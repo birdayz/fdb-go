@@ -10,7 +10,7 @@ import (
 	"fdb.dev/pkg/recordlayer"
 )
 
-// buildChainedUnnestMetadata constructs a RecordMetaData with a THREE-level
+// BuildChainedUnnestMetadata constructs a RecordMetaData with a THREE-level
 // nested struct/array shape for the class-4 CHAINED lateral unnest
 // (`FROM t, t.arr AS x, x.sub AS y`). The record T4 carries:
 //

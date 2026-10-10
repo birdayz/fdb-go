@@ -501,8 +501,9 @@ func (t *ExploreExprTask) preOrderRules(p *Planner, implRules []ImplementationRu
 	return result
 }
 
-// Complete a physical input batch's ruleless closure before admitting parent
-// transforms. The proof is local to this visit; no ordinary group becomes pinned.
+// completeRulelessInput completes a physical input batch's ruleless closure
+// before admitting parent transforms. The proof is local to this visit; no
+// ordinary group becomes pinned.
 func (t *ExploreExprTask) completeRulelessInput(ctx context.Context, p *Planner, implRules []ImplementationRule) error {
 	qs := t.Expr.GetQuantifiers()
 	if t.Phase != PhasePlanning || !isPhysical(t.Expr) || len(qs) == 0 {

@@ -897,11 +897,11 @@ func indexEntryKey(idx *Index, indexValues tuple.Tuple, primaryKey tuple.Tuple) 
 	return entry, nil
 }
 
-// trimPrimaryKey removes PK components that already appear in the index key.
+// TrimPrimaryKey removes PK components that already appear in the index key.
 // Returns the remaining PK components that need to be appended to the index entry.
 // Returns an error if primaryKeyComponentPositions references an index beyond the
 // primary key length.
-// Matches Java's Index.TrimPrimaryKey().
+// Matches Java's Index.trimPrimaryKey().
 func (idx *Index) TrimPrimaryKey(primaryKey tuple.Tuple) (tuple.Tuple, error) {
 	if idx.primaryKeyComponentPositions == nil {
 		return primaryKey, nil
@@ -918,7 +918,7 @@ func (idx *Index) TrimPrimaryKey(primaryKey tuple.Tuple) (tuple.Tuple, error) {
 	return trimmed, nil
 }
 
-// getEntryPrimaryKey reconstructs the full primary key from an index entry key.
+// EntryPrimaryKey reconstructs the full primary key from an index entry key.
 // When primaryKeyComponentPositions is set, some PK components come from the
 // index key portion and some from the appended portion.
 // Returns an empty tuple if the entry key is truncated (fewer elements than expected).

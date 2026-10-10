@@ -265,7 +265,7 @@ func newStoreSubspaceKeys(ss subspace.Subspace) *storeSubspaceKeys {
 }
 
 // loadRecordStoreState reads store header + index states from FDB.
-// Issues both GetRange calls (store info + index states) in parallel using
+// Issues both reads (store-info Get + index-state GetRange) in parallel using
 // FDB's future-based API, then resolves sequentially.
 // This is a pure function — it does NOT mutate store fields.
 // The caller is responsible for setting store.storeHeader and store.indexStates.

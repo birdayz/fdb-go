@@ -169,7 +169,7 @@ func (g *MhGen) Pred(depth int) string {
 
 const MhCols = "(id, a, b, c, s, f)"
 
-// mhRowLiteral builds one fixture row.
+// MhRowLiteral builds one fixture row.
 func MhRowLiteral(r *rand.Rand, id int) string {
 	nul := func(p int, gen func() string) string {
 		if r.Intn(100) < p {

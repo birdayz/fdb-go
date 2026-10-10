@@ -19,7 +19,7 @@ import (
 	"fdb.dev/pkg/relational/core/embedded"
 )
 
-// pagedConn returns a connection in paginate mode with a small scanned-rows
+// PagedConn returns a connection in paginate mode with a small scanned-rows
 // budget, so the engine crosses many internal page boundaries and resumes via
 // continuations transparently.
 func PagedConn(t *testing.T, db *sql.DB, budget int) *sql.Conn {

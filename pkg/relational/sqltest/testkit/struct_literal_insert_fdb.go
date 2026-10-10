@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// requireErrContains asserts the statement failed with a message carrying
+// RequireErrContains asserts the statement failed with a message carrying
 // want — used where the Java-verbatim WORDING is the contract.
 func RequireErrContains(t *testing.T, err error, want string) {
 	t.Helper()

@@ -17,7 +17,7 @@ import (
 	"fdb.dev/pkg/relational/core/embedded"
 )
 
-// pinEmbeddedConn pins a single *sql.Conn and hands back its underlying
+// PinEmbeddedConn pins a single *sql.Conn and hands back its underlying
 // *embedded.EmbeddedConnection so a test can install the RFC-106a
 // connection-local config (options / fail-on-scan / statement timeout /
 // result-byte cap). The returned *sql.Conn MUST be used for every

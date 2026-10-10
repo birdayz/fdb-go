@@ -18,7 +18,7 @@ import (
 	"fdb.dev/pkg/relational/core/metadata"
 )
 
-// existsGatherSchemaMetadata builds the A/B/EE/EEV schema shared by the row cert (FDB
+// ExistsGatherSchemaMetadata builds the A/B/EE/EEV schema shared by the row cert (FDB
 // execution) and the plan-only sweep below. A(AID=1,K=100,ARR=[7,8]);
 // B(BID=2,K=110) — A.K/B.K dup-named, the leg a qualified EXISTS correlation
 // must disambiguate; EE(CK) is the leg-correlation table, EEV(VK) the element

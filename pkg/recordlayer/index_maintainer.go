@@ -166,7 +166,7 @@ func (m *StandardIndexMaintainer) CanDeleteWhere(prefix tuple.Tuple) error {
 	return checkDeleteWhereBound(m.index, prefix)
 }
 
-// indexStoreContext provides the store methods needed by index maintainers.
+// IndexStoreContext provides the store methods needed by index maintainers.
 // Avoids circular dependency by using an interface instead of *FDBRecordStore directly.
 type IndexStoreContext interface {
 	readIndexState(indexName string) (IndexState, error)
@@ -210,7 +210,7 @@ type IndexStoreContext interface {
 	indexMaintenanceFilter() IndexMaintenanceFilter
 }
 
-// standardIndexMaintainer handles VALUE index maintenance.
+// StandardIndexMaintainer handles VALUE index maintenance.
 // Evaluates the index key expression against records, then sets/clears entries
 // in the index subspace. Matches Java's standardIndexMaintainer.
 type StandardIndexMaintainer struct {
@@ -521,14 +521,14 @@ func (m *StandardIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
 	return deleteWhereRange(m.tx, m.indexSubspace, prefix)
 }
 
-// indexEntry represents a single index entry (indexed values + record primary key).
+// EvaluatedIndexEntry represents a single index entry (indexed values + record primary key).
 type EvaluatedIndexEntry struct {
 	key        tuple.Tuple
 	primaryKey tuple.Tuple
 	value      tuple.Tuple // Non-nil for KeyWithValueExpression covering indexes
 }
 
-// filteredIndexEntries is Java's StandardIndexMaintainer.filteredIndexEntries
+// FilteredIndexEntries is Java's StandardIndexMaintainer.filteredIndexEntries
 // (:348-384): nil for a nil record or one the index does not maintain
 // (indexValuesFor), otherwise its evaluated entries, only those the store's
 // filter admits under IndexValuesSome. Every maintainer's update path reads a
@@ -827,7 +827,7 @@ func tuplesEqual(a, b tuple.Tuple) bool {
 	return string(a.Pack()) == string(b.Pack())
 }
 
-// removeCommonEntries filters out entries that are identical in both old and new.
+// RemoveCommonEntries filters out entries that are identical in both old and new.
 // This avoids unnecessary FDB mutations when a record update doesn't change
 // the indexed value. Matches Java's standardIndexMaintainer.commonKeys optimization.
 func RemoveCommonEntries(idx *Index, old, new []EvaluatedIndexEntry) ([]EvaluatedIndexEntry, []EvaluatedIndexEntry, error) {

@@ -29,7 +29,7 @@ import (
 	"fmt"
 )
 
-// mmHeadRows truncates a row list for a failure message.
+// MmHeadRows truncates a row list for a failure message.
 func MmHeadRows(rows []string) []string {
 	if len(rows) <= 20 {
 		return rows

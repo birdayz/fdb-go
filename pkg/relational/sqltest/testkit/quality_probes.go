@@ -9,7 +9,7 @@ import (
 	"fdb.dev/pkg/relational/api"
 )
 
-// collectRows runs a query and returns rows as [][]any.
+// CollectRows runs a query and returns rows as [][]any.
 func CollectRows(t *testing.T, db *sql.DB, query string) [][]any {
 	t.Helper()
 	ctx := context.Background()
@@ -59,7 +59,7 @@ func ExpectError(t *testing.T, db *sql.DB, query string) error {
 	return nil
 }
 
-// requireSQLSTATE unwraps err to *api.Error and asserts that the SQLSTATE
+// RequireSQLSTATE unwraps err to *api.Error and asserts that the SQLSTATE
 // code matches want. Use after expectError for Java-conformance tests where
 // the exact SQLSTATE is known.
 func RequireSQLSTATE(t *testing.T, err error, want api.ErrorCode) {

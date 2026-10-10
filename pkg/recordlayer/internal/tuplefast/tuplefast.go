@@ -141,7 +141,7 @@ func Skip(b []byte) int {
 	return -1 // unknown type code
 }
 
-// nestedPKSpans splits the content of a neighbor-list tuple (the bytes between
+// NestedPKSpans splits the content of a neighbor-list tuple (the bytes between
 // the 0x05 marker and its terminating 0x00) into one byte-span per element,
 // WITHOUT decoding/boxing the elements. Children are stored verbatim, so each
 // returned span is exactly the bytes Tuple{pk}.Pack() produces — which is both
@@ -412,7 +412,7 @@ func fastDecodeTuple(b []byte, nested bool) (tuple.Tuple, int, error) {
 	return t, i, nil
 }
 
-// splitKeySuffix splits a tuple-encoded key into PK portion and trailing int64 suffix.
+// SplitKeySuffix splits a tuple-encoded key into PK portion and trailing int64 suffix.
 // Zero allocation.
 func SplitKeySuffix(tupleBytes []byte) (suffix int64, pkEnd int, err error) {
 	// Defense-in-depth: an empty suffix has no tuple element, so the scan loop below

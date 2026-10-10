@@ -71,7 +71,7 @@ func walkIndexScans(p plans.RecordQueryPlan, visit func(*plans.RecordQueryIndexP
 	})
 }
 
-// planBindsBoundedScanOn reports whether the plan scans indexName with at least
+// PlanBindsBoundedScanOn reports whether the plan scans indexName with at least
 // one non-empty comparison range — the property "the predicate reached the
 // access path" as distinct from "a Fetch node is rendered".
 func PlanBindsBoundedScanOn(p plans.RecordQueryPlan, indexName string) (found, bounded bool) {
@@ -89,7 +89,7 @@ func PlanBindsBoundedScanOn(p plans.RecordQueryPlan, indexName string) (found, b
 	return found, bounded
 }
 
-// planUsesIndex reports whether the plan scans indexName at all, seeing through
+// PlanUsesIndex reports whether the plan scans indexName at all, seeing through
 // covering wrappers.
 func PlanUsesIndex(p plans.RecordQueryPlan, indexName string) bool {
 	used := false
@@ -101,7 +101,7 @@ func PlanUsesIndex(p plans.RecordQueryPlan, indexName string) bool {
 	return used
 }
 
-// assertScanReadsBaseRecords asserts that the scan introduced by scanPrefix
+// AssertScanReadsBaseRecords asserts that the scan introduced by scanPrefix
 // reads BASE RECORDS rather than answering from the index entry.
 //
 // Checked on the scan's own label, not the whole plan, so a covering scan
@@ -120,7 +120,7 @@ func AssertScanReadsBaseRecords(t *testing.T, plan, scanPrefix string) {
 	}
 }
 
-// scanLabel extracts the single scan label beginning at scanPrefix, up to its
+// ScanLabel extracts the single scan label beginning at scanPrefix, up to its
 // closing paren, so an assertion applies to that scan and not the whole plan.
 func ScanLabel(plan, scanPrefix string) (string, bool) {
 	i := strings.Index(plan, scanPrefix)

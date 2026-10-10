@@ -51,7 +51,7 @@ func ScanRowStrings(t *testing.T, rows *sql.Rows) []string {
 	return got
 }
 
-// siRenderRow renders the row the cursor is currently positioned on, whatever
+// SiRenderRow renders the row the cursor is currently positioned on, whatever
 // its arity and column types, as "v1|v2|...|vN".
 func SiRenderRow(t *testing.T, rows *sql.Rows) string {
 	t.Helper()
@@ -74,7 +74,7 @@ func SiRenderRow(t *testing.T, rows *sql.Rows) string {
 	return strings.Join(parts, "|")
 }
 
-// assertUnsupported runs q and asserts it fails cleanly with
+// AssertUnsupported runs q and asserts it fails cleanly with
 // ErrCodeUnsupportedQuery (0AF00) — NOT a silently-wrong cross product, and
 // for EXPLAIN not a rendered plan for a query the engine cannot run.
 func AssertUnsupported(t *testing.T, db *sql.DB, ctx context.Context, q string) {

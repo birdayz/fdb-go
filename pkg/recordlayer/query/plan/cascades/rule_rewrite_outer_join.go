@@ -60,6 +60,7 @@ func NewRewriteOuterJoinRule() *RewriteOuterJoinRule {
 
 var _ ExpressionRule = (*RewriteOuterJoinRule)(nil)
 
+// ConstraintDependencies is empty: the rule reads no planner constraints, as in Java.
 func (r *RewriteOuterJoinRule) ConstraintDependencies() []any { return nil }
 
 // Matcher returns the pattern.

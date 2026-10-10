@@ -10,7 +10,7 @@ import (
 	"fmt"
 )
 
-// ChainedCursor iterates over values generated dynamically one at a time.
+// chainedCursor iterates over values generated dynamically one at a time.
 // A generator function takes the previous value (nil for start) and returns the
 // next value. Iteration stops when the generator returns nil, nil.
 // Matches Java's com.apple.foundationdb.record.cursors.ChainedCursor.

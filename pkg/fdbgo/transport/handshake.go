@@ -26,10 +26,10 @@ const ConnectPacketSize = 44
 
 // Protocol version constants.
 const (
-	// objectSerializerFlag signals FlatBuffers serialization (always set in modern FDB).
+	// ObjectSerializerFlag signals FlatBuffers serialization (always set in modern FDB).
 	ObjectSerializerFlag uint64 = 0x1000000000000000
 
-	// compatibleProtocolVersionMask: top 48 bits must match for compatibility.
+	// CompatibleProtocolVersionMask: top 48 bits must match for compatibility.
 	CompatibleProtocolVersionMask uint64 = 0xFFFFFFFFFFFF0000
 
 	// FDB 7.3 protocol version (without flags).

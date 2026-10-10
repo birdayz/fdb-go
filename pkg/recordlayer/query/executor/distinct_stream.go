@@ -139,6 +139,8 @@ func (d *distinctStreamContinuation) IsEnd() bool { return false }
 
 var _ recordlayer.RecordCursor[QueryResult] = (*distinctStreamCursor)(nil)
 
+// queryResultDistinctKeyer packs a row's DISTINCT identity; injected so value and
+// primary-key DISTINCT share one cursor.
 type queryResultDistinctKeyer func(QueryResult) (string, error)
 
 // distinctHashCursor is the shared resume-clean hash executor for unordered

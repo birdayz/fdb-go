@@ -100,7 +100,7 @@ var floatOrderingRows = []floatOrderingRow{
 	{id: 5, seed: "0.0", makeNonFinite: "CAST('NaN' AS DOUBLE)", label: "posNaN"},
 }
 
-// seedFloatOrderingLadder writes the ladder into tbl with a constant `a` so an
+// SeedFloatOrderingLadder writes the ladder into tbl with a constant `a` so an
 // equality on the index's leading column binds and leaves the float as the
 // leading SORTED coordinate.
 func SeedFloatOrderingLadder(t *testing.T, db *sql.DB, ctx context.Context, tbl string) {
@@ -120,7 +120,7 @@ func SeedFloatOrderingLadder(t *testing.T, db *sql.DB, ctx context.Context, tbl 
 	}
 }
 
-// assertFloatLadderStored fails loudly if the ladder did not land as intended.
+// AssertFloatLadderStored fails loudly if the ladder did not land as intended.
 // Every assertion below is meaningless without it: if the write path silently
 // rejected the non-finite values (or started rejecting them after a guard
 // change), the test would be comparing two tables of ordinary finite doubles

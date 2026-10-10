@@ -27,7 +27,7 @@ const (
 // Precedes returns true if s comes before other in the stage order.
 func (s PlannerStage) Precedes(other PlannerStage) bool { return s < other }
 
-// exploration state tracks per-Reference exploration progress within a phase.
+// explorationState tracks per-Reference exploration progress within a phase.
 type explorationState int
 
 const (

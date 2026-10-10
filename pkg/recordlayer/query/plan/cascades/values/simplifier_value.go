@@ -179,7 +179,7 @@ func isFoldableComposite(v Value) bool {
 	return false
 }
 
-// simplifyChildren rebuilds v with each child recursively simplified.
+// simplifyChildrenWith rebuilds v with each child recursively simplified.
 // Returns v unchanged (same pointer) when no child changed — keeps
 // the SimplifyValue caller's pointer-equality short-circuit usable.
 func simplifyChildrenWith(v Value, mode simplifyMode) Value {
@@ -345,7 +345,8 @@ func composeFieldOverConstructor(v Value) Value {
 	return nil
 }
 
-// tryCastConstant folds a CAST of cv to target, or returns nil when the cast fails.
+// tryCastConstant folds a CAST of cv to target, or returns nil when the cast
+// fails or yields NULL.
 func tryCastConstant(cv *ConstantValue, target Type) (out *ConstantValue) {
 	cast := NewCastValue(cv, target)
 	result, err := cast.Evaluate(nil)

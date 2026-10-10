@@ -175,7 +175,7 @@ func (o *RequestedOrdering) Mirrored() *RequestedOrdering {
 	return &RequestedOrdering{parts: parts, distinctness: o.distinctness, exhaustive: o.exhaustive, sortable: o.sortable}
 }
 
-// Preserve returns a RequestedOrdering that preserves the incoming order.
+// PreserveOrdering returns a RequestedOrdering that preserves the incoming order.
 func PreserveOrdering() *RequestedOrdering {
 	return &RequestedOrdering{
 		distinctness: DistinctnessPreserveDistinctness,

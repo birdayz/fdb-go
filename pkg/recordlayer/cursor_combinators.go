@@ -370,7 +370,7 @@ func (w *orElseContinuationWrapper) IsEnd() bool {
 	return false
 }
 
-// ConcatCursor concatenates two cursors: returns all results from the first cursor,
+// concatCursor concatenates two cursors: returns all results from the first cursor,
 // then all results from the second. Matches Java's ConcatCursor.
 //
 // Uses cursor factories (not raw cursors) so that on continuation resumption,
@@ -509,7 +509,7 @@ func (c *concatCursor[T]) Close() error {
 
 func (c *concatCursor[T]) IsClosed() bool { return c.closed }
 
-// MapResultCursor applies a transformation function to each cursor result.
+// mapResultCursor applies a transformation function to each cursor result.
 // Unlike Map (which operates on iter.Seq), this operates at the RecordCursor level
 // and preserves continuations. Matches Java's MapResultCursor.
 type mapResultCursor[T, R any] struct {

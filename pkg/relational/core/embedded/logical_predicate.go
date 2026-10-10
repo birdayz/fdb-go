@@ -645,11 +645,11 @@ func projectionOutputNames(sq *selectQuery) []string {
 	return names
 }
 
-// cteRowTypes lifts the enclosing WITH bindings out of the semantic scope into
-// the row types the exact logical derivation needs. A body reading one of those
-// names builds to a bare LogicalScan whose "table" has no catalog descriptor,
-// so without this the derivation reports `scan table "C" has no record
-// descriptor` and the whole derived source declines.
+// cteRegistryFromScopes lifts the enclosing WITH bindings out of the semantic
+// scope into the CTE registry the exact logical derivation needs. A body
+// reading one of those names builds to a bare LogicalScan whose "table" has
+// no catalog descriptor, so without this the derivation reports `scan table
+// "C" has no record descriptor` and the whole derived source declines.
 func cteRegistryFromScopes(scopes ...map[string]semantic.ScopeSource) *logical.CTERegistry {
 	registry := logical.CTERegistry{}
 	for _, cteScopes := range scopes {
@@ -7540,24 +7540,6 @@ func expandProjectionStars(sq *selectQuery, md *recordlayer.RecordMetaData, temp
 	return nil
 }
 
-// expandProjQualifier handles `SELECT <qualifier>.*` when it is the
-// only SELECT element (projQualifier set, projCols nil). Expands the
-// qualifier into explicit projCols with qualified column names
-// (`qualifier.COL`) so buildLogicalPlanForSelect emits a LogicalProject
-// that restricts the output to that source's columns. Without this,
-// JOIN queries with a lone qualified star would project all columns
-// from all sources (the nil-projCols path in buildLogicalPlanForSelect
-// skips the projection node entirely).
-//
-// For single-table queries `a.*` is equivalent to `*`, so the expansion
-// is technically unnecessary but harmless — the resulting projection
-// lists the same columns the scan produces.
-// A lone `V.*` over a lateral array unnest alias (`SELECT V.* FROM t, t.arr AS
-// V`) expands to the unnest's element column(s) (and the ordinal under WITH
-// ORDINALITY) via the SHARED unnest virtual source — NOT only real record types.
-// Without this the qualifier resolves to nothing and the query falls through to
-// the nil-projCols path → returns the ENTIRE FlatMap row instead of just the
-// unnest source's columns (silent-wrong). RFC-142.
 // expandBareStarFromScope publishes the visible SQL attributes when they differ
 // from the physical row. Projection elision requires the same names and ordinal
 // mapping, not merely a SELECT *: a CTE can expose K,K over physical K,K_2.

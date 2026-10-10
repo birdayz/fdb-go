@@ -198,7 +198,7 @@ func (h *IndexingHeartbeat) Cleanup(tx fdb.WritableTransaction, storeSubspace su
 	tx.Clear(h.heartbeatKey(storeSubspace, index))
 }
 
-// CleanupAll removes ALL heartbeats for an index. Used during index rebuild or
+// CleanupAllHeartbeats removes ALL heartbeats for an index. Used during index rebuild or
 // full clear operations.
 func CleanupAllHeartbeats(tx fdb.WritableTransaction, storeSubspace subspace.Subspace, index *Index) {
 	hbSub := heartbeatSubspace(storeSubspace, index)

@@ -883,7 +883,7 @@ func (c *indexRecordLoader) finish(entry *IndexEntry, pk tuple.Tuple, rec *FDBSt
 	}, nil
 }
 
-// byDistanceScanner is the BY_DISTANCE access-method contract every vector
+// ByDistanceScanner is the BY_DISTANCE access-method contract every vector
 // index maintainer implements (RFC-094 §10): Low = (serialized query vector
 // [, prefix...]), High = (k [, tuning...]); entries ascend by distance.
 // Compile-time assertions catch signature drift at build time.
@@ -891,7 +891,7 @@ type ByDistanceScanner interface {
 	ScanByDistance(TupleRange, []byte, ScanProperties) RecordCursor[*IndexEntry]
 }
 
-// orderedStreamScanner is the RFC-156 Phase C distance-ordered STREAMING scan
+// OrderedStreamScanner is the RFC-156 Phase C distance-ordered STREAMING scan
 // (demand-driven widening + budget-bounded honest truncation). Same TupleRange/
 // IndexEntry contract as ScanByDistance; only partition indices with a widenable
 // posting structure (SPFresh) implement it — others use the ScanByDistance

@@ -528,6 +528,7 @@ func (p *RecordQueryIndexPlan) structuralKey() *structuralKey {
 		Str(p.matchedIndexPredicate)
 }
 
+// EqualsPlanWithoutChildren compares structuralKeys (see structuralKey).
 func (p *RecordQueryIndexPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryIndexPlan)
 	return ok && p.keyFor(p).Equal(o.keyFor(o))

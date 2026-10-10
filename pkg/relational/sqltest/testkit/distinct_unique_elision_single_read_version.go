@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-// dusrvDrainTxErr is dusrvDrainTx that RETURNS its driver error, which is what
+// DusrvDrainTxErr is dusrvDrainTx that RETURNS its driver error, which is what
 // a retried transaction body needs. A drain crosses many page boundaries by
 // design, and every one of those pages is a place the whole-transaction budget
 // pre-emption can arrive; fatalling there would end the test before the retry
@@ -32,7 +32,7 @@ func DusrvDrainTxErr(ctx context.Context, tx *sql.Tx, q string) ([]string, error
 	return out, nil
 }
 
-// explainPlanOnErr is explainPlanOn that RETURNS its driver error, for use
+// ExplainPlanOnErr is explainPlanOn that RETURNS its driver error, for use
 // inside a retried transaction body. An EXPLAIN issued on a transaction is a
 // read page like any other and can be pre-empted for outliving the MVCC window.
 func ExplainPlanOnErr(ctx context.Context, q DusrvQueryer, stmt string) (string, error) {
@@ -68,7 +68,7 @@ func ExplainPlanOnErr(ctx context.Context, q DusrvQueryer, stmt string) (string,
 	return plan.String(), nil
 }
 
-// dusrvQueryer is satisfied by *sql.DB, *sql.Conn and *sql.Tx alike.
+// DusrvQueryer is satisfied by *sql.DB, *sql.Conn and *sql.Tx alike.
 type DusrvQueryer interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }

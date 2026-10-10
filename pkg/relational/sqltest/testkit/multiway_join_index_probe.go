@@ -20,7 +20,7 @@ func MustExecCtx(t *testing.T, db execer, ctx context.Context, query string) {
 	}
 }
 
-// mwjoInsertRange inserts row(i) for i in [lo, hi] as multi-row INSERTs of 100.
+// MwjoInsertRange inserts row(i) for i in [lo, hi] as multi-row INSERTs of 100.
 // For fixtures whose test reads only the loaded rows: one autocommit statement
 // per row cost these probes most of their runtime. 500-row statements hit the
 // 5s transaction limit (1007) on an overloaded box; 100 matches the other

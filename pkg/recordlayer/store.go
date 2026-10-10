@@ -1618,10 +1618,18 @@ func (store *FDBRecordStore) removeUniquenessViolations(index *Index, indexKey t
 func (store *FDBRecordStore) Env() *dst.Env { return store.context.Env() }
 
 // lockRegistry delegation — matches Java's LockRegistry on FDBRecordContext.
+
+// AcquireWriteLock takes the context's exclusive lock for key.
 func (store *FDBRecordStore) AcquireWriteLock(key string) { store.context.locks.WriteLock(key) }
+
+// ReleaseWriteLock releases the exclusive lock AcquireWriteLock took for key.
 func (store *FDBRecordStore) ReleaseWriteLock(key string) { store.context.locks.WriteUnlock(key) }
-func (store *FDBRecordStore) AcquireReadLock(key string)  { store.context.locks.ReadLock(key) }
-func (store *FDBRecordStore) ReleaseReadLock(key string)  { store.context.locks.ReadUnlock(key) }
+
+// AcquireReadLock takes the context's shared lock for key.
+func (store *FDBRecordStore) AcquireReadLock(key string) { store.context.locks.ReadLock(key) }
+
+// ReleaseReadLock releases the shared lock AcquireReadLock took for key.
+func (store *FDBRecordStore) ReleaseReadLock(key string) { store.context.locks.ReadUnlock(key) }
 
 func (store *FDBRecordStore) isKeyInIndexBuildRange(index *Index, primaryKey tuple.Tuple) (bool, error) {
 	irs := NewIndexingRangeSet(store.subspace, index)

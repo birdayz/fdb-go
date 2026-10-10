@@ -61,7 +61,7 @@ func SetupErrorDB(t *testing.T, dbPath, schemaName, ddl string) *sql.DB {
 	return db
 }
 
-// asAPIError unwraps the err to *api.Error. Returns nil if the chain
+// AsAPIError unwraps the err to *api.Error. Returns nil if the chain
 // has no api.Error.
 func AsAPIError(err error) *api.Error {
 	var e *api.Error
@@ -71,7 +71,7 @@ func AsAPIError(err error) *api.Error {
 	return nil
 }
 
-// assertErrorCode runs the SQL, expects an error, and asserts the
+// AssertErrorCode runs the SQL, expects an error, and asserts the
 // returned error's api.ErrCode* matches `wantCode`.
 func AssertErrorCode(t *testing.T, db *sql.DB, sql string, wantCode api.ErrorCode) {
 	t.Helper()

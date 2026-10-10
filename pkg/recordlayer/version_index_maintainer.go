@@ -175,7 +175,7 @@ func (m *versionIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
 	return deleteWhereRange(m.tx, m.indexSubspace, prefix)
 }
 
-// filteredIndexEntries is Java's StandardIndexMaintainer.filteredIndexEntries
+// FilteredIndexEntries is Java's StandardIndexMaintainer.filteredIndexEntries
 // over the version index's evaluated entries (see standardIndexMaintainer's).
 func (m *versionIndexMaintainer) FilteredIndexEntries(record *FDBStoredRecord[proto.Message]) ([]EvaluatedIndexEntry, error) {
 	values := indexValuesFor(m.store, m.index, record)

@@ -1304,7 +1304,7 @@ func BuildPingRequest(replyToken UID) []byte {
 	)
 }
 
-// fastRNG is a per-goroutine fast PRNG for UID generation.
+// fastRNGState is the shared, atomically advanced PRNG state for UID generation.
 // Uses SplitMix64 (same as java.util.SplittableRandom). Seeded from crypto/rand.
 // Reply tokens only need uniqueness within a connection, not crypto security.
 var fastRNGState atomic.Uint64

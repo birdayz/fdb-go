@@ -67,7 +67,7 @@ func (h *FleetHarness) MustRun(t *testing.T, what string, fn func(txn api.Transa
 	}
 }
 
-// fleetTemplate builds template `name` at `version` over one table T(PK,C,V),
+// FleetTemplate builds template `name` at `version` over one table T(PK,C,V),
 // optionally carrying a value index on C. v1 has no index; v2 adds it, which
 // is the migration every test below performs.
 func FleetTemplate(t *testing.T, name string, version int, withIndex bool) *metadata.RecordLayerSchemaTemplate {
@@ -99,7 +99,7 @@ func FleetOpen(t *testing.T, dbPath, schemaName string) *sql.DB {
 	return db
 }
 
-// fleetTargets lists the fan-out targets for one database. Narrowed to the
+// FleetTargets lists the fan-out targets for one database. Narrowed to the
 // test's own database on purpose: the catalog subspace is shared by every test
 // in this package, so an unfiltered listing would race with concurrent tests.
 func FleetTargets(t *testing.T, h *FleetHarness, dbPath string) []fleet.Target {
@@ -113,7 +113,7 @@ func FleetTargets(t *testing.T, h *FleetHarness, dbPath string) []fleet.Target {
 	return targets
 }
 
-// fleetVersions maps schema name -> bound TEMPLATE_VERSION, read back from the
+// FleetVersions maps schema name -> bound TEMPLATE_VERSION, read back from the
 // catalog. This is the migration observable.
 func FleetVersions(t *testing.T, h *FleetHarness, dbPath string) map[string]int {
 	t.Helper()
@@ -124,7 +124,7 @@ func FleetVersions(t *testing.T, h *FleetHarness, dbPath string) map[string]int 
 	return out
 }
 
-// migrateFleet is the shared arrange step: save template v2 (adding the index)
+// MigrateFleet is the shared arrange step: save template v2 (adding the index)
 // and rebind every schema, one transaction per schema.
 func MigrateFleet(t *testing.T, h *FleetHarness, dbPath, tmplName string, opts fleet.Options) (fleet.Result, error) {
 	t.Helper()

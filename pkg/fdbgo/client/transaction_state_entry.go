@@ -31,7 +31,8 @@ func (tx *Transaction) Clear(key []byte) {
 }
 
 // ClearRange deletes all keys in [begin, end).
-// Returns inverted_range (2005) if begin > end. Matches C++ fdb_transaction_clear_range_impl.
+// Returns inverted_range (2005) if begin > end; C++ ThreadSafeTransaction::clear
+// raises it as the transaction's deferred error (ThreadSafeTransaction.cpp:626-640).
 // Zero-width ranges (begin == end) are silently ignored, matching C++.
 func (tx *Transaction) ClearRange(begin, end []byte) error {
 	lease := tx.enterState()
@@ -98,14 +99,6 @@ func (tx *Transaction) SetReadVersion(version int64) {
 // a retried transaction opened a fresh one. Only the GRV instant tracks it.
 //
 // Callers MUST honour ok rather than treating a zero time as an anchor.
-//
-// The hasReadVersion term is the whole reset discipline, deliberately. Every path
-// that drops the read version (reset on the OnError retry, postCommitReset on
-// commit-reuse) retires the instant through this one gate, so a new reset path
-// cannot forget to clear it. Explicit clears were tried at those sites and removed:
-// they were redundant with the gate, and two mechanisms covering one rule means
-// neither is individually detectable by a mutation — the tests kept passing with
-// either one broken, which is worse than having only one.
 func (tx *Transaction) ReadVersionInstant() (time.Time, bool) {
 	lease := tx.enterState()
 	defer lease.release()
@@ -135,8 +128,9 @@ func (tx *Transaction) SetRetryLimit(retries int64) {
 // GetApproximateSize returns the approximate size of the transaction's mutations
 // and conflict ranges in bytes. Matches C++ ReadYourWritesTransaction accounting:
 // each mutation includes sizeof(MutationRef), each conflict range includes
-// sizeof(KeyRangeRef). For set/atomic with write conflicts, C++ also adds the
-// key length again for the auto-generated write conflict range.
+// sizeof(KeyRangeRef). For set/atomic with write conflicts, C++ also adds
+// sizeof(KeyRangeRef) + 2*len(key) + 1 for the auto-generated write conflict
+// range (ReadYourWrites.actor.cpp:2289-2290, :2337-2338).
 func (tx *Transaction) GetApproximateSize() (int64, error) {
 	lease := tx.enterState()
 	defer lease.release()
@@ -243,8 +237,8 @@ func (tx *Transaction) SetMaxRetryDelay(ms int64) {
 // throws client_invalid_operation BEFORE assigning the option
 // (ReadYourWrites.actor.cpp:2534-2542), so the option does NOT take effect; the throw
 // lands in deferredError (the option call itself succeeds) and every subsequent op
-// returns 2000 until reset (RFC-059). Match both halves: record the deferred error
-// AND leave rywDisabled unset. A clean (pre-op) disable applies normally.
+// returns 2000 until reset (RFC-059); this client behaves the same. A clean (pre-op)
+// disable applies normally.
 func (tx *Transaction) SetReadYourWritesDisable() {
 	lease := tx.enterState()
 	defer lease.release()
@@ -401,7 +395,7 @@ func (tx *Transaction) AddReadConflictRange(begin, end []byte) error {
 // AddReadConflictKey adds a read conflict on a single key. Like AddReadConflictRange it is filtered
 // through the RYW write-map (C++ addReadConflictRange over [key, keyAfter(key)) → updateConflictMap,
 // ReadYourWrites.actor.cpp:1986): a self-written independent key adds no conflict; rywDisabled adds
-// the full single-key conflict directly (:1979). Identical to the Get-path helper, so delegate.
+// the full single-key conflict directly (:1979).
 func (tx *Transaction) AddReadConflictKey(key []byte) {
 	lease := tx.enterState()
 	defer lease.release()

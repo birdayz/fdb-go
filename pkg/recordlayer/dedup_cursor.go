@@ -13,7 +13,7 @@ import (
 	"fdb.dev/gen"
 )
 
-// DedupCursor removes adjacent duplicate elements from an inner cursor.
+// dedupCursor removes adjacent duplicate elements from an inner cursor.
 // Assumes the inner cursor is sorted so that duplicates are grouped consecutively.
 // Matches Java's com.apple.foundationdb.record.cursors.DedupCursor.
 //

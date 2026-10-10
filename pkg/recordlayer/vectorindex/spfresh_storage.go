@@ -24,7 +24,7 @@ var errSPFreshNotFound = errors.New("spfresh: not found")
 
 // --- META: generation, ID blocks, transform ---
 
-// readGenerationForWrite REAL-reads META's current-generation key — the write
+// spfreshReadGenerationForWrite REAL-reads META's current-generation key — the write
 // fence (RFC-094 §3): the value check covers transactions that start after a
 // flip, the conflict range covers in-flight writers racing one. Returns
 // errSPFreshNotFound when no generation has ever been established.
@@ -42,7 +42,7 @@ func spfreshReadGenerationForWrite(tx fdb.WritableTransaction, s *spfreshStorage
 	return int64(binary.LittleEndian.Uint64(data)), nil
 }
 
-// readGenerationSnapshot is the query-path variant: no conflict range (queries
+// spfreshReadGenerationSnapshot is the query-path variant: no conflict range (queries
 // never abort anyone; staleness degrades to partial-at-worst under MVCC).
 func spfreshReadGenerationSnapshot(tx fdb.ReadTransaction, s *spfreshStorage) (int64, error) {
 	data, err := tx.Snapshot().Get(s.metaKey(spfreshMetaGeneration)).Get()

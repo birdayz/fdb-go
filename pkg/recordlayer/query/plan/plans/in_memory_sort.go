@@ -258,6 +258,7 @@ func (p *RecordQueryInMemorySortPlan) structuralKey() *structuralKey {
 	return newStructuralKey().SortKeys(p.sortKeys)
 }
 
+// EqualsPlanWithoutChildren compares structuralKeys (see structuralKey).
 func (p *RecordQueryInMemorySortPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryInMemorySortPlan)
 	return ok && p.keyFor(p).Equal(o.keyFor(o))

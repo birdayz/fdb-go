@@ -10,7 +10,7 @@ import (
 	"fdb.dev/pkg/relational/core/keyspace"
 )
 
-// relationalStoreSubspace is the record-store subspace of a schema the driver
+// RelationalStoreSubspace is the record-store subspace of a schema the driver
 // created: Java's (domain, database, schema) longs, looked up (never interned)
 // in the cluster under test. Names are the ones CREATE DATABASE / CREATE SCHEMA
 // stored (an unquoted path or schema folds to upper case).

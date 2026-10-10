@@ -44,6 +44,7 @@ func NewImplementFilterRule() *ImplementFilterRule {
 	}
 }
 
+// ConstraintDependencies is empty: the rule reads no planner constraints, as in Java.
 func (r *ImplementFilterRule) ConstraintDependencies() []any { return nil }
 
 // Matcher returns the pattern.

@@ -2668,6 +2668,8 @@ func (tx *Transaction) stateSetReadVersion(version int64) {
 	tx.readVersionMu.Unlock()
 }
 
+// The hasReadVersion gate is the only reset of the instant: every path that drops
+// the read version retires it here, so a new reset path cannot forget to.
 func (tx *Transaction) stateReadVersionInstant() (time.Time, bool) {
 	tx.readVersionMu.Lock()
 	defer tx.readVersionMu.Unlock()
@@ -3359,6 +3361,7 @@ func (tx *Transaction) stateAddReadConflictRange(begin, end []byte) error {
 	return nil
 }
 
+// The Get path applies the same RYW filtering, so share its helper.
 func (tx *Transaction) stateAddReadConflictKey(key []byte) {
 	tx.addReadConflictForKeyRYW(key)
 }

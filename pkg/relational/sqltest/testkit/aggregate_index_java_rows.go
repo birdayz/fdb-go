@@ -4,7 +4,7 @@ import (
 	"strings"
 )
 
-// mmAggregateIndexRowsAgree reports whether rows read through SUM / COUNT
+// MmAggregateIndexRowsAgree reports whether rows read through SUM / COUNT
 // aggregate indexes (idx) are the answer Java's index gives for the records the
 // unindexed twin reads (oracle). Both are mmRows output: one "|"-joined string
 // per row, in the read's order, the last nAgg columns aggregates.
@@ -116,7 +116,7 @@ func anyAggregate(aggs []string, f func(string) bool) bool {
 	return false
 }
 
-// mmTrailingAggregates counts the aggregate calls in a read's select list (the
+// MmTrailingAggregates counts the aggregate calls in a read's select list (the
 // text before its first FROM), which this file's callers project last.
 func MmTrailingAggregates(q string) int {
 	up := strings.ToUpper(q)

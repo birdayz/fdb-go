@@ -30,7 +30,7 @@ type IndexStatePlanningFixture struct {
 	Ss  subspace.Subspace
 }
 
-// newIndexStatePlanningFixture builds a schema with one secondary UNIQUE index
+// NewIndexStatePlanningFixture builds a schema with one secondary UNIQUE index
 // and a second, byte-identical metadata handle reached OUTSIDE the SQL layer.
 // The out-of-band handle is what lets a test drive an index through a state
 // transition mid-statement, which is not expressible in SQL.
@@ -82,7 +82,7 @@ func NewIndexStatePlanningFixture(t *testing.T) *IndexStatePlanningFixture {
 	return &IndexStatePlanningFixture{DB: db, RDB: rdb, md: tmpl.Underlying(), Ss: ss}
 }
 
-// makeUniqueIndexPending drives U_EMAIL from READABLE to
+// MakeUniqueIndexPending drives U_EMAIL from READABLE to
 // READABLE_UNIQUE_PENDING: the state that is SCANNABLE but whose declared
 // uniqueness the data contradicts (IndexState.java:59-66). It is the sharpest
 // transition available, because a check written against scannability rather
@@ -125,7 +125,7 @@ func (f *IndexStatePlanningFixture) MakeUniqueIndexPending(ctx context.Context) 
 	return err
 }
 
-// queryIndexStateStrings runs query INSIDE AN EXPLICIT TRANSACTION, which is the
+// QueryIndexStateStrings runs query INSIDE AN EXPLICIT TRANSACTION, which is the
 // only regime in which a secondary-UNIQUE proof is drawn at all.
 //
 // The proof is a statement about the store at one instant, so it is licensed
@@ -178,7 +178,7 @@ func AssertSerializationFailure(t *testing.T, err error) {
 	}
 }
 
-// distinctEmailRun plans and runs one query on the logger-equipped conn and
+// DistinctEmailRun plans and runs one query on the logger-equipped conn and
 // returns the plan text the planner actually chose alongside the rows, so an
 // assertion can name both the shape and the answer. The plan is read from the
 // planning event rather than from EXPLAIN because EXPLAIN is a second planning
@@ -198,7 +198,7 @@ func DistinctEmailRun(
 	return events[len(events)-1].PlanExplain, got
 }
 
-// writeGhostIndexState plants a state key for an index name the METADATA does
+// WriteGhostIndexState plants a state key for an index name the METADATA does
 // not have. This is not a contrived state: an index-state key outlives the
 // index whose name it holds whenever metadata is evolved to drop an index
 // without vacuuming its state key, and nothing in the read path removes it.
@@ -211,7 +211,7 @@ func (f *IndexStatePlanningFixture) WriteGhostIndexState(ctx context.Context, na
 	return err
 }
 
-// setIndexState drives any index of the fixture's schema to a state, out of
+// SetIndexState drives any index of the fixture's schema to a state, out of
 // band, so a test can move an index the SQL layer is not looking at.
 func (f *IndexStatePlanningFixture) SetIndexState(
 	ctx context.Context, name string, readable bool,
@@ -246,7 +246,7 @@ func (f *IndexStatePlanningFixture) SetIndexState(
 	return err
 }
 
-// setIndexDisabled drives an index to DISABLED, the state setIndexState cannot
+// SetIndexDisabled drives an index to DISABLED, the state setIndexState cannot
 // reach. DISABLED and WRITE_ONLY are both non-READABLE but they are not the same
 // state — DISABLED additionally clears the index data — and a check written
 // against "not readable" must hold for both.

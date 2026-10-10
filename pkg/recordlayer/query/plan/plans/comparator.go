@@ -118,6 +118,8 @@ func (p *RecordQueryComparatorPlan) structuralKey() *structuralKey {
 		Values(p.comparisonKeyValues)
 }
 
+// EqualsPlanWithoutChildren compares structuralKeys; comparison keys match by
+// semantic Value identity (semanticValueEquals), not pointer.
 func (p *RecordQueryComparatorPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryComparatorPlan)
 	return ok && p.keyFor(p).Equal(o.keyFor(o))

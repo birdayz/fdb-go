@@ -661,6 +661,7 @@ func oracleAggRows(c *Case, q Query) ([]Row, error) {
 	return out, nil
 }
 
+// aggOverflow is its own type so the sentinel cannot equal any real row value.
 type aggOverflow struct{}
 
 // errAggOverflow is foldAgg's sentinel for "SUM overflows int64 here", i.e.

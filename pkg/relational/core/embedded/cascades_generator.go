@@ -4627,9 +4627,9 @@ func rejectAtOrdinalityOnTable(op logical.LogicalOperator, md *recordlayer.Recor
 	return rejectAtOrdinalityOnTableWithCTEs(op, md, logical.CTERegistry{}, nil)
 }
 
-// Resolve constructor inputs once, then validate the retained producer graph.
-// Both selected CTEs and captured physical sources keep their defining ownership.
-// enclosing is the scope of the blocks enclosing op, whose operators Java's
+// rejectAtOrdinalityOnTableWithCTEs binds op's CTE sources once, then validates
+// the retained producer graph; selected CTEs and captured physical sources keep
+// their defining ownership. enclosing is the scope of the blocks enclosing op, whose operators Java's
 // CTE branch reads by name; nil where the caller has none.
 func rejectAtOrdinalityOnTableWithCTEs(op logical.LogicalOperator, md *recordlayer.RecordMetaData, registry logical.CTERegistry, enclosing *semantic.Scope) error {
 	logical.BindCTESources(op, registry)

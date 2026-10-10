@@ -170,7 +170,7 @@ type indexMaintainerDecorator interface {
 	delegateMaintainer() IndexMaintainer
 }
 
-// maintainerAs peels decorators off a maintainer until one of them satisfies T.
+// IndexMaintainerAs peels decorators off a maintainer until one of them satisfies T.
 //
 // Every access method NOT declared on IndexMaintainer is reached by asking
 // whether the maintainer satisfies some capability — a concrete type for the

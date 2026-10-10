@@ -21,7 +21,7 @@ func MhEqRows(a, b []string) bool {
 	return true
 }
 
-// mhHead truncates a row list so one systemic divergence cannot bury the rest
+// MhHead truncates a row list so one systemic divergence cannot bury the rest
 // of the report under thousands of rows.
 func MhHead(rows []string) []string {
 	if len(rows) <= 25 {

@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// runShape renders a query's column names and rows as one comparable string,
+// RunShape renders a query's column names and rows as one comparable string,
 // scanning into `any` so a struct-valued cell is REPORTED rather than converted
 // into a scan error. That is deliberate: scanning into int64 turns the defect
 // into a type complaint, and the point of this matrix is to show what a client
