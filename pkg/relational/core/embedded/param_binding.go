@@ -32,9 +32,8 @@ import (
 // (Type.fromObject, MutablePlanGenerationContext.java:473-495): a positional
 // `?` takes the next unnamed argument, a named `?x` or `$x` the argument named
 // x (repeatable, mixable with positional ones). A missing value is 42F02; an
-// unused argument is ignored. It returns the bindings' rendering for the plan
-// cache key, and a release that removes the bindings.
-func bindStatementParameters(tree antlr.Tree, args []driver.NamedValue) (string, func(), error) {
+// unused argument is ignored. It returns a release that removes the bindings.
+func bindStatementParameters(tree antlr.Tree, args []driver.NamedValue) (func(), error) {
 	var positional []any
 	named := map[string]any{}
 	for _, a := range args {
@@ -50,7 +49,6 @@ func bindStatementParameters(tree antlr.Tree, args []driver.NamedValue) (string,
 			expr.UnbindParameter(tok)
 		}
 	}
-	var key strings.Builder
 	next := 0
 	var walk func(antlr.Tree) error
 	walk = func(n antlr.Tree) error {
@@ -97,8 +95,6 @@ func bindStatementParameters(tree antlr.Tree, args []driver.NamedValue) (string,
 			}
 			expr.BindParameter(pp.GetStart(), v)
 			bound = append(bound, pp.GetStart())
-			fmt.Fprintf(&key, "\x00%s=", v.Type())
-			writeBindingKey(&key, constantPayload(v))
 			return nil
 		}
 		for i := 0; i < n.GetChildCount(); i++ {
@@ -110,9 +106,9 @@ func bindStatementParameters(tree antlr.Tree, args []driver.NamedValue) (string,
 	}
 	if err := walk(tree); err != nil {
 		release()
-		return "", func() {}, err
+		return func() {}, err
 	}
-	return key.String(), release, nil
+	return release, nil
 }
 
 // constantPayload is a bound constant's carrier; a BOOLEAN binds as a

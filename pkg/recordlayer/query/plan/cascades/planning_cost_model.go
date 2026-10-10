@@ -3364,8 +3364,8 @@ func costExprHash(e expressions.RelationalExpression) uint64 {
 	return deepHashCode(e)
 }
 
-// tieValueHash keeps the content tie-break independent of constant values, so
-// literal and statement-pool planning break cost ties alike.
+// tieValueHash mirrors Java's final planHash(VC0) rung (PlanningCostModel.java:332-338),
+// where every SQL literal is a ConstantObjectValue hashing to its BASE_HASH alone.
 func tieValueHash(v values.Value) uint64 {
 	return values.SemanticHashCodeIn(values.ConstantAgnosticHash{}, v)
 }

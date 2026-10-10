@@ -326,3 +326,36 @@ func TestFDB_PlanCacheParameterIndexState(t *testing.T) {
 		t.Fatalf("cached index dependency survived DISABLED: %s / %s", events[1].PlanExplain, events[2].PlanExplain)
 	}
 }
+
+// A literal operand of an aggregate over a gathered UNNEST bakes positionally;
+// the baked operand must read this execution's pool on a miss and on a hit.
+func TestFDB_PlanCacheGatheredUnnestAggregateOperand(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db := testkit.SetupErrorDB(t, "/FRL/cache_binding_unnest_agg", "cache_binding_unnest_agg",
+		"CREATE TABLE things (id BIGINT, arr BIGINT ARRAY, PRIMARY KEY (id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO things VALUES (1, [1, 2, 3]), (2, [4])"); err != nil {
+		t.Fatal(err)
+	}
+	logger := &testkit.SyncCaptureLogger{}
+	conn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) { ec.SetPlanLogger(logger) })
+	for i, step := range []struct {
+		query string
+		want  []int64
+		cache embedded.PlanCacheEvent
+	}{
+		{"SELECT SUM(x * 2) FROM things, things.arr AS x", []int64{20}, embedded.PlanCacheMiss},
+		{"SELECT SUM(x * 3) FROM things, things.arr AS x", []int64{30}, embedded.PlanCacheHit},
+		{"SELECT COUNT(5) FROM things, things.arr AS x", []int64{4}, embedded.PlanCacheMiss},
+		{"SELECT COUNT(7) FROM things, things.arr AS x", []int64{4}, embedded.PlanCacheHit},
+	} {
+		before := len(logger.Snapshot())
+		if got := cacheQueryIDs(t, conn, step.query); !reflect.DeepEqual(got, step.want) {
+			t.Fatalf("%s = %v, want %v", step.query, got, step.want)
+		}
+		events := logger.Snapshot()[before:]
+		if len(events) != 1 || events[0].Cache != step.cache {
+			t.Fatalf("step %d %s cache events %+v, want %v", i, step.query, events, step.cache)
+		}
+	}
+}

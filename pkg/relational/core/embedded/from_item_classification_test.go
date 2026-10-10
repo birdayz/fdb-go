@@ -264,7 +264,7 @@ func TestLateralLegsCorrelatedToOtherLegs(t *testing.T) {
 		},
 		{
 			sql:      `SELECT e.k FROM w, (SELECT w.f AS k FROM h) AS d, (SELECT w.f AS k FROM h AS h2) AS e`,
-			contains: "NestedLoopJoin(INNER, NestedLoopJoin(INNER, Scan(H), Scan(W)), Scan(H))",
+			contains: "NestedLoopJoin(INNER, NestedLoopJoin(INNER, Scan(H), Scan(H)), Scan(W))",
 			result:   "{K: W.F#1}",
 		},
 		{

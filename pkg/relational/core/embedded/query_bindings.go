@@ -8,9 +8,11 @@
 package embedded
 
 import (
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
+	"weak"
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
@@ -29,32 +31,12 @@ type queryBindings struct {
 	equivalence string
 	constants   map[string]any
 	literals    []queryLiteralBinding
-	pins        *literalPins
+	pins        literalPins
 }
 
-// literalPins records runtime literals whose value planning consumed.
-type literalPins struct {
-	mu    sync.Mutex
-	exact map[int]bool
-}
-
-func (p *literalPins) pin(position int) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.exact == nil {
-		p.exact = make(map[int]bool)
-	}
-	p.exact[position] = true
-}
-
-func (p *literalPins) has(position int) bool {
-	if p == nil {
-		return false
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.exact[position]
-}
+// literalPins records the runtime literals whose value planning consumed;
+// a statement is planned on one goroutine.
+type literalPins map[int]bool
 
 type queryLiteralBinding struct {
 	typeName string
@@ -73,7 +55,7 @@ type queryBindingConstraint struct {
 func (b queryBindings) constraint() queryBindingConstraint {
 	literals := append([]queryLiteralBinding(nil), b.literals...)
 	for i := range literals {
-		literals[i].exact = literals[i].exact || b.pins.has(i)
+		literals[i].exact = literals[i].exact || b.pins[i]
 		if !literals[i].exact {
 			literals[i].valueKey = ""
 		}
@@ -113,7 +95,7 @@ func (c queryBindingConstraint) accepts(b queryBindings) bool {
 }
 
 func normalizeQueryBindings(tree antlr.ParseTree, md *recordlayer.RecordMetaData) (queryBindings, func(), error) {
-	result := queryBindings{constants: make(map[string]any), pins: &literalPins{}}
+	result := queryBindings{constants: make(map[string]any), pins: literalPins{}}
 	var text, equivalence strings.Builder
 	byValue := make(map[string]int)
 	type replacement struct {
@@ -146,9 +128,8 @@ func normalizeQueryBindings(tree antlr.ParseTree, md *recordlayer.RecordMetaData
 		writeBindingKey(&exact, constantPayload(v))
 		position := len(result.literals)
 		literal := queryLiteralBinding{typeName: v.Type().String(), valueKey: exact.String(), equalTo: position}
-		// Java's EvaluatesToValue constraints distinguish TRUE/FALSE/NULL;
-		// predicate simplification may replace those bindings with literals.
-		// Float key proofs (signed zero, NaN) read the comparand's value.
+		// Simplification folds TRUE/FALSE/NULL (Java's EvaluatesToValue constraints);
+		// float key proofs read signed zero and NaN.
 		switch v.Type().Code() {
 		case values.TypeCodeNull, values.TypeCodeBoolean, values.TypeCodeFloat, values.TypeCodeDouble:
 			runtime = false
@@ -176,7 +157,7 @@ func normalizeQueryBindings(tree antlr.ParseTree, md *recordlayer.RecordMetaData
 		ref := values.NewConstantObjectValue(queryConstantsAlias, id, v.Type())
 		refs = append(refs, ref)
 		pins := result.pins
-		expr.BindSpecializableParameter(token, ref, v, func() { pins.pin(position) })
+		expr.BindSpecializableParameter(token, ref, v, func() { pins[position] = true })
 	}
 	var walk func(antlr.Tree, bool) error
 	walk = func(node antlr.Tree, runtime bool) error {
@@ -251,6 +232,21 @@ func requiresLiteralIndexProof(md *recordlayer.RecordMetaData) bool {
 	if md == nil {
 		return false
 	}
+	key := weak.Make(md)
+	if known, ok := literalIndexProofs.Load(key); ok {
+		return known.(bool)
+	}
+	result := scanLiteralIndexProof(md)
+	if _, loaded := literalIndexProofs.LoadOrStore(key, result); !loaded {
+		runtime.AddCleanup(md, func(k weak.Pointer[recordlayer.RecordMetaData]) { literalIndexProofs.Delete(k) }, key)
+	}
+	return result
+}
+
+// Metadata is immutable per version, so its index scan is memoized per object.
+var literalIndexProofs sync.Map // weak.Pointer[recordlayer.RecordMetaData] -> bool
+
+func scanLiteralIndexProof(md *recordlayer.RecordMetaData) bool {
 	for _, index := range md.GetAllIndexes() {
 		if index.HasFilteringPredicate() || keyHasLiteral(index.RootExpression) {
 			return true

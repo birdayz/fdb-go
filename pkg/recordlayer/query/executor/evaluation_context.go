@@ -144,11 +144,12 @@ func (ec *EvaluationContext) WithConstants(alias values.CorrelationIdentifier, p
 }
 
 // DereferenceConstant resolves a constant pool installed with WithConstants.
-func (ec *EvaluationContext) DereferenceConstant(alias values.CorrelationIdentifier, constantID string) any {
+func (ec *EvaluationContext) DereferenceConstant(alias values.CorrelationIdentifier, constantID string) (any, bool) {
 	if ec == nil {
-		return nil
+		return nil, false
 	}
-	return ec.constants[alias][constantID]
+	value, present := ec.constants[alias][constantID]
+	return value, present
 }
 
 // RowContext returns a binding-only RowEvalContext — this context's parameter
@@ -324,43 +325,6 @@ func rowEvalContextForPositional(pos values.OrdinalRow, ec *EvaluationContext) *
 	return &holder.ctx
 }
 
-// valuesDependOnStatementClock reports whether ANY of the value trees
-// contains a CURRENT_TIMESTAMP-family function (values.DependsOnStatementClock).
-// Operators compute this ONCE alongside hasBindingContext: a clock-needing
-// value makes the frontier wrap the bare row so the statement-stable
-// instant is in reach.
-func valuesDependOnStatementClock(vs []values.Value) bool {
-	for _, v := range vs {
-		if values.DependsOnStatementClock(v) {
-			return true
-		}
-	}
-	return false
-}
-
-// predicatesDependOnStatementClock is valuesDependOnStatementClock over
-// the value trees embedded in predicates (the shared rewrite spine —
-// predicates.DependsOnStatementClock).
-func predicatesDependOnStatementClock(ps []predicates.QueryPredicate) bool {
-	for _, p := range ps {
-		if predicates.DependsOnStatementClock(p) {
-			return true
-		}
-	}
-	return false
-}
-
-// aggregateOperandsDependOnStatementClock is valuesDependOnStatementClock
-// over the operand value trees of aggregate specs.
-func aggregateOperandsDependOnStatementClock(specs []expressions.AggregateSpec) bool {
-	for _, s := range specs {
-		if values.DependsOnStatementClock(s.Operand) {
-			return true
-		}
-	}
-	return false
-}
-
 // hasBindingContext reports whether an eval context carries any resolvable
 // binding beyond a bare row — a param, a pre-evaluated scalar subquery, or a
 // correlation binding. It gates whether a positional row needs a wrapping
@@ -368,7 +332,36 @@ func aggregateOperandsDependOnStatementClock(specs []expressions.AggregateSpec) 
 // bare ordinal row.
 func hasBindingContext(ec *EvaluationContext) bool {
 	return ec != nil && (len(ec.params) > 0 || len(ec.scalarSubqueries) > 0 ||
-		len(ec.bindings) > 0 || len(ec.quantifiedBindings) > 0 || len(ec.constants) > 0)
+		len(ec.bindings) > 0 || len(ec.quantifiedBindings) > 0)
+}
+
+// The statement clock and constant pool live only on a RowEvalContext, so a
+// value reading either cannot flow as a bare frontier row.
+func valuesNeedStatementContext(vs ...values.Value) bool {
+	for _, v := range vs {
+		if values.DependsOnStatementClock(v) || values.ReadsConstantPool(v) {
+			return true
+		}
+	}
+	return false
+}
+
+func predicatesNeedStatementContext(ps []predicates.QueryPredicate) bool {
+	for _, p := range ps {
+		if predicates.DependsOnStatementClock(p) || predicates.ReadsConstantPool(p) {
+			return true
+		}
+	}
+	return false
+}
+
+func aggregatesNeedStatementContext(specs []expressions.AggregateSpec) bool {
+	for _, s := range specs {
+		if valuesNeedStatementContext(s.Operand) {
+			return true
+		}
+	}
+	return false
 }
 
 // WithScalarSubqueries returns a copy with pre-evaluated scalar

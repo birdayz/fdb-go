@@ -19,10 +19,8 @@ import "fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 //
 // Ports Java's com.apple.foundationdb.record.query.plan.cascades.ValueEquivalence.
 //
-// Runtime constant references cannot match a candidate's stored literal without
-// Java's ConstantValueEquivalence constraint. SQL's requiresLiteralIndexProof
-// keeps exact bindings for these schemas; unconstrained references never match
-// a stored literal by their current execution's value.
+// A pool reference never matches a stored literal (no ConstantValueEquivalence
+// constraint); SQL keeps such schemas' literals exact (requiresLiteralIndexProof).
 type ValueEquivalence interface {
 	// IsDefinedEqual reports whether two values are axiomatically equal
 	// under this equivalence. Returns a ConstrainedBoolean that may

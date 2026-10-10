@@ -86,20 +86,13 @@ func TestBindStatementParameters(t *testing.T) {
 		{Ordinal: 3, Value: "three"},
 		{Ordinal: 4, Value: int64(9)}, // unused: ignored
 	}
-	key, release, err := bindStatementParameters(root, args)
+	release, err := bindStatementParameters(root, args)
 	if err != nil {
 		t.Fatal(err)
 	}
 	release()
-	key2, release2, _ := bindStatementParameters(root, []driver.NamedValue{
-		{Ordinal: 1, Value: int32(1)}, {Name: "x", Value: int32(2)}, {Ordinal: 3, Value: "three"},
-	})
-	release2()
-	if key == key2 {
-		t.Fatal("a LONG and an INT binding share a plan-cache key")
-	}
 	var apiErr *api.Error
-	if _, _, err := bindStatementParameters(root, args[:1]); !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeUndefinedParameter {
+	if _, err := bindStatementParameters(root, args[:1]); !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeUndefinedParameter {
 		t.Fatalf("missing parameter: want 42F02, got %v", err)
 	}
 }
@@ -126,7 +119,7 @@ func TestBindStatementParameters_InvalidUTF8(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			_, release, err := bindStatementParameters(root, tc.args)
+			release, err := bindStatementParameters(root, tc.args)
 			release()
 			var apiErr *api.Error
 			if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeCharacterNotInRepertoire {
@@ -137,7 +130,7 @@ func TestBindStatementParameters_InvalidUTF8(t *testing.T) {
 			}
 		})
 	}
-	_, release, err := bindStatementParameters(root, []driver.NamedValue{{Ordinal: 1, Value: "naïve"}, {Name: "label", Value: []string{"日本"}}})
+	release, err := bindStatementParameters(root, []driver.NamedValue{{Ordinal: 1, Value: "naïve"}, {Name: "label", Value: []string{"日本"}}})
 	release()
 	if err != nil {
 		t.Fatalf("valid UTF-8 refused: %v", err)
@@ -190,7 +183,7 @@ func TestBindStatementParameters_BatchBindsAllFirst(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, release, err := bindStatementParameters(root, []driver.NamedValue{{Ordinal: 1, Value: "ok"}, {Ordinal: 2, Value: "\xff"}})
+	release, err := bindStatementParameters(root, []driver.NamedValue{{Ordinal: 1, Value: "ok"}, {Ordinal: 2, Value: "\xff"}})
 	release()
 	var apiErr *api.Error
 	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeCharacterNotInRepertoire || !strings.Contains(apiErr.Message, "parameter 2") {
@@ -277,7 +270,7 @@ func TestBindStatementParameters_UnsupportedTypeNamesParameter(t *testing.T) {
 		{[]driver.NamedValue{{Ordinal: 1, Value: []int{1}}, {Name: "x", Value: struct{}{}}}, "parameter x has unsupported type struct {}"},
 		{[]driver.NamedValue{{Ordinal: 1, Value: []any{[]int{1}}}, {Name: "x", Value: 1}}, "parameter 1 has unsupported type []interface {}"},
 	} {
-		_, release, err := bindStatementParameters(root, c.args)
+		release, err := bindStatementParameters(root, c.args)
 		release()
 		var apiErr *api.Error
 		if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeInvalidParameter || apiErr.Message != c.want {
@@ -366,7 +359,7 @@ func TestBindStatementParameters_TimeOutOfDomain(t *testing.T) {
 		{"pointer", []driver.NamedValue{{Ordinal: 1, Value: &year10000}, {Name: "when", Value: []time.Time{ok}}}, "parameter 1"},
 		{"array element", []driver.NamedValue{{Ordinal: 1, Value: ok}, {Name: "when", Value: []time.Time{ok, year10000}}}, "parameter when"},
 	} {
-		_, release, err := bindStatementParameters(root, c.args)
+		release, err := bindStatementParameters(root, c.args)
 		release()
 		var apiErr *api.Error
 		if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeDatetimeFieldOverflow || !strings.Contains(apiErr.Message, c.want) {

@@ -2593,11 +2593,11 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === case_when_in_java.yaml#3
 sql:   SELECT CASE WHEN category <= 20 THEN 'low' ELSE 'high' END AS tier, COUNT(*) FROM products GROUP BY tier ORDER BY tier
-plan:  Map(StreamingAgg(keys=[CASE(WHEN(predicate, TRUE), ['low', 'high'])], InMemorySort([CASE(WHEN(predicate, TRUE), ['low', 'high']) ASC], IndexScan(IDX_CATEGORY, [*]))), {TIER: _current.CASE(WHEN(predicate, TRUE), ['low', 'high'])#0, _1: _current.COUNT(*)#1})
+plan:  Map(StreamingAgg(keys=[CASE(WHEN(predicate, TRUE), ['low', 'high'])], InMemorySort([CASE(WHEN(predicate, TRUE), ['low', 'high']) ASC], Scan(PRODUCTS))), {TIER: _current.CASE(WHEN(predicate, TRUE), ['low', 'high'])#0, _1: _current.COUNT(*)#1})
 shape: RecordQueryMapPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryInMemorySortPlan
-shape:       RecordQueryIndexPlan
+shape:       RecordQueryScanPlan
 === case_when_in_java.yaml#4
 sql:   SELECT id, CASE WHEN price > 400 THEN CASE WHEN category = 30 THEN 'premium-30' ELSE 'premium-other' END ELSE 'standard' END AS classification FROM products WHERE id IN (5, 6, 7, 8) ORDER BY id
 plan:  InJoin(Map(Scan(PRODUCTS, [=]), {ID: _current.ID#0, CLASSIFICATION: CASE(WHEN(predicate, TRUE), [CASE(WHEN(predicate, TRUE), ['premium-30', 'premium-other']), 'standard'])}), binding ASC)
@@ -3927,7 +3927,7 @@ shape:     RecordQueryScanPlan
 shape:     RecordQueryScanPlan
 === cross_join.yaml#9
 sql:   SELECT COUNT(*) FROM a WHERE EXISTS (SELECT 1 FROM a JOIN b)
-plan:  Map(StreamingAgg(keys=[], FlatMap(outer=Scan(A), inner=PredicatesFilter(FirstOrDefault(NestedLoopJoin(INNER, Scan(A), Scan(B))), [1 preds]))), {_0: COALESCE(_current.COUNT(*)#0, 0)})
+plan:  Map(StreamingAgg(keys=[], FlatMap(outer=Scan(A), inner=PredicatesFilter(FirstOrDefault(NestedLoopJoin(INNER, Scan(B), Scan(A))), [1 preds]))), {_0: COALESCE(_current.COUNT(*)#0, 0)})
 shape: RecordQueryMapPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryFlatMapPlan
@@ -4169,14 +4169,14 @@ shape:       RecordQueryScanPlan
 shape:     RecordQueryScanPlan
 === cte.yaml#25
 sql:   WITH c1(w) AS (SELECT id FROM t), c2(a) AS (WITH c1 AS (SELECT x.id AS id FROM t AS x, t AS y WHERE x.id = y.id) SELECT id + 1 FROM c1) SELECT w, a FROM c1, c2 WHERE w = a ORDER BY w
-plan:  InMemorySort([_current.W#0 ASC], FlatMap(outer=Scan(T), inner=FlatMap(outer=Map(Scan(T, [=]), {_0: 1}), inner=Scan(T, [=]))))
+plan:  InMemorySort([_current.W#0 ASC], FlatMap(outer=Scan(T), inner=FlatMap(outer=Scan(T, [=]), inner=Map(Scan(T, [=]), {_0: 1}))))
 shape: RecordQueryInMemorySortPlan
 shape:   RecordQueryFlatMapPlan
 shape:     RecordQueryScanPlan
 shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryScanPlan
 shape:       RecordQueryMapPlan
 shape:         RecordQueryScanPlan
-shape:       RecordQueryScanPlan
 === cte.yaml#26 expect-error=42F10
 sql:   WITH c2(a, b) AS (WITH t AS (SELECT x.v AS id FROM t AS x, t AS y WHERE x.id = y.id) SELECT id FROM t) SELECT a FROM c2
 plan:  <PLAN-ERROR: 42F10: cte query has 1 column(s), however 2 aliases defined>
@@ -4713,18 +4713,18 @@ shape:         RecordQueryScanPlan
 shape:         RecordQueryScanPlan
 === cte_published_row_names.yaml#16
 sql:   WITH u AS (SELECT ga.g, c.id AS g, c.w FROM ga, c) SELECT u.w FROM u WHERE u.w = 1
-plan:  NestedLoopJoin(INNER, Scan(GA), PredicatesFilter(Scan(C), [1 preds]))
+plan:  NestedLoopJoin(INNER, PredicatesFilter(Scan(C), [1 preds]), Scan(GA))
 shape: RecordQueryNestedLoopJoinPlan
-shape:   RecordQueryScanPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
+shape:   RecordQueryScanPlan
 === cte_published_row_names.yaml#17
 sql:   SELECT u.w FROM (SELECT ga.g, c.id AS g, c.w FROM ga, c) u WHERE u.w = 1
-plan:  NestedLoopJoin(INNER, Scan(GA), PredicatesFilter(Scan(C), [1 preds]))
+plan:  NestedLoopJoin(INNER, PredicatesFilter(Scan(C), [1 preds]), Scan(GA))
 shape: RecordQueryNestedLoopJoinPlan
-shape:   RecordQueryScanPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
+shape:   RecordQueryScanPlan
 === cte_published_row_names.yaml#18
 sql:   WITH u AS (SELECT ga.g, c.id AS g, c.w FROM ga, c) SELECT u.w, COUNT(*) FROM u GROUP BY u.w ORDER BY u.w
 plan:  Map(StreamingAgg(keys=[_current.W#2], InMemorySort([_current.W#2 ASC], NestedLoopJoin(INNER, Scan(GA), Scan(C)))), {W: _current.W#0, _1: _current.COUNT(*)#1})
@@ -4884,18 +4884,18 @@ shape:       RecordQueryInMemorySortPlan
 shape:         RecordQueryScanPlan
 === cte_published_row_names.yaml#37
 sql:   SELECT d.w FROM (SELECT * FROM ga, c) d WHERE d.w = 1
-plan:  NestedLoopJoin(INNER, Scan(GA), PredicatesFilter(Scan(C), [1 preds]))
+plan:  NestedLoopJoin(INNER, PredicatesFilter(Scan(C), [1 preds]), Scan(GA))
 shape: RecordQueryNestedLoopJoinPlan
-shape:   RecordQueryScanPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
+shape:   RecordQueryScanPlan
 === cte_published_row_names.yaml#38
 sql:   WITH d AS (SELECT * FROM ga, c) SELECT d.w FROM d WHERE d.w = 1
-plan:  NestedLoopJoin(INNER, Scan(GA), PredicatesFilter(Scan(C), [1 preds]))
+plan:  NestedLoopJoin(INNER, PredicatesFilter(Scan(C), [1 preds]), Scan(GA))
 shape: RecordQueryNestedLoopJoinPlan
-shape:   RecordQueryScanPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
+shape:   RecordQueryScanPlan
 === cte_published_row_names.yaml#39
 sql:   SELECT d.w, COUNT(*) FROM (SELECT * FROM ga, c UNION ALL SELECT * FROM ga, c) d GROUP BY d.w ORDER BY d.w
 plan:  Map(StreamingAgg(keys=[_current.W#4], InMemorySort([_current.W#4 ASC], UnorderedUnion(NestedLoopJoin(INNER, Scan(C), Scan(GA)), NestedLoopJoin(INNER, Scan(C), Scan(GA))))), {W: _current.W#0, _1: _current.COUNT(*)#1})
@@ -5904,14 +5904,14 @@ shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === derived_table_patterns_java.yaml#5
 sql:   SELECT o.id, s.shipped_count FROM orders o, (SELECT customer_id, COUNT(*) AS shipped_count FROM orders WHERE status = 'shipped' GROUP BY customer_id) AS s WHERE o.customer_id = s.customer_id AND o.status = 'pending' ORDER BY o.id
-plan:  InMemorySort([_current.ID#0 ASC], NestedLoopJoin(INNER, [2 preds], StreamingAgg(keys=[_current.CUSTOMER_ID#1], InMemorySort([_current.CUSTOMER_ID#1 ASC], PredicatesFilter(Scan(ORDERS), [1 preds]))), Scan(ORDERS)))
+plan:  InMemorySort([_current.ID#0 ASC], NestedLoopJoin(INNER, [2 preds], Scan(ORDERS), StreamingAgg(keys=[_current.CUSTOMER_ID#1], InMemorySort([_current.CUSTOMER_ID#1 ASC], PredicatesFilter(Scan(ORDERS), [1 preds])))))
 shape: RecordQueryInMemorySortPlan
 shape:   RecordQueryNestedLoopJoinPlan
+shape:     RecordQueryScanPlan
 shape:     RecordQueryStreamingAggregationPlan
 shape:       RecordQueryInMemorySortPlan
 shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryScanPlan
-shape:     RecordQueryScanPlan
 === derived_table_patterns_java.yaml#6
 sql:   SELECT * FROM (SELECT id, amount * 2 AS double_amt FROM orders WHERE id <= 3) AS d ORDER BY id
 plan:  Map(Scan(ORDERS, [<>]), {ID: _current.ID#0, DOUBLE_AMT: (_current.AMOUNT#2 * 2)})
@@ -7099,9 +7099,10 @@ sql:   SELECT COUNT(*) FROM orders HAVING EXISTS (SELECT k FROM flags)
 plan:  <PLAN-ERROR: 42803: Invalid reference to non-grouping expression EXISTS(SELECTkFROMflags)>
 === exists.yaml#7
 sql:   SELECT o.id FROM orders AS o, flags AS f WHERE EXISTS (SELECT k FROM flags) ORDER BY o.id
-plan:  InMemorySort([_current.ID#0 ASC], NestedLoopJoin(INNER, NestedLoopJoin(INNER, Map(PredicatesFilter(FirstOrDefault(Map(Scan(FLAGS), {K: _current.K#0})), [1 preds]), {_0: 1}), Scan(FLAGS)), Scan(ORDERS)))
+plan:  InMemorySort([_current.ID#0 ASC], NestedLoopJoin(INNER, Scan(ORDERS), NestedLoopJoin(INNER, Map(PredicatesFilter(FirstOrDefault(Map(Scan(FLAGS), {K: _current.K#0})), [1 preds]), {_0: 1}), Scan(FLAGS))))
 shape: RecordQueryInMemorySortPlan
 shape:   RecordQueryNestedLoopJoinPlan
+shape:     RecordQueryScanPlan
 shape:     RecordQueryNestedLoopJoinPlan
 shape:       RecordQueryMapPlan
 shape:         RecordQueryPredicatesFilterPlan
@@ -7109,7 +7110,6 @@ shape:           RecordQueryFirstOrDefaultPlan
 shape:             RecordQueryMapPlan
 shape:               RecordQueryScanPlan
 shape:       RecordQueryScanPlan
-shape:     RecordQueryScanPlan
 === exists_multi_table_inner.yaml#0
 sql:   SELECT a.name FROM authors a WHERE EXISTS ( SELECT 1 FROM books b, awards w WHERE b.author_id = a.id AND w.book_id = b.id ) ORDER BY a.name
 plan:  InMemorySort([_current.NAME#0 ASC], FlatMap(outer=Scan(AUTHORS), inner=PredicatesFilter(FirstOrDefault(NestedLoopJoin(INNER, [2 preds], Scan(AWARDS), Scan(BOOKS))), [1 preds])))
@@ -12971,13 +12971,13 @@ shape:       RecordQueryScanPlan
 shape:       RecordQueryScanPlan
 === nested_projection_column_name.yaml#3
 sql:   SELECT n.sk, v FROM t1 JOIN t2 ON t2.v > 0 ORDER BY id
-plan:  Map(InMemorySort([_current._2#2 ASC], NestedLoopJoin(INNER, PredicatesFilter(Scan(T2), [1 preds]), Scan(T1))), {SK: _current.SK#0, V: _current.V#1})
+plan:  Map(InMemorySort([_current._2#2 ASC], NestedLoopJoin(INNER, Scan(T1), PredicatesFilter(Scan(T2), [1 preds]))), {SK: _current.SK#0, V: _current.V#1})
 shape: RecordQueryMapPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryNestedLoopJoinPlan
+shape:       RecordQueryScanPlan
 shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryScanPlan
-shape:       RecordQueryScanPlan
 === nested_projection_column_name.yaml#4
 sql:   SELECT sk, n.sk FROM t1 ORDER BY id
 plan:  Map(Map(Scan(T1), {SK: _current.SK#1, SK_2: _current.N#2.SK#0, _2: _current.ID#0}), {SK: _current.SK#0, SK_2: _current.SK_2#1})
@@ -15766,7 +15766,7 @@ shape:     RecordQueryScanPlan
 shape:     RecordQueryScanPlan
 === qualified_star.yaml#10
 sql:   SELECT a.id, b.* FROM a, b WHERE a.id = 1 ORDER BY b.id
-plan:  InMemorySort([_current.ID#1 ASC], NestedLoopJoin(INNER, Scan(A, [=]), Scan(B)))
+plan:  InMemorySort([_current.ID#1 ASC], NestedLoopJoin(INNER, Scan(B), Scan(A, [=])))
 shape: RecordQueryInMemorySortPlan
 shape:   RecordQueryNestedLoopJoinPlan
 shape:     RecordQueryScanPlan
@@ -16195,7 +16195,7 @@ shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryTempTableScanPlan
 === quoted_identifier_labels.yaml#34
 sql:   WITH RECURSIVE d AS (SELECT * FROM (SELECT q1."id" AS aa, QCASE.id AS bb FROM q1, QCASE WHERE q1."id" = 1 UNION ALL SELECT q1."id" AS cc, QCASE.id AS dd FROM q1, QCASE WHERE q1."id" = 2) x UNION ALL SELECT d.aa + 1, d.bb FROM d WHERE d.aa < 3) SELECT d.aa FROM d ORDER BY d.aa
-plan:  InMemorySort([_current.AA#0 ASC], Map(RecursiveDfsJoin(PREORDER, UnorderedUnion(NestedLoopJoin(INNER, Scan(Q1, [=]), Scan(QCASE)), NestedLoopJoin(INNER, Scan(Q1, [=]), Scan(QCASE))), Map(PredicatesFilter(TempTableScan(DforScan), [1 preds]), {AA: (_current.AA#0 + 1), BB: _current.BB#1})), {AA: _current.AA#0}))
+plan:  InMemorySort([_current.AA#0 ASC], Map(RecursiveDfsJoin(PREORDER, UnorderedUnion(NestedLoopJoin(INNER, Scan(QCASE), Scan(Q1, [=])), NestedLoopJoin(INNER, Scan(QCASE), Scan(Q1, [=]))), Map(PredicatesFilter(TempTableScan(DforScan), [1 preds]), {AA: (_current.AA#0 + 1), BB: _current.BB#1})), {AA: _current.AA#0}))
 shape: RecordQueryInMemorySortPlan
 shape:   RecordQueryMapPlan
 shape:     RecordQueryRecursiveDfsJoinPlan
@@ -16223,7 +16223,7 @@ shape:       RecordQueryMapPlan
 shape:         RecordQueryScanPlan
 === quoted_identifier_labels.yaml#37
 sql:   SELECT * FROM QCASE q, q1 WHERE q.id = 1 ORDER BY q1."id"
-plan:  InMemorySort([_current.id#3 ASC], NestedLoopJoin(INNER, Scan(Q1), Scan(QCASE, [=])))
+plan:  InMemorySort([_current.id#3 ASC], NestedLoopJoin(INNER, Scan(QCASE, [=]), Scan(Q1)))
 shape: RecordQueryInMemorySortPlan
 shape:   RecordQueryNestedLoopJoinPlan
 shape:     RecordQueryScanPlan
@@ -16687,28 +16687,28 @@ shape:     RecordQueryInMemorySortPlan
 shape:       RecordQueryScanPlan
 === repeated_output_names.yaml#5
 sql:   SELECT * FROM (SELECT g, SUM(v) AS g FROM ga GROUP BY g) u, c WHERE c.id = 100
-plan:  NestedLoopJoin(INNER, Scan(C, [=]), StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(GA))))
+plan:  NestedLoopJoin(INNER, StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(GA))), Scan(C, [=]))
 shape: RecordQueryNestedLoopJoinPlan
-shape:   RecordQueryScanPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryInMemorySortPlan
 shape:       RecordQueryScanPlan
+shape:   RecordQueryScanPlan
 === repeated_output_names.yaml#6
 sql:   WITH u AS (SELECT g, SUM(v) AS g FROM ga GROUP BY g) SELECT * FROM u, c WHERE c.id = 100
-plan:  NestedLoopJoin(INNER, Scan(C, [=]), StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(GA))))
+plan:  NestedLoopJoin(INNER, StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(GA))), Scan(C, [=]))
 shape: RecordQueryNestedLoopJoinPlan
-shape:   RecordQueryScanPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryInMemorySortPlan
 shape:       RecordQueryScanPlan
+shape:   RecordQueryScanPlan
 === repeated_output_names.yaml#7
 sql:   SELECT * FROM c, (SELECT g, SUM(v) AS g FROM ga GROUP BY g) u WHERE c.id = 100
-plan:  NestedLoopJoin(INNER, Scan(C, [=]), StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(GA))))
+plan:  NestedLoopJoin(INNER, StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(GA))), Scan(C, [=]))
 shape: RecordQueryNestedLoopJoinPlan
-shape:   RecordQueryScanPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryInMemorySortPlan
 shape:       RecordQueryScanPlan
+shape:   RecordQueryScanPlan
 === repeated_output_names.yaml#8
 sql:   SELECT * FROM (SELECT g AS a, SUM(v) AS a FROM ga GROUP BY g) u, c WHERE c.id = 100
 plan:  NestedLoopJoin(INNER, Scan(C, [=]), StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(GA))))
@@ -18558,9 +18558,15 @@ shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryScanPlan
 === subquery_in.yaml#10
 sql:   SELECT id FROM a WHERE a.v IS NOT NULL AND NOT EXISTS (SELECT 1 FROM b AS sub WHERE sub.v = a.v) AND NOT EXISTS (SELECT 1 FROM b AS sub WHERE sub.v IS NULL) ORDER BY id
-plan:  InMemorySort([_current.ID#0 ASC], NestedLoopJoin(INNER, FlatMap(outer=PredicatesFilter(Scan(A), [1 preds]), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(B), [1 preds])), [1 preds])), Map(PredicatesFilter(FirstOrDefault(Map(PredicatesFilter(Scan(B), [1 preds]), {_0: 1})), [1 preds]), {_0: 1})))
+plan:  InMemorySort([_current.ID#0 ASC], NestedLoopJoin(INNER, Map(PredicatesFilter(FirstOrDefault(Map(PredicatesFilter(Scan(B), [1 preds]), {_0: 1})), [1 preds]), {_0: 1}), FlatMap(outer=PredicatesFilter(Scan(A), [1 preds]), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(B), [1 preds])), [1 preds]))))
 shape: RecordQueryInMemorySortPlan
 shape:   RecordQueryNestedLoopJoinPlan
+shape:     RecordQueryMapPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryFirstOrDefaultPlan
+shape:           RecordQueryMapPlan
+shape:             RecordQueryPredicatesFilterPlan
+shape:               RecordQueryScanPlan
 shape:     RecordQueryFlatMapPlan
 shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryScanPlan
@@ -18568,12 +18574,6 @@ shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryFirstOrDefaultPlan
 shape:           RecordQueryPredicatesFilterPlan
 shape:             RecordQueryScanPlan
-shape:     RecordQueryMapPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryFirstOrDefaultPlan
-shape:           RecordQueryMapPlan
-shape:             RecordQueryPredicatesFilterPlan
-shape:               RecordQueryScanPlan
 === subquery_in.yaml#11
 sql:   SELECT id FROM a WHERE a.v IS NOT NULL AND NOT EXISTS (SELECT 1 FROM b AS sub WHERE sub.id = 101 AND sub.v = a.v) AND NOT EXISTS (SELECT 1 FROM b AS sub WHERE sub.id = 101 AND sub.v IS NULL) ORDER BY id
 plan:  InMemorySort([_current.ID#0 ASC], NestedLoopJoin(INNER, Map(PredicatesFilter(FirstOrDefault(Map(PredicatesFilter(Scan(B, [=]), [1 preds]), {_0: 1})), [1 preds]), {_0: 1}), FlatMap(outer=PredicatesFilter(Scan(A), [1 preds]), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(B), [2 preds])), [1 preds]))))

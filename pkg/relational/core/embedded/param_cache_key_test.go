@@ -19,12 +19,17 @@ func TestBindStatementParameters_KeyIsExact(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		k, release, err := bindStatementParameters(root, []driver.NamedValue{{Ordinal: 1, Value: v}})
-		release()
+		release, err := bindStatementParameters(root, []driver.NamedValue{{Ordinal: 1, Value: v}})
+		defer release()
 		if err != nil {
 			t.Fatalf("bind %#v: %v", v, err)
 		}
-		return k
+		bindings, releaseBindings, err := normalizeQueryBindings(root.Statements().AllStatement()[0].SelectStatement().Query(), nil)
+		if err != nil {
+			t.Fatalf("normalize %#v: %v", v, err)
+		}
+		defer releaseBindings()
+		return bindings.literals[0].valueKey
 	}
 	for _, pair := range [][2]any{
 		{true, false},
@@ -39,6 +44,7 @@ func TestBindStatementParameters_KeyIsExact(t *testing.T) {
 		{[]string{"a", "b"}, []string{"a,b"}},
 		{[]bool{true}, []bool{false}},
 		{"a\x00b", "a"},
+		{int64(1), int32(1)},
 	} {
 		if key(pair[0]) == key(pair[1]) {
 			t.Errorf("%#v and %#v share the plan-cache key %q", pair[0], pair[1], key(pair[0]))
@@ -70,12 +76,11 @@ func TestPlanCache_BooleanEvaluationConstraint(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		k, release, err := bindStatementParameters(root, []driver.NamedValue{{Ordinal: 1, Value: v}})
+		release, err := bindStatementParameters(root, []driver.NamedValue{{Ordinal: 1, Value: v}})
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer release()
-		g.paramKey = k
 		q := root.Statements().AllStatement()[0].SelectStatement().Query()
 		if _, err := g.planSelectCascades(context.Background(), q, md, true, statementOptions{}); err != nil {
 			t.Fatalf("plan with %v: %v", v, err)

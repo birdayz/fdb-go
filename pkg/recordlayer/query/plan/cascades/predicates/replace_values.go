@@ -78,6 +78,18 @@ func TransformEmbeddedValuesChecked(
 // shape that carries values cannot be visible to rewrites yet invisible
 // to the statement-clock need check. The probe transform returns every
 // value unchanged, so the pointer-stable spine rebuilds nothing.
+// ReadsConstantPool reports whether p embeds a statement constant reference.
+func ReadsConstantPool(p QueryPredicate) bool {
+	found := false
+	TransformEmbeddedValues(p, func(v values.Value) values.Value {
+		if !found && values.ReadsConstantPool(v) {
+			found = true
+		}
+		return v
+	})
+	return found
+}
+
 func DependsOnStatementClock(p QueryPredicate) bool {
 	found := false
 	TransformEmbeddedValues(p, func(v values.Value) values.Value {

@@ -33,10 +33,8 @@ type specializableConstant struct {
 	pin     func()
 }
 
-// specializableConstants maps a statement-pool reference to its literal. A
-// resolver rewrite that needs the value pins it, so the cached plan is reused
-// only for that exact value (Java records such compile-time evaluations as
-// QueryPlanConstraints).
+// specializableConstants maps a pool reference to its literal; a rewrite that
+// reads the value pins it, as Java constrains a compile-time evaluation.
 var specializableConstants sync.Map // *values.ConstantObjectValue -> specializableConstant
 
 // BindSpecializableParameter binds tok to ref, whose value is literal.
@@ -63,9 +61,8 @@ func specialize(v values.Value) (values.Value, bool) {
 	return c.literal, true
 }
 
-// specializeCrossTypeComparands pins pool references compared across numeric
-// type codes: the SARG coercions below rewrite such a comparand from its value.
-// STRING-to-ENUM/UUID promotes at execution, so Java reuses those plans.
+// specializeCrossTypeComparands pins numeric cross-type comparands, which the
+// SARG coercions rewrite from their value; STRING-to-ENUM/UUID promotes at run time.
 func specializeCrossTypeComparands(left, right values.Value) (values.Value, values.Value) {
 	lt, rt := left.Type(), right.Type()
 	if lt == nil || rt == nil || lt.Code() == rt.Code() || sharesIntegerWireEncoding(lt.Code(), rt.Code()) ||

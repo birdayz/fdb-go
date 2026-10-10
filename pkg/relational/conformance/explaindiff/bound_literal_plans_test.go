@@ -16,15 +16,16 @@ import (
 // around them must not differ.
 var renderedLiteral = regexp.MustCompile(`@[0-9]+|'[^']*'(?:[^',)}\]]+')*|(^|[^A-Za-z0-9_#.$@])-?[0-9]+(?:\.[0-9]+)?(?:[eE][-+]?[0-9]+)?`)
 
+// An aggregate's field name is its operand text (pool references render @N).
+var aggregateFieldName = regexp.MustCompile(`_current\.[A-Z_]+\(.*?\)#`)
+
 func literalAgnostic(plan string) string {
-	return renderedLiteral.ReplaceAllString(plan, "${1}?")
+	return renderedLiteral.ReplaceAllString(aggregateFieldName.ReplaceAllString(plan, "_current.AGG#"), "${1}?")
 }
 
-// REWRITING ranks these tied logical members by a memo hash that includes
-// constant values, so a literal and a pool reference may keep different
-// (equivalent) members. Physical ties are value-agnostic (tieValueHash).
+// REWRITING breaks this NOT-member tie by a value-sensitive memo hash; Java's
+// semanticHashCode tie (RewritingCostModel.java:112-114) ignores literals.
 var boundLiteralTieFlips = map[string]bool{
-	"case_when_in_java.yaml#3": true,
 	"fold_prune_regime.yaml#6": true,
 }
 

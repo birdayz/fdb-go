@@ -23,19 +23,19 @@ ROWS(2) cols=[G, G]:
   [200, 9]
 
 === SELECT * FROM (SELECT g, SUM(v) AS g FROM ga GROUP BY g) u, c WHERE c.id = 100
-PLAN: NestedLoopJoin(INNER, Scan(C, [=]), StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(GA))))
+PLAN: NestedLoopJoin(INNER, StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(GA))), Scan(C, [=]))
 ROWS(2) cols=[G, G, ID, W]:
   [100, 12, 100, 1]
   [200, 9, 100, 1]
 
 === WITH u AS (SELECT g, SUM(v) AS g FROM ga GROUP BY g) SELECT * FROM u, c WHERE c.id = 100
-PLAN: NestedLoopJoin(INNER, Scan(C, [=]), StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(GA))))
+PLAN: NestedLoopJoin(INNER, StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(GA))), Scan(C, [=]))
 ROWS(2) cols=[G, G, ID, W]:
   [100, 12, 100, 1]
   [200, 9, 100, 1]
 
 === SELECT * FROM c, (SELECT g, SUM(v) AS g FROM ga GROUP BY g) u WHERE c.id = 100
-PLAN: NestedLoopJoin(INNER, Scan(C, [=]), StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(GA))))
+PLAN: NestedLoopJoin(INNER, StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(GA))), Scan(C, [=]))
 ROWS(2) cols=[ID, W, G, G]:
   [100, 1, 100, 12]
   [100, 1, 200, 9]
