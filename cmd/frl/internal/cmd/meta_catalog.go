@@ -327,12 +327,7 @@ func runCatalogQuery[T any](
 	}
 	rec := recordlayer.NewFDBDatabase(db)
 
-	// The sqldriver writes its catalog at
-	// keyspace.New(subspace.Sub()).CatalogSubspace() =
-	// ("__SYS", "__SYS", "CATALOG") — three strings, not the two-string
-	// DefaultCatalogSubspace() catalog.OpenRecordLayerStoreCatalog uses.
-	// Read from the same place the driver writes so `meta catalog` sees
-	// what `frl sql` just created.
+	// Share the SQL driver's typed catalog prefix so `meta catalog` sees its writes.
 	cat, err := catalog.NewRecordLayerStoreCatalog(relationalKeyspace().CatalogSubspace())
 	if err != nil {
 		return zero, fmt.Errorf("open relational catalog: %w", err)

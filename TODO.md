@@ -934,10 +934,17 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   admission bound, the terminal reconcile with `ClusterUnsplittableError`
   above the hard cap, the zero-primary new-child drop, and the empty merge
   core. Timing and acceptance fixtures done (2026-10-07):
-  `guardiann_peel_timing_test` (full lane) times the whole peel and its
-  worst case (all refits) at W = B, n = 1001 d = 2175 and the fixture shapes,
-  two runs with load logged: max 0.63 s against the 2.5 s margin (refit rate
-  ~2.9e-8 s per n·d, under the JVM median). `guardiann_peel_fixtures_test`
+  `guardiann_peel_timing_test` (full lane) times, in process CPU, the whole
+  peel and its worst case (every k-means iteration of every refit, each
+  round's sort, assignment and score on all n) at W = B, n = 1001 d = 2175 and
+  the fixture shapes, and at W = B under cosine, with RaBitQ and at
+  I = 1, R = 31: max 1.25 s against the 2.5 s margin (2026-10-10). The k-means
+  early stop had hidden a 2.66 s Euclidean worst case; cosine, RaBitQ (14 s)
+  and the knobs were untimed, and the admission's knob factor now counts each
+  restart's seeding and final passes (I = 1, R = 31 admits d = 551 at
+  n = 2000, not 980) and prices n and d at no less than 128 each (at I = 1,
+  n = 2000 admits at most R = 136 and n = 128 R = 3587).
+  `guardiann_peel_fixtures_test`
   (full lane, real FDB, HALF, no RaBitQ) splits the d = 768 n = 2000 cluster
   by a deferred drain and by an inline insert and the d = 2048 n = 1001
   cluster by a drain, every transaction in one attempt (attempt observer),
@@ -1406,13 +1413,13 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
     candidate reference or vendored start for a format-compatible port.
   The engine choice is made in the follow-up PR.
 - [x] **Catalog/keyspace: DECIDED 2026-10-05, exactly Java's layout, no
-  compatibility with the old Go layout.** Go's SQL driver uses the string-key
+  compatibility with the old Go layout.** Go's SQL driver used the string-key
   catalog/schema layout `(__SYS, __SYS, CATALOG)` / `(dbPath, schemaName)`.
-  Replace it with Java's `RelationalKeyspaceProvider` layout: the typed system
+  Replaced it with Java's `RelationalKeyspaceProvider` layout: the typed system
   path `(NULL, NULL, int64(0))` and directory-layer domain -> database ->
   schema levels. No migration from the Go layout: data written by an earlier Go
   build is recreated. A template created through Go must load in Java and the
-  reverse (`TODO_OLD.md`, “Go SQL driver stores the relational catalog…”).
+  reverse (`TODO_OLD.md`, “Go SQL driver uses Java's relational catalog and schema keyspace”).
   Measured scope (4.14.2.0 source):
   - Catalog store at `KeySpaceDirectory(__SYS, NULL) / (__SYS, NULL) /
     (CATALOG, LONG, 0)`, so the tuple `(nil, nil, 0)`.

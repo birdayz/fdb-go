@@ -16,9 +16,9 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-// The peel's admission edges: W = floor(log2(n - 1)) * n * d * max(I*(R+1),
-// 32) / 32 against B = 1.96e7. Lowering B, dropping the check, the knob factor
-// or its floor reddens a row.
+// The peel's admission edges: W = floor(log2(n - 1)) * max(n, 128) * max(d, 128) *
+// max(I(R+1)/32, (R+1)(2I+2)/72, 1) against B = 1.96e7. Lowering B, dropping
+// the check, either knob term, the knob floor or either size floor reddens a row.
 func TestGuardiannPeelAdmission(t *testing.T) {
 	t.Parallel()
 	for _, c := range []struct {
@@ -32,7 +32,15 @@ func TestGuardiannPeelAdmission(t *testing.T) {
 		{1001, 2048, 8, 3, true},  // the d = 2048 fixture shape
 		{2000, 768, 8, 3, true},   // 768-dimensional embeddings at the hard cap
 		{2000, 768, 16, 3, false}, // twice the iterations doubles W: the knob factor
+		{2000, 490, 16, 3, true},  // W = B at twice the iterations
+		{2000, 500, 16, 3, false}, // the iteration term refuses what the pass term admits
 		{2000, 4096, 1, 0, false}, // smaller knobs never enlarge admission: the floor
+		{2000, 551, 1, 31, true},  // 32 single-iteration restarts: 128 passes, f = 16/9
+		{2000, 552, 1, 31, false}, // the pass term refuses what the iteration term admits
+		{2000, 1, 1, 136, true},   // d is priced at no less than 128: the most restarts at I = 1
+		{2000, 1, 1, 137, false},  // without the floor, d = 1 would admit R = 17639
+		{3, 1, 1, 21532, true},    // n is priced at no less than 128 too
+		{3, 1, 1, 21533, false},   // without that floor, n = 3 would admit nearly a million
 		{2000, 4096, 8, 3, false},
 		{2, 1 << 20, 8, 3, true}, // log2(1) = 0: one pair always peels
 		{1, 4, 8, 3, false},

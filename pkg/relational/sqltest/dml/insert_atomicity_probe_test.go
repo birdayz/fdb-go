@@ -75,6 +75,22 @@ func TestFDB_InsertAtomicityProbe(t *testing.T) {
 			t.Errorf("after failed multi-insert, t = %v, want [2] (atomic rollback, no partial)", got)
 		}
 	})
+	// INSERT reads ahead in windows of ten rows: a key repeated inside a window
+	// and one repeated across windows must each see the earlier row.
+	t.Run("repeated_pk_in_statement_rolls_back_all", func(t *testing.T) {
+		for _, stmt := range []string{
+			"INSERT INTO t (id, a) VALUES (5,50),(6,60),(5,51)",
+			"INSERT INTO t (id, a) VALUES (11,1),(12,1),(13,1),(14,1),(15,1),(16,1),(17,1),(18,1),(19,1),(20,1),(11,2)",
+		} {
+			_, err := db.ExecContext(ctx, stmt)
+			if err == nil || !strings.Contains(err.Error(), "23505") {
+				t.Fatalf("%s: err = %v, want 23505", stmt, err)
+			}
+			if got := ids("t"); !eq(got, []int64{2}) {
+				t.Errorf("%s: t = %v, want [2] (atomic rollback, no partial)", stmt, got)
+			}
+		}
+	})
 	t.Run("valid_multi_insert_all_applied", func(t *testing.T) {
 		testkit.MustExecCtx(t, db, ctx, "INSERT INTO u (id, a) VALUES (10,1),(11,2),(12,3)")
 		if got := ids("u"); !eq(got, []int64{10, 11, 12}) {

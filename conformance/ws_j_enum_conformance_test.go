@@ -23,20 +23,8 @@ import (
 	"fdb.dev/pkg/relational/core/keyspace"
 )
 
-// WS-J step 5 (design section 5): an enum column written and read by each
-// engine. The Go SQL driver and Java's keep their catalogs on different
-// keyspaces today (TODO.md "Go SQL driver stores the relational catalog and
-// user schemas on a Go-only keyspace", F11), so neither driver can open a
-// schema the other created. What is compared instead is everything a shared
-// store would expose: each engine creates the same template through its own
-// DDL and inserts the same rows through its own driver, and the stored records
-// and the enum index's entries must be byte-equal relative to each store; the
-// same query must answer the same rows in each (a value by its name,
-// RowStruct.getString's spelling); an undeclared name and an integer must be
-// refused alike. The records are compared whole, the serializer prefix
-// included; that each engine reads the other's records is the serializer spec's
-// measurement ("TransformedRecordSerializer records are read and written as
-// Java's"), not this one's.
+// Separate schemas let both drivers' enum records and index entries be compared
+// byte-for-byte without either writer masking the other's representation.
 var _ = Describe("RFC-257 WS-J enum columns written and read by both engines", func() {
 	It("stores, indexes, reads and refuses as the target", func() {
 		ctx := context.Background()

@@ -466,6 +466,22 @@ read it there. What does not change is the shape of the constraint — anything 
 `cloud-init.yaml` has to come out of a budget with roughly one line left in it, so the next
 person to touch that file is trimming, not adding.
 
+## Containers a cancelled job leaves running
+
+When a job times out or is cancelled, the runner kills only processes that carry
+`RUNNER_TRACKING_ID`: bazelisk, bazel and the Bazel server. Action processes run under a
+strict action env, and containers are children of containerd-shim, so both survive. On
+2026-10-10 a timed-out oracle job's FDB C++ build (`--cpus=3 --memory=5120m`) kept running
+into the next job on both runners. That job's tests swapped, ran 20x slower, and the kernel
+OOM-killed `factory_test`.
+
+`reap-leaked-containers.sh` therefore runs first in every self-hosted `ci.yml` job (the
+`infra_test` pin checks that). It removes running containers that started before the oldest
+`Runner.Worker` and have no restart policy, keeps `bazel-remote` by name as well, and prints
+memory afterwards so a leak it cannot see still shows. Workflows outside `ci.yml`, and re-runs
+of commits from before the step existed, are not covered. A host `ACTIONS_RUNNER_HOOK_JOB_STARTED`
+hook would cover them, but it needs the boxes re-rolled.
+
 ## Ephemeral runner (opt-in)
 
 `-var runner_ephemeral=true` configures the runner with `--ephemeral` (one job per process,

@@ -1669,17 +1669,8 @@ var _ = Describe("WS-J nested-leaf value index plan oracle", func() {
 	})
 })
 
-// "Go stores, Java plans". The target plans over the STORED key expressions
-// (KeyExpressionExpansionVisitor turns a stored literal into a Value of the
-// stored width), so a template Go persisted with long_value literals may not
-// match the target's own INT-typed query Values, or may fail to encapsulate
-// where the target has no (LONG, LONG) operator (the bitmap functions have only
-// _LI and _II). Each read runs twice in the target: over the template Go
-// stored through its catalog library at the Java-compatible catalog subspace,
-// and over the identical body the target stored itself (the control). Before
-// the literal-carrier fix every bitmap read over the Go-stored template failed
-// to encapsulate; the two must now answer identically. A third copy stored
-// through the Go SQL driver is pinned invisible to the target.
+// Java must plan the stored literal widths identically whether its own driver,
+// Go's catalog library, or Go's SQL driver wrote the shared catalog template.
 var _ = Describe("WS-J Go-stored template planned by the target", func() {
 	It("records the target's plans and rows over literal-bearing indexes Go stored", func() {
 		ctx := context.Background()
@@ -1696,33 +1687,22 @@ var _ = Describe("WS-J Go-stored template planned by the target", func() {
 			"CREATE TABLE T2 (id BIGINT, d BIGINT, PRIMARY KEY (id)) " +
 			"CREATE INDEX dmask AS SELECT d & 1 FROM T2 ORDER BY d & 1 " +
 			"CREATE INDEX dplus AS SELECT d + 1 FROM T2 ORDER BY d + 1"
-		driverName := "WSJ_DRV_" + strings.ReplaceAll(uuid.New().String()[:8], "-", "")
+		// Fixed mixed case catches accidental folding even when the UUID has only digits.
+		driverName := "WSJ_DRV_mixed_" + strings.ReplaceAll(uuid.New().String()[:8], "-", "")
 		goName := "WSJ_GO_" + strings.ReplaceAll(uuid.New().String()[:8], "-", "")
 		javaName := "WSJ_JAVA_" + strings.ReplaceAll(uuid.New().String()[:8], "-", "")
 
-		// (a) Through the Go SQL driver: stored on the driver's Go-only keyspace
-		// (TODO.md, "Go SQL driver stores the relational catalog ... on a Go-only
-		// keyspace"), so the target cannot see it at all. Pinned below; it reddens
-		// when the driver moves to the Java layout.
+		// The driver and catalog library must both persist to Java's (NULL, NULL, 0) catalog.
 		sysDB, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///__SYS?cluster_file=%s", clusterFilePath))
 		Expect(err).NotTo(HaveOccurred())
 		defer sysDB.Close()
-		_, err = sysDB.ExecContext(ctx, fmt.Sprintf("CREATE SCHEMA TEMPLATE %s %s", driverName, body))
+		_, err = sysDB.ExecContext(ctx, fmt.Sprintf("CREATE SCHEMA TEMPLATE \"%s\" %s", driverName, body))
 		Expect(err).NotTo(HaveOccurred(), "Go stores the template through its SQL driver")
-		defer func() { _, _ = sysDB.ExecContext(context.Background(), "DROP SCHEMA TEMPLATE IF EXISTS "+driverName) }()
-		var driverRead map[string]any
-		driverErr := java.InvokeAs(ctx, "runOnExistingTemplateJava", map[string]any{
-			"clusterFile": clusterFile, "templateName": driverName, "setupSqls": []string{}, "querySql": "SELECT id FROM T2",
-		}, &driverRead)
-		var driverJE *JavaError
-		Expect(errors.As(driverErr, &driverJE)).To(BeTrue(), "the target reading a driver-stored template")
-		Expect(driverJE.SQLState).To(Equal("42F55"),
-			"the target cannot see a template the Go SQL driver stored (Go-only keyspace); if this moved, "+
-				"the driver's catalog layout changed and the TODO.md entry must be revisited")
-		fmt.Fprintf(GinkgoWriter, "WSJG driver-stored template seen by the target: %s %q\n", driverJE.SQLState, wsjTrim(driverJE.Message))
+		defer func() {
+			_, _ = sysDB.ExecContext(context.Background(), "DROP SCHEMA TEMPLATE IF EXISTS \""+driverName+"\"")
+		}()
 
-		// (b) The same Go-built metadata stored through Go's catalog LIBRARY at the
-		// Java-compatible (NULL, NULL, 0) subspace: the literal-width question.
+		// The library arm distinguishes metadata construction from driver persistence.
 		goTmpl, err := embedded.BuildSchemaTemplateFromDDLNamed(body, goName)
 		Expect(err).NotTo(HaveOccurred())
 		cat, err := catalog.OpenRecordLayerStoreCatalog()
@@ -1740,8 +1720,7 @@ var _ = Describe("WS-J Go-stored template planned by the target", func() {
 				"clusterFile": clusterFile, "templateName": goName,
 			}, &dropped)
 		}()
-		// (c) The same metadata with every INT literal rewritten to long_value, the
-		// width a Go build before the literal-carrier fix persisted.
+		// Widening INT literals supplies a negative control for Java's literal matching.
 		longName := "WSJ_LONG_" + strings.ReplaceAll(uuid.New().String()[:8], "-", "")
 		longProto, err := goTmpl.Underlying().ToProto()
 		Expect(err).NotTo(HaveOccurred())
@@ -1902,8 +1881,12 @@ var _ = Describe("WS-J Go-stored template planned by the target", func() {
 			reads[14]: encapsulate,
 		}
 		gotJava, gotGo, gotLong := map[string]string{}, map[string]string{}, map[string]string{}
+		gotDriver := map[string]string{}
 		for _, q := range reads {
-			var onGo, onJava, onLong map[string]any
+			var onGo, onJava, onLong, onDriver map[string]any
+			driverErr := java.InvokeAs(ctx, "runOnExistingTemplateJava", map[string]any{
+				"clusterFile": clusterFile, "templateName": driverName, "setupSqls": setup, "querySql": q,
+			}, &onDriver)
 			goErr := java.InvokeAs(ctx, "runOnExistingTemplateJava", map[string]any{
 				"clusterFile": clusterFile, "templateName": goName, "setupSqls": setup, "querySql": q,
 			}, &onGo)
@@ -1914,7 +1897,8 @@ var _ = Describe("WS-J Go-stored template planned by the target", func() {
 				"clusterFile": clusterFile, "templateName": longName, "setupSqls": setup, "querySql": q,
 			}, &onLong)
 			overGo, overJava, overLong := render(q, onGo, goErr), render(q, onJava, javaErr), render(q, onLong, longErr)
-			fmt.Fprintf(GinkgoWriter, "WSJG %q\n  over-go-stored=%s\n  over-java-stored=%s\n  over-long-value=%s\n", q, overGo, overJava, overLong)
+			gotDriver[q] = render(q, onDriver, driverErr)
+			fmt.Fprintf(GinkgoWriter, "WSJG %q\n  over-go-stored=%s\n  over-driver-stored=%s\n  over-java-stored=%s\n  over-long-value=%s\n", q, overGo, gotDriver[q], overJava, overLong)
 			gotJava[q], gotGo[q], gotLong[q] = overJava, overGo, overLong
 		}
 		for _, q := range reads {
@@ -1926,6 +1910,7 @@ var _ = Describe("WS-J Go-stored template planned by the target", func() {
 		discriminating := 0
 		for _, q := range reads {
 			Expect(gotJava[q]).To(Equal(javaPins[q]), "the target over its own template: %s", q)
+			Expect(gotDriver[q]).To(Equal(javaPins[q]), "the target over the Go-driver-stored template: %s", q)
 			Expect(gotGo[q]).To(Equal(gotJava[q]), "the target over the Go-stored template must answer as over its own: %s", q)
 			Expect(gotLong[q]).To(Equal(longPins[q]), "the target over the long_value template: %s", q)
 			if gotLong[q] != gotJava[q] {
@@ -3253,9 +3238,7 @@ var _ = Describe("WS-J a table or struct named UnionDescriptor", func() {
 // creates the template through its own DDL, its catalog row is rewritten raw
 // with the defaults (library code can store such a records file; the DDL
 // cannot), a row with d and s unset is inserted through SQL, and each engine
-// reads it. Each engine reads its own catalog: the Go driver keeps its catalog
-// on a Go-only keyspace (TODO.md, "Go SQL driver stores the relational catalog
-// and user schemas on a Go-only keyspace").
+// reads it. Distinct template names isolate the two engines in the shared catalog.
 var _ = Describe("WS-J an unset field with a declared default reads as the target reads it", func() {
 	It("SELECT * and SELECT d", func() {
 		ctx := context.Background()

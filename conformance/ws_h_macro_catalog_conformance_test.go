@@ -25,9 +25,7 @@ import (
 // (MetaData.user_defined_functions) with their parameter names and DEFAULT
 // Values. The definitions Go builds from DDL are byte-identical to the ones
 // the target stores for the same DDL, and the target calls the functions of a
-// template Go stored as it calls its own. Go stores through its catalog
-// library: its SQL driver's catalog is on a Go-only keyspace (TODO.md, "Go SQL
-// driver stores the relational catalog and user schemas on a Go-only keyspace").
+// template Go stored as it calls its own. This spec writes through Go's catalog library.
 var _ = Describe("WSHMacroCatalogConformance", func() {
 	It("stores and reads SQL function definitions as the target does", func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
