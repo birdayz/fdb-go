@@ -154,7 +154,7 @@ var _ = Describe("vector indexes under core contracts", func() {
 	Describe("the store's vector entry points", func() {
 		buildMetaData := func() *recordlayer.RecordMetaData {
 			builder := baseBuilder()
-			builder.AddIndex("Order", recordlayer.NewVectorIndex("original", recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 2))
+			builder.AddIndex("Order", recordlayer.NewVectorIndex("original", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0), 2))
 			md, err := builder.Build()
 			Expect(err).NotTo(HaveOccurred())
 			return md

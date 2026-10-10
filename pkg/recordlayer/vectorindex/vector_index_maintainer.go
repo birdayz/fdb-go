@@ -33,6 +33,7 @@ import (
 // where grouped key expressions produce per-prefix HNSW graphs.
 type vectorIndexMaintainer struct {
 	recordlayer.StandardIndexMaintainer
+	root         *recordlayer.KeyWithValueExpression
 	hnswSubspace subspace.Subspace
 	hnswConfig   HNSWConfig
 
@@ -54,6 +55,12 @@ func newVectorIndexMaintainer(
 	// included: a configuration Java refuses is refused here rather than built
 	// with Go's own reading (for example m > mMax, a new node selecting more
 	// neighbours than the pruning cap, or efRepair < m).
+	root, ok := index.RootExpression.(*recordlayer.KeyWithValueExpression)
+	if !ok {
+		// Java's getKeyWithValueExpression (VectorIndexMaintainer.java:726-731);
+		// the build-time structure check keeps such a root out of built meta-data.
+		return nil, &recordlayer.RecordCoreError{Message: "structure of vector index is not supported"}
+	}
 	engine, err := VectorEngineOf(index)
 	if err != nil {
 		return nil, err
@@ -65,6 +72,7 @@ func newVectorIndexMaintainer(
 		}
 		return &vectorIndexMaintainer{
 			StandardIndexMaintainer: *recordlayer.NewStandardIndexMaintainer(recordlayer.IndexMaintainerState{Index: index, IndexSubspace: indexSubspace, Transaction: tx, Store: store}),
+			root:                    root,
 			hnswSubspace:            hnswSubspace,
 			engine:                  engine,
 			guardiannConfig:         gc,
@@ -78,6 +86,7 @@ func newVectorIndexMaintainer(
 	}
 	return &vectorIndexMaintainer{
 		StandardIndexMaintainer: *recordlayer.NewStandardIndexMaintainer(recordlayer.IndexMaintainerState{Index: index, IndexSubspace: indexSubspace, Transaction: tx, Store: store}),
+		root:                    root,
 		hnswSubspace:            hnswSubspace,
 		hnswConfig:              config,
 	}, nil
@@ -85,8 +94,7 @@ func newVectorIndexMaintainer(
 
 // HNSWConfigOf is the HNSW configuration a VECTOR index's options declare, as
 // the maintainer reads it (parseHNSWConfig): Java's
-// HnswVectorIndexEngine.parseConfig, with Go's dimension default for a plain
-// HNSW index.
+// HnswVectorIndexEngine.parseConfig.
 func HNSWConfigOf(index *recordlayer.Index) (HNSWConfig, error) { return parseHNSWConfig(index) }
 
 // getSubspaceForPrefix returns the HNSW subspace scoped to the given prefix.
@@ -127,37 +135,21 @@ func (m *vectorIndexMaintainer) getStorageForPrefix(prefix tuple.Tuple) *hnswSto
 }
 
 // splitPrefixAndVector extracts the prefix (grouping key) and vector from an
-// index entry. For KeyWithValueExpression indexes:
-//   - entry.key = prefix columns (the key portion before splitPoint)
-//   - entry.value = vector data (the value portion after splitPoint)
-//
-// For non-KWV indexes (e.g., Concat(Field("x"), Field("y"))):
-//   - entry.key = the entire vector (no prefix)
-//   - entry.value = nil
-//
-// NOTE: Java divergence — Java's VectorIndexMaintainer.getKeyWithValueExpression()
-// at line 375 throws if the root expression is not a KeyWithValueExpression.
-// We accept non-KWV expressions for backwards compatibility with existing tests
-// that use Concat/Field directly as the root expression. This is more permissive
-// than Java but functionally equivalent for non-grouped vector indexes.
+// index entry: entry.key is the prefix columns before the split point, and
+// entry.value the vector data after it.
 func (m *vectorIndexMaintainer) splitPrefixAndVector(entry recordlayer.EvaluatedIndexEntry) (prefix tuple.Tuple, vector []float64, err error) {
-	if len(entry.Value()) > 0 {
-		// KeyWithValue index: key is prefix, value is vector.
-		vec, verr := tupleToVector(entry.Value())
-		return entry.Key(), vec, verr
+	if len(entry.Value()) == 0 {
+		// Java reads value.getBytes(0), which throws for a root with no value column.
+		return nil, nil, fmt.Errorf("vector index %q: entry has no vector column after the split point", m.Index().Name)
 	}
-	// Non-KWV index: no prefix, entire key is the vector.
-	vec, verr := tupleToVector(entry.Key())
-	return nil, vec, verr
+	vec, verr := tupleToVector(entry.Value())
+	return entry.Key(), vec, verr
 }
 
 // vectorTypeOfEntry is the VectorType ordinal of an entry's serialized vector;
 // a vector spelled as numeric tuple elements is DOUBLE.
 func vectorTypeOfEntry(entry recordlayer.EvaluatedIndexEntry) byte {
-	t := entry.Key()
-	if len(entry.Value()) > 0 {
-		t = entry.Value()
-	}
+	t := entry.Value()
 	if len(t) == 1 {
 		if b, ok := t[0].([]byte); ok && len(b) > 0 && b[0] <= vectorcodec.TypeDouble {
 			return b[0]
@@ -372,14 +364,10 @@ func (m *vectorIndexMaintainer) ScanByDistance(
 }
 
 // partitionSize returns the number of leading partition (key) columns of the
-// vector index — the KeyWithValueExpression split point — or 0 if the index is
-// not a KeyWithValueExpression (unpartitioned). Mirrors Java's
+// vector index, the KeyWithValueExpression split point. Mirrors Java's
 // prefixSize = getKeyWithValueExpression(rootExpression).getSplitPoint().
 func (m *vectorIndexMaintainer) partitionSize() int {
-	if kwv, ok := m.Index().RootExpression.(*recordlayer.KeyWithValueExpression); ok {
-		return kwv.SplitPoint()
-	}
-	return 0
+	return m.root.SplitPoint()
 }
 
 // ScanVectorIndex performs the actual kNN search and returns a cursor.
@@ -989,11 +977,9 @@ func (m *vectorIndexMaintainer) SearchKNN(prefix tuple.Tuple, queryVector []floa
 	// Guard: if index has a prefix (KWV splitPoint > 0), caller MUST provide one.
 	// Searching without a prefix on a grouped index returns empty (queries the
 	// base subspace which has no data), silently producing wrong results.
-	if len(prefix) == 0 {
-		if kwv, ok := m.Index().RootExpression.(*recordlayer.KeyWithValueExpression); ok && kwv.SplitPoint() > 0 {
-			return nil, fmt.Errorf("VECTOR index %q is prefix-partitioned (splitPoint=%d): "+
-				"use SearchVectorIndexWithPrefix to provide a prefix", m.Index().Name, kwv.SplitPoint())
-		}
+	if len(prefix) == 0 && m.root.SplitPoint() > 0 {
+		return nil, fmt.Errorf("VECTOR index %q is prefix-partitioned (splitPoint=%d): "+
+			"use SearchVectorIndexWithPrefix to provide a prefix", m.Index().Name, m.root.SplitPoint())
 	}
 	storage := m.getStorageForPrefix(prefix)
 	graph := NewHNSWGraph(storage, m.hnswConfig)
@@ -1039,18 +1025,8 @@ func (m *vectorIndexMaintainer) SearchKNN(prefix tuple.Tuple, queryVector []floa
 // and is accepted — while getSubspaceForPrefix then addresses a subspace one
 // level deeper than any graph that exists. The clear hits nothing, returns
 // success, and the deleted records' HNSW nodes stay queryable.
-//
-// A non-KeyWithValue root has no key columns at all: splitPrefixAndVector
-// reads the whole key as the vector and indexes every record under the empty
-// prefix, so any non-empty prefix is unclearable. Java refuses that root shape
-// outright (getKeyWithValueExpression throws); Go accepts it for other
-// operations — see "VECTOR index metadata validation" in DIVERGENCES.md — so
-// the bound of zero is what expresses the same refusal here.
 func (m *vectorIndexMaintainer) CanDeleteWhere(prefix tuple.Tuple) error {
-	keyColumns := 0
-	if kwv, ok := m.Index().RootExpression.(*recordlayer.KeyWithValueExpression); ok {
-		keyColumns = kwv.ColumnSize()
-	}
+	keyColumns := m.root.ColumnSize()
 	if len(prefix) > keyColumns {
 		return fmt.Errorf(
 			"vector index %q: deleteWhere prefix has %d columns but the index has %d key column(s); "+

@@ -19,11 +19,10 @@ import (
 // refuses an option given under both its name and its alias (a MetaDataError,
 // VectorIndexOptionsHelper.validateNoAliasConflicts) and then parses the HNSW
 // configuration as HnswVectorIndexEngine.parseConfig does, Config's checks
-// included (readHNSWOptions, Go's dimension default kept for a plain HNSW
-// index only); any IllegalArgumentException
+// included (readHNSWOptions); any IllegalArgumentException
 // of the parse, a NumberFormatException included, is rethrown as
 // MetaDataException("incorrect index options", cause), and a missing dimension
-// count is the parse's own MetaDataException. So the windowed index Go builds is
+// count is the parse's own MetaDataException. So the vector index Go builds is
 // the one Java builds, and its maintainer (parseHNSWConfig, the same reader)
 // reads the numbers Java reads. A GuardiANN index is parsed by
 // parseGuardiannConfig, GuardiannVectorIndexEngine.parseConfig.
@@ -38,7 +37,7 @@ func validateVectorIndexOptionsAtBuild(idx *recordlayer.Index) error {
 	if engine == VectorEngineGuardiann {
 		_, err = parseGuardiannConfig(idx)
 	} else {
-		_, err = readHNSWOptions(idx, !idx.HasRowNumberWindowPredicate())
+		_, err = readHNSWOptions(idx)
 	}
 	if err != nil {
 		var iae *recordlayer.IllegalArgumentError
@@ -114,11 +113,11 @@ func validateVectorIndexOptions(oldIdx, newIdx *recordlayer.Index, changed map[s
 	// VectorIndexOptionsHelper.disallowChange compares the parsed and defaulted
 	// values (VectorIndexOptionsHelper.java:120-147), so an option set to its
 	// default beside one left unset is no change; with Java's message.
-	oldOpts, err := readHNSWOptions(oldIdx, true)
+	oldOpts, err := readHNSWOptions(oldIdx)
 	if err != nil {
 		return err
 	}
-	newOpts, err := readHNSWOptions(newIdx, true)
+	newOpts, err := readHNSWOptions(newIdx)
 	if err != nil {
 		return err
 	}

@@ -69,7 +69,7 @@ var _ = Describe("Vector index pending queue", func() {
 	// the maintainer directly, so the store's queue path and the replay are
 	// not covered here).
 	It("serializes both entries of a queued save that keeps the vector", func() {
-		index := recordlayer.NewVectorIndex("queued_unchanged", recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 2)
+		index := recordlayer.NewVectorIndex("queued_unchanged", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0), 2)
 		builder := baseBuilder()
 		builder.AddIndex("Order", index)
 		md, err := builder.Build()
@@ -98,7 +98,7 @@ var _ = Describe("Vector index pending queue", func() {
 	})
 
 	It("replays captured vector entries without reevaluating records or predicates", func() {
-		index := recordlayer.NewVectorIndex("queued_vector", recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 2)
+		index := recordlayer.NewVectorIndex("queued_vector", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0), 2)
 		allow := true
 		index.Predicate = func(proto.Message) bool { return allow }
 		builder := baseBuilder()

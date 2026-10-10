@@ -32,16 +32,16 @@ var _ = Describe("MetaDataEvolutionValidator (vector)", func() {
 	// VECTOR (HNSW) option validation
 	It("rejects HNSW structural option change (metric)", func() {
 		old := buildMetaData(1, func(b *recordlayer.RecordMetaDataBuilder) {
-			idx := recordlayer.NewIndex("idx_vec", recordlayer.Field("price"))
+			idx := recordlayer.NewIndex("idx_vec", recordlayer.KeyWithValue(recordlayer.Field("price"), 0))
 			idx.Type = recordlayer.IndexTypeVector
-			idx.Options = map[string]string{recordlayer.IndexOptionVectorMetric: "EUCLIDEAN_METRIC"}
+			idx.Options = map[string]string{recordlayer.IndexOptionVectorNumDimensions: "4", recordlayer.IndexOptionVectorMetric: "EUCLIDEAN_METRIC"}
 			b.AddIndex("Order", idx)
 		})
 
 		new := buildMetaData(2, func(b *recordlayer.RecordMetaDataBuilder) {
-			idx := recordlayer.NewIndex("idx_vec", recordlayer.Field("price"))
+			idx := recordlayer.NewIndex("idx_vec", recordlayer.KeyWithValue(recordlayer.Field("price"), 0))
 			idx.Type = recordlayer.IndexTypeVector
-			idx.Options = map[string]string{recordlayer.IndexOptionVectorMetric: "COSINE_METRIC"}
+			idx.Options = map[string]string{recordlayer.IndexOptionVectorNumDimensions: "4", recordlayer.IndexOptionVectorMetric: "COSINE_METRIC"}
 			b.AddIndex("Order", idx)
 		})
 
@@ -53,16 +53,16 @@ var _ = Describe("MetaDataEvolutionValidator (vector)", func() {
 
 	It("allows HNSW runtime option change (concurrency)", func() {
 		old := buildMetaData(1, func(b *recordlayer.RecordMetaDataBuilder) {
-			idx := recordlayer.NewIndex("idx_vec", recordlayer.Field("price"))
+			idx := recordlayer.NewIndex("idx_vec", recordlayer.KeyWithValue(recordlayer.Field("price"), 0))
 			idx.Type = recordlayer.IndexTypeVector
-			idx.Options = map[string]string{recordlayer.IndexOptionHNSWMaxNumConcurrentNodeFetches: "16"}
+			idx.Options = map[string]string{recordlayer.IndexOptionVectorNumDimensions: "4", recordlayer.IndexOptionHNSWMaxNumConcurrentNodeFetches: "16"}
 			b.AddIndex("Order", idx)
 		})
 
 		new := buildMetaData(2, func(b *recordlayer.RecordMetaDataBuilder) {
-			idx := recordlayer.NewIndex("idx_vec", recordlayer.Field("price"))
+			idx := recordlayer.NewIndex("idx_vec", recordlayer.KeyWithValue(recordlayer.Field("price"), 0))
 			idx.Type = recordlayer.IndexTypeVector
-			idx.Options = map[string]string{recordlayer.IndexOptionHNSWMaxNumConcurrentNodeFetches: "32"}
+			idx.Options = map[string]string{recordlayer.IndexOptionVectorNumDimensions: "4", recordlayer.IndexOptionHNSWMaxNumConcurrentNodeFetches: "32"}
 			b.AddIndex("Order", idx)
 		})
 
@@ -72,16 +72,16 @@ var _ = Describe("MetaDataEvolutionValidator (vector)", func() {
 
 	It("rejects HNSW structural change when value actually differs", func() {
 		old := buildMetaData(1, func(b *recordlayer.RecordMetaDataBuilder) {
-			idx := recordlayer.NewIndex("idx_vec", recordlayer.Field("price"))
+			idx := recordlayer.NewIndex("idx_vec", recordlayer.KeyWithValue(recordlayer.Field("price"), 0))
 			idx.Type = recordlayer.IndexTypeVector
-			idx.Options = map[string]string{recordlayer.IndexOptionHNSWM: "16"}
+			idx.Options = map[string]string{recordlayer.IndexOptionVectorNumDimensions: "4", recordlayer.IndexOptionHNSWM: "16"}
 			b.AddIndex("Order", idx)
 		})
 
 		new := buildMetaData(2, func(b *recordlayer.RecordMetaDataBuilder) {
-			idx := recordlayer.NewIndex("idx_vec", recordlayer.Field("price"))
+			idx := recordlayer.NewIndex("idx_vec", recordlayer.KeyWithValue(recordlayer.Field("price"), 0))
 			idx.Type = recordlayer.IndexTypeVector
-			idx.Options = map[string]string{recordlayer.IndexOptionHNSWM: "32", recordlayer.IndexOptionHNSWMMax: "32"}
+			idx.Options = map[string]string{recordlayer.IndexOptionVectorNumDimensions: "4", recordlayer.IndexOptionHNSWM: "32", recordlayer.IndexOptionHNSWMMax: "32"}
 			b.AddIndex("Order", idx)
 		})
 
@@ -186,6 +186,8 @@ func TestVectorOptionsComparedByEffectiveValue(t *testing.T) {
 			"vectorRaBitQNumExBits", true,
 		},
 	} {
+		c.old[recordlayer.IndexOptionVectorNumDimensions] = "4"
+		c.new[recordlayer.IndexOptionVectorNumDimensions] = "4"
 		oldIdx := &recordlayer.Index{Name: "v", Type: recordlayer.IndexTypeVector, Options: c.old}
 		newIdx := &recordlayer.Index{Name: "v", Type: recordlayer.IndexTypeVector, Options: c.new}
 		changed := map[string]bool{c.option: true}
@@ -204,8 +206,11 @@ func TestVectorOptionsComparedByEffectiveValue(t *testing.T) {
 	}
 	// A metric no Metric constant names is Java's parse failure, Metric.valueOf's
 	// IllegalArgumentException, not taken for the default.
-	err := validateVectorIndexOptions(&recordlayer.Index{Name: "v", Type: recordlayer.IndexTypeVector, Options: map[string]string{}},
-		&recordlayer.Index{Name: "v", Type: recordlayer.IndexTypeVector, Options: map[string]string{recordlayer.IndexOptionVectorMetric: "COSINE"}},
+	err := validateVectorIndexOptions(
+		&recordlayer.Index{Name: "v", Type: recordlayer.IndexTypeVector, Options: map[string]string{recordlayer.IndexOptionVectorNumDimensions: "4"}},
+		&recordlayer.Index{Name: "v", Type: recordlayer.IndexTypeVector, Options: map[string]string{
+			recordlayer.IndexOptionVectorNumDimensions: "4", recordlayer.IndexOptionVectorMetric: "COSINE",
+		}},
 		map[string]bool{recordlayer.IndexOptionVectorMetric: true})
 	var iae *recordlayer.IllegalArgumentError
 	if !errors.As(err, &iae) || iae.Message != "No enum constant com.apple.foundationdb.linear.Metric.COSINE" {

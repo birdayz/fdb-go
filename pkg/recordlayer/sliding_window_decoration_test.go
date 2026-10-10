@@ -32,7 +32,7 @@ var _ = Describe("SlidingWindowIndex decoration", func() {
 		// is ever widened to recurse through OR, this spec fails — and that
 		// failure is the signal that the placement check has become reachable
 		// for this shape and the two must be reconciled.
-		idx := NewVectorIndex("sw_or_only", Concat(Field("coord_x"), Field("coord_y")), 2)
+		idx := NewVectorIndex("sw_or_only", KeyWithValue(Concat(Field("coord_x"), Field("coord_y")), 0), 2)
 		rn := &gen.Predicate{RowNumberWindowPredicate: &gen.RowNumberWindowPredicate{
 			OrderingField: []string{"price"},
 			Size:          proto.Int32(2),
