@@ -284,26 +284,27 @@ jobs:
           # The scope step diffs a PR's merge commit against its base parent.
           fetch-depth: 2
 
-      # A PR that changes nothing the oracle is built from cannot change its result, and master
-      # runs it on every push. Skipping spares such PRs a cold C++ build (782-840s measured).
-      - name: Does this change reach the oracle?
-        id: scope
-        run: infra/wire-oracle-scope.sh
-
       - name: Reap containers an earlier job left running
         timeout-minutes: 2
         run: infra/reap-leaked-containers.sh
 
+      # A PR that changes nothing the oracle is built from cannot change its result, and master
+      # runs it on every push run that completes. Skipping spares such PRs a cold C++ build
+      # (782-840s measured).
+      - name: Does this change reach the oracle?
+        id: scope
+        run: infra/wire-oracle-scope.sh
+
       - name: Build C++ oracle
-        if: steps.scope.outputs.run == 'true'
+        if: steps.scope.outputs.run != 'false'
         run: bazelisk build --config=ci //cmd/fdb-diff-oracle:diff_oracle_bin
 
       - name: Build Go fuzz test
-        if: steps.scope.outputs.run == 'true'
+        if: steps.scope.outputs.run != 'false'
         run: bazelisk build --config=ci //cmd/fdb-diff-oracle:fdb-diff-oracle_test
 
       - name: Resolve Bazel Go SDK
-        if: steps.scope.outputs.run == 'true'
+        if: steps.scope.outputs.run != 'false'
         id: go-sdk
         run: |
           OUTPUT_BASE=$(bazelisk info --config=ci output_base 2>/dev/null)
@@ -321,7 +322,7 @@ jobs:
           echo "Using Go: $GO_BIN ($($GO_BIN version))"
 
       - name: Deterministic wire-type oracle (TestDiff + all fuzz seed corpora)
-        if: steps.scope.outputs.run == 'true'
+        if: steps.scope.outputs.run != 'false'
         # Runs every TestDiff* against the C++ oracle AND replays all Fuzz* SEED corpora
         # (committed under testdata/fuzz + each f.Add). The `^Fuzz` in -run is load-bearing:
         # without it `go test` does NOT exercise the Fuzz functions at all, so -run=TestDiff

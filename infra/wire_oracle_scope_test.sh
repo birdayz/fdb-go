@@ -21,8 +21,8 @@ bad() {
   fail=1
 }
 
-# The stub accepts only the production query. $T/query_mode: ok, fail, or foreign (labels
-# in a form the script cannot read, e.g. --consistent_labels' @@//).
+# The stub accepts only the production query. $T/query_mode: ok, fail, foreign (labels in
+# a form the script cannot read, e.g. --consistent_labels' @@//), or partial (an edge lost).
 cat >"$T/bin/bazelisk" <<'STUB'
 #!/bin/bash
 t='//cmd/fdb-diff-oracle:fdb-diff-oracle_test + //cmd/fdb-diff-oracle:diff_oracle_bin'
@@ -32,8 +32,10 @@ t='//cmd/fdb-diff-oracle:fdb-diff-oracle_test + //cmd/fdb-diff-oracle:diff_oracl
 case "$(cat "$SCOPETEST_DIR/query_mode")" in
 fail) echo "ERROR: query exploded" >&2; exit 1 ;;
 foreign) echo "@@//cmd/fdb-diff-oracle:oracle.go"; echo "@foundationdb//:CMakeLists.txt"; exit 0 ;;
+partial) skip=cmd/fdb-schema-extract ;;
+*) skip=none ;;
 esac
-cat <<EOF
+grep -v "^//$skip:" <<EOF
 //:BUILD.bazel
 //:nogo_config.json
 //cmd/fdb-diff-oracle:BUILD.bazel
@@ -41,6 +43,10 @@ cat <<EOF
 //cmd/fdb-diff-oracle:cpp/main.cpp
 //pkg/fdbgo/wire:BUILD.bazel
 //pkg/fdbgo/wire:reader.go
+//pkg/fdbgo/wire/types:BUILD.bazel
+//pkg/fdbgo/wire/types:types.go
+//cmd/fdb-schema-extract:BUILD.bazel
+//cmd/fdb-schema-extract:fdb_cpp_build.bzl
 @foundationdb//:CMakeLists.txt
 @rules_go//go:def.bzl
 EOF
@@ -55,14 +61,16 @@ for f in BUILD.bazel nogo_config.json README.md MODULE.bazel sift_repo.bzl patch
   patches/x.patch .github/workflows/ci.yml cmd/fdb-diff-oracle/BUILD.bazel cmd/fdb-diff-oracle/oracle.go \
   cmd/fdb-diff-oracle/cpp/main.cpp cmd/fdb-diff-oracle/testdata/fuzz/FuzzX/seed \
   pkg/fdbgo/wire/BUILD.bazel pkg/fdbgo/wire/reader.go pkg/fdbgo/wire/vtables/BUILD.bazel \
-  pkg/fdbgo/wire/vtables/v.go pkg/relational/BUILD.bazel pkg/relational/x.go; do
+  pkg/fdbgo/wire/vtables/v.go pkg/fdbgo/wire/types/BUILD.bazel pkg/fdbgo/wire/types/types.go \
+  cmd/fdb-schema-extract/BUILD.bazel cmd/fdb-schema-extract/fdb_cpp_build.bzl \
+  pkg/relational/BUILD.bazel pkg/relational/x.go; do
   mkdir -p "$(dirname "$f")"
   echo "base $f" >"$f"
 done
 git add -A && git commit -qm base
 
 # $1 name; $2 checkout: merge (GitHub's merge ref), head (the PR head), or push; $3 the PR's
-# changes, space-separated: a path to append to, or mv:FROM:TO; $4 query mode; $5 expected
+# changes, space-separated: a path to append to, rm:PATH, or mv:FROM:TO; $4 query mode; $5 expected
 # run=; $6 output substring. The base moves on first, as it does under a real PR.
 run_case() {
   git checkout -q -f base
@@ -74,6 +82,7 @@ run_case() {
       mkdir -p "$(dirname "$to")"
       git mv "$from" "$to"
       ;;
+    rm:*) git rm -q -- "${c#rm:}" ;;
     *)
       mkdir -p "$(dirname "$c")"
       echo change >>"$c"
@@ -107,7 +116,7 @@ run_case() {
 echo "wire-oracle-scope:"
 run_case "push to master" push pkg/relational/x.go ok true "push event: full run"
 run_case "unrelated package" merge pkg/relational/x.go ok false "none of the 1 changed files"
-run_case "root file outside the oracle" merge README.md ok false "skipped"
+run_case "root file outside the oracle" merge README.md ok false "::notice::wire-type oracle skipped"
 run_case "several unrelated files" merge "README.md pkg/relational/x.go moved2.txt" ok false "none of the 3 changed files"
 run_case "sibling package not depended on" merge pkg/fdbgo/wire/vtables/v.go ok false "skipped"
 # README.md sorts before pkg/, so the relevant file is not the first one seen.
@@ -118,13 +127,19 @@ run_case "fuzz seed corpus" merge cmd/fdb-diff-oracle/testdata/fuzz/FuzzX/seed o
 run_case "new file in an oracle package" merge pkg/fdbgo/wire/new.go ok true "in oracle package pkg/fdbgo/wire"
 run_case "non-ASCII name in an oracle package" merge "pkg/fdbgo/wire/ä.go" ok true "in oracle package pkg/fdbgo/wire"
 run_case "oracle input moved out" merge mv:pkg/fdbgo/wire/reader.go:pkg/relational/reader.go ok true "pkg/fdbgo/wire/reader.go is an oracle input"
-run_case "FDB source pin" merge MODULE.bazel ok true "pins the toolchain or external repositories"
-run_case "module patch" merge patches/x.patch ok true "pins the toolchain or external repositories"
+run_case "root BUILD the oracle loads" merge BUILD.bazel ok true "BUILD.bazel is an oracle input"
+run_case "oracle input deleted" merge rm:pkg/fdbgo/wire/reader.go ok true "pkg/fdbgo/wire/reader.go is an oracle input"
+run_case "C++ build rule" merge cmd/fdb-schema-extract/fdb_cpp_build.bzl ok true "is an oracle input"
+run_case "FDB source pin" merge MODULE.bazel ok true "pins the toolchain, module layout"
+run_case "module patch" merge patches/x.patch ok true "pins the toolchain, module layout"
+run_case "nested module splits the oracle's" merge pkg/go.mod ok true "pins the toolchain, module layout"
+run_case "pin decided before the query" merge MODULE.bazel fail true "pins the toolchain, module layout"
 run_case "root repository rule" merge sift_repo.bzl ok true "defines a repository rule"
 run_case "this job's workflow" merge .github/workflows/ci.yml ok true "defines this job"
 run_case "PR head, not a merge" head pkg/relational/x.go ok true "not a PR merge commit"
 run_case "query fails, and says why" merge pkg/relational/x.go fail true "query exploded"
-run_case "query output unreadable" merge pkg/relational/x.go foreign true "did not return the oracle package"
+run_case "query output unreadable" merge pkg/relational/x.go foreign true "did not return oracle package cmd/fdb-diff-oracle"
+run_case "query lost the C++ edge" merge pkg/relational/x.go partial true "did not return oracle package cmd/fdb-schema-extract"
 
 if [ "$fail" -ne 0 ]; then
   echo "FAILURES"
