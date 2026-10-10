@@ -934,10 +934,13 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   admission bound, the terminal reconcile with `ClusterUnsplittableError`
   above the hard cap, the zero-primary new-child drop, and the empty merge
   core. Timing and acceptance fixtures done (2026-10-07):
-  `guardiann_peel_timing_test` (full lane) times the whole peel and its
-  worst case (all refits) at W = B, n = 1001 d = 2175 and the fixture shapes,
-  two runs with load logged: max 0.63 s against the 2.5 s margin (refit rate
-  ~2.9e-8 s per n·d, under the JVM median). `guardiann_peel_fixtures_test`
+  `guardiann_peel_timing_test` (full lane) times, in process CPU, the whole
+  peel and its worst case (every k-means iteration of every refit, each
+  round's sort, assignment and score on all n) at W = B, n = 1001 d = 2175 and
+  the fixture shapes, and at the two edges under cosine and with RaBitQ:
+  max 1.57 s (RaBitQ; Euclidean 1.21 s, cosine 1.41 s) against the 2.5 s
+  margin (2026-10-10; before, the k-means early stop hid a 2.66 s Euclidean
+  and 14 s RaBitQ worst case). `guardiann_peel_fixtures_test`
   (full lane, real FDB, HALF, no RaBitQ) splits the d = 768 n = 2000 cluster
   by a deferred drain and by an inline insert and the d = 2048 n = 1001
   cluster by a drain, every transaction in one attempt (attempt observer),

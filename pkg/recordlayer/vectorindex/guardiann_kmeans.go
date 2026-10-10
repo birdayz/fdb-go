@@ -31,18 +31,36 @@ type kMeansAdapter struct{ codec *guardiannVectorCodec }
 
 func (a kMeansAdapter) baseObjective(v gVector, c []float64) (float64, error) {
 	if !a.sequentialL2(v) {
-		d, err := a.codec.distance(v, gVector{data: c, typ: vectorcodec.TypeDouble})
-		if a.codec.config.metric != VectorMetricCosine {
-			d *= d
-		}
-		return d, err
+		return a.objectiveOf(a.codec.distance(v, gVector{data: c, typ: vectorcodec.TypeDouble}))
 	}
 	return l2SquaredSequential(v.data, c), nil
+}
+
+// objectiveOf is the objective of a distance d: its square but for cosine.
+func (a kMeansAdapter) objectiveOf(d float64, err error) (float64, error) {
+	if a.codec.config.metric != VectorMetricCosine {
+		d *= d
+	}
+	return d, err
 }
 
 // sequentialL2 is whether v's objective is l2SquaredSequential.
 func (a kMeansAdapter) sequentialL2(v gVector) bool {
 	return a.codec.config.metric != VectorMetricCosine && (a.codec.quantizer == nil || v.typ != rabitq.TypeByte)
+}
+
+// plainCosine is whether every objective is javaMetricDistance's cosine,
+// which squared norms computed once reproduce exactly.
+func (a kMeansAdapter) plainCosine() bool {
+	return a.codec.config.metric == VectorMetricCosine && a.codec.quantizer == nil
+}
+
+// cosineFromDot is javaMetricDistance's cosine from its three dot products.
+func cosineFromDot(dot, na, nb float64) float64 {
+	if na == 0 || nb == 0 {
+		return math.Inf(1)
+	}
+	return 1 - dot/(math.Sqrt(na)*math.Sqrt(nb))
 }
 
 // javaMetricDistance is MetricDefinition.distance over the scalar backend:
@@ -54,11 +72,7 @@ func javaMetricDistance(a, b []float64, metric VectorMetric) float64 {
 	case VectorMetricEuclideanSquare:
 		return l2SquaredSequential(a, b)
 	case VectorMetricCosine:
-		na, nb := dotSequential(a, a), dotSequential(b, b)
-		if na == 0 || nb == 0 {
-			return math.Inf(1)
-		}
-		return 1 - dotSequential(a, b)/(math.Sqrt(na)*math.Sqrt(nb))
+		return cosineFromDot(dotSequential(a, b), dotSequential(a, a), dotSequential(b, b))
 	}
 	return vectorDistance(a, b, metric)
 }
@@ -87,10 +101,15 @@ func l2SquaredSequential(a, b []float64) float64 {
 	return s
 }
 
-// l2SquaredSequentialPair is l2SquaredSequential of v against c0 and c1. Each
-// sum keeps its own order, so both are bit-identical to the single calls, and
-// the two independent chains overlap their add latency.
+// l2SquaredSequentialPair is l2SquaredSequential of v against c0 and c1: two
+// sums in their own order, interleaved so their add latencies overlap.
+// Not inlined: inlined, its accumulators spilled and it ran 1.8x slower.
+//
+//go:noinline
 func l2SquaredSequentialPair(v, c0, c1 []float64) (s0, s1 float64) {
+	if len(c0) < len(v) || len(c1) < len(v) {
+		panic("l2SquaredSequentialPair: centroid shorter than vector")
+	}
 	c0, c1 = c0[:len(v)], c1[:len(v)]
 	for i, x := range v {
 		d0 := x - c0[i]
@@ -109,6 +128,22 @@ func dotSequential(a, b []float64) float64 {
 	return s
 }
 
+// dotSequentialPair is dotSequential of v with c0 and c1, interleaved and kept
+// out of line as l2SquaredSequentialPair.
+//
+//go:noinline
+func dotSequentialPair(v, c0, c1 []float64) (s0, s1 float64) {
+	if len(c0) < len(v) || len(c1) < len(v) {
+		panic("dotSequentialPair: centroid shorter than vector")
+	}
+	c0, c1 = c0[:len(v)], c1[:len(v)]
+	for i, x := range v {
+		s0 += x * c0[i]
+		s1 += x * c1[i]
+	}
+	return s0, s1
+}
+
 // kMeansFit is KMeans.fit with lambda 0 (GuardiANN's call): k-means++
 // initialisation, Lloyd iterations, and the best of maxRestarts+1 runs.
 func kMeansFit(random *splittableRandom, codec *guardiannVectorCodec, vectors []gVector, k, maxIterations, maxRestarts int) (kMeansResult, error) {
@@ -116,7 +151,7 @@ func kMeansFit(random *splittableRandom, codec *guardiannVectorCodec, vectors []
 }
 
 // kMeansLloyd is kMeansFit; without stopWhenStable every restart runs all
-// maxIterations, the cost the peel's admission bounds.
+// maxIterations, the work the peel's admission bounds.
 func kMeansLloyd(random *splittableRandom, codec *guardiannVectorCodec, vectors []gVector, k, maxIterations, maxRestarts int, stopWhenStable bool) (kMeansResult, error) {
 	switch {
 	case k < 1:
@@ -164,6 +199,7 @@ func kMeansLloyd(random *splittableRandom, codec *guardiannVectorCodec, vectors 
 	for c := range next {
 		next[c] = make([]float64, dims)
 	}
+	norms := a.cosineNorms(vectors, k)
 	var best *kMeansResult
 	for r := 0; r <= maxRestarts; r++ {
 		centroids, err := initKMeansPP(a, random, vectors, k)
@@ -180,7 +216,7 @@ func kMeansLloyd(random *splittableRandom, codec *guardiannVectorCodec, vectors 
 			for c := range next {
 				clear(next[c])
 			}
-			changed, err := assignmentStep(a, vectors, centroids, assignment, projected, next, nil)
+			changed, err := assignmentStep(a, vectors, norms, centroids, assignment, projected, next, nil)
 			if err != nil {
 				return kMeansResult{}, err
 			}
@@ -213,11 +249,10 @@ func kMeansLloyd(random *splittableRandom, codec *guardiannVectorCodec, vectors 
 		}
 		projected := make([]int, k)
 		cand := kMeansResult{distances: make([]float64, n)}
-		if _, err = assignmentStep(a, vectors, centroids, assignment, projected, nil, cand.distances); err != nil {
+		if _, err = assignmentStep(a, vectors, norms, centroids, assignment, projected, nil, cand.distances); err != nil {
 			return kMeansResult{}, err
 		}
-		copy(sizes, projected)
-		cand.clusterSizes, cand.assignment = append([]int(nil), sizes...), append([]int(nil), assignment...)
+		cand.clusterSizes, cand.assignment = projected, append([]int(nil), assignment...)
 		for _, d := range cand.distances {
 			cand.objective += d
 		}
@@ -238,7 +273,13 @@ func kMeansLloyd(random *splittableRandom, codec *guardiannVectorCodec, vectors 
 	return *best, nil
 }
 
+// Not inlined, as l2SquaredSequentialPair.
+//
+//go:noinline
 func addInto(dst, v []float64) {
+	if len(v) < len(dst) {
+		panic("addInto: vector shorter than sum")
+	}
 	v = v[:len(dst)]
 	for i := range dst {
 		dst[i] += v[i]
@@ -251,18 +292,56 @@ func scale(v []float64, f float64) {
 	}
 }
 
-// assignmentStep assigns each vector to its nearest centroid. With next it also
-// sums each vector into next[c] in vector order, the update's sums read while
-// the vector is hot; with distances it records each vector's objective.
-func assignmentStep(a kMeansAdapter, vectors []gVector, centroids [][]float64, assignment, projected []int,
+// cosineNorms is the vectors' squared norms when a k = 2 cosine fit can take
+// its objectives from them, else nil.
+func (a kMeansAdapter) cosineNorms(vectors []gVector, k int) []float64 {
+	if k != 2 || !a.plainCosine() {
+		return nil
+	}
+	norms := make([]float64, len(vectors))
+	for i, v := range vectors {
+		norms[i] = dotSequential(v.data, v.data)
+	}
+	return norms
+}
+
+// assignmentStep assigns each vector to its nearest centroid, with next also
+// summing it into next[c] in vector order and with distances recording it.
+func assignmentStep(a kMeansAdapter, vectors []gVector, norms []float64, centroids [][]float64, assignment, projected []int,
 	next [][]float64, distances []float64,
 ) (int, error) {
+	var nb0, nb1 float64
+	var sc0, sc1 *rabitq.Scorer
+	switch {
+	case norms != nil:
+		nb0, nb1 = dotSequential(centroids[0], centroids[0]), dotSequential(centroids[1], centroids[1])
+	case len(centroids) == 2 && a.codec.quantizer != nil:
+		sc0, sc1 = a.codec.quantizer.NewScorer(centroids[0]), a.codec.quantizer.NewScorer(centroids[1])
+	}
 	changed := 0
 	for i, v := range vectors {
 		bestC := 0
-		var bestScore float64
-		if len(centroids) == 2 && a.sequentialL2(v) {
-			s0, s1 := l2SquaredSequentialPair(v.data, centroids[0], centroids[1])
+		var bestScore, s0, s1 float64
+		pair := true
+		switch {
+		case norms != nil:
+			d0, d1 := dotSequentialPair(v.data, centroids[0], centroids[1])
+			s0, s1 = cosineFromDot(d0, norms[i], nb0), cosineFromDot(d1, norms[i], nb1)
+		case sc0 != nil && v.typ == rabitq.TypeByte && v.code != nil:
+			d0, d1 := v.code.DotPair(centroids[0], centroids[1])
+			var err error
+			if s0, err = a.objectiveOf(a.codec.estimated(sc0.Finish(v.code, d0))); err != nil {
+				return 0, err
+			}
+			if s1, err = a.objectiveOf(a.codec.estimated(sc1.Finish(v.code, d1))); err != nil {
+				return 0, err
+			}
+		case len(centroids) == 2 && a.sequentialL2(v):
+			s0, s1 = l2SquaredSequentialPair(v.data, centroids[0], centroids[1])
+		default:
+			pair = false
+		}
+		if pair {
 			bestScore = s0
 			if s1 < s0 {
 				bestScore, bestC = s1, 1

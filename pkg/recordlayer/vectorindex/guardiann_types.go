@@ -15,6 +15,7 @@ import (
 
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/rabitq"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/vectorcodec"
 )
@@ -30,6 +31,7 @@ type gVector struct {
 	data    []float64
 	typ     byte
 	encoded []byte
+	code    *rabitq.Code // a RaBitQ vector's decoded code, so estimates skip the unpack
 }
 
 func (v gVector) encode() []byte {

@@ -20,7 +20,9 @@ import (
 // every refit, the sorts, the assignment passes and the scoring — must take at
 // most 2.5 s at the admission edges (n = 2000 at d = 980, W = B; n = 1001 at
 // d = 2175) and at the acceptance fixtures' shapes (n = 2000 at d = 768,
-// n = 1001 at d = 2048), HALF precision, default KMeans knobs.
+// n = 1001 at d = 2048), HALF precision, default KMeans knobs, Euclidean. The
+// admission ignores the metric and RaBitQ, so the two edges are also timed under
+// cosine and with RaBitQ-encoded primaries.
 //
 // Deliberate deviation from the design, which times the peel's wall clock under
 // the suite's concurrency: the budget is the process CPU the peel uses, GC
@@ -31,12 +33,13 @@ import (
 // scheduling. Wall time and the load average are logged beside the CPU.
 //
 // Two measurements per shape and seed: the peel over the tight-core-plus-50-
-// outliers generator, and its worst case, the candidate fit plus
+// outliers generator, and its worst case: the candidate fit plus
 // floor(log2(n - 1)) refits, each fit run to all its iterations (no early
-// convergence) on all n vectors and each refit's round also sorting, assigning
-// and scoring all n, which bounds every input the admission lets through. A
-// miss is a Go performance defect in the peel, fixed in Go; the bound B is
-// never raised to meet it.
+// convergence) on all n vectors, a farthest-member sort of all n in every round
+// and each refit's assignment and score of all n. That bounds every admitted
+// input but for k-means reseeds (an empty or norm-less cluster), which add an
+// objective pass each. A miss is a Go performance defect in the peel, fixed in
+// Go; the bound B is never raised to meet it.
 
 const peelTimeMargin = 2500 * time.Millisecond
 
@@ -88,24 +91,47 @@ func processCPU() time.Duration {
 }
 
 func TestGuardiannPeelPerformanceCriterion(t *testing.T) {
-	shapes := []struct{ n, d int }{
-		{2000, 980},  // W = B
-		{1001, 2175}, // the first over-max size at its largest admitted d
-		{2000, 768},  // the d = 768 acceptance fixture
-		{1001, 2048}, // the d = 2048 acceptance fixture
+	shapes := []struct {
+		n, d   int
+		metric VectorMetric
+		raBitQ bool
+	}{
+		{2000, 980, VectorMetricEuclidean, false},  // W = B
+		{1001, 2175, VectorMetricEuclidean, false}, // the first over-max size at its largest admitted d
+		{2000, 768, VectorMetricEuclidean, false},  // the d = 768 acceptance fixture
+		{1001, 2048, VectorMetricEuclidean, false}, // the d = 2048 acceptance fixture
+		{2000, 980, VectorMetricCosine, false},
+		{1001, 2175, VectorMetricCosine, false},
+		{2000, 980, VectorMetricEuclidean, true},
+		{1001, 2175, VectorMetricEuclidean, true},
 	}
 	var worst time.Duration
 	for run := 0; run < 2; run++ {
 		t.Logf("run %d: load before %s", run, loadAverage())
 		for _, s := range shapes {
 			cfg := defaultGuardiannConfig(s.d)
+			cfg.metric, cfg.useRaBitQ = s.metric, s.raBitQ
 			if !peelAdmitted(s.n, s.d, cfg.kMeansMaxIterations, cfg.kMeansMaxRestarts) {
 				t.Fatalf("shape n=%d d=%d is not admitted; the criterion times admitted shapes", s.n, s.d)
 			}
 			g := newGuardiann(subspace.FromBytes([]byte("peel-timing")), cfg, nil, nil)
+			if s.raBitQ {
+				g = g.withAccessInfo(&guardiannAccessInfoValue{rotatorSeed: 42, negatedCentroid: make([]float64, s.d)})
+			}
 			for _, seed := range []int64{1, 2} {
 				primaries := peelShape(s.n, s.d, seed)
-				current := guardiannCluster{centroid: gVector{data: make([]float64, s.d), typ: vectorcodec.TypeHalf}, refs: primaries}
+				mean := make([]float64, s.d)
+				var err error
+				for i, p := range primaries {
+					addInto(mean, p.vector.data)
+					if s.raBitQ {
+						if primaries[i].vector, err = g.codec.decode(g.codec.encode(p.vector)); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				scale(mean, 1/float64(s.n))
+				current := guardiannCluster{centroid: gVector{data: mean, typ: vectorcodec.TypeDouble}, refs: primaries}
 
 				start, startCPU := time.Now(), processCPU()
 				c12, err := g.kMeansCandidate(&clusterClassification{}, primaries, newSplittableRandomForUUID(tuple.UUID{byte(seed)}), 2)
@@ -132,19 +158,19 @@ func TestGuardiannPeelPerformanceCriterion(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if r == 0 {
-						continue
-					}
 					if _, err := g.peelFarthest(primaries, inMass, fit.centroids[1]); err != nil {
 						t.Fatal(err)
+					}
+					if r == 0 {
+						continue
 					}
 					if _, _, err := g.peelCandidate(current, c12, fit.centroids); err != nil {
 						t.Fatal(err)
 					}
 				}
 				bound, boundCPU := time.Since(start), processCPU()-startCPU
-				t.Logf("n=%d d=%d seed=%d: peel CPU %v wall %v (exit %d), worst case (%d refits) CPU %v wall %v",
-					s.n, s.d, seed, peelCPU, peel, exit, refits, boundCPU, bound)
+				t.Logf("n=%d d=%d metric=%v raBitQ=%t seed=%d: peel CPU %v wall %v (exit %d), worst case (%d refits) CPU %v wall %v",
+					s.n, s.d, s.metric, s.raBitQ, seed, peelCPU, peel, exit, refits, boundCPU, bound)
 				worst = max(worst, peelCPU, boundCPU)
 			}
 		}

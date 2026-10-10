@@ -163,8 +163,8 @@ func TestKMeansFitPreconditionsAreJavas(t *testing.T) {
 	}
 }
 
-// Running past convergence repeats the converged step, so it changes no result:
-// the peel's worst-case timing runs every iteration and still fits what the peel fits.
+// Absent a reseed, running past convergence repeats the converged step and
+// changes no result, so the peel's worst-case timing fits what the peel fits.
 func TestKMeansLloydPastConvergenceIsTheFit(t *testing.T) {
 	t.Parallel()
 	data := &splittableRandom{seed: 5, gamma: goldenGamma}

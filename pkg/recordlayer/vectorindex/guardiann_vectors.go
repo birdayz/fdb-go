@@ -89,11 +89,11 @@ func (c *guardiannVectorCodec) decode(raw []byte) (gVector, error) {
 		if !rabitq.ValidNumExBits(c.config.raBitQNumExBits) {
 			return gVector{}, &recordlayer.IllegalArgumentError{Message: "RaBitQ encodes 1 to 8 extra bits"}
 		}
-		data, err := q.Decode(raw, c.config.numDimensions)
+		data, code, err := q.DecodeCode(raw, c.config.numDimensions)
 		if err != nil {
 			return gVector{}, err
 		}
-		return gVector{data: data, typ: rabitq.TypeByte, encoded: append([]byte(nil), raw...)}, nil
+		return gVector{data: data, typ: rabitq.TypeByte, encoded: append([]byte(nil), raw...), code: code}, nil
 	}
 	v, err := decodeGVector(raw)
 	if err != nil {
@@ -111,26 +111,47 @@ func (c *guardiannVectorCodec) encode(v gVector) []byte {
 
 // RaBitDistanceEstimator estimates only when exactly one operand is encoded.
 func (c *guardiannVectorCodec) distance(a, b gVector) (float64, error) {
+	if c.quantizer == nil {
+		return javaMetricDistance(a.data, b.data, c.config.metric), nil
+	}
+	switch {
+	case a.typ != rabitq.TypeByte && b.typ == rabitq.TypeByte:
+		return c.estimated(c.estimate(a.data, b))
+	case a.typ == rabitq.TypeByte && b.typ != rabitq.TypeByte:
+		return c.estimated(c.estimate(b.data, a))
+	}
 	d := javaMetricDistance(a.data, b.data, c.config.metric)
-	if c.quantizer != nil {
-		var err error
-		switch {
-		case a.typ != rabitq.TypeByte && b.typ == rabitq.TypeByte:
-			d, err = c.quantizer.Distance(a.data, b.encoded, c.config.numDimensions)
-		case a.typ == rabitq.TypeByte && b.typ != rabitq.TypeByte:
-			d, err = c.quantizer.Distance(b.data, a.encoded, c.config.numDimensions)
-		}
-		if err == nil && (a.typ == rabitq.TypeByte) != (b.typ == rabitq.TypeByte) {
-			switch c.config.metric {
-			case VectorMetricEuclidean:
-				d = math.Sqrt(math.Max(0, d))
-			case VectorMetricEuclideanSquare:
-				d = math.Max(0, d)
-			}
-		}
-		if err != nil || math.IsNaN(d) || math.IsInf(d, 0) {
-			return 0, &recordlayer.IllegalArgumentError{Message: "distance is infinite or not a number"}
-		}
+	if math.IsNaN(d) || math.IsInf(d, 0) {
+		return 0, notFiniteDistance()
 	}
 	return d, nil
+}
+
+// estimate is the RaBitQ estimate of query's distance to the encoded v.
+func (c *guardiannVectorCodec) estimate(query []float64, v gVector) (float64, error) {
+	if v.code != nil {
+		return c.quantizer.DistanceCode(query, v.code)
+	}
+	return c.quantizer.Distance(query, v.encoded, c.config.numDimensions)
+}
+
+// estimated is the distance of a RaBitQ estimate d, which is squared for the
+// Euclidean metrics.
+func (c *guardiannVectorCodec) estimated(d float64, err error) (float64, error) {
+	if err == nil {
+		switch c.config.metric {
+		case VectorMetricEuclidean:
+			d = math.Sqrt(math.Max(0, d))
+		case VectorMetricEuclideanSquare:
+			d = math.Max(0, d)
+		}
+	}
+	if err != nil || math.IsNaN(d) || math.IsInf(d, 0) {
+		return 0, notFiniteDistance()
+	}
+	return d, nil
+}
+
+func notFiniteDistance() error {
+	return &recordlayer.IllegalArgumentError{Message: "distance is infinite or not a number"}
 }

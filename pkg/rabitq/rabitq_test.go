@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"math"
 	"math/rand"
+	"reflect"
 	"runtime"
 	"testing"
 )
@@ -941,5 +942,50 @@ func TestDotRoundsProductsBeforeAccumulation(t *testing.T) {
 	fused := math.FMA(v[1], v[1], float64(v[0]*v[0]))
 	if math.Float64bits(fused) != want+1 {
 		t.Fatalf("counterexample no longer discriminates FMA: %016x", math.Float64bits(fused))
+	}
+}
+
+// A decoded code estimates exactly as its stored bytes: DistanceCode is
+// Distance, and Finish over DotPair is Score, bit for bit.
+func TestDecodeCodeEstimatesAsItsBytes(t *testing.T) {
+	t.Parallel()
+	rng := rand.New(rand.NewSource(11))
+	for _, metric := range []Metric{MetricEuclidean, MetricCosine, MetricInnerProduct} {
+		for _, exBits := range []int{1, 2, 4, 8} {
+			q := NewQuantizer(metric, exBits)
+			for trial := 0; trial < 100; trial++ {
+				dims := 4 * (1 + rng.Intn(32))
+				vec, q0, q1 := make([]float64, dims), make([]float64, dims), make([]float64, dims)
+				for i := range vec {
+					vec[i], q0[i], q1[i] = rng.NormFloat64()*3, rng.NormFloat64()*3, rng.NormFloat64()*3
+				}
+				if trial%10 == 0 {
+					clear(q1)
+				}
+				data := q.Encode(vec)
+				wantData, werr := q.Decode(data, dims)
+				gotData, code, gerr := q.DecodeCode(data, dims)
+				if werr != nil || gerr != nil || !reflect.DeepEqual(gotData, wantData) {
+					t.Fatalf("metric %v exBits %d: DecodeCode %v, %v; Decode %v, %v", metric, exBits, gotData, gerr, wantData, werr)
+				}
+				d0, d1 := code.DotPair(q0, q1)
+				for i, pair := range []struct {
+					query []float64
+					dot   float64
+				}{{q0, d0}, {q1, d1}} {
+					want, werr := q.Distance(pair.query, data, dims)
+					got, gerr := q.DistanceCode(pair.query, code)
+					if (werr == nil) != (gerr == nil) || got != want {
+						t.Fatalf("metric %v exBits %d query %d: DistanceCode %v, %v; Distance %v, %v", metric, exBits, i, got, gerr, want, werr)
+					}
+					sc := q.NewScorer(pair.query)
+					want, werr = sc.Score(data, dims)
+					got, gerr = sc.Finish(code, pair.dot)
+					if (werr == nil) != (gerr == nil) || got != want {
+						t.Fatalf("metric %v exBits %d query %d: Finish %v, %v; Score %v, %v", metric, exBits, i, got, gerr, want, werr)
+					}
+				}
+			}
+		}
 	}
 }
