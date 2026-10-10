@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"fdb.dev/pkg/dst"
@@ -203,62 +204,79 @@ func TestDSN_DisabledPlannerRulesReachPlan(t *testing.T) {
 	}
 }
 
-// Every statement transaction, autocommit or explicit, DML or DDL, carries the
-// DSN's timeout and tags, as Java configures every connection transaction.
+// Every statement transaction, autocommit or explicit, read-only or not, DML or
+// DDL, carries the connection's timeout and tags, as Java configures every
+// connection transaction.
 func TestDSN_TransactionOptionsReachEveryTransaction(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
+		name    string
 		params  string
+		set     any // a SetOption(TRANSACTION_TIMEOUT) value, if not nil
 		timeout []int64
 	}{
-		{"transaction_timeout=2500&transaction_tags=tenant", []int64{2500}},
-		{"transaction_timeout=0&transaction_tags=tenant", []int64{0}},
-		{"transaction_timeout=-1&transaction_tags=tenant", nil},
+		{"dsn_2500", "transaction_timeout=2500", nil, []int64{2500}},
+		{"dsn_0", "transaction_timeout=0", nil, []int64{0}},
+		{"dsn_-1", "transaction_timeout=-1", nil, nil},
+		{"set_int", "", 2500, []int64{2500}},
 	} {
-		t.Run(tc.params, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			db, rec := openLimitsDB(t, tc.params)
-			db.SetMaxOpenConns(1)
+			db, rec := openLimitsDB(t, tc.params+"&transaction_tags=tenant&planner_statistics=true")
 			ctx := context.Background()
+			c, err := db.Conn(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			if tc.set != nil {
+				if err := c.Raw(func(dc any) error {
+					return dc.(*embedded.EmbeddedConnection).SetOption(api.OptTransactionTimeout, tc.set)
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// The session's first statement bootstraps the shared catalog, which
+			// Java does at engine start, outside any connection transaction.
+			if _, err := countRows(ctx, c, "SELECT id FROM u"); err != nil {
+				t.Fatal(err)
+			}
+			check := func(what string, txs []*recordedTx) {
+				t.Helper()
+				if len(txs) == 0 {
+					t.Fatalf("%s opened no transaction", what)
+				}
+				for _, tx := range txs {
+					if !slices.Equal(tx.timeouts, tc.timeout) || !slices.Equal(tx.tags, []string{"tenant"}) {
+						t.Errorf("%s: %s", what, describeTxs(txs))
+						return
+					}
+				}
+			}
 			for _, stmt := range []string{
-				"SELECT id FROM t",
+				"SELECT id FROM t WHERE a > 2",
 				"UPDATE t SET a = a + 1 WHERE id = 0",
 				"INSERT INTO t VALUES (100, 1)",
 				"CREATE SCHEMA /FRL/simdb/s2 WITH TEMPLATE tmpl",
 			} {
-				// The first run warms the metadata caches; the second must open
-				// only statement transactions.
 				for run := 0; run < 2; run++ {
-					if run == 1 {
-						stmt = strings.Replace(stmt, "100", "101", 1)
-						stmt = strings.Replace(stmt, "s2", "s3", 1)
-					}
+					stmt := strings.NewReplacer("100", fmt.Sprint(100+run), "s2", fmt.Sprintf("s%d", 2+run)).Replace(stmt)
 					txs := rec.capture(func() {
 						var err error
 						if strings.HasPrefix(stmt, "SELECT") {
-							_, err = countRows(ctx, db, stmt)
+							_, err = countRows(ctx, c, stmt)
 						} else {
-							_, err = db.ExecContext(ctx, stmt)
+							_, err = c.ExecContext(ctx, stmt)
 						}
 						if err != nil {
 							t.Fatalf("%s: %v", stmt, err)
 						}
 					})
-					if run == 0 {
-						continue
-					}
-					if len(txs) == 0 {
-						t.Fatalf("%s opened no transaction", stmt)
-					}
-					for i, tx := range txs {
-						if !slices.Equal(tx.timeouts, tc.timeout) || !slices.Equal(tx.tags, []string{"tenant"}) {
-							t.Errorf("%s: transaction %d/%d timeouts=%v tags=%v", stmt, i+1, len(txs), tx.timeouts, tx.tags)
-						}
-					}
+					check(fmt.Sprintf("%s (run %d)", stmt, run), txs)
 				}
 			}
-			txs := rec.capture(func() {
-				tx, err := db.BeginTx(ctx, nil)
+			check("explicit transaction", rec.capture(func() {
+				tx, err := c.BeginTx(ctx, nil)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -271,9 +289,9 @@ func TestDSN_TransactionOptionsReachEveryTransaction(t *testing.T) {
 				if err := tx.Commit(); err != nil {
 					t.Fatal(err)
 				}
-			})
-			if len(txs) != 1 || !slices.Equal(txs[0].timeouts, tc.timeout) || !slices.Equal(txs[0].tags, []string{"tenant"}) {
-				t.Fatalf("explicit transaction: %s", describeTxs(txs))
+			}))
+			if rec.reads.Load() == 0 {
+				t.Fatal("no read-only transaction was observed; the statistics read is unpinned")
 			}
 		})
 	}
@@ -283,8 +301,9 @@ func TestDSN_TransactionOptionsReachEveryTransaction(t *testing.T) {
 // transaction the wrapped SimFDB creates, which SimFDB itself ignores.
 type txOptionRecorder struct {
 	*simfdb.SimDB
-	mu  sync.Mutex
-	txs *[]*recordedTx
+	mu    sync.Mutex
+	txs   *[]*recordedTx
+	reads atomic.Int32 // read-only transactions created while capturing
 }
 
 type recordedTx struct {
@@ -315,13 +334,35 @@ func (r *txOptionRecorder) capture(fn func()) []*recordedTx {
 }
 
 func (r *txOptionRecorder) wrap(tx fdb.WritableTransaction) fdb.WritableTransaction {
+	return recordingTx{WritableTransaction: tx, rec: r.record(false)}
+}
+
+func (r *txOptionRecorder) record(read bool) *recordedTx {
 	rt := &recordedTx{}
 	r.mu.Lock()
 	if r.txs != nil {
 		*r.txs = append(*r.txs, rt)
+		if read {
+			r.reads.Add(1)
+		}
 	}
 	r.mu.Unlock()
-	return recordingTx{WritableTransaction: tx, rec: rt}
+	return rt
+}
+
+func (r *txOptionRecorder) ReadTransact(fn func(fdb.ReadTransaction) (any, error)) (any, error) {
+	return r.SimDB.ReadTransact(func(tx fdb.ReadTransaction) (any, error) {
+		return fn(recordingReadTx{ReadTransaction: tx, rec: r.record(true)})
+	})
+}
+
+type recordingReadTx struct {
+	fdb.ReadTransaction
+	rec *recordedTx
+}
+
+func (t recordingReadTx) Options() fdb.TransactionOptions {
+	return recordingOptions{TransactionOptions: t.ReadTransaction.Options(), rec: t.rec}
 }
 
 func (r *txOptionRecorder) Transact(fn func(fdb.WritableTransaction) (any, error)) (any, error) {

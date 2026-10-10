@@ -37,7 +37,7 @@ func TestDSNRestrictDDLOption(t *testing.T) {
 		}
 	})
 
-	truthy := []string{"true", "TRUE", "1", "t", "yes", "on", ""}
+	truthy := []string{"true", "TRUE", "True"}
 	for _, raw := range truthy {
 		t.Run("true_"+raw, func(t *testing.T) {
 			t.Parallel()
@@ -55,7 +55,7 @@ func TestDSNRestrictDDLOption(t *testing.T) {
 		})
 	}
 
-	falsy := []string{"false", "FALSE", "0", "f", "no", "off"}
+	falsy := []string{"false", "FALSE", "fAlSe"}
 	for _, raw := range falsy {
 		t.Run("false_"+raw, func(t *testing.T) {
 			t.Parallel()

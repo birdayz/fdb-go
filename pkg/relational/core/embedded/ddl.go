@@ -1227,6 +1227,8 @@ func (c *EmbeddedConnection) ensureCatalogInit(ctx context.Context) error {
 	if c.sess.CatalogReady {
 		return nil
 	}
+	// Unconfigured: this is the shared catalog's bootstrap, which Java runs at
+	// engine start rather than in any connection's transaction.
 	_, err := c.sess.DB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		txn := catalog.NewFDBTransaction(rctx)
 		// Run commits; a commit in its body is refused (RecordContextNotActiveError).

@@ -1,7 +1,7 @@
 package sqldriver_test
 
 // End-to-end proof that ?transaction_tags= drives real SQL execution: the tags
-// are applied to every transaction the connection opens (configureTransaction
+// are applied to every transaction the connection opens (transactionConfigurer
 // covers autocommit and explicit BEGIN alike), and both reads and writes still
 // work with the tags on the wire.
 //

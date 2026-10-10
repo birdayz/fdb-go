@@ -2823,7 +2823,7 @@ func (g *cascadesGenerator) fetchTableStatistics(ctx context.Context, md *record
 	}
 
 	countSubspace := ss.Sub(recordlayer.RecordCountKey)
-	result, runErr := c.sess.DB.RunRead(ctx, func(rtx fdb.ReadTransaction) (any, error) {
+	result, runErr := configuredRunner{c.sess.DB, c.Options()}.RunRead(ctx, func(rtx fdb.ReadTransaction) (any, error) {
 		counts := make(map[string]float64)
 		for name := range md.RecordTypes() {
 			rt := md.GetRecordType(name)
