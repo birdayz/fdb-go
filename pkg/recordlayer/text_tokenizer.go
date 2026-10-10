@@ -150,7 +150,7 @@ func (t *DefaultTextTokenizer) MaxVersion() int {
 //  1. Segment text into words using UAX #29 word boundaries (Java's
 //     BreakIterator.getWordInstance(Locale.ROOT) differs; docs/compatibility.md)
 //  2. NFKD normalize each segment
-//  3. Filter segments that don't contain any letter or digit
+//  3. Filter segments without a letter or digit in the Basic Multilingual Plane
 //  4. Lowercase and strip combining marks (\p{M})
 func (t *DefaultTextTokenizer) Tokenize(text string, version int, mode TokenizerMode) (TokenIterator, error) {
 	if err := ValidateTokenizerVersion(t, version); err != nil {
@@ -229,8 +229,9 @@ func hasLetterOrDigit(s string) bool {
 }
 
 // lowerWord lowercases a word as Java's toLowerCase(Locale.ROOT) does: a
-// capital sigma with a cased letter before it in the word and none after it
-// becomes final ς.
+// capital sigma with a cased letter anywhere before it in the word and none after
+// it becomes final ς. Java rechecks word boundaries inside the normalized word;
+// the rare words where that differs are pinned in the conformance suite.
 func lowerWord(s string) string {
 	if !strings.ContainsRune(s, 'Σ') {
 		return strings.ToLower(s)
@@ -258,7 +259,7 @@ func lowerWord(s string) string {
 	return b.String()
 }
 
-// isCased is Unicode's Cased property.
+// isCased is Unicode's Cased property; Java's set is narrower (U+10780 differs).
 func isCased(r rune) bool {
 	return unicode.IsUpper(r) || unicode.IsLower(r) || unicode.IsTitle(r) ||
 		unicode.In(r, unicode.Other_Lowercase, unicode.Other_Uppercase)

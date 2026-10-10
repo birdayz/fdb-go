@@ -824,6 +824,12 @@ var _ = Describe("Default TEXT tokenizer over non-Latin scripts", func() {
 			{"3a a3 3.a a.3", []string{"3a", "a3", "3", "a", "a", ".3"}, []string{"3a", "a3", "3", "a", "a", "3"}},
 			{"x𠀀 𠀀x 𐐔\u0301", []string{"x𠀀", "𠀀x"}, []string{"x", "x"}},
 			{"ΑΣ_Σ ΑΣ_ ΑΣ.Σ ΑΣ:Σ ΑΣ'", []string{"ασ_ς", "ας", "ασ.ς", "ας", "σ", "ας"}, []string{"ασ_ς", "ας_", "ασ.ς", "ασ:ς", "ας"}},
+			{"col·lecció", []string{"col", "leccio"}, []string{"col·leccio"}},
+			// NFKD changes the word around the sigma, and Java's cased set is narrower.
+			{"ĿΣ", []string{"l·σ"}, []string{"l·ς"}},
+			{"ΑΣ\u037a", []string{"ας "}, []string{"ασ "}},
+			{"ΑΣ\ufe70Β", []string{"ας β"}, []string{"ασ β"}},
+			{"\U00010780Σ", []string{"\U00010780σ"}, []string{"\U00010780ς"}},
 		}
 		texts := make([]string, len(cases))
 		for i, tc := range cases {
