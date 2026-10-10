@@ -54,9 +54,8 @@ var _ = Describe("Six-table chain planning cost", func() {
 			}
 			fmt.Fprintf(GinkgoWriter, "SIX-TABLE-COST %s tasks=%d phases=%v elapsed=%s\n",
 				pr.name, total, trace.Tasks, time.Duration(trace.Elapsed))
-			// 2% matches the Go-side task bands; the target's search is deterministic.
-			tol := pr.tasks / 50
-			Expect(total).To(BeNumerically("~", pr.tasks, tol), pr.name)
+			// Exact: three runs of each chain gave the same count.
+			Expect(total).To(Equal(pr.tasks), pr.name)
 		}
 	})
 })
