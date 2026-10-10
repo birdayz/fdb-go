@@ -255,6 +255,44 @@ func TestPlanner_Plan_MaxTasksHit(t *testing.T) {
 	}
 }
 
+// TestPlanner_BudgetBoundariesMatchJava pins CascadesPlanner's guards: the
+// total-task bound is checked before a task against tasks already run (N runs
+// N+1), 0 is unbounded, and the queue bound is checked after each task, ahead
+// of the next total-task check.
+func TestPlanner_BudgetBoundariesMatchJava(t *testing.T) {
+	t.Parallel()
+	plan := func(maxTasks, maxQueue int) (expressions.RelationalExpression, int, error) {
+		p := NewPlanner(DefaultExpressionRules(), nil)
+		p.MaxTasks, p.MaxTaskQueueSize = maxTasks, maxQueue
+		return p.Plan(expressions.InitialOf(plannerTestScan("T")))
+	}
+	_, total, err := plan(0, 0)
+	if err != nil {
+		t.Fatalf("unbounded plan: %v", err)
+	}
+	if total < 4 {
+		t.Fatalf("fixture ran %d tasks, too few to probe the boundary", total)
+	}
+	for _, bound := range []int{1, total - 2} {
+		_, tasks, err := plan(bound, 0)
+		var budget *PlannerBudgetExceededError
+		if !errors.As(err, &budget) || !errors.Is(err, ErrPlannerCapHit) {
+			t.Fatalf("MaxTasks=%d of %d: err=%v, want the task cap", bound, total, err)
+		}
+		if tasks != bound+1 || budget.Observed != bound+1 || budget.Limit != bound {
+			t.Fatalf("MaxTasks=%d: ran %d, observed %d, limit %d; want %d run and observed",
+				bound, tasks, budget.Observed, budget.Limit, bound+1)
+		}
+	}
+	if _, tasks, err := plan(total-1, 0); err != nil || tasks != total {
+		t.Fatalf("MaxTasks=%d: tasks=%d err=%v, want the full %d-task plan", total-1, tasks, err, total)
+	}
+	_, tasks, err := plan(1, 1)
+	if !errors.Is(err, ErrPlannerQueueCapHit) || tasks != 1 {
+		t.Fatalf("both bounds 1: tasks=%d err=%v, want the queue cap after the first task", tasks, err)
+	}
+}
+
 // TestPlanner_BestMember_StampedAfterPlan pins that Plan's OPTIMIZE
 // phase stamps the group winner on the root Reference,
 // accessible via BestMember(ref). A winner is stamped only when the

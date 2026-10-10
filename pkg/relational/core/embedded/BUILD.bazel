@@ -249,6 +249,7 @@ go_test(
         "plan_logging_test.go",
         "plan_stress_shapes_bench_test.go",
         "plan_visitor_where_installation_test.go",
+        "planner_budget_test.go",
         "planner_cancellation_test.go",
         "planner_error_test.go",
         "planner_options_test.go",
@@ -550,6 +551,7 @@ go_test(
         "macro_relop_test.go",
         "plan_harness_schema_cache_test.go",
         "stored_query_warm_up_logging_test.go",
+        "planner_budget_test.go",
     ],
     tags = ["resources:cpu:4"],
     deps = [

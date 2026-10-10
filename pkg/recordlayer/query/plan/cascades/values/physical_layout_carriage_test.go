@@ -1,6 +1,9 @@
 package values
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 // legBearingCarrierLayout builds a two-leg merged row — L at [0,2), R at [2,4) —
 // the shape a joined box flows.
@@ -140,5 +143,38 @@ func TestRemintThroughPhysicalTypePreservesLegs(t *testing.T) {
 	if !SemanticEqualsUnderAliasMap(throughPublic, throughPhysical, EmptyAliasMap()) ||
 		SemanticHashCode(throughPublic) != SemanticHashCode(throughPhysical) {
 		t.Error("carrying layout changed QOV semantic identity; it must not")
+	}
+}
+
+// TestNewPhysicalCarrierQOVMatchesRemint pins the rebinding fast path to the
+// thaw-and-snapshot re-mint it replaces, legs included, and the zero-alias guard.
+func TestNewPhysicalCarrierQOVMatchesRemint(t *testing.T) {
+	t.Parallel()
+
+	layout, _ := legBearingCarrierLayout(t)
+	merged := NamedCorrelationIdentifier("M")
+	want, err := NewQuantifiedObjectValue(merged, PhysicalCarrierType(layout))
+	if err != nil {
+		t.Fatalf("re-mint: %v", err)
+	}
+	got, err := NewPhysicalCarrierQOV(merged, layout)
+	if err != nil {
+		t.Fatalf("rebind: %v", err)
+	}
+	w, g := want.(*quantifiedObjectValue), got.(*quantifiedObjectValue)
+	if g.correlation != merged || g.flowed != w.flowed {
+		t.Fatalf("rebind = %s over %p, want %s over the interned %p", g.correlation.Name(), g.flowed, merged.Name(), w.flowed)
+	}
+	if !reflect.DeepEqual(g.sourceLayout, w.sourceLayout) || g.sourceLayout == nil || len(g.sourceLayout.legs) != 2 {
+		t.Fatalf("rebind layout %+v, want the re-mint's %+v", g.sourceLayout, w.sourceLayout)
+	}
+	if !SemanticEqualsUnderAliasMap(got, want, EmptyAliasMap()) {
+		t.Fatal("rebind and re-mint are not semantically equal")
+	}
+	if _, err := NewPhysicalCarrierQOV(CorrelationIdentifier{}, layout); err == nil {
+		t.Fatal("rebind accepted a zero correlation the re-mint rejects")
+	}
+	if _, err := NewPhysicalCarrierQOV(merged, nil); err == nil {
+		t.Fatal("rebind of a nil layout must fail as the re-mint does")
 	}
 }

@@ -22,7 +22,12 @@ import (
 // resolved plannerOptions), returning the winning physical plan and the task
 // count. It exists so the option plumbing can be exercised without a live
 // store: everything from plannerOptionsFrom onward is the production code.
-func planWithOptions(t *testing.T, sql, schemaDDL string, opts *api.Options) (plans.RecordQueryPlan, int, error) {
+func planWithOptions(t testing.TB, sql, schemaDDL string, opts *api.Options) (plans.RecordQueryPlan, int, error) {
+	t.Helper()
+	return planWithOptionsContext(context.Background(), t, sql, schemaDDL, opts)
+}
+
+func planWithOptionsContext(ctx context.Context, t testing.TB, sql, schemaDDL string, opts *api.Options) (plans.RecordQueryPlan, int, error) {
 	t.Helper()
 	tmpl, err := buildSchemaTemplateFromDDL(schemaDDL)
 	if err != nil {
@@ -48,7 +53,7 @@ func planWithOptions(t *testing.T, sql, schemaDDL string, opts *api.Options) (pl
 	}
 
 	planner := newCascadesPlanner(md, plannerOptionsFrom(opts), cascades.BatchAExpressionRules(), nil)
-	best, tasks, planErr := planner.PlanWithContext(context.Background(), ref)
+	best, tasks, planErr := planner.PlanWithContext(ctx, ref)
 	if planErr != nil {
 		return nil, tasks, planErr
 	}
@@ -112,9 +117,8 @@ CREATE TABLE S4 (id BIGINT, hid BIGINT, PRIMARY KEY (id))
 CREATE TABLE S5 (id BIGINT, hid BIGINT, PRIMARY KEY (id))
 CREATE TABLE S6 (id BIGINT, hid BIGINT, PRIMARY KEY (id))`
 
-// sixSpokeStarSQL is the hub+6 all-live star, the narrowest all-live star that
-// exhausts the embedded planner task budget at default settings (hub+5
-// converges in ~130k of 150k tasks).
+// sixSpokeStarSQL is the hub+6 all-live star, which exhausts the embedded
+// planner task budget at default settings.
 const sixSpokeStarSQL = "SELECT H.id, S1.id, S2.id, S3.id, S4.id, S5.id, S6.id " +
 	"FROM H, S1, S2, S3, S4, S5, S6 " +
 	"WHERE H.id = S1.hid AND H.id = S2.hid AND H.id = S3.hid AND H.id = S4.hid AND H.id = S5.hid AND H.id = S6.hid"

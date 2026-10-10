@@ -103,11 +103,10 @@ type Planner struct {
 	// full constraint and ordering information available.
 	planningExpressionRules []ExpressionRule
 
-	// MaxTasks caps the total tasks executed before the planner
-	// gives up: PlanWithContext returns nil and ErrPlannerCapHit (no
-	// partial result — matching Java's throw). Defaults to 100_000. Hitting
-	// the cap is a strong signal of a non-terminating rule — callers
-	// should report.
+	// MaxTasks is Java's RecordQueryPlannerConfiguration.maxTotalTaskCount:
+	// once more than MaxTasks tasks have run, PlanWithContext returns nil and
+	// ErrPlannerCapHit (no partial result — matching Java's throw); 0 disables.
+	// Defaults to 100_000, where Java defaults to unbounded.
 	MaxTasks int
 
 	// MaxTaskQueueSize caps the task stack's depth; 0 disables (Java
@@ -493,11 +492,10 @@ func (p *Planner) plan(ctx context.Context, rootRef *expressions.Reference) (exp
 		if err := plannerContextErr(ctx); err != nil {
 			return nil, p.tasksRun, err
 		}
-		if p.tasksRun >= p.MaxTasks {
+		// Java's isTaskTotalCountExceeded: checked before a task starts, against
+		// the tasks already started, so a bound of N runs N+1 tasks before it trips.
+		if p.MaxTasks > 0 && p.tasksRun > p.MaxTasks {
 			return nil, p.tasksRun, newTaskCapError(p.MaxTasks, p.tasksRun)
-		}
-		if p.MaxTaskQueueSize > 0 && len(p.stack) > p.MaxTaskQueueSize {
-			return nil, p.tasksRun, newQueueCapError(p.MaxTaskQueueSize, len(p.stack))
 		}
 		task := p.pop()
 		if p.taskObserver != nil {
@@ -523,6 +521,10 @@ func (p *Planner) plan(ctx context.Context, rootRef *expressions.Reference) (exp
 		}
 		if p.capErr != nil {
 			return nil, p.tasksRun, p.capErr
+		}
+		// Java's isTaskQueueSizeExceeded runs after each executed task.
+		if p.MaxTaskQueueSize > 0 && len(p.stack) > p.MaxTaskQueueSize {
+			return nil, p.tasksRun, newQueueCapError(p.MaxTaskQueueSize, len(p.stack))
 		}
 		if err := plannerContextErr(ctx); err != nil {
 			return nil, p.tasksRun, err
