@@ -201,6 +201,61 @@ var _ = Describe("Go-only collation guard", func() {
 		})
 	}
 
+	for _, format := range []int32{4, 14} {
+		It(fmt.Sprintf("preflights the replaced type's collated indexes at format %d", format), func() {
+			index := NewIndex("collated_names", FunctionExpr(CollateFuncJRE, Field("name")))
+			md := build(func(b *RecordMetaDataBuilder) {
+				b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+				b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+				b.AddIndex("Customer", index)
+				b.SetRecordCountKey(EmptyKey())
+			})
+			_, err := sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().SetContext(rc).SetMetaDataProvider(md).SetSubspace(specSubspace()).
+					SetFormatVersion(format).SetGoOnlyCollation(true).Create()
+				Expect(err).NotTo(HaveOccurred())
+				_, err = store.SaveRecord(customer(1))
+				Expect(err).NotTo(HaveOccurred())
+				store, err = store.AsBuilder().SetGoOnlyCollation(false).Build()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(store.ensureStoreStateLoadedErr()).To(Succeed())
+				before := contents(store)
+				replacement := &gen.Order{OrderId: proto.Int64(1)}
+				_, err = store.SaveRecord(replacement)
+				Expect(guard(err, CollateFuncJRE).IndexName).To(Equal(index.Name))
+				Expect(contents(store)).To(Equal(before))
+				_, err = store.SaveRecordBatch([]proto.Message{&gen.Order{OrderId: proto.Int64(99)}, replacement})
+				guard(err, CollateFuncJRE)
+				Expect(contents(store)).To(Equal(before), "the old type's index must be checked before even the first batch write")
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	}
+
+	It("preflights collated universal indexes for writes of every record type", func() {
+		index := NewIndex("all_records", FunctionExpr(CollateFuncICU, LiteralExpr("a")))
+		md := build(func(b *RecordMetaDataBuilder) { b.AddUniversalIndex(index) })
+		var pk tuple.Tuple
+		Expect(run(md, true, func(store *FDBRecordStore) error {
+			record, err := store.SaveRecord(customer(1))
+			Expect(err).NotTo(HaveOccurred())
+			pk = record.PrimaryKey
+			return nil
+		})).To(Succeed())
+		Expect(run(md, false, func(store *FDBRecordStore) error {
+			before := contents(store)
+			_, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(2)})
+			Expect(guard(err, CollateFuncICU).IndexName).To(Equal(index.Name))
+			_, err = store.SaveRecordBatch([]proto.Message{customer(3)})
+			guard(err, CollateFuncICU)
+			_, err = store.DeleteRecord(pk)
+			guard(err, CollateFuncICU)
+			Expect(contents(store)).To(Equal(before))
+			return nil
+		})).To(Succeed())
+	})
+
 	for _, source := range []bool{false, true} {
 		It(fmt.Sprintf("refuses an online rebuild before its clearing transaction commits (source %v)", source), func() {
 			index := NewIndex("collated_names", FunctionExpr(CollateFuncJRE, Field("name")))
