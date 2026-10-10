@@ -77,9 +77,10 @@ import (
 //     full type name + uvarint-length-prefixed proto.Marshal bytes. Decode is
 //     TWO-PHASE: readContValue returns a pendingProtoRowValue placeholder,
 //     which the continuation decode path resolves (resolvePendingProtoValues)
-//     BY THE ENCODED REPRESENTATION — flag 0 rebuilds via
-//     protoregistry.GlobalTypes as the generated type; flag 1 rebuilds via the
-//     store's metadata descriptors + dynamicpb. NEVER across representations:
+//     BY THE ENCODED REPRESENTATION — flag 0 rebuilds the store metadata's
+//     descriptor as the compiled type whose descriptor it is (dynamicpb when
+//     none is); flag 1 rebuilds via the store's metadata descriptors +
+//     dynamicpb. NEVER across representations:
 //     fresh rows materialize as the schema's representation (a dynamic record
 //     schema importing a compiled message type still materializes
 //     *dynamicpb.Message rows even though the name IS registered), and the
@@ -202,8 +203,7 @@ func appendContValue(buf []byte, v any) ([]byte, error) {
 // identity). The full name ALONE cannot pick the representation: a dynamic
 // record schema importing a compiled message type materializes dynamicpb rows
 // even though the name IS registered in protoregistry.GlobalTypes. The name is
-// the decode-side lookup key — flag 0 in protoregistry.GlobalTypes, flag 1 in
-// the store's metadata descriptors.
+// the decode-side lookup key into the store's metadata descriptors.
 func appendContProtoMessage(buf []byte, msg proto.Message) ([]byte, error) {
 	fullName := string(msg.ProtoReflect().Descriptor().FullName())
 	// Deterministic marshal: the flag byte below exists precisely because msg can be a
@@ -451,9 +451,11 @@ type protoDescriptorResolver func(fullName string) (protoreflect.MessageDescript
 // resolvePendingProtoValues walks a decoded row value RECURSIVELY (lists may
 // contain messages — struct arrays) and replaces every pendingProtoRowValue
 // with the real message, rebuilt as its ENCODED representation:
-//   - flag 0 (generated): protoregistry.GlobalTypes — the value was a generated
-//     Go message (e.g. *gen.Flower) when encoded, so it rebuilds as that
-//     generated type. A name the registry does not carry is a LOUD error.
+//   - flag 0 (generated): the resolver's metadata descriptor, as the compiled
+//     Go type whose descriptor it is (recordlayer.GeneratedMessageType), the
+//     type a fresh record of that metadata holds; dynamicpb over it when the
+//     compiled message only shares its name. A nil resolver or an
+//     unresolvable name is a LOUD error.
 //   - flag 1 (dynamic): the resolver's metadata descriptor +
 //     dynamicpb.NewMessage — the value was a *dynamicpb.Message when encoded (a
 //     dynamic, metadata-built schema — INCLUDING one that imports a compiled
@@ -465,8 +467,9 @@ type protoDescriptorResolver func(fullName string) (protoreflect.MessageDescript
 // slots, so a restored slot whose concrete Go type differs from a freshly-
 // materialized row's would never key-match it — equal rows straddling a
 // checkpoint would split into duplicate groups / duplicate DISTINCT rows
-// (wrong results, no error). Falling back registry→resolver (or the reverse)
-// recreates exactly that split from the other side. A payload that does not
+// (wrong results, no error). So a flag-1 slot is never rebuilt as a compiled
+// type, and a flag-0 slot is dynamicpb only when the metadata's descriptor is
+// not compiled, the one form its fresh rows take. A payload that does not
 // unmarshal is a LOUD error too — never a silent nil slot. The list walk
 // shares readContValue's nesting budget (defense in depth: the cap must not
 // depend on the caller having decoded through readContValue).
@@ -480,14 +483,23 @@ func resolvePendingProtoValuesDepth(v any, resolve protoDescriptorResolver, dept
 	switch t := v.(type) {
 	case pendingProtoRowValue:
 		if !t.Dynamic {
-			// Flag 0: the encoder saw a generated message, so ONLY the registry
-			// may rebuild it. A metadata + dynamicpb rebuild would change the
-			// concrete Go type and split %T-keyed group/dedup identity.
-			mt := recordlayer.FindRegisteredMessageType(protoreflect.FullName(t.TypeName))
-			if mt == nil {
-				return nil, fmt.Errorf("continuation: proto message type %q was encoded from a generated message but is not registered in this binary — cannot rebuild it", t.TypeName)
+			// Flag 0: the encoder saw a generated message. Java parses it with
+			// the metadata's descriptor; it is the compiled type only when that
+			// descriptor is the compiled one, as Build decodes fresh records.
+			if resolve == nil {
+				return nil, fmt.Errorf("continuation: value carries a generated proto message of type %q but no descriptor resolver is available — cannot rebuild it", t.TypeName)
 			}
-			msg := mt.New().Interface()
+			desc, err := resolve(t.TypeName)
+			if err != nil {
+				return nil, fmt.Errorf("continuation: cannot resolve descriptor for proto message type %q: %w", t.TypeName, err)
+			}
+			if desc == nil {
+				return nil, fmt.Errorf("continuation: descriptor resolver returned no descriptor for proto message type %q", t.TypeName)
+			}
+			var msg proto.Message = dynamicpb.NewMessage(desc)
+			if mt := recordlayer.GeneratedMessageType(desc); mt != nil {
+				msg = mt.New().Interface()
+			}
 			// Read as the row it was buffered from read: a record's value, as
 			// protobuf-java parses a record (proto_closed_enums.go), so a closed
 			// enum's undeclared number the row held as unknown stays unknown.
@@ -639,9 +651,8 @@ func buildMetadataMessageIndex(md *recordlayer.RecordMetaData, computedFiles ...
 			addFile(imports.Get(i).FileDescriptor)
 		}
 	}
-	for _, file := range computedFiles {
-		addFile(file)
-	}
+	// The metadata's files first: an equivalent computed copy of a message then
+	// resolves to the metadata's descriptor, the one a compiled type has.
 	if md != nil {
 		for _, rt := range md.RecordTypes() {
 			if rt.Descriptor != nil {
@@ -651,6 +662,9 @@ func buildMetadataMessageIndex(md *recordlayer.RecordMetaData, computedFiles ...
 		if ud := md.GetUnionDescriptor(); ud != nil {
 			addFile(ud.ParentFile())
 		}
+	}
+	for _, file := range computedFiles {
+		addFile(file)
 	}
 	return index, conflict
 }
@@ -1210,11 +1224,10 @@ func encodeSortContinuation(
 
 // decodeSortContinuation deserializes the MemorySortContinuation proto.
 // Buffered STRUCT column slots (contValProtoMsg placeholders, see
-// pendingProtoRowValue) rebuild as their ENCODED representation — flag 0
-// (generated) via protoregistry.GlobalTypes, flag 1 (*dynamicpb.Message) via
-// resolve (metadata descriptors + dynamicpb). A nil resolve is valid ONLY for
-// buffers with no dynamic (flag-1) struct slots — a dynamic placeholder with
-// no resolver fails the resume loudly, never silently.
+// pendingProtoRowValue) rebuild as their ENCODED representation over resolve's
+// metadata descriptors (resolvePendingProtoValues). A nil resolve is valid ONLY
+// for buffers with no struct slots — a placeholder with no resolver fails the
+// resume loudly, never silently.
 //
 // innerExhausted reports the emit-phase marker (sortInnerExhaustedMarker in
 // minimum_key): true means the inner was exhausted when the continuation was

@@ -5680,10 +5680,10 @@ func executeInMemorySort(
 	if continuation != nil {
 		// Buffered STRUCT column slots rebuild as their ENCODED representation
 		// (concrete-type identity with fresh rows, which the %T-keyed
-		// group/dedup paths depend on): a generated message (flag 0) restores
-		// via protoregistry.GlobalTypes; a *dynamicpb.Message (flag 1) restores
-		// via the selected plan's computed descriptors or stored metadata —
-		// never across representations. An unknown descriptor fails loudly
+		// group/dedup paths depend on), over the stored metadata's or the
+		// selected plan's descriptors: a generated message (flag 0) as the
+		// compiled type whose descriptor that is, a *dynamicpb.Message (flag 1)
+		// as dynamicpb — never across representations. An unknown descriptor fails loudly
 		// rather than leaking a descriptor-less placeholder into the row domain.
 		var md *recordlayer.RecordMetaData
 		if store != nil {

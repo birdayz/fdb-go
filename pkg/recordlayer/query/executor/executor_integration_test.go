@@ -683,7 +683,7 @@ func TestIntegration_SortContinuation_ArrayStructStraddle_F53(t *testing.T) {
 					}
 					// Rows carry *gen.Flower on BOTH sides of a checkpoint: the
 					// restore rebuilds the ENCODED representation (a generated
-					// row encodes flag 0 → protoregistry), so the resumed slot
+					// row encodes flag 0 → the metadata's compiled type), so the resumed slot
 					// keeps the generated concrete type. That identity is
 					// load-bearing — the %T-keyed group/dedup paths
 					// (computeGroupKey, packedDedupKey) would otherwise never
