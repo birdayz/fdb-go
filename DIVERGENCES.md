@@ -6,18 +6,20 @@ fully ported: ~65 PlanningRuleSet rule instances, 5/5 RewritingRuleSet rules,
 candidate types, 24/24 comparison operators, 9/9 predicates. Remaining items
 are execution-layer, wire-format, or intentional architectural choices.
 
-Validated against a live Java **4.12.11** conformance run (the cross-engine corpus runs against
-live 4.12 in `just test-full` and PR CI with a stale-annotation guard, and the suite is green).
+Validated against a live Java **4.14.2.0** conformance run (the cross-engine corpus runs against
+live 4.14.2.0 in `just test-full` and PR CI's `conformance-java` job with a stale-annotation guard,
+and the suite is green). Entries below that say "measured on 4.12.11" record the previous pin;
+not every one has been re-measured on 4.14.2.0.
 
 ## Intentional Architectural Decisions (no functional difference)
 
 ### Default format version for a NEW store: Go writes 14, Java writes 7 (DECIDED — keep 14)
 
 Java's default is **`CACHEABLE_STATE` (7)** — `FormatVersion.getDefaultFormatVersion()`
-(`FormatVersion.java:215-217`), which `FDBRecordStore.Builder` seeds itself with
-(`FDBRecordStore.java:5437`). Go's default is `formatVersionDefault = 14`, which is
-`FULL_STORE_LOCK(14)` (`FormatVersion.java:173`) — the same value as Java's
-`MAX_SUPPORTED_VERSION` (`:182`). So a new store created by Go declares a **newer
+(`FormatVersion.java:221-223`, 4.14.2.0), which `FDBRecordStore.Builder` seeds itself with
+(`FDBRecordStore.java:5670`). Go's default is `formatVersionDefault = 14`, which is
+`FULL_STORE_LOCK(14)` (`FormatVersion.java:173`) — one below Java's
+`MAX_SUPPORTED_VERSION`, `WRITE_ONLY_WITH_QUEUE(15)` (`:188`). So a new store created by Go declares a **newer
 on-disk format than a new store created by Java**, and Go also upgrades any store it
 opens to that version.
 
@@ -25,11 +27,11 @@ opens to that version.
 question was carried to the Java source and the answer settles it.
 
 **What Java actually does, read rather than assumed.** `validateFormatVersion`
-(`FormatVersion.java:224-231`) throws `UnsupportedFormatVersionException` only when the
+(`FormatVersion.java:231-237`) throws `UnsupportedFormatVersionException` only when the
 candidate is `< getMinimumVersion()` **or** `> getMaximumSupportedVersion()`. At
-4.12.11 `MAX_SUPPORTED_VERSION` is computed as the maximum enum value (`:182`) and
-that value **is** `FULL_STORE_LOCK(14)`. So 14 ≤ 14 and the check passes. Then
-`checkPossiblyRebuild` (`FDBRecordStore.java:4627-4630`):
+4.14.2.0 `MAX_SUPPORTED_VERSION` is computed as the maximum enum value (`:188`) and
+that value is `WRITE_ONLY_WITH_QUEUE(15)` (it was `FULL_STORE_LOCK(14)` at 4.12.11). So
+14 ≤ 15 and the check passes. Then `checkPossiblyRebuild` (`FDBRecordStore.java:4844-4847`):
 
 ```java
 final int oldFormatVersion = info.getFormatVersion();
@@ -59,12 +61,13 @@ the remaining work was "a decision about the DEFAULT, not a missing capability."
 was wrong. `formatVersionCurrent` served **both** of the roles Java keeps apart —
 the validation ceiling (`store_builder.go:185`, `:1338`, rejecting `stored > current`)
 and the creation/upgrade target (`:199`, `:1005`, `:1200`) — where Java separates
-`getMaximumSupportedVersion()` (`:203`) from `getDefaultFormatVersion()` (`:215-217`).
+`getMaximumSupportedVersion()` (`:209`) from `getDefaultFormatVersion()` (`:221-223`).
 Fused, **lowering the default would have lowered the ceiling with it, and every store
 Go had already created at 14 would have been rejected on open** with
 `UnsupportedFormatVersionError`. "Just change the default" was a change that could not
 be made safely at all. Now split into `formatVersionMaxSupported` and
-`formatVersionDefault` (both 14, zero behaviour change), so the default is a free
+`formatVersionDefault` (both 14 at the split; the ceiling is now 15 to match Java
+4.14.2.0 while the default stays 14), so the default is a free
 decision and the existing-store path is safe by construction: the ceiling does not move
 when the default does. Pinned by `format_version_split_test.go`, including the case the
 fusion made inexpressible — a store pinned BELOW its own header still opens, because
@@ -74,7 +77,7 @@ validation consults the ceiling and never the target.
 default 14 opening an existing **Java** store at 7 upgrades it to 14 and writes that,
 permanently narrowing the set of readers that store can be opened by. Java at its
 conservative default never does this to someone else's store. It is harmless at the
-pinned spec — Java 4.12.11 reads 14 — and it is the strongest argument that exists
+pinned spec — Java 4.14.2.0 reads up to 15 — and it is the strongest argument that exists
 for lowering the default.
 
 It flips the decision if any of these becomes true:
@@ -901,8 +904,8 @@ These affect runtime behavior and wire compatibility, NOT plan selection.
 
 | Gap | Category | Blocked on |
 |---|---|---|
-| Plan proto serialization (Go plans not serialized to proto) | Wire format | Plan serialization infrastructure |
-| Value type proto serialization | Wire format | Value serialization infrastructure |
+| Plan proto serialization: no Go code builds or reads `PRecordQueryPlan` | Wire format | Plan serialization infrastructure |
+| Value proto serialization is partial: `SerializationContext.ValueToProto`/`ValueFromProto` (`cascades/values/plan_serialization.go`, used for macro-function metadata) cover 18 of the 55 `PValue` variants in `record_query_plan.proto`; the rest return "unsupported" | Wire format | Porting the remaining `PValue` variants |
 | Comparison subclass types: `OpaqueEqualityComparison`, `MultiColumnComparison`, `InvertedFunctionComparison` | Index-specific | Niche index types not in core planner |
 
 ### Vector scan multi-partition fan-out — CLOSED (RFC-046, was TODO 9.5)
@@ -955,7 +958,7 @@ with 0AF00. An EXISTS in HAVING is 42803 in both (`CorrelatedHavingExistsJavaPro
 of an outer join. An INNER join after the unnest, and a LEFT JOIN before it, answer as Java
 (`CommaJoinJavaProbe`). TODO.md "An unnest leg before an outer join".
 
-## Go-Only Extensions (features Java 4.12.11 rejects)
+## Go-Only Extensions (classified against Java 4.12.11; not yet re-verified on 4.14.2.0)
 
 Go supports these SQL features that Java rejects. Removing them would be a user-visible regression; they stay as Go extensions.
 

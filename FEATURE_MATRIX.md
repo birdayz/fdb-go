@@ -244,7 +244,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 |---|--:|--:|--:|--:|---|
 | `cte` | 41 | 30 | 0 | 11 | WITH ... |
 | `cte_aggregate` | 4 | 4 | 0 | 0 | CTE materialization + GROUP BY aggregation. |
-| `cte_defining_environment` | 20 | 20 | 0 | 0 | Java 4.12.11.0 QueryVisitor.visitCtes publishes definitions in declaration |
+| `cte_defining_environment` | 20 | 20 | 0 | 0 | Java 4.14.2.0 QueryVisitor.visitCtes publishes definitions in declaration |
 | `cte_error_codes` | 6 | 2 | 0 | 4 | Java's cte.yamsql error tests: CTE-specific validation errors. |
 | `cte_java_patterns` | 8 | 6 | 0 | 2 | CTE patterns from Java's cte.yamsql. |
 | `cte_multi_reference` | 2 | 2 | 0 | 0 | CTE referenced multiple times |

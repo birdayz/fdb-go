@@ -3,10 +3,10 @@
 package conformance_test
 
 // ANSI Java?-fact verification (RFC-165 follow-up). The roster's `Java?` column
-// in ansi_roster.go is HAND-AUTHORED (a fact about the frozen fdb-relational
-// 4.12.11.0 reference). This lane proves it isn't a stale assertion by running
-// each ANSI-tagged query against the LIVE Java conformance server and checking
-// Java's real supported/rejected behaviour against the roster fact.
+// in ansi_roster.go is HAND-AUTHORED (pinned against fdb-relational 4.12.11.0;
+// the live server is the current 4.14.2.0 target). This lane proves it isn't a
+// stale assertion by running each ANSI-tagged query against the LIVE Java
+// conformance server and checking Java's real supported/rejected behaviour against the roster fact.
 //
 // The NULLIF episode is why this exists: the `*_java.yaml` testdata files falsely
 // implied Java supports NULLIF, while the real server rejects it. A hand-authored

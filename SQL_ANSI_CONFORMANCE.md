@@ -7,8 +7,10 @@
      on the yamsql corpus. Drift guards: TestAnsiLedgerUpToDate + TestAnsiLedgerEvidenceExists. -->
 
 Ledger A of RFC-165 — the ANSI-standard scorecard, modeled on PostgreSQL Appendix D.
-The `Java?`/`Core?`/`Identifier`/`Name` columns are pinned facts (SQL:2023 Core; the
-frozen fdb-relational 4.12.11.0 reference). **`Go?` and completeness are derived** by
+The `Java?`/`Core?`/`Identifier`/`Name` columns are pinned facts (SQL:2023 Core; `Java?`
+was pinned against fdb-relational 4.12.11.0 and is not yet re-verified on the 4.14.2.0 target,
+whose Java conformance lane only checks that ANSI-tagged `Java?` = no rows are still rejected).
+**`Go?` and completeness are derived** by
 walking `ansi:`-tagged corpus scenarios — a claim of support traces to a named,
 passing case, never a hand-typed status. For the measured corpus number see `SQL_COVERAGE.md`.
 
