@@ -38,5 +38,7 @@ func VectorEngineOf(index *recordlayer.Index) (VectorEngineKind, error) {
 	case "GUARDIANN":
 		return VectorEngineGuardiann, nil
 	}
-	return VectorEngineHNSW, &recordlayer.MetaDataError{Message: "unknown vector index engine: " + v}
+	// Java logs the value as a log key; its message is the text alone
+	// (VectorIndexEngineKind.java:57).
+	return VectorEngineHNSW, &recordlayer.MetaDataError{Message: "unknown vector index engine"}
 }

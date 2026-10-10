@@ -19,7 +19,8 @@ import (
 // refuses an option given under both its name and its alias (a MetaDataError,
 // VectorIndexOptionsHelper.validateNoAliasConflicts) and then parses the HNSW
 // configuration as HnswVectorIndexEngine.parseConfig does, Config's checks
-// included (readHNSWOptions, without Go's forms); any IllegalArgumentException
+// included (readHNSWOptions, Go's dimension default kept for a plain HNSW
+// index only); any IllegalArgumentException
 // of the parse, a NumberFormatException included, is rethrown as
 // MetaDataException("incorrect index options", cause), and a missing dimension
 // count is the parse's own MetaDataException. So the windowed index Go builds is
@@ -37,7 +38,7 @@ func validateVectorIndexOptionsAtBuild(idx *recordlayer.Index) error {
 	if engine == VectorEngineGuardiann {
 		_, err = parseGuardiannConfig(idx)
 	} else {
-		_, err = readHNSWOptions(idx, false)
+		_, err = readHNSWOptions(idx, !idx.HasRowNumberWindowPredicate())
 	}
 	if err != nil {
 		var iae *recordlayer.IllegalArgumentError

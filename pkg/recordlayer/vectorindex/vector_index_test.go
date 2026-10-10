@@ -2382,30 +2382,47 @@ var _ = Describe("VectorIndex Store Integration", func() {
 		return builder
 	}
 
-	It("rejects an invalid HNSW config when the index is used (validation wired into maintainer)", func() {
-		ks := specSubspace()
-		// m=20 > default mMax=16 — a config Java's Config constructor rejects. The store
-		// must surface the error when it constructs the vector index maintainer, not
-		// silently build a bad graph. Revert-proof: drop Config's checks from
-		// readHNSWOptions and the save succeeds.
+	It("refuses an invalid HNSW config at build, as Java's VectorIndexValidator does", func() {
+		// m=20 > default mMax=16, which Java's Config constructor refuses.
 		vecIdx := recordlayer.NewVectorIndex("vec_price_qty", recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 2)
 		vecIdx.Options[recordlayer.IndexOptionHNSWM] = "20"
 		builder := baseMetaData()
 		builder.AddIndex("Order", vecIdx)
-		md, err := builder.Build()
-		Expect(err).NotTo(HaveOccurred())
+		_, err := builder.Build()
+		Expect(err).To(MatchError("incorrect index options"))
+		var iae *recordlayer.IllegalArgumentError
+		Expect(errors.As(err, &iae)).To(BeTrue(), "%v", err)
+		Expect(iae.Message).To(Equal("m must be less than or equal to mMax"))
+	})
 
-		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
-			store, serr := recordlayer.NewStoreBuilder().
-				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
-			if serr != nil {
-				return nil, serr // validation may fire at store open (maintainer construction)
-			}
-			_, serr = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(10)})
-			return nil, serr
-		})
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("m must be less than or equal to mMax"))
+	It("refuses a metric Java's Metric.valueOf does not name at build", func() {
+		for _, metric := range []string{"COSIGN_METRIC", "cosine", "inner_product", "euclidean"} {
+			vecIdx := recordlayer.NewVectorIndex("vec_price_qty",
+				recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 2)
+			vecIdx.Options[recordlayer.IndexOptionVectorMetric] = metric
+			builder := baseMetaData()
+			builder.AddIndex("Order", vecIdx)
+			_, err := builder.Build()
+			Expect(err).To(MatchError("incorrect index options"), metric)
+			var iae *recordlayer.IllegalArgumentError
+			Expect(errors.As(err, &iae)).To(BeTrue(), "%s: %v", metric, err)
+			Expect(iae.Message).To(Equal("No enum constant com.apple.foundationdb.linear.Metric." + metric))
+			_, err = VectorIndexMetric(vecIdx)
+			Expect(errors.As(err, &iae)).To(BeTrue(), "the planner's metric reader refuses it too: %v", err)
+		}
+	})
+
+	It("refuses an option given under its name and its alias at build", func() {
+		vecIdx := recordlayer.NewVectorIndex("vec_price_qty",
+			recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 2)
+		vecIdx.Options[recordlayer.IndexOptionVectorMetric] = "COSINE_METRIC"
+		vecIdx.Options["vectorMetric"] = "COSINE_METRIC"
+		builder := baseMetaData()
+		builder.AddIndex("Order", vecIdx)
+		_, err := builder.Build()
+		var mde *recordlayer.MetaDataError
+		Expect(errors.As(err, &mde)).To(BeTrue(), "%v", err)
+		Expect(mde.Message).To(Equal("vector index option specified under more than one name"))
 	})
 
 	It("save records with int fields, SearchVectorIndex returns nearest", func() {
