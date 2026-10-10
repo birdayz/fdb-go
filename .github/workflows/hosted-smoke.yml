@@ -87,5 +87,9 @@ jobs:
       - name: go build
         run: go build ${{ steps.pkgs.outputs.pkgs }}
 
+      # A fresh clone must build with only the Go toolchain: no Bazel, no fdb_c.h.
+      - name: go build ./... (fresh clone)
+        run: go build ./...
+
       - name: go test (wire / tuple / subspace — wire-compat floor)
         run: go test -count=1 ${{ steps.pkgs.outputs.pkgs }}
