@@ -21,6 +21,7 @@ func TestOptionContractsCoverEveryOption(t *testing.T) {
 		OptValidPlanHashModes, OptAsyncOperationsTimeoutMillis, OptEncryptWhenSerializing,
 		OptEncryptionKeyStore, OptEncryptionKeyEntry, OptEncryptionKeyEntryList, OptEncryptionKeyPassword,
 		OptCompressWhenSerializing, OptRestrictDDLToSessionDatabase, OptTransactionTags,
+		OptMaxTaskQueueSize, OptMaxTotalTaskCount, OptMaxNumMatchesPerRuleCall,
 	}
 	if len(all) != len(optionContracts) {
 		t.Fatalf("%d option names, %d contracts", len(all), len(optionContracts))

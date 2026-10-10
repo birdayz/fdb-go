@@ -45,8 +45,7 @@ type intersectionConsumption struct {
 //
 // Convergence: a Reference whose member set stops growing is committed
 // (Reference.CommitExploration); the stack drains; the planner returns.
-// A hard cap (MaxTasks) prevents pathological non-termination from
-// rule-yielding-fresh-members loops; default 100_000.
+// MaxTasks optionally bounds the run; like Java it is unbounded by default.
 //
 // A Planner is single-use for non-nil planning runs.
 // PlanWithContext(ctx, nil) remains a zero-work no-op; the first non-nil call
@@ -103,10 +102,8 @@ type Planner struct {
 	// full constraint and ordering information available.
 	planningExpressionRules []ExpressionRule
 
-	// MaxTasks is Java's RecordQueryPlannerConfiguration.maxTotalTaskCount:
-	// once more than MaxTasks tasks have run, PlanWithContext returns nil and
-	// ErrPlannerCapHit (no partial result — matching Java's throw); 0 disables.
-	// Defaults to 100_000, where Java defaults to unbounded.
+	// MaxTasks is Java's maxTotalTaskCount: past it planning fails with
+	// ErrPlannerCapHit. 0, the default as in Java, is unbounded.
 	MaxTasks int
 
 	// MaxTaskQueueSize caps the task stack's depth; 0 disables (Java
@@ -259,7 +256,6 @@ func NewPlanner(rules []ExpressionRule, ctx PlanContext) *Planner {
 		rewritingImplRules: RewritingImplementationRules(),
 		ctx:                ctx,
 		memo:               nil,
-		MaxTasks:           100_000,
 	}
 	// The comparator ranks with the planner's configuration and metadata
 	// whatever the statistics, as Java's PlanningCostModel does (RFC-257 WS-F
@@ -487,7 +483,8 @@ func (p *Planner) plan(ctx context.Context, rootRef *expressions.Reference) (exp
 	// because a task that actually executed and concluded planning cannot
 	// legitimately continue carries strictly more diagnostic value than
 	// "someone canceled" — losing it to a concurrent cancel would hide a real
-	// invariant violation. Do not "harmonize" the two orderings.
+	// invariant violation. Do not "harmonize" the two orderings. The queue
+	// bound guards the next task, so it sits after the post-Run ctx check.
 	for len(p.stack) > 0 {
 		if err := plannerContextErr(ctx); err != nil {
 			return nil, p.tasksRun, err
@@ -522,12 +519,12 @@ func (p *Planner) plan(ctx context.Context, rootRef *expressions.Reference) (exp
 		if p.capErr != nil {
 			return nil, p.tasksRun, p.capErr
 		}
+		if err := plannerContextErr(ctx); err != nil {
+			return nil, p.tasksRun, err
+		}
 		// Java's isTaskQueueSizeExceeded runs after each executed task.
 		if p.MaxTaskQueueSize > 0 && len(p.stack) > p.MaxTaskQueueSize {
 			return nil, p.tasksRun, newQueueCapError(p.MaxTaskQueueSize, len(p.stack))
-		}
-		if err := plannerContextErr(ctx); err != nil {
-			return nil, p.tasksRun, err
 		}
 	}
 

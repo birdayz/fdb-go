@@ -60,7 +60,7 @@ func explorePushFilterJoinRewriting(
 	planner.push(&OptimizeGroupTask{Phase: PhaseRewriting, Ref: root})
 	planner.push(&ExploreGroupTask{Phase: PhaseRewriting, Ref: root})
 	for len(planner.stack) > 0 {
-		if planner.tasksRun >= planner.MaxTasks {
+		if planner.tasksRun >= testTaskBound(planner) {
 			return planner.tasksRun, false
 		}
 		planner.pop().Run(context.Background(), planner)

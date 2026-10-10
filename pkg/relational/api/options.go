@@ -196,6 +196,12 @@ const (
 	// option above it stays out of defaultOptionValues so the default option set
 	// remains byte-identical to Java's.
 	OptTransactionTags OptionName = "TRANSACTION_TAGS"
+
+	// The Cascades planner budgets of Java's RecordQueryPlannerConfiguration.
+	// Java's SQL layer exposes none; unset or 0 is unbounded, as in Java.
+	OptMaxTaskQueueSize         OptionName = "MAX_TASK_QUEUE_SIZE"
+	OptMaxTotalTaskCount        OptionName = "MAX_TOTAL_TASK_COUNT"
+	OptMaxNumMatchesPerRuleCall OptionName = "MAX_NUM_MATCHES_PER_RULE_CALL"
 )
 
 // IndexFetchMethod mirrors Java's Options.IndexFetchMethod enum.

@@ -146,8 +146,8 @@ func TestRemintThroughPhysicalTypePreservesLegs(t *testing.T) {
 	}
 }
 
-// TestNewPhysicalCarrierQOVMatchesRemint pins the rebinding fast path to the
-// thaw-and-snapshot re-mint it replaces, legs included, and the zero-alias guard.
+// TestNewPhysicalCarrierQOVMatchesRemint pins the rebind to the re-mint it
+// replaces: with legs, without a layout, and the zero-alias and nil guards.
 func TestNewPhysicalCarrierQOVMatchesRemint(t *testing.T) {
 	t.Parallel()
 
@@ -170,6 +170,28 @@ func TestNewPhysicalCarrierQOVMatchesRemint(t *testing.T) {
 	}
 	if !SemanticEqualsUnderAliasMap(got, want, EmptyAliasMap()) {
 		t.Fatal("rebind and re-mint are not semantically equal")
+	}
+	plain, err := NewOrdinalLayoutForCarrierType(&RecordType{Fields: []Field{
+		{Name: "ID", Ordinal: 0, FieldType: NotNullLong},
+		{Name: "V", Ordinal: 1, FieldType: NullableLong},
+	}}, []OrdinalTileSpec{{Start: 0, Width: 2, Kind: OrdinalTileFlat}}, nil)
+	if err != nil {
+		t.Fatalf("plain layout: %v", err)
+	}
+	if plain.Carrier().(*quantifiedObjectValue).sourceLayout != nil {
+		t.Fatal("fixture: the plain record carrier has a source layout")
+	}
+	plainWant, err := NewQuantifiedObjectValue(merged, PhysicalCarrierType(plain))
+	if err != nil {
+		t.Fatalf("plain re-mint: %v", err)
+	}
+	plainGot, err := NewPhysicalCarrierQOV(merged, plain)
+	if err != nil {
+		t.Fatalf("plain rebind: %v", err)
+	}
+	pw, pg := plainWant.(*quantifiedObjectValue), plainGot.(*quantifiedObjectValue)
+	if pg.flowed != pw.flowed || pg.sourceLayout != nil || pw.sourceLayout != nil {
+		t.Fatalf("plain rebind = %p/%+v, want the re-mint's %p/%+v", pg.flowed, pg.sourceLayout, pw.flowed, pw.sourceLayout)
 	}
 	if _, err := NewPhysicalCarrierQOV(CorrelationIdentifier{}, layout); err == nil {
 		t.Fatal("rebind accepted a zero correlation the re-mint rejects")

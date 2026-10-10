@@ -439,22 +439,19 @@ const sixSpokeStarQuery = "SELECT H.id, S1.id, S2.id, S3.id, S4.id, S5.id, S6.id
 	"FROM H, S1, S2, S3, S4, S5, S6 " +
 	"WHERE H.id = S1.hid AND H.id = S2.hid AND H.id = S3.hid AND H.id = S4.hid AND H.id = S5.hid AND H.id = S6.hid"
 
-// TestFDB_PlannerOptions_PlanRightDeep is CQ-9's stated goal delivered through
-// Java's own opt-in lever. The hub+6 all-live star exhausts the 150,000-task
-// planning budget at DEFAULT settings — and would in Java too, whose
-// PLAN_RIGHT_DEEP likewise defaults to false — so this is not a divergence to
-// close but a knob to wire. With the option set, join enumeration is restricted
-// to right-deep trees, the star converges, and the query runs.
-//
-// The default half is asserted as well: bounding enumeration by default would
-// change the plan shape of every multi-way join in the engine, which is not
-// something an option-wiring change gets to do silently.
+// TestFDB_PlannerOptions_PlanRightDeep: under one task budget the bushy hub+6 star
+// exhausts it, and with PLAN_RIGHT_DEEP it converges and returns the right row.
 func TestFDB_PlannerOptions_PlanRightDeep(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	db := starOptsDB(t, "rd")
+	withBudget := func(b *api.OptionsBuilder) *api.Options {
+		return b.Set(api.OptMaxTotalTaskCount, 20_000).Build()
+	}
 
-	base := testkit.PinEmbeddedConn(t, db, func(*embedded.EmbeddedConnection) {})
+	base := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+		ec.SetOptions(withBudget(api.NewOptionsBuilder()))
+	})
 	rows, err := base.QueryContext(ctx, sixSpokeStarQuery)
 	if rows != nil {
 		_ = rows.Close()
@@ -462,7 +459,7 @@ func TestFDB_PlannerOptions_PlanRightDeep(t *testing.T) {
 	testkit.AssertPlannerCapHit(t, err)
 
 	rd := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
-		ec.SetOptions(api.NewOptionsBuilder().Set(api.OptPlanRightDeep, true).Build())
+		ec.SetOptions(withBudget(api.NewOptionsBuilder().Set(api.OptPlanRightDeep, true)))
 	})
 	rdRows, rdErr := rd.QueryContext(ctx, sixSpokeStarQuery)
 	if rdErr != nil {
@@ -492,7 +489,7 @@ func TestFDB_PlannerOptions_PlanRightDeep(t *testing.T) {
 	// Explicitly false must be identical to unset: the Java-identical default
 	// is not something setting the option can move.
 	off := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
-		ec.SetOptions(api.NewOptionsBuilder().Set(api.OptPlanRightDeep, false).Build())
+		ec.SetOptions(withBudget(api.NewOptionsBuilder().Set(api.OptPlanRightDeep, false)))
 	})
 	offRows, offErr := off.QueryContext(ctx, sixSpokeStarQuery)
 	if offRows != nil {

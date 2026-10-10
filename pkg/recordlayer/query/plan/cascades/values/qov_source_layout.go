@@ -120,10 +120,8 @@ func PhysicalCarrierType(layout OrdinalLayout) Type {
 	return carrier.FlowedType()
 }
 
-// NewPhysicalCarrierQOV is NewQuantifiedObjectValue(correlation,
-// PhysicalCarrierType(layout)). A record carrier's snapshot and layout are
-// already frozen, so it rebinds them like rebase instead of thawing and
-// re-snapshotting the row on every join alternative.
+// NewPhysicalCarrierQOV is NewQuantifiedObjectValue(correlation, PhysicalCarrierType(layout)),
+// rebinding a record carrier's frozen snapshot and layout as rebase does.
 func NewPhysicalCarrierQOV(correlation CorrelationIdentifier, layout OrdinalLayout) (QuantifiedObjectValue, error) {
 	if layout != nil {
 		if q, ok := layout.Carrier().(*quantifiedObjectValue); ok && q != nil && q.flowed != nil &&
