@@ -1024,11 +1024,11 @@ func (d *Database) CreateTransaction() *Transaction {
 	// floor is 32 and its default/ceiling is 10 MB. A 0/unset DB default must therefore
 	// still enforce 10 MB, otherwise the Go client commits an oversized transaction that
 	// libfdb_c rejects client-side with transaction_too_large (2101) — a wire divergence.
-	// The DB option, when set (>0), lowers the limit.
+	// The DB option, when set (>0), lowers the limit; an out-of-range one leaves
+	// 10 MB and poisons the txn with 2006, as the tx-level option does.
+	tx.SetSizeLimit(transactionSizeLimit)
 	if td.SizeLimit > 0 {
 		tx.SetSizeLimit(td.SizeLimit)
-	} else {
-		tx.SetSizeLimit(transactionSizeLimit)
 	}
 	if td.ReadSystemKeys {
 		tx.SetReadSystemKeys()

@@ -181,6 +181,7 @@ go_test(
         "metrics_validation_test.go",
         "multishard_test.go",
         "nil_shard_end_test.go",
+        "option_fences_test.go",
         "panicbackstop_test.go",
         "parse_fuzz_test.go",
         "poison_recheck_fault_test.go",

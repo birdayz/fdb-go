@@ -23,8 +23,11 @@ project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (
   recreate them.
 - **SQL behaviour:** follows Java 4.14.2.0 where both engines run a query; see the PR for the
   per-change list.
-- **FDB client option semantics:** unchanged since v0.1.0; the honored / `UnsupportedOptionError` /
-  safe-no-op classification in `pkg/fdbgo/fdb/OPTIONS.md` still holds against `libfdb_c` 7.3.77.
+- **FDB client option semantics:** as v0.1.0, except that, as in `libfdb_c`, `SetReadLockAware` makes
+  the transaction read-only (a commit with writes fails 2023) unless `SetLockAware` came first, and
+  `SetSizeLimit` outside [32, 10,000,000] fails every later operation with 2006 instead of only the
+  commit (0 no longer disables the limit). The honored / `UnsupportedOptionError` / safe-no-op
+  classification in `pkg/fdbgo/fdb/OPTIONS.md` still holds against `libfdb_c` 7.3.77.
 - **Required versions:** Java `fdb-record-layer-core` **4.14.2.0**, FDB C++ client **7.3.77**, Go
   **1.26.x** (the `MODULE.bazel` / `go.mod` pins; the CI doc-guard enforces docs match them).
 
@@ -33,6 +36,7 @@ project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (
   `hosted-smoke.yml` workflow is retired; its secret scan, Bazel-anchor check and fresh-clone
   `go build ./...` moved into `ci.yml`'s `go install lane` job, and the wire-type oracle runs as
   `bazelisk test //cmd/fdb-diff-oracle:fdb-diff-oracle_test`.
+- **Breaking:** `client.Transaction.SetLockAware` and `SetReadLockAware` take no argument; like the C options they only set.
 - SQL planning has no task budget by default, as in Java (was 150,000 tasks, 250,000 right-deep); the
   caller's context bounds it, and `MAX_TOTAL_TASK_COUNT`, `MAX_TASK_QUEUE_SIZE` and
   `MAX_NUM_MATCHES_PER_RULE_CALL` opt into Java's caps (54F02 when exhausted).

@@ -45,7 +45,7 @@ C++ references are into the FoundationDB 7.3.77 source: `T::setOption` =
 | `SetTimeout` | **honored** | RYW:2570 sets `timeoutsEnabled`/`operationTimeout` | n/a | wires the tx deadline |
 | `SetRetryLimit` | **honored** | RYW:2575 `maxRetries` | n/a | |
 | `SetMaxRetryDelay` | **honored** | T:7062 `maxBackoff` | n/a | |
-| `SetSizeLimit` | **honored** | T:7067 `sizeLimit` | n/a | |
+| `SetSizeLimit` | **honored** | T:7067 `sizeLimit` | n/a | outside [32, 10,000,000]: not applied; deferred 2006 on every later op |
 | `SetPriorityBatch` | **honored** | T:6969 `PRIORITY_BATCH` | n/a | GRV priority |
 | `SetPrioritySystemImmediate` | **honored** | T:6963 `PRIORITY_SYSTEM_IMMEDIATE` | n/a | |
 | `SetCausalReadRisky` | **honored** | T:6958 GRV `FLAG_CAUSAL_READ_RISKY` | n/a | |
@@ -54,8 +54,8 @@ C++ references are into the FoundationDB 7.3.77 source: `T::setOption` =
 | `SetWriteConflictsDisabled` | **honored** | (Go-modeled) | n/a | |
 | `SetAccessSystemKeys` | **honored** (+tenant guard) | RYW:2557 read+write system keys; T:7161 `raw_access`, throws on tenant | n/a | tenant guard mirrors `hasTenant`==false |
 | `SetReadSystemKeys` | **honored** (+tenant guard) | RYW:2564 read system keys | n/a | |
-| `SetLockAware` | **honored** | T:7072 `lockAware` | n/a | |
-| `SetReadLockAware` | **honored** | T:7082 `lockAware` read-only | n/a | |
+| `SetLockAware` | **honored** | T:7071 `lockAware`, clears `readOnly` | n/a | |
+| `SetReadLockAware` | **honored** | T:7082 `lockAware` read-only | n/a | unless `SetLockAware` came first, a commit with writes fails 2023 (T:6810) |
 | `SetSnapshotRywEnable` | **honored** (counter) | RYW:2591 `snapshotRYWEnabled++` | n/a | true counter, matches C |
 | `SetSnapshotRywDisable` | **honored** (counter) | RYW:2596 `snapshotRYWEnabled--` | n/a | |
 | `SetUseGrvCache` | **honored** | T:7145 `USE_GRV_CACHE` | n/a | Go GRV cache is opt-in |
