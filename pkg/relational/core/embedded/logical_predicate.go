@@ -1109,18 +1109,6 @@ func buildDerivedTableSourceFromAgg(alias string, sq *selectQuery, md *recordlay
 	}, true
 }
 
-// mapPredicateWalkError converts a resolver.WalkPredicate failure into the
-// SQLSTATE-classified *api.Error it should surface as, or nil when the error is
-// not one of the recognized semantic / IN-shape errors (the caller then decides
-// whether to fall back to a text predicate or fail closed). Shared by the
-// WHERE-clause and JOIN-ON resolution paths so both classify column, ambiguity,
-// source, and IN-shape failures identically — and a structured *api.Error from a
-// nested subquery build surfaces verbatim.
-//
-// A bare ColumnNotFoundError maps to ErrCodeUndefinedColumn so a WHERE-clause
-// correlated subquery's BuildExists can fall back to buildCorrelatedExists with
-// its richer outer scope (RFC-141/RFC-142); in the JOIN-ON path the same mapping
-// is simply the correct 42703 for an ON column that does not exist.
 // whereFaultFirst is Java's clause order on a failed SELECT build: the WHERE
 // is resolved before the select list, so when the build failed and the WHERE
 // alone fails to resolve, the WHERE's fault is the one reported. A WHERE with
@@ -1176,6 +1164,18 @@ func clauseFault(resolver *expr.Resolver, where antlrgen.IExpressionContext, err
 	return whereErr
 }
 
+// mapPredicateWalkError converts a resolver.WalkPredicate failure into the
+// SQLSTATE-classified *api.Error it should surface as, or nil when the error is
+// not one of the recognized semantic / IN-shape errors (the caller then decides
+// whether to fall back to a text predicate or fail closed). Shared by the
+// WHERE-clause and JOIN-ON resolution paths so both classify column, ambiguity,
+// source, and IN-shape failures identically — and a structured *api.Error from a
+// nested subquery build surfaces verbatim.
+//
+// A bare ColumnNotFoundError maps to ErrCodeUndefinedColumn so a WHERE-clause
+// correlated subquery's BuildExists can fall back to buildCorrelatedExists with
+// its richer outer scope (RFC-141/RFC-142); in the JOIN-ON path the same mapping
+// is simply the correct 42703 for an ON column that does not exist.
 func mapPredicateWalkError(walkErr error) *api.Error {
 	var tableNotFound *semantic.TableNotFoundError
 	if errors.As(walkErr, &tableNotFound) {
@@ -2587,11 +2587,9 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuildUnfolded(op logical.Logica
 				// unresolvable name or a lazy result keeps the translator's name
 				// emission unchanged.
 				//
-				// This is the twin of the PlanVisitor's bare-projection bind, and it
-				// used to state the retired rule: that a MULTI-SOURCE QOV-correlated
-				// resolution also falls through to the name. It no longer does —
-				// resolveBaked's child-bearing arm admits exactly that shape, and it
-				// FIRES here on the existing corpus (RFC-223).
+				// This is the twin of the PlanVisitor's bare-projection bind. A
+				// multi-source QOV-correlated resolution binds here too:
+				// resolveBaked's child-bearing arm admits that shape (RFC-223).
 				if proj.ProjectedValues == nil || (i < len(proj.ProjectedValues) && proj.ProjectedValues[i] == nil) {
 					rv, rerr := resolveBareProjectionValue(resolver, col.bare)
 					if rerr == nil {
@@ -3497,13 +3495,6 @@ func orderByOutputAliasNames(sq *selectQuery, resolver *expr.Resolver) []string 
 	return names
 }
 
-// resolveColumnRefStructural resolves a column reference from its
-// parse-tree SEGMENTS — never a dotted re-split of a rendered string,
-// so a derived column or alias whose NAME contains a dot ("A.ID")
-// resolves as itself instead of being torn at the last dot into a
-// phantom qualifier (WS-N Phase A slice 1; the segments arrive
-// quote-stripped with quoted case preserved, so identifiers are built
-// case-sensitively — no re-fold).
 // colRefIdentifiers renders a captured column reference as the ordered
 // Identifier list resolution consumes. The leading segments name SOURCES and
 // STRUCT COLUMNS, which are registered folded; the LEAF keeps the verbatim
@@ -3531,6 +3522,13 @@ func colRefIdentifiers(bare, qualifier string, qualified bool, segs []string) []
 	return []semantic.Identifier{semantic.FromNormalized(bare)}
 }
 
+// resolveColumnRefStructural resolves a column reference from its
+// parse-tree SEGMENTS — never a dotted re-split of a rendered string,
+// so a derived column or alias whose NAME contains a dot ("A.ID")
+// resolves as itself instead of being torn at the last dot into a
+// phantom qualifier (WS-N Phase A slice 1; the segments arrive
+// quote-stripped with quoted case preserved, so identifiers are built
+// case-sensitively — no re-fold).
 func resolveColumnRefStructural(resolver *expr.Resolver, bare, qualifier string, qualified bool, segs []string) error {
 	if resolver == nil || bare == "" {
 		return nil
@@ -4335,16 +4333,12 @@ func cascadesSafeScalarFunction(name string) bool {
 // It is the value `AggCallProvenance.Operand` was recorded from, so the two
 // agree exactly whenever the column has not moved.
 //
-// ONE SPELLING, NOT TWO, and the second was not merely redundant — it was a
-// hole. An earlier draft also offered the argument with its LEADING segment
-// removed, carried over from the pre-RFC-241 matcher where it accommodated the
-// producer's strip. Once the comparison moved to the PRE-strip text that
-// accommodation has nothing to do: the recorded value is derived by these exact
-// lines, so it matches this spelling by construction, and a second spelling can
-// therefore only ever match when the first does NOT — i.e. precisely when the
-// column HAS changed, which is the event being watched. Concretely, a call
-// recorded as `X` validated clean against a column now rendering `A.X`. Widening
-// a checksum with an alternative that only fires on corruption inverts it.
+// Exactly one spelling. The recorded value is derived by these exact lines, so
+// it matches this spelling by construction; any alternative spelling (e.g. the
+// argument with its leading segment removed) could only match when this one
+// does not — precisely when the column has changed, which is the event being
+// watched. A call recorded as `X` would then validate clean against a column
+// now rendering `A.X` (RFC-241).
 func aggColOperandText(ac aggSelectCol) string {
 	arg := ac.aggArg
 	if arg == "" && ac.aggExpr != nil {
@@ -4709,11 +4703,8 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 		// consumer are unchanged. Qualified keys and unresolvable names keep
 		// the translator's name emission.
 		//
-		// MULTI-SOURCE resolutions no longer fall through to the name, which
-		// is what this comment used to say: resolveBaked's child-bearing arm
-		// admits them. Of the two folded sites here this is the busier (7 firings
-		// to the bare-projection twin's 1), though the PlanVisitor site outside
-		// this file takes the same arm 131 times (RFC-223).
+		// Multi-source resolutions bind here too: resolveBaked's child-bearing
+		// arm admits them (RFC-223).
 		if keyValues[i] == nil && !ref.isQualified() {
 			rv, rerr := resolver.ResolveIdentifier(semantic.Identifier{}, semantic.FromNormalized(ref.bare()))
 			if rerr == nil {
@@ -5125,24 +5116,14 @@ func validatePostAggregateValueDraft(v values.Value, agg *logical.LogicalAggrega
 		// AMBIGUOUS_COLUMN (Expressions.java:112) before taking the element, and
 		// this binder is a pull-up.
 		//
-		// IT IS NOT WHAT CLOSES THE DUPLICATE-KEY DIVERGENCE, and an earlier
-		// revision of this comment claimed it was — asserting that a projected
-		// reference under `... JOIN ... GROUP BY a.r.v.z, r.v.z` reaches THIS
-		// loop. Instrumented, it does not: that reference is bound by
-		// buildAggregateOutputSlots, and this loop is consulted zero times for
-		// the shape. The claim was refuted by the file's own test, which had the
-		// projected half planning — if the reference arrived here, the matcher
-		// below is semantic and the two equal keys would have raised.
-		//
-		// Duplicates are refused upstream now, at output construction
-		// (groupByOutputConstructionPullUp), which is where Java refuses them
-		// (LogicalOperator.java:454) and which needs no reference at all. This
-		// guard is therefore UNREACHABLE from SQL — measured over the whole
-		// //pkg/relational/sqldriver target at 6158 subtests, this site is
-		// consulted 414 times and never sees more than one match. It is kept
-		// because Java keeps the assert at every pull-up site, and it is driven
-		// directly by TestGroupKeyPullUpGuard_ExactBoundaryBinderRefusesAMultiMatch
-		// so that unreachable does not become untested.
+		// Duplicate group keys are refused upstream, at output construction
+		// (groupByOutputConstructionPullUp), where Java refuses them
+		// (LogicalOperator.java:454); a projected reference under
+		// `... JOIN ... GROUP BY a.r.v.z, r.v.z` is bound by
+		// buildAggregateOutputSlots and never reaches this loop. This guard is
+		// therefore unreachable from SQL. It is kept because Java keeps the
+		// assert at every pull-up site, and is driven directly by
+		// TestGroupKeyPullUpGuard_ExactBoundaryBinderRefusesAMultiMatch.
 		keyMatch, keyMatches := -1, 0
 		for i, key := range agg.GroupKeys {
 			if key.Value != nil &&

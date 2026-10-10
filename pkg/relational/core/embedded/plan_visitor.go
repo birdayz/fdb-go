@@ -522,8 +522,6 @@ func (v *PlanVisitor) visitSimpleTableBody(simpleTable *antlrgen.SimpleTableCont
 	return foldInnerOnExistsIntoWhere(op)
 }
 
-// visitSimpleTableBodyUnfolded builds the block; visitSimpleTableBody folds
-// its ON-clause EXISTS afterwards.
 // moveCorrelatedGroupColumns applies correlatedGroupColumnsToComputed to a
 // grouped block with an enclosing one, the only block whose select list can
 // read another block's source, resolving each reference in the block's own
@@ -540,6 +538,8 @@ func (v *PlanVisitor) moveCorrelatedGroupColumns(cls *selectClassification, fs *
 	correlatedGroupColumnsToComputed(cls, selectOutputSlots(simpleTable, expandStar), isOuter)
 }
 
+// visitSimpleTableBodyUnfolded builds the block; visitSimpleTableBody folds
+// its ON-clause EXISTS afterwards.
 func (v *PlanVisitor) visitSimpleTableBodyUnfolded(simpleTable *antlrgen.SimpleTableContext) (_ logical.LogicalOperator, err error) {
 	// Step 1: parse the source before classifying the SELECT list. An absent
 	// FROM yields a singleton with no visible attributes, as in QueryVisitor.
@@ -2020,44 +2020,6 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antl
 	return logical.NewSort(op, keys)
 }
 
-// qualifyShadowedSortKeys redirects a BARE ORDER BY sort key that binds to a
-// lateral-unnest SHADOWING scope source to the key QUALIFIED to that source's
-// correlation (`FieldValue(QOV(v), v)`), the SORT-key analog of the bare-column
-// PROJECTION qualification in buildSelectShell step (2). Without it, a bare sort
-// key over `FROM t, t.arr AS v, u` (where a LATER FROM item `u` also has a column
-// `v`) sorts by the merged row's BARE `v` key — which mergeRows overwrites
-// last-leg-wins with `u.v` — instead of the unnest element under the protected
-// qualified `v.v` key. The projection reads `v.v` (P2) but the sort read
-// the clobbered bare key, so the rows came back in the WRONG ORDER (P2a,
-// silent-wrong). Only a key whose Value is still UNSET (a bare column, not an
-// alias/computed/raw-expr key already resolved by upgradeSortKeyValues) and that
-// resolves to a Shadowing source is rewritten; everything else is untouched, so
-// an explicitly-qualified `u.v` sort key and non-unnest queries are unaffected.
-// Reuses ResolveColumnShadowingQualified — the same helper the projection path
-// uses — so the two cannot diverge. RFC-142.
-//
-// PRE- vs POST-aggregate distinction (P2b). For a GROUPED /
-// aggregate query (`SELECT V, COUNT(*) … GROUP BY V ORDER BY V DESC`) the sort
-// sits ABOVE the aggregate, so the group-key sort key must read the aggregate's
-// EXPOSED group-key column (the bare name `V`), NOT the FROM-scope-qualified
-// `V.V`. That post-aggregate resolution is handled UPSTREAM in
-// upgradeSortKeyValues (step 15): when the group key resolves to a lateral-unnest
-// FieldValue it sets the sort key's Value to the aggregate OUTPUT column name
-// (aggregateGroupKeyOutputName → the bare field), so the key arrives here already
-// carrying a Value and is skipped by the `Value != nil` guard below. This
-// function therefore only ever qualifies a PRE-aggregate (non-grouped) bare
-// ORDER BY over an unnest — the shadowing case where the sort sits
-// BELOW the merge and a later FROM item could clobber the bare key. RFC-142.
-// A QUALIFIED sort key has the dup-alias twin of the same silent-wrong-order
-// hazard: the sort sits BELOW the projection over the JOIN row, whose
-// namespace carries the BINDING correlation (`Q$DUP1.QID`) for a later
-// duplicate-alias leg — a key left as the SQL alias (`A.QID`)
-// silently misses and the rows come back in scan order (the projection reads
-// the binding, the sort read the display alias). Route qualified keys through
-// ResolveQualifiedProjection — the SAME helper the projection path uses, so
-// the two cannot diverge: it returns a value ONLY when the reference binds a
-// later duplicate leg (binding != alias); every other qualified key (distinct
-// aliases, first-occurrence legs) is untouched.
 // bareLeafDuplicated reports whether the BARE leaf of projection column i
 // collides (case-insensitive) with another projection column's EFFECTIVE
 // output label (its alias when aliased, else its bare leaf) — the shape whose
@@ -2281,6 +2243,44 @@ func resolveQualifiedProjectionValuePath(resolver *expr.Resolver, segs []semanti
 	return resolveProjectionValue(rv)
 }
 
+// qualifyShadowedSortKeys redirects a BARE ORDER BY sort key that binds to a
+// lateral-unnest SHADOWING scope source to the key QUALIFIED to that source's
+// correlation (`FieldValue(QOV(v), v)`), the SORT-key analog of the bare-column
+// PROJECTION qualification in buildSelectShell step (2). Without it, a bare sort
+// key over `FROM t, t.arr AS v, u` (where a LATER FROM item `u` also has a column
+// `v`) sorts by the merged row's BARE `v` key — which mergeRows overwrites
+// last-leg-wins with `u.v` — instead of the unnest element under the protected
+// qualified `v.v` key. The projection reads `v.v` (P2) but the sort read
+// the clobbered bare key, so the rows came back in the WRONG ORDER (P2a,
+// silent-wrong). Only a key whose Value is still UNSET (a bare column, not an
+// alias/computed/raw-expr key already resolved by upgradeSortKeyValues) and that
+// resolves to a Shadowing source is rewritten; everything else is untouched, so
+// an explicitly-qualified `u.v` sort key and non-unnest queries are unaffected.
+// Reuses ResolveColumnShadowingQualified — the same helper the projection path
+// uses — so the two cannot diverge. RFC-142.
+//
+// PRE- vs POST-aggregate distinction (P2b). For a GROUPED /
+// aggregate query (`SELECT V, COUNT(*) … GROUP BY V ORDER BY V DESC`) the sort
+// sits ABOVE the aggregate, so the group-key sort key must read the aggregate's
+// EXPOSED group-key column (the bare name `V`), NOT the FROM-scope-qualified
+// `V.V`. That post-aggregate resolution is handled UPSTREAM in
+// upgradeSortKeyValues (step 15): when the group key resolves to a lateral-unnest
+// FieldValue it sets the sort key's Value to the aggregate OUTPUT column name
+// (aggregateGroupKeyOutputName → the bare field), so the key arrives here already
+// carrying a Value and is skipped by the `Value != nil` guard below. This
+// function therefore only ever qualifies a PRE-aggregate (non-grouped) bare
+// ORDER BY over an unnest — the shadowing case where the sort sits
+// BELOW the merge and a later FROM item could clobber the bare key. RFC-142.
+// A QUALIFIED sort key has the dup-alias twin of the same silent-wrong-order
+// hazard: the sort sits BELOW the projection over the JOIN row, whose
+// namespace carries the BINDING correlation (`Q$DUP1.QID`) for a later
+// duplicate-alias leg — a key left as the SQL alias (`A.QID`)
+// silently misses and the rows come back in scan order (the projection reads
+// the binding, the sort read the display alias). Route qualified keys through
+// ResolveQualifiedProjection — the SAME helper the projection path uses, so
+// the two cannot diverge: it returns a value ONLY when the reference binds a
+// later duplicate leg (binding != alias); every other qualified key (distinct
+// aliases, first-occurrence legs) is untouched.
 func qualifyShadowedSortKeys(op logical.LogicalOperator, resolver *expr.Resolver) error {
 	sort := findSort(op)
 	if sort == nil {

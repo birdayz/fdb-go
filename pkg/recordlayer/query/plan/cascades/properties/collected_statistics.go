@@ -20,20 +20,15 @@ import "fdb.dev/pkg/recordlayer/protoname"
 // This inversion is reachable under ONE provider, which is what makes it real:
 // MapStatistics' fallback is a CONSTANT, so the miss and the hit are drawn from
 // the same map and still differ by four orders of magnitude. It is a different
-// mechanism from the empty-NAME case below, and the two are easy to conflate —
-// an earlier revision of the FullUnorderedScan comment described a
-// universal-vs-typed comparison as inverting when, under one provider, it is
-// not. Keep them apart: a MISSING name inverts because the fallback is a
-// constant; the EMPTY name would invert only for a store larger than
-// LeafScanCardinality.
+// mechanism from the empty-NAME case below, and the two are easy to conflate:
+// a MISSING name inverts because the fallback is a constant; the EMPTY name
+// would invert only for a store larger than LeafScanCardinality.
 //
 // THE EMPTY NAME IS NOT A RECORD TYPE. Production sites ask for it when a leaf's
 // record types are unknown — a nil plan, or a scan carrying no type list
 // (planning_cost_model.go, plans/cost.go, and FullUnorderedScanExpression with an
-// empty type list). The population is deliberately NOT written as a number here:
-// an earlier revision said "four", RFC-236 then added the fifth, and the stale
-// count sat in the file that states the rule about comments outrunning code. To
-// see the current set:
+// empty type list). The population is deliberately NOT written as a number here,
+// since it grows. To see the current set:
 //
 //	grep -rn --include='*.go' 'RecordTypeCardinality("")' . |
 //	  grep -v _test.go | grep -v '^[^:]*:[0-9]*:\s*//'

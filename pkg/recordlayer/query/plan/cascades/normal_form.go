@@ -167,8 +167,7 @@ func isInNormalForm(p predicates.QueryPredicate, mode normalFormMode) bool {
 // normal form would have, carrying the negate flag.
 //
 // Under negation the major and minor arms SWAP, which is De Morgan expressed as
-// a role swap rather than as a rewrite. That swap is the difference between
-// this and the negate-blind size Go's cost model used to read: for CNF,
+// a role swap rather than as a rewrite. A negate-blind size is wrong: for CNF,
 // `normalFormSize(NOT(a OR b), false, CNF)` is 2 — the negated Or is sized as a
 // major, so its children SUM — where a walk that just recursed through the NOT
 // answers 1.

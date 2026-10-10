@@ -86,39 +86,8 @@ func (s *Scenario) InjectOnce(fault FaultType) {
 	s.chaos.InjectOnce(fault)
 }
 
-// opContext bounds a single chaos operation.
-//
-// WHY THIS IS BOUNDED AT ALL, since the obvious reading is that it is belt and
-// braces. `Database.TransactCtx` retries "bounded only by
-// SetTransactionTimeout/SetTransactionRetryLimit (default unbounded)", and no
-// scenario sets either. On context.Background() a shared cluster that dies
-// mid-suite therefore does not fail these ops -- it hangs them, one after
-// another, until the package-level 15-minute alarm fires. That is where the
-// observed cost came from: 14 tests each waiting out their own deadline and a
-// panic whose stack names whichever test was unlucky, not the container.
-//
-// A bound turns that into a fast, TYPED context.DeadlineExceeded at the first
-// op of every subsequent scenario. Typed matters: it is what lets a caller use
-// errors.Is rather than matching on message text, which cannot be spoofed by an
-// error that merely quotes the phrase.
-//
-// It deliberately does NOT try to distinguish "cluster died" from "cluster is
-// slow". An earlier attempt did, by classifying error strings, and was removed:
-// the classifier's own signature list was the only thing pinning it, one of its
-// signatures could never be produced by any error in the tree, and a false
-// positive would have replaced every later scenario's real diagnosis with a
-// guess. Bounding is strictly weaker and strictly honest.
-//
-// 30s is far above any healthy op here: the whole suite is 228 top-level tests
-// (229 `func Test*` minus TestMain) and runs in a MEASURED ~90s against a live
-// container, with the slowest single scenario a few seconds. It is far below
-// the 900s package alarm, so a dead cluster surfaces as fast failures rather
-// than one timeout.
-//
-// An earlier version of this sentence said "229 tests" and "well under a
-// minute". Both were wrong -- the population counted TestMain, and the runtime
-// was off by 1.5x -- and it was the premise this bound rests on. It survived a
-// sweep that fixed the same claim elsewhere because it wraps mid-phrase.
+// opContext bounds retries so an unavailable cluster produces a typed deadline
+// error instead of consuming the package timeout.
 func (s *Scenario) opContext() (context.Context, context.CancelFunc) {
 	return chaosOpContext()
 }

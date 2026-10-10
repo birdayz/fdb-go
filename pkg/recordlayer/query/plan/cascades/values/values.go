@@ -979,8 +979,7 @@ func (f *fieldValue) descendResolvedPath(rootVal any) (any, error) {
 			// A STRUCT column materializes as its raw proto message (the
 			// executor's row layer flows nested records verbatim). Go descends it
 			// by field NAME. That is the DIVERGENCE this step carries on the
-			// `.Field` ratchet (RFC-197's `boundary` bucket) — it is not the port,
-			// and this comment used to claim it was.
+			// `.Field` ratchet (RFC-197's `boundary` bucket).
 			//
 			// Java descends by ORDINAL. FieldValue.eval calls
 			// MessageHelpers.getFieldValueForFieldOrdinals (FieldValue.java:169),
@@ -1346,18 +1345,9 @@ func (f *fieldValue) evaluateCorrelated(qov *quantifiedObjectValue, evalCtx any)
 	return nil, &UnboundEvalContextError{Field: f.Field, Correlation: qov.correlation.Name(), CtxType: fmt.Sprintf("%T", evalCtx)}
 }
 
-// resolveOrdinal returns the 0-based ordinal of f.Field within the record type
-// f.Child flows, mirroring Java's FieldValue.resolveFieldPath (name -> ordinal
-// against the input Type, FieldValue.java:273). Returns (ordinal, true) when
-// f.Child flows a RecordType containing f.Field; (0, false) for a nil-Child
-// leaf, a non-record child, or an absent/anonymous field.
-//
-// The ordinal substrate is AUTHORITATIVE for every runtime read.
-// evaluateOrdinal resolves
-// through it, loud on a miss, no name fallback, for frontier and BAKED
-// join-leg references alike (the Resolved fast path below). Side-effect-free,
-// so computing it can never perturb planning. A nil-Child leaf or non-record
-// child yields false and fails loud at evaluation.
+// resolveOrdinal returns the baked path's root ordinal, or (0, false) when
+// there is no resolved path. It never derives an ordinal from a runtime name:
+// evaluateOrdinal treats an unresolved reference as an error.
 func (f *fieldValue) resolveOrdinal() (int, bool) {
 	// A BAKED node's position was resolved at construction
 	// (newFieldValueOfOrdinal / newFieldValueWithResolvedOrdinal) — it is
@@ -1393,9 +1383,8 @@ func (f *fieldValue) resolveOrdinal() (int, bool) {
 // through the walk's own authority (and count it as a leg reference), whereas
 // a FrontierPinned (machinery-owned) path is final.
 //
-// A MULTI-ACCESSOR PATH IS NOT FINAL, and this doc used to say it was — the
-// arity clause reads like a second way of being machinery-owned and is not one.
-// Machinery-ownership is the FRONTIER PIN alone; arity is orthogonal to it. An
+// A multi-accessor path is not necessarily final: machinery ownership is the
+// frontier pin alone, independent of arity. An
 // UNPINNED multi-accessor path (a user-written nested descent, minted as one
 // node with a leg-relative root) still addresses its own source row and still
 // has to be rebound — but this predicate answers false for it, so a walk that
@@ -2790,22 +2779,6 @@ func DependsOnStatementClock(v Value) bool {
 	return false
 }
 
-// evalScalarFunction dispatches catalogued scalar operators, including the
-// internal IF/NULLIF forms that are deliberately excluded from Cascades SQL
-// admission. NULL argument propagates to NULL result (SQL standard), returned
-// as (nil, nil). Genuine decline edges — unknown function, wrong arity, a
-// non-coercible arg type, or an out-of-domain math input that SQL degrades to
-// NULL — also return (nil, nil): the value becomes SQL NULL rather than
-// erroring. The data-dependent error edges return a typed error so the
-// executor maps it to a SQLSTATE:
-//
-//   - ABS(MinInt64)             → *ArithmeticOverflowError       (22003)
-//   - integral MOD(x, 0)        → *ArithmeticDivisionByZeroError (22012)
-//   - SQRT(negative)            → *InvalidArgumentError          (22023)
-//   - GREATEST/LEAST mixed type → *ScalarTypeMismatchError       (22000)
-//
-// (nil, nil) is SQL NULL; (nil, err) is a runtime error — the two are now
-// unambiguous, which is the whole point of the error channel.
 // scalarArgString renders a scalar-function argument as a string. A UUID flows
 // through the value layer as a neutral [16]byte (RFC-162); a bare fmt.Sprintf
 // "%v" would print it as a Go array literal ("[85 14 …]"), so string functions
@@ -2847,6 +2820,22 @@ func statementTime(evalCtx any) time.Time {
 	return time.Now().UTC()
 }
 
+// evalScalarFunction dispatches catalogued scalar operators, including the
+// internal IF/NULLIF forms that are deliberately excluded from Cascades SQL
+// admission. NULL argument propagates to NULL result (SQL standard), returned
+// as (nil, nil). Genuine decline edges — unknown function, wrong arity, a
+// non-coercible arg type, or an out-of-domain math input that SQL degrades to
+// NULL — also return (nil, nil): the value becomes SQL NULL rather than
+// erroring. The data-dependent error edges return a typed error so the
+// executor maps it to a SQLSTATE:
+//
+//   - ABS(MinInt64)             → *ArithmeticOverflowError       (22003)
+//   - integral MOD(x, 0)        → *ArithmeticDivisionByZeroError (22012)
+//   - SQRT(negative)            → *InvalidArgumentError          (22023)
+//   - GREATEST/LEAST mixed type → *ScalarTypeMismatchError       (22000)
+//
+// (nil, nil) is SQL NULL; (nil, err) is a runtime error — the two are now
+// unambiguous, which is the whole point of the error channel.
 func evalScalarFunction(name string, args []any) (any, error) {
 	definition, ok := scalarFunctionDefinitionFor(name)
 	if !ok {
@@ -3546,11 +3535,6 @@ func roundFloat64DecimalPlaces(value float64, decimals int64) float64 {
 	return rounded
 }
 
-// scalarFnInt64Arg coerces a numeric scalar-fn argument to int64.
-// Float coercion only succeeds for whole-valued floats — non-integer
-// floats decline so the fold path returns nil and the runtime
-// evaluator (which can surface 22018 INVALID_CHARACTER_VALUE) handles
-// the conversion error.
 // floorDivInt64 matches Java's Math.floorDiv: the largest int64 less than or
 // equal to the algebraic quotient (truncating division adjusted toward
 // negative infinity when the signs differ and there is a remainder).
@@ -3562,6 +3546,11 @@ func floorDivInt64(a, b int64) int64 {
 	return q
 }
 
+// scalarFnInt64Arg coerces a numeric scalar-fn argument to int64.
+// Float coercion only succeeds for whole-valued floats — non-integer
+// floats decline so the fold path returns nil and the runtime
+// evaluator (which can surface 22018 INVALID_CHARACTER_VALUE) handles
+// the conversion error.
 func scalarFnInt64Arg(v any) (int64, bool) {
 	if i, ok := ToInt64(v); ok {
 		return i, true

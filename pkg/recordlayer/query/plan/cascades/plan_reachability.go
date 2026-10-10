@@ -21,9 +21,7 @@ import (
 // stay green while the optimizer quietly makes decisions on fiction.
 //
 // That silence is why this check is permanent code rather than a throwaway
-// script. It was reconstructed three separate times during RFC-183 — each
-// time to answer a question the existing green signals structurally could not
-// answer.
+// script: it answers a question the other green signals structurally cannot.
 //
 // Comparison is plans.Equals (node-local fields plus recursive children), NOT
 // rendered explain text. Explain is lossy and has hidden the deciding field
@@ -40,8 +38,8 @@ type ReachabilityViolation struct {
 	NumChildren int
 
 	// Reason distinguishes a genuine unreachable edge from the two shapes
-	// that merely LOOK like one. Counting without this conflates them, which
-	// is how RFC-183 §12 over-counted 343 edges down to a true 158.
+	// that merely LOOK like one. Counting without it over-counts real defects
+	// (RFC-183 §12).
 	Reason string
 
 	ParentExplain string
@@ -80,9 +78,8 @@ const (
 // quantifiers, depth 1.
 //
 // It deliberately does NOT recurse into group members. Every expression is
-// checked when IT is yielded, so recursing re-counts the same edge once per
-// ancestor — an earlier revision did exactly that and reported 3541 where the
-// true figure is two orders of magnitude smaller.
+// checked when IT is yielded, so recursing would re-count the same edge once
+// per ancestor.
 //
 // A nil or non-physical expression yields no violations: this asks whether a
 // plan is consistent with its memo, and there is nothing to ask of a non-plan.
@@ -107,13 +104,9 @@ func CheckPlanReachability(expr expressions.RelationalExpression) []Reachability
 // ACTUALLY compared against a group.
 //
 // The compared count is produced HERE, incremented immediately before the
-// member scan, and not by a sibling helper. An earlier revision computed it in
-// a separate countComparedEdges walk, which made the anti-blindness guard
-// unable to detect the very failure it names: stubbing this function to return
-// immediately left the checker totally blind, yet the separate counter still
-// reported 17884 compared edges and the ratchet went GREEN. A guard that
-// cannot observe the thing it guards is worse than none, because it reads as
-// coverage.
+// member scan, and not by a sibling helper. A separately computed count would
+// stay non-zero if this function were stubbed out, so the anti-blindness guard
+// could not detect the very failure it names.
 func collectReachability(expr expressions.RelationalExpression, plan plans.RecordQueryPlan, out *[]ReachabilityViolation) int {
 	// A collapsed plan is its OWN cascades expression: it models every child as a
 	// quantifier, so no ReasonNoQuantifier edge is possible, and each child is
@@ -388,11 +381,8 @@ func (c *ReachabilityCollector) Report(maxSamples int) string {
 	return b.String()
 }
 
-// Reset clears the tally so one caller can measure several runs separately.
-//
-// Kept because a long-lived collector is a legitimate shape, NOT because
-// anything needs to undo another caller's accumulation — that was the old
-// global's job and the reason it could silently zero a live measurement.
+// Reset clears the tally between measurements. Callers sharing a collector
+// must not reset it while another caller's measurement is still in progress.
 func (c *ReachabilityCollector) Reset() {
 	if c == nil {
 		return
@@ -406,18 +396,14 @@ func (c *ReachabilityCollector) Reset() {
 // quantifier's group cannot produce (ReasonAbsent), plus a quantifier ranging
 // over an empty reference (ReasonEmptyGroup, a mis-seeded reference).
 //
-// BOTH are defects, so both are counted. An earlier revision counted only
-// ReasonAbsent, which made the headline "0" a zero of ONE reason code: an
-// EmptyGroup regression would have slipped through the ratchet silently while
-// the number still read zero. EmptyGroup happens to be 0 across the corpus
-// today, so that filtering did not inflate any published figure — but a
-// ratchet that cannot see a whole class of the defect it guards is exactly
-// the "green while broken" failure this file exists to prevent.
+// BOTH are defects, so both are counted: counting only ReasonAbsent would let
+// an EmptyGroup regression through the ratchet while the number still read
+// zero.
 //
 // ReasonNoQuantifier is the ONLY exclusion, and it is a real one rather than
 // convenience: those are leaf adapters that model no quantifier for a plan
-// child BY DESIGN. Folding them in would restate RFC-183 §12's over-count in
-// a new form — a big number whose bulk is architecture working as intended.
+// child BY DESIGN. Folding them in would produce a big number whose bulk is
+// architecture working as intended (RFC-183 §12).
 // They are reported separately by ReachabilityReport and tracked as a
 // modelling gap, not silently dropped.
 func (c *ReachabilityCollector) Count() int {
@@ -469,10 +455,8 @@ func sortedKeys(m map[string]int) []string {
 // This exists because rendered explain repeatedly cannot answer the question.
 // Several PredicatesFilter violations render byte-identical on both sides
 // while plans.Equals rejects them, so the deciding field is one Explain does
-// not print. Without this, the only available move is to guess — and guessing
-// from a lossy rendering is how a working fix nearly got reverted (a
-// `[2 preds]` -> `[1 preds]` change that was a CONJUNCTION, not a dropped
-// predicate) and how InJoin was briefly miscounted as 20 real defects.
+// not print. A lossy rendering misleads: a `[2 preds]` -> `[1 preds]` change
+// can be a CONJUNCTION rather than a dropped predicate.
 //
 // Reports the node TYPE and the shallow field dump of both sides. A node-local
 // mismatch means the defect is at that node; a child-count mismatch means the

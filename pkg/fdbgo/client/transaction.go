@@ -1208,21 +1208,6 @@ func (tx *Transaction) addReadConflictForKeyRYW(key []byte) {
 	}
 }
 
-// rangeConflictExtent clamps a completed GetRange's read-conflict to the data actually returned,
-// mirroring libfdb_c's post-read addConflictRange (ReadYourWrites.actor.cpp:245-319) and the
-// RYW-disabled native path (NativeAPI.actor.cpp:4558-4587). For a plain [begin,end) — both
-// selectors firstGreaterOrEqual, offset +1 — the two C++ clamp sites reduce to one rule:
-//   - forward, more, non-empty → [begin, keyAfter(lastReturnedKey))
-//   - reverse, more, non-empty → [firstReturnedKey, end)
-//   - !more or empty           → [begin, end)
-//
-// lastReturnedKey/firstReturnedKey are both kvs[len-1].Key: forward results are ascending (so
-// kvs[last] is the highest) and reverse results descending (so kvs[last] is the lowest =
-// C++ result.end()[-1].key; readpath.go:781). A more=true read genuinely did not observe the
-// unread tail (forward) / head (reverse), so narrowing there cannot under-conflict; an empty or
-// fully-drained (!more) read keeps the full [begin,end) so a concurrent insert ANYWHERE in the
-// requested range still trips a conflict (phantom protection). more⇒non-empty for Go's row-limited
-// GetRange (readpath.go:752-757,774), so the !more/empty arm is what fires on an empty read. (RFC-121 D1.)
 // normalizeByteTarget applies the C API's boundary normalization for a per-fetch byte target,
 // porting fdb_c.cpp:993:
 //
@@ -1248,6 +1233,21 @@ func normalizeByteTarget(byteTarget int) (int, error) {
 	return byteTarget, nil
 }
 
+// rangeConflictExtent clamps a completed GetRange's read-conflict to the data actually returned,
+// mirroring libfdb_c's post-read addConflictRange (ReadYourWrites.actor.cpp:245-319) and the
+// RYW-disabled native path (NativeAPI.actor.cpp:4558-4587). For a plain [begin,end) — both
+// selectors firstGreaterOrEqual, offset +1 — the two C++ clamp sites reduce to one rule:
+//   - forward, more, non-empty → [begin, keyAfter(lastReturnedKey))
+//   - reverse, more, non-empty → [firstReturnedKey, end)
+//   - !more or empty           → [begin, end)
+//
+// lastReturnedKey/firstReturnedKey are both kvs[len-1].Key: forward results are ascending (so
+// kvs[last] is the highest) and reverse results descending (so kvs[last] is the lowest =
+// C++ result.end()[-1].key; readpath.go:781). A more=true read genuinely did not observe the
+// unread tail (forward) / head (reverse), so narrowing there cannot under-conflict; an empty or
+// fully-drained (!more) read keeps the full [begin,end) so a concurrent insert ANYWHERE in the
+// requested range still trips a conflict (phantom protection). more⇒non-empty for Go's row-limited
+// GetRange (readpath.go:752-757,774), so the !more/empty arm is what fires on an empty read. (RFC-121 D1.)
 func rangeConflictExtent(begin, end []byte, kvs []KeyValue, more, reverse bool) (cBegin, cEnd []byte) {
 	if !more || len(kvs) == 0 {
 		return begin, end

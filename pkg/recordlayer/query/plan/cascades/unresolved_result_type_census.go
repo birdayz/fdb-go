@@ -12,35 +12,19 @@ import (
 
 // The UNRESOLVED-RESULT-TYPE census (RFC-213 §7).
 //
-// It sizes the PAYOFF of deriving a plan's result type from its result value,
-// and it exists because RFC-213's first draft could only INFER that payoff.
+// It sizes the PAYOFF of deriving a plan's result type from its result value.
 //
-// Twelve plans returned values.UnknownType from GetResultType when this census
-// was built, and every consumer that reads a result type fails CLOSED on one —
+// Every consumer that reads a result type fails CLOSED on values.UnknownType —
 // type-asserts *values.RecordType, misses, and declines. Declining is
 // INVISIBLE: it costs an optimization or a proof, never a wrong row, so no test
-// goes red and no number moves. That is precisely why the size of the loss had
-// to be counted rather than argued.
+// goes red and no number moves. That is why the loss is counted rather than
+// argued.
 //
-// RFC-232 CLOSED THAT POPULATION, so this paragraph is history: stubInventory()
+// RFC-232 closed the population of plans returning UnknownType: stubInventory()
 // is empty, and findStubs finds no UNCONDITIONAL stub among the non-test plans
 // under planPkgDir. "Unconditional" is the word the instrument rests on --
 // explode.go still returns the singleton on a branch, through GetElementType(),
 // and the detector deliberately does not count it.
-//
-// HISTORICAL, and the figures below are frozen at the readings named with them.
-// RFC-213 §6 measured 135 unresolved reads over FIVE consumers -- 31 at
-// distinctKeyColumns, 104 at planRowRecordType, and zero at the other three,
-// one of which (predicatesFilterIsFullPKPointProbe) declined none of 14,486.
-// All 135 flipped: at d15a81c07 the gate recorded four consumers at UNRESOLVED
-// 0, planRowRecordType among them at 784 resolved, under MinSites 4. RFC-232 is
-// not the sole cause -- RFC-226 landed inside the same window -- so what is
-// provable is that the reads flipped, not which change flipped each one.
-//
-// Two of those consumers were deleted AFTERWARDS by RFC-235, when the
-// three-quantifier NLJ arm that was their only live caller went away. That is a
-// separate event, and not a way of retiring reads instead of fixing them: the
-// zero predates it. The gate reads the two survivors today.
 //
 // The census stays as the instrument that would show the population coming
 // back, and the sqldriver gate keeps asserting the consumers are still reached,

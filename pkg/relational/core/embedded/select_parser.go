@@ -668,9 +668,6 @@ func extractAwfFields(awf *antlrgen.AggregateWindowedFunctionContext) (funcName,
 	return funcName, argCol, argExpr, outName, distinct, argQualified, argBare, argQualifier, argSegs, true
 }
 
-// columnNameFromExpr extracts a plain column name (or aggregate output name like
-// "COUNT(*)") from an IExpressionContext.
-// context is used in error messages (e.g. "SELECT expression", "ORDER BY expression").
 // exprIsBareColumnRef reports whether expr is a plain column reference
 // with exactly ONE identifier segment — the only shape SQL binds to an
 // output alias. Everything else (qualified `d.x`, aggregate or computed
@@ -736,6 +733,9 @@ func splitColumnRef(expr antlrgen.IExpressionContext) (bare, qualifier string, q
 	return bare, qualifier, qualified, parts
 }
 
+// columnNameFromExpr extracts a plain column name (or aggregate output name like
+// "COUNT(*)") from an IExpressionContext.
+// context is used in error messages (e.g. "SELECT expression", "ORDER BY expression").
 func columnNameFromExpr(expr antlrgen.IExpressionContext, context string) (string, error) {
 	pred, ok := expr.(*antlrgen.PredicatedExpressionContext)
 	if !ok {
@@ -782,8 +782,6 @@ func columnNameFromExpr(expr antlrgen.IExpressionContext, context string) (strin
 	}
 }
 
-// selectExprToColumnName extracts a plain column name and optional alias from a
-// SelectExpressionElementContext. Returns (colName, alias, error).
 // selectOutputAlias mirrors Java ExpressionVisitor.visitSelectExpressionElement:
 // a trailing identifier names the SELECT output only when introduced by AS.
 // FROM and GROUP BY names have separate grammar contracts.
@@ -846,6 +844,8 @@ func starRecordName(e *antlrgen.SelectExpressionElementContext) string {
 	return ""
 }
 
+// selectExprToColumnName extracts a plain column name and optional alias from a
+// SelectExpressionElementContext. Returns (colName, alias, error).
 func selectExprToColumnName(e *antlrgen.SelectExpressionElementContext) (string, string, error) {
 	colName, err := columnNameFromExpr(e.Expression(), "SELECT expression")
 	if err != nil {

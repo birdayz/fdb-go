@@ -118,9 +118,7 @@ func (p *RecordQueryPredicatesFilterPlan) GetInner() RecordQueryPlan {
 
 // GetInnerQuantifier returns the live child quantifier — the single memo edge the
 // filter ranges over. derivationsForPredicatesFilter reads its alias to translate
-// the predicates' correlations; since RFC-184 W2 the memo holds the bare plan (no
-// physicalPredicatesFilterWrapper whose innerQuant field it used to read), this
-// exposes the same edge.
+// the predicates' correlations.
 func (p *RecordQueryPredicatesFilterPlan) GetInnerQuantifier() expressions.Quantifier {
 	return p.innerQ
 }

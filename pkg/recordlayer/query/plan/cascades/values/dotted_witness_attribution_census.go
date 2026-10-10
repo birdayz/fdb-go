@@ -8,74 +8,8 @@ import (
 	"sync"
 )
 
-// THE DOTTED-WITNESS ATTRIBUTION census — RFC-212 §10.3's DELIVERABLE 1, and it
-// gates the retitling it precedes.
-//
-// The executor's dotted leg-column arm answers on exactly two names over the
-// real-FDB corpus, `C.CV` and `I.QTY`, and the erratum deliberately refused to
-// claim they share a producer: the leg-column provenance census reports them
-// under DIFFERENT owners (`q$3122` over `[C E]`, `q$236051` over `[O I]`), and
-// asserting they retire together would be the same true-measurement /
-// false-corollary error that killed §1.1's first target.
-//
-// So this measures it instead of assuming it. The question is narrow:
-//
-//	for each name the dotted arm answers, WHICH producer built the leg type
-//	that carried it?
-//
-// ATTRIBUTION IS BY IDENTITY, NOT BY NAME MATCH, which is the whole point of
-// doing it this way. The producer registers the (correlation, title) pair it
-// mints; the reader reports the OWNER correlation it was handed. A hit requires
-// the owner to BE a correlation this producer minted AND the name to be the
-// title it minted for that correlation. Matching on the name alone would prove
-// only that two strings agree, which is how a corollary gets mistaken for a
-// measurement.
-//
-// The answer scopes the retitling:
-//
-//   - BOTH attributed → the retitling retires the whole arm, day-one scope is
-//     the whole arm.
-//   - ONE attributed → scope to that one; the other gets its own producer hunt
-//     and its own booking. The convenient answer must not become the assumed one.
-//   - NEITHER → the corrected target is wrong too, and that is a third refutation
-//     rather than a surprise.
-//
-// WHAT IT MEASURED — TWO ROUNDS, and the first one is kept because it is the
-// finding, not a false start.
-//
-// ROUND 1 instrumented only `clusteredOuterOrdinalSeed`, the producer RFC-212
-// §10.3 v1 named. Whole real-FDB sqldriver corpus, uncached, EXIT=0:
-//
-//	inner-leg titles minted 19; dotted-arm names observed 2
-//	  NOT attributed (2):
-//	    C.CV (owner q$3122 ...), I.QTY (owner q$395174 ...)
-//
-// NEITHER witness came from it, over a run where it minted 19 titles — so the
-// instrument was live and the zero was a reading, not an absence. That refuted
-// §10.3 v1 BEFORE any retitling was written, which is the entire purpose of
-// gating the conversion on this deliverable.
-//
-// ROUND 2 instrumented BOTH seeds. There are two: `clusteredOuterOrdinalSeed`
-// serves the GATED MULTI-TABLE outer, and `scalarSubqueryOrdinalSeed`
-// (scalar_subquery_seed.go) serves the SINGLE-SOURCE outer (clusterArity == 1) —
-// the one clustered_outer_scalar.go's own comment calls "the single-source
-// seed". Same corpus, uncached, EXIT=0:
-//
-//	inner-leg titles minted 274; dotted-arm names observed 2
-//	  ATTRIBUTED to a correlated-scalar seed inner leg (2):
-//	    C.CV (owner q$3122) -> scalarSubqueryOrdinalSeed, minted title "C.CV"
-//	    I.QTY (owner q$336732) -> scalarSubqueryOrdinalSeed, minted title "I.QTY"
-//
-// BOTH witnesses attribute to `scalarSubqueryOrdinalSeed`, by IDENTITY. So the
-// retitling target is a producer SWAP from §10.3 v1, and the scope question is
-// answered in the same breath: both witnesses share one producer, so the
-// retitling retires the whole arm rather than half of it.
-//
-// The machine-minted `q$N` counter differs between runs (q$395174 in round 1,
-// q$336732 in round 2 for the same logical leg), which is why attribution is
-// computed WITHIN a run and never by quoting an id across runs.
-//
-// GATED by LegIdentityCensusEnabled, like every census on this path.
+// Dotted-witness attribution joins reader observations to producer registrations
+// by correlation and title; matching names alone cannot establish provenance.
 
 // mintedLeg is one inner-leg registration: who minted it, and the title given.
 type mintedLeg struct {
@@ -83,17 +17,8 @@ type mintedLeg struct {
 	title    string
 }
 
-// attributionState is the census's whole state, passed EXPLICITLY to every
-// decision below.
-//
-// It is split out from the process globals for the reason this path's other
-// censuses give: a corpus run exercises only the arms the corpus happens to
-// take, so an arm that is rare today — or that a pending conversion will make
-// reachable tomorrow — ships untested and its first real firing reads as a
-// finding rather than as an untested branch. The MIDDLE arm below is exactly
-// that case: it fires when a leg's title changed between mint and read, which is
-// what the RFC-212 §11.3 retitling does by definition, and no corpus run has
-// ever reached it.
+// attributionState separates decision inputs from process globals so tests can
+// drive attribution cases that the corpus does not reach.
 type attributionState struct {
 	// minted maps a correlation to the producer that minted its inner leg and
 	// the title that leg's flowed column was given.
@@ -294,10 +219,9 @@ type DottedWitnessFloors struct {
 	// Observed floors the dotted-arm names. A partition over an empty observed
 	// population reads exactly like a decided one.
 	Observed int
-	// Minted floors the registrations. This is the direction the census's first
-	// round rested on and nothing checked: the NEITHER finding was only load
-	// bearing because the producers minted titles on that run, so the instrument
-	// was demonstrably live. A run minting ZERO reports NOT attributed for every
+	// Minted floors the registrations. A NOT-attributed finding is load-bearing
+	// only when the producers minted titles on that run, so the instrument was
+	// demonstrably live. A run minting ZERO reports NOT attributed for every
 	// name, vacuously, and looks identical to a real refutation.
 	Minted int
 }

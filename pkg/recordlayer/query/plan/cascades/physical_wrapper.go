@@ -232,47 +232,6 @@ func findPhysicalPlan(ref *expressions.Reference) plans.RecordQueryPlan {
 	return nil
 }
 
-// findPhysicalExpr returns a physical-plan expression from ref, FINAL members
-// first. Used by implement rules to obtain the existing wrapper (already
-// memoized in the inner Reference by a prior implement-rule fire) without
-// re-wrapping from scratch.
-//
-// See findPhysicalPlan for why the final set is searched first and why the
-// exploratory fallback stays.
-//
-// The exploratory fallback still matters, but for a different reason than it
-// used to. MemoizeFinalExpression now genuinely lands plans in the FINAL set
-// (FinalOfAtStage), so the finals-first loop below is live at the
-// push-through sites rather than inert. What the fallback covers is rules
-// calling this MID-PLANNING, before a group has been finalized.
-//
-// A finals-ONLY tightening here is still not safe, and the reason is
-// measured: at these call sites 3821 references have ZERO final members
-// (against 2744 with exactly one), so refusing the exploratory set would make
-// a large fraction of rules silently decline. That number is also why P5's
-// terminal form is not reachable yet — see below.
-//
-// Java dereferences a physical quantifier with getOnlyElement over final
-// expressions, but RFC-224 established that singleton finals are Java's
-// mechanism, not Go's invariant. Go deliberately keeps alternatives required
-// by distinct physical properties and makes extraction unambiguous through a
-// stamped winner or cheapest compatible physical fallback. The 1186/1125
-// multi-final measurements here were taken MID-PLANNING, where alternatives
-// are expected; they are not a blocker to plans holding quantifiers.
-//
-// DO NOT make this cost-ranked. Picking the "cheapest" member here looks like
-// an obvious improvement, but it is wrong, and measurably so: ranking with
-// PlanningCostModelLess ignores the REQUESTED ORDERING, so a rule asking for a
-// child gets whichever member is cheapest rather than one that satisfies the
-// ordering its parent needs. Tried, and it turned `SELECT a, b FROM ab WHERE
-// a = 1 ORDER BY a DESC` into an ASCENDING result (pinned by yamsql
-// order_by_elimination#36) and moved 79 plan shapes.
-//
-// Cost is the memo's job, not a rule's. A rule wants A VALID CHILD; which
-// alternative wins is decided by OptimizeGroup under the ordering constraints,
-// and extraction then reads that winner through the ordering-aware winner
-// lookup. A cost comparison at rule time is a second, ordering-blind optimizer
-// running outside the cost framework.
 // physicalMembersForParentEnumeration returns EVERY physical member of ref that
 // a parent construction should be fired over — the cardinality answer to
 // findPhysicalExpr's single pick.
@@ -325,6 +284,21 @@ func physicalMembersForParentEnumeration(ref *expressions.Reference) []expressio
 	return out
 }
 
+// findPhysicalExpr returns a physical-plan expression from ref, FINAL members
+// first. Used by implement rules to obtain the existing wrapper (already
+// memoized in the inner Reference by a prior implement-rule fire) without
+// re-wrapping from scratch.
+//
+// See findPhysicalPlan for why the final set is searched first and why the
+// exploratory fallback stays.
+//
+// The exploratory fallback serves rules running before a group is finalized.
+// Go retains alternatives with distinct physical properties (RFC-224), rather
+// than requiring Java's singleton final set.
+//
+// Do not cost-rank this lookup: PlanningCostModelLess alone ignores requested
+// ordering and can select an ascending child for ORDER BY ... DESC. OptimizeGroup
+// chooses the winner under ordering constraints; extraction uses that winner.
 func findPhysicalExpr(ref *expressions.Reference) expressions.RelationalExpression {
 	if ref == nil {
 		return nil

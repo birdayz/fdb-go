@@ -110,9 +110,7 @@ func unnestOrdinalRecordSprint(row *executor.PositionalRow) string {
 // rendered element-wise so its string elements are raw too (both pinned in
 // TestUnnestSprintIsStableAcrossBuilds). What remains is a string nested inside a
 // value fmt renders as ONE blob — a proto message's own string field, a struct
-// field. Its spacing IS collapsed. An earlier version of this note claimed no
-// real text was ever touched; that was false for composites, and this is the
-// honest boundary.
+// field. Its spacing IS collapsed.
 func unnestCollapseSpaces(s string) string {
 	if !strings.Contains(s, "  ") {
 		return s

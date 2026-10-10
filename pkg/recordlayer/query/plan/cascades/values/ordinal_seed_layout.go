@@ -42,35 +42,20 @@ type OrdinalSeedLegWindow struct {
 	// row occupies this window, carried VERBATIM from the seed's own
 	// QuantifiedObjectValue.
 	//
-	// It used to be minted from the map KEY instead — NamedCorrelationIdentifier of
-	// the upper-folded alias — with the QOV's correlation in scope at both
-	// construction sites. That kept Name == Alias.Name() trivially true, but by
-	// making the identity a function of the text rather than the other way round:
-	// the fold is a no-op where the correlation is already upper and manufactures a
-	// forgery where it is not, since the machine namespace is LOWERCASE and folding
-	// a minted q$N yields the Q$N that SameLeg exists to exclude.
+	// It is never minted from the upper-folded alias text: the fold is a no-op
+	// where the correlation is already upper and manufactures a forgery where it
+	// is not, since the machine namespace is LOWERCASE and folding a minted q$N
+	// yields the Q$N that SameLeg exists to exclude.
 	//
-	// The map's KEYS are now this same identifier, so Alias is no longer one of two
-	// namespaces held apart — it is the only one. Every keyed reader was measured
-	// first, by a census built to answer exactly that question and retired with it:
-	// over the real-FDB corpus all 1400 lookups had a correlation in hand and the
-	// identity selected the same window the fold did, on every one; the two readers
-	// that had only text were unreachable by panic probe across the whole
-	// relational tree. That is a DATED POINT MEASUREMENT of a namespace that no
-	// longer exists, not a live claim.
+	// The map's KEYS are this same identifier, so there is one namespace, not two
+	// held apart. A text key would merge the two alias namespaces the rest of this
+	// package keeps deliberately DISJOINT — user correlations upper-folded at the
+	// semantic scope, machine mints lowercase — so a quoted "q$5" and a
+	// planner-minted q$5 would be one key while being two legs.
 	//
-	// What stands in its place is the seed-window READER census
-	// (seed_window_reader_census.go), a STANDING instrument: it floors each of the
-	// five keyed readers so one going dark reds instead of printing a clean-looking
-	// zero, and it hard-zeros the two DECLINE classes that replaced the text
-	// lookups. The conversion's own evidence is history; the readers' continued
-	// exercise is checked on every suite run.
-	//
-	// What the key change buys is not tidiness. A text key merges the two alias
-	// namespaces the rest of this package keeps deliberately DISJOINT — user
-	// correlations upper-folded at the semantic scope, machine mints lowercase — so
-	// a quoted "q$5" and a planner-minted q$5 were one key while being two legs.
-	// SameLeg exists to refuse exactly that, and the map used to undo it.
+	// AssertSeedWindowReaderCensus floors each of the five keyed readers so one
+	// going dark reds instead of printing a clean-looking zero, and hard-zeros its
+	// two DECLINE classes.
 	Alias CorrelationIdentifier
 }
 
@@ -136,13 +121,8 @@ func OrdinalSeedLegWindows(rc *RecordConstructorValue) (map[CorrelationIdentifie
 // answers the different question "how many legs TILE this row, and what shape is
 // each".
 //
-// ITS ONE PRODUCTION CONSUMER IS GONE. It served an orientation check inside the
-// three-quantifier NLJ arm, and both retired with RFC-235. The run list is kept
-// because the question it answers is not derivable from the map — finalization
-// replaces a box run's entry with a narrower sub-window, after which the map no
-// longer states which windows tile the row — so a future consumer would have to
-// rebuild exactly this. A caller returning here should say why the map cannot
-// serve it.
+// The run list preserves tiling that finalization's narrower map entries lose;
+// it has no production consumer.
 func OrdinalSeedLegLayout(rc *RecordConstructorValue) (map[CorrelationIdentifier]OrdinalSeedLegWindow, *RecordType, []OrdinalSeedLegWindow) {
 	return ordinalSeedLegWindows(rc, true)
 }
@@ -427,12 +407,8 @@ func finalizeSeedWindows(windows map[CorrelationIdentifier]OrdinalSeedLegWindow,
 			// can notice, because a window filed under the zero key is
 			// indistinguishable from a window nobody filed.
 			//
-			// NewRecordTypeLeg's doc states this hazard about its own construction
-			// ("a leg whose identity is the zero CorrelationIdentifier — which every
-			// reader then fails to bind, silently ... deleting `Alias:` from two
-			// producers left the whole suite green"). The compile-time half of that
-			// defence is the positional constructor; this is the runtime half, at the
-			// one place where two such legs become one.
+			// NewRecordTypeLeg requires an explicit identity argument; this runtime
+			// check also rejects zero identities supplied through literals or callers.
 			//
 			// LOUD, not skip-this-leg: a seed missing a sub-window is a seed whose
 			// qualified reads resolve to the wrong slots, so the honest answer is no
@@ -441,11 +417,9 @@ func finalizeSeedWindows(windows map[CorrelationIdentifier]OrdinalSeedLegWindow,
 				return nil, nil, nil
 			}
 			if LegIdentityCensusEnabled() {
-				// The RETIRED predicate is reproduced from the identity so the census
-				// keeps measuring what it always measured. The old `alias` was the map
-				// key, which WAS the upper fold of this window's own correlation — so
-				// spelling it that way here is not an approximation of the retired test,
-				// it is the retired test with its input named honestly.
+				// The census's text predicate compares Name against the upper fold of
+				// this window's own correlation — exactly the text a folded key would
+				// have held.
 				RecordLegIdentityConversion(LegSiteFinalizeSeedWindows, leg.Alias, w.Alias,
 					leg.Name == strings.ToUpper(w.Alias.Name()))
 				RecordLegIdentityLeg(leg)
@@ -476,28 +450,16 @@ func finalizeSeedWindows(windows map[CorrelationIdentifier]OrdinalSeedLegWindow,
 			// IDENTITY and the box run's key is the minted `C$BOX` binding's, so those
 			// are two different identifiers: the `taken` test below misses and the leaf
 			// sub-window is filed anyway — ADDED beside the box run rather than
-			// replacing it. The retired TEXT predicate (`leg.Name == alias`) declined
-			// that pair too, so the conversion changed nothing for this producer, and
-			// the premise test pins both arms.
+			// replacing it. The premise test pins both arms.
 			//
-			// So the two producers' dispositions above survive the key change intact:
-			// producer 1 makes the box's correlation and its rightmost leaf's the SAME
-			// identifier (REPLACE), producer 2's $BOX suffix makes them different ones
-			// (ADD beside). What the key change removes is the case-folding that used
-			// to sit under both — a buried `c` and a box `C` collided as one text key
-			// while being two identities, which is the collision SameLeg exists to
-			// refuse.
+			// Keying by identity rather than folded text keeps a buried `c` and a box
+			// `C` apart: as one text key they would collide while being two
+			// identities, which is the collision SameLeg exists to refuse.
 			//
-			// Three earlier justifications for keeping a TEXT comparison here are
-			// withdrawn, and the last of them was wrong in an instructive way. It claimed
-			// the two identifiers are "legitimately different — box quantifier vs leaf",
-			// and cited a red in the planner/seed cross-agreement fixture as proof the
-			// site could not convert. Measured: over the real-FDB corpus this comparison
-			// decides IDENTICALLY in both namespaces on all 1311 pairs, and the fixture's
-			// red came from the fixture, which hand-minted the box correlation as
-			// LOWERCASE "c" where production mints sourceAlias(box) = "C". The convention
-			// makes the two identifiers EQUAL; it does not make them different — under
-			// producer 1. Producer 2's $BOX suffix makes them differ by design; see above.
+			// Under producer 1 the box and leaf identifiers are EQUAL by convention,
+			// not "box quantifier vs leaf": production mints sourceAlias(box) = "C". A
+			// fixture that hand-mints the box correlation as LOWERCASE "c" reds the
+			// planner/seed cross-agreement test for that reason alone.
 			if !SameLeg(leg.Alias, w.Alias) {
 				if _, taken := windows[leg.Alias]; taken {
 					continue
@@ -605,9 +567,7 @@ func finalizeSeedWindows(windows map[CorrelationIdentifier]OrdinalSeedLegWindow,
 		}
 		// The IDENTITY is the map key and the window's Alias — one fact, stated once.
 		// The NAME comes from the producer-local side table, and the two entries in
-		// that table have DIFFERENT provenance, which is worth stating precisely
-		// because an earlier version of this comment claimed they never derive from
-		// each other and that is false for one of them:
+		// that table have DIFFERENT provenance:
 		//
 		//   - a TOP-LEVEL leg's name IS derived from its identity —
 		//     `names[alias] = strings.ToUpper(alias.Name())`, right where the window

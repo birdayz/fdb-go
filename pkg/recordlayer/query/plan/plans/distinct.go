@@ -68,9 +68,9 @@ func NewRecordQueryDistinctPlan(inner RecordQueryPlan) (*RecordQueryDistinctPlan
 // NewRecordQueryStreamingDistinctPlan is NewRecordQueryDistinctPlan with the
 // ordering-critical streaming flag set.
 //
-// It exists so the flag can be chosen at CONSTRUCTION and nowhere else. It used to
-// be an exported field, which made it settable on a finished plan from any package —
-// and it is the FIRST component of this plan's structuralKey, so such a write
+// It exists so the flag can be chosen at CONSTRUCTION and nowhere else. An exported
+// field would be settable on a finished plan from any package — and the flag is
+// the FIRST component of this plan's structuralKey, so such a write
 // rewrites the identity of a plan the memo may already hold, under an unchanged
 // pointer that the memo's owner check cannot distinguish from the original.
 //
@@ -116,8 +116,7 @@ func (p *RecordQueryDistinctPlan) GetInner() RecordQueryPlan {
 
 // GetInnerQuantifier returns the live child quantifier — the single memo edge
 // the distinct ranges over. The push rules read it to reach the distinct's inner
-// group; since RFC-184 W2 the memo holds the bare plan (no physicalDistinctWrapper
-// whose innerQuant field they used to read), this exposes the same edge.
+// group, which the memo holds as the bare plan (RFC-184 W2).
 func (p *RecordQueryDistinctPlan) GetInnerQuantifier() expressions.Quantifier {
 	return p.innerQ
 }

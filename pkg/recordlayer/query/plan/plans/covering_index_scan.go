@@ -258,22 +258,11 @@ var _ DistinctProofStampable = (*RecordQueryCoveringIndexPlan)(nil)
 // Each one here answers a LIVE consumer that reaches this plan type — the
 // baked-reference walk, the ordering derivations, the primary-key property.
 //
-// GetFlowedType and IsUnique were briefly DELETED on the argument that they had
-// no such consumer. That argument was wrong in a way worth recording, because
-// the deletion of a delegator cannot fail loudly. Both names are reachable
-// through ANONYMOUS-INTERFACE probes — `x.(interface{ IsUnique() bool })` — and
-// when a probe stops matching there is no compiler error and no panic: the
-// assertion simply returns false, which reads as "this plan is not unique"
-// rather than as "nobody asked the right type". The tree has two such probes
-// today (abstract_data_access_rule.go, in candidateScanProps and
-// candidateUnique). Their receiver is a MatchCandidate, which a plan cannot be,
-// so those two specifically could not have broken — but establishing that took
-// a grep, and the next probe added does not come with one.
-//
-// So both are restored, and the standing objection to an unconsumed delegator
-// is answered by giving them a consumer: TestCoveringPlanDelegatesUniqueAndFlowedType
-// pins that each returns the wrapped scan's answer, so the delegation is a
-// tested claim rather than a surface nobody exercises.
+// Callers can probe GetFlowedType and IsUnique through anonymous interfaces
+// such as `x.(interface{ IsUnique() bool })`. Removing a method would make such
+// a probe return false rather than cause a compile error.
+// TestCoveringPlanDelegatesUniqueAndFlowedType pins that each returns the
+// wrapped scan's answer.
 
 // GetScanComparisons delegates to the inner scan.
 func (p *RecordQueryCoveringIndexPlan) GetScanComparisons() []*predicates.ComparisonRange {

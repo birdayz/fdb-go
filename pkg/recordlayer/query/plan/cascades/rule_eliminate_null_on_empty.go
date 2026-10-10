@@ -20,11 +20,11 @@ import (
 // REJECTS the null tuple that the null-on-empty quantifier would inject at that
 // quantifier's alias.
 //
-// Ports Java's EliminateNullOnEmptyRule (#4186), which REPLACED the buggy
-// PullUpNullOnEmptyRule. PullUp's "positional-predicate-equality heuristic"
-// (predicates.equals(otherPredicates)) was wrong with predicates that ACCEPT the
-// injected null tuple (`… WHERE x IS NULL` over a null-on-empty leg) — it assumed
-// the null tuple is always rejected. The correct test is semantic: substitute a
+// Ports Java's EliminateNullOnEmptyRule (#4186), which replaces Java's
+// PullUpNullOnEmptyRule. A positional predicate-equality heuristic
+// (predicates.equals(otherPredicates)) is wrong with predicates that ACCEPT the
+// injected null tuple (`… WHERE x IS NULL` over a null-on-empty leg), because it
+// assumes the null tuple is always rejected. The correct test is semantic: substitute a
 // typed NullValue at the quantifier's alias, constant-fold the predicate, and the
 // quantifier is eligible iff the fold is FALSE or NULL (both filter the row out).
 //

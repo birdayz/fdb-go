@@ -56,9 +56,8 @@ import (
 // support it. All three seed-tested branch points are REACHED and take the name
 // arm ZERO times: the seed over them is already windowed, so the conversion a
 // lifted seed gate would perform has already happened on the other side of each
-// branch. Read without the arms, those three zeros say "never reached" — the
-// opposite claim, with the opposite follow-up — and a prior revision of this
-// header said exactly that.
+// branch. Read without the arms, those three zeros would say "never reached" —
+// the opposite claim, with the opposite follow-up.
 //
 // The other two sites apply no seed test, are reached 28 times, and mint nothing.
 // So the qualified-name channel this mint is supposed to feed carries no name at
@@ -296,10 +295,9 @@ func RecordUnnestLegMintArm(site UnnestLegMintSite, arm UnnestLegMintArm) {
 // `ordinalSeed` arm, and `bakeInnerExistsPredicateOrdinal`. This census
 // instruments the first two directly as ARMS; the third is reached only through
 // the two planTimeBake arms, so its calls are attributed to no arm and show up
-// as the gap between this total and the summed ordinal-twin arms. (An earlier
-// revision of this comment said "four callers", counting the two planTimeBake
-// arms as separate callers of the twin — they are two callers of
-// `bakeInnerExistsPredicateOrdinal`, which is one caller of the twin.)
+// as the gap between this total and the summed ordinal-twin arms. (The two
+// planTimeBake arms are two callers of `bakeInnerExistsPredicateOrdinal`, which
+// is one caller of the twin.)
 func RecordUnnestLegOrdinalTwinCall() {
 	unnestLegMintMu.Lock()
 	defer unnestLegMintMu.Unlock()
@@ -434,10 +432,9 @@ func AssertUnnestLegMintCensus(w io.Writer, executorDottedNames []string) bool {
 // against its INDEPENDENT reach counter, and checks that a branchless site
 // records neither.
 //
-// This is the check the arm matrix's own doc claimed and did not have. Without
-// it, an arm added to one of these branches without a recorder does not surface
-// as a gap — it silently shrinks the branch total, because the renderer used to
-// compute that total AS the arm sum. The joinPredicate branch is the sharp case:
+// Without it, an arm added to one of these branches without a recorder does not
+// surface as a gap — a total computed AS the arm sum silently shrinks with it.
+// The joinPredicate branch is the sharp case:
 // its census guard doubles as the third arm, so an `else if` inserted ahead of
 // that guard steals from `leg-relative` with nothing to notice.
 func assertUnnestLegMintArmPartition(

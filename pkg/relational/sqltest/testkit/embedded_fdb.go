@@ -84,10 +84,7 @@ func Main(m *testing.M) {
 // The gate lives HERE, in TestMain, rather than in a test, because the question
 // is about the traffic of the WHOLE corpus and Go gives tests no ordering: only
 // after m.Run() is the population complete. It is unconditional rather than
-// env-gated because a proof nothing in CI runs is not a proof — the previous
-// env-gated form reported the real numbers only under a manual
-// LEG_IDENTITY_CENSUS=1 invocation, while the in-CI assertion it delegated to
-// saw six of the eight sites at zero.
+// env-gated because a proof nothing in CI runs is not a proof.
 //
 // Enabling the counters always is affordable HERE and nowhere else: the gate
 // exists so production never pays an atomic in the per-row executor loop, and a
@@ -115,11 +112,8 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	// ratchet's accessor_name_path entry, and zero vs non-zero there mean opposite
 	// things about where that debt actually lives.
 	values.DumpAccessorPathCensus(os.Stderr, "sqldriver real-FDB corpus")
-	// ASSERTED, not merely printed. Both of these were printed only, which made
-	// the numbers the lazy-render retirement rests on a report nothing checked —
-	// they survived in one unparsed `why` string on the field-decision ratchet, so
-	// a regression back to 4 declines and 21,865 rendered mints would have failed
-	// nothing at all.
+	// ASSERTED, not merely printed: the lazy-render retirement rests on these
+	// numbers, and a printed report fails nothing.
 	if failed := assertAccessorPathCensus(os.Stderr); failed && code == 0 {
 		code = 1
 	}
@@ -150,9 +144,7 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", values.FormatDottedLegQualifierCensus())
 	// The seed-window READER census: the five keyed readers of an
 	// OrdinalSeedLegWindows map, plus the two decline classes that are hard zeros.
-	// Its predecessor measured whether a text key and an identity key selected the
-	// same window; that question died with the text namespace, but the five
-	// readers did not, and nothing else asserts they still run. It is here rather
+	// Nothing else asserts the five readers still run. It is here rather
 	// than in a test for the reason every census on this path is: the population
 	// is only complete after m.Run().
 	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", values.FormatSeedWindowReaderCensus())
@@ -190,10 +182,8 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", cascades.FormatUnresolvedResultTypeCensus())
 
 	// THE GATES, run through the reporter so a failure carries a `--- FAIL:` line
-	// naming which one moved. They used to assert inline here, each writing prose
-	// to stderr and bumping the exit code, which produced a red package with no
-	// failure marker anywhere in its output — see census_gate_reporting_test.go
-	// for what that cost and why the gates cannot simply become test functions.
+	// naming which one moved; census_gate_reporting_test.go explains why the
+	// gates cannot simply become test functions.
 	//
 	// Their reports are emitted together at the end rather than interleaved with
 	// the census dumps above, because the SET of gates that moved is the
@@ -237,92 +227,18 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	return code
 }
 
-// legColumnProvenanceFloors is the minimum population the leg-column provenance
-// census must report over the whole suite.
+// legColumnProvenanceFloors is EMPTY: the reader is retired.
 //
-// RETIREMENT MEASURED, AND IT IS A DRAIN RATHER THAN A REROUTE. RFC-212 §11.3
-// retitled the producer and the dotted arm went from 2 answers to 0. The
-// statistic that separates those two readings is flatHit, which was 120 on ALL
-// FIVE of the runs enumerated below — the one number on this census that did not
-// move while the call total swung by nearly 300 — and is now 122. Exactly +2,
-// exactly the two dotted hits that disappeared, landing in the arm they must land
-// in when the name stops splitting: the FLAT lookup answers them instead. A
-// reroute would show no compensating +2 in any sibling arm.
+// RFC-212 §11.3 retitled the producer, so the dotted arm answers zero times over
+// the corpus (those names resolve through the FLAT lookup instead), and
+// adaptLegPositional's layout-permutation gather, the reader's only driver, is
+// skipped because the exact-ordinal seed bakes against the chosen physical leg
+// layout (Java's translateCorrelations behaviour), so every leg row passes
+// positionalMatchesLegType.
 //
-// The drift also runs the SAFE way. The AFTER run reported 2534 calls, inside the
-// magnitude below; the BEFORE run reported 1174, an unexplained low outlier at
-// less than half the band floor — and NOT a narrowed run (no -test.run, and the
-// harness printed none of its narrowing notices). So the zero was measured on the
-// LARGER population, 2.16x the before side, which is the direction that cannot
-// manufacture a zero.
-//
-// RE-MEASURED over this corpus, 2026-08-06: dotted hits available 2 (`C.CV`,
-// `I.QTY`), unstated 0, diverged 0 — STABLE across five full-suite runs. The
-// CALL total is not stable and is quoted as a MAGNITUDE, ≈2.4–2.7k: 2394, 2474,
-// 2554, 2554, 2674 across those same five runs (flatHit 120 every time; the
-// movement is all in notDotted).
-//
-// The enumeration is kept because it is the argument. An earlier revision
-// quoted three of those values as an exhaustive list — "2554, 2554, 2674" — and
-// the next run landed outside all three; the run after that landed outside the
-// range that correction then wrote. A bounded-looking enumeration of an
-// unbounded quantity reads as a pin and decays into a wrong one, twice in a row
-// here. Quote the magnitude or quote nothing, for the reason the leg-identity
-// census states at its own population line — this site is sampled inside
-// readers that rules drive, and the memo may explore a rule once or many times
-// for one query depending on exploration order.
-//
-// PRESENCE is what holds; MULTIPLICITY is what moves. The dotted-HIT count is 2
-// in every one of the five runs while the total swings by ~12%, and that is the
-// distinction the floors below rest on: exploration order scales how often a
-// shape is visited, it does not invent or delete the shapes the corpus contains.
-//
-// The number the retirement decision rests on is the DOTTED-HIT count, and that
-// one is stable at 2.
-//
-// The previous reading in this block — "calls 52 (flatHit 40, notDotted 8),
-// dotted hits available 4" — was wrong in BOTH directions and is kept here as
-// the history it is: the call total was low by a factor of fifty (the corpus
-// grew under it) while the dotted-hit count was HIGH by two. The second error is
-// the dangerous one. This census's retirement decision rests entirely on the
-// dotted-hit population, so a stale 4 overstates the reader's remaining reach by
-// double, and nothing read the instrument to notice. The floors held throughout,
-// which is the point of flooring rather than pinning — and also why a floor is
-// no protection at all against a comment.
-//
-// Both floors are 1, not an order of magnitude below the measurement, because
-// there is no order of magnitude below 2. What is being detected here is
-// DISAPPEARANCE: the shapes that drive the dotted arm ceasing to be planned, or
-// the reader ceasing to be reached. DottedHitIdentityAvailable is floored
-// separately from Calls because the non-dotted arms carry all but 2 of the
-// calls, so the
-// denominator can look healthy while the arm the census exists for goes silent.
-// RFC-212 §11.3 RETITLED the producer, and the dotted arm now answers ZERO
-// times over the whole corpus (measured: available 2 -> 0). The
-// DottedHitIdentityAvailable FLOOR is therefore retired with the population it
-// guarded — it is unsatisfiable by construction now, and a floor that cannot be
-// met is a build break rather than a guard.
-//
-// THE DANGEROUS DIRECTION HAS FLIPPED, and that is the whole point: this
-// population was watched for COLLAPSE while the arm was live, because a zero read
-// like good news. Now zero IS the news, so growth is the alarm — a non-zero means
-// some producer is again naming a leg type's column with a dot-containing title,
-// and the arm the retitling emptied is answering again. AssertLegColumnProvenanceCensus
-// holds that at a hard zero; only the Calls floor remains, because the reader
-// itself is still live on its FLAT arm and a census reaching it zero times would
-// make that zero vacuous.
-// legColumnProvenanceFloors is EMPTY, and the emptiness is the reconciliation.
-//
-// It used to floor Calls at 100 (measured between 300 and 1500 across runs, an
-// unstable population that a tight floor would have red-flagged on churn alone),
-// so that a reader nothing reaches could not report the same shape as a reader
-// with nothing wrong. The reader is now retired: adaptLegPositional's
-// layout-permutation gather is its only driver, and the exact-ordinal seed bakes
-// against the chosen physical leg layout — Java's translateCorrelations
-// behaviour, which that gather's own note named as the thing that would end it —
-// so every leg row passes positionalMatchesLegType and the gather is skipped.
-//
-// The census asserts Calls == 0 unconditionally now, with revival as the alarm.
+// The dangerous direction is therefore growth, not collapse: a non-zero means
+// some producer again names a leg type's column with a dot-containing title.
+// The census asserts Calls == 0 unconditionally, with revival as the alarm.
 var legColumnProvenanceFloors = executor.LegColumnProvenanceFloors{}
 
 // assertLegColumnProvenanceCensus checks the provenance census, dropping the
@@ -344,17 +260,12 @@ func assertLegColumnProvenanceCensus(w io.Writer) bool {
 
 // dottedLegQualifierFloors is EMPTY: the whole channel is retired.
 //
-// It used to floor the match attempts each translator dotted-leg reader made
-// over the suite — 10 for flatColumnBake (measured 106) and 1 for legQOVBake
-// (measured 4, with no order of magnitude to drop to) — because that census's
-// two hard zeros hold vacuously over an empty population.
-//
-// Both readers were arms of the NAME-model bake (query.bakeFlatRefsAgainstColumns
-// and query.bakeDottedRefsToLegQOV), which resolved a reference by splitting a
-// column name at a dot. The ordinal model resolves by baked slot and those bakes
-// are gone, so values.RecordDottedLegQualifier has no caller at all and the
-// floors are unsatisfiable. The census asserts zero attempts unconditionally
-// now, with revival as the alarm.
+// Both readers (query.bakeFlatRefsAgainstColumns and query.bakeDottedRefsToLegQOV)
+// were arms of the name-model bake, which resolved a reference by splitting a
+// column name at a dot. The ordinal model resolves by baked slot, so
+// values.RecordDottedLegQualifier has no caller and any floor would be
+// unsatisfiable. The census asserts zero attempts unconditionally, with revival
+// as the alarm.
 var dottedLegQualifierFloors = values.DottedLegQualifierFloors{}
 
 // seedWindowReaderFloors is the minimum keyed-read count each seed-window reader
@@ -409,19 +320,12 @@ func assertSeedWindowReaderCensus(w io.Writer) bool {
 
 // nameSplitFloors is EMPTY: the whole channel is retired.
 //
-// It used to floor the population each splitting arm reported over the suite
-// (legQOVSegmentsOf calls 1, measured 9; flatColumnBake calls 1 and splits 1,
-// measured 2), because this census's content was a HARD ZERO on SPLIT-QUALIFIED
-// and a hard zero over an empty population is the fake-green shape every
-// instrument on this path was rebuilt to end.
-//
-// Both arms lived inside the NAME-model bake — query.legQOVSegmentsOf and
-// query.bakeFlatRefsAgainstColumns, which decided qualification by counting a
-// reference's name segments. The ordinal model decides by baked slot, both bakes
-// are gone, and values.RecordNameSplit has no caller at all. So the CALL floors
-// are unsatisfiable, and the SPLIT-QUALIFIED zero they protected is now trivially
-// structural rather than a corpus fact worth guarding. The census asserts zero
-// calls at every site unconditionally, with revival as the alarm.
+// Both splitting arms (query.legQOVSegmentsOf and
+// query.bakeFlatRefsAgainstColumns) lived inside the name-model bake, which
+// decided qualification by counting a reference's name segments. The ordinal
+// model decides by baked slot and values.RecordNameSplit has no caller, so the
+// SPLIT-QUALIFIED zero is structural rather than a corpus fact. The census
+// asserts zero calls at every site unconditionally, with revival as the alarm.
 var nameSplitFloors = values.NameSplitFloors{}
 
 // assertNameSplitCensus checks the translator name-split census.
@@ -521,8 +425,7 @@ func assertDottedLegQualifierCensus(w io.Writer) bool {
 }
 
 // legIdentityFloors is the minimum population each site must report over the
-// whole suite. A site at ZERO makes every zero asserted about it vacuous, which
-// is precisely how the previous form of this gate passed while proving nothing.
+// whole suite. A site at ZERO makes every zero asserted about it vacuous.
 //
 // The floors are set an order of magnitude below the measured populations, and
 // that gap is doing TWO jobs. The corpus grows and shrinks with unrelated work,
@@ -537,7 +440,7 @@ func assertDottedLegQualifierCensus(w io.Writer) bool {
 // drift, and it is set loosely enough that the observed variance cannot reach
 // it.
 //
-// FOUR OF THE EIGHT SITES ARE NO LONGER FLOORED, and the reason splits in two.
+// FOUR OF THE EIGHT SITES ARE NOT FLOORED, and the reason splits in two.
 // A floor watches for collapse; once zero is the steady state a floor is
 // unsatisfiable and the danger inverts to GROWTH, so each of the four moves to
 // the guard that matches what it now is rather than being lowered or dropped:
@@ -598,16 +501,9 @@ var legIdentityDeclaredEmpty = map[values.LegIdentitySite]string{
 // -test.run narrows the run: FIVE zeros hold over ANY population, one query or
 // eighty thousand firings — fold-only, unstated, retired-verdict divergence,
 // text-vs-identity divergence and mixed instrument — and a filtered invocation
-// checks them exactly as the full suite does. The earlier form returned before all
-// of them and announced only that the floors were unchecked, so a focused run
-// reported a passing gate while five assertions had silently not run.
-//
-// The enumeration is kept HONEST deliberately. It read "four" while
-// values.AssertLegIdentityCensus ran five, and the omitted one was the
-// retired-verdict zero — the assertion that compares this site's converted answer
-// against the text predicate it replaced, i.e. the only one that measures the
-// conversion rather than the representation. An enumeration that drops the
-// headline check reads as reassurance about the wrong thing.
+// checks them exactly as the full suite does. Keep this list in step with
+// values.AssertLegIdentityCensus; the retired-verdict zero is the one that
+// measures the conversion rather than the representation.
 func assertLegIdentityCensus(w io.Writer) bool {
 	floors := legIdentityFloors
 	if f := corpusNarrowing(); f != nil && f.Value.String() != "" {
@@ -644,108 +540,26 @@ func OpenDB(t *testing.T, dbPath string) *sql.DB {
 	return db
 }
 
-// orientationGateFloors is RFC-200 step 3d”s live/latent discriminator.
-//
-// MEASURED over this corpus: calls 438 (not-a-seed 96, tiled-by-2 342,
-// tiled-by-other 0); of the tiled-by-2, unverifiable 84, matched 197, declined
-// 61; and 72 firings where the MAP count differs from the TILE count — of which
-// DECLINED zero.
-//
-// That last pair is the whole explanation for why 3d' moved no plan. 72 firings
-// that the old map-count gate skipped are now checked, and every one of them
-// matches; the 61 declines were all firings the old gate already checked and
-// already declined. So the step changes no decision on this corpus while making
-// 72 previously-unanswerable firings answerable.
-//
-// Floored an order of magnitude below, like every population floor on this path:
-// what a floor detects here is the shape going DARK, not drift.
-// RE-MEASURED at RFC-226, because §1c relaxed this exact gate's type comparison
-// and a bound nobody re-read after changing the thing it watches is not a bound.
-// Current corpus: calls 506 (not-a-seed 102, tiled-by-2 404, tiled-by-other 0);
-// unverifiable 104, matched 232, declined 68; MapCountDiffers 92, of which
-// DECLINED 0.
-//
-// WHAT THIS CHANGE MOVES: NOTHING, on the pre-existing corpus. Established by
-// the only control that answers that question — the PRE-CHANGE baseline, not a
-// mutation of the branch:
-//
-//	master aba271454        calls 496  unverifiable 104  matched 224  DECLINED 66
-//	branch, probe file OUT  calls 496  unverifiable 104  matched 224  DECLINED 66
-//	branch, probe file IN   calls 506  unverifiable 104  matched 232  DECLINED 68
-//
-// The middle row is the whole answer: with this branch's engine changes applied
-// and ONLY its new test queries removed, the census is bit-identical to master.
-// So the +10 calls / +8 matched / +2 declined are NEW FIRINGS contributed by
-// projection_result_type_probe_fdb_test.go's two WHERE-EXISTS queries — not
-// existing firings that flipped INTO declining, which is the reading the census
-// alone cannot rule out and which would have been a real alarm.
-//
-// A PRIOR REVISION OF THIS COMMENT GOT THAT WRONG, and the error is kept visible
-// because the reasoning was seductive: it isolated §1c's arm by MUTATING THE
-// BRANCH (removing the unstated-field arm of recordFieldsMatch — calls 504,
-// matched 230, declined 68) and concluded "Declined does not move at all". That
-// measures what §1c's ARM does, not what this CHANGE does, and it swept the
-// whole 61 -> 68 drift into "corpus growth". Only 61 -> 66 is growth; 66 -> 68
-// is this branch. The unverifiable claim survives intact — master already reads
-// 104, so 84 -> 104 is growth.
-//
-// ON THE CEILING, stated precisely because the loose phrasing gives away the
-// stronger claim: DeclinedCeiling is not "200, unchanged". Master aba271454 has
-// flatMapProducerFloors gates the FlatMap result-value producer census.
-//
-// The floors are ORDER-OF-MAGNITUDE below the measurement, like every other
-// per-site floor on this path: they exist to catch a site going dark, not to
-// re-bless a corpus count that moves whenever a test file is added.
-//
-// The FlatMap PRODUCER census that used to sit beside this one is retired with
-// the three-quantifier NLJ arm it measured (RFC-235): its whole subject was the
-// declined-leg residue that arm produced, and there is no residue without the
-// arm. What it established still holds and is recorded in RFC-235 rather than
-// here — the refusal was on SHAPE, not on missing types.
-//
-// The untyped-QOV mints those sites emit are a SEPARATE live Java divergence
-// (CQ-96) and are floored below so they stay counted.
-//
-// TWO OF THOSE THREE ARE COURIERS, NOT AUTHORS, and the mint census beside this
-// one is what says so: implementExistentialSelect and yieldExistsFlatMap flow
-// sel.GetResultValue() verbatim (Java's three constructions do the same,
-// ImplementNestedLoopJoinRule.java:187,201,214), and 1086 of their untyped
-// traffic is minted by the SQL translator. These floors keep the traffic
-// counted; selectResultMintFloors is where the divergence itself is booked.
-
 // selectResultMintFloors gates the select result-value MINT census.
 //
-// This is the site that BUILT the untyped QuantifiedObjectValue Java cannot
-// express. The producer census beside it reported that population at
-// implementExistentialSelect and yieldExistsFlatMap — both of which flow
-// sel.GetResultValue() verbatim and build nothing, exactly as Java's three
+// This is the site that builds a select's result QuantifiedObjectValue;
+// implementExistentialSelect and yieldExistsFlatMap only flow
+// sel.GetResultValue() verbatim, exactly as Java's three
 // RecordQueryFlatMapPlan constructions do
-// (ImplementNestedLoopJoinRule.java:187,201,214). Booking the divergence against
-// a courier is what this census corrected.
+// (ImplementNestedLoopJoinRule.java:187,201,214), so the census books the
+// author, not the couriers.
 //
-// Java's own guarantee is structural: a simple select's result value is
+// Java's guarantee is structural: a simple select's result value is
 // overQuantifier.getFlowedObjectValue() (GraphExpansion.java:401),
 // QuantifiedObjectValue.of has no untyped overload
 // (QuantifiedObjectValue.java:187), and Quantifier.getFlowedObjectType is a
-// Verify.verify plus requireNonNull (Quantifier.java:801-810).
+// Verify.verify plus requireNonNull (Quantifier.java:801-810). Go has the same
+// guarantee: every mint is typed, so the census asserts the untyped zero
+// unconditionally, with revival as the alarm.
 //
-// GO NOW HAS THE SAME GUARANTEE, and the floor that kept the gap counted is
-// therefore gone. Measured over the whole real-FDB corpus:
-//
-//	translator buildExistsSelect(MINT)  calls 1006 | typedQOV 1006 | UNTYPED 0
-//
-// Every mint is TYPED, where every mint used to be untyped. The untyped floor
-// (100, an order of magnitude below a measured 1086) is unsatisfiable against a
-// population the constructor makes unrepresentable, so the census asserts the
-// zero unconditionally instead, with the alarm pointing at revival.
-//
-// THE TOTAL IS NOT DETERMINISTIC AND THE RATIO IS. Consecutive full-suite runs
-// measured 1086, 1004 and 1006 — these are RULE FIRINGS, and the memo explores a
-// rule a different number of times per query run to run, exactly as the FlatMap
-// producer census's own totals move. What did not move is the ratio: 100%
-// untyped before, 100% typed after. So the call floor is calibrated an order of
-// magnitude below the smallest observation, and anyone re-measuring should
-// expect a different digit and check the RATIO.
+// The call total counts rule firings and is not deterministic run to run
+// (≈1000); the typed ratio is. The call floor sits an order of magnitude below
+// the smallest observation — when re-measuring, check the ratio, not the digit.
 var selectResultMintFloors = func() values.SelectResultMintFloors {
 	var f values.SelectResultMintFloors
 	f.Calls = [values.SelectResultMintSiteCount]int{100}

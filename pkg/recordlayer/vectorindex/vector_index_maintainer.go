@@ -1026,20 +1026,6 @@ func (m *vectorIndexMaintainer) SearchKNN(prefix tuple.Tuple, queryVector []floa
 	return vResults, nil
 }
 
-// DeleteWhere clears all HNSW graph data at or BELOW the given prefix.
-// An empty prefix clears every graph in the index.
-//
-// The range clear is the whole point, and clearing the prefix's own graph is
-// not enough. A grouped vector index keyed by (zone, category) stores each
-// group at hnswSubspace.Sub(zone, category), so a delete-where on (zone) has to
-// take every category under it. Clearing only the graph AT (zone) left those
-// descendants behind: their records were deleted while their HNSW nodes stayed
-// queryable, so a search returned primary keys that no longer resolve.
-//
-// Matches Java, which reaches StandardIndexMaintainer.deleteWhere through
-// VectorIndexMaintainer.deleteWhere and clears
-// Range.startsWith(indexSubspace.pack(prefix)) — everything under the packed
-// prefix, descendants included.
 // CanDeleteWhere is Java's VectorIndexMaintainer.canDeleteWhere (:358-363):
 // beyond the delegate's own alignment check it requires
 // `evaluated.size() <= getKeyWithValueExpression(root).getColumnSize()`, and
@@ -1075,6 +1061,20 @@ func (m *vectorIndexMaintainer) CanDeleteWhere(prefix tuple.Tuple) error {
 	return nil
 }
 
+// DeleteWhere clears all HNSW graph data at or BELOW the given prefix.
+// An empty prefix clears every graph in the index.
+//
+// The range clear is the whole point, and clearing the prefix's own graph is
+// not enough. A grouped vector index keyed by (zone, category) stores each
+// group at hnswSubspace.Sub(zone, category), so a delete-where on (zone) has to
+// take every category under it. Clearing only the graph AT (zone) left those
+// descendants behind: their records were deleted while their HNSW nodes stayed
+// queryable, so a search returned primary keys that no longer resolve.
+//
+// Matches Java, which reaches StandardIndexMaintainer.deleteWhere through
+// VectorIndexMaintainer.deleteWhere and clears
+// Range.startsWith(indexSubspace.pack(prefix)) — everything under the packed
+// prefix, descendants included.
 func (m *vectorIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
 	// Backstop for direct callers — Java's Verify.verify inside deleteWhere
 	// (:366-369). DeleteRecordsWhere asks CanDeleteWhere before it clears.

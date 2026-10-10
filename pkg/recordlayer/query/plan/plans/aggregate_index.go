@@ -38,30 +38,19 @@ import (
 //     type depends on which derivation ran, which is worse than either default
 //     alone.
 //
-//     RFC-238 §7f carries the two axes that could reach the miss, and BOTH ARE
-//     NOW CLOSED, for different reasons. The namespace one is forbidden by
-//     §7c's committed design, which translates on the QUERY side precisely so
-//     the candidate side does not move; it does not arm, and the reference is
-//     not licence to move it. The EMPTY association -- RecordTypesForIndex
-//     returning nothing for an index that is neither universal nor associated,
-//     leaving this field empty so GetRecordType("") misses -- is refused in
-//     Build, which requires every registered index to be universal or claimed
-//     by some record type. An earlier version of this paragraph said the state
-//     had exactly ONE route, a second SetRecords call; it had several, because
-//     the builder hands out live maps, and enumerating them is what went wrong.
-//     Pinned by TestBuildRefusesAnIndexNoRecordTypeClaims and
+//     RFC-238 §7f lists the two axes that could reach the miss; both are
+//     closed. The namespace axis is forbidden by §7c's design, which
+//     translates on the QUERY side so the candidate side does not move. The
+//     EMPTY association -- RecordTypesForIndex returning nothing for an index
+//     that is neither universal nor associated, so GetRecordType("") misses --
+//     is refused in Build, which requires every registered index to be
+//     universal or claimed by some record type. Pinned by
+//     TestBuildRefusesAnIndexNoRecordTypeClaims and
 //     TestBuiltMetadataIsDetachedFromTheBuilder in pkg/recordlayer.
 //
-//     WHAT THAT ROUTE COST IS NOT WHAT THIS COMMENT ANALYSES, which is worth
-//     knowing before reviving the analysis above. An orphaned index did not
-//     merely lose its descriptor: ToProto emitted it with an EMPTY RecordType
-//     list, and a reload reads that as UNIVERSAL, so after a serialization
-//     round trip RecordTypesForIndex answered with EVERY type rather than none.
-//     The degraded-result-type hazard described here therefore did not survive
-//     a reload; a different defect did. It matters HERE because this field
-//     carries whichever namespace the plan was built in (RFC-238 §7c), so a
-//     plan built with a SQL spelling against metadata keyed by the stored one
-//     misses and degrades exactly that way.
+//     This field carries whichever namespace the plan was built in (RFC-238
+//     §7c), so a plan built with a SQL spelling against metadata keyed by the
+//     stored one still misses and degrades exactly as described above.
 //
 //   - resultType: the rich Type of the aggregated result row.
 //
@@ -115,8 +104,7 @@ type RecordQueryAggregateIndexPlan struct {
 	// the rows this leaf emits — minted once at construction, returned by
 	// GetResultValue, EXCLUDED from Equals/Hash (its correlation id is unique per
 	// instance). A bare leaf that stands as its own Cascades expression must
-	// present a consistent row identity across repeated interrogations, the role
-	// physicalAggregateIndexWrapper's fresh-per-call GetResultValue could not
+	// present a consistent row identity across repeated interrogations
 	// (RFC-184 W2). nil for struct-literal test plans that bypass the constructor —
 	// GetResultValue falls back to PlanExprBase's fresh QOV there.
 	resultValue values.Value

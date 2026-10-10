@@ -779,28 +779,6 @@ func (t *cascadesTranslator) ordinalJoinSeedFields(legs []clusterLeg) ([]values.
 	return fields, legTypes, owners
 }
 
-// bakeGatedJoinPredicates rewrites a gated join's CROSS-LEG predicates so
-// direct leg references — lazy `FieldValue(QOV(leg), col)`, bare (non-dotted)
-// names — become BAKED `ofOrdinalNumber(typedQOV(leg), idx)`: eager
-// (quantifier, field ordinal) resolution for the predicates the join loop
-// itself evaluates.
-//
-// Only predicates referencing BOTH legs are baked: a SINGLE-LEG predicate is
-// pushdown fodder (PushFilterBelowJoinRule / SARG extraction move it into the
-// leg's own select — including NAME-MODEL legs like aggregate boxes whose
-// rows carry no positional; a baked node there is a loud
-// BakedNameContextError — the live catch that guards a CTE-aggregate join
-// leg from being mis-baked). Lazy single-leg predicates are SOUND wherever
-// they land by the load-bearing lazy invariant itself: they evaluate against
-// ONE leg's row and nothing re-types a leg between plan-finalize and eval —
-// pushdown moves the predicate, never the leg's type. Cross-leg predicates
-// cannot be pushed below either leg (they need both), so they stay in the
-// join select where the per-leg binder context resolves them.
-//
-// References that are not direct leg columns (dotted names, outer
-// correlations, columns absent from the leg type, already-baked nodes) pass
-// through untouched. Shares the exact predicate-walk spine the planner rules
-// use (predicates.ReplaceValues).
 // addBuriedBakeWindows registers a bake window for every leaf buried inside a
 // clustered box leg: binding → {the box's flowed concat type, the leaf's
 // cumulative offset within it, the leaf's own type, the box quantifier's
@@ -826,6 +804,28 @@ func (t *cascadesTranslator) addBuriedBakeWindows(j *logical.LogicalJoin, boxCor
 	}
 }
 
+// bakeGatedJoinPredicates rewrites a gated join's CROSS-LEG predicates so
+// direct leg references — lazy `FieldValue(QOV(leg), col)`, bare (non-dotted)
+// names — become BAKED `ofOrdinalNumber(typedQOV(leg), idx)`: eager
+// (quantifier, field ordinal) resolution for the predicates the join loop
+// itself evaluates.
+//
+// Only predicates referencing BOTH legs are baked: a SINGLE-LEG predicate is
+// pushdown fodder (PushFilterBelowJoinRule / SARG extraction move it into the
+// leg's own select — including NAME-MODEL legs like aggregate boxes whose
+// rows carry no positional; a baked node there is a loud
+// BakedNameContextError — the live catch that guards a CTE-aggregate join
+// leg from being mis-baked). Lazy single-leg predicates are SOUND wherever
+// they land by the load-bearing lazy invariant itself: they evaluate against
+// ONE leg's row and nothing re-types a leg between plan-finalize and eval —
+// pushdown moves the predicate, never the leg's type. Cross-leg predicates
+// cannot be pushed below either leg (they need both), so they stay in the
+// join select where the per-leg binder context resolves them.
+//
+// References that are not direct leg columns (dotted names, outer
+// correlations, columns absent from the leg type, already-baked nodes) pass
+// through untouched. Shares the exact predicate-walk spine the planner rules
+// use (predicates.ReplaceValues).
 func bakeGatedJoinPredicates(preds []predicates.QueryPredicate, legTypes map[string]bakeLegType) []predicates.QueryPredicate {
 	out, _ := bakeGatedJoinPredicatesChecked(preds, legTypes)
 	return out
@@ -934,56 +934,8 @@ func bakeGatedJoinPredicatesChecked(preds []predicates.QueryPredicate, legTypes 
 	return out, drift
 }
 
-// legRef extracts the UPPER leg-correlation name of a BARE FieldValue over a
-// QuantifiedObjectValue — the reference shape the gated-predicate walks key on.
-// Returns "",false for
-// a non-FieldValue, a MACHINERY-OWNED baked ref, a flat-dotted read
-// (fv.Field carries a '.', the RFC-142 mergedQOV "leg.col" channel, resolved
-// elsewhere), or a non-QOV child.
-//
-// MACHINERY-OWNERSHIP IS THE FRONTIER PIN, NOT THE ACCESSOR COUNT. The walks'
-// own output is an exact ordinal field access over a composed frontier, which is
-// FrontierPinned by construction; excluding it is what stops a re-walk from
-// re-counting or re-baking an address that already indexes the composed row.
-// Arity was long used as a second half of that exclusion, on the reading that
-// only machinery mints a multi-accessor path. That reading is refuted: the
-// resolver now mints a USER-WRITTEN nested descent (`m.n.sk`) as ONE unpinned
-// FieldValue with a leg-relative root and the descent in its remaining
-// accessors, so arity selected against exactly the references this walk exists
-// to rebase. A declined nested ref keeps its leg correlation, nothing binds
-// that correlation at execution, and the read falls through to the multi-leg
-// positional row and trips the correct-or-loud guard there.
-//
-// So the gate is the ROOT's leg-relativity (values.RootIsLegRelativeUnpinned),
-// the same predicate the eval-side multi-leg guards and the leg-concat collapse
-// key on: an UNPINNED root addresses the reference's OWN source window whatever
-// its arity, which is precisely the thing that must be counted and re-baked
-// here. Java needs no equivalent — QuantifiedObjectValue.eval picks the row by
-// ALIAS alone and FieldValue.eval descends the remaining ordinals inside that
-// one Message, so no arity ever selects a binding there.
-//
-// FIVE call sites consult this prologue, not three. Each then asks its own
-// question of the key, so widening the gate widens all of them together — which
-// is the intent, not a side effect: a nested reference is a leg reference for
-// counting exactly as it is for baking.
-//
-//   - the bake closure above — build the baked node;
-//   - predicateLegAliases — is-a-leg, for the cross-leg count;
-//   - predicateRefsBuriedLeg — is-buried (bakeCorr != "");
-//   - box_conjunct.go classifyLegConjunct — the GATHER ADMISSION VERDICT for a
-//     box/flat-cluster WHERE conjunct, and a PLAN-SHAPE decision rather than a
-//     count. It is not pre-filtered, so it widens with this gate, and it stays
-//     coherent with the bake because the two SHARE legRefRootInWindow — one
-//     function, so a verdict cannot say "resolves" about a different column than
-//     the bake reads. It used to make that claim on a weaker basis (both sites
-//     spelled out leafTyp.FieldIndexUnique(fv.Field) separately), and that basis
-//     was destroyed by the fused-leaf naming: a display name is not the root's,
-//     so the two copies would have had to be corrected in lockstep to stay
-//     coherent. Sharing the resolver is what makes the coherence structural;
-//   - exists_gathered_cluster_wrap.go rebaseLegRefsToBox — MASKED. Its caller
-//     pre-filters on SourceRelativeBaked before reaching here, deliberately, and
-//     that narrowness is pinned at its own site; see the guard's comment there
-//     for why the walk below it cannot serve a multi-accessor path.
+// legRef returns the upper-case correlation of an unpinned FieldValue over a QOV.
+// Frontier pins, not path arity, prevent rebaking references to an already-composed row.
 func legRef(v values.Value) (string, bool) {
 	fv, isFV := values.AsFieldValue(v)
 	if !isFV || fv.Path().IsFrontierPinned() {

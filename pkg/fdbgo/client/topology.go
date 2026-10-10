@@ -133,48 +133,8 @@ func (db *database) followForward(old *ClusterFile, fwd string) bool {
 	return true
 }
 
-// installProxySet publishes a proxy set, broadcasts the proxy-changed channel,
-// and — when this installation completes a pending coordinator-set adoption —
-// performs the cluster handoff in the SAME act. Returns true on apply. Split out
-// from refreshTopology so the contract can be pinned without faking
-// tryAllCoordinators.
-//
-// THE COHERENCE RULE, and why the handoff cannot be a separate call:
-//
-//   - DBInfo.Epoch is what a REQUEST binds to. It rides the snapshot the request
-//     takes its proxies from, so an epoch can never describe a proxy set the
-//     request did not use. That is what closes the commit path's window: the
-//     epoch used to be sampled and the proxy selected afterwards, so a handoff
-//     landing between the two made the commit's own token stale against the
-//     cluster it actually committed to. The publication then failed sameEpoch,
-//     the durable floor was never raised, and a lower GRV from the new cluster
-//     repopulated the cache underneath a commit the caller had already been told
-//     succeeded. On the GRV path refusing is merely conservative; on the commit
-//     path it costs read-your-committed-writes, which is the invariant the whole
-//     floor mechanism exists to hold.
-//   - grvCache's fence word is what a PUBLICATION is judged against.
-//
-// The two are kept coherent by DERIVATION, not by the order of two statements:
-// the published epoch is read from the fence at publication (see below), so
-// DBInfo.Epoch <= fence epoch holds at every instant no matter where the bump
-// sits. The only reachable disagreement is (new fence, old proxies) — a request
-// binding there carries the OLD epoch, talks to the OLD cluster, and is refused,
-// which is the correct outcome rather than a conservative approximation of one,
-// and the next install republishes from the fence and heals it.
-//
-// The disagreement in the other direction is what must never occur, and it is
-// worth naming precisely because an earlier version of this function guarded it
-// with statement order and a test that only appeared to check it. A snapshot
-// published AHEAD of the fence lets a commit bind epoch N+1, reply while the
-// fence still reads N, fail sameEpoch and lose its DURABLE FLOOR — the same loss
-// the epoch-before-proxies sampling used to cause, reached from the other side.
-// Deriving the published value from the fence removes the state rather than
-// forbidding it.
-//
-// C++ reaches the same observable state by a different mechanism: switchConnectionRecord
-// clears commitProxies and grvProxies inside the same block as its cluster-state
-// reset (NativeAPI.actor.cpp:2196-2197, and again on the published clientInfo at
-// :2206-2209), so nothing can be dispatched to the previous cluster at all.
+// installProxySet completes pending coordinator handoffs and publishes proxies under installMu.
+// Coherence rule: DBInfo.Epoch must not exceed the fence epoch, or commits can lose their durable floor.
 func (db *database) installProxySet(newInfo *DBInfo) bool {
 	// The whole load-derive-bump-store sequence, not each step: see installMu.
 	// Two concurrent installers that interleave here publish an epoch the fence
@@ -204,39 +164,14 @@ func (db *database) installProxySet(newInfo *DBInfo) bool {
 		db.minAcceptableReadVersion.Store(&minAcceptableStamp{epoch: db.grvCache.epochNow()})
 	}
 
-	// THE ORDER INVARIANT, held BY CONSTRUCTION rather than by a check or by the
-	// order of two statements: the published epoch is READ FROM THE FENCE, so it
-	// is whatever the fence holds at publication and cannot be ahead of it. Not
-	// carried from the old snapshot, not taken from the bump's return value —
-	// either of those is a value from an earlier instant, and publishing an
-	// earlier instant's epoch is precisely how a snapshot gets ahead of the fence.
-	//
-	// This is what makes the guarantee independent of where the bump sits. Move
-	// the bump anywhere after this read and the publication simply does not carry
-	// the new epoch: the fence ends up AHEAD of the published snapshot. That is
-	// the safe disagreement — a request binding there does reach the NEW cluster
-	// (the snapshot carries the new proxies), but it binds an epoch the fence has
-	// passed, so nothing it brings back can install and nothing can be served from
-	// it. Refused, not misapplied. The next install republishes from the fence and
-	// heals it.
-	//
-	// The harmful direction — a snapshot ahead of the fence, where a commit binds
-	// an epoch the fence has not reached, replies, fails sameEpoch and loses its
-	// durable floor — has no way to arise.
+	// Derive the snapshot epoch from the fence: publishing ahead of it would
+	// reject a successful commit's durable floor as belonging to another epoch.
 	newInfo.Epoch = db.grvCache.epochNow()
 
 	if old != nil && dbInfoEqual(old, newInfo) {
 		return false
 	}
-	// ONE seam, immediately before the publication. It exists to let a test hold
-	// an installer inside installMu and to read the fence at publication; it is
-	// NOT what enforces the order, which the derivation above does.
-	//
-	// It used to bracket the publication, on a theory — that a hook on each side
-	// catches the bump wherever it moves — which was simply false: a bump landing
-	// between the two left both observations consistent. A pin that depends on
-	// where a hook sits tests the hook's position, not the property, and that
-	// theory cost two failed pins before the invariant was made structural.
+	// The test seam observes publication while installMu still excludes other installers.
 	db.observeProxyInstall()
 	db.dbInfo.Store(newInfo)
 
