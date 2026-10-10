@@ -1302,7 +1302,7 @@ func evaluateOrdinalJoinRow(rc *values.RecordConstructorValue, mergedType *value
 	// resolves here (else ScalarSubqueryValue.Evaluate is loud: UnboundScalarSubquery).
 	// The pristine ordinal-join SEED (baked leg refs only) carries none, so this is
 	// nil for the NLJ path — harmless.
-	evalCtx := &values.RowEvalContext{Correlations: bindings, ScalarSubqueries: scalarSubqueriesFromBinder(bindings), Clock: clock}
+	evalCtx := joinBuildRowContext(bindings, clock)
 	for i, f := range rc.Fields {
 		// Join-leg QOVs are whole record objects. The cursor adapters guarantee
 		// an OrdinalRow (or present nil for an unmatched leg); reject a hostile
@@ -1353,7 +1353,7 @@ func evaluateOrdinalJoinRow(rc *values.RecordConstructorValue, mergedType *value
 // read against a row that cannot serve it is an OrdinalResolutionError, so
 // dropping the RC-only construction check trades no silence for reach.
 func evaluateOrdinalJoinBareRow(v values.Value, bindings values.CorrelationBinder, clock values.StatementClock) (*PositionalRow, error) {
-	evalCtx := &values.RowEvalContext{Correlations: bindings, ScalarSubqueries: scalarSubqueriesFromBinder(bindings), Clock: clock}
+	evalCtx := joinBuildRowContext(bindings, clock)
 	out, err := v.Evaluate(evalCtx)
 	if err != nil {
 		return nil, err
@@ -2474,25 +2474,27 @@ func (b *rowLegsBinder) GetCorrelationBinding(id values.CorrelationIdentifier) (
 	return nil, false
 }
 
-// scalarSubqueriesFromBinder unwraps a build-time correlation binder to the
-// pre-evaluated scalar-subquery map carried by the base *EvaluationContext, so a
-// FOLDED build result value's ScalarSubqueryValue resolves at build (the B1
-// existential wrap folds an uncorrelated scalar into the wrap RV). The build
-// binders (buildLegBinder / twoLegBinder) chain their base down to the
-// EvaluationContext; a bare EvaluationContext base returns its own map. Any other
-// binder (a plan-time probe, no base) returns nil — the scalar then declines loudly
-// at build, which is exactly the UnboundScalarSubquery contract for an
-// unresolvable context.
-func scalarSubqueriesFromBinder(b values.CorrelationBinder) map[values.CorrelationIdentifier]any {
-	switch bb := b.(type) {
-	case *EvaluationContext:
-		return bb.scalarSubqueries
-	case *buildLegBinder:
-		return scalarSubqueriesFromBinder(bb.base)
-	case *twoLegBinder:
-		return scalarSubqueriesFromBinder(bb.base)
+// Join output replaces the row correlations, not the statement's constants,
+// parameters or scalar subqueries (Java's FlatMap uses context.withBinding).
+func joinBuildRowContext(bindings values.CorrelationBinder, clock values.StatementClock) *values.RowEvalContext {
+	row := &values.RowEvalContext{}
+	for base := bindings; base != nil; {
+		switch b := base.(type) {
+		case *EvaluationContext:
+			row.Binder = b
+			row.ScalarSubqueries = b.scalarSubqueries
+			base = nil
+		case *buildLegBinder:
+			base = b.base
+		case *twoLegBinder:
+			base = b.base
+		default:
+			base = nil
+		}
 	}
-	return nil
+	row.Correlations = bindings
+	row.Clock = clock
+	return row
 }
 
 // downstreamLegWindows computes, ONCE at operator construction, whether a

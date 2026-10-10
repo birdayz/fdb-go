@@ -2735,7 +2735,7 @@ func residualComparandIsRowInvariant(
 	if _, dependsOnCurrent := correlated[values.CurrentCorrelation()]; dependsOnCurrent {
 		return false
 	}
-	if values.IsConstantValue(v) {
+	if values.IsConstantExpression(v) {
 		return true
 	}
 	if _, isQOV := values.AsQuantifiedObjectValue(v); isQOV {
@@ -3222,33 +3222,33 @@ func stablePlanNodeHash(p plans.RecordQueryPlan) uint64 {
 		}
 	case *plans.RecordQueryPredicatesFilterPlan:
 		for _, pr := range t.GetPredicates() {
-			stableHashU64(h, predicates.SemanticHashCode(pr))
+			stableHashU64(h, predicates.ConstantAgnosticHashCode(pr))
 		}
 	case *plans.RecordQueryFilterPlan:
 		for _, pr := range t.GetPredicates() {
-			stableHashU64(h, predicates.SemanticHashCode(pr))
+			stableHashU64(h, predicates.ConstantAgnosticHashCode(pr))
 		}
 	case *plans.RecordQueryNestedLoopJoinPlan:
 		stableHashU64(h, uint64(t.GetJoinType()))
 		for _, pr := range t.GetPredicates() {
-			stableHashU64(h, predicates.SemanticHashCode(pr))
+			stableHashU64(h, predicates.ConstantAgnosticHashCode(pr))
 		}
 		if rv := t.GetResultValue(); rv != nil {
-			stableHashU64(h, values.SemanticHashCode(rv))
+			stableHashU64(h, tieValueHash(rv))
 		}
 	case *plans.RecordQueryFlatMapPlan:
 		if rv := t.GetResultValue(); rv != nil {
-			stableHashU64(h, values.SemanticHashCode(rv))
+			stableHashU64(h, tieValueHash(rv))
 		}
 	case *plans.RecordQueryMapPlan:
 		if rv := t.GetResultValue(); rv != nil {
-			stableHashU64(h, values.SemanticHashCode(rv))
+			stableHashU64(h, tieValueHash(rv))
 		}
 	case *plans.RecordQueryInMemorySortPlan:
 		for _, k := range t.GetSortKeys() {
 			_, _ = io.WriteString(h, k.Field)
 			if k.ValueExpr != nil {
-				stableHashU64(h, values.SemanticHashCode(k.ValueExpr))
+				stableHashU64(h, tieValueHash(k.ValueExpr))
 			}
 			if k.Desc {
 				_, _ = h.Write([]byte{1})
@@ -3317,7 +3317,7 @@ func stableHashComparison(h hash.Hash64, c *predicates.Comparison) {
 	}
 	stableHashU64(h, uint64(c.Type))
 	if c.Operand != nil {
-		stableHashU64(h, values.SemanticHashCode(c.Operand))
+		stableHashU64(h, tieValueHash(c.Operand))
 	}
 }
 
@@ -3362,4 +3362,10 @@ func costExprHash(e expressions.RelationalExpression) uint64 {
 		}
 	}
 	return deepHashCode(e)
+}
+
+// tieValueHash mirrors Java's final planHash(VC0) rung (PlanningCostModel.java:332-338),
+// where every SQL literal is a ConstantObjectValue hashing to its BASE_HASH alone.
+func tieValueHash(v values.Value) uint64 {
+	return values.SemanticHashCodeIn(values.ConstantAgnosticHash{}, v)
 }

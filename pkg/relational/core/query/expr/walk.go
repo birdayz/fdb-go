@@ -2754,6 +2754,16 @@ func (r *Resolver) walkConstant(c antlrgen.IConstantContext) (values.Value, erro
 	if c == nil {
 		return nil, fmt.Errorf("expr.walkConstant: nil Constant")
 	}
+	if bound, ok := BoundParameter(c.GetStart()); ok {
+		return bound, nil
+	}
+	return ResolveLiteral(c)
+}
+
+// ResolveLiteral decodes a literal before the normalizer replaces it with a
+// constant-pool reference. It shares the expression visitor's type semantics.
+func ResolveLiteral(c antlrgen.IConstantContext) (values.Value, error) {
+	r := &Resolver{}
 	switch k := c.(type) {
 	case *antlrgen.NullConstantContext:
 		return r.ResolveConstant(nil)

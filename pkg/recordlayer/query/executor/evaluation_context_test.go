@@ -75,6 +75,57 @@ func TestWithParams_CarriesScalarSubqueries(t *testing.T) {
 	}
 }
 
+func TestConstantPoolSurvivesDerivedContexts(t *testing.T) {
+	t.Parallel()
+	alias := values.NamedCorrelationIdentifier("constants")
+	ref := values.NewConstantObjectValue(alias, "0", values.NotNullLong)
+	base := EmptyEvaluationContext().WithConstants(alias, map[string]any{"0": int64(7)})
+	derived := base.WithParams([]any{int64(1)}).
+		WithBinding(alias, int64(2)).
+		WithScalarSubqueries(map[values.CorrelationIdentifier]any{})
+	for _, context := range []any{base, derived, derived.RowContext(), derived.RowContextPositional(nil)} {
+		got, err := ref.Evaluate(context)
+		if err != nil || got != int64(7) {
+			t.Fatalf("%T lost constant pool: %v, %v", context, got, err)
+		}
+	}
+	other := EmptyEvaluationContext().WithConstants(alias, map[string]any{"0": int64(9)})
+	got, err := ref.Evaluate(other.RowContext())
+	original, present := base.DereferenceConstant(alias, "0")
+	if err != nil || got != int64(9) || !present || original != int64(7) {
+		t.Fatalf("shared reference coupled execution pools: %v, %v", got, err)
+	}
+}
+
+func TestOrdinalJoinBuildPreservesExecutionBindings(t *testing.T) {
+	t.Parallel()
+	alias := values.NamedCorrelationIdentifier("constants")
+	base := EmptyEvaluationContext().WithParams([]any{int64(3)}).
+		WithConstants(alias, map[string]any{"0": int64(7)})
+	constant := values.NewConstantObjectValue(alias, "0", values.NotNullLong)
+	parameter := &values.ParameterValue{Ordinal: 1, Typ: values.NotNullLong}
+	for _, binder := range []values.CorrelationBinder{
+		base, &buildLegBinder{base: base}, &twoLegBinder{base: base},
+		&buildLegBinder{base: &twoLegBinder{base: base}},
+	} {
+		for _, value := range []values.Value{constant, parameter} {
+			want, err := value.Evaluate(base.RowContext())
+			if err != nil {
+				t.Fatal(err)
+			}
+			rc := values.NewRawRecordConstructorValue(values.RecordConstructorField{Name: "V", Value: value})
+			row, err := evaluateOrdinalJoinRow(rc, rcOutputType(rc), binder, base)
+			if err != nil || row.Slots[0] != want {
+				t.Fatalf("%T record %T lost execution binding: %v, %v (want %v)", binder, value, row, err, want)
+			}
+			row, err = evaluateOrdinalJoinBareRow(value, binder, base)
+			if err != nil || row == nil || row.Slots[0] != want {
+				t.Fatalf("%T scalar %T lost execution binding: %v, %v (want %v)", binder, value, row, err, want)
+			}
+		}
+	}
+}
+
 func TestBindParameter_OneBased(t *testing.T) {
 	t.Parallel()
 	ec := EmptyEvaluationContext().WithParams([]any{"first", "second"})

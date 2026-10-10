@@ -230,24 +230,42 @@ func TestFDB_NWayJoinCorrelatedExists(t *testing.T) {
 		}
 	})
 
-	// PARAMETER in the projection: ParameterValue is not on the build
-	// whitelist either — declines to the name model, correct rows.
+	// Direct and nested pool references must retain each execution's bindings
+	// through the gathered wrap, including when the physical plan is reused.
 	t.Run("parameter_mixed", func(t *testing.T) {
-		rows, qErr := db.QueryContext(ctx,
-			"SELECT p.id, ? FROM p JOIN q ON q.qid = p.id JOIN r ON r.rid = p.id WHERE EXISTS (SELECT 1 FROM e WHERE e.eref = p.id)", int64(42))
-		if qErr != nil {
-			t.Fatalf("query: %v", qErr)
+		conn, err := db.Conn(ctx)
+		if err != nil {
+			t.Fatal(err)
 		}
-		defer rows.Close()
-		if !rows.Next() {
-			t.Fatalf("no rows, want (1, 42)")
+		defer conn.Close()
+		check := func(query string, bound, want int64) {
+			t.Helper()
+			rows, qErr := conn.QueryContext(ctx, query, bound)
+			if qErr != nil {
+				t.Fatalf("query %q with %d: %v", query, bound, qErr)
+			}
+			defer rows.Close()
+			if !rows.Next() {
+				t.Fatalf("no rows with %d, want (1, %d): %v", bound, want, rows.Err())
+			}
+			var id, p int64
+			if sErr := rows.Scan(&id, &p); sErr != nil {
+				t.Fatalf("scan (a NULL here is the parameter build drift): %v", sErr)
+			}
+			if id != 1 || p != want {
+				t.Fatalf("parameter mixed with %d = (%d, %d), want (1, %d)", bound, id, p, want)
+			}
+			if rows.Next() {
+				t.Fatalf("extra row with %d", bound)
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatal(err)
+			}
 		}
-		var id, p int64
-		if sErr := rows.Scan(&id, &p); sErr != nil {
-			t.Fatalf("scan (a NULL here is the parameter build drift): %v", sErr)
-		}
-		if id != 1 || p != 42 {
-			t.Fatalf("parameter mixed = (%d, %d), want (1, 42)", id, p)
+		const from = " FROM p JOIN q ON q.qid = p.id JOIN r ON r.rid = p.id WHERE EXISTS (SELECT 1 FROM e WHERE e.eref = p.id)"
+		for _, bound := range []int64{42, 73, -5} {
+			check("SELECT p.id, ?"+from, bound, bound)
+			check("SELECT p.id, p.id + ?"+from, bound, 1+bound)
 		}
 	})
 

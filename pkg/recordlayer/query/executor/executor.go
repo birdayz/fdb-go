@@ -1529,7 +1529,7 @@ func executeFilter(
 	preds := p.GetPredicates()
 	// A CURRENT_TIMESTAMP-family reference needs the statement clock a
 	// RowEvalContext carries — a bare frontier row would drift per row.
-	needsRowCtx := hasBindingContext(evalCtx) || predicatesDependOnStatementClock(preds)
+	needsRowCtx := hasBindingContext(evalCtx) || predicatesNeedStatementContext(preds)
 	// When the input flows a 2-way ordinal join's merged
 	// positional row, filter predicates evaluate under the LEG WINDOWS —
 	// computed once, from the input plan's result value.
@@ -4138,7 +4138,7 @@ func executeUpdate(
 		// unrelated owner therefore stays loud instead of borrowing the ambient
 		// positional row.
 		rowCtx, err := frontierRowContext(
-			qr.Positional, evalCtx, hasBindingContext(evalCtx), inputQOV, targetQOV)
+			qr.Positional, evalCtx, hasBindingContext(evalCtx) || (evalCtx != nil && len(evalCtx.constants) > 0), inputQOV, targetQOV)
 		if err != nil {
 			return nil, fmt.Errorf("update target binding: %w", err)
 		}

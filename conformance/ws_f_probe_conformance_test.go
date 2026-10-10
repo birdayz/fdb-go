@@ -1545,7 +1545,7 @@ var wsfGoPins = map[string]string{
 	"w13_quoted_pk_eq_explain":                   "OK EXPLAIN \"Scan(footab, [=])\"",
 	"w13_quoted_pk_eq_rows":                      "OK [id:BIGINT x:BIGINT] [[1 2]]",
 	"w13_subscript_alias":                        "OK [X:BIGINT] [[7]]",
-	"w13_subscript_explain":                      "OK EXPLAIN \"Map(Scan(A, [=]), {_0: _current.ARR#1[1]})\"",
+	"w13_subscript_explain":                      "OK EXPLAIN \"Map(Scan(A, [=]), {_0: _current.ARR#1[@0]})\"",
 	"w13_subscript_int_param":                    "OK [_0:BIGINT] [[8]]",
 	"w13_subscript_long_index":                   "OK [_0:BIGINT] [[7]]",
 	"w13_subscript_long_index_empty":             "OK [_0:BIGINT] []",

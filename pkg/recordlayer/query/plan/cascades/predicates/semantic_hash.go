@@ -25,10 +25,23 @@ func SemanticHashCode(p QueryPredicate) uint64 {
 	return h.Sum64()
 }
 
+// ConstantAgnosticHashCode is SemanticHashCode with constants hashed by type.
+func ConstantAgnosticHashCode(p QueryPredicate) uint64 {
+	h := fnv64.New()
+	writeSemanticHash(values.ConstantAgnosticHash{Writer: h}, p)
+	return h.Sum64()
+}
+
 func writeSemanticSetHash(h io.Writer, children []QueryPredicate) {
 	hashes := make([]uint64, len(children))
 	for i, child := range children {
-		hashes[i] = SemanticHashCode(child)
+		d := fnv64.New()
+		if _, agnostic := h.(values.ConstantAgnosticHash); agnostic {
+			writeSemanticHash(values.ConstantAgnosticHash{Writer: d}, child)
+		} else {
+			writeSemanticHash(d, child)
+		}
+		hashes[i] = d.Sum64()
 	}
 	slices.Sort(hashes)
 	_, _ = io.WriteString(h, "[")
@@ -57,7 +70,7 @@ func writeSemanticHash(h io.Writer, p QueryPredicate) {
 	switch t := p.(type) {
 	case *ValuePredicate:
 		_, _ = io.WriteString(h, "vp:")
-		fnv64.WriteHex(h, values.SemanticHashCode(t.Value))
+		fnv64.WriteHex(h, values.SemanticHashCodeIn(h, t.Value))
 	case *ComparisonPredicate:
 		// The text-search comparand fields fold because both equality layers
 		// compare them (see PredicateEquals). Length-delimit the strings so
@@ -76,7 +89,7 @@ func writeSemanticHash(h io.Writer, p QueryPredicate) {
 		// DistanceRank comparands fold because both equality layers compare
 		// them; the optional knobs fold a presence marker so nil ("index
 		// default") and an explicit value cannot collide.
-		fnv64.WriteHex(h, values.SemanticHashCode(t.Comparison.QueryVector))
+		fnv64.WriteHex(h, values.SemanticHashCodeIn(h, t.Comparison.QueryVector))
 		_, _ = io.WriteString(h, ":")
 		if t.Comparison.EfSearch != nil {
 			_, _ = io.WriteString(h, "e")
@@ -92,7 +105,7 @@ func writeSemanticHash(h io.Writer, p QueryPredicate) {
 		} else {
 			_, _ = io.WriteString(h, "-:")
 		}
-		fnv64.WriteHex(h, values.SemanticHashCode(t.Operand))
+		fnv64.WriteHex(h, values.SemanticHashCodeIn(h, t.Operand))
 		_, _ = io.WriteString(h, "/")
 		// Unary comparisons (IS [NOT] NULL) ignore Comparison.Operand at Eval
 		// time and BOTH equality layers treat nil and Literal(nil) operands as
@@ -101,17 +114,17 @@ func writeSemanticHash(h io.Writer, p QueryPredicate) {
 		if t.Comparison.Type.IsUnary() {
 			_, _ = io.WriteString(h, "u")
 		} else {
-			fnv64.WriteHex(h, values.SemanticHashCode(t.Comparison.Operand))
+			fnv64.WriteHex(h, values.SemanticHashCodeIn(h, t.Comparison.Operand))
 		}
 	case *PredicateWithValueAndRanges:
 		// Java hashes only the value; ranges are unordered sets under equality.
 		_, _ = io.WriteString(h, "ranges:")
-		fnv64.WriteHex(h, values.SemanticHashCode(t.value))
+		fnv64.WriteHex(h, values.SemanticHashCodeIn(h, t.value))
 	case *ExistentialValuePredicate:
 		// QuantifiedObjectValue operand's alias EXCLUDED — alias-invariant.
 		// The operand's value hash (qov tag, alias-free) folds in too.
 		_, _ = io.WriteString(h, "existential:")
-		fnv64.WriteHex(h, values.SemanticHashCode(t.Value))
+		fnv64.WriteHex(h, values.SemanticHashCodeIn(h, t.Value))
 	case *AndPredicate:
 		_, _ = io.WriteString(h, "and")
 		writeSemanticSetHash(h, t.SubPredicates)

@@ -132,6 +132,20 @@ func PlanPhysicalForTestWithArgs(
 	return plan, err
 }
 
+// PlanPhysicalForTestWithBoundLiterals plans like production: literals and
+// parameters become statement-pool references, as on a plan-cache miss.
+func PlanPhysicalForTestWithBoundLiterals(
+	sql, schemaDDL string,
+	args []driver.NamedValue,
+	stats properties.StatisticsProvider,
+) (plans.RecordQueryPlan, error) {
+	popts := plannerOptionsFrom(nil)
+	popts.params = args
+	popts.bindQueryLiterals = true
+	plan, _, err := planPhysicalForTest(sql, schemaDDL, stats, false, nil, popts)
+	return plan, err
+}
+
 // bindHarnessParameters binds a harness statement's parameters on its parse
 // tree; the release removes them. No parameters bind nothing, leaving every
 // `?` an untyped placeholder.
@@ -139,7 +153,7 @@ func bindHarnessParameters(root antlr.Tree, params []driver.NamedValue) (func(),
 	if len(params) == 0 {
 		return func() {}, nil
 	}
-	_, release, err := bindStatementParameters(root, params)
+	release, err := bindStatementParameters(root, params)
 	return release, err
 }
 
@@ -319,6 +333,13 @@ func planPhysicalForMetaData(
 	q := sel.Query()
 	if q == nil {
 		return nil, nil, fmt.Errorf("malformed SELECT")
+	}
+	if popts.bindQueryLiterals {
+		_, releaseBindings, bindErr := normalizeQueryBindings(q, md)
+		if bindErr != nil {
+			return nil, nil, bindErr
+		}
+		defer releaseBindings()
 	}
 	// Match the production SELECT pre-pass before lowering discards OVER.
 	// Otherwise this harness certifies a bare aggregate production rejects.

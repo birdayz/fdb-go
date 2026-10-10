@@ -328,7 +328,7 @@ func comparandReferencesOnlyKeys(c predicates.Comparison, keySet map[string]stru
 		return inKeys
 	}
 	switch c.Operand.(type) {
-	case *values.ConstantValue, *values.NullValue, *values.BooleanValue:
+	case *values.ConstantValue, *values.NullValue, *values.BooleanValue, *values.ConstantObjectValue:
 		return true
 	default:
 		return false

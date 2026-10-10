@@ -18,7 +18,7 @@ ROWS(4) cols=[W, S]:
   [3, 2]
 
 === WITH u AS (SELECT g, COUNT(1) AS n FROM ga GROUP BY g UNION ALL SELECT h, COUNT(1) AS m FROM gb GROUP BY h) SELECT c.w, u.n FROM u, c WHERE u.g = c.id ORDER BY c.w, u.n
-PLAN: InMemorySort([_current.W#0 ASC, _current.N#1 ASC], FlatMap(outer=UnorderedUnion(Map(AggregateIndex(COUNT, CNT_BY_G, [G], GA), {G: _current.G#0, N: _current.COUNT(1)#1}), Map(AggregateIndex(COUNT, CNT_BY_H, [H], GB), {G: _current.H#0, N: _current.COUNT(1)#1})), inner=Scan(C, [=])))
+PLAN: InMemorySort([_current.W#0 ASC, _current.N#1 ASC], FlatMap(outer=UnorderedUnion(Map(AggregateIndex(COUNT, CNT_BY_G, [G], GA), {G: _current.G#0, N: _current.COUNT(@0)#1}), Map(AggregateIndex(COUNT, CNT_BY_H, [H], GB), {G: _current.H#0, N: _current.COUNT(@0)#1})), inner=Scan(C, [=])))
 ROWS(4) cols=[W, N]:
   [1, 1]
   [1, 2]

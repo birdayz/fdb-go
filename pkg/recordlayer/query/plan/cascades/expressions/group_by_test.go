@@ -24,6 +24,8 @@ func TestIsCountStar(t *testing.T) {
 		{"COUNT(1)", AggregateSpec{Function: AggCount, Operand: &values.ConstantValue{Value: int64(1)}}, true},
 		{"COUNT(NULL)", AggregateSpec{Function: AggCount, Operand: &values.ConstantValue{Value: nil}}, true},
 		{"COUNT(TRUE)", AggregateSpec{Function: AggCount, Operand: &values.ConstantValue{Value: true}}, true},
+		{"COUNT(non-null pool)", AggregateSpec{Function: AggCount, Operand: values.NewConstantObjectValue(values.NamedCorrelationIdentifier("pool"), "0", values.NotNullLong)}, true},
+		{"COUNT(nullable pool)", AggregateSpec{Function: AggCount, Operand: values.NewConstantObjectValue(values.NamedCorrelationIdentifier("pool"), "0", values.NullableLong)}, false},
 		{"COUNT(col)", AggregateSpec{Function: AggCount, Operand: testField("id", values.NotNullLong)}, false},
 		{"SUM(col)", AggregateSpec{Function: AggSum, Operand: testField("amount", values.NotNullLong)}, false},
 		{"SUM(const) is not count-star", AggregateSpec{Function: AggSum, Operand: &values.ConstantValue{Value: int64(1)}}, false},

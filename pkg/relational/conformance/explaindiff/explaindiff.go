@@ -138,16 +138,22 @@ func (e Entry) UnexpectedlyFailed() bool { return e.Failed() && e.ErrorPin == ""
 // The returned slice is sorted by (file, index) and is byte-stable across
 // runs: no map iteration, no timestamps, no addresses.
 func Collect(dir string) ([]Entry, Stats, error) {
-	return collect(dir, nil)
+	return collect(dir, nil, false)
+}
+
+// CollectBoundLiterals is Collect with SELECT literals planned as production
+// plans them: statement-pool references, the form the plan cache reuses.
+func CollectBoundLiterals(dir string) ([]Entry, Stats, error) {
+	return collect(dir, nil, true)
 }
 
 // CollectWithReachability is Collect with RFC-183's yield-time plan-reachability
 // accounting routed into the caller's collector. nil = collect nothing.
 func CollectWithReachability(dir string, reach *cascades.ReachabilityCollector) ([]Entry, Stats, error) {
-	return collect(dir, reach)
+	return collect(dir, reach, false)
 }
 
-func collect(dir string, reach *cascades.ReachabilityCollector) ([]Entry, Stats, error) {
+func collect(dir string, reach *cascades.ReachabilityCollector, bound bool) ([]Entry, Stats, error) {
 	matches, err := filepath.Glob(filepath.Join(dir, "*.yaml"))
 	if err != nil {
 		return nil, Stats{}, fmt.Errorf("glob %s: %w", dir, err)
@@ -193,6 +199,9 @@ func collect(dir string, reach *cascades.ReachabilityCollector) ([]Entry, Stats,
 			case yamsql.IsQuery(t.Query):
 				st.Queries++
 				plan = planSelect(args)
+				if bound {
+					plan = planSelectBound(args)
+				}
 			default:
 				st.NonQuery++
 				continue
@@ -281,6 +290,12 @@ func planSelect(args []driver.NamedValue) planFn {
 // planDML routes a DELETE/UPDATE statement through the DML harness — the same
 // no-FDB Cascades pipeline, entered via the DML logical builders and the DML
 // planning rule set (see embedded.PlanPhysicalDMLForTest).
+func planSelectBound(args []driver.NamedValue) planFn {
+	return func(sql, schemaTemplate string, _ *cascades.ReachabilityCollector) (plans.RecordQueryPlan, error) {
+		return embedded.PlanPhysicalForTestWithBoundLiterals(sql, schemaTemplate, args, nil)
+	}
+}
+
 func planDML(args []driver.NamedValue) planFn {
 	return func(sql, schemaTemplate string, reach *cascades.ReachabilityCollector) (plans.RecordQueryPlan, error) {
 		return embedded.PlanPhysicalDMLForTestWithArgs(sql, schemaTemplate, args, nil, reach)
@@ -909,7 +924,7 @@ func GenerateBaseline(dir string) (string, Stats, error) {
 // cascades they summed into one number and the ratchet read edges=53748 for a
 // true 17916. nil = collect nothing.
 func GenerateBaselineWithReachability(dir string, reach *cascades.ReachabilityCollector) (string, Stats, error) {
-	entries, st, err := collect(dir, reach)
+	entries, st, err := collect(dir, reach, false)
 	if err != nil {
 		return "", Stats{}, err
 	}

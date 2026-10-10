@@ -67,26 +67,49 @@ func (v *ConstantObjectValue) Type() Type { return v.ResultType }
 //
 // Mirrors Java's EvaluationContext.dereferenceConstant.
 type ConstantDeref interface {
-	// DereferenceConstant returns the value bound to (alias,
-	// constantID) at evaluation time, or nil if no binding exists.
-	DereferenceConstant(alias CorrelationIdentifier, constantID string) any
+	// DereferenceConstant distinguishes a bound NULL from an absent pool entry.
+	DereferenceConstant(alias CorrelationIdentifier, constantID string) (any, bool)
+}
+
+// UnboundConstantError reports a constant reference evaluated without its pool
+// entry; returning NULL instead would silently change query results.
+type UnboundConstantError struct {
+	Alias          CorrelationIdentifier
+	ConstantID     string
+	NullForNotNull bool
+}
+
+func (e *UnboundConstantError) Error() string {
+	if e.NullForNotNull {
+		return "constant " + e.ConstantID + " is NULL but its type is NOT NULL"
+	}
+	return "constant " + e.ConstantID + " of " + e.Alias.String() + " is not bound in this evaluation context"
 }
 
 // Evaluate dereferences the constant via evalCtx's ConstantDeref
-// capability. Returns nil if evalCtx doesn't implement
-// ConstantDeref or if the binding is missing.
+// capability. A missing binding fails, as Java's "Missing binding" does (EvaluationContext.java:184-192).
 //
 // Matches Java's ConstantObjectValue.eval: after dereferencing,
 // applies numeric type promotion when the runtime object's type
 // doesn't match the bound ResultType. Relation-typed results are
 // returned as-is (no promotion for structured stream types).
 func (v *ConstantObjectValue) Evaluate(evalCtx any) (any, error) {
-	deref, ok := evalCtx.(ConstantDeref)
-	if !ok {
+	if evalCtx == nil {
+		// Plan-time probes (Evaluate(nil)) see no pool; Java has no such caller.
 		return nil, nil
 	}
-	obj := deref.DereferenceConstant(v.Alias, v.ConstantID)
+	deref, ok := evalCtx.(ConstantDeref)
+	if !ok {
+		return nil, &UnboundConstantError{Alias: v.Alias, ConstantID: v.ConstantID}
+	}
+	obj, present := deref.DereferenceConstant(v.Alias, v.ConstantID)
+	if !present {
+		return nil, &UnboundConstantError{Alias: v.Alias, ConstantID: v.ConstantID}
+	}
 	if obj == nil {
+		if !v.ResultType.IsNullable() {
+			return nil, &UnboundConstantError{Alias: v.Alias, ConstantID: v.ConstantID, NullForNotNull: true}
+		}
 		return nil, nil
 	}
 	// Relation types pass through without promotion, matching Java.

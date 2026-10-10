@@ -1798,7 +1798,7 @@ var wsE8GoPins = map[string]string{
 	"index_range_type_annulling_fold_where":   "OK [BIGINT] [NULL] []",
 	"index_tie_duplicate_or_explain":          "OK EXPLAIN \"Map(PredicatesFilter(IndexScan(T_N, [*] COVERING), [1 preds]), {ID: _current.ID#0})\"",
 	"index_tie_duplicate_or_where":            "OK [BIGINT] [NULL] [[2]]",
-	"index_tie_not_over_comparison_explain":   "OK EXPLAIN \"Map(PredicatesFilter(IndexScan(T_N, [*] COVERING), [1 preds]), {ID: _current.ID#0})\"",
+	"index_tie_not_over_comparison_explain":   "OK EXPLAIN \"Map(IndexScan(T_N, [<>] COVERING), {ID: _current.ID#0})\"",
 	"index_tie_not_over_comparison_where":     "OK [BIGINT] [NULL] [[5]]",
 	"or_annulling_fold_where":                 "ERROR 22012 \"/ by zero\"",
 	"pk_annulling_fold_explain":               "OK EXPLAIN \"Map(PredicatesFilter(Scan(T, [=]), [2 preds]), {ID: _current.ID#0})\"",

@@ -18092,22 +18092,11 @@ func SeedRunCorpus() []RunQuery {
 			// accepts the duplicate FROM (per-attribute a.qid → the q leg,
 			// the only leg carrying qid) and the UNCORRELATED EXISTS (always
 			// true — p is non-empty), so it answers the full cross product's
-			// q values: 6 rows, qid ∈ {5,7,9} each twice. Go answers the same
-			// rows in its own nesting order (Divergence below).
+			// q values: 6 rows, qid ∈ {5,7,9} each twice, in FROM order on both.
 			Name:           "dup_from_alias_leg_independent_exists",
 			SchemaTemplate: "CREATE TABLE T_DUP_EIP (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_DUP_EIQ (qid BIGINT, PRIMARY KEY (qid))",
 			SetupSqls:      []string{"INSERT INTO T_DUP_EIP VALUES (1, 10), (2, 20)", "INSERT INTO T_DUP_EIQ VALUES (5), (7), (9)"},
 			Query:          "SELECT a.qid FROM T_DUP_EIP AS a, T_DUP_EIQ AS a WHERE EXISTS (SELECT 1 FROM T_DUP_EIP)",
-			Divergence: &Divergence{
-				Reason: "ORDER ONLY — identical six-row multiset on both engines, and the query has no ORDER BY. " +
-					"The two nestings of the unconstrained comma join tie on cost and each engine breaks the tie " +
-					"with its own plan hash; see dup_from_alias_shadowing_exists, and the live pin beside its sibling " +
-					"shapes in conformance/dup_alias_exists_order_probe_test.go.",
-				Direction: DivergenceUnorderedRowOrderDiffers,
-				GoExpectedRows: [][]any{
-					{float64(5)}, {float64(5)}, {float64(7)}, {float64(7)}, {float64(9)}, {float64(9)},
-				},
-			},
 		},
 		{
 			// The SHADOWING variant: the exists subquery's own `T_DUP_SHP AS a`
@@ -18121,20 +18110,6 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_DUP_SHP (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_DUP_SHQ (qid BIGINT, PRIMARY KEY (qid))",
 			SetupSqls:      []string{"INSERT INTO T_DUP_SHP VALUES (1, 10), (2, 20)", "INSERT INTO T_DUP_SHQ VALUES (5), (7), (9)"},
 			Query:          "SELECT a.qid FROM T_DUP_SHP AS a, T_DUP_SHQ AS a WHERE EXISTS (SELECT 1 FROM T_DUP_SHP AS a WHERE a.id = 1)",
-			Divergence: &Divergence{
-				Reason: "ORDER ONLY — identical six-row multiset on both engines, and the query has no ORDER BY. " +
-					"Go's cost model ties on the two nestings of the unconstrained comma join and breaks the tie " +
-					"with an identifier-sensitive hash. So does JAVA — its ImplementNestedLoopJoinRule matches both " +
-					"quantifier orders (SetMatcher.exactlyInAnyOrder) and PlanningCostModel.compare ends in a planHash " +
-					"comparison, so neither engine guarantees a nesting: over 16 name/cardinality combinations Java " +
-					"deviates from FROM order in 10 (RFC-235 section 18). The plain comma join over these tables " +
-					"diverges the same way. Pinned live against the JVM, beside its sibling shapes, by " +
-					"conformance/dup_alias_exists_order_probe_test.go.",
-				Direction: DivergenceUnorderedRowOrderDiffers,
-				GoExpectedRows: [][]any{
-					{float64(5)}, {float64(5)}, {float64(7)}, {float64(7)}, {float64(9)}, {float64(9)},
-				},
-			},
 		},
 		{
 			// SELECT * over duplicate aliases: Java answers with DUPLICATE columns

@@ -1543,15 +1543,27 @@ func ValueSize(v Value) int {
 // Used by code that only acts on fully-foldable operands (e.g. range
 // enclosure's compile-time comparand).
 func IsConstantValue(v Value) bool {
+	return isConstantValue(v, false)
+}
+
+// IsConstantExpression also admits statement-pool references: row-independent,
+// but their value is known only at execution.
+func IsConstantExpression(v Value) bool {
+	return isConstantValue(v, true)
+}
+
+func isConstantValue(v Value, includeBindings bool) bool {
 	if v == nil {
 		return false
 	}
 	switch v.(type) {
 	case *ConstantValue, *NullValue, *BooleanValue:
 		return true
+	case *ConstantObjectValue:
+		return includeBindings
 	case *fieldValue, *quantifiedObjectValue, *AggregateValue, *ParameterValue,
 		*QuantifiedRecordValue, *ExistsValue, *ScalarSubqueryValue,
-		*ObjectValue, *UnmatchedAggregateValue, *ConstantObjectValue,
+		*ObjectValue, *UnmatchedAggregateValue,
 		*IndexEntryObjectValue, *ParameterObjectValue:
 		return false
 	}
@@ -1562,7 +1574,7 @@ func IsConstantValue(v Value) bool {
 		return false
 	}
 	for _, c := range children {
-		if !IsConstantValue(c) {
+		if !isConstantValue(c, includeBindings) {
 			return false
 		}
 	}
@@ -2180,6 +2192,8 @@ func explainValueOrdinalsWithAliases(v Value, withOrdinals bool, aliases map[Cor
 			parts[i] = explainValueOrdinalsWithAliases(a, withOrdinals, aliases)
 		}
 		return cv.FuncName + "(" + strings.Join(parts, ", ") + ")"
+	case *ConstantObjectValue:
+		return "@" + cv.ConstantID
 	case *ParameterValue:
 		// Render with the same `?` sigil the grammar accepts:
 		// `?` for plain positional, `?N` once an ordinal is assigned,
@@ -2536,6 +2550,14 @@ func (r *RowEvalContext) BindParameter(ordinal int, name string) (any, bool) {
 	return r.Binder.BindParameter(ordinal, name)
 }
 
+// DereferenceConstant preserves constant pools through row-context adapters.
+func (r *RowEvalContext) DereferenceConstant(alias CorrelationIdentifier, constantID string) (any, bool) {
+	if binder, ok := r.Binder.(ConstantDeref); ok {
+		return binder.DereferenceConstant(alias, constantID)
+	}
+	return nil, false
+}
+
 func (r *RowEvalContext) GetCorrelationBinding(id CorrelationIdentifier) (any, bool) {
 	if r.Correlations == nil {
 		return nil, false
@@ -2770,6 +2792,19 @@ type StatementClock interface {
 // must be wrapped in a clock-bearing RowEvalContext: evaluating such a
 // value against a bare OrdinalRow falls back to per-row time.Now() and
 // drifts across the rows of one statement, which SQL forbids.
+// ReadsConstantPool reports whether v dereferences a statement constant pool,
+// which only a RowEvalContext with the statement binder can resolve.
+func ReadsConstantPool(v Value) bool {
+	found := false
+	WalkValue(v, func(n Value) bool {
+		if _, ok := n.(*ConstantObjectValue); ok {
+			found = true
+		}
+		return !found
+	})
+	return found
+}
+
 func DependsOnStatementClock(v Value) bool {
 	if v == nil {
 		return false

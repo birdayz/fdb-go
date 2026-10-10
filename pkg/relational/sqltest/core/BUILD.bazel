@@ -14,6 +14,7 @@ go_test(
         "fleet_fanout_fdb_test.go",
         "main_test.go",
         "named_call_fdb_test.go",
+        "plan_cache_bindings_fdb_test.go",
         "plan_cache_engine_fdb_test.go",
         "plan_logging_fdb_test.go",
         "range_table_function_fdb_test.go",

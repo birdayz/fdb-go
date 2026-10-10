@@ -23,30 +23,23 @@ func checkInvariants(t *testing.T, c *PlanCache) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.ll.Len() != len(c.items) {
-		t.Fatalf("invariant: list len %d != map len %d", c.ll.Len(), len(c.items))
+	variants := 0
+	for _, byVariant := range c.items {
+		if len(byVariant) == 0 {
+			t.Fatal("invariant: empty variant bucket retained")
+		}
+		variants += len(byVariant)
+	}
+	if c.ll.Len() != variants {
+		t.Fatalf("invariant: list len %d != variant count %d", c.ll.Len(), variants)
 	}
 	if c.ll.Len() > c.maxSize {
 		t.Fatalf("invariant: list len %d exceeds maxSize %d", c.ll.Len(), c.maxSize)
 	}
-	seen := make(map[cacheKey]bool, c.ll.Len())
 	for e := c.ll.Front(); e != nil; e = e.Next() {
 		it := e.Value.(*lruItem)
-		if seen[it.key] {
-			t.Fatalf("invariant: key %q appears twice in list", it.key)
-		}
-		seen[it.key] = true
-		mapped, ok := c.items[it.key]
-		if !ok {
-			t.Fatalf("invariant: list key %q missing from map", it.key)
-		}
-		if mapped != e {
-			t.Fatalf("invariant: map[%q] points at a different element than the list", it.key)
-		}
-	}
-	for k := range c.items {
-		if !seen[k] {
-			t.Fatalf("invariant: map key %q not present in list", k)
+		if c.items[it.key][it.variant] != e {
+			t.Fatalf("invariant: map[%q][%q] does not point at its list element", it.key, it.variant)
 		}
 	}
 }
@@ -691,18 +684,42 @@ func TestPlanCacheCarriesOutputLabelsDefensively(t *testing.T) {
 	t.Parallel()
 	cache := NewPlanCache(1)
 	labels := []string{"G", "G"}
-	cache.PutWithOutputLabels("scope", "SELECT", &stubPlan{label: "p"}, nil, labels)
+	key := cacheKey{scope: "scope", sql: "SELECT"}
+	cache.store("", key, queryBindings{}, &planCacheEntry{plan: &stubPlan{label: "p"}, outputLabels: labels})
 	labels[0] = "mutated-input"
 
-	_, _, got, ok := cache.GetWithOutputLabels("scope", "SELECT")
-	if !ok || !slices.Equal(got, []string{"G", "G"}) {
+	got, ok := cache.lookup("", key, queryBindings{})
+	if !ok || !slices.Equal(got.outputLabels, []string{"G", "G"}) {
 		t.Fatalf("cached labels = %v, hit=%v, want [G G]", got, ok)
 	}
-	got[1] = "mutated-output"
-	_, _, again, ok := cache.GetWithOutputLabels("scope", "SELECT")
-	if !ok || !slices.Equal(again, []string{"G", "G"}) {
+	got.outputLabels[1] = "mutated-output"
+	again, ok := cache.lookup("", key, queryBindings{})
+	if !ok || !slices.Equal(again.outputLabels, []string{"G", "G"}) {
 		t.Fatalf("cached labels after caller mutation = %v, hit=%v, want [G G]", again, ok)
 	}
+}
+
+// Variants of one statement live under its key; a lookup sees only them.
+func TestPlanCacheIndexesConstraintVariantsByStatement(t *testing.T) {
+	t.Parallel()
+	cache := NewPlanCache(8)
+	key := cacheKey{scope: "s", sql: "SELECT ? FROM T"}
+	literal := func(value string) queryBindings {
+		return queryBindings{literals: []queryLiteralBinding{{typeName: "LONG", valueKey: value, exact: true}}}
+	}
+	cache.store("", key, literal("1"), &planCacheEntry{plan: &stubPlan{label: "one"}})
+	cache.store("", key, literal("2"), &planCacheEntry{plan: &stubPlan{label: "two"}})
+	cache.store("", cacheKey{scope: "s", sql: "other"}, literal("1"), &planCacheEntry{plan: &stubPlan{label: "x"}})
+	for value, want := range map[string]string{"1": "one", "2": "two"} {
+		got, ok := cache.lookup("", key, literal(value))
+		if !ok || got.plan.(*stubPlan).label != want {
+			t.Fatalf("value %s: got %v, want %s", value, got, want)
+		}
+	}
+	if _, ok := cache.lookup("", key, literal("3")); ok {
+		t.Fatal("an exact variant served another value")
+	}
+	checkInvariants(t, cache)
 }
 
 func BenchmarkPlanCache_Hit(b *testing.B) {
