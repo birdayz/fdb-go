@@ -8417,51 +8417,15 @@ same machine). The cause is 5459c90a2, which introduced the decline.
 
 ---
 
-### Go SQL driver stores the relational catalog and user schemas on a Go-only keyspace (found 2026-09-23, measured)
+### [x] Go SQL driver uses Java's relational catalog and schema keyspace
 
-`pkg/relational/sqldriver/driver.go` opens the catalog at
-`keyspace.RelationalKeyspace.CatalogSubspace()`, which is the three strings `(__SYS,
-__SYS, CATALOG)`. User schemas sit at `SchemaSubspace(dbPath, schemaName)`, the raw
-strings `(dbPath, schemaName)`. Java's `RelationalKeyspaceProvider` uses a typed
-system path for the catalog, `(NULL, NULL, int64(0))`
-(`getSystemDirectory`, :183-188), and puts user data under DirectoryLayerDirectory
-levels (domain -> dbName -> schema, directory-layer-interned, :203-210). A Go SQL
-application and a Java relational application on the same cluster therefore share
-no catalog, database, schema or row. MEASURED by the spec "WS-J Go-stored template
-planned by the target": a template created through the Go `fdbsql` driver is
-42F55 "SchemaTemplate '...' is not in catalog" to the target. The comment on
-`catalog.DefaultCatalogSubspace` said the driver's migration "is tracked in
-TODO.md". Before this entry it was not: grep over TODO.md for catalog/keyspace/Java
-wire terms, positive control 45 `catalog` lines, found none. That comment now points
-here. The core record layer (explicit subspaces) is not affected; the Go catalog
-LIBRARY at `DefaultCatalogSubspace` does read and write the Java layout. Work: port
-the relational keyspace (typed system path, DirectoryLayerDirectory domains,
-databases and schemas, the interning layer) into `keyspace.RelationalKeyspace`,
-switch the driver to it, and decide the migration of data Go drivers already wrote
-under the string layout. This is a wire-compat hard-line item that predates the
-RFC-257 upgrade delta; scope and priority have been put to the owner.
-
-The migration must COPY each template's stored MetaData bytes verbatim, never rebuild
-a template from its DDL: a rebuild on a post-RFC-257 node gives Java's record-type
-numbering and union field numbers (ws-j-design.md section 4, F3) and Java's literal
-widths (section 3.2, F2), so a rebuilt template no longer matches the rows its schemas
-already hold, and nothing on the read path notices (a rebuild of the same DDL keeps
-the metadata version, so the store's version check does nothing). Driver-stored templates written before
-RFC-257 carry `long_value` literals; the target cannot plan a bitmap query over them
-and serves arithmetic equalities by full index scan (measured, spec "WS-J Go-stored
-template planned by the target", long_value variant), so a migrated tenant is rebound
-to a NEW template version CARRIED from its migrated bytes (ws-j-design.md section 4:
-the carry rule keeps the stored record-type keys, union numbers and index versions, and
-only an index whose definition changed gets a new last-modified version), the literal
-carrier's move from `long_value` to `int_value` being admitted by the rebind
-validator's one-way literal-carrier arm (section 3.2). That path depends on section
-4's carry rule; without it a rebuild shifts every index's versions and the rebind is
-refused. Nothing is rewritten in place.
-
-Re-booked 2026-10-05: the entry was lost when the branch history was rewritten,
-while `catalog.DefaultCatalogSubspace` and the spec "WS-J Go-stored template planned
-by the target" still cited it. Until the driver moves, cross-engine catalog specs
-store Go templates through the catalog library (`WSHMacroCatalogConformance`).
+The driver and catalog library both use `(NULL, NULL, int64(0))`, matching Java
+4.14.2.0 `RelationalKeyspaceProvider.getSystemDirectory` (:183-188); user schemas use
+the directory and interning layers. The spec "WS-J Go-stored template planned by the
+target" checks Java's plans and populated query results over driver-written and
+library-written templates against the same explicit Java pins. The old 42F55
+invisibility expectation no longer describes the shared catalog. As documented in
+`CHANGELOG.md`, pre-release stores with the former layout must be recreated.
 
 
 ## 11. Reference — stress baselines

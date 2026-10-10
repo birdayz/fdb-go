@@ -50,10 +50,8 @@ func isTerminalReader(r any) bool {
 	return false
 }
 
-// guardNotCatalog rejects writes whose subspace overlaps the relational
-// catalog at ("__SYS", "__SYS", "CATALOG") — in either direction (a
-// target inside the catalog, or one that contains it, like a truncate
-// of ("__SYS",)).
+// Protect the shared catalog tuple (nil, nil, 0) from writes inside it
+// and from writes to an enclosing subspace.
 func guardNotCatalog(ss subspace.Subspace) error {
 	catalogBytes := relationalKeyspace().CatalogSubspace().Bytes()
 	target := ss.Bytes()

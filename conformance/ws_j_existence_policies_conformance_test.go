@@ -22,14 +22,8 @@ import (
 	"fdb.dev/pkg/relational/core/metadata"
 )
 
-// RFC-257 WS-J step 4 (parity with Java's SchemaExistsBehavior.shouldWrite,
-// SchemaExistsBehavior.java:39-80): CREATE SCHEMA's order and the
-// catalog's saveSchema under each SchemaExistsBehavior, arm by arm, through both
-// engines; each outcome's SQLSTATE and message must be the target's. Each
-// engine runs the arms on its own names (the Go driver keeps its catalog and
-// stores on a Go-only keyspace, TODO.md "Go SQL driver stores the relational
-// catalog and user schemas on a Go-only keyspace"), and the outcomes are
-// compared with each engine's prefix replaced by one placeholder.
+// Distinct names isolate the engines in the shared catalog while pinning
+// SchemaExistsBehavior.shouldWrite's SQLSTATE and message (SchemaExistsBehavior.java:39-80).
 var _ = Describe("WS-J existence policies answer as the target", func() {
 	It("CREATE SCHEMA's precedence and saveSchema's four behaviours", func() {
 		ctx := context.Background()

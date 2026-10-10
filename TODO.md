@@ -1406,13 +1406,13 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
     candidate reference or vendored start for a format-compatible port.
   The engine choice is made in the follow-up PR.
 - [x] **Catalog/keyspace: DECIDED 2026-10-05, exactly Java's layout, no
-  compatibility with the old Go layout.** Go's SQL driver uses the string-key
+  compatibility with the old Go layout.** Go's SQL driver used the string-key
   catalog/schema layout `(__SYS, __SYS, CATALOG)` / `(dbPath, schemaName)`.
-  Replace it with Java's `RelationalKeyspaceProvider` layout: the typed system
+  Replaced it with Java's `RelationalKeyspaceProvider` layout: the typed system
   path `(NULL, NULL, int64(0))` and directory-layer domain -> database ->
   schema levels. No migration from the Go layout: data written by an earlier Go
   build is recreated. A template created through Go must load in Java and the
-  reverse (`TODO_OLD.md`, “Go SQL driver stores the relational catalog…”).
+  reverse (`TODO_OLD.md`, “Go SQL driver uses Java's relational catalog and schema keyspace”).
   Measured scope (4.14.2.0 source):
   - Catalog store at `KeySpaceDirectory(__SYS, NULL) / (__SYS, NULL) /
     (CATALOG, LONG, 0)`, so the tuple `(nil, nil, 0)`.
