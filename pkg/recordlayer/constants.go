@@ -1,3 +1,9 @@
+// Portions derived from FoundationDB Record Layer (SplitHelper.java,
+// FDBRecordStore.java, FDBRecordStoreKeyspace.java,
+// TimeWindowLeaderboardIndexMaintainer.java),
+// Copyright 2015-2018 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 package recordlayer
 
 // Subspace keys used by the Record Layer to organize data within FDB.

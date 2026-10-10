@@ -8,12 +8,12 @@ legal/security, performance, operations, and a simulated HN thread. Owner and st
 
 | # | Decision | Notes |
 |---|---|---|
-| D1 | ~~Revoke the leaked GitHub OAuth `client_secret`~~ **done 2026-10-09 (owner rotated all metrognome secrets)** | `examples/metrognome/config.yaml:7` (commit `6ad7ae7e5`). Its branches are deleted, but closed PRs #58 and #65 retain accessible history. Rotation addresses the credential; history cleanup is a separate, disruptive operation. Treat the exposed value as compromised. |
+| D1 | Credential rotation | Completed by the owner on 2026-10-09. Rotation and repository-history cleanup are separate operations. |
 | D2 | Git history: keep, strip binaries, or squash | 440 MiB pack; 55 MB `factory-migrate` binary. `v0.1.0` is already in the Go module proxy. Rewriting history does not remove copies in forks, caches or module proxies. |
 | D3 | Agent material in the public tree | `CLAUDE.md` ("ABSOLUTE PRIME DIRECTIVE"), `.claude/` (Graefe/Torvalds personas, 24/7 shifts), `shifts/`, 19 root `.md` files, and real people as reviewer names in RFCs, commits and tests. |
 | D4 | AI-assisted disclosure | The HN-thread simulation's top comment is commit forensics. Disclose first, in your own words, and point at the oracles: Java conformance, the libfdb_c differential, the binding tester. |
 | D5 | Shrink the public API (about 88% of 11.5k exported identifiers should be internal) | Planner, simfdb, dst, conformance, gomock mocks and test seams are importable. Hard to take back after launch. |
-| D6 | Bigger CI boxes / shared-cache write auth | The cache is unauthenticated; a trusted-write split needs a server change (see S5). |
+| D6 | CI fleet capacity and security review | Review deployment configuration privately before launch, following SECURITY.md. |
 
 ## 2. Blockers and highs, by workstream
 
@@ -51,11 +51,11 @@ legal/security, performance, operations, and a simulated HN thread. Owner and st
 ### Security and legal
 | Sev | Item | Owner |
 |---|---|---|
-| B | Fork PRs could reach persistent root runners | **mitigated**: runner job-started guard (both boxes) + approval for all outside contributors; persistent sudo/Docker hosts and shared-cache trust remain risks |
+| B | Runner trust boundaries | Require the job-started guard and contributor approval; verify provisioning preserves the guard. |
 | H | `claude.yml` on self-hosted runners with write tokens | **done** (PR #788): GitHub-hosted |
 | H | Tag/release protection; secret scanning; push protection; Dependabot; private vulnerability reporting | **done** (settings) |
 | H | Apache §4 headers on ~288 ported files; NOTICE; trademark wording; third-party notices; SECURITY.md link | fix-legal |
-| M | Unused high-impact repo secrets (`HCLOUD_TOKEN`, `BAZELSCALESET_*`); no Hetzner firewall; cache poisoning by trusted-branch jobs | open (S5) |
+| M | Deployment security review | Track deployment-specific findings privately, following SECURITY.md. |
 
 ### Code health (screenshot material)
 | Sev | Item | Owner |

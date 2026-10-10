@@ -1,12 +1,15 @@
 # Operator guide
 
-Practical guidance for running `fdb-record-layer-go` in production. This covers connecting to a
-cluster, transaction behaviour and limits, the online-index lifecycle, schema evolution,
-backup/restore, and the observability hooks. It is **pre-1.0** — see `RELEASE.md` for the stability
-policy and `PRODUCTION_READINESS.md` for the current readiness snapshot.
+Practical guidance for operating `fdb-record-layer-go`: connecting to a cluster,
+transaction behaviour and limits, the online-index lifecycle, schema evolution,
+backup/restore, and observability. It is **pre-1.0, not declared production-ready** —
+see [STATUS.md](../STATUS.md) and [RELEASE.md](../RELEASE.md).
 
-The one hard line: **the FDB wire format is byte-compatible with Java `fdb-record-layer-core`
-4.12.11.0** in every release. Go, C, and Java apps can share one cluster and read each other's data.
+The current Java reference is **Record Layer 4.14.2.0**. Sharing data depends on the
+features, metadata and formats in use; read the [compatibility exceptions](compatibility.md)
+and [upgrade guide](upgrade.md) before opening an existing store. In particular,
+an unpinned Go open can upgrade its format, and older Go SQL storage is not
+automatically migrated.
 
 **Running this as a multi-tenant SaaS?** Read [`mt-saas.md`](mt-saas.md) alongside this page. It
 covers only what changes when one database path is one tenant — the tenancy model, the trust

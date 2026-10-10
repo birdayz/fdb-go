@@ -1,3 +1,7 @@
+// Portions derived from FoundationDB Record Layer (Matchers.java),
+// Copyright 2021-2024 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 // Package javayamsql parses Apple's `.yamsql` acceptance-test format — the
 // multi-document YAML dialect driving the Java record layer's yaml-tests suite.
 //

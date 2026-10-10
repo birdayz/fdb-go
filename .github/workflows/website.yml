@@ -60,6 +60,10 @@ jobs:
           HUGO_ENVIRONMENT: production
           HUGO_CACHEDIR: "${{ runner.temp }}/hugo_cache"
         run: hugo --source website --gc --minify --baseURL "https://fdb.dev/"
+      - name: Check website
+        run: |
+          python3 website/check.py website/public
+          python3 -B -m unittest discover -s website -p 'check_test.py'
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:

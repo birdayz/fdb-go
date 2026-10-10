@@ -307,6 +307,115 @@ func TestFleetGoMatchesGoMod(t *testing.T) {
 	}
 }
 
+func TestPRCIThirdPartyNoticesFreshness(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile("../.github/workflows/ci.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflow struct {
+		On   map[string]yaml.Node `yaml:"on"`
+		Jobs map[string]struct {
+			If              string `yaml:"if"`
+			ContinueOnError bool   `yaml:"continue-on-error"`
+			Steps           []struct {
+				Name, Uses, Run string
+				If              string            `yaml:"if"`
+				ContinueOnError bool              `yaml:"continue-on-error"`
+				With            map[string]string `yaml:"with"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(data, &workflow); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := workflow.On["pull_request"]; !ok {
+		t.Fatal("notice freshness must run on pull requests, not only release tags")
+	}
+	job, ok := workflow.Jobs["ci"]
+	if !ok || job.If != "" || job.ContinueOnError {
+		t.Fatal("notice freshness must be in the required CI job")
+	}
+	var check string
+	goReady := false
+	for _, step := range job.Steps {
+		if strings.HasPrefix(step.Uses, "actions/setup-go@") {
+			goReady = step.With["go-version-file"] == "go.mod" && step.If == "" && !step.ContinueOnError
+		}
+		if step.Name == "Verify third-party notices are current" {
+			if !goReady || step.If != "" || step.ContinueOnError || check != "" {
+				t.Fatal("notice freshness must run once, after setup-go from go.mod, without an optional condition")
+			}
+			check = step.Run
+		}
+	}
+	if check == "" {
+		t.Fatal("PR CI has no third-party notice freshness check")
+	}
+	for _, tc := range []struct {
+		name           string
+		fail, generate bool
+	}{
+		{"current", false, true},
+		{"stale", true, true},
+		{"staged_regeneration", true, true},
+		{"missing", true, false},
+		{"untracked", true, false},
+		{"empty", true, false},
+		{"generator_failure", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			run := func(script string) ([]byte, error) {
+				cmd := exec.Command("bash", "-euo", "pipefail", "-c", script)
+				cmd.Dir = root
+				cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "CASE="+tc.name)
+				return cmd.CombinedOutput()
+			}
+			setup := `
+git init -q
+if [ "$CASE" != missing ] && [ "$CASE" != untracked ]; then
+  case "$CASE" in
+    stale|staged_regeneration) printf 'stale notice\n' > THIRD_PARTY_NOTICES.txt ;;
+    empty) : > THIRD_PARTY_NOTICES.txt ;;
+    *) printf 'current notice\n' > THIRD_PARTY_NOTICES.txt ;;
+  esac
+  git add THIRD_PARTY_NOTICES.txt
+fi
+git -c user.name=fixture -c user.email=fixture@example.invalid -c core.hooksPath=/dev/null commit -qm fixture --allow-empty
+if [ "$CASE" = untracked ] || [ "$CASE" = staged_regeneration ]; then
+  printf 'current notice\n' > THIRD_PARTY_NOTICES.txt
+fi
+if [ "$CASE" = staged_regeneration ]; then git add THIRD_PARTY_NOTICES.txt; fi
+`
+			if out, err := run(setup); err != nil {
+				t.Fatalf("notice fixture: %v\n%s", err, out)
+			}
+			// Exercise the workflow's shell, stubbing only metadata generation.
+			harness := `
+python3() {
+  [ "$*" = scripts/update-third-party-notices.py ] || return 91
+  printf 'generated\n' > generator-called
+  [ "$CASE" != generator_failure ] || return 92
+  printf 'current notice\n' > THIRD_PARTY_NOTICES.txt
+}
+`
+			out, err := run(harness + check)
+			if (err != nil) != tc.fail {
+				t.Fatalf("notice check %s: exit=%v, want failure=%v\n%s", tc.name, err, tc.fail, out)
+			}
+			_, err = os.Stat(filepath.Join(root, "generator-called"))
+			if err != nil && !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+			if (err == nil) != tc.generate {
+				t.Fatalf("notice check %s: generator called=%v, want %v", tc.name, err == nil, tc.generate)
+			}
+		})
+	}
+}
+
 func TestFRLReleaseLegalNotices(t *testing.T) {
 	t.Parallel()
 	data, err := os.ReadFile("../.github/workflows/frl-release.yml")

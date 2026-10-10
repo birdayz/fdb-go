@@ -1,3 +1,10 @@
+// Portions derived from FoundationDB Record Layer (LogicalOperator.java,
+// RecordQueryFlatMapPlan.java, Quantifier.java, RecordQueryExplodePlan.java),
+// Copyright 2015-2020 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2022 Apple Inc. and the FoundationDB project authors
+// Copyright 2021-2025 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 package query
 
 import (

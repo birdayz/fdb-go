@@ -1,3 +1,10 @@
+// Portions derived from FoundationDB Record Layer (
+// MultidimensionalIndexMaintainer.java, CursorLimitManager.java,
+// IndexOptions.java, KeyValueCursorBase.java, and others),
+// Copyright 2015-2018 Apple Inc. and the FoundationDB project authors
+// Copyright 2023 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 package recordlayer
 
 import (

@@ -12,10 +12,7 @@ on:
 
 jobs:
   claude:
-    # One live run per issue/PR, newest wins. This job competes with the real CI gates
-    # for the hetzner-fdb-vm boxes — a handful, one job each — so a pile of wedged or
-    # superseded review runs still starves PR CI behind it (a 3h-wedged run + its queued
-    # re-requests once held a box while CI sat queued for an hour).
+    # One live run per issue/PR, newest wins; superseded reviews need not keep running.
     #
     # JOB-level concurrency, deliberately NOT workflow-level: the workflow
     # fires on EVERY issue_comment, and a workflow-level group is entered by
@@ -29,12 +26,8 @@ jobs:
     concurrency:
       group: claude-${{ github.event.issue.number || github.event.pull_request.number || github.run_id }}
       cancel-in-progress: true
-    # SECURITY: this runs on a SELF-HOSTED runner with write perms + secrets on a
-    # PUBLIC repo. Only the owner, org members, and invited collaborators may trigger
-    # it — never untrusted commenters (CONTRIBUTOR / FIRST_TIME_CONTRIBUTOR / NONE).
-    # Each branch ANDs the '@claude' mention with an author_association allowlist so the
-    # job never even STARTS for an untrusted actor (the action's own actor check runs too
-    # late — the self-hosted runner has already checked out code and run steps by then).
+    # Write permissions and secrets are available even on a GitHub-hosted runner.
+    # Require an owner/member/collaborator mention before any job steps run.
     if: |
       (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude') &&
         (github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'MEMBER' || github.event.comment.author_association == 'COLLABORATOR')) ||
@@ -46,8 +39,9 @@ jobs:
         (github.event.issue.author_association == 'OWNER' || github.event.issue.author_association == 'MEMBER' || github.event.issue.author_association == 'COLLABORATOR'))
     # GitHub-hosted, never the self-hosted fleet: the agent reads untrusted
     # issue and pull-request content, and the self-hosted boxes are persistent,
-    # have sudo and write the fleet's shared Bazel cache (infra/runner-job-guard.sh
-    # refuses such jobs there anyway). Nothing here needs Bazel or FDB.
+    # have sudo and write the fleet's shared Bazel cache. The host guard rejects
+    # fork PR events and all PR issue_comments, not every agent trigger.
+    # Nothing here needs Bazel or FDB.
     runs-on: ubuntu-latest
     # Hard wall so a wedged run can never hold a runner for hours
     # (a review normally completes in well under 15 minutes).

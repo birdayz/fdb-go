@@ -18,6 +18,7 @@ import (
 // end-to-end SQL test belongs in a pkg/relational/sqltest package instead; add a
 // file here only if it tests the driver itself.
 var driverTestFiles = []string{
+	"clusterfile_lookup_test.go",
 	"column_metadata_probe_test.go",
 	"connector_dsn_freeze_test.go",
 	"driver_test.go",

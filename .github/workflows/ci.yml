@@ -33,6 +33,16 @@ jobs:
           go-version-file: go.mod
           cache: false
 
+      - name: Verify third-party notices are current
+        # Match release inputs: go.mod's toolchain, the four pure-Go frl targets,
+        # and no ambient GOFLAGS/GOEXPERIMENT (enforced by the generator).
+        run: |
+          set -euo pipefail
+          git ls-files --error-unmatch THIRD_PARTY_NOTICES.txt
+          test -s THIRD_PARTY_NOTICES.txt
+          python3 scripts/update-third-party-notices.py
+          git diff --exit-code HEAD -- THIRD_PARTY_NOTICES.txt
+
       - name: Check generated code is up to date
         run: |
           just generate

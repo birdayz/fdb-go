@@ -1,3 +1,9 @@
+// Portions derived from FoundationDB Record Layer (TestBlock.java,
+// QueryCommand.java, RelationalResultSet.java, QueryConfig.java,
+// and others),
+// Copyright 2021-2024 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 package javacorpus
 
 import (

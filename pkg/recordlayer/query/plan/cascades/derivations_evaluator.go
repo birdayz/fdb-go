@@ -1,3 +1,9 @@
+// Portions derived from FoundationDB Record Layer (DerivationsProperty.java,
+// QueriedValue.java, QueryPredicate.java, CorrelationIdentifier.java),
+// Copyright 2015-2020 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2022 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 // derivations_evaluator.go — evaluates DerivationsProperty for
 // physical plan wrapper expressions. Mirrors Java's
 // DerivationsProperty.DerivationsVisitor.

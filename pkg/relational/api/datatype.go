@@ -1,3 +1,7 @@
+// Portions derived from FoundationDB Record Layer (DataType.java),
+// Copyright 2021-2024 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 package api
 
 // DataType represents a relational SQL data type. Mirrors Java's

@@ -1,3 +1,11 @@
+// Portions derived from FoundationDB Record Layer (
+// RelationalStructMetaData.java, MessageTuple.java, RowStruct.java,
+// ImmutableRowStruct.java, and others),
+// Copyright 2015-2025 Apple Inc. and the FoundationDB project authors
+// Copyright 2021-2024 Apple Inc. and the FoundationDB project authors
+// Copyright 2021-2025 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 // Package rowstruct materializes a STRUCT column value for SQL clients:
 // the Go analogue of Java's RowStruct family, where a struct column read
 // off a record surfaces as a RelationalStruct rather than as the raw

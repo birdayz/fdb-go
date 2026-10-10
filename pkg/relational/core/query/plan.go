@@ -1,3 +1,7 @@
+// Portions derived from FoundationDB Record Layer (Plan.java),
+// Copyright 2021-2025 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 // Package query defines the planner/plan seam between the SQL frontend
 // (database/sql driver, future gRPC server, REPL) and the SQL execution
 // engine. Mirrors the role of Java's

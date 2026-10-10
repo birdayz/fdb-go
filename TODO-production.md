@@ -1,4 +1,9 @@
-# TODO — Production Readiness
+# TODO — Production Readiness (historical)
+
+> **Historical work log, not current readiness.** Checked/open labels, release
+> references and scheduled-workflow claims below describe earlier revisions.
+> [STATUS.md](STATUS.md) is the current readiness statement; [TODO.md](TODO.md)
+> tracks engineering work. Do not use this log as production approval.
 
 Derived from `docs/review_2026-06-07.md`. Ordered by criticality so the most important
 work is done first. Target use case: **SaaS control plane.**

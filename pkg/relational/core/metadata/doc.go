@@ -1,3 +1,11 @@
+// Portions derived from FoundationDB Record Layer (
+// RecordLayerSchemaTemplate.java, Type.java, NullableArrayTypeUtils.java,
+// RecordLayerTable.java, and others),
+// Copyright 2015-2022 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2026 Apple Inc. and the FoundationDB project authors
+// Copyright 2021-2025 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 // Package metadata provides concrete bridge implementations of the
 // api.* metadata interfaces backed by *recordlayer.RecordMetaData.
 //

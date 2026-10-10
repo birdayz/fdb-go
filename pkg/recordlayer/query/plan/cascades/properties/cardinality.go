@@ -1,3 +1,8 @@
+// Portions derived from FoundationDB Record Layer (CardinalitiesProperty.java,
+// Cardinality.java),
+// Copyright 2015-2026 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 // Package properties — Cardinality and Cardinalities types.
 //
 // Ports Java's CardinalitiesProperty.Cardinality and

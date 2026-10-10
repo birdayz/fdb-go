@@ -1,3 +1,11 @@
+// Portions derived from FoundationDB Record Layer (Type.java,
+// TypeRepository.java, ProtoUtils.java, NullableArrayTypeUtils.java,
+// and others),
+// Copyright 2015-2021 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2022 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2026 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 package values
 
 // Plan-time protobuf descriptor synthesis for a values.Type.

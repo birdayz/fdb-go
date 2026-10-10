@@ -28,9 +28,18 @@ hasCJKLanguage = false
     pageRef = "/docs"
     weight = 1
   [[menu.main]]
+    name = "Status"
+    url = "/docs/maturity/"
+    weight = 2
+  [[menu.main]]
     name = "Changelog"
     pageRef = "/changelog"
     weight = 3
+  [[menu.main]]
+    name = "Appearance"
+    weight = 7
+    [menu.main.params]
+      type = "theme-toggle"
   [[menu.main]]
     name = "Search"
     weight = 8
@@ -44,8 +53,8 @@ hasCJKLanguage = false
       icon = "github"
 
 [params]
-  description = "A pure-Go FoundationDB client (no cgo, 2-4x faster reads than libfdb_c), plus a wire-compatible Record Layer and SQL engine for Go."
-  # Default og:image / twitter:image for every page (1200x630, static/og.png).
+  description = "A native Go FoundationDB client, a Record Layer, and an embedded SQL engine. No cgo required. Explore the APIs, examples, and compatibility boundaries."
+  # Default og:image / twitter:image (2400x1260; render static/og.svg to og.png).
   images = ["/og.png"]
 
   [params.navbar]
@@ -53,8 +62,7 @@ hasCJKLanguage = false
     displayLogo = false
 
   [params.theme]
-    # FAANG/HN audience: dark, fast, dense.
-    default = "dark"
+    default = "system"
     displayToggle = true
 
   [params.footer]

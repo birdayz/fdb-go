@@ -1,22 +1,11 @@
 # Production Readiness Checklist
 
-> **AUTHORITY: `road-to-prod.md`.** That page — not this one — answers "what stands between this
-> codebase and production use", and where the two disagree it wins. This document is the **launch-gate
-> checklist**: the bar a public release has to clear and the P0/P1 work that was defined against it.
-> It is kept because the bar is still the bar, not because its status claims are current; it was
-> written before the 2026-07-29 audit and reads pessimistic. Two of its claims were flatly false at
-> the time of the reconciliation pass and are corrected in place (marked **CORRECTED**); the rest of
-> its prose is left as the record of what was decided when.
->
-> Target versions: Java
-> `fdb-record-layer-core` **4.14.2.0**, FDB C++ client **7.3.77**, Go **1.26.x** (the pins in
-> `MODULE.bazel` are the source of truth). The executable truth is the test suites
-> (`//conformance:conformance_test`, the cross-engine differential, binding-stress); `README.md` and
-> `DIVERGENCES.md` are the other living docs. Point-in-time audit snapshots live under
-> `docs/archive/` and are **not** current status — do not cite them. A `docs_consistency_test.go`
-> guard fails CI if a living doc cites a Java record-layer / FDB C++ / Go version other than the
-> `MODULE.bazel` / `go.mod` pins, reintroduces the README escape-hatch contradiction, or leaves a
-> stale report under `reports/`.
+> **Historical checklist, not current status.** [STATUS.md](STATUS.md) is the
+> readiness authority. The resolved/open labels and CI descriptions below record
+> earlier planning; they have not been re-certified for this tree. In particular,
+> removed scheduled workflows are not current safety nets. Use the current
+> [compatibility](docs/compatibility.md) and [upgrade](docs/upgrade.md) pages rather
+> than interpreting an old checked item as a release or production endorsement.
 
 This document collects the work needed to make `fdb-record-layer-go` credible as
 a production-grade project that users can rely on, and as a near-term public HN

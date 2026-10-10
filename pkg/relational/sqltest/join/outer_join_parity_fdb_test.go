@@ -1,3 +1,7 @@
+// Portions derived from FoundationDB Record Layer (join-tests-outer.yamsql),
+// Copyright 2021-2026 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 package sqltest
 
 // Outer-join parity sweep — RFC-144 TASK A.

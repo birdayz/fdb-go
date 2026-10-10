@@ -1,3 +1,9 @@
+// Portions derived from FoundationDB Record Layer (NullableArrayUtils.java,
+// NullableArrayTypeUtils.java),
+// Copyright 2015-2022 Apple Inc. and the FoundationDB project authors
+// Copyright 2021-2025 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 package values
 
 import (

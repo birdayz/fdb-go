@@ -1,3 +1,10 @@
+// Portions derived from FoundationDB Record Layer (CheckExplainTest.java,
+// CheckResultMetadataTest.java, IncludeBlockTest.java,
+// TransactionSetupTest.java, and others),
+// Copyright 2015-2025 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2026 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 package javayamsql
 
 // This file records what the corpus *means* — which files are meant to succeed,

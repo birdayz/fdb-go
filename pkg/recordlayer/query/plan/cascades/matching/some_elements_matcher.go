@@ -1,3 +1,7 @@
+// Portions derived from FoundationDB Record Layer (MultiMatcher.java),
+// Copyright 2015-2022 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 package matching
 
 // SomeElementsMatcher matches an []any input where AT LEAST ONE

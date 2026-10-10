@@ -1,3 +1,10 @@
+// Portions derived from FoundationDB Record Layer (ConstrainedBoolean.java,
+// ValueEquivalence.java, QueryPlanConstraint.java),
+// Copyright 2015-2020 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2023 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2024 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 package cascades
 
 import "fdb.dev/pkg/recordlayer/query/plan/cascades/values"

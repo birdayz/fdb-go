@@ -1,3 +1,11 @@
+// Portions derived from FoundationDB Record Layer (ConstantObjectValue.java,
+// EvaluationContext.java, PromoteValue.java, CorrelationIdentifier.java),
+// Copyright 2015-2018 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2020 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2023 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2024 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 package values
 
 // ConstantObjectValue is a NAMED reference to a constant captured

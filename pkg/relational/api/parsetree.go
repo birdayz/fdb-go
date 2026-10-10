@@ -1,3 +1,9 @@
+// Portions derived from FoundationDB Record Layer (ParseTreeInfo.java,
+// WithMetadata.java),
+// Copyright 2015-2025 Apple Inc. and the FoundationDB project authors
+// Copyright 2021-2024 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 package api
 
 // ParseTreeInfo is the minimal shape of a parsed SQL query exposed to

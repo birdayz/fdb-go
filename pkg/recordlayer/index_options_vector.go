@@ -1,3 +1,7 @@
+// Portions derived from FoundationDB Record Layer (IndexOptions.java),
+// Copyright 2015-2018 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 package recordlayer
 
 // Vector index option names. They live in the core package, as Java's

@@ -1,3 +1,10 @@
+// Portions derived from FoundationDB Record Layer (RelOpValue.java,
+// SemanticAnalyzer.java, FieldValue.java, CastValue.java, and others),
+// Copyright 2015-2022 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2025 Apple Inc. and the FoundationDB project authors
+// Copyright 2021-2025 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 // Package expr is the parse-tree → values.Value resolver. It
 // bridges the two main Phase 3 seam packages:
 //

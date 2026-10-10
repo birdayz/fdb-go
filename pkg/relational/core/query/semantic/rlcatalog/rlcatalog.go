@@ -1,3 +1,11 @@
+// Portions derived from FoundationDB Record Layer (Type.java,
+// RecordMetaData.java, DataType.java, ProtoUtils.java, and others),
+// Copyright 2015-2018 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2022 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2026 Apple Inc. and the FoundationDB project authors
+// Copyright 2021-2024 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 // Package rlcatalog adapts the Record Layer's `RecordMetaData` into
 // the `semantic.Catalog` interface. Isolated in a sub-package so the
 // core semantic package stays free of a recordlayer dependency —

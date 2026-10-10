@@ -1,3 +1,10 @@
+// Portions derived from FoundationDB Record Layer (ErrorCode.java,
+// ExceptionUtil.java, FDBExceptions.java),
+// Copyright 2015-2018 Apple Inc. and the FoundationDB project authors
+// Copyright 2021-2024 Apple Inc. and the FoundationDB project authors
+// Copyright 2021-2025 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 // Package api mirrors Java's fdb-relational-api module.
 //
 // It defines the public interfaces and types for the relational (SQL)

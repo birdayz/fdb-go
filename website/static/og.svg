@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2400" height="1260" viewBox="0 0 2400 1260">
+  <rect width="2400" height="1260" fill="#111111"/>
+  <g font-family="DejaVu Sans, sans-serif">
+    <text x="152" y="184" fill="#e7edeb" font-size="54" font-weight="bold">fdb.dev</text>
+    <text x="152" y="302" fill="#a5b1ad" font-size="28" letter-spacing="3">FOUNDATIONDB FOR GO</text>
+    <g fill="#e7edeb" font-size="144" font-weight="bold" letter-spacing="-7">
+      <text x="144" y="508">FoundationDB,</text>
+      <text x="144" y="678">from Go.</text>
+    </g>
+    <g fill="#a5b1ad" font-size="43">
+      <text x="152" y="804">Native client. Record Layer. Embedded SQL.</text>
+      <text x="152" y="881">No cgo required.</text>
+    </g>
+    <g transform="translate(1500 346)">
+      <text x="0" y="0" fill="#a5b1ad" font-size="25" letter-spacing="2">INSIDE YOUR GO APPLICATION</text>
+      <g fill="#171d1a" stroke="#323c38" stroke-width="2">
+        <rect x="0" y="44" width="748" height="130" rx="8"/>
+        <rect x="0" y="210" width="748" height="130" rx="8"/>
+        <rect x="0" y="376" width="748" height="130" rx="8" fill="#1a2c23" stroke="#98d9ba"/>
+      </g>
+      <g fill="#e7edeb" font-size="42" font-weight="bold">
+        <text x="36" y="124">SQL engine</text>
+        <text x="36" y="290">Record Layer</text>
+        <text x="36" y="456">Pure-Go FDB client</text>
+      </g>
+      <g fill="#a5b1ad" font-size="28" text-anchor="middle">
+        <text x="374" y="203">↓</text>
+        <text x="374" y="369">↓</text>
+        <text x="374" y="550">↓ FoundationDB cluster</text>
+      </g>
+    </g>
+    <path d="M152 1050H2248" stroke="#323c38" stroke-width="2"/>
+    <text x="152" y="1130" fill="#98d9ba" font-size="32">Independent open source · Pre-1.0</text>
+    <text x="2248" y="1130" fill="#a5b1ad" font-size="30" text-anchor="end">github.com/birdayz/fdb-go</text>
+  </g>
+</svg>

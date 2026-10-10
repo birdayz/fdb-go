@@ -1,75 +1,126 @@
 # fdb-go — FoundationDB for Go
 
 [![CI](https://github.com/birdayz/fdb-go/actions/workflows/ci.yml/badge.svg)](https://github.com/birdayz/fdb-go/actions/workflows/ci.yml)
-[![Test Report](https://img.shields.io/badge/test_report-latest-2980b9)](https://fdb-record-layer-go-reports.fsn1.your-objectstorage.com/reports/master/latest.html)
 
-Go port of Apple's [FoundationDB Record Layer](https://github.com/FoundationDB/fdb-record-layer).
-Wire-compatible with Java Record Layer 4.14.2.0 — Go and Java applications can read
-and write the same data on a shared FDB cluster.
+**Use FoundationDB from Go — at the key-value, record, or SQL layer.**
+
+fdb-go includes a native client with no cgo dependency, a Go port of Apple's
+[Record Layer](https://github.com/FoundationDB/fdb-record-layer), and an embedded
+`database/sql` engine. FoundationDB remains the database server; these libraries
+run in your Go application. Use the client on its own or the layers above it.
+
+Sharing record-store data with Java Record Layer 4.14.2.0 is a central goal,
+with explicit [compatibility boundaries](docs/compatibility.md). This is not a
+PostgreSQL-compatible SQL server or a replacement for the FoundationDB cluster.
+
+This is an **unofficial, independent project**, not affiliated with, sponsored by,
+or endorsed by Apple Inc. or the FoundationDB project. Apple and FoundationDB
+names identify upstream projects and compatibility targets, not an endorsement.
+
+[Get started](#getting-started) · [Examples](example/) ·
+[Status](STATUS.md) · [Compatibility](docs/compatibility.md) ·
+[Operator guide](docs/operations.md) · [Website](https://fdb.dev/)
+
+## Choose a layer
+
+| API | Use it for | Package |
+|-----|------------|---------|
+| **FoundationDB client** | Key-value transactions, range reads, and retries without cgo | [`pkg/fdbgo/fdb`](pkg/fdbgo/fdb) |
+| **Record Layer** | Protobuf records, secondary indexes, schema metadata, and cursors | [`pkg/recordlayer`](pkg/recordlayer) |
+| **SQL** | Queries through Go's `database/sql`, planned and executed in-process | [`pkg/relational/sqldriver`](pkg/relational/sqldriver) |
+
+The SQL engine uses the Record Layer, which uses an FDB client. Record Layer and
+SQL builds may select Apple's C client instead of the default pure-Go backend;
+see [backend selection](#fdb-client).
 
 ## Status
 
-**Pre-1.0. Not yet declared production-ready — pin a commit and run the suites below
-before relying on it.** Maturity varies by layer:
+**Pre-1.0; not declared production-ready.** Evaluate a pinned commit against your
+schemas, queries, recovery requirements, and load. [STATUS.md](STATUS.md) describes
+readiness and what the test lanes establish. These docs describe the development
+tree, not the older v0.1.0 release. Read the [upgrade guide](docs/upgrade.md) before
+opening existing data; older Go SQL storage is not automatically migrated.
 
-| Layer | Maturity | Notes |
-|-------|----------|-------|
-| **Record store** (CRUD, indexes, versions, continuations, split records) | **Most mature** | Wire-compatibility is the project's hard line, exercised by the Java conformance + binding-stress suites. This is the part to trust first. |
-| **Cascades SQL engine** | **Usable, evolving** | Wide SQL surface (see below) validated by a cross-engine differential harness, but still has open correctness items — consult the conformance report and `TODO.md` before depending on a given query shape. |
-| **Pure-Go FDB client** (`pkg/fdbgo`) | **Youngest** | Reimplements the FDB wire protocol from scratch (RYW, retries, `commit_unknown_result`). Validated against libfdb_c via the binding tester. It is the default backend; if you'd rather link Apple's C client, the `CGO_ENABLED=1 ... -tags libfdbc` build flag swaps it in — both read/write byte-identical records (see the build commands below). |
+## Getting started
 
-Before production use: pin a commit, run the conformance + differential + stress
-suites against your workload, and review `PRODUCTION_READINESS.md` /
-`TODO-production.md` for the current gap list. Report issues per `SECURITY.md`.
-For running it — connecting, transactions, online index builds, schema evolution,
-backup, and observability — see the [operator guide](docs/operations.md).
+Requires the Go toolchain specified in [go.mod](go.mod) and a running Docker daemon.
+From a clone of this repository:
 
-## Target versions
+```sh
+# Build the CLI from this checkout.
+go build -o frl ./cmd/frl
 
-| Component | Version | Notes |
-|-----------|---------|-------|
-| **FoundationDB** | **7.3.77** | Client library + headers. Go bindings pinned to `release-7.3` branch. |
-| **Java Record Layer** | **4.14.2.0** | Wire compatibility target. Conformance tests run against this version. |
-| **Go** | **1.26.4** | Minimum Go version (kept current with stdlib security patches; `govulncheck` CI gates this). |
-| **Bazel** | **9.0.1** | Build system. Pinned in `.bazelversion`. |
+# Start AND configure a disposable single-node cluster.
+# stdout is the cluster-file path.
+FDB_CLUSTER_FILE="$(./frl fdb up)" || exit 1
+export FDB_CLUSTER_FILE
 
-FDB 8.0 is not yet released. When it ships, the Go bindings and client library should be upgraded together.
+# Run the complete SQL example, or the record-store example.
+go run ./example/sql
+go run ./example
+```
 
-## Why
+**Use a disposable cluster:** the SQL example recreates `/FRL/QUICKSTART` and
+`QUICKSTART_TMPL`; the record-store example writes order `1001` under
+`record_layer_demo`. Both programs return a nonzero exit status on failure.
 
-The Record Layer gives you structured records, secondary indexes, and transactional
-schema evolution on top of FoundationDB's ordered key-value store. This port brings
-that to Go without sacrificing interoperability with existing Java deployments.
+- [`example/sql`](example/sql/main.go): domain/schema setup, parameterized writes,
+  point queries, grouped aggregation, and checked row iteration.
+- [`example/getting_started.go`](example/getting_started.go): protobuf metadata,
+  saving records and typed loads inside transactions.
 
-## Performance
+For an existing cluster, set `FDB_CLUSTER_FILE` to its cluster file instead of
+starting one with `frl`. Do not run these destructive demos against data you need.
+When finished with the disposable cluster:
 
-Includes a **pure Go FDB client** that speaks the FDB wire protocol directly — no CGo, no C library dependency.
+```sh
+./frl fdb down
+```
 
-Both clients run in the same process against the same FDB testcontainer, same keys. [`TestBenchmarkSanity`](pkg/fdbgo/bench/bench_test.go) verifies byte-identical results.
+## FDB client
 
-| Benchmark | fdb-go | Apple CGo | Diff |
-|---|---:|---:|---|
-| Get (100 B) | 60 us | 218 us | **3.6x** |
-| Get (1 KB) | 61 us | 209 us | **3.4x** |
-| Get (10 KB) | 69 us | 217 us | **3.1x** |
-| GetRange (100 keys) | 92 us | 363 us | **3.9x** |
-| Sustained read throughput | 430 MB/s | 191 MB/s | **2.3x** |
-| Set + Commit | 1,008 us | 1,005 us | 1.0x |
-
-With simulated network latency ([tc netem](pkg/fdbgo/bench/bench_test.go)):
-
-| RTT | fdb-go | Apple CGo | Diff |
-|---|---:|---:|---|
-| 2 ms | 1,080 us | 2,726 us | **2.5x** |
-| 10 ms | 5,254 us | 12,635 us | **2.4x** |
-| 1,000 ms | 1,005 ms | 1,006 ms | 1.0x |
-
-Reads 2-4x faster on localhost, **still 2.4x at 10 ms RTT**, converges to parity at extreme latency. Writes at parity. See [`PERFORMANCE.md`](pkg/fdbgo/bench/PERFORMANCE.md) for the analysis.
-
-## Usage
+The pure-Go client's API is modeled on Apple's Go binding. See the
+[client documentation](pkg/fdbgo/README.md) for its supported surface and
+limitations. A connection and transaction excerpt, inside an application function:
 
 ```go
-db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+import "fdb.dev/pkg/fdbgo/fdb"
+
+if err := fdb.APIVersion(730); err != nil {
+    return err
+}
+db, err := fdb.OpenDatabase(clusterFile)
+if err != nil {
+    return err
+}
+defer db.Close()
+_, err = db.TransactCtx(ctx, func(tx fdb.WritableTransaction) (any, error) {
+    tx.Set(fdb.Key("k"), []byte("v"))
+    return tx.Get(fdb.Key("k")).Get()
+})
+return err
+```
+
+The callback may run again on a retryable error. Return read errors to the
+transaction wrapper and keep external side effects outside the callback.
+
+Record Layer and SQL backend selection is static per binary:
+
+```sh
+go build ./...  # pure-Go backend; no libfdb_c
+CGO_ENABLED=1 go build -tags libfdbc ./...  # C compiler + matching libfdb_c headers/library
+```
+
+The build tag changes the transport, not the layers' storage format or compatibility
+boundaries. Direct users of `pkg/fdbgo/fdb` always get the pure-Go client.
+
+## Record Layer
+
+With metadata, a keyspace, and a record configured (see the
+[runnable example](example/getting_started.go)):
+
+```go
+_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
     store, err := recordlayer.NewStoreBuilder().
         SetMetaDataProvider(metadata).
         SetContext(rtx).
@@ -78,288 +129,83 @@ db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
     if err != nil {
         return nil, err
     }
-
     return store.SaveRecord(order)
 })
-```
-
-Type-safe access via generics:
-
-```go
-typed := recordlayer.NewTypedFDBRecordStore[*pb.Order](store)
-order, err := typed.LoadRecord(ctx, primaryKey)
-```
-
-## FDB client
-
-Use the pure-Go client directly through `pkg/fdbgo/fdb`. It mirrors Apple's Go binding
-(`apple/foundationdb/bindings/go`), so existing FoundationDB code ports with minimal changes:
-
-```go
-import "fdb.dev/pkg/fdbgo/fdb"
-
-fdb.MustAPIVersion(730)
-db, _ := fdb.OpenDatabase(clusterFile)
-db.Transact(func(tx fdb.WritableTransaction) (any, error) {
-	tx.Set(fdb.Key("k"), []byte("v"))
-	return tx.Get(fdb.Key("k")).MustGet(), nil
-})
-```
-
-A default `go build` links no cgo and no C library. The Record Layer and SQL engine can
-optionally run on Apple's libfdb_c instead, selected by a **build tag**. The choice is static
-per binary, since libfdb_c's network thread is initialized once per process:
-
-```sh
-go build ./...                        # default: the pure-Go client (no cgo, no libfdb_c)
-CGO_ENABLED=1 go build -tags libfdbc  # the Record Layer on Apple's libfdb_c (the escape hatch)
-```
-
-Both clients read and write byte-identical records, index entries, and continuations against
-the same cluster, proven by a cross-backend differential suite, so flipping the tag keeps data
-shared (with each other, and with Java/C apps). This is the idiom the standard library uses for
-its `netgo`/`netcgo` split and sqlite uses to swap mattn/go-sqlite3 (cgo) for modernc.org/sqlite
-(pure-Go). The build-tag backend selection is internal to the layers (`pkg/internal/fdbclient`);
-code that uses the `fdb` client directly always gets the pure-Go client.
-
-## SQL engine
-
-Built-in SQL engine via Go's `database/sql` interface. Queries are optimized by a
-Cascades-based query planner ported from Java's `fdb-relational-core`.
-
-```go
-import _ "fdb.dev/pkg/relational/sqldriver"
-
-db, _ := sql.Open("fdbsql", "fdbsql:///FRL/mydb?cluster_file=/etc/foundationdb/fdb.cluster&schema=main")
-
-// DDL
-db.Exec("CREATE DATABASE /FRL/mydb")
-db.Exec(`CREATE SCHEMA TEMPLATE app_tmpl
-    CREATE TABLE Users (id BIGINT NOT NULL, name STRING, email STRING, PRIMARY KEY (id))
-    CREATE INDEX idx_email ON Users (email)`)
-db.Exec("CREATE SCHEMA /FRL/mydb/main WITH TEMPLATE app_tmpl")
-
-// DML
-db.Exec("INSERT INTO Users (id, name, email) VALUES (1, 'Alice', 'alice@example.com')")
-db.Exec("UPDATE Users SET name = 'Bob' WHERE id = 1")
-
-// Queries — Cascades optimizer picks index scans, sort elimination, streaming aggregation
-rows, _ := db.Query("SELECT name FROM Users WHERE email = 'alice@example.com'")
-rows, _ = db.Query("SELECT name FROM Users ORDER BY id DESC")  // reverse PK scan
-rows, _ = db.Query("SELECT email, COUNT(*) FROM Users GROUP BY email ORDER BY email ASC")
-```
-
-Supported SQL (the authoritative, tested surface is the yamsql scenarios under
-`pkg/relational/conformance/yamsql/testdata/` + `DIVERGENCES.md` **at HEAD**; the list
-below is a hand summary of those, not a separately-maintained source of truth). For an
-exhaustive, auto-generated inventory of every scenario by feature area, see
-[`FEATURE_MATRIX.md`](FEATURE_MATRIX.md) (regenerated by `just feature-matrix`):
-- SELECT with WHERE, ORDER BY (ASC/DESC, including mixed directions), DISTINCT,
-  GROUP BY, HAVING, LIMIT / OFFSET
-- Aggregates: COUNT, SUM, MIN, MAX, AVG
-- JOINs: INNER, comma-join / self-join, and LEFT / RIGHT / FULL OUTER JOIN
-  (outer joins are a Go-only read-side extension — Java's SQL layer has none; wire
-  compat is unaffected)
-- Subqueries in WHERE: EXISTS / NOT EXISTS and correlated scalar subqueries
-  (Go-only read-side extensions). `x IN (SELECT ...)` is **not supported** — see
-  the gap list below
-- CTEs: WITH ... AS (SELECT ...), including chained CTEs
-- UNION ALL
-- INSERT, UPDATE, DELETE
-- CASE, COALESCE, CAST, arithmetic, scalar functions (e.g. UPPER, LOWER)
-- Computed projections with aliases
-
-ORDER BY works without an index via a Go-only bounded in-memory sort
-(`RecordQueryInMemorySortPlan`, beyond Java's index-only Cascades); a supporting
-index/PK avoids the sort, and an unbounded ORDER BY without LIMIT is capped to
-avoid OOM. Self-joins and CTE+JOINs correctly resolve alias-qualified columns.
-
-Not yet supported in the SQL engine:
-- A plain CTE referenced inside a UNION branch (recursive CTEs, which use UNION
-  internally, do work)
-- `x IN (SELECT ...)` / `x NOT IN (SELECT ...)` **anywhere** — SELECT WHERE, DML
-  WHERE, a JOIN ON conjunct, or a projection. Every form is rejected with SQLSTATE
-  `0AF00`; rewrite as a correlated `EXISTS` / `NOT EXISTS` or a join. This matches
-  Java, which rejects the same grammar alternative
-  (`ExpressionVisitor.visitInPredicate` asserts `inList().queryExpressionBody() == null`
-  → `UNSUPPORTED_QUERY` "IN predicate does not support nested SELECT"), so it is a
-  shared gap, not a Go divergence. `NOT IN` needs care: it is UNKNOWN (so the row
-  drops) when the subquery yields a NULL or the left operand is NULL, whereas a bare
-  `NOT EXISTS` keeps those rows. Adding `IS NOT NULL` inside the `NOT EXISTS` does
-  **not** fix that — a NULL row already fails the equality. Emulate `NOT IN` with a
-  second existence test:
-  ```sql
-  -- x NOT IN (SELECT y FROM t)
-  WHERE x IS NOT NULL
-    AND NOT EXISTS (SELECT 1 FROM t WHERE t.y = x)
-    AND NOT EXISTS (SELECT 1 FROM t WHERE t.y IS NULL)
-  ```
-  (`x IN (a, b, c)` value lists are unaffected and fully supported.)
-- General window functions (matching Java — only `ROW_NUMBER() ... QUALIFY` for
-  vector K-NN search exists; see TODO.md)
-- Synthetic record types (JoinedRecordType, UnnestedRecordType)
-
-## What works
-
-Records, indexes, cursors, and all the plumbing needed to share data with Java:
-
-- **CRUD** — save, load, delete, scan, existence checks, typed stores
-- **Indexes** — VALUE, VERSION, RANK, COUNT, SUM, MIN_EVER, MAX_EVER, MAX_EVER_VERSION, COUNT_NOT_NULL, COUNT_UPDATES, PERMUTED_MIN, PERMUTED_MAX, TEXT, BITMAP_VALUE, MULTIDIMENSIONAL, TIME_WINDOW_LEADERBOARD, VECTOR (HNSW)
-- **Covering indexes** — KeyWithValueExpression (value columns stored in FDB value)
-- **Index operations** — scan (BY_VALUE, BY_RANK, BY_GROUP), rebuild, online build (BY_RECORDS), state management (READABLE/WRITE_ONLY/DISABLED/READABLE_UNIQUE_PENDING)
-- **Split records** — automatic chunking at 100KB, transparent reassembly
-- **Record versioning** — 12-byte versions (10 global versionstamp + 2 local)
-- **Cursors** — concat, map, filter, skip, limit, union, intersection, dedup, flatmap, chained, auto-continuing, fallback
-- **Continuations** — cross-platform cursor resume tokens (record and index level)
-- **Scan limits** — time, byte, and record scan limits
-- **Transactions** — configurable retry with exponential backoff, commit hooks, conflict reporting
-- **Schema evolution** — MetaDataValidator, MetaDataEvolutionValidator
-- **Bulk operations** — DeleteAllRecords, DeleteRecordsWhere, record counting (atomic)
-- **Aggregate functions** — EvaluateAggregateFunction (COUNT, SUM, MIN, MAX, RANK functions)
-- **Store management** — format version 14, store locking (FORBID_RECORD_UPDATE, FULL_STORE), incarnation, header user fields
-- **Key expressions** — Field, RecordType, Empty, Composite (Then), Nesting, FanOut, Grouping, FunctionKey, KeyWithValue, Version
-- **Instrumentation** — StoreTimer with timed events and counters matching Java's FDBStoreTimer
-- **Store state caching** — FDBRecordStoreStateCache interface with PassThroughStoreStateCache default
-
-## What doesn't (yet)
-
-- Synthetic record types (JoinedRecordType, UnnestedRecordType)
-
-Full gap analysis in [TODO.md](TODO.md).
-
-## Conformance
-
-Wire compatibility is verified by a conformance suite that runs both Go and Java
-(Record Layer 4.14.2.0) against the same FDB instance, cross-validating reads and
-writes bidirectionally.
-
-### Wire format
-
-All 10 keyspace constants match the Java implementation:
-
-| Subspace | ID | Purpose |
-|----------|----|---------|
-| `StoreInfoKey` | 0 | Store header (format version, metadata) |
-| `RecordKey` | 1 | Record data |
-| `IndexKey` | 2 | Index entries |
-| `IndexSecondarySpaceKey` | 3 | Secondary index data (RANK, PERMUTED) |
-| `RecordCountKey` | 4 | Atomic record counts |
-| `IndexStateSpaceKey` | 5 | Index lifecycle state |
-| `IndexRangeSpaceKey` | 6 | Index build range tracking |
-| `IndexUniquenessViolationsKey` | 7 | Deferred uniqueness violations |
-| `RecordVersionKey` | 8 | Inline record versions |
-| `IndexBuildSpaceKey` | 9 | Index build metadata |
-
-Tuple encoding, split record layout, continuation token format, and index entry
-structure are all verified against Java.
-
-### Test coverage
-
-434 conformance specs (Go↔Java cross-validation), 5320 Go test functions, and 2702
-Ginkgo specs against real FDB via testcontainers. **8000+ total test entry points.**
-1579-entry SQL corpus runs through the Go engine with zero failures.
-
-| Area | Conformance specs |
-|------|------------------:|
-| CRUD + existence + isolation + conflicts | 49 |
-| Multi-type records (Customer) | 15 |
-| Split records | 10 |
-| Scanning (forward, reverse, limits, tuple ordering) | 13 |
-| Continuation tokens (record + index level) | 6 |
-| VALUE indexes (single, composite, fan-out, covering) | 22 |
-| COUNT/SUM/MIN_EVER/MAX_EVER indexes | 38 |
-| COUNT_NOT_NULL/COUNT_UPDATES/CLEAR_WHEN_ZERO | 12 |
-| MAX_EVER_VERSION index | 7 |
-| PERMUTED_MIN/MAX indexes | 10 |
-| RANK index | 14 |
-| TEXT index | 12 |
-| BITMAP_VALUE index | 6 |
-| MULTIDIMENSIONAL index | 15 |
-| VECTOR index (HNSW) | 18 |
-| TIME_WINDOW_LEADERBOARD index | 11 |
-| Record versioning | 4 |
-| Record counting | 6 |
-| RangeSet wire format | 4 |
-| Store header (v1 + v2), index state, lifecycle | 28 |
-| DeleteAllRecords / DeleteRecordsWhere | 10 |
-| OnlineIndexer | 7 |
-| RecordMetaData proto serialization | 21 |
-| TypedRecord cross-language encoding | 11 |
-
-## Getting started
-
-```sh
-# 1. Start FoundationDB (Docker)
-docker run -d --name fdb -p 4500:4500 foundationdb/foundationdb:7.3.77
-
-# 2. Get the cluster file
-docker exec fdb cat /var/fdb/fdb.cluster > /tmp/fdb.cluster
-
-# 3. Use from Go
-go get fdb.dev/pkg/relational/sqldriver
-```
-
-```go
-package main
-
-import (
-    "database/sql"
-    "fmt"
-    _ "fdb.dev/pkg/relational/sqldriver"
-)
-
-func main() {
-    db, _ := sql.Open("fdbsql", "fdbsql:///FRL/myapp?cluster_file=/tmp/fdb.cluster&schema=main")
-    db.Exec("CREATE DATABASE /FRL/myapp")
-    db.Exec(`CREATE SCHEMA TEMPLATE app CREATE TABLE Users (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))`)
-    db.Exec("CREATE SCHEMA /FRL/myapp/main WITH TEMPLATE app")
-
-    db.Exec("INSERT INTO Users VALUES (1, 'Alice'), (2, 'Bob')")
-
-    rows, _ := db.Query("SELECT id, name FROM Users ORDER BY id")
-    for rows.Next() {
-        var id int64; var name string
-        rows.Scan(&id, &name)
-        fmt.Printf("%d: %s\n", id, name)
-    }
+if err != nil {
+    return err
 }
 ```
 
-Runnable, CI-compiled examples live under `example/`:
-- [`example/sql`](example/sql/main.go) — the SQL path above, fleshed out (DDL, parameterized
-  INSERT, point query, `GROUP BY` aggregate over an index). `go run ./example/sql`.
-- [`example/getting_started.go`](example/getting_started.go) — the lower-level record-store API
-  (metadata, typed `SaveRecord`/`loadRecord`, index scans).
+For transactions, online index builds, schema evolution, backup, and observability,
+see the [operator guide](docs/operations.md). The
+[compatibility inventory](docs/compatibility.md) describes supported formats and
+exceptions; a feature name alone is not an interoperability guarantee.
 
-## Building
+## SQL engine
 
-Requires Bazel 9+ (via bazelisk) and Docker (for testcontainers).
+The embedded `database/sql` engine uses a Cascades-based planner ported from
+Java's relational layer. The [complete SQL example](example/sql/main.go) registers
+a domain, creates a database and schema, inserts orders, and queries them.
+
+Database paths have the form `/DOMAIN/DATABASE`. Register application domains
+explicitly with `sqldriver.RegisterDomainIfNotExists("FRL")`. Unquoted SQL identifiers
+fold to uppercase; DSN paths and schema names are case-sensitive. The example uses
+`/FRL/QUICKSTART?schema=APP` and includes the required setup and error handling.
+
+See [`FEATURE_MATRIX.md`](FEATURE_MATRIX.md) for the generated scenario inventory
+and [`DIVERGENCES.md`](DIVERGENCES.md) for differences from Java. Tested features
+are not promises about every combination of query shapes. SQL continuation tokens
+are engine-private, not interchangeable between Go and Java.
+
+## Compatibility and versions
+
+| Component | Reference |
+|-----------|-----------|
+| **FoundationDB** | 7.3 protocol; client and test-cluster pin 7.3.77 |
+| **Java Record Layer / Relational** | 4.14.2.0 |
+| **Go toolchain** | [`go.mod`](go.mod) |
+| **Bazel and dependencies** | [`.bazelversion`](.bazelversion), [`MODULE.bazel`](MODULE.bazel) |
+
+The pure-Go client is not a multi-version client. FDB 8.0 compatibility is not
+established. Before mixing Go and Java writers, check the
+[compatibility matrix](docs/compatibility.md): collation, TEXT Unicode behavior,
+vector layouts, synthetic types, and continuations need particular care.
+
+## Evidence and performance
+
+- [Client differentials](pkg/fdbgo/bench/) compare pure Go with `libfdb_c`.
+- [Record Layer conformance](conformance/) exercises shared data with Java.
+- [SQL conformance](pkg/relational/conformance/) compares query behavior with
+  the Java relational engine.
+
+A passing case establishes its tested scope, not universal parity. Read the
+[CI run](https://github.com/birdayz/fdb-go/actions/workflows/ci.yml) for the exact
+commit and executed lanes; a badge alone does not establish a full-suite pass.
+
+Previous Go-vs-libfdb_c speedup and write-parity claims were withdrawn because the
+measurements used obsolete GRV-cache semantics and mislabeled netem delay.
+[Correction and benchmark methodology](pkg/fdbgo/bench/PERFORMANCE.md).
+No replacement speed claim is made.
+
+## Building and contributing
+
+Development uses Bazel via bazelisk, `just`, and Docker for testcontainers:
 
 ```sh
-just build      # compile + nogo lint (20 analyzers)
-just test       # full test suite against real FDB
+just build      # compile + nogo lint
+just test       # fast lane: unit + bounded integration tests
+just test-full  # all Bazel test targets, including Java conformance + heavy suites
 just gazelle    # regenerate BUILD files
-just generate   # buf proto codegen
+just generate   # protobuf/code generation
 ```
 
-### Project layout
-
-```
-pkg/recordlayer/        Record Layer implementation (CRUD, indexes, cursors, schema)
-pkg/relational/         SQL engine (parser, Cascades optimizer, executor, database/sql driver)
-pkg/fdbgo/              Pure Go FDB client (wire protocol, no CGo)
-gen/                    Generated protobuf Go code
-proto/apple/            Apple's original proto definitions
-conformance/            Go↔Java cross-validation tests + Java conformance server
-```
-
-### Running specific tests
-
-```sh
-bazelisk test //pkg/recordlayer:recordlayer_test \
-    --test_arg="--ginkgo.focus=CountIndex" --test_output=streamed
-```
+The full lane runs targets at their default budgets, not every extended seed,
+race, or active-fuzz configuration. See [STATUS.md](STATUS.md) for validation scope
+and [CONTRIBUTING.md](CONTRIBUTING.md) to contribute. For questions and support
+expectations, read [SUPPORT.md](SUPPORT.md). Report reproducible bugs through
+[issues](https://github.com/birdayz/fdb-go/issues), and vulnerabilities according
+to [SECURITY.md](SECURITY.md).
 
 ## License
 
-See [LICENSE](LICENSE).
+[Apache-2.0](LICENSE). See [NOTICE](NOTICE) for upstream attribution.
