@@ -13,6 +13,7 @@ package types
 // FuzzSplitRangeRequest_RoundTrip 2026-04-25.
 
 import (
+	"bytes"
 	"encoding/binary"
 
 	"fdb.dev/pkg/fdbgo/wire"
@@ -55,21 +56,10 @@ func (m *KeyRangeRef) UnmarshalFDB(data []byte) error {
 	return nil
 }
 
-// equalsKeyAfter returns true if begin + '\x00' == end.
-// C++ FDBTypes.h: equalsKeyAfter(begin, end)
+// keyRangeEqualsKeyAfter returns true if begin + '\x00' == end: C++
+// equalsKeyAfter (FDBTypes.h:309-313).
 func keyRangeEqualsKeyAfter(begin, end []byte) bool {
-	if len(end) != len(begin)+1 {
-		return false
-	}
-	if end[len(end)-1] != 0 {
-		return false
-	}
-	for i := range begin {
-		if begin[i] != end[i] {
-			return false
-		}
-	}
-	return true
+	return len(end) == len(begin)+1 && end[len(begin)] == 0 && bytes.Equal(begin, end[:len(begin)])
 }
 
 // precomputeSize replaces the generated precomputeSize for KeyRangeRef.
@@ -92,7 +82,8 @@ func (m *KeyRangeRef) precomputeSize(ps *wire.PrecomputeSize) int {
 // writeToBuffer replaces the generated writeToBuffer for KeyRangeRef.
 func (m *KeyRangeRef) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
 	var beginOff, endOff int
-	if keyRangeEqualsKeyAfter(m.Begin, m.End) {
+	single := keyRangeEqualsKeyAfter(m.Begin, m.End)
+	if single {
 		// C++: serialize(end, empty) — swap field order
 		endOff, _ = wb.VisitDynamicSize(m.End)
 		beginOff, _ = wb.VisitDynamicSize(nil) // empty
@@ -117,7 +108,7 @@ func (m *KeyRangeRef) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmp
 	// Normal: serializer(ar, begin, end) → slot 0 = begin, slot 1 = end.
 	// Optimized: serializer(ar, end, empty) → slot 0 = end, slot 1 = empty.
 	// Our variables: when optimized, endOff = end data, beginOff = empty data.
-	if keyRangeEqualsKeyAfter(m.Begin, m.End) {
+	if single {
 		// Optimized: slot 0 = end (endOff), slot 1 = empty (beginOff)
 		selfW.WriteRelativeOffset(endOff, int(vt[KeyRangeRefSlotBegin+2]))
 		selfW.WriteRelativeOffset(beginOff, int(vt[KeyRangeRefSlotEnd+2]))
