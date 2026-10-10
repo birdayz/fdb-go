@@ -76,14 +76,7 @@ func NewRecordLayerStoreCatalog(catalogSubspace subspace.Subspace) (*RecordLayer
 // two string tuple elements and is incompatible with Java-written catalogs.
 // See fdb-record-layer/.../RelationalKeyspaceProvider.java#getSystemDirectory.
 //
-// NOTE: this is the Java-wire-compat subspace, which the Go sqldriver does
-// NOT yet use — pkg/relational/sqldriver/driver.go opens the catalog via
-// keyspace.RelationalKeyspace.CatalogSubspace() (three strings). Migration
-// to this function from the driver is tracked in TODO.md, "Go SQL driver
-// stores the relational catalog and user schemas on a Go-only keyspace". Callers reading
-// a Go-written catalog today (incl. frl's `meta catalog`) should use the
-// keyspace helper; readers of a Java-written catalog (or a future Go
-// driver) should use DefaultCatalogSubspace.
+// The SQL driver's keyspace.RelationalKeyspace.CatalogSubspace uses the same prefix.
 func DefaultCatalogSubspace() subspace.Subspace {
 	return subspace.Sub(nil, nil, int64(0))
 }
