@@ -575,8 +575,8 @@ go_test(
     deps = ["@rules_go//go/runfiles"],
 )
 
-# The six-table planning-cost probe takes ~20 min of target planning, so it is
-# its own manual target outside the conformance lanes.
+# The six-table planning-cost probe spends ~14 min in a ~1.1 GB (peak RSS) JVM,
+# so it is its own manual target outside the conformance lanes.
 # keep
 go_test(
     name = "conformance_planning_cost_test",
@@ -593,7 +593,7 @@ go_test(
     tags = [
         "conformance_java",
         "manual",
-        "resources:memory:500",
+        "resources:memory:1500",
         "test-full",
     ],
     deps = [

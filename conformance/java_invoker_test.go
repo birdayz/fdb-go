@@ -406,9 +406,14 @@ func TestJavaHTTPClient_LeavesTheDeadlineToTheCaller(t *testing.T) {
 var reusedServerJVMFlags = []string{"-XX:+UseSerialGC"}
 
 func startJavaServer(jvmFlags ...string) (*JavaInvoker, error) {
-	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
-		return nil, fmt.Errorf("java conformance runs only on linux/amd64, not %s/%s: fdb-java ships "+
-			"linux/amd64 natives only and the pinned libfdb_c is x86_64", runtime.GOOS, runtime.GOARCH)
+	switch {
+	case runtime.GOOS == "linux" && runtime.GOARCH != "amd64":
+		return nil, fmt.Errorf("java conformance on linux needs amd64, not %s: the pinned libfdb_c "+
+			"and fdb-java's linux natives are x86_64 only", runtime.GOARCH)
+	case runtime.GOOS != "linux":
+		// FDB Java swallows the failed load of the pinned linux .so and falls back to the host's.
+		fmt.Fprintf(os.Stderr, "java conformance on %s uses the host libfdb_c; the pinned one is linux/amd64\n",
+			runtime.GOOS)
 	}
 	// Find the Bazel-built conformance server binary via runfiles
 	r, err := runfiles.New()

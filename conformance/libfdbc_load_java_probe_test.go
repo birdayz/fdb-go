@@ -2,10 +2,14 @@ package conformance_test
 
 import (
 	"context"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/bazelbuild/rules_go/go/runfiles"
@@ -17,6 +21,9 @@ import (
 // the host's, so only the running JVM's mappings prove the pin took effect.
 var _ = Describe("LibfdbCLoadJavaProbe", func() {
 	It("maps the pinned libfdb_c and no other", func() {
+		if runtime.GOOS != "linux" {
+			Skip("no /proc maps and no pinned libfdb_c off linux; the host libfdb_c is used")
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
 		clusterFile, err := sharedContainer.ClusterFile(ctx)
@@ -56,9 +63,17 @@ var _ = Describe("LibfdbCLoadJavaProbe", func() {
 				continue
 			}
 			maps, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "maps"))
+			if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ESRCH) {
+				continue // exited since its stat was read
+			}
 			Expect(err).NotTo(HaveOccurred())
 			for _, line := range strings.Split(string(maps), "\n") {
-				if i := strings.Index(line, "/"); i >= 0 && strings.HasSuffix(line, "/libfdb_c.so") {
+				i := strings.Index(line, "/")
+				if i < 0 {
+					continue
+				}
+				// A prefix catches versioned and "(deleted)" host copies too.
+				if base := filepath.Base(strings.TrimSuffix(line[i:], " (deleted)")); strings.HasPrefix(base, "libfdb_c") {
 					mapped[line[i:]] = true
 				}
 			}
