@@ -1,0 +1,17 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "apimock",
+    testonly = True,
+    srcs = [
+        "mocks_metadata.go",
+        "mocks_resultset.go",
+        "mocks_transaction.go",
+    ],
+    importpath = "fdb.dev/pkg/relational/api/apimock",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/relational/api",
+        "@org_uber_go_mock//gomock",
+    ],
+)

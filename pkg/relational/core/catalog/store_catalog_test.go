@@ -9,6 +9,7 @@ import (
 	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/relational/api/apimock"
 	"fdb.dev/pkg/relational/core/metadata"
 )
 
@@ -161,18 +162,18 @@ func TestStoreCatalog_SaveSchemaValidation(t *testing.T) {
 	// at construction, Version() is non-negative by construction), so
 	// use gomock stubs for those two.
 	ctrl := gomock.NewController(t)
-	mockTmplEmpty := api.NewMockSchemaTemplate(ctrl)
+	mockTmplEmpty := apimock.NewMockSchemaTemplate(ctrl)
 	mockTmplEmpty.EXPECT().MetadataName().Return("").AnyTimes()
 	mockTmplEmpty.EXPECT().Version().Return(0).AnyTimes()
-	schemaEmptyTmpl := api.NewMockSchema(ctrl)
+	schemaEmptyTmpl := apimock.NewMockSchema(ctrl)
 	schemaEmptyTmpl.EXPECT().MetadataName().Return("s1").AnyTimes()
 	schemaEmptyTmpl.EXPECT().DatabaseName().Return("/FRL/db").AnyTimes()
 	schemaEmptyTmpl.EXPECT().SchemaTemplate().Return(mockTmplEmpty).AnyTimes()
 
-	mockTmplNeg := api.NewMockSchemaTemplate(ctrl)
+	mockTmplNeg := apimock.NewMockSchemaTemplate(ctrl)
 	mockTmplNeg.EXPECT().MetadataName().Return("t").AnyTimes()
 	mockTmplNeg.EXPECT().Version().Return(-1).AnyTimes()
-	schemaNegVer := api.NewMockSchema(ctrl)
+	schemaNegVer := apimock.NewMockSchema(ctrl)
 	schemaNegVer.EXPECT().MetadataName().Return("s1").AnyTimes()
 	schemaNegVer.EXPECT().DatabaseName().Return("/FRL/db").AnyTimes()
 	schemaNegVer.EXPECT().SchemaTemplate().Return(mockTmplNeg).AnyTimes()
@@ -501,7 +502,7 @@ func TestStoreCatalog_WrongTransactionType(t *testing.T) {
 	// *InMemoryTransaction must be rejected with an internal error.
 	// Catches impl mismatches early instead of misbehaving silently.
 	ctrl := gomock.NewController(t)
-	wrongTx := api.NewMockTransaction(ctrl)
+	wrongTx := apimock.NewMockTransaction(ctrl)
 	// The in-memory catalog calls Unwrap() first; return the mock itself
 	// so it can't possibly satisfy the *InMemoryTransaction assertion.
 	wrongTx.EXPECT().Unwrap().Return(wrongTx).AnyTimes()
