@@ -3287,7 +3287,7 @@ func (tx *Transaction) stateSetSnapshotRYWDisableCount(n int) { tx.snapshotRYWDi
 
 // BypassUnreadable reports whether FDB_TR_OPTION_BYPASS_UNREADABLE is set. Read-only accessor used
 // to verify database-level option propagation.
-func (tx *Transaction) stateBypassUnreadable() bool { return tx.ryw.bypassUnreadable }
+func (tx *Transaction) stateBypassUnreadable() bool { return tx.ryw.getBypassUnreadable() }
 
 // CausalReadRisky reports whether the GRV causal-read-risky flag is set. Read-only accessor used to
 // verify database-level option propagation.
