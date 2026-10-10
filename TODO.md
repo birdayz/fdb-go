@@ -925,8 +925,8 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   deltas; committed negative-count disable. Checked decoding, task poisoning,
   KMeans preconditions and merge/drain target checks have prior fixes.
   Committed negative-count disable is done: the disable is Java's keyed commit
-  check, run after the merger's heartbeat refresh, so it commits (it used to
-  roll back with the refresh's "Unexpected index state(s)"), and counts
+  check, and no heartbeat check shares the merge transaction (Java's core
+  merges run no pre-commit callback), so it commits, and counts
   `vector_index_disabled_on_negative_task_count`
   (`guardiann_negative_count_test.go`). Zero-candidate admission is done:
   `insertMaxCandidateClusters < 1` refuses the insert (engine and queue
@@ -1355,8 +1355,8 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
     - `SetStoreState` to WRITE_ONLY_WITH_QUEUE, through the metadata action
       at format 14 (refused) and at 15 (`TestFDB_QueuedVectorIndexIsWriteOnlyToSQL`).
     Each is mutation-checked.
-    MISSING: Lucene pending-queue consumption (keep visible; L); vector merge
-    heartbeat callback (book under WS-D's GuardiANN adapter).
+    MISSING: Lucene pending-queue consumption (keep visible; L). Java's vector
+    merge calls no heartbeat callback, so Go's needs none.
   - [x] WS-J. Done (2026-10-07):
     - restore one-history rows for swapped record-type keys and a
       former-index key reused by a live index (`TestFDB_Restore_OneHistory`);

@@ -40,16 +40,12 @@ func (m *indexingMerger) merge(ctx context.Context, oi *OnlineIndexer) error {
 			control.SetTimeQuotaMillis(m.timeQuotaMillis)
 			control.SetRepartitionDocumentCount(m.repartitionDocumentCount)
 			control.SetMergeSessionID(&sessionID)
-			heartbeat := oi.sessionHeartbeat
+			// Offered, not registered: only a maintainer whose merge drains its own
+			// queue (Java's Lucene, FDBDirectoryWrapper.java:602) registers it.
+			heartbeat, index := oi.sessionHeartbeat, m.index
 			control.SetPreCommitCallback(func(store *FDBRecordStore) error {
-				// Java's updateHeartbeat skips a null heartbeat (IndexingBase.java:969-972):
-				// a standalone merge writes no heartbeat and checks no index state.
-				if heartbeat == nil {
-					return nil
-				}
-				return oi.refreshFollowupHeartbeats(store, heartbeat)
+				return oi.updateMergeHeartbeat(store, index, heartbeat)
 			})
-			control.RegisterPreCommit(store, m.index)
 			maintainer, err := store.getIndexMaintainer(m.index)
 			if err != nil {
 				return nil, err
@@ -137,6 +133,20 @@ func (m *indexingMerger) handleFailure(control *IndexDeferredMaintenanceControl,
 		return err
 	}
 	return nil
+}
+
+// updateMergeHeartbeat is Java's IndexingBase.updateHeartbeat (:969-972): it
+// renews only the merged index, only while it is write-only, and does nothing
+// without a session, as in a standalone merge.
+func (oi *OnlineIndexer) updateMergeHeartbeat(store *FDBRecordStore, index *Index, heartbeat *IndexingHeartbeat) error {
+	if heartbeat == nil {
+		return nil
+	}
+	state, err := store.readIndexState(index.Name)
+	if err != nil || !state.IsWriteOnly() {
+		return err
+	}
+	return oi.renewSessionHeartbeat(store, index, heartbeat)
 }
 
 // mergeRequestedIndexes runs after the committed batch's queue drains, even

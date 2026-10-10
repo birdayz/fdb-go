@@ -3408,7 +3408,7 @@ the pending write queue as it marks the index readable, losing the queued writes
 once. Pinned by "fails a MARK_READABLE session over a non-empty queue at once rather than
 retrying a drain it never runs" (`index_queued_dispatch_test.go:440`).
 
-**A target disabled under the session fails its next drain or merge transaction.** Java's
+**A target disabled under the session fails its next drain transaction.** Java's
 follow-up heartbeat update skips a target that is not write-only
 (`IndexingBase.java:969-972`) and commits. What fails is whatever runs next:
 - a following build transaction's state check (`RecordCoreStorageException` "Unexpected
@@ -3417,18 +3417,22 @@ follow-up heartbeat update skips a target that is not write-only
 - or, with `SetMarkReadable(false)`, nothing: Java's session then succeeds after the last
   range and leaves the target DISABLED.
 
-Go's follow-up (`refreshFollowupHeartbeats`, `online_indexer_queue.go:441`) refuses at the
-first transaction that sees the state, with the state check's class and message, and
-commits nothing.
+Go's drain follow-up (`refreshFollowupHeartbeats`, `online_indexer_queue.go:447`) refuses
+at the first transaction that sees the state, with the state check's class and message,
+and commits nothing. Merges are not affected: as in Java, no core maintainer's merge runs
+the heartbeat callback (`IndexingMerger.java:98`; only Lucene's queue drain calls it,
+`FDBDirectoryWrapper.java:602`, `:617-620`).
 
-**`MergeIndexes` after a `BuildIndex` that left a target WRITE_ONLY holds no session.**
-Go's merge, like Java's standalone one (`IndexingBase.java:969-972`, `:1085-1096`), writes
-no heartbeat and checks no index state. Java reuses its indexer after a successful build
-(`OnlineIndexer.java:302-315`), and a build that does not mark readable keeps its heartbeat
-(`IndexingBase.java:358-359`; only `:374` drops it). A Java `mergeIndex` on that same
-`OnlineIndexer` then writes that heartbeat over each WRITE_ONLY target and refuses under a
-live exclusive peer. It never clears the key. Go's build session ends with the build, so
-its merge has no heartbeat.
+**A merge callback after a non-readable build has no heartbeat.** This matters only for a
+maintainer whose merge calls the pre-commit callback (Lucene in Java, which Go lacks, or a
+custom one). Java reuses the indexer after a successful build (`OnlineIndexer.java:302-315`;
+only the catcher drops it, `:169-171`). A build that does not mark readable keeps its
+heartbeat (`IndexingBase.java:358-359`; only `:374` drops it). So that callback in a later
+`mergeIndex` on the same `OnlineIndexer` renews the heartbeat over the merged WRITE_ONLY
+target and never clears it. An exclusive heartbeat refuses under any live peer; a mutual one
+under none (`IndexingHeartbeat.java:87-97`). Go's session ends with the build, so the
+callback does nothing. Pinned by "gives a callback-calling merge after a non-readable build
+no heartbeat" (`indexing_merger_test.go`).
 
 **A target that moved between WRITE_ONLY and WRITE_ONLY_WITH_QUEUE mid-session is
 refused.** Java does not look at the queue flag in its per-transaction state check. Go's

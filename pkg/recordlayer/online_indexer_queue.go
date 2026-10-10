@@ -441,7 +441,7 @@ func (oi *OnlineIndexer) retireBuildTarget(index *Index) {
 }
 
 // refreshFollowupHeartbeats keeps the whole session alive while sequential
-// drains or merges work on one target. Scannable targets have been published
+// drains work on one target. Scannable targets have been published
 // (possibly by a mutual peer) and no longer own build heartbeats. Active builds
 // validate every remaining target's state and stamp, not only the current one.
 func (oi *OnlineIndexer) refreshFollowupHeartbeats(store *FDBRecordStore, heartbeat *IndexingHeartbeat) error {
@@ -454,7 +454,7 @@ func (oi *OnlineIndexer) refreshFollowupHeartbeats(store *FDBRecordStore, heartb
 			return err
 		}
 		if state.IsScannable() {
-			if heartbeat != nil && heartbeat == oi.admittedHeartbeat {
+			if heartbeat == oi.admittedHeartbeat {
 				store.context.AddPostCommit(func() { oi.retireBuildTarget(index) })
 			}
 			continue
@@ -462,7 +462,7 @@ func (oi *OnlineIndexer) refreshFollowupHeartbeats(store *FDBRecordStore, heartb
 		if !state.IsWriteOnly() {
 			// Go-only, and declared (DIVERGENCES.md, "OnlineIndexer session start
 			// and build catcher"): a target that is neither scannable nor write-only
-			// (disabled under the session) fails this drain or merge transaction.
+			// (disabled under the session) fails this drain transaction.
 			// Java's follow-up heartbeat update skips such a target
 			// (IndexingBase.java:969-972) and commits; what fails is whatever runs
 			// next: a following build transaction's state check

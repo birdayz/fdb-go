@@ -250,11 +250,12 @@ var _ = Describe("OnlineIndexer follow-up liveness", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 			for _, followup := range []string{"drain", "merge"} {
-				if followup == "drain" {
-					err = oi.drainPendingIndexWritesForIndex(ctx, oi.targetIndexes[1], oi.sessionHeartbeat)
-				} else {
-					err = oi.mergeIndex(ctx, oi.targetIndexes[1])
+				if followup == "merge" {
+					// Java's core merges run no follow-up check (IndexingMerger.java:98).
+					Expect(oi.mergeIndex(ctx, oi.targetIndexes[1])).To(Succeed())
+					continue
 				}
+				err = oi.drainPendingIndexWritesForIndex(ctx, oi.targetIndexes[1], oi.sessionHeartbeat)
 				if committed {
 					Expect(err).NotTo(HaveOccurred())
 				} else {
@@ -296,61 +297,57 @@ var _ = Describe("OnlineIndexer follow-up liveness", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	for _, followup := range []string{"drain", "merge"} {
-		It("keeps queued and ordinary followers owned through long "+followup+" and retires published targets", func() {
-			ctx := context.Background()
-			oi, db, backend := fixture(ctx, false)
-			checks := 0
-			backend.afterCommit = func() {
-				checks++
-				for _, follower := range oi.targetIndexes[1:] {
-					competitor, err := NewOnlineIndexerBuilder().SetDatabase(db).SetMetaData(oi.metaData).SetSubspace(oi.subspace).SetIndex(follower).
-						SetPolicy(&IndexingPolicy{AllowedTakeovers: map[TakeoverType]bool{TakeoverMultiTargetToSingle: true}}).Build()
-					Expect(err).NotTo(HaveOccurred())
-					competitor.sessionHeartbeat = NewIndexingHeartbeat("permitted single-target takeover", 30_000, false, db.Env())
-					var locked *SynchronizedSessionLockedError
-					_, err = competitor.markWriteOnly(ctx)
-					Expect(errors.As(err, &locked)).To(BeTrue(), "follower=%s elapsed=%v error=%v", follower.Name, backend.clock.Now().Sub(dst.Epoch), err)
-				}
-			}
-			if followup == "drain" {
-				Expect(oi.drainPendingIndexWrites(ctx, oi.sessionHeartbeat)).To(Succeed())
-				Expect(backend.clears).To(Equal(8))
-			} else {
-				for range 8 {
-					backend.clock.Advance(5 * time.Second)
-					Expect(oi.mergeIndex(ctx, oi.targetIndexes[0])).To(Succeed())
-				}
-				Expect(backend.clears).To(BeZero(), "HNSW merges only exercise callback wiring, not deferred backend work")
-			}
-			Expect(checks).To(BeNumerically(">=", 8))
-			Expect(backend.clock.Now().Sub(dst.Epoch)).To(BeNumerically(">", 30*time.Second))
-			backend.afterCommit = nil
-			Expect(oi.markReadable(ctx)).To(Succeed())
-			_, err := db.Run(ctx, func(rc *FDBRecordContext) (any, error) {
-				store, err := oi.openStore(rc)
+	It("keeps queued and ordinary followers owned through a long drain and retires published targets", func() {
+		ctx := context.Background()
+		oi, db, backend := fixture(ctx, false)
+		checks := 0
+		backend.afterCommit = func() {
+			checks++
+			for _, follower := range oi.targetIndexes[1:] {
+				competitor, err := NewOnlineIndexerBuilder().SetDatabase(db).SetMetaData(oi.metaData).SetSubspace(oi.subspace).SetIndex(follower).
+					SetPolicy(&IndexingPolicy{AllowedTakeovers: map[TakeoverType]bool{TakeoverMultiTargetToSingle: true}}).Build()
 				Expect(err).NotTo(HaveOccurred())
-				for _, index := range oi.targetIndexes {
-					Expect(store.GetIndexState(index.Name)).To(Equal(IndexStateReadable))
-					rows, err := rc.Transaction().GetRange(heartbeatSubspace(oi.subspace, index), fdb.RangeOptions{}).GetSliceWithError()
-					Expect(err).NotTo(HaveOccurred())
-					Expect(rows).To(BeEmpty(), "later follow-up must not recreate a published target's heartbeat")
-				}
-				for _, index := range oi.queuedIndexes {
-					empty, err := store.indexingPendingWriteQueue(index, 0).IsQueueEmpty(rc)
-					Expect(err).NotTo(HaveOccurred())
-					Expect(empty).To(BeTrue())
-					rows, err := queuedIndexPrimaryKeys(store, index, tuple.Tuple{int64(7)})
-					Expect(err).NotTo(HaveOccurred())
-					Expect(rows).To(HaveLen(8))
-				}
-				return nil, nil
-			})
+				competitor.sessionHeartbeat = NewIndexingHeartbeat("permitted single-target takeover", 30_000, false, db.Env())
+				var locked *SynchronizedSessionLockedError
+				_, err = competitor.markWriteOnly(ctx)
+				Expect(errors.As(err, &locked)).To(BeTrue(), "follower=%s elapsed=%v error=%v", follower.Name, backend.clock.Now().Sub(dst.Epoch), err)
+			}
+		}
+		Expect(oi.drainPendingIndexWrites(ctx, oi.sessionHeartbeat)).To(Succeed())
+		Expect(backend.clears).To(Equal(8))
+		Expect(checks).To(BeNumerically(">=", 8))
+		Expect(backend.clock.Now().Sub(dst.Epoch)).To(BeNumerically(">", 30*time.Second))
+		backend.afterCommit = nil
+		Expect(oi.markReadable(ctx)).To(Succeed())
+		_, err := db.Run(ctx, func(rc *FDBRecordContext) (any, error) {
+			store, err := oi.openStore(rc)
 			Expect(err).NotTo(HaveOccurred())
+			for _, index := range oi.targetIndexes {
+				Expect(store.GetIndexState(index.Name)).To(Equal(IndexStateReadable))
+				rows, err := rc.Transaction().GetRange(heartbeatSubspace(oi.subspace, index), fdb.RangeOptions{}).GetSliceWithError()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(rows).To(BeEmpty(), "later follow-up must not recreate a published target's heartbeat")
+			}
+			for _, index := range oi.queuedIndexes {
+				empty, err := store.indexingPendingWriteQueue(index, 0).IsQueueEmpty(rc)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(empty).To(BeTrue())
+				rows, err := queuedIndexPrimaryKeys(store, index, tuple.Tuple{int64(7)})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(rows).To(HaveLen(8))
+			}
+			return nil, nil
 		})
+		Expect(err).NotTo(HaveOccurred())
+	})
 
+	for _, followup := range []string{"drain", "merge"} {
 		for _, change := range []string{"block", "disable"} {
-			It(fmt.Sprintf("fences a follower %s during %s before committing queue removal", change, followup), func() {
+			title := fmt.Sprintf("fences a follower %s during %s before committing queue removal", change, followup)
+			if followup == "merge" {
+				title = fmt.Sprintf("does not fence a follower %s during a core merge", change)
+			}
+			It(title, func() {
 				ctx := context.Background()
 				oi, db, _ := fixture(ctx, false)
 				follower := oi.targetIndexes[1]
@@ -372,7 +369,10 @@ var _ = Describe("OnlineIndexer follow-up liveness", func() {
 				} else {
 					err = oi.mergeIndex(ctx, oi.targetIndexes[0])
 				}
-				if change == "block" {
+				if followup == "merge" {
+					// Java's core merges run no follow-up check (IndexingMerger.java:98).
+					Expect(err).NotTo(HaveOccurred())
+				} else if change == "block" {
 					var blocked *PartlyBuiltError
 					Expect(errors.As(err, &blocked)).To(BeTrue(), "%v", err)
 				} else {

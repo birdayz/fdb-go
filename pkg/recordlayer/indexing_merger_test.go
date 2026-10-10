@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestIndexingMergerFeedback(t *testing.T) {
@@ -305,6 +306,76 @@ var _ = Describe("Deferred maintenance transaction contract", func() {
 // Java merges every requested index under AsyncUtil.whenAll
 // (IndexingBase.mergeIndexes, :1085-1093): a failing target does not stop the
 // others. Go reports the first target's error, in target order.
+// Java's core merges never run the pre-commit callback; only a maintainer
+// whose merge registers it (Lucene's queue drain) does.
+var _ = Describe("the merge heartbeat callback", func() {
+	type probeCase struct {
+		ctx   context.Context
+		root  subspaceAndMeta
+		index *Index
+	}
+	setupProbe := func(registers bool) probeCase {
+		mergeProbe.registersCallback = registers
+		mergeProbe.merges, mergeProbe.sawCheck = 0, false
+		ctx := context.Background()
+		root := specSubspace()
+		builder := baseBuilder()
+		index := NewIndex("Order$merge_probe", Field("price"))
+		index.Type = indexTypeMergeProbe
+		builder.AddIndex("Order", index)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+		_, err = sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().SetContext(rc).SetMetaDataProvider(md).SetSubspace(root).Create()
+			if err != nil {
+				return nil, err
+			}
+			saveOrders(store, 3)
+			store.setIndexState(index.Name, IndexStateWriteOnly)
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		mergeProbe.merges = 0
+		return probeCase{ctx: ctx, root: subspaceAndMeta{ks: root, md: md}, index: md.GetIndex(index.Name)}
+	}
+	indexer := func(c probeCase) *OnlineIndexer {
+		oi, err := NewOnlineIndexerBuilder().SetDatabase(sharedDB).SetMetaData(c.root.md).
+			SetIndex(c.index).SetSubspace(c.root.ks).SetMarkReadable(false).Build()
+		Expect(err).NotTo(HaveOccurred())
+		return oi
+	}
+	heartbeatCount := func(c probeCase) int {
+		var n int
+		_, err := sharedDB.Run(c.ctx, func(rc *FDBRecordContext) (any, error) {
+			hbs, _, err := ReadHeartbeats(rc.Transaction(), c.root.ks, c.index)
+			n = len(hbs)
+			return nil, err
+		})
+		Expect(err).NotTo(HaveOccurred())
+		return n
+	}
+
+	It("is not registered by a core merge inside a build session", func() {
+		c := setupProbe(false)
+		_, err := indexer(c).BuildIndex(c.ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(mergeProbe.merges).To(BeNumerically(">", 0), "the build requested no merge")
+		Expect(mergeProbe.sawCheck).To(BeFalse(), "the merger registered the follow-up check itself")
+	})
+
+	It("gives a callback-calling merge after a non-readable build no heartbeat", func() {
+		c := setupProbe(true)
+		oi := indexer(c)
+		_, err := oi.BuildIndex(c.ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(heartbeatCount(c)).To(BeZero())
+		merges := mergeProbe.merges
+		Expect(oi.MergeIndexes(c.ctx)).To(Succeed())
+		Expect(mergeProbe.merges).To(BeNumerically(">", merges), "MergeIndexes did not merge")
+		Expect(heartbeatCount(c)).To(BeZero(), "the callback wrote a heartbeat after the session ended")
+	})
+})
+
 var _ = Describe("MergeIndexes over several targets", func() {
 	It("attempts every target when an earlier one fails", func() {
 		ctx := context.Background()
@@ -398,3 +469,59 @@ func (failingMergeFactory) ValidateChangedOptions(_, _ *Index, _ map[string]bool
 type failingMergeMaintainer struct{ StandardIndexMaintainer }
 
 func (*failingMergeMaintainer) MergeIndex() error { return errors.New(failingMergeMessage) }
+
+// indexTypeMergeProbe is a value index that requests a merge on every update
+// and records what its merges see.
+const indexTypeMergeProbe = "merge_probe_test"
+
+var mergeProbe struct {
+	registersCallback bool // MergeIndex registers the control's callback, as Lucene's drain does
+	merges            int
+	sawCheck          bool // a merge commit check was registered before MergeIndex ran
+}
+
+func init() { RegisterIndexMaintainerFactory(mergeProbeFactory{}) }
+
+type mergeProbeFactory struct{}
+
+func (mergeProbeFactory) IndexTypes() []string { return []string{indexTypeMergeProbe} }
+
+func (mergeProbeFactory) NewIndexMaintainer(state IndexMaintainerState) (IndexMaintainer, error) {
+	return &mergeProbeMaintainer{
+		StandardIndexMaintainer: *newStandardIndexMaintainer(state.Index, state.IndexSubspace, state.Transaction, state.Store),
+		rs:                      state.Store,
+	}, nil
+}
+
+func (mergeProbeFactory) ValidateIndexOptions(*Index) error { return nil }
+
+func (mergeProbeFactory) ValidateChangedOptions(_, _ *Index, _ map[string]bool) error {
+	return nil
+}
+
+type mergeProbeMaintainer struct {
+	StandardIndexMaintainer
+	rs *FDBRecordStore
+}
+
+func (m *mergeProbeMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
+	if err := m.StandardIndexMaintainer.Update(oldRecord, newRecord); err != nil {
+		return err
+	}
+	return m.rs.GetIndexDeferredMaintenanceControl().SetMergeRequiredIndexes(m.index)
+}
+
+func (m *mergeProbeMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
+	return m.Update(oldRecord, newRecord)
+}
+
+func (m *mergeProbeMaintainer) MergeIndex() error {
+	mergeProbe.merges++
+	if m.rs.context.getCommitCheck(PendingWriteCommitCheckPrefix(m.rs.subspace)+"merge:"+m.index.Name) != nil {
+		mergeProbe.sawCheck = true
+	}
+	if mergeProbe.registersCallback {
+		m.rs.GetIndexDeferredMaintenanceControl().RegisterPreCommit(m.rs, m.index)
+	}
+	return nil
+}

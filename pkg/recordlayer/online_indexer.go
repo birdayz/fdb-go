@@ -406,9 +406,9 @@ type OnlineIndexer struct {
 	// the fallback: the records scan must replace the abandoned method's stamp.
 	enforcedStampOverwrite bool
 	// indexerID is this indexer's heartbeat identity, minted once (Java
-	// IndexingCommon.indexerId): every attempt the catcher runs, and every merge,
-	// writes its heartbeat under it, so an attempt never mistakes the previous
-	// attempt's heartbeat for a live peer.
+	// IndexingCommon.indexerId): every attempt the catcher runs writes its
+	// heartbeat under it, so an attempt never mistakes the previous attempt's
+	// heartbeat for a live peer. Merges use it as their merge session ID.
 	indexerID uuid.UUID
 	// lastOutcome is what the last completed BuildIndex did; see LastBuildOutcome.
 	lastOutcome      IndexBuildOutcome

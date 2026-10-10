@@ -73,7 +73,8 @@ var _ = Describe("GuardiANN negative task count", func() {
 			SetIndex(md.GetIndex(index.Name)).SetSubspace(root).Build()
 		Expect(err).NotTo(HaveOccurred())
 		// The merge reports success with nothing done (0/0), so the disable,
-		// a commit check, commits and the merge ends.
+		// a commit check, commits and the merge ends. No heartbeat check shares
+		// the transaction: "the merge heartbeat callback" (indexing_merger_test.go).
 		Expect(oi.MergeIndexes(ctx)).To(Succeed())
 		Expect(timer.GetCount(CountVectorIndexDisabledOnNegativeTaskCount)).To(Equal(int64(1)))
 		_, err = sharedDB.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
