@@ -116,6 +116,9 @@ func (store *FDBRecordStore) deserializePendingRecord(serialized []byte) (*FDBSt
 	if err != nil {
 		return nil, err
 	}
+	if err := store.checkPrimaryKeyCollation(recordType); err != nil {
+		return nil, err
+	}
 	rec := &FDBStoredRecord[proto.Message]{RecordType: recordType, Record: msg, Store: store, wire: wire}
 	keyValues, err := evaluateKeyFlat(recordType.PrimaryKey, rec, msg)
 	if err != nil {

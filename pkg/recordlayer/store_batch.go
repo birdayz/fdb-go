@@ -55,6 +55,9 @@ func (store *FDBRecordStore) SaveRecordBatch(
 		}
 	}
 	if store.omitUnsplitRecordSuffix() {
+		if err := store.checkLegacyBatchCollation(records); err != nil {
+			return nil, err
+		}
 		results := make([]*FDBStoredRecord[proto.Message], len(records))
 		for i, rec := range records {
 			saved, err := store.SaveRecord(rec)
@@ -79,19 +82,17 @@ func (store *FDBRecordStore) SaveRecordBatch(
 		unsplitKey fdb.Key // pre-computed, reused for save
 		unsplitFut fdb.FutureByteSlice
 		splitFut   fdb.FutureByteSlice // nil if !splitEnabled
+		oldExists  bool
+		oldSize    sizeInfo
+		oldType    *RecordType
+		oldRecord  proto.Message
+		oldWire    *recordWire
+		oldVersion *FDBRecordVersion
+		previous   int // previous occurrence of this primary key, or -1
 	}
 
 	pending := make([]pendingRecord, len(records))
-	// Reads are sent before any write, so a repeated key reads at its own turn
-	// instead: its early read would miss the earlier save.
-	existenceReads := func(primaryKey tuple.Tuple, unsplitKey fdb.Key) (unsplit, split fdb.FutureByteSlice) {
-		unsplit = tx.Get(unsplitKey)
-		if splitEnabled {
-			split = tx.Get(fdb.Key(recordsSubspace.Pack(appendToTuple(primaryKey, startSplitRecord))))
-		}
-		return unsplit, split
-	}
-	seen := make(map[string]struct{}, len(records))
+	lastForKey := make(map[string]int, len(records))
 
 	for i, record := range records {
 		if record == nil {
@@ -105,6 +106,9 @@ func (store *FDBRecordStore) SaveRecordBatch(
 		}
 		if recordType.PrimaryKey == nil {
 			return nil, &MetaDataError{Message: fmt.Sprintf("no primary key for: %s", recordTypeName)}
+		}
+		if err := store.checkPrimaryKeyCollation(recordType); err != nil {
+			return nil, err
 		}
 		// As saveRecordInternal: the record as every later load reads it, and
 		// the message the save serializes.
@@ -130,10 +134,18 @@ func (store *FDBRecordStore) SaveRecordBatch(
 		// All futures are pipelined: N×2 frames queued, one TCP flush.
 		unsplitKeyTuple := appendToTuple(primaryKey, unsplitRecord)
 		unsplitKey := fdb.Key(recordsSubspace.Pack(unsplitKeyTuple))
+		previous := -1
+		if last, ok := lastForKey[string(unsplitKey)]; ok {
+			previous = last
+		}
+		lastForKey[string(unsplitKey)] = i
+		// A repeated key replaces the earlier batch entry, so it reads nothing.
 		var unsplitFut, splitFut fdb.FutureByteSlice
-		if _, repeated := seen[string(unsplitKey)]; !repeated {
-			seen[string(unsplitKey)] = struct{}{}
-			unsplitFut, splitFut = existenceReads(primaryKey, unsplitKey)
+		if previous < 0 {
+			unsplitFut = tx.Get(unsplitKey)
+			if splitEnabled {
+				splitFut = tx.Get(fdb.Key(recordsSubspace.Pack(appendToTuple(primaryKey, startSplitRecord))))
+			}
 		}
 
 		pending[i] = pendingRecord{
@@ -144,6 +156,7 @@ func (store *FDBRecordStore) SaveRecordBatch(
 			unsplitKey: unsplitKey,
 			unsplitFut: unsplitFut,
 			splitFut:   splitFut,
+			previous:   previous,
 		}
 	}
 
@@ -185,8 +198,13 @@ func (store *FDBRecordStore) SaveRecordBatch(
 	for i := range pending {
 		p := &pending[i]
 
-		if p.unsplitFut == nil {
-			p.unsplitFut, p.splitFut = existenceReads(p.primaryKey, p.unsplitKey)
+		// A repeated key replaces the earlier batch entry, not the initial image.
+		if p.previous >= 0 {
+			p.oldExists, p.oldType = true, pending[p.previous].recordType
+			if err := store.checkRecordWriteCollationLocked(false, p.recordType, p.oldType); err != nil {
+				return nil, fmt.Errorf("record %d: %w", i, err)
+			}
+			continue
 		}
 		// Resolve pipelined existence checks (both unsplit + split).
 		unsplitVal, err := p.unsplitFut.Get()
@@ -234,6 +252,34 @@ func (store *FDBRecordStore) SaveRecordBatch(
 				return nil, err
 			}
 			lockChecked = true
+		}
+
+		if err := store.checkRecordWriteCollationLocked(!oldRecordExists, p.recordType, oldRT); err != nil {
+			return nil, fmt.Errorf("record %d: %w", i, err)
+		}
+		p.oldExists, p.oldSize = oldRecordExists, oldsizeInfo
+		p.oldType, p.oldRecord, p.oldWire = oldRT, oldMsg, oldWire
+		if oldRecordExists && store.metaData.IsStoreRecordVersions() && store.hasVersionIndex() {
+			p.oldVersion, err = store.LoadRecordVersion(p.primaryKey, false)
+			if err != nil {
+				return nil, fmt.Errorf("record %d: load old record version: %w", i, err)
+			}
+		}
+	}
+
+	// No record mutation precedes the whole batch's collation preflight.
+	for i := range pending {
+		p := &pending[i]
+		oldRecordExists, oldsizeInfo := p.oldExists, p.oldSize
+		oldRT, oldMsg, oldWire := p.oldType, p.oldRecord, p.oldWire
+		oldVersion := p.oldVersion
+		if p.previous >= 0 {
+			old := results[p.previous]
+			oldRT, oldMsg, oldWire, oldVersion = old.RecordType, old.Record, old.wire, old.Version
+			oldsizeInfo = sizeInfo{KeyCount: old.KeyCount, KeySize: old.KeySize, ValueSize: old.ValueSize, IsSplit: old.Split}
+		}
+		if oldRecordExists && store.metaData.IsStoreRecordVersions() {
+			oldsizeInfo.VersionedInline = !store.useOldVersionFormat()
 		}
 
 		// Serialize
@@ -315,11 +361,7 @@ func (store *FDBRecordStore) SaveRecordBatch(
 				Record:     oldMsg,
 				wire:       oldWire,
 				Store:      store,
-			}
-			if store.metaData.IsStoreRecordVersions() && store.hasVersionIndex() {
-				if ver, verErr := store.LoadRecordVersion(p.primaryKey, false); verErr == nil {
-					oldRecord.Version = ver
-				}
+				Version:    oldVersion,
 			}
 		}
 		if err := store.updateSecondaryIndexesLocked(oldRecord, stored); err != nil {
@@ -337,6 +379,56 @@ func (store *FDBRecordStore) SaveRecordBatch(
 	}
 
 	return results, nil
+}
+
+// The sequential legacy fallback must refuse a later collated record before
+// staging earlier saves, just as the pipelined batch preflights all its records.
+func (store *FDBRecordStore) checkLegacyBatchCollation(records []proto.Message) error {
+	if store.goOnlyCollation {
+		return nil
+	}
+	previous := make(map[string]*RecordType, len(records))
+	for i, record := range records {
+		if record == nil {
+			return fmt.Errorf("record %d is nil", i)
+		}
+		name := string(record.ProtoReflect().Descriptor().Name())
+		rt := store.metaData.GetRecordType(name)
+		if rt == nil {
+			return unknownRecordTypeError(name)
+		}
+		if rt.PrimaryKey == nil {
+			return &MetaDataError{Message: fmt.Sprintf("no primary key for: %s", name)}
+		}
+		if err := store.checkPrimaryKeyCollation(rt); err != nil {
+			return err
+		}
+		record, _ = rt.asJavaForSave(record)
+		values, err := evaluateKeyFlat(rt.PrimaryKey, &FDBStoredRecord[proto.Message]{RecordType: rt, Record: record}, record)
+		if err != nil {
+			return err
+		}
+		key := make(tuple.Tuple, len(values))
+		for j, value := range values {
+			key[j] = value
+		}
+		packed := string(key.Pack())
+		oldType := previous[packed]
+		if oldType == nil {
+			old, err := store.LoadRecord(key)
+			if err != nil {
+				return err
+			}
+			if old != nil {
+				oldType = old.RecordType
+			}
+		}
+		if err := store.checkRecordWriteCollation(oldType == nil, rt, oldType); err != nil {
+			return fmt.Errorf("record %d: %w", i, err)
+		}
+		previous[packed] = rt
+	}
+	return nil
 }
 
 // loadSplitOnly checks for a split record without checking unsplit first.

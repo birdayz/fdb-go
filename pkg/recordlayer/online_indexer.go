@@ -1739,7 +1739,20 @@ func (oi *OnlineIndexer) markWriteOnly(ctx context.Context) (indexingSessionStar
 	oi.retiredBuildTargets = nil
 	var start indexingSessionStart
 	result, err := oi.run(ctx, func(rtx *FDBRecordContext) (any, error) {
-		store, err := oi.openStoreWithPreflight(rtx, oi.checkOpenHeartbeats)
+		store, err := oi.openStoreWithPreflight(rtx, func(store *FDBRecordStore) error {
+			// Reject before the session commits any clearing or state transitions.
+			for _, index := range oi.targetIndexes {
+				if err := store.checkIndexCollation(index); err != nil {
+					return err
+				}
+			}
+			if oi.sourceIndex != nil {
+				if err := store.checkIndexCollation(oi.sourceIndex); err != nil {
+					return err
+				}
+			}
+			return oi.checkOpenHeartbeats(store)
+		})
 		if err != nil {
 			return nil, err
 		}
