@@ -461,6 +461,14 @@ func (b *RecordMetaDataBuilder) validateIndex(idx *Index, recordTypeNames []stri
 		}
 	} else if err := validateIndexType(idx, b.storeRecordVersions); err != nil {
 		return err
+	} else if canonicalIndexType(idx.Type) == IndexTypeVector {
+		// The plain VECTOR validator's option half, as Java runs it at build; a
+		// binary without vectorindex still builds the meta-data and refuses at use.
+		if factory, err := lookupIndexMaintainerFactory(idx); err == nil && factory != nil {
+			if err := factory.ValidateIndexOptions(idx); err != nil {
+				return err
+			}
+		}
 	}
 
 	sk := subspaceKeyIdentity(idx.SubspaceTupleKey())

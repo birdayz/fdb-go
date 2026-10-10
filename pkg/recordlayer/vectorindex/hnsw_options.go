@@ -50,9 +50,8 @@ func hnswOptionValue(index *recordlayer.Index, canonical string) (string, bool) 
 }
 
 // VectorIndexMetric is the metric a vector index's maintainer builds it with,
-// read by the maintainer's own metric reader: hnswMetric (the plain index's Go
-// forms admitted, as its maintainer reads them) for an HNSW VECTOR index, and
-// spfreshMetric for an SPFresh index. A value the maintainer refuses is an
+// read by the maintainer's own metric reader: hnswMetric for an HNSW VECTOR
+// index, and spfreshMetric for an SPFresh index. A value the maintainer refuses is an
 // error. The planner reads a vector index's metric through it (Java's
 // VectorIndexExpansionVisitor reads the engine's parsed Metric), so a
 // candidate's metric is always the one the index is maintained with.
@@ -61,7 +60,7 @@ func VectorIndexMetric(index *recordlayer.Index) (VectorMetric, error) {
 	case recordlayer.IndexTypeVectorSPFresh:
 		return spfreshMetric(index)
 	case recordlayer.IndexTypeVector:
-		name, err := hnswMetric(index, true)
+		name, err := hnswMetric(index)
 		if err != nil {
 			return VectorMetricEuclidean, err
 		}
@@ -73,15 +72,15 @@ func VectorIndexMetric(index *recordlayer.Index) (VectorMetric, error) {
 // hnswMetric is an HNSW index's metric as Java's parseConfig reads it: the
 // Metric constant name its metric option names, found as
 // VectorIndexOptionKeys.METRIC.read finds it (hnswMetric, else its alias
-// vectorMetric), read by Metric.valueOf with goForms (javaMetricName), and
+// vectorMetric), read by Metric.valueOf (javaMetricName), and
 // EUCLIDEAN_METRIC when neither is set. The one metric reader of the
 // maintainer (readHNSWOptions) and the planner (VectorIndexMetric).
-func hnswMetric(index *recordlayer.Index, goForms bool) (string, error) {
+func hnswMetric(index *recordlayer.Index) (string, error) {
 	v, ok := hnswOptionValue(index, recordlayer.IndexOptionVectorMetric)
 	if !ok {
 		return "EUCLIDEAN_METRIC", nil
 	}
-	return javaMetricName(v, goForms)
+	return javaMetricName(v)
 }
 
 // hnswAliasConflict is VectorIndexOptionsHelper.validateNoAliasConflicts, the
@@ -120,13 +119,12 @@ type hnswOptions struct {
 // to specify the number of dimensions" (VectorIndexOptionsHelper.
 // getNumDimensions).
 //
-// goForms admits two Go conveniences for a plain VECTOR index, whose
-// build-time validation is RFC-257 WS-D's (DIVERGENCES.md, the VECTOR entry):
-// the lower-case metric names cosine, inner_product and euclidean, and 128
-// dimensions when none are given. The windowed validator reads with it false.
+// goForms admits Go's one remaining convenience for a plain VECTOR index, 128
+// dimensions when none are given (DIVERGENCES.md, the VECTOR entry). The
+// windowed validator reads with it false.
 func readHNSWOptions(index *recordlayer.Index, goForms bool) (hnswOptions, error) {
 	o := hnswOptions{metric: "EUCLIDEAN_METRIC", raBitQNumExBits: 4}
-	name, err := hnswMetric(index, goForms)
+	name, err := hnswMetric(index)
 	if err != nil {
 		return o, err
 	}
@@ -187,22 +185,11 @@ func readHNSWOptions(index *recordlayer.Index, goForms bool) (hnswOptions, error
 	return o, hnswConfigChecks(c, o.useRaBitQ, o.raBitQNumExBits)
 }
 
-// javaMetricName is Metric.valueOf over v: one of the four constants' names,
-// or, with goForms, a Go convenience name mapped to one.
-func javaMetricName(v string, goForms bool) (string, error) {
+// javaMetricName is Metric.valueOf over v: one of the four constants' names.
+func javaMetricName(v string) (string, error) {
 	switch v {
 	case "EUCLIDEAN_METRIC", "EUCLIDEAN_SQUARE_METRIC", "COSINE_METRIC", "DOT_PRODUCT_METRIC":
 		return v, nil
-	}
-	if goForms {
-		switch v {
-		case "cosine":
-			return "COSINE_METRIC", nil
-		case "inner_product":
-			return "DOT_PRODUCT_METRIC", nil
-		case "euclidean":
-			return "EUCLIDEAN_METRIC", nil
-		}
 	}
 	return "", &recordlayer.IllegalArgumentError{Message: "No enum constant com.apple.foundationdb.linear.Metric." + v}
 }
@@ -251,7 +238,7 @@ func hnswConfigChecks(c HNSWConfig, useRaBitQ bool, raBitQNumExBits int) error {
 }
 
 // parseHNSWConfig is the configuration the VECTOR maintainer builds its graph
-// with: readHNSWOptions with Go's forms, and the RaBitQ quantizer when it is
+// with: readHNSWOptions with Go's dimension default, and the RaBitQ quantizer when it is
 // enabled. Java's Config admits 1 to 15 extra bits and its RaBitQuantizer 1 to 8
 // (RaBitQuantizer.java:76, TIGHT_START's length); Java constructs the quantizer
 // only when an operation first quantizes, so a count of 9 to 15 is refused

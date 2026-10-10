@@ -1702,22 +1702,26 @@ var _ = Describe("SlidingWindowIndex validation", func() {
 		Expect(mdErr.Message).To(Equal("need to specify the number of dimensions"))
 	})
 
-	It("runs the wrapped vector index's metric validation", func() {
-		// The metric arm is separate from the numeric ones: parseHNSWConfig's
-		// default branch maps ANY unrecognised name to Euclidean, so a typo
-		// silently redefines what "nearest" means for every query the index
-		// serves. Java uses Metric.valueOf, which throws, and knows only the four
-		// constants' names: parseHNSWConfig's lower-case aliases are refused too.
+	It("runs the wrapped and the plain vector index's metric validation", func() {
+		// Java's Metric.valueOf knows only the four constants' names, so the
+		// lower-case spellings are refused at build for a plain index too.
 		for _, metric := range []string{"COSIGN_METRIC", "cosine", "inner_product", "euclidean"} {
-			idx := newWindowedVectorIndex("sw_bad_metric", 2, gen.RowNumberWindowPredicate_ASC)
-			idx.Options[recordlayer.IndexOptionVectorMetric] = metric
-			builder := baseMetaData()
-			builder.AddIndex("Order", idx)
-			_, err := builder.Build()
-			Expect(err).To(MatchError("incorrect index options"), "Java's MetaDataException message, whole")
-			var iae *recordlayer.IllegalArgumentError
-			Expect(errors.As(err, &iae)).To(BeTrue(), "the cause is Enum.valueOf's refusal")
-			Expect(iae.Message).To(Equal("No enum constant com.apple.foundationdb.linear.Metric."+metric), "Enum.valueOf's text, whole")
+			for _, windowed := range []bool{true, false} {
+				idx := newWindowedVectorIndex("sw_bad_metric", 2, gen.RowNumberWindowPredicate_ASC)
+				if !windowed {
+					idx = recordlayer.NewVectorIndex("bad_metric", recordlayer.Concat(recordlayer.Field("coord_x"), recordlayer.Field("coord_y")), 2)
+				}
+				idx.Options[recordlayer.IndexOptionVectorMetric] = metric
+				builder := baseMetaData()
+				builder.AddIndex("Order", idx)
+				_, err := builder.Build()
+				Expect(err).To(MatchError("incorrect index options"), "Java's MetaDataException message, whole")
+				var iae *recordlayer.IllegalArgumentError
+				Expect(errors.As(err, &iae)).To(BeTrue(), "the cause is Enum.valueOf's refusal")
+				Expect(iae.Message).To(Equal("No enum constant com.apple.foundationdb.linear.Metric."+metric), "Enum.valueOf's text, whole")
+				_, err = VectorIndexMetric(idx)
+				Expect(errors.As(err, &iae)).To(BeTrue(), "the planner's metric reader refuses it too: %v", err)
+			}
 		}
 	})
 

@@ -1897,6 +1897,20 @@ var _ = Describe("A windowed VECTOR index's options parse as Java parses them", 
 	}
 })
 
+// A PLAIN VECTOR index runs the same validator (VectorIndexMaintainerFactory.
+// java:102-111), so its metric is Metric.valueOf's too: the windowed shape
+// without its predicate, each row requiring the same verdict from both loaders.
+var _ = Describe("A plain VECTOR index's metric is read as Java reads it", func() {
+	for _, metric := range []string{"COSINE_METRIC", "DOT_PRODUCT_METRIC", "cosine", "inner_product", "euclidean", "COSINE_METRIC "} {
+		It(fmt.Sprintf("%s=%q", recordlayer.IndexOptionVectorMetric, metric), func() {
+			expectWindowedVerdictAsJava("plain "+metric, windowedEdited(func(ix *gen.Index) {
+				ix.Predicate = nil
+				setOptions(map[string]string{recordlayer.IndexOptionVectorMetric: metric})(ix)
+			}))
+		})
+	}
+})
+
 // The configuration each engine READS from a windowed VECTOR index's options,
 // the whole of it compared: for spellings only Java's parsers read as the number
 // (full-width digits, a sign, a suffix, padding, an exponent), for values in
