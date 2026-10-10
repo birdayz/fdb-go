@@ -17,6 +17,7 @@ go_test(
     ],
     data = glob(["testdata/**"]),
     tags = [
+        "resources:cpu:2",
         "resources:memory:700",
         "test-full",
     ],

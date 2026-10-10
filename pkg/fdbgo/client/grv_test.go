@@ -1,9 +1,103 @@
 package client
 
 import (
+	"context"
+	"encoding/binary"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"fdb.dev/pkg/fdbgo/transport"
+	"fdb.dev/pkg/fdbgo/wire/types"
 )
+
+func TestGRVBatcherInitialWindow(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	for priority, batcher := range db.db.grvBatchers {
+		batcher.mu.Lock()
+		window := batcher.batchTime
+		batcher.mu.Unlock()
+		// NativeAPI.actor.cpp readVersionBatcher starts batchTime at zero.
+		if window != 0 {
+			t.Errorf("priority %d: initial GRV batch window=%v, want zero", priority, window)
+		}
+	}
+}
+
+func newDeadlineRecoveryGRVDatabase(t *testing.T, ctx context.Context) (*Database, *atomic.Bool, <-chan struct{}) {
+	t.Helper()
+	sd := newSimDialer()
+	db := newTestDatabase(t, ctx, sharedClusterFile, sd.dial)
+	t.Cleanup(func() { db.Close() })
+	if _, err := db.CreateTransaction().GetReadVersion(ctx); err != nil {
+		t.Fatalf("warm GRV: %v", err)
+	}
+	recovering := &atomic.Bool{}
+	recovering.Store(true)
+	injected := make(chan struct{}, 1)
+	brokenPromise := (&types.ErrorOrError{ErrorCode: 1100}).MarshalFDB()
+	sd.setIntercept(func(_ int, _ transport.UID, body []byte) ([]byte, bool) {
+		if len(body) >= 8 && binary.LittleEndian.Uint32(body[4:8]) == grvReplyEnvelopeFileID && recovering.Load() {
+			select {
+			case injected <- struct{}{}:
+			default:
+			}
+			return brokenPromise, false
+		}
+		return body, false
+	})
+	proxies, _ := db.db.getGRVProxies()
+	if len(proxies) == 0 {
+		t.Fatal("no GRV proxies after warmup")
+	}
+	for _, proxy := range proxies {
+		sd.armAddr(proxy.Address)
+	}
+	return db, recovering, injected
+}
+
+func TestGRVBatcherRecoveryOutlivesCoordinatorTimeout(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	db, recovering, injected := newDeadlineRecoveryGRVDatabase(t, ctx)
+	done := make(chan grvResult, 1)
+	go func() {
+		rv, err := db.CreateTransaction().GetReadVersion(ctx)
+		done <- grvResult{version: rv, err: err}
+	}()
+	select {
+	case <-injected:
+	case <-time.After(10 * time.Second):
+		t.Fatal("no GRV reply was faulted")
+	}
+
+	// Cross the actual former deadline, not a shortened test-only surrogate.
+	timer := time.NewTimer(31 * time.Second)
+	defer timer.Stop()
+	select {
+	case result := <-done:
+		t.Fatalf("GRV ended during recovery: version=%d error=%v; the caller is still live", result.version, result.err)
+	case <-timer.C:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	recovering.Store(false)
+	select {
+	case result := <-done:
+		if result.err != nil || result.version <= 0 {
+			t.Fatalf("GRV after recovery: version=%d error=%v", result.version, result.err)
+		}
+	case <-ctx.Done():
+		t.Fatal("GRV did not recover:", ctx.Err())
+	}
+	if db.db.metrics.Snapshot().GRVInBandMaybeDelivered == 0 {
+		t.Fatal("injected failures never reached the GRV retry loop")
+	}
+}
 
 // TestNextGRVRefreshDelay covers the C++-equivalent adaptive delay formula.
 // See nextGRVRefreshDelay doc for the porting reference.

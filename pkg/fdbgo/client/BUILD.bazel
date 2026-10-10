@@ -59,6 +59,46 @@ go_library(
     }),
 )
 
+# gazelle:exclude commit_coalesce_unit_test.go
+# gazelle:exclude ownership_unit_test.go
+# gazelle:exclude read_result_ownership_unit_test.go
+go_test(
+    name = "ownership_unit_test",
+    srcs = [
+        "commit_coalesce_unit_test.go",
+        "ownership_unit_test.go",
+        "read_result_ownership_unit_test.go",
+    ],
+    embed = [":client"],
+)
+
+# gazelle:exclude conflictbuf_unit_test.go
+go_test(
+    name = "conflictbuf_unit_test",
+    srcs = ["conflictbuf_unit_test.go"],
+    embed = [":client"],
+    deps = ["//pkg/fdbgo/wire"],
+)
+
+# gazelle:exclude grv_batch_unit_test.go
+go_test(
+    name = "grv_batch_unit_test",
+    srcs = ["grv_batch_unit_test.go"],
+    embed = [":client"],
+)
+
+# gazelle:exclude ryw_issue_view_unit_test.go
+# gazelle:exclude ryw_range_cut_unit_test.go
+go_test(
+    name = "ryw_issue_view_unit_test",
+    srcs = [
+        "ryw_issue_view_unit_test.go",
+        "ryw_range_cut_unit_test.go",
+    ],
+    embed = [":client"],
+    deps = ["//pkg/fdbgo/wire"],
+)
+
 go_test(
     name = "client_test",
     timeout = "eternal",
@@ -109,6 +149,7 @@ go_test(
         "getkey_conflict_unit_test.go",
         "getrange_conflict_unit_test.go",
         "getrange_more_limit_test.go",
+        "grv_batch_flags_test.go",
         "grv_cache_coherence_test.go",
         "grv_cache_freshness_test.go",
         "grv_cache_optin_test.go",
@@ -116,8 +157,10 @@ go_test(
         "grv_commit_generation_test.go",
         "grv_epoch_dbinfo_test.go",
         "grv_fences_test.go",
+        "grv_idle_fdb_test.go",
         "grv_invalidate_generation_test.go",
         "grv_panic_test.go",
+        "grv_reply_wait_test.go",
         "grv_seam_test.go",
         "grv_test.go",
         "grv_throttle_ordering_test.go",
@@ -164,6 +207,7 @@ go_test(
         "ryw_fuzz_test.go",
         "ryw_getkey_test.go",
         "ryw_integration_test.go",
+        "ryw_issue_view_fdb_test.go",
         "ryw_snapshot_cache_bounded_test.go",
         "ryw_snapshot_cache_invariant_test.go",
         "ryw_snapshot_cache_scan_test.go",
@@ -206,6 +250,7 @@ go_test(
     data = ["//pkg/fdbgo/wire/types:testdata.json"],
     embed = [":client"],
     tags = [
+        "resources:cpu:2",
         "resources:memory:2500",
         "test-full",
     ],

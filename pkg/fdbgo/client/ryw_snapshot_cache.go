@@ -334,10 +334,54 @@ func (sc *snapshotCache) getKey(key []byte) ([]byte, bool) {
 	return nil, true // key is in known range but doesn't exist at server
 }
 
-// copyKVs makes a shallow copy of the KV slice. The Key/Value byte slices
-// alias the caller's backing arrays. This is safe because FDB response
-// buffers are not pooled — once parsed, the byte slices are stable for the
-// lifetime of the transaction.
+// knownPast reports whether the cache knows the position adjacent to key in scan
+// direction: keyAfter(key) forward, the keys just below key in reverse.
+func (sc *snapshotCache) knownPast(key []byte, reverse bool) bool {
+	es := sc.entries
+	if reverse {
+		i := sort.Search(len(es), func(i int) bool { return bytes.Compare(es[i].begin, key) >= 0 })
+		return i > 0 && bytes.Compare(es[i-1].end, key) >= 0
+	}
+	i := sort.Search(len(es), func(i int) bool { return bytes.Compare(es[i].begin, key) > 0 })
+	if i > 0 && bytes.Compare(es[i-1].end, key) > 0 && !isKeyAfter(es[i-1].end, key) {
+		return true
+	}
+	return i < len(es) && isKeyAfter(es[i].begin, key)
+}
+
+// isKeyAfter reports a == keyAfter(b) without allocating.
+func isKeyAfter(a, b []byte) bool {
+	return len(a) == len(b)+1 && a[len(b)] == 0 && bytes.Equal(a[:len(b)], b)
+}
+
+// cloneReadKVs separates public results from immutable RYW/cache storage.
+func cloneReadKVs(kvs []KeyValue) []KeyValue {
+	if len(kvs) == 0 {
+		return kvs
+	}
+	size := 0
+	for _, kv := range kvs {
+		size += len(kv.Key) + len(kv.Value)
+	}
+	arena := make([]byte, size)
+	clone := func(src []byte) []byte {
+		if src == nil {
+			return nil
+		}
+		dst := arena[:len(src):len(src)]
+		copy(dst, src)
+		arena = arena[len(src):]
+		return dst
+	}
+	out := make([]KeyValue, len(kvs))
+	for i, kv := range kvs {
+		out[i] = KeyValue{Key: clone(kv.Key), Value: clone(kv.Value)}
+	}
+	return out
+}
+
+// copyKVs retains immutable internal bytes. Public read boundaries copy them
+// before handing results to callers, and FDB response buffers are not pooled.
 func copyKVs(kvs []KeyValue) []KeyValue {
 	if len(kvs) == 0 {
 		return nil

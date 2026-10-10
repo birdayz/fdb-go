@@ -4,6 +4,8 @@ import (
 	"math"
 	"math/rand"
 	"os"
+	"path/filepath"
+	"runtime/pprof"
 	"strings"
 	"syscall"
 	"testing"
@@ -86,6 +88,25 @@ func processCPU() time.Duration {
 }
 
 func TestGuardiannPeelPerformanceCriterion(t *testing.T) {
+	if os.Getenv("FDB_PEEL_CPU_PROFILE") == "1" {
+		dir := os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR")
+		if dir == "" {
+			t.Fatal("FDB_PEEL_CPU_PROFILE requires Bazel's TEST_UNDECLARED_OUTPUTS_DIR")
+		}
+		profile, err := os.Create(filepath.Join(dir, "peel.cpu.pprof"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := profile.Close(); err != nil {
+				t.Error(err)
+			}
+		})
+		if err := pprof.StartCPUProfile(profile); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(pprof.StopCPUProfile)
+	}
 	shapes := []struct{ n, d int }{
 		{2000, 980},  // W = B
 		{1001, 2175}, // the first over-max size at its largest admitted d
