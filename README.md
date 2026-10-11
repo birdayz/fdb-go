@@ -1,6 +1,7 @@
 # fdb-go — FoundationDB for Go
 
 [![CI](https://github.com/birdayz/fdb-go/actions/workflows/ci.yml/badge.svg)](https://github.com/birdayz/fdb-go/actions/workflows/ci.yml)
+[![Test Report](https://img.shields.io/badge/test_report-latest-2980b9)](https://fdb.dev/reports/latest.html)
 
 **Use FoundationDB from Go — at the key-value, record, or SQL layer.**
 
