@@ -276,7 +276,7 @@ jobs:
     # RFC §7.) Active fuzzing is not a gate; `just verify` runs a fuzz smoke.
     runs-on: hetzner-fdb-vm
     # A cold C++ oracle build (once per FDB pin/build change) is long; later runs hit the disk/remote cache.
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -289,7 +289,7 @@ jobs:
         run: infra/reap-leaked-containers.sh
 
       # A PR that changes nothing the oracle is built from cannot change its result; master runs
-      # it on every push. Skipping saves 9-30s warm, or a 13-14 min C++ build on a cache miss.
+      # it on every push. Skipping saves 9-30s warm, or a 25+ min C++ build on a cache miss.
       - name: Does this change reach the oracle?
         id: scope
         run: infra/wire-oracle-scope.sh

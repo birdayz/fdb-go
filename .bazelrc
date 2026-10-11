@@ -63,6 +63,9 @@ coverage --instrumentation_filter="^//pkg/fdbgo/client[/:],^//pkg/fdbgo/fdb[/:],
 test --local_test_jobs=0
 test --local_resources=cpu=HOST_CPUS
 test --local_resources=memory=HOST_RAM*0.8
+# The compact FDB C++ build asks for more RAM than CI's build pool: run it alone, not fail it.
+# Bazel 9.0.1 defaults this to true but plans to flip it (b/405364605).
+build --allow_one_action_on_resource_unavailable
 # `bazelrunfiles`: runfiles-only suites (conformance, bindingtester) — excluded from
 #   a plain `go test ./...` so it doesn't panic looking for Bazel runfiles.
 # `stress`: heavy million-row stress benchmarks under //pkg/relational/sqldriver/stress.

@@ -75,7 +75,9 @@ fdb_cpp_build(
                     -DWITH_PYTHON=OFF -DUSE_WERROR=OFF -DBUILD_TESTING=OFF \
                     2>&1 | tee /out/build.log | tail -3
 
-                ninja -C /tmp/build -j$(FDB_BUILD_CPUS) fdbclient 2>&1 | tee /out/build.log | tail -3
+                # NativeAPI alone peaks at 4.75 GB anon; beside another heavy unit it overruns the cap.
+                ninja -C /tmp/build -j1 fdbclient/CMakeFiles/fdbclient.dir/NativeAPI.actor.g.cpp.o 2>&1 | tee /out/build.log | tail -3
+                ninja -C /tmp/build -j$(FDB_BUILD_CPUS) fdbclient 2>&1 | tee -a /out/build.log | tail -3
                 tar cf /out/fdb_build.tar -C /tmp build fdb
                 chmod 666 /out/fdb_build.tar
             '
