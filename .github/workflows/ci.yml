@@ -13,10 +13,12 @@ permissions:
   pull-requests: write
 
 # On a branch, a new push cancels the running CI: only the latest commit's
-# result matters, and the two runners are the bottleneck. On master every
-# commit's run completes.
+# result matters. On master every commit gets its own group (keyed by SHA), so
+# each master commit's run is queued and reports its checks. A shared master
+# group let GitHub keep only one pending run and silently cancel the rest, so
+# most master commits showed only the website checks.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.ref }}${{ github.ref == 'refs/heads/master' && format('-{0}', github.sha) || '' }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 jobs:
