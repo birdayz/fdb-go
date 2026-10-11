@@ -13,9 +13,8 @@ import (
 
 // Go-vs-libfdb_c differential for a range drain that CROSSES BATCH BOUNDARIES under a row
 // limit. Every existing range-limit differential in this package compares single-fetch results:
-// TestDifferential_RangeRead drives both sides through GetSliceWithError, and the pure-Go
-// GetSliceWithError issues exactly one doRangeWithLimit with the full budget (range_result.go:93)
-// — it never enters the iterator's batch loop at all. TestDifferential_ExactModeWithoutLimits
+// TestDifferential_RangeRead drives both sides through GetSliceWithError, which reads batch 1
+// and then the rest in one unlimited-byte read — it never enters the iterator's batch loop. TestDifferential_ExactModeWithoutLimits
 // drains iterators but over three seeded rows, comparing error codes only. So the batch loop's
 // behaviour under a limit had no cross-client pin.
 //

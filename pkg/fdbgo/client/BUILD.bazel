@@ -151,6 +151,7 @@ go_test(
 go_test(
     name = "ryw_issue_view_unit_test",
     srcs = [
+        "ryw_getrange_helper_test.go",
         "ryw_issue_view_unit_test.go",
         "ryw_range_cut_unit_test.go",
     ],
@@ -281,6 +282,7 @@ go_test(
         "ryw_coalesce_test.go",
         "ryw_fuzz_test.go",
         "ryw_getkey_test.go",
+        "ryw_getrange_helper_test.go",
         "ryw_integration_test.go",
         "ryw_issue_view_fdb_test.go",
         "ryw_snapshot_cache_bounded_test.go",

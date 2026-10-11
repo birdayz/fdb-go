@@ -61,6 +61,7 @@ go_test(
         "parity_test.go",
         "range_byte_division_conflict_test.go",
         "range_byte_division_test.go",
+        "range_issue_bench_test.go",
         "range_issue_test.go",
         "range_iterator_limit_batch_test.go",
         "range_iterator_test.go",

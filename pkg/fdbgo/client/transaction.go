@@ -57,6 +57,7 @@ const (
 	ErrInvertedRange             = 2005 // inverted_range (begin > end)
 	ErrInvalidOptionValue        = 2006 // invalid_option_value (e.g. SIZE_LIMIT outside [32, 1e7])
 	ErrRangeLimitsInvalid        = 2012 // range_limits_invalid (e.g. a row limit < -1)
+	ErrInternalError             = 4100 // internal_error
 	ErrInvalidMutationType       = 2018 // invalid_mutation_type (a non-atomic op passed to Atomic())
 	ErrTransactionReadOnly       = 2023 // transaction_read_only (a READ_LOCK_AWARE txn committed writes)
 	ErrTenantNotFound            = 2131 // tenant_not_found
@@ -676,7 +677,7 @@ func (s *Snapshot) GetRangeWithByteTarget(ctx context.Context, begin, end []byte
 }
 
 func (s *Snapshot) getRangeDir(ctx context.Context, begin, end []byte, limit, byteTarget int, reverse bool) ([]KeyValue, bool, error) {
-	return s.tx.issueRange(ctx, begin, end, limit, byteTarget, reverse, true).run()
+	return s.tx.issueRange(ctx, begin, end, limit, byteTarget, reverse, true).run(true)
 }
 
 // GetRangeReverse reads a range in reverse without adding a read conflict range.
@@ -1389,7 +1390,7 @@ func (tx *Transaction) GetRangeWithByteTarget(ctx context.Context, begin, end []
 }
 
 func (tx *Transaction) getRangeDir(ctx context.Context, begin, end []byte, limit int, byteTarget int, reverse bool) ([]KeyValue, bool, error) {
-	return tx.issueRange(ctx, begin, end, limit, byteTarget, reverse, false).run()
+	return tx.issueRange(ctx, begin, end, limit, byteTarget, reverse, false).run(true)
 }
 
 // ownMutationLocked takes ownership before the caller can reuse its buffers,

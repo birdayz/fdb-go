@@ -66,7 +66,7 @@ type ClientMetrics struct {
 	grvInBandMaybeDelivered atomic.Int64
 
 	transactionRetries atomic.Int64 // Go-only aggregate, see doc comment
-	// C++ DatabaseContext transactionGetRangeRequests (NativeAPI.actor.cpp:1557, :5790-5792).
+	// C++ DatabaseContext transactionGetRangeRequests (NativeAPI.actor.cpp:1557, :5808).
 	getRangeRequests atomic.Int64
 
 	// recoveredPanics counts panics recovered by the background-goroutine
@@ -220,7 +220,7 @@ type ClientMetricsSnapshot struct {
 
 	TransactionRetries int64
 
-	TransactionGetRangeRequests int64 // getKeyValues requests sent
+	TransactionGetRangeRequests int64 // range reads that reached storage (C++ GetRangeRequests)
 
 	RecoveredPanics               int64 // RFC-110: panics recovered by the goroutine backstop
 	RecoveredPanicsConsecutiveMax int64 // RFC-110: high-water of any loop's consecutive-panic streak

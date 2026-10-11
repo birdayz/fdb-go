@@ -6,6 +6,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -47,39 +49,118 @@ func fdbCode(err error) int {
 	return 0
 }
 
-// StartGetRange sends its first request before returning, like
-// fdb_transaction_get_range: N started reads are N requests in flight before
-// the first wait.
-func TestStartGetRange_RequestsInFlightBeforeFirstWait(t *testing.T) {
+// releaseOnCleanup returns a channel parked reads wait on; it is closed by release or at
+// cleanup, so a failed test cannot leave a read holding its lease.
+func releaseOnCleanup(t *testing.T) (<-chan struct{}, func()) {
+	ch := make(chan struct{})
+	var once sync.Once
+	release := func() { once.Do(func() { close(ch) }) }
+	t.Cleanup(release)
+	return ch, release
+}
+
+// StartGetRange returns at once, like fdb_transaction_get_range: N reads over a cold location
+// cache have all N location lookups in flight before the first wait.
+func TestStartGetRange_LocationLookupsOverlap(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	db := rangeIssueDB(t, ctx)
+	defer db.Close()
+	const n = 5
+	prefixes := make([][]byte, n)
+	for i := range prefixes {
+		prefixes[i] = []byte(fmt.Sprintf("%s/%d/", t.Name(), i))
+		rangeIssueSeed(t, ctx, db, prefixes[i], 1)
+	}
+	// A fresh database: nothing is in its location cache.
+	cold := rangeIssueDB(t, ctx)
+	defer cold.Close()
+	tx := cold.CreateTransaction()
+	defer tx.Cancel()
+	if _, err := tx.GetReadVersion(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var inflight atomic.Int32
+	held, release := releaseOnCleanup(t)
+	cold.db.afterLocationSend = func() {
+		inflight.Add(1)
+		<-held
+	}
+	started := make(chan []*PendingRange, 1)
+	go func() {
+		reads := make([]*PendingRange, n)
+		for i := range reads {
+			reads[i] = tx.StartGetRange(ctx, prefixes[i], append(bytes.Clone(prefixes[i]), 0xff), 0, ByteLimitUnlimited, false)
+		}
+		started <- reads
+	}()
+	deadline := time.Now().Add(20 * time.Second)
+	for inflight.Load() < n && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	got := inflight.Load()
+	release()
+	if got != n {
+		t.Fatalf("location lookups in flight before the first wait = %d, want %d", got, n)
+	}
+	for i, p := range <-started {
+		kvs, _, err := p.Get()
+		if err != nil || len(kvs) != 1 || !bytes.Equal(kvs[0].Key, rangeIssueKey(prefixes[i], 0)) {
+			t.Fatalf("read %d = %v, %v", i, kvs, err)
+		}
+	}
+}
+
+// GetRangeRequests counts client getRange calls, not storage requests: C++ increments it once
+// at the top of Transaction::getRangeInternal (NativeAPI.actor.cpp:5808).
+func TestGetRangeRequests_OncePerRead(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	db := rangeIssueDB(t, ctx)
+	defer db.Close()
+	prefix := []byte(t.Name() + "/")
+	// 120 rows of 1 KB exceed one reply's REPLY_BYTE_LIMIT (80 KB), so the read takes two replies.
+	const rows = 120
+	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		for i := 0; i < rows; i++ {
+			tx.Set(rangeIssueKey(prefix, i), bytes.Repeat([]byte{'v'}, 1000))
+		}
+		return nil, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tx := db.CreateTransaction()
+	defer tx.Cancel()
+	before := db.Metrics().TransactionGetRangeRequests
+	kvs, _, err := tx.GetRange(ctx, prefix, append(bytes.Clone(prefix), 0xff), 0)
+	if err != nil || len(kvs) != rows {
+		t.Fatalf("read = %d rows, %v", len(kvs), err)
+	}
+	if got := db.Metrics().TransactionGetRangeRequests - before; got != 1 {
+		t.Fatalf("GetRangeRequests for one multi-reply read = %d, want 1", got)
+	}
+}
+
+// A panic on a started read's goroutine fails that read (RFC-110) instead of aborting the host.
+func TestStartGetRange_PanicFailsTheRead(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	db := rangeIssueDB(t, ctx)
 	defer db.Close()
 	prefix := []byte(t.Name())
-	const n = 5
-	rangeIssueSeed(t, ctx, db, prefix, n)
-
 	tx := db.CreateTransaction()
 	defer tx.Cancel()
-	// Pin the read version and warm the location cache, outside the ranges under test
-	// (a range this transaction already read is answered from its RYW cache).
-	if _, _, err := tx.GetRange(ctx, rangeIssueKey(prefix, n), rangeIssueKey(prefix, n+1), 0); err != nil {
-		t.Fatal(err)
+	tx.afterRangeReply = func() { panic("injected") }
+	before := db.Metrics().RecoveredPanics
+	_, _, err := tx.StartGetRange(ctx, prefix, append(bytes.Clone(prefix), 0xff), 0, ByteLimitUnlimited, false).Get()
+	if fdbCode(err) != ErrInternalError {
+		t.Fatalf("read = %v, want internal_error", err)
 	}
-	before := db.Metrics().TransactionGetRangeRequests
-	reads := make([]*PendingRange, n)
-	for i := range reads {
-		reads[i] = tx.StartGetRange(ctx, rangeIssueKey(prefix, i), rangeIssueKey(prefix, i+1), 0, ByteLimitUnlimited, false)
-	}
-	if got := db.Metrics().TransactionGetRangeRequests - before; got != n {
-		t.Fatalf("getKeyValues requests sent before the first wait = %d, want %d", got, n)
-	}
-	for i, p := range reads {
-		kvs, more, err := p.Get()
-		if err != nil || more || len(kvs) != 1 || !bytes.Equal(kvs[0].Key, rangeIssueKey(prefix, i)) {
-			t.Fatalf("read %d = %v more=%v err=%v", i, kvs, more, err)
-		}
+	if db.Metrics().RecoveredPanics == before {
+		t.Fatal("the panic was not counted by the backstop")
 	}
 }
 
@@ -99,8 +180,8 @@ func TestStartGetRange_CommitWaitsForUnconsumedRead(t *testing.T) {
 	if _, err := tx.GetReadVersion(ctx); err != nil {
 		t.Fatal(err)
 	}
-	release := make(chan struct{})
-	tx.afterRangeReply = func() { <-release }
+	held, release := releaseOnCleanup(t)
+	tx.afterRangeReply = func() { <-held }
 	waiting := make(chan int, 1)
 	tx.beforeIssuedReadWait = func(n int) {
 		select {
@@ -131,7 +212,7 @@ func TestStartGetRange_CommitWaitsForUnconsumedRead(t *testing.T) {
 	case <-time.After(30 * time.Second):
 		t.Fatal("commit neither waited for the issued read nor returned")
 	}
-	close(release)
+	release()
 	if err := <-committed; fdbCode(err) != ErrNotCommitted {
 		t.Fatalf("commit = %v, want not_committed: the unconsumed read's conflict must count", err)
 	}
@@ -156,14 +237,14 @@ func TestStartGetRange_IssueTimeWriteView(t *testing.T) {
 			if withWrites {
 				tx.Set(rangeIssueKey(prefix, 1), []byte("local"))
 			}
-			release := make(chan struct{})
-			tx.afterRangeReply = func() { <-release }
+			held, release := releaseOnCleanup(t)
+			tx.afterRangeReply = func() { <-held }
 			p := tx.StartGetRange(ctx, prefix, end, 0, ByteLimitUnlimited, false)
 			tx.afterRangeReply = nil
 			// Writes after the issue must not join it.
 			tx.Set(rangeIssueKey(prefix, 7), []byte("late"))
 			tx.Clear(rangeIssueKey(prefix, 0))
-			close(release)
+			release()
 			kvs, _, err := p.Get()
 			if err != nil {
 				t.Fatal(err)

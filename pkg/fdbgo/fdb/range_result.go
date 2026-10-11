@@ -65,14 +65,9 @@ func startRangeResult(rr goRangeResult) goRangeResult {
 		return rr
 	}
 	f.begin, f.end = begin, end
-	// ROW_LIMIT_UNLIMITED is -1; anything below is range_limits_invalid (2012), as in the client's
-	// getRangeDir and libfdb_c (RYW getRange isValid). EXACT with no limit is exact_mode_without_limits
-	// (2210), libfdb_c validate_and_update_parameters (bindings/c/fdb_c.cpp:996-998).
-	if rr.options.Limit < -1 {
-		f.err = Error{Code: client.ErrRangeLimitsInvalid}
-		return rr
-	}
-	if rr.options.Mode == StreamingModeExact && rr.options.Limit <= 0 {
+	// EXACT without a limit is exact_mode_without_limits (2210) before the RYW checks
+	// (fdb_c.cpp:996-998); the client then raises cancelled, 2004 and 2012 in C++ order.
+	if rr.options.Mode == StreamingModeExact && (rr.options.Limit == 0 || rr.options.Limit == -1) {
 		f.err = Error{Code: 2210}
 		return rr
 	}
@@ -81,7 +76,7 @@ func startRangeResult(rr goRangeResult) goRangeResult {
 		f.err = err
 		return rr
 	}
-	f.limit = effectiveLimit(rr.options.Limit)
+	f.limit = effectiveLimit(rr.options.Limit) // a limit < -1 stays as is, for the client's 2012
 	if rr.snapshot {
 		f.pending = rr.tx.inner.Snapshot().StartGetRange(rr.tx.ctx, begin, end, f.limit, byteTarget, rr.options.Reverse)
 	} else {
@@ -124,8 +119,8 @@ func keyAfter(k []byte) []byte {
 
 // effectiveLimit returns the row budget to use for a range read. Apple API: Limit=0 means
 // unlimited; ROW_LIMIT_UNLIMITED=-1 ALSO means unlimited (FDBTypes.h:728, isReached()==false for
-// -1). A row limit < -1 is range_limits_invalid (2012) and is rejected by the callers (the client
-// getRangeDir for GetSlice; Iterator() explicitly) — never normalized here.
+// -1). A row limit < -1 is range_limits_invalid (2012), raised by the client's issueRange; it is
+// never normalized here.
 func effectiveLimit(limit int) int {
 	if limit == 0 || limit == -1 {
 		return math.MaxInt32
@@ -149,8 +144,8 @@ func (rr goRangeResult) doRange(begin, end []byte, limit, byteTarget int) ([]cli
 	return rr.tx.inner.GetRangeWithByteTarget(rr.tx.ctx, begin, end, limit, byteTarget, rr.options.Reverse)
 }
 
-// GetSliceWithError returns all key-value pairs in the range as a slice.
-// Always fetches all results regardless of streaming mode.
+// GetSliceWithError returns all key-value pairs in the range as a slice: batch 1 as GetRange
+// issued it (in the streaming mode), then the rest in one unlimited-byte read, as Apple does.
 //
 // WARNING: This eagerly loads all matching key-value pairs into memory.
 // For large ranges this can cause excessive memory usage. Prefer
@@ -273,7 +268,8 @@ func (ri *goRangeIterator) Advance() bool {
 	}
 
 	// No more buffered results. If the previous batch was the last, we're done.
-	if ri.exhausted || ri.remaining <= 0 {
+	// Batch 1 is taken before the budget check, so its error (2012 included) surfaces.
+	if ri.first == nil && (ri.exhausted || ri.remaining <= 0) {
 		return false
 	}
 

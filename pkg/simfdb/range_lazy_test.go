@@ -308,24 +308,36 @@ func TestWriteBeforeGetRangeStillReads(t *testing.T) {
 	commitAfterConcurrentSet(t, db, tx, "e", 0)
 }
 
-// TestCancelBetweenGetRangeAndConsumptionFailsTheRead pins that a Cancel after GetRange() fails
-// the issued read: its reply cannot beat a local cancel, and C++ fails the in-flight read
-// through resetPromise (ReadYourWrites.actor.cpp:391).
-func TestCancelBetweenGetRangeAndConsumptionFailsTheRead(t *testing.T) {
+// TestCancelAfterGetRangeKeepsBatchOne pins that a Cancel after GetRange() leaves batch 1, whose
+// reply was already in hand, and fails every later fetch and every later GetRange with 1025:
+// a ready libfdb_c future keeps its value; reads issued after resetPromise fails do not.
+func TestCancelAfterGetRangeKeepsBatchOne(t *testing.T) {
 	t.Parallel()
 	db := New(nil)
 	seedLazy(db)
 
 	tx := db.newTxn()
-	rr := tx.GetRange(fdb.KeyRange{Begin: k("a"), End: k("z")}, fdb.RangeOptions{})
+	r := fdb.KeyRange{Begin: k("a"), End: k("z")}
+	rr := tx.GetRange(r, fdb.RangeOptions{})
 	tx.Cancel()
-	if _, err := rr.GetSliceWithError(); errCode(t, err) != 1025 {
-		t.Fatalf("GetSliceWithError after Cancel = %v, want transaction_cancelled(1025)", err)
+	it := rr.Iterator()
+	for i := 0; i < 2; i++ {
+		if !it.Advance() {
+			_, err := it.Get()
+			t.Fatalf("batch-1 row %d lost after Cancel: %v", i, err)
+		}
 	}
-	it := tx.GetRange(fdb.KeyRange{Begin: k("a"), End: k("z")}, fdb.RangeOptions{}).Iterator()
-	it.Advance()
+	if it.Advance() {
+		t.Fatal("a batch fetched after Cancel returned rows")
+	}
 	if _, err := it.Get(); errCode(t, err) != 1025 {
-		t.Fatalf("Iterator Get after Cancel = %v, want transaction_cancelled(1025)", err)
+		t.Fatalf("batch 2 after Cancel = %v, want transaction_cancelled(1025)", err)
+	}
+	if _, err := rr.GetSliceWithError(); errCode(t, err) != 1025 {
+		t.Fatalf("GetSliceWithError past batch 1 after Cancel = %v, want transaction_cancelled(1025)", err)
+	}
+	if _, err := tx.GetRange(r, fdb.RangeOptions{}).GetSliceWithError(); errCode(t, err) != 1025 {
+		t.Fatalf("GetRange after Cancel = %v, want transaction_cancelled(1025)", err)
 	}
 }
 

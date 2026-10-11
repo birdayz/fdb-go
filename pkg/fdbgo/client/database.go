@@ -379,7 +379,9 @@ type database struct {
 	// DEFAULT_MAX_OUTSTANDING_WATCHES (10000, ClientKnobs.cpp:120) and is lowerable via the
 	// max_watches database option (SetMaxWatches). 0 means unlimited.
 	outstandingWatches atomic.Int64
-	maxWatches         atomic.Int64
+	// afterLocationSend observes a sent location query before its reply wait (test seam).
+	afterLocationSend func()
+	maxWatches        atomic.Int64
 
 	// Lifecycle.
 	ctx       context.Context

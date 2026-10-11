@@ -1007,8 +1007,7 @@ func TestUnreadableDoesNotSurviveTheCommit(t *testing.T) {
 //
 // The dimension this covers is the batch boundary, and it is invisible to any single-batch test.
 // The cap is per-FETCH — the client keeps ri.begin/ri.end at the requested bounds and lets
-// rywCache.getRange re-derive the cap on every call (fdb/range_result.go:309 passes them
-// unmodified). If the iterator instead wrote the capped end back into its own scan bounds, the
+// rywCache.issueRange re-derive the cap on every call. If the iterator instead wrote the capped end back into its own scan bounds, the
 // unreadable key would land exactly ON the next window's exclusive end, where unreadableScanCap
 // skips it: batch two would find no cap, return no rows, and report clean exhaustion. The scan
 // would then have walked up to an unreadable position and reported success, which is the one

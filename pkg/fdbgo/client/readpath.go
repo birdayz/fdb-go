@@ -598,6 +598,8 @@ func (tx *Transaction) sendGetValueToServer(ctx context.Context, key []byte, ser
 // invalidates entire remaining range on wrong_shard_server, and passes reverse
 // to getKeyRangeLocations so the proxy returns shards in the right order.
 func (tx *Transaction) getRange(parentCtx context.Context, begin, end []byte, limit int, byteTarget int, reverse bool) ([]KeyValue, bool, error) {
+	// Once per call, before GRV: C++ Transaction::getRangeInternal (NativeAPI.actor.cpp:5808).
+	tx.db.metrics.getRangeRequests.Add(1)
 	ctx, cancel := tx.opContext(parentCtx)
 	defer cancel()
 	if err := tx.ensureReadVersion(ctx); err != nil {
@@ -890,7 +892,6 @@ func rangeScanImpl[T any](tx *Transaction, ctx context.Context, begin, end []byt
 }
 
 func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limit int, byteTarget int, reverse bool, servers []ServerInfo) ([]KeyValue, bool, error) {
-	tx.db.metrics.getRangeRequests.Add(1) // C++ increaseCounterForRequest (NativeAPI.actor.cpp:5790-5792)
 	return sendRangeRPC(tx, ctx, begin, end, limit, byteTarget, reverse, servers, rangeRPCOps[KeyValue]{
 		endpoint: EndpointGetKeyValues,
 		build:    buildGetKeyValuesRequest,
@@ -977,7 +978,6 @@ func sendRangeRPC[T any](tx *Transaction, ctx context.Context, begin, end []byte
 				return inFlightRPC{err: err, addr: server.Address}
 			}
 			ops.putBuf(poolBuf)
-			markReadSent(ctx)
 			return inFlightRPC{
 				replyCh:     replyCh,
 				replyHandle: replyHandle,

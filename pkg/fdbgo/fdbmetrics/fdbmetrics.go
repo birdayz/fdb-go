@@ -139,7 +139,7 @@ var counters = []counterDef{
 		func(s client.ClientMetricsSnapshot) int64 { return s.GRVInBandMaybeDelivered },
 	},
 	{
-		"fdb_client_transaction_get_range_requests_total", "getKeyValues requests sent to storage servers (C++ GetRangeRequests).",
+		"fdb_client_transaction_get_range_requests_total", "Range reads issued to storage, one per client getRange call (C++ GetRangeRequests).",
 		originCPPTwin,
 		func(s client.ClientMetricsSnapshot) int64 { return s.TransactionGetRangeRequests },
 	},

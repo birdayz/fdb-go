@@ -6,29 +6,8 @@ import (
 	fdb "fdb.dev/pkg/fdbgo/fdb"
 )
 
-// simRangeResult is SimFDB's RangeResult. Like the pure-Go client's goRangeResult and Apple's
-// binding (bindings/go/src/fdb/transaction.go:295-296), GetRange fetches BATCH 1 at the call;
-// every later batch is fetched when an iterator reaches it.
-//
-// Both halves of that split are observable through a write issued between the GetRange() call
-// and the consumption of its result — the record layer's scan-and-update shape:
-//
-//   - ROWS. Each fetch resolves against the read-your-writes view AS IT IS WHEN THE FETCH IS
-//     ISSUED (C++ ReadYourWrites.actor.cpp:382). Batch 1 ignores a write made after GetRange();
-//     a later batch sees it.
-//   - CONFLICTS. Every batch takes its own read conflict range, clamped to what that batch
-//     returned and filtered through the write map at that batch's issue (addFilteredReadConflict;
-//     C++ :388). Batch 1's conflict counts even if the result is never consumed: commit waits
-//     for every issued read (:1359-1360).
-//
-// The batching itself is modelled, not incidental: the real backend fetches pages sized by the
-// streaming mode's per-fetch BYTE target (fdb.ModeTargetBytes), EVERY BATCH TAKES ITS OWN READ
-// CONFLICT RANGE, and a cursor abandoned after one page has therefore conflicted over ONE PAGE.
-// Batch boundaries are also where a continuation lands, so a sim that batched differently would
-// page differently from the client it stands in for.
-//
-// GetSliceWithError matches the client's: batch 1, then the rest in one unlimited-byte fetch,
-// each taking its own conflict.
+// simRangeResult is SimFDB's RangeResult. Batch 1 is fetched by GetRange against the write map
+// then, and later batches by the iterator; each takes its own read conflict (client parity).
 type simRangeResult struct {
 	tx       *simTxn
 	r        fdb.Range
@@ -78,16 +57,7 @@ func (r *simRangeResult) issueFirst() {
 	}
 }
 
-// take returns a consumer's own copy of batch 1, as each Get of a range future copies. A
-// Cancel since GetRange fails it: the storage reply cannot have beaten a local cancel, and C++
-// fails the in-flight read through resetPromise (ReadYourWrites.actor.cpp:391).
-func (f *simFirstBatch) take(tx *simTxn) ([]fdb.KeyValue, error) {
-	if tx.cancelled.Load() {
-		return nil, fdb.Error{Code: 1025}
-	}
-	return f.rows(), nil
-}
-
+// rows returns a consumer's own copy of batch 1, as each Get of a range future copies.
 func (f *simFirstBatch) rows() []fdb.KeyValue {
 	out := make([]fdb.KeyValue, len(f.batch))
 	for i, kv := range f.batch {
@@ -138,11 +108,8 @@ func (r *simRangeResult) GetSliceWithError() ([]fdb.KeyValue, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
-	kvs, err := f.take(r.tx)
-	if err != nil {
-		return nil, err
-	}
-	more := f.more
+	// Batch 1's reply is in hand at GetRange, so a later Cancel cannot fail it.
+	kvs, more := f.rows(), f.more
 	begin, end, remaining := f.begin, f.end, f.limit-len(kvs)
 	for more && remaining > 0 && len(kvs) > 0 {
 		last := []byte(kvs[len(kvs)-1].Key)
@@ -250,13 +217,7 @@ func (it *rangeIter) fetchBatch() bool {
 		if it.traceLog != nil {
 			it.traceLog(1, it.remaining, len(f.batch), f.more, nil)
 		}
-		rows, err := f.take(it.rr.tx)
-		if err != nil {
-			it.err = err
-			it.exhausted = true
-			return false
-		}
-		return it.takeBatch(rows, f.more)
+		return it.takeBatch(f.rows(), f.more)
 	}
 	// The division is BYTE-driven, exactly as it is in the client: the streaming mode supplies a
 	// per-fetch byte target (fdb.ModeTargetBytes, the single definition of the rule), the row
@@ -285,9 +246,8 @@ func (it *rangeIter) fetchBatch() bool {
 		it.exhausted = true
 		return false
 	}
-	// The cap is recomputed per batch, as it is in the client — doRangeWithLimit funnels every
-	// batch through rywCache.getRange, which caps the window it was handed. So a versionstamped
-	// write issued between two batches truncates the second one and not the first.
+	// The cap is recomputed per batch, as in the client, whose rywCache.issueRange caps each
+	// batch's window: a versionstamped write between two batches truncates only the second.
 	batch, more, capBegin, capEnd, err := it.rr.tx.fetchRange(
 		it.scanBegin, it.scanEnd, want, byteTarget, it.rr.options.Reverse)
 	if err != nil {
@@ -298,13 +258,8 @@ func (it *rangeIter) fetchBatch() bool {
 		it.exhausted = true
 		return false
 	}
-	// capBegin/capEnd are used for THIS batch's conflict only; they must NOT be written back
-	// into scanBegin/scanEnd. The client keeps ri.begin/ri.end at the REQUESTED bounds and lets
-	// rywCache.getRange re-cap each call (fdb/range_result.go:309 passes ri.begin/ri.end
-	// unmodified). Persisting the cap here would move the unreadable key onto the next window's
-	// exclusive end, where unreadableScanCap no longer sees it — the following batch would find
-	// no cap, return no rows and report clean exhaustion, silently swallowing the 1036 the scan
-	// is supposed to raise.
+	// capBegin/capEnd are THIS batch's conflict window only: the client re-caps the requested
+	// bounds per batch, and writing the cap back would hide the unreadable key from the next batch.
 	if it.traceLog != nil {
 		// iteration-1 is the 1-based number of the iteration this batch WAS, matching the
 		// client's own trace call (fdb/range_result.go:255-257).
@@ -318,12 +273,12 @@ func (it *rangeIter) fetchBatch() bool {
 			// the clamped extent on every call, and an empty result clamps to the full
 			// [begin,end) it scanned. The previous batch stays in it.batch, exactly as the
 			// client leaves ri.kvs untouched on an empty fetch.
-			it.addConflict(capBegin, capEnd, nil, false)
+			it.rr.addConflict(capBegin, capEnd, nil, false)
 		}
 		return false
 	}
 	if !it.rr.snapshot {
-		it.addConflict(capBegin, capEnd, batch, more)
+		it.rr.addConflict(capBegin, capEnd, batch, more)
 	}
 	return it.takeBatch(batch, more)
 }
@@ -412,13 +367,8 @@ func serverByteCut(batch []fdb.KeyValue, targetBytes int) int {
 	return len(batch)
 }
 
-// addConflict registers the read conflict for one fetched batch over the window that batch
-// ACTUALLY read — the scan bounds as the unreadable cap narrowed them, not the requested ones —
-// clamped by the same rule the whole-read path uses.
-func (it *rangeIter) addConflict(begin, end []byte, batch []fdb.KeyValue, more bool) {
-	it.rr.addConflict(begin, end, batch, more)
-}
-
+// addConflict registers one fetched batch's read conflict over the window it ACTUALLY read
+// (the unreadable cap narrows it), clamped by the same rule the whole-read path uses.
 func (r *simRangeResult) addConflict(begin, end []byte, batch []fdb.KeyValue, more bool) {
 	cb, ce := rangeConflictExtent(begin, end, batch, more, r.options.Reverse)
 	if bytes.Compare(cb, ce) < 0 {

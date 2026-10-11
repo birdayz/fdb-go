@@ -5,12 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"fdb.dev/pkg/fdbgo/fdb"
 )
 
-// GetRange sends batch 1 at the call (Apple bindings/go/src/fdb/transaction.go:295-296):
-// N range results are N requests in flight before any is read.
+// GetRange starts batch 1 at the call (Apple bindings/go/src/fdb/transaction.go:295-296):
+// N range results are N reads under way before any is consumed.
 func TestGetRange_RequestsInFlightBeforeFirstWait(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
@@ -36,8 +37,14 @@ func TestGetRange_RequestsInFlightBeforeFirstWait(t *testing.T) {
 		for i := range results {
 			results[i] = tr.GetRange(fdb.KeyRange{Begin: key(i), End: key(i + 1)}, fdb.RangeOptions{})
 		}
-		if got := db.Metrics().TransactionGetRangeRequests - before; got != n {
-			return nil, fmt.Errorf("getKeyValues requests sent before the first wait = %d, want %d", got, n)
+		// Every read starts without any consumer waiting on it.
+		deadline := time.Now().Add(20 * time.Second)
+		for db.Metrics().TransactionGetRangeRequests-before < n {
+			if time.Now().After(deadline) {
+				return nil, fmt.Errorf("range reads started before the first wait = %d, want %d",
+					db.Metrics().TransactionGetRangeRequests-before, n)
+			}
+			time.Sleep(time.Millisecond)
 		}
 		for i, rr := range results {
 			it := rr.Iterator()
@@ -89,7 +96,7 @@ func TestGetRange_ConsumersShareFirstBatch(t *testing.T) {
 }
 
 // The rows of batch 1 are the write map as of GetRange (ReadYourWrites.actor.cpp:382), and a
-// never-consumed GetRange still conflicts: commit waits for it (:1359-1360, :1767).
+// GetRange that is never consumed is still issued and still conflicts (:1767, :388).
 func TestGetRange_IssueTimeViewAndUnconsumedConflict(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
@@ -127,7 +134,7 @@ func TestGetRange_IssueTimeViewAndUnconsumedConflict(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tr2.Cancel()
-	tr2.GetRange(fdb.KeyRange{Begin: k('1'), End: k('2')}, fdb.RangeOptions{}) // never consumed
+	tr2.GetRange(fdb.KeyRange{Begin: k('1'), End: k('2')}, fdb.RangeOptions{}) // issued, never consumed
 	if _, err := db.Transact(func(w fdb.WritableTransaction) (any, error) {
 		w.Set(k('1'), []byte("changed"))
 		return nil, nil
@@ -138,5 +145,58 @@ func TestGetRange_IssueTimeViewAndUnconsumedConflict(t *testing.T) {
 	var fe fdb.Error
 	if err := tr2.Commit().Get(); !errors.As(err, &fe) || fe.Code != 1020 {
 		t.Fatalf("commit = %v, want not_committed: the unconsumed read's conflict must count", err)
+	}
+}
+
+// GetRange's errors arrive in libfdb_c's order: 2210 (fdb_c.cpp:996-998), then cancelled, 2004
+// and 2012 (ReadYourWrites.actor.cpp:1740, :1749), on both consumption paths.
+func TestGetRange_ErrorOrder(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	code := func(err error) int {
+		var fe fdb.Error
+		if errors.As(err, &fe) {
+			return fe.Code
+		}
+		return 0
+	}
+	iterCode := func(rr fdb.RangeResult) int {
+		it := rr.Iterator()
+		it.Advance()
+		_, err := it.Get()
+		return code(err)
+	}
+	ok := fdb.KeyRange{Begin: fdb.Key("a"), End: fdb.Key("b")}
+	illegal := fdb.KeyRange{Begin: fdb.Key{0xff, 1}, End: fdb.Key{0xff, 2}}
+	tr, err := db.CreateTransaction()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name string
+		r    fdb.KeyRange
+		opts fdb.RangeOptions
+		want int
+	}{
+		{"limit<-1", ok, fdb.RangeOptions{Limit: -2}, 2012},
+		{"illegal key before limit", illegal, fdb.RangeOptions{Limit: -2}, 2004},
+		{"exact without limit", illegal, fdb.RangeOptions{Mode: fdb.StreamingModeExact}, 2210},
+	}
+	for _, c := range cases {
+		if got := code(func() error { _, err := tr.GetRange(c.r, c.opts).GetSliceWithError(); return err }()); got != c.want {
+			t.Errorf("%s: GetSliceWithError = %d, want %d", c.name, got, c.want)
+		}
+		if got := iterCode(tr.GetRange(c.r, c.opts)); got != c.want {
+			t.Errorf("%s: Iterator = %d, want %d", c.name, got, c.want)
+		}
+	}
+	tr.Cancel()
+	for _, c := range []struct {
+		opts fdb.RangeOptions
+		want int
+	}{{fdb.RangeOptions{Limit: -2}, 1025}, {fdb.RangeOptions{Mode: fdb.StreamingModeExact}, 2210}} {
+		if got := iterCode(tr.GetRange(illegal, c.opts)); got != c.want {
+			t.Errorf("cancelled, %+v: %d, want %d", c.opts, got, c.want)
+		}
 	}
 }

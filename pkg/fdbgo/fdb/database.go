@@ -335,6 +335,9 @@ func MustOpenDatabase(clusterFile string) Database {
 // Metrics returns the client's operational counters (client.Database.Metrics),
 // so a facade Database can be passed to fdbmetrics.Handler.
 func (db Database) Metrics() client.ClientMetricsSnapshot {
+	if db.d == nil || db.d.inner == nil {
+		return client.ClientMetricsSnapshot{}
+	}
 	return db.d.inner.Metrics()
 }
 
