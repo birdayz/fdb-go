@@ -103,6 +103,29 @@ class TransformedSerializerSteps extends ConformanceBase {
         }
     }
 
+    /**
+     * Builds a KeyStoreSerializationKeyManager over keyStore and reads its first key, returning the
+     * exception chain it fails with (each "SimpleClassName: message", outermost first), or an empty
+     * list when the key reads.
+     */
+    @ConformanceStep("keyStoreErrorJava")
+    public List<String> keyStoreErrorJava(String keyStore, String storePassword, String entryPassword, List<String> aliases) {
+        List<String> chain = new java.util.ArrayList<>();
+        try {
+            KeyStoreSerializationKeyManager.Builder km = KeyStoreSerializationKeyManager.newBuilder();
+            km.setKeyStoreFileName(keyStore);
+            km.setKeyStorePassword(storePassword);
+            km.setKeyEntryPassword(entryPassword);
+            km.setKeyEntryAliases(aliases);
+            km.build().getKey(0);
+        } catch (RuntimeException e) {
+            for (Throwable t = e; t != null; t = t.getCause()) {
+                chain.add(t.getClass().getSimpleName() + ": " + t.getMessage());
+            }
+        }
+        return chain;
+    }
+
     @ConformanceStep("saveOrderKeyStoreJava")
     public void saveOrderKeyStoreJava(String clusterFile, byte[] subspace, Order order, String tenantName, boolean compress,
                                       String keyStore, String password, List<String> aliases, String defaultAlias) {

@@ -100,8 +100,11 @@ const jceksSelfSuperclass = "cececece" + "00000002" + "00000001" +
 
 // jceksStore is a store of raw entries under storePassword's digest.
 func jceksStore(version int, storePassword string, entries ...string) []byte {
-	body := fmt.Sprintf("cececece%08x%08x", version, len(entries)) + strings.Join(entries, "")
-	data := jsHex(body)
+	return jceksSigned(jsHex(fmt.Sprintf("cececece%08x%08x", version, len(entries))+strings.Join(entries, "")), storePassword)
+}
+
+// jceksSigned is data followed by its digest under storePassword.
+func jceksSigned(data []byte, storePassword string) []byte {
 	h := sha1.New() //nolint:gosec // the JCEKS integrity digest is SHA-1
 	for _, c := range utf16.Encode([]rune(storePassword)) {
 		h.Write([]byte{byte(c >> 8), byte(c)})
@@ -160,7 +163,7 @@ func TestJCEKS_UnsealRefusals(t *testing.T) {
 	for _, c := range []struct {
 		name, sealed, want string
 	}{
-		{"not a SealedObject", jsHead + jsString("x"), "not a SealedObject"},
+		{"not a SealedObject", jsHead + jsString("x"), "Invalid secret key format"},
 		{"another seal", sealedKey(t, "PBEWithMD5AndDES", salt, 10, "kp", secretKeySpec("AES", key)), "sealed with"},
 		{"a 7-byte salt", sealedKey(t, jceksPBEAlgorithm, salt[:7], 10, "kp", nil), "bad PBEWithMD5AndTripleDES parameters"},
 		{"no iterations", sealedKey(t, jceksPBEAlgorithm, salt, 0, "kp", nil), "IterationCount must be a positive number"},
@@ -205,13 +208,19 @@ func TestJCEKS_StoreRefusals(t *testing.T) {
 		{"an unknown tag", jceksStore(2, "sp", jceksEntry(4, "6b", "")), "Unrecognized keystore entry"},
 		{"a cut digest", good[:len(good)-1], "truncated"},
 		{"a changed digest", append(good[:len(good)-1:len(good)-1], good[len(good)-1]^1), "Keystore was tampered with"},
-		{"a superclass naming its subclass", jsHex(jceksSelfSuperclass), "not a complete class descriptor"},
+		{"the self-superclass crasher", jsHex(jceksSelfSuperclass), "Invalid secret key format"},
+		{"a plain SealedObject", jceksStore(2, "sp", jceksEntry(3, "6b", jsHead+"73"+jsDesc("javax.crypto.SealedObject", "02", "70"))), "Invalid secret key format"},
+		{"not a SealedObject", jceksStore(2, "sp", jceksEntry(3, "6b", jsHead+jsString("x"))), "Invalid secret key format"},
 		{"a malformed alias", jceksStore(2, "sp", jceksEntry(3, "f09f9880", "")), "malformed input"},
 	} {
 		_, err := readJCEKSEntries(c.data, "sp")
 		if err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: %v, want %q", c.name, err, c.want)
 		}
+	}
+	// A negative entry count, a Java int, reads no entries (measured).
+	if entries, err := readJCEKSEntries(jceksSigned(jsHex("cececece00000002ffffffff"), "sp"), "sp"); err != nil || len(entries) != 0 {
+		t.Errorf("a negative count: %v, %v", entries, err)
 	}
 }
 
@@ -253,8 +262,9 @@ func TestJCEKS_ReadsAsTheJDK(t *testing.T) {
 	}
 }
 
-// FuzzReadJavaObject: any input is read or refused, promptly and without a
-// panic, an unbounded loop or an allocation beyond the input's size.
+// FuzzReadJavaObject: any input is read or refused without a panic. The
+// reader bounds every length by the input and class chains by
+// javaMaxClassDepth; this target checks that it returns, and stays in the input.
 func FuzzReadJavaObject(f *testing.F) {
 	f.Add(secretKeySpec("AES", fixtureKey(1, 16)))
 	f.Add(keyRep("java.security.KeyRep$Type", "SECRET", "RAW", fixtureKey(1, 24)))
@@ -270,9 +280,9 @@ func FuzzReadJavaObject(f *testing.F) {
 	})
 }
 
-// FuzzReadJCEKSEntries: any store is read or refused promptly. Reading
-// decrypts nothing (keys unseal when asked for), so no input reaches the PBE
-// iterations.
+// FuzzReadJCEKSEntries: any store is read or refused without a panic.
+// Reading decrypts nothing (keys unseal when asked for), so no input reaches
+// the PBE iterations.
 func FuzzReadJCEKSEntries(f *testing.F) {
 	f.Add(jsHex(jceksSelfSuperclass))
 	f.Add(jceksStore(2, "sp", jceksEntry(3, "6b", jsHead+"73"+jsDesc("A", "02", "70"))))

@@ -337,6 +337,7 @@ var _ = Describe("RFC-257 TransformedRecordSerializer records are read and writt
 			{"JCEKS", "JCEKS", password, password, false, [][]byte{jceksMagic, jceksPBE}, [][]byte{oidPBES2}, ""},
 			{"JCEKS, the empty password", "JCEKS", "", "", false, [][]byte{jceksMagic, jceksPBE}, nil, ""},
 			{"JCEKS, a key password apart from the store's", "JCEKS", "storepass", "entrypass", false, [][]byte{jceksMagic, jceksPBE}, nil, ""},
+			{"JCEKS, a store password beyond ASCII and the BMP", "JCEKS", "p\u00e4ssw\u00f6rd\U0001F600", "entrypass", false, [][]byte{jceksMagic, jceksPBE}, nil, ""},
 		} {
 			path := filepath.Join(dir, fmt.Sprintf("variant-%d", i))
 			Expect(writeKeyStore(path, v.storeType, v.storePassword, v.entryPassword, v.legacy)).To(Succeed(), v.name)
@@ -406,6 +407,30 @@ var _ = Describe("RFC-257 TransformedRecordSerializer records are read and writt
 		Expect(err).NotTo(HaveOccurred())
 		_, err = wrongKey.GetKey(0)
 		Expect(err).To(MatchError(ContainSubstring("cannot load key")), "a wrong key password")
+		var keyErr *recordlayer.RecordSerializationError
+		Expect(errors.As(err, &keyErr)).To(BeTrue(), "%v", err)
+		// Java's key manager fails the same two ways: its outermost exception
+		// and the one under it carry the messages Go reports.
+		javaChain := func(storePassword, entryPassword string) []string {
+			var chain []string
+			Expect(java.InvokeAs(ctx, "keyStoreErrorJava", map[string]any{
+				"keyStore": jceksStore, "storePassword": storePassword, "entryPassword": entryPassword, "aliases": aliases,
+			}, &chain)).To(Succeed())
+			GinkgoWriter.Printf("TSERKS Java's JCEKS refusal: %q\n", chain)
+			Expect(len(chain)).To(BeNumerically(">=", 2), "Java read the key")
+			return chain
+		}
+		chain := javaChain("wrong", "wrong")
+		Expect(chain[0]).To(HavePrefix("RecordCoreArgumentException: " + loadErr.Message))
+		Expect(chain[1]).To(Equal("IOException: " + loadErr.Cause.Error()))
+		chain = javaChain(password, "wrong")
+		Expect(chain[0]).To(HavePrefix("RecordSerializationException: " + keyErr.Message))
+		// The salt is random: a wrong password's last block pads correctly one
+		// time in 256, and the failure then comes from the bytes after it.
+		Expect(chain[1]).To(HavePrefix("UnrecoverableKeyException: "))
+		if strings.Contains(chain[1], "not properly padded") {
+			Expect(chain[1]).To(Equal("UnrecoverableKeyException: " + keyErr.Cause.Error()))
+		}
 
 		Expect(writeKeyStore(keyStore, "PKCS12", password, password, false)).To(Succeed())
 

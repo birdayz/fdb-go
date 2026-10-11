@@ -3930,8 +3930,11 @@ what Go writes, and in both a Java reader reads what Go writes:
   SecretKeySpec or a KeyRep. A wrong store password is Java's "Keystore was tampered with, or
   password was incorrect"; a key that does not unseal, or a private-key or certificate entry, is
   "cannot load key". Measured on JDK 21 and pinned by `jceks_test.go`, `jceks_refusal_test.go` and
-  the JVM spec: a version 1 store, a later entry of an alias replacing an earlier one, modified
-  UTF-8 aliases, more than 5000000 PBE iterations refused ("PBE iteration count too large"), a
+  the JVM spec: a version 1 store, a negative entry count (no entries), a later entry of an alias
+  replacing an earlier one, modified UTF-8 aliases, the key password "\x00" (one NUL byte, with no
+  retry under the empty password), a secret key entry other than a SealedObjectForKeyProtector
+  refused at load ("Invalid secret key format"; Java throws a ClassCastException for one that is
+  no SealedObject at all), more than 5000000 PBE iterations refused ("PBE iteration count too large"), a
   salt of equal halves (JDK 21 reverses the first; pyjks documents older JDKs reordering it
   otherwise), and the sealed key's classes limited to those `java.security`'s default
   `jceks.key.serialFilter` admits. Two differences remain: Go steps over private-key and

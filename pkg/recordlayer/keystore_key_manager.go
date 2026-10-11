@@ -241,7 +241,9 @@ func (m *KeyStoreSerializationKeyManager) GetRandom(int32) (io.Reader, error) { 
 // is not ASCII". Measured against the JVM for a key password and for a store
 // password (the JDK refuses to store either). The one-character password
 // "\x00" is accepted: PBEKey reads it as the empty password with no NUL
-// terminator (bmpPassword), which retryWithZero tries.
+// terminator (bmpPassword), which retryWithZero tries. A JCEKS key password
+// passes the same check; there "\x00" is one NUL byte, and the empty password
+// is not retried (measured).
 func checkPBEPassword(password string) error {
 	if password == "\x00" {
 		return nil

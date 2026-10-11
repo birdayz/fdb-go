@@ -1,5 +1,5 @@
 // Portions derived from pyjks (jks/jks.py, jks/sun_crypto.py),
-// Copyright (c) 2013 Kurt Rose; Jeroen De Ridder
+// Copyright (c) 2013 Kurt Rose
 // Licensed under the MIT License (see NOTICE); translated to Go and modified.
 
 package recordlayer
@@ -42,6 +42,12 @@ const (
 	jceksMaxIterations = 5000000
 )
 
+// jceksSealedClass is the class a secret key entry holds, and
+// jceksSealedClasses the classes its serialized form names.
+const jceksSealedClass = "com.sun.crypto.provider.SealedObjectForKeyProtector"
+
+var jceksSealedClasses = map[string]bool{jceksSealedClass: true, "javax.crypto.SealedObject": true}
+
 // jceksKeyClasses are the classes JDK 21 deserializes a sealed key as: its
 // java.security's default jceks.key.serialFilter admits these and rejects all
 // others (byte[] is a primitive array, which the filter admits).
@@ -65,7 +71,8 @@ func readJCEKSEntries(data []byte, storePassword string) (map[string]keyStoreEnt
 	if version != 1 && version != 2 {
 		return nil, errors.New("Invalid keystore format")
 	}
-	count := int(binary.BigEndian.Uint32(head[8:]))
+	// A Java int: a negative count reads no entries (measured).
+	count := int(int32(binary.BigEndian.Uint32(head[8:]))) //nolint:gosec // a Java int
 	entries := map[string]keyStoreEntry{}
 	for range count {
 		tag, err := r.i32()
@@ -93,9 +100,12 @@ func readJCEKSEntries(data []byte, storePassword string) (map[string]keyStoreEnt
 			}
 			entries[alias] = notASecretKey("a trusted certificate entry")
 		case jceksTagSecretKey:
-			sealed, n, err := readJavaObject(data[r.pos:], nil)
-			if err != nil {
-				return nil, err
+			// JDK 21 loads only a SealedObjectForKeyProtector here: a plain
+			// SealedObject fails the load as "Invalid secret key format", and
+			// another object a cast (measured); Go refuses both as the first.
+			sealed, n, err := readJavaObject(data[r.pos:], func(name string) bool { return jceksSealedClasses[name] })
+			if obj, ok := sealed.(*javaObject); err != nil || !ok || obj.class.name != jceksSealedClass {
+				return nil, errors.New("Invalid secret key format")
 			}
 			r.pos += n
 			entries[alias] = func(password string) (secretKey, error) { return unsealJCEKSKey(sealed, password) }
@@ -174,8 +184,8 @@ func notASecretKey(kind string) keyStoreEntry {
 // other class when it deserializes the key (its jceks.key.serialFilter).
 func unsealJCEKSKey(sealed any, password string) (secretKey, error) {
 	obj, ok := sealed.(*javaObject)
-	if !ok || !obj.class.isA("javax.crypto.SealedObject") {
-		return secretKey{}, errors.New("a secret key entry is not a SealedObject")
+	if !ok || obj.class.name != jceksSealedClass {
+		return secretKey{}, errors.New("Invalid secret key format")
 	}
 	sealAlg, _ := obj.fields["sealAlg"].(string)
 	paramsAlg, _ := obj.fields["paramsAlg"].(string)
@@ -184,7 +194,7 @@ func unsealJCEKSKey(sealed any, password string) (secretKey, error) {
 	if sealAlg != jceksPBEAlgorithm || paramsAlg != jceksPBEAlgorithm || len(params) == 0 {
 		return secretKey{}, fmt.Errorf("a secret key sealed with %q", sealAlg)
 	}
-	if err := checkJCEKSPassword(password); err != nil {
+	if err := checkPBEPassword(password); err != nil {
 		return secretKey{}, err
 	}
 	var pbe struct {
@@ -220,7 +230,7 @@ func unsealJCEKSKey(sealed any, password string) (secretKey, error) {
 		if !ok || alg == "" {
 			return secretKey{}, errors.New("a malformed SecretKeySpec")
 		}
-		return secretKey{bytes: bytes.Clone(b), algorithm: alg}, nil
+		return secretKey{bytes: b, algorithm: alg}, nil // the parser's own copy
 	case "java.security.KeyRep":
 		alg, _ := k.fields["algorithm"].(string)
 		format, _ := k.fields["format"].(string)
@@ -229,21 +239,9 @@ func unsealJCEKSKey(sealed any, password string) (secretKey, error) {
 		if !ok || alg == "" || typ.class == nil || typ.class.name != "java.security.KeyRep$Type" || typ.constant != "SECRET" || format != "RAW" {
 			return secretKey{}, fmt.Errorf("a KeyRep of type %q, format %q, not a raw secret key", typ.constant, format)
 		}
-		return secretKey{bytes: bytes.Clone(b), algorithm: alg}, nil
+		return secretKey{bytes: b, algorithm: alg}, nil // the parser's own copy
 	}
 	return secretKey{}, fmt.Errorf("a sealed %s, not a secret key", k.class.name)
-}
-
-// checkJCEKSPassword is the PBEKey check a key password passes through: a
-// character outside printable ASCII is "Password is not ASCII" (measured on
-// JDK 21). Unlike PKCS12's, a JCEKS key may have the empty password.
-func checkJCEKSPassword(password string) error {
-	for _, c := range password {
-		if c < 0x20 || c > 0x7e {
-			return errors.New("Password is not ASCII")
-		}
-	}
-	return nil
 }
 
 // pbeWithMD5AndTripleDESDecrypt is SunJCE's PBEWithMD5AndTripleDES: PKCS #5

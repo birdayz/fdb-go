@@ -1,5 +1,5 @@
 // Portions derived from pyjks (jks/jks.py, jks/sun_crypto.py),
-// Copyright (c) 2013 Kurt Rose; Jeroen De Ridder
+// Copyright (c) 2013 Kurt Rose
 // Licensed under the MIT License (see NOTICE); translated to Go and modified.
 
 package keystoretest

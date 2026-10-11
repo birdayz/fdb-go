@@ -49,6 +49,34 @@ func TestJCEKS_UnsealsWhatTheJDKSealed(t *testing.T) {
 	}
 }
 
+// TestJCEKS_UnsealsUnderNUL: a key JDK 21 sealed (KeyStore.setEntry, JCEKS)
+// under the key password "\x00", which its PBEKey admits as one NUL byte: it
+// unseals under "\x00" and not under the empty password.
+func TestJCEKS_UnsealsUnderNUL(t *testing.T) {
+	t.Parallel()
+	outer, _ := hex.DecodeString(
+		"aced000573720033636f6d2e73756e2e63727970746f2e70726f76696465722e5365616c65644f626a656374466f724b" +
+			"657950726f746563746f72cd57ca59e730bb53020000787200196a617661782e63727970746f2e5365616c65644f626a" +
+			"6563743e363da6c3b754700200045b000d656e636f646564506172616d737400025b425b0010656e6372797074656443" +
+			"6f6e74656e7471007e00024c0009706172616d73416c677400124c6a6176612f6c616e672f537472696e673b4c000773" +
+			"65616c416c6771007e00037870757200025b42acf317f8060854e0020000787000000011300f04083904db1a410b506e" +
+			"0203030d407571007e0005000000908362cd87a39e67692679f3354d2442e5dc6fa7420bf4e4da3be37c52d366038f7a" +
+			"53fb72ba01905f4294de116a2120e496db03ec8f69953e02d7bd301ae2459faec043cd97617212aef14ba848f82528e0" +
+			"03600190fcf3aebe54e475bb6e5e06f788997d6ed26f67b77017a652ce2ab2f26db87348d7e76d3628f5c71b53a0fc0b" +
+			"31d4ec98ce8a484b7d966965fed497740016504245576974684d4435416e64547269706c654445537400165042455769" +
+			"74684d4435416e64547269706c65444553")
+	sealed, _, err := readJavaObject(outer, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if k, err := unsealJCEKSKey(sealed, "\x00"); err != nil || hex.EncodeToString(k.bytes) != "000102030405060708090a0b0c0d0e0f" {
+		t.Errorf("under \\x00: %x, %v", k.bytes, err)
+	}
+	if _, err := unsealJCEKSKey(sealed, ""); err == nil {
+		t.Error("the empty password unsealed a key sealed under \\x00")
+	}
+}
+
 // TestJCEKS_PBEMatchesTheJDK: JDK 21's PBEWithMD5AndTripleDES Cipher (key
 // password "entry-pass", 1000 iterations) over the 17 bytes 00..10, under a
 // salt of two equal halves, which the JDK reverses the first of, and one of
