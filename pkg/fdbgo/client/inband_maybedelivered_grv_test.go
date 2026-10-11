@@ -36,7 +36,6 @@ import (
 //     other alternative to observe, so what is pinned is that the request
 //     survives and the address is untouched -- not that a second proxy was
 //     tried.
-//   - kickTopology, which neither arm calls.
 func TestInBandMaybeDeliveredLeavesGRVProxyUntouched(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)

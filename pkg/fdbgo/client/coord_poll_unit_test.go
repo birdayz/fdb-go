@@ -7,7 +7,6 @@ import (
 	"net"
 	"slices"
 	"testing"
-	"time"
 
 	"fdb.dev/pkg/fdbgo/transport"
 	"fdb.dev/pkg/fdbgo/wire"
@@ -21,7 +20,11 @@ func TestBuildOpenDatabaseCoordRequest_CarriesCoordinatorsAndKnownID(t *testing.
 		t.Fatal(err)
 	}
 	known := transport.UID{First: 0x1122334455667788, Second: 0x99aabbccddeeff00}
-	r, err := wire.NewReader(buildOpenDatabaseCoordRequest(cf, known, transport.UID{First: 7, Second: 8}))
+	body, err := buildOpenDatabaseCoordRequest(cf, false, known, transport.UID{First: 7, Second: 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := wire.NewReader(body)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,18 +70,44 @@ func TestParseCoordinatorResponse_ReadsClientInfoID(t *testing.T) {
 	}
 }
 
-func TestCoordinatorAddresses_TLSFlag(t *testing.T) {
+// The TLS flag follows the transport the client dials: WithTLSConfig dials TLS
+// for a plain cluster string, and the coordinators must be advertised as TLS.
+func TestCoordinatorAddresses_TLSFollowsTransport(t *testing.T) {
 	t.Parallel()
-	cf, err := ParseClusterString("desc:abc@10.1.2.3:4500:tls,coord.example:4502:tls")
+	cf, err := ParseClusterString("desc:abc@10.1.2.3:4500,coord.example:4502")
 	if err != nil {
 		t.Fatal(err)
 	}
-	coords, hostnames := coordinatorAddresses(cf)
-	if len(coords) != 1 || coords[0].Flags != types.FlagTLS {
-		t.Errorf("coords = %+v, want one FLAG_TLS address", coords)
+	for _, useTLS := range []bool{false, true} {
+		coords, hostnames, err := coordinatorAddresses(cf, useTLS)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := uint16(0)
+		if useTLS {
+			want = types.FlagTLS
+		}
+		if len(coords) != 1 || coords[0].Flags != want {
+			t.Errorf("tls=%t: coords = %+v, want flags %d", useTLS, coords, want)
+		}
+		if len(hostnames) != 1 || hostnames[0].IsTLS != useTLS {
+			t.Errorf("tls=%t: hostnames = %+v", useTLS, hostnames)
+		}
 	}
-	if len(hostnames) != 1 || !hostnames[0].IsTLS {
-		t.Errorf("hostnames = %+v, want one TLS hostname", hostnames)
+}
+
+// A coordinator that cannot be encoded fails the request rather than being
+// dropped, and an empty list is never sent.
+func TestCoordinatorAddresses_NeverDropsOrSendsEmpty(t *testing.T) {
+	t.Parallel()
+	for _, cf := range []*ClusterFile{
+		{Description: "d", ID: "i"},
+		{Description: "d", ID: "i", Coordinators: []string{"10.1.2.3:4500", "10.1.2.3"}},
+		{Description: "d", ID: "i", Coordinators: []string{"10.1.2.3:70000"}},
+	} {
+		if coords, hostnames, err := coordinatorAddresses(cf, false); err == nil {
+			t.Errorf("%v encoded as %+v %+v, want an error", cf.Coordinators, coords, hostnames)
+		}
 	}
 }
 
@@ -93,12 +122,13 @@ type scriptedPoll struct {
 	cancel context.CancelFunc
 	script []func(addr string) (*DBInfo, error)
 	calls  []pollCall
-	at     []time.Time
+	pauses []int // len(calls) at each reconnection pause
 }
+
+func (p *scriptedPoll) pause() { p.pauses = append(p.pauses, len(p.calls)) }
 
 func (p *scriptedPoll) poll(_ context.Context, _ *ClusterFile, addr string, known transport.UID) (*DBInfo, error) {
 	p.calls = append(p.calls, pollCall{addr, known})
-	p.at = append(p.at, time.Now())
 	if len(p.script) == 0 {
 		p.cancel()
 		return nil, context.Canceled
@@ -138,7 +168,7 @@ func TestMonitorProxies_LongPollsSameCoordinatorWithLatestID(t *testing.T) {
 		func(string) (*DBInfo, error) { return proxyInfo(3, "10.0.0.8:4500"), nil },
 	}}
 	known := transport.UID{First: 99}
-	db.monitorProxiesOneGeneration(p.poll, time.Hour, &known)
+	db.monitorProxiesOneGeneration(p.poll, p.pause, "", &known)
 
 	wantKnown := []uint64{99, 1, 2, 2, 3}
 	if len(p.calls) != len(wantKnown) {
@@ -155,6 +185,9 @@ func TestMonitorProxies_LongPollsSameCoordinatorWithLatestID(t *testing.T) {
 	if got := db.dbInfo.Load(); got == nil || got.GRVProxies[0].Address != "10.0.0.8:4500" {
 		t.Errorf("installed proxies = %+v, want the latest reply's", got)
 	}
+	if len(p.pauses) != 0 {
+		t.Errorf("paused after polls %v; a reply or an expired poll never pauses", p.pauses)
+	}
 }
 
 // A failure moves to the next coordinator; only a sweep in which every
@@ -168,9 +201,8 @@ func TestMonitorProxies_FailureRotatesAndPausesAfterFullSweep(t *testing.T) {
 		fail, fail, fail, fail,
 		func(string) (*DBInfo, error) { return proxyInfo(1, "10.0.0.9:4500"), nil },
 	}}
-	const delay = 50 * time.Millisecond
 	var known transport.UID
-	db.monitorProxiesOneGeneration(p.poll, delay, &known)
+	db.monitorProxiesOneGeneration(p.poll, p.pause, "", &known)
 
 	if len(p.calls) != 6 {
 		t.Fatalf("polls = %+v, want 6", p.calls)
@@ -183,13 +215,8 @@ func TestMonitorProxies_FailureRotatesAndPausesAfterFullSweep(t *testing.T) {
 	if p.calls[3].addr != p.calls[0].addr {
 		t.Errorf("after the sweep the poll went to %s, want %s again", p.calls[3].addr, p.calls[0].addr)
 	}
-	for i := 1; i < 3; i++ {
-		if gap := p.at[i].Sub(p.at[i-1]); gap >= delay {
-			t.Errorf("poll %d waited %v inside a sweep", i, gap)
-		}
-	}
-	if gap := p.at[3].Sub(p.at[2]); gap < delay {
-		t.Errorf("full failed sweep paused %v, want >= %v", gap, delay)
+	if !slices.Equal(p.pauses, []int{3}) {
+		t.Errorf("paused after polls %v, want once, after the third", p.pauses)
 	}
 	if p.calls[5].addr != p.calls[4].addr || p.calls[5].known.First != 1 {
 		t.Errorf("after success poll = %+v, want same coordinator with known 1", p.calls[5])
@@ -204,7 +231,7 @@ func TestMonitorProxies_ForwardEndsGeneration(t *testing.T) {
 		func(string) (*DBInfo, error) { return &DBInfo{Forward: "d:j@10.0.0.5:4500"}, nil },
 	}}
 	var known transport.UID
-	db.monitorProxiesOneGeneration(p.poll, time.Hour, &known)
+	db.monitorProxiesOneGeneration(p.poll, p.pause, "", &known)
 
 	if len(p.calls) != 1 {
 		t.Fatalf("polls = %+v, want the generation to end after the forward", p.calls)
@@ -214,5 +241,54 @@ func TestMonitorProxies_ForwardEndsGeneration(t *testing.T) {
 	}
 	if !db.clusterSwitchPending.Load() {
 		t.Error("forward must mark the coordinator set adopted")
+	}
+}
+
+// A reply without an id is a failure: echoing a zero id back would make every
+// poll return at once.
+func TestMonitorProxies_ZeroIDReplyIsAFailure(t *testing.T) {
+	t.Parallel()
+	db := newPollTestDB(t, "10.0.0.1:4500")
+	p := &scriptedPoll{t: t, cancel: db.cancel, script: []func(string) (*DBInfo, error){
+		func(string) (*DBInfo, error) { return proxyInfo(0, "10.0.0.9:4500"), nil },
+	}}
+	known := transport.UID{First: 5}
+	db.monitorProxiesOneGeneration(p.poll, p.pause, "", &known)
+
+	if got := db.dbInfo.Load(); got != nil {
+		t.Errorf("installed %+v from a reply without an id", got)
+	}
+	// The script's end fails the second poll too, hence a second pause.
+	if !slices.Equal(p.pauses, []int{1, 2}) || known.First != 5 {
+		t.Errorf("pauses %v, known %d; want a failed sweep and the old id", p.pauses, known.First)
+	}
+}
+
+// A port past 65535 is rejected, never truncated or dropped from the request.
+func TestParseClusterString_RejectsPortOutOfRange(t *testing.T) {
+	t.Parallel()
+	if _, err := ParseClusterString("d:i@10.1.2.3:65536"); err == nil {
+		t.Error("port 65536 accepted")
+	}
+	cf, err := ParseClusterString("d:i@10.1.2.3:65535")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if coords, _, err := coordinatorAddresses(cf, false); err != nil || len(coords) != 1 || coords[0].Port != 65535 {
+		t.Errorf("coordinators = %+v, want port 65535", coords)
+	}
+}
+
+// The first poll goes to the coordinator bootstrap heard from.
+func TestMonitorProxies_FirstPollGoesToBootstrapCoordinator(t *testing.T) {
+	t.Parallel()
+	for _, first := range []string{"10.0.0.1:4500", "10.0.0.2:4500", "10.0.0.3:4500"} {
+		db := newPollTestDB(t, "10.0.0.1:4500", "10.0.0.2:4500", "10.0.0.3:4500")
+		p := &scriptedPoll{t: t, cancel: db.cancel}
+		var known transport.UID
+		db.monitorProxiesOneGeneration(p.poll, p.pause, first, &known)
+		if p.calls[0].addr != first {
+			t.Errorf("first poll went to %s, want %s", p.calls[0].addr, first)
+		}
 	}
 }

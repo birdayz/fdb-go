@@ -448,7 +448,6 @@ func newTestDatabaseStub() *Database {
 	db := &database{
 		connRecord:     newConnRecord(&ClusterFile{Coordinators: []string{"127.0.0.1:4500"}}, "", nil),
 		connPool:       make(map[string]*transport.Conn),
-		topologyKick:   make(chan struct{}, 1),
 		proxiesChanged: make(chan struct{}),
 		connected:      make(chan struct{}),
 		ctx:            ctx,

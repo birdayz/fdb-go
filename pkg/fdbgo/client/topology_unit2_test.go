@@ -10,57 +10,6 @@ import (
 )
 
 // ============================================================================
-// kickTopology — non-blocking signal channel.
-// ============================================================================
-
-func TestKickTopology_FirstSendSucceeds(t *testing.T) {
-	t.Parallel()
-	db := &database{topologyKick: make(chan struct{}, 1)}
-	db.kickTopology()
-	select {
-	case <-db.topologyKick:
-		// ok
-	default:
-		t.Error("first kick must enqueue a signal")
-	}
-}
-
-func TestKickTopology_DropsWhenFull(t *testing.T) {
-	t.Parallel()
-	db := &database{topologyKick: make(chan struct{}, 1)}
-	db.kickTopology() // fills the buffer (cap=1)
-
-	// Second kick must NOT block — channel is full and the select has a
-	// default arm. Test by running it under a strict deadline.
-	done := make(chan struct{})
-	go func() {
-		db.kickTopology()
-		close(done)
-	}()
-	select {
-	case <-done:
-		// ok — returned within deadline
-	case <-time.After(100 * time.Millisecond):
-		t.Fatal("kickTopology blocked when buffer was full — non-blocking contract violated")
-	}
-
-	// Buffer still has exactly one signal (first one wasn't dropped, second
-	// kick was dropped silently).
-	select {
-	case <-db.topologyKick:
-		// ok — first signal still there
-	default:
-		t.Error("first signal disappeared")
-	}
-	select {
-	case <-db.topologyKick:
-		t.Error("second kick should have been dropped, but a signal arrived")
-	default:
-		// ok — buffer drained
-	}
-}
-
-// ============================================================================
 // installProxySet — apply + broadcast contract.
 // ============================================================================
 
@@ -193,7 +142,6 @@ func TestTopologyMonitor_ShutsDownOnCtxDone(t *testing.T) {
 	db := &database{
 		ctx:            ctx,
 		cancel:         cancel,
-		topologyKick:   make(chan struct{}, 1),
 		proxiesChanged: make(chan struct{}),
 		failMon:        newFailureMonitor(),
 		connPool:       make(map[string]*transport.Conn),
@@ -218,48 +166,6 @@ func TestTopologyMonitor_ShutsDownOnCtxDone(t *testing.T) {
 		t.Fatal("topologyMonitor did not shut down within 2s of ctx cancel")
 	}
 	db.wg.Wait()
-}
-
-func TestTopologyMonitor_ConsumesKickWithoutBlocking(t *testing.T) {
-	t.Parallel()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	db := &database{
-		ctx:            ctx,
-		cancel:         cancel,
-		topologyKick:   make(chan struct{}, 1),
-		proxiesChanged: make(chan struct{}),
-		failMon:        newFailureMonitor(),
-		connPool:       make(map[string]*transport.Conn),
-		connRecord:     newConnRecord(&ClusterFile{Coordinators: nil}, "", nil), // nothing to poll
-	}
-	db.dbInfo.Store(&DBInfo{})
-
-	db.wg.Add(1)
-	go db.topologyMonitor()
-
-	// Pump several kicks. kickTopology is non-blocking by contract — verified
-	// in TestKickTopology_DropsWhenFull. What this test pins is that the
-	// monitor goroutine doesn't deadlock on a kick and shuts down cleanly
-	// when ctx is cancelled (i.e., the kick handling doesn't get stuck in a
-	// state that would block the ctx.Done() select arm).
-	for i := 0; i < 5; i++ {
-		db.kickTopology()
-	}
-
-	cancel()
-	exitDone := make(chan struct{})
-	go func() {
-		db.wg.Wait()
-		close(exitDone)
-	}()
-	select {
-	case <-exitDone:
-		// ok — wg.Wait completing implies topologyMonitor reached its
-		// ctx.Done() arm despite the buffered kick.
-	case <-time.After(2 * time.Second):
-		t.Fatal("topologyMonitor failed to exit after kick burst + ctx cancel")
-	}
 }
 
 // ============================================================================

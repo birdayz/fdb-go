@@ -41,10 +41,13 @@ func (db *database) topologyMonitor() {
 	if cur := db.dbInfo.Load(); cur != nil {
 		known = cur.ID
 	}
+	first := db.bootstrapCoordinator
 	for db.ctx.Err() == nil {
-		if pb.run(func() { db.monitorProxiesOneGeneration(db.pollCoordinator, coordinatorReconnectionDelay, &known) }) {
-			db.sleep(coordinatorReconnectionDelay)
+		pause := func() { db.sleep(coordinatorReconnectionDelay) }
+		if pb.run(func() { db.monitorProxiesOneGeneration(db.pollCoordinator, pause, first, &known) }) {
+			pause()
 		}
+		first = ""
 	}
 }
 
@@ -52,15 +55,20 @@ func (db *database) topologyMonitor() {
 // (MonitorLeader.actor.cpp:840-982). It polls one coordinator at a time with the
 // id of the last ClientDBInfo received, so the coordinator answers only when the
 // info changes; a failure moves to the next coordinator, and a sweep in which all
-// failed pauses reconnectDelay. It returns when the coordinator set changes.
-func (db *database) monitorProxiesOneGeneration(poll coordPollFunc, reconnectDelay time.Duration, known *transport.UID) {
+// failed calls pause. It returns when the coordinator set changes. first, when in
+// the set, is polled first: C++ keeps polling the coordinator that last answered
+// (:966-967), and bootstrap is that answer here.
+func (db *database) monitorProxiesOneGeneration(poll coordPollFunc, pause func(), first string, known *transport.UID) {
 	snap := db.connRecord.get()
 	if snap == nil || len(snap.Coordinators) == 0 {
-		db.sleep(reconnectDelay)
+		pause()
 		return
 	}
 	addrs := slices.Clone(snap.Coordinators)
 	rand.Shuffle(len(addrs), func(i, j int) { addrs[i], addrs[j] = addrs[j], addrs[i] })
+	if i := slices.Index(addrs, first); i > 0 {
+		addrs[0], addrs[i] = addrs[i], addrs[0]
+	}
 	index, successIndex := 0, 0
 	allConnectionsFailed := false
 	for db.ctx.Err() == nil {
@@ -82,12 +90,16 @@ func (db *database) monitorProxiesOneGeneration(poll coordPollFunc, reconnectDel
 			}
 			err = errors.New("coordinator forward could not be followed")
 		}
+		if err == nil && info.ID == (transport.UID{}) {
+			// The id is echoed as knownClientInfoID; zero would never long-poll.
+			err = errors.New("coordinator reply without a ClientDBInfo id")
+		}
 		if err != nil {
 			// :969-980: next coordinator; pause once the sweep wraps around.
 			index = (index + 1) % len(addrs)
 			if index == successIndex {
 				allConnectionsFailed = true
-				db.sleep(reconnectDelay)
+				pause()
 			}
 			continue
 		}
@@ -128,15 +140,6 @@ func (db *database) sleep(d time.Duration) {
 	select {
 	case <-t.C:
 	case <-db.ctx.Done():
-	}
-}
-
-// kickTopology records that a proxy RPC failed. Non-blocking. The monitor learns
-// of new proxies from its long poll, as C++ does, so nothing waits on this.
-func (db *database) kickTopology() {
-	select {
-	case db.topologyKick <- struct{}{}:
-	default:
 	}
 }
 

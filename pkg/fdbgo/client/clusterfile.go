@@ -37,8 +37,8 @@ func isHostnameToken(s string) bool {
 // already stripped) is a valid IP NetworkAddress. This is a deliberate one-way
 // SAFE tightening over C++'s NetworkAddress::parse (RFC-111 §8): C++'s
 // sscanf/std::stoi accept-and-truncate out-of-range octets and trailing-junk ports
-// (999.999.999.999 → 234.234.234.231); net.ParseIP + an all-digits port reject
-// them. Go-accept is a strict subset of C++-accept, so the persist path can never
+// (999.999.999.999 → 234.234.234.231) and ports past 65535 (truncated into the
+// uint16 port); net.ParseIP + a uint16 all-digits port reject them. Go-accept is a strict subset of C++-accept, so the persist path can never
 // write a token C++ can't parse; the over-rejections are unreachable because real
 // forward/file strings are always toString()-normalized (octets 0-255).
 func isNetworkAddressToken(s string) bool {
@@ -46,10 +46,11 @@ func isNetworkAddressToken(s string) bool {
 	if err != nil {
 		return false
 	}
-	if net.ParseIP(host) == nil {
+	if net.ParseIP(host) == nil || !allDigits(port) {
 		return false
 	}
-	return allDigits(port)
+	_, err = strconv.ParseUint(port, 10, 16)
+	return err == nil
 }
 
 // validClusterKeyPart ports C++ ClusterConnectionString::parseKey char validation

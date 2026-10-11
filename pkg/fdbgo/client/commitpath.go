@@ -72,7 +72,6 @@ func (input *commitInput) commitNative(ctx context.Context) (result commitOutcom
 		// context, and fails as maybe-delivered through the same fence. (Go used
 		// to fail at once with a Go-internal 1200, which a bounded retry owner
 		// counted as an attempt during a recovery libfdb_c waits through.)
-		input.db.kickTopology()
 		select {
 		case <-noProxyChanged:
 		case <-ctx.Done():
@@ -84,7 +83,6 @@ func (input *commitInput) commitNative(ctx context.Context) (result commitOutcom
 	conn, err := input.db.getOrDial(ctx, proxy.Address)
 	if err != nil {
 		input.db.handleDialError(ctx, proxy.Address)
-		input.db.kickTopology()
 		return result, input.unknownResult(ctx)
 	}
 
@@ -107,7 +105,6 @@ func (input *commitInput) commitNative(ctx context.Context) (result commitOutcom
 		// (The success-path Put below is safe: WriteFrame copied body before errCh fired.)
 		replyHandle.Cancel()
 		input.db.handleConnError(proxy.Address)
-		input.db.kickTopology()
 		return result, input.unknownResult(ctx)
 	}
 	// body is copied into WriteFrame's own buffer — safe to return to pool.
@@ -121,7 +118,6 @@ func (input *commitInput) commitNative(ctx context.Context) (result commitOutcom
 	}
 	if resp.Err != nil {
 		input.db.handleConnError(proxy.Address)
-		input.db.kickTopology()
 		return result, input.unknownResult(ctx)
 	}
 
@@ -145,7 +141,7 @@ func (input *commitInput) commitNative(ctx context.Context) (result commitOutcom
 	// rather than raising 1030 and mapping later; that is what the four
 	// transport arms above already do, so this arm now agrees with its siblings.
 	if dispositionForReplyError(commitErr, true) == replyConvertToMaybeDelivered {
-		// Convert ONLY. No handleConnError and no kickTopology, deliberately,
+		// Convert ONLY. No handleConnError, deliberately,
 		// and deliberately unlike the four transport arms above: those fire when
 		// the connection genuinely died, whereas here a well-formed reply just
 		// arrived on a healthy connection and it is the PROXY that is going
