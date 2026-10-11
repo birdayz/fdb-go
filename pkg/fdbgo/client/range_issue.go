@@ -20,7 +20,8 @@ type rangeRead struct {
 	limit, byteTarget int
 	reverse, snapshot bool
 	path              rangePath
-	ryw               *rywRangeRead
+	ryw               *rywRangeRead // points at rywRead on the RYW path
+	rywRead           rywRangeRead
 	finished          bool // answered by the synchronous checks; nothing to run
 	local             bool // answered from local state at issue; run needs no I/O
 	kvs               []KeyValue
@@ -72,7 +73,8 @@ func (tx *Transaction) issueRange(parent context.Context, begin, end []byte, lim
 		r.kvs, r.more, r.local, r.err = tx.ryw.localRange(begin, end, limit, byteTarget, reverse, false)
 	default:
 		r.path = rangePathRYW
-		r.ryw = tx.ryw.issueRange(begin, end, limit, byteTarget, reverse)
+		r.ryw = &r.rywRead
+		tx.ryw.issueRangeInto(r.ryw, begin, end, limit, byteTarget, reverse, !snapshot)
 		r.local = r.ryw.known
 	}
 	if !counted && !r.local {
@@ -210,11 +212,14 @@ func (r *rangeRead) addConflicts(kvs []KeyValue, more bool) {
 	if bytes.Compare(cBegin, cEnd) >= 0 {
 		return
 	}
-	if r.path == rangePathRYWDisabled || r.ryw.view == nil {
+	switch {
+	case r.path == rangePathRYWDisabled || !r.ryw.writesAtIssue:
 		tx.addReadConflict(cBegin, cEnd) // no local writes in range at issue: nothing to filter
-		return
+	case r.ryw.known:
+		tx.addReadConflicts(r.ryw.localConflicts) // the same extent, filtered at issue
+	default:
+		tx.addReadConflicts(r.ryw.conflictRanges(cBegin, cEnd))
 	}
-	tx.addReadConflicts(r.ryw.conflictRanges(cBegin, cEnd))
 }
 
 // complete leaves the commit barrier and releases the read's operation.

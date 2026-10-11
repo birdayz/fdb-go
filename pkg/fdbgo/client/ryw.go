@@ -650,19 +650,29 @@ type rywRangeRead struct {
 	more              bool
 	err               error
 	unreadableCap     []byte
-	view              *rywWriteSpan // write state of [begin, end) at issue; nil = none
+	writesAtIssue     bool          // local writes or clears in [begin, end) at issue
+	view              *rywWriteSpan // their state, captured for a read that must fetch
+	localConflicts    [][2][]byte   // a local answer's filtered read conflict, computed at issue
 }
 
-func (c *rywCache) issueRange(begin, end []byte, limit, byteTarget int, reverse bool) *rywRangeRead {
+// issueRangeInto answers the read from local state when it can, deciding its read conflict in the
+// same critical section; only a read that must fetch copies the write span it will merge against.
+func (c *rywCache) issueRangeInto(r *rywRangeRead, begin, end []byte, limit, byteTarget int, reverse, wantConflicts bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	r := &rywRangeRead{c: c, begin: begin, end: end, limit: limit, byteTarget: byteTarget, reverse: reverse}
-	if c.hasWritesInRangeLocked(begin, end) || c.hasClearsInRangeLocked(begin, end) {
-		r.view = c.captureWriteSpanLocked(begin, end)
-	}
+	*r = rywRangeRead{c: c, begin: begin, end: end, limit: limit, byteTarget: byteTarget, reverse: reverse}
+	r.writesAtIssue = c.hasWritesInRangeLocked(begin, end) || c.hasClearsInRangeLocked(begin, end)
 	if rows, more, known, err := c.localRangeLocked(begin, end, limit, byteTarget, reverse, true); known {
 		r.known, r.rows, r.more, r.err = true, rows, more, err
-		return r
+		if wantConflicts && err == nil && r.writesAtIssue {
+			if cb, ce := rangeConflictExtent(begin, end, rows, more, reverse); bytes.Compare(cb, ce) < 0 {
+				r.localConflicts = c.conflictRangesLocked(cb, ce)
+			}
+		}
+		return
+	}
+	if r.writesAtIssue {
+		r.view = c.captureWriteSpanLocked(begin, end)
 	}
 	// Unreadable reach cap (RFC-098): truncate the scan window at the first
 	// (forward) / last (reverse) unreadable position; iteration that would
@@ -674,7 +684,6 @@ func (c *rywCache) issueRange(begin, end []byte, limit, byteTarget int, reverse 
 	if r.view == nil {
 		r.known, r.rows, r.more, r.err = c.cachedRangeLocked(begin, end, limit, byteTarget, reverse, r.unreadableCap)
 	}
-	return r
 }
 
 // cachedRangeLocked answers a range with no local writes from the snapshot cache

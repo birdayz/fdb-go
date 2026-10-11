@@ -123,3 +123,52 @@ func BenchmarkGetRangeFacade(b *testing.B) {
 		})
 	})
 }
+
+// BenchmarkGetRangeWriteHeavy mirrors the R-tree's insert pattern: one transaction holding N
+// written keys (cleared node ranges refilled slot by slot) reads small node ranges back.
+func BenchmarkGetRangeWriteHeavy(b *testing.B) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	db, err := fdb.OpenDatabaseFromConfig(ctx, sharedClusterFile)
+	cancel()
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer db.Close()
+	const slots = 100 // keys per node
+	for _, setFirst := range []bool{false, true} {
+		for _, n := range []int{1000, 10000, 50000} {
+			b.Run(fmt.Sprintf("set-first=%v/writes=%d", setFirst, n), func(b *testing.B) {
+				tr, err := db.CreateTransaction()
+				if err != nil {
+					b.Fatal(err)
+				}
+				defer tr.Cancel()
+				node := func(i int) fdb.KeyRange {
+					p := fdb.Key(fmt.Sprintf("bench_write_heavy/%06d/", i))
+					return fdb.KeyRange{Begin: p, End: append(append(fdb.Key{}, p...), 0xff)}
+				}
+				nodes := n / slots
+				for i := 0; i < nodes; i++ {
+					r := node(i)
+					tr.ClearRange(r)
+					for s := 0; s < slots; s++ {
+						tr.Set(append(append(fdb.Key{}, r.Begin.(fdb.Key)...), fmt.Sprintf("%03d", s)...), []byte("slot"))
+					}
+				}
+				opts := fdb.RangeOptions{Mode: fdb.StreamingModeWantAll}
+				b.ReportAllocs()
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					r := node(i % nodes)
+					if setFirst { // an insert rewrites a slot, then re-reads its node
+						tr.Set(append(append(fdb.Key{}, r.Begin.(fdb.Key)...), "000"...), []byte("slot"))
+					}
+					kvs, err := tr.GetRange(r, opts).GetSliceWithError()
+					if err != nil || len(kvs) != slots {
+						b.Fatalf("node read = %d rows, %v", len(kvs), err)
+					}
+				}
+			})
+		}
+	}
+}
