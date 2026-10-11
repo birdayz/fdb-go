@@ -118,7 +118,8 @@ func (tx *Transaction) sendWaitMetrics(ctx context.Context, begin, end []byte, s
 			tx.db.handleDialError(ctx, server.Address)
 			continue
 		}
-		replyToken, replyCh, replyHandle := conn.PrepareReply()
+		wmToken := getAdjustedEndpoint(server.Token, EndpointWaitMetrics)
+		replyToken, replyCh, replyHandle := conn.PrepareReplyTo(wmToken)
 		req := types.WaitMetricsRequest{
 			Keys:       types.KeyRangeRef{Begin: begin, End: end},
 			Min:        types.StorageMetrics{Bytes: 0},
@@ -127,7 +128,6 @@ func (tx *Transaction) sendWaitMetrics(ctx context.Context, begin, end []byte, s
 			TenantInfo: types.TenantInfo{TenantId: tx.tenantId},
 			MinVersion: minVersion,
 		}
-		wmToken := getAdjustedEndpoint(server.Token, EndpointWaitMetrics)
 		if err := sendReadFrame(ctx, conn, wmToken, req.MarshalFDB(), replyHandle); err != nil {
 			replyHandle.Cancel()
 			replyHandle.Release()
@@ -272,14 +272,14 @@ func (tx *Transaction) sendSplitRange(ctx context.Context, begin, end []byte, ch
 			tx.db.handleDialError(ctx, server.Address)
 			continue
 		}
-		replyToken, replyCh, replyHandle := conn.PrepareReply()
+		srToken := getAdjustedEndpoint(server.Token, EndpointGetRangeSplitPoints)
+		replyToken, replyCh, replyHandle := conn.PrepareReplyTo(srToken)
 		req := types.SplitRangeRequest{
 			Keys:       types.KeyRangeRef{Begin: begin, End: end},
 			ChunkSize:  chunkSize,
 			Reply:      types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
 			TenantInfo: types.TenantInfo{TenantId: tx.tenantId},
 		}
-		srToken := getAdjustedEndpoint(server.Token, EndpointGetRangeSplitPoints)
 		if err := sendReadFrame(ctx, conn, srToken, req.MarshalFDB(), replyHandle); err != nil {
 			replyHandle.Cancel()
 			replyHandle.Release()

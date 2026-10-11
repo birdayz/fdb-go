@@ -126,6 +126,17 @@ go_test(
     deps = ["//pkg/fdbgo/wire"],
 )
 
+# gazelle:exclude endpoint_not_found_unit_test.go
+go_test(
+    name = "endpoint_not_found_unit_test",
+    srcs = ["endpoint_not_found_unit_test.go"],
+    embed = [":client"],
+    deps = [
+        "//pkg/fdbgo/transport",
+        "//pkg/fdbgo/wire",
+    ],
+)
+
 # gazelle:exclude pending_get_abort_unit_test.go
 go_test(
     name = "pending_get_abort_unit_test",
@@ -190,6 +201,7 @@ go_test(
         "ddsketch_test.go",
         "deferred_error_test.go",
         "dial_connmu_test.go",
+        "endpoint_not_found_fdb_test.go",
         "endpoint_test.go",
         "failure_monitor_test.go",
         "fault_test.go",

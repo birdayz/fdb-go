@@ -86,7 +86,7 @@ func (input *commitInput) commitNative(ctx context.Context) (result commitOutcom
 		return result, input.unknownResult(ctx)
 	}
 
-	replyToken, replyCh, replyHandle := conn.PrepareReply()
+	replyToken, replyCh, replyHandle := conn.PrepareReplyTo(proxy.Token)
 	defer replyHandle.Release()
 	body, poolBuf := buildCommitInputRequest(input, replyToken)
 
@@ -117,7 +117,9 @@ func (input *commitInput) commitNative(ctx context.Context) (result commitOutcom
 		return result, input.unknownResult(ctx)
 	}
 	if resp.Err != nil {
-		input.db.handleConnError(proxy.Address)
+		if !isEndpointNotFound(resp.Err) {
+			input.db.handleConnError(proxy.Address)
+		}
 		return result, input.unknownResult(ctx)
 	}
 
@@ -141,12 +143,14 @@ func (input *commitInput) commitNative(ctx context.Context) (result commitOutcom
 	// rather than raising 1030 and mapping later; that is what the four
 	// transport arms above already do, so this arm now agrees with its siblings.
 	if dispositionForReplyError(commitErr, true) == replyConvertToMaybeDelivered {
+		input.db.noteBrokenPromise(commitErr, proxy.Address, proxy.Token)
 		// Convert ONLY. No handleConnError, deliberately,
 		// and deliberately unlike the four transport arms above: those fire when
 		// the connection genuinely died, whereas here a well-formed reply just
 		// arrived on a healthy connection and it is the PROXY that is going
 		// away. C++ agrees -- basicLoadBalance's AtMostOnce::True arm throws
-		// and touches neither the failure monitor nor the connection. Closing
+		// and touches neither the address's failure state nor the connection
+		// (only the endpoint, genericactors.actor.h:397-402). Closing
 		// the pooled conn here would evict it for every user of that ADDRESS.
 		//
 		// This DOES newly route an in-band 1100 into commitDummyTransaction

@@ -3,6 +3,9 @@ package client
 import (
 	"math"
 	"sync"
+	"sync/atomic"
+
+	"fdb.dev/pkg/fdbgo/transport"
 )
 
 // failureMonitor tracks per-endpoint health state. When an endpoint
@@ -23,7 +26,21 @@ type failureMonitor struct {
 	mu        sync.Mutex
 	failed    map[string]*failEntry
 	recovered chan struct{}
+	// epFailed holds endpoints the server reported not found. They never
+	// recover (FailureMonitor.actor.cpp:228-230 permanentlyFailed).
+	epFailed map[endpointKey]struct{}
+	epCount  atomic.Int32 // len(epFailed); lets the read hot path skip the lock
 }
+
+// endpointKey is one request stream at one address, as C++ keys failedEndpoints.
+type endpointKey struct {
+	addr  string
+	token transport.UID
+}
+
+// maxFailedEndpoints is C++'s failedEndpoints cap; past it the set is cleared
+// (FailureMonitor.actor.cpp:131-134).
+const maxFailedEndpoints = 100000
 
 // failEntry is the per-endpoint failure state. Present in `failed` ⇔ isFailed.
 type failEntry struct {
@@ -144,4 +161,53 @@ func (fm *failureMonitor) excludedUntil(addr string) float64 {
 		return e.excludedUntil
 	}
 	return 0
+}
+
+// markEndpointNotFound records that addr no longer has the endpoint token
+// (SimpleFailureMonitor::endpointNotFound, FailureMonitor.actor.cpp:117-139).
+func (fm *failureMonitor) markEndpointNotFound(addr string, token transport.UID) {
+	fm.mu.Lock()
+	defer fm.mu.Unlock()
+	if fm.epFailed == nil || len(fm.epFailed) > maxFailedEndpoints {
+		fm.epFailed = make(map[endpointKey]struct{})
+	}
+	fm.epFailed[endpointKey{addr, token}] = struct{}{}
+	fm.epCount.Store(int32(len(fm.epFailed)))
+}
+
+// endpointFailed reports whether the endpoint was reported not found; C++
+// loadBalance skips such an alternative (LoadBalance.actor.h:499) and
+// tryGetReply fails it without sending (fdbrpc.h:800-806).
+func (fm *failureMonitor) endpointFailed(addr string, token transport.UID) bool {
+	if fm == nil || fm.epCount.Load() == 0 {
+		return false
+	}
+	fm.mu.Lock()
+	defer fm.mu.Unlock()
+	_, ok := fm.epFailed[endpointKey{addr, token}]
+	return ok
+}
+
+// liveServers drops replicas whose stream endpoint was reported not found.
+// ok is false when none remain: C++ loadBalance then fails with
+// all_alternatives_failed (LoadBalance.actor.h:617-634).
+func (fm *failureMonitor) liveServers(servers []ServerInfo, endpoint int) (live []ServerInfo, ok bool) {
+	if fm == nil || fm.epCount.Load() == 0 {
+		return servers, true
+	}
+	fm.mu.Lock()
+	defer fm.mu.Unlock()
+	for i, s := range servers {
+		if _, failed := fm.epFailed[endpointKey{s.Address, getAdjustedEndpoint(s.Token, endpoint)}]; failed {
+			if live == nil {
+				live = append(make([]ServerInfo, 0, len(servers)), servers[:i]...)
+			}
+		} else if live != nil {
+			live = append(live, s)
+		}
+	}
+	if live == nil {
+		return servers, true
+	}
+	return live, len(live) > 0
 }

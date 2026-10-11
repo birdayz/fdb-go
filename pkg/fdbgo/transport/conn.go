@@ -167,8 +167,12 @@ type Conn struct {
 
 	// Typed pending map avoids sync.Map's interface boxing (saves 3 allocs/RPC).
 	pendingMu sync.RWMutex
-	pending   map[UID]chan Response
+	pending   map[UID]pendingEntry
 	peerPkt   *ConnectPacket // peer's connect packet
+
+	// onEndpointNotFound observes every ENDPOINT_NOT_FOUND, waiter or not, as
+	// C++ marks the endpoint failed regardless (FlowTransport.actor.cpp:227-233).
+	onEndpointNotFound atomic.Pointer[func(UID)]
 
 	// Connection monitor: counts bytes received so connectionMonitor() can
 	// detect dead connections in ~2s (vs 10s TCP keepalive).
@@ -435,7 +439,7 @@ func dialWith(ctx context.Context, addr string, dialFn DialFunc, tlsConfig *tls.
 		useTLS:  tlsConfig != nil, // drives frame-checksum omission; not a TLS switch
 		wbuf:    bufio.NewWriterSize(netConn, 64*1024),
 		writeCh: make(chan writeReq, 256), // buffered for concurrent senders
-		pending: make(map[UID]chan Response, 16),
+		pending: make(map[UID]pendingEntry, 16),
 		ctx:     connCtx,
 		cancel:  cancel,
 		// C++ CONNECTION_MONITOR_LOOP_TIME / CONNECTION_MONITOR_TIMEOUT, both
@@ -518,7 +522,7 @@ func (c *Conn) sendInternal(destToken UID, body []byte) (replyToken UID, replyCh
 	replyToken = NewUID()
 	ch := getReplyChannel()
 	c.pendingMu.Lock()
-	c.pending[replyToken] = ch
+	c.pending[replyToken] = pendingEntry{ch: ch, dest: destToken}
 	c.pendingMu.Unlock()
 
 	if err = c.SendFrame(destToken, body); err != nil {
@@ -551,12 +555,18 @@ func (c *Conn) cancelPending(token UID, ch chan Response) {
 // Returns a ReplyHandle whose Cancel() removes the pending token. Call
 // handle.Release() when done to return it to the pool.
 func (c *Conn) PrepareReply() (UID, <-chan Response, *ReplyHandle) {
+	return c.PrepareReplyTo(UID{})
+}
+
+// PrepareReplyTo is PrepareReply for a request that will be sent to dest, so an
+// ENDPOINT_NOT_FOUND for dest fails this reply instead of leaving it to time out.
+func (c *Conn) PrepareReplyTo(dest UID) (UID, <-chan Response, *ReplyHandle) {
 	h := replyHandlePool.Get().(*ReplyHandle)
 	h.conn = c
 	h.token = NewUID()
 	h.ch = getReplyChannel()
 	c.pendingMu.Lock()
-	c.pending[h.token] = h.ch
+	c.pending[h.token] = pendingEntry{ch: h.ch, dest: dest}
 	c.pendingMu.Unlock()
 	return h.token, h.ch, h
 }
@@ -945,14 +955,18 @@ func (c *Conn) readLoop() {
 			c.handlePing(body)
 			continue
 		}
+		if token == endpointNotFoundToken {
+			c.handleEndpointNotFound(body)
+			continue
+		}
 
 		// Look up the pending request by reply token.
 		c.pendingMu.Lock()
-		ch, ok := c.pending[token]
+		entry, ok := c.pending[token]
 		if ok {
 			// The fresh size-one channel has one producer. Publish together
 			// with deletion so cancellation cannot fall into a delivery gap.
-			ch <- Response{Body: body, RecvAt: time.Now()}
+			entry.ch <- Response{Body: body, RecvAt: time.Now()}
 			delete(c.pending, token)
 		}
 		c.pendingMu.Unlock()
@@ -982,9 +996,9 @@ const readBufferSize = 16 << 10
 // in-flight deliver() actors.
 func (c *Conn) failAllPending(err error) {
 	c.pendingMu.Lock()
-	for token, ch := range c.pending {
+	for token, entry := range c.pending {
 		select {
-		case ch <- Response{Err: err}:
+		case entry.ch <- Response{Err: err}:
 		default:
 		}
 		delete(c.pending, token)

@@ -447,8 +447,16 @@ func (db *database) getCommitProxy() (*ProxyInfo, int64, error) {
 	if info == nil || len(info.CommitProxies) == 0 {
 		return nil, 0, fmt.Errorf("no commit proxies available")
 	}
-	idx := db.proxyRR.nextCommit(len(info.CommitProxies))
-	return &info.CommitProxies[idx], info.Epoch, nil
+	n := len(info.CommitProxies)
+	idx := db.proxyRR.nextCommit(n)
+	// basicLoadBalance skips permanently failed alternatives (LoadBalance.actor.h:790);
+	// with none left the commit waits for a proxy change, as for an empty set.
+	for i := 0; i < n; i++ {
+		if p := &info.CommitProxies[(idx+i)%n]; !db.failMon.endpointFailed(p.Address, p.Token) {
+			return p, info.Epoch, nil
+		}
+	}
+	return nil, 0, fmt.Errorf("no live commit proxies")
 }
 
 // getGRVProxies returns all GRV proxies from the current topology and the
@@ -604,6 +612,7 @@ func (db *database) dialAndPool(addr string, call *dialCall) {
 			call.err = db.ctx.Err()
 			_ = c.Close()
 		default:
+			c.SetEndpointNotFoundHandler(func(token transport.UID) { db.failMon.markEndpointNotFound(addr, token) })
 			db.connPool[addr] = c
 			call.conn = c
 			// Clear the failed state on a successful dial HERE — not in a caller (so a
