@@ -2,19 +2,35 @@ package client
 
 import (
 	"context"
+	"encoding/binary"
+	"errors"
 	"fmt"
+	"net"
+	"strconv"
+	"strings"
+	"time"
 
 	"fdb.dev/pkg/fdbgo/transport"
 	"fdb.dev/pkg/fdbgo/wire"
 	"fdb.dev/pkg/fdbgo/wire/types"
 )
 
-// openDatabaseCoord sends an OpenDatabaseCoordRequest to the coordinator
-// and returns the parsed ClientDBInfo with proxy addresses and tokens.
-func (db *database) openDatabaseCoord(ctx context.Context, conn *transport.Conn, snap *ClusterFile, addr string) (*DBInfo, error) {
+// errLongPollExpired reports a long poll the coordinator held past
+// coordinatorLongPollCeiling; the caller re-sends it rather than failing.
+var errLongPollExpired = errors.New("coordinator long poll expired")
+
+// openDatabaseCoord sends an OpenDatabaseCoordRequest and returns the parsed
+// ClientDBInfo. The coordinator holds the request while its info id equals
+// known (Coordination.actor.cpp:234-249), so a non-zero known is a long poll;
+// timeout bounds the wait.
+func (db *database) openDatabaseCoord(ctx context.Context, conn *transport.Conn, snap *ClusterFile, known transport.UID, timeout time.Duration) (*DBInfo, error) {
 	replyToken, replyCh, replyHandle := conn.PrepareReply()
 	defer replyHandle.Release()
-	body := buildOpenDatabaseCoordRequest(snap, replyToken)
+	body, err := buildOpenDatabaseCoordRequest(snap, db.tlsConfig != nil, known, replyToken)
+	if err != nil {
+		replyHandle.Cancel()
+		return nil, err
+	}
 
 	destToken := transport.WellKnownToken(transport.WLTokenClientLeaderRegOpenDatabase)
 	if err := sendReadFrame(ctx, conn, destToken, body, replyHandle); err != nil {
@@ -22,28 +38,87 @@ func (db *database) openDatabaseCoord(ctx context.Context, conn *transport.Conn,
 		return nil, fmt.Errorf("send OpenDatabaseCoordRequest: %w", err)
 	}
 
-	reqCtx, cancel := context.WithTimeout(ctx, CoordinatorTimeout)
-	defer cancel()
-
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 	select {
 	case resp := <-replyCh:
 		if resp.Err != nil {
 			return nil, fmt.Errorf("coordinator response: %w", resp.Err)
 		}
 		return parseCoordinatorResponse(resp.Body)
-	case <-reqCtx.Done():
+	case <-timer.C:
 		replyHandle.Cancel()
-		return nil, fmt.Errorf("coordinator request timed out: %w", reqCtx.Err())
+		if known != (transport.UID{}) {
+			return nil, errLongPollExpired
+		}
+		return nil, fmt.Errorf("coordinator request timed out: %w", context.DeadlineExceeded)
+	case <-ctx.Done():
+		replyHandle.Cancel()
+		return nil, fmt.Errorf("coordinator request: %w", ctx.Err())
 	}
 }
 
-func buildOpenDatabaseCoordRequest(cf *ClusterFile, replyToken transport.UID) []byte {
-	req := types.OpenDatabaseCoordRequest{
-		ClusterKey: []byte(cf.Description + ":" + cf.ID),
-		Reply:      types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
-		Internal:   true,
+// buildOpenDatabaseCoordRequest fills the fields C++ monitorProxiesOneGeneration
+// sets (MonitorLeader.actor.cpp:873-881). The coordinator seeds its leader
+// monitor from the first request's coordinators (Coordination.actor.cpp:331-333),
+// so they must be the full set. supportedVersions, traceLogGroup, issues and
+// internal only feed status reporting (Coordination.actor.cpp:228-231).
+func buildOpenDatabaseCoordRequest(cf *ClusterFile, useTLS bool, known transport.UID, replyToken transport.UID) ([]byte, error) {
+	coords, hostnames, err := coordinatorAddresses(cf, useTLS)
+	if err != nil {
+		return nil, err
 	}
-	return req.MarshalFDB()
+	req := types.CoordOpenDatabaseRequest{
+		KnownClientInfoID: wire.UIDFromParts(known.First, known.Second),
+		ClusterKey:        []byte(cf.Description + ":" + cf.ID),
+		Coordinators:      coords,
+		Reply:             types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
+		Hostnames:         hostnames,
+		Internal:          true,
+	}
+	return req.MarshalFDB(), nil
+}
+
+// coordinatorAddresses splits the coordinators into C++ ClusterConnectionString's
+// coords and hostnames, in order (MonitorLeader.actor.cpp:100-121). Addresses
+// parse as NetworkAddress::parse does (flow/network.cpp:151-187): public, and
+// IPv6 only when the address is (a bracketed IPv4 stays IPv4, :134-141). The TLS
+// flag follows the transport the client dials, which WithTLSConfig can force: a
+// coordinator compares it when matching its peers (FlowTransport.actor.cpp:1732).
+func coordinatorAddresses(cf *ClusterFile, useTLS bool) ([]types.NetworkAddress, []types.Hostname, error) {
+	var flags uint16
+	if useTLS {
+		flags = types.FlagTLS
+	}
+	var coords []types.NetworkAddress
+	var hostnames []types.Hostname
+	for _, addr := range cf.Coordinators {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, nil, fmt.Errorf("coordinator %q: %w", addr, err)
+		}
+		if isHostnameToken(addr) {
+			hostnames = append(hostnames, types.Hostname{Host: []byte(host), Service: []byte(port), IsTLS: useTLS})
+			continue
+		}
+		ip := net.ParseIP(host)
+		p, err := strconv.ParseUint(port, 10, 16)
+		if ip == nil || err != nil {
+			return nil, nil, fmt.Errorf("coordinator %q is neither a hostname nor an IP address", addr)
+		}
+		na := types.NetworkAddress{Port: uint16(p), Flags: flags}
+		if v4 := ip.To4(); v4 != nil && !strings.Contains(host, ":") {
+			na.Ip = types.IPAddress{AddrTag: 1, AddrAlt0: binary.BigEndian.Uint32(v4)}
+		} else {
+			na.Ip = types.IPAddress{AddrTag: 2, AddrAlt1: ip.To16()}
+		}
+		coords = append(coords, na)
+	}
+	if len(coords)+len(hostnames) == 0 {
+		// An empty list is what wedges a restarted coordinator; never send one.
+		return nil, nil, errors.New("no coordinators to send")
+	}
+	return coords, hostnames, nil
 }
 
 func parseCoordinatorResponse(data []byte) (*DBInfo, error) {
@@ -124,12 +199,11 @@ func parseClientDBInfoFromReader(r *wire.Reader) (*DBInfo, error) {
 		info.CommitProxies = append(info.CommitProxies, proxy)
 	}
 
-	idSlot := types.ClientDBInfoSlotId
-	if r.FieldPresent(idSlot) {
-		idR, err := r.ReadNestedReader(idSlot)
-		if err == nil {
-			info.ID = parseUID(idR)
-		}
+	// The id is an inline UID struct, not a nested table. The long poll sends it
+	// back as knownClientInfoID, so a zero id would make every poll return at once.
+	if r.FieldPresent(types.ClientDBInfoSlotId) {
+		first, second := r.ReadUIDPair(types.ClientDBInfoSlotId)
+		info.ID = transport.UID{First: first, Second: second}
 	}
 
 	// forward (Optional<Value>): when present, the coordinators handed back a new
@@ -160,9 +234,4 @@ func parseEndpointAsProxy(r *wire.Reader, slot int) (ProxyInfo, error) {
 		Address: endpointAddress(&ep),
 		Token:   endpointToken(&ep),
 	}, nil
-}
-
-func parseUID(r *wire.Reader) transport.UID {
-	first, second := r.ReadUIDPair(0)
-	return transport.UID{First: first, Second: second}
 }

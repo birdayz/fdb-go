@@ -489,7 +489,6 @@ func (lc *locationCache) queryLocations(db *database, ctx context.Context, tenan
 	for {
 		proxies := db.getCommitProxies()
 		if len(proxies) == 0 {
-			db.kickTopology()
 			if backoff == 0 {
 				backoff = loadBalanceStartBackoff
 			}
@@ -582,7 +581,6 @@ func (lc *locationCache) queryLocations(db *database, ctx context.Context, tenan
 			cycledAll = false
 		}
 
-		db.kickTopology()
 		if cycledAll {
 			if backoff == 0 {
 				backoff = loadBalanceStartBackoff

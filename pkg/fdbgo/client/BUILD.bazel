@@ -72,6 +72,18 @@ go_test(
     embed = [":client"],
 )
 
+# gazelle:exclude coord_poll_unit_test.go
+go_test(
+    name = "coord_poll_unit_test",
+    srcs = ["coord_poll_unit_test.go"],
+    embed = [":client"],
+    deps = [
+        "//pkg/fdbgo/transport",
+        "//pkg/fdbgo/wire",
+        "//pkg/fdbgo/wire/types",
+    ],
+)
+
 # gazelle:exclude commit_capture_borrow_unit_test.go
 # gazelle:exclude conflictbuf_unit_test.go
 go_test(

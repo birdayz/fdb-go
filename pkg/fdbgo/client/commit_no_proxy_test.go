@@ -49,11 +49,6 @@ func TestCommit_NoProxies_WaitsForContext(t *testing.T) {
 	if elapsed < wait {
 		t.Fatalf("commit with no proxies returned after %v; it must wait for a proxy change or the context (%v)", elapsed, wait)
 	}
-	select {
-	case <-db.topologyKick:
-	default:
-		t.Fatal("commit with no proxies did not ask for a topology refresh")
-	}
 }
 
 // TestCommit_NoProxies_WakesOnProxyChange pins the other arm of the race: a
@@ -65,12 +60,24 @@ func TestCommit_NoProxies_WakesOnProxyChange(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 
+	// Broadcast changes until the commit returns: whichever channel it armed,
+	// the next broadcast closes it.
+	done := make(chan struct{})
+	defer close(done)
 	go func() {
-		<-db.topologyKick // the commit is now waiting
-		db.proxiesChangedMu.Lock()
-		close(db.proxiesChanged)
-		db.proxiesChanged = make(chan struct{})
-		db.proxiesChangedMu.Unlock()
+		tick := time.NewTicker(10 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-tick.C:
+			}
+			db.proxiesChangedMu.Lock()
+			close(db.proxiesChanged)
+			db.proxiesChanged = make(chan struct{})
+			db.proxiesChangedMu.Unlock()
+		}
 	}()
 
 	elapsed, err := commitWithNoProxies(t, ctx, db)

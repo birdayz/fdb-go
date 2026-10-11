@@ -1312,7 +1312,6 @@ retry:
 		var proxies []ProxyInfo
 		proxies, attemptEpoch = db.getGRVProxies()
 		if len(proxies) == 0 {
-			db.kickTopology()
 			if backoff == 0 {
 				backoff = loadBalanceStartBackoff
 			}
@@ -1403,11 +1402,10 @@ retry:
 			return v, lk, rkD, rkB, tti, ptd, attemptEpoch, perr
 		}
 
-		// All proxies exhausted — backoff with recovery/topology wakeup.
+		// All proxies exhausted — back off, woken by recovery or a topology change.
 		if err := grvRPCEnded(ctx, db); err != nil {
 			return 0, false, false, false, nil, 0, attemptEpoch, err
 		}
-		db.kickTopology()
 		if backoff == 0 {
 			backoff = loadBalanceStartBackoff
 		} else {

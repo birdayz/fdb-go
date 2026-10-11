@@ -225,7 +225,10 @@ type database struct {
 	// goroutine (the two never run concurrently, so no atomic is needed). Reset to
 	// 0 on every successful non-forward connect.
 	forwardHops int
-	dialFn      transport.DialFunc // nil = net.DialTimeout
+	// bootstrapCoordinator answered bootstrap; the monitor long-polls it first so
+	// a lagging coordinator cannot reinstall older info. Set before the monitor starts.
+	bootstrapCoordinator string
+	dialFn               transport.DialFunc // nil = net.DialTimeout
 	// tlsConfig is the single source of truth for transport security: non-nil =>
 	// every connection (coordinators, proxies, storage) is dialed over TLS with
 	// this *tls.Config; nil => plaintext. Set at open from WithTLSConfig (which
@@ -264,8 +267,6 @@ type database struct {
 	// installProxySet deadlocks the calling goroutine against itself. Hooks here
 	// may observe and block; they may not install.
 	duringProxyInstall atomic.Pointer[func()]
-	// Kick this channel to trigger an immediate topology refresh.
-	topologyKick chan struct{} // buffered(1), non-blocking send
 	// Broadcast: closed when proxy list changes, then replaced with a fresh channel.
 	// Commit monitors this to detect mid-commit proxy changes (C++ onProxiesChanged).
 	proxiesChangedMu sync.Mutex
@@ -663,7 +664,7 @@ func (db *database) bootstrap(ctx context.Context) error {
 	backoff := 500 * time.Millisecond
 	for {
 		snap := db.connRecord.get()
-		info, err := db.tryAllCoordinators(ctx, snap)
+		info, addr, err := db.tryAllCoordinators(ctx, snap)
 		switch {
 		case err == nil && info.Forward != "":
 			// Path A: a coordinator forwarded us to a new set. Adopt + retry now.
@@ -679,6 +680,7 @@ func (db *database) bootstrap(ctx context.Context) error {
 			// previous iteration now that the set is confirmed reachable (Path A).
 			db.connRecord.persistIfDirty()
 			db.installProxySet(info)
+			db.bootstrapCoordinator = addr
 			close(db.connected)
 			return nil
 		default:
@@ -720,21 +722,23 @@ func (db *database) bootstrap(ctx context.Context) error {
 // (identical first-success outcome, lower latency) and never contacts more than the
 // coordinator set. (Cluster-file re-read stays failure-gated to match C++'s
 // allConnectionsFailed path, :888-900 — RFC-111; do not add a periodic timer.)
-func (db *database) tryAllCoordinators(ctx context.Context, snap *ClusterFile) (*DBInfo, error) {
+func (db *database) tryAllCoordinators(ctx context.Context, snap *ClusterFile) (*DBInfo, string, error) {
 	if snap == nil || len(snap.Coordinators) == 0 {
 		// Defensive — production cluster-file parsing rejects empty
 		// coordinator lists, but a hand-constructed *database in tests can
 		// reach this path. Without the guard, the for-loop below returns
-		// (nil, nil) and refreshTopology eventually nil-derefs in dbInfoEqual.
-		return nil, fmt.Errorf("no coordinators configured")
+		// (nil, nil) and bootstrap nil-derefs the info.
+		return nil, "", fmt.Errorf("no coordinators configured")
 	}
 	if len(snap.Coordinators) == 1 {
 		// Fast path: single coordinator, no goroutine overhead.
-		return db.tryOneCoordinator(ctx, snap, snap.Coordinators[0])
+		info, err := db.tryOneCoordinator(ctx, snap, snap.Coordinators[0])
+		return info, snap.Coordinators[0], err
 	}
 
 	type result struct {
 		info *DBInfo
+		addr string
 		err  error
 	}
 	ch := make(chan result, len(snap.Coordinators))
@@ -744,7 +748,7 @@ func (db *database) tryAllCoordinators(ctx context.Context, snap *ClusterFile) (
 	for _, addr := range snap.Coordinators {
 		go func(addr string) {
 			info, err := db.tryOneCoordinator(raceCtx, snap, addr)
-			ch <- result{info, err}
+			ch <- result{info, addr, err}
 		}(addr)
 	}
 
@@ -753,11 +757,11 @@ func (db *database) tryAllCoordinators(ctx context.Context, snap *ClusterFile) (
 		r := <-ch
 		if r.err == nil {
 			cancel() // cancel remaining attempts
-			return r.info, nil
+			return r.info, r.addr, nil
 		}
 		lastErr = r.err
 	}
-	return nil, lastErr
+	return nil, "", lastErr
 }
 
 func (db *database) tryOneCoordinator(ctx context.Context, snap *ClusterFile, addr string) (info *DBInfo, err error) {
@@ -778,7 +782,7 @@ func (db *database) tryOneCoordinator(ctx context.Context, snap *ClusterFile, ad
 	if dialErr != nil {
 		return nil, dialErr
 	}
-	info, err = db.openDatabaseCoord(ctx, conn, snap, addr)
+	info, err = db.openDatabaseCoord(ctx, conn, snap, transport.UID{}, CoordinatorTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("coordinator %s: %w", addr, err)
 	}
@@ -896,7 +900,6 @@ func OpenDatabaseFromConfig(ctx context.Context, cf *ClusterFile, opts ...Option
 		apiVersion:        o.apiVersion,
 		connPool:          make(map[string]*transport.Conn),
 		dialing:           make(map[string]*dialCall),
-		topologyKick:      make(chan struct{}, 1),
 		proxiesChanged:    make(chan struct{}),
 		connected:         make(chan struct{}),
 		ctx:               bgCtx,
