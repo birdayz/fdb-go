@@ -292,6 +292,7 @@ func (s *StorageAdapter) deleteIntermediateNode(tx fdb.WritableTransaction, node
 	if t := s.touch(node); t != nil {
 		t.cur = nil
 	}
+	delete(s.written, string(node.id))
 	s.deleteNode(tx, node.id)
 }
 
@@ -325,6 +326,7 @@ func (s *StorageAdapter) writeSlots(tx fdb.WritableTransaction, nodeID []byte, k
 // entries of its own (its parent's slot names it, and the parent's write or
 // delete maintains that), so nothing else changes.
 func (s *StorageAdapter) deleteLeafNode(tx fdb.WritableTransaction, node *leafNode) {
+	delete(s.written, string(node.id))
 	s.deleteNode(tx, node.id)
 }
 
@@ -333,7 +335,6 @@ func (s *StorageAdapter) deleteLeafNode(tx fdb.WritableTransaction, node *leafNo
 // the storage layer calls it; the tree deletes through deleteLeafNode and
 // deleteIntermediateNode, which say what kind of node goes.
 func (s *StorageAdapter) deleteNode(tx fdb.WritableTransaction, nodeID []byte) {
-	delete(s.written, string(nodeID))
 	key := s.subspace.Pack(tuple.Tuple{nodeID})
 	if s.config.Storage != RTreeStorageBySlot {
 		tx.Clear(fdb.Key(key))
@@ -388,9 +389,10 @@ func (s *StorageAdapter) beginOperation() {
 }
 
 // noteWritten records a node's slot count as the operation writes it. An
-// empty node is deleted instead, which drops it (deleteNode).
+// empty node is deleted instead, so it drops out.
 func (s *StorageAdapter) noteWritten(nodeID []byte, size int) {
 	if size == 0 {
+		delete(s.written, string(nodeID))
 		return
 	}
 	if s.written == nil {

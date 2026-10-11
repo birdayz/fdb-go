@@ -58,7 +58,8 @@ var _ = Describe("MULTIDIMENSIONAL index R-tree options", func() {
 			java := NewJavaInvoker()
 
 			// Small nodes, so 120 points make a tree several levels deep and
-			// the deletes fuse nodes and lower the root.
+			// the deletes fuse nodes and lower the root. A row that sets wider
+			// nodes keeps them all in its root leaf.
 			options := map[string]string{recordlayer.IndexOptionRTreeMinM: "2", recordlayer.IndexOptionRTreeMaxM: "4"}
 			for k, v := range c.options {
 				options[k] = v

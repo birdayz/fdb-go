@@ -3626,12 +3626,15 @@ with Java's exception class (`errors.go`). Pinned by "RTree configurations"
   minM above half of maxM + 1 at the root split. Java commits that node, and every later read
   of it fails. Go fails the operation that would write it, with the same
   `IllegalStateException` "packing of non-root is out of valid range"
-  (`StorageAdapter.checkWritten`, `storage.go`).
+  (`StorageAdapter.checkWritten`, `storage.go`), and the tree stays usable for every operation
+  that does not make that split. Exact parity would mean dropping this refusal and committing
+  a tree neither engine can read.
 - **A splitS above a parent's child count.** Java's `fetchSiblings` reads past the parent's
   slots and fails with `IndexOutOfBoundsException` (`RTree.java:1631-1646`). With splitS 3 or
   more, that happens at the first non-root overflow or underflow after the first root split.
-  Go takes the children there are. The exception is a fuse left with the node alone, which
-  fails as Java's does (`loneFuseError`, `rtree.go`).
+  With splitS 2, it happens under a non-root parent with one child, which minM 1 or below
+  allows. Go takes the children there are (`gatherLeafSiblings`, `rtree.go`). The exception is
+  a fuse left with the node alone, which fails as Java's does (`loneFuseError`, `rtree.go`).
 
 ### How Go maintains an R-tree's node slot index (RFC-257 WS-C, same bytes)
 

@@ -15,6 +15,16 @@ import (
 // getConfig). A configuration that cannot keep the node invariants fails at
 // the operation where Java's does, and the failed operation commits nothing.
 var _ = Describe("RTree configurations", func() {
+	for _, storage := range []RTreeStorage{RTreeStorageByNode, RTreeStorageBySlot} {
+		rtreeConfigurationSpecs(storage)
+	}
+	It("still refuses no dimensions", func() {
+		_, err := NewRTree(nil, DefaultRTreeConfig(0))
+		Expect(err).To(MatchError(ContainSubstring("NumDimensions")))
+	})
+})
+
+func rtreeConfigurationSpecs(storage RTreeStorage) {
 	ctx := context.Background()
 
 	type tree struct {
@@ -23,7 +33,7 @@ var _ = Describe("RTree configurations", func() {
 	}
 	newTree := func(name string, minM, maxM, splitS int) tree {
 		config := DefaultRTreeConfig(2)
-		config.MinM, config.MaxM, config.SplitS = minM, maxM, splitS
+		config.MinM, config.MaxM, config.SplitS, config.Storage = minM, maxM, splitS, storage
 		sub := specSubspace().Sub(name)
 		rt, err := NewRTree(NewStorageAdapter(sub, config), config)
 		Expect(err).NotTo(HaveOccurred())
@@ -84,9 +94,9 @@ var _ = Describe("RTree configurations", func() {
 		return pks
 	}
 
-	It("maintains and scans minM 0 with maxM 2000, past a root split", func() {
+	It(string(storage)+": maintains and scans minM 0 with maxM 2000, past a root split", func() {
 		t := newTree("wide", 0, 2000, 2)
-		n, err := insert(t, 0, 2100, 30)
+		n, err := insert(t, 0, 2100, 20)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(n).To(Equal(int64(2100)))
 		Expect(scanPKs(t)).To(Equal(pkRange(0, 2100)))
@@ -96,19 +106,13 @@ var _ = Describe("RTree configurations", func() {
 		Expect(scanPKs(t)).To(Equal(pkRange(50, 2100)))
 	})
 
-	DescribeTable("an insert under a configuration Java cannot maintain fails where Java's does",
+	DescribeTable(string(storage)+": an insert under a configuration Java cannot maintain fails where Java's does",
 		func(minM, maxM, splitS int, committed int64, match func(error) bool) {
 			t := newTree("insert", minM, maxM, splitS)
 			n, err := insert(t, 0, 40, 1)
 			Expect(err).To(HaveOccurred())
 			Expect(match(err)).To(BeTrue(), "error: %v", err)
-			if splitS < 1 {
-				// The first non-root overflow follows the root split, at a count
-				// the points' Hilbert order decides.
-				Expect(n).To(BeNumerically(">=", committed))
-			} else {
-				Expect(n).To(Equal(committed))
-			}
+			Expect(n).To(Equal(committed))
 			Expect(scanPKs(t)).To(Equal(pkRange(0, n)), "a failed insert lost or kept an item")
 		},
 		// RTree.java:797, Verify on the first insert.
@@ -120,13 +124,14 @@ var _ = Describe("RTree configurations", func() {
 		Entry("maxM one", 1, 1, 2, int64(2), isPacking),
 		// The first root split leaves halves of 6 and 7 below minM 10.
 		Entry("a split ratio maxM cannot keep", 10, 12, 2, int64(12), isPacking),
-		// RTree.java:1622, the first non-root overflow.
-		Entry("splitS below zero", 2, 4, -1, int64(5), isErr[*NegativeArraySizeError]),
-		// RTree.java:1004, the first non-root overflow splits into a node with no slots.
-		Entry("splitS zero", 2, 4, 0, int64(5), isErr[*VerifyError]),
+		// RTree.java:1622. The fifth point splits the root into leaves of 2 and
+		// 3; the seventh, (6, 6), is the first to overflow one of them.
+		Entry("splitS below zero", 2, 4, -1, int64(6), isErr[*NegativeArraySizeError]),
+		// RTree.java:952, the split links after sibling -1.
+		Entry("splitS zero", 2, 4, 0, int64(6), isOutOfBounds(-1)),
 	)
 
-	DescribeTable("a delete under a configuration Java cannot maintain fails where Java's does",
+	DescribeTable(string(storage)+": a delete under a configuration Java cannot maintain fails where Java's does",
 		func(minM, maxM, splitS int, match func(error) bool) {
 			t := newTree("delete", minM, maxM, splitS)
 			n, err := insert(t, 0, 5, 5)
@@ -137,18 +142,15 @@ var _ = Describe("RTree configurations", func() {
 			Expect(match(err)).To(BeTrue(), "error: %v", err)
 			Expect(scanPKs(t)).To(Equal(pkRange(int64(deleted), 5)), "a failed delete lost or kept an item")
 		},
-		// RTree.java:1449, a non-root leaf emptied without a fuse.
-		Entry("minM zero", 0, 4, 2, isErr[*IndexOutOfBoundsError]),
+		// RTree.java:1447, the MBR of a non-root leaf emptied without a fuse.
+		Entry("minM zero", 0, 4, 2, isErr[*NullPointerError]),
 		// RTree.java:1273, the fuse's tombstone is sibling -1.
-		Entry("splitS zero", 2, 4, 0, func(err error) bool {
-			var oob *IndexOutOfBoundsError
-			return errors.As(err, &oob) && oob.Index == -1
-		}),
+		Entry("splitS zero", 2, 4, 0, isOutOfBounds(-1)),
 		// RTree.java:1304, the fuse leaves no sibling to divide by.
 		Entry("splitS one", 2, 4, 1, isErr[*ArithmeticError]),
 	)
 
-	It("refuses to read a non-root node outside [minM, maxM], as Java's checkNode does", func() {
+	It(string(storage)+": refuses to read a non-root node outside [minM, maxM], as Java's checkNode does", func() {
 		t := newTree("packing", 2, 4, 2)
 		_, err := insert(t, 0, 5, 5) // a root split into leaves of 2 and 3
 		Expect(err).NotTo(HaveOccurred())
@@ -161,13 +163,14 @@ var _ = Describe("RTree configurations", func() {
 		Expect(isPacking(err)).To(BeTrue(), "error: %v", err)
 		Expect(scanPKs(t)).To(Equal(pkRange(0, 5)))
 	})
+}
 
-	It("still refuses no dimensions", func() {
-		config := DefaultRTreeConfig(0)
-		_, err := NewRTree(nil, config)
-		Expect(err).To(MatchError(ContainSubstring("NumDimensions")))
-	})
-})
+func isOutOfBounds(index int) func(error) bool {
+	return func(err error) bool {
+		var oob *IndexOutOfBoundsError
+		return errors.As(err, &oob) && oob.Index == index
+	}
+}
 
 func isErr[T error](err error) bool {
 	var target T
