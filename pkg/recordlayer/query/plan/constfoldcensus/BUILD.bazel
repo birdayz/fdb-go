@@ -2,6 +2,8 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "constfoldcensus",
+    # keep: a source-scanning test instrument; no production target may link it.
+    testonly = True,
     srcs = ["census.go"],
     importpath = "fdb.dev/pkg/recordlayer/query/plan/constfoldcensus",
     visibility = ["//visibility:public"],
