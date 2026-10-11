@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=404 queries=3119 dml=179 non_query=129 plan_errors=322 unexpected_errors=4
+# files=405 queries=3126 dml=179 non_query=129 plan_errors=322 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -15578,6 +15578,46 @@ plan:  Map(PredicatesFilter(Scan(T, [<>]), [1 preds]), {ID: _current.ID#0, VAL: 
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
+=== plan_cache_binding_shapes.yaml#0
+sql:   SELECT id FROM T WHERE COALESCE(?, 0) > 4 ORDER BY id
+plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== plan_cache_binding_shapes.yaml#1
+sql:   SELECT id FROM T WHERE COALESCE(?, 0) > 4 ORDER BY id
+plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== plan_cache_binding_shapes.yaml#2 expect-error=22012
+sql:   SELECT id FROM T WHERE COALESCE(?, 1 / 0) > 4 ORDER BY id
+plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== plan_cache_binding_shapes.yaml#3 expect-error=22012
+sql:   SELECT id FROM T WHERE COALESCE(?, 1 / 0) > 4 ORDER BY id
+plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== plan_cache_binding_shapes.yaml#4 expect-error=22012
+sql:   SELECT id FROM T WHERE COALESCE(5, 1 / 0) > 4 ORDER BY id
+plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== plan_cache_binding_shapes.yaml#5
+sql:   SELECT id FROM T WHERE COALESCE(?, 1 / 0 = 1) ORDER BY id
+plan:  Map(Scan(T), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryScanPlan
+=== plan_cache_binding_shapes.yaml#6
+sql:   SELECT id FROM T WHERE COALESCE(TRUE, 1 / 0 > 0) ORDER BY id
+plan:  Map(Scan(T), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryScanPlan
 === projected_exists_nested_sort_key.yaml#0
 sql:   SELECT id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS h FROM t1 ORDER BY n.sk
 plan:  Map(InMemorySort([_current._2#2 ASC], FlatMap(outer=Scan(T1), inner=FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds])))), {ID: _current.ID#0, H: _current.H#1})
