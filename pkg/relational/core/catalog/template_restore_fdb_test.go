@@ -146,7 +146,9 @@ func (e *restoreEnv) openStore(db, schema string, md []byte, fn func(*recordlaye
 	if err := proto.Unmarshal(md, p); err != nil {
 		e.t.Fatal(err)
 	}
-	rmd, err := recordlayer.RecordMetaDataFromProto(p)
+	// The compiled demo types, as a Java program saving them over stored meta-data
+	// sets setLocalFileDescriptor.
+	rmd, err := recordlayer.RecordMetaDataFromProto(p, recordlayer.WithLocalFileDescriptor(demopb.File_record_layer_demo_proto))
 	if err != nil {
 		e.t.Fatal(err)
 	}

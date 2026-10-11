@@ -65,6 +65,10 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 		})
 	})
 
+	// The compiled demo records saved below need the compiled descriptors, as a
+	// Java program reading an FDBMetaDataStore sets setLocalFileDescriptor.
+	localDemo := recordlayer.WithLocalFileDescriptor(demopb.File_record_layer_demo_proto)
+
 	buildMetaDataProto := func(version int32) *gen.MetaData {
 		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
@@ -305,7 +309,7 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 				// — guarantees the store uses the exact schema bytes
 				// that crossed the wire to Java, removing any chance of
 				// the Go save path and the records save path diverging.
-				md, buildErr := recordlayer.RecordMetaDataFromProto(mdProto)
+				md, buildErr := recordlayer.RecordMetaDataFromProto(mdProto, localDemo)
 				if buildErr != nil {
 					return nil, buildErr
 				}
@@ -549,7 +553,7 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 				if saveErr := mdStore.SaveRecordMetaData(rtx.Transaction(), mdProto); saveErr != nil {
 					return nil, saveErr
 				}
-				md, fromProtoErr := recordlayer.RecordMetaDataFromProto(mdProto)
+				md, fromProtoErr := recordlayer.RecordMetaDataFromProto(mdProto, localDemo)
 				if fromProtoErr != nil {
 					return nil, fromProtoErr
 				}
@@ -627,7 +631,7 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 				if saveErr := mdStore.SaveRecordMetaData(rtx.Transaction(), mdProto); saveErr != nil {
 					return nil, saveErr
 				}
-				md, fromProtoErr := recordlayer.RecordMetaDataFromProto(mdProto)
+				md, fromProtoErr := recordlayer.RecordMetaDataFromProto(mdProto, localDemo)
 				if fromProtoErr != nil {
 					return nil, fromProtoErr
 				}
@@ -707,7 +711,7 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 				if saveErr := mdStore.SaveRecordMetaData(rtx.Transaction(), mdProto); saveErr != nil {
 					return nil, saveErr
 				}
-				md, fromProtoErr := recordlayer.RecordMetaDataFromProto(mdProto)
+				md, fromProtoErr := recordlayer.RecordMetaDataFromProto(mdProto, localDemo)
 				if fromProtoErr != nil {
 					return nil, fromProtoErr
 				}
@@ -760,7 +764,7 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 				if saveErr := mdStore.SaveRecordMetaData(rtx.Transaction(), mdProto); saveErr != nil {
 					return nil, saveErr
 				}
-				md, fromProtoErr := recordlayer.RecordMetaDataFromProto(mdProto)
+				md, fromProtoErr := recordlayer.RecordMetaDataFromProto(mdProto, localDemo)
 				if fromProtoErr != nil {
 					return nil, fromProtoErr
 				}
@@ -1013,7 +1017,7 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 				// Re-derive the runtime metadata from the persisted proto
 				// (consistent with the records-only test): the store's
 				// schema is now byte-identical to what crossed the wire.
-				md, fromProtoErr := recordlayer.RecordMetaDataFromProto(mdProto)
+				md, fromProtoErr := recordlayer.RecordMetaDataFromProto(mdProto, localDemo)
 				if fromProtoErr != nil {
 					return nil, fromProtoErr
 				}

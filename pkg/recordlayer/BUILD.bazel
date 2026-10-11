@@ -375,6 +375,7 @@ go_test(
         "reverse_scan_test.go",
         "runner_tags_fdb_test.go",
         "runner_test.go",
+        "save_descriptor_identity_test.go",
         "save_error_test.go",
         "save_records_pipelined_test.go",
         "scan_by_type_user_identifier_test.go",

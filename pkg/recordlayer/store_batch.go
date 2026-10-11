@@ -99,10 +99,11 @@ func (store *FDBRecordStore) SaveRecordBatch(
 			return nil, fmt.Errorf("record %d is nil", i)
 		}
 
-		recordTypeName := string(record.ProtoReflect().Descriptor().Name())
-		recordType := store.metaData.GetRecordType(recordTypeName)
-		if recordType == nil {
-			return nil, unknownRecordTypeError(recordTypeName)
+		descriptor := record.ProtoReflect().Descriptor()
+		recordTypeName := string(descriptor.Name())
+		recordType, err := store.metaData.GetRecordTypeForDescriptor(descriptor)
+		if err != nil {
+			return nil, err
 		}
 		if recordType.PrimaryKey == nil {
 			return nil, &MetaDataError{Message: fmt.Sprintf("no primary key for: %s", recordTypeName)}

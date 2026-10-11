@@ -343,10 +343,11 @@ func (store *FDBRecordStore) DryRunSaveRecord(
 	if record == nil {
 		return nil, fmt.Errorf("cannot save nil record")
 	}
-	recordTypeName := string(record.ProtoReflect().Descriptor().Name())
-	recordType := store.metaData.GetRecordType(recordTypeName)
-	if recordType == nil {
-		return nil, unknownRecordTypeError(recordTypeName)
+	descriptor := record.ProtoReflect().Descriptor()
+	recordTypeName := string(descriptor.Name())
+	recordType, err := store.metaData.GetRecordTypeForDescriptor(descriptor)
+	if err != nil {
+		return nil, err
 	}
 
 	if recordType.PrimaryKey == nil {

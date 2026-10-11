@@ -719,11 +719,15 @@ func (store *FDBRecordStore) saveTargetFor(record proto.Message) (saveTarget, er
 	if record == nil {
 		return saveTarget{}, fmt.Errorf("cannot save nil record")
 	}
-	recordTypeName := string(record.ProtoReflect().Descriptor().Name())
-	recordType := store.metaData.GetRecordType(recordTypeName)
-	if recordType == nil {
-		return saveTarget{}, unknownRecordTypeError(recordTypeName)
+	// Java's saveTypedRecord resolves the type by descriptor before anything
+	// else (FDBRecordStore.java:552): a same-named message of another
+	// descriptor is refused, untyped saves included.
+	descriptor := record.ProtoReflect().Descriptor()
+	recordType, err := store.metaData.GetRecordTypeForDescriptor(descriptor)
+	if err != nil {
+		return saveTarget{}, err
 	}
+	recordTypeName := string(descriptor.Name())
 
 	if recordType.PrimaryKey == nil {
 		return saveTarget{}, &MetaDataError{Message: fmt.Sprintf("no primary key defined for record type: %s", recordTypeName)}
@@ -778,14 +782,6 @@ func (store *FDBRecordStore) saveRecordInternal(
 	typed *typedRecordSerializer,
 ) (*FDBStoredRecord[proto.Message], error) {
 	startTime := time.Now()
-	if typed != nil && record != nil {
-		// Java resolves the type by descriptor first (RecordMetaData.java:219-223); untyped saves
-		// still match by name, as Go lacks setLocalFileDescriptor for loaded metadata.
-		desc := record.ProtoReflect().Descriptor()
-		if rt := store.metaData.GetRecordType(string(desc.Name())); rt != nil && rt.Descriptor != desc {
-			return nil, &MetaDataError{Message: "descriptor did not match record type"}
-		}
-	}
 	var target saveTarget
 	var err error
 	if load != nil {
