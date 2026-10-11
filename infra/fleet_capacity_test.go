@@ -388,8 +388,8 @@ func TestMatrixEntriesSizesOrRefuses(t *testing.T) {
 }
 
 // TestSelfHostedJobsReapLeakedContainersFirst pins that every job on the pool
-// removes an earlier job's leftover containers before doing any work; a job
-// without the step inherits such a leak unseen.
+// removes an earlier job's leftover containers before doing any work, then
+// re-merges the PR onto current master so its results share a cached base.
 func TestSelfHostedJobsReapLeakedContainersFirst(t *testing.T) {
 	t.Parallel()
 	var paths []string

@@ -32,6 +32,7 @@ jobs:
         run: infra/reap-leaked-containers.sh
 
       - name: Test against current master
+        timeout-minutes: 5
         env:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_BASE_REF: ${{ github.base_ref }}
@@ -225,6 +226,7 @@ jobs:
         run: infra/reap-leaked-containers.sh
 
       - name: Test against current master
+        timeout-minutes: 5
         env:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_BASE_REF: ${{ github.base_ref }}
@@ -301,6 +303,7 @@ jobs:
         run: infra/reap-leaked-containers.sh
 
       - name: Test against current master
+        timeout-minutes: 5
         env:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_BASE_REF: ${{ github.base_ref }}
@@ -363,6 +366,7 @@ jobs:
         run: infra/reap-leaked-containers.sh
 
       - name: Test against current master
+        timeout-minutes: 5
         env:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_BASE_REF: ${{ github.base_ref }}
@@ -405,6 +409,7 @@ jobs:
         run: infra/reap-leaked-containers.sh
 
       - name: Test against current master
+        timeout-minutes: 5
         env:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_BASE_REF: ${{ github.base_ref }}
@@ -463,6 +468,7 @@ jobs:
         run: infra/reap-leaked-containers.sh
 
       - name: Test against current master
+        timeout-minutes: 5
         env:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_BASE_REF: ${{ github.base_ref }}
@@ -508,6 +514,7 @@ jobs:
         run: infra/reap-leaked-containers.sh
 
       - name: Test against current master
+        timeout-minutes: 5
         env:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_BASE_REF: ${{ github.base_ref }}
