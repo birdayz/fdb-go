@@ -67,7 +67,7 @@ test --local_resources=memory=HOST_RAM*0.8
 # Bazel 9.0.1 defaults this to true but plans to flip it (b/405364605).
 build --allow_one_action_on_resource_unavailable
 # `bazelrunfiles`: runfiles-only suites (conformance, bindingtester), the stacktester and
-#   the libfdb_c differential tests, whose cgo needs @foundationdb's fdb_c.h — excluded
+#   the libfdb_c differential and interop tests, whose cgo needs @foundationdb's fdb_c.h — excluded
 #   from plain `go build/test ./...`.
 # `stress`: heavy million-row stress benchmarks under //pkg/relational/sqldriver/stress.
 #   The target is `manual` (runs only when invoked, e.g. by nightly), so setting the tag

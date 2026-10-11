@@ -446,7 +446,7 @@ CGO_ENABLED=1 go test -tags libfdbc -count=1 -timeout 30m -v ./pkg/fdbgo/libfdbc
   lost serializability, the catastrophic direction — `FuzzDifferential_ConflictOutcome`), GetKey/RYW
   selector resolution, GetRange chunking-invariance, tuple byte-identity.
 - **Reproduce:** a `FuzzDifferential*` crash writes `pkg/fdbgo/bench/testdata/fuzz/<Fuzz>/<hash>` (auto-
-  replays via `data = glob(testdata/**)`). Replay one: `CGO_ENABLED=1 go test
+  replays via `data = glob(testdata/**)`). Replay one: `CGO_ENABLED=1 go test -tags bazelrunfiles
   -run='FuzzDifferential_ConflictOutcome/<hash>' ./pkg/fdbgo/bench/`. Both clients are pinned to one
   shared read version, so a genuine divergence replays every time (transient `1007` is retried, never a
   false mismatch).
