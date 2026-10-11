@@ -29,7 +29,6 @@ import (
 	"fdb.dev/pkg/dst"
 	fdb "fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
-	"fdb.dev/pkg/fdbgo/wire"
 
 	apiddl "fdb.dev/pkg/relational/api/ddl"
 	"fdb.dev/pkg/relational/core/catalog"
@@ -42,6 +41,7 @@ import (
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/relational/core/exceptionutil"
 )
 
 // EmbeddedConnection is an in-process SQL connection backed by FDB.
@@ -445,7 +445,7 @@ func (tx *embeddedTx) Rollback() error {
 // exists) or inside a new auto-commit transaction via fdbDB.Run.
 // In explicit-transaction mode, fn errors propagate without retry.
 func (c *EmbeddedConnection) runInTx(ctx context.Context, fn func(*recordlayer.FDBRecordContext) (any, error)) (any, error) {
-	return c.runInCapturedTx(ctx, c.activeTx, fn)
+	return c.runInCapturedTx(ctx, c.activeTx, c.Options(), fn)
 }
 
 // runInCapturedTx executes fn inside tx when one was captured, or inside a new
@@ -461,7 +461,10 @@ func (c *EmbeddedConnection) runInTx(ctx context.Context, fn func(*recordlayer.F
 // In explicit-transaction mode fn errors propagate WITHOUT retry: a retry
 // would have to re-run the whole transaction, and the driver does not hold the
 // statements the application has not issued yet.
-func (c *EmbeddedConnection) runInCapturedTx(ctx context.Context, tx *embeddedTx, fn func(*recordlayer.FDBRecordContext) (any, error)) (any, error) {
+//
+// opts are the options of the statement the work belongs to; an auto-commit
+// transaction is configured from them (transactionConfigurer) on every attempt.
+func (c *EmbeddedConnection) runInCapturedTx(ctx context.Context, tx *embeddedTx, opts *api.Options, fn func(*recordlayer.FDBRecordContext) (any, error)) (any, error) {
 	if tx != nil {
 		if tx.terminated.Load() {
 			return nil, api.NewError(api.ErrCodeTransactionInactive,
@@ -469,7 +472,63 @@ func (c *EmbeddedConnection) runInCapturedTx(ctx context.Context, tx *embeddedTx
 		}
 		return fn(tx.rctx)
 	}
-	return c.sess.DB.Run(ctx, fn)
+	return configuredRunner{c.sess.DB, opts}.Run(ctx, fn)
+}
+
+// transactionConfigurer is Java's RecordLayerTransactionManager building each
+// connection transaction's FDBRecordContextConfig from the connection options.
+func transactionConfigurer(opts *api.Options) recordlayer.TransactionConfigurer {
+	return func(o fdb.TransactionOptions) error {
+		// Tags reach the cluster's ratekeeper only if set before the first read.
+		if tags, ok := opts.Get(api.OptTransactionTags).([]string); ok {
+			for _, tag := range tags {
+				if err := o.SetTag(tag); err != nil {
+					return err
+				}
+			}
+		}
+		// FDBRecordContext: -1 (DEFAULT_TR_TIMEOUT_MILLIS) inherits the database's
+		// timeout, 0 disables it, and a positive value is the transaction's own.
+		if ms := optInt64(opts, api.OptTransactionTimeout, -1); ms != -1 {
+			if err := o.SetTimeout(ms); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+}
+
+// configuredRunner runs auto-commit work for a statement, so its transactions
+// carry the connection's timeout and tags like the statement's own.
+type configuredRunner struct {
+	db   *recordlayer.FDBDatabase
+	opts *api.Options
+}
+
+func (r configuredRunner) Run(ctx context.Context, fn func(*recordlayer.FDBRecordContext) (any, error)) (any, error) {
+	return r.db.Run(ctx, configured(r.opts, fn))
+}
+
+func (r configuredRunner) RunRead(ctx context.Context, fn func(fdb.ReadTransaction) (any, error)) (any, error) {
+	configure := transactionConfigurer(r.opts)
+	return r.db.RunRead(ctx, func(rtx fdb.ReadTransaction) (any, error) {
+		if err := configure(rtx.Options()); err != nil {
+			return nil, err
+		}
+		return fn(rtx)
+	})
+}
+
+// configured wraps a DB.Run body so each attempt's fresh transaction is
+// configured before the body reads.
+func configured(opts *api.Options, fn func(*recordlayer.FDBRecordContext) (any, error)) func(*recordlayer.FDBRecordContext) (any, error) {
+	configure := transactionConfigurer(opts)
+	return func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		if err := rctx.Configure(configure); err != nil {
+			return nil, err
+		}
+		return fn(rctx)
+	}
 }
 
 // cachedLoadSchema returns the api.Schema for (dbPath, schemaName).
@@ -918,17 +977,6 @@ func (c *EmbeddedConnection) beginTransaction() (*embeddedTx, error) {
 		return nil, err
 	}
 	fdbTx.Options().SetReadSystemKeys()
-	// Tag the transaction for the cluster's ratekeeper. This is the single
-	// transaction-creation seam in the SQL layer, so tagging here covers both
-	// explicit BeginTx transactions and autocommit statements.
-	if tags, ok := c.Options().Get(api.OptTransactionTags).([]string); ok {
-		for _, tag := range tags {
-			if err := fdbTx.Options().SetTag(tag); err != nil {
-				fdbTx.Cancel()
-				return nil, err
-			}
-		}
-	}
 	// NewRecordContext, not NewFDBRecordContext: it threads every piece of
 	// per-database state the record layer expects a context to inherit — the DST
 	// env AND the StoreTimer — so an explicit BeginTx transaction is instrumented
@@ -936,6 +984,10 @@ func (c *EmbeddedConnection) beginTransaction() (*embeddedTx, error) {
 	// FDBDatabase.Run and inherits the timer there). Naming the fields one by one
 	// here is what previously left this path running with env==nil.
 	rctx := c.sess.DB.NewRecordContext(fdbTx)
+	if err := rctx.Configure(transactionConfigurer(c.Options())); err != nil {
+		fdbTx.Cancel()
+		return nil, err
+	}
 	tx := &embeddedTx{conn: c, rctx: rctx}
 	c.activeTx = tx
 	return tx, nil
@@ -1149,38 +1201,6 @@ func (c *EmbeddedConnection) releaseStatementParams() {
 	c.releaseParams = nil
 }
 
-// translateFDBCode maps an FDB numeric error code to a SQLSTATE-wrapped error.
-// Returns the original error unchanged if the code is not recognized.
-func translateFDBCode(code int, err error) error {
-	switch code {
-	case 1031: // transaction_timed_out
-		return api.WrapError(api.ErrCodeTransactionTimeout, "FDB transaction timed out", err)
-	case 1020: // not_committed
-		return api.WrapError(api.ErrCodeSerializationFailure, "FDB transaction conflict", err)
-	case 1007: // transaction_too_old
-		// SAME condition as paginatingRows.preflightTxBudget's pre-emption — the
-		// transaction outlived FDB's 5-second MVCC window — reached by the other
-		// of its two producers, so it carries the SAME marker. 40001 alone cannot
-		// say which condition occurred, because 1020 above maps here too; the
-		// marker is what separates a lost window from a genuine conflict, and
-		// attaching it at both producers is what stops a consumer from having to
-		// enumerate spellings (api.TransactionTimeLimitError).
-		return api.MarkFDBTransactionTooOld(err)
-	case 1021: // commit_unknown_result
-		// 40003, NOT 40001: the transaction may or may not have committed and
-		// the client cannot tell. The application must determine the outcome
-		// before retrying — a blind retry double-applies any non-idempotent
-		// statement on the applied branch (RFC-198 Decision 7).
-		return api.WrapError(api.ErrCodeStatementCompletionUnknown,
-			"FDB commit outcome unknown: the transaction may or may not have committed; determine the outcome before retrying", err)
-	case 1025: // transaction_cancelled
-		return api.WrapError(api.ErrCodeTransactionInactive, "FDB transaction cancelled", err)
-	case 2017: // used_during_commit
-		return api.WrapError(api.ErrCodeTransactionInactive, "FDB transaction used during commit", err)
-	}
-	return err
-}
-
 // translateFDBError maps known FDB wire errors to SQLSTATE error codes.
 // Mirrors Java's ExceptionUtil.translateException for FDB-specific errors.
 func translateFDBError(err error) error {
@@ -1249,13 +1269,8 @@ func translateFDBError(err error) error {
 	if errors.As(err, &notExistErr) {
 		return api.WrapError(api.ErrCodeUnknown, "record does not exist", err)
 	}
-	var fdbErr *wire.FDBError
-	if errors.As(err, &fdbErr) {
-		return translateFDBCode(fdbErr.Code, err)
-	}
-	var fdbValErr fdb.Error
-	if errors.As(err, &fdbValErr) {
-		return translateFDBCode(fdbValErr.Code, err)
+	if _, ok := exceptionutil.FDBErrorCode(err); ok {
+		return exceptionutil.TranslateFDBError(err)
 	}
 	// ExceptionUtil's default: a RecordCoreException no arm above claims is
 	// ErrorCode.UNKNOWN, and so is a non-RecordCore Java exception

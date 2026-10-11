@@ -1,0 +1,13 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "exceptionutil",
+    srcs = ["exceptionutil.go"],
+    importpath = "fdb.dev/pkg/relational/core/exceptionutil",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/wire",
+        "//pkg/relational/api",
+    ],
+)

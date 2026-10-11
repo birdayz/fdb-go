@@ -2,7 +2,7 @@ package embedded
 
 // RFC-198 criterion 9(b): a page fetched on a CANCELLED transaction context
 // surfaces as 25F01, pinning the 1025 (transaction_cancelled) lane in
-// translateFDBCode and the FDB tail of translateExecError.
+// exceptionutil.TranslateFDBError and the FDB tail of translateExecError.
 //
 // This is deliberately NOT one of Decision 3's four doors: every door sets the
 // terminal flag and is asserted BEFORE the page runs. The 1025 lane covers the

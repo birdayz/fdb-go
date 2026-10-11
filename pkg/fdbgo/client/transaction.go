@@ -471,6 +471,7 @@ type Transaction struct {
 	// SetReadYourWritesDisable after a read/write (2000 — RYW setOptionImpl's throw,
 	// :2534-2542; the option is NOT applied, matching the C++ throw-before-assign), and
 	// SetSizeLimit out of [32, 1e7], including a DB default (2006, extractIntOption).
+	// SetTimeout outside [0, INT_MAX] (2006 — extractIntOption's throw, also not applied).
 	// (readErr is a DIFFERENT C++ mechanism — ryw->reading, the read-future ledger —
 	// and lives under readErrMu, which also guards readGen + pendingReads.)
 	deferredErr atomic.Pointer[wire.FDBError]
@@ -2719,8 +2720,17 @@ func (tx *Transaction) stateReadVersionInstant() (time.Time, bool) {
 // NOT per-retry. OnError retries share the same deadline.
 // A value of 0 disables the timeout. Matches C++ FDB_TR_OPTION_TIMEOUT.
 func (tx *Transaction) stateSetTimeout(ms int64) {
+	// doOnMainThreadVoid skips an option on a poisoned transaction; RYW setOptionImpl
+	// throws invalid_option_value outside [0, INT_MAX] (extractIntOption) before applying.
+	if tx.deferredErr.Load() != nil {
+		return
+	}
+	if ms < 0 || ms > math.MaxInt32 {
+		tx.deferredErr.CompareAndSwap(nil, &wire.FDBError{Code: 2006})
+		return
+	}
 	defer tx.configureReadTimeout()
-	if ms <= 0 {
+	if ms == 0 {
 		tx.timeoutNs.Store(0)
 		tx.deadlineNs.Store(0)
 		return

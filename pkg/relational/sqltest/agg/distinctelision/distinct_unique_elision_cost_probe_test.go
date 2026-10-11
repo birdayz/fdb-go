@@ -416,7 +416,7 @@ func duecRoundRatios(rs []float64) []float64 {
 // Typed throughout, never a string match on a rendered message. api.Error's own
 // doc forbids parsing its wording, and both the 1007 path and the pre-emption
 // path arrive wrapped: the relational layer turns 1007 into
-// api.Error{Code: 40001} keeping the cause (connection.go's translateFDBCode),
+// api.Error{Code: 40001} keeping the cause (exceptionutil.TranslateFDBError),
 // and the pre-emption is an api.Error{Code: 40001} whose cause is the marker.
 // errors.As reaches through both.
 //
@@ -430,7 +430,7 @@ func duecMeasurementWindowLost(err error) bool {
 	}
 	// ONE question, asked of the product. api.IsTransactionTimeLimit is true for
 	// BOTH producers because both attach the marker — the driver's pre-emption at
-	// 4s and translateFDBCode's 1007 arm at 5s. This test deliberately does not
+	// 4s and exceptionutil.TranslateFDBError's 1007 arm at 5s. This test deliberately does not
 	// re-enumerate them: a list kept here is a list that drifts from the guards,
 	// which is precisely how the 1007-only version of this function shipped while
 	// the condition arrived as something else.

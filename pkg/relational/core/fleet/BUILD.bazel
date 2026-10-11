@@ -16,6 +16,7 @@ go_library(
         "//pkg/relational/api",
         "//pkg/relational/core/catalog",
         "//pkg/relational/core/ddl",
+        "//pkg/relational/core/exceptionutil",
         "//pkg/relational/core/keyspace",
     ],
 )

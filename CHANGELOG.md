@@ -28,8 +28,20 @@ project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (
 - **FDB client option semantics:** as v0.1.0 except `SetReadLockAware` and `SetSizeLimit` (see
   Changed). The honored / `UnsupportedOptionError` / safe-no-op classification in
   `pkg/fdbgo/fdb/OPTIONS.md` still holds against `libfdb_c` 7.3.77.
+- **FDB client option semantics:** the honored / `UnsupportedOptionError` / safe-no-op
+  classification in `pkg/fdbgo/fdb/OPTIONS.md` still holds against `libfdb_c` 7.3.77, with one change:
+  `Transaction.SetTimeout` outside [0, INT_MAX] now records a deferred 2006
+  (`invalid_option_value`) like libfdb_c, where a negative value used to disable the timeout (0 still disables it).
+- **DSN booleans are strictly `true`/`false`** (any case): a bare `?flag`, `1`/`0`, `t`/`f`,
+  `yes`/`no` and `on`/`off` now fail at open with 22023.
 - **Required versions:** Java `fdb-record-layer-core` **4.14.2.0**, FDB C++ client **7.3.77**, Go
   **1.26.x** (the `MODULE.bazel` / `go.mod` pins; the CI doc-guard enforces docs match them).
+
+### Added
+- The SQL driver DSN sets `max_rows`, `execution_scanned_rows_limit`, `execution_scanned_bytes_limit`,
+  `execution_time_limit`, `max_statement_memory_bytes`, `transaction_timeout`, and the planner knobs
+  `plan_right_deep`, `disable_planner_rewriting` and `disabled_planner_rules`. The transaction timeout
+  and tags now apply to every statement transaction, autocommit and read-only ones included.
 
 ### Changed
 - CI no longer runs `go test` or `go vet`: every test runs through Bazel. The GitHub-hosted
@@ -59,6 +71,13 @@ project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (
   `IsReady` is polled (it stayed not-ready until `Get`), and one future may be read from several
   goroutines.
 - `KeyStoreSerializationKeyManager` reads JCEKS key stores, as Java's `KeyStore.getInstance(File, password)` detects them, besides PKCS12: AES keys sealed with PBEWithMD5AndTripleDES, Java's errors for a wrong store or key password. Ported from pyjks (MIT; see NOTICE).
+- An FDB error inside a catalog operation (DDL, schema lookup) now carries the same SQLSTATE as
+  anywhere else, for example 53F00 for a transaction timeout or 40001 for transaction_too_old,
+  instead of XX000.
+- An FDB error inside a catalog operation (DDL, `ApplyMetadataOperation`,
+  `fleet.RestoreTemplateVersion`) now carries the same SQLSTATE as anywhere else, for example 53F00
+  for a transaction timeout or 40001 for transaction_too_old, instead of XX000. The mapper is
+  exported as `exceptionutil.TranslateFDBError` (`pkg/relational/core/exceptionutil`).
 - SQL planning has no task budget by default, as in Java (was 150,000 tasks, 250,000 right-deep); the
   caller's context bounds it, and `MAX_TOTAL_TASK_COUNT`, `MAX_TASK_QUEUE_SIZE` and
   `MAX_NUM_MATCHES_PER_RULE_CALL` opt into Java's caps (54F02 when exhausted).

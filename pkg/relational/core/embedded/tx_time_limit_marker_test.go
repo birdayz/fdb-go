@@ -4,7 +4,7 @@ package embedded
 // pinned where they are RAISED rather than where they are consumed.
 //
 // The condition has exactly two guards: paginatingRows.preflightTxBudget, which
-// pre-empts at 4 s, and translateFDBCode's 1007 arm, which relays FDB's own wall
+// pre-empts at 4 s, and exceptionutil.TranslateFDBError's 1007 arm, which relays FDB's own wall
 // at 5 s. Both map to SQLSTATE 40001 — and so does 1020, a genuine read/write
 // conflict, which is a completely different problem with the opposite remedy.
 //

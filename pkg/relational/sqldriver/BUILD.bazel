@@ -35,8 +35,10 @@ go_test(
         "connector_dsn_freeze_test.go",
         "driver_test.go",
         "dsn_ddl_scope_option_test.go",
+        "dsn_execution_test.go",
         "dsn_options_test.go",
         "dsn_tags_test.go",
+        "dsn_transaction_timeout_fdb_test.go",
         "embedded_fdb_errors_test.go",
         "execution_stats_fdb_test.go",
         "execution_stats_retry_test.go",
@@ -91,6 +93,8 @@ go_test(
         "//pkg/recordlayer",
         "//pkg/recordlayer/keystoretest",
         "//pkg/relational/api",
+        "//pkg/relational/api/ddl",
+        "//pkg/relational/core/catalog",
         "//pkg/relational/core/ddl",
         "//pkg/relational/core/embedded",
         "//pkg/relational/core/fleet",
@@ -99,6 +103,7 @@ go_test(
         "//pkg/relational/sqltest/testkit",
         "//pkg/simfdb",
         "@com_github_google_uuid//:uuid",
+        "@org_golang_google_protobuf//proto",
     ],
 )
 
@@ -108,13 +113,29 @@ go_test(
     embed = [":sqldriver"],
 )
 
-# DSN unit tests: no FDB, so they run in the fast lane (`just test`), unlike
-# sqldriver_test, which is tagged test-full as a whole.
+# DSN tests: no Docker (SimFDB at most), so they run in the fast lane
+# (`just test`), unlike sqldriver_test, which is tagged test-full as a whole.
 go_test(
     name = "dsn_test",
-    srcs = ["dsn_options_test.go"],
+    srcs = [
+        "dsn_execution_test.go",
+        "dsn_options_test.go",
+    ],
     embed = [":sqldriver"],
-    deps = ["//pkg/relational/api"],
+    deps = [
+        "//pkg/dst",
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/recordlayer",
+        "//pkg/relational/api",
+        "//pkg/relational/api/ddl",
+        "//pkg/relational/core/catalog",
+        "//pkg/relational/core/embedded",
+        "//pkg/relational/core/fleet",
+        "//pkg/relational/core/keyspace",
+        "//pkg/simfdb",
+        "@org_golang_google_protobuf//proto",
+    ],
 )
 
 # The corpus the transaction-budget census reads as DATA rather than as code.
