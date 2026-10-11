@@ -28,7 +28,7 @@ legal/security, performance, operations, and a simulated HN thread. Owner and st
 | B (for SQL perf claims) | Plan-cache key includes literals and `?` values, so prepared statements always re-plan (3 ms per lookup) | fix-plancache |
 | H | Planning costs milliseconds; a 6-table join takes 5.6 s with no error; no wall-clock budget | fix-planbudget |
 | M | Serial index→record fetch and FlatMap (the N+1 question) | fix-fetchpipe |
-| H | Collated indexes silently diverge from Java bytes (data corruption when shared) | fix-collation |
+| H | Collated indexes silently diverge from Java bytes (data corruption when shared) | **done** (PR #790): default refusal, explicit Go-only opt-in and Java byte probes |
 
 ### First impression
 | Sev | Item | Owner |

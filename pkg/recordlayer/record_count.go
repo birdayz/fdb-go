@@ -96,6 +96,10 @@ func (store *FDBRecordStore) addRecordCount(recordType *RecordType, record proto
 		return nil // Count state is DISABLED — skip mutation
 	}
 
+	if err := store.checkRecordCountCollation(countKey); err != nil {
+		return err
+	}
+
 	// Evaluate the count key expression against the record.
 	// Count keys should produce exactly one tuple.
 	subkeys, err := countKey.Evaluate(&FDBStoredRecord[proto.Message]{
