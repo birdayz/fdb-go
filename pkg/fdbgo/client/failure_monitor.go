@@ -27,10 +27,9 @@ type failureMonitor struct {
 	mu        sync.Mutex
 	failed    map[string]*failEntry
 	recovered chan struct{}
-	// epFailed holds endpoints the server reported not found. They never
-	// recover (FailureMonitor.actor.cpp:228-230 permanentlyFailed).
-	epFailed map[endpointKey]struct{}
-	epCount  atomic.Int32 // len(epFailed); lets the read hot path skip the lock
+	// epFailed holds endpoints the server reported not found; they never
+	// recover (FailureMonitor.actor.cpp:228-230). Copy-on-write: reads are lock-free.
+	epFailed atomic.Pointer[map[endpointKey]struct{}]
 	// C++ NetworkInfo's all-alternatives-failed clock, in nowSeconds.
 	oldestAltFailure, newestAltFailure, lastAltSkip float64
 }
@@ -182,23 +181,35 @@ func (fm *failureMonitor) excludedUntil(addr string) float64 {
 func (fm *failureMonitor) markEndpointNotFound(addr string, token transport.UID) {
 	fm.mu.Lock()
 	defer fm.mu.Unlock()
-	if fm.epFailed == nil || len(fm.epFailed) > maxFailedEndpoints {
-		fm.epFailed = make(map[endpointKey]struct{})
+	key := endpointKey{addr, token}
+	var next map[endpointKey]struct{}
+	if cur := fm.epFailed.Load(); cur != nil && len(*cur) <= maxFailedEndpoints {
+		if _, ok := (*cur)[key]; ok {
+			return
+		}
+		next = make(map[endpointKey]struct{}, len(*cur)+1)
+		for k := range *cur {
+			next[k] = struct{}{}
+		}
+	} else {
+		next = make(map[endpointKey]struct{})
 	}
-	fm.epFailed[endpointKey{addr, token}] = struct{}{}
-	fm.epCount.Store(int32(len(fm.epFailed)))
+	next[key] = struct{}{}
+	fm.epFailed.Store(&next)
 }
 
 // endpointFailed reports whether the endpoint was reported not found; C++
 // loadBalance skips such an alternative (LoadBalance.actor.h:499) and
 // tryGetReply fails it without sending (fdbrpc.h:800-806).
 func (fm *failureMonitor) endpointFailed(addr string, token transport.UID) bool {
-	if fm == nil || fm.epCount.Load() == 0 {
+	if fm == nil {
 		return false
 	}
-	fm.mu.Lock()
-	defer fm.mu.Unlock()
-	_, ok := fm.epFailed[endpointKey{addr, token}]
+	set := fm.epFailed.Load()
+	if set == nil {
+		return false
+	}
+	_, ok := (*set)[endpointKey{addr, token}]
 	return ok
 }
 
@@ -206,13 +217,15 @@ func (fm *failureMonitor) endpointFailed(addr string, token transport.UID) bool 
 // ok is false when none remain: C++ loadBalance then fails with
 // all_alternatives_failed (LoadBalance.actor.h:617-634).
 func (fm *failureMonitor) liveServers(servers []ServerInfo, endpoint int) (live []ServerInfo, ok bool) {
-	if fm == nil || fm.epCount.Load() == 0 {
+	if fm == nil {
 		return servers, true
 	}
-	fm.mu.Lock()
-	defer fm.mu.Unlock()
+	set := fm.epFailed.Load()
+	if set == nil {
+		return servers, true
+	}
 	for i, s := range servers {
-		if _, failed := fm.epFailed[endpointKey{s.Address, getAdjustedEndpoint(s.Token, endpoint)}]; failed {
+		if _, failed := (*set)[endpointKey{s.Address, getAdjustedEndpoint(s.Token, endpoint)}]; failed {
 			if live == nil {
 				live = append(make([]ServerInfo, 0, len(servers)), servers[:i]...)
 			}

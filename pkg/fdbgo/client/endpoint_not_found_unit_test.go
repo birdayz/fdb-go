@@ -31,12 +31,14 @@ func TestFailureMonitorEndpointSet(t *testing.T) {
 	}
 
 	// Past the cap the whole set is cleared before the insert, as in C++.
-	for i := 0; len(fm.epFailed) <= maxFailedEndpoints; i++ {
-		fm.epFailed[endpointKey{"c:1", transport.UID{First: uint64(i) + 100}}] = struct{}{}
+	full := make(map[endpointKey]struct{}, maxFailedEndpoints+1)
+	for i := 0; len(full) <= maxFailedEndpoints; i++ {
+		full[endpointKey{"c:1", transport.UID{First: uint64(i) + 100}}] = struct{}{}
 	}
+	fm.epFailed.Store(&full)
 	fm.markEndpointNotFound("d:1", tok)
-	if len(fm.epFailed) != 1 || fm.endpointFailed("a:1", tok) || !fm.endpointFailed("d:1", tok) {
-		t.Fatalf("cap overflow: len=%d", len(fm.epFailed))
+	if n := len(*fm.epFailed.Load()); n != 1 || fm.endpointFailed("a:1", tok) || !fm.endpointFailed("d:1", tok) {
+		t.Fatalf("cap overflow: len=%d", n)
 	}
 }
 
