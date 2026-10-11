@@ -2704,7 +2704,8 @@ var _ = Describe("Shared index-state lifecycle coherence", func() {
 			Expect(err).NotTo(HaveOccurred())
 			p, err := md.ToProto()
 			Expect(err).NotTo(HaveOccurred())
-			copy, err := RecordMetaDataFromProto(p)
+			// The compiled Order saved below, as Java's setLocalFileDescriptor admits it.
+			copy, err := RecordMetaDataFromProto(p, WithLocalFileDescriptor(demopb.File_record_layer_demo_proto))
 			Expect(err).NotTo(HaveOccurred())
 			return copy
 		}

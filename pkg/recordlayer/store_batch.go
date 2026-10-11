@@ -48,10 +48,13 @@ func (store *FDBRecordStore) SaveRecordBatch(
 		if record == nil {
 			continue
 		}
-		if rt := store.metaData.GetRecordType(string(record.ProtoReflect().Descriptor().Name())); rt != nil {
-			if err := rt.checkUTF8Strings(record); err != nil {
-				return nil, fmt.Errorf("record %d: %w", i, &RecordSerializationError{Cause: err})
-			}
+		// The type by descriptor first, as each save resolves it ahead of the record's contents.
+		rt, err := store.metaData.GetRecordTypeForDescriptor(record.ProtoReflect().Descriptor())
+		if err != nil {
+			return nil, err
+		}
+		if err := rt.checkUTF8Strings(record); err != nil {
+			return nil, fmt.Errorf("record %d: %w", i, &RecordSerializationError{Cause: err})
 		}
 	}
 	if store.omitUnsplitRecordSuffix() {
@@ -99,10 +102,11 @@ func (store *FDBRecordStore) SaveRecordBatch(
 			return nil, fmt.Errorf("record %d is nil", i)
 		}
 
-		recordTypeName := string(record.ProtoReflect().Descriptor().Name())
-		recordType := store.metaData.GetRecordType(recordTypeName)
-		if recordType == nil {
-			return nil, unknownRecordTypeError(recordTypeName)
+		descriptor := record.ProtoReflect().Descriptor()
+		recordTypeName := string(descriptor.Name())
+		recordType, err := store.metaData.GetRecordTypeForDescriptor(descriptor)
+		if err != nil {
+			return nil, err
 		}
 		if recordType.PrimaryKey == nil {
 			return nil, &MetaDataError{Message: fmt.Sprintf("no primary key for: %s", recordTypeName)}
