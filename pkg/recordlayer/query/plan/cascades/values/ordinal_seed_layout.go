@@ -60,7 +60,7 @@ type OrdinalSeedLegWindow struct {
 	// longer exists, not a live claim.
 	//
 	// What stands in its place is the seed-window READER census
-	// (seed_window_reader_census.go), a STANDING instrument: it floors each of the
+	// (querycensus/seed_window_reader_census.go), a STANDING instrument: it floors each of the
 	// five keyed readers so one going dark reds instead of printing a clean-looking
 	// zero, and it hard-zeros the two DECLINE classes that replaced the text
 	// lookups. The conversion's own evidence is history; the readers' continued

@@ -7,6 +7,7 @@ go_library(
     testonly = True,
     srcs = [
         "accessor_name_path_census.go",
+        "census_labels.go",
         "dotted_leg_qualifier_census.go",
         "dotted_row_type_producer_census.go",
         "dotted_witness_attribution_census.go",
@@ -38,6 +39,7 @@ go_test(
         "dotted_row_type_producer_census_test.go",
         "dotted_witness_attribution_census_test.go",
         "field_value_mint_census_test.go",
+        "hooks_test.go",
         "leg_column_owner_selection_test.go",
         "leg_column_provenance_census_test.go",
         "leg_identity_census_test.go",

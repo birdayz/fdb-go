@@ -90,7 +90,7 @@ func TestLegIdentityCensus_DisabledRecordsNothing(t *testing.T) {
 	// premise, i.e. that the default really is off for every production path.
 	for _, site := range LegIdentitySites() {
 		if c := LegIdentityCensusOf(site); c.Total != 0 {
-			t.Errorf("site %s recorded %d comparisons while disabled", site, c.Total)
+			t.Errorf("site %s recorded %d comparisons while disabled", LegIdentitySiteLabel(site), c.Total)
 		}
 	}
 }

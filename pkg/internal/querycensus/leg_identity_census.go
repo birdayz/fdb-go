@@ -302,7 +302,7 @@ func LegIdentityCensusEnabled() bool { return legCensusEnabled.Load() }
 // text-vs-identity divergence site. Every reader that walks a leg calls it, so the
 // population is every leg any consumer looked at.
 //
-// Callers must guard on LegIdentityCensusEnabled().
+// Sites reach it only via values.Census().
 func RecordLegIdentityLeg(leg values.RecordTypeLeg) {
 	RecordLegIdentityComparison(values.LegSiteTextVsIdentity, leg.Name, leg.Alias.Name())
 }
@@ -310,7 +310,7 @@ func RecordLegIdentityLeg(leg values.RecordTypeLeg) {
 // RecordLegIdentityComparison records one leg-identity pair at a site: legName is
 // the leg's stored text, corrName the counterparty correlation's own spelling.
 //
-// Callers must guard on LegIdentityCensusEnabled() so the disabled path costs one
+// Sites reach it only via values.Census(), so the disabled path costs one
 // atomic load and no argument evaluation.
 func RecordLegIdentityComparison(site values.LegIdentitySite, legName, corrName string) {
 	if site < 0 || site >= values.LegIdentitySiteCount {
@@ -347,7 +347,7 @@ func RecordLegIdentityComparison(site values.LegIdentitySite, legName, corrName 
 // upper-folded one side), so no single central rule could stand in for them; each
 // site states its own, verbatim.
 //
-// Callers must guard on LegIdentityCensusEnabled().
+// Sites reach it only via values.Census().
 func RecordLegIdentityConversion(site values.LegIdentitySite, leg, corr values.CorrelationIdentifier, retiredVerdict bool) {
 	recordLegIdentityPair(site, leg, corr)
 	if site < 0 || site >= values.LegIdentitySiteCount {
@@ -381,7 +381,7 @@ func RecordLegIdentityConversion(site values.LegIdentitySite, leg, corr values.C
 // A converted site wants RecordLegIdentityConversion instead: this function's
 // populations describe the pair, not the change in verdict.
 //
-// Callers must guard on LegIdentityCensusEnabled().
+// Sites reach it only via values.Census().
 func recordLegIdentityPair(site values.LegIdentitySite, leg, corr values.CorrelationIdentifier) {
 	if site < 0 || site >= values.LegIdentitySiteCount {
 		return

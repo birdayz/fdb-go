@@ -111,7 +111,7 @@ func TestSeedWindowReader_RetiredSiteAlarmsOnRevival(t *testing.T) {
 		revived[values.SeedWindowSiteExistentialRebase][class] = 1
 		var b strings.Builder
 		if !assertSeedWindowReaderCounts(&b, revived, floors) {
-			t.Fatalf("a %s read at a RETIRED site left the census green", class)
+			t.Fatalf("a %s read at a RETIRED site left the census green", SeedWindowReadClassLabel(class))
 		}
 		for _, want := range []string{"RETIRED site existentialRebase reached 1 reads", "GROWTH", "PartitionSelectRule"} {
 			if !strings.Contains(b.String(), want) {
@@ -136,18 +136,18 @@ func TestSeedWindowReader_RetiredSiteAlarmsOnRevival(t *testing.T) {
 func TestSeedWindowReader_LookupHelperMapsBothWays(t *testing.T) {
 	t.Parallel()
 	if got := seedWindowLookupClass(true); got != values.SeedWindowHit {
-		t.Fatalf("a found window must count as a hit, got %s", got)
+		t.Fatalf("a found window must count as a hit, got %s", SeedWindowReadClassLabel(got))
 	}
 	if got := seedWindowLookupClass(false); got != values.SeedWindowMiss {
-		t.Fatalf("an absent window must count as a miss, got %s", got)
+		t.Fatalf("an absent window must count as a miss, got %s", SeedWindowReadClassLabel(got))
 	}
 	// Every site must appear in the report, including the ones the corpus may
 	// leave at zero — a site missing from the table is a site nobody notices is
 	// dark.
 	report := FormatSeedWindowReaderCensus()
 	for s := values.SeedWindowSite(0); s < values.SeedWindowSiteCount; s++ {
-		if !strings.Contains(report, s.String()) {
-			t.Fatalf("the report omits %s; got %q", s, report)
+		if !strings.Contains(report, SeedWindowSiteLabel(s).String()) {
+			t.Fatalf("the report omits %s; got %q", SeedWindowSiteLabel(s), report)
 		}
 	}
 }

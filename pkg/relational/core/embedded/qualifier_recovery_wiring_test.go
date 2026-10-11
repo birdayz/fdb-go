@@ -143,7 +143,7 @@ func TestQualRecWiring_ProjQualVsScanCountsEveryArm(t *testing.T) {
 			})
 			if got < 1 {
 				t.Fatalf("projQualVsScan recorded %d %v decision(s) for %q — want at least 1.\n%s",
-					got, tc.class, tc.upper, tc.why)
+					got, querycensus.QualifierRecoveryClassLabel(tc.class), tc.upper, tc.why)
 			}
 		})
 	}

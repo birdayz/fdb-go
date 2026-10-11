@@ -81,8 +81,8 @@ var (
 // set is "a handful", and anything approaching the cap is itself the finding.
 const accessorPathWitnessCap = 64
 
-// RecordAccessorPathCall counts one call's outcome. Callers must guard on
-// LegIdentityCensusEnabled().
+// RecordAccessorPathCall counts one call's outcome. Sites reach it only via
+// values.Census().
 func RecordAccessorPathCall(class values.AccessorPathClass) {
 	if class < 0 || class >= values.AccessorPathClassCount {
 		return
@@ -118,7 +118,7 @@ func DumpAccessorPathCensus(w io.Writer, label string) {
 	fmt.Fprintf(w, "\n[%s] accessor-name-path census (per call to AccessorNamePath): total %d\n",
 		label, total)
 	for i := values.AccessorPathClass(0); i < values.AccessorPathClassCount; i++ {
-		fmt.Fprintf(w, "  %-22s %d\n", i, c[i])
+		fmt.Fprintf(w, "  %-22s %d\n", AccessorPathClassLabel(i), c[i])
 	}
 	if ws := AccessorPathDottedWitnesses(); len(ws) > 0 {
 		names := make([]string, 0, len(ws))
@@ -137,8 +137,8 @@ func DumpAccessorPathCensus(w io.Writer, label string) {
 }
 
 // RecordAccessorPathDottedWitness records the flat-dotted NAME that tripped the
-// ratchet arm, so the producer can be found rather than guessed at. Callers must
-// guard on LegIdentityCensusEnabled().
+// ratchet arm, so the producer can be found rather than guessed at. Sites reach
+// it only via values.Census().
 //
 // The name is exactly the string the guard refused to split, which is the whole
 // point: it is the only artifact that distinguishes "a real nested path arrived
@@ -299,7 +299,7 @@ func assertAccessorPathCensusState(w io.Writer, counts [values.AccessorPathClass
 	if failed {
 		fmt.Fprintf(w, "  classes:")
 		for i := values.AccessorPathClass(0); i < values.AccessorPathClassCount; i++ {
-			fmt.Fprintf(w, " %s=%d", i, counts[i])
+			fmt.Fprintf(w, " %s=%d", AccessorPathClassLabel(i), counts[i])
 		}
 		fmt.Fprintf(w, " total=%d\n", total)
 		names := make([]string, 0, len(witnesses))

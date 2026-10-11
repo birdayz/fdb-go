@@ -349,7 +349,7 @@ func TestClassifyQualifierRecovery_PartitionsByIdentityInHand(t *testing.T) {
 			got, _ := values.ClassifyQualifierRecovery(tc.in, tc.identity, tc.identityPresent)
 			if got != tc.want {
 				t.Fatalf("ClassifyQualifierRecovery(%q, %q, %v) = %v, want %v.\n%s",
-					tc.in, tc.identity, tc.identityPresent, got, tc.want, tc.why)
+					tc.in, tc.identity, tc.identityPresent, QualifierRecoveryClassLabel(got), QualifierRecoveryClassLabel(tc.want), tc.why)
 			}
 		})
 	}
@@ -427,7 +427,7 @@ func TestQualRecAssert_RetiredSplitInvertsTheAlarm(t *testing.T) {
 			})
 			if !failed {
 				t.Fatalf("a %s call at a retired site passed. Every class but CARRIED means a "+
-					"rendered name was sliced, so every one of them is a revival:\n%s", c, out)
+					"rendered name was sliced, so every one of them is a revival:\n%s", QualifierRecoveryClassLabel(c), out)
 			}
 		}
 	})
@@ -508,7 +508,7 @@ func TestQualRecAssert_RetiredCallsIncludesCarried(t *testing.T) {
 	t.Parallel()
 	for _, filtered := range []bool{false, true} {
 		for class := values.QualifierRecoveryClass(0); class < values.QualRecClassCount; class++ {
-			t.Run(fmt.Sprintf("filtered=%t/%s", filtered, class), func(t *testing.T) {
+			t.Run(fmt.Sprintf("filtered=%t/%s", filtered, QualifierRecoveryClassLabel(class)), func(t *testing.T) {
 				t.Parallel()
 				var counts [values.QualRecSiteCount][values.QualRecClassCount]int
 				var witnesses [values.QualRecSiteCount][values.QualRecClassCount][]string
@@ -524,7 +524,7 @@ func TestQualRecAssert_RetiredCallsIncludesCarried(t *testing.T) {
 				counts[values.QualRecSiteDerivedUnnestSource][class] = 1
 				failed, out := assertReport(t, counts, witnesses, exp)
 				if !failed || !strings.Contains(out, "ALL-CALL RETIRED") || !strings.Contains(out, "GROWTH") {
-					t.Fatalf("revived %s classifier traffic did not fire retirement: %s", class, out)
+					t.Fatalf("revived %s classifier traffic did not fire retirement: %s", QualifierRecoveryClassLabel(class), out)
 				}
 			})
 		}

@@ -112,7 +112,7 @@ func TestQualRecWiring_ExistsSortSplitCountsEveryArm(t *testing.T) {
 			})
 			if got < 1 {
 				t.Fatalf("existsSortSplit recorded %d %v decision(s) — want at least 1.\n%s",
-					got, tc.class, tc.why)
+					got, querycensus.QualifierRecoveryClassLabel(tc.class), tc.why)
 			}
 		})
 	}

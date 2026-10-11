@@ -81,7 +81,7 @@ func TestUnnestLegMintCensus_ArmsRenderApart(t *testing.T) {
 	t.Parallel()
 	seen := map[string]struct{}{}
 	for a := values.UnnestLegMintArm(0); a < values.UnnestLegMintArmCount; a++ {
-		name := a.String()
+		name := UnnestLegMintArmLabel(a).String()
 		if name == "unknown" {
 			t.Fatalf("arm %d renders as %q — an arm the census cannot name is an arm "+
 				"whose reading is unquotable", int(a), name)
@@ -129,7 +129,7 @@ func TestUnnestLegMintCensus_SitesRenderApart(t *testing.T) {
 	t.Parallel()
 	seen := map[string]struct{}{}
 	for s := values.UnnestLegMintSite(0); s < values.UnnestLegMintSiteCount; s++ {
-		name := s.String()
+		name := UnnestLegMintSiteLabel(s).String()
 		if name == "unknown" {
 			t.Fatalf("site %d renders as %q — a site the census cannot name is a site "+
 				"whose population is unreadable in the report", int(s), name)

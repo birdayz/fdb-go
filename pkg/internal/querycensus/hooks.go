@@ -25,7 +25,6 @@ var hooks = &values.CensusHooks{
 	OrderingBridgeDotted:       NoteOrderingBridgeDotted,
 	MergeSlotTyping:            recordMergeSlotTyping,
 	ResultTypeRead:             recordResultTypeRead,
-	OrderingComparison:         recordOrderingComparison,
 	LegColumnProvenance:        recordLegColumnProvenance,
 	UnnestLegMintCall:          RecordUnnestLegMintCall,
 	UnnestLegMintName:          RecordUnnestLegMintName,
@@ -33,6 +32,8 @@ var hooks = &values.CensusHooks{
 	UnnestLegMintArm:           RecordUnnestLegMintArm,
 	UnnestLegOrdinalTwinCall:   RecordUnnestLegOrdinalTwinCall,
 }
+
+var orderingHooks = &values.OrderingHooks{OrderingComparison: recordOrderingComparison}
 
 var installMu sync.Mutex
 
@@ -42,12 +43,13 @@ func setEnabled(flag *atomic.Bool, on bool) {
 	installMu.Lock()
 	defer installMu.Unlock()
 	flag.Store(on)
-	var leg, ordering *values.CensusHooks
+	var leg *values.CensusHooks
+	var ordering *values.OrderingHooks
 	if legCensusEnabled.Load() {
 		leg = hooks
 	}
 	if orderingCensusEnabled.Load() {
-		ordering = hooks
+		ordering = orderingHooks
 	}
 	values.SetCensusHooks(leg, ordering)
 }

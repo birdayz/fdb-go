@@ -23,7 +23,7 @@ func ReportLegIdentityCensus(w io.Writer, label string) {
 	for _, site := range LegIdentitySites() {
 		c := LegIdentityCensusOf(site)
 		fmt.Fprintf(w, "%-52s [%-10s] total=%-8d exact=%-8d foldOnly=%-4d neither=%-6d unstated=%-4d retiredDiverged=%d\n",
-			site.String(), c.Channel, c.Total, c.ExactEqual, c.FoldOnlyEqual, c.Neither, c.Unstated,
+			LegIdentitySiteLabel(site).String(), c.Channel, c.Total, c.ExactEqual, c.FoldOnlyEqual, c.Neither, c.Unstated,
 			c.RetiredVerdictDivergent)
 		if len(c.FoldOnlySamples) > 0 {
 			fmt.Fprintf(w, "    fold-only witnesses: %v\n", c.FoldOnlySamples)
@@ -98,7 +98,7 @@ func AssertLegIdentityCensusWith(w io.Writer, exp LegIdentityExpectations) bool 
 				"  %s\n"+
 				"  This site's alarm is INVERTED: zero is the steady state and traffic is the\n"+
 				"  finding. Do not add a floor to match — find what reintroduced the reader.\n",
-				site, c.Total, why)
+				LegIdentitySiteLabel(site), c.Total, why)
 		}
 		if why, ok := exp.DeclaredEmpty[site]; ok && c.Total != 0 {
 			failed = true
@@ -108,7 +108,7 @@ func AssertLegIdentityCensusWith(w io.Writer, exp LegIdentityExpectations) bool 
 				"  DISPLACED, not deleted, and the corpus has started routing through it again.\n"+
 				"  Re-read the site, then replace this declaration with a real floor so the\n"+
 				"  population is watched for collapse the way its siblings are.\n",
-				site, c.Total, why)
+				LegIdentitySiteLabel(site), c.Total, why)
 		}
 		if floor, ok := floors[site]; ok && c.Total < floor {
 			failed = true
@@ -116,7 +116,7 @@ func AssertLegIdentityCensusWith(w io.Writer, exp LegIdentityExpectations) bool 
 				"  A site the suite no longer reaches makes every zero asserted about it\n"+
 				"  VACUOUS. Either the shapes that drive it stopped being planned, or a\n"+
 				"  reader was routed around. Find out which before adjusting this floor.\n",
-				site, c.Total, floor)
+				LegIdentitySiteLabel(site), c.Total, floor)
 		}
 		if c.Channel == LegChannelMixed {
 			failed = true
@@ -124,7 +124,7 @@ func AssertLegIdentityCensusWith(w io.Writer, exp LegIdentityExpectations) bool 
 				"  Its counts then describe neither comparison. A site records the pair its\n"+
 				"  own comparison evaluates — RecordLegIdentityConversion for a values.SameLeg\n"+
 				"  decision, RecordLegIdentityComparison for a genuine text decision — and\n"+
-				"  exactly one of them.\n", site)
+				"  exactly one of them.\n", LegIdentitySiteLabel(site))
 		}
 		if c.FoldOnlyEqual != 0 {
 			failed = true
@@ -135,7 +135,7 @@ func AssertLegIdentityCensusWith(w io.Writer, exp LegIdentityExpectations) bool 
 				"  The fix belongs at the PRODUCER that normalizes one side, not in the\n"+
 				"  comparison: SameLeg is exact because the alias namespaces here are\n"+
 				"  case-DISJOINT (a quoted \"q$5\" must not forge a planner-minted q$5).\n",
-				site, c.FoldOnlyEqual, c.FoldOnlySamples)
+				LegIdentitySiteLabel(site), c.FoldOnlyEqual, c.FoldOnlySamples)
 		}
 		if c.Unstated != 0 {
 			failed = true
@@ -145,7 +145,7 @@ func AssertLegIdentityCensusWith(w io.Writer, exp LegIdentityExpectations) bool 
 				"  A leg's identity is SOURCED at construction from its quantifier; an unstated\n"+
 				"  one means a producer had no identifier to thread and left it blank rather\n"+
 				"  than being fixed. Witnesses: %v.\n",
-				site, c.Unstated, c.Total, c.UnstatedSamples)
+				LegIdentitySiteLabel(site), c.Unstated, c.Total, c.UnstatedSamples)
 		}
 		if c.RetiredVerdictDivergent != 0 {
 			failed = true
@@ -157,7 +157,7 @@ func AssertLegIdentityCensusWith(w io.Writer, exp LegIdentityExpectations) bool 
 				"  Either the producers on the two sides must be reconciled so the identities\n"+
 				"  agree, or the flip is a FIX and needs the shape pinned by a test that shows\n"+
 				"  the new answer is the right one. Witnesses: %v.\n",
-				site, c.RetiredVerdictDivergent, c.Total, c.RetiredVerdictSamples)
+				LegIdentitySiteLabel(site), c.RetiredVerdictDivergent, c.Total, c.RetiredVerdictSamples)
 		}
 		if LegSiteNeitherMustBeZero(site) && c.Neither != 0 {
 			failed = true
@@ -167,7 +167,7 @@ func AssertLegIdentityCensusWith(w io.Writer, exp LegIdentityExpectations) bool 
 				"  two channels have DIVERGED and Name can no longer be retired by asserting\n"+
 				"  they agree. Find the producer that sets one without the other — an empty\n"+
 				"  Alias against a stated Name lands here too. Witnesses: %v.\n",
-				site, c.Neither, c.Total, c.NeitherSamples)
+				LegIdentitySiteLabel(site), c.Neither, c.Total, c.NeitherSamples)
 		}
 	}
 	return failed

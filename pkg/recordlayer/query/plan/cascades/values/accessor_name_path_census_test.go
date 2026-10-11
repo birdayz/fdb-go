@@ -77,7 +77,7 @@ func TestAccessorPathCensus_ClassifiesEveryArm(t *testing.T) {
 					"that arm meaningless, and the DECLINE-lazy-dotted count in "+
 					"particular is small enough (3 in 270k on the corpus) that a "+
 					"classifier bug and an empty population look identical.",
-					tc.name, tc.why, tc.want, got[tc.want], got)
+					tc.name, tc.why, querycensus.AccessorPathClassLabel(tc.want), got[tc.want], got)
 			}
 		})
 	}

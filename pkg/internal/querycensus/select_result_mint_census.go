@@ -120,7 +120,7 @@ func RecordSelectResultMint(site values.SelectResultMintSite, rv values.Value) {
 }
 
 // SelectResultMintOriginOf reports the site that MINTED rv, and whether any did.
-// Callers must guard on LegIdentityCensusEnabled().
+// Sites reach it only via values.Census().
 func SelectResultMintOriginOf(rv values.Value) (values.SelectResultMintSite, bool) {
 	if rv == nil {
 		return 0, false
@@ -177,7 +177,7 @@ func formatSelectResultMintCounters(c SelectResultMintCounters) string {
 	b.WriteString("Select result-value MINTS (per construction):")
 	for s := values.SelectResultMintSite(0); s < values.SelectResultMintSiteCount; s++ {
 		fmt.Fprintf(&b, "\n  %-34s calls %d | typedQOV %d | UNTYPED-QOV %d | other %d",
-			s, c.Calls[s], c.TypedQOV[s], c.UntypedQOV[s], c.OtherRV[s])
+			SelectResultMintSiteLabel(s), c.Calls[s], c.TypedQOV[s], c.UntypedQOV[s], c.OtherRV[s])
 		shapes := make([]string, 0, len(c.Shapes[s]))
 		for sh, n := range c.Shapes[s] {
 			shapes = append(shapes, fmt.Sprintf("x%d %s", n, sh))
@@ -230,7 +230,7 @@ func assertSelectResultMintCounters(w io.Writer, c SelectResultMintCounters, flo
 			fmt.Fprintf(w, "SELECT MINT CENSUS FAIL: %s: typed(%d) + untyped(%d) + other(%d) = %d,\n"+
 				"  but calls = %d. Every mint takes exactly one arm, so a gap is an arm that\n"+
 				"  returns before recording.\n",
-				s, c.TypedQOV[s], c.UntypedQOV[s], c.OtherRV[s], got, c.Calls[s])
+				SelectResultMintSiteLabel(s), c.TypedQOV[s], c.UntypedQOV[s], c.OtherRV[s], got, c.Calls[s])
 		}
 	}
 	// The untyped-QOV zero is UNCONDITIONAL, like the partition above it and for
@@ -250,7 +250,7 @@ func assertSelectResultMintCounters(w io.Writer, c SelectResultMintCounters, flo
 			"  Verify.verify plus requireNonNull (Quantifier.java:801-810) — and\n"+
 			"  NewQuantifiedObjectValue now requires an exact type, so a non-zero here\n"+
 			"  means a mint path has appeared that reaches around that requirement.\n"+
-			"  census: %s\n", s, c.UntypedQOV[s], formatSelectResultMintCounters(c))
+			"  census: %s\n", SelectResultMintSiteLabel(s), c.UntypedQOV[s], formatSelectResultMintCounters(c))
 	}
 	if floors == nil {
 		return failed
@@ -263,7 +263,7 @@ func assertSelectResultMintCounters(w io.Writer, c SelectResultMintCounters, flo
 		fmt.Fprintf(w, "SELECT MINT CENSUS FAIL: %s made %d mint(s), want >= %d — the site has\n"+
 			"  gone dark, so every zero recorded beside it is measuring an absence of\n"+
 			"  traffic rather than an absence of the shape.\n"+
-			"  census: %s\n", s, c.Calls[s], floors.Calls[s], formatSelectResultMintCounters(c))
+			"  census: %s\n", SelectResultMintSiteLabel(s), c.Calls[s], floors.Calls[s], formatSelectResultMintCounters(c))
 	}
 	return failed
 }

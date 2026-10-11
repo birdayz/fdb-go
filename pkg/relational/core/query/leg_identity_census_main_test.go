@@ -231,12 +231,12 @@ func assertTranslatorLegIdentityCensus(w io.Writer) bool {
 			failed = true
 			fmt.Fprintf(w, "LEG IDENTITY CENSUS FAIL: site %s reported Total = %d, want >= %d.\n"+
 				"  A site this corpus no longer reaches makes every claim about it VACUOUS.\n",
-				site, c.Total, floor)
+				querycensus.LegIdentitySiteLabel(site), c.Total, floor)
 		}
 		if c.Channel == querycensus.LegChannelMixed {
 			failed = true
 			fmt.Fprintf(w, "LEG IDENTITY CENSUS FAIL: site %s recorded in BOTH namespaces; its\n"+
-				"  counts then describe neither comparison.\n", site)
+				"  counts then describe neither comparison.\n", querycensus.LegIdentitySiteLabel(site))
 		}
 		allowed := negativeControlWitnesses[site]
 		for _, group := range []struct {
@@ -275,7 +275,7 @@ func assertTranslatorLegIdentityCensus(w io.Writer) bool {
 					"  unaccounted-witness check below is no longer complete and this gate can\n"+
 					"  no longer clear this site. Narrow the corpus or raise the cap — do not\n"+
 					"  read the passing witness walk as a clean result.\n",
-					site, len(group.witness), group.what, querycensus.LegIdentitySampleCap())
+					querycensus.LegIdentitySiteLabel(site), len(group.witness), group.what, querycensus.LegIdentitySampleCap())
 			}
 			for _, wit := range group.witness {
 				// The retired-verdict witnesses carry a " (retired=...)" suffix naming
@@ -292,7 +292,7 @@ func assertTranslatorLegIdentityCensus(w io.Writer) bool {
 					"  test fixture accounts for — %s.\n"+
 					"  The fixtures' deliberate pairs are listed in negativeControlWitnesses; a\n"+
 					"  witness outside that set came from a PRODUCER, and the fix belongs there.\n",
-					site, group.what, wit, group.indictor)
+					querycensus.LegIdentitySiteLabel(site), group.what, wit, group.indictor)
 			}
 		}
 		if querycensus.LegSiteNeitherMustBeZero(site) && c.Neither != 0 {
@@ -302,7 +302,7 @@ func assertTranslatorLegIdentityCensus(w io.Writer) bool {
 				fmt.Fprintf(w, "LEG IDENTITY CENSUS FAIL: site %s retained %d Neither witnesses, "+
 					"SATURATING the cap of %d — beyond it an anomaly is counted but "+
 					"unwitnessed, so the walk below cannot clear this site.\n",
-					site, len(c.NeitherSamples), querycensus.LegIdentitySampleCap())
+					querycensus.LegIdentitySiteLabel(site), len(c.NeitherSamples), querycensus.LegIdentitySampleCap())
 			}
 			for _, wit := range c.NeitherSamples {
 				if _, ok := allowed[wit]; ok {
@@ -311,7 +311,7 @@ func assertTranslatorLegIdentityCensus(w io.Writer) bool {
 				failed = true
 				fmt.Fprintf(w, "LEG IDENTITY CENSUS FAIL: site %s reported Neither witness %q that no\n"+
 					"  test fixture accounts for: a leg's TEXT and its IDENTITY name different\n"+
-					"  things, so the two channels have diverged at a producer.\n", site, wit)
+					"  things, so the two channels have diverged at a producer.\n", querycensus.LegIdentitySiteLabel(site), wit)
 			}
 		}
 	}

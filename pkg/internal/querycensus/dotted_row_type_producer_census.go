@@ -140,7 +140,7 @@ func nameIsQualified(name string) bool {
 
 // RecordDottedRowTypeDerivation counts ONE RecordType derivation by the generic
 // record-constructor path, cut by whether the row it describes is the DOTTED
-// `LEG.COL` shape. Callers must guard on LegIdentityCensusEnabled().
+// `LEG.COL` shape. Sites reach it only via values.Census().
 func RecordDottedRowTypeDerivation(fields []values.Field) {
 	dottedRowTypeMu.Lock()
 	defer dottedRowTypeMu.Unlock()

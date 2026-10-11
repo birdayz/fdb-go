@@ -153,7 +153,7 @@ import (
 //     becomes non-empty (ordinal_join.go:234 and :187, ordinal_seed_layout.go:391
 //     and :528).
 //
-// GATED by values.LegIdentityCensusEnabled, like every other census on this
+// GATED by LegIdentityCensusEnabled, like every other census on this
 // path: a disabled census costs the reader one predicate. The counts are per
 // CALL, and the caller (adaptLegPositional) calls once per leg-type column per
 // adapted row, so read the absolute numbers as traffic and the SHARES as the

@@ -223,7 +223,7 @@ func (r *PartitionSelectRule) positionalMergeCase(
 // state a real scalar type and land in the SCALAR class, which is separable, and
 // the UNTYPED class is empty.
 //
-// So the hard zero in AssertMergeSlotTypingCensus is not a tightened guess; it is
+// So the hard zero in querycensus.AssertMergeSlotTypingCensus is not a tightened guess; it is
 // the new expected value, and a non-zero now means a leg genuinely lost its row.
 // The SCALAR count is deliberately NOT floored at zero — an unnest element over
 // an array is a correct scalar slot, and demanding a record there would report

@@ -114,8 +114,8 @@ var (
 )
 
 // RecordInnerScalarLegTitleAt registers one (correlation, title) pair minted for
-// a correlated-scalar seed inner leg, naming the producer. Callers must guard on
-// LegIdentityCensusEnabled().
+// a correlated-scalar seed inner leg, naming the producer. Sites reach it only via
+// values.Census().
 func RecordInnerScalarLegTitleAt(producer values.InnerLegProducer, corr values.CorrelationIdentifier, title string) {
 	if corr.IsZero() || title == "" {
 		return
@@ -129,8 +129,8 @@ func RecordInnerScalarLegTitleAt(producer values.InnerLegProducer, corr values.C
 }
 
 // RecordDottedArmAnswer records one name the executor's dotted arm answered on,
-// with the OWNER correlation the reader held. Callers must guard on
-// LegIdentityCensusEnabled().
+// with the OWNER correlation the reader held. Sites reach it only via
+// values.Census().
 //
 // First writer wins for the map, and a LATER, DIFFERENT owner for the same name
 // is RECORDED as a collision rather than dropped. That is not tidiness: a name
@@ -211,12 +211,12 @@ func classifyAttribution(s attributionState) (attributed, unattributed []string,
 		switch {
 		case minted && m.title == name:
 			attributed = append(attributed,
-				fmt.Sprintf("%s (owner %s) -> %s, minted title %q", name, owner, m.producer, m.title))
+				fmt.Sprintf("%s (owner %s) -> %s, minted title %q", name, owner, InnerLegProducerLabel(m.producer), m.title))
 		case minted:
 			unattributed = append(unattributed,
 				fmt.Sprintf("%s (owner %s IS an inner leg minted by %s, but its title is %q — "+
 					"the owner matches and the NAME does not, so this leg was retitled or "+
-					"renamed between mint and read)", name, owner, m.producer, m.title))
+					"renamed between mint and read)", name, owner, InnerLegProducerLabel(m.producer), m.title))
 		default:
 			unattributed = append(unattributed,
 				fmt.Sprintf("%s (owner %s was minted by NEITHER correlated-scalar seed — a "+

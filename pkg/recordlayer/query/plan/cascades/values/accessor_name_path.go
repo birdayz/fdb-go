@@ -32,7 +32,7 @@ import "strings"
 // different, evaluation-domain concern; unifying them by ordinalizing the
 // candidate is the RFC-187 §8 / RFC-173-endgame follow-up.
 func AccessorNamePath(v Value) ([]string, bool) {
-	// Census: which arm carried this call. See accessor_name_path_census.go for
+	// Census: which arm carried this call. See querycensus/accessor_name_path_census.go for
 	// why the '.' decline in particular is worth counting rather than reasoning
 	// about. Disabled, this is one atomic load per call.
 	census := Census()

@@ -21,7 +21,6 @@ type CensusHooks struct {
 	OrderingBridgeDotted       func(leftName, rightName string, answered bool)
 	MergeSlotTyping            func(corr CorrelationIdentifier, slotType Type, scavenged bool)
 	ResultTypeRead             func(site string, t Type)
-	OrderingComparison         func(site OrderingComparisonSite, left, right Value, bridge func(a, b Value) bool)
 	LegColumnProvenance        func(rt *RecordType, name string, flatHit, flatAmbiguous bool, matched *RecordTypeLeg, qualifier string, owner CorrelationIdentifier)
 	UnnestLegMintCall          func(site UnnestLegMintSite)
 	UnnestLegMintName          func(site UnnestLegMintSite, name string)
@@ -30,19 +29,26 @@ type CensusHooks struct {
 	UnnestLegOrdinalTwinCall   func()
 }
 
-// The ordering-comparison census switches independently of the leg-identity
-// family, so it gets its own slot rather than a second flag at every site.
-var legCensusHooks, orderingCensusHooks atomic.Pointer[CensusHooks]
+// OrderingHooks is the ordering-comparison census's sink. That census switches
+// independently of the leg-identity family, so it gets its own slot.
+type OrderingHooks struct {
+	OrderingComparison func(site OrderingComparisonSite, left, right Value, bridge func(a, b Value) bool)
+}
+
+var (
+	legCensusHooks      atomic.Pointer[CensusHooks]
+	orderingCensusHooks atomic.Pointer[OrderingHooks]
+)
 
 // Census returns the leg-identity census hooks, or nil when the census is off:
 // a record site costs one atomic load and one untaken branch.
 func Census() *CensusHooks { return legCensusHooks.Load() }
 
 // OrderingCensus returns the ordering-comparison census hooks, or nil.
-func OrderingCensus() *CensusHooks { return orderingCensusHooks.Load() }
+func OrderingCensus() *OrderingHooks { return orderingCensusHooks.Load() }
 
 // SetCensusHooks installs (or, with nil, removes) the two census slots.
-func SetCensusHooks(leg, ordering *CensusHooks) {
+func SetCensusHooks(leg *CensusHooks, ordering *OrderingHooks) {
 	legCensusHooks.Store(leg)
 	orderingCensusHooks.Store(ordering)
 }

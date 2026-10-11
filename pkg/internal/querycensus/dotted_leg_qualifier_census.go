@@ -303,7 +303,7 @@ func classifyDottedLegQualifier(qual string, matchedAlias values.CorrelationIden
 }
 
 // RecordDottedLegQualifier counts one qualifier-against-leg-table match.
-// Callers must guard on LegIdentityCensusEnabled().
+// Sites reach it only via values.Census().
 func RecordDottedLegQualifier(site DottedLegSite, qual string, matchedAlias values.CorrelationIdentifier, matchedBinding string, lookup DottedLegLookup) {
 	class := classifyDottedLegQualifier(qual, matchedAlias, matchedBinding, lookup)
 	dottedLegMu.Lock()

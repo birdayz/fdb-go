@@ -577,7 +577,7 @@ type RecordTypeLeg struct {
 	// standing fact; it was an order of magnitude low and nothing caught it,
 	// because prose carrying a number carries no instrument.)
 	//
-	// The STANDING instrument is LegSiteTextVsIdentity in leg_identity_census.go,
+	// The STANDING instrument is LegSiteTextVsIdentity in querycensus/leg_identity_census.go,
 	// asserted every full sqldriver run: its divergence counters are held at zero
 	// unconditionally, and its population is floored (not pinned) in
 	// legIdentityFloors so that COLLAPSE fails while drift does not.
@@ -602,7 +602,7 @@ type RecordTypeLeg struct {
 	//     closed by RFC-212 §11.3's `unqualifiedScalarTitle`
 	//     (scalar_subquery_seed.go:205-214), so nothing drives it today and the
 	//     standing assertion in executor's leg-column provenance census
-	//     (leg_column_provenance_census.go:552-564) now holds the arm at a HARD
+	//     (querycensus/leg_column_provenance_census.go:552-564) now holds the arm at a HARD
 	//     ZERO — with the alarm direction stated there as GROWTH, since a count
 	//     means the producer came back.
 	//
@@ -646,7 +646,7 @@ type RecordTypeLeg struct {
 	// one, and the only two text-keyed readers unreachable by panic probe across
 	// the entire relational tree. The census that produced it retired with the
 	// namespace it measured; the STANDING instrument over those readers is
-	// seed_window_reader_census.go, which floors each one and hard-zeros the two
+	// querycensus/seed_window_reader_census.go, which floors each one and hard-zeros the two
 	// declines that replaced the text lookups.
 	//
 	// Two further uses are not decisions and gate nothing. finalizeSeedWindows
@@ -706,7 +706,7 @@ type RecordTypeLeg struct {
 	//     identity even in principle.
 	//
 	// The SPLIT population these bakers sit on is now instrumented
-	// (name_split_census.go) and reads SPLIT-QUALIFIED 0 at both arms over 11
+	// (querycensus/name_split_census.go) and reads SPLIT-QUALIFIED 0 at both arms over 11
 	// calls. Scope that to the TWO LEG BAKERS: the census's own header names four
 	// uninstrumented splitting siblings, so this is not a statement about
 	// re-splitting in Go. Within that scope it closes the question of whether a

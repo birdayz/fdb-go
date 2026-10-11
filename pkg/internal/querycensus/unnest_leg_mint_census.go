@@ -72,7 +72,7 @@ import (
 // disjointness assertion below watches. The per-site report is the instrument;
 // a floor would turn a finding into a build break.
 //
-// GATED by values.LegIdentityCensusEnabled, like every census on this path.
+// GATED by LegIdentityCensusEnabled, like every census on this path.
 // Counts are per CALL of the mint's rewrite, so read the totals as traffic.
 
 // hasSeedBranch reports whether this site sits on a seed test with arms to take.
@@ -104,8 +104,8 @@ var (
 )
 
 // RecordUnnestLegMintCall counts ONE invocation of the name-keyed rebase at a
-// site, whether or not it rewrites anything. Callers must guard on
-// LegIdentityCensusEnabled().
+// site, whether or not it rewrites anything. Sites reach it only via
+// values.Census().
 //
 // Counted separately from the NAMES because a site can be reached constantly
 // and mint nothing (no reference in the predicate names an outer leg), and the
@@ -120,8 +120,8 @@ func RecordUnnestLegMintCall(site values.UnnestLegMintSite) {
 	unnestLegMintCalls[site]++
 }
 
-// RecordUnnestLegMintName counts ONE minted qualified name at a site. Callers
-// must guard on LegIdentityCensusEnabled().
+// RecordUnnestLegMintName counts ONE minted qualified name at a site. Sites
+// reach it only via values.Census().
 func RecordUnnestLegMintName(site values.UnnestLegMintSite, name string) {
 	if site < 0 || site >= values.UnnestLegMintSiteCount {
 		return
@@ -141,8 +141,8 @@ func RecordUnnestLegMintName(site values.UnnestLegMintSite, name string) {
 }
 
 // RecordUnnestLegMintBranchReached counts ONE arrival at a seed-tested branch
-// point, BEFORE any arm is chosen. Callers must guard on
-// LegIdentityCensusEnabled().
+// point, BEFORE any arm is chosen. Sites reach it only via
+// values.Census().
 //
 // It is the INDEPENDENT denominator for the arm matrix. Summing the arms instead
 // is true by construction and cannot see an arm that was added without a
@@ -157,7 +157,7 @@ func RecordUnnestLegMintBranchReached(site values.UnnestLegMintSite) {
 }
 
 // RecordUnnestLegMintArm counts ONE arm taken at a seed-tested branch point.
-// Callers must guard on LegIdentityCensusEnabled().
+// Sites reach it only via values.Census().
 func RecordUnnestLegMintArm(site values.UnnestLegMintSite, arm values.UnnestLegMintArm) {
 	if site < 0 || site >= values.UnnestLegMintSiteCount || arm < 0 || arm >= values.UnnestLegMintArmCount {
 		return
@@ -241,7 +241,7 @@ func formatUnnestLegMintCounters(
 	var b strings.Builder
 	b.WriteString("unnest leg-mint (rebaseUnnestOuterLegPredicate, per call):")
 	for s := values.UnnestLegMintSite(0); s < values.UnnestLegMintSiteCount; s++ {
-		fmt.Fprintf(&b, "\n  %-34s calls %d | minted names %d", s, calls[s], mints[s])
+		fmt.Fprintf(&b, "\n  %-34s calls %d | minted names %d", UnnestLegMintSiteLabel(s), calls[s], mints[s])
 	}
 	attributed := 0
 	b.WriteString("\n  ARM taken at the three seed-tested branch points — a name-arm ZERO beside" +
@@ -261,16 +261,16 @@ func formatUnnestLegMintCounters(
 			// with no arm to take, so a row of zeros here would be a tautology
 			// wearing the shape of a reading — the exact ambiguity this whole
 			// sub-report exists to remove.
-			fmt.Fprintf(&b, "\n    %-34s NO SEED BRANCH EXISTS (unconditional call site)", s)
+			fmt.Fprintf(&b, "\n    %-34s NO SEED BRANCH EXISTS (unconditional call site)", UnnestLegMintSiteLabel(s))
 			continue
 		}
 		if total == 0 {
-			fmt.Fprintf(&b, "\n    %-34s BRANCH POINT NEVER REACHED", s)
+			fmt.Fprintf(&b, "\n    %-34s BRANCH POINT NEVER REACHED", UnnestLegMintSiteLabel(s))
 			continue
 		}
-		fmt.Fprintf(&b, "\n    %-34s reached %d", s, total)
+		fmt.Fprintf(&b, "\n    %-34s reached %d", UnnestLegMintSiteLabel(s), total)
 		for a := values.UnnestLegMintArm(0); a < values.UnnestLegMintArmCount; a++ {
-			fmt.Fprintf(&b, " | %s %d", a, arms[s][a])
+			fmt.Fprintf(&b, " | %s %d", UnnestLegMintArmLabel(a), arms[s][a])
 		}
 		if armSum != total {
 			fmt.Fprintf(&b, "  <<< ARM GAP: arms sum to %d", armSum)
@@ -342,7 +342,7 @@ func assertUnnestLegMintArmPartition(
 					"  site with no seed branch, but recorded %d arm(s) and %d branch arrival(s).\n"+
 					"  Either the site grew a branch — in which case hasSeedBranch must say so, or\n"+
 					"  its report will keep printing a structural line where a reading now exists —\n"+
-					"  or a recorder was wired to the wrong site.\n", s, armSum, reached[s])
+					"  or a recorder was wired to the wrong site.\n", UnnestLegMintSiteLabel(s), armSum, reached[s])
 			}
 			continue
 		}
@@ -360,7 +360,7 @@ func assertUnnestLegMintArmPartition(
 			"  converted on the other arm', and an unrecorded arm silently moves traffic out\n"+
 			"  of both. At joinPredicate the census guard IS the third arm (`else if\n"+
 			"  jpCensus`), so an `else if` inserted ahead of it steals from leg-relative.\n"+
-			"  Add the recorder; do NOT widen this check.\n", s, reached[s], armSum)
+			"  Add the recorder; do NOT widen this check.\n", UnnestLegMintSiteLabel(s), reached[s], armSum)
 	}
 	return failed
 }

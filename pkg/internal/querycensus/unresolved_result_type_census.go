@@ -46,7 +46,7 @@ import (
 // back, and the sqldriver gate keeps asserting the consumers are still reached,
 // so a future zero cannot be read as the instrument going dark.
 //
-// GATED by values.LegIdentityCensusEnabled, like every census on this path: the
+// GATED by LegIdentityCensusEnabled, like every census on this path: the
 // recorder's first statement is the gate, so a disabled census costs one atomic
 // load. Callers pass the type they ALREADY have — no work is done to build the
 // argument.

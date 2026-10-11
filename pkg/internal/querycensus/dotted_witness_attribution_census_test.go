@@ -211,8 +211,8 @@ func TestAttribution_HeaderNamesNoProducer(t *testing.T) {
 		header = out[:i]
 	}
 	for _, producer := range []string{
-		values.InnerLegProducerClusteredOuter.String(),
-		values.InnerLegProducerSingleSource.String(),
+		InnerLegProducerLabel(values.InnerLegProducerClusteredOuter).String(),
+		InnerLegProducerLabel(values.InnerLegProducerSingleSource).String(),
 	} {
 		if strings.Contains(header, producer) {
 			t.Fatalf("the header names producer %q:\n%s\n"+
@@ -224,7 +224,7 @@ func TestAttribution_HeaderNamesNoProducer(t *testing.T) {
 				"  class.", producer, out)
 		}
 	}
-	if !strings.Contains(out, values.InnerLegProducerSingleSource.String()) {
+	if !strings.Contains(out, InnerLegProducerLabel(values.InnerLegProducerSingleSource).String()) {
 		t.Fatal("the producer appears nowhere in the report; it belongs on the ROW")
 	}
 }

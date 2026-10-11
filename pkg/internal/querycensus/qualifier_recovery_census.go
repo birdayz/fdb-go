@@ -288,13 +288,13 @@ func assertQualifierRecoveryCounts(
 			total += counts[s][c]
 		}
 		fmt.Fprintf(w, "  %-20s calls %d | carried %d | AGREED %d | DIVERGED %d | MANUFACTURED %d | leafOnly %d | bare %d | heuristicDecline %d\n",
-			s, total,
+			QualifierRecoverySiteLabel(s), total,
 			counts[s][values.QualRecCarried], counts[s][values.QualRecAgreed], counts[s][values.QualRecDiverged],
 			counts[s][values.QualRecManufactured], counts[s][values.QualRecLeafOnly], counts[s][values.QualRecBare],
 			counts[s][values.QualRecHeuristicDecline])
 		for c := values.QualifierRecoveryClass(0); c < values.QualRecClassCount; c++ {
 			for _, wit := range witnesses[s][c] {
-				fmt.Fprintf(w, "      %s witness: %s\n", c, wit)
+				fmt.Fprintf(w, "      %s witness: %s\n", QualifierRecoveryClassLabel(c), wit)
 			}
 		}
 	}
@@ -321,7 +321,7 @@ func assertQualifierRecoveryCounts(
 				"  for: %v.\n"+
 				"  The fixtures' deliberate pairs are declared per corpus; a witness outside\n"+
 				"  that set came from a PRODUCER, and the fix belongs there — use the identity.\n",
-				s, unaccounted)
+				QualifierRecoverySiteLabel(s), unaccounted)
 			continue
 		}
 		if n := counts[s][values.QualRecDiverged]; n != 0 {
@@ -335,7 +335,7 @@ func assertQualifierRecoveryCounts(
 				"  same bytes), or a producer rebased one channel and not the other.\n"+
 				"  THE FIX IS TO USE THE IDENTITY, never to widen this zero: the identity is what\n"+
 				"  the parser saw, the string is a rendering of it. Witnesses above carry both\n"+
-				"  sides of each disagreeing pair.\n", s, n)
+				"  sides of each disagreeing pair.\n", QualifierRecoverySiteLabel(s), n)
 		}
 	}
 
@@ -375,14 +375,14 @@ func assertQualifierRecoveryCounts(
 					"  on and a subset presented as a whole sends the reader to whichever\n"+
 					"  spellings arrived first. Narrow the corpus or raise the cap — do not read\n"+
 					"  the listed witnesses as complete.\n",
-					s, len(witnesses[s][c]), c, qualRecWitnessCap)
+					QualifierRecoverySiteLabel(s), len(witnesses[s][c]), QualifierRecoveryClassLabel(c), qualRecWitnessCap)
 			}
 		}
 		for _, c := range []values.QualifierRecoveryClass{values.QualRecAgreed, values.QualRecLeafOnly, values.QualRecHeuristicDecline} {
 			if len(witnesses[s][c]) >= qualRecWitnessCap {
 				fmt.Fprintf(w, "NOTE: %s %s witnesses TRUNCATED at the cap of %d — the listed\n"+
 					"  spellings are examples, not the whole set. The COUNT above is complete and\n"+
-					"  is what this class's claim rests on.\n", s, c, qualRecWitnessCap)
+					"  is what this class's claim rests on.\n", QualifierRecoverySiteLabel(s), QualifierRecoveryClassLabel(c), qualRecWitnessCap)
 			}
 		}
 	}
@@ -397,7 +397,7 @@ func assertQualifierRecoveryCounts(
 				failed = true
 				fmt.Fprintf(w, "FAIL: %s reported %d call(s) at an ALL-CALL RETIRED site.\n"+
 					"  Zero is the steady state; GROWTH, including CARRIED, means the deleted classifier returned.\n"+
-					"  Do not restore a population floor or manufacture recorder traffic.\n", s, total)
+					"  Do not restore a population floor or manufacture recorder traffic.\n", QualifierRecoverySiteLabel(s), total)
 			}
 			continue
 		}
@@ -414,7 +414,7 @@ func assertQualifierRecoveryCounts(
 			"  finding, because a split here means the rendered-name recovery this census\n"+
 			"  was built to watch has come BACK. Do not raise a floor to match — find what\n"+
 			"  reintroduced the slice and route it through the structured identity.\n",
-			s, split)
+			QualifierRecoverySiteLabel(s), split)
 	}
 
 	if floors == nil {
@@ -434,7 +434,7 @@ func assertQualifierRecoveryCounts(
 				"  DARK. A splitter at zero reads exactly like a splitter measured clean, and\n"+
 				"  every zero this census asserts about it is worthless over an empty\n"+
 				"  population. Either the shapes that drive it stopped being planned, or the\n"+
-				"  recorder was dropped from the site.\n", s, total, floors.Calls[s])
+				"  recorder was dropped from the site.\n", QualifierRecoverySiteLabel(s), total, floors.Calls[s])
 		}
 		if retiredSplit[s] {
 			// The retirement check above already owns this site, with the words
@@ -450,7 +450,7 @@ func assertQualifierRecoveryCounts(
 			fmt.Fprintf(w, "FAIL: %s entered a SPLITTING arm %d time(s), below its split floor of %d.\n"+
 				"  Its total call count can stay healthy on CARRIED traffic alone, so this is\n"+
 				"  the floor — and the only floor — that says the arms this census measures are\n"+
-				"  still being reached.\n", s, split, f)
+				"  still being reached.\n", QualifierRecoverySiteLabel(s), split, f)
 		case f == 0 && split > 0:
 			failed = true
 			fmt.Fprintf(w, "FAIL: %s declares a split floor of 0 — WATCHED, NOT PROVEN, meaning its\n"+
@@ -458,7 +458,7 @@ func assertQualifierRecoveryCounts(
 				"  wiring pin instead. They are no longer empty: %d split call(s) now arrive\n"+
 				"  here. This is not a defect, it is the DECLARATION GOING STALE. Re-read the\n"+
 				"  site, then raise this floor to a real number so the corpus starts carrying\n"+
-				"  the guarantee the unit pin was standing in for.\n", s, split)
+				"  the guarantee the unit pin was standing in for.\n", QualifierRecoverySiteLabel(s), split)
 		}
 	}
 	return failed

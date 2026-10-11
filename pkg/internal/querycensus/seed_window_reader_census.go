@@ -72,8 +72,8 @@ var (
 	seedWindowReadCounts [values.SeedWindowSiteCount][values.SeedWindowReadClassCount]int
 )
 
-// RecordSeedWindowRead counts one keyed read of a seed-window map. Callers must
-// guard on LegIdentityCensusEnabled().
+// RecordSeedWindowRead counts one keyed read of a seed-window map. Sites reach
+// it only via values.Census().
 func RecordSeedWindowRead(site values.SeedWindowSite, class values.SeedWindowReadClass) {
 	if site < 0 || site >= values.SeedWindowSiteCount || class < 0 || class >= values.SeedWindowReadClassCount {
 		return
@@ -141,14 +141,14 @@ func FormatSeedWindowReaderCensus() string {
 		for c := 0; c < int(values.SeedWindowReadClassCount); c++ {
 			total += counts[s][c]
 		}
-		fmt.Fprintf(&b, "\n  %-24s reads %d", s, total)
+		fmt.Fprintf(&b, "\n  %-24s reads %d", SeedWindowSiteLabel(s), total)
 		for c := values.SeedWindowReadClass(0); c < values.SeedWindowReadClassCount; c++ {
 			// NESTED-HIT prints even at ZERO. Its zero is the live-vs-latent
 			// answer for RFC-200 step 3d, and a class that vanishes when empty is
 			// exactly the reporting habit that makes a latent arm indistinguishable
 			// from an absent one.
 			if counts[s][c] != 0 || c == values.SeedWindowNestedHit {
-				fmt.Fprintf(&b, " | %s %d", c, counts[s][c])
+				fmt.Fprintf(&b, " | %s %d", SeedWindowReadClassLabel(c), counts[s][c])
 			}
 		}
 	}
@@ -233,7 +233,7 @@ func assertSeedWindowReaderCounts(w io.Writer, counts [values.SeedWindowSiteCoun
 				"  MODEL instead of resolving positionally. Find the producer and give it a\n"+
 				"  correlation (CQ-52 hands this site the parser's qualifier/leaf segments).\n"+
 				"  Do NOT re-key by the sliced qualifier: that mints an identifier out of a\n"+
-				"  column name.\n", s, n)
+				"  column name.\n", SeedWindowSiteLabel(s), n)
 		}
 		if n := counts[s][values.SeedWindowChildlessBaked]; n != 0 {
 			failed = true
@@ -246,7 +246,7 @@ func assertSeedWindowReaderCounts(w io.Writer, counts [values.SeedWindowSiteCoun
 				"  and this shape has no other route — its ordinal is LEG-relative, so nothing\n"+
 				"  downstream can rebase it onto the box row. Either the producer should be\n"+
 				"  emitting the QOV-shaped spelling (which carries the correlation the rebase\n"+
-				"  needs), or the rebase owes this shape an answer.\n", s, n)
+				"  needs), or the rebase owes this shape an answer.\n", SeedWindowSiteLabel(s), n)
 		}
 	}
 	if floors != nil {
@@ -264,7 +264,7 @@ func assertSeedWindowReaderCounts(w io.Writer, counts [values.SeedWindowSiteCoun
 			failed = true
 			fmt.Fprintf(w, "SEED-WINDOW READER CENSUS FAIL: RETIRED site %s reached %d reads, want 0.\n"+
 				"  The alarm direction is GROWTH: this reader's expected population is zero,\n"+
-				"  so a read means the traffic it served is being produced again.\n", s, total)
+				"  so a read means the traffic it served is being produced again.\n", SeedWindowSiteLabel(s), total)
 			if s == values.SeedWindowSiteExistentialRebase {
 				fmt.Fprint(w, "  An existential's correlated predicate reached ImplementNestedLoopJoin's\n"+
 					"  two-quantifier select beside an ordinal-seed outer. Java's\n"+
@@ -313,7 +313,7 @@ func assertSeedWindowReaderCounts(w io.Writer, counts [values.SeedWindowSiteCoun
 				"    4. the census-invisible bare-column arm of query.slotInGatheredSeed\n"+
 				"       allowed to contribute a hits++ for a nested window.\n"+
 				"  Then clear NestedHitMustBeZero, floor NESTED-HIT instead, and mark\n"+
-				"  CQ-67's gate (a) satisfied.\n", s, n)
+				"  CQ-67's gate (a) satisfied.\n", SeedWindowSiteLabel(s), n)
 		}
 	}
 	if floors == nil {
@@ -334,7 +334,7 @@ func assertSeedWindowReaderCounts(w io.Writer, counts [values.SeedWindowSiteCoun
 				"  VACUOUSLY — including the two decline classes whose emptiness is the whole\n"+
 				"  claim that the gather and the wrap are firing on the shapes they exist for.\n"+
 				"  A silenced reader and a clean one print the same line; this floor is the\n"+
-				"  only thing that tells them apart.\n", s, total, floors.Reads[s])
+				"  only thing that tells them apart.\n", SeedWindowSiteLabel(s), total, floors.Reads[s])
 		}
 	}
 	return failed

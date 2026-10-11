@@ -1084,7 +1084,7 @@ func SatisfiesRequestedOrdering(pm PartialMatch, ro *properties.RequestedOrderin
 //
 // Declining costs nothing in production: over the corpus neither comparator
 // ever sees a FieldValue pair with a non-stating operand, kept honest by the
-// census in ordering_comparison_census.go. A key that states no identity is
+// census in querycensus/ordering_comparison_census.go. A key that states no identity is
 // UNADDRESSABLE, and the fix for one belongs at the producer that minted it
 // without the layout its ordinal indexes — never in a fallthrough here.
 //

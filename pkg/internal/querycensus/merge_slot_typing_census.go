@@ -24,7 +24,7 @@ import (
 // rather than dropped. A census deleted alongside the thing it happened to
 // share a file with is an unwatched live path.
 //
-// It is GATED (values.LegIdentityCensusEnabled) like its siblings. The site is
+// It is GATED (LegIdentityCensusEnabled) like its siblings. The site is
 // inside a planner rule, so totals count RULE FIRINGS, not queries.
 type mergeSlotClass int
 

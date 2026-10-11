@@ -55,7 +55,7 @@ func TestOrderingComparatorsDeclineNothingOnTheCorpus(t *testing.T) {
 
 		t.Logf("%v: total=%d fieldPairs=%d decided=%d declineResidual=%d "+
 			"residualLost=%d residualAgreed=%d nonFieldPairs=%d nonFieldBridgeOnly=%d",
-			site, c.Total, c.FieldPairs, c.FieldPairsDecided, c.DeclineResidual,
+			querycensus.OrderingComparisonSiteLabel(site), c.Total, c.FieldPairs, c.FieldPairsDecided, c.DeclineResidual,
 			c.ResidualMatchesLost, c.ResidualWeakerArmsAgreed,
 			c.NonFieldPairs, c.NonFieldBridgeOnly)
 
@@ -64,7 +64,7 @@ func TestOrderingComparatorsDeclineNothingOnTheCorpus(t *testing.T) {
 				"This test is then vacuous, and every zero below it is vacuous too. "+
 				"Either the census stopped being wired into the comparator or the "+
 				"corpus stopped reaching it; find out which before trusting any "+
-				"other assertion in this file.", site)
+				"other assertion in this file.", querycensus.OrderingComparisonSiteLabel(site))
 			continue
 		}
 
@@ -73,7 +73,7 @@ func TestOrderingComparatorsDeclineNothingOnTheCorpus(t *testing.T) {
 				"FieldValues.\n\n"+
 				"The identity arm is then dead at this site, so the transitivity it "+
 				"provides is untested by this corpus and the decline residual below "+
-				"is a zero over an empty set.", site, c.Total)
+				"is a zero over an empty set.", querycensus.OrderingComparisonSiteLabel(site), c.Total)
 		}
 
 		if c.DeclineResidual != 0 {
@@ -87,7 +87,7 @@ func TestOrderingComparatorsDeclineNothingOnTheCorpus(t *testing.T) {
 				"ordering key without the layout its ordinal indexes: find it (the "+
 				"candidate mints route through bakeOrderingColumnIn, the requested "+
 				"side through the translator's sort-key bakes) and give it the layout.",
-				site, c.DeclineResidual, c.FieldPairs, c.ResidualMatchesLost)
+				querycensus.OrderingComparisonSiteLabel(site), c.DeclineResidual, c.FieldPairs, c.ResidualMatchesLost)
 		}
 
 		if c.NonFieldBridgeOnly != 0 {
@@ -101,7 +101,7 @@ func TestOrderingComparatorsDeclineNothingOnTheCorpus(t *testing.T) {
 				"match at an ordering comparator, which is the comparison RFC-197 "+
 				"exists to remove. Find the pair and give it a column identity rather "+
 				"than accepting the name match.",
-				site, c.NonFieldBridgeOnly, c.NonFieldPairs)
+				querycensus.OrderingComparisonSiteLabel(site), c.NonFieldBridgeOnly, c.NonFieldPairs)
 		}
 	}
 }

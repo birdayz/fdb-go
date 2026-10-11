@@ -1200,7 +1200,7 @@ func rowSlotForLegColumn(rt *values.RecordType, name string, owner values.Correl
 				// that leg also states an identity — the fact that decides
 				// whether this reader can be re-keyed off the name.
 				if census != nil {
-					census.LegColumnProvenance(rt, name, false, flatAmbiguous, &leg, qual, owner)
+					census.LegColumnProvenance(rt, name, false, flatAmbiguous, &rt.Legs[i], qual, owner)
 				}
 				return k, legColumnBound
 			}
