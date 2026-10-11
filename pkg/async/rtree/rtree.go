@@ -1038,6 +1038,7 @@ func (rt *RTree) fuseIntermediate(tx fdb.WritableTransaction, path *updatePath, 
 // gatherIntermediateSiblings returns S intermediate siblings centered on childIdx,
 // loaded from FDB. Mirrors gatherLeafSiblings but for intermediate nodes.
 func (rt *RTree) gatherIntermediateSiblings(tx fdb.WritableTransaction, parent *intermediateNode, childIdx int) ([]*intermediateNode, int, error) {
+	// The leaf-level gather of the same operation already failed any splitS < 1.
 	s := min(rt.config.SplitS, len(parent.slots)) // see gatherLeafSiblings
 
 	// Center the window.
