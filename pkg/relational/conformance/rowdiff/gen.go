@@ -2306,7 +2306,7 @@ func renderLiteral(v any) string {
 // significant digits — e.g. float64(float32(0.1))). The sign is handled by
 // FormatFloat itself, including -0.0 (renders "-0", then ".0" is appended),
 // which already round-trips through this codebase's SQL surface (see
-// plandiff/corpus.go's "double_negative_zero" cases).
+// plandiff/seedcorpus/corpus.go's "double_negative_zero" cases).
 func renderFloatLiteral(v float64) string {
 	if math.IsNaN(v) || math.IsInf(v, 0) {
 		panic(fmt.Sprintf("rowdiff: NaN/Infinity has no SQL literal spelling (%v) — see the ColType doc comment", v))

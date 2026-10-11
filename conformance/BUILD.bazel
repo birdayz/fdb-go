@@ -436,6 +436,7 @@ go_test(
         "//pkg/recordlayer/query/plan/plans",
         "//pkg/relational/api",
         "//pkg/relational/conformance/plandiff",
+        "//pkg/relational/conformance/plandiff/seedcorpus",
         "//pkg/relational/conformance/yamsql",
         "//pkg/relational/core/catalog",
         "//pkg/relational/core/embedded",

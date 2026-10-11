@@ -1,0 +1,30 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "seedcorpus",
+    testonly = True,
+    srcs = [
+        "corpus.go",
+        "corpus_rfc082_divergences.go",
+        "corpus_rfc082_knownred.go",
+    ],
+    importpath = "fdb.dev/pkg/relational/conformance/plandiff/seedcorpus",
+    visibility = ["//visibility:public"],
+    deps = ["//pkg/relational/conformance/plandiff"],
+)
+
+go_test(
+    name = "seedcorpus_test",
+    # Drives every SeedRunCorpus entry through FDB; same budget as plandiff_test.
+    timeout = "long",
+    srcs = ["corpus_test.go"],
+    embed = [":seedcorpus"],
+    tags = [
+        "resources:cpu:2",
+        "resources:memory:400",
+    ],
+    deps = [
+        "//pkg/relational/conformance/plandiff",
+        "//pkg/testcontainers/foundationdb",
+    ],
+)

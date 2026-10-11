@@ -143,7 +143,7 @@ through and only rejects definitively-typed non-boolean values (concrete `Boolea
   "documented divergence" note; assert `SELECT id FROM a WHERE flag` yields exactly `[1]` (`setupBoolDB`
   inserts `a=(1,true),(2,false),(3,null)` — identical to the green `WHERE flag = TRUE`). Add a
   `WHERE NOT flag` row assertion to pin the already-green path stays green.
-- **Corpus flip** — `pkg/relational/conformance/plandiff/corpus_rfc082_divergences.go:41` entry
+- **Corpus flip** — `pkg/relational/conformance/plandiff/seedcorpus/corpus_rfc082_divergences.go:41` entry
   `bare_bool_where_rejected` is currently `DivergenceJavaSucceedsGoRejects`; after the fix it becomes
   parity (both engines plan it) → reclassify/remove. Run the full `embedded` + `sqldriver` + `plandiff`
   suites; any test asserting `WHERE <nonbool>` expecting `0AF00` updates to `42804`.

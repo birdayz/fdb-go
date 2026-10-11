@@ -60,7 +60,7 @@ type Divergence struct {
 
 // DivergenceDirection enumerates the cross-engine divergence shapes.
 // Defined as a string type for grep-friendly corpus inspection
-// (`grep -c JavaErrorsGoCorrect corpus.go`).
+// (`grep -c JavaErrorsGoCorrect seedcorpus/corpus.go`).
 type DivergenceDirection string
 
 const (

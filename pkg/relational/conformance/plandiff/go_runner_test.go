@@ -203,65 +203,6 @@ func TestGoSQLRunner_ArrayCellIsNormalised(t *testing.T) {
 	}
 }
 
-// TestGoSQLRunner_SeedRunCorpus is a Go-side runner smoke test: every
-// SeedRunCorpus entry is driven through the embedded engine, and must not
-// panic or hit a Go-engine type gap. Cross-engine byte-equivalence with Java
-// is asserted in `conformance/run_sql_conformance_test.go` (the only place
-// that has both the Java conformance server AND the FDB testcontainer in
-// scope). Splitting the responsibilities keeps this package's tests running
-// without a Java dependency.
-//
-// Query errors are tolerated: the corpus carries negative entries that Java
-// rejects and Go rejects too, so a non-nil error is not by itself a failure.
-// What is NOT tolerated is a Go-engine TYPE gap (isGoFeatureGap) — a DDL or
-// metadata-builder rejection means the corpus declares a column type the Go
-// engine cannot represent, and that must fail loudly rather than pass quietly.
-func TestGoSQLRunner_SeedRunCorpus(t *testing.T) {
-	t.Parallel()
-	if goSQLClusterFilePath == "" {
-		t.Skip("FDB not available (no Docker)")
-	}
-
-	r := NewGoSQLSetupRunner(goSQLClusterFilePath)
-	for _, q := range SeedRunCorpus() {
-		q := q
-		t.Run(q.Name, func(t *testing.T) {
-			t.Parallel()
-			// Go-runner-only smoke test: confirms each entry runs
-			// through Go's embedded engine without panic. Whether Go's
-			// behaviour matches Java is asserted in the cross-engine
-			// conformance test (run_sql_conformance_test.go). Ordinary
-			// query errors are tolerated — negative entries that Java
-			// rejects also error in Go after alignment work.
-			got := r.RunWithSetup(context.Background(), q.SchemaTemplate, q.SetupSqls, q.Query)
-			if got.Err != nil && isGoFeatureGap(got.Err) {
-				t.Fatalf("Go-engine type gap: %v — the corpus declares a column type the Go "+
-					"engine cannot represent; close the gap rather than tolerating it", got.Err)
-			}
-		})
-	}
-}
-
-// isGoFeatureGap recognises errors that mean "the Go embedded engine cannot
-// represent this column type" (vs. an ordinary query rejection). Patterns:
-//   - "unsupported column type": DDL parser-level rejection.
-//   - "unsupported DataType code": metadata-builder-level rejection
-//     for types whose DDL is accepted but proto-mapping isn't wired.
-//
-// No SeedRunCorpus entry hits this path today — every entry's schema uses a
-// type the engine models end-to-end. It is a gate, not a tolerance: a corpus
-// entry that introduces a not-yet-modelled type names the gap in the failure
-// message instead of surfacing as an opaque strict-equivalence mismatch
-// downstream.
-func isGoFeatureGap(err error) bool {
-	if err == nil {
-		return false
-	}
-	s := err.Error()
-	return strings.Contains(s, "unsupported column type") ||
-		strings.Contains(s, "unsupported DataType code")
-}
-
 // TestGoSQLRunner_NullPassThrough pins NULL handling: a SELECT on a
 // NULL column produces nil in the resulting RowSet (matches Java's
 // JSON-NULL encoding).
