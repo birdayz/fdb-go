@@ -1,0 +1,20 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "integration_test",
+    srcs = ["smoke_test.go"],
+    args = [
+        "-go-binary=$(rlocationpath //tools/clientbench/cmd/clientbench:clientbench_go)",
+        "-cgo-binary=$(rlocationpath //tools/clientbench/cmd/clientbench:clientbench_cgo)",
+    ],
+    data = [
+        "//tools/clientbench/cmd/clientbench:clientbench_cgo",
+        "//tools/clientbench/cmd/clientbench:clientbench_go",
+    ],
+    tags = ["resources:memory:750"],
+    deps = [
+        "//pkg/testcontainers/foundationdb",
+        "//tools/clientbench/internal/bench",
+        "@rules_go//go/runfiles",
+    ],
+)

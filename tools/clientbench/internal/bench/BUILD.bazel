@@ -1,0 +1,26 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "bench",
+    srcs = [
+        "counters.go",
+        "lifecycle.go",
+        "profile.go",
+        "run.go",
+        "workload.go",
+    ],
+    importpath = "fdb.dev/tools/clientbench/internal/bench",
+    visibility = ["//tools/clientbench:__subpackages__"],
+)
+
+go_test(
+    name = "bench_test",
+    srcs = [
+        "batch_value_test.go",
+        "batchset50_test.go",
+        "bench_test.go",
+        "counters_test.go",
+        "lifecycle_test.go",
+    ],
+    embed = [":bench"],
+)
