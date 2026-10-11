@@ -303,7 +303,7 @@ func (c *countKVCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexEn
 
 func (c *countKVCursor) makeContinuation(key fdb.Key) ([]byte, error) {
 	var keySuffix []byte
-	if len(key) > c.prefixLength {
+	if len(key) >= c.prefixLength {
 		keySuffix = key[c.prefixLength:]
 	} else {
 		keySuffix = key

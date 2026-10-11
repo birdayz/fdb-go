@@ -279,7 +279,7 @@ func (c *keyValueCursor) OnNext(ctx context.Context) (RecordCursorResult[*FDBSto
 	// For split records, this is the last chunk's key (e.g., suffix 3).
 	// This ensures resuming starts after the complete record.
 	var keySuffix []byte
-	if len(lastKey) > c.prefixLength {
+	if len(lastKey) >= c.prefixLength {
 		keySuffix = lastKey[c.prefixLength:]
 	} else {
 		keySuffix = lastKey
@@ -772,7 +772,7 @@ func (c *keyValueCursor) nextKV() (fdb.KeyValue, bool, error) {
 // makeKeyContinuation creates a proto-wrapped continuation from an FDB key.
 func (c *keyValueCursor) makeKeyContinuation(key fdb.Key) ([]byte, error) {
 	var keySuffix []byte
-	if len(key) > c.prefixLength {
+	if len(key) >= c.prefixLength {
 		keySuffix = key[c.prefixLength:]
 	} else {
 		keySuffix = key

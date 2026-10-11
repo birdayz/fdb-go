@@ -71,22 +71,20 @@ func TestIndexCursorLazyContinuationBytes(t *testing.T) {
 	long[0].Key = prefixed.Pack(tuple.Tuple{string(bytes.Repeat([]byte{'x'}, 300))}) // multi-byte varint length
 
 	cases := []struct {
-		name     string
-		ss       subspace.Subspace
-		kvs      []fdb.KeyValue
-		props    ExecuteProperties
-		skipJava bool
+		name  string
+		ss    subspace.Subspace
+		kvs   []fdb.KeyValue
+		props ExecuteProperties
 	}{
-		{"forward-exhausted", prefixed, keys(prefixed, 5), ExecuteProperties{}, false},
-		{"reverse-exhausted", prefixed, reversed(keys(prefixed, 5)), ExecuteProperties{}, false},
-		{"row-limit-middle", prefixed, keys(prefixed, 5), ExecuteProperties{ReturnedRowLimit: 2}, false},
-		{"row-limit-reverse", prefixed, reversed(keys(prefixed, 5)), ExecuteProperties{ReturnedRowLimit: 3}, false},
-		{"scan-limit", prefixed, keys(prefixed, 5), ExecuteProperties{ScannedRecordsLimit: 2}, false},
-		{"empty-scan", prefixed, nil, ExecuteProperties{}, false},
-		{"empty-subspace-prefix", empty, keys(empty, 3), ExecuteProperties{}, false},
-		// Known Java divergence (TODO.md): Go emits the whole key here, Java an empty suffix.
-		{"key-equals-prefix", prefixed, []fdb.KeyValue{{Key: fdb.Key(prefixed.Bytes())}}, ExecuteProperties{}, true},
-		{"long-suffix", prefixed, long, ExecuteProperties{}, false},
+		{"forward-exhausted", prefixed, keys(prefixed, 5), ExecuteProperties{}},
+		{"reverse-exhausted", prefixed, reversed(keys(prefixed, 5)), ExecuteProperties{}},
+		{"row-limit-middle", prefixed, keys(prefixed, 5), ExecuteProperties{ReturnedRowLimit: 2}},
+		{"row-limit-reverse", prefixed, reversed(keys(prefixed, 5)), ExecuteProperties{ReturnedRowLimit: 3}},
+		{"scan-limit", prefixed, keys(prefixed, 5), ExecuteProperties{ScannedRecordsLimit: 2}},
+		{"empty-scan", prefixed, nil, ExecuteProperties{}},
+		{"empty-subspace-prefix", empty, keys(empty, 3), ExecuteProperties{}},
+		{"key-equals-prefix", prefixed, []fdb.KeyValue{{Key: fdb.Key(prefixed.Bytes())}}, ExecuteProperties{}},
+		{"long-suffix", prefixed, long, ExecuteProperties{}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -127,10 +125,7 @@ func TestIndexCursorLazyContinuationBytes(t *testing.T) {
 					break
 				}
 				key := tc.kvs[row].Key
-				suffix := []byte(key)
-				if len(key) > c.prefixLength {
-					suffix = key[c.prefixLength:]
-				}
+				suffix := []byte(key[c.prefixLength:])
 				eager, err := wrapContinuation(suffix)
 				if err != nil {
 					t.Fatal(err)
@@ -138,7 +133,7 @@ func TestIndexCursorLazyContinuationBytes(t *testing.T) {
 				if !bytes.Equal(got, eager) {
 					t.Fatalf("row %d: lazy %x != eager %x", row, got, eager)
 				}
-				if java := javaContinuationBytes(key, c.prefixLength); !tc.skipJava && !bytes.Equal(got, java) {
+				if java := javaContinuationBytes(key, c.prefixLength); !bytes.Equal(got, java) {
 					t.Fatalf("row %d: lazy %x != java %x", row, got, java)
 				}
 				if res.GetContinuation().IsEnd() != (&BytesContinuation{bytes: eager}).IsEnd() {
@@ -246,5 +241,40 @@ func TestIndexCursorRowAllocs(t *testing.T) {
 	const want = 3
 	if perRow != want {
 		t.Fatalf("indexCursor allocates %v per row, want %d", perRow, want)
+	}
+}
+
+// TestKeyContinuationEmptySuffixMatchesJava pins Java's toProto for a key equal to the
+// prefix (KeyValueCursorBase.java:233-235): an empty but present suffix, 0A 00 11 <magic>.
+func TestKeyContinuationEmptySuffixMatchesJava(t *testing.T) {
+	t.Parallel()
+	ss := subspace.Sub("idx", int64(7))
+	key := fdb.Key(ss.Bytes())
+	pl := len(key)
+	want := binary.LittleEndian.AppendUint64([]byte{0x0A, 0x00, 0x11}, uint64(continuationMagicNumber))
+
+	idx, err := (&indexCursor{prefixLength: pl}).makeContinuation(key).ToBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	count, err := (&countKVCursor{prefixLength: pl}).makeContinuation(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bitmap, err := (&bitmapKVCursor{prefixLength: pl}).makeContinuation(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kvc, err := (&keyValueCursor{prefixLength: pl}).makeKeyContinuation(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, got := range map[string][]byte{"index": idx, "count": count, "bitmap": bitmap, "keyValue": kvc} {
+		if !bytes.Equal(got, want) {
+			t.Errorf("%s cursor: %x, want Java's %x", name, got, want)
+		}
+	}
+	if (&keyValueContinuation{suffix: key[pl:]}).IsEnd() {
+		t.Error("an empty suffix is a real position, not the end")
 	}
 }
