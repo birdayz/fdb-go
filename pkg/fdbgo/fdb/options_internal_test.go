@@ -3,6 +3,7 @@ package fdb
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"fdb.dev/pkg/fdbgo/client"
 	"fdb.dev/pkg/fdbgo/wire"
@@ -36,20 +37,26 @@ func TestSetMaxWatches_FacadeConvertsError(t *testing.T) {
 
 const absoluteMaxWatchesFacade = 1_000_000
 
-// TestNewFutureNilCancel_CancelRunsHook pins that a Watch future's Cancel() actually runs its cancel
-// hook (which cancels the watch context so the poll drains and releases its outstanding-watch slot),
-// instead of the base futureBase.Cancel() no-op that left the slot charged. The fn here
-// stands in for WatchPoll (blocks until cancelled); the hook for the scoped cancel (releases the poll).
+// TestNewFutureNilCancel_CancelRunsHook pins that a Watch future's Cancel() runs its cancel hook
+// (which cancels the watch context so the poll drains and releases its outstanding-watch slot) and
+// completes the future with operation_cancelled (1101), as fdb_future_cancel does.
 func TestNewFutureNilCancel_CancelRunsHook(t *testing.T) {
 	t.Parallel()
 	release := make(chan struct{})
+	polled := make(chan struct{})
 	f := newFutureNilCancel(
-		func() error { <-release; return errors.New("polled") },
+		func() error { <-release; close(polled); return errors.New("polled") },
 		func() { close(release) },
 	)
-	f.Cancel() // must run the hook (base future Cancel is a no-op — the bug)
-	if err := f.Get(); err == nil || err.Error() != "polled" {
-		t.Fatalf("Cancel must run the hook so the future's fn completes, got %v", err)
+	f.Cancel()
+	select {
+	case <-polled:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Cancel did not run the hook")
+	}
+	var fe Error
+	if err := f.Get(); !errors.As(err, &fe) || fe.Code != 1101 {
+		t.Fatalf("Get after Cancel = %v, want operation_cancelled (1101)", err)
 	}
 }
 

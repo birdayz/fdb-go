@@ -474,11 +474,7 @@ func (tr Transaction) LocalityGetAddressesForKey(key KeyConvertible) FutureStrin
 func newFutureStringSlice(fn func() ([]string, error)) FutureStringSlice {
 	f := &futureStringSlice{}
 	f.init()
-	go func() {
-		defer close(f.done)
-		defer recoverFuturePanic(func(e error) { f.err = e }) // RFC-110
-		f.val, f.err = fn()
-	}()
+	runFuture(&f.futureBase, &f.val, fn)
 	return f
 }
 
