@@ -44,10 +44,18 @@ Older minors are best-effort until `v1`. Security fixes land on the latest suppo
 packages. Dependencies are pinned in `go.mod` / `MODULE.bazel`; report any
 known-vulnerable dependency you spot.
 
-Known accepted exception: `pkg/testcontainers` wraps the Docker SDK
-(`github.com/docker/docker`) **for tests only** (it is not part of the shipped
-library). That SDK currently has open upstream advisories with **no fixed
-release** (e.g. GO-2026-4887, GO-2026-4883), so the CI vulnerability scan excludes
-`pkg/testcontainers` and `pkg/relational/sqltest` (the end-to-end SQL test suite,
-whose shared `testkit` library imports it). These do not affect production use; they will be picked up
-when an upstream fix ships.
+The CI scan excludes `pkg/testcontainers` and `pkg/relational/sqltest`, whose
+shared `testkit` imports the container helpers. These helpers wrap Docker's
+client SDK for tests and developer/stress tools (including `factory-run`,
+`factory-migrate`, `fdb-binding-stress`, and `sql-diff-stress`); neither the
+production library nor the released `frl` CLI imports them. The exclusion is
+not a clean bill of health for the dependency graph or developer workloads.
+
+The legacy `github.com/docker/docker` module has open advisories concerning
+Docker **daemon** archive/mount handling and plugin privilege validation, not
+the imported client/API implementations. Some have no patched version listed
+for that legacy Go module, which does not mean upstream daemon fixes are
+unavailable. Fixture operations still contact a real Docker Engine: use a
+patched daemon and trusted container images. Updating Go SDK dependencies does
+**not** update or patch the host daemon. Available dependency security fixes
+must be applied independently of that daemon/client distinction.
