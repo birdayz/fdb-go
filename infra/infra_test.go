@@ -127,6 +127,13 @@ func TestReapLeakedContainersScript(t *testing.T) {
 	runShellSuite(t, "reap_leaked_containers_test.sh")
 }
 
+// TestWireOracleScopeScript drives the PR scope decision for the wire-type oracle job:
+// it may skip only when no changed file reaches the oracle's Bazel inputs.
+func TestWireOracleScopeScript(t *testing.T) {
+	t.Parallel()
+	runShellSuite(t, "wire_oracle_scope_test.sh")
+}
+
 func runShellSuite(t *testing.T, script string) {
 	t.Helper()
 	// The suites resolve the repo from their own path (dirname $0/..), which holds both in

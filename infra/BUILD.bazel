@@ -37,6 +37,8 @@ go_test(
         "reap-leaked-containers.sh",
         "reap_leaked_containers_test.sh",
         "runner-job-guard.sh",
+        "wire-oracle-scope.sh",
+        "wire_oracle_scope_test.sh",
         "//:go.mod",
         "//:justfile",
         "//cmd/fdb-diff-oracle:BUILD.bazel",
