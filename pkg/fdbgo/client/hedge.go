@@ -2,9 +2,11 @@ package client
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"fdb.dev/pkg/fdbgo/transport"
+	"fdb.dev/pkg/fdbgo/wire"
 )
 
 // rpcAccount carries the QueueModel bookkeeping for one started request:
@@ -85,7 +87,7 @@ func sendFrameWithHedge(
 		// Primary replied before hedge timer. Use it.
 		pResult.replyHandle.Release()
 		res := processReply(pResult, resp)
-		if res.err == nil {
+		if res.err == nil || !movesToNextAlternative(ctx, res.err) {
 			return res
 		}
 		// A failed alternative is not a tried secondary: C++ loadBalance moves on
@@ -121,6 +123,22 @@ func sendFrameWithHedge(
 		// LoadBalance's ModelHolder RAII releases on cancel too).
 		return hedgeResult{addr: pResult.addr, delta: pResult.delta, start: pResult.start, err: ctx.Err()}
 	}
+}
+
+// movesToNextAlternative reports whether C++ loadBalance retries the next
+// alternative after this outcome (checkAndProcessResultImpl,
+// LoadBalance.actor.h:344-377): a transport or maybe-delivered failure,
+// server_overloaded or process_behind. Any other error is the answer, and a
+// cancelled caller sends nothing more.
+func movesToNextAlternative(ctx context.Context, err error) bool {
+	if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var fdbErr *wire.FDBError
+	if !errors.As(err, &fdbErr) {
+		return true
+	}
+	return isMaybeDelivered(err) || fdbErr.Code == ErrProcessBehind || fdbErr.Code == ErrServerOverloaded
 }
 
 // sendFunc prepares and sends an RPC to a server. Returns the in-flight state

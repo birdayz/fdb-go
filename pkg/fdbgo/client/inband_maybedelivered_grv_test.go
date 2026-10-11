@@ -11,7 +11,7 @@ import (
 	"fdb.dev/pkg/fdbgo/wire/types"
 )
 
-// AN IN-BAND maybeDelivered MUST NOT TOUCH THE FAILURE MONITOR OR THE POOL.
+// AN IN-BAND maybeDelivered FAILS ONLY THE ENDPOINT, NEVER THE ADDRESS OR THE POOL.
 //
 // This regression was found by reading, not by the suite: the first version of
 // the in-band arm called handleConnError, and restoring it left 874 tests
@@ -23,9 +23,9 @@ import (
 // well-formed reply just arrived on it -- and connPool is keyed by ADDRESS. A
 // single-process FDB collocates GrvProxy and CommitProxy on one connection, so
 // evicting it for a dying GrvProxy pushes an in-flight COMMIT into resp.Err,
-// which the commit path maps to commit_unknown_result. C++ does not do this:
-// basicLoadBalance's maybeDelivered arm touches neither IFailureMonitor nor the
-// connection (LoadBalance.actor.h:823-833).
+// which the commit path maps to commit_unknown_result. C++ does not do this: it
+// fails only the endpoint (waitValueOrSignal, genericactors.actor.h:397-402),
+// never the address or the connection (LoadBalance.actor.h:823-833).
 //
 // NOT covered here, stated first because the positive claim is narrow:
 //   - the commit arm. Its equivalent conversion is pinned only at the
@@ -34,13 +34,13 @@ import (
 //     harness does not have.
 //   - the next-alternative BEHAVIOUR. With one proxy in the sim there is no
 //     other alternative to observe, so what is pinned is that the request
-//     survives and the address is untouched -- not that a second proxy was
-//     tried.
+//     waits for and completes on the replacement proxy and the address is
+//     untouched -- not that a second proxy was tried.
 func TestInBandMaybeDeliveredLeavesGRVProxyUntouched(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	db, sd := newSimTestDB(t, ctx)
+	db, sd, container := newSimTestDBContainer(t, ctx)
 
 	b := db.db.grvBatchers[grvBatcherDefault]
 	// Warm: learn the proxies and establish the connection the intercept arms.
@@ -136,10 +136,39 @@ func TestInBandMaybeDeliveredLeavesGRVProxyUntouched(t *testing.T) {
 	// these two sentinels read it this way.
 	armBefore := db.db.metrics.Snapshot().GRVInBandMaybeDelivered
 	db.db.grvCache.invalidate() // force a real round trip, not a cache hit
-	if _, _, _, err := b.getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, nil, false, false); err != nil {
-		t.Fatalf("GRV returned %v; an in-band 1100 must be absorbed and retried, "+
-			"not surfaced -- 1100 is retryable under none of the three predicates, "+
-			"so surfacing it fails the caller's transaction terminally", err)
+	done := make(chan error, 1)
+	go func() {
+		_, _, _, err := b.getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, nil, false, false)
+		done <- err
+	}()
+	// C++ fails the endpoint for good (waitValueOrSignal, genericactors.actor.h:397-402)
+	// and basicLoadBalance then waits for it to come back, which it never does
+	// (LoadBalance.actor.h:796-807), so the GRV waits for a proxy change
+	// (NativeAPI.actor.cpp:7253-7262). Here the only proxy stays, so it must wait.
+	for !db.db.failMon.endpointFailed(addr, proxies[0].Token) {
+		select {
+		case err := <-done:
+			t.Fatalf("GRV ended (%v) before its proxy endpoint was failed", err)
+		case <-ctx.Done():
+			t.Fatal("the in-band 1100 never failed the proxy endpoint:", ctx.Err())
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("GRV ended (%v) on a failed endpoint with no proxy change", err)
+	default:
+	}
+	replaceProxies(t, ctx, container)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("GRV returned %v; an in-band 1100 must be absorbed, not surfaced -- "+
+				"1100 is retryable under none of the three predicates, so surfacing it "+
+				"fails the caller's transaction terminally", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("GRV did not complete on the replacement proxy:", ctx.Err())
 	}
 
 	if injected.Load() == 0 {

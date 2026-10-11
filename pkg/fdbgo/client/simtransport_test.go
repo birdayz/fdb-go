@@ -16,6 +16,7 @@ import (
 	"fdb.dev/pkg/fdbgo/transport"
 	"fdb.dev/pkg/fdbgo/wire"
 	"fdb.dev/pkg/fdbgo/wire/types"
+	tcfdb "fdb.dev/pkg/testcontainers/foundationdb"
 )
 
 // simtransport_test.go is the consolidated frame-level fault-injection harness —
@@ -167,11 +168,18 @@ func (d *simDialer) armAll() {
 // and returns a Database dialing through a simDialer with no intercept set yet.
 func newSimTestDB(t *testing.T, ctx context.Context) (*Database, *simDialer) {
 	t.Helper()
-	connectCF := startProxyFDB(t, ctx)
+	db, d, _ := newSimTestDBContainer(t, ctx)
+	return db, d
+}
+
+// newSimTestDBContainer is newSimTestDB that also returns the container.
+func newSimTestDBContainer(t *testing.T, ctx context.Context) (*Database, *simDialer, *tcfdb.Container) {
+	t.Helper()
+	connectCF, c := startProxyFDBContainer(t, ctx)
 	d := newSimDialer()
 	db := newTestDatabase(t, ctx, connectCF, d.dial)
 	t.Cleanup(func() { db.Close() })
-	return db, d
+	return db, d, c
 }
 
 // storageAddrFor returns the storage server address serving key (Servers[0]),
