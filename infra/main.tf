@@ -95,7 +95,7 @@ variable "runner_ephemeral" {
 # Single source of truth: every runner download is pinned to a version AND verified
 # against the checksum here before use. A version bump is ONE reviewed diff that changes
 # {version, sha256} together — never one without the other. Checksums fetched + verified
-# 2026-06-14 (runner/just/mc from upstream-published sums; bazelisk/fdb-deb computed).
+# 2026-06-14 (runner/just from upstream-published sums; bazelisk/fdb-deb computed).
 locals {
   versions = {
     # GitHub Actions runner (was releases/latest — now pinned). SHA from the release body.
@@ -124,9 +124,6 @@ locals {
     # just task runner (was curl|bash — now a pinned, verified release tarball).
     just_version = "1.48.1"
     just_sha256  = "9293e553ce401d1b524bf4e104918f72f268e3f9c6827e0055fe98d84a1b2522"
-    # MinIO client (was the rolling :latest object — now a dated, verified release).
-    mc_release = "mc.RELEASE.2025-05-21T01-59-54Z"
-    mc_sha256  = "fb11c542a9d781fb228de1126c267a7933e98bee831654462fb352d5c9e94d24"
     # FoundationDB clients .deb — host libfdb_c for the cgo differential harness. The
     # version lives HERE (not a tofu variable) so it is LOCKED to its checksum: overriding
     # the version without updating the SHA would make fetch-verified.sh abort (codex). MUST
@@ -171,7 +168,7 @@ resource "hcloud_server" "runner" {
   location = "nbg1"
   # Rolling Hetzner system-image label (RFC-108 §3): Hetzner refreshes the 24.04 image
   # over time, so the base OS point-release can drift between provisions. Every TOOL the
-  # tests use (runner, bazelisk, just, mc, FDB client) is pinned + checksummed on top of
+  # tests use (runner, bazelisk, just, FDB client) is pinned + checksummed on top of
   # this, so the drift is bounded to the apt baseline; pinning to a captured user-snapshot
   # is a follow-up (Hetzner does not expose a stable id for the maintained system images).
   image    = "ubuntu-24.04"
@@ -193,8 +190,6 @@ resource "hcloud_server" "runner" {
     bazelisk_sha256     = local.versions.bazelisk_sha256
     just_version        = local.versions.just_version
     just_sha256         = local.versions.just_sha256
-    mc_release          = local.versions.mc_release
-    mc_sha256           = local.versions.mc_sha256
     fdb_clients_sha256  = local.versions.fdb_clients_sha256
     # bazelscaleset (RFC-155)
     runner_mode                       = var.runner_mode
@@ -296,8 +291,6 @@ resource "hcloud_server" "runner_pool" {
     bazelisk_sha256                   = local.versions.bazelisk_sha256
     just_version                      = local.versions.just_version
     just_sha256                       = local.versions.just_sha256
-    mc_release                        = local.versions.mc_release
-    mc_sha256                         = local.versions.mc_sha256
     fdb_clients_sha256                = local.versions.fdb_clients_sha256
     runner_mode                       = var.runner_mode
     bazelscaleset_app_client_id       = var.bazelscaleset_app_client_id
@@ -360,6 +353,8 @@ resource "hcloud_volume" "runner_data" {
 }
 
 # --- Object Storage (test reports) ---
+# No longer written: master's report is published on fdb.dev (website.yml). Kept so apply
+# does not destroy the bucket and its old reports.
 
 resource "minio_s3_bucket" "reports" {
   bucket = "fdb-record-layer-go-reports"
@@ -387,8 +382,4 @@ output "server_ip" {
 
 output "ssh_command" {
   value = "ssh root@${hcloud_server.runner.ipv4_address}"
-}
-
-output "report_url" {
-  value = "https://${minio_s3_bucket.reports.bucket}.${var.s3_endpoint}/reports/master/latest.html"
 }

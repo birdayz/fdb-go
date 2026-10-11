@@ -11,6 +11,96 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+func TestWebsiteReportPreservedOnEveryDeploy(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile("../.github/workflows/website.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflow struct {
+		Jobs map[string]struct {
+			Steps []struct {
+				Name string `yaml:"name"`
+				Run  string `yaml:"run"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(data, &workflow); err != nil {
+		t.Fatal(err)
+	}
+	var script string
+	for _, step := range workflow.Jobs["build"].Steps {
+		if step.Name == "Add master's latest test report" {
+			if script != "" {
+				t.Fatal("duplicate report step")
+			}
+			script = step.Run
+		}
+	}
+	if script == "" {
+		t.Fatal("website build has no report step")
+	}
+	for _, event := range []string{"push", "workflow_dispatch", "workflow_run"} {
+		for _, mode := range []string{"artifact", "live", "missing", "api-error", "download-error"} {
+			t.Run(event+"/"+mode, func(t *testing.T) {
+				t.Parallel()
+				root := t.TempDir()
+				bin := filepath.Join(root, "bin")
+				if err := os.MkdirAll(bin, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				stubs := map[string]string{
+					"gh": `#!/bin/bash
+set -eu
+case "$*" in
+  *'/actions/workflows/'*)
+    [ "$REPORT_MODE" != api-error ] || exit 1
+    if [ "$REPORT_MODE" = artifact ] || [ "$REPORT_MODE" = download-error ]; then echo 123; fi
+    ;;
+  *'/artifacts?name=test-report'*) echo 1 ;;
+  'run download '*)
+    [ "$REPORT_MODE" != download-error ] || exit 1
+    while [ "$1" != -D ]; do shift; done
+    mkdir -p "$2"
+    printf artifact > "$2/test-report.html"
+    ;;
+  *) exit 2 ;;
+esac
+`,
+					"curl": `#!/bin/bash
+set -eu
+while [ "$1" != -o ]; do shift; done
+mkdir -p "$(dirname "$2")"
+if [ "$REPORT_MODE" = live ]; then printf live > "$2"; else printf partial > "$2"; exit 22; fi
+`,
+				}
+				for name, stub := range stubs {
+					if err := os.WriteFile(filepath.Join(bin, name), []byte(stub), 0o700); err != nil {
+						t.Fatal(err)
+					}
+				}
+				cmd := exec.Command("bash", "-eo", "pipefail", "-c", strings.ReplaceAll(script, "${{ runner.temp }}", root))
+				cmd.Dir = root
+				cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "REPORT_MODE="+mode,
+					"GITHUB_REPOSITORY=fixture/repo", "GITHUB_EVENT_NAME="+event)
+				out, err := cmd.CombinedOutput()
+				wantSuccess := mode == "artifact" || mode == "live"
+				if (err == nil) != wantSuccess {
+					t.Fatalf("report step success = %v, want %v: %v\n%s", err == nil, wantSuccess, err, out)
+				}
+				page, readErr := os.ReadFile(filepath.Join(root, "website/public/reports/latest.html"))
+				if wantSuccess {
+					if readErr != nil || string(page) != mode {
+						t.Fatalf("published report = %q, want %q: %v", page, mode, readErr)
+					}
+				} else if !os.IsNotExist(readErr) {
+					t.Fatalf("failed report step left a deployable partial page: %q, %v", page, readErr)
+				}
+			})
+		}
+	}
+}
+
 // hetznerUserDataLimit is Hetzner's hard cap on hcloud_server.user_data. Exceeding it is
 // rejected by the API at apply time, before the box exists.
 const hetznerUserDataLimit = 32768
@@ -41,8 +131,6 @@ var templateVars = map[string]string{
 	"bazelisk_sha256":     strings.Repeat("0", 64),
 	"just_version":        "1.48.1",
 	"just_sha256":         strings.Repeat("0", 64),
-	"mc_release":          "mc.RELEASE.2025-05-21T01-59-54Z",
-	"mc_sha256":           strings.Repeat("0", 64),
 	"fdb_clients_sha256":  strings.Repeat("0", 64),
 	"runner_mode":         "classic",
 	"nat":                 "false",
@@ -619,58 +707,6 @@ func TestCloudInitBringsUpThePrivateNIC(t *testing.T) {
 				len(e.Nameservers.Addresses) > 0
 			if routed != (nat == "true") {
 				t.Errorf("default route via the NAT gateway = %v, want %v:\n%s", routed, nat == "true", data)
-			}
-		})
-	}
-}
-
-// TestCloudInitMcInstallIsBestEffort pins that a failed or mismatched mc download (dl.min.io
-// answers 410) neither aborts provisioning under set -eu nor leaves an unverified binary.
-func TestCloudInitMcInstallIsBestEffort(t *testing.T) {
-	t.Parallel()
-	var doc struct {
-		Runcmd []any `yaml:"runcmd"`
-	}
-	renderWith(t, nil, &doc)
-	var line string
-	for _, c := range doc.Runcmd {
-		if s, ok := c.(string); ok {
-			for _, l := range strings.Split(s, "\n") {
-				if strings.Contains(l, "client/mc/release") {
-					line = l
-				}
-			}
-		}
-	}
-	if line == "" {
-		t.Fatal("runcmd installs no mc")
-	}
-	for _, tc := range []struct {
-		name, stub string
-		installed  bool
-	}{
-		{"download fails", "exit 1", false},
-		{"checksum mismatch leaves a file", `echo bad > "$3"; exit 1`, false},
-		{"download verifies", `echo good > "$3"`, true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
-			fv := filepath.Join(dir, "fetch-verified.sh")
-			if err := os.WriteFile(fv, []byte("#!/bin/sh\n"+tc.stub+"\n"), 0o755); err != nil {
-				t.Fatal(err)
-			}
-			mc := filepath.Join(dir, "mc")
-			script := "set -eu\nFV=" + fv + "\n" + strings.ReplaceAll(line, "/usr/local/bin/mc", mc) + "\necho survived\n"
-			out, err := exec.Command("sh", "-c", script).CombinedOutput()
-			if err != nil || !strings.Contains(string(out), "survived") {
-				t.Fatalf("mc install aborted provisioning: %v\n%s", err, out)
-			}
-			st, statErr := os.Stat(mc)
-			if tc.installed != (statErr == nil) {
-				t.Fatalf("mc present = %v, want %v", statErr == nil, tc.installed)
-			}
-			if tc.installed && st.Mode()&0o111 == 0 {
-				t.Error("installed mc is not executable")
 			}
 		})
 	}

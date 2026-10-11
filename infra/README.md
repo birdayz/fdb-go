@@ -80,7 +80,8 @@ than a gate. If nightlies start being cancelled unacquired, revisit that.
 - `tofu` (or `terraform`) ≥ 1.7, the `hcloud` + `minio` providers (`tofu init`).
 - Environment / variables:
   - `HCLOUD_TOKEN` — Hetzner Cloud API token (provider auth).
-  - `MINIO_USER` / `MINIO_PASSWORD` — Hetzner Object Storage S3 credentials (for report upload).
+  - `MINIO_USER` / `MINIO_PASSWORD` — Hetzner Object Storage S3 credentials (the old
+    test-report bucket; CI no longer writes it).
   - `-var github_runner_token=<TOKEN>` — a **short-lived (~1 h)** runner registration token:
     `gh api -X POST repos/birdayz/fdb-go/actions/runners/registration-token --jq .token`.
     It is consumed once by `config.sh` at first boot and is useless afterward; nothing secret
@@ -98,15 +99,14 @@ tofu init        # once
 tofu apply       # provisions (or updates) gh-runner-fdb; prints server_ip / ssh_command
 ```
 
-`tofu output ssh_command` gives `ssh root@<ip>`. `tofu output report_url` is the published
-test-report URL.
+`tofu output ssh_command` gives `ssh root@<ip>`.
 
 ## What is pinned (and why it's reproducible)
 
 Every artifact the runner downloads is pinned to a **version AND a SHA-256**, verified by
 `fetch-verified.sh` before use — a corrupted/tampered/moved artifact aborts the provision
 instead of installing silently. The pins live in **one place**: the `locals.versions` block
-in `main.tf` (runner, bazelisk, just, mc, FDB client). Bump a tool by editing its
+in `main.tf` (runner, bazelisk, just, FDB client). Bump a tool by editing its
 `{version, sha256}` pair together — never one without the other.
 
 The **build itself** does not depend on this image: `.bazelversion` (Bazel 9.0.1) and
@@ -564,5 +564,3 @@ longer rationale for these lines lives here.
   surviving volume; a stopped one would otherwise stay down) before trying `docker run`, and
   only reports a failed start: a name conflict or pull failure would otherwise abort
   provisioning, leaving the box with no runner.
-- **mc.** `dl.min.io` answers 410 for the pinned archive; the install is best effort because
-  only the report upload uses it.
