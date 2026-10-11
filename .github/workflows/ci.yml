@@ -276,7 +276,7 @@ jobs:
     # RFC §7.) Active fuzzing is not a gate; `just verify` runs a fuzz smoke.
     runs-on: hetzner-fdb-vm
     # A cold C++ oracle build (once per FDB pin/build change) is long; later runs hit the disk/remote cache.
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - name: Checkout
         uses: actions/checkout@v5

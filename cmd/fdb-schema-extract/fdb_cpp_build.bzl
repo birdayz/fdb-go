@@ -1,9 +1,9 @@
 """Local Docker C++ actions with scheduler-accounted, enforced resource bounds."""
 
-# Compact fits the 4 vCPU / 8 GB CI runners: -j1 outran the CI job, -j3 OOM-killed cc1plus
-# (CommitProxyInterface.cpp) at 5120 MB. Default, since a non-default flag re-roots CI outputs.
+# Compact fits the 4 vCPU / 8 GB CI runners: at -j2 in 5120 or 6656 MB, NativeAPI beside another
+# heavy unit was OOM-killed; built alone first it peaks at 5.0 GB. Default: a flag re-roots CI outputs.
 _COMPACT_CPUS = 2
-_COMPACT_MEMORY_MB = 5120
+_COMPACT_MEMORY_MB = 6656
 _LARGE_CPUS = 4
 _LARGE_MEMORY_MB = 24576
 _BUILD_IMAGE = "foundationdb/build@sha256:c6133f7e7c2bde2130f712baf56f642ef3e6966bd4f9e4e6b83de14f2db3fd48"

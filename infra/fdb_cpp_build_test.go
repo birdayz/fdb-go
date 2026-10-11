@@ -60,10 +60,10 @@ func TestFDBCppBuildFailureAndCleanup(t *testing.T) {
 		}
 		profiles[profile] = constants
 	}
-	// The default profile must fit a cpx32 runner (main.tf) under Bazel's 0.67 of RAM,
-	// at -j2: -j3 without GC params OOM-killed cc1plus in 5120 MB on CI.
-	if c := profiles["compact"]; c["CPUS"] != "2" || c["MEMORY_MB"] != "5120" {
-		t.Errorf("compact profile = %s CPUs / %s MB, want 2 / 5120 for the 4 vCPU / 8 GB CI runners", c["CPUS"], c["MEMORY_MB"])
+	// The default profile must finish cold inside the CI job on a cpx32 runner (main.tf): -j2
+	// was OOM-killed or thrashed past the 60-minute job at 5120 MB.
+	if c := profiles["compact"]; c["CPUS"] != "2" || c["MEMORY_MB"] != "6656" {
+		t.Errorf("compact profile = %s CPUs / %s MB, want 2 / 6656 for the 4 vCPU / 8 GB CI runners", c["CPUS"], c["MEMORY_MB"])
 	}
 	commands := regexp.MustCompile(`(?s)fdb_cpp_build\(\s*name = "([^"]+)",.*?\n    cmd = """(.*?)"""`)
 	count := 0
