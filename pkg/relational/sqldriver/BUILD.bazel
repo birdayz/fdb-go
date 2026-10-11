@@ -94,6 +94,7 @@ go_test(
         "//pkg/recordlayer/keystoretest",
         "//pkg/relational/api",
         "//pkg/relational/api/ddl",
+        "//pkg/relational/core/catalog",
         "//pkg/relational/core/ddl",
         "//pkg/relational/core/embedded",
         "//pkg/relational/core/fleet",
@@ -102,6 +103,7 @@ go_test(
         "//pkg/relational/sqltest/testkit",
         "//pkg/simfdb",
         "@com_github_google_uuid//:uuid",
+        "@org_golang_google_protobuf//proto",
     ],
 )
 
@@ -123,11 +125,16 @@ go_test(
     deps = [
         "//pkg/dst",
         "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
         "//pkg/recordlayer",
         "//pkg/relational/api",
         "//pkg/relational/api/ddl",
+        "//pkg/relational/core/catalog",
         "//pkg/relational/core/embedded",
+        "//pkg/relational/core/fleet",
+        "//pkg/relational/core/keyspace",
         "//pkg/simfdb",
+        "@org_golang_google_protobuf//proto",
     ],
 )
 

@@ -41,6 +41,7 @@ import (
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/relational/core/exceptionutil"
 )
 
 // EmbeddedConnection is an in-process SQL connection backed by FDB.
@@ -1268,8 +1269,8 @@ func translateFDBError(err error) error {
 	if errors.As(err, &notExistErr) {
 		return api.WrapError(api.ErrCodeUnknown, "record does not exist", err)
 	}
-	if _, ok := api.FDBErrorCode(err); ok {
-		return api.TranslateFDBError(err)
+	if _, ok := exceptionutil.FDBErrorCode(err); ok {
+		return exceptionutil.TranslateFDBError(err)
 	}
 	// ExceptionUtil's default: a RecordCoreException no arm above claims is
 	// ErrorCode.UNKNOWN, and so is a non-RecordCore Java exception

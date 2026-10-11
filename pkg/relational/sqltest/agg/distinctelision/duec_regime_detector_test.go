@@ -342,7 +342,7 @@ func TestDuecRegimeVerdict_WithholdsWithoutSamples(t *testing.T) {
 // see the condition it guards is worse than no detector: it reads as armed.
 //
 // The wrapping half is load-bearing for both spellings. The probe never sees a
-// bare fdb.Error: api.TranslateFDBError turns 1007 into
+// bare fdb.Error: exceptionutil.TranslateFDBError turns 1007 into
 // api.Error{Code: 40001} and keeps the original as the cause, and database/sql
 // hands that through.
 //

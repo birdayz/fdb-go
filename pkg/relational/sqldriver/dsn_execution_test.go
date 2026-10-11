@@ -19,9 +19,15 @@ import (
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/recordlayer"
+	"google.golang.org/protobuf/proto"
+
+	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/relational/api"
 	apiddl "fdb.dev/pkg/relational/api/ddl"
+	"fdb.dev/pkg/relational/core/catalog"
 	"fdb.dev/pkg/relational/core/embedded"
+	"fdb.dev/pkg/relational/core/fleet"
+	"fdb.dev/pkg/relational/core/keyspace"
 	"fdb.dev/pkg/simfdb"
 )
 
@@ -346,6 +352,38 @@ func TestDSN_CatalogStoreFDBErrorsAreTranslated(t *testing.T) {
 			rec.failGets.Store(0)
 			check("ApplyMetadataOperation", err)
 		})
+	}
+}
+
+// fleet.RestoreTemplateVersion gives an FDB failure in a catalog store op its
+// SQLSTATE, as every other relational entry point does.
+func TestDSN_RestoreTemplateVersionTranslatesFDBErrors(t *testing.T) {
+	t.Parallel()
+	_, rec := openLimitsDB(t, "")
+	v, _ := fdbDBCache.Load("sim://" + t.Name())
+	db := v.(*recordlayer.FDBDatabase)
+	ks := keyspace.New(subspace.Sub())
+	cat, err := catalog.NewRecordLayerStoreCatalog(ks.CatalogSubspace())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	var md []byte
+	if _, err := db.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		p, err := cat.SchemaTemplateCatalog().LoadTemplateProto(catalog.NewFDBTransaction(rctx), "TMPL", 1)
+		if err == nil {
+			md, err = proto.Marshal(p)
+		}
+		return nil, err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rec.failGets.Store(1025)
+	err = fleet.RestoreTemplateVersion(ctx, db, cat, ks, "TMPL", 1, md)
+	rec.failGets.Store(0)
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeTransactionInactive {
+		t.Fatalf("got %v, want 25F01", err)
 	}
 }
 

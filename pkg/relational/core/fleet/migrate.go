@@ -15,6 +15,7 @@ import (
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/catalog"
 	"fdb.dev/pkg/relational/core/ddl"
+	"fdb.dev/pkg/relational/core/exceptionutil"
 	"fdb.dev/pkg/relational/core/keyspace"
 )
 
@@ -85,7 +86,7 @@ func SaveTemplate(ctx context.Context, db *recordlayer.FDBDatabase, cat api.Stor
 func RestoreTemplateVersion(ctx context.Context, db *recordlayer.FDBDatabase, cat *catalog.RecordLayerStoreCatalog,
 	ks *keyspace.RelationalKeyspace, templateName string, version int, md []byte,
 ) error {
-	return api.TranslateFDBError(cat.RestoreTemplateVersion(ctx, db, ks, templateName, version, md))
+	return exceptionutil.TranslateFDBError(cat.RestoreTemplateVersion(ctx, db, ks, templateName, version, md))
 }
 
 // Migrate rebinds every target onto template version targetVersion, ONE

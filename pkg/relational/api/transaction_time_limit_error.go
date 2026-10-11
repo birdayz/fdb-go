@@ -21,7 +21,7 @@ import (
 // It is a CAUSE carried under an *Error{Code: ErrCodeSerializationFailure}, never
 // a replacement for it. 40001 is deliberate and stays: no limit the caller can
 // raise makes an FDB transaction live longer than five seconds, and it is the same
-// code TranslateFDBError assigns to FDB's own transaction_too_old (1007), so retry
+// code exceptionutil.TranslateFDBError assigns to FDB's own transaction_too_old (1007), so retry
 // logic is uniform whether the driver pre-empts or FDB does.
 //
 // THE CODE ALONE CANNOT SAY WHICH CONDITION OCCURRED, and that is why this type
@@ -66,7 +66,7 @@ import (
 // intentional: Java's 54F01 covers scan/byte/row limits, every one of which the
 // caller can RAISE, and 54F01's contract is "you hit a limit — raise it". FDB's
 // MVCC window is raisable by nobody, so 54F01 would send the caller to a knob
-// that does not exist. 40001 is also what TranslateFDBError already assigns to
+// that does not exist. 40001 is also what exceptionutil.TranslateFDBError already assigns to
 // FDB's own 1007, so the choice keeps Go internally consistent: one code, one
 // condition, two producers.
 //
@@ -102,7 +102,7 @@ import (
 //     COMMON case by a wide margin: it fires a full second before FDB's wall,
 //     so a caller inside an explicit transaction almost never sees the other.
 //   - TimeLimitFDBTooOld — FDB's transaction_too_old (1007) at 5s, attached by
-//     TranslateFDBError. It is the residual: it arrives when the driver could not
+//     exceptionutil.TranslateFDBError. It is the residual: it arrives when the driver could not
 //     pre-empt, which is any read outside the page preflight or a backend that
 //     reports no read-version instant (the cgo escape hatch has no accessor).
 //
@@ -182,7 +182,7 @@ func NewTransactionTimeLimitError(elapsed, limit time.Duration) *Error {
 // same marker the driver's pre-emption carries, so that ONE predicate answers
 // "did this transaction outlive its MVCC window" whichever ceiling enforced it.
 //
-// Called from TranslateFDBError's 1007 arm — beside the SQLSTATE mapping rather
+// Called from exceptionutil.TranslateFDBError's 1007 arm — beside the SQLSTATE mapping rather
 // than anywhere else, because the two must not be able to drift: the code says
 // 40001 and the marker says why, and a future edit that changes one without the
 // other is visible in a single switch case.
