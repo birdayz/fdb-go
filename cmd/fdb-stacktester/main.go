@@ -1,6 +1,9 @@
+//go:build bazelrunfiles
+
 // fdb-stacktester implements the FDB binding tester stack machine.
 // It reads instructions from FDB, executes them, and writes results back.
-// Used with bindingtester.py for conformance testing.
+// Used with bindingtester.py for conformance testing. Bazel-only: the Apple
+// bindings' cgo needs the fdb_c.h that Bazel's @foundationdb repo provides.
 //
 // Usage: fdb-stacktester <prefix> <api-version> <cluster-file>
 package main

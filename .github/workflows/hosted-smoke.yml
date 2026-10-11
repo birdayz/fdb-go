@@ -4,8 +4,9 @@ name: Hosted Smoke (reproducibility floor)
 # -race, the 23 fuzz targets, the libfdb_c differential, all FDB-testcontainer tests) run
 # only on the self-hosted Hetzner box, so an external fork sees a green check it cannot
 # reproduce. This job runs the subset that needs NO self-hosted state and NO Docker/cgo —
-# build + vet + the pure wire/encoding unit tests (the bytes that must match Java/C++, the
-# project's wire-compat hard line) — on a stock `ubuntu-latest` with just the Go toolchain.
+# a whole-module build, plus vet + the pure wire/encoding unit tests (the bytes that must
+# match Java/C++, the project's wire-compat hard line) — on a stock `ubuntu-latest` with
+# just the Go toolchain.
 # It is a floor an adopter can re-run on their own infra, explicitly NOT a replacement for
 # the self-hosted gates. (A labelled Docker FDB-testcontainer smoke is future work — see RFC.)
 on:
@@ -71,7 +72,7 @@ jobs:
           echo "Bazel pinned to $(cat .bazelversion); MODULE.bazel.lock present ($(wc -c <MODULE.bazel.lock) bytes)"
 
       # The cgo/Docker packages (pkg/fdbgo/bench needs libfdb_c; the testcontainer suites
-      # need Docker) are deliberately excluded — this floor is the pure, dependency-free set.
+      # need Docker) are deliberately excluded — vet and test run on the pure set only.
       - name: Pure packages resolve (no-op guard)
         id: pkgs
         run: |
@@ -84,8 +85,10 @@ jobs:
       - name: go vet
         run: go vet ${{ steps.pkgs.outputs.pkgs }}
 
-      - name: go build
-        run: go build ${{ steps.pkgs.outputs.pkgs }}
+      # A fresh clone must build with only the Go toolchain: no Bazel, no fdb_c.h.
+      # cgo stays enabled so a package that needs fdb_c.h fails here.
+      - name: go build ./... (fresh clone)
+        run: go build ./...
 
       - name: go test (wire / tuple / subspace — wire-compat floor)
         run: go test -count=1 ${{ steps.pkgs.outputs.pkgs }}
