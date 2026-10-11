@@ -15,8 +15,8 @@ implemented behavior, regression coverage that exercises it end to end, truthful
 compatibility notes, and a green workstream—not merely types or rules that exist.
 The final migration receives the milestone review; no intermediate RFC rounds.
 
-`TODO_OLD.md` preserves the old backlog and evidence, not the active execution
-order. Historical audit/design source (not a current completion claim):
+The old backlog and its evidence (`TODO_OLD.md`) are in git history, not the active
+execution order. Historical audit/design source (not a current completion claim):
 
 ```
 git show 13d5a3d1e:rfcs/257-java-4.14.2.0-upgrade.md

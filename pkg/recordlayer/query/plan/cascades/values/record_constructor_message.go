@@ -172,7 +172,7 @@ func rowScalarToProtoValue(fd protoreflect.FieldDescriptor, v any) (protoreflect
 }
 
 // rowMessageToProtoValue accepts UUID bytes or proto messages, not unstamped row maps.
-// Unstamped-child refusals are tracked in TODO_OLD.md (duplicate join fields and unstamped record literals).
+// Unstamped-child refusals (duplicate join fields and unstamped record literals) are a known gap.
 func rowMessageToProtoValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.Value, error) {
 	md := fd.Message()
 	if md == nil {

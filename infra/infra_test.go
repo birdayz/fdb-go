@@ -402,11 +402,10 @@ func TestFleetGoMatchesGoMod(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read go.mod: %v", err)
 	}
-	g := regexp.MustCompile(`(?m)^go\s+(\S+)`).FindSubmatch(gomod)
-	if g == nil {
-		t.Fatal("go.mod has no `go` directive")
+	repo := goModBuildToolchain(gomod)
+	if repo == "" {
+		t.Fatal("go.mod has no Go build toolchain")
 	}
-	repo := string(g[1])
 
 	if fleet != repo {
 		t.Errorf("the fleet provisions Go %s but the repo builds with Go %s (go.mod, which is "+
@@ -414,6 +413,75 @@ func TestFleetGoMatchesGoMod(t *testing.T) {
 			"go_version AND go_sha256 together — a version bumped without its checksum fails "+
 			"provisioning at fetch-verified.sh, which is the loud outcome; a checksum left "+
 			"matching a stale version is the quiet one.", fleet, repo)
+	}
+}
+
+// rules_go prefers toolchain; setup-go v5 ignores it, so workflow pins are explicit.
+func goModBuildToolchain(gomod []byte) string {
+	g := regexp.MustCompile(`(?m)^toolchain\s+go(\S+)`).FindSubmatch(gomod)
+	if g == nil {
+		g = regexp.MustCompile(`(?m)^go\s+(\S+)`).FindSubmatch(gomod)
+	}
+	if g == nil {
+		return ""
+	}
+	return string(g[1])
+}
+
+func TestGoModBuildToolchain(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ mod, want string }{
+		{"module example\ngo 1.26.0\ntoolchain go1.26.9\n", "1.26.9"},
+		{"module example\ngo 1.26.0\n", "1.26.0"},
+		{"module example\n", ""},
+	} {
+		if got := goModBuildToolchain([]byte(tc.mod)); got != tc.want {
+			t.Errorf("goModBuildToolchain(%q) = %q, want %q", tc.mod, got, tc.want)
+		}
+	}
+}
+
+func TestWorkflowGoMatchesGoMod(t *testing.T) {
+	t.Parallel()
+	gomod, err := os.ReadFile("../go.mod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := goModBuildToolchain(gomod)
+	if want == "" {
+		t.Fatal("missing build toolchain")
+	}
+	for _, path := range []string{"../.github/workflows/ci.yml", "../.github/workflows/frl-release.yml"} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var workflow struct {
+			Jobs map[string]struct {
+				Steps []struct {
+					Uses string
+					With map[string]string
+				}
+			}
+		}
+		if err := yaml.Unmarshal(data, &workflow); err != nil {
+			t.Fatal(err)
+		}
+		count := 0
+		for job, spec := range workflow.Jobs {
+			for _, step := range spec.Steps {
+				if !strings.HasPrefix(step.Uses, "actions/setup-go@") {
+					continue
+				}
+				count++
+				if step.With["go-version"] != want || step.With["go-version-file"] != "" {
+					t.Errorf("%s job %s setup-go must pin %s explicitly", path, job, want)
+				}
+			}
+		}
+		if count == 0 {
+			t.Errorf("%s has no setup-go steps", path)
+		}
 	}
 }
 
@@ -446,15 +514,23 @@ func TestPRCIThirdPartyNoticesFreshness(t *testing.T) {
 	if !ok || job.If != "" || job.ContinueOnError {
 		t.Fatal("notice freshness must be in the required CI job")
 	}
+	gomod, err := os.ReadFile("../go.mod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolchain := goModBuildToolchain(gomod)
+	if toolchain == "" {
+		t.Fatal("missing notice build toolchain")
+	}
 	var check string
 	goReady := false
 	for _, step := range job.Steps {
 		if strings.HasPrefix(step.Uses, "actions/setup-go@") {
-			goReady = step.With["go-version-file"] == "go.mod" && step.If == "" && !step.ContinueOnError
+			goReady = step.With["go-version"] == toolchain && step.If == "" && !step.ContinueOnError
 		}
 		if step.Name == "Verify third-party notices are current" {
 			if !goReady || step.If != "" || step.ContinueOnError || check != "" {
-				t.Fatal("notice freshness must run once, after setup-go from go.mod, without an optional condition")
+				t.Fatal("notice freshness must run once, after setup-go with the pinned toolchain, without an optional condition")
 			}
 			check = step.Run
 		}

@@ -10,11 +10,10 @@ The reports in this directory were generated on **2026-03-09**, against an **ear
 
 **For current status, read the living docs and run the suites:**
 
-- `PRODUCTION_READINESS.md` — the single authoritative current-status page (target versions,
-  completed/unsupported features, links to authoritative tests).
+- [STATUS.md](../../../STATUS.md) — current readiness and test-evidence limits.
 - `README.md` — current feature surface and maturity.
 - `DIVERGENCES.md` — current Go-vs-Java divergence ledger (target: Java fdb-record-layer-core
-  **4.11.1.0**).
+  **4.14.2.0**).
 - `TODO.md` — open issues, including any wire-compat gaps these snapshots first noted that are
   still open (e.g. the format-version-<6 record-version read path).
 - The conformance (`//conformance:conformance_test`), cross-engine differential, and binding-stress

@@ -1,398 +1,134 @@
 # FoundationDB Record Layer — Go Port
 
-## ABSOLUTE PRIME DIRECTIVE: NO SKIPS
-
-**NEVER use t.Skip() to defer a failing test.** If a test fails, FIX IT. Immediately. No matter how long it takes, no matter how deep the rabbit hole goes. Skipping is forbidden. The only acceptable t.Skip is the runtime Docker check (`FDB not available (no Docker)`). Every other skip is a bug you're hiding. Hunt it down. Fix it. Principles first.
-
-## THERE ARE NO UNRELATED FLAKES — EVERY FLAKE GETS INVESTIGATED NOW
-
-**A flaky or intermittently-failing test is a REAL BUG, never noise to wave away.** "Unrelated flake," "just rerun CI," "not caused by my change," "known-flaky" are all FORBIDDEN rationalizations. A red CI is red — full stop. The moment any test fails or flakes (in CI, in `just test`, in a stress/fuzz run, anywhere), STOP and root-cause it immediately, even if it lives in a package your change never touched. Flakes are how real concurrency bugs, conflict-handling gaps, ordering assumptions, and resource leaks hide in plain sight — a transaction-conflict (`not_committed 1020`), a timeout, a watch that doesn't fire, a nondeterministic plan: each is a latent defect, not bad luck. Reproduce it (run it in a loop / under `--runs_per_test` / with `-race`), find the actual race or assumption, fix the code (or the test if the test's timing assumption is genuinely wrong — but prove that first), and pin it with a deterministic regression. Never merge or hand off with CI red or a flake outstanding. "It passed the second time" is not a fix; it's the bug still there.
-
-**A red nightly (fuzz / differential / conformance) is ALWAYS in scope — no freeze or owner directive exempts it.** A freeze gates NEW work, never triage of a red safety net; "the freeze says don't touch that package" is one more forbidden rationalization. Root-cause it immediately. If the fix is small, fix it in place; if it's large, surface it to the owner the SAME DAY with the root cause in hand. A safety net that stays red is not a safety net.
-
-## NO EXCUSES — DO THE WORK
-
-**Nothing is "gated," "blocked," or "multi-shift."** If a TODO exists, DO IT. Now. No matter how long it takes. Don't rationalize deferral with "needs Java conformance server," "blocked on upstream," or "multi-shift effort." Those are excuses. Read the Java source, understand the algorithm, port it, test it, ship it. If it takes 826 lines, write 826 lines. If it takes all night, work all night. The TODO list is a list of things TO DO, not a list of things to punt.
-
-**100% Java alignment or it's a bug.** Every component must match Java's behavior exactly. Go-only extensions are fine, but they need DEEP test coverage. If Java has it and Go doesn't, that's not "low priority" — it's missing functionality. Port it.
-
-**Wire compat is the hard line; query reach is not.** Two distinct axes, don't conflate them:
-1. **Anything touching the wire** — key encoding, record/index/version format, continuations, what gets written to FDB — MUST match Java exactly. Divergence there is a bug, full stop. This is the whole point: Go and Java apps share a cluster and read/write each other's records.
-2. **The read-side query surface MAY go beyond Java.** Net-new query capabilities Java lacks *entirely* (new join flavours, operators, syntax) are welcome — provided (a) wire compat is never sacrificed (Java still reads/writes the exact same records; the extension only lets Go *express* more), and (b) the extension has deep test coverage. "Doing better than Java" on the read path is encouraged, not suspect.
-
-Before treating a TODO "vs Java gap" as parity work, **verify Java actually supports it.** A TODO line can be stale (the feature may already work — e.g. via a normalization the item's author missed) or mis-framed (Java may not support it *at all*, in which case you're adding an allowed extension, not closing a divergence — and the conformance principle below does not forbid it).
-
-## DFS, NOT BFS — GO ALL IN ON EVERY PROBLEM
-
-**When you discover a problem, go ALL IN.** Dig into the rabbit hole. Fix it completely. No matter how long it takes, no matter how deep it goes. Don't "skip this and look for quick wins" — that's BFS thinking and it produces shallow, fragile work. DFS: pick the problem, understand it fully by reading Java first, then fix it properly in Go. One problem at a time, fixed to completion.
-
-**Java is the reference. Always.** Before writing ANY fix, read the corresponding Java code. Understand how Java handles the exact same case. Then port that approach to Go. No invented shortcuts, no "pragmatic alternatives," no "we'll do this differently." If Java uses SemanticAnalyzer.resolveIdentifier, Go uses the semantic scope. If Java walks the ANTLR tree with typed visitors, Go walks the ANTLR tree with typed visitors. 1:1.
-
-**Never paper over a problem.** If a test fails, the fix is in the code, not in the test expectations. If an error code is wrong, trace it to the root cause — don't add a string check at the surface. If a column doesn't resolve, fix the resolution infrastructure — don't strip qualifiers with string hacks.
-
-**SCOPE EVERY COUNT, or paste the command that produced it.** "Exactly one hit", "the only definition in the tree", "five call sites", "nowhere else" — this shape keeps being wrong even when the argument resting on it is right, because a grep run over one directory gets written up as a fact about the repo. Say the claim that is actually true ("three `instanceof` in non-test main sources") or show the command and its output. An unscoped enumeration is a load-bearing number nobody can check, and the conclusion surviving does not make the count true.
-
-**A NEW TEST FILE PROVES NOTHING UNTIL YOU SEE IT RUN UNDER BAZEL.** A file that is not in its target's `srcs` is not skipped and not reported — it produces no signal at all, while `go test` runs it happily and the surrounding suite stays green. That is worse than a filter matching nothing, because a filter at least runs the target. After adding a test file: `just gazelle`, then run the Bazel target and grep the output for a line only that test emits. `go test` green and Bazel green are different claims, and the second is the one CI makes.
-
-The same trap has a second door: a test that resolves paths. Under Bazel a test runs in a runfiles tree containing only its declared inputs, so a helper that returns the runfiles root sees a different world than one that returns the source tree — green under `go test`, and under Bazel the files simply are not there. Both doors are found the same way: run it sandboxed and read the output, rather than inferring from a local pass.
-
-**"For now" is a red flag.** If you're about to write "for now" or "pragmatic approach" or "we'll fix this later" — STOP. That means you're about to create technical debt. Either do it properly or document it as the FIRST priority in TODO.md so it gets done next. No deferred hacks.
-
-**DFS IS ABSOLUTELY CRITICAL. NEVER DEFER — FIX IT NOW.** This is the single most important working rule in this file. When a fix uncovers a second problem, fix that one too, in the same change. When a sweep surfaces something adjacent, chase it to ground. Take as long as it takes. The instinct to write it up and move on is always wrong, and it is strongest exactly when the finding is real — because a real finding looks like scope, and scope looks like something to schedule.
-
-Filing it feels responsible. It is not. A TODO entry ships nothing, deletes the regression sentinel that would have caught the bug, and hands the work to someone with none of the context you have right now — you have the reproducer, the measurement harness, and the Java source already open. That will never be true again as cheaply.
-
-Worse, deferred findings **rot into invisibility**. Write a live defect into the prose of an item you then mark `- [x]` and it is unreachable work: the execution rule is "pick the lowest-numbered UNCHECKED item", so nothing will ever pick it up. That has happened here — a redundant in-memory sort on `WHERE pk IN (...) ORDER BY pk`, fully diagnosed with a reproducer, was written into a completed item and would have sat there indefinitely. DFS'ing it instead removed the sort.
-
-**NEVER PROPOSE — RESEARCH, DECIDE, IMPLEMENT.** Writing up options and asking which one to take is deferral wearing a lab coat. An RFC that says "here are three paths, please rule" has shipped nothing and has moved the decision to someone with less context than you had while writing it. You did the research; you are the one who knows which path is right. Pick it, say why the others lose, and build it. Do not write an RFC or design doc unless the owner asks for one.
-
-"Long-term correct" is the only selection criterion. Not smallest diff, not least blast radius, not what the existing structure makes convenient. If the right answer requires changing a cost formula, deleting a Go-only extension, or reworking a mechanism three commits old, that is the answer. A smaller change that leaves the architecture incoherent is a bigger cost paid later, by someone with none of the context.
-
-**NEVER MOVE LATERALLY WHILE A DFS PATH IS OPEN.** If you are inside a problem and it is not finished, nothing else may be started — not an adjacent cleanup, not a different finding, not a "quick win" that would feel like progress. Lateral motion while a path is open is the same failure as deferral: the depth is abandoned, the context evaporates, and the problem comes back later as someone else's. Finish, or prove the path is genuinely blocked on a capability that does not exist.
-
-**THERE ARE NO LEGITIMATE DEFERRALS. NONE.** Not "separate concern", not "deserves its own item", not "changes plans so it needs its own review" — those are reasons to do the extra work now: run the stress comparison, review the goldens, get the review lap.
-
-**"It needs a capability that doesn't exist yet" is not a deferral — it is the work.** This is the escape hatch that feels most legitimate and is the most damaging, because it is indistinguishable from real engineering right up until nothing gets built. A missing capability is a thing to BUILD, not a wall to stop at. Before you conclude a capability is missing, check Java: this is a port, and the odds are overwhelming that Java already has the machinery you just decided Go cannot have. A cost model that cannot tell a unique probe from a non-unique one is not blocked on statistics nobody has — Java has `CardinalitiesProperty`, so the task is to port it. "Go's substitute for X" in a comment is a standing admission that X is the real answer and someone stopped early.
-
-**"It's an upstream bug" is not a deferral either.** Fix it at the boundary, work around it deliberately with the divergence documented at the call site, and report it upstream. Shipping a known-broken path because the break is someone else's is still shipping a known-broken path.
-
-If you genuinely cannot proceed — the work needs a decision only the owner can make, or an external system nobody here controls — that is not a deferral, it is a **STOP**. Say so directly, in the conversation, with what you found and what you need. Do not convert it into a TODO entry and keep moving; a filed item is how a blocker becomes invisible. Escalating costs one sentence. Filing costs the next person everything you knew.
-
-**A FINDING TRACKED WHERE THE NEXT READER CANNOT SEE IT IS NOT TRACKED.** Conversation state, a coordinating agent's private task list, a scratchpad note — all evaporate, and none of them are visible to the person or agent who inherits the work. This is not the same failure as filing instead of fixing; it is worse, because it *looks* like tracking right up until someone tries to follow the reference. It has happened here: three live findings were carried for a full shift in a session-local tracker, and the gap surfaced only because an agent was told to update "task #86", searched `TODO.md`, found nothing, and refused to proceed on the assumption that it existed somewhere. Durable homes are `TODO.md`, an RFC, or a comment at the fix site — and when a finding spans two of those, each must point at the other, or the halves rot separately. When you hand someone a finding, hand them a location that outlives you.
-
-**And when a claim is superseded, GREP FOR IT — do not fix only the copy you remember writing.** A refuted hypothesis rots wherever it was ever recorded, and the copy you forget is the one the next reader finds. This was demonstrated inside the very edit meant to fix its first instance: an investigation corrected a superseded "the surviving hypothesis…" framing in `TODO.md`, and the identical framing had also settled into a workflow comment, where it would have outlived the fix entirely. The correction is not done until a grep for the superseded phrasing returns zero **across every file**, and that count is what you report — not "I updated the entry".
-
-**A MEASUREMENT RECORDED AS PROSE MUST STATE THE POPULATION IT WAS TAKEN OVER, or it cannot be seen to go stale.** "Mutating X reddens ONLY that arm and leaves the other TWELVE green" was true when measured — over a file with 13 arms. A 14th arm was then added and the measurement never re-run. The lethal part is that **"twelve green" stayed accidentally correct across the change**, so the only half that could have flagged the staleness was the half that happened to still hold, while "only that arm" had silently become false. The claim then contradicted the `TODO.md` entry and commit body that described the same shape correctly — and the wrong copy was the one sitting at the site a later engineer would read while deciding where to add a guard.
-
-Write the scope into the claim ("at 14 arms"), the way an expiry condition is written into a guard. A number with no stated population is a fact about a tree nobody can identify, and it decays without ever looking wrong.
-
-**Book into a shared section as ONE self-contained block appended at its END — never merged into an existing entry.** The durable home is right; the mechanism has to survive concurrency. Several agents editing one region of `TODO.md` produced a conflict in every in-flight branch the moment the first one merged: three PRs, two of them at a clean full-green rollup, all went `DIRTY` at once. Appending at EOF removes the collision at the source instead of asking each author to remember.
-
-And when that conflict does arrive, **read both hunks — a `TODO.md` collision looks content-free and is therefore resolved by reflex.** It is the same trap as the general merge rule above, wearing its most disarming face: two appends to one list genuinely usually are independent, so "keep both" is usually right, which is exactly why the once it isn't goes through unexamined. The check is what establishes independence, not the appearance. Measure it rather than asserting it — grep each side for the other's subsystem terms and show the zero.
-
-## NO FAKE CHECKBOXES — E2E OR IT'S NOT DONE
-
-**A TODO item is done when a SQL query exercises it end-to-end and a test pins the behavior.** "Plan type exists" is not done. "Rule ported but can't fire" is not done. "Infrastructure exists but SQL can't trigger it" is not done. If a user can't write a SQL query that hits the code path and gets the right answer, the checkbox stays unchecked.
-
-The proof is a **yamsql scenario** (for SQL-visible features) or an **FDB integration test** (for record-layer internals). The test must demonstrate the OPTIMIZATION actually fires — not just that the query returns correct results via a slower fallback. For planner optimizations, use `EXPLAIN` assertions to verify the expected plan shape:
-
-```yaml
-# GOOD: proves aggregate index scan fires
-- query: SELECT status, COUNT(*) FROM orders GROUP BY status
-  plan_contains: AggregateIndexScan
-  rows:
-    - [delivered, 2500]
-    - [pending, 2500]
-
-# BAD: just proves GROUP BY returns correct results (could be full scan)
-- query: SELECT status, COUNT(*) FROM orders GROUP BY status
-  rows:
-    - [delivered, 2500]
-    - [pending, 2500]
-```
-
-If you can't write the e2e test, the feature isn't done. Period.
-
-## NO TEXT MATCHING ON SQL / PARSE TREES
-
-**NEVER detect SQL features by string-matching on SQL text or GetText() output.** The ANTLR parse tree has typed nodes — use them. `strings.Contains(sql, "CROSS JOIN")` is forbidden. `GetText()` concatenates tokens without whitespace and produces garbage like `labelISDISTINCTFROMnull`. Magic length limits (`lparen > 12`) are fragile trash that breaks on `CHARACTER_LENGTH`. Walk the parse tree or Value tree. If you need to detect a function call, find `FunctionCallExpressionAtomContext` / `ScalarFunctionValue` in the tree — don't regex the text.
-
-## CODE FIRST — REVIEW ONCE, AT THE END (owner ruling 2026-09-28)
-
-**Write the code. No design documents, RFC review rounds or reviewer gates while the work is in progress.** Read Java, port it, test it, commit, push. One review (Graefe/Torvalds/codex/@claude as fits) runs when the whole body of work is done (for the RFC-257 upgrade: the finished migration), and its Medium-or-higher findings are fixed then. This overrides the review steps in the skills (query-engine, todo-worker, fdb-client-engineer, fdb-client-review): skip their RFC and review phases until that final review.
-
-**Keep paperwork minimal.** Commit messages of 10 lines or fewer. No evidence READMEs, md5 records, gate transcripts or per-step design-doc updates. CHANGELOG: one line per user-visible change. TODO.md: only genuinely deferred work.
-
-**Code comments: short, and only what the code cannot say.** A comment states a non-obvious WHY (a Java quirk being matched, a wire constraint, a trap) in one or two lines. No restating what the code does, no history of earlier attempts, no measurement narratives, no enumerations of tested shapes — those belong in the test or the commit message.
-
-**Verification per commit:** the pre-commit hook (`just test`, the fast lane; see `AGENTS.md` → Efficient validation). A touched test in a `test-full`-tagged target runs under `just test-full`. A regression test is written before its fix, so its red is observed while fixing; do not re-run tests at historical commits to manufacture reds. CI runs on the PR.
-
----
-
-Port `fdb-record-layer-core` from Java to Go with full wire compatibility — Go and Java apps must read/write each other's records and share the same FDB cluster. SQL/relational layer features (UDFs, views, synthetic record types, fdb-relational-*) are out of scope unless a TODO entry calls for them; protobuf round-trips them via unknown-field preservation.
-
-## Keep this file general
-
-This file is for **general instructions only** — project goals, testing rules, design principles, working rhythm. Specific bug findings, gotcha lists, resolved/retracted history, per-shift state belong in:
-- TODO.md (open issues)
-- `shifts/*.md` handovers (history)
-- Code comments at the relevant fix site
-
-If you're tempted to add a 5-line note explaining a divergence, write it as a code comment at the call site instead.
-
-**Never put shift tags in code comments.** No `nightshift-65`, no `swingshift-64`, no `landed in shift X`. Shift refs rot the moment the codebase outlives the shift naming scheme and they leak ephemeral process state into permanent files. Code comments explain WHY the code is the way it is — not WHEN it got there or WHO did it. That belongs in `shifts/*.md` handovers and PR descriptions. Old shift-tag refs already in the codebase are cleanup fodder; don't add new ones.
-
-**Never attribute code comments to a reviewer or a review artifact.** No `Graefe condition 1`, no `Torvalds R1 positive`, no `per @claude`, no `codex finding 3`, no `review round 2`. Reviewer names and review-cycle labels are ephemeral process state exactly like shift tags — they rot and they leak WHO/WHEN into permanent files. Keep the *reasoning* the reviewer surfaced (that's the WHY), drop the attribution: write "an asserted bridge, never a silent fallback", not "(Graefe condition 1: an asserted bridge…)". RFC numbers are fine (they name durable design docs, not people).
-
-## Testing
-
-**EVERY bug you discover gets a regression test — no exceptions.** The moment you find a problem (a failing probe, a reviewer catch, a "huh, that's wrong"), the fix is incomplete until a test pins the corrected behavior. This is not optional polish; it is the difference between fixing a bug and fixing it *for good*. **A green CI with the bug still latent is the real danger** — it reads as "covered" when it isn't. Most bugs ship green precisely because no test exercises that *dimension*: the gap is dimensional, not volumetric (you can have 100 tests for a feature and still miss the one axis that's broken). When you fix something, ask "what dimension was unprobed that let this through?" and add the test on that axis. Hard-won examples from this codebase: non-correlated `EXISTS` was wrong on master with full CI green because every `NOT EXISTS` test was *correlated*; deleting a DML helper silently dropped the secondary-UNIQUE→23505 and `RecordDoesNotExistError` mappings — caught by review and a deliberate probe, not by the suite. If a reviewer (human or Graefe/Torvalds/@claude) finds a problem the tests didn't, that's a doubly-important signal: fix the bug **and** add the test that should have caught it. Quality is the point.
-
-**A CENSUS OR GATE NEEDS A UNIT PIN THAT DRIVES EVERY ARM — the corpus reading is not a substitute.** A full-suite run exercises only the arms the corpus happens to reach, so an arm that is rare today, or that a pending conversion will make reachable tomorrow, ships untested. Its first real firing is then read as a *finding* rather than as an untested branch, which is the most expensive way to discover a bug in an instrument. Split the decision away from the process globals so it takes explicit state — `assertXCounters(w, state, floors)`, the shape the existing censuses use — and drive every class, every floor, and every vacuity guard from a test. Guard both populations while you are there: the one whose collapse makes a finding vacuous, and the one whose collapse makes the instrument silently dead. This has been skipped on three separate instruments here and caught by review each time; the arm that went untested longest was the one the next change was about to make live.
-
-**A GUARD HAS A SHELF LIFE, AND ITS DIRECTION INVERTS WHEN THE EXPECTED VALUE DOES.** A population watched for COLLAPSE is watched that way because a zero would read like good news while meaning the instrument died. Once a change makes zero the *steady state* — an arm retired, a channel drained — that same floor becomes unsatisfiable and the danger flips to GROWTH: a non-zero now means the thing you removed came back. Reconcile the guard with the new expected value rather than relaxing or deleting it, and say in the failure message which direction is now the alarm. A floor left pointing at the old expectation is a build break; a floor deleted outright is an unwatched revival.
-
-**A TEST FILTER THAT MATCHES NOTHING REPORTS GREEN.** `--test.run` / `--test_filter` with a name that matches no test function runs zero tests and the target still passes — Bazel will print `Executed 1 out of 1 test: 1 test passes` for a target that executed nothing you asked for. So a green from a narrowed run is a statement about the FILTER until you have checked the filter matches: confirm the pattern against the actual function names, or read the per-test output and count what ran. Never bank a narrowed green as evidence without that check.
-
-**A GREEN FROM AN EMPTY SET IS THE DOMINANT FALSE POSITIVE — AND IT WEARS AT LEAST FIFTEEN FACES.** The narrowed-filter case above is one instance of a general failure: a reporting layer that cannot distinguish *passed* from *never ran* renders both as success, so the absence of a result reads as the absence of a problem. Fifteen confirmed here:
-
-- a `--test.run` pattern matching no function (`TestFieldNameDecision` for a test actually named `TestFieldNameNeverDecides` — `PASS`, zero `=== RUN` lines);
-- Bazel serving a cached result, printing `Executed 0 out of 1 test: 1 test passes` — a green that ran nothing this invocation. That green is REAL (owner ruling: the Bazel cache is correct, keep it on, never force an uncached run to verify): a cached pass is the pass of those exact inputs. The trap is only in the CLAIM — say "cached pass", and when you need proof the test covers your change, confirm your edit is among its inputs (a changed input re-executes it) rather than forcing a rerun. If you suspect the cache itself is wrong, that is a cache bug: root-cause and fix it, never route around it with `--nocache_test_results`. (Timing measurements such as the stress workflow below are different: the run IS the measurement.);
-- CI runs held at `action_required` awaiting approval, which `gh pr checks` reports as *"no checks reported"* — indistinguishable from never triggered. All 3 bot-authored PRs in this repo's history ran zero checks and **one of them merged that way**, because `mergeStateStatus` was `UNSTABLE`, not blocked;
-- a `gh` JSON query whose `statusCheckRollup` is empty, so a filter for failing checks returns nothing and reads as "all green";
-- a PR whose `mergeStateStatus` is `DIRTY`, also reported by `gh pr checks` as *"no checks reported"*. GitHub cannot compute `refs/pull/N/merge` on a conflict, so `pull_request` workflows never fire **at all** — and that is rendered identically to "queued" and to "never triggered". Actions status, workflow triggers and repo permissions all read healthy while nothing runs. Check `mergeStateStatus` before diagnosing a missing check; merging the base fires every workflow within seconds;
-- a GLOB-MODE quirk emptying the input to the search itself: an UNQUOTED `grep --include=*.go` behaves differently depending on how the running shell treats an UNMATCHED wildcard, so the diagnosis must never be ported without re-measuring. Where the pattern is passed through literally (bash by default) grep runs normally and the count is TRUE. Where an unmatched wildcard is REJECTED (zsh here, fish, and bash under `failglob`) the command never runs at all, and a pipeline capturing only stdout then reports 0 hits, which "proves" the symbol does not exist anywhere -- the failure is loud on stderr, and it is the capture that is silent. Do not try to identify the shell: `echo $0` is empty under fish, and bash alone gives three different answers depending on its glob settings: the true count by default, 0 under `failglob`, and an UNFILTERED grep under `nullglob`, which deletes the `--include` entirely. It is the GLOB MODE that decides, not the shell name. Quote the pattern, and settle any zero the only way that works everywhere -- the positive control below. This is not one quirk but a family — an unexpanded glob, a pattern whose metacharacters the shell ate before `grep` saw them, a path that does not exist in *this* worktree, a `--include` filter matching no file, and a search rooted at a directory the tree does not have. Five distinct causes, all hit inside a single PR's verification, and every one renders as the same confident `0`. Any zero-hit sweep used as evidence of absence must first be shown to be a well-formed command — run it against a term you know is present, in the same invocation, and report that positive control alongside the zero. A zero without its control is not a measurement. **And a control is not enough when the malformation INFLATES rather than empties**: bash `nullglob` deletes the `--include` and greps every file type, so the command runs, the control passes, and the count is silently WRONG IN THE OTHER DIRECTION -- counting LINES via `grep -rn <sym> --include=*.go . | wc -l` at repo root, `fkChainCardinalityCap` gives 33 quoted, 33 under default bash, 0 under `failglob`, 36 under `nullglob` (`CardinalityProver`: 17/17/0/25). Those nullglob figures move as this file changes, because nullglob drops the filter and greps CLAUDE.md too -- naming the symbol here pushed it 35 to 36 inside the commit that recorded it, the cleanest demonstration available that an unscoped count cannot survive its own publication. So the tuples above are pinned at `b2b848215` and checkable there with no working tree, which is what stops them drifting again. They are TRACKED-BLOB counts, which is a slightly different population from the shell command above -- that one also sweeps at least untracked and ignored files, plus `.git/` when it is a real directory (in a linked worktree it is a pointer FILE, as here, and grep cannot recurse into it) -- so they pin the mechanism and the magnitude, not a byte-identical rerun of the shell: `git grep -c <sym> b2b848215 -- '*.go'` sums to the quoted figure, and `git grep -c <sym> b2b848215` over all tracked files sums to the nullglob one (33/36 and 17/25 respectively). The inflation is POPULATION-DEPENDENT, which is what makes it quiet: rooted at `pkg` instead, the same symbol gives 33 under `nullglob` too, because nothing outside `.go` under that root mentions it. A run that happens to pick such a root reads as CONFIRMATION of a broken method. This whole entry is written around the false zero because that is the failure that gets noticed, and the false non-zero passes every check listed here for one reason: every check above asks "did anything run", and none asks "is this the RIGHT POPULATION". That distinction generalises past globs to every face in this list. When a count is load-bearing, compare the QUOTED form against the unquoted one -- but know what that buys: it is sound for glob mode only (quoted is correct by construction, so agreement means unquoted is too), it is BLIND to the other members of this family, which move both forms identically and agree while under-counting, it is VACUOUS wherever the corpus happens to make them agree anyway (`FlowedType` under `pkg` at `b2b848215` is 524 LINES quoted and 524 under nullglob -- the same coincidence that validated this method wrongly the first time), and it says nothing about WHAT IS BEING COUNTED. Be exact on that last point, because the sloppy version of it is what produced the 18-vs-17 error above: there are TWO measurements here, not three. `grep -rn | wc -l` and a summed `grep -c` both count LINES and cannot disagree; only `grep -o | wc -l` counts OCCURRENCES. At `b2b848215`, lines-then-occurrences: 33/33, 17/18, 524/577. Say which of the two a number is, or it cannot be compared to the next one.
-- **a run that executed fully, against bytes that no longer exist.** A suite launched before your last edit lands is a real execution with a real green — describing a tree that is gone. This is the nastiest face because every check for emptiness passes: the population is non-empty, `=== RUN` lines are there, nothing was cached. The defence is to freeze the tree and record a `md5sum` you verify *after* the run, so the green is provably about the committed content. Two full-suite runs were discarded on this basis in one shift.
-- **a paired-equality assertion whose two sides move together.** `assert(nested == topLevel)` looks like a strong invariant and is vacuous against any mutation that breaks both — disabling a type-derivation arm made both sides report `UNKNOWN`, the equality held, and only the explicit `want STRUCT` check caught it. The general rule, because the vacuity is not luck: **a pair whose two sides share a derivation cannot be checked by comparing them to each other.** The sibling pairs in that same file DO detect their mutations, and only because each straddles a boundary — one side answers from the stored descriptor, the other from the value — so the shared-route pair was the first that could not. Establish which route each side takes before trusting a comparison, and assert a VALUE as well as a relationship.
-- **an infrastructure layer reporting busy while nothing runs.** A self-hosted runner claimed `busy=true` to GitHub for 4h21m while `gh run list --status in_progress` returned nothing, because one job had wedged against a 17400s timeout. Job-level and run-level status disagree by design — GitHub keeps a *run* at `queued` until all its jobs start — so run-level status alone reports "nothing is running" while jobs execute, and reports "busy" while nothing progresses. Read check-level status, and treat a long timeout as a defect in the safety net: at ~5h, one wedge costs a two-runner fleet a day before anyone asks why.
-- **a query language quietly not falling through.** `jq`'s `//` operator only substitutes on `null` and `false`, so `.conclusion // .status` returns `""` — not the status — for a check whose conclusion is an empty string. Five real, distinct check states rendered as blank and would have read as "nothing to see". Any defaulting operator needs its falsy set checked against the data's actual shape.
-- **a probe that ran, passed, and printed nothing — or printed, and had its evidence truncated on the way to you.** A cross-engine JVM probe reported `1 test passes` with **zero** `PROBE` lines, because Ginkgo buffers `GinkgoWriter` unless `--ginkgo.v` is passed. Read as "the probe found no disagreement", it would have reframed a *measured, real* divergence as conformance and rewritten a correct DONE criterion into one that made Go refuse queries Java accepts. In the same task, two further captures showed zero lines for a different reason: the reporter's own `tail`/`grep` had cut them. Three empty readings, one real and two self-inflicted, all indistinguishable from agreement. When a probe's verdict is its OUTPUT rather than its pass/fail, capture the FULL output to a file and interrogate the file afterwards — never a pipeline you cannot re-inspect — and assert on the line count you expect, because a silent probe and an agreeing probe are the same green.
-- **a run still in flight reads exactly like a run that produced nothing.** A grep for a summary line mid-run returns empty, identical to "never ran" — and unlike the other faces, the correct reading changes minute to minute, so a re-read minutes later can flip the verdict without anything being wrong. Confirm the process is gone before interpreting an absent summary — but see the next face for why the obvious way to confirm that is itself unsound. The corollary is a working rule, not a nicety: **never end a turn with a run still going and a "monitor armed".** Nothing survives the turn — the OS process keeps running, no monitor reports, and the verdict sits detached from the context that could interpret it. Block on it in the foreground with an explicit timeout, or run a narrower target and say exactly what you skipped.
-- **a wait-for-completion predicate that an EMPTY population satisfies.** `all(jobs are completed)` is vacuously TRUE for zero jobs, so a loop written as "wait until nothing is pending, then check for failures" declares itself settled the instant it observes an empty list — and then finds no failures in it and reports success. Confirmed here: a CI grinder queried a run created seconds earlier, GitHub had not yet populated `.jobs`, and it printed `ALL GREEN` for a run that was still `queued` with four 2-line job logs. The author of that loop had been auditing for this exact family all shift and guarded the *classification* of failures scrupulously while leaving the *population* unchecked — which is why this face is worth naming separately from the two around it: it is not a misreading of an absent result, it is a loop concluding it is DONE because there is nothing to wait for. A completion test must require a non-empty, fully-populated set FIRST (`total >= expected`), treat a partial set as "not ready" rather than "green", and assert the success count explicitly (`passed == expected`) instead of inferring green from an empty failure list.
-- **a waiter whose pattern matches its own command line, so it can never fire.** `while pgrep -f some-marker; do sleep …; done` contains `some-marker` in the `pgrep` process's own argv, so `pgrep` finds itself, the condition never goes false, and the loop spins forever — reporting neither "finished" nor "still running". Confirmed twice here; the second time it had been described in a report as *"the commit process exited"*, a conclusion the loop was structurally incapable of reaching. The same self-match inflates any `pgrep -c` by one and makes `pkill -f` a self-kill that leaves the real target alive. This face is nastier than the others because it attacks the *remedy* for the face above it: the prescribed way to confirm a run is gone is the thing that silently never confirms it. Anchor the pattern so it cannot match itself (`pgrep -f '[s]ome-marker'`), match on the PID you launched rather than on text, or use the harness's own completion signal — and never report a process state from a loop you have not shown can terminate.
-
-- **a MUTATION that never applied, verified by a run that then passes.** Mutation testing is the prescribed way to show a gate can fire, and it inverts into the same false green the moment the edit silently misses: a `perl` pattern with one tab too many, a `sed` anchored on text that `gofumpt` has since reflowed, a replacement whose result does not compile. All three produce a green — the first two because the code is unchanged, the third because the target never ran (`FAILED TO BUILD` / `Executed 0 out of 1`, which a `grep` for `--- FAIL` renders as silence). This face is the most dangerous of the family because it corrupts the *instrument used to validate the other instruments*: every "I mutation-verified it" claim rests on the mutation having landed. Confirmed four times in a single session, twice by an author auditing for this exact family. Never interpret a mutation run without first proving the mutation is present — `grep -c` the mutated text in the same invocation — and read the build result, not only the test result. Assert NON-ZERO and assert the EFFECT; do not assert the predicted count. The arithmetic is itself a claim that fails the same way everything else here fails: `grep -c` counts LINES, so three names on one line is 1 and not 3, and an author who wrote this very rule miscounted its expected value three times in a dozen uses. It is the conjunction that is load-bearing — the mutation is present AND something reddened that did not before.
-
-The defence is always the same and it is cheap: **confirm the population is non-empty before interpreting the verdict.** Count the `=== RUN` lines, count the checks, count the rows. A gate must separate three states — passed, failed, and never-ran — because collapsing the third into the first fails OPEN, which is the direction that ships bugs. When you report a green, you are implicitly claiming something ran; make that claim checkable.
-
-**A GATE'S SCOPE SENTENCE MUST BE WRITTEN BY PROBING WHAT IT CATCHES, NOT BY DESCRIBING WHAT YOU JUST WROTE.** This is the fifteenth face's discipline applied to documentation, and it is the failure mode that survives every other check: the algorithm is right, the arms all pass, the ratchet sits at zero — and the sentence saying what it covers is broader than the code. Nothing fails, because a comment cannot fail.
-
-Measured here across six review rounds on one gate: **every single finding was a scope claim exceeding coverage, and not once a wrong algorithm.** "This closes the read end" caught 2 of 9 write spellings. "A local the call was assigned to" missed `var x = …` and alias-of-an-alias. "A range variable is a copy so mutating it is correctly silent" was false for interface payloads and pointees. Each of those sentences was written by describing the code just added, and each was true of that code and false of the claim.
-
-The compounding version is worse: a layer added to fix one over-claim arrives with its own. Three of the six findings were in code written to close the previous finding.
-
-So when a layer lands, enumerate the spellings it follows rather than characterising them — a list can be checked against reality and a characterisation cannot — and write the NOT-covered list FIRST, from shapes you actually ran, before the covered one. If a shape sits inside what the positive claim asserts, it is not a documentation gap, it is a bug in the gate.
-
-**EVERY PROOF GETS COMMITTED AS A TEST — never as a throwaway probe you delete.** If you wrote a scratch probe to establish a fact, and that fact justified a decision, the probe becomes a test. No exceptions. The instinct is to delete it once it has "done its job", and that is exactly backwards: the conclusion outlives the measurement, so the measurement is what has to survive. A deleted probe is the same failure as a filed-instead-of-fixed finding — the knowledge evaporates, and the next person either re-derives it or silently breaks the assumption it rested on.
-
-This applies with FULL force to two cases that feel exempt:
-
-- **Negative results.** "I probed X and it does not reproduce" is a load-bearing claim — it is what lets you classify something as latent rather than shipped. Pin the fact that makes it unreachable, with a failure message naming what gets re-armed if it changes. A real example: a wrong-order sort bug was unreachable only because the SQL layer rejects a repeated `ORDER BY` column with 42701 before the dedup rule sees it. Nothing pinned that rejection; relaxing it would have silently armed the bug.
-- **The exact shape that broke.** Pin the reproducer, not a simpler cousin of it. A signed-zero DISTINCT bug shipped a SINGLE-column test while the defect required a float in a NON-final dedup position — with one column the two zeros are adjacent, both plans agree, and the test passes with the bug fully present. A test that cannot express the defect is not coverage.
-
-If a probe is too slow or too broad to keep as-is, narrow it until it is keepable. Do not delete it.
-
-- Real FDB via testcontainers, never mocks. High and thorough coverage required for every feature/fix/behavior change — edge cases, error paths, zero-value behavior.
-- All tests MUST call `t.Parallel()` and be safe to run concurrently (unique key prefixes / subspaces, no shared mutable state).
-- Container setup MUST have timeouts: `context.WithTimeout(context.Background(), 2*time.Minute)` around `foundationdbtc.Run()` / `container.InitializeDatabase()`. Bare `context.Background()` blocks forever when Docker is slow.
-- Never run binding stress concurrently with `just test` — both spin Docker containers; pre-commit runs `just test`.
-- `.bazelrc` has `--local_test_jobs=4` to cap concurrent FDB containers. If a test suite "hangs", check whether 200 tests are cascading through 30s timeouts (kill it; don't wait).
-
-## Shift system
-
-Vollkonti continuous 24/7 shifts via `/vollkonti`. Handovers in `shifts/`. One branch + one PR per shift, merged at end.
-
-**Pacing is NEVER the model's call.** Don't autonomously slow down, "find a stopping point," or rationalize coasting. Stops are EXTERNAL: user intervention, mid-shift check-in, wind-down at T+7:30. Heuristics from human-paced practice ("keep PRs focused", "let big work rest") DO NOT apply — the system is designed for continuous output. Common rationalizations to ignore: trained-SWE-instinct, marginal-value-reasoning, reviewer-empathy projection, milestone pattern-matching, "shipped ahead of demand" guilt. If a "what I would have done differently" entry boils down to "less work would have been fine," delete it before merging.
-
-## Work tracking
-
-`TODO.md` is the authoritative execution order — numbered items in 6 sequential phases, items inside a phase run in parallel unless gated. **At shift start, pick the lowest-numbered unchecked item whose gates are satisfied.** Handover follow-ups are suggestions, not the priority list. Finish what you start before moving on.
-
-**Working rhythm:** one thing at a time. Implement → `just test` → commit → push → next. One logical change per commit; don't batch unrelated features.
-
-**High-output patterns (proven in swingshift-70, 11k+ LOC/shift):**
-- **Commit constantly.** Every green test = commit + push. Small commits (5-50 LOC each) maintain momentum and make rollback trivial. 80+ commits/shift is normal when you're flowing.
-- **Read Java first, write Go second.** Read the Java source file completely before porting. Understand the algorithm, then translate idiomatically — don't transliterate line-by-line.
-- **Tests find bugs.** Write the test BEFORE assuming the implementation is correct. swingshift-70 found 3 real bugs via tests (InJoin chain flat, UnorderedUnion early return, DistinctUnion ascending-only). Tests are not padding — they're debugging tools.
-- **Fuzz is non-negotiable.** Run fuzz targets (`bazelisk test ... --test_arg="-test.fuzz=FuzzXxx" --test_arg="-test.fuzztime=15s" --test_arg="-test.fuzzcachedir=/tmp/fuzz-cache" --sandbox_writable_path=/tmp/fuzz-cache`) on new infrastructure. 200k+ execs should produce 0 panics.
-- **Prove with FDB.** Integration tests against real FoundationDB (testcontainers) are the gold standard. A unit test proves the code compiles; an FDB test proves it works. The fast lane's FDB-backed targets (yamsql scenarios, embedded, recordlayer) run in `just test`; the end-to-end SQL suite and the other `test-full` targets run in `just test-full`. That suite is one package per area under `pkg/relational/sqltest/` (helpers in `sqltest/testkit`): a new end-to-end SQL test goes in the matching area package, never in `pkg/relational/sqldriver`, which holds only the driver's own tests (the sqltest guard enforces both). The census floors are asserted only by `//pkg/relational/sqltest/census:census_test` (manual; `just census`), which runs the whole corpus as one binary.
-- **Subagents for boilerplate.** Delegate test writing, wrapper creation, and mechanical porting to subagents. Keep the critical path (algorithms, rule logic, architectural decisions) in the main context.
-- **Don't pad tests, do find gaps.** Use `bazelisk coverage //path:target --combined_report=lcov` to find actual coverage gaps. Only write tests that exercise uncovered code paths or prove new behavior.
-- **100% Java alignment unless there's a good reason.** Never simplify "for now" — the simplified version rots and the next shift inherits technical debt. Port the full algorithm, handle all edge cases, match the error messages.
-- **Java is the spec for the query planner.** Always read the Java source first, understand the architecture, then port. 1:1 port is king — same class structure, same algorithm, same semantics. No Go-only shortcuts, no "temporary" alternative paths. If Java uses Cascades for all queries, Go uses Cascades for all queries. Java does have `RecordQuerySortPlan`, but only its legacy `RecordQueryPlanner` constructs it; Java Cascades never constructs a physical sort because `RemoveSortRule` must eliminate the logical sort or planning fails. Go's `RecordQueryInMemorySortPlan` is a sanctioned, deeply tested read-side fallback for queries whose requested ordering no access path can satisfy, not evidence that ordering-sensitive Cascades rules may skip Java's ordered-variant enumeration. Same goes for tests: port Java's test cases directly, don't invent Go-only test shapes that diverge from Java's expectations.
-- **No parallel pipelines.** Java has one query path (Cascades). Go has one query path (Cascades). Don't maintain a "plangen" or "naive" fallback alongside Cascades — it creates divergence, doubles maintenance, and hides Cascades gaps instead of forcing them to be fixed.
-
-**Fix bugs as you find them.** When a corpus probe (parallel-agent batch or otherwise) surfaces a real Go-side divergence, the default response is: investigate root cause → fix in the same shift → pin the corpus entry. Filing a TODO and dropping the entry is a failure mode — it ships nothing, removes the regression sentinel that would have caught the bug, and dumps the work on the next shift. A 30-line TODO writeup is more expensive than the 50-line fix it punts. **Only file a TODO when the fix is genuinely out of scope:** Java upstream bug, gated on a future Phase, or multi-shift effort. Tiny isolated bugs (one comparison op, one missing dedup-key projection, one error-message tweak) MUST be fixed inline. The corpus is the regression net for cross-engine parity; if you can't pin a shape because Go has a bug, fix the bug — don't grow the corpus around it. Nightshift-65 surfaced 23 bugs and fixed zero; that pattern is now explicitly forbidden.
-
-**Divergence grinding:** `DIVERGENCES.md` is the authoritative list of Go vs Java architectural differences. **100% Java alignment is the default. ALWAYS read Java source FIRST before writing any fix, any port, any new code.** The workflow for closing divergences:
-1. **Research phase:** spawn parallel read-only subagents to investigate the Java source code for each divergence. Each agent reads the Java class, notes fields/methods/behavioral differences, and reports whether the divergence is (a) fixable now, (b) blocked on execution layer, or (c) deep architectural.
-2. **Port phase:** DFS through the fixable items. For each: read Java → understand the exact semantics → implement the identical semantics in Go → write tests → `just test` → update DIVERGENCES.md. One divergence at a time, fixed to completion.
-3. **Document phase:** update DIVERGENCES.md with precise findings — what's fixed, what's remaining, what's blocked and why.
-
-Never rationalize a divergence as "intentional" without first reading the Java code. If Java does X and Go does Y, the default is to port X. Only keep Y if there's a real architectural reason (Go has no sealed classes, Go's fixpoint rule architecture requires a different guard, etc.) — and document that reason in DIVERGENCES.md.
-
-**Delegation:** principal-engineer mindset. Delegate mechanical/boilerplate work to subagents with full context (file paths, snippets, patterns). Critical/tricky pieces: do yourself. Never run two big implementation subagents in parallel.
-
-**Build & verify:** always `just test` (fast lane), `just test-full` at workstream/PR boundaries; never a hand-picked target list (`AGENTS.md`). Bazel cache makes incremental runs fast. After Go file/dep changes: `just gazelle` then `bazel mod tidy`. Proto codegen: `buf generate` (not in Bazel). **Always `bazelisk`, never `bazel`** when invoking directly. Never `--no-verify` — investigate hook failures.
-
-Update TODO.md as work completes (`- [x]` with a short note).
-
-## Wire types
-
-Never hand-write FDB wire-type structs in `pkg/fdbgo/wire/types/`. Generate via the C++ schema extractor: register in `cmd/fdb-schema-extract/extract.h`, add `extractType<T>(...)` in `main.cpp`, run `just generate-wire-types && just gazelle`. The only exception is `keyrangeref_custom.go` (documented).
-
-## Stack
-
-Go (see `go.mod`); FoundationDB via pure Go client (`pkg/fdbgo/fdb`) or Apple CGo binding; protobuf (Apple's protos in `proto/apple/`); buf for proto codegen; Bazel 9 via bazelisk + gazelle; nogo lint as build error; just as task runner; testcontainers-go.
-
-Top-level dirs (run `ls`/`tree` for detail):
-```
-pkg/recordlayer/        Record Layer impl + chaos + cascades + plans
-pkg/relational/         SQL engine + cross-engine harnesses
-pkg/fdbgo/              Pure Go FDB client
-gen/                    Generated proto Go code
-proto/apple/            Apple's proto defs
-conformance/            Java conformance server + Go conformance tests
-shifts/                 Per-shift handovers (YYYY-MM-DD-{shift}.md)
-TODO.md                 Authoritative priority list
-```
-
-## Running
-
-```sh
-just build / test / bench / gazelle / generate / tidy / verify
-just bench-one NAME
-just binding-stress [N M]   # default 100 seeds × 1000 ops
-```
-
-Run a specific Ginkgo test: `bazelisk test //pkg/recordlayer:recordlayer_test --test_arg="--ginkgo.focus=NAME" --test_output=streamed`. Continuous fuzz: `bazelisk run //pkg/...:test -- -test.fuzz='^FuzzName$' -test.fuzztime=60s`. Reproduce a binding-stress seed: `bazelisk run //cmd/fdb-binding-stress -- -seeds 1 -seed-start NNN`. FDB crash debugging: see `pkg/fdbgo/client/CRASH_BUG.md`.
-
-**Stress comparison workflow:** When changing the planner, cost model, or executor, run the 1M stress test before AND after to detect regressions. Use a git worktree for the baseline:
-```sh
-# Both sides MUST live on the same filesystem — a baseline in /tmp or on another
-# disk measures the DISKS, not the change. Check free space first: ext4 point-lookup
-# latency degrades sharply above ~95% utilisation and reports as a planner regression.
-df -h .
-
-# BASELINE AT THE MERGE-BASE, NEVER AT `master`. If master has moved since the branch
-# forked, `master` puts commits on the baseline side that the branch does not have —
-# and one of them bumping `go.mod` silently changes the COMPILER, because MODULE.bazel
-# derives the Bazel Go SDK with `go_sdk.from_file(go_mod = "//:go.mod")`. A 3-commit
-# stale baseline produced a ratio of 0.98x for a query that is really 1.54x.
-git worktree add --detach ../fdb-baseline "$(git merge-base HEAD origin/master)"
-cd ../fdb-baseline && bazelisk test //pkg/relational/sqldriver/stress:stress_test \
-  --nocache_test_results \
-  --test_output=streamed --test_arg="--test.run=TestFDB_Stress_1M$" --test_arg="--test.v"
-git worktree remove ../fdb-baseline --force
-
-# Current branch — run it AFTER the baseline finishes, never concurrently. Sequential
-# execution is what makes the ratio valid under non-zero background load: both sides
-# then see the same machine. Record the load average with the numbers.
-bazelisk test //pkg/relational/sqldriver/stress:stress_test --nocache_test_results \
-  --test_output=streamed --test_arg="--test.run=TestFDB_Stress_1M$" --test_arg="--test.v"
-```
-Confirm both sides report the same `=== RUN` count before comparing anything, and take
-**n >= 2 per side** for any figure you intend to write down — a single sample flipped a
-booked "parity with master" into a 1.5x regression once already.
-
-**A confound is not a bounded error term.** Do not reason "the other rows moved by 0.04
-so this one can only move by 0.04". A stale baseline moved ONE row by 0.56x while
-leaving nine within 0.04, and the nine told you nothing about the one. Re-measure;
-don't extrapolate.
-
-**`git add -A` STAGES WHATEVER ELSE IS EDITING THE WORKTREE — AND SOMETHING ELSE
-USUALLY IS.** Reviewer agents, probes and experiments run in this checkout, not in
-an isolated copy, so `add -A` snapshots the tree at one instant rather than your
-change. It happened here: a reviewer was mid-way through a six-line accessor
-experiment when `git add -A && git commit` ran, and the INDEX captured his flip
-while the worktree later held his restore. The commit would have shipped an
-unreviewed behaviour change under a message about a documentation edit.
-
-The pre-commit hook caught it — `just test` went red, `git commit` aborted,
-nothing landed. Note what that means: **`--no-verify` would have shipped it**,
-which is the concrete reason that flag is banned rather than discouraged.
-
-Two habits, the first cheap. Stage by PATH (`git add <files>`) when anything else
-might be running. And after any `add -A`, read `git diff --cached --stat` before
-committing — it diffs against HEAD, so a file you did not touch appearing in it is
-the whole signal. A staged change you cannot explain is not noise to be resolved
-by committing.
-
-**A CENSUS LOCATES WORK; ONLY A PROFILE PRICES IT.** These are different
-questions and a census answers only the first, yet a call-site count reads as a
-cost estimate — it is a number, it is large, and it sits next to the thing you
-are about to change. An RFC here was motivated by 33 `Equals`-shaped call sites
-and, after converting every one of them, moved total allocation by **0.3%**. The
-profile that motivated the RFC could have priced it directly:
-`go tool pprof -peek 'thaw$'` is one command and would have shown, before any
-code was written, that the hot callers were a different set entirely. The
-wall-clock win that did arrive came from a site the census never highlighted —
-one function rebuilding a whole Type graph, recursively, to read a slice length.
-
-This is not the "scope every count" rule wearing a new hat. That rule is about
-counting the right POPULATION; this one is about the count answering a question
-it was never asked. A perfectly scoped census still prices nothing. When the
-change is motivated by cost, the artifact in the RFC must be the cost
-measurement, and the census belongs beside it as the work-list.
-
-**A RATIO IS A FACT ABOUT TWO TREES, SO WRITE BOTH SHAS — "vs master" EXPIRES.**
-This is not the stale-baseline rule above, and obeying that one does not save you.
-A measurement taken correctly, at the true merge-base, with its baseline SHA
-written down, still rots: master MOVES, and the sentence around the number keeps
-saying "vs master" while the comparison it describes silently becomes one nobody
-made. It happened here to a booked **1.150x planner-sweep regression** that the
-whole campaign was organised around. The baseline had merged in the meantime —
-one row of that very table named a commit that was by then master's second parent
-— so the 1.184x being clawed back was master's own code. Re-measured against the
-current merge-base the branch was **0.958x: faster, never slower.**
-
-The failure is worse than a wrong number because it is self-reinforcing: work gets
-scheduled to close a gap that does not exist, and every result confirms the gap,
-because the stale baseline is still there to confirm it.
-
-So: name both SHAs, state what each WAS at the time ("`7d0435536`, the merge-base
-on 2026-08-11"), and re-measure the baseline — not just the branch — whenever the
-number is about to be quoted in a decision. And when the two baselines disagree,
-measure the OLD one too: the difference between them is a real quantity about
-master, and here it was master getting 1.178x slower, which is a finding in its
-own right rather than an error term.
-
-Compare row counts + durations. Record results in `TODO.md` "Stress test 1M baseline" table. Key thresholds: point lookups <5ms, full scans ~3s/1M, index equality <10ms.
-
-## Java compatibility — non-negotiable
-
-Wire-level compatibility is the whole point. These match Java exactly: subspace constants, key construction (FDB tuple encoding), protobuf format, record store header, builder pattern, continuation tokens (proto-wrapped, magic `6773487359078157740`), index entry format, split record format (100KB chunks at suffixes 1+; unsplit at 0), record version storage (inline at `pk + -1` suffix, format version ≥ 6).
-
-FDB constraints: 5s tx limit, 100KB value limit, 10MB tx limit, ~10KB key limit. Cursors need `TimeScanLimiter` + continuations; values use split records.
-
-Java source at `fdb-record-layer/` (gitignored, tag **4.14.2.0**, matches MODULE.bazel pins).
-
-## Design principles
-
-1. **Compatibility first** — match Java wire format exactly.
-2. **C++ is the spec for the FDB client** — Go divergence from C++ is a bug in Go. Never skip a divergence test; fix Go.
-3. **No mocks.**
-4. **Explicit errors** — never panic in library code.
-5. **Simple code** — three similar lines beats a premature abstraction.
-6. **Proto fidelity** — open enums, field presence, wire compat.
-7. **Test hard** — `t.Parallel()`, edge cases, Java interop.
-8. **Error types, not sentinels** — see below.
-9. **Never paper over bugs** — early-return tolerance gates compound across shifts and hide real failures. Pin the actual expected behaviour.
-10. **Emergent behaviour over special-case checks** — match the architectural property that produces the behaviour, not a downstream observable. Bolted-on `if X { throw }` checks diverge the moment Java's structure changes.
-11. **Resolve a conflict by reading it, never by stripping the markers** — a conflict is not always two additions to merge. It is often one side *correcting* what the other still asserts, and "keep both" then silently reverts the correction while compiling cleanly and passing the whole suite. That failure is invisible to `go vet`, to the compiler and to a green run; the loud ones (a brace mismatch, a duplicate map key) are the lucky cases. Restore the markers with `git checkout --conflict=merge` and read each hunk. The resolution differs *per hunk within one file*: the first may be genuinely balanced and keeping both is right, and the next may need one side outright because it is the newer, corrected text.
-
-## Cross-engine SQL conformance
-
-Conformance principle: **doesn't work in Java → doesn't work in Go**, in the same architectural way (visitor-doesn't-implement → fall-through-to-default), with identical error wording where the message can be cleanly shared.
-
-This governs the **shared** query surface — inputs Java also attempts. It is NOT a ban on capabilities Java lacks entirely: net-new read-side query extensions are allowed when wire compat holds (see "Wire compat is the hard line; query reach is not" near the top). The rule means *don't silently diverge from Java where both engines run the same query*, not *never exceed Java*.
-
-Don't enumerate Java's quirks in this file — find them via the cross-engine harness, document each at the relevant code site, capture open ones in TODO.md.
-
-## Error handling
-
-Java exception class = Go error struct, always. Use `errors.As()` to match (the Go equivalent of `catch (SpecificException e)`). Never use bare `var ErrFoo = errors.New("...")` sentinels — they can't carry the structured context Java's `addLogInfo()` provides.
-
-```go
-type RecordAlreadyExistsError struct { PrimaryKey tuple.Tuple }
-func (e *RecordAlreadyExistsError) Error() string { ... }
-
-return &RecordAlreadyExistsError{PrimaryKey: pk}
-
-var e *RecordAlreadyExistsError
-if errors.As(err, &e) { ... }
-```
-
-Carry the same context fields as the Java exception's `addLogInfo()` keys. Wrap with `fmt.Errorf("...: %w", err)` to add call-site context while preserving `errors.As()` unwrapping. For genuinely message-only Java exceptions, use `XxxError{Message string}`.
-
-## Proto definitions
-
-Use Java's protos directly. Canonical at `fdb-record-layer/fdb-record-layer-core/src/main/proto/`; `proto/apple/` mirrors them. Copy the full proto when adding new types — don't hand-maintain a subset.
-
-## Chaos testing
-
-Model-based, at `pkg/recordlayer/chaos/`. An in-memory `StoreModel` shadows the real store; `Verify()` compares them after each operation. `ChaosTransactor` injects faults at tx boundaries via the production-side `NewFDBDatabaseWithTransactor` hook. Targeted (`s.InjectOnce(FaultCommitUnknown)`) or random (`WithSeed(N), WithFaults(FaultsRetryHeavy)`); seed for reproducibility. Extend by adding a `FaultType` + `ChaosTransactor.Transact` arm, or a new `Verify()` invariant, or a new `StoreModel` state field.
-
-## Status
-
-For up-to-date counts and shift-by-shift state, read the most recent file in `shifts/` and run the relevant tooling: `just test` for spec count, `grep -rE "^func Fuzz" pkg/` for fuzz targets, `just coverage` for HTML coverage, `just bench` for benchmarks.
+## Project scope and references
+
+Port the FoundationDB Record Layer to Go so Go and Java applications can share
+record stores. Java Record Layer / Relational **4.14.2.0** is the reference for
+record-layer and shared SQL behavior; FoundationDB C++ **7.3.77** is the reference
+for the pure-Go client's protocol and transaction semantics. Read the corresponding
+upstream implementation before changing behavior. The Java checkout is at
+`fdb-record-layer/` (gitignored); dependency versions are pinned in `MODULE.bazel`.
+
+Persisted keys, records, indexes, versions, headers and supported continuations
+must match the declared Java target. Read-side extensions that Java does not
+implement are allowed when they preserve wire compatibility and have end-to-end
+coverage. Do not call a feature a parity gap without checking Java supports it.
+Document compatibility boundaries in `docs/compatibility.md` and `DIVERGENCES.md`.
+
+## Working rules
+
+- Work within the owner's assigned scope and respect explicit pauses and decisions.
+- Investigate failures and flakes; do not dismiss them as unrelated or fix them by
+  rerunning CI. Reproduce the defect, identify its cause and add a regression.
+- Do not use `t.Skip()` to defer a failing test. The runtime Docker availability
+  check (`FDB not available (no Docker)`) is the allowed skip.
+- Finish a coherent change before moving to another. Surface genuine external
+  blockers directly, with evidence and the decision or capability needed.
+- Implement before final review; do not write an RFC or design document unless
+  the owner requests one. Keep commit messages to ten lines or fewer.
+- Stage explicit paths. Do not use `--no-verify` or `git stash` (stash state is
+  shared across worktrees). Preserve other agents' work.
+- Read both sides of every merge conflict. One side may correct the other;
+  retaining both is not always a valid resolution.
+- Delegate separable work with paths and context. Do not run two large
+  implementation tasks concurrently.
+
+`TODO.md` is the durable work list. Record genuinely deferred work there, not
+only in conversation state; do not bury an open finding in a completed entry.
+Append self-contained entries to shared sections to reduce concurrent conflicts.
+A completed item needs implemented behavior and a regression that exercises it
+end to end, not merely a type, rule or plan that exists.
+
+## Validation
+
+Read `AGENTS.md` for the validation lanes and PR rules. Use **`just test`**, not
+`go test`, `go vet`, a hand-picked Bazel test list or a test filter. Bazel's cache
+is enabled: report executed and cached results separately. `just test` is the
+fast lane, not full-suite verification. Heavyweight, Java conformance, stress and
+manual targets belong to `just test-full`; run that lane in CI when local full
+runs are prohibited by the owner. Do not force uncached tests to manufacture
+verification.
+
+- Use `bazelisk`, not a system `bazel`. Nogo runs during compilation.
+- Run `just gazelle` after adding Go/test files and verify new tests are declared
+  inputs of their Bazel targets. Run `bazelisk mod tidy` for dependency changes.
+- Run `just generate` for codegen inputs. Proto generation uses buf.
+- Freeze the tracked and untracked input tree around a run and check it afterward;
+  a pass before the last edit does not verify the committed bytes.
+- Confirm a gate has a nonempty population before reading its verdict. Empty
+  checks, missing test inputs, a build failure or a run still in progress is not
+  a passing test. Capture complete probe output when output is the evidence.
+- A proof used to justify a behavior change becomes a committed test, including
+  negative results and the exact shape that reproduced a bug.
+- Census/guard helpers need unit tests driving every arm and the vacuity checks.
+  Check values as well as relationships when both sides share a derivation.
+- A mutation test needs evidence that the mutation applied, compiled and changed
+  the expected result. Do not infer this from an empty failure search.
+
+Use real FoundationDB via testcontainers for integration tests. Tests should
+call `t.Parallel()` and isolate key prefixes/subspaces and mutable state; keep
+exclusive tests exclusive where sharing is unsafe. Bound container setup with a
+context timeout (normally two minutes). Do not run binding stress concurrently
+with the fast lane. Respect the owner's shared-machine resource limits and locks.
+
+For SQL-visible changes, pin end-to-end behavior in yamsql or the SQL integration
+suite under `pkg/relational/sqltest/<area>` (helpers in `sqltest/testkit`). For
+planner optimizations assert the plan shape with `EXPLAIN`, not just the rows a
+fallback can also return. Record-layer internals need FDB integration coverage.
+
+## Evidence and measurements
+
+State the population behind every count and measurement. Quote search globs and
+use a positive control before claiming a zero proves absence. Distinguish lines
+from occurrences. When a claim is superseded, search for its other copies.
+
+A profile measures cost; a census only locates work. Performance comparisons
+must identify both trees, compiler, workload, sample sizes and measurement scope.
+Use the merge-base as the baseline, the same filesystem and toolchain, and
+sequential runs under comparable load. Re-measure rather than extrapolating from
+a confound. A historical result is not a claim about current master. Benchmark
+success does not establish correctness or authorize a merge.
+
+## Code and design
+
+- Preserve Java's architectural behavior on the shared surface, not only one
+  observed output. Do not add surface-level string checks to hide a deeper bug.
+- Use typed ANTLR/value nodes, not string matching on SQL or `GetText()` output.
+- Library errors are explicit error types, not panics or bare sentinels. Match
+  Java exception classes with Go structs carrying the relevant log context;
+  use `errors.As` and preserve wrapping with `%w`.
+- Keep code simple. Prefer direct implementations to premature abstractions.
+- Preserve protobuf field presence, open enums and unknown fields. Use the
+  complete upstream proto definitions; `proto/apple/` mirrors Java's protos.
+- Comments explain a non-obvious reason in one or two lines. Do not add reviewer
+  names, review rounds, shift tags or measurement narratives to code comments.
+- This file contains general rules, not specific findings or resolved history.
+  Findings belong in `TODO.md`, compatibility docs or the relevant fix site.
+
+## Wire types and store boundaries
+
+Do not hand-write FDB wire structs in `pkg/fdbgo/wire/types/`. Register types in
+`cmd/fdb-schema-extract/extract.h` and `main.cpp`, then run
+`just generate-wire-types && just gazelle`. `keyrangeref_custom.go` is the
+existing documented exception.
+
+Match Java's tuple/subspace keys, protobuf records, store headers, index entries,
+split records (100 KB chunks at suffixes 1+, unsplit at 0), and inline versions
+at `pk + -1` for format version 6 and later. FoundationDB constrains transaction
+age (5 s), values (100 KB), transactions (10 MB) and keys (about 10 KB). Cursors
+need scan/time limiters and continuations; large values need split records.
+
+## Repository map and tooling
+
+- `pkg/fdbgo/`: pure-Go FoundationDB client, transport and differentials.
+- `pkg/recordlayer/`: records, indexes, cursors and query planning.
+- `pkg/relational/`: embedded SQL engine, driver and cross-engine tests.
+- `conformance/`: Java record-layer harness.
+- `gen/`, `proto/apple/`: generated Go and upstream protobuf definitions.
+- `.claude/`: retained agent skills; `AGENTS.md`: repository workflow rules.
+- `STATUS.md`: current readiness; `RELEASE.md`: release gates.
+
+Development uses Go, Bazel via bazelisk, gazelle, nogo, buf, just and Docker.
+Common commands are `just build`, `just test`, `just gazelle`, `just generate`,
+`just bench` and `just binding-stress`. Consult the recipes and target inputs
+rather than treating historical counts or shift notes as current evidence.

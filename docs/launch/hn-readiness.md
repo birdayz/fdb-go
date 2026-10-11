@@ -3,39 +3,41 @@
 This plan comes from nine independent reviews: first look, Java parity, FDB client, public API, code health,
 legal/security, performance, operations, and a simulated HN thread.
 
-Verified against `origin/master` 564f835d3 and the open PRs on 2026-10-11. Master CI was green at
-e047fc58c (run 38150245998) when the owner lifted the feature freeze. release-ws updates this file
-in batches as PRs land; other PRs should not edit it.
+The baseline tracker was verified at `origin/master` 564f835d3. This release-readiness
+update is based on 6b3e2f0f0 (green master CI run 38160820959) on 2026-10-11;
+it updates release decisions and evidence, not a fresh audit of every row.
 
 - **Severity:** **B** = launch blocker: launch waits for it. **H** = high: fix before launch, or list
   it as a known gap in `STATUS.md`. **M** = medium: may ship, stays tracked.
 - **Status:** `done` (with the PR, "settings" for a repository setting, or "owner"), `PR [#N] open`,
-  `in progress` (work exists, no PR), `not started`.
+  `in progress` (work landed or under way; row not closed), `not started`.
 - **Workstream** is the agent workstream doing the work. D rows are decided by the project owner.
 
 ## Blocking launch
 
-- Owner decisions D2–D6 (§1).
+- Public API reduction D5 remains for v0.3.0, the HN launch release (§1).
+  v0.2.0 preparation does not declare launch readiness.
 - Every open H row fixed, or listed as a known gap in `STATUS.md` (release-ws). Six are open: 5 s
   per-RPC timeouts on commits and reads, commit ignoring ctx and timeout, 38 KB per read-only
   transaction, real-cluster fault testing, planning cost, unbounded default limits.
 - Release (release-ws prepares, the owner tags), per `RELEASE.md`: the cut PR (step 1), then green
-  CI, `just test-full` and the dry run on the cut commit (steps 2–3), then tag v0.2.0, then
-  `cmd/frl/v0.1.1`, which retracts the nested `fdb.dev/cmd/frl` module. The order matters: root
+  CI including the full lane and the dry run on the cut commit (steps 2–3), then
+  explicit maintainer tagging authorization. No local full lane or premature tag.
+  Only after v0.2.0 is proxy `@latest` may `cmd/frl/v0.1.1` retract the nested module. The order matters: root
   v0.1.0 does not contain `cmd/frl`.
 
-## 1. Owner decisions (cannot be delegated)
+## 1. Owner decisions
 
-Each needs an answer before launch. D2–D5 change what ships.
+The owner delegated release decisions; API reduction remains a v0.3.0 launch workstream.
 
 | # | Decision | Status | Notes |
 |---|---|---|---|
 | D1 | Credential rotation | done (owner) | Completed by the owner on 2026-10-09. Rotation and repository-history cleanup are separate operations. |
-| D2 | Git history: keep, strip binaries, or squash | not started | 440 MiB pack; 55 MB `factory-migrate` binary. `v0.1.0` is already in the Go module proxy. Rewriting history does not remove copies in forks, caches or module proxies. |
-| D3 | Agent material in the public tree | not started | Still in the tree: `CLAUDE.md` ("ABSOLUTE PRIME DIRECTIVE"), `AGENTS.md`, `.claude/` (Graefe/Torvalds personas, 24/7 shifts), `shifts/`, `TODO.md`, `TODO_OLD.md`, `TODO_client.md`, `TODO-production.md`, the historical `road-to-prod.md`, `PRODUCTION_READINESS.md`, `PORT.md`, `STRESS_RELATIONAL.md`, and this file. Real people as reviewer names in RFCs and commits; [#791] removed them from test names. |
-| D4 | AI-assisted disclosure | not started | The HN-thread simulation's top comment is commit forensics. Disclose first, in the owner's own words, and point at the oracles: Java conformance, the libfdb_c differential, the binding tester. |
-| D5 | Shrink the public API (about 88% of 11.5k exported identifiers should be internal) | in progress | Planner, simfdb, dst, conformance and test seams are importable. The gomock mocks moved to `pkg/relational/api/apimock` ([#810]) and the demo protos to `gen/demopb` ([#842]); both are still importable. Nothing is internal yet. Hard to take back after launch. |
-| D6 | CI fleet capacity and deployment security review | not started | Review deployment configuration privately before launch, following SECURITY.md. |
+| D2 | Git history: keep, strip binaries, or squash | done (owner) | Keep history. README notes the approximately 440 MiB full clone observed during preparation and offers a blobless clone. Forks, caches and module proxies retain old objects. |
+| D3 | Agent material in the public tree | done (owner) | Keep `CLAUDE.md`, `AGENTS.md` and `.claude/`; CLAUDE uses plain general rules. Remove tracked `shifts/`, `TODO_OLD.md`, `TODO_client.md`, `road-to-prod.md`, `PRODUCTION_READINESS.md`, `PORT.md` and `STRESS_RELATIONAL.md`; history retains them. [#791] removed reviewer names from test names. |
+| D4 | AI-assisted disclosure | done (owner) | README states AI agents work under human direction and links Java conformance, libfdb_c differentials, the binding tester and deterministic simulation. Test infrastructure is not a universal-parity claim. |
+| D5 | Shrink the public API (about 88% of 11.5k exported identifiers should be internal) | in progress | Planner, simfdb, dst, conformance and test seams are importable. The gomock mocks moved to `pkg/relational/api/apimock` ([#810]) and the demo protos to `gen/demopb` ([#842]); both are still importable. Neither move made those packages internal. Owner assigned API reduction to v0.3.0, the HN launch release, not v0.2.0. |
+| D6 | CI fleet capacity and deployment security review | done (owner, scoped verification) | Root verified two online runners on 2026-10-11: master's root-owned 0755 job guard and hook setting on both; actual master run 38160820959 executes it before steps in all seven jobs. Default token is read-only and cannot approve PRs; Claude mention workflow uses hosted runners and a trusted-association allowlist. This checks the deployment/trust boundary, not blanket security. |
 
 ## 2. Findings, by workstream
 
@@ -48,7 +50,7 @@ Each needs an answer before launch. D2–D5 change what ships.
 | H | Tenant `commit_unknown_result` fence uses the unprefixed key, so a commit can land after 1021 is returned | done [#800] | hn-client-ws2 |
 | H | Endpoint-not-found replies are dropped | done [#835], [#857] (hedge fail-over fix) | hn-client-ws2 |
 | H | 5 s per-RPC timeouts that libfdb_c lacks | in progress: GRV replies done [#789]; commits and reads still time out | hn-client-ws2 |
-| H | Commit ignores ctx and timeout | not started | hn-client-ws2 |
+| H | Commit ignores ctx and timeout | in progress: client work under way; current public wait still strips transaction timeout, Cancel and Reset. Remains a known gap in STATUS.md | client-gpt |
 | H | 38 KB allocated per read-only transaction | in progress: [#832] and [#843] cut allocations; re-measure pending | hn-client-ws2 |
 | H | Lazy futures | done [#840] | hn-client-ws2 |
 | H | `APIVersion` above 730 accepted | done [#823] | hn-client-ws2 |
@@ -66,7 +68,7 @@ Each needs an answer before launch. D2–D5 change what ships.
 |---|---|---|---|
 | B | Every quickstart fails (domain registration, `NOT NULL`, DSN case, unconfigured docker FDB, swallowed errors, typed-store snippet) | done [#808]: [#788] fixed the listed failures; [#808] chains the steps so a failed `frl fdb up` stops the demo | hn-health-ws2 |
 | B | "2–4× faster" claims are false (pre-RFC-104 GRV cache; one-way netem labelled as RTT) | done [#788]: claims removed, website check guards them | perf-lead2 |
-| B | `go get` gives v0.1.0, 682 commits behind and storage-incompatible; `go install …/cmd/frl@latest` resolves to the stale nested module | in progress: [#825] landed the notes, checklist and `cmd/frl` vanity stub (live); a rehearsal dry run on master e047fc58c passed (run 38152910574); retraction commit 948f2d3b6 is ready. Next: the cut PR, then the owner tags v0.2.0, then `cmd/frl/v0.1.1`, which retracts every nested `fdb.dev/cmd/frl` version | release-ws |
+| B | `go get` gives v0.1.0, 682 commits behind and storage-incompatible; `go install …/cmd/frl@latest` resolves to the stale nested module | in progress: [#825] landed the notes, checklist and `cmd/frl` vanity stub (live); a rehearsal dry run on master e047fc58c passed (run 38152910574); retraction commit 948f2d3b6 is ready. Next: reviewed readiness PR, correctness fixes, exact-cut CI/full-lane and dry-run gates, explicit tagging approval, then v0.2.0 proxy latest before `cmd/frl/v0.1.1`; no tag is done | release-ws |
 | M | `frl fdb up` hangs silently on a nearly full host disk (FDB throttles to 0 TPS) | done [#814] | hn-health-ws2 |
 | H | macOS: `frl fdb up` used `--network host` | done [#788]: loopback-published bridge network | hn-health-ws2 |
 | H | Positioning: what it is, and the "unofficial / not Apple" disclaimer | done [#788]: README, website, NOTICE | release-ws |
@@ -111,7 +113,7 @@ Each needs an answer before launch. D2–D5 change what ships.
 | H | Limits (retries, timeouts, statement memory/rows) not settable from the DSN | done [#799]: DSN-settable timeouts and statement limits; no retry-limit parameter | hn-sql-ws3 |
 | H | Unbounded default limits | not started: [#799] keeps Java's unbounded defaults; decide or document | hn-sql-ws3 |
 | H | No CONTRIBUTING / SUPPORT / issue templates | done [#788]: `CONTRIBUTING.md`, `SUPPORT.md`, issue forms | release-ws |
-| M | `go 1.26.9` patch-level directive; root v0.1.0 has no GitHub release (only `cmd/frl/v0.1.0` does) | in progress: v0.2.0 gets a GitHub release ([#825]). `go 1.26.9` kept: `GOTOOLCHAIN=auto` fetches it | release-ws |
+| M | `go 1.26.9` patch-level directive; root v0.1.0 has no GitHub release (only `cmd/frl/v0.1.0` does) | in progress: v0.2.0 gets a GitHub release ([#825]). `go 1.26.0` is the dependencies' floor; `toolchain go1.26.9` preserves the tested build pin | release-ws |
 
 ## 3. Launch framing (from the HN-thread simulation)
 
@@ -134,7 +136,7 @@ Each needs an answer before launch. D2–D5 change what ships.
 | Re-measured performance with a committed harness (`/tmp/hn-perf` is gone) | in progress: the Go/CGo harness landed ([#822]); re-measurement pending | perf-lead2 |
 | Architecture page | not started | release-ws |
 | Compatibility table and FDB 8.0 stance | done [#788]: `docs/compatibility.md` | hn-compat-ws2 |
-| Known gaps in one list (`STATUS.md` links out instead) | not started | release-ws |
+| Known gaps in one list | in progress: STATUS.md lists the six launch concerns and scoped mitigations in the v0.2.0 candidate | release-gpt |
 | Answer on the N+1 question | not started: [#798] landed; FlatMap still open | hn-sql-ws3 |
 | Answer on the 5 s per-RPC timeout question | not started: after the client timeout fixes | hn-client-ws2 |
 | Answer on bus factor | not started | owner |

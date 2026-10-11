@@ -73,7 +73,7 @@ import (
 // retired by changing its producer.
 //
 // WHY THIS CENSUS EXISTS AT ALL. The "110 calls → 3 → 0" progression quoted for
-// the projection-channel conversion, in TODO.md, in road-to-prod.md and in the
+// the projection-channel conversion, in TODO.md, in the former road-to-prod.md and in the
 // comment at the flat baker's own re-split arm, was SCRATCH measurement: a
 // number obtained once by hand, written into prose, and thereafter re-quoted
 // rather than re-read. This file is what makes those figures instrument

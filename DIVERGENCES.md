@@ -2733,9 +2733,9 @@ from one that did nothing.
 
 **On steps 3 and 4 this section defers to `cq90BumpIndexVersion`** in
 `pkg/relational/sqldriver/cardinality_stale_key_rebuild_fdb_test.go`, which
-calls itself THE production recipe, and to `road-to-prod.md`; where either
-disagrees with steps 3 or 4 here, they are right and this section is stale.
-They are NOT authorities on steps 1, 2 and 5 — `cq90BumpIndexVersion` mutates a
+calls itself THE production recipe; where it disagrees with steps 3 or 4 here,
+it is right and this section is stale.
+It is NOT an authority on steps 1, 2 and 5 — `cq90BumpIndexVersion` mutates a
 proto in process, so it drains nothing, never invokes the validator and never
 runs `OnlineIndexer`. Reading it and finding no drain step is not evidence that
 step 1 is stale; it is a test exercising the bump, not the deployment.

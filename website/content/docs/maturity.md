@@ -17,7 +17,7 @@ readiness statement; this page is an overview, not a release certification.
 | **Record Layer** | Go ↔ Java reads and writes for your exact metadata, index types, and store formats |
 | **SQL engine** | Query correctness, plans, resource limits, and performance for your workload |
 
-These docs describe the development tree, not the older v0.1.0 release. Pinning
+These docs describe the v0.2.0 candidate and development tree, not a published tag. Pinning
 a version does not by itself establish readiness.
 
 ## Interoperability has boundaries
@@ -58,7 +58,8 @@ or production-workload result is asserted by this page.
 
 Earlier Go-vs-libfdb_c speedup and write-parity claims were withdrawn. See the
 [benchmark correction and methodology](https://github.com/birdayz/fdb-go/blob/master/pkg/fdbgo/bench/PERFORMANCE.md);
-there is no replacement speed claim.
+the README's separate [R17 experiment](https://github.com/birdayz/fdb-go/blob/master/README.md#performance-vs-libfdb_c)
+measures a frozen historical patchset, not current master or the release cut.
 
 ## Version targets
 
