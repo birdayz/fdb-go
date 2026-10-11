@@ -51,9 +51,8 @@ func (c *versionstampCompletion) finishNative(result commitOutcome, err error) {
 	if c == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return
 	}
-	var fdbErr *wire.FDBError
 	// flow/Error.h aliases actor_cancelled to operation_cancelled (1101).
-	if errors.As(err, &fdbErr) && fdbErr != nil && fdbErr.Code == 1101 {
+	if code, ok := fdbErrorCode(err); ok && code == 1101 {
 		return
 	}
 	if err != nil {
