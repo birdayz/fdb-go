@@ -60,8 +60,8 @@ func TestFDBCppBuildFailureAndCleanup(t *testing.T) {
 		}
 		profiles[profile] = constants
 	}
-	// The default profile must finish cold inside the CI job on a cpx32 runner (main.tf): -j2
-	// was OOM-killed or thrashed past the 60-minute job at 5120 MB.
+	// The default profile must finish cold inside the CI job on a cpx32 runner (main.tf): -j2 was
+	// OOM-killed at 5120 and 6656 MB; NativeAPI built alone first, then -j2, fits 6656 MB.
 	if c := profiles["compact"]; c["CPUS"] != "2" || c["MEMORY_MB"] != "6656" {
 		t.Errorf("compact profile = %s CPUs / %s MB, want 2 / 6656 for the 4 vCPU / 8 GB CI runners", c["CPUS"], c["MEMORY_MB"])
 	}
@@ -98,6 +98,12 @@ func TestFDBCppBuildFailureAndCleanup(t *testing.T) {
 							if !strings.Contains(body, want) {
 								t.Errorf("missing tool-only CMake build input: %s", want)
 							}
+						}
+						// NativeAPI beside another heavy unit overruns the cap: it must build alone, first.
+						alone := strings.Index(body, "ninja -C /tmp/build -j1 fdbclient/CMakeFiles/fdbclient.dir/NativeAPI.actor.g.cpp.o ")
+						rest := strings.Index(body, "ninja -C /tmp/build -j$(FDB_BUILD_CPUS) fdbclient ")
+						if alone < 0 || rest < 0 || alone > rest {
+							t.Errorf("NativeAPI must build alone at -j1 before the -j$(FDB_BUILD_CPUS) fdbclient build (at %d, %d)", alone, rest)
 						}
 					}
 					for _, forbidden := range []string{"nproc", "MemAvailable", "head -1"} {

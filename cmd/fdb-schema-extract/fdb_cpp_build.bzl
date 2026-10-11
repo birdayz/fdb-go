@@ -1,7 +1,7 @@
 """Local Docker C++ actions with scheduler-accounted, enforced resource bounds."""
 
 # Compact fits the 4 vCPU / 8 GB CI runners: at -j2 in 5120 or 6656 MB, NativeAPI beside another
-# heavy unit was OOM-killed; built alone first it peaks at 5.0 GB. Default: a flag re-roots CI outputs.
+# heavy unit was OOM-killed; built alone first, anon peaks at 4.75 GB. Default: a flag re-roots CI outputs.
 _COMPACT_CPUS = 2
 _COMPACT_MEMORY_MB = 6656
 _LARGE_CPUS = 4
