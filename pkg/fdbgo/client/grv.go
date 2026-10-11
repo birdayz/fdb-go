@@ -849,11 +849,22 @@ func (b *grvBatcher) getReadVersion(db *database, ctx context.Context, flags uin
 	req := grvRequest{reply: make(chan grvResult, 1), spanContext: span, tags: tags}
 
 	b = b.forFlags(flags)
-	if batch := b.admit(req, func(seq uint64) {
+	switch batch := b.admit(req, func(seq uint64) {
 		if batch := b.timerBatch(seq); batch != nil {
 			b.flush(db, batch)
 		}
-	}); batch != nil {
+	}); len(batch) {
+	case 0:
+	case 1:
+		// An idle batcher detached only this request: a goroutine would just hand
+		// the reply back, so run the RPC here, bounded by this caller's ctx too.
+		// Accepted divergence: C++ runs every batch to its reply (NativeAPI.actor.cpp
+		// :7266-7287, :7382), so a cancelled lone caller here also skips tag throttles,
+		// the minAcceptable floor and one batch-window sample.
+		b.flushWithin(db, ctx, batch)
+		result := <-req.reply
+		return result.version, result.locked, result.instant, result.err
+	default:
 		go b.flush(db, batch)
 	}
 
@@ -941,7 +952,14 @@ func (b *grvBatcher) observeLatency(elapsed time.Duration) {
 }
 
 // flush sends a detached batch without holding mu, allowing overlapping RPCs.
+// Callers cancel their own waits; only Close cancels a shared batch's RPC.
 func (b *grvBatcher) flush(db *database, batch []grvRequest) {
+	b.flushWithin(db, nil, batch)
+}
+
+// flushWithin runs the batch's RPC under ctx; Close also ends it. A nil ctx
+// means db.ctx, read only once the panic backstop below is armed.
+func (b *grvBatcher) flushWithin(db *database, ctx context.Context, batch []grvRequest) {
 	// RFC-110: once the batch is popped, b.pending no longer references
 	// it — a panic anywhere below (sendGRVRequest decode, applyGRVReply, the
 	// adaptive-window math) would orphan it, and every waiter blocked on its
@@ -961,6 +979,9 @@ func (b *grvBatcher) flush(db *database, batch []grvRequest) {
 		}
 	}
 	defer retire() // retire before the panic backstop publishes errors
+	if ctx == nil {
+		ctx = db.ctx
+	}
 
 	// Collect per-tx span contexts so GetReadVersionRequest carries the
 	// readVersionBatcher span (C++
@@ -978,8 +999,7 @@ func (b *grvBatcher) flush(db *database, batch []grvRequest) {
 	// by a reply it was meant to retire.
 	tok := db.grvCache.token()
 	requestTime := time.Now()
-	// Callers cancel their own waits; only Close cancels the shared recovery.
-	version, locked, rkDefault, rkBatch, tagThrottleInfoEntries, _, attemptEpoch, err := b.sendGRVRequest(db, db.ctx, flags, uint32(len(batch)), batchGRVSpanContext(spans), aggregateBatchTags(batch))
+	version, locked, rkDefault, rkBatch, tagThrottleInfoEntries, _, attemptEpoch, err := b.sendGRVRequest(db, ctx, flags, uint32(len(batch)), batchGRVSpanContext(spans), aggregateBatchTags(batch))
 	elapsed := time.Since(requestTime)
 
 	if err == nil {
@@ -993,7 +1013,7 @@ func (b *grvBatcher) flush(db *database, batch []grvRequest) {
 		// here (C++ parity: its cached path returns before the counters); the
 		// background refresher has no waiters and adds nothing. Two accepted
 		// edge divergences: waiters whose ctx expired mid-batch are still
-		// counted (C++ cancels abandoned futures before its counter), and
+		// counted, except a lone inline one (C++ cancels abandoned futures before its counter), and
 		// under a LOCKED database non-lock-aware waiters are counted here
 		// while C++'s database_locked throw (:7425-7426) precedes its
 		// counters — fixing either would need per-waiter counting at the
@@ -1279,13 +1299,18 @@ const (
 // sendGRVRequest cycles all GRV proxies, matching C++ basicLoadBalance
 // with AtMostOnce::False. On broken_promise (transport error), tries next
 // proxy. On FDB application error, propagates immediately. If all proxies
-// fail, applies exponential backoff and retries — loops until success or
-// db.ctx cancellation (matching C++ infinite loop + quorum(ok,1) wait).
+// fail, applies exponential backoff and retries — loops until success, ctx
+// cancellation or Close (matching C++ infinite loop + quorum(ok,1) wait).
 func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uint32, txnCount uint32, span types.SpanContext, tags []types.TransactionTagCount) (version int64, locked bool, rkDefaultThrottled, rkBatchThrottled bool, tagThrottleInfo []types.TransactionTagThrottle, proxyTagThrottledDuration float64, attemptEpoch int64, err error) {
 	var backoff time.Duration
+	closed := db.ctx.Done() // ctx may be a caller's, which Close does not cancel
 
 retry:
 	for {
+		// A cancelled caller must not kick a topology refresh on its way out.
+		if err := grvRPCEnded(ctx, db); err != nil {
+			return 0, false, false, false, nil, 0, attemptEpoch, err
+		}
 		proxiesChanged := db.waitProxiesChanged()
 		// Re-read the proxy list each cycle — topology may have refreshed — and
 		// take the epoch FROM THAT SAME LOAD. A retry can cross a cluster
@@ -1316,6 +1341,9 @@ retry:
 			case <-ctx.Done():
 				timer.Stop()
 				return 0, false, false, false, nil, 0, attemptEpoch, ctx.Err()
+			case <-closed:
+				timer.Stop()
+				return 0, false, false, false, nil, 0, attemptEpoch, db.ctx.Err()
 			}
 		}
 
@@ -1325,6 +1353,9 @@ retry:
 			proxy := proxies[(startIdx+i)%len(proxies)]
 			conn, err := db.getOrDial(ctx, proxy.Address)
 			if err != nil {
+				if ended := grvRPCEnded(ctx, db); ended != nil {
+					return 0, false, false, false, nil, 0, attemptEpoch, ended
+				}
 				db.handleDialError(ctx, proxy.Address)
 				continue
 			}
@@ -1335,6 +1366,9 @@ retry:
 			if err := sendReadFrame(ctx, conn, proxy.Token, body, replyHandle); err != nil {
 				replyHandle.Cancel()
 				replyHandle.Release()
+				if ended := grvRPCEnded(ctx, db); ended != nil {
+					return 0, false, false, false, nil, 0, attemptEpoch, ended
+				}
 				db.handleReadConnError(proxy.Address, err)
 				continue
 			}
@@ -1353,6 +1387,10 @@ retry:
 				replyHandle.Cancel()
 				replyHandle.Release()
 				return 0, false, false, false, nil, 0, attemptEpoch, ctx.Err()
+			case <-closed:
+				replyHandle.Cancel()
+				replyHandle.Release()
+				return 0, false, false, false, nil, 0, attemptEpoch, db.ctx.Err()
 			}
 			replyHandle.Release()
 			if resp.Err != nil {
@@ -1401,6 +1439,9 @@ retry:
 		}
 
 		// All proxies exhausted — backoff with recovery/topology wakeup.
+		if err := grvRPCEnded(ctx, db); err != nil {
+			return 0, false, false, false, nil, 0, attemptEpoch, err
+		}
 		db.kickTopology()
 		if backoff == 0 {
 			backoff = loadBalanceStartBackoff
@@ -1420,8 +1461,20 @@ retry:
 		case <-ctx.Done():
 			timer.Stop()
 			return 0, false, false, false, nil, 0, attemptEpoch, ctx.Err()
+		case <-closed:
+			timer.Stop()
+			return 0, false, false, false, nil, 0, attemptEpoch, db.ctx.Err()
 		}
 	}
+}
+
+// grvRPCEnded reports a caller's or the database's end, which must neither count
+// against a proxy nor kick a topology refresh.
+func grvRPCEnded(ctx context.Context, db *database) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return db.ctx.Err()
 }
 
 // grvPriorityToPriority converts GRV wire priority bits to TransactionPriority.
