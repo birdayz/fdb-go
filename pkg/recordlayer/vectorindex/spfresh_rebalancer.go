@@ -260,9 +260,16 @@ func spfreshRebalanceOnce(ctx context.Context, db *recordlayer.FDBDatabase, s *s
 					// Unlike those sibling sites we absorb ONLY errSPFreshLeaseHeld,
 					// not errSPFreshNotFound: spfreshSplitFine re-claims only after
 					// proving the centroid SEALED, and a centroid already split away
-					// is caught earlier by its FORWARD no-op — so a missing task row
+					// is caught earlier by its FORWARD no-op (or, coarse-split out of
+					// its cell since, by its absent task row) — so a missing task row
 					// at this point is a genuine SEALED-without-task anomaly that must
 					// fail loudly, not be skipped.
+					timer.Increment(CountSPFreshLeaseSkips)
+					continue
+				}
+				if errors.Is(serr, errSPFreshSplitDeferred) {
+					// A child's own split is in flight (another executor sealed
+					// it mid-drain): the lease is released, a later pass resumes.
 					timer.Increment(CountSPFreshLeaseSkips)
 					continue
 				}

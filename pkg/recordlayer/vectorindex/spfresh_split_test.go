@@ -3,6 +3,7 @@ package vectorindex
 import (
 	"context"
 	"errors"
+	"time"
 
 	"fdb.dev/pkg/recordlayer"
 
@@ -776,82 +777,11 @@ var _ = Describe("SPFresh chunked oversized split", func() {
 		config.CellMax = 8
 		storage := newSPFreshStorage(specSubspace().Sub("spfresh-chunked").Sub("drain"), 1)
 
-		// Build a SMALL two-cluster index, then balloon cluster A's posting
-		// far past the 4×Lmax envelope by direct posting writes (the exact
-		// state sustained write load leaves when the rebalancer lags).
-		var inputs []spfreshBuildInput
-		id := int64(1)
-		for i := 0; i < 8; i++ {
-			inputs = append(inputs, spfreshBuildInput{pk: tuple.Tuple{id}, vec: []float64{float64(i%5) * 0.2, float64(i%7) * 0.2}})
-			id++
-		}
-		for i := 0; i < 8; i++ {
-			inputs = append(inputs, spfreshBuildInput{pk: tuple.Tuple{id}, vec: []float64{50 + float64(i%2)*0.1, float64(i%3) * 0.1}})
-			id++
-		}
-		builder := newSPFreshBuilder(sharedDB, storage, config, "builder-1")
-		Expect(builder.build(ctx, inputs, 42)).To(Succeed())
-		// Balloon: 90 more members written the way the foreground insert
-		// writes them (posting + membership + sidecar + counter).
-		quantizerB := newSPFreshQuantizer(config)
-		var firstFine int64
-		_, err0 := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
-			tx := rtx.Transaction()
-			mem, merr := spfreshReadMembership(tx, storage, tuple.Tuple{int64(1)})
-			Expect(merr).NotTo(HaveOccurred())
-			firstFine = mem[0]
-			cellOf, ferr := spfreshFindCentroidCell(tx, storage, firstFine)
-			Expect(ferr).NotTo(HaveOccurred())
-			row, rerr := spfreshReadCentroidForWrite(tx, storage, cellOf, firstFine)
-			Expect(rerr).NotTo(HaveOccurred())
-			cvec, verr := row.vector()
-			Expect(verr).NotTo(HaveOccurred())
-			for i := 0; i < 90; i++ {
-				pk := tuple.Tuple{int64(1000 + i)}
-				v := []float64{float64(i%5) * 0.21, float64(i%7) * 0.19}
-				residual := []float64{v[0] - cvec[0], v[1] - cvec[1]}
-				tx.Set(storage.postingKey(firstFine, pk), quantizerB.Encode(residual))
-				tx.Set(storage.membershipKey(pk), encodeMembership([]int64{firstFine}))
-				tx.Set(storage.sidecarKey(pk), vectorcodec.SerializeHalf(v))
-				spfreshCounterAdd(tx, storage, spfreshCounterFine, firstFine, 1)
-			}
-			return nil, nil
-		})
-		Expect(err0).NotTo(HaveOccurred())
-
-		// The fullest posting is cluster A's (or one of its build-time splits).
-		var cellID, fineID int64
-		var members []tuple.Tuple
-		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
-			tx := rtx.Transaction()
-			cellID, fineID, members = 0, 0, nil
-			cells, _, lerr := spfreshLoadAllCoarse(tx, storage)
-			Expect(lerr).NotTo(HaveOccurred())
-			for _, cid := range cells {
-				rows, _, _, cerr := spfreshLoadCell(tx, storage, cid)
-				Expect(cerr).NotTo(HaveOccurred())
-				for _, r := range rows {
-					if r.row.state != spfreshStateActive {
-						continue
-					}
-					entries, perr := spfreshLoadPostingForSplit(tx, storage, r.fineID)
-					Expect(perr).NotTo(HaveOccurred())
-					if len(entries) > len(members) {
-						cellID, fineID = cid, r.fineID
-						members = nil
-						for _, e := range entries {
-							members = append(members, e.pk)
-						}
-					}
-				}
-			}
-			return nil, nil
-		})
-		Expect(err).NotTo(HaveOccurred())
+		cellID, fineID, members, nInputs := spfreshBalloonPosting(ctx, storage, config, 90)
 		Expect(len(members)).To(BeNumerically(">", 4*config.Lmax),
 			"test premise: the posting must exceed the 4×Lmax single-tx envelope")
 
-		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			_, terr := spfreshTaskSetIfAbsent(rtx.Transaction(), storage, spfreshTaskSplit, fineID)
 			return nil, terr
 		})
@@ -905,11 +835,275 @@ var _ = Describe("SPFresh chunked oversized split", func() {
 			tx := rtx.Transaction()
 			Expect(cache.fullReload(tx, storage, 1)).To(Succeed())
 			searcher := newSPFreshSearcher(storage, config, cache)
-			got, serr := searcher.search(tx, []float64{0.4, 0.6}, len(inputs))
+			got, serr := searcher.search(tx, []float64{0.4, 0.6}, nInputs)
 			Expect(serr).NotTo(HaveOccurred())
-			Expect(len(got)).To(BeNumerically(">=", len(inputs)-2), "records lost across the chunked split")
+			Expect(len(got)).To(BeNumerically(">=", nInputs-2), "records lost across the chunked split")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	// The two-rebalancer churn flake made deterministic: appending into a child
+	// another executor split mid-drain strands live entries where no query reads.
+	DescribeTable("a child split out from under an in-flight drain never receives the drain's entries",
+		func(extra int, chunked bool) {
+			config := DefaultSPFreshConfig(2)
+			config.Lmax = 16
+			config.CellTarget = 4
+			config.CellMax = 8
+			storage := newSPFreshStorage(specSubspace().Sub("spfresh-drain-race"), 1)
+			cellID, fineID, members, nInputs := spfreshBalloonPosting(ctx, storage, config, extra)
+			Expect(len(members) > 4*config.Lmax).To(Equal(chunked), "test premise: posting size picks the split path")
+
+			_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				_, terr := spfreshTaskSetIfAbsent(rtx.Transaction(), storage, spfreshTaskSplit, fineID)
+				return nil, terr
+			})
+			Expect(err).NotTo(HaveOccurred())
+			out, err := spfreshSealFine(ctx, sharedDB, storage, "drainer", cellID, fineID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(out.proceed).To(BeTrue())
+			// The drainer publishes the children ACTIVE (the chunked plan), then
+			// stalls; a second executor splits child A to FORWARD meanwhile.
+			err = spfreshChunkedSplitPlan(ctx, sharedDB, storage, config, "drainer", cellID, fineID, out.childA, out.childB, 7)
+			Expect(err).NotTo(HaveOccurred())
+			_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				_, terr := spfreshTaskSetIfAbsent(rtx.Transaction(), storage, spfreshTaskSplit, out.childA)
+				return nil, terr
+			})
+			Expect(err).NotTo(HaveOccurred())
+			childOut, err := spfreshSealFine(ctx, sharedDB, storage, "other", cellID, out.childA)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(childOut.proceed).To(BeTrue())
+			Expect(spfreshSplitFine(ctx, sharedDB, storage, config, "other", cellID, out.childA, 11)).To(Succeed())
+
+			// The drainer resumes: chunked drain, or the single-tx path's
+			// existing-children resume when the posting fits the envelope.
+			Expect(spfreshSplitFine(ctx, sharedDB, storage, config, "drainer", cellID, fineID, 7)).To(Succeed())
+
+			_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				tx := rtx.Transaction()
+				for _, f := range []int64{fineID, out.childA} {
+					row, rerr := spfreshReadCentroidForWrite(tx, storage, cellID, f)
+					Expect(rerr).NotTo(HaveOccurred())
+					Expect(row.state).To(Equal(spfreshStateForward), "fine %d", f)
+					es, perr := spfreshLoadPostingForSplit(tx, storage, f)
+					Expect(perr).NotTo(HaveOccurred())
+					Expect(es).To(BeEmpty(), "entries stranded in FORWARD posting %d", f)
+				}
+				for _, pk := range members {
+					mem, merr := spfreshReadMembership(tx, storage, pk)
+					Expect(merr).NotTo(HaveOccurred())
+					for _, f := range mem {
+						cell, ferr := spfreshFindCentroidCell(tx, storage, f)
+						Expect(ferr).NotTo(HaveOccurred())
+						row, rerr := spfreshReadCentroidForWrite(tx, storage, cell, f)
+						Expect(rerr).NotTo(HaveOccurred())
+						Expect(row.state).To(Equal(spfreshStateActive), "pk %v membership names non-ACTIVE fine %d", pk, f)
+						data, gerr := tx.Get(storage.postingKey(f, pk)).Get()
+						Expect(gerr).NotTo(HaveOccurred())
+						Expect(data).NotTo(BeNil(), "pk %v membership names fine %d without its posting entry", pk, f)
+					}
+				}
+				cells, _, lerr := spfreshLoadAllCoarse(tx, storage)
+				Expect(lerr).NotTo(HaveOccurred())
+				for _, c := range cells {
+					rows, _, _, cerr := spfreshLoadCell(tx, storage, c)
+					Expect(cerr).NotTo(HaveOccurred())
+					for _, r := range rows {
+						if r.row.state != spfreshStateActive {
+							continue
+						}
+						es, perr := spfreshLoadPostingForSplit(tx, storage, r.fineID)
+						Expect(perr).NotTo(HaveOccurred())
+						n, nerr := spfreshCounterReadSnapshot(tx, storage, spfreshCounterFine, r.fineID)
+						Expect(nerr).NotTo(HaveOccurred())
+						Expect(n).To(Equal(int64(len(es))), "fine counter drift on posting %d", r.fineID)
+					}
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Every member is findable through a fresh routing view.
+			cache := newSPFreshRoutingCache(0)
+			_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				tx := rtx.Transaction()
+				Expect(cache.fullReload(tx, storage, 1)).To(Succeed())
+				got, serr := newSPFreshSearcher(storage, config, cache).search(tx, []float64{0.4, 0.6}, nInputs+extra)
+				Expect(serr).NotTo(HaveOccurred())
+				found := map[string]bool{}
+				for _, g := range got {
+					found[string(g.PrimaryKey.Pack())] = true
+				}
+				for _, pk := range members {
+					Expect(found).To(HaveKey(string(pk.Pack())), "member %v unfindable after the drain", pk)
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		},
+		Entry("chunked drain (posting past 4×Lmax)", 90, true),
+		Entry("single-tx resume over existing children", 20, false),
+	)
+
+	// The flake's rebalancer-error half: after a takeover finished the split and a
+	// coarse split moved the parent, the stale executor's next step must no-op.
+	It("a split completed elsewhere and coarse-split away is a no-op for the stale executor", func() {
+		config := DefaultSPFreshConfig(2)
+		config.Lmax = 16
+		config.CellTarget = 4
+		config.CellMax = 8
+		storage := newSPFreshStorage(specSubspace().Sub("spfresh-split-done-elsewhere"), 1)
+		cellID, fineID, members, _ := spfreshBalloonPosting(ctx, storage, config, 20)
+		Expect(len(members)).To(BeNumerically("<=", 4*config.Lmax), "test premise: single-tx split")
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			_, terr := spfreshTaskSetIfAbsent(rtx.Transaction(), storage, spfreshTaskSplit, fineID)
+			return nil, terr
+		})
+		Expect(err).NotTo(HaveOccurred())
+		restore := spfreshLeaseDurationMs
+		spfreshLeaseDurationMs = 1
+		defer func() { spfreshLeaseDurationMs = restore }()
+		out, err := spfreshSealFine(ctx, sharedDB, storage, "stale", cellID, fineID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(out.proceed).To(BeTrue())
+
+		// The stale executor stalls past its lease; another finishes the split
+		// and the cell is coarse-split, moving the FORWARD parent away.
+		time.Sleep(5 * time.Millisecond)
+		takeover, err := spfreshSealFine(ctx, sharedDB, storage, "takeover", cellID, fineID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(takeover.proceed).To(BeTrue())
+		Expect(spfreshSplitFine(ctx, sharedDB, storage, config, "takeover", cellID, fineID, 7)).To(Succeed())
+		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			_, terr := spfreshTaskSetIfAbsent(rtx.Transaction(), storage, spfreshTaskCSplit, cellID)
+			return nil, terr
+		})
+		Expect(err).NotTo(HaveOccurred())
+		outcome, err := spfreshCoarseSplit(ctx, sharedDB, storage, config, "takeover", cellID, 3)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(outcome).To(Equal(spfreshOutcomeActed), "test premise: the cell coarse-splits")
+
+		// Both of the stale executor's possible next steps are no-ops.
+		Expect(spfreshSplitFine(ctx, sharedDB, storage, config, "stale", cellID, fineID, 7)).To(Succeed())
+		Expect(spfreshSplitFineChunked(ctx, sharedDB, storage, config, "stale", cellID, fineID, out.childA, out.childB, 7)).To(Succeed())
+	})
+
+	It("a sealed posting drained below two members by NPA still plans a chunked split", func() {
+		config := DefaultSPFreshConfig(2)
+		config.Lmax = 16
+		config.CellTarget = 4
+		config.CellMax = 8
+		storage := newSPFreshStorage(specSubspace().Sub("spfresh-plan-drained"), 1)
+		cellID, fineID, members, _ := spfreshBalloonPosting(ctx, storage, config, 20)
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			_, terr := spfreshTaskSetIfAbsent(rtx.Transaction(), storage, spfreshTaskSplit, fineID)
+			return nil, terr
+		})
+		Expect(err).NotTo(HaveOccurred())
+		out, err := spfreshSealFine(ctx, sharedDB, storage, "drainer", cellID, fineID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(out.proceed).To(BeTrue())
+		// NPA moves all but one member out of the SEALED posting between the
+		// oversized read and the plan (modelled by deleting them outright).
+		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			for _, pk := range members[:len(members)-1] {
+				tx.Clear(storage.postingKey(fineID, pk))
+				tx.Clear(storage.membershipKey(pk))
+				spfreshCounterAdd(tx, storage, spfreshCounterFine, fineID, -1)
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(spfreshSplitFineChunked(ctx, sharedDB, storage, config, "drainer", cellID, fineID, out.childA, out.childB, 7)).To(Succeed())
+		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			row, rerr := spfreshReadCentroidForWrite(tx, storage, cellID, fineID)
+			Expect(rerr).NotTo(HaveOccurred())
+			Expect(row.state).To(Equal(spfreshStateForward))
+			// The survivor is a balloon pk: one replica, now in a child.
+			mem, merr := spfreshReadMembership(tx, storage, members[len(members)-1])
+			Expect(merr).NotTo(HaveOccurred())
+			Expect(mem).To(ConsistOf(BeElementOf(out.childA, out.childB)))
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
 	})
 })
+
+// spfreshBalloonPosting builds a two-cluster index and grows cluster A's posting
+// by `extra` members, as a lagging rebalancer leaves it; returns the fullest posting.
+func spfreshBalloonPosting(ctx context.Context, storage *spfreshStorage, config SPFreshConfig, extra int) (cellID, fineID int64, members []tuple.Tuple, nInputs int) {
+	// A SMALL two-cluster index; ballooning cluster A's posting by direct
+	// writes is the state sustained write load leaves when the rebalancer lags.
+	var inputs []spfreshBuildInput
+	id := int64(1)
+	for i := 0; i < 8; i++ {
+		inputs = append(inputs, spfreshBuildInput{pk: tuple.Tuple{id}, vec: []float64{float64(i%5) * 0.2, float64(i%7) * 0.2}})
+		id++
+	}
+	for i := 0; i < 8; i++ {
+		inputs = append(inputs, spfreshBuildInput{pk: tuple.Tuple{id}, vec: []float64{50 + float64(i%2)*0.1, float64(i%3) * 0.1}})
+		id++
+	}
+	builder := newSPFreshBuilder(sharedDB, storage, config, "builder-1")
+	Expect(builder.build(ctx, inputs, 42)).To(Succeed())
+	// Balloon: `extra` more members written the way the foreground insert
+	// writes them (posting + membership + sidecar + counter).
+	quantizerB := newSPFreshQuantizer(config)
+	var firstFine int64
+	_, err0 := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		tx := rtx.Transaction()
+		mem, merr := spfreshReadMembership(tx, storage, tuple.Tuple{int64(1)})
+		Expect(merr).NotTo(HaveOccurred())
+		firstFine = mem[0]
+		cellOf, ferr := spfreshFindCentroidCell(tx, storage, firstFine)
+		Expect(ferr).NotTo(HaveOccurred())
+		row, rerr := spfreshReadCentroidForWrite(tx, storage, cellOf, firstFine)
+		Expect(rerr).NotTo(HaveOccurred())
+		cvec, verr := row.vector()
+		Expect(verr).NotTo(HaveOccurred())
+		for i := 0; i < extra; i++ {
+			pk := tuple.Tuple{int64(1000 + i)}
+			v := []float64{float64(i%5) * 0.21, float64(i%7) * 0.19}
+			residual := []float64{v[0] - cvec[0], v[1] - cvec[1]}
+			tx.Set(storage.postingKey(firstFine, pk), quantizerB.Encode(residual))
+			tx.Set(storage.membershipKey(pk), encodeMembership([]int64{firstFine}))
+			tx.Set(storage.sidecarKey(pk), vectorcodec.SerializeHalf(v))
+			spfreshCounterAdd(tx, storage, spfreshCounterFine, firstFine, 1)
+		}
+		return nil, nil
+	})
+	Expect(err0).NotTo(HaveOccurred())
+
+	// The fullest posting is cluster A's (or one of its build-time splits).
+	_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		tx := rtx.Transaction()
+		cellID, fineID, members = 0, 0, nil
+		cells, _, lerr := spfreshLoadAllCoarse(tx, storage)
+		Expect(lerr).NotTo(HaveOccurred())
+		for _, cid := range cells {
+			rows, _, _, cerr := spfreshLoadCell(tx, storage, cid)
+			Expect(cerr).NotTo(HaveOccurred())
+			for _, r := range rows {
+				if r.row.state != spfreshStateActive {
+					continue
+				}
+				entries, perr := spfreshLoadPostingForSplit(tx, storage, r.fineID)
+				Expect(perr).NotTo(HaveOccurred())
+				if len(entries) > len(members) {
+					cellID, fineID = cid, r.fineID
+					members = nil
+					for _, e := range entries {
+						members = append(members, e.pk)
+					}
+				}
+			}
+		}
+		return nil, nil
+	})
+	Expect(err).NotTo(HaveOccurred())
+	return cellID, fineID, members, len(inputs)
+}

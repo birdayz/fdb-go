@@ -304,7 +304,16 @@ are created ACTIVE up front (queries and inserts route to them mid-drain, and
 a pk lives in exactly one of parent/child at any commit point), entries move
 in 4×Lmax-sized chunks, each chunk one lease-fenced transaction with the same
 membership-rewrite rules as the single-tx step, and the FORWARD flip lands
-only after a REAL read proves the parent empty:
+only after a REAL read proves the parent empty. Unlike the papers' atomic
+split, the drain exposes ACTIVE children that another executor may split or
+merge before it ends, so each chunk (and a single-tx resume over existing
+children) REAL-reads the parent's cell and moves an entry only to the nearest
+ACTIVE fine its child has become — the child, or the descendants a FORWARD row
+names; a SEALED descendant defers the drain, lease released, until its split
+publishes (appending into a child already FORWARD left live entries in a
+posting no query reads). A stale executor whose next step finds the parent
+gone and its task cleared treats the split as done (a takeover finished it).
+The steps:
 
 1. **SEAL** (tiny): read claim; read `CENTROIDS/(cell, c)` = ACTIVE (FORWARD /
    DEAD ⇒ zombie rule: delete task, no-op; SEALED with own childIDs ⇒ resume at
