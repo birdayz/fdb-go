@@ -194,6 +194,7 @@ class CampaignTest(unittest.TestCase):
             manifest = dict(config=cfg, backend=backend, go_version='go1.26.9', gomaxprocs=8)
             before = dict(process_user_cpu_us=100, process_system_cpu_us=50, go_total_alloc_bytes=0,
                           go_mallocs=0, go_gc_cycles=0, go_gc_pause_ns=0, process_high_water_rss_kb=1)
+            identity = dict(before, process_user_cpu_us=25, process_system_cpu_us=10)
             after = dict(before, process_user_cpu_us=100 + base * (40 if native else 30),
                          process_system_cpu_us=50 + base * (20 if native else 15), go_total_alloc_bytes=1000,
                          go_mallocs=20, go_gc_cycles=1, go_gc_pause_ns=100, process_high_water_rss_kb=100)
@@ -211,7 +212,7 @@ class CampaignTest(unittest.TestCase):
                              stats_after_measurement_drain=drained, stats_after_shutdown=shutdown)
             summary = dict(config=cfg, backend=backend, lifecycle=lifecycle, success=True, persisted_validation='ok',
                            requested=5, completed=5, errors=0, warmup_completed=2, warmup_errors=0,
-                           measured_wall_ns=latency_base * 20000, stats_before=before, stats_after=after,
+                           measured_wall_ns=latency_base * 20000, stats_after_identity=identity, stats_before=before, stats_after=after,
                            client_counters_delta=counters)
             for filename, value in [('manifest.json', manifest), ('summary.json', summary), ('result.json', dict(returncode=0))]:
                 (folder / filename).write_text(json.dumps(value))
@@ -250,12 +251,16 @@ class CampaignTest(unittest.TestCase):
         self.assertEqual(len(report['per_run']), 12)
         for row in report['per_run']:
             self.assertAlmostEqual(row['drained_cpu_ns_per_op'], row['process_cpu_ns_per_op'] + 3000)
-            self.assertAlmostEqual(row['shutdown_process_cpu_ns_per_op'], row['process_cpu_ns_per_op'] + 39000)
+            self.assertAlmostEqual(row['shutdown_process_cpu_ns_per_op'], row['process_cpu_ns_per_op'] + 32000)
+            self.assertAlmostEqual(row['whole_process_cpu_through_shutdown_ns_per_op'], row['process_cpu_ns_per_op'] + 39000)
             self.assertEqual(row['drained_go_gc_cycles'], 3)
             self.assertEqual(row['shutdown_go_gc_cycles'], 5)
         self.assertIn('process exit', report['lifecycle_cpu_scope'])
         self.assertIn('drained_cpu_ns_per_op', ratios)
         self.assertIn('shutdown_process_cpu_ns_per_op', ratios)
+        self.assertNotIn('whole_process_cpu_through_shutdown_ns_per_op', ratios)
+        with (out / 'paired.csv').open() as f:
+            self.assertNotIn('whole_process_cpu_through_shutdown_ns_per_op', {r['metric'] for r in csv.DictReader(f)})
         self.assertIn('getrusage', (out / 'TABLES.md').read_text())
         self.assertIn('native C++ heap', (out / 'TABLES.md').read_text())
 
@@ -321,6 +326,9 @@ class CampaignTest(unittest.TestCase):
             ('wrong_binary', 'manifest.json', lambda x: x['backend'].update(executable_sha256='0' * 64)),
             ('synthetic_native_counters', 'summary.json', lambda x: x['client_counters_delta'].update(observation='observed')),
             ('missing_stats', 'summary.json', lambda x: x.pop('stats_after')),
+            ('missing_identity', 'summary.json', lambda x: x.pop('stats_after_identity')),
+            ('late_identity', 'summary.json', lambda x: x['stats_after_identity'].update(process_user_cpu_us=1000000)),
+            ('nonpositive_lifecycle_cpu', 'summary.json', lambda x: x.update(stats_after_identity=x['lifecycle']['stats_after_shutdown'])),
             ('missing_lifecycle', 'summary.json', lambda x: x.pop('lifecycle')),
             ('incomplete_lifecycle', 'summary.json', lambda x: x['lifecycle'].update(complete=False)),
             ('open_database', 'summary.json', lambda x: x['lifecycle'].update(database_closed=False)),

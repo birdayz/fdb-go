@@ -56,11 +56,7 @@ func run() error {
 			return fmt.Errorf("inherited FDB_NETWORK_OPTION_* is forbidden: native lifecycle accounting requires only the local client")
 		}
 	}
-	db, meta, err := openBackend(cfg)
-	if err != nil {
-		return err
-	}
-	defer db.Close()
+	meta := map[string]any{}
 	if info, ok := debug.ReadBuildInfo(); ok {
 		meta["go_build_info"] = info.String()
 	}
@@ -95,10 +91,23 @@ func run() error {
 		}
 	}
 	meta["loaded_fdb_libraries_sha256"] = libraries
+	// Identity hashing is asymmetric across arms and must precede client startup.
+	afterIdentity, err := bench.ReadStats(true)
+	if err != nil {
+		return err
+	}
+	db, backendMeta, err := openBackend(cfg)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	for key, value := range backendMeta {
+		meta[key] = value
+	}
 	if native, _ := meta["native_library"].(bool); native != (len(libraries) > 0) {
 		return fmt.Errorf("native linkage assertion failed: native=%t mapped=%v", native, libraries)
 	}
-	return bench.Run(cfg, db, meta)
+	return bench.Run(cfg, db, meta, afterIdentity)
 }
 
 func hashFile(path string) (string, error) {

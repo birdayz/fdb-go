@@ -94,6 +94,7 @@ func TestBothBackendsAgainstFDB(t *testing.T) {
 					WarmupCompleted     int                  `json:"warmup_completed"`
 					WarmupErrors        int                  `json:"warmup_errors"`
 					PersistedValidation string               `json:"persisted_validation"`
+					AfterIdentity       bench.Stats          `json:"stats_after_identity"`
 					Before              bench.Stats          `json:"stats_before"`
 					After               bench.Stats          `json:"stats_after"`
 					Counters            bench.ClientCounters `json:"client_counters_delta"`
@@ -107,6 +108,12 @@ func TestBothBackendsAgainstFDB(t *testing.T) {
 					t.Fatal("missing measured-phase getrusage CPU")
 				}
 				life := summary.Lifecycle
+				identityCPU := summary.AfterIdentity.UserUS + summary.AfterIdentity.SystemUS
+				beforeCPU := summary.Before.UserUS + summary.Before.SystemUS
+				shutdownCPU := life.AfterShutdown.UserUS + life.AfterShutdown.SystemUS
+				if identityCPU <= 0 || identityCPU >= beforeCPU || beforeCPU >= shutdownCPU || shutdownCPU-identityCPU >= shutdownCPU {
+					t.Fatalf("identity hashing was not excluded before opening the backend: identity=%d before=%d shutdown=%d", identityCPU, beforeCPU, shutdownCPU)
+				}
 				if !life.Complete || !life.DatabaseClosed || !life.MeasurementBarrier || life.NetworkStopped != arm.native ||
 					life.AfterDrain.UserUS+life.AfterDrain.SystemUS <= summary.After.UserUS+summary.After.SystemUS ||
 					life.AfterShutdown.UserUS+life.AfterShutdown.SystemUS <= life.AfterDrain.UserUS+life.AfterDrain.SystemUS {

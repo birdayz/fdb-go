@@ -26,9 +26,12 @@ WINDOW_CPU_SCOPE = (
 LIFECYCLE_CPU_SCOPE = (
     'Drained CPU is (getrusage after the post-measurement finalizer fixpoint and native FIFO barrier minus '
     'the pre-measurement snapshot)/measured transactions. It includes forced GC and pending setup/warmup cleanup; '
-    'it is not isolated steady-state transaction CPU. Shutdown process CPU is absolute RUSAGE_SELF user+system '
-    'through the final fixpoint, database close and native StopNetwork, divided by measured transactions. '
-    'It includes startup, fixture, warmup, validation and CSV output, but excludes final JSON output and process exit. '
+    'it is not isolated steady-state transaction CPU. Shutdown process CPU subtracts the post-identity, pre-backend-open '
+    'snapshot A from RUSAGE_SELF user+system E after the final fixpoint, database close and native StopNetwork, '
+    'divided by measured transactions. E-A includes client startup, fixture, warmup, validation and CSV output, '
+    'but excludes earlier harness identity hashing, final JSON output and process exit. '
+    'Whole process CPU through shutdown is absolute E/transactions, retained only in raw/per-run/absolute tables. '
+    'It includes arm-specific executable/library identity hashing and is not paired cross-arm client-cost evidence. '
     'Go finalizers are drained using exact runtime counters; cleanups are runtime estimates and must not increase '
     'during either drain. The terminal shutdown, not GC counts alone, establishes that native network work has stopped.'
 )
@@ -86,7 +89,8 @@ def digest(path):
 
 def write_tables(out, per_run, comparisons):
     times = ['mean_ns', 'p50_ns', 'p90_ns', 'p99_ns', 'p999_ns', 'process_cpu_ns_per_op',
-             'user_cpu_ns_per_op', 'system_cpu_ns_per_op', 'drained_cpu_ns_per_op', 'shutdown_process_cpu_ns_per_op']
+             'user_cpu_ns_per_op', 'system_cpu_ns_per_op', 'drained_cpu_ns_per_op', 'shutdown_process_cpu_ns_per_op',
+             'whole_process_cpu_through_shutdown_ns_per_op']
     absolute = []
     for workload, arm in sorted({(r['workload'], r['arm']) for r in per_run}):
         rows = [r for r in per_run if r['workload'] == workload and r['arm'] == arm]
@@ -99,8 +103,8 @@ def write_tables(out, per_run, comparisons):
             'Ratios are geometric means of within-block ratios, NOT ratios of these medians. '
             'Window CPU is measured-phase getrusage user+system; drained and shutdown scopes are defined below. Go allocation/GC counters exclude the native C++ heap; '
             'do not compare total Go/CGo memory from these columns. Native client counters are unobserved.\n\n',
-            '|Workload|Arm|Runs|Transactions|Mean|p50|p90|p99|p99.9|Window CPU|Window User CPU|Window System CPU|Drained CPU|Shutdown process CPU|Go B/tx|Go allocs/tx|Go GC cycles: window/drained/shutdown|\n',
-            '|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n']
+            '|Workload|Arm|Runs|Transactions|Mean|p50|p90|p99|p99.9|Window CPU|Window User CPU|Window System CPU|Drained CPU|Shutdown process CPU (E-A)|Whole process through shutdown (E; unpaired)|Go B/tx|Go allocs/tx|Go GC cycles: window/drained/shutdown|\n',
+            '|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n']
     for r in absolute:
         text.append(f'|{r["workload"]}|{r["arm"]}|{r["runs"]}|{r["transactions"]}|' +
                     '|'.join(f'{r[m]/1000:.3f}' for m in times) +
@@ -256,10 +260,12 @@ def main():
                      go_gc_pause_ns=after['go_gc_pause_ns'] - before['go_gc_pause_ns'],
                      process_lifetime_high_water_rss_kib=after["process_high_water_rss_kb"])
         life = summary['lifecycle']
+        identity = summary['stats_after_identity']
         drained, shutdown = life['stats_after_measurement_drain'], life['stats_after_shutdown']
         cpu_keys = ('process_user_cpu_us', 'process_system_cpu_us')
         s.update(drained_cpu_ns_per_op=1000 * sum(drained[k] - before[k] for k in cpu_keys) / len(rows),
-                 shutdown_process_cpu_ns_per_op=1000 * sum(shutdown[k] for k in cpu_keys) / len(rows),
+                 shutdown_process_cpu_ns_per_op=1000 * sum(shutdown[k] - identity[k] for k in cpu_keys) / len(rows),
+                 whole_process_cpu_through_shutdown_ns_per_op=1000 * sum(shutdown[k] for k in cpu_keys) / len(rows),
                  drained_go_gc_cycles=drained['go_gc_cycles'] - before['go_gc_cycles'],
                  shutdown_go_gc_cycles=shutdown['go_gc_cycles'])
         stats[(s["workload"], s["block"], s["arm"])] = s

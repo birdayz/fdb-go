@@ -192,14 +192,17 @@ def validate_lifecycle(summary):
                 after['cleanups_executed_estimate'] != after['cleanups_queued_estimate'] or
                 after['cleanups_queued_estimate'] != before['cleanups_queued_estimate']):
             raise ValueError('incomplete finalizer fixpoint: ' + name)
-    snapshots = [summary['stats_before'], summary['stats_after'], life['stats_after_measurement_drain'], life['stats_after_shutdown']]
+    snapshots = [summary['stats_after_identity'], summary['stats_before'], summary['stats_after'],
+                 life['stats_after_measurement_drain'], life['stats_after_shutdown']]
     required = {'process_user_cpu_us', 'process_system_cpu_us', 'go_total_alloc_bytes', 'go_mallocs',
                 'go_gc_cycles', 'go_gc_pause_ns', 'process_high_water_rss_kb'}
     if any(set(s) != required or any(type(v) is not int or v < 0 for v in s.values()) for s in snapshots):
         raise ValueError('invalid lifecycle resource counter')
     if any(after[k] < before[k] for before, after in zip(snapshots, snapshots[1:]) for k in required):
         raise ValueError('decreasing lifecycle resource counter')
-    for drain, snapshot in [('measurement_drain', snapshots[2]), ('shutdown_drain', snapshots[3])]:
+    if sum(snapshots[-1][k] - snapshots[0][k] for k in ('process_user_cpu_us', 'process_system_cpu_us')) <= 0:
+        raise ValueError('nonpositive shutdown process CPU after identity')
+    for drain, snapshot in [('measurement_drain', snapshots[3]), ('shutdown_drain', snapshots[4])]:
         if snapshot['go_gc_cycles'] < life[drain]['after']['gc_cycles']:
             raise ValueError('resource snapshot precedes finalizer drain')
     return life

@@ -156,7 +156,8 @@ retains accessible server statistics even when owner-only `/proc/PID/io` is deni
 
 `TABLES.md` and `absolute.csv` contain **medians of run-level statistics**, not
 pooled percentiles: mean, p50, p90, p99, p99.9, process CPU and its user/system
-components, post-drain CPU, process CPU through shutdown, plus Go-runtime allocation
+components, post-drain CPU, post-identity CPU through shutdown, absolute whole-process
+CPU through shutdown (unpaired), plus Go-runtime allocation
 and GC counts (window, through drain, and process lifetime through shutdown). `paired.csv` contains
 **geometric means of within-block ratios** and nominal 95% percentile
 block-bootstrap intervals; `--denominator` selects the reference arm. These
@@ -181,18 +182,28 @@ The unequal deferred-cleanup effect is unmeasured by that window alone. Paired
 tables include both arms' Go GC cycles beside ratios; counts alone do not prove
 native cleanup completed. Do not present window CPU as native full-cost evidence.
 
-Two additional CPU scopes are reported per measured transaction:
+Three additional CPU scopes are reported per measured transaction:
 
 - **Drained CPU** subtracts the pre-window snapshot from a snapshot after a Go
   finalizer fixpoint and a native non-I/O FIFO barrier (`GetApproximateSize`).
   It includes forced GC and any pending setup/warmup cleanup, not just measured
   transaction work. It excludes persisted validation and terminal shutdown.
-- **Shutdown process CPU** is absolute `RUSAGE_SELF` user + system after another
-  finalizer fixpoint, database close, and native `StopNetwork` (which waits for
-  the network thread to exit). It includes startup, fixture, warmup, validation
-  and CSV output. It excludes final summary JSON output and process exit; GNU
-  `time` remains the independent whole-process measure. Fixed overheads are not
-  removed or extrapolated into a steady-state cost.
+- **Shutdown process CPU** is `(E-A)/N`: `RUSAGE_SELF` user + system after another
+  finalizer fixpoint, database close, and native `StopNetwork` (E), minus the
+  post-identity snapshot A taken before opening either backend. This excludes
+  arm-specific executable/library hashing and build metadata work, but includes
+  client startup, fixture, warmup, validation and CSV output. It excludes final
+  summary JSON output and process exit. Other fixed overheads are not removed
+  or extrapolated into a steady-state cost.
+- **Whole process CPU through shutdown** preserves absolute `E/N`, including
+  startup and arm-specific identity hashing. It is retained only in raw,
+  per-run and absolute tables, **not paired comparisons or `paired.csv`**: it is
+  not cross-arm client-cost evidence. GNU `time` remains the independent
+  whole-process-through-exit measure.
+
+The summary retains A as `stats_after_identity`; resource counters must be
+nondecreasing across A, pre-window B, post-window C, post-drain D and shutdown E.
+The post-identity shutdown CPU delta must be positive.
 
 Each drain forces at least two GC rounds and waits for exact runtime finalizer
 executed/queued counts to match, continuing until consecutive quiet rounds queue
