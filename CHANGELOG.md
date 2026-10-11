@@ -47,6 +47,7 @@ project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (
 ### Changed
 - Update Go dependencies for archive containment, bounded group parsing, CEL JSON field privacy, and OpenTelemetry diagnostic privacy; these SDK updates do not patch the host Docker daemon.
 - `EndpointTypeContinuation` is internal; scan callers supply the original range endpoints and pass the continuation separately.
+- Commit has no synthetic reply timeout: transaction Cancel/timeout end the public wait while native GRV/commit/fence work remains owned by the transaction; Reset, owner collection, and database close drop that work.
 - The client handles FDB's ENDPOINT_NOT_FOUND reply as libfdb_c does: a request to a role the server no
   longer hosts fails at once as maybe-delivered instead of waiting for the RPC timeout, without closing
   the connection, and later reads, GRVs, location lookups and commits skip that endpoint.

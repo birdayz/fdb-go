@@ -24,8 +24,8 @@ type ReadTransactor interface {
 // Transactor interface stays unwidened and Transaction — which has no retry loop —
 // needs no meaningless TransactCtx). Per RFC-090 the dispatched commit and its
 // commit_unknown_result barrier deliberately run on a DETACHED context, so the
-// caller's ctx never cancels an in-flight commit (which is already bounded by the
-// per-RPC timeout).
+// caller's ctx never cancels an in-flight commit. The transaction timeout and Cancel
+// end the public wait; Reset additionally drops the retained native commit actor.
 type CtxTransactor interface {
 	TransactCtx(ctx context.Context, f func(WritableTransaction) (any, error)) (any, error)
 }

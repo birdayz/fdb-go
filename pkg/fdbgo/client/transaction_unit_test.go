@@ -911,7 +911,7 @@ func TestBackoffSleepBounded_CapsAtDeadline(t *testing.T) {
 // txStateActive is the zero value, so this is a documentation aid more than
 // a behaviour aid — it pins the expected initial state at the call site.
 func newTestTx() *Transaction {
-	tx := &Transaction{}
+	tx := &Transaction{readVersionState: &readVersionState{}}
 	tx.state.Store(int32(txStateActive))
 	return tx
 }

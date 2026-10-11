@@ -36,6 +36,14 @@ import (
 // frame entirely. A nil intercept, or an unarmed conn, passes everything through.
 type frameIntercept func(idx int, token transport.UID, body []byte) (newBody []byte, drop bool)
 
+// severConn, returned as newBody with drop, also closes the connection: over TCP
+// a reply is lost only with its connection, and libfdb_c waits on a silent drop.
+var severConn = []byte{0}
+
+var errSevered = errors.New("sim: connection severed after a lost reply")
+
+func isSever(b []byte) bool { return len(b) == 1 && &b[0] == &severConn[0] }
+
 // simConn proxies server→client frames through an io.Pipe (the proven
 // wrongShardConn pattern: client→server Write passes straight through the
 // embedded net.Conn; only the Read direction — server replies — is intercepted).
@@ -83,6 +91,11 @@ func (s *simConn) proxyLoop(pw *io.PipeWriter) {
 				newBody, drop := fn(idx, token, body)
 				idx++
 				if drop {
+					if isSever(newBody) {
+						_ = s.Conn.Close()
+						pw.CloseWithError(errSevered)
+						return
+					}
 					continue // swallow the reply (dropReplyConn behavior)
 				}
 				body = newBody

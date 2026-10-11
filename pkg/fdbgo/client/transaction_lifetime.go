@@ -175,6 +175,8 @@ func (tx *Transaction) turnoverLocked(old *readIncarnation) func() {
 	recordReadCauseLocked(old, &wire.FDBError{Code: ErrTransactionCancelled})
 	cause, timer := old.cause, old.timer
 	old.timer = nil
+	native := old.nativeCommits
+	old.nativeCommits = nil
 	var drained <-chan struct{}
 	if old.users != 0 {
 		old.drained = make(chan struct{})
@@ -183,6 +185,9 @@ func (tx *Transaction) turnoverLocked(old *readIncarnation) func() {
 	tx.readErrMu.Unlock()
 	if timer != nil {
 		timer.Stop()
+	}
+	for commit := range native {
+		commit.stop()
 	}
 	old.cancel(cause)
 	retirePending(pending, false)

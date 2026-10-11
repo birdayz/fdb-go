@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"fdb.dev/pkg/fdbgo/transport"
+	"fdb.dev/pkg/fdbgo/wire"
 )
 
 // errReplyTimeout is the INTERNAL signal that an RPC reply did not arrive
@@ -71,24 +72,14 @@ func waitReply(replyCh <-chan transport.Response, ctx context.Context, timeout t
 	}
 }
 
-// waitReplyOrProxiesChanged is like waitReply but also wakes on proxy list
-// changes. Used by commit to detect mid-commit topology changes (C++
-// onProxiesChanged). If the proxy set changes, the commit result is unknown
-// — the proxy may have been removed before processing our commit.
-func waitReplyOrProxiesChanged(replyCh <-chan transport.Response, ctx context.Context, timeout time.Duration, proxiesChanged <-chan struct{}) (transport.Response, error) {
-	timer := getTimer(timeout)
+// C++ tryCommit has no reply timer (NativeAPI.actor.cpp:6646–6651).
+func waitReplyOrProxiesChanged(replyCh <-chan transport.Response, ctx context.Context, proxiesChanged <-chan struct{}) (transport.Response, error) {
 	select {
 	case resp := <-replyCh:
-		putTimer(timer)
 		return resp, nil
 	case <-proxiesChanged:
-		putTimer(timer)
-		return transport.Response{}, context.DeadlineExceeded
-	case <-timer.C:
-		putTimer(timer)
-		return transport.Response{}, context.DeadlineExceeded
+		return transport.Response{}, &wire.FDBError{Code: ErrCommitUnknownResult}
 	case <-ctx.Done():
-		putTimer(timer)
 		return transport.Response{}, ctx.Err()
 	}
 }

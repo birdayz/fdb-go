@@ -111,12 +111,12 @@ func TestCommitUnknownResult_NoDoubleApply(t *testing.T) {
 	}
 	t.Log("seeded fault_counter=10")
 
-	// Drop exactly one commit reply: the next one, which belongs to the commit
-	// below. Nothing else commits on this Database in between.
+	// Drop exactly one commit reply, with its connection: the next one, which
+	// belongs to the commit below. Nothing else commits on this Database in between.
 	var dropped atomic.Int64
 	sd.setIntercept(func(_ int, _ transport.UID, body []byte) ([]byte, bool) {
 		if isCommitReplyBody(body) && dropped.CompareAndSwap(0, 1) {
-			return nil, true
+			return severConn, true
 		}
 		return body, false
 	})
@@ -129,7 +129,7 @@ func TestCommitUnknownResult_NoDoubleApply(t *testing.T) {
 
 	// The admitted commit outlives ctx; Close must unblock a broken barrier
 	// before the failure path waits for its goroutine.
-	const commitBound = DefaultRPCTimeout + 25*time.Second
+	const commitBound = 30 * time.Second
 	commitDone := make(chan error, 1)
 	go func() { commitDone <- tx.Commit(ctx) }()
 	select {

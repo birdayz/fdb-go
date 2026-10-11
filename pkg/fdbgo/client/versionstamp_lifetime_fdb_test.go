@@ -3,6 +3,7 @@ package client
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"sync"
 	"sync/atomic"
@@ -50,12 +51,14 @@ func TestFDBVersionstampSelectionBeforeMetrics(t *testing.T) {
 	if got := readCommitLifetimeValue(t, ctx, db, key); !bytes.Equal(got, stamp) {
 		t.Fatalf("selected CommitID differs from stored stamp: %x != %x", stamp, got)
 	}
-	if got, err := tx.GetCommittedVersion(); err != nil || got != -1 {
-		t.Fatalf("stale success published metadata: %d, %v", got, err)
+	// Native committedVersion precedes its stamp; Reset preserves that known version.
+	wantVersion := int64(binary.BigEndian.Uint64(stamp[:8]))
+	if got, err := tx.GetCommittedVersion(); err != nil || got != wantVersion {
+		t.Fatalf("Reset lost known native version: %d, %v; want %d", got, err, wantVersion)
 	}
 }
 
-func TestFDBVersionstampRetirementDoesNotCancelCommit(t *testing.T) {
+func TestFDBVersionstampRetirementAndNativeCommitLifetime(t *testing.T) {
 	t.Parallel()
 	for _, mode := range []string{"cancel", "reset", "timeout", "caller", "late-poison"} {
 		t.Run(mode, func(t *testing.T) {
@@ -77,6 +80,7 @@ func TestFDBVersionstampRetirementDoesNotCancelCommit(t *testing.T) {
 			done := make(chan error, 1)
 			go func() { done <- tx.Commit(caller) }()
 			waitCommitLifetimeGate(t, ctx, pause.reached, "detached commit")
+			native := currentNativeCommit(t, tx)
 			switch mode {
 			case "cancel":
 				tx.Cancel()
@@ -109,10 +113,23 @@ func TestFDBVersionstampRetirementDoesNotCancelCommit(t *testing.T) {
 				}
 			}
 			pause.unblock()
-			awaitCommitLifetimeResult(t, ctx, done, "detached Commit must retain success")
+			if mode == "cancel" || mode == "reset" || mode == "timeout" {
+				want := 1025
+				if mode == "timeout" {
+					want = 1031
+				}
+				awaitCommitLifetimeCode(t, ctx, done, want, "interrupted public wait")
+			} else {
+				awaitCommitLifetimeResult(t, ctx, done, "uninterrupted public wait")
+			}
+			waitCommitLifetimeGate(t, ctx, native.finished, "native commit completion")
 			stored := readCommitLifetimeValue(t, ctx, db, key)
-			if len(stored) != 10 {
-				t.Fatalf("detached write missing: %x", stored)
+			if mode == "reset" {
+				if stored != nil {
+					t.Fatalf("Reset did not drop unsent native commit: %x", stored)
+				}
+			} else if len(stored) != 10 {
+				t.Fatalf("retained native write missing: %x", stored)
 			}
 			if mode == "caller" || mode == "late-poison" {
 				stamp, err := sibling.Resolve()
@@ -230,9 +247,8 @@ func TestFDBVersionstampOverlappingProducers(t *testing.T) {
 	pause.unblock()
 	select {
 	case err := <-firstDone:
-		// Both snapshots share the original SC read/write range. The second
-		// commit wins, so the server rejects the delayed first snapshot.
-		requireCommitLifetimeCode(t, err, 1020, "first producer's own Commit result")
+		// Go's successful-commit reuse drops the earlier incarnation's native actor.
+		requireCommitLifetimeCode(t, err, 1025, "first producer's own Commit result")
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}

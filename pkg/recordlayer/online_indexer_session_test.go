@@ -469,9 +469,8 @@ type cleanupCommitBarrier struct {
 	beforeCommit      func(fdb.WritableTransaction)
 	timeouts          []int64
 	// holdDispatch models a dispatched commit that reaches the cluster LATE, after
-	// the cleanup has returned: Commit only records the transaction, cancellation
-	// and the timeout are not applied to it (a dispatched pure-Go commit is
-	// detached and does not enforce the timeout), and landLate commits it.
+	// the cleanup has returned: Commit only records the transaction, and landLate
+	// commits it (a dispatched commit may land after a timeout or cancel ends its wait).
 	holdDispatch bool
 	held         fdb.WritableTransaction
 }

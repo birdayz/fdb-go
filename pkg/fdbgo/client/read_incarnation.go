@@ -27,6 +27,7 @@ type readIncarnation struct {
 
 	versionstamp  *versionstampCompletion
 	versionstamps map[*versionstampCompletion]struct{}
+	nativeCommits map[*nativeCommit]struct{}
 }
 
 type readContextKey struct{ tx *Transaction }
@@ -39,6 +40,9 @@ type readOperation struct {
 }
 
 func (tx *Transaction) readIncarnationLocked() *readIncarnation {
+	if tx.readVersionState == nil {
+		tx.readVersionState = &readVersionState{}
+	}
 	if tx.readLife == nil {
 		ctx, cancel := context.WithCancelCause(context.Background())
 		tx.readLife = &readIncarnation{ctx: ctx, cancel: cancel, gen: tx.readGen}
@@ -55,6 +59,9 @@ func recordReadCauseLocked(inc *readIncarnation, cause error) {
 		inc.timerGen++
 		for completion := range inc.versionstamps {
 			completion.selectLocked(commitOutcome{}, cause, true)
+		}
+		for native := range inc.nativeCommits {
+			native.selectResult(cause, false, nil)
 		}
 	}
 }

@@ -35,8 +35,7 @@ func requireCode(t *testing.T, err error, want int) {
 // onProxiesChanged() (NativeAPI.actor.cpp:6646-6649). It does not fail at once.
 // Go used to return a Go-internal 1200 immediately, which a bounded retry owner
 // counted as a spent attempt during a recovery libfdb_c simply waits through.
-// The wait is bounded by the caller's context, and the attempt then reports
-// commit_unknown_result like every other maybe-delivered commit failure.
+// Dropping the native actor ends the wait without pretending a fence completed.
 func TestCommit_NoProxies_WaitsForContext(t *testing.T) {
 	t.Parallel()
 	db := newTestDatabaseStub().db
@@ -45,7 +44,9 @@ func TestCommit_NoProxies_WaitsForContext(t *testing.T) {
 	defer cancel()
 
 	elapsed, err := commitWithNoProxies(t, ctx, db)
-	requireCode(t, err, ErrCommitUnknownResult)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("dropped native wait = %v, want context.DeadlineExceeded", err)
+	}
 	if elapsed < wait {
 		t.Fatalf("commit with no proxies returned after %v; it must wait for a proxy change or the context (%v)", elapsed, wait)
 	}
