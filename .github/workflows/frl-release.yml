@@ -3,7 +3,7 @@
 # Trigger: push the project's release tag (the maintainer's release act, per
 # RELEASE.md):
 #
-#   git tag v0.2.0 && git push origin v0.2.0
+#   git tag -a v0.2.0 -m v0.2.0 && git push origin v0.2.0
 #
 # frl is a package of the root module, so the root tag is what
 # `go install fdb.dev/cmd/frl@vX.Y.Z` resolves: the binaries here are
@@ -13,7 +13,7 @@
 # install.sh still finds that release.
 #
 # workflow_dispatch runs the whole pipeline as a dry run (build + smoke +
-# checksums, no release published).
+# checksums, no release published); give it a version to preview that tag's notes.
 #
 # fdb.dev/install.sh consumes these releases; it expects assets named
 # frl_<version>_<os>_<arch>.tar.gz plus checksums.txt on the release.
@@ -24,6 +24,10 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Tag whose release notes to preview, e.g. v0.2.0 (nothing is published)"
+        required: false
 
 permissions:
   contents: write # create the GitHub release
@@ -129,39 +133,30 @@ jobs:
             cmd/frl/dist/frl_*.tar.gz
             cmd/frl/dist/checksums.txt
 
+      - name: Preview release notes (dry run)
+        if: github.event_name == 'workflow_dispatch' && inputs.version != ''
+        env:
+          TAG: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          scripts/release-notes.sh --check "$TAG" > "$RUNNER_TEMP/notes.md" ||
+            { echo "::error::no release notes for $TAG (see the message above)"; exit 1; }
+          tee -a "$GITHUB_STEP_SUMMARY" < "$RUNNER_TEMP/notes.md"
+
       - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          notes="$(cat <<EOF
-          Changes and compatibility notes: [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/CHANGELOG.md).
-
-          Static, dependency-free binaries of the \`frl\` CLI (pure Go, no cgo; the
-          linux binaries run on glibc, musl, and \`FROM scratch\`).
-
-          **Install**
-
-              curl -fsSL https://fdb.dev/install.sh | sh
-
-          or with the Go toolchain (builds the identical version):
-
-              go install fdb.dev/cmd/frl@${VERSION}
-
-          **Verify**: every asset is sha256-listed in \`checksums.txt\` and carries
-          build provenance:
-
-              gh attestation verify frl_${VERSION}_linux_amd64.tar.gz -R ${GITHUB_REPOSITORY}
-          EOF
-          )"
+          scripts/release-notes.sh "$GITHUB_REF_NAME" > "$RUNNER_TEMP/notes.md"
           gh release create "$GITHUB_REF_NAME" \
             --title "$VERSION" \
-            --notes "$notes" \
+            --notes-file "$RUNNER_TEMP/notes.md" \
             cmd/frl/dist/frl_*.tar.gz cmd/frl/dist/checksums.txt
 
       - name: Verify published download URL (what install.sh fetches)
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         run: |
           set -euo pipefail
           # The install script downloads via the tag's URL; prove it resolves

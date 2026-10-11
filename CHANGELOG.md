@@ -114,7 +114,10 @@ project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (
 - An IN list item that fails to evaluate (`a IN (1 / 0, 3)`) raises when the query runs (22012), even over an empty table, as Java's does; it was 0AF00 `Cascades translation failed`.
 - An unknown column is 42703 `Attempting to query non existing column X`, Java's text, with the reference as written (`T.X`, `Q.ID` for an unknown qualifier) in every clause and in UPDATE's SET; a qualified star over no source and a JOIN USING column missing from either side are `Unknown reference X`.
 - A query block reports its faults in Java's clause order: a join's ON first, then the WHERE, then the select list (an unknown function in the select list included).
-- `frl` is a package of the root module and releases under the project's `vX.Y.Z` tag.
+- `frl` is a package of the root module and releases under the project's `vX.Y.Z` tag. The nested
+  module `fdb.dev/cmd/frl` is retracted (`cmd/frl/v0.1.1`), so `go install fdb.dev/cmd/frl@latest`
+  builds `frl` from the root module. A module that requires `fdb.dev/cmd/frl` drops it with
+  `go get fdb.dev/cmd/frl@none` before upgrading `fdb.dev`, or the build reports an ambiguous import.
 - SQL `LIKE` follows Java 4.14.2.0: wildcards cross newlines, `LIKE NULL` is allowed, and invalid escapes raise 22019/2200B/22025 per row.
 - SQL comments follow Java 4.14.2.0: block comments nest, an unterminated one is 42601, and `#` is no longer a comment.
 - `OPTIONS (...)` is statement-level only and adds `PLAN RIGHT DEEP` and `ISOLATION LEVEL SNAPSHOT`; `PLAN` and `DEEP` are reserved words.
