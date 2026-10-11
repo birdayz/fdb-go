@@ -515,7 +515,7 @@ verify:
     # already stale — "5" predated the cascades scope, which alone resolves to 7.
     echo "=== Race detector (see race-all: does NOT cover relational/..., unlike the PR gate) ==="
     just race-all
-    echo "=== Fuzz smoke (3 targets, 10s each) ==="
+    echo "=== Fuzz smoke (5 targets, 10s each) ==="
     # Routed through //cmd/fuzzrun: Go's fuzz
     # coordinator intermittently reports a clean -fuzztime expiry as
     # "context deadline exceeded" (golang/go#72104). A shorter budget narrows that
@@ -527,6 +527,12 @@ verify:
         -test.fuzzcachedir=/tmp/fuzz_verify -test.fuzztime=10s
     "$FUZZRUN" -label FuzzDeserializeBunch -- bazelisk run //pkg/recordlayer:recordlayer_test -- \
         -test.run='^$' -test.fuzz='^FuzzDeserializeBunch$' \
+        -test.fuzzcachedir=/tmp/fuzz_verify -test.fuzztime=10s
+    "$FUZZRUN" -label FuzzReadJavaObject -- bazelisk run //pkg/recordlayer:recordlayer_test -- \
+        -test.run='^$' -test.fuzz='^FuzzReadJavaObject$' \
+        -test.fuzzcachedir=/tmp/fuzz_verify -test.fuzztime=10s
+    "$FUZZRUN" -label FuzzReadJCEKSEntries -- bazelisk run //pkg/recordlayer:recordlayer_test -- \
+        -test.run='^$' -test.fuzz='^FuzzReadJCEKSEntries$' \
         -test.fuzzcachedir=/tmp/fuzz_verify -test.fuzztime=10s
     "$FUZZRUN" -label FuzzRYWCache -- bazelisk run //pkg/fdbgo/client:client_test -- \
         -test.run='^$' -test.fuzz='^FuzzRYWCache$' \

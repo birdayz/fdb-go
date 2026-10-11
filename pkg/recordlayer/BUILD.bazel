@@ -279,6 +279,7 @@ go_test(
         "invalid_utf8_save_test.go",
         "java_parse_test.go",
         "jce_cipher_test.go",
+        "jceks_refusal_test.go",
         "jceks_test.go",
         "key_expr_bug_verify_test.go",
         "key_expression_cardinality_test.go",

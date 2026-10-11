@@ -15,6 +15,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"os"
+	"slices"
 	"strings"
 	"unicode/utf16"
 )
@@ -154,12 +155,17 @@ func sealKey(e JCEKSEntry, password string, iterations int) ([]byte, error) {
 	return obj.Bytes(), nil
 }
 
+// SealPBEWithMD5AndTripleDES encrypts plain as SunJCE's PBEWithMD5AndTripleDES
+// does, for tests that build a sealed key themselves.
+func SealPBEWithMD5AndTripleDES(plain []byte, password string, salt []byte, iterations int) ([]byte, error) {
+	return pbeWithMD5AndTripleDES(plain, password, salt, iterations)
+}
+
 // pbeWithMD5AndTripleDES encrypts as SunJCE's PBEWithMD5AndTripleDES does.
 func pbeWithMD5AndTripleDES(plain []byte, password string, salt []byte, iterations int) ([]byte, error) {
 	halves := [2][]byte{append([]byte(nil), salt[:4]...), append([]byte(nil), salt[4:]...)}
 	if bytes.Equal(halves[0], halves[1]) {
-		s := halves[0]
-		s[0], s[1], s[2] = s[3], s[0], s[1]
+		slices.Reverse(halves[0]) // as JDK 21 does
 	}
 	var derived []byte
 	for _, d := range halves {

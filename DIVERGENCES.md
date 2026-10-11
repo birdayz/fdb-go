@@ -3929,7 +3929,15 @@ what Go writes, and in both a Java reader reads what Go writes:
   PBEWithMD5AndTripleDES under the key password (printable ASCII, the empty one admitted), around a
   SecretKeySpec or a KeyRep. A wrong store password is Java's "Keystore was tampered with, or
   password was incorrect"; a key that does not unseal, or a private-key or certificate entry, is
-  "cannot load key". Measured on JDK 21 and pinned by `jceks_test.go` and the JVM spec.
+  "cannot load key". Measured on JDK 21 and pinned by `jceks_test.go`, `jceks_refusal_test.go` and
+  the JVM spec: a version 1 store, a later entry of an alias replacing an earlier one, modified
+  UTF-8 aliases, more than 5000000 PBE iterations refused ("PBE iteration count too large"), a
+  salt of equal halves (JDK 21 reverses the first; pyjks documents older JDKs reordering it
+  otherwise), and the sealed key's classes limited to those `java.security`'s default
+  `jceks.key.serialFilter` admits. Two differences remain: Go steps over private-key and
+  certificate entries without parsing them, so a store whose such entry is malformed loads in Go
+  and fails Java's load; and an alias holding an unpaired surrogate reads as U+FFFD, which no Go
+  string can name otherwise.
 - **Compressed bytes are Go's deflate, not the JDK's zlib.** Both write a zlib stream (Java's
   `Deflater.finish()` then `FULL_FLUSH`, `TransformedRecordSerializer.java:133-134`; Go's
   `compress/zlib`, `transformed_record_serializer.go:444-480`). Each engine inflates the other's,
