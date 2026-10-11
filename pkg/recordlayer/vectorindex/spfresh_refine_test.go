@@ -587,18 +587,22 @@ func dropCopies(ctx context.Context, s *spfreshStorage, plans []copyDropPlan, se
 // body invocation per Transact call; the inner retry loop rolls that attempt back
 // and re-runs the body, which then commits.
 type retryOnceTransactor struct {
-	inner fdb.Transactor
+	inner    fdb.Transactor
+	attempts int
+	injected int
 }
 
 func (t *retryOnceTransactor) Transact(fn func(fdb.WritableTransaction) (any, error)) (any, error) {
 	first := true
 	return t.inner.Transact(func(tx fdb.WritableTransaction) (any, error) {
+		t.attempts++
 		res, err := fn(tx)
 		if err != nil {
 			return res, err
 		}
 		if first {
 			first = false
+			t.injected++
 			return nil, fdb.Error{Code: 1020} // not_committed — retryable
 		}
 		return res, nil
