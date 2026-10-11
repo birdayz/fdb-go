@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"math"
+	"slices"
 	"sort"
 	"sync"
 
@@ -24,9 +25,8 @@ type rywCache struct {
 	// entry.value == nil means the key was Set to empty bytes, NOT cleared.
 	writes map[string]rywEntry
 
-	// sortedKeys is a lazily-maintained sorted copy of write map keys.
-	// Set to nil when writes changes (dirty). Rebuilt on demand for getRange
-	// to enable O(log N) binary search instead of O(N) linear scan.
+	// Built lazily, then kept sorted across mutations to avoid re-sorting on reads.
+	// Inserting or deleting a key still shifts an O(N) slice suffix.
 	sortedKeys []string
 
 	// cleared is a sorted, non-overlapping list of [begin, end) byte ranges
@@ -42,14 +42,8 @@ type rywCache struct {
 	// candidate range in the Go write map").
 	unreadableRanges []rywRange
 
-	// unreadableKeys is the sorted index of write-map keys whose entries carry
-	// the unreadable flag (pending versionstamped ops — typically 0, rarely 1-2
-	// per transaction). Maintained incrementally at the flag transitions
-	// (atomic() sets it; clear()/clearRange() delete the entry) so the
-	// per-getRange unreadable-cap scan never touches sortedKeys:
-	// ensureSortedLocked rebuilds O(N log N) after every write invalidation,
-	// and calling it on every read made interleaved write/read transactions
-	// quadratic (recordlayer suite timed out at 900s before this index).
+	// A separate index keeps unreadable-cap checks proportional to unreadable keys,
+	// without building the full write-key index for an otherwise write-only transaction.
 	unreadableKeys []string
 
 	// bypassUnreadable mirrors FDB_TR_OPTION_BYPASS_UNREADABLE
@@ -190,7 +184,7 @@ func (c *rywCache) reset() {
 	c.serverCache.reset()
 }
 
-// ensureSortedLocked rebuilds sortedKeys from the writes map if dirty (nil).
+// ensureSortedLocked builds sortedKeys on first use after construction or reset.
 // Must be called under c.mu.
 func (c *rywCache) ensureSortedLocked() {
 	if c.sortedKeys != nil {
@@ -205,6 +199,20 @@ func (c *rywCache) ensureSortedLocked() {
 		c.sortedKeys = append(c.sortedKeys, k)
 	}
 	sort.Strings(c.sortedKeys)
+}
+
+func (c *rywCache) insertSortedKeyLocked(k string) {
+	if c.sortedKeys == nil {
+		return // not built yet; ensureSortedLocked builds it on demand
+	}
+	i, _ := slices.BinarySearch(c.sortedKeys, k)
+	c.sortedKeys = slices.Insert(c.sortedKeys, i, k)
+}
+
+func (c *rywCache) removeSortedKeyLocked(k string) {
+	if i, found := slices.BinarySearch(c.sortedKeys, k); found {
+		c.sortedKeys = slices.Delete(c.sortedKeys, i, i+1)
+	}
 }
 
 // set records a Set operation.
@@ -226,8 +234,11 @@ func (c *rywCache) set(key, value []byte) {
 	// pending versionstamped op keeps it unreadable (sticky — C++ WriteMap.cpp:125
 	// gates the stack-replacing SetValue fast path on !it.is_unreadable(); on an
 	// unreadable entry the Set is pushed and :141 keeps the flag).
-	c.writes[string(key)] = rywEntry{value: copied, unreadable: c.writes[string(key)].unreadable}
-	c.sortedKeys = nil // invalidate sorted index
+	prev, exists := c.writes[string(key)]
+	c.writes[string(key)] = rywEntry{value: copied, unreadable: prev.unreadable}
+	if !exists {
+		c.insertSortedKeyLocked(string(key))
+	}
 	// A Set after ClearRange wins — no need to remove from cleared, because
 	// get() checks writes before cleared.
 }
@@ -239,7 +250,7 @@ func (c *rywCache) clear(key []byte) {
 	// Remove from writes.
 	if e, existed := c.writes[string(key)]; existed {
 		delete(c.writes, string(key))
-		c.sortedKeys = nil // invalidate sorted index
+		c.removeSortedKeyLocked(string(key))
 		if e.unreadable {
 			c.removeUnreadableKeyLocked(string(key))
 		}
@@ -259,7 +270,7 @@ func (c *rywCache) clear(key []byte) {
 func (c *rywCache) clearRange(begin, end []byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	// Remove all writes in [begin, end) using sorted keys for O(log N + k).
+	// Search the sorted index rather than scanning unaffected map entries.
 	if len(c.writes) > 0 {
 		c.ensureSortedLocked()
 		wStart := sort.SearchStrings(c.sortedKeys, string(begin))
@@ -272,7 +283,7 @@ func (c *rywCache) clearRange(begin, end []byte) {
 				}
 				delete(c.writes, k)
 			}
-			c.sortedKeys = nil // invalidate sorted index
+			c.sortedKeys = slices.Delete(c.sortedKeys, wStart, wEnd)
 		}
 	}
 	c.addClearedRangeLocked(begin, end)
@@ -510,7 +521,7 @@ func (c *rywCache) atomic(op MutationType, key, param []byte) {
 				val = []byte{} // present-empty, not absent (see site B).
 			}
 			c.writes[k] = rywEntry{value: val, absent: clr}
-			c.sortedKeys = nil
+			c.insertSortedKeyLocked(k)
 			return
 		}
 	}
@@ -532,10 +543,10 @@ func (c *rywCache) atomic(op MutationType, key, param []byte) {
 	// repeated same-type resolvable atomics fold to one op, so a 150k-`ADD 1` chain on an unread key ships
 	// one mutation, not 150k (the RFC-172 / #28 fix). Read-transparent; versionstamps/CompareAndClear push.
 	entry.atomics = coalesceOverAtomics(entry.atomics, rywMutation{typ: op, param: paramCopy})
-	if !exists {
-		c.sortedKeys = nil
-	}
 	c.writes[k] = entry
+	if !exists {
+		c.insertSortedKeyLocked(k)
+	}
 }
 
 // localPointLocked evaluates the merged point view without changing the write
@@ -1419,15 +1430,8 @@ func (c *rywCache) isClearedLocked(key []byte) bool {
 	return bytes.Compare(key, r.end) < 0
 }
 
-// conflictForKeyLocked reports whether a single-key read of `key` must add a read-conflict, the
-// single-key analog of C++ updateConflictMap(ryw, key, it) (ReadYourWrites.actor.cpp:322-332):
-// conflict iff the key sits in an UNMODIFIED range or a DEPENDENT operation; SKIP for an
-// INDEPENDENT write (plain Set / folded atomic / matched-CAC phantom) or a cleared range. It is the
-// exact result of conflictRangesLocked(key, keyAfter(key)) — operation→isDependentLocked(),
-// cleared→false, gap→true — but reached by ONE map lookup + a cleared binary-search, with NO
-// ensureSortedLocked re-sort. C++ positions one WriteMap iterator (it.skip(key)) here; routing the
-// hot single-key Get path through the range walk re-sorted the whole growing write map on every
-// Get (O(n²·log n) across a write-heavy txn — a 10K-record save hung for 15 min). Caller holds c.mu.
+// A point conflict check does not need to build the full write-key index.
+// Matches updateConflictMap (ReadYourWrites.actor.cpp:322-332). Caller holds c.mu.
 func (c *rywCache) conflictForKeyLocked(key []byte) bool {
 	if e, ok := c.writes[string(key)]; ok {
 		return e.isDependentLocked() // operation key: conflict iff DEPENDENT_WRITE
@@ -2113,11 +2117,7 @@ func resolveAtomicsBypass(base []byte, atomics []rywMutation) (result []byte, cl
 // would cross the cap. Caller holds c.mu.
 func (c *rywCache) unreadableScanCapLocked(begin, end []byte, reverse bool) []byte {
 	// Fast path: no unreadable state at all — the overwhelmingly common case.
-	// This runs on EVERY getRange, so it must not touch sortedKeys
-	// (ensureSortedLocked rebuilds O(N log N) after every write invalidation;
-	// per-read rebuilding made interleaved write/read transactions quadratic).
-	// Unreadable ENTRIES are found via the dedicated sorted unreadableKeys
-	// index, maintained at the flag transitions.
+	// The dedicated unreadable index avoids building or scanning all write keys.
 	if len(c.unreadableKeys) == 0 && len(c.unreadableRanges) == 0 {
 		return nil
 	}
