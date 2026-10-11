@@ -182,16 +182,16 @@ func (o goTransactionOptions) SetReadSystemKeys() error {
 }
 
 func (o goTransactionOptions) SetLockAware() error {
-	o.tx.inner.SetLockAware(true)
+	o.tx.inner.SetLockAware()
 	return nil
 }
 
-// SetReadLockAware allows reads on locked databases. Unlike SetLockAware,
-// this does NOT set lock_aware on the commit path — in C++ FDB,
-// read_lock_aware only bypasses the locked-database check for reads,
-// not commits.
+// SetReadLockAware allows reads on locked databases. Unless SetLockAware was
+// set first, it also makes the transaction read-only: a commit carrying writes
+// fails with transaction_read_only (2023), as in libfdb_c. A later
+// SetLockAware lifts the read-only state.
 func (o goTransactionOptions) SetReadLockAware() error {
-	o.tx.inner.SetReadLockAware(true)
+	o.tx.inner.SetReadLockAware()
 	return nil
 }
 
@@ -203,6 +203,9 @@ func (o goTransactionOptions) SetTransactionLoggingEnable(_ string) error {
 	return nil
 }
 
+// SetSizeLimit sets the transaction size limit in bytes, in [32, 10_000_000].
+// Like libfdb_c, an out-of-range value returns nil here and every later
+// operation fails with invalid_option_value (2006) until reset.
 func (o goTransactionOptions) SetSizeLimit(limit int64) error {
 	o.tx.inner.SetSizeLimit(limit)
 	return nil

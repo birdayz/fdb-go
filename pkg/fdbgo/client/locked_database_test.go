@@ -59,7 +59,7 @@ func TestFDB_DatabaseLocked_ReadPathEnforcement(t *testing.T) {
 	// suffix 0, plus a write-conflict range over the normal keyspace.
 	lockTx := db.CreateTransaction()
 	lockTx.SetAccessSystemKeys()
-	lockTx.SetLockAware(true)
+	lockTx.SetLockAware()
 	lockUID := []byte{
 		0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
 		0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00,
@@ -125,7 +125,7 @@ func TestFDB_DatabaseLocked_ReadPathEnforcement(t *testing.T) {
 
 	// Arm 3: LOCK_AWARE reads succeed (C++ options.lockAware exemption).
 	lockAware := db2.CreateTransaction()
-	lockAware.SetLockAware(true)
+	lockAware.SetLockAware()
 	if v, err := lockAware.Get(ctx, key); err != nil {
 		t.Fatalf("LOCK_AWARE read on locked database: %v", err)
 	} else if string(v) != "v" {
@@ -135,7 +135,7 @@ func TestFDB_DatabaseLocked_ReadPathEnforcement(t *testing.T) {
 	// Arm 4: READ_LOCK_AWARE reads succeed (also sets C++ options.lockAware,
 	// NativeAPI.actor.cpp:7083-7091).
 	readLockAware := db2.CreateTransaction()
-	readLockAware.SetReadLockAware(true)
+	readLockAware.SetReadLockAware()
 	if v, err := readLockAware.Get(ctx, key); err != nil {
 		t.Fatalf("READ_LOCK_AWARE read on locked database: %v", err)
 	} else if string(v) != "v" {
@@ -145,7 +145,7 @@ func TestFDB_DatabaseLocked_ReadPathEnforcement(t *testing.T) {
 	// Unlock (lock-aware clear, as C++ unlockDatabase does).
 	unlockTx := db2.CreateTransaction()
 	unlockTx.SetAccessSystemKeys()
-	unlockTx.SetLockAware(true)
+	unlockTx.SetLockAware()
 	unlockTx.Clear(databaseLockedKey)
 	if err := unlockTx.Commit(ctx); err != nil {
 		t.Fatalf("unlock database: %v", err)

@@ -54,8 +54,10 @@ const (
 	ErrRequestMaybeDelivered     = 1030 // request_maybe_delivered — an in-flight RPC's connection died (transport teardown); reads retry another alternative, commit maps it to 1021
 	ErrBrokenPromise             = 1100 // broken_promise — the peer dropped the reply promise; same maybeDelivered class as 1030 (LoadBalance.actor.h:344)
 	ErrInvertedRange             = 2005 // inverted_range (begin > end)
+	ErrInvalidOptionValue        = 2006 // invalid_option_value (e.g. SIZE_LIMIT outside [32, 1e7])
 	ErrRangeLimitsInvalid        = 2012 // range_limits_invalid (e.g. a row limit < -1)
 	ErrInvalidMutationType       = 2018 // invalid_mutation_type (a non-atomic op passed to Atomic())
+	ErrTransactionReadOnly       = 2023 // transaction_read_only (a READ_LOCK_AWARE txn committed writes)
 )
 
 // Client constants. These mirror CLIENT_KNOBS in NativeAPI.actor.cpp.
@@ -240,15 +242,16 @@ type txOptions struct {
 	useGrvCache  bool
 	skipGrvCache bool
 
-	// lockAware: if true, lock_aware is set on both reads and commits.
-	// readLockAware: if true, lock_aware is set on reads only (not commits).
-	// C++: req.options.lockAware = tr->options.lockAware || tr->options.readLockAware
-	//      tr.lock_aware = tr->options.lockAware  (commit path — no readLockAware)
+	// C++ options.lockAware is lockAware || readLockAware here: both make reads and
+	// the GRV lock-aware, and readOnly (READ_LOCK_AWARE without a prior LOCK_AWARE,
+	// cleared by LOCK_AWARE) fails a commit with writes 2023 before the wire, so only
+	// lockAware reaches the commit flag (NativeAPI.actor.cpp:7071-7091, :6810, :6878).
 	lockAware     bool
 	readLockAware bool
+	readOnly      bool
 
-	// sizeLimit: if > 0, enforced before commit. Matches C++ FDB_TR_OPTION_SIZE_LIMIT.
-	// Valid range: [32, 10_000_000]. Out-of-range values cause error 2006 at commit.
+	// sizeLimit: if > 0, enforced before commit (C++ FDB_TR_OPTION_SIZE_LIMIT). In
+	// [32, 10_000_000] on db transactions; 0 only on the fence dummy and bare test txns.
 	sizeLimit int64
 
 	// writeConflictsDisabled: when true, ALL mutations skip adding write conflict
@@ -465,7 +468,8 @@ type Transaction struct {
 	// RYW::atomicOp's throw, ReadYourWrites.actor.cpp:2235; recorded store-if-unset
 	// under conflictMu, linearized with the preceding-mutation scan — see Atomic()) and
 	// SetReadYourWritesDisable after a read/write (2000 — RYW setOptionImpl's throw,
-	// :2534-2542; the option is NOT applied, matching the C++ throw-before-assign).
+	// :2534-2542; the option is NOT applied, matching the C++ throw-before-assign), and
+	// SetSizeLimit out of [32, 1e7], including a DB default (2006, extractIntOption).
 	// (readErr is a DIFFERENT C++ mechanism — ryw->reading, the read-future ledger —
 	// and lives under readErrMu, which also guards readGen + pendingReads.)
 	deferredErr atomic.Pointer[wire.FDBError]
@@ -1894,13 +1898,6 @@ func (tx *Transaction) commitAdmitted(parent context.Context, completion *versio
 		return readErr
 	}
 
-	// Validate size limit bounds. C++: valid range is [32, 10_000_000].
-	// Out-of-range values return invalid_option_value (2006) at commit time.
-	if tx.sizeLimit > 0 && (tx.sizeLimit < 32 || tx.sizeLimit > 10_000_000) {
-		tx.state.Store(int32(txStateErrored))
-		return &wire.FDBError{Code: 2006} // invalid_option_value
-	}
-
 	// Snapshot the mutation/conflict buffers under conflictMu before reading
 	// them. The published contract (fdb/transaction.go) makes Set/Get/Commit
 	// safe for concurrent use: a Get future resolving on another goroutine
@@ -1968,6 +1965,12 @@ func (tx *Transaction) commitAdmitted(parent context.Context, completion *versio
 	nativeStarted = true
 	if tx.db != nil && (len(shipMuts) > 0 || len(sizeConflicts) > 0) {
 		tx.db.metrics.transactionsCommitStarted.Add(1)
+	}
+
+	// C++ checks readOnly after the empty fast path and before the size check (:6810-6811).
+	if (len(shipMuts) > 0 || len(sizeConflicts) > 0) && tx.readOnly {
+		tx.state.Store(int32(txStateErrored))
+		return &wire.FDBError{Code: ErrTransactionReadOnly}
 	}
 
 	if (len(shipMuts) > 0 || len(sizeConflicts) > 0) && tx.sizeLimit > 0 && tx.approximateCommitSize(shipMuts, sizeConflicts) > tx.sizeLimit {
@@ -3207,15 +3210,21 @@ func (tx *Transaction) stateSetSkipGrvCache() {
 	tx.skipGrvCache = true
 }
 
-// SetLockAware sets the lock-aware flag on the commit request.
-func (tx *Transaction) stateSetLockAware(v bool) {
-	tx.lockAware = v
+// SetLockAware makes reads and the commit lock-aware, and lifts a read-only
+// state left by SetReadLockAware (C++ LOCK_AWARE, NativeAPI.actor.cpp:7071-7079).
+func (tx *Transaction) stateSetLockAware() {
+	tx.lockAware = true
+	tx.readOnly = false
 }
 
-// SetReadLockAware allows reads on locked databases without granting
-// commit access. C++: options.readLockAware — only affects read path.
-func (tx *Transaction) stateSetReadLockAware(v bool) {
-	tx.readLockAware = v
+// SetReadLockAware makes reads lock-aware and, unless SetLockAware came first,
+// makes the transaction read-only: a commit with writes fails 2023 (C++
+// READ_LOCK_AWARE, NativeAPI.actor.cpp:7082-7091; checked at :6810).
+func (tx *Transaction) stateSetReadLockAware() {
+	tx.readLockAware = true
+	if !tx.lockAware {
+		tx.readOnly = true
+	}
 }
 
 // LockAware reports whether the commit is lock-aware (sets FLAG_IS_LOCK_AWARE,
@@ -3230,11 +3239,15 @@ func (tx *Transaction) stateReadLockAware() bool {
 	return tx.readLockAware
 }
 
-// SetSizeLimit sets the maximum transaction size in bytes.
-// If the transaction exceeds this size, commit returns error 2101.
-// Valid range: [32, 10_000_000]. Out-of-range values cause error 2006 at commit.
-// A value of 0 disables the limit.
+// SetSizeLimit sets the maximum transaction size in bytes; a larger commit
+// fails 2101. Outside [32, 10_000_000] the limit is not applied and 2006 becomes
+// the deferred error every later op returns until reset, as libfdb_c's
+// extractIntOption throw lands in deferredError (NativeAPI.actor.cpp:7067-7069).
 func (tx *Transaction) stateSetSizeLimit(limit int64) {
+	if limit < 32 || limit > transactionSizeLimit {
+		tx.deferredErr.CompareAndSwap(nil, &wire.FDBError{Code: ErrInvalidOptionValue})
+		return
+	}
 	tx.sizeLimit = limit
 }
 
@@ -3699,15 +3712,15 @@ func (tx *Transaction) applyOptionDefaults(userReset bool) {
 	// non-persistent set — cleared regardless of userReset.
 	tx.readSystemKeys = td.ReadSystemKeys
 	tx.writeSystemKeys = td.AccessSysKeys
+	tx.sizeLimit = transactionSizeLimit // C++ has no "disabled" state — default/ceiling is 10 MB
 	if td.SizeLimit > 0 {
-		tx.sizeLimit = td.SizeLimit
-	} else {
-		tx.sizeLimit = transactionSizeLimit // C++ has no "disabled" state — default/ceiling is 10 MB
+		tx.stateSetSizeLimit(td.SizeLimit)
 	}
 	tx.priority = 0
 	tx.causalReadRisky = false
 	tx.lockAware = false
 	tx.readLockAware = false
+	tx.readOnly = false
 	tx.rywDisabled = false
 	tx.snapshotRYWDisableCount = 0
 	tx.tags = nil

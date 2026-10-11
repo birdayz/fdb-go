@@ -122,16 +122,16 @@ func (tx *Transaction) SetSkipGrvCache() {
 	tx.stateSetSkipGrvCache()
 }
 
-func (tx *Transaction) SetLockAware(v bool) {
+func (tx *Transaction) SetLockAware() {
 	lease := tx.enterState()
 	defer lease.release()
-	tx.stateSetLockAware(v)
+	tx.stateSetLockAware()
 }
 
-func (tx *Transaction) SetReadLockAware(v bool) {
+func (tx *Transaction) SetReadLockAware() {
 	lease := tx.enterState()
 	defer lease.release()
-	tx.stateSetReadLockAware(v)
+	tx.stateSetReadLockAware()
 }
 
 func (tx *Transaction) LockAware() bool {
