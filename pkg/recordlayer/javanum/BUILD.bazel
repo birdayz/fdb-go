@@ -4,6 +4,7 @@ go_library(
     name = "javanum",
     srcs = [
         "illegal_argument.go",
+        "illegal_state.go",
         "javanum.go",
     ],
     importpath = "fdb.dev/pkg/recordlayer/javanum",

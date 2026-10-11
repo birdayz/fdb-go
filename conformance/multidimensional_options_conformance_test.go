@@ -47,6 +47,7 @@ var _ = Describe("MULTIDIMENSIONAL index R-tree options", func() {
 		{"BY_NODE storage alone stores no Hilbert values", map[string]string{recordlayer.IndexOptionRTreeStorage: "BY_NODE"}, false, false, false},
 		{"Hilbert false without storage keeps them", map[string]string{recordlayer.IndexOptionRTreeStoreHilbertValues: "false"}, false, true, false},
 		{"BY_NODE with the node slot index", map[string]string{recordlayer.IndexOptionRTreeUseNodeSlotIndex: "True"}, false, true, true},
+		{"minM 0 and maxM 2000, past limits Go once refused", map[string]string{recordlayer.IndexOptionRTreeMinM: "0", recordlayer.IndexOptionRTreeMaxM: "2000"}, false, true, false},
 	} {
 		It("Java and Go share the tree: "+c.name, func() {
 			ctx := context.Background()
@@ -57,7 +58,8 @@ var _ = Describe("MULTIDIMENSIONAL index R-tree options", func() {
 			java := NewJavaInvoker()
 
 			// Small nodes, so 120 points make a tree several levels deep and
-			// the deletes fuse nodes and lower the root.
+			// the deletes fuse nodes and lower the root. A row that sets wider
+			// nodes keeps them all in its root leaf.
 			options := map[string]string{recordlayer.IndexOptionRTreeMinM: "2", recordlayer.IndexOptionRTreeMaxM: "4"}
 			for k, v := range c.options {
 				options[k] = v

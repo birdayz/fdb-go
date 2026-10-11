@@ -54,6 +54,9 @@ type StorageAdapter struct {
 	// intermediate node the operation wrote or deleted: the entries it held
 	// when fetched and the ones it holds now.
 	touched map[string]*nodeSlotIndexTouch
+	// written is, per operation, the slot count of every node it last wrote:
+	// checkWritten refuses a non-root one Java's read-back would refuse.
+	written map[string]int
 
 	// env is the DST Tier-0 environment routing node-ID entropy. Nil means
 	// production (crypto/rand); the maintainer sets it from the record
@@ -132,10 +135,20 @@ func (s *StorageAdapter) fetchNode(tx fdb.ReadTransaction, nodeID []byte) (*leaf
 	} else {
 		leaf, inter, err = s.fetchNodeByNode(tx, nodeID)
 	}
-	if inter != nil {
+	if err != nil {
+		return nil, nil, err
+	}
+	switch {
+	case leaf != nil:
+		err = checkPacking(s.config, nodeID, len(leaf.slots))
+	case inter != nil:
+		err = checkPacking(s.config, nodeID, len(inter.slots))
 		inter.orig, inter.fetched = slices.Clone(inter.slots), true
 	}
-	return leaf, inter, err
+	if err != nil {
+		return nil, nil, err
+	}
+	return leaf, inter, nil
 }
 
 // fetchNodeByNode reads a BY_NODE node's one key-value pair.
@@ -241,6 +254,7 @@ func (s *StorageAdapter) nodeFromSlotList(nodeID []byte, kind NodeKind, slotList
 // writeLeafNode writes a leaf node to FDB. If the node has no slots, it is
 // deleted instead (empty nodes should not exist in the tree).
 func (s *StorageAdapter) writeLeafNode(tx fdb.WritableTransaction, node *leafNode) {
+	s.noteWritten(node.id, len(node.slots))
 	if len(node.slots) == 0 {
 		s.deleteNode(tx, node.id)
 		return
@@ -260,6 +274,7 @@ func (s *StorageAdapter) writeIntermediateNode(tx fdb.WritableTransaction, node 
 	if t := s.touch(node); t != nil {
 		t.cur = s.nodeSlotIndexEntries(node.slots, node.height-1)
 	}
+	s.noteWritten(node.id, len(node.slots))
 	if len(node.slots) == 0 {
 		s.deleteNode(tx, node.id)
 		return
@@ -277,6 +292,7 @@ func (s *StorageAdapter) deleteIntermediateNode(tx fdb.WritableTransaction, node
 	if t := s.touch(node); t != nil {
 		t.cur = nil
 	}
+	delete(s.written, string(node.id))
 	s.deleteNode(tx, node.id)
 }
 
@@ -310,6 +326,7 @@ func (s *StorageAdapter) writeSlots(tx fdb.WritableTransaction, nodeID []byte, k
 // entries of its own (its parent's slot names it, and the parent's write or
 // delete maintains that), so nothing else changes.
 func (s *StorageAdapter) deleteLeafNode(tx fdb.WritableTransaction, node *leafNode) {
+	delete(s.written, string(node.id))
 	s.deleteNode(tx, node.id)
 }
 
@@ -368,7 +385,34 @@ func (s *StorageAdapter) nodeSlotIndexEntries(slots []ChildSlot, childLevel int)
 
 // beginOperation starts an insert or delete's node slot index record.
 func (s *StorageAdapter) beginOperation() {
-	s.touched = nil
+	s.touched, s.written = nil, nil
+}
+
+// noteWritten records a node's slot count as the operation writes it. An
+// empty node is deleted instead, so it drops out.
+func (s *StorageAdapter) noteWritten(nodeID []byte, size int) {
+	if size == 0 {
+		delete(s.written, string(nodeID))
+		return
+	}
+	if s.written == nil {
+		s.written = make(map[string]int)
+	}
+	s.written[string(nodeID)] = size
+}
+
+// checkWritten refuses an operation that would leave a non-root node Java's
+// read check refuses. Java writes such a node, under a split ratio its
+// configuration cannot keep, and every later read of it fails; Go fails the
+// write instead, before it commits.
+func (s *StorageAdapter) checkWritten() error {
+	defer func() { s.written = nil }()
+	for id, size := range s.written {
+		if err := checkPacking(s.config, []byte(id), size); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // flushNodeSlotIndex writes the node slot index difference of the operation:

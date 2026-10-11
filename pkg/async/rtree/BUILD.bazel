@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "rtree",
     srcs = [
+        "errors.go",
         "hilbert.go",
         "rtree.go",
         "storage.go",
@@ -25,6 +26,7 @@ go_test(
         "dst_nonce_test.go",
         "hilbert_test.go",
         "layout_test.go",
+        "rtree_config_test.go",
         "rtree_suite_test.go",
         "rtree_test.go",
     ],
@@ -34,6 +36,7 @@ go_test(
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
+        "//pkg/recordlayer/javanum",
         "//pkg/testcontainers/foundationdb",
         "@com_github_onsi_ginkgo_v2//:ginkgo",
         "@com_github_onsi_gomega//:gomega",

@@ -3612,18 +3612,29 @@ and `indexToProto` refuses to serialize it (`pkg/recordlayer/metadata_proto.go:4
 never stores an index every reader refuses ("Exactly one root must be specified for an index",
 `key_expression_proto.go:148`). The refusal's class and text are Go's, where Java's is an NPE.
 
-### R-tree configurations Go refuses to maintain (RFC-257 WS-C)
+### R-tree configurations Java cannot maintain (RFC-257 WS-C)
 
 Java's `MultiDimensionalIndexHelper.getConfig` takes any int for `rtreeMinimumM`,
-`rtreeMaximumM` and `rtreeSplitS` (`Integer.parseInt`, `MultiDimensionalIndexHelper.java:48-56`).
-Go parses them the same way; the option checks of the evolution validator compare the parsed
-values. Go's `NewRTree` (`pkg/recordlayer/rtree.go:21`) then refuses to maintain an R-tree whose
-configuration cannot keep its node invariants: `MinM < 1`, `MaxM` outside [2, 1000],
-`SplitS < 1`, or `SplitS * MaxM < (SplitS + 1) * MinM`. Java maintains such a tree and fails
-later, reading a node whose size is out of range ("packing of non-root is out of valid range",
-`fdb-extensions/.../async/rtree/AbstractStorageAdapter.java:183`). The call site is
-`ValidateRTreeConfig` (`pkg/recordlayer/rtree_types.go:260`), reached from the maintainer at
-`multidimensional_index_maintainer.go:586`.
+`rtreeMaximumM` and `rtreeSplitS` (`MultiDimensionalIndexHelper.java:44-57`), and so does Go's
+`NewRTree` (`pkg/async/rtree/rtree.go`). Both refuse to read a non-root node outside
+[minM, maxM] (`AbstractStorageAdapter.java:180-186`; Go's `checkPacking`, `errors.go`).
+A configuration that cannot keep the node invariants fails at the step where Java's does,
+with Java's exception class (`errors.go`). Pinned by "RTree configurations"
+(`rtree_config_test.go`). Two differences remain:
+- **Go refuses to write a node Java writes and then cannot read.** A split that leaves a
+  non-root node outside [minM, maxM] is one example: maxM 1, a split ratio maxM cannot keep, or
+  minM above half of maxM + 1 at the root split. Java commits that node, and every later read
+  of it fails. Go fails the operation that would write it, with the same
+  `IllegalStateException` "packing of non-root is out of valid range"
+  (`StorageAdapter.checkWritten`, `storage.go`), and the tree stays usable for every operation
+  that does not make that split. Exact parity would mean dropping this refusal and committing
+  a tree neither engine can read.
+- **A splitS above a parent's child count.** Java's `fetchSiblings` reads past the parent's
+  slots and fails with `IndexOutOfBoundsException` (`RTree.java:1631-1646`). With splitS 3 or
+  more, that happens at the first non-root overflow or underflow after the first root split.
+  With splitS 2, it happens under a non-root parent with one child, which minM 1 or below
+  allows. Go takes the children there are (`gatherLeafSiblings`, `rtree.go`). The exception is
+  a fuse left with the node alone, which fails as Java's does (`loneFuseError`, `rtree.go`).
 
 ### How Go maintains an R-tree's node slot index (RFC-257 WS-C, same bytes)
 
