@@ -158,6 +158,109 @@ var _ = Describe("RFC-257 TransformedRecordSerializer records are read and writt
 		}
 	})
 
+	// One transformation per AES mode family Java's serializer runs under its
+	// 16-byte IvParameterSpec: Java encrypts and Go decrypts, then Go encrypts
+	// and Java decrypts. GCM and ECB, which Java's JCE refuses that IV, fail the
+	// write in both engines.
+	It("reads and writes records under each AES mode Java's serializer runs", func() {
+		ctx := context.Background()
+		env, err := SetupTenantEnvironment(ctx, sharedContainer, "tsermode_"+uuid.New().String())
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = env.Cleanup(ctx) }()
+		java := NewJavaInvoker()
+		clusterFile, err := sharedContainer.ClusterFile(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		order := func(id int64) *gen.Order {
+			return &gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(int32(id)), Tags: []string{"a mode row", "b"}} //nolint:gosec
+		}
+		goSave := func(id int64, s *recordlayer.TransformedRecordSerializer) error {
+			_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(env.MetaData).
+					SetSubspace(env.Keyspace).SetSerializer(s).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				_, err = store.SaveRecord(order(id))
+				return nil, err
+			})
+			return err
+		}
+		goLoad := func(id int64, s *recordlayer.TransformedRecordSerializer) (proto.Message, error) {
+			var got proto.Message
+			_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(env.MetaData).
+					SetSubspace(env.Keyspace).SetSerializer(s).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				rec, err := store.LoadRecord(tuple.Tuple{id})
+				if err != nil {
+					return nil, err
+				}
+				if rec == nil {
+					return nil, fmt.Errorf("record %d not found", id)
+				}
+				got = rec.Record
+				return nil, nil
+			})
+			return got, err
+		}
+		for i, c := range []struct {
+			cipher  string
+			keySize int
+			refused string // the root cause Java's write fails with, "" when it writes
+		}{
+			{"AES/CBC/ISO10126Padding", 16, ""},
+			{"AES/PCBC/PKCS5Padding", 24, ""},
+			{"AES/CTR/NoPadding", 32, ""},
+			{"AES/CFB8/NoPadding", 16, ""},
+			{"AES/CFB/PKCS5Padding", 16, ""},
+			{"AES/OFB/NoPadding", 16, ""},
+			{"AES/OFB64/ISO10126Padding", 16, ""},
+			{"AES_256/CFB/NoPadding", 32, ""},
+			{"AES/CTS/NoPadding", 16, ""},
+			{"OID.2.16.840.1.101.3.4.1.43", 32, ""},
+			{"AES/GCM/NoPadding", 16, "AlgorithmParameterSpec not of GCMParameterSpec"},
+			{"AES", 16, "ECB mode cannot use IV"},
+		} {
+			By(c.cipher)
+			key := make([]byte, c.keySize)
+			_, err := rand.Read(key)
+			Expect(err).NotTo(HaveOccurred())
+			keyHex := hex.EncodeToString(key)
+			goSer, err := recordlayer.NewTransformedRecordSerializerJCEBuilder().SetEncryptWhenSerializing(true).
+				SetEncryptionKey(key).SetCipherName(c.cipher).SetWriteValidationRatio(1).Build()
+			Expect(err).NotTo(HaveOccurred())
+			javaID, goID := int64(400+2*i), int64(401+2*i)
+			javaErr := java.InvokeAs(ctx, "saveOrderTransformedJava", map[string]any{
+				"clusterFile": clusterFile, "subspace": BytesToIntArray(env.Keyspace.Bytes()), "order": order(javaID),
+				"tenantName": env.TenantName, "compress": false, "encrypt": true, "keyHex": keyHex, "cipherName": c.cipher,
+			}, nil)
+			goErr := goSave(goID, goSer)
+			if c.refused != "" {
+				// The conformance server reports the root cause of Java's
+				// "encryption error": the cipher's init refusing the IV.
+				var je *JavaError
+				Expect(errors.As(javaErr, &je)).To(BeTrue(), "%s: Java refuses it: %v", c.cipher, javaErr)
+				Expect(je.ExceptionClass).To(Equal("InvalidAlgorithmParameterException"), c.cipher)
+				Expect(je.Message).To(ContainSubstring(c.refused), c.cipher)
+				Expect(goErr).To(MatchError(ContainSubstring("encryption error: unsupported cipher "+c.cipher+": "+c.refused)), "%s: Go refuses it", c.cipher)
+				continue
+			}
+			Expect(javaErr).NotTo(HaveOccurred(), "%s: Java writes", c.cipher)
+			Expect(goErr).NotTo(HaveOccurred(), "%s: Go writes", c.cipher)
+			got, err := goLoad(javaID, goSer)
+			Expect(err).NotTo(HaveOccurred(), "%s: Go reads what Java wrote", c.cipher)
+			Expect(proto.Equal(got, order(javaID))).To(BeTrue(), "%s: Go read %v", c.cipher, got)
+			var javaOrder gen.Order
+			Expect(java.InvokeAs(ctx, "loadOrderTransformedJava", map[string]any{
+				"clusterFile": clusterFile, "subspace": BytesToIntArray(env.Keyspace.Bytes()), "orderID": goID,
+				"tenantName": env.TenantName, "keyHex": keyHex, "cipherName": c.cipher,
+			}, &javaOrder)).To(Succeed(), "%s: Java reads what Go wrote", c.cipher)
+			Expect(proto.Equal(&javaOrder, order(goID))).To(BeTrue(), "%s: Java read %v", c.cipher, &javaOrder)
+		}
+	})
+
 	// A PKCS12 key store the JDK writes (KeyStore.getInstance("PKCS12"), the
 	// JDK 12+ default protection) holding two AES keys, one of them under a
 	// mixed-case alias the JDK stores folded, and a password of spaces and

@@ -12,7 +12,6 @@ package recordlayer
 import (
 	"bytes"
 	"compress/zlib"
-	"crypto/aes"
 	"crypto/cipher"
 	"encoding/binary"
 	"errors"
@@ -45,8 +44,8 @@ const (
 	compressionHeaderSize = 5
 )
 
-// DefaultCipher is Java's CipherPool.DEFAULT_CIPHER, and the one cipher Go
-// implements.
+// DefaultCipher is Java's CipherPool.DEFAULT_CIPHER. Go implements every AES
+// transformation Java's serializer can run (jce_cipher.go).
 const DefaultCipher = "AES/CBC/PKCS5Padding"
 
 // cipherIVSize is CipherPool.IV_SIZE: an encrypted body begins with the IV.
@@ -648,11 +647,8 @@ func (s *TransformedRecordSerializer) encrypt(st *transformState, env *dst.Env) 
 	if s.keyManager == nil {
 		return serializationError("attempted to encrypt without setting key manager (cipher name and key)")
 	}
+	// Java draws the IV before it looks the cipher up.
 	keyNumber := s.keyManager.GetSerializationKey()
-	block, err := s.cipherBlock(keyNumber, "encryption error")
-	if err != nil {
-		return err
-	}
 	random, err := s.keyManager.GetRandom(keyNumber)
 	if err != nil {
 		return err
@@ -660,19 +656,21 @@ func (s *TransformedRecordSerializer) encrypt(st *transformState, env *dst.Env) 
 	if random == nil {
 		random = env
 	}
-	iv := make([]byte, cipherIVSize)
-	if _, err := io.ReadFull(random, iv); err != nil {
+	var iv [cipherIVSize]byte
+	if _, err := io.ReadFull(random, iv[:]); err != nil {
 		return &RecordSerializationError{Message: "encryption error", Cause: err}
 	}
-	padding := aes.BlockSize - len(st.data)%aes.BlockSize
-	plain := make([]byte, len(st.data)+padding)
-	copy(plain, st.data)
-	for i := len(st.data); i < len(plain); i++ {
-		plain[i] = byte(padding)
+	block, t, err := s.cipherBlock(keyNumber, "encryption error")
+	if err != nil {
+		return err
 	}
-	out := make([]byte, cipherIVSize+len(plain))
-	copy(out, iv)
-	cipher.NewCBCEncrypter(block, iv).CryptBlocks(out[cipherIVSize:], plain)
+	// ISO 10126 filler comes from the store's randomness, not the key
+	// manager's: Java's cipher draws it from its own SecureRandom, so a key
+	// manager's seeded random gives the same IV sequence in both engines.
+	out, err := t.encrypt(block, iv[:], st.data, env)
+	if err != nil {
+		return securityError("encryption error", err)
+	}
 	st.data = out
 	st.encrypted = true
 	st.keyNumber = keyNumber
@@ -687,32 +685,21 @@ func (s *TransformedRecordSerializer) decrypt(st *transformState) error {
 	if s.keyManager == nil {
 		return serializationError("missing encryption key or provider during decryption")
 	}
-	block, err := s.cipherBlock(st.keyNumber, "decryption error")
-	if err != nil {
-		return err
-	}
-	// Shorter than the IV: Java's decrypt copies the IV out of it and fails
-	// with an array bound exception, not a cipher failure (so it is not the
-	// encryption validation's either).
+	// Shorter than the IV: Java's decrypt copies the IV out of it, before it
+	// looks the cipher up, and fails with an array bound exception, not a
+	// cipher failure (so it is not the encryption validation's either).
 	if len(st.data) < cipherIVSize {
 		return &RecordSerializationError{Message: "decryption error", Cause: fmt.Errorf("%d bytes, shorter than the %d-byte IV", len(st.data), cipherIVSize)}
 	}
-	iv, text := st.data[:cipherIVSize], st.data[cipherIVSize:]
-	if len(text) == 0 || len(text)%aes.BlockSize != 0 {
-		return securityError("decryption error", errors.New("input length not multiple of 16 bytes"))
+	block, t, err := s.cipherBlock(st.keyNumber, "decryption error")
+	if err != nil {
+		return err
 	}
-	plain := make([]byte, len(text))
-	cipher.NewCBCDecrypter(block, iv).CryptBlocks(plain, text)
-	padding := int(plain[len(plain)-1])
-	if padding == 0 || padding > aes.BlockSize || padding > len(plain) {
-		return securityError("decryption error", errors.New("bad padding"))
+	plain, err := t.decrypt(block, st.data[:cipherIVSize], st.data[cipherIVSize:])
+	if err != nil {
+		return securityError("decryption error", err)
 	}
-	for _, p := range plain[len(plain)-padding:] {
-		if int(p) != padding {
-			return securityError("decryption error", errors.New("bad padding"))
-		}
-	}
-	st.data = plain[:len(plain)-padding]
+	st.data = plain
 	return nil
 }
 
@@ -730,34 +717,35 @@ type KeyAlgorithmReporter interface {
 // number 0", "cannot load key") propagates as it is, and a security failure
 // (a cipher the JCE does not provide, a key it rejects) is Java's
 // GeneralSecurityException, wrapped as op, "encryption error" or "decryption
-// error". Transformation names match case-insensitively, as
-// Cipher.getInstance matches them.
-func (s *TransformedRecordSerializer) cipherBlock(keyNumber int32, op string) (cipher.Block, error) {
+// error". Transformation names are parsed as Cipher.getInstance parses them
+// (parseJCETransformation).
+func (s *TransformedRecordSerializer) cipherBlock(keyNumber int32, op string) (cipher.Block, jceTransformation, error) {
+	var t jceTransformation
 	name, err := s.keyManager.GetCipher(keyNumber)
 	if err != nil {
-		return nil, err
+		return nil, t, err
 	}
-	if !strings.EqualFold(name, DefaultCipher) {
-		return nil, securityError(op, fmt.Errorf("unsupported cipher %s: Go implements %s only", name, DefaultCipher))
+	if t, err = parseJCETransformation(name); err != nil {
+		return nil, t, securityError(op, err)
 	}
 	key, err := s.keyManager.GetKey(keyNumber)
 	if err != nil {
-		return nil, err
+		return nil, t, err
 	}
 	if reporter, ok := s.keyManager.(KeyAlgorithmReporter); ok {
 		algorithm, err := reporter.KeyAlgorithm(keyNumber)
 		if err != nil {
-			return nil, err
+			return nil, t, err
 		}
 		if !strings.EqualFold(algorithm, "AES") && !strings.EqualFold(algorithm, "Rijndael") {
-			return nil, securityError(op, fmt.Errorf("Wrong algorithm: AES or Rijndael required (key algorithm %s)", algorithm))
+			return nil, t, securityError(op, fmt.Errorf("Wrong algorithm: AES or Rijndael required (key algorithm %s)", algorithm))
 		}
 	}
-	block, err := aes.NewCipher(key)
+	block, err := t.newBlock(key)
 	if err != nil {
-		return nil, securityError(op, err)
+		return nil, t, securityError(op, err)
 	}
-	return block, nil
+	return block, t, nil
 }
 
 // encodeTransformPrefix is TransformedRecordSerializerPrefix.encodePrefix.
