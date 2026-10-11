@@ -1005,12 +1005,21 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 		}
 		replyToken, replyCh, replyHandle := conn.PrepareReply()
 		body, poolBuf := buildGetValueRequest(key, readVersion, tx.lockAware || tx.readLockAware, tx.tenantId, childSpanContext(tx.currentSpan()), replyToken, server.Token)
-		// RFC-114: stamp sentAt BEFORE enqueueing the frame. SendFrameDeferred only
-		// enqueues onto the write channel, so for a very fast read the write+read loops
-		// can deliver the reply (stamping resp.RecvAt) before we'd otherwise record
-		// sentAt — making RecvAt−sentAt negative and silently dropped by the sketch.
+		// RFC-114: stamp sentAt BEFORE sending. The frame may be written, and its reply
+		// delivered (stamping resp.RecvAt), before the send returns — RecvAt−sentAt
+		// would go negative and be silently dropped by the sketch.
 		sentAt := time.Now()
-		_, sendErr := conn.SendFrameDeferredContext(ctx, server.Token, body)
+		// The first read of a burst goes out at once; later ones queue while it is
+		// outstanding, so writeLoop can coalesce them into one write.
+		tx.readErrMu.Lock()
+		first := len(tx.pendingReads) == 0
+		tx.readErrMu.Unlock()
+		var sendErr error
+		if first {
+			_, sendErr = conn.SendFrameEagerContext(ctx, server.Token, body)
+		} else {
+			_, sendErr = conn.SendFrameDeferredContext(ctx, server.Token, body)
+		}
 		getValueBufPool.Put(poolBuf)
 		if sendErr != nil {
 			replyHandle.Cancel()

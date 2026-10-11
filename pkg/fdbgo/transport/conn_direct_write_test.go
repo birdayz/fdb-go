@@ -423,3 +423,31 @@ func TestDirectWriteTailsUnderConcurrency(t *testing.T) {
 		t.Fatal("WRITE_TAIL: the idle 1 MiB direct write was not partial")
 	}
 }
+
+// An eager send writes at once on an idle connection and otherwise queues
+// without waiting, behind what is already queued.
+func TestSendFrameEagerContext(t *testing.T) {
+	t.Parallel()
+	cli, srv := tcpPair(t)
+	c := directConn(t, cli)
+	if enqueued, err := c.SendFrameEagerContext(context.Background(), UID{First: 1}, []byte("lone")); !enqueued || err != nil {
+		t.Fatalf("idle eager send = (%v, %v)", enqueued, err)
+	}
+	if token, _ := readFrame(t, srv); token.First != 1 || c.queued.Load() != 0 {
+		t.Fatalf("WRITE_EAGER: peer got token %d, %d queued; want the frame written by its caller", token.First, c.queued.Load())
+	}
+	if err := c.SendFrameDeferred(UID{First: 2}, []byte("queued")); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if enqueued, err := c.SendFrameEagerContext(ctx, UID{First: 3}, []byte("behind")); !enqueued || err != nil {
+		t.Fatalf("eager send behind a queued frame = (%v, %v)", enqueued, err)
+	}
+	if n := len(c.writeCh); n != 2 {
+		t.Fatalf("WRITE_REORDER: %d frames queued, want the eager frame behind the queued one", n)
+	}
+	if first, second := <-c.writeCh, <-c.writeCh; first.token.First != 2 || second.token.First != 3 {
+		t.Fatalf("WRITE_REORDER: queue order = %d, %d", first.token.First, second.token.First)
+	}
+}
