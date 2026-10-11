@@ -86,23 +86,73 @@ var _ = Describe("GuardiANN unsplittable clusters", func() {
 	}
 	runner := func(ss []byte, cfg guardiannConfig) func(func(g *guardiann, tx fdb.WritableTransaction) error) error {
 		return func(f func(g *guardiann, tx fdb.WritableTransaction) error) error {
-			_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
-				g := newGuardiann(specSubspace().Sub(string(ss)), cfg, nil, nil)
-				return nil, f(g, rtx.Transaction())
+			db := recordlayer.NewFDBDatabaseWithTransactor(sharedRawDB, sharedRawDB)
+			attempts, successfulBodies, committed := 0, 0, 0
+			tooOld, conflicts := 0, 0
+			db.SetAttemptObserver(func(_ recordlayer.AttemptCall, err error) {
+				if err == nil {
+					committed++
+				}
+				var fe fdb.Error
+				if errors.As(err, &fe) {
+					switch fe.Code {
+					case 1007:
+						tooOld++
+					case 1020:
+						conflicts++
+					}
+				}
 			})
+			fired := false
+			_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				attempts++
+				g := newGuardiann(specSubspace().Sub(string(ss)), cfg, nil, nil)
+				tx := guardiannUnsplittableRetryTx{WritableTransaction: rtx.Transaction(), fired: &fired}
+				if err := f(g, tx); err != nil {
+					return nil, err
+				}
+				successfulBodies++
+				if successfulBodies == 1 {
+					return nil, fdb.Error{Code: 1020}
+				}
+				return nil, nil
+			})
+			Expect(fired).To(BeTrue())
+			Expect(tooOld).To(BeNumerically(">=", 1))
+			if err == nil {
+				Expect(attempts).To(BeNumerically(">=", 3))
+				Expect(successfulBodies).To(BeNumerically(">=", 2))
+				Expect(conflicts).To(BeNumerically(">=", 1))
+				Expect(committed).To(Equal(1))
+			} else {
+				Expect(attempts).To(BeNumerically(">=", 2))
+				Expect(successfulBodies).To(Equal(0))
+				Expect(committed).To(Equal(0))
+			}
 			return err
 		}
 	}
 	findsAll := func(run func(func(g *guardiann, tx fdb.WritableTransaction) error) error, vectors map[int64]gVector) {
+		// A search batch can outlive FDB's MVCC window; each query gets its own retry budget.
+		for i, v := range vectors {
+			var res []guardiannResult
+			Expect(run(func(g *guardiann, tx fdb.WritableTransaction) error {
+				var err error
+				res, err = g.search(tx, 1, defaultGuardiannSearchConfig(), v)
+				return err
+			})).To(Succeed())
+			Expect(res).NotTo(BeEmpty())
+			Expect(res[0].primaryKey).To(Equal(tuple.Tuple{i}), "vector %d", i)
+		}
+	}
+	snapshot := func(run func(func(g *guardiann, tx fdb.WritableTransaction) error) error) guardiannSnapshot {
+		var snap guardiannSnapshot
 		Expect(run(func(g *guardiann, tx fdb.WritableTransaction) error {
-			for i, v := range vectors {
-				res, err := g.search(tx, 1, defaultGuardiannSearchConfig(), v)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(res).NotTo(BeEmpty())
-				Expect(res[0].primaryKey).To(Equal(tuple.Tuple{i}), "vector %d", i)
-			}
-			return nil
+			var err error
+			snap, err = readGuardiannErr(tx, g)
+			return err
 		})).To(Succeed())
+		return snap
 	}
 
 	drain := func(run func(func(g *guardiann, tx fdb.WritableTransaction) error) error) {
@@ -135,11 +185,8 @@ var _ = Describe("GuardiANN unsplittable clusters", func() {
 				return nil
 			})).To(Succeed())
 			drain(run)
-			var snap guardiannSnapshot
-			Expect(run(func(g *guardiann, tx fdb.WritableTransaction) error {
-				snap = readGuardiann(tx, g)
-				return nil
-			})).To(Succeed())
+			findsAll(run, vectors)
+			snap := snapshot(run)
 			Expect(snap.tasks).To(Equal(0))
 			Expect(len(snap.clusters)).To(BeNumerically(">=", 2), "the peel split the cluster")
 			for id, m := range snap.clusters {
@@ -147,61 +194,57 @@ var _ = Describe("GuardiANN unsplittable clusters", func() {
 				Expect(m.numPrimary()).To(BeNumerically("<=", cfg.primaryClusterMax))
 				Expect(m.has(clusterStateSplitMerge)).To(BeFalse())
 			}
-			findsAll(run, vectors)
 		})
 	}
 
 	It("selects the peel's first usable refit and pins its exit", func() {
 		cfg := config()
-		run := runner([]byte("peel-exits"), cfg)
+		g := newGuardiann(specSubspace().Sub("peel-exits"), cfg, nil, nil)
 		vectors := outlierShape(10)
-		Expect(run(func(g *guardiann, tx fdb.WritableTransaction) error {
-			primaries := make([]guardiannVectorRef, 0, len(vectors))
-			current := guardiannCluster{centroid: gVector{data: make([]float64, 4), typ: vectorcodec.TypeDouble}}
-			for i := int64(0); i <= 10; i++ {
-				r := guardiannVectorRef{id: guardiannVectorID{pk: tuple.Tuple{i}}, vector: vectors[i], primary: true}
-				primaries = append(primaries, r)
-				current.refs = append(current.refs, r)
-			}
-			c12, err := g.kMeansCandidate(&clusterClassification{}, primaries, newSplittableRandomForUUID(tuple.UUID{1}), 2)
-			Expect(err).NotTo(HaveOccurred())
-			result, err := g.scoreCandidate([]guardiannCluster{current}, c12)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(result.decision).To(Equal(decisionInvalidCandidate), "the target's own candidate isolates the outlier")
-			cand, exit, err := g.peelSplit(newSplittableRandomForUUID(tuple.UUID{2}), current, c12)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(exit).To(Equal(peelSelected))
-			sizes := [2]int{}
-			for _, a := range cand.kMeans.assignment {
-				sizes[a]++
-			}
-			Expect(min(sizes[0], sizes[1])).To(BeNumerically(">=", 2), "both children hold at least minChildFraction of n")
+		primaries := make([]guardiannVectorRef, 0, len(vectors))
+		current := guardiannCluster{centroid: gVector{data: make([]float64, 4), typ: vectorcodec.TypeDouble}}
+		for i := int64(0); i <= 10; i++ {
+			r := guardiannVectorRef{id: guardiannVectorID{pk: tuple.Tuple{i}}, vector: vectors[i], primary: true}
+			primaries = append(primaries, r)
+			current.refs = append(current.refs, r)
+		}
+		c12, err := g.kMeansCandidate(&clusterClassification{}, primaries, newSplittableRandomForUUID(tuple.UUID{1}), 2)
+		Expect(err).NotTo(HaveOccurred())
+		result, err := g.scoreCandidate([]guardiannCluster{current}, c12)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.decision).To(Equal(decisionInvalidCandidate), "the target's own candidate isolates the outlier")
+		cand, exit, err := g.peelSplit(newSplittableRandomForUUID(tuple.UUID{2}), current, c12)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(exit).To(Equal(peelSelected))
+		sizes := [2]int{}
+		for _, a := range cand.kMeans.assignment {
+			sizes[a]++
+		}
+		Expect(min(sizes[0], sizes[1])).To(BeNumerically(">=", 2), "both children hold at least minChildFraction of n")
 
-			// A coordinate-identical mass: KMeans cannot separate it, so the
-			// undersized child holds none of the mass and the peel stops.
-			same := make([]guardiannVectorRef, 3)
-			for i := range same {
-				same[i] = guardiannVectorRef{
-					id: guardiannVectorID{pk: tuple.Tuple{int64(i)}}, primary: true,
-					vector: gVector{data: []float64{1, 1, 1, 1}, typ: vectorcodec.TypeDouble},
-				}
+		// A coordinate-identical mass: KMeans cannot separate it, so the
+		// undersized child holds none of the mass and the peel stops.
+		same := make([]guardiannVectorRef, 3)
+		for i := range same {
+			same[i] = guardiannVectorRef{
+				id: guardiannVectorID{pk: tuple.Tuple{int64(i)}}, primary: true,
+				vector: gVector{data: []float64{1, 1, 1, 1}, typ: vectorcodec.TypeDouble},
 			}
-			stuck := &repartitioningCandidate{primaries: same, kMeans: kMeansResult{
-				centroids: []gVector{same[0].vector, same[0].vector}, assignment: []int{0, 0, 0},
-			}}
-			_, exit, err = g.peelSplit(newSplittableRandomForUUID(tuple.UUID{3}), current, stuck)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(exit).To(Equal(peelUndersizedChildHoldsNoMass))
+		}
+		stuck := &repartitioningCandidate{primaries: same, kMeans: kMeansResult{
+			centroids: []gVector{same[0].vector, same[0].vector}, assignment: []int{0, 0, 0},
+		}}
+		_, exit, err = g.peelSplit(newSplittableRandomForUUID(tuple.UUID{3}), current, stuck)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(exit).To(Equal(peelUndersizedChildHoldsNoMass))
 
-			// Two members: removing the undersized one leaves fewer than two.
-			pair := &repartitioningCandidate{primaries: primaries[9:], kMeans: kMeansResult{
-				centroids: []gVector{vectors[9], vectors[10]}, assignment: []int{0, 1},
-			}}
-			_, exit, err = g.peelSplit(newSplittableRandomForUUID(tuple.UUID{4}), current, pair)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(exit).To(Equal(peelMassBelowTwo))
-			return nil
-		})).To(Succeed())
+		// Two members: removing the undersized one leaves fewer than two.
+		pair := &repartitioningCandidate{primaries: primaries[9:], kMeans: kMeansResult{
+			centroids: []gVector{vectors[9], vectors[10]}, assignment: []int{0, 1},
+		}}
+		_, exit, err = g.peelSplit(newSplittableRandomForUUID(tuple.UUID{4}), current, pair)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(exit).To(Equal(peelMassBelowTwo))
 	})
 
 	It("reconciles a stale-inflated cluster whose survivors are n<k instead of failing forever", func() {
@@ -222,18 +265,15 @@ var _ = Describe("GuardiANN unsplittable clusters", func() {
 			return nil
 		})).To(Succeed())
 		drain(run)
-		Expect(run(func(g *guardiann, tx fdb.WritableTransaction) error {
-			snap := readGuardiann(tx, g)
-			Expect(snap.tasks).To(Equal(0))
-			Expect(snap.clusters).To(HaveLen(1))
-			for id, m := range snap.clusters {
-				Expect(m.numPrimary()).To(Equal(1))
-				Expect(snap.primaries[id]).To(Equal(1), "the stale references were removed")
-				Expect(m.has(clusterStateSplitMerge)).To(BeFalse())
-				Expect(m.maxEverPrimary).To(Equal(11), "the lifetime peak is unchanged")
-			}
-			return nil
-		})).To(Succeed())
+		snap := snapshot(run)
+		Expect(snap.tasks).To(Equal(0))
+		Expect(snap.clusters).To(HaveLen(1))
+		for id, m := range snap.clusters {
+			Expect(m.numPrimary()).To(Equal(1))
+			Expect(snap.primaries[id]).To(Equal(1), "the stale references were removed")
+			Expect(m.has(clusterStateSplitMerge)).To(BeFalse())
+			Expect(m.maxEverPrimary).To(Equal(11), "the lifetime peak is unchanged")
+		}
 		findsAll(run, map[int64]gVector{10: vectors[10]})
 	})
 
@@ -250,16 +290,17 @@ var _ = Describe("GuardiANN unsplittable clusters", func() {
 			}
 			return nil
 		})).To(Succeed())
-		var survivor tuple.UUID
+		snap := snapshot(run)
+		Expect(snap.clusters).To(HaveLen(1))
+		var target guardiannClusterMetadata
+		for _, m := range snap.clusters {
+			target = m
+		}
 		Expect(run(func(g *guardiann, tx fdb.WritableTransaction) error {
-			snap := readGuardiann(tx, g)
-			Expect(snap.clusters).To(HaveLen(1))
-			var target guardiannClusterMetadata
-			for _, m := range snap.clusters {
-				target = m
-			}
 			cluster, err := g.fetchCluster(tx, target.id, gVector{data: make([]float64, 4), typ: vectorcodec.TypeDouble})
-			Expect(err).NotTo(HaveOccurred())
+			if err != nil {
+				return err
+			}
 			// A KMeans child whose centroid is far from every primary: Java
 			// asserts it holds a primary (SplitMergeTask.java:909) and fails.
 			cand := &repartitioningCandidate{
@@ -272,24 +313,28 @@ var _ = Describe("GuardiANN unsplittable clusters", func() {
 			}
 			return g.applyRepartitioning(tx, newSplittableRandomForUUID(tuple.UUID{6}), cand)
 		})).To(Succeed())
+		var tasks []*guardiannTask
 		Expect(run(func(g *guardiann, tx fdb.WritableTransaction) error {
-			snap := readGuardiann(tx, g)
-			Expect(snap.clusters).To(HaveLen(1), "the empty child was not written")
-			Expect(snap.centroids).To(Equal(1))
-			for id, m := range snap.clusters {
-				survivor = id
-				Expect(m.numPrimary()).To(Equal(8))
-				Expect(snap.primaries[id]).To(Equal(8))
+			var err error
+			if snap, err = readGuardiannErr(tx, g); err != nil {
+				return err
 			}
-			tasks, err := g.fetchSomeTasks(tx, 100)
-			Expect(err).NotTo(HaveOccurred())
-			for _, t := range tasks {
-				if t.kind == taskBounce {
-					Expect(t.targets).To(Equal([]tuple.UUID{survivor}), "the bounce names only the surviving new cluster")
-				}
-			}
-			return nil
+			tasks, err = g.fetchSomeTasks(tx, 100)
+			return err
 		})).To(Succeed())
+		Expect(snap.clusters).To(HaveLen(1), "the empty child was not written")
+		Expect(snap.centroids).To(Equal(1))
+		var survivor tuple.UUID
+		for id, m := range snap.clusters {
+			survivor = id
+			Expect(m.numPrimary()).To(Equal(8))
+			Expect(snap.primaries[id]).To(Equal(8))
+		}
+		for _, t := range tasks {
+			if t.kind == taskBounce {
+				Expect(t.targets).To(Equal([]tuple.UUID{survivor}), "the bounce names only the surviving new cluster")
+			}
+		}
 		drain(run)
 		findsAll(run, vectors)
 	})
@@ -319,10 +364,7 @@ var _ = Describe("GuardiANN unsplittable clusters", func() {
 			})).To(Succeed())
 			drain(run)
 		}
-		Expect(run(func(g *guardiann, tx fdb.WritableTransaction) error {
-			Expect(len(readGuardiann(tx, g).clusters)).To(BeNumerically(">=", 4))
-			return nil
-		})).To(Succeed())
+		Expect(len(snapshot(run).clusters)).To(BeNumerically(">=", 4))
 		for lo := int64(0); lo < 40; lo += 10 {
 			Expect(run(func(g *guardiann, tx fdb.WritableTransaction) error {
 				for i := lo; i < lo+10; i++ {
@@ -334,17 +376,14 @@ var _ = Describe("GuardiANN unsplittable clusters", func() {
 			})).To(Succeed())
 		}
 		drain(run)
-		Expect(run(func(g *guardiann, tx fdb.WritableTransaction) error {
-			snap := readGuardiann(tx, g)
-			Expect(snap.tasks).To(Equal(0))
-			Expect(snap.clusters).To(HaveLen(1), "repeated empty merges end at one retained cluster")
-			Expect(snap.centroids).To(Equal(1))
-			for _, m := range snap.clusters {
-				Expect(m.numPrimary()).To(Equal(0))
-				Expect(m.states).To(Equal(0))
-			}
-			return nil
-		})).To(Succeed())
+		snap := snapshot(run)
+		Expect(snap.tasks).To(Equal(0))
+		Expect(snap.clusters).To(HaveLen(1), "repeated empty merges end at one retained cluster")
+		Expect(snap.centroids).To(Equal(1))
+		for _, m := range snap.clusters {
+			Expect(m.numPrimary()).To(Equal(0))
+			Expect(m.states).To(Equal(0))
+		}
 		for lo := int64(0); lo < 40; lo += 5 {
 			Expect(run(func(g *guardiann, tx fdb.WritableTransaction) error {
 				for i := lo; i < lo+5; i++ {
@@ -363,31 +402,40 @@ var _ = Describe("GuardiANN unsplittable clusters", func() {
 		cfg := config()
 		run := runner([]byte("reconcile-hardcap"), cfg)
 		vectors := outlierShape(15)
+		var capacityErr *guardiannClusterCapacityError
+		var rejected int64
 		Expect(run(func(g *guardiann, tx fdb.WritableTransaction) error {
+			capacityErr, rejected = nil, -1
 			for i := int64(0); i <= 15; i++ {
 				if err := g.insert(tx, tuple.Tuple{i}, vectors[i], nil, false); err != nil {
-					// The deferred cap refuses the 15th primary.
-					var capacity *guardiannClusterCapacityError
-					Expect(errors.As(err, &capacity)).To(BeTrue(), "error: %v", err)
+					if !errors.As(err, &capacityErr) {
+						return err
+					}
+					rejected = i
 					break
 				}
 			}
 			return nil
 		})).To(Succeed())
-		var target guardiannClusterMetadata
-		var centroid gVector
+		Expect(capacityErr).NotTo(BeNil())
+		Expect(rejected).To(Equal(int64(14)), "the deferred cap refuses the 15th primary")
+		var snap guardiannSnapshot
+		var tasks []*guardiannTask
 		Expect(run(func(g *guardiann, tx fdb.WritableTransaction) error {
-			snap := readGuardiann(tx, g)
-			Expect(snap.clusters).To(HaveLen(1))
-			for _, m := range snap.clusters {
-				target = m
+			var err error
+			if snap, err = readGuardiannErr(tx, g); err != nil {
+				return err
 			}
-			tasks, err := g.fetchSomeTasks(tx, 10)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(tasks).NotTo(BeEmpty())
-			centroid = tasks[0].centroid
-			return nil
+			tasks, err = g.fetchSomeTasks(tx, 10)
+			return err
 		})).To(Succeed())
+		Expect(snap.clusters).To(HaveLen(1))
+		var target guardiannClusterMetadata
+		for _, m := range snap.clusters {
+			target = m
+		}
+		Expect(tasks).NotTo(BeEmpty())
+		centroid := tasks[0].centroid
 		// One primary more than the hard cap reaches the cluster without the
 		// cap check, as inline inserts and neighbour re-homing do.
 		err := run(func(g *guardiann, tx fdb.WritableTransaction) error {
@@ -408,3 +456,13 @@ var _ = Describe("GuardiANN unsplittable clusters", func() {
 		Expect(errors.As(err, &capacity)).To(BeFalse(), "the unsplittable error is not the insert cap's")
 	})
 })
+
+// A failed point read must reach Run without aborting the spec's assertion handler.
+type guardiannUnsplittableRetryTx struct {
+	fdb.WritableTransaction
+	fired *bool
+}
+
+func (t guardiannUnsplittableRetryTx) Get(key fdb.KeyConvertible) fdb.FutureByteSlice {
+	return (tooOldOnceReadTx{ReadTransaction: t.WritableTransaction, fired: t.fired}).Get(key)
+}
