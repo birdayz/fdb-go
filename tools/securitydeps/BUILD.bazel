@@ -1,0 +1,15 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "securitydeps_test",
+    srcs = ["security_test.go"],
+    deps = [
+        "@com_github_google_cel_go//cel:go_default_library",
+        "@com_github_google_cel_go//ext:go_default_library",
+        "@com_github_moby_go_archive//:go-archive",
+        "@com_github_moby_sys_user//:user",
+        "@io_opentelemetry_go_otel_exporters_otlp_otlptrace//:otlptrace",
+        "@io_opentelemetry_go_otel_sdk//trace",
+        "@io_opentelemetry_go_proto_otlp//trace/v1:trace",
+    ],
+)
