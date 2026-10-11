@@ -23,6 +23,7 @@ type indexingMerger struct {
 
 func (m *indexingMerger) merge(ctx context.Context, oi *OnlineIndexer) error {
 	failures := 0
+	sessionID := oi.ensureIndexerID(oi.db.Env())
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -38,13 +39,13 @@ func (m *indexingMerger) merge(ctx context.Context, oi *OnlineIndexer) error {
 			control.SetMergesLimit(m.mergesLimit)
 			control.SetTimeQuotaMillis(m.timeQuotaMillis)
 			control.SetRepartitionDocumentCount(m.repartitionDocumentCount)
-			if oi.sessionHeartbeat != nil {
-				control.SetMergeSessionID(&oi.sessionHeartbeat.indexerID)
-				control.SetPreCommitCallback(func(store *FDBRecordStore) error {
-					return oi.refreshFollowupHeartbeats(store, oi.sessionHeartbeat)
-				})
-			}
-			control.RegisterPreCommit(store, m.index)
+			control.SetMergeSessionID(&sessionID)
+			// Offered, not registered: only a maintainer whose merge drains its own
+			// queue (Java's Lucene, FDBDirectoryWrapper.java:602) registers it.
+			heartbeat, index := oi.sessionHeartbeat, m.index
+			control.SetPreCommitCallback(func(store *FDBRecordStore) error {
+				return oi.updateMergeHeartbeat(store, index, heartbeat)
+			})
 			maintainer, err := store.getIndexMaintainer(m.index)
 			if err != nil {
 				return nil, err
@@ -134,6 +135,20 @@ func (m *indexingMerger) handleFailure(control *IndexDeferredMaintenanceControl,
 	return nil
 }
 
+// updateMergeHeartbeat is Java's IndexingBase.updateHeartbeat (:969-972): it
+// renews only the merged index, only while it is write-only, and does nothing
+// without a session, as in a standalone merge.
+func (oi *OnlineIndexer) updateMergeHeartbeat(store *FDBRecordStore, index *Index, heartbeat *IndexingHeartbeat) error {
+	if heartbeat == nil {
+		return nil
+	}
+	state, err := store.readIndexState(index.Name)
+	if err != nil || !state.IsWriteOnly() {
+		return err
+	}
+	return oi.renewSessionHeartbeat(store, index, heartbeat)
+}
+
 // mergeRequestedIndexes runs after the committed batch's queue drains, even
 // when that batch exhausted its input. Failed transactions publish no requests.
 func (oi *OnlineIndexer) mergeRequestedIndexes(ctx context.Context) error {
@@ -174,13 +189,9 @@ func (oi *OnlineIndexer) mergeIndex(ctx context.Context, index *Index) error {
 
 // MergeIndexes explicitly runs deferred maintenance for all configured targets.
 // Synchronous maintainers report no work; this does not substitute for a backend
-// adapter capable of performing real deferred work.
+// adapter capable of performing real deferred work. Like Java's mergeIndex it
+// holds no session: no heartbeat, no index-state check.
 func (oi *OnlineIndexer) MergeIndexes(ctx context.Context) error {
-	if oi.sessionHeartbeat == nil {
-		oi.retiredBuildTargets = nil
-		oi.sessionHeartbeat = oi.newHeartbeat("explicit index merge", false, oi.db.Env())
-		defer func() { oi.cleanupPendingQueueHeartbeat(oi.sessionHeartbeat); oi.sessionHeartbeat = nil }()
-	}
 	return oi.mergeEach(ctx, oi.targetIndexes)
 }
 

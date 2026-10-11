@@ -406,9 +406,9 @@ type OnlineIndexer struct {
 	// the fallback: the records scan must replace the abandoned method's stamp.
 	enforcedStampOverwrite bool
 	// indexerID is this indexer's heartbeat identity, minted once (Java
-	// IndexingCommon.indexerId): every attempt the catcher runs, and every merge,
-	// writes its heartbeat under it, so an attempt never mistakes the previous
-	// attempt's heartbeat for a live peer.
+	// IndexingCommon.indexerId): every attempt the catcher runs writes its
+	// heartbeat under it, so an attempt never mistakes the previous attempt's
+	// heartbeat for a live peer. Merges use it as their merge session ID.
 	indexerID uuid.UUID
 	// lastOutcome is what the last completed BuildIndex did; see LastBuildOutcome.
 	lastOutcome      IndexBuildOutcome
@@ -511,10 +511,15 @@ func (oi *OnlineIndexer) buildsByIndex() bool {
 // newHeartbeat is a heartbeat under this indexer's one identity, minted from
 // env the first time it is needed.
 func (oi *OnlineIndexer) newHeartbeat(info string, allowMutual bool, env *dst.Env) *IndexingHeartbeat {
+	return newIndexingHeartbeatWithID(oi.ensureIndexerID(env), info, resolvedLeaseLengthMs(oi.leaseLengthMs), allowMutual, env)
+}
+
+// ensureIndexerID mints this indexer's one identity from env on first use.
+func (oi *OnlineIndexer) ensureIndexerID(env *dst.Env) uuid.UUID {
 	if oi.indexerID == uuid.Nil {
 		oi.indexerID = newIndexerID(env)
 	}
-	return newIndexingHeartbeatWithID(oi.indexerID, info, resolvedLeaseLengthMs(oi.leaseLengthMs), allowMutual, env)
+	return oi.indexerID
 }
 
 // IndexBuildOutcome is what a BuildIndex call did. It is a Go extension: Java's

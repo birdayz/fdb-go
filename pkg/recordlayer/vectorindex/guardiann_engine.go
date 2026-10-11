@@ -419,11 +419,10 @@ func reportMergeProgress(control *recordlayer.IndexDeferredMaintenanceControl, e
 // disableOnNegativeTaskCount marks the index disabled at commit, as Java's
 // disableIndexOnNegativeTaskCount commit check does
 // (VectorIndexMaintainer.java:605-616, keyed "disableVectorIndexOnNegativeTaskCount:"
-// per index, so repeated trips disable once). At commit it runs after the
-// checks registered before it, the merger's heartbeat refresh among them,
-// which still see the index in its state; the disable then commits, and the
-// session's next refresh finds it disabled. Scoped to the store, as the
-// pending-queue overflow disable is, so DeleteStore cancels it.
+// per index, so repeated trips disable once). The merger registers no heartbeat
+// check, as Java's core merges call no pre-commit callback, so nothing else in
+// the merge transaction reads the state the disable changes. Scoped to the
+// store, as the pending-queue overflow disable is, so DeleteStore cancels it.
 func (m *vectorIndexMaintainer) disableOnNegativeTaskCount() error {
 	s, ok := m.Store().(*recordlayer.FDBRecordStore)
 	if !ok {

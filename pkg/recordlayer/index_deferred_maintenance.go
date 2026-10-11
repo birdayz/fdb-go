@@ -240,6 +240,8 @@ func (store *FDBRecordStore) GetIndexDeferredMaintenanceControl() *IndexDeferred
 }
 
 // RegisterPreCommit registers the callback on the actual write transaction.
+// A maintainer's merge calls it only if it must refresh the session heartbeat,
+// as Java's Lucene queue drain does; no core merge calls it, as in Java.
 // A backend that creates child transactions must call this for each child too;
 // installing it on an outer coordinator alone does not protect child commits.
 func (c *IndexDeferredMaintenanceControl) RegisterPreCommit(store *FDBRecordStore, index *Index) {
