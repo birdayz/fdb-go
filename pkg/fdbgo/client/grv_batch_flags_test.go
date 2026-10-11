@@ -217,3 +217,56 @@ func TestGRVBatcherSeparatesFullFlags(t *testing.T) {
 		t.Fatalf("missing tagged GRV wire population: normal=%t risky=%t", seenNormal, seenRisky)
 	}
 }
+
+// C++ tryCommit fetches a missing read version risky (NativeAPI.actor.cpp:6576-6578);
+// a transaction that already read keeps its ordinary GRV.
+func TestCommitPathGRVIsCausalReadRisky(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	observer := &grvFlagsObserver{}
+	db := newTestDatabase(t, ctx, sharedClusterFile, observer.dial)
+	defer db.Close()
+	const writeOnly, readFirst = "commit-grv-write-only", "commit-grv-read-first"
+	for _, tag := range []string{writeOnly, readFirst} {
+		tx := db.CreateTransaction()
+		if err := tx.SetTag(tag); err != nil {
+			t.Fatal(err)
+		}
+		key := []byte("commit-grv-flags/" + tag)
+		if tag == readFirst {
+			if _, err := tx.Get(ctx, key); err != nil {
+				t.Fatal(err)
+			}
+		}
+		tx.Set(key, []byte("v"))
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatalf("%s commit: %v", tag, err)
+		}
+	}
+	observer.mu.Lock()
+	defer observer.mu.Unlock()
+	if observer.err != nil {
+		t.Fatal("GRV request observer:", observer.err)
+	}
+	got := map[string][]uint32{}
+	for _, req := range observer.requests {
+		for _, tag := range []string{writeOnly, readFirst} {
+			if req.tags[tag] > 0 {
+				got[tag] = append(got[tag], req.flags)
+			}
+		}
+	}
+	// A proxy change may legitimately resend a GRV, so check every frame.
+	for tag, want := range map[string]uint32{writeOnly: grvPriorityDefault | grvFlagCausalReadRisky, readFirst: grvPriorityDefault} {
+		f := got[tag]
+		if len(f) == 0 {
+			t.Errorf("COMMIT_GRV_FLAGS: %s sent no GRV", tag)
+		}
+		for _, flags := range f {
+			if flags != want {
+				t.Errorf("COMMIT_GRV_FLAGS: %s GRV flags = %#x, want %#x", tag, flags, want)
+			}
+		}
+	}
+}
