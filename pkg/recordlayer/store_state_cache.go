@@ -281,7 +281,9 @@ func loadRecordStoreState(store *FDBRecordStore, existenceCheck StoreExistenceCh
 	// record-layer key sorts before the info key's 0, so it covers the same
 	// written keys as this point Get's [key, key\x00).
 	storeInfoFuture := tx.Get(ks.expectedInfoKey)
-	// Index states use snapshot isolation (no conflict).
+	// Index states use snapshot isolation (no conflict). GetRange issues the read
+	// at the call, so calling it before awaiting the header overlaps the two, as
+	// Java's loadRecordStoreStateInternalAsync does (FDBRecordStore.java:4134-4136).
 	indexStatesFuture := tx.Snapshot().GetRange(fdb.KeyRange{Begin: ks.indexStateBegin, End: ks.indexStateEnd}, fdb.RangeOptions{})
 
 	// Resolve store info.
