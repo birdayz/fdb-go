@@ -16,12 +16,12 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"fdb.dev/pkg/dst"
-	"fdb.dev/pkg/fdbgo/fdb"
-	"fdb.dev/pkg/recordlayer"
 	"google.golang.org/protobuf/proto"
 
+	"fdb.dev/pkg/dst"
+	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
+	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
 	apiddl "fdb.dev/pkg/relational/api/ddl"
 	"fdb.dev/pkg/relational/core/catalog"

@@ -4275,7 +4275,7 @@ The Go driver takes connection options from the DSN query string. Java takes the
 
 ## FDB errors: Go gives more FDB codes a SQLSTATE than Java
 
-Java turns an `FDBException` into a typed `RecordCoreException` (FDBExceptions.java:194-211), and `ExceptionUtil.recordCoreToRelationalException` maps only `FDBStoreTransactionTimeoutException` (1031 → 53F00). Every other FDB failure falls through to `UNKNOWN` (XXXXX). The exception is 1020 at commit, which `RecordContextTransaction.commit` maps to 40001 (RecordContextTransaction.java:66-68). Go's single mapper, `api.TranslateFDBError`, also covers:
+Java turns an `FDBException` into a typed `RecordCoreException` (FDBExceptions.java:194-211), and `ExceptionUtil.recordCoreToRelationalException` maps only `FDBStoreTransactionTimeoutException` (1031 → 53F00). Every other FDB failure falls through to `UNKNOWN` (XXXXX). The exception is 1020 at commit, which `RecordContextTransaction.commit` maps to 40001 (RecordContextTransaction.java:66-68). Go's single mapper, `exceptionutil.TranslateFDBError`, also covers:
 
 | FDB code | Go | Java |
 |---|---|---|
