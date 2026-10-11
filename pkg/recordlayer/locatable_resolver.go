@@ -305,11 +305,6 @@ func (h highContentionAllocator) allocate(rctx *FDBRecordContext, name string) (
 	}
 }
 
-// IllegalStateError is Java's IllegalStateException.
-type IllegalStateError struct{ Message string }
-
-func (e *IllegalStateError) Error() string { return e.Message }
-
 // ---- ScopedInterningLayer / StringInterningLayer ----
 
 // ScopedInterningLayer is Java's ScopedInterningLayer over a resolved path:

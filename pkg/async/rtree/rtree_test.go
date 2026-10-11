@@ -715,57 +715,6 @@ var _ = Describe("RTree", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	It("config validation rejects invalid configs", func() {
-		// NumDimensions=0
-		_, err := NewRTree(nil, RTreeConfig{
-			MinM: 2, MaxM: 4, SplitS: 2,
-			StoreHilbertValues: true, NumDimensions: 0,
-		})
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("NumDimensions"))
-
-		// MinM=0
-		_, err = NewRTree(nil, RTreeConfig{
-			MinM: 0, MaxM: 4, SplitS: 2,
-			StoreHilbertValues: true, NumDimensions: 2,
-		})
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("MinM"))
-
-		// MaxM=1 (must be >= 2)
-		_, err = NewRTree(nil, RTreeConfig{
-			MinM: 1, MaxM: 1, SplitS: 1,
-			StoreHilbertValues: true, NumDimensions: 2,
-		})
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("MaxM"))
-
-		// SplitS=0
-		_, err = NewRTree(nil, RTreeConfig{
-			MinM: 2, MaxM: 4, SplitS: 0,
-			StoreHilbertValues: true, NumDimensions: 2,
-		})
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("SplitS"))
-
-		// Split constraint violation: S*MaxM < (S+1)*MinM
-		// MinM=10, MaxM=12, SplitS=2: 2*12=24 < 3*10=30
-		_, err = NewRTree(nil, RTreeConfig{
-			MinM: 10, MaxM: 12, SplitS: 2,
-			StoreHilbertValues: true, NumDimensions: 2,
-		})
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("split constraint"))
-
-		// Default config should be valid.
-		err = ValidateRTreeConfig(DefaultRTreeConfig(2))
-		Expect(err).NotTo(HaveOccurred())
-
-		// Default config for 3D should be valid.
-		err = ValidateRTreeConfig(DefaultRTreeConfig(3))
-		Expect(err).NotTo(HaveOccurred())
-	})
-
 	It("tree height transitions: grow and shrink", func() {
 		ks := specSubspace()
 

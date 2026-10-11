@@ -45,6 +45,7 @@ project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (
   Apple Go binding's code; 730 is libfdb_c 7.3.77's maximum and 510 this client's floor. Before,
   `fdb.APIVersion` accepted 731 and above and answered 2201 below 510, and `client.WithAPIVersion`
   accepted any non-zero version. A different version after one is selected stays 2201.
+- The R-tree takes any `rtreeMinimumM`, `rtreeMaximumM` and `rtreeSplitS`, as Java does; `rtree.ValidateRTreeConfig` is gone. A configuration that cannot keep the node invariants fails where Java's does (`rtree.VerifyError`, `IndexOutOfBoundsError`, `NegativeArraySizeError`, `ArithmeticError`), and a non-root node outside [minM, maxM] is refused on read (`javanum.IllegalStateError`, also `recordlayer.IllegalStateError`).
 - SQL planning has no task budget by default, as in Java (was 150,000 tasks, 250,000 right-deep); the
   caller's context bounds it, and `MAX_TOTAL_TASK_COUNT`, `MAX_TASK_QUEUE_SIZE` and
   `MAX_NUM_MATCHES_PER_RULE_CALL` opt into Java's caps (54F02 when exhausted).

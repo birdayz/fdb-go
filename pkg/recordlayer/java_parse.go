@@ -19,6 +19,9 @@ import (
 // (Enum.valueOf, as RTree.Storage.valueOf).
 type IllegalArgumentError = javanum.IllegalArgumentError
 
+// IllegalStateError is Java's IllegalStateException.
+type IllegalStateError = javanum.IllegalStateError
+
 // NumberFormatError is Java's NumberFormatException, raised by
 // Integer.parseInt on an index option that is not a decimal int. Java's class
 // extends IllegalArgumentException, so errors.As matches it as an

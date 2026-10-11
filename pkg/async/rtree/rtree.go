@@ -21,10 +21,12 @@ type RTree struct {
 	config  RTreeConfig
 }
 
-// NewRTree creates a new R-tree. Returns an error if config is invalid.
+// NewRTree creates a new R-tree. Like Java's RTree it takes any minM, maxM
+// and splitS: a configuration that cannot keep the node invariants fails at
+// the operation where Java's fails (see errors.go).
 func NewRTree(storage *StorageAdapter, config RTreeConfig) (*RTree, error) {
-	if err := ValidateRTreeConfig(config); err != nil {
-		return nil, err
+	if config.NumDimensions < 1 {
+		return nil, fmt.Errorf("rtree: NumDimensions must be >= 1, got %d", config.NumDimensions)
 	}
 	return &RTree{storage: storage, config: config}, nil
 }
@@ -34,6 +36,9 @@ func NewRTree(storage *StorageAdapter, config RTreeConfig) (*RTree, error) {
 func (rt *RTree) InsertOrUpdate(tx fdb.WritableTransaction, point Point, keySuffix tuple.Tuple, value tuple.Tuple) error {
 	rt.storage.beginOperation()
 	if err := rt.insertOrUpdate(tx, point, keySuffix, value); err != nil {
+		return err
+	}
+	if err := rt.storage.checkWritten(); err != nil {
 		return err
 	}
 	return rt.storage.flushNodeSlotIndex(tx)
@@ -58,6 +63,10 @@ func (rt *RTree) insertOrUpdate(tx fdb.WritableTransaction, point Point, keySuff
 		// Empty tree — create root leaf.
 		leaf = &leafNode{id: rootNodeID, slots: nil}
 		path.leaf = leaf
+	}
+	// RTree.java:797: a negative maxM fails the first insert.
+	if len(leaf.slots) > rt.config.MaxM {
+		return &VerifyError{}
 	}
 
 	// Check if item already exists (update).
@@ -99,6 +108,9 @@ func (rt *RTree) Delete(tx fdb.WritableTransaction, point Point, keySuffix tuple
 	if err := rt.delete(tx, point, keySuffix); err != nil {
 		return err
 	}
+	if err := rt.storage.checkWritten(); err != nil {
+		return err
+	}
 	return rt.storage.flushNodeSlotIndex(tx)
 }
 
@@ -118,6 +130,9 @@ func (rt *RTree) delete(tx fdb.WritableTransaction, point Point, keySuffix tuple
 	leaf := path.leaf
 	if leaf == nil {
 		return nil // empty tree or item not reachable
+	}
+	if len(leaf.slots) > rt.config.MaxM { // RTree.java:1134
+		return &VerifyError{}
 	}
 
 	// Find the item.
@@ -414,6 +429,9 @@ func (rt *RTree) handleLeafOverflow(tx fdb.WritableTransaction, path *updatePath
 
 // splitRootLeaf splits a root leaf into two leaves + new intermediate root.
 func (rt *RTree) splitRootLeaf(tx fdb.WritableTransaction, root *leafNode) error {
+	if len(root.slots) < 2 { // maxM 0: an empty left half (RTree.java:1070)
+		return &IndexOutOfBoundsError{Index: 0, Length: 0}
+	}
 	mid := len(root.slots) / 2
 
 	leftID, err := rt.storage.newRandomNodeID()
@@ -458,6 +476,9 @@ func (rt *RTree) overflowLeaf(tx fdb.WritableTransaction, path *updatePath) erro
 	if err != nil {
 		return err
 	}
+	if len(siblings) == 0 { // splitS 0: the split node gets no slots (RTree.java:1004)
+		return &VerifyError{}
+	}
 
 	// Replace the re-fetched copy of the overflowing leaf with the in-memory
 	// version that contains the newly inserted item. gatherLeafSiblings reads
@@ -495,6 +516,9 @@ func (rt *RTree) overflowLeaf(tx fdb.WritableTransaction, path *updatePath) erro
 	}
 
 	// Redistribute items evenly.
+	if err := redistributable(len(allItems), len(siblings)); err != nil {
+		return err
+	}
 	rt.redistributeItems(allItems, siblings)
 
 	// Write all siblings.
@@ -539,6 +563,11 @@ func (rt *RTree) handleLeafUnderflow(tx fdb.WritableTransaction, path *updatePat
 		return nil
 	}
 
+	if len(leaf.slots) == 0 && rt.config.MinM <= 0 {
+		// minM 0 or below never fuses; Java then reads the empty node's first slot
+		// (RTree.java:1449).
+		return &IndexOutOfBoundsError{Index: 0, Length: 0}
+	}
 	if len(leaf.slots) >= rt.config.MinM {
 		// No underflow.
 		rt.storage.writeLeafNode(tx, leaf)
@@ -580,7 +609,10 @@ func (rt *RTree) handleLeafUnderflow(tx fdb.WritableTransaction, path *updatePat
 		}
 	}
 
-	if needFuse && len(siblings) > 1 {
+	if needFuse && len(siblings) < 2 {
+		return rt.loneFuseError(len(siblings), len(parent.slots))
+	}
+	if needFuse {
 		// Fuse: remove the last sibling, redistribute across S-1 nodes.
 		removedSib := siblings[len(siblings)-1]
 		rt.storage.deleteLeafNode(tx, removedSib)
@@ -588,6 +620,9 @@ func (rt *RTree) handleLeafUnderflow(tx fdb.WritableTransaction, path *updatePat
 	}
 
 	// Redistribute items evenly.
+	if err := redistributable(len(allItems), len(siblings)); err != nil {
+		return err
+	}
 	rt.redistributeItems(allItems, siblings)
 
 	for _, sib := range siblings {
@@ -616,6 +651,9 @@ func (rt *RTree) handleLeafUnderflow(tx fdb.WritableTransaction, path *updatePat
 // gatherLeafSiblings returns S siblings centered on childIdx, loaded from FDB.
 func (rt *RTree) gatherLeafSiblings(tx fdb.WritableTransaction, parent *intermediateNode, childIdx int) ([]*leafNode, int, error) {
 	s := rt.config.SplitS
+	if s < 0 { // RTree.java:1622
+		return nil, 0, &NegativeArraySizeError{Size: s}
+	}
 	if s >= len(parent.slots) {
 		s = len(parent.slots)
 	}
@@ -762,6 +800,9 @@ func (rt *RTree) handleIntermediateOverflow(tx fdb.WritableTransaction, path *up
 // splitRootIntermediate splits an overflowing root intermediate node into two
 // intermediate children under a new root.
 func (rt *RTree) splitRootIntermediate(tx fdb.WritableTransaction, root *intermediateNode) error {
+	if len(root.slots) < 2 { // RTree.java:1070
+		return &IndexOutOfBoundsError{Index: 0, Length: 0}
+	}
 	mid := len(root.slots) / 2
 
 	leftID, err := rt.storage.newRandomNodeID()
@@ -806,6 +847,9 @@ func (rt *RTree) overflowIntermediate(tx fdb.WritableTransaction, path *updatePa
 	if err != nil {
 		return err
 	}
+	if len(siblings) == 0 { // RTree.java:1004
+		return &VerifyError{}
+	}
 
 	// Replace the re-fetched copy of the overflowing node with the in-memory
 	// version that has the updated child slots.
@@ -843,6 +887,9 @@ func (rt *RTree) overflowIntermediate(tx fdb.WritableTransaction, path *updatePa
 	}
 
 	// Redistribute child slots evenly.
+	if err := redistributable(len(allSlots), len(siblings)); err != nil {
+		return err
+	}
 	rt.redistributeChildSlots(allSlots, siblings)
 
 	// Write all siblings.
@@ -892,6 +939,9 @@ func (rt *RTree) handleIntermediateUnderflow(tx fdb.WritableTransaction, path *u
 		return nil
 	}
 
+	if len(node.slots) == 0 && rt.config.MinM <= 0 { // RTree.java:1449
+		return &IndexOutOfBoundsError{Index: 0, Length: 0}
+	}
 	if len(node.slots) >= rt.config.MinM {
 		// No underflow — just write and propagate.
 		rt.storage.writeIntermediateNode(tx, node)
@@ -972,7 +1022,10 @@ func (rt *RTree) fuseIntermediate(tx fdb.WritableTransaction, path *updatePath, 
 		}
 	}
 
-	if needFuse && len(siblings) > 1 {
+	if needFuse && len(siblings) < 2 {
+		return rt.loneFuseError(len(siblings), len(grandparent.slots))
+	}
+	if needFuse {
 		// Fuse: remove the last sibling, redistribute across S-1 nodes.
 		removedSib := siblings[len(siblings)-1]
 		rt.storage.deleteIntermediateNode(tx, removedSib)
@@ -980,6 +1033,9 @@ func (rt *RTree) fuseIntermediate(tx fdb.WritableTransaction, path *updatePath, 
 	}
 
 	// Redistribute child slots evenly.
+	if err := redistributable(len(allSlots), len(siblings)); err != nil {
+		return err
+	}
 	rt.redistributeChildSlots(allSlots, siblings)
 
 	// Write all siblings.
@@ -1010,6 +1066,9 @@ func (rt *RTree) fuseIntermediate(tx fdb.WritableTransaction, path *updatePath, 
 // loaded from FDB. Mirrors gatherLeafSiblings but for intermediate nodes.
 func (rt *RTree) gatherIntermediateSiblings(tx fdb.WritableTransaction, parent *intermediateNode, childIdx int) ([]*intermediateNode, int, error) {
 	s := rt.config.SplitS
+	if s < 0 { // RTree.java:1622
+		return nil, 0, &NegativeArraySizeError{Size: s}
+	}
 	if s >= len(parent.slots) {
 		s = len(parent.slots)
 	}
@@ -1093,6 +1152,30 @@ func (rt *RTree) childSlotForIntermediate(node *intermediateNode) ChildSlot {
 // Clear removes all data from the R-tree.
 func (rt *RTree) Clear(tx fdb.WritableTransaction) error {
 	return rt.storage.clearAll(tx)
+}
+
+// loneFuseError is how Java's fuse fails with fewer than two siblings: splitS
+// 0 tombstones sibling -1 (RTree.java:1273), splitS 1 tombstones the node itself
+// and divides by the zero left (:1304), and a parent with fewer children than
+// splitS makes fetchSiblings read past them (:1646), where Go takes those it has.
+func (rt *RTree) loneFuseError(siblings, parentSlots int) error {
+	switch {
+	case siblings == 0:
+		return &IndexOutOfBoundsError{Index: -1, Length: 0}
+	case rt.config.SplitS == 1:
+		return &ArithmeticError{Message: "/ by zero"}
+	default:
+		return &IndexOutOfBoundsError{Index: parentSlots, Length: parentSlots}
+	}
+}
+
+// redistributable is Java's check that every sibling of a split or fuse gets
+// a slot (RTree.java:1004, :1323).
+func redistributable(slots, siblings int) error {
+	if slots < siblings {
+		return &VerifyError{}
+	}
+	return nil
 }
 
 // nodeIDEqual compares two node IDs.
