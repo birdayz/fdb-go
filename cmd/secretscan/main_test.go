@@ -24,6 +24,9 @@ func newRepo(t *testing.T) string {
 		{"config", "core.quotePath", "true"},
 		{"config", "diff.external", "false"},
 		{"config", "commit.gpgsign", "false"},
+		// A commit or merge detaches `git maintenance run --auto`, which can still be
+		// writing under .git while t.TempDir removes it.
+		{"config", "maintenance.auto", "false"},
 	} {
 		gitT(t, dir, args...)
 	}

@@ -404,7 +404,7 @@ if [ "$CASE" != missing ] && [ "$CASE" != untracked ]; then
   esac
   git add THIRD_PARTY_NOTICES.txt
 fi
-git -c user.name=fixture -c user.email=fixture@example.invalid -c core.hooksPath=/dev/null commit -qm fixture --allow-empty
+git -c user.name=fixture -c user.email=fixture@example.invalid -c core.hooksPath=/dev/null -c maintenance.auto=false commit -qm fixture --allow-empty
 if [ "$CASE" = untracked ] || [ "$CASE" = staged_regeneration ]; then
   printf 'current notice\n' > THIRD_PARTY_NOTICES.txt
 fi
