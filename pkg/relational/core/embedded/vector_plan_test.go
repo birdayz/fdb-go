@@ -652,6 +652,8 @@ func TestVectorPlan_MetricIsTheMaintainers(t *testing.T) {
 	}{
 		{"an empty HNSW metric", `CREATE TABLE docs (doc_id string, embedding vector(3, half), PRIMARY KEY (doc_id))
 			CREATE VECTOR INDEX doc_idx USING HNSW ON docs(embedding)`, recordlayer.IndexOptionVectorMetric, "", "euclidean_distance"},
+		{"an HNSW metric in lower case", `CREATE TABLE docs (doc_id string, embedding vector(3, half), PRIMARY KEY (doc_id))
+			CREATE VECTOR INDEX doc_idx USING HNSW ON docs(embedding) OPTIONS (METRIC = COSINE_METRIC)`, recordlayer.IndexOptionVectorMetric, "cosine", "cosine_distance"},
 		{"an SPFresh metric in lower case", `CREATE TABLE docs (doc_id string, embedding vector(3, half), PRIMARY KEY (doc_id))
 			CREATE VECTOR INDEX doc_idx USING SPFRESH ON docs(embedding) OPTIONS (METRIC = COSINE_METRIC)`, recordlayer.IndexOptionSPFreshMetric, "cosine", "cosine_distance"},
 	} {

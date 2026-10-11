@@ -167,7 +167,7 @@ func (c guardiannConfig) validate() error {
 // vector options (metric, dimensions, stats, RaBitQ) read their canonical
 // name or alias as the HNSW engine does.
 func parseGuardiannConfig(index *recordlayer.Index) (guardiannConfig, error) {
-	name, err := hnswMetric(index, false)
+	name, err := hnswMetric(index)
 	if err != nil {
 		return guardiannConfig{}, err
 	}

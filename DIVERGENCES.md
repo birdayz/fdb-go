@@ -2223,16 +2223,16 @@ byte-level assertions that every narrower integer width collapses to one key,
 that a string key reaches the bytes rather than the type name, and that a bytes
 key keeps tuple type code `0x01` rather than being folded into a string.
 
-### VECTOR index metadata validation: Go validates only windowed indexes, Java has `VectorIndexValidator` (OPEN — RFC-257 WS-D)
+### VECTOR index metadata validation: Go validates a plain index's options but not a plain HNSW index's dimension count or any index's structure, Java has `VectorIndexValidator` (OPEN — RFC-257 WS-D)
 
 This entry replaces the current section of the same subject (cur.md:2194, "(OPEN — owner decision)"), whose "Go:" paragraph is stale.
 
 **Java:** `VectorIndexMaintainerFactory.VectorIndexValidator.validate`
 (`indexes/VectorIndexMaintainerFactory.java:96-111`) runs when the metadata is built.
 It does three things. It runs the base `IndexValidator.validate`. It runs
-`validateStructure()` (`:132`): the root must be a `KeyWithValueExpression`, must
-not contain a grouping expression, and must have at least one column after the split
-point, and the index must not be unique. It then calls `VectorIndexHelper.validate(index)`
+`validateStructure()` (`:132-151`): the root must not contain a grouping expression,
+the index must not be unique, the root must not contain a version column, the root
+must be a `KeyWithValueExpression`, and the root must not fan out. It then calls `VectorIndexHelper.validate(index)`
 (`VectorIndexHelper.java:47`), which delegates to the engine the index's
 `vectorEngine` option selects. Any `IllegalArgumentException` from that call is
 rethrown as `MetaDataException("incorrect index options")`. The dimension count is
@@ -2244,25 +2244,22 @@ maintainer read options permissively: each option went through an "if it parses 
 is in range, use it" guard. So a mistyped `hnswM`, an out-of-range
 `hnswEfConstruction` or an unknown `hnswMetric` fell back to a DEFAULT. The index then
 served queries with a graph whose connectivity, or notion of "nearest", was not the
-declared one. The maintainer now reads options the way Java does (see below). The
-build-time half for a plain index is still open.
+declared one. The maintainer now reads options the way Java does (see below).
 
-**What is closed:** the OPTION half, for windowed vector indexes only. It is the
-delegate call that Java's `SlidingWindowIndexValidator` ends with:
-`validateVectorIndexOptionsAtBuild` (`vector_index_validation.go:19`). `validateIndex`
-calls it after `validateSlidingWindowIndex` for a windowed index
-(`index_validator.go:427-451`).
-
-A plain VECTOR index runs no part of the validator at `Build`, because
-`validateIndexType` (`index_validator.go:104`) has no VECTOR arm.
+**What is closed:** the OPTION half, `validateVectorIndexOptionsAtBuild`
+(`vector_index_validation.go:30`). `validateIndex` calls it after
+`validateSlidingWindowIndex` for a windowed index, as Java's
+`SlidingWindowIndexValidator` ends with the delegate, and after `validateIndexType`
+for a plain VECTOR index (`index_validator.go:453-479`). A binary that does not link
+`vectorindex` still builds a plain index and refuses it at use.
 
 `validateVectorIndexOptionsAtBuild` dispatches on the engine (`VectorEngineOf`):
 - GuardiANN goes through `parseGuardiannConfig`.
 - HNSW gets Java's `VectorIndexHelper.validate`. First, an option set under both its
   `hnsw*` name and its `vector*` alias is refused with "vector index option specified
-  under more than one name" (`hnswAliasConflict`, `hnsw_options.go:83`). Then the
+  under more than one name" (`hnswAliasConflict`, `hnsw_options.go:89`). Then the
   configuration is parsed as `HnswVectorIndexEngine.parseConfig` parses it
-  (`readHNSWOptions`, `hnsw_options.go:120`):
+  (`readHNSWOptions`, `hnsw_options.go:125`):
   - a shared option is read under its alias when its name is absent;
   - parsing follows `Integer::parseInt`, `Double::parseDouble`,
     `Boolean::parseBoolean` and `Metric::valueOf` (`javaParseInt` and
@@ -2276,9 +2273,10 @@ with the failure as its cause (`Unwrap`, a `NumberFormatError` or an
 number of dimensions". Pinned by the JVM specs in
 `conformance/key_validation_conformance_test.go`: "A windowed VECTOR index's options
 parse as Java parses them", "... is validated as Java validates it", "... configuration
-is checked as Java's Config checks it".
+is checked as Java's Config checks it", and, for a plain index, "A plain VECTOR index's
+metric is read as Java reads it".
 
-The maintainer uses the same reader (`parseHNSWConfig`, `hnsw_options.go:253`). So the
+The maintainer uses the same reader (`parseHNSWConfig`, `hnsw_options.go:247`). So the
 configuration Go maintains is the one Java's engine reads, and a configuration Java
 refuses makes the maintainer fail instead of taking a default. The JVM spec "A windowed
 VECTOR index's options are read as Java reads them" compares the whole configuration.
@@ -2309,18 +2307,18 @@ encodes is refused where Java constructs it" (`conformance/vector_index_conforma
 The refusal is an `IllegalArgumentError`, Java's class. Guava's `checkArgument` gives
 no message in Java; Go's message names the range.
 
-For a PLAIN vector index the maintainer still accepts two Go forms that the windowed
-validator refuses (`goForms`, `hnsw_options.go:116-136`): the lower-case metric names
-(`cosine`, `inner_product`, `euclidean`), and 128 dimensions when none are given.
+A PLAIN index's options are read at build as a windowed index's are, so its metric is
+Java's (`Metric::valueOf`, the four constants' names only: the lower-case Go names
+`cosine`, `inner_product` and `euclidean` are refused) and its `Config` bounds are
+refused at build. A plain HNSW index still accepts one form the windowed validator
+refuses (`defaultDims`, `hnsw_options.go:122-141`): 128 dimensions when none are given.
 Java's structure half is not ported.
 
-**What is open, and why it is an owner call rather than a deferral:** applying the same
-validation to PLAIN vector indexes was implemented and MEASURED, and it breaks the
-existing suite, because Go builds vector indexes without `hnswNumDimensions`, which Java
-requires. Closing it means Go starts REJECTING metadata it accepts today, which can make
-an existing Go-authored store fail to open. The structure half is wider still: test
-sites build vector indexes on roots that are not `KeyWithValueExpression`, which Java
-refuses outright.
+**What is open:**
+- The dimension count: Go builds plain HNSW indexes without `hnswNumDimensions`,
+  which Java requires.
+- The structure half, wider still: test sites build vector indexes on roots that are
+  not `KeyWithValueExpression`, which Java refuses outright.
 
 The owner ruled that data written by pre-release Go builds is not supported (RFC-257,
 "Verification and review gates" item 9). That removes the reason this stayed open: the

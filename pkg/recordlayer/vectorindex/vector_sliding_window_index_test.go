@@ -1703,11 +1703,7 @@ var _ = Describe("SlidingWindowIndex validation", func() {
 	})
 
 	It("runs the wrapped vector index's metric validation", func() {
-		// The metric arm is separate from the numeric ones: parseHNSWConfig's
-		// default branch maps ANY unrecognised name to Euclidean, so a typo
-		// silently redefines what "nearest" means for every query the index
-		// serves. Java uses Metric.valueOf, which throws, and knows only the four
-		// constants' names: parseHNSWConfig's lower-case aliases are refused too.
+		// Java's Metric.valueOf knows only the four constants' names.
 		for _, metric := range []string{"COSIGN_METRIC", "cosine", "inner_product", "euclidean"} {
 			idx := newWindowedVectorIndex("sw_bad_metric", 2, gen.RowNumberWindowPredicate_ASC)
 			idx.Options[recordlayer.IndexOptionVectorMetric] = metric

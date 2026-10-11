@@ -7,6 +7,7 @@
 package recordlayer
 
 import (
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -461,6 +462,21 @@ func (b *RecordMetaDataBuilder) validateIndex(idx *Index, recordTypeNames []stri
 		}
 	} else if err := validateIndexType(idx, b.storeRecordVersions); err != nil {
 		return err
+	} else if canonicalIndexType(idx.Type) == IndexTypeVector {
+		// The plain VECTOR validator's option half, as Java runs it at build.
+		factory, err := lookupIndexMaintainerFactory(idx)
+		var notLinked *IndexMaintainerNotLinkedError
+		switch {
+		case errors.As(err, &notLinked):
+			// Plain meta-data stays loadable without vectorindex (e.g. by tools that
+			// never maintain it); using the index refuses instead.
+		case err != nil:
+			return err
+		case factory != nil:
+			if err := factory.ValidateIndexOptions(idx); err != nil {
+				return err
+			}
+		}
 	}
 
 	sk := subspaceKeyIdentity(idx.SubspaceTupleKey())

@@ -21,7 +21,8 @@ func TestVectorDDL_PartitionedIndexShape(t *testing.T) {
 			PRIMARY KEY (zone, doc_id))
 		CREATE VECTOR INDEX doc_euclid USING HNSW ON documents(embedding)
 			PARTITION BY (zone, bookshelf)
-			OPTIONS (METRIC = EUCLIDEAN_METRIC, EF_CONSTRUCTION = 100, CONNECTIVITY = 24, USE_RABITQ = true)`
+			OPTIONS (METRIC = EUCLIDEAN_METRIC, EF_CONSTRUCTION = 100, CONNECTIVITY = 24, M_MAX = 24,
+				USE_RABITQ = true)`
 
 	tmpl, err := buildSchemaTemplateFromDDL(ddl)
 	if err != nil {
@@ -55,6 +56,7 @@ func TestVectorDDL_PartitionedIndexShape(t *testing.T) {
 	assertOpt(t, idx, recordlayer.IndexOptionVectorMetric, "EUCLIDEAN_METRIC")
 	assertOpt(t, idx, recordlayer.IndexOptionHNSWEfConstruction, "100")
 	assertOpt(t, idx, recordlayer.IndexOptionHNSWM, "24")
+	assertOpt(t, idx, recordlayer.IndexOptionHNSWMMax, "24")
 	assertOpt(t, idx, recordlayer.IndexOptionHNSWUseRaBitQ, "true")
 }
 
