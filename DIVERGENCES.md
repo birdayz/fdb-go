@@ -3876,44 +3876,48 @@ what Go writes, and in both a Java reader reads what Go writes:
   stored-record read site. A store with no serializer reads a record that Java's relational layer
   or a compressing Java application wrote, where Java's default serializer would fail it. An
   encrypted record still needs the key: a store whose serializer has no key manager fails it with
-  Java's "this serializer cannot decrypt" (`pkg/recordlayer/transformed_record_serializer.go:676`).
+  Java's "this serializer cannot decrypt" (`pkg/recordlayer/transformed_record_serializer.go:683`).
 - **The ciphers are the AES transformations Java's serializer can run.** Java initializes every
   cipher with a 16-byte `IvParameterSpec` (`TransformedRecordSerializerJCE.java:67-72`,
   `:98-106`), so only an AES mode that takes that IV works. Go implements those modes from NIST
   SP 800-38A, its addendum and FIPS 81 (`pkg/recordlayer/jce_cipher.go`):
   - CBC and PCBC, with NoPadding, PKCS5Padding or ISO10126Padding;
   - CTS (CBC-CS3) and CTR, with NoPadding;
-  - CFB and OFB, with a unit of 8 to 128 bits and any of those paddings;
+  - CFB and OFB, with a unit of 1 to 16 whole bytes and any of those paddings;
   - the `AES_128`, `AES_192` and `AES_256` forms SunJCE registers (CBC, CFB and OFB, with
     NoPadding), each with a key of that size;
-  - the NIST AES OIDs (`2.16.840.1.101.3.4.1` and its CBC, OFB and CFB sub-arcs, with or without
-    `OID.`), alone or with a mode and padding.
+  - the NIST AES OIDs, with or without `OID.`. A CBC, OFB or CFB sub-arc alone names its
+    `AES_n` form. With a mode and padding, the arc `2.16.840.1.101.3.4.1` is AES, and the ECB,
+    CBC, OFB and CFB sub-arcs take the general modes with their sub-arc's key size. The arc
+    alone, and the ECB sub-arcs alone, are ECB, which both engines refuse.
 
-  Names parse as `Cipher.getInstance` parses them, and which it accepts, with which keys and
-  lengths, and the bytes of each mode were measured on JDK 21.0.9's SunJCE and pinned
-  (`jce_cipher_test.go`, "MatchesJDK"). Any other name fails the record with Java's "encryption
-  error" or "decryption error", its cause "unsupported cipher X". Java fails ECB, GCM, KW,
-  ChaCha20 and the 8-byte-block ciphers on that IV too. Go does not implement a cipher a JCE
-  provider other than SunJCE adds. Each mode family is also run across both engines by "reads and
-  writes records under each AES mode Java's serializer runs"
-  (`conformance/transformed_serializer_conformance_test.go`). A key the key manager reports as
-  another algorithm is refused as Java's AES cipher refuses it ("Wrong algorithm: AES or Rijndael
-  required"; measured against the JVM for an HmacSHA256 key).
+  Names parse as `Cipher.getInstance` parses them. Which it accepts, with which keys, in which
+  order of refusal (getInstance, then the key, then the IV), and the bytes of each mode at each
+  length were measured on JDK 21.0.9's SunJCE and pinned (`jce_cipher_test.go`, "MatchesJDK").
+  Any other name fails the record with Java's "encryption error" or "decryption error", its
+  cause "unsupported cipher X". Java fails ECB, GCM, KW, KWP, ChaCha20 and the 8-byte-block
+  ciphers on that IV too. Go does not implement a cipher a JCE provider other than SunJCE adds.
+  Each mode family is also run across both engines by "reads and writes records under each AES
+  mode Java's serializer runs" (`conformance/transformed_serializer_conformance_test.go`).
+  ISO 10126 filler is random in both engines: Java draws it from the cipher's own SecureRandom,
+  Go from the writing store's randomness, so neither draws it from the key manager's random,
+  and a seeded key manager random gives both engines the same IVs. A key the key manager
+  reports as another algorithm is refused as Java's AES cipher refuses it ("Wrong algorithm: AES
+  or Rijndael required"; measured against the JVM for an HmacSHA256 key).
 - **A key store must be PKCS12**, the JDK's default type and what `keytool` writes. A JCEKS file is
   refused as "Key store loading failed", its cause naming the conversion (`keytool -importkeystore
-  -deststoretype PKCS12`, `pkg/recordlayer/keystore_key_manager.go:385`). Reading JCEKS is open:
-  the reference its format would be ported from awaits an owner decision. A JKS file cannot hold a
+  -deststoretype PKCS12`, `pkg/recordlayer/keystore_key_manager.go:385`). A JKS file cannot hold a
   secret key, so neither engine serves a key from one: Go refuses it at load, Java when a key is
   read. Within PKCS12, Go reads the protections the JDK writes (`pbeDecrypt`,
-  `keystore_key_manager.go:500`): PBES2 (PBKDF2 with an HMAC-SHA PRF, AES-128/192/256-CBC), the
+  `keystore_key_manager.go:508`): PBES2 (PBKDF2 with an HMAC-SHA PRF, AES-128/192/256-CBC), the
   JDK 12+ default, and the older pbeWithSHAAnd3-KeyTripleDES-CBC, under a MAC over SHA-1, SHA-224,
   SHA-256, SHA-384 or SHA-512. As in the JDK, a key's password and the store's password must be
-  printable ASCII ("Password is not ASCII", `checkPBEPassword`, `keystore_key_manager.go:229-243`).
+  printable ASCII ("Password is not ASCII", `checkPBEPassword`, `keystore_key_manager.go:242-252`).
   The JDK derives the key-entry and the MAC keys through a `PBEKey`, and was measured refusing to
   store either.
 - **Compressed bytes are Go's deflate, not the JDK's zlib.** Both write a zlib stream (Java's
   `Deflater.finish()` then `FULL_FLUSH`, `TransformedRecordSerializer.java:133-134`; Go's
-  `compress/zlib`, `transformed_record_serializer.go:439-471`). Each engine inflates the other's,
+  `compress/zlib`, `transformed_record_serializer.go:444-480`). Each engine inflates the other's,
   and the prefix and length header are Java's. But `compress/zlib` (over `compress/flate`) is a
   different encoder from the zlib the JDK links, so the compressed bytes differ from Java's for the
   same record and level. Each engine keeps the compression only when its own output is shorter
@@ -3926,7 +3930,7 @@ what Go writes, and in both a Java reader reads what Go writes:
   (`TransformedRecordSerializer.java:184-185`), whose key number is 0. So a sampled write under any
   other key fails ("encryption validation error: decryption failed", or a mismatch if the padding
   happens to hold). Go validates under the record's own key and accepts that write
-  (`transformed_record_serializer.go:298-316`). The stored bytes are the ones Java would have
+  (`transformed_record_serializer.go:306-326`). The stored bytes are the ones Java would have
   written, and Java reads them. `TestTransformedSerializer_WriteValidation`
   (`pkg/recordlayer/transformed_record_serializer_test.go:691`) pins Go's answer and, mutated to
   Java's key number 0, reddens with Java's error. Both validations are otherwise Java's: a

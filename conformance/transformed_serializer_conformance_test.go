@@ -208,20 +208,20 @@ var _ = Describe("RFC-257 TransformedRecordSerializer records are read and writt
 		for i, c := range []struct {
 			cipher  string
 			keySize int
-			refused bool
+			refused string // the root cause Java's write fails with, "" when it writes
 		}{
-			{"AES/CBC/ISO10126Padding", 16, false},
-			{"AES/PCBC/PKCS5Padding", 24, false},
-			{"AES/CTR/NoPadding", 32, false},
-			{"AES/CFB8/NoPadding", 16, false},
-			{"AES/CFB/PKCS5Padding", 16, false},
-			{"AES/OFB/NoPadding", 16, false},
-			{"AES/OFB64/ISO10126Padding", 16, false},
-			{"AES_256/CFB/NoPadding", 32, false},
-			{"AES/CTS/NoPadding", 16, false},
-			{"OID.2.16.840.1.101.3.4.1.43", 32, false},
-			{"AES/GCM/NoPadding", 16, true},
-			{"AES", 16, true},
+			{"AES/CBC/ISO10126Padding", 16, ""},
+			{"AES/PCBC/PKCS5Padding", 24, ""},
+			{"AES/CTR/NoPadding", 32, ""},
+			{"AES/CFB8/NoPadding", 16, ""},
+			{"AES/CFB/PKCS5Padding", 16, ""},
+			{"AES/OFB/NoPadding", 16, ""},
+			{"AES/OFB64/ISO10126Padding", 16, ""},
+			{"AES_256/CFB/NoPadding", 32, ""},
+			{"AES/CTS/NoPadding", 16, ""},
+			{"OID.2.16.840.1.101.3.4.1.43", 32, ""},
+			{"AES/GCM/NoPadding", 16, "AlgorithmParameterSpec not of GCMParameterSpec"},
+			{"AES", 16, "ECB mode cannot use IV"},
 		} {
 			By(c.cipher)
 			key := make([]byte, c.keySize)
@@ -237,9 +237,14 @@ var _ = Describe("RFC-257 TransformedRecordSerializer records are read and writt
 				"tenantName": env.TenantName, "compress": false, "encrypt": true, "keyHex": keyHex, "cipherName": c.cipher,
 			}, nil)
 			goErr := goSave(goID, goSer)
-			if c.refused {
-				Expect(javaErr).To(MatchError(ContainSubstring("encryption error")), "%s: Java refuses it", c.cipher)
-				Expect(goErr).To(MatchError(ContainSubstring("encryption error: unsupported cipher")), "%s: Go refuses it", c.cipher)
+			if c.refused != "" {
+				// The conformance server reports the root cause of Java's
+				// "encryption error": the cipher's init refusing the IV.
+				var je *JavaError
+				Expect(errors.As(javaErr, &je)).To(BeTrue(), "%s: Java refuses it: %v", c.cipher, javaErr)
+				Expect(je.ExceptionClass).To(Equal("InvalidAlgorithmParameterException"), c.cipher)
+				Expect(je.Message).To(ContainSubstring(c.refused), c.cipher)
+				Expect(goErr).To(MatchError(ContainSubstring("encryption error: unsupported cipher "+c.cipher+": "+c.refused)), "%s: Go refuses it", c.cipher)
 				continue
 			}
 			Expect(javaErr).NotTo(HaveOccurred(), "%s: Java writes", c.cipher)

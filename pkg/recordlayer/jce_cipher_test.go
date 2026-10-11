@@ -51,7 +51,8 @@ func TestJCETransformation_KnownAnswers(t *testing.T) {
 		{"AES/CFB128/NoPadding", sp80038aIV, 64, "3b3fd92eb72dad20333449f8e83cfb4ac8a64537a0b3a93fcde3cdad9f1ce58b26751f67a3cbb140b1808cf187a4f4dfc04b05357c5d1c0eeac4c66f9ff7f2e6"},
 		{"AES/OFB/NoPadding", sp80038aIV, 64, "3b3fd92eb72dad20333449f8e83cfb4a7789508d16918f03f53c52dac54ed8259740051e9c5fecf64344f7a82260edcc304c6528f659c77866a510d9c1d6ae5e"},
 		{"AES/CTR/NoPadding", sp80038aCTR, 64, "874d6191b620e3261bef6864990db6ce9806f66b7970fdff8617187bb9fffdff5ae4df3edbd5d35e5b4f09020db03eab1e031dda2fbe03d1792170a0f3009cee"},
-		// The counter is the whole block, wrapping from all ones to zero.
+		// The counter is the whole block, wrapping from all ones to zero
+		// (measured on JDK 21.0.9).
 		{"AES/CTR/NoPadding", strings.Repeat("ff", 16), 32, "e13338e36cb71962e00d020b4cedbd86d3dae15b04bb352fa0f59febfcb4da3e"},
 		// Partial final units.
 		{"AES/CFB/NoPadding", sp80038aIV, 21, "3b3fd92eb72dad20333449f8e83cfb4ac8a64537a0"},
@@ -70,6 +71,7 @@ func TestJCETransformation_KnownAnswers(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", c.name, err)
 		}
+		got = got[len(iv):]
 		if hex.EncodeToString(got) != c.want {
 			t.Errorf("%s over %d bytes: %x, want %s", c.name, c.plainLen, got, c.want)
 		}
@@ -187,7 +189,7 @@ var (
 		}
 		return b
 	}()
-	jdkLengths = [8]int{0, 1, 15, 16, 17, 31, 32, 33}
+	jdkLengths = [9]int{0, 1, 15, 16, 17, 31, 32, 33, 48}
 )
 
 func jdkCrypt(name string, keySize int, decrypt bool, data []byte) ([]byte, error) {
@@ -202,7 +204,11 @@ func jdkCrypt(name string, keySize int, decrypt bool, data []byte) ([]byte, erro
 	if decrypt {
 		return tr.decrypt(block, jdkIV, data)
 	}
-	return tr.encrypt(block, jdkIV, data, rand.Reader)
+	out, err := tr.encrypt(block, jdkIV, data, rand.Reader)
+	if err != nil {
+		return nil, err
+	}
+	return out[len(jdkIV):], nil
 }
 
 // wantJDKOutcome checks Go's result against a table cell: Java's output in hex,
@@ -217,17 +223,35 @@ func wantJDKOutcome(t *testing.T, what string, got []byte, err error, cell strin
 		return
 	}
 	class, message, _ := strings.Cut(failure, ": ")
-	want := map[string]string{
-		"BadPaddingException":                "bad padding",
-		"NoSuchAlgorithmException":           "unsupported cipher",
-		"InvalidAlgorithmParameterException": "unsupported cipher",
-	}[class]
-	if want == "" {
-		want = message // IllegalBlockSizeException, InvalidKeyException: Java's message
+	want := message // IllegalBlockSizeException, InvalidKeyException: Java's message
+	switch class {
+	case "BadPaddingException":
+		want = "bad padding"
+	case "NoSuchAlgorithmException", "InvalidAlgorithmParameterException":
+		want = "unsupported cipher"
 	}
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Errorf("%s: %x, %v; Java throws %s", what, got, err, failure)
 	}
+}
+
+// jdkCodeMatches says Go's err is what a jdkAccepts code says Java threw. N and
+// P are Go's "unsupported cipher", K its key refusals (Java's messages), B its
+// length refusals (Java's messages).
+func jdkCodeMatches(code rune, err error) bool {
+	if code == '+' || err == nil {
+		return code == '+' && err == nil
+	}
+	msg := err.Error()
+	switch code {
+	case 'N', 'P':
+		return strings.Contains(msg, "unsupported cipher")
+	case 'K':
+		return strings.Contains(msg, "The key must be") || strings.Contains(msg, "Invalid key length") || strings.Contains(msg, "Invalid AES key length")
+	case 'B':
+		return strings.Contains(msg, "Input length not multiple of 16 bytes") || strings.Contains(msg, "input is too short!")
+	}
+	return false
 }
 
 func TestJCETransformation_MatchesJDK(t *testing.T) {
@@ -265,194 +289,239 @@ func TestJCETransformation_MatchesJDK(t *testing.T) {
 		}
 	}
 	for _, c := range jdkAccepts {
-		for i, size := range []int{16, 24, 32} {
-			_, err := jdkCrypt(c.name, size, false, jdkData[:17])
-			if (err == nil) != (c.keys[i] == '+') {
-				t.Errorf("%q, %d-byte key, 17 bytes: Go %v, Java %c", c.name, size, err, c.keys[i])
+		for i, code := range strings.ReplaceAll(c.codes, " ", "") {
+			size, n := []int{16, 24, 32}[i%3], []int{17, 32}[i/3]
+			_, err := jdkCrypt(c.name, size, false, jdkData[:n])
+			if !jdkCodeMatches(code, err) {
+				t.Errorf("%q, %d-byte key, %d bytes: Go %v, Java %c", c.name, size, n, err, code)
 			}
 		}
 	}
 }
 
-// jdkEncrypt: Java's cipher text of jdkData's first 0, 1, 15, 16, 17, 31, 32 and 33
-// bytes, or "!" and the exception it threw.
+// jdkEncrypt: Java's cipher text of jdkData's first 0, 1, 15, 16, 17, 31, 32, 33 and
+// 48 bytes, or "!" and the exception it threw.
 var jdkEncrypt = []struct {
 	name    string
 	keySize int
-	out     [8]string
+	out     [9]string
 }{
-	{"AES/CBC/NoPadding", 16, [8]string{"", "!IllegalBlockSizeException: Input length not multiple of 16 bytes", "!IllegalBlockSizeException: Input length not multiple of 16 bytes", "7b1eb12dbae30af43643545968377b67", "!IllegalBlockSizeException: Input length not multiple of 16 bytes", "!IllegalBlockSizeException: Input length not multiple of 16 bytes", "7b1eb12dbae30af43643545968377b6704181653c38c6df5342c827bfc587f4f", "!IllegalBlockSizeException: Input length not multiple of 16 bytes"}},
-	{"AES/CBC/PKCS5Padding", 16, [8]string{"efddc425a6fa0c5f25e444092eb0f503", "05f9261a790e32c5f0a584b29993baf9", "f43efc2197413a9750aa26e7676d734f", "7b1eb12dbae30af43643545968377b67020fb2b791d325698a069999f37145e0", "7b1eb12dbae30af43643545968377b67d7d617162390e0e82abc77d0f387826a", "7b1eb12dbae30af43643545968377b6749327d5b75acad3f79c605f89abf1173", "7b1eb12dbae30af43643545968377b6704181653c38c6df5342c827bfc587f4fe629e27a71c905351c729d95aa79aea1", "7b1eb12dbae30af43643545968377b6704181653c38c6df5342c827bfc587f4f45300995150059d0b4d58c9e061d8fdc"}},
-	{"AES/PCBC/NoPadding", 16, [8]string{"", "!IllegalBlockSizeException: Input length not multiple of 16 bytes", "!IllegalBlockSizeException: Input length not multiple of 16 bytes", "7b1eb12dbae30af43643545968377b67", "!IllegalBlockSizeException: Input length not multiple of 16 bytes", "!IllegalBlockSizeException: Input length not multiple of 16 bytes", "7b1eb12dbae30af43643545968377b67c1182fc40bbdcf93abcc9885833687c0", "!IllegalBlockSizeException: Input length not multiple of 16 bytes"}},
-	{"AES/PCBC/PKCS5Padding", 24, [8]string{"70f89353d0ccb40b5e0e95492b35dbdc", "6cc61a63cdf93b97c58766acbae4c24a", "97139df1d9eecbf4bec9a6cefbf1c0c1", "d2e80d30356748290bd16c1cb534d46984e3f1b106d84e0f40291cf68afca3d2", "d2e80d30356748290bd16c1cb534d4691987297238a93bfc49842cd6b6d100f4", "d2e80d30356748290bd16c1cb534d469ca813ca89f9773b2b42307886d96f85d", "d2e80d30356748290bd16c1cb534d4699dd5fc50f8dcd39c0bf5d7992c90ab7c93c1c52663741f66adc870a136679fa5", "d2e80d30356748290bd16c1cb534d4699dd5fc50f8dcd39c0bf5d7992c90ab7c536b26cea342a005d8b988d1266da263"}},
-	{"AES/CTS/NoPadding", 16, [8]string{"", "!IllegalBlockSizeException: input is too short!", "!IllegalBlockSizeException: input is too short!", "7b1eb12dbae30af43643545968377b67", "9da05de178ba95cf9ae0fd953de546ef7b", "fe35fdd57c387eba2daf99e14e9a63677b1eb12dbae30af43643545968377b", "04181653c38c6df5342c827bfc587f4f7b1eb12dbae30af43643545968377b67", "7b1eb12dbae30af43643545968377b678e8e5ce61c54a0a0cf91a4fe0ab4a89604"}},
-	{"AES/CTS/NoPadding", 32, [8]string{"", "!IllegalBlockSizeException: input is too short!", "!IllegalBlockSizeException: input is too short!", "ce9d699cf4634613504b7761c0ed0642", "6b5f4c3c525e7e078440c9d27b950317ce", "3299f4debe9c7f99896de24bad8e3c2fce9d699cf4634613504b7761c0ed06", "4701964905cd00dc2af8ee4677b61892ce9d699cf4634613504b7761c0ed0642", "ce9d699cf4634613504b7761c0ed064228d14f2ab3ca96b3580cd9c965e751b247"}},
-	{"AES/CTR/NoPadding", 16, [8]string{"", "2b", "2b99ace82b88b2e63747817eab4288", "2b99ace82b88b2e63747817eab42885c", "2b99ace82b88b2e63747817eab42885c1c", "2b99ace82b88b2e63747817eab42885c1c26016f9a4a591aed1a5c1e5e0560", "2b99ace82b88b2e63747817eab42885c1c26016f9a4a591aed1a5c1e5e0560d9", "2b99ace82b88b2e63747817eab42885c1c26016f9a4a591aed1a5c1e5e0560d910"}},
-	{"AES/CFB/NoPadding", 16, [8]string{"", "2b", "2b99ace82b88b2e63747817eab4288", "2b99ace82b88b2e63747817eab42885c", "2b99ace82b88b2e63747817eab42885c50", "2b99ace82b88b2e63747817eab42885c507f05ad9df74f75aad363cd367739", "2b99ace82b88b2e63747817eab42885c507f05ad9df74f75aad363cd36773985", "2b99ace82b88b2e63747817eab42885c507f05ad9df74f75aad363cd367739850f"}},
-	{"AES/CFB/PKCS5Padding", 16, [8]string{"30b9e982a45c4bf8140feccc7cbe897a", "2ba6f69dbb4354e70b10f3d363a19665", "2b99ace82b88b2e63747817eab42886b", "2b99ace82b88b2e63747817eab42885c1befb07762f3663b396bbe2f315b4813", "2b99ace82b88b2e63747817eab42885c50f0af687dec79242674a1302e44570c", "2b99ace82b88b2e63747817eab42885c507f05ad9df74f75aad363cd36773902", "2b99ace82b88b2e63747817eab42885c507f05ad9df74f75aad363cd36773985b4480c5228dab8d34b17e89dc97749e6", "2b99ace82b88b2e63747817eab42885c507f05ad9df74f75aad363cd367739850f57134d37c5a7cc5408f782d66856f9"}},
-	{"AES/CFB8/NoPadding", 16, [8]string{"", "2b", "2bdd3908f09ef99359ff21ffccdc46", "2bdd3908f09ef99359ff21ffccdc46e6", "2bdd3908f09ef99359ff21ffccdc46e6e5", "2bdd3908f09ef99359ff21ffccdc46e6e5bb57f8a041e12a817b704be52b63", "2bdd3908f09ef99359ff21ffccdc46e6e5bb57f8a041e12a817b704be52b6374", "2bdd3908f09ef99359ff21ffccdc46e6e5bb57f8a041e12a817b704be52b637420"}},
-	{"AES/CFB8/PKCS5Padding", 16, [8]string{"30b8d55649f3636b7c63c7eba65988fe", "2be2ce452dda17af56f04886881005df", "2bdd3908f09ef99359ff21ffccdc46d1", "2bdd3908f09ef99359ff21ffccdc46e6ae7405c74aef94799927baddf5627582", "2bdd3908f09ef99359ff21ffccdc46e6e534feba78e278ac609bea4b45319fec", "2bdd3908f09ef99359ff21ffccdc46e6e5bb57f8a041e12a817b704be52b63f3", "2bdd3908f09ef99359ff21ffccdc46e6e5bb57f8a041e12a817b704be52b63749b66ffb6ca71b37c9e2e23e819af995b", "2bdd3908f09ef99359ff21ffccdc46e6e5bb57f8a041e12a817b704be52b637420e70369a2b848edb92d132051fd1690"}},
-	{"AES/CFB24/NoPadding", 24, [8]string{"", "21", "2197743c380f949f23b871aebb1a17", "2197743c380f949f23b871aebb1a17e0", "2197743c380f949f23b871aebb1a17e0f1", "2197743c380f949f23b871aebb1a17e0f17ba8253c08fb37faa00145216351", "2197743c380f949f23b871aebb1a17e0f17ba8253c08fb37faa001452163516a", "2197743c380f949f23b871aebb1a17e0f17ba8253c08fb37faa001452163516a78"}},
-	{"AES/CFB64/NoPadding", 16, [8]string{"", "2b", "2b99ace82b88b2e61b31feccc12ca4", "2b99ace82b88b2e61b31feccc12ca4b0", "2b99ace82b88b2e61b31feccc12ca4b0a9", "2b99ace82b88b2e61b31feccc12ca4b0a92e4966333b214f2c380e8d8bc5cd", "2b99ace82b88b2e61b31feccc12ca4b0a92e4966333b214f2c380e8d8bc5cded", "2b99ace82b88b2e61b31feccc12ca4b0a92e4966333b214f2c380e8d8bc5cded3d"}},
-	{"AES/CFB120/PKCS5Padding", 16, [8]string{"30b9e982a45c4bf8140feccc7cbe8915", "2ba6f69dbb4354e70b10f3d363a19614", "2b99ace82b88b2e63747817eab4288ca", "2b99ace82b88b2e63747817eab4288fd17fa9c90a5b3619718bdcf47f6460a68", "2b99ace82b88b2e63747817eab4288fd5ce5838fbaac7e8807a2d058e959a5b8", "2b99ace82b88b2e63747817eab4288fd5c6a294a5ab748d98b0512a5f16aa2d3", "2b99ace82b88b2e63747817eab4288fd5c6a294a5ab748d98b0512a5f16aa254012e44eb24db51fd9829b1b1020b78f0", "2b99ace82b88b2e63747817eab4288fd5c6a294a5ab748d98b0512a5f16aa254ba315bf43bc44ee28736aeae1da4263c"}},
-	{"AES/OFB/NoPadding", 16, [8]string{"", "2b", "2b99ace82b88b2e63747817eab4288", "2b99ace82b88b2e63747817eab42885c", "2b99ace82b88b2e63747817eab42885cbf", "2b99ace82b88b2e63747817eab42885cbf8e88a5a876999b07ace679c20811", "2b99ace82b88b2e63747817eab42885cbf8e88a5a876999b07ace679c20811cd", "2b99ace82b88b2e63747817eab42885cbf8e88a5a876999b07ace679c20811cd20"}},
-	{"AES/OFB/PKCS5Padding", 32, [8]string{"62a1f3285c635f3b63bad4da9a5295b1", "79beec37437c40247ca5cbc5854d8aae", "7981b642d3b7a62540f2b9684dae94a0", "7981b642d3b7a62540f2b9684dae949718285ac7dcee174f5a49c2dd199704e7", "7981b642d3b7a62540f2b9684dae9497533745d8c3f108504556ddc206881bf8", "7981b642d3b7a62540f2b9684dae949753b8ef1d23ea3e01c9f11f3f1ebb75f6", "7981b642d3b7a62540f2b9684dae949753b8ef1d23ea3e01c9f11f3f1ebb757119c58bb244c15b9ba327dbb403c75c1b", "7981b642d3b7a62540f2b9684dae949753b8ef1d23ea3e01c9f11f3f1ebb7571a2da94ad5bde4484bc38c4ab1cd84304"}},
-	{"AES/OFB8/NoPadding", 16, [8]string{"", "2b", "2bb55a44bc3fdf4be56b2e2dfc01df", "2bb55a44bc3fdf4be56b2e2dfc01dffa", "2bb55a44bc3fdf4be56b2e2dfc01dffaa3", "2bb55a44bc3fdf4be56b2e2dfc01dffaa3dd163d09988de9a818e4b25b493b", "2bb55a44bc3fdf4be56b2e2dfc01dffaa3dd163d09988de9a818e4b25b493b85", "2bb55a44bc3fdf4be56b2e2dfc01dffaa3dd163d09988de9a818e4b25b493b8532"}},
-	{"AES/OFB64/NoPadding", 16, [8]string{"", "2b", "2b99ace82b88b2e684b71ed8428034", "2b99ace82b88b2e684b71ed842803455", "2b99ace82b88b2e684b71ed84280345595", "2b99ace82b88b2e684b71ed842803455953fe0fc6dc476cb0312e1040a4a8e", "2b99ace82b88b2e684b71ed842803455953fe0fc6dc476cb0312e1040a4a8ec1", "2b99ace82b88b2e684b71ed842803455953fe0fc6dc476cb0312e1040a4a8ec169"}},
-	{"AES/OFB120/NoPadding", 16, [8]string{"", "2b", "2b99ace82b88b2e63747817eab4288", "2b99ace82b88b2e63747817eab4288e1", "2b99ace82b88b2e63747817eab4288e197", "2b99ace82b88b2e63747817eab4288e197afa1ae32756c249f5f4e350b47bd", "2b99ace82b88b2e63747817eab4288e197afa1ae32756c249f5f4e350b47bde5", "2b99ace82b88b2e63747817eab4288e197afa1ae32756c249f5f4e350b47bde5f3"}},
-	{"AES_192/CFB/NoPadding", 24, [8]string{"", "21", "2197745a509c6cf521ced2d29d67a6", "2197745a509c6cf521ced2d29d67a6ae", "2197745a509c6cf521ced2d29d67a6ae3a", "2197745a509c6cf521ced2d29d67a6ae3a356328cabec929b33f41f555bd1f", "2197745a509c6cf521ced2d29d67a6ae3a356328cabec929b33f41f555bd1fbe", "2197745a509c6cf521ced2d29d67a6ae3a356328cabec929b33f41f555bd1fbe38"}},
-	{"AES_256/OFB/NoPadding", 32, [8]string{"", "79", "7981b642d3b7a62540f2b9684dae94", "7981b642d3b7a62540f2b9684dae9497", "7981b642d3b7a62540f2b9684dae949753", "7981b642d3b7a62540f2b9684dae949753b8ef1d23ea3e01c9f11f3f1ebb75", "7981b642d3b7a62540f2b9684dae949753b8ef1d23ea3e01c9f11f3f1ebb7571", "7981b642d3b7a62540f2b9684dae949753b8ef1d23ea3e01c9f11f3f1ebb7571a2"}},
-	{"2.16.840.1.101.3.4.1.42", 32, [8]string{"", "!IllegalBlockSizeException: Input length not multiple of 16 bytes", "!IllegalBlockSizeException: Input length not multiple of 16 bytes", "ce9d699cf4634613504b7761c0ed0642", "!IllegalBlockSizeException: Input length not multiple of 16 bytes", "!IllegalBlockSizeException: Input length not multiple of 16 bytes", "ce9d699cf4634613504b7761c0ed06424701964905cd00dc2af8ee4677b61892", "!IllegalBlockSizeException: Input length not multiple of 16 bytes"}},
-	{"2.16.840.1.101.3.4.1.2/CTR/NoPadding", 16, [8]string{"", "2b", "2b99ace82b88b2e63747817eab4288", "2b99ace82b88b2e63747817eab42885c", "2b99ace82b88b2e63747817eab42885c1c", "2b99ace82b88b2e63747817eab42885c1c26016f9a4a591aed1a5c1e5e0560", "2b99ace82b88b2e63747817eab42885c1c26016f9a4a591aed1a5c1e5e0560d9", "2b99ace82b88b2e63747817eab42885c1c26016f9a4a591aed1a5c1e5e0560d910"}},
-	{"2.16.840.1.101.3.4.1.23/ECB/PKCS5Padding", 24, [8]string{"3ab73130df4895eb0286bf604a9ba788", "21a82e2fc0578af41d99a07f5584b897", "2197745a509c6cf521ced2d29d67a699", "2197745a509c6cf521ced2d29d67a6ae9c0b4a6ecaad5a25fbbffd07decca386", "2197745a509c6cf521ced2d29d67a6aed7145571d5b2453ae4a0e218c1d3bc99", "2197745a509c6cf521ced2d29d67a6aed79bffb435a9736b680720e5d9e0d297", "2197745a509c6cf521ced2d29d67a6aed79bffb435a9736b680720e5d9e0d210e6612c8170ca4a77c6a2abc98fe1aa0b", "2197745a509c6cf521ced2d29d67a6aed79bffb435a9736b680720e5d9e0d2105d7e339e6fd55568d9bdb4d690feb514"}},
-	{"2.16.840.1.101.3.4.1.44/CTS/NoPadding", 32, [8]string{"", "!IllegalBlockSizeException: input is too short!", "!IllegalBlockSizeException: input is too short!", "ce9d699cf4634613504b7761c0ed0642", "6b5f4c3c525e7e078440c9d27b950317ce", "3299f4debe9c7f99896de24bad8e3c2fce9d699cf4634613504b7761c0ed06", "4701964905cd00dc2af8ee4677b61892ce9d699cf4634613504b7761c0ed0642", "ce9d699cf4634613504b7761c0ed064228d14f2ab3ca96b3580cd9c965e751b247"}},
+	{"AES/CBC/NoPadding", 16, [9]string{"", "!IllegalBlockSizeException: Input length not multiple of 16 bytes", "!IllegalBlockSizeException: Input length not multiple of 16 bytes", "7b1eb12dbae30af43643545968377b67", "!IllegalBlockSizeException: Input length not multiple of 16 bytes", "!IllegalBlockSizeException: Input length not multiple of 16 bytes", "7b1eb12dbae30af43643545968377b6704181653c38c6df5342c827bfc587f4f", "!IllegalBlockSizeException: Input length not multiple of 16 bytes", "7b1eb12dbae30af43643545968377b6704181653c38c6df5342c827bfc587f4f0274258d82ec4273c9739ccc177fc89b"}},
+	{"AES/CBC/PKCS5Padding", 16, [9]string{"efddc425a6fa0c5f25e444092eb0f503", "05f9261a790e32c5f0a584b29993baf9", "f43efc2197413a9750aa26e7676d734f", "7b1eb12dbae30af43643545968377b67020fb2b791d325698a069999f37145e0", "7b1eb12dbae30af43643545968377b67d7d617162390e0e82abc77d0f387826a", "7b1eb12dbae30af43643545968377b6749327d5b75acad3f79c605f89abf1173", "7b1eb12dbae30af43643545968377b6704181653c38c6df5342c827bfc587f4fe629e27a71c905351c729d95aa79aea1", "7b1eb12dbae30af43643545968377b6704181653c38c6df5342c827bfc587f4f45300995150059d0b4d58c9e061d8fdc", "7b1eb12dbae30af43643545968377b6704181653c38c6df5342c827bfc587f4f0274258d82ec4273c9739ccc177fc89b3ff15925b994a6bfb4ad69219eecc00e"}},
+	{"AES/PCBC/NoPadding", 16, [9]string{"", "!IllegalBlockSizeException: Input length not multiple of 16 bytes", "!IllegalBlockSizeException: Input length not multiple of 16 bytes", "7b1eb12dbae30af43643545968377b67", "!IllegalBlockSizeException: Input length not multiple of 16 bytes", "!IllegalBlockSizeException: Input length not multiple of 16 bytes", "7b1eb12dbae30af43643545968377b67c1182fc40bbdcf93abcc9885833687c0", "!IllegalBlockSizeException: Input length not multiple of 16 bytes", "7b1eb12dbae30af43643545968377b67c1182fc40bbdcf93abcc9885833687c0785017372dffb259814bf70a18c167a2"}},
+	{"AES/PCBC/PKCS5Padding", 24, [9]string{"70f89353d0ccb40b5e0e95492b35dbdc", "6cc61a63cdf93b97c58766acbae4c24a", "97139df1d9eecbf4bec9a6cefbf1c0c1", "d2e80d30356748290bd16c1cb534d46984e3f1b106d84e0f40291cf68afca3d2", "d2e80d30356748290bd16c1cb534d4691987297238a93bfc49842cd6b6d100f4", "d2e80d30356748290bd16c1cb534d469ca813ca89f9773b2b42307886d96f85d", "d2e80d30356748290bd16c1cb534d4699dd5fc50f8dcd39c0bf5d7992c90ab7c93c1c52663741f66adc870a136679fa5", "d2e80d30356748290bd16c1cb534d4699dd5fc50f8dcd39c0bf5d7992c90ab7c536b26cea342a005d8b988d1266da263", "d2e80d30356748290bd16c1cb534d4699dd5fc50f8dcd39c0bf5d7992c90ab7cfb8daab084d0e6c053c3c4dd0eb0824c23a4760367250944783feeccf5a2c0a0"}},
+	{"AES/CTS/NoPadding", 16, [9]string{"", "!IllegalBlockSizeException: input is too short!", "!IllegalBlockSizeException: input is too short!", "7b1eb12dbae30af43643545968377b67", "9da05de178ba95cf9ae0fd953de546ef7b", "fe35fdd57c387eba2daf99e14e9a63677b1eb12dbae30af43643545968377b", "04181653c38c6df5342c827bfc587f4f7b1eb12dbae30af43643545968377b67", "7b1eb12dbae30af43643545968377b678e8e5ce61c54a0a0cf91a4fe0ab4a89604", "7b1eb12dbae30af43643545968377b670274258d82ec4273c9739ccc177fc89b04181653c38c6df5342c827bfc587f4f"}},
+	{"AES/CTS/NoPadding", 32, [9]string{"", "!IllegalBlockSizeException: input is too short!", "!IllegalBlockSizeException: input is too short!", "ce9d699cf4634613504b7761c0ed0642", "6b5f4c3c525e7e078440c9d27b950317ce", "3299f4debe9c7f99896de24bad8e3c2fce9d699cf4634613504b7761c0ed06", "4701964905cd00dc2af8ee4677b61892ce9d699cf4634613504b7761c0ed0642", "ce9d699cf4634613504b7761c0ed064228d14f2ab3ca96b3580cd9c965e751b247", "ce9d699cf4634613504b7761c0ed0642a18feb5118ee2ac2494e44c487621c064701964905cd00dc2af8ee4677b61892"}},
+	{"AES/CTR/NoPadding", 16, [9]string{"", "2b", "2b99ace82b88b2e63747817eab4288", "2b99ace82b88b2e63747817eab42885c", "2b99ace82b88b2e63747817eab42885c1c", "2b99ace82b88b2e63747817eab42885c1c26016f9a4a591aed1a5c1e5e0560", "2b99ace82b88b2e63747817eab42885c1c26016f9a4a591aed1a5c1e5e0560d9", "2b99ace82b88b2e63747817eab42885c1c26016f9a4a591aed1a5c1e5e0560d910", "2b99ace82b88b2e63747817eab42885c1c26016f9a4a591aed1a5c1e5e0560d9100f0da6d1a7e014023ba81d1700c543"}},
+	{"AES/CFB/NoPadding", 16, [9]string{"", "2b", "2b99ace82b88b2e63747817eab4288", "2b99ace82b88b2e63747817eab42885c", "2b99ace82b88b2e63747817eab42885c50", "2b99ace82b88b2e63747817eab42885c507f05ad9df74f75aad363cd367739", "2b99ace82b88b2e63747817eab42885c507f05ad9df74f75aad363cd36773985", "2b99ace82b88b2e63747817eab42885c507f05ad9df74f75aad363cd367739850f", "2b99ace82b88b2e63747817eab42885c507f05ad9df74f75aad363cd367739850f88e95807ae216d88ffe5cfbeebe820"}},
+	{"AES/CFB/PKCS5Padding", 16, [9]string{"30b9e982a45c4bf8140feccc7cbe897a", "2ba6f69dbb4354e70b10f3d363a19665", "2b99ace82b88b2e63747817eab42886b", "2b99ace82b88b2e63747817eab42885c1befb07762f3663b396bbe2f315b4813", "2b99ace82b88b2e63747817eab42885c50f0af687dec79242674a1302e44570c", "2b99ace82b88b2e63747817eab42885c507f05ad9df74f75aad363cd36773902", "2b99ace82b88b2e63747817eab42885c507f05ad9df74f75aad363cd36773985b4480c5228dab8d34b17e89dc97749e6", "2b99ace82b88b2e63747817eab42885c507f05ad9df74f75aad363cd367739850f57134d37c5a7cc5408f782d66856f9", "2b99ace82b88b2e63747817eab42885c507f05ad9df74f75aad363cd367739850f88e95807ae216d88ffe5cfbeebe82070114e494cf269c43cf09c193db1377d"}},
+	{"AES/CFB8/NoPadding", 16, [9]string{"", "2b", "2bdd3908f09ef99359ff21ffccdc46", "2bdd3908f09ef99359ff21ffccdc46e6", "2bdd3908f09ef99359ff21ffccdc46e6e5", "2bdd3908f09ef99359ff21ffccdc46e6e5bb57f8a041e12a817b704be52b63", "2bdd3908f09ef99359ff21ffccdc46e6e5bb57f8a041e12a817b704be52b6374", "2bdd3908f09ef99359ff21ffccdc46e6e5bb57f8a041e12a817b704be52b637420", "2bdd3908f09ef99359ff21ffccdc46e6e5bb57f8a041e12a817b704be52b63742038c793d8b5e3c7fde949af4affae39"}},
+	{"AES/CFB8/PKCS5Padding", 16, [9]string{"30b8d55649f3636b7c63c7eba65988fe", "2be2ce452dda17af56f04886881005df", "2bdd3908f09ef99359ff21ffccdc46d1", "2bdd3908f09ef99359ff21ffccdc46e6ae7405c74aef94799927baddf5627582", "2bdd3908f09ef99359ff21ffccdc46e6e534feba78e278ac609bea4b45319fec", "2bdd3908f09ef99359ff21ffccdc46e6e5bb57f8a041e12a817b704be52b63f3", "2bdd3908f09ef99359ff21ffccdc46e6e5bb57f8a041e12a817b704be52b63749b66ffb6ca71b37c9e2e23e819af995b", "2bdd3908f09ef99359ff21ffccdc46e6e5bb57f8a041e12a817b704be52b637420e70369a2b848edb92d132051fd1690", "2bdd3908f09ef99359ff21ffccdc46e6e5bb57f8a041e12a817b704be52b63742038c793d8b5e3c7fde949af4affae39b06808c122cb98d1cb3b15a4a0d67fea"}},
+	{"AES/CFB24/NoPadding", 24, [9]string{"", "21", "2197743c380f949f23b871aebb1a17", "2197743c380f949f23b871aebb1a17e0", "2197743c380f949f23b871aebb1a17e0f1", "2197743c380f949f23b871aebb1a17e0f17ba8253c08fb37faa00145216351", "2197743c380f949f23b871aebb1a17e0f17ba8253c08fb37faa001452163516a", "2197743c380f949f23b871aebb1a17e0f17ba8253c08fb37faa001452163516a78", "2197743c380f949f23b871aebb1a17e0f17ba8253c08fb37faa001452163516a78b887e8fc38918cd5b7a8e787160a35"}},
+	{"AES/CFB64/NoPadding", 16, [9]string{"", "2b", "2b99ace82b88b2e61b31feccc12ca4", "2b99ace82b88b2e61b31feccc12ca4b0", "2b99ace82b88b2e61b31feccc12ca4b0a9", "2b99ace82b88b2e61b31feccc12ca4b0a92e4966333b214f2c380e8d8bc5cd", "2b99ace82b88b2e61b31feccc12ca4b0a92e4966333b214f2c380e8d8bc5cded", "2b99ace82b88b2e61b31feccc12ca4b0a92e4966333b214f2c380e8d8bc5cded3d", "2b99ace82b88b2e61b31feccc12ca4b0a92e4966333b214f2c380e8d8bc5cded3d3a7e3b39856984bc6798d9bf4250ed"}},
+	{"AES/CFB120/PKCS5Padding", 16, [9]string{"30b9e982a45c4bf8140feccc7cbe8915", "2ba6f69dbb4354e70b10f3d363a19614", "2b99ace82b88b2e63747817eab4288ca", "2b99ace82b88b2e63747817eab4288fd17fa9c90a5b3619718bdcf47f6460a68", "2b99ace82b88b2e63747817eab4288fd5ce5838fbaac7e8807a2d058e959a5b8", "2b99ace82b88b2e63747817eab4288fd5c6a294a5ab748d98b0512a5f16aa2d3", "2b99ace82b88b2e63747817eab4288fd5c6a294a5ab748d98b0512a5f16aa254012e44eb24db51fd9829b1b1020b78f0", "2b99ace82b88b2e63747817eab4288fd5c6a294a5ab748d98b0512a5f16aa254ba315bf43bc44ee28736aeae1da4263c", "2b99ace82b88b2e63747817eab4288fd5c6a294a5ab748d98b0512a5f16aa254baeea1e10bafc8435bc1bce3751bc960eb35f7c1200d3bb4a6f27fc51b965afd"}},
+	{"AES/OFB/NoPadding", 16, [9]string{"", "2b", "2b99ace82b88b2e63747817eab4288", "2b99ace82b88b2e63747817eab42885c", "2b99ace82b88b2e63747817eab42885cbf", "2b99ace82b88b2e63747817eab42885cbf8e88a5a876999b07ace679c20811", "2b99ace82b88b2e63747817eab42885cbf8e88a5a876999b07ace679c20811cd", "2b99ace82b88b2e63747817eab42885cbf8e88a5a876999b07ace679c20811cd20", "2b99ace82b88b2e63747817eab42885cbf8e88a5a876999b07ace679c20811cd204cea0808080e536373280c27cd3e4b"}},
+	{"AES/OFB/PKCS5Padding", 32, [9]string{"62a1f3285c635f3b63bad4da9a5295b1", "79beec37437c40247ca5cbc5854d8aae", "7981b642d3b7a62540f2b9684dae94a0", "7981b642d3b7a62540f2b9684dae949718285ac7dcee174f5a49c2dd199704e7", "7981b642d3b7a62540f2b9684dae9497533745d8c3f108504556ddc206881bf8", "7981b642d3b7a62540f2b9684dae949753b8ef1d23ea3e01c9f11f3f1ebb75f6", "7981b642d3b7a62540f2b9684dae949753b8ef1d23ea3e01c9f11f3f1ebb757119c58bb244c15b9ba327dbb403c75c1b", "7981b642d3b7a62540f2b9684dae949753b8ef1d23ea3e01c9f11f3f1ebb7571a2da94ad5bde4484bc38c4ab1cd84304", "7981b642d3b7a62540f2b9684dae949753b8ef1d23ea3e01c9f11f3f1ebb7571a2056eb86bb5c22560cfd6e6745bfddd7e7b9883d56a7b678b9ff3912f87523d"}},
+	{"AES/OFB8/NoPadding", 16, [9]string{"", "2b", "2bb55a44bc3fdf4be56b2e2dfc01df", "2bb55a44bc3fdf4be56b2e2dfc01dffa", "2bb55a44bc3fdf4be56b2e2dfc01dffaa3", "2bb55a44bc3fdf4be56b2e2dfc01dffaa3dd163d09988de9a818e4b25b493b", "2bb55a44bc3fdf4be56b2e2dfc01dffaa3dd163d09988de9a818e4b25b493b85", "2bb55a44bc3fdf4be56b2e2dfc01dffaa3dd163d09988de9a818e4b25b493b8532", "2bb55a44bc3fdf4be56b2e2dfc01dffaa3dd163d09988de9a818e4b25b493b8532cc880741f22c400c4922c0fa406ee3"}},
+	{"AES/OFB64/NoPadding", 16, [9]string{"", "2b", "2b99ace82b88b2e684b71ed8428034", "2b99ace82b88b2e684b71ed842803455", "2b99ace82b88b2e684b71ed84280345595", "2b99ace82b88b2e684b71ed842803455953fe0fc6dc476cb0312e1040a4a8e", "2b99ace82b88b2e684b71ed842803455953fe0fc6dc476cb0312e1040a4a8ec1", "2b99ace82b88b2e684b71ed842803455953fe0fc6dc476cb0312e1040a4a8ec169", "2b99ace82b88b2e684b71ed842803455953fe0fc6dc476cb0312e1040a4a8ec169ae755152c0757c63a9598331bd5831"}},
+	{"AES/OFB120/NoPadding", 16, [9]string{"", "2b", "2b99ace82b88b2e63747817eab4288", "2b99ace82b88b2e63747817eab4288e1", "2b99ace82b88b2e63747817eab4288e197", "2b99ace82b88b2e63747817eab4288e197afa1ae32756c249f5f4e350b47bd", "2b99ace82b88b2e63747817eab4288e197afa1ae32756c249f5f4e350b47bde5", "2b99ace82b88b2e63747817eab4288e197afa1ae32756c249f5f4e350b47bde5f3", "2b99ace82b88b2e63747817eab4288e197afa1ae32756c249f5f4e350b47bde5f3181bafbb5b60a48b2a50fc410c3994"}},
+	{"AES_192/CFB/NoPadding", 24, [9]string{"", "21", "2197745a509c6cf521ced2d29d67a6", "2197745a509c6cf521ced2d29d67a6ae", "2197745a509c6cf521ced2d29d67a6ae3a", "2197745a509c6cf521ced2d29d67a6ae3a356328cabec929b33f41f555bd1f", "2197745a509c6cf521ced2d29d67a6ae3a356328cabec929b33f41f555bd1fbe", "2197745a509c6cf521ced2d29d67a6ae3a356328cabec929b33f41f555bd1fbe38", "2197745a509c6cf521ced2d29d67a6ae3a356328cabec929b33f41f555bd1fbe38b43e82ec6a4856448ece0ed25337ab"}},
+	{"AES_256/OFB/NoPadding", 32, [9]string{"", "79", "7981b642d3b7a62540f2b9684dae94", "7981b642d3b7a62540f2b9684dae9497", "7981b642d3b7a62540f2b9684dae949753", "7981b642d3b7a62540f2b9684dae949753b8ef1d23ea3e01c9f11f3f1ebb75", "7981b642d3b7a62540f2b9684dae949753b8ef1d23ea3e01c9f11f3f1ebb7571", "7981b642d3b7a62540f2b9684dae949753b8ef1d23ea3e01c9f11f3f1ebb7571a2", "7981b642d3b7a62540f2b9684dae949753b8ef1d23ea3e01c9f11f3f1ebb7571a2056eb86bb5c22560cfd6e6745bfddd"}},
+	{"2.16.840.1.101.3.4.1.42", 32, [9]string{"", "!IllegalBlockSizeException: Input length not multiple of 16 bytes", "!IllegalBlockSizeException: Input length not multiple of 16 bytes", "ce9d699cf4634613504b7761c0ed0642", "!IllegalBlockSizeException: Input length not multiple of 16 bytes", "!IllegalBlockSizeException: Input length not multiple of 16 bytes", "ce9d699cf4634613504b7761c0ed06424701964905cd00dc2af8ee4677b61892", "!IllegalBlockSizeException: Input length not multiple of 16 bytes", "ce9d699cf4634613504b7761c0ed06424701964905cd00dc2af8ee4677b61892a18feb5118ee2ac2494e44c487621c06"}},
+	{"2.16.840.1.101.3.4.1.2/CTR/NoPadding", 16, [9]string{"", "2b", "2b99ace82b88b2e63747817eab4288", "2b99ace82b88b2e63747817eab42885c", "2b99ace82b88b2e63747817eab42885c1c", "2b99ace82b88b2e63747817eab42885c1c26016f9a4a591aed1a5c1e5e0560", "2b99ace82b88b2e63747817eab42885c1c26016f9a4a591aed1a5c1e5e0560d9", "2b99ace82b88b2e63747817eab42885c1c26016f9a4a591aed1a5c1e5e0560d910", "2b99ace82b88b2e63747817eab42885c1c26016f9a4a591aed1a5c1e5e0560d9100f0da6d1a7e014023ba81d1700c543"}},
+	{"2.16.840.1.101.3.4.1.23/ECB/PKCS5Padding", 24, [9]string{"3ab73130df4895eb0286bf604a9ba788", "21a82e2fc0578af41d99a07f5584b897", "2197745a509c6cf521ced2d29d67a699", "2197745a509c6cf521ced2d29d67a6ae9c0b4a6ecaad5a25fbbffd07decca386", "2197745a509c6cf521ced2d29d67a6aed7145571d5b2453ae4a0e218c1d3bc99", "2197745a509c6cf521ced2d29d67a6aed79bffb435a9736b680720e5d9e0d297", "2197745a509c6cf521ced2d29d67a6aed79bffb435a9736b680720e5d9e0d210e6612c8170ca4a77c6a2abc98fe1aa0b", "2197745a509c6cf521ced2d29d67a6aed79bffb435a9736b680720e5d9e0d2105d7e339e6fd55568d9bdb4d690feb514", "2197745a509c6cf521ced2d29d67a6aed79bffb435a9736b680720e5d9e0d2105da1c98b5fbed3c9054aa69bf87d0bcdd38d2d99f545ad5fb4e46cb9abd4bdee"}},
+	{"2.16.840.1.101.3.4.1.44/CTS/NoPadding", 32, [9]string{"", "!IllegalBlockSizeException: input is too short!", "!IllegalBlockSizeException: input is too short!", "ce9d699cf4634613504b7761c0ed0642", "6b5f4c3c525e7e078440c9d27b950317ce", "3299f4debe9c7f99896de24bad8e3c2fce9d699cf4634613504b7761c0ed06", "4701964905cd00dc2af8ee4677b61892ce9d699cf4634613504b7761c0ed0642", "ce9d699cf4634613504b7761c0ed064228d14f2ab3ca96b3580cd9c965e751b247", "ce9d699cf4634613504b7761c0ed0642a18feb5118ee2ac2494e44c487621c064701964905cd00dc2af8ee4677b61892"}},
 }
 
 // jdkDecrypt: Java's plain text of jdkData's first bytes read as cipher text.
 var jdkDecrypt = []struct {
 	name    string
 	keySize int
-	out     [8]string
+	out     [9]string
 }{
-	{"AES/CBC/NoPadding", 16, [8]string{"", "!IllegalBlockSizeException: Input length not multiple of 16 bytes", "!IllegalBlockSizeException: Input length not multiple of 16 bytes", "74492210e51a8cb1f2702f244a07eea5", "!IllegalBlockSizeException: Input length not multiple of 16 bytes", "!IllegalBlockSizeException: Input length not multiple of 16 bytes", "74492210e51a8cb1f2702f244a07eea533491013b2c452fe73e66b3cab7e5ee0", "!IllegalBlockSizeException: Input length not multiple of 16 bytes"}},
-	{"AES/CBC/PKCS5Padding", 16, [8]string{"", "!IllegalBlockSizeException: Input length must be multiple of 16 when decrypting with padded cipher", "!IllegalBlockSizeException: Input length must be multiple of 16 when decrypting with padded cipher", "!BadPaddingException: Given final block not properly padded. Such issues can arise if a bad key is used during decryption.", "!IllegalBlockSizeException: Input length must be multiple of 16 when decrypting with padded cipher", "!IllegalBlockSizeException: Input length must be multiple of 16 when decrypting with padded cipher", "!BadPaddingException: Given final block not properly padded. Such issues can arise if a bad key is used during decryption.", "!IllegalBlockSizeException: Input length must be multiple of 16 when decrypting with padded cipher"}},
-	{"AES/CBC/ISO10126Padding", 16, [8]string{"", "!IllegalBlockSizeException: Input length must be multiple of 16 when decrypting with padded cipher", "!IllegalBlockSizeException: Input length must be multiple of 16 when decrypting with padded cipher", "!BadPaddingException: Given final block not properly padded. Such issues can arise if a bad key is used during decryption.", "!IllegalBlockSizeException: Input length must be multiple of 16 when decrypting with padded cipher", "!IllegalBlockSizeException: Input length must be multiple of 16 when decrypting with padded cipher", "!BadPaddingException: Given final block not properly padded. Such issues can arise if a bad key is used during decryption.", "!IllegalBlockSizeException: Input length must be multiple of 16 when decrypting with padded cipher"}},
-	{"AES/PCBC/PKCS5Padding", 16, [8]string{"", "!IllegalBlockSizeException: Input length must be multiple of 16 when decrypting with padded cipher", "!IllegalBlockSizeException: Input length must be multiple of 16 when decrypting with padded cipher", "!BadPaddingException: Given final block not properly padded. Such issues can arise if a bad key is used during decryption.", "!IllegalBlockSizeException: Input length must be multiple of 16 when decrypting with padded cipher", "!IllegalBlockSizeException: Input length must be multiple of 16 when decrypting with padded cipher", "!BadPaddingException: Given final block not properly padded. Such issues can arise if a bad key is used during decryption.", "!IllegalBlockSizeException: Input length must be multiple of 16 when decrypting with padded cipher"}},
-	{"AES/CFB/PKCS5Padding", 16, [8]string{"", "!IllegalBlockSizeException: Input length must be multiple of 16 when decrypting with padded cipher", "!IllegalBlockSizeException: Input length must be multiple of 16 when decrypting with padded cipher", "!BadPaddingException: Given final block not properly padded. Such issues can arise if a bad key is used during decryption.", "!IllegalBlockSizeException: Input length must be multiple of 16 when decrypting with padded cipher", "!IllegalBlockSizeException: Input length must be multiple of 16 when decrypting with padded cipher", "!BadPaddingException: Given final block not properly padded. Such issues can arise if a bad key is used during decryption.", "!IllegalBlockSizeException: Input length must be multiple of 16 when decrypting with padded cipher"}},
-	{"AES/OFB8/ISO10126Padding", 16, [8]string{"", "!IllegalBlockSizeException: Input length must be multiple of 16 when decrypting with padded cipher", "!IllegalBlockSizeException: Input length must be multiple of 16 when decrypting with padded cipher", "!BadPaddingException: Given final block not properly padded. Such issues can arise if a bad key is used during decryption.", "!IllegalBlockSizeException: Input length must be multiple of 16 when decrypting with padded cipher", "!IllegalBlockSizeException: Input length must be multiple of 16 when decrypting with padded cipher", "!BadPaddingException: Given final block not properly padded. Such issues can arise if a bad key is used during decryption.", "!IllegalBlockSizeException: Input length must be multiple of 16 when decrypting with padded cipher"}},
-	{"AES/CTS/NoPadding", 16, [8]string{"", "!IllegalBlockSizeException: input is too short!", "!IllegalBlockSizeException: input is too short!", "74492210e51a8cb1f2702f244a07eea5", "e9a23ce74b80545b1cb5bc39f5458d2f20", "4bc119d02570b0acd794d981bc64948220c78ad60104bce776dee7d25e398e", "37774865260ab2f847b8139a6f904ed620c78ad60104bce776dee7d25e398e23", "74492210e51a8cb1f2702f244a07eea580d9d5c4014d10c6552444c9e866dde693"}},
+	{"AES/CBC/NoPadding", 16, [9]string{"", "!IllegalBlockSizeException: Input length not multiple of 16 bytes", "!IllegalBlockSizeException: Input length not multiple of 16 bytes", "74492210e51a8cb1f2702f244a07eea5", "!IllegalBlockSizeException: Input length not multiple of 16 bytes", "!IllegalBlockSizeException: Input length not multiple of 16 bytes", "74492210e51a8cb1f2702f244a07eea533491013b2c452fe73e66b3cab7e5ee0", "!IllegalBlockSizeException: Input length not multiple of 16 bytes", "74492210e51a8cb1f2702f244a07eea533491013b2c452fe73e66b3cab7e5ee01b0e4a39141781b46278f865ee9adf91"}},
+	{"AES/CBC/PKCS5Padding", 16, [9]string{"", "!IllegalBlockSizeException: Input length must be multiple of 16 when decrypting with padded cipher", "!IllegalBlockSizeException: Input length must be multiple of 16 when decrypting with padded cipher", "!BadPaddingException: Given final block not properly padded. Such issues can arise if a bad key is used during decryption.", "!IllegalBlockSizeException: Input length must be multiple of 16 when decrypting with padded cipher", "!IllegalBlockSizeException: Input length must be multiple of 16 when decrypting with padded cipher", "!BadPaddingException: Given final block not properly padded. Such issues can arise if a bad key is used during decryption.", "!IllegalBlockSizeException: Input length must be multiple of 16 when decrypting with padded cipher", "!BadPaddingException: Given final block not properly padded. Such issues can arise if a bad key is used during decryption."}},
+	{"AES/CBC/ISO10126Padding", 16, [9]string{"", "!IllegalBlockSizeException: Input length must be multiple of 16 when decrypting with padded cipher", "!IllegalBlockSizeException: Input length must be multiple of 16 when decrypting with padded cipher", "!BadPaddingException: Given final block not properly padded. Such issues can arise if a bad key is used during decryption.", "!IllegalBlockSizeException: Input length must be multiple of 16 when decrypting with padded cipher", "!IllegalBlockSizeException: Input length must be multiple of 16 when decrypting with padded cipher", "!BadPaddingException: Given final block not properly padded. Such issues can arise if a bad key is used during decryption.", "!IllegalBlockSizeException: Input length must be multiple of 16 when decrypting with padded cipher", "!BadPaddingException: Given final block not properly padded. Such issues can arise if a bad key is used during decryption."}},
+	{"AES/PCBC/PKCS5Padding", 16, [9]string{"", "!IllegalBlockSizeException: Input length must be multiple of 16 when decrypting with padded cipher", "!IllegalBlockSizeException: Input length must be multiple of 16 when decrypting with padded cipher", "!BadPaddingException: Given final block not properly padded. Such issues can arise if a bad key is used during decryption.", "!IllegalBlockSizeException: Input length must be multiple of 16 when decrypting with padded cipher", "!IllegalBlockSizeException: Input length must be multiple of 16 when decrypting with padded cipher", "!BadPaddingException: Given final block not properly padded. Such issues can arise if a bad key is used during decryption.", "!IllegalBlockSizeException: Input length must be multiple of 16 when decrypting with padded cipher", "!BadPaddingException: Given final block not properly padded. Such issues can arise if a bad key is used during decryption."}},
+	{"AES/CFB/PKCS5Padding", 16, [9]string{"", "!IllegalBlockSizeException: Input length must be multiple of 16 when decrypting with padded cipher", "!IllegalBlockSizeException: Input length must be multiple of 16 when decrypting with padded cipher", "!BadPaddingException: Given final block not properly padded. Such issues can arise if a bad key is used during decryption.", "!IllegalBlockSizeException: Input length must be multiple of 16 when decrypting with padded cipher", "!IllegalBlockSizeException: Input length must be multiple of 16 when decrypting with padded cipher", "!BadPaddingException: Given final block not properly padded. Such issues can arise if a bad key is used during decryption.", "!IllegalBlockSizeException: Input length must be multiple of 16 when decrypting with padded cipher", "!BadPaddingException: Given final block not properly padded. Such issues can arise if a bad key is used during decryption."}},
+	{"AES/OFB8/ISO10126Padding", 16, [9]string{"", "!IllegalBlockSizeException: Input length must be multiple of 16 when decrypting with padded cipher", "!IllegalBlockSizeException: Input length must be multiple of 16 when decrypting with padded cipher", "!BadPaddingException: Given final block not properly padded. Such issues can arise if a bad key is used during decryption.", "!IllegalBlockSizeException: Input length must be multiple of 16 when decrypting with padded cipher", "!IllegalBlockSizeException: Input length must be multiple of 16 when decrypting with padded cipher", "!BadPaddingException: Given final block not properly padded. Such issues can arise if a bad key is used during decryption.", "!IllegalBlockSizeException: Input length must be multiple of 16 when decrypting with padded cipher", "!BadPaddingException: Given final block not properly padded. Such issues can arise if a bad key is used during decryption."}},
+	{"AES/CTS/NoPadding", 16, [9]string{"", "!IllegalBlockSizeException: input is too short!", "!IllegalBlockSizeException: input is too short!", "74492210e51a8cb1f2702f244a07eea5", "e9a23ce74b80545b1cb5bc39f5458d2f20", "4bc119d02570b0acd794d981bc64948220c78ad60104bce776dee7d25e398e", "37774865260ab2f847b8139a6f904ed620c78ad60104bce776dee7d25e398e23", "74492210e51a8cb1f2702f244a07eea580d9d5c4014d10c6552444c9e866dde693", "74492210e51a8cb1f2702f244a07eea54bbeba8964c751e4d28848353e4aaf2193a9b0731264325e93460bdc0b1efe00"}},
 }
 
 // jdkISO10126: Java's cipher text, under its random filler, of jdkData's first
-// 0, 1, 15, 16, 17, 31, 32 and 33 bytes.
+// 0, 1, 15, 16, 17, 31, 32, 33 and 48 bytes.
 var jdkISO10126 = []struct {
 	name    string
 	keySize int
-	out     [8]string
+	out     [9]string
 }{
-	{"AES/CBC/ISO10126Padding", 16, [8]string{"f95ec8f58186a9ce6cd41142dcbc9408", "18d284071ce8fafd7ba111ddcf8a2fee", "f43efc2197413a9750aa26e7676d734f", "7b1eb12dbae30af43643545968377b67682e0a69f2fcf02f36c3b9ca46151a90", "7b1eb12dbae30af43643545968377b678a114accf7b0db882ec5856d2aa1117b", "7b1eb12dbae30af43643545968377b6749327d5b75acad3f79c605f89abf1173", "7b1eb12dbae30af43643545968377b6704181653c38c6df5342c827bfc587f4f513e7eccae830eed79943ebd892caa74", "7b1eb12dbae30af43643545968377b6704181653c38c6df5342c827bfc587f4f99521451b8cf91301203edd63f430125"}},
-	{"AES/PCBC/ISO10126Padding", 16, [8]string{"fb08ea95f9a03291f85d61fe94dfc6a2", "47e473192f7e9d2c0e5efbe5c17f2256", "f43efc2197413a9750aa26e7676d734f", "7b1eb12dbae30af43643545968377b673634b0c825aa94bb7ccb879206aca4a4", "7b1eb12dbae30af43643545968377b678c7b0e6a3ec37b33ba809258411d528f", "7b1eb12dbae30af43643545968377b67009abeff1592ed0df9ce7fe1a64393ac", "7b1eb12dbae30af43643545968377b67c1182fc40bbdcf93abcc9885833687c06f0a883aeb84e0c543da4a4c11020e79", "7b1eb12dbae30af43643545968377b67c1182fc40bbdcf93abcc9885833687c0e05099dd88e3ecc050fd0592ee6ad312"}},
-	{"AES/CFB/ISO10126Padding", 16, [8]string{"fee26c72474b607b3b235a4ee131127a", "2b06580a07bbebd6cf272bb7995ae365", "2b99ace82b88b2e63747817eab42886b", "2b99ace82b88b2e63747817eab42885cc8845b624a2b7b17cfd7e312178d7a13", "2b99ace82b88b2e63747817eab42885c503cea035f16c63f626cbf2916c81f0c", "2b99ace82b88b2e63747817eab42885c507f05ad9df74f75aad363cd36773902", "2b99ace82b88b2e63747817eab42885c507f05ad9df74f75aad363cd36773985b1df51e61ad273087d0ca44b397188e6", "2b99ace82b88b2e63747817eab42885c507f05ad9df74f75aad363cd367739850fc92ad60afadd07765e31ba5708f2f9"}},
-	{"AES/OFB32/ISO10126Padding", 16, [8]string{"e72c044da2c5b08c90926994f1f82f95", "2b302bbc9e2b9db6dccd4a28d5f1e48a", "2b99ace8a96cdc8cdc8edc0f23945b84", "2b99ace8a96cdc8cdc8edc0f23945bb3c767ba61d309fc519143ac2f8723c248", "2b99ace8a96cdc8cdc8edc0f23945bb3fa318ed774cf91d576b51012b00d5357", "2b99ace8a96cdc8cdc8edc0f23945bb3faee5b544631321dad46bcc02fdc5659", "2b99ace8a96cdc8cdc8edc0f23945bb3faee5b544631321dad46bcc02fdc56de67fcf8942328889223968bfb4a91dc2c", "2b99ace8a96cdc8cdc8edc0f23945bb3faee5b544631321dad46bcc02fdc56de5c595557aca62f955cb06a378b6e3533"}},
-	{"OID.2.16.840.1.101.3.4.1.42/CFB8/ISO10126Padding", 32, [8]string{"b409336e7f72cce81a60ec1b687f422a", "79ec84fd15dd77b70875192b0ae9e1aa", "796ab31c7f5acb9c0330101294234e40", "796ab31c7f5acb9c0330101294234e77d229a6be18631d04c47692b3be745bdd", "796ab31c7f5acb9c0330101294234e774659787834ab6da2b3762c23fac92115", "796ab31c7f5acb9c0330101294234e77462176462c46875064e82582a306da21", "796ab31c7f5acb9c0330101294234e77462176462c46875064e82582a306daa68738fb8f4af72f2e744a915b7ad216f4", "796ab31c7f5acb9c0330101294234e77462176462c46875064e82582a306daa65eeed33b8d2359f7c3474aace0ca9416"}},
+	{"AES/CBC/ISO10126Padding", 16, [9]string{"85fe88d87e44dc3937277c66b43f0fcc", "216fd94d06feef4e5f0d648f39fe7880", "f43efc2197413a9750aa26e7676d734f", "7b1eb12dbae30af43643545968377b67136f964f7ff76ef7802cfa5af04bd988", "7b1eb12dbae30af43643545968377b6743d6359e35018455a4724495791481ad", "7b1eb12dbae30af43643545968377b6749327d5b75acad3f79c605f89abf1173", "7b1eb12dbae30af43643545968377b6704181653c38c6df5342c827bfc587f4f2bce0c5c94625673b54d20ed97640504", "7b1eb12dbae30af43643545968377b6704181653c38c6df5342c827bfc587f4f9974a233173dff56f46d4f1fffdb1602", "7b1eb12dbae30af43643545968377b6704181653c38c6df5342c827bfc587f4f0274258d82ec4273c9739ccc177fc89bd41ef178ede72138998a3c881c5eefaa"}},
+	{"AES/PCBC/ISO10126Padding", 16, [9]string{"3715feee7fec2f6efe39a8ee499aa916", "c996711937f8b5ae5027e5a0c43e2e6e", "f43efc2197413a9750aa26e7676d734f", "7b1eb12dbae30af43643545968377b67054da6e959465cee9f7851ba6c42551f", "7b1eb12dbae30af43643545968377b6726df900262c43deee0b81e9b43985164", "7b1eb12dbae30af43643545968377b67009abeff1592ed0df9ce7fe1a64393ac", "7b1eb12dbae30af43643545968377b67c1182fc40bbdcf93abcc9885833687c03e9a98bd851897f05d8d21ca38502307", "7b1eb12dbae30af43643545968377b67c1182fc40bbdcf93abcc9885833687c06ac7dba778bdafc86c94b8ae53bb828f", "7b1eb12dbae30af43643545968377b67c1182fc40bbdcf93abcc9885833687c0785017372dffb259814bf70a18c167a2596112aa48ddfb9185930854106f2c39"}},
+	{"AES/CFB/ISO10126Padding", 16, [9]string{"0bb61423281f3333a9d04a08cfe6927a", "2b204f62b1342074fd2dfed0b7ad5f65", "2b99ace82b88b2e63747817eab42886b", "2b99ace82b88b2e63747817eab42885c84005368dcd4ec1b1a922d834f2a3c13", "2b99ace82b88b2e63747817eab42885c500fe88ae4cef6a980073fa05c22760c", "2b99ace82b88b2e63747817eab42885c507f05ad9df74f75aad363cd36773902", "2b99ace82b88b2e63747817eab42885c507f05ad9df74f75aad363cd36773985b94ebed89c33283d700c3fef1f4013e6", "2b99ace82b88b2e63747817eab42885c507f05ad9df74f75aad363cd367739850fb4cc67b5ef942ab06b595b340f17f9", "2b99ace82b88b2e63747817eab42885c507f05ad9df74f75aad363cd367739850f88e95807ae216d88ffe5cfbeebe82070194cd78538fe5b49f4266bdead227d"}},
+	{"AES/OFB32/ISO10126Padding", 16, [9]string{"ba36c04f0dda5a2be487a6dfbab9de95", "2b5928adc4887f03126af8edea6a5d8a", "2b99ace8a96cdc8cdc8edc0f23945b84", "2b99ace8a96cdc8cdc8edc0f23945bb3580ba630a8aebc68081f2b9fb3278a48", "2b99ace8a96cdc8cdc8edc0f23945bb3facb28a78dd905853f9c3c6464ccbd57", "2b99ace8a96cdc8cdc8edc0f23945bb3faee5b544631321dad46bcc02fdc5659", "2b99ace8a96cdc8cdc8edc0f23945bb3faee5b544631321dad46bcc02fdc56defa5391690bc771a61e36f8eddeebc42c", "2b99ace8a96cdc8cdc8edc0f23945bb3faee5b544631321dad46bcc02fdc56de5c813e5f04b7b78deb40d12c1719db33", "2b99ace8a96cdc8cdc8edc0f23945bb3faee5b544631321dad46bcc02fdc56de5cfe9a781610763d7ce8964e9443dbeacea5bf09315d6a15ddc151d716c574a6"}},
+	{"OID.2.16.840.1.101.3.4.1.42/CFB8/ISO10126Padding", 32, [9]string{"1aa7328e55f0a28c2c3a7780a9295807", "798565fe98f5fd7053cecbbeb7a43021", "796ab31c7f5acb9c0330101294234e40", "796ab31c7f5acb9c0330101294234e77f5ce74f005857cec936aaf4b339b0c49", "796ab31c7f5acb9c0330101294234e7746f84294cf486f71d99fcb8ec3bf8d98", "796ab31c7f5acb9c0330101294234e77462176462c46875064e82582a306da21", "796ab31c7f5acb9c0330101294234e77462176462c46875064e82582a306daa63415f8a54c97694cd7bf6b1fd5a6a0f6", "796ab31c7f5acb9c0330101294234e77462176462c46875064e82582a306daa65eff1130ae7999de5465a9e544049662", "796ab31c7f5acb9c0330101294234e77462176462c46875064e82582a306daa65ee7ac987e0d15cd37e8885bc304d58d376c6e7c2112e89c8d53919229268561"}},
 }
 
-// jdkAccepts: whether Java encrypts jdkData's first 17 bytes under each name
-// with a 16-, 24- and 32-byte key ("+" it does, "-" it throws).
-var jdkAccepts = []struct{ name, keys string }{
-	{"AES/CBC/NoPadding", "---"},
-	{"AES/CBC/PKCS5Padding", "+++"},
-	{"AES/CBC/ISO10126Padding", "+++"},
-	{"AES/PCBC/NoPadding", "---"},
-	{"AES/PCBC/PKCS5Padding", "+++"},
-	{"AES/PCBC/ISO10126Padding", "+++"},
-	{"AES/CTS/NoPadding", "+++"},
-	{"AES/CTR/NoPadding", "+++"},
-	{"AES/CFB/NoPadding", "+++"},
-	{"AES/CFB/PKCS5Padding", "+++"},
-	{"AES/CFB/ISO10126Padding", "+++"},
-	{"AES/CFB8/NoPadding", "+++"},
-	{"AES/CFB8/PKCS5Padding", "+++"},
-	{"AES/CFB16/NoPadding", "+++"},
-	{"AES/CFB24/NoPadding", "+++"},
-	{"AES/CFB64/NoPadding", "+++"},
-	{"AES/CFB120/PKCS5Padding", "+++"},
-	{"AES/CFB128/NoPadding", "+++"},
-	{"AES/OFB/NoPadding", "+++"},
-	{"AES/OFB/PKCS5Padding", "+++"},
-	{"AES/OFB8/NoPadding", "+++"},
-	{"AES/OFB32/ISO10126Padding", "+++"},
-	{"AES/OFB64/NoPadding", "+++"},
-	{"AES/OFB120/NoPadding", "+++"},
-	{"AES/OFB128/PKCS5Padding", "+++"},
-	{"aes/cbc/pkcs5padding", "+++"},
-	{" AES / OFB / PKCS5Padding ", "+++"},
-	{"AES /CBC/PKCS5Padding\t", "+++"},
-	{"aes/cfb24/nopadding", "+++"},
-	{"AES/Cfb16/NoPadding", "+++"},
-	{"AES_128/CBC/NoPadding", "---"},
-	{"AES_128/CFB/NoPadding", "+--"},
-	{"AES_128/OFB/NoPadding", "+--"},
-	{"AES_192/CBC/NoPadding", "---"},
-	{"AES_192/CFB/NoPadding", "-+-"},
-	{"AES_256/OFB/NoPadding", "--+"},
-	{"aes_256/cfb/nopadding", "--+"},
-	{"2.16.840.1.101.3.4.1.2", "---"},
-	{"2.16.840.1.101.3.4.1.3", "+--"},
-	{"2.16.840.1.101.3.4.1.4", "+--"},
-	{"OID.2.16.840.1.101.3.4.1.22", "---"},
-	{"oid.2.16.840.1.101.3.4.1.23", "-+-"},
-	{"2.16.840.1.101.3.4.1.24", "-+-"},
-	{"2.16.840.1.101.3.4.1.42", "---"},
-	{"OID.2.16.840.1.101.3.4.1.43", "--+"},
-	{" 2.16.840.1.101.3.4.1.44 ", "--+"},
-	{"2.16.840.1.101.3.4.1/CTS/NoPadding", "+++"},
-	{"OID.2.16.840.1.101.3.4.1/CBC/PKCS5Padding", "+++"},
-	{"2.16.840.1.101.3.4.1.1/CBC/PKCS5Padding", "+--"},
-	{"2.16.840.1.101.3.4.1.2/CTR/NoPadding", "+--"},
-	{"2.16.840.1.101.3.4.1.22/PCBC/PKCS5Padding", "-+-"},
-	{"OID.2.16.840.1.101.3.4.1.42/CFB8/ISO10126Padding", "--+"},
-	{"2.16.840.1.101.3.4.1.44/CTS/NoPadding", "--+"},
-	{"2.16.840.1.101.3.4.1.2/ECB/NoPadding", "---"},
-	{"2.16.840.1.101.3.4.1.23/ECB/PKCS5Padding", "-+-"},
-	{"2.16.840.1.101.3.4.1.44/ECB/ISO10126Padding", "--+"},
-	{"AES", "---"},
-	{"AES/ECB/PKCS5Padding", "---"},
-	{"AES/ECB/NoPadding", "---"},
-	{"AES/GCM/NoPadding", "---"},
-	{"AES/KW/NoPadding", "---"},
-	{"AES/KWP/NoPadding", "---"},
-	{"AES/CTS/PKCS5Padding", "---"},
-	{"AES/CTS/ISO10126Padding", "---"},
-	{"ChaCha20-Poly1305", "---"},
-	{"ChaCha20/None/NoPadding", "---"},
-	{"DESede/CBC/PKCS5Padding", "---"},
-	{"DES/CBC/PKCS5Padding", "---"},
-	{"Blowfish/CBC/PKCS5Padding", "---"},
-	{"Rijndael/CBC/PKCS5Padding", "---"},
-	{"AES/CTR/PKCS5Padding", "---"},
-	{"AES/CTR/ISO10126Padding", "---"},
-	{"AES/CFB4/NoPadding", "---"},
-	{"AES/CFB12/NoPadding", "---"},
-	{"AES/CFB136/NoPadding", "---"},
-	{"AES/OFB0/NoPadding", "---"},
-	{"AES/CFB0/NoPadding", "---"},
-	{"AES/CFB008/NoPadding", "---"},
-	{"AES/CFB+8/NoPadding", "---"},
-	{"AES/CFB 8/NoPadding", "---"},
-	{"AES/CFB-8/NoPadding", "---"},
-	{"AES/CBC/PKCS7Padding", "---"},
-	{"AES/XYZ/NoPadding", "---"},
-	{"AES_128", "---"},
-	{"AES_128/CBC/PKCS5Padding", "---"},
-	{"AES_256/CFB8/NoPadding", "---"},
-	{"AES_128/CTR/NoPadding", "---"},
-	{"AES_128/PCBC/NoPadding", "---"},
-	{"AES_128/CTS/NoPadding", "---"},
-	{"AES_128/ECB/NoPadding", "---"},
-	{"AES_192/GCM/NoPadding", "---"},
-	{"AES/CBC", "---"},
-	{"AES//PKCS5Padding", "---"},
-	{"AES//CBC/PKCS5Padding", "---"},
-	{"AES/CBC/PKCS5Padding/Extra", "---"},
-	{"AES/CBC/NoPadding/", "---"},
-	{"/AES/CBC/NoPadding", "---"},
-	{"", "---"},
-	{"2.16.840.1.101.3.4.1", "---"},
-	{"OID.2.16.840.1.101.3.4.1", "---"},
-	{"2.16.840.1.101.3.4.1.1", "---"},
-	{"2.16.840.1.101.3.4.1.6", "---"},
-	{"2.16.840.1.101.3.4.1.5", "---"},
-	{"2.16.840.1.101.3.4.1.8", "---"},
-	{"2.16.840.1.101.3.4.1.7", "---"},
-	{"2.16.840.1.101.3.4.1.21", "---"},
-	{"2.16.840.1.101.3.4.1.46", "---"},
-	{"2.16.840.1.101.3.4.1.02", "---"},
-	{"2.16.840.1.101.3.4.1.6/CBC/PKCS5Padding", "---"},
-	{"2.16.840.1.101.3.4.1.5/CBC/PKCS5Padding", "---"},
-	{"2.16.840.1.101.3.4.1.2/GCM/NoPadding", "---"},
-	{"2.16.840.1.101.3.4.1.2/CTR/PKCS5Padding", "---"},
-	{"2.16.840.1.101.3.4.1.1/ECB/NoPadding", "---"},
-	{"2.16.840.1.101.3.4.1/ECB/NoPadding", "---"},
-	{"OID2.16.840.1.101.3.4.1.2", "---"},
+// jdkAccepts: what Java does encrypting jdkData's first 17 bytes, then its first
+// 32, under each name with a 16-, 24- and 32-byte key: "+" it encrypts, else
+// the exception it throws: N NoSuchAlgorithmException (getInstance), P
+// InvalidAlgorithmParameterException and K InvalidKeyException (init, which
+// checks the key first), B IllegalBlockSizeException (doFinal).
+var jdkAccepts = []struct{ name, codes string }{
+	{"AES/CBC/NoPadding", "BBB +++"},
+	{"AES/CBC/PKCS5Padding", "+++ +++"},
+	{"AES/CBC/ISO10126Padding", "+++ +++"},
+	{"AES/PCBC/NoPadding", "BBB +++"},
+	{"AES/PCBC/PKCS5Padding", "+++ +++"},
+	{"AES/PCBC/ISO10126Padding", "+++ +++"},
+	{"AES/CTS/NoPadding", "+++ +++"},
+	{"AES/CTR/NoPadding", "+++ +++"},
+	{"AES/CFB/NoPadding", "+++ +++"},
+	{"AES/CFB/PKCS5Padding", "+++ +++"},
+	{"AES/CFB/ISO10126Padding", "+++ +++"},
+	{"AES/CFB8/NoPadding", "+++ +++"},
+	{"AES/CFB8/PKCS5Padding", "+++ +++"},
+	{"AES/CFB16/NoPadding", "+++ +++"},
+	{"AES/CFB24/NoPadding", "+++ +++"},
+	{"AES/CFB64/NoPadding", "+++ +++"},
+	{"AES/CFB120/PKCS5Padding", "+++ +++"},
+	{"AES/CFB128/NoPadding", "+++ +++"},
+	{"AES/OFB/NoPadding", "+++ +++"},
+	{"AES/OFB/PKCS5Padding", "+++ +++"},
+	{"AES/OFB8/NoPadding", "+++ +++"},
+	{"AES/OFB32/ISO10126Padding", "+++ +++"},
+	{"AES/OFB64/NoPadding", "+++ +++"},
+	{"AES/OFB120/NoPadding", "+++ +++"},
+	{"AES/OFB128/PKCS5Padding", "+++ +++"},
+	{"aes/cbc/pkcs5padding", "+++ +++"},
+	{" AES / OFB / PKCS5Padding ", "+++ +++"},
+	{"AES /CBC/PKCS5Padding\t", "+++ +++"},
+	{"aes/cfb24/nopadding", "+++ +++"},
+	{"AES/Cfb16/NoPadding", "+++ +++"},
+	{"AES_128/CBC/NoPadding", "BKK +KK"},
+	{"AES_128/CFB/NoPadding", "+KK +KK"},
+	{"AES_128/OFB/NoPadding", "+KK +KK"},
+	{"AES_192/CBC/NoPadding", "KBK K+K"},
+	{"AES_192/CFB/NoPadding", "K+K K+K"},
+	{"AES_256/OFB/NoPadding", "KK+ KK+"},
+	{"aes_256/cfb/nopadding", "KK+ KK+"},
+	{"2.16.840.1.101.3.4.1.2", "BKK +KK"},
+	{"2.16.840.1.101.3.4.1.3", "+KK +KK"},
+	{"2.16.840.1.101.3.4.1.4", "+KK +KK"},
+	{"OID.2.16.840.1.101.3.4.1.22", "KBK K+K"},
+	{"oid.2.16.840.1.101.3.4.1.23", "K+K K+K"},
+	{"2.16.840.1.101.3.4.1.24", "K+K K+K"},
+	{"2.16.840.1.101.3.4.1.42", "KKB KK+"},
+	{"OID.2.16.840.1.101.3.4.1.43", "KK+ KK+"},
+	{" 2.16.840.1.101.3.4.1.44 ", "KK+ KK+"},
+	{"2.16.840.1.101.3.4.1/CTS/NoPadding", "+++ +++"},
+	{"OID.2.16.840.1.101.3.4.1/CBC/PKCS5Padding", "+++ +++"},
+	{"2.16.840.1.101.3.4.1.1/CBC/PKCS5Padding", "+KK +KK"},
+	{"2.16.840.1.101.3.4.1.2/CTR/NoPadding", "+KK +KK"},
+	{"2.16.840.1.101.3.4.1.22/PCBC/PKCS5Padding", "K+K K+K"},
+	{"OID.2.16.840.1.101.3.4.1.42/CFB8/ISO10126Padding", "KK+ KK+"},
+	{"2.16.840.1.101.3.4.1.44/CTS/NoPadding", "KK+ KK+"},
+	{"2.16.840.1.101.3.4.1.2/ECB/NoPadding", "BKK +KK"},
+	{"2.16.840.1.101.3.4.1.23/ECB/PKCS5Padding", "K+K K+K"},
+	{"2.16.840.1.101.3.4.1.44/ECB/ISO10126Padding", "KK+ KK+"},
+	{"AES/CBC/PKCS5PADD\u0130NG", "NNN NNN"},
+	{"AES/CBC/PKCS5Padd\u0131ng", "+++ +++"},
+	{"AES/CBC/P\u212aCS5Padding", "NNN NNN"},
+	{"AES/CBC/PKC\u017f5Padding", "+++ +++"},
+	{"\u00e4es/CBC/NoPadding", "NNN NNN"},
+	{"o\u0131d.2.16.840.1.101.3.4.1.2", "BKK +KK"},
+	{"AES/GCM/PKCS5Padding", "NNN NNN"},
+	{"AES/KW/PKCS5Padding", "PPP PPP"},
+	{"AES/KWP/NoPadding", "PPP PPP"},
+	{"AES/KWP/PKCS5Padding", "NNN NNN"},
+	{"AES/ECB/ISO10126Padding", "PPP PPP"},
+	{"AES_128/GCM/NoPadding", "PPP PPP"},
+	{"AES_192/KW/PKCS5Padding", "KPK KPK"},
+	{"AES_256/KWP/NoPadding", "KKP KKP"},
+	{"AES_128/KW/ISO10126Padding", "NNN NNN"},
+	{"2.16.840.1.101.3.4.1.25", "KPK KPK"},
+	{"2.16.840.1.101.3.4.1.48", "KKP KKP"},
+	{"2.16.840.1.101.3.4.1.2/KW/NoPadding", "NNN NNN"},
+	{"2.16.840.1.101.3.4.1.21/ECB/NoPadding", "KPK KPK"},
+	{"2.16.840.1.101.3.4.1.21/CBC/NoPadding", "KBK K+K"},
+	{"2.16.840.1.101.3.4.1/GCM/NoPadding", "NNN NNN"},
+	{"2.16.840.1.101.3.4.1/KW/NoPadding", "NNN NNN"},
+	{"2.16.840.1.101.3.4.1.5/KW/NoPadding", "PKK PKK"},
+	{"2.16.840.1.101.3.4.1.5/KW/PKCS5Padding", "NNN NNN"},
+	{"2.16.840.1.101.3.4.1.5/KWP/NoPadding", "NNN NNN"},
+	{"2.16.840.1.101.3.4.1.8/KWP/NoPadding", "PKK PKK"},
+	{"2.16.840.1.101.3.4.1.8/KW/NoPadding", "NNN NNN"},
+	{"2.16.840.1.101.3.4.1.6/GCM/NoPadding", "PPP PPP"},
+	{"2.16.840.1.101.3.4.1.26/GCM/NoPadding", "PPP PPP"},
+	{"2.16.840.1.101.3.4.1.1/GCM/NoPadding", "NNN NNN"},
+	{"2.16.840.1.101.3.4.1.45/ECB/NoPadding", "NNN NNN"},
+	{"2.16.840.1.101.3.4.1.5/ECB/NoPadding", "NNN NNN"},
+	{"2.16.840.1.101.3.4.1.1/ECB/PKCS5Padding", "PKK PKK"},
+	{"AES_192/ECB/PKCS5Padding", "NNN NNN"},
+	{"AES/KW/ISO10126Padding", "NNN NNN"},
+	{"2.16.840.1.101.3.4.1.2/CTS/NoPadding", "+KK +KK"},
+	{"2.16.840.1.101.3.4.1.44/ECB/NoPadding", "KK+ KK+"},
+	{"2.16.840.1.101.3.4.1.9", "NNN NNN"},
+	{"2.16.840.1.101.3.4.1.49", "NNN NNN"},
+	{"2.16.840.1.101.3.4.1.0", "NNN NNN"},
+	{"2.16.840.1.101.3.4.1.20", "NNN NNN"},
+	{"AES", "PPP PPP"},
+	{"AES/ECB/PKCS5Padding", "PPP PPP"},
+	{"AES/ECB/NoPadding", "PPP PPP"},
+	{"AES/GCM/NoPadding", "PPP PPP"},
+	{"AES/KW/NoPadding", "PPP PPP"},
+	{"AES/KWP/NoPadding", "PPP PPP"},
+	{"AES/CTS/PKCS5Padding", "NNN NNN"},
+	{"AES/CTS/ISO10126Padding", "NNN NNN"},
+	{"ChaCha20-Poly1305", "PPP PPP"},
+	{"ChaCha20/None/NoPadding", "PPP PPP"},
+	{"DESede/CBC/PKCS5Padding", "PPP PPP"},
+	{"DES/CBC/PKCS5Padding", "PPP PPP"},
+	{"Blowfish/CBC/PKCS5Padding", "PPP PPP"},
+	{"Rijndael/CBC/PKCS5Padding", "NNN NNN"},
+	{"AES/CTR/PKCS5Padding", "NNN NNN"},
+	{"AES/CTR/ISO10126Padding", "NNN NNN"},
+	{"AES/CFB4/NoPadding", "NNN NNN"},
+	{"AES/CFB12/NoPadding", "NNN NNN"},
+	{"AES/CFB136/NoPadding", "NNN NNN"},
+	{"AES/OFB0/NoPadding", "NNN NNN"},
+	{"AES/CFB0/NoPadding", "NNN NNN"},
+	{"AES/CFB008/NoPadding", "NNN NNN"},
+	{"AES/CFB+8/NoPadding", "NNN NNN"},
+	{"AES/CFB 8/NoPadding", "NNN NNN"},
+	{"AES/CFB-8/NoPadding", "NNN NNN"},
+	{"AES/CBC/PKCS7Padding", "NNN NNN"},
+	{"AES/XYZ/NoPadding", "NNN NNN"},
+	{"AES_128", "NNN NNN"},
+	{"AES_128/CBC/PKCS5Padding", "NNN NNN"},
+	{"AES_256/CFB8/NoPadding", "NNN NNN"},
+	{"AES_128/CTR/NoPadding", "NNN NNN"},
+	{"AES_128/PCBC/NoPadding", "NNN NNN"},
+	{"AES_128/CTS/NoPadding", "NNN NNN"},
+	{"AES_128/ECB/NoPadding", "PKK PKK"},
+	{"AES_192/GCM/NoPadding", "PPP PPP"},
+	{"AES/CBC", "NNN NNN"},
+	{"AES//PKCS5Padding", "NNN NNN"},
+	{"AES//CBC/PKCS5Padding", "NNN NNN"},
+	{"AES/CBC/PKCS5Padding/Extra", "NNN NNN"},
+	{"AES/CBC/NoPadding/", "NNN NNN"},
+	{"/AES/CBC/NoPadding", "NNN NNN"},
+	{"", "NNN NNN"},
+	{"2.16.840.1.101.3.4.1", "PPP PPP"},
+	{"OID.2.16.840.1.101.3.4.1", "PPP PPP"},
+	{"2.16.840.1.101.3.4.1.1", "PKK PKK"},
+	{"2.16.840.1.101.3.4.1.6", "PPP PPP"},
+	{"2.16.840.1.101.3.4.1.5", "PKK PKK"},
+	{"2.16.840.1.101.3.4.1.8", "PKK PKK"},
+	{"2.16.840.1.101.3.4.1.7", "NNN NNN"},
+	{"2.16.840.1.101.3.4.1.21", "KPK KPK"},
+	{"2.16.840.1.101.3.4.1.46", "PPP PPP"},
+	{"2.16.840.1.101.3.4.1.02", "NNN NNN"},
+	{"2.16.840.1.101.3.4.1.6/CBC/PKCS5Padding", "NNN NNN"},
+	{"2.16.840.1.101.3.4.1.5/CBC/PKCS5Padding", "NNN NNN"},
+	{"2.16.840.1.101.3.4.1.2/GCM/NoPadding", "NNN NNN"},
+	{"2.16.840.1.101.3.4.1.2/CTR/PKCS5Padding", "NNN NNN"},
+	{"2.16.840.1.101.3.4.1.1/ECB/NoPadding", "PKK PKK"},
+	{"2.16.840.1.101.3.4.1/ECB/NoPadding", "PPP PPP"},
+	{"OID2.16.840.1.101.3.4.1.2", "NNN NNN"},
 }

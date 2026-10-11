@@ -647,11 +647,8 @@ func (s *TransformedRecordSerializer) encrypt(st *transformState, env *dst.Env) 
 	if s.keyManager == nil {
 		return serializationError("attempted to encrypt without setting key manager (cipher name and key)")
 	}
+	// Java draws the IV before it looks the cipher up.
 	keyNumber := s.keyManager.GetSerializationKey()
-	block, t, err := s.cipherBlock(keyNumber, "encryption error")
-	if err != nil {
-		return err
-	}
 	random, err := s.keyManager.GetRandom(keyNumber)
 	if err != nil {
 		return err
@@ -659,15 +656,22 @@ func (s *TransformedRecordSerializer) encrypt(st *transformState, env *dst.Env) 
 	if random == nil {
 		random = env
 	}
-	iv := make([]byte, cipherIVSize)
-	if _, err := io.ReadFull(random, iv); err != nil {
+	var iv [cipherIVSize]byte
+	if _, err := io.ReadFull(random, iv[:]); err != nil {
 		return &RecordSerializationError{Message: "encryption error", Cause: err}
 	}
-	text, err := t.encrypt(block, iv, st.data, random)
+	block, t, err := s.cipherBlock(keyNumber, "encryption error")
+	if err != nil {
+		return err
+	}
+	// ISO 10126 filler comes from the store's randomness, not the key
+	// manager's: Java's cipher draws it from its own SecureRandom, so a key
+	// manager's seeded random gives the same IV sequence in both engines.
+	out, err := t.encrypt(block, iv[:], st.data, env)
 	if err != nil {
 		return securityError("encryption error", err)
 	}
-	st.data = append(iv, text...)
+	st.data = out
 	st.encrypted = true
 	st.keyNumber = keyNumber
 	return nil
@@ -681,15 +685,15 @@ func (s *TransformedRecordSerializer) decrypt(st *transformState) error {
 	if s.keyManager == nil {
 		return serializationError("missing encryption key or provider during decryption")
 	}
+	// Shorter than the IV: Java's decrypt copies the IV out of it, before it
+	// looks the cipher up, and fails with an array bound exception, not a
+	// cipher failure (so it is not the encryption validation's either).
+	if len(st.data) < cipherIVSize {
+		return &RecordSerializationError{Message: "decryption error", Cause: fmt.Errorf("%d bytes, shorter than the %d-byte IV", len(st.data), cipherIVSize)}
+	}
 	block, t, err := s.cipherBlock(st.keyNumber, "decryption error")
 	if err != nil {
 		return err
-	}
-	// Shorter than the IV: Java's decrypt copies the IV out of it and fails
-	// with an array bound exception, not a cipher failure (so it is not the
-	// encryption validation's either).
-	if len(st.data) < cipherIVSize {
-		return &RecordSerializationError{Message: "decryption error", Cause: fmt.Errorf("%d bytes, shorter than the %d-byte IV", len(st.data), cipherIVSize)}
 	}
 	plain, err := t.decrypt(block, st.data[:cipherIVSize], st.data[cipherIVSize:])
 	if err != nil {
