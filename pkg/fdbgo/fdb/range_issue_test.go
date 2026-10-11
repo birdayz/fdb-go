@@ -214,3 +214,35 @@ func TestGetRange_ErrorOrder(t *testing.T) {
 		}
 	}
 }
+
+// A selector range is rejected on its raw selector keys before resolution reads anything:
+// C++ checks cancellation, 2004, then 2012 before the read starts (ReadYourWrites.actor.cpp:1736-1749).
+func TestGetRange_SelectorChecksPrecedeResolution(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	tr, err := db.CreateTransaction()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Cancel()
+	before := db.Metrics().TransactionReadVersionsCompleted
+	code := func(rr fdb.RangeResult) int {
+		_, err := rr.GetSliceWithError()
+		var fe fdb.Error
+		if errors.As(err, &fe) {
+			return fe.Code
+		}
+		return 0
+	}
+	sel := fdb.SelectorRange{Begin: fdb.LastLessThan(fdb.Key("a")), End: fdb.FirstGreaterThan(fdb.Key("b"))}
+	if got := code(tr.GetRange(sel, fdb.RangeOptions{Limit: -2})); got != 2012 {
+		t.Errorf("limit < -1 = %d, want 2012", got)
+	}
+	pastMax := fdb.SelectorRange{Begin: fdb.LastLessThan(fdb.Key("a")), End: fdb.FirstGreaterOrEqual(fdb.Key{0xff, 1})}
+	if got := code(tr.GetRange(pastMax, fdb.RangeOptions{})); got != 2004 {
+		t.Errorf("end past the max key = %d, want 2004", got)
+	}
+	if n := db.Metrics().TransactionReadVersionsCompleted - before; n != 0 {
+		t.Fatalf("rejected selector ranges read %d read versions; they must do no I/O", n)
+	}
+}

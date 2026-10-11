@@ -70,6 +70,15 @@ func startRangeResult(rr goRangeResult) goRangeResult {
 		f.err = err
 		return rr
 	}
+	if _, exact := rr.r.(ExactRange); !exact {
+		// Selector resolution reads; C++ rejects first on the raw selector keys.
+		bs, es := rr.r.FDBRangeKeySelectors()
+		b, e := bs.FDBKeySelector().Key.FDBKey(), es.FDBKeySelector().Key.FDBKey()
+		if err := rr.tx.inner.CheckRangeArgs(rr.tx.ctx, b, e, rr.options.Limit); err != nil {
+			f.err = convertError(err)
+			return rr
+		}
+	}
 	begin, end, err := resolveRange(rr.tx, rr.r, rr.snapshot)
 	if err != nil {
 		f.err = convertError(err)

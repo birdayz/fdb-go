@@ -3,6 +3,7 @@ package client
 import (
 	"bytes"
 	"context"
+	"sync/atomic"
 
 	"fdb.dev/pkg/fdbgo/wire"
 )
@@ -78,6 +79,25 @@ func (tx *Transaction) issueRange(parent context.Context, begin, end []byte, lim
 	}
 	r.afterReply = tx.afterRangeReply
 	return r
+}
+
+// CheckRangeArgs runs a selector range read's checks on its UNRESOLVED selector keys, in
+// C++ order: deferred error and cancellation, 2004, then 2012 (ReadYourWrites.actor.cpp:1736-1749).
+// The caller resolves the selectors only after it passes.
+func (tx *Transaction) CheckRangeArgs(ctx context.Context, beginKey, endKey []byte, limit int) error {
+	ctx, release := tx.opContext(ctx)
+	defer release()
+	if err := tx.checkReadState(ctx); err != nil {
+		return tx.trackReadOperation(ctx, err)
+	}
+	maxKey := tx.maxReadKey()
+	if bytes.Compare(beginKey, maxKey) > 0 || bytes.Compare(endKey, maxKey) > 0 {
+		return &wire.FDBError{Code: 2004}
+	}
+	if limit < -1 {
+		return &wire.FDBError{Code: ErrRangeLimitsInvalid}
+	}
+	return nil
 }
 
 // enterIssuedRead counts a read Commit must wait for (C++ `reading`); nil when the
@@ -225,17 +245,40 @@ func (tx *Transaction) waitIssuedReads(ctx context.Context, inc *readIncarnation
 
 // PendingRange is a started range read, like the future fdb_transaction_get_range returns.
 type PendingRange struct {
-	done chan struct{}
-	kvs  []KeyValue // shared RYW/cache storage; Get copies
-	more bool
-	err  error
+	r     *rangeRead
+	state atomic.Int32 // pendingReady → pendingClaimed by whichever of the goroutine or Get runs r
+	done  chan struct{}
+	kvs   []KeyValue // shared RYW/cache storage; Get copies
+	more  bool
+	err   error
+	// ranByCaller reports that Get ran the read itself (test observability).
+	ranByCaller bool
 }
 
+const (
+	pendingReady int32 = iota
+	pendingClaimed
+)
+
 // Get waits for the read and returns its rows (the caller's own copy, as each Get of
-// a libfdb_c future copies), whether more remain, and its error.
+// a libfdb_c future copies), whether more remain, and its error. A caller that asks
+// before the background goroutine has started runs the read itself, saving the handoff.
 func (p *PendingRange) Get() ([]KeyValue, bool, error) {
+	if p.state.CompareAndSwap(pendingReady, pendingClaimed) {
+		p.ranByCaller = true
+		p.execute()
+	}
 	<-p.done
 	return cloneReadKVs(p.kvs), p.more, p.err
+}
+
+// execute runs the claimed read; run recovers panics and records them before
+// the read leaves Commit's barrier, on either path.
+func (p *PendingRange) execute() {
+	defer close(p.done)
+	r := p.r
+	p.r = nil
+	p.kvs, p.more, p.err = r.run(false)
 }
 
 // StartGetRange starts a range read and returns at once; GRV, location lookup and request run
@@ -253,13 +296,19 @@ func (tx *Transaction) startRange(ctx context.Context, begin, end []byte, limit,
 	r := tx.issueRange(ctx, begin, end, limit, byteTarget, reverse, snapshot)
 	if r.finished || r.local {
 		p := &PendingRange{done: closedDone}
+		p.state.Store(pendingClaimed)
 		p.kvs, p.more, p.err = r.run(false)
 		return p
 	}
-	p := &PendingRange{done: make(chan struct{})}
+	p := &PendingRange{r: r, done: make(chan struct{})}
+	hook := tx.beforeRangeGoroutine
 	go func() {
-		defer close(p.done)
-		p.kvs, p.more, p.err = r.run(false)
+		if hook != nil {
+			hook()
+		}
+		if p.state.CompareAndSwap(pendingReady, pendingClaimed) {
+			p.execute()
+		}
 	}()
 	return p
 }

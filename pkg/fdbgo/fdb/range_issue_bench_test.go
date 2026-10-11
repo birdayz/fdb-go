@@ -82,4 +82,44 @@ func BenchmarkGetRangeFacade(b *testing.B) {
 		}
 		tr.Cancel()
 	})
+	b.Run("local-hit-parallel", func(b *testing.B) {
+		r := fdb.KeyRange{Begin: key(0), End: key(4)}
+		b.ReportAllocs()
+		b.RunParallel(func(pb *testing.PB) {
+			tr := newTx()
+			if _, err := tr.GetRange(r, fdb.RangeOptions{}).GetSliceWithError(); err != nil {
+				b.Error(err)
+				return
+			}
+			for i := 1; pb.Next(); i++ {
+				if i%keys == 0 {
+					tr.Cancel()
+					tr = newTx()
+				}
+				if _, err := tr.GetRange(r, fdb.RangeOptions{}).GetSliceWithError(); err != nil {
+					b.Error(err)
+					return
+				}
+			}
+			tr.Cancel()
+		})
+	})
+	b.Run("remote-parallel", func(b *testing.B) {
+		b.ReportAllocs()
+		b.RunParallel(func(pb *testing.PB) {
+			tr := newTx()
+			for i := 1; pb.Next(); i++ {
+				j := i % keys
+				if j == 0 {
+					tr.Cancel()
+					tr = newTx()
+				}
+				if _, err := tr.GetRange(fdb.KeyRange{Begin: key(j), End: key(j + 1)}, fdb.RangeOptions{}).GetSliceWithError(); err != nil {
+					b.Error(err)
+					return
+				}
+			}
+			tr.Cancel()
+		})
+	})
 }

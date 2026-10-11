@@ -314,3 +314,41 @@ func TestWatchSetup_FailedReadAddsNoConflict(t *testing.T) {
 		t.Fatalf("commit = %v; the failed watch read must not leave a read conflict", err)
 	}
 }
+
+// Get on a read whose goroutine has not started runs the read itself instead of waiting for
+// the goroutine to be scheduled.
+func TestStartGetRange_CallerRunsUnstartedRead(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	db := rangeIssueDB(t, ctx)
+	defer db.Close()
+	prefix := []byte(t.Name())
+	rangeIssueSeed(t, ctx, db, prefix, 2)
+	tx := db.CreateTransaction()
+	defer tx.Cancel()
+	held, release := releaseOnCleanup(t)
+	tx.beforeRangeGoroutine = func() { <-held }
+	p := tx.StartGetRange(ctx, prefix, append(bytes.Clone(prefix), 0xff), 0, ByteLimitUnlimited, false)
+	tx.beforeRangeGoroutine = nil
+	got := make(chan error, 1)
+	go func() {
+		kvs, _, err := p.Get()
+		if err == nil && len(kvs) != 2 {
+			err = fmt.Errorf("rows = %v", kvs)
+		}
+		got <- err
+	}()
+	select {
+	case err := <-got:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("Get waited for the parked goroutine instead of running the read")
+	}
+	release()
+	if !p.ranByCaller {
+		t.Fatal("the read was not run by its caller")
+	}
+}

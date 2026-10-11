@@ -316,6 +316,8 @@ type txOptions struct {
 	// afterPendingSend is a per-transaction lifecycle interleaving seam. It
 	// runs without transaction locks, after enqueue and before registration.
 	afterPendingSend func(*PendingGet)
+	// beforeRangeGoroutine parks a started range read's goroutine before it claims the read.
+	beforeRangeGoroutine func()
 	// afterRangeReply parks an issued range read after a storage reply, before
 	// it merges the reply or records its conflict.
 	afterRangeReply func()
