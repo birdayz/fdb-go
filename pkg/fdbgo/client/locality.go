@@ -548,8 +548,8 @@ func (lc *locationCache) queryLocations(db *database, ctx context.Context, tenan
 				db.handleReadConnError(proxy.Address, err)
 				continue
 			}
-			if db.afterLocationSend != nil {
-				db.afterLocationSend()
+			if hook := db.afterLocationSend.Load(); hook != nil {
+				(*hook)()
 			}
 
 			rctx, rpcCancel := context.WithTimeout(ctx, DefaultRPCTimeout)

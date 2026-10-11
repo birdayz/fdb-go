@@ -17,6 +17,7 @@ type rangeIssueTxn struct {
 	set      func(k, v []byte)
 	clear    func(k []byte)
 	getRange func(begin, end []byte) func() ([]kvPair, error)
+	pinRV    func()
 	commit   func() int
 	cancel   func()
 }
@@ -31,6 +32,11 @@ func rangeIssueOpen(t *testing.T, name string) rangeIssueTxn {
 		}
 		return rangeIssueTxn{
 			set: func(k, v []byte) { tx.Set(gofdb.Key(k), v) }, clear: func(k []byte) { tx.Clear(gofdb.Key(k)) },
+			pinRV: func() {
+				if _, err := tx.GetReadVersion().Get(); err != nil {
+					t.Fatal(err)
+				}
+			},
 			getRange: func(b, e []byte) func() ([]kvPair, error) {
 				rr := tx.GetRange(gofdb.KeyRange{Begin: gofdb.Key(b), End: gofdb.Key(e)}, gofdb.RangeOptions{})
 				return func() ([]kvPair, error) {
@@ -56,6 +62,11 @@ func rangeIssueOpen(t *testing.T, name string) rangeIssueTxn {
 		}
 		return rangeIssueTxn{
 			set: func(k, v []byte) { tx.Set(cgofdb.Key(k), v) }, clear: func(k []byte) { tx.Clear(cgofdb.Key(k)) },
+			pinRV: func() {
+				if _, err := tx.GetReadVersion().Get(); err != nil {
+					t.Fatal(err)
+				}
+			},
 			getRange: func(b, e []byte) func() ([]kvPair, error) {
 				rr := tx.GetRange(cgofdb.KeyRange{Begin: cgofdb.Key(b), End: cgofdb.Key(e)}, cgofdb.RangeOptions{})
 				return func() ([]kvPair, error) {
@@ -110,6 +121,7 @@ func TestDifferential_GetRangeIssuesAtCall(t *testing.T) {
 
 		// The unconsumed read: a concurrent write to its range fails the commit.
 		tx = rangeIssueOpen(t, name)
+		tx.pinRV() // the read's GRV is asynchronous in both clients
 		tx.getRange(k1, ownershipKey(prefix, '2'))
 		rangeIssueWrite(t, name, k1, []byte("changed"))
 		tx.set(ownershipKey(prefix, 'w'), []byte("x"))

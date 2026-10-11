@@ -59,14 +59,8 @@ func newSnapshotRangeResult(tx *transaction, r Range, options RangeOptions) Rang
 func startRangeResult(rr goRangeResult) goRangeResult {
 	f := &firstBatch{}
 	rr.first = f
-	begin, end, err := resolveRange(rr.tx, rr.r, rr.snapshot)
-	if err != nil {
-		f.err = convertError(err)
-		return rr
-	}
-	f.begin, f.end = begin, end
-	// EXACT without a limit is exact_mode_without_limits (2210) before the RYW checks
-	// (fdb_c.cpp:996-998); the client then raises cancelled, 2004 and 2012 in C++ order.
+	// EXACT without a limit (2210) and an invalid mode fail before the RYW checks and any I/O
+	// (fdb_c.cpp:996-1024); the client then raises cancelled, 2004 and 2012 in C++ order.
 	if rr.options.Mode == StreamingModeExact && (rr.options.Limit == 0 || rr.options.Limit == -1) {
 		f.err = Error{Code: 2210}
 		return rr
@@ -76,6 +70,12 @@ func startRangeResult(rr goRangeResult) goRangeResult {
 		f.err = err
 		return rr
 	}
+	begin, end, err := resolveRange(rr.tx, rr.r, rr.snapshot)
+	if err != nil {
+		f.err = convertError(err)
+		return rr
+	}
+	f.begin, f.end = begin, end
 	f.limit = effectiveLimit(rr.options.Limit) // a limit < -1 stays as is, for the client's 2012
 	if rr.snapshot {
 		f.pending = rr.tx.inner.Snapshot().StartGetRange(rr.tx.ctx, begin, end, f.limit, byteTarget, rr.options.Reverse)

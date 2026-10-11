@@ -28,19 +28,25 @@ type simFirstBatch struct {
 func (r *simRangeResult) issueFirst() {
 	f := &simFirstBatch{}
 	r.first = f
+	// The client's order (libfdb_c's): 2210 and the mode before any read, then cancelled and the
+	// legal range in resolution, then 2012 (ReadYourWrites.actor.cpp:1736-1749).
+	if r.options.Mode == fdb.StreamingModeExact && (r.options.Limit == 0 || r.options.Limit == -1) {
+		f.err = fdb.Error{Code: 2210}
+		return
+	}
+	byteTarget, err := fdb.ModeTargetBytes(r.options.Mode, 1)
+	if err != nil {
+		f.err = err
+		return
+	}
 	begin, end, err := r.tx.resolveRangeForRead(r.r, r.snapshot)
 	if err != nil {
 		f.err = err
 		return
 	}
 	f.begin, f.end = begin, end
-	if err := validateRangeLimit(r.options); err != nil {
-		f.err = err
-		return
-	}
-	byteTarget, err := fdb.ModeTargetBytes(r.options.Mode, 1)
-	if err != nil {
-		f.err = err
+	if r.options.Limit < -1 {
+		f.err = fdb.Error{Code: 2012}
 		return
 	}
 	f.limit = fdb.EffectiveRowLimit(r.options.Limit)
@@ -57,7 +63,15 @@ func (r *simRangeResult) issueFirst() {
 	}
 }
 
-// rows returns a consumer's own copy of batch 1, as each Get of a range future copies.
+// take returns a consumer's own copy of batch 1. The client runs batch 1 in the background, so a
+// Cancel before its consumption fails it with 1025; the sim models no RYW cache answer at issue.
+func (f *simFirstBatch) take(tx *simTxn) ([]fdb.KeyValue, error) {
+	if tx.cancelled.Load() {
+		return nil, fdb.Error{Code: 1025}
+	}
+	return f.rows(), nil
+}
+
 func (f *simFirstBatch) rows() []fdb.KeyValue {
 	out := make([]fdb.KeyValue, len(f.batch))
 	for i, kv := range f.batch {
@@ -66,50 +80,16 @@ func (f *simFirstBatch) rows() []fdb.KeyValue {
 	return out
 }
 
-// validateRangeLimit is the row-limit check the client applies on BOTH consumption paths. A row
-// limit below ROW_LIMIT_UNLIMITED(-1) is range_limits_invalid(2012): GetSlice reaches it through
-// getRangeDir (client/transaction.go:1265-1268, which every doRangeWithLimit call funnels
-// through) and Iterator() performs it inline (fdb/range_result.go:122-125). Without it here a
-// Limit of -2 silently returned every row — a wrong answer no real backend gives, on the path
-// most callers use.
-//
-// EXACT without a row budget is exact_mode_without_limits(2210) on BOTH surfaces, and the two
-// codes are ordered: 2012 wins for a limit below ROW_LIMIT_UNLIMITED(-1), because libfdb_c's
-// EXACT gate compares the limit against ROW_LIMIT_UNLIMITED and -7 is neither unlimited nor valid.
-// The order is what enforces that here — 2012 is checked first, so by the time the EXACT test runs
-// the limit is already known to be >= -1.
-//
-// The EXACT test is therefore spelled "0 or -1" for READABILITY, not for behaviour: with the 2012
-// check above it, "<= 0" is equivalent, and mutating it to "<= 0" leaves this package green. That
-// is expected and not a coverage gap. The spelling IS load-bearing in the client's GetSlice, where
-// 2012 arrives later (from getRangeDir) and "<= 0" really would answer 2210 for -7; matching the
-// spelling here keeps the two readable side by side. The client-side direction is pinned by
-// fdb:TestRangeIterator_RowLimitUnlimitedAndInvalid and bench:TestDifferential_ExactModeWithoutLimits.
-//
-// This used to be modelled as Iterator-only, on the argument that GetSlice cannot reach the check
-// because neither real backend forwards the streaming mode down: the pure-Go client's
-// GetSliceWithError did not pass Mode at all, and Apple's binding rewrites it (Exact when a limit
-// is set, WantAll otherwise). The argument was from source, not measurement, and it was wrong —
-// Apple's binding issues the FIRST batch's future eagerly with the caller's mode and only rewrites
-// the batches it fetches itself. TestDifferential_ExactModeWithoutLimits measured libfdb_c raising
-// 2210 from GetSlice; the pure-Go client was fixed to match, and this follows it.
-func validateRangeLimit(options fdb.RangeOptions) error {
-	if options.Limit < -1 {
-		return fdb.Error{Code: 2012}
-	}
-	if options.Mode == fdb.StreamingModeExact && (options.Limit == 0 || options.Limit == -1) {
-		return fdb.Error{Code: 2210}
-	}
-	return nil
-}
-
 func (r *simRangeResult) GetSliceWithError() ([]fdb.KeyValue, error) {
 	f := r.first
 	if f.err != nil {
 		return nil, f.err
 	}
-	// Batch 1's reply is in hand at GetRange, so a later Cancel cannot fail it.
-	kvs, more := f.rows(), f.more
+	kvs, err := f.take(r.tx)
+	if err != nil {
+		return nil, err
+	}
+	more := f.more
 	begin, end, remaining := f.begin, f.end, f.limit-len(kvs)
 	for more && remaining > 0 && len(kvs) > 0 {
 		last := []byte(kvs[len(kvs)-1].Key)
@@ -217,7 +197,13 @@ func (it *rangeIter) fetchBatch() bool {
 		if it.traceLog != nil {
 			it.traceLog(1, it.remaining, len(f.batch), f.more, nil)
 		}
-		return it.takeBatch(f.rows(), f.more)
+		rows, err := f.take(it.rr.tx)
+		if err != nil {
+			it.err = err
+			it.exhausted = true
+			return false
+		}
+		return it.takeBatch(rows, f.more)
 	}
 	// The division is BYTE-driven, exactly as it is in the client: the streaming mode supplies a
 	// per-fetch byte target (fdb.ModeTargetBytes, the single definition of the rule), the row

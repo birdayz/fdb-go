@@ -154,3 +154,18 @@ func TestModeTargetBytes_IteratorProgression(t *testing.T) {
 		}
 	}
 }
+
+// An invalid streaming mode or iteration is client_invalid_operation (2000), as libfdb_c returns
+// (fdb_c.cpp:1017-1024, error_definitions.h:189); 2005 is inverted_range.
+func TestModeTargetBytes_InvalidIsClientInvalidOperation(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		mode      StreamingMode
+		iteration int
+	}{{StreamingModeIterator, 0}, {StreamingMode(99), 1}, {StreamingMode(-99), 1}} {
+		_, err := modeTargetBytes(c.mode, c.iteration)
+		if e, ok := err.(Error); !ok || e.Code != 2000 {
+			t.Errorf("modeTargetBytes(%v, %d) = %v, want client_invalid_operation (2000)", c.mode, c.iteration, err)
+		}
+	}
+}

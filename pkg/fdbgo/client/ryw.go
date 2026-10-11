@@ -701,14 +701,11 @@ func (c *rywCache) cachedRangeLocked(begin, end []byte, limit, byteTarget int, r
 	return true, kvs, bytesReached || computeMore(cachedKVs, limit) || limitReached(limit, len(kvs)) || unreadableCap != nil, nil
 }
 
-// conflictRanges filters [begin, end) through the issue-time write state: C++
-// addConflictRange walks the read's own iterator (ReadYourWrites.actor.cpp:388).
+// conflictRanges filters [begin, end) through the issue-time write state (view must be set):
+// C++ addConflictRange walks the read's own iterator (ReadYourWrites.actor.cpp:388).
 func (r *rywRangeRead) conflictRanges(begin, end []byte) [][2][]byte {
 	if bytes.Compare(begin, end) >= 0 {
 		return nil
-	}
-	if r.view == nil {
-		return [][2][]byte{{bytes.Clone(begin), bytes.Clone(end)}}
 	}
 	c := r.c
 	c.mu.Lock()

@@ -83,10 +83,11 @@ func TestStartGetRange_LocationLookupsOverlap(t *testing.T) {
 	}
 	var inflight atomic.Int32
 	held, release := releaseOnCleanup(t)
-	cold.db.afterLocationSend = func() {
+	hook := func() {
 		inflight.Add(1)
 		<-held
 	}
+	cold.db.afterLocationSend.Store(&hook)
 	started := make(chan []*PendingRange, 1)
 	go func() {
 		reads := make([]*PendingRange, n)
@@ -143,7 +144,8 @@ func TestGetRangeRequests_OncePerRead(t *testing.T) {
 	}
 }
 
-// A panic on a started read's goroutine fails that read (RFC-110) instead of aborting the host.
+// A panic on a started read's goroutine fails that read (RFC-110) instead of aborting the host,
+// and fails the commit: the read never recorded its conflict.
 func TestStartGetRange_PanicFailsTheRead(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -161,6 +163,10 @@ func TestStartGetRange_PanicFailsTheRead(t *testing.T) {
 	}
 	if db.Metrics().RecoveredPanics == before {
 		t.Fatal("the panic was not counted by the backstop")
+	}
+	tx.Set(append(bytes.Clone(prefix), 'w'), []byte("x"))
+	if err := tx.Commit(ctx); fdbCode(err) != ErrInternalError {
+		t.Fatalf("commit = %v, want the failed read's internal_error", err)
 	}
 }
 

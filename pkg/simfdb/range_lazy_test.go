@@ -308,10 +308,10 @@ func TestWriteBeforeGetRangeStillReads(t *testing.T) {
 	commitAfterConcurrentSet(t, db, tx, "e", 0)
 }
 
-// TestCancelAfterGetRangeKeepsBatchOne pins that a Cancel after GetRange() leaves batch 1, whose
-// reply was already in hand, and fails every later fetch and every later GetRange with 1025:
-// a ready libfdb_c future keeps its value; reads issued after resetPromise fails do not.
-func TestCancelAfterGetRangeKeepsBatchOne(t *testing.T) {
+// TestCancelBetweenGetRangeAndConsumptionFailsTheRead pins that a Cancel after GetRange() fails
+// the read with 1025 on both surfaces, as the client's background read is cancelled through its
+// incarnation (C++ resetPromise, ReadYourWrites.actor.cpp:391), and so does a later GetRange.
+func TestCancelBetweenGetRangeAndConsumptionFailsTheRead(t *testing.T) {
 	t.Parallel()
 	db := New(nil)
 	seedLazy(db)
@@ -320,21 +320,15 @@ func TestCancelAfterGetRangeKeepsBatchOne(t *testing.T) {
 	r := fdb.KeyRange{Begin: k("a"), End: k("z")}
 	rr := tx.GetRange(r, fdb.RangeOptions{})
 	tx.Cancel()
-	it := rr.Iterator()
-	for i := 0; i < 2; i++ {
-		if !it.Advance() {
-			_, err := it.Get()
-			t.Fatalf("batch-1 row %d lost after Cancel: %v", i, err)
-		}
+	if _, err := rr.GetSliceWithError(); errCode(t, err) != 1025 {
+		t.Fatalf("GetSliceWithError after Cancel = %v, want transaction_cancelled(1025)", err)
 	}
+	it := rr.Iterator()
 	if it.Advance() {
-		t.Fatal("a batch fetched after Cancel returned rows")
+		t.Fatal("Iterator after Cancel returned a row")
 	}
 	if _, err := it.Get(); errCode(t, err) != 1025 {
-		t.Fatalf("batch 2 after Cancel = %v, want transaction_cancelled(1025)", err)
-	}
-	if _, err := rr.GetSliceWithError(); errCode(t, err) != 1025 {
-		t.Fatalf("GetSliceWithError past batch 1 after Cancel = %v, want transaction_cancelled(1025)", err)
+		t.Fatalf("Iterator Get after Cancel = %v, want transaction_cancelled(1025)", err)
 	}
 	if _, err := tx.GetRange(r, fdb.RangeOptions{}).GetSliceWithError(); errCode(t, err) != 1025 {
 		t.Fatalf("GetRange after Cancel = %v, want transaction_cancelled(1025)", err)

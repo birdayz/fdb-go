@@ -38,7 +38,7 @@ const (
 // issueRange runs a range read's synchronous part: entry checks, path choice,
 // the issue-time write view, and registration in the commit barrier.
 func (tx *Transaction) issueRange(parent context.Context, begin, end []byte, limit, byteTarget int, reverse, snapshot bool) *rangeRead {
-	ctx, release := tx.opContext(parent)
+	ctx, release, counted := tx.opContextFor(parent, true)
 	r := &rangeRead{tx: tx, ctx: ctx, release: release, begin: begin, end: end, limit: limit, reverse: reverse, snapshot: snapshot}
 	if err := tx.checkReadState(ctx); err != nil {
 		return r.finish(nil, false, tx.trackReadOperation(ctx, err))
@@ -73,8 +73,8 @@ func (tx *Transaction) issueRange(parent context.Context, begin, end []byte, lim
 		r.ryw = tx.ryw.issueRange(begin, end, limit, byteTarget, reverse)
 		r.local = r.ryw.known
 	}
-	if !r.local {
-		r.inc = tx.enterIssuedRead(ctx)
+	if !counted && !r.local {
+		r.inc = tx.enterIssuedRead(ctx) // a borrowed operation's lease does not count
 	}
 	r.afterReply = tx.afterRangeReply
 	return r
@@ -120,11 +120,21 @@ func (r *rangeRead) finish(kvs []KeyValue, more bool, err error) *rangeRead {
 
 // run performs the read's I/O and records its read conflict. Exactly once. With
 // clone the rows are copied out of RYW storage for the caller.
-func (r *rangeRead) run(clone bool) ([]KeyValue, bool, error) {
+func (r *rangeRead) run(clone bool) (kvs []KeyValue, more bool, err error) {
 	if r.finished {
 		return r.kvs, r.more, r.err
 	}
 	defer r.complete()
+	// RFC-110: a panic fails the read, and is recorded before complete() releases
+	// Commit's wait, so a commit cannot go out without this read's conflict.
+	pb := r.tx.rangeReadBackstop()
+	if pb.run(func() { kvs, more, err = r.read(clone) }) {
+		return nil, false, r.tx.trackReadOperation(r.ctx, &wire.FDBError{Code: ErrInternalError})
+	}
+	return kvs, more, err
+}
+
+func (r *rangeRead) read(clone bool) ([]KeyValue, bool, error) {
 	tx, ctx := r.tx, r.ctx
 	server := tx.getRange
 	if hook := r.afterReply; hook != nil {
@@ -173,8 +183,8 @@ func (r *rangeRead) addConflicts(kvs []KeyValue, more bool) {
 	if bytes.Compare(cBegin, cEnd) >= 0 {
 		return
 	}
-	if r.path == rangePathRYWDisabled {
-		tx.addReadConflict(cBegin, cEnd)
+	if r.path == rangePathRYWDisabled || r.ryw.view == nil {
+		tx.addReadConflict(cBegin, cEnd) // no local writes in range at issue: nothing to filter
 		return
 	}
 	tx.addReadConflicts(r.ryw.conflictRanges(cBegin, cEnd))
@@ -241,19 +251,27 @@ func (s *Snapshot) StartGetRange(ctx context.Context, begin, end []byte, limit, 
 
 func (tx *Transaction) startRange(ctx context.Context, begin, end []byte, limit, byteTarget int, reverse, snapshot bool) *PendingRange {
 	r := tx.issueRange(ctx, begin, end, limit, byteTarget, reverse, snapshot)
-	p := &PendingRange{done: make(chan struct{})}
 	if r.finished || r.local {
+		p := &PendingRange{done: closedDone}
 		p.kvs, p.more, p.err = r.run(false)
-		close(p.done)
 		return p
 	}
+	p := &PendingRange{done: make(chan struct{})}
 	go func() {
 		defer close(p.done)
-		// RFC-110: a read-path panic fails this read; it must not abort the host.
-		pb := panicBackstop{name: "rangeRead", db: tx.db}
-		if pb.run(func() { p.kvs, p.more, p.err = r.run(false) }) {
-			p.kvs, p.more, p.err = nil, false, &wire.FDBError{Code: ErrInternalError}
-		}
+		p.kvs, p.more, p.err = r.run(false)
 	}()
 	return p
+}
+
+// closedDone is the done channel of every read answered in the call.
+var closedDone = func() chan struct{} { ch := make(chan struct{}); close(ch); return ch }()
+
+// rangeReadBackstop is the database's shared range-read backstop, or a private one for a
+// transaction without a database.
+func (tx *Transaction) rangeReadBackstop() *panicBackstop {
+	if tx.db == nil {
+		return &panicBackstop{name: "rangeRead"}
+	}
+	return &tx.db.rangeReadPanics
 }

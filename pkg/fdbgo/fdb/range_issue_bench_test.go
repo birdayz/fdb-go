@@ -40,19 +40,29 @@ func BenchmarkGetRangeFacade(b *testing.B) {
 		return tr
 	}
 	b.Run("local-hit", func(b *testing.B) {
-		tr := newTx()
-		defer tr.Cancel()
 		r := fdb.KeyRange{Begin: key(0), End: key(4)}
-		if _, err := tr.GetRange(r, fdb.RangeOptions{}).GetSliceWithError(); err != nil {
-			b.Fatal(err)
+		warm := func() fdb.Transaction {
+			tr := newTx()
+			if _, err := tr.GetRange(r, fdb.RangeOptions{}).GetSliceWithError(); err != nil {
+				b.Fatal(err)
+			}
+			return tr
 		}
+		tr := warm()
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
+			if i%keys == 0 && i > 0 {
+				b.StopTimer()
+				tr.Cancel()
+				tr = warm()
+				b.StartTimer()
+			}
 			if _, err := tr.GetRange(r, fdb.RangeOptions{}).GetSliceWithError(); err != nil {
 				b.Fatal(err)
 			}
 		}
+		tr.Cancel()
 	})
 	b.Run("remote", func(b *testing.B) {
 		tr := newTx()

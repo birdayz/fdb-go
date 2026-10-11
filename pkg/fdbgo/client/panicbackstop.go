@@ -3,6 +3,7 @@ package client
 import (
 	"fmt"
 	"runtime/debug"
+	"sync"
 	"time"
 
 	"fdb.dev/pkg/fdbgo/internal/diag"
@@ -21,10 +22,10 @@ import (
 // (true OOM, stack overflow, concurrent map write) bypass recover() and still
 // abort — matching C++'s deliberate hard-exit classes.
 //
-// A backstop is owned by exactly one goroutine (the loop/worker it guards), so
-// its fields need no synchronization. The shared db.metrics counters it bumps
-// are atomic.
+// mu guards the streak and log state, so one backstop can be shared by many
+// goroutines (the database's range reads); db.metrics counters are atomic.
 type panicBackstop struct {
+	mu   sync.Mutex
 	name string
 	db   *database // may be nil for hand-constructed test databases
 
@@ -63,6 +64,8 @@ func (pb *panicBackstop) recovered(r any) bool {
 	if r == nil {
 		return false
 	}
+	pb.mu.Lock()
+	defer pb.mu.Unlock()
 	pb.consecutive++
 	if pb.db != nil {
 		pb.db.metrics.countRecoveredPanic(pb.consecutive)
@@ -92,6 +95,8 @@ func (pb *panicBackstop) run(fn func()) (panicked bool) {
 // successful iteration so the next panic starts fresh (immediate log, base
 // backoff).
 func (pb *panicBackstop) reset() {
+	pb.mu.Lock()
+	defer pb.mu.Unlock()
 	pb.consecutive = 0
 }
 
@@ -100,6 +105,8 @@ func (pb *panicBackstop) reset() {
 // exponential 10ms→1s (×2 per consecutive panic, capped) — the C++ Backoff
 // analog. Bounds a deterministic re-panic to ≤1/s.
 func (pb *panicBackstop) backoff() time.Duration {
+	pb.mu.Lock()
+	defer pb.mu.Unlock()
 	if pb.consecutive == 0 {
 		return 0
 	}

@@ -134,6 +134,10 @@ func TestGetRange_IssueTimeViewAndUnconsumedConflict(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tr2.Cancel()
+	// Pin the read version: GetRange's GRV runs in the background, as libfdb_c's does.
+	if _, err := tr2.GetReadVersion().Get(); err != nil {
+		t.Fatal(err)
+	}
 	tr2.GetRange(fdb.KeyRange{Begin: k('1'), End: k('2')}, fdb.RangeOptions{}) // issued, never consumed
 	if _, err := db.Transact(func(w fdb.WritableTransaction) (any, error) {
 		w.Set(k('1'), []byte("changed"))
@@ -197,6 +201,16 @@ func TestGetRange_ErrorOrder(t *testing.T) {
 	}{{fdb.RangeOptions{Limit: -2}, 1025}, {fdb.RangeOptions{Mode: fdb.StreamingModeExact}, 2210}} {
 		if got := iterCode(tr.GetRange(illegal, c.opts)); got != c.want {
 			t.Errorf("cancelled, %+v: %d, want %d", c.opts, got, c.want)
+		}
+	}
+	// Option errors precede selector resolution, which would read (and fail with 1025 here).
+	sel := fdb.SelectorRange{Begin: fdb.LastLessThan(fdb.Key("a")), End: fdb.FirstGreaterThan(fdb.Key("b"))}
+	for _, c := range []struct {
+		opts fdb.RangeOptions
+		want int
+	}{{fdb.RangeOptions{Mode: fdb.StreamingModeExact}, 2210}, {fdb.RangeOptions{Mode: fdb.StreamingMode(99)}, 2000}} {
+		if got := iterCode(tr.GetRange(sel, c.opts)); got != c.want {
+			t.Errorf("cancelled selector range, %+v: %d, want %d", c.opts, got, c.want)
 		}
 	}
 }
