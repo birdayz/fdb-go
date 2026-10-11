@@ -574,7 +574,7 @@ func (c *indexCursor) advance(ctx context.Context) (RecordCursorResult[*IndexEnt
 		if c.iterator.Advance() {
 			return NewResultNoNext[*IndexEntry](
 				ReturnLimitReached,
-				c.rowLimitContinuation(),
+				c.limitContinuation(),
 			), nil
 		}
 		// Advance() returns false on exhaustion OR error — check Get() for the stored
@@ -649,7 +649,7 @@ func (c *indexCursor) advance(ctx context.Context) (RecordCursorResult[*IndexEnt
 	cont := c.makeContinuation(kv.Key)
 	c.lastCont = cont
 
-	return NewResultWithValue[*IndexEntry](entry, cont), nil
+	return NewResultWithValue(entry, cont), nil
 }
 
 func (c *indexCursor) unpackKeyValue(kv fdb.KeyValue) (*IndexEntry, error) {
@@ -688,18 +688,8 @@ func (c *indexCursor) limitContinuation() RecordCursorContinuation {
 	return &StartContinuation{}
 }
 
-// rowLimitContinuation is the continuation of a row-limit stop: the last returned
-// row's position, or an end-like empty token if no row was returned.
-func (c *indexCursor) rowLimitContinuation() RecordCursorContinuation {
-	if c.lastCont != nil {
-		return c.lastCont
-	}
-	return &BytesContinuation{}
-}
-
-// makeContinuation captures the row's key suffix; the proto is marshaled only if
-// the continuation is serialized (Java's KeyValueCursorBase.Continuation is lazy too).
-// The suffix aliases kv.Key, which the range iterator never reuses.
+// makeContinuation aliases kv.Key without copying: RangeIterator never reuses
+// returned key bytes, so the lazily marshaled suffix stays valid.
 func (c *indexCursor) makeContinuation(key fdb.Key) *keyValueContinuation {
 	var keySuffix []byte
 	if len(key) > c.prefixLength {

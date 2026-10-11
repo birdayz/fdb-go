@@ -1509,6 +1509,10 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   allocation (GC is ~39% of planner CPU); split 2, vector indexes out of
   `pkg/recordlayer` behind a maintainer registry (58 -> ~38 test targets per
   vector change); a Bazel cache shared by both CI runners.
+- [ ] Key-value continuation suffix when `len(lastKey) == prefixLength`: Java's
+  `KeyValueCursorBase.Continuation.toProto` (KeyValueCursorBase.java:225-236) emits
+  `lastKey[prefixLength:]` (empty, still a real position); Go's `indexCursor.makeContinuation`
+  and the count-index cursor emit the whole key. Match Java and pin `0A 00 11 <magic>`.
 
 ## Test lanes and test-speed work (committed with the temporal change)
 
