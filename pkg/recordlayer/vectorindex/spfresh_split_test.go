@@ -842,6 +842,121 @@ var _ = Describe("SPFresh chunked oversized split", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	It("recreates unpublished children when a chunked plan retries before commit", func() {
+		config := DefaultSPFreshConfig(2)
+		config.Lmax = 16
+		config.CellTarget = 4
+		config.CellMax = 8
+		storage := newSPFreshStorage(specSubspace().Sub("spfresh-plan-retry"), 1)
+		cellID, fineID, members, _ := spfreshBalloonPosting(ctx, storage, config, 90)
+		Expect(len(members)).To(BeNumerically(">", 4*config.Lmax))
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			_, terr := spfreshTaskSetIfAbsent(rtx.Transaction(), storage, spfreshTaskSplit, fineID)
+			return nil, terr
+		})
+		Expect(err).NotTo(HaveOccurred())
+		out, err := spfreshSealFine(ctx, sharedDB, storage, "plan-retry", cellID, fineID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(out.proceed).To(BeTrue())
+
+		// Computed centers from an aborted attempt must not imply published children.
+		retry := &retryOnceTransactor{inner: sharedRawDB}
+		retryDB := recordlayer.NewFDBDatabaseWithTransactor(retry, sharedRawDB)
+		Expect(spfreshChunkedSplitPlan(ctx, retryDB, storage, config, "plan-retry", cellID, fineID, out.childA, out.childB, 7)).To(Succeed())
+		Expect(retry.injected).To(Equal(1))
+		Expect(retry.attempts).To(BeNumerically(">=", 2))
+
+		children := []int64{out.childA, out.childB}
+		var childRows [2]spfreshCentroidRow
+		var childCounts [2]int64
+		var hdr []byte
+		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			for i, childID := range children {
+				var rerr error
+				childRows[i], rerr = spfreshReadCentroidForWrite(tx, storage, cellID, childID)
+				if rerr != nil {
+					return nil, rerr
+				}
+				childCounts[i], rerr = spfreshCounterReadSnapshot(tx, storage, spfreshCounterFine, childID)
+				if rerr != nil {
+					return nil, rerr
+				}
+			}
+			var herr error
+			hdr, herr = tx.Get(storage.postingHDRKey(fineID)).Get()
+			return nil, herr
+		})
+		Expect(err).NotTo(HaveOccurred(), "a retried plan must publish both child centroid rows before draining")
+		for i := range children {
+			Expect(childRows[i].state).To(Equal(spfreshStateActive))
+			Expect(childCounts[i]).To(BeZero())
+		}
+		hdrCell, hdrA, hdrB, err := decodePostingHDR(hdr)
+		Expect(err).NotTo(HaveOccurred())
+		Expect([]int64{hdrCell, hdrA, hdrB}).To(Equal([]int64{cellID, out.childA, out.childB}))
+
+		Expect(spfreshSplitFine(ctx, sharedDB, storage, config, "plan-retry", cellID, fineID, 7)).To(Succeed())
+		var parent spfreshCentroidRow
+		var parentEntries []spfreshPostingEntry
+		var childEntries [2][]spfreshPostingEntry
+		var memberships [][]int64
+		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			var rerr error
+			parent, rerr = spfreshReadCentroidForWrite(tx, storage, cellID, fineID)
+			if rerr != nil {
+				return nil, rerr
+			}
+			parentEntries, rerr = spfreshLoadPostingForSplit(tx, storage, fineID)
+			if rerr != nil {
+				return nil, rerr
+			}
+			for i, childID := range children {
+				childRows[i], rerr = spfreshReadCentroidForWrite(tx, storage, cellID, childID)
+				if rerr != nil {
+					return nil, rerr
+				}
+				childEntries[i], rerr = spfreshLoadPostingForSplit(tx, storage, childID)
+				if rerr != nil {
+					return nil, rerr
+				}
+				childCounts[i], rerr = spfreshCounterReadSnapshot(tx, storage, spfreshCounterFine, childID)
+				if rerr != nil {
+					return nil, rerr
+				}
+			}
+			memberships = make([][]int64, len(members))
+			for i, pk := range members {
+				memberships[i], rerr = spfreshReadMembership(tx, storage, pk)
+				if rerr != nil {
+					return nil, rerr
+				}
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(parent.state).To(Equal(spfreshStateForward))
+		Expect(parentEntries).To(BeEmpty())
+		posted := map[string]int64{}
+		for i, childID := range children {
+			Expect(childRows[i].state).To(Equal(spfreshStateActive))
+			Expect(childCounts[i]).To(Equal(int64(len(childEntries[i]))))
+			for _, e := range childEntries[i] {
+				key := string(e.pk.Pack())
+				Expect(posted).NotTo(HaveKey(key), "a parent member must move to exactly one child")
+				posted[key] = childID
+			}
+		}
+		Expect(posted).To(HaveLen(len(members)))
+		for i, pk := range members {
+			key := string(pk.Pack())
+			Expect(posted).To(HaveKey(key))
+			Expect(memberships[i]).To(ContainElement(posted[key]))
+			Expect(memberships[i]).NotTo(ContainElement(fineID))
+		}
+	})
+
 	// The two-rebalancer churn flake made deterministic: appending into a child
 	// another executor split mid-drain strands live entries where no query reads.
 	DescribeTable("a child split out from under an in-flight drain never receives the drain's entries",
