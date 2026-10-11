@@ -5,6 +5,7 @@ import (
 	"context"
 	"sync/atomic"
 
+	"fdb.dev/pkg/fdbgo/internal/rangecheck"
 	"fdb.dev/pkg/fdbgo/wire"
 )
 
@@ -81,10 +82,16 @@ func (tx *Transaction) issueRange(parent context.Context, begin, end []byte, lim
 	return r
 }
 
-// CheckRangeArgs runs a selector range read's checks on its UNRESOLVED selector keys, in
+func init() {
+	rangecheck.Check = func(ctx context.Context, tx any, beginKey, endKey []byte, limit int) error {
+		return tx.(*Transaction).checkRangeArgs(ctx, beginKey, endKey, limit)
+	}
+}
+
+// checkRangeArgs runs a selector range read's checks on its UNRESOLVED selector keys, in
 // C++ order: deferred error and cancellation, 2004, then 2012 (ReadYourWrites.actor.cpp:1736-1749).
-// The caller resolves the selectors only after it passes.
-func (tx *Transaction) CheckRangeArgs(ctx context.Context, beginKey, endKey []byte, limit int) error {
+// The facade resolves the selectors only after it passes.
+func (tx *Transaction) checkRangeArgs(ctx context.Context, beginKey, endKey []byte, limit int) error {
 	ctx, release := tx.opContext(ctx)
 	defer release()
 	if err := tx.checkReadState(ctx); err != nil {

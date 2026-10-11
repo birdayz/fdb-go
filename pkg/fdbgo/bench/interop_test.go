@@ -723,7 +723,7 @@ func TestInterop_GetRangeWithLimit(t *testing.T) {
 }
 
 // TestInterop_LastLessOrEqual verifies that LastLessOrEqual resolves
-// identically across Go and CGo. This selector goes through resolveSelector
+// identically across Go and CGo. This selector goes through the facade's GetKey
 // → GetKey wire call, and was affected by the OrEqual inversion bug.
 func TestInterop_LastLessOrEqual(t *testing.T) {
 	prefix := "interop_lle_"

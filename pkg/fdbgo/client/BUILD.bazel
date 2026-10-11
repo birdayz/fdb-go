@@ -47,6 +47,7 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/fdbgo/internal/diag",
+        "//pkg/fdbgo/internal/rangecheck",
         "//pkg/fdbgo/transport",
         "//pkg/fdbgo/wire",
         "//pkg/fdbgo/wire/types",

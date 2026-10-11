@@ -5,6 +5,7 @@ import (
 	"math"
 
 	"fdb.dev/pkg/fdbgo/client"
+	"fdb.dev/pkg/fdbgo/internal/rangecheck"
 )
 
 // RangeResult is the asynchronous result of a range read. It is an INTERFACE (RFC-109)
@@ -74,7 +75,7 @@ func startRangeResult(rr goRangeResult) goRangeResult {
 		// Selector resolution reads; C++ rejects first on the raw selector keys.
 		bs, es := rr.r.FDBRangeKeySelectors()
 		b, e := bs.FDBKeySelector().Key.FDBKey(), es.FDBKeySelector().Key.FDBKey()
-		if err := rr.tx.inner.CheckRangeArgs(rr.tx.ctx, b, e, rr.options.Limit); err != nil {
+		if err := rangecheck.Check(rr.tx.ctx, rr.tx.inner, b, e, rr.options.Limit); err != nil {
 			f.err = convertError(err)
 			return rr
 		}
