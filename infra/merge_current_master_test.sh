@@ -11,8 +11,11 @@ T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
 export HOME=$T/home GIT_CONFIG_NOSYSTEM=1
+export GIT_TRACE2_EVENT=$T/git-trace.json
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
 mkdir -p "$HOME"
+# Local clones and fixture teardown must not race detached object repacking.
+git config --global maintenance.auto false || exit 1
 
 fail=0
 ok() { printf '  ok   %s\n' "$1"; }
@@ -112,6 +115,14 @@ setup 3
 touch .git/index.lock
 check "failed checkout fails the job" pull_request 1 any "cannot check out current master"
 rm -f .git/index.lock
+
+if ! grep -q '"event":"child_start"' "$GIT_TRACE2_EVENT"; then
+  bad "Git tracing must record fixture child processes"
+elif grep -q '"maintenance","run","--auto"' "$GIT_TRACE2_EVENT"; then
+  bad "fixture must not launch automatic Git maintenance"
+else
+  ok "fixture starts no automatic Git maintenance"
+fi
 
 if [ "$fail" -ne 0 ]; then
   echo "FAILURES"
