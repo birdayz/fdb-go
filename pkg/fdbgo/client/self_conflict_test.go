@@ -248,25 +248,26 @@ func TestCommit_NonTenantWriteOnlyInjectsSelfConflictToWire(t *testing.T) {
 	}
 }
 
-// TestCommit_TenantSkipsSelfConflict pins the tenant-scoping GATE: a tenant commit must NOT inject a
-// \xFF/SC/ range (threading a raw system key through tenant-prefixed conflict ranges is a documented
-// follow-up). The assertion is prefix-INDEPENDENT and counts ranges: buildCommit tenant-prefixes the
-// SC key (only metadataVersion is exempt), so a \xFF/SC/ prefix check would be masked — instead, a
-// gated write-only tenant commit ships EXACTLY the one (prefixed) write range and ZERO read ranges.
-// Revert-proof: drop the `tx.tenantId != NoTenantID` early return and the injected SC range adds a
-// read range (and a second write range) → this goes red.
-func TestCommit_TenantSkipsSelfConflict(t *testing.T) {
+// Tenant self-conflict keys are prefixed exactly once, like user conflict keys.
+func TestCommit_TenantWriteOnlyInjectsSelfConflictToWire(t *testing.T) {
 	t.Parallel()
 	tx := newTestTx()
 	tx.tenantId = 42
-	tx.addWriteConflict([]byte("wk"), keyAfterBytes([]byte("wk"))) // write-only: one write conflict, no reads
-	tx.maybeMakeSelfConflicting(tx.writeConflicts)
-	reads, writes := marshaledConflictRanges(t, tx)
-	if len(reads) != 0 {
-		t.Fatalf("tenant write-only commit must ship 0 read conflict ranges (gate must skip SC injection); got %d", len(reads))
+	tx.addWriteConflict([]byte("wk"), keyAfterBytes([]byte("wk")))
+	sc, added := tx.maybeMakeSelfConflicting(tx.writeConflicts)
+	if !added || !bytes.HasPrefix(sc.Begin, []byte("\xff/SC/")) || len(sc.Begin) != len("\xff/SC/")+16 {
+		t.Fatalf("tenant self-conflict range = %x, added = %v", sc, added)
 	}
-	if len(writes) != 1 {
-		t.Fatalf("tenant write-only commit must ship exactly 1 write conflict range (the real one, no SC); got %d", len(writes))
+	reads, writes := marshaledConflictRanges(t, tx)
+	if len(reads) != 1 || len(writes) != 2 {
+		t.Fatalf("tenant write-only conflict counts: reads=%d writes=%d, want 1 and 2", len(reads), len(writes))
+	}
+	want := append(tenantPrefix(42), sc.Begin...)
+	if !singleKeyRangeIs(reads[0], want) || !singleKeyRangeIs(writes[1], want) {
+		t.Fatalf("self-conflict ranges: read=%x write=%x, want single key %x", reads[0], writes[1], want)
+	}
+	if !singleKeyRangeIs(writes[0], append(tenantPrefix(42), []byte("wk")...)) {
+		t.Fatalf("user write conflict range = %x, want tenant-prefixed wk", writes[0])
 	}
 }
 

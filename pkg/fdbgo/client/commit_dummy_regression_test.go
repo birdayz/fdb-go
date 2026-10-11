@@ -43,8 +43,10 @@ func TestCommitDummyTransaction_DoesNotOverwriteUserKey(t *testing.T) {
 	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		tx.Set(key, []byte("uncommitted")) // puts key in writeConflicts
 		tx.addReadConflictForKey(key)      // ...and readConflicts (matches intersect path)
-		tx.commitDummyTransaction(ctx)     // the barrier — must not touch `key`'s value
-		return nil, errAbortRegression     // abort: do not commit the outer tx's Set
+		if err := tx.commitDummyTransaction(ctx); err != nil {
+			return nil, err
+		}
+		return nil, errAbortRegression // abort: do not commit the outer tx's Set
 	}); err != errAbortRegression {
 		t.Fatalf("expected abort sentinel, got %v", err)
 	}
