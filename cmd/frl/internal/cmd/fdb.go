@@ -117,7 +117,8 @@ func newFdbUpCmd() *cobra.Command {
 				o, err := runDocker(ctx, "exec", name, "fdbcli", "--timeout", "5", "--exec", "configure new single memory")
 				return configureNewOutcome(o, err)
 			}); err != nil {
-				return fmt.Errorf("configure cluster (is the image healthy?): %w", err)
+				return fmt.Errorf("configure cluster (is the image healthy?): %w\n%s",
+					err, fdbStartupDiagnostics(cmd.Context(), runDocker, name))
 			}
 
 			fmt.Fprint(progress, "Waiting for the database to become available")
@@ -133,7 +134,8 @@ func newFdbUpCmd() *cobra.Command {
 				return fmt.Errorf("not available yet")
 			}); err != nil {
 				fmt.Fprintln(progress)
-				return fmt.Errorf("database did not become available: %w", err)
+				return fmt.Errorf("database did not become available: %w\n%s",
+					err, fdbStartupDiagnostics(cmd.Context(), runDocker, name))
 			}
 			fmt.Fprintln(progress, " ready")
 
@@ -262,8 +264,31 @@ func fdbRunArgs(name, image string, port int) []string {
 		"--env", "FDB_NETWORKING_MODE=host",
 		"--env", fmt.Sprintf("FDB_PORT=%d", port),
 		"--env", "FDB_CLUSTER_FILE_CONTENTS=" + fdbClusterString(port),
+		// Ratekeeper otherwise throttles to zero TPS when the host disk has under 5%
+		// free; a disposable cluster keeps only the absolute MIN_AVAILABLE_SPACE floor.
+		"--env", "FDB_KNOB_min_available_space_ratio=0",
 		image,
 	}
+}
+
+// fdbStartupDiagnostics is gathered while building the startup error, so it runs
+// before the deferred cleanup removes the container.
+func fdbStartupDiagnostics(ctx context.Context,
+	run func(context.Context, ...string) (string, error), name string,
+) string {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	logs, err := run(ctx, "logs", "--tail", "50", name)
+	if err != nil {
+		logs = fmt.Sprintf("docker logs: %v\n%s", err, logs)
+	}
+	trace, err := run(ctx, "exec", name, "sh", "-c",
+		`cd /var/fdb/logs && grep -hE 'Severity="(30|40)"' *.xml | tail -n 10; grep -h 'Type="RkUpdate"' *.xml | tail -n 1`)
+	if err != nil {
+		trace = fmt.Sprintf("read server trace: %v\n%s", err, trace)
+	}
+	return "container output:\n" + strings.TrimSpace(logs) +
+		"\nserver warnings and latest ratekeeper update:\n" + strings.TrimSpace(trace)
 }
 
 // setContext upserts a context by name (updating its cluster file and keyspace)

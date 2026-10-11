@@ -112,6 +112,7 @@ func TestFdbRunArgs_LoopbackPublishNotHostNetwork(t *testing.T) {
 		"--env", "FDB_NETWORKING_MODE=host",
 		"--env", "FDB_PORT=4689",
 		"--env", "FDB_CLUSTER_FILE_CONTENTS=docker:docker@127.0.0.1:4689",
+		"--env", "FDB_KNOB_min_available_space_ratio=0",
 		"img:tag",
 	}
 	if !slices.Equal(args, want) {
@@ -269,5 +270,34 @@ func TestEnsureFdbImagePullsOnlyMissingImageWithoutDeadline(t *testing.T) {
 		func(context.Context, string, io.Writer) error { t.Error("canceled lookup pulled"); return nil })
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled image lookup: %v", err)
+	}
+}
+
+func TestFdbStartupDiagnosticsOutlivesStartupDeadline(t *testing.T) {
+	t.Parallel()
+	expired, cancel := context.WithCancel(context.Background())
+	cancel()
+	var calls []string
+	run := func(ctx context.Context, args ...string) (string, error) {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		calls = append(calls, args[0])
+		switch args[0] {
+		case "logs":
+			return "FDBD joined cluster.\n", nil
+		case "exec":
+			return `<Event Type="RkUpdate" TPSLimit="0" />` + "\n", nil
+		}
+		return "", fmt.Errorf("unexpected docker %q", args)
+	}
+	got := fdbStartupDiagnostics(expired, run, "frl-fdb")
+	if !slices.Equal(calls, []string{"logs", "exec"}) {
+		t.Fatalf("docker calls = %q, want logs then exec", calls)
+	}
+	for _, want := range []string{"FDBD joined cluster.", `TPSLimit="0"`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("diagnostics missing %q:\n%s", want, got)
+		}
 	}
 }
