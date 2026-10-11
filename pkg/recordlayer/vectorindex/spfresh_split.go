@@ -210,15 +210,8 @@ func spfreshSplitFine(ctx context.Context, db *recordlayer.FDBDatabase, s *spfre
 			vecs[i] = v
 		}
 
-		// Children that ALREADY EXIST pin the geometry: a chunked drain that
-		// lost its lease after moving some chunks leaves ACTIVE children whose
-		// entries are RaBitQ residuals against the committed centers — if the
-		// takeover resumes here (the parent shrank back under the envelope),
-		// recomputing 2-means and overwriting those centroid rows would
-		// corrupt every drained entry's code and the counterSet below would
-		// erase their counts. Same rule as the chunked drain: move the
-		// remainder to the nearest ACTIVE split target and counterAdd instead
-		// of counterSet.
+		// Existing children (a chunked drain resumed under the envelope) pin the
+		// geometry their entries' codes encode: follow them, never re-center.
 		childrenExist := false
 		for _, childID := range []int64{childA, childB} {
 			if _, rerr := spfreshReadCentroidForWrite(tx, s, cellID, childID); rerr == nil {
@@ -235,7 +228,7 @@ func spfreshSplitFine(ctx context.Context, db *recordlayer.FDBDatabase, s *spfre
 			if terr != nil {
 				return terr
 			}
-			if sealed || len(targets) == 0 {
+			if sealed && len(entries) > 0 {
 				deferred = true
 				return spfreshTaskRelease(tx, s, spfreshTaskSplit, fineID, owner)
 			}
@@ -280,8 +273,8 @@ func spfreshSplitFine(ctx context.Context, db *recordlayer.FDBDatabase, s *spfre
 				}
 				return merr
 			}
-			mem, moved := spfreshMoveReplica(mem, fineID, childID)
-			if moved {
+			mem, place, changed := spfreshMoveReplica(mem, fineID, childID)
+			if place {
 				residual := make([]float64, len(vecs[i]))
 				for d := range vecs[i] {
 					residual[d] = vecs[i][d] - cents[c][d]
@@ -289,7 +282,9 @@ func spfreshSplitFine(ctx context.Context, db *recordlayer.FDBDatabase, s *spfre
 				tx.Set(s.postingKey(childID, e.pk), quantizer.Encode(residual))
 				counts[c]++
 			}
-			tx.Set(s.membershipKey(e.pk), encodeMembership(mem))
+			if changed {
+				tx.Set(s.membershipKey(e.pk), encodeMembership(mem))
+			}
 		}
 
 		for i, childID := range children {
@@ -410,9 +405,7 @@ func spfreshSplitFine(ctx context.Context, db *recordlayer.FDBDatabase, s *spfre
 // stands; a commit_unknown retry of the final tx no-ops on FORWARD.
 //
 // spfreshChunkedSplitPlan is step 1: child centroids from a bounded sample,
-// written ACTIVE (idempotent: re-running overwrites with freshly sampled
-// centers only while the children are still empty — entries committed to
-// them pin the geometry, so re-runs skip the rewrite once rows exist), the
+// written ACTIVE (idempotent: re-runs leave existing children untouched), the
 // parent's HDR forward marker, and the cellMax probe — all one transaction,
 // so a reader routed to the SEALED parent finds the redirect the moment any
 // entry can have moved.
@@ -446,7 +439,7 @@ func spfreshSplitFineChunked(ctx context.Context, db *recordlayer.FDBDatabase, s
 			if terr != nil {
 				return terr
 			}
-			if sealed || len(targets) == 0 {
+			if sealed {
 				deferred = true
 				return spfreshTaskRelease(tx, s, spfreshTaskSplit, fineID, owner)
 			}
@@ -472,8 +465,8 @@ func spfreshSplitFineChunked(ctx context.Context, db *recordlayer.FDBDatabase, s
 					return derr
 				}
 				t := targets[spfreshNearestTarget(v, targets)]
-				mem, ok := spfreshMoveReplica(mem, fineID, t.fineID)
-				if ok {
+				mem, place, changed := spfreshMoveReplica(mem, fineID, t.fineID)
+				if place {
 					residual := make([]float64, len(v))
 					for d := range v {
 						residual[d] = v[d] - t.vec[d]
@@ -481,7 +474,9 @@ func spfreshSplitFineChunked(ctx context.Context, db *recordlayer.FDBDatabase, s
 					tx.Set(s.postingKey(t.fineID, e.pk), quantizer.Encode(residual))
 					spfreshCounterAdd(tx, s, spfreshCounterFine, t.fineID, 1)
 				}
-				tx.Set(s.membershipKey(e.pk), encodeMembership(mem))
+				if changed {
+					tx.Set(s.membershipKey(e.pk), encodeMembership(mem))
+				}
 				tx.Clear(s.postingKey(fineID, e.pk))
 				moved++
 			}
@@ -664,40 +659,44 @@ func spfreshSplitGoneOr(tx fdb.WritableTransaction, s *spfreshStorage, fineID in
 	return err
 }
 
-// errSPFreshSplitDeferred: a child is mid-split, so its share has no posting yet;
-// the parent stays SEALED (still searched), lease released, for a later pass.
+// errSPFreshSplitDeferred: a descendant is SEALED (frozen, its children only in its
+// task row), so the parent stays SEALED and searched, lease released, for later.
 var errSPFreshSplitDeferred = errors.New("spfresh: split deferred behind a child's in-flight split")
 
 // spfreshSplitTargets: published children can be split or merged mid-drain, so a
-// move follows them to ACTIVE descendants, fenced by one REAL read of the cell.
+// move follows them to ACTIVE descendants, each fenced by a REAL read of its row.
 func spfreshSplitTargets(tx fdb.WritableTransaction, s *spfreshStorage, cellID, childA, childB int64) (targets []spfreshMergeTarget, sealed bool, err error) {
-	rows, _, _, err := spfreshLoadCellForWrite(tx, s, cellID)
-	if err != nil {
-		return nil, false, err
-	}
-	byID := make(map[int64]spfreshCentroidRow, len(rows))
-	for _, r := range rows {
-		byID[r.fineID] = r.row
-	}
 	seen := map[int64]bool{}
 	for work := []int64{childA, childB}; len(work) > 0; work = work[1:] {
-		row, ok := byID[work[0]]
-		if !ok || seen[work[0]] {
-			continue // gone (GC'd past the horizon), or already visited
+		id := work[0]
+		if id == 0 || seen[id] {
+			continue
 		}
-		seen[work[0]] = true
+		seen[id] = true
+		// The SEALED parent pins its whole lineage in its cell (coarse splits and
+		// GC both skip a cell with a SEALED row), so a point read finds each row.
+		row, rerr := spfreshReadCentroidForWrite(tx, s, cellID, id)
+		if errors.Is(rerr, errSPFreshNotFound) {
+			return nil, false, fmt.Errorf("spfresh split: lineage fine %d absent from cell %d", id, cellID)
+		}
+		if rerr != nil {
+			return nil, false, rerr
+		}
 		switch row.state {
 		case spfreshStateActive:
 			vec, verr := row.vector()
 			if verr != nil {
 				return nil, false, verr
 			}
-			targets = append(targets, spfreshMergeTarget{fineID: work[0], vec: vec})
+			targets = append(targets, spfreshMergeTarget{fineID: id, vec: vec})
 		case spfreshStateSealed:
 			sealed = true
 		case spfreshStateForward:
 			work = append(work, row.childA, row.childB)
 		}
+	}
+	if len(targets) == 0 && !sealed {
+		return nil, false, fmt.Errorf("spfresh split: lineage of (%d,%d) holds no ACTIVE or SEALED fine", childA, childB)
 	}
 	return targets, sealed, nil
 }
@@ -714,19 +713,19 @@ func spfreshNearestTarget(v []float64, targets []spfreshMergeTarget) int {
 	return best
 }
 
-// spfreshMoveReplica reports whether to write the replica at `to`: a copy-set
-// naming `to` already just drops `from`, one not naming `from` is an orphan.
-func spfreshMoveReplica(mem []int64, from, to int64) ([]int64, bool) {
+// spfreshMoveReplica rewrites `from` to `to` in a copy-set: place reports whether
+// `to` needs the replica (not if it holds one), changed false means an orphan.
+func spfreshMoveReplica(mem []int64, from, to int64) (out []int64, place, changed bool) {
 	if !slices.Contains(mem, from) {
-		return mem, false
+		return mem, false, false
 	}
 	if slices.Contains(mem, to) {
-		return slices.DeleteFunc(mem, func(id int64) bool { return id == from }), false
+		return slices.DeleteFunc(mem, func(id int64) bool { return id == from }), false, true
 	}
 	for i, id := range mem {
 		if id == from {
 			mem[i] = to
 		}
 	}
-	return mem, true
+	return mem, true, true
 }

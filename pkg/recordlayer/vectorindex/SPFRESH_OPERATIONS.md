@@ -63,6 +63,7 @@ Event reference (`spfresh_metrics.go`):
 | `spfresh_splits` / `_merges` / `_csplits` / `_npas` | lifecycle ACTIONS only (cleanup clears are excluded) | proportional to write volume (§5.2.2: actions track entries written) |
 | `spfresh_zombie_cleans` | cleanup writes across all kinds: stale/zombie/cooldown/no-target task clears | small; a flood follows crashes or mass merges |
 | `spfresh_csplit_defers` | coarse-split pause-window defer bumps | bursts while a hotspot cell's fine splits run; sustained means a stuck SEALED row |
+| `spfresh_split_defers` | split drains paused behind a SEALED descendant (another executor's split in flight) | rare bursts under concurrent rebalancers; sustained means a stuck SEALED child |
 | `spfresh_lease_skips` | tasks skipped: another executor's live lease OR already completed (task gone) | ~0 with sharded sweepers; high means overlapping sweepers duplicating scans |
 | `spfresh_refine_moves` | RFC-104 vectors re-routed (assignment refinement) | bursts after a fast-ingest phase, then decays to ~0 as tenants converge |
 | `spfresh_refine_converged` | refinement cursors that wrapped a full cycle moving nothing | climbs to == tenant count in steady state; the back-off signal for quiescent tenants |

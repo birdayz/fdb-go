@@ -72,6 +72,7 @@ var (
 	CountSPFreshZombieCleans = recordlayer.Event{Name: "spfresh_zombie_cleans", Title: "SPFresh Zombie Cleanups", Kind: recordlayer.KindCount}
 	CountSPFreshCSplitDefers = recordlayer.Event{Name: "spfresh_csplit_defers", Title: "SPFresh Coarse Split Deferrals", Kind: recordlayer.KindCount}
 	CountSPFreshLeaseSkips   = recordlayer.Event{Name: "spfresh_lease_skips", Title: "SPFresh Lease Skips", Kind: recordlayer.KindCount}
+	CountSPFreshSplitDefers  = recordlayer.Event{Name: "spfresh_split_defers", Title: "SPFresh Split Deferrals", Kind: recordlayer.KindCount}
 	// Assignment refinement (RFC-104) fleet pass: vectors re-routed against the
 	// converged topology, and tenants whose cursor wrapped a full cycle moving
 	// nothing. Moves trending to zero while Converged rises = the fleet has

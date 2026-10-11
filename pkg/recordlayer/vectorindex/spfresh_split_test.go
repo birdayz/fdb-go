@@ -3,7 +3,6 @@ package vectorindex
 import (
 	"context"
 	"errors"
-	"time"
 
 	"fdb.dev/pkg/recordlayer"
 
@@ -947,6 +946,222 @@ var _ = Describe("SPFresh chunked oversized split", func() {
 		Entry("single-tx resume over existing children", 20, false),
 	)
 
+	// A child sealed mid-drain (another executor's split in flight) has no
+	// posting to take its share: the pass defers, releases the lease, resumes later.
+	DescribeTable("a drain defers behind a child sealed mid-split, then completes",
+		func(extra int) {
+			config := DefaultSPFreshConfig(2)
+			config.Lmax = 16
+			config.CellTarget = 4
+			config.CellMax = 8
+			storage := newSPFreshStorage(specSubspace().Sub("spfresh-drain-defer"), 1)
+			cellID, fineID, members, _ := spfreshBalloonPosting(ctx, storage, config, extra)
+			_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				_, terr := spfreshTaskSetIfAbsent(rtx.Transaction(), storage, spfreshTaskSplit, fineID)
+				return nil, terr
+			})
+			Expect(err).NotTo(HaveOccurred())
+			// The first drainer seals and plans, then dies: its lease is born expired.
+			restore := spfreshLeaseDurationMs
+			spfreshLeaseDurationMs = -1
+			out, err := spfreshSealFine(ctx, sharedDB, storage, "dead", cellID, fineID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(out.proceed).To(BeTrue())
+			Expect(spfreshChunkedSplitPlan(ctx, sharedDB, storage, config, "dead", cellID, fineID, out.childA, out.childB, 7)).To(Succeed())
+			spfreshLeaseDurationMs = restore
+			// Another executor seals child A and holds it, mid-split.
+			_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				_, terr := spfreshTaskSetIfAbsent(rtx.Transaction(), storage, spfreshTaskSplit, out.childA)
+				return nil, terr
+			})
+			Expect(err).NotTo(HaveOccurred())
+			childOut, err := spfreshSealFine(ctx, sharedDB, storage, "other", cellID, out.childA)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(childOut.proceed).To(BeTrue())
+
+			timer := recordlayer.NewStoreTimer()
+			_, err = spfreshRebalanceOnce(ctx, sharedDB, storage, config, "reb", 3, 0, timer)
+			Expect(err).NotTo(HaveOccurred(), "a deferral is a benign skip")
+			Expect(timer.GetCount(CountSPFreshSplitDefers)).To(Equal(int64(1)))
+			_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				tx := rtx.Transaction()
+				row, rerr := spfreshReadCentroidForWrite(tx, storage, cellID, fineID)
+				Expect(rerr).NotTo(HaveOccurred())
+				Expect(row.state).To(Equal(spfreshStateSealed), "the parent waits, still searched")
+				data, gerr := tx.Get(storage.taskKey(spfreshTaskSplit, fineID)).Get()
+				Expect(gerr).NotTo(HaveOccurred())
+				task, derr := decodeTaskRow(data)
+				Expect(derr).NotTo(HaveOccurred())
+				Expect(task.owner).To(BeEmpty(), "the deferral released its lease")
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// The child's split publishes; the next pass finishes the parent.
+			Expect(spfreshSplitFine(ctx, sharedDB, storage, config, "other", cellID, out.childA, 11)).To(Succeed())
+			Expect(spfreshSplitFine(ctx, sharedDB, storage, config, "reb", cellID, fineID, 7)).To(Succeed())
+			_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				tx := rtx.Transaction()
+				row, rerr := spfreshReadCentroidForWrite(tx, storage, cellID, fineID)
+				Expect(rerr).NotTo(HaveOccurred())
+				Expect(row.state).To(Equal(spfreshStateForward))
+				for _, pk := range members {
+					mem, merr := spfreshReadMembership(tx, storage, pk)
+					Expect(merr).NotTo(HaveOccurred())
+					for _, f := range mem {
+						cell, ferr := spfreshFindCentroidCell(tx, storage, f)
+						Expect(ferr).NotTo(HaveOccurred())
+						frow, frerr := spfreshReadCentroidForWrite(tx, storage, cell, f)
+						Expect(frerr).NotTo(HaveOccurred())
+						Expect(frow.state).To(Equal(spfreshStateActive), "pk %v names non-ACTIVE fine %d", pk, f)
+					}
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		},
+		Entry("chunked drain", 90),
+		Entry("single-tx resume over existing children", 20),
+	)
+
+	It("a child merged away mid-drain is followed to its merge targets", func() {
+		config := DefaultSPFreshConfig(2)
+		config.Lmax = 16
+		config.CellTarget = 4
+		config.CellMax = 8
+		config.CooldownSec = 0 // children may merge at once, as the chaos config allows
+		storage := newSPFreshStorage(specSubspace().Sub("spfresh-drain-merge"), 1)
+		cellID, fineID, members, _ := spfreshBalloonPosting(ctx, storage, config, 90)
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			if _, terr := spfreshTaskSetIfAbsent(tx, storage, spfreshTaskSplit, fineID); terr != nil {
+				return nil, terr
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		out, err := spfreshSealFine(ctx, sharedDB, storage, "drainer", cellID, fineID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(spfreshChunkedSplitPlan(ctx, sharedDB, storage, config, "drainer", cellID, fineID, out.childA, out.childB, 7)).To(Succeed())
+		// Child B is still empty: below Lmin, another executor merges it away.
+		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			_, terr := spfreshTaskSetIfAbsent(rtx.Transaction(), storage, spfreshTaskMerge, out.childB)
+			return nil, terr
+		})
+		Expect(err).NotTo(HaveOccurred())
+		outcome, err := spfreshMergeFine(ctx, sharedDB, storage, config, "other", cellID, out.childB)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(outcome).To(Equal(spfreshOutcomeActed), "test premise: child B merges")
+
+		Expect(spfreshSplitFine(ctx, sharedDB, storage, config, "drainer", cellID, fineID, 7)).To(Succeed())
+		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			es, perr := spfreshLoadPostingForSplit(tx, storage, out.childB)
+			Expect(perr).NotTo(HaveOccurred())
+			Expect(es).To(BeEmpty(), "entries stranded in the merged-away child")
+			for _, pk := range members {
+				mem, merr := spfreshReadMembership(tx, storage, pk)
+				Expect(merr).NotTo(HaveOccurred())
+				for _, f := range mem {
+					cell, ferr := spfreshFindCentroidCell(tx, storage, f)
+					Expect(ferr).NotTo(HaveOccurred())
+					frow, frerr := spfreshReadCentroidForWrite(tx, storage, cell, f)
+					Expect(frerr).NotTo(HaveOccurred())
+					Expect(frow.state).To(Equal(spfreshStateActive), "pk %v names non-ACTIVE fine %d", pk, f)
+				}
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("releasing a lease leaves another owner's claim alone", func() {
+		storage := newSPFreshStorage(specSubspace().Sub("spfresh-release"), 1)
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			if _, terr := spfreshTaskSetIfAbsent(tx, storage, spfreshTaskSplit, 42); terr != nil {
+				return nil, terr
+			}
+			_, cerr := spfreshTaskClaim(tx, storage, spfreshTaskSplit, 42, "x", spfreshNowMs()+60_000, spfreshNowMs())
+			return nil, cerr
+		})
+		Expect(err).NotTo(HaveOccurred())
+		owner := func(releaser string) string {
+			var got string
+			_, rerr := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				tx := rtx.Transaction()
+				if err := spfreshTaskRelease(tx, storage, spfreshTaskSplit, 42, releaser); err != nil {
+					return nil, err
+				}
+				data, gerr := tx.Get(storage.taskKey(spfreshTaskSplit, 42)).Get()
+				if gerr != nil {
+					return nil, gerr
+				}
+				row, derr := decodeTaskRow(data)
+				got = row.owner
+				return nil, derr
+			})
+			Expect(rerr).NotTo(HaveOccurred())
+			return got
+		}
+		Expect(owner("y")).To(Equal("x"), "a foreign release is a no-op")
+		Expect(owner("x")).To(BeEmpty())
+	})
+
+	// The drain follows a split-away child through its FORWARD row, so GC (horizon 0,
+	// as the chaos config runs) must not purge that row while the parent is SEALED.
+	It("GC keeps a split-away child's FORWARD row while its parent still drains", func() {
+		config := DefaultSPFreshConfig(2)
+		config.Lmax = 16
+		config.CellTarget = 4
+		config.CellMax = 8
+		storage := newSPFreshStorage(specSubspace().Sub("spfresh-gc-drain"), 1)
+		cellID, fineID, members, _ := spfreshBalloonPosting(ctx, storage, config, 90)
+		Expect(len(members)).To(BeNumerically(">", 4*config.Lmax), "test premise: chunked drain")
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			_, terr := spfreshTaskSetIfAbsent(rtx.Transaction(), storage, spfreshTaskSplit, fineID)
+			return nil, terr
+		})
+		Expect(err).NotTo(HaveOccurred())
+		out, err := spfreshSealFine(ctx, sharedDB, storage, "drainer", cellID, fineID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(out.proceed).To(BeTrue())
+		Expect(spfreshChunkedSplitPlan(ctx, sharedDB, storage, config, "drainer", cellID, fineID, out.childA, out.childB, 7)).To(Succeed())
+		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			_, terr := spfreshTaskSetIfAbsent(rtx.Transaction(), storage, spfreshTaskSplit, out.childA)
+			return nil, terr
+		})
+		Expect(err).NotTo(HaveOccurred())
+		childOut, err := spfreshSealFine(ctx, sharedDB, storage, "other", cellID, out.childA)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(childOut.proceed).To(BeTrue())
+		Expect(spfreshSplitFine(ctx, sharedDB, storage, config, "other", cellID, out.childA, 11)).To(Succeed())
+
+		_, err = spfreshGCSweep(ctx, sharedDB, storage, config, 0)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			_, rerr := spfreshReadCentroidForWrite(rtx.Transaction(), storage, cellID, out.childA)
+			return nil, rerr
+		})
+		Expect(err).NotTo(HaveOccurred(), "GC purged the FORWARD child the drain still follows")
+
+		Expect(spfreshSplitFine(ctx, sharedDB, storage, config, "drainer", cellID, fineID, 7)).To(Succeed())
+		moved := 0
+		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			moved = 0
+			for _, f := range []int64{childOut.childA, childOut.childB} {
+				es, perr := spfreshLoadPostingForSplit(rtx.Transaction(), storage, f)
+				if perr != nil {
+					return nil, perr
+				}
+				moved += len(es)
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(moved).To(BeNumerically(">", 0), "child A's share of the drain must follow it to its children")
+	})
+
 	// The flake's rebalancer-error half: after a takeover finished the split and a
 	// coarse split moved the parent, the stale executor's next step must no-op.
 	It("a split completed elsewhere and coarse-split away is a no-op for the stale executor", func() {
@@ -963,7 +1178,7 @@ var _ = Describe("SPFresh chunked oversized split", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 		restore := spfreshLeaseDurationMs
-		spfreshLeaseDurationMs = 1
+		spfreshLeaseDurationMs = -1 // every lease is born expired: the takeover is free
 		defer func() { spfreshLeaseDurationMs = restore }()
 		out, err := spfreshSealFine(ctx, sharedDB, storage, "stale", cellID, fineID)
 		Expect(err).NotTo(HaveOccurred())
@@ -971,7 +1186,6 @@ var _ = Describe("SPFresh chunked oversized split", func() {
 
 		// The stale executor stalls past its lease; another finishes the split
 		// and the cell is coarse-split, moving the FORWARD parent away.
-		time.Sleep(5 * time.Millisecond)
 		takeover, err := spfreshSealFine(ctx, sharedDB, storage, "takeover", cellID, fineID)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(takeover.proceed).To(BeTrue())
