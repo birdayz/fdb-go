@@ -316,7 +316,10 @@ drain with the lease released: SPFresh §4.2.2's posting lock, as
 abort-and-retry. Deferral cannot cycle (every pointer in a
 lineage is written after its parent sealed), and the lineage stays in the
 parent's cell because coarse splits and GC both skip a cell holding a SEALED
-row. A stale executor whose next step finds the parent gone and its task
+row; a stuck SEALED row therefore also holds back GC of that cell's retired
+rows (`spfresh_split_defers` / `spfresh_csplit_defers` alarm it). A followed
+merge sees only the two targets its FORWARD row names, not every target the
+merge used. A stale executor whose next step finds the parent gone and its task
 cleared treats the split as done (a takeover finished it). The steps:
 
 1. **SEAL** (tiny): read claim; read `CENTROIDS/(cell, c)` = ACTIVE (FORWARD /
