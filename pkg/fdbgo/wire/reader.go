@@ -578,7 +578,6 @@ var fdbErrorDescriptions = map[int]string{
 	2012: "range_limits_invalid",
 	2015: "future_not_set",
 	2017: "used_during_commit",
-	2023: "transaction_read_only",
 	2101: "transaction_too_large",
 	2200: "api_version_unset",
 }
