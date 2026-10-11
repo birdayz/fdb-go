@@ -8,7 +8,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -37,19 +37,19 @@ func TestIntegration_FlatMapNullSupplyingOuter(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name      string
-		customers []*gen.Customer
+		customers []*demopb.Customer
 		want      []string
 	}{
 		{"empty outer supplies one NULL row", nil, []string{"C=<nil>|O=18301", "C=<nil>|O=18302"}},
-		{"non-empty outer supplies its rows", []*gen.Customer{{CustomerId: proto.Int64(7)}}, nil},
+		{"non-empty outer supplies its rows", []*demopb.Customer{{CustomerId: proto.Int64(7)}}, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			ctx := context.Background()
 			store := setupStore(t)
 			insertOrders(t, store,
-				&gen.Order{OrderId: proto.Int64(18301)},
-				&gen.Order{OrderId: proto.Int64(18302)},
+				&demopb.Order{OrderId: proto.Int64(18301)},
+				&demopb.Order{OrderId: proto.Int64(18302)},
 			)
 			if len(tc.customers) > 0 {
 				if _, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {

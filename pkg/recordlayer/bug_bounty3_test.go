@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -64,7 +64,7 @@ var _ = Describe("Bug Bounty Round 3", func() {
 		// Now show the downstream impact: computeIndexDeletePrefix fails.
 		countIdx := NewCountIndex("count_by_type", groupingExpr)
 
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Concat(RecordTypeKey(), Field("order_id")))
 		builder.GetRecordType("Customer").SetPrimaryKey(Concat(RecordTypeKey(), Field("customer_id")))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Concat(RecordTypeKey(), Field("id")))
@@ -126,7 +126,7 @@ var _ = Describe("Bug Bounty Round 3", func() {
 	It("BUG3: SaveRecordWithOptions/SaveRecord/InsertRecord/UpdateRecord/DryRunSaveRecord panic on nil proto.Message", func() {
 		ks := specSubspace()
 
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -223,7 +223,7 @@ var _ = Describe("Bug Bounty Round 3", func() {
 	It("BUG4: clearRecordKeyRange with empty PK + splitLongRecords deletes all records", func() {
 		ks := specSubspace()
 
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -240,7 +240,7 @@ var _ = Describe("Bug Bounty Round 3", func() {
 			}
 			for i := int64(1); i <= 5; i++ {
 				price := int32(i * 100)
-				if _, err := store.SaveRecord(&gen.Order{OrderId: &i, Price: &price}); err != nil {
+				if _, err := store.SaveRecord(&demopb.Order{OrderId: &i, Price: &price}); err != nil {
 					return nil, err
 				}
 			}
@@ -320,7 +320,7 @@ var _ = Describe("Bug Bounty Round 3", func() {
 	// The Go equivalent is missing this validation.
 	// =========================================================================
 	It("BUG5: Build() accepts EmptyKeyExpression as primary key", func() {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(EmptyKey())
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -332,7 +332,7 @@ var _ = Describe("Bug Bounty Round 3", func() {
 	})
 
 	It("BUG5b: Build() accepts Concat() (zero children) as primary key", func() {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Concat()) // zero children
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -360,7 +360,7 @@ var _ = Describe("Bug Bounty Round 3", func() {
 		// If price is null, Go skips the entry even if quantity is non-null.
 		idx := NewCountNotNullIndex("count_notnull_qty", GroupBy(Field("quantity"), Field("price")))
 
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -374,22 +374,22 @@ var _ = Describe("Bug Bounty Round 3", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Order 1: price=100, quantity=5 — both non-null, should be counted
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(5)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(5)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Order 2: price=nil (unset), quantity=10 — grouping column is null,
 			// but the VALUE column (quantity) is non-null.
 			// Java: counts this entry (null check on quantity passes)
 			// Go (bug): skips this entry (null check on whole expr sees null price)
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Quantity: proto.Int32(10)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Quantity: proto.Int32(10)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Order 3: price=200, quantity=nil — value column IS null, should be skipped
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(200)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(200)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Order 4: price=nil, quantity=nil — both null, should be skipped
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(4)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(4)})
 			Expect(err).NotTo(HaveOccurred())
 
 			entries, err := AsList(ctx, store.ScanIndex(idx, TupleRangeAll, nil, ForwardScan()))

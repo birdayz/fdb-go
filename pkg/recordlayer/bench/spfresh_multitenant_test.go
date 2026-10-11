@@ -13,7 +13,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 )
@@ -69,7 +69,7 @@ func TestSPFreshMultiTenantSoak(t *testing.T) {
 		recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0))
 	spfIdx.Type = recordlayer.IndexTypeVectorSPFresh
 	spfIdx.Options = map[string]string{recordlayer.IndexOptionSPFreshNumDimensions: "128"}
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -152,7 +152,7 @@ func TestSPFreshMultiTenantSoak(t *testing.T) {
 						return nil, serr
 					}
 					for i := lo; i < hi; i++ {
-						if _, serr := store.SaveRecord(&gen.Order{
+						if _, serr := store.SaveRecord(&demopb.Order{
 							OrderId:    proto.Int64(int64(i + 1)),
 							VectorData: vectorindex.SerializeVector(tn.base[i]),
 						}); serr != nil {

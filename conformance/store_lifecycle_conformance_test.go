@@ -7,7 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -43,7 +43,7 @@ var _ = Describe("Store Lifecycle Conformance", func() {
 		keyspace = subspace.Sub(tuple.Tuple{})
 
 		priceIdx = recordlayer.NewIndex("Order$price", recordlayer.Field("price"))
-		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -135,7 +135,7 @@ var _ = Describe("Store Lifecycle Conformance", func() {
 			label = "Java-written"
 		}
 		It("resolves "+label+" overlapping-PK uniqueness violations in Java and Go", func() {
-			builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("order_id")))
 			builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -150,7 +150,7 @@ var _ = Describe("Store Lifecycle Conformance", func() {
 					_, err = store.MarkIndexWriteOnly(index.Name)
 					Expect(err).NotTo(HaveOccurred())
 					for id, price := range []int32{100, 100, 100, 200, 200} {
-						_, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(id + 1)), Price: proto.Int32(price)})
+						_, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(int64(id + 1)), Price: proto.Int32(price)})
 						Expect(err).NotTo(HaveOccurred())
 					}
 					return nil, nil
@@ -233,7 +233,7 @@ var _ = Describe("Store Lifecycle Conformance", func() {
 				if err != nil {
 					return nil, err
 				}
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 				return nil, err
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -300,7 +300,7 @@ var _ = Describe("Store Lifecycle Conformance", func() {
 				if err != nil {
 					return nil, err
 				}
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 				if err != nil {
 					return nil, err
 				}
@@ -327,7 +327,7 @@ var _ = Describe("Store Lifecycle Conformance", func() {
 			// Java saves records
 			for i, price := range []int32{100, 200, 300} {
 				params := buildJavaParams()
-				params["order"] = &gen.Order{
+				params["order"] = &demopb.Order{
 					OrderId: proto.Int64(int64(i + 1)),
 					Price:   proto.Int32(price),
 				}
@@ -345,7 +345,7 @@ var _ = Describe("Store Lifecycle Conformance", func() {
 				if err != nil {
 					return nil, err
 				}
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(10), Price: proto.Int32(999)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(10), Price: proto.Int32(999)})
 				return nil, err
 			})
 			Expect(err).NotTo(HaveOccurred())

@@ -6,7 +6,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 )
@@ -32,7 +32,7 @@ func TestSimFDB_ContinuationUnderConcurrentModification(t *testing.T) {
 			return nil, err
 		}
 		for i := 0; i < 20; i++ {
-			if _, err := store.SaveRecord(&gen.Order{
+			if _, err := store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(int64(i)),
 				Price:   proto.Int32(int32(i)),
 			}); err != nil {
@@ -59,7 +59,7 @@ func TestSimFDB_ContinuationUnderConcurrentModification(t *testing.T) {
 				return nil, err
 			}
 			for _, r := range recs {
-				pks = append(pks, r.Record.(*gen.Order).GetOrderId())
+				pks = append(pks, r.Record.(*demopb.Order).GetOrderId())
 			}
 			next = c
 			return nil, nil
@@ -88,7 +88,7 @@ func TestSimFDB_ContinuationUnderConcurrentModification(t *testing.T) {
 		if _, err := store.DeleteRecord(tuple.Tuple{int64(10)}); err != nil {
 			return nil, err
 		}
-		if _, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(100), Price: proto.Int32(100)}); err != nil {
+		if _, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(100), Price: proto.Int32(100)}); err != nil {
 			return nil, err
 		}
 		return nil, nil

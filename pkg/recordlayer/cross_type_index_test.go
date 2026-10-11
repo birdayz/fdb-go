@@ -3,7 +3,7 @@ package recordlayer
 import (
 	"context"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -19,7 +19,7 @@ var _ = Describe("CrossTypeIndexCleanup", func() {
 	// RecordExistenceCheckNone to allow overwriting a record with a
 	// different type at the same PK slot).
 	buildMetaData := func() (*RecordMetaData, *Index, *Index, *Index) {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -49,7 +49,7 @@ var _ = Describe("CrossTypeIndexCleanup", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Save an Order with PK=1
-			order := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(42)}
+			order := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(42)}
 			_, err = store.SaveRecord(order)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -70,7 +70,7 @@ var _ = Describe("CrossTypeIndexCleanup", func() {
 			Expect(emailEntries).To(BeEmpty())
 
 			// Now overwrite PK=1 with a Customer (cross-type overwrite)
-			customer := &gen.Customer{CustomerId: proto.Int64(1), Email: proto.String("a@b.com")}
+			customer := &demopb.Customer{CustomerId: proto.Int64(1), Email: proto.String("a@b.com")}
 			_, err = store.SaveRecordWithOptions(customer, RecordExistenceCheckNone)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -105,15 +105,15 @@ var _ = Describe("CrossTypeIndexCleanup", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Order → Customer → Order at PK=1
-			order1 := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10)}
+			order1 := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(10)}
 			_, err = store.SaveRecord(order1)
 			Expect(err).NotTo(HaveOccurred())
 
-			customer := &gen.Customer{CustomerId: proto.Int64(1), Email: proto.String("x@y.com")}
+			customer := &demopb.Customer{CustomerId: proto.Int64(1), Email: proto.String("x@y.com")}
 			_, err = store.SaveRecordWithOptions(customer, RecordExistenceCheckNone)
 			Expect(err).NotTo(HaveOccurred())
 
-			order2 := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(99)}
+			order2 := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(99)}
 			_, err = store.SaveRecordWithOptions(order2, RecordExistenceCheckNone)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -142,11 +142,11 @@ var _ = Describe("CrossTypeIndexCleanup", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			order1 := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10)}
+			order1 := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(10)}
 			_, err = store.SaveRecord(order1)
 			Expect(err).NotTo(HaveOccurred())
 
-			order2 := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(20)}
+			order2 := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(20)}
 			_, err = store.SaveRecord(order2)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -171,11 +171,11 @@ var _ = Describe("CrossTypeIndexCleanup", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Save Order PK=1, Customer PK=2
-			order := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(50)}
+			order := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(50)}
 			_, err = store.SaveRecord(order)
 			Expect(err).NotTo(HaveOccurred())
 
-			customer := &gen.Customer{CustomerId: proto.Int64(2), Email: proto.String("z@w.com")}
+			customer := &demopb.Customer{CustomerId: proto.Int64(2), Email: proto.String("z@w.com")}
 			_, err = store.SaveRecord(customer)
 			Expect(err).NotTo(HaveOccurred())
 

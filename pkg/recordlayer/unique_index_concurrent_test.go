@@ -5,7 +5,7 @@ import (
 	"errors"
 	"sync"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
@@ -15,7 +15,7 @@ var _ = Describe("UniqueIndexConcurrent", func() {
 	ctx := context.Background()
 
 	buildMD := func() (*RecordMetaData, *Index) {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -47,7 +47,7 @@ var _ = Describe("UniqueIndexConcurrent", func() {
 						return nil, err
 					}
 					// Different order IDs, same price → uniqueness conflict
-					order := &gen.Order{OrderId: proto.Int64(int64(100 + idx)), Price: proto.Int32(42)}
+					order := &demopb.Order{OrderId: proto.Int64(int64(100 + idx)), Price: proto.Int32(42)}
 					_, err = store.SaveRecord(order)
 					return nil, err
 				})
@@ -84,7 +84,7 @@ var _ = Describe("UniqueIndexConcurrent", func() {
 						return nil, err
 					}
 					// Different prices → no conflict
-					order := &gen.Order{OrderId: proto.Int64(int64(200 + idx)), Price: proto.Int32(int32(10 + idx))}
+					order := &demopb.Order{OrderId: proto.Int64(int64(200 + idx)), Price: proto.Int32(int32(10 + idx))}
 					_, err = store.SaveRecord(order)
 					return nil, err
 				})
@@ -107,7 +107,7 @@ var _ = Describe("UniqueIndexConcurrent", func() {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
-			order := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(42)}
+			order := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(42)}
 			_, err = store.SaveRecord(order)
 			return nil, err
 		})
@@ -118,7 +118,7 @@ var _ = Describe("UniqueIndexConcurrent", func() {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
-			order := &gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(42)}
+			order := &demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(42)}
 			_, err = store.SaveRecord(order)
 			return nil, err
 		})

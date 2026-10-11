@@ -13,7 +13,7 @@ import (
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -41,7 +41,7 @@ type TextIndexConformanceStore struct {
 func NewTextIndexConformanceStore(recordDB *recordlayer.FDBDatabase, keyspace subspace.Subspace, clusterFile string, tenantName string) (*TextIndexConformanceStore, error) {
 	textIdx := recordlayer.NewTextIndex("customer_name_text", recordlayer.Field("name"))
 
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -79,7 +79,7 @@ func (s *TextIndexConformanceStore) buildJavaParams() map[string]any {
 }
 
 // SaveCustomerGo saves a customer with Go (with TEXT index maintenance).
-func (s *TextIndexConformanceStore) SaveCustomerGo(ctx context.Context, customer *gen.Customer) error {
+func (s *TextIndexConformanceStore) SaveCustomerGo(ctx context.Context, customer *demopb.Customer) error {
 	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
@@ -93,7 +93,7 @@ func (s *TextIndexConformanceStore) SaveCustomerGo(ctx context.Context, customer
 }
 
 // SaveCustomerJava saves a customer via Java (with TEXT index maintenance).
-func (s *TextIndexConformanceStore) SaveCustomerJava(ctx context.Context, customer *gen.Customer) error {
+func (s *TextIndexConformanceStore) SaveCustomerJava(ctx context.Context, customer *demopb.Customer) error {
 	params := s.buildJavaParams()
 	params["customer"] = customer
 	return s.java.InvokeAs(ctx, "saveCustomerWithTextIndex", params, nil)
@@ -297,7 +297,7 @@ var _ = Describe("TEXT Index Conformance", func() {
 	Describe("Go writes, both scan TEXT index", func() {
 		It("should produce identical text entries visible to both Go and Java", func() {
 			// Save a customer with "hello world" — tokenizes to "hello" and "world"
-			err := store.SaveCustomerGo(ctx, &gen.Customer{
+			err := store.SaveCustomerGo(ctx, &demopb.Customer{
 				CustomerId: proto.Int64(1),
 				Name:       proto.String("hello world"),
 			})
@@ -331,7 +331,7 @@ var _ = Describe("TEXT Index Conformance", func() {
 	Describe("Java writes, both scan TEXT index", func() {
 		It("should produce identical text entries visible to both Go and Java", func() {
 			// Java saves a customer with "quick brown fox"
-			err := store.SaveCustomerJava(ctx, &gen.Customer{
+			err := store.SaveCustomerJava(ctx, &demopb.Customer{
 				CustomerId: proto.Int64(10),
 				Name:       proto.String("quick brown fox"),
 			})
@@ -365,14 +365,14 @@ var _ = Describe("TEXT Index Conformance", func() {
 	Describe("Mixed writes: Go and Java both insert", func() {
 		It("should produce correct combined text entries", func() {
 			// Go saves customer 1
-			err := store.SaveCustomerGo(ctx, &gen.Customer{
+			err := store.SaveCustomerGo(ctx, &demopb.Customer{
 				CustomerId: proto.Int64(1),
 				Name:       proto.String("alpha beta"),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Java saves customer 2 with overlapping token "beta"
-			err = store.SaveCustomerJava(ctx, &gen.Customer{
+			err = store.SaveCustomerJava(ctx, &demopb.Customer{
 				CustomerId: proto.Int64(2),
 				Name:       proto.String("beta gamma"),
 			})
@@ -407,7 +407,7 @@ var _ = Describe("TEXT Index Conformance", func() {
 	Describe("Go deletes Java-written record", func() {
 		It("should remove text entries visible to both Go and Java", func() {
 			// Java saves a customer
-			err := store.SaveCustomerJava(ctx, &gen.Customer{
+			err := store.SaveCustomerJava(ctx, &demopb.Customer{
 				CustomerId: proto.Int64(5),
 				Name:       proto.String("deleteme please"),
 			})
@@ -437,7 +437,7 @@ var _ = Describe("TEXT Index Conformance", func() {
 	Describe("Java deletes Go-written record", func() {
 		It("should remove text entries visible to both Go and Java", func() {
 			// Go saves a customer
-			err := store.SaveCustomerGo(ctx, &gen.Customer{
+			err := store.SaveCustomerGo(ctx, &demopb.Customer{
 				CustomerId: proto.Int64(7),
 				Name:       proto.String("removable entry"),
 			})
@@ -466,7 +466,7 @@ var _ = Describe("TEXT Index Conformance", func() {
 	Describe("Update via Go re-indexes correctly", func() {
 		It("should update text entries when record name changes", func() {
 			// Save initial record
-			err := store.SaveCustomerGo(ctx, &gen.Customer{
+			err := store.SaveCustomerGo(ctx, &demopb.Customer{
 				CustomerId: proto.Int64(20),
 				Name:       proto.String("original text"),
 			})
@@ -478,7 +478,7 @@ var _ = Describe("TEXT Index Conformance", func() {
 			Expect(goEntries).To(HaveLen(2)) // "original", "text"
 
 			// Update name
-			err = store.SaveCustomerGo(ctx, &gen.Customer{
+			err = store.SaveCustomerGo(ctx, &demopb.Customer{
 				CustomerId: proto.Int64(20),
 				Name:       proto.String("updated content"),
 			})
@@ -518,7 +518,7 @@ var _ = Describe("TEXT Index Conformance", func() {
 			text := "Hello World hello WORLD"
 
 			// Go writes
-			err := store.SaveCustomerGo(ctx, &gen.Customer{
+			err := store.SaveCustomerGo(ctx, &demopb.Customer{
 				CustomerId: proto.Int64(30),
 				Name:       proto.String(text),
 			})
@@ -530,7 +530,7 @@ var _ = Describe("TEXT Index Conformance", func() {
 			Expect(goEntriesInitial).To(HaveLen(2)) // "hello", "world"
 
 			// Java writes same text in a fresh store — but same tenant, different PK.
-			err = store.SaveCustomerJava(ctx, &gen.Customer{
+			err = store.SaveCustomerJava(ctx, &demopb.Customer{
 				CustomerId: proto.Int64(31),
 				Name:       proto.String(text),
 			})
@@ -577,7 +577,7 @@ var _ = Describe("TEXT Index Conformance", func() {
 			// "Après-midi café résumé" should normalize to:
 			// UAX #29 splits on hyphens → "Après", "midi", "café", "résumé"
 			// NFKD + strip marks + lowercase → "apres", "midi", "cafe", "resume"
-			err := store.SaveCustomerGo(ctx, &gen.Customer{
+			err := store.SaveCustomerGo(ctx, &demopb.Customer{
 				CustomerId: proto.Int64(100),
 				Name:       proto.String("Après-midi café résumé"),
 			})
@@ -614,7 +614,7 @@ var _ = Describe("TEXT Index Conformance", func() {
 			// Save 25 customers each containing "common" — forces BunchedMap
 			// bunch splitting (bunchSize=20, so at least 2 bunches).
 			for i := int64(200); i < 225; i++ {
-				err := store.SaveCustomerGo(ctx, &gen.Customer{
+				err := store.SaveCustomerGo(ctx, &demopb.Customer{
 					CustomerId: proto.Int64(i),
 					Name:       proto.String(fmt.Sprintf("common extra%d", i)),
 				})
@@ -646,7 +646,7 @@ var _ = Describe("TEXT Index Conformance", func() {
 	Describe("Position list with many positions", func() {
 		It("should record correct positions for repeated tokens", func() {
 			// "the the the the the" — token "the" at positions [0, 1, 2, 3, 4].
-			err := store.SaveCustomerGo(ctx, &gen.Customer{
+			err := store.SaveCustomerGo(ctx, &demopb.Customer{
 				CustomerId: proto.Int64(300),
 				Name:       proto.String("the the the the the"),
 			})
@@ -672,7 +672,7 @@ var _ = Describe("TEXT Index Conformance", func() {
 	Describe("Cross-language update", func() {
 		It("should re-index when Java updates a Go-written record", func() {
 			// Go saves customer with "alpha beta".
-			err := store.SaveCustomerGo(ctx, &gen.Customer{
+			err := store.SaveCustomerGo(ctx, &demopb.Customer{
 				CustomerId: proto.Int64(400),
 				Name:       proto.String("alpha beta"),
 			})
@@ -684,7 +684,7 @@ var _ = Describe("TEXT Index Conformance", func() {
 			Expect(goEntries).To(HaveLen(2))
 
 			// Java updates same PK with different text.
-			err = store.SaveCustomerJava(ctx, &gen.Customer{
+			err = store.SaveCustomerJava(ctx, &demopb.Customer{
 				CustomerId: proto.Int64(400),
 				Name:       proto.String("gamma delta"),
 			})
@@ -720,7 +720,7 @@ var _ = Describe("TEXT Index Conformance", func() {
 	Describe("Empty text cross-language", func() {
 		It("should produce zero index entries for empty name", func() {
 			// Save customer with empty name — no tokens to index.
-			err := store.SaveCustomerGo(ctx, &gen.Customer{
+			err := store.SaveCustomerGo(ctx, &demopb.Customer{
 				CustomerId: proto.Int64(500),
 				Name:       proto.String(""),
 			})

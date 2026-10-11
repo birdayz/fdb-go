@@ -7,7 +7,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -39,7 +39,7 @@ func TestIntegration_OrphanIndexEntry_RaisesStorageError(t *testing.T) {
 	ctx := context.Background()
 	store := setupStore(t) // metadata has a VALUE index "order_price_idx" on Order.price
 
-	insertOrders(t, store, &gen.Order{
+	insertOrders(t, store, &demopb.Order{
 		OrderId: proto.Int64(1),
 		Price:   proto.Int32(100),
 	})
@@ -108,7 +108,7 @@ func TestIntegration_OrphanIndexEntry_RaisesStorageError(t *testing.T) {
 			"order_price_idx",
 			[]*predicates.ComparisonRange{merged.Range},
 			[]string{"Order"},
-			PositionalTypeForRecordLayout((&gen.Order{}).ProtoReflect().Descriptor(), false),
+			PositionalTypeForRecordLayout((&demopb.Order{}).ProtoReflect().Descriptor(), false),
 			false,
 		)).WithKeyComponentTypes([]values.Type{values.NullableInt})
 
@@ -159,7 +159,7 @@ func TestIntegration_OrphanIndexEntry_ScanIndexRecords_RaisesStorageError(t *tes
 	ctx := context.Background()
 	store := setupStore(t)
 
-	insertOrders(t, store, &gen.Order{
+	insertOrders(t, store, &demopb.Order{
 		OrderId: proto.Int64(1),
 		Price:   proto.Int32(100),
 	})

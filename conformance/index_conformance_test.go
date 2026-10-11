@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"math"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -47,7 +47,7 @@ var _ = Describe("Index Entry Conformance", func() {
 		It("should produce identical index entries visible to both Go and Java", func() {
 			// Save 5 orders with Go — each gets an index entry on price
 			for i := int64(1); i <= 5; i++ {
-				order := NewOrder(i).WithPrice(int32(i*100)).WithFlower("Rose", gen.Color_RED).Build()
+				order := NewOrder(i).WithPrice(int32(i*100)).WithFlower("Rose", demopb.Color_RED).Build()
 				err := store.SaveOrderGo(ctx, order)
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -83,7 +83,7 @@ var _ = Describe("Index Entry Conformance", func() {
 		It("should produce identical index entries visible to both Go and Java", func() {
 			// Save 3 orders with Java
 			for i := int64(1); i <= 3; i++ {
-				order := NewOrder(i).WithPrice(int32(i*200)).WithFlower("Tulip", gen.Color_BLUE).Build()
+				order := NewOrder(i).WithPrice(int32(i*200)).WithFlower("Tulip", demopb.Color_BLUE).Build()
 				err := store.SaveOrderJava(ctx, order)
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -113,7 +113,7 @@ var _ = Describe("Index Entry Conformance", func() {
 	Describe("Delete removes index entry", func() {
 		It("should remove the index entry when Go deletes a record", func() {
 			// Save with Go
-			order := NewOrder(42).WithPrice(999).WithFlower("Orchid", gen.Color_PINK).Build()
+			order := NewOrder(42).WithPrice(999).WithFlower("Orchid", demopb.Color_PINK).Build()
 			err := store.SaveOrderGo(ctx, order)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -142,7 +142,7 @@ var _ = Describe("Index Entry Conformance", func() {
 	Describe("Update changes index entry", func() {
 		It("should update the index entry when price changes", func() {
 			// Save with Go, price=100
-			order := NewOrder(77).WithPrice(100).WithFlower("Daisy", gen.Color_YELLOW).Build()
+			order := NewOrder(77).WithPrice(100).WithFlower("Daisy", demopb.Color_YELLOW).Build()
 			err := store.SaveOrderGo(ctx, order)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -153,7 +153,7 @@ var _ = Describe("Index Entry Conformance", func() {
 			Expect(toInt64(javaEntries[0].Key[0])).To(Equal(int64(100)))
 
 			// Update with Go, price=500
-			order2 := NewOrder(77).WithPrice(500).WithFlower("Daisy", gen.Color_YELLOW).Build()
+			order2 := NewOrder(77).WithPrice(500).WithFlower("Daisy", demopb.Color_YELLOW).Build()
 			err = store.SaveOrderGo(ctx, order2)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -180,7 +180,7 @@ var _ = Describe("Index Entry Conformance", func() {
 			// Insert orders with non-sequential prices to verify sort order
 			prices := []int32{500, 100, 300, 200, 400}
 			for i, price := range prices {
-				order := NewOrder(int64(i+1)).WithPrice(price).WithFlower("Mix", gen.Color_RED).Build()
+				order := NewOrder(int64(i+1)).WithPrice(price).WithFlower("Mix", demopb.Color_RED).Build()
 				err := store.SaveOrderGo(ctx, order)
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -251,7 +251,7 @@ type IndexEntryResult struct {
 func NewIndexConformanceStore(recordDB *recordlayer.FDBDatabase, keyspace subspace.Subspace, clusterFile string, tenantName string) (*IndexConformanceStore, error) {
 	priceIndex := recordlayer.NewIndex("Order$price", recordlayer.Field("price"))
 
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -290,7 +290,7 @@ func (s *IndexConformanceStore) buildJavaParams() map[string]any {
 }
 
 // SaveOrderGo saves an order with Go (with index maintenance).
-func (s *IndexConformanceStore) SaveOrderGo(ctx context.Context, order *gen.Order) error {
+func (s *IndexConformanceStore) SaveOrderGo(ctx context.Context, order *demopb.Order) error {
 	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
@@ -304,7 +304,7 @@ func (s *IndexConformanceStore) SaveOrderGo(ctx context.Context, order *gen.Orde
 }
 
 // SaveOrderJava saves an order via Java (with index maintenance).
-func (s *IndexConformanceStore) SaveOrderJava(ctx context.Context, order *gen.Order) error {
+func (s *IndexConformanceStore) SaveOrderJava(ctx context.Context, order *demopb.Order) error {
 	params := s.buildJavaParams()
 	params["order"] = order
 	return s.java.InvokeAs(ctx, "saveOrderWithIndex", params, nil)
@@ -381,8 +381,8 @@ func (s *IndexConformanceStore) ScanIndexJava(ctx context.Context) ([]IndexEntry
 }
 
 // LoadOrderGo loads an order using Go.
-func (s *IndexConformanceStore) LoadOrderGo(ctx context.Context, orderID int64) (*gen.Order, error) {
-	var order *gen.Order
+func (s *IndexConformanceStore) LoadOrderGo(ctx context.Context, orderID int64) (*demopb.Order, error) {
+	var order *demopb.Order
 	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
@@ -396,17 +396,17 @@ func (s *IndexConformanceStore) LoadOrderGo(ctx context.Context, orderID int64) 
 		if rec == nil {
 			return nil, nil
 		}
-		order = rec.Record.(*gen.Order)
+		order = rec.Record.(*demopb.Order)
 		return nil, nil
 	})
 	return order, err
 }
 
 // LoadOrderJava loads an order using Java.
-func (s *IndexConformanceStore) LoadOrderJava(ctx context.Context, orderID int64) (*gen.Order, error) {
+func (s *IndexConformanceStore) LoadOrderJava(ctx context.Context, orderID int64) (*demopb.Order, error) {
 	params := s.buildJavaParams()
 	params["orderID"] = orderID
-	var order gen.Order
+	var order demopb.Order
 	if err := s.java.InvokeAs(ctx, "loadOrderWithIndex", params, &order); err != nil {
 		return nil, err
 	}
@@ -569,7 +569,7 @@ func toInterfaceSlice(v any) []any {
 
 // SaveRecord saves a record using Go, then verifies Java can read it and sees the same record.
 func (s *IndexConformanceStore) SaveRecord(ctx context.Context, msg proto.Message) error {
-	order, ok := msg.(*gen.Order)
+	order, ok := msg.(*demopb.Order)
 	if !ok {
 		return fmt.Errorf("only Order records supported")
 	}

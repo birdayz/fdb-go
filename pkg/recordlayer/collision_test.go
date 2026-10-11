@@ -3,7 +3,7 @@ package recordlayer
 import (
 	"context"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -15,7 +15,7 @@ var _ = Describe("PrimaryKeyCollision", func() {
 		ctx := context.Background()
 
 		// Create metadata with collision-prone primary keys (no record type prefix)
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 
 		// Set primary keys WITHOUT record type prefix - can collide!
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
@@ -35,12 +35,12 @@ var _ = Describe("PrimaryKeyCollision", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Save an Order with ID 123
-			order := &gen.Order{
+			order := &demopb.Order{
 				OrderId: proto.Int64(123),
 				Price:   proto.Int32(100),
-				Flower: &gen.Flower{
+				Flower: &demopb.Flower{
 					Type:  proto.String("Rose"),
-					Color: gen.Color_RED.Enum(),
+					Color: demopb.Color_RED.Enum(),
 				},
 			}
 
@@ -53,7 +53,7 @@ var _ = Describe("PrimaryKeyCollision", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(loaded1).NotTo(BeNil())
 
-			loadedOrder := loaded1.Record.(*gen.Order)
+			loadedOrder := loaded1.Record.(*demopb.Order)
 			Expect(*loadedOrder.Price).To(Equal(int32(100)))
 
 			// In a real scenario with multiple types sharing same key space,
@@ -70,7 +70,7 @@ var _ = Describe("PrimaryKeyNoCollision", func() {
 		ctx := context.Background()
 
 		// Create metadata - record type index is always included automatically (like Java)
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 
 		// Primary key - record type index prevents collisions automatically
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
@@ -90,12 +90,12 @@ var _ = Describe("PrimaryKeyNoCollision", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Save an Order with ID 123
-			order := &gen.Order{
+			order := &demopb.Order{
 				OrderId: proto.Int64(123),
 				Price:   proto.Int32(100),
-				Flower: &gen.Flower{
+				Flower: &demopb.Flower{
 					Type:  proto.String("Rose"),
-					Color: gen.Color_RED.Enum(),
+					Color: demopb.Color_RED.Enum(),
 				},
 			}
 
@@ -108,7 +108,7 @@ var _ = Describe("PrimaryKeyNoCollision", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(loaded1).NotTo(BeNil())
 
-			loadedOrder := loaded1.Record.(*gen.Order)
+			loadedOrder := loaded1.Record.(*demopb.Order)
 			Expect(*loadedOrder.Price).To(Equal(int32(100)))
 
 			// Record type index ensures Order{order_id: 123} and Customer{customer_id: 123}
@@ -147,7 +147,7 @@ var _ = Describe("JavaCompatibilityBothModes", func() {
 			ctx := context.Background()
 
 			// Create metadata
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(tc.primaryKeyExpr)
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -165,12 +165,12 @@ var _ = Describe("JavaCompatibilityBothModes", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// Save a record
-				order := &gen.Order{
+				order := &demopb.Order{
 					OrderId: proto.Int64(999),
 					Price:   proto.Int32(50),
-					Flower: &gen.Flower{
+					Flower: &demopb.Flower{
 						Type:  proto.String("Tulip"),
-						Color: gen.Color_YELLOW.Enum(),
+						Color: demopb.Color_YELLOW.Enum(),
 					},
 				}
 

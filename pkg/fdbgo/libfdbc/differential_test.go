@@ -14,7 +14,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/directory"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -74,7 +74,7 @@ func TestLibFDBC_RecordLayerDifferential(t *testing.T) {
 	cgoDB := recordlayer.NewFDBDatabaseWithBackend(cgoBackend)
 
 	md := orderMetaData(t)
-	orders := []*gen.Order{
+	orders := []*demopb.Order{
 		makeOrder(1, 100, "Rose"),
 		makeOrder(2, 250, "Tulip"),
 		makeOrder(3, 50, "Daisy"),
@@ -129,8 +129,8 @@ func TestLibFDBC_RecordLayerDifferential(t *testing.T) {
 		big := makeOrder(7, 7, string(bigBlob(250_000)))
 		ssGo := uniqueSubspace("split_go")
 		ssCgo := uniqueSubspace("split_cgo")
-		saveOrders(t, goDB, md, ssGo, []*gen.Order{big})
-		saveOrders(t, cgoDB, md, ssCgo, []*gen.Order{big})
+		saveOrders(t, goDB, md, ssGo, []*demopb.Order{big})
+		saveOrders(t, cgoDB, md, ssCgo, []*demopb.Order{big})
 
 		got := loadOrder(t, goDB, md, ssCgo, tuple.Tuple{int64(7)})
 		if !proto.Equal(got, big) {
@@ -651,7 +651,7 @@ func startCluster(t *testing.T) string {
 
 func orderMetaData(t *testing.T) *recordlayer.RecordMetaData {
 	t.Helper()
-	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	b.SetSplitLongRecords(true) // exercise the split-record wire format (>100KB → multiple keys)
 	b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
@@ -664,11 +664,11 @@ func orderMetaData(t *testing.T) *recordlayer.RecordMetaData {
 	return md
 }
 
-func makeOrder(id int64, price int32, flowerType string) *gen.Order {
-	return &gen.Order{
+func makeOrder(id int64, price int32, flowerType string) *demopb.Order {
+	return &demopb.Order{
 		OrderId: proto.Int64(id),
 		Price:   proto.Int32(price),
-		Flower:  &gen.Flower{Type: proto.String(flowerType), Color: gen.Color_RED.Enum()},
+		Flower:  &demopb.Flower{Type: proto.String(flowerType), Color: demopb.Color_RED.Enum()},
 	}
 }
 
@@ -684,7 +684,7 @@ func uniqueSubspace(name string) subspace.Subspace {
 	return subspace.FromBytes(tuple.Tuple{"libfdbc_diff", name}.Pack())
 }
 
-func saveOrders(t *testing.T, db *recordlayer.FDBDatabase, md *recordlayer.RecordMetaData, ss subspace.Subspace, orders []*gen.Order) {
+func saveOrders(t *testing.T, db *recordlayer.FDBDatabase, md *recordlayer.RecordMetaData, ss subspace.Subspace, orders []*demopb.Order) {
 	t.Helper()
 	ctx := context.Background()
 	_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -708,7 +708,7 @@ func saveOrders(t *testing.T, db *recordlayer.FDBDatabase, md *recordlayer.Recor
 	}
 }
 
-func loadOrder(t *testing.T, db *recordlayer.FDBDatabase, md *recordlayer.RecordMetaData, ss subspace.Subspace, pk tuple.Tuple) *gen.Order {
+func loadOrder(t *testing.T, db *recordlayer.FDBDatabase, md *recordlayer.RecordMetaData, ss subspace.Subspace, pk tuple.Tuple) *demopb.Order {
 	t.Helper()
 	ctx := context.Background()
 	got, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -735,7 +735,7 @@ func loadOrder(t *testing.T, db *recordlayer.FDBDatabase, md *recordlayer.Record
 	if got == nil {
 		t.Fatalf("loadOrder %v: record not found", pk)
 	}
-	return got.(proto.Message).(*gen.Order)
+	return got.(proto.Message).(*demopb.Order)
 }
 
 // readSubspaceRelative reads every KV under sub through the neutral pure-Go reader,

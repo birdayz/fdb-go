@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
@@ -16,7 +16,7 @@ var _ = Describe("SecondaryIndexes", func() {
 	ctx := context.Background()
 
 	buildMetaWithIndex := func(indexes ...*Index) *RecordMetaData {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -50,7 +50,7 @@ var _ = Describe("SecondaryIndexes", func() {
 				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			order := &gen.Order{OrderId: proto.Int64(42), Price: proto.Int32(999)}
+			order := &demopb.Order{OrderId: proto.Int64(42), Price: proto.Int32(999)}
 			_, err = store.SaveRecord(order)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -81,7 +81,7 @@ var _ = Describe("SecondaryIndexes", func() {
 				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			order := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
+			order := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
 			_, err = store.SaveRecord(order)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -114,12 +114,12 @@ var _ = Describe("SecondaryIndexes", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Save with price=100
-			order := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
+			order := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
 			_, err = store.SaveRecord(order)
 			Expect(err).NotTo(HaveOccurred())
 
 			// Update to price=200
-			order2 := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)}
+			order2 := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)}
 			_, err = store.SaveRecord(order2)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -149,12 +149,12 @@ var _ = Describe("SecondaryIndexes", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Save with price=100
-			order := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
+			order := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
 			_, err = store.SaveRecord(order)
 			Expect(err).NotTo(HaveOccurred())
 
 			// Update with same price — index entry should be unchanged
-			order2 := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
+			order2 := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
 			_, err = store.SaveRecord(order2)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -178,7 +178,7 @@ var _ = Describe("SecondaryIndexes", func() {
 
 			// Save 3 records with different prices
 			for i := int64(1); i <= 3; i++ {
-				order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))}
+				order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))}
 				_, err = store.SaveRecord(order)
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -209,12 +209,12 @@ var _ = Describe("SecondaryIndexes", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// First record with price=100
-			order1 := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
+			order1 := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
 			_, err = store.SaveRecord(order1)
 			Expect(err).NotTo(HaveOccurred())
 
 			// Second record with same price=100 — should fail
-			order2 := &gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)}
+			order2 := &demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)}
 			_, err = store.SaveRecord(order2)
 			Expect(err).To(HaveOccurred())
 
@@ -236,11 +236,11 @@ var _ = Describe("SecondaryIndexes", func() {
 				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			order1 := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
+			order1 := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
 			_, err = store.SaveRecord(order1)
 			Expect(err).NotTo(HaveOccurred())
 
-			order2 := &gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)}
+			order2 := &demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)}
 			_, err = store.SaveRecord(order2)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -263,12 +263,12 @@ var _ = Describe("SecondaryIndexes", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Save with price=100
-			order := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
+			order := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
 			_, err = store.SaveRecord(order)
 			Expect(err).NotTo(HaveOccurred())
 
 			// Update same record to price=200 — should succeed
-			order2 := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)}
+			order2 := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)}
 			_, err = store.SaveRecord(order2)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -291,7 +291,7 @@ var _ = Describe("SecondaryIndexes", func() {
 				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			order := &gen.Order{OrderId: proto.Int64(42), Price: proto.Int32(999)}
+			order := &demopb.Order{OrderId: proto.Int64(42), Price: proto.Int32(999)}
 			_, err = store.SaveRecord(order)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -323,7 +323,7 @@ var _ = Describe("SecondaryIndexes", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i := int64(1); i <= 5; i++ {
-				order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))}
+				order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))}
 				_, err = store.SaveRecord(order)
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -346,7 +346,7 @@ var _ = Describe("SecondaryIndexes", func() {
 		// order_id is both PK and indexed — tests that PK is appended to index entry
 		idIndex := NewIndex("Order$order_id", Field("order_id"))
 
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -361,7 +361,7 @@ var _ = Describe("SecondaryIndexes", func() {
 				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			order := &gen.Order{OrderId: proto.Int64(7), Price: proto.Int32(500)}
+			order := &demopb.Order{OrderId: proto.Int64(7), Price: proto.Int32(500)}
 			_, err = store.SaveRecord(order)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -384,7 +384,7 @@ var _ = Describe("SecondaryIndexes", func() {
 	It("IndexOnStringField", func() {
 		nameIndex := NewIndex("Customer$name", Field("name"))
 
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -398,7 +398,7 @@ var _ = Describe("SecondaryIndexes", func() {
 				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			customer := &gen.Customer{CustomerId: proto.Int64(1), Name: proto.String("Alice")}
+			customer := &demopb.Customer{CustomerId: proto.Int64(1), Name: proto.String("Alice")}
 			_, err = store.SaveRecord(customer)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -427,7 +427,7 @@ var _ = Describe("SecondaryIndexes", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Insert with price=100
-			order := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
+			order := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
 			_, err = store.SaveRecord(order)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -436,7 +436,7 @@ var _ = Describe("SecondaryIndexes", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Insert different record with same price — should succeed
-			order2 := &gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)}
+			order2 := &demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)}
 			_, err = store.SaveRecord(order2)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -463,11 +463,11 @@ var _ = Describe("SecondaryIndexes", func() {
 
 			// Two orders WITHOUT flower set → index key is (nil, pk).
 			// Both should succeed because null keys skip uniqueness checks.
-			order1 := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
+			order1 := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
 			_, err = store.SaveRecord(order1)
 			Expect(err).NotTo(HaveOccurred())
 
-			order2 := &gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)}
+			order2 := &demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)}
 			_, err = store.SaveRecord(order2)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -476,19 +476,19 @@ var _ = Describe("SecondaryIndexes", func() {
 			Expect(kvs).To(HaveLen(2))
 
 			// But a UNIQUE non-null value should still be enforced
-			order3 := &gen.Order{
+			order3 := &demopb.Order{
 				OrderId: proto.Int64(3),
 				Price:   proto.Int32(300),
-				Flower:  &gen.Flower{Type: proto.String("Rose")},
+				Flower:  &demopb.Flower{Type: proto.String("Rose")},
 			}
 			_, err = store.SaveRecord(order3)
 			Expect(err).NotTo(HaveOccurred())
 
 			// Another record with the same non-null flower type → violation
-			order4 := &gen.Order{
+			order4 := &demopb.Order{
 				OrderId: proto.Int64(4),
 				Price:   proto.Int32(400),
-				Flower:  &gen.Flower{Type: proto.String("Rose")},
+				Flower:  &demopb.Flower{Type: proto.String("Rose")},
 			}
 			_, err = store.SaveRecord(order4)
 			Expect(err).To(HaveOccurred())
@@ -503,7 +503,7 @@ var _ = Describe("SecondaryIndexes", func() {
 	It("IndexWithRecordCounting", func() {
 		priceIndex := NewIndex("Order$price", Field("price"))
 
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -520,7 +520,7 @@ var _ = Describe("SecondaryIndexes", func() {
 
 			// Insert 3 records
 			for i := int64(1); i <= 3; i++ {
-				order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))}
+				order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))}
 				_, err = store.SaveRecord(order)
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -566,7 +566,7 @@ var _ = Describe("SecondaryIndexes", func() {
 			for i := range longTag {
 				longTag[i] = 'x'
 			}
-			order := &gen.Order{
+			order := &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(100),
 				Tags:    []string{string(longTag)},
@@ -587,7 +587,7 @@ var _ = Describe("KeyWithValueExpression covering indexes", func() {
 	ctx := context.Background()
 
 	buildMetaWithIndex := func(indexes ...*Index) *RecordMetaData {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -610,9 +610,9 @@ var _ = Describe("KeyWithValueExpression covering indexes", func() {
 				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			order := &gen.Order{
+			order := &demopb.Order{
 				OrderId: proto.Int64(42), Price: proto.Int32(999),
-				Flower: &gen.Flower{Type: proto.String("Rose")},
+				Flower: &demopb.Flower{Type: proto.String("Rose")},
 			}
 			_, err = store.SaveRecord(order)
 			Expect(err).NotTo(HaveOccurred())
@@ -654,10 +654,10 @@ var _ = Describe("KeyWithValueExpression covering indexes", func() {
 				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			for _, o := range []*gen.Order{
-				{OrderId: proto.Int64(1), Price: proto.Int32(300), Flower: &gen.Flower{Type: proto.String("Rose")}},
-				{OrderId: proto.Int64(2), Price: proto.Int32(100), Flower: &gen.Flower{Type: proto.String("Tulip")}},
-				{OrderId: proto.Int64(3), Price: proto.Int32(200), Flower: &gen.Flower{Type: proto.String("Lily")}},
+			for _, o := range []*demopb.Order{
+				{OrderId: proto.Int64(1), Price: proto.Int32(300), Flower: &demopb.Flower{Type: proto.String("Rose")}},
+				{OrderId: proto.Int64(2), Price: proto.Int32(100), Flower: &demopb.Flower{Type: proto.String("Tulip")}},
+				{OrderId: proto.Int64(3), Price: proto.Int32(200), Flower: &demopb.Flower{Type: proto.String("Lily")}},
 			} {
 				_, err = store.SaveRecord(o)
 				Expect(err).NotTo(HaveOccurred())
@@ -700,9 +700,9 @@ var _ = Describe("KeyWithValueExpression covering indexes", func() {
 				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(500), Flower: &gen.Flower{Type: proto.String("Rose")}})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(500), Flower: &demopb.Flower{Type: proto.String("Rose")}})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(600), Flower: &gen.Flower{Type: proto.String("Tulip")}})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(600), Flower: &demopb.Flower{Type: proto.String("Tulip")}})
 			Expect(err).NotTo(HaveOccurred())
 
 			deleted, err := store.DeleteRecord(tuple.Tuple{int64(1)})
@@ -734,11 +734,11 @@ var _ = Describe("KeyWithValueExpression covering indexes", func() {
 				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Flower: &gen.Flower{Type: proto.String("Rose")}})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Flower: &demopb.Flower{Type: proto.String("Rose")}})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Update: price changes from 100 to 200, flower stays same
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(200), Flower: &gen.Flower{Type: proto.String("Rose")}})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(200), Flower: &demopb.Flower{Type: proto.String("Rose")}})
 			Expect(err).NotTo(HaveOccurred())
 
 			var entries []*IndexEntry
@@ -768,9 +768,9 @@ var _ = Describe("KeyWithValueExpression covering indexes", func() {
 				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(1), Price: proto.Int32(100),
-				Flower: &gen.Flower{Type: proto.String("Rose")},
+				Flower: &demopb.Flower{Type: proto.String("Rose")},
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -804,11 +804,11 @@ var _ = Describe("KeyWithValueExpression covering indexes", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Save record
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Flower: &gen.Flower{Type: proto.String("Rose")}})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Flower: &demopb.Flower{Type: proto.String("Rose")}})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Save exact same record again — should be a no-op for index
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Flower: &gen.Flower{Type: proto.String("Rose")}})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Flower: &demopb.Flower{Type: proto.String("Rose")}})
 			Expect(err).NotTo(HaveOccurred())
 
 			var entries []*IndexEntry
@@ -855,7 +855,7 @@ var _ = Describe("KeyWithValueExpression covering indexes", func() {
 				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(300), Flower: &gen.Flower{Type: proto.String("Rose")}})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(300), Flower: &demopb.Flower{Type: proto.String("Rose")}})
 			Expect(err).NotTo(HaveOccurred())
 
 			var entries []*IndexEntry
@@ -888,9 +888,9 @@ var _ = Describe("KeyWithValueExpression covering indexes", func() {
 				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(42), Price: proto.Int32(100),
-				Flower: &gen.Flower{Type: proto.String("Rose")},
+				Flower: &demopb.Flower{Type: proto.String("Rose")},
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -929,9 +929,9 @@ var _ = Describe("KeyWithValueExpression covering indexes", func() {
 				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(500)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(500)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(300)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(300)})
 			Expect(err).NotTo(HaveOccurred())
 
 			var entries []*IndexEntry
@@ -967,9 +967,9 @@ var _ = Describe("KeyWithValueExpression covering indexes", func() {
 				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(1), Price: proto.Int32(100),
-				Flower: &gen.Flower{Type: proto.String("Rose")},
+				Flower: &demopb.Flower{Type: proto.String("Rose")},
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -1007,10 +1007,10 @@ var _ = Describe("KeyWithValueExpression covering indexes", func() {
 				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(1), Price: proto.Int32(100),
 				Tags:   []string{"premium", "gift"},
-				Flower: &gen.Flower{Type: proto.String("Rose")},
+				Flower: &demopb.Flower{Type: proto.String("Rose")},
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -1049,9 +1049,9 @@ var _ = Describe("KeyWithValueExpression covering indexes", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i := int64(1); i <= 5; i++ {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100)),
-					Flower: &gen.Flower{Type: proto.String("Rose")},
+					Flower: &demopb.Flower{Type: proto.String("Rose")},
 				})
 				Expect(err).NotTo(HaveOccurred())
 			}

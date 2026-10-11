@@ -6,6 +6,8 @@ import (
 	"sync"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
@@ -35,7 +37,7 @@ var _ = Describe("index maintainer dispatch", func() {
 	// buildMetaWithIndex builds metadata carrying one index on Order, whatever
 	// its type string, so a type no maintainer implements can reach the dispatch.
 	buildMetaWithIndex := func(idx *Index) *RecordMetaData {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -53,7 +55,7 @@ var _ = Describe("index maintainer dispatch", func() {
 			if err != nil {
 				return nil, err
 			}
-			return store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(500)})
+			return store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(500)})
 		})
 		return err
 	}

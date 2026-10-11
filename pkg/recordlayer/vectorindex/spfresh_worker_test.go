@@ -8,7 +8,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 )
@@ -17,7 +17,7 @@ var _ = Describe("SPFresh maintenance worker (RFC-156 reference runner)", func()
 	ctx := context.Background()
 
 	workerMetadata := func() *recordlayer.RecordMetaDataBuilder {
-		b := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		b := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 		b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 		b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -54,7 +54,7 @@ var _ = Describe("SPFresh maintenance worker (RFC-156 reference runner)", func()
 				return nil, serr
 			}
 			for id := int64(1); id <= 120; id++ {
-				if _, serr := store.SaveRecord(&gen.Order{
+				if _, serr := store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(id), Price: proto.Int32(int32(5 + id%6)), Quantity: proto.Int32(int32(5 + (id/6)%6)),
 				}); serr != nil {
 					return nil, serr

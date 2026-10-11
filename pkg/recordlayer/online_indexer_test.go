@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -27,7 +29,7 @@ var _ = Describe("OnlineIndexer", func() {
 
 	// Helper: create metadata with an Order type (PK on order_id) and NO indexes initially.
 	baseMetaData := func() (*RecordMetaData, *RecordMetaDataBuilder) {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -49,7 +51,7 @@ var _ = Describe("OnlineIndexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 10; i++ {
-					order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))}
+					order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))}
 					_, err = store.SaveRecord(order)
 					Expect(err).NotTo(HaveOccurred())
 				}
@@ -113,7 +115,7 @@ var _ = Describe("OnlineIndexer", func() {
 					SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
 				for i := int64(1); i <= 10; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 				return nil, nil
@@ -172,7 +174,7 @@ var _ = Describe("OnlineIndexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 5; i++ {
-					order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))}
+					order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))}
 					_, err = store.SaveRecord(order)
 					Expect(err).NotTo(HaveOccurred())
 				}
@@ -277,7 +279,7 @@ var _ = Describe("OnlineIndexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 5; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 				return nil, nil
@@ -309,7 +311,7 @@ var _ = Describe("OnlineIndexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(6); i <= 10; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 
@@ -335,7 +337,7 @@ var _ = Describe("OnlineIndexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 20; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 				return nil, nil
@@ -390,7 +392,7 @@ var _ = Describe("OnlineIndexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 5; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 				return nil, nil
@@ -429,7 +431,7 @@ var _ = Describe("OnlineIndexer", func() {
 					SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
 				for i := int64(1); i <= 6; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 				return nil, nil
@@ -473,7 +475,7 @@ var _ = Describe("OnlineIndexer", func() {
 					SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
 				for i := int64(1); i <= 2; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 				return nil, nil
@@ -512,7 +514,7 @@ var _ = Describe("OnlineIndexer", func() {
 					SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
 				for i := int64(1); i <= 6; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 				return nil, nil
@@ -550,7 +552,7 @@ var _ = Describe("OnlineIndexer", func() {
 			// single-target records scan presets too, as Java's does: conformance "The
 			// online build presets a string-keyed record type's range as Java does").
 			typedBuilder := func() *RecordMetaDataBuilder {
-				b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+				b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 				b.GetRecordType("Order").SetPrimaryKey(Concat(RecordTypeKey(), Field("order_id")))
 				b.GetRecordType("Customer").SetPrimaryKey(Concat(RecordTypeKey(), Field("customer_id")))
 				b.GetRecordType("TypedRecord").SetPrimaryKey(Concat(RecordTypeKey(), Field("id")))
@@ -564,10 +566,10 @@ var _ = Describe("OnlineIndexer", func() {
 					SetContext(rtx).SetMetaDataProvider(mdNoIdx).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
 				for i := int64(1); i <= 3; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100)), Quantity: proto.Int32(int32(i))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100)), Quantity: proto.Int32(int32(i))})
 					Expect(err).NotTo(HaveOccurred())
 				}
-				_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(1), Name: proto.String("x")})
+				_, err = store.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(1), Name: proto.String("x")})
 				Expect(err).NotTo(HaveOccurred())
 				return nil, nil
 			})
@@ -620,7 +622,7 @@ var _ = Describe("OnlineIndexer", func() {
 			ks := specSubspace()
 
 			typedBuilder := func() *RecordMetaDataBuilder {
-				b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+				b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 				b.GetRecordType("Order").SetPrimaryKey(Concat(RecordTypeKey(), Field("order_id")))
 				b.GetRecordType("Customer").SetPrimaryKey(Concat(RecordTypeKey(), Field("customer_id")))
 				b.GetRecordType("TypedRecord").SetPrimaryKey(Concat(RecordTypeKey(), Field("id")))
@@ -633,10 +635,10 @@ var _ = Describe("OnlineIndexer", func() {
 					SetContext(rtx).SetMetaDataProvider(mdNoIdx).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
 				for i := int64(1); i <= 4; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100)), Quantity: proto.Int32(int32(i))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100)), Quantity: proto.Int32(int32(i))})
 					Expect(err).NotTo(HaveOccurred())
 				}
-				_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(1), Name: proto.String("x")})
+				_, err = store.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(1), Name: proto.String("x")})
 				Expect(err).NotTo(HaveOccurred())
 				return nil, nil
 			})
@@ -715,12 +717,12 @@ var _ = Describe("OnlineIndexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 5; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(100)})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(100)})
 					Expect(err).NotTo(HaveOccurred())
 				}
 				// Use non-overlapping PKs (101-103) to avoid colliding with Order PKs (1-5).
 				for i := int64(101); i <= 103; i++ {
-					_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(i), Name: proto.String("Test")})
+					_, err = store.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(i), Name: proto.String("Test")})
 					Expect(err).NotTo(HaveOccurred())
 				}
 				return nil, nil
@@ -777,7 +779,7 @@ var _ = Describe("OnlineIndexer", func() {
 
 				prices := []int32{500, 100, 300, 200, 400}
 				for i, price := range prices {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)})
 					Expect(err).NotTo(HaveOccurred())
 				}
 				return nil, nil
@@ -848,7 +850,7 @@ var _ = Describe("OnlineIndexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 15; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 				return nil, nil
@@ -914,11 +916,11 @@ var _ = Describe("OnlineIndexer", func() {
 					SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
 
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 				Expect(err).NotTo(HaveOccurred())
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(300)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(300)})
 				Expect(err).NotTo(HaveOccurred())
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(500)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(500)})
 				Expect(err).NotTo(HaveOccurred())
 				return nil, nil
 			})
@@ -949,9 +951,9 @@ var _ = Describe("OnlineIndexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// Insert prices that interleave: 200 (rank 1), 400 (rank 3)
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(4), Price: proto.Int32(200)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(4), Price: proto.Int32(200)})
 				Expect(err).NotTo(HaveOccurred())
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(5), Price: proto.Int32(400)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(5), Price: proto.Int32(400)})
 				Expect(err).NotTo(HaveOccurred())
 
 				// BY_RANK should now return: 100, 200, 300, 400, 500
@@ -983,17 +985,17 @@ var _ = Describe("OnlineIndexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// 3 records at price=100, 2 at price=200, 1 at price=300
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 				Expect(err).NotTo(HaveOccurred())
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
 				Expect(err).NotTo(HaveOccurred())
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(100)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(100)})
 				Expect(err).NotTo(HaveOccurred())
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(4), Price: proto.Int32(200)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(4), Price: proto.Int32(200)})
 				Expect(err).NotTo(HaveOccurred())
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(5), Price: proto.Int32(200)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(5), Price: proto.Int32(200)})
 				Expect(err).NotTo(HaveOccurred())
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(6), Price: proto.Int32(300)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(6), Price: proto.Int32(300)})
 				Expect(err).NotTo(HaveOccurred())
 				return nil, nil
 			})
@@ -1063,7 +1065,7 @@ var _ = Describe("OnlineIndexer", func() {
 					SetContext(rtx).SetMetaDataProvider(mdSrc).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
 				for i := int64(1); i <= 10; i++ {
-					order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100)), Quantity: proto.Int32(int32(i))}
+					order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100)), Quantity: proto.Int32(int32(i))}
 					_, err = store.SaveRecord(order)
 					Expect(err).NotTo(HaveOccurred())
 				}
@@ -1128,7 +1130,7 @@ var _ = Describe("OnlineIndexer", func() {
 					SetContext(rtx).SetMetaDataProvider(mdSrc).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
 				for i := int64(1); i <= 20; i++ {
-					order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100)), Quantity: proto.Int32(int32(i))}
+					order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100)), Quantity: proto.Int32(int32(i))}
 					_, err = store.SaveRecord(order)
 					Expect(err).NotTo(HaveOccurred())
 				}
@@ -1187,7 +1189,7 @@ var _ = Describe("OnlineIndexer", func() {
 					SetContext(rtx).SetMetaDataProvider(mdSrc).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
 				for i := int64(1); i <= 3; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100)), Quantity: proto.Int32(int32(i))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100)), Quantity: proto.Int32(int32(i))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 				return nil, nil
@@ -1311,7 +1313,7 @@ var _ = Describe("OnlineIndexer", func() {
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
 				for i := int64(1); i <= 3; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100)), Quantity: proto.Int32(int32(i)), Tags: []string{"a", "b"}})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100)), Quantity: proto.Int32(int32(i)), Tags: []string{"a", "b"}})
 					Expect(err).NotTo(HaveOccurred())
 				}
 				return nil, nil
@@ -1404,7 +1406,7 @@ var _ = Describe("OnlineIndexer", func() {
 					SetContext(rtx).SetMetaDataProvider(mdSrc).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
 				for i := int64(1); i <= 5; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100)), Quantity: proto.Int32(int32(i))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100)), Quantity: proto.Int32(int32(i))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 				return nil, nil
@@ -1438,7 +1440,7 @@ var _ = Describe("OnlineIndexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(6); i <= 10; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100)), Quantity: proto.Int32(int32(i))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100)), Quantity: proto.Int32(int32(i))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 
@@ -1479,7 +1481,7 @@ var _ = Describe("OnlineIndexer", func() {
 
 				// Insert 3 records while index is READABLE — entries are maintained.
 				for i := int64(1); i <= 3; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 
@@ -1507,7 +1509,7 @@ var _ = Describe("OnlineIndexer", func() {
 				Expect(store.IsIndexWriteOnly("Order$price")).To(BeTrue())
 
 				for i := int64(4); i <= 6; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 				return nil, nil
@@ -1566,7 +1568,7 @@ var _ = Describe("OnlineIndexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 5; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 
@@ -1629,7 +1631,7 @@ var _ = Describe("OnlineIndexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 5; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 
@@ -1709,7 +1711,7 @@ var _ = Describe("OnlineIndexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 5; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 				return nil, disableIndexes(store, priceIndex)
@@ -1743,7 +1745,7 @@ var _ = Describe("OnlineIndexer", func() {
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
 				Expect(err).NotTo(HaveOccurred())
 				for i := int64(6); i <= 8; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 				return nil, nil
@@ -1799,7 +1801,7 @@ var _ = Describe("OnlineIndexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 4; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 
@@ -1875,7 +1877,7 @@ var _ = Describe("OnlineIndexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// Record A: inserted before index exists.
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 				Expect(err).NotTo(HaveOccurred())
 				return nil, nil
 			})
@@ -1916,7 +1918,7 @@ var _ = Describe("OnlineIndexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(store.IsIndexWriteOnly("Order$price")).To(BeTrue())
 
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
 				Expect(err).NotTo(HaveOccurred())
 				return nil, nil
 			})
@@ -1999,7 +2001,7 @@ var _ = Describe("OnlineIndexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 10; i++ {
-					_, err = store.SaveRecord(&gen.Order{
+					_, err = store.SaveRecord(&demopb.Order{
 						OrderId:  proto.Int64(i),
 						Price:    proto.Int32(int32(i * 100)),
 						Quantity: proto.Int32(int32(i * 5)),
@@ -2076,7 +2078,7 @@ var _ = Describe("OnlineIndexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 10; i++ {
-					_, err = store.SaveRecord(&gen.Order{
+					_, err = store.SaveRecord(&demopb.Order{
 						OrderId:  proto.Int64(i),
 						Price:    proto.Int32(int32(i * 100)),
 						Quantity: proto.Int32(int32(i)),
@@ -2446,7 +2448,7 @@ var _ = Describe("OnlineIndexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 3; i++ {
-					_, err = store.SaveRecord(&gen.Order{
+					_, err = store.SaveRecord(&demopb.Order{
 						OrderId:  proto.Int64(i),
 						Price:    proto.Int32(int32(i * 100)),
 						Quantity: proto.Int32(int32(i)),
@@ -2520,7 +2522,7 @@ var _ = Describe("OnlineIndexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 10; i++ {
-					_, err = store.SaveRecord(&gen.Order{
+					_, err = store.SaveRecord(&demopb.Order{
 						OrderId:  proto.Int64(i),
 						Price:    proto.Int32(int32(i * 100)),
 						Quantity: proto.Int32(int32(i)),
@@ -2623,7 +2625,7 @@ var _ = Describe("OnlineIndexer", func() {
 
 				// 5 Orders with prices.
 				for i := int64(1); i <= 5; i++ {
-					_, err = store.SaveRecord(&gen.Order{
+					_, err = store.SaveRecord(&demopb.Order{
 						OrderId: proto.Int64(i),
 						Price:   proto.Int32(int32(i * 100)),
 					})
@@ -2632,7 +2634,7 @@ var _ = Describe("OnlineIndexer", func() {
 
 				// 3 Customers with names. Use non-overlapping PKs (101-103).
 				for i := int64(101); i <= 103; i++ {
-					_, err = store.SaveRecord(&gen.Customer{
+					_, err = store.SaveRecord(&demopb.Customer{
 						CustomerId: proto.Int64(i),
 						Name:       proto.String("Customer"),
 					})
@@ -2708,7 +2710,7 @@ var _ = Describe("OnlineIndexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 5; i++ {
-					_, err = store.SaveRecord(&gen.Order{
+					_, err = store.SaveRecord(&demopb.Order{
 						OrderId:  proto.Int64(i),
 						Price:    proto.Int32(int32(i * 10)),
 						Quantity: proto.Int32(int32(i)),
@@ -2748,7 +2750,7 @@ var _ = Describe("OnlineIndexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(6); i <= 10; i++ {
-					_, err = store.SaveRecord(&gen.Order{
+					_, err = store.SaveRecord(&demopb.Order{
 						OrderId:  proto.Int64(i),
 						Price:    proto.Int32(int32(i * 10)),
 						Quantity: proto.Int32(int32(i)),
@@ -2791,7 +2793,7 @@ var _ = Describe("OnlineIndexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 10; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 				return nil, nil
@@ -2836,7 +2838,7 @@ var _ = Describe("OnlineIndexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 15; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 				return nil, nil
@@ -2881,7 +2883,7 @@ var _ = Describe("OnlineIndexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 8; i++ {
-					_, err = store.SaveRecord(&gen.Order{
+					_, err = store.SaveRecord(&demopb.Order{
 						OrderId:  proto.Int64(i),
 						Price:    proto.Int32(int32(i * 100)),
 						Quantity: proto.Int32(int32(i)),
@@ -2944,7 +2946,7 @@ var _ = Describe("OnlineIndexer", func() {
 					SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
 				for i := int64(1); i <= 10; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 				return nil, nil
@@ -3001,7 +3003,7 @@ var _ = Describe("OnlineIndexer", func() {
 					SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
 				for _, r := range []struct{ id, price int64 }{{1, 100}, {2, 100}, {3, 200}} { // 1 & 2 collide on price
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(r.id), Price: proto.Int32(int32(r.price))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(r.id), Price: proto.Int32(int32(r.price))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 				return nil, nil
@@ -3088,7 +3090,7 @@ var _ = Describe("OnlineIndexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 5; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 
@@ -3157,7 +3159,7 @@ var _ = Describe("OnlineIndexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 5; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 
@@ -3216,7 +3218,7 @@ var _ = Describe("OnlineIndexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 5; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 
@@ -3266,7 +3268,7 @@ var _ = Describe("OnlineIndexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 5; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 
@@ -3329,7 +3331,7 @@ var _ = Describe("OnlineIndexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 5; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 
@@ -3422,7 +3424,7 @@ var _ = Describe("OnlineIndexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 5; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 				return nil, nil
@@ -3505,7 +3507,7 @@ var _ = Describe("OnlineIndexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 5; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 				return nil, nil
@@ -3567,7 +3569,7 @@ var _ = Describe("OnlineIndexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 5; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 
@@ -3643,7 +3645,7 @@ var _ = Describe("OnlineIndexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 5; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 
@@ -3730,7 +3732,7 @@ var _ = Describe("OnlineIndexer", func() {
 				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
 				for i := int64(1); i <= 5; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100)), Quantity: proto.Int32(int32(i))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100)), Quantity: proto.Int32(int32(i))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 				arrange(store)
@@ -3962,7 +3964,7 @@ var _ = Describe("OnlineIndexer", func() {
 				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
 				for i := int64(1); i <= 3; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(100), Quantity: proto.Int32(int32(i))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(100), Quantity: proto.Int32(int32(i))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 				return nil, nil
@@ -3999,7 +4001,7 @@ var _ = Describe("OnlineIndexer", func() {
 				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
 				for i := int64(1); i <= 3; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(100)})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(100)})
 					Expect(err).NotTo(HaveOccurred())
 				}
 				return nil, nil
@@ -4816,7 +4818,7 @@ var _ = Describe("OnlineIndexer", func() {
 					SetContext(rtx).SetMetaDataProvider(mdNoIdx).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
 				for i := int64(1); i <= 50; i++ {
-					_, err = store.SaveRecord(&gen.Order{
+					_, err = store.SaveRecord(&demopb.Order{
 						OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10)),
 					})
 					Expect(err).NotTo(HaveOccurred())
@@ -4857,7 +4859,7 @@ var _ = Describe("OnlineIndexer", func() {
 					SetContext(rtx).SetMetaDataProvider(mdNoIdx).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
 				for i := int64(1); i <= 5; i++ {
-					_, err = store.SaveRecord(&gen.Order{
+					_, err = store.SaveRecord(&demopb.Order{
 						OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10)),
 					})
 					Expect(err).NotTo(HaveOccurred())
@@ -4901,7 +4903,7 @@ var _ = Describe("OnlineIndexer", func() {
 					SetContext(rtx).SetMetaDataProvider(mdNoIdx).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
 				for i := int64(1); i <= 10; i++ {
-					_, err = store.SaveRecord(&gen.Order{
+					_, err = store.SaveRecord(&demopb.Order{
 						OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10)),
 					})
 					Expect(err).NotTo(HaveOccurred())
@@ -4942,7 +4944,7 @@ var _ = Describe("OnlineIndexer", func() {
 					SetContext(rtx).SetMetaDataProvider(mdNoIdx).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
 				for i := int64(1); i <= 5; i++ {
-					_, err = store.SaveRecord(&gen.Order{
+					_, err = store.SaveRecord(&demopb.Order{
 						OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10)),
 					})
 					Expect(err).NotTo(HaveOccurred())
@@ -4983,7 +4985,7 @@ var _ = Describe("OnlineIndexer", func() {
 					SetContext(rtx).SetMetaDataProvider(mdNoIdx).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
 				for i := int64(1); i <= 10; i++ {
-					_, err = store.SaveRecord(&gen.Order{
+					_, err = store.SaveRecord(&demopb.Order{
 						OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10)),
 					})
 					Expect(err).NotTo(HaveOccurred())
@@ -5042,7 +5044,7 @@ var _ = Describe("OnlineIndexer", func() {
 					SetContext(rtx).SetMetaDataProvider(mdNoIdx).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
 				for i := int64(1); i <= 5; i++ {
-					_, err = store.SaveRecord(&gen.Order{
+					_, err = store.SaveRecord(&demopb.Order{
 						OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10)),
 						Quantity: proto.Int32(int32(i)),
 					})
@@ -5239,7 +5241,7 @@ var _ = Describe("OnlineIndexer", func() {
 						SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ks).CreateOrOpen()
 					Expect(err).NotTo(HaveOccurred())
 					for i := int64(1); i <= 20; i++ {
-						_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+						_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 						Expect(err).NotTo(HaveOccurred())
 					}
 					return nil, nil
@@ -5301,7 +5303,7 @@ var _ = Describe("OnlineIndexer", func() {
 						SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ks).CreateOrOpen()
 					Expect(err).NotTo(HaveOccurred())
 					for i := int64(1); i <= 50; i++ {
-						_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
+						_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
 						Expect(err).NotTo(HaveOccurred())
 					}
 					return nil, nil
@@ -5381,7 +5383,7 @@ var _ = Describe("OnlineIndexer", func() {
 							SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ks).CreateOrOpen()
 						Expect(err).NotTo(HaveOccurred())
 						for i := int64(batch*100 + 1); i <= int64((batch+1)*100); i++ {
-							_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
+							_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
 							Expect(err).NotTo(HaveOccurred())
 						}
 						return nil, nil
@@ -5501,7 +5503,7 @@ var _ = Describe("OnlineIndexer", func() {
 						SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ks).CreateOrOpen()
 					Expect(err).NotTo(HaveOccurred())
 					for i := int64(1); i <= 20; i++ {
-						_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+						_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 						Expect(err).NotTo(HaveOccurred())
 					}
 					return nil, nil
@@ -5567,7 +5569,7 @@ var _ = Describe("OnlineIndexer", func() {
 							SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ks).CreateOrOpen()
 						Expect(err).NotTo(HaveOccurred())
 						for i := int64(batch*100 + 1); i <= int64((batch+1)*100); i++ {
-							_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
+							_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
 							Expect(err).NotTo(HaveOccurred())
 						}
 						return nil, nil
@@ -5625,7 +5627,7 @@ var _ = Describe("OnlineIndexer", func() {
 							if err != nil {
 								return nil, err
 							}
-							_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
+							_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
 							return nil, err
 						})
 						if err != nil {
@@ -5679,7 +5681,7 @@ var _ = Describe("OnlineIndexer", func() {
 						SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ks).CreateOrOpen()
 					Expect(err).NotTo(HaveOccurred())
 					for i := int64(1); i <= 100; i++ {
-						_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
+						_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
 						Expect(err).NotTo(HaveOccurred())
 					}
 					return nil, nil
@@ -5774,7 +5776,7 @@ var _ = Describe("OnlineIndexer", func() {
 						SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ks).CreateOrOpen()
 					Expect(err).NotTo(HaveOccurred())
 					for i := int64(1); i <= 5; i++ {
-						_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+						_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 						Expect(err).NotTo(HaveOccurred())
 					}
 					return nil, nil
@@ -5829,7 +5831,7 @@ var _ = Describe("OnlineIndexer", func() {
 						SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ks).CreateOrOpen()
 					Expect(err).NotTo(HaveOccurred())
 					for i := int64(1); i <= 5; i++ {
-						_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+						_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 						Expect(err).NotTo(HaveOccurred())
 					}
 					return nil, nil

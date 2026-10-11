@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
@@ -50,7 +50,7 @@ var _ = Describe("Reverse Scan Conformance", func() {
 		return params
 	}
 
-	saveOrdersWithGo := func(orders []*gen.Order) {
+	saveOrdersWithGo := func(orders []*demopb.Order) {
 		_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			store, err := recordlayer.NewStoreBuilder().
 				SetContext(rtx).
@@ -71,8 +71,8 @@ var _ = Describe("Reverse Scan Conformance", func() {
 		Expect(err).NotTo(HaveOccurred())
 	}
 
-	reverseScanWithGo := func(limit int) []*gen.Order {
-		var result []*gen.Order
+	reverseScanWithGo := func(limit int) []*demopb.Order {
+		var result []*demopb.Order
 		_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			store, err := recordlayer.NewStoreBuilder().
 				SetContext(rtx).
@@ -97,7 +97,7 @@ var _ = Describe("Reverse Scan Conformance", func() {
 			}
 
 			for _, rec := range records {
-				order, ok := rec.Record.(*gen.Order)
+				order, ok := rec.Record.(*demopb.Order)
 				if ok {
 					result = append(result, order)
 				}
@@ -125,7 +125,7 @@ var _ = Describe("Reverse Scan Conformance", func() {
 		return results
 	}
 
-	saveOrderWithJava := func(order *gen.Order) {
+	saveOrderWithJava := func(order *demopb.Order) {
 		params := buildJavaParams()
 		params["order"] = order
 		err := java.InvokeAs(ctx, "saveOrder", params, nil)
@@ -190,7 +190,7 @@ var _ = Describe("Reverse Scan Conformance", func() {
 
 	Describe("Reverse scan mirrors forward scan", func() {
 		It("should return the exact reverse of forward scan", func() {
-			orders := []*gen.Order{
+			orders := []*demopb.Order{
 				NewOrder(5005).WithPrice(50).Build(),
 				NewOrder(5001).WithPrice(10).Build(),
 				NewOrder(5003).WithPrice(30).Build(),
@@ -254,7 +254,7 @@ var _ = Describe("Reverse Scan Conformance", func() {
 			contBytes, err := base64.StdEncoding.DecodeString(page1.Continuation)
 			Expect(err).NotTo(HaveOccurred())
 
-			var goPage2 []*gen.Order
+			var goPage2 []*demopb.Order
 			_, err = env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 				store, err := recordlayer.NewStoreBuilder().
 					SetContext(rtx).
@@ -276,7 +276,7 @@ var _ = Describe("Reverse Scan Conformance", func() {
 				}
 
 				for _, rec := range records {
-					order, ok := rec.Record.(*gen.Order)
+					order, ok := rec.Record.(*demopb.Order)
 					if ok {
 						goPage2 = append(goPage2, order)
 					}

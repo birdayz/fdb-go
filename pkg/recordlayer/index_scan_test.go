@@ -5,7 +5,7 @@ import (
 	"context"
 	"errors"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -18,7 +18,7 @@ var _ = Describe("IndexScanning", func() {
 	ctx := context.Background()
 
 	buildMetaWithIndex := func(indexes ...*Index) *RecordMetaData {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -33,7 +33,7 @@ var _ = Describe("IndexScanning", func() {
 	// insertOrders creates n Order records with sequential IDs and prices.
 	insertOrders := func(store *FDBRecordStore, count int) {
 		for i := 1; i <= count; i++ {
-			order := &gen.Order{OrderId: proto.Int64(int64(i)), Price: proto.Int32(int32(i * 100))}
+			order := &demopb.Order{OrderId: proto.Int64(int64(i)), Price: proto.Int32(int32(i * 100))}
 			_, err := store.SaveRecord(order)
 			Expect(err).NotTo(HaveOccurred())
 		}
@@ -285,7 +285,7 @@ var _ = Describe("IndexScanning", func() {
 			// Index on customer name — use Customer records for string index
 			nameIndex := NewIndex("Customer$name", Field("name"))
 
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -301,7 +301,7 @@ var _ = Describe("IndexScanning", func() {
 
 				// Insert customers with different names
 				for i, name := range []string{"Alice", "Alice", "Bob", "Charlie"} {
-					customer := &gen.Customer{CustomerId: proto.Int64(int64(i + 1)), Name: proto.String(name)}
+					customer := &demopb.Customer{CustomerId: proto.Int64(int64(i + 1)), Name: proto.String(name)}
 					_, err = store.SaveRecord(customer)
 					Expect(err).NotTo(HaveOccurred())
 				}
@@ -460,12 +460,12 @@ var _ = Describe("IndexScanning", func() {
 
 				// Insert orders: 3 with price=100, 2 with price=200
 				for i := int64(1); i <= 3; i++ {
-					order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(100)}
+					order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(100)}
 					_, err = store.SaveRecord(order)
 					Expect(err).NotTo(HaveOccurred())
 				}
 				for i := int64(4); i <= 5; i++ {
-					order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(200)}
+					order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(200)}
 					_, err = store.SaveRecord(order)
 					Expect(err).NotTo(HaveOccurred())
 				}
@@ -551,7 +551,7 @@ var _ = Describe("IndexScanning", func() {
 
 	Describe("GetIndex metadata lookup", func() {
 		It("returns nil for unknown index", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -564,7 +564,7 @@ var _ = Describe("IndexScanning", func() {
 		It("returns the correct index", func() {
 			priceIndex := NewIndex("Order$price", Field("price"))
 
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -590,7 +590,7 @@ var _ = Describe("IndexScanning", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// Order with 3 tags → 3 index entries
-				order := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Tags: []string{"urgent", "fragile", "gift"}}
+				order := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Tags: []string{"urgent", "fragile", "gift"}}
 				_, err = store.SaveRecord(order)
 				Expect(err).NotTo(HaveOccurred())
 
@@ -620,7 +620,7 @@ var _ = Describe("IndexScanning", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// Order with no tags → no index entries
-				order := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
+				order := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
 				_, err = store.SaveRecord(order)
 				Expect(err).NotTo(HaveOccurred())
 
@@ -644,13 +644,13 @@ var _ = Describe("IndexScanning", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// Order 1: tags ["urgent", "gift"]
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Tags: []string{"urgent", "gift"}})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Tags: []string{"urgent", "gift"}})
 				Expect(err).NotTo(HaveOccurred())
 				// Order 2: tags ["urgent", "fragile"]
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200), Tags: []string{"urgent", "fragile"}})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200), Tags: []string{"urgent", "fragile"}})
 				Expect(err).NotTo(HaveOccurred())
 				// Order 3: tags ["gift"]
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(300), Tags: []string{"gift"}})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(300), Tags: []string{"gift"}})
 				Expect(err).NotTo(HaveOccurred())
 
 				// Find all orders tagged "urgent" — should be PKs 1 and 2
@@ -689,7 +689,7 @@ var _ = Describe("IndexScanning", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// Save with tags ["urgent", "gift"]
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Tags: []string{"urgent", "gift"}})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Tags: []string{"urgent", "gift"}})
 				Expect(err).NotTo(HaveOccurred())
 
 				entries, err := AsList(ctx, store.ScanIndex(tagIndex, TupleRangeAll, nil, ForwardScan()))
@@ -697,7 +697,7 @@ var _ = Describe("IndexScanning", func() {
 				Expect(entries).To(HaveLen(2))
 
 				// Update to tags ["fragile"] — "urgent" and "gift" entries should be removed
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Tags: []string{"fragile"}})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Tags: []string{"fragile"}})
 				Expect(err).NotTo(HaveOccurred())
 
 				entries, err = AsList(ctx, store.ScanIndex(tagIndex, TupleRangeAll, nil, ForwardScan()))
@@ -721,7 +721,7 @@ var _ = Describe("IndexScanning", func() {
 					SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
 
-				order := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Tags: []string{"urgent", "gift"}}
+				order := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Tags: []string{"urgent", "gift"}}
 				_, err = store.SaveRecord(order)
 				Expect(err).NotTo(HaveOccurred())
 
@@ -755,7 +755,7 @@ var _ = Describe("IndexScanning", func() {
 					SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
 
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Tags: []string{"a", "b", "c"}})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Tags: []string{"a", "b", "c"}})
 				Expect(err).NotTo(HaveOccurred())
 
 				entries, err := AsList(ctx, store.ScanIndex(tagIndex, TupleRangeAll, nil, ForwardScan()))
@@ -777,7 +777,7 @@ var _ = Describe("IndexScanning", func() {
 
 		It("errors on FanTypeNone with repeated field", func() {
 			// Using Field() (FanTypeNone) on a repeated field is caught at Build() time
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -802,14 +802,14 @@ var _ = Describe("IndexScanning", func() {
 					SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
 
-				rose := &gen.Flower{Type: proto.String("Rose"), Color: gen.Color_RED.Enum()}
-				tulip := &gen.Flower{Type: proto.String("Tulip"), Color: gen.Color_YELLOW.Enum()}
+				rose := &demopb.Flower{Type: proto.String("Rose"), Color: demopb.Color_RED.Enum()}
+				tulip := &demopb.Flower{Type: proto.String("Tulip"), Color: demopb.Color_YELLOW.Enum()}
 
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Flower: rose})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Flower: rose})
 				Expect(err).NotTo(HaveOccurred())
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200), Flower: tulip})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200), Flower: tulip})
 				Expect(err).NotTo(HaveOccurred())
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(300), Flower: rose})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(300), Flower: rose})
 				Expect(err).NotTo(HaveOccurred())
 
 				// Scan all — should have 3 entries ordered by flower type string
@@ -851,15 +851,15 @@ var _ = Describe("IndexScanning", func() {
 					SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
 
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(1), Price: proto.Int32(100),
-					Flower: &gen.Flower{Type: proto.String("Rose"), Color: gen.Color_RED.Enum()},
+					Flower: &demopb.Flower{Type: proto.String("Rose"), Color: demopb.Color_RED.Enum()},
 				})
 				Expect(err).NotTo(HaveOccurred())
 
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(2), Price: proto.Int32(200),
-					Flower: &gen.Flower{Type: proto.String("Rose"), Color: gen.Color_BLUE.Enum()},
+					Flower: &demopb.Flower{Type: proto.String("Rose"), Color: demopb.Color_BLUE.Enum()},
 				})
 				Expect(err).NotTo(HaveOccurred())
 
@@ -893,14 +893,14 @@ var _ = Describe("IndexScanning", func() {
 					SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
 
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(1), Price: proto.Int32(100),
-					Flower: &gen.Flower{Type: proto.String("Rose")},
+					Flower: &demopb.Flower{Type: proto.String("Rose")},
 				})
 				Expect(err).NotTo(HaveOccurred())
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(2), Price: proto.Int32(100),
-					Flower: &gen.Flower{Type: proto.String("Tulip")},
+					Flower: &demopb.Flower{Type: proto.String("Tulip")},
 				})
 				Expect(err).NotTo(HaveOccurred())
 
@@ -997,7 +997,7 @@ var _ = Describe("IndexScanning", func() {
 		})
 
 		It("pipelines split records and their versions", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -1012,7 +1012,7 @@ var _ = Describe("IndexScanning", func() {
 				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
 				for i := int64(1); i <= 12; i++ {
-					order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))}
+					order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))}
 					if i%4 == 0 {
 						order.VectorData = big
 					}
@@ -1159,7 +1159,7 @@ var _ = Describe("IndexScanning", func() {
 
 					Expect(rec.Record).NotTo(BeNil())
 					Expect(rec.Record.PrimaryKey).To(Equal(tuple.Tuple{expectedPK}))
-					order := rec.Record.Record.(*gen.Order)
+					order := rec.Record.Record.(*demopb.Order)
 					Expect(order.GetOrderId()).To(Equal(expectedPK))
 					Expect(order.GetPrice()).To(Equal(expectedPrice))
 				}
@@ -1189,7 +1189,7 @@ var _ = Describe("IndexScanning", func() {
 				))
 				Expect(err).NotTo(HaveOccurred())
 				Expect(records).To(HaveLen(1))
-				Expect(records[0].Record.Record.(*gen.Order).GetPrice()).To(Equal(int32(300)))
+				Expect(records[0].Record.Record.(*demopb.Order).GetPrice()).To(Equal(int32(300)))
 
 				return nil, nil
 			})
@@ -1234,8 +1234,8 @@ var _ = Describe("IndexScanning", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(records).To(HaveLen(2))
 
-				Expect(records[0].Record.Record.(*gen.Order).GetPrice()).To(Equal(int32(100)))
-				Expect(records[1].Record.Record.(*gen.Order).GetPrice()).To(Equal(int32(200)))
+				Expect(records[0].Record.Record.(*demopb.Order).GetPrice()).To(Equal(int32(100)))
+				Expect(records[1].Record.Record.(*demopb.Order).GetPrice()).To(Equal(int32(200)))
 
 				return nil, nil
 			})
@@ -1258,9 +1258,9 @@ var _ = Describe("IndexScanning", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(records).To(HaveLen(3))
 
-				Expect(records[0].Record.Record.(*gen.Order).GetPrice()).To(Equal(int32(300)))
-				Expect(records[1].Record.Record.(*gen.Order).GetPrice()).To(Equal(int32(200)))
-				Expect(records[2].Record.Record.(*gen.Order).GetPrice()).To(Equal(int32(100)))
+				Expect(records[0].Record.Record.(*demopb.Order).GetPrice()).To(Equal(int32(300)))
+				Expect(records[1].Record.Record.(*demopb.Order).GetPrice()).To(Equal(int32(200)))
+				Expect(records[2].Record.Record.(*demopb.Order).GetPrice()).To(Equal(int32(100)))
 
 				return nil, nil
 			})
@@ -1409,7 +1409,7 @@ var _ = Describe("IndexScanning", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 10; i++ {
-					_, saveErr := store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					_, saveErr := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 					Expect(saveErr).NotTo(HaveOccurred())
 				}
 

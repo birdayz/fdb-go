@@ -9,7 +9,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -21,7 +21,7 @@ var _ = Describe("SPFresh index maintainer e2e", func() {
 	ctx := context.Background()
 
 	baseMetaData := func() *recordlayer.RecordMetaDataBuilder {
-		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -82,7 +82,7 @@ var _ = Describe("SPFresh index maintainer e2e", func() {
 			store, serr := storeBuilder(rtx)
 			Expect(serr).NotTo(HaveOccurred())
 			for _, p := range points {
-				_, serr = store.SaveRecord(&gen.Order{
+				_, serr = store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(p.id), Price: proto.Int32(p.price), Quantity: proto.Int32(p.quantity),
 				})
 				Expect(serr).NotTo(HaveOccurred(), "disabled SPFresh index must not block record writes")
@@ -170,7 +170,7 @@ var _ = Describe("SPFresh index maintainer e2e", func() {
 		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			store, serr := storeBuilder(rtx)
 			Expect(serr).NotTo(HaveOccurred())
-			_, serr = store.SaveRecord(&gen.Order{OrderId: proto.Int64(99), Price: proto.Int32(1), Quantity: proto.Int32(1)})
+			_, serr = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(99), Price: proto.Int32(1), Quantity: proto.Int32(1)})
 			return nil, serr
 		})
 		Expect(err).NotTo(HaveOccurred(), "094.2: foreground insert against the readable index")
@@ -181,7 +181,7 @@ var _ = Describe("SPFresh index maintainer e2e", func() {
 		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			store, serr := storeBuilder(rtx)
 			Expect(serr).NotTo(HaveOccurred())
-			_, serr = store.SaveRecord(&gen.Order{OrderId: proto.Int64(99), Price: proto.Int32(200), Quantity: proto.Int32(200)})
+			_, serr = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(99), Price: proto.Int32(200), Quantity: proto.Int32(200)})
 			return nil, serr
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -213,7 +213,7 @@ var _ = Describe("SPFresh index maintainer e2e", func() {
 			if serr != nil {
 				return nil, serr
 			}
-			_, serr = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(1), Quantity: proto.Int32(1)})
+			_, serr = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(1), Quantity: proto.Int32(1)})
 			return nil, serr
 		})
 		Expect(err).To(HaveOccurred())
@@ -255,7 +255,7 @@ var _ = Describe("SPFresh 094.2 write path", func() {
 	ctx := context.Background()
 
 	baseMD := func() *recordlayer.RecordMetaDataBuilder {
-		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -299,7 +299,7 @@ var _ = Describe("SPFresh 094.2 write path", func() {
 			Expect(serr).NotTo(HaveOccurred())
 			for _, id := range ids {
 				p, q := at(id)
-				if _, serr := store.SaveRecord(&gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(p), Quantity: proto.Int32(q)}); serr != nil {
+				if _, serr := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(id), Price: proto.Int32(p), Quantity: proto.Int32(q)}); serr != nil {
 					return nil, serr
 				}
 			}
@@ -356,7 +356,7 @@ var _ = Describe("SPFresh 094.2 write path", func() {
 			store, serr := storeBuilder(rtx)
 			Expect(serr).NotTo(HaveOccurred())
 			for id := int64(100); id < 180; id++ {
-				if _, serr := store.SaveRecord(&gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(10), Quantity: proto.Int32(10)}); serr != nil {
+				if _, serr := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(id), Price: proto.Int32(10), Quantity: proto.Int32(10)}); serr != nil {
 					return nil, serr
 				}
 			}
@@ -417,7 +417,7 @@ var _ = Describe("SPFresh §8 staging interleaving", func() {
 			recordlayer.IndexOptionSPFreshCellTarget:    "4",
 			recordlayer.IndexOptionSPFreshCellMax:       "8",
 		}
-		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -431,7 +431,7 @@ var _ = Describe("SPFresh §8 staging interleaving", func() {
 			_, serr := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 				store, berr := storeBuilder(rtx)
 				Expect(berr).NotTo(HaveOccurred())
-				_, berr = store.SaveRecord(&gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(p), Quantity: proto.Int32(q)})
+				_, berr = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(id), Price: proto.Int32(p), Quantity: proto.Int32(q)})
 				return nil, berr
 			})
 			Expect(serr).NotTo(HaveOccurred())
@@ -627,7 +627,7 @@ var _ = Describe("SPFresh §8 fence regressions (094.2)", func() {
 			recordlayer.IndexOptionSPFreshCellTarget:    "4",
 			recordlayer.IndexOptionSPFreshCellMax:       "8",
 		}
-		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -650,7 +650,7 @@ var _ = Describe("SPFresh §8 fence regressions (094.2)", func() {
 			store, serr := storeBuilder(rtx)
 			Expect(serr).NotTo(HaveOccurred())
 			for i := int64(1); i <= 6; i++ {
-				if _, serr := store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(10 + i%3)), Quantity: proto.Int32(int32(10 + i%5))}); serr != nil {
+				if _, serr := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(10 + i%3)), Quantity: proto.Int32(int32(10 + i%5))}); serr != nil {
 					return nil, serr
 				}
 			}
@@ -744,7 +744,7 @@ var _ = Describe("SPFresh 094.1 regressions", func() {
 	ctx := context.Background()
 
 	baseMD := func() *recordlayer.RecordMetaDataBuilder {
-		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -785,7 +785,7 @@ var _ = Describe("SPFresh 094.1 regressions", func() {
 			_, serr = store.MarkIndexDisabled("spf_scanbatch")
 			Expect(serr).NotTo(HaveOccurred())
 			for i := int64(1); i <= 10; i++ {
-				_, serr = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i)), Quantity: proto.Int32(int32(i))})
+				_, serr = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i)), Quantity: proto.Int32(int32(i))})
 				Expect(serr).NotTo(HaveOccurred())
 			}
 			return nil, nil
@@ -876,7 +876,7 @@ var _ = Describe("SPFresh 094.1 regressions", func() {
 			_, serr = store.MarkIndexDisabled("spf_rebuild")
 			Expect(serr).NotTo(HaveOccurred())
 			for i := int64(1); i <= 5; i++ {
-				_, serr = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10)), Quantity: proto.Int32(0)})
+				_, serr = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10)), Quantity: proto.Int32(0)})
 				Expect(serr).NotTo(HaveOccurred())
 			}
 			return nil, nil

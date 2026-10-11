@@ -12,6 +12,8 @@ import (
 	"testing"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
@@ -38,7 +40,7 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 	// buildMetaData sets version AFTER configure so AddIndex/RemoveIndex bumps
 	// don't interfere with the final version.
 	buildMetaData := func(version int, configure func(b *RecordMetaDataBuilder)) *RecordMetaData {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -357,7 +359,7 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			oldIdx := old.GetIndex("price_idx")
 
 			// Build new with matching index added/removed at proper versions
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -431,7 +433,7 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 		It("rejects new index with old version", func() {
 			old := buildMetaData(5, nil)
 
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -450,7 +452,7 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 
 		It("rejects last modified version decrease", func() {
 			// Old has index with LastModifiedVersion=5
-			builder1 := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder1 := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder1.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder1.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder1.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -463,7 +465,7 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// New has same index but LastModifiedVersion=3 (less than 5)
-			builder2 := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder2 := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder2.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder2.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder2.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -513,7 +515,7 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 
 			// Build new with same index name/type/expression but manually set
 			// different primaryKeyComponentPositions.
-			builder2 := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder2 := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder2.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder2.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder2.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -543,7 +545,7 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			Expect(oldIdx.HasPrimaryKeyComponentPositions()).To(BeFalse())
 
 			// New: same expression but pre-set non-nil positions before Build().
-			builder2 := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder2 := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder2.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder2.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder2.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -569,7 +571,7 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			oldIdx := old.GetIndex("composite_idx")
 			Expect(oldIdx.HasPrimaryKeyComponentPositions()).To(BeTrue())
 
-			builder2 := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder2 := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder2.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder2.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder2.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -593,7 +595,7 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			Expect(oldIdx.HasPrimaryKeyComponentPositions()).To(BeTrue())
 
 			// New index: same expression but different positions + higher lastModifiedVersion.
-			builder2 := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder2 := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder2.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder2.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder2.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -615,7 +617,7 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 
 	Describe("former index validation", func() {
 		It("rejects removing a former index", func() {
-			builder1 := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder1 := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder1.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder1.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder1.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -690,7 +692,7 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 		})
 
 		It("accepts preserved former index", func() {
-			builder1 := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder1 := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder1.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder1.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder1.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -701,7 +703,7 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Build new with same FormerIndex by replaying the same steps
-			builder2 := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder2 := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder2.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder2.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder2.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -1098,7 +1100,7 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 	Describe("former index version change validation", func() {
 		// Helper to build metadata with a former index from removing price_idx
 		buildWithFormerIndex := func(version int, addedVersion, removedVersion int, formerName string) *RecordMetaData {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -2749,7 +2751,7 @@ func (unsupportedKeyExpr) ToKeyExpression() *gen.KeyExpression { return nil }
 // names the first by name on every run, where a map walk names either.
 func TestRecordTypeViolationsNamedInNameOrder(t *testing.T) {
 	t.Parallel()
-	b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -2788,7 +2790,7 @@ func TestRecordTypeViolationsNamedInNameOrder(t *testing.T) {
 // name (Customer) or whichever a map yields.
 func TestTypeRenameNamedInUnionOrder(t *testing.T) {
 	t.Parallel()
-	b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -2859,7 +2861,7 @@ func TestChangedIndexOptionsNamedInNameOrder(t *testing.T) {
 func TestIndexRecordTypeViolationNamedInNameOrder(t *testing.T) {
 	t.Parallel()
 	build := func(types []string, version int) *RecordMetaData {
-		b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))

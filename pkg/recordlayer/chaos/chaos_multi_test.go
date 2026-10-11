@@ -6,7 +6,7 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
 )
 
@@ -23,7 +23,7 @@ import (
 // removeCommonSumEntries) runs in the retry transaction.
 func buildMultiIndexMetadata() *recordlayer.RecordMetaData {
 	builder := recordlayer.NewRecordMetaDataBuilder()
-	builder.SetRecords(gen.File_record_layer_demo_proto)
+	builder.SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -54,7 +54,7 @@ func buildMultiIndexMetadata() *recordlayer.RecordMetaData {
 // - Universal: COUNT index (ungrouped, counts all records regardless of type)
 func buildMultiTypeMetadata() *recordlayer.RecordMetaData {
 	builder := recordlayer.NewRecordMetaDataBuilder()
-	builder.SetRecords(gen.File_record_layer_demo_proto)
+	builder.SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -80,17 +80,17 @@ func TestMultiIndexBasicVerify(t *testing.T) {
 	md := buildMultiIndexMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(5)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(5)})
 	s.Verify()
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200), Quantity: proto.Int32(10)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200), Quantity: proto.Int32(10)})
 	s.Verify()
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(100), Quantity: proto.Int32(3)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(100), Quantity: proto.Int32(3)})
 	s.Verify()
 
 	// Overwrite — changes both price and quantity
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(300), Quantity: proto.Int32(7)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(300), Quantity: proto.Int32(7)})
 	s.Verify()
 
 	// Delete
@@ -110,16 +110,16 @@ func TestMultiIndexCommitUnknown(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(5)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(5)})
 	s.Verify()
 
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200), Quantity: proto.Int32(10)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200), Quantity: proto.Int32(10)})
 	s.Verify()
 
 	// Same price group — COUNT(price=100) must be 2, SUM must be 300
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(100), Quantity: proto.Int32(3)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(100), Quantity: proto.Int32(3)})
 	s.Verify()
 }
 
@@ -132,17 +132,17 @@ func TestMultiIndexOverwriteCommitUnknown(t *testing.T) {
 	md := buildMultiIndexMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(5)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(5)})
 	s.Verify()
 
 	// Overwrite: price 100→200, quantity 5→10
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(200), Quantity: proto.Int32(10)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(200), Quantity: proto.Int32(10)})
 	s.Verify()
 
 	// Overwrite again: same PK, different values
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(50), Quantity: proto.Int32(1)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(50), Quantity: proto.Int32(1)})
 	s.Verify()
 }
 
@@ -153,8 +153,8 @@ func TestMultiIndexDeleteCommitUnknown(t *testing.T) {
 	md := buildMultiIndexMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(5)})
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200), Quantity: proto.Int32(10)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(5)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200), Quantity: proto.Int32(10)})
 	s.Verify()
 
 	s.InjectOnce(FaultCommitUnknown)
@@ -178,7 +178,7 @@ func TestMultiIndexDeleteAllCommitUnknown(t *testing.T) {
 
 	// Populate several records across different price groups
 	for i := int64(1); i <= 10; i++ {
-		s.SaveRecord(&gen.Order{
+		s.SaveRecord(&demopb.Order{
 			OrderId:  proto.Int64(i),
 			Price:    proto.Int32(int32(i%3) * 100),
 			Quantity: proto.Int32(int32(i)),
@@ -200,7 +200,7 @@ func TestMultiIndexDeleteAllThenSaveCommitUnknown(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 
 	for i := int64(1); i <= 5; i++ {
-		s.SaveRecord(&gen.Order{
+		s.SaveRecord(&demopb.Order{
 			OrderId:  proto.Int64(i),
 			Price:    proto.Int32(int32(i * 50)),
 			Quantity: proto.Int32(int32(i * 2)),
@@ -215,7 +215,7 @@ func TestMultiIndexDeleteAllThenSaveCommitUnknown(t *testing.T) {
 
 	// Save new record with fault on clean store
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(99), Price: proto.Int32(777), Quantity: proto.Int32(42)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(99), Price: proto.Int32(777), Quantity: proto.Int32(42)})
 	s.Verify()
 }
 
@@ -235,7 +235,7 @@ func TestMultiIndexRandomHeavyStress(t *testing.T) {
 		pk := s.Rng.Int64N(maxPK) + 1
 		if s.Rng.Float64() < 0.65 {
 			// 65% saves — random price + quantity
-			s.SaveRecord(&gen.Order{
+			s.SaveRecord(&demopb.Order{
 				OrderId:  proto.Int64(pk),
 				Price:    proto.Int32(s.Rng.Int32N(5) * 100), // small price space → collisions
 				Quantity: proto.Int32(s.Rng.Int32N(20) + 1),
@@ -269,7 +269,7 @@ func TestMultiIndexRapidOverwrite(t *testing.T) {
 	s := NewScenario(t, testRealDB, md, WithSeed(11111), WithFaults(FaultsRetryHeavy))
 
 	for i := 0; i < 50; i++ {
-		s.SaveRecord(&gen.Order{
+		s.SaveRecord(&demopb.Order{
 			OrderId:  proto.Int64(1),
 			Price:    proto.Int32(int32(i) * 10),
 			Quantity: proto.Int32(int32(i) + 1),
@@ -289,7 +289,7 @@ func TestMultiIndexDeleteAndReinsert(t *testing.T) {
 
 	for i := 0; i < 25; i++ {
 		// Save
-		s.SaveRecord(&gen.Order{
+		s.SaveRecord(&demopb.Order{
 			OrderId:  proto.Int64(1),
 			Price:    proto.Int32(int32(i)*100 + 50),
 			Quantity: proto.Int32(int32(i) + 1),
@@ -301,7 +301,7 @@ func TestMultiIndexDeleteAndReinsert(t *testing.T) {
 
 	// Final save to leave one record
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(999), Quantity: proto.Int32(99)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(999), Quantity: proto.Int32(99)})
 	s.Verify()
 
 	t.Logf("25 save-delete cycles + final save, %d faults injected", len(s.FaultLog()))
@@ -319,21 +319,21 @@ func TestMultiTypeSaveCommitUnknown(t *testing.T) {
 
 	// Save Order under fault
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 	s.Verify()
 
 	// Save Customer under fault
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Customer{CustomerId: proto.Int64(1), Name: proto.String("Alice")})
+	s.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(1), Name: proto.String("Alice")})
 	s.Verify()
 
 	// Interleaved saves — different types, different PKs
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
 	s.Verify()
 
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Customer{CustomerId: proto.Int64(2), Name: proto.String("Bob")})
+	s.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(2), Name: proto.String("Bob")})
 	s.Verify()
 }
 
@@ -347,8 +347,8 @@ func TestMultiTypeDeleteAllCommitUnknown(t *testing.T) {
 
 	// Populate both types
 	for i := int64(1); i <= 5; i++ {
-		s.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
-		s.SaveRecord(&gen.Customer{CustomerId: proto.Int64(i), Name: proto.String("Customer")})
+		s.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+		s.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(i), Name: proto.String("Customer")})
 	}
 	s.Verify()
 
@@ -358,8 +358,8 @@ func TestMultiTypeDeleteAllCommitUnknown(t *testing.T) {
 
 	// Save after delete-all
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(99), Price: proto.Int32(42)})
-	s.SaveRecord(&gen.Customer{CustomerId: proto.Int64(99), Name: proto.String("NewCustomer")})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(99), Price: proto.Int32(42)})
+	s.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(99), Name: proto.String("NewCustomer")})
 	s.Verify()
 }
 
@@ -378,7 +378,7 @@ func TestMultiTypeRandomStress(t *testing.T) {
 			// Order operation
 			pk := s.Rng.Int64N(30) + 1
 			if s.Rng.Float64() < 0.7 {
-				s.SaveRecord(&gen.Order{
+				s.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(pk),
 					Price:   proto.Int32(s.Rng.Int32N(1000)),
 				})
@@ -389,7 +389,7 @@ func TestMultiTypeRandomStress(t *testing.T) {
 			// Customer operation
 			pk := s.Rng.Int64N(30) + 1
 			if s.Rng.Float64() < 0.7 {
-				s.SaveRecord(&gen.Customer{
+				s.SaveRecord(&demopb.Customer{
 					CustomerId: proto.Int64(pk),
 					Name:       proto.String("Cust"),
 				})

@@ -7,7 +7,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 )
@@ -28,7 +28,7 @@ var _ = Describe("HNSW operation-local node cache", func() {
 		Expect(err).NotTo(HaveOccurred())
 		ks := specSubspace()
 		save := func(store *recordlayer.FDBRecordStore, id int64, x, y int32) {
-			_, err := store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(x), Quantity: proto.Int32(y)}, "price", "quantity"))
+			_, err := store.SaveRecord(withVector(&demopb.Order{OrderId: proto.Int64(id), Price: proto.Int32(x), Quantity: proto.Int32(y)}, "price", "quantity"))
 			Expect(err).NotTo(HaveOccurred())
 		}
 		_, err = sharedDB.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {

@@ -14,7 +14,7 @@ import (
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 )
 
 // Java equivalent: FDBRecordStoreCrudTest.writeNotUnionType()
@@ -22,7 +22,7 @@ var _ = Describe("SaveRecord_NotInUnion", func() {
 	var recordMetaData *RecordMetaData
 
 	BeforeEach(func() {
-		fileDesc := gen.File_record_layer_demo_proto
+		fileDesc := demopb.File_record_layer_demo_proto
 		metaDataBuilder := NewRecordMetaDataBuilder().SetRecords(fileDesc)
 		metaDataBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		metaDataBuilder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
@@ -44,7 +44,7 @@ var _ = Describe("SaveRecord_NotInUnion", func() {
 				CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			order := &gen.Order{
+			order := &demopb.Order{
 				OrderId: proto.Int64(1001),
 				Price:   proto.Int32(100),
 			}
@@ -70,9 +70,9 @@ var _ = Describe("SaveRecord_NotInUnion", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Flower is not a record type in the union
-			flower := &gen.Flower{
+			flower := &demopb.Flower{
 				Type:  proto.String("Rose"),
-				Color: gen.Color_RED.Enum(),
+				Color: demopb.Color_RED.Enum(),
 			}
 
 			_, err = store.SaveRecord(flower)
@@ -97,7 +97,7 @@ var _ = Describe("LoadRecord_InvalidRecordTypeKey", func() {
 	var recordMetaData *RecordMetaData
 
 	BeforeEach(func() {
-		fileDesc := gen.File_record_layer_demo_proto
+		fileDesc := demopb.File_record_layer_demo_proto
 		metaDataBuilder := NewRecordMetaDataBuilder().SetRecords(fileDesc)
 		metaDataBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		metaDataBuilder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
@@ -122,7 +122,7 @@ var _ = Describe("LoadRecord_InvalidRecordTypeKey", func() {
 				return nil, err
 			}
 
-			order := &gen.Order{
+			order := &demopb.Order{
 				OrderId: proto.Int64(2001),
 				Price:   proto.Int32(200),
 			}
@@ -172,7 +172,7 @@ var _ = Describe("RecordExists_InvalidRecordTypeKey", func() {
 		ctx := context.Background()
 		keyspace := specSubspace()
 
-		fileDesc := gen.File_record_layer_demo_proto
+		fileDesc := demopb.File_record_layer_demo_proto
 		metaDataBuilder := NewRecordMetaDataBuilder().SetRecords(fileDesc)
 		metaDataBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		metaDataBuilder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
@@ -219,7 +219,7 @@ var _ = Describe("UnionDescriptor_Validation", func() {
 	var recordMetaData *RecordMetaData
 
 	BeforeEach(func() {
-		fileDesc := gen.File_record_layer_demo_proto
+		fileDesc := demopb.File_record_layer_demo_proto
 		metaDataBuilder := NewRecordMetaDataBuilder().SetRecords(fileDesc)
 		metaDataBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		metaDataBuilder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
@@ -241,7 +241,7 @@ var _ = Describe("UnionDescriptor_Validation", func() {
 				CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			order := &gen.Order{
+			order := &demopb.Order{
 				OrderId: proto.Int64(5001),
 				Price:   proto.Int32(500),
 			}
@@ -266,9 +266,9 @@ var _ = Describe("UnionDescriptor_Validation", func() {
 				CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			flower := &gen.Flower{
+			flower := &demopb.Flower{
 				Type:  proto.String("Tulip"),
-				Color: gen.Color_BLUE.Enum(),
+				Color: demopb.Color_BLUE.Enum(),
 			}
 
 			_, err = store.SaveRecord(flower)
@@ -282,7 +282,7 @@ var _ = Describe("UnionDescriptor_Validation", func() {
 
 var _ = Describe("RecordMetaDataBuilder_Validation", func() {
 	It("Build returns error when primary key is missing", func() {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		// Intentionally do NOT set any primary keys
 		md, err := builder.Build()
 		Expect(err).To(HaveOccurred())
@@ -293,7 +293,7 @@ var _ = Describe("RecordMetaDataBuilder_Validation", func() {
 	})
 
 	It("Build returns error when one record type lacks primary key", func() {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		// Customer and TypedRecord primary keys intentionally not set
 		md, err := builder.Build()
@@ -305,7 +305,7 @@ var _ = Describe("RecordMetaDataBuilder_Validation", func() {
 	})
 
 	It("Build succeeds when all primary keys are set", func() {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -319,7 +319,7 @@ var _ = Describe("RecordMetaDataBuilder_Validation", func() {
 	It("Build rejects primary key with fan-out (createsDuplicates)", func() {
 		// Over a repeated field, so the key validates and createsDuplicates
 		// is what refuses it.
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(FanOut("tags"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -332,7 +332,7 @@ var _ = Describe("RecordMetaDataBuilder_Validation", func() {
 	})
 
 	It("Build rejects duplicate record type keys", func() {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -348,7 +348,7 @@ var _ = Describe("RecordMetaDataBuilder_Validation", func() {
 	})
 
 	It("Build rejects duplicate index subspace keys", func() {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -368,7 +368,7 @@ var _ = Describe("RecordMetaDataBuilder_Validation", func() {
 	})
 
 	It("Build rejects former index with addedVersion > removedVersion", func() {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))

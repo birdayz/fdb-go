@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -11,7 +13,7 @@ func TestSplitKeyExpressionEvaluateBasic(t *testing.T) {
 	t.Parallel()
 
 	// FanOut of 6 values, splitSize=2 -> 3 results of 2 elements each
-	msg := &gen.Order{
+	msg := &demopb.Order{
 		OrderId: proto.Int64(1),
 		Tags:    []string{"a", "b", "c", "d", "e", "f"},
 	}
@@ -44,7 +46,7 @@ func TestSplitKeyExpressionEvaluateUnevenError(t *testing.T) {
 	t.Parallel()
 
 	// Java throws RecordCoreException if not evenly divisible
-	msg := &gen.Order{
+	msg := &demopb.Order{
 		OrderId: proto.Int64(1),
 		Tags:    []string{"a", "b", "c", "d", "e", "f", "g"},
 	}
@@ -60,7 +62,7 @@ func TestSplitKeyExpressionEvaluateEmpty(t *testing.T) {
 	t.Parallel()
 
 	// FanOut of 0 values -> nil
-	msg := &gen.Order{
+	msg := &demopb.Order{
 		OrderId: proto.Int64(1),
 		Tags:    []string{},
 	}
@@ -79,7 +81,7 @@ func TestSplitKeyExpressionEvaluateSplitSizeOne(t *testing.T) {
 	t.Parallel()
 
 	// splitSize=1: each value becomes its own batch
-	msg := &gen.Order{
+	msg := &demopb.Order{
 		OrderId: proto.Int64(1),
 		Tags:    []string{"x", "y", "z"},
 	}
@@ -112,7 +114,7 @@ func TestSplitKeyExpressionEvaluateLargerBatches(t *testing.T) {
 	t.Parallel()
 
 	// 12 values, splitSize=3 -> 4 batches
-	msg := &gen.Order{
+	msg := &demopb.Order{
 		OrderId: proto.Int64(1),
 		Tags:    []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"},
 	}

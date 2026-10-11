@@ -6,7 +6,7 @@ import (
 	"context"
 	"fmt"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -45,20 +45,20 @@ var _ = Describe("COUNT_NOT_NULL Index Conformance", func() {
 	Describe("Go writes with nulls, both scan", func() {
 		It("should only count records with non-null price", func() {
 			// Save 2 orders with price, 1 without (null)
-			err := store.SaveOrderGo(ctx, &gen.Order{
+			err := store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(100),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			err = store.SaveOrderGo(ctx, &gen.Order{
+			err = store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(2),
 				Price:   proto.Int32(200),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Order 3: no price (null) — should NOT be counted
-			err = store.SaveOrderGo(ctx, &gen.Order{
+			err = store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(3),
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -82,19 +82,19 @@ var _ = Describe("COUNT_NOT_NULL Index Conformance", func() {
 	Describe("Java writes with nulls, both scan", func() {
 		It("should only count records with non-null price", func() {
 			// Java saves 2 with price, 1 without
-			err := store.SaveOrderJava(ctx, &gen.Order{
+			err := store.SaveOrderJava(ctx, &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(200),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			err = store.SaveOrderJava(ctx, &gen.Order{
+			err = store.SaveOrderJava(ctx, &demopb.Order{
 				OrderId: proto.Int64(2),
 				Price:   proto.Int32(300),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			err = store.SaveOrderJava(ctx, &gen.Order{
+			err = store.SaveOrderJava(ctx, &demopb.Order{
 				OrderId: proto.Int64(3),
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -117,27 +117,27 @@ var _ = Describe("COUNT_NOT_NULL Index Conformance", func() {
 	Describe("Mixed writes with nulls from both sides", func() {
 		It("should produce identical count ignoring null records from both", func() {
 			// Go saves with price
-			err := store.SaveOrderGo(ctx, &gen.Order{
+			err := store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(300),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Go saves without price (null)
-			err = store.SaveOrderGo(ctx, &gen.Order{
+			err = store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(2),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Java saves with price
-			err = store.SaveOrderJava(ctx, &gen.Order{
+			err = store.SaveOrderJava(ctx, &demopb.Order{
 				OrderId: proto.Int64(3),
 				Price:   proto.Int32(400),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Java saves without price (null)
-			err = store.SaveOrderJava(ctx, &gen.Order{
+			err = store.SaveOrderJava(ctx, &demopb.Order{
 				OrderId: proto.Int64(4),
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -160,7 +160,7 @@ var _ = Describe("COUNT_NOT_NULL Index Conformance", func() {
 		It("should decrement when Go deletes a Java-written non-null record", func() {
 			// Java saves 3 orders with price
 			for i := int64(1); i <= 3; i++ {
-				err := store.SaveOrderJava(ctx, &gen.Order{
+				err := store.SaveOrderJava(ctx, &demopb.Order{
 					OrderId: proto.Int64(i),
 					Price:   proto.Int32(int32(400 + i)),
 				})
@@ -210,7 +210,7 @@ type CountNotNullIndexConformanceStore struct {
 func NewCountNotNullIndexConformanceStore(recordDB *recordlayer.FDBDatabase, keyspace subspace.Subspace, clusterFile string, tenantName string) (*CountNotNullIndexConformanceStore, error) {
 	countIdx := recordlayer.NewCountNotNullIndex("count_not_null_price", recordlayer.Ungrouped(recordlayer.Field("price")))
 
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -247,7 +247,7 @@ func (s *CountNotNullIndexConformanceStore) buildJavaParams() map[string]any {
 	return params
 }
 
-func (s *CountNotNullIndexConformanceStore) SaveOrderGo(ctx context.Context, order *gen.Order) error {
+func (s *CountNotNullIndexConformanceStore) SaveOrderGo(ctx context.Context, order *demopb.Order) error {
 	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
@@ -260,7 +260,7 @@ func (s *CountNotNullIndexConformanceStore) SaveOrderGo(ctx context.Context, ord
 	return err
 }
 
-func (s *CountNotNullIndexConformanceStore) SaveOrderJava(ctx context.Context, order *gen.Order) error {
+func (s *CountNotNullIndexConformanceStore) SaveOrderJava(ctx context.Context, order *demopb.Order) error {
 	params := s.buildJavaParams()
 	params["order"] = order
 	return s.java.InvokeAs(ctx, "saveOrderWithCountNotNullIndex", params, nil)

@@ -12,6 +12,8 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
 
@@ -504,7 +506,7 @@ func TestDeclaredSyntheticTypesAreVisibleAndIndexesOverThemRefused(t *testing.T)
 
 func fidelityBuilder(t *testing.T) *RecordMetaDataBuilder {
 	t.Helper()
-	b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -519,7 +521,7 @@ func fidelityBuilderFrom(t *testing.T, p *gen.MetaData) *RecordMetaDataBuilder {
 	if err != nil {
 		t.Fatalf("RecordMetaDataFromProto: %v", err)
 	}
-	b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))

@@ -15,7 +15,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -88,7 +88,7 @@ func onePerTxRows(t *testing.T, store *recordlayer.FDBRecordStore, makePlan func
 func aggPriceCountPlan(t testing.TB, grouped bool) plans.RecordQueryPlan {
 	t.Helper()
 	scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan(
-		[]string{"Order"}, PositionalTypeForRecordLayout((&gen.Order{}).ProtoReflect().Descriptor(), false), false))
+		[]string{"Order"}, PositionalTypeForRecordLayout((&demopb.Order{}).ProtoReflect().Descriptor(), false), false))
 	// price is Order proto field 3 → positional ordinal 2 (the sibling PRICE
 	// tests use ordinal 2).
 	priceVal := mustTestFieldOrdinal(t, scan.GetResultValue(), 2)
@@ -111,11 +111,11 @@ func TestIntegration_AggregateRowContinuation_OneRowPerTx(t *testing.T) {
 	t.Parallel()
 	store := setupStore(t)
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(50)},
-		&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(50)},
-		&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(150)},
-		&gen.Order{OrderId: proto.Int64(4), Price: proto.Int32(150)},
-		&gen.Order{OrderId: proto.Int64(5), Price: proto.Int32(250)},
+		&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(50)},
+		&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(50)},
+		&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(150)},
+		&demopb.Order{OrderId: proto.Int64(4), Price: proto.Int32(150)},
+		&demopb.Order{OrderId: proto.Int64(5), Price: proto.Int32(250)},
 	)
 
 	got := onePerTxRows(t, store,
@@ -143,9 +143,9 @@ func TestIntegration_ScalarAggregateRowContinuation_NoDuplicate(t *testing.T) {
 	t.Parallel()
 	store := setupStore(t)
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10)},
-		&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(20)},
-		&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(30)},
+		&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(10)},
+		&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(20)},
+		&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(30)},
 	)
 
 	got := onePerTxRows(t, store,
@@ -193,16 +193,16 @@ func TestIntegration_SortEmitContinuation_OneRowPerTx(t *testing.T) {
 	t.Parallel()
 	store := setupStore(t)
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(300)},
-		&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)},
-		&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(500)},
-		&gen.Order{OrderId: proto.Int64(4), Price: proto.Int32(200)},
-		&gen.Order{OrderId: proto.Int64(5), Price: proto.Int32(400)},
+		&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(300)},
+		&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)},
+		&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(500)},
+		&demopb.Order{OrderId: proto.Int64(4), Price: proto.Int32(200)},
+		&demopb.Order{OrderId: proto.Int64(5), Price: proto.Int32(400)},
 	)
 
 	makePlan := func() plans.RecordQueryPlan {
 		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan(
-			[]string{"Order"}, PositionalTypeForRecordLayout((&gen.Order{}).ProtoReflect().Descriptor(), false), false))
+			[]string{"Order"}, PositionalTypeForRecordLayout((&demopb.Order{}).ProtoReflect().Descriptor(), false), false))
 		return mustExecutorConstruct(plans.NewRecordQueryInMemorySortPlan(scan, []plans.SortKey{{
 			Field:     "PRICE",
 			ValueExpr: mustTestFieldOrdinal(t, scan.GetResultValue(), 2),

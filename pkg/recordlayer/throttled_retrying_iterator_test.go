@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -17,10 +17,10 @@ var _ = Describe("Throttled retrying iterator", func() {
 	It("replays failed commits from the committed continuation and commits the final empty batch", func() {
 		ctx := context.Background()
 		root := specSubspace()
-		queue := NewPendingWritesQueue(root.Sub("entries"), root.Sub("size"), 100, &gen.Order{})
+		queue := NewPendingWritesQueue(root.Sub("entries"), root.Sub("size"), 100, &demopb.Order{})
 		_, err := sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
 			for id := int64(1); id <= 3; id++ {
-				if err := queue.Enqueue(rc, &gen.Order{OrderId: proto.Int64(id)}, 0); err != nil {
+				if err := queue.Enqueue(rc, &demopb.Order{OrderId: proto.Int64(id)}, 0); err != nil {
 					return nil, err
 				}
 			}
@@ -33,7 +33,7 @@ var _ = Describe("Throttled retrying iterator", func() {
 		var seen []int64
 		failure := &RecordCoreError{Message: "deliberate commit check failure"}
 		iterator := newThrottledRetryingIterator(NewFDBDatabaseRunner(sharedDB),
-			func(_ context.Context, rc *FDBRecordContext, cont []byte, limit int) (RecordCursor[*PendingWritesQueueEntry[*gen.Order]], error) {
+			func(_ context.Context, rc *FDBRecordContext, cont []byte, limit int) (RecordCursor[*PendingWritesQueueEntry[*demopb.Order]], error) {
 				attempts++
 				starts = append(starts, append([]byte(nil), cont...))
 				limits = append(limits, limit)
@@ -45,7 +45,7 @@ var _ = Describe("Throttled retrying iterator", func() {
 				props.ExecuteProperties.ReturnedRowLimit = limit
 				return queue.GetQueueCursor(rc, props, cont), nil
 			},
-			func(_ context.Context, rc *FDBRecordContext, entry *PendingWritesQueueEntry[*gen.Order], quota *iterationQuota) error {
+			func(_ context.Context, rc *FDBRecordContext, entry *PendingWritesQueueEntry[*demopb.Order], quota *iterationQuota) error {
 				seen = append(seen, entry.Payload.GetOrderId())
 				quota.deleted++
 				return queue.ClearEntry(rc, entry)
@@ -74,18 +74,18 @@ var _ = Describe("Throttled retrying iterator", func() {
 
 	It("exhausts exactly 100 retries on a non-FDB error without nested retry", func() {
 		root := specSubspace()
-		queue := NewPendingWritesQueue(root.Sub("entries"), root.Sub("size"), 100, &gen.Order{})
+		queue := NewPendingWritesQueue(root.Sub("entries"), root.Sub("size"), 100, &demopb.Order{})
 		attempts := 0
 		failure := &RecordCoreError{Message: "persistent cursor initialization failure"}
 		iterator := newThrottledRetryingIterator(NewFDBDatabaseRunner(sharedDB),
-			func(_ context.Context, rc *FDBRecordContext, _ []byte, limit int) (RecordCursor[*PendingWritesQueueEntry[*gen.Order]], error) {
+			func(_ context.Context, rc *FDBRecordContext, _ []byte, limit int) (RecordCursor[*PendingWritesQueueEntry[*demopb.Order]], error) {
 				attempts++
 				if attempts > 1 {
 					Expect(limit).To(Equal(1))
 				}
 				rc.Transaction().Set(fdb.Key(root.Sub("uncommitted").Bytes()), []byte{1})
 				return nil, failure
-			}, func(_ context.Context, _ *FDBRecordContext, _ *PendingWritesQueueEntry[*gen.Order], _ *iterationQuota) error {
+			}, func(_ context.Context, _ *FDBRecordContext, _ *PendingWritesQueueEntry[*demopb.Order], _ *iterationQuota) error {
 				return nil
 			})
 		defer iterator.Close()
@@ -141,10 +141,10 @@ var _ = Describe("Throttled retrying iterator", func() {
 
 	It("resets retry allowance after commits and increases the adaptive limit after forty successes", func() {
 		root := specSubspace()
-		queue := NewPendingWritesQueue(root.Sub("entries"), root.Sub("size"), 100, &gen.Order{})
+		queue := NewPendingWritesQueue(root.Sub("entries"), root.Sub("size"), 100, &demopb.Order{})
 		_, err := sharedDB.Run(context.Background(), func(rc *FDBRecordContext) (any, error) {
 			for id := int64(1); id <= 45; id++ {
-				if err := queue.Enqueue(rc, &gen.Order{OrderId: proto.Int64(id)}, 0); err != nil {
+				if err := queue.Enqueue(rc, &demopb.Order{OrderId: proto.Int64(id)}, 0); err != nil {
 					return nil, err
 				}
 			}
@@ -153,7 +153,7 @@ var _ = Describe("Throttled retrying iterator", func() {
 		Expect(err).NotTo(HaveOccurred())
 		var limits []int
 		iterator := newThrottledRetryingIterator(NewFDBDatabaseRunner(sharedDB),
-			func(_ context.Context, rc *FDBRecordContext, cont []byte, limit int) (RecordCursor[*PendingWritesQueueEntry[*gen.Order]], error) {
+			func(_ context.Context, rc *FDBRecordContext, cont []byte, limit int) (RecordCursor[*PendingWritesQueueEntry[*demopb.Order]], error) {
 				limits = append(limits, limit)
 				if len(limits) == 1 || len(limits) == 3 {
 					rc.AddCommitCheck(func() error { return &RecordCoreError{Message: "retry allowance reset"} })
@@ -161,7 +161,7 @@ var _ = Describe("Throttled retrying iterator", func() {
 				props := ForwardScan()
 				props.ExecuteProperties.ReturnedRowLimit = limit
 				return queue.GetQueueCursor(rc, props, cont), nil
-			}, func(_ context.Context, rc *FDBRecordContext, entry *PendingWritesQueueEntry[*gen.Order], quota *iterationQuota) error {
+			}, func(_ context.Context, rc *FDBRecordContext, entry *PendingWritesQueueEntry[*demopb.Order], quota *iterationQuota) error {
 				quota.deleted++
 				return queue.ClearEntry(rc, entry)
 			})
@@ -181,10 +181,10 @@ var _ = Describe("Throttled retrying iterator", func() {
 
 	It("closes concurrently during the rate wait without starting another transaction", func() {
 		root := specSubspace()
-		queue := NewPendingWritesQueue(root.Sub("entries"), root.Sub("size"), 1000, &gen.Order{})
+		queue := NewPendingWritesQueue(root.Sub("entries"), root.Sub("size"), 1000, &demopb.Order{})
 		_, err := sharedDB.Run(context.Background(), func(rc *FDBRecordContext) (any, error) {
 			for id := int64(1); id <= 100; id++ {
-				if err := queue.Enqueue(rc, &gen.Order{OrderId: proto.Int64(id)}, 0); err != nil {
+				if err := queue.Enqueue(rc, &demopb.Order{OrderId: proto.Int64(id)}, 0); err != nil {
 					return nil, err
 				}
 			}
@@ -194,11 +194,11 @@ var _ = Describe("Throttled retrying iterator", func() {
 		committed := make(chan struct{})
 		attempts := 0
 		iterator := newThrottledRetryingIterator(NewFDBDatabaseRunner(sharedDB),
-			func(_ context.Context, rc *FDBRecordContext, cont []byte, _ int) (RecordCursor[*PendingWritesQueueEntry[*gen.Order]], error) {
+			func(_ context.Context, rc *FDBRecordContext, cont []byte, _ int) (RecordCursor[*PendingWritesQueueEntry[*demopb.Order]], error) {
 				attempts++
 				rc.AddPostCommit(func() { close(committed) })
 				return queue.GetQueueCursor(rc, ForwardScan(), cont), nil
-			}, func(_ context.Context, rc *FDBRecordContext, entry *PendingWritesQueueEntry[*gen.Order], quota *iterationQuota) error {
+			}, func(_ context.Context, rc *FDBRecordContext, entry *PendingWritesQueueEntry[*demopb.Order], quota *iterationQuota) error {
 				quota.deleted++
 				return queue.ClearEntry(rc, entry)
 			})

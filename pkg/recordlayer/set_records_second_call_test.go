@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 )
 
 // A SECOND SetRecords IS REFUSED, matching Java, which is ONE of several routes
@@ -149,7 +149,7 @@ func TestRefusedSetRecordsLeavesTheFirstDescriptorInPlace(t *testing.T) {
 	t.Parallel()
 
 	idx := NewIndex("first_desc_idx", Field("price"))
-	b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	setDemoPrimaryKeys(b)
 	b.AddIndex("Order", idx)
 
@@ -161,7 +161,7 @@ func TestRefusedSetRecordsLeavesTheFirstDescriptorInPlace(t *testing.T) {
 		t.Fatalf("setup: Order carries %d indexes, want 1", len(before.indexes))
 	}
 
-	b.SetRecords(gen.File_record_layer_demo_proto)
+	b.SetRecords(demopb.File_record_layer_demo_proto)
 
 	after := b.GetRecordTypes()["Order"]
 	if after != before {
@@ -244,11 +244,11 @@ func TestUniversalIndexRoundTripsThroughAnEmptyRecordTypeList(t *testing.T) {
 // reaches the state the arms are about -- and their assertions would then be
 // unreachable code describing something nothing produced.
 func newDemoBuilder(register func(*RecordMetaDataBuilder, *Index), idx *Index, secondSetRecords bool) *RecordMetaDataBuilder {
-	b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	setDemoPrimaryKeys(b)
 	register(b, idx)
 	if secondSetRecords {
-		b.SetRecords(gen.File_record_layer_demo_proto)
+		b.SetRecords(demopb.File_record_layer_demo_proto)
 		// Re-apply the primary keys an UNGUARDED second call would have dropped.
 		// With the guard this is a no-op, and that is the point: without it, an
 		// unguarded second SetRecords replaces every RecordType, Build fails on a
@@ -292,7 +292,7 @@ func TestBuildRefusesAnIndexNoRecordTypeClaims(t *testing.T) {
 
 	newBuilderWithOrderIndex := func() (*RecordMetaDataBuilder, *Index) {
 		idx := NewIndex("orphan_by_delete", Field("price"))
-		b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		setDemoPrimaryKeys(b)
 		b.AddIndex("Order", idx)
 		return b, idx
@@ -329,7 +329,7 @@ func TestBuildRefusesAnIndexNoRecordTypeClaims(t *testing.T) {
 	// A UNIVERSAL index is registered and claimed by no record type BY DESIGN.
 	// The check must not reject it — without this arm, a check that refused
 	// every unassociated index would pass everything above.
-	ub := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	ub := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	setDemoPrimaryKeys(ub)
 	uIdx := NewIndex("universal_ok", EmptyKey())
 	ub.AddUniversalIndex(uIdx)
@@ -356,7 +356,7 @@ func TestBuiltMetadataIsDetachedFromTheBuilder(t *testing.T) {
 	t.Parallel()
 
 	idx := NewIndex("detach_idx", Field("price"))
-	b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	setDemoPrimaryKeys(b)
 	b.AddIndex("Order", idx)
 	md, err := b.Build()
@@ -410,7 +410,7 @@ func TestBuildRefusesAnIndexAssociatedAsADifferentObject(t *testing.T) {
 	t.Parallel()
 
 	registered := NewIndex("divergent_idx", Field("price"))
-	b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	setDemoPrimaryKeys(b)
 	b.AddIndex("Order", registered)
 
@@ -458,7 +458,7 @@ func TestBuildRequiresRegistryAndAssociationsToAgree(t *testing.T) {
 	t.Run("a renamed index no longer matches its registry key", func(t *testing.T) {
 		t.Parallel()
 		idx := NewIndex("alpha", Field("price"))
-		b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		setDemoPrimaryKeys(b)
 		b.AddIndex("Order", idx)
 
@@ -486,7 +486,7 @@ func TestBuildRequiresRegistryAndAssociationsToAgree(t *testing.T) {
 	t.Run("a multi-type association replaced on one type only", func(t *testing.T) {
 		t.Parallel()
 		idx := NewIndex("mt_idx", Field("price"))
-		b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		setDemoPrimaryKeys(b)
 		b.AddMultiTypeIndex([]string{"Order", "Customer"}, idx)
 
@@ -533,7 +533,7 @@ func TestBuildRefusesAnIndexBothUniversalAndAssociated(t *testing.T) {
 	t.Parallel()
 
 	idx := NewIndex("both_idx", EmptyKey())
-	b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	setDemoPrimaryKeys(b)
 	b.AddUniversalIndex(idx)
 
@@ -582,7 +582,7 @@ func TestBuildRefusesARenamedUniversalIndex(t *testing.T) {
 	t.Parallel()
 
 	idx := NewIndex("uni_alpha", EmptyKey())
-	b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	setDemoPrimaryKeys(b)
 	b.AddUniversalIndex(idx)
 	idx.Name = "uni_beta"
@@ -614,7 +614,7 @@ func TestBuildAcceptsADuplicateAssociationBecauseJavaDoes(t *testing.T) {
 	t.Parallel()
 
 	idx := NewIndex("dup_idx", Field("price"))
-	b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	setDemoPrimaryKeys(b)
 	b.AddMultiTypeIndex([]string{"Order", "Order"}, idx)
 
@@ -648,7 +648,7 @@ func TestBuiltMetadataSharesIndexObjectsWithTheBuilder(t *testing.T) {
 	t.Parallel()
 
 	idx := NewIndex("shared_idx", Field("price"))
-	b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	setDemoPrimaryKeys(b)
 	b.AddIndex("Order", idx)
 	md, err := b.Build()
@@ -691,7 +691,7 @@ func TestPostBuildRemoveIndexLeavesUniversalIndexesIntact(t *testing.T) {
 
 	uniA := NewIndex("uni_a", EmptyKey())
 	uniB := NewIndex("uni_b", EmptyKey())
-	b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	setDemoPrimaryKeys(b)
 	b.AddUniversalIndex(uniA)
 	b.AddUniversalIndex(uniB)

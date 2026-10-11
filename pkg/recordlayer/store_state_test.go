@@ -10,6 +10,8 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 )
 
 var _ = Describe("Store state management", func() {
@@ -20,7 +22,7 @@ var _ = Describe("Store state management", func() {
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -71,7 +73,7 @@ var _ = Describe("Store state management", func() {
 				}
 				id := int64(1)
 				price := int32(100)
-				_, err = store.SaveRecord(&gen.Order{OrderId: &id, Price: &price})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: &id, Price: &price})
 				return nil, err
 			})
 			Expect(err).To(HaveOccurred())
@@ -100,7 +102,7 @@ var _ = Describe("Store state management", func() {
 
 			id := int64(7)
 			price := int32(700)
-			rec := &gen.Order{OrderId: &id, Price: &price}
+			rec := &demopb.Order{OrderId: &id, Price: &price}
 
 			// Control: a REAL save is rejected by the lock.
 			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
@@ -179,7 +181,7 @@ var _ = Describe("Store state management", func() {
 				}
 				id := int64(1)
 				price := int32(100)
-				_, err = store.SaveRecord(&gen.Order{OrderId: &id, Price: &price})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: &id, Price: &price})
 				return nil, err
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -359,7 +361,7 @@ var _ = Describe("Store state management", func() {
 					return nil, err
 				}
 				_, err = store.SaveRecordWithOptions(
-					&gen.Order{OrderId: proto.Int64(999), Price: proto.Int32(100)},
+					&demopb.Order{OrderId: proto.Int64(999), Price: proto.Int32(100)},
 					RecordExistenceCheckErrorIfNotExists,
 				)
 				return nil, err
@@ -434,7 +436,7 @@ var _ = Describe("Store state management", func() {
 				// Save some data
 				id := int64(1)
 				price := int32(100)
-				_, err = store.SaveRecord(&gen.Order{OrderId: &id, Price: &price})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: &id, Price: &price})
 				if err != nil {
 					return nil, err
 				}
@@ -470,7 +472,7 @@ var _ = Describe("Store state management", func() {
 		It("records and scans violations", func() {
 			priceIndex := NewIndex("Order$price", Field("price")).SetUnique()
 
-			idxBuilder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			idxBuilder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			idxBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			idxBuilder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			idxBuilder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -503,7 +505,7 @@ var _ = Describe("Store state management", func() {
 		It("resolves violations", func() {
 			priceIndex := NewIndex("Order$price", Field("price")).SetUnique()
 
-			idxBuilder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			idxBuilder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			idxBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			idxBuilder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			idxBuilder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -538,7 +540,7 @@ var _ = Describe("Store state management", func() {
 		It("returns empty for no violations", func() {
 			priceIndex := NewIndex("Order$price", Field("price")).SetUnique()
 
-			idxBuilder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			idxBuilder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			idxBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			idxBuilder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			idxBuilder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))

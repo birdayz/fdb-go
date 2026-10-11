@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -60,7 +60,7 @@ var _ = Describe("IndexRegistrationMatrix", func() {
 					wantKey    tuple.Tuple
 					pk         KeyExpression
 				)
-				builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+				builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 				if rc.isUniversal {
 					pk = Field("price")
 					pkDedupIdx = NewIndex("pkdedup_idx", Field("price"))
@@ -95,7 +95,7 @@ var _ = Describe("IndexRegistrationMatrix", func() {
 						SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 					Expect(err).NotTo(HaveOccurred())
 
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 					Expect(err).NotTo(HaveOccurred())
 
 					entries, err := AsList(ctx, store.ScanIndex(pkDedupIdx, TupleRangeAll, nil, ForwardScan()))
@@ -123,7 +123,7 @@ var _ = Describe("IndexRegistrationMatrix", func() {
 
 				priceIdx := NewIndex("price_idx", Field("price"))
 
-				builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+				builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 				builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 				builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 				builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -137,18 +137,18 @@ var _ = Describe("IndexRegistrationMatrix", func() {
 					Expect(err).NotTo(HaveOccurred())
 
 					for i := int64(1); i <= 3; i++ {
-						_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
+						_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
 						Expect(err).NotTo(HaveOccurred())
 					}
 					if !rc.isUniversal {
 						// Multi-type: also save a Customer (has price field).
 						if rc.name == "MultiType" {
-							_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(100), Name: proto.String("Alice"), Price: proto.Int32(999)})
+							_, err = store.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(100), Name: proto.String("Alice"), Price: proto.Int32(999)})
 							Expect(err).NotTo(HaveOccurred())
 						}
 					} else {
 						// Universal: save a Customer too.
-						_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(100), Name: proto.String("Alice"), Price: proto.Int32(999)})
+						_, err = store.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(100), Name: proto.String("Alice"), Price: proto.Int32(999)})
 						Expect(err).NotTo(HaveOccurred())
 					}
 
@@ -181,7 +181,7 @@ var _ = Describe("IndexRegistrationMatrix", func() {
 
 				priceIdx := NewIndex("price_idx", Field("price"))
 
-				builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+				builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 				builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 				builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 				builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -195,9 +195,9 @@ var _ = Describe("IndexRegistrationMatrix", func() {
 					Expect(err).NotTo(HaveOccurred())
 
 					// Save two orders.
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 					Expect(err).NotTo(HaveOccurred())
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
 					Expect(err).NotTo(HaveOccurred())
 
 					entries, err := AsList(ctx, store.ScanIndex(priceIdx, TupleRangeAll, nil, ForwardScan()))
@@ -215,7 +215,7 @@ var _ = Describe("IndexRegistrationMatrix", func() {
 					Expect(entries[0].IndexValues()).To(Equal(tuple.Tuple{int64(200)}))
 
 					// Update remaining record's price.
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(300)})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(300)})
 					Expect(err).NotTo(HaveOccurred())
 
 					entries, err = AsList(ctx, store.ScanIndex(priceIdx, TupleRangeAll, nil, ForwardScan()))
@@ -236,7 +236,7 @@ var _ = Describe("IndexRegistrationMatrix", func() {
 
 				priceIdx := NewIndex("price_idx", Field("price"))
 
-				builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+				builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 				builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 				builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 				builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -250,11 +250,11 @@ var _ = Describe("IndexRegistrationMatrix", func() {
 					Expect(err).NotTo(HaveOccurred())
 
 					for i := int64(1); i <= 5; i++ {
-						_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
+						_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
 						Expect(err).NotTo(HaveOccurred())
 					}
 					if rc.name != "SingleType" {
-						_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(100), Name: proto.String("Bob"), Price: proto.Int32(555)})
+						_, err = store.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(100), Name: proto.String("Bob"), Price: proto.Int32(555)})
 						Expect(err).NotTo(HaveOccurred())
 					}
 
@@ -282,7 +282,7 @@ var _ = Describe("IndexRegistrationMatrix", func() {
 				ks := specSubspace()
 
 				// Phase 1: save records WITHOUT index.
-				builderNoIdx := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+				builderNoIdx := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 				builderNoIdx.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 				builderNoIdx.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 				builderNoIdx.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -295,11 +295,11 @@ var _ = Describe("IndexRegistrationMatrix", func() {
 					Expect(err).NotTo(HaveOccurred())
 
 					for i := int64(1); i <= 5; i++ {
-						_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
+						_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
 						Expect(err).NotTo(HaveOccurred())
 					}
 					if rc.name != "SingleType" {
-						_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(100), Name: proto.String("Carol"), Price: proto.Int32(777)})
+						_, err = store.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(100), Name: proto.String("Carol"), Price: proto.Int32(777)})
 						Expect(err).NotTo(HaveOccurred())
 					}
 					return nil, nil
@@ -309,7 +309,7 @@ var _ = Describe("IndexRegistrationMatrix", func() {
 				// Phase 2: build index with OnlineIndexer.
 				priceIdx := NewIndex("price_idx", Field("price"))
 
-				builderWithIdx := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+				builderWithIdx := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 				builderWithIdx.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 				builderWithIdx.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 				builderWithIdx.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -360,7 +360,7 @@ var _ = Describe("IndexRegistrationMatrix", func() {
 
 				priceIdx := NewIndex("price_idx", Field("price"))
 
-				builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+				builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 				builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 				builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 				builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -375,11 +375,11 @@ var _ = Describe("IndexRegistrationMatrix", func() {
 					Expect(err).NotTo(HaveOccurred())
 
 					for i := int64(1); i <= 3; i++ {
-						_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
+						_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
 						Expect(err).NotTo(HaveOccurred())
 					}
 					if rc.name != "SingleType" {
-						_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(100), Name: proto.String("Dave"), Price: proto.Int32(888)})
+						_, err = store.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(100), Name: proto.String("Dave"), Price: proto.Int32(888)})
 						Expect(err).NotTo(HaveOccurred())
 					}
 					return nil, nil
@@ -421,7 +421,7 @@ var _ = Describe("IndexRegistrationMatrix", func() {
 			It(fmt.Sprintf("%s: DeleteRecordsWhere", rc.name), func() {
 				ks := specSubspace()
 
-				builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+				builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 				// PKs must start with RecordTypeKey for DeleteRecordsWhere.
 				builder.GetRecordType("Order").SetPrimaryKey(Concat(RecordTypeKey(), Field("order_id")))
 				builder.GetRecordType("Customer").SetPrimaryKey(Concat(RecordTypeKey(), Field("customer_id")))
@@ -449,11 +449,11 @@ var _ = Describe("IndexRegistrationMatrix", func() {
 					Expect(err).NotTo(HaveOccurred())
 
 					for i := int64(1); i <= 3; i++ {
-						_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
+						_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
 						Expect(err).NotTo(HaveOccurred())
 					}
 					for i := int64(1); i <= 2; i++ {
-						_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(i), Name: proto.String("Cust"), Price: proto.Int32(int32(i * 100))})
+						_, err = store.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(i), Name: proto.String("Cust"), Price: proto.Int32(int32(i * 100))})
 						Expect(err).NotTo(HaveOccurred())
 					}
 					return nil, nil

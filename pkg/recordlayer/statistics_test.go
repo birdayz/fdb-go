@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -28,7 +30,7 @@ var _ = Describe("CollectStatistics", func() {
 	var metaData *RecordMetaData
 
 	BeforeEach(func() {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Concat(RecordTypeKey(), Field("order_id")))
 		builder.GetRecordType("Customer").SetPrimaryKey(Concat(RecordTypeKey(), Field("customer_id")))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Concat(RecordTypeKey(), Field("id")))
@@ -51,14 +53,14 @@ var _ = Describe("CollectStatistics", func() {
 				}
 				for i := s; i < s+batch && i < total; i++ {
 					if i < orders {
-						if _, e := store.SaveRecord(&gen.Order{
+						if _, e := store.SaveRecord(&demopb.Order{
 							OrderId: proto.Int64(int64(i)), Price: proto.Int32(int32(i % 7)),
 						}); e != nil {
 							return nil, e
 						}
 						continue
 					}
-					if _, e := store.SaveRecord(&gen.Customer{
+					if _, e := store.SaveRecord(&demopb.Customer{
 						CustomerId: proto.Int64(int64(i)),
 					}); e != nil {
 						return nil, e
@@ -438,7 +440,7 @@ var _ = Describe("CollectStatistics", func() {
 		// refuses an oversized record, so the split layout only exists where an
 		// operator asked for it — and a collector tested only against the
 		// default metadata never meets the layout at all.
-		splitBuilder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		splitBuilder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		splitBuilder.SetSplitLongRecords(true)
 		splitBuilder.GetRecordType("Order").SetPrimaryKey(Concat(RecordTypeKey(), Field("order_id")))
 		splitBuilder.GetRecordType("Customer").SetPrimaryKey(Concat(RecordTypeKey(), Field("customer_id")))
@@ -465,13 +467,13 @@ var _ = Describe("CollectStatistics", func() {
 				return nil, sErr
 			}
 			for i := 0; i < 2; i++ {
-				if _, e := store.SaveRecord(&gen.Order{
+				if _, e := store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(int64(i)), VectorData: big,
 				}); e != nil {
 					return nil, e
 				}
 			}
-			_, e := store.SaveRecord(&gen.Order{OrderId: proto.Int64(99), Price: proto.Int32(1)})
+			_, e := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(99), Price: proto.Int32(1)})
 			return nil, e
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -544,7 +546,7 @@ var _ = Describe("CollectStatistics", func() {
 		// the store's header will record, which is the condition
 		// checkPossiblyRebuild acts on.
 		newerMeta := func() *RecordMetaData {
-			b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			b.GetRecordType("Order").SetPrimaryKey(Concat(RecordTypeKey(), Field("order_id")))
 			b.GetRecordType("Customer").SetPrimaryKey(Concat(RecordTypeKey(), Field("customer_id")))
 			b.GetRecordType("TypedRecord").SetPrimaryKey(Concat(RecordTypeKey(), Field("id")))
@@ -1771,7 +1773,7 @@ var _ = Describe("CollectStatisticsIntegerKeys", func() {
 		// Java's (constants.go).
 		stats := NewStatisticsSubspace(subspace.FromBytes(
 			tuple.Tuple{"__stats__", CurrentSpecReport().FullText()}.Pack()))
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Concat(RecordTypeKey(), Field("order_id")))
 		builder.GetRecordType("Customer").SetPrimaryKey(Concat(RecordTypeKey(), Field("customer_id")))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Concat(RecordTypeKey(), Field("id")))
@@ -1786,7 +1788,7 @@ var _ = Describe("CollectStatisticsIntegerKeys", func() {
 			if sErr != nil {
 				return nil, sErr
 			}
-			_, sErr = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1)})
+			_, sErr = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1)})
 			return nil, sErr
 		})
 		Expect(err).NotTo(HaveOccurred())

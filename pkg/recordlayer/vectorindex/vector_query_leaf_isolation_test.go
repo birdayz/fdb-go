@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -114,7 +114,7 @@ func TestVectorQueryLeavesConsultIsolationLevel(t *testing.T) {
 	const indexName = "Order$price"
 	buildMetaData := func(t *testing.T) (*recordlayer.RecordMetaData, vectorLeafFixture) {
 		t.Helper()
-		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -176,7 +176,7 @@ func TestVectorQueryLeavesConsultIsolationLevel(t *testing.T) {
 						return nil, err
 					}
 					for i := int64(1); i <= 5; i++ {
-						if _, err := store.SaveRecord(withVector(&gen.Order{
+						if _, err := store.SaveRecord(withVector(&demopb.Order{
 							OrderId: proto.Int64(i), Price: proto.Int32(int32(i)), Quantity: proto.Int32(int32(i)),
 						}, "price", "quantity")); err != nil {
 							return nil, err
@@ -217,7 +217,7 @@ func TestVectorQueryLeavesConsultIsolationLevel(t *testing.T) {
 					if err != nil {
 						return nil, err
 					}
-					_, err = store.SaveRecord(withVector(&gen.Order{
+					_, err = store.SaveRecord(withVector(&demopb.Order{
 						OrderId: proto.Int64(3), Price: proto.Int32(3000), Quantity: proto.Int32(3000),
 					}, "price", "quantity"))
 					return nil, err
@@ -235,7 +235,7 @@ func TestVectorQueryLeavesConsultIsolationLevel(t *testing.T) {
 				// every serializable arm and a failure on every snapshot one.
 				// The ONLY thing that may conflict this commit is the read
 				// conflict range the scan above did or did not take.
-				if _, err := readerStore.SaveRecord(&gen.Customer{
+				if _, err := readerStore.SaveRecord(&demopb.Customer{
 					CustomerId: proto.Int64(99), Name: proto.String("reader"),
 				}); err != nil {
 					t.Fatalf("reader write: %v", err)

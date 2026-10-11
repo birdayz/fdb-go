@@ -6,7 +6,7 @@ import (
 	"context"
 	"fmt"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -46,14 +46,14 @@ var _ = Describe("COUNT Index Conformance", func() {
 		It("should produce identical count entries visible to both Go and Java", func() {
 			// Save 3 orders with price=100, 2 with price=200
 			for i := int64(1); i <= 3; i++ {
-				err := store.SaveOrderGo(ctx, &gen.Order{
+				err := store.SaveOrderGo(ctx, &demopb.Order{
 					OrderId: proto.Int64(i),
 					Price:   proto.Int32(100),
 				})
 				Expect(err).NotTo(HaveOccurred())
 			}
 			for i := int64(4); i <= 5; i++ {
-				err := store.SaveOrderGo(ctx, &gen.Order{
+				err := store.SaveOrderGo(ctx, &demopb.Order{
 					OrderId: proto.Int64(i),
 					Price:   proto.Int32(200),
 				})
@@ -86,13 +86,13 @@ var _ = Describe("COUNT Index Conformance", func() {
 		It("should produce identical count entries visible to both Go and Java", func() {
 			// Java saves 2 orders with price=300, 1 with price=400
 			for i := int64(1); i <= 2; i++ {
-				err := store.SaveOrderJava(ctx, &gen.Order{
+				err := store.SaveOrderJava(ctx, &demopb.Order{
 					OrderId: proto.Int64(i),
 					Price:   proto.Int32(300),
 				})
 				Expect(err).NotTo(HaveOccurred())
 			}
-			err := store.SaveOrderJava(ctx, &gen.Order{
+			err := store.SaveOrderJava(ctx, &demopb.Order{
 				OrderId: proto.Int64(3),
 				Price:   proto.Int32(400),
 			})
@@ -124,7 +124,7 @@ var _ = Describe("COUNT Index Conformance", func() {
 		It("should produce correct combined counts", func() {
 			// Go saves 2 orders with price=500
 			for i := int64(1); i <= 2; i++ {
-				err := store.SaveOrderGo(ctx, &gen.Order{
+				err := store.SaveOrderGo(ctx, &demopb.Order{
 					OrderId: proto.Int64(i),
 					Price:   proto.Int32(500),
 				})
@@ -133,7 +133,7 @@ var _ = Describe("COUNT Index Conformance", func() {
 
 			// Java saves 3 more orders with price=500
 			for i := int64(3); i <= 5; i++ {
-				err := store.SaveOrderJava(ctx, &gen.Order{
+				err := store.SaveOrderJava(ctx, &demopb.Order{
 					OrderId: proto.Int64(i),
 					Price:   proto.Int32(500),
 				})
@@ -160,7 +160,7 @@ var _ = Describe("COUNT Index Conformance", func() {
 		It("should decrement when Go deletes a Java-written record", func() {
 			// Java saves 3 orders with price=600
 			for i := int64(1); i <= 3; i++ {
-				err := store.SaveOrderJava(ctx, &gen.Order{
+				err := store.SaveOrderJava(ctx, &demopb.Order{
 					OrderId: proto.Int64(i),
 					Price:   proto.Int32(600),
 				})
@@ -195,7 +195,7 @@ var _ = Describe("COUNT Index Conformance", func() {
 		It("should decrement when Java deletes a Go-written record", func() {
 			// Go saves 3 orders with price=700
 			for i := int64(1); i <= 3; i++ {
-				err := store.SaveOrderGo(ctx, &gen.Order{
+				err := store.SaveOrderGo(ctx, &demopb.Order{
 					OrderId: proto.Int64(i),
 					Price:   proto.Int32(700),
 				})
@@ -229,13 +229,13 @@ var _ = Describe("COUNT Index Conformance", func() {
 	Describe("Update changes count correctly", func() {
 		It("should move counts when price changes via Go update", func() {
 			// Save 2 orders: price=800 and price=900
-			err := store.SaveOrderGo(ctx, &gen.Order{
+			err := store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(800),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			err = store.SaveOrderGo(ctx, &gen.Order{
+			err = store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(2),
 				Price:   proto.Int32(900),
 			})
@@ -247,7 +247,7 @@ var _ = Describe("COUNT Index Conformance", func() {
 			Expect(goEntries).To(HaveLen(2))
 
 			// Update order 1: price 800 → 900
-			err = store.SaveOrderGo(ctx, &gen.Order{
+			err = store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(900),
 			})
@@ -307,7 +307,7 @@ func NewCountIndexConformanceStore(recordDB *recordlayer.FDBDatabase, keyspace s
 	// Matches Java's field("price").groupBy(empty())
 	countIdx := recordlayer.NewCountIndex("count_by_price", recordlayer.GroupAll(recordlayer.Field("price")))
 
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -345,7 +345,7 @@ func (s *CountIndexConformanceStore) buildJavaParams() map[string]any {
 }
 
 // SaveOrderGo saves an order with Go (with COUNT index maintenance).
-func (s *CountIndexConformanceStore) SaveOrderGo(ctx context.Context, order *gen.Order) error {
+func (s *CountIndexConformanceStore) SaveOrderGo(ctx context.Context, order *demopb.Order) error {
 	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
@@ -359,7 +359,7 @@ func (s *CountIndexConformanceStore) SaveOrderGo(ctx context.Context, order *gen
 }
 
 // SaveOrderJava saves an order via Java (with COUNT index maintenance).
-func (s *CountIndexConformanceStore) SaveOrderJava(ctx context.Context, order *gen.Order) error {
+func (s *CountIndexConformanceStore) SaveOrderJava(ctx context.Context, order *demopb.Order) error {
 	params := s.buildJavaParams()
 	params["order"] = order
 	return s.java.InvokeAs(ctx, "saveOrderWithCountIndex", params, nil)
@@ -458,7 +458,7 @@ func CompareCountIndexEntries(goEntries, javaEntries []CountIndexEntryResult) er
 
 // SaveOrderGoProto is a convenience for creating and saving an order.
 func (s *CountIndexConformanceStore) SaveOrderGoProto(ctx context.Context, orderID int64, price int32) error {
-	order := &gen.Order{
+	order := &demopb.Order{
 		OrderId: proto.Int64(orderID),
 		Price:   proto.Int32(price),
 	}

@@ -3,7 +3,7 @@ package recordlayer
 import (
 	"context"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -22,7 +22,7 @@ func collectOrderIDs(store *FDBRecordStore, continuation []byte, props ScanPrope
 		if !result.HasNext() {
 			break
 		}
-		order := result.GetValue().Record.(*gen.Order)
+		order := result.GetValue().Record.(*demopb.Order)
 		ids = append(ids, *order.OrderId)
 	}
 	return ids
@@ -36,7 +36,7 @@ var _ = Describe("ReverseScan", func() {
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -56,10 +56,10 @@ var _ = Describe("ReverseScan", func() {
 				return nil, err
 			}
 			for i := int64(1); i <= 5; i++ {
-				order := &gen.Order{
+				order := &demopb.Order{
 					OrderId: proto.Int64(i),
 					Price:   proto.Int32(int32(i * 10)),
-					Flower:  &gen.Flower{Type: proto.String("Rose"), Color: gen.Color_RED.Enum()},
+					Flower:  &demopb.Flower{Type: proto.String("Rose"), Color: demopb.Color_RED.Enum()},
 				}
 				if _, err := store.SaveRecord(order); err != nil {
 					return nil, err
@@ -93,10 +93,10 @@ var _ = Describe("ReverseScan", func() {
 				return nil, err
 			}
 			for i := int64(1); i <= 5; i++ {
-				order := &gen.Order{
+				order := &demopb.Order{
 					OrderId: proto.Int64(i),
 					Price:   proto.Int32(int32(i * 10)),
-					Flower:  &gen.Flower{Type: proto.String("Rose"), Color: gen.Color_RED.Enum()},
+					Flower:  &demopb.Flower{Type: proto.String("Rose"), Color: demopb.Color_RED.Enum()},
 				}
 				if _, err := store.SaveRecord(order); err != nil {
 					return nil, err
@@ -137,10 +137,10 @@ var _ = Describe("ReverseScan", func() {
 				return nil, err
 			}
 			for i := int64(1); i <= 5; i++ {
-				order := &gen.Order{
+				order := &demopb.Order{
 					OrderId: proto.Int64(i),
 					Price:   proto.Int32(int32(i * 10)),
-					Flower:  &gen.Flower{Type: proto.String("Rose"), Color: gen.Color_RED.Enum()},
+					Flower:  &demopb.Flower{Type: proto.String("Rose"), Color: demopb.Color_RED.Enum()},
 				}
 				if _, err := store.SaveRecord(order); err != nil {
 					return nil, err
@@ -172,7 +172,7 @@ var _ = Describe("ReverseScan", func() {
 				if !result.HasNext() {
 					break
 				}
-				order := result.GetValue().Record.(*gen.Order)
+				order := result.GetValue().Record.(*demopb.Order)
 				ids = append(ids, *order.OrderId)
 			}
 
@@ -192,10 +192,10 @@ var _ = Describe("ReverseScan", func() {
 				return nil, err
 			}
 			for i := int64(1); i <= 5; i++ {
-				order := &gen.Order{
+				order := &demopb.Order{
 					OrderId: proto.Int64(i),
 					Price:   proto.Int32(int32(i * 10)),
-					Flower:  &gen.Flower{Type: proto.String("Rose"), Color: gen.Color_RED.Enum()},
+					Flower:  &demopb.Flower{Type: proto.String("Rose"), Color: demopb.Color_RED.Enum()},
 				}
 				if _, err := store.SaveRecord(order); err != nil {
 					return nil, err
@@ -236,10 +236,10 @@ var _ = Describe("ReverseScan", func() {
 				return nil, err
 			}
 			for i := int64(1); i <= 5; i++ {
-				order := &gen.Order{
+				order := &demopb.Order{
 					OrderId: proto.Int64(i),
 					Price:   proto.Int32(int32(i * 10)),
-					Flower:  &gen.Flower{Type: proto.String("Rose"), Color: gen.Color_RED.Enum()},
+					Flower:  &demopb.Flower{Type: proto.String("Rose"), Color: demopb.Color_RED.Enum()},
 				}
 				if _, err := store.SaveRecord(order); err != nil {
 					return nil, err
@@ -285,7 +285,7 @@ var _ = Describe("ReverseScan", func() {
 						}
 						break
 					}
-					order := result.GetValue().Record.(*gen.Order)
+					order := result.GetValue().Record.(*demopb.Order)
 					batchIDs = append(batchIDs, *order.OrderId)
 				}
 				_ = cursor.Close()
@@ -313,10 +313,10 @@ var _ = Describe("ReverseScan", func() {
 				return nil, err
 			}
 			for i := int64(1); i <= 5; i++ {
-				order := &gen.Order{
+				order := &demopb.Order{
 					OrderId: proto.Int64(i),
 					Price:   proto.Int32(int32(i * 10)),
-					Flower:  &gen.Flower{Type: proto.String("Rose"), Color: gen.Color_RED.Enum()},
+					Flower:  &demopb.Flower{Type: proto.String("Rose"), Color: demopb.Color_RED.Enum()},
 				}
 				if _, err := store.SaveRecord(order); err != nil {
 					return nil, err

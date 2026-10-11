@@ -3,7 +3,7 @@ package recordlayer
 import (
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 )
 
 // A deprecated index-type alias must behave EXACTLY like the type it names, in
@@ -89,7 +89,7 @@ func TestIndexTypeAlias_BehavesIdenticallyToItsCanonicalType(t *testing.T) {
 			// the proto path repairs an unwrapped root (Index.java:205-215), so
 			// only a hand-built index can still reach the validator unwrapped.
 			buildErr := func(indexType string, root KeyExpression) error {
-				b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+				b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 				b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 				b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 				b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))

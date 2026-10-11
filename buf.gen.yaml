@@ -4,6 +4,11 @@ managed:
   override:
     - file_option: go_package_prefix
       value: fdb.dev/gen
+    # The demo schema is test data: its own package keeps its
+    # com.apple.foundationdb.record types out of every production binary.
+    - file_option: go_package
+      path: record_layer_demo.proto
+      value: fdb.dev/gen/demopb
 plugins:
   - local:
       - bazelisk
@@ -12,7 +17,7 @@ plugins:
       - --
     out: gen
     opt:
-      - paths=source_relative
+      - module=fdb.dev/gen
   - local:
       - bazelisk
       - run
@@ -20,6 +25,7 @@ plugins:
       - --
     out: gen
     opt:
-      - paths=source_relative
+      - module=fdb.dev/gen
       - features=marshal+unmarshal+size+pool
       - pool=fdb.dev/gen.*
+      - pool=fdb.dev/gen/demopb.*

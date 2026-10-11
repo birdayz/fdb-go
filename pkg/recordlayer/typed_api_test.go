@@ -1,16 +1,18 @@
 package recordlayer
 
 import (
+	"errors"
+	"fmt"
 	"testing"
 
 	"fdb.dev/gen"
-	"google.golang.org/protobuf/proto"
+	"fdb.dev/gen/demopb"
 )
 
 // testMetaData creates metadata with all record types having primary keys set.
 func testMetaData(t testing.TB) *RecordMetaData {
 	t.Helper()
-	builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -31,7 +33,7 @@ func TestGetTypedRecordStore(t *testing.T) {
 	}
 
 	// Create typed store using the new API - much cleaner!
-	orderStore, err := GetTypedRecordStore[*gen.Order](baseStore, "Order")
+	orderStore, err := GetTypedRecordStore[*demopb.Order](baseStore, "Order")
 	if err != nil {
 		t.Fatalf("Failed to create typed store: %v", err)
 	}
@@ -45,34 +47,16 @@ func TestGetTypedRecordStore(t *testing.T) {
 		t.Errorf("Expected record type 'Order', got %s", orderStore.recordType.Name)
 	}
 
-	// Test that wrap/unwrap functions work
-	order := &gen.Order{
-		OrderId: proto.Int64(123),
-		Price:   proto.Int32(50),
+	// The metadata decodes Order as *demopb.Order, so the union builder matches.
+	if !orderStore.builderMatches {
+		t.Error("Order store typed *demopb.Order does not match the metadata's Order")
 	}
-
-	// Test wrap function
-	union, err := orderStore.wrapFunc(order)
-	if err != nil {
-		t.Fatalf("Wrap function failed: %v", err)
-	}
-
-	if union.XOrder == nil {
-		t.Fatal("Union does not contain Order")
-	}
-
-	if *union.XOrder.OrderId != 123 {
-		t.Errorf("Expected OrderId 123, got %d", *union.XOrder.OrderId)
-	}
-
-	// Test unwrap function
-	unwrapped, err := orderStore.unwrapFunc(union)
-	if err != nil {
-		t.Fatalf("Unwrap function failed: %v", err)
-	}
-
-	if *unwrapped.OrderId != 123 {
-		t.Errorf("Expected OrderId 123, got %d", *unwrapped.OrderId)
+	// Java's TypedRecordSerializer constructor refuses a getter of another
+	// message than the field's (TypedRecordSerializer.java:77-80).
+	_, err = GetTypedRecordStore[*demopb.Customer](baseStore, "Order")
+	var argErr *RecordCoreArgumentError
+	if !errors.As(err, &argErr) || argErr.Message != "fieldDescriptor and getter do not match" {
+		t.Errorf("Order store typed *demopb.Customer: %v (%T), want fieldDescriptor and getter do not match", err, err)
 	}
 
 	t.Logf("✓ New API works! Much cleaner than manual construction.")
@@ -87,7 +71,7 @@ func TestGetTypedRecordStore_InvalidType(t *testing.T) {
 	}
 
 	// Try to get typed store for non-existent type
-	_, err := GetTypedRecordStore[*gen.Order](baseStore, "NonExistentType")
+	_, err := GetTypedRecordStore[*demopb.Order](baseStore, "NonExistentType")
 	if err == nil {
 		t.Fatal("Expected error for non-existent record type")
 	}
@@ -97,4 +81,43 @@ func TestGetTypedRecordStore_InvalidType(t *testing.T) {
 	}
 
 	t.Logf("✓ Error handling works correctly")
+}
+
+// NewTypedRecordStore resolves its record type in the store's own metadata:
+// a nil, unknown or other metadata's record type is an error, not a store
+// whose every check compares against a pointer the store never produces.
+func TestNewTypedRecordStore_RecordTypeOutsideStoreMetaData(t *testing.T) {
+	t.Parallel()
+	baseStore := &FDBRecordStore{metaData: testMetaData(t)}
+	catalog := NewRecordMetaDataBuilder().SetRecords(gen.File_catalog_data_proto)
+	catalog.GetRecordType("Databases").SetPrimaryKey(Field("DATABASE_ID"))
+	catalog.GetRecordType("Schemas").SetPrimaryKey(Field("DATABASE_ID"))
+	catalog.GetRecordType("Templates").SetPrimaryKey(Field("TEMPLATE_NAME"))
+	catalogMD, err := catalog.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	newStore := func(rt *RecordType) (err error) {
+		defer func() {
+			if r := recover(); r != nil {
+				err = fmt.Errorf("panic: %v", r)
+			}
+		}()
+		_, err = NewTypedRecordStore[*demopb.Order](baseStore, rt)
+		return err
+	}
+	var argErr *RecordCoreArgumentError
+	if err := newStore(nil); !errors.As(err, &argErr) {
+		t.Errorf("nil record type: %v (%T), want a RecordCoreArgumentError", err, err)
+	}
+	var mdErr *MetaDataError
+	if err := newStore(catalogMD.GetRecordType("Databases")); !errors.As(err, &mdErr) || mdErr.Message != "Unknown record type Databases" {
+		t.Errorf("unknown record type: %v (%T), want Unknown record type Databases", err, err)
+	}
+	if err := newStore(testMetaData(t).GetRecordType("Order")); !errors.As(err, &argErr) || argErr.Message != "fieldDescriptor does not match recordType" {
+		t.Errorf("other metadata's Order: %v (%T), want fieldDescriptor does not match recordType", err, err)
+	}
+	if err := newStore(baseStore.metaData.GetRecordType("Order")); err != nil {
+		t.Errorf("the store's own Order: %v", err)
+	}
 }

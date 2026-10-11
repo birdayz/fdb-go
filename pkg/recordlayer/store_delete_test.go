@@ -3,7 +3,7 @@ package recordlayer
 import (
 	"context"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -15,7 +15,7 @@ var _ = Describe("DeleteRecord", func() {
 		ctx := context.Background()
 
 		// Create metadata
-		fileDesc := gen.File_record_layer_demo_proto
+		fileDesc := demopb.File_record_layer_demo_proto
 		metaDataBuilder := NewRecordMetaDataBuilder().SetRecords(fileDesc)
 		metaDataBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		metaDataBuilder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
@@ -35,12 +35,12 @@ var _ = Describe("DeleteRecord", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// First, create a test record
-			order := &gen.Order{
+			order := &demopb.Order{
 				OrderId: proto.Int64(1001),
 				Price:   proto.Int32(25),
-				Flower: &gen.Flower{
+				Flower: &demopb.Flower{
 					Type:  proto.String("Rose"),
-					Color: gen.Color_RED.Enum(),
+					Color: demopb.Color_RED.Enum(),
 				},
 			}
 

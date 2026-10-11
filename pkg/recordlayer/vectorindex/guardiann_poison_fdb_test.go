@@ -8,7 +8,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer/vectorcodec"
@@ -27,7 +27,7 @@ var _ = Describe("GuardiANN task poisoning", func() {
 		ks := specSubspace()
 		vecIdx := recordlayer.NewVectorIndex("vec_poison", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("vector_data")), 1), 1)
 		vecIdx.Options[recordlayer.IndexOptionVectorEngine] = "GUARDIANN"
-		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -39,8 +39,8 @@ var _ = Describe("GuardiANN task poisoning", func() {
 			Expect(err).NotTo(HaveOccurred())
 			return store
 		}
-		order := func(id int64) *gen.Order {
-			return withVector(&gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(int32(10 * id)), Quantity: proto.Int32(1)}, "price")
+		order := func(id int64) *demopb.Order {
+			return withVector(&demopb.Order{OrderId: proto.Int64(id), Price: proto.Int32(int32(10 * id)), Quantity: proto.Int32(1)}, "price")
 		}
 		// The first save creates the partition's access info and first cluster.
 		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {

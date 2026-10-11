@@ -8,7 +8,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 )
 
 var _ = Describe("Bug Bounty Round 2", func() {
@@ -184,7 +184,7 @@ var _ = Describe("Bug Bounty Round 2", func() {
 		It("proves AddBuildProgress receives the inflated count", func() {
 			ctx := context.Background()
 
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -204,7 +204,7 @@ var _ = Describe("Bug Bounty Round 2", func() {
 				}
 				for i := int64(1); i <= 10; i++ {
 					price := int32(i * 10)
-					if _, err := store.SaveRecord(&gen.Order{OrderId: &i, Price: &price}); err != nil {
+					if _, err := store.SaveRecord(&demopb.Order{OrderId: &i, Price: &price}); err != nil {
 						return nil, err
 					}
 				}

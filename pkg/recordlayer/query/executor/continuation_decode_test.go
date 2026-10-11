@@ -28,6 +28,8 @@ import (
 	"google.golang.org/protobuf/types/dynamicpb"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -236,7 +238,7 @@ func FuzzSortContinuation(f *testing.F) {
 		recordlayer.NewBytesContinuation([]byte("INNER")),
 		[]QueryResult{dmap(map[string]any{
 			"arr":    []any{int64(1), "x", []any{nil}},
-			"struct": &gen.Flower{Type: proto.String("rose")},
+			"struct": &demopb.Flower{Type: proto.String("rose")},
 		})},
 		false,
 	); err == nil {
@@ -599,8 +601,7 @@ func TestSortContinuation_LegacyTypedSlotBlobRejected_F33(t *testing.T) {
 // never registered in protoregistry.GlobalTypes. This is the dynamic-schema
 // shape whose restore must go through the metadata resolver → dynamicpb path
 // (it encodes as a flag-1 tag-14 value: a *dynamicpb.Message); a generated
-// gen.* message encodes flag 0 and restores from the registry without any
-// resolver, so it cannot exercise the resolver-rejection paths.
+// gen.* message encodes flag 0, so it cannot exercise the flag-1 paths.
 func unregisteredDynamicMessage(tb testing.TB) (*dynamicpb.Message, protoreflect.MessageDescriptor) {
 	tb.Helper()
 	fdp := &descriptorpb.FileDescriptorProto{
@@ -632,7 +633,7 @@ func unregisteredDynamicMessage(tb testing.TB) (*dynamicpb.Message, protoreflect
 // resolver executeInMemorySort hands decodeSortContinuation.
 func demoMetadataResolver(tb testing.TB) protoDescriptorResolver {
 	tb.Helper()
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -729,8 +730,8 @@ func TestContValue_ListRoundTrip_F53(t *testing.T) {
 func TestSortContinuation_ArrayAndStructSlots_F53(t *testing.T) {
 	t.Parallel()
 
-	flower := &gen.Flower{Type: proto.String("rose"), Color: gen.Color_RED.Enum()}
-	elem := &gen.Flower{Type: proto.String("lily"), Color: gen.Color_BLUE.Enum()}
+	flower := &demopb.Flower{Type: proto.String("rose"), Color: demopb.Color_RED.Enum()}
+	elem := &demopb.Flower{Type: proto.String("lily"), Color: demopb.Color_BLUE.Enum()}
 	names := []string{"FLOWER", "TAGS", "STRUCT_ARR", "PRICE"}
 	slots := []any{flower, []any{"a", "b"}, []any{elem}, int64(5)}
 	buf := []QueryResult{dorder(names, slots)}
@@ -755,7 +756,7 @@ func TestSortContinuation_ArrayAndStructSlots_F53(t *testing.T) {
 	}
 
 	// STRUCT slot: rebuilt as a proto message (a generated message encodes
-	// flag 0 and restores from the registry; concrete-type identity is pinned
+	// flag 0 and restores as the metadata's compiled type; identity is pinned
 	// separately in TestSortContinuation_GeneratedTypeIdentity_F54),
 	// field-for-field equal to the original.
 	gotFlower, ok := gotSlots[0].(proto.Message)
@@ -818,9 +819,8 @@ func TestSortContinuation_ArrayAndStructSlots_F53(t *testing.T) {
 // correct-or-loud half for FLAG-1 (dynamic) slots: a buffered dynamicpb
 // STRUCT slot decoded WITHOUT a descriptor resolver (nil — e.g. a store-less
 // unit path) is a LOUD error, never a silent placeholder or nil slot leaking
-// into the row domain. The no-resolver rejection applies to flag-1 ONLY: a
-// generated (flag-0) slot restores from protoregistry.GlobalTypes without any
-// resolver (pinned in TestSortContinuation_GeneratedTypeIdentity_F54). The
+// into the row domain. A flag-0 slot with no resolver is refused too
+// (TestSortContinuation_GeneratedTypeIdentity_F54). The
 // ghost here is a *dynamicpb.Message, so its tag-14 encoding carries flag 1
 // (pinned in TestContProtoMessage_RepresentationFlag_F55) — this test
 // meaningfully rejects a flag-1 token.
@@ -914,7 +914,7 @@ func TestSortContinuation_DynamicSchemaFallback_F54(t *testing.T) {
 func TestDecodeAggregateContinuation_ProtoPlaceholderRejected_F53(t *testing.T) {
 	t.Parallel()
 
-	flower := &gen.Flower{Type: proto.String("rose")}
+	flower := &demopb.Flower{Type: proto.String("rose")}
 	flowerVal := mustContValue(t, flower)
 	validOne := mustContValue(t, int64(1))
 
@@ -1019,21 +1019,21 @@ func TestContValue_RetiredJSONTagRejected_F53(t *testing.T) {
 
 // TestSortContinuation_GeneratedTypeIdentity_F54 pins that a buffered STRUCT
 // slot encoded from a GENERATED message (flag 0) restores with the SAME
-// concrete Go type a freshly-read row carries (*gen.Flower, not
+// concrete Go type a freshly-read row carries (*demopb.Flower, not
 // *dynamicpb.Message). The group/dedup keys (computeGroupKey, packedDedupKey,
 // mergeSortCursor.extractKey) fall back to %T:%v for composite slots, so a
 // restored slot with a different concrete type would NEVER key-match an equal
 // fresh row: equal rows straddling a checkpoint split into duplicate groups /
-// duplicate DISTINCT rows — wrong results, no error. A flag-0 slot resolves
-// via protoregistry.GlobalTypes ONLY — even when a metadata resolver is
-// present (which would hand back a dynamicpb message with a different %T);
-// the flag-1 (dynamicpb) inverse is pinned in
-// TestSortContinuation_DynamicMessageOfRegisteredType_F55.
+// duplicate DISTINCT rows — wrong results, no error. A flag-0 slot whose
+// metadata descriptor is the compiled one restores as the compiled type; the
+// flag-1 (dynamicpb) inverse is pinned in
+// TestSortContinuation_DynamicMessageOfRegisteredType_F55, a metadata that
+// only shares the name in TestContProtoMessage_GeneratedFlagDecodesWithMetadataDescriptor.
 func TestSortContinuation_GeneratedTypeIdentity_F54(t *testing.T) {
 	t.Parallel()
 
-	flower := &gen.Flower{Type: proto.String("rose"), Color: gen.Color_RED.Enum()}
-	elem := &gen.Flower{Type: proto.String("lily"), Color: gen.Color_BLUE.Enum()}
+	flower := &demopb.Flower{Type: proto.String("rose"), Color: demopb.Color_RED.Enum()}
+	elem := &demopb.Flower{Type: proto.String("lily"), Color: demopb.Color_BLUE.Enum()}
 	names := []string{"FLOWER", "STRUCT_ARR", "ID"}
 	slots := []any{flower, []any{elem}, int64(1)}
 	buf := []QueryResult{dorder(names, slots)}
@@ -1047,29 +1047,28 @@ func TestSortContinuation_GeneratedTypeIdentity_F54(t *testing.T) {
 		name    string
 		resolve func(t *testing.T) protoDescriptorResolver
 	}{
-		// The production path: a resolver is present, but a flag-0 (generated)
-		// slot must still rebuild from the registry (the resolver would hand
-		// back a dynamicpb message with a different %T).
+		// The production path: the demo metadata's Flower is the compiled one.
 		{"with metadata resolver", func(t *testing.T) protoDescriptorResolver { return demoMetadataResolver(t) }},
-		// A flag-0 (generated) slot needs NO resolver at all — the no-resolver
-		// rejection applies only to flag-1 (dynamicpb) slots.
-		{"nil resolver, registry alone", func(_ *testing.T) protoDescriptorResolver { return nil }},
+	}
+	// Without metadata nothing says the compiled Flower is the schema's.
+	if _, _, _, decErr := decodeSortContinuation(encoded, nil); decErr == nil {
+		t.Error("decode with no resolver rebuilt a generated struct slot")
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			_, got, _, decErr := decodeSortContinuation(encoded, tc.resolve(t))
 			if decErr != nil {
-				t.Fatalf("decode: %v (a registered struct type must restore from the registry)", decErr)
+				t.Fatalf("decode: %v (the metadata's compiled struct type must restore)", decErr)
 			}
 			if len(got) != 1 || got[0].Positional == nil {
 				t.Fatalf("decoded buf = %+v, want 1 positional row", got)
 			}
 			gotSlots := got[0].Positional.Slots
 
-			gotFlower, ok := gotSlots[0].(*gen.Flower)
+			gotFlower, ok := gotSlots[0].(*demopb.Flower)
 			if !ok {
-				t.Fatalf("slots[0] = %T, want *gen.Flower — a dynamicpb restore breaks %%T-keyed group/dedup identity across the checkpoint", gotSlots[0])
+				t.Fatalf("slots[0] = %T, want *demopb.Flower — a dynamicpb restore breaks %%T-keyed group/dedup identity across the checkpoint", gotSlots[0])
 			}
 			if !proto.Equal(gotFlower, flower) {
 				t.Errorf("slots[0] = %v, want %v", gotFlower, flower)
@@ -1079,9 +1078,9 @@ func TestSortContinuation_GeneratedTypeIdentity_F54(t *testing.T) {
 			if !ok || len(arr) != 1 {
 				t.Fatalf("slots[1] = %#v (%T), want a 1-element []any", gotSlots[1], gotSlots[1])
 			}
-			gotElem, ok := arr[0].(*gen.Flower)
+			gotElem, ok := arr[0].(*demopb.Flower)
 			if !ok {
-				t.Fatalf("slots[1][0] = %T, want *gen.Flower (identity must hold inside ARRAY-OF-STRUCT too)", arr[0])
+				t.Fatalf("slots[1][0] = %T, want *demopb.Flower (identity must hold inside ARRAY-OF-STRUCT too)", arr[0])
 			}
 			if !proto.Equal(gotElem, elem) {
 				t.Errorf("slots[1][0] = %v, want %v", gotElem, elem)
@@ -1114,7 +1113,7 @@ func TestContProtoMessage_RepresentationFlag_F55(t *testing.T) {
 	t.Parallel()
 
 	// Generated message → flag 0.
-	encGen := mustContValue(t, &gen.Flower{Type: proto.String("rose")})
+	encGen := mustContValue(t, &demopb.Flower{Type: proto.String("rose")})
 	if encGen[0] != contValProtoMsg || encGen[1] != 0 {
 		t.Errorf("generated message encodes [tag flag] = [%d %d], want [%d 0]", encGen[0], encGen[1], contValProtoMsg)
 	}
@@ -1128,7 +1127,7 @@ func TestContProtoMessage_RepresentationFlag_F55(t *testing.T) {
 
 	// A dynamicpb message over a REGISTERED descriptor → still flag 1: the
 	// name cannot pick the representation, only the concrete type can.
-	dyn := dynamicpb.NewMessage((&gen.Flower{}).ProtoReflect().Descriptor())
+	dyn := dynamicpb.NewMessage((&demopb.Flower{}).ProtoReflect().Descriptor())
 	encDyn := mustContValue(t, dyn)
 	if encDyn[0] != contValProtoMsg || encDyn[1] != 1 {
 		t.Errorf("dynamicpb-over-registered-descriptor encodes [tag flag] = [%d %d], want [%d 1]", encDyn[0], encDyn[1], contValProtoMsg)
@@ -1141,7 +1140,7 @@ func TestContProtoMessage_RepresentationFlag_F55(t *testing.T) {
 // type's full name IS registered in protoregistry.GlobalTypes. The restore
 // must rebuild the ENCODED representation (flag 1 → metadata resolver →
 // dynamicpb), NOT registry-first: a registry rebuild would hand back
-// *gen.Flower, and the %T-keyed group/dedup keys would never match an equal
+// *demopb.Flower, and the %T-keyed group/dedup keys would never match an equal
 // fresh dynamicpb row — equal rows straddling a checkpoint split into
 // duplicate groups / duplicate DISTINCT rows (wrong results, no error).
 func TestSortContinuation_DynamicMessageOfRegisteredType_F55(t *testing.T) {
@@ -1149,7 +1148,7 @@ func TestSortContinuation_DynamicMessageOfRegisteredType_F55(t *testing.T) {
 
 	// dynamicpb messages over the REGISTERED Flower descriptor — the shape a
 	// dynamic schema importing the compiled demo file materializes.
-	flowerDesc := (&gen.Flower{}).ProtoReflect().Descriptor()
+	flowerDesc := (&demopb.Flower{}).ProtoReflect().Descriptor()
 	newDynFlower := func(typ string) *dynamicpb.Message {
 		m := dynamicpb.NewMessage(flowerDesc)
 		m.Set(flowerDesc.Fields().ByName("type"), protoreflect.ValueOfString(typ))
@@ -1169,7 +1168,7 @@ func TestSortContinuation_DynamicMessageOfRegisteredType_F55(t *testing.T) {
 		t.Parallel()
 		// The demo metadata carries Flower, so the PRODUCTION resolver finds
 		// it — and the registry carries it too, so a registry-first decode
-		// would wrongly restore *gen.Flower.
+		// would wrongly restore *demopb.Flower.
 		_, got, _, decErr := decodeSortContinuation(encoded, demoMetadataResolver(t))
 		if decErr != nil {
 			t.Fatalf("decode: %v", decErr)
@@ -1227,15 +1226,12 @@ func TestSortContinuation_DynamicMessageOfRegisteredType_F55(t *testing.T) {
 	})
 }
 
-// TestResolvePendingProto_GeneratedUnregisteredNoFallback_F55 pins the flag-0
-// half of "never across representations": a flag-0 (generated) token whose
-// type name is NOT registered in this binary must fail LOUDLY even when the
-// metadata resolver COULD supply the descriptor — a resolver → dynamicpb
-// rebuild would restore a *dynamicpb.Message where the encoder saw a generated
-// message, recreating the representation split. (Unreachable from a genuine
-// encode — a generated value implies a registered type — so this is the
-// crafted/schema-drift arm.)
-func TestResolvePendingProto_GeneratedUnregisteredNoFallback_F55(t *testing.T) {
+// TestResolvePendingProto_GeneratedUnregisteredUsesMetadata_F55: a flag-0
+// (generated) token whose type the metadata does not have compiled (a crafted
+// token, or a schema changed between pages) rebuilds as dynamicpb over the
+// metadata's descriptor, the only form a fresh row of that metadata can take,
+// as Java parses it with the current descriptor.
+func TestResolvePendingProto_GeneratedUnregisteredUsesMetadata_F55(t *testing.T) {
 	t.Parallel()
 
 	ghost, md := unregisteredDynamicMessage(t)
@@ -1259,19 +1255,22 @@ func TestResolvePendingProto_GeneratedUnregisteredNoFallback_F55(t *testing.T) {
 	if len(rest) != 0 {
 		t.Fatalf("trailing bytes = %d, want 0", len(rest))
 	}
-	// A resolver that COULD resolve the name — resolution must not use it.
 	resolve := func(fullName string) (protoreflect.MessageDescriptor, error) {
 		if fullName != name {
 			return nil, fmt.Errorf("unexpected descriptor lookup %q", fullName)
 		}
 		return md, nil
 	}
-	_, rErr := resolvePendingProtoValues(v, resolve)
-	if rErr == nil {
-		t.Fatal("want error, got nil (a flag-0 token with an unregistered name must fail loudly, never fall back to the resolver + dynamicpb)")
+	got, rErr := resolvePendingProtoValues(v, resolve)
+	if rErr != nil {
+		t.Fatalf("resolve: %v", rErr)
 	}
-	if !strings.Contains(rErr.Error(), "not registered") {
-		t.Errorf("Error() = %q, want 'not registered' rejection", rErr)
+	dyn, ok := got.(*dynamicpb.Message)
+	if !ok || dyn.Descriptor() != md {
+		t.Fatalf("resolved %T, want *dynamicpb.Message over the metadata's descriptor", got)
+	}
+	if !proto.Equal(dyn, ghost) {
+		t.Errorf("resolved %v, want %v", dyn, ghost)
 	}
 }
 

@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -124,7 +126,7 @@ func TestIndexBlockLeaseReadsTheEnvClock(t *testing.T) {
 			db := NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(env)
 			sub := subspace.FromBytes(tuple.Tuple{"leaseseam", tc.name}.Pack())
 
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -142,7 +144,7 @@ func TestIndexBlockLeaseReadsTheEnvClock(t *testing.T) {
 					return nil, err
 				}
 				for i := int64(1); i <= 5; i++ {
-					if _, err := store.SaveRecord(&gen.Order{
+					if _, err := store.SaveRecord(&demopb.Order{
 						OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100)),
 					}); err != nil {
 						return nil, err
@@ -248,7 +250,7 @@ func TestBuildIndexTimeLimitUsesTheEnvClock(t *testing.T) {
 		db := NewFDBDatabaseWithBackend(&elapsedBuildBackend{BackendDatabase: simfdb.New(env), clock: clock}).SetEnv(env)
 		sub := subspace.FromBytes(tuple.Tuple{"timelimitseam", name}.Pack())
 
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -265,7 +267,7 @@ func TestBuildIndexTimeLimitUsesTheEnvClock(t *testing.T) {
 				return nil, err
 			}
 			for i := int64(1); i <= records; i++ {
-				if _, err := store.SaveRecord(&gen.Order{
+				if _, err := store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(i), Price: proto.Int32(int32(i)),
 				}); err != nil {
 					return nil, err
@@ -418,7 +420,7 @@ func TestScanTimeBudgetUsesTheEnvClock(t *testing.T) {
 		db := NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(env)
 		sub := subspace.FromBytes(tuple.Tuple{"scanbudget", name}.Pack())
 
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -433,7 +435,7 @@ func TestScanTimeBudgetUsesTheEnvClock(t *testing.T) {
 				return nil, err
 			}
 			for i := int64(1); i <= records; i++ {
-				if _, err := store.SaveRecord(&gen.Order{
+				if _, err := store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(i), Price: proto.Int32(int32(i)),
 				}); err != nil {
 					return nil, err

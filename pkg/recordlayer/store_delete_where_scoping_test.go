@@ -3,7 +3,7 @@ package recordlayer
 import (
 	"context"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
@@ -37,7 +37,7 @@ var _ = Describe("DeleteRecordsWhere index scoping", func() {
 		// PK = (quantity, order_id); index on price alone. A prefix on quantity
 		// says nothing about where the price entries live.
 		idx := NewIndex("order$price", Field("price"))
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Concat(Field("quantity"), Field("order_id")))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -53,7 +53,7 @@ var _ = Describe("DeleteRecordsWhere index scoping", func() {
 			for _, o := range []struct{ id, qty, price int64 }{
 				{1, 7, 100}, {2, 7, 200}, {3, 8, 300},
 			} {
-				_, e := store.SaveRecord(&gen.Order{
+				_, e := store.SaveRecord(&demopb.Order{
 					OrderId:  proto.Int64(o.id),
 					Quantity: proto.Int32(int32(o.qty)),
 					Price:    proto.Int32(int32(o.price)),
@@ -89,7 +89,7 @@ var _ = Describe("DeleteRecordsWhere index scoping", func() {
 		// Java asks CanDeleteWhere of every maintainer in the deleter's
 		// constructor, before a single range is touched.
 		textIdx := NewTextIndex("customer$name_text", Field("name"))
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("name"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -102,7 +102,7 @@ var _ = Describe("DeleteRecordsWhere index scoping", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(serr).NotTo(HaveOccurred())
 
-			_, e := store.SaveRecord(&gen.Customer{
+			_, e := store.SaveRecord(&demopb.Customer{
 				CustomerId: proto.Int64(1), Name: proto.String("hello world"),
 			})
 			Expect(e).NotTo(HaveOccurred())
@@ -149,7 +149,7 @@ var _ = Describe("DeleteRecordsWhere index scoping", func() {
 		// records go, and the sum keeps adding them. (A COUNT has no grouped
 		// column: Java's validator refuses one.)
 		countIdx := NewSumIndex("order$sum_by_qty", GroupBy(Field("price"), Field("quantity")))
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(
 			Concat(Field("quantity"), Field("price"), Field("order_id")))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
@@ -164,7 +164,7 @@ var _ = Describe("DeleteRecordsWhere index scoping", func() {
 			Expect(serr).NotTo(HaveOccurred())
 
 			for _, o := range []struct{ id, qty, price int64 }{{1, 7, 10}, {2, 7, 20}} {
-				_, e := store.SaveRecord(&gen.Order{
+				_, e := store.SaveRecord(&demopb.Order{
 					OrderId:  proto.Int64(o.id),
 					Quantity: proto.Int32(int32(o.qty)),
 					Price:    proto.Int32(int32(o.price)),
@@ -203,7 +203,7 @@ var _ = Describe("DeleteRecordsWhere index scoping", func() {
 		// BY_GROUP scan keeps answering with the extremum of deleted records.
 		permIdx := NewPermutedMaxIndex("order$permuted_max",
 			GroupBy(Field("order_id"), Concat(Field("quantity"), Field("price"))), 1)
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(
 			Concat(Field("quantity"), Field("price"), Field("order_id")))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
@@ -218,7 +218,7 @@ var _ = Describe("DeleteRecordsWhere index scoping", func() {
 			Expect(serr).NotTo(HaveOccurred())
 
 			for _, o := range []struct{ id, qty, price int64 }{{1, 7, 10}, {2, 7, 20}} {
-				_, e := store.SaveRecord(&gen.Order{
+				_, e := store.SaveRecord(&demopb.Order{
 					OrderId:  proto.Int64(o.id),
 					Quantity: proto.Int32(int32(o.qty)),
 					Price:    proto.Int32(int32(o.price)),
@@ -253,7 +253,7 @@ var _ = Describe("DeleteRecordsWhere index scoping", func() {
 		// Index leads with the same column the prefix names, so the clear can
 		// be scoped to exactly the deleted records.
 		idx := NewIndex("order$qtyPrice", Concat(Field("quantity"), Field("price")))
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Concat(Field("quantity"), Field("order_id")))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -269,7 +269,7 @@ var _ = Describe("DeleteRecordsWhere index scoping", func() {
 			for _, o := range []struct{ id, qty, price int64 }{
 				{1, 7, 100}, {2, 7, 200}, {3, 8, 300},
 			} {
-				_, e := store.SaveRecord(&gen.Order{
+				_, e := store.SaveRecord(&demopb.Order{
 					OrderId:  proto.Int64(o.id),
 					Quantity: proto.Int32(int32(o.qty)),
 					Price:    proto.Int32(int32(o.price)),
@@ -301,7 +301,7 @@ var _ = Describe("DeleteRecordsWhere index scoping", func() {
 		// This is Java's `indexMatcher == null` arm, and it is the ONLY case in
 		// which a whole-index clear is correct.
 		idx := NewIndex("order$priceOnly", Field("price"))
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Concat(RecordTypeKey(), Field("order_id")))
 		builder.GetRecordType("Customer").SetPrimaryKey(Concat(RecordTypeKey(), Field("customer_id")))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Concat(RecordTypeKey(), Field("id")))
@@ -315,7 +315,7 @@ var _ = Describe("DeleteRecordsWhere index scoping", func() {
 			Expect(serr).NotTo(HaveOccurred())
 
 			for _, o := range []struct{ id, price int64 }{{1, 100}, {2, 200}} {
-				_, e := store.SaveRecord(&gen.Order{
+				_, e := store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(o.id), Price: proto.Int32(int32(o.price)),
 				})
 				Expect(e).NotTo(HaveOccurred())
@@ -350,7 +350,7 @@ var _ = Describe("DeleteRecordsWhere index scoping", func() {
 
 		countIdx := NewCountNotNullIndex("order$count_all",
 			Ungrouped(Concat(RecordTypeKey(), Field("price"))))
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(
 			Concat(RecordTypeKey(), Field("order_id")))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
@@ -367,7 +367,7 @@ var _ = Describe("DeleteRecordsWhere index scoping", func() {
 			rt := md.GetRecordType("Order")
 			Expect(rt).NotTo(BeNil())
 			for _, id := range []int64{1, 2, 3} {
-				_, e := store.SaveRecord(&gen.Order{
+				_, e := store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(id), Price: proto.Int32(int32(10 * id)),
 				})
 				Expect(e).NotTo(HaveOccurred())
@@ -400,7 +400,7 @@ var _ = Describe("DeleteRecordsWhere index scoping", func() {
 		ks := specSubspace()
 
 		rankIdx := NewRankIndex("order$rank_by_qty", GroupBy(Field("price"), Field("quantity")))
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(
 			Concat(Field("quantity"), Field("price"), Field("order_id")))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
@@ -415,7 +415,7 @@ var _ = Describe("DeleteRecordsWhere index scoping", func() {
 			Expect(serr).NotTo(HaveOccurred())
 
 			for _, o := range []struct{ id, qty, price int64 }{{1, 7, 10}, {2, 7, 20}} {
-				_, e := store.SaveRecord(&gen.Order{
+				_, e := store.SaveRecord(&demopb.Order{
 					OrderId:  proto.Int64(o.id),
 					Quantity: proto.Int32(int32(o.qty)),
 					Price:    proto.Int32(int32(o.price)),
@@ -466,7 +466,7 @@ var _ = Describe("DeleteRecordsWhere index scoping", func() {
 		ks := specSubspace()
 
 		textIdx := NewTextIndex("customer$name_by_price", GroupBy(Field("name"), Field("price")))
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		// The primary key repeats the index root's columns so that a
 		// two-column prefix ALIGNS; otherwise the store's positional check
@@ -489,7 +489,7 @@ var _ = Describe("DeleteRecordsWhere index scoping", func() {
 			}{
 				{1, 10, "hello world"}, {2, 10, "goodbye world"}, {3, 20, "hello again"},
 			} {
-				_, e := store.SaveRecord(&gen.Customer{
+				_, e := store.SaveRecord(&demopb.Customer{
 					CustomerId: proto.Int64(c.id),
 					Price:      proto.Int32(int32(c.price)),
 					Name:       proto.String(c.name),
@@ -527,7 +527,7 @@ var _ = Describe("DeleteRecordsWhere index scoping", func() {
 		ks := specSubspace()
 
 		textIdx := NewTextIndex("customer$name_versions", GroupBy(Field("name"), Field("price")))
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(
 			Concat(Field("price"), Field("customer_id")))
@@ -564,7 +564,7 @@ var _ = Describe("DeleteRecordsWhere index scoping", func() {
 				id, price int64
 				name      string
 			}{{1, 10, "hello world"}, {2, 20, "goodbye world"}} {
-				_, e := store.SaveRecord(&gen.Customer{
+				_, e := store.SaveRecord(&demopb.Customer{
 					CustomerId: proto.Int64(c.id),
 					Price:      proto.Int32(int32(c.price)),
 					Name:       proto.String(c.name),
@@ -606,7 +606,7 @@ var _ = Describe("DeleteRecordsWhere index scoping", func() {
 		ks := specSubspace()
 
 		textIdx := NewTextIndex("customer$name_whole", Field("name"))
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(
 			Concat(RecordTypeKey(), Field("customer_id")))
@@ -632,7 +632,7 @@ var _ = Describe("DeleteRecordsWhere index scoping", func() {
 			rt := md.GetRecordType("Customer")
 			Expect(rt).NotTo(BeNil())
 			for _, id := range []int64{1, 2} {
-				_, e := store.SaveRecord(&gen.Customer{
+				_, e := store.SaveRecord(&demopb.Customer{
 					CustomerId: proto.Int64(id), Name: proto.String("hello world"),
 				})
 				Expect(e).NotTo(HaveOccurred())

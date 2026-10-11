@@ -20,6 +20,7 @@ go_test(
     deps = [
         "//cmd/frl/gen/frl/config/v1:config",
         "//gen",
+        "//gen/demopb",
         "//pkg/recordlayer",
         "@org_golang_google_protobuf//proto",
     ],

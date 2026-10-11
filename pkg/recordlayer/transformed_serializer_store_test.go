@@ -11,6 +11,8 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -34,7 +36,7 @@ var _ = Describe("A store writing through TransformedRecordSerializer", func() {
 		return s
 	}
 	metaData := func() *RecordMetaData {
-		b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto).SetSplitLongRecords(true)
+		b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto).SetSplitLongRecords(true)
 		b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -71,8 +73,8 @@ var _ = Describe("A store writing through TransformedRecordSerializer", func() {
 		Expect(err).NotTo(HaveOccurred())
 		return out
 	}
-	order := func(id int64, tags ...string) *gen.Order {
-		return &gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(int32(id)), Tags: tags} //nolint:gosec
+	order := func(id int64, tags ...string) *demopb.Order {
+		return &demopb.Order{OrderId: proto.Int64(id), Price: proto.Int32(int32(id)), Tags: tags} //nolint:gosec
 	}
 
 	It("refuses to overwrite or delete a record it cannot read, on every write path", func() {
@@ -165,7 +167,7 @@ var _ = Describe("A store writing through TransformedRecordSerializer", func() {
 
 	It("keeps the serializer on a copied builder and builds an index through the store's", func() {
 		ss, key := specSubspace(), newKey()
-		mb := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		mb := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		mb.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		mb.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		mb.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -229,7 +231,7 @@ var _ = Describe("A store writing through TransformedRecordSerializer", func() {
 	// copy of the configuration, so a later subspace is the one every part of
 	// the store is opened in.
 	It("opens the indexer's stores as its template: the format version, the database, a later subspace", func() {
-		mb := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		mb := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		mb.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		mb.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		mb.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -368,14 +370,14 @@ var _ = Describe("A store writing through TransformedRecordSerializer", func() {
 		ks, md := specSubspace(), metaData()
 		for i, path := range []struct {
 			name  string
-			write func(*FDBRecordStore, *gen.Order) error
+			write func(*FDBRecordStore, *demopb.Order) error
 		}{
-			{"SaveRecord", func(s *FDBRecordStore, o *gen.Order) error { _, err := s.SaveRecord(o); return err }},
-			{"DryRunSaveRecord", func(s *FDBRecordStore, o *gen.Order) error {
+			{"SaveRecord", func(s *FDBRecordStore, o *demopb.Order) error { _, err := s.SaveRecord(o); return err }},
+			{"DryRunSaveRecord", func(s *FDBRecordStore, o *demopb.Order) error {
 				_, err := s.DryRunSaveRecord(o, RecordExistenceCheckNone)
 				return err
 			}},
-			{"SaveRecordBatch", func(s *FDBRecordStore, o *gen.Order) error {
+			{"SaveRecordBatch", func(s *FDBRecordStore, o *demopb.Order) error {
 				_, err := s.SaveRecordBatch([]proto.Message{o})
 				return err
 			}},

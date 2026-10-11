@@ -12,6 +12,8 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
@@ -45,7 +47,7 @@ var _ = Describe("IndexMaintenanceFilter", func() {
 	ctx := context.Background()
 
 	build := func(add func(*RecordMetaDataBuilder)) *RecordMetaData {
-		b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -89,8 +91,8 @@ var _ = Describe("IndexMaintenanceFilter", func() {
 		})).To(Succeed())
 		return keys
 	}
-	order := func(id int64, price, quantity int32) *gen.Order {
-		return &gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(price), Quantity: proto.Int32(quantity)}
+	order := func(id int64, price, quantity int32) *demopb.Order {
+		return &demopb.Order{OrderId: proto.Int64(id), Price: proto.Int32(price), Quantity: proto.Int32(quantity)}
 	}
 
 	It("defaults to NORMAL, which a store and its builders report", func() {
@@ -114,7 +116,7 @@ var _ = Describe("IndexMaintenanceFilter", func() {
 		})
 		filter := &recordingFilter{values: IndexValuesSome, drop: int64(7)}
 		Expect(run(md, filter, func(store *FDBRecordStore, _ *FDBRecordContext) error {
-			for _, o := range []*gen.Order{order(1, 7, 1), order(2, 8, 2)} {
+			for _, o := range []*demopb.Order{order(1, 7, 1), order(2, 8, 2)} {
 				if _, err := store.SaveRecord(o); err != nil {
 					return err
 				}
@@ -166,7 +168,7 @@ var _ = Describe("IndexMaintenanceFilter", func() {
 		})
 		filter := &recordingFilter{values: IndexValuesSome, drop: int64(7)}
 		Expect(run(md, filter, func(store *FDBRecordStore, _ *FDBRecordContext) error {
-			for _, o := range []*gen.Order{order(1, 10, 7), order(2, 20, 8), order(3, 30, 8)} {
+			for _, o := range []*demopb.Order{order(1, 10, 7), order(2, 20, 8), order(3, 30, 8)} {
 				if _, err := store.SaveRecord(o); err != nil {
 					return err
 				}
@@ -211,7 +213,7 @@ var _ = Describe("IndexMaintenanceFilter", func() {
 			if err != nil {
 				return nil, err
 			}
-			for _, o := range []*gen.Order{order(1, 7, 1), order(2, 8, 1), order(3, 7, 1)} {
+			for _, o := range []*demopb.Order{order(1, 7, 1), order(2, 8, 1), order(3, 7, 1)} {
 				if _, err := store.SaveRecord(o); err != nil {
 					return nil, err
 				}
@@ -251,7 +253,7 @@ var _ = Describe("A non-idempotent index under a BY_INDEX build", func() {
 	It("applies a write where the record's source index key is built", func() {
 		source := NewIndex("Order$price", Field("price"))
 		count := NewCountIndex("count_by_qty", GroupAll(Field("quantity")))
-		b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -299,27 +301,27 @@ var _ = Describe("A non-idempotent index under a BY_INDEX build", func() {
 		// Source key (10, 1000) is built, though primary key (1000) sorts after
 		// (50); source key (90, 1) is not, though primary key (1) sorts before.
 		step(func(store *FDBRecordStore, _ *FDBRecordContext) error {
-			if _, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(1000), Price: proto.Int32(10), Quantity: proto.Int32(3)}); err != nil {
+			if _, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1000), Price: proto.Int32(10), Quantity: proto.Int32(3)}); err != nil {
 				return err
 			}
-			_, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(90), Quantity: proto.Int32(3)})
+			_, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(90), Quantity: proto.Int32(3)})
 			return err
 		})
 		Expect(countOf(3)).To(Equal(int64(1)))
 		// An update whose source key leaves the built range: the removal
 		// applies, the insertion does not.
 		step(func(store *FDBRecordStore, _ *FDBRecordContext) error {
-			_, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(1000), Price: proto.Int32(95), Quantity: proto.Int32(4)})
+			_, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1000), Price: proto.Int32(95), Quantity: proto.Int32(4)})
 			return err
 		})
 		Expect(countOf(3)).To(Equal(int64(0)))
 		Expect(countOf(4)).To(Equal(int64(0)))
 		// An update whose source key stays in the built range applies whole.
 		step(func(store *FDBRecordStore, _ *FDBRecordContext) error {
-			if _, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(7), Price: proto.Int32(20), Quantity: proto.Int32(5)}); err != nil {
+			if _, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(7), Price: proto.Int32(20), Quantity: proto.Int32(5)}); err != nil {
 				return err
 			}
-			_, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(7), Price: proto.Int32(20), Quantity: proto.Int32(6)})
+			_, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(7), Price: proto.Int32(20), Quantity: proto.Int32(6)})
 			return err
 		})
 		Expect(countOf(5)).To(Equal(int64(0)))
@@ -328,7 +330,7 @@ var _ = Describe("A non-idempotent index under a BY_INDEX build", func() {
 
 	It("refuses a stamp of a method it cannot place a write under", func() {
 		count := NewCountIndex("count_by_qty", GroupAll(Field("quantity")))
-		b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -346,7 +348,7 @@ var _ = Describe("A non-idempotent index under a BY_INDEX build", func() {
 			if err := store.SaveIndexingTypeStamp(count, &gen.IndexBuildIndexingStamp{Method: gen.IndexBuildIndexingStamp_SCRUB_REPAIR.Enum()}); err != nil {
 				return nil, err
 			}
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Quantity: proto.Int32(3)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Quantity: proto.Int32(3)})
 			return nil, err
 		})
 		var rc *RecordCoreError

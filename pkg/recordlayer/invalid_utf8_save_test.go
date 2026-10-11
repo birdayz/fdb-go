@@ -10,7 +10,7 @@ import (
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -25,7 +25,7 @@ var _ = Describe("A string that is not valid UTF-8", func() {
 	ctx := context.Background()
 	const invalid = "ok\xffno"
 	metaData := func() *RecordMetaData {
-		b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -68,17 +68,17 @@ var _ = Describe("A string that is not valid UTF-8", func() {
 		ss := specSubspace()
 		_, err := sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
 			s := open(rc, md, ss)
-			_, err := s.SaveRecord(&gen.TypedRecord{Id: proto.Int64(1), ValString: proto.String(invalid)})
+			_, err := s.SaveRecord(&demopb.TypedRecord{Id: proto.Int64(1), ValString: proto.String(invalid)})
 			refused(err, "val_string")
-			_, err = s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Tags: []string{"a", invalid}})
+			_, err = s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Tags: []string{"a", invalid}})
 			refused(err, "tags")
-			_, err = s.DryRunSaveRecord(&gen.TypedRecord{Id: proto.Int64(2), ValString: proto.String(invalid)}, RecordExistenceCheckNone)
+			_, err = s.DryRunSaveRecord(&demopb.TypedRecord{Id: proto.Int64(2), ValString: proto.String(invalid)}, RecordExistenceCheckNone)
 			refused(err, "val_string")
 			// The bad record is last: the valid ones before it are not written either.
 			_, err = s.SaveRecordBatch([]proto.Message{
-				&gen.TypedRecord{Id: proto.Int64(3), ValString: proto.String("fine")},
-				&gen.Order{OrderId: proto.Int64(4)},
-				&gen.TypedRecord{Id: proto.Int64(5), ValString: proto.String(invalid)},
+				&demopb.TypedRecord{Id: proto.Int64(3), ValString: proto.String("fine")},
+				&demopb.Order{OrderId: proto.Int64(4)},
+				&demopb.TypedRecord{Id: proto.Int64(5), ValString: proto.String(invalid)},
 			})
 			refused(err, "val_string")
 			return nil, nil
@@ -93,12 +93,12 @@ var _ = Describe("A string that is not valid UTF-8", func() {
 		// Store a record whose bytes the save would refuse, as an older Go writer did.
 		_, err := sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
 			s := open(rc, md, ss)
-			_, err := s.SaveRecord(&gen.TypedRecord{Id: proto.Int64(1), ValString: proto.String("placeholder"), Price: proto.Int32(1)})
+			_, err := s.SaveRecord(&demopb.TypedRecord{Id: proto.Int64(1), ValString: proto.String("placeholder"), Price: proto.Int32(1)})
 			if err != nil {
 				return nil, err
 			}
 			rt := md.GetRecordType("TypedRecord")
-			inner, err := proto.Marshal(&gen.TypedRecord{Id: proto.Int64(1), ValString: proto.String(invalid), Price: proto.Int32(1)})
+			inner, err := proto.Marshal(&demopb.TypedRecord{Id: proto.Int64(1), ValString: proto.String(invalid), Price: proto.Int32(1)})
 			if err != nil {
 				return nil, err
 			}
@@ -112,7 +112,7 @@ var _ = Describe("A string that is not valid UTF-8", func() {
 			s := open(rc, md, ss)
 			loaded, err := s.LoadRecord(tuple.Tuple{int64(1)})
 			Expect(err).NotTo(HaveOccurred())
-			held := loaded.Record.(*gen.TypedRecord)
+			held := loaded.Record.(*demopb.TypedRecord)
 			Expect(held.GetValString()).To(Equal(invalid))
 
 			held.Price = proto.Int32(2)

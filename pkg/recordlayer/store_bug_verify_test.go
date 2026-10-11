@@ -8,7 +8,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 )
 
 var _ = Describe("StoreBugVerify", func() {
@@ -20,7 +20,7 @@ var _ = Describe("StoreBugVerify", func() {
 			ctx := context.Background()
 			ss := specSubspace()
 
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -35,7 +35,7 @@ var _ = Describe("StoreBugVerify", func() {
 				if err != nil {
 					return nil, err
 				}
-				_, err = store.SaveRecord(&gen.Order{OrderId: intPtr(1), Price: int32Ptr(42)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: intPtr(1), Price: int32Ptr(42)})
 				return nil, err
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -49,7 +49,7 @@ var _ = Describe("StoreBugVerify", func() {
 					return nil, err
 				}
 				_, err = store.SaveRecordWithOptions(
-					&gen.Customer{CustomerId: intPtr(1), Name: strPtr("Alice")},
+					&demopb.Customer{CustomerId: intPtr(1), Name: strPtr("Alice")},
 					RecordExistenceCheckErrorIfTypeChanged,
 				)
 				return nil, err
@@ -72,7 +72,7 @@ var _ = Describe("StoreBugVerify", func() {
 			ctx := context.Background()
 			ss := specSubspace()
 
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -88,7 +88,7 @@ var _ = Describe("StoreBugVerify", func() {
 				if err != nil {
 					return nil, err
 				}
-				_, err = store.SaveRecord(&gen.Order{OrderId: intPtr(1), Price: int32Ptr(42)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: intPtr(1), Price: int32Ptr(42)})
 				return nil, err
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -130,7 +130,7 @@ var _ = Describe("StoreBugVerify", func() {
 
 			priceIdx := NewIndex("Order$price", Field("price"))
 
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -146,7 +146,7 @@ var _ = Describe("StoreBugVerify", func() {
 				if err != nil {
 					return nil, err
 				}
-				_, err = store.SaveRecord(&gen.Order{OrderId: intPtr(1), Price: int32Ptr(99)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: intPtr(1), Price: int32Ptr(99)})
 				return nil, err
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -190,7 +190,7 @@ var _ = Describe("StoreBugVerify", func() {
 			ctx := context.Background()
 			ss := specSubspace()
 
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -208,7 +208,7 @@ var _ = Describe("StoreBugVerify", func() {
 				}
 				for i := int64(1); i <= 5; i++ {
 					id := i // avoid closure capture
-					_, err := store.SaveRecord(&gen.Order{OrderId: &id, Price: int32Ptr(int32(i * 10))})
+					_, err := store.SaveRecord(&demopb.Order{OrderId: &id, Price: int32Ptr(int32(i * 10))})
 					if err != nil {
 						return nil, err
 					}
@@ -246,7 +246,7 @@ var _ = Describe("StoreBugVerify", func() {
 			ctx := context.Background()
 			ss := specSubspace()
 
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -263,7 +263,7 @@ var _ = Describe("StoreBugVerify", func() {
 				}
 				for _, id := range []int64{1, 2, 3} {
 					oid := id // avoid closure capture
-					_, err := store.SaveRecord(&gen.Order{OrderId: &oid, Price: int32Ptr(int32(id * 10))})
+					_, err := store.SaveRecord(&demopb.Order{OrderId: &oid, Price: int32Ptr(int32(id * 10))})
 					if err != nil {
 						return nil, err
 					}
@@ -291,7 +291,7 @@ var _ = Describe("StoreBugVerify", func() {
 				Expect(records).To(HaveLen(2), "exclusive low should exclude the boundary record")
 				// Verify the returned records are 2 and 3, not 1.
 				for _, rec := range records {
-					order := rec.Record.(*gen.Order)
+					order := rec.Record.(*demopb.Order)
 					Expect(order.GetOrderId()).To(BeNumerically(">=", 2))
 				}
 				return nil, nil

@@ -5,23 +5,23 @@ import (
 	"fmt"
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 // helper: get the Order message descriptor from the demo proto.
 func orderDescriptor() protoreflect.MessageDescriptor {
-	return gen.File_record_layer_demo_proto.Messages().ByName("Order")
+	return demopb.File_record_layer_demo_proto.Messages().ByName("Order")
 }
 
 // helper: get the Customer message descriptor from the demo proto.
 func customerDescriptor() protoreflect.MessageDescriptor {
-	return gen.File_record_layer_demo_proto.Messages().ByName("Customer")
+	return demopb.File_record_layer_demo_proto.Messages().ByName("Customer")
 }
 
 // helper: build a RecordMetaDataBuilder pre-populated with record types and primary keys.
 func baseBuilder() *RecordMetaDataBuilder {
-	b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -492,7 +492,7 @@ func TestBuild_NoRecordTypes(t *testing.T) {
 
 func TestBuild_PrimaryKeyReferencingNonExistentField(t *testing.T) {
 	t.Parallel()
-	b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	b.GetRecordType("Order").SetPrimaryKey(Field("nonexistent_field"))
 	b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -548,7 +548,7 @@ func TestBuild_ValidMetadataBuildsSuccessfully(t *testing.T) {
 
 func TestBuild_PrimaryKeyNil(t *testing.T) {
 	t.Parallel()
-	b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	// Don't set primary key for Order
 	b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -559,7 +559,7 @@ func TestBuild_PrimaryKeyNil(t *testing.T) {
 
 func TestBuild_PrimaryKeyWithDuplicates(t *testing.T) {
 	t.Parallel()
-	b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	// FanOut on PK → should fail (creates duplicates)
 	b.GetRecordType("Order").SetPrimaryKey(FanOut("tags"))
 	b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
@@ -571,7 +571,7 @@ func TestBuild_PrimaryKeyWithDuplicates(t *testing.T) {
 
 func TestBuild_PrimaryKeyEmptyColumnSize(t *testing.T) {
 	t.Parallel()
-	b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	// EmptyKey has ColumnSize() == 0 → should fail
 	b.GetRecordType("Order").SetPrimaryKey(EmptyKey())
 	b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
@@ -609,7 +609,7 @@ func TestBuild_IndexWithNestIsValid(t *testing.T) {
 
 func TestBuild_CompositePrimaryKey(t *testing.T) {
 	t.Parallel()
-	b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	b.GetRecordType("Order").SetPrimaryKey(Concat(Field("order_id"), Field("price")))
 	b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -623,7 +623,7 @@ func TestBuild_CompositePrimaryKey(t *testing.T) {
 
 func TestBuild_RecordTypeKeyInPrimaryKey(t *testing.T) {
 	t.Parallel()
-	b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	b.GetRecordType("Order").SetPrimaryKey(Concat(RecordTypeKey(), Field("order_id")))
 	b.GetRecordType("Customer").SetPrimaryKey(Concat(RecordTypeKey(), Field("customer_id")))
 	b.GetRecordType("TypedRecord").SetPrimaryKey(Concat(RecordTypeKey(), Field("id")))

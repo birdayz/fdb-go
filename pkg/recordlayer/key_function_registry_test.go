@@ -6,7 +6,7 @@ import (
 	"sort"
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 )
 
 // TestKeyFunctionRegistry_BuiltInsAreTheTargetsCore pins the names this
@@ -48,7 +48,7 @@ func TestKeyFunctionRegistry_BuildRefusesWhatCreateRefuses(t *testing.T) {
 		{CardinalityExpr(Concat(Field("price"), Field("quantity"))), "Invalid number of arguments provided to function"},
 		{Concat(Field("order_id"), FunctionExpr("bitnot", Concat(Field("price"), Field("quantity")))), "Invalid number of arguments provided to function"},
 	} {
-		b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -62,7 +62,7 @@ func TestKeyFunctionRegistry_BuildRefusesWhatCreateRefuses(t *testing.T) {
 	// The earlier of two refusals is the one returned: a Then of one child
 	// built before the function.
 	one := Concat(Field("price"))
-	b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))

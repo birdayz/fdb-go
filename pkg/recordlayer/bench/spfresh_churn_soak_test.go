@@ -13,7 +13,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 )
@@ -60,7 +60,7 @@ func TestSPFreshChurnSoak(t *testing.T) {
 	spfIdx.Options = map[string]string{
 		recordlayer.IndexOptionSPFreshNumDimensions: "128",
 	}
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -94,7 +94,7 @@ func TestSPFreshChurnSoak(t *testing.T) {
 				return nil, serr
 			}
 			for i := lo; i < hi; i++ {
-				if _, serr := store.SaveRecord(&gen.Order{
+				if _, serr := store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(int64(i)), VectorData: vectorindex.SerializeVector(baseF64[i]),
 				}); serr != nil {
 					return nil, serr
@@ -253,7 +253,7 @@ func TestSPFreshChurnSoak(t *testing.T) {
 					return nil, serr
 				}
 				for _, id := range ids[lo:hi] {
-					if _, serr := store.SaveRecord(&gen.Order{
+					if _, serr := store.SaveRecord(&demopb.Order{
 						OrderId: proto.Int64(id), VectorData: vectorindex.SerializeVector(reinserts[id]),
 					}); serr != nil {
 						return nil, serr

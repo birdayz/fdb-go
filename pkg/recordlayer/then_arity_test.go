@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 )
 
 // TestThenOfFewerThanTwoChildrenIsRefusedWhereJavaThrows pins Java's refusal of
@@ -19,7 +19,7 @@ func TestThenOfFewerThanTwoChildrenIsRefusedWhereJavaThrows(t *testing.T) {
 
 	const want = "Then must have at least 2 children"
 	base := func() *RecordMetaDataBuilder {
-		b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -131,7 +131,7 @@ func TestThenOfFewerThanTwoChildrenIsRefusedWhereJavaThrows(t *testing.T) {
 // not added.
 func TestAddMultiTypeIndexResolvesItsRecordTypesFirst(t *testing.T) {
 	t.Parallel()
-	b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -143,7 +143,7 @@ func TestAddMultiTypeIndexResolvesItsRecordTypesFirst(t *testing.T) {
 		t.Fatalf("Build = %v (%T), want the unknown record type, not the duplicate", err, err)
 	}
 
-	b = NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b = NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -161,7 +161,7 @@ func TestAddMultiTypeIndexResolvesItsRecordTypesFirst(t *testing.T) {
 func TestTextIndexWithAnEmptyTokenizerNameIsRefused(t *testing.T) {
 	t.Parallel()
 	build := func(options map[string]string) error {
-		b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))

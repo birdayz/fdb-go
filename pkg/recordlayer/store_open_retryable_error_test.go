@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -32,7 +32,7 @@ import (
 var _ = Describe("StoreOpen_RetryableReadError", func() {
 	ctx := context.Background()
 
-	metaBuilder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	metaBuilder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	metaBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	metaBuilder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	metaBuilder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))

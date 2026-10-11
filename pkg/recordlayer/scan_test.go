@@ -3,7 +3,7 @@ package recordlayer
 import (
 	"context"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
@@ -14,7 +14,7 @@ var _ = Describe("BasicScan", func() {
 		ctx := context.Background()
 
 		// Create metadata
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -32,21 +32,21 @@ var _ = Describe("BasicScan", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Save some test orders
-			testOrders := []*gen.Order{
+			testOrders := []*demopb.Order{
 				{
 					OrderId: proto.Int64(1001),
 					Price:   proto.Int32(25),
-					Flower:  &gen.Flower{Type: proto.String("Rose"), Color: gen.Color_RED.Enum()},
+					Flower:  &demopb.Flower{Type: proto.String("Rose"), Color: demopb.Color_RED.Enum()},
 				},
 				{
 					OrderId: proto.Int64(1002),
 					Price:   proto.Int32(30),
-					Flower:  &gen.Flower{Type: proto.String("Tulip"), Color: gen.Color_YELLOW.Enum()},
+					Flower:  &demopb.Flower{Type: proto.String("Tulip"), Color: demopb.Color_YELLOW.Enum()},
 				},
 				{
 					OrderId: proto.Int64(1003),
 					Price:   proto.Int32(35),
-					Flower:  &gen.Flower{Type: proto.String("Lily"), Color: gen.Color_BLUE.Enum()},
+					Flower:  &demopb.Flower{Type: proto.String("Lily"), Color: demopb.Color_BLUE.Enum()},
 				},
 			}
 
@@ -72,7 +72,7 @@ var _ = Describe("BasicScan", func() {
 				}
 
 				record := result.GetValue()
-				order, ok := record.Record.(*gen.Order)
+				order, ok := record.Record.(*demopb.Order)
 				Expect(ok).To(BeTrue())
 
 				foundOrders = append(foundOrders, *order.OrderId)

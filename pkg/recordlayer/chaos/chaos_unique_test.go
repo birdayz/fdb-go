@@ -7,7 +7,7 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
 )
 
@@ -15,7 +15,7 @@ import (
 // This means no two orders can share the same price.
 func buildUniqueIndexMetadata() *recordlayer.RecordMetaData {
 	builder := recordlayer.NewRecordMetaDataBuilder()
-	builder.SetRecords(gen.File_record_layer_demo_proto)
+	builder.SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -35,17 +35,17 @@ func TestUniqueIndexBasicVerify(t *testing.T) {
 	md := buildUniqueIndexMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 	s.Verify()
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
 	s.Verify()
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(300)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(300)})
 	s.Verify()
 
 	// Overwrite record 1 with a different (still unique) price
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(150)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(150)})
 	s.Verify()
 }
 
@@ -59,7 +59,7 @@ func TestUniqueIndexCommitUnknown(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 	s.Verify() // Must not have false uniqueness violation. COUNT must be 1.
 }
 
@@ -74,12 +74,12 @@ func TestUniqueIndexOverwriteCommitUnknown(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 
 	// Initial save: price=100
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 	s.Verify()
 
 	// Overwrite to price=200 under commit-unknown
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)})
 	s.Verify() // Index entry should be (200, pk=1), old (100, pk=1) should be gone.
 }
 
@@ -93,17 +93,17 @@ func TestUniqueIndexSwapPricesCommitUnknown(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 
 	// Save A with price=100
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 	s.Verify()
 
 	// Change A to price=200 (under commit-unknown)
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)})
 	s.Verify() // price=100 entry gone, price=200 entry exists for pk=1
 
 	// Save B with price=100 (now free, under commit-unknown)
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
 	s.Verify() // price=100 → pk=2, price=200 → pk=1
 }
 
@@ -116,11 +116,11 @@ func TestUniqueIndexViolationDetection(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 
 	// Save first record with price=100
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 	s.Verify()
 
 	// Try to save second record with same price — must fail
-	err := s.TrySaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
+	err := s.TrySaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
 	if err == nil {
 		t.Fatal("expected uniqueness violation error, got nil")
 	}
@@ -149,7 +149,7 @@ func TestUniqueIndexDeleteAndReuseValue(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 
 	// Save A with price=100
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 	s.Verify()
 
 	// Delete A under commit-unknown
@@ -159,7 +159,7 @@ func TestUniqueIndexDeleteAndReuseValue(t *testing.T) {
 
 	// Save B with the now-free price=100 under commit-unknown
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
 	s.Verify() // price=100 → pk=2
 }
 
@@ -181,7 +181,7 @@ func TestUniqueIndexRandomStress(t *testing.T) {
 		if s.Rng.Float64() < 0.7 {
 			// Save with unique price (price = pk * 1000 guarantees no collision
 			// since each PK maps to exactly one price).
-			s.SaveRecord(&gen.Order{
+			s.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(pk),
 				Price:   proto.Int32(int32(pk * 1000)),
 			})
@@ -209,7 +209,7 @@ func TestUniqueIndexMultipleSavesCommitUnknown(t *testing.T) {
 	// Each save gets commit-unknown
 	for i := int64(1); i <= 5; i++ {
 		s.InjectOnce(FaultCommitUnknown)
-		s.SaveRecord(&gen.Order{
+		s.SaveRecord(&demopb.Order{
 			OrderId: proto.Int64(i),
 			Price:   proto.Int32(int32(i * 100)),
 		})

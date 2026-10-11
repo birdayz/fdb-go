@@ -6,7 +6,7 @@ import (
 	"context"
 	"fmt"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -46,7 +46,7 @@ var _ = Describe("SUM Index Conformance", func() {
 		It("should produce identical sum entries visible to both Go and Java", func() {
 			// Save orders with known prices: 100 + 200 + 300 = 600
 			for i, price := range []int32{100, 200, 300} {
-				err := store.SaveOrderGo(ctx, &gen.Order{
+				err := store.SaveOrderGo(ctx, &demopb.Order{
 					OrderId: proto.Int64(int64(i + 1)),
 					Price:   proto.Int32(price),
 				})
@@ -77,7 +77,7 @@ var _ = Describe("SUM Index Conformance", func() {
 		It("should produce identical sum entries visible to both Go and Java", func() {
 			// Java saves orders: 150 + 250 + 350 = 750
 			for i, price := range []int32{150, 250, 350} {
-				err := store.SaveOrderJava(ctx, &gen.Order{
+				err := store.SaveOrderJava(ctx, &demopb.Order{
 					OrderId: proto.Int64(int64(i + 1)),
 					Price:   proto.Int32(price),
 				})
@@ -107,7 +107,7 @@ var _ = Describe("SUM Index Conformance", func() {
 		It("should produce correct combined sum", func() {
 			// Go saves: 100 + 200 = 300
 			for i, price := range []int32{100, 200} {
-				err := store.SaveOrderGo(ctx, &gen.Order{
+				err := store.SaveOrderGo(ctx, &demopb.Order{
 					OrderId: proto.Int64(int64(i + 1)),
 					Price:   proto.Int32(price),
 				})
@@ -116,7 +116,7 @@ var _ = Describe("SUM Index Conformance", func() {
 
 			// Java saves: 300 + 400 = 700
 			for i, price := range []int32{300, 400} {
-				err := store.SaveOrderJava(ctx, &gen.Order{
+				err := store.SaveOrderJava(ctx, &demopb.Order{
 					OrderId: proto.Int64(int64(i + 3)),
 					Price:   proto.Int32(price),
 				})
@@ -142,7 +142,7 @@ var _ = Describe("SUM Index Conformance", func() {
 		It("should decrement when Go deletes a Java-written record", func() {
 			// Java saves: 100 + 200 + 300 = 600
 			for i, price := range []int32{100, 200, 300} {
-				err := store.SaveOrderJava(ctx, &gen.Order{
+				err := store.SaveOrderJava(ctx, &demopb.Order{
 					OrderId: proto.Int64(int64(i + 1)),
 					Price:   proto.Int32(price),
 				})
@@ -177,7 +177,7 @@ var _ = Describe("SUM Index Conformance", func() {
 		It("should decrement when Java deletes a Go-written record", func() {
 			// Go saves: 500 + 600 + 700 = 1800
 			for i, price := range []int32{500, 600, 700} {
-				err := store.SaveOrderGo(ctx, &gen.Order{
+				err := store.SaveOrderGo(ctx, &demopb.Order{
 					OrderId: proto.Int64(int64(i + 1)),
 					Price:   proto.Int32(price),
 				})
@@ -211,13 +211,13 @@ var _ = Describe("SUM Index Conformance", func() {
 	Describe("Update changes sum correctly", func() {
 		It("should adjust sum when price changes via Go update", func() {
 			// Save: 100 + 200 = 300
-			err := store.SaveOrderGo(ctx, &gen.Order{
+			err := store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(100),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			err = store.SaveOrderGo(ctx, &gen.Order{
+			err = store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(2),
 				Price:   proto.Int32(200),
 			})
@@ -230,7 +230,7 @@ var _ = Describe("SUM Index Conformance", func() {
 			Expect(goEntries[0].Sum).To(Equal(int64(300)))
 
 			// Update order 1: price 100 → 500 (net change +400)
-			err = store.SaveOrderGo(ctx, &gen.Order{
+			err = store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(500),
 			})
@@ -252,20 +252,20 @@ var _ = Describe("SUM Index Conformance", func() {
 
 		It("should adjust sum when price changes via Java update", func() {
 			// Java saves: 300 + 400 = 700
-			err := store.SaveOrderJava(ctx, &gen.Order{
+			err := store.SaveOrderJava(ctx, &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(300),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			err = store.SaveOrderJava(ctx, &gen.Order{
+			err = store.SaveOrderJava(ctx, &demopb.Order{
 				OrderId: proto.Int64(2),
 				Price:   proto.Int32(400),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Java updates order 2: price 400 → 100 (net change -300)
-			err = store.SaveOrderJava(ctx, &gen.Order{
+			err = store.SaveOrderJava(ctx, &demopb.Order{
 				OrderId: proto.Int64(2),
 				Price:   proto.Int32(100),
 			})
@@ -315,7 +315,7 @@ func NewSumIndexConformanceStore(recordDB *recordlayer.FDBDatabase, keyspace sub
 	// Matches Java's new GroupingKeyExpression(field("price"), 1)
 	sumIdx := recordlayer.NewSumIndex("sum_price", recordlayer.Ungrouped(recordlayer.Field("price")))
 
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -353,7 +353,7 @@ func (s *SumIndexConformanceStore) buildJavaParams() map[string]any {
 }
 
 // SaveOrderGo saves an order with Go (with SUM index maintenance).
-func (s *SumIndexConformanceStore) SaveOrderGo(ctx context.Context, order *gen.Order) error {
+func (s *SumIndexConformanceStore) SaveOrderGo(ctx context.Context, order *demopb.Order) error {
 	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
@@ -367,7 +367,7 @@ func (s *SumIndexConformanceStore) SaveOrderGo(ctx context.Context, order *gen.O
 }
 
 // SaveOrderJava saves an order via Java (with SUM index maintenance).
-func (s *SumIndexConformanceStore) SaveOrderJava(ctx context.Context, order *gen.Order) error {
+func (s *SumIndexConformanceStore) SaveOrderJava(ctx context.Context, order *demopb.Order) error {
 	params := s.buildJavaParams()
 	params["order"] = order
 	return s.java.InvokeAs(ctx, "saveOrderWithSumIndex", params, nil)

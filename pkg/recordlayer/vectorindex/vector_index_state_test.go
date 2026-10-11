@@ -9,7 +9,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 )
@@ -30,7 +30,7 @@ var _ = Describe("SPFresh transactional search state", func() {
 		ss := specSubspace()
 		first, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Create()
 		Expect(err).NotTo(HaveOccurred())
-		_, err = first.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(20)})
+		_, err = first.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(20)})
 		Expect(err).NotTo(HaveOccurred())
 		second, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
 		Expect(err).NotTo(HaveOccurred())

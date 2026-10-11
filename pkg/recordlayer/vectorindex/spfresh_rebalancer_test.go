@@ -10,7 +10,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/gomega"
@@ -32,7 +32,7 @@ var _ = Describe("SPFresh rebalancer + coarse splits", func() {
 		return idx
 	}
 	baseMD := func() *recordlayer.RecordMetaDataBuilder {
-		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -63,7 +63,7 @@ var _ = Describe("SPFresh rebalancer + coarse splits", func() {
 			store, serr := storeBuilder(rtx)
 			Expect(serr).NotTo(HaveOccurred())
 			for i := 0; i < seedN; i++ {
-				if _, serr := store.SaveRecord(&gen.Order{
+				if _, serr := store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(int64(i + 1)),
 					Price:   proto.Int32(int32(i % 3)), Quantity: proto.Int32(int32(i % 2)),
 				}); serr != nil {
@@ -330,7 +330,7 @@ var _ = Describe("SPFresh rebalancer + coarse splits", func() {
 				}
 				for i := lo; i < lo+50; i++ {
 					id := int64(1000 + i)
-					if _, serr := store.SaveRecord(&gen.Order{
+					if _, serr := store.SaveRecord(&demopb.Order{
 						OrderId:  proto.Int64(id),
 						Price:    proto.Int32(int32((i * 13) % 200)),
 						Quantity: proto.Int32(int32((i * 7) % 200)),
@@ -436,7 +436,7 @@ var _ = Describe("SPFresh cold-start bootstrap (no bulk build)", func() {
 			recordlayer.IndexOptionSPFreshCellTarget:    "4",
 			recordlayer.IndexOptionSPFreshCellMax:       "8",
 		}
-		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -452,7 +452,7 @@ var _ = Describe("SPFresh cold-start bootstrap (no bulk build)", func() {
 			store, serr := storeBuilder(rtx)
 			Expect(serr).NotTo(HaveOccurred())
 			// First insert: bootstraps generation + first centroid in-tx.
-			_, serr = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(10)})
+			_, serr = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(10)})
 			return nil, serr
 		})
 		Expect(err).NotTo(HaveOccurred(), "first insert must bootstrap the §6b cold-start shape")
@@ -466,7 +466,7 @@ var _ = Describe("SPFresh cold-start bootstrap (no bulk build)", func() {
 				}
 				for i := lo; i < lo+50; i++ {
 					id := int64(100 + i)
-					if _, serr := store.SaveRecord(&gen.Order{
+					if _, serr := store.SaveRecord(&demopb.Order{
 						OrderId:  proto.Int64(id),
 						Price:    proto.Int32(int32((i * 13) % 150)),
 						Quantity: proto.Int32(int32((i * 7) % 150)),
@@ -527,7 +527,7 @@ var _ = Describe("SPFresh bootstrap fencing (094.4)", func() {
 			recordlayer.IndexOptionSPFreshCellTarget:    "4",
 			recordlayer.IndexOptionSPFreshCellMax:       "8",
 		}
-		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -559,7 +559,7 @@ var _ = Describe("SPFresh bootstrap fencing (094.4)", func() {
 		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			store, serr := storeBuilder(rtx)
 			Expect(serr).NotTo(HaveOccurred())
-			_, serr = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(1), Quantity: proto.Int32(1)})
+			_, serr = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(1), Quantity: proto.Int32(1)})
 			return nil, serr
 		})
 		Expect(err).To(HaveOccurred())
@@ -608,7 +608,7 @@ var _ = Describe("SPFresh bootstrap cache eviction (094.4)", func() {
 			recordlayer.IndexOptionSPFreshCellTarget:    "4",
 			recordlayer.IndexOptionSPFreshCellMax:       "8",
 		}
-		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -651,7 +651,7 @@ var _ = Describe("SPFresh bootstrap cache eviction (094.4)", func() {
 		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			store, serr := storeBuilder(rtx)
 			Expect(serr).NotTo(HaveOccurred())
-			_, serr = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1)})
+			_, serr = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1)})
 			return nil, serr
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -679,7 +679,7 @@ var _ = Describe("SPFresh bootstrap cache eviction (094.4)", func() {
 		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			store, serr := storeBuilder(rtx)
 			Expect(serr).NotTo(HaveOccurred())
-			_, serr = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(11), Quantity: proto.Int32(11)})
+			_, serr = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(11), Quantity: proto.Int32(11)})
 			return nil, serr
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -702,7 +702,7 @@ var _ = Describe("SPFresh cosine exact-match + build-vs-scan (094.4)", func() {
 			recordlayer.IndexOptionSPFreshCellTarget:    "4",
 			recordlayer.IndexOptionSPFreshCellMax:       "8",
 		}
-		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -719,7 +719,7 @@ var _ = Describe("SPFresh cosine exact-match + build-vs-scan (094.4)", func() {
 		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			store, serr := storeBuilder(rtx)
 			Expect(serr).NotTo(HaveOccurred())
-			_, serr = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(3), Quantity: proto.Int32(4)})
+			_, serr = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(3), Quantity: proto.Int32(4)})
 			return nil, serr
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -754,7 +754,7 @@ var _ = Describe("SPFresh cosine exact-match + build-vs-scan (094.4)", func() {
 			recordlayer.IndexOptionSPFreshCellTarget:    "4",
 			recordlayer.IndexOptionSPFreshCellMax:       "8",
 		}
-		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -812,7 +812,7 @@ var _ = Describe("SPFresh cosine zero-residual ranking (094.4)", func() {
 			recordlayer.IndexOptionSPFreshCellTarget:    "4",
 			recordlayer.IndexOptionSPFreshCellMax:       "8",
 		}
-		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -831,10 +831,10 @@ var _ = Describe("SPFresh cosine zero-residual ranking (094.4)", func() {
 		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			store, serr := storeBuilder(rtx)
 			Expect(serr).NotTo(HaveOccurred())
-			if _, serr := store.SaveRecord(&gen.Order{OrderId: proto.Int64(5), Price: proto.Int32(4), Quantity: proto.Int32(3)}); serr != nil {
+			if _, serr := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(5), Price: proto.Int32(4), Quantity: proto.Int32(3)}); serr != nil {
 				return nil, serr
 			}
-			_, serr = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(3), Quantity: proto.Int32(4)})
+			_, serr = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(3), Quantity: proto.Int32(4)})
 			return nil, serr
 		})
 		Expect(err).NotTo(HaveOccurred())

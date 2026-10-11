@@ -11,7 +11,7 @@ import (
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -61,7 +61,7 @@ var _ = Describe("TIME_WINDOW_LEADERBOARD Conformance", func() {
 				{3, 200, 300},
 			}
 			for _, o := range orders {
-				err := store.SaveOrderGo(ctx, &gen.Order{
+				err := store.SaveOrderGo(ctx, &demopb.Order{
 					OrderId:  proto.Int64(o.id),
 					Price:    proto.Int32(o.price),
 					Quantity: proto.Int32(o.quantity),
@@ -99,7 +99,7 @@ var _ = Describe("TIME_WINDOW_LEADERBOARD Conformance", func() {
 				{3, 750, 30},
 			}
 			for _, o := range orders {
-				err := store.SaveOrderJava(ctx, &gen.Order{
+				err := store.SaveOrderJava(ctx, &demopb.Order{
 					OrderId:  proto.Int64(o.id),
 					Price:    proto.Int32(o.price),
 					Quantity: proto.Int32(o.quantity),
@@ -128,7 +128,7 @@ var _ = Describe("TIME_WINDOW_LEADERBOARD Conformance", func() {
 	Describe("Mixed writes: Go and Java both insert", func() {
 		It("should produce identically ordered entries", func() {
 			// Go writes order 1
-			err := store.SaveOrderGo(ctx, &gen.Order{
+			err := store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId:  proto.Int64(1),
 				Price:    proto.Int32(300),
 				Quantity: proto.Int32(50),
@@ -136,7 +136,7 @@ var _ = Describe("TIME_WINDOW_LEADERBOARD Conformance", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Java writes order 2
-			err = store.SaveOrderJava(ctx, &gen.Order{
+			err = store.SaveOrderJava(ctx, &demopb.Order{
 				OrderId:  proto.Int64(2),
 				Price:    proto.Int32(100),
 				Quantity: proto.Int32(60),
@@ -144,7 +144,7 @@ var _ = Describe("TIME_WINDOW_LEADERBOARD Conformance", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Go writes order 3
-			err = store.SaveOrderGo(ctx, &gen.Order{
+			err = store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId:  proto.Int64(3),
 				Price:    proto.Int32(200),
 				Quantity: proto.Int32(70),
@@ -174,14 +174,14 @@ var _ = Describe("TIME_WINDOW_LEADERBOARD Conformance", func() {
 
 	Describe("Delete removes index entry cross-language", func() {
 		It("Go deletes a Java-written record", func() {
-			err := store.SaveOrderJava(ctx, &gen.Order{
+			err := store.SaveOrderJava(ctx, &demopb.Order{
 				OrderId:  proto.Int64(1),
 				Price:    proto.Int32(400),
 				Quantity: proto.Int32(10),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			err = store.SaveOrderJava(ctx, &gen.Order{
+			err = store.SaveOrderJava(ctx, &demopb.Order{
 				OrderId:  proto.Int64(2),
 				Price:    proto.Int32(200),
 				Quantity: proto.Int32(20),
@@ -208,14 +208,14 @@ var _ = Describe("TIME_WINDOW_LEADERBOARD Conformance", func() {
 		})
 
 		It("Java deletes a Go-written record", func() {
-			err := store.SaveOrderGo(ctx, &gen.Order{
+			err := store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId:  proto.Int64(1),
 				Price:    proto.Int32(150),
 				Quantity: proto.Int32(10),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			err = store.SaveOrderGo(ctx, &gen.Order{
+			err = store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId:  proto.Int64(2),
 				Price:    proto.Int32(350),
 				Quantity: proto.Int32(20),
@@ -255,7 +255,7 @@ var _ = Describe("TIME_WINDOW_LEADERBOARD Conformance", func() {
 				{5, 400, 50},
 			}
 			for _, o := range orders {
-				err := store.SaveOrderGo(ctx, &gen.Order{
+				err := store.SaveOrderGo(ctx, &demopb.Order{
 					OrderId:  proto.Int64(o.id),
 					Price:    proto.Int32(o.price),
 					Quantity: proto.Int32(o.quantity),
@@ -283,14 +283,14 @@ var _ = Describe("TIME_WINDOW_LEADERBOARD Conformance", func() {
 	Describe("Update score cross-language", func() {
 		It("Java writes, Go overwrites with new price, both scan updated", func() {
 			// Java writes price=100
-			err := store.SaveOrderJava(ctx, &gen.Order{
+			err := store.SaveOrderJava(ctx, &demopb.Order{
 				OrderId:  proto.Int64(1),
 				Price:    proto.Int32(100),
 				Quantity: proto.Int32(10),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			err = store.SaveOrderJava(ctx, &gen.Order{
+			err = store.SaveOrderJava(ctx, &demopb.Order{
 				OrderId:  proto.Int64(2),
 				Price:    proto.Int32(300),
 				Quantity: proto.Int32(20),
@@ -298,7 +298,7 @@ var _ = Describe("TIME_WINDOW_LEADERBOARD Conformance", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Go updates order 1 price to 500
-			err = store.SaveOrderGo(ctx, &gen.Order{
+			err = store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId:  proto.Int64(1),
 				Price:    proto.Int32(500),
 				Quantity: proto.Int32(10),
@@ -338,7 +338,7 @@ var _ = Describe("TIME_WINDOW_LEADERBOARD Conformance", func() {
 				{4, 200, 40},
 				{5, 400, 50},
 			} {
-				err := store.SaveOrderGo(ctx, &gen.Order{
+				err := store.SaveOrderGo(ctx, &demopb.Order{
 					OrderId:  proto.Int64(o.id),
 					Price:    proto.Int32(o.price),
 					Quantity: proto.Int32(o.qty),
@@ -415,7 +415,7 @@ var _ = Describe("TIME_WINDOW_LEADERBOARD Custom Window Conformance", func() {
 				{2, 300, 20},
 				{3, 200, 30},
 			} {
-				err = store.SaveOrderGo(ctx, &gen.Order{
+				err = store.SaveOrderGo(ctx, &demopb.Order{
 					OrderId:  proto.Int64(o.id),
 					Price:    proto.Int32(o.price),
 					Quantity: proto.Int32(o.qty),
@@ -470,7 +470,7 @@ var _ = Describe("TIME_WINDOW_LEADERBOARD Custom Window Conformance", func() {
 				{4, 200, 2500}, // outside window
 			}
 			for _, o := range orders {
-				err = store.SaveOrderGo(ctx, &gen.Order{
+				err = store.SaveOrderGo(ctx, &demopb.Order{
 					OrderId:  proto.Int64(o.id),
 					Price:    proto.Int32(o.price),
 					Quantity: proto.Int32(o.qty),
@@ -527,7 +527,7 @@ var _ = Describe("TIME_WINDOW_LEADERBOARD Custom Window Conformance", func() {
 				{2, 150, 20},
 				{3, 600, 30},
 			} {
-				err = store.SaveOrderJava(ctx, &gen.Order{
+				err = store.SaveOrderJava(ctx, &demopb.Order{
 					OrderId:  proto.Int64(o.id),
 					Price:    proto.Int32(o.price),
 					Quantity: proto.Int32(o.qty),
@@ -578,7 +578,7 @@ func buildLeaderboardConformanceMetadata() (*recordlayer.RecordMetaData, *record
 	idx := recordlayer.NewTimeWindowLeaderboardIndex("leaderboard_score",
 		recordlayer.Ungrouped(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity"))))
 
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -649,7 +649,7 @@ func (s *LeaderboardConformanceStore) setupWindowsGo(store *recordlayer.FDBRecor
 	}, store)
 }
 
-func (s *LeaderboardConformanceStore) SaveOrderGo(ctx context.Context, order *gen.Order) error {
+func (s *LeaderboardConformanceStore) SaveOrderGo(ctx context.Context, order *demopb.Order) error {
 	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
@@ -662,7 +662,7 @@ func (s *LeaderboardConformanceStore) SaveOrderGo(ctx context.Context, order *ge
 	return err
 }
 
-func (s *LeaderboardConformanceStore) SaveOrderJava(ctx context.Context, order *gen.Order) error {
+func (s *LeaderboardConformanceStore) SaveOrderJava(ctx context.Context, order *demopb.Order) error {
 	params := s.buildJavaParams()
 	params["order"] = order
 	return s.java.InvokeAs(ctx, "saveOrderWithLeaderboard", params, nil)

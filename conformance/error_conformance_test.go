@@ -12,6 +12,8 @@ import (
 	. "github.com/onsi/gomega"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -361,7 +363,7 @@ var _ = Describe("Error Conformance", func() {
 // buildErrorTestIndexedMetaData creates metadata with an Order$price VALUE index.
 func buildErrorTestIndexedMetaData() *recordlayer.RecordMetaData {
 	b := recordlayer.NewRecordMetaDataBuilder().
-		SetRecords(gen.File_record_layer_demo_proto)
+		SetRecords(demopb.File_record_layer_demo_proto)
 	b.GetRecordType("Order").SetPrimaryKey(
 		recordlayer.Field("order_id"),
 	)

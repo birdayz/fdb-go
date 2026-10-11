@@ -8,7 +8,7 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
 )
 
@@ -131,7 +131,7 @@ func RunRandom(t testing.TB, realDB fdb.Database, metadata *recordlayer.RecordMe
 			// becomes an overwrite — that's fine, still valid.
 			price := s.Rng.Int32N(10000)
 			qty := s.Rng.Int32N(100)
-			s.SaveRecord(&gen.Order{
+			s.SaveRecord(&demopb.Order{
 				OrderId:  proto.Int64(pk),
 				Price:    proto.Int32(price),
 				Quantity: proto.Int32(qty),
@@ -142,7 +142,7 @@ func RunRandom(t testing.TB, realDB fdb.Database, metadata *recordlayer.RecordMe
 			pk := pickExistingPK(s)
 			price := s.Rng.Int32N(10000)
 			qty := s.Rng.Int32N(100)
-			s.SaveRecord(&gen.Order{
+			s.SaveRecord(&demopb.Order{
 				OrderId:  proto.Int64(pk),
 				Price:    proto.Int32(price),
 				Quantity: proto.Int32(qty),

@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
@@ -41,8 +41,8 @@ var _ = Describe("Format 15 queued lifecycle", func() {
 		Expect(err).NotTo(HaveOccurred())
 		return md, vector, ordinary
 	}
-	order := func(id int64, price int32) *gen.Order {
-		return &gen.Order{OrderId: proto.Int64(id), Quantity: proto.Int32(1), Price: proto.Int32(price)}
+	order := func(id int64, price int32) *demopb.Order {
+		return &demopb.Order{OrderId: proto.Int64(id), Quantity: proto.Int32(1), Price: proto.Int32(price)}
 	}
 	It("keeps default creation at 14 while explicitly creating upgrading and reopening 15", func() {
 		md, _, _ := metadata()
@@ -90,7 +90,7 @@ var _ = Describe("Format 15 queued lifecycle", func() {
 			if err != nil {
 				return nil, err
 			}
-			for _, record := range []*gen.Order{order(1, 10), order(2, 20)} {
+			for _, record := range []*demopb.Order{order(1, 10), order(2, 20)} {
 				if _, err := store.SaveRecord(record); err != nil {
 					return nil, err
 				}

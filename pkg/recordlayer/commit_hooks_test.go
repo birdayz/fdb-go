@@ -12,7 +12,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
@@ -25,7 +25,7 @@ var _ = Describe("Commit hooks", func() {
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -207,7 +207,7 @@ var _ = Describe("Commit hooks", func() {
 				}
 				id := int64(1)
 				price := int32(100)
-				_, err = store.SaveRecord(&gen.Order{OrderId: &id, Price: &price})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: &id, Price: &price})
 				if err != nil {
 					return nil, err
 				}
@@ -231,7 +231,7 @@ var _ = Describe("Commit hooks", func() {
 				}
 				id := int64(1)
 				price := int32(100)
-				_, err = store.SaveRecord(&gen.Order{OrderId: &id, Price: &price})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: &id, Price: &price})
 				if err != nil {
 					return nil, err
 				}

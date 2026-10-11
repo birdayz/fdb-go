@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	gofdb "fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -44,7 +44,7 @@ func TestGoWriteGoReadWithTestcontainer(t *testing.T) {
 
 	recordDB := recordlayer.NewFDBDatabase(db)
 
-	fileDesc := gen.File_record_layer_demo_proto
+	fileDesc := demopb.File_record_layer_demo_proto
 	metaDataBuilder := recordlayer.NewRecordMetaDataBuilder().SetRecords(fileDesc)
 	metaDataBuilder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	metaDataBuilder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
@@ -67,12 +67,12 @@ func TestGoWriteGoReadWithTestcontainer(t *testing.T) {
 			return nil, err
 		}
 
-		order := &gen.Order{
+		order := &demopb.Order{
 			OrderId: proto.Int64(3003),
 			Price:   proto.Int32(75),
-			Flower: &gen.Flower{
+			Flower: &demopb.Flower{
 				Type:  proto.String("Sunflower"),
-				Color: gen.Color_YELLOW.Enum(),
+				Color: demopb.Color_YELLOW.Enum(),
 			},
 		}
 		_, err = store.SaveRecord(order)
@@ -100,9 +100,9 @@ func TestGoWriteGoReadWithTestcontainer(t *testing.T) {
 		if storedRecord == nil {
 			return nil, nil
 		}
-		order, ok := storedRecord.Record.(*gen.Order)
+		order, ok := storedRecord.Record.(*demopb.Order)
 		if !ok {
-			return nil, fmt.Errorf("expected *gen.Order, got %T", storedRecord.Record)
+			return nil, fmt.Errorf("expected *demopb.Order, got %T", storedRecord.Record)
 		}
 		return order, nil
 	})
@@ -110,7 +110,7 @@ func TestGoWriteGoReadWithTestcontainer(t *testing.T) {
 		t.Fatalf("Failed to read: %v", err)
 	}
 
-	orderData := result.(*gen.Order)
+	orderData := result.(*demopb.Order)
 	if orderData.OrderId == nil || *orderData.OrderId != 3003 {
 		t.Fatalf("Expected order ID 3003, got %v", orderData.OrderId)
 	}

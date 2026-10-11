@@ -15,8 +15,7 @@ proto/
 └── README.md
 
 conformance/
-└── proto/           # Test/conformance protos
-    └── record_layer_demo.proto
+└── record_layer_demo.proto   # Test/conformance demo schema (Go: fdb.dev/gen/demopb)
 ```
 
 ## Proto Organization
@@ -59,7 +58,8 @@ buf generate
 This will:
 1. Compile both Apple and conformance protos
 2. Generate Go code with `protoc-gen-go`
-3. Place output in `gen/` with package `github.com/birdayz/fdb-record-layer-go/gen`
+3. Place output in `gen/` with package `fdb.dev/gen`; the demo schema goes to
+   `gen/demopb` (`fdb.dev/gen/demopb`), which production code never imports
 
 ### Buf Configuration
 
@@ -73,10 +73,10 @@ The workspace setup allows conformance protos to import Apple protos while keepi
 ### From Go Code
 
 ```go
-import "github.com/birdayz/fdb-record-layer-go/gen"
+import "fdb.dev/gen/demopb"
 
 // Use generated types
-order := &gen.Order{
+order := &demopb.Order{
     OrderId: proto.Int64(1001),
     Price:   proto.Int32(100),
 }

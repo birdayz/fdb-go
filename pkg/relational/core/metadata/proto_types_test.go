@@ -10,6 +10,8 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
 )
@@ -19,7 +21,7 @@ func TestIsFieldNullable_ProtoCardinality(t *testing.T) {
 
 	// Demo proto uses proto2 with optional fields — all should be
 	// nullable.
-	orderMD := gen.File_record_layer_demo_proto.Messages().ByName("Order")
+	orderMD := demopb.File_record_layer_demo_proto.Messages().ByName("Order")
 	for i := 0; i < orderMD.Fields().Len(); i++ {
 		fd := orderMD.Fields().Get(i)
 		got := isFieldNullable(fd)
@@ -64,7 +66,7 @@ func TestIsUUIDDescriptor(t *testing.T) {
 	}
 
 	// Non-UUID message must fail the check.
-	orderMD := gen.File_record_layer_demo_proto.Messages().ByName("Order")
+	orderMD := demopb.File_record_layer_demo_proto.Messages().ByName("Order")
 	if orderMD == nil {
 		t.Fatal("Order descriptor missing from demo proto")
 	}
@@ -129,7 +131,7 @@ func TestUnwrapWrappedArray_RejectsNonMatching(t *testing.T) {
 	}
 
 	// Regular non-wrapper messages must still be rejected.
-	orderMD := gen.File_record_layer_demo_proto.Messages().ByName("Order")
+	orderMD := demopb.File_record_layer_demo_proto.Messages().ByName("Order")
 	if _, ok := unwrapWrappedArray(orderMD, map[string]bool{}); ok {
 		t.Error("unwrapWrappedArray accepted Order (multi-field real table)")
 	}

@@ -18,7 +18,7 @@ go_test(
         "resources:memory:400",
     ],
     deps = [
-        "//gen",
+        "//gen/demopb",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",

@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"math"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -29,7 +29,7 @@ type TypedRecordConformanceStore struct {
 }
 
 func NewTypedRecordConformanceStore(recordDB *recordlayer.FDBDatabase, keyspace subspace.Subspace, clusterFile string, tenantName string) (*TypedRecordConformanceStore, error) {
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -79,7 +79,7 @@ func (s *TypedRecordConformanceStore) buildJavaParams() map[string]any {
 	return params
 }
 
-func (s *TypedRecordConformanceStore) SaveGo(ctx context.Context, record *gen.TypedRecord) error {
+func (s *TypedRecordConformanceStore) SaveGo(ctx context.Context, record *demopb.TypedRecord) error {
 	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
@@ -92,7 +92,7 @@ func (s *TypedRecordConformanceStore) SaveGo(ctx context.Context, record *gen.Ty
 	return err
 }
 
-func (s *TypedRecordConformanceStore) SaveJava(ctx context.Context, record *gen.TypedRecord) error {
+func (s *TypedRecordConformanceStore) SaveJava(ctx context.Context, record *demopb.TypedRecord) error {
 	params := s.buildJavaParams()
 	params["record"] = record
 	return s.java.InvokeAs(ctx, "saveTypedRecord", params, nil)
@@ -148,16 +148,16 @@ func (s *TypedRecordConformanceStore) ScanIndexJava(ctx context.Context, indexNa
 	return results, nil
 }
 
-func genColorPtr(c gen.Color) *gen.Color {
+func genColorPtr(c demopb.Color) *demopb.Color {
 	return &c
 }
 
 // buildTypedRecord constructs a TypedRecord with all supported field types set.
 func buildTypedRecord(id int64, i32 int32, i64 int64,
 	si32 int32, si64 int64, sf32 int32, sf64 int64,
-	vFloat float32, vDouble float64, vBool bool, vString string, vBytes []byte, vEnum gen.Color,
-) *gen.TypedRecord {
-	return &gen.TypedRecord{
+	vFloat float32, vDouble float64, vBool bool, vString string, vBytes []byte, vEnum demopb.Color,
+) *demopb.TypedRecord {
+	return &demopb.TypedRecord{
 		Id:          proto.Int64(id),
 		ValInt32:    proto.Int32(i32),
 		ValInt64:    proto.Int64(i64),
@@ -236,7 +236,7 @@ var _ = Describe("TypedRecord Conformance — FDB tuple encoding of all proto fi
 				true,               // bool
 				"hello",            // string
 				[]byte{0xDE, 0xAD}, // bytes
-				gen.Color_RED,      // enum
+				demopb.Color_RED,   // enum
 			)
 			err := store.SaveGo(ctx, rec)
 			Expect(err).NotTo(HaveOccurred())
@@ -249,7 +249,7 @@ var _ = Describe("TypedRecord Conformance — FDB tuple encoding of all proto fi
 			rec := buildTypedRecord(
 				2, 99, 999999, -99, -999999, -99, -999999,
 				1.5, 9.99, false, "world",
-				[]byte{0xCA, 0xFE}, gen.Color_BLUE,
+				[]byte{0xCA, 0xFE}, demopb.Color_BLUE,
 			)
 			err := store.SaveJava(ctx, rec)
 			Expect(err).NotTo(HaveOccurred())
@@ -261,7 +261,7 @@ var _ = Describe("TypedRecord Conformance — FDB tuple encoding of all proto fi
 		It("all zeros produce identical index entries", func() {
 			rec := buildTypedRecord(
 				10, 0, 0, 0, 0, 0, 0,
-				0.0, 0.0, false, "", []byte{}, gen.Color_RED,
+				0.0, 0.0, false, "", []byte{}, demopb.Color_RED,
 			)
 			err := store.SaveGo(ctx, rec)
 			Expect(err).NotTo(HaveOccurred())
@@ -284,7 +284,7 @@ var _ = Describe("TypedRecord Conformance — FDB tuple encoding of all proto fi
 				true,
 				"maxvals",
 				[]byte{0xFF, 0xFF, 0xFF},
-				gen.Color_PINK,
+				demopb.Color_PINK,
 			)
 			err := store.SaveGo(ctx, rec)
 			Expect(err).NotTo(HaveOccurred())
@@ -307,7 +307,7 @@ var _ = Describe("TypedRecord Conformance — FDB tuple encoding of all proto fi
 				false,
 				"",
 				nil,
-				gen.Color_RED,
+				demopb.Color_RED,
 			)
 			err := store.SaveGo(ctx, rec)
 			Expect(err).NotTo(HaveOccurred())
@@ -319,14 +319,14 @@ var _ = Describe("TypedRecord Conformance — FDB tuple encoding of all proto fi
 		It("Go saves, Java loads — record values preserved", func() {
 			rec := buildTypedRecord(
 				50, -1, -1, -1, -1, -1, -1,
-				-1.5, -1.5, true, "roundtrip", []byte{1, 2, 3}, gen.Color_YELLOW,
+				-1.5, -1.5, true, "roundtrip", []byte{1, 2, 3}, demopb.Color_YELLOW,
 			)
 			err := store.SaveGo(ctx, rec)
 			Expect(err).NotTo(HaveOccurred())
 
 			params := store.buildJavaParams()
 			params["id"] = int64(50)
-			var loaded gen.TypedRecord
+			var loaded demopb.TypedRecord
 			err = store.java.InvokeAs(ctx, "loadTypedRecord", params, &loaded)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -346,12 +346,12 @@ var _ = Describe("TypedRecord Conformance — FDB tuple encoding of all proto fi
 		It("Java saves, Go loads — record values preserved", func() {
 			rec := buildTypedRecord(
 				51, 100, 200, -500, -600, -900, -1000,
-				1.23, 4.56, false, "java2go", []byte{0xAB}, gen.Color_PINK,
+				1.23, 4.56, false, "java2go", []byte{0xAB}, demopb.Color_PINK,
 			)
 			err := store.SaveJava(ctx, rec)
 			Expect(err).NotTo(HaveOccurred())
 
-			var loaded *gen.TypedRecord
+			var loaded *demopb.TypedRecord
 			_, err = store.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 				st, err := recordlayer.NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(store.MetaData).SetSubspace(store.Keyspace).Open()
@@ -363,7 +363,7 @@ var _ = Describe("TypedRecord Conformance — FDB tuple encoding of all proto fi
 					return nil, err
 				}
 				Expect(result).NotTo(BeNil())
-				loaded = result.Record.(*gen.TypedRecord)
+				loaded = result.Record.(*demopb.TypedRecord)
 				return nil, nil
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -388,7 +388,7 @@ var _ = Describe("TypedRecord Conformance — FDB tuple encoding of all proto fi
 			for i, v := range values {
 				rec := buildTypedRecord(
 					int64(60+i), v, 0, 0, 0, 0, 0,
-					0, 0, false, "", []byte{}, gen.Color_RED,
+					0, 0, false, "", []byte{}, demopb.Color_RED,
 				)
 				err := store.SaveGo(ctx, rec)
 				Expect(err).NotTo(HaveOccurred())
@@ -417,7 +417,7 @@ var _ = Describe("TypedRecord Conformance — FDB tuple encoding of all proto fi
 			rec := buildTypedRecord(
 				70, 0, 0, 0, 0, 0, 0,
 				math.MaxFloat32, math.MaxFloat64,
-				false, "", []byte{}, gen.Color_RED,
+				false, "", []byte{}, demopb.Color_RED,
 			)
 			err := store.SaveGo(ctx, rec)
 			Expect(err).NotTo(HaveOccurred())
@@ -428,7 +428,7 @@ var _ = Describe("TypedRecord Conformance — FDB tuple encoding of all proto fi
 			rec := buildTypedRecord(
 				71, 0, 0, 0, 0, 0, 0,
 				-math.MaxFloat32, -math.MaxFloat64,
-				false, "", []byte{}, gen.Color_RED,
+				false, "", []byte{}, demopb.Color_RED,
 			)
 			err := store.SaveGo(ctx, rec)
 			Expect(err).NotTo(HaveOccurred())
@@ -439,7 +439,7 @@ var _ = Describe("TypedRecord Conformance — FDB tuple encoding of all proto fi
 			rec := buildTypedRecord(
 				72, 0, 0, 0, 0, 0, 0,
 				math.SmallestNonzeroFloat32, math.SmallestNonzeroFloat64,
-				false, "", []byte{}, gen.Color_RED,
+				false, "", []byte{}, demopb.Color_RED,
 			)
 			err := store.SaveGo(ctx, rec)
 			Expect(err).NotTo(HaveOccurred())

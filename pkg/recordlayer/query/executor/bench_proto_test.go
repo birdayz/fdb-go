@@ -6,7 +6,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -14,8 +14,8 @@ import (
 // goToProtoValue. These run on every record scan and every UPDATE/INSERT
 // write — the dominant cost in query execution after FDB round-trips.
 
-func makeOrder(id int64, price int32, qty int32) *gen.Order {
-	return &gen.Order{
+func makeOrder(id int64, price int32, qty int32) *demopb.Order {
+	return &demopb.Order{
 		OrderId:    proto.Int64(id),
 		Price:      proto.Int32(price),
 		Quantity:   proto.Int32(qty),
@@ -24,8 +24,8 @@ func makeOrder(id int64, price int32, qty int32) *gen.Order {
 	}
 }
 
-func makeTypedRecord() *gen.TypedRecord {
-	return &gen.TypedRecord{
+func makeTypedRecord() *demopb.TypedRecord {
+	return &demopb.TypedRecord{
 		Id:        proto.Int64(42),
 		ValInt32:  proto.Int32(100),
 		ValInt64:  proto.Int64(999),
@@ -59,7 +59,7 @@ func BenchmarkProtoToMap_TypedRecord(b *testing.B) {
 // BenchmarkProtoToMap_SparseRecord measures protoToMap on a record where
 // most fields are unset (the Has() check should skip quickly).
 func BenchmarkProtoToMap_SparseRecord(b *testing.B) {
-	msg := &gen.TypedRecord{Id: proto.Int64(1)}
+	msg := &demopb.TypedRecord{Id: proto.Int64(1)}
 	b.ResetTimer()
 	for b.Loop() {
 		_ = protoToMap(msg)
@@ -130,7 +130,7 @@ func BenchmarkScalarProtoToGo_Float64(b *testing.B) {
 
 // BenchmarkGoToProtoValue_Int64 measures the reverse path: Go int64 → proto.
 func BenchmarkGoToProtoValue_Int64(b *testing.B) {
-	msg := &gen.TypedRecord{}
+	msg := &demopb.TypedRecord{}
 	fd := msg.ProtoReflect().Descriptor().Fields().ByName("val_int64")
 	b.ResetTimer()
 	for b.Loop() {
@@ -140,7 +140,7 @@ func BenchmarkGoToProtoValue_Int64(b *testing.B) {
 
 // BenchmarkGoToProtoValue_String measures Go string → proto.
 func BenchmarkGoToProtoValue_String(b *testing.B) {
-	msg := &gen.TypedRecord{}
+	msg := &demopb.TypedRecord{}
 	fd := msg.ProtoReflect().Descriptor().Fields().ByName("val_string")
 	b.ResetTimer()
 	for b.Loop() {
@@ -150,7 +150,7 @@ func BenchmarkGoToProtoValue_String(b *testing.B) {
 
 // BenchmarkGoToProtoValue_Bool measures Go bool → proto.
 func BenchmarkGoToProtoValue_Bool(b *testing.B) {
-	msg := &gen.TypedRecord{}
+	msg := &demopb.TypedRecord{}
 	fd := msg.ProtoReflect().Descriptor().Fields().ByName("val_bool")
 	b.ResetTimer()
 	for b.Loop() {
@@ -162,7 +162,7 @@ func BenchmarkGoToProtoValue_Bool(b *testing.B) {
 // field lookup by name — done once per column per query but worth
 // understanding.
 func BenchmarkProtoReflect_DescriptorLookup(b *testing.B) {
-	msg := &gen.TypedRecord{}
+	msg := &demopb.TypedRecord{}
 	desc := msg.ProtoReflect().Descriptor().Fields()
 	b.ResetTimer()
 	for b.Loop() {

@@ -10,7 +10,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -26,9 +26,9 @@ func TestIntegration_LimitResumeOffsetDomain(t *testing.T) {
 	store := setupStore(t)
 	ks := testSubspace(t)
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(1)},
-		&gen.Order{OrderId: proto.Int64(2)},
-		&gen.Order{OrderId: proto.Int64(3)},
+		&demopb.Order{OrderId: proto.Int64(1)},
+		&demopb.Order{OrderId: proto.Int64(2)},
+		&demopb.Order{OrderId: proto.Int64(3)},
 	)
 	scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
 	plan := mustExecutorConstruct(plans.NewRecordQueryLimitPlan(scan, 2, 1))
@@ -100,12 +100,12 @@ func TestIntegration_LimitParentSkip(t *testing.T) {
 				ctx := context.Background()
 				store := setupStore(t)
 				for i := int64(1); i <= 6; i++ {
-					insertOrders(t, store, &gen.Order{OrderId: proto.Int64(i)})
+					insertOrders(t, store, &demopb.Order{OrderId: proto.Int64(i)})
 				}
 				scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
 				var child plans.RecordQueryPlan = scan
 				if kind == "filtered_child" {
-					insertOrders(t, store, &gen.Order{OrderId: proto.Int64(0)})
+					insertOrders(t, store, &demopb.Order{OrderId: proto.Int64(0)})
 					child = mustExecutorConstruct(plans.NewRecordQueryFilterPlan([]predicates.QueryPredicate{
 						predicates.NewComparisonPredicate(integrationField(t, scan, 0), predicates.Comparison{
 							Type: predicates.ComparisonGreaterThan, Operand: values.LiteralValue(int64(0)),
@@ -157,9 +157,9 @@ func TestIntegration_LimitParentSkipResume(t *testing.T) {
 			t.Parallel()
 			ctx := context.Background()
 			store := setupStore(t)
-			orders := make([]*gen.Order, 8)
+			orders := make([]*demopb.Order, 8)
 			for i := range orders {
-				orders[i] = &gen.Order{OrderId: proto.Int64(int64(i + 1))}
+				orders[i] = &demopb.Order{OrderId: proto.Int64(int64(i + 1))}
 			}
 			insertOrders(t, store, orders...)
 			scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
@@ -259,9 +259,9 @@ func TestIntegration_UnboundedUnionLimit(t *testing.T) {
 	ctx := context.Background()
 	store := setupStore(t)
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(1)},
-		&gen.Order{OrderId: proto.Int64(2)},
-		&gen.Order{OrderId: proto.Int64(3)},
+		&demopb.Order{OrderId: proto.Int64(1)},
+		&demopb.Order{OrderId: proto.Int64(2)},
+		&demopb.Order{OrderId: proto.Int64(3)},
 	)
 
 	var legs []expressions.Quantifier
@@ -343,7 +343,7 @@ func TestIntegration_StrictFirstOrDefaultRequest(t *testing.T) {
 				t.Parallel()
 				ctx := context.Background()
 				store := setupStore(t)
-				insertOrders(t, store, &gen.Order{OrderId: proto.Int64(1)}, &gen.Order{OrderId: proto.Int64(2)})
+				insertOrders(t, store, &demopb.Order{OrderId: proto.Int64(1)}, &demopb.Order{OrderId: proto.Int64(2)})
 				if probe.mixedTypes {
 					// A raw scan budget of two would count Customer 0, then only
 					// Order 1, and hide the second matching scalar row (Order 2).
@@ -352,7 +352,7 @@ func TestIntegration_StrictFirstOrDefaultRequest(t *testing.T) {
 						if err != nil {
 							return nil, err
 						}
-						_, err = s.SaveRecord(&gen.Customer{CustomerId: proto.Int64(0)})
+						_, err = s.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(0)})
 						return nil, err
 					})
 					if err != nil {
@@ -420,7 +420,7 @@ func TestIntegration_DefaultEvaluationContext(t *testing.T) {
 				t.Parallel()
 				store := setupStore(t)
 				if !empty {
-					insertOrders(t, store, &gen.Order{OrderId: proto.Int64(1)})
+					insertOrders(t, store, &demopb.Order{OrderId: proto.Int64(1)})
 				}
 				scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
 				inner := mustExecutorConstruct(plans.NewRecordQueryMapPlan(scan, &values.ConstantValue{

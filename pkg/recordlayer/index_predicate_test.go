@@ -10,6 +10,8 @@ import (
 	"google.golang.org/protobuf/types/dynamicpb"
 
 	gen "fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -28,11 +30,11 @@ func TestConstantPredicateTrue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("predicateFromProto: %v", err)
 	}
-	order := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
+	order := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
 	if !fn(order) {
 		t.Fatal("TRUE predicate should return true for any message")
 	}
-	if !fn(&gen.Order{}) {
+	if !fn(&demopb.Order{}) {
 		t.Fatal("TRUE predicate should return true for zero-value message")
 	}
 }
@@ -48,7 +50,7 @@ func TestConstantPredicateFalse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("predicateFromProto: %v", err)
 	}
-	if fn(&gen.Order{OrderId: proto.Int64(1)}) {
+	if fn(&demopb.Order{OrderId: proto.Int64(1)}) {
 		t.Fatal("FALSE predicate should return false")
 	}
 }
@@ -64,7 +66,7 @@ func TestConstantPredicateNull(t *testing.T) {
 	if err != nil {
 		t.Fatalf("predicateFromProto: %v", err)
 	}
-	if fn(&gen.Order{OrderId: proto.Int64(1)}) {
+	if fn(&demopb.Order{OrderId: proto.Int64(1)}) {
 		t.Fatal("NULL predicate should return false")
 	}
 }
@@ -91,11 +93,11 @@ func TestValuePredicateEquals(t *testing.T) {
 		t.Fatalf("predicateFromProto: %v", err)
 	}
 	// Match
-	if !fn(&gen.Order{Price: proto.Int32(100)}) {
+	if !fn(&demopb.Order{Price: proto.Int32(100)}) {
 		t.Fatal("EQUALS should match price=100")
 	}
 	// Non-match
-	if fn(&gen.Order{Price: proto.Int32(200)}) {
+	if fn(&demopb.Order{Price: proto.Int32(200)}) {
 		t.Fatal("EQUALS should not match price=200")
 	}
 }
@@ -117,10 +119,10 @@ func TestValuePredicateNotEquals(t *testing.T) {
 	if err != nil {
 		t.Fatalf("predicateFromProto: %v", err)
 	}
-	if fn(&gen.Order{Price: proto.Int32(100)}) {
+	if fn(&demopb.Order{Price: proto.Int32(100)}) {
 		t.Fatal("NOT_EQUALS should not match price=100")
 	}
-	if !fn(&gen.Order{Price: proto.Int32(200)}) {
+	if !fn(&demopb.Order{Price: proto.Int32(200)}) {
 		t.Fatal("NOT_EQUALS should match price=200")
 	}
 }
@@ -142,13 +144,13 @@ func TestValuePredicateLessThan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("predicateFromProto: %v", err)
 	}
-	if !fn(&gen.Order{Price: proto.Int32(100)}) {
+	if !fn(&demopb.Order{Price: proto.Int32(100)}) {
 		t.Fatal("LESS_THAN 500: price=100 should match")
 	}
-	if fn(&gen.Order{Price: proto.Int32(500)}) {
+	if fn(&demopb.Order{Price: proto.Int32(500)}) {
 		t.Fatal("LESS_THAN 500: price=500 should not match (not strictly less)")
 	}
-	if fn(&gen.Order{Price: proto.Int32(999)}) {
+	if fn(&demopb.Order{Price: proto.Int32(999)}) {
 		t.Fatal("LESS_THAN 500: price=999 should not match")
 	}
 }
@@ -170,13 +172,13 @@ func TestValuePredicateGreaterThan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("predicateFromProto: %v", err)
 	}
-	if fn(&gen.Order{Price: proto.Int32(500)}) {
+	if fn(&demopb.Order{Price: proto.Int32(500)}) {
 		t.Fatal("GREATER_THAN 500: price=500 should not match (not strictly greater)")
 	}
-	if !fn(&gen.Order{Price: proto.Int32(501)}) {
+	if !fn(&demopb.Order{Price: proto.Int32(501)}) {
 		t.Fatal("GREATER_THAN 500: price=501 should match")
 	}
-	if fn(&gen.Order{Price: proto.Int32(100)}) {
+	if fn(&demopb.Order{Price: proto.Int32(100)}) {
 		t.Fatal("GREATER_THAN 500: price=100 should not match")
 	}
 }
@@ -198,13 +200,13 @@ func TestValuePredicateLessThanOrEquals(t *testing.T) {
 	if err != nil {
 		t.Fatalf("predicateFromProto: %v", err)
 	}
-	if !fn(&gen.Order{Price: proto.Int32(500)}) {
+	if !fn(&demopb.Order{Price: proto.Int32(500)}) {
 		t.Fatal("LTE 500: price=500 should match")
 	}
-	if !fn(&gen.Order{Price: proto.Int32(100)}) {
+	if !fn(&demopb.Order{Price: proto.Int32(100)}) {
 		t.Fatal("LTE 500: price=100 should match")
 	}
-	if fn(&gen.Order{Price: proto.Int32(501)}) {
+	if fn(&demopb.Order{Price: proto.Int32(501)}) {
 		t.Fatal("LTE 500: price=501 should not match")
 	}
 }
@@ -226,13 +228,13 @@ func TestValuePredicateGreaterThanOrEquals(t *testing.T) {
 	if err != nil {
 		t.Fatalf("predicateFromProto: %v", err)
 	}
-	if !fn(&gen.Order{Price: proto.Int32(500)}) {
+	if !fn(&demopb.Order{Price: proto.Int32(500)}) {
 		t.Fatal("GTE 500: price=500 should match")
 	}
-	if !fn(&gen.Order{Price: proto.Int32(999)}) {
+	if !fn(&demopb.Order{Price: proto.Int32(999)}) {
 		t.Fatal("GTE 500: price=999 should match")
 	}
-	if fn(&gen.Order{Price: proto.Int32(499)}) {
+	if fn(&demopb.Order{Price: proto.Int32(499)}) {
 		t.Fatal("GTE 500: price=499 should not match")
 	}
 }
@@ -258,11 +260,11 @@ func TestValuePredicateIsNull(t *testing.T) {
 		t.Fatalf("predicateFromProto: %v", err)
 	}
 	// Price not set
-	if !fn(&gen.Order{OrderId: proto.Int64(1)}) {
+	if !fn(&demopb.Order{OrderId: proto.Int64(1)}) {
 		t.Fatal("IS_NULL should match when price is unset")
 	}
 	// Price set
-	if fn(&gen.Order{Price: proto.Int32(100)}) {
+	if fn(&demopb.Order{Price: proto.Int32(100)}) {
 		t.Fatal("IS_NULL should not match when price is set")
 	}
 }
@@ -287,10 +289,10 @@ func TestValuePredicateNotNull(t *testing.T) {
 	if err != nil {
 		t.Fatalf("predicateFromProto: %v", err)
 	}
-	if !fn(&gen.Order{Price: proto.Int32(100)}) {
+	if !fn(&demopb.Order{Price: proto.Int32(100)}) {
 		t.Fatal("NOT_NULL should match when price is set")
 	}
-	if fn(&gen.Order{OrderId: proto.Int64(1)}) {
+	if fn(&demopb.Order{OrderId: proto.Int64(1)}) {
 		t.Fatal("NOT_NULL should not match when price is unset")
 	}
 }
@@ -330,13 +332,13 @@ func TestValuePredicateStartsWith(t *testing.T) {
 	if err != nil {
 		t.Fatalf("predicateFromProto: %v", err)
 	}
-	if !fn(&gen.Order{Flower: &gen.Flower{Type: proto.String("rose")}}) {
+	if !fn(&demopb.Order{Flower: &demopb.Flower{Type: proto.String("rose")}}) {
 		t.Fatal("STARTS_WITH 'ros' should match 'rose'")
 	}
-	if fn(&gen.Order{Flower: &gen.Flower{Type: proto.String("tulip")}}) {
+	if fn(&demopb.Order{Flower: &demopb.Flower{Type: proto.String("tulip")}}) {
 		t.Fatal("STARTS_WITH 'ros' should not match 'tulip'")
 	}
-	if !fn(&gen.Order{Flower: &gen.Flower{Type: proto.String("ros")}}) {
+	if !fn(&demopb.Order{Flower: &demopb.Flower{Type: proto.String("ros")}}) {
 		t.Fatal("STARTS_WITH 'ros' should match exact 'ros'")
 	}
 }
@@ -363,14 +365,14 @@ func TestValuePredicateNestedFieldPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("predicateFromProto: %v", err)
 	}
-	if !fn(&gen.Order{Flower: &gen.Flower{Type: proto.String("rose")}}) {
+	if !fn(&demopb.Order{Flower: &demopb.Flower{Type: proto.String("rose")}}) {
 		t.Fatal("nested path should match flower.type=rose")
 	}
-	if fn(&gen.Order{Flower: &gen.Flower{Type: proto.String("tulip")}}) {
+	if fn(&demopb.Order{Flower: &demopb.Flower{Type: proto.String("tulip")}}) {
 		t.Fatal("nested path should not match flower.type=tulip")
 	}
 	// flower not set at all
-	if fn(&gen.Order{OrderId: proto.Int64(1)}) {
+	if fn(&demopb.Order{OrderId: proto.Int64(1)}) {
 		t.Fatal("nested path should return false when intermediate message is nil")
 	}
 }
@@ -414,13 +416,13 @@ func TestAndPredicate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("predicateFromProto: %v", err)
 	}
-	if !fn(&gen.Order{Price: proto.Int32(500)}) {
+	if !fn(&demopb.Order{Price: proto.Int32(500)}) {
 		t.Fatal("AND: price=500 should match (100 < 500 < 1000)")
 	}
-	if fn(&gen.Order{Price: proto.Int32(50)}) {
+	if fn(&demopb.Order{Price: proto.Int32(50)}) {
 		t.Fatal("AND: price=50 should not match (not > 100)")
 	}
-	if fn(&gen.Order{Price: proto.Int32(1000)}) {
+	if fn(&demopb.Order{Price: proto.Int32(1000)}) {
 		t.Fatal("AND: price=1000 should not match (not < 1000)")
 	}
 }
@@ -464,13 +466,13 @@ func TestOrPredicate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("predicateFromProto: %v", err)
 	}
-	if !fn(&gen.Order{Price: proto.Int32(100)}) {
+	if !fn(&demopb.Order{Price: proto.Int32(100)}) {
 		t.Fatal("OR: price=100 should match")
 	}
-	if !fn(&gen.Order{Price: proto.Int32(200)}) {
+	if !fn(&demopb.Order{Price: proto.Int32(200)}) {
 		t.Fatal("OR: price=200 should match")
 	}
-	if fn(&gen.Order{Price: proto.Int32(300)}) {
+	if fn(&demopb.Order{Price: proto.Int32(300)}) {
 		t.Fatal("OR: price=300 should not match")
 	}
 }
@@ -501,10 +503,10 @@ func TestNotPredicate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("predicateFromProto: %v", err)
 	}
-	if fn(&gen.Order{Price: proto.Int32(100)}) {
+	if fn(&demopb.Order{Price: proto.Int32(100)}) {
 		t.Fatal("NOT(price==100): price=100 should not match")
 	}
-	if !fn(&gen.Order{Price: proto.Int32(200)}) {
+	if !fn(&demopb.Order{Price: proto.Int32(200)}) {
 		t.Fatal("NOT(price==100): price=200 should match")
 	}
 }
@@ -574,19 +576,19 @@ func TestComplexNestedPredicate(t *testing.T) {
 	}
 
 	// price=200, quantity=10 -> both AND arms satisfied
-	if !fn(&gen.Order{Price: proto.Int32(200), Quantity: proto.Int32(10)}) {
+	if !fn(&demopb.Order{Price: proto.Int32(200), Quantity: proto.Int32(10)}) {
 		t.Fatal("price=200, qty=10 should match")
 	}
 	// price=200, flower.type set -> second OR arm (NOT IS_NULL) satisfied
-	if !fn(&gen.Order{Price: proto.Int32(200), Flower: &gen.Flower{Type: proto.String("rose")}}) {
+	if !fn(&demopb.Order{Price: proto.Int32(200), Flower: &demopb.Flower{Type: proto.String("rose")}}) {
 		t.Fatal("price=200, flower.type=rose should match")
 	}
 	// price=50 -> first AND arm fails regardless of other fields
-	if fn(&gen.Order{Price: proto.Int32(50), Quantity: proto.Int32(100)}) {
+	if fn(&demopb.Order{Price: proto.Int32(50), Quantity: proto.Int32(100)}) {
 		t.Fatal("price=50 should not match (first AND arm fails)")
 	}
 	// price=200, quantity=1, no flower -> OR fails (qty not > 5, flower.type IS_NULL)
-	if fn(&gen.Order{Price: proto.Int32(200), Quantity: proto.Int32(1)}) {
+	if fn(&demopb.Order{Price: proto.Int32(200), Quantity: proto.Int32(1)}) {
 		t.Fatal("price=200, qty=1, no flower should not match")
 	}
 }
@@ -615,7 +617,7 @@ func TestIndexSetPredicateProto(t *testing.T) {
 	if idx.Predicate == nil {
 		t.Fatal("Predicate function should be set")
 	}
-	if !idx.Predicate(&gen.Order{Price: proto.Int32(1)}) {
+	if !idx.Predicate(&demopb.Order{Price: proto.Int32(1)}) {
 		t.Fatal("TRUE predicate function should return true")
 	}
 }
@@ -632,7 +634,7 @@ func TestIndexSetPredicateProtoOwnsPublishedMessage(t *testing.T) {
 
 	// Mutating the caller's input after Set must affect neither representation.
 	pred.ConstantPredicate.Value = gen.ConstantPredicate_TRUE.Enum()
-	if idx.Predicate(&gen.Order{}) {
+	if idx.Predicate(&demopb.Order{}) {
 		t.Fatal("caller mutation changed compiled FALSE evaluator")
 	}
 	if got := idx.GetPredicateProto(); got.GetConstantPredicate().GetValue() != gen.ConstantPredicate_FALSE {
@@ -642,7 +644,7 @@ func TestIndexSetPredicateProtoOwnsPublishedMessage(t *testing.T) {
 	// The getter is also an ownership boundary.
 	got := idx.GetPredicateProto()
 	got.ConstantPredicate.Value = gen.ConstantPredicate_TRUE.Enum()
-	if idx.Predicate(&gen.Order{}) {
+	if idx.Predicate(&demopb.Order{}) {
 		t.Fatal("getter-result mutation changed compiled FALSE evaluator")
 	}
 	if again := idx.GetPredicateProto(); again.GetConstantPredicate().GetValue() != gen.ConstantPredicate_FALSE {
@@ -664,7 +666,7 @@ func TestIndexPredicateMetadataProtoIsMutationIsolated(t *testing.T) {
 		t.Fatalf("indexToProto: %v", err)
 	}
 	wire.Predicate.ConstantPredicate.Value = gen.ConstantPredicate_TRUE.Enum()
-	if idx.Predicate(&gen.Order{}) {
+	if idx.Predicate(&demopb.Order{}) {
 		t.Fatal("serialized metadata mutation changed compiled FALSE evaluator")
 	}
 	again, err := indexToProto(idx)
@@ -711,7 +713,7 @@ func TestIndexPredicateRepresentationsStayAtomic(t *testing.T) {
 	if err := idx.SetPredicateProto(valid); err != nil {
 		t.Fatalf("SetPredicateProto(valid): %v", err)
 	}
-	if !idx.HasPredicate() || idx.Predicate == nil || idx.Predicate(&gen.Order{}) {
+	if !idx.HasPredicate() || idx.Predicate == nil || idx.Predicate(&demopb.Order{}) {
 		t.Fatal("valid FALSE proto was not published consistently")
 	}
 
@@ -721,12 +723,12 @@ func TestIndexPredicateRepresentationsStayAtomic(t *testing.T) {
 	if err := idx.SetPredicateProto(&gen.Predicate{}); err == nil {
 		t.Fatal("empty predicate proto unexpectedly compiled")
 	}
-	if !proto.Equal(idx.GetPredicateProto(), valid) || idx.Predicate == nil || idx.Predicate(&gen.Order{}) {
+	if !proto.Equal(idx.GetPredicateProto(), valid) || idx.Predicate == nil || idx.Predicate(&demopb.Order{}) {
 		t.Fatal("rejected proto partially mutated the previous predicate")
 	}
 
 	idx.SetPredicate(func(proto.Message) bool { return true })
-	if !idx.HasPredicate() || idx.GetPredicateProto() != nil || !idx.Predicate(&gen.Order{}) {
+	if !idx.HasPredicate() || idx.GetPredicateProto() != nil || !idx.Predicate(&demopb.Order{}) {
 		t.Fatal("programmatic predicate did not replace and clear serialized semantics")
 	}
 	idx.SetPredicate(nil)
@@ -793,10 +795,10 @@ func TestIndexPredicateProtoRoundTrip(t *testing.T) {
 	}
 
 	// Verify the evaluator works
-	if !idx2.Predicate(&gen.Order{Price: proto.Int32(100)}) {
+	if !idx2.Predicate(&demopb.Order{Price: proto.Int32(100)}) {
 		t.Fatal("deserialized predicate should match price=100 (> 0)")
 	}
-	if idx2.Predicate(&gen.Order{Price: proto.Int32(-5)}) {
+	if idx2.Predicate(&demopb.Order{Price: proto.Int32(-5)}) {
 		t.Fatal("deserialized predicate should not match price=-5 (not > 0)")
 	}
 }
@@ -847,7 +849,7 @@ func TestResolveFieldPathNilMessage(t *testing.T) {
 
 func TestResolveFieldPathUnknownField(t *testing.T) {
 	t.Parallel()
-	val, has := resolveFieldPath(&gen.Order{Price: proto.Int32(100)}, []string{"nonexistent"})
+	val, has := resolveFieldPath(&demopb.Order{Price: proto.Int32(100)}, []string{"nonexistent"})
 	if has {
 		t.Fatal("unknown field should return has=false")
 	}
@@ -859,7 +861,7 @@ func TestResolveFieldPathUnknownField(t *testing.T) {
 func TestResolveFieldPathNonMessageIntermediate(t *testing.T) {
 	t.Parallel()
 	// Try to navigate through price (an int32) as if it were a message
-	val, has := resolveFieldPath(&gen.Order{Price: proto.Int32(100)}, []string{"price", "sub"})
+	val, has := resolveFieldPath(&demopb.Order{Price: proto.Int32(100)}, []string{"price", "sub"})
 	if has {
 		t.Fatal("non-message intermediate should return has=false")
 	}
@@ -871,7 +873,7 @@ func TestResolveFieldPathNonMessageIntermediate(t *testing.T) {
 func TestResolveFieldPathUnsetIntermediate(t *testing.T) {
 	t.Parallel()
 	// flower is nil, try to navigate flower.type
-	val, has := resolveFieldPath(&gen.Order{}, []string{"flower", "type"})
+	val, has := resolveFieldPath(&demopb.Order{}, []string{"flower", "type"})
 	if has {
 		t.Fatal("unset intermediate message should return has=false")
 	}
@@ -883,7 +885,7 @@ func TestResolveFieldPathUnsetIntermediate(t *testing.T) {
 func TestResolveFieldPathUnknownIntermediateField(t *testing.T) {
 	t.Parallel()
 	// "bogus" doesn't exist as a field on Order
-	val, has := resolveFieldPath(&gen.Order{}, []string{"bogus", "type"})
+	val, has := resolveFieldPath(&demopb.Order{}, []string{"bogus", "type"})
 	if has {
 		t.Fatal("unknown intermediate field should return has=false")
 	}
@@ -1123,11 +1125,11 @@ func TestNullComparisonIsNull(t *testing.T) {
 		t.Fatalf("predicateFromProto: %v", err)
 	}
 	// price unset
-	if !fn(&gen.Order{OrderId: proto.Int64(1)}) {
+	if !fn(&demopb.Order{OrderId: proto.Int64(1)}) {
 		t.Fatal("NullComparison isNull=true should match when field is unset")
 	}
 	// price set
-	if fn(&gen.Order{Price: proto.Int32(100)}) {
+	if fn(&demopb.Order{Price: proto.Int32(100)}) {
 		t.Fatal("NullComparison isNull=true should not match when field is set")
 	}
 }
@@ -1149,11 +1151,11 @@ func TestNullComparisonNotNull(t *testing.T) {
 		t.Fatalf("predicateFromProto: %v", err)
 	}
 	// price set
-	if !fn(&gen.Order{Price: proto.Int32(100)}) {
+	if !fn(&demopb.Order{Price: proto.Int32(100)}) {
 		t.Fatal("NullComparison isNull=false should match when field is set")
 	}
 	// price unset
-	if fn(&gen.Order{OrderId: proto.Int64(1)}) {
+	if fn(&demopb.Order{OrderId: proto.Int64(1)}) {
 		t.Fatal("NullComparison isNull=false should not match when field is unset")
 	}
 }
@@ -1247,7 +1249,7 @@ func TestValuePredicateUnsetFieldReturnsFalse(t *testing.T) {
 		t.Fatalf("predicateFromProto: %v", err)
 	}
 	// price not set
-	if fn(&gen.Order{OrderId: proto.Int64(1)}) {
+	if fn(&demopb.Order{OrderId: proto.Int64(1)}) {
 		t.Fatal("EQUALS on unset field should return false")
 	}
 }
@@ -1274,10 +1276,10 @@ func TestValuePredicateLongValueOperand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("predicateFromProto: %v", err)
 	}
-	if !fn(&gen.Order{OrderId: proto.Int64(42)}) {
+	if !fn(&demopb.Order{OrderId: proto.Int64(42)}) {
 		t.Fatal("LongValue operand should match order_id=42")
 	}
-	if fn(&gen.Order{OrderId: proto.Int64(99)}) {
+	if fn(&demopb.Order{OrderId: proto.Int64(99)}) {
 		t.Fatal("LongValue operand should not match order_id=99")
 	}
 }
@@ -1570,7 +1572,7 @@ func TestSetPredicateProtoAcceptsRowNumberWindow(t *testing.T) {
 
 	// The evaluator accepts everything — that is Java's shouldIndexThisRecord,
 	// and it is why the completeness question must NOT be answered from it.
-	if !idx.Predicate(&gen.Order{}) {
+	if !idx.Predicate(&demopb.Order{}) {
 		t.Fatal("the compiled row-window evaluator rejected a record; Java's " +
 			"RowNumberWindowPredicate.shouldIndexThisRecord is `return true`")
 	}

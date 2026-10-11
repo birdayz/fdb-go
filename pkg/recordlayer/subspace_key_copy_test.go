@@ -4,7 +4,7 @@ import (
 	"math/big"
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
 
@@ -163,7 +163,7 @@ func TestBuildIsolatesAFormerIndexSubspaceKey(t *testing.T) {
 	// records the departing index's subspace key, which SetSubspaceKey stores
 	// by reference.
 	raw := []byte{1, 2, 3}
-	b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))

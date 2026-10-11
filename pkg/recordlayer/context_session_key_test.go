@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
@@ -77,7 +77,7 @@ var _ = Describe("Index-update session sets", func() {
 			if err != nil {
 				return nil, err
 			}
-			if _, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Quantity: proto.Int32(2), Price: proto.Int32(3)}); err != nil {
+			if _, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Quantity: proto.Int32(2), Price: proto.Int32(3)}); err != nil {
 				return nil, err
 			}
 			Expect(GetInSession(rc, ReadableIndexesUpdated)).To(Equal(map[string]struct{}{"readable": {}}))

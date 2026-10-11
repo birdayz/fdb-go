@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -535,11 +535,11 @@ func TestDefaultRecordMaterialization(t *testing.T) {
 				case "nil_positional":
 					datum, wantAbsent = (*PositionalRow)(nil), true
 				case "nil_proto":
-					datum, wantAbsent = (*gen.Order)(nil), true
+					datum, wantAbsent = (*demopb.Order)(nil), true
 				case "all_null":
 					source.Slots[0] = nil
 				case "proto", "nullable_array_proto", "wrong_proto", "duplicate_proto":
-					message := &gen.Order{OrderId: proto.Int64(99), Tags: []string{"a"}}
+					message := &demopb.Order{OrderId: proto.Int64(99), Tags: []string{"a"}}
 					declared := PositionalTypeForDescriptor(message.ProtoReflect().Descriptor())
 					fields := append([]values.Field(nil), declared.Fields...)
 					if shape == "nullable_array_proto" {

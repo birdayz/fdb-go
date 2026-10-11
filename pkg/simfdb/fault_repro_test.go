@@ -7,7 +7,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/dst"
 	fdb "fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -37,7 +37,7 @@ func TestSimFDB_ByteReproducibleUnderFaults(t *testing.T) {
 				if err != nil {
 					return nil, err
 				}
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId:  proto.Int64(pk),
 					Price:    proto.Int32(int32(i * 10)),
 					Quantity: proto.Int32(int32(i % 3)),

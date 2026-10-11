@@ -6,7 +6,7 @@ import (
 	"context"
 	"fmt"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -41,7 +41,7 @@ var _ = Describe("Covering Index (KeyWithValueExpression) Conformance", func() {
 	Describe("Go writes, both scan covering index", func() {
 		It("value portion is wire-compatible between Go and Java", func() {
 			for i := int64(1); i <= 3; i++ {
-				order := NewOrder(i).WithPrice(int32(i*100)).WithFlower("Rose", gen.Color_RED).Build()
+				order := NewOrder(i).WithPrice(int32(i*100)).WithFlower("Rose", demopb.Color_RED).Build()
 				err := store.SaveOrderGo(ctx, order)
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -84,7 +84,7 @@ var _ = Describe("Covering Index (KeyWithValueExpression) Conformance", func() {
 	Describe("Java writes, both scan covering index", func() {
 		It("Go reads covering index entries written by Java", func() {
 			for i := int64(1); i <= 3; i++ {
-				order := NewOrder(i).WithPrice(int32(i*200)).WithFlower("Tulip", gen.Color_BLUE).Build()
+				order := NewOrder(i).WithPrice(int32(i*200)).WithFlower("Tulip", demopb.Color_BLUE).Build()
 				err := store.SaveOrderJava(ctx, order)
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -114,7 +114,7 @@ var _ = Describe("Covering Index (KeyWithValueExpression) Conformance", func() {
 	Describe("Cross-language delete removes covering index entry", func() {
 		It("Go deletes Java-written record, both see updated index", func() {
 			for i := int64(1); i <= 3; i++ {
-				order := NewOrder(i).WithPrice(int32(i*100)).WithFlower("Rose", gen.Color_RED).Build()
+				order := NewOrder(i).WithPrice(int32(i*100)).WithFlower("Rose", demopb.Color_RED).Build()
 				err := store.SaveOrderJava(ctx, order)
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -145,7 +145,7 @@ var _ = Describe("Covering Index (KeyWithValueExpression) Conformance", func() {
 
 	Describe("Update changes value portion consistently", func() {
 		It("Go updates record, Java sees new value in covering index", func() {
-			order := NewOrder(1).WithPrice(100).WithFlower("Rose", gen.Color_RED).Build()
+			order := NewOrder(1).WithPrice(100).WithFlower("Rose", demopb.Color_RED).Build()
 			err := store.SaveOrderGo(ctx, order)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -156,7 +156,7 @@ var _ = Describe("Covering Index (KeyWithValueExpression) Conformance", func() {
 			Expect(toInt64(javaEntries[0].Key[0])).To(Equal(int64(100)))
 
 			// Update price from 100 to 500
-			order2 := NewOrder(1).WithPrice(500).WithFlower("Rose", gen.Color_RED).Build()
+			order2 := NewOrder(1).WithPrice(500).WithFlower("Rose", demopb.Color_RED).Build()
 			err = store.SaveOrderGo(ctx, order2)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -180,12 +180,12 @@ var _ = Describe("Covering Index (KeyWithValueExpression) Conformance", func() {
 		It("interleaved Go and Java writes produce consistent covering index", func() {
 			// Go writes orders 1,3,5; Java writes orders 2,4
 			for _, id := range []int64{1, 3, 5} {
-				order := NewOrder(id).WithPrice(int32(id*100)).WithFlower("Rose", gen.Color_RED).Build()
+				order := NewOrder(id).WithPrice(int32(id*100)).WithFlower("Rose", demopb.Color_RED).Build()
 				err := store.SaveOrderGo(ctx, order)
 				Expect(err).NotTo(HaveOccurred())
 			}
 			for _, id := range []int64{2, 4} {
-				order := NewOrder(id).WithPrice(int32(id*100)).WithFlower("Tulip", gen.Color_BLUE).Build()
+				order := NewOrder(id).WithPrice(int32(id*100)).WithFlower("Tulip", demopb.Color_BLUE).Build()
 				err := store.SaveOrderJava(ctx, order)
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -227,7 +227,7 @@ func NewCoveringIndexConformanceStore(recordDB *recordlayer.FDBDatabase, keyspac
 	coveringIndex := recordlayer.NewIndex("covering_price",
 		recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Nest("flower", recordlayer.Field("type"))), 1))
 
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -264,7 +264,7 @@ func (s *CoveringIndexConformanceStore) buildJavaParams() map[string]any {
 	return params
 }
 
-func (s *CoveringIndexConformanceStore) SaveOrderGo(ctx context.Context, order *gen.Order) error {
+func (s *CoveringIndexConformanceStore) SaveOrderGo(ctx context.Context, order *demopb.Order) error {
 	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
@@ -277,7 +277,7 @@ func (s *CoveringIndexConformanceStore) SaveOrderGo(ctx context.Context, order *
 	return err
 }
 
-func (s *CoveringIndexConformanceStore) SaveOrderJava(ctx context.Context, order *gen.Order) error {
+func (s *CoveringIndexConformanceStore) SaveOrderJava(ctx context.Context, order *demopb.Order) error {
 	params := s.buildJavaParams()
 	params["order"] = order
 	return s.java.InvokeAs(ctx, "saveOrderWithCoveringIndex", params, nil)

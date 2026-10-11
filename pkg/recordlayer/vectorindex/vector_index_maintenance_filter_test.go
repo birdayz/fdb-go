@@ -9,6 +9,8 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 )
@@ -31,7 +33,7 @@ var _ = Describe("IndexMaintenanceFilter (sliding window)", func() {
 	ctx := context.Background()
 
 	build := func(add func(*recordlayer.RecordMetaDataBuilder)) *recordlayer.RecordMetaData {
-		b := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		b := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 		b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 		b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -56,7 +58,7 @@ var _ = Describe("IndexMaintenanceFilter (sliding window)", func() {
 	It("refuses SOME in the sliding window, and maintains no window entry for NONE", func() {
 		idx := newWindowedVectorIndex("sw_filter", 2, gen.RowNumberWindowPredicate_ASC)
 		md := build(func(b *recordlayer.RecordMetaDataBuilder) { b.AddIndex("Order", idx) })
-		o := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), CoordX: proto.Int64(1), CoordY: proto.Int64(1)}
+		o := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), CoordX: proto.Int64(1), CoordY: proto.Int64(1)}
 		err := run(md, &vectorRecordingFilter{values: recordlayer.IndexValuesSome}, func(store *recordlayer.FDBRecordStore, _ *recordlayer.FDBRecordContext) error {
 			_, err := store.SaveRecord(o)
 			return err

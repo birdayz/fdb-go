@@ -8,7 +8,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -30,11 +30,11 @@ import (
 // contract) — the type the planner's seed-constructed QOV over a Customer
 // quantifier carries.
 func existsCustomerType() *values.RecordType {
-	return PositionalTypeForRecordLayout((&gen.Customer{}).ProtoReflect().Descriptor(), false)
+	return PositionalTypeForRecordLayout((&demopb.Customer{}).ProtoReflect().Descriptor(), false)
 }
 
 func existsOrderType() *values.RecordType {
-	return PositionalTypeForRecordLayout((&gen.Order{}).ProtoReflect().Descriptor(), false)
+	return PositionalTypeForRecordLayout((&demopb.Order{}).ProtoReflect().Descriptor(), false)
 }
 
 // ojProbeInnerType is the concrete inner-row carrier for the probe-only plan
@@ -146,10 +146,10 @@ func TestIntegration_DisabledBuildBinder_BakedInner(t *testing.T) {
 	t.Parallel()
 	store := setupStore(t)
 	insertCustomers(t, store,
-		&gen.Customer{CustomerId: proto.Int64(1), Name: proto.String("Alice"), Price: proto.Int32(10)},
-		&gen.Customer{CustomerId: proto.Int64(2), Name: proto.String("Bob"), Price: proto.Int32(20)},
+		&demopb.Customer{CustomerId: proto.Int64(1), Name: proto.String("Alice"), Price: proto.Int32(10)},
+		&demopb.Customer{CustomerId: proto.Int64(2), Name: proto.String("Bob"), Price: proto.Int32(20)},
 	)
-	insertOrders(t, store, &gen.Order{OrderId: proto.Int64(9001), Price: proto.Int32(10)})
+	insertOrders(t, store, &demopb.Order{OrderId: proto.Int64(9001), Price: proto.Int32(10)})
 
 	fm, _ := buildCorrelatedExistsShape(t, true)
 	results := runCorrelatedExistsShape(t, store, fm)
@@ -185,10 +185,10 @@ func TestIntegration_ProbeNegative_LazyInner(t *testing.T) {
 	t.Parallel()
 	store := setupStore(t)
 	insertCustomers(t, store,
-		&gen.Customer{CustomerId: proto.Int64(1), Name: proto.String("Alice"), Price: proto.Int32(10)},
-		&gen.Customer{CustomerId: proto.Int64(2), Name: proto.String("Bob"), Price: proto.Int32(20)},
+		&demopb.Customer{CustomerId: proto.Int64(1), Name: proto.String("Alice"), Price: proto.Int32(10)},
+		&demopb.Customer{CustomerId: proto.Int64(2), Name: proto.String("Bob"), Price: proto.Int32(20)},
 	)
-	insertOrders(t, store, &gen.Order{OrderId: proto.Int64(9001), Price: proto.Int32(10)})
+	insertOrders(t, store, &demopb.Order{OrderId: proto.Int64(9001), Price: proto.Int32(10)})
 
 	fm, custCorr := buildCorrelatedExistsShape(t, false)
 	results := runCorrelatedExistsShape(t, store, fm)

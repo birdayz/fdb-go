@@ -6,7 +6,7 @@ import (
 	"context"
 	"fmt"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -45,7 +45,7 @@ var _ = Describe("OnlineIndexer Conformance", func() {
 	Describe("Go saves, Go online-builds, Java scans", func() {
 		It("should produce index entries readable by Java", func() {
 			for i := int64(1); i <= 10; i++ {
-				err := store.SaveOrderGo(ctx, &gen.Order{
+				err := store.SaveOrderGo(ctx, &demopb.Order{
 					OrderId: proto.Int64(i),
 					Price:   proto.Int32(int32(i * 100)),
 				})
@@ -76,7 +76,7 @@ var _ = Describe("OnlineIndexer Conformance", func() {
 	Describe("Java saves, Go online-builds, both scan", func() {
 		It("should index Java-written records correctly", func() {
 			for i := int64(1); i <= 8; i++ {
-				err := store.SaveOrderJava(ctx, &gen.Order{
+				err := store.SaveOrderJava(ctx, &demopb.Order{
 					OrderId: proto.Int64(i),
 					Price:   proto.Int32(int32(i * 50)),
 				})
@@ -106,7 +106,7 @@ var _ = Describe("OnlineIndexer Conformance", func() {
 	Describe("Chunked build with small limit", func() {
 		It("should produce correct entries across multiple build transactions", func() {
 			for i := int64(1); i <= 12; i++ {
-				err := store.SaveOrderGo(ctx, &gen.Order{
+				err := store.SaveOrderGo(ctx, &demopb.Order{
 					OrderId: proto.Int64(i),
 					Price:   proto.Int32(int32(i * 10)),
 				})
@@ -137,7 +137,7 @@ var _ = Describe("OnlineIndexer Conformance", func() {
 	Describe("Go online-build vs Java rebuild produce identical results", func() {
 		It("should produce byte-identical index entries", func() {
 			for i := int64(1); i <= 5; i++ {
-				err := store.SaveOrderGo(ctx, &gen.Order{
+				err := store.SaveOrderGo(ctx, &demopb.Order{
 					OrderId: proto.Int64(i),
 					Price:   proto.Int32(int32(i * 150)),
 				})
@@ -167,7 +167,7 @@ var _ = Describe("OnlineIndexer Conformance", func() {
 
 	Describe("Index state after Go online-build", func() {
 		It("should be READABLE as seen by Java", func() {
-			err := store.SaveOrderGo(ctx, &gen.Order{
+			err := store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(100),
 			})
@@ -182,7 +182,7 @@ var _ = Describe("OnlineIndexer Conformance", func() {
 		})
 
 		It("should be READABLE as seen by Go", func() {
-			err := store.SaveOrderGo(ctx, &gen.Order{
+			err := store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(100),
 			})
@@ -201,7 +201,7 @@ var _ = Describe("OnlineIndexer Conformance", func() {
 		It("should index all records regardless of which side wrote them", func() {
 			// Go writes orders 1-3
 			for i := int64(1); i <= 3; i++ {
-				err := store.SaveOrderGo(ctx, &gen.Order{
+				err := store.SaveOrderGo(ctx, &demopb.Order{
 					OrderId: proto.Int64(i),
 					Price:   proto.Int32(int32(i * 100)),
 				})
@@ -210,7 +210,7 @@ var _ = Describe("OnlineIndexer Conformance", func() {
 
 			// Java writes orders 4-6
 			for i := int64(4); i <= 6; i++ {
-				err := store.SaveOrderJava(ctx, &gen.Order{
+				err := store.SaveOrderJava(ctx, &demopb.Order{
 					OrderId: proto.Int64(i),
 					Price:   proto.Int32(int32(i * 100)),
 				})
@@ -253,7 +253,7 @@ type OnlineIndexerConformanceStore struct {
 
 func NewOnlineIndexerConformanceStore(recordDB *recordlayer.FDBDatabase, keyspace subspace.Subspace, clusterFile string, tenantName string) (*OnlineIndexerConformanceStore, error) {
 	// Metadata WITHOUT index — for saving records before online build
-	builderNoIdx := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builderNoIdx := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builderNoIdx.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builderNoIdx.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builderNoIdx.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -264,7 +264,7 @@ func NewOnlineIndexerConformanceStore(recordDB *recordlayer.FDBDatabase, keyspac
 
 	// Metadata WITH index — for online build and scanning
 	priceIndex := recordlayer.NewIndex("Order$price", recordlayer.Field("price"))
-	builderIdx := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builderIdx := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builderIdx.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builderIdx.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builderIdx.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -303,7 +303,7 @@ func (s *OnlineIndexerConformanceStore) buildJavaParams() map[string]any {
 }
 
 // SaveOrderGo saves an order WITHOUT index using Go.
-func (s *OnlineIndexerConformanceStore) SaveOrderGo(ctx context.Context, order *gen.Order) error {
+func (s *OnlineIndexerConformanceStore) SaveOrderGo(ctx context.Context, order *demopb.Order) error {
 	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		st, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaDataNoIdx).SetSubspace(s.Keyspace).CreateOrOpen()
@@ -317,7 +317,7 @@ func (s *OnlineIndexerConformanceStore) SaveOrderGo(ctx context.Context, order *
 }
 
 // SaveOrderJava saves an order WITHOUT index using Java.
-func (s *OnlineIndexerConformanceStore) SaveOrderJava(ctx context.Context, order *gen.Order) error {
+func (s *OnlineIndexerConformanceStore) SaveOrderJava(ctx context.Context, order *demopb.Order) error {
 	params := s.buildJavaParams()
 	params["order"] = order
 	return s.java.InvokeAs(ctx, "saveOrderForOnlineBuild", params, nil)

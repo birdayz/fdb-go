@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -29,7 +31,7 @@ func requireEmbeddedPhysicalTypeCodes(t *testing.T, got []values.Type, want ...v
 func TestPhysicalKeyComponentTypesFollowExpressionTopology(t *testing.T) {
 	t.Parallel()
 
-	descriptor := gen.File_record_layer_demo_proto.Messages().ByName("TypedRecord")
+	descriptor := demopb.File_record_layer_demo_proto.Messages().ByName("TypedRecord")
 	recordType := &recordlayer.RecordType{
 		Name:            "TypedRecord",
 		Descriptor:      descriptor,
@@ -70,7 +72,7 @@ func TestPhysicalKeyComponentTypesHandleNestingAndCardinality(t *testing.T) {
 
 	order := &recordlayer.RecordType{
 		Name:            "Order",
-		Descriptor:      gen.File_record_layer_demo_proto.Messages().ByName("Order"),
+		Descriptor:      demopb.File_record_layer_demo_proto.Messages().ByName("Order"),
 		RecordTypeIndex: 1,
 	}
 	nested := recordlayer.Nest("flower", recordlayer.Field("color"))
@@ -195,7 +197,7 @@ func TestPrimaryCandidateTypesExcludeExecutorRecordTypePrefix(t *testing.T) {
 
 	recordType := &recordlayer.RecordType{
 		Name:            "TypedRecord",
-		Descriptor:      gen.File_record_layer_demo_proto.Messages().ByName("TypedRecord"),
+		Descriptor:      demopb.File_record_layer_demo_proto.Messages().ByName("TypedRecord"),
 		RecordTypeIndex: 3,
 		PrimaryKey: recordlayer.Concat(
 			recordlayer.RecordTypeKey(),
@@ -265,7 +267,7 @@ func TestCoveredPrimaryKeyColumnsRequireCoordinateSafeTail(t *testing.T) {
 
 	recordType := &recordlayer.RecordType{
 		Name:       "TypedRecord",
-		Descriptor: gen.File_record_layer_demo_proto.Messages().ByName("TypedRecord"),
+		Descriptor: demopb.File_record_layer_demo_proto.Messages().ByName("TypedRecord"),
 	}
 	for _, test := range []struct {
 		name       string
@@ -359,7 +361,7 @@ func metadataIndexDefForOrderPrimaryKeyAndIndex(
 	indexName string,
 ) *metadataIndexDef {
 	t.Helper()
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(primaryKey)
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -594,7 +596,7 @@ func TestMetadataIndexDefSharedPrimaryKeyWidthDisagreementIsUnknown(t *testing.T
 func TestMetadataIndexDefPrimaryKeyTypesStayAlignedThroughMiddleTrim(t *testing.T) {
 	t.Parallel()
 
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Concat(

@@ -9,7 +9,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
@@ -29,9 +29,9 @@ func TestIntegration_FlatMapInnerRowLimitResume(t *testing.T) {
 			defer cancel()
 			store := setupStore(t)
 			insertOrders(t, store,
-				&gen.Order{OrderId: proto.Int64(1)},
-				&gen.Order{OrderId: proto.Int64(2)},
-				&gen.Order{OrderId: proto.Int64(3)},
+				&demopb.Order{OrderId: proto.Int64(1)},
+				&demopb.Order{OrderId: proto.Int64(2)},
+				&demopb.Order{OrderId: proto.Int64(3)},
 			)
 			scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
 			outerAlias := values.NamedCorrelationIdentifier("outer")

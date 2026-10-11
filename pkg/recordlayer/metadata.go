@@ -234,9 +234,8 @@ type RecordType struct {
 	closedEnumRoot *closedEnumPlan
 	decodeVT       bool
 
-	// newMessage creates a new empty instance of this record type's proto message.
-	// Pre-computed at Build() time via protoregistry. Returns concrete Go type
-	// (e.g. *gen.Order), not dynamicpb.
+	// newMessage creates an empty record of this type, set at Build: the
+	// compiled Go type whose descriptor is Descriptor, else dynamicpb over it.
 	newMessage func() proto.Message
 
 	// indexes defined for this record type (single-type)
@@ -1275,8 +1274,8 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 		}
 		if rt.UnionFieldDescriptor != nil {
 			rt.unionFieldNumber = rt.UnionFieldDescriptor.Number()
-			msgType, err := protoregistry.GlobalTypes.FindMessageByName(rt.Descriptor.FullName())
-			if err != nil || msgType.Descriptor() != rt.Descriptor {
+			msgType := GeneratedMessageType(rt.Descriptor)
+			if msgType == nil {
 				// Dynamic or revised schemas must decode against the current descriptor.
 				// This allows runtime-constructed schemas (e.g. from DDL) to be used
 				// for both serialization and deserialization.
@@ -1324,18 +1323,13 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 	return md, nil
 }
 
-// FindRegisteredMessageType returns the message type registered for fullName
-// in the process-global protobuf registry (protoregistry.GlobalTypes) — the
-// GENERATED Go type (e.g. *gen.Order) — or nil when the name is not registered
-// (a dynamic, metadata-built schema type). This is the same registry-first
-// policy Build applies to record-type message factories above: a caller that
-// rebuilds a proto value from serialized bytes must prefer the generated type
-// so the restored value has the SAME concrete Go type as a freshly-read
-// record, falling back to dynamicpb over metadata descriptors only for
-// dynamic schemas (where fresh records are dynamicpb too).
-func FindRegisteredMessageType(fullName protoreflect.FullName) protoreflect.MessageType {
-	mt, err := protoregistry.GlobalTypes.FindMessageByName(fullName)
-	if err != nil {
+// GeneratedMessageType is the compiled Go type whose descriptor is desc, nil
+// when there is none: a registered type that only shares desc's full name is
+// another message. Build decodes a record type as it when there is one, and
+// as dynamicpb over desc otherwise.
+func GeneratedMessageType(desc protoreflect.MessageDescriptor) protoreflect.MessageType {
+	mt, err := protoregistry.GlobalTypes.FindMessageByName(desc.FullName())
+	if err != nil || mt.Descriptor() != desc {
 		return nil
 	}
 	return mt

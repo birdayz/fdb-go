@@ -9,7 +9,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -26,7 +26,7 @@ func setupVectorStore(t *testing.T) *recordlayer.FDBRecordStore {
 	ctx := context.Background()
 	ks := testSubspace(t)
 
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -61,9 +61,9 @@ func TestIntegration_VectorIndexScan_KNN(t *testing.T) {
 	store := setupVectorStore(t)
 
 	insertOrders(t, store,
-		withVector(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(10)}, "price", "quantity"),
-		withVector(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(20)}, "price", "quantity"),
-		withVector(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(30), Quantity: proto.Int32(30)}, "price", "quantity"),
+		withVector(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(10)}, "price", "quantity"),
+		withVector(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(20)}, "price", "quantity"),
+		withVector(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(30), Quantity: proto.Int32(30)}, "price", "quantity"),
 	)
 
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -83,7 +83,7 @@ func TestIntegration_VectorIndexScan_KNN(t *testing.T) {
 			predicates.ComparisonDistanceRankLessThanOrEq,
 			nil, nil,
 			[]string{"Order"},
-			PositionalTypeForRecordLayout((&gen.Order{}).ProtoReflect().Descriptor(), false),
+			PositionalTypeForRecordLayout((&demopb.Order{}).ProtoReflect().Descriptor(), false),
 		))
 
 		// EXPLAIN-pin: the plan must be a BY_DISTANCE vector scan, not a
@@ -134,9 +134,9 @@ func TestIntegration_VectorIndexScan_RankLessThan(t *testing.T) {
 	ctx := context.Background()
 	store := setupVectorStore(t)
 	insertOrders(t, store,
-		withVector(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(10)}, "price", "quantity"),
-		withVector(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(20)}, "price", "quantity"),
-		withVector(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(30), Quantity: proto.Int32(30)}, "price", "quantity"),
+		withVector(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(10)}, "price", "quantity"),
+		withVector(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(20)}, "price", "quantity"),
+		withVector(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(30), Quantity: proto.Int32(30)}, "price", "quantity"),
 	)
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		s, err := recordlayer.NewStoreBuilder().
@@ -152,7 +152,7 @@ func TestIntegration_VectorIndexScan_RankLessThan(t *testing.T) {
 			&values.ConstantValue{Value: int64(3), Typ: values.NotNullLong},
 			predicates.ComparisonDistanceRankLessThan,
 			nil, nil, []string{"Order"},
-			PositionalTypeForRecordLayout((&gen.Order{}).ProtoReflect().Descriptor(), false),
+			PositionalTypeForRecordLayout((&demopb.Order{}).ProtoReflect().Descriptor(), false),
 		))
 		cursor, err := ExecutePlan(ctx, plan, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -193,9 +193,9 @@ func TestIntegration_VectorIndexScan_ContinuationPK(t *testing.T) {
 	ctx := context.Background()
 	store := setupVectorStore(t)
 	insertOrders(t, store,
-		withVector(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(10)}, "price", "quantity"),
-		withVector(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(20)}, "price", "quantity"),
-		withVector(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(30), Quantity: proto.Int32(30)}, "price", "quantity"),
+		withVector(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(10)}, "price", "quantity"),
+		withVector(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(20)}, "price", "quantity"),
+		withVector(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(30), Quantity: proto.Int32(30)}, "price", "quantity"),
 	)
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		s, err := recordlayer.NewStoreBuilder().
@@ -270,7 +270,7 @@ func TestIntegration_VectorIndexScan_ReturnVectors(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	store := setupVectorStore(t)
-	insertOrders(t, store, withVector(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(20)}, "price", "quantity"))
+	insertOrders(t, store, withVector(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(20)}, "price", "quantity"))
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		s, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).SetSubspace(testSubspace(t)).Open()
 		if err != nil {
@@ -284,7 +284,7 @@ func TestIntegration_VectorIndexScan_ReturnVectors(t *testing.T) {
 				plan := mustExecutorConstruct(plans.NewRecordQueryVectorIndexPlan("vec_pq", nil,
 					&values.ConstantValue{Value: []float64{10, 20}, Typ: values.NewArrayType(false, values.NotNullDouble)},
 					&values.ConstantValue{Value: int64(1), Typ: values.NotNullLong}, predicates.ComparisonDistanceRankLessThanOrEq,
-					nil, option, []string{"Order"}, PositionalTypeForRecordLayout((&gen.Order{}).ProtoReflect().Descriptor(), false)))
+					nil, option, []string{"Order"}, PositionalTypeForRecordLayout((&demopb.Order{}).ProtoReflect().Descriptor(), false)))
 				if ordered {
 					plan = plan.WithOrderedStream()
 				}
@@ -375,7 +375,7 @@ func TestEvalFloat64SliceSerializedVector(t *testing.T) {
 // withVector sets o's vector_data to the named numeric fields as Java's
 // RealVector bytes, the only vector form Java's maintainer reads; an unset
 // field leaves the vector null, which the index skips.
-func withVector(o *gen.Order, fields ...string) *gen.Order {
+func withVector(o *demopb.Order, fields ...string) *demopb.Order {
 	vec := make([]float64, 0, len(fields))
 	for _, f := range fields {
 		var v float64

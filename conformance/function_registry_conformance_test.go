@@ -14,6 +14,8 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
 )
 
@@ -123,7 +125,7 @@ var _ = Describe("RFC-257 key functions: the registry and create's refusals as J
 			// In code: Build returns the refusal create threw.
 			args, err := recordlayer.KeyExpressionFromProto(c.args)
 			Expect(err).NotTo(HaveOccurred())
-			builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))

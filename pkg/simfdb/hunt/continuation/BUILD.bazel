@@ -6,7 +6,7 @@ go_library(
     importpath = "fdb.dev/pkg/simfdb/hunt/continuation",
     visibility = ["//visibility:public"],
     deps = [
-        "//gen",
+        "//gen/demopb",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",

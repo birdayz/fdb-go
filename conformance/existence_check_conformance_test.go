@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
@@ -230,7 +230,7 @@ var _ = Describe("RecordExistenceCheck Conformance", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Try to save a Customer at the same PK with ERROR_IF_RECORD_TYPE_CHANGED
-			customer := &gen.Customer{CustomerId: &orderID, Name: stringPtr("Alice")}
+			customer := &demopb.Customer{CustomerId: &orderID, Name: stringPtr("Alice")}
 			_, saveErr := store.RunRaw(ctx, func(st *recordlayer.FDBRecordStore) (any, error) {
 				return st.SaveRecordWithOptions(customer, recordlayer.RecordExistenceCheckErrorIfTypeChanged)
 			})
@@ -286,7 +286,7 @@ var _ = Describe("RecordExistenceCheck Conformance", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Try to save a Customer at the same PK with ERROR_IF_NOT_EXISTS_OR_RECORD_TYPE_CHANGED
-			customer := &gen.Customer{CustomerId: &orderID, Name: stringPtr("Bob")}
+			customer := &demopb.Customer{CustomerId: &orderID, Name: stringPtr("Bob")}
 			_, saveErr := store.RunRaw(ctx, func(st *recordlayer.FDBRecordStore) (any, error) {
 				return st.SaveRecordWithOptions(customer, recordlayer.RecordExistenceCheckErrorIfNotExistsOrTypeChanged)
 			})

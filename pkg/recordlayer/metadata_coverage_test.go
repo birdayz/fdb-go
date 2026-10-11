@@ -7,13 +7,15 @@ import (
 	. "github.com/onsi/gomega"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 )
 
 // Tests targeting uncovered lines in metadata.go to push coverage from ~79% to ~85%.
 var _ = Describe("RecordMetaData coverage", func() {
 	// Helper: build a standard metadata from the demo proto.
 	buildDemoMetadata := func() *RecordMetaData {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -26,7 +28,7 @@ var _ = Describe("RecordMetaData coverage", func() {
 		// Lines 292-316: GetVersion, IsSplitLongRecords, IsStoreRecordVersions,
 		// GetRecordCountKey, GetRecordTypes.
 		It("GetVersion returns current builder version", func() {
-			b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			initialVersion := b.GetVersion()
 			b.SetVersion(42)
 			Expect(b.GetVersion()).To(Equal(42))
@@ -34,28 +36,28 @@ var _ = Describe("RecordMetaData coverage", func() {
 		})
 
 		It("IsSplitLongRecords returns builder state", func() {
-			b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			Expect(b.IsSplitLongRecords()).To(BeFalse())
 			b.SetSplitLongRecords(true)
 			Expect(b.IsSplitLongRecords()).To(BeTrue())
 		})
 
 		It("IsStoreRecordVersions returns builder state", func() {
-			b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			Expect(b.IsStoreRecordVersions()).To(BeFalse())
 			b.SetStoreRecordVersions(true)
 			Expect(b.IsStoreRecordVersions()).To(BeTrue())
 		})
 
 		It("GetRecordCountKey returns builder state", func() {
-			b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			Expect(b.GetRecordCountKey()).To(BeNil())
 			b.SetRecordCountKey(EmptyKey())
 			Expect(b.GetRecordCountKey()).NotTo(BeNil())
 		})
 
 		It("GetRecordTypes returns builder record types", func() {
-			b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			rt := b.GetRecordTypes()
 			Expect(rt).To(HaveKey("Order"))
 			Expect(rt).To(HaveKey("Customer"))
@@ -94,7 +96,7 @@ var _ = Describe("RecordMetaData coverage", func() {
 			idx := NewIndex("bad_bitmap", Field("price"))
 			idx.Type = IndexTypeBitmapValue
 
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -112,7 +114,7 @@ var _ = Describe("RecordMetaData coverage", func() {
 			idx := NewIndex("bad_bitmap2", GroupAll(Concat(Field("price"), Field("order_id"))))
 			idx.Type = IndexTypeBitmapValue
 
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -172,7 +174,7 @@ var _ = Describe("RecordMetaData coverage", func() {
 
 		// Lines 992-999: GetIndexFromSubspaceKey.
 		It("GetIndexFromSubspaceKey finds index", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -191,7 +193,7 @@ var _ = Describe("RecordMetaData coverage", func() {
 
 		// Lines 980-987: GetFormerIndexesSince.
 		It("GetFormerIndexesSince filters by version", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -225,7 +227,7 @@ var _ = Describe("RecordMetaData coverage", func() {
 	Describe("CommonPrimaryKeyLength", func() {
 		// Lines 1050-1062.
 		It("returns common length when all types share same PK length", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			// All PKs are single-column fields.
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
@@ -237,7 +239,7 @@ var _ = Describe("RecordMetaData coverage", func() {
 		})
 
 		It("returns -1 when types have different PK lengths", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Concat(Field("order_id"), Field("price")))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -251,7 +253,7 @@ var _ = Describe("RecordMetaData coverage", func() {
 	Describe("GetIndexesForRecordType with multi-type indexes", func() {
 		// Lines 926-927: multi-type index path.
 		It("returns both single-type and multi-type indexes", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -283,7 +285,7 @@ var _ = Describe("RecordMetaData coverage", func() {
 
 	Describe("RecordType.GetAllIndexes", func() {
 		It("combines single-type and multi-type indexes", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -300,7 +302,7 @@ var _ = Describe("RecordMetaData coverage", func() {
 		})
 
 		It("returns only single-type when no multi-type indexes", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -318,7 +320,7 @@ var _ = Describe("RecordMetaData coverage", func() {
 
 	Describe("RecordType accessor methods", func() {
 		It("HasExplicitRecordTypeKey and GetRecordTypeKey", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -411,7 +413,7 @@ var _ = Describe("RecordMetaData coverage", func() {
 
 	Describe("SetRecordCountKey version bump", func() {
 		It("bumps version when value changes", func() {
-			b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			v1 := b.GetVersion()
 			b.SetRecordCountKey(EmptyKey())
 			v2 := b.GetVersion()
@@ -426,7 +428,7 @@ var _ = Describe("RecordMetaData coverage", func() {
 
 	Describe("SetStoreRecordVersions version bump", func() {
 		It("bumps version when value changes", func() {
-			b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			v1 := b.GetVersion()
 			b.SetStoreRecordVersions(true)
 			v2 := b.GetVersion()
@@ -441,7 +443,7 @@ var _ = Describe("RecordMetaData coverage", func() {
 
 	Describe("SetSplitLongRecords version bump", func() {
 		It("bumps version when value changes", func() {
-			b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			v1 := b.GetVersion()
 			b.SetSplitLongRecords(true)
 			v2 := b.GetVersion()
@@ -467,7 +469,7 @@ var _ = Describe("RecordMetaData coverage", func() {
 
 	Describe("Build error: primary key creates duplicates", func() {
 		It("rejects primary key with fan-out", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(FanOut("tags"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -482,7 +484,7 @@ var _ = Describe("RecordMetaData coverage", func() {
 
 	Describe("Build error: primary key zero columns", func() {
 		It("rejects EmptyKeyExpression as primary key", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(EmptyKey())
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -497,7 +499,7 @@ var _ = Describe("RecordMetaData coverage", func() {
 
 	Describe("Build error: duplicate index name", func() {
 		It("rejects adding same index name twice", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -512,7 +514,7 @@ var _ = Describe("RecordMetaData coverage", func() {
 
 	Describe("AddIndex with unknown record type", func() {
 		It("records build error", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -526,7 +528,7 @@ var _ = Describe("RecordMetaData coverage", func() {
 
 	Describe("AddMultiTypeIndex edge cases", func() {
 		It("delegates to AddUniversalIndex for empty list", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -539,7 +541,7 @@ var _ = Describe("RecordMetaData coverage", func() {
 		})
 
 		It("delegates to AddIndex for single-element list", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -552,7 +554,7 @@ var _ = Describe("RecordMetaData coverage", func() {
 		})
 
 		It("records error for unknown record type in multi-type list", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -567,7 +569,7 @@ var _ = Describe("RecordMetaData coverage", func() {
 
 	Describe("GetRecordType of an unknown type", func() {
 		It("records Java's MetaDataException for Build", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("NonExistent")
 			_, err := builder.Build()
 			Expect(err).To(Equal(&MetaDataError{Message: "Unknown record type NonExistent"}))
@@ -576,7 +578,7 @@ var _ = Describe("RecordMetaData coverage", func() {
 
 	Describe("EnableCounterBasedSubspaceKeys", func() {
 		It("assigns integer subspace keys", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.EnableCounterBasedSubspaceKeys()
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
@@ -600,7 +602,7 @@ var _ = Describe("RecordMetaData coverage", func() {
 
 	Describe("Index replacement chain validation", func() {
 		It("rejects replacement index that does not exist", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))

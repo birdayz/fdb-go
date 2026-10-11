@@ -11,6 +11,8 @@ import (
 	. "github.com/onsi/gomega"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -50,7 +52,7 @@ var _ = Describe("Index Build State Conformance", func() {
 
 	// buildGoMetaData creates metadata WITHOUT index (for saving records before build).
 	buildGoMetaData := func() *recordlayer.RecordMetaData {
-		b := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		b := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 		b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 		b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -62,7 +64,7 @@ var _ = Describe("Index Build State Conformance", func() {
 	// buildGoIndexedMetaData creates metadata WITH the Order$price VALUE index.
 	buildGoIndexedMetaData := func() (*recordlayer.RecordMetaData, *recordlayer.Index) {
 		priceIndex := recordlayer.NewIndex("Order$price", recordlayer.Field("price"))
-		b := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		b := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 		b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 		b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -88,7 +90,7 @@ var _ = Describe("Index Build State Conformance", func() {
 				if err != nil {
 					return nil, err
 				}
-				_, err = st.SaveRecord(&gen.Order{
+				_, err = st.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(1),
 					Price:   proto.Int32(100),
 				})
@@ -221,7 +223,7 @@ var _ = Describe("Index Build State Conformance", func() {
 				if err != nil {
 					return nil, err
 				}
-				_, err = st.SaveRecord(&gen.Order{
+				_, err = st.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(1),
 					Price:   proto.Int32(500),
 				})
@@ -285,7 +287,7 @@ var _ = Describe("Index Build State Conformance", func() {
 				if err != nil {
 					return nil, err
 				}
-				_, err = st.SaveRecord(&gen.Order{
+				_, err = st.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(1),
 					Price:   proto.Int32(200),
 				})

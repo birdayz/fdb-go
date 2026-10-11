@@ -3,7 +3,7 @@ package recordlayer
 import (
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
 )
@@ -36,7 +36,7 @@ func TestListKeyExpressionBasic(t *testing.T) {
 	// should produce [tuple(1), tuple(100)] — each child's value wrapped in a nested tuple.
 	expr := ListExpr(Field("order_id"), Field("price"))
 
-	msg := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
+	msg := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
 	results, err := expr.Evaluate(nil, msg)
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)
@@ -56,7 +56,7 @@ func TestListKeyExpressionSingleChild(t *testing.T) {
 	t.Parallel()
 
 	expr := ListExpr(Field("order_id"))
-	msg := &gen.Order{OrderId: proto.Int64(42)}
+	msg := &demopb.Order{OrderId: proto.Int64(42)}
 	results, err := expr.Evaluate(nil, msg)
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)
@@ -75,7 +75,7 @@ func TestListKeyExpressionNoChildren(t *testing.T) {
 	t.Parallel()
 
 	expr := ListExpr()
-	msg := &gen.Order{OrderId: proto.Int64(1)}
+	msg := &demopb.Order{OrderId: proto.Int64(1)}
 	results, err := expr.Evaluate(nil, msg)
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)
@@ -92,7 +92,7 @@ func TestListKeyExpressionFanOutCrossProduct(t *testing.T) {
 	t.Parallel()
 
 	expr := ListExpr(FanOut("tags"), Field("order_id"))
-	msg := &gen.Order{
+	msg := &demopb.Order{
 		Tags:    []string{"alpha", "beta"},
 		OrderId: proto.Int64(99),
 	}
@@ -114,7 +114,7 @@ func TestListKeyExpressionFanOutBothChildren(t *testing.T) {
 	t.Parallel()
 
 	expr := ListExpr(FanOut("tags"), FanOut("tags"))
-	msg := &gen.Order{
+	msg := &demopb.Order{
 		Tags: []string{"x", "y"},
 	}
 	results, err := expr.Evaluate(nil, msg)
@@ -130,7 +130,7 @@ func TestListKeyExpressionEmptyFanOut(t *testing.T) {
 	t.Parallel()
 
 	expr := ListExpr(FanOut("tags"), Field("order_id"))
-	msg := &gen.Order{
+	msg := &demopb.Order{
 		Tags:    nil,
 		OrderId: proto.Int64(1),
 	}
@@ -150,7 +150,7 @@ func TestListKeyExpressionMultiColumnChild(t *testing.T) {
 		Concat(Field("order_id"), Field("price")),
 		Field("order_id"),
 	)
-	msg := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
+	msg := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
 	results, err := expr.Evaluate(nil, msg)
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)
@@ -305,7 +305,7 @@ func TestListKeyExpressionNestedTuplesPack(t *testing.T) {
 	t.Parallel()
 
 	expr := ListExpr(Field("order_id"), Field("price"))
-	msg := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
+	msg := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
 	results, err := expr.Evaluate(nil, msg)
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)

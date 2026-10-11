@@ -6,6 +6,8 @@ import (
 	"fmt"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
@@ -56,7 +58,7 @@ var _ = Describe("Index pending queue application", func() {
 			incarnation, err := store.GetIncarnation()
 			Expect(err).NotTo(HaveOccurred())
 			for _, partition := range []int32{7, 8} {
-				record := &FDBStoredRecord[proto.Message]{Record: &gen.Order{OrderId: proto.Int64(int64(partition)), Quantity: proto.Int32(partition), Price: proto.Int32(42)}, PrimaryKey: tuple.Tuple{int64(partition)}, RecordType: md.GetRecordType("Order")}
+				record := &FDBStoredRecord[proto.Message]{Record: &demopb.Order{OrderId: proto.Int64(int64(partition)), Quantity: proto.Int32(partition), Price: proto.Int32(42)}, PrimaryKey: tuple.Tuple{int64(partition)}, RecordType: md.GetRecordType("Order")}
 				data, err := maintainer.SerializePendingWriteQueue(nil, record)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(queue.Enqueue(rc, &gen.PendingWritesQueueEntry{Operation: gen.PendingWritesQueueEntry_UPDATE.Enum(), Data: data}, incarnation)).To(Succeed())
@@ -324,7 +326,7 @@ var _ = Describe("Nested pending queue Any compatibility", func() {
 					Expect(err).NotTo(HaveOccurred())
 					maintainer, err := store.GetIndexMaintainer(index)
 					Expect(err).NotTo(HaveOccurred())
-					record := &FDBStoredRecord[proto.Message]{Record: &gen.Order{OrderId: proto.Int64(1), Quantity: proto.Int32(7), Price: proto.Int32(42), CoordX: proto.Int64(3), CoordY: proto.Int64(4)}, PrimaryKey: tuple.Tuple{int64(1)}, RecordType: md.GetRecordType("Order")}
+					record := &FDBStoredRecord[proto.Message]{Record: &demopb.Order{OrderId: proto.Int64(1), Quantity: proto.Int32(7), Price: proto.Int32(42), CoordX: proto.Int64(3), CoordY: proto.Int64(4)}, PrimaryKey: tuple.Tuple{int64(1)}, RecordType: md.GetRecordType("Order")}
 					var data *anypb.Any
 					operation := gen.PendingWritesQueueEntry_UPDATE
 					if deleting {

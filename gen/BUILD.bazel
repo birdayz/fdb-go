@@ -19,8 +19,6 @@ go_library(
         "record_cursor_vtproto.pb.go",
         "record_key_expression.pb.go",
         "record_key_expression_vtproto.pb.go",
-        "record_layer_demo.pb.go",
-        "record_layer_demo_vtproto.pb.go",
         "record_metadata.pb.go",
         "record_metadata_options.pb.go",
         "record_metadata_options_vtproto.pb.go",

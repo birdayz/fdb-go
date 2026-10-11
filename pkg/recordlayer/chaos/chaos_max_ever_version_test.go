@@ -7,7 +7,7 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
 )
 
@@ -15,7 +15,7 @@ import (
 // Tracks the maximum versionstamp ever written across all Order records.
 func buildMaxEverVersionMetadata() *recordlayer.RecordMetaData {
 	builder := recordlayer.NewRecordMetaDataBuilder()
-	builder.SetRecords(gen.File_record_layer_demo_proto)
+	builder.SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -34,7 +34,7 @@ func buildMaxEverVersionMetadata() *recordlayer.RecordMetaData {
 // Groups by quantity, so there's one max-version entry per unique quantity value.
 func buildGroupedMaxEverVersionMetadata() *recordlayer.RecordMetaData {
 	builder := recordlayer.NewRecordMetaDataBuilder()
-	builder.SetRecords(gen.File_record_layer_demo_proto)
+	builder.SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -129,13 +129,13 @@ func TestMaxEverVersionBasicVerify(t *testing.T) {
 	md := buildMaxEverVersionMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 	s.Verify()
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
 	s.Verify()
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(300)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(300)})
 	s.Verify()
 
 	// Additional check: exactly 1 ungrouped entry.
@@ -168,7 +168,7 @@ func TestMaxEverVersionCommitUnknownInsert(t *testing.T) {
 	// MAX_EVER_VERSION uses BYTE_MAX (idempotent) or SET_VERSIONSTAMPED_VALUE
 	// with a merge function that keeps max. Retry should be safe.
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 	s.Verify()
 }
 
@@ -177,13 +177,13 @@ func TestMaxEverVersionCommitUnknownOverwrite(t *testing.T) {
 	md := buildMaxEverVersionMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 	s.Verify()
 
 	// Overwrite with commit-unknown. The max version should ratchet up
 	// to the second transaction's versionstamp (which is >= the first).
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(999)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(999)})
 	s.Verify()
 }
 
@@ -192,7 +192,7 @@ func TestMaxEverVersionCommitUnknownDelete(t *testing.T) {
 	md := buildMaxEverVersionMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 	s.Verify()
 
 	// _EVER semantics: deletes are no-ops for the index.
@@ -229,7 +229,7 @@ func TestMaxEverVersionDeleteAllRecords(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 
 	for i := int64(1); i <= 5; i++ {
-		s.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
+		s.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
 	}
 	s.Verify()
 
@@ -238,7 +238,7 @@ func TestMaxEverVersionDeleteAllRecords(t *testing.T) {
 	s.Verify()
 
 	// After delete-all, save a new record. A fresh MAX_EVER_VERSION entry should appear.
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(99), Price: proto.Int32(42)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(99), Price: proto.Int32(42)})
 	s.Verify()
 
 	ctx, cancelCtx := chaosRunContext(0)
@@ -274,7 +274,7 @@ func TestMaxEverVersionRandomFaults(t *testing.T) {
 	for i := 0; i < numOps; i++ {
 		pk := s.Rng.Int64N(maxPK) + 1
 		if s.Rng.Float64() < 0.7 {
-			s.SaveRecord(&gen.Order{
+			s.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(pk),
 				Price:   proto.Int32(s.Rng.Int32N(1000)),
 			})
@@ -303,7 +303,7 @@ func TestMaxEverVersionHeavyFaultStress(t *testing.T) {
 	for i := 0; i < numOps; i++ {
 		pk := s.Rng.Int64N(maxPK) + 1
 		if s.Rng.Float64() < 0.6 {
-			s.SaveRecord(&gen.Order{
+			s.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(pk),
 				Price:   proto.Int32(s.Rng.Int32N(500)),
 			})
@@ -330,14 +330,14 @@ func TestMaxEverVersionGroupedBasicVerify(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 
 	// Save records with different quantities (grouping keys).
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(5)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(5)})
 	s.Verify()
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200), Quantity: proto.Int32(10)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200), Quantity: proto.Int32(10)})
 	s.Verify()
 
 	// Same quantity group as record 1 — should update max for that group.
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(300), Quantity: proto.Int32(5)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(300), Quantity: proto.Int32(5)})
 	s.Verify()
 
 	// Verify grouped entries: should be at most 2 entries (qty=5 and qty=10).
@@ -379,7 +379,7 @@ func TestMaxEverVersionGroupedRandomFaults(t *testing.T) {
 		if s.Rng.Float64() < 0.7 {
 			qty := s.Rng.Int32N(5) * 10 // small quantity space for grouping collisions
 			uniqueQuantities[qty] = true
-			s.SaveRecord(&gen.Order{
+			s.SaveRecord(&demopb.Order{
 				OrderId:  proto.Int64(pk),
 				Price:    proto.Int32(s.Rng.Int32N(1000)),
 				Quantity: proto.Int32(qty),
@@ -435,7 +435,7 @@ func TestMaxEverVersionAllFaultsStress(t *testing.T) {
 	for i := 0; i < numOps; i++ {
 		pk := s.Rng.Int64N(maxPK) + 1
 		if s.Rng.Float64() < 0.65 {
-			s.SaveRecord(&gen.Order{
+			s.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(pk),
 				Price:   proto.Int32(s.Rng.Int32N(800)),
 			})
@@ -459,7 +459,7 @@ func TestMaxEverVersionGroupedCommitUnknownInsert(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(5)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(5)})
 	s.Verify()
 }
 
@@ -468,12 +468,12 @@ func TestMaxEverVersionGroupedCommitUnknownOverwrite(t *testing.T) {
 	md := buildGroupedMaxEverVersionMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(5)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(5)})
 	s.Verify()
 
 	// Overwrite with different quantity (changes grouping key).
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(200), Quantity: proto.Int32(10)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(200), Quantity: proto.Int32(10)})
 	s.Verify()
 }
 
@@ -483,7 +483,7 @@ func TestMaxEverVersionGroupedDeleteAll(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 
 	for i := int64(1); i <= 5; i++ {
-		s.SaveRecord(&gen.Order{
+		s.SaveRecord(&demopb.Order{
 			OrderId:  proto.Int64(i),
 			Price:    proto.Int32(int32(i * 10)),
 			Quantity: proto.Int32(int32(i % 3)),
@@ -496,7 +496,7 @@ func TestMaxEverVersionGroupedDeleteAll(t *testing.T) {
 	s.Verify()
 
 	// After delete-all + re-save, grouped entries should reflect only the new record.
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(99), Price: proto.Int32(42), Quantity: proto.Int32(7)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(99), Price: proto.Int32(42), Quantity: proto.Int32(7)})
 	s.Verify()
 
 	ctx, cancelCtx := chaosRunContext(0)
@@ -535,7 +535,7 @@ func TestMaxEverVersionGroupedHeavyFaultStress(t *testing.T) {
 	for i := 0; i < numOps; i++ {
 		pk := s.Rng.Int64N(maxPK) + 1
 		if s.Rng.Float64() < 0.6 {
-			s.SaveRecord(&gen.Order{
+			s.SaveRecord(&demopb.Order{
 				OrderId:  proto.Int64(pk),
 				Price:    proto.Int32(s.Rng.Int32N(500)),
 				Quantity: proto.Int32(s.Rng.Int32N(5) * 10),
@@ -572,14 +572,14 @@ func TestMaxEverVersionIdempotencyExplanation(t *testing.T) {
 	// non-idempotent, this would corrupt the index value.
 	for i := int64(1); i <= 5; i++ {
 		s.InjectOnce(FaultCommitUnknown)
-		s.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+		s.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 		s.Verify()
 	}
 
 	// Overwrite all with commit-unknown.
 	for i := int64(1); i <= 5; i++ {
 		s.InjectOnce(FaultCommitUnknown)
-		s.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 200))})
+		s.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 200))})
 		s.Verify()
 	}
 

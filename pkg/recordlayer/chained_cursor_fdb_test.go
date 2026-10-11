@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -52,7 +54,7 @@ func TestFDB_ChainedCursorEmptyContinuation(t *testing.T) {
 	t.Cleanup(rawDB.Close)
 	db := NewFDBDatabase(rawDB)
 
-	builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(Field("name"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -68,7 +70,7 @@ func TestFDB_ChainedCursorEmptyContinuation(t *testing.T) {
 			return nil, err
 		}
 		for i, name := range want {
-			if _, err := store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(int64(i)), Name: proto.String(name)}); err != nil {
+			if _, err := store.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(int64(i)), Name: proto.String(name)}); err != nil {
 				return nil, err
 			}
 		}
@@ -102,7 +104,7 @@ func TestFDB_ChainedCursorEmptyContinuation(t *testing.T) {
 						if err != nil || !result.HasNext() {
 							return nil, err
 						}
-						name := result.GetValue().Record.(*gen.Customer).GetName()
+						name := result.GetValue().Record.(*demopb.Customer).GetName()
 						return &name, nil
 					},
 					func(name string) []byte { return []byte(name) },

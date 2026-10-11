@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"os"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	gofdb "fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -145,7 +145,7 @@ func (env *TenantEnvironment) Cleanup(_ context.Context) error {
 // createOrderMetaData creates RecordMetaData for the Order protobuf schema
 func createOrderMetaData() (*recordlayer.RecordMetaData, error) {
 	// Build metadata with primary key defined (matches pattern from record layer tests)
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))

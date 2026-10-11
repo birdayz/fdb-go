@@ -5,6 +5,8 @@ import (
 	"errors"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -18,7 +20,7 @@ import (
 // setFormatVersion, :2245/:2266). The zero value is the interesting case, and it
 // is why the field is a pointer rather than a bare int32.
 var _ = Describe("StoreBuilder_FormatVersion", func() {
-	fvBuilder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	fvBuilder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	fvBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	fvBuilder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	fvBuilder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -232,7 +234,7 @@ var _ = Describe("StoreBuilder_FormatVersion", func() {
 	DescribeTable("writes only the record-count header fields its birth format version has",
 		func(pinned int32, wantKey bool, wantState bool) {
 			ks := specSubspace()
-			cntBuilder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			cntBuilder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			cntBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			cntBuilder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			cntBuilder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -314,7 +316,7 @@ var _ = Describe("StoreBuilder_FormatVersion", func() {
 			// genuine change or a no-op, which is what separates "must rebuild" from
 			// "must not".
 			buildMD := func(withKey bool) *RecordMetaData {
-				b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+				b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 				b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 				b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 				b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -340,7 +342,7 @@ var _ = Describe("StoreBuilder_FormatVersion", func() {
 					return nil, oErr
 				}
 				for _, id := range []int64{1, 2} {
-					if _, sErr := store.SaveRecord(&gen.Order{
+					if _, sErr := store.SaveRecord(&demopb.Order{
 						OrderId: proto.Int64(id), Price: proto.Int32(int32(id * 10)),
 					}); sErr != nil {
 						return nil, sErr
@@ -431,7 +433,7 @@ var _ = Describe("StoreBuilder_FormatVersion", func() {
 	// still gated off at 2 (< 3), so the sentinel would survive.
 	It("rebuilds record counts for an existing store below RECORD_COUNT_ADDED", func() {
 		ks := specSubspace()
-		b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -451,7 +453,7 @@ var _ = Describe("StoreBuilder_FormatVersion", func() {
 				return nil, oErr
 			}
 			Expect(store.GetFormatVersion()).To(Equal(int32(formatVersionInfoAdded)))
-			if _, sErr := store.SaveRecord(&gen.Order{
+			if _, sErr := store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(1), Price: proto.Int32(10),
 			}); sErr != nil {
 				return nil, sErr
@@ -495,7 +497,7 @@ var _ = Describe("StoreBuilder_FormatVersion", func() {
 	// rebuild would slip past the first.
 	It("does not rebuild or rewrite anything on repeated steady-state opens of a pinned store", func() {
 		ks := specSubspace()
-		b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -514,7 +516,7 @@ var _ = Describe("StoreBuilder_FormatVersion", func() {
 			if oErr != nil {
 				return nil, oErr
 			}
-			if _, sErr := store.SaveRecord(&gen.Order{
+			if _, sErr := store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(1), Price: proto.Int32(10),
 			}); sErr != nil {
 				return nil, sErr
@@ -594,7 +596,7 @@ var _ = Describe("StoreBuilder_FormatVersion", func() {
 })
 
 var _ = Describe("StoreBuilder_Validation", func() {
-	validBuilder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	validBuilder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	validBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	validBuilder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	validBuilder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -647,7 +649,7 @@ var _ = Describe("StoreBuilder_Validation", func() {
 
 var _ = Describe("StoreBuilder_CreateOpenSemantics", func() {
 	ctx := context.Background()
-	semanticsBuilder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	semanticsBuilder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	semanticsBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	semanticsBuilder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	semanticsBuilder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -791,7 +793,7 @@ var _ = Describe("StoreBuilder_CreateOpenSemantics", func() {
 var _ = Describe("StoreLockState", func() {
 	ctx := context.Background()
 
-	builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -833,7 +835,7 @@ var _ = Describe("StoreLockState", func() {
 				return nil, err
 			}
 
-			order := &gen.Order{
+			order := &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(10),
 			}
@@ -858,7 +860,7 @@ var _ = Describe("StoreLockState", func() {
 				return nil, err
 			}
 
-			order := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10)}
+			order := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(10)}
 			if _, err := store.SaveRecord(order); err != nil {
 				return nil, err
 			}
@@ -934,7 +936,7 @@ var _ = Describe("StoreLockState", func() {
 				return nil, err
 			}
 
-			order := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10)}
+			order := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(10)}
 			if _, err := store.SaveRecord(order); err != nil {
 				return nil, err
 			}
@@ -980,7 +982,7 @@ var _ = Describe("StoreLockState", func() {
 			}
 
 			// Save should work
-			order := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10)}
+			order := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(10)}
 			if _, err := store.SaveRecord(order); err != nil {
 				return nil, err
 			}
@@ -1005,7 +1007,7 @@ var _ = Describe("StoreLockState", func() {
 var _ = Describe("StoreBuilder_SetSubspace", func() {
 	It("re-derives the records subspace, so a reused builder saves into the new subspace", func() {
 		ctx := context.Background()
-		b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -1028,7 +1030,7 @@ var _ = Describe("StoreBuilder_SetSubspace", func() {
 			if err != nil {
 				return nil, err
 			}
-			if _, err := sa.SaveRecord(&gen.Order{OrderId: proto.Int64(1)}); err != nil {
+			if _, err := sa.SaveRecord(&demopb.Order{OrderId: proto.Int64(1)}); err != nil {
 				return nil, err
 			}
 			sbB, err := sb.SetSubspace(ssB).CreateOrOpen()
@@ -1036,7 +1038,7 @@ var _ = Describe("StoreBuilder_SetSubspace", func() {
 				return nil, err
 			}
 			Expect(sbB.recordsSubspace.Bytes()).To(Equal(ssB.Sub(RecordKey).Bytes()))
-			_, err = sbB.SaveRecord(&gen.Order{OrderId: proto.Int64(2)})
+			_, err = sbB.SaveRecord(&demopb.Order{OrderId: proto.Int64(2)})
 			return nil, err
 		})
 		Expect(err).NotTo(HaveOccurred())

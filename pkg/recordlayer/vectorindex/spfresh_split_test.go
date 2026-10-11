@@ -8,7 +8,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -24,7 +24,7 @@ var _ = Describe("SPFresh fine-split primitives", func() {
 	ctx := context.Background()
 
 	baseMD := func() *recordlayer.RecordMetaDataBuilder {
-		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -67,7 +67,7 @@ var _ = Describe("SPFresh fine-split primitives", func() {
 			store, serr := storeBuilder(rtx)
 			Expect(serr).NotTo(HaveOccurred())
 			for id, p := range points {
-				if _, serr := store.SaveRecord(&gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(p[0]), Quantity: proto.Int32(p[1])}); serr != nil {
+				if _, serr := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(id), Price: proto.Int32(p[0]), Quantity: proto.Int32(p[1])}); serr != nil {
 					return nil, serr
 				}
 			}
@@ -323,7 +323,7 @@ var _ = Describe("SPFresh fine-split primitives", func() {
 		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			store, serr := storeBuilder(rtx)
 			Expect(serr).NotTo(HaveOccurred())
-			_, serr = store.SaveRecord(&gen.Order{OrderId: proto.Int64(999), Price: proto.Int32(10), Quantity: proto.Int32(10)})
+			_, serr = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(999), Price: proto.Int32(10), Quantity: proto.Int32(10)})
 			return nil, serr
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -364,7 +364,7 @@ var _ = Describe("SPFresh fine-split primitives", func() {
 			if serr != nil {
 				return nil, serr
 			}
-			return store.SaveRecord(&gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(10), Quantity: proto.Int32(10)})
+			return store.SaveRecord(&demopb.Order{OrderId: proto.Int64(id), Price: proto.Int32(10), Quantity: proto.Int32(10)})
 		})
 		return err
 	}
@@ -508,7 +508,7 @@ var _ = Describe("SPFresh fine-split primitives", func() {
 		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			store, serr := storeBuilder(rtx)
 			Expect(serr).NotTo(HaveOccurred())
-			_, serr = store.SaveRecord(&gen.Order{OrderId: proto.Int64(777), Price: proto.Int32(10), Quantity: proto.Int32(10)})
+			_, serr = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(777), Price: proto.Int32(10), Quantity: proto.Int32(10)})
 			return nil, serr
 		})
 		Expect(err).NotTo(HaveOccurred(), "insert near a freshly split centroid must follow the forward, not fail")
@@ -716,7 +716,7 @@ var _ = Describe("SPFresh fine-split primitives", func() {
 		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			store, serr := storeBuilder(rtx)
 			Expect(serr).NotTo(HaveOccurred())
-			_, serr = store.SaveRecord(&gen.Order{OrderId: proto.Int64(500), Price: proto.Int32(10), Quantity: proto.Int32(10)})
+			_, serr = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(500), Price: proto.Int32(10), Quantity: proto.Int32(10)})
 			return nil, serr
 		})
 		Expect(err).NotTo(HaveOccurred())

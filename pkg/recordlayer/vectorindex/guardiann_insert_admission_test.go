@@ -8,7 +8,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
@@ -37,7 +37,7 @@ var _ = Describe("GuardiANN insert admission", func() {
 			if err != nil {
 				return nil, err
 			}
-			_, refused = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(5), Quantity: proto.Int32(1)}, "price"))
+			_, refused = store.SaveRecord(withVector(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(5), Quantity: proto.Int32(1)}, "price"))
 			return nil, nil // the caller swallows the refusal and tries to commit
 		})
 		var capability *VectorCapabilityError
@@ -74,7 +74,7 @@ var _ = Describe("GuardiANN insert admission", func() {
 			if err != nil {
 				return nil, err
 			}
-			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(5), Quantity: proto.Int32(1)}, "price"))
+			_, err = store.SaveRecord(withVector(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(5), Quantity: proto.Int32(1)}, "price"))
 			return nil, err
 		})
 		Expect(errors.As(err, &capability)).To(BeTrue(), "%v", err)

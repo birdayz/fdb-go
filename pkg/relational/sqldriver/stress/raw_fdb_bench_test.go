@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	purefdb "fdb.dev/pkg/fdbgo/client"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -279,7 +279,7 @@ func TestFDB_SaveRecordBatchScaling(t *testing.T) {
 							}
 							msgs := make([]protopkg.Message, end-offset)
 							for i := offset; i < end; i++ {
-								msgs[i-offset] = &gen.Order{
+								msgs[i-offset] = &demopb.Order{
 									OrderId: protopkg.Int64(int64(i)),
 									Price:   protopkg.Int32(int32(i * 7)),
 								}
@@ -380,7 +380,7 @@ func TestFDB_SaveRecordPerRowScaling(t *testing.T) {
 							openNanos.Add(time.Since(t0).Nanoseconds())
 							t1 := time.Now()
 							for i := offset; i < end; i++ {
-								msg := &gen.Order{
+								msg := &demopb.Order{
 									OrderId: protopkg.Int64(int64(i)),
 									Price:   protopkg.Int32(int32(i * 7)),
 								}
@@ -457,7 +457,7 @@ func TestFDB_SaveRecordConcurrentVsBatch(t *testing.T) {
 			name: "sequential",
 			fn: func(store *recordlayer.FDBRecordStore, offset, end int) error {
 				for i := offset; i < end; i++ {
-					msg := &gen.Order{OrderId: protopkg.Int64(int64(i)), Price: protopkg.Int32(int32(i * 7))}
+					msg := &demopb.Order{OrderId: protopkg.Int64(int64(i)), Price: protopkg.Int32(int32(i * 7))}
 					if _, err := store.SaveRecord(msg); err != nil {
 						return err
 					}
@@ -470,7 +470,7 @@ func TestFDB_SaveRecordConcurrentVsBatch(t *testing.T) {
 			fn: func(store *recordlayer.FDBRecordStore, offset, end int) error {
 				msgs := make([]protopkg.Message, end-offset)
 				for i := offset; i < end; i++ {
-					msgs[i-offset] = &gen.Order{OrderId: protopkg.Int64(int64(i)), Price: protopkg.Int32(int32(i * 7))}
+					msgs[i-offset] = &demopb.Order{OrderId: protopkg.Int64(int64(i)), Price: protopkg.Int32(int32(i * 7))}
 				}
 				_, err := store.SaveRecordBatch(msgs)
 				return err
@@ -494,7 +494,7 @@ func TestFDB_SaveRecordConcurrentVsBatch(t *testing.T) {
 					wg.Add(1)
 					go func(id int) {
 						defer func() { <-sem; wg.Done() }()
-						msg := &gen.Order{OrderId: protopkg.Int64(int64(id)), Price: protopkg.Int32(int32(id * 7))}
+						msg := &demopb.Order{OrderId: protopkg.Int64(int64(id)), Price: protopkg.Int32(int32(id * 7))}
 						if _, err := store.SaveRecord(msg); err != nil {
 							firstErr.Record(err)
 						}
@@ -541,7 +541,7 @@ func TestFDB_SaveRecordConcurrentVsBatch(t *testing.T) {
 
 func buildBenchMD(t *testing.T) *recordlayer.RecordMetaData {
 	t.Helper()
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))

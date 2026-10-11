@@ -10,7 +10,7 @@ go_library(
     importpath = "fdb.dev/pkg/simfdb/hunt",
     visibility = ["//visibility:public"],
     deps = [
-        "//gen",
+        "//gen/demopb",
         "//pkg/dst",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
@@ -30,7 +30,7 @@ go_test(
     ],
     embed = [":hunt"],
     deps = [
-        "//gen",
+        "//gen/demopb",
         "//pkg/dst",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",

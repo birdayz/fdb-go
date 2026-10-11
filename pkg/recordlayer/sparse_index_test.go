@@ -8,7 +8,7 @@ import (
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 )
 
 var _ = Describe("Sparse/filtered indexes", func() {
@@ -21,14 +21,14 @@ var _ = Describe("Sparse/filtered indexes", func() {
 	It("only indexes records matching predicate", func() {
 		priceIndex := NewIndex("Order$price", Field("price"))
 		priceIndex.SetPredicate(func(msg proto.Message) bool {
-			order, ok := msg.(*gen.Order)
+			order, ok := msg.(*demopb.Order)
 			if !ok {
 				return false
 			}
 			return order.GetPrice() >= 500
 		})
 
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -49,7 +49,7 @@ var _ = Describe("Sparse/filtered indexes", func() {
 			for _, p := range []int32{100, 300, 500, 700, 900} {
 				id := int64(p)
 				price := p
-				_, err = store.SaveRecord(&gen.Order{OrderId: &id, Price: &price})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: &id, Price: &price})
 				if err != nil {
 					return nil, err
 				}
@@ -71,7 +71,7 @@ var _ = Describe("Sparse/filtered indexes", func() {
 		priceIndex := NewIndex("Order$price", Field("price"))
 		// No predicate set
 
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -91,7 +91,7 @@ var _ = Describe("Sparse/filtered indexes", func() {
 			for _, p := range []int32{100, 200, 300} {
 				id := int64(p)
 				price := p
-				_, err = store.SaveRecord(&gen.Order{OrderId: &id, Price: &price})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: &id, Price: &price})
 				if err != nil {
 					return nil, err
 				}
@@ -108,14 +108,14 @@ var _ = Describe("Sparse/filtered indexes", func() {
 	It("filtered records are removed from index on update when predicate changes result", func() {
 		priceIndex := NewIndex("Order$price", Field("price"))
 		priceIndex.SetPredicate(func(msg proto.Message) bool {
-			order, ok := msg.(*gen.Order)
+			order, ok := msg.(*demopb.Order)
 			if !ok {
 				return false
 			}
 			return order.GetPrice() >= 500
 		})
 
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -134,7 +134,7 @@ var _ = Describe("Sparse/filtered indexes", func() {
 			}
 			id := int64(1)
 			price := int32(600)
-			_, err = store.SaveRecord(&gen.Order{OrderId: &id, Price: &price})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: &id, Price: &price})
 			return nil, err
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -148,7 +148,7 @@ var _ = Describe("Sparse/filtered indexes", func() {
 			}
 			id := int64(1)
 			price := int32(200)
-			_, err = store.SaveRecord(&gen.Order{OrderId: &id, Price: &price})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: &id, Price: &price})
 			if err != nil {
 				return nil, err
 			}
@@ -172,7 +172,7 @@ var _ = Describe("Bulk index operations", func() {
 	It("DeleteIndexEntries clears all index entries", func() {
 		priceIndex := NewIndex("Order$price", Field("price"))
 
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -191,7 +191,7 @@ var _ = Describe("Bulk index operations", func() {
 
 			for i := int64(1); i <= 5; i++ {
 				price := int32(i * 100)
-				_, err = store.SaveRecord(&gen.Order{OrderId: &i, Price: &price})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: &i, Price: &price})
 				if err != nil {
 					return nil, err
 				}
@@ -217,7 +217,7 @@ var _ = Describe("Bulk index operations", func() {
 	It("DeleteIndexEntriesInRange clears matching prefix", func() {
 		priceIndex := NewIndex("Order$price", Field("price"))
 
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -237,7 +237,7 @@ var _ = Describe("Bulk index operations", func() {
 			// Save orders: 100, 200, 300
 			for i := int64(1); i <= 3; i++ {
 				price := int32(i * 100)
-				_, err = store.SaveRecord(&gen.Order{OrderId: &i, Price: &price})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: &i, Price: &price})
 				if err != nil {
 					return nil, err
 				}
@@ -257,7 +257,7 @@ var _ = Describe("Bulk index operations", func() {
 
 var _ = Describe("Counter-based subspace keys", func() {
 	It("assigns incrementing int64 keys", func() {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -276,7 +276,7 @@ var _ = Describe("Counter-based subspace keys", func() {
 	})
 
 	It("uses name-based keys by default", func() {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -299,7 +299,7 @@ var _ = Describe("Store accessor methods", func() {
 	})
 
 	It("GetMetaData returns metadata", func() {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -321,7 +321,7 @@ var _ = Describe("Store accessor methods", func() {
 	It("GetIndexMaintainer returns maintainer", func() {
 		priceIndex := NewIndex("Order$price", Field("price"))
 
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))

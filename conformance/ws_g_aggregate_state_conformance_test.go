@@ -18,6 +18,8 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/executor"
@@ -64,7 +66,7 @@ var wsgAggregates = []wsgAggregate{
 
 // wsgRows is one group (the key columns are equal throughout), led by a row
 // whose every operand is NULL so the first partial holds absent states.
-var wsgRows = []*gen.TypedRecord{
+var wsgRows = []*demopb.TypedRecord{
 	{Id: proto.Int64(1)},
 	{Id: proto.Int64(2), ValInt32: proto.Int32(3), ValInt64: proto.Int64(10), ValFloat: proto.Float32(1.5), ValDouble: proto.Float64(2.25)},
 	{Id: proto.Int64(3), ValInt64: proto.Int64(-4), ValDouble: proto.Float64(math.Copysign(0, -1))},
@@ -74,7 +76,7 @@ var wsgRows = []*gen.TypedRecord{
 }
 
 // wsgInput renders a row's operand the way the target step parses it.
-func wsgInput(r *gen.TypedRecord, field string) any {
+func wsgInput(r *demopb.TypedRecord, field string) any {
 	switch field {
 	case "":
 		return "1"
@@ -100,7 +102,7 @@ func wsgInput(r *gen.TypedRecord, field string) any {
 	return nil
 }
 
-func wsgSpec(rows []*gen.TypedRecord, states []string) map[string]any {
+func wsgSpec(rows []*demopb.TypedRecord, states []string) map[string]any {
 	aggs := make([]map[string]any, len(wsgAggregates))
 	for i, a := range wsgAggregates {
 		inputs := make([]any, len(rows))
@@ -148,7 +150,7 @@ var _ = Describe("WSGAggregateStateConformance", func() {
 		defer cancel()
 		java := NewJavaInvoker()
 
-		b := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		b := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 		b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 		b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -268,7 +270,7 @@ var _ = Describe("WSGAggregateStateConformance", func() {
 // wsgPlan is StreamingAgg(Scan(TypedRecord)) grouped by (val_string, val_bool,
 // price, val_bytes) over wsgAggregates, typed as the planner types them.
 func wsgPlan() plans.RecordQueryPlan {
-	desc := (&gen.TypedRecord{}).ProtoReflect().Descriptor()
+	desc := (&demopb.TypedRecord{}).ProtoReflect().Descriptor()
 	rowType := executor.PositionalTypeForRecordLayout(desc, false)
 	scan, err := plans.NewRecordQueryScanPlan([]string{"TypedRecord"}, rowType, false)
 	Expect(err).NotTo(HaveOccurred())

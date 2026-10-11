@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -52,7 +52,7 @@ var _ = Describe("RANK Index Conformance", func() {
 					if duplicates {
 						index.Options[recordlayer.IndexOptionRankCountDuplicates] = "true"
 					}
-					builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+					builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 					pk := recordlayer.Field("order_id")
 					builder.GetRecordType("Order").SetPrimaryKey(pk)
 					if overlap {
@@ -69,7 +69,7 @@ var _ = Describe("RANK Index Conformance", func() {
 					metadataBytes, err := proto.Marshal(metadataProto)
 					Expect(err).NotTo(HaveOccurred())
 					for i, score := range [][3]int64{{0, 100, 1}, {0, 100, 1}, {0, 100, 2}, {0, 200, 1}, {1, 300, 1}} {
-						order := &gen.Order{OrderId: proto.Int64(int64(i + 1)), CoordX: proto.Int64(score[0]), Price: proto.Int32(int32(score[1])), Quantity: proto.Int32(int32(score[2]))}
+						order := &demopb.Order{OrderId: proto.Int64(int64(i + 1)), CoordX: proto.Int64(score[0]), Price: proto.Int32(int32(score[1])), Quantity: proto.Int32(int32(score[2]))}
 						if javaWriter {
 							params := store.buildJavaParams()
 							params["protoBytes"], params["order"] = BytesToIntArray(metadataBytes), order
@@ -146,7 +146,7 @@ var _ = Describe("RANK Index Conformance", func() {
 	for _, javaWriter := range []bool{false, true} {
 		It(fmt.Sprintf("compares rank-valued packed tuples, Java writer=%t", javaWriter), func() {
 			for i, price := range []int32{100, 100, 200, 300} {
-				order := &gen.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)}
+				order := &demopb.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)}
 				var err error
 				if javaWriter {
 					err = store.SaveOrderJava(ctx, order)
@@ -228,7 +228,7 @@ var _ = Describe("RANK Index Conformance", func() {
 	Describe("Go writes, both scan BY_VALUE", func() {
 		It("should produce identical index entries visible to both Go and Java", func() {
 			for i, price := range []int32{300, 100, 200} {
-				err := store.SaveOrderGo(ctx, &gen.Order{
+				err := store.SaveOrderGo(ctx, &demopb.Order{
 					OrderId: proto.Int64(int64(i + 1)),
 					Price:   proto.Int32(price),
 				})
@@ -256,7 +256,7 @@ var _ = Describe("RANK Index Conformance", func() {
 	Describe("Java writes, both scan BY_VALUE", func() {
 		It("should produce identical index entries visible to both Go and Java", func() {
 			for i, price := range []int32{500, 250, 750} {
-				err := store.SaveOrderJava(ctx, &gen.Order{
+				err := store.SaveOrderJava(ctx, &demopb.Order{
 					OrderId: proto.Int64(int64(i + 1)),
 					Price:   proto.Int32(price),
 				})
@@ -284,21 +284,21 @@ var _ = Describe("RANK Index Conformance", func() {
 	Describe("Mixed writes: Go and Java both insert", func() {
 		It("should produce identically ordered entries", func() {
 			// Go writes order 1 with price=300
-			err := store.SaveOrderGo(ctx, &gen.Order{
+			err := store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(300),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Java writes order 2 with price=100
-			err = store.SaveOrderJava(ctx, &gen.Order{
+			err = store.SaveOrderJava(ctx, &demopb.Order{
 				OrderId: proto.Int64(2),
 				Price:   proto.Int32(100),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Go writes order 3 with price=200
-			err = store.SaveOrderGo(ctx, &gen.Order{
+			err = store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(3),
 				Price:   proto.Int32(200),
 			})
@@ -328,13 +328,13 @@ var _ = Describe("RANK Index Conformance", func() {
 	Describe("Delete removes index entry cross-language", func() {
 		It("should remove the index entry when Go deletes a Java-written record", func() {
 			// Java writes
-			err := store.SaveOrderJava(ctx, &gen.Order{
+			err := store.SaveOrderJava(ctx, &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(400),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			err = store.SaveOrderJava(ctx, &gen.Order{
+			err = store.SaveOrderJava(ctx, &demopb.Order{
 				OrderId: proto.Int64(2),
 				Price:   proto.Int32(200),
 			})
@@ -361,13 +361,13 @@ var _ = Describe("RANK Index Conformance", func() {
 
 		It("should remove the index entry when Java deletes a Go-written record", func() {
 			// Go writes
-			err := store.SaveOrderGo(ctx, &gen.Order{
+			err := store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(150),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			err = store.SaveOrderGo(ctx, &gen.Order{
+			err = store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(2),
 				Price:   proto.Int32(350),
 			})
@@ -395,14 +395,14 @@ var _ = Describe("RANK Index Conformance", func() {
 	Describe("Update changes index entry cross-language", func() {
 		It("should update when Go updates a Java-written record", func() {
 			// Java writes price=100
-			err := store.SaveOrderJava(ctx, &gen.Order{
+			err := store.SaveOrderJava(ctx, &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(100),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Go updates price to 500
-			err = store.SaveOrderGo(ctx, &gen.Order{
+			err = store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(500),
 			})
@@ -428,7 +428,7 @@ var _ = Describe("RANK Index Conformance", func() {
 			// Insert 5 orders with distinct prices
 			prices := []int32{500, 100, 300, 200, 400}
 			for i, price := range prices {
-				err := store.SaveOrderGo(ctx, &gen.Order{
+				err := store.SaveOrderGo(ctx, &demopb.Order{
 					OrderId: proto.Int64(int64(i + 1)),
 					Price:   proto.Int32(price),
 				})
@@ -455,7 +455,7 @@ var _ = Describe("RANK Index Conformance", func() {
 		It("should produce identical results for full rank range via both Go and Java", func() {
 			prices := []int32{300, 100, 200}
 			for i, price := range prices {
-				err := store.SaveOrderGo(ctx, &gen.Order{
+				err := store.SaveOrderGo(ctx, &demopb.Order{
 					OrderId: proto.Int64(int64(i + 1)),
 					Price:   proto.Int32(price),
 				})
@@ -484,7 +484,7 @@ var _ = Describe("RANK Index Conformance", func() {
 		It("Go writes, Java reads by rank — ranked set is shared", func() {
 			// Go inserts 3 records
 			for i, price := range []int32{600, 200, 400} {
-				err := store.SaveOrderGo(ctx, &gen.Order{
+				err := store.SaveOrderGo(ctx, &demopb.Order{
 					OrderId: proto.Int64(int64(i + 1)),
 					Price:   proto.Int32(price),
 				})
@@ -511,7 +511,7 @@ var _ = Describe("RANK Index Conformance", func() {
 		It("Java writes, Go reads by rank — ranked set is shared", func() {
 			// Java inserts 4 records
 			for i, price := range []int32{800, 200, 500, 100} {
-				err := store.SaveOrderJava(ctx, &gen.Order{
+				err := store.SaveOrderJava(ctx, &demopb.Order{
 					OrderId: proto.Int64(int64(i + 1)),
 					Price:   proto.Int32(price),
 				})
@@ -540,7 +540,7 @@ var _ = Describe("RANK Index Conformance", func() {
 		It("should update rank positions after Go deletes from Java data", func() {
 			// Java inserts 3 records
 			for i, price := range []int32{100, 200, 300} {
-				err := store.SaveOrderJava(ctx, &gen.Order{
+				err := store.SaveOrderJava(ctx, &demopb.Order{
 					OrderId: proto.Int64(int64(i + 1)),
 					Price:   proto.Int32(price),
 				})
@@ -573,7 +573,7 @@ var _ = Describe("RANK Index Conformance", func() {
 		It("Go and Java agree on rank of records written by Go", func() {
 			prices := []int32{300, 100, 500, 200, 400}
 			for i, price := range prices {
-				err := store.SaveOrderGo(ctx, &gen.Order{
+				err := store.SaveOrderGo(ctx, &demopb.Order{
 					OrderId: proto.Int64(int64(i + 1)),
 					Price:   proto.Int32(price),
 				})
@@ -599,7 +599,7 @@ var _ = Describe("RANK Index Conformance", func() {
 		It("Go and Java agree on rank of records written by Java", func() {
 			prices := []int32{50, 150, 250}
 			for i, price := range prices {
-				err := store.SaveOrderJava(ctx, &gen.Order{
+				err := store.SaveOrderJava(ctx, &demopb.Order{
 					OrderId: proto.Int64(int64(i + 1)),
 					Price:   proto.Int32(price),
 				})
@@ -623,7 +623,7 @@ var _ = Describe("RANK Index Conformance", func() {
 		It("ranks update consistently after cross-language delete", func() {
 			// Go writes 3 records
 			for i, price := range []int32{100, 200, 300} {
-				err := store.SaveOrderGo(ctx, &gen.Order{
+				err := store.SaveOrderGo(ctx, &demopb.Order{
 					OrderId: proto.Int64(int64(i + 1)),
 					Price:   proto.Int32(price),
 				})
@@ -669,7 +669,7 @@ type RankIndexConformanceStore struct {
 func NewRankIndexConformanceStore(recordDB *recordlayer.FDBDatabase, keyspace subspace.Subspace, clusterFile string, tenantName string) (*RankIndexConformanceStore, error) {
 	rankIdx := recordlayer.NewRankIndex("rank_by_price", recordlayer.GroupBy(recordlayer.Field("price")))
 
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -706,7 +706,7 @@ func (s *RankIndexConformanceStore) buildJavaParams() map[string]any {
 	return params
 }
 
-func (s *RankIndexConformanceStore) SaveOrderGo(ctx context.Context, order *gen.Order) error {
+func (s *RankIndexConformanceStore) SaveOrderGo(ctx context.Context, order *demopb.Order) error {
 	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
@@ -719,7 +719,7 @@ func (s *RankIndexConformanceStore) SaveOrderGo(ctx context.Context, order *gen.
 	return err
 }
 
-func (s *RankIndexConformanceStore) SaveOrderJava(ctx context.Context, order *gen.Order) error {
+func (s *RankIndexConformanceStore) SaveOrderJava(ctx context.Context, order *demopb.Order) error {
 	params := s.buildJavaParams()
 	params["order"] = order
 	return s.java.InvokeAs(ctx, "saveOrderWithRankIndex", params, nil)
@@ -926,7 +926,7 @@ var _ = Describe("RANK ranked set per hash function", func() {
 		if hash != "" {
 			index.Options[recordlayer.IndexOptionRankHashFunction] = hash
 		}
-		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -942,10 +942,10 @@ var _ = Describe("RANK ranked set per hash function", func() {
 	}
 	// 120 distinct scores: about seven reach level 1 under any of the hashes,
 	// so two hashes agreeing on every level by chance is negligible.
-	orders := func() []*gen.Order {
-		var out []*gen.Order
+	orders := func() []*demopb.Order {
+		var out []*demopb.Order
 		for i := 0; i < 120; i++ {
-			out = append(out, &gen.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(int32((i*37)%1000 + 1))})
+			out = append(out, &demopb.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(int32((i*37)%1000 + 1))})
 		}
 		return out
 	}

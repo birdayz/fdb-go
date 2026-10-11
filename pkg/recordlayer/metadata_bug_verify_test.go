@@ -11,13 +11,15 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 )
 
 var _ = Describe("MetadataBugVerify", func() {
 	// Bug 1: RemoveIndex must pre-increment version before recording RemovedVersion.
 	Describe("RemoveIndex version increment", func() {
 		It("RemovedVersion > AddedVersion for FormerIndex", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -35,7 +37,7 @@ var _ = Describe("MetadataBugVerify", func() {
 		})
 
 		It("version counter incremented on remove", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -61,7 +63,7 @@ var _ = Describe("MetadataBugVerify", func() {
 			ss := specSubspace()
 
 			priceIndex := NewIndex("Order$price", Field("price"))
-			builder1 := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder1 := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder1.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder1.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder1.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -77,7 +79,7 @@ var _ = Describe("MetadataBugVerify", func() {
 				if err != nil {
 					return nil, err
 				}
-				_, err = store.SaveRecord(&gen.Order{OrderId: intPtr(1), Price: int32Ptr(42)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: intPtr(1), Price: int32Ptr(42)})
 				return nil, err
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -98,7 +100,7 @@ var _ = Describe("MetadataBugVerify", func() {
 			Expect(hasIndexDataBefore).To(BeTrue())
 
 			// Remove index in v2 metadata.
-			builder2 := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder2 := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder2.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder2.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder2.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -243,7 +245,7 @@ var _ = Describe("MetadataBugVerify", func() {
 			ctx := context.Background()
 			ss := specSubspace()
 
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -280,7 +282,7 @@ var _ = Describe("MetadataBugVerify", func() {
 })
 
 func buildMetaDataForBugTest(version int, configure func(b *RecordMetaDataBuilder)) *RecordMetaData {
-	builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 )
@@ -161,7 +161,7 @@ func TestOnlineIndexerLeaseLengthDefault(t *testing.T) {
 	// Build() is where the default lands for every real caller; drive it with no
 	// SetLeaseLengthMs call. Build validates configuration only, so a bare database
 	// handle is enough to reach the resolution.
-	builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))

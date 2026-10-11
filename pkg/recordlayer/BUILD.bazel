@@ -429,6 +429,7 @@ go_test(
         "tuple_ordering_test.go",
         "typed_api_test.go",
         "typed_store_conformance_test.go",
+        "typed_store_union_field_test.go",
         "union_deserialize_test.go",
         "unique_index_concurrent_test.go",
         "utf8_strings_test.go",
@@ -447,6 +448,7 @@ go_test(
     tags = ["resources:memory:800"],
     deps = [
         "//gen",
+        "//gen/demopb",
         "//pkg/async/rtree",
         "//pkg/dst",
         "//pkg/fdbgo/fdb",
@@ -500,7 +502,7 @@ go_test(
         "resources:memory:4300",
     ],
     deps = [
-        "//gen",
+        "//gen/demopb",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",

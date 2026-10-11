@@ -3,7 +3,7 @@ package metadata
 import (
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
 )
 
@@ -12,7 +12,7 @@ import (
 // the bridge cost dominates rather than the proto descriptor tree.
 func benchmarkMetaData(b *testing.B) *recordlayer.RecordMetaData {
 	b.Helper()
-	bu := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	bu := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	bu.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	bu.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	bu.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))

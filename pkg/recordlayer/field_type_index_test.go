@@ -4,7 +4,7 @@ import (
 	"context"
 	"math"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
@@ -16,7 +16,7 @@ var _ = Describe("FieldTypeIndexes", func() {
 	ctx := context.Background()
 
 	buildTypedRecordMeta := func(indexes ...*Index) *RecordMetaData {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -56,7 +56,7 @@ var _ = Describe("FieldTypeIndexes", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.TypedRecord{Id: proto.Int64(1), ValInt32: proto.Int32(42)})
+			_, err = store.SaveRecord(&demopb.TypedRecord{Id: proto.Int64(1), ValInt32: proto.Int32(42)})
 			Expect(err).NotTo(HaveOccurred())
 
 			kvs := scanIndexEntries(store, idx)
@@ -80,7 +80,7 @@ var _ = Describe("FieldTypeIndexes", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.TypedRecord{Id: proto.Int64(1), ValSint32: proto.Int32(-100)})
+			_, err = store.SaveRecord(&demopb.TypedRecord{Id: proto.Int64(1), ValSint32: proto.Int32(-100)})
 			Expect(err).NotTo(HaveOccurred())
 
 			kvs := scanIndexEntries(store, idx)
@@ -102,7 +102,7 @@ var _ = Describe("FieldTypeIndexes", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.TypedRecord{Id: proto.Int64(1), ValSint64: proto.Int64(-9999999)})
+			_, err = store.SaveRecord(&demopb.TypedRecord{Id: proto.Int64(1), ValSint64: proto.Int64(-9999999)})
 			Expect(err).NotTo(HaveOccurred())
 
 			kvs := scanIndexEntries(store, idx)
@@ -124,7 +124,7 @@ var _ = Describe("FieldTypeIndexes", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.TypedRecord{Id: proto.Int64(1), ValSfixed32: proto.Int32(12345)})
+			_, err = store.SaveRecord(&demopb.TypedRecord{Id: proto.Int64(1), ValSfixed32: proto.Int32(12345)})
 			Expect(err).NotTo(HaveOccurred())
 
 			kvs := scanIndexEntries(store, idx)
@@ -146,7 +146,7 @@ var _ = Describe("FieldTypeIndexes", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.TypedRecord{Id: proto.Int64(1), ValSfixed64: proto.Int64(-12345)})
+			_, err = store.SaveRecord(&demopb.TypedRecord{Id: proto.Int64(1), ValSfixed64: proto.Int64(-12345)})
 			Expect(err).NotTo(HaveOccurred())
 
 			kvs := scanIndexEntries(store, idx)
@@ -168,7 +168,7 @@ var _ = Describe("FieldTypeIndexes", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.TypedRecord{Id: proto.Int64(1), ValFloat: proto.Float32(3.14)})
+			_, err = store.SaveRecord(&demopb.TypedRecord{Id: proto.Int64(1), ValFloat: proto.Float32(3.14)})
 			Expect(err).NotTo(HaveOccurred())
 
 			kvs := scanIndexEntries(store, idx)
@@ -193,7 +193,7 @@ var _ = Describe("FieldTypeIndexes", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.TypedRecord{Id: proto.Int64(1), ValDouble: proto.Float64(2.718281828)})
+			_, err = store.SaveRecord(&demopb.TypedRecord{Id: proto.Int64(1), ValDouble: proto.Float64(2.718281828)})
 			Expect(err).NotTo(HaveOccurred())
 
 			kvs := scanIndexEntries(store, idx)
@@ -215,9 +215,9 @@ var _ = Describe("FieldTypeIndexes", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.TypedRecord{Id: proto.Int64(1), ValBool: proto.Bool(true)})
+			_, err = store.SaveRecord(&demopb.TypedRecord{Id: proto.Int64(1), ValBool: proto.Bool(true)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.TypedRecord{Id: proto.Int64(2), ValBool: proto.Bool(false)})
+			_, err = store.SaveRecord(&demopb.TypedRecord{Id: proto.Int64(2), ValBool: proto.Bool(false)})
 			Expect(err).NotTo(HaveOccurred())
 
 			entries, err := AsList(ctx, store.ScanIndex(idx, TupleRangeAll, nil, ForwardScan()))
@@ -244,7 +244,7 @@ var _ = Describe("FieldTypeIndexes", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.TypedRecord{Id: proto.Int64(1), ValString: proto.String("hello world")})
+			_, err = store.SaveRecord(&demopb.TypedRecord{Id: proto.Int64(1), ValString: proto.String("hello world")})
 			Expect(err).NotTo(HaveOccurred())
 
 			kvs := scanIndexEntries(store, idx)
@@ -267,7 +267,7 @@ var _ = Describe("FieldTypeIndexes", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.TypedRecord{Id: proto.Int64(1), ValBytes: []byte{0x00, 0xFF, 0xAB}})
+			_, err = store.SaveRecord(&demopb.TypedRecord{Id: proto.Int64(1), ValBytes: []byte{0x00, 0xFF, 0xAB}})
 			Expect(err).NotTo(HaveOccurred())
 
 			kvs := scanIndexEntries(store, idx)
@@ -290,7 +290,7 @@ var _ = Describe("FieldTypeIndexes", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.TypedRecord{Id: proto.Int64(1), ValEnum: gen.Color_BLUE.Enum()})
+			_, err = store.SaveRecord(&demopb.TypedRecord{Id: proto.Int64(1), ValEnum: demopb.Color_BLUE.Enum()})
 			Expect(err).NotTo(HaveOccurred())
 
 			kvs := scanIndexEntries(store, idx)
@@ -314,7 +314,7 @@ var _ = Describe("FieldTypeIndexes", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Only set id, leave val_string unset
-			_, err = store.SaveRecord(&gen.TypedRecord{Id: proto.Int64(1)})
+			_, err = store.SaveRecord(&demopb.TypedRecord{Id: proto.Int64(1)})
 			Expect(err).NotTo(HaveOccurred())
 
 			kvs := scanIndexEntries(store, idx)
@@ -338,7 +338,7 @@ var _ = Describe("FieldTypeIndexes", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.TypedRecord{
+			_, err = store.SaveRecord(&demopb.TypedRecord{
 				Id:        proto.Int64(1),
 				ValInt32:  proto.Int32(42),
 				ValFloat:  proto.Float32(1.5),
@@ -371,11 +371,11 @@ var _ = Describe("FieldTypeIndexes", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.TypedRecord{Id: proto.Int64(1), ValDouble: proto.Float64(-1.5)})
+			_, err = store.SaveRecord(&demopb.TypedRecord{Id: proto.Int64(1), ValDouble: proto.Float64(-1.5)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.TypedRecord{Id: proto.Int64(2), ValDouble: proto.Float64(0.0)})
+			_, err = store.SaveRecord(&demopb.TypedRecord{Id: proto.Int64(2), ValDouble: proto.Float64(0.0)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.TypedRecord{Id: proto.Int64(3), ValDouble: proto.Float64(99.9)})
+			_, err = store.SaveRecord(&demopb.TypedRecord{Id: proto.Int64(3), ValDouble: proto.Float64(99.9)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Verify FDB tuple ordering: -1.5 < 0.0 < 99.9
@@ -411,13 +411,13 @@ var _ = Describe("FieldTypeIndexes", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.TypedRecord{Id: proto.Int64(1), ValFloat: proto.Float32(float32(math.Inf(1)))})
+			_, err = store.SaveRecord(&demopb.TypedRecord{Id: proto.Int64(1), ValFloat: proto.Float32(float32(math.Inf(1)))})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.TypedRecord{Id: proto.Int64(2), ValFloat: proto.Float32(float32(math.Inf(-1)))})
+			_, err = store.SaveRecord(&demopb.TypedRecord{Id: proto.Int64(2), ValFloat: proto.Float32(float32(math.Inf(-1)))})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.TypedRecord{Id: proto.Int64(3), ValFloat: proto.Float32(0.0)})
+			_, err = store.SaveRecord(&demopb.TypedRecord{Id: proto.Int64(3), ValFloat: proto.Float32(0.0)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.TypedRecord{Id: proto.Int64(4), ValFloat: proto.Float32(float32(math.Copysign(0, -1)))})
+			_, err = store.SaveRecord(&demopb.TypedRecord{Id: proto.Int64(4), ValFloat: proto.Float32(float32(math.Copysign(0, -1)))})
 			Expect(err).NotTo(HaveOccurred())
 
 			// All entries should be scannable
@@ -447,9 +447,9 @@ var _ = Describe("FieldTypeIndexes", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.TypedRecord{Id: proto.Int64(1), ValInt32: proto.Int32(math.MaxInt32)})
+			_, err = store.SaveRecord(&demopb.TypedRecord{Id: proto.Int64(1), ValInt32: proto.Int32(math.MaxInt32)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.TypedRecord{Id: proto.Int64(2), ValInt32: proto.Int32(math.MinInt32)})
+			_, err = store.SaveRecord(&demopb.TypedRecord{Id: proto.Int64(2), ValInt32: proto.Int32(math.MinInt32)})
 			Expect(err).NotTo(HaveOccurred())
 
 			entries, err := AsList(ctx, store.ScanIndex(idx, TupleRangeAll, nil, ForwardScan()))

@@ -13,7 +13,7 @@ import (
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
 )
 
@@ -48,7 +48,7 @@ var _ = Describe("DeleteRecordsWhere Conformance", func() {
 
 		// Build metadata with type-prefixed PKs matching Java's createTypePrefixedMetaData()
 		priceIdx = recordlayer.NewIndex("Order$price_tp", recordlayer.Field("price"))
-		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(
 			recordlayer.Concat(recordlayer.RecordTypeKey(), recordlayer.Field("order_id")))
 		builder.GetRecordType("Customer").SetPrimaryKey(
@@ -88,7 +88,7 @@ var _ = Describe("DeleteRecordsWhere Conformance", func() {
 			if err != nil {
 				return nil, err
 			}
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(orderID),
 				Price:   proto.Int32(price),
 			})
@@ -103,7 +103,7 @@ var _ = Describe("DeleteRecordsWhere Conformance", func() {
 			if err != nil {
 				return nil, err
 			}
-			_, err = store.SaveRecord(&gen.Customer{
+			_, err = store.SaveRecord(&demopb.Customer{
 				CustomerId: proto.Int64(customerID),
 				Name:       proto.String(name),
 			})
@@ -183,13 +183,13 @@ var _ = Describe("DeleteRecordsWhere Conformance", func() {
 
 			// Java confirms Customers survived
 			params["customerId"] = int64(10)
-			var customer gen.Customer
+			var customer demopb.Customer
 			Expect(java.InvokeAs(ctx, "loadCustomerTypePrefixed", params, &customer)).To(Succeed())
 			Expect(customer.GetName()).To(Equal("Alice"))
 
 			// Java confirms Order is gone
 			params["orderId"] = int64(1)
-			var nilOrder *gen.Order
+			var nilOrder *demopb.Order
 			err := java.InvokeAs(ctx, "loadOrderTypePrefixed", params, &nilOrder)
 			// loadOrderTypePrefixed returns null for missing records
 			Expect(err).NotTo(HaveOccurred())
@@ -218,7 +218,7 @@ var _ = Describe("DeleteRecordsWhere Conformance", func() {
 			Expect(scanIndexGo()).To(Equal(0))
 
 			// Go loads the surviving Customer
-			var loadedCustomer *gen.Customer
+			var loadedCustomer *demopb.Customer
 			_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 				store, err := openStore(rtx)
 				if err != nil {
@@ -229,7 +229,7 @@ var _ = Describe("DeleteRecordsWhere Conformance", func() {
 					return nil, err
 				}
 				Expect(rec).NotTo(BeNil())
-				c := rec.Record.(*gen.Customer)
+				c := rec.Record.(*demopb.Customer)
 				loadedCustomer = c
 				return nil, nil
 			})
@@ -260,7 +260,7 @@ var _ = Describe("DeleteRecordsWhere Conformance", func() {
 			// Java reads the new orders
 			params = buildJavaParams()
 			params["orderId"] = int64(5)
-			var order gen.Order
+			var order demopb.Order
 			Expect(java.InvokeAs(ctx, "loadOrderTypePrefixed", params, &order)).To(Succeed())
 			Expect(order.GetPrice()).To(Equal(int32(500)))
 
@@ -283,7 +283,7 @@ var _ = Describe("DeleteRecordsWhere Conformance", func() {
 			// Java saves 3 orders
 			for i, price := range []int32{100, 200, 300} {
 				params := buildJavaParams()
-				params["order"] = &gen.Order{
+				params["order"] = &demopb.Order{
 					OrderId: proto.Int64(int64(i + 1)),
 					Price:   proto.Int32(price),
 				}
@@ -292,7 +292,7 @@ var _ = Describe("DeleteRecordsWhere Conformance", func() {
 
 			// Java saves 1 customer
 			params := buildJavaParams()
-			params["customer"] = &gen.Customer{
+			params["customer"] = &demopb.Customer{
 				CustomerId: proto.Int64(99),
 				Name:       proto.String("Diana"),
 			}
@@ -316,7 +316,7 @@ var _ = Describe("DeleteRecordsWhere Conformance", func() {
 			// Java confirms Customer survived
 			params = buildJavaParams()
 			params["customerId"] = int64(99)
-			var customer gen.Customer
+			var customer demopb.Customer
 			Expect(java.InvokeAs(ctx, "loadCustomerTypePrefixed", params, &customer)).To(Succeed())
 			Expect(customer.GetName()).To(Equal("Diana"))
 		})
@@ -329,7 +329,7 @@ var _ = Describe("DeleteRecordsWhere Conformance", func() {
 
 			// Java saves order 2
 			params := buildJavaParams()
-			params["order"] = &gen.Order{
+			params["order"] = &demopb.Order{
 				OrderId: proto.Int64(2),
 				Price:   proto.Int32(200),
 			}
@@ -340,7 +340,7 @@ var _ = Describe("DeleteRecordsWhere Conformance", func() {
 
 			// Java saves customer 20
 			params = buildJavaParams()
-			params["customer"] = &gen.Customer{
+			params["customer"] = &demopb.Customer{
 				CustomerId: proto.Int64(20),
 				Name:       proto.String("Frank"),
 			}

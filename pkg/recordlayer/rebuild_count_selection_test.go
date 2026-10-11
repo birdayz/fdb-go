@@ -19,7 +19,7 @@ package recordlayer
 import (
 	"context"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -33,7 +33,7 @@ var _ = Describe("RebuildRecordCountSelection", func() {
 	// singleRecordTypeWithPrefixKey never applies and the COUNT-index consultation
 	// is the only thing that can produce a count.
 	flatMetaData := func() *RecordMetaDataBuilder {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -43,7 +43,7 @@ var _ = Describe("RebuildRecordCountSelection", func() {
 	// prefixedMetaData: every primary key starts with the record type key, so each
 	// type's records occupy a contiguous sub-range and type-scoping applies.
 	prefixedMetaData := func() *RecordMetaDataBuilder {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Concat(RecordTypeKey(), Field("order_id")))
 		builder.GetRecordType("Customer").SetPrimaryKey(Concat(RecordTypeKey(), Field("customer_id")))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Concat(RecordTypeKey(), Field("id")))
@@ -77,7 +77,7 @@ var _ = Describe("RebuildRecordCountSelection", func() {
 				return nil, sErr
 			}
 			for i := int64(1); i <= 5; i++ {
-				if _, sErr = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))}); sErr != nil {
+				if _, sErr = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))}); sErr != nil {
 					return nil, sErr
 				}
 			}
@@ -139,7 +139,7 @@ var _ = Describe("RebuildRecordCountSelection", func() {
 				return nil, sErr
 			}
 			for i := int64(1); i <= 201; i++ {
-				if _, sErr = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))}); sErr != nil {
+				if _, sErr = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))}); sErr != nil {
 					return nil, sErr
 				}
 			}
@@ -192,7 +192,7 @@ var _ = Describe("RebuildRecordCountSelection", func() {
 				return nil, sErr
 			}
 			for i := int64(1); i <= 201; i++ {
-				if _, sErr = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(i)}); sErr != nil {
+				if _, sErr = store.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(i)}); sErr != nil {
 					return nil, sErr
 				}
 			}
@@ -261,12 +261,12 @@ var _ = Describe("RebuildRecordCountSelection", func() {
 					return nil, sErr
 				}
 				for i := int64(1); i <= 201; i++ {
-					if _, sErr = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(i)}); sErr != nil {
+					if _, sErr = store.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(i)}); sErr != nil {
 						return nil, sErr
 					}
 				}
 				for i := int64(1); i <= int64(orders); i++ {
-					if _, sErr = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))}); sErr != nil {
+					if _, sErr = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))}); sErr != nil {
 						return nil, sErr
 					}
 				}
@@ -324,7 +324,7 @@ var _ = Describe("RebuildRecordCountSelection", func() {
 				return nil, sErr
 			}
 			for i := int64(1); i <= 201; i++ {
-				if _, sErr = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(i)}); sErr != nil {
+				if _, sErr = store.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(i)}); sErr != nil {
 					return nil, sErr
 				}
 			}
@@ -376,7 +376,7 @@ var _ = Describe("RebuildRecordCountSelection", func() {
 			if sErr != nil {
 				return nil, sErr
 			}
-			if _, sErr = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(1)}); sErr != nil {
+			if _, sErr = store.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(1)}); sErr != nil {
 				return nil, sErr
 			}
 			return nil, nil

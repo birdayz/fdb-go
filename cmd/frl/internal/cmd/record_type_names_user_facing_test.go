@@ -12,6 +12,8 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 )
@@ -22,7 +24,7 @@ import (
 // leaves every assertion below vacuous while reporting green.
 func metaWithEscapedTypeName(t *testing.T, storage string) *recordlayer.RecordMetaData {
 	t.Helper()
-	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -239,7 +241,7 @@ func TestRecordTypeNamesRenderAsSQLIdentifiers(t *testing.T) {
 		rec := &recordlayer.FDBStoredRecord[proto.Message]{
 			PrimaryKey: tuple.Tuple{int64(1)},
 			RecordType: rt,
-			Record:     &gen.Order{},
+			Record:     &demopb.Order{},
 		}
 		if err := writeRecordAsJSON(&buf, md, rec); err != nil {
 			t.Fatalf("writeRecordAsJSON: %v", err)
@@ -259,7 +261,7 @@ func TestRecordTypeNamesRenderAsSQLIdentifiers(t *testing.T) {
 		t.Parallel()
 		// Diffed against metadata where the type is NOT renamed, so the escaped
 		// type lands in Removed -- which is the bucket that prints its name.
-		mb := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		mb := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		mb.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 		mb.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 		mb.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -411,7 +413,7 @@ func TestCompletionFallsBackToStoredNamesWhenAmbiguous(t *testing.T) {
 func metaWithTwoRenamedTypes(t *testing.T, orderTo, customerTo string) *recordlayer.RecordMetaData {
 	t.Helper()
 	rename := map[string]string{"Order": orderTo, "Customer": customerTo}
-	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -492,7 +494,7 @@ func TestRecordScanJSONGatesRecordTypeOnAmbiguity(t *testing.T) {
 	err := writeRecordAsJSON(&buf, md, &recordlayer.FDBStoredRecord[proto.Message]{
 		PrimaryKey: tuple.Tuple{int64(1)},
 		RecordType: rt,
-		Record:     &gen.Order{},
+		Record:     &demopb.Order{},
 	})
 	if err != nil {
 		t.Fatalf("writeRecordAsJSON: %v", err)
@@ -595,7 +597,7 @@ func TestDiffShowsStoredNamesWhenRenamedNamesRenderAlike(t *testing.T) {
 // FIELD whose two spellings render alike, and no checked-in proto has one.
 func metaWithRenamedField(t *testing.T, to string) *recordlayer.RecordMetaData {
 	t.Helper()
-	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))

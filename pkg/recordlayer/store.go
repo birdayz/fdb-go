@@ -465,6 +465,12 @@ func (store *FDBRecordStore) SaveRecord(record proto.Message) (*FDBStoredRecord[
 // Handles both split and unsplit records via SplitHelper.
 // Matches Java's FDBRecordStore.deleteRecordAsync(Tuple primaryKey)
 func (store *FDBRecordStore) DeleteRecord(primaryKey tuple.Tuple) (bool, error) {
+	return store.deleteRecord(primaryKey, nil)
+}
+
+// deleteRecord is Java's deleteTypedRecord: typed, when not nil, is the typed
+// store's serializer, through which the existing record is read.
+func (store *FDBRecordStore) deleteRecord(primaryKey tuple.Tuple, typed *typedRecordSerializer) (bool, error) {
 	startTime := time.Now()
 	recordsSubspace := store.recordsSubspace
 	splitEnabled := store.metaData.IsSplitLongRecords()
@@ -494,6 +500,11 @@ func (store *FDBRecordStore) DeleteRecord(primaryKey tuple.Tuple) (bool, error) 
 	oldRecordType, oldMsg, oldWire, deserErr := store.deserializeAndDiscover(value)
 	if deserErr != nil {
 		return false, &RecordDeserializationError{PrimaryKey: primaryKey, Cause: deserErr}
+	}
+	if typed != nil {
+		if err := typed.checkDeserialized(primaryKey, oldRecordType); err != nil {
+			return false, err
+		}
 	}
 
 	// Then the lock, before any write (validateRecordUpdateAllowed inside the
@@ -626,7 +637,7 @@ func (store *FDBRecordStore) SaveRecordWithOptions(
 	record proto.Message,
 	existenceCheck RecordExistenceCheck,
 ) (*FDBStoredRecord[proto.Message], error) {
-	return store.saveRecordInternal(record, existenceCheck, false, nil)
+	return store.saveRecordInternal(record, existenceCheck, false, nil, nil)
 }
 
 // SaveRecordsPipelined saves records in order as SaveRecordWithOptions would
@@ -646,7 +657,7 @@ func (store *FDBRecordStore) SaveRecordsPipelined(
 		window := records[start:min(start+DefaultPipelineSize, len(records))]
 		loads := store.startExistingRecordLoads(tx, window)
 		for i, record := range window {
-			stored, err := store.saveRecordInternal(record, existenceCheck, false, &loads[i])
+			stored, err := store.saveRecordInternal(record, existenceCheck, false, &loads[i], nil)
 			if err != nil {
 				return nil, err
 			}
@@ -757,14 +768,24 @@ func (store *FDBRecordStore) saveTargetFor(record proto.Message) (saveTarget, er
 // saveRecordInternal implements the save logic with an explicit overrideLock parameter.
 // When overrideLock is true, the FORBID_RECORD_UPDATE lock check is skipped.
 // This eliminates the goroutine-unsafe overrideLock field pattern. A non-nil
-// load is record's, from startExistingRecordLoads.
+// load is record's, from startExistingRecordLoads. A non-nil typed is a typed
+// store's serializer, which reads the existing record and writes record.
 func (store *FDBRecordStore) saveRecordInternal(
 	record proto.Message,
 	existenceCheck RecordExistenceCheck,
 	overrideLock bool,
 	load *existingRecordLoad,
+	typed *typedRecordSerializer,
 ) (*FDBStoredRecord[proto.Message], error) {
 	startTime := time.Now()
+	if typed != nil && record != nil {
+		// Java resolves the type by descriptor first (RecordMetaData.java:219-223); untyped saves
+		// still match by name, as Go lacks setLocalFileDescriptor for loaded metadata.
+		desc := record.ProtoReflect().Descriptor()
+		if rt := store.metaData.GetRecordType(string(desc.Name())); rt != nil && rt.Descriptor != desc {
+			return nil, &MetaDataError{Message: "descriptor did not match record type"}
+		}
+	}
 	var target saveTarget
 	var err error
 	if load != nil {
@@ -819,6 +840,11 @@ func (store *FDBRecordStore) saveRecordInternal(
 		if deserErr != nil {
 			return nil, &RecordDeserializationError{PrimaryKey: primaryKey, Cause: deserErr}
 		}
+		if typed != nil {
+			if err := typed.checkDeserialized(primaryKey, cachedOldRT); err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	// Perform existence checks
@@ -863,6 +889,11 @@ func (store *FDBRecordStore) saveRecordInternal(
 		return nil, err
 	}
 
+	if typed != nil {
+		if err := typed.checkSerialize(recordType, store.metaData.Version()); err != nil {
+			return nil, err
+		}
+	}
 	// Serialize directly into union wire format (no UnionDescriptor allocation)
 	data, err := serializeUnionOver(writeRecord, recordType, priorRecordInner(cachedOldRT, cachedOldWire, recordType))
 	if err != nil {

@@ -23,7 +23,7 @@ import (
 	"math/rand/v2"
 	"sort"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/dst"
 	fdb "fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -289,7 +289,7 @@ func (d *driver) open(rtx *recordlayer.FDBRecordContext) (*recordlayer.FDBRecord
 }
 
 func (d *driver) save(ctx context.Context, pk int64, price, qty int32) error {
-	rec := &gen.Order{OrderId: proto.Int64(pk), Price: proto.Int32(price), Quantity: proto.Int32(qty)}
+	rec := &demopb.Order{OrderId: proto.Int64(pk), Price: proto.Int32(price), Quantity: proto.Int32(qty)}
 	return d.apply(ctx, func(store *recordlayer.FDBRecordStore) error {
 		_, err := store.SaveRecord(rec)
 		return err
@@ -508,7 +508,7 @@ func pickMissingPK(rng *rand.Rand, model *chaos.StoreModel, maxPKs int64) int64 
 // maintainer's fault/retry path and Verify has teeth on all of them.
 func KitchenSinkMetadata() *recordlayer.RecordMetaData {
 	b := recordlayer.NewRecordMetaDataBuilder()
-	b.SetRecords(gen.File_record_layer_demo_proto)
+	b.SetRecords(demopb.File_record_layer_demo_proto)
 	b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))

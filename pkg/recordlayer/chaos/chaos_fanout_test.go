@@ -6,14 +6,14 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
 )
 
 // buildFanOutMetadata creates metadata with a FanOut("tags") VALUE index on Order.
 func buildFanOutMetadata() *recordlayer.RecordMetaData {
 	builder := recordlayer.NewRecordMetaDataBuilder()
-	builder.SetRecords(gen.File_record_layer_demo_proto)
+	builder.SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -30,7 +30,7 @@ func buildFanOutMetadata() *recordlayer.RecordMetaData {
 // This produces a cross-product: one index entry per tag, each including the price.
 func buildFanOutCrossProductMetadata() *recordlayer.RecordMetaData {
 	builder := recordlayer.NewRecordMetaDataBuilder()
-	builder.SetRecords(gen.File_record_layer_demo_proto)
+	builder.SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -52,7 +52,7 @@ func TestFanOutBasicVerify(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 
 	// Single record with 3 tags → 3 index entries
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(1),
 		Price:   proto.Int32(100),
 		Tags:    []string{"alpha", "beta", "gamma"},
@@ -60,7 +60,7 @@ func TestFanOutBasicVerify(t *testing.T) {
 	s.Verify()
 
 	// Second record with overlapping tags → additional entries
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(2),
 		Price:   proto.Int32(200),
 		Tags:    []string{"beta", "delta"},
@@ -68,7 +68,7 @@ func TestFanOutBasicVerify(t *testing.T) {
 	s.Verify()
 
 	// Third record with single tag
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(3),
 		Price:   proto.Int32(300),
 		Tags:    []string{"epsilon"},
@@ -85,7 +85,7 @@ func TestFanOutCommitUnknown(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(1),
 		Price:   proto.Int32(100),
 		Tags:    []string{"alpha", "beta", "gamma"},
@@ -103,7 +103,7 @@ func TestFanOutChangeTagsCommitUnknown(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 
 	// First: save with tags ["a","b"]
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(1),
 		Price:   proto.Int32(100),
 		Tags:    []string{"a", "b"},
@@ -112,7 +112,7 @@ func TestFanOutChangeTagsCommitUnknown(t *testing.T) {
 
 	// Now overwrite with tags ["b","c"] under commit-unknown
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(1),
 		Price:   proto.Int32(100),
 		Tags:    []string{"b", "c"},
@@ -126,7 +126,7 @@ func TestFanOutEmptyTags(t *testing.T) {
 	md := buildFanOutMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(1),
 		Price:   proto.Int32(100),
 		Tags:    []string{}, // empty
@@ -134,7 +134,7 @@ func TestFanOutEmptyTags(t *testing.T) {
 	s.Verify()
 
 	// Also test nil tags (zero value)
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(2),
 		Price:   proto.Int32(200),
 	})
@@ -150,7 +150,7 @@ func TestFanOutEmptyToNonEmptyCommitUnknown(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 
 	// Start with empty tags
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(1),
 		Price:   proto.Int32(100),
 		Tags:    []string{},
@@ -159,7 +159,7 @@ func TestFanOutEmptyToNonEmptyCommitUnknown(t *testing.T) {
 
 	// Overwrite to non-empty under commit-unknown
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(1),
 		Price:   proto.Int32(100),
 		Tags:    []string{"x", "y", "z"},
@@ -168,7 +168,7 @@ func TestFanOutEmptyToNonEmptyCommitUnknown(t *testing.T) {
 
 	// And the reverse: non-empty to empty under commit-unknown
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(1),
 		Price:   proto.Int32(100),
 		Tags:    []string{},
@@ -183,7 +183,7 @@ func TestFanOutNonEmptyToEmptyCommitUnknown(t *testing.T) {
 	md := buildFanOutMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(1),
 		Price:   proto.Int32(100),
 		Tags:    []string{"alpha", "beta"},
@@ -192,7 +192,7 @@ func TestFanOutNonEmptyToEmptyCommitUnknown(t *testing.T) {
 
 	// Clear all tags under commit-unknown
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(1),
 		Price:   proto.Int32(100),
 		Tags:    []string{},
@@ -207,12 +207,12 @@ func TestFanOutDeleteRecordCommitUnknown(t *testing.T) {
 	md := buildFanOutMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(1),
 		Price:   proto.Int32(100),
 		Tags:    []string{"a", "b", "c"},
 	})
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(2),
 		Price:   proto.Int32(200),
 		Tags:    []string{"b", "d"},
@@ -233,7 +233,7 @@ func TestFanOutDuplicateTags(t *testing.T) {
 	md := buildFanOutMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(1),
 		Price:   proto.Int32(100),
 		Tags:    []string{"a", "a", "b"},
@@ -248,14 +248,14 @@ func TestFanOutCrossProduct(t *testing.T) {
 	md := buildFanOutCrossProductMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(1),
 		Price:   proto.Int32(100),
 		Tags:    []string{"x", "y"},
 	})
 	s.Verify() // 2 entries: (x,100) and (y,100)
 
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(2),
 		Price:   proto.Int32(200),
 		Tags:    []string{"x", "z"},
@@ -263,7 +263,7 @@ func TestFanOutCrossProduct(t *testing.T) {
 	s.Verify() // 4 entries total
 
 	// Overwrite record 1 with different price
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(1),
 		Price:   proto.Int32(999),
 		Tags:    []string{"x", "y"},
@@ -278,7 +278,7 @@ func TestFanOutCrossProductCommitUnknown(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(1),
 		Price:   proto.Int32(100),
 		Tags:    []string{"x", "y", "z"},
@@ -287,7 +287,7 @@ func TestFanOutCrossProductCommitUnknown(t *testing.T) {
 
 	// Update both tags and price under commit-unknown
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(1),
 		Price:   proto.Int32(200),
 		Tags:    []string{"y", "z", "w"},
@@ -318,7 +318,7 @@ func TestFanOutRandomStress(t *testing.T) {
 			for j := range tags {
 				tags[j] = allTags[s.Rng.IntN(len(allTags))]
 			}
-			s.SaveRecord(&gen.Order{
+			s.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(pk),
 				Price:   proto.Int32(s.Rng.Int32N(1000)),
 				Tags:    tags,
@@ -359,7 +359,7 @@ func TestFanOutCrossProductRandomStress(t *testing.T) {
 			for j := range tags {
 				tags[j] = allTags[s.Rng.IntN(len(allTags))]
 			}
-			s.SaveRecord(&gen.Order{
+			s.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(pk),
 				Price:   proto.Int32(s.Rng.Int32N(500)),
 				Tags:    tags,

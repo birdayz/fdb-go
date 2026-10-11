@@ -7,7 +7,7 @@ import (
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 )
 
 // TestDiscoverUnionIsJavasDeserializeUnion: a stored union message must hold
@@ -16,7 +16,7 @@ import (
 // repeats is merged, as protobuf parses it.
 func TestDiscoverUnionIsJavasDeserializeUnion(t *testing.T) {
 	t.Parallel()
-	b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -33,17 +33,17 @@ func TestDiscoverUnionIsJavasDeserializeUnion(t *testing.T) {
 		}
 		return protowire.AppendBytes(protowire.AppendTag(nil, num, protowire.BytesType), inner)
 	}
-	order := field(orderRT.unionFieldNumber, &gen.Order{OrderId: proto.Int64(1)})
-	customer := field(customerRT.unionFieldNumber, &gen.Customer{CustomerId: proto.Int64(2)})
+	order := field(orderRT.unionFieldNumber, &demopb.Order{OrderId: proto.Int64(1)})
+	customer := field(customerRT.unionFieldNumber, &demopb.Customer{CustomerId: proto.Int64(2)})
 	unknown := protowire.AppendVarint(protowire.AppendTag(nil, 999, protowire.VarintType), 7)
 
 	rt, msg, _, err := store.discoverUnion(order)
-	if err != nil || rt != orderRT || msg.(*gen.Order).GetOrderId() != 1 {
+	if err != nil || rt != orderRT || msg.(*demopb.Order).GetOrderId() != 1 {
 		t.Fatalf("one known field: %v, %v", rt, err)
 	}
-	merged := append(append([]byte(nil), order...), field(orderRT.unionFieldNumber, &gen.Order{Price: proto.Int32(5)})...)
+	merged := append(append([]byte(nil), order...), field(orderRT.unionFieldNumber, &demopb.Order{Price: proto.Int32(5)})...)
 	rt, msg, _, err = store.discoverUnion(merged)
-	if err != nil || rt != orderRT || msg.(*gen.Order).GetOrderId() != 1 || msg.(*gen.Order).GetPrice() != 5 {
+	if err != nil || rt != orderRT || msg.(*demopb.Order).GetOrderId() != 1 || msg.(*demopb.Order).GetPrice() != 5 {
 		t.Fatalf("one field twice, merged: %v, %v", msg, err)
 	}
 	for _, c := range []struct {

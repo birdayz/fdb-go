@@ -7,7 +7,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer/vectorcodec"
 	. "github.com/onsi/gomega"
@@ -35,7 +35,7 @@ var _ = Describe("SPFresh StoreTimer instrumentation", func() {
 				return nil, serr
 			}
 			for i := 100; i < 110; i++ {
-				if _, serr := store.SaveRecord(&gen.Order{
+				if _, serr := store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(int64(i)),
 					Price:   proto.Int32(int32(i % 5)), Quantity: proto.Int32(int32(i % 3)),
 				}); serr != nil {

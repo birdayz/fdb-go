@@ -15,7 +15,7 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
 )
 
@@ -129,7 +129,7 @@ func RunConcurrent(t testing.TB, realDB fdb.Database, metadata *recordlayer.Reco
 						if err != nil {
 							return nil, err
 						}
-						return store.SaveRecord(&gen.Order{
+						return store.SaveRecord(&demopb.Order{
 							OrderId:  proto.Int64(pk),
 							Price:    proto.Int32(price),
 							Quantity: proto.Int32(qty),

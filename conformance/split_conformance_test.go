@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -47,10 +47,10 @@ var _ = Describe("Split Record Conformance", func() {
 		It("should handle 250KB split record (3 chunks)", func() {
 			// 250KB will be split into 3 chunks at 100KB boundaries
 			padding := strings.Repeat("X", 250_000)
-			order := &gen.Order{
+			order := &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(42),
-				Flower:  &gen.Flower{Type: proto.String(padding), Color: gen.Color_RED.Enum()},
+				Flower:  &demopb.Flower{Type: proto.String(padding), Color: demopb.Color_RED.Enum()},
 			}
 			err := store.SaveRecord(ctx, order)
 			Expect(err).NotTo(HaveOccurred())
@@ -66,10 +66,10 @@ var _ = Describe("Split Record Conformance", func() {
 
 		It("should handle 150KB split record (2 chunks)", func() {
 			padding := strings.Repeat("A", 150_000)
-			order := &gen.Order{
+			order := &demopb.Order{
 				OrderId: proto.Int64(3),
 				Price:   proto.Int32(77),
-				Flower:  &gen.Flower{Type: proto.String(padding), Color: gen.Color_BLUE.Enum()},
+				Flower:  &demopb.Flower{Type: proto.String(padding), Color: demopb.Color_BLUE.Enum()},
 			}
 			err := store.SaveRecord(ctx, order)
 			Expect(err).NotTo(HaveOccurred())
@@ -81,10 +81,10 @@ var _ = Describe("Split Record Conformance", func() {
 			// Java saves a large record split across multiple KV pairs,
 			// Go must reassemble the chunks correctly.
 			padding := strings.Repeat("Y", 250_000)
-			order := &gen.Order{
+			order := &demopb.Order{
 				OrderId: proto.Int64(10),
 				Price:   proto.Int32(99),
-				Flower:  &gen.Flower{Type: proto.String(padding), Color: gen.Color_BLUE.Enum()},
+				Flower:  &demopb.Flower{Type: proto.String(padding), Color: demopb.Color_BLUE.Enum()},
 			}
 			loaded, err := store.JavaSaveThenGoLoad(ctx, order)
 			Expect(err).NotTo(HaveOccurred())
@@ -94,7 +94,7 @@ var _ = Describe("Split Record Conformance", func() {
 		It("should handle small record from Java with split enabled", func() {
 			order := NewOrder(11).
 				WithPrice(33).
-				WithFlower("Daisy", gen.Color_YELLOW).
+				WithFlower("Daisy", demopb.Color_YELLOW).
 				Build()
 			loaded, err := store.JavaSaveThenGoLoad(ctx, order)
 			Expect(err).NotTo(HaveOccurred())
@@ -103,10 +103,10 @@ var _ = Describe("Split Record Conformance", func() {
 
 		It("should handle 150KB split record from Java", func() {
 			padding := strings.Repeat("B", 150_000)
-			order := &gen.Order{
+			order := &demopb.Order{
 				OrderId: proto.Int64(12),
 				Price:   proto.Int32(55),
-				Flower:  &gen.Flower{Type: proto.String(padding), Color: gen.Color_PINK.Enum()},
+				Flower:  &demopb.Flower{Type: proto.String(padding), Color: demopb.Color_PINK.Enum()},
 			}
 			loaded, err := store.JavaSaveThenGoLoad(ctx, order)
 			Expect(err).NotTo(HaveOccurred())
@@ -119,10 +119,10 @@ var _ = Describe("Split Record Conformance", func() {
 			// Right around the split boundary. The serialized protobuf size
 			// determines whether splitting occurs, not just the string length.
 			padding := strings.Repeat("Z", 100_000)
-			order := &gen.Order{
+			order := &demopb.Order{
 				OrderId: proto.Int64(20),
 				Price:   proto.Int32(1),
-				Flower:  &gen.Flower{Type: proto.String(padding), Color: gen.Color_YELLOW.Enum()},
+				Flower:  &demopb.Flower{Type: proto.String(padding), Color: demopb.Color_YELLOW.Enum()},
 			}
 			err := store.SaveRecord(ctx, order)
 			Expect(err).NotTo(HaveOccurred())
@@ -139,10 +139,10 @@ var _ = Describe("Split Record Conformance", func() {
 		It("should handle overwriting a split record with a small record", func() {
 			// First write a large split record
 			padding := strings.Repeat("L", 200_000)
-			large := &gen.Order{
+			large := &demopb.Order{
 				OrderId: proto.Int64(30),
 				Price:   proto.Int32(100),
-				Flower:  &gen.Flower{Type: proto.String(padding), Color: gen.Color_RED.Enum()},
+				Flower:  &demopb.Flower{Type: proto.String(padding), Color: demopb.Color_RED.Enum()},
 			}
 			err := store.SaveRecord(ctx, large)
 			Expect(err).NotTo(HaveOccurred())
@@ -150,7 +150,7 @@ var _ = Describe("Split Record Conformance", func() {
 			// Overwrite with a small record — old split chunks must be cleared
 			small := NewOrder(30).
 				WithPrice(1).
-				WithFlower("Tiny", gen.Color_BLUE).
+				WithFlower("Tiny", demopb.Color_BLUE).
 				Build()
 			err = store.SaveRecord(ctx, small)
 			Expect(err).NotTo(HaveOccurred())
@@ -160,17 +160,17 @@ var _ = Describe("Split Record Conformance", func() {
 			// First write a small record
 			small := NewOrder(31).
 				WithPrice(5).
-				WithFlower("Small", gen.Color_YELLOW).
+				WithFlower("Small", demopb.Color_YELLOW).
 				Build()
 			err := store.SaveRecord(ctx, small)
 			Expect(err).NotTo(HaveOccurred())
 
 			// Overwrite with a large split record
 			padding := strings.Repeat("G", 200_000)
-			large := &gen.Order{
+			large := &demopb.Order{
 				OrderId: proto.Int64(31),
 				Price:   proto.Int32(200),
-				Flower:  &gen.Flower{Type: proto.String(padding), Color: gen.Color_PINK.Enum()},
+				Flower:  &demopb.Flower{Type: proto.String(padding), Color: demopb.Color_PINK.Enum()},
 			}
 			err = store.SaveRecord(ctx, large)
 			Expect(err).NotTo(HaveOccurred())
@@ -222,7 +222,7 @@ func (s *SplitConformanceStore) buildJavaParams() map[string]any {
 // SaveRecord saves a record with Go (split enabled), then has Java load it to verify
 // Java can read Go's split chunks. Also reads back with Go for sanity.
 func (s *SplitConformanceStore) SaveRecord(ctx context.Context, msg proto.Message) error {
-	order, ok := msg.(*gen.Order)
+	order, ok := msg.(*demopb.Order)
 	if !ok {
 		return fmt.Errorf("only Order records are supported in split conformance tests")
 	}
@@ -245,7 +245,7 @@ func (s *SplitConformanceStore) SaveRecord(ctx context.Context, msg proto.Messag
 	}
 
 	// 2. Java loads what Go wrote (validates Java can read Go's split chunks)
-	var javaOrder gen.Order
+	var javaOrder demopb.Order
 	params := s.buildJavaParams()
 	params["orderID"] = *order.OrderId
 	err = s.java.InvokeAs(ctx, "loadSplitOrder", params, &javaOrder)
@@ -269,7 +269,7 @@ func (s *SplitConformanceStore) SaveRecord(ctx context.Context, msg proto.Messag
 
 // JavaSaveThenGoLoad has Java save a record (with split enabled), then Go loads it.
 // Validates Go can reassemble Java's split chunks.
-func (s *SplitConformanceStore) JavaSaveThenGoLoad(ctx context.Context, order *gen.Order) (*gen.Order, error) {
+func (s *SplitConformanceStore) JavaSaveThenGoLoad(ctx context.Context, order *demopb.Order) (*demopb.Order, error) {
 	// 1. Java saves the record with split-enabled metadata
 	params := s.buildJavaParams()
 	params["order"] = order
@@ -285,7 +285,7 @@ func (s *SplitConformanceStore) JavaSaveThenGoLoad(ctx context.Context, order *g
 	}
 
 	// 3. Also verify Java can read its own data
-	var javaOrder gen.Order
+	var javaOrder demopb.Order
 	params = s.buildJavaParams()
 	params["orderID"] = *order.OrderId
 	err = s.java.InvokeAs(ctx, "loadSplitOrder", params, &javaOrder)
@@ -302,8 +302,8 @@ func (s *SplitConformanceStore) JavaSaveThenGoLoad(ctx context.Context, order *g
 }
 
 // loadRecordWithGo loads a record using only Go with split-enabled metadata.
-func (s *SplitConformanceStore) loadRecordWithGo(ctx context.Context, orderID int64) (*gen.Order, error) {
-	var order *gen.Order
+func (s *SplitConformanceStore) loadRecordWithGo(ctx context.Context, orderID int64) (*demopb.Order, error) {
+	var order *demopb.Order
 	_, err := s.recordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).
@@ -323,7 +323,7 @@ func (s *SplitConformanceStore) loadRecordWithGo(ctx context.Context, orderID in
 			return nil, fmt.Errorf("record not found: %d", orderID)
 		}
 
-		order = storedRecord.Record.(*gen.Order)
+		order = storedRecord.Record.(*demopb.Order)
 		return nil, nil
 	})
 	return order, err
@@ -333,7 +333,7 @@ func (s *SplitConformanceStore) loadRecordWithGo(ctx context.Context, orderID in
 // Must match the Java createSplitMetaData() configuration exactly.
 func createSplitOrderMetaData() (*recordlayer.RecordMetaData, error) {
 	builder := recordlayer.NewRecordMetaDataBuilder().
-		SetRecords(gen.File_record_layer_demo_proto).
+		SetRecords(demopb.File_record_layer_demo_proto).
 		SetSplitLongRecords(true)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))

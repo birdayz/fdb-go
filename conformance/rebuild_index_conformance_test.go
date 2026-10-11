@@ -6,7 +6,7 @@ import (
 	"context"
 	"fmt"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -46,7 +46,7 @@ var _ = Describe("Index Rebuild Conformance", func() {
 		It("should produce index entries readable by Java", func() {
 			// Save 5 orders without index using Go
 			for i := int64(1); i <= 5; i++ {
-				order := &gen.Order{
+				order := &demopb.Order{
 					OrderId: proto.Int64(i),
 					Price:   proto.Int32(int32(i * 100)),
 				}
@@ -84,7 +84,7 @@ var _ = Describe("Index Rebuild Conformance", func() {
 		It("should produce index entries readable by Go", func() {
 			// Save 4 orders without index using Go
 			for i := int64(1); i <= 4; i++ {
-				order := &gen.Order{
+				order := &demopb.Order{
 					OrderId: proto.Int64(i),
 					Price:   proto.Int32(int32(i * 200)),
 				}
@@ -122,7 +122,7 @@ var _ = Describe("Index Rebuild Conformance", func() {
 		It("should produce index entries readable by Java", func() {
 			// Save 3 orders without index using Java
 			for i := int64(1); i <= 3; i++ {
-				order := &gen.Order{
+				order := &demopb.Order{
 					OrderId: proto.Int64(i),
 					Price:   proto.Int32(int32(i * 300)),
 				}
@@ -156,7 +156,7 @@ var _ = Describe("Index Rebuild Conformance", func() {
 			// Record count is tracked atomically, enabling Java's default
 			// UserVersionChecker to see recordCount <= 200 and return READABLE.
 			for i := int64(1); i <= 4; i++ {
-				order := &gen.Order{
+				order := &demopb.Order{
 					OrderId: proto.Int64(i),
 					Price:   proto.Int32(int32(i * 100)),
 				}
@@ -193,7 +193,7 @@ var _ = Describe("Index Rebuild Conformance", func() {
 		It("should auto-rebuild index via checkPossiblyRebuild and produce correct entries", func() {
 			// Save 3 orders using Go with counting metadata (no index)
 			for i := int64(1); i <= 3; i++ {
-				order := &gen.Order{
+				order := &demopb.Order{
 					OrderId: proto.Int64(i),
 					Price:   proto.Int32(int32(i * 250)),
 				}
@@ -229,7 +229,7 @@ var _ = Describe("Index Rebuild Conformance", func() {
 		It("should auto-rebuild index via checkPossiblyRebuild and produce correct entries", func() {
 			// Save 3 orders using Java with counting metadata (no index)
 			for i := int64(1); i <= 3; i++ {
-				order := &gen.Order{
+				order := &demopb.Order{
 					OrderId: proto.Int64(i),
 					Price:   proto.Int32(int32(i * 300)),
 				}
@@ -258,7 +258,7 @@ var _ = Describe("Index Rebuild Conformance", func() {
 		It("Go rebuild and Java rebuild produce identical results", func() {
 			// Save 3 orders without index using Go
 			for i := int64(1); i <= 3; i++ {
-				order := &gen.Order{
+				order := &demopb.Order{
 					OrderId: proto.Int64(i),
 					Price:   proto.Int32(int32(i * 150)),
 				}
@@ -325,7 +325,7 @@ type RebuildIndexConformanceStore struct {
 // NewRebuildIndexConformanceStore creates a conformance store for index rebuild testing.
 func NewRebuildIndexConformanceStore(recordDB *recordlayer.FDBDatabase, keyspace subspace.Subspace, clusterFile string, tenantName string) (*RebuildIndexConformanceStore, error) {
 	// Metadata without index (for saving records)
-	builderNoIdx := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builderNoIdx := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builderNoIdx.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builderNoIdx.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builderNoIdx.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -336,7 +336,7 @@ func NewRebuildIndexConformanceStore(recordDB *recordlayer.FDBDatabase, keyspace
 
 	// Metadata with index (for rebuild/scan)
 	priceIndex := recordlayer.NewIndex("Order$price", recordlayer.Field("price"))
-	builderIdx := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builderIdx := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builderIdx.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builderIdx.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builderIdx.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -347,7 +347,7 @@ func NewRebuildIndexConformanceStore(recordDB *recordlayer.FDBDatabase, keyspace
 	}
 
 	// Counting metadata WITHOUT index (for auto-rebuild: save phase)
-	builderNoIdxCounting := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builderNoIdxCounting := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builderNoIdxCounting.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builderNoIdxCounting.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builderNoIdxCounting.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -359,7 +359,7 @@ func NewRebuildIndexConformanceStore(recordDB *recordlayer.FDBDatabase, keyspace
 
 	// Counting metadata WITH index (for auto-rebuild: open+scan phase)
 	priceIndexCounting := recordlayer.NewIndex("Order$price", recordlayer.Field("price"))
-	builderIdxCounting := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builderIdxCounting := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builderIdxCounting.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builderIdxCounting.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builderIdxCounting.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -402,7 +402,7 @@ func (s *RebuildIndexConformanceStore) buildJavaParams() map[string]any {
 }
 
 // SaveOrderGo saves an order WITHOUT index using Go.
-func (s *RebuildIndexConformanceStore) SaveOrderGo(ctx context.Context, order *gen.Order) error {
+func (s *RebuildIndexConformanceStore) SaveOrderGo(ctx context.Context, order *demopb.Order) error {
 	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaDataNoIdx).SetSubspace(s.Keyspace).CreateOrOpen()
@@ -416,7 +416,7 @@ func (s *RebuildIndexConformanceStore) SaveOrderGo(ctx context.Context, order *g
 }
 
 // SaveOrderJava saves an order WITHOUT index using Java.
-func (s *RebuildIndexConformanceStore) SaveOrderJava(ctx context.Context, order *gen.Order) error {
+func (s *RebuildIndexConformanceStore) SaveOrderJava(ctx context.Context, order *demopb.Order) error {
 	params := s.buildJavaParams()
 	params["order"] = order
 	return s.java.InvokeAs(ctx, "saveOrder", params, nil)
@@ -444,7 +444,7 @@ func (s *RebuildIndexConformanceStore) RebuildIndexJava(ctx context.Context) err
 // SaveOrderForAutoRebuildGo saves an order using counting metadata (no index).
 // The record count is tracked atomically, enabling Java's default UserVersionChecker
 // to determine the record count for the inline rebuild threshold.
-func (s *RebuildIndexConformanceStore) SaveOrderForAutoRebuildGo(ctx context.Context, order *gen.Order) error {
+func (s *RebuildIndexConformanceStore) SaveOrderForAutoRebuildGo(ctx context.Context, order *demopb.Order) error {
 	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaDataNoIdxCounting).SetSubspace(s.Keyspace).CreateOrOpen()
@@ -458,7 +458,7 @@ func (s *RebuildIndexConformanceStore) SaveOrderForAutoRebuildGo(ctx context.Con
 }
 
 // SaveOrderForAutoRebuildJava saves an order using Java's counting metadata (no index).
-func (s *RebuildIndexConformanceStore) SaveOrderForAutoRebuildJava(ctx context.Context, order *gen.Order) error {
+func (s *RebuildIndexConformanceStore) SaveOrderForAutoRebuildJava(ctx context.Context, order *demopb.Order) error {
 	params := s.buildJavaParams()
 	params["order"] = order
 	return s.java.InvokeAs(ctx, "saveOrderForAutoRebuild", params, nil)

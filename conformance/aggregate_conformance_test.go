@@ -11,7 +11,7 @@ import (
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -363,7 +363,7 @@ type AggregateConformanceStore struct {
 }
 
 func NewAggregateConformanceStore(env *TenantEnvironment, aggType AggType) (*AggregateConformanceStore, error) {
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -427,7 +427,7 @@ func (s *AggregateConformanceStore) SaveOrdersGo(ctx context.Context, prices ...
 			if err != nil {
 				return nil, err
 			}
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(int64(i + 1)),
 				Price:   proto.Int32(price),
 			})
@@ -461,7 +461,7 @@ func (s *AggregateConformanceStore) SaveOrdersJava(ctx context.Context, prices .
 	stepName := s.javaStepForSave()
 	for i, price := range prices {
 		params := s.buildJavaParams()
-		params["order"] = &gen.Order{
+		params["order"] = &demopb.Order{
 			OrderId: proto.Int64(int64(i + 1)),
 			Price:   proto.Int32(price),
 		}

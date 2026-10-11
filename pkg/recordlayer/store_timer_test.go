@@ -10,7 +10,7 @@ import (
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 )
 
 var _ = Describe("StoreTimer", func() {
@@ -413,7 +413,7 @@ var _ = Describe("StoreTimer", func() {
 
 		BeforeEach(func() {
 			ctx = context.Background()
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -446,7 +446,7 @@ var _ = Describe("StoreTimer", func() {
 				}
 				id := int64(1)
 				price := int32(100)
-				_, err = store.SaveRecord(&gen.Order{OrderId: &id, Price: &price})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: &id, Price: &price})
 				return nil, err
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -469,7 +469,7 @@ var _ = Describe("StoreTimer", func() {
 				}
 				id := int64(1)
 				price := int32(100)
-				_, err = store.SaveRecord(&gen.Order{OrderId: &id, Price: &price})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: &id, Price: &price})
 				if err != nil {
 					return nil, err
 				}
@@ -492,7 +492,7 @@ var _ = Describe("StoreTimer", func() {
 				}
 				id := int64(1)
 				price := int32(100)
-				_, err = store.SaveRecord(&gen.Order{OrderId: &id, Price: &price})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: &id, Price: &price})
 				if err != nil {
 					return nil, err
 				}
@@ -517,7 +517,7 @@ var _ = Describe("StoreTimer", func() {
 				}
 				id := int64(1)
 				price := int32(100)
-				_, err = store.SaveRecord(&gen.Order{OrderId: &id, Price: &price})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: &id, Price: &price})
 				return nil, err
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -537,7 +537,7 @@ var _ = Describe("StoreTimer", func() {
 				// Save 3 records
 				for i := int64(1); i <= 3; i++ {
 					price := int32(100)
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: &price})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: &price})
 					if err != nil {
 						return nil, err
 					}

@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -15,7 +15,7 @@ var _ = Describe("Schema Migration", func() {
 	ctx := context.Background()
 
 	baseBuilder := func() *RecordMetaDataBuilder {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -62,7 +62,7 @@ var _ = Describe("Schema Migration", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 20; i++ {
-					_, err = store.SaveRecord(&gen.Order{
+					_, err = store.SaveRecord(&demopb.Order{
 						OrderId:  proto.Int64(i),
 						Price:    proto.Int32(int32(i * 10)),
 						Quantity: proto.Int32(int32(i)),
@@ -122,7 +122,7 @@ var _ = Describe("Schema Migration", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(21); i <= 25; i++ {
-					_, err = store.SaveRecord(&gen.Order{
+					_, err = store.SaveRecord(&demopb.Order{
 						OrderId: proto.Int64(i),
 						Price:   proto.Int32(int32(i * 10)),
 					})
@@ -163,7 +163,7 @@ var _ = Describe("Schema Migration", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 5; i++ {
-					_, err = store.SaveRecord(&gen.Order{
+					_, err = store.SaveRecord(&demopb.Order{
 						OrderId: proto.Int64(i),
 						Price:   proto.Int32(int32(i * 100)),
 					})
@@ -200,7 +200,7 @@ var _ = Describe("Schema Migration", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(rec).NotTo(BeNil())
 
-				order := rec.Record.(*gen.Order)
+				order := rec.Record.(*demopb.Order)
 				Expect(order.GetOrderId()).To(Equal(int64(3)))
 				Expect(order.GetPrice()).To(Equal(int32(300)))
 				return nil, nil
@@ -225,7 +225,7 @@ var _ = Describe("Schema Migration", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 10; i++ {
-					_, err = store.SaveRecord(&gen.Order{
+					_, err = store.SaveRecord(&demopb.Order{
 						OrderId:  proto.Int64(i),
 						Price:    proto.Int32(int32(i * 100)),
 						Quantity: proto.Int32(int32(i * 2)),
@@ -350,7 +350,7 @@ var _ = Describe("Schema Migration", func() {
 					rec, err := store.LoadRecord(tuple.Tuple{i})
 					Expect(err).NotTo(HaveOccurred())
 					Expect(rec).NotTo(BeNil())
-					order := rec.Record.(*gen.Order)
+					order := rec.Record.(*demopb.Order)
 					Expect(order.GetOrderId()).To(Equal(i))
 					Expect(order.GetPrice()).To(Equal(int32(i * 100)))
 					Expect(order.GetQuantity()).To(Equal(int32(i * 2)))
@@ -471,7 +471,7 @@ var _ = Describe("Schema Migration", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 5; i++ {
-					_, err = store.SaveRecord(&gen.Order{
+					_, err = store.SaveRecord(&demopb.Order{
 						OrderId: proto.Int64(i),
 						Price:   proto.Int32(int32(i * 10)),
 					})
@@ -543,7 +543,7 @@ var _ = Describe("Schema Migration", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 10; i++ {
-					_, err = store.SaveRecord(&gen.Order{
+					_, err = store.SaveRecord(&demopb.Order{
 						OrderId: proto.Int64(i),
 						Price:   proto.Int32(int32(i)),
 					})
@@ -566,7 +566,7 @@ var _ = Describe("Schema Migration", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(11); i <= 15; i++ {
-					_, err = store.SaveRecord(&gen.Order{
+					_, err = store.SaveRecord(&demopb.Order{
 						OrderId: proto.Int64(i),
 						Price:   proto.Int32(int32(i)),
 					})

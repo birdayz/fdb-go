@@ -6,14 +6,14 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
 )
 
 // buildVersionIndexMetadata creates metadata with a VERSION index.
 func buildVersionIndexMetadata() *recordlayer.RecordMetaData {
 	builder := recordlayer.NewRecordMetaDataBuilder()
-	builder.SetRecords(gen.File_record_layer_demo_proto)
+	builder.SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -32,7 +32,7 @@ func buildVersionIndexMetadata() *recordlayer.RecordMetaData {
 // that includes both version and a field (price).
 func buildCompositeVersionIndexMetadata() *recordlayer.RecordMetaData {
 	builder := recordlayer.NewRecordMetaDataBuilder()
-	builder.SetRecords(gen.File_record_layer_demo_proto)
+	builder.SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -54,20 +54,20 @@ func TestVersionIndexBasicVerify(t *testing.T) {
 	md := buildVersionIndexMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(1),
 		Price:   proto.Int32(100),
-		Flower:  &gen.Flower{Type: proto.String("Rose"), Color: gen.Color_RED.Enum()},
+		Flower:  &demopb.Flower{Type: proto.String("Rose"), Color: demopb.Color_RED.Enum()},
 	})
 	s.Verify()
 
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(2),
 		Price:   proto.Int32(200),
 	})
 	s.Verify()
 
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(3),
 		Price:   proto.Int32(300),
 	})
@@ -79,15 +79,15 @@ func TestVersionIndexOverwriteVerify(t *testing.T) {
 	md := buildVersionIndexMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 	s.Verify()
 
 	// Overwrite same PK with different data — version index entry should update.
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)})
 	s.Verify()
 
 	// Overwrite again.
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(300)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(300)})
 	s.Verify()
 }
 
@@ -96,8 +96,8 @@ func TestVersionIndexDeleteVerify(t *testing.T) {
 	md := buildVersionIndexMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
 	s.Verify()
 
 	// Delete one record — its VERSION index entry must be removed.
@@ -114,9 +114,9 @@ func TestVersionIndexDeleteAllVerify(t *testing.T) {
 	md := buildVersionIndexMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(300)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(300)})
 	s.Verify()
 
 	s.DeleteAllRecords()
@@ -134,7 +134,7 @@ func TestVersionIndexCommitUnknownInsert(t *testing.T) {
 	// the second transaction sees the existing record and does an update,
 	// properly clearing the first tx's VERSION index entry and adding a new one.
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 	s.Verify()
 }
 
@@ -143,17 +143,17 @@ func TestVersionIndexCommitUnknownMultipleSaves(t *testing.T) {
 	md := buildVersionIndexMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 	s.Verify()
 
 	// Commit-unknown on second save (new PK).
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
 	s.Verify()
 
 	// Commit-unknown on third save.
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(300)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(300)})
 	s.Verify()
 }
 
@@ -162,7 +162,7 @@ func TestVersionIndexCommitUnknownOverwrite(t *testing.T) {
 	md := buildVersionIndexMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 	s.Verify()
 
 	// Commit-unknown on overwrite. The retry must:
@@ -170,7 +170,7 @@ func TestVersionIndexCommitUnknownOverwrite(t *testing.T) {
 	// 2. Clear tx1's VERSION index entry (at tx1's versionstamp key)
 	// 3. Add new entry (at tx2's versionstamp key)
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)})
 	s.Verify()
 }
 
@@ -179,7 +179,7 @@ func TestVersionIndexCommitUnknownDelete(t *testing.T) {
 	md := buildVersionIndexMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 	s.Verify()
 
 	// Commit-unknown on delete. The retry should be idempotent:
@@ -195,8 +195,8 @@ func TestVersionIndexCommitUnknownDeleteAll(t *testing.T) {
 	md := buildVersionIndexMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
 	s.Verify()
 
 	// Commit-unknown on DeleteAllRecords.
@@ -213,7 +213,7 @@ func TestVersionIndexSaveDeleteSaveCommitUnknown(t *testing.T) {
 
 	// Save, delete, re-save same PK — each with commit-unknown.
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 	s.Verify()
 
 	s.InjectOnce(FaultCommitUnknown)
@@ -221,7 +221,7 @@ func TestVersionIndexSaveDeleteSaveCommitUnknown(t *testing.T) {
 	s.Verify()
 
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)})
 	s.Verify()
 }
 
@@ -232,8 +232,8 @@ func TestCompositeVersionIndexBasicVerify(t *testing.T) {
 	md := buildCompositeVersionIndexMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
 	s.Verify()
 }
 
@@ -243,11 +243,11 @@ func TestCompositeVersionIndexCommitUnknown(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 	s.Verify()
 
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)})
 	s.Verify()
 }
 
@@ -261,10 +261,10 @@ func TestVersionIndexRandomStress(t *testing.T) {
 	for i := 0; i < 200; i++ {
 		pk := s.Rng.Int64N(30) + 1
 		if s.Rng.Float64() < 0.7 {
-			s.SaveRecord(&gen.Order{
+			s.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(pk),
 				Price:   proto.Int32(s.Rng.Int32N(1000)),
-				Flower:  &gen.Flower{Type: proto.String("Rose"), Color: gen.Color_RED.Enum()},
+				Flower:  &demopb.Flower{Type: proto.String("Rose"), Color: demopb.Color_RED.Enum()},
 			})
 		} else {
 			s.DeleteRecord(tuple.Tuple{pk})
@@ -284,7 +284,7 @@ func TestVersionIndexHeavyFaultStress(t *testing.T) {
 	for i := 0; i < 200; i++ {
 		pk := s.Rng.Int64N(20) + 1
 		if s.Rng.Float64() < 0.6 {
-			s.SaveRecord(&gen.Order{
+			s.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(pk),
 				Price:   proto.Int32(s.Rng.Int32N(500)),
 			})
@@ -308,7 +308,7 @@ func TestVersionIndexAllFaultsStress(t *testing.T) {
 	for i := 0; i < 150; i++ {
 		pk := s.Rng.Int64N(25) + 1
 		if s.Rng.Float64() < 0.65 {
-			s.SaveRecord(&gen.Order{
+			s.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(pk),
 				Price:   proto.Int32(s.Rng.Int32N(800)),
 			})
@@ -330,7 +330,7 @@ func TestCompositeVersionIndexRandomStress(t *testing.T) {
 	for i := 0; i < 150; i++ {
 		pk := s.Rng.Int64N(25) + 1
 		if s.Rng.Float64() < 0.7 {
-			s.SaveRecord(&gen.Order{
+			s.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(pk),
 				Price:   proto.Int32(s.Rng.Int32N(500)),
 			})

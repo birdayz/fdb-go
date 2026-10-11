@@ -5,7 +5,7 @@ import (
 	"errors"
 	"strings"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -38,7 +38,7 @@ var _ = Describe("split record corruption errors", func() {
 	bigPayload := strings.Repeat("x", 3*splitRecordSize)
 
 	buildMeta := func() *RecordMetaData {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto).SetSplitLongRecords(true)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto).SetSplitLongRecords(true)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -59,7 +59,7 @@ var _ = Describe("split record corruption errors", func() {
 			if err != nil {
 				return nil, err
 			}
-			return store.SaveRecord(&gen.Order{
+			return store.SaveRecord(&demopb.Order{
 				OrderId:    proto.Int64(1),
 				Price:      proto.Int32(500),
 				VectorData: []byte(bigPayload),

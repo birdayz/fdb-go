@@ -7,7 +7,7 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
 )
 
@@ -17,7 +17,7 @@ import (
 // price is the position column (ungrouped). Entry size defaults to 10000.
 func buildBitmapValueMetadata() *recordlayer.RecordMetaData {
 	builder := recordlayer.NewRecordMetaDataBuilder()
-	builder.SetRecords(gen.File_record_layer_demo_proto)
+	builder.SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -39,7 +39,7 @@ func TestBitmapBasicSave(t *testing.T) {
 	md := buildBitmapValueMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(42)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(42)})
 	s.Verify() // bit 42 in aligned entry at position 0 should be set
 }
 
@@ -49,9 +49,9 @@ func TestBitmapMultipleRecords(t *testing.T) {
 	md := buildBitmapValueMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10)})
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(500)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(10)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(500)})
 	s.Verify() // bits 10, 100, 500 should all be set
 }
 
@@ -61,7 +61,7 @@ func TestBitmapDelete(t *testing.T) {
 	md := buildBitmapValueMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(77)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(77)})
 	s.Verify()
 
 	s.DeleteRecord(tuple.Tuple{int64(1)})
@@ -75,10 +75,10 @@ func TestBitmapOverwrite(t *testing.T) {
 	md := buildBitmapValueMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(50)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(50)})
 	s.Verify() // bit 50 set
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)})
 	s.Verify() // bit 50 cleared, bit 200 set
 }
 
@@ -90,7 +90,7 @@ func TestBitmapCommitUnknown(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 	s.Verify()
 }
 
@@ -101,7 +101,7 @@ func TestBitmapDeleteCommitUnknown(t *testing.T) {
 	md := buildBitmapValueMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 	s.Verify()
 
 	s.InjectOnce(FaultCommitUnknown)
@@ -140,7 +140,7 @@ func TestRandomBitmapWithFaults(t *testing.T) {
 // violation.
 func TestBitmapRefusedEntrySizeHoldsNoEntry(t *testing.T) {
 	t.Parallel()
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -162,7 +162,7 @@ func TestBitmapRefusedEntrySizeHoldsNoEntry(t *testing.T) {
 			if err != nil {
 				return nil, err
 			}
-			if _, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(4)}); err == nil {
+			if _, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(4)}); err == nil {
 				t.Fatal("a bitmap index of entry size 0 maintained a write")
 			}
 			if write {

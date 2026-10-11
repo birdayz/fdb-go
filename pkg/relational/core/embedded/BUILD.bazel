@@ -560,6 +560,7 @@ go_test(
     tags = ["resources:cpu:4"],
     deps = [
         "//gen",
+        "//gen/demopb",
         "//pkg/dst",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",

@@ -107,7 +107,7 @@ go_test(
     ],
     embed = [":query"],
     deps = [
-        "//gen",
+        "//gen/demopb",
         "//pkg/internal/querycensus",
         "//pkg/recordlayer",
         "//pkg/recordlayer/protoname",

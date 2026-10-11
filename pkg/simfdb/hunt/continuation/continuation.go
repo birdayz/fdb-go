@@ -42,7 +42,7 @@ import (
 	"math/rand/v2"
 	"sort"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	fdb "fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -382,7 +382,7 @@ func (w Workload) scanPage(ctx context.Context, db *recordlayer.FDBDatabase, md 
 				return nil, err
 			}
 			for _, r := range list {
-				rows = append(rows, fmt.Sprintf("%d", r.Record.(*gen.Order).GetOrderId()))
+				rows = append(rows, fmt.Sprintf("%d", r.Record.(*demopb.Order).GetOrderId()))
 			}
 			next = c
 		} else {
@@ -474,7 +474,7 @@ func (w Workload) setup(seed uint64, recs []rec) (*simfdb.SimDB, *recordlayer.FD
 			return nil, err
 		}
 		for _, r := range recs {
-			if _, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(r.pk), Price: proto.Int32(int32(r.price))}); err != nil {
+			if _, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(r.pk), Price: proto.Int32(int32(r.price))}); err != nil {
 				return nil, err
 			}
 		}
@@ -488,7 +488,7 @@ func (w Workload) setup(seed uint64, recs []rec) (*simfdb.SimDB, *recordlayer.FD
 
 func buildMetadata() (*recordlayer.RecordMetaData, *recordlayer.Index) {
 	b := recordlayer.NewRecordMetaDataBuilder()
-	b.SetRecords(gen.File_record_layer_demo_proto)
+	b.SetRecords(demopb.File_record_layer_demo_proto)
 	b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))

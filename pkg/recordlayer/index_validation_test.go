@@ -8,7 +8,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 )
 
 var _ = Describe("Index validation", func() {
@@ -22,7 +22,7 @@ var _ = Describe("Index validation", func() {
 		It("returns valid for a consistent index", func() {
 			priceIndex := NewIndex("Order$price", Field("price"))
 
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -42,7 +42,7 @@ var _ = Describe("Index validation", func() {
 				// Save some records
 				for i := int64(1); i <= 3; i++ {
 					price := int32(i * 100)
-					_, err = store.SaveRecord(&gen.Order{OrderId: &i, Price: &price})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: &i, Price: &price})
 					if err != nil {
 						return nil, err
 					}
@@ -63,7 +63,7 @@ var _ = Describe("Index validation", func() {
 		It("detects orphaned index entries", func() {
 			priceIndex := NewIndex("Order$price", Field("price"))
 
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -83,7 +83,7 @@ var _ = Describe("Index validation", func() {
 				// Save a record (creates index entry)
 				id := int64(1)
 				price := int32(500)
-				_, err = store.SaveRecord(&gen.Order{OrderId: &id, Price: &price})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: &id, Price: &price})
 				if err != nil {
 					return nil, err
 				}
@@ -106,7 +106,7 @@ var _ = Describe("Index validation", func() {
 		It("detects missing index entries", func() {
 			priceIndex := NewIndex("Order$price", Field("price"))
 
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -126,7 +126,7 @@ var _ = Describe("Index validation", func() {
 				// Save a record (creates index entry)
 				id := int64(1)
 				price := int32(500)
-				_, err = store.SaveRecord(&gen.Order{OrderId: &id, Price: &price})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: &id, Price: &price})
 				if err != nil {
 					return nil, err
 				}
@@ -149,7 +149,7 @@ var _ = Describe("Index validation", func() {
 		It("returns valid for empty store", func() {
 			priceIndex := NewIndex("Order$price", Field("price"))
 
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))

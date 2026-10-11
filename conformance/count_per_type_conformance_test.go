@@ -11,7 +11,7 @@ import (
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -45,7 +45,7 @@ var _ = Describe("RFC-257 a record type's count comes from a COUNT index, as Jav
 			GinkgoWriter.Printf("PERTYPECOUNT %s java=%d %s %q\n", c.mode, java.Count, java.Class, java.Error)
 			Expect([]any{java.Count, java.Error}).To(Equal([]any{c.javaCount, c.javaError}))
 
-			b := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			b := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 			b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 			b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -67,11 +67,11 @@ var _ = Describe("RFC-257 a record type's count comes from a COUNT index, as Jav
 					return nil, err
 				}
 				for i := int64(1); i <= 3; i++ {
-					if _, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(i)}); err != nil {
+					if _, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i)}); err != nil {
 						return nil, err
 					}
 				}
-				if _, err := store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(9)}); err != nil {
+				if _, err := store.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(9)}); err != nil {
 					return nil, err
 				}
 				n, err = store.GetSnapshotRecordCountForRecordType("Order")

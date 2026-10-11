@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -119,7 +120,7 @@ var _ = Describe("vector indexes under core contracts", func() {
 				return nil, err
 			}
 			for i := int64(1); i <= 13; i++ {
-				if _, err := store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i)), Quantity: proto.Int32(1)}, "price")); err != nil {
+				if _, err := store.SaveRecord(withVector(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i)), Quantity: proto.Int32(1)}, "price")); err != nil {
 					return nil, err
 				}
 			}

@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -25,7 +25,7 @@ var _ = Describe("Index version vs metadata version", func() {
 	ctx := context.Background()
 
 	baseBuilder := func() *RecordMetaDataBuilder {
-		b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -48,7 +48,7 @@ var _ = Describe("Index version vs metadata version", func() {
 				SetContext(rtx).SetMetaDataProvider(md1).SetSubspace(ks).CreateOrOpen()
 			Expect(serr).NotTo(HaveOccurred())
 			for i := int64(1); i <= 20; i++ {
-				_, serr = store.SaveRecord(&gen.Order{
+				_, serr = store.SaveRecord(&demopb.Order{
 					OrderId:  proto.Int64(i),
 					Price:    proto.Int32(int32(i * 10)),
 					Quantity: proto.Int32(int32(i)),

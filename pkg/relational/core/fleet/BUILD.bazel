@@ -33,6 +33,7 @@ go_test(
     embed = [":fleet"],
     deps = [
         "//gen",
+        "//gen/demopb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/recordlayer",
         "//pkg/relational/core/catalog",

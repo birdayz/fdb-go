@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -2376,7 +2377,7 @@ var _ = Describe("VectorIndex Store Integration", func() {
 	ctx := context.Background()
 
 	baseMetaData := func() *recordlayer.RecordMetaDataBuilder {
-		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -2488,7 +2489,7 @@ var _ = Describe("VectorIndex Store Integration", func() {
 		}
 		var cce *recordlayer.ClassCastError
 		err = run(func(store *recordlayer.FDBRecordStore) error {
-			_, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(1), Quantity: proto.Int32(2)})
+			_, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(1), Quantity: proto.Int32(2)})
 			return err
 		})
 		Expect(errors.As(err, &cce)).To(BeTrue(), "save: %T %v", err, err)
@@ -2496,7 +2497,7 @@ var _ = Describe("VectorIndex Store Integration", func() {
 			if _, err := store.MarkIndexDisabled(vecIdx.Name); err != nil {
 				return err
 			}
-			if _, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(3), Quantity: proto.Int32(4)}); err != nil {
+			if _, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(3), Quantity: proto.Int32(4)}); err != nil {
 				return err
 			}
 			_, err := store.MarkIndexWriteOnly(vecIdx.Name)
@@ -2549,7 +2550,7 @@ var _ = Describe("VectorIndex Store Integration", func() {
 				{3, 100, 100},
 				{4, 50, 50},
 			} {
-				_, err = store.SaveRecord(withVector(&gen.Order{
+				_, err = store.SaveRecord(withVector(&demopb.Order{
 					OrderId:  proto.Int64(o.id),
 					Price:    proto.Int32(o.price),
 					Quantity: proto.Int32(o.quantity),
@@ -2601,11 +2602,11 @@ var _ = Describe("VectorIndex Store Integration", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Insert 3 orders.
-			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(10)}, "price", "quantity"))
+			_, err = store.SaveRecord(withVector(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(10)}, "price", "quantity"))
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(20)}, "price", "quantity"))
+			_, err = store.SaveRecord(withVector(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(20)}, "price", "quantity"))
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(30), Quantity: proto.Int32(30)}, "price", "quantity"))
+			_, err = store.SaveRecord(withVector(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(30), Quantity: proto.Int32(30)}, "price", "quantity"))
 			Expect(err).NotTo(HaveOccurred())
 
 			// Delete order id=2.
@@ -2680,7 +2681,7 @@ var _ = Describe("VectorIndex Store Integration", func() {
 				{3, 100, 100},
 				{4, 50, 50},
 			} {
-				_, err = store.SaveRecord(withVector(&gen.Order{
+				_, err = store.SaveRecord(withVector(&demopb.Order{
 					OrderId:  proto.Int64(o.id),
 					Price:    proto.Int32(o.price),
 					Quantity: proto.Int32(o.quantity),
@@ -2745,7 +2746,7 @@ var _ = Describe("VectorIndex Store Integration", func() {
 				{3, 100, 100},
 				{4, 50, 50},
 			} {
-				_, err = store.SaveRecord(withVector(&gen.Order{
+				_, err = store.SaveRecord(withVector(&demopb.Order{
 					OrderId:  proto.Int64(o.id),
 					Price:    proto.Int32(o.price),
 					Quantity: proto.Int32(o.quantity),
@@ -2821,9 +2822,9 @@ var _ = Describe("VectorIndex Store Integration", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Insert 2 records.
-			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(10)}, "price", "quantity"))
+			_, err = store.SaveRecord(withVector(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(10)}, "price", "quantity"))
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(20)}, "price", "quantity"))
+			_, err = store.SaveRecord(withVector(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(20)}, "price", "quantity"))
 			Expect(err).NotTo(HaveOccurred())
 
 			// Request k=100 but only 2 exist.
@@ -2870,7 +2871,7 @@ var _ = Describe("VectorIndex Store Integration", func() {
 				{4, 5, 5},     // dist^2 = 50
 				{5, 100, 100}, // dist^2 = 20000
 			} {
-				_, err = store.SaveRecord(withVector(&gen.Order{
+				_, err = store.SaveRecord(withVector(&demopb.Order{
 					OrderId:  proto.Int64(o.id),
 					Price:    proto.Int32(o.price),
 					Quantity: proto.Int32(o.quantity),
@@ -2938,7 +2939,7 @@ var _ = Describe("VectorIndex Store Integration", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// SearchVectorIndex should reject non-VECTOR index.
@@ -2992,7 +2993,7 @@ var _ = Describe("VectorIndex Store Integration", func() {
 			// Insert a record with 128D vector.
 			vec128 := make([]byte, 1+8*128)
 			vec128[0] = 2 // DOUBLE type
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId:    proto.Int64(1),
 				VectorData: vec128,
 			})
@@ -3024,15 +3025,15 @@ var _ = Describe("VectorIndex Store Integration", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Insert PK=1 at (0, 0).
-			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(0), Quantity: proto.Int32(0)}, "price", "quantity"))
+			_, err = store.SaveRecord(withVector(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(0), Quantity: proto.Int32(0)}, "price", "quantity"))
 			Expect(err).NotTo(HaveOccurred())
 
 			// Insert PK=2 at (100, 100) — far away.
-			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100), Quantity: proto.Int32(100)}, "price", "quantity"))
+			_, err = store.SaveRecord(withVector(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(100), Quantity: proto.Int32(100)}, "price", "quantity"))
 			Expect(err).NotTo(HaveOccurred())
 
 			// Update PK=1 to (100, 100) — move it far from origin.
-			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(100)}, "price", "quantity"))
+			_, err = store.SaveRecord(withVector(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(100)}, "price", "quantity"))
 			Expect(err).NotTo(HaveOccurred())
 
 			// Search near (0, 0) with k=1: should NOT find PK=1 (it moved).
@@ -3072,7 +3073,7 @@ var _ = Describe("VectorIndex Store Integration", func() {
 				}
 				vecBytes := serializeVector(vec)
 
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId:    proto.Int64(i + 1),
 					VectorData: vecBytes,
 				})
@@ -3148,7 +3149,7 @@ var _ = Describe("VectorIndex Store Integration", func() {
 		}
 		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			store := open(rtx)
-			_, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(fixture.Record.PK), VectorData: serializeVector(fixture.Record.Vector)})
+			_, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(fixture.Record.PK), VectorData: serializeVector(fixture.Record.Vector)})
 			Expect(err).NotTo(HaveOccurred())
 			ss := store.IndexSubspace(index)
 			rtx.Transaction().ClearRange(ss)
@@ -3186,12 +3187,12 @@ var _ = Describe("VectorIndex Store Integration", func() {
 			Expect(kvs).To(BeEmpty(), "disable must clear every legacy graph key")
 			record, err := store.LoadRecord(tuple.Tuple{fixture.Record.PK})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(record.Record.(*gen.Order).GetVectorData()).To(Equal(serializeVector(fixture.Record.Vector)))
+			Expect(record.Record.(*demopb.Order).GetVectorData()).To(Equal(serializeVector(fixture.Record.Vector)))
 			// The old fixture used threshold 1, which Java rejects. Keep its
 			// graph bytes intact but rebuild with Java-valid threshold 11 and
 			// enough authoritative records to exercise centroid establishment.
 			for id := int64(100); id < 111; id++ {
-				_, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(id), VectorData: serializeVector([]float64{float64(id), 2, 3, 4})})
+				_, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(id), VectorData: serializeVector([]float64{float64(id), 2, 3, 4})})
 				Expect(err).NotTo(HaveOccurred())
 			}
 			Expect(store.RebuildIndex(index)).To(Succeed())
@@ -3209,7 +3210,7 @@ var _ = Describe("VectorIndex Store Integration", func() {
 			// The rebuild established a centroid from authoritative records.
 			// Exercise its active encoder, then delete the rebuilt entry.
 			for i, vector := range [][]float64{{1, 2, 3, 4}, {4, -1, 7, 9}} {
-				_, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(i + 3)), VectorData: serializeVector(vector)})
+				_, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(int64(i + 3)), VectorData: serializeVector(vector)})
 				Expect(err).NotTo(HaveOccurred())
 			}
 			deleted, err := store.DeleteRecord(tuple.Tuple{fixture.Record.PK})
@@ -3260,7 +3261,7 @@ var _ = Describe("VectorIndex Store Integration", func() {
 
 			// Insert 5 records.
 			for i := int64(1); i <= 5; i++ {
-				_, err = store.SaveRecord(withVector(&gen.Order{
+				_, err = store.SaveRecord(withVector(&demopb.Order{
 					OrderId:  proto.Int64(i),
 					Price:    proto.Int32(int32(i * 10)),
 					Quantity: proto.Int32(int32(i * 10)),
@@ -3334,7 +3335,7 @@ var _ = Describe("VectorIndex Store Integration", func() {
 
 				for i := batchStart; i < batchEnd; i++ {
 					// Deterministic spread: (i*2, i*3) gives distinct 2D positions.
-					_, err = store.SaveRecord(withVector(&gen.Order{
+					_, err = store.SaveRecord(withVector(&demopb.Order{
 						OrderId:  proto.Int64(int64(i + 1)),
 						Price:    proto.Int32(int32(i * 2)),
 						Quantity: proto.Int32(int32(i * 3)),
@@ -3613,7 +3614,7 @@ var _ = Describe("VectorIndex Prefix Partitioning", func() {
 	ctx := context.Background()
 
 	baseMetaData := func() *recordlayer.RecordMetaDataBuilder {
-		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -3638,17 +3639,17 @@ var _ = Describe("VectorIndex Prefix Partitioning", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Group 1 (quantity=1): prices 10, 20, 100
-			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(1)}, "price"))
+			_, err = store.SaveRecord(withVector(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(1)}, "price"))
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(1)}, "price"))
+			_, err = store.SaveRecord(withVector(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(1)}, "price"))
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(100), Quantity: proto.Int32(1)}, "price"))
+			_, err = store.SaveRecord(withVector(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(100), Quantity: proto.Int32(1)}, "price"))
 			Expect(err).NotTo(HaveOccurred())
 
 			// Group 2 (quantity=2): prices 50, 60
-			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(4), Price: proto.Int32(50), Quantity: proto.Int32(2)}, "price"))
+			_, err = store.SaveRecord(withVector(&demopb.Order{OrderId: proto.Int64(4), Price: proto.Int32(50), Quantity: proto.Int32(2)}, "price"))
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(5), Price: proto.Int32(60), Quantity: proto.Int32(2)}, "price"))
+			_, err = store.SaveRecord(withVector(&demopb.Order{OrderId: proto.Int64(5), Price: proto.Int32(60), Quantity: proto.Int32(2)}, "price"))
 			Expect(err).NotTo(HaveOccurred())
 
 			// Search in group 1 near price=15: should find id=1(10) and id=2(20), not group 2 records.
@@ -3696,7 +3697,7 @@ var _ = Describe("VectorIndex Prefix Partitioning", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Insert into group 1 only.
-			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(1)}, "price"))
+			_, err = store.SaveRecord(withVector(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(1)}, "price"))
 			Expect(err).NotTo(HaveOccurred())
 
 			// Search in group 99 (empty): should return 0 results.
@@ -3725,13 +3726,13 @@ var _ = Describe("VectorIndex Prefix Partitioning", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Group 1: id=1 and id=2.
-			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(1)}, "price"))
+			_, err = store.SaveRecord(withVector(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(1)}, "price"))
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(1)}, "price"))
+			_, err = store.SaveRecord(withVector(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(1)}, "price"))
 			Expect(err).NotTo(HaveOccurred())
 
 			// Group 2: id=3.
-			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(50), Quantity: proto.Int32(2)}, "price"))
+			_, err = store.SaveRecord(withVector(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(50), Quantity: proto.Int32(2)}, "price"))
 			Expect(err).NotTo(HaveOccurred())
 
 			// Delete id=1 from group 1.
@@ -3772,13 +3773,13 @@ var _ = Describe("VectorIndex Prefix Partitioning", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Group 1: id=1(price=10), id=2(price=20).
-			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(1)}, "price"))
+			_, err = store.SaveRecord(withVector(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(1)}, "price"))
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(1)}, "price"))
+			_, err = store.SaveRecord(withVector(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(1)}, "price"))
 			Expect(err).NotTo(HaveOccurred())
 
 			// Group 2: id=3(price=50).
-			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(50), Quantity: proto.Int32(2)}, "price"))
+			_, err = store.SaveRecord(withVector(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(50), Quantity: proto.Int32(2)}, "price"))
 			Expect(err).NotTo(HaveOccurred())
 
 			// ScanVectorIndexWithPrefix for group 1.
@@ -3825,15 +3826,15 @@ var _ = Describe("VectorIndex Prefix Partitioning", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Group 1: id=1(price=10), id=2(price=20).
-			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(1)}, "price"))
+			_, err = store.SaveRecord(withVector(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(1)}, "price"))
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(1)}, "price"))
+			_, err = store.SaveRecord(withVector(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(1)}, "price"))
 			Expect(err).NotTo(HaveOccurred())
 
 			// Group 2: id=3(price=50), id=4(price=60).
-			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(50), Quantity: proto.Int32(2)}, "price"))
+			_, err = store.SaveRecord(withVector(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(50), Quantity: proto.Int32(2)}, "price"))
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(4), Price: proto.Int32(60), Quantity: proto.Int32(2)}, "price"))
+			_, err = store.SaveRecord(withVector(&demopb.Order{OrderId: proto.Int64(4), Price: proto.Int32(60), Quantity: proto.Int32(2)}, "price"))
 			Expect(err).NotTo(HaveOccurred())
 
 			// Scan group 2 via ScanIndexByType + VectorDistanceScanRangeWithPrefix.
@@ -3881,7 +3882,7 @@ var _ = Describe("VectorIndex Prefix Partitioning", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Insert id=1 in group 1.
-			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(1)}, "price"))
+			_, err = store.SaveRecord(withVector(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(1)}, "price"))
 			Expect(err).NotTo(HaveOccurred())
 
 			// Verify it's in group 1.
@@ -3891,7 +3892,7 @@ var _ = Describe("VectorIndex Prefix Partitioning", func() {
 			Expect(results[0].PrimaryKey[0].(int64)).To(Equal(int64(1)))
 
 			// Update id=1 to group 2.
-			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(2)}, "price"))
+			_, err = store.SaveRecord(withVector(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(2)}, "price"))
 			Expect(err).NotTo(HaveOccurred())
 
 			// Group 1 should now be empty.
@@ -3925,9 +3926,9 @@ var _ = Describe("VectorIndex Prefix Partitioning", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(10)}, "price", "quantity"))
+			_, err = store.SaveRecord(withVector(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(10)}, "price", "quantity"))
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(20)}, "price", "quantity"))
+			_, err = store.SaveRecord(withVector(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(20)}, "price", "quantity"))
 			Expect(err).NotTo(HaveOccurred())
 
 			// Backward-compatible API (no prefix) should work.
@@ -3956,18 +3957,18 @@ var _ = Describe("VectorIndex Prefix Partitioning", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Group 1: id=1(price=10).
-			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(1)}, "price"))
+			_, err = store.SaveRecord(withVector(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(1)}, "price"))
 			Expect(err).NotTo(HaveOccurred())
 
 			// Group 2: id=2(price=50).
-			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(50), Quantity: proto.Int32(2)}, "price"))
+			_, err = store.SaveRecord(withVector(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(50), Quantity: proto.Int32(2)}, "price"))
 			Expect(err).NotTo(HaveOccurred())
 
 			// Fetch records from group 1.
 			records, err := store.SearchVectorIndexRecordsWithPrefix(ctx, vecIdx, tuple.Tuple{int64(1)}, []float64{10.0}, 10, 100)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(records).To(HaveLen(1))
-			order := records[0].Record.Record.(*gen.Order)
+			order := records[0].Record.Record.(*demopb.Order)
 			Expect(order.GetOrderId()).To(Equal(int64(1)))
 			Expect(order.GetQuantity()).To(Equal(int32(1)))
 
@@ -3975,7 +3976,7 @@ var _ = Describe("VectorIndex Prefix Partitioning", func() {
 			records2, err := store.SearchVectorIndexRecordsWithPrefix(ctx, vecIdx, tuple.Tuple{int64(2)}, []float64{50.0}, 10, 100)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(records2).To(HaveLen(1))
-			order2 := records2[0].Record.Record.(*gen.Order)
+			order2 := records2[0].Record.Record.(*demopb.Order)
 			Expect(order2.GetOrderId()).To(Equal(int64(2)))
 			Expect(order2.GetQuantity()).To(Equal(int32(2)))
 
@@ -4014,7 +4015,7 @@ var _ = Describe("VectorIndex Prefix Partitioning", func() {
 			for _, o := range []struct{ id, zone, cat int64 }{
 				{1, 1, 10}, {2, 1, 20}, {3, 2, 10},
 			} {
-				_, e := store.SaveRecord(&gen.Order{
+				_, e := store.SaveRecord(&demopb.Order{
 					OrderId:    proto.Int64(o.id),
 					Quantity:   proto.Int32(int32(o.zone)),
 					Price:      proto.Int32(int32(o.cat)),
@@ -4076,19 +4077,19 @@ var _ = Describe("VectorIndex Prefix Partitioning", func() {
 			}
 
 			// Group 1: two 3D vectors.
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(1), Quantity: proto.Int32(1),
 				VectorData: mkVec(1.0, 2.0, 3.0),
 			})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(2), Quantity: proto.Int32(1),
 				VectorData: mkVec(4.0, 5.0, 6.0),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Group 2: one 3D vector.
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(3), Quantity: proto.Int32(2),
 				VectorData: mkVec(100.0, 100.0, 100.0),
 			})
@@ -4137,7 +4138,7 @@ var _ = Describe("VectorIndex Prefix Partitioning", func() {
 			for g := int32(1); g <= 5; g++ {
 				for j := int32(0); j < 2; j++ {
 					id := int64(g)*100 + int64(j)
-					_, err = store.SaveRecord(withVector(&gen.Order{
+					_, err = store.SaveRecord(withVector(&demopb.Order{
 						OrderId:  proto.Int64(id),
 						Price:    proto.Int32(g*10 + j),
 						Quantity: proto.Int32(g),
@@ -5050,7 +5051,7 @@ func spanPKInt(span []byte) int64 {
 // withVector sets o's vector_data to the named numeric fields as Java's
 // RealVector bytes, the only vector form Java's maintainer reads; an unset
 // field leaves the vector null, which the index skips.
-func withVector(o *gen.Order, fields ...string) *gen.Order {
+func withVector(o *demopb.Order, fields ...string) *demopb.Order {
 	vec := make([]float64, 0, len(fields))
 	for _, f := range fields {
 		var v float64

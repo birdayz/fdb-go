@@ -18,7 +18,7 @@ import (
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -46,8 +46,8 @@ var _ = Describe("RFC-257 TransformedRecordSerializer records are read and writt
 		Expect(err).NotTo(HaveOccurred())
 		keyHex := hex.EncodeToString(key)
 		sonnet := strings.Repeat("What's in the brain that ink may character which hath not figured to thee my true spirit? ", 4)
-		order := func(id int64) *gen.Order {
-			return &gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(int32(id)), Tags: []string{sonnet, "b"}} //nolint:gosec
+		order := func(id int64) *demopb.Order {
+			return &demopb.Order{OrderId: proto.Int64(id), Price: proto.Int32(int32(id)), Tags: []string{sonnet, "b"}} //nolint:gosec
 		}
 		goSerializer := func(compress, encrypt bool) *recordlayer.TransformedRecordSerializer {
 			s, err := recordlayer.NewTransformedRecordSerializerJCEBuilder().
@@ -149,7 +149,7 @@ var _ = Describe("RFC-257 TransformedRecordSerializer records are read and writt
 			raw = rawValue(goID)
 			GinkgoWriter.Printf("TSER %s go-written %d bytes, prefix %02x\n", c.name, len(raw), raw[0])
 			Expect(raw[0]).To(Equal(c.prefix), "%s: Go's stored prefix", c.name)
-			var javaOrder gen.Order
+			var javaOrder demopb.Order
 			Expect(java.InvokeAs(ctx, "loadOrderTransformedJava", map[string]any{
 				"clusterFile": clusterFile, "subspace": BytesToIntArray(env.Keyspace.Bytes()), "orderID": goID,
 				"tenantName": env.TenantName, "keyHex": keyHex,
@@ -170,8 +170,8 @@ var _ = Describe("RFC-257 TransformedRecordSerializer records are read and writt
 		java := NewJavaInvoker()
 		clusterFile, err := sharedContainer.ClusterFile(ctx)
 		Expect(err).NotTo(HaveOccurred())
-		order := func(id int64) *gen.Order {
-			return &gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(int32(id)), Tags: []string{"a mode row", "b"}} //nolint:gosec
+		order := func(id int64) *demopb.Order {
+			return &demopb.Order{OrderId: proto.Int64(id), Price: proto.Int32(int32(id)), Tags: []string{"a mode row", "b"}} //nolint:gosec
 		}
 		goSave := func(id int64, s *recordlayer.TransformedRecordSerializer) error {
 			_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -252,7 +252,7 @@ var _ = Describe("RFC-257 TransformedRecordSerializer records are read and writt
 			got, err := goLoad(javaID, goSer)
 			Expect(err).NotTo(HaveOccurred(), "%s: Go reads what Java wrote", c.cipher)
 			Expect(proto.Equal(got, order(javaID))).To(BeTrue(), "%s: Go read %v", c.cipher, got)
-			var javaOrder gen.Order
+			var javaOrder demopb.Order
 			Expect(java.InvokeAs(ctx, "loadOrderTransformedJava", map[string]any{
 				"clusterFile": clusterFile, "subspace": BytesToIntArray(env.Keyspace.Bytes()), "orderID": goID,
 				"tenantName": env.TenantName, "keyHex": keyHex, "cipherName": c.cipher,
@@ -448,8 +448,8 @@ var _ = Describe("RFC-257 TransformedRecordSerializer records are read and writt
 			Expect(err).NotTo(HaveOccurred())
 			return s
 		}
-		order := func(id int64) *gen.Order {
-			return &gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(int32(id)), Tags: []string{strings.Repeat("sonnet ", 40)}} //nolint:gosec
+		order := func(id int64) *demopb.Order {
+			return &demopb.Order{OrderId: proto.Int64(id), Price: proto.Int32(int32(id)), Tags: []string{strings.Repeat("sonnet ", 40)}} //nolint:gosec
 		}
 		rawPrefix := func(id int64) byte {
 			var raw []byte
@@ -511,7 +511,7 @@ var _ = Describe("RFC-257 TransformedRecordSerializer records are read and writt
 			})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(rawPrefix(goID)).To(Equal(byte(0x09)), "Go's prefix: encrypted, key 1")
-			var javaOrder gen.Order
+			var javaOrder demopb.Order
 			Expect(java.InvokeAs(ctx, "loadOrderKeyStoreJava", map[string]any{
 				"clusterFile": clusterFile, "subspace": BytesToIntArray(env.Keyspace.Bytes()), "orderID": goID,
 				"tenantName": env.TenantName, "keyStore": keyStore, "password": password,

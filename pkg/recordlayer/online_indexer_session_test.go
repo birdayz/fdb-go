@@ -13,6 +13,8 @@ import (
 	"fdb.dev/pkg/dst"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
@@ -69,7 +71,7 @@ var _ = Describe("OnlineIndexer batch session fencing", func() {
 				if err != nil {
 					return nil, err
 				}
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(2)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(2)})
 				if err != nil {
 					return nil, err
 				}
@@ -130,7 +132,7 @@ var _ = Describe("OnlineIndexer batch session fencing", func() {
 				if err != nil {
 					return nil, err
 				}
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(2)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(2)})
 				if err != nil {
 					return nil, err
 				}
@@ -776,7 +778,7 @@ var _ = Describe("Mutual heartbeat renewal concurrency", func() {
 				return nil, err
 			}
 			for _, id := range []int64{1, 2, 51, 52} {
-				if _, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(int32(id))}); err != nil {
+				if _, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(id), Price: proto.Int32(int32(id))}); err != nil {
 					return nil, err
 				}
 			}

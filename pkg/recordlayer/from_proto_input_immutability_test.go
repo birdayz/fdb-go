@@ -8,6 +8,8 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 )
 
 // RecordMetaDataFromProto MUST NOT MUTATE THE PROTO IT IS HANDED, because
@@ -169,7 +171,7 @@ func TestRelativeTypeNameFixtureActuallyCarriesARelativeName(t *testing.T) {
 func relativeTypeNameMetaData(t *testing.T) *gen.MetaData {
 	t.Helper()
 
-	b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -381,7 +383,7 @@ func countTypeNameShapes(fd *descriptorpb.FileDescriptorProto) (relative, absolu
 func TestRecordMetaDataFromProtoReadsAnUndeclaredEnumFromAClone(t *testing.T) {
 	t.Parallel()
 	b := NewRecordMetaDataBuilder()
-	b.SetRecords(gen.File_record_layer_demo_proto)
+	b.SetRecords(demopb.File_record_layer_demo_proto)
 	b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))

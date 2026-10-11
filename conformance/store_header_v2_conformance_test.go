@@ -7,6 +7,8 @@ import (
 	"fmt"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -218,7 +220,7 @@ var _ = Describe("Store Header V2 Conformance", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Java tries to save — should fail
-			result, err := store.SaveOrderLockedJava(ctx, &gen.Order{
+			result, err := store.SaveOrderLockedJava(ctx, &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(100),
 			})
@@ -472,7 +474,7 @@ func (s *StoreHeaderV2ConformanceStore) OpenLockedStoreJava(ctx context.Context,
 }
 
 // SaveOrderLockedJava tries to save a record via Java to a potentially locked store.
-func (s *StoreHeaderV2ConformanceStore) SaveOrderLockedJava(ctx context.Context, order *gen.Order) (*OpenLockedStoreResult, error) {
+func (s *StoreHeaderV2ConformanceStore) SaveOrderLockedJava(ctx context.Context, order *demopb.Order) (*OpenLockedStoreResult, error) {
 	params := s.buildJavaParams()
 	params["order"] = order
 

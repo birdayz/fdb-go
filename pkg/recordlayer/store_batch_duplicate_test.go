@@ -10,7 +10,7 @@ import (
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -20,13 +20,13 @@ import (
 // that record's old index entries. The batch API promises the same sequential semantics.
 var _ = Describe("SaveRecordBatch repeated primary keys", func() {
 	ctx := context.Background()
-	record := func(id int64, price int32, size int, unknown protowire.Number) *gen.TypedRecord {
-		r := &gen.TypedRecord{Id: proto.Int64(id), Price: proto.Int32(price), ValBytes: bytes.Repeat([]byte{'x'}, size)}
+	record := func(id int64, price int32, size int, unknown protowire.Number) *demopb.TypedRecord {
+		r := &demopb.TypedRecord{Id: proto.Int64(id), Price: proto.Int32(price), ValBytes: bytes.Repeat([]byte{'x'}, size)}
 		r.ProtoReflect().SetUnknown(protowire.AppendString(protowire.AppendTag(nil, unknown, protowire.BytesType), "forward-compatible"))
 		return r
 	}
 	build := func() *RecordMetaData {
-		b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto).SetSplitLongRecords(true)
+		b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto).SetSplitLongRecords(true)
 		b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -50,7 +50,7 @@ var _ = Describe("SaveRecordBatch repeated primary keys", func() {
 		return out
 	}
 	It("replaces both committed and earlier batch VERSION index entries", func() {
-		b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))

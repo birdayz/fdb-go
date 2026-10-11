@@ -3,7 +3,7 @@ package recordlayer
 import (
 	"context"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
@@ -176,7 +176,7 @@ var _ = Describe("PrimaryKeyComponentDeduplication", func() {
 			// order_id appears in both → should be deduplicated.
 			compositeIndex := NewIndex("Order$price_id", Concat(Field("price"), Field("order_id")))
 
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -190,7 +190,7 @@ var _ = Describe("PrimaryKeyComponentDeduplication", func() {
 					SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
 
-				order := &gen.Order{OrderId: proto.Int64(42), Price: proto.Int32(999)}
+				order := &demopb.Order{OrderId: proto.Int64(42), Price: proto.Int32(999)}
 				_, err = store.SaveRecord(order)
 				Expect(err).NotTo(HaveOccurred())
 
@@ -222,7 +222,7 @@ var _ = Describe("PrimaryKeyComponentDeduplication", func() {
 				records, recErr := AsList(ctx, store.ScanIndexRecords("Order$price_id", TupleRangeAll, nil, ForwardScan()))
 				Expect(recErr).NotTo(HaveOccurred())
 				Expect(records).To(HaveLen(1))
-				Expect(records[0].Record.Record.(*gen.Order).GetOrderId()).To(Equal(int64(42)))
+				Expect(records[0].Record.Record.(*demopb.Order).GetOrderId()).To(Equal(int64(42)))
 
 				return nil, nil
 			})
@@ -233,7 +233,7 @@ var _ = Describe("PrimaryKeyComponentDeduplication", func() {
 			// Index on price, PK on order_id — no overlap, PK appended as-is
 			priceIndex := NewIndex("Order$price", Field("price"))
 
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -247,7 +247,7 @@ var _ = Describe("PrimaryKeyComponentDeduplication", func() {
 					SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
 
-				order := &gen.Order{OrderId: proto.Int64(42), Price: proto.Int32(999)}
+				order := &demopb.Order{OrderId: proto.Int64(42), Price: proto.Int32(999)}
 				_, err = store.SaveRecord(order)
 				Expect(err).NotTo(HaveOccurred())
 
@@ -276,7 +276,7 @@ var _ = Describe("PrimaryKeyComponentDeduplication", func() {
 			// Full lifecycle: insert, update, delete with dedup active
 			compositeIndex := NewIndex("Order$price_id", Concat(Field("price"), Field("order_id")))
 
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -291,7 +291,7 @@ var _ = Describe("PrimaryKeyComponentDeduplication", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// Insert
-				order := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
+				order := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
 				_, err = store.SaveRecord(order)
 				Expect(err).NotTo(HaveOccurred())
 
@@ -300,7 +300,7 @@ var _ = Describe("PrimaryKeyComponentDeduplication", func() {
 				Expect(entries[0].PrimaryKey()).To(Equal(tuple.Tuple{int64(1)}))
 
 				// Update price
-				order2 := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)}
+				order2 := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)}
 				_, err = store.SaveRecord(order2)
 				Expect(err).NotTo(HaveOccurred())
 
@@ -325,7 +325,7 @@ var _ = Describe("PrimaryKeyComponentDeduplication", func() {
 			// Unique composite index where PK is part of index key
 			compositeIndex := NewIndex("Order$price_id", Concat(Field("price"), Field("order_id"))).SetUnique()
 
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -341,7 +341,7 @@ var _ = Describe("PrimaryKeyComponentDeduplication", func() {
 
 				// Different orders with same price — should work because order_id differs
 				for i := int64(1); i <= 3; i++ {
-					order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(100)}
+					order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(100)}
 					_, err = store.SaveRecord(order)
 					Expect(err).NotTo(HaveOccurred())
 				}
@@ -382,7 +382,7 @@ var _ = Describe("PrimaryKeyComponentDeduplication", func() {
 			// this index were single-type. It is not, so they are not.
 			compositeIdx := NewIndex("multi_price_literal", Concat(Field("price"), Literal(int64(999))))
 
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("price"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("price"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -401,7 +401,7 @@ var _ = Describe("PrimaryKeyComponentDeduplication", func() {
 			// positions. Without it, a Build that stopped computing positions
 			// entirely would satisfy the check.
 			ctlIdx := NewIndex("single_price_literal", Concat(Field("price"), Literal(int64(999))))
-			ctlBuilder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			ctlBuilder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			ctlBuilder.GetRecordType("Order").SetPrimaryKey(Field("price"))
 			ctlBuilder.GetRecordType("Customer").SetPrimaryKey(Field("price"))
 			ctlBuilder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -420,7 +420,7 @@ var _ = Describe("PrimaryKeyComponentDeduplication", func() {
 			// appears twice.
 			compositeIdx := NewIndex("multi_oid_price", Concat(Field("price"), Literal(int64(999))))
 
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("price"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("price"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -433,7 +433,7 @@ var _ = Describe("PrimaryKeyComponentDeduplication", func() {
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
 
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(42),
 					Price:   proto.Int32(42),
 				})

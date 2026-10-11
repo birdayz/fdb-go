@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -238,7 +240,7 @@ var _ = Describe("Union identity persistence", func() {
 	It("uses the current descriptor for same-name generated schema revisions", func() {
 		old, err := baseBuilder().Build()
 		Expect(err).NotTo(HaveOccurred())
-		schema := protodesc.ToFileDescriptorProto(gen.File_record_layer_demo_proto)
+		schema := protodesc.ToFileDescriptorProto(demopb.File_record_layer_demo_proto)
 		for _, message := range schema.MessageType {
 			if message.GetName() == "Order" {
 				message.Field = append(message.Field, unionEvolutionField("new_payload", 50, descriptorpb.FieldDescriptorProto_TYPE_STRING, ""))

@@ -6,7 +6,7 @@ import (
 	"context"
 	"fmt"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -45,7 +45,7 @@ var _ = Describe("MAX_EVER_LONG Index Conformance", func() {
 	Describe("Go writes, both scan MAX_EVER_LONG index", func() {
 		It("should produce identical max entries visible to both Go and Java", func() {
 			for i, price := range []int32{100, 300, 200} {
-				err := store.SaveOrderGo(ctx, &gen.Order{
+				err := store.SaveOrderGo(ctx, &demopb.Order{
 					OrderId: proto.Int64(int64(i + 1)),
 					Price:   proto.Int32(price),
 				})
@@ -71,7 +71,7 @@ var _ = Describe("MAX_EVER_LONG Index Conformance", func() {
 	Describe("Java writes, both scan MAX_EVER_LONG index", func() {
 		It("should produce identical max entries visible to both Go and Java", func() {
 			for i, price := range []int32{150, 450, 250} {
-				err := store.SaveOrderJava(ctx, &gen.Order{
+				err := store.SaveOrderJava(ctx, &demopb.Order{
 					OrderId: proto.Int64(int64(i + 1)),
 					Price:   proto.Int32(price),
 				})
@@ -96,21 +96,21 @@ var _ = Describe("MAX_EVER_LONG Index Conformance", func() {
 	Describe("Mixed writes: Go and Java both insert", func() {
 		It("should track the global max across both writers", func() {
 			// Go writes: max so far = 200
-			err := store.SaveOrderGo(ctx, &gen.Order{
+			err := store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(200),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Java writes: max becomes 500
-			err = store.SaveOrderJava(ctx, &gen.Order{
+			err = store.SaveOrderJava(ctx, &demopb.Order{
 				OrderId: proto.Int64(2),
 				Price:   proto.Int32(500),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Go writes lower: max stays 500
-			err = store.SaveOrderGo(ctx, &gen.Order{
+			err = store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(3),
 				Price:   proto.Int32(300),
 			})
@@ -132,13 +132,13 @@ var _ = Describe("MAX_EVER_LONG Index Conformance", func() {
 	Describe("Delete does NOT revert max (_EVER semantics)", func() {
 		It("should preserve max after Go deletes the max record written by Java", func() {
 			// Java saves: prices 100, 500
-			err := store.SaveOrderJava(ctx, &gen.Order{
+			err := store.SaveOrderJava(ctx, &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(100),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			err = store.SaveOrderJava(ctx, &gen.Order{
+			err = store.SaveOrderJava(ctx, &demopb.Order{
 				OrderId: proto.Int64(2),
 				Price:   proto.Int32(500),
 			})
@@ -170,13 +170,13 @@ var _ = Describe("MAX_EVER_LONG Index Conformance", func() {
 
 		It("should preserve max after Java deletes the max record written by Go", func() {
 			// Go saves: prices 200, 800
-			err := store.SaveOrderGo(ctx, &gen.Order{
+			err := store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(200),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			err = store.SaveOrderGo(ctx, &gen.Order{
+			err = store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(2),
 				Price:   proto.Int32(800),
 			})
@@ -203,14 +203,14 @@ var _ = Describe("MAX_EVER_LONG Index Conformance", func() {
 	Describe("Update never decreases max", func() {
 		It("should keep max when Go updates to lower value", func() {
 			// Save with price 700
-			err := store.SaveOrderGo(ctx, &gen.Order{
+			err := store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(700),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Update to lower price 200
-			err = store.SaveOrderGo(ctx, &gen.Order{
+			err = store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(200),
 			})
@@ -260,7 +260,7 @@ var _ = Describe("MIN_EVER_LONG Index Conformance", func() {
 	Describe("Go writes, both scan MIN_EVER_LONG index", func() {
 		It("should produce identical min entries visible to both Go and Java", func() {
 			for i, price := range []int32{300, 100, 200} {
-				err := store.SaveOrderGo(ctx, &gen.Order{
+				err := store.SaveOrderGo(ctx, &demopb.Order{
 					OrderId: proto.Int64(int64(i + 1)),
 					Price:   proto.Int32(price),
 				})
@@ -286,7 +286,7 @@ var _ = Describe("MIN_EVER_LONG Index Conformance", func() {
 	Describe("Java writes, both scan MIN_EVER_LONG index", func() {
 		It("should produce identical min entries visible to both Go and Java", func() {
 			for i, price := range []int32{350, 50, 250} {
-				err := store.SaveOrderJava(ctx, &gen.Order{
+				err := store.SaveOrderJava(ctx, &demopb.Order{
 					OrderId: proto.Int64(int64(i + 1)),
 					Price:   proto.Int32(price),
 				})
@@ -311,21 +311,21 @@ var _ = Describe("MIN_EVER_LONG Index Conformance", func() {
 	Describe("Mixed writes: Go and Java both insert", func() {
 		It("should track the global min across both writers", func() {
 			// Go writes: min so far = 300
-			err := store.SaveOrderGo(ctx, &gen.Order{
+			err := store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(300),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Java writes lower: min becomes 50
-			err = store.SaveOrderJava(ctx, &gen.Order{
+			err = store.SaveOrderJava(ctx, &demopb.Order{
 				OrderId: proto.Int64(2),
 				Price:   proto.Int32(50),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Go writes higher: min stays 50
-			err = store.SaveOrderGo(ctx, &gen.Order{
+			err = store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(3),
 				Price:   proto.Int32(200),
 			})
@@ -347,13 +347,13 @@ var _ = Describe("MIN_EVER_LONG Index Conformance", func() {
 	Describe("Delete does NOT revert min (_EVER semantics)", func() {
 		It("should preserve min after Go deletes the min record written by Java", func() {
 			// Java saves: prices 500, 100
-			err := store.SaveOrderJava(ctx, &gen.Order{
+			err := store.SaveOrderJava(ctx, &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(500),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			err = store.SaveOrderJava(ctx, &gen.Order{
+			err = store.SaveOrderJava(ctx, &demopb.Order{
 				OrderId: proto.Int64(2),
 				Price:   proto.Int32(100),
 			})
@@ -385,13 +385,13 @@ var _ = Describe("MIN_EVER_LONG Index Conformance", func() {
 
 		It("should preserve min after Java deletes the min record written by Go", func() {
 			// Go saves: prices 400, 75
-			err := store.SaveOrderGo(ctx, &gen.Order{
+			err := store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(400),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			err = store.SaveOrderGo(ctx, &gen.Order{
+			err = store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(2),
 				Price:   proto.Int32(75),
 			})
@@ -418,14 +418,14 @@ var _ = Describe("MIN_EVER_LONG Index Conformance", func() {
 	Describe("Update never increases min", func() {
 		It("should keep min when Go updates to higher value", func() {
 			// Save with price 100
-			err := store.SaveOrderGo(ctx, &gen.Order{
+			err := store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(100),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Update to higher price 900
-			err = store.SaveOrderGo(ctx, &gen.Order{
+			err = store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(900),
 			})
@@ -469,7 +469,7 @@ type MaxEverLongIndexConformanceStore struct {
 func NewMaxEverLongIndexConformanceStore(recordDB *recordlayer.FDBDatabase, keyspace subspace.Subspace, clusterFile string, tenantName string) (*MaxEverLongIndexConformanceStore, error) {
 	maxIdx := recordlayer.NewMaxEverLongIndex("max_ever_price", recordlayer.Ungrouped(recordlayer.Field("price")))
 
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -506,7 +506,7 @@ func (s *MaxEverLongIndexConformanceStore) buildJavaParams() map[string]any {
 	return params
 }
 
-func (s *MaxEverLongIndexConformanceStore) SaveOrderGo(ctx context.Context, order *gen.Order) error {
+func (s *MaxEverLongIndexConformanceStore) SaveOrderGo(ctx context.Context, order *demopb.Order) error {
 	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
@@ -519,7 +519,7 @@ func (s *MaxEverLongIndexConformanceStore) SaveOrderGo(ctx context.Context, orde
 	return err
 }
 
-func (s *MaxEverLongIndexConformanceStore) SaveOrderJava(ctx context.Context, order *gen.Order) error {
+func (s *MaxEverLongIndexConformanceStore) SaveOrderJava(ctx context.Context, order *demopb.Order) error {
 	params := s.buildJavaParams()
 	params["order"] = order
 	return s.java.InvokeAs(ctx, "saveOrderWithMaxEverLongIndex", params, nil)
@@ -611,7 +611,7 @@ type MinEverLongIndexConformanceStore struct {
 func NewMinEverLongIndexConformanceStore(recordDB *recordlayer.FDBDatabase, keyspace subspace.Subspace, clusterFile string, tenantName string) (*MinEverLongIndexConformanceStore, error) {
 	minIdx := recordlayer.NewMinEverLongIndex("min_ever_price", recordlayer.Ungrouped(recordlayer.Field("price")))
 
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -648,7 +648,7 @@ func (s *MinEverLongIndexConformanceStore) buildJavaParams() map[string]any {
 	return params
 }
 
-func (s *MinEverLongIndexConformanceStore) SaveOrderGo(ctx context.Context, order *gen.Order) error {
+func (s *MinEverLongIndexConformanceStore) SaveOrderGo(ctx context.Context, order *demopb.Order) error {
 	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
@@ -661,7 +661,7 @@ func (s *MinEverLongIndexConformanceStore) SaveOrderGo(ctx context.Context, orde
 	return err
 }
 
-func (s *MinEverLongIndexConformanceStore) SaveOrderJava(ctx context.Context, order *gen.Order) error {
+func (s *MinEverLongIndexConformanceStore) SaveOrderJava(ctx context.Context, order *demopb.Order) error {
 	params := s.buildJavaParams()
 	params["order"] = order
 	return s.java.InvokeAs(ctx, "saveOrderWithMinEverLongIndex", params, nil)
@@ -797,7 +797,7 @@ func NewBareEverIndexConformanceStore(recordDB *recordlayer.FDBDatabase, keyspac
 	}
 
 	build := func(idx *recordlayer.Index) (*recordlayer.RecordMetaData, error) {
-		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -854,7 +854,7 @@ func (s *BareEverIndexConformanceStore) buildJavaParams() map[string]any {
 }
 
 // SaveOrderGo saves through the BARE-spelled metadata.
-func (s *BareEverIndexConformanceStore) SaveOrderGo(ctx context.Context, order *gen.Order) error {
+func (s *BareEverIndexConformanceStore) SaveOrderGo(ctx context.Context, order *demopb.Order) error {
 	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
@@ -867,7 +867,7 @@ func (s *BareEverIndexConformanceStore) SaveOrderGo(ctx context.Context, order *
 	return err
 }
 
-func (s *BareEverIndexConformanceStore) SaveOrderJava(ctx context.Context, order *gen.Order) error {
+func (s *BareEverIndexConformanceStore) SaveOrderJava(ctx context.Context, order *demopb.Order) error {
 	params := s.buildJavaParams()
 	params["order"] = order
 	return s.java.InvokeAs(ctx, "saveOrderWithBareEverIndex", params, nil)
@@ -976,7 +976,7 @@ var _ = Describe("Deprecated bare MIN_EVER / MAX_EVER index conformance", func()
 			Expect(err).NotTo(HaveOccurred())
 
 			for i, price := range tc.prices {
-				Expect(store.SaveOrderGo(ctx, &gen.Order{
+				Expect(store.SaveOrderGo(ctx, &demopb.Order{
 					OrderId: proto.Int64(int64(i + 1)),
 					Price:   proto.Int32(price),
 				})).To(Succeed())
@@ -1014,7 +1014,7 @@ var _ = Describe("Deprecated bare MIN_EVER / MAX_EVER index conformance", func()
 			// The direction that matters most for a shared cluster: the metadata
 			// AND the writes are Java's, and this port has to read them.
 			for i, price := range tc.prices {
-				Expect(store.SaveOrderJava(ctx, &gen.Order{
+				Expect(store.SaveOrderJava(ctx, &demopb.Order{
 					OrderId: proto.Int64(int64(i + 1)),
 					Price:   proto.Int32(price),
 				})).To(Succeed())

@@ -3,7 +3,7 @@ package recordlayer
 import (
 	"context"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -334,7 +334,7 @@ var _ = Describe("RankIndex", func() {
 	ctx := context.Background()
 
 	baseMetaData := func() *RecordMetaDataBuilder {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -365,7 +365,7 @@ var _ = Describe("RankIndex", func() {
 				{2, 100},
 				{3, 200},
 			} {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(p.id),
 					Price:   proto.Int32(p.price),
 				})
@@ -453,7 +453,7 @@ var _ = Describe("RankIndex", func() {
 			// Insert 5 orders with different prices
 			prices := []int32{500, 100, 300, 200, 400}
 			for i, p := range prices {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(int64(i + 1)),
 					Price:   proto.Int32(p),
 				})
@@ -519,7 +519,7 @@ var _ = Describe("RankIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i, p := range []int32{100, 200, 300} {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(int64(i + 1)),
 					Price:   proto.Int32(p),
 				})
@@ -561,7 +561,7 @@ var _ = Describe("RankIndex", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Exclusive range [0, 0) is empty
@@ -600,13 +600,13 @@ var _ = Describe("RankIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Insert: id=1 price=100, id=2 price=200
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Update id=1 price from 100 to 300 (now it should rank higher than id=2)
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(300)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(300)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Verify ranks: price 200 → rank 0, price 300 → rank 1
@@ -652,11 +652,11 @@ var _ = Describe("RankIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Three orders, two with the same price
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(200)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(200)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Ranked set has 2 unique scores (100 and 200) — !CountDuplicates
@@ -724,7 +724,7 @@ var _ = Describe("RankIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i, p := range []int32{300, 100, 200} {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(int64(i + 1)),
 					Price:   proto.Int32(p),
 				})
@@ -793,7 +793,7 @@ var _ = Describe("RankIndex", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Rebuild the index
@@ -827,7 +827,7 @@ var _ = Describe("RankIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i, p := range []int32{100, 200, 300} {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(int64(i + 1)),
 					Price:   proto.Int32(p),
 				})
@@ -871,7 +871,7 @@ var _ = Describe("RankIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i, p := range []int32{100, 200, 300} {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(int64(i + 1)),
 					Price:   proto.Int32(p),
 				})
@@ -967,9 +967,9 @@ var _ = Describe("RankIndex", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// BY_VALUE scan through ScanIndexByType
@@ -1022,9 +1022,9 @@ var _ = Describe("RankIndex", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(store.DeleteAllRecords()).To(Succeed())
@@ -1067,7 +1067,7 @@ var _ = Describe("RankIndex", func() {
 				{30, "alice"},
 				{40, "bob"},
 			} {
-				_, err = store.SaveRecord(&gen.Customer{
+				_, err = store.SaveRecord(&demopb.Customer{
 					CustomerId: proto.Int64(c.id),
 					Name:       proto.String(c.name),
 				})
@@ -1167,11 +1167,11 @@ var _ = Describe("RankIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Insert 3 orders: two with price=100, one with price=200
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(200)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(200)})
 			Expect(err).NotTo(HaveOccurred())
 
 			maintainerIface, mErr := store.getIndexMaintainer(rankIdx)
@@ -1239,7 +1239,7 @@ var _ = Describe("RankIndex", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Rank range [5,10) — out of bounds → empty
@@ -1279,7 +1279,7 @@ var _ = Describe("RankIndex", func() {
 
 			prices := []int32{500, 100, 300, 200, 400}
 			for i, p := range prices {
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(p)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(p)})
 				Expect(err).NotTo(HaveOccurred())
 			}
 
@@ -1344,7 +1344,7 @@ var _ = Describe("RankIndex", func() {
 
 			// Insert 5 records with distinct prices
 			for i, p := range []int32{500, 100, 300, 200, 400} {
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(p)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(p)})
 				Expect(err).NotTo(HaveOccurred())
 			}
 
@@ -1419,7 +1419,7 @@ var _ = Describe("RANK Aggregate Functions", func() {
 	ctx := context.Background()
 
 	baseMetaData := func() *RecordMetaDataBuilder {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -1442,7 +1442,7 @@ var _ = Describe("RANK Aggregate Functions", func() {
 
 			// Insert 5 orders: prices 100, 200, 200, 300, 300
 			for i, price := range []int32{100, 200, 200, 300, 300} {
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)})
 				Expect(err).NotTo(HaveOccurred())
 			}
 
@@ -1472,7 +1472,7 @@ var _ = Describe("RANK Aggregate Functions", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i, price := range []int32{100, 200, 300} {
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)})
 				Expect(err).NotTo(HaveOccurred())
 			}
 
@@ -1510,7 +1510,7 @@ var _ = Describe("RANK Aggregate Functions", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i, price := range []int32{100, 200, 300} {
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)})
 				Expect(err).NotTo(HaveOccurred())
 			}
 
@@ -1547,7 +1547,7 @@ var _ = Describe("RANK Aggregate Functions", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Rank 5 is out of bounds (only 1 record)
@@ -1576,7 +1576,7 @@ var _ = Describe("RANK Aggregate Functions", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Rank 5 out of bounds → sentinel
@@ -1613,7 +1613,7 @@ var _ = Describe("RANK Aggregate Functions", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i, price := range []int32{100, 200, 300} {
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)})
 				Expect(err).NotTo(HaveOccurred())
 			}
 
@@ -1645,7 +1645,7 @@ var _ = Describe("RANK Aggregate Functions", func() {
 
 			// Insert 3 records with distinct prices
 			for i, price := range []int32{100, 200, 300} {
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)})
 				Expect(err).NotTo(HaveOccurred())
 			}
 
@@ -1675,7 +1675,7 @@ var _ = Describe("RANK Record Functions", func() {
 	ctx := context.Background()
 
 	baseMetaData := func() *RecordMetaDataBuilder {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -1700,7 +1700,7 @@ var _ = Describe("RANK Record Functions", func() {
 			records := make([]*FDBStoredRecord[proto.Message], 5)
 			prices := []int32{300, 100, 500, 200, 400}
 			for i, price := range prices {
-				rec, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)})
+				rec, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)})
 				Expect(err).NotTo(HaveOccurred())
 				records[i] = rec
 			}
@@ -1755,7 +1755,7 @@ var _ = Describe("RANK Record Functions", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			rec, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(42)})
+			rec, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(42)})
 			Expect(err).NotTo(HaveOccurred())
 
 			fn := &IndexRecordFunction{
@@ -1791,14 +1791,14 @@ var _ = Describe("RANK Record Functions", func() {
 			// 3 records at price=100, 2 at price=200
 			var rec100, rec200 *FDBStoredRecord[proto.Message]
 			for i := int64(1); i <= 3; i++ {
-				r, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(100)})
+				r, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(100)})
 				Expect(err).NotTo(HaveOccurred())
 				if i == 1 {
 					rec100 = r
 				}
 			}
 			for i := int64(4); i <= 5; i++ {
-				r, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(200)})
+				r, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(200)})
 				Expect(err).NotTo(HaveOccurred())
 				if i == 4 {
 					rec200 = r
@@ -1839,11 +1839,11 @@ var _ = Describe("RANK Record Functions", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			rec1, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			rec1, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
 			Expect(err).NotTo(HaveOccurred())
-			rec3, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(300)})
+			rec3, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(300)})
 			Expect(err).NotTo(HaveOccurred())
 
 			fn := &IndexRecordFunction{
@@ -1889,7 +1889,7 @@ var _ = Describe("RANK Record Functions", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			rec, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			rec, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
 
 			fn := &IndexRecordFunction{
@@ -1931,7 +1931,7 @@ var _ = Describe("RANK Record Functions", func() {
 				{2, 200},
 				{3, 300},
 			} {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(p.id),
 					Price:   proto.Int32(p.price),
 				})

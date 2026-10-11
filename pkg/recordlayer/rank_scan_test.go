@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
@@ -50,7 +50,7 @@ var _ = Describe("Rank-valued scans", func() {
 				_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 					store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
 					Expect(err).NotTo(HaveOccurred())
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 					Expect(err).NotTo(HaveOccurred())
 					if missing {
 						maintainer, err := store.getIndexMaintainer(index)
@@ -169,7 +169,7 @@ var _ = Describe("Rank-valued scans", func() {
 				Expect(errors.As(err, &argument)).To(BeTrue())
 				Expect(argument.ScanType).To(Equal(IndexScanByGroup))
 			}
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(1)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(1)})
 			Expect(err).NotTo(HaveOccurred())
 			maintainer, err := store.getIndexMaintainer(index)
 			Expect(err).NotTo(HaveOccurred())
@@ -237,7 +237,7 @@ var _ = Describe("Rank-valued scans", func() {
 					store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
 					Expect(err).NotTo(HaveOccurred())
 					for i, score := range [][3]int64{{0, 100, 1}, {0, 100, 1}, {0, 100, 2}, {0, 200, 1}, {1, 300, 1}} {
-						_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(i + 1)), CoordX: proto.Int64(score[0]), Price: proto.Int32(int32(score[1])), Quantity: proto.Int32(int32(score[2]))})
+						_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(int64(i + 1)), CoordX: proto.Int64(score[0]), Price: proto.Int32(int32(score[1])), Quantity: proto.Int32(int32(score[2]))})
 						Expect(err).NotTo(HaveOccurred())
 					}
 					maintainer, err := store.getIndexMaintainer(index)

@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -489,7 +491,7 @@ func TestKeyExpressionDeserializationErrorsAreJavas(t *testing.T) {
 		t.Fatalf("Concat kept a nested composite: %v", got)
 	}
 
-	b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -501,7 +503,7 @@ func TestKeyExpressionDeserializationErrorsAreJavas(t *testing.T) {
 	}
 
 	// An index's root emptied after Build is not serialized either.
-	b = NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b = NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))

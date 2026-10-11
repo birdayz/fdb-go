@@ -9,7 +9,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -26,7 +26,7 @@ var _ = Describe("SPFresh parallel staging scan (RFC-103)", func() {
 	// Record-type-prefixed PKs ⇒ shard-safe (PrimaryKeyHasRecordTypePrefix), so
 	// the fan-out actually runs S>1 rather than degrading to the serial floor.
 	buildMeta := func(idx *recordlayer.Index) *recordlayer.RecordMetaData {
-		b := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		b := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		b.GetRecordType("Order").SetPrimaryKey(recordlayer.Concat(recordlayer.RecordTypeKey(), recordlayer.Field("order_id")))
 		b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Concat(recordlayer.RecordTypeKey(), recordlayer.Field("customer_id")))
 		b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Concat(recordlayer.RecordTypeKey(), recordlayer.Field("id")))
@@ -65,7 +65,7 @@ var _ = Describe("SPFresh parallel staging scan (RFC-103)", func() {
 				return nil, serr
 			}
 			for i := 0; i < n; i++ {
-				if _, serr = store.SaveRecord(&gen.Order{
+				if _, serr = store.SaveRecord(&demopb.Order{
 					OrderId:  proto.Int64(int64(i)),
 					Price:    proto.Int32(int32((i * 13) % 50)),
 					Quantity: proto.Int32(int32((i*7)%40 + 1)),
@@ -314,7 +314,7 @@ var _ = Describe("SPFresh parallel staging scan (RFC-103)", func() {
 		ks := specSubspace()
 		idx := newVecIndex("spf_unsafe")
 		// Bare PKs (no RecordTypeKey prefix) ⇒ shard-UNSAFE ⇒ S=1 fallback.
-		b := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		b := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 		b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 		b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))

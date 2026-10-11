@@ -9,7 +9,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
@@ -47,7 +47,7 @@ var _ = Describe("SPFresh N-writer conflict stress", func() {
 			// the split threshold, so no probe ever fires (see above).
 			recordlayer.IndexOptionSPFreshLmax: "768",
 		}
-		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -71,7 +71,7 @@ var _ = Describe("SPFresh N-writer conflict stress", func() {
 			store, serr := storeBuilder(rtx)
 			Expect(serr).NotTo(HaveOccurred())
 			for i := int64(1); i <= 64; i++ {
-				if _, serr := store.SaveRecord(&gen.Order{
+				if _, serr := store.SaveRecord(&demopb.Order{
 					OrderId:  proto.Int64(i),
 					Price:    proto.Int32(int32((i % 16) * 50)),
 					Quantity: proto.Int32(int32((i / 16) * 50)),
@@ -109,7 +109,7 @@ var _ = Describe("SPFresh N-writer conflict stress", func() {
 						if serr != nil {
 							return nil, serr
 						}
-						_, serr = store.SaveRecord(&gen.Order{
+						_, serr = store.SaveRecord(&demopb.Order{
 							OrderId:  proto.Int64(id),
 							Price:    proto.Int32(int32((id % 16) * 50)),
 							Quantity: proto.Int32(int32((id % 13) * 60)),

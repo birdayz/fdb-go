@@ -10,11 +10,13 @@ import (
 	"google.golang.org/protobuf/types/dynamicpb"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/relational/api"
 )
 
 func typedFD(name string) protoreflect.FieldDescriptor {
-	msg := &gen.TypedRecord{}
+	msg := &demopb.TypedRecord{}
 	return msg.ProtoReflect().Descriptor().Fields().ByName(protoreflect.Name(name))
 }
 
@@ -390,7 +392,7 @@ func TestLiteralMatchesPKKind_BoolKind(t *testing.T) {
 
 func TestRoundTrip_Int32(t *testing.T) {
 	t.Parallel()
-	msg := &gen.TypedRecord{}
+	msg := &demopb.TypedRecord{}
 	refl := msg.ProtoReflect()
 	fd := typedFD("val_int32")
 	pv, err := ConvertToProtoValue(fd, int64(42))
@@ -406,7 +408,7 @@ func TestRoundTrip_Int32(t *testing.T) {
 
 func TestRoundTrip_String(t *testing.T) {
 	t.Parallel()
-	msg := &gen.TypedRecord{}
+	msg := &demopb.TypedRecord{}
 	refl := msg.ProtoReflect()
 	fd := typedFD("val_string")
 	pv, err := ConvertToProtoValue(fd, "hello")
@@ -422,7 +424,7 @@ func TestRoundTrip_String(t *testing.T) {
 
 func TestRoundTrip_Double(t *testing.T) {
 	t.Parallel()
-	msg := &gen.TypedRecord{}
+	msg := &demopb.TypedRecord{}
 	refl := msg.ProtoReflect()
 	fd := typedFD("val_double")
 	pv, err := ConvertToProtoValue(fd, float64(3.14))
@@ -438,8 +440,8 @@ func TestRoundTrip_Double(t *testing.T) {
 
 // ----- Benchmarks -----------------------------------------------------------
 
-func makeTypedRecord() *gen.TypedRecord {
-	return &gen.TypedRecord{
+func makeTypedRecord() *demopb.TypedRecord {
+	return &demopb.TypedRecord{
 		Id:        proto.Int64(42),
 		ValInt32:  proto.Int32(100),
 		ValInt64:  proto.Int64(999),
@@ -562,7 +564,7 @@ func TestProtoValueToDriver_Uint64(t *testing.T) {
 func TestProtoValueToDriver_Enum(t *testing.T) {
 	t.Parallel()
 	fd := typedFD("val_enum")
-	v := protoreflect.ValueOfEnum(protoreflect.EnumNumber(gen.Color_BLUE))
+	v := protoreflect.ValueOfEnum(protoreflect.EnumNumber(demopb.Color_BLUE))
 	got := ProtoValueToDriver(fd, v)
 	// Enum → int64 via the ProtoScalarKindToRowValue path, but ProtoValueToDriver has
 	// no explicit enum case — falls through to default v.Interface().
@@ -805,7 +807,7 @@ func TestIsUUIDMessageField_NonMessage(t *testing.T) {
 
 func TestIsUUIDMessageField_WrongMessage(t *testing.T) {
 	t.Parallel()
-	fd := (&gen.Order{}).ProtoReflect().Descriptor().Fields().ByName("flower")
+	fd := (&demopb.Order{}).ProtoReflect().Descriptor().Fields().ByName("flower")
 	if isUUIDMessageField(fd) {
 		t.Error("Flower field should not be UUID")
 	}
@@ -954,7 +956,7 @@ func TestRoundTrip_AllSignedKinds(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			msg := &gen.TypedRecord{}
+			msg := &demopb.TypedRecord{}
 			refl := msg.ProtoReflect()
 			pv, err := ConvertToProtoValue(tc.fd, tc.input)
 			if err != nil {
@@ -1001,7 +1003,7 @@ func TestRoundTrip_UnsignedKinds(t *testing.T) {
 func TestRoundTrip_Bytes(t *testing.T) {
 	t.Parallel()
 	fd := typedFD("val_bytes")
-	msg := &gen.TypedRecord{}
+	msg := &demopb.TypedRecord{}
 	refl := msg.ProtoReflect()
 
 	data := []byte{0xDE, 0xAD, 0xBE, 0xEF}
@@ -1040,7 +1042,7 @@ func TestRoundTrip_BytesFromString(t *testing.T) {
 func TestRoundTrip_Float(t *testing.T) {
 	t.Parallel()
 	fd := typedFD("val_float")
-	msg := &gen.TypedRecord{}
+	msg := &demopb.TypedRecord{}
 	refl := msg.ProtoReflect()
 
 	pv, err := ConvertToProtoValue(fd, float64(1.5))
@@ -1061,7 +1063,7 @@ func TestRoundTrip_Float(t *testing.T) {
 func TestRoundTrip_BoolFromInt(t *testing.T) {
 	t.Parallel()
 	fd := typedFD("val_bool")
-	msg := &gen.TypedRecord{}
+	msg := &demopb.TypedRecord{}
 	refl := msg.ProtoReflect()
 
 	pv, err := ConvertToProtoValue(fd, int64(1))

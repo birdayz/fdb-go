@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
 )
 
@@ -84,7 +84,7 @@ func TestWriteTypesList_RendersFixture(t *testing.T) {
 func writeDemoMetaFile(t *testing.T, version int32) string {
 	t.Helper()
 	builder := recordlayer.NewRecordMetaDataBuilder().
-		SetRecords(gen.File_record_layer_demo_proto)
+		SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -429,7 +429,7 @@ func TestMetaEvolveCheck_ValidEvolution(t *testing.T) {
 func writeLiteralMetaFile(t *testing.T, version int32, lit any) string {
 	t.Helper()
 	builder := recordlayer.NewRecordMetaDataBuilder().
-		SetRecords(gen.File_record_layer_demo_proto)
+		SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))

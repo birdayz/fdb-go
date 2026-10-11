@@ -14,7 +14,7 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
 )
 
@@ -75,7 +75,7 @@ func benchSubspace(b *testing.B) subspace.Subspace {
 // benchMetaData builds metadata with Order/Customer/TypedRecord primary keys.
 func benchMetaData(b *testing.B) *RecordMetaData {
 	b.Helper()
-	builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -89,7 +89,7 @@ func benchMetaData(b *testing.B) *RecordMetaData {
 // benchMetaDataWithValueIndex builds metadata with a VALUE index on price.
 func benchMetaDataWithValueIndex(b *testing.B) *RecordMetaData {
 	b.Helper()
-	builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -104,7 +104,7 @@ func benchMetaDataWithValueIndex(b *testing.B) *RecordMetaData {
 // benchMetaDataWithCountKey builds metadata with ungrouped record counting enabled.
 func benchMetaDataWithCountKey(b *testing.B) *RecordMetaData {
 	b.Helper()
-	builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -120,7 +120,7 @@ func benchMetaDataWithCountKey(b *testing.B) *RecordMetaData {
 func benchMetaDataSplit(b *testing.B) *RecordMetaData {
 	b.Helper()
 	builder := NewRecordMetaDataBuilder().
-		SetRecords(gen.File_record_layer_demo_proto).
+		SetRecords(demopb.File_record_layer_demo_proto).
 		SetSplitLongRecords(true)
 	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
@@ -133,13 +133,13 @@ func benchMetaDataSplit(b *testing.B) *RecordMetaData {
 }
 
 // benchOrder creates a simple Order record for benchmarking.
-func benchOrder(id int64, price int32) *gen.Order {
-	return &gen.Order{
+func benchOrder(id int64, price int32) *demopb.Order {
+	return &demopb.Order{
 		OrderId: proto.Int64(id),
 		Price:   proto.Int32(price),
-		Flower: &gen.Flower{
+		Flower: &demopb.Flower{
 			Type:  proto.String("Rose"),
-			Color: gen.Color_RED.Enum(),
+			Color: demopb.Color_RED.Enum(),
 		},
 	}
 }
@@ -388,7 +388,7 @@ func BenchmarkSaveRecordWithIndex(b *testing.B) {
 	ensureBenchDB(b)
 
 	priceIndex := NewIndex("bench_price", Field("price"))
-	builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -439,7 +439,7 @@ func BenchmarkScanIndex(b *testing.B) {
 	ensureBenchDB(b)
 
 	priceIndex := NewIndex("bench_price_scan", Field("price"))
-	builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -515,7 +515,7 @@ func BenchmarkScanIndexRecords(b *testing.B) {
 			return nil, err
 		}
 		for i := range count {
-			if _, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(i)), Price: proto.Int32(int32(i))}); err != nil {
+			if _, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(int64(i)), Price: proto.Int32(int32(i))}); err != nil {
 				return nil, err
 			}
 		}
@@ -583,7 +583,7 @@ func BenchmarkSaveRecordWithMultipleIndexes(b *testing.B) {
 	countIndex := NewCountIndex("bench_multi_count", GroupAll(Field("price")))
 	sumIndex := NewSumIndex("bench_multi_sum", GroupAll(Field("price")))
 
-	builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -724,10 +724,10 @@ func BenchmarkSaveLargeRecord(b *testing.B) {
 			if err != nil {
 				return nil, err
 			}
-			order := &gen.Order{
+			order := &demopb.Order{
 				OrderId: proto.Int64(int64(i)),
 				Price:   proto.Int32(42),
-				Flower:  &gen.Flower{Type: proto.String(padding), Color: gen.Color_RED.Enum()},
+				Flower:  &demopb.Flower{Type: proto.String(padding), Color: demopb.Color_RED.Enum()},
 			}
 			return store.SaveRecord(order)
 		})
@@ -775,10 +775,10 @@ func BenchmarkSaveSplitRecord(b *testing.B) {
 			if err != nil {
 				return nil, err
 			}
-			order := &gen.Order{
+			order := &demopb.Order{
 				OrderId: proto.Int64(int64(i)),
 				Price:   proto.Int32(42),
-				Flower:  &gen.Flower{Type: proto.String(padding), Color: gen.Color_RED.Enum()},
+				Flower:  &demopb.Flower{Type: proto.String(padding), Color: demopb.Color_RED.Enum()},
 			}
 			return store.SaveRecord(order)
 		})
@@ -823,7 +823,7 @@ func BenchmarkStoreOpen(b *testing.B) {
 func BenchmarkStoreOpenCached(b *testing.B) {
 	ensureBenchDB(b)
 
-	builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -912,7 +912,7 @@ func BenchmarkDeleteRecord(b *testing.B) {
 func BenchmarkSaveRecordWithCountAndIndex(b *testing.B) {
 	ensureBenchDB(b)
 
-	builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))

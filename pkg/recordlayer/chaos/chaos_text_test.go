@@ -6,14 +6,14 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
 )
 
 // buildTextMetadata creates metadata with a TEXT index on Customer.name.
 func buildTextMetadata() *recordlayer.RecordMetaData {
 	builder := recordlayer.NewRecordMetaDataBuilder()
-	builder.SetRecords(gen.File_record_layer_demo_proto)
+	builder.SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -36,13 +36,13 @@ func TestTextBasicVerify(t *testing.T) {
 	md := buildTextMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Customer{CustomerId: proto.Int64(1), Name: proto.String("Hello World")})
+	s.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(1), Name: proto.String("Hello World")})
 	s.Verify()
 
-	s.SaveRecord(&gen.Customer{CustomerId: proto.Int64(2), Name: proto.String("Alice Bob Charlie")})
+	s.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(2), Name: proto.String("Alice Bob Charlie")})
 	s.Verify()
 
-	s.SaveRecord(&gen.Customer{CustomerId: proto.Int64(3), Name: proto.String("Hello Alice")})
+	s.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(3), Name: proto.String("Hello Alice")})
 	s.Verify()
 
 	// Delete one and re-verify.
@@ -50,7 +50,7 @@ func TestTextBasicVerify(t *testing.T) {
 	s.Verify()
 
 	// Re-insert with different name.
-	s.SaveRecord(&gen.Customer{CustomerId: proto.Int64(2), Name: proto.String("New Name Here")})
+	s.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(2), Name: proto.String("New Name Here")})
 	s.Verify()
 }
 
@@ -63,15 +63,15 @@ func TestTextCommitUnknownInsert(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Customer{CustomerId: proto.Int64(1), Name: proto.String("Hello World")})
+	s.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(1), Name: proto.String("Hello World")})
 	s.Verify()
 
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Customer{CustomerId: proto.Int64(2), Name: proto.String("Foo Bar Baz")})
+	s.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(2), Name: proto.String("Foo Bar Baz")})
 	s.Verify()
 
 	// Third save, no fault.
-	s.SaveRecord(&gen.Customer{CustomerId: proto.Int64(3), Name: proto.String("Testing Chaos")})
+	s.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(3), Name: proto.String("Testing Chaos")})
 	s.Verify()
 }
 
@@ -84,18 +84,18 @@ func TestTextCommitUnknownOverwrite(t *testing.T) {
 	md := buildTextMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Customer{CustomerId: proto.Int64(1), Name: proto.String("Hello World")})
-	s.SaveRecord(&gen.Customer{CustomerId: proto.Int64(2), Name: proto.String("Foo Bar")})
+	s.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(1), Name: proto.String("Hello World")})
+	s.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(2), Name: proto.String("Foo Bar")})
 	s.Verify()
 
 	// Overwrite pk=1: "Hello World" → "Goodbye Universe" with commit-unknown.
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Customer{CustomerId: proto.Int64(1), Name: proto.String("Goodbye Universe")})
+	s.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(1), Name: proto.String("Goodbye Universe")})
 	s.Verify()
 
 	// Overwrite pk=2: "Foo Bar" → "Baz Qux" with commit-unknown.
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Customer{CustomerId: proto.Int64(2), Name: proto.String("Baz Qux")})
+	s.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(2), Name: proto.String("Baz Qux")})
 	s.Verify()
 }
 
@@ -107,9 +107,9 @@ func TestTextCommitUnknownDelete(t *testing.T) {
 	md := buildTextMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Customer{CustomerId: proto.Int64(1), Name: proto.String("Hello World")})
-	s.SaveRecord(&gen.Customer{CustomerId: proto.Int64(2), Name: proto.String("Foo Bar")})
-	s.SaveRecord(&gen.Customer{CustomerId: proto.Int64(3), Name: proto.String("Baz Qux")})
+	s.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(1), Name: proto.String("Hello World")})
+	s.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(2), Name: proto.String("Foo Bar")})
+	s.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(3), Name: proto.String("Baz Qux")})
 	s.Verify()
 
 	// Delete pk=2 with commit-unknown.
@@ -131,16 +131,16 @@ func TestTextUpdateSameName(t *testing.T) {
 	md := buildTextMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Customer{CustomerId: proto.Int64(1), Name: proto.String("Hello World")})
+	s.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(1), Name: proto.String("Hello World")})
 	s.Verify()
 
 	// Overwrite with identical name — removeCommonEntries should skip everything.
-	s.SaveRecord(&gen.Customer{CustomerId: proto.Int64(1), Name: proto.String("Hello World")})
+	s.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(1), Name: proto.String("Hello World")})
 	s.Verify()
 
 	// Overwrite again with commit-unknown — double no-op should still be fine.
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Customer{CustomerId: proto.Int64(1), Name: proto.String("Hello World")})
+	s.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(1), Name: proto.String("Hello World")})
 	s.Verify()
 }
 
@@ -151,19 +151,19 @@ func TestTextUpdateDifferentName(t *testing.T) {
 	md := buildTextMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Customer{CustomerId: proto.Int64(1), Name: proto.String("Alpha Beta Gamma")})
+	s.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(1), Name: proto.String("Alpha Beta Gamma")})
 	s.Verify()
 
 	// Change to completely different tokens.
-	s.SaveRecord(&gen.Customer{CustomerId: proto.Int64(1), Name: proto.String("Delta Epsilon Zeta")})
+	s.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(1), Name: proto.String("Delta Epsilon Zeta")})
 	s.Verify()
 
 	// Change to partially overlapping tokens.
-	s.SaveRecord(&gen.Customer{CustomerId: proto.Int64(1), Name: proto.String("Delta Theta Iota")})
+	s.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(1), Name: proto.String("Delta Theta Iota")})
 	s.Verify()
 
 	// Change to single token.
-	s.SaveRecord(&gen.Customer{CustomerId: proto.Int64(1), Name: proto.String("Omega")})
+	s.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(1), Name: proto.String("Omega")})
 	s.Verify()
 }
 
@@ -174,7 +174,7 @@ func TestTextDeleteAllRecords(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 
 	for i := int64(1); i <= 10; i++ {
-		s.SaveRecord(&gen.Customer{
+		s.SaveRecord(&demopb.Customer{
 			CustomerId: proto.Int64(i),
 			Name:       proto.String("Customer Number " + string(rune('A'-1+i))),
 		})
@@ -185,7 +185,7 @@ func TestTextDeleteAllRecords(t *testing.T) {
 	s.Verify()
 
 	// Re-add after delete-all.
-	s.SaveRecord(&gen.Customer{CustomerId: proto.Int64(99), Name: proto.String("New Customer")})
+	s.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(99), Name: proto.String("New Customer")})
 	s.Verify()
 }
 
@@ -218,7 +218,7 @@ func TestTextRandomFaults(t *testing.T) {
 		if s.Rng.Float64() < 0.7 {
 			// 70% saves with random names.
 			name := names[s.Rng.IntN(len(names))]
-			s.SaveRecord(&gen.Customer{
+			s.SaveRecord(&demopb.Customer{
 				CustomerId: proto.Int64(pk),
 				Name:       proto.String(name),
 			})
@@ -260,7 +260,7 @@ func TestTextHeavyFaultStress(t *testing.T) {
 		pk := s.Rng.Int64N(maxPK) + 1
 		if s.Rng.Float64() < 0.6 {
 			name := names[s.Rng.IntN(len(names))]
-			s.SaveRecord(&gen.Customer{
+			s.SaveRecord(&demopb.Customer{
 				CustomerId: proto.Int64(pk),
 				Name:       proto.String(name),
 			})

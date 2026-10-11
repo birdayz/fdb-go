@@ -6,7 +6,7 @@ import (
 	"context"
 	"fmt"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"github.com/google/uuid"
@@ -33,7 +33,7 @@ var _ = Describe("Record Count Conformance", func() {
 		java = NewJavaInvoker()
 
 		// Create counting-enabled metadata for Go side
-		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -59,7 +59,7 @@ var _ = Describe("Record Count Conformance", func() {
 		return params
 	}
 
-	saveOrderWithGoCounting := func(order *gen.Order) {
+	saveOrderWithGoCounting := func(order *demopb.Order) {
 		_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			store, err := recordlayer.NewStoreBuilder().
 				SetContext(rtx).
@@ -117,7 +117,7 @@ var _ = Describe("Record Count Conformance", func() {
 		return count
 	}
 
-	saveOrderWithJavaCounting := func(order *gen.Order) {
+	saveOrderWithJavaCounting := func(order *demopb.Order) {
 		params := buildJavaParams()
 		params["order"] = order
 		err := java.InvokeAs(ctx, "saveOrderCounting", params, nil)
@@ -195,7 +195,7 @@ var _ = Describe("Record Count Conformance", func() {
 			Expect(getJavaRecordCount()).To(Equal(int64(1)))
 
 			// Update the same record (same primary key, different data)
-			updated := NewOrder(1).WithPrice(999).WithFlower("UpdatedRose", gen.Color_BLUE).Build()
+			updated := NewOrder(1).WithPrice(999).WithFlower("UpdatedRose", demopb.Color_BLUE).Build()
 			saveOrderWithGoCounting(updated)
 
 			// Count should still be 1

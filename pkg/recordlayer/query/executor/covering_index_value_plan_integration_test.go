@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -70,10 +70,10 @@ func TestIntegration_CoveringIndexValuePlan(t *testing.T) {
 	ctx := context.Background()
 	store := setupStore(t)
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(50)},
-		&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(150)},
-		&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(250), Quantity: proto.Int32(9)},
-		&gen.Order{OrderId: proto.Int64(4), Price: proto.Int32(100)},
+		&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(50)},
+		&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(150)},
+		&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(250), Quantity: proto.Int32(9)},
+		&demopb.Order{OrderId: proto.Int64(4), Price: proto.Int32(100)},
 	)
 	reader := orderPriceReader(t)
 	index := orderPriceAtLeast(t, 100)

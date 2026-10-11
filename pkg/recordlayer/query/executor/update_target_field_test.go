@@ -9,7 +9,7 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 	"google.golang.org/protobuf/types/dynamicpb"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -24,7 +24,7 @@ func TestUpdateTargetField(t *testing.T) {
 	tr := func(names []string, ordinals ...int) expressions.UpdateTransform {
 		return expressions.UpdateTransform{FieldNames: names, FieldOrdinals: ordinals}
 	}
-	msg := (&gen.Order{}).ProtoReflect()
+	msg := (&demopb.Order{}).ProtoReflect()
 	owner, fd, err := updateTargetField(msg, tr([]string{"price"}, 2))
 	if err != nil || owner != msg || string(fd.Name()) != "price" {
 		t.Fatalf("a column: %v, %v", fd, err)
@@ -50,7 +50,7 @@ func TestUpdateTargetField(t *testing.T) {
 		{"a field of a scalar", tr([]string{"price", "x"}, 2, 0), "is not a struct"},
 		{"a field of an array", tr([]string{"tags", "x"}, 3, 0), "is not a struct"},
 	} {
-		if _, _, err := updateTargetField((&gen.Order{}).ProtoReflect(), c.tr); err == nil || !strings.Contains(err.Error(), c.want) {
+		if _, _, err := updateTargetField((&demopb.Order{}).ProtoReflect(), c.tr); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: %v, want an error containing %q", c.name, err, c.want)
 		}
 	}

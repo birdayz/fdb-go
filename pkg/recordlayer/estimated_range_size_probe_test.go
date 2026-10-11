@@ -24,7 +24,7 @@ import (
 	"context"
 	"fmt"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
@@ -36,7 +36,7 @@ var _ = Describe("EstimatedRangeSizeProbe", func() {
 	It("measures where the sampled estimator stops discriminating", func() {
 		ctx := context.Background()
 
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -78,7 +78,7 @@ var _ = Describe("EstimatedRangeSizeProbe", func() {
 					default:
 						price = 4 // exactly one row
 					}
-					if _, err := store.SaveRecord(&gen.Order{
+					if _, err := store.SaveRecord(&demopb.Order{
 						OrderId: proto.Int64(int64(i)),
 						Price:   proto.Int32(price),
 					}); err != nil {

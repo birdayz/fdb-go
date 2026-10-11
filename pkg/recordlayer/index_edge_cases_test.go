@@ -7,7 +7,7 @@ import (
 	"context"
 	"math"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -23,7 +23,7 @@ var _ = Describe("Index Edge Cases", func() {
 
 	Describe("VALUE index with zero-value fields", func() {
 		It("indexes a record where all fields are zero/default", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -41,7 +41,7 @@ var _ = Describe("Index Edge Cases", func() {
 				// Save with all defaults (order_id=0, price=0).
 				// Proto2: unset optional fields → not serialized.
 				// But order_id is the PK, it must be set.
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(0), Price: proto.Int32(0)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(0), Price: proto.Int32(0)})
 				Expect(err).NotTo(HaveOccurred())
 
 				// Scan the index — should find the entry.
@@ -50,13 +50,13 @@ var _ = Describe("Index Edge Cases", func() {
 				Expect(entries).To(HaveLen(1))
 
 				// Save with PK = MaxInt64 — extreme PK value.
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(math.MaxInt64), Price: proto.Int32(42)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(math.MaxInt64), Price: proto.Int32(42)})
 				Expect(err).NotTo(HaveOccurred())
 
 				rec, err := store.LoadRecord(tuple.Tuple{int64(math.MaxInt64)})
 				Expect(err).NotTo(HaveOccurred())
 				Expect(rec).NotTo(BeNil())
-				Expect(rec.Record.(*gen.Order).GetPrice()).To(Equal(int32(42)))
+				Expect(rec.Record.(*demopb.Order).GetPrice()).To(Equal(int32(42)))
 
 				return nil, nil
 			})
@@ -66,7 +66,7 @@ var _ = Describe("Index Edge Cases", func() {
 
 	Describe("COUNT index edge cases", func() {
 		It("handles save-delete-save cycle correctly", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -82,7 +82,7 @@ var _ = Describe("Index Edge Cases", func() {
 				}
 
 				// Save.
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(10)})
 				Expect(err).NotTo(HaveOccurred())
 				count, err := store.GetRecordCount()
 				Expect(err).NotTo(HaveOccurred())
@@ -97,7 +97,7 @@ var _ = Describe("Index Edge Cases", func() {
 				Expect(count).To(Equal(int64(0)))
 
 				// Re-save same PK.
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(20)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(20)})
 				Expect(err).NotTo(HaveOccurred())
 				count, err = store.GetRecordCount()
 				Expect(err).NotTo(HaveOccurred())
@@ -111,7 +111,7 @@ var _ = Describe("Index Edge Cases", func() {
 
 	Describe("SUM index with negative values", func() {
 		It("correctly sums negative field values", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -128,9 +128,9 @@ var _ = Describe("Index Edge Cases", func() {
 				}
 
 				// Save records with negative prices.
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(-100)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(-100)})
 				Expect(err).NotTo(HaveOccurred())
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(50)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(50)})
 				Expect(err).NotTo(HaveOccurred())
 
 				// SUM should be -100 + 50 = -50.
@@ -152,7 +152,7 @@ var _ = Describe("Index Edge Cases", func() {
 
 	Describe("VALUE index update-in-place", func() {
 		It("correctly updates index entry when indexed field changes", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -168,11 +168,11 @@ var _ = Describe("Index Edge Cases", func() {
 				}
 
 				// Save with price=10.
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(10)})
 				Expect(err).NotTo(HaveOccurred())
 
 				// Update to price=20 (same PK).
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(20)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(20)})
 				Expect(err).NotTo(HaveOccurred())
 
 				// Old entry (price=10) should be gone.
@@ -191,7 +191,7 @@ var _ = Describe("Index Edge Cases", func() {
 		})
 
 		It("handles update where indexed field doesn't change (no-op)", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -207,9 +207,9 @@ var _ = Describe("Index Edge Cases", func() {
 				}
 
 				// Save and re-save with same price — index should still have exactly 1 entry.
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(42)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(42)})
 				Expect(err).NotTo(HaveOccurred())
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(42)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(42)})
 				Expect(err).NotTo(HaveOccurred())
 
 				entries, err := collectIndexEntries(ctx, store, "order_price2", TupleRangeAllOf(tuple.Tuple{int64(42)}))
@@ -224,7 +224,7 @@ var _ = Describe("Index Edge Cases", func() {
 
 	Describe("COUNT index with rapid inserts and deletes", func() {
 		It("count stays consistent after many save-delete cycles", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -241,7 +241,7 @@ var _ = Describe("Index Edge Cases", func() {
 
 				// Rapid insert/delete cycle: insert 20, delete odd PKs, verify count=10.
 				for i := int64(0); i < 20; i++ {
-					_, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))})
+					_, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 
@@ -262,7 +262,7 @@ var _ = Describe("Index Edge Cases", func() {
 
 	Describe("VALUE index with MaxInt32 and MinInt32 prices", func() {
 		It("indexes extreme int32 values correctly", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -278,11 +278,11 @@ var _ = Describe("Index Edge Cases", func() {
 				}
 
 				// Save with extreme int32 values.
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(math.MaxInt32)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(math.MaxInt32)})
 				Expect(err).NotTo(HaveOccurred())
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(math.MinInt32)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(math.MinInt32)})
 				Expect(err).NotTo(HaveOccurred())
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(0)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(0)})
 				Expect(err).NotTo(HaveOccurred())
 
 				// Scan all — should get all 3 in tuple order (MinInt32 < 0 < MaxInt32).
@@ -309,7 +309,7 @@ var _ = Describe("Index Edge Cases", func() {
 
 	Describe("DeleteAllRecords with indexes", func() {
 		It("clears all index entries and count", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -327,7 +327,7 @@ var _ = Describe("Index Edge Cases", func() {
 
 				// Save 10 records.
 				for i := int64(0); i < 10; i++ {
-					_, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
+					_, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 
@@ -365,7 +365,7 @@ var _ = Describe("Index Edge Cases", func() {
 	// =========================================================================
 	Describe("RANK index edge cases", func() {
 		It("handles many records with identical scores", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -383,7 +383,7 @@ var _ = Describe("Index Edge Cases", func() {
 
 				// Save 10 orders all with price=100.
 				for i := int64(1); i <= 10; i++ {
-					_, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(100)})
+					_, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(100)})
 					Expect(err).NotTo(HaveOccurred())
 				}
 
@@ -418,7 +418,7 @@ var _ = Describe("Index Edge Cases", func() {
 		})
 
 		It("rank scan with empty store returns empty", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -446,7 +446,7 @@ var _ = Describe("Index Edge Cases", func() {
 		})
 
 		It("score for rank beyond dataset returns nil", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -463,11 +463,11 @@ var _ = Describe("Index Edge Cases", func() {
 				}
 
 				// Save 3 records with distinct prices.
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(10)})
 				Expect(err).NotTo(HaveOccurred())
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(20)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(20)})
 				Expect(err).NotTo(HaveOccurred())
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(30)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(30)})
 				Expect(err).NotTo(HaveOccurred())
 
 				maintainerIface, mErr := store.getIndexMaintainer(rankIdx)
@@ -485,7 +485,7 @@ var _ = Describe("Index Edge Cases", func() {
 		})
 
 		It("delete reduces rank", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -502,11 +502,11 @@ var _ = Describe("Index Edge Cases", func() {
 				}
 
 				// Save 3 records: prices 10, 20, 30.
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(10)})
 				Expect(err).NotTo(HaveOccurred())
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(20)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(20)})
 				Expect(err).NotTo(HaveOccurred())
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(30)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(30)})
 				Expect(err).NotTo(HaveOccurred())
 
 				// Before delete: rank of 30 should be 2.
@@ -548,7 +548,7 @@ var _ = Describe("Index Edge Cases", func() {
 	// =========================================================================
 	Describe("PERMUTED_MIN/MAX index edge cases", func() {
 		It("permuted min tracks minimum value per group", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -566,15 +566,15 @@ var _ = Describe("Index Edge Cases", func() {
 				}
 
 				// Price=100 group: order_ids 5, 3, 8.
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(5), Price: proto.Int32(100)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(5), Price: proto.Int32(100)})
 				Expect(err).NotTo(HaveOccurred())
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(100)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(100)})
 				Expect(err).NotTo(HaveOccurred())
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(8), Price: proto.Int32(100)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(8), Price: proto.Int32(100)})
 				Expect(err).NotTo(HaveOccurred())
 
 				// Price=200 group: order_id 10.
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(10), Price: proto.Int32(200)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(10), Price: proto.Int32(200)})
 				Expect(err).NotTo(HaveOccurred())
 
 				// BY_GROUP: min per group.
@@ -590,7 +590,7 @@ var _ = Describe("Index Edge Cases", func() {
 				Expect(byGroup[1].Key[1]).To(Equal(int64(200)))
 
 				// Now save a new record in price=100 group with lower order_id=1.
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 				Expect(err).NotTo(HaveOccurred())
 
 				// BY_GROUP: price=100 min should now be order_id=1.
@@ -607,7 +607,7 @@ var _ = Describe("Index Edge Cases", func() {
 		})
 
 		It("permuted min after delete of min record", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -624,11 +624,11 @@ var _ = Describe("Index Edge Cases", func() {
 				}
 
 				// Price=100 group: order_ids 10, 20, 30.
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(10), Price: proto.Int32(100)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(10), Price: proto.Int32(100)})
 				Expect(err).NotTo(HaveOccurred())
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(20), Price: proto.Int32(100)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(20), Price: proto.Int32(100)})
 				Expect(err).NotTo(HaveOccurred())
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(30), Price: proto.Int32(100)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(30), Price: proto.Int32(100)})
 				Expect(err).NotTo(HaveOccurred())
 
 				// Min is order_id=10.
@@ -656,7 +656,7 @@ var _ = Describe("Index Edge Cases", func() {
 		})
 
 		It("permuted max with ties", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -673,11 +673,11 @@ var _ = Describe("Index Edge Cases", func() {
 				}
 
 				// Price=50 group: 3 records all with same order_id range.
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(50)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(50)})
 				Expect(err).NotTo(HaveOccurred())
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(50)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(50)})
 				Expect(err).NotTo(HaveOccurred())
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(50)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(50)})
 				Expect(err).NotTo(HaveOccurred())
 
 				// BY_GROUP: max order_id for price=50 should be 3.
@@ -704,7 +704,7 @@ var _ = Describe("Index Edge Cases", func() {
 	// =========================================================================
 	Describe("TEXT index edge cases", func() {
 		It("empty string field produces no tokens", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -721,7 +721,7 @@ var _ = Describe("Index Edge Cases", func() {
 				}
 
 				// Save a customer with empty name.
-				_, err = store.SaveRecord(&gen.Customer{
+				_, err = store.SaveRecord(&demopb.Customer{
 					CustomerId: proto.Int64(1),
 					Name:       proto.String(""),
 				})
@@ -739,7 +739,7 @@ var _ = Describe("Index Edge Cases", func() {
 		})
 
 		It("single character tokens", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -755,7 +755,7 @@ var _ = Describe("Index Edge Cases", func() {
 					return nil, err
 				}
 
-				_, err = store.SaveRecord(&gen.Customer{
+				_, err = store.SaveRecord(&demopb.Customer{
 					CustomerId: proto.Int64(1),
 					Name:       proto.String("a b c"),
 				})
@@ -775,7 +775,7 @@ var _ = Describe("Index Edge Cases", func() {
 		})
 
 		It("update changes token set", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -792,7 +792,7 @@ var _ = Describe("Index Edge Cases", func() {
 				}
 
 				// Save with "hello world".
-				_, err = store.SaveRecord(&gen.Customer{
+				_, err = store.SaveRecord(&demopb.Customer{
 					CustomerId: proto.Int64(1),
 					Name:       proto.String("hello world"),
 				})
@@ -805,7 +805,7 @@ var _ = Describe("Index Edge Cases", func() {
 				Expect(helloEntries).To(HaveLen(1))
 
 				// Update to "goodbye world" (same PK).
-				_, err = store.SaveRecord(&gen.Customer{
+				_, err = store.SaveRecord(&demopb.Customer{
 					CustomerId: proto.Int64(1),
 					Name:       proto.String("goodbye world"),
 				})
@@ -849,7 +849,7 @@ var _ = Describe("Index Edge Cases", func() {
 		}
 
 		It("bitmap set and check for single position", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -867,7 +867,7 @@ var _ = Describe("Index Edge Cases", func() {
 				}
 
 				// Save at position 0 (order_id=0) in group price=5.
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(0), Price: proto.Int32(5)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(0), Price: proto.Int32(5)})
 				Expect(err).NotTo(HaveOccurred())
 
 				// Scan by group=5 to get bitmap.
@@ -887,7 +887,7 @@ var _ = Describe("Index Edge Cases", func() {
 		})
 
 		It("bitmap survives delete", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -904,9 +904,9 @@ var _ = Describe("Index Edge Cases", func() {
 				}
 
 				// Save positions 0 and 1 in group price=5.
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(0), Price: proto.Int32(5)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(0), Price: proto.Int32(5)})
 				Expect(err).NotTo(HaveOccurred())
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(5)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(5)})
 				Expect(err).NotTo(HaveOccurred())
 
 				// Both bits should be set.
@@ -940,7 +940,7 @@ var _ = Describe("Index Edge Cases", func() {
 		})
 
 		It("large position value", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -957,7 +957,7 @@ var _ = Describe("Index Edge Cases", func() {
 				}
 
 				// Save at position 5000 in group price=7.
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(5000), Price: proto.Int32(7)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(5000), Price: proto.Int32(7)})
 				Expect(err).NotTo(HaveOccurred())
 
 				// Scan should return an entry; the position 5000 bit should be set.
