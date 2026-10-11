@@ -180,7 +180,39 @@ commit and executed lanes; a badge alone does not establish a full-suite pass.
 Previous Go-vs-libfdb_c speedup and write-parity claims were withdrawn because the
 measurements used obsolete GRV-cache semantics and mislabeled netem delay.
 [Correction and benchmark methodology](pkg/fdbgo/bench/PERFORMANCE.md).
-No replacement speed claim is made.
+
+### Performance vs libfdb_c
+
+Go / libfdb_c ratios from one pre-registered experiment (R17). Below 1 means the
+pure-Go client used less CPU or had lower latency than Apple's C client through cgo.
+
+| Measure | Workload | Go / libfdb_c | 99% CI |
+|---|---|---:|---|
+| CPU per transaction, full lifecycle | `batchset50` | 0.862 | [0.850, 0.876] |
+| CPU per transaction, measured window | `batchset50` | 0.788 | [0.776, 0.802] |
+| Mean latency | `read1000` | 0.626 | [0.601, 0.653] |
+| p99 latency | `read1000` | 0.507 | [0.463, 0.550] |
+| CPU per transaction, full lifecycle | `read1000` | 0.909 | [0.884, 0.934] |
+
+Scope:
+- One Hetzner ccx43 VM (16 vCPUs), reimaged with Ubuntu 24.04 before the run,
+  with a fresh FDB 7.3.77 cluster on the same VM. One client worker,
+  `GOMAXPROCS=8`, fixed CPU sets for server and client. Not replicated on other
+  VMs and not a capacity measurement.
+- `read1000`: a read-only transaction with one Get, 5,000 measured per process.
+  `batchset50`: 50 distinct 100-byte Sets and a commit, 2,500 measured per process.
+- 160 paired blocks per workload (640 processes). The five comparisons, sample
+  sizes and analysis were registered before measurement. Each ratio is the
+  geometric mean of the 160 paired ratios; the interval is the wider of two
+  block-bootstrap 99% intervals.
+- "Full lifecycle" CPU runs from client startup through shutdown, including
+  setup and warmup. "Measured window" covers the measured transactions only.
+- Measured build: the Go client at 7922a2e5a plus #812, #816, #818, #824, #827,
+  #828, #832, #834, #841 and #843 (all in v0.2.0), built with go1.26.9. Later
+  client changes in v0.2.0 (#835, #840, #844, #857) were not measured.
+- Results archive SHA-256
+  `4943768b532b2c57797c677f37b9381c10d922fbee81ef7821a3174a29d2e6f0`. Tables:
+  [`tools/clientbench/results/r17/TABLES.md`](tools/clientbench/results/r17/TABLES.md). Reproduce with the `tools/clientbench` harness (#822).
 
 ## Building and contributing
 

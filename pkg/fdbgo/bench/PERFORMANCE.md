@@ -14,7 +14,8 @@ was applied only to the container's egress. It adds 5 ms, not 10 ms, to a
 client/server round trip; the underlying network latency is additional.
 
 Those historical results are not evidence of current speed, write parity or
-cgo/event-loop overhead. No replacement performance claim is made here.
+cgo/event-loop overhead. The current Go-vs-libfdb_c measurement is the
+pre-registered R17 experiment in the README ("Performance vs libfdb_c").
 
 ## Measurement status
 
