@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"slices"
 	"sort"
 
 	"fdb.dev/pkg/recordlayer"
 
 	. "github.com/onsi/ginkgo/v2"
 
+	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/gomega"
 )
@@ -63,6 +65,24 @@ var _ = Describe("SPFresh build + query e2e", func() {
 		return ids
 	}
 
+	// searchCommitted runs one search in its own transaction (a loop of them in
+	// one transaction outlives the 5s MVCC window under load) and returns the
+	// committed attempt's result, so callers assert outside the retried closure.
+	// injectTooOld fails the first attempt's first read with
+	// transaction_too_old, forcing the retry deterministically.
+	searchCommitted := func(searcher *spfreshSearcher, query []float64, k int, injectTooOld bool) []spfreshSearchResult {
+		var got []spfreshSearchResult
+		fired := !injectTooOld
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			var serr error
+			got, serr = searcher.search(tooOldOnceReadTx{ReadTransaction: rtx.Transaction(), fired: &fired}, query, k)
+			return nil, serr
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(fired).To(BeTrue(), "the injected transaction_too_old never reached the search")
+		return got
+	}
+
 	It("builds a two-level index and answers kNN with high recall", func() {
 		const (
 			n    = 2000
@@ -107,47 +127,36 @@ var _ = Describe("SPFresh build + query e2e", func() {
 		// Recall@10 across 50 queries (held-in: the vectors themselves — exact
 		// self-recall plus neighborhood recall).
 		hits, total := 0, 0
-		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
-			tx := rtx.Transaction()
-			for qi := 0; qi < 50; qi++ {
-				query := inputs[qi*37%n].vec
-				want := bruteForceKNN(inputs, query, k)
-				got, serr := searcher.search(tx, query, k)
-				Expect(serr).NotTo(HaveOccurred())
-				Expect(got).To(HaveLen(k))
-				wantSet := map[int64]bool{}
-				for _, id := range want {
-					wantSet[id] = true
-				}
-				for _, r := range got {
-					if wantSet[r.PrimaryKey[0].(int64)] {
-						hits++
-					}
-					total++
-				}
-				// Self-retrieval: the query IS an indexed vector; with exact
-				// re-rank it must be the top hit.
-				Expect(got[0].PrimaryKey[0].(int64)).To(Equal(inputs[qi*37%n].pk[0].(int64)),
-					"query %d: indexed vector must retrieve itself first", qi)
+		for qi := 0; qi < 50; qi++ {
+			query := inputs[qi*37%n].vec
+			want := bruteForceKNN(inputs, query, k)
+			got := searchCommitted(searcher, query, k, qi == 0)
+			Expect(got).To(HaveLen(k))
+			wantSet := map[int64]bool{}
+			for _, id := range want {
+				wantSet[id] = true
 			}
-			return nil, nil
-		})
-		Expect(err).NotTo(HaveOccurred())
+			for _, r := range got {
+				if wantSet[r.PrimaryKey[0].(int64)] {
+					hits++
+				}
+				total++
+			}
+			// Self-retrieval: the query IS an indexed vector; with exact
+			// re-rank it must be the top hit.
+			Expect(got[0].PrimaryKey[0].(int64)).To(Equal(inputs[qi*37%n].pk[0].(int64)),
+				"query %d: indexed vector must retrieve itself first", qi)
+		}
 		recall := float64(hits) / float64(total)
 		Expect(recall).To(BeNumerically(">=", 0.90),
 			fmt.Sprintf("recall@%d = %.3f, want >= 0.90", k, recall))
 
 		// Distances are exact (re-ranked) and ascending.
-		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
-			got, serr := searcher.search(rtx.Transaction(), inputs[0].vec, k)
-			Expect(serr).NotTo(HaveOccurred())
-			Expect(got[0].Distance).To(BeNumerically("~", 0, 1e-2), "self-distance ~0 (fp16 rounding)")
-			for i := 1; i < len(got); i++ {
-				Expect(got[i].Distance).To(BeNumerically(">=", got[i-1].Distance))
-			}
-			return nil, nil
-		})
-		Expect(err).NotTo(HaveOccurred())
+		got := searchCommitted(searcher, inputs[0].vec, k, false)
+		Expect(got[0].Distance).To(BeNumerically("~", 0, 1e-2), "self-distance ~0 (fp16 rounding)")
+		for i := 1; i < len(got); i++ {
+			Expect(got[i].Distance).To(BeNumerically(">=", got[i-1].Distance))
+		}
 	})
 
 	It("closure replication writes multiple posting copies and dedups at query time", func() {
@@ -157,55 +166,67 @@ var _ = Describe("SPFresh build + query e2e", func() {
 		builder := newSPFreshBuilder(sharedDB, storage, config, "builder-1")
 		Expect(builder.build(ctx, inputs, 5)).To(Succeed())
 
-		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
-			tx := rtx.Transaction()
-			replicated := 0
-			for _, in := range inputs {
-				ids, merr := spfreshReadMembership(tx, storage, in.pk)
-				Expect(merr).NotTo(HaveOccurred())
-				Expect(ids).NotTo(BeEmpty())
-				Expect(len(ids)).To(BeNumerically("<=", config.Replication))
-				if len(ids) > 1 {
-					replicated++
-				}
-				// Every membership entry has a posting row (the chaos
-				// invariant, asserted directly here).
-				for _, fineID := range ids {
-					entries, _, _, _, lerr := spfreshLoadPostingSnapshot(tx, storage, fineID, 2*config.Lmax+1)
-					Expect(lerr).NotTo(HaveOccurred())
-					found := false
-					for _, e := range entries {
-						if string(e.pk.Pack()) == string(in.pk.Pack()) {
-							found = true
-							break
+		// Bounded batches with only reads inside the retried closure: one
+		// transaction over all 600 copy-sets outlives the MVCC window under
+		// load, and an assertion inside it turns a retryable error fatal.
+		type copySet struct {
+			ids     []int64
+			missing []int64 // membership targets whose posting lacks the pk
+		}
+		sets := make([]copySet, len(inputs))
+		for lo := 0; lo < len(inputs); lo += 100 {
+			hi := min(lo+100, len(inputs))
+			_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				tx := rtx.Transaction()
+				for i := lo; i < hi; i++ {
+					ids, merr := spfreshReadMembership(tx, storage, inputs[i].pk)
+					if merr != nil {
+						return nil, merr
+					}
+					sets[i] = copySet{ids: ids}
+					for _, fineID := range ids {
+						entries, _, _, _, lerr := spfreshLoadPostingSnapshot(tx, storage, fineID, 2*config.Lmax+1)
+						if lerr != nil {
+							return nil, lerr
+						}
+						if !slices.ContainsFunc(entries, func(e spfreshPostingEntry) bool {
+							return string(e.pk.Pack()) == string(inputs[i].pk.Pack())
+						}) {
+							sets[i].missing = append(sets[i].missing, fineID)
 						}
 					}
-					Expect(found).To(BeTrue(), "membership row without posting entry")
 				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		}
+		replicated := 0
+		for i, cs := range sets {
+			Expect(cs.ids).NotTo(BeEmpty())
+			Expect(len(cs.ids)).To(BeNumerically("<=", config.Replication))
+			if len(cs.ids) > 1 {
+				replicated++
 			}
-			Expect(replicated).To(BeNumerically(">", 0),
-				"alpha=1.2 must replicate SOME boundary vectors (the rev-3 alpha bug regression)")
-			return nil, nil
-		})
-		Expect(err).NotTo(HaveOccurred())
+			// Every membership entry has a posting row (the chaos invariant,
+			// asserted directly here).
+			Expect(cs.missing).To(BeEmpty(), "pk %v: membership row without posting entry", inputs[i].pk)
+		}
+		Expect(replicated).To(BeNumerically(">", 0),
+			"alpha=1.2 must replicate SOME boundary vectors (the rev-3 alpha bug regression)")
 
 		// Dedup: no pk appears twice in results.
 		cache := newSPFreshRoutingCache(0)
-		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
-			tx := rtx.Transaction()
-			Expect(cache.fullReload(tx, storage, 1)).To(Succeed())
-			searcher := newSPFreshSearcher(storage, config, cache)
-			got, serr := searcher.search(tx, inputs[3].vec, 20)
-			Expect(serr).NotTo(HaveOccurred())
-			seen := map[string]bool{}
-			for _, r := range got {
-				key := string(r.PrimaryKey.Pack())
-				Expect(seen[key]).To(BeFalse(), "closure replica leaked through dedup")
-				seen[key] = true
-			}
-			return nil, nil
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			return nil, cache.fullReload(rtx.Transaction(), storage, 1)
 		})
 		Expect(err).NotTo(HaveOccurred())
+		got := searchCommitted(newSPFreshSearcher(storage, config, cache), inputs[3].vec, 20, false)
+		seen := map[string]bool{}
+		for _, r := range got {
+			key := string(r.PrimaryKey.Pack())
+			Expect(seen[key]).To(BeFalse(), "closure replica leaked through dedup")
+			seen[key] = true
+		}
 	})
 
 	It("wave B re-run after FINALIZED is a no-op; wave order is enforced", func() {
@@ -275,3 +296,27 @@ var _ = Describe("SPFresh build + query e2e", func() {
 		Expect(builder.waveB(ctx, builder.cellIDs[0], router)).To(MatchError(ContainSubstring("took over")))
 	})
 })
+
+// tooOldOnceReadTx fails its first Get with transaction_too_old (1007) — the
+// error a search meets when its transaction outlives the MVCC window — then
+// reads through. fired is shared across the attempts of one Run.
+type tooOldOnceReadTx struct {
+	fdb.ReadTransaction
+	fired *bool
+}
+
+func (t tooOldOnceReadTx) Get(key fdb.KeyConvertible) fdb.FutureByteSlice {
+	if !*t.fired {
+		*t.fired = true
+		return erroredFuture{err: fdb.Error{Code: 1007}}
+	}
+	return t.ReadTransaction.Get(key)
+}
+
+type erroredFuture struct{ err error }
+
+func (f erroredFuture) Get() ([]byte, error) { return nil, f.err }
+func (f erroredFuture) MustGet() []byte      { panic(f.err) }
+func (erroredFuture) BlockUntilReady()       {}
+func (erroredFuture) IsReady() bool          { return true }
+func (erroredFuture) Cancel()                {}

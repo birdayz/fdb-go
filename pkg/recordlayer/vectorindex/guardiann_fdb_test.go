@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"slices"
 	"time"
 
 	"fdb.dev/pkg/recordlayer"
@@ -40,10 +41,24 @@ var _ = Describe("GuardiANN structure", func() {
 		ss := specSubspace().Sub("guardiann")
 		listener := &countingListener{}
 		g := newGuardiann(ss, cfg, nil, listener)
+		// Every step is forced through one or two retries (a 1020 after each
+		// uncommitted attempt), as load does at random. Only the committed
+		// attempt's effects may count, so the listener restarts from its
+		// pre-step counts; uneven retry counts are what expose a miscount.
+		steps := 0
 		run := func(f func(tx fdb.WritableTransaction) error) {
+			steps++
+			base, attempts, retries := *listener, 0, 1+steps%2
 			_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				*listener = base
 				g = newGuardiann(ss, cfg, nil, listener)
-				return nil, f(rtx.Transaction())
+				if err := f(rtx.Transaction()); err != nil {
+					return nil, err
+				}
+				if attempts++; attempts <= retries {
+					return nil, fdb.Error{Code: 1020}
+				}
+				return nil, nil
 			})
 			Expect(err).NotTo(HaveOccurred())
 		}
@@ -107,22 +122,35 @@ var _ = Describe("GuardiANN structure", func() {
 				total += m.numPrimary()
 			}
 			Expect(total + snap.collapsed).To(BeNumerically(">=", len(live)))
+			pks := make([]int64, 0, len(live))
+			for pk := range live {
+				pks = append(pks, pk)
+			}
+			slices.Sort(pks)
+			// Bounded batches keep each transaction well inside the 5s MVCC
+			// window under load; a batch counts only once it commits.
 			found := 0
-			run(func(tx fdb.WritableTransaction) error {
-				for pk, v := range live {
-					res, err := g.search(tx, 5, defaultGuardiannSearchConfig(), v)
-					if err != nil {
-						return err
-					}
-					for _, r := range res {
-						if r.primaryKey[0].(int64) == pk || r.distance == 0 {
-							found++
-							break
+			for lo := 0; lo < len(pks); lo += 20 {
+				batch := pks[lo:min(lo+20, len(pks))]
+				var batchFound int
+				run(func(tx fdb.WritableTransaction) error {
+					batchFound = 0
+					for _, pk := range batch {
+						res, err := g.search(tx, 5, defaultGuardiannSearchConfig(), live[pk])
+						if err != nil {
+							return err
+						}
+						for _, r := range res {
+							if r.primaryKey[0].(int64) == pk || r.distance == 0 {
+								batchFound++
+								break
+							}
 						}
 					}
-				}
-				return nil
-			})
+					return nil
+				})
+				found += batchFound
+			}
 			Expect(found).To(Equal(len(live)), "every live vector is its own nearest neighbour")
 		}
 		drain()
