@@ -139,7 +139,7 @@ func TestTerminalReplay_ExecutorCursors(t *testing.T) {
 
 	t.Run("index_fetch", func(t *testing.T) {
 		t.Parallel()
-		c := &indexFetchCursor{inner: &pauseThenExhaustCursor[*recordlayer.IndexEntry]{}}
+		c := newIndexFetchCursor(&pauseThenExhaustCursor[*recordlayer.IndexEntry]{}, nil, nil)
 		defer c.Close()
 		requireTerminalReplay(t, c)
 	})

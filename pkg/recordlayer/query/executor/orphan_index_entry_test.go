@@ -154,9 +154,6 @@ func TestIntegration_OrphanIndexEntry_RaisesStorageError(t *testing.T) {
 // Java's scanIndexRecords defaults to IndexOrphanBehavior.ERROR (not SKIP), so
 // an orphaned source-index entry aborts the scan rather than silently building
 // an incomplete target index.
-//
-// Revert-proof: restore the `continue` in indexRecordCursor.OnNext and this
-// test's drain returns (rows=0, nil error) and fails.
 func TestIntegration_OrphanIndexEntry_ScanIndexRecords_RaisesStorageError(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

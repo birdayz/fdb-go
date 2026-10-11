@@ -524,7 +524,7 @@ func executeIndexScan(
 	if err != nil {
 		return nil, err
 	}
-	return applySkipLimit(&indexFetchCursor{inner: indexCursor, store: store},
+	return applySkipLimit(newIndexFetchCursor(indexCursor, store, props.ScanState),
 		props.Skip, props.ReturnedRowLimit), nil
 }
 
@@ -787,7 +787,7 @@ func executeVectorIndexScan(
 	if err != nil {
 		return nil, fmt.Errorf("executor: opening vector partition scan ranges for %q: %w", p.GetIndexName(), err)
 	}
-	result := &indexFetchCursor{inner: indexCursor, store: store}
+	result := newIndexFetchCursor(indexCursor, store, props.ScanState)
 	return applySkipLimit(result, props.Skip, props.ReturnedRowLimit), nil
 }
 
@@ -1358,59 +1358,63 @@ func anyLaterComparisonConstrains(comparisons []*predicates.ComparisonRange, i i
 	return false
 }
 
-type indexFetchCursor struct {
-	inner  recordlayer.RecordCursor[*recordlayer.IndexEntry]
-	store  *recordlayer.FDBRecordStore
-	closed bool
-	// lastNoNext replays the terminal result on a contract-violating re-call
-	// (Java's cached no-next result) — never re-pulls the inner entry scan.
-	lastNoNext *recordlayer.RecordCursorResult[QueryResult]
-}
-
-func (c *indexFetchCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
-	if c.lastNoNext != nil {
-		return *c.lastNoNext, nil
-	}
-	// One index entry per call: the fetch either yields its record, exhausts, or
-	// raises on an orphan/malformed entry. No loop — orphans no longer
-	// skip-and-continue (that silently dropped rows); they abort with a typed
-	// error like Java's IndexOrphanBehavior.ERROR default.
-	if err := ctx.Err(); err != nil {
-		return recordlayer.RecordCursorResult[QueryResult]{}, err
-	}
-	result, err := c.inner.OnNext(ctx)
+// Fetch failures keep reporting an exhausted end result beside the error.
+func terminalOnError(res recordlayer.RecordCursorResult[QueryResult], err error) (recordlayer.RecordCursorResult[QueryResult], error) {
 	if err != nil {
 		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), err
 	}
-	if !result.HasNext() {
-		res := recordlayer.NewResultNoNext[QueryResult](result.GetNoNextReason(), result.GetContinuation())
-		c.lastNoNext = &res
-		return res, nil
-	}
+	return res, nil
+}
 
-	entry := result.GetValue()
+type indexFetchCursor struct {
+	inner     recordlayer.RecordCursor[*recordlayer.IndexEntry]
+	store     *recordlayer.FDBRecordStore
+	scanState *recordlayer.ScanLimiterState
+	pipeline  recordlayer.RecordCursor[QueryResult]
+}
+
+// newIndexFetchCursor fetches each entry's record; scanState, when set, is
+// charged the loaded bytes as Java's fetchIndexRecords charges its ExecuteState.
+func newIndexFetchCursor(inner recordlayer.RecordCursor[*recordlayer.IndexEntry], store *recordlayer.FDBRecordStore, scanState *recordlayer.ScanLimiterState) *indexFetchCursor {
+	c := &indexFetchCursor{inner: inner, store: store, scanState: scanState}
+	c.pipeline = recordlayer.MapPipelined(inner, c.load, recordlayer.DefaultPipelineSize)
+	return c
+}
+
+func (c *indexFetchCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
+	return terminalOnError(c.pipeline.OnNext(ctx))
+}
+
+func (c *indexFetchCursor) load(entry *recordlayer.IndexEntry) recordlayer.PendingRead[QueryResult] {
+	pk := entry.PrimaryKey()
+	if pk == nil {
+		return recordlayer.NewPendingRead(func() (QueryResult, error) { return c.finish(entry, nil, nil, nil) }, nil)
+	}
+	return recordlayer.MapPendingRead(c.store.LoadRecordAsync(pk, c.scanState), func(rec *recordlayer.FDBStoredRecord[proto.Message], err error) (QueryResult, error) {
+		return c.finish(entry, pk, rec, err)
+	})
+}
+
+func (c *indexFetchCursor) finish(entry *recordlayer.IndexEntry, pk tuple.Tuple, rec *recordlayer.FDBStoredRecord[proto.Message], err error) (QueryResult, error) {
 	indexName := ""
 	if entry.Index != nil {
 		indexName = entry.Index.Name
 	}
-	pk := entry.PrimaryKey()
 	if pk == nil {
 		// A malformed index entry that resolves to no primary key is detectable
 		// corruption, not a row to drop. Java resolves the PK before fetching
 		// (IndexEntry.getPrimaryKey) and the ERROR orphan path below is loud for
 		// any missing base record; a nil PK is the same class of fault, so raise
 		// rather than silently continue.
-		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}),
-			&recordlayer.RecordCoreStorageError{
-				Message:   "record not found from index entry",
-				IndexName: indexName,
-				IndexKey:  entry.Key,
-			}
+		return QueryResult{}, &recordlayer.RecordCoreStorageError{
+			Message:   "record not found from index entry",
+			IndexName: indexName,
+			IndexKey:  entry.Key,
+		}
 	}
 
-	rec, err := c.store.LoadRecord(pk)
 	if err != nil {
-		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), fmt.Errorf("executor: loading record for index entry pk %v: %w", pk, err)
+		return QueryResult{}, fmt.Errorf("executor: loading record for index entry pk %v: %w", pk, err)
 	}
 	if rec == nil {
 		// Port Java's IndexOrphanBehavior.ERROR (RecordQueryIndexPlan →
@@ -1421,25 +1425,20 @@ func (c *indexFetchCursor) OnNext(ctx context.Context) (recordlayer.RecordCursor
 		// continuing would return fewer rows and hide the corruption. Raise the
 		// same typed error Java throws, carrying its INDEX_NAME / PRIMARY_KEY /
 		// INDEX_KEY log info.
-		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}),
-			&recordlayer.RecordCoreStorageError{
-				Message:    "record not found from index entry",
-				IndexName:  indexName,
-				PrimaryKey: pk,
-				IndexKey:   entry.Key,
-			}
+		return QueryResult{}, &recordlayer.RecordCoreStorageError{
+			Message:    "record not found from index entry",
+			IndexName:  indexName,
+			PrimaryKey: pk,
+			IndexKey:   entry.Key,
+		}
 	}
 
-	qr := FromStoredRecord(rec)
-	return recordlayer.NewResultWithValue(qr, result.GetContinuation()), nil
+	return FromStoredRecord(rec), nil
 }
 
-func (c *indexFetchCursor) Close() error {
-	c.closed = true
-	return c.inner.Close()
-}
+func (c *indexFetchCursor) Close() error { return c.pipeline.Close() }
 
-func (c *indexFetchCursor) IsClosed() bool { return c.closed }
+func (c *indexFetchCursor) IsClosed() bool { return c.pipeline.IsClosed() }
 
 func executeTypeFilter(
 	ctx context.Context,
@@ -1951,7 +1950,7 @@ func executeFetchFromPartialRecord(
 	if err != nil {
 		return nil, err
 	}
-	return &fetchFullRecordCursor{inner: innerCursor, store: store}, nil
+	return newFetchFullRecordCursor(innerCursor, store, props.ScanState), nil
 }
 
 // fetchFullRecordCursor resolves each incoming row to its full stored record by
@@ -1970,31 +1969,33 @@ func executeFetchFromPartialRecord(
 // indexFetchCursor's: an entry whose base record is missing means the index and
 // the records disagree, and query execution never uses SKIP.
 type fetchFullRecordCursor struct {
-	inner  recordlayer.RecordCursor[QueryResult]
-	store  *recordlayer.FDBRecordStore
-	closed bool
-	// lastNoNext replays the terminal result on a contract-violating re-call
-	// (Java's cached no-next result) — never re-pulls the inner cursor.
-	lastNoNext *recordlayer.RecordCursorResult[QueryResult]
+	store     *recordlayer.FDBRecordStore
+	scanState *recordlayer.ScanLimiterState
+	pipeline  recordlayer.RecordCursor[QueryResult]
+}
+
+func newFetchFullRecordCursor(inner recordlayer.RecordCursor[QueryResult], store *recordlayer.FDBRecordStore, scanState *recordlayer.ScanLimiterState) *fetchFullRecordCursor {
+	c := &fetchFullRecordCursor{store: store, scanState: scanState}
+	c.pipeline = recordlayer.MapPipelined(inner, c.load, recordlayer.DefaultPipelineSize)
+	return c
 }
 
 func (c *fetchFullRecordCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
-	if c.lastNoNext != nil {
-		return *c.lastNoNext, nil
-	}
-	result, err := c.inner.OnNext(ctx)
-	if err != nil {
-		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), err
-	}
-	if !result.HasNext() {
-		res := recordlayer.NewResultNoNext[QueryResult](result.GetNoNextReason(), result.GetContinuation())
-		c.lastNoNext = &res
-		return res, nil
-	}
+	return terminalOnError(c.pipeline.OnNext(ctx))
+}
 
-	row := result.GetValue()
+func (c *fetchFullRecordCursor) load(row QueryResult) recordlayer.PendingRead[QueryResult] {
+	if row.Record != nil || row.PrimaryKey == nil {
+		return recordlayer.NewPendingRead(func() (QueryResult, error) { return c.finish(row, nil, nil) }, nil)
+	}
+	return recordlayer.MapPendingRead(c.store.LoadRecordAsync(row.PrimaryKey, c.scanState), func(rec *recordlayer.FDBStoredRecord[proto.Message], err error) (QueryResult, error) {
+		return c.finish(row, rec, err)
+	})
+}
+
+func (c *fetchFullRecordCursor) finish(row QueryResult, rec *recordlayer.FDBStoredRecord[proto.Message], err error) (QueryResult, error) {
 	if row.Record != nil {
-		return result, nil
+		return row, nil
 	}
 	pk := row.PrimaryKey
 	if pk == nil {
@@ -2004,35 +2005,28 @@ func (c *fetchFullRecordCursor) OnNext(ctx context.Context) (recordlayer.RecordC
 		// that does not carry row identity — and it is raised rather than
 		// passed through, because passing it through is precisely the silent
 		// partial-row leak this cursor exists to prevent.
-		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}),
-			&recordlayer.RecordCoreStorageError{
-				Message: "fetch from partial record: row carries neither a stored record nor a primary key",
-			}
+		return QueryResult{}, &recordlayer.RecordCoreStorageError{
+			Message: "fetch from partial record: row carries neither a stored record nor a primary key",
+		}
 	}
-	rec, err := c.store.LoadRecord(pk)
 	if err != nil {
-		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}),
-			fmt.Errorf("executor: loading record for partial row pk %v: %w", pk, err)
+		return QueryResult{}, fmt.Errorf("executor: loading record for partial row pk %v: %w", pk, err)
 	}
 	if rec == nil {
 		// Java IndexOrphanBehavior.ERROR — see indexFetchCursor for the full
 		// reasoning. Silently continuing would return fewer rows and hide index
 		// corruption.
-		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}),
-			&recordlayer.RecordCoreStorageError{
-				Message:    "record not found from index entry",
-				PrimaryKey: pk,
-			}
+		return QueryResult{}, &recordlayer.RecordCoreStorageError{
+			Message:    "record not found from index entry",
+			PrimaryKey: pk,
+		}
 	}
-	return recordlayer.NewResultWithValue(FromStoredRecord(rec), result.GetContinuation()), nil
+	return FromStoredRecord(rec), nil
 }
 
-func (c *fetchFullRecordCursor) Close() error {
-	c.closed = true
-	return c.inner.Close()
-}
+func (c *fetchFullRecordCursor) Close() error { return c.pipeline.Close() }
 
-func (c *fetchFullRecordCursor) IsClosed() bool { return c.closed }
+func (c *fetchFullRecordCursor) IsClosed() bool { return c.pipeline.IsClosed() }
 
 func executeDistinct(
 	ctx context.Context,

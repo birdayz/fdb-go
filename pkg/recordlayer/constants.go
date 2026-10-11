@@ -90,8 +90,8 @@ const (
 
 // Other constants from Java implementation
 const (
-	// defaultPipelineSize is the default pipeline size for operations
-	defaultPipelineSize = 10
+	// DefaultPipelineSize matches FDBRecordStore.DEFAULT_PIPELINE_SIZE in Java.
+	DefaultPipelineSize = 10
 
 	// maxRecordsForRebuild is the maximum records for rebuild operations
 	maxRecordsForRebuild = 200
