@@ -83,7 +83,9 @@ func TestFDB_UniquePendingIndexDoesNotEliminateDistinct(t *testing.T) {
 	if idx := md.GetIndex("T_C1_UNIQ"); idx == nil || !idx.IsUnique() {
 		t.Fatal("T_C1_UNIQ is missing or not unique — the rest of this test would assert nothing")
 	}
-	desc := md.GetRecordType("T").Descriptor
+	// The seed store runs mdPlain, and a save must use that meta-data's own
+	// descriptor (RecordMetaData.getRecordTypeForDescriptor compares identity).
+	desc := mdPlain.GetRecordType("T").Descriptor
 
 	rec := func(id, c1, other int32) proto.Message {
 		m := dynamicpb.NewMessage(desc)
