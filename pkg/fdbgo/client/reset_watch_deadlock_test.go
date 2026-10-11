@@ -4,8 +4,6 @@ import (
 	"context"
 	"testing"
 	"time"
-
-	"fdb.dev/pkg/fdbgo/transport"
 )
 
 // Reset must release a WatchSetup GRV before waiting for its execution lease.
@@ -13,22 +11,31 @@ func TestReset_DoesNotDeadlockWithWatchSetupGRV(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	db, sd := newSimTestDB(t, ctx)
-	parked := make(chan struct{}, 1)
-	release, releaseIt := releaseGate(t)
-	sd.setIntercept(func(_ int, _ transport.UID, body []byte) ([]byte, bool) {
-		select {
-		case parked <- struct{}{}:
-		default:
-		}
-		<-release
-		return body, false
-	})
-	sd.armAll()
+	db, gate, _ := newGRVReplyGateDB(t, ctx)
+	unrelated := db.CreateTransaction()
+	version, err := unrelated.GetReadVersion(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unrelated.SetReadVersion(version)
+	gate.arm(1, false)
 	tx := db.CreateTransaction()
+	entry := make(chan struct{})
+	releaseEntry, releaseEntryIt := releaseGate(t)
+	tx.beforeReadVersionLock = func() { close(entry); <-releaseEntry }
 	watchErr := make(chan error, 1)
 	go func() { watchErr <- tx.Watch(ctx, []byte(t.Name()+"_k")) }()
-	waitReadParked(t, ctx, parked, "watch GRV")
+	waitReadParked(t, ctx, entry, "watch before GRV entry")
+	if _, err := unrelated.Get(ctx, []byte(t.Name()+"_unrelated")); err != nil {
+		t.Fatalf("unrelated real read: %v", err)
+	}
+	select {
+	case <-gate.heldCh:
+		t.Fatal("unrelated real read signaled the watch GRV gate")
+	default:
+	}
+	releaseEntryIt()
+	waitReadParked(t, ctx, gate.heldCh, "actual watch GRV reply")
 	tx.readVersionMu.Lock()
 	pending := tx.pendingReadVersion != nil
 	tx.readVersionMu.Unlock()
@@ -42,8 +49,9 @@ func TestReset_DoesNotDeadlockWithWatchSetupGRV(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("Reset waited for a WatchSetup GRV that only its retirement can release")
 	}
-	releaseIt()
+	gate.release()
 	<-watchErr
+	tx.beforeReadVersionLock = nil
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("post-Reset commit on the reset handle: %v", err)
 	}
