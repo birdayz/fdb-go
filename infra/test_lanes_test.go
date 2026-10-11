@@ -8,6 +8,8 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestPrecommitFastLane(t *testing.T) {
@@ -176,4 +178,55 @@ func TestWorkflowsUseTheCIConfig(t *testing.T) {
 		t.Fatal("found no bazelisk commands in the workflows: the check matched nothing")
 	}
 	t.Logf("%d workflow Bazel commands pass --config=ci", checked)
+}
+
+// TestCILanesPartitionTheSuite pins that CI's three test jobs split the suite without a gap:
+// the fast lane is `just test`'s filter, the full-suites job takes exactly the test-full
+// targets (timing gates only on master pushes), and Java conformance its own tag. A target
+// the filters stopped selecting would otherwise drop out of CI with every job still green.
+func TestCILanesPartitionTheSuite(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile("../.github/workflows/ci.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wf struct {
+		Jobs map[string]struct {
+			Steps []struct {
+				ID  string `yaml:"id"`
+				Run string `yaml:"run"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(data, &wf); err != nil {
+		t.Fatal(err)
+	}
+	// A value can end in a ${{ }} expression, which contains spaces.
+	filter := regexp.MustCompile(`--test_tag_filters=((?:\$\{\{[^}]*\}\}|\S)+)`)
+	want := map[string]string{
+		"ci":               "-test-full,-stress,-conformance_java",
+		"full-suites":      "test-full,-stress,-conformance_java${{ github.event_name == 'pull_request' && ',-ci-postmerge' || '' }}",
+		"conformance-java": "conformance_java,-stress",
+	}
+	for job, w := range want {
+		var got []string
+		for _, s := range wf.Jobs[job].Steps {
+			if s.ID == "test" {
+				for _, m := range filter.FindAllStringSubmatch(s.Run, -1) {
+					got = append(got, m[1])
+				}
+			}
+		}
+		if len(got) != 1 || got[0] != w {
+			t.Errorf("job %q test step tag filter = %q, want exactly [%q]", job, got, w)
+		}
+	}
+	// The fast lane is `just test`; the two must not drift apart.
+	just, err := os.ReadFile("../justfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(just), "--test_tag_filters=-test-full,-conformance_java,-stress") {
+		t.Error("justfile's fast lane no longer excludes exactly test-full, conformance_java and stress; update the ci job's filter with it")
+	}
 }

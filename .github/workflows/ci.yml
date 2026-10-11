@@ -119,11 +119,12 @@ jobs:
       # that an exclusive target waited for every other test and then ran with three
       # idle slots (~700 s of serial tail per run).
       #
-      # The Java conformance targets (tag conformance_java) run in the
-      # conformance-java job on the other runner; see there.
+      # This job is the fast lane, `just test`'s filter. The test-full targets run in the
+      # full-suites job and the Java conformance targets (conformance_java) in the
+      # conformance-java job, each on another runner; see there.
       - name: Build, lint & test
         id: test
-        run: bazelisk test --config=ci //... //cmd/fdb-stacktester/bindingtester:bindingtester_test --define gotags=fdbdocker --test_tag_filters=-stress,-conformance_java --build_event_json_file=.bazel-bep.jsonl
+        run: bazelisk test --config=ci //... //cmd/fdb-stacktester/bindingtester:bindingtester_test --define gotags=fdbdocker --test_tag_filters=-test-full,-stress,-conformance_java --build_event_json_file=.bazel-bep.jsonl
 
       # tools/bazelscaleset is a standalone Go module (its own go.mod) so the
       # runner supervisor's GitHub-API dependencies never enter the
@@ -203,6 +204,65 @@ jobs:
         with:
           name: bazel-timing
           path: |
+            bazel-profile.json.gz
+            .bazel-bep.jsonl
+          include-hidden-files: true
+          retention-days: 14
+
+  full-suites:
+    name: Full suites (test-full)
+    runs-on: hetzner-fdb-vm
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Reap containers an earlier job left running
+        timeout-minutes: 2
+        run: infra/reap-leaked-containers.sh
+
+      - name: Test against current master
+        timeout-minutes: 5
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_REF: ${{ github.base_ref }}
+        run: infra/merge-current-master.sh
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Check Docker (else the full suites silently no-op)
+        run: |
+          docker info >/dev/null 2>&1 || { echo "::error::Docker unavailable — the suites would skip (exit 0) with no coverage"; exit 1; }
+
+      # The test-full targets, split out of Build, Lint & Test so the two run on separate
+      # runners at once. ci-postmerge targets (timing gates) run on pushes to master only.
+      - name: Full suites
+        id: test
+        run: bazelisk test --config=ci //... --build_tests_only --define gotags=fdbdocker --test_tag_filters=test-full,-stress,-conformance_java${{ github.event_name == 'pull_request' && ',-ci-postmerge' || '' }} --build_event_json_file=.bazel-bep.jsonl
+
+      - name: Timeout budgets
+        if: ${{ !cancelled() && steps.test.outcome != 'skipped' }}
+        run: |
+          bazelisk query --config=ci 'tests(//...)' --output=xml --xml:default_values > .bazel-targets.xml
+          go run ./cmd/test-budget -lane suite -bep .bazel-bep.jsonl -targets .bazel-targets.xml -warn 0.70 -threshold 0.90
+
+      - name: Generate test report
+        if: ${{ !cancelled() && steps.test.outcome != 'skipped' }}
+        run: |
+          bazelisk build --config=ci //cmd/test-report
+          BAZEL_BIN=$(bazelisk info --config=ci bazel-bin 2>/dev/null)
+          "$BAZEL_BIN/cmd/test-report/test-report_/test-report" .bazel-bep.jsonl > test-report.html
+
+      - name: Upload test report and timing data as artifact
+        if: ${{ !cancelled() && steps.test.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-report-full-suites
+          path: |
+            test-report.html
             bazel-profile.json.gz
             .bazel-bep.jsonl
           include-hidden-files: true

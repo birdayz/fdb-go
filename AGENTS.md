@@ -41,5 +41,8 @@ dependents and is not the check the hook and CI make.
   (`just sqltest`), so an edited test reruns only its package.
 - Classify heavyweight targets using the `test-full` BUILD tag, not test skips
   or global build-tag changes. New ordinary targets enter the fast lane by default.
+  CI runs the fast lane ("Build, Lint & Test") and the `test-full` targets ("Full
+  suites") as separate jobs; a target also tagged `ci-postmerge` (a timing gate)
+  runs there only on pushes to master.
 - Report which lane ran, failures, and actual versus cached execution. A fast pass
   must never be described as full-suite verification.

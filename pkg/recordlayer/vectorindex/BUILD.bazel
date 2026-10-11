@@ -121,7 +121,11 @@ go_test(
     timeout = "long",
     srcs = ["guardiann_peel_timing_test.go"],
     embed = [":vectorindex"],
-    tags = ["test-full"],
+    # A 148s timing gate: CI runs it on pushes to master only (ci-postmerge), not per PR.
+    tags = [
+        "ci-postmerge",
+        "test-full",
+    ],
     deps = [
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
