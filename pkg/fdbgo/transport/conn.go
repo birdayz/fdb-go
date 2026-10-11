@@ -883,9 +883,12 @@ func (c *Conn) readLoop() {
 
 	pingToken := WellKnownToken(WLTokenPingPacket)
 	var fr FrameReader
+	// C++ connectionReader reads into a packet buffer: one read usually carries
+	// whole frames, where length, checksum and payload reads cost three each.
+	in := bufio.NewReaderSize(c.conn, readBufferSize)
 
 	for {
-		token, body, err := fr.Read(c.conn, c.useTLS)
+		token, body, err := fr.Read(in, c.useTLS)
 		if err != nil {
 			// Only log if this is unexpected (server died, not our Close).
 			if c.debugFrames && c.ctx.Err() == nil {
@@ -927,6 +930,10 @@ func (c *Conn) readLoop() {
 		// Unknown tokens are silently dropped (e.g., late responses after timeout).
 	}
 }
+
+// readBufferSize exceeds C++ MIN_PACKET_BUFFER_BYTES (4 KiB, flow/Knobs.cpp:226)
+// so a burst of replies drains in one read; larger payloads bypass it.
+const readBufferSize = 16 << 10
 
 // failAllPending delivers an error to all pending request channels.
 // Matches C++ connectionKeeper's disconnect promise that wakes all

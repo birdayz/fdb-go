@@ -25,6 +25,7 @@ go_test(
         "conn_handshake_timeout_test.go",
         "conn_lifecycle_test.go",
         "conn_monitor_pacing_test.go",
+        "conn_read_buffer_test.go",
         "conn_recover_test.go",
         "conn_unit_test.go",
         "connclosed_error_test.go",
