@@ -41,21 +41,22 @@ var _ = Describe("GuardiANN structure", func() {
 		ss := specSubspace().Sub("guardiann")
 		listener := &countingListener{}
 		g := newGuardiann(ss, cfg, nil, listener)
-		// Every step is forced through one or two retries (a 1020 after each
-		// uncommitted attempt), as load does at random. Only the committed
-		// attempt's effects may count, so the listener restarts from its
-		// pre-step counts; uneven retry counts are what expose a miscount.
+		// Load retries steps unevenly; forcing 1-2 retries per step proves only the
+		// committed attempt counts (uniform retries would cancel in enqueued-executed).
 		steps := 0
 		run := func(f func(tx fdb.WritableTransaction) error) {
 			steps++
-			base, attempts, retries := *listener, 0, 1+steps%2
+			base := *listener
+			retries := 1 + steps%2
+			attempts := 0
 			_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 				*listener = base
 				g = newGuardiann(ss, cfg, nil, listener)
 				if err := f(rtx.Transaction()); err != nil {
 					return nil, err
 				}
-				if attempts++; attempts <= retries {
+				attempts++
+				if attempts <= retries {
 					return nil, fdb.Error{Code: 1020}
 				}
 				return nil, nil
@@ -103,8 +104,9 @@ var _ = Describe("GuardiANN structure", func() {
 		check := func(live map[int64]gVector) {
 			var snap guardiannSnapshot
 			run(func(tx fdb.WritableTransaction) error {
-				snap = readGuardiann(tx, g)
-				return nil
+				var err error
+				snap, err = readGuardiannErr(tx, g)
+				return err
 			})
 			Expect(snap.tasks).To(Equal(0))
 			Expect(listener.enqueued-listener.executed).To(Equal(snap.tasks), "the task counts track the queue")
@@ -127,11 +129,11 @@ var _ = Describe("GuardiANN structure", func() {
 				pks = append(pks, pk)
 			}
 			slices.Sort(pks)
-			// Bounded batches keep each transaction well inside the 5s MVCC
-			// window under load; a batch counts only once it commits.
+			// One transaction over every search outlives the 5s MVCC window under load.
+			const searchBatch = 20
 			found := 0
-			for lo := 0; lo < len(pks); lo += 20 {
-				batch := pks[lo:min(lo+20, len(pks))]
+			for lo := 0; lo < len(pks); lo += searchBatch {
+				batch := pks[lo:min(lo+searchBatch, len(pks))]
 				var batchFound int
 				run(func(tx fdb.WritableTransaction) error {
 					batchFound = 0
@@ -156,8 +158,9 @@ var _ = Describe("GuardiANN structure", func() {
 		drain()
 		var snap guardiannSnapshot
 		run(func(tx fdb.WritableTransaction) error {
-			snap = readGuardiann(tx, g)
-			return nil
+			var err error
+			snap, err = readGuardiannErr(tx, g)
+			return err
 		})
 		Expect(len(snap.clusters)).To(BeNumerically(">", 4), "clusters were split")
 		Expect(snap.collapsed).To(BeNumerically(">", 0), "duplicates were collapsed")
@@ -173,15 +176,18 @@ var _ = Describe("GuardiANN structure", func() {
 					if err := g.delete(tx, tuple.Tuple{i}, vectors[i], true); err != nil {
 						return fmt.Errorf("delete %d: %w", i, err)
 					}
-					delete(live, i)
 				}
 				return nil
 			})
+			for i := lo; i < lo+10; i++ {
+				delete(live, i)
+			}
 		}
 		drain()
 		run(func(tx fdb.WritableTransaction) error {
-			snap = readGuardiann(tx, g)
-			return nil
+			var err error
+			snap, err = readGuardiannErr(tx, g)
+			return err
 		})
 		Expect(len(snap.clusters)).To(BeNumerically("<", 5), "clusters were merged")
 		check(live)
