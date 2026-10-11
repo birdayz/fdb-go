@@ -102,12 +102,27 @@ func (c *Conn) writeContext(ctx context.Context, token UID, body []byte, flush b
 // does not wait for its acknowledgment. The boolean reports enqueue, not wire
 // delivery. FlushContext may subsequently wait for the batch.
 func (c *Conn) SendFrameDeferredContext(ctx context.Context, token UID, body []byte) (bool, error) {
+	return c.sendWithoutAck(ctx, token, body, false)
+}
+
+// SendFrameEagerContext is SendFrameDeferredContext for a frame nothing is about
+// to join: an idle writer lets the caller write it at once. (true, err) means the
+// direct write failed: maybe delivered, and the connection is failed.
+func (c *Conn) SendFrameEagerContext(ctx context.Context, token UID, body []byte) (bool, error) {
+	return c.sendWithoutAck(ctx, token, body, true)
+}
+
+func (c *Conn) sendWithoutAck(ctx context.Context, token UID, body []byte, eager bool) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
-	request := writeReq{token: token, body: bytes.Clone(body)}
-	LogSend(token, request.body)
-	return c.enqueueOwned(ctx, request)
+	LogSend(token, body)
+	if eager {
+		if direct, err := c.tryWriteDirect(token, body); direct {
+			return true, err
+		}
+	}
+	return c.enqueueOwned(ctx, writeReq{token: token, body: bytes.Clone(body)})
 }
 
 func (c *Conn) enqueueOwned(ctx context.Context, request writeReq) (bool, error) {
