@@ -528,3 +528,32 @@ building locally, and `--remote_timeout` bounds the wait.
 
 To roll back, delete the `# RFC-257 shared cache` block from
 `/etc/bazel.bazelrc`, and on the server also run `docker rm -f bazel-remote`.
+
+## Notes moved out of cloud-init.yaml
+
+`cloud-init.yaml` is user_data and every comment counts against Hetzner's 32 KiB cap, so the
+longer rationale for these lines lives here.
+
+- **Packages that look optional.** clang is load-bearing: Bazel's `@local_config_cc` lives on
+  the CI volume, outlives the box, and was detected against clang, so a gcc-only box fails
+  every C++ action with `unrecognized command-line option '-Wthread-safety'`. gh, unzip and
+  rsync are the same class: really depended on, undeclared because the old fleet installed
+  them by hand.
+- **Swap.** 7.6 GB of RAM runs the FDB-container suite, each test spawning a multi-GB FDB
+  server. With no swap a memory spike OOM-kills test processes and can wedge the runner
+  (observed: 10 OOM-kills in 42 days, ending in an sshd-starving wedge). Swap turns those into
+  survivable slowdowns; swappiness=10 keeps the common path on RAM. It only buys headroom.
+- **`--max-runners 1` (scale-set mode).** Two concurrent heavy Bazel+FDB jobs exhaust a
+  7.6 GiB box (RAM plus 4 GiB swap) into a swap-thrash, sshd-starving wedge (observed live).
+  Real 2-slot capacity needs a bigger server_type; the backlog just serializes.
+- **Private network (`60-ci-fleet.yaml`).** Hetzner attaches the private NIC (`enp*`) after
+  first boot and the image's netplan only configures `eth0`, so without this file the NIC
+  stays down and `10.77.0.2:9092` (bazel-remote) is unreachable: every Bazel job then dies
+  with exit 34. Boxes without a public IP (`nat = true`) also route through `10.77.0.1`.
+- **Pre-warm.** Before the runner service starts, the box clones the repo into the job
+  workspace and runs `bazelisk fetch --config=ci //...`, so the first jobs on a new box do not
+  cold-fetch hundreds of Go modules. gazelle's `fetch_repo` goes through the Go module fetcher,
+  which has no retry, and an upstream HTTP/2 reset then fails analysis. Bazel's own downloader
+  already retries (`--experimental_repository_downloader_retries` defaults to 5 in 9.0.1).
+- **mc.** `dl.min.io` answers 410 for the pinned archive; the install is best effort because
+  only the report upload uses it.

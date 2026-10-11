@@ -1,19 +1,17 @@
 #cloud-config
 
-# `packages:` starts docker.io in the CONFIG stage, before runcmd links the CI volume, so
-# an unmasked daemon puts its data-root on the ROOT DISK and the volume link then cannot
-# nest inside it. bootcmd is the only hook before package install, so the mask stays here
-# and stays UNCONDITIONAL: bootcmd runs Before=sysinit.target, so no mount it inspects has
-# happened yet and a conditional there reports "absent" on every boot. Lifting the mask is
-# ci-docker-gate.service's job, below. Incident narrative: infra/README.md.
+# Mask docker before packages start it on the root disk; ci-docker-gate.service lifts it. Unconditional: see README.
 bootcmd:
   - systemctl mask docker.service docker.socket
+  # The private NIC is attached after first boot and the image's netplan configures only eth0.
+  - |
+    printf 'network:\n  version: 2\n  ethernets:\n    ci-fleet:\n      match:\n        name: "enp*"\n      dhcp4: true\n' > /etc/netplan/60-ci-fleet.yaml
+    [ "${nat}" != true ] || printf '      routes:\n        - to: default\n          via: 10.77.0.1\n      nameservers:\n        addresses: [185.12.64.1, 185.12.64.2]\n' >> /etc/netplan/60-ci-fleet.yaml # Hetzner DNS, secretscan:allow
+    chmod 600 /etc/netplan/60-ci-fleet.yaml
+    netplan apply
 
 package_update: true
-# clang is load-bearing: Bazel's @local_config_cc lives on the CI volume, outlives the box,
-# and was detected against clang — a gcc-only box fails every C++ action with
-# `unrecognized command-line option '-Wthread-safety'`. gh, unzip and rsync are the same
-# class: really depended on, undeclared because the old fleet installed them by hand.
+# clang, gh, unzip, rsync: load-bearing, see README ("Packages that look optional").
 packages:
   - docker.io
   - build-essential
@@ -25,11 +23,7 @@ packages:
   - rsync
   - unzip
 
-# 7.6 GB RAM running the FDB-container suite at --local_test_jobs=4 (each test spawns a
-# multi-GB FDB server). With NO swap a memory spike OOM-kills test processes and can wedge
-# the runner (observed: 10 OOM-kills in 42 days, ending in an sshd-starving wedge). Swap
-# converts those into survivable slowdowns; swappiness=10 keeps the common path on RAM.
-# This only buys headroom — real capacity needs a bigger server_type or fewer test jobs.
+# Swap turns FDB-suite memory spikes into slowdowns, not OOM-kills; see README.
 swap:
   filename: /swapfile
   size: 4294967296 # 4 GiB
@@ -440,10 +434,7 @@ write_files:
       #!/bin/bash
       set -euo pipefail
       export BAZELSCALESET_APP_PRIVATE_KEY="$(cat /etc/bazelscaleset/app.pem)"
-      # --max-runners 1 is deliberate, NOT just the default: two concurrent heavy
-      # bazel+FDB jobs exhaust this 7.6 GiB box (RAM + 4 GiB swap) into a swap-thrash
-      # sshd-starving wedge (observed live). Real 2-slot capacity needs a bigger
-      # server_type, not this flag. The backlog just serializes — slow is fine.
+      # --max-runners 1 is deliberate: two heavy jobs wedge this box; see README.
       exec /usr/local/bin/bazelscaleset \
         --url https://github.com/${github_repo} \
         --name hetzner-fdb \
@@ -545,9 +536,8 @@ runcmd:
     chown root:root /usr/local/bin/just
     chmod 0755 /usr/local/bin/just
     rm -f /tmp/just.tar.gz
-    # MinIO client (pinned dated release)
-    "$FV" "https://dl.min.io/client/mc/release/linux-amd64/archive/${mc_release}" "${mc_sha256}" /usr/local/bin/mc
-    chmod 0755 /usr/local/bin/mc
+    # MinIO client, best effort: dl.min.io now answers 410, and only report upload needs it.
+    if "$FV" "https://dl.min.io/client/mc/release/linux-amd64/archive/${mc_release}" "${mc_sha256}" /usr/local/bin/mc; then chmod 0755 /usr/local/bin/mc; else echo "mc download failed (non-fatal)"; fi
 
   # Runner user
   - useradd -m -s /bin/bash runner
@@ -604,6 +594,9 @@ runcmd:
       printf '[Unit]\nRequires=ci-docker-gate.service\nAfter=ci-docker-gate.service\n\n[Service]\nEnvironment=ACTIONS_RUNNER_HOOK_JOB_STARTED=/usr/local/bin/runner-job-guard.sh\nOOMPolicy=continue\nKillMode=process\n' \
         > "/etc/systemd/system/$RUNNER_UNIT.d/ci-docker-gate.conf"
       systemctl daemon-reload
+      # Pre-fetch the job workspace's external repos so first jobs never cold-fetch; best effort.
+      W=/mnt/ci-data/runner-work/$(basename ${github_repo})/$(basename ${github_repo})
+      su - runner -c "git clone -q https://github.com/${github_repo} $W && cd $W && timeout 1800 bazelisk fetch --config=ci //... ; bazelisk shutdown" || echo "pre-warm failed (non-fatal)"
       ( cd "$RUNNER_DIR" && ./svc.sh start )
       # Do not leave a second job claimant on a repurposed box.
       systemctl disable --now bazelscaleset.service 2>/dev/null || true

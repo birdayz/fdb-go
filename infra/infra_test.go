@@ -45,6 +45,7 @@ var templateVars = map[string]string{
 	"mc_sha256":           strings.Repeat("0", 64),
 	"fdb_clients_sha256":  strings.Repeat("0", 64),
 	"runner_mode":         "classic",
+	"nat":                 "false",
 
 	"bazelscaleset_app_client_id":       "Iv23litTscHcbrnmhtKa",
 	"bazelscaleset_app_installation_id": "143183909",
@@ -540,6 +541,78 @@ func TestFRLReleaseLegalNotices(t *testing.T) {
 			out, err := run(dist, smoke)
 			if (err != nil) != (damage != "none") {
 				t.Fatalf("smoke check for %s notice: %v\n%s", damage, err, out)
+			}
+		})
+	}
+}
+
+// TestCloudInitBringsUpThePrivateNIC runs the rendered bootcmd netplan script against a temp
+// dir: without it the private NIC stays down and every Bazel job dies on the unreachable
+// remote cache. A NAT box (no public IP) must also get the default route and DNS.
+func TestCloudInitBringsUpThePrivateNIC(t *testing.T) {
+	t.Parallel()
+	tmpl, err := os.ReadFile("cloud-init.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, nat := range []string{"false", "true"} {
+		t.Run("nat="+nat, func(t *testing.T) {
+			vars := map[string]string{}
+			for k, v := range templateVars {
+				vars[k] = v
+			}
+			vars["nat"] = nat
+			rendered, err := renderTemplate(string(tmpl), vars)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var doc struct {
+				Bootcmd []string `yaml:"bootcmd"`
+			}
+			if err := yaml.Unmarshal([]byte(rendered), &doc); err != nil {
+				t.Fatal(err)
+			}
+			var script string
+			for _, c := range doc.Bootcmd {
+				if strings.Contains(c, "60-ci-fleet.yaml") {
+					script = c
+				}
+			}
+			if script == "" {
+				t.Fatal("bootcmd writes no /etc/netplan/60-ci-fleet.yaml")
+			}
+			dir := t.TempDir()
+			script = strings.ReplaceAll(script, "/etc/netplan/", dir+"/")
+			script = strings.ReplaceAll(script, "netplan apply", "true")
+			if out, err := exec.Command("bash", "-ec", script).CombinedOutput(); err != nil {
+				t.Fatalf("netplan script failed: %v\n%s", err, out)
+			}
+			data, err := os.ReadFile(filepath.Join(dir, "60-ci-fleet.yaml"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var np struct {
+				Network struct {
+					Ethernets map[string]struct {
+						Match       map[string]string `yaml:"match"`
+						DHCP4       bool              `yaml:"dhcp4"`
+						Routes      []map[string]string
+						Nameservers struct {
+							Addresses []string `yaml:"addresses"`
+						} `yaml:"nameservers"`
+					} `yaml:"ethernets"`
+				} `yaml:"network"`
+			}
+			if err := yaml.Unmarshal(data, &np); err != nil {
+				t.Fatalf("written netplan is not YAML: %v\n%s", err, data)
+			}
+			e, ok := np.Network.Ethernets["ci-fleet"]
+			if !ok || e.Match["name"] != "enp*" || !e.DHCP4 {
+				t.Fatalf("netplan does not DHCP the private enp* NIC:\n%s", data)
+			}
+			routed := len(e.Routes) == 1 && e.Routes[0]["via"] == "10.77.0.1" && len(e.Nameservers.Addresses) > 0
+			if routed != (nat == "true") {
+				t.Errorf("default route via the NAT gateway = %v, want %v:\n%s", routed, nat == "true", data)
 			}
 		})
 	}
