@@ -65,21 +65,19 @@ var _ = Describe("SPFresh build + query e2e", func() {
 		return ids
 	}
 
-	// searchCommitted runs one search in its own transaction (a loop of them in
-	// one transaction outlives the 5s MVCC window under load) and returns the
-	// committed attempt's result, so callers assert outside the retried closure.
-	// injectTooOld fails the first attempt's first read with
-	// transaction_too_old, forcing the retry deterministically.
-	searchCommitted := func(searcher *spfreshSearcher, query []float64, k int, injectTooOld bool) []spfreshSearchResult {
+	// searchCommitted runs one search per transaction (50 in one outlive the 5s
+	// MVCC window under load), each forced through a 1007 retry by its first point Get.
+	searchCommitted := func(searcher *spfreshSearcher, query []float64, k int) []spfreshSearchResult {
 		var got []spfreshSearchResult
-		fired := !injectTooOld
+		fired, attempts := false, 0
 		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			attempts++
 			var serr error
 			got, serr = searcher.search(tooOldOnceReadTx{ReadTransaction: rtx.Transaction(), fired: &fired}, query, k)
 			return nil, serr
 		})
 		Expect(err).NotTo(HaveOccurred())
-		Expect(fired).To(BeTrue(), "the injected transaction_too_old never reached the search")
+		Expect(attempts).To(BeNumerically(">=", 2), "the injected transaction_too_old must surface and be retried")
 		return got
 	}
 
@@ -98,23 +96,32 @@ var _ = Describe("SPFresh build + query e2e", func() {
 		Expect(builder.build(ctx, inputs, 42)).To(Succeed())
 
 		// The build must have produced a genuine two-level shape.
+		var gen int64
+		var cells []int64
+		staged := 0
 		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			tx := rtx.Transaction()
-			gen, gerr := spfreshReadGenerationSnapshot(tx, storage)
-			Expect(gerr).NotTo(HaveOccurred())
-			Expect(gen).To(Equal(int64(1)), "generation flipped readable")
-			ids, _, lerr := spfreshLoadAllCoarse(tx, storage)
-			Expect(lerr).NotTo(HaveOccurred())
-			Expect(len(ids)).To(BeNumerically(">", 1), "multiple coarse cells")
-			// Staging fully cleared (FINALIZED contract).
-			for _, cellID := range ids {
+			var rerr error
+			if gen, rerr = spfreshReadGenerationSnapshot(tx, storage); rerr != nil {
+				return nil, rerr
+			}
+			if cells, _, rerr = spfreshLoadAllCoarse(tx, storage); rerr != nil {
+				return nil, rerr
+			}
+			staged = 0
+			for _, cellID := range cells {
 				pks, _, serr := spfreshLoadStagingCell(tx, storage, cellID)
-				Expect(serr).NotTo(HaveOccurred())
-				Expect(pks).To(BeEmpty(), "staging cleared at finalization")
+				if serr != nil {
+					return nil, serr
+				}
+				staged += len(pks)
 			}
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
+		Expect(gen).To(Equal(int64(1)), "generation flipped readable")
+		Expect(len(cells)).To(BeNumerically(">", 1), "multiple coarse cells")
+		Expect(staged).To(BeZero(), "staging cleared at finalization (FINALIZED contract)")
 
 		cache := newSPFreshRoutingCache(0)
 		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -130,7 +137,7 @@ var _ = Describe("SPFresh build + query e2e", func() {
 		for qi := 0; qi < 50; qi++ {
 			query := inputs[qi*37%n].vec
 			want := bruteForceKNN(inputs, query, k)
-			got := searchCommitted(searcher, query, k, qi == 0)
+			got := searchCommitted(searcher, query, k)
 			Expect(got).To(HaveLen(k))
 			wantSet := map[int64]bool{}
 			for _, id := range want {
@@ -152,7 +159,7 @@ var _ = Describe("SPFresh build + query e2e", func() {
 			fmt.Sprintf("recall@%d = %.3f, want >= 0.90", k, recall))
 
 		// Distances are exact (re-ranked) and ascending.
-		got := searchCommitted(searcher, inputs[0].vec, k, false)
+		got := searchCommitted(searcher, inputs[0].vec, k)
 		Expect(got[0].Distance).To(BeNumerically("~", 0, 1e-2), "self-distance ~0 (fp16 rounding)")
 		for i := 1; i < len(got); i++ {
 			Expect(got[i].Distance).To(BeNumerically(">=", got[i-1].Distance))
@@ -166,16 +173,16 @@ var _ = Describe("SPFresh build + query e2e", func() {
 		builder := newSPFreshBuilder(sharedDB, storage, config, "builder-1")
 		Expect(builder.build(ctx, inputs, 5)).To(Succeed())
 
-		// Bounded batches with only reads inside the retried closure: one
-		// transaction over all 600 copy-sets outlives the MVCC window under
-		// load, and an assertion inside it turns a retryable error fatal.
+		// One transaction over all 600 copy-sets outlives the MVCC window under
+		// load: read in batches, assert after commit.
+		const copySetBatch = 25
 		type copySet struct {
 			ids     []int64
 			missing []int64 // membership targets whose posting lacks the pk
 		}
 		sets := make([]copySet, len(inputs))
-		for lo := 0; lo < len(inputs); lo += 100 {
-			hi := min(lo+100, len(inputs))
+		for lo := 0; lo < len(inputs); lo += copySetBatch {
+			hi := min(lo+copySetBatch, len(inputs))
 			_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 				tx := rtx.Transaction()
 				for i := lo; i < hi; i++ {
@@ -184,13 +191,14 @@ var _ = Describe("SPFresh build + query e2e", func() {
 						return nil, merr
 					}
 					sets[i] = copySet{ids: ids}
+					packed := string(inputs[i].pk.Pack())
 					for _, fineID := range ids {
 						entries, _, _, _, lerr := spfreshLoadPostingSnapshot(tx, storage, fineID, 2*config.Lmax+1)
 						if lerr != nil {
 							return nil, lerr
 						}
 						if !slices.ContainsFunc(entries, func(e spfreshPostingEntry) bool {
-							return string(e.pk.Pack()) == string(inputs[i].pk.Pack())
+							return string(e.pk.Pack()) == packed
 						}) {
 							sets[i].missing = append(sets[i].missing, fineID)
 						}
@@ -207,8 +215,7 @@ var _ = Describe("SPFresh build + query e2e", func() {
 			if len(cs.ids) > 1 {
 				replicated++
 			}
-			// Every membership entry has a posting row (the chaos invariant,
-			// asserted directly here).
+			// Every membership entry has a posting row (the chaos invariant).
 			Expect(cs.missing).To(BeEmpty(), "pk %v: membership row without posting entry", inputs[i].pk)
 		}
 		Expect(replicated).To(BeNumerically(">", 0),
@@ -220,7 +227,7 @@ var _ = Describe("SPFresh build + query e2e", func() {
 			return nil, cache.fullReload(rtx.Transaction(), storage, 1)
 		})
 		Expect(err).NotTo(HaveOccurred())
-		got := searchCommitted(newSPFreshSearcher(storage, config, cache), inputs[3].vec, 20, false)
+		got := searchCommitted(newSPFreshSearcher(storage, config, cache), inputs[3].vec, 20)
 		seen := map[string]bool{}
 		for _, r := range got {
 			key := string(r.PrimaryKey.Pack())
@@ -245,14 +252,20 @@ var _ = Describe("SPFresh build + query e2e", func() {
 
 		// Wave B before wave A is a state error: enqueue a fresh task on a
 		// new cell and try to finalize it directly.
+		// The row's presence, not set-if-absent's report, is the premise: a
+		// commit_unknown retry of our own write reports wrote=false.
+		var exists bool
 		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			tx := rtx.Transaction()
-			wrote, terr := spfreshTaskSetIfAbsent(tx, storage, spfreshTaskCellfin, 999)
-			Expect(terr).NotTo(HaveOccurred())
-			Expect(wrote).To(BeTrue())
-			return nil, nil
+			if _, terr := spfreshTaskSetIfAbsent(tx, storage, spfreshTaskCellfin, 999); terr != nil {
+				return nil, terr
+			}
+			data, gerr := tx.Get(storage.taskKey(spfreshTaskCellfin, 999)).Get()
+			exists = data != nil
+			return nil, gerr
 		})
 		Expect(err).NotTo(HaveOccurred())
+		Expect(exists).To(BeTrue())
 		Expect(builder.waveB(ctx, 999, router)).To(MatchError(ContainSubstring("wave B before wave A")))
 	})
 
@@ -267,13 +280,14 @@ var _ = Describe("SPFresh build + query e2e", func() {
 		// that is OUR flip — it must succeed, not report a concurrent build.
 		Expect(builder.flip(ctx)).To(Succeed())
 
+		var gen int64
 		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
-			gen, gerr := spfreshReadGenerationSnapshot(rtx.Transaction(), storage)
-			Expect(gerr).NotTo(HaveOccurred())
-			Expect(gen).To(Equal(int64(1)))
-			return nil, nil
+			var gerr error
+			gen, gerr = spfreshReadGenerationSnapshot(rtx.Transaction(), storage)
+			return nil, gerr
 		})
 		Expect(err).NotTo(HaveOccurred())
+		Expect(gen).To(Equal(int64(1)))
 	})
 
 	It("a takeover token aborts a stale builder's transactions", func() {
@@ -297,9 +311,8 @@ var _ = Describe("SPFresh build + query e2e", func() {
 	})
 })
 
-// tooOldOnceReadTx fails its first Get with transaction_too_old (1007) — the
-// error a search meets when its transaction outlives the MVCC window — then
-// reads through. fired is shared across the attempts of one Run.
+// tooOldOnceReadTx fails its first point Get with the 1007 a search meets past
+// the MVCC window; fired spans the attempts of one Run, so the retry reads through.
 type tooOldOnceReadTx struct {
 	fdb.ReadTransaction
 	fired *bool
