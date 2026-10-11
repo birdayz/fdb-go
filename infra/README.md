@@ -560,6 +560,7 @@ longer rationale for these lines lives here.
   already retries (`--experimental_repository_downloader_retries` defaults to 5 in 9.0.1).
 - **bazel-remote start.** It runs under the docker block's leaked `set -eu` and before the
   runner registers, so it skips `docker run` when the container already exists (a
-  replace onto the surviving volume); a name conflict would otherwise abort provisioning.
+  replace onto the surviving volume) and only reports a failed start: a name conflict or
+  pull failure would otherwise abort provisioning, leaving the box with no runner.
 - **mc.** `dl.min.io` answers 410 for the pinned archive; the install is best effort because
   only the report upload uses it.

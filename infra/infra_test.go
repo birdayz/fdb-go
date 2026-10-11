@@ -677,7 +677,7 @@ func TestCloudInitMcInstallIsBestEffort(t *testing.T) {
 }
 
 // TestCloudInitBazelRemoteSurvivesReplace pins that the bazel-remote item, which runs under the
-// docker block's leaked set -eu before runner registration, skips docker run for an existing container.
+// docker block's leaked set -eu before runner registration, reuses an existing container and never aborts.
 func TestCloudInitBazelRemoteSurvivesReplace(t *testing.T) {
 	t.Parallel()
 	var doc struct {
@@ -695,12 +695,13 @@ func TestCloudInitBazelRemoteSurvivesReplace(t *testing.T) {
 	}
 	for _, tc := range []struct {
 		name, host, inspect, run string
-		wantRun                  bool
+		wantRun, wantErr         bool
 	}{
 		// A second docker run exits 125 on the name conflict, as the real one does.
-		{"existing container", "gh-runner-fdb", "exit 0", "exit 125", false},
-		{"fresh box", "gh-runner-fdb", "exit 1", "exit 0", true},
-		{"other box", "gh-runner-drain-0", "exit 0", "exit 125", false},
+		{"existing container", "gh-runner-fdb", "exit 0", "exit 125", false, false},
+		{"fresh box", "gh-runner-fdb", "exit 1", "exit 0", true, false},
+		{"pull fails", "gh-runner-fdb", "exit 1", "exit 1", true, true},
+		{"other box", "gh-runner-drain-0", "exit 0", "exit 125", false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -724,6 +725,9 @@ func TestCloudInitBazelRemoteSurvivesReplace(t *testing.T) {
 			got, _ := os.ReadFile(calls)
 			if ran := strings.Contains(string(got), "run"); ran != tc.wantRun {
 				t.Fatalf("docker run called = %v, want %v (calls: %q)", ran, tc.wantRun, got)
+			}
+			if reported := strings.Contains(string(out), "::error::"); reported != tc.wantErr {
+				t.Errorf("::error:: reported = %v, want %v\n%s", reported, tc.wantErr, out)
 			}
 		})
 	}
