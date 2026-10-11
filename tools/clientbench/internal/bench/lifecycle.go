@@ -77,6 +77,9 @@ func drainFinalizers(ctx context.Context, maxRounds int) (report FinalizerDrain,
 		}
 		runtime.GC()
 		report.Rounds++
+		if err := ctx.Err(); err != nil {
+			return report, err
+		}
 		after, err := read()
 		if err != nil {
 			return report, err
@@ -87,6 +90,9 @@ func drainFinalizers(ctx context.Context, maxRounds int) (report FinalizerDrain,
 		}
 		for {
 			runtime.Gosched()
+			if err := ctx.Err(); err != nil {
+				return report, err
+			}
 			report.After, err = read()
 			if err != nil {
 				return report, err
