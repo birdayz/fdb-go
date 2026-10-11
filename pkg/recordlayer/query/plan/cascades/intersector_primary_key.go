@@ -1095,10 +1095,12 @@ func containsIntersectionValue(haystack []values.Value, needle values.Value) boo
 // fire would read as a live fallback for the very class the identity arm was
 // made final over.
 func intersectionValuesEqualIn(left, right values.Value) bool {
-	recordOrderingComparison(
-		OrderingSiteIntersectionKeys, left, right,
-		values.CanBridgeOrderingFieldValues,
-	)
+	if h := values.OrderingCensus(); h != nil {
+		h.OrderingComparison(
+			values.OrderingSiteIntersectionKeys, left, right,
+			values.CanBridgeOrderingFieldValues,
+		)
+	}
 	if values.OrderingFieldPair(left, right) {
 		return values.SameOrderingColumn(left, right)
 	}
@@ -1552,7 +1554,9 @@ func commonPrimaryKeyValues(accesses []Vectored[*SingleMatchedAccess], ctx PlanC
 func bakedIntersectionKeys(pkValues []values.Value, legs []plans.RecordQueryPlan) []values.Value {
 	var rowType *values.RecordType
 	for _, leg := range legs {
-		recordResultTypeRead("bakedIntersectionKeys", leg.GetResultType())
+		if h := values.Census(); h != nil {
+			h.ResultTypeRead("bakedIntersectionKeys", leg.GetResultType())
+		}
 		rt, isRT := leg.GetResultType().(*values.RecordType)
 		if !isRT {
 			return nil

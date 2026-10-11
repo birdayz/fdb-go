@@ -625,7 +625,7 @@ type RecordTypeLeg struct {
 	//     matched nothing, and neither blocking class (MATCH-ALIAS-DIFFERS,
 	//     MATCH-NO-ALIAS) appeared. (Dated point measurement, 2026-08-06, STABLE
 	//     across two consecutive full-suite runs; was 106/98/8. The standing
-	//     instrument is values.AssertDottedLegQualifierCensus, which asserts the
+	//     instrument is querycensus.AssertDottedLegQualifierCensus, which asserts the
 	//     two blocking classes at zero — that assertion, not the call count, is
 	//     the retirement condition.) CQ-52 converted this reader's COUNTERPARTY —
 	//     a qualifier now arrives as a parse-tree segment instead of a slice of a

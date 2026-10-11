@@ -7,6 +7,8 @@ import (
 	"os"
 	"testing"
 
+	"fdb.dev/pkg/internal/querycensus"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -39,10 +41,10 @@ import (
 // The census counters are package-scoped in values and Go orders no tests, so
 // the assertion belongs after m.Run() and nowhere else.
 func TestMain(m *testing.M) {
-	values.ResetQualifierRecoveryCensus()
-	values.SetLegIdentityCensusEnabled(true)
+	querycensus.ResetQualifierRecoveryCensus()
+	querycensus.SetLegIdentityCensusEnabled(true)
 	code := m.Run()
-	values.SetLegIdentityCensusEnabled(false)
+	querycensus.SetLegIdentityCensusEnabled(false)
 
 	if failed := assertEmbeddedQualifierRecoveryCensus(os.Stderr); failed && code == 0 {
 		code = 1
@@ -54,7 +56,7 @@ func TestMain(m *testing.M) {
 // this corpus. Derived UNNEST, projection-scope classification and the
 // display-label strip are fully retired and forbid all calls independently of
 // these floors.
-var embeddedQualifierRecoveryFloors = values.QualifierRecoveryFloors{
+var embeddedQualifierRecoveryFloors = querycensus.QualifierRecoveryFloors{
 	Calls: [6]int{
 		values.QualRecSiteExistsSortSplit: 3,
 		values.QualRecSiteProjQualVsScan:  2,
@@ -69,7 +71,7 @@ var embeddedQualifierRecoveryFloors = values.QualifierRecoveryFloors{
 // gone from the tree rather than merely unreached here. Their alarm is inverted:
 // any split is the arm coming back.
 //
-//   - recursiveRemap: values.RecordQualifierRecovery is not called with this site
+//   - recursiveRemap: querycensus.RecordQualifierRecovery is not called with this site
 //     anywhere in non-test sources.
 var embeddedQualifierRecoveryRetiredSplit = func() (r [6]bool) {
 	r[values.QualRecSiteRecursiveRemap] = true
@@ -107,7 +109,7 @@ func assertEmbeddedQualifierRecoveryCensus(w io.Writer) bool {
 			f.Value.String())
 		floors = nil
 	}
-	return values.AssertQualifierRecoveryCensus(w, &values.QualifierRecoveryExpectations{
+	return querycensus.AssertQualifierRecoveryCensus(w, &querycensus.QualifierRecoveryExpectations{
 		Floors:          floors,
 		AllowedDiverged: qualifierRecoveryNegativeControls,
 		RetiredSplit:    embeddedQualifierRecoveryRetiredSplit,

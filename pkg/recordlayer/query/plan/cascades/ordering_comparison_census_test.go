@@ -19,6 +19,8 @@ package cascades
 import (
 	"testing"
 
+	"fdb.dev/pkg/internal/querycensus"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -85,8 +87,8 @@ func TestNonFieldBridgeOnlyCensusReachesTheCardinalityWrapper(t *testing.T) {
 			values.ExplainValue(rooted), values.ExplainValue(sourceLocal))
 	}
 
-	var c OrderingComparisonCensus
-	classifyOrderingComparison(
+	var c querycensus.OrderingComparisonCensus
+	querycensus.ClassifyOrderingComparison(
 		&c, rooted, sourceLocal, values.CanBridgeOrderingValueRoots)
 
 	if c.NonFieldPairs != 1 {

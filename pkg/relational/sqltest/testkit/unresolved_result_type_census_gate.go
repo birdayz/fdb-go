@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"io"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades"
+	"fdb.dev/pkg/internal/querycensus"
 )
 
 // assertUnresolvedResultTypeCensus gates RFC-213's reached-consumers floor over
@@ -98,7 +98,7 @@ func assertUnresolvedResultTypeCensus(w io.Writer) bool {
 	// their count is a measurement rather than a contract. What is asserted is
 	// that the consumers are still reached, so a future zero cannot be confused
 	// with the instrument going dark.
-	floors := &cascades.UnresolvedResultTypeFloors{MinReads: 48, MinSites: 2}
+	floors := &querycensus.UnresolvedResultTypeFloors{MinReads: 48, MinSites: 2}
 	if f := corpusNarrowing(); f != nil && f.Value.String() != "" {
 		fmt.Fprintf(w, "unresolved-result-type census: reached-consumers floors NOT checked "+
 			"(-test.run=%q narrowed the corpus; they describe the whole suite). "+
@@ -106,5 +106,5 @@ func assertUnresolvedResultTypeCensus(w io.Writer) bool {
 			"over the reduced population.\n", f.Value.String())
 		floors = nil
 	}
-	return cascades.AssertUnresolvedResultTypeCensus(w, floors)
+	return querycensus.AssertUnresolvedResultTypeCensus(w, floors)
 }

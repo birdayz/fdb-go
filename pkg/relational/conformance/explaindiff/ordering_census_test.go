@@ -3,7 +3,9 @@ package explaindiff_test
 import (
 	"testing"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades"
+	"fdb.dev/pkg/internal/querycensus"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+
 	"fdb.dev/pkg/relational/conformance/explaindiff"
 )
 
@@ -35,21 +37,21 @@ import (
 func TestOrderingComparatorsDeclineNothingOnTheCorpus(t *testing.T) {
 	t.Parallel()
 
-	cascades.ResetOrderingComparisonCensus()
-	cascades.SetOrderingComparisonCensusEnabled(true)
-	defer cascades.SetOrderingComparisonCensusEnabled(false)
+	querycensus.ResetOrderingComparisonCensus()
+	querycensus.SetOrderingComparisonCensusEnabled(true)
+	defer querycensus.SetOrderingComparisonCensusEnabled(false)
 
 	if _, _, err := explaindiff.Collect(corpusDir); err != nil {
 		t.Fatalf("collect corpus: %v", err)
 	}
 
-	sites := []cascades.OrderingComparisonSite{
-		cascades.OrderingSiteRequestedVsCandidate,
-		cascades.OrderingSiteIntersectionKeys,
+	sites := []values.OrderingComparisonSite{
+		values.OrderingSiteRequestedVsCandidate,
+		values.OrderingSiteIntersectionKeys,
 	}
 
 	for _, site := range sites {
-		c := cascades.OrderingComparisonCensusOf(site)
+		c := querycensus.OrderingComparisonCensusOf(site)
 
 		t.Logf("%v: total=%d fieldPairs=%d decided=%d declineResidual=%d "+
 			"residualLost=%d residualAgreed=%d nonFieldPairs=%d nonFieldBridgeOnly=%d",

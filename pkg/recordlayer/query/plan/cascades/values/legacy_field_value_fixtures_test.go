@@ -70,7 +70,7 @@ func newFieldValueOfOrdinal(child Value, ordinal int) (*fieldValue, error) {
 	// against rt itself, so rt IS the layout the ordinal indexes — the one
 	// place a derived domain is a proof rather than a claim. A caller that
 	// resolved elsewhere must state its own domain explicitly.
-	NoteFieldValueMint(fld.Name, true)
+	noteFieldValueMint(fld.Name, true)
 	return &fieldValue{
 		Field:    fld.Name,
 		Typ:      typ,
@@ -96,12 +96,12 @@ func newFieldPathOfSingleInDomain(field string, ordinal int, frontierPinned bool
 // are test fixtures, not planner construction APIs: production callers must
 // use the checked constructors and exact ordinal resolvers.
 func newFieldValue(child Value, field string, typ Type) *fieldValue {
-	NoteFieldValueMint(field, false)
+	noteFieldValueMint(field, false)
 	return &fieldValue{Field: field, Typ: typ, Child: child}
 }
 
 func newFlatFieldValue(field string, typ Type) *fieldValue {
-	NoteFieldValueMint(field, false)
+	noteFieldValueMint(field, false)
 	return &fieldValue{Field: field, Typ: typ}
 }
 
@@ -110,7 +110,7 @@ func newFieldValueWithResolvedOrdinal(field string, ordinal int, typ Type) *fiel
 }
 
 func newFieldValueWithResolvedOrdinalInDomain(field string, ordinal int, typ Type, domain OrdinalDomain) *fieldValue {
-	NoteFieldValueMint(field, true)
+	noteFieldValueMint(field, true)
 	return &fieldValue{
 		Field:    field,
 		Typ:      typ,
@@ -123,11 +123,18 @@ func newCorrelatedFieldValueWithResolvedOrdinal(child Value, field string, ordin
 }
 
 func newCorrelatedFieldValueWithResolvedOrdinalInDomain(child Value, field string, ordinal int, typ Type, domain OrdinalDomain) *fieldValue {
-	NoteFieldValueMint(field, true)
+	noteFieldValueMint(field, true)
 	return &fieldValue{
 		Field:    field,
 		Typ:      typ,
 		Child:    child,
 		Resolved: newFieldPathOfSingleInDomain(field, ordinal, false, domain),
+	}
+}
+
+// noteFieldValueMint reports a fixture mint the way production mints report.
+func noteFieldValueMint(field string, baked bool) {
+	if h := Census(); h != nil {
+		h.FieldValueMint(field, baked)
 	}
 }

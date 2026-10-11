@@ -35,11 +35,11 @@ func AccessorNamePath(v Value) ([]string, bool) {
 	// Census: which arm carried this call. See accessor_name_path_census.go for
 	// why the '.' decline in particular is worth counting rather than reasoning
 	// about. Disabled, this is one atomic load per call.
-	census := LegIdentityCensusEnabled()
+	census := Census()
 	sawLazyAccessor := false
 	decline := func(c AccessorPathClass) ([]string, bool) {
-		if census {
-			RecordAccessorPathCall(c)
+		if census != nil {
+			census.AccessorPathCall(c)
 		}
 		return nil, false
 	}
@@ -73,8 +73,8 @@ func AccessorNamePath(v Value) ([]string, bool) {
 		sawLazyAccessor = true
 		if strings.Contains(fv.Field, ".") {
 			// Ambiguous flat-dotted (form c): do not split. THE RATCHET ARM.
-			if census {
-				RecordAccessorPathDottedWitness(fv.Field)
+			if census != nil {
+				census.AccessorPathDottedWitness(fv.Field)
 			}
 			return decline(AccessorPathDeclineDotted)
 		}
@@ -91,14 +91,14 @@ func AccessorNamePath(v Value) ([]string, bool) {
 	for i, j := 0, len(rev)-1; i < j; i, j = i+1, j-1 {
 		rev[i], rev[j] = rev[j], rev[i]
 	}
-	if census {
+	if census != nil {
 		// The success split is what says how much of this function's traffic
 		// COULD be ordinal-compared today (all-baked) versus how much is waiting
 		// on resolve-at-mint (has-lazy).
 		if sawLazyAccessor {
-			RecordAccessorPathCall(AccessorPathOKHasLazy)
+			census.AccessorPathCall(AccessorPathOKHasLazy)
 		} else {
-			RecordAccessorPathCall(AccessorPathOKAllBaked)
+			census.AccessorPathCall(AccessorPathOKAllBaked)
 		}
 	}
 	return rev, true

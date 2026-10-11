@@ -2013,7 +2013,9 @@ func CanBridgeOrderingFieldValues(left, right Value) bool {
 	rightName := ColumnNameValue(right)
 	answer := leftName != "" && strings.EqualFold(leftName, rightName)
 	// Census: this is the ANSWERING comparison a flat-dotted name can reach.
-	NoteOrderingBridgeDotted(leftName, rightName, answer)
+	if h := Census(); h != nil {
+		h.OrderingBridgeDotted(leftName, rightName, answer)
+	}
 	return answer
 }
 
@@ -5362,8 +5364,8 @@ func (r *RecordConstructorValue) Type() Type {
 	// populated leg table over an empty one, so a second UNPOPULATED producer is
 	// harmless; a second producer that states DIFFERENT boundaries is the
 	// plan-level conflict.
-	if LegIdentityCensusEnabled() {
-		RecordDottedRowTypeDerivation(fields)
+	if h := Census(); h != nil {
+		h.DottedRowTypeDerivation(fields)
 	}
 	// A named struct literal carries its declared name into the result type,
 	// exactly as Java's ofColumnsAndName resolves the type through

@@ -43,6 +43,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/internal/querycensus"
+
 	"fdb.dev/pkg/relational/sqltest/testkit"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -215,8 +217,8 @@ func TestFDB_LegIdentityCensus_NoFoldOnlyTraffic(t *testing.T) {
 	// — a zero over a sum of non-negative terms is exact however many extra passes
 	// contribute, so extra traffic can make it FAIL, never falsely pass. The
 	// POPULATION floors are TestMain's job, because only it runs last.
-	for _, site := range values.LegIdentitySites() {
-		c := values.LegIdentityCensusOf(site)
+	for _, site := range querycensus.LegIdentitySites() {
+		c := querycensus.LegIdentityCensusOf(site)
 		t.Logf("site %-52s total=%-7d exact=%-7d foldOnly=%-3d neither=%d",
 			site.String(), c.Total, c.ExactEqual, c.FoldOnlyEqual, c.Neither)
 		if c.FoldOnlyEqual != 0 {

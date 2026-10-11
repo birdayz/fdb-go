@@ -982,12 +982,12 @@ func (b *legWindowBinder) GetCorrelationBinding(id values.CorrelationIdentifier)
 // silent.
 func buriedLegWindow(row values.OrdinalRow, s legSpan, alias values.CorrelationIdentifier) (*legWindowRow, bool) {
 	for _, bl := range s.LegType.Legs {
-		if values.LegIdentityCensusEnabled() {
+		if h := values.Census(); h != nil {
 			// RETIRED PREDICATE: `bl.Name == alias` — this function took the alias as a
 			// STRING and compared it exactly against the buried leg's text.
-			values.RecordLegIdentityConversion(values.LegSiteBuriedLegWindow,
+			h.LegIdentityConversion(values.LegSiteBuriedLegWindow,
 				bl.Alias, alias, bl.Name == alias.Name())
-			values.RecordLegIdentityLeg(bl)
+			h.LegIdentityLeg(bl)
 		}
 		if !values.SameLeg(bl.Alias, alias) {
 			continue
@@ -1163,12 +1163,12 @@ const (
 // recorded so the census can answer the question the conversion turns on: would
 // selecting the source window by identity have chosen the leg the text chose?
 func rowSlotForLegColumn(rt *values.RecordType, name string, owner values.CorrelationIdentifier) (int, legColumnBind) {
-	census := values.LegIdentityCensusEnabled()
+	census := values.Census()
 	flatHits := rt.FieldNameHits(name)
 	if flatHits == 1 {
 		i, _ := rt.FieldIndexUnique(name)
-		if census {
-			recordLegColumnProvenance(rt, name, true, false, nil, "", owner)
+		if census != nil {
+			census.LegColumnProvenance(rt, name, true, false, nil, "", owner)
 		}
 		return i, legColumnBound
 	}
@@ -1179,8 +1179,8 @@ func rowSlotForLegColumn(rt *values.RecordType, name string, owner values.Correl
 	}
 	di := strings.IndexByte(name, '.')
 	if di <= 0 || len(rt.Legs) == 0 {
-		if census {
-			recordLegColumnProvenance(rt, name, false, flatAmbiguous, nil, "", owner)
+		if census != nil {
+			census.LegColumnProvenance(rt, name, false, flatAmbiguous, nil, "", owner)
 		}
 		return 0, unresolved
 	}
@@ -1199,16 +1199,16 @@ func rowSlotForLegColumn(rt *values.RecordType, name string, owner values.Correl
 				// The census is told WHICH leg answered, so it can ask whether
 				// that leg also states an identity — the fact that decides
 				// whether this reader can be re-keyed off the name.
-				if census {
-					recordLegColumnProvenance(rt, name, false, flatAmbiguous, &leg, qual, owner)
+				if census != nil {
+					census.LegColumnProvenance(rt, name, false, flatAmbiguous, &leg, qual, owner)
 				}
 				return k, legColumnBound
 			}
 		}
 		break
 	}
-	if census {
-		recordLegColumnProvenance(rt, name, false, flatAmbiguous, nil, qual, owner)
+	if census != nil {
+		census.LegColumnProvenance(rt, name, false, flatAmbiguous, nil, qual, owner)
 	}
 	return 0, unresolved
 }
@@ -2441,14 +2441,14 @@ type rowLegsBinder struct {
 func (b *rowLegsBinder) GetCorrelationBinding(id values.CorrelationIdentifier) (any, bool) {
 	if b.row != nil && b.row.Type != nil {
 		for _, leg := range b.row.Type.Legs {
-			if values.LegIdentityCensusEnabled() {
+			if h := values.Census(); h != nil {
 				// RETIRED PREDICATE: `leg.Name == id.Name()` — exact on the leg's text
 				// against the correlation's own spelling. Recording it lets the census
 				// measure whether the conversion changed this binder's ANSWER, rather
 				// than only whether the pair it now compares folds equal.
-				values.RecordLegIdentityConversion(values.LegSiteRowLegsBinder,
+				h.LegIdentityConversion(values.LegSiteRowLegsBinder,
 					leg.Alias, id, leg.Name == id.Name())
-				values.RecordLegIdentityLeg(leg)
+				h.LegIdentityLeg(leg)
 			}
 			// The leg's IDENTITY decides, through the one comparison every identity
 			// proof routes through. Not its Name: matching text here would be an

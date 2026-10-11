@@ -126,8 +126,8 @@ func rebaseLegRefsToBox(v values.Value, windows map[values.CorrelationIdentifier
 			return n
 		}
 		w, isLeg := windows[qov.Correlation()]
-		if values.LegIdentityCensusEnabled() {
-			values.RecordSeedWindowLookupOfKind(values.SeedWindowSiteBoxLegRef, isLeg, w.Kind)
+		if h := values.Census(); h != nil {
+			h.SeedWindowLookupOfKind(values.SeedWindowSiteBoxLegRef, isLeg, w.Kind)
 		}
 		if !isLeg {
 			return n
@@ -169,8 +169,8 @@ func rebaseLegRefsToBox(v values.Value, windows map[values.CorrelationIdentifier
 	values.WalkValue(out, func(n values.Value) bool {
 		if qov, isQOV := values.AsQuantifiedObjectValue(n); isQOV {
 			_, isLeg := windows[qov.Correlation()]
-			if values.LegIdentityCensusEnabled() {
-				values.RecordSeedWindowLookup(values.SeedWindowSiteBoxSurvivorQOV, isLeg)
+			if h := values.Census(); h != nil {
+				h.SeedWindowLookup(values.SeedWindowSiteBoxSurvivorQOV, isLeg)
 			}
 			if isLeg {
 				ok = false
@@ -466,8 +466,8 @@ func (t *cascadesTranslator) translateExistsOverGatheredCluster(
 		// name model rather than ship an unbound reference.
 		for corr := range subRef.GetCorrelatedTo() {
 			_, isLeg := windows[corr]
-			if values.LegIdentityCensusEnabled() {
-				values.RecordSeedWindowLookup(values.SeedWindowSiteBoxSurvivorCorrelation, isLeg)
+			if h := values.Census(); h != nil {
+				h.SeedWindowLookup(values.SeedWindowSiteBoxSurvivorCorrelation, isLeg)
 			}
 			if isLeg {
 				return nil

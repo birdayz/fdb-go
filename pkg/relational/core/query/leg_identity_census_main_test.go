@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/internal/querycensus"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -40,13 +42,13 @@ import (
 // The census counters are package-scoped in values and Go orders no tests, so the
 // assertion belongs after m.Run() and nowhere else.
 func TestMain(m *testing.M) {
-	values.ResetLegIdentityCensus()
-	values.ResetQualifierRecoveryCensus()
-	values.SetLegIdentityCensusEnabled(true)
+	querycensus.ResetLegIdentityCensus()
+	querycensus.ResetQualifierRecoveryCensus()
+	querycensus.SetLegIdentityCensusEnabled(true)
 	code := m.Run()
-	values.SetLegIdentityCensusEnabled(false)
+	querycensus.SetLegIdentityCensusEnabled(false)
 
-	values.ReportLegIdentityCensus(os.Stderr, "translator corpus")
+	querycensus.ReportLegIdentityCensus(os.Stderr, "translator corpus")
 	if failed := assertTranslatorLegIdentityCensus(os.Stderr); failed && code == 0 {
 		code = 1
 	}
@@ -64,7 +66,7 @@ func TestMain(m *testing.M) {
 // translatorQualifierRecoveryFloors watches collapse at the live sites reached by this corpus.
 // Derived UNNEST is retired: its stable site forbids ALL calls independently
 // of these population floors, including under a narrowed test filter.
-var translatorQualifierRecoveryFloors = values.QualifierRecoveryFloors{
+var translatorQualifierRecoveryFloors = querycensus.QualifierRecoveryFloors{
 	Calls: [6]int{
 		values.QualRecSiteExistsSortSplit: 2,
 	},
@@ -88,7 +90,7 @@ func assertTranslatorQualifierRecoveryCensus(w io.Writer) bool {
 			"at zero the former holds VACUOUSLY.\n", f.Value.String())
 		floors = nil
 	}
-	return values.AssertQualifierRecoveryCensus(w, &values.QualifierRecoveryExpectations{
+	return querycensus.AssertQualifierRecoveryCensus(w, &querycensus.QualifierRecoveryExpectations{
 		Floors:          floors,
 		AllowedDiverged: qualifierRecoveryNegativeControls,
 		RetiredSplit:    translatorQualifierRecoveryRetiredSplit,
@@ -201,7 +203,7 @@ var negativeControlWitnesses = map[values.LegIdentitySite]map[string]struct{}{
 // unfiltered corpus and are dropped under -test.run. Everything else runs always:
 // a witness the fixtures do not account for is a defect over any population.
 //
-// Where this harness DIFFERS from values.AssertLegIdentityCensus, and it matters
+// Where this harness DIFFERS from querycensus.AssertLegIdentityCensus, and it matters
 // for reading the announcement below: that gate asserts five ZEROS, while this one
 // cannot (its fixtures deliberately drive declines), so it converts four of them —
 // fold-only, unstated, retired-verdict divergence and text-vs-identity divergence
@@ -223,15 +225,15 @@ func assertTranslatorLegIdentityCensus(w io.Writer) bool {
 		floors = nil
 	}
 	failed := false
-	for _, site := range values.LegIdentitySites() {
-		c := values.LegIdentityCensusOf(site)
+	for _, site := range querycensus.LegIdentitySites() {
+		c := querycensus.LegIdentityCensusOf(site)
 		if floor, ok := floors[site]; ok && c.Total < floor {
 			failed = true
 			fmt.Fprintf(w, "LEG IDENTITY CENSUS FAIL: site %s reported Total = %d, want >= %d.\n"+
 				"  A site this corpus no longer reaches makes every claim about it VACUOUS.\n",
 				site, c.Total, floor)
 		}
-		if c.Channel == values.LegChannelMixed {
+		if c.Channel == querycensus.LegChannelMixed {
 			failed = true
 			fmt.Fprintf(w, "LEG IDENTITY CENSUS FAIL: site %s recorded in BOTH namespaces; its\n"+
 				"  counts then describe neither comparison.\n", site)
@@ -265,7 +267,7 @@ func assertTranslatorLegIdentityCensus(w io.Writer) bool {
 			// gate passes with a real divergence counted. The count alone cannot reveal
 			// that — the allowlisted fixtures legitimately drive many pairs — so the
 			// saturation itself is the failure.
-			if len(group.witness) >= values.LegIdentitySampleCap() {
+			if len(group.witness) >= querycensus.LegIdentitySampleCap() {
 				failed = true
 				fmt.Fprintf(w, "LEG IDENTITY CENSUS FAIL: site %s retained %d %s witnesses, "+
 					"SATURATING the cap of %d.\n"+
@@ -273,7 +275,7 @@ func assertTranslatorLegIdentityCensus(w io.Writer) bool {
 					"  unaccounted-witness check below is no longer complete and this gate can\n"+
 					"  no longer clear this site. Narrow the corpus or raise the cap — do not\n"+
 					"  read the passing witness walk as a clean result.\n",
-					site, len(group.witness), group.what, values.LegIdentitySampleCap())
+					site, len(group.witness), group.what, querycensus.LegIdentitySampleCap())
 			}
 			for _, wit := range group.witness {
 				// The retired-verdict witnesses carry a " (retired=...)" suffix naming
@@ -293,14 +295,14 @@ func assertTranslatorLegIdentityCensus(w io.Writer) bool {
 					site, group.what, wit, group.indictor)
 			}
 		}
-		if values.LegSiteNeitherMustBeZero(site) && c.Neither != 0 {
+		if querycensus.LegSiteNeitherMustBeZero(site) && c.Neither != 0 {
 			// Same saturation hazard as the grouped walk above.
-			if len(c.NeitherSamples) >= values.LegIdentitySampleCap() {
+			if len(c.NeitherSamples) >= querycensus.LegIdentitySampleCap() {
 				failed = true
 				fmt.Fprintf(w, "LEG IDENTITY CENSUS FAIL: site %s retained %d Neither witnesses, "+
 					"SATURATING the cap of %d — beyond it an anomaly is counted but "+
 					"unwitnessed, so the walk below cannot clear this site.\n",
-					site, len(c.NeitherSamples), values.LegIdentitySampleCap())
+					site, len(c.NeitherSamples), querycensus.LegIdentitySampleCap())
 			}
 			for _, wit := range c.NeitherSamples {
 				if _, ok := allowed[wit]; ok {

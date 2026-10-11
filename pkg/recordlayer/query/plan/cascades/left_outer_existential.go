@@ -84,12 +84,12 @@ func rebaseOuterLegValueOrdinal(
 		// participate in the mapping; duplicate and dotted SQL names therefore
 		// cannot redirect the address.
 		w, isLeg := windows[qov.Correlation()]
-		if values.LegIdentityCensusEnabled() {
+		if h := values.Census(); h != nil {
 			// KIND-AWARE: a hit on a NESTED window is its own class, because
 			// whether the fused two-step arm is ever ENTERED on this corpus is the
 			// live-vs-latent question for RFC-200 step 3d, and every other number
 			// on this path prints identically either way.
-			values.RecordSeedWindowLookupOfKind(values.SeedWindowSiteExistentialRebase, isLeg, w.Kind)
+			h.SeedWindowLookupOfKind(values.SeedWindowSiteExistentialRebase, isLeg, w.Kind)
 		}
 		if !isLeg {
 			// A missing window is safe only for a genuinely external/inner root.

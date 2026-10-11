@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"io"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/internal/querycensus"
 )
 
 // The two censuses that measured the lazy-render retirement were PRINTED and
@@ -66,7 +66,7 @@ func narrowed() (string, bool) {
 // (317,738 calls this run; 269,979 and 318,449 on earlier ones) because what it
 // guards is the instrument being ALIVE, not its exact traffic.
 func assertAccessorPathCensus(w io.Writer) bool {
-	gates := &values.AccessorPathGates{
+	gates := &querycensus.AccessorPathGates{
 		MinTotal:         10000,
 		MaxDeclineDotted: intPtr(0),
 	}
@@ -77,7 +77,7 @@ func assertAccessorPathCensus(w io.Writer) bool {
 			"whole.\n", pat)
 		gates.MinTotal = 0
 	}
-	return values.AssertAccessorPathCensus(w, gates)
+	return querycensus.AssertAccessorPathCensus(w, gates)
 }
 
 // assertFieldValueMintCensus gates the producer half.
@@ -112,7 +112,7 @@ func assertAccessorPathCensus(w io.Writer) bool {
 // now expected EMPTY and fails on the revival, and unlike a floor it survives a
 // -test.run filter, which a claim about the tree must.
 func assertFieldValueMintCensus(w io.Writer) bool {
-	gates := &values.FieldValueMintGates{
+	gates := &querycensus.FieldValueMintGates{
 		MaxTotal:           intPtr(0),
 		MaxExplainRendered: intPtr(0),
 	}
@@ -121,7 +121,7 @@ func assertFieldValueMintCensus(w io.Writer) bool {
 			"CEILING and all of them still run — a subset cannot exceed the whole — so this "+
 			"note is a statement about the population, not about what was skipped.\n", pat)
 	}
-	return values.AssertFieldValueMintCensus(w, gates)
+	return querycensus.AssertFieldValueMintCensus(w, gates)
 }
 
 func intPtr(n int) *int { return &n }

@@ -40,6 +40,9 @@ project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (
   `pkg/recordlayer/indexpredicate` (was in the cascades planner), `FinalizePlan` and the plan
   walkers are in `pkg/recordlayer/query/plan/plans`, and the R-tree is `pkg/async/rtree`
   (Java's `async.rtree`). `pkg/recordlayer` no longer imports the planner.
+- The planner's test-only census instruments (`Record*`, `Assert*`, `Format*`, `*Floors`,
+  snapshots) left the public `values`, `cascades`, `executor` and `core/query` APIs for the
+  testonly `pkg/internal/querycensus`; production keeps a nil-by-default `values.CensusHooks`.
 - **Breaking (storage):** the relational key space is Java's `RelationalKeyspaceProvider` layout byte for byte. The catalog store is `(NULL, NULL, 0)`; a schema's record store is `(domain, database, schema)`, where the domain is a directory of the FDB directory layer and the database and schema names are interned in the domain's interning layer. Go and Java open each other's databases and schemas in a shared cluster. Data written by earlier Go builds is not migrated: recreate it.
 - `pkg/fdbgo/fdb/directory` runs on any `fdb.WritableTransaction` (the libfdb_c backend and the simulator included; `UnsupportedBackendError` is gone) and `NewDirectoryLayerWithRandom` injects the prefix allocator's random source.
 - **Breaking:** a relational database path is `/DOMAIN/DATABASE`, as in Java, and its domain must be registered once per process before use: `sqldriver.RegisterDomainIfNotExists("FRL")` (Java's `RelationalKeyspaceProvider.instance().registerDomainIfNotExists`). The driver registers none; `frl` registers `FRL`, as Java's server and CLI do. A path outside the registered domains (including a one-segment `/name`) is INVALID_PATH (08F01) on CREATE DATABASE, on a schema's store and when connecting to a schema; a malformed path is 08F01 `invalid database path '…'` (was 22023). `/__SYS` needs no domain.

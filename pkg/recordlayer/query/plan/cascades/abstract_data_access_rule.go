@@ -1097,10 +1097,12 @@ func SatisfiesRequestedOrdering(pm PartialMatch, ro *properties.RequestedOrderin
 // it is the only arm that decides such a pair, and on today's corpus that count
 // is zero — unexercised, not unreachable, which is why it stays.
 func orderingValuesEqualIn(left, right values.Value) bool {
-	recordOrderingComparison(
-		OrderingSiteRequestedVsCandidate, left, right,
-		values.CanBridgeOrderingValueRoots,
-	)
+	if h := values.OrderingCensus(); h != nil {
+		h.OrderingComparison(
+			values.OrderingSiteRequestedVsCandidate, left, right,
+			values.CanBridgeOrderingValueRoots,
+		)
+	}
 	if values.OrderingFieldPair(left, right) {
 		return values.SameOrderingColumn(left, right)
 	}

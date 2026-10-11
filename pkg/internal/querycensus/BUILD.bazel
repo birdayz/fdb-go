@@ -1,0 +1,55 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "querycensus",
+    # keep: the census storage and reports are test instruments; testonly makes
+    # "no production binary links them" a BUILD-enforced invariant.
+    testonly = True,
+    srcs = [
+        "accessor_name_path_census.go",
+        "dotted_leg_qualifier_census.go",
+        "dotted_row_type_producer_census.go",
+        "dotted_witness_attribution_census.go",
+        "field_value_mint_census.go",
+        "hooks.go",
+        "leg_column_provenance_census.go",
+        "leg_identity_census.go",
+        "leg_identity_census_report.go",
+        "merge_slot_typing_census.go",
+        "name_split_census.go",
+        "ordering_comparison_census.go",
+        "qualifier_recovery_census.go",
+        "seed_window_reader_census.go",
+        "select_result_mint_census.go",
+        "unnest_leg_mint_census.go",
+        "unresolved_result_type_census.go",
+    ],
+    importpath = "fdb.dev/pkg/internal/querycensus",
+    visibility = ["//pkg:__subpackages__"],
+    deps = ["//pkg/recordlayer/query/plan/cascades/values"],
+)
+
+go_test(
+    name = "querycensus_test",
+    srcs = [
+        "accessor_name_path_census_test.go",
+        "census_gate_test.go",
+        "dotted_leg_qualifier_census_test.go",
+        "dotted_row_type_producer_census_test.go",
+        "dotted_witness_attribution_census_test.go",
+        "field_value_mint_census_test.go",
+        "leg_column_owner_selection_test.go",
+        "leg_column_provenance_census_test.go",
+        "leg_identity_census_test.go",
+        "merge_slot_typing_census_test.go",
+        "name_split_census_test.go",
+        "qualifier_recovery_census_test.go",
+        "seed_window_reader_census_test.go",
+        "select_result_mint_census_test.go",
+        "unnest_leg_mint_census_test.go",
+        "unnest_leg_mint_partition_test.go",
+        "unresolved_result_type_census_test.go",
+    ],
+    embed = [":querycensus"],
+    deps = ["//pkg/recordlayer/query/plan/cascades/values"],
+)

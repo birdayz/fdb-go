@@ -440,15 +440,15 @@ func finalizeSeedWindows(windows map[CorrelationIdentifier]OrdinalSeedLegWindow,
 			if leg.Alias.IsZero() {
 				return nil, nil, nil
 			}
-			if LegIdentityCensusEnabled() {
+			if h := Census(); h != nil {
 				// The RETIRED predicate is reproduced from the identity so the census
 				// keeps measuring what it always measured. The old `alias` was the map
 				// key, which WAS the upper fold of this window's own correlation — so
 				// spelling it that way here is not an approximation of the retired test,
 				// it is the retired test with its input named honestly.
-				RecordLegIdentityConversion(LegSiteFinalizeSeedWindows, leg.Alias, w.Alias,
+				h.LegIdentityConversion(LegSiteFinalizeSeedWindows, leg.Alias, w.Alias,
 					leg.Name == strings.ToUpper(w.Alias.Name()))
-				RecordLegIdentityLeg(leg)
+				h.LegIdentityLeg(leg)
 			}
 			// "Is this buried leg the box run's RIGHTMOST LEAF?" — an IDENTITY question,
 			// answered by the one comparison every identity question routes through.

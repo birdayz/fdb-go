@@ -191,9 +191,9 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 	// recorded rather than asserted, and its zero is what makes the retyping
 	// representation-only.
 	leftCorr, rightCorr := quants[0].GetAlias(), quants[1].GetAlias()
-	if values.LegIdentityCensusEnabled() {
-		values.RecordLegIdentityComparison(values.LegSiteNLJPlanAlias, leftAlias, leftCorr.Name())
-		values.RecordLegIdentityComparison(values.LegSiteNLJPlanAlias, rightAlias, rightCorr.Name())
+	if h := values.Census(); h != nil {
+		h.LegIdentityComparison(values.LegSiteNLJPlanAlias, leftAlias, leftCorr.Name())
+		h.LegIdentityComparison(values.LegSiteNLJPlanAlias, rightAlias, rightCorr.Name())
 	}
 
 	var joinType plans.JoinType

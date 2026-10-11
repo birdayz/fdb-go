@@ -926,7 +926,9 @@ func distinctKeyColumns(inner plans.RecordQueryPlan) []values.Value {
 			return cols
 		}
 	}
-	recordResultTypeRead("distinctKeyColumns", inner.GetResultType())
+	if h := values.Census(); h != nil {
+		h.ResultTypeRead("distinctKeyColumns", inner.GetResultType())
+	}
 	if rt, ok := inner.GetResultType().(*values.RecordType); ok && len(rt.Fields) > 0 {
 		root, err := values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier(), rt)
 		if err != nil {

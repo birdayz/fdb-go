@@ -561,6 +561,7 @@ go_test(
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/fdbgo/wire",
+        "//pkg/internal/querycensus",
         "//pkg/recordlayer",
         "//pkg/recordlayer/chaos",
         "//pkg/recordlayer/protoname",

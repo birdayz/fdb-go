@@ -91,7 +91,7 @@ func (r *PartitionSelectRule) positionalMergeCase(
 				return nil
 			}
 		}
-		if values.LegIdentityCensusEnabled() {
+		if h := values.Census(); h != nil {
 			// What this slot ended up stating, counted where it is decided. The
 			// interesting outcome is the MISS — a slot that enters the merged record
 			// constructor stating nothing — because that is the one remaining path by
@@ -107,7 +107,7 @@ func (r *PartitionSelectRule) positionalMergeCase(
 			// RecordType", so an unnest ELEMENT — which flows one array element, a
 			// scalar, and is correct — fails it exactly as a leg that lost its row
 			// does. Inheriting that test would report every unnest element as a defect.
-			recordMergeSlotTyping(a, fov.Type(), scavenged)
+			h.MergeSlotTyping(a, fov.Type(), scavenged)
 		}
 		fields[i] = values.RecordConstructorField{Name: values.OrdinalFieldName(i), Value: fov}
 		mergedFields[i] = values.Field{Name: values.OrdinalFieldName(i), FieldType: fov.Type(), Ordinal: i}
@@ -202,7 +202,7 @@ func (r *PartitionSelectRule) positionalMergeCase(
 //
 // How much traffic it carries is now MEASURED rather than argued, because an
 // argument about which shapes can reach a fallback is what a change to the
-// fallback invalidates silently (see recordMergeSlotTyping). Measured over the
+// fallback invalidates silently (see querycensus.recordMergeSlotTyping). Measured over the
 // whole real-FDB corpus, one run: 22394 merge slots — 21736 typed by the
 // quantifier, 0 recovered here, 658 stating a non-row scalar, 0 stating nothing
 // at all.

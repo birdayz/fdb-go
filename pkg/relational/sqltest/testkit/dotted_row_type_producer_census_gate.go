@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"io"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/internal/querycensus"
 )
 
 // assertDottedRowTypeProducerCensus gates the dotted row-type producer census
@@ -58,12 +58,12 @@ func assertDottedRowTypeProducerCensus(w io.Writer) bool {
 	// than merely supplying a number for it: whole corpus, floors NOT withheld,
 	// 1487 tests passed. A floor justified only by readings taken before it
 	// existed has never been shown to pass anything.
-	floor := &values.DottedRowTypeProducerFloor{Derivations: 100, Dotted: 50}
+	floor := &querycensus.DottedRowTypeProducerFloor{Derivations: 100, Dotted: 50}
 	if f := corpusNarrowing(); f != nil && f.Value.String() != "" {
 		fmt.Fprintf(w, "dotted row-type producer census: population floors NOT checked "+
 			"(-test.run=%q narrowed the corpus). The census still reports its counts "+
 			"above; only the whole-corpus floors are withheld.\n", f.Value.String())
 		floor = nil
 	}
-	return values.AssertDottedRowTypeProducerCensus(w, floor)
+	return querycensus.AssertDottedRowTypeProducerCensus(w, floor)
 }

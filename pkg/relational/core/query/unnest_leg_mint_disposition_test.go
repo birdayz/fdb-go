@@ -64,7 +64,7 @@ func TestRebaseUnnestOuterLegPredicate_MintIsIntentional(t *testing.T) {
 	pred := predicates.NewComparisonPredicate(elemRead,
 		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: legRead})
 
-	out, rebased := rebaseUnnestOuterLegPredicate(pred, outerLegs, mergedCorr, mergedType, UnnestLegMintSiteAnchoredNonExists)
+	out, rebased := rebaseUnnestOuterLegPredicate(pred, outerLegs, mergedCorr, mergedType, values.UnnestLegMintSiteAnchoredNonExists)
 	if !rebased {
 		t.Fatal("exact outer-leg rebase declined")
 	}
@@ -105,7 +105,7 @@ func TestRebaseUnnestOuterLegPredicate_MintIsIntentional(t *testing.T) {
 	otherRead := exactTestField(t, exactTestQOV(t, otherAlias.Name(), legRowType), 0)
 	otherPred := predicates.NewComparisonPredicate(elemRead,
 		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: otherRead})
-	otherOut, rebased := rebaseUnnestOuterLegPredicate(otherPred, outerLegs, mergedCorr, mergedType, UnnestLegMintSiteAnchoredNonExists)
+	otherOut, rebased := rebaseUnnestOuterLegPredicate(otherPred, outerLegs, mergedCorr, mergedType, values.UnnestLegMintSiteAnchoredNonExists)
 	if !rebased {
 		t.Fatal("non-outer exact read caused the rebase to decline")
 	}
@@ -138,7 +138,7 @@ func TestRebaseUnnestOuterLegPredicate_NilCarrierDeclinesOnlyARealOuterLeg(t *te
 		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: elementRead})
 
 	unchanged, ok := rebaseUnnestOuterLegPredicate(
-		elementPredicate, outerLegs, elementAlias, nil, UnnestLegMintSiteJoinPredNotWindowed)
+		elementPredicate, outerLegs, elementAlias, nil, values.UnnestLegMintSiteJoinPredNotWindowed)
 	if !ok || unchanged != elementPredicate {
 		t.Fatalf("element-only predicate with no merged carrier = (%T, %t), want pointer-exact no-op",
 			unchanged, ok)
@@ -148,7 +148,7 @@ func TestRebaseUnnestOuterLegPredicate_NilCarrierDeclinesOnlyARealOuterLeg(t *te
 	outerPredicate := predicates.NewComparisonPredicate(innerRead,
 		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: outerRead})
 	if got, admitted := rebaseUnnestOuterLegPredicate(
-		outerPredicate, outerLegs, elementAlias, nil, UnnestLegMintSiteJoinPredNotWindowed); admitted || got != outerPredicate {
+		outerPredicate, outerLegs, elementAlias, nil, values.UnnestLegMintSiteJoinPredNotWindowed); admitted || got != outerPredicate {
 		t.Fatalf("real outer-leg predicate without merged carrier = (%T, %t), want pointer-exact loud decline",
 			got, admitted)
 	}
