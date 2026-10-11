@@ -41,8 +41,6 @@ var templateVars = map[string]string{
 	"bazelisk_sha256":     strings.Repeat("0", 64),
 	"just_version":        "1.48.1",
 	"just_sha256":         strings.Repeat("0", 64),
-	"mc_release":          "mc.RELEASE.2025-05-21T01-59-54Z",
-	"mc_sha256":           strings.Repeat("0", 64),
 	"fdb_clients_sha256":  strings.Repeat("0", 64),
 	"runner_mode":         "classic",
 	"nat":                 "false",
@@ -619,58 +617,6 @@ func TestCloudInitBringsUpThePrivateNIC(t *testing.T) {
 				len(e.Nameservers.Addresses) > 0
 			if routed != (nat == "true") {
 				t.Errorf("default route via the NAT gateway = %v, want %v:\n%s", routed, nat == "true", data)
-			}
-		})
-	}
-}
-
-// TestCloudInitMcInstallIsBestEffort pins that a failed or mismatched mc download (dl.min.io
-// answers 410) neither aborts provisioning under set -eu nor leaves an unverified binary.
-func TestCloudInitMcInstallIsBestEffort(t *testing.T) {
-	t.Parallel()
-	var doc struct {
-		Runcmd []any `yaml:"runcmd"`
-	}
-	renderWith(t, nil, &doc)
-	var line string
-	for _, c := range doc.Runcmd {
-		if s, ok := c.(string); ok {
-			for _, l := range strings.Split(s, "\n") {
-				if strings.Contains(l, "client/mc/release") {
-					line = l
-				}
-			}
-		}
-	}
-	if line == "" {
-		t.Fatal("runcmd installs no mc")
-	}
-	for _, tc := range []struct {
-		name, stub string
-		installed  bool
-	}{
-		{"download fails", "exit 1", false},
-		{"checksum mismatch leaves a file", `echo bad > "$3"; exit 1`, false},
-		{"download verifies", `echo good > "$3"`, true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
-			fv := filepath.Join(dir, "fetch-verified.sh")
-			if err := os.WriteFile(fv, []byte("#!/bin/sh\n"+tc.stub+"\n"), 0o755); err != nil {
-				t.Fatal(err)
-			}
-			mc := filepath.Join(dir, "mc")
-			script := "set -eu\nFV=" + fv + "\n" + strings.ReplaceAll(line, "/usr/local/bin/mc", mc) + "\necho survived\n"
-			out, err := exec.Command("sh", "-c", script).CombinedOutput()
-			if err != nil || !strings.Contains(string(out), "survived") {
-				t.Fatalf("mc install aborted provisioning: %v\n%s", err, out)
-			}
-			st, statErr := os.Stat(mc)
-			if tc.installed != (statErr == nil) {
-				t.Fatalf("mc present = %v, want %v", statErr == nil, tc.installed)
-			}
-			if tc.installed && st.Mode()&0o111 == 0 {
-				t.Error("installed mc is not executable")
 			}
 		})
 	}

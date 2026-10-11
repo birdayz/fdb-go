@@ -538,8 +538,6 @@ runcmd:
     chown root:root /usr/local/bin/just
     chmod 0755 /usr/local/bin/just
     rm -f /tmp/just.tar.gz
-    # MinIO client, best effort: dl.min.io now answers 410, and only report upload needs it.
-    if "$FV" "https://dl.min.io/client/mc/release/linux-amd64/archive/${mc_release}" "${mc_sha256}" /usr/local/bin/mc; then chmod 0755 /usr/local/bin/mc; else rm -f /usr/local/bin/mc; echo "mc download failed (non-fatal)"; fi
 
   # Runner user
   - useradd -m -s /bin/bash runner
