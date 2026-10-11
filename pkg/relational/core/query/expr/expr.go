@@ -219,6 +219,17 @@ func (r *Resolver) functionCatalog() *semantic.FunctionCatalog {
 	return r.funcCat
 }
 
+// Scope returns the FROM-side scope this resolver binds against.
+//
+// It exists for star expansion, which is the one caller that needs the sources'
+// OUTPUT rather than an answer about one reference. Java hands the same thing to
+// the same caller: expandStar takes the plan fragment's LogicalOperators and
+// reads getExpressions().nonEphemeralVisible() off them
+// (SemanticAnalyzer.java:323-330). Reaching for the scope instead of
+// re-deriving the source list from the FROM parse tree is what keeps the star
+// and the resolver naming the same columns.
+func (r *Resolver) Scope() *semantic.Scope { return r.scope }
+
 // DescendsIntoStruct reports whether a reference resolves by descending INTO a
 // struct column rather than addressing a source column directly — `n.sk` where
 // `n` is a struct column, as opposed to `t.sk` where `t` is a FROM source.
@@ -236,17 +247,6 @@ func (r *Resolver) functionCatalog() *semantic.FunctionCatalog {
 // A resolution FAILURE reports false with the error, so a caller gating on the
 // descent never converts an unrelated lookup failure into its own verdict —
 // existence and ambiguity stay owned by the checks that already report them.
-// Scope returns the FROM-side scope this resolver binds against.
-//
-// It exists for star expansion, which is the one caller that needs the sources'
-// OUTPUT rather than an answer about one reference. Java hands the same thing to
-// the same caller: expandStar takes the plan fragment's LogicalOperators and
-// reads getExpressions().nonEphemeralVisible() off them
-// (SemanticAnalyzer.java:323-330). Reaching for the scope instead of
-// re-deriving the source list from the FROM parse tree is what keeps the star
-// and the resolver naming the same columns.
-func (r *Resolver) Scope() *semantic.Scope { return r.scope }
-
 func (r *Resolver) DescendsIntoStruct(qualifier, id semantic.Identifier) (bool, error) {
 	if qualifier.IsZero() {
 		return r.DescendsIntoStructPath([]semantic.Identifier{id})
@@ -621,6 +621,13 @@ func (e *UnresolvableOrdinalError) Error() string {
 	return fmt.Sprintf("column %q resolves against source %q, which declares no column order to bind a plan-time ordinal", e.Field, e.Source)
 }
 
+// SourceRowType is the exported view of sourceRowType, for callers outside this
+// package that hold a resolved ScopeSource and need the row it flows — the
+// enclosing-WITH bindings a derived body must be typed against, in particular.
+func SourceRowType(src semantic.ScopeSource) *values.RecordType {
+	return sourceRowType(src)
+}
+
 // sourceRowType builds the ROW the resolved source flows: its declared columns,
 // in declared order, each carrying the catalog's own type.
 //
@@ -635,13 +642,6 @@ func (e *UnresolvableOrdinalError) Error() string {
 //
 // A declared zero-column table has an exact empty row. nil means there is no
 // table declaration, or the source's flowed whole object is not a record.
-// SourceRowType is the exported view of sourceRowType, for callers outside this
-// package that hold a resolved ScopeSource and need the row it flows — the
-// enclosing-WITH bindings a derived body must be typed against, in particular.
-func SourceRowType(src semantic.ScopeSource) *values.RecordType {
-	return sourceRowType(src)
-}
-
 func sourceRowType(src semantic.ScopeSource) *values.RecordType {
 	if src.FlowedObject != nil {
 		record, _ := columnCascadesType(*src.FlowedObject).(*values.RecordType)
@@ -1013,21 +1013,6 @@ func arithmeticEncapsulationError(err error) error {
 	return err
 }
 
-// ResolveComparison wraps left/right Values in a cascades
-// ComparisonPredicate. Mirrors the analyzer's job of lifting
-// `a > b` from a parse-tree comparison node to a predicate node.
-//
-// Both LHS and RHS are carried as Values — non-constant RHS
-// (`a = b`, `a < b + 1`, `a = CAST(col AS INT)`) composes uniformly
-// with constant RHS. Plan-time folding happens only over EFFECTIVE
-// constants (cascades.ConstantFoldingRules, Java's ConstantFoldingRuleSet:
-// `x IS NULL` over a NOT NULL x, a NULL side, two boolean literals);
-// row-context evaluation (FieldValue RHS) runs through
-// ComparisonPredicate.Eval.
-//
-// Does NOT pre-fold even when both operands are constant. `5 = 5`
-// produces a real ComparisonPredicate, and it stays one: two non-boolean
-// literals are not effective constants, as Java keeps `@c EQUALS @c`.
 // isOrderingComparison reports whether op needs its operands to be ORDERED, as
 // opposed to merely comparable for equality. The distinction is what separates
 // the operators BOOLEAN supports from the ones it does not.
@@ -1075,6 +1060,21 @@ func comparisonOperandSupported(t values.Type) bool {
 	return t.Code().IsPrimitive() || values.IsEnum(t) || values.IsUuid(t) || values.IsArray(t)
 }
 
+// ResolveComparison wraps left/right Values in a cascades
+// ComparisonPredicate. Mirrors the analyzer's job of lifting
+// `a > b` from a parse-tree comparison node to a predicate node.
+//
+// Both LHS and RHS are carried as Values — non-constant RHS
+// (`a = b`, `a < b + 1`, `a = CAST(col AS INT)`) composes uniformly
+// with constant RHS. Plan-time folding happens only over EFFECTIVE
+// constants (cascades.ConstantFoldingRules, Java's ConstantFoldingRuleSet:
+// `x IS NULL` over a NOT NULL x, a NULL side, two boolean literals);
+// row-context evaluation (FieldValue RHS) runs through
+// ComparisonPredicate.Eval.
+//
+// Does NOT pre-fold even when both operands are constant. `5 = 5`
+// produces a real ComparisonPredicate, and it stays one: two non-boolean
+// literals are not effective constants, as Java keeps `@c EQUALS @c`.
 func (r *Resolver) ResolveComparison(op predicates.ComparisonType, left, right values.Value) (predicates.QueryPredicate, error) {
 	if left == nil || right == nil {
 		return nil, fmt.Errorf("expr.ResolveComparison: operand is nil")
@@ -1566,9 +1566,7 @@ func constAsFloat64(cv any) (float64, bool) {
 //     numeric to approximate when comparing the two, so `double_col = 2^53+1`
 //     legitimately matches a stored 2^53. Postgres agrees. Adding an exactness
 //     check there would DECLINE a conversion the standard mandates and turn
-//     correct rows into missing ones. (An earlier version of this comment said
-//     int→double is "always exact for any realistic int64", which is false and
-//     invited exactly that non-fix.)
+//     correct rows into missing ones.
 //   - float64→float32 is different: the FLOAT column's index entries are packed
 //     under a different tuple type code, so a non-exact narrowing does not just
 //     lose precision, it probes a key that cannot exist. That is why this

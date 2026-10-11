@@ -109,12 +109,11 @@ func everyPhysicalMemberOfUnaryChildProves(
 // logical equality.
 //
 // It READS that fact off the ordering the producer built, and does not compute
-// it. An earlier revision re-derived it here from the plan's key component
-// types, which made it a second property that had to be kept in agreement with
-// the truncation the ordering derivation had actually performed — and the two
-// could disagree. They did: a tail dropped wholesale at a signed-zero equality
-// left the advertised ordering with no sorted coordinates at all, which this
-// function called COMPLETE because the types were fine.
+// it. Re-deriving it from the plan's key component types would be a second
+// property that can disagree with the truncation the ordering derivation
+// actually performed: a tail dropped wholesale at a signed-zero equality leaves
+// the advertised ordering with no sorted coordinates even though the types are
+// fine.
 //
 // What remains here is the part the ordering cannot answer: a memo group holds
 // several physical alternatives and extraction may relink to any of them, so

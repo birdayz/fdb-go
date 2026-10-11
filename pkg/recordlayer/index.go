@@ -71,19 +71,6 @@ const (
 	IndexTypeMaxEver = "max_ever"
 )
 
-// canonicalIndexType resolves a deprecated index-type alias to the type whose
-// behaviour it names, and returns every other type unchanged.
-//
-// One function rather than two more `case` labels on each switch, because Java
-// only ever answers this question ONCE. There, the type string picks a maintainer
-// out of the factory registry and every later question — is it idempotent, does
-// it validate grouping, can it serve this aggregate — is a method call on the
-// maintainer that was already chosen. Go flattened that into several independent
-// switches over `idx.Type`, so an alias handled at the dispatch and nowhere else
-// would produce an index that builds with the right maintainer and is then
-// mis-judged by the idempotency check, the grouping validator and the aggregate
-// matcher. Routing every one of those switches through here keeps the alias in a
-// single place, which is the property Java gets for free from its registry.
 // CanonicalType is canonicalIndexType for callers outside this package — the
 // chaos model and its verifier, which re-derive an index's behaviour from its
 // type exactly as the five in-package switches do.
@@ -97,6 +84,19 @@ func (idx *Index) CanonicalType() string {
 	return canonicalIndexType(idx.Type)
 }
 
+// canonicalIndexType resolves a deprecated index-type alias to the type whose
+// behaviour it names, and returns every other type unchanged.
+//
+// One function rather than two more `case` labels on each switch, because Java
+// only ever answers this question ONCE. There, the type string picks a maintainer
+// out of the factory registry and every later question — is it idempotent, does
+// it validate grouping, can it serve this aggregate — is a method call on the
+// maintainer that was already chosen. Go flattened that into several independent
+// switches over `idx.Type`, so an alias handled at the dispatch and nowhere else
+// would produce an index that builds with the right maintainer and is then
+// mis-judged by the idempotency check, the grouping validator and the aggregate
+// matcher. Routing every one of those switches through here keeps the alias in a
+// single place, which is the property Java gets for free from its registry.
 func canonicalIndexType(indexType string) string {
 	switch indexType {
 	case IndexTypeMinEver:

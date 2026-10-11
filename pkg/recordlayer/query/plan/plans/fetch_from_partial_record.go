@@ -94,8 +94,7 @@ func (p *RecordQueryFetchFromPartialRecordPlan) GetInner() RecordQueryPlan {
 // GetInnerQuantifier returns the live child quantifier — the single memo edge
 // the fetch ranges over. Push/data-access rules that match a physical fetch in
 // the memo need its inner GROUP (GetRangesOver) and alias to re-plan around it;
-// since RFC-184 W2 the memo holds the bare plan (no physicalFetchFromPartialRecordWrapper
-// whose innerQuant field they used to read), this exposes the same edge.
+// the memo holds the bare plan (RFC-184 W2), so this is their path to that edge.
 func (p *RecordQueryFetchFromPartialRecordPlan) GetInnerQuantifier() expressions.Quantifier {
 	return p.inner[0]
 }

@@ -161,9 +161,7 @@ func (p *RecordQueryInUnionPlan) ComputeCorrelatedTo(childCorrelations func(*exp
 
 // GetInnerQuantifier returns the live child quantifier — the single memo edge the
 // InUnion ranges over. derivationsForInUnion reads its alias to decorrelate the
-// inner against the IN-source bindings; since RFC-184 W2 the memo holds the bare
-// plan (no physicalInUnionWrapper whose innerQuant field it used to read), this
-// exposes the same edge.
+// inner against the IN-source bindings.
 func (p *RecordQueryInUnionPlan) GetInnerQuantifier() expressions.Quantifier {
 	return p.innerQ
 }
@@ -240,24 +238,9 @@ func (p *RecordQueryInUnionPlan) WithInComparands(comparands []values.Value) *Re
 // method must never write through its receiver.
 //
 // inSources is in this plan's structuralKey, so writing it in place rewrites the
-// identity of a plan that may already be in the memo — and since the structural-hash
-// memo landed, under an UNCHANGED owner, which is the one staleness the memo's owner
-// check cannot see: it compares identity, not content. Every caller happened to set
-// before yielding, so nothing was ever wrong; that is exactly the "guarded by
-// accident" shape, with no rule keeping it true.
-//
-// Scope of that claim, because an unscoped count is the thing this repo keeps
-// getting wrong: across WithInValues, WithSourceKind and WithInSources together,
-// 8 invocations in NON-TEST sources, spread over 4 rule files and 4 enclosing
-// functions. An earlier draft said "five call sites", which is not the count under
-// any definition.
-//
-// Deliberately no test-inclusive total here. A first correction added one, and it
-// was false on arrival: the very commit that wrote "40 invocations including tests"
-// went on to add five more test arms, so the number was stale before it was pushed.
-// A figure that moves whenever anyone writes a test cannot stay true in a comment.
-// The non-test count is the one that means something — it is the set that has to be
-// audited when this rule changes — and it is stable.
+// identity of a plan that may already be in the memo under an UNCHANGED owner —
+// the one staleness the memo's owner check cannot see, since it compares
+// identity, not content.
 func (p *RecordQueryInUnionPlan) WithInSources(sources [][]any) *RecordQueryInUnionPlan {
 	cp := *p
 	// Deep enough to break sharing at both levels: the outer slice AND each inner

@@ -578,7 +578,7 @@ var _ = Describe("SPFresh §8 staging interleaving", func() {
 
 // The three §8 fence holes, each pinned (red against the pre-fix
 // behavior, green now).
-var _ = Describe("SPFresh §8 fence regressions (Torvalds 094.2)", func() {
+var _ = Describe("SPFresh §8 fence regressions (094.2)", func() {
 	ctx := context.Background()
 
 	It("#1: the pre-coarse no-op decision carries a conflict range — a racing coarse commit aborts the save", func() {
@@ -740,7 +740,7 @@ var _ = Describe("SPFresh §8 fence regressions (Torvalds 094.2)", func() {
 	})
 })
 
-var _ = Describe("SPFresh 094.1 review regressions", func() {
+var _ = Describe("SPFresh 094.1 regressions", func() {
 	ctx := context.Background()
 
 	baseMD := func() *recordlayer.RecordMetaDataBuilder {

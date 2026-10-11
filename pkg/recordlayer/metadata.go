@@ -501,9 +501,6 @@ func (b *RecordMetaDataBuilder) SetRecordCountKey(key KeyExpression) *RecordMeta
 	return b
 }
 
-// SetStoreRecordVersions enables or disables automatic record versioning.
-// When enabled, each save assigns an FDBRecordVersion to the record.
-// Java equivalent: RecordMetaDataBuilder.setStoreRecordVersions(boolean)
 // AddUserDefinedFunction appends a SQL function.
 func (b *RecordMetaDataBuilder) AddUserDefinedFunction(fn *gen.PUserDefinedFunction) *RecordMetaDataBuilder {
 	b.preserved.userDefinedFunctions = append(b.preserved.userDefinedFunctions, fn)
@@ -522,6 +519,9 @@ func (b *RecordMetaDataBuilder) AddView(name, definition string) *RecordMetaData
 	return b
 }
 
+// SetStoreRecordVersions enables or disables automatic record versioning.
+// When enabled, each save assigns an FDBRecordVersion to the record.
+// Java equivalent: RecordMetaDataBuilder.setStoreRecordVersions(boolean)
 func (b *RecordMetaDataBuilder) SetStoreRecordVersions(store bool) *RecordMetaDataBuilder {
 	if b.storeRecordVersions != store {
 		b.version++ // Matches Java: bumps version when value changes
@@ -816,10 +816,7 @@ func (b *RecordMetaDataBuilder) GetRecordType(name string) *RecordTypeBuilder {
 // metadata whose index registry and record-type associations do not agree in
 // both directions -- see the bijection check below.
 //
-// WHAT BUILD WRITES INTO THE BUILDER'S OWN OBJECTS -- first, because two
-// successive revisions of this comment claimed it wrote nothing, and the
-// revision that fixed THAT over-claimed in the other direction by listing three
-// writes where there is one. Exactly one:
+// WHAT BUILD WRITES INTO THE BUILDER'S OWN OBJECTS. Exactly one:
 //
 //   - `idx.primaryKeyComponentPositions`, on every SINGLE-TYPE index, because
 //     `indexes[k] = v` shares the pointer. That is the point: Java sets
@@ -1013,8 +1010,7 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 	// refusing metadata Java writes is the one line this port may not cross. The
 	// resulting double maintenance (each copy maintained separately on write,
 	// which for COUNT/SUM is a non-idempotent double atomic ADD) is therefore a
-	// shared behaviour, booked rather than unilaterally diverged from. An
-	// earlier revision of this check refused it.
+	// shared behaviour, booked rather than unilaterally diverged from.
 	//
 	// THE REGISTRY KEY IS THE INDEX'S OWN NAME. Index.Name is exported, so a
 	// caller can rename the object it registered. buildIndexRecordTypeMap keys
@@ -1116,24 +1112,15 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 	// Compute primaryKeyComponentPositions ON THE BUILDER'S OBJECTS, and before
 	// the containers are copied below.
 	//
-	// The order is load-bearing and only the cross-engine conformance suite
-	// proved it. Java sets these positions on the very Index objects the caller
-	// registered (RecordMetaDataBuilder.build calls
-	// index.setPrimaryKeyComponentPositions), and callers rely on that: the
-	// composite-index conformance store keeps the *Index it passed to AddIndex
-	// and hands that same object to ScanIndex. A revision that copied the index
-	// OBJECTS and computed positions afterwards left the caller's object with
-	// nil positions while the metadata wrote entries with the primary key
-	// DEDUPED, so the scan decoded `pk=[]` where Java produced `pk=[1]` -- a
-	// wire-visible disagreement from a change that looked purely in-memory.
-	// The object copy is gone, so the two are one pointer again and the hazard
-	// is latent rather than live; the order still matters the moment anyone
-	// reintroduces a copy, which is why it is stated rather than assumed.
-	//
-	// A COMMENT IS THE ONLY THING HOLDING THIS. Expressing it as call order
-	// instead is what the TODO.md entry "RecordMetaDataBuilder.Build does six
-	// jobs in one frame" is for; that entry names this site, and this names it
-	// back, so neither half can rot alone.
+	// Java sets these positions on the very Index objects the caller registered
+	// (RecordMetaDataBuilder.build calls index.setPrimaryKeyComponentPositions),
+	// and callers rely on that: the composite-index conformance store keeps the
+	// *Index it passed to AddIndex and hands that same object to ScanIndex.
+	// Positions computed on a copy would leave the caller's object with nil
+	// positions while entries are written with the primary key deduped, so the
+	// scan decodes `pk=[]` where Java produces `pk=[1]`. Only this comment holds
+	// the order; the TODO_OLD.md entry "RecordMetaDataBuilder.Build does six jobs in
+	// one frame" (which names this site) is for expressing it as call order.
 	//
 	// SINGLE-TYPE INDEXES ONLY. Java's loop is over
 	// `recordTypeBuilder.getIndexes()` (RecordMetaDataBuilder.java:1465-1467),
@@ -1141,47 +1128,18 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 	// (RecordTypeIndexesBuilder.java:43 and :45); universal indexes are in neither.
 	// So Java NEVER assigns positions to a multi-type or universal index, and
 	// its `Index.trimPrimaryKey` therefore returns those indexes' primary keys
-	// untrimmed.
+	// untrimmed. Trimming a multi-type index on a field its types are keyed on
+	// would write `(price)` where Java writes `(price, pk)`, and for a universal
+	// index there is no single record type whose primary key could be chosen
+	// deterministically. Pinned by
+	// TestPositionsAreAssignedOnlyToSingleTypeIndexes.
 	//
-	// Go used to assign them to all three, and that reached the wire in both
-	// directions:
-	//
-	//   - Multi-type. Two record types keyed on the same field, with a
-	//     multi-type index on that field, gave positions [0] and trimmed the
-	//     primary key to NOTHING -- Go wrote `(price)` where Java writes
-	//     `(price, pk)`. Different index entry keys for the same metadata.
-	//   - Universal. The old code took "the first record type's primary key",
-	//     by `break`ing out of a range over `b.recordTypes`, which is a MAP.
-	//     With record types whose primary keys differ, the chosen type -- and
-	//     so the entry key -- varied per Build within a single process: 40
-	//     builds of one metadata produced positions [0] 33 times and nil 7
-	//     times. That is worse than a Java divergence, because two Go stores
-	//     built from identical metadata could disagree with each other.
-	//
-	// Both are pinned by TestPositionsAreAssignedOnlyToSingleTypeIndexes.
-	//
-	// THIS CHANGES EXISTING DATA. Positions are derived here and never
-	// persisted, so entries an older build wrote for a multi-type or universal
-	// index are trimmed while this one writes them whole. The DECODE of such an
-	// entry does not error -- a full overlap yields an empty primary key, a
-	// partial overlap a short and plausible wrong one -- and the old entries are
-	// never cleared. Nothing detects any of that automatically; the affected
-	// indexes need a rebuild, and the procedure is considerably more than a
-	// lastModifiedVersion bump.
-	//
-	// WHAT THAT LOOKS LIKE AT THE SCAN IS NOT DESCRIBED HERE. An earlier version
-	// of this comment finished the sentence with "so an unremediated store
-	// returns duplicate rows", which is true of the index ENTRIES and false of
-	// most rows, and it survived here after being refuted in DIVERGENCES.md
-	// because that fold swept for a different claim in the same commit. Two
-	// claims were refuted; one sweep was run. The scan-level symptoms live in
-	// the operator-facing copy and nowhere else.
-	//
-	// That copy is DIVERGENCES.md, "UPGRADING BREAKS EXISTING DATA FOR THE
-	// AFFECTED INDEXES, SILENTLY", which names this file back. The read
-	// behaviour is pinned by these two, each on its own line so that grep finds
-	// them -- wrapping a test name across a line break is exactly how a sweep
-	// comes back empty, which happened to this very comment:
+	// Positions are derived here and never persisted, so entries an older build
+	// wrote trimmed for a multi-type or universal index are neither detected nor
+	// cleared: they decode to an empty (full overlap) or short wrong (partial
+	// overlap) primary key, and the affected indexes need a rebuild. Scan-level
+	// symptoms are in DIVERGENCES.md, "UPGRADING BREAKS EXISTING DATA FOR THE
+	// AFFECTED INDEXES, SILENTLY". The read behaviour is pinned by:
 	//   TestPreUpgradeTrimmedEntryReadsBackWithAnEmptyPrimaryKey
 	//   TestPreUpgradeTrimmedEntryWithAPartialOverlapReadsBackAShortWrongPrimaryKey
 	for _, rt := range b.recordTypes {
@@ -1229,9 +1187,8 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 	// COPY BOTH OR SHARE BOTH; THE MIXTURE IS WHAT BREAKS. Copying the registry
 	// while sharing the record-type slices is exactly the state that produces
 	// an index registered under a name no record type claims, whose ToProto
-	// emits an EMPTY record-type list that a reload reads as UNIVERSAL. This
-	// branch built that state once and spent three commits on it. Go now copies
-	// both, so it is coherent in the other direction: a snapshot at Build
+	// emits an EMPTY record-type list that a reload reads as UNIVERSAL. Go
+	// copies both, so it is coherent in the other direction: a snapshot at Build
 	// rather than Java's live view. Neither is obviously better; what this is
 	// NOT is a port, and it must not drift into a mixture. DIVERGENCES.md
 	// ("Go snapshots a record type's index lists; Java shares everything") has
@@ -1248,8 +1205,8 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 		// make+copy, never append([]byte(nil), …), which returns NIL for an
 		// empty input -- nil is how this field spells "absent", so an
 		// empty-bytes key would stop serializing and the type would fall back
-		// to its union field number. TestRecordTypeKey_EmptyBytesSurvives
-		// ProtoRoundTrip pins that and has already caught this exact idiom here.
+		// to its union field number. Pinned by
+		// TestRecordTypeKey_EmptyBytesSurvivesProtoRoundTrip.
 		if raw, ok := v.explicitRecordTypeKey.([]byte); ok && raw != nil {
 			dup := make([]byte, len(raw))
 			copy(dup, raw)
@@ -1474,9 +1431,8 @@ func (*RecordTypeKeyTypeError) JavaRecordCoreException() {}
 //   - a big.Int is refused even though the encoder writes it, because no
 //     metadata carrying one could ever be exported or read back; and
 //   - a uint/uint64 above math.MaxInt64 is refused for the same reason. It
-//     packs, and it used to build and save — but ToProto then failed on it
-//     ("unsupported value type uint64"), which is the accepted-here /
-//     broken-there split this whole function exists to remove. Java cannot
+//     packs, but ToProto cannot write it ("unsupported value type uint64"),
+//     which is the accepted-here / broken-there split this whole function exists to remove. Java cannot
 //     express it either: its only unsigned-capable Number is BigInteger, and
 //     LiteralKeyExpression.toProtoValue funnels every non-Integer Number
 //     through longValue(), silently TRUNCATING it to a wrong key.
@@ -1645,65 +1601,12 @@ func (m *RecordMetaData) GetRecordType(name string) *RecordType {
 	return found
 }
 
-// RecordTypes returns all record types
+// RecordTypes returns all record types.
 //
-// NOTE: this returns the LIVE map, not a copy, and the map IS mutated after
-// Build.
-//
-// The census below is over changes to its KEY SET, because that is all the
-// derived field depends on: computeAmbiguousDeclaredNames ranges the keys and
-// probes declared[escaped], and never reads a *RecordType value. Mutating a
-// value already in the map is irrelevant here.
-//
-// ENUMERATED per site rather than counted by regex, and by SHAPE rather than by
-// one shape mistaken for all of them. Both mistakes were made here in
-// succession: first a count that included the sentence stating it, then an
-// assignment census presented as a mutation census -- which survived a round of
-// review, because the two read alike and the missing shape was delete().
-//
-//	Insertions, subscript form -- 7:
-//	  1 on the BUILDER, before any RecordMetaData exists, in this file:
-//	    setRecords (the union-less fallback that held a second one
-//	    is gone: Java has no union-less mode)
-//	  6 post-Build, every one in a test:
-//	    1 in record_type_key_identity_test.go
-//	    5 in metadata_evolution_validator_test.go
-//
-//	Removals, delete() form -- 4, ALL post-Build, every one in a test:
-//	    1 in record_type_key_identity_test.go
-//	    3 in metadata_evolution_validator_test.go
-//	  Two of those three are bare removals with no paired insertion (the
-//	  "rejects removed type" cases); the third is half of a rename. A removal
-//	  invalidates the derived field exactly as an insertion does.
-//
-//	clear(), the maps.* helpers, and whole-map assignment: none AFTER
-//	  construction. online_indexer.go does assign a whole recordTypes, but that
-//	  is a []string on a different struct -- it was once miscounted into this
-//	  census.
-//
-//	CONSTRUCTION is a separate route with the same fail-open, and is not a
-//	mutation of this map at all, which is why it sits outside the counts above:
-//	metadata_evolution_validator_test.go and online_indexer_preset_test.go each
-//	build &RecordMetaData{recordTypes: ...} directly, so Build never runs and
-//	ambiguousFound stays false -- reported as "no collision" over a set nobody
-//	derived.
-//
-// Twelve sites, ten of them after Build.
-//
-// This matters because Build DERIVES ambiguousNames from this map, so any
-// post-Build key-set change leaves the derived field describing a declared set
-// that no longer exists. Latent today, and measured so: none of the THREE files
-// named above calls AmbiguousDeclaredNames, so nothing reads the stale value. A
-// test that starts doing both re-arms it.
-//
-// Copying the map here would NOT close that. All ten post-Build sites touch the
-// private field directly rather than through this accessor, so a copy prevents
-// none of them while adding an O(types) allocation to every caller -- including
-// computeAmbiguousDeclaredNames itself.
-//
-// The staleness is silent either way, but it is at least deterministic: the
-// field always means "what Build saw", never "whatever the set was the first
-// time somebody happened to ask", which is what the sync.Once it replaced meant.
+// It returns the live map, not a copy. Build derives ambiguousNames from the
+// map's key set, so changing keys after Build leaves AmbiguousDeclaredNames
+// describing the set Build saw. Constructing a RecordMetaData literal bypasses
+// that derivation entirely; copying here would not protect direct field writes.
 func (m *RecordMetaData) RecordTypes() map[string]*RecordType {
 	return m.recordTypes
 }

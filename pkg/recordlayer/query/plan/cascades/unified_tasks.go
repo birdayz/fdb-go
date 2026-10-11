@@ -1601,13 +1601,13 @@ func pushOrdinalInputRequirementsForMembers(
 	return nil
 }
 
-// isFinalMember checks if expr is already in the Reference's final members.
 // isExploratoryMember reports pointer-identity membership in the
 // EXPLORATORY set only (ContainsExactly admits finals too).
 func isExploratoryMember(ref *expressions.Reference, expr expressions.RelationalExpression) bool {
 	return ref.HasExploratoryMember(expr)
 }
 
+// isFinalMember checks if expr is already in the Reference's final members.
 func isFinalMember(ref *expressions.Reference, expr expressions.RelationalExpression) bool {
 	return ref.HasFinalMember(expr)
 }

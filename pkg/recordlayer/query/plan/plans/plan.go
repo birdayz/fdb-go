@@ -31,20 +31,15 @@
 // Why a separate sub-package vs cascades/expressions/: to mirror Java's
 // package layout, so code review across the two languages stays tractable.
 //
-// This used to say something stronger and WRONG — that "physical and
-// logical plan trees live in different namespaces in Java", so a
-// RecordQueryPlan is not a RelationalExpression. Java says the opposite:
+// Java separates the PACKAGE but unifies the HIERARCHY:
 //
 //	QueryPlan<T> extends PlanHashable, RelationalExpression  (QueryPlan.java:51)
 //	RecordQueryPlan extends QueryPlan<…>              (RecordQueryPlan.java:73)
 //
-// Java separates the PACKAGE and unifies the HIERARCHY; the old comment
-// conflated the two. That misreading is where the 23-file
-// physical_*_wrapper.go layer came from — adapters existing only to present
-// a plan as an expression — and with it the nil-inner "shell" bug class,
-// since a wrapper and its wrapped plan each stored the parent->child edge
-// and could disagree. RecordQueryPlan now embeds RelationalExpression
-// directly (RFC-183 P5).
+// so RecordQueryPlan embeds RelationalExpression directly (RFC-183 P5). A
+// separate adapter layer presenting a plan as an expression is the source of
+// the nil-inner "shell" bug class: a wrapper and its wrapped plan each store
+// the parent->child edge and can disagree.
 package plans
 
 import (
@@ -82,11 +77,10 @@ func (e *OrdinalLayoutUnavailableError) Error() string {
 // node. Mirrors Java's `RecordQueryPlan` interface — implementations
 // produce a record stream when executed against an FDBRecordStore.
 //
-// The seed exposes node-information accessors (GetResultType,
+// It exposes node-information accessors (GetResultType,
 // GetChildren, EqualsPlanWithoutChildren, HashCodeWithoutChildren) and
-// an Explain method for diagnostic rendering. Execute is NOT in the
-// seed surface — wiring to FDBRecordStore is a follow-up shift gated
-// on the rule chain being able to produce these plans end-to-end.
+// an Explain method for diagnostic rendering. Execute is NOT on the
+// interface: the executor package runs plans.
 type RecordQueryPlan interface {
 	// A plan IS a RelationalExpression — Java's
 	// `QueryPlan<T> extends PlanHashable, RelationalExpression`

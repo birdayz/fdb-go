@@ -170,18 +170,6 @@ func (b *Builder) SetStoreRowVersions(v bool) *Builder {
 	return b
 }
 
-// AddTable registers a table definition. columns must be listed in
-// declared order; primaryKey is the ordered slice of column names — a
-// DOTTED element (id.a) is the nested-column convention, split into path
-// segments here (see AddTablePrimaryKeyPaths for the unambiguous form a
-// quoted identifier carrying a literal '.' needs).
-//
-// The name check is RECIPROCAL with AddAuxiliaryType's: Java's
-// Builder.addTable calls the same verifyNameIsNotUsed
-// (RecordLayerSchemaTemplate.java:465), so a table colliding with an
-// already-registered struct type is rejected whichever side is seen first.
-// Without it a `CREATE TYPE AS STRUCT s ... CREATE TABLE s ...` template
-// builds two descriptors named s, one silently shadowing the other.
 // HasTable reports whether a table of that name was added.
 func (b *Builder) HasTable(name string) bool {
 	for _, t := range b.tables {
@@ -236,6 +224,18 @@ func (b *Builder) AddView(name, definition string) error {
 	return nil
 }
 
+// AddTable registers a table definition. columns must be listed in
+// declared order; primaryKey is the ordered slice of column names — a
+// DOTTED element (id.a) is the nested-column convention, split into path
+// segments here (see AddTablePrimaryKeyPaths for the unambiguous form a
+// quoted identifier carrying a literal '.' needs).
+//
+// The name check is RECIPROCAL with AddAuxiliaryType's: Java's
+// Builder.addTable calls the same verifyNameIsNotUsed
+// (RecordLayerSchemaTemplate.java:465), so a table colliding with an
+// already-registered struct type is rejected whichever side is seen first.
+// Without it a `CREATE TYPE AS STRUCT s ... CREATE TABLE s ...` template
+// builds two descriptors named s, one silently shadowing the other.
 func (b *Builder) AddTable(name string, columns []ColumnSpec, primaryKey []string) *Builder {
 	paths := make([][]string, len(primaryKey))
 	for i, col := range primaryKey {
@@ -1400,9 +1400,7 @@ func (r *tableTypeRepo) wrapperFor(elem api.DataType) (string, error) {
 	return name, nil
 }
 
-// buildPrimaryKeyExpression builds the record layer primary key expression.
-// In intermingled mode it's just the column fields; in non-intermingled mode
-// a RecordType prefix is prepended (matching Java).
+// buildIndexKeyExpression combines index columns in their declared order.
 func buildIndexKeyExpression(columns []string) (recordlayer.KeyExpression, error) {
 	if len(columns) == 0 {
 		return nil, api.NewError(api.ErrCodeInvalidSchemaTemplate,
@@ -1563,6 +1561,9 @@ func buildCardinalityIndex(idx indexSpec) (*recordlayer.Index, error) {
 	return recordlayer.NewIndex(idx.name, root), nil
 }
 
+// buildPrimaryKeyExpression builds the record layer primary key expression.
+// In intermingled mode it's just the column fields; in non-intermingled mode
+// a RecordType prefix is prepended (matching Java).
 func buildPrimaryKeyExpression(tbl tableSpec, intermingle bool) (recordlayer.KeyExpression, error) {
 	if len(tbl.primaryKey) == 0 {
 		return nil, api.NewError(api.ErrCodeInvalidSchemaTemplate,

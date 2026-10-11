@@ -276,17 +276,12 @@ func intersectTwo(a, b Compensation) Compensation {
 //
 // NEITHER side's obligation may be discarded. Making this read only one
 // operand's obligation reddens the order-independence laws in
-// compensation_monoid_test.go — run it to see by how much, and note that the
-// count is a function of the corpus size the test logs, not a constant. An
-// earlier version of this comment carried a bare "151 violations" that was
-// already wrong when written (it omitted the commutativity subtest) and was
-// then invalidated again by a corpus shape being added. A number stated as
-// prose against a corpus that grows cannot stay true, so the test reports it.
+// compensation_monoid_test.go; the test reports the violation count, which
+// depends on its corpus size.
 //
 // The quantifier union below is NOT covered by those laws — see the note at the
-// merge itself. An earlier version of this comment said the choice of
-// representative "does not matter", which was true of everything the laws can
-// observe and false of the quantifier set they cannot.
+// merge itself. The choice of representative is invisible to the laws but not
+// to the quantifier set.
 func unionPrimaryKeyDistinctObligations(a, b Compensation) Compensation {
 	aOnly := primaryKeyDistinctOnlyCompensation(a)
 	bOnly := primaryKeyDistinctOnlyCompensation(b)

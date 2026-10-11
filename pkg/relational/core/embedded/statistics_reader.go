@@ -257,12 +257,6 @@ func evaluateCollectedStatistics(
 	// metadata-only verdicts fix the outcome outright, and reading anyway costs
 	// an FDB transaction on every opt-in plan-cache miss — one that may retry or
 	// wait on a cluster whose answer is then thrown away.
-	//
-	// AMBIGUITY BELONGS HERE TOO. Its gate comment said it was decided "before
-	// any read", and that was true of decideStatistics and false of this caller:
-	// an ambiguous schema still paid the read and discarded the answer. A comment
-	// describing the gate rather than the path through it reads as a claim about
-	// the path.
 	if in.HasSyntheticTypes {
 		return decideStatistics(in)
 	}
@@ -345,9 +339,7 @@ func decideStatistics(in statisticsGateInput) StatisticsStatus {
 
 	// GATE 0b — NAME AMBIGUITY ACROSS THE TWO NAMESPACES. Metadata-only, like
 	// GATE 0, and decided in the same place. evaluateCollectedStatistics
-	// short-circuits on it too, so an ambiguous schema costs no read -- that is a
-	// property of the CALLER, and this comment said "before any read" while the
-	// caller still performed one.
+	// short-circuits on it too, so an ambiguous schema costs no read.
 	//
 	// It used to run LAST, after freshness and completeness, and that ordering
 	// was a bug rather than a preference. A colliding schema with no collected
@@ -479,19 +471,6 @@ func decideStatistics(in statisticsGateInput) StatisticsStatus {
 	return st
 }
 
-// ambiguousStorageName reports a declared type name that means one table read as
-// a STORAGE name and a different one read as a SQL name, which happens exactly
-// when some name's escaped form is ALSO a declared name.
-//
-// Returns the colliding pair, lower name first, so the refusal can say which two
-// tables an operator has to rename or quote differently.
-//
-// Takes the DECLARED set, not the per-type map the completeness loop built.
-// Ambiguity is a property of the names a schema declares, not of which of them
-// happened to be collected -- and the two coincide only because completeness
-// refuses first. Reading the collected map would make this gate's correctness
-// depend on the gate above it, which is one reordering away from vacuous, and
-// §5 of RFC-236 explicitly floats relaxing completeness to per-query.
 // ambiguousDeclaredNamesIn is the gate-input form of
 // RecordMetaData.AmbiguousDeclaredNames, taking the names the gate already
 // carries so decideStatistics stays a PURE function of its input.
@@ -506,6 +485,19 @@ func ambiguousDeclaredNamesIn(names []string) ([]string, bool) {
 	return ambiguousStorageName(declared)
 }
 
+// ambiguousStorageName reports a declared type name that means one table read as
+// a STORAGE name and a different one read as a SQL name, which happens exactly
+// when some name's escaped form is ALSO a declared name.
+//
+// Returns the colliding pair, lower name first, so the refusal can say which two
+// tables an operator has to rename or quote differently.
+//
+// Takes the DECLARED set, not the per-type map the completeness loop built.
+// Ambiguity is a property of the names a schema declares, not of which of them
+// happened to be collected -- and the two coincide only because completeness
+// refuses first. Reading the collected map would make this gate's correctness
+// depend on the gate above it, which is one reordering away from vacuous, and
+// §5 of RFC-236 explicitly floats relaxing completeness to per-query.
 func ambiguousStorageName(declared map[string]struct{}) ([]string, bool) {
 	var worst []string
 	for name := range declared {

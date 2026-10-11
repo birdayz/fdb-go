@@ -7,15 +7,8 @@ package recordlayer
 
 // Collected planner statistics (RFC-236).
 //
-// Statistics are gathered by an OFFLINE job — the same shape as
-// RebalanceSPFreshIndex and OnlineIndexer, which this library already ships —
-// and read at plan time behind a per-connection opt-in. The collector is allowed
-// to SCAN, which is the whole reason this design works where two earlier ones
-// failed: FDB's sampled range-size estimator is accurate above ~100KB and
-// returns 0 for a non-empty range below it, so a small table is invisible to it
-// exactly when its smallness is the most valuable thing a join-order decision
-// could know (measured in estimated_range_size_probe_test.go and
-// per_type_size_estimate_probe_test.go).
+// Offline collection scans records because sampled range-size estimates can
+// miss small non-empty tables. Plan-time reads are opt-in per connection.
 //
 // WHAT IS STORED, AND WHERE IT IS NOT. Statistics live OUTSIDE the record
 // store's subspace. That namespace belongs to Java: FDBRecordStoreKeyspace
@@ -198,17 +191,11 @@ type CollectOptions struct {
 	//
 	// This, not BatchSize, is what keeps a transaction inside FDB's 5s limit.
 	// BatchSize bounds ROWS, and a row is not a fixed number of bytes.
+	// TimeLimit uses ScanLimiterState.Elapsed, so simulations use their own clock.
 	TimeLimit time.Duration
 	// ScannedBytesLimit bounds how many bytes ONE scan transaction reads before
 	// it stops and hands back a continuation. Zero means
 	// DefaultCollectScannedBytesLimit.
-	//
-	// Both bounds are drivable from a test, and neither is a wall-clock bound:
-	// every elapsed-time decision goes through ScanLimiterState.Elapsed, which is
-	// env.Since, so TimeLimit runs on the simulation clock when one is installed.
-	// An earlier version of this comment claimed TimeLimit was nondeterministic
-	// and used that to justify leaving its arm undriven -- the claim was false and
-	// the gap it excused was real; both arms now have a test.
 	ScannedBytesLimit int64
 	// Tags are FDB transaction tags applied to EVERY transaction this collection
 	// opens — each scan batch and the replacing write.
@@ -306,11 +293,7 @@ func CollectStatistics(
 	var storeSubspace subspace.Subspace
 	var collectedAtVersion int64
 	var declaredTypes map[string]*RecordType
-	// cappedTypes is the set that blew the cap. It is merged from a per-attempt
-	// set after Run returns, exactly like the counters — an earlier revision
-	// wrote it inside the closure on the argument that a retry re-derives the
-	// same membership, which holds only if the rows do not change underneath.
-	// Same discipline, no separate argument to be wrong about.
+	// Merge cap violations only after a successful attempt: retries may see different rows.
 	cappedTypes := make(map[string]struct{})
 
 	for {
@@ -605,15 +588,8 @@ func CollectStatistics(
 	}
 
 	if storeSubspace == nil {
-		// Unreachable: the scan loop runs at least once and its first act is to
-		// open the store, which sets this; a failure to open returns an error
-		// from db.Run instead of arriving here.
-		//
-		// It is an ERROR rather than the early return it used to be, because that
-		// return reported SUCCESS having persisted nothing. That is the same shape
-		// as the capped run which used to exit 0 while storing nothing, and
-		// automation reads it as a completed refresh. An unreachable branch that
-		// fails silently is worth less than one that fails loudly.
+		// A successful collection must persist its report; missing the store
+		// subspace is an invariant failure, not an empty successful refresh.
 		return nil, fmt.Errorf(
 			"internal: collection finished without resolving the store subspace, so nothing was persisted")
 	}
@@ -669,28 +645,8 @@ func writeStatistics(
 			CollectedAtUnixNanos: nanos,
 		}))
 		for name, st := range report.Collected {
-			// BOTH stamps are set here, not one. The version used to be taken on
-			// trust from the report, which held only because the single caller
-			// pre-stamped every entry with the same value. Since the reader now
-			// requires entry stamps to MATCH the header, a future caller that built
-			// a report without pre-stamping would write a set rejected as torn --
-			// surfacing to an operator as "not collected" immediately after a
-			// successful collection. Stamping here makes the writer, not its
-			// callers, responsible for the invariant the reader enforces.
-			//
-			// Overriding the caller cannot lose information while the reader demands
-			// set-wide stamp equality: an entry version differing from the header's
-			// is BY DEFINITION a torn set there, so this can only turn a set the
-			// reader would reject into one it accepts. Per-entry versions become
-			// meaningful only under incremental recollection (RFC-236 §7, out of
-			// scope), which would have to relax that equality check first -- the two
-			// move together, and this line is where the coupling lives.
-			//
-			// The range copies, so this never reaches report.Collected: a caller that
-			// did not pre-stamp gets back a report saying version 0 while the store
-			// holds `version`. Unreachable today -- writeStatistics is unexported and
-			// has one caller, which pre-stamps -- and worth stating so the next
-			// caller knows the report is not what was written.
+			// Readers require each entry's stamps to match the header, regardless
+			// of the report's input stamps. This updates the stored copy only.
 			st.CollectedAtVersion = version
 			st.CollectedAtUnixNanos = nanos
 			tx.Set(target.Pack(tuple.Tuple{name}), packStatistic(st))
@@ -904,25 +860,8 @@ func ReadStatisticsAtWithRefusal(
 		}
 		return StoreStatistics{}, StatisticsReadAbsent, readVersion, nil
 	}
-	// THE HEADER SAYS HOW MANY PER-TYPE ENTRIES THE WRITE PUT DOWN, so a read
-	// that returns a different number returned a DIFFERENT SET than was written.
-	// Header and entries are written in one transaction (ClearRange, then the
-	// header, then every entry), so on any consistent read they agree.
-	//
-	// This is the check that makes the header's Count field load-bearing rather
-	// than decorative -- it was previously written to durable bytes and never
-	// read, which is the shape that lets a value drift wrong without anything
-	// noticing. Disagreement is treated exactly like a malformed entry, because
-	// it means the same thing: a PARTIAL set, which the completeness gate above
-	// this is built to never receive.
-	//
-	// This reaches an operator as its OWN diagnosis, not as "not collected".
-	// An earlier version of this comment argued the collapse was acceptable
-	// because "ok=false is the only channel this signature has" -- which stopped
-	// being true the moment ReadStatisticsAtWithRefusal landed, and the sentence
-	// then held the gap open by justifying it. Absent and torn are opposite
-	// facts: one means the store is empty, the other means it is holding
-	// something that cannot be vouched for.
+	// Header and entries are written atomically; a count mismatch identifies
+	// an inconsistent stored set, which must not be reported as absent.
 	if int64(len(out.PerType)) != headerTypeCount {
 		return StoreStatistics{}, StatisticsReadCountMismatch, readVersion, nil
 	}
@@ -970,20 +909,8 @@ func ClearStatistics(
 	return err
 }
 
-// ReadStatisticsAt is ReadStatisticsAtWithRefusal reduced to a boolean, for
-// callers that only need to know whether the set is usable.
-//
-// Every caller that DISTINGUISHES refusals must use the WithRefusal form. A
-// bool cannot tell apart the eight ways this read declines, and FOUR checks were
-// found dead precisely because their specs asserted ok==false: a later check
-// refused the same fixture first, and the earlier one stopped being exercised
-// with nothing going red at the moment it happened.
-//
-// That applies to callers that REPORT a refusal too, not only to tests. The
-// relational gate used this wrapper and therefore told operators "not
-// collected" for every torn set -- an earlier draft of this very comment said
-// "every caller that ASSERTS on a refusal", and its only non-test caller was
-// doing exactly that while not asserting, so the wording excused it.
+// ReadStatisticsAt reduces ReadStatisticsAtWithRefusal to a usability boolean.
+// Use the WithRefusal form to distinguish or report absent, torn, and unreadable sets.
 func ReadStatisticsAt(
 	ctx context.Context,
 	db *FDBDatabase,

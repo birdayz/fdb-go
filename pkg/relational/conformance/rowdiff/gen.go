@@ -1819,9 +1819,6 @@ func aggExprSQL(a *AggSpec) string {
 	}
 }
 
-// aggSQL renders an aggregate query. Both output columns are aliased so the
-// harness's name-keyed rows have stable, unique keys regardless of how the
-// engine spells a computed column.
 // unionSQL renders `SELECT <proj> FROM t WHERE <l> UNION [ALL] SELECT <proj>
 // FROM t WHERE <r>`. Both branches carry the SAME projection so their output
 // columns align.
@@ -1900,6 +1897,9 @@ func (c *Case) derivedSQL(q Query, projection []string) string {
 	return b.String()
 }
 
+// aggSQL renders an aggregate query. Both output columns are aliased so the
+// harness's name-keyed rows have stable, unique keys regardless of how the
+// engine spells a computed column.
 func (c *Case) aggSQL(q Query) string {
 	a := q.Agg
 	var b strings.Builder

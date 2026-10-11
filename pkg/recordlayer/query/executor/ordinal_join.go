@@ -759,21 +759,6 @@ type legWindowRow struct {
 	// window shadows, the alias was already resolvable WITHOUT the binder. The
 	// binder's shadowing semantics are documented in DIVERGENCES.md.
 	//
-	// It is recorded to be MEASURED, not to be reasoned from, because the reasoning
-	// it invites is wrong. The tempting inference — a window that shadows nothing is
-	// the binder's only binding, so a read of it is a genuine consumer — was the
-	// premise this marker was added under, and the census refuted it: over a full
-	// sqldriver run ZERO of the binder's reads shadow, all of them are unshadowed,
-	// and declining them entirely still changes no row
-	// (measured by running the shape down both resolution routes). "The only
-	// binding" and "load-bearing" are therefore different properties: those reads
-	// were the first without being the second, because the value they resolved
-	// never reached an answer. The ordinal model has since removed the reads
-	// entirely — TestFDB_MergedLegBinding_NothingReadsTheBinder pins that the shape
-	// still binds and is still not read — so the flag now describes a channel with
-	// no consumer at all. Load-bearing is settled per reader shape by running both
-	// routes, never by reading this flag.
-	//
 	// Recorded only while the leg-identity census gate is on; the map probe is not
 	// something the per-outer-row path should pay for in production.
 	shadowsExisting bool

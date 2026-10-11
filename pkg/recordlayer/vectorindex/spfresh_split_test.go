@@ -471,7 +471,7 @@ var _ = Describe("SPFresh fine-split primitives", func() {
 		Expect(out.proceed).To(BeFalse(), "absent centroid is a zombie task")
 	})
 
-	It("queries keep returning a SEALED posting's members (codex 094.2 r1)", func() {
+	It("queries keep returning a SEALED posting's members (094.2)", func() {
 		// Until SPLIT commits, the parent posting is the ONLY place its
 		// members live. A cache loaded during the seal window must still
 		// route reads to it — filtering SEALED out of query routing made
@@ -489,7 +489,7 @@ var _ = Describe("SPFresh fine-split primitives", func() {
 		Expect(got).To(HaveLen(10), "SEALED posting's members missing from kNN during the seal window")
 	})
 
-	It("an insert routed by a stale cache follows a FORWARD parent to its children (codex 094.2 r1)", func() {
+	It("an insert routed by a stale cache follows a FORWARD parent to its children (094.2)", func() {
 		// One tight cluster → one fine centroid. Warm the cache, split the
 		// centroid, then insert: the stale cache still routes to the parent;
 		// the REAL state fence sees FORWARD and must follow childA/childB
@@ -526,7 +526,7 @@ var _ = Describe("SPFresh fine-split primitives", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	It("the assignment scan batch is byte-bounded by dimension (codex 094.2 r1)", func() {
+	It("the assignment scan batch is byte-bounded by dimension (094.2)", func() {
 		small := DefaultSPFreshConfig(2)
 		Expect(small.stagingScanBatch()).To(Equal(spfreshScanBatchSize), "small vectors keep the row cap")
 		big := DefaultSPFreshConfig(4096)
@@ -534,7 +534,7 @@ var _ = Describe("SPFresh fine-split primitives", func() {
 		Expect(big.stagingScanBatch()).To(BeNumerically(">=", 1))
 	})
 
-	It("write routing never lets SEALED rows starve the ACTIVE fallbacks (codex 094.2 r2+r4)", func() {
+	It("write routing never lets SEALED rows starve the ACTIVE fallbacks (094.2)", func() {
 		// 40 SEALED centroids — more than ANY combined cap (2·kc = 32) —
 		// nearer than the only ACTIVE one: per-state budgets must still keep
 		// the ACTIVE fallback. Two prior shapes of this bug: r2 (SEALED
@@ -575,7 +575,7 @@ var _ = Describe("SPFresh fine-split primitives", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	It("a parent cached SEALED but FORWARD in storage is still followed by inserts (codex 094.2 r3)", func() {
+	It("a parent cached SEALED but FORWARD in storage is still followed by inserts (094.2)", func() {
 		// The SEAL→SPLIT staleness window: the cache loaded during SEAL, the
 		// split committed after. Write routing must keep the SEALED-cached
 		// parent so the fence can real-read FORWARD and follow the children —
@@ -665,7 +665,7 @@ var _ = Describe("SPFresh fine-split primitives", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	It("a followed FORWARD child keeps the verified list nearest-first for closure (codex 094.2 r2)", func() {
+	It("a followed FORWARD child keeps the verified list nearest-first for closure (094.2)", func() {
 		// Stale-cache order: an ACTIVE candidate pops BEFORE a FORWARD parent
 		// whose child is nearer than it. The closure's c1 must be the child —
 		// pre-fix the child was appended after the farther candidate, closure
