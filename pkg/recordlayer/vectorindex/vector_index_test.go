@@ -2385,7 +2385,7 @@ var _ = Describe("VectorIndex Store Integration", func() {
 
 	It("refuses an invalid HNSW config at build, as Java's VectorIndexValidator does", func() {
 		// m=20 > default mMax=16, which Java's Config constructor refuses.
-		vecIdx := recordlayer.NewVectorIndex("vec_price_qty", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0), 2)
+		vecIdx := recordlayer.NewVectorIndex("vec_price_qty", recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0), 2)
 		vecIdx.Options[recordlayer.IndexOptionHNSWM] = "20"
 		builder := baseMetaData()
 		builder.AddIndex("Order", vecIdx)
@@ -2399,7 +2399,7 @@ var _ = Describe("VectorIndex Store Integration", func() {
 	It("refuses a metric Java's Metric.valueOf does not name at build", func() {
 		for _, metric := range []string{"COSIGN_METRIC", "cosine", "inner_product", "euclidean"} {
 			vecIdx := recordlayer.NewVectorIndex("vec_price_qty",
-				recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0), 2)
+				recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0), 2)
 			vecIdx.Options[recordlayer.IndexOptionVectorMetric] = metric
 			builder := baseMetaData()
 			builder.AddIndex("Order", vecIdx)
@@ -2465,9 +2465,53 @@ var _ = Describe("VectorIndex Store Integration", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	// Java's maintainer reads value column 0 as vector bytes on a remove as on
+	// an insert: a numeric column fails both, the delete of a record saved
+	// while the index was disabled included.
+	It("refuses a numeric vector column on save and on delete, as Java's maintainer does", func() {
+		ks := specSubspace()
+		vecIdx := recordlayer.NewVectorIndex("vec_numeric",
+			recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0), 2)
+		builder := baseMetaData()
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+		run := func(fn func(*recordlayer.FDBRecordStore) error) error {
+			_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				return nil, fn(store)
+			})
+			return err
+		}
+		var cce *recordlayer.ClassCastError
+		err = run(func(store *recordlayer.FDBRecordStore) error {
+			_, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(1), Quantity: proto.Int32(2)})
+			return err
+		})
+		Expect(errors.As(err, &cce)).To(BeTrue(), "save: %T %v", err, err)
+		Expect(run(func(store *recordlayer.FDBRecordStore) error {
+			if _, err := store.MarkIndexDisabled(vecIdx.Name); err != nil {
+				return err
+			}
+			if _, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(3), Quantity: proto.Int32(4)}); err != nil {
+				return err
+			}
+			_, err := store.MarkIndexWriteOnly(vecIdx.Name)
+			return err
+		})).To(Succeed())
+		err = run(func(store *recordlayer.FDBRecordStore) error {
+			_, err := store.DeleteRecord(tuple.Tuple{int64(2)})
+			return err
+		})
+		Expect(errors.As(err, &cce)).To(BeTrue(), "delete: %T %v", err, err)
+	})
+
 	It("refuses an option given under its name and its alias at build", func() {
 		vecIdx := recordlayer.NewVectorIndex("vec_price_qty",
-			recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0), 2)
+			recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0), 2)
 		vecIdx.Options[recordlayer.IndexOptionVectorMetric] = "COSINE_METRIC"
 		vecIdx.Options["vectorMetric"] = "COSINE_METRIC"
 		builder := baseMetaData()
@@ -2481,8 +2525,8 @@ var _ = Describe("VectorIndex Store Integration", func() {
 	It("save records with int fields, SearchVectorIndex returns nearest", func() {
 		ks := specSubspace()
 
-		// A VECTOR index whose value columns (price, quantity) are a 2D vector.
-		vecIdx := recordlayer.NewVectorIndex("vec_price_qty", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0), 2)
+		// A VECTOR index over vector_data, which withVector fills with (price, quantity).
+		vecIdx := recordlayer.NewVectorIndex("vec_price_qty", recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0), 2)
 		builder := baseMetaData()
 		builder.AddIndex("Order", vecIdx)
 		md, err := builder.Build()
@@ -2505,11 +2549,11 @@ var _ = Describe("VectorIndex Store Integration", func() {
 				{3, 100, 100},
 				{4, 50, 50},
 			} {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(withVector(&gen.Order{
 					OrderId:  proto.Int64(o.id),
 					Price:    proto.Int32(o.price),
 					Quantity: proto.Int32(o.quantity),
-				})
+				}, "price", "quantity"))
 				Expect(err).NotTo(HaveOccurred())
 			}
 
@@ -2545,7 +2589,7 @@ var _ = Describe("VectorIndex Store Integration", func() {
 	It("delete record removes from vector index", func() {
 		ks := specSubspace()
 
-		vecIdx := recordlayer.NewVectorIndex("vec_price_qty", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0), 2)
+		vecIdx := recordlayer.NewVectorIndex("vec_price_qty", recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0), 2)
 		builder := baseMetaData()
 		builder.AddIndex("Order", vecIdx)
 		md, err := builder.Build()
@@ -2557,11 +2601,11 @@ var _ = Describe("VectorIndex Store Integration", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Insert 3 orders.
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(10)})
+			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(10)}, "price", "quantity"))
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(20)})
+			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(20)}, "price", "quantity"))
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(30), Quantity: proto.Int32(30)})
+			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(30), Quantity: proto.Int32(30)}, "price", "quantity"))
 			Expect(err).NotTo(HaveOccurred())
 
 			// Delete order id=2.
@@ -2589,7 +2633,7 @@ var _ = Describe("VectorIndex Store Integration", func() {
 	It("ScanIndex rejects VECTOR index with error", func() {
 		ks := specSubspace()
 
-		vecIdx := recordlayer.NewVectorIndex("vec_price_qty", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0), 2)
+		vecIdx := recordlayer.NewVectorIndex("vec_price_qty", recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0), 2)
 		builder := baseMetaData()
 		builder.AddIndex("Order", vecIdx)
 		md, err := builder.Build()
@@ -2614,7 +2658,7 @@ var _ = Describe("VectorIndex Store Integration", func() {
 	It("ScanVectorIndex returns kNN results as cursor", func() {
 		ks := specSubspace()
 
-		vecIdx := recordlayer.NewVectorIndex("vec_price_qty", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0), 2)
+		vecIdx := recordlayer.NewVectorIndex("vec_price_qty", recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0), 2)
 		builder := baseMetaData()
 		builder.AddIndex("Order", vecIdx)
 		md, err := builder.Build()
@@ -2636,11 +2680,11 @@ var _ = Describe("VectorIndex Store Integration", func() {
 				{3, 100, 100},
 				{4, 50, 50},
 			} {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(withVector(&gen.Order{
 					OrderId:  proto.Int64(o.id),
 					Price:    proto.Int32(o.price),
 					Quantity: proto.Int32(o.quantity),
-				})
+				}, "price", "quantity"))
 				Expect(err).NotTo(HaveOccurred())
 			}
 
@@ -2680,7 +2724,7 @@ var _ = Describe("VectorIndex Store Integration", func() {
 	It("ScanIndexByType BY_DISTANCE returns kNN results", func() {
 		ks := specSubspace()
 
-		vecIdx := recordlayer.NewVectorIndex("vec_price_qty", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0), 2)
+		vecIdx := recordlayer.NewVectorIndex("vec_price_qty", recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0), 2)
 		builder := baseMetaData()
 		builder.AddIndex("Order", vecIdx)
 		md, err := builder.Build()
@@ -2701,11 +2745,11 @@ var _ = Describe("VectorIndex Store Integration", func() {
 				{3, 100, 100},
 				{4, 50, 50},
 			} {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(withVector(&gen.Order{
 					OrderId:  proto.Int64(o.id),
 					Price:    proto.Int32(o.price),
 					Quantity: proto.Int32(o.quantity),
-				})
+				}, "price", "quantity"))
 				Expect(err).NotTo(HaveOccurred())
 			}
 
@@ -2740,7 +2784,7 @@ var _ = Describe("VectorIndex Store Integration", func() {
 	It("ScanVectorIndex on empty index returns no results", func() {
 		ks := specSubspace()
 
-		vecIdx := recordlayer.NewVectorIndex("vec_price_qty", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0), 2)
+		vecIdx := recordlayer.NewVectorIndex("vec_price_qty", recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0), 2)
 		builder := baseMetaData()
 		builder.AddIndex("Order", vecIdx)
 		md, err := builder.Build()
@@ -2765,7 +2809,7 @@ var _ = Describe("VectorIndex Store Integration", func() {
 	It("ScanVectorIndex returns all results when k > count", func() {
 		ks := specSubspace()
 
-		vecIdx := recordlayer.NewVectorIndex("vec_price_qty", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0), 2)
+		vecIdx := recordlayer.NewVectorIndex("vec_price_qty", recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0), 2)
 		builder := baseMetaData()
 		builder.AddIndex("Order", vecIdx)
 		md, err := builder.Build()
@@ -2777,9 +2821,9 @@ var _ = Describe("VectorIndex Store Integration", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Insert 2 records.
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(10)})
+			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(10)}, "price", "quantity"))
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(20)})
+			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(20)}, "price", "quantity"))
 			Expect(err).NotTo(HaveOccurred())
 
 			// Request k=100 but only 2 exist.
@@ -2803,7 +2847,7 @@ var _ = Describe("VectorIndex Store Integration", func() {
 	It("ScanVectorIndex results are sorted by distance ascending", func() {
 		ks := specSubspace()
 
-		vecIdx := recordlayer.NewVectorIndex("vec_price_qty", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0), 2)
+		vecIdx := recordlayer.NewVectorIndex("vec_price_qty", recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0), 2)
 		builder := baseMetaData()
 		builder.AddIndex("Order", vecIdx)
 		md, err := builder.Build()
@@ -2826,11 +2870,11 @@ var _ = Describe("VectorIndex Store Integration", func() {
 				{4, 5, 5},     // dist^2 = 50
 				{5, 100, 100}, // dist^2 = 20000
 			} {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(withVector(&gen.Order{
 					OrderId:  proto.Int64(o.id),
 					Price:    proto.Int32(o.price),
 					Quantity: proto.Int32(o.quantity),
-				})
+				}, "price", "quantity"))
 				Expect(err).NotTo(HaveOccurred())
 			}
 
@@ -2968,7 +3012,7 @@ var _ = Describe("VectorIndex Store Integration", func() {
 	It("old vector position not returned after update", func() {
 		ks := specSubspace()
 
-		vecIdx := recordlayer.NewVectorIndex("vec_update_pos", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0), 2)
+		vecIdx := recordlayer.NewVectorIndex("vec_update_pos", recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0), 2)
 		builder := baseMetaData()
 		builder.AddIndex("Order", vecIdx)
 		md, err := builder.Build()
@@ -2980,15 +3024,15 @@ var _ = Describe("VectorIndex Store Integration", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Insert PK=1 at (0, 0).
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(0), Quantity: proto.Int32(0)})
+			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(0), Quantity: proto.Int32(0)}, "price", "quantity"))
 			Expect(err).NotTo(HaveOccurred())
 
 			// Insert PK=2 at (100, 100) — far away.
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100), Quantity: proto.Int32(100)})
+			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100), Quantity: proto.Int32(100)}, "price", "quantity"))
 			Expect(err).NotTo(HaveOccurred())
 
 			// Update PK=1 to (100, 100) — move it far from origin.
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(100)})
+			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(100)}, "price", "quantity"))
 			Expect(err).NotTo(HaveOccurred())
 
 			// Search near (0, 0) with k=1: should NOT find PK=1 (it moved).
@@ -3203,7 +3247,7 @@ var _ = Describe("VectorIndex Store Integration", func() {
 	It("RebuildIndex rebuilds VECTOR index", func() {
 		ks := specSubspace()
 
-		vecIdx := recordlayer.NewVectorIndex("vec_rebuild", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0), 2)
+		vecIdx := recordlayer.NewVectorIndex("vec_rebuild", recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0), 2)
 		builder := baseMetaData()
 		builder.AddIndex("Order", vecIdx)
 		md, err := builder.Build()
@@ -3216,11 +3260,11 @@ var _ = Describe("VectorIndex Store Integration", func() {
 
 			// Insert 5 records.
 			for i := int64(1); i <= 5; i++ {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(withVector(&gen.Order{
 					OrderId:  proto.Int64(i),
 					Price:    proto.Int32(int32(i * 10)),
 					Quantity: proto.Int32(int32(i * 10)),
-				})
+				}, "price", "quantity"))
 				Expect(err).NotTo(HaveOccurred())
 			}
 
@@ -3266,8 +3310,8 @@ var _ = Describe("VectorIndex Store Integration", func() {
 	It("medium-scale search with 500 vectors", func() {
 		ks := specSubspace()
 
-		// 2D HNSW index on (price, quantity).
-		vecIdx := recordlayer.NewVectorIndex("vec_500", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0), 2)
+		// 2D HNSW index over (price, quantity), serialized into vector_data.
+		vecIdx := recordlayer.NewVectorIndex("vec_500", recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0), 2)
 		builder := baseMetaData()
 		builder.AddIndex("Order", vecIdx)
 		md, err := builder.Build()
@@ -3290,11 +3334,11 @@ var _ = Describe("VectorIndex Store Integration", func() {
 
 				for i := batchStart; i < batchEnd; i++ {
 					// Deterministic spread: (i*2, i*3) gives distinct 2D positions.
-					_, err = store.SaveRecord(&gen.Order{
+					_, err = store.SaveRecord(withVector(&gen.Order{
 						OrderId:  proto.Int64(int64(i + 1)),
 						Price:    proto.Int32(int32(i * 2)),
 						Quantity: proto.Int32(int32(i * 3)),
-					})
+					}, "price", "quantity"))
 					Expect(err).NotTo(HaveOccurred())
 				}
 
@@ -3579,10 +3623,10 @@ var _ = Describe("VectorIndex Prefix Partitioning", func() {
 	It("grouped VECTOR index stores per-prefix HNSW graphs", func() {
 		ks := specSubspace()
 
-		// Index: KWV(Concat(Field("quantity"), Field("price")), 1)
-		// quantity is the prefix (group key), price is the vector (1D).
+		// Index: KWV(Concat(Field("quantity"), Field("vector_data")), 1)
+		// quantity is the prefix (group key), vector_data holds (price) (1D).
 		vecIdx := recordlayer.NewVectorIndex("vec_grouped",
-			recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("price")), 1), 1)
+			recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("vector_data")), 1), 1)
 		builder := baseMetaData()
 		builder.AddIndex("Order", vecIdx)
 		md, err := builder.Build()
@@ -3594,17 +3638,17 @@ var _ = Describe("VectorIndex Prefix Partitioning", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Group 1 (quantity=1): prices 10, 20, 100
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(1)})
+			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(1)}, "price"))
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(1)})
+			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(1)}, "price"))
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(100), Quantity: proto.Int32(1)})
+			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(100), Quantity: proto.Int32(1)}, "price"))
 			Expect(err).NotTo(HaveOccurred())
 
 			// Group 2 (quantity=2): prices 50, 60
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(4), Price: proto.Int32(50), Quantity: proto.Int32(2)})
+			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(4), Price: proto.Int32(50), Quantity: proto.Int32(2)}, "price"))
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(5), Price: proto.Int32(60), Quantity: proto.Int32(2)})
+			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(5), Price: proto.Int32(60), Quantity: proto.Int32(2)}, "price"))
 			Expect(err).NotTo(HaveOccurred())
 
 			// Search in group 1 near price=15: should find id=1(10) and id=2(20), not group 2 records.
@@ -3640,7 +3684,7 @@ var _ = Describe("VectorIndex Prefix Partitioning", func() {
 		ks := specSubspace()
 
 		vecIdx := recordlayer.NewVectorIndex("vec_grouped_empty",
-			recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("price")), 1), 1)
+			recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("vector_data")), 1), 1)
 		builder := baseMetaData()
 		builder.AddIndex("Order", vecIdx)
 		md, err := builder.Build()
@@ -3652,7 +3696,7 @@ var _ = Describe("VectorIndex Prefix Partitioning", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Insert into group 1 only.
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(1)})
+			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(1)}, "price"))
 			Expect(err).NotTo(HaveOccurred())
 
 			// Search in group 99 (empty): should return 0 results.
@@ -3669,7 +3713,7 @@ var _ = Describe("VectorIndex Prefix Partitioning", func() {
 		ks := specSubspace()
 
 		vecIdx := recordlayer.NewVectorIndex("vec_grouped_del",
-			recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("price")), 1), 1)
+			recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("vector_data")), 1), 1)
 		builder := baseMetaData()
 		builder.AddIndex("Order", vecIdx)
 		md, err := builder.Build()
@@ -3681,13 +3725,13 @@ var _ = Describe("VectorIndex Prefix Partitioning", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Group 1: id=1 and id=2.
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(1)})
+			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(1)}, "price"))
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(1)})
+			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(1)}, "price"))
 			Expect(err).NotTo(HaveOccurred())
 
 			// Group 2: id=3.
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(50), Quantity: proto.Int32(2)})
+			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(50), Quantity: proto.Int32(2)}, "price"))
 			Expect(err).NotTo(HaveOccurred())
 
 			// Delete id=1 from group 1.
@@ -3716,7 +3760,7 @@ var _ = Describe("VectorIndex Prefix Partitioning", func() {
 		ks := specSubspace()
 
 		vecIdx := recordlayer.NewVectorIndex("vec_grouped_scan",
-			recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("price")), 1), 1)
+			recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("vector_data")), 1), 1)
 		builder := baseMetaData()
 		builder.AddIndex("Order", vecIdx)
 		md, err := builder.Build()
@@ -3728,13 +3772,13 @@ var _ = Describe("VectorIndex Prefix Partitioning", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Group 1: id=1(price=10), id=2(price=20).
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(1)})
+			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(1)}, "price"))
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(1)})
+			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(1)}, "price"))
 			Expect(err).NotTo(HaveOccurred())
 
 			// Group 2: id=3(price=50).
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(50), Quantity: proto.Int32(2)})
+			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(50), Quantity: proto.Int32(2)}, "price"))
 			Expect(err).NotTo(HaveOccurred())
 
 			// ScanVectorIndexWithPrefix for group 1.
@@ -3769,7 +3813,7 @@ var _ = Describe("VectorIndex Prefix Partitioning", func() {
 		ks := specSubspace()
 
 		vecIdx := recordlayer.NewVectorIndex("vec_grouped_scantype",
-			recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("price")), 1), 1)
+			recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("vector_data")), 1), 1)
 		builder := baseMetaData()
 		builder.AddIndex("Order", vecIdx)
 		md, err := builder.Build()
@@ -3781,15 +3825,15 @@ var _ = Describe("VectorIndex Prefix Partitioning", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Group 1: id=1(price=10), id=2(price=20).
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(1)})
+			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(1)}, "price"))
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(1)})
+			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(1)}, "price"))
 			Expect(err).NotTo(HaveOccurred())
 
 			// Group 2: id=3(price=50), id=4(price=60).
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(50), Quantity: proto.Int32(2)})
+			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(50), Quantity: proto.Int32(2)}, "price"))
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(4), Price: proto.Int32(60), Quantity: proto.Int32(2)})
+			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(4), Price: proto.Int32(60), Quantity: proto.Int32(2)}, "price"))
 			Expect(err).NotTo(HaveOccurred())
 
 			// Scan group 2 via ScanIndexByType + VectorDistanceScanRangeWithPrefix.
@@ -3825,7 +3869,7 @@ var _ = Describe("VectorIndex Prefix Partitioning", func() {
 		ks := specSubspace()
 
 		vecIdx := recordlayer.NewVectorIndex("vec_grouped_update",
-			recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("price")), 1), 1)
+			recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("vector_data")), 1), 1)
 		builder := baseMetaData()
 		builder.AddIndex("Order", vecIdx)
 		md, err := builder.Build()
@@ -3837,7 +3881,7 @@ var _ = Describe("VectorIndex Prefix Partitioning", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Insert id=1 in group 1.
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(1)})
+			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(1)}, "price"))
 			Expect(err).NotTo(HaveOccurred())
 
 			// Verify it's in group 1.
@@ -3847,7 +3891,7 @@ var _ = Describe("VectorIndex Prefix Partitioning", func() {
 			Expect(results[0].PrimaryKey[0].(int64)).To(Equal(int64(1)))
 
 			// Update id=1 to group 2.
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(2)})
+			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(2)}, "price"))
 			Expect(err).NotTo(HaveOccurred())
 
 			// Group 1 should now be empty.
@@ -3869,8 +3913,8 @@ var _ = Describe("VectorIndex Prefix Partitioning", func() {
 	It("non-KWV index (no prefix) still works via backward-compatible APIs", func() {
 		ks := specSubspace()
 
-		// Non-grouped vector index: no key columns, value columns (price, quantity) as a 2D vector.
-		vecIdx := recordlayer.NewVectorIndex("vec_noprefix", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0), 2)
+		// Non-grouped vector index: no key columns, vector_data holds (price, quantity).
+		vecIdx := recordlayer.NewVectorIndex("vec_noprefix", recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0), 2)
 		builder := baseMetaData()
 		builder.AddIndex("Order", vecIdx)
 		md, err := builder.Build()
@@ -3881,9 +3925,9 @@ var _ = Describe("VectorIndex Prefix Partitioning", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(10)})
+			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(10)}, "price", "quantity"))
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(20)})
+			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(20)}, "price", "quantity"))
 			Expect(err).NotTo(HaveOccurred())
 
 			// Backward-compatible API (no prefix) should work.
@@ -3900,7 +3944,7 @@ var _ = Describe("VectorIndex Prefix Partitioning", func() {
 		ks := specSubspace()
 
 		vecIdx := recordlayer.NewVectorIndex("vec_grouped_recs",
-			recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("price")), 1), 1)
+			recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("vector_data")), 1), 1)
 		builder := baseMetaData()
 		builder.AddIndex("Order", vecIdx)
 		md, err := builder.Build()
@@ -3912,11 +3956,11 @@ var _ = Describe("VectorIndex Prefix Partitioning", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Group 1: id=1(price=10).
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(1)})
+			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(1)}, "price"))
 			Expect(err).NotTo(HaveOccurred())
 
 			// Group 2: id=2(price=50).
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(50), Quantity: proto.Int32(2)})
+			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(50), Quantity: proto.Int32(2)}, "price"))
 			Expect(err).NotTo(HaveOccurred())
 
 			// Fetch records from group 1.
@@ -4078,7 +4122,7 @@ var _ = Describe("VectorIndex Prefix Partitioning", func() {
 		ks := specSubspace()
 
 		vecIdx := recordlayer.NewVectorIndex("vec_grouped_isolation",
-			recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("price")), 1), 1)
+			recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("vector_data")), 1), 1)
 		builder := baseMetaData()
 		builder.AddIndex("Order", vecIdx)
 		md, err := builder.Build()
@@ -4093,11 +4137,11 @@ var _ = Describe("VectorIndex Prefix Partitioning", func() {
 			for g := int32(1); g <= 5; g++ {
 				for j := int32(0); j < 2; j++ {
 					id := int64(g)*100 + int64(j)
-					_, err = store.SaveRecord(&gen.Order{
+					_, err = store.SaveRecord(withVector(&gen.Order{
 						OrderId:  proto.Int64(id),
 						Price:    proto.Int32(g*10 + j),
 						Quantity: proto.Int32(g),
-					})
+					}, "price"))
 					Expect(err).NotTo(HaveOccurred())
 				}
 			}
@@ -5001,6 +5045,36 @@ func spanPKInt(span []byte) int64 {
 		panic(err)
 	}
 	return pk[0].(int64)
+}
+
+// withVector sets o's vector_data to the named numeric fields as Java's
+// RealVector bytes, the only vector form Java's maintainer reads; an unset
+// field leaves the vector null, which the index skips.
+func withVector(o *gen.Order, fields ...string) *gen.Order {
+	vec := make([]float64, 0, len(fields))
+	for _, f := range fields {
+		var v float64
+		var set bool
+		switch f {
+		case "price":
+			v, set = float64(o.GetPrice()), o.Price != nil
+		case "quantity":
+			v, set = float64(o.GetQuantity()), o.Quantity != nil
+		case "coord_x":
+			v, set = float64(o.GetCoordX()), o.CoordX != nil
+		case "coord_y":
+			v, set = float64(o.GetCoordY()), o.CoordY != nil
+		default:
+			panic("withVector: unknown field " + f)
+		}
+		if !set {
+			o.VectorData = nil
+			return o
+		}
+		vec = append(vec, v)
+	}
+	o.VectorData = vectorcodec.Serialize(vec)
+	return o
 }
 
 // mustParseHNSWConfig is parseHNSWConfig for an index whose options parse.

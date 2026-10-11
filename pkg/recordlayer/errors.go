@@ -608,6 +608,18 @@ type UnsupportedOperationError struct{ Message string }
 
 func (e *UnsupportedOperationError) Error() string { return e.Message }
 
+// ClassCastError corresponds to Java's ClassCastException, e.g. a vector
+// index reading a value column that is not bytes (Tuple.getBytes).
+type ClassCastError struct{ Message string }
+
+func (e *ClassCastError) Error() string { return e.Message }
+
+// IndexOutOfBoundsError corresponds to Java's IndexOutOfBoundsException, e.g.
+// a vector index entry without a value column or with an unknown vector type.
+type IndexOutOfBoundsError struct{ Message string }
+
+func (e *IndexOutOfBoundsError) Error() string { return e.Message }
+
 // RecordCoreError carries Java's base RecordCoreException diagnostics and cause.
 type RecordCoreError struct {
 	IndexOption string

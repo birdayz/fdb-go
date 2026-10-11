@@ -94,6 +94,7 @@ const (
 	TypeHalf   = typeHalf
 	TypeSingle = typeSingle
 	TypeDouble = typeDouble
+	TypeRaBitQ = typeRaBitQ
 )
 
 // HalfToFloat32 converts an IEEE-754 half-precision (16-bit) value to float32.

@@ -21,7 +21,7 @@ var _ = Describe("Vector index store timer counters", func() {
 	// counts them.
 	It("counts vector references read and deferred tasks", func() {
 		ks := specSubspace()
-		vecIdx := recordlayer.NewVectorIndex("vec_counted", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("price")), 1), 1)
+		vecIdx := recordlayer.NewVectorIndex("vec_counted", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("vector_data")), 1), 1)
 		vecIdx.Options[recordlayer.IndexOptionVectorEngine] = "GUARDIANN"
 		vecIdx.Options[recordlayer.IndexOptionGuardiannPrimaryClusterMin] = "1"
 		vecIdx.Options[recordlayer.IndexOptionGuardiannPrimaryClusterMax] = "2"
@@ -41,7 +41,7 @@ var _ = Describe("Vector index store timer counters", func() {
 			// In-transaction maintenance, as embedded relational runs it.
 			store.GetIndexDeferredMaintenanceControl().SetAutoMergeDuringCommit(true)
 			for id := int64(1); id <= 6; id++ {
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(int32(10 * id)), Quantity: proto.Int32(1)})
+				_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(int32(10 * id)), Quantity: proto.Int32(1)}, "price"))
 				Expect(err).NotTo(HaveOccurred())
 			}
 			Expect(timer.GetCount(CountVectorTaskEnqueued)).To(BeNumerically(">", 0), "a cluster past its maximum enqueues a split")
@@ -65,7 +65,7 @@ var _ = Describe("Vector index store timer counters", func() {
 	// and the generic index key/value counters, on writes and on searches.
 	It("counts HNSW node reads and writes", func() {
 		ks := specSubspace()
-		vecIdx := recordlayer.NewVectorIndex("vec_hnsw_counted", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("price")), 1), 1)
+		vecIdx := recordlayer.NewVectorIndex("vec_hnsw_counted", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("vector_data")), 1), 1)
 		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
@@ -79,7 +79,7 @@ var _ = Describe("Vector index store timer counters", func() {
 			store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 			for id := int64(1); id <= 4; id++ {
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(int32(10 * id)), Quantity: proto.Int32(1)})
+				_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(int32(10 * id)), Quantity: proto.Int32(1)}, "price"))
 				Expect(err).NotTo(HaveOccurred())
 			}
 			Expect(timer.GetCount(CountVectorNode0Writes)).To(BeNumerically(">=", 4), "each insert writes its layer-0 node")

@@ -24,7 +24,7 @@ var _ = Describe("GuardiANN insert admission", func() {
 		ctx := context.Background()
 		root := specSubspace()
 		builder := baseBuilder()
-		index := recordlayer.NewVectorIndex("Order$no_candidates", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("price")), 1), 1)
+		index := recordlayer.NewVectorIndex("Order$no_candidates", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("vector_data")), 1), 1)
 		index.Options[recordlayer.IndexOptionVectorEngine] = "GUARDIANN"
 		index.Options[recordlayer.IndexOptionGuardiannInsertMaxCandidateClusters] = "0"
 		builder.AddIndex("Order", index)
@@ -37,7 +37,7 @@ var _ = Describe("GuardiANN insert admission", func() {
 			if err != nil {
 				return nil, err
 			}
-			_, refused = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(5), Quantity: proto.Int32(1)})
+			_, refused = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(5), Quantity: proto.Int32(1)}, "price"))
 			return nil, nil // the caller swallows the refusal and tries to commit
 		})
 		var capability *VectorCapabilityError
@@ -74,7 +74,7 @@ var _ = Describe("GuardiANN insert admission", func() {
 			if err != nil {
 				return nil, err
 			}
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(5), Quantity: proto.Int32(1)})
+			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(5), Quantity: proto.Int32(1)}, "price"))
 			return nil, err
 		})
 		Expect(errors.As(err, &capability)).To(BeTrue(), "%v", err)

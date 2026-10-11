@@ -18,6 +18,7 @@ import (
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/vectorcodec"
 	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
 )
 
@@ -646,7 +647,7 @@ func TestMultidimensionalRandomStress(t *testing.T) {
 // --- VECTOR (HNSW) index chaos tests ---
 
 // buildVectorMetadata creates metadata with a VECTOR index on Order's
-// price and quantity fields as a 2D vector.
+// vector_data, records carrying (price, quantity) as a 2D vector (withVector).
 func buildVectorMetadata() *recordlayer.RecordMetaData {
 	builder := recordlayer.NewRecordMetaDataBuilder()
 	builder.SetRecords(gen.File_record_layer_demo_proto)
@@ -656,7 +657,7 @@ func buildVectorMetadata() *recordlayer.RecordMetaData {
 	builder.SetRecordCountKey(recordlayer.EmptyKey())
 	vecIdx := recordlayer.NewVectorIndex(
 		"order_vec_idx",
-		recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0),
+		recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0),
 		2,
 	)
 	// This scenario asserts strict reachability (every inserted vector must be found by
@@ -680,25 +681,25 @@ func TestVectorBasicSave(t *testing.T) {
 	md := buildVectorMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(withVector(&gen.Order{
 		OrderId:  proto.Int64(1),
 		Price:    proto.Int32(100),
 		Quantity: proto.Int32(10),
-	})
+	}, "price", "quantity"))
 	s.Verify()
 
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(withVector(&gen.Order{
 		OrderId:  proto.Int64(2),
 		Price:    proto.Int32(200),
 		Quantity: proto.Int32(20),
-	})
+	}, "price", "quantity"))
 	s.Verify()
 
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(withVector(&gen.Order{
 		OrderId:  proto.Int64(3),
 		Price:    proto.Int32(300),
 		Quantity: proto.Int32(30),
-	})
+	}, "price", "quantity"))
 	s.Verify()
 }
 
@@ -712,11 +713,11 @@ func TestVectorCommitUnknownInsert(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(withVector(&gen.Order{
 		OrderId:  proto.Int64(1),
 		Price:    proto.Int32(100),
 		Quantity: proto.Int32(10),
-	})
+	}, "price", "quantity"))
 	s.Verify() // HNSW must have exactly 1 entry, not 2
 }
 
@@ -729,20 +730,20 @@ func TestVectorCommitUnknownOverwrite(t *testing.T) {
 	md := buildVectorMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(withVector(&gen.Order{
 		OrderId:  proto.Int64(1),
 		Price:    proto.Int32(100),
 		Quantity: proto.Int32(10),
-	})
+	}, "price", "quantity"))
 	s.Verify()
 
 	// Overwrite with different vector under commit-unknown.
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(withVector(&gen.Order{
 		OrderId:  proto.Int64(1),
 		Price:    proto.Int32(999),
 		Quantity: proto.Int32(99),
-	})
+	}, "price", "quantity"))
 	s.Verify() // Old (100,10) gone, new (999,99) present, exactly 1 entry
 }
 
@@ -753,16 +754,16 @@ func TestVectorCommitUnknownDelete(t *testing.T) {
 	md := buildVectorMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(withVector(&gen.Order{
 		OrderId:  proto.Int64(1),
 		Price:    proto.Int32(100),
 		Quantity: proto.Int32(10),
-	})
-	s.SaveRecord(&gen.Order{
+	}, "price", "quantity"))
+	s.SaveRecord(withVector(&gen.Order{
 		OrderId:  proto.Int64(2),
 		Price:    proto.Int32(200),
 		Quantity: proto.Int32(20),
-	})
+	}, "price", "quantity"))
 	s.Verify()
 
 	s.InjectOnce(FaultCommitUnknown)
@@ -785,11 +786,11 @@ func TestVectorRandomStress(t *testing.T) {
 		pk := s.Rng.Int64N(maxPK) + 1
 		if s.Rng.Float64() < 0.7 {
 			// 70% saves with random vector coordinates.
-			s.SaveRecord(&gen.Order{
+			s.SaveRecord(withVector(&gen.Order{
 				OrderId:  proto.Int64(pk),
 				Price:    proto.Int32(s.Rng.Int32N(1000)),
 				Quantity: proto.Int32(s.Rng.Int32N(500)),
-			})
+			}, "price", "quantity"))
 		} else {
 			// 30% deletes.
 			s.DeleteRecord(tuple.Tuple{pk})
@@ -802,6 +803,36 @@ func TestVectorRandomStress(t *testing.T) {
 	s.Verify()
 	t.Logf("completed %d ops with seed=%d, %d faults injected",
 		numOps, s.Seed(), len(s.FaultLog()))
+}
+
+// withVector sets o's vector_data to the named numeric fields as Java's
+// RealVector bytes, the only vector form Java's maintainer reads; an unset
+// field leaves the vector null, which the index skips.
+func withVector(o *gen.Order, fields ...string) *gen.Order {
+	vec := make([]float64, 0, len(fields))
+	for _, f := range fields {
+		var v float64
+		var set bool
+		switch f {
+		case "price":
+			v, set = float64(o.GetPrice()), o.Price != nil
+		case "quantity":
+			v, set = float64(o.GetQuantity()), o.Quantity != nil
+		case "coord_x":
+			v, set = float64(o.GetCoordX()), o.CoordX != nil
+		case "coord_y":
+			v, set = float64(o.GetCoordY()), o.CoordY != nil
+		default:
+			panic("withVector: unknown field " + f)
+		}
+		if !set {
+			o.VectorData = nil
+			return o
+		}
+		vec = append(vec, v)
+	}
+	o.VectorData = vectorcodec.Serialize(vec)
+	return o
 }
 
 // serializeVecForChaos serializes a float64 vector to the DOUBLE wire format
@@ -1308,12 +1339,12 @@ func TestPermutedMinRandomStress(t *testing.T) {
 
 // TestVectorHighDimRaBitQCommitUnknown validates that HNSW with RaBitQ
 // quantization remains idempotent under commit-unknown fault injection.
-// Uses 2D vectors (Price, Quantity) so the chaos StoreModel verification
-// works (it requires numeric fields, not byte vectors).
+// Uses small 2D vectors (Price, Quantity, serialized by withVector) so the
+// chaos StoreModel's self-search verification stays cheap.
 func TestVectorHighDimRaBitQCommitUnknown(t *testing.T) {
 	t.Parallel()
 
-	// Use 2D vectors via Price/Quantity for chaos model compatibility,
+	// Use 2D vectors of (Price, Quantity) for the chaos model's checks,
 	// but with RaBitQ enabled to exercise the quantization pipeline under faults.
 	builder := recordlayer.NewRecordMetaDataBuilder()
 	builder.SetRecords(gen.File_record_layer_demo_proto)
@@ -1324,7 +1355,7 @@ func TestVectorHighDimRaBitQCommitUnknown(t *testing.T) {
 
 	vecIdx := recordlayer.NewVectorIndex(
 		"order_vec_rabitq_chaos",
-		recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0),
+		recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0),
 		2,
 	)
 	vecIdx.Options["hnswUseRaBitQ"] = "true"
@@ -1346,18 +1377,18 @@ func TestVectorHighDimRaBitQCommitUnknown(t *testing.T) {
 	// Commit enough distinct authoritative records to establish the centroid
 	// and then write a quantized node, even if every subsequent update repeats.
 	for pk := int64(1); pk <= 13; pk++ {
-		s.SaveRecord(&gen.Order{OrderId: proto.Int64(pk), Price: proto.Int32(int32(pk * 7)), Quantity: proto.Int32(int32(pk * 11))})
+		s.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(pk), Price: proto.Int32(int32(pk * 7)), Quantity: proto.Int32(int32(pk * 11))}, "price", "quantity"))
 	}
 	assertChaosRaBitQActive(t, s.cleanDB, md, s.sub, "order_vec_rabitq_chaos")
 
 	const numOps = 20
 	for i := 0; i < numOps; i++ {
 		pk := s.Rng.Int64N(10) + 1
-		s.SaveRecord(&gen.Order{
+		s.SaveRecord(withVector(&gen.Order{
 			OrderId:  proto.Int64(pk),
 			Price:    proto.Int32(s.Rng.Int32N(500)),
 			Quantity: proto.Int32(s.Rng.Int32N(500)),
-		})
+		}, "price", "quantity"))
 
 		if (i+1)%5 == 0 {
 			s.Verify()

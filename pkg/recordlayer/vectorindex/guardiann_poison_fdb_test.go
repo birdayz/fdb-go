@@ -25,7 +25,7 @@ var _ = Describe("GuardiANN task poisoning", func() {
 	It("refuses to commit after a task fails with its removal buffered", func() {
 		ctx := context.Background()
 		ks := specSubspace()
-		vecIdx := recordlayer.NewVectorIndex("vec_poison", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("price")), 1), 1)
+		vecIdx := recordlayer.NewVectorIndex("vec_poison", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("vector_data")), 1), 1)
 		vecIdx.Options[recordlayer.IndexOptionVectorEngine] = "GUARDIANN"
 		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
@@ -40,7 +40,7 @@ var _ = Describe("GuardiANN task poisoning", func() {
 			return store
 		}
 		order := func(id int64) *gen.Order {
-			return &gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(int32(10 * id)), Quantity: proto.Int32(1)}
+			return withVector(&gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(int32(10 * id)), Quantity: proto.Int32(1)}, "price")
 		}
 		// The first save creates the partition's access info and first cluster.
 		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {

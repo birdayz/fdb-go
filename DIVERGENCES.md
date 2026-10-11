@@ -2237,7 +2237,7 @@ byte-level assertions that every narrower integer width collapses to one key,
 that a string key reaches the bytes rather than the type name, and that a bytes
 key keeps tuple type code `0x01` rather than being folded into a string.
 
-### VECTOR index metadata validation: Go validates at build as Java's `VectorIndexValidator`; its maintainer still reads a vector from numeric value columns (OPEN — RFC-257 WS-D)
+### VECTOR index metadata validation and vector read: Go validates and reads as Java's `VectorIndexValidator` and `VectorIndexMaintainer` (CLOSED — RFC-257 WS-D; the residual differences are listed at the end)
 
 This entry replaces the current section of the same subject (cur.md:2194, "(OPEN — owner decision)"), whose "Go:" paragraph is stale.
 
@@ -2332,19 +2332,35 @@ A plain index's options are read at build as a windowed index's are: its metric 
 Java's (`Metric::valueOf`, the four constants' names only), its `Config` bounds are
 refused, and its dimension count is mandatory. Go's 128-dimension default is gone.
 
-A root with no value column (`KeyWithValue(Concat(quantity, vector_data), 2)`) builds in
-both engines (the structure spec's row pins the build verdict). Both refuse its
-inserts; Java's `getValue().getBytes(0)` also fails its deletes, which Go's queue
-tolerates on remove (`vector_index_queue.go:77-80`), as it does undecodable vectors.
+**The vector read at write.** Java's maintainer reads the vector as
+`indexEntry.getValue().getBytes(0)` and `RealVector.fromBytes`
+(`VectorIndexMaintainer.java:357`, `:395`), on an insert and a remove alike. Go's HNSW and
+GuardiANN maintainer reads it the same way (`entryVector`, `vector_index_maintainer.go`;
+`applyIndexEntry`, `vector_index_queue.go`):
+- value column 0 alone; later value columns are ignored;
+- a null column 0 is not indexed; empty bytes (which Go's tuple decoder returns as a nil
+  `[]byte`) are not null and are refused;
+- a column 0 that is not bytes is a `ClassCastError` (Java's `ClassCastException`), and
+  a root with no value column, empty bytes or a `VectorType` ordinal outside 0-3 an
+  `IndexOutOfBoundsError` (Java's `IndexOutOfBoundsException`).
 
-**What is open:** the vector's spelling at write. Java's maintainer reads the vector as
-`indexEntry.getValue().getBytes(0)` (`VectorIndexMaintainer.java:357`): the first value
-column alone, a serialized vector in bytes. Go's `tupleToVector`
-(`vector_index_maintainer.go:241`) joins every value column, and also assembles a vector
-from numeric columns, as the Go suites' `KeyWithValue(Concat(price, quantity), 0)` roots
-do; Java builds that metadata and refuses its writes, and reads only the first column of
-a root with covering value columns. Closing it means reading the first value column as
-a bytes vector at write and moving those suites to bytes vectors.
+A remove fails where its read does, as in Java; Go's queue no longer deletes the node by
+primary key regardless. Pinned by the JVM spec "A VECTOR index reads value column 0 as
+Java's maintainer does" (`conformance/vector_index_conformance_test.go`): numeric value
+columns on insert and on the delete of a record saved while the index was disabled, and
+covering value columns. The Go-only SPFresh index keeps its own reader (`tupleToVector`),
+which also reads numeric and several value columns.
+
+**Residual differences.** Each is refused in both engines; what differs is the text, the
+error class, or where the refusal happens:
+- `ClassCastError`'s message is Go's own; Java's is the JDK's (`class java.lang.Long cannot
+  be cast to class [B ...`), which varies by JDK. The conformance spec compares the class.
+- A truncated payload fails with a plain Go error where Java throws a
+  `BufferUnderflowException` (`DoubleRealVector.decodeDoubleBytes`), and a RaBitQ ordinal
+  with a plain Go error where Java throws a bare `RuntimeException`.
+- Java's validator always runs; Go's option half lives in `vectorindex`, so a binary that
+  does not link it builds a plain index with options Java refuses, and refuses that index
+  when it is used (`IndexMaintainerNotLinkedError`).
 
 ---
 

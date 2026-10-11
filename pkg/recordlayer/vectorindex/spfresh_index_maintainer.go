@@ -1285,8 +1285,8 @@ func buildSPFreshIndex(ctx context.Context, db *recordlayer.FDBDatabase, storeBu
 }
 
 // spfreshEntryVector extracts the vector from an evaluated index entry
-// (KeyWithValue puts it in the value; plain expressions in the key) — the
-// same convention the HNSW maintainer uses.
+// (KeyWithValue puts it in the value; plain expressions in the key). Unlike
+// Java's vector maintainer it also reads numeric and several value columns.
 func spfreshEntryVector(index *recordlayer.Index, entry recordlayer.EvaluatedIndexEntry) ([]float64, error) {
 	if _, ok := index.RootExpression.(*recordlayer.KeyWithValueExpression); ok && len(entry.Value()) > 0 {
 		return tupleToVector(entry.Value())

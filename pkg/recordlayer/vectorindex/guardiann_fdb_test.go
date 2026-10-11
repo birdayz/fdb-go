@@ -164,7 +164,7 @@ var _ = Describe("Vector scan options", func() {
 	ctx := context.Background()
 	DescribeTable("applies per-scan search options and fans out over a partial prefix", func(engine string, useRaBitQ bool) {
 		ks := specSubspace()
-		vecIdx := recordlayer.NewVectorIndex("vec_guardiann_opts", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("price")), 1), 1)
+		vecIdx := recordlayer.NewVectorIndex("vec_guardiann_opts", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("vector_data")), 1), 1)
 		vecIdx.Options[recordlayer.IndexOptionVectorEngine] = engine
 		vecIdx.Options[recordlayer.IndexOptionHNSWUseRaBitQ] = fmt.Sprint(useRaBitQ)
 		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
@@ -178,7 +178,7 @@ var _ = Describe("Vector scan options", func() {
 			store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 			for _, o := range []struct{ id, price, qty int64 }{{1, 10, 1}, {2, 20, 1}, {3, 50, 2}} {
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(o.id), Price: proto.Int32(int32(o.price)), Quantity: proto.Int32(int32(o.qty))})
+				_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(o.id), Price: proto.Int32(int32(o.price)), Quantity: proto.Int32(int32(o.qty))}, "price"))
 				Expect(err).NotTo(HaveOccurred())
 			}
 			ids := func(prefix tuple.Tuple, opts recordlayer.VectorIndexScanOptions) ([]int64, error) {

@@ -31,7 +31,7 @@ func setupVectorStore(t *testing.T) *recordlayer.FDBRecordStore {
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
 	builder.AddIndex("Order", recordlayer.NewVectorIndex(
-		"vec_pq", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0), 2))
+		"vec_pq", recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0), 2))
 	md, err := builder.Build()
 	if err != nil {
 		t.Fatalf("build metadata: %v", err)
@@ -61,9 +61,9 @@ func TestIntegration_VectorIndexScan_KNN(t *testing.T) {
 	store := setupVectorStore(t)
 
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(10)},
-		&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(20)},
-		&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(30), Quantity: proto.Int32(30)},
+		withVector(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(10)}, "price", "quantity"),
+		withVector(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(20)}, "price", "quantity"),
+		withVector(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(30), Quantity: proto.Int32(30)}, "price", "quantity"),
 	)
 
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -134,9 +134,9 @@ func TestIntegration_VectorIndexScan_RankLessThan(t *testing.T) {
 	ctx := context.Background()
 	store := setupVectorStore(t)
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(10)},
-		&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(20)},
-		&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(30), Quantity: proto.Int32(30)},
+		withVector(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(10)}, "price", "quantity"),
+		withVector(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(20)}, "price", "quantity"),
+		withVector(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(30), Quantity: proto.Int32(30)}, "price", "quantity"),
 	)
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		s, err := recordlayer.NewStoreBuilder().
@@ -193,9 +193,9 @@ func TestIntegration_VectorIndexScan_ContinuationPK(t *testing.T) {
 	ctx := context.Background()
 	store := setupVectorStore(t)
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(10)},
-		&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(20)},
-		&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(30), Quantity: proto.Int32(30)},
+		withVector(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(10)}, "price", "quantity"),
+		withVector(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(20)}, "price", "quantity"),
+		withVector(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(30), Quantity: proto.Int32(30)}, "price", "quantity"),
 	)
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		s, err := recordlayer.NewStoreBuilder().
@@ -270,7 +270,7 @@ func TestIntegration_VectorIndexScan_ReturnVectors(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	store := setupVectorStore(t)
-	insertOrders(t, store, &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(20)})
+	insertOrders(t, store, withVector(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(20)}, "price", "quantity"))
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		s, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).SetSubspace(testSubspace(t)).Open()
 		if err != nil {
@@ -370,4 +370,34 @@ func TestEvalFloat64SliceSerializedVector(t *testing.T) {
 			}
 		})
 	}
+}
+
+// withVector sets o's vector_data to the named numeric fields as Java's
+// RealVector bytes, the only vector form Java's maintainer reads; an unset
+// field leaves the vector null, which the index skips.
+func withVector(o *gen.Order, fields ...string) *gen.Order {
+	vec := make([]float64, 0, len(fields))
+	for _, f := range fields {
+		var v float64
+		var set bool
+		switch f {
+		case "price":
+			v, set = float64(o.GetPrice()), o.Price != nil
+		case "quantity":
+			v, set = float64(o.GetQuantity()), o.Quantity != nil
+		case "coord_x":
+			v, set = float64(o.GetCoordX()), o.CoordX != nil
+		case "coord_y":
+			v, set = float64(o.GetCoordY()), o.CoordY != nil
+		default:
+			panic("withVector: unknown field " + f)
+		}
+		if !set {
+			o.VectorData = nil
+			return o
+		}
+		vec = append(vec, v)
+	}
+	o.VectorData = vectorcodec.Serialize(vec)
+	return o
 }

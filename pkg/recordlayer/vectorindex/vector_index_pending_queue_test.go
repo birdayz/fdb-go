@@ -26,7 +26,7 @@ var _ = Describe("Vector index pending queue", func() {
 	// spec in vector_index_test.go pins those). Go deleted and re-inserted the
 	// node. The pending-write queue does not skip (next spec).
 	It("leaves the graph as it is when a save keeps the vector", func() {
-		index := recordlayer.NewVectorIndex("unchanged_vector", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("price")), 1), 1)
+		index := recordlayer.NewVectorIndex("unchanged_vector", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("vector_data")), 1), 1)
 		builder := baseBuilder()
 		builder.AddIndex("Order", index)
 		md, err := builder.Build()
@@ -35,7 +35,7 @@ var _ = Describe("Vector index pending queue", func() {
 			store, err := recordlayer.NewStoreBuilder().SetContext(rc).SetMetaDataProvider(md).SetSubspace(specSubspace()).Create()
 			Expect(err).NotTo(HaveOccurred())
 			for i := int64(1); i <= 12; i++ {
-				_, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Quantity: proto.Int32(1), Price: proto.Int32(int32(i)), CoordX: proto.Int64(0)})
+				_, err := store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(i), Quantity: proto.Int32(1), Price: proto.Int32(int32(i)), CoordX: proto.Int64(0)}, "price"))
 				Expect(err).NotTo(HaveOccurred())
 			}
 			snapshot := func() []fdb.KeyValue {
@@ -48,11 +48,11 @@ var _ = Describe("Vector index pending queue", func() {
 			Expect(before).NotTo(BeEmpty())
 			// Record 5 again, its (quantity, price) entry unchanged, another
 			// field changed.
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(5), Quantity: proto.Int32(1), Price: proto.Int32(5), CoordX: proto.Int64(99)})
+			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(5), Quantity: proto.Int32(1), Price: proto.Int32(5), CoordX: proto.Int64(99)}, "price"))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(snapshot()).To(Equal(before), "the graph's bytes are unchanged")
 			// A save that changes the vector does touch the graph: the control.
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(5), Quantity: proto.Int32(1), Price: proto.Int32(500), CoordX: proto.Int64(99)})
+			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(5), Quantity: proto.Int32(1), Price: proto.Int32(500), CoordX: proto.Int64(99)}, "price"))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(snapshot()).NotTo(Equal(before))
 			return nil, nil
@@ -69,7 +69,7 @@ var _ = Describe("Vector index pending queue", func() {
 	// the maintainer directly, so the store's queue path and the replay are
 	// not covered here).
 	It("serializes both entries of a queued save that keeps the vector", func() {
-		index := recordlayer.NewVectorIndex("queued_unchanged", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0), 2)
+		index := recordlayer.NewVectorIndex("queued_unchanged", recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0), 2)
 		builder := baseBuilder()
 		builder.AddIndex("Order", index)
 		md, err := builder.Build()
@@ -81,7 +81,7 @@ var _ = Describe("Vector index pending queue", func() {
 			Expect(err).NotTo(HaveOccurred())
 			record := func(other int64) *recordlayer.FDBStoredRecord[proto.Message] {
 				return &recordlayer.FDBStoredRecord[proto.Message]{
-					Record:     &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(20), CoordX: proto.Int64(other)},
+					Record:     withVector(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(20), CoordX: proto.Int64(other)}, "price", "quantity"),
 					PrimaryKey: tuple.Tuple{int64(1)}, RecordType: md.GetRecordType("Order"),
 				}
 			}
@@ -98,7 +98,7 @@ var _ = Describe("Vector index pending queue", func() {
 	})
 
 	It("replays captured vector entries without reevaluating records or predicates", func() {
-		index := recordlayer.NewVectorIndex("queued_vector", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0), 2)
+		index := recordlayer.NewVectorIndex("queued_vector", recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0), 2)
 		allow := true
 		index.Predicate = func(proto.Message) bool { return allow }
 		builder := baseBuilder()
@@ -112,7 +112,7 @@ var _ = Describe("Vector index pending queue", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(maintainer.IsPendingWriteQueueAllowed()).To(BeTrue())
 			makeRecord := func(x, y int32) *recordlayer.FDBStoredRecord[proto.Message] {
-				return &recordlayer.FDBStoredRecord[proto.Message]{Record: &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(x), Quantity: proto.Int32(y)}, PrimaryKey: tuple.Tuple{int64(1)}, RecordType: md.GetRecordType("Order")}
+				return &recordlayer.FDBStoredRecord[proto.Message]{Record: withVector(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(x), Quantity: proto.Int32(y)}, "price", "quantity"), PrimaryKey: tuple.Tuple{int64(1)}, RecordType: md.GetRecordType("Order")}
 			}
 			original := makeRecord(10, 20)
 			data, err := maintainer.SerializePendingWriteQueue(nil, original)
@@ -122,6 +122,7 @@ var _ = Describe("Vector index pending queue", func() {
 			Expect(decoded.GetNewEntries()).To(HaveLen(1))
 			Expect(decoded.GetNewEntries()[0].GetPrimaryKey()).To(Equal(tuple.Tuple{int64(1)}.Pack()))
 			original.Record.(*gen.Order).Price = proto.Int32(999)
+			withVector(original.Record.(*gen.Order), "price", "quantity")
 			allow = false
 			Expect(maintainer.UpdateFromQueue(data)).To(Succeed())
 			results, err := store.SearchVectorIndex(index, []float64{10, 20}, 10, 100)
@@ -168,12 +169,12 @@ var _ = Describe("Vector index pending queue", func() {
 		}
 		It("preserves "+name+" in captured vector entries", func() {
 			builder := baseBuilder()
-			expression := recordlayer.KeyWithValue(recordlayer.Field("price"), 0)
+			expression := recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0)
 			primaryKey := tuple.Tuple{int64(11)}
 			prefix := tuple.Tuple{}
 			if partitioned {
 				builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("order_id")))
-				expression = recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("price")), 1)
+				expression = recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("vector_data")), 1)
 				primaryKey = tuple.Tuple{int64(7), int64(11)}
 				prefix = tuple.Tuple{int64(7)}
 			}
@@ -186,7 +187,7 @@ var _ = Describe("Vector index pending queue", func() {
 				Expect(err).NotTo(HaveOccurred())
 				maintainer, err := store.GetIndexMaintainer(index)
 				Expect(err).NotTo(HaveOccurred())
-				record := &recordlayer.FDBStoredRecord[proto.Message]{Record: &gen.Order{OrderId: proto.Int64(11), Quantity: proto.Int32(7), Price: proto.Int32(42)}, PrimaryKey: primaryKey, RecordType: md.GetRecordType("Order")}
+				record := &recordlayer.FDBStoredRecord[proto.Message]{Record: withVector(&gen.Order{OrderId: proto.Int64(11), Quantity: proto.Int32(7), Price: proto.Int32(42)}, "price"), PrimaryKey: primaryKey, RecordType: md.GetRecordType("Order")}
 				data, err := maintainer.SerializePendingWriteQueue(nil, record)
 				Expect(err).NotTo(HaveOccurred())
 				var entries gen.OldAndNewIndexEntries
@@ -226,7 +227,7 @@ var _ = Describe("Vector index pending queue", func() {
 			maintainer, err := store.GetIndexMaintainer(index)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(maintainer.IsPendingWriteQueueAllowed()).To(BeTrue())
-			record := &recordlayer.FDBStoredRecord[proto.Message]{Record: &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), CoordX: proto.Int64(3), CoordY: proto.Int64(4)}, PrimaryKey: tuple.Tuple{int64(1)}, RecordType: md.GetRecordType("Order")}
+			record := &recordlayer.FDBStoredRecord[proto.Message]{Record: withVector(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), CoordX: proto.Int64(3), CoordY: proto.Int64(4)}, "coord_x", "coord_y"), PrimaryKey: tuple.Tuple{int64(1)}, RecordType: md.GetRecordType("Order")}
 			inserted, err := maintainer.SerializePendingWriteQueue(nil, record)
 			Expect(err).NotTo(HaveOccurred())
 			removed, err := maintainer.SerializePendingWriteQueue(record, nil)
@@ -265,17 +266,19 @@ var _ = Describe("Nested vector pending queue Any compatibility", func() {
 			It(fmt.Sprintf("applies boundary=%s prefix=%q with Java URL semantics", boundary, prefix), func() {
 				ctx := context.Background()
 				root := specSubspace()
-				index := recordlayer.NewVectorIndex("nested_any", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("price")), 1), 1)
+				index := recordlayer.NewVectorIndex("nested_any", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("vector_data")), 1), 1)
 				sliding := boundary == "sliding" || boundary == "delegate-insert" || boundary == "delegate-delete"
+				vectorFields := []string{"price"}
 				if sliding {
 					index = newWindowedVectorIndex("nested_any", 2, gen.RowNumberWindowPredicate_ASC)
+					vectorFields = []string{"coord_x", "coord_y"}
 				}
 				deleting := boundary == "delegate-delete"
 				builder := baseBuilder()
 				builder.AddIndex("Order", index)
 				md, err := builder.Build()
 				Expect(err).NotTo(HaveOccurred())
-				record := &recordlayer.FDBStoredRecord[proto.Message]{Record: &gen.Order{OrderId: proto.Int64(1), Quantity: proto.Int32(7), Price: proto.Int32(42), CoordX: proto.Int64(3), CoordY: proto.Int64(4)}, PrimaryKey: tuple.Tuple{int64(1)}, RecordType: md.GetRecordType("Order")}
+				record := &recordlayer.FDBStoredRecord[proto.Message]{Record: withVector(&gen.Order{OrderId: proto.Int64(1), Quantity: proto.Int32(7), Price: proto.Int32(42), CoordX: proto.Int64(3), CoordY: proto.Int64(4)}, vectorFields...), PrimaryKey: tuple.Tuple{int64(1)}, RecordType: md.GetRecordType("Order")}
 				// The delete's record is committed first, so a refused payload
 				// rolls back only its own application.
 				_, err = sharedDB.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {

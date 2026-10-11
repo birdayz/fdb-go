@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/bazelbuild/rules_go/go/runfiles"
@@ -1735,15 +1736,7 @@ var _ = Describe("An HNSW index with more RaBitQ extra bits than the quantizer e
 					}
 					return nil, fn(store)
 				})
-				var iae *recordlayer.IllegalArgumentError
-				switch {
-				case err == nil:
-					return "ok"
-				case errors.As(err, &iae):
-					return "java.lang.IllegalArgumentException"
-				default:
-					return fmt.Sprintf("%T: %v", err, err)
-				}
+				return javaOutcomeClass(err)
 			}
 			search := func(s *recordlayer.FDBRecordStore) error {
 				_, err := s.SearchVectorIndex(index, vectors[0], 3, 100)
@@ -1773,6 +1766,125 @@ var _ = Describe("An HNSW index with more RaBitQ extra bits than the quantizer e
 			Expect(goResave).To(Equal(java.ResaveUnchangedVector), "a save leaving the vector unchanged")
 			Expect(goSearch).To(Equal(java.Search), "search")
 			Expect(goDelete).To(Equal(java.DeleteFirst), "delete of record 0")
+		})
+	}
+})
+
+// javaOutcomeClass is "ok" for nil, else the Java exception class a Go error
+// mirrors (errors.go), as the probes report a failure's root cause class.
+func javaOutcomeClass(err error) string {
+	var iae *recordlayer.IllegalArgumentError
+	var cce *recordlayer.ClassCastError
+	var oob *recordlayer.IndexOutOfBoundsError
+	switch {
+	case err == nil:
+		return "ok"
+	case errors.As(err, &iae):
+		return "java.lang.IllegalArgumentException"
+	case errors.As(err, &cce):
+		return "java.lang.ClassCastException"
+	case errors.As(err, &oob):
+		return "java.lang.IndexOutOfBoundsException"
+	default:
+		return fmt.Sprintf("%T: %v", err, err)
+	}
+}
+
+// A VECTOR index whose value columns are not one serialized vector: Java's
+// maintainer reads value column 0 alone as vector bytes, on an insert and a
+// remove alike (VectorIndexMaintainer.updateIndexEntry, :357 and :395). Both
+// engines run the same steps (vectorValueColumnsProbe): a record without the
+// columns, a record with them, a search, the delete of a record saved while the
+// index was disabled, and a vector of an unknown VectorType ordinal.
+var _ = Describe("A VECTOR index reads value column 0 as Java's maintainer does", func() {
+	for _, shape := range []string{"numeric", "covering"} {
+		It(shape, func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+			defer cancel()
+			javaEnv, err := SetupTenantEnvironment(ctx, sharedContainer, "vcols_java_"+uuid.New().String())
+			Expect(err).NotTo(HaveOccurred())
+			defer func() { Expect(javaEnv.Cleanup(ctx)).To(Succeed()) }()
+			goEnv, err := SetupTenantEnvironment(ctx, sharedContainer, "vcols_go_"+uuid.New().String())
+			Expect(err).NotTo(HaveOccurred())
+			defer func() { Expect(goEnv.Cleanup(ctx)).To(Succeed()) }()
+			var java map[string]string
+			Expect(NewJavaInvoker().InvokeAs(ctx, "vectorValueColumnsProbe", map[string]any{
+				"clusterFile": javaEnv.ClusterFile, "tenantName": javaEnv.TenantName,
+				"subspace": BytesToIntArray(subspace.Sub(tuple.Tuple{}).Bytes()), "shape": shape,
+			}, &java)).To(Succeed())
+			// Java's VectorType lookup may throw an IndexOutOfBoundsException subclass.
+			for k, v := range java {
+				if strings.HasSuffix(v, "IndexOutOfBoundsException") {
+					java[k] = "java.lang.IndexOutOfBoundsException"
+				}
+			}
+
+			root := recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("vector_data"), recordlayer.Field("price")), 0)
+			if shape == "numeric" {
+				root = recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0)
+			}
+			index := recordlayer.NewVectorIndex("order_vector_columns", root, 2)
+			builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+			builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+			builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+			builder.AddIndex("Order", index)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+			run := func(fn func(*recordlayer.FDBRecordStore) error) string {
+				_, err := goEnv.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+					store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).
+						SetSubspace(subspace.Sub(tuple.Tuple{})).CreateOrOpen()
+					if err != nil {
+						return nil, err
+					}
+					return nil, fn(store)
+				})
+				return javaOutcomeClass(err)
+			}
+			save := func(o *gen.Order) string {
+				return run(func(s *recordlayer.FDBRecordStore) error { _, err := s.SaveRecord(o); return err })
+			}
+			goOutcome := map[string]string{}
+			goOutcome["saveNull"] = save(&gen.Order{OrderId: proto.Int64(1)})
+			goOutcome["save"] = save(&gen.Order{
+				OrderId: proto.Int64(2), Price: proto.Int32(1), Quantity: proto.Int32(2),
+				VectorData: conformanceSerializeVector([]float64{1, 2}),
+			})
+			found := []int64{}
+			goOutcome["search"] = run(func(s *recordlayer.FDBRecordStore) error {
+				results, err := s.SearchVectorIndex(index, []float64{1, 2}, 1, 100)
+				for _, r := range results {
+					found = append(found, r.PrimaryKey[0].(int64))
+				}
+				return err
+			})
+			if goOutcome["search"] == "ok" {
+				goOutcome["search"] = fmt.Sprintf("ok %v", found)
+			}
+			Expect(run(func(s *recordlayer.FDBRecordStore) error {
+				if _, err := s.MarkIndexDisabled(index.Name); err != nil {
+					return err
+				}
+				if _, err := s.SaveRecord(&gen.Order{
+					OrderId: proto.Int64(3), Price: proto.Int32(3), Quantity: proto.Int32(4),
+					VectorData: conformanceSerializeVector([]float64{3, 4}),
+				}); err != nil {
+					return err
+				}
+				_, err := s.MarkIndexWriteOnly(index.Name)
+				return err
+			})).To(Equal("ok"))
+			goOutcome["deleteHeld"] = run(func(s *recordlayer.FDBRecordStore) error {
+				_, err := s.DeleteRecord(tuple.Tuple{int64(3)})
+				return err
+			})
+			goOutcome["saveUnknownType"] = save(&gen.Order{
+				OrderId: proto.Int64(4), Price: proto.Int32(5),
+				VectorData: []byte{7, 0, 0, 0, 0, 0, 0, 0, 0},
+			})
+			fmt.Fprintf(GinkgoWriter, "VECTOR_COLUMNS %s java=%v go=%v\n", shape, java, goOutcome)
+			Expect(goOutcome).To(Equal(java))
 		})
 	}
 })

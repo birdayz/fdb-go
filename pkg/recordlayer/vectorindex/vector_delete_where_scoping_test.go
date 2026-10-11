@@ -28,11 +28,13 @@ var _ = Describe("DeleteRecordsWhere vector index scoping", func() {
 		//
 		// Java bounds it at the split point — KeyWithValueExpression.getColumnSize()
 		// — in CanDeleteWhere, and again with a Verify inside deleteWhere.
+		// The primary key leads with the vector column too, so the prefix that
+		// reaches into it aligns with the primary key.
 		vecIdx := recordlayer.NewVectorIndex("vec_split_bound",
-			recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("price"), recordlayer.Field("vector_data")), 1), 3)
+			recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("vector_data")), 1), 3)
 		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(
-			recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("price"), recordlayer.Field("order_id")))
+			recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("vector_data"), recordlayer.Field("order_id")))
 		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
 		builder.AddIndex("Order", vecIdx)
@@ -44,9 +46,9 @@ var _ = Describe("DeleteRecordsWhere vector index scoping", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(serr).NotTo(HaveOccurred())
 
+			vector := SerializeVector([]float64{1, 2, 3})
 			_, e := store.SaveRecord(&gen.Order{
-				OrderId: proto.Int64(1), Quantity: proto.Int32(7), Price: proto.Int32(10),
-				VectorData: SerializeVector([]float64{1, 2, 3}),
+				OrderId: proto.Int64(1), Quantity: proto.Int32(7), VectorData: vector,
 			})
 			Expect(e).NotTo(HaveOccurred())
 
@@ -54,11 +56,11 @@ var _ = Describe("DeleteRecordsWhere vector index scoping", func() {
 			Expect(vecIdx.RootExpression.ColumnSize()).To(Equal(1))
 
 			// Two reaches past it, into the vector columns.
-			derr := store.DeleteRecordsWhere(tuple.Tuple{int64(7), int64(10)})
+			derr := store.DeleteRecordsWhere(tuple.Tuple{int64(7), vector})
 			Expect(derr).To(HaveOccurred())
 			Expect(derr.Error()).To(ContainSubstring("vec_split_bound"))
 
-			rec, rerr := store.LoadRecord(tuple.Tuple{int64(7), int64(10), int64(1)})
+			rec, rerr := store.LoadRecord(tuple.Tuple{int64(7), vector, int64(1)})
 			Expect(rerr).NotTo(HaveOccurred())
 			Expect(rec).NotTo(BeNil())
 			res, serr2 := store.SearchVectorIndexWithPrefix(vecIdx,

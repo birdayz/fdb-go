@@ -561,6 +561,71 @@ class VectorIndexSteps extends ConformanceBase {
     }
 
     /**
+     * A VECTOR index whose value columns are not one serialized vector, maintained
+     * through the record store. Java's maintainer reads value column 0 alone as
+     * vector bytes (VectorIndexMaintainer.updateIndexEntry, Tuple.getBytes and
+     * RealVector.fromBytes), on an insert and a remove alike. The "numeric" shape
+     * indexes (price, quantity); the "covering" shape (vector_data, price). Each
+     * step is "ok" or its root cause's class; the search lists the primary keys.
+     * Record 3 is saved while the index is disabled, so the index's remove meets
+     * it only on the delete, after the index is made write-only.
+     */
+    @ConformanceStep("vectorValueColumnsProbe")
+    public Map<String, Object> vectorValueColumnsProbe(String clusterFile, byte[] subspace, String tenantName,
+            String shape) {
+        KeyWithValueExpression root = "numeric".equals(shape)
+            ? new KeyWithValueExpression(Key.Expressions.concat(Key.Expressions.field("price"),
+                Key.Expressions.field("quantity")), 0)
+            : new KeyWithValueExpression(Key.Expressions.concat(Key.Expressions.field("vector_data"),
+                Key.Expressions.field("price")), 0);
+        RecordMetaDataBuilder metaDataBuilder = RecordMetaData.newBuilder()
+            .setRecords(RecordLayerDemo.getDescriptor());
+        metaDataBuilder.getRecordType("Order").setPrimaryKey(Key.Expressions.field("order_id"));
+        metaDataBuilder.getRecordType("Customer").setPrimaryKey(Key.Expressions.field("customer_id"));
+        metaDataBuilder.getRecordType("TypedRecord").setPrimaryKey(Key.Expressions.field("id"));
+        metaDataBuilder.addIndex("Order", new Index("order_vector_columns", root, IndexTypes.VECTOR,
+            Map.of(IndexOptions.HNSW_NUM_DIMENSIONS, "2")));
+        RecordMetaData md = metaDataBuilder.build();
+        java.util.function.Function<FDBRecordContext, FDBRecordStore> open = context -> FDBRecordStore.newBuilder()
+            .setMetaDataProvider(md)
+            .setContext(context)
+            .setSubspace(new Subspace(subspace))
+            .setUserVersionChecker(ALWAYS_READABLE_CHECKER)
+            .createOrOpen();
+        java.util.function.Function<Order, String> save = order -> extraBitsOutcome(() ->
+            runInContext(clusterFile, tenantName, context -> open.apply(context).saveRecord(order)));
+        Map<String, Object> result = new java.util.LinkedHashMap<>();
+        result.put("saveNull", save.apply(Order.newBuilder().setOrderId(1L).build()));
+        result.put("save", save.apply(Order.newBuilder().setOrderId(2L).setPrice(1).setQuantity(2)
+            .setVectorData(ByteString.copyFrom(serializeVector(new double[] {1, 2}))).build()));
+        List<Long> found = new ArrayList<>();
+        String search = extraBitsOutcome(() -> runInContext(clusterFile, tenantName, context -> {
+            VectorIndexScanBounds bounds = new VectorIndexScanBounds(TupleRange.ALL,
+                Comparisons.Type.DISTANCE_RANK_LESS_THAN_OR_EQUAL, new DoubleRealVector(new double[] {1, 2}), 1,
+                VectorIndexScanOptions.empty());
+            for (IndexEntry entry : open.apply(context).scanIndex(md.getIndex("order_vector_columns"), bounds, null,
+                    ScanProperties.FORWARD_SCAN).asList().join()) {
+                found.add(entry.getPrimaryKey().getLong(0));
+            }
+            return null;
+        }));
+        result.put("search", "ok".equals(search) ? "ok " + found : search);
+        runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = open.apply(context);
+            store.markIndexDisabled("order_vector_columns").join();
+            store.saveRecord(Order.newBuilder().setOrderId(3L).setPrice(3).setQuantity(4)
+                .setVectorData(ByteString.copyFrom(serializeVector(new double[] {3, 4}))).build());
+            store.markIndexWriteOnly("order_vector_columns").join();
+            return null;
+        });
+        result.put("deleteHeld", extraBitsOutcome(() -> runInContext(clusterFile, tenantName, context ->
+            open.apply(context).deleteRecord(Tuple.from(3L)))));
+        result.put("saveUnknownType", save.apply(Order.newBuilder().setOrderId(4L).setPrice(5)
+            .setVectorData(ByteString.copyFrom(new byte[] {7, 0, 0, 0, 0, 0, 0, 0, 0})).build()));
+        return result;
+    }
+
+    /**
      * Parse a JSON array of doubles, e.g. "[1.0, 2.0, 3.0]".
      */
     private static double[] parseVector(String json) {
