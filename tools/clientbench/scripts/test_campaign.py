@@ -192,14 +192,24 @@ class CampaignTest(unittest.TestCase):
                            executable_sha256=pins[binary], api_version=730,
                            loaded_fdb_libraries_sha256={str(self.root / 'native'): plan['native_library_sha256']} if native else {})
             manifest = dict(config=cfg, backend=backend, go_version='go1.26.9', gomaxprocs=8)
-            before = dict(process_user_cpu_us=0, process_system_cpu_us=0, go_total_alloc_bytes=0,
+            before = dict(process_user_cpu_us=100, process_system_cpu_us=50, go_total_alloc_bytes=0,
                           go_mallocs=0, go_gc_cycles=0, go_gc_pause_ns=0, process_high_water_rss_kb=1)
-            after = dict(before, process_user_cpu_us=base * (40 if native else 30),
-                         process_system_cpu_us=base * (20 if native else 15), go_total_alloc_bytes=1000,
+            after = dict(before, process_user_cpu_us=100 + base * (40 if native else 30),
+                         process_system_cpu_us=50 + base * (20 if native else 15), go_total_alloc_bytes=1000,
                          go_mallocs=20, go_gc_cycles=1, go_gc_pause_ns=100, process_high_water_rss_kb=100)
             counters = dict(observation='unobserved') if native else dict(observation='observed', values=dict(
                 grv_cache_hits=0, read_versions_completed=5, grv_successful_batch_replies=5))
-            summary = dict(config=cfg, backend=backend, success=True, persisted_validation='ok',
+            counts = dict(finalizers_queued=10, finalizers_executed=10, cleanups_queued_estimate=0,
+                          cleanups_executed_estimate=0, gc_cycles=1)
+            drain = dict(complete=True, rounds=2, wall_ns=1000, before=counts, after=dict(counts, gc_cycles=3))
+            drained = dict(after, process_user_cpu_us=after['process_user_cpu_us'] + 10,
+                           process_system_cpu_us=after['process_system_cpu_us'] + 5, go_gc_cycles=3)
+            shutdown = dict(drained, process_user_cpu_us=drained['process_user_cpu_us'] + 20,
+                            process_system_cpu_us=drained['process_system_cpu_us'] + 10, go_gc_cycles=5)
+            lifecycle = dict(complete=True, database_closed=True, network_stopped=native, measurement_barrier_complete=True,
+                             measurement_drain=drain, shutdown_drain=dict(drain, before=drain['after'], after=dict(counts, gc_cycles=5)),
+                             stats_after_measurement_drain=drained, stats_after_shutdown=shutdown)
+            summary = dict(config=cfg, backend=backend, lifecycle=lifecycle, success=True, persisted_validation='ok',
                            requested=5, completed=5, errors=0, warmup_completed=2, warmup_errors=0,
                            measured_wall_ns=latency_base * 20000, stats_before=before, stats_after=after,
                            client_counters_delta=counters)
@@ -238,6 +248,14 @@ class CampaignTest(unittest.TestCase):
         self.assertEqual(float(absolute['cgo']['mean_ns']), 105000)
         self.assertNotAlmostEqual(135000 / 105000, ratios['mean_ns']['ratio'])
         self.assertEqual(len(report['per_run']), 12)
+        for row in report['per_run']:
+            self.assertAlmostEqual(row['drained_cpu_ns_per_op'], row['process_cpu_ns_per_op'] + 3000)
+            self.assertAlmostEqual(row['shutdown_process_cpu_ns_per_op'], row['process_cpu_ns_per_op'] + 39000)
+            self.assertEqual(row['drained_go_gc_cycles'], 3)
+            self.assertEqual(row['shutdown_go_gc_cycles'], 5)
+        self.assertIn('process exit', report['lifecycle_cpu_scope'])
+        self.assertIn('drained_cpu_ns_per_op', ratios)
+        self.assertIn('shutdown_process_cpu_ns_per_op', ratios)
         self.assertIn('getrusage', (out / 'TABLES.md').read_text())
         self.assertIn('native C++ heap', (out / 'TABLES.md').read_text())
 
@@ -303,6 +321,16 @@ class CampaignTest(unittest.TestCase):
             ('wrong_binary', 'manifest.json', lambda x: x['backend'].update(executable_sha256='0' * 64)),
             ('synthetic_native_counters', 'summary.json', lambda x: x['client_counters_delta'].update(observation='observed')),
             ('missing_stats', 'summary.json', lambda x: x.pop('stats_after')),
+            ('missing_lifecycle', 'summary.json', lambda x: x.pop('lifecycle')),
+            ('incomplete_lifecycle', 'summary.json', lambda x: x['lifecycle'].update(complete=False)),
+            ('open_database', 'summary.json', lambda x: x['lifecycle'].update(database_closed=False)),
+            ('running_network', 'summary.json', lambda x: x['lifecycle'].update(network_stopped=False)),
+            ('no_barrier', 'summary.json', lambda x: x['lifecycle'].update(measurement_barrier_complete=False)),
+            ('one_gc', 'summary.json', lambda x: x['lifecycle']['measurement_drain'].update(rounds=1)),
+            ('pending_finalizer', 'summary.json', lambda x: x['lifecycle']['shutdown_drain']['after'].update(finalizers_queued=11)),
+            ('unexpected_cleanup', 'summary.json', lambda x: x['lifecycle']['measurement_drain']['after'].update(cleanups_queued_estimate=1, cleanups_executed_estimate=1)),
+            ('missing_shutdown_cpu', 'summary.json', lambda x: x['lifecycle']['stats_after_shutdown'].pop('process_user_cpu_us')),
+            ('decreasing_drained_cpu', 'summary.json', lambda x: x['lifecycle']['stats_after_measurement_drain'].update(process_user_cpu_us=0)),
             ('negative_cpu', 'summary.json', lambda x: x['stats_after'].update(process_user_cpu_us=-1)),
         ]
         for name, filename, mutate in cases:

@@ -69,15 +69,21 @@ func TestBothBackendsAgainstFDB(t *testing.T) {
 					"--output", output, "--run-id", arm.name + "-" + workload, "--block", "0", "--source-revision", "smoke-test",
 					"--harness-id", "smoke-test", "--prefix", "clientbench/smoke/" + arm.name + "/" + workload + "/",
 				}
-				execute := func(args []string) ([]byte, error) {
+				execute := func(args []string, environment ...string) ([]byte, error) {
 					cmd := exec.CommandContext(ctx, binary, args...)
 					cmd.Env = append(os.Environ(), "GOMAXPROCS=2", "GOGC=100", "GOMEMLIMIT=off", "GODEBUG=")
+					cmd.Env = append(cmd.Env, environment...)
 					return cmd.CombinedOutput()
 				}
 				if text, err := execute(args); err == nil || !strings.Contains(string(text), "--allow-writes is required") {
 					t.Fatalf("missing write authority: err=%v output=%s", err, text)
 				}
 				args = append(args, "--allow-writes")
+				for _, env := range []string{"GOMAXPROCS=", "FDB_NETWORK_OPTION_EXTERNAL_CLIENT_LIBRARY=unexpected"} {
+					if text, err := execute(args, env); err == nil || !strings.Contains(string(text), "lifecycle accounting") {
+						t.Fatalf("unsafe lifecycle environment %q accepted: err=%v output=%s", env, err, text)
+					}
+				}
 				if text, err := execute(args); err != nil {
 					t.Fatalf("benchmark failed: %v\n%s", err, text)
 				}
@@ -91,6 +97,7 @@ func TestBothBackendsAgainstFDB(t *testing.T) {
 					Before              bench.Stats          `json:"stats_before"`
 					After               bench.Stats          `json:"stats_after"`
 					Counters            bench.ClientCounters `json:"client_counters_delta"`
+					Lifecycle           bench.Lifecycle      `json:"lifecycle"`
 				}
 				readJSON(t, filepath.Join(output, "summary.json"), &summary)
 				if !summary.Success || summary.Completed != 5 || summary.WarmupCompleted != 3 || summary.Errors != 0 || summary.WarmupErrors != 0 || summary.PersistedValidation != "ok" {
@@ -98,6 +105,20 @@ func TestBothBackendsAgainstFDB(t *testing.T) {
 				}
 				if summary.After.UserUS+summary.After.SystemUS <= summary.Before.UserUS+summary.Before.SystemUS {
 					t.Fatal("missing measured-phase getrusage CPU")
+				}
+				life := summary.Lifecycle
+				if !life.Complete || !life.DatabaseClosed || !life.MeasurementBarrier || life.NetworkStopped != arm.native ||
+					life.AfterDrain.UserUS+life.AfterDrain.SystemUS <= summary.After.UserUS+summary.After.SystemUS ||
+					life.AfterShutdown.UserUS+life.AfterShutdown.SystemUS <= life.AfterDrain.UserUS+life.AfterDrain.SystemUS {
+					t.Fatalf("missing complete-lifecycle CPU accounting: %+v", life)
+				}
+				for _, drain := range []bench.FinalizerDrain{life.MeasurementDrain, life.ShutdownDrain} {
+					if !drain.Complete || drain.Rounds < 2 || drain.WallNS <= 0 ||
+						drain.After.FinalizersExecuted != drain.After.FinalizersQueued ||
+						drain.After.CleanupsQueued != drain.Before.CleanupsQueued ||
+						drain.After.CleanupsExecuted != drain.After.CleanupsQueued {
+						t.Fatalf("incomplete finalizer fixpoint: %+v", drain)
+					}
 				}
 				observation := "observed"
 				if arm.native {

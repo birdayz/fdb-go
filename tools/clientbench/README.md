@@ -8,8 +8,10 @@ the public `pkg/fdbgo/fdb` facade; CGo uses Apple's Go binding to `libfdb_c`.
 The workload/measurement implementation was imported from the frozen V6 VM
 harness (source archive SHA256
 `3d2504ae0db14fad14f0384287377998231cf049310c8289d6e7245d3428e0d0`).
-This repository version uses the main module and Bazel dependency graph,
-including its native-binding patch, instead of the historical standalone module.
+This lifecycle-accounting revision (V7) preserves the V6 workload and measured
+window, but adds post-window draining and terminal shutdown snapshots. It uses
+the main module and Bazel dependency graph, including its native-binding patch,
+instead of the historical standalone module. Historical frozen V6 archives are unchanged.
 It is **not a claim that newly built binaries reproduce historical results**.
 Record the new source/toolchain/binary/library identities for every campaign.
 
@@ -39,7 +41,7 @@ bazelisk shutdown
 Follow the shared-machine locking/resource rules when developing in a shared
 checkout. Both executables are also built as inputs of the bounded real-FDB
 smoke test in `just test`: it exercises all eleven workloads, both backends,
-raw rows, measured CPU, persisted validation, native linkage and overwrite
+raw rows, window/drained/shutdown CPU, finalizer fixpoints, persisted validation, native linkage and overwrite
 refusal. The fast lane also runs the Go fixture/counter/scheduling tests and
 Python plan/analyzer/process-cleanup tests. These are harness checks, not a
 replacement for candidate-client correctness or full CI validation.
@@ -47,7 +49,10 @@ replacement for candidate-client correctness or full CI validation.
 The Go target is `pure = "on"`, the CGo target is `pure = "off"`; their backend
 source files **and dependency graphs** are separate. Each process asserts the
 absence/presence of a mapped `libfdb_c`, records its actual library hash and
-native client version, and hashes its own executable.
+native client version, and hashes its own executable. An explicit positive
+`GOMAXPROCS` is required so runtime cleanup-counter per-P accounting cannot change
+through automatic resizing. Inherited `FDB_NETWORK_OPTION_*` variables are
+rejected; the native shutdown guarantee covers the local client, not external clients.
 
 ## Freeze the inputs
 
@@ -151,14 +156,15 @@ retains accessible server statistics even when owner-only `/proc/PID/io` is deni
 
 `TABLES.md` and `absolute.csv` contain **medians of run-level statistics**, not
 pooled percentiles: mean, p50, p90, p99, p99.9, process CPU and its user/system
-components, plus Go-runtime allocation and GC counts. `paired.csv` contains
+components, post-drain CPU, process CPU through shutdown, plus Go-runtime allocation
+and GC counts (window, through drain, and process lifetime through shutdown). `paired.csv` contains
 **geometric means of within-block ratios** and nominal 95% percentile
 block-bootstrap intervals; `--denominator` selects the reference arm. These
 ratios are not ratios of the displayed medians. `analysis.json` additionally
 records raw-file hashes, order effects, split-half estimates and a moving-block
 sensitivity diagnostic. `per-run.csv` retains every arm's statistics.
 
-CPU is the **measured-phase `getrusage(RUSAGE_SELF)` user + system delta**, divided
+Window CPU is the **measured-phase `getrusage(RUSAGE_SELF)` user + system delta**, divided
 by completed transactions. Resource snapshots bracket measurement: MemStats then
 getrusage before, getrusage then MemStats after, excluding the MemStats collector's
 CPU but including minimal clock/barrier bookkeeping. GNU `time -v` is saved
@@ -171,9 +177,33 @@ releases native transactions/futures through Go GC finalizers (7.3.77 binding
 `database.go:102-106`, `futures.go:93`), then transaction teardown is queued on the
 network thread (`fdb_c.cpp:921-926`, `ThreadSafeTransaction.cpp:402-406`). Warmup
 cleanup can enter the window; late measured-transaction cleanup can fall after it.
-The unequal deferred-cleanup effect is unmeasured. Paired tables include both
-arms' Go GC cycles beside CPU ratios; these counts do not prove native cleanup
-completed. Do not present window CPU as native full-cost or capacity evidence.
+The unequal deferred-cleanup effect is unmeasured by that window alone. Paired
+tables include both arms' Go GC cycles beside ratios; counts alone do not prove
+native cleanup completed. Do not present window CPU as native full-cost evidence.
+
+Two additional CPU scopes are reported per measured transaction:
+
+- **Drained CPU** subtracts the pre-window snapshot from a snapshot after a Go
+  finalizer fixpoint and a native non-I/O FIFO barrier (`GetApproximateSize`).
+  It includes forced GC and any pending setup/warmup cleanup, not just measured
+  transaction work. It excludes persisted validation and terminal shutdown.
+- **Shutdown process CPU** is absolute `RUSAGE_SELF` user + system after another
+  finalizer fixpoint, database close, and native `StopNetwork` (which waits for
+  the network thread to exit). It includes startup, fixture, warmup, validation
+  and CSV output. It excludes final summary JSON output and process exit; GNU
+  `time` remains the independent whole-process measure. Fixed overheads are not
+  removed or extrapolated into a steady-state cost.
+
+Each drain forces at least two GC rounds and waits for exact runtime finalizer
+executed/queued counts to match, continuing until consecutive quiet rounds queue
+no new finalizers. This handles future-to-transaction dependency chains rather
+than assuming two GCs suffice. A concurrent extra GC restarts the fixpoint check;
+16 rounds or 30 seconds without completion fails the run. Cleanup counters are
+runtime estimates: they must match and queue no additional cleanup during the
+drain, not a general proof that every Go cleanup ran. Raw drain counters, rounds,
+wall time, barrier completion and shutdown completion are retained in `summary.json`.
+No FDB calls or forced GC occur after native shutdown. The runner and analyzer
+reject absent/incomplete lifecycle metadata, pending finalizers and decreasing CPU.
 
 The imported master590145 baseline also omits C++'s causal-read-risky flag on
 write-only commit GRVs (`NativeAPI.actor.cpp:6577-6578`, versus Go

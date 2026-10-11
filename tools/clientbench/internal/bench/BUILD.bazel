@@ -4,6 +4,7 @@ go_library(
     name = "bench",
     srcs = [
         "counters.go",
+        "lifecycle.go",
         "profile.go",
         "run.go",
         "workload.go",
@@ -19,6 +20,7 @@ go_test(
         "batchset50_test.go",
         "bench_test.go",
         "counters_test.go",
+        "lifecycle_test.go",
     ],
     embed = [":bench"],
 )

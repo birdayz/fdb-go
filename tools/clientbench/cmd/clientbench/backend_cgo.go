@@ -10,19 +10,24 @@ package main
 import "C"
 
 import (
+	"sync"
+
 	"fdb.dev/tools/clientbench/internal/bench"
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
 )
 
 type (
-	backend     struct{ db fdb.Database }
+	backend struct {
+		db        fdb.Database
+		closeOnce sync.Once
+	}
 	transaction struct {
 		read  fdb.ReadTransaction
 		write fdb.Transaction
 	}
 )
 
-func openBackend(cfg bench.Config) (bench.Database, map[string]any, error) {
+func openBackend(cfg bench.Config) (bench.LifecycleDatabase, map[string]any, error) {
 	if err := fdb.APIVersion(730); err != nil {
 		return nil, nil, err
 	}
@@ -38,10 +43,27 @@ func openBackend(cfg bench.Config) (bench.Database, map[string]any, error) {
 		db.Close()
 		return nil, nil, err
 	}
-	return &backend{db}, map[string]any{"backend": "cgo", "api_version": 730, "native_library": true, "native_client_version": C.GoString(C.fdb_get_client_version())}, nil
+	return &backend{db: db}, map[string]any{"backend": "cgo", "api_version": 730, "native_library": true, "native_client_version": C.GoString(C.fdb_get_client_version())}, nil
 }
 
-func (b *backend) Close() { b.db.Close() }
+func (b *backend) Close() { b.closeOnce.Do(b.db.Close) }
+
+func (b *backend) Barrier() error {
+	// This non-I/O future follows finalizer-posted destructors on the native FIFO.
+	tx, err := b.db.CreateTransaction()
+	if err != nil {
+		return err
+	}
+	_, err = tx.GetApproximateSize().Get()
+	return err
+}
+
+func (b *backend) Shutdown() (bool, error) {
+	b.Close()
+	err := fdb.StopNetwork()
+	return err == nil, err
+}
+
 func (b *backend) Counters() bench.ClientCounters {
 	return bench.ClientCounters{Observation: "unobserved"}
 }

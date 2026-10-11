@@ -20,7 +20,7 @@ type transaction struct {
 	write fdb.WritableTransaction
 }
 
-func openBackend(cfg bench.Config) (bench.Database, map[string]any, error) {
+func openBackend(cfg bench.Config) (bench.LifecycleDatabase, map[string]any, error) {
 	if err := fdb.APIVersion(730); err != nil {
 		return nil, nil, err
 	}
@@ -42,7 +42,13 @@ func openBackend(cfg bench.Config) (bench.Database, map[string]any, error) {
 	return &backend{db: db, raw: raw}, map[string]any{"backend": "go", "api_version": 730, "native_library": false}, nil
 }
 
-func (b *backend) Close() { b.db.Close() }
+func (b *backend) Close()         { b.db.Close() }
+func (b *backend) Barrier() error { return nil }
+func (b *backend) Shutdown() (bool, error) {
+	// Database.Close waits for background workers and all transport loops.
+	return false, b.raw.Close()
+}
+
 func (b *backend) Counters() bench.ClientCounters {
 	m := b.raw.Metrics()
 	return bench.ClientCounters{Observation: "observed", Values: map[string]int64{

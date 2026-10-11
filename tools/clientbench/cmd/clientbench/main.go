@@ -8,7 +8,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
+	"strconv"
 	"strings"
 
 	"fdb.dev/tools/clientbench/internal/bench"
@@ -44,6 +46,15 @@ func run() error {
 	}
 	if err := cfg.Validate(); err != nil {
 		return err
+	}
+	procs, err := strconv.Atoi(os.Getenv("GOMAXPROCS"))
+	if err != nil || procs <= 0 || procs != runtime.GOMAXPROCS(0) {
+		return fmt.Errorf("explicit positive GOMAXPROCS matching runtime is required for lifecycle accounting")
+	}
+	for _, setting := range os.Environ() {
+		if strings.HasPrefix(setting, "FDB_NETWORK_OPTION_") {
+			return fmt.Errorf("inherited FDB_NETWORK_OPTION_* is forbidden: native lifecycle accounting requires only the local client")
+		}
 	}
 	db, meta, err := openBackend(cfg)
 	if err != nil {

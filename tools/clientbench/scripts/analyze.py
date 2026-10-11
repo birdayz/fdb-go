@@ -21,7 +21,16 @@ WINDOW_CPU_SCOPE = (
     'Window CPU is not complete-lifecycle per-transaction CPU: the Apple binding releases native transactions/futures '
     'through Go GC finalizers, which enqueue further network-thread teardown. Warmup cleanup can enter the window '
     'and late measured-transaction cleanup can fall after it. The size/direction of that unequal deferred-cleanup '
-    'effect is unmeasured; GC counts do not establish that all native cleanup completed.'
+    'effect is unmeasured by the window alone; GC counts do not establish that all native cleanup completed.'
+)
+LIFECYCLE_CPU_SCOPE = (
+    'Drained CPU is (getrusage after the post-measurement finalizer fixpoint and native FIFO barrier minus '
+    'the pre-measurement snapshot)/measured transactions. It includes forced GC and pending setup/warmup cleanup; '
+    'it is not isolated steady-state transaction CPU. Shutdown process CPU is absolute RUSAGE_SELF user+system '
+    'through the final fixpoint, database close and native StopNetwork, divided by measured transactions. '
+    'It includes startup, fixture, warmup, validation and CSV output, but excludes final JSON output and process exit. '
+    'Go finalizers are drained using exact runtime counters; cleanups are runtime estimates and must not increase '
+    'during either drain. The terminal shutdown, not GC counts alone, establishes that native network work has stopped.'
 )
 
 
@@ -77,34 +86,37 @@ def digest(path):
 
 def write_tables(out, per_run, comparisons):
     times = ['mean_ns', 'p50_ns', 'p90_ns', 'p99_ns', 'p999_ns', 'process_cpu_ns_per_op',
-             'user_cpu_ns_per_op', 'system_cpu_ns_per_op']
+             'user_cpu_ns_per_op', 'system_cpu_ns_per_op', 'drained_cpu_ns_per_op', 'shutdown_process_cpu_ns_per_op']
     absolute = []
     for workload, arm in sorted({(r['workload'], r['arm']) for r in per_run}):
         rows = [r for r in per_run if r['workload'] == workload and r['arm'] == arm]
         absolute.append(dict(workload=workload, arm=arm, runs=len(rows), transactions=sum(r['observations'] for r in rows),
                              **{m: statistics.median(r[m] for r in rows) for m in times + ['go_alloc_bytes_per_op', 'go_mallocs_per_op']},
-                             go_gc_cycles=sum(r['go_gc_cycles'] for r in rows)))
+                             go_gc_cycles=sum(r['go_gc_cycles'] for r in rows),
+                             drained_go_gc_cycles=sum(r['drained_go_gc_cycles'] for r in rows),
+                             shutdown_go_gc_cycles=sum(r['shutdown_go_gc_cycles'] for r in rows)))
     text = ['# Client benchmark\n\nAbsolute times are medians of run-level statistics in µs/transaction. '
             'Ratios are geometric means of within-block ratios, NOT ratios of these medians. '
-            'CPU is measured-phase getrusage user+system. Go allocation/GC counters exclude the native C++ heap; '
+            'Window CPU is measured-phase getrusage user+system; drained and shutdown scopes are defined below. Go allocation/GC counters exclude the native C++ heap; '
             'do not compare total Go/CGo memory from these columns. Native client counters are unobserved.\n\n',
-            '|Workload|Arm|Runs|Transactions|Mean|p50|p90|p99|p99.9|CPU|User CPU|System CPU|Go B/tx|Go allocs/tx|Go GC cycles|\n',
-            '|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n']
+            '|Workload|Arm|Runs|Transactions|Mean|p50|p90|p99|p99.9|Window CPU|Window User CPU|Window System CPU|Drained CPU|Shutdown process CPU|Go B/tx|Go allocs/tx|Go GC cycles: window/drained/shutdown|\n',
+            '|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n']
     for r in absolute:
         text.append(f'|{r["workload"]}|{r["arm"]}|{r["runs"]}|{r["transactions"]}|' +
                     '|'.join(f'{r[m]/1000:.3f}' for m in times) +
-                    f'|{r["go_alloc_bytes_per_op"]:.3f}|{r["go_mallocs_per_op"]:.3f}|{r["go_gc_cycles"]}|\n')
-    text.append('\n|Workload|Ratio|Metric|Paired GM|Nominal 95% block-bootstrap CI|Pairs <1|Numerator Go GC cycles|Denominator Go GC cycles|\n|---|---|---|---:|---|---:|---:|---:|\n')
+                    f'|{r["go_alloc_bytes_per_op"]:.3f}|{r["go_mallocs_per_op"]:.3f}|{r["go_gc_cycles"]}/{r["drained_go_gc_cycles"]}/{r["shutdown_go_gc_cycles"]}|\n')
+    text.append('\n|Workload|Ratio|Metric|Paired GM|Nominal 95% block-bootstrap CI|Pairs <1|Numerator Go GC: window/drained/shutdown|Denominator Go GC: window/drained/shutdown|\n|---|---|---|---:|---|---:|---:|---:|\n')
     for r in comparisons:
         text.append(f'|{r["workload"]}|{r["numerator"]}/{r["denominator"]}|{r["metric"]}|{r["ratio"]:.6f}|'
                     f'[{r["ci95_low"]:.6f}, {r["ci95_high"]:.6f}]|{r["pairs_below_one"]}/{r["blocks"]}|'
-                    f'{r["numerator_go_gc_cycles"]}|{r["denominator_go_gc_cycles"]}|\n')
+                    f'{r["numerator_go_gc_cycles"]}/{r["numerator_drained_go_gc_cycles"]}/{r["numerator_shutdown_go_gc_cycles"]}|'
+                    f'{r["denominator_go_gc_cycles"]}/{r["denominator_drained_go_gc_cycles"]}/{r["denominator_shutdown_go_gc_cycles"]}|\n')
     text.append('\nExploratory same-host result, not a noninferiority, global-native or capacity claim. '
                 'Bootstrap resamples paired run blocks, not individual operations. Independence and CI coverage '
                 'are not established on a continuously running server; no multiplicity correction. '
                 'analysis.json includes order/dependence diagnostics, raw-file hashes and any CPU-component ratios '
                 'omitted because a counter was zero.\n')
-    text.append('\n' + WINDOW_CPU_SCOPE + '\n')
+    text.append('\n' + WINDOW_CPU_SCOPE + '\n\n' + LIFECYCLE_CPU_SCOPE + '\n')
     if any(r['workload'] in ('set100', 'batchset50', 'batchset50x1000') for r in per_run):
         text.append('\nThe imported master590145 baseline omits C++ causal-read-risky on write-only commit GRVs '
                     '(NativeAPI.actor.cpp:6577-6578 versus client/transaction.go:1980-1985,3398-3411). '
@@ -243,6 +255,13 @@ def main():
                      go_gc_cycles=after["go_gc_cycles"] - before["go_gc_cycles"],
                      go_gc_pause_ns=after['go_gc_pause_ns'] - before['go_gc_pause_ns'],
                      process_lifetime_high_water_rss_kib=after["process_high_water_rss_kb"])
+        life = summary['lifecycle']
+        drained, shutdown = life['stats_after_measurement_drain'], life['stats_after_shutdown']
+        cpu_keys = ('process_user_cpu_us', 'process_system_cpu_us')
+        s.update(drained_cpu_ns_per_op=1000 * sum(drained[k] - before[k] for k in cpu_keys) / len(rows),
+                 shutdown_process_cpu_ns_per_op=1000 * sum(shutdown[k] for k in cpu_keys) / len(rows),
+                 drained_go_gc_cycles=drained['go_gc_cycles'] - before['go_gc_cycles'],
+                 shutdown_go_gc_cycles=shutdown['go_gc_cycles'])
         stats[(s["workload"], s["block"], s["arm"])] = s
         all_latencies.setdefault((s["workload"], s["arm"]), []).extend(latencies)
         per_run.append(s)
@@ -257,7 +276,7 @@ def main():
         for numerator in arms:
             if numerator == args.denominator:
                 continue
-            for metric in ("mean_ns", "p50_ns", "p90_ns", "p99_ns", "p999_ns", "process_cpu_ns_per_op", "user_cpu_ns_per_op", "system_cpu_ns_per_op"):
+            for metric in ("mean_ns", "p50_ns", "p90_ns", "p99_ns", "p999_ns", "process_cpu_ns_per_op", "user_cpu_ns_per_op", "system_cpu_ns_per_op", "drained_cpu_ns_per_op", "shutdown_process_cpu_ns_per_op"):
                 pairs = [(stats[(workload, b, numerator)][metric],
                           stats[(workload, b, args.denominator)][metric])
                          for b in range(plan["blocks"])]
@@ -284,14 +303,18 @@ def main():
                          ratio_gt_1_means="numerator slower",
                          first_half_ratio=math.exp(statistics.mean(math.log(a / b) for a, b in pairs[:half])),
                          second_half_ratio=math.exp(statistics.mean(math.log(a / b) for a, b in pairs[half:])))
+                for field in ('drained_go_gc_cycles', 'shutdown_go_gc_cycles'):
+                    s['numerator_' + field] = sum(stats[(workload, b, numerator)][field] for b in range(plan['blocks']))
+                    s['denominator_' + field] = sum(stats[(workload, b, args.denominator)][field] for b in range(plan['blocks']))
                 comparisons.append(s)
     pooled = [{"workload": w, "arm": a, "successes": len(v),
                "mean_ns": statistics.mean(v), "p50_ns": quantile(v, .5),
                "p99_ns": quantile(v, .99), "max_ns": max(v)}
               for (w, a), v in sorted(all_latencies.items())]
     report = {"valid_zero_error_campaign": not issues, "issues": issues,
-              "inference": "Geometric mean of paired run-level statistics (NOT ratio of pooled quantiles or medians). CPU is the measured-phase getrusage user+system delta per transaction. Go memory/GC excludes the native C++ heap; RSS is process-lifetime high water. Native counters are unobserved. Nominal 95% percentile bootstrap over run-block replicates; statistical independence is not established on a continuously running server. Circular moving-block bootstrap length3, lag1 and order effects are sensitivity diagnostics, not a guarantee of CI coverage. One guest/server configuration, not independent physical hosts. Pooled quantiles are descriptive only. No multiplicity correction.",
+              "inference": "Geometric mean of paired run-level statistics (NOT ratio of pooled quantiles or medians). Window CPU is the measured-phase getrusage user+system delta per transaction; drained and shutdown CPU have separate explicit scopes. Go memory/GC excludes the native C++ heap; RSS is process-lifetime high water. Native counters are unobserved. Nominal 95% percentile bootstrap over run-block replicates; statistical independence is not established on a continuously running server. Circular moving-block bootstrap length3, lag1 and order effects are sensitivity diagnostics, not a guarantee of CI coverage. One guest/server configuration, not independent physical hosts. Pooled quantiles are descriptive only. No multiplicity correction.",
               "window_cpu_scope": WINDOW_CPU_SCOPE,
+              "lifecycle_cpu_scope": LIFECYCLE_CPU_SCOPE,
               "bootstrap_seed": args.seed, "bootstrap_resamples": args.resamples,
               "plan_sha256": digest(out / "plan.json"), "raw_sha256": hashes,
               "per_run": per_run, "pooled_descriptive": pooled,
