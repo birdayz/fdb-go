@@ -30,18 +30,19 @@ go_test(
     # keep: Bazel (rules_go) shards by TOP-LEVEL TEST FUNCTION, and the corpus
     # runs as one function per shard (TestFDB_FactoryCorpusFull0..7, each over a
     # disjoint, size-balanced set of corpus files). Must equal fullShards in
-    # full_corpus_fdb_test.go. Each shard is its own process and FDB container.
+    # full_corpus_fdb_test.go. Each shard is its own process and SimFDB backend.
     shard_count = 8,
     tags = [
         "resources:cpu:5",
-        # Per shard: Go 0.8-1.6 GB measured plus its FDB container (~0.6 GB).
         "resources:memory:2000",
         "test-full",
     ],
     deps = [
+        "//pkg/dst",
+        "//pkg/recordlayer",
         "//pkg/relational/conformance/factorycorpus",
         "//pkg/relational/core/keyspace",
         "//pkg/relational/sqldriver",
-        "//pkg/testcontainers/foundationdb",
+        "//pkg/simfdb",
     ],
 )
