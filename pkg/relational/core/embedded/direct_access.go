@@ -101,14 +101,15 @@ func (s *directAccessStatement) run(ctx context.Context, tableName string, opts 
 		if err := c.ensureMetaData(ctx); err != nil {
 			return nil, err
 		}
-		rt := c.cachedMetaData().GetRecordType(table)
-		if rt == nil {
-			// RecordTypeTable.loadRecordType: the metadata's refusal, UNDEFINED_SCHEMA.
-			return nil, api.NewErrorf(api.ErrCodeUndefinedSchema, "Unknown record type %s", table)
-		}
 		store, err := c.storeIn(rctx, tx, ss)
 		if err != nil {
 			return nil, err
+		}
+		// RecordTypeTable.loadRecordType: the store's own meta-data (its records must
+		// carry its descriptors), refusing an unknown type as UNDEFINED_SCHEMA.
+		rt := store.GetRecordMetaData().GetRecordType(table)
+		if rt == nil {
+			return nil, api.NewErrorf(api.ErrCodeUndefinedSchema, "Unknown record type %s", table)
 		}
 		return fn(directTable{name: table, rt: rt, store: store}, merged)
 	})

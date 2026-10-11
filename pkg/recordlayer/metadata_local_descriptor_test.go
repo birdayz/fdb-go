@@ -152,4 +152,127 @@ var _ = Describe("WithLocalFileDescriptor", func() {
 		Expect(errors.As(err, &evoErr)).To(BeTrue(), "got %v (%T)", err, err)
 		Expect(evoErr.Message).To(Equal("record type removed from union: Extra"))
 	})
+
+	// A small records file of its own, the stored and local sides of one schema.
+	optional := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum()
+	scalar := func(name string, num int32) *descriptorpb.FieldDescriptorProto {
+		return &descriptorpb.FieldDescriptorProto{Name: proto.String(name), Number: proto.Int32(num), Label: optional, Type: descriptorpb.FieldDescriptorProto_TYPE_INT64.Enum()}
+	}
+	ref := func(name string, num int32, msg string) *descriptorpb.FieldDescriptorProto {
+		return &descriptorpb.FieldDescriptorProto{
+			Name: proto.String(name), Number: proto.Int32(num), Label: optional,
+			Type: descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(), TypeName: proto.String(".localkey." + msg),
+		}
+	}
+	message := func(name string, fields ...*descriptorpb.FieldDescriptorProto) *descriptorpb.DescriptorProto {
+		return &descriptorpb.DescriptorProto{Name: proto.String(name), Field: fields}
+	}
+	file := func(msgs ...*descriptorpb.DescriptorProto) protoreflect.FileDescriptor {
+		fd, err := protodesc.NewFile(&descriptorpb.FileDescriptorProto{
+			Name: proto.String("localkey.proto"), Package: proto.String("localkey"), Syntax: proto.String("proto2"), MessageType: msgs,
+		}, nil)
+		Expect(err).NotTo(HaveOccurred())
+		return fd
+	}
+	// stored is fd's meta-data with every type keyed by id, as a store holds it.
+	stored := func(fd protoreflect.FileDescriptor, edit func(*RecordMetaDataBuilder)) *gen.MetaData {
+		b := NewRecordMetaDataBuilder().SetRecords(fd)
+		for i := 0; i < fd.Messages().Len(); i++ {
+			if name := fd.Messages().Get(i).Name(); name != "RecordTypeUnion" {
+				b.GetRecordType(string(name)).SetPrimaryKey(Field("id"))
+			}
+		}
+		if edit != nil {
+			edit(b)
+		}
+		md, err := b.Build()
+		Expect(err).NotTo(HaveOccurred())
+		p, err := md.ToProto()
+		Expect(err).NotTo(HaveOccurred())
+		return p
+	}
+	order := func(name string) *descriptorpb.DescriptorProto {
+		return message(name, scalar("id", 1), scalar("price", 2))
+	}
+	other := message("Other", scalar("id", 1))
+
+	It("takes the record type key from the local union's smallest field", func() {
+		// RecordType.getRecordTypeKey (RecordType.java:171-182) reads the meta-data's
+		// union, which is the local one (RecordMetaDataBuilder.java:281-287).
+		storedFile := file(order("Order"), other, message("RecordTypeUnion", ref("_Order", 5, "Order"), ref("_Other", 6, "Other")))
+		localFile := file(order("Order"), other, message("RecordTypeUnion", ref("_Order_low", 4, "Order"), ref("_Order", 5, "Order"), ref("_Other", 6, "Other")))
+		p := stored(storedFile, func(b *RecordMetaDataBuilder) { b.GetRecordType("Other").SetRecordTypeKey("other") })
+
+		plain, err := RecordMetaDataFromProto(proto.Clone(p).(*gen.MetaData))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(plain.GetRecordType("Order").GetRecordTypeKey()).To(Equal(int64(5)))
+		md, err := RecordMetaDataFromProto(p, WithLocalFileDescriptor(localFile))
+		Expect(err).NotTo(HaveOccurred())
+		rt := md.GetRecordType("Order")
+		Expect(rt.GetRecordTypeKey()).To(Equal(int64(4)))
+		// The union field written is still the stored one (RecordMetaDataBuilder.java:804-809).
+		Expect(rt.UnionFieldDescriptor.Number()).To(Equal(protoreflect.FieldNumber(5)))
+		Expect(md.GetRecordType("Other").GetRecordTypeKey()).To(Equal("other"), "an explicit key is kept")
+	})
+
+	It("renames a record type through the local file, keeping its key, indexes and primary key", func() {
+		storedFile := file(order("Order"), message("RecordTypeUnion", ref("_Order", 1, "Order")))
+		localFile := file(order("Purchase"), message("RecordTypeUnion", ref("_Purchase", 1, "Purchase")))
+		p := stored(storedFile, func(b *RecordMetaDataBuilder) { b.AddIndex("Order", NewIndex("price", Field("price"))) })
+
+		md, err := RecordMetaDataFromProto(p, WithLocalFileDescriptor(localFile))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(md.GetRecordType("Order")).To(BeNil())
+		rt := md.GetRecordType("Purchase")
+		Expect(rt).NotTo(BeNil())
+		Expect(rt.Descriptor).To(BeIdenticalTo(localFile.Messages().ByName("Purchase")))
+		Expect(rt.GetRecordTypeKey()).To(Equal(int64(1)))
+		Expect(rt.PrimaryKey).To(Equal(Field("id")))
+		Expect(rt.GetIndexes()).To(HaveLen(1))
+		Expect(rt.GetIndexes()[0].Name).To(Equal("price"))
+		Expect(md.RecordTypesForIndex(md.GetIndex("price"))).To(ConsistOf(rt))
+	})
+
+	It("honours WithEvolutionValidator", func() {
+		storedFile := file(order("Order"), message("RecordTypeUnion", ref("_Order", 1, "Order")))
+		renamedField := message("Order", scalar("id", 1), scalar("cost", 2))
+		localFile := file(renamedField, message("RecordTypeUnion", ref("_Order", 1, "Order")))
+		p := stored(storedFile, nil)
+
+		_, err := RecordMetaDataFromProto(proto.Clone(p).(*gen.MetaData), WithLocalFileDescriptor(localFile))
+		var evoErr *MetaDataEvolutionError
+		Expect(errors.As(err, &evoErr)).To(BeTrue(), "the default validator refuses a field rename: %v (%T)", err, err)
+		lenient := NewMetaDataEvolutionValidator().SetAllowFieldRenames(true).Build()
+		md, err := RecordMetaDataFromProto(p, WithLocalFileDescriptor(localFile), WithEvolutionValidator(lenient))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(md.GetRecordType("Order").Descriptor.Fields().ByName("cost")).NotTo(BeNil())
+	})
+
+	It("skips a local record type the stored meta-data lacks", func() {
+		// RecordMetaDataBuilder.java:795-797: no new types from a local union.
+		storedFile := file(order("Order"), message("RecordTypeUnion", ref("_Order", 1, "Order")))
+		localFile := file(order("Order"), other, message("RecordTypeUnion", ref("_Order", 1, "Order"), ref("_Other", 2, "Other")))
+		md, err := RecordMetaDataFromProto(stored(storedFile, nil), WithLocalFileDescriptor(localFile))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(md.GetRecordType("Other")).To(BeNil())
+		Expect(md.RecordTypes()).To(HaveLen(1))
+		Expect(md.GetRecordType("Order").Descriptor).To(BeIdenticalTo(localFile.Messages().ByName("Order")))
+	})
+
+	It("refuses to synthesize a union for a oneof union or a removed type", func() {
+		oneofUnion := message("RecordTypeUnion", ref("_Order", 1, "Order"), ref("_Other", 2, "Other"))
+		for _, f := range oneofUnion.Field {
+			f.OneofIndex = proto.Int32(0)
+		}
+		oneofUnion.OneofDecl = []*descriptorpb.OneofDescriptorProto{{Name: proto.String("record")}}
+		_, err := RecordMetaDataFromProto(stored(file(order("Order"), other, oneofUnion), nil), WithLocalFileDescriptor(file(order("Order"), other)))
+		var mdErr *MetaDataError
+		Expect(errors.As(err, &mdErr)).To(BeTrue(), "got %v (%T)", err, err)
+		Expect(mdErr.Message).To(Equal("Adding record type to oneof is not allowed"))
+
+		plainUnion := message("RecordTypeUnion", ref("_Order", 1, "Order"), ref("_Other", 2, "Other"))
+		_, err = RecordMetaDataFromProto(stored(file(order("Order"), other, plainUnion), nil), WithLocalFileDescriptor(file(order("Order"))))
+		Expect(errors.As(err, &mdErr)).To(BeTrue(), "got %v (%T)", err, err)
+		Expect(mdErr.Message).To(Equal("Record type Other removed"))
+	})
 })

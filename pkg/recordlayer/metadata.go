@@ -477,7 +477,8 @@ func (b *RecordMetaDataBuilder) setRecords(fd protoreflect.FileDescriptor, wantU
 	return b
 }
 
-// FileDescriptor returns the schema's protobuf file descriptor.
+// FileDescriptor returns the schema's protobuf file descriptor: the stored records
+// file even under WithLocalFileDescriptor, as Java's getRecordsDescriptor (RecordMetaDataBuilder.java:275).
 func (m *RecordMetaData) FileDescriptor() protoreflect.FileDescriptor { return m.fileDescriptor }
 
 // SetRecordsSourceProto retains the ORIGINAL FileDescriptorProto the file

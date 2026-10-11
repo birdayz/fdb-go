@@ -173,6 +173,17 @@ func (b *RecordMetaDataBuilder) updateUnionFieldsAndRecordTypesFromLocal(union p
 		updated[rt.Name] = rt
 		byNewDescriptor[newDescriptor] = rt
 	}
+	// The derived record type key is the smallest union field of the type in
+	// the meta-data's union, now the local one (RecordType.java:171-182).
+	for newDescriptor, rt := range byNewDescriptor {
+		smallest := 0
+		for i := 0; i < union.Fields().Len(); i++ {
+			if field := union.Fields().Get(i); field.Message() == newDescriptor && (smallest == 0 || int(field.Number()) < smallest) {
+				smallest = int(field.Number())
+			}
+		}
+		rt.RecordTypeIndex = smallest
+	}
 	b.recordTypes = updated
 	return nil
 }
