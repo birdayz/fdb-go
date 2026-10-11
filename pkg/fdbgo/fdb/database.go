@@ -27,18 +27,28 @@ func MustAPIVersion(version int) {
 }
 
 // APIVersion must be called before any other fdb function. It selects the
-// FDB API version to use. The pure Go client supports a broad range of
-// API versions but does not enforce version-specific behavior differences.
+// FDB API version to use: client.MinAPIVersion through client.MaxAPIVersion
+// (510-730). Re-selecting the same version is a no-op; any other version once
+// one is selected fails with api_version_already_set (2201), and an
+// unsupported version with api_version_not_supported (2203).
 func APIVersion(version int) error {
-	if version < 510 {
-		return Error{Code: 2201} // api_version_not_supported
-	}
-	v := int32(version)
-	// Atomic set-if-unset. Reject re-set with a different version.
-	if !apiVersion.CompareAndSwap(0, v) {
-		if apiVersion.Load() != v {
-			return Error{Code: 2201}
+	return selectAPIVersion(&apiVersion, version)
+}
+
+// selectAPIVersion is APIVersion over explicit state. The already-set check
+// precedes the range check, as in the Apple binding's APIVersion.
+func selectAPIVersion(cur *atomic.Int32, version int) error {
+	if v := cur.Load(); v != 0 {
+		if int(v) == version {
+			return nil
 		}
+		return Error{Code: 2201} // api_version_already_set
+	}
+	if version < client.MinAPIVersion || version > client.MaxAPIVersion {
+		return Error{Code: 2203} // api_version_not_supported
+	}
+	if !cur.CompareAndSwap(0, int32(version)) && int(cur.Load()) != version {
+		return Error{Code: 2201}
 	}
 	return nil
 }

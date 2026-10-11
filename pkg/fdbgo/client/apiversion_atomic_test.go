@@ -72,3 +72,37 @@ func TestOpenDatabase_RequiresAPIVersion(t *testing.T) {
 		t.Fatalf("err = %v (%T), want *wire.FDBError{Code: 2200}", err, err)
 	}
 }
+
+// Unsupported API versions must fail before attempting bootstrap.
+func TestOpenDatabase_RejectsUnsupportedAPIVersion(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ v, want int }{
+		{0, 2200},
+		{-1, 2203},
+		{13, 2203},
+		{200, 2203},
+		{509, 2203},
+		{510, 0},
+		{730, 0},
+		{731, 2203},
+		{1<<32 + 730, 2203},
+	} {
+		err := checkAPIVersion(tc.v)
+		var fe *wire.FDBError
+		switch {
+		case tc.want == 0 && err != nil:
+			t.Errorf("checkAPIVersion(%d) = %v, want nil", tc.v, err)
+		case tc.want != 0 && (!errors.As(err, &fe) || fe.Code != tc.want):
+			t.Errorf("checkAPIVersion(%d) = %v, want code %d", tc.v, err, tc.want)
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for _, v := range []int{509, 731} {
+		_, err := OpenDatabaseFromConfig(ctx, &ClusterFile{}, WithAPIVersion(v))
+		var fe *wire.FDBError
+		if !errors.As(err, &fe) || fe.Code != 2203 {
+			t.Errorf("OpenDatabaseFromConfig(api %d) err = %v (%T), want *wire.FDBError{Code: 2203}", v, err, err)
+		}
+	}
+}
