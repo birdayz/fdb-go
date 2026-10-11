@@ -118,6 +118,10 @@ type RecordMetaData struct {
 	// preserved holds the proto fields this port does not model, kept verbatim
 	// so a Go round-trip re-emits them. See preservedMetaDataFields.
 	preserved preservedMetaDataFields
+
+	// usesLocalRecordsDescriptor is set by WithLocalFileDescriptor; ToProto then
+	// refuses, as Java's toProto does (RecordMetaData.java:643-645).
+	usesLocalRecordsDescriptor bool
 }
 
 // UserDefinedFunctions returns the schema's SQL functions (MetaData field 14).
@@ -311,6 +315,8 @@ type RecordMetaDataBuilder struct {
 	// preserved carries the unmodelled proto fields through to the built
 	// metadata. See preservedMetaDataFields.
 	preserved preservedMetaDataFields
+
+	usesLocalRecordsDescriptor bool
 }
 
 // NewRecordMetaDataBuilder creates a new builder
@@ -1311,6 +1317,8 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 		subspaceKeyCounter:      b.subspaceKeyCounter,
 		usesSubspaceKeyCounter:  b.counterBasedSubspaceKeys,
 		preserved:               preserved,
+
+		usesLocalRecordsDescriptor: b.usesLocalRecordsDescriptor,
 	}
 
 	// Derived here, beside fieldNumberToRecordType above, so the value is
@@ -1593,6 +1601,22 @@ func (m *RecordMetaData) GetRecordType(name string) *RecordType {
 		}
 	}
 	return found
+}
+
+// GetRecordTypeForDescriptor is Java's RecordMetaData.getRecordTypeForDescriptor
+// (RecordMetaData.java:219-223): the record type of descriptor's name, which
+// must hold that very descriptor; a same-named message of another descriptor
+// (a compiled type over loaded meta-data, without WithLocalFileDescriptor) is not it.
+func (m *RecordMetaData) GetRecordTypeForDescriptor(descriptor protoreflect.MessageDescriptor) (*RecordType, error) {
+	name := string(descriptor.Name())
+	rt := m.GetRecordType(name)
+	if rt == nil {
+		return nil, unknownRecordTypeError(name)
+	}
+	if rt.Descriptor != descriptor {
+		return nil, &MetaDataError{Message: "descriptor did not match record type"}
+	}
+	return rt, nil
 }
 
 // RecordTypes returns all record types.

@@ -67,6 +67,9 @@ import (
 // opposite reason: they are declared fields of a message this code parses, so
 // they are never unknown. Both halves of the message need explicit carrying.
 func (m *RecordMetaData) ToProto() (*gen.MetaData, error) {
+	if m.usesLocalRecordsDescriptor {
+		return nil, &MetaDataError{Message: "cannot serialize meta-data with a local records descriptor to proto"}
+	}
 	md := &gen.MetaData{}
 
 	// 1. File descriptor. The retained source proto (when present) is
@@ -214,8 +217,13 @@ func (m *RecordMetaData) ToProto() (*gen.MetaData, error) {
 }
 
 // RecordMetaDataFromProto deserializes a MetaData proto back into a RecordMetaData.
-// Matches Java's RecordMetaDataBuilder.loadFromProto().
-func RecordMetaDataFromProto(md *gen.MetaData) (*RecordMetaData, error) {
+// Matches Java's RecordMetaDataBuilder.loadFromProto(), with opts the builder
+// settings Java applies first (WithLocalFileDescriptor).
+func RecordMetaDataFromProto(md *gen.MetaData, opts ...MetaDataProtoOption) (*RecordMetaData, error) {
+	var options metaDataProtoOptions
+	for _, opt := range opts {
+		opt(&options)
+	}
 	if md == nil {
 		return nil, &MetaDataError{Message: "nil metadata proto"}
 	}
@@ -386,6 +394,11 @@ func RecordMetaDataFromProto(md *gen.MetaData) (*RecordMetaData, error) {
 		builder.recordCountKey = ck
 	}
 
+	if options.localFileDescriptor != nil {
+		if err := builder.useLocalFileDescriptor(options.localFileDescriptor, options.evolutionValidator); err != nil {
+			return nil, err
+		}
+	}
 	return builder.Build()
 }
 

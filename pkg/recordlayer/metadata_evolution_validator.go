@@ -276,6 +276,13 @@ func (v *MetaDataEvolutionValidator) unionCorrespondence(old, new *RecordMetaDat
 		// has; only a zero-value RecordMetaData, never built, lacks it.
 		return nil, &MetaDataEvolutionError{Message: "meta-data has no union descriptor (it was not built by RecordMetaDataBuilder)"}
 	}
+	return v.unionDescriptorCorrespondence(oldUnion, newUnion)
+}
+
+// unionDescriptorCorrespondence is validateUnion over the two union descriptors
+// (MetaDataEvolutionValidator.validateUnion(Descriptor, Descriptor)), which
+// RecordMetaDataBuilder also runs on a local file descriptor.
+func (v *MetaDataEvolutionValidator) unionDescriptorCorrespondence(oldUnion, newUnion protoreflect.MessageDescriptor) (map[protoreflect.MessageDescriptor]protoreflect.MessageDescriptor, error) {
 	oldToNew := make(map[protoreflect.MessageDescriptor]protoreflect.MessageDescriptor)
 	newToOld := make(map[protoreflect.MessageDescriptor]protoreflect.MessageDescriptor)
 	seen := make(map[descriptorPair]bool)
