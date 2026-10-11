@@ -111,13 +111,22 @@ func newPendingFutureByteSlice(pending *client.PendingGet) FutureByteSlice {
 	return &pendingFutureByteSlice{pending: pending}
 }
 
+// pendingRead is the part of *client.PendingGet a pipelined future waits on.
+type pendingRead interface {
+	ResolveOrAbort(abort <-chan struct{}) ([]byte, error, bool)
+}
+
 type pendingFutureByteSlice struct {
-	pending *client.PendingGet
+	pending pendingRead
 	once    sync.Once
 	ready   atomic.Bool
 	polled  atomic.Bool
 	val     []byte
 	err     error
+
+	wakeMu sync.Mutex
+	wake   chan struct{} // closed by Cancel so blocked waiters return
+	woken  bool
 }
 
 func (f *pendingFutureByteSlice) finish(val []byte, err error) {
@@ -132,8 +141,19 @@ func (f *pendingFutureByteSlice) resolve() {
 	if f.ready.Load() {
 		return
 	}
-	val, err := f.pending.Resolve()
-	f.finish(val, convertError(err))
+	f.wakeMu.Lock()
+	if f.wake == nil {
+		f.wake = make(chan struct{})
+	}
+	wake := f.wake
+	f.wakeMu.Unlock()
+	if f.ready.Load() { // a Cancel that found no channel completed first
+		return
+	}
+	val, err, abandoned := f.pending.ResolveOrAbort(wake)
+	if !abandoned {
+		f.finish(val, convertError(err))
+	}
 }
 
 func (f *pendingFutureByteSlice) Get() ([]byte, error) {
@@ -161,7 +181,16 @@ func (f *pendingFutureByteSlice) IsReady() bool {
 	return false
 }
 
-func (f *pendingFutureByteSlice) Cancel() { f.finish(nil, Error{Code: 1101}) }
+// Cancel wakes blocked waiters; the read itself stays pending for commit.
+func (f *pendingFutureByteSlice) Cancel() {
+	f.finish(nil, Error{Code: 1101})
+	f.wakeMu.Lock()
+	if f.wake != nil && !f.woken {
+		f.woken = true
+		close(f.wake)
+	}
+	f.wakeMu.Unlock()
+}
 
 // FutureNil represents the asynchronous result of a function that has no
 // return value.
@@ -193,7 +222,7 @@ func newFutureNil(fn func() error) FutureNil {
 	return f
 }
 
-// cancellableFutureNil is a FutureNil whose Cancel() runs a hook before completing with 1101. Watch()
+// cancellableFutureNil is a FutureNil whose Cancel() completes with 1101 and runs a hook. Watch()
 // uses it so that an app freeing an unneeded watch by Cancel()ing the returned future actually
 // cancels the underlying watch (its context → the long-poll drains and releases its
 // outstanding-watch slot). Without this the slot stays charged until the key changes.
@@ -203,10 +232,10 @@ type cancellableFutureNil struct {
 }
 
 func (f *cancellableFutureNil) Cancel() {
+	f.futureBase.Cancel() // before the hook, whose wake-up would publish its ctx error
 	if f.cancel != nil {
 		f.cancel()
 	}
-	f.futureBase.Cancel()
 }
 
 func newFutureNilCancel(fn func() error, cancel func()) FutureNil {

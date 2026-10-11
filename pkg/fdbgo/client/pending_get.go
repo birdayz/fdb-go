@@ -13,11 +13,21 @@ import (
 // retained context. A retired future may consume a ready reply, never retry
 // through the replacement transaction. Repeated callers receive the memo.
 func (p *PendingGet) Resolve() ([]byte, error) {
+	val, err, _ := p.ResolveOrAbort(nil)
+	return val, err
+}
+
+// errWaitAbandoned ends one caller's wait without resolving the read.
+var errWaitAbandoned = errors.New("fdbgo: pending get wait abandoned")
+
+// ResolveOrAbort is Resolve whose reply wait also ends when abort closes, as a
+// cancelled future's waiter wakes in libfdb_c; the read stays pending for commit.
+func (p *PendingGet) ResolveOrAbort(abort <-chan struct{}) ([]byte, error, bool) {
 	p.mu.Lock()
 	if p.done {
 		value, err := p.memoVal, p.memoErr
 		p.mu.Unlock()
-		return value, err
+		return value, err, false
 	}
 	p.mu.Unlock()
 	op := p.tx.readOperation(p.ctx)
@@ -37,20 +47,23 @@ func (p *PendingGet) Resolve() ([]byte, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.done {
-		return p.memoVal, p.memoErr
+		return p.memoVal, p.memoErr, false
 	}
 	if lease == nil {
 		p.retireLocked()
-		return p.memoVal, p.memoErr
+		return p.memoVal, p.memoErr, false
 	}
 	parent := p.ctx
 	if op := p.tx.readOperation(p.ctx); op != nil {
 		parent = op.parent
 	}
 	ctx := context.WithValue(p.ctx, readContextKey{p.tx}, &readOperation{inc: inc, parent: parent, lease: lease})
-	val, err := p.resolve(ctx)
+	val, err := p.resolve(ctx, abort)
+	if err == errWaitAbandoned {
+		return nil, nil, true
+	}
 	p.completeLocked(val, err)
-	return p.memoVal, p.memoErr
+	return p.memoVal, p.memoErr, false
 }
 
 func (p *PendingGet) interruption() error {
@@ -120,7 +133,7 @@ func (p *PendingGet) completeLocked(value []byte, err error) {
 	p.tx.readErrMu.Unlock()
 }
 
-func (p *PendingGet) resolve(ctx context.Context) ([]byte, error) {
+func (p *PendingGet) resolve(ctx context.Context, abort <-chan struct{}) ([]byte, error) {
 	if !p.flushed {
 		p.flushed = true
 		if err := p.conn.FlushContext(ctx); err != nil {
@@ -142,6 +155,8 @@ func (p *PendingGet) resolve(ctx context.Context) ([]byte, error) {
 	case <-p.timer.C:
 		p.releaseWireLocked()
 		return p.resolveFull(ctx)
+	case <-abort:
+		return nil, errWaitAbandoned
 	case <-ctx.Done():
 		if response, ready := p.replyHandle.TakeReadyOrCancel(); ready {
 			p.replyConsumed = true

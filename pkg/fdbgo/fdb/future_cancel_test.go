@@ -2,6 +2,7 @@ package fdb_test
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -32,12 +33,12 @@ func TestGetFuture_IsReadyPolling(t *testing.T) {
 		deadline := time.Now().Add(10 * time.Second)
 		for !f.IsReady() {
 			if time.Now().After(deadline) {
-				t.Fatal("Get future never became ready while IsReady was polled")
+				return nil, errors.New("Get future never became ready while IsReady was polled")
 			}
 			time.Sleep(time.Millisecond)
 		}
 		if v, err := f.Get(); err != nil || string(v) != "v" {
-			t.Fatalf("Get = %q, %v; want \"v\"", v, err)
+			return nil, fmt.Errorf("Get = %q, %v; want \"v\"", v, err)
 		}
 		return nil, nil
 	})
@@ -67,8 +68,8 @@ func TestGetFuture_ConcurrentGet(t *testing.T) {
 		}
 		wg.Wait()
 		close(errs)
-		for err := range errs {
-			t.Fatal(err)
+		if err := <-errs; err != nil { // closed and empty when every Get succeeded
+			return nil, err
 		}
 		return nil, nil
 	})
@@ -88,15 +89,15 @@ func TestFuture_CancelBeforeReady(t *testing.T) {
 		f.Cancel()
 		var fe fdb.Error
 		if _, err := f.Get(); !errors.As(err, &fe) || fe.Code != 1101 {
-			t.Fatalf("Get after Cancel = %v, want 1101", err)
+			return nil, fmt.Errorf("Get after Cancel = %v, want 1101", err)
 		}
 		ready := tr.Get(key)
 		if v, err := ready.Get(); err != nil || string(v) != "v" {
-			t.Fatalf("Get = %q, %v", v, err)
+			return nil, fmt.Errorf("Get = %q, %v", v, err)
 		}
 		ready.Cancel()
 		if v, err := ready.Get(); err != nil || string(v) != "v" {
-			t.Fatalf("Get after a late Cancel = %q, %v; want the value", v, err)
+			return nil, fmt.Errorf("Get after a late Cancel = %q, %v; want the value", v, err)
 		}
 		return nil, nil
 	})
