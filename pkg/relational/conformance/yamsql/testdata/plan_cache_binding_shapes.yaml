@@ -1,0 +1,35 @@
+# plan_cache_binding_shapes.yaml — executes the plan-cache binding-shape rows
+# that hinge on evaluation, so a wrong premise cannot hide in the FDB-only table
+# (testkit.PlanCacheBindingShapes). Java's COALESCE evaluates every argument
+# (VariadicFunctionValue.java:118) and folds only over a NULL/BOOLEAN head in a
+# predicate, so a non-null head does not prune `1 / 0`: Java's
+# ArithmeticException is Go's 22012 (see insert_values_expr.yaml).
+name: plan_cache_binding_shapes
+schema_template: |
+  CREATE TABLE T (id BIGINT, v BIGINT, PRIMARY KEY(id))
+  CREATE INDEX i_v ON T(v)
+setup:
+  - INSERT INTO T VALUES (1, 10), (2, 20), (3, 30)
+tests:
+  - query: SELECT id FROM T WHERE COALESCE(?, 0) > 4 ORDER BY id
+    args: [{kind: int64, value: "5"}]
+    rows: [[1], [2], [3]]
+  - query: SELECT id FROM T WHERE COALESCE(?, 0) > 4 ORDER BY id
+    args: [{kind: int64, value: "3"}]
+    rows: []
+  - query: SELECT id FROM T WHERE COALESCE(?, 1 / 0) > 4 ORDER BY id
+    args: [{kind: int64, value: "5"}]
+    error_code: "22012"
+  - query: SELECT id FROM T WHERE COALESCE(?, 1 / 0) > 4 ORDER BY id
+    args: [{kind: int64, value: "3"}]
+    error_code: "22012"
+  - query: SELECT id FROM T WHERE COALESCE(5, 1 / 0) > 4 ORDER BY id
+    error_code: "22012"
+  - query: SELECT id FROM T WHERE COALESCE(?, 1 / 0 = 1) ORDER BY id
+    args: [{kind: bool, value: "true"}]
+    rows: [[1], [2], [3]]
+  # A BOOLEAN head is the one constant Java dereferences into a literal inside a
+  # predicate (DereferenceConstantObjectValueRule.java:76-80), so the COALESCE
+  # folds at plan time (EvaluateConstantCoalesceRule.java:77-79) and never raises.
+  - query: SELECT id FROM T WHERE COALESCE(TRUE, 1 / 0 > 0) ORDER BY id
+    rows: [[1], [2], [3]]

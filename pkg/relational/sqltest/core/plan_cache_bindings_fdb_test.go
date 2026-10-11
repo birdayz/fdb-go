@@ -2,7 +2,6 @@ package sqltest
 
 import (
 	"context"
-	"database/sql"
 	"math"
 	"reflect"
 	"strings"
@@ -13,67 +12,9 @@ import (
 	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
-func cacheQueryIDs(t *testing.T, conn *sql.Conn, text string, args ...any) []int64 {
-	t.Helper()
-	rows, err := conn.QueryContext(context.Background(), text, args...)
-	if err != nil {
-		t.Fatalf("%s %v: %v", text, args, err)
-	}
-	defer rows.Close()
-	var result []int64
-	for rows.Next() {
-		var value int64
-		if err := rows.Scan(&value); err != nil {
-			t.Fatal(err)
-		}
-		result = append(result, value)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatal(err)
-	}
-	return result
-}
-
 func TestFDB_PlanCacheBindingShapes(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
-	db := testkit.SetupErrorDB(t, "/FRL/cache_binding_shapes", "cache_binding_shapes", testkit.PlanCacheBindingShapesSchema)
-	if _, err := db.ExecContext(ctx, "INSERT INTO T VALUES (1,10),(2,20),(3,30)"); err != nil {
-		t.Fatal(err)
-	}
-	logger := &testkit.SyncCaptureLogger{}
-	var cache *embedded.RelationalPlanCache
-	conn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
-		cache = ec.SharedPlanCache()
-		ec.SetPlanLogger(logger)
-	})
-	for _, tc := range testkit.PlanCacheBindingShapes {
-		cache.Invalidate()
-		before := len(logger.Snapshot())
-		if got := cacheQueryIDs(t, conn, tc.Query, tc.First...); !reflect.DeepEqual(got, tc.WantFirst) {
-			t.Fatalf("%s first: %v, want %v", tc.Name, got, tc.WantFirst)
-		}
-		if got := cacheQueryIDs(t, conn, tc.Query, tc.Second...); !reflect.DeepEqual(got, tc.WantSecond) {
-			t.Fatalf("%s second: %v, want %v", tc.Name, got, tc.WantSecond)
-		}
-		events := logger.Snapshot()[before:]
-		if len(events) != 2 || events[0].Cache != embedded.PlanCacheMiss || (events[1].Cache == embedded.PlanCacheHit) != tc.Hit {
-			t.Fatalf("%s cache events: %+v, want miss then hit=%v", tc.Name, events, tc.Hit)
-		}
-		if tc.Name == "secondary" && !strings.Contains(events[1].PlanExplain, "IndexScan(I_V") {
-			t.Fatalf("reusable equality lost indexed access: %s", events[1].PlanExplain)
-		}
-	}
-	cache.Invalidate()
-	for i, query := range []string{"SELECT id FROM T WHERE v=10", "SELECT id FROM T WHERE v=30"} {
-		before := cache.Counts()
-		if got := cacheQueryIDs(t, conn, query); !reflect.DeepEqual(got, []int64{int64(1 + 2*i)}) {
-			t.Fatalf("literal query: %v", got)
-		}
-		if got := cache.Counts().TertiaryHit - before.TertiaryHit; got != int64(i) {
-			t.Fatalf("literal execution %d hit delta=%d", i, got)
-		}
-	}
+	testkit.RunPlanCacheBindingShapes(t, testkit.SetupErrorDB(t, "/FRL/cache_binding_shapes", "cache_binding_shapes", testkit.PlanCacheBindingShapesSchema))
 }
 
 func TestFDB_PlanCachePreservesRuntimePayloads(t *testing.T) {
@@ -146,7 +87,7 @@ func TestFDB_PlanCacheDMLRuntimeBindings(t *testing.T) {
 			t.Fatalf("DML cache events: %+v", events)
 		}
 	}
-	if got := cacheQueryIDs(t, conn, "SELECT id FROM T ORDER BY id"); !reflect.DeepEqual(got, []int64{3}) {
+	if got := testkit.QueryIDs(t, conn, "SELECT id FROM T ORDER BY id"); !reflect.DeepEqual(got, []int64{3}) {
 		t.Fatalf("DML reused old predicate: %v", got)
 	}
 }
@@ -171,11 +112,11 @@ func TestFDB_PlanCacheNumericPromotions(t *testing.T) {
 		{"SELECT id FROM T WHERE id=?", 1.0, 1.5, []int64{1}, nil},
 	} {
 		cache.Invalidate()
-		if got := cacheQueryIDs(t, conn, tc.query, tc.first); !reflect.DeepEqual(got, tc.wantFirst) {
+		if got := testkit.QueryIDs(t, conn, tc.query, tc.first); !reflect.DeepEqual(got, tc.wantFirst) {
 			t.Fatalf("%s first %v", tc.query, got)
 		}
 		before := cache.Counts().TertiaryHit
-		if got := cacheQueryIDs(t, conn, tc.query, tc.second); !reflect.DeepEqual(got, tc.wantSecond) {
+		if got := testkit.QueryIDs(t, conn, tc.query, tc.second); !reflect.DeepEqual(got, tc.wantSecond) {
 			t.Fatalf("%s second %v", tc.query, got)
 		}
 		// A float or cross-type comparand is rewritten from its value at plan
@@ -183,7 +124,7 @@ func TestFDB_PlanCacheNumericPromotions(t *testing.T) {
 		if cache.Counts().TertiaryHit != before {
 			t.Fatalf("%s reused a value-specialized plan for another value", tc.query)
 		}
-		if got := cacheQueryIDs(t, conn, tc.query, tc.first); !reflect.DeepEqual(got, tc.wantFirst) {
+		if got := testkit.QueryIDs(t, conn, tc.query, tc.first); !reflect.DeepEqual(got, tc.wantFirst) {
 			t.Fatalf("%s repeat %v", tc.query, got)
 		}
 		if cache.Counts().TertiaryHit != before+1 {
@@ -213,7 +154,7 @@ func TestFDB_PlanCacheRuntimePoolsAcrossPagesAndConnections(t *testing.T) {
 	defer first.Close()
 	// Rebind the same cached plan before the first execution fetches lazy pages.
 	before := cache.Counts().TertiaryHit
-	if got := cacheQueryIDs(t, other, "SELECT ? FROM T ORDER BY id", int64(22)); !reflect.DeepEqual(got, []int64{22, 22, 22, 22, 22, 22}) {
+	if got := testkit.QueryIDs(t, other, "SELECT ? FROM T ORDER BY id", int64(22)); !reflect.DeepEqual(got, []int64{22, 22, 22, 22, 22, 22}) {
 		t.Fatalf("second execution: %v", got)
 	}
 	if cache.Counts().TertiaryHit != before+1 {
@@ -266,7 +207,7 @@ func TestFDB_PlanCacheParameterSchemaScope(t *testing.T) {
 		{"CACHE_BINDING_SCHEMA", 1, 10}, {"OTHER", 1, 100}, {"OTHER", 2, 200}, {"CACHE_BINDING_SCHEMA", 2, 20},
 	} {
 		setSchema(tc.schema)
-		if got := cacheQueryIDs(t, conn, "SELECT v FROM T WHERE id=?", tc.id); !reflect.DeepEqual(got, []int64{tc.want}) {
+		if got := testkit.QueryIDs(t, conn, "SELECT v FROM T WHERE id=?", tc.id); !reflect.DeepEqual(got, []int64{tc.want}) {
 			t.Fatalf("schema %s: got %v want %d", tc.schema, got, tc.want)
 		}
 	}
@@ -291,7 +232,7 @@ func TestFDB_PlanCacheParameterIndexState(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if got := cacheQueryIDs(t, conn, query, value); !reflect.DeepEqual(got, []int64{int64(i + 1)}) {
+		if got := testkit.QueryIDs(t, conn, query, value); !reflect.DeepEqual(got, []int64{int64(i + 1)}) {
 			t.Fatalf("execution %d: %v", i, got)
 		}
 	}
@@ -327,7 +268,7 @@ func TestFDB_PlanCacheGatheredUnnestAggregateOperand(t *testing.T) {
 		{"SELECT COUNT(7) FROM things, things.arr AS x", []int64{4}, embedded.PlanCacheHit},
 	} {
 		before := len(logger.Snapshot())
-		if got := cacheQueryIDs(t, conn, step.query); !reflect.DeepEqual(got, step.want) {
+		if got := testkit.QueryIDs(t, conn, step.query); !reflect.DeepEqual(got, step.want) {
 			t.Fatalf("%s = %v, want %v", step.query, got, step.want)
 		}
 		events := logger.Snapshot()[before:]
