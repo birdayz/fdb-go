@@ -182,8 +182,7 @@ resource "hcloud_server" "runner" {
     github_repo         = var.github_repo
     github_runner_token = var.github_runner_token
     runner_name         = "gh-runner-fdb"
-    # No ci.yml job selects fdb-ci-main any more; the shared bazel-remote cache replaced the pinning.
-    runner_labels       = "${var.runner_labels},fdb-ci-main"
+    runner_labels       = var.runner_labels
     nat                 = false
     runner_ephemeral    = var.runner_ephemeral
     runner_version      = local.versions.runner_version
@@ -286,8 +285,7 @@ resource "hcloud_server" "runner_pool" {
     github_repo                       = var.github_repo
     github_runner_token               = local.pool_registration_token
     runner_name                       = "gh-runner-drain-${count.index}"
-    # No ci.yml job selects fdb-ci-aux any more; the shared bazel-remote cache replaced the pinning.
-    runner_labels                     = count.index == 0 ? "${var.runner_labels},fdb-ci-aux" : var.runner_labels
+    runner_labels                     = var.runner_labels
     nat                               = false
     runner_ephemeral                  = false
     runner_version                    = local.versions.runner_version

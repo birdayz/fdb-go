@@ -546,32 +546,16 @@ func TestFRLReleaseLegalNotices(t *testing.T) {
 	}
 }
 
-// TestCloudInitBringsUpThePrivateNIC runs the rendered bootcmd netplan script against a temp
-// dir: without it the private NIC stays down and every Bazel job dies on the unreachable
-// remote cache. A NAT box (no public IP) must also get the default route and DNS.
+// TestCloudInitBringsUpThePrivateNIC runs the rendered bootcmd netplan script twice under sh:
+// without it the private NIC stays down and every Bazel job dies on the unreachable cache.
 func TestCloudInitBringsUpThePrivateNIC(t *testing.T) {
 	t.Parallel()
-	tmpl, err := os.ReadFile("cloud-init.yaml")
-	if err != nil {
-		t.Fatal(err)
-	}
 	for _, nat := range []string{"false", "true"} {
 		t.Run("nat="+nat, func(t *testing.T) {
-			vars := map[string]string{}
-			for k, v := range templateVars {
-				vars[k] = v
-			}
-			vars["nat"] = nat
-			rendered, err := renderTemplate(string(tmpl), vars)
-			if err != nil {
-				t.Fatal(err)
-			}
 			var doc struct {
 				Bootcmd []string `yaml:"bootcmd"`
 			}
-			if err := yaml.Unmarshal([]byte(rendered), &doc); err != nil {
-				t.Fatal(err)
-			}
+			renderWith(t, map[string]string{"nat": nat}, &doc)
 			var script string
 			for _, c := range doc.Bootcmd {
 				if strings.Contains(c, "60-ci-fleet.yaml") {
@@ -581,22 +565,43 @@ func TestCloudInitBringsUpThePrivateNIC(t *testing.T) {
 			if script == "" {
 				t.Fatal("bootcmd writes no /etc/netplan/60-ci-fleet.yaml")
 			}
+			// A hot-plugged NIC stays down until the file is applied, so apply must be there.
+			if n := strings.Count(script, "netplan apply"); n != 1 {
+				t.Fatalf("bootcmd runs `netplan apply` %d times, want 1", n)
+			}
 			dir := t.TempDir()
 			script = strings.ReplaceAll(script, "/etc/netplan/", dir+"/")
-			script = strings.ReplaceAll(script, "netplan apply", "true")
-			if out, err := exec.Command("bash", "-ec", script).CombinedOutput(); err != nil {
-				t.Fatalf("netplan script failed: %v\n%s", err, out)
+			script = strings.ReplaceAll(script, "netplan apply", "touch "+dir+"/applied")
+			boot := func() []byte {
+				// cloud-init runs bootcmd with /bin/sh, on every boot.
+				if out, err := exec.Command("sh", "-c", script).CombinedOutput(); err != nil {
+					t.Fatalf("netplan script failed: %v\n%s", err, out)
+				}
+				data, err := os.ReadFile(filepath.Join(dir, "60-ci-fleet.yaml"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				return data
 			}
-			data, err := os.ReadFile(filepath.Join(dir, "60-ci-fleet.yaml"))
-			if err != nil {
+			data := boot()
+			if _, err := os.Stat(filepath.Join(dir, "applied")); err != nil {
+				t.Fatal("first boot did not apply the netplan file")
+			}
+			if err := os.Remove(filepath.Join(dir, "applied")); err != nil {
 				t.Fatal(err)
+			}
+			if again := boot(); string(again) != string(data) {
+				t.Fatalf("second boot changed the netplan file:\n%s\nthen\n%s", data, again)
+			}
+			if _, err := os.Stat(filepath.Join(dir, "applied")); err == nil {
+				t.Error("second boot re-applied an unchanged netplan file")
 			}
 			var np struct {
 				Network struct {
 					Ethernets map[string]struct {
-						Match       map[string]string `yaml:"match"`
-						DHCP4       bool              `yaml:"dhcp4"`
-						Routes      []map[string]string
+						Match       map[string]string   `yaml:"match"`
+						DHCP4       bool                `yaml:"dhcp4"`
+						Routes      []map[string]string `yaml:"routes"`
 						Nameservers struct {
 							Addresses []string `yaml:"addresses"`
 						} `yaml:"nameservers"`
@@ -610,10 +615,86 @@ func TestCloudInitBringsUpThePrivateNIC(t *testing.T) {
 			if !ok || e.Match["name"] != "enp*" || !e.DHCP4 {
 				t.Fatalf("netplan does not DHCP the private enp* NIC:\n%s", data)
 			}
-			routed := len(e.Routes) == 1 && e.Routes[0]["via"] == "10.77.0.1" && len(e.Nameservers.Addresses) > 0
+			routed := len(e.Routes) == 1 && e.Routes[0]["to"] == "default" && e.Routes[0]["via"] == "10.77.0.1" &&
+				len(e.Nameservers.Addresses) > 0
 			if routed != (nat == "true") {
 				t.Errorf("default route via the NAT gateway = %v, want %v:\n%s", routed, nat == "true", data)
 			}
 		})
+	}
+}
+
+// TestCloudInitMcInstallIsBestEffort pins that a failed or mismatched mc download (dl.min.io
+// answers 410) neither aborts provisioning under set -eu nor leaves an unverified binary.
+func TestCloudInitMcInstallIsBestEffort(t *testing.T) {
+	t.Parallel()
+	var doc struct {
+		Runcmd []any `yaml:"runcmd"`
+	}
+	renderWith(t, nil, &doc)
+	var line string
+	for _, c := range doc.Runcmd {
+		if s, ok := c.(string); ok {
+			for _, l := range strings.Split(s, "\n") {
+				if strings.Contains(l, "client/mc/release") {
+					line = l
+				}
+			}
+		}
+	}
+	if line == "" {
+		t.Fatal("runcmd installs no mc")
+	}
+	for _, tc := range []struct {
+		name, stub string
+		installed  bool
+	}{
+		{"download fails", "exit 1", false},
+		{"checksum mismatch leaves a file", `echo bad > "$3"; exit 1`, false},
+		{"download verifies", `echo good > "$3"`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			fv := filepath.Join(dir, "fetch-verified.sh")
+			if err := os.WriteFile(fv, []byte("#!/bin/sh\n"+tc.stub+"\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			mc := filepath.Join(dir, "mc")
+			script := "set -eu\nFV=" + fv + "\n" + strings.ReplaceAll(line, "/usr/local/bin/mc", mc) + "\necho survived\n"
+			out, err := exec.Command("sh", "-c", script).CombinedOutput()
+			if err != nil || !strings.Contains(string(out), "survived") {
+				t.Fatalf("mc install aborted provisioning: %v\n%s", err, out)
+			}
+			st, statErr := os.Stat(mc)
+			if tc.installed != (statErr == nil) {
+				t.Fatalf("mc present = %v, want %v", statErr == nil, tc.installed)
+			}
+			if tc.installed && st.Mode()&0o111 == 0 {
+				t.Error("installed mc is not executable")
+			}
+		})
+	}
+}
+
+// renderWith renders cloud-init.yaml with templateVars plus overrides and parses it into doc.
+func renderWith(t *testing.T, overrides map[string]string, doc any) {
+	t.Helper()
+	tmpl, err := os.ReadFile("cloud-init.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	vars := map[string]string{}
+	for k, v := range templateVars {
+		vars[k] = v
+	}
+	for k, v := range overrides {
+		vars[k] = v
+	}
+	rendered, err := renderTemplate(string(tmpl), vars)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := yaml.Unmarshal([]byte(rendered), doc); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -523,13 +523,14 @@ tofu import 'hcloud_server_network.runner_pool[0]' "$(hcloud server describe gh-
 ```
 
 The script is idempotent and ends by checking that the cache answers. An
-unreachable cache only produces warnings, because Bazel falls back to
-building locally, and `--remote_timeout` bounds the wait.
+unreachable cache is NOT a warning: Bazel 9 queries the cache's capabilities
+while building each action and aborts with exit 34 when it cannot, so every
+Bazel job on the fleet fails. The cache box is a single point of failure.
 
 To roll back, delete the `# RFC-257 shared cache` block from
 `/etc/bazel.bazelrc`, and on the server also run `docker rm -f bazel-remote`.
 
-## Notes moved out of cloud-init.yaml
+## Rationale for cloud-init.yaml lines
 
 `cloud-init.yaml` is user_data and every comment counts against Hetzner's 32 KiB cap, so the
 longer rationale for these lines lives here.
@@ -549,10 +550,12 @@ longer rationale for these lines lives here.
 - **Private network (`60-ci-fleet.yaml`).** Hetzner attaches the private NIC (`enp*`) after
   first boot and the image's netplan only configures `eth0`, so without this file the NIC
   stays down and `10.77.0.2:9092` (bazel-remote) is unreachable: every Bazel job then dies
-  with exit 34. Boxes without a public IP (`nat = true`) also route through `10.77.0.1`.
+  with exit 34. Boxes without a public IP (`nat = true`, set only by the separately managed
+  pool overlay; this repo's resources pass `false`) also route through `10.77.0.1`. The file
+  is written only if absent: `enable-shared-cache.sh` writes its own static version.
 - **Pre-warm.** Before the runner service starts, the box clones the repo into the job
-  workspace and runs `bazelisk fetch --config=ci //...`, so the first jobs on a new box do not
-  cold-fetch hundreds of Go modules. gazelle's `fetch_repo` goes through the Go module fetcher,
+  workspace and runs `bazelisk fetch --config=ci //...`, so the main workspace's first jobs do
+  not cold-fetch hundreds of Go modules (the race job's separate output base still does). gazelle's `fetch_repo` goes through the Go module fetcher,
   which has no retry, and an upstream HTTP/2 reset then fails analysis. Bazel's own downloader
   already retries (`--experimental_repository_downloader_retries` defaults to 5 in 9.0.1).
 - **mc.** `dl.min.io` answers 410 for the pinned archive; the install is best effort because
