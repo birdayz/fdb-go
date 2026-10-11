@@ -27,6 +27,8 @@ func TestIsTransientContainerErr(t *testing.T) {
 		{"config/option error (deterministic)", errors.New("apply option: bad redundancy mode"), false},
 		{"malformed cluster file", errors.New(`malformed cluster file: "garbage"`), false},
 		{"plain error", errors.New("boom"), false},
+		{"deterministic cause with misleading logs", &startupFailureError{cause: errors.New("bad config"), diagnostics: "container exited; is not running; failed to start"}, false},
+		{"transient cause with harmless logs", &startupFailureError{cause: errors.New("container abc is not running"), diagnostics: "startup logs"}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

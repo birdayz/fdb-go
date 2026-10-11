@@ -28,6 +28,7 @@ package foundationdb
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -103,6 +104,11 @@ const maxContainerStartAttempts = 3
 func isTransientContainerErr(err error) bool {
 	if err == nil {
 		return false
+	}
+	// Diagnostic logs must not turn a deterministic startup failure into a retry.
+	var failure *startupFailureError
+	if errors.As(err, &failure) {
+		err = failure.cause
 	}
 	s := err.Error()
 	return strings.Contains(s, "is not running") || // container died (OOM-killed) mid-bring-up
@@ -221,34 +227,24 @@ func runOnce(ctx context.Context, img string, opts ...testcontainers.ContainerCu
 
 	ctr, err := testcontainers.GenericContainer(ctx, genReq)
 	if err != nil {
-		// GenericContainer returns a non-nil handle even when the container was created but Start/the
-		// readiness wait failed (e.g. it exited during startup). Terminate it before returning: Run retries
-		// a "container exited"/failed-to-start death (isTransientContainerErr), and a leftover container
-		// would name-conflict a WithName caller / be reused by WithReuseByName / just leak.
-		if ctr != nil {
-			_ = ctr.Terminate(ctx)
-		}
-		return nil, fmt.Errorf("create container: %w", err)
+		return nil, startupFailure(ctr, fmt.Errorf("create container: %w", err))
 	}
 
 	// Get the host-mapped port for external connectivity.
 	mapped, err := ctr.MappedPort(ctx, nat.Port(portStr))
 	if err != nil {
-		_ = ctr.Terminate(ctx)
-		return nil, fmt.Errorf("get mapped port: %w", err)
+		return nil, startupFailure(ctr, fmt.Errorf("get mapped port: %w", err))
 	}
 
 	host, err := ctr.Host(ctx)
 	if err != nil {
-		_ = ctr.Terminate(ctx)
-		return nil, fmt.Errorf("get host: %w", err)
+		return nil, startupFailure(ctr, fmt.Errorf("get host: %w", err))
 	}
 
 	// Get the container's bridge IP for internal (cross-container) connectivity.
 	containerIP, err := ctr.ContainerIP(ctx)
 	if err != nil {
-		_ = ctr.Terminate(ctx)
-		return nil, fmt.Errorf("get container IP: %w", err)
+		return nil, startupFailure(ctr, fmt.Errorf("get container IP: %w", err))
 	}
 
 	// Read the cluster file description:id from inside the container.
@@ -256,16 +252,14 @@ func runOnce(ctx context.Context, img string, opts ...testcontainers.ContainerCu
 	// to construct compatible cluster files for both external and internal use.
 	rawCF, err := readContainerFile(ctx, ctr, "/var/fdb/fdb.cluster")
 	if err != nil {
-		_ = ctr.Terminate(ctx)
-		return nil, fmt.Errorf("read cluster file: %w", err)
+		return nil, startupFailure(ctr, fmt.Errorf("read cluster file: %w", err))
 	}
 
 	// Parse cluster file: "description:id@coordinator1,coordinator2,..."
 	// Keep the "description:id@" prefix, replace coordinators.
 	atIdx := strings.Index(rawCF, "@")
 	if atIdx < 0 {
-		_ = ctr.Terminate(ctx)
-		return nil, fmt.Errorf("malformed cluster file: %q", rawCF)
+		return nil, startupFailure(ctr, fmt.Errorf("malformed cluster file: %q", rawCF))
 	}
 	prefix := rawCF[:atIdx+1] // "docker:docker@"
 
@@ -301,26 +295,22 @@ func runOnce(ctx context.Context, img string, opts ...testcontainers.ContainerCu
 			savedMode := c.config.redundancyMode
 			c.config.redundancyMode = "single"
 			if err := c.InitializeDatabase(ctx); err != nil {
-				_ = c.Terminate(ctx)
-				return nil, fmt.Errorf("initialize database: %w", err)
+				return nil, startupFailure(ctr, fmt.Errorf("initialize database: %w", err))
 			}
 			if err := c.startAdditionalProcesses(ctx); err != nil {
-				_ = c.Terminate(ctx)
-				return nil, fmt.Errorf("start additional processes: %w", err)
+				return nil, startupFailure(ctr, fmt.Errorf("start additional processes: %w", err))
 			}
 			// Reconfigure to requested redundancy now that all processes are up.
 			c.config.redundancyMode = savedMode
 			if savedMode != "single" {
 				cmd := fmt.Sprintf("configure %s", savedMode)
 				if err := c.configureWithRetry(ctx, "reconfigure redundancy", cmd); err != nil {
-					_ = c.Terminate(ctx)
-					return nil, err
+					return nil, startupFailure(ctr, err)
 				}
 			}
 		} else {
 			if err := c.InitializeDatabase(ctx); err != nil {
-				_ = c.Terminate(ctx)
-				return nil, fmt.Errorf("initialize database: %w", err)
+				return nil, startupFailure(ctr, fmt.Errorf("initialize database: %w", err))
 			}
 		}
 	}
