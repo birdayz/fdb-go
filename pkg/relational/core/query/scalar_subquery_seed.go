@@ -129,11 +129,11 @@ func (t *cascadesTranslator) scalarSubqueryOrdinalSeed(outerAlias string, outerO
 	// (clusteredOuterOrdinalSeed) registers the same way, and the attribution
 	// census reports which — if either — named the leg type each dotted answer
 	// comes from.
-	if values.LegIdentityCensusEnabled() {
+	if h := values.Census(); h != nil {
 		// The title the TYPE carries, not the pre-strip one: "attributed" must mean
 		// "this producer named this leg type's column", so registering the old
 		// spelling would attribute a title the leg no longer has.
-		values.RecordInnerScalarLegTitleAt(values.InnerLegProducerSingleSource, innerCorr, innerTitle)
+		h.InnerScalarLegTitleAt(values.InnerLegProducerSingleSource, innerCorr, innerTitle)
 	}
 	innerQOV, err := values.NewQuantifiedObjectValue(innerCorr, innerType)
 	if err != nil {

@@ -311,7 +311,7 @@ func (r *RewriteOuterJoinRule) OnMatch(call *ExpressionRuleCall) {
 	//   planner-constructed typed leg QOV.
 	//
 	//   CENSUS — the same instrument, so the box's slots are measured too. Before
-	//   this, recordMergeSlotTyping had exactly two call sites, both in
+	//   this, the MergeSlotTyping hook had exactly two call sites, both in
 	//   positional_merge.go, which made "the census measures the positional merge"
 	//   a claim about ONE of the two positional merges in the tree.
 	//
@@ -341,8 +341,8 @@ func (r *RewriteOuterJoinRule) OnMatch(call *ExpressionRuleCall) {
 				scavenged = true
 			}
 		}
-		if values.LegIdentityCensusEnabled() {
-			recordMergeSlotTyping(leg.GetAlias(), fov.Type(), scavenged)
+		if h := values.Census(); h != nil {
+			h.MergeSlotTyping(leg.GetAlias(), fov.Type(), scavenged)
 		}
 		boxFields[i] = values.RecordConstructorField{Name: values.OrdinalFieldName(i), Value: fov}
 		boxTypeFields[i] = values.Field{Name: values.OrdinalFieldName(i), FieldType: fov.Type(), Ordinal: i}

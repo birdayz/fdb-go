@@ -467,8 +467,8 @@ func slotInGatheredSeed(windows map[values.CorrelationIdentifier]values.OrdinalS
 	// the qualifier/leaf segments and joins them only for this site to split them
 	// back apart. Until it hands them over, this shape goes to the name model.
 	if qualified && corr.IsZero() {
-		if values.LegIdentityCensusEnabled() {
-			values.RecordSeedWindowRead(values.SeedWindowSiteGatheredGroupSlot,
+		if h := values.Census(); h != nil {
+			h.SeedWindowRead(values.SeedWindowSiteGatheredGroupSlot,
 				values.SeedWindowQualifiedNoIdentity)
 		}
 		return 0, false
@@ -479,8 +479,8 @@ func slotInGatheredSeed(windows map[values.CorrelationIdentifier]values.OrdinalS
 	// qualifier is never shadowed by a same-named element.
 	if !corr.IsZero() {
 		w, isLeg := windows[corr]
-		if values.LegIdentityCensusEnabled() {
-			values.RecordSeedWindowLookup(values.SeedWindowSiteGatheredGroupSlot, isLeg)
+		if h := values.Census(); h != nil {
+			h.SeedWindowLookup(values.SeedWindowSiteGatheredGroupSlot, isLeg)
 		}
 		// This site's CONTRACT is a flat slot index into the gathered seed's row,
 		// and a NESTED leg has none: its column lives one level down, reachable

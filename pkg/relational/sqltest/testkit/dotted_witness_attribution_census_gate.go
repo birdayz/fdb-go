@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"io"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/internal/querycensus"
 )
 
 // assertDottedWitnessAttributionCensus gates the dotted-witness attribution
@@ -44,7 +44,7 @@ func assertDottedWitnessAttributionCensus(w io.Writer) bool {
 	// unsatisfiable by construction. The MINTED floor stays and is what keeps the
 	// zero honest — it proves the producers are still registering, so an empty
 	// observed population means the arm is quiet rather than the instrument dead.
-	floors := &values.DottedWitnessFloors{Minted: 1}
+	floors := &querycensus.DottedWitnessFloors{Minted: 1}
 	if f := corpusNarrowing(); f != nil && f.Value.String() != "" {
 		fmt.Fprintf(w, "dotted-witness attribution census: population floors NOT checked "+
 			"(-test.run=%q narrowed the corpus; the minted floor describes the whole suite). "+
@@ -53,5 +53,5 @@ func assertDottedWitnessAttributionCensus(w io.Writer) bool {
 			"a proof.\n", f.Value.String())
 		floors = nil
 	}
-	return values.AssertDottedWitnessAttribution(w, floors)
+	return querycensus.AssertDottedWitnessAttribution(w, floors)
 }

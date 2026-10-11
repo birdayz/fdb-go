@@ -1084,7 +1084,7 @@ func SatisfiesRequestedOrdering(pm PartialMatch, ro *properties.RequestedOrderin
 //
 // Declining costs nothing in production: over the corpus neither comparator
 // ever sees a FieldValue pair with a non-stating operand, kept honest by the
-// census in ordering_comparison_census.go. A key that states no identity is
+// census in querycensus/ordering_comparison_census.go. A key that states no identity is
 // UNADDRESSABLE, and the fix for one belongs at the producer that minted it
 // without the layout its ordinal indexes — never in a fallthrough here.
 //
@@ -1097,10 +1097,12 @@ func SatisfiesRequestedOrdering(pm PartialMatch, ro *properties.RequestedOrderin
 // it is the only arm that decides such a pair, and on today's corpus that count
 // is zero — unexercised, not unreachable, which is why it stays.
 func orderingValuesEqualIn(left, right values.Value) bool {
-	recordOrderingComparison(
-		OrderingSiteRequestedVsCandidate, left, right,
-		values.CanBridgeOrderingValueRoots,
-	)
+	if h := values.OrderingCensus(); h != nil {
+		h.OrderingComparison(
+			values.OrderingSiteRequestedVsCandidate, left, right,
+			values.CanBridgeOrderingValueRoots,
+		)
+	}
 	if values.OrderingFieldPair(left, right) {
 		return values.SameOrderingColumn(left, right)
 	}

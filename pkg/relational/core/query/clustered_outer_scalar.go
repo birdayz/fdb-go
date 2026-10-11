@@ -647,8 +647,8 @@ func clusteredOuterOrdinalSeed(pu *clusterPullUp, innerCorr values.CorrelationId
 	// IDENTITY rather than by a name coincidence. `scalarCol` is the subquery's
 	// output title, and a title that already contains a dot is what reaches the
 	// dotted arm looking like a leg-qualified reference.
-	if values.LegIdentityCensusEnabled() {
-		values.RecordInnerScalarLegTitleAt(values.InnerLegProducerClusteredOuter, innerCorr, scalarCol)
+	if h := values.Census(); h != nil {
+		h.InnerScalarLegTitleAt(values.InnerLegProducerClusteredOuter, innerCorr, scalarCol)
 	}
 	innerQOV, err := values.NewQuantifiedObjectValue(innerCorr, innerType)
 	if err != nil {

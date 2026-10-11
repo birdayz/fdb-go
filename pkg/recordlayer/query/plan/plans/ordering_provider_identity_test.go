@@ -25,6 +25,8 @@ package plans
 import (
 	"testing"
 
+	"fdb.dev/pkg/internal/querycensus"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -501,18 +503,18 @@ func TestInMemorySortHintOrderingIsUnknownWhenUnbaked(t *testing.T) {
 func TestInMemorySortHintOrderingMintsNothingWhenUnbaked(t *testing.T) {
 	// Not parallel: it owns the process census counters and the census gate flag
 	// for its duration.
-	was := values.LegIdentityCensusEnabled()
-	values.SetLegIdentityCensusEnabled(true)
-	values.ResetFieldValueMintCensus()
+	was := querycensus.LegIdentityCensusEnabled()
+	querycensus.SetLegIdentityCensusEnabled(true)
+	querycensus.ResetFieldValueMintCensus()
 	t.Cleanup(func() {
-		values.ResetFieldValueMintCensus()
-		values.SetLegIdentityCensusEnabled(was)
+		querycensus.ResetFieldValueMintCensus()
+		querycensus.SetLegIdentityCensusEnabled(was)
 	})
 
 	// The exact shape that broke: a rendered Explain label in Field — dot and
 	// `#ordinal` — which is what ClassifyFieldMint buckets as lazy-EXPLAIN-RENDERED.
 	const rendered = "q$50765.AID#0"
-	if got := values.ClassifyFieldMint(rendered, false); got != values.FieldMintLazyExplainRendered {
+	if got := querycensus.ClassifyFieldMint(rendered, false); got != querycensus.FieldMintLazyExplainRendered {
 		t.Fatalf("control: %q classifies as %v, not lazy-EXPLAIN-RENDERED — the fixture no "+
 			"longer expresses the class this test is about", rendered, got)
 	}
@@ -520,11 +522,11 @@ func TestInMemorySortHintOrderingMintsNothingWhenUnbaked(t *testing.T) {
 	plan := &RecordQueryInMemorySortPlan{sortKeys: []SortKey{{Field: rendered}}}
 	_ = plan.HintOrdering()
 
-	total, counts := values.FieldValueMintCensus()
-	if counts[values.FieldMintLazyExplainRendered] != 0 {
+	total, counts := querycensus.FieldValueMintCensus()
+	if counts[querycensus.FieldMintLazyExplainRendered] != 0 {
 		t.Fatalf("HintOrdering minted %d lazy-EXPLAIN-RENDERED FieldValue(s) from a display "+
 			"string; the corpus gate's ceiling of 0 on that class exists because this line "+
-			"was its only producer", counts[values.FieldMintLazyExplainRendered])
+			"was its only producer", counts[querycensus.FieldMintLazyExplainRendered])
 	}
 	if total != 0 {
 		t.Fatalf("HintOrdering minted %d FieldValue(s) for an unbaked key, want none — "+

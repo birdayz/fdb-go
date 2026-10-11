@@ -41,6 +41,7 @@ go_test(
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
+        "//pkg/internal/querycensus",
         "//pkg/recordlayer",
         "//pkg/recordlayer/query/executor",
         "//pkg/recordlayer/query/plan/cascades/values",

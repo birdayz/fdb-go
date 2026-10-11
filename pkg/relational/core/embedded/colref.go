@@ -156,13 +156,14 @@ func parseColRef(s string) colRef {
 // classifier's, because the two disagree on a trailing dot and an instrument
 // must report the decision the site actually made.
 //
-// The gate is read FIRST, before any classification. RecordQualifierRecovery
+// The gate is read FIRST, before any classification. querycensus.RecordQualifierRecovery
 // re-checks it, so a gate here is not needed for CORRECTNESS — it is needed so
 // the census-off cost is the atomic load and nothing else. Classifying first
 // and filing second would make production pay the ToUpper on every projected
 // column to build an argument that is then discarded.
 func recordProjQualVsScan(proj *logical.LogicalProject, slot int, upper string, ref colRef) {
-	if !values.LegIdentityCensusEnabled() {
+	h := values.Census()
+	if h == nil {
 		return
 	}
 	ident, present := "", false
@@ -189,7 +190,7 @@ func recordProjQualVsScan(proj *logical.LogicalProject, slot int, upper string, 
 			witness = "<unqualified>"
 		}
 	}
-	values.RecordQualifierRecovery(values.QualRecSiteProjQualVsScan, class, upper, witness)
+	h.QualifierRecovery(values.QualRecSiteProjQualVsScan, class, upper, witness)
 }
 
 // bare returns the unqualified column name.

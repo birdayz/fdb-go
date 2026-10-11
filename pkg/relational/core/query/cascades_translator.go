@@ -3115,7 +3115,7 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 				} else {
 					mergedType, _ := sel.GetResultValue().Type().(*values.RecordType)
 					var rebased bool
-					pred, rebased = rebaseUnnestOuterLegPredicate(pred, outerLegs, mergedCorr, mergedType, UnnestLegMintSiteNonChainedMerge)
+					pred, rebased = rebaseUnnestOuterLegPredicate(pred, outerLegs, mergedCorr, mergedType, values.UnnestLegMintSiteNonChainedMerge)
 					if !rebased {
 						return nil
 					}
@@ -3470,7 +3470,7 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 			outerLegs := unnestOuterLegAliases(join.Left, mergedCorr)
 			mergedType, _ := sel.GetResultValue().Type().(*values.RecordType)
 			for _, p := range nonExists {
-				rebased, ok := rebaseUnnestOuterLegPredicate(rewriteUnnestPredicate(p, u), outerLegs, mergedCorr, mergedType, UnnestLegMintSiteAnchoredNonExists)
+				rebased, ok := rebaseUnnestOuterLegPredicate(rewriteUnnestPredicate(p, u), outerLegs, mergedCorr, mergedType, values.UnnestLegMintSiteAnchoredNonExists)
 				if !ok {
 					return nil
 				}
@@ -3591,13 +3591,13 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 						return nil, false
 					}
 					var rebased predicates.QueryPredicate
-					armCensus := unnestLegMintEnabled()
-					if armCensus {
-						RecordUnnestLegMintBranchReached(UnnestLegMintSiteBuriedNotWindowed)
+					armCensus := values.Census()
+					if armCensus != nil {
+						armCensus.UnnestLegMintBranchReached(values.UnnestLegMintSiteBuriedNotWindowed)
 					}
 					if planTimeBake {
-						if armCensus {
-							RecordUnnestLegMintArm(UnnestLegMintSiteBuriedNotWindowed, UnnestLegMintArmPlanTimeBake)
+						if armCensus != nil {
+							armCensus.UnnestLegMintArm(values.UnnestLegMintSiteBuriedNotWindowed, values.UnnestLegMintArmPlanTimeBake)
 						}
 						// E-1a: a BURIED outer-only predicate over the INNER cluster (or a
 						// multi-esq peel box) may reference a leg OR the ELEMENT (`… WHERE
@@ -3610,8 +3610,8 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 						}
 						rebased = baked
 					} else if seedWindowed {
-						if armCensus {
-							RecordUnnestLegMintArm(UnnestLegMintSiteBuriedNotWindowed, UnnestLegMintArmOrdinalTwin)
+						if armCensus != nil {
+							armCensus.UnnestLegMintArm(values.UnnestLegMintSiteBuriedNotWindowed, values.UnnestLegMintArmOrdinalTwin)
 						}
 						baked, ok := rebaseUnnestOuterLegPredicateOrdinal(original, t.ordinalLegType(join.Left), ordMergedType, outerLegs, mergedCorr)
 						if !ok {
@@ -3635,8 +3635,8 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 						}
 						rebased = baked
 					} else if windowlessSeedType != nil {
-						if armCensus {
-							RecordUnnestLegMintArm(UnnestLegMintSiteBuriedNotWindowed, UnnestLegMintArmOrdinalTwin)
+						if armCensus != nil {
+							armCensus.UnnestLegMintArm(values.UnnestLegMintSiteBuriedNotWindowed, values.UnnestLegMintArmOrdinalTwin)
 						}
 						baked, ok := t.bakeWindowlessSeedLegRefs(original, join.Left, windowlessSeedType, outerLegs, mergedCorr)
 						if !ok {
@@ -3644,11 +3644,11 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 						}
 						rebased = baked
 					} else {
-						if armCensus {
-							RecordUnnestLegMintArm(UnnestLegMintSiteBuriedNotWindowed, UnnestLegMintArmName)
+						if armCensus != nil {
+							armCensus.UnnestLegMintArm(values.UnnestLegMintSiteBuriedNotWindowed, values.UnnestLegMintArmName)
 						}
 						var ok bool
-						rebased, ok = rebaseUnnestOuterLegPredicate(original, outerLegs, mergedCorr, ordMergedType, UnnestLegMintSiteBuriedNotWindowed)
+						rebased, ok = rebaseUnnestOuterLegPredicate(original, outerLegs, mergedCorr, ordMergedType, values.UnnestLegMintSiteBuriedNotWindowed)
 						if !ok {
 							return nil, false
 						}
@@ -3685,13 +3685,13 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 			if esq.JoinPredicate, spineOK = spineElements(esq.JoinPredicate); !spineOK {
 				return nil
 			}
-			jpCensus := unnestLegMintEnabled()
-			if jpCensus {
-				RecordUnnestLegMintBranchReached(UnnestLegMintSiteJoinPredNotWindowed)
+			jpCensus := values.Census()
+			if jpCensus != nil {
+				jpCensus.UnnestLegMintBranchReached(values.UnnestLegMintSiteJoinPredNotWindowed)
 			}
 			if windowlessSeedType != nil {
-				if jpCensus {
-					RecordUnnestLegMintArm(UnnestLegMintSiteJoinPredNotWindowed, UnnestLegMintArmOrdinalTwin)
+				if jpCensus != nil {
+					jpCensus.UnnestLegMintArm(values.UnnestLegMintSiteJoinPredNotWindowed, values.UnnestLegMintArmOrdinalTwin)
 				}
 				baked, ok := t.bakeWindowlessSeedLegRefs(esq.JoinPredicate, join.Left, windowlessSeedType, outerLegs, mergedCorr)
 				if !ok {
@@ -3699,17 +3699,17 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 				}
 				esq.JoinPredicate = baked
 			} else if !seedWindowed {
-				if jpCensus {
-					RecordUnnestLegMintArm(UnnestLegMintSiteJoinPredNotWindowed, UnnestLegMintArmName)
+				if jpCensus != nil {
+					jpCensus.UnnestLegMintArm(values.UnnestLegMintSiteJoinPredNotWindowed, values.UnnestLegMintArmName)
 				}
 				var ok bool
-				esq.JoinPredicate, ok = rebaseUnnestOuterLegPredicate(esq.JoinPredicate, outerLegs, mergedCorr, ordMergedType, UnnestLegMintSiteJoinPredNotWindowed)
+				esq.JoinPredicate, ok = rebaseUnnestOuterLegPredicate(esq.JoinPredicate, outerLegs, mergedCorr, ordMergedType, values.UnnestLegMintSiteJoinPredNotWindowed)
 				if !ok {
 					return nil
 				}
 			} else if planTimeBake {
-				if jpCensus {
-					RecordUnnestLegMintArm(UnnestLegMintSiteJoinPredNotWindowed, UnnestLegMintArmPlanTimeBake)
+				if jpCensus != nil {
+					jpCensus.UnnestLegMintArm(values.UnnestLegMintSiteJoinPredNotWindowed, values.UnnestLegMintArmPlanTimeBake)
 				}
 				// Bake the existential correlation's LEG refs (alias-aware, dup-named
 				// disambiguation) AND the ELEMENT ref (`EEV.VK = X` — the merged
@@ -3721,12 +3721,12 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 					return nil
 				}
 				esq.JoinPredicate = baked
-			} else if jpCensus {
+			} else if jpCensus != nil {
 				// The windowed, non-plan-time-bake fall-through: this channel rebases
 				// NOTHING and leaves the refs leg-relative for the executor's below-FOD
 				// hoist. Recorded so the branch's arms PARTITION — without it a zero on
 				// the name arm cannot be told from a branch nothing reaches.
-				RecordUnnestLegMintArm(UnnestLegMintSiteJoinPredNotWindowed, UnnestLegMintArmLegRelative)
+				jpCensus.UnnestLegMintArm(values.UnnestLegMintSiteJoinPredNotWindowed, values.UnnestLegMintArmLegRelative)
 			}
 			existsSubqueries[i] = esq
 		}
@@ -3774,15 +3774,15 @@ func rebaseUnnestOuterLegPredicate(
 	outerLegs map[string]struct{},
 	mergedCorr values.CorrelationIdentifier,
 	mergedType *values.RecordType,
-	site UnnestLegMintSite,
+	site values.UnnestLegMintSite,
 ) (predicates.QueryPredicate, bool) {
 	// Counted BEFORE the inert guard, deliberately. A site that is reached with
 	// nothing to rewrite and a site that is never reached print the same zero
 	// once the guard has run, and they mean opposite things: the first is a live
 	// arm carrying no traffic, the second is dead code.
-	census := unnestLegMintEnabled()
-	if census {
-		RecordUnnestLegMintCall(site)
+	census := values.Census()
+	if census != nil {
+		census.UnnestLegMintCall(site)
 	}
 	if p == nil || len(outerLegs) == 0 {
 		return p, true
@@ -3842,8 +3842,8 @@ func rebaseUnnestOuterLegPredicate(
 				return node
 			}
 			minted := leg + "." + strings.ToUpper(rootName)
-			if census {
-				RecordUnnestLegMintName(site, minted)
+			if census != nil {
+				census.UnnestLegMintName(site, minted)
 			}
 			slot, found := mergedType.FieldIndexUnique(minted)
 			if !found {
@@ -3964,20 +3964,20 @@ func rebaseChainedOuterLegPredicate(
 	// would strand ordinal -1). Over a NAME-MODEL seed (a declined 3+-link fallback), the merged
 	// row carries qualified `leg.col` keys — use the NAME-KEY rebase (a positional bake against
 	// the name-keyed row would strand DEEP ordinal -1).
-	chainCensus := unnestLegMintEnabled()
-	if chainCensus {
-		RecordUnnestLegMintBranchReached(UnnestLegMintSiteChainedNameModel)
+	chainCensus := values.Census()
+	if chainCensus != nil {
+		chainCensus.UnnestLegMintBranchReached(values.UnnestLegMintSiteChainedNameModel)
 	}
 	if ordinalSeed {
-		if chainCensus {
-			RecordUnnestLegMintArm(UnnestLegMintSiteChainedNameModel, UnnestLegMintArmOrdinalTwin)
+		if chainCensus != nil {
+			chainCensus.UnnestLegMintArm(values.UnnestLegMintSiteChainedNameModel, values.UnnestLegMintArmOrdinalTwin)
 		}
 		return rebaseUnnestOuterLegPredicateOrdinal(p, ordType, ordType, outerLegs, mergedCorr)
 	}
-	if chainCensus {
-		RecordUnnestLegMintArm(UnnestLegMintSiteChainedNameModel, UnnestLegMintArmName)
+	if chainCensus != nil {
+		chainCensus.UnnestLegMintArm(values.UnnestLegMintSiteChainedNameModel, values.UnnestLegMintArmName)
 	}
-	return rebaseUnnestOuterLegPredicate(p, outerLegs, mergedCorr, ordType, UnnestLegMintSiteChainedNameModel)
+	return rebaseUnnestOuterLegPredicate(p, outerLegs, mergedCorr, ordType, values.UnnestLegMintSiteChainedNameModel)
 }
 
 // chainedPredScanPushable reports whether every correlation the conjunct references is an
@@ -4038,7 +4038,7 @@ func ordinalSlotInLegWindow(rt *values.RecordType, leg values.CorrelationIdentif
 	}
 	if len(rt.Legs) > 0 {
 		for _, lw := range rt.Legs {
-			if values.LegIdentityCensusEnabled() {
+			if h := values.Census(); h != nil {
 				// RETIRED PREDICATE: `lw.Name == strings.ToUpper(leg.Name())` — this
 				// function took the qualifier as a string and every caller passed the
 				// UPPER fold of the correlation. Recording the verdict is what makes the
@@ -4046,10 +4046,10 @@ func ordinalSlotInLegWindow(rt *values.RecordType, leg values.CorrelationIdentif
 				// sees a match that became a decline, but NOT a decline that became a
 				// match (a lowercase machine-minted leg matches itself exactly while the
 				// folding predicate rejected it, and that pair lands in ExactEqual).
-				values.RecordLegIdentityConversion(
+				h.LegIdentityConversion(
 					values.LegSiteOrdinalSlotInLegWindow, lw.Alias, leg,
 					lw.Name == strings.ToUpper(leg.Name()))
-				values.RecordLegIdentityLeg(lw)
+				h.LegIdentityLeg(lw)
 			}
 			// "Does this correlation name that leg window?" — the same IDENTITY
 			// question every other Group-A reader asks, so it gets the same answer
@@ -4115,8 +4115,8 @@ func rebaseUnnestOuterLegPredicateOrdinal(
 	// a call that finds nothing to rebase and a call that never happens print the
 	// same zero afterwards, and the two mean opposite things about whether this
 	// arm is the one the corpus takes.
-	if unnestLegMintEnabled() {
-		RecordUnnestLegOrdinalTwinCall()
+	if h := values.Census(); h != nil {
+		h.UnnestLegOrdinalTwinCall()
 	}
 	if p == nil || len(outerLegs) == 0 {
 		return p, true // genuinely nothing to rebase
@@ -4498,7 +4498,9 @@ func (t *cascadesTranslator) buildExistentialSelect(
 			return nil
 		}
 		resultValue = flowed
-		values.RecordSelectResultMint(values.SelectResultMintExistsSelect, resultValue)
+		if h := values.Census(); h != nil {
+			h.SelectResultMint(values.SelectResultMintExistsSelect, resultValue)
+		}
 	}
 	return t.exactSelectWithAliases(
 		resultValue,
@@ -5180,7 +5182,7 @@ func (s sortSource) sortKeyName(k logical.SortKey) string {
 	// atomic load; the call it guards allocates a ToUpper per sort key.
 	var ident string
 	var present bool
-	if values.LegIdentityCensusEnabled() {
+	if values.Census() != nil {
 		ident, present = sortKeyQualifierIdentity(k)
 	}
 	return s.resolveKeyName(field, ident, present)
@@ -5523,7 +5525,8 @@ func stripSortQualifier(field string) string {
 // that is why it hoists the gate above the helper rather than relying on this
 // one.
 func recordExistsSortSplit(up, ident string, identPresent bool) {
-	if !values.LegIdentityCensusEnabled() {
+	h := values.Census()
+	if h == nil {
 		return
 	}
 	class, _ := values.ClassifyQualifierRecovery(up, ident, identPresent)
@@ -5536,7 +5539,7 @@ func recordExistsSortSplit(up, ident string, identPresent bool) {
 		// pair a DIVERGED reading turns on.
 		witnessIdent = "<unqualified>"
 	}
-	values.RecordQualifierRecovery(values.QualRecSiteExistsSortSplit, class, up, witnessIdent)
+	h.QualifierRecovery(values.QualRecSiteExistsSortSplit, class, up, witnessIdent)
 }
 
 func splitQualifier(field string) (string, string, bool) {

@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/internal/querycensus"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -877,7 +879,7 @@ func TestOuterConjunctNarrowing(t *testing.T) {
 // WITNESS rather than on a count is what makes that true.
 func TestOrdinalSlotInLegWindowCensusRecordsTheEvaluatedPair(t *testing.T) {
 	t.Parallel()
-	if !values.LegIdentityCensusEnabled() {
+	if !querycensus.LegIdentityCensusEnabled() {
 		t.Fatal("this package's TestMain enables the leg-identity census for the whole " +
 			"corpus; without it this test measures nothing")
 	}
@@ -897,8 +899,8 @@ func TestOrdinalSlotInLegWindowCensusRecordsTheEvaluatedPair(t *testing.T) {
 			"the identity is the lowercase mint, and matching Name is a text claim " +
 			"dressed as an identity check")
 	}
-	c := values.LegIdentityCensusOf(values.LegSiteOrdinalSlotInLegWindow)
-	if c.Channel != values.LegChannelIdentity {
+	c := querycensus.LegIdentityCensusOf(values.LegSiteOrdinalSlotInLegWindow)
+	if c.Channel != querycensus.LegChannelIdentity {
 		t.Errorf("census channel = %v, want identity — this site decides with SameLeg, "+
 			"so its recorded pair must be the two identifiers", c.Channel)
 	}

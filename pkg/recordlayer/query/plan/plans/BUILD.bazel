@@ -288,6 +288,7 @@ go_test(
     ],
     deps = [
         "//pkg/fdbgo/fdb/tuple",
+        "//pkg/internal/querycensus",
         "//pkg/recordlayer/query/plan/cascades/expressions",
         "//pkg/recordlayer/query/plan/cascades/predicates",
         "//pkg/recordlayer/query/plan/cascades/properties",

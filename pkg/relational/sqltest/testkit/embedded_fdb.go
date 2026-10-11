@@ -15,10 +15,9 @@ import (
 	"testing"
 	"time"
 
-	"fdb.dev/pkg/recordlayer/query/executor"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades"
+	"fdb.dev/pkg/internal/querycensus"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
-	corequery "fdb.dev/pkg/relational/core/query"
 	_ "fdb.dev/pkg/relational/sqldriver"
 	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
 )
@@ -94,27 +93,27 @@ func Main(m *testing.M) {
 // test binary is not production. The measured cost is inside the run-to-run
 // noise of this suite.
 func runUnderLegIdentityCensus(m *testing.M) int {
-	values.ResetLegIdentityCensus()
-	values.ResetDottedLegQualifierCensus()
-	values.ResetSeedWindowReaderCensus()
-	values.ResetAccessorPathCensus()
-	values.ResetFieldValueMintCensus()
-	values.ResetOrderingBridgeDottedCensus()
-	values.ResetDottedRowTypeProducerCensus()
-	values.ResetDottedWitnessAttribution()
-	values.ResetQualifierRecoveryCensus()
-	corequery.ResetUnnestLegMintCensus()
-	cascades.ResetMergeSlotTypingCensus()
-	values.SetLegIdentityCensusEnabled(true)
+	querycensus.ResetLegIdentityCensus()
+	querycensus.ResetDottedLegQualifierCensus()
+	querycensus.ResetSeedWindowReaderCensus()
+	querycensus.ResetAccessorPathCensus()
+	querycensus.ResetFieldValueMintCensus()
+	querycensus.ResetOrderingBridgeDottedCensus()
+	querycensus.ResetDottedRowTypeProducerCensus()
+	querycensus.ResetDottedWitnessAttribution()
+	querycensus.ResetQualifierRecoveryCensus()
+	querycensus.ResetUnnestLegMintCensus()
+	querycensus.ResetMergeSlotTypingCensus()
+	querycensus.SetLegIdentityCensusEnabled(true)
 	code := m.Run()
-	values.SetLegIdentityCensusEnabled(false)
+	querycensus.SetLegIdentityCensusEnabled(false)
 
-	values.ReportLegIdentityCensus(os.Stderr, "sqldriver real-FDB corpus")
+	querycensus.ReportLegIdentityCensus(os.Stderr, "sqldriver real-FDB corpus")
 	// The ACCESSOR-NAME-PATH census: which arm of the one match-domain column
 	// identity carries traffic. Its DECLINE-lazy-dotted class is the field-decision
 	// ratchet's accessor_name_path entry, and zero vs non-zero there mean opposite
 	// things about where that debt actually lives.
-	values.DumpAccessorPathCensus(os.Stderr, "sqldriver real-FDB corpus")
+	querycensus.DumpAccessorPathCensus(os.Stderr, "sqldriver real-FDB corpus")
 	// ASSERTED, not merely printed. Both of these were printed only, which made
 	// the numbers the lazy-render retirement rests on a report nothing checked —
 	// they survived in one unparsed `why` string on the field-decision ratchet, so
@@ -126,28 +125,28 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	// The MINT census: who builds a lazy FieldValue and what they put in its
 	// Field. The consumer census says a rendered Explain label reaches the
 	// match-domain identity; this is the half that can name who wrote it.
-	values.DumpFieldValueMintCensus(os.Stderr, "sqldriver real-FDB corpus")
+	querycensus.DumpFieldValueMintCensus(os.Stderr, "sqldriver real-FDB corpus")
 	if failed := assertFieldValueMintCensus(os.Stderr); failed && code == 0 {
 		code = 1
 	}
-	values.DumpOrderingBridgeDottedCensus(os.Stderr, "sqldriver real-FDB corpus")
+	querycensus.DumpOrderingBridgeDottedCensus(os.Stderr, "sqldriver real-FDB corpus")
 	// The MERGE-SLOT TYPING census: what each slot of a positional merge ends up
 	// STATING. It is the surviving half of the retired leg-local bakeability
 	// census — the positional merge outlived the three-quantifier NLJ arm that
 	// census existed to measure, and a live path with no instrument is how the
 	// silent zero-rows defect it watches for gets back in (RFC-235).
-	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", cascades.FormatMergeSlotTypingCensus())
+	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", querycensus.FormatMergeSlotTypingCensus())
 	// The leg-column PROVENANCE census: the executor's last live reader of a
 	// dotted leg-qualified column name, cut by whether the leg it matched by TEXT
 	// also states an IDENTITY. That is the fact the reader's retirement rests on,
 	// and it is a different fact from how often the reader fires.
-	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", executor.FormatLegColumnProvenanceCensus())
+	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", querycensus.FormatLegColumnProvenanceCensus())
 	// The TRANSLATOR twin of the executor's leg-column provenance census: the two
 	// readers that match a name-split qualifier against a leg table's text. They
 	// hold no correlation and cannot be re-keyed, so what this measures is whether
 	// the leg table's two spellings still agree on the one channel that has to
 	// keep working until its counterparty carries parsed segments.
-	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", values.FormatDottedLegQualifierCensus())
+	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", querycensus.FormatDottedLegQualifierCensus())
 	// The seed-window READER census: the five keyed readers of an
 	// OrdinalSeedLegWindows map, plus the two decline classes that are hard zeros.
 	// Its predecessor measured whether a text key and an identity key selected the
@@ -155,7 +154,7 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	// readers did not, and nothing else asserts they still run. It is here rather
 	// than in a test for the reason every census on this path is: the population
 	// is only complete after m.Run().
-	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", values.FormatSeedWindowReaderCensus())
+	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", querycensus.FormatSeedWindowReaderCensus())
 	// The SELECT RESULT-VALUE MINT census: the site that BUILDS a select's result
 	// value, as against the three that flow it verbatim. The producer census
 	// above can only name the FlatMap construction that handed a value over, and
@@ -163,7 +162,7 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	// exactly as Java's three constructions do
 	// (ImplementNestedLoopJoinRule.java:187,201,214). Their untyped counts are a
 	// count of couriers; this is the author.
-	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", values.FormatSelectResultMintCensus())
+	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", querycensus.FormatSelectResultMintCensus())
 	// The UNNEST LEG-MINT census: which of the five call sites of the surviving
 	// qualified-name unnest rebase the corpus reaches, and what names it mints.
 	// Reported beside the leg-column provenance census because the assertion
@@ -180,14 +179,14 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	// RFC-212 §10.3 DELIVERABLE 1, gate-before-conversion: which producer named
 	// the leg-type column each dotted-arm answer comes from. Decided BY IDENTITY
 	// (owner correlation), not by name match.
-	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", values.FormatDottedWitnessAttribution())
-	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", values.FormatDottedRowTypeProducerCensus())
-	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", corequery.FormatUnnestLegMintCensus())
+	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", querycensus.FormatDottedWitnessAttribution())
+	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", querycensus.FormatDottedRowTypeProducerCensus())
+	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", querycensus.FormatUnnestLegMintCensus())
 	// The RFC-213 payoff census: how often a consumer that must decide on a plan's
 	// result type is handed an UNRESOLVED one and declines. Declining is invisible
 	// — it costs a proof or an optimization, never a wrong row — so the size of the
 	// loss has to be counted rather than argued.
-	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", cascades.FormatUnresolvedResultTypeCensus())
+	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", querycensus.FormatUnresolvedResultTypeCensus())
 
 	// THE GATES, run through the reporter so a failure carries a `--- FAIL:` line
 	// naming which one moved. They used to assert inline here, each writing prose
@@ -203,7 +202,7 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 		{"dottedWitnessAttribution", assertDottedWitnessAttributionCensus},
 		{"dottedRowTypeProducer", assertDottedRowTypeProducerCensus},
 		{"unnestLegMint", func(w io.Writer) bool {
-			return corequery.AssertUnnestLegMintCensus(w, executor.LegColumnProvenanceDottedNames())
+			return querycensus.AssertUnnestLegMintCensus(w, querycensus.LegColumnProvenanceDottedNames())
 		}},
 		{"dottedLegQualifier", assertDottedLegQualifierCensus},
 		{"seedWindowReader", assertSeedWindowReaderCensus},
@@ -323,7 +322,7 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 // so every leg row passes positionalMatchesLegType and the gather is skipped.
 //
 // The census asserts Calls == 0 unconditionally now, with revival as the alarm.
-var legColumnProvenanceFloors = executor.LegColumnProvenanceFloors{}
+var legColumnProvenanceFloors = querycensus.LegColumnProvenanceFloors{}
 
 // assertLegColumnProvenanceCensus checks the provenance census, dropping the
 // population floors when -test.run narrows the corpus — the same split its two
@@ -331,7 +330,7 @@ var legColumnProvenanceFloors = executor.LegColumnProvenanceFloors{}
 func assertLegColumnProvenanceCensus(w io.Writer) bool {
 	floors := &legColumnProvenanceFloors
 	if f := corpusNarrowing(); f != nil && f.Value.String() != "" {
-		c, _ := executor.LegColumnProvenanceCensus()
+		c, _ := querycensus.LegColumnProvenanceCensus()
 		fmt.Fprintf(w, "leg-column provenance census: population floors NOT checked "+
 			"(-test.run=%q narrowed the corpus). The partition and the divergence zero "+
 			"still run, over the population this filter actually reached: calls %d, "+
@@ -339,7 +338,7 @@ func assertLegColumnProvenanceCensus(w io.Writer) bool {
 			f.Value.String(), c.Calls, c.DottedHitIdentityAvailable)
 		floors = nil
 	}
-	return executor.AssertLegColumnProvenanceCensus(w, floors)
+	return querycensus.AssertLegColumnProvenanceCensus(w, floors)
 }
 
 // dottedLegQualifierFloors is EMPTY: the whole channel is retired.
@@ -352,10 +351,10 @@ func assertLegColumnProvenanceCensus(w io.Writer) bool {
 // Both readers were arms of the NAME-model bake (query.bakeFlatRefsAgainstColumns
 // and query.bakeDottedRefsToLegQOV), which resolved a reference by splitting a
 // column name at a dot. The ordinal model resolves by baked slot and those bakes
-// are gone, so values.RecordDottedLegQualifier has no caller at all and the
+// are gone, so querycensus.RecordDottedLegQualifier has no caller at all and the
 // floors are unsatisfiable. The census asserts zero attempts unconditionally
 // now, with revival as the alarm.
-var dottedLegQualifierFloors = values.DottedLegQualifierFloors{}
+var dottedLegQualifierFloors = querycensus.DottedLegQualifierFloors{}
 
 // seedWindowReaderFloors is the minimum keyed-read count each seed-window reader
 // must report over the whole suite.
@@ -365,8 +364,8 @@ var dottedLegQualifierFloors = values.DottedLegQualifierFloors{}
 // churns with unrelated work — a query added anywhere in this suite moves every
 // one of these numbers — and a floor pinned tight would red on that instead of
 // on the thing it is watching for.
-var seedWindowReaderFloors = func() values.SeedWindowReaderFloors {
-	var f values.SeedWindowReaderFloors
+var seedWindowReaderFloors = func() querycensus.SeedWindowReaderFloors {
+	var f querycensus.SeedWindowReaderFloors
 	// RETIRED, so its alarm is GROWTH. The buried-leg EXISTS rebase measured 0
 	// over the whole suite once select partitioning followed Java's predicate
 	// placement: an existential's correlated predicates stay in the partition
@@ -402,9 +401,9 @@ func assertSeedWindowReaderCensus(w io.Writer) bool {
 			"hold VACUOUSLY.\n",
 			f.Value.String())
 		// A revival is visible on any population, so retirement survives narrowing.
-		floors = &values.SeedWindowReaderFloors{Retired: seedWindowReaderFloors.Retired}
+		floors = &querycensus.SeedWindowReaderFloors{Retired: seedWindowReaderFloors.Retired}
 	}
-	return values.AssertSeedWindowReaderCensus(w, floors)
+	return querycensus.AssertSeedWindowReaderCensus(w, floors)
 }
 
 // nameSplitFloors is EMPTY: the whole channel is retired.
@@ -418,11 +417,11 @@ func assertSeedWindowReaderCensus(w io.Writer) bool {
 // Both arms lived inside the NAME-model bake — query.legQOVSegmentsOf and
 // query.bakeFlatRefsAgainstColumns, which decided qualification by counting a
 // reference's name segments. The ordinal model decides by baked slot, both bakes
-// are gone, and values.RecordNameSplit has no caller at all. So the CALL floors
+// are gone, and querycensus.RecordNameSplit has no caller at all. So the CALL floors
 // are unsatisfiable, and the SPLIT-QUALIFIED zero they protected is now trivially
 // structural rather than a corpus fact worth guarding. The census asserts zero
 // calls at every site unconditionally, with revival as the alarm.
-var nameSplitFloors = values.NameSplitFloors{}
+var nameSplitFloors = querycensus.NameSplitFloors{}
 
 // assertNameSplitCensus checks the translator name-split census.
 //
@@ -433,14 +432,14 @@ var nameSplitFloors = values.NameSplitFloors{}
 // narrowed corpus as over the whole one. Skipping it under a filter would be
 // the one direction that fails open.
 func assertNameSplitCensus(w io.Writer) bool {
-	return values.AssertNameSplitCensus(w, &nameSplitFloors)
+	return querycensus.AssertNameSplitCensus(w, &nameSplitFloors)
 }
 
 // qualifierRecoveryFloors watches collapse at the live sites reached by this
 // corpus. Derived UNNEST, projection-scope classification and the display-label
 // strip are fully retired; their stable sites forbid all calls independently of
 // these floors.
-var qualifierRecoveryFloors = values.QualifierRecoveryFloors{
+var qualifierRecoveryFloors = querycensus.QualifierRecoveryFloors{
 	Calls: [6]int{
 		// recursiveRemap: no entry. The site is retired and has no caller; its
 		// revival is watched by the Split declaration below, which fires on any
@@ -472,7 +471,7 @@ var qualifierRecoveryFloors = values.QualifierRecoveryFloors{
 // split is the arm coming back — and unlike a floor it is checked under a
 // narrowed run too, because a tree fact holds over any population.
 //
-//   - recursiveRemap: values.RecordQualifierRecovery is not called with this site
+//   - recursiveRemap: querycensus.RecordQualifierRecovery is not called with this site
 //     anywhere in non-test sources; query.recursiveRemapValues is a retired
 //     compatibility no-op.
 var qualifierRecoveryRetiredSplit = func() (r [6]bool) {
@@ -498,8 +497,8 @@ func assertQualifierRecoveryCensus(w io.Writer) bool {
 	// producer because its input is SQL, so a disagreement here is a defect and
 	// the zero is a BARE zero. The translator harness needs an allowlist; this
 	// one must never grow one.
-	return values.AssertQualifierRecoveryCensus(w,
-		&values.QualifierRecoveryExpectations{
+	return querycensus.AssertQualifierRecoveryCensus(w,
+		&querycensus.QualifierRecoveryExpectations{
 			Floors:       floors,
 			RetiredSplit: qualifierRecoveryRetiredSplit,
 			RetiredCalls: [6]bool{
@@ -517,7 +516,7 @@ func assertQualifierRecoveryCensus(w io.Writer) bool {
 // the channel is retired and this is its revival alarm, which holds over any
 // population.
 func assertDottedLegQualifierCensus(w io.Writer) bool {
-	return values.AssertDottedLegQualifierCensus(w, &dottedLegQualifierFloors)
+	return querycensus.AssertDottedLegQualifierCensus(w, &dottedLegQualifierFloors)
 }
 
 // legIdentityFloors is the minimum population each site must report over the
@@ -603,7 +602,7 @@ var legIdentityDeclaredEmpty = map[values.LegIdentitySite]string{
 // reported a passing gate while five assertions had silently not run.
 //
 // The enumeration is kept HONEST deliberately. It read "four" while
-// values.AssertLegIdentityCensus ran five, and the omitted one was the
+// querycensus.AssertLegIdentityCensus ran five, and the omitted one was the
 // retired-verdict zero — the assertion that compares this site's converted answer
 // against the text predicate it replaced, i.e. the only one that measures the
 // conversion rather than the representation. An enumeration that drops the
@@ -621,7 +620,7 @@ func assertLegIdentityCensus(w io.Writer) bool {
 			f.Value.String())
 		floors = nil
 	}
-	return values.AssertLegIdentityCensusWith(w, values.LegIdentityExpectations{
+	return querycensus.AssertLegIdentityCensusWith(w, querycensus.LegIdentityExpectations{
 		Floors:        floors,
 		Retired:       legIdentityRetired,
 		DeclaredEmpty: legIdentityDeclaredEmpty,
@@ -746,8 +745,8 @@ func OpenDB(t *testing.T, dbPath string) *sql.DB {
 // untyped before, 100% typed after. So the call floor is calibrated an order of
 // magnitude below the smallest observation, and anyone re-measuring should
 // expect a different digit and check the RATIO.
-var selectResultMintFloors = func() values.SelectResultMintFloors {
-	var f values.SelectResultMintFloors
+var selectResultMintFloors = func() querycensus.SelectResultMintFloors {
+	var f querycensus.SelectResultMintFloors
 	f.Calls = [values.SelectResultMintSiteCount]int{100}
 	return f
 }()
@@ -760,7 +759,7 @@ func assertSelectResultMintCensus(w io.Writer) bool {
 			"over ANY population.\n", f.Value.String())
 		floors = nil
 	}
-	return values.AssertSelectResultMintCensus(w, floors)
+	return querycensus.AssertSelectResultMintCensus(w, floors)
 }
 
 // mergeSlotTypingFloor is the measured population of positional-merge slots the
@@ -779,7 +778,7 @@ func assertMergeSlotTypingCensus(w io.Writer) bool {
 		fmt.Fprintf(w, "merge-slot typing census: floor NOT checked (-test.run=%q narrowed the "+
 			"corpus). The partition identity and the Untyped zero still run — both hold over any "+
 			"population.\n", f.Value.String())
-		return cascades.AssertMergeSlotTypingCensus(w, cascades.MergeSlotTypingCensus(), 0)
+		return querycensus.AssertMergeSlotTypingCensus(w, querycensus.MergeSlotTypingCensus(), 0)
 	}
-	return cascades.AssertMergeSlotTypingCensus(w, cascades.MergeSlotTypingCensus(), mergeSlotTypingFloor)
+	return querycensus.AssertMergeSlotTypingCensus(w, querycensus.MergeSlotTypingCensus(), mergeSlotTypingFloor)
 }

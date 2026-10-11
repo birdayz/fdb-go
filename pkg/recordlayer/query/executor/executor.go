@@ -3455,10 +3455,10 @@ func spansFromMergedLegs(pos *PositionalRow) []legSpan {
 			f.Ordinal = i
 			legFields[i] = f
 		}
-		if values.LegIdentityCensusEnabled() {
+		if h := values.Census(); h != nil {
 			// The re-mint's delta: what the leg's identity WAS at construction
 			// against what re-minting its text would have produced.
-			values.RecordLegIdentityLeg(leg)
+			h.LegIdentityLeg(leg)
 		}
 		spans = append(spans, legSpan{
 			// The leg's identity is CARRIED, not re-minted from leg.Name. Re-minting

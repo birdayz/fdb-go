@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 
+	"fdb.dev/pkg/internal/querycensus"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/core/query/logical"
 )
@@ -31,13 +33,13 @@ func qualRecDelta(t *testing.T, site values.QualifierRecoverySite, class values.
 	qualRecProbeMu.Lock()
 	defer qualRecProbeMu.Unlock()
 
-	restore := values.LegIdentityCensusEnabled()
-	values.SetLegIdentityCensusEnabled(true)
-	defer values.SetLegIdentityCensusEnabled(restore)
+	restore := querycensus.LegIdentityCensusEnabled()
+	querycensus.SetLegIdentityCensusEnabled(true)
+	defer querycensus.SetLegIdentityCensusEnabled(restore)
 
-	before, _ := values.QualifierRecoveryCensus()
+	before, _ := querycensus.QualifierRecoveryCensus()
 	fn()
-	after, _ := values.QualifierRecoveryCensus()
+	after, _ := querycensus.QualifierRecoveryCensus()
 	return after[site][class] - before[site][class]
 }
 
@@ -110,7 +112,7 @@ func TestQualRecWiring_ExistsSortSplitCountsEveryArm(t *testing.T) {
 			})
 			if got < 1 {
 				t.Fatalf("existsSortSplit recorded %d %v decision(s) — want at least 1.\n%s",
-					got, tc.class, tc.why)
+					got, querycensus.QualifierRecoveryClassLabel(tc.class), tc.why)
 			}
 		})
 	}

@@ -174,7 +174,9 @@ func pullUpThroughPassthrough(
 	}
 	// Legacy-private package fixture path. It is not externally constructible
 	// and cannot pass AsFieldValue admission.
-	NoteFieldValueMint(fv.Field, fv.Resolved != nil)
+	if h := Census(); h != nil {
+		h.FieldValueMint(fv.Field, fv.Resolved != nil)
+	}
 	return &fieldValue{Field: fv.Field, Typ: fv.Typ, Child: child, Resolved: fv.Resolved}, nil
 }
 
@@ -367,7 +369,9 @@ func pushDownThroughPassthrough(
 		return nil
 	}
 	if fv.Child == nil {
-		NoteFieldValueMint(fv.Field, fv.Resolved != nil)
+		if h := Census(); h != nil {
+			h.FieldValueMint(fv.Field, fv.Resolved != nil)
+		}
 		return &fieldValue{Field: fv.Field, Typ: fv.Typ, Resolved: fv.Resolved}
 	}
 	qov, ok := fv.Child.(*quantifiedObjectValue)
@@ -381,7 +385,9 @@ func pushDownThroughPassthrough(
 		}
 		return rebuilt
 	}
-	NoteFieldValueMint(fv.Field, fv.Resolved != nil)
+	if h := Census(); h != nil {
+		h.FieldValueMint(fv.Field, fv.Resolved != nil)
+	}
 	return &fieldValue{Field: fv.Field, Typ: fv.Typ, Child: resultValue, Resolved: fv.Resolved}
 }
 

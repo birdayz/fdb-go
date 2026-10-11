@@ -43,6 +43,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/internal/querycensus"
+
 	"fdb.dev/pkg/relational/sqltest/testkit"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -215,10 +217,10 @@ func TestFDB_LegIdentityCensus_NoFoldOnlyTraffic(t *testing.T) {
 	// — a zero over a sum of non-negative terms is exact however many extra passes
 	// contribute, so extra traffic can make it FAIL, never falsely pass. The
 	// POPULATION floors are TestMain's job, because only it runs last.
-	for _, site := range values.LegIdentitySites() {
-		c := values.LegIdentityCensusOf(site)
+	for _, site := range querycensus.LegIdentitySites() {
+		c := querycensus.LegIdentityCensusOf(site)
 		t.Logf("site %-52s total=%-7d exact=%-7d foldOnly=%-3d neither=%d",
-			site.String(), c.Total, c.ExactEqual, c.FoldOnlyEqual, c.Neither)
+			querycensus.LegIdentitySiteLabel(site).String(), c.Total, c.ExactEqual, c.FoldOnlyEqual, c.Neither)
 		if c.FoldOnlyEqual != 0 {
 			t.Errorf("site %s: FoldOnlyEqual = %d, want 0 — a leg is STORED under one "+
 				"spelling and LOOKED UP under another, so making this site exact "+
@@ -226,7 +228,7 @@ func TestFDB_LegIdentityCensus_NoFoldOnlyTraffic(t *testing.T) {
 				"The fix belongs at the PRODUCER that normalizes one side, not in the "+
 				"comparison: SameLeg is exact because the alias namespaces here are "+
 				"case-DISJOINT (a quoted \"q$5\" must not forge a planner-minted q$5).",
-				site, c.FoldOnlyEqual, c.FoldOnlySamples)
+				querycensus.LegIdentitySiteLabel(site), c.FoldOnlyEqual, c.FoldOnlySamples)
 		}
 		// The two IDENTITY-PAIR sites record something different from a comparison
 		// the code makes: their pair is (leg.Name, leg.Alias.Name()) for the SAME
@@ -244,7 +246,7 @@ func TestFDB_LegIdentityCensus_NoFoldOnlyTraffic(t *testing.T) {
 					"the identity while the dotted channel still reads the text, so the "+
 					"two channels have diverged and Name can no longer be retired by "+
 					"asserting they agree. Find the producer that sets one without the "+
-					"other.", site, c.Neither, c.Total)
+					"other.", querycensus.LegIdentitySiteLabel(site), c.Neither, c.Total)
 			}
 		}
 	}
