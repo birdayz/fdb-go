@@ -20,6 +20,10 @@ type readIncarnation struct {
 	timerGen uint64
 	users    int
 	drained  chan struct{}
+	// issuedReads counts issued reads not yet complete; Commit waits for zero
+	// (issuedReadsDone closes then), as C++ commit waits on `reading`.
+	issuedReads     int
+	issuedReadsDone chan struct{}
 
 	versionstamp  *versionstampCompletion
 	versionstamps map[*versionstampCompletion]struct{}
@@ -142,20 +146,27 @@ func (tx *Transaction) fireReadTimeout(inc *readIncarnation, gen uint64) {
 // calls carrying the same operation retain its OLD incarnation even after a
 // reset. Cleanup belongs to the outer operation, or to PendingGet.Resolve.
 func (tx *Transaction) opContext(parent context.Context) (context.Context, context.CancelFunc) {
+	ctx, release, _ := tx.opContextFor(parent, false)
+	return ctx, release
+}
+
+// opContextFor with issued counts the new lease as an issued read Commit waits on;
+// counted reports whether it did (a borrowed or refused lease counts nothing).
+func (tx *Transaction) opContextFor(parent context.Context, issued bool) (context.Context, context.CancelFunc, bool) {
 	key := readContextKey{tx}
 	if op := tx.readOperation(parent); op != nil {
 		tx.readErrMu.Lock()
 		borrow := op.lease != nil && op.lease.active
 		tx.readErrMu.Unlock()
 		if borrow {
-			return parent, func() {}
+			return parent, func() {}, false
 		}
-		lease := tx.enterReadState(parent, op.inc, false)
+		lease := tx.enterReadStateFor(parent, op.inc, false, issued)
 		if lease == nil {
-			return parent, func() {}
+			return parent, func() {}, false
 		}
 		ctx := context.WithValue(parent, key, &readOperation{inc: op.inc, parent: op.parent, lease: lease, entryErr: op.entryErr})
-		return ctx, lease.release
+		return ctx, lease.release, issued
 	}
 	tx.readErrMu.Lock()
 	inc := tx.readIncarnationLocked()
@@ -169,7 +180,7 @@ func (tx *Transaction) opContext(parent context.Context) (context.Context, conte
 		inc.cancel(cause)
 		cancel(cause)
 	}
-	lease := tx.enterReadState(ctx, inc, true)
+	lease := tx.enterReadStateFor(ctx, inc, true, issued)
 	var entryErr *wire.FDBError
 	if lease != nil {
 		// The lease pins this incarnation's slot across reset. Preserve even a
@@ -181,7 +192,7 @@ func (tx *Transaction) opContext(parent context.Context) (context.Context, conte
 		stop()
 		cancel(nil)
 		lease.release()
-	}
+	}, lease != nil && issued
 }
 
 func (tx *Transaction) readOperation(ctx context.Context) *readOperation {

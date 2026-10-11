@@ -26,6 +26,7 @@ go_library(
     deps = [
         "//pkg/fdbgo/client",
         "//pkg/fdbgo/internal/diag",
+        "//pkg/fdbgo/internal/rangecheck",
         "//pkg/fdbgo/wire",
         "//pkg/fdbgo/wire/types",
         "@io_opentelemetry_go_otel_trace//:trace",
@@ -61,6 +62,8 @@ go_test(
         "parity_test.go",
         "range_byte_division_conflict_test.go",
         "range_byte_division_test.go",
+        "range_issue_bench_test.go",
+        "range_issue_test.go",
         "range_iterator_limit_batch_test.go",
         "range_iterator_test.go",
         "range_result_internal_test.go",

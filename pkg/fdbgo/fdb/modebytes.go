@@ -67,7 +67,7 @@ func modeTargetBytes(mode StreamingMode, iteration int) (int, error) {
 	if mode == StreamingModeIterator {
 		// fdb_c.cpp:1017 — ITERATOR with iteration <= 0 is client_invalid_operation.
 		if iteration <= 0 {
-			return 0, Error{Code: 2005} // client_invalid_operation
+			return 0, Error{Code: 2000} // client_invalid_operation (error_definitions.h:189)
 		}
 		if iteration > maxIteration {
 			iteration = maxIteration // fdb_c.cpp:1019
@@ -80,7 +80,7 @@ func modeTargetBytes(mode StreamingMode, iteration int) (int, error) {
 	// bounds: the guard is the bounds check, so it must be expressed on the C value.
 	i := cModeIndex(mode)
 	if i < 0 || i >= len(modeBytesTable) {
-		return 0, Error{Code: 2005} // client_invalid_operation
+		return 0, Error{Code: 2000} // client_invalid_operation (error_definitions.h:189)
 	}
 	return modeBytesTable[i], nil
 }

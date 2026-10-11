@@ -12,6 +12,7 @@ type executionLease struct {
 	tx     *Transaction
 	inc    *readIncarnation
 	active bool
+	issued bool // counted in inc.issuedReads, which Commit waits on
 }
 
 func (l *executionLease) release() {
@@ -19,6 +20,13 @@ func (l *executionLease) release() {
 		return
 	}
 	l.tx.readErrMu.Lock()
+	var issuedDone chan struct{}
+	if l.active && l.issued {
+		l.inc.issuedReads--
+		if l.inc.issuedReads == 0 {
+			issuedDone, l.inc.issuedReadsDone = l.inc.issuedReadsDone, nil
+		}
+	}
 	if l.active {
 		l.active = false
 		l.inc.users--
@@ -28,6 +36,9 @@ func (l *executionLease) release() {
 		}
 	}
 	l.tx.readErrMu.Unlock()
+	if issuedDone != nil {
+		close(issuedDone)
+	}
 }
 
 // enterState admits synchronous, context-free state access; the lease protects the
@@ -55,6 +66,11 @@ func (tx *Transaction) admitState() *readIncarnation {
 // enterReadState never rebinds a captured operation to a replacement. A pending
 // resolver passes wait=false: it may only claim its own active incarnation.
 func (tx *Transaction) enterReadState(ctx context.Context, inc *readIncarnation, wait bool) *executionLease {
+	return tx.enterReadStateFor(ctx, inc, wait, false)
+}
+
+// enterReadStateFor with issued also counts the lease as an issued read, under the same lock.
+func (tx *Transaction) enterReadStateFor(ctx context.Context, inc *readIncarnation, wait, issued bool) *executionLease {
 	for {
 		tx.readErrMu.Lock()
 		if tx.readLife != inc {
@@ -64,7 +80,10 @@ func (tx *Transaction) enterReadState(ctx context.Context, inc *readIncarnation,
 		ready := tx.readReady
 		if ready == nil {
 			inc.users++
-			lease := &executionLease{tx: tx, inc: inc, active: true}
+			if issued {
+				inc.issuedReads++
+			}
+			lease := &executionLease{tx: tx, inc: inc, active: true, issued: issued}
 			tx.readErrMu.Unlock()
 			return lease
 		}

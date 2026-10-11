@@ -3,6 +3,8 @@ package client
 import (
 	"fmt"
 	"runtime/debug"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"fdb.dev/pkg/fdbgo/internal/diag"
@@ -21,16 +23,16 @@ import (
 // (true OOM, stack overflow, concurrent map write) bypass recover() and still
 // abort — matching C++'s deliberate hard-exit classes.
 //
-// A backstop is owned by exactly one goroutine (the loop/worker it guards), so
-// its fields need no synchronization. The shared db.metrics counters it bumps
-// are atomic.
+// mu guards the log state and consecutive is atomic, so one backstop can be shared by
+// many goroutines (the database's range reads) without a lock on the clean path.
 type panicBackstop struct {
+	mu   sync.Mutex
 	name string
 	db   *database // may be nil for hand-constructed test databases
 
-	consecutive int       // panics since the last successful iteration
-	lastLog     time.Time // last time we emitted a log line (rate limiting)
-	suppressed  int       // log lines suppressed since lastLog
+	consecutive atomic.Int64 // panics since the last successful iteration; lock-free on the clean path
+	lastLog     time.Time    // last time we emitted a log line (rate limiting)
+	suppressed  int          // log lines suppressed since lastLog
 
 	// logFn overrides the diagnostics sink (default diag.Recovered). Per-instance
 	// rather than a global override so tests stay t.Parallel()-safe.
@@ -63,11 +65,11 @@ func (pb *panicBackstop) recovered(r any) bool {
 	if r == nil {
 		return false
 	}
-	pb.consecutive++
+	n := pb.consecutive.Add(1)
 	if pb.db != nil {
-		pb.db.metrics.countRecoveredPanic(pb.consecutive)
+		pb.db.metrics.countRecoveredPanic(int(n))
 	}
-	pb.logRateLimited(r)
+	pb.logRateLimited(r, n)
 	return true
 }
 
@@ -92,7 +94,9 @@ func (pb *panicBackstop) run(fn func()) (panicked bool) {
 // successful iteration so the next panic starts fresh (immediate log, base
 // backoff).
 func (pb *panicBackstop) reset() {
-	pb.consecutive = 0
+	if pb.consecutive.Load() != 0 { // a store per clean run would bounce the shared line
+		pb.consecutive.Store(0)
+	}
 }
 
 // backoff returns how long the guarded standing loop should wait before its next
@@ -100,11 +104,12 @@ func (pb *panicBackstop) reset() {
 // exponential 10ms→1s (×2 per consecutive panic, capped) — the C++ Backoff
 // analog. Bounds a deterministic re-panic to ≤1/s.
 func (pb *panicBackstop) backoff() time.Duration {
-	if pb.consecutive == 0 {
+	n := int(pb.consecutive.Load())
+	if n == 0 {
 		return 0
 	}
 	d := panicBackoffStart
-	for i := 1; i < pb.consecutive && d < panicBackoffMax; i++ {
+	for i := 1; i < n && d < panicBackoffMax; i++ {
 		d *= 2
 	}
 	if d > panicBackoffMax {
@@ -113,12 +118,17 @@ func (pb *panicBackstop) backoff() time.Duration {
 	return d
 }
 
-func (pb *panicBackstop) logRateLimited(r any) {
+func (pb *panicBackstop) logRateLimited(r any, consecutive int64) {
 	now := time.Now()
-	if pb.consecutive > 1 && now.Sub(pb.lastLog) < panicLogInterval {
+	pb.mu.Lock()
+	if consecutive > 1 && now.Sub(pb.lastLog) < panicLogInterval {
 		pb.suppressed++
+		pb.mu.Unlock()
 		return
 	}
+	suppressed := pb.suppressed
+	pb.lastLog, pb.suppressed = now, 0
+	pb.mu.Unlock()
 	log := pb.logFn
 	if log == nil {
 		log = diag.Recovered
@@ -126,10 +136,8 @@ func (pb *panicBackstop) logRateLimited(r any) {
 	log("fdbgo: recovered panic in client goroutine",
 		"goroutine", pb.name,
 		"err", fmt.Sprintf("%v", r),
-		"consecutive", pb.consecutive,
-		"suppressed_since_last", pb.suppressed,
+		"consecutive", int(consecutive),
+		"suppressed_since_last", suppressed,
 		"stack", string(debug.Stack()),
 	)
-	pb.lastLog = now
-	pb.suppressed = 0
 }

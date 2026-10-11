@@ -38,8 +38,8 @@ func TestPanicBackstop_RecoverCountReset(t *testing.T) {
 	if got := db.metrics.Snapshot().RecoveredPanics; got != 1 {
 		t.Fatalf("RecoveredPanics = %d, want 1", got)
 	}
-	if pb.consecutive != 1 {
-		t.Fatalf("consecutive = %d, want 1", pb.consecutive)
+	if pb.consecutive.Load() != 1 {
+		t.Fatalf("consecutive = %d, want 1", pb.consecutive.Load())
 	}
 	if len(cap.calls) != 1 {
 		t.Fatalf("expected 1 log line, got %d", len(cap.calls))
@@ -52,8 +52,8 @@ func TestPanicBackstop_RecoverCountReset(t *testing.T) {
 	if pb.run(func() {}) {
 		t.Fatal("clean run must not report a panic")
 	}
-	if pb.consecutive != 0 {
-		t.Fatalf("consecutive after clean run = %d, want 0", pb.consecutive)
+	if pb.consecutive.Load() != 0 {
+		t.Fatalf("consecutive after clean run = %d, want 0", pb.consecutive.Load())
 	}
 	// Total stays monotonic; the high-water mark is preserved across the reset.
 	snap := db.metrics.Snapshot()

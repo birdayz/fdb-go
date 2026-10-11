@@ -379,7 +379,11 @@ type database struct {
 	// DEFAULT_MAX_OUTSTANDING_WATCHES (10000, ClientKnobs.cpp:120) and is lowerable via the
 	// max_watches database option (SetMaxWatches). 0 means unlimited.
 	outstandingWatches atomic.Int64
-	maxWatches         atomic.Int64
+	// afterLocationSend observes a sent location query before its reply wait (test seam).
+	afterLocationSend atomic.Pointer[func()]
+	// rangeReadPanics is the RFC-110 backstop shared by this database's range reads.
+	rangeReadPanics panicBackstop
+	maxWatches      atomic.Int64
 
 	// Lifecycle.
 	ctx       context.Context
@@ -926,6 +930,7 @@ func OpenDatabaseFromConfig(ctx context.Context, cf *ClusterFile, opts ...Option
 		},
 	}
 
+	db.rangeReadPanics.name, db.rangeReadPanics.db = "rangeRead", db
 	db.hedgeEnabled.Store(true)                       // default: hedge on (matches C++)
 	db.maxWatches.Store(defaultMaxOutstandingWatches) // C++ DEFAULT_MAX_OUTSTANDING_WATCHES (10000)
 

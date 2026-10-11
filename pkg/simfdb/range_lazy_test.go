@@ -7,9 +7,10 @@ import (
 	fdb "fdb.dev/pkg/fdbgo/fdb"
 )
 
-// A range read is LAZY: each fetch resolves against the read-your-writes view AS IT IS AT FETCH
-// TIME. These pin the consequence in the one ordering that can tell a lazy read from an eager
-// one — a write issued BETWEEN the GetRange() call and the consumption of its result.
+// Each fetch of a range read resolves against the read-your-writes view AS IT IS WHEN THAT FETCH
+// IS ISSUED: batch 1 at GetRange(), later batches when an iterator reaches them. These pin the
+// consequence in the one ordering that tells the batches apart — a write issued BETWEEN the
+// GetRange() call and the consumption of its result.
 //
 // The bug they exist for: SimFDB used to materialize the whole range at GetRange() call time
 // while registering the read conflict per batch at CONSUMPTION, filtered through the write map
@@ -307,25 +308,30 @@ func TestWriteBeforeGetRangeStillReads(t *testing.T) {
 	commitAfterConcurrentSet(t, db, tx, "e", 0)
 }
 
-// TestCancelBetweenGetRangeAndConsumptionFailsTheRead pins that the range read's cancellation
-// check happens where the READ does — at consumption — not at GetRange() call time. The client's
-// GetRange builds a handle and touches nothing; the 1025 comes from ensureReadVersion inside the
-// fetch. A sim that checked at call time would answer a read no real client answers.
+// TestCancelBetweenGetRangeAndConsumptionFailsTheRead pins that a Cancel after GetRange() fails
+// the read with 1025 on both surfaces, as the client's background read is cancelled through its
+// incarnation (C++ resetPromise, ReadYourWrites.actor.cpp:391), and so does a later GetRange.
 func TestCancelBetweenGetRangeAndConsumptionFailsTheRead(t *testing.T) {
 	t.Parallel()
 	db := New(nil)
 	seedLazy(db)
 
 	tx := db.newTxn()
-	rr := tx.GetRange(fdb.KeyRange{Begin: k("a"), End: k("z")}, fdb.RangeOptions{})
+	r := fdb.KeyRange{Begin: k("a"), End: k("z")}
+	rr := tx.GetRange(r, fdb.RangeOptions{})
 	tx.Cancel()
 	if _, err := rr.GetSliceWithError(); errCode(t, err) != 1025 {
 		t.Fatalf("GetSliceWithError after Cancel = %v, want transaction_cancelled(1025)", err)
 	}
-	it := tx.GetRange(fdb.KeyRange{Begin: k("a"), End: k("z")}, fdb.RangeOptions{}).Iterator()
-	it.Advance()
+	it := rr.Iterator()
+	if it.Advance() {
+		t.Fatal("Iterator after Cancel returned a row")
+	}
 	if _, err := it.Get(); errCode(t, err) != 1025 {
 		t.Fatalf("Iterator Get after Cancel = %v, want transaction_cancelled(1025)", err)
+	}
+	if _, err := tx.GetRange(r, fdb.RangeOptions{}).GetSliceWithError(); errCode(t, err) != 1025 {
+		t.Fatalf("GetRange after Cancel = %v, want transaction_cancelled(1025)", err)
 	}
 }
 

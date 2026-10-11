@@ -57,6 +57,7 @@ const (
 	ErrInvertedRange             = 2005 // inverted_range (begin > end)
 	ErrInvalidOptionValue        = 2006 // invalid_option_value (e.g. SIZE_LIMIT outside [32, 1e7])
 	ErrRangeLimitsInvalid        = 2012 // range_limits_invalid (e.g. a row limit < -1)
+	ErrInternalError             = 4100 // internal_error
 	ErrInvalidMutationType       = 2018 // invalid_mutation_type (a non-atomic op passed to Atomic())
 	ErrTransactionReadOnly       = 2023 // transaction_read_only (a READ_LOCK_AWARE txn committed writes)
 	ErrTenantNotFound            = 2131 // tenant_not_found
@@ -315,6 +316,13 @@ type txOptions struct {
 	// afterPendingSend is a per-transaction lifecycle interleaving seam. It
 	// runs without transaction locks, after enqueue and before registration.
 	afterPendingSend func(*PendingGet)
+	// beforeRangeGoroutine parks a started range read's goroutine before it claims the read.
+	beforeRangeGoroutine func()
+	// afterRangeReply parks an issued range read after a storage reply, before
+	// it merges the reply or records its conflict.
+	afterRangeReply func()
+	// beforeIssuedReadWait observes Commit about to wait for n issued reads.
+	beforeIssuedReadWait func(n int)
 	// afterReadVersion observes a completed GRV before its caller returns.
 	afterReadVersion func()
 	// beforeReadVersionLock parks acquisition after entry validation.
@@ -671,36 +679,7 @@ func (s *Snapshot) GetRangeWithByteTarget(ctx context.Context, begin, end []byte
 }
 
 func (s *Snapshot) getRangeDir(ctx context.Context, begin, end []byte, limit, byteTarget int, reverse bool) ([]KeyValue, bool, error) {
-	ctx, cancel := s.tx.opContext(ctx)
-	defer cancel()
-	if err := s.tx.checkReadState(ctx); err != nil {
-		return nil, false, s.tx.trackReadOperation(ctx, err)
-	}
-	maxKey := s.tx.maxReadKey()
-	if bytes.Compare(begin, maxKey) > 0 || bytes.Compare(end, maxKey) > 0 {
-		return nil, false, &wire.FDBError{Code: 2004}
-	}
-	if limit < -1 { // range_limits_invalid — see getRangeDir
-		return nil, false, &wire.FDBError{Code: ErrRangeLimitsInvalid}
-	}
-	byteTarget, err := normalizeByteTarget(byteTarget) // fdb_c.cpp:993 — see getRangeDir
-	if err != nil {
-		return nil, false, err
-	}
-	if bytes.Compare(begin, end) >= 0 {
-		return nil, false, nil
-	}
-	s.tx.hadRead.Store(true)
-	if s.tx.rywDisabled {
-		kvs, more, err := s.tx.getRange(ctx, begin, end, limit, byteTarget, reverse)
-		return kvs, more, s.tx.trackReadOperation(ctx, err)
-	}
-	if s.tx.snapshotRYWDisableCount > 0 {
-		kvs, more, err := s.tx.ryw.getSnapshotRange(ctx, begin, end, limit, byteTarget, reverse, s.tx.getRange)
-		return cloneReadKVs(kvs), more, s.tx.trackReadOperation(ctx, err)
-	}
-	kvs, more, err := s.tx.ryw.getRange(ctx, begin, end, limit, byteTarget, reverse, s.tx.getRange)
-	return cloneReadKVs(kvs), more, s.tx.trackReadOperation(ctx, err)
+	return s.tx.issueRange(ctx, begin, end, limit, byteTarget, reverse, true).run(true)
 }
 
 // GetRangeReverse reads a range in reverse without adding a read conflict range.
@@ -1211,20 +1190,23 @@ func (tx *Transaction) addGetKeyConflictRange(selKey []byte, orEqual bool, offse
 // failed read can never survive to a successful commit — matching C++'s success-only add without
 // pushing the conflict into GetPipelined's Resolve/cache-hit branches.
 func (tx *Transaction) addReadConflictForKeyRYW(key []byte) {
-	if tx.rywDisabled {
+	if tx.readConflictForKeyRYW(key) {
 		tx.addReadConflictForKey(key)
-		return
+	}
+}
+
+// readConflictForKeyRYW classifies a single-key read against the current write map.
+func (tx *Transaction) readConflictForKeyRYW(key []byte) bool {
+	if tx.rywDisabled {
+		return true
 	}
 	// Single-key classification via conflictForKeyLocked (one map lookup, no write-map re-sort) —
 	// NOT conflictRangesLocked, whose ensureSortedLocked re-sorts the whole write map on every call.
 	// Get is the hot path (every record load); routing it through the range walk made a write-heavy
 	// txn (e.g. a 10K-record bulk save, each save doing a split-marker Get) O(n²·log n).
 	tx.ryw.mu.Lock()
-	conflict := tx.ryw.conflictForKeyLocked(key)
-	tx.ryw.mu.Unlock()
-	if conflict {
-		tx.addReadConflictForKey(key)
-	}
+	defer tx.ryw.mu.Unlock()
+	return tx.ryw.conflictForKeyLocked(key)
 }
 
 // normalizeByteTarget applies the C API's boundary normalization for a per-fetch byte target,
@@ -1410,67 +1392,7 @@ func (tx *Transaction) GetRangeWithByteTarget(ctx context.Context, begin, end []
 }
 
 func (tx *Transaction) getRangeDir(ctx context.Context, begin, end []byte, limit int, byteTarget int, reverse bool) ([]KeyValue, bool, error) {
-	ctx, cancel := tx.opContext(ctx)
-	defer cancel()
-	if err := tx.checkReadState(ctx); err != nil {
-		return nil, false, tx.trackReadOperation(ctx, err)
-	}
-	// C++ RYW::getRange: if (begin > maxKey || end > maxKey) → key_outside_legal_range
-	maxKey := tx.maxReadKey()
-	if bytes.Compare(begin, maxKey) > 0 || bytes.Compare(end, maxKey) > 0 {
-		return nil, false, &wire.FDBError{Code: 2004}
-	}
-	// C++ RYW::getRange: !limits.isValid() → range_limits_invalid (ReadYourWrites.actor.cpp:1749).
-	// GetRangeLimits::isValid (FDBTypes.h:754) accepts rows >= 0 || rows == ROW_LIMIT_UNLIMITED(-1),
-	// so a row limit < -1 is invalid; -1/0/positive are valid. libfdb_c (api > 13, fdb_c.cpp:983 no
-	// negative→reverse remap) rejects limit <= -2 here while Go used to map all <= 0 to unlimited.
-	// key_outside_legal_range is checked first (C++ order :1740 before :1749).
-	if limit < -1 {
-		return nil, false, &wire.FDBError{Code: ErrRangeLimitsInvalid}
-	}
-	byteTarget, err := normalizeByteTarget(byteTarget)
-	if err != nil {
-		return nil, false, err
-	}
-
-	if bytes.Compare(begin, end) >= 0 {
-		return nil, false, nil
-	}
-	tx.hadRead.Store(true)
-	var kvs []KeyValue
-	var more bool
-	if tx.rywDisabled {
-		kvs, more, err = tx.getRange(ctx, begin, end, limit, byteTarget, reverse)
-	} else {
-		kvs, more, err = tx.ryw.getRange(ctx, begin, end, limit, byteTarget, reverse, tx.getRange)
-		kvs = cloneReadKVs(kvs)
-	}
-	if err != nil {
-		// C++ adds the read-conflict only in the read's SUCCESS branch
-		// (ReadYourWrites.actor.cpp:388) — a failed read records no conflict.
-		return kvs, more, tx.trackReadOperation(ctx, err)
-	}
-
-	// Read-conflict computed AFTER the read so it can be CLAMPED to the data actually
-	// returned (RFC-121 D1) and FILTERED through the RYW write-map (RFC-121 D2, RYW path
-	// only — rywDisabled reads went straight to storage, which recorded the full read-
-	// conflict span). Mirrors libfdb_c's post-read addConflictRange. The begin<=end and
-	// non-special-key guards match the C++ client: an inverted range adds no conflict, and
-	// \xff\xff special keys resolve internally without a resolver conflict range.
-	if bytes.Compare(begin, end) <= 0 && !isSpecialKey(begin) && !isSpecialKey(end) {
-		cBegin, cEnd := rangeConflictExtent(begin, end, kvs, more, reverse)
-		if bytes.Compare(cBegin, cEnd) < 0 {
-			if tx.rywDisabled {
-				tx.addReadConflict(cBegin, cEnd)
-			} else {
-				tx.ryw.mu.Lock()
-				ranges := tx.ryw.conflictRangesLocked(cBegin, cEnd)
-				tx.ryw.mu.Unlock()
-				tx.addReadConflicts(ranges) // atomic append of the filtered sub-ranges
-			}
-		}
-	}
-	return kvs, more, nil
+	return tx.issueRange(ctx, begin, end, limit, byteTarget, reverse, false).run(true)
 }
 
 // ownMutationLocked takes ownership before the caller can reuse its buffers,
@@ -1906,6 +1828,9 @@ func (tx *Transaction) commitAdmitted(parent context.Context, completion *versio
 	tx.readErrMu.Unlock()
 	for _, p := range drain {
 		p.Resolve() //nolint:errcheck // outcome lands in readErr via its tracked tail
+	}
+	if err := tx.waitIssuedReads(ctx, op.inc); err != nil {
+		return err
 	}
 	if err := tx.readIncarnationCause(op.inc); err != nil {
 		return err

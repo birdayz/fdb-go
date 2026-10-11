@@ -229,6 +229,14 @@ func (sc *snapshotCache) getRangeKVsLimited(begin, end []byte, budget int, rever
 		lo := sort.Search(len(e.kvs), func(k int) bool {
 			return bytes.Compare(e.kvs[k].Key, begin) >= 0
 		})
+		if result == nil && lo < len(e.kvs) {
+			// Usually one fragment answers the walk: size the result for it.
+			size := len(e.kvs) - lo
+			if budget > 0 && budget < size {
+				size = budget
+			}
+			result = make([]KeyValue, 0, size)
+		}
 		for k := lo; k < len(e.kvs); k++ {
 			kv := e.kvs[k]
 			if bytes.Compare(kv.Key, end) >= 0 {

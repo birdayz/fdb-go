@@ -25,6 +25,7 @@ func TestHandler_TextExposition(t *testing.T) {
 		GRVCacheHits:                     9,
 		GRVInBandMaybeDelivered:          11,
 		TransactionRetries:               4,
+		TransactionGetRangeRequests:      23,
 		ClientConnectionFailures:         2,
 		CoordinatorChanges:               1,
 		// Every counter gets a DISTINCT NON-ZERO value. That is the half still
@@ -94,6 +95,7 @@ func TestHandler_TextExposition(t *testing.T) {
 		"# TYPE fdb_client_grv_in_band_maybe_delivered_total counter\n",
 		"fdb_client_grv_in_band_maybe_delivered_total 11\n",
 		"fdb_client_transaction_retries_total 4\n",
+		"fdb_client_transaction_get_range_requests_total 23\n",
 		"fdb_client_transactions_throttled_total 22\n",
 		// RFC-114 counters.
 		"# TYPE fdb_client_connection_failures_total counter\n",
@@ -251,7 +253,7 @@ func TestDocumentedCounterSplitMatchesTheTable(t *testing.T) {
 			other++
 		}
 	}
-	if len(counters) != 18 || cppTwin != 13 || goOnly != 5 || other != 0 {
+	if len(counters) != 19 || cppTwin != 14 || goOnly != 5 || other != 0 {
 		t.Errorf("table is %d counters (%d C++ twin, %d Go-only, %d unclassified). "+
 			"The ENTRY COUNT is written in the package doc and in `counters`' doc; "+
 			"the C++-twin SPLIT only in the latter. Update the ones your change "+

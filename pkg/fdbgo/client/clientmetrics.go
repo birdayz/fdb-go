@@ -66,6 +66,8 @@ type ClientMetrics struct {
 	grvInBandMaybeDelivered atomic.Int64
 
 	transactionRetries atomic.Int64 // Go-only aggregate, see doc comment
+	// C++ DatabaseContext transactionGetRangeRequests (NativeAPI.actor.cpp:1557, :5808).
+	getRangeRequests atomic.Int64
 
 	// recoveredPanics counts panics recovered by the background-goroutine
 	// backstop (RFC-110) — the analog of C++ Net2::run's SevError "TaskError"
@@ -218,6 +220,8 @@ type ClientMetricsSnapshot struct {
 
 	TransactionRetries int64
 
+	TransactionGetRangeRequests int64 // range reads that reached storage (C++ GetRangeRequests)
+
 	RecoveredPanics               int64 // RFC-110: panics recovered by the goroutine backstop
 	RecoveredPanicsConsecutiveMax int64 // RFC-110: high-water of any loop's consecutive-panic streak
 
@@ -252,7 +256,8 @@ func (m *ClientMetrics) Snapshot() ClientMetricsSnapshot {
 		GRVCacheHits:            m.grvCacheHits.Load(),
 		GRVInBandMaybeDelivered: m.grvInBandMaybeDelivered.Load(),
 
-		TransactionRetries: m.transactionRetries.Load(),
+		TransactionRetries:          m.transactionRetries.Load(),
+		TransactionGetRangeRequests: m.getRangeRequests.Load(),
 
 		RecoveredPanics:               m.recoveredPanics.Load(),
 		RecoveredPanicsConsecutiveMax: m.recoveredPanicsConsecutiveMax.Load(),

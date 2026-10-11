@@ -649,13 +649,13 @@ func (tx *simTxn) rangeRows(begin, end []byte, limit int, reverse bool) ([]fdb.K
 
 // fetchRange is ONE round-trip of a range read: cap the window at any pending versionstamped op,
 // resolve the rows over what remains, and decide whether iteration REACHED the cap. It is the
-// sim's rywCache.getRange (client/ryw.go:645-700) and, like it, runs once per FETCH — so the cap
+// sim's rywCache.issueRange + run (client/ryw.go) and, like it, runs once per FETCH — so the cap
 // is recomputed for every batch, and a versionstamped write landing mid-scan truncates the
 // batches after it while leaving the ones already returned alone.
 //
 // cBegin/cEnd are the window the fetch ACTUALLY read, and they are returned because that is what
 // the caller must record its read conflict over. The client caps begin/end before issuing the
-// read for exactly that reason (client/ryw.go:667-673); conflicting over the REQUESTED window
+// read for exactly that reason (rywRangeRead.run); conflicting over the REQUESTED window
 // instead claims a read of keys past the cap that provably never happened.
 // byteTarget is the reply's per-fetch byte budget (fdb.ByteLimitUnlimited for none). It is
 // applied HERE rather than by the caller because it has to take effect before the
@@ -668,6 +668,10 @@ func (tx *simTxn) rangeRows(begin, end []byte, limit int, reverse bool) ([]fdb.K
 func (tx *simTxn) fetchRange(begin, end []byte, limit int, byteTarget int, reverse bool) (
 	kvs []fdb.KeyValue, more bool, cBegin, cEnd []byte, err error,
 ) {
+	// Every fetch is a read call of its own and fails once the transaction is cancelled.
+	if tx.cancelled.Load() {
+		return nil, false, nil, nil, fdb.Error{Code: 1025}
+	}
 	cBegin, cEnd = begin, end
 	// Truncate at the first (forward) / last (reverse) key carrying a pending versionstamped op.
 	// unreadableScanCap already honours BYPASS_UNREADABLE and returns nil when nothing
@@ -876,27 +880,21 @@ func (tx *simTxn) GetRange(r fdb.Range, options fdb.RangeOptions) fdb.RangeResul
 	return tx.getRange(r, options, false)
 }
 
-// getRange returns a LAZY handle. Nothing is read here — not the rows, not the bounds, not even
-// the read version — exactly as the client's GetRange returns a bare goRangeResult{tx, r,
-// options} (fdb/range_result.go:39-45). All of it happens at consumption, in
-// resolveRangeForRead and rangeRows. See simRangeResult for why that ordering is the whole
-// point.
+// getRange fetches batch 1 at the call, as the client's GetRange does; later batches are
+// fetched at consumption. See simRangeResult.
 func (tx *simTxn) getRange(r fdb.Range, options fdb.RangeOptions, snapshot bool) fdb.RangeResult {
-	return &simRangeResult{tx: tx, r: r, options: options, snapshot: snapshot}
+	rr := &simRangeResult{tx: tx, r: r, options: options, snapshot: snapshot}
+	rr.issueFirst()
+	return rr
 }
 
 // resolveRangeForRead turns a range request's selectors into the raw [begin, end) a fetch reads
 // over, and records the conflict ranges that resolution itself takes. It is the sim's
-// resolveRange (fdb/range_result.go), and like it, it runs at CONSUMPTION — once per
-// GetSliceWithError call and once per Iterator() call — never at GetRange() time.
+// resolveRange (fdb/range_result.go), and like it, it runs once per
+// GetRange() call.
 func (tx *simTxn) resolveRangeForRead(r fdb.Range, snapshot bool) (begin, end []byte, err error) {
-	// transaction_cancelled(1025) before anything else, as on every other read entry point: the
-	// client reaches it through ensureReadVersion, whose FIRST act is checkCancelled
-	// (client/transaction.go:662-665), and getRangeDir calls ensureReadVersion before its own
-	// legal-range and limit validation (client/transaction.go:1252-1268). Checking it HERE
-	// rather than in getRange also matches the client's timing: a transaction cancelled after
-	// GetRange() but before the result is consumed fails the read, because the read had not
-	// happened yet.
+	// transaction_cancelled(1025) before anything else, as on every other read entry point
+	// (C++ RYW getRange checks resetPromise first, ReadYourWrites.actor.cpp:1736-1737).
 	if tx.cancelled.Load() {
 		return nil, nil, fdb.Error{Code: 1025}
 	}
