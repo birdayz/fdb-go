@@ -50,6 +50,7 @@ go_test(
         "spfresh_maintainer_test.go",
         "spfresh_merge_test.go",
         "spfresh_metrics_test.go",
+        "spfresh_move_replica_test.go",
         "spfresh_npa_test.go",
         "spfresh_parallel_staging_test.go",
         "spfresh_phaseb_rerank_test.go",

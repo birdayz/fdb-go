@@ -266,6 +266,12 @@ func spfreshRebalanceOnce(ctx context.Context, db *recordlayer.FDBDatabase, s *s
 					timer.Increment(CountSPFreshLeaseSkips)
 					continue
 				}
+				if errors.Is(serr, errSPFreshSplitDeferred) {
+					// Budget-free like a lease skip: charging it would spin the drain
+					// loop on a child whose split another executor still holds.
+					timer.Increment(CountSPFreshSplitDefers)
+					continue
+				}
 				fail(fmt.Errorf("split fine %d (cell %d): %w", ref.id, ref.cellID, serr))
 				continue
 			}

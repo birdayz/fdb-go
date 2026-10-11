@@ -94,6 +94,17 @@ func spfreshGCSweep(ctx context.Context, db *recordlayer.FDBDatabase, s *spfresh
 			if cent.epoch == 0 || spfreshNowMs()-cent.epoch < horizonMs {
 				return nil
 			}
+			// A SEALED split in this cell may still be draining into this row's
+			// descendants and follows its FORWARD pointers: keep it (as coarse splits do).
+			cellRows, _, _, lerr := spfreshLoadCellForWrite(tx, s, ref.cellID)
+			if lerr != nil {
+				return lerr
+			}
+			for _, r := range cellRows {
+				if r.row.state == spfreshStateSealed {
+					return nil
+				}
+			}
 
 			// Residual drain: REAL posting read; re-home entries the
 			// membership still claims, clear only disclaimed orphans.

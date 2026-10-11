@@ -496,6 +496,29 @@ func spfreshTaskClaim(tx fdb.WritableTransaction, s *spfreshStorage, kind, id in
 	return row, nil
 }
 
+// spfreshTaskRelease drops our lease on a task left queued: owners are unique per
+// invocation, so a held lease would stall the next one until expiry.
+func spfreshTaskRelease(tx fdb.WritableTransaction, s *spfreshStorage, kind, id int64, owner string) error {
+	key := s.taskKey(kind, id)
+	data, err := tx.Get(key).Get()
+	if err != nil {
+		return fmt.Errorf("spfresh: read task (%d,%d): %w", kind, id, err)
+	}
+	if data == nil {
+		return nil
+	}
+	row, err := decodeTaskRow(data)
+	if err != nil {
+		return err
+	}
+	if row.owner != owner {
+		return nil
+	}
+	row.owner, row.leaseDeadlineMs = "", 0
+	tx.Set(key, encodeTaskRow(row))
+	return nil
+}
+
 // --- CHANGELOG (versionstamped, ordered; distinct user-versions per tx) ---
 
 // spfreshMaxDeltasPerTx is the changelog's single-transaction delta cap: the

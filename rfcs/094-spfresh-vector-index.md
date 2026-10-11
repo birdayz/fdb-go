@@ -302,9 +302,22 @@ envelope at step 2 — possible only when maintenance lagged the writers (the
 **chunked multi-tx drain** instead (`spfreshSplitFineChunked`): the children
 are created ACTIVE up front (queries and inserts route to them mid-drain, and
 a pk lives in exactly one of parent/child at any commit point), entries move
-in 4×Lmax-sized chunks, each chunk one lease-fenced transaction with the same
-membership-rewrite rules as the single-tx step, and the FORWARD flip lands
-only after a REAL read proves the parent empty:
+in 4×Lmax-sized chunks, each chunk one transaction (fenced per pk by its
+membership read, not by the lease) with the same membership-rewrite rules as
+the single-tx step, and the FORWARD flip lands
+only after a REAL read proves the parent empty. Unlike the papers' atomic
+split, the drain exposes ACTIVE children that another executor may split or
+merge before it ends (appending into a child already FORWARD left live entries
+in a posting no query reads). So each chunk, and a single-tx resume over
+existing children, REAL-reads the rows of the child lineage and moves an entry
+only to the nearest ACTIVE fine its child has become: the child, or what a
+FORWARD row names (split children or merge targets). A SEALED one defers the
+drain with the lease released: SPFresh §4.2.2's posting lock, as
+abort-and-retry. Deferral cannot cycle (every pointer in a
+lineage is written after its parent sealed), and the lineage stays in the
+parent's cell because coarse splits and GC both skip a cell holding a SEALED
+row. A stale executor whose next step finds the parent gone and its task
+cleared treats the split as done (a takeover finished it). The steps:
 
 1. **SEAL** (tiny): read claim; read `CENTROIDS/(cell, c)` = ACTIVE (FORWARD /
    DEAD ⇒ zombie rule: delete task, no-op; SEALED with own childIDs ⇒ resume at

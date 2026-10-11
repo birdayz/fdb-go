@@ -11,6 +11,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 
 	"fdb.dev/gen/demopb"
+	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer/vectorcodec"
@@ -82,19 +83,27 @@ func newConcurrencyIndex(name string) (*recordlayer.Index, func(*recordlayer.FDB
 }
 
 // assertSPFreshSelfConsistent pins the §6/§12 structural invariants after
-// quiescence: every membership target holds the pk's posting entry, the fine
-// counters equal the live posting sizes, and every ACTIVE posting is within
-// the 4×Lmax search-visibility envelope.
+// quiescence: membership targets are searched postings holding the entry, no
+// retired posting holds entries, counters match, postings stay within 4×Lmax.
 func assertSPFreshSelfConsistent(ctx context.Context, indexSubspace subspace.Subspace, config SPFreshConfig) {
 	storage := newSPFreshStorage(indexSubspace, 1)
 	_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		tx := rtx.Transaction()
 		cells, _, lerr := spfreshLoadAllCoarse(tx, storage)
 		Expect(lerr).NotTo(HaveOccurred())
+		states := map[int64]byte{}
 		for _, cellID := range cells {
 			rows, _, _, cerr := spfreshLoadCell(tx, storage, cellID)
 			Expect(cerr).NotTo(HaveOccurred())
 			for _, r := range rows {
+				states[r.fineID] = r.row.state
+				if r.row.state == spfreshStateForward || r.row.state == spfreshStateDead {
+					// No query searches a retired posting: an entry left there
+					// is a live record no query can return.
+					entries, perr := spfreshLoadPostingForSplit(tx, storage, r.fineID)
+					Expect(perr).NotTo(HaveOccurred())
+					Expect(entries).To(BeEmpty(), "retired posting %d (state %d) strands %d entries", r.fineID, r.row.state, len(entries))
+				}
 				if r.row.state != spfreshStateActive {
 					continue
 				}
@@ -113,6 +122,26 @@ func assertSPFreshSelfConsistent(ctx context.Context, indexSubspace subspace.Sub
 					Expect(mem).To(ContainElement(r.fineID),
 						"pk %v sits in posting %d but its membership %v disclaims it (orphan)", e.pk, r.fineID, mem)
 				}
+			}
+		}
+		// The converse: every membership target is a searched posting (ACTIVE,
+		// or SEALED mid-split) holding the entry.
+		mr, rerr := fdb.PrefixRange(storage.membership.Bytes())
+		Expect(rerr).NotTo(HaveOccurred())
+		kvs, gerr := tx.GetRange(mr, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll}).GetSliceWithError()
+		Expect(gerr).NotTo(HaveOccurred())
+		for _, kv := range kvs {
+			pk, uerr := storage.membership.Unpack(kv.Key)
+			Expect(uerr).NotTo(HaveOccurred())
+			mem, derr := decodeMembership(kv.Value)
+			Expect(derr).NotTo(HaveOccurred())
+			for _, fineID := range mem {
+				st, ok := states[fineID]
+				Expect(ok && (st == spfreshStateActive || st == spfreshStateSealed)).To(BeTrue(),
+					"pk %v membership %v names posting %d that no query searches (state %d, in a cell: %v)", pk, mem, fineID, st, ok)
+				data, perr := tx.Get(storage.postingKey(fineID, pk)).Get()
+				Expect(perr).NotTo(HaveOccurred())
+				Expect(data).NotTo(BeNil(), "pk %v membership names posting %d without its entry", pk, fineID)
 			}
 		}
 		return nil, nil

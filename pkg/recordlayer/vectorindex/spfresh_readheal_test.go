@@ -182,7 +182,7 @@ var _ = Describe("SPFresh read-path envelope repair", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 
-		_, _, err = spfreshChunkedSplitPlan(ctx, sharedDB, storage, config, "planhdr-owner", 1, parent, childA, childB, 7)
+		err = spfreshChunkedSplitPlan(ctx, sharedDB, storage, config, "planhdr-owner", 1, parent, childA, childB, 7)
 		Expect(err).NotTo(HaveOccurred())
 
 		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
