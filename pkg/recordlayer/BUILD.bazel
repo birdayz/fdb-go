@@ -396,6 +396,7 @@ go_test(
         "store_generic_test.go",
         "store_header_update_time_test.go",
         "store_open_retryable_error_test.go",
+        "store_open_round_trip_test.go",
         "store_state_cache_test.go",
         "store_state_test.go",
         "store_stress_test.go",

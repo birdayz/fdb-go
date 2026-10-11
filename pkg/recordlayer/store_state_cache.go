@@ -281,8 +281,13 @@ func loadRecordStoreState(store *FDBRecordStore, existenceCheck StoreExistenceCh
 	// record-layer key sorts before the info key's 0, so it covers the same
 	// written keys as this point Get's [key, key\x00).
 	storeInfoFuture := tx.Get(ks.expectedInfoKey)
-	// Index states use snapshot isolation (no conflict).
-	indexStatesFuture := tx.Snapshot().GetRange(fdb.KeyRange{Begin: ks.indexStateBegin, End: ks.indexStateEnd}, fdb.RangeOptions{})
+	// Index states use snapshot isolation (no conflict). The facade's GetRange is
+	// lazy, so drive it on its own goroutine to overlap the header Get, as Java's
+	// loadRecordStoreStateInternalAsync does (FDBRecordStore.java:4134-4136).
+	// The deferred await keeps every return path from orphaning the read.
+	indexStatesRead := startIndexStatesRead(tx.Snapshot().GetRange(
+		fdb.KeyRange{Begin: ks.indexStateBegin, End: ks.indexStateEnd}, fdb.RangeOptions{}))
+	defer indexStatesRead.await()
 
 	// Resolve store info.
 	storeInfoValue, err := storeInfoFuture.Get()
@@ -322,7 +327,7 @@ func loadRecordStoreState(store *FDBRecordStore, existenceCheck StoreExistenceCh
 	// Resolve index states.
 	var indexStates map[string]IndexState
 	if exists {
-		indexKVs, err := indexStatesFuture.GetSliceWithError()
+		indexKVs, err := indexStatesRead.result()
 		if err != nil {
 			return nil, fmt.Errorf("failed to load index states: %w", err)
 		}
@@ -364,6 +369,29 @@ func loadRecordStoreState(store *FDBRecordStore, existenceCheck StoreExistenceCh
 		StoreHeader: header,
 		IndexStates: indexStates,
 	}, nil
+}
+
+// indexStatesRead is a range read already in flight on its own goroutine.
+type indexStatesRead struct {
+	done chan struct{}
+	kvs  []fdb.KeyValue
+	err  error
+}
+
+func startIndexStatesRead(rr fdb.RangeResult) *indexStatesRead {
+	r := &indexStatesRead{done: make(chan struct{})}
+	go func() {
+		defer close(r.done)
+		r.kvs, r.err = rr.GetSliceWithError()
+	}()
+	return r
+}
+
+func (r *indexStatesRead) await() { <-r.done }
+
+func (r *indexStatesRead) result() ([]fdb.KeyValue, error) {
+	r.await()
+	return r.kvs, r.err
 }
 
 // checkStoreHeaderExistence validates the existence check against the header.
