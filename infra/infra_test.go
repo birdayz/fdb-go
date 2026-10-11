@@ -676,8 +676,9 @@ func TestCloudInitMcInstallIsBestEffort(t *testing.T) {
 	}
 }
 
-// TestCloudInitBazelRemoteSurvivesReplace pins that the bazel-remote item, which runs under the
-// docker block's leaked set -eu before runner registration, reuses an existing container and never aborts.
+// TestCloudInitBazelRemoteSurvivesReplace pins that the bazel-remote item, which runs under
+// the docker block's leaked set -eu before runner registration, reuses an existing container
+// and never aborts.
 func TestCloudInitBazelRemoteSurvivesReplace(t *testing.T) {
 	t.Parallel()
 	var doc struct {
@@ -723,6 +724,9 @@ func TestCloudInitBazelRemoteSurvivesReplace(t *testing.T) {
 				t.Fatalf("bazel-remote item aborted provisioning: %v\n%s", err, out)
 			}
 			got, _ := os.ReadFile(calls)
+			if tc.host != "gh-runner-fdb" && len(got) != 0 {
+				t.Fatalf("docker called on a box without the cache: %q", got)
+			}
 			if ran := strings.Contains(string(got), "run"); ran != tc.wantRun {
 				t.Fatalf("docker run called = %v, want %v (calls: %q)", ran, tc.wantRun, got)
 			}

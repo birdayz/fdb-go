@@ -518,7 +518,7 @@ runcmd:
 
   # Pinned + checksummed tool installs (RFC-108 §1). ONE block under `set -eu` so a
   # checksum mismatch in fetch-verified.sh ABORTS before the next install (e.g. `dpkg -i`)
-  # runs on the corrupt artifact (codex). No pipefail: runcmd runs under dash.
+  # runs on the corrupt artifact. No pipefail: runcmd runs under dash.
   - |
     set -eu
     FV=/usr/local/bin/fetch-verified.sh

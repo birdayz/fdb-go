@@ -556,7 +556,8 @@ longer rationale for these lines lives here.
 - **Pre-warm.** Before the runner service starts, the box clones the repo into the job
   workspace and runs `bazelisk fetch --config=ci //...`, so the main workspace's first jobs do
   not cold-fetch hundreds of Go modules (the race job's separate output base still does).
-  gazelle's `fetch_repo` goes through the Go module fetcher, which has no retry, and an upstream HTTP/2 reset then fails analysis. Bazel's own downloader
+  gazelle's `fetch_repo` goes through the Go module fetcher, which has no retry, and an
+  upstream HTTP/2 reset then fails analysis. Bazel's own downloader
   already retries (`--experimental_repository_downloader_retries` defaults to 5 in 9.0.1).
 - **bazel-remote start.** It runs under the docker block's leaked `set -eu` and before the
   runner registers, so it skips `docker run` when the container already exists (a
