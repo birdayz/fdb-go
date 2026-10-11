@@ -17,7 +17,7 @@ readiness statement; this page is an overview, not a release certification.
 | **Record Layer** | Go ↔ Java reads and writes for your exact metadata, index types, and store formats |
 | **SQL engine** | Query correctness, plans, resource limits, and performance for your workload |
 
-These docs describe the development tree, not the older v0.1.0 release. Pinning
+These docs describe v0.2.0 and the development tree. Pinning
 a version does not by itself establish readiness.
 
 ## Interoperability has boundaries

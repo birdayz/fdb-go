@@ -40,11 +40,12 @@ def legal_file(path):
 
 
 def main():
-    # Match setup-go's go-version-file release toolchain, not a newer local Go
-    # or ambient experiment/build flags that could change the imported graph.
-    version = next(line.split()[1] for line in Path("go.mod").read_text().splitlines()
-                   if line.startswith("go "))
-    env = dict(os.environ, GOTOOLCHAIN="go" + version, GOEXPERIMENT="", GOFLAGS="")
+    # Match setup-go's go-version-file release toolchain (the toolchain line, else
+    # the go line), not a newer local Go or ambient flags that could change the graph.
+    lines = Path("go.mod").read_text().splitlines()
+    toolchain = next((line.split()[1] for line in lines if line.startswith("toolchain ")), None)
+    version = toolchain or "go" + next(line.split()[1] for line in lines if line.startswith("go "))
+    env = dict(os.environ, GOTOOLCHAIN=version, GOEXPERIMENT="", GOFLAGS="")
     modules = {}
     standard_dirs = set()
     goroot = None

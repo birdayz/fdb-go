@@ -1,6 +1,6 @@
 # Compatibility boundaries
 
-This page describes the development tree. It is not a promise that all Java
+This page describes v0.2.0 and the development tree. It is not a promise that all Java
 features work, that all historical Go releases share one storage format, or that
 an arbitrary Java query plan can resume in Go. See [status](../STATUS.md) and
 [upgrade guidance](upgrade.md).
@@ -39,7 +39,7 @@ higher-level storage layout; it does not remove the exceptions below.
 | **TEXT / Unicode** | Go's default tokenizer applies Java's per-word steps (NFKD, a Basic Multilingual Plane letter or digit, `toLowerCase(Locale.ROOT)` with final sigma, marks removed); the Java conformance suite compares their tokens for Latin, Greek, Cyrillic, Hebrew, Arabic, Hangul, Indic and supplementary-plane text. Word segmentation differs: Go uses UAX #29 (`uniseg`), Java the JDK's `BreakIterator.getWordInstance(Locale.ROOT)`. Text written without spaces (Han, kana, Thai, Lao, Khmer, Myanmar) and some connectors (`_`, `:`, `’`, `·`, `.` before a digit, `$` or `%` beside digits, U+200B, superscript digits) give different tokens, as do a few Greek words whose final-sigma context NFKD changes. Each side uses its runtime's Unicode tables: Go's follow the Go toolchain (15.0 through Go 1.26, 17.0 from Go 1.27; `uniseg` 15.0), Java's the JVM (JDK 21: 15.0). Characters assigned or changed between those versions tokenize differently, and a Go TEXT index may need rebuilding when the toolchain's Unicode version changes. Do not share a TEXT index over such text. |
 | **Continuations** | Leaf and structural cursor framing has Java conformance coverage. SQL statement continuations are engine-private; Go rejects caller-supplied `api.OptContinuation`. Go streaming-aggregate accumulator payloads and in-memory-sort state are not Java-compatible, even where a protobuf message name is shared. Do not exchange these tokens between engines or assume stability across plan changes. |
 | **Store format** | An unpinned Go open can upgrade an older store to format 14 when its transaction commits. Java's default 7 is not its maximum: Java 4.14.2.0 can open 14 and 15. Older readers and downgrade paths must be checked separately. |
-| **Earlier Go SQL storage** | The development tree changed the relational catalog/database/schema keyspace after v0.1.0. There is no automatic migration from the old Go layout. A common FDB cluster does not make these layouts interchangeable. |
+| **Earlier Go SQL storage** | v0.2.0 changed the relational catalog/database/schema keyspace from v0.1.0's. There is no automatic migration from the old Go layout. A common FDB cluster does not make these layouts interchangeable. |
 
 ### Vector defaults are layer-specific
 

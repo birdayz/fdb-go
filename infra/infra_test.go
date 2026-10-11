@@ -313,7 +313,11 @@ func TestFleetGoMatchesGoMod(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read go.mod: %v", err)
 	}
-	g := regexp.MustCompile(`(?m)^go\s+(\S+)`).FindSubmatch(gomod)
+	// go_sdk.from_file builds with the toolchain line when present, else the go line.
+	g := regexp.MustCompile(`(?m)^toolchain\s+go(\S+)`).FindSubmatch(gomod)
+	if g == nil {
+		g = regexp.MustCompile(`(?m)^go\s+(\S+)`).FindSubmatch(gomod)
+	}
 	if g == nil {
 		t.Fatal("go.mod has no `go` directive")
 	}

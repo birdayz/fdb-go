@@ -99,7 +99,7 @@ fmt.Println(string(value.([]byte)))
 </section>
 
 <section class="launch-section launch-next" aria-labelledby="next-heading">
-  <div><p class="launch-eyebrow">Try it, then inspect it</p><h2 id="next-heading">Start from the source.</h2><p>The website describes the development tree, not the older v0.1.0 release. Record the commit you evaluate.</p><a class="launch-button" href="/docs/getting-started/">Build &amp; run locally <span aria-hidden="true">→</span></a></div>
+  <div><p class="launch-eyebrow">Try it, then inspect it</p><h2 id="next-heading">Start from the source.</h2><p>The website describes v0.2.0 and the development tree. Record the commit you evaluate.</p><a class="launch-button" href="/docs/getting-started/">Build &amp; run locally <span aria-hidden="true">→</span></a></div>
   <div class="launch-reading"><a href="https://github.com/birdayz/fdb-go/blob/master/STATUS.md"><span>Project status</span><span>Readiness and test-lane scope ↗</span></a><a href="https://github.com/birdayz/fdb-go/blob/master/docs/operations.md"><span>Operator guide</span><span>Transactions, indexes, backups ↗</span></a><a href="https://github.com/birdayz/fdb-go/issues"><span>Issues &amp; contributions</span><span>Report a reproducer or explore the work ↗</span></a></div>
 </section>
 

@@ -1,8 +1,8 @@
 # Project status
 
-**Pre-1.0; not declared production-ready.** This is the current readiness
-statement for the development tree, not a certification of a tagged release or
-of a particular deployment. Pin a commit and evaluate it against your workload.
+**Pre-1.0; not declared production-ready.** This readiness statement covers
+v0.2.0 and the development tree after it. It certifies neither a release nor a
+particular deployment. Pin a version and evaluate it against your workload.
 
 The project contains three independently useful layers:
 
@@ -18,6 +18,29 @@ compatibility with every feature or every server release. See
 [compatibility](docs/compatibility.md) for exceptions and source references and
 [upgrading](docs/upgrade.md) before opening existing data. `MODULE.bazel`,
 `go.mod` and `.bazelversion` are the dependency/build pins.
+
+## Known gaps in v0.2.0
+
+These are open and planned for v0.3.0. Each has a workaround where one exists.
+
+- **Per-RPC 5 s timeouts on commits and reads, which libfdb_c does not have.** A
+  commit whose reply takes longer fails with `commit_unknown_result` (1021); a
+  slower read reply is abandoned and re-sent, to another replica first. Make
+  transactions idempotent and retry 1021 as maybe-committed, as with libfdb_c.
+- **A commit's wait for its reply ignores the transaction timeout and `Cancel`.**
+  The 5 s limit above ends it. Bound the caller with a context deadline.
+- **Read-only transactions allocate more than libfdb_c's.** It was 38 KB per
+  transaction before v0.2.0's allocation cuts and has not been re-measured. Batch
+  reads into fewer transactions on allocation-sensitive paths.
+- **Limited real-cluster fault testing.** A coordinator-restart recovery
+  regression runs in CI; process kills, partitions and coordinator changes are not
+  yet tested against a real cluster. Rehearse them on your cluster (below).
+- **Planning cost.** Planning a query takes milliseconds, and a large join can
+  take seconds. Prepared statements reuse plans across bindings; a context
+  deadline bounds planning, which has no budget of its own by default (as in Java).
+- **No resource limits by default** (as in Java). Set them in the DSN:
+  `max_rows`, `execution_scanned_rows_limit`, `execution_scanned_bytes_limit`,
+  `execution_time_limit`, `max_statement_memory_bytes` and `transaction_timeout`.
 
 ## Evidence and its limits
 

@@ -12,10 +12,43 @@ semantics, and required dependency versions.
 
 This changelog starts **2026-06-20**; earlier history is in `git log`. The first tagged release is
 **v0.1.0** (2026-08-26). v0.1.0 shipped the `frl` CLI from a parallel nested-module tag,
-`cmd/frl/v0.1.0`; from the next release `frl` is a package of the root module and ships under the
+`cmd/frl/v0.1.0`; from v0.2.0 `frl` is a package of the root module and ships under the
 project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (`RELEASE.md`).
 
 ## [Unreleased]
+
+## [v0.2.0] - 2026-10-11
+
+### Breaking changes
+Each is described in full under Compatibility or Changed below.
+- **SQL storage:** the relational key space is Java's `RelationalKeyspaceProvider` layout; SQL data
+  written by v0.1.0 is not migrated (`docs/upgrade.md`). A database path is `/DOMAIN/DATABASE`, and
+  its domain must be registered once per process (`sqldriver.RegisterDomainIfNotExists`).
+- **Collated indexes** fail with `GoOnlyCollationError` unless the store opts into Go-only bytes
+  with `StoreBuilder.SetGoOnlyCollation(true)` (#790).
+- **VECTOR indexes** read value column 0 as serialized vector bytes (#815), are refused at build
+  without a dimension count or with a structure Java refuses (#809), and accept only Java's metric
+  names and options (#804).
+- **TEXT indexes:** the default tokenizer handles a word-final capital sigma and supplementary-plane
+  text as Java does; rebuild Go-written TEXT indexes over such text (#803).
+- **Pure-Go client:** API versions outside 510-730 are refused with 2203 (#823).
+  `SetLockAware`/`SetReadLockAware` take no argument, a read-lock-aware commit with writes fails
+  with 2023 unless the transaction is also lock-aware, and `SetSizeLimit` outside
+  [32, 10,000,000] is a deferred error (#820). `SetTimeout` outside [0, INT_MAX] is a deferred
+  2006 (#799).
+- **Record layer:** `FDBDatabase.Run` and its variants retry at most 10 times by default, and a
+  body that commits the context it was handed is refused. A typed record store reads and writes
+  only its record type's union field, `NewTypedRecordStore` takes the record type only, and every
+  save resolves the record type by the record's descriptor (#842, #852).
+  `FindRegisteredMessageType` is replaced by `GeneratedMessageType` (#842).
+- **SQL driver:** an unknown DSN parameter, or a DSN boolean other than `true`/`false`, fails at
+  open with 22023 (#799).
+- **Go API moves:** the gomock mocks moved to `pkg/relational/api/apimock` (#810), the demo protos
+  to `fdb.dev/gen/demopb` (#842), and index-predicate normalization, the plan walkers and the
+  R-tree to `pkg/recordlayer/indexpredicate`, `pkg/recordlayer/query/plan/plans` and
+  `pkg/async/rtree`. The planner census left the public `values`, `cascades`, `executor` and
+  `core/query` packages (#836). `keyspace.FDBResolver` is removed.
+- **frl:** the nested module `fdb.dev/cmd/frl` is retracted; `frl` is a package of the root module.
 
 ### Compatibility
 - **Collation:** collated index access and writes that evaluate collated primary/count keys now fail with `GoOnlyCollationError` unless the store explicitly opts into Go-only bytes with `StoreBuilder.SetGoOnlyCollation(true)`; existing keys are not migrated.
@@ -23,19 +56,18 @@ project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (
 - **Wire format:** the Java target is upgraded to `fdb-record-layer-core` 4.14.2.0 (RFC-257). Records Java writes through `TransformedRecordSerializer` (compressed, encrypted) are
   read and written. Stores written only by an earlier pre-release Go build are not supported:
   recreate them.
-- **SQL behaviour:** follows Java 4.14.2.0 where both engines run a query; see the PR for the
+- **SQL behaviour:** follows Java 4.14.2.0 where both engines run a query; see Changed for the
   per-change list.
-- **FDB client option semantics:** as v0.1.0 except `SetReadLockAware` and `SetSizeLimit` (see
-  Changed). The honored / `UnsupportedOptionError` / safe-no-op classification in
-  `pkg/fdbgo/fdb/OPTIONS.md` still holds against `libfdb_c` 7.3.77.
 - **FDB client option semantics:** the honored / `UnsupportedOptionError` / safe-no-op
-  classification in `pkg/fdbgo/fdb/OPTIONS.md` still holds against `libfdb_c` 7.3.77, with one change:
-  `Transaction.SetTimeout` outside [0, INT_MAX] now records a deferred 2006
-  (`invalid_option_value`) like libfdb_c, where a negative value used to disable the timeout (0 still disables it).
+  classification in `pkg/fdbgo/fdb/OPTIONS.md` still holds against `libfdb_c` 7.3.77. Changed since
+  v0.1.0: `SetReadLockAware` and `SetSizeLimit` (see Changed), and `Transaction.SetTimeout` outside
+  [0, INT_MAX] records a deferred 2006 (`invalid_option_value`) like libfdb_c, where a negative
+  value used to disable the timeout (0 still disables it).
 - **DSN booleans are strictly `true`/`false`** (any case): a bare `?flag`, `1`/`0`, `t`/`f`,
   `yes`/`no` and `on`/`off` now fail at open with 22023.
 - **Required versions:** Java `fdb-record-layer-core` **4.14.2.0**, FDB C++ client **7.3.77**, Go
-  **1.26.x** (the `MODULE.bazel` / `go.mod` pins; the CI doc-guard enforces docs match them).
+  **1.26.0** or newer (`go.mod` says `go 1.26.0`; its `toolchain go1.26.9` line pins the
+  toolchain this repository builds and tests with).
 
 ### Added
 - The SQL driver DSN sets `max_rows`, `execution_scanned_rows_limit`, `execution_scanned_bytes_limit`,
