@@ -127,6 +127,13 @@ func TestReapLeakedContainersScript(t *testing.T) {
 	runShellSuite(t, "reap_leaked_containers_test.sh")
 }
 
+// TestMergeCurrentMasterScript drives the PR re-merge onto current master: GitHub's merge
+// commit shape, a deepened fetch, and a conflict that fails the job.
+func TestMergeCurrentMasterScript(t *testing.T) {
+	t.Parallel()
+	runShellSuite(t, "merge_current_master_test.sh")
+}
+
 // TestWireOracleScopeScript drives the PR scope decision for the wire-type oracle job:
 // it may skip only when no changed file reaches the oracle's Bazel inputs.
 func TestWireOracleScopeScript(t *testing.T) {

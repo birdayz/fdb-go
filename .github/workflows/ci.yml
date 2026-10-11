@@ -31,6 +31,13 @@ jobs:
         timeout-minutes: 2
         run: infra/reap-leaked-containers.sh
 
+      - name: Test against current master
+        timeout-minutes: 5
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_REF: ${{ github.base_ref }}
+        run: infra/merge-current-master.sh
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
@@ -218,6 +225,13 @@ jobs:
         timeout-minutes: 2
         run: infra/reap-leaked-containers.sh
 
+      - name: Test against current master
+        timeout-minutes: 5
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_REF: ${{ github.base_ref }}
+        run: infra/merge-current-master.sh
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
@@ -288,6 +302,13 @@ jobs:
         timeout-minutes: 2
         run: infra/reap-leaked-containers.sh
 
+      - name: Test against current master
+        timeout-minutes: 5
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_REF: ${{ github.base_ref }}
+        run: infra/merge-current-master.sh
+
       # A PR that changes nothing the oracle is built from cannot change its result; master runs
       # it on every push. Skipping saves 9-30s warm, or a 25+ min C++ build on a cache miss.
       - name: Does this change reach the oracle?
@@ -344,6 +365,13 @@ jobs:
         timeout-minutes: 2
         run: infra/reap-leaked-containers.sh
 
+      - name: Test against current master
+        timeout-minutes: 5
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_REF: ${{ github.base_ref }}
+        run: infra/merge-current-master.sh
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
@@ -379,6 +407,13 @@ jobs:
       - name: Reap containers an earlier job left running
         timeout-minutes: 2
         run: infra/reap-leaked-containers.sh
+
+      - name: Test against current master
+        timeout-minutes: 5
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_REF: ${{ github.base_ref }}
+        run: infra/merge-current-master.sh
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -432,6 +467,13 @@ jobs:
         timeout-minutes: 2
         run: infra/reap-leaked-containers.sh
 
+      - name: Test against current master
+        timeout-minutes: 5
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_REF: ${{ github.base_ref }}
+        run: infra/merge-current-master.sh
+
       - name: Resolve Bazel Go SDK
         id: go-sdk
         run: |
@@ -470,6 +512,13 @@ jobs:
       - name: Reap containers an earlier job left running
         timeout-minutes: 2
         run: infra/reap-leaked-containers.sh
+
+      - name: Test against current master
+        timeout-minutes: 5
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_REF: ${{ github.base_ref }}
+        run: infra/merge-current-master.sh
 
       - name: Check Docker (else the race gates silently no-op)
         # Both race steps below drive real FDB testcontainers; without Docker the
