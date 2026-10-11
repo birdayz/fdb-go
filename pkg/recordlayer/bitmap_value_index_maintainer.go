@@ -685,13 +685,7 @@ func (c *bitmapKVCursor) limitContinuation() RecordCursorContinuation {
 }
 
 func (c *bitmapKVCursor) makeContinuation(key fdb.Key) ([]byte, error) {
-	var keySuffix []byte
-	if len(key) > c.prefixLength {
-		keySuffix = key[c.prefixLength:]
-	} else {
-		keySuffix = key
-	}
-	return wrapContinuation(keySuffix)
+	return wrapContinuation(keySuffix(key, c.prefixLength))
 }
 
 func (c *bitmapKVCursor) Close() error {

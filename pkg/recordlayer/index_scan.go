@@ -691,13 +691,7 @@ func (c *indexCursor) limitContinuation() RecordCursorContinuation {
 // makeContinuation aliases kv.Key without copying: RangeIterator never reuses
 // returned key bytes, so the lazily marshaled suffix stays valid.
 func (c *indexCursor) makeContinuation(key fdb.Key) *keyValueContinuation {
-	var keySuffix []byte
-	if len(key) > c.prefixLength {
-		keySuffix = key[c.prefixLength:]
-	} else {
-		keySuffix = key
-	}
-	return &keyValueContinuation{suffix: keySuffix}
+	return &keyValueContinuation{suffix: keySuffix(key, c.prefixLength)}
 }
 
 func (c *indexCursor) initIterator() error {
