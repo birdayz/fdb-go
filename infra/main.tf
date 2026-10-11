@@ -353,8 +353,8 @@ resource "hcloud_volume" "runner_data" {
 }
 
 # --- Object Storage (test reports) ---
-# No longer written: CI publishes the report as a GitHub artifact. Kept so apply does not
-# destroy the bucket and its old reports.
+# No longer written: master's report is published on fdb.dev (website.yml). Kept so apply
+# does not destroy the bucket and its old reports.
 
 resource "minio_s3_bucket" "reports" {
   bucket = "fdb-record-layer-go-reports"

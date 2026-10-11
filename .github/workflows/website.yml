@@ -27,9 +27,10 @@ permissions:
   id-token: write
   actions: read # download CI's test-report artifact
 
-# One deployment at a time; let in-flight runs finish.
+# One deployment at a time; let in-flight runs finish. Runs whose build is skipped (see
+# build's `if`) get their own group, so they cannot displace a queued real deploy.
 concurrency:
-  group: "pages"
+  group: ${{ github.event_name == 'workflow_run' && (github.event.workflow_run.event != 'push' || github.event.workflow_run.head_repository.full_name != github.repository) && format('pages-noop-{0}', github.run_id) || 'pages' }}
   cancel-in-progress: false
 
 defaults:
@@ -74,20 +75,33 @@ jobs:
           python3 website/check.py website/public
           python3 -B -m unittest discover -s website -p 'check_test.py'
       # Pages replaces the whole site on each deploy, so every build re-adds the newest
-      # report from a finished master push run; a run without one (cancelled) is skipped.
+      # report from a finished master push run (cancelled runs have none).
       - name: Add master's latest test report
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          dir="${{ runner.temp }}/report"
-          for id in $(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?branch=master&event=push&status=completed&per_page=20" --jq '.workflow_runs[].id'); do
-            if gh run download "$id" -R "$GITHUB_REPOSITORY" -n test-report -D "$dir" 2>/dev/null; then
-              install -D -m 0644 "$dir/test-report.html" website/public/reports/latest.html
-              echo "Published the test report of CI run $id"
-              exit 0
-            fi
+          out=website/public/reports/latest.html
+          ids=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?branch=master&event=push&status=completed&per_page=100" --jq '.workflow_runs[].id')
+          for id in $ids; do
+            n=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/$id/artifacts?name=test-report" --jq '[.artifacts[] | select(.expired | not)] | length')
+            [ "$n" -gt 0 ] || continue
+            gh run download "$id" -R "$GITHUB_REPOSITORY" -n test-report -D "${{ runner.temp }}/report"
+            install -D -m 0644 "${{ runner.temp }}/report/test-report.html" "$out"
+            echo "Published the test report of CI run $id"
+            exit 0
           done
-          echo "::warning::no master CI run among the last 20 has a test-report artifact; publishing without one"
+          # None in reach (a long cancelled streak, or all expired after 30 days): keep the live one.
+          if curl -fsSL --create-dirs -o "$out" https://fdb.dev/reports/latest.html; then
+            echo "::warning::no master test-report artifact in the last 100 runs; kept the live report"
+            exit 0
+          fi
+          rm -f "$out"
+          # Failing keeps the current deployment; a site-content deploy still goes out without it.
+          if [ "$GITHUB_EVENT_NAME" = workflow_run ]; then
+            echo "::error::no master test report to publish"
+            exit 1
+          fi
+          echo "::warning::no master test report to publish; deploying without one"
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:

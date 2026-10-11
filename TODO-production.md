@@ -632,7 +632,7 @@ README links it. **P1.7 is now fully closed.**
 ### [~] P1.8 — CI reproducibility / supply chain · M — implementation landed; RFC-108 still DRAFT
 *(Verified 2026-06-24.)* The work is in-tree and verifiable: every downloaded runner artifact is
 pinned **and SHA-256-verified** via `fetch_verified` (`infra/cloud-init.yaml`; `infra/main.tf`
-`locals.versions` — `runner_sha256`, `bazelisk_sha256`, `just_sha256`, `mc_sha256`,
+`locals.versions` — `runner_sha256`, `bazelisk_sha256`, `just_sha256`,
 `fdb_clients_sha256`). FDB skew fixed to `7.3.77` (matches `MODULE.bazel`); GitHub runner pinned
 (was `releases/latest`); ephemeral-runner opt-in (`runner_ephemeral`); stand-up documented
 (`infra/README.md`). A GitHub-hosted reproducibility floor (`hosted-smoke.yml` on `ubuntu-latest`
