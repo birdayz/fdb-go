@@ -57,6 +57,7 @@ project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (
   `operation_cancelled` (1101) (it was a no-op), a pipelined `Get` future becomes ready while only
   `IsReady` is polled (it stayed not-ready until `Get`), and one future may be read from several
   goroutines.
+- `KeyStoreSerializationKeyManager` reads JCEKS key stores, as Java's `KeyStore.getInstance(File, password)` detects them, besides PKCS12: AES keys sealed with PBEWithMD5AndTripleDES, Java's errors for a wrong store or key password. Ported from pyjks (MIT; see NOTICE).
 - SQL planning has no task budget by default, as in Java (was 150,000 tasks, 250,000 right-deep); the
   caller's context bounds it, and `MAX_TOTAL_TASK_COUNT`, `MAX_TASK_QUEUE_SIZE` and
   `MAX_NUM_MATCHES_PER_RULE_CALL` opt into Java's caps (54F02 when exhausted).

@@ -2,7 +2,10 @@ load("@rules_go//go:def.bzl", "go_library")
 
 go_library(
     name = "keystoretest",
-    srcs = ["keystoretest.go"],
+    srcs = [
+        "jceks.go",
+        "keystoretest.go",
+    ],
     importpath = "fdb.dev/pkg/recordlayer/keystoretest",
     visibility = ["//visibility:public"],
 )

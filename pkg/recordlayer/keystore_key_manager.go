@@ -30,14 +30,14 @@ import (
 // KeyStoreSerializationKeyManager is Java's KeyStoreSerializationKeyManager: the
 // keys are secret-key entries of a key store file, key number i the entry named
 // by the i-th alias, and the serialization key the default alias's number.
-// Go reads a PKCS12 key store (the JDK's default key store type, and what
-// keytool writes); Java's KeyStore.getInstance(File, password) also detects a
-// JCEKS file, which Go refuses (declared in DIVERGENCES.md).
+// Go reads the key store types Java's KeyStore.getInstance(File, password)
+// detects that can hold a secret key: PKCS12 (the JDK's default, and what
+// keytool writes) and JCEKS (jceks.go).
 type KeyStoreSerializationKeyManager struct {
-	// entries are the shrouded secret keys by alias, folded as Java's
-	// PKCS12KeyStore folds them; each is decrypted in GetKey, as Java's
-	// getKey decrypts, so a wrong key-entry password fails there.
-	entries       map[string][]byte
+	// entries are the key store's entries by alias, folded as Java's key
+	// stores fold them; each is decrypted in GetKey, as Java's getKey
+	// decrypts, so a wrong key-entry password fails there.
+	entries       map[string]keyStoreEntry
 	entryPassword string
 	// decrypted caches each key number's decrypted key, so a record's IV write
 	// does not re-run PBKDF2 per call. Java decrypts in every getKey; only a
@@ -121,7 +121,12 @@ func (b *KeyStoreSerializationKeyManagerBuilder) Build() (*KeyStoreSerialization
 		}
 		return nil, &RecordCoreArgumentError{Message: "Key store loading failed", Cause: err}
 	}
-	entries, err := readPKCS12SecretKeyEntries(data, storePassword)
+	var entries map[string]keyStoreEntry
+	if bytes.HasPrefix(data, jceksMagic) {
+		entries, err = readJCEKSEntries(data, storePassword)
+	} else {
+		entries, err = readPKCS12Entries(data, storePassword)
+	}
 	if err != nil {
 		return nil, &RecordCoreArgumentError{Message: "Key store loading failed", Cause: err}
 	}
@@ -171,6 +176,9 @@ type secretKey struct {
 	algorithm string
 }
 
+// keyStoreEntry decrypts one entry's secret key under the key password.
+type keyStoreEntry func(password string) (secretKey, error)
+
 // GetKey is Java's getKey. A key that does not decrypt is Java's
 // UnrecoverableKeyException, "cannot load key". An alias with no secret-key
 // entry is, in Java, a null entry dereferenced (a NullPointerException) or a
@@ -207,16 +215,11 @@ func (m *KeyStoreSerializationKeyManager) secretKey(keyNumber int32) (secretKey,
 		return k, nil
 	}
 	alias := m.keyEntryAliases[keyNumber]
-	shrouded, ok := m.entries[foldAlias(alias)]
+	entry, ok := m.entries[foldAlias(alias)]
 	if !ok {
 		return secretKey{}, &RecordSerializationError{Message: "cannot load key", Cause: fmt.Errorf("no secret key entry %q", alias)}
 	}
-	if err := checkPBEPassword(m.entryPassword); err != nil {
-		return secretKey{}, &RecordSerializationError{Message: "cannot load key", Cause: err}
-	}
-	k, err := retryWithZero(m.entryPassword, func(pw string) (secretKey, error) {
-		return decryptShroudedSecretKey(shrouded, pw)
-	})
+	k, err := entry(m.entryPassword)
 	if err != nil {
 		return secretKey{}, &RecordSerializationError{Message: "cannot load key", Cause: err}
 	}
@@ -238,7 +241,9 @@ func (m *KeyStoreSerializationKeyManager) GetRandom(int32) (io.Reader, error) { 
 // is not ASCII". Measured against the JVM for a key password and for a store
 // password (the JDK refuses to store either). The one-character password
 // "\x00" is accepted: PBEKey reads it as the empty password with no NUL
-// terminator (bmpPassword), which retryWithZero tries.
+// terminator (bmpPassword), which retryWithZero tries. A JCEKS key password
+// passes the same check; there "\x00" is one NUL byte, and the empty password
+// is not retried (measured).
 func checkPBEPassword(password string) error {
 	if password == "\x00" {
 		return nil
@@ -264,8 +269,8 @@ func retryWithZero[T any](password string, attempt func(string) (T, error)) (T, 
 	return v, err
 }
 
-// foldAlias folds an alias as Java's PKCS12KeyStore does: entries are stored
-// and looked up by alias.toLowerCase(Locale.ENGLISH). strings.ToLower is
+// foldAlias folds an alias as Java's PKCS12KeyStore and JceKeyStore do: entries
+// are stored and looked up by alias.toLowerCase(Locale.ENGLISH). strings.ToLower is
 // Unicode simple case mapping, which Java's matches outside its few
 // context-sensitive special cases (final sigma, dotted capital I).
 func foldAlias(s string) string { return strings.ToLower(s) }
@@ -382,9 +387,6 @@ type pbeParams struct {
 // PKCS12KeyStore.engineLoad. The MAC is checked with the store password, as
 // the JDK checks it ("keystore password was incorrect").
 func readPKCS12SecretKeyEntries(der []byte, storePassword string) (map[string][]byte, error) {
-	if len(der) >= 4 && bytes.Equal(der[:4], []byte{0xCE, 0xCE, 0xCE, 0xCE}) {
-		return nil, errors.New("a JCEKS key store: Go reads PKCS12 key stores only (keytool -importkeystore -deststoretype PKCS12 converts one)")
-	}
 	var pfx pfxPDU
 	if rest, err := asn1.Unmarshal(der, &pfx); err != nil {
 		return nil, fmt.Errorf("not a PKCS12 key store: %w", err)
@@ -467,6 +469,28 @@ func bagFriendlyName(attrs []pkcs12Attribute) (string, error) {
 		return string(utf16.Decode(u)), nil
 	}
 	return "", errors.New("PKCS12 secret bag without a friendlyName")
+}
+
+// readPKCS12Entries is readPKCS12SecretKeyEntries, each entry decrypted as
+// PKCS12KeyStore decrypts a key: the password checked, and an empty one
+// retried as "\x00".
+func readPKCS12Entries(der []byte, storePassword string) (map[string]keyStoreEntry, error) {
+	shrouded, err := readPKCS12SecretKeyEntries(der, storePassword)
+	if err != nil {
+		return nil, err
+	}
+	entries := make(map[string]keyStoreEntry, len(shrouded))
+	for alias, der := range shrouded {
+		entries[alias] = func(password string) (secretKey, error) {
+			if err := checkPBEPassword(password); err != nil {
+				return secretKey{}, err
+			}
+			return retryWithZero(password, func(pw string) (secretKey, error) {
+				return decryptShroudedSecretKey(der, pw)
+			})
+		}
+	}
+	return entries, nil
 }
 
 // decryptShroudedSecretKey decrypts an EncryptedPrivateKeyInfo holding a

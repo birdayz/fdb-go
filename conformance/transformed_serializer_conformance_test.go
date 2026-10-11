@@ -273,10 +273,11 @@ var _ = Describe("RFC-257 TransformedRecordSerializer records are read and writt
 	// measures the JDK's refusal. Before the round trip, Go reads every kind
 	// of key store the JDK writes (no key store file may be committed, so the
 	// JDK writes each one here): the JDK 12+ default, the empty password, a
-	// key password apart from the store's, the pre-12 protection, and a JCEKS
-	// store, which Go refuses (declared). The algorithms each file holds are
-	// checked in its bytes, so a JDK that ignored the legacy properties could
-	// not pass as legacy.
+	// key password apart from the store's, the pre-12 protection, and JCEKS
+	// stores under the same three kinds of password. The algorithms each file
+	// holds are checked in its bytes, so a JDK that ignored the legacy
+	// properties could not pass as legacy. The round trip runs through a PKCS12
+	// store and a JCEKS one.
 	It("reads and writes records encrypted through a key store the JDK writes", func() {
 		ctx := context.Background()
 		env, err := SetupTenantEnvironment(ctx, sharedContainer, "tserks_"+uuid.New().String())
@@ -321,6 +322,8 @@ var _ = Describe("RFC-257 TransformedRecordSerializer records are read and writt
 		oid3DES := []byte{0x06, 0x0a, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x0c, 0x01, 0x03}
 		oidSHA1 := []byte{0x06, 0x05, 0x2b, 0x0e, 0x03, 0x02, 0x1a}
 		oidSHA256 := []byte{0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01}
+		jceksMagic := []byte{0xce, 0xce, 0xce, 0xce}
+		jceksPBE := []byte("PBEWithMD5AndTripleDES")
 		for i, v := range []struct {
 			name, storeType, storePassword, entryPassword string
 			legacy                                        bool
@@ -331,7 +334,10 @@ var _ = Describe("RFC-257 TransformedRecordSerializer records are read and writt
 			{"the empty password", "PKCS12", "", "", false, [][]byte{oidPBES2}, nil, ""},
 			{"a key password apart from the store's", "PKCS12", "storepass", "entrypass", false, [][]byte{oidPBES2}, nil, ""},
 			{"the pre-12 protection: 3DES keys, an HmacPBESHA1 MAC", "PKCS12", "storepass", "storepass", true, [][]byte{oid3DES, oidSHA1}, [][]byte{oidPBES2, oidSHA256}, ""},
-			{"JCEKS", "JCEKS", "storepass", "storepass", false, nil, nil, "JCEKS"},
+			{"JCEKS", "JCEKS", password, password, false, [][]byte{jceksMagic, jceksPBE}, [][]byte{oidPBES2}, ""},
+			{"JCEKS, the empty password", "JCEKS", "", "", false, [][]byte{jceksMagic, jceksPBE}, nil, ""},
+			{"JCEKS, a key password apart from the store's", "JCEKS", "storepass", "entrypass", false, [][]byte{jceksMagic, jceksPBE}, nil, ""},
+			{"JCEKS, a store password beyond ASCII and the BMP", "JCEKS", "p\u00e4ssw\u00f6rd\U0001F600", "entrypass", false, [][]byte{jceksMagic, jceksPBE}, nil, ""},
 		} {
 			path := filepath.Join(dir, fmt.Sprintf("variant-%d", i))
 			Expect(writeKeyStore(path, v.storeType, v.storePassword, v.entryPassword, v.legacy)).To(Succeed(), v.name)
@@ -385,9 +391,50 @@ var _ = Describe("RFC-257 TransformedRecordSerializer records are read and writt
 			GinkgoWriter.Printf("TSERKS the JDK's \\0 store read under %q: both keys\n", pw)
 		}
 
+		// A JCEKS store under the wrong store password fails its digest, and a key
+		// under the wrong key password does not unseal: Java's "Keystore was
+		// tampered with, or password was incorrect" and "cannot load key".
+		jceksStore := filepath.Join(dir, "keys.jceks")
+		Expect(writeKeyStore(jceksStore, "JCEKS", password, password, false)).To(Succeed())
+		_, err = recordlayer.NewKeyStoreSerializationKeyManagerBuilder().SetKeyStoreFileName(jceksStore).
+			SetKeyStorePassword("wrong").SetKeyEntryAliases(aliases).Build()
+		var loadErr *recordlayer.RecordCoreArgumentError
+		Expect(errors.As(err, &loadErr)).To(BeTrue(), "%v", err)
+		Expect(loadErr.Message).To(Equal("Key store loading failed"))
+		Expect(loadErr.Cause).To(MatchError(ContainSubstring("Keystore was tampered with, or password was incorrect")))
+		wrongKey, err := recordlayer.NewKeyStoreSerializationKeyManagerBuilder().SetKeyStoreFileName(jceksStore).
+			SetKeyStorePassword(password).SetKeyEntryPassword("wrong").SetKeyEntryAliases(aliases).Build()
+		Expect(err).NotTo(HaveOccurred())
+		_, err = wrongKey.GetKey(0)
+		Expect(err).To(MatchError(ContainSubstring("cannot load key")), "a wrong key password")
+		var keyErr *recordlayer.RecordSerializationError
+		Expect(errors.As(err, &keyErr)).To(BeTrue(), "%v", err)
+		// Java's key manager fails the same two ways: its outermost exception
+		// and the one under it carry the messages Go reports.
+		javaChain := func(storePassword, entryPassword string) []string {
+			var chain []string
+			Expect(java.InvokeAs(ctx, "keyStoreErrorJava", map[string]any{
+				"keyStore": jceksStore, "storePassword": storePassword, "entryPassword": entryPassword, "aliases": aliases,
+			}, &chain)).To(Succeed())
+			GinkgoWriter.Printf("TSERKS Java's JCEKS refusal: %q\n", chain)
+			Expect(len(chain)).To(BeNumerically(">=", 2), "Java read the key")
+			return chain
+		}
+		chain := javaChain("wrong", "wrong")
+		Expect(chain[0]).To(HavePrefix("RecordCoreArgumentException: " + loadErr.Message))
+		Expect(chain[1]).To(Equal("IOException: " + loadErr.Cause.Error()))
+		chain = javaChain(password, "wrong")
+		Expect(chain[0]).To(HavePrefix("RecordSerializationException: " + keyErr.Message))
+		// The salt is random: a wrong password's last block pads correctly one
+		// time in 256, and the failure then comes from the bytes after it.
+		Expect(chain[1]).To(HavePrefix("UnrecoverableKeyException: "))
+		if strings.Contains(chain[1], "not properly padded") {
+			Expect(chain[1]).To(Equal("UnrecoverableKeyException: " + keyErr.Cause.Error()))
+		}
+
 		Expect(writeKeyStore(keyStore, "PKCS12", password, password, false)).To(Succeed())
 
-		goSerializer := func(compress bool, defaultAlias string) *recordlayer.TransformedRecordSerializer {
+		goSerializer := func(keyStore string, compress bool, defaultAlias string) *recordlayer.TransformedRecordSerializer {
 			km, err := recordlayer.NewKeyStoreSerializationKeyManagerBuilder().SetKeyStoreFileName(keyStore).
 				SetKeyStorePassword(password).SetKeyEntryAliases(aliases).SetDefaultKeyEntryAlias(defaultAlias).Build()
 			Expect(err).NotTo(HaveOccurred())
@@ -425,51 +472,54 @@ var _ = Describe("RFC-257 TransformedRecordSerializer records are read and writt
 			return raw[0]
 		}
 
-		// Java writes under key-b (key number 1), compressed then encrypted: 1<<3|5.
-		Expect(java.InvokeAs(ctx, "saveOrderKeyStoreJava", map[string]any{
-			"clusterFile": clusterFile, "subspace": BytesToIntArray(env.Keyspace.Bytes()), "order": order(300),
-			"tenantName": env.TenantName, "compress": true, "keyStore": keyStore, "password": password,
-			"aliases": aliases, "defaultAlias": "key-b",
-		}, nil)).To(Succeed())
-		Expect(rawPrefix(300)).To(Equal(byte(0x0d)), "Java's prefix: compressed then encrypted, key 1")
-		var got proto.Message
-		_, err = env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
-			// A Go manager whose default is the OTHER key still reads key 1: the prefix names it.
-			store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(env.MetaData).
-				SetSubspace(env.Keyspace).SetSerializer(goSerializer(false, "Key-A")).CreateOrOpen()
-			if err != nil {
-				return nil, err
-			}
-			rec, err := store.LoadRecord(tuple.Tuple{int64(300)})
-			if err != nil || rec == nil {
-				return nil, fmt.Errorf("load 300: %v, %v", rec, err)
-			}
-			got = rec.Record
-			return nil, nil
-		})
-		Expect(err).NotTo(HaveOccurred(), "Go decrypts what Java encrypted through the key store")
-		Expect(proto.Equal(got, order(300))).To(BeTrue(), "Go read %v", got)
+		for i, keyStore := range []string{keyStore, jceksStore} {
+			javaID, goID := int64(300+10*i), int64(301+10*i)
+			// Java writes under key-b (key number 1), compressed then encrypted: 1<<3|5.
+			Expect(java.InvokeAs(ctx, "saveOrderKeyStoreJava", map[string]any{
+				"clusterFile": clusterFile, "subspace": BytesToIntArray(env.Keyspace.Bytes()), "order": order(javaID),
+				"tenantName": env.TenantName, "compress": true, "keyStore": keyStore, "password": password,
+				"aliases": aliases, "defaultAlias": "key-b",
+			}, nil)).To(Succeed())
+			Expect(rawPrefix(javaID)).To(Equal(byte(0x0d)), "Java's prefix: compressed then encrypted, key 1")
+			var got proto.Message
+			_, err = env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				// A Go manager whose default is the OTHER key still reads key 1: the prefix names it.
+				store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(env.MetaData).
+					SetSubspace(env.Keyspace).SetSerializer(goSerializer(keyStore, false, "Key-A")).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				rec, err := store.LoadRecord(tuple.Tuple{javaID})
+				if err != nil || rec == nil {
+					return nil, fmt.Errorf("load %d: %v, %v", javaID, rec, err)
+				}
+				got = rec.Record
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred(), "%s: Go decrypts what Java encrypted through the key store", keyStore)
+			Expect(proto.Equal(got, order(javaID))).To(BeTrue(), "Go read %v", got)
 
-		// Go writes under key-b, encrypted only: 1<<3|1.
-		_, err = env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
-			store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(env.MetaData).
-				SetSubspace(env.Keyspace).SetSerializer(goSerializer(false, "key-b")).CreateOrOpen()
-			if err != nil {
+			// Go writes under key-b, encrypted only: 1<<3|1.
+			_, err = env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(env.MetaData).
+					SetSubspace(env.Keyspace).SetSerializer(goSerializer(keyStore, false, "key-b")).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				_, err = store.SaveRecord(order(goID))
 				return nil, err
-			}
-			_, err = store.SaveRecord(order(301))
-			return nil, err
-		})
-		Expect(err).NotTo(HaveOccurred())
-		Expect(rawPrefix(301)).To(Equal(byte(0x09)), "Go's prefix: encrypted, key 1")
-		var javaOrder gen.Order
-		Expect(java.InvokeAs(ctx, "loadOrderKeyStoreJava", map[string]any{
-			"clusterFile": clusterFile, "subspace": BytesToIntArray(env.Keyspace.Bytes()), "orderID": int64(301),
-			"tenantName": env.TenantName, "keyStore": keyStore, "password": password,
-			"aliases": aliases, "defaultAlias": "Key-A",
-		}, &javaOrder)).To(Succeed(), "Java decrypts what Go encrypted through the key store")
-		Expect(proto.Equal(&javaOrder, order(301))).To(BeTrue(), "Java read %v", &javaOrder)
-		GinkgoWriter.Printf("TSERKS java-written prefix %02x, go-written prefix %02x, both read across\n", rawPrefix(300), rawPrefix(301))
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(rawPrefix(goID)).To(Equal(byte(0x09)), "Go's prefix: encrypted, key 1")
+			var javaOrder gen.Order
+			Expect(java.InvokeAs(ctx, "loadOrderKeyStoreJava", map[string]any{
+				"clusterFile": clusterFile, "subspace": BytesToIntArray(env.Keyspace.Bytes()), "orderID": goID,
+				"tenantName": env.TenantName, "keyStore": keyStore, "password": password,
+				"aliases": aliases, "defaultAlias": "Key-A",
+			}, &javaOrder)).To(Succeed(), "%s: Java decrypts what Go encrypted through the key store", keyStore)
+			Expect(proto.Equal(&javaOrder, order(goID))).To(BeTrue(), "Java read %v", &javaOrder)
+			GinkgoWriter.Printf("TSERKS java-written prefix %02x, go-written prefix %02x, both read across\n", rawPrefix(javaID), rawPrefix(goID))
+		}
 
 		// A secret key of another algorithm (HmacSHA256, 32 bytes): Java's AES
 		// cipher refuses it when initialized, so neither engine encrypts with it.

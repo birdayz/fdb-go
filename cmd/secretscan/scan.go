@@ -80,7 +80,7 @@ var nameRules = []struct {
 		return false
 	}},
 	{"key or certificate store", func(_, b string) bool {
-		for _, s := range []string{".pem", ".key", ".p12", ".pfx", ".jks", ".keystore"} {
+		for _, s := range []string{".pem", ".key", ".p12", ".pfx", ".jks", ".jceks", ".keystore"} {
 			if strings.HasSuffix(b, s) {
 				return true
 			}
