@@ -864,8 +864,8 @@ func (c *Conn) SetDebug(enabled bool) {
 	c.debugWriter = os.Stderr
 }
 
-// BytesReceived returns the total bytes received on this connection.
-// Used by the connection monitor for dead-connection detection.
+// BytesReceived returns the socket bytes received since the handshake, frame
+// headers and partial frames included. The connection monitor watches it.
 func (c *Conn) BytesReceived() int64 {
 	return c.bytesReceived.Load()
 }
@@ -917,7 +917,7 @@ func (c *Conn) readLoop() {
 	var fr FrameReader
 	// C++ connectionReader reads into a packet buffer: one read usually carries
 	// whole frames, where length, checksum and payload reads cost three each.
-	in := bufio.NewReaderSize(c.conn, readBufferSize)
+	in := bufio.NewReaderSize(socketCounter{c.conn, &c.bytesReceived}, readBufferSize)
 
 	for {
 		token, body, err := fr.Read(in, c.useTLS)
@@ -929,9 +929,6 @@ func (c *Conn) readLoop() {
 			exitErr = err
 			return
 		}
-
-		// Track bytes received for connection monitor dead-connection detection.
-		c.bytesReceived.Add(int64(len(body)))
 
 		LogRecv(token, body)
 
@@ -961,6 +958,19 @@ func (c *Conn) readLoop() {
 		c.pendingMu.Unlock()
 		// Unknown tokens are silently dropped (e.g., late responses after timeout).
 	}
+}
+
+// socketCounter counts bytes as the socket delivers them, as C++ connectionReader
+// does (peer->bytesReceived += totalReadBytes), so a large frame in transit is progress.
+type socketCounter struct {
+	r io.Reader
+	n *atomic.Int64
+}
+
+func (s socketCounter) Read(p []byte) (int, error) {
+	n, err := s.r.Read(p)
+	s.n.Add(int64(n))
+	return n, err
 }
 
 // readBufferSize exceeds C++ MIN_PACKET_BUFFER_BYTES (4 KiB, flow/Knobs.cpp:226)

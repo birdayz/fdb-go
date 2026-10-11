@@ -103,3 +103,30 @@ func TestReadLoopBufferBoundaries(t *testing.T) {
 	sendReplies(t, s, tokens, bodies)
 	awaitReplies(t, chans, bodies)
 }
+
+// Liveness counts bytes as they arrive, not frames as they complete: a large
+// reply still in transit is progress to the connection monitor, as in C++.
+func TestBytesReceivedCountsPartialFrames(t *testing.T) {
+	t.Parallel()
+	s := newSimServer(t)
+	c, _ := dialCounted(t, s)
+	token, replies, _ := c.PrepareReply()
+	var wire bytes.Buffer
+	if err := WriteFrame(&wire, token, bytes.Repeat([]byte{'p'}, 4096), false); err != nil {
+		t.Fatal(err)
+	}
+	half := wire.Bytes()[:wire.Len()/2]
+	go func() { _, _ = s.srv.Write(half) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for c.BytesReceived() != int64(len(half)) {
+		if time.Now().After(deadline) {
+			t.Fatalf("LIVENESS_PER_FRAME: %d bytes counted with half a frame delivered, want %d", c.BytesReceived(), len(half))
+		}
+		time.Sleep(time.Millisecond)
+	}
+	select {
+	case r := <-replies:
+		t.Fatalf("LIVENESS_PER_FRAME: half a frame produced a reply: %+v", r)
+	default:
+	}
+}
