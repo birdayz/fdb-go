@@ -2237,7 +2237,7 @@ byte-level assertions that every narrower integer width collapses to one key,
 that a string key reaches the bytes rather than the type name, and that a bytes
 key keeps tuple type code `0x01` rather than being folded into a string.
 
-### VECTOR index metadata validation: Go validates a plain index's options but not a plain HNSW index's dimension count or any index's structure, Java has `VectorIndexValidator` (OPEN — RFC-257 WS-D)
+### VECTOR index metadata validation: Go validates at build as Java's `VectorIndexValidator`; its maintainer still reads a vector from numeric value columns (OPEN — RFC-257 WS-D)
 
 This entry replaces the current section of the same subject (cur.md:2194, "(OPEN — owner decision)"), whose "Go:" paragraph is stale.
 
@@ -2260,12 +2260,18 @@ is in range, use it" guard. So a mistyped `hnswM`, an out-of-range
 served queries with a graph whose connectivity, or notion of "nearest", was not the
 declared one. The maintainer now reads options the way Java does (see below).
 
-**What is closed:** the OPTION half, `validateVectorIndexOptionsAtBuild`
-(`vector_index_validation.go:30`). `validateIndex` calls it after
-`validateSlidingWindowIndex` for a windowed index, as Java's
-`SlidingWindowIndexValidator` ends with the delegate, and after `validateIndexType`
-for a plain VECTOR index (`index_validator.go:453-479`). A binary that does not link
-`vectorindex` still builds a plain index and refuses it at use.
+**What is closed:** the whole validator. The STRUCTURE half is
+`validateVectorStructure` (`index_validator.go:354`), Java's checks in Java's order
+with its classes and texts. The OPTION half is `validateVectorIndexOptionsAtBuild`
+(`vector_index_validation.go:29`). For a windowed index `validateIndex` runs both
+after `validateSlidingWindowIndex`, as Java's `SlidingWindowIndexValidator` ends with
+the delegate (`index_validator.go:477-488`). For a plain VECTOR index
+`validateIndexType` runs the structure (`index_validator.go:148`) and `validateIndex`
+then runs the option half (`index_validator.go:491-505`). A binary that does not link `vectorindex` checks the
+structure but not the options of a plain index, and refuses it at use. The maintainer
+refuses a root that is not a `KeyWithValueExpression` with Java's
+`RecordCoreException` text, "structure of vector index is not supported"
+(`newVectorIndexMaintainer`).
 
 `validateVectorIndexOptionsAtBuild` dispatches on the engine (`VectorEngineOf`):
 - GuardiANN goes through `parseGuardiannConfig`.
@@ -2273,7 +2279,7 @@ for a plain VECTOR index (`index_validator.go:453-479`). A binary that does not 
   `hnsw*` name and its `vector*` alias is refused with "vector index option specified
   under more than one name" (`hnswAliasConflict`, `hnsw_options.go:89`). Then the
   configuration is parsed as `HnswVectorIndexEngine.parseConfig` parses it
-  (`readHNSWOptions`, `hnsw_options.go:125`):
+  (`readHNSWOptions`, `hnsw_options.go:121`):
   - a shared option is read under its alias when its name is absent;
   - parsing follows `Integer::parseInt`, `Double::parseDouble`,
     `Boolean::parseBoolean` and `Metric::valueOf` (`javaParseInt` and
@@ -2287,10 +2293,11 @@ with the failure as its cause (`Unwrap`, a `NumberFormatError` or an
 number of dimensions". Pinned by the JVM specs in
 `conformance/key_validation_conformance_test.go`: "A windowed VECTOR index's options
 parse as Java parses them", "... is validated as Java validates it", "... configuration
-is checked as Java's Config checks it", and, for a plain index, "A plain VECTOR index's
-metric is read as Java reads it".
+is checked as Java's Config checks it", "A VECTOR index's structure is validated as Java
+validates it" (plain and windowed, the dimension count included), and "A plain VECTOR
+index's metric is read as Java reads it".
 
-The maintainer uses the same reader (`parseHNSWConfig`, `hnsw_options.go:247`). So the
+The maintainer uses the same reader (`parseHNSWConfig`, `hnsw_options.go:240`). So the
 configuration Go maintains is the one Java's engine reads, and a configuration Java
 refuses makes the maintainer fail instead of taking a default. The JVM spec "A windowed
 VECTOR index's options are read as Java reads them" compares the whole configuration.
@@ -2306,7 +2313,7 @@ operation first quantizes (`hnswGraph.raBitQuantizerAdmits`, `hnsw.go:178`). The
   is served in both engines, because it makes no graph call. Java's
   `StandardIndexMaintainer.update` removes the entry common to the old and new record,
   and so does Go's `vectorIndexMaintainer.Update` via `removeCommonEntries`
-  (`vector_index_maintainer.go:264-294`).
+  (`vector_index_maintainer.go:181-212`).
 - Two paths still delete and re-insert such a node in both engines, so both are refused
   after the centroid. This was read from both sources; no JVM row covers it.
   - A save queued for a WRITE_ONLY_WITH_QUEUE index commits (both entries are
@@ -2321,26 +2328,23 @@ encodes is refused where Java constructs it" (`conformance/vector_index_conforma
 The refusal is an `IllegalArgumentError`, Java's class. Guava's `checkArgument` gives
 no message in Java; Go's message names the range.
 
-A PLAIN index's options are read at build as a windowed index's are, so its metric is
-Java's (`Metric::valueOf`, the four constants' names only: the lower-case Go names
-`cosine`, `inner_product` and `euclidean` are refused) and its `Config` bounds are
-refused at build. A plain HNSW index still accepts one form the windowed validator
-refuses (`defaultDims`, `hnsw_options.go:122-141`): 128 dimensions when none are given.
-Java's structure half is not ported.
+A plain index's options are read at build as a windowed index's are: its metric is
+Java's (`Metric::valueOf`, the four constants' names only), its `Config` bounds are
+refused, and its dimension count is mandatory. Go's 128-dimension default is gone.
 
-**What is open:**
-- The dimension count: Go builds plain HNSW indexes without `hnswNumDimensions`,
-  which Java requires.
-- The structure half, wider still: test sites build vector indexes on roots that are
-  not `KeyWithValueExpression`, which Java refuses outright.
+A root with no value column (`KeyWithValue(Concat(quantity, vector_data), 2)`) builds in
+both engines (the structure spec's row pins the build verdict). Both refuse its
+inserts; Java's `getValue().getBytes(0)` also fails its deletes, which Go's queue
+tolerates on remove (`vector_index_queue.go:77-80`), as it does undecodable vectors.
 
-The owner ruled that data written by pre-release Go builds is not supported (RFC-257,
-"Verification and review gates" item 9). That removes the reason this stayed open: the
-port refuses what Java refuses and migrates the call sites. The work belongs to RFC-257
-WS-D, alongside the rest of the vector index's Java alignment.
-
-(The comment at `vector_index_maintainer.go:213-217` still calls the non-KeyWithValue
-root a "Java divergence". This entry documents it.)
+**What is open:** the vector's spelling at write. Java's maintainer reads the vector as
+`indexEntry.getValue().getBytes(0)` (`VectorIndexMaintainer.java:357`): the first value
+column alone, a serialized vector in bytes. Go's `tupleToVector`
+(`vector_index_maintainer.go:241`) joins every value column, and also assembles a vector
+from numeric columns, as the Go suites' `KeyWithValue(Concat(price, quantity), 0)` roots
+do; Java builds that metadata and refuses its writes, and reads only the first column of
+a root with covering value columns. Closing it means reading the first value column as
+a bytes vector at write and moving those suites to bytes vectors.
 
 ---
 

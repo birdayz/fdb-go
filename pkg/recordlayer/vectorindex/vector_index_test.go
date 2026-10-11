@@ -2160,7 +2160,7 @@ var _ = Describe("HNSW with RaBitQ", func() {
 		idx := &recordlayer.Index{
 			Name:    "test_vec",
 			Type:    recordlayer.IndexTypeVector,
-			Options: map[string]string{},
+			Options: map[string]string{recordlayer.IndexOptionVectorNumDimensions: "4"},
 		}
 		config := mustParseHNSWConfig(idx)
 		Expect(config.Quantizer).To(BeNil())
@@ -2181,6 +2181,7 @@ var _ = Describe("HNSW with RaBitQ", func() {
 				Name: "test_vec",
 				Type: recordlayer.IndexTypeVector,
 				Options: map[string]string{
+					recordlayer.IndexOptionVectorNumDimensions: "4",
 					"hnswUseRaBitQ":       "true",
 					"hnswRaBitQNumExBits": bits,
 				},
@@ -2384,7 +2385,7 @@ var _ = Describe("VectorIndex Store Integration", func() {
 
 	It("refuses an invalid HNSW config at build, as Java's VectorIndexValidator does", func() {
 		// m=20 > default mMax=16, which Java's Config constructor refuses.
-		vecIdx := recordlayer.NewVectorIndex("vec_price_qty", recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 2)
+		vecIdx := recordlayer.NewVectorIndex("vec_price_qty", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0), 2)
 		vecIdx.Options[recordlayer.IndexOptionHNSWM] = "20"
 		builder := baseMetaData()
 		builder.AddIndex("Order", vecIdx)
@@ -2398,7 +2399,7 @@ var _ = Describe("VectorIndex Store Integration", func() {
 	It("refuses a metric Java's Metric.valueOf does not name at build", func() {
 		for _, metric := range []string{"COSIGN_METRIC", "cosine", "inner_product", "euclidean"} {
 			vecIdx := recordlayer.NewVectorIndex("vec_price_qty",
-				recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 2)
+				recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0), 2)
 			vecIdx.Options[recordlayer.IndexOptionVectorMetric] = metric
 			builder := baseMetaData()
 			builder.AddIndex("Order", vecIdx)
@@ -2412,9 +2413,61 @@ var _ = Describe("VectorIndex Store Integration", func() {
 		}
 	})
 
+	// VectorIndexValidator.validateStructure (VectorIndexMaintainerFactory.java:
+	// 132-151), in its order, and the mandatory dimension count.
+	It("refuses what Java's vector validator refuses at build, with its class and text", func() {
+		vector := recordlayer.Field("vector_data")
+		kwv := func(k recordlayer.KeyExpression) *recordlayer.KeyWithValueExpression {
+			return recordlayer.KeyWithValue(recordlayer.Concat(k, vector), 1)
+		}
+		for _, c := range []struct {
+			name, text string
+			root       recordlayer.KeyExpression
+			edit       func(*recordlayer.Index)
+			keyError   bool
+		}{
+			{"grouping", "grouping not possible in index type", recordlayer.GroupBy(recordlayer.Field("price"), vector), nil, true},
+			{
+				"unique", "index type does not allow unique indexes", recordlayer.KeyWithValue(vector, 0),
+				func(i *recordlayer.Index) { i.SetUnique() }, false,
+			},
+			{"version", "version key not possible in index type", kwv(recordlayer.VersionKey()), nil, true},
+			{"not KeyWithValue", "vector index type must use top key with value expression", vector, nil, true},
+			{"fan-out", "fan outs not supported in index type", kwv(recordlayer.FanOut("tags")), nil, true},
+			{
+				"no dimensions", "need to specify the number of dimensions", recordlayer.KeyWithValue(vector, 0),
+				func(i *recordlayer.Index) { delete(i.Options, recordlayer.IndexOptionVectorNumDimensions) }, false,
+			},
+		} {
+			vecIdx := recordlayer.NewVectorIndex("vec_structure", c.root, 4)
+			if c.edit != nil {
+				c.edit(vecIdx)
+			}
+			builder := baseMetaData()
+			builder.AddIndex("Order", vecIdx)
+			_, err := builder.Build()
+			if c.keyError {
+				var kee *recordlayer.KeyExpressionError
+				Expect(errors.As(err, &kee)).To(BeTrue(), "%s: %T %v", c.name, err, err)
+				Expect(kee.Message).To(Equal(c.text), c.name)
+				continue
+			}
+			var mde *recordlayer.MetaDataError
+			Expect(errors.As(err, &mde)).To(BeTrue(), "%s: %T %v", c.name, err, err)
+			Expect(mde.Message).To(Equal(c.text), c.name)
+		}
+		// A collation is no fan-out: Java's createsDuplicates delegates to its argument.
+		collated := recordlayer.NewVectorIndex("vec_collated", kwv(recordlayer.FunctionExpr(recordlayer.CollateFuncJRE,
+			recordlayer.Nest("flower", recordlayer.Field("type")))), 4)
+		builder := baseMetaData()
+		builder.AddIndex("Order", collated)
+		_, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	It("refuses an option given under its name and its alias at build", func() {
 		vecIdx := recordlayer.NewVectorIndex("vec_price_qty",
-			recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 2)
+			recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0), 2)
 		vecIdx.Options[recordlayer.IndexOptionVectorMetric] = "COSINE_METRIC"
 		vecIdx.Options["vectorMetric"] = "COSINE_METRIC"
 		builder := baseMetaData()
@@ -2428,8 +2481,8 @@ var _ = Describe("VectorIndex Store Integration", func() {
 	It("save records with int fields, SearchVectorIndex returns nearest", func() {
 		ks := specSubspace()
 
-		// Create a VECTOR index on (price, quantity) as a 2D vector.
-		vecIdx := recordlayer.NewVectorIndex("vec_price_qty", recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 2)
+		// A VECTOR index whose value columns (price, quantity) are a 2D vector.
+		vecIdx := recordlayer.NewVectorIndex("vec_price_qty", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0), 2)
 		builder := baseMetaData()
 		builder.AddIndex("Order", vecIdx)
 		md, err := builder.Build()
@@ -2492,7 +2545,7 @@ var _ = Describe("VectorIndex Store Integration", func() {
 	It("delete record removes from vector index", func() {
 		ks := specSubspace()
 
-		vecIdx := recordlayer.NewVectorIndex("vec_price_qty", recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 2)
+		vecIdx := recordlayer.NewVectorIndex("vec_price_qty", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0), 2)
 		builder := baseMetaData()
 		builder.AddIndex("Order", vecIdx)
 		md, err := builder.Build()
@@ -2536,7 +2589,7 @@ var _ = Describe("VectorIndex Store Integration", func() {
 	It("ScanIndex rejects VECTOR index with error", func() {
 		ks := specSubspace()
 
-		vecIdx := recordlayer.NewVectorIndex("vec_price_qty", recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 2)
+		vecIdx := recordlayer.NewVectorIndex("vec_price_qty", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0), 2)
 		builder := baseMetaData()
 		builder.AddIndex("Order", vecIdx)
 		md, err := builder.Build()
@@ -2561,7 +2614,7 @@ var _ = Describe("VectorIndex Store Integration", func() {
 	It("ScanVectorIndex returns kNN results as cursor", func() {
 		ks := specSubspace()
 
-		vecIdx := recordlayer.NewVectorIndex("vec_price_qty", recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 2)
+		vecIdx := recordlayer.NewVectorIndex("vec_price_qty", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0), 2)
 		builder := baseMetaData()
 		builder.AddIndex("Order", vecIdx)
 		md, err := builder.Build()
@@ -2627,7 +2680,7 @@ var _ = Describe("VectorIndex Store Integration", func() {
 	It("ScanIndexByType BY_DISTANCE returns kNN results", func() {
 		ks := specSubspace()
 
-		vecIdx := recordlayer.NewVectorIndex("vec_price_qty", recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 2)
+		vecIdx := recordlayer.NewVectorIndex("vec_price_qty", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0), 2)
 		builder := baseMetaData()
 		builder.AddIndex("Order", vecIdx)
 		md, err := builder.Build()
@@ -2687,7 +2740,7 @@ var _ = Describe("VectorIndex Store Integration", func() {
 	It("ScanVectorIndex on empty index returns no results", func() {
 		ks := specSubspace()
 
-		vecIdx := recordlayer.NewVectorIndex("vec_price_qty", recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 2)
+		vecIdx := recordlayer.NewVectorIndex("vec_price_qty", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0), 2)
 		builder := baseMetaData()
 		builder.AddIndex("Order", vecIdx)
 		md, err := builder.Build()
@@ -2712,7 +2765,7 @@ var _ = Describe("VectorIndex Store Integration", func() {
 	It("ScanVectorIndex returns all results when k > count", func() {
 		ks := specSubspace()
 
-		vecIdx := recordlayer.NewVectorIndex("vec_price_qty", recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 2)
+		vecIdx := recordlayer.NewVectorIndex("vec_price_qty", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0), 2)
 		builder := baseMetaData()
 		builder.AddIndex("Order", vecIdx)
 		md, err := builder.Build()
@@ -2750,7 +2803,7 @@ var _ = Describe("VectorIndex Store Integration", func() {
 	It("ScanVectorIndex results are sorted by distance ascending", func() {
 		ks := specSubspace()
 
-		vecIdx := recordlayer.NewVectorIndex("vec_price_qty", recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 2)
+		vecIdx := recordlayer.NewVectorIndex("vec_price_qty", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0), 2)
 		builder := baseMetaData()
 		builder.AddIndex("Order", vecIdx)
 		md, err := builder.Build()
@@ -2915,7 +2968,7 @@ var _ = Describe("VectorIndex Store Integration", func() {
 	It("old vector position not returned after update", func() {
 		ks := specSubspace()
 
-		vecIdx := recordlayer.NewVectorIndex("vec_update_pos", recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 2)
+		vecIdx := recordlayer.NewVectorIndex("vec_update_pos", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0), 2)
 		builder := baseMetaData()
 		builder.AddIndex("Order", vecIdx)
 		md, err := builder.Build()
@@ -3150,7 +3203,7 @@ var _ = Describe("VectorIndex Store Integration", func() {
 	It("RebuildIndex rebuilds VECTOR index", func() {
 		ks := specSubspace()
 
-		vecIdx := recordlayer.NewVectorIndex("vec_rebuild", recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 2)
+		vecIdx := recordlayer.NewVectorIndex("vec_rebuild", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0), 2)
 		builder := baseMetaData()
 		builder.AddIndex("Order", vecIdx)
 		md, err := builder.Build()
@@ -3214,7 +3267,7 @@ var _ = Describe("VectorIndex Store Integration", func() {
 		ks := specSubspace()
 
 		// 2D HNSW index on (price, quantity).
-		vecIdx := recordlayer.NewVectorIndex("vec_500", recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 2)
+		vecIdx := recordlayer.NewVectorIndex("vec_500", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0), 2)
 		builder := baseMetaData()
 		builder.AddIndex("Order", vecIdx)
 		md, err := builder.Build()
@@ -3816,8 +3869,8 @@ var _ = Describe("VectorIndex Prefix Partitioning", func() {
 	It("non-KWV index (no prefix) still works via backward-compatible APIs", func() {
 		ks := specSubspace()
 
-		// Non-grouped vector index: Concat(Field("price"), Field("quantity")) as 2D vector.
-		vecIdx := recordlayer.NewVectorIndex("vec_noprefix", recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 2)
+		// Non-grouped vector index: no key columns, value columns (price, quantity) as a 2D vector.
+		vecIdx := recordlayer.NewVectorIndex("vec_noprefix", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0), 2)
 		builder := baseMetaData()
 		builder.AddIndex("Order", vecIdx)
 		md, err := builder.Build()
@@ -4473,6 +4526,7 @@ var _ = Describe("HNSW Extended Neighbor Selection", func() {
 		idx3 := &recordlayer.Index{
 			Name: "test_vec3",
 			Options: map[string]string{
+				recordlayer.IndexOptionVectorNumDimensions:         "4",
 				recordlayer.IndexOptionVectorExtendCandidates:      "false",
 				recordlayer.IndexOptionVectorKeepPrunedConnections: "false",
 			},
@@ -4493,6 +4547,7 @@ var _ = Describe("HNSW Extended Neighbor Selection", func() {
 		idx := &recordlayer.Index{
 			Name: "test_vec_fetch_limits",
 			Options: map[string]string{
+				recordlayer.IndexOptionVectorNumDimensions:                     "4",
 				recordlayer.IndexOptionHNSWMaxNumConcurrentNodeFetches:         "32",
 				recordlayer.IndexOptionHNSWMaxNumConcurrentNeighborhoodFetches: "15",
 				recordlayer.IndexOptionHNSWMaxNumConcurrentDeleteFromLayer:     "5",
@@ -4507,7 +4562,7 @@ var _ = Describe("HNSW Extended Neighbor Selection", func() {
 	It("uses default fetch limits when options are absent", func() {
 		idx := &recordlayer.Index{
 			Name:    "test_vec_default_limits",
-			Options: map[string]string{},
+			Options: map[string]string{recordlayer.IndexOptionVectorNumDimensions: "4"},
 		}
 		config := mustParseHNSWConfig(idx)
 		Expect(config.MaxNumConcurrentNodeFetches).To(Equal(16))
@@ -4526,7 +4581,7 @@ var _ = Describe("HNSW Extended Neighbor Selection", func() {
 			{recordlayer.IndexOptionHNSWMaxNumConcurrentNeighborhoodFetches, "21", "maxNumConcurrentNeighborhoodFetches must be (0, 20]"},
 			{recordlayer.IndexOptionHNSWMaxNumConcurrentDeleteFromLayer, "-1", "maxNumConcurrentDeleteFromLayer must be (0, 10]"},
 		} {
-			_, err := parseHNSWConfig(&recordlayer.Index{Name: "test_vec_bad_limits", Options: map[string]string{c.option: c.value}})
+			_, err := parseHNSWConfig(&recordlayer.Index{Name: "test_vec_bad_limits", Options: map[string]string{recordlayer.IndexOptionVectorNumDimensions: "4", c.option: c.value}})
 			var iae *recordlayer.IllegalArgumentError
 			Expect(errors.As(err, &iae)).To(BeTrue(), "%s=%s: %v", c.option, c.value, err)
 			Expect(iae.Message).To(Equal(c.want))
@@ -4537,6 +4592,7 @@ var _ = Describe("HNSW Extended Neighbor Selection", func() {
 		idx := &recordlayer.Index{
 			Name: "test_vec_nonnumeric_limits",
 			Options: map[string]string{
+				recordlayer.IndexOptionVectorNumDimensions:             "4",
 				recordlayer.IndexOptionHNSWMaxNumConcurrentNodeFetches: "abc",
 			},
 		}
@@ -4550,6 +4606,7 @@ var _ = Describe("HNSW Extended Neighbor Selection", func() {
 		idx := &recordlayer.Index{
 			Name: "test_vec_boundary_limits",
 			Options: map[string]string{
+				recordlayer.IndexOptionVectorNumDimensions:                     "4",
 				recordlayer.IndexOptionHNSWMaxNumConcurrentNodeFetches:         "64", // max valid
 				recordlayer.IndexOptionHNSWMaxNumConcurrentNeighborhoodFetches: "1",  // min valid
 				recordlayer.IndexOptionHNSWMaxNumConcurrentDeleteFromLayer:     "10", // max valid

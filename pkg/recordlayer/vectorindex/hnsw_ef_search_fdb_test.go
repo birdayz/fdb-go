@@ -21,7 +21,7 @@ import (
 var _ = Describe("HNSW efSearch scan option", func() {
 	It("searches with the option as given", func() {
 		ctx := context.Background()
-		index := recordlayer.NewVectorIndex("hnsw_ef", recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 2)
+		index := recordlayer.NewVectorIndex("hnsw_ef", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0), 2)
 		builder := baseBuilder()
 		builder.AddIndex("Order", index)
 		md, err := builder.Build()

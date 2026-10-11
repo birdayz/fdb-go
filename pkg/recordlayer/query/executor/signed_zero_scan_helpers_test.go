@@ -122,7 +122,7 @@ func TestValidateVectorPartitionPlanUsesMetadataTopology(t *testing.T) {
 		t.Fatalf("valid partitioned plan: %v", err)
 	}
 
-	nonPartitionedIndex := recordlayer.NewVectorIndex("vec", recordlayer.Field("vector"), 2)
+	nonPartitionedIndex := recordlayer.NewVectorIndex("vec", recordlayer.KeyWithValue(recordlayer.Field("vector"), 0), 2)
 	if err := validateVectorPartitionPlan(
 		nonPartitionedIndex,
 		vectorPartitionValidationPlan(nil, nil, true),

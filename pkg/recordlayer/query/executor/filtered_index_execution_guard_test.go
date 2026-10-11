@@ -36,7 +36,7 @@ func TestExecutePlanRejectsFilteredIndexesAtEveryIndexLeaf(t *testing.T) {
 		"filtered_value", recordlayer.Field("price")).SetPredicate(filtered))
 	builder.AddIndex("Order", recordlayer.NewVectorIndex(
 		"filtered_vector",
-		recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")),
+		recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0),
 		2,
 	).SetPredicate(filtered))
 	builder.AddIndex("Order", recordlayer.NewCountIndex(
@@ -133,7 +133,7 @@ func TestExecutePlanTransactionalIndexState(t *testing.T) {
 				ctx := context.Background()
 				seed := setupStore(t,
 					recordlayer.NewCountIndex("state_count", recordlayer.GroupAll(recordlayer.Field("price"))),
-					recordlayer.NewVectorIndex("state_vector", recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 2))
+					recordlayer.NewVectorIndex("state_vector", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0), 2))
 				insertOrders(t, seed, &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(20)})
 				orderType := PositionalTypeForRecordLayout((&gen.Order{}).ProtoReflect().Descriptor(), false)
 				name := "order_price_idx"

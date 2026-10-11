@@ -1897,6 +1897,43 @@ var _ = Describe("A windowed VECTOR index's options parse as Java parses them", 
 	}
 })
 
+// VectorIndexValidator's structure checks (VectorIndexMaintainerFactory.java:
+// 132-151) and its mandatory dimension count, for a plain index and a windowed
+// one: each row edits the windowed shape and requires the same verdict.
+var _ = Describe("A VECTOR index's structure is validated as Java validates it", func() {
+	root := func(k recordlayer.KeyExpression) func(*gen.Index) {
+		return func(ix *gen.Index) { ix.RootExpression = k.ToKeyExpression() }
+	}
+	for _, c := range []struct {
+		name string
+		edit func(*gen.Index)
+	}{
+		{"no dimension count", func(ix *gen.Index) { dropOption(ix, recordlayer.IndexOptionVectorNumDimensions) }},
+		{"a grouping root", root(recordlayer.GroupBy(recordlayer.Field("price"), recordlayer.Field("vector_data")))},
+		{"a unique index", setOptions(map[string]string{recordlayer.IndexOptionUnique: "true"})},
+		{"a version column", root(recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.VersionKey(), recordlayer.Field("vector_data")), 1))},
+		{"a root that is not KeyWithValue", root(recordlayer.Field("vector_data"))},
+		{"a fan-out", root(recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.FanOut("tags"), recordlayer.Field("vector_data")), 1))},
+		{"a well-formed partitioned root", root(recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("vector_data")), 1))},
+		// A collation delegates createsDuplicates to its argument: no fan-out.
+		{"a collated partition column", root(recordlayer.KeyWithValue(recordlayer.Concat(
+			recordlayer.FunctionExpr(recordlayer.CollateFuncJRE, recordlayer.Nest("flower", recordlayer.Field("type"))),
+			recordlayer.Field("vector_data")), 1))},
+		{"a root with no value column", root(recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("vector_data")), 2))},
+	} {
+		for _, windowed := range []bool{false, true} {
+			It(fmt.Sprintf("%s (windowed %t)", c.name, windowed), func() {
+				expectWindowedVerdictAsJava(c.name, windowedEdited(func(ix *gen.Index) {
+					if !windowed {
+						ix.Predicate = nil
+					}
+					c.edit(ix)
+				}))
+			})
+		}
+	}
+})
+
 // A PLAIN VECTOR index runs the same validator (VectorIndexMaintainerFactory.
 // java:102-111), so its metric is Metric.valueOf's too: the windowed shape
 // without its predicate, each row requiring the same verdict from both loaders.
@@ -2163,6 +2200,10 @@ func expectWindowedVerdictAsJava(label string, p *gen.MetaData) {
 		}
 	case "com.apple.foundationdb.record.RecordCoreException":
 		var e *recordlayer.RecordCoreError
+		Expect(errors.As(goErr, &e)).To(BeTrue(), "Go: %T %v", goErr, goErr)
+		goMessage = e.Message
+	case "com.apple.foundationdb.record.metadata.expressions.KeyExpression$InvalidExpressionException":
+		var e *recordlayer.KeyExpressionError
 		Expect(errors.As(goErr, &e)).To(BeTrue(), "Go: %T %v", goErr, goErr)
 		goMessage = e.Message
 	default:

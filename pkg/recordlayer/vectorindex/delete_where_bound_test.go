@@ -1,6 +1,7 @@
 package vectorindex
 
 import (
+	"errors"
 	"testing"
 
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -9,7 +10,7 @@ import (
 )
 
 // TestVectorCanDeleteWhereBound pins the vector maintainers' DeleteWhere
-// bounds, each narrower than the generic root-expression bound a
+// bounds; SPFresh's is narrower than the generic root-expression bound a
 // StandardIndexMaintainer would answer with (recordlayer's
 // TestCanDeleteWhereBoundPerMaintainer covers the core maintainers).
 func TestVectorCanDeleteWhereBound(t *testing.T) {
@@ -38,6 +39,12 @@ func TestVectorCanDeleteWhereBound(t *testing.T) {
 		}
 		return m
 	}
+	// Java's maintainer refuses any root but a KeyWithValue on every use.
+	var rce *recordlayer.RecordCoreError
+	if _, err := newVectorIndexMaintainer(vecPlain, sub, sub, sub, nil, nil); !errors.As(err, &rce) ||
+		rce.Message != "structure of vector index is not supported" {
+		t.Fatalf("a non-KeyWithValue root: %v", err)
+	}
 	spfresh, err := newSPFreshIndexMaintainer(spfIdx, sub, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -50,19 +57,6 @@ func TestVectorCanDeleteWhereBound(t *testing.T) {
 		// row detects the maintainer's override being lost.
 		index *recordlayer.Index
 	}{
-		{
-			// A NON-KeyWithValue root deliberately: splitPrefixAndVector then
-			// reads the whole key as the vector and indexes every record under
-			// the EMPTY prefix, so no non-empty prefix names a graph. The
-			// inherited bound would be the root's width (2) — so this row is
-			// the one that fails if vector's override is ever lost, which a
-			// KeyWithValue row cannot detect (there the two bounds coincide,
-			// because KeyWithValueExpression.ColumnSize IS the split point).
-			name:       "VECTOR on a non-KeyWithValue root has no clearable prefix at all",
-			maintainer: vectorOf(vecPlain),
-			bound:      0,
-			index:      vecPlain,
-		},
 		{
 			name:       "VECTOR stops at the KeyWithValue split point",
 			maintainer: vectorOf(vecSplit),

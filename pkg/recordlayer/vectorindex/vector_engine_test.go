@@ -15,7 +15,10 @@ import (
 func TestVectorEngineIdentity(t *testing.T) {
 	t.Parallel()
 	idx := func(engine string) *recordlayer.Index {
-		i := &recordlayer.Index{Name: "vi", Type: recordlayer.IndexTypeVector, Options: map[string]string{recordlayer.IndexOptionVectorNumDimensions: "3"}}
+		i := &recordlayer.Index{
+			Name: "vi", Type: recordlayer.IndexTypeVector, RootExpression: recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0),
+			Options: map[string]string{recordlayer.IndexOptionVectorNumDimensions: "3"},
+		}
 		if engine != "" {
 			i.Options[recordlayer.IndexOptionVectorEngine] = engine
 		}

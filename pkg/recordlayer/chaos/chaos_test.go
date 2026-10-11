@@ -656,7 +656,7 @@ func buildVectorMetadata() *recordlayer.RecordMetaData {
 	builder.SetRecordCountKey(recordlayer.EmptyKey())
 	vecIdx := recordlayer.NewVectorIndex(
 		"order_vec_idx",
-		recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")),
+		recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0),
 		2,
 	)
 	// This scenario asserts strict reachability (every inserted vector must be found by
@@ -1324,7 +1324,7 @@ func TestVectorHighDimRaBitQCommitUnknown(t *testing.T) {
 
 	vecIdx := recordlayer.NewVectorIndex(
 		"order_vec_rabitq_chaos",
-		recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")),
+		recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0),
 		2,
 	)
 	vecIdx.Options["hnswUseRaBitQ"] = "true"

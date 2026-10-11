@@ -118,28 +118,22 @@ type hnswOptions struct {
 // with Java's text; a missing dimension count is Java's MetaDataError "need
 // to specify the number of dimensions" (VectorIndexOptionsHelper.
 // getNumDimensions).
-//
-// defaultDims admits Go's one remaining convenience for a plain HNSW index, 128
-// dimensions when none are given (DIVERGENCES.md, the VECTOR entry). A windowed
-// index is read with it false.
-func readHNSWOptions(index *recordlayer.Index, defaultDims bool) (hnswOptions, error) {
+func readHNSWOptions(index *recordlayer.Index) (hnswOptions, error) {
 	o := hnswOptions{metric: "EUCLIDEAN_METRIC", raBitQNumExBits: 4}
 	name, err := hnswMetric(index)
 	if err != nil {
 		return o, err
 	}
 	o.metric = name
-	dims := 128
-	if v, ok := hnswOptionValue(index, recordlayer.IndexOptionVectorNumDimensions); ok {
-		n, err := recordlayer.JavaParseInt(v)
-		if err != nil {
-			return o, err
-		}
-		dims = int(n)
-	} else if !defaultDims {
+	v, ok := hnswOptionValue(index, recordlayer.IndexOptionVectorNumDimensions)
+	if !ok {
 		return o, &recordlayer.MetaDataError{Message: "need to specify the number of dimensions"}
 	}
-	c := DefaultHNSWConfig(dims)
+	dims, err := recordlayer.JavaParseInt(v)
+	if err != nil {
+		return o, err
+	}
+	c := DefaultHNSWConfig(int(dims))
 	c.Metric = vectorMetricNamed(o.metric)
 	intOpt := func(name string, set *int) {
 		if v, ok := hnswOptionValue(index, name); ok && err == nil {
@@ -238,14 +232,14 @@ func hnswConfigChecks(c HNSWConfig, useRaBitQ bool, raBitQNumExBits int) error {
 }
 
 // parseHNSWConfig is the configuration the VECTOR maintainer builds its graph
-// with: readHNSWOptions with Go's dimension default, and the RaBitQ quantizer
-// when it is enabled. Java's Config admits 1 to 15 extra bits and its RaBitQuantizer 1 to 8
+// with: readHNSWOptions, and the RaBitQuantizer when it is enabled. Java's
+// Config admits 1 to 15 extra bits and its RaBitQuantizer 1 to 8
 // (RaBitQuantizer.java:76, TIGHT_START's length); Java constructs the quantizer
 // only when an operation first quantizes, so a count of 9 to 15 is refused
 // there (hnswGraph.raBitQuantizerAdmits), never here: the index is built, and
 // serves every operation that does not quantize, as in Java.
 func parseHNSWConfig(index *recordlayer.Index) (HNSWConfig, error) {
-	o, err := readHNSWOptions(index, true)
+	o, err := readHNSWOptions(index)
 	if err != nil {
 		return HNSWConfig{}, err
 	}

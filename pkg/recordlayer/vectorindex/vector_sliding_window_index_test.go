@@ -25,7 +25,7 @@ import (
 // that reused one field for two roles could not tell window movement apart from
 // vector movement.
 func newWindowedVectorIndex(name string, size int32, dir gen.RowNumberWindowPredicate_Direction, partitionFields ...string) *recordlayer.Index {
-	idx := recordlayer.NewVectorIndex(name, recordlayer.Concat(recordlayer.Field("coord_x"), recordlayer.Field("coord_y")), 2)
+	idx := recordlayer.NewVectorIndex(name, recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("coord_x"), recordlayer.Field("coord_y")), 0), 2)
 	rn := &gen.RowNumberWindowPredicate{
 		OrderingField: []string{"price"},
 		Size:          proto.Int32(size),
@@ -1746,7 +1746,7 @@ var _ = Describe("SlidingWindowIndex validation", func() {
 		// admits exactly one. `price` is the only field all three demo types
 		// share, so the index expression itself validates everywhere and the
 		// multiple-types arm is what fails — not a field-resolution error.
-		idx := recordlayer.NewVectorIndex("sw_universal", recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("price")), 2)
+		idx := recordlayer.NewVectorIndex("sw_universal", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("price")), 0), 2)
 		Expect(idx.SetPredicateProto(&gen.Predicate{
 			RowNumberWindowPredicate: &gen.RowNumberWindowPredicate{
 				OrderingField: []string{"price"},
@@ -1769,7 +1769,7 @@ var _ = Describe("SlidingWindowIndex validation", func() {
 		// an index the factory DECORATED, and the factory's search recurses
 		// through AND only. A window reachable solely under an OR is therefore
 		// never seen — see the spec below, which pins that Java accepts it too.
-		idx := recordlayer.NewVectorIndex("sw_or", recordlayer.Concat(recordlayer.Field("coord_x"), recordlayer.Field("coord_y")), 2)
+		idx := recordlayer.NewVectorIndex("sw_or", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("coord_x"), recordlayer.Field("coord_y")), 0), 2)
 		rn := func() *gen.Predicate {
 			return &gen.Predicate{RowNumberWindowPredicate: &gen.RowNumberWindowPredicate{
 				OrderingField: []string{"price"},
@@ -1854,7 +1854,7 @@ var _ = Describe("SlidingWindowIndex validation", func() {
 		// AND(rowWindow, value) is a legal shape and the maintainer must honour
 		// BOTH: the per-record arm decides who is a candidate at all, the window
 		// decides which candidates are kept.
-		idx := recordlayer.NewVectorIndex("sw_and_value", recordlayer.Concat(recordlayer.Field("coord_x"), recordlayer.Field("coord_y")), 2)
+		idx := recordlayer.NewVectorIndex("sw_and_value", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("coord_x"), recordlayer.Field("coord_y")), 0), 2)
 		rn := &gen.Predicate{RowNumberWindowPredicate: &gen.RowNumberWindowPredicate{
 			OrderingField: []string{"price"},
 			Size:          proto.Int32(2),

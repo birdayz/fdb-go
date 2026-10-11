@@ -145,6 +145,8 @@ func validateIndexType(idx *Index, storeRecordVersions bool) error {
 			func() error { return validateStoresRecordVersions(storeRecordVersions) },
 			func() error { return validateVersionKey(root) },
 			func() error { return validateNotUnique(idx) })
+	case IndexTypeVector:
+		return validateVectorStructure(idx)
 	case IndexTypeMultidimensional:
 		// MultidimensionalIndexMaintainerFactory.java:67-72.
 		return firstError(
@@ -347,6 +349,28 @@ func validateNotVersion(root KeyExpression) error {
 	return nil
 }
 
+// validateVectorStructure is VectorIndexValidator.validateStructure
+// (VectorIndexMaintainerFactory.java:132-151), in its order.
+func validateVectorStructure(idx *Index) error {
+	root := idx.RootExpression
+	return firstError(
+		func() error { return validateNotGrouping(root) },
+		func() error { return validateNotUnique(idx) },
+		func() error { return validateNotVersion(root) },
+		func() error {
+			if _, ok := root.(*KeyWithValueExpression); !ok {
+				return &KeyExpressionError{Message: "vector index type must use top key with value expression"}
+			}
+			return nil
+		},
+		func() error {
+			if createsDuplicates(root) {
+				return &KeyExpressionError{Message: "fan outs not supported in index type"}
+			}
+			return nil
+		})
+}
+
 func validateNoValue(root KeyExpression) error {
 	if _, ok := root.(*KeyWithValueExpression); ok {
 		return &KeyExpressionError{Message: "no value expression allowed in index type"}
@@ -451,8 +475,10 @@ func (b *RecordMetaDataBuilder) validateIndex(idx *Index, recordTypeNames []stri
 		return &MetaDataError{Message: fmt.Sprintf("Index %s has added version %d which is greater than the last modified version %d", idx.Name, idx.AddedVersion, idx.LastModifiedVersion)}
 	}
 	if sliding {
-		// The VECTOR validator's option half; its structural half is not
-		// ported (DIVERGENCES.md, "VECTOR index metadata validation").
+		// The delegate VECTOR validator: its structure, then its options.
+		if err := validateVectorStructure(idx); err != nil {
+			return err
+		}
 		factory, err := lookupIndexMaintainerFactory(idx)
 		if err != nil {
 			return err

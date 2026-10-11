@@ -21,7 +21,7 @@ import (
 var _ = Describe("HNSW operation-local node cache", func() {
 	It("does not let a snapshot search's nodes serve a later insert", func() {
 		ctx := context.Background()
-		index := recordlayer.NewVectorIndex("hnsw_oplocal", recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 2)
+		index := recordlayer.NewVectorIndex("hnsw_oplocal", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0), 2)
 		builder := baseBuilder()
 		builder.AddIndex("Order", index)
 		md, err := builder.Build()

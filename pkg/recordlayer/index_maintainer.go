@@ -161,7 +161,7 @@ func checkDeleteWhereBound(index *Index, prefix tuple.Tuple) error {
 // RANK's ranked sets, MULTIDIMENSIONAL's R-trees and TIME_WINDOW_LEADERBOARD's
 // directory get a bound without each restating it, exactly as they inherit
 // StandardIndexMaintainer.canDeleteWhere in Java. The types whose secondary
-// layout is narrower still (permuted min/max, vector, sliding window) override.
+// layout is narrower still (permuted min/max, sliding window) override.
 func (m *StandardIndexMaintainer) CanDeleteWhere(prefix tuple.Tuple) error {
 	return checkDeleteWhereBound(m.index, prefix)
 }

@@ -31,7 +31,7 @@ func setupVectorStore(t *testing.T) *recordlayer.FDBRecordStore {
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
 	builder.AddIndex("Order", recordlayer.NewVectorIndex(
-		"vec_pq", recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 2))
+		"vec_pq", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0), 2))
 	md, err := builder.Build()
 	if err != nil {
 		t.Fatalf("build metadata: %v", err)

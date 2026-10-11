@@ -123,7 +123,7 @@ func TestVectorQueryLeavesConsultIsolationLevel(t *testing.T) {
 		// (price, quantity) as a 2-D vector: the same records carry both the
 		// value index and the kNN access path, so one seeded store serves
 		// every leaf and the concurrent write below moves a row in BOTH.
-		vecIndex := recordlayer.NewVectorIndex("Order$vec", recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 2)
+		vecIndex := recordlayer.NewVectorIndex("Order$vec", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0), 2)
 		builder.AddIndex("Order", vecIndex)
 		// The SPFresh index over the same 2-D coordinates. A separate index
 		// type with a separate implementation of the BY_DISTANCE contract, so
