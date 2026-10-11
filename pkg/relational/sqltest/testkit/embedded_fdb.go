@@ -501,7 +501,7 @@ var legIdentityDeclaredEmpty = map[values.LegIdentitySite]string{
 // eighty thousand firings — fold-only, unstated, retired-verdict divergence,
 // text-vs-identity divergence and mixed instrument — and a filtered invocation
 // checks them exactly as the full suite does. Keep this list in step with
-// values.AssertLegIdentityCensus; the retired-verdict zero is the one that
+// querycensus.AssertLegIdentityCensus; the retired-verdict zero is the one that
 // measures the conversion rather than the representation.
 func assertLegIdentityCensus(w io.Writer) bool {
 	floors := legIdentityFloors
