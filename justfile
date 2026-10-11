@@ -152,7 +152,7 @@ stress:
 # stdin EOF (parent-death watchdog), so run it with a live stdin (a terminal
 # is fine); `< /dev/null` or a non-TTY wrapper with closed stdin exits at once.
 run-conformance-server:
-    bazelisk run //conformance/java:conformance_server
+    bazelisk run //conformance:conformance_server
 
 # Run SQL conformance scenarios against the Go fdbsql driver.
 # Each .yaml file under pkg/relational/conformance/yamsql/testdata/ pins a

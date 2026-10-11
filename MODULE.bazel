@@ -182,3 +182,12 @@ filegroup(
     strip_prefix = "foundationdb-7.3.77",
     urls = ["https://files.pythonhosted.org/packages/cd/b7/9b3de7fcc3280cb7661499bd8889882de7bafbda6153b4bc408ac2faadbe/foundationdb-7.3.77.tar.gz"],
 )
+
+# libfdb_c 7.3.77 for the Java conformance server; fdb-java 7.1.26 (unpinned, no maven lock) runs
+# on it because the C API is backward compatible. The host still provides liblzma.so.5.
+http_file(
+    name = "libfdb_c_linux_x86_64",
+    downloaded_file_path = "libfdb_c.so",
+    sha256 = "617572467897d0360f76ffc33f24b58090ee691e3273750d2ff334cc71aae3fa",
+    urls = ["https://github.com/apple/foundationdb/releases/download/7.3.77/libfdb_c.x86_64.so"],
+)

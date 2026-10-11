@@ -907,6 +907,9 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   compare only roughly. No error is right: Java's budgets default to unbounded
   and its SQL layer sets none; Go matches, with opt-in MAX_TOTAL_TASK_COUNT /
   MAX_TASK_QUEUE_SIZE / MAX_NUM_MATCHES_PER_RULE_CALL caps raising 54F02.
+  On the star chain the target takes 541965 tasks / 12.5 min (17 under load);
+  `//conformance:conformance_planning_cost_test` ("Six-table chain planning
+  cost", manual) pins the target's counts for both chains.
 - [x] Re-measure planner/executor stress against the actual merge-base with
   explicit SHAs and equal row populations; resolve regressions, not just timeouts.
   2026-10-06, `c116de63b` against the recorded merge-base `e48f5b49` (2 samples
