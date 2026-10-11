@@ -18,13 +18,14 @@ import java.util.zip.Deflater;
 
 /**
  * Orders saved and loaded through a TransformedRecordSerializerJCE: compressed, encrypted with an
- * AES key given in hex (CipherPool's default cipher), both, or neither; and through a
+ * AES key given in hex (under CipherPool's default cipher or a named one), both, or neither; and through a
  * KeyStoreSerializationKeyManager over a PKCS12 key store the JDK writes. The Go record layer's
  * reader and writer, and its key store reader, are pinned against these (RFC-257
  * serializer-design.md).
  */
 class TransformedSerializerSteps extends ConformanceBase {
-    private static TransformedRecordSerializerJCE<Message> serializer(boolean compress, boolean encrypt, String keyHex) {
+    private static TransformedRecordSerializerJCE<Message> serializer(boolean compress, boolean encrypt, String keyHex,
+                                                                      String cipherName) {
         TransformedRecordSerializerJCE.Builder<Message> b = TransformedRecordSerializerJCE.newDefaultBuilder()
             .setCompressWhenSerializing(compress)
             .setCompressionLevel(Deflater.BEST_COMPRESSION)
@@ -32,6 +33,9 @@ class TransformedSerializerSteps extends ConformanceBase {
             .setWriteValidationRatio(1.0);
         if (keyHex != null && !keyHex.isEmpty()) {
             b.setEncryptionKey(new SecretKeySpec(HexFormat.of().parseHex(keyHex), "AES"));
+        }
+        if (cipherName != null && !cipherName.isEmpty()) {
+            b.setCipherName(cipherName);
         }
         return b.build();
     }
@@ -134,13 +138,13 @@ class TransformedSerializerSteps extends ConformanceBase {
 
     @ConformanceStep("saveOrderTransformedJava")
     public void saveOrderTransformedJava(String clusterFile, byte[] subspace, Order order, String tenantName,
-                                         boolean compress, boolean encrypt, String keyHex) {
+                                         boolean compress, boolean encrypt, String keyHex, String cipherName) {
         runInContext(clusterFile, tenantName, context -> {
             FDBRecordStore store = FDBRecordStore.newBuilder()
                 .setMetaDataProvider(createMetaData())
                 .setContext(context)
                 .setSubspace(new Subspace(subspace))
-                .setSerializer(serializer(compress, encrypt, keyHex))
+                .setSerializer(serializer(compress, encrypt, keyHex, cipherName))
                 .createOrOpen();
             store.saveRecord(order);
             return null;
@@ -149,13 +153,13 @@ class TransformedSerializerSteps extends ConformanceBase {
 
     @ConformanceStep("loadOrderTransformedJava")
     public Order loadOrderTransformedJava(String clusterFile, byte[] subspace, long orderID, String tenantName,
-                                          String keyHex) {
+                                          String keyHex, String cipherName) {
         return runInContext(clusterFile, tenantName, context -> {
             FDBRecordStore store = FDBRecordStore.newBuilder()
                 .setMetaDataProvider(createMetaData())
                 .setContext(context)
                 .setSubspace(new Subspace(subspace))
-                .setSerializer(serializer(false, false, keyHex))
+                .setSerializer(serializer(false, false, keyHex, cipherName))
                 .open();
             FDBStoredRecord<Message> record = store.loadRecord(Tuple.from(orderID));
             if (record == null) {

@@ -3877,18 +3877,30 @@ what Go writes, and in both a Java reader reads what Go writes:
   or a compressing Java application wrote, where Java's default serializer would fail it. An
   encrypted record still needs the key: a store whose serializer has no key manager fails it with
   Java's "this serializer cannot decrypt" (`pkg/recordlayer/transformed_record_serializer.go:676`).
-- **The one cipher is `AES/CBC/PKCS5Padding`**, Java's default (`CipherPool.DEFAULT_CIPHER`,
-  `CipherPool.java:32`; Go's `DefaultCipher`, `transformed_record_serializer.go:41`), with 16-, 24-
-  and 32-byte keys. The name matches case-insensitively, as `Cipher.getInstance` matches it
-  (`transformed_record_serializer.go:731`). A key manager naming any other cipher fails the record
-  with Java's "encryption error" or "decryption error", its cause "unsupported cipher X: Go
-  implements AES/CBC/PKCS5Padding only" (`transformed_record_serializer.go:732`). Java encrypts
-  under any cipher its JCE provides. A key the key manager reports as another algorithm is refused
-  as Java's AES cipher refuses it ("Wrong algorithm: AES or Rijndael required",
-  `transformed_record_serializer.go:743-744`; measured against the JVM for an HmacSHA256 key).
+- **The ciphers are the AES transformations Java's serializer can run.** Java initializes every
+  cipher with a 16-byte `IvParameterSpec` (`TransformedRecordSerializerJCE.java:67-72`,
+  `:98-106`), so only an AES mode that takes that IV works. Go implements those modes from NIST
+  SP 800-38A and FIPS 81 (`pkg/recordlayer/jce_cipher.go`):
+  - CBC and PCBC, with NoPadding, PKCS5Padding or ISO10126Padding;
+  - CTR with NoPadding;
+  - CFB and OFB, with a unit of 8 to 128 bits and any of those paddings;
+  - the `AES_128`, `AES_192` and `AES_256` forms SunJCE registers (CBC, CFB and OFB, with
+    NoPadding), each with a key of that size.
+
+  Names parse as `Cipher.getInstance` parses them. Any other name fails the record with Java's
+  "encryption error" or "decryption error", its cause "unsupported cipher X". Java fails ECB, GCM,
+  KW, ChaCha20 and the 8-byte-block ciphers on that IV too. A block mode without padding fails an
+  unaligned record with "Input length not multiple of 16 bytes". Go does not implement AES/CTS,
+  the OID aliases of the `AES_n` forms, or a cipher a JCE provider other than SunJCE adds. A
+  padded CFB or OFB pads to the 16-byte block. That and the other modes are pinned against the
+  JVM by "reads and writes records under each AES mode Java's serializer runs"
+  (`conformance/transformed_serializer_conformance_test.go`). A key the key manager reports as
+  another algorithm is refused as Java's AES cipher refuses it ("Wrong algorithm: AES or Rijndael
+  required"; measured against the JVM for an HmacSHA256 key).
 - **A key store must be PKCS12**, the JDK's default type and what `keytool` writes. A JCEKS file is
   refused as "Key store loading failed", its cause naming the conversion (`keytool -importkeystore
-  -deststoretype PKCS12`, `pkg/recordlayer/keystore_key_manager.go:381`). A JKS file cannot hold a
+  -deststoretype PKCS12`, `pkg/recordlayer/keystore_key_manager.go:385`). Reading JCEKS is open:
+  the reference its format would be ported from awaits an owner decision. A JKS file cannot hold a
   secret key, so neither engine serves a key from one: Go refuses it at load, Java when a key is
   read. Within PKCS12, Go reads the protections the JDK writes (`pbeDecrypt`,
   `keystore_key_manager.go:500`): PBES2 (PBKDF2 with an HMAC-SHA PRF, AES-128/192/256-CBC), the
