@@ -504,6 +504,7 @@ runcmd:
   # that refuses to start (bad data-root, unmounted volume) left provisioning to continue,
   # the runner to register, and the box to claim testcontainers jobs it cannot run. Same
   # discipline as infra/migrate-ci-volume.sh's post-start `docker info` check.
+  # Its `set -eu` stays on for every later item: runcmd is one shell.
   - |
     set -eu
     systemctl unmask docker.service docker.socket
@@ -516,10 +517,8 @@ runcmd:
     systemctl enable ci-docker-gate.service
 
   # Pinned + checksummed tool installs (RFC-108 §1). ONE block under `set -eu` so a
-  # checksum mismatch in fetch-verified.sh ABORTS — cloud-init runcmd has no set -e by
-  # default, so as separate items the next install (e.g. `dpkg -i`) would still run on the
-  # corrupt artifact and defeat the supply-chain gate (codex). pipefail is omitted (runcmd
-  # runs under dash); fetch-verified.sh enforces its own pipefail internally.
+  # checksum mismatch in fetch-verified.sh ABORTS before the next install (e.g. `dpkg -i`)
+  # runs on the corrupt artifact (codex). No pipefail: runcmd runs under dash.
   - |
     set -eu
     FV=/usr/local/bin/fetch-verified.sh
@@ -566,7 +565,7 @@ runcmd:
     chmod 0644 /etc/profile.d/go.sh
 
   # The fleet's shared cache comes up before this box's own (minutes-long) pre-warm.
-  - '[ "$(hostname)" != gh-runner-fdb ] || { install -d -o runner -g runner /mnt/ci-data/bazel-remote && docker run -d --restart=always --name bazel-remote -u $(id -u runner):$(id -g runner) -v /mnt/ci-data/bazel-remote:/data -p 10.77.0.2:9092:9092 buchgr/bazel-remote-cache@sha256:8e17332e2ceb8b69f67bb08d6a1a51b3e11aaa5a25644c8a34f09d1ff1811a53 --dir /data --max_size 30; }'
+  - '[ "$(hostname)" != gh-runner-fdb ] || { install -d -o runner -g runner /mnt/ci-data/bazel-remote && { docker inspect bazel-remote >/dev/null 2>&1 || docker run -d --restart=always --name bazel-remote -u $(id -u runner):$(id -g runner) -v /mnt/ci-data/bazel-remote:/data -p 10.77.0.2:9092:9092 buchgr/bazel-remote-cache@sha256:8e17332e2ceb8b69f67bb08d6a1a51b3e11aaa5a25644c8a34f09d1ff1811a53 --dir /data --max_size 30; }; }'
 
   # GitHub Actions runner (pinned version + checksummed — was releases/latest, RFC-108 §1).
   # --ephemeral (opt-in) also needs a token-refresh service to run continuously; follow-up.

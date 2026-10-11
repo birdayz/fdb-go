@@ -676,6 +676,59 @@ func TestCloudInitMcInstallIsBestEffort(t *testing.T) {
 	}
 }
 
+// TestCloudInitBazelRemoteSurvivesReplace pins that the bazel-remote item, which runs under the
+// docker block's leaked set -eu before runner registration, skips docker run for an existing container.
+func TestCloudInitBazelRemoteSurvivesReplace(t *testing.T) {
+	t.Parallel()
+	var doc struct {
+		Runcmd []any `yaml:"runcmd"`
+	}
+	renderWith(t, nil, &doc)
+	var item string
+	for _, c := range doc.Runcmd {
+		if s, ok := c.(string); ok && strings.Contains(s, "--name bazel-remote") {
+			item = s
+		}
+	}
+	if item == "" {
+		t.Fatal("runcmd starts no bazel-remote")
+	}
+	for _, tc := range []struct {
+		name, host, inspect, run string
+		wantRun                  bool
+	}{
+		// A second docker run exits 125 on the name conflict, as the real one does.
+		{"existing container", "gh-runner-fdb", "exit 0", "exit 125", false},
+		{"fresh box", "gh-runner-fdb", "exit 1", "exit 0", true},
+		{"other box", "gh-runner-drain-0", "exit 0", "exit 125", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			calls := filepath.Join(dir, "calls")
+			for name, body := range map[string]string{
+				"hostname": "echo " + tc.host,
+				"install":  "exit 0",
+				"id":       "echo 1000",
+				"docker":   `echo "$1" >> ` + calls + "\n[ \"$1\" = inspect ] && " + tc.inspect + "\n" + tc.run,
+			} {
+				if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cmd := exec.Command("sh", "-c", "set -eu\n"+item+"\necho survived\n")
+			cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"))
+			out, err := cmd.CombinedOutput()
+			if err != nil || !strings.Contains(string(out), "survived") {
+				t.Fatalf("bazel-remote item aborted provisioning: %v\n%s", err, out)
+			}
+			got, _ := os.ReadFile(calls)
+			if ran := strings.Contains(string(got), "run"); ran != tc.wantRun {
+				t.Fatalf("docker run called = %v, want %v (calls: %q)", ran, tc.wantRun, got)
+			}
+		})
+	}
+}
+
 // renderWith renders cloud-init.yaml with templateVars plus overrides and parses it into doc.
 func renderWith(t *testing.T, overrides map[string]string, doc any) {
 	t.Helper()

@@ -524,8 +524,8 @@ tofu import 'hcloud_server_network.runner_pool[0]' "$(hcloud server describe gh-
 
 The script is idempotent and ends by checking that the cache answers. An
 unreachable cache is NOT a warning: Bazel 9 queries the cache's capabilities
-while building each action and aborts with exit 34 when it cannot, so every
-Bazel job on the fleet fails. The cache box is a single point of failure.
+on first cache use in each invocation and aborts with exit 34 when it cannot,
+so every Bazel job on the fleet fails. The cache box is a single point of failure.
 
 To roll back, delete the `# RFC-257 shared cache` block from
 `/etc/bazel.bazelrc`, and on the server also run `docker rm -f bazel-remote`.
@@ -555,8 +555,11 @@ longer rationale for these lines lives here.
   is written only if absent: `enable-shared-cache.sh` writes its own static version.
 - **Pre-warm.** Before the runner service starts, the box clones the repo into the job
   workspace and runs `bazelisk fetch --config=ci //...`, so the main workspace's first jobs do
-  not cold-fetch hundreds of Go modules (the race job's separate output base still does). gazelle's `fetch_repo` goes through the Go module fetcher,
-  which has no retry, and an upstream HTTP/2 reset then fails analysis. Bazel's own downloader
+  not cold-fetch hundreds of Go modules (the race job's separate output base still does).
+  gazelle's `fetch_repo` goes through the Go module fetcher, which has no retry, and an upstream HTTP/2 reset then fails analysis. Bazel's own downloader
   already retries (`--experimental_repository_downloader_retries` defaults to 5 in 9.0.1).
+- **bazel-remote start.** It runs under the docker block's leaked `set -eu` and before the
+  runner registers, so it skips `docker run` when the container already exists (a
+  replace onto the surviving volume); a name conflict would otherwise abort provisioning.
 - **mc.** `dl.min.io` answers 410 for the pinned archive; the install is best effort because
   only the report upload uses it.
