@@ -16,6 +16,7 @@ go_library(
 go_test(
     name = "explaindiff_test",
     srcs = [
+        "bound_literal_plans_test.go",
         "domain_registration_test.go",
         "explaindiff_internal_test.go",
         "explaindiff_test.go",

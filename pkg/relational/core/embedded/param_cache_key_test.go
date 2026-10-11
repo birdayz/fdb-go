@@ -9,11 +9,8 @@ import (
 	"fdb.dev/pkg/relational/core/parser"
 )
 
-// The plan-cache key renders every bound value exactly (ws-e-design.md 4.2):
-// a cached plan carries its bound constants, so two bindings that share a key
-// would run the first binding's constant. TRUE and FALSE, NaN payloads, the
-// signed zeros, NULL beside an empty STRING or BYTES, and arrays element by
-// element must all key apart; equal values must key alike.
+// Exact binding encodings constrain specialization and identify duplicate
+// values before runtime slots are assigned. Float bits and carrier types matter.
 func TestBindStatementParameters_KeyIsExact(t *testing.T) {
 	t.Parallel()
 	key := func(v any) string {
@@ -22,12 +19,17 @@ func TestBindStatementParameters_KeyIsExact(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		k, release, err := bindStatementParameters(root, []driver.NamedValue{{Ordinal: 1, Value: v}})
-		release()
+		release, err := bindStatementParameters(root, []driver.NamedValue{{Ordinal: 1, Value: v}})
+		defer release()
 		if err != nil {
 			t.Fatalf("bind %#v: %v", v, err)
 		}
-		return k
+		bindings, releaseBindings, err := normalizeQueryBindings(root.Statements().AllStatement()[0].SelectStatement().Query(), nil)
+		if err != nil {
+			t.Fatalf("normalize %#v: %v", v, err)
+		}
+		defer releaseBindings()
+		return bindings.literals[0].valueKey
 	}
 	for _, pair := range [][2]any{
 		{true, false},
@@ -42,6 +44,7 @@ func TestBindStatementParameters_KeyIsExact(t *testing.T) {
 		{[]string{"a", "b"}, []string{"a,b"}},
 		{[]bool{true}, []bool{false}},
 		{"a\x00b", "a"},
+		{int64(1), int32(1)},
 	} {
 		if key(pair[0]) == key(pair[1]) {
 			t.Errorf("%#v and %#v share the plan-cache key %q", pair[0], pair[1], key(pair[0]))
@@ -62,9 +65,8 @@ func TestBindStatementParameters_KeyIsExact(t *testing.T) {
 	}
 }
 
-// End to end through the generator's live plan cache: a second binding of the
-// same text is a cache MISS when its value differs and a HIT when it is equal.
-func TestPlanCache_BoundValuesKeyApart(t *testing.T) {
+// Boolean folding is constrained by evaluation, as in Java EvaluatesToValue.
+func TestPlanCache_BooleanEvaluationConstraint(t *testing.T) {
 	t.Parallel()
 	cap := &captureLogger{}
 	g, md := newLoggingGenerator(t, ordersSchema, cap)
@@ -74,12 +76,11 @@ func TestPlanCache_BoundValuesKeyApart(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		k, release, err := bindStatementParameters(root, []driver.NamedValue{{Ordinal: 1, Value: v}})
+		release, err := bindStatementParameters(root, []driver.NamedValue{{Ordinal: 1, Value: v}})
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer release()
-		g.paramKey = k
 		q := root.Statements().AllStatement()[0].SelectStatement().Query()
 		if _, err := g.planSelectCascades(context.Background(), q, md, true, statementOptions{}); err != nil {
 			t.Fatalf("plan with %v: %v", v, err)

@@ -1,4 +1,4 @@
-load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "testkit",
@@ -43,6 +43,7 @@ go_library(
         "ordering_limit_oracle_fdb.go",
         "packages.go",
         "parallel_reads.go",
+        "plan_cache_binding_shapes.go",
         "plan_logging_fdb.go",
         "plan_shape_conformance.go",
         "planner_cap_hit_fdb.go",
@@ -89,4 +90,11 @@ go_library(
         "@org_golang_google_protobuf//types/descriptorpb",
         "@org_golang_google_protobuf//types/dynamicpb",
     ],
+)
+
+go_test(
+    name = "testkit_test",
+    srcs = ["plan_cache_binding_shapes_test.go"],
+    embed = [":testkit"],
+    deps = ["//pkg/relational/core/embedded"],
 )

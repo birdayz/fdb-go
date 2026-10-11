@@ -5,6 +5,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
@@ -73,6 +74,40 @@ func TestCostModel_PlanHashOrderSensitive(t *testing.T) {
 	}
 }
 
+func TestCostModel_ConstantPoolJoinOrderTies(t *testing.T) {
+	t.Parallel()
+	for _, operand := range []values.Value{
+		&values.ConstantValue{Value: int64(1), Typ: values.NotNullLong},
+		values.NewConstantObjectValue(values.NamedCorrelationIdentifier("pool"), "0", values.NotNullLong),
+	} {
+		a, b := hashScan("GA"), hashScan("C")
+		q := expressions.ForEachQuantifier(expressions.FinalOf(b))
+		filter := mustHashConstruct(plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(q,
+			[]predicates.QueryPredicate{predicates.NewComparisonPredicate(hashField(q, 1),
+				predicates.Comparison{Type: predicates.ComparisonEquals, Operand: operand})}, q.GetAlias()))
+		rangeResult := predicates.EmptyComparisonRange().Merge(&predicates.Comparison{Type: predicates.ComparisonEquals, Operand: operand})
+		if !rangeResult.Complete() {
+			t.Fatal("fixture equality did not form a scan bound")
+		}
+		for _, other := range []plans.RecordQueryPlan{
+			filter, b.WithScanComparisons([]*predicates.ComparisonRange{rangeResult.Range}),
+		} {
+			ab := mustHashConstruct(plans.NewRecordQueryNestedLoopJoinPlan(a, other, nil, plans.JoinInner,
+				values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), hashResultValue()))
+			ba := mustHashConstruct(plans.NewRecordQueryNestedLoopJoinPlan(other, a, nil, plans.JoinInner,
+				values.NamedCorrelationIdentifier("B"), values.NamedCorrelationIdentifier("A"), hashResultValue()))
+			ca := concretePlanCost(ab, properties.DefaultStatistics{}, nil)
+			cb := concretePlanCost(ba, properties.DefaultStatistics{}, nil)
+			if ca != cb {
+				t.Fatalf("%T/%T materialized join orders have different costs: %+v / %+v", operand, other, ca, cb)
+			}
+			if got, want := PlanningCostModelLess(ab, ba), costExprHash(ab) < costExprHash(ba); got != want {
+				t.Fatalf("%T/%T join order was not selected by the content hash", operand, other)
+			}
+		}
+	}
+}
+
 // TestCostModel_PlanHashMintedAliasBlind pins the tie-break's alias
 // blindness: two plans identical except for their MINTED correlation
 // identifiers (fresh q$N per planning — the FlatMap outer/inner aliases,
@@ -118,24 +153,34 @@ func TestCostModel_PlanHashMintedAliasBlind(t *testing.T) {
 	}
 }
 
-// TestCostModel_PlanHashContentSensitive pins the other half of alias
-// blindness: a REAL content difference — a different literal inside an
-// otherwise identical predicate tree — MUST change the hash. Alias-blind is
-// not content-blind: the predicate folds through SemanticHashCode, which
-// keeps literals (a content-blind hash would tie plans that filter
-// differently and hand the winner to arrival order).
+// TestCostModel_PlanHashContentSensitive: a comparison change moves the hash, a
+// constant does not, as in Java's planHash(VC0) tie-break over SQL literals.
 func TestCostModel_PlanHashContentSensitive(t *testing.T) {
 	t.Parallel()
-	build := func(lit int64) plans.RecordQueryPlan {
+	build := func(cmp predicates.Comparison) plans.RecordQueryPlan {
 		scanG := hashScan("PG")
 		alias := values.NamedCorrelationIdentifier("q$1")
 		q := expressions.NamedForEachQuantifier(alias, expressions.FinalOf(scanG))
-		pred := predicates.NewComparisonPredicate(hashField(q, 1),
-			predicates.NewLiteralComparison(predicates.ComparisonEquals, lit))
+		pred := predicates.NewComparisonPredicate(hashField(q, 1), cmp)
 		return mustHashConstruct(plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(
 			q, []predicates.QueryPredicate{pred}, alias))
 	}
-	if stablePlanHash(build(1)) == stablePlanHash(build(2)) {
-		t.Fatal("stablePlanHash is content-blind: predicates differing only in their literal hashed equal — such ties fall to arrival order")
+	long := func(n int64) values.Value { return &values.ConstantValue{Value: n, Typ: values.NotNullLong} }
+	eq := func(v values.Value) predicates.Comparison {
+		return predicates.Comparison{Type: predicates.ComparisonEquals, Operand: v}
+	}
+	one := stablePlanHash(build(eq(long(1))))
+	if stablePlanHash(build(eq(long(2)))) != one {
+		t.Fatal("stablePlanHash depends on a literal's value: a cached plan would win ties differently from fresh planning of another binding")
+	}
+	ref := values.NewConstantObjectValue(values.NamedCorrelationIdentifier("pool"), "0", values.NotNullLong)
+	if stablePlanHash(build(eq(ref))) != one {
+		t.Fatal("a statement-pool reference and its literal hash differently, so bound planning breaks ties unlike literal planning")
+	}
+	if stablePlanHash(build(predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: long(1)})) == one {
+		t.Fatal("stablePlanHash is content-blind: a different comparison hashed equal")
+	}
+	if stablePlanHash(build(eq(&values.ConstantValue{Value: "1", Typ: values.NotNullString}))) != one {
+		t.Fatal("Java's planHash(VC0) hashes every ConstantObjectValue alike, whatever its type")
 	}
 }

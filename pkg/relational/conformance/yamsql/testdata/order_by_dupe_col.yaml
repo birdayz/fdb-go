@@ -42,13 +42,13 @@ tests:
     error_code: "42701"
   # Multi-column ORDER BY with expression — Go extension: in-memory sort.
   - query: SELECT b FROM t ORDER BY b + 1, b + 1
-    plan_contains: "Map(InMemorySort([_current._1#1 ASC, _current._2#2 ASC], Map(Scan(T), {B: _current.B#1, _1: (_current.B#1 + 1), _2: (_current.B#1 + 1)})), {B: _current.B#0})"
+    plan_contains: "Map(InMemorySort([_current._1#1 ASC, _current._2#2 ASC], Map(Scan(T), {B: _current.B#1, _1: (_current.B#1 + @0), _2: (_current.B#1 + @0)})), {B: _current.B#0})"
     # The duplicate sort key must be deduplicated to ONE. Spelled with the
     # renderer's CURRENT qualifier: this asserted `T.B#1` and the printer emits
     # `_current.B#1`, so it could not match whatever the plan did — a
     # plan_not_contains that cannot match is satisfied by every plan, including
     # the undeduplicated one it was written to forbid.
-    plan_not_contains: "(_current.B#1 + 1) ASC, (_current.B#1 + 1) ASC"
+    plan_not_contains: "(_current.B#1 + @0) ASC, (_current.B#1 + @0) ASC"
     rows:
       - [10]
       - [20]

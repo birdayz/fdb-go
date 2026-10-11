@@ -51,7 +51,7 @@ func (r *SortConstantKeysElimRule) OnMatch(call *ExpressionRuleCall) {
 		return // the unsorted form
 	}
 	for _, k := range keys {
-		if !values.IsConstantValue(k.Value) {
+		if !values.IsConstantExpression(k.Value) {
 			return
 		}
 	}

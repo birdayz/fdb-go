@@ -38,21 +38,10 @@ func TestFDB_GroupByDerivedTableComputedExpr(t *testing.T) {
 			"(6, 20, 6), (7, 20, 7), (8, 20, 8), (9, 20, 9), (10, 20, 10), "+
 			"(11, 20, 11), (12, 20, 12), (13, 20, 13)")).Error().NotTo(gomega.HaveOccurred())
 
-	// A NESTED group-key reference inside a computed projection (`x.col1` within
-	// `x.col1 + 10`) bakes to its logical ordinal — the explain renders
-	// `COL1#0 + 10`. groupByOutputBaker must never leave such a key LAZY on
-	// the accident that its bare name `COL1` happens to resolve by GetByName
-	// (which would render the bare `COL1 + 10`). This pins the uniform bake
-	// FIRES (the `#0` ordinal marker). Rows correctness is pinned by
-	// derived_col1_plus_10 below.
-	//
-	// The assertion is the `#0` MARKER, not the whole parenthesised rendering:
-	// a resolved reference renders under its owning correlation
-	// (`_current.COL1#0`), so pinning `(COL1#0` also pinned the ABSENCE of a
-	// qualifier — a separate claim this case is not about, and one the ordinal
-	// model changed. Both halves are asserted, because "contains #0" alone
-	// passes on a plan that ALSO still carries a lazy copy.
+	// Pin the computed projection's ordinal, not just the grouping key's ordinal.
+	// The literal is a runtime pool reference; a lazy copy must not survive beside it.
 	t.Run("nested_group_key_bakes_ordinal", func(t *testing.T) {
+		g := gomega.NewWithT(t)
 		rows, err := db.QueryContext(ctx, "EXPLAIN SELECT x.col1 + 10 FROM (SELECT col1 FROM t1) AS x GROUP BY x.col1 ORDER BY 1")
 		if err != nil {
 			t.Fatalf("explain error: %v", err)
@@ -61,10 +50,9 @@ func TestFDB_GroupByDerivedTableComputedExpr(t *testing.T) {
 		g.Expect(rows.Next()).To(gomega.BeTrue())
 		var plan string
 		g.Expect(rows.Scan(&plan)).To(gomega.Succeed())
-		// The nested group key bakes: `COL1#0`, not a bare lazy `COL1 + 10`.
-		g.Expect(plan).To(gomega.ContainSubstring("COL1#0 + 10"),
+		g.Expect(plan).To(gomega.ContainSubstring("COL1#0 + @0"),
 			"nested group key must bake to its logical ordinal; plan=%s", plan)
-		g.Expect(plan).NotTo(gomega.ContainSubstring("(COL1 + 10)"),
+		g.Expect(plan).NotTo(gomega.ContainSubstring("COL1 + @0"),
 			"no lazy, unbaked copy of the computed key may survive; plan=%s", plan)
 	})
 
@@ -74,6 +62,7 @@ func TestFDB_GroupByDerivedTableComputedExpr(t *testing.T) {
 	// positional slot name (writer+reader agree via OutputColumnName) but never the
 	// result-set header.
 	t.Run("computed_column_label_is_positional_not_ordinal", func(t *testing.T) {
+		g := gomega.NewWithT(t)
 		rows, err := db.QueryContext(ctx, "SELECT x.col1 + 10 FROM (SELECT col1 FROM t1) AS x GROUP BY x.col1 ORDER BY 1")
 		if err != nil {
 			t.Fatalf("query error: %v", err)
@@ -87,6 +76,7 @@ func TestFDB_GroupByDerivedTableComputedExpr(t *testing.T) {
 
 	// derived_table_group_by test 4: x.col1 + 10 through derived + GROUP BY
 	t.Run("derived_col1_plus_10", func(t *testing.T) {
+		g := gomega.NewWithT(t)
 		rows, err := db.QueryContext(ctx,
 			"SELECT x.col1 + 10 FROM (SELECT col1 FROM t1) AS x GROUP BY x.col1 ORDER BY 1")
 		if err != nil {
@@ -105,6 +95,7 @@ func TestFDB_GroupByDerivedTableComputedExpr(t *testing.T) {
 
 	// derived_table_group_by test 6: x.col1 + x.col1 through derived + GROUP BY
 	t.Run("derived_col1_plus_col1", func(t *testing.T) {
+		g := gomega.NewWithT(t)
 		rows, err := db.QueryContext(ctx,
 			"SELECT x.col1 + x.col1 FROM (SELECT col1, col2 FROM t1) AS x GROUP BY x.col1 ORDER BY 1")
 		if err != nil {
@@ -125,6 +116,7 @@ func TestFDB_GroupByDerivedTableComputedExpr(t *testing.T) {
 	// NOT in GROUP BY must error 42803. Java rejects this because col2 is
 	// neither grouped nor aggregated.
 	t.Run("derived_col1_plus_col2_ungrouped_42803", func(t *testing.T) {
+		g := gomega.NewWithT(t)
 		_, err := db.QueryContext(ctx,
 			"SELECT x.col1 + x.col2 FROM (SELECT col1, col2 FROM t1) AS x GROUP BY x.col1")
 		g.Expect(err).To(gomega.HaveOccurred())
@@ -133,6 +125,7 @@ func TestFDB_GroupByDerivedTableComputedExpr(t *testing.T) {
 
 	// derived_table_group_by test 7: nested aggregate in derived + outer filter
 	t.Run("nested_derived_agg_plus_literal", func(t *testing.T) {
+		g := gomega.NewWithT(t)
 		rows, err := db.QueryContext(ctx,
 			`SELECT G + 4 FROM (
 				SELECT MIN(x.col2) AS G FROM (SELECT col1, col2 FROM t1) AS x GROUP BY x.col1
@@ -157,6 +150,7 @@ func TestFDB_GroupByDerivedTableComputedExpr(t *testing.T) {
 	// walker didn't recognise GROUP BY aliases and the Cascades sort key
 	// referenced a non-existent field.
 	t.Run("group_by_alias_derived_max_z", func(t *testing.T) {
+		g := gomega.NewWithT(t)
 		// Use a separate DB/schema to match YAML test data:
 		// t1 rows: (1,10,100), (2,10,200), (3,20,300)
 		setupA := testkit.OpenDB(t, "/FRL/testdb_gbalias")
@@ -197,6 +191,7 @@ func TestFDB_GroupByDerivedTableComputedExpr(t *testing.T) {
 
 	// group_by_proj_expr test 1: a+b in projection, both in GROUP BY
 	t.Run("a_plus_b_grouped", func(t *testing.T) {
+		g := gomega.NewWithT(t)
 		setup2 := testkit.OpenDB(t, "/FRL/testdb_gbpe")
 		g.Expect(setup2.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_gbpe")).Error().NotTo(gomega.HaveOccurred())
 		g.Expect(setup2.ExecContext(ctx,
@@ -246,6 +241,7 @@ func TestFDB_GroupByDerivedTableComputedExpr(t *testing.T) {
 	// executor stores the group key under ExplainValue (with outer parens). If
 	// the projection can't find the value, it returns NULL for every row.
 	t.Run("expr_group_by_with_having_order_by_agg", func(t *testing.T) {
+		g := gomega.NewWithT(t)
 		setup4 := testkit.OpenDB(t, "/FRL/testdb_gbexpr")
 		g.Expect(setup4.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_gbexpr")).Error().NotTo(gomega.HaveOccurred())
 		g.Expect(setup4.ExecContext(ctx,
@@ -285,6 +281,7 @@ func TestFDB_GroupByDerivedTableComputedExpr(t *testing.T) {
 
 	// group_by_proj_expr test 2: no aggregates, just expression on group cols
 	t.Run("a_times_100_plus_b_no_agg", func(t *testing.T) {
+		g := gomega.NewWithT(t)
 		setup3 := testkit.OpenDB(t, "/FRL/testdb_gbpe2")
 		g.Expect(setup3.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_gbpe2")).Error().NotTo(gomega.HaveOccurred())
 		g.Expect(setup3.ExecContext(ctx,
@@ -326,6 +323,7 @@ func TestFDB_GroupByDerivedTableComputedExpr(t *testing.T) {
 	// table's id, not the derived table's (which shares the same
 	// underlying record type).
 	t.Run("cross_join_derived_qualified_column", func(t *testing.T) {
+		g := gomega.NewWithT(t)
 		setupCJ := testkit.OpenDB(t, "/FRL/testdb_cjderived")
 		g.Expect(setupCJ.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_cjderived")).Error().NotTo(gomega.HaveOccurred())
 		g.Expect(setupCJ.ExecContext(ctx,

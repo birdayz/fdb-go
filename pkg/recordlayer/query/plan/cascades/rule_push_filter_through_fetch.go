@@ -325,8 +325,9 @@ func tryTranslateValueRec(
 	if v == nil {
 		return nil
 	}
-	// Constants are never correlated — always pushable.
-	if _, isConst := v.(*values.ConstantValue); isConst {
+	// Constants and statement-pool references are never correlated — always pushable.
+	switch v.(type) {
+	case *values.ConstantValue, *values.ConstantObjectValue:
 		return v
 	}
 	// An ACCESSOR is a column read out of a row, and the ONLY authority on

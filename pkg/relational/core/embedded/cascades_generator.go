@@ -63,10 +63,9 @@ import (
 type cascadesGenerator struct {
 	c     *EmbeddedConnection
 	cache queryPlanCache
-	// args are the statement's driver arguments; paramKey renders their
-	// bindings for the plan-cache key, since bound constants are planned in.
-	args     []driver.NamedValue
-	paramKey string
+	// INSERT keeps concrete bindings; SELECT and cached DML extract runtime
+	// constants and constrain only the assumptions used by their cached plan.
+	args []driver.NamedValue
 }
 
 func newCascadesGenerator(c *EmbeddedConnection) *cascadesGenerator {
@@ -134,11 +133,10 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 			}
 		}
 	}
-	paramKey, release, err := bindStatementParameters(root, g.args)
+	release, err := bindStatementParameters(root, g.args)
 	if err != nil {
 		return nil, err
 	}
-	g.paramKey = paramKey
 	g.c.releaseParams = append(g.c.releaseParams, release)
 
 	stmts := root.Statements()
@@ -406,7 +404,12 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	if so.rightDeep {
 		popts.config.ShouldJoinRightDeep = true
 	}
-	planKey, cacheable := g.planCacheKey(md, popts, planCacheText(q))
+	bindings, releaseBindings, bindErr := normalizeQueryBindings(q, md)
+	if bindErr != nil {
+		return nil, bindErr
+	}
+	defer releaseBindings()
+	planKey, cacheable := g.planCacheKey(md, popts, bindings.text)
 	cacheTemplate := g.sessionTemplate()
 	cache := g.cache
 	if so.noCache || !cacheable {
@@ -414,7 +417,7 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	}
 
 	if cache != nil {
-		if cached, ok := cache.lookup(cacheTemplate, planKey, g.paramKey); ok {
+		if cached, ok := cache.lookup(cacheTemplate, planKey, bindings); ok {
 			cachedPlan, cachedSubs, cachedLabels := cached.plan, cached.scalarSubs, cached.outputLabels
 			ls.setPlan(cachedPlan)
 			ls.setCache(PlanCacheHit)
@@ -425,6 +428,7 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 				physicalPlan:     cachedPlan,
 				explain:          cachedPlan.Explain(),
 				scalarSubqueries: cachedSubs,
+				constants:        bindings.constants,
 				outputLabels:     cachedLabels,
 				sql:              g.c.execLogSQL(q),
 				// Dependencies are a function of the PLAN, so a cache hit derives
@@ -592,7 +596,7 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	// not applied post-execution, so the cached plan is complete.
 	if cache != nil {
 		ls.setCache(PlanCacheMiss)
-		cache.store(cacheTemplate, planKey, g.paramKey, &planCacheEntry{plan: physPlan, scalarSubs: scalarSubs, outputLabels: outputLabels})
+		cache.store(cacheTemplate, planKey, bindings, &planCacheEntry{plan: physPlan, scalarSubs: scalarSubs, outputLabels: outputLabels})
 	} else {
 		ls.setCache(PlanCacheSkip)
 	}
@@ -603,6 +607,7 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 		physicalPlan:     physPlan,
 		explain:          physPlan.Explain(),
 		scalarSubqueries: scalarSubs,
+		constants:        bindings.constants,
 		outputLabels:     outputLabels,
 		sql:              g.c.execLogSQL(q),
 		// The fourth argument is the PROOF-ONLY dependency set: indexes whose
@@ -950,6 +955,15 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	// INSERT…SELECT spelling — whose OPTIONS the grammar attaches to the inner SELECT, not
 	// insertStatement.queryOptions — cannot silently bypass DRY RUN and commit.
 	dryRun := so.dryRun
+	bindings := queryBindings{text: planCacheText(dml)}
+	if dml.InsertStatement() == nil {
+		var releaseBindings func()
+		bindings, releaseBindings, err = normalizeQueryBindings(dml, md)
+		if err != nil {
+			return nil, err
+		}
+		defer releaseBindings()
+	}
 
 	var logicalOp logical.LogicalOperator
 	var insStmt antlrgen.IInsertStatementContext
@@ -1183,7 +1197,7 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	// The plan cache, keyed as a SELECT's is. The statement's checks above
 	// ran, and its RETURNING labels and explain come from the logical plan,
 	// so a hit supplies only the physical plan and its scalar subqueries.
-	planKey, cacheable := g.planCacheKey(md, popts, planCacheText(dml))
+	planKey, cacheable := g.planCacheKey(md, popts, bindings.text)
 	var cache queryPlanCache
 	if dml.InsertStatement() == nil && !so.noCache && cacheable {
 		cache = g.cache
@@ -1197,6 +1211,7 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 			physicalPlan:     physPlan,
 			explain:          logicalOp.Explain(""),
 			scalarSubqueries: subs,
+			constants:        bindings.constants,
 			sql:              g.c.execLogSQL(dml),
 
 			indexDependencies: collectPlanIndexDependencies(md, physPlan, subs),
@@ -1205,7 +1220,7 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 		}
 	}
 	if cache != nil {
-		if cached, ok := cache.lookup(cacheTemplate, planKey, g.paramKey); ok {
+		if cached, ok := cache.lookup(cacheTemplate, planKey, bindings); ok {
 			ls.setCache(PlanCacheHit)
 			return newDMLPlan(cached.plan, cached.scalarSubs), nil
 		}
@@ -1266,7 +1281,7 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 
 	if cache != nil {
 		ls.setCache(PlanCacheMiss)
-		cache.store(cacheTemplate, planKey, g.paramKey, &planCacheEntry{plan: physPlan, scalarSubs: dmlScalarSubs})
+		cache.store(cacheTemplate, planKey, bindings, &planCacheEntry{plan: physPlan, scalarSubs: dmlScalarSubs})
 	} else {
 		ls.setCache(PlanCacheSkip)
 	}
@@ -1333,6 +1348,7 @@ type cascadesPlan struct {
 	physicalPlan     plans.RecordQueryPlan
 	explain          string
 	scalarSubqueries []PlannedScalarSubquery
+	constants        map[string]any
 	// outputLabels is the top-level SQL publication contract. It is parallel to
 	// the physical result row but intentionally not the same as its protobuf-safe,
 	// deduplicated field names (for example [G,G] over physical [G,G_2]).
@@ -1472,6 +1488,7 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 		plan:             p.physicalPlan,
 		md:               p.md,
 		scalarSubqueries: p.scalarSubqueries,
+		constants:        p.constants,
 
 		indexDependencies: p.indexDependencies,
 
@@ -1680,6 +1697,8 @@ type paginatingRows struct {
 	// snapshot is the statement-scoped OPTIONS (ISOLATION LEVEL SNAPSHOT) flag:
 	// the statement's reads take no read-conflict ranges.
 	snapshot bool
+
+	constants map[string]any
 
 	// statementTime is the statement-stable CURRENT_TIMESTAMP-family
 	// instant, captured once in Execute while the statement's session-clock
@@ -2369,6 +2388,9 @@ func (r *paginatingRows) fetchPage() error {
 		evalCtx := executor.EmptyEvaluationContext().
 			WithStatementTime(r.statementTime).
 			WithExecutionScratch(r.scratch)
+		if len(r.constants) != 0 {
+			evalCtx = evalCtx.WithConstants(queryConstantsAlias, r.constants)
+		}
 		// The statement-stable CURRENT_TIMESTAMP-family instant was stamped
 		// ONCE in Execute, from the session clock (Session.BeginStatement /
 		// StatementNow — the same authority the INSERT…VALUES fold reads),

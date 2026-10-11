@@ -48,6 +48,9 @@ import (
 // package could still bypass newCascadesPlanner and get the defaults silently.
 // Route new planner construction through the funnel.
 type plannerOptions struct {
+	// bindQueryLiterals makes the harness plan with production's statement-pool
+	// references instead of literals.
+	bindQueryLiterals bool
 	// useCollectedStatistics is OptPlannerStatistics (RFC-236).
 	useCollectedStatistics bool
 	// disabledRules is the union of the user's DISABLED_PLANNER_RULES and,
