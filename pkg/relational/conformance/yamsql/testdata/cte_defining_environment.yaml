@@ -1,4 +1,4 @@
-# Java 4.12.11.0 QueryVisitor.visitCtes publishes definitions in declaration
+# Java 4.14.2.0 QueryVisitor.visitCtes publishes definitions in declaration
 # order; LogicalOperator.generateAccess/withNewSharedReferenceAndAlias retain
 # the selected producer, not a name to resolve in a later consumer's scope.
 # T and catalog A each contain id=1. The id<0 CTE is empty. These independent

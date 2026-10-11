@@ -30,7 +30,7 @@ named for a regression it could not detect.
 
 ## Java is the spec
 
-Java source is at `fdb-record-layer/` (tag 4.12.11.0). Before porting or
+Java source is at `fdb-record-layer/` (tag 4.14.2.0). Before porting or
 inventing anything, read how Java does it and cite `file:line`. If you conclude
 a capability is missing from Go, check Java first — the odds are it already has
 the machinery and someone stopped early. A comment saying "Go's substitute for

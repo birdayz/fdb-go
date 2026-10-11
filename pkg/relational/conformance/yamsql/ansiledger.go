@@ -425,8 +425,10 @@ func RenderAnsiLedger(l *AnsiLedger) string {
 	b.WriteString("     in ansi_roster.go; the Go? column + completeness are DERIVED from `ansi:` tags\n")
 	b.WriteString("     on the yamsql corpus. Drift guards: TestAnsiLedgerUpToDate + TestAnsiLedgerEvidenceExists. -->\n\n")
 	b.WriteString("Ledger A of RFC-165 — the ANSI-standard scorecard, modeled on PostgreSQL Appendix D.\n")
-	b.WriteString("The `Java?`/`Core?`/`Identifier`/`Name` columns are pinned facts (SQL:2023 Core; the\n")
-	b.WriteString("frozen fdb-relational 4.12.11.0 reference). **`Go?` and completeness are derived** by\n")
+	b.WriteString("The `Java?`/`Core?`/`Identifier`/`Name` columns are pinned facts (SQL:2023 Core; `Java?`\n")
+	b.WriteString("was pinned against fdb-relational 4.12.11.0 and is not yet re-verified on the 4.14.2.0 target,\n")
+	b.WriteString("whose Java conformance lane only checks that ANSI-tagged `Java?` = no rows are still rejected).\n")
+	b.WriteString("**`Go?` and completeness are derived** by\n")
 	b.WriteString("walking `ansi:`-tagged corpus scenarios — a claim of support traces to a named,\n")
 	b.WriteString("passing case, never a hand-typed status. For the measured corpus number see `SQL_COVERAGE.md`.\n\n")
 	b.WriteString("**Axes** (RFC-165 §4.2): `Java?` × `Go?`. The headline is keyed on **`Go?` only** —\n")
@@ -531,7 +533,7 @@ type AnsiTaggedCase struct {
 
 // AnsiTaggedCases walks the corpus and returns one case per `ansi:`/`ansi_gap:`
 // tag, joined to the roster's Java fact for that feature. The A3 Java?-verification
-// lane runs each query against the live Java 4.12.11.0 server and asserts the
+// lane runs each query against the live Java (4.14.2.0) server and asserts the
 // roster fact matches Java's real supported/rejected behaviour (the NULLIF episode
 // showed `*_java.yaml` testdata files are not a reliable Java reference).
 func AnsiTaggedCases(dir string) ([]AnsiTaggedCase, error) {

@@ -7,10 +7,10 @@ package yamsql
 //     VERBATIM from PostgreSQL 18 Appendix D (D.1 + D.2, the Core-marked rows).
 //     PostgreSQL 18 enumerates 176 Core feature/subfeature rows (it was 177 in
 //     PG13–15; F812 "Basic flagging" lost Core status in PG16). These are facts.
-//   - Java — the support level of the FROZEN fdb-relational 4.12.11.0 reference,
-//     sourced from SQL_CONFORMANCE.md. A fact about a pinned artifact; it changes
-//     only on a tracked Java-pin bump and is cross-checked by the A3 cross-engine
-//     lane where a feature is covered there.
+//   - Java — the support level of fdb-relational as pinned against 4.12.11.0,
+//     sourced from SQL_CONFORMANCE.md; not yet re-pinned for the 4.14.2.0 target.
+//     It changes only on a tracked Java-pin bump and is cross-checked by the A3
+//     cross-engine lane (live 4.14.2.0) where a feature is covered there.
 //   - NA — true for Core features structurally outside an embedded record-layer
 //     SQL surface (host-language binding, cursors, modules, table privileges,
 //     SQL-invoked routines, user-defined types). Kept in the roster so the 176
