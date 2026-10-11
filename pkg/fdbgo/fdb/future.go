@@ -106,7 +106,7 @@ func newFutureByteSlice(fn func() ([]byte, error)) FutureByteSlice {
 // newPendingFutureByteSlice wraps a pipelined read. Get resolves it on the
 // caller's goroutine, so N Gets flush their N queued frames together; polling
 // IsReady starts a background resolve instead, so it does become ready.
-// Only a Get that has to wait makes a channel: this is the per-Get hot path.
+// A Get that is not yet ready makes one wake channel; nothing else allocates.
 func newPendingFutureByteSlice(pending *client.PendingGet) FutureByteSlice {
 	return &pendingFutureByteSlice{pending: pending}
 }
@@ -176,7 +176,10 @@ func (f *pendingFutureByteSlice) IsReady() bool {
 		return true
 	}
 	if f.polled.CompareAndSwap(false, true) {
-		go f.resolve()
+		go func() {
+			defer recoverFuturePanic(func(e error) { f.finish(nil, e) })
+			f.resolve()
+		}()
 	}
 	return false
 }

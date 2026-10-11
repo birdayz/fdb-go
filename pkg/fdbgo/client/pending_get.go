@@ -49,16 +49,21 @@ func (p *PendingGet) ResolveOrAbort(abort <-chan struct{}) ([]byte, error, bool)
 		}
 		return nil, nil, true
 	}
-	unlock := func() {
+	handedOff := false
+	defer func() {
+		if handedOff {
+			return
+		}
+		if !p.done { // only a panic gets here unsettled; settle so queued waiters wake
+			p.completeLocked(nil, errReadPanicked)
+		}
 		p.mu.Unlock()
 		lease.release()
-	}
+	}()
 	if p.done {
-		defer unlock()
 		return p.memoVal, p.memoErr, false
 	}
 	if lease == nil {
-		defer unlock()
 		p.retireLocked()
 		return p.memoVal, p.memoErr, false
 	}
@@ -69,16 +74,33 @@ func (p *PendingGet) ResolveOrAbort(abort <-chan struct{}) ([]byte, error, bool)
 	ctx := context.WithValue(p.ctx, readContextKey{p.tx}, &readOperation{inc: inc, parent: parent, lease: lease})
 	val, err := p.resolve(ctx, abort)
 	if h, ok := err.(*handoff); ok {
-		go func() {
-			defer unlock()
-			v, e := h.finish()
-			p.completeLocked(v, e)
-		}()
+		handedOff = true
+		go p.finishHandoff(h, lease)
 		return nil, nil, true
 	}
-	defer unlock()
 	p.completeLocked(val, err)
 	return p.memoVal, p.memoErr, false
+}
+
+// finishHandoff completes a handed-off read, then releases what the aborted
+// waiter held.
+func (p *PendingGet) finishHandoff(h *handoff, lease *executionLease) {
+	defer lease.release()
+	defer p.mu.Unlock()
+	v, e := recoverRead(p, h.finish)
+	p.completeLocked(v, e)
+}
+
+var errReadPanicked = errors.New("fdbgo: panic resolving a pipelined read")
+
+// recoverRead runs fn on a read's own goroutine, turning a panic into the
+// read's error so the process survives, as the network thread does in C++.
+func recoverRead(p *PendingGet, fn func() ([]byte, error)) (val []byte, err error) {
+	pb := &panicBackstop{name: "pipelined read", db: p.tx.db}
+	if pb.run(func() { val, err = fn() }) {
+		return nil, errReadPanicked
+	}
+	return val, err
 }
 
 // lockOrWait takes mu. With an abort it does not block on mu: it waits for the
@@ -88,22 +110,25 @@ func (p *PendingGet) lockOrWait(abort <-chan struct{}) bool {
 		p.mu.Lock()
 		return true
 	}
-	for !p.mu.TryLock() {
-		ch := make(chan struct{})
-		if !p.settled.CompareAndSwap(nil, &ch) {
-			ch = *p.settled.Load()
-		}
-		if p.settledFlag.Load() {
-			return false
-		}
-		select {
-		case <-ch:
-			return false
-		case <-abort:
-			return false
+	if p.mu.TryLock() {
+		return true
+	}
+	ch := p.settled.Load()
+	if ch == nil {
+		c := make(chan struct{})
+		if p.settled.CompareAndSwap(nil, &c) {
+			ch = &c
+		} else {
+			ch = p.settled.Load()
 		}
 	}
-	return true
+	if !p.settledFlag.Load() {
+		select {
+		case <-*ch:
+		case <-abort:
+		}
+	}
+	return false
 }
 
 func (p *PendingGet) interruption() error {
@@ -191,7 +216,7 @@ func (p *PendingGet) full(ctx context.Context, abort <-chan struct{}) ([]byte, e
 	}
 	res := make(chan result, 1)
 	go func() {
-		v, e := p.resolveFull(ctx)
+		v, e := recoverRead(p, func() ([]byte, error) { return p.resolveFull(ctx) })
 		res <- result{v, e}
 	}()
 	select {

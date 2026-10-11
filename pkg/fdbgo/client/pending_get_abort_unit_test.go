@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -34,18 +35,12 @@ func TestPendingGet_AbortHandsOffTheRead(t *testing.T) {
 		t.Fatal("an aborted wait must report abandoned")
 	}
 	complete()
-	done := make(chan struct{})
-	go func() {
-		_, _ = p.Resolve()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the handed-off read never completed")
-	}
-	if !p.settledFlag.Load() {
-		t.Fatal("read not settled after completion")
+	deadline := time.Now().Add(10 * time.Second)
+	for !p.settledFlag.Load() { // only the hand-off goroutine can settle it
+		if time.Now().After(deadline) {
+			t.Fatal("the handed-off read never completed")
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 
@@ -83,4 +78,50 @@ func TestPendingGet_AbortWhileQueuedOnMu(t *testing.T) {
 	if _, _, abandoned := p.ResolveOrAbort(make(chan struct{})); abandoned {
 		t.Fatal("a settled read must return its memo, not abandon")
 	}
+}
+
+// newPanickingRead is a sent read whose reply timer fires at once and whose
+// re-send panics (a zero Transaction has no RYW cache).
+func newPanickingRead() *PendingGet {
+	return &PendingGet{
+		tx:          &Transaction{},
+		flushed:     true,
+		ctx:         context.Background(),
+		replyCh:     make(chan transport.Response),
+		replyHandle: &transport.ReplyHandle{},
+		timer:       getTimer(time.Millisecond),
+	}
+}
+
+// TestPendingGet_PanicIsTheReadsError pins that a panic in a re-send on the
+// read's own goroutine becomes the read's error instead of killing the process.
+func TestPendingGet_PanicIsTheReadsError(t *testing.T) {
+	t.Parallel()
+	p := newPanickingRead()
+	_, err, abandoned := p.ResolveOrAbort(make(chan struct{}))
+	if abandoned || err == nil || !strings.Contains(err.Error(), "panic") {
+		t.Fatalf("ResolveOrAbort = %v, abandoned=%v; want the panic as the read's error", err, abandoned)
+	}
+	if !p.settledFlag.Load() {
+		t.Fatal("read not settled after its re-send panicked")
+	}
+}
+
+// TestPendingGet_PanicReleasesTheRead pins that a panic on the caller's
+// goroutine still unlocks the read, so Commit's drain and Reset cannot hang.
+func TestPendingGet_PanicReleasesTheRead(t *testing.T) {
+	t.Parallel()
+	p := newPanickingRead()
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("expected the re-send to panic on the caller's goroutine")
+			}
+		}()
+		_, _ = p.Resolve()
+	}()
+	if !p.mu.TryLock() {
+		t.Fatal("a panic left the read locked")
+	}
+	p.mu.Unlock()
 }
