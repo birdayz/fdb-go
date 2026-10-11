@@ -12,7 +12,6 @@ package recordlayer
 import (
 	"bytes"
 	"compress/zlib"
-	"crypto/aes"
 	"crypto/cipher"
 	"encoding/binary"
 	"errors"
@@ -738,10 +737,7 @@ func (s *TransformedRecordSerializer) cipherBlock(keyNumber int32, op string) (c
 			return nil, t, securityError(op, fmt.Errorf("Wrong algorithm: AES or Rijndael required (key algorithm %s)", algorithm))
 		}
 	}
-	if t.keySize != 0 && len(key) != t.keySize {
-		return nil, t, securityError(op, fmt.Errorf("Wrong key size: %s takes a %d-byte key, got %d", name, t.keySize, len(key)))
-	}
-	block, err := aes.NewCipher(key)
+	block, err := t.newBlock(key)
 	if err != nil {
 		return nil, t, securityError(op, err)
 	}

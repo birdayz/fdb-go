@@ -218,6 +218,8 @@ var _ = Describe("RFC-257 TransformedRecordSerializer records are read and writt
 			{"AES/OFB/NoPadding", 16, false},
 			{"AES/OFB64/ISO10126Padding", 16, false},
 			{"AES_256/CFB/NoPadding", 32, false},
+			{"AES/CTS/NoPadding", 16, false},
+			{"OID.2.16.840.1.101.3.4.1.43", 32, false},
 			{"AES/GCM/NoPadding", 16, true},
 			{"AES", 16, true},
 		} {

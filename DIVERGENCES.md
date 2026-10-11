@@ -3880,20 +3880,22 @@ what Go writes, and in both a Java reader reads what Go writes:
 - **The ciphers are the AES transformations Java's serializer can run.** Java initializes every
   cipher with a 16-byte `IvParameterSpec` (`TransformedRecordSerializerJCE.java:67-72`,
   `:98-106`), so only an AES mode that takes that IV works. Go implements those modes from NIST
-  SP 800-38A and FIPS 81 (`pkg/recordlayer/jce_cipher.go`):
+  SP 800-38A, its addendum and FIPS 81 (`pkg/recordlayer/jce_cipher.go`):
   - CBC and PCBC, with NoPadding, PKCS5Padding or ISO10126Padding;
-  - CTR with NoPadding;
+  - CTS (CBC-CS3) and CTR, with NoPadding;
   - CFB and OFB, with a unit of 8 to 128 bits and any of those paddings;
   - the `AES_128`, `AES_192` and `AES_256` forms SunJCE registers (CBC, CFB and OFB, with
-    NoPadding), each with a key of that size.
+    NoPadding), each with a key of that size;
+  - the NIST AES OIDs (`2.16.840.1.101.3.4.1` and its CBC, OFB and CFB sub-arcs, with or without
+    `OID.`), alone or with a mode and padding.
 
-  Names parse as `Cipher.getInstance` parses them. Any other name fails the record with Java's
-  "encryption error" or "decryption error", its cause "unsupported cipher X". Java fails ECB, GCM,
-  KW, ChaCha20 and the 8-byte-block ciphers on that IV too. A block mode without padding fails an
-  unaligned record with "Input length not multiple of 16 bytes". Go does not implement AES/CTS,
-  the OID aliases of the `AES_n` forms, or a cipher a JCE provider other than SunJCE adds. A
-  padded CFB or OFB pads to the 16-byte block. That and the other modes are pinned against the
-  JVM by "reads and writes records under each AES mode Java's serializer runs"
+  Names parse as `Cipher.getInstance` parses them, and which it accepts, with which keys and
+  lengths, and the bytes of each mode were measured on JDK 21.0.9's SunJCE and pinned
+  (`jce_cipher_test.go`, "MatchesJDK"). Any other name fails the record with Java's "encryption
+  error" or "decryption error", its cause "unsupported cipher X". Java fails ECB, GCM, KW,
+  ChaCha20 and the 8-byte-block ciphers on that IV too. Go does not implement a cipher a JCE
+  provider other than SunJCE adds. Each mode family is also run across both engines by "reads and
+  writes records under each AES mode Java's serializer runs"
   (`conformance/transformed_serializer_conformance_test.go`). A key the key manager reports as
   another algorithm is refused as Java's AES cipher refuses it ("Wrong algorithm: AES or Rijndael
   required"; measured against the JVM for an HmacSHA256 key).
