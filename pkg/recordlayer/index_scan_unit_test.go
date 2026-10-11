@@ -419,10 +419,12 @@ var _ = Describe("Index Scan Unit Tests", func() {
 			Expect(cont.ToBytes()).To(BeNil())
 		})
 
-		It("returns BytesContinuation when lastCont is set", func() {
-			c := &indexCursor{lastCont: []byte{0x01, 0x02}}
+		It("returns the last row's continuation when lastCont is set", func() {
+			c := &indexCursor{lastCont: &keyValueContinuation{suffix: []byte{0x01, 0x02}}}
 			cont := c.limitContinuation()
-			Expect(cont.ToBytes()).To(Equal([]byte{0x01, 0x02}))
+			want, err := wrapContinuation([]byte{0x01, 0x02})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cont.ToBytes()).To(Equal(want))
 		})
 	})
 
@@ -434,7 +436,7 @@ var _ = Describe("Index Scan Unit Tests", func() {
 				prefixLength:  len(ss.FDBKey()),
 			}
 			fullKey := ss.Pack(tuple.Tuple{int64(42)})
-			cont, err := c.makeContinuation(fullKey)
+			cont, err := c.makeContinuation(fullKey).ToBytes()
 			Expect(err).NotTo(HaveOccurred())
 			// TO_NEW proto-wrapped (Java 4.11.1.0 default): the packed tuple suffix
 			// (without subspace prefix) round-trips back through the dual-reader.
@@ -449,7 +451,7 @@ var _ = Describe("Index Scan Unit Tests", func() {
 				prefixLength:  len(ss.FDBKey()),
 			}
 			shortKey := fdb.Key{0x01}
-			cont, err := c.makeContinuation(shortKey)
+			cont, err := c.makeContinuation(shortKey).ToBytes()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(unwrapContinuation(cont)).To(Equal([]byte(shortKey)))
 		})

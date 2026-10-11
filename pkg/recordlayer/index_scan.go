@@ -504,7 +504,7 @@ type indexCursor struct {
 	closed       bool
 	recordsRead  int // also this cursor's own free-initial-pass gate (Java's usedInitialPass)
 	prefixLength int
-	lastCont     []byte
+	lastCont     *keyValueContinuation
 	lastNoNext   RecordCursorResult[*IndexEntry]
 	hasNoNext    bool
 
@@ -574,7 +574,7 @@ func (c *indexCursor) advance(ctx context.Context) (RecordCursorResult[*IndexEnt
 		if c.iterator.Advance() {
 			return NewResultNoNext[*IndexEntry](
 				ReturnLimitReached,
-				&BytesContinuation{bytes: c.lastCont},
+				c.limitContinuation(),
 			), nil
 		}
 		// Advance() returns false on exhaustion OR error — check Get() for the stored
@@ -646,13 +646,10 @@ func (c *indexCursor) advance(ctx context.Context) (RecordCursorResult[*IndexEnt
 
 	c.recordsRead++
 
-	cont, err := c.makeContinuation(kv.Key)
-	if err != nil {
-		return RecordCursorResult[*IndexEntry]{}, err
-	}
+	cont := c.makeContinuation(kv.Key)
 	c.lastCont = cont
 
-	return NewResultWithValue(entry, &BytesContinuation{bytes: cont}), nil
+	return NewResultWithValue(entry, cont), nil
 }
 
 func (c *indexCursor) unpackKeyValue(kv fdb.KeyValue) (*IndexEntry, error) {
@@ -686,19 +683,21 @@ func (c *indexCursor) unpackKeyValue(kv fdb.KeyValue) (*IndexEntry, error) {
 // limitContinuation returns the appropriate continuation when a limit is hit.
 func (c *indexCursor) limitContinuation() RecordCursorContinuation {
 	if c.lastCont != nil {
-		return &BytesContinuation{bytes: c.lastCont}
+		return c.lastCont
 	}
 	return &StartContinuation{}
 }
 
-func (c *indexCursor) makeContinuation(key fdb.Key) ([]byte, error) {
+// makeContinuation aliases kv.Key without copying: RangeIterator never reuses
+// returned key bytes, so the lazily marshaled suffix stays valid.
+func (c *indexCursor) makeContinuation(key fdb.Key) *keyValueContinuation {
 	var keySuffix []byte
 	if len(key) > c.prefixLength {
 		keySuffix = key[c.prefixLength:]
 	} else {
 		keySuffix = key
 	}
-	return wrapContinuation(keySuffix)
+	return &keyValueContinuation{suffix: keySuffix}
 }
 
 func (c *indexCursor) initIterator() error {

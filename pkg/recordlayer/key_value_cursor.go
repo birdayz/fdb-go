@@ -58,6 +58,21 @@ func wrapContinuation(innerBytes []byte) ([]byte, error) {
 	return out, nil
 }
 
+// keyValueContinuation defers the proto marshal to ToBytes: most rows' continuations
+// are never serialized (Java's KeyValueCursorBase.Continuation.toBytes is lazy too).
+type keyValueContinuation struct {
+	suffix []byte
+}
+
+func (c *keyValueContinuation) ToBytes() ([]byte, error) {
+	return wrapContinuation(c.suffix)
+}
+
+// IsEnd mirrors wrapContinuation, which maps only a nil suffix to the end token.
+func (c *keyValueContinuation) IsEnd() bool {
+	return c.suffix == nil
+}
+
 // unwrapContinuation extracts the inner continuation bytes from a
 // potentially protobuf-wrapped continuation token. Handles both:
 // - New format: protobuf-wrapped with magic number

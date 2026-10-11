@@ -21,7 +21,8 @@ type RangeResult interface {
 
 // RangeIterator streams key-value pairs from a range read. Call Advance() before each
 // Get(); Get() is idempotent (returns the current element without advancing). Interface
-// for the same backend-substitution reason as RangeResult (RFC-109).
+// for the same backend-substitution reason as RangeResult (RFC-109). Returned key and
+// value bytes are owned by the caller and are never reused by the iterator.
 type RangeIterator interface {
 	Advance() bool
 	Get() (KeyValue, error)
