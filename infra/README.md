@@ -8,9 +8,9 @@ the orphan-container sweep — is described by `main.tf` + `cloud-init.yaml`, so
 the inputs below can stand up a byte-for-byte-equivalent runner. See **RFC-108** for the
 reproducibility/supply-chain rationale.
 
-> A public, no-Docker **reproducibility floor** (build + vet + the wire-compat unit tests)
-> runs on GitHub-hosted `ubuntu-latest` via `.github/workflows/hosted-smoke.yml`, so a fork
-> gets a green signal it can reproduce without this box. This runner is the *heavy* gates.
+> CI never runs `go test` or `go vet`: every test runs through Bazel on this fleet. The
+> GitHub-hosted `hosted-smoke.yml` floor was retired; its secret scan, Bazel-anchor check
+> and fresh-clone `go build ./...` moved into `ci.yml`'s `go install lane` job.
 
 ## The fleet, and what `gh-runner-drain-*` is NOT
 
@@ -133,8 +133,8 @@ script and exercises both provisioning branches with fixture commands.
 The hook refuses other repositories, fork PR/review events, and **all** PR
 `issue_comment` events (those payloads do not identify the head repository). It does
 not reject ordinary issues or their comments, and is not a blanket agent-job ban.
-`claude.yml` separately uses GitHub-hosted runners. Forks get `hosted-smoke.yml`; a
-maintainer can push a reviewed fork commit to a repository branch for the heavy suite.
+`claude.yml` separately uses GitHub-hosted runners. A maintainer can push a reviewed
+fork commit to a repository branch for the suite.
 
 `cloud-init` is `PER_INSTANCE`, and `user_data` is pinned by `ignore_changes`: this
 change does not update existing runners. Deploy from reviewed infrastructure inputs by
