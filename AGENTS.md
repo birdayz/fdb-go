@@ -43,3 +43,19 @@ dependents and is not the check the hook and CI make.
   or global build-tag changes. New ordinary targets enter the fast lane by default.
 - Report which lane ran, failures, and actual versus cached execution. A fast pass
   must never be described as full-suite verification.
+
+## Stacked pull requests
+
+Use `gh stack` for every stacked PR: a PR whose base is another PR's branch
+instead of `master`. Do not hand-roll stacks with plain git branches and manual
+retargeting.
+
+- Create and update: `gh stack init` / `gh stack add <branch>`, then
+  `gh stack submit` to push the branches and create or update the PRs.
+  `gh stack sync` keeps the local stack in step with GitHub; `gh stack view`
+  shows it.
+- After a lower PR changes or merges, restack with `gh stack` rather than
+  rebasing each branch by hand.
+- Merge with `gh stack merge <pr-number> --yes --squash`. It merges every PR up
+  to and including that one into `master` atomically. GitHub refuses
+  `gh pr merge` and the REST merge endpoint for a PR that is part of a stack.
