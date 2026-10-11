@@ -343,14 +343,9 @@ func executeScanWithRowLayout(
 
 		// When the PK uses RecordTypeKey() as its first component, FDB
 		// keys are prefixed with the record type discriminator. Prepend
-		// it so the scan range matches the actual key structure.
-		//
-		// After prepending, constrain TreeStart/TreeEnd endpoints to
-		// the record-type prefix. Without this, an inequality like
-		// order_id > 0 with HighEndpoint=TreeEnd would scan past
-		// this record type into other record types' key ranges —
-		// the subspace contains ALL record types interleaved by their
-		// RecordTypeKey prefix.
+		// it so the scan range matches the actual key structure; Prepend
+		// turns an open endpoint into the inclusive prefix, which keeps
+		// the scan inside this record type's keys.
 		types := p.GetRecordTypes()
 		var recordTypePrefix tuple.Tuple
 		if len(types) == 1 {
@@ -372,32 +367,15 @@ func executeScanWithRowLayout(
 			) (recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]], error) {
 				if len(recordTypePrefix) > 0 {
 					tupleRange = tupleRange.Prepend(recordTypePrefix)
-					// Clamp unbounded endpoints to the record-type prefix so
-					// the scan stays within this type's key range.
-					if tupleRange.HighEndpoint == recordlayer.EndpointTypeTreeEnd {
-						tupleRange.High = append(tuple.Tuple(nil), recordTypePrefix...)
-						tupleRange.HighEndpoint = recordlayer.EndpointTypeRangeInclusive
-					}
-					if tupleRange.LowEndpoint == recordlayer.EndpointTypeTreeStart {
-						tupleRange.Low = append(tuple.Tuple(nil), recordTypePrefix...)
-						tupleRange.LowEndpoint = recordlayer.EndpointTypeRangeInclusive
-					}
 				}
 
-				lowEndpoint := tupleRange.LowEndpoint
-				highEndpoint := tupleRange.HighEndpoint
-				if innerContinuation != nil {
-					if childProps.Reverse {
-						highEndpoint = recordlayer.EndpointTypeContinuation
-					} else {
-						lowEndpoint = recordlayer.EndpointTypeContinuation
-					}
-				}
+				// The range's own endpoints: the cursor applies the continuation
+				// after deriving the prefix length from them, as Java's does.
 				return store.ScanRecordsInRange(
 					tupleRange.Low,
 					tupleRange.High,
-					lowEndpoint,
-					highEndpoint,
+					tupleRange.LowEndpoint,
+					tupleRange.HighEndpoint,
 					innerContinuation,
 					childProps,
 				), nil

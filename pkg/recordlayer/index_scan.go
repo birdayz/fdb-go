@@ -128,23 +128,25 @@ func TupleRangePrefixString(token string) TupleRange {
 }
 
 // Prepend prepends a tuple prefix to both Low and High bounds.
-// Matches Java's TupleRange.prepend(Tuple).
+// Matches Java's TupleRange.prepend(Tuple) (TupleRange.java:160-186): an open
+// bound becomes the prefix itself, inclusive.
 func (r TupleRange) Prepend(prefix tuple.Tuple) TupleRange {
-	prependTuple := func(t tuple.Tuple) tuple.Tuple {
-		if t == nil {
-			return prefix
-		}
+	join := func(t tuple.Tuple) tuple.Tuple {
 		result := make(tuple.Tuple, 0, len(prefix)+len(t))
-		result = append(result, prefix...)
-		result = append(result, t...)
-		return result
+		return append(append(result, prefix...), t...)
 	}
-	return TupleRange{
-		Low:          prependTuple(r.Low),
-		High:         prependTuple(r.High),
-		LowEndpoint:  r.LowEndpoint,
-		HighEndpoint: r.HighEndpoint,
+	out := TupleRange{LowEndpoint: r.LowEndpoint, HighEndpoint: r.HighEndpoint}
+	if r.Low == nil {
+		out.Low, out.LowEndpoint = prefix, EndpointTypeRangeInclusive
+	} else {
+		out.Low = join(r.Low)
 	}
+	if r.High == nil {
+		out.High, out.HighEndpoint = prefix, EndpointTypeRangeInclusive
+	} else {
+		out.High = join(r.High)
+	}
+	return out
 }
 
 // ToFDBRange converts this TupleRange to an fdb.KeyRange relative to a subspace.
@@ -390,6 +392,9 @@ func (store *FDBRecordStore) scanIndexByType(
 			return m.ScanByGroup(scanRange, continuation, scanProperties)
 		case *bitmapValueIndexMaintainer:
 			return m.ScanByGroup(scanRange, continuation, scanProperties)
+		case *atomicMutationIndexMaintainer:
+			// BY_GROUP is the only scan type Java's AtomicMutationIndexMaintainer.scan accepts.
+			return m.Scan(scanRange, continuation, scanProperties)
 		default:
 			return &errorCursor[*IndexEntry]{
 				err: fmt.Errorf("index %q (type %s) does not support BY_GROUP scan", index.Name, index.Type),
@@ -503,6 +508,7 @@ type indexCursor struct {
 	iterator     rangeIterator
 	closed       bool
 	recordsRead  int // also this cursor's own free-initial-pass gate (Java's usedInitialPass)
+	bounds       kvScanBounds
 	prefixLength int
 	lastCont     *keyValueContinuation
 	lastNoNext   RecordCursorResult[*IndexEntry]
@@ -521,6 +527,7 @@ func newIndexCursor(
 	continuation []byte,
 	scanProps ScanProperties,
 ) *indexCursor {
+	bounds := newKVScanBounds(indexSubspace, tupleRange.Low, tupleRange.High, tupleRange.LowEndpoint, tupleRange.HighEndpoint)
 	return &indexCursor{
 		index:         index,
 		indexSubspace: indexSubspace,
@@ -528,7 +535,8 @@ func newIndexCursor(
 		tupleRange:    tupleRange,
 		continuation:  continuation,
 		scanProps:     scanProps,
-		prefixLength:  len(indexSubspace.FDBKey()),
+		bounds:        bounds,
+		prefixLength:  bounds.prefixLength,
 		scanState:     resolveScanLimiterState(scanProps.ExecuteProperties),
 	}
 }
@@ -646,7 +654,10 @@ func (c *indexCursor) advance(ctx context.Context) (RecordCursorResult[*IndexEnt
 
 	c.recordsRead++
 
-	cont := c.makeContinuation(kv.Key)
+	cont, err := c.makeContinuation(kv.Key)
+	if err != nil {
+		return RecordCursorResult[*IndexEntry]{}, err
+	}
 	c.lastCont = cont
 
 	return NewResultWithValue(entry, cont), nil
@@ -690,76 +701,19 @@ func (c *indexCursor) limitContinuation() RecordCursorContinuation {
 
 // makeContinuation aliases kv.Key without copying: RangeIterator never reuses
 // returned key bytes, so the lazily marshaled suffix stays valid.
-func (c *indexCursor) makeContinuation(key fdb.Key) *keyValueContinuation {
-	return &keyValueContinuation{suffix: keySuffix(key, c.prefixLength)}
+func (c *indexCursor) makeContinuation(key fdb.Key) (*keyValueContinuation, error) {
+	suffix, err := keySuffix(key, c.prefixLength)
+	if err != nil {
+		return nil, err
+	}
+	return &keyValueContinuation{suffix: suffix}, nil
 }
 
 func (c *indexCursor) initIterator() error {
-	// Compute begin from TupleRange low endpoint
-	var begin fdb.Key
-	switch c.tupleRange.LowEndpoint {
-	case EndpointTypeTreeStart:
-		begin = c.indexSubspace.FDBKey()
-	case EndpointTypeRangeInclusive:
-		begin = c.indexSubspace.Pack(c.tupleRange.Low)
-	case EndpointTypeRangeExclusive:
-		packed := c.indexSubspace.Pack(c.tupleRange.Low)
-		var err error
-		begin, err = fdb.Strinc(packed)
-		if err != nil {
-			return fmt.Errorf("strinc for exclusive low endpoint: %w", err)
-		}
-	case EndpointTypePrefixString:
-		packed := c.indexSubspace.Pack(c.tupleRange.Low)
-		begin = packed[:len(packed)-1]
-	default:
-		begin = c.indexSubspace.FDBKey()
+	rng, err := c.bounds.keyRange(c.continuation, c.scanProps.IsReverse())
+	if err != nil {
+		return err
 	}
-
-	// Compute end from TupleRange high endpoint
-	var end fdb.Key
-	switch c.tupleRange.HighEndpoint {
-	case EndpointTypeTreeEnd:
-		_, endKey := c.indexSubspace.FDBRangeKeys()
-		end = endKey.FDBKey()
-	case EndpointTypeRangeInclusive:
-		packed := c.indexSubspace.Pack(c.tupleRange.High)
-		end = append(packed, 0xFF)
-	case EndpointTypeRangeExclusive:
-		end = c.indexSubspace.Pack(c.tupleRange.High)
-	case EndpointTypePrefixString:
-		packed := c.indexSubspace.Pack(c.tupleRange.High)
-		stripped := packed[:len(packed)-1]
-		newLen := len(stripped)
-		for newLen >= 1 && stripped[newLen-1] == 0xFF {
-			newLen--
-		}
-		if newLen == 0 {
-			end = fdb.Key{0xFF}
-		} else {
-			dest := make([]byte, newLen)
-			copy(dest, stripped[:newLen])
-			dest[newLen-1]++
-			end = dest
-		}
-	default:
-		_, endKey := c.indexSubspace.FDBRangeKeys()
-		end = endKey.FDBKey()
-	}
-
-	// Apply continuation — overrides one endpoint
-	if c.continuation != nil {
-		innerCont := unwrapContinuation(c.continuation)
-		fullKey := append(append(fdb.Key(nil), c.indexSubspace.FDBKey()...), innerCont...)
-
-		if c.scanProps.IsReverse() {
-			end = fullKey // exclusive (FDB range end is exclusive)
-		} else {
-			begin = append(fullKey, 0x00) // start after the continuation key
-		}
-	}
-
-	rng := fdb.KeyRange{Begin: begin, End: end}
 	options := fdb.RangeOptions{
 		Mode:    c.scanProps.CursorStreamingMode.ToFDB(),
 		Reverse: c.scanProps.IsReverse(),

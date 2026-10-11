@@ -1663,23 +1663,12 @@ func (store *FDBRecordStore) isKeyInIndexBuildRange(index *Index, primaryKey tup
 	return irs.ContainsKey(store.context.Transaction(), primaryKey.Pack())
 }
 
-// ScanRecords scans all records in the store.
-// For forward scans, continuation sets the low endpoint (start after last returned key).
-// For reverse scans, continuation sets the high endpoint (end before last returned key).
-// Matches Java's KeyValueCursorBase behavior.
+// ScanRecords scans all records in the store, resuming after continuation's key.
+// Matches Java's FDBRecordStoreBase.scanRecords(continuation, scanProperties).
 func (store *FDBRecordStore) ScanRecords(continuation []byte, scanProperties ScanProperties) RecordCursor[*FDBStoredRecord[proto.Message]] {
-	lowEndpoint := EndpointTypeTreeStart
-	highEndpoint := EndpointTypeTreeEnd
-	if continuation != nil {
-		if scanProperties.IsReverse() {
-			highEndpoint = EndpointTypeContinuation
-		} else {
-			lowEndpoint = EndpointTypeContinuation
-		}
-	}
 	// EventScanRecords is recorded by ScanRecordsInRange, not here — see its
 	// doc-comment for why the innermost method is the only recording site.
-	return store.ScanRecordsInRange(nil, nil, lowEndpoint, highEndpoint, continuation, scanProperties)
+	return store.ScanRecordsInRange(nil, nil, EndpointTypeTreeStart, EndpointTypeTreeEnd, continuation, scanProperties)
 }
 
 // ScanRecordsByType scans records filtered to a specific record type.
@@ -1696,20 +1685,9 @@ func (store *FDBRecordStore) ScanRecordsByType(recordTypeName string, continuati
 		// Use GetRecordTypeKey() to respect explicit keys from SetRecordTypeKey().
 		// Matches Java's RecordType.getRecordTypeKey().
 		rtk := recordType.GetRecordTypeKey()
-		lowEP := EndpointTypeRangeInclusive
-		highEP := EndpointTypeRangeInclusive
-		if len(continuation) > 0 {
-			// Match ScanRecords: reverse scans narrow the high endpoint,
-			// forward scans narrow the low endpoint.
-			if scanProperties.IsReverse() {
-				highEP = EndpointTypeContinuation
-			} else {
-				lowEP = EndpointTypeContinuation
-			}
-		}
 		return store.ScanRecordsInRange(
 			tuple.Tuple{rtk}, tuple.Tuple{rtk},
-			lowEP, highEP,
+			EndpointTypeRangeInclusive, EndpointTypeRangeInclusive,
 			continuation, scanProperties,
 		)
 	}
@@ -1772,10 +1750,8 @@ func (store *FDBRecordStore) ScanRecordsInRange(
 	continuation []byte,
 	scanProperties ScanProperties,
 ) RecordCursor[*FDBStoredRecord[proto.Message]] {
-	// Calculate the prefix length for proper continuation handling
-	// This is the length of the records subspace prefix
 	recordsSubspace := store.recordsSubspace
-	prefixLength := len(recordsSubspace.FDBKey())
+	bounds := newKVScanBounds(recordsSubspace, low, high, lowEndpoint, highEndpoint)
 
 	return instrumentCursor(store.context.Timer(), EventScanRecords, &keyValueCursor{
 		store:               store,
@@ -1785,7 +1761,9 @@ func (store *FDBRecordStore) ScanRecordsInRange(
 		highEndpoint:        highEndpoint,
 		continuation:        continuation,
 		scanProperties:      scanProperties,
-		prefixLength:        prefixLength,
+		keyPrefixLength:     len(recordsSubspace.Bytes()),
+		bounds:              bounds,
+		prefixLength:        bounds.prefixLength,
 		scanState:           resolveScanLimiterState(scanProperties.ExecuteProperties),
 		recordsSubspace:     recordsSubspace,
 		storeRecordVersions: store.metaData.IsStoreRecordVersions(),

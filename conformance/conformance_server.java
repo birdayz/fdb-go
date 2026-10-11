@@ -58,6 +58,7 @@ class ConformanceServer {
         new MaxEverVersionIndexSteps(),
         new PermutedMinMaxIndexSteps(),
         new IndexContinuationSteps(),
+        new IndexContinuationRangeSteps(),
         new TypedRecordSteps(),
         new MetaDataProtoSteps(),
         new ErrorSteps(),

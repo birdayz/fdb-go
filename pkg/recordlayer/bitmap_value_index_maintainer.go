@@ -504,6 +504,7 @@ type bitmapKVCursor struct {
 	iterator     rangeIterator
 	closed       bool
 	recordsRead  int // also this cursor's own free-initial-pass gate (Java's usedInitialPass)
+	bounds       kvScanBounds
 	prefixLength int
 	lastCont     []byte
 
@@ -521,6 +522,7 @@ func newBitmapKVCursor(
 	scanProperties ScanProperties,
 	entrySize int64,
 ) *bitmapKVCursor {
+	bounds := newKVScanBounds(indexSubspace, tupleRange.Low, tupleRange.High, tupleRange.LowEndpoint, tupleRange.HighEndpoint)
 	return &bitmapKVCursor{
 		index:         index,
 		indexSubspace: indexSubspace,
@@ -529,24 +531,16 @@ func newBitmapKVCursor(
 		continuation:  continuation,
 		scanProps:     scanProperties,
 		entrySize:     entrySize,
-		prefixLength:  len(indexSubspace.FDBKey()),
+		bounds:        bounds,
+		prefixLength:  bounds.prefixLength,
 		scanState:     resolveScanLimiterState(scanProperties.ExecuteProperties),
 	}
 }
 
 func (c *bitmapKVCursor) initIterator() error {
-	rng := c.tupleRange.ToFDBRange(c.indexSubspace)
-
-	// Apply continuation — overrides one endpoint.
-	if c.continuation != nil {
-		innerCont := unwrapContinuation(c.continuation)
-		fullKey := append(append(fdb.Key(nil), c.indexSubspace.FDBKey()...), innerCont...)
-
-		if c.scanProps.IsReverse() {
-			rng.End = fullKey
-		} else {
-			rng.Begin = append(fullKey, 0x00)
-		}
+	rng, err := c.bounds.keyRange(c.continuation, c.scanProps.IsReverse())
+	if err != nil {
+		return err
 	}
 
 	options := fdb.RangeOptions{
@@ -685,7 +679,11 @@ func (c *bitmapKVCursor) limitContinuation() RecordCursorContinuation {
 }
 
 func (c *bitmapKVCursor) makeContinuation(key fdb.Key) ([]byte, error) {
-	return wrapContinuation(keySuffix(key, c.prefixLength))
+	suffix, err := keySuffix(key, c.prefixLength)
+	if err != nil {
+		return nil, err
+	}
+	return wrapContinuation(suffix)
 }
 
 func (c *bitmapKVCursor) Close() error {

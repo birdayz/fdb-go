@@ -822,10 +822,9 @@ func spfreshScanRecordBatches(
 
 // spfreshScanRecordRange is spfreshScanRecordBatches bounded to one half-open
 // primary-key sub-range [low, high) — the unit of RFC-103 parallel staging. The
-// high bound is held CONSTANT across every continuation-resumed batch; only the
-// low end advances (lowEP -> EndpointTypeContinuation once a batch has been
-// read), so a resumed batch can never escape its shard's range. ScanRecords
-// forces highEP=TreeEnd on a continuation (store.go); a sharded scan must NOT.
+// high bound is held CONSTANT across every continuation-resumed batch; the
+// continuation only replaces the low end, so a resumed batch can never escape
+// its shard's range.
 // low/high nil with TreeStart/TreeEnd endpoints reproduces the full-range scan.
 func spfreshScanRecordRange(
 	ctx context.Context,
@@ -875,11 +874,7 @@ func spfreshScanRecordRange(
 			// Hold the shard's high bound across every batch; advance only the
 			// low end via the continuation (the per-shard fence is the read
 			// conflict range over [low, high), which must not grow on resume).
-			scanLowEP := lowEP
-			if continuation != nil {
-				scanLowEP = recordlayer.EndpointTypeContinuation
-			}
-			cursor := store.ScanRecordsInRange(low, high, scanLowEP, highEP, continuation, props)
+			cursor := store.ScanRecordsInRange(low, high, lowEP, highEP, continuation, props)
 			defer func() { _ = cursor.Close() }()
 			for {
 				result, cerr := cursor.OnNext(ctx)

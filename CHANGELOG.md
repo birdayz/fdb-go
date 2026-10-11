@@ -32,6 +32,7 @@ project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (
   classification in `pkg/fdbgo/fdb/OPTIONS.md` still holds against `libfdb_c` 7.3.77, with one change:
   `Transaction.SetTimeout` outside [0, INT_MAX] now records a deferred 2006
   (`invalid_option_value`) like libfdb_c, where a negative value used to disable the timeout (0 still disables it).
+- **Continuation tokens:** key-value cursor tokens (index, COUNT/atomic, BITMAP_VALUE and record scans) strip Java's range common prefix (`KeyValueCursorBase.calculatePrefixLength`), so a token is valid only for the range that minted it, as in Java.
 - **DSN booleans are strictly `true`/`false`** (any case): a bare `?flag`, `1`/`0`, `t`/`f`,
   `yes`/`no` and `on`/`off` now fail at open with 22023.
 - **Required versions:** Java `fdb-record-layer-core` **4.14.2.0**, FDB C++ client **7.3.77**, Go
@@ -44,6 +45,7 @@ project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (
   and tags now apply to every statement transaction, autocommit and read-only ones included.
 
 ### Changed
+- `EndpointTypeContinuation` is internal; scan callers supply the original range endpoints and pass the continuation separately.
 - The client handles FDB's ENDPOINT_NOT_FOUND reply as libfdb_c does: a request to a role the server no
   longer hosts fails at once as maybe-delivered instead of waiting for the RPC timeout, without closing
   the connection, and later reads, GRVs, location lookups and commits skip that endpoint.
@@ -248,6 +250,11 @@ project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (
 ### Fixed
 - The client's `OpenDatabaseCoordRequest` carries the coordinator list, hostnames and known `ClientDBInfo` id, byte for byte as libfdb_c 7.3.77. Without the list, a restarted coordinator that heard from a Go client first stopped serving every client, libfdb_c included, and Go transactions waited until their deadline. The client now long-polls the coordinators for topology changes, as libfdb_c does, instead of polling every 5 s.
 - `tools/clientbench` provides separate Go/CGo measurement executables, counterbalanced campaigns and paired latency/window/drained/shutdown CPU analysis with reproducible R3-design instructions; native builds require the explicit `libfdbc` tag.
+- Record scans with an inclusive high bound end at `pack(high)+\xFF`, as Java's `TupleRange.toRange`, not at `strinc(pack(high))`.
+- Key-value cursors reject invalid endpoint pairs (e.g. a TREE_END low, mismatched PREFIX_STRING bounds) with an error, as Java's `TupleRange.toRange` does, instead of scanning the whole subspace.
+- Record and COUNT/atomic cursors implement PREFIX_STRING ranges.
+- Reverse `ScanRecordsByType` scans preserve empty non-nil continuations as positions before the range prefix, returning no rows as Java does.
+- Key-value cursor continuations on narrowed ranges are byte-identical to Java's, and resuming a Java token stays inside the range. Previously Go resuming a Java token could return rows outside the range, and Java resuming a Go token rebuilt a key with the shared prefix doubled. `TupleRange.Prepend` turns an open bound into the inclusive prefix as Java does, and atomic aggregate indexes (COUNT, SUM, ...) accept `BY_GROUP` scans.
 
 ## [v0.1.0] - 2026-08-26
 

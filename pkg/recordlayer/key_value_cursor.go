@@ -20,24 +20,11 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// continuationMagicNumber is the magic number Java's KeyValueCursorBase writes into
-// the protobuf-wrapped continuation (SerializationMode.TO_NEW) so the reader can
-// distinguish a wrapped token from a legacy raw-byte token.
+// continuationMagicNumber identifies Java's protobuf-wrapped key-value tokens.
 const continuationMagicNumber int64 = 6_773_487_359_078_157_740
 
-// wrapContinuation produces a protobuf-wrapped continuation token (TO_NEW format),
-// matching Java Record Layer 4.11.1.0: KeyValueCursorBase.Builder defaults
-// SerializationMode to TO_NEW and no production path selects TO_OLD, so Java emits
-// KeyValueCursorContinuation{inner_continuation, magic_number} — never raw bytes.
-// Go previously emitted raw bytes, a wire divergence (a Go-written continuation read
-// back by Java, or compared against Java's, would not round-trip identically).
-//
-// innerBytes is the FDB key suffix relative to the scan subspace and is always a
-// real (non-end) position — the end-of-scan case uses EndContinuation, never this.
-// An empty-but-present suffix still yields a proto carrying the magic number, which
-// is wire-distinguishable from an end/start token (nil), matching Java and avoiding
-// the old raw format's ambiguity where an empty suffix produced an empty, end-looking
-// token. The dual-read unwrapContinuation still accepts legacy raw tokens.
+// wrapContinuation matches Java's TO_NEW format: a suffix relative to the range's
+// common prefix. An empty-but-present suffix is a real position, distinct from nil.
 func wrapContinuation(innerBytes []byte) ([]byte, error) {
 	// A nil suffix is an end position; Java returns the end marker, not a wrapped
 	// token. The cursor already represents end via EndContinuation, so this is
@@ -58,15 +45,6 @@ func wrapContinuation(innerBytes []byte) ([]byte, error) {
 	return out, nil
 }
 
-// keySuffix is Java's lastKey[prefixLength:] (KeyValueCursorBase.java:233-235): a key
-// equal to the prefix is an empty but present suffix. A shorter key is kept whole.
-func keySuffix(key []byte, prefixLength int) []byte {
-	if len(key) >= prefixLength {
-		return key[prefixLength:]
-	}
-	return key
-}
-
 // keyValueContinuation defers the proto marshal to ToBytes: most rows' continuations
 // are never serialized (Java's KeyValueCursorBase.Continuation.toBytes is lazy too).
 type keyValueContinuation struct {
@@ -82,28 +60,17 @@ func (c *keyValueContinuation) IsEnd() bool {
 	return c.suffix == nil
 }
 
-// unwrapContinuation extracts the inner continuation bytes from a
-// potentially protobuf-wrapped continuation token. Handles both:
-// - New format: protobuf-wrapped with magic number
-// - Old format: raw bytes (returned as-is for backward compatibility)
-// Matches Java's KeyValueCursorBase.Continuation.getInnerContinuation()
+// unwrapContinuation matches Java's getInnerContinuation: only a successfully
+// decoded proto carrying the magic number is unwrapped; other bytes stay intact.
 func unwrapContinuation(rawBytes []byte) []byte {
 	if rawBytes == nil {
 		return nil
 	}
 	msg := &gen.KeyValueCursorContinuation{}
 	if err := UnmarshalVTAsJava(msg, rawBytes); err != nil {
-		// Parse failed — treat as old-format raw bytes. This restart-free
-		// tolerance is Java-verified, NOT the swallow-and-restart bug class:
-		// KeyValueCursorBase.Continuation.getInnerContinuation
-		// (KeyValueCursorBase.java:218-223) deliberately returns rawBytes on
-		// InvalidProtocolBufferException so TO_OLD-serialized tokens keep
-		// working across the TO_NEW migration.
 		return rawBytes
 	}
 	if msg.MagicNumber == nil || *msg.MagicNumber != continuationMagicNumber {
-		// Magic number doesn't match — treat as old-format raw bytes
-		// (KeyValueCursorBase.java:212-216, same deliberate tolerance).
 		return rawBytes
 	}
 	return msg.InnerContinuation
@@ -138,7 +105,9 @@ type keyValueCursor struct {
 	recordsScanned int // Records scanned by THIS cursor (including skipped ones) — the
 	// local "free initial pass" gate (Java's per-cursor CursorLimitManager.usedInitialPass);
 	// always allows this cursor's own first scan even if scanState is already past its budget.
-	prefixLength int // Length of the subspace prefix for continuation handling
+	keyPrefixLength int // records subspace length: where a key's primary-key tuple starts
+	bounds          kvScanBounds
+	prefixLength    int // continuation prefix length (Java's calculatePrefixLength)
 
 	// scanState is the (possibly shared) scanned-records/scanned-bytes/time
 	// counter set that ScannedRecordsLimit/ScannedBytesLimit/TimeLimit are
@@ -311,7 +280,7 @@ func (c *keyValueCursor) readNextRecord(ctx context.Context) (*FDBStoredRecord[p
 
 	recordsSubspace := c.recordsSubspace
 
-	prefixLen := c.prefixLength
+	prefixLen := c.keyPrefixLength
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -445,11 +414,11 @@ func (c *keyValueCursor) peekVersionKey(recordsSubspace subspace.Subspace, prima
 	if !ok {
 		return nil, nil
 	}
-	if len(kv.Key) <= c.prefixLength {
+	if len(kv.Key) <= c.keyPrefixLength {
 		c.bufferedKV = &kv
 		return nil, nil
 	}
-	tupleBytes := kv.Key[c.prefixLength:]
+	tupleBytes := kv.Key[c.keyPrefixLength:]
 	suffix, pkEnd, err := tuplefast.SplitKeySuffix(tupleBytes)
 	if err != nil {
 		c.bufferedKV = &kv
@@ -545,11 +514,11 @@ func (c *keyValueCursor) readNextBareRecord(ctx context.Context) (*FDBStoredReco
 	if !ok {
 		return nil, nil, nil // exhausted
 	}
-	if len(kv.Key) <= c.prefixLength {
-		return nil, nil, fmt.Errorf("record cursor: key length %d <= subspace prefix length %d (malformed or out-of-range key under the records subspace)", len(kv.Key), c.prefixLength)
+	if len(kv.Key) <= c.keyPrefixLength {
+		return nil, nil, fmt.Errorf("record cursor: key length %d <= subspace prefix length %d (malformed or out-of-range key under the records subspace)", len(kv.Key), c.keyPrefixLength)
 	}
 	// The whole tuple after the prefix is the primary key — there is no suffix.
-	primaryKey, pkErr := tuplefast.Unpack(kv.Key[c.prefixLength:])
+	primaryKey, pkErr := tuplefast.Unpack(kv.Key[c.keyPrefixLength:])
 	if pkErr != nil {
 		return nil, nil, fmt.Errorf("failed to unpack legacy primary key: %w", pkErr)
 	}
@@ -611,11 +580,11 @@ func (c *keyValueCursor) readSplitRecord(
 			break // Iterator exhausted
 		}
 
-		if len(kv.Key) <= c.prefixLength {
+		if len(kv.Key) <= c.keyPrefixLength {
 			c.bufferedKV = &kv
 			break
 		}
-		chunkTuple := kv.Key[c.prefixLength:]
+		chunkTuple := kv.Key[c.keyPrefixLength:]
 		suffix, chunkPKEnd, splitErr := tuplefast.SplitKeySuffix(chunkTuple)
 		if splitErr != nil {
 			c.bufferedKV = &kv
@@ -773,7 +742,11 @@ func (c *keyValueCursor) nextKV() (fdb.KeyValue, bool, error) {
 
 // makeKeyContinuation creates a proto-wrapped continuation from an FDB key.
 func (c *keyValueCursor) makeKeyContinuation(key fdb.Key) ([]byte, error) {
-	cont, err := wrapContinuation(keySuffix(key, c.prefixLength))
+	suffix, err := keySuffix(key, c.prefixLength)
+	if err != nil {
+		return nil, err
+	}
+	cont, err := wrapContinuation(suffix)
 	if err != nil {
 		return nil, fmt.Errorf("failed to wrap continuation: %w", err)
 	}
@@ -828,69 +801,10 @@ func sameTuple(a, b tuple.Tuple) bool {
 
 // initIterator sets up the FDB range iterator
 func (c *keyValueCursor) initIterator() error {
-	recordsSubspace := c.store.subspace.Sub(RecordKey)
-
-	// Build range based on endpoints
-	var begin, end fdb.Key
-
-	// Handle low endpoint
-	switch c.lowEndpoint {
-	case EndpointTypeTreeStart:
-		begin = recordsSubspace.FDBKey()
-	case EndpointTypeRangeInclusive:
-		begin = recordsSubspace.Pack(c.low)
-	case EndpointTypeRangeExclusive:
-		packedKey := recordsSubspace.Pack(c.low)
-		// Use Strinc to skip past ALL keys with this prefix.
-		// append(0x00) is wrong because pack(pk)\x00 < pack(pk, suffix)
-		// so the boundary record would still be included.
-		// Matches Java's ByteArrayUtil.strinc() for exclusive low endpoints.
-		strincKey, strincErr := fdb.Strinc(packedKey)
-		if strincErr != nil {
-			return fmt.Errorf("failed to compute strinc for exclusive low endpoint: %w", strincErr)
-		}
-		begin = strincKey
-	case EndpointTypeContinuation:
-		if c.continuation != nil {
-			innerContinuation := unwrapContinuation(c.continuation)
-			fullKey := append(recordsSubspace.FDBKey(), innerContinuation...)
-			begin = append(fullKey, 0x00) // Start after the continuation key
-		} else {
-			begin = recordsSubspace.FDBKey()
-		}
-	default:
-		begin = recordsSubspace.Pack(c.low)
+	rng, err := c.bounds.keyRange(c.continuation, c.scanProperties.IsReverse())
+	if err != nil {
+		return err
 	}
-
-	// Handle high endpoint
-	switch c.highEndpoint {
-	case EndpointTypeTreeEnd:
-		_, endKey := recordsSubspace.FDBRangeKeys()
-		end = endKey.FDBKey()
-	case EndpointTypeRangeInclusive:
-		packedKey := recordsSubspace.Pack(c.high)
-		var strincErr error
-		end, strincErr = fdb.Strinc(packedKey)
-		if strincErr != nil {
-			return fmt.Errorf("failed to compute strinc for high endpoint: %w", strincErr)
-		}
-	case EndpointTypeRangeExclusive:
-		end = recordsSubspace.Pack(c.high)
-	case EndpointTypeContinuation:
-		if c.continuation != nil {
-			innerContinuation := unwrapContinuation(c.continuation)
-			fullKey := append(recordsSubspace.FDBKey(), innerContinuation...)
-			end = fullKey // exclusive: FDB won't return this key
-		} else {
-			_, endKey := recordsSubspace.FDBRangeKeys()
-			end = endKey.FDBKey()
-		}
-	default:
-		end = recordsSubspace.Pack(c.high)
-	}
-
-	// Create range
-	rng := fdb.KeyRange{Begin: begin, End: end}
 
 	// Get range options
 	options := fdb.RangeOptions{
