@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -42,6 +43,13 @@ const (
 )
 
 func newFdbUpCmd() *cobra.Command {
+	return newFdbUpCmdWithDocker(requireLocalDocker, runDocker, pullDockerImage)
+}
+
+func newFdbUpCmdWithDocker(checkLocal func(context.Context) error,
+	run func(context.Context, ...string) (string, error),
+	pull func(context.Context, string, io.Writer) error,
+) *cobra.Command {
 	var name, image, ctxName, keyspace, outputFmt string
 	var port int
 	c := &cobra.Command{
@@ -81,50 +89,61 @@ func newFdbUpCmd() *cobra.Command {
 			// Progress is chatter, not output — stderr, so that
 			// $(frl fdb up) captures only the cluster-file path.
 			progress := cmd.ErrOrStderr()
-			if _, err := exec.LookPath("docker"); err != nil {
-				return fmt.Errorf("docker not found on PATH: %w", err)
-			}
-			if err := requireLocalDocker(cmd.Context()); err != nil {
+			if err := checkLocal(cmd.Context()); err != nil {
 				return err
 			}
-			if running, err := dockerContainerExists(cmd.Context(), name); err != nil {
+			if running, err := dockerContainerExists(cmd.Context(), name, run); err != nil {
 				return err
 			} else if running {
 				return fmt.Errorf("container %q already exists; run `frl fdb down --name %s` first (or pick --name)", name, name)
 			}
 			// A first-run pull can take minutes; only Ctrl-C bounds it.
-			if err := ensureFdbImage(cmd.Context(), image, progress, runDocker, pullDockerImage); err != nil {
+			if err := ensureFdbImage(cmd.Context(), image, progress, run, pull); err != nil {
 				return err
 			}
 
+			instance := newFdbInstanceLabel()
 			ctx, cancel := context.WithTimeout(cmd.Context(), 2*time.Minute)
 			defer cancel()
-			// Remove a container this command created but could not finish starting.
+			// A name can be claimed by another invocation; the daemon-side label marks
+			// only our creation, even if the CLI died after the daemon created it.
 			defer func() {
 				if err != nil {
-					_, _ = runDocker(context.WithoutCancel(cmd.Context()), "rm", "-fv", name)
+					cleanupCtx := context.WithoutCancel(cmd.Context())
+					ids, _ := fdbContainersByLabel(cleanupCtx, run, instance)
+					for _, id := range ids {
+						_, _ = run(cleanupCtx, "rm", "-fv", id)
+					}
 				}
 			}()
 			fmt.Fprintf(progress, "Starting %s (container %q, 127.0.0.1:%d)...\n", image, name, port)
-			if o, err := runDocker(ctx, fdbRunArgs(name, image, port)...); err != nil {
+			if o, err := run(ctx, fdbRunArgs(name, image, instance, port)...); err != nil {
 				return fmt.Errorf("docker run: %w\n%s", err, o)
 			}
+			ids, err := fdbContainersByLabel(ctx, run, instance)
+			if err != nil {
+				return fmt.Errorf("resolve created container: %w", err)
+			}
+			if len(ids) != 1 {
+				return fmt.Errorf("resolve created container: found %d containers labeled %s, want 1", len(ids), instance)
+			}
+			containerID := ids[0]
 
 			// fdbcli is not reachable the instant the container starts; retry
 			// the one-time `configure new` until it takes.
 			fmt.Fprintln(progress, "Configuring (new single memory)...")
 			if err := retry(ctx, 15, 2*time.Second, func() error {
-				o, err := runDocker(ctx, "exec", name, "fdbcli", "--timeout", "5", "--exec", "configure new single memory")
+				o, err := run(ctx, "exec", containerID, "fdbcli", "--timeout", "5", "--exec", "configure new single memory")
 				return configureNewOutcome(o, err)
 			}); err != nil {
 				return fmt.Errorf("configure cluster (is the image healthy?): %w\n%s",
-					err, fdbStartupDiagnostics(cmd.Context(), runDocker, name))
+					err, fdbStartupDiagnostics(cmd.Context(), run, containerID))
 			}
 
 			fmt.Fprint(progress, "Waiting for the database to become available")
 			if err := retry(ctx, 30, 2*time.Second, func() error {
 				fmt.Fprint(progress, ".")
-				o, err := runDocker(ctx, "exec", name, "fdbcli", "--timeout", "5", "--exec", "status minimal")
+				o, err := run(ctx, "exec", containerID, "fdbcli", "--timeout", "5", "--exec", "status minimal")
 				if err != nil {
 					return err
 				}
@@ -135,11 +154,11 @@ func newFdbUpCmd() *cobra.Command {
 			}); err != nil {
 				fmt.Fprintln(progress)
 				return fmt.Errorf("database did not become available: %w\n%s",
-					err, fdbStartupDiagnostics(cmd.Context(), runDocker, name))
+					err, fdbStartupDiagnostics(cmd.Context(), run, containerID))
 			}
 			fmt.Fprintln(progress, " ready")
 
-			cluster, err := runDocker(ctx, "exec", name, "cat", "/var/fdb/fdb.cluster")
+			cluster, err := run(ctx, "exec", containerID, "cat", "/var/fdb/fdb.cluster")
 			if err != nil {
 				return fmt.Errorf("read container cluster file: %w\n%s", err, cluster)
 			}
@@ -232,7 +251,7 @@ func newFdbStatusCmd() *cobra.Command {
 			if _, err := exec.LookPath("docker"); err != nil {
 				return fmt.Errorf("docker not found on PATH: %w", err)
 			}
-			if ok, err := dockerContainerExists(cmd.Context(), name); err != nil {
+			if ok, err := dockerContainerExists(cmd.Context(), name, runDocker); err != nil {
 				return err
 			} else if !ok {
 				return fmt.Errorf("container %q is not running; `frl fdb up` to start it", name)
@@ -257,9 +276,9 @@ func fdbClusterString(port int) string {
 
 // The image's "host" mode advertises loopback; Docker still uses a bridge.
 // Matching ports lets host clients reach every advertised FDB role via NAT.
-func fdbRunArgs(name, image string, port int) []string {
+func fdbRunArgs(name, image, instanceLabel string, port int) []string {
 	return []string{
-		"run", "-d", "--name", name, "--network", "bridge",
+		"run", "-d", "--name", name, "--label", instanceLabel, "--network", "bridge",
 		"--publish", fmt.Sprintf("127.0.0.1:%d:%d", port, port),
 		"--env", "FDB_NETWORKING_MODE=host",
 		"--env", fmt.Sprintf("FDB_PORT=%d", port),
@@ -289,6 +308,31 @@ func fdbStartupDiagnostics(ctx context.Context,
 	}
 	return "container output:\n" + strings.TrimSpace(logs) +
 		"\nserver warnings and latest ratekeeper update:\n" + strings.TrimSpace(trace)
+}
+
+const fdbInstanceLabelKey = "dev.fdb.frl.instance"
+
+// newFdbInstanceLabel returns a key=value label unique to one `fdb up` invocation.
+func newFdbInstanceLabel() string {
+	return fdbInstanceLabelKey + "=" + rand.Text()
+}
+
+// fdbContainersByLabel lists full IDs of containers carrying instanceLabel.
+func fdbContainersByLabel(ctx context.Context, run func(context.Context, ...string) (string, error),
+	instanceLabel string,
+) ([]string, error) {
+	out, err := run(ctx, "ps", "-aq", "--no-trunc", "--filter", "label="+instanceLabel)
+	if err != nil {
+		return nil, fmt.Errorf("docker ps: %w\n%s", err, out)
+	}
+	var ids []string
+	for line := range strings.Lines(out) {
+		// Output includes stderr warnings; keep only full container IDs.
+		if id := strings.TrimSpace(line); len(id) == 64 && strings.Trim(id, "0123456789abcdef") == "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids, nil
 }
 
 // setContext upserts a context by name (updating its cluster file and keyspace)
@@ -328,6 +372,9 @@ func configureNewOutcome(output string, err error) error {
 }
 
 func requireLocalDocker(ctx context.Context) error {
+	if _, err := exec.LookPath("docker"); err != nil {
+		return fmt.Errorf("docker not found on PATH: %w", err)
+	}
 	endpoint := os.Getenv("DOCKER_HOST")
 	// With DOCKER_CONTEXT set, ask the CLI which endpoint it actually selects.
 	if endpoint == "" || os.Getenv("DOCKER_CONTEXT") != "" {
@@ -391,8 +438,10 @@ func runDocker(ctx context.Context, args ...string) (string, error) {
 
 // dockerContainerExists reports whether a container with the given name exists
 // (running or stopped).
-func dockerContainerExists(ctx context.Context, name string) (bool, error) {
-	out, err := runDocker(ctx, "ps", "-a", "--filter", "name=^/"+name+"$", "--format", "{{.Names}}")
+func dockerContainerExists(ctx context.Context, name string,
+	run func(context.Context, ...string) (string, error),
+) (bool, error) {
+	out, err := run(ctx, "ps", "-a", "--filter", "name=^/"+name+"$", "--format", "{{.Names}}")
 	if err != nil {
 		return false, err
 	}

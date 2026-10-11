@@ -1,4 +1,6 @@
 fdb-record-layer/
 .claude/worktrees
-website
+website/public
+website/resources
+website/themes
 tools/bazelscaleset

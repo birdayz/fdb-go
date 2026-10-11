@@ -44,18 +44,14 @@ opening existing data; older Go SQL storage is not automatically migrated.
 ## Getting started
 
 Requires the Go toolchain specified in [go.mod](go.mod) and a running Docker daemon.
-From a clone of this repository:
+From a clone of this repository, build the CLI, start and configure a disposable
+single-node cluster (`frl fdb up` prints its cluster-file path), then run the
+complete SQL example and the record-store example:
 
 ```sh
-# Build the CLI from this checkout.
-go build -o frl ./cmd/frl
-
-# Start AND configure a disposable single-node cluster.
-# stdout is the cluster-file path.
-FDB_CLUSTER_FILE="$(./frl fdb up)" && export FDB_CLUSTER_FILE
-
-# Run the complete SQL example, or the record-store example.
-go run ./example/sql
+go build -o frl ./cmd/frl &&
+FDB_CLUSTER_FILE="$(./frl fdb up)" && export FDB_CLUSTER_FILE &&
+go run ./example/sql &&
 go run ./example
 ```
 
