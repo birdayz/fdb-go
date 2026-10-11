@@ -9,6 +9,8 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -28,7 +30,7 @@ var _ = Describe("Legacy format compatibility", func() {
 	// split/version settings (and a fixed metadata version so a later open does not
 	// trigger an index rebuild — only a format upgrade).
 	legacyMetaData := func(split, versions bool) *RecordMetaData {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -39,8 +41,8 @@ var _ = Describe("Legacy format compatibility", func() {
 		return md
 	}
 
-	order := func(id int64, price int32) *gen.Order {
-		return &gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(price)}
+	order := func(id int64, price int32) *demopb.Order {
+		return &demopb.Order{OrderId: proto.Int64(id), Price: proto.Int32(price)}
 	}
 
 	// completeGlobalFor returns a deterministic, non-incomplete 10-byte global version.
@@ -52,7 +54,7 @@ var _ = Describe("Legacy format compatibility", func() {
 	// legacy on-disk locations, bypassing the modern write path. This simulates a
 	// store created by old Java code. Versions (if enabled) are written to the
 	// separate RecordVersionKey(8) subspace as raw 12-byte FDBRecordVersion bytes.
-	layDownLegacy := func(rtx *FDBRecordContext, ss subspace.Subspace, md *RecordMetaData, formatVersion int32, omit bool, orders []*gen.Order) {
+	layDownLegacy := func(rtx *FDBRecordContext, ss subspace.Subspace, md *RecordMetaData, formatVersion int32, omit bool, orders []*demopb.Order) {
 		tx := rtx.Transaction()
 
 		fv := formatVersion
@@ -105,7 +107,7 @@ var _ = Describe("Legacy format compatibility", func() {
 		It("reads bare-key records + subspace-8 versions (format 4, omit=true)", func() {
 			ss := specSubspace()
 			md := legacyMetaData(false, true)
-			orders := []*gen.Order{order(1, 100), order(2, 200), order(3, 300)}
+			orders := []*demopb.Order{order(1, 100), order(2, 200), order(3, 300)}
 
 			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				layDownLegacy(rtx, ss, md, 4, true, orders)
@@ -122,7 +124,7 @@ var _ = Describe("Legacy format compatibility", func() {
 				rec, lErr := store.LoadRecord(tuple.Tuple{int64(2)})
 				Expect(lErr).NotTo(HaveOccurred())
 				Expect(rec).NotTo(BeNil())
-				Expect(rec.Record.(*gen.Order).GetPrice()).To(Equal(int32(200)))
+				Expect(rec.Record.(*demopb.Order).GetPrice()).To(Equal(int32(200)))
 				Expect(rec.Version).NotTo(BeNil())
 				Expect(rec.Version.IsComplete()).To(BeTrue())
 				wantVer, _ := NewCompleteVersion(completeGlobalFor(1), 1)
@@ -142,7 +144,7 @@ var _ = Describe("Legacy format compatibility", func() {
 				cur := store.ScanRecords(nil, ForwardScan())
 				for r, sErr := range Seq2(cur, ctx) {
 					Expect(sErr).NotTo(HaveOccurred())
-					o := r.Record.(*gen.Order)
+					o := r.Record.(*demopb.Order)
 					prices[o.GetOrderId()] = o.GetPrice()
 					vers[o.GetOrderId()] = r.Version != nil && r.Version.IsComplete()
 				}
@@ -165,7 +167,7 @@ var _ = Describe("Legacy format compatibility", func() {
 		It("reads suffixed records + subspace-8 versions (format 5, split, omit=false)", func() {
 			ss := specSubspace()
 			md := legacyMetaData(true, true)
-			orders := []*gen.Order{order(10, 1000), order(20, 2000)}
+			orders := []*demopb.Order{order(10, 1000), order(20, 2000)}
 
 			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				layDownLegacy(rtx, ss, md, 5, false, orders)
@@ -182,7 +184,7 @@ var _ = Describe("Legacy format compatibility", func() {
 				rec, lErr := store.LoadRecord(tuple.Tuple{int64(10)})
 				Expect(lErr).NotTo(HaveOccurred())
 				Expect(rec).NotTo(BeNil())
-				Expect(rec.Record.(*gen.Order).GetPrice()).To(Equal(int32(1000)))
+				Expect(rec.Record.(*demopb.Order).GetPrice()).To(Equal(int32(1000)))
 				Expect(rec.Version).NotTo(BeNil())
 				wantVer, _ := NewCompleteVersion(completeGlobalFor(0), 0)
 				Expect(rec.Version.Equal(wantVer)).To(BeTrue())
@@ -204,7 +206,7 @@ var _ = Describe("Legacy format compatibility", func() {
 			ss := specSubspace()
 			mdNoVer := legacyMetaData(false, false)
 			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-				layDownLegacy(rtx, ss, mdNoVer, 4, true, []*gen.Order{order(1, 100)})
+				layDownLegacy(rtx, ss, mdNoVer, 4, true, []*demopb.Order{order(1, 100)})
 				return nil, nil
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -231,7 +233,7 @@ var _ = Describe("Legacy format compatibility", func() {
 
 			// Seed one existing record, then insert a second through the store.
 			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-				layDownLegacy(rtx, ss, md, 4, true, []*gen.Order{order(1, 100)})
+				layDownLegacy(rtx, ss, md, 4, true, []*demopb.Order{order(1, 100)})
 				return nil, nil
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -256,7 +258,7 @@ var _ = Describe("Legacy format compatibility", func() {
 				store := openLegacy(rtx, ss, md)
 				rec, lErr := store.LoadRecord(pk2)
 				Expect(lErr).NotTo(HaveOccurred())
-				Expect(rec.Record.(*gen.Order).GetPrice()).To(Equal(int32(222)))
+				Expect(rec.Record.(*demopb.Order).GetPrice()).To(Equal(int32(222)))
 				Expect(rec.Version).NotTo(BeNil())
 				Expect(rec.Version.IsComplete()).To(BeTrue())
 				return nil, nil
@@ -287,7 +289,7 @@ var _ = Describe("Legacy format compatibility", func() {
 				store := openLegacy(rtx, ss, md)
 				rec, lErr := store.LoadRecord(pk1)
 				Expect(lErr).NotTo(HaveOccurred())
-				Expect(rec.Record.(*gen.Order).GetPrice()).To(Equal(int32(111)))
+				Expect(rec.Record.(*demopb.Order).GetPrice()).To(Equal(int32(111)))
 				return nil, nil
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -296,7 +298,7 @@ var _ = Describe("Legacy format compatibility", func() {
 		It("DeleteRecordsWhere clears the legacy version subspace", func() {
 			ss := specSubspace()
 			// Composite PK (type-prefixed) so deleteRecordsWhere has a prefix to target.
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Concat(RecordTypeKey(), Field("order_id")))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -354,7 +356,7 @@ var _ = Describe("Legacy format compatibility", func() {
 			md := legacyMetaData(true, true) // split => omit stays false => versions convert
 			recSub := ss.Sub(RecordKey)
 			verSub := ss.Sub(RecordVersionKey)
-			orders := []*gen.Order{order(1, 100), order(2, 200)}
+			orders := []*demopb.Order{order(1, 100), order(2, 200)}
 
 			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				layDownLegacy(rtx, ss, md, 4, false, orders)
@@ -403,7 +405,7 @@ var _ = Describe("Legacy format compatibility", func() {
 			verSub := ss.Sub(RecordVersionKey)
 
 			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-				layDownLegacy(rtx, ss, md, 4, true, []*gen.Order{order(7, 700)})
+				layDownLegacy(rtx, ss, md, 4, true, []*demopb.Order{order(7, 700)})
 				return nil, nil
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -432,7 +434,7 @@ var _ = Describe("Legacy format compatibility", func() {
 				Expect(oErr).NotTo(HaveOccurred())
 				rec, lErr := store.LoadRecord(pk)
 				Expect(lErr).NotTo(HaveOccurred())
-				Expect(rec.Record.(*gen.Order).GetPrice()).To(Equal(int32(700)))
+				Expect(rec.Record.(*demopb.Order).GetPrice()).To(Equal(int32(700)))
 				Expect(rec.Version).NotTo(BeNil())
 				return nil, nil
 			})
@@ -442,7 +444,7 @@ var _ = Describe("Legacy format compatibility", func() {
 		It("clears omit_unsplit_record_suffix when an EMPTY legacy store gains indexes", func() {
 			ss := specSubspace()
 			// Indexed, versioned, non-splitting metadata at version 2 (the index bumps it).
-			b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -509,7 +511,7 @@ var _ = Describe("Legacy format compatibility", func() {
 
 			small := order(1, 100)
 			bigData := bytes.Repeat([]byte("x"), splitRecordSize+5000) // forces a real split
-			big := &gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200), VectorData: bigData}
+			big := &demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200), VectorData: bigData}
 
 			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				tx := rtx.Transaction()
@@ -562,7 +564,7 @@ var _ = Describe("Legacy format compatibility", func() {
 				cur := store.ScanRecords(nil, ForwardScan())
 				for r, sErr := range Seq2(cur, ctx) {
 					Expect(sErr).NotTo(HaveOccurred())
-					o := r.Record.(*gen.Order)
+					o := r.Record.(*demopb.Order)
 					got[o.GetOrderId()] = rec{
 						price:   o.GetPrice(),
 						vecLen:  len(o.GetVectorData()),
@@ -598,7 +600,7 @@ var _ = Describe("Legacy format compatibility", func() {
 
 			// Committed record + version (raw lay-down so a real value sits in subspace 8).
 			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-				layDownLegacy(rtx, ss, md, 4, true, []*gen.Order{order(5, 500)})
+				layDownLegacy(rtx, ss, md, 4, true, []*demopb.Order{order(5, 500)})
 				return nil, nil
 			})
 			Expect(err).NotTo(HaveOccurred())

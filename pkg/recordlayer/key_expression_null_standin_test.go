@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
@@ -63,8 +65,8 @@ func TestNullStandin_Evaluate(t *testing.T) {
 		}
 		return got
 	}
-	unset := &gen.Order{OrderId: proto.Int64(1)}
-	withEmptyFlower := &gen.Order{OrderId: proto.Int64(1), Flower: &gen.Flower{}}
+	unset := &demopb.Order{OrderId: proto.Int64(1)}
+	withEmptyFlower := &demopb.Order{OrderId: proto.Int64(1), Flower: &demopb.Flower{}}
 	for _, c := range []struct {
 		name string
 		expr KeyExpression
@@ -82,7 +84,7 @@ func TestNullStandin_Evaluate(t *testing.T) {
 			"NOT_NULL parent: the child reads the default message",
 			&NestingKeyExpression{parentField: "flower", fanType: FanTypeNone, child: FieldWithNullStandin("color", FanTypeNone, NullStandinNotNull), parentNullStandin: NullStandinNotNull},
 			unset,
-			[][]any{{int64(gen.Color_RED)}},
+			[][]any{{int64(demopb.Color_RED)}},
 		},
 		{
 			"NULL parent: the child reads a null message",
@@ -94,7 +96,7 @@ func TestNullStandin_Evaluate(t *testing.T) {
 			"a present empty parent: a NOT_NULL child is the default",
 			Nest("flower", FieldWithNullStandin("color", FanTypeNone, NullStandinNotNull)),
 			withEmptyFlower,
-			[][]any{{int64(gen.Color_RED)}},
+			[][]any{{int64(demopb.Color_RED)}},
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {

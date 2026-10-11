@@ -6,7 +6,7 @@ import (
 	"context"
 	"fmt"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -45,12 +45,12 @@ var _ = Describe("CLEAR_WHEN_ZERO Conformance", func() {
 	Describe("Go insert+delete clears entry, Java confirms", func() {
 		It("should have no index entries when all records are deleted", func() {
 			// Go saves 2 orders with price=100
-			err := store.SaveOrderGo(ctx, &gen.Order{
+			err := store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(100),
 			})
 			Expect(err).NotTo(HaveOccurred())
-			err = store.SaveOrderGo(ctx, &gen.Order{
+			err = store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(2),
 				Price:   proto.Int32(100),
 			})
@@ -83,12 +83,12 @@ var _ = Describe("CLEAR_WHEN_ZERO Conformance", func() {
 	Describe("Java insert+delete clears entry, Go confirms", func() {
 		It("should have no index entries when all records are deleted by Java", func() {
 			// Java saves 2 orders with price=200
-			err := store.SaveOrderJava(ctx, &gen.Order{
+			err := store.SaveOrderJava(ctx, &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(200),
 			})
 			Expect(err).NotTo(HaveOccurred())
-			err = store.SaveOrderJava(ctx, &gen.Order{
+			err = store.SaveOrderJava(ctx, &demopb.Order{
 				OrderId: proto.Int64(2),
 				Price:   proto.Int32(200),
 			})
@@ -121,7 +121,7 @@ var _ = Describe("CLEAR_WHEN_ZERO Conformance", func() {
 	Describe("Cross-platform: Go inserts, Java deletes all, entry cleared", func() {
 		It("should clear entry when Java deletes Go-written records to zero", func() {
 			// Go saves 1 order with price=300
-			err := store.SaveOrderGo(ctx, &gen.Order{
+			err := store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(300),
 			})
@@ -193,7 +193,7 @@ func NewClearWhenZeroConformanceStore(recordDB *recordlayer.FDBDatabase, keyspac
 	countIdx := recordlayer.NewCountIndex("count_cwz_price", recordlayer.GroupAll(recordlayer.Field("price")))
 	countIdx.SetClearWhenZero(true)
 
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -230,7 +230,7 @@ func (s *ClearWhenZeroConformanceStore) buildJavaParams() map[string]any {
 	return params
 }
 
-func (s *ClearWhenZeroConformanceStore) SaveOrderGo(ctx context.Context, order *gen.Order) error {
+func (s *ClearWhenZeroConformanceStore) SaveOrderGo(ctx context.Context, order *demopb.Order) error {
 	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
@@ -243,14 +243,14 @@ func (s *ClearWhenZeroConformanceStore) SaveOrderGo(ctx context.Context, order *
 	return err
 }
 
-func (s *ClearWhenZeroConformanceStore) SaveOrderJava(ctx context.Context, order *gen.Order) error {
+func (s *ClearWhenZeroConformanceStore) SaveOrderJava(ctx context.Context, order *demopb.Order) error {
 	params := s.buildJavaParams()
 	params["order"] = order
 	return s.java.InvokeAs(ctx, "saveOrderWithCountCWZ", params, nil)
 }
 
 func (s *ClearWhenZeroConformanceStore) SaveOrderGoProto(ctx context.Context, orderID int64, price int32) error {
-	return s.SaveOrderGo(ctx, &gen.Order{
+	return s.SaveOrderGo(ctx, &demopb.Order{
 		OrderId: proto.Int64(orderID),
 		Price:   proto.Int32(price),
 	})

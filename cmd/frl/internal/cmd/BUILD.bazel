@@ -112,6 +112,7 @@ go_test(
         "//cmd/frl/gen/frl/config/v1:config",
         "//cmd/frl/internal/meta",
         "//gen",
+        "//gen/demopb",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",

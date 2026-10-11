@@ -7,7 +7,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 )
 
 var _ = Describe("MetadataValidation", func() {
@@ -15,7 +15,7 @@ var _ = Describe("MetadataValidation", func() {
 	// Java's addIndexCommon() throws MetaDataException("Index X already defined").
 	Describe("duplicate index name", func() {
 		It("returns error from Build when same index name is added twice", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -34,7 +34,7 @@ var _ = Describe("MetadataValidation", func() {
 		})
 
 		It("returns error when duplicate name across single-type and universal", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -53,7 +53,7 @@ var _ = Describe("MetadataValidation", func() {
 		})
 
 		It("succeeds with distinct index names", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -70,7 +70,7 @@ var _ = Describe("MetadataValidation", func() {
 	// Java's getIndexableRecordType() throws for unknown type names.
 	Describe("unknown record type in AddIndex", func() {
 		It("returns error from Build when record type does not exist", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -90,7 +90,7 @@ var _ = Describe("MetadataValidation", func() {
 	// Java throws for unknown types rather than silently skipping.
 	Describe("unknown record type in AddMultiTypeIndex", func() {
 		It("returns error from Build when one record type does not exist", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -109,7 +109,7 @@ var _ = Describe("MetadataValidation", func() {
 		})
 
 		It("succeeds when all record types exist", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))

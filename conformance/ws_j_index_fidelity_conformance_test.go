@@ -29,6 +29,8 @@ import (
 	"google.golang.org/protobuf/types/dynamicpb"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -2614,7 +2616,7 @@ const wsjDuplicateOptionGoMessage = "Multiple entries with same key: unique=fals
 // DuplicateIndexOptionError, "OK" when the index loads.
 func wsjGoDuplicateOptionOutcome(options [][]string) string {
 	b := recordlayer.NewRecordMetaDataBuilder()
-	b.SetRecords(gen.File_record_layer_demo_proto)
+	b.SetRecords(demopb.File_record_layer_demo_proto)
 	b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -2766,7 +2768,7 @@ var _ = Describe("WS-J stored index protos read as Java reads them", func() {
 			Expect(proto.Unmarshal(rootBytes, javaRoot)).To(Succeed())
 
 			b := recordlayer.NewRecordMetaDataBuilder()
-			b.SetRecords(gen.File_record_layer_demo_proto)
+			b.SetRecords(demopb.File_record_layer_demo_proto)
 			b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 			b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 			b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -2863,7 +2865,7 @@ var _ = Describe("WS-J stored index protos read as Java reads them", func() {
 			Expect(java.InvokeAs(context.Background(), "wsjIndexFromProtoJava", map[string]any{"indexProto": ints}, &out)).To(Succeed())
 
 			b := recordlayer.NewRecordMetaDataBuilder()
-			b.SetRecords(gen.File_record_layer_demo_proto)
+			b.SetRecords(demopb.File_record_layer_demo_proto)
 			b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 			b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 			b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))

@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
@@ -30,8 +30,8 @@ var _ = Describe("WRITE_ONLY_WITH_QUEUE consumers", func() {
 		Expect(err).NotTo(HaveOccurred())
 		return md
 	}
-	order := func(id int64) *gen.Order {
-		return &gen.Order{OrderId: proto.Int64(id), Quantity: proto.Int32(int32(id)), Price: proto.Int32(int32(10 * id))}
+	order := func(id int64) *demopb.Order {
+		return &demopb.Order{OrderId: proto.Int64(id), Quantity: proto.Int32(int32(id)), Price: proto.Int32(int32(10 * id))}
 	}
 	// queue forces state 4 as a Java process writes it, without Go's
 	// eligibility check.

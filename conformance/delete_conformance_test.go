@@ -6,7 +6,7 @@ import (
 	"context"
 	"fmt"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -148,7 +148,7 @@ var _ = Describe("Delete Conformance", func() {
 			// Create record
 			order1 := NewOrder(400).
 				WithPrice(100).
-				WithFlower("Rose", gen.Color_RED).
+				WithFlower("Rose", demopb.Color_RED).
 				Build()
 			err := store.SaveRecord(ctx, order1)
 			Expect(err).NotTo(HaveOccurred())
@@ -156,7 +156,7 @@ var _ = Describe("Delete Conformance", func() {
 			// Update record
 			order2 := NewOrder(400).
 				WithPrice(200).
-				WithFlower("Tulip", gen.Color_BLUE).
+				WithFlower("Tulip", demopb.Color_BLUE).
 				Build()
 			err = store.SaveRecord(ctx, order2)
 			Expect(err).NotTo(HaveOccurred())
@@ -176,7 +176,7 @@ var _ = Describe("Delete Conformance", func() {
 			// Create, delete, re-insert with different data
 			order1 := NewOrder(600).
 				WithPrice(100).
-				WithFlower("Rose", gen.Color_RED).
+				WithFlower("Rose", demopb.Color_RED).
 				Build()
 			err := store.SaveRecord(ctx, order1)
 			Expect(err).NotTo(HaveOccurred())
@@ -189,7 +189,7 @@ var _ = Describe("Delete Conformance", func() {
 			// Re-insert with different data (validated with Java)
 			order2 := NewOrder(600).
 				WithPrice(999).
-				WithFlower("Tulip", gen.Color_BLUE).
+				WithFlower("Tulip", demopb.Color_BLUE).
 				Build()
 			err = store.SaveRecord(ctx, order2)
 			Expect(err).NotTo(HaveOccurred())
@@ -258,7 +258,7 @@ var _ = Describe("Delete Conformance", func() {
 			err := java.InvokeAs(ctx, "saveOrder", map[string]any{
 				"clusterFile": clusterFile,
 				"subspace":    BytesToIntArray(env.Keyspace.Bytes()),
-				"order": &gen.Order{
+				"order": &demopb.Order{
 					OrderId: proto.Int64(701),
 					Price:   proto.Int32(999),
 				},

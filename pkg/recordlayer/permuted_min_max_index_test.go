@@ -3,7 +3,7 @@ package recordlayer
 import (
 	"context"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -14,7 +14,7 @@ var _ = Describe("PermutedMinMaxIndex", func() {
 	ctx := context.Background()
 
 	baseMetaData := func() *RecordMetaDataBuilder {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -57,13 +57,13 @@ var _ = Describe("PermutedMinMaxIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Price=100 group: order_ids 1, 3
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Price=200 group: order_id 2
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// BY_VALUE (primary): all 3 entries sorted by [price, order_id]
@@ -115,11 +115,11 @@ var _ = Describe("PermutedMinMaxIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Price=100 group: order_ids 1, 5, 10
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(5), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(5), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(10), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(10), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Max order_id for price=100 is 10
@@ -164,17 +164,17 @@ var _ = Describe("PermutedMinMaxIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Price=100 group: order_ids 3, 1, 7
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(7), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(7), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Price=200 group: order_ids 4, 2
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(4), Price: proto.Int32(200)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(4), Price: proto.Int32(200)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// BY_GROUP: min per group.
@@ -219,11 +219,11 @@ var _ = Describe("PermutedMinMaxIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Price=100 group: order_ids 10, 20, 30
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(10), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(10), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(20), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(20), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(30), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(30), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Max is 30
@@ -275,10 +275,10 @@ var _ = Describe("PermutedMinMaxIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Price=100: one order
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
 			// Price=200: one order
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
 			Expect(err).NotTo(HaveOccurred())
 
 			byGroup, err := AsList(ctx, store.ScanIndexByType(
@@ -330,19 +330,19 @@ var _ = Describe("PermutedMinMaxIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Price=100: orders 1, 5
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(5), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(5), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Price=200: orders 2, 8
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(8), Price: proto.Int32(200)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(8), Price: proto.Int32(200)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Price=300: order 4
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(4), Price: proto.Int32(300)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(4), Price: proto.Int32(300)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// BY_GROUP (all): 3 groups
@@ -390,12 +390,12 @@ var _ = Describe("PermutedMinMaxIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Price=100: orders 1, 5
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(5), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(5), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
 			// Price=200: order 3
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(200)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(200)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Max order_id across all groups = 5 (from price=100 group)
@@ -452,14 +452,14 @@ var _ = Describe("PermutedMinMaxIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Price=100: orders 3, 7
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(7), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(7), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
 			// Price=200: orders 1, 9
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(9), Price: proto.Int32(200)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(9), Price: proto.Int32(200)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Min order_id across all groups = 1 (from price=200 group)
@@ -516,7 +516,7 @@ var _ = Describe("PermutedMinMaxIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Price=100: order 1
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Max for price=100 is 1
@@ -527,7 +527,7 @@ var _ = Describe("PermutedMinMaxIndex", func() {
 			Expect(byGroup[0].Key[0]).To(Equal(int64(1)))
 
 			// Add order 5 in same group → new max
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(5), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(5), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Max for price=100 is now 5
@@ -562,11 +562,11 @@ var _ = Describe("PermutedMinMaxIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Price=100: orders 5, 10, 15
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(5), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(5), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(10), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(10), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(15), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(15), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Min is 5
@@ -642,11 +642,11 @@ var _ = Describe("PermutedMinMaxIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Price=100: order 50 (high order_id)
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(50), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(50), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Price=100: order 10 (lower order_id)
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(10), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(10), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// BY_GROUP should still show 50 as max

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"sync/atomic"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -928,7 +928,7 @@ var _ = Describe("CursorCombinatorsUnit", func() {
 		var metaData *RecordMetaData
 
 		BeforeEach(func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -989,7 +989,7 @@ var _ = Describe("CursorCombinatorsUnit", func() {
 			Expect(records).To(HaveLen(10))
 
 			for i, rec := range records {
-				order := rec.Record.(*gen.Order)
+				order := rec.Record.(*demopb.Order)
 				Expect(order.GetOrderId()).To(Equal(int64(i + 1)))
 			}
 		})
@@ -1018,7 +1018,7 @@ var _ = Describe("CursorCombinatorsUnit", func() {
 
 			// Reverse scan: order 10, 9, 8, ..., 1
 			for i, rec := range records {
-				order := rec.Record.(*gen.Order)
+				order := rec.Record.(*demopb.Order)
 				Expect(order.GetOrderId()).To(Equal(int64(10 - i)))
 			}
 		})
@@ -1060,7 +1060,7 @@ var _ = Describe("CursorCombinatorsUnit", func() {
 			Expect(generatorCalls.Load()).To(Equal(int32(2)))
 
 			for i, rec := range records {
-				order := rec.Record.(*gen.Order)
+				order := rec.Record.(*demopb.Order)
 				Expect(order.GetOrderId()).To(Equal(int64(i + 1)))
 			}
 		})

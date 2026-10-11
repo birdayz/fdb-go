@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -45,7 +45,7 @@ func parseQueryFromSelect(t *testing.T, sql string) (antlrgen.IQueryContext, err
 // to exercise rlcatalog lookups without a live FDB.
 func buildTestMetaData(t *testing.T) *recordlayer.RecordMetaData {
 	t.Helper()
-	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))

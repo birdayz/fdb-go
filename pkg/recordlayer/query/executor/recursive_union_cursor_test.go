@@ -11,6 +11,8 @@ import (
 	"google.golang.org/protobuf/types/dynamicpb"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
@@ -27,7 +29,7 @@ import (
 // transitive imports (metadataMessageResolver).
 func TestRecursiveRow_SiblingStructDescriptorResolves(t *testing.T) {
 	t.Parallel()
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -38,7 +40,7 @@ func TestRecursiveRow_SiblingStructDescriptorResolves(t *testing.T) {
 	resolve := metadataMessageResolver(md)
 
 	// The sibling type resolves directly.
-	flowerDesc := (&gen.Flower{}).ProtoReflect().Descriptor()
+	flowerDesc := (&demopb.Flower{}).ProtoReflect().Descriptor()
 	got, err := resolve(string(flowerDesc.FullName()))
 	if err != nil {
 		t.Fatalf("sibling type %s must resolve from store metadata: %v", flowerDesc.FullName(), err)

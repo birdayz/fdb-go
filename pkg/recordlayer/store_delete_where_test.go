@@ -5,6 +5,8 @@ import (
 	"errors"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -16,7 +18,7 @@ var _ = Describe("DeleteRecordsWhere", func() {
 
 	// Helper: builds metadata with record type prefix PKs.
 	buildMetaDataWithTypePrefix := func(indexes ...*Index) *RecordMetaData {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Concat(RecordTypeKey(), Field("order_id")))
 		builder.GetRecordType("Customer").SetPrimaryKey(Concat(RecordTypeKey(), Field("customer_id")))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Concat(RecordTypeKey(), Field("id")))
@@ -39,11 +41,11 @@ var _ = Describe("DeleteRecordsWhere", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i := int64(1); i <= 5; i++ {
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 				Expect(err).NotTo(HaveOccurred())
 			}
 			for i := int64(1); i <= 3; i++ {
-				_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(i), Name: proto.String("Customer")})
+				_, err = store.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(i), Name: proto.String("Customer")})
 				Expect(err).NotTo(HaveOccurred())
 			}
 			return nil, nil
@@ -105,7 +107,7 @@ var _ = Describe("DeleteRecordsWhere", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i := int64(1); i <= 5; i++ {
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(100)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(100)})
 				Expect(err).NotTo(HaveOccurred())
 			}
 			return nil, nil
@@ -148,7 +150,7 @@ var _ = Describe("DeleteRecordsWhere", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i := int64(1); i <= 5; i++ {
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 				Expect(err).NotTo(HaveOccurred())
 			}
 			return nil, nil
@@ -182,7 +184,7 @@ var _ = Describe("DeleteRecordsWhere", func() {
 
 	It("clears record versions", func() {
 		ks := specSubspace()
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Concat(RecordTypeKey(), Field("order_id")))
 		builder.GetRecordType("Customer").SetPrimaryKey(Concat(RecordTypeKey(), Field("customer_id")))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Concat(RecordTypeKey(), Field("id")))
@@ -196,7 +198,7 @@ var _ = Describe("DeleteRecordsWhere", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i := int64(1); i <= 3; i++ {
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(100)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(100)})
 				Expect(err).NotTo(HaveOccurred())
 			}
 			return nil, nil
@@ -248,7 +250,7 @@ var _ = Describe("DeleteRecordsWhere", func() {
 
 		// Build metadata where PK starts with RecordType but a universal index
 		// starts with Field("price") — not aligned with RecordType prefix.
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Concat(RecordTypeKey(), Field("order_id")))
 		builder.GetRecordType("Customer").SetPrimaryKey(Concat(RecordTypeKey(), Field("customer_id")))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Concat(RecordTypeKey(), Field("id")))
@@ -273,7 +275,7 @@ var _ = Describe("DeleteRecordsWhere", func() {
 
 		// Universal index whose expression starts with RecordType — aligned with PK prefix.
 		// Use only RecordTypeKey() as the index expression since "price" doesn't exist on Customer.
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Concat(RecordTypeKey(), Field("order_id")))
 		builder.GetRecordType("Customer").SetPrimaryKey(Concat(RecordTypeKey(), Field("customer_id")))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Concat(RecordTypeKey(), Field("id")))
@@ -291,11 +293,11 @@ var _ = Describe("DeleteRecordsWhere", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i := int64(1); i <= 3; i++ {
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 				Expect(err).NotTo(HaveOccurred())
 			}
 			for i := int64(1); i <= 2; i++ {
-				_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(i), Name: proto.String("C")})
+				_, err = store.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(i), Name: proto.String("C")})
 				Expect(err).NotTo(HaveOccurred())
 			}
 			return nil, nil
@@ -373,7 +375,7 @@ var _ = Describe("DeleteRecordsWhere", func() {
 
 			// Insert 3 orders.
 			for i := int64(1); i <= 3; i++ {
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 				Expect(err).NotTo(HaveOccurred())
 			}
 
@@ -383,7 +385,7 @@ var _ = Describe("DeleteRecordsWhere", func() {
 
 			// Re-insert 2 new orders.
 			for i := int64(10); i <= 11; i++ {
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
 				Expect(err).NotTo(HaveOccurred())
 			}
 
@@ -411,7 +413,7 @@ var _ = Describe("DeleteRecordsWhere", func() {
 			store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
 
 			_, err = store.MarkIndexDisabled("price_idx")
@@ -432,7 +434,7 @@ var _ = Describe("DeleteRecordsWhere", func() {
 		// Create an index shared by both Order and Customer (multi-type) but
 		// without a RecordTypeKey prefix. DeleteRecordsWhere cannot scope the
 		// clear to a single type, so it must reject the operation.
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Concat(RecordTypeKey(), Field("order_id")))
 		builder.GetRecordType("Customer").SetPrimaryKey(Concat(RecordTypeKey(), Field("customer_id")))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Concat(RecordTypeKey(), Field("id")))
@@ -459,7 +461,7 @@ var _ = Describe("DeleteRecordsWhere", func() {
 
 		// Multi-type index WITH RecordTypeKey prefix — deleteRecordsWhere should
 		// scope the clear to only the target type's entries.
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Concat(RecordTypeKey(), Field("order_id")))
 		builder.GetRecordType("Customer").SetPrimaryKey(Concat(RecordTypeKey(), Field("customer_id")))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Concat(RecordTypeKey(), Field("id")))
@@ -477,11 +479,11 @@ var _ = Describe("DeleteRecordsWhere", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i := int64(1); i <= 3; i++ {
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
 				Expect(err).NotTo(HaveOccurred())
 			}
 			for i := int64(1); i <= 2; i++ {
-				_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(i), Name: proto.String("Cust")})
+				_, err = store.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(i), Name: proto.String("Cust")})
 				Expect(err).NotTo(HaveOccurred())
 			}
 			return nil, nil
@@ -521,7 +523,7 @@ var _ = Describe("DeleteRecordsWhere", func() {
 		// Before the fix, findMatchingRecordTypes returned ALL types with PK
 		// length >= prefix length, causing Customer's index to be incorrectly
 		// cleared when deleting Orders.
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Concat(RecordTypeKey(), Field("order_id")))
 		builder.GetRecordType("Customer").SetPrimaryKey(Concat(RecordTypeKey(), Field("customer_id")))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Concat(RecordTypeKey(), Field("id")))
@@ -536,9 +538,9 @@ var _ = Describe("DeleteRecordsWhere", func() {
 			store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(1), Name: proto.String("Alice")})
+			_, err = store.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(1), Name: proto.String("Alice")})
 			Expect(err).NotTo(HaveOccurred())
 			return nil, nil
 		})
@@ -570,7 +572,7 @@ var _ = Describe("DeleteRecordsWhere", func() {
 		// pk.add(0) for header, pk.add(1), pk.add(2), ... for 100KB chunks.
 		// DeleteRecordsWhere must clear ALL chunks, not just the header.
 		ks := specSubspace()
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Concat(RecordTypeKey(), Field("order_id")))
 		builder.GetRecordType("Customer").SetPrimaryKey(Concat(RecordTypeKey(), Field("customer_id")))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Concat(RecordTypeKey(), Field("id")))
@@ -588,7 +590,7 @@ var _ = Describe("DeleteRecordsWhere", func() {
 			_, err = store.SaveRecord(makeLargeOrder(1, 250_000))
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(1), Name: proto.String("test")})
+			_, err = store.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(1), Name: proto.String("test")})
 			Expect(err).NotTo(HaveOccurred())
 
 			return nil, nil

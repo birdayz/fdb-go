@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
@@ -196,7 +198,7 @@ func TestValueFromProto_MoreThanOneValue(t *testing.T) {
 	if v, err := ValueFromProto(&gen.Value{}); v != nil || err != nil {
 		t.Fatalf("an empty Value is (%v, %v), want (nil, nil)", v, err)
 	}
-	builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -239,7 +241,7 @@ func TestValueFromProto_MoreThanOneValue(t *testing.T) {
 func TestMetaDataToProtoRoundtrip(t *testing.T) {
 	t.Parallel()
 	// Use the demo proto file descriptor
-	fd := gen.File_record_layer_demo_proto
+	fd := demopb.File_record_layer_demo_proto
 
 	builder := NewRecordMetaDataBuilder().SetRecords(fd)
 	builder.GetRecordType("Order").SetPrimaryKey(Concat(Field("order_id"), Field("price")))
@@ -357,7 +359,7 @@ func TestMetaDataToProtoRoundtrip(t *testing.T) {
 
 func TestMetaDataToProtoWithFormerIndexes(t *testing.T) {
 	t.Parallel()
-	fd := gen.File_record_layer_demo_proto
+	fd := demopb.File_record_layer_demo_proto
 
 	builder := NewRecordMetaDataBuilder().SetRecords(fd)
 	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
@@ -397,7 +399,7 @@ func TestMetaDataToProtoWithFormerIndexes(t *testing.T) {
 
 func TestMetaDataToProtoUniversalIndex(t *testing.T) {
 	t.Parallel()
-	fd := gen.File_record_layer_demo_proto
+	fd := demopb.File_record_layer_demo_proto
 
 	builder := NewRecordMetaDataBuilder().SetRecords(fd)
 	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
@@ -448,7 +450,7 @@ func TestRecordMetaDataFromProtoNil(t *testing.T) {
 // various index types survives a ToProto→FromProto round-trip.
 func TestMetaDataProtoRoundtripWithAllIndexTypes(t *testing.T) {
 	t.Parallel()
-	fd := gen.File_record_layer_demo_proto
+	fd := demopb.File_record_layer_demo_proto
 
 	builder := NewRecordMetaDataBuilder().SetRecords(fd)
 	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
@@ -560,7 +562,7 @@ func TestMetaDataProtoRoundtripWithAllIndexTypes(t *testing.T) {
 // TestMetaDataProtoRoundtripWithSinceVersion checks that SinceVersion survives.
 func TestMetaDataProtoRoundtripWithSinceVersion(t *testing.T) {
 	t.Parallel()
-	fd := gen.File_record_layer_demo_proto
+	fd := demopb.File_record_layer_demo_proto
 
 	builder := NewRecordMetaDataBuilder().SetRecords(fd)
 	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
@@ -596,7 +598,7 @@ func TestMetaDataProtoRoundtripWithSinceVersion(t *testing.T) {
 // TestMetaDataProtoRoundtripWithExplicitRecordTypeKey checks explicit type keys.
 func TestMetaDataProtoRoundtripWithExplicitRecordTypeKey(t *testing.T) {
 	t.Parallel()
-	fd := gen.File_record_layer_demo_proto
+	fd := demopb.File_record_layer_demo_proto
 
 	builder := NewRecordMetaDataBuilder().SetRecords(fd)
 	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
@@ -633,7 +635,7 @@ func TestMetaDataProtoRoundtripWithExplicitRecordTypeKey(t *testing.T) {
 // TestMetaDataProtoRoundtripMultiTypeIndex verifies multi-type indexes survive.
 func TestMetaDataProtoRoundtripMultiTypeIndex(t *testing.T) {
 	t.Parallel()
-	fd := gen.File_record_layer_demo_proto
+	fd := demopb.File_record_layer_demo_proto
 
 	builder := NewRecordMetaDataBuilder().SetRecords(fd)
 	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
@@ -732,7 +734,7 @@ func TestStoredIndexSubspaceKeyIsReadAsJavaReadsIt(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
-			b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))

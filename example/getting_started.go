@@ -10,7 +10,7 @@ import (
 	"os"
 	"time"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -37,7 +37,7 @@ func run(ctx context.Context, clusterFile string, out io.Writer) error {
 	defer db.Close()
 	recordDB := recordlayer.NewFDBDatabase(db)
 
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -57,16 +57,16 @@ func run(ctx context.Context, clusterFile string, out io.Writer) error {
 		if err != nil {
 			return nil, err
 		}
-		order := &gen.Order{
+		order := &demopb.Order{
 			OrderId: proto.Int64(1001),
 			Price:   proto.Int32(25),
-			Flower:  &gen.Flower{Type: proto.String("Rose"), Color: gen.Color_RED.Enum()},
+			Flower:  &demopb.Flower{Type: proto.String("Rose"), Color: demopb.Color_RED.Enum()},
 		}
 		if _, err := store.SaveRecord(order); err != nil {
 			return nil, err
 		}
 
-		typed, err := recordlayer.GetTypedRecordStore[*gen.Order](store, "Order")
+		typed, err := recordlayer.GetTypedRecordStore[*demopb.Order](store, "Order")
 		if err != nil {
 			return nil, err
 		}
@@ -82,7 +82,7 @@ func run(ctx context.Context, clusterFile string, out io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("record transaction: %w", err)
 	}
-	order := result.(*gen.Order)
+	order := result.(*demopb.Order)
 	_, err = fmt.Fprintf(out, "order %d: price=%d\n", order.GetOrderId(), order.GetPrice())
 	return err
 }

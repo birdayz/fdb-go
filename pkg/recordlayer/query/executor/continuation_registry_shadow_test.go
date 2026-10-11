@@ -10,7 +10,7 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 	"google.golang.org/protobuf/types/dynamicpb"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
 )
 
@@ -59,7 +59,7 @@ func shadowFlowerMetaData(tb testing.TB) (*recordlayer.RecordMetaData, protorefl
 		tb.Fatalf("build shadow metadata: %v", err)
 	}
 	flower := fd.Messages().ByName("Flower")
-	if registered := (&gen.Flower{}).ProtoReflect().Descriptor(); registered.FullName() != flower.FullName() {
+	if registered := (&demopb.Flower{}).ProtoReflect().Descriptor(); registered.FullName() != flower.FullName() {
 		tb.Fatalf("shadow Flower is %s, want the compiled name %s", flower.FullName(), registered.FullName())
 	}
 	return md, flower
@@ -117,7 +117,7 @@ func TestContProtoMessage_GeneratedFlagDecodesWithMetadataDescriptor(t *testing.
 // shadow it: the metadata's descriptor is resolved, so its compiled type restores.
 func TestMetadataMessageResolver_MetadataBeforeComputedFiles(t *testing.T) {
 	t.Parallel()
-	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -125,16 +125,16 @@ func TestMetadataMessageResolver_MetadataBeforeComputedFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	computed, err := protodesc.NewFile(protodesc.ToFileDescriptorProto(gen.File_record_layer_demo_proto), protoregistry.GlobalFiles)
+	computed, err := protodesc.NewFile(protodesc.ToFileDescriptorProto(demopb.File_record_layer_demo_proto), protoregistry.GlobalFiles)
 	if err != nil {
 		t.Fatal(err)
 	}
 	resolve := metadataMessageResolver(md, computed)
-	flower := (&gen.Flower{}).ProtoReflect().Descriptor()
+	flower := (&demopb.Flower{}).ProtoReflect().Descriptor()
 	if got, err := resolve(string(flower.FullName())); err != nil || got != flower {
 		t.Fatalf("resolved %v (%v), want the metadata's compiled Flower", got, err)
 	}
-	v, _, err := readContValue(mustContValue(t, &gen.Flower{Type: proto.String("rose")}))
+	v, _, err := readContValue(mustContValue(t, &demopb.Flower{Type: proto.String("rose")}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +142,7 @@ func TestMetadataMessageResolver_MetadataBeforeComputedFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := got.(*gen.Flower); !ok {
-		t.Fatalf("restored %T, want *gen.Flower", got)
+	if _, ok := got.(*demopb.Flower); !ok {
+		t.Fatalf("restored %T, want *demopb.Flower", got)
 	}
 }

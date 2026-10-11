@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/gomega"
@@ -96,7 +98,7 @@ func assertFastPathAgreementForRecord(t *testing.T, expr KeyExpression, record *
 func TestKeyExpressionFastPath_SingleFieldInt64(t *testing.T) {
 	t.Parallel()
 	g := NewGomegaWithT(t)
-	got := assertFastPathAgreement(t, Field("order_id"), &gen.Order{OrderId: proto.Int64(42)})
+	got := assertFastPathAgreement(t, Field("order_id"), &demopb.Order{OrderId: proto.Int64(42)})
 	g.Expect(got).To(HaveLen(1))
 	g.Expect(got[0]).To(Equal(int64(42)))
 }
@@ -104,7 +106,7 @@ func TestKeyExpressionFastPath_SingleFieldInt64(t *testing.T) {
 func TestKeyExpressionFastPath_SingleFieldString(t *testing.T) {
 	t.Parallel()
 	g := NewGomegaWithT(t)
-	got := assertFastPathAgreement(t, Field("name"), &gen.Customer{CustomerId: proto.Int64(1), Name: proto.String("test")})
+	got := assertFastPathAgreement(t, Field("name"), &demopb.Customer{CustomerId: proto.Int64(1), Name: proto.String("test")})
 	g.Expect(got).To(HaveLen(1))
 	g.Expect(got[0]).To(Equal("test"))
 }
@@ -112,7 +114,7 @@ func TestKeyExpressionFastPath_SingleFieldString(t *testing.T) {
 func TestKeyExpressionFastPath_SingleFieldFloat32(t *testing.T) {
 	t.Parallel()
 	g := NewGomegaWithT(t)
-	got := assertFastPathAgreement(t, Field("val_float"), &gen.TypedRecord{Id: proto.Int64(1), ValFloat: proto.Float32(3.14)})
+	got := assertFastPathAgreement(t, Field("val_float"), &demopb.TypedRecord{Id: proto.Int64(1), ValFloat: proto.Float32(3.14)})
 	g.Expect(got).To(HaveLen(1))
 	g.Expect(got[0]).To(BeAssignableToTypeOf(float32(0)), "must be float32, not float64 — the two pack to different bytes")
 	g.Expect(got[0]).To(BeNumerically("~", 3.14, 0.001))
@@ -121,7 +123,7 @@ func TestKeyExpressionFastPath_SingleFieldFloat32(t *testing.T) {
 func TestKeyExpressionFastPath_SingleFieldFloat64(t *testing.T) {
 	t.Parallel()
 	g := NewGomegaWithT(t)
-	got := assertFastPathAgreement(t, Field("val_double"), &gen.TypedRecord{Id: proto.Int64(1), ValDouble: proto.Float64(2.71828)})
+	got := assertFastPathAgreement(t, Field("val_double"), &demopb.TypedRecord{Id: proto.Int64(1), ValDouble: proto.Float64(2.71828)})
 	g.Expect(got).To(HaveLen(1))
 	g.Expect(got[0]).To(BeAssignableToTypeOf(float64(0)))
 	g.Expect(got[0]).To(Equal(float64(2.71828)))
@@ -130,81 +132,81 @@ func TestKeyExpressionFastPath_SingleFieldFloat64(t *testing.T) {
 func TestKeyExpressionFastPath_SingleFieldEnum(t *testing.T) {
 	t.Parallel()
 	g := NewGomegaWithT(t)
-	got := assertFastPathAgreement(t, Field("val_enum"), &gen.TypedRecord{Id: proto.Int64(1), ValEnum: gen.Color_RED.Enum()})
+	got := assertFastPathAgreement(t, Field("val_enum"), &demopb.TypedRecord{Id: proto.Int64(1), ValEnum: demopb.Color_RED.Enum()})
 	g.Expect(got).To(HaveLen(1))
 	g.Expect(got[0]).To(Equal(int64(1))) // RED=1
 }
 
 func TestKeyExpressionFastPath_Int32Field(t *testing.T) {
 	t.Parallel()
-	assertFastPathAgreement(t, Field("val_int32"), &gen.TypedRecord{Id: proto.Int64(1), ValInt32: proto.Int32(-100)})
+	assertFastPathAgreement(t, Field("val_int32"), &demopb.TypedRecord{Id: proto.Int64(1), ValInt32: proto.Int32(-100)})
 }
 
 func TestKeyExpressionFastPath_Sint32Field(t *testing.T) {
 	t.Parallel()
-	assertFastPathAgreement(t, Field("val_sint32"), &gen.TypedRecord{Id: proto.Int64(1), ValSint32: proto.Int32(-50)})
+	assertFastPathAgreement(t, Field("val_sint32"), &demopb.TypedRecord{Id: proto.Int64(1), ValSint32: proto.Int32(-50)})
 }
 
 func TestKeyExpressionFastPath_Sint64Field(t *testing.T) {
 	t.Parallel()
-	assertFastPathAgreement(t, Field("val_sint64"), &gen.TypedRecord{Id: proto.Int64(1), ValSint64: proto.Int64(-999999)})
+	assertFastPathAgreement(t, Field("val_sint64"), &demopb.TypedRecord{Id: proto.Int64(1), ValSint64: proto.Int64(-999999)})
 }
 
 func TestKeyExpressionFastPath_Sfixed32Field(t *testing.T) {
 	t.Parallel()
-	assertFastPathAgreement(t, Field("val_sfixed32"), &gen.TypedRecord{Id: proto.Int64(1), ValSfixed32: proto.Int32(12345)})
+	assertFastPathAgreement(t, Field("val_sfixed32"), &demopb.TypedRecord{Id: proto.Int64(1), ValSfixed32: proto.Int32(12345)})
 }
 
 func TestKeyExpressionFastPath_Sfixed64Field(t *testing.T) {
 	t.Parallel()
-	assertFastPathAgreement(t, Field("val_sfixed64"), &gen.TypedRecord{Id: proto.Int64(1), ValSfixed64: proto.Int64(-12345)})
+	assertFastPathAgreement(t, Field("val_sfixed64"), &demopb.TypedRecord{Id: proto.Int64(1), ValSfixed64: proto.Int64(-12345)})
 }
 
 func TestKeyExpressionFastPath_BoolField(t *testing.T) {
 	t.Parallel()
-	assertFastPathAgreement(t, Field("val_bool"), &gen.TypedRecord{Id: proto.Int64(1), ValBool: proto.Bool(true)})
+	assertFastPathAgreement(t, Field("val_bool"), &demopb.TypedRecord{Id: proto.Int64(1), ValBool: proto.Bool(true)})
 }
 
 func TestKeyExpressionFastPath_BoolFieldFalse(t *testing.T) {
 	t.Parallel()
-	assertFastPathAgreement(t, Field("val_bool"), &gen.TypedRecord{Id: proto.Int64(1), ValBool: proto.Bool(false)})
+	assertFastPathAgreement(t, Field("val_bool"), &demopb.TypedRecord{Id: proto.Int64(1), ValBool: proto.Bool(false)})
 }
 
 func TestKeyExpressionFastPath_BytesField(t *testing.T) {
 	t.Parallel()
-	assertFastPathAgreement(t, Field("val_bytes"), &gen.TypedRecord{Id: proto.Int64(1), ValBytes: []byte{0x00, 0xFF, 0xAB}})
+	assertFastPathAgreement(t, Field("val_bytes"), &demopb.TypedRecord{Id: proto.Int64(1), ValBytes: []byte{0x00, 0xFF, 0xAB}})
 }
 
 func TestKeyExpressionFastPath_LargeInt64(t *testing.T) {
 	t.Parallel()
-	assertFastPathAgreement(t, Field("order_id"), &gen.Order{OrderId: proto.Int64(9223372036854775807)}) // MaxInt64
+	assertFastPathAgreement(t, Field("order_id"), &demopb.Order{OrderId: proto.Int64(9223372036854775807)}) // MaxInt64
 }
 
 func TestKeyExpressionFastPath_NegativeInt64(t *testing.T) {
 	t.Parallel()
-	assertFastPathAgreement(t, Field("order_id"), &gen.Order{OrderId: proto.Int64(-9223372036854775808)}) // MinInt64
+	assertFastPathAgreement(t, Field("order_id"), &demopb.Order{OrderId: proto.Int64(-9223372036854775808)}) // MinInt64
 }
 
 func TestKeyExpressionFastPath_ZeroInt64(t *testing.T) {
 	t.Parallel()
-	assertFastPathAgreement(t, Field("order_id"), &gen.Order{OrderId: proto.Int64(0)})
+	assertFastPathAgreement(t, Field("order_id"), &demopb.Order{OrderId: proto.Int64(0)})
 }
 
 func TestKeyExpressionFastPath_EmptyString(t *testing.T) {
 	t.Parallel()
-	assertFastPathAgreement(t, Field("name"), &gen.Customer{CustomerId: proto.Int64(1), Name: proto.String("")})
+	assertFastPathAgreement(t, Field("name"), &demopb.Customer{CustomerId: proto.Int64(1), Name: proto.String("")})
 }
 
 func TestKeyExpressionFastPath_UnicodeString(t *testing.T) {
 	t.Parallel()
-	assertFastPathAgreement(t, Field("name"), &gen.Customer{CustomerId: proto.Int64(1), Name: proto.String("Hello 世界 \U0001F600")})
+	assertFastPathAgreement(t, Field("name"), &demopb.Customer{CustomerId: proto.Int64(1), Name: proto.String("Hello 世界 \U0001F600")})
 }
 
 func TestKeyExpressionFastPath_UnsetOptionalField(t *testing.T) {
 	t.Parallel()
 	g := NewGomegaWithT(t)
 	// val_float is NOT set: every fast path must agree it encodes as tuple null.
-	got := assertFastPathAgreement(t, Field("val_float"), &gen.TypedRecord{Id: proto.Int64(1)})
+	got := assertFastPathAgreement(t, Field("val_float"), &demopb.TypedRecord{Id: proto.Int64(1)})
 	g.Expect(got).To(HaveLen(1))
 	g.Expect(got[0]).To(BeNil())
 }
@@ -215,7 +217,7 @@ func TestKeyExpressionFastPath_CompositeKeyTwoFields(t *testing.T) {
 	t.Parallel()
 	g := NewGomegaWithT(t)
 	got := assertFastPathAgreement(t, Concat(Field("order_id"), Field("price")),
-		&gen.Order{OrderId: proto.Int64(99), Price: proto.Int32(250)})
+		&demopb.Order{OrderId: proto.Int64(99), Price: proto.Int32(250)})
 	g.Expect(got).To(HaveLen(2))
 	g.Expect(got[0]).To(Equal(int64(99)))
 	g.Expect(got[1]).To(Equal(int64(250)))
@@ -226,7 +228,7 @@ func TestKeyExpressionFastPath_CompositeWithMixedTypes(t *testing.T) {
 	g := NewGomegaWithT(t)
 	got := assertFastPathAgreement(t,
 		Concat(Field("val_int32"), Field("val_float"), Field("val_string")),
-		&gen.TypedRecord{
+		&demopb.TypedRecord{
 			Id:        proto.Int64(1),
 			ValInt32:  proto.Int32(42),
 			ValFloat:  proto.Float32(1.5),
@@ -243,7 +245,7 @@ func TestKeyExpressionFastPath_CompositeWithUnsetFields(t *testing.T) {
 	t.Parallel()
 	g := NewGomegaWithT(t)
 	got := assertFastPathAgreement(t, Concat(Field("val_int32"), Field("val_string")),
-		&gen.TypedRecord{Id: proto.Int64(1)})
+		&demopb.TypedRecord{Id: proto.Int64(1)})
 	g.Expect(got).To(HaveLen(2))
 	g.Expect(got[0]).To(BeNil())
 	g.Expect(got[1]).To(BeNil())
@@ -261,7 +263,7 @@ func TestKeyExpressionFastPath_AllIntegerTypes(t *testing.T) {
 			Field("val_sfixed32"),
 			Field("val_sfixed64"),
 		),
-		&gen.TypedRecord{
+		&demopb.TypedRecord{
 			Id:          proto.Int64(1),
 			ValInt32:    proto.Int32(32),
 			ValInt64:    proto.Int64(64),
@@ -279,7 +281,7 @@ func TestKeyExpressionFastPath_AllIntegerTypes(t *testing.T) {
 func TestKeyExpressionFastPath_EmptyKeyExpression(t *testing.T) {
 	t.Parallel()
 	g := NewGomegaWithT(t)
-	got := assertFastPathAgreement(t, EmptyKey(), &gen.Order{OrderId: proto.Int64(1)})
+	got := assertFastPathAgreement(t, EmptyKey(), &demopb.Order{OrderId: proto.Int64(1)})
 	g.Expect(got).To(HaveLen(0), "empty key produces no elements")
 }
 
@@ -289,7 +291,7 @@ func TestKeyExpressionFastPath_GroupingKeyDelegatesToWholeKey(t *testing.T) {
 
 	// GroupBy(grouped, grouping...) builds wholeKey = Concat(grouping..., grouped).
 	grouped := GroupBy(Field("price"), Field("order_id"))
-	msg := &gen.Order{OrderId: proto.Int64(5), Price: proto.Int32(100)}
+	msg := &demopb.Order{OrderId: proto.Int64(5), Price: proto.Int32(100)}
 
 	got := assertFastPathAgreement(t, grouped, msg)
 	g.Expect(got).To(HaveLen(2))
@@ -307,7 +309,7 @@ func TestKeyExpressionFastPath_GroupingKeyDelegatesToWholeKey(t *testing.T) {
 // the type rather than on the expression.
 func storedOfType(t *testing.T, msg proto.Message, typeName string, keys map[string]any) *FDBStoredRecord[proto.Message] {
 	t.Helper()
-	b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -330,7 +332,7 @@ func TestKeyExpressionFastPath_RecordTypeKeyWithField(t *testing.T) {
 	g := NewGomegaWithT(t)
 
 	expr := Concat(RecordTypeKey(), Field("order_id"))
-	msg := &gen.Order{OrderId: proto.Int64(42)}
+	msg := &demopb.Order{OrderId: proto.Int64(42)}
 	record := storedOfType(t, msg, "Order", map[string]any{"Order": 1, "Customer": 2})
 
 	got := assertFastPathAgreementForRecord(t, expr, record, msg)
@@ -344,7 +346,7 @@ func TestKeyExpressionFastPath_ThreeFieldComposite(t *testing.T) {
 	g := NewGomegaWithT(t)
 
 	expr := Concat(RecordTypeKey(), Field("order_id"), Field("price"))
-	msg := &gen.Order{OrderId: proto.Int64(42), Price: proto.Int32(250)}
+	msg := &demopb.Order{OrderId: proto.Int64(42), Price: proto.Int32(250)}
 	record := storedOfType(t, msg, "Order", map[string]any{"Order": 7})
 
 	got := assertFastPathAgreementForRecord(t, expr, record, msg)
@@ -363,11 +365,11 @@ func TestKeyExpressionFastPath_RecordTypeKeyFollowsTheRecord(t *testing.T) {
 	rtk := RecordTypeKey()
 	keys := map[string]any{"Order": 1, "Customer": 2}
 
-	orderMsg := &gen.Order{OrderId: proto.Int64(1)}
+	orderMsg := &demopb.Order{OrderId: proto.Int64(1)}
 	orderRec := storedOfType(t, orderMsg, "Order", keys)
 	g.Expect(assertFastPathAgreementForRecord(t, rtk, orderRec, orderMsg)[0]).To(Equal(int64(1)))
 
-	customerMsg := &gen.Customer{CustomerId: proto.Int64(1)}
+	customerMsg := &demopb.Customer{CustomerId: proto.Int64(1)}
 	customerRec := storedOfType(t, customerMsg, "Customer", keys)
 	g.Expect(assertFastPathAgreementForRecord(t, rtk, customerRec, customerMsg)[0]).To(Equal(int64(2)))
 }
@@ -382,7 +384,7 @@ func TestKeyExpressionFastPath_RecordTypeKeyUnresolvedType(t *testing.T) {
 	g := NewGomegaWithT(t)
 
 	rtk := &RecordTypeKeyExpression{}
-	msg := &gen.Order{OrderId: proto.Int64(1)}
+	msg := &demopb.Order{OrderId: proto.Int64(1)}
 	record := &FDBStoredRecord[proto.Message]{Record: msg} // no RecordType
 
 	_, err := rtk.Evaluate(record, msg)
@@ -438,7 +440,7 @@ func TestKeyExpressionFastPath_FanOutFieldDeclinesFastPath(t *testing.T) {
 	g := NewGomegaWithT(t)
 
 	expr := FanOut("tags")
-	msg := &gen.Order{OrderId: proto.Int64(1), Tags: []string{"a", "b"}}
+	msg := &demopb.Order{OrderId: proto.Int64(1), Tags: []string{"a", "b"}}
 	record := &FDBStoredRecord[proto.Message]{Record: msg}
 
 	// Fan-out genuinely produces more than one tuple — the shape no fast path
@@ -463,7 +465,7 @@ func TestKeyExpressionFastPath_RepeatedFieldInCompositeDeclinesFastPath(t *testi
 	g := NewGomegaWithT(t)
 
 	expr := Concat(Field("order_id"), FanOut("tags"))
-	msg := &gen.Order{OrderId: proto.Int64(1), Tags: []string{"a", "b"}}
+	msg := &demopb.Order{OrderId: proto.Int64(1), Tags: []string{"a", "b"}}
 	record := &FDBStoredRecord[proto.Message]{Record: msg}
 
 	pk := tuple.GetPacker()
@@ -490,17 +492,17 @@ func TestKeyExpressionFastPath_NestedRecordTypeKeyKeepsAllColumns(t *testing.T) 
 	for _, c := range []struct {
 		name string
 		expr KeyExpression
-		msg  *gen.Order
+		msg  *demopb.Order
 		want []any
 	}{
 		{
 			"RecordTypeKey().Nest(order_id)", RecordTypeKey().Nest(Field("order_id")),
-			&gen.Order{OrderId: proto.Int64(42)},
+			&demopb.Order{OrderId: proto.Int64(42)},
 			[]any{int64(7), int64(42)},
 		},
 		{
 			"inside a composite index root", Concat(RecordTypeKey().Nest(Field("order_id")), Field("price")),
-			&gen.Order{OrderId: proto.Int64(42), Price: proto.Int32(9)},
+			&demopb.Order{OrderId: proto.Int64(42), Price: proto.Int32(9)},
 			[]any{int64(7), int64(42), int64(9)},
 		},
 	} {
@@ -548,7 +550,7 @@ func TestKeyExpressionFastPath_NestedRecordTypeKeyPrimaryKeysStayDistinct(t *tes
 	pkExpr := RecordTypeKey().Nest(Field("order_id"))
 
 	keyFor := func(id int64) []any {
-		msg := &gen.Order{OrderId: proto.Int64(id)}
+		msg := &demopb.Order{OrderId: proto.Int64(id)}
 		rec := storedOfType(t, msg, "Order", map[string]any{"Order": 7})
 		vals, err := evaluateKeyFlat(pkExpr, rec, msg)
 		g.Expect(err).NotTo(HaveOccurred())
@@ -607,7 +609,7 @@ func TestKeyExpressionFastPath_UnknownFieldErrorsEverywhere(t *testing.T) {
 	g := NewGomegaWithT(t)
 
 	expr := Field("no_such_field")
-	msg := &gen.Order{OrderId: proto.Int64(1)}
+	msg := &demopb.Order{OrderId: proto.Int64(1)}
 	record := &FDBStoredRecord[proto.Message]{Record: msg}
 
 	assertUnknownFieldError := func(err error, path string) {
@@ -646,7 +648,7 @@ func TestKeyExpressionFastPath_UnknownFieldInCompositeErrors(t *testing.T) {
 	g := NewGomegaWithT(t)
 
 	expr := Concat(Field("order_id"), Field("no_such_field"))
-	msg := &gen.Order{OrderId: proto.Int64(1)}
+	msg := &demopb.Order{OrderId: proto.Int64(1)}
 	record := &FDBStoredRecord[proto.Message]{Record: msg}
 
 	var want *KeyExpressionError
@@ -679,13 +681,13 @@ func TestKeyExpressionFastPath_FieldCacheAcrossMessageTypes(t *testing.T) {
 	expr := Field("price")
 	se := expr.(ScalarEvaluator)
 
-	orderMsg := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
+	orderMsg := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
 	orderRec := &FDBStoredRecord[proto.Message]{Record: orderMsg}
 	v, err := se.EvaluateScalar(orderRec, orderMsg)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(v).To(Equal(int64(100)))
 
-	typedMsg := &gen.TypedRecord{Id: proto.Int64(2), Price: proto.Int32(200)}
+	typedMsg := &demopb.TypedRecord{Id: proto.Int64(2), Price: proto.Int32(200)}
 	typedRec := &FDBStoredRecord[proto.Message]{Record: typedMsg}
 	v, err = se.EvaluateScalar(typedRec, typedMsg)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -707,9 +709,9 @@ func TestKeyExpressionFastPath_FieldCacheConcurrent(t *testing.T) {
 	expr := Field("price")
 	se := expr.(ScalarEvaluator)
 
-	orderMsg := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
+	orderMsg := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
 	orderRec := &FDBStoredRecord[proto.Message]{Record: orderMsg}
-	typedMsg := &gen.TypedRecord{Id: proto.Int64(2), Price: proto.Int32(200)}
+	typedMsg := &demopb.TypedRecord{Id: proto.Int64(2), Price: proto.Int32(200)}
 	typedRec := &FDBStoredRecord[proto.Message]{Record: typedMsg}
 
 	var wg sync.WaitGroup
@@ -752,7 +754,7 @@ func TestKeyExpressionFastPath_PackDirectWithSubspacePrefix(t *testing.T) {
 	g := NewGomegaWithT(t)
 
 	expr := Concat(Field("order_id"), Field("price"))
-	msg := &gen.Order{OrderId: proto.Int64(42), Price: proto.Int32(100)}
+	msg := &demopb.Order{OrderId: proto.Int64(42), Price: proto.Int32(100)}
 	record := &FDBStoredRecord[proto.Message]{Record: msg}
 	ss := subspace.Sub(int64(1), int64(2))
 
@@ -781,7 +783,7 @@ func TestKeyExpressionFastPath_PackerResetLeavesNoResidue(t *testing.T) {
 	pk := tuple.GetPacker()
 	defer tuple.PutPacker(pk)
 
-	msg1 := &gen.Order{OrderId: proto.Int64(1)}
+	msg1 := &demopb.Order{OrderId: proto.Int64(1)}
 	rec1 := &FDBStoredRecord[proto.Message]{Record: msg1}
 	pk.Reset()
 	g.Expect(dp.PackDirect(pk, rec1, msg1)).To(BeTrue())
@@ -790,7 +792,7 @@ func TestKeyExpressionFastPath_PackerResetLeavesNoResidue(t *testing.T) {
 	g.Expect(first).To(Equal(tuple.Tuple{int64(1)}.Pack()))
 
 	// Same packer, second record.
-	msg2 := &gen.Order{OrderId: proto.Int64(999)}
+	msg2 := &demopb.Order{OrderId: proto.Int64(999)}
 	rec2 := &FDBStoredRecord[proto.Message]{Record: msg2}
 	pk.Reset()
 	g.Expect(dp.PackDirect(pk, rec2, msg2)).To(BeTrue())

@@ -3,7 +3,7 @@ package recordlayer
 import (
 	"context"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
@@ -19,7 +19,7 @@ var _ = Describe("KeyStructure", func() {
 		orderId := int64(100)
 		expectedKey := tuple.Tuple{int64(100), int64(0)}
 
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(primaryKeyExpr)
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -34,7 +34,7 @@ var _ = Describe("KeyStructure", func() {
 				CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			order := &gen.Order{
+			order := &demopb.Order{
 				OrderId: proto.Int64(orderId),
 				Price:   proto.Int32(50),
 			}

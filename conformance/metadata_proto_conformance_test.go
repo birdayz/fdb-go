@@ -10,6 +10,8 @@ import (
 	"sort"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -111,7 +113,7 @@ func normalizeKeyExprJSON(s string) string {
 // buildGoMetaData creates a Go RecordMetaData matching a specific config.
 // MUST match the Java buildMetaData() configs exactly.
 func buildGoMetaData(config string) *recordlayer.RecordMetaData {
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -270,7 +272,7 @@ var _ = Describe("RecordMetaData Proto Serialization Conformance", func() {
 	} {
 		It("matches ignored option evolution in Java: "+tc.name, func() {
 			build := func(version int, options map[string]string) *recordlayer.RecordMetaData {
-				b := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+				b := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 				b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 				b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 				b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))

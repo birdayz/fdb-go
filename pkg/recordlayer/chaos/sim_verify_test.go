@@ -7,7 +7,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -58,8 +58,8 @@ func TestSimFDB_RunRandomVerify(t *testing.T) {
 			t.Fatalf("verify at op %d: %v", op, err)
 		}
 	}
-	order := func(pk int64) *gen.Order {
-		return &gen.Order{
+	order := func(pk int64) *demopb.Order {
+		return &demopb.Order{
 			OrderId:  proto.Int64(pk),
 			Price:    proto.Int32(rng.Int32N(10000)),
 			Quantity: proto.Int32(rng.Int32N(100)),

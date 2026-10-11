@@ -11,7 +11,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -33,14 +33,14 @@ var testDB *recordlayer.FDBDatabase
 // the old tests passed nil/Unknown and therefore could not prove that an
 // ordinal was resolved against the row that execution actually emits.
 func integrationOrderType() *values.RecordType {
-	return PositionalTypeForRecordLayout((&gen.Order{}).ProtoReflect().Descriptor(), false)
+	return PositionalTypeForRecordLayout((&demopb.Order{}).ProtoReflect().Descriptor(), false)
 }
 
 // orderUpdate is the transform assigning an Order column, resolved as the SQL
 // builder resolves a SET column (values.ResolveAssignmentColumn over the
 // descriptor's user identifiers).
 func orderUpdate(column string, v values.Value) expressions.UpdateTransform {
-	fields := (&gen.Order{}).ProtoReflect().Descriptor().Fields()
+	fields := (&demopb.Order{}).ProtoReflect().Descriptor().Fields()
 	names := make([]string, fields.Len())
 	for i := range names {
 		names[i] = values.FieldNameForProtoField(fields.Get(i))
@@ -53,11 +53,11 @@ func orderUpdate(column string, v values.Value) expressions.UpdateTransform {
 }
 
 func integrationCustomerType() *values.RecordType {
-	return PositionalTypeForRecordLayout((&gen.Customer{}).ProtoReflect().Descriptor(), false)
+	return PositionalTypeForRecordLayout((&demopb.Customer{}).ProtoReflect().Descriptor(), false)
 }
 
 func integrationTypedRecordType() *values.RecordType {
-	return PositionalTypeForRecordLayout((&gen.TypedRecord{}).ProtoReflect().Descriptor(), false)
+	return PositionalTypeForRecordLayout((&demopb.TypedRecord{}).ProtoReflect().Descriptor(), false)
 }
 
 func integrationField(t testing.TB, owner plans.RecordQueryPlan, ordinal int) values.Value {
@@ -158,7 +158,7 @@ func setupStore(t *testing.T, extraIndexes ...*recordlayer.Index) *recordlayer.F
 	ctx := context.Background()
 	ks := testSubspace(t)
 
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -202,7 +202,7 @@ func setupStore(t *testing.T, extraIndexes ...*recordlayer.Index) *recordlayer.F
 	return store
 }
 
-func insertOrders(t *testing.T, store *recordlayer.FDBRecordStore, orders ...*gen.Order) {
+func insertOrders(t *testing.T, store *recordlayer.FDBRecordStore, orders ...*demopb.Order) {
 	t.Helper()
 	ctx := context.Background()
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -230,13 +230,13 @@ func TestIntegration_ScanPlan_AllRecords(t *testing.T) {
 	ctx := context.Background()
 	store := setupStore(t)
 
-	insertOrders(t, store, &gen.Order{
+	insertOrders(t, store, &demopb.Order{
 		OrderId: proto.Int64(1),
 		Price:   proto.Int32(100),
-	}, &gen.Order{
+	}, &demopb.Order{
 		OrderId: proto.Int64(2),
 		Price:   proto.Int32(200),
-	}, &gen.Order{
+	}, &demopb.Order{
 		OrderId: proto.Int64(3),
 		Price:   proto.Int32(300),
 	})
@@ -292,7 +292,7 @@ func TestIntegration_ScanPlan_TypeFilter(t *testing.T) {
 	ctx := context.Background()
 	store := setupStore(t)
 
-	insertOrders(t, store, &gen.Order{
+	insertOrders(t, store, &demopb.Order{
 		OrderId: proto.Int64(10),
 		Price:   proto.Int32(999),
 	})
@@ -339,10 +339,10 @@ func TestIntegration_FilterPlan(t *testing.T) {
 	ctx := context.Background()
 	store := setupStore(t)
 
-	insertOrders(t, store, &gen.Order{
+	insertOrders(t, store, &demopb.Order{
 		OrderId: proto.Int64(100),
 		Price:   proto.Int32(50),
-	}, &gen.Order{
+	}, &demopb.Order{
 		OrderId: proto.Int64(101),
 		Price:   proto.Int32(500),
 	})
@@ -400,9 +400,9 @@ func TestIntegration_SortLimitPlan(t *testing.T) {
 	store := setupStore(t)
 
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(201), Price: proto.Int32(300)},
-		&gen.Order{OrderId: proto.Int64(202), Price: proto.Int32(100)},
-		&gen.Order{OrderId: proto.Int64(203), Price: proto.Int32(200)},
+		&demopb.Order{OrderId: proto.Int64(201), Price: proto.Int32(300)},
+		&demopb.Order{OrderId: proto.Int64(202), Price: proto.Int32(100)},
+		&demopb.Order{OrderId: proto.Int64(203), Price: proto.Int32(200)},
 	)
 
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -462,12 +462,12 @@ func TestIntegration_SortContinuation_BytesKeyStraddle_F33(t *testing.T) {
 	store := setupStore(t)
 
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(1), VectorData: []byte{0x02, 0xff}},
-		&gen.Order{OrderId: proto.Int64(2), VectorData: []byte{0x01}},
-		&gen.Order{OrderId: proto.Int64(3), VectorData: []byte{0x03, 0x00}},
-		&gen.Order{OrderId: proto.Int64(4), VectorData: []byte{0x00, 0xaa}},
-		&gen.Order{OrderId: proto.Int64(5), VectorData: []byte{0x02, 0x01}},
-		&gen.Order{OrderId: proto.Int64(6), VectorData: []byte{0x01, 0xff}},
+		&demopb.Order{OrderId: proto.Int64(1), VectorData: []byte{0x02, 0xff}},
+		&demopb.Order{OrderId: proto.Int64(2), VectorData: []byte{0x01}},
+		&demopb.Order{OrderId: proto.Int64(3), VectorData: []byte{0x03, 0x00}},
+		&demopb.Order{OrderId: proto.Int64(4), VectorData: []byte{0x00, 0xaa}},
+		&demopb.Order{OrderId: proto.Int64(5), VectorData: []byte{0x02, 0x01}},
+		&demopb.Order{OrderId: proto.Int64(6), VectorData: []byte{0x01, 0xff}},
 	)
 
 	// Expected ASC lexicographic byte order of vector_data.
@@ -593,11 +593,11 @@ func TestIntegration_SortContinuation_ArrayStructStraddle_F53(t *testing.T) {
 	}
 	// Inserted out of price order so the sort actually reorders.
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(300), Tags: []string{"c1", "c2"}, Flower: &gen.Flower{Type: proto.String("rose"), Color: gen.Color_RED.Enum()}},
-		&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100), Tags: []string{"a1"}, Flower: &gen.Flower{Type: proto.String("lily"), Color: gen.Color_BLUE.Enum()}},
-		&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(500), Tags: []string{"e1", "e2", "e3"}, Flower: &gen.Flower{Type: proto.String("tulip"), Color: gen.Color_YELLOW.Enum()}},
-		&gen.Order{OrderId: proto.Int64(4), Price: proto.Int32(200), Tags: []string{"b1", "b2"}, Flower: &gen.Flower{Type: proto.String("iris"), Color: gen.Color_PINK.Enum()}},
-		&gen.Order{OrderId: proto.Int64(5), Price: proto.Int32(400), Tags: []string{"d1"}, Flower: &gen.Flower{Type: proto.String("daisy"), Color: gen.Color_RED.Enum()}},
+		&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(300), Tags: []string{"c1", "c2"}, Flower: &demopb.Flower{Type: proto.String("rose"), Color: demopb.Color_RED.Enum()}},
+		&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(100), Tags: []string{"a1"}, Flower: &demopb.Flower{Type: proto.String("lily"), Color: demopb.Color_BLUE.Enum()}},
+		&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(500), Tags: []string{"e1", "e2", "e3"}, Flower: &demopb.Flower{Type: proto.String("tulip"), Color: demopb.Color_YELLOW.Enum()}},
+		&demopb.Order{OrderId: proto.Int64(4), Price: proto.Int32(200), Tags: []string{"b1", "b2"}, Flower: &demopb.Flower{Type: proto.String("iris"), Color: demopb.Color_PINK.Enum()}},
+		&demopb.Order{OrderId: proto.Int64(5), Price: proto.Int32(400), Tags: []string{"d1"}, Flower: &demopb.Flower{Type: proto.String("daisy"), Color: demopb.Color_RED.Enum()}},
 	)
 	want := []wantRow{
 		{100, []string{"a1"}, "lily"},
@@ -681,16 +681,16 @@ func TestIntegration_SortContinuation_ArrayStructStraddle_F53(t *testing.T) {
 					if !ok {
 						return nil, fmt.Errorf("no slot at flower ordinal %d", flowerOrdinal)
 					}
-					// Rows carry *gen.Flower on BOTH sides of a checkpoint: the
+					// Rows carry *demopb.Flower on BOTH sides of a checkpoint: the
 					// restore rebuilds the ENCODED representation (a generated
 					// row encodes flag 0 → the metadata's compiled type), so the resumed slot
 					// keeps the generated concrete type. That identity is
 					// load-bearing — the %T-keyed group/dedup paths
 					// (computeGroupKey, packedDedupKey) would otherwise never
 					// match a restored row against an equal fresh one.
-					fm, isFlower := fv.(*gen.Flower)
+					fm, isFlower := fv.(*demopb.Flower)
 					if !isFlower {
-						return nil, fmt.Errorf("flower slot = %#v (%T), want *gen.Flower — the STRUCT column must survive the sort-continuation resume with its generated type", fv, fv)
+						return nil, fmt.Errorf("flower slot = %#v (%T), want *demopb.Flower — the STRUCT column must survive the sort-continuation resume with its generated type", fv, fv)
 					}
 					got = append(got, wantRow{
 						price:      price,
@@ -755,7 +755,7 @@ func TestIntegration_DeletePlan(t *testing.T) {
 	ctx := context.Background()
 	store := setupStore(t)
 
-	insertOrders(t, store, &gen.Order{
+	insertOrders(t, store, &demopb.Order{
 		OrderId: proto.Int64(500),
 		Price:   proto.Int32(42),
 	})
@@ -806,9 +806,9 @@ func TestIntegration_IndexScan(t *testing.T) {
 	store := setupStore(t)
 
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(301), Price: proto.Int32(50)},
-		&gen.Order{OrderId: proto.Int64(302), Price: proto.Int32(150)},
-		&gen.Order{OrderId: proto.Int64(303), Price: proto.Int32(250)},
+		&demopb.Order{OrderId: proto.Int64(301), Price: proto.Int32(50)},
+		&demopb.Order{OrderId: proto.Int64(302), Price: proto.Int32(150)},
+		&demopb.Order{OrderId: proto.Int64(303), Price: proto.Int32(250)},
 	)
 
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -870,8 +870,8 @@ func TestIntegration_UpdatePlan(t *testing.T) {
 	store := setupStore(t)
 
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(601), Price: proto.Int32(100)},
-		&gen.Order{OrderId: proto.Int64(602), Price: proto.Int32(200)},
+		&demopb.Order{OrderId: proto.Int64(601), Price: proto.Int32(100)},
+		&demopb.Order{OrderId: proto.Int64(602), Price: proto.Int32(200)},
 	)
 
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -920,7 +920,7 @@ func TestIntegration_UpdatePlan(t *testing.T) {
 		if rec == nil {
 			t.Fatal("record not found after update")
 		}
-		updated := rec.Record.(*gen.Order)
+		updated := rec.Record.(*demopb.Order)
 		if updated.GetPrice() != 999 {
 			t.Errorf("price after update = %d, want 999", updated.GetPrice())
 		}
@@ -932,7 +932,7 @@ func TestIntegration_UpdatePlan(t *testing.T) {
 		if untouched == nil {
 			t.Fatal("untouched record not found")
 		}
-		other := untouched.Record.(*gen.Order)
+		other := untouched.Record.(*demopb.Order)
 		if other.GetPrice() != 200 {
 			t.Errorf("untouched order price = %d, want 200", other.GetPrice())
 		}
@@ -951,13 +951,13 @@ func TestIntegration_UpdatePlan_ExactTargetOwnerBinding(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	store := setupStore(t)
-	wantFlower := &gen.Flower{Type: proto.String("rose"), Color: gen.Color_BLUE.Enum()}
+	wantFlower := &demopb.Flower{Type: proto.String("rose"), Color: demopb.Color_BLUE.Enum()}
 
 	insertOrders(t, store,
-		&gen.Order{
+		&demopb.Order{
 			OrderId: proto.Int64(603),
 			Price:   proto.Int32(100),
-			Flower:  proto.Clone(wantFlower).(*gen.Flower),
+			Flower:  proto.Clone(wantFlower).(*demopb.Flower),
 		},
 	)
 
@@ -1004,7 +1004,7 @@ func TestIntegration_UpdatePlan_ExactTargetOwnerBinding(t *testing.T) {
 		if err != nil {
 			t.Fatalf("LoadRecord: %v", err)
 		}
-		updated := rec.Record.(*gen.Order)
+		updated := rec.Record.(*demopb.Order)
 		if updated.GetPrice() != 107 {
 			t.Errorf("price after target-owned arithmetic = %d, want 107", updated.GetPrice())
 		}
@@ -1056,7 +1056,7 @@ func TestIntegration_UpdatePlan_ExactTargetOwnerRejectsForeignViews(t *testing.T
 			ctx := context.Background()
 			store := setupStore(t)
 			id := int64(604 + i)
-			insertOrders(t, store, &gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(100)})
+			insertOrders(t, store, &demopb.Order{OrderId: proto.Int64(id), Price: proto.Int32(100)})
 
 			_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 				s, err := recordlayer.NewStoreBuilder().
@@ -1088,7 +1088,7 @@ func TestIntegration_UpdatePlan_ExactTargetOwnerRejectsForeignViews(t *testing.T
 				if err != nil {
 					t.Fatalf("LoadRecord: %v", err)
 				}
-				if got := rec.Record.(*gen.Order).GetPrice(); got != 100 {
+				if got := rec.Record.(*demopb.Order).GetPrice(); got != 100 {
 					t.Fatalf("failed transform staged PRICE=%d, want unchanged 100", got)
 				}
 				return nil, nil
@@ -1108,7 +1108,7 @@ func TestIntegration_ScanDatum_Shape(t *testing.T) {
 	store := setupStore(t)
 
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(701), Price: proto.Int32(42)},
+		&demopb.Order{OrderId: proto.Int64(701), Price: proto.Int32(42)},
 	)
 
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -1161,9 +1161,9 @@ func TestIntegration_IndexScan_Equality(t *testing.T) {
 	store := setupStore(t)
 
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(901), Price: proto.Int32(77)},
-		&gen.Order{OrderId: proto.Int64(902), Price: proto.Int32(88)},
-		&gen.Order{OrderId: proto.Int64(903), Price: proto.Int32(77)},
+		&demopb.Order{OrderId: proto.Int64(901), Price: proto.Int32(77)},
+		&demopb.Order{OrderId: proto.Int64(902), Price: proto.Int32(88)},
+		&demopb.Order{OrderId: proto.Int64(903), Price: proto.Int32(77)},
 	)
 
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -1225,10 +1225,10 @@ func TestIntegration_IndexScan_BoundedRange(t *testing.T) {
 	store := setupStore(t)
 
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(1001), Price: proto.Int32(10)},
-		&gen.Order{OrderId: proto.Int64(1002), Price: proto.Int32(50)},
-		&gen.Order{OrderId: proto.Int64(1003), Price: proto.Int32(100)},
-		&gen.Order{OrderId: proto.Int64(1004), Price: proto.Int32(150)},
+		&demopb.Order{OrderId: proto.Int64(1001), Price: proto.Int32(10)},
+		&demopb.Order{OrderId: proto.Int64(1002), Price: proto.Int32(50)},
+		&demopb.Order{OrderId: proto.Int64(1003), Price: proto.Int32(100)},
+		&demopb.Order{OrderId: proto.Int64(1004), Price: proto.Int32(150)},
 	)
 
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -1297,11 +1297,11 @@ func TestIntegration_FilterSortLimit_Pipeline(t *testing.T) {
 	store := setupStore(t)
 
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(1101), Price: proto.Int32(500)},
-		&gen.Order{OrderId: proto.Int64(1102), Price: proto.Int32(300)},
-		&gen.Order{OrderId: proto.Int64(1103), Price: proto.Int32(100)},
-		&gen.Order{OrderId: proto.Int64(1104), Price: proto.Int32(400)},
-		&gen.Order{OrderId: proto.Int64(1105), Price: proto.Int32(200)},
+		&demopb.Order{OrderId: proto.Int64(1101), Price: proto.Int32(500)},
+		&demopb.Order{OrderId: proto.Int64(1102), Price: proto.Int32(300)},
+		&demopb.Order{OrderId: proto.Int64(1103), Price: proto.Int32(100)},
+		&demopb.Order{OrderId: proto.Int64(1104), Price: proto.Int32(400)},
+		&demopb.Order{OrderId: proto.Int64(1105), Price: proto.Int32(200)},
 	)
 
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -1367,8 +1367,8 @@ func TestIntegration_ResultSet_TypedAccess(t *testing.T) {
 	store := setupStore(t)
 
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(2001), Price: proto.Int32(77)},
-		&gen.Order{OrderId: proto.Int64(2002), Price: proto.Int32(88)},
+		&demopb.Order{OrderId: proto.Int64(2001), Price: proto.Int32(77)},
+		&demopb.Order{OrderId: proto.Int64(2002), Price: proto.Int32(88)},
 	)
 
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -1448,7 +1448,7 @@ func TestIntegration_ResultSet_StringCoercion(t *testing.T) {
 	store := setupStore(t)
 
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(3001), Price: proto.Int32(42)},
+		&demopb.Order{OrderId: proto.Int64(3001), Price: proto.Int32(42)},
 	)
 
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -1509,10 +1509,10 @@ func TestIntegration_ResultSet_FilterPipeline(t *testing.T) {
 	store := setupStore(t)
 
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(4001), Price: proto.Int32(10)},
-		&gen.Order{OrderId: proto.Int64(4002), Price: proto.Int32(50)},
-		&gen.Order{OrderId: proto.Int64(4003), Price: proto.Int32(90)},
-		&gen.Order{OrderId: proto.Int64(4004), Price: proto.Int32(30)},
+		&demopb.Order{OrderId: proto.Int64(4001), Price: proto.Int32(10)},
+		&demopb.Order{OrderId: proto.Int64(4002), Price: proto.Int32(50)},
+		&demopb.Order{OrderId: proto.Int64(4003), Price: proto.Int32(90)},
+		&demopb.Order{OrderId: proto.Int64(4004), Price: proto.Int32(30)},
 	)
 
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -1593,7 +1593,7 @@ func TestIntegration_ResultSet_ByName(t *testing.T) {
 	store := setupStore(t)
 
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(5001), Price: proto.Int32(99)},
+		&demopb.Order{OrderId: proto.Int64(5001), Price: proto.Int32(99)},
 	)
 
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -1652,7 +1652,7 @@ func TestIntegration_ResultSet_ByName(t *testing.T) {
 	}
 }
 
-func insertCustomers(t *testing.T, store *recordlayer.FDBRecordStore, customers ...*gen.Customer) {
+func insertCustomers(t *testing.T, store *recordlayer.FDBRecordStore, customers ...*demopb.Customer) {
 	t.Helper()
 	ctx := context.Background()
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -1681,8 +1681,8 @@ func TestIntegration_ProjectionPlan(t *testing.T) {
 	store := setupStore(t)
 
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(6001), Price: proto.Int32(111)},
-		&gen.Order{OrderId: proto.Int64(6002), Price: proto.Int32(222)},
+		&demopb.Order{OrderId: proto.Int64(6001), Price: proto.Int32(111)},
+		&demopb.Order{OrderId: proto.Int64(6002), Price: proto.Int32(222)},
 	)
 
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -1738,7 +1738,7 @@ func TestIntegration_ProjectionPlan_MultiColumn(t *testing.T) {
 	store := setupStore(t)
 
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(6101), Price: proto.Int32(50)},
+		&demopb.Order{OrderId: proto.Int64(6101), Price: proto.Int32(50)},
 	)
 
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -1796,9 +1796,9 @@ func TestIntegration_DistinctPlan(t *testing.T) {
 	store := setupStore(t)
 
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(7001), Price: proto.Int32(100)},
-		&gen.Order{OrderId: proto.Int64(7002), Price: proto.Int32(200)},
-		&gen.Order{OrderId: proto.Int64(7003), Price: proto.Int32(300)},
+		&demopb.Order{OrderId: proto.Int64(7001), Price: proto.Int32(100)},
+		&demopb.Order{OrderId: proto.Int64(7002), Price: proto.Int32(200)},
+		&demopb.Order{OrderId: proto.Int64(7003), Price: proto.Int32(300)},
 	)
 
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -1849,9 +1849,9 @@ func TestIntegration_ParameterBinding_Filter(t *testing.T) {
 	store := setupStore(t)
 
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(8001), Price: proto.Int32(10)},
-		&gen.Order{OrderId: proto.Int64(8002), Price: proto.Int32(50)},
-		&gen.Order{OrderId: proto.Int64(8003), Price: proto.Int32(90)},
+		&demopb.Order{OrderId: proto.Int64(8001), Price: proto.Int32(10)},
+		&demopb.Order{OrderId: proto.Int64(8002), Price: proto.Int32(50)},
+		&demopb.Order{OrderId: proto.Int64(8003), Price: proto.Int32(90)},
 	)
 
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -1911,9 +1911,9 @@ func TestIntegration_ParameterBinding_IndexScan(t *testing.T) {
 	store := setupStore(t)
 
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(8101), Price: proto.Int32(25)},
-		&gen.Order{OrderId: proto.Int64(8102), Price: proto.Int32(75)},
-		&gen.Order{OrderId: proto.Int64(8103), Price: proto.Int32(125)},
+		&demopb.Order{OrderId: proto.Int64(8101), Price: proto.Int32(25)},
+		&demopb.Order{OrderId: proto.Int64(8102), Price: proto.Int32(75)},
+		&demopb.Order{OrderId: proto.Int64(8103), Price: proto.Int32(125)},
 	)
 
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -1976,13 +1976,13 @@ func TestIntegration_NestedLoopJoin_CrossJoin(t *testing.T) {
 	store := setupStore(t)
 
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(9001), Price: proto.Int32(10)},
-		&gen.Order{OrderId: proto.Int64(9002), Price: proto.Int32(20)},
+		&demopb.Order{OrderId: proto.Int64(9001), Price: proto.Int32(10)},
+		&demopb.Order{OrderId: proto.Int64(9002), Price: proto.Int32(20)},
 	)
 	insertCustomers(t, store,
-		&gen.Customer{CustomerId: proto.Int64(1), Name: proto.String("Alice")},
-		&gen.Customer{CustomerId: proto.Int64(2), Name: proto.String("Bob")},
-		&gen.Customer{CustomerId: proto.Int64(3), Name: proto.String("Carol")},
+		&demopb.Customer{CustomerId: proto.Int64(1), Name: proto.String("Alice")},
+		&demopb.Customer{CustomerId: proto.Int64(2), Name: proto.String("Bob")},
+		&demopb.Customer{CustomerId: proto.Int64(3), Name: proto.String("Carol")},
 	)
 
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -2043,12 +2043,12 @@ func TestIntegration_NestedLoopJoin_WithPredicate(t *testing.T) {
 	store := setupStore(t)
 
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(9101), Price: proto.Int32(100), Quantity: proto.Int32(5)},
-		&gen.Order{OrderId: proto.Int64(9102), Price: proto.Int32(200), Quantity: proto.Int32(10)},
+		&demopb.Order{OrderId: proto.Int64(9101), Price: proto.Int32(100), Quantity: proto.Int32(5)},
+		&demopb.Order{OrderId: proto.Int64(9102), Price: proto.Int32(200), Quantity: proto.Int32(10)},
 	)
 	insertCustomers(t, store,
-		&gen.Customer{CustomerId: proto.Int64(19101), Name: proto.String("Dan")},
-		&gen.Customer{CustomerId: proto.Int64(19102), Name: proto.String("Eve")},
+		&demopb.Customer{CustomerId: proto.Int64(19101), Name: proto.String("Dan")},
+		&demopb.Customer{CustomerId: proto.Int64(19102), Name: proto.String("Eve")},
 	)
 
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -2117,11 +2117,11 @@ func TestIntegration_NestedLoopJoin_LeftOuter(t *testing.T) {
 	store := setupStore(t)
 
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(9201), Price: proto.Int32(100), Quantity: proto.Int32(5)},
-		&gen.Order{OrderId: proto.Int64(9202), Price: proto.Int32(200), Quantity: proto.Int32(10)},
+		&demopb.Order{OrderId: proto.Int64(9201), Price: proto.Int32(100), Quantity: proto.Int32(5)},
+		&demopb.Order{OrderId: proto.Int64(9202), Price: proto.Int32(200), Quantity: proto.Int32(10)},
 	)
 	insertCustomers(t, store,
-		&gen.Customer{CustomerId: proto.Int64(19201), Name: proto.String("Frank")},
+		&demopb.Customer{CustomerId: proto.Int64(19201), Name: proto.String("Frank")},
 	)
 
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -2202,7 +2202,7 @@ func TestIntegration_UpdatePlan_WithParameter(t *testing.T) {
 	store := setupStore(t)
 
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(8201), Price: proto.Int32(100)},
+		&demopb.Order{OrderId: proto.Int64(8201), Price: proto.Int32(100)},
 	)
 
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -2252,7 +2252,7 @@ func TestIntegration_UpdatePlan_WithParameter(t *testing.T) {
 		if rec == nil {
 			t.Fatal("record not found after update")
 		}
-		updated := rec.Record.(*gen.Order)
+		updated := rec.Record.(*demopb.Order)
 		if updated.GetPrice() != 777 {
 			t.Errorf("price after param update = %d, want 777", updated.GetPrice())
 		}
@@ -2273,7 +2273,7 @@ func TestIntegration_UnionPlan(t *testing.T) {
 	store := setupStore(t)
 
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(10001), Price: proto.Int32(100)},
+		&demopb.Order{OrderId: proto.Int64(10001), Price: proto.Int32(100)},
 	)
 
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -2315,9 +2315,9 @@ func TestIntegration_IntersectionPlan(t *testing.T) {
 	store := setupStore(t)
 
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(11001), Price: proto.Int32(10)},
-		&gen.Order{OrderId: proto.Int64(11002), Price: proto.Int32(50)},
-		&gen.Order{OrderId: proto.Int64(11003), Price: proto.Int32(90)},
+		&demopb.Order{OrderId: proto.Int64(11001), Price: proto.Int32(10)},
+		&demopb.Order{OrderId: proto.Int64(11002), Price: proto.Int32(50)},
+		&demopb.Order{OrderId: proto.Int64(11003), Price: proto.Int32(90)},
 	)
 
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -2363,9 +2363,9 @@ func TestIntegration_StreamingAggregation_CountAndSum(t *testing.T) {
 	store := setupStore(t)
 
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(12001), Price: proto.Int32(100), Quantity: proto.Int32(2)},
-		&gen.Order{OrderId: proto.Int64(12002), Price: proto.Int32(100), Quantity: proto.Int32(3)},
-		&gen.Order{OrderId: proto.Int64(12003), Price: proto.Int32(200), Quantity: proto.Int32(1)},
+		&demopb.Order{OrderId: proto.Int64(12001), Price: proto.Int32(100), Quantity: proto.Int32(2)},
+		&demopb.Order{OrderId: proto.Int64(12002), Price: proto.Int32(100), Quantity: proto.Int32(3)},
+		&demopb.Order{OrderId: proto.Int64(12003), Price: proto.Int32(200), Quantity: proto.Int32(1)},
 	)
 
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -2439,10 +2439,10 @@ func TestIntegration_Aggregation_NoGroupBy(t *testing.T) {
 	store := setupStore(t)
 
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(13001), Price: proto.Int32(10)},
-		&gen.Order{OrderId: proto.Int64(13002), Price: proto.Int32(20)},
-		&gen.Order{OrderId: proto.Int64(13003), Price: proto.Int32(30)},
-		&gen.Order{OrderId: proto.Int64(13004), Price: proto.Int32(40)},
+		&demopb.Order{OrderId: proto.Int64(13001), Price: proto.Int32(10)},
+		&demopb.Order{OrderId: proto.Int64(13002), Price: proto.Int32(20)},
+		&demopb.Order{OrderId: proto.Int64(13003), Price: proto.Int32(30)},
+		&demopb.Order{OrderId: proto.Int64(13004), Price: proto.Int32(40)},
 	)
 
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -2502,9 +2502,9 @@ func TestIntegration_IndexScan_Reverse(t *testing.T) {
 	store := setupStore(t)
 
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(15001), Price: proto.Int32(100)},
-		&gen.Order{OrderId: proto.Int64(15002), Price: proto.Int32(200)},
-		&gen.Order{OrderId: proto.Int64(15003), Price: proto.Int32(300)},
+		&demopb.Order{OrderId: proto.Int64(15001), Price: proto.Int32(100)},
+		&demopb.Order{OrderId: proto.Int64(15002), Price: proto.Int32(200)},
+		&demopb.Order{OrderId: proto.Int64(15003), Price: proto.Int32(300)},
 	)
 
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -2558,11 +2558,11 @@ func TestIntegration_LimitWithOffset(t *testing.T) {
 	store := setupStore(t)
 
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(15101), Price: proto.Int32(10)},
-		&gen.Order{OrderId: proto.Int64(15102), Price: proto.Int32(20)},
-		&gen.Order{OrderId: proto.Int64(15103), Price: proto.Int32(30)},
-		&gen.Order{OrderId: proto.Int64(15104), Price: proto.Int32(40)},
-		&gen.Order{OrderId: proto.Int64(15105), Price: proto.Int32(50)},
+		&demopb.Order{OrderId: proto.Int64(15101), Price: proto.Int32(10)},
+		&demopb.Order{OrderId: proto.Int64(15102), Price: proto.Int32(20)},
+		&demopb.Order{OrderId: proto.Int64(15103), Price: proto.Int32(30)},
+		&demopb.Order{OrderId: proto.Int64(15104), Price: proto.Int32(40)},
+		&demopb.Order{OrderId: proto.Int64(15105), Price: proto.Int32(50)},
 	)
 
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -2617,10 +2617,10 @@ func TestIntegration_Aggregation_MinMaxAvg(t *testing.T) {
 	store := setupStore(t)
 
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(15201), Price: proto.Int32(100), Quantity: proto.Int32(10)},
-		&gen.Order{OrderId: proto.Int64(15202), Price: proto.Int32(200), Quantity: proto.Int32(20)},
-		&gen.Order{OrderId: proto.Int64(15203), Price: proto.Int32(300), Quantity: proto.Int32(30)},
-		&gen.Order{OrderId: proto.Int64(15204), Price: proto.Int32(400), Quantity: proto.Int32(40)},
+		&demopb.Order{OrderId: proto.Int64(15201), Price: proto.Int32(100), Quantity: proto.Int32(10)},
+		&demopb.Order{OrderId: proto.Int64(15202), Price: proto.Int32(200), Quantity: proto.Int32(20)},
+		&demopb.Order{OrderId: proto.Int64(15203), Price: proto.Int32(300), Quantity: proto.Int32(30)},
+		&demopb.Order{OrderId: proto.Int64(15204), Price: proto.Int32(400), Quantity: proto.Int32(40)},
 	)
 
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -2681,9 +2681,9 @@ func TestIntegration_DeletePlan_WithFilter(t *testing.T) {
 	store := setupStore(t)
 
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(15301), Price: proto.Int32(50)},
-		&gen.Order{OrderId: proto.Int64(15302), Price: proto.Int32(100)},
-		&gen.Order{OrderId: proto.Int64(15303), Price: proto.Int32(150)},
+		&demopb.Order{OrderId: proto.Int64(15301), Price: proto.Int32(50)},
+		&demopb.Order{OrderId: proto.Int64(15302), Price: proto.Int32(100)},
+		&demopb.Order{OrderId: proto.Int64(15303), Price: proto.Int32(150)},
 	)
 
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -2755,9 +2755,9 @@ func TestIntegration_ParameterBinding_Delete(t *testing.T) {
 	store := setupStore(t)
 
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(15401), Price: proto.Int32(10)},
-		&gen.Order{OrderId: proto.Int64(15402), Price: proto.Int32(20)},
-		&gen.Order{OrderId: proto.Int64(15403), Price: proto.Int32(30)},
+		&demopb.Order{OrderId: proto.Int64(15401), Price: proto.Int32(10)},
+		&demopb.Order{OrderId: proto.Int64(15402), Price: proto.Int32(20)},
+		&demopb.Order{OrderId: proto.Int64(15403), Price: proto.Int32(30)},
 	)
 
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -2826,10 +2826,10 @@ func TestIntegration_Aggregation_GroupBy_MultiFunc(t *testing.T) {
 	store := setupStore(t)
 
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(15501), Price: proto.Int32(100), Quantity: proto.Int32(1)},
-		&gen.Order{OrderId: proto.Int64(15502), Price: proto.Int32(100), Quantity: proto.Int32(2)},
-		&gen.Order{OrderId: proto.Int64(15503), Price: proto.Int32(200), Quantity: proto.Int32(3)},
-		&gen.Order{OrderId: proto.Int64(15504), Price: proto.Int32(200), Quantity: proto.Int32(7)},
+		&demopb.Order{OrderId: proto.Int64(15501), Price: proto.Int32(100), Quantity: proto.Int32(1)},
+		&demopb.Order{OrderId: proto.Int64(15502), Price: proto.Int32(100), Quantity: proto.Int32(2)},
+		&demopb.Order{OrderId: proto.Int64(15503), Price: proto.Int32(200), Quantity: proto.Int32(3)},
+		&demopb.Order{OrderId: proto.Int64(15504), Price: proto.Int32(200), Quantity: proto.Int32(7)},
 	)
 
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -2921,10 +2921,10 @@ func TestIntegration_FilterSortProjection_Pipeline(t *testing.T) {
 	store := setupStore(t)
 
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(14001), Price: proto.Int32(500), Quantity: proto.Int32(5)},
-		&gen.Order{OrderId: proto.Int64(14002), Price: proto.Int32(300), Quantity: proto.Int32(3)},
-		&gen.Order{OrderId: proto.Int64(14003), Price: proto.Int32(100), Quantity: proto.Int32(1)},
-		&gen.Order{OrderId: proto.Int64(14004), Price: proto.Int32(400), Quantity: proto.Int32(4)},
+		&demopb.Order{OrderId: proto.Int64(14001), Price: proto.Int32(500), Quantity: proto.Int32(5)},
+		&demopb.Order{OrderId: proto.Int64(14002), Price: proto.Int32(300), Quantity: proto.Int32(3)},
+		&demopb.Order{OrderId: proto.Int64(14003), Price: proto.Int32(100), Quantity: proto.Int32(1)},
+		&demopb.Order{OrderId: proto.Int64(14004), Price: proto.Int32(400), Quantity: proto.Int32(4)},
 	)
 
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -3001,7 +3001,7 @@ func TestIntegration_InsertPlan_DuplicateError(t *testing.T) {
 	ctx := context.Background()
 	store := setupStore(t)
 
-	insertOrders(t, store, &gen.Order{
+	insertOrders(t, store, &demopb.Order{
 		OrderId: proto.Int64(17101), Price: proto.Int32(42),
 	})
 
@@ -3129,9 +3129,9 @@ func TestIntegration_InsertPlan_ValuesExplode(t *testing.T) {
 		}
 		got := map[int64]int64{}
 		for _, r := range rows {
-			o, ok := r.Record.Record.(*gen.Order)
+			o, ok := r.Record.Record.(*demopb.Order)
 			if !ok {
-				t.Fatalf("scanned record type = %T, want *gen.Order", r.Record.Record)
+				t.Fatalf("scanned record type = %T, want *demopb.Order", r.Record.Record)
 			}
 			got[o.GetOrderId()] = int64(o.GetPrice())
 		}
@@ -3213,7 +3213,7 @@ func TestIntegration_UpdatePlan_MultipleFields(t *testing.T) {
 	store := setupStore(t)
 
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(17201), Price: proto.Int32(100), Quantity: proto.Int32(5)},
+		&demopb.Order{OrderId: proto.Int64(17201), Price: proto.Int32(100), Quantity: proto.Int32(5)},
 	)
 
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -3263,7 +3263,7 @@ func TestIntegration_UpdatePlan_MultipleFields(t *testing.T) {
 		if rec == nil {
 			t.Fatal("record not found after update")
 		}
-		updated := rec.Record.(*gen.Order)
+		updated := rec.Record.(*demopb.Order)
 		if updated.GetPrice() != 999 {
 			t.Errorf("price after update = %d, want 999", updated.GetPrice())
 		}
@@ -3285,10 +3285,10 @@ func TestIntegration_IndexScan_EqualityRange(t *testing.T) {
 	store := setupStore(t)
 
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(17301), Price: proto.Int32(50)},
-		&gen.Order{OrderId: proto.Int64(17302), Price: proto.Int32(100)},
-		&gen.Order{OrderId: proto.Int64(17303), Price: proto.Int32(100)},
-		&gen.Order{OrderId: proto.Int64(17304), Price: proto.Int32(200)},
+		&demopb.Order{OrderId: proto.Int64(17301), Price: proto.Int32(50)},
+		&demopb.Order{OrderId: proto.Int64(17302), Price: proto.Int32(100)},
+		&demopb.Order{OrderId: proto.Int64(17303), Price: proto.Int32(100)},
+		&demopb.Order{OrderId: proto.Int64(17304), Price: proto.Int32(200)},
 	)
 
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -3351,10 +3351,10 @@ func TestIntegration_SortPlan_MultiKey(t *testing.T) {
 	store := setupStore(t)
 
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(17401), Price: proto.Int32(100), Quantity: proto.Int32(3)},
-		&gen.Order{OrderId: proto.Int64(17402), Price: proto.Int32(200), Quantity: proto.Int32(1)},
-		&gen.Order{OrderId: proto.Int64(17403), Price: proto.Int32(100), Quantity: proto.Int32(7)},
-		&gen.Order{OrderId: proto.Int64(17404), Price: proto.Int32(200), Quantity: proto.Int32(9)},
+		&demopb.Order{OrderId: proto.Int64(17401), Price: proto.Int32(100), Quantity: proto.Int32(3)},
+		&demopb.Order{OrderId: proto.Int64(17402), Price: proto.Int32(200), Quantity: proto.Int32(1)},
+		&demopb.Order{OrderId: proto.Int64(17403), Price: proto.Int32(100), Quantity: proto.Int32(7)},
+		&demopb.Order{OrderId: proto.Int64(17404), Price: proto.Int32(200), Quantity: proto.Int32(9)},
 	)
 
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -3419,9 +3419,9 @@ func TestIntegration_UnionPlan_DisjointLegs(t *testing.T) {
 	store := setupStore(t)
 
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(17501), Price: proto.Int32(50)},
-		&gen.Order{OrderId: proto.Int64(17502), Price: proto.Int32(100)},
-		&gen.Order{OrderId: proto.Int64(17503), Price: proto.Int32(150)},
+		&demopb.Order{OrderId: proto.Int64(17501), Price: proto.Int32(50)},
+		&demopb.Order{OrderId: proto.Int64(17502), Price: proto.Int32(100)},
+		&demopb.Order{OrderId: proto.Int64(17503), Price: proto.Int32(150)},
 	)
 
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -3502,7 +3502,7 @@ func TestIntegration_FilterPlan_NoMatch(t *testing.T) {
 	store := setupStore(t)
 
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(17601), Price: proto.Int32(10)},
+		&demopb.Order{OrderId: proto.Int64(17601), Price: proto.Int32(10)},
 	)
 
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -3555,9 +3555,9 @@ func TestIntegration_DeletePlan_AllRecords(t *testing.T) {
 	store := setupStore(t)
 
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(17701), Price: proto.Int32(10)},
-		&gen.Order{OrderId: proto.Int64(17702), Price: proto.Int32(20)},
-		&gen.Order{OrderId: proto.Int64(17703), Price: proto.Int32(30)},
+		&demopb.Order{OrderId: proto.Int64(17701), Price: proto.Int32(10)},
+		&demopb.Order{OrderId: proto.Int64(17702), Price: proto.Int32(20)},
+		&demopb.Order{OrderId: proto.Int64(17703), Price: proto.Int32(30)},
 	)
 
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -3616,13 +3616,13 @@ func TestIntegration_TypeFilter_MixedRecordTypes(t *testing.T) {
 		if err != nil {
 			return nil, err
 		}
-		if _, err := s.SaveRecord(&gen.Order{OrderId: proto.Int64(18001), Price: proto.Int32(100)}); err != nil {
+		if _, err := s.SaveRecord(&demopb.Order{OrderId: proto.Int64(18001), Price: proto.Int32(100)}); err != nil {
 			return nil, err
 		}
-		if _, err := s.SaveRecord(&gen.Order{OrderId: proto.Int64(18002), Price: proto.Int32(200)}); err != nil {
+		if _, err := s.SaveRecord(&demopb.Order{OrderId: proto.Int64(18002), Price: proto.Int32(200)}); err != nil {
 			return nil, err
 		}
-		if _, err := s.SaveRecord(&gen.TypedRecord{Id: proto.Int64(28001), ValString: proto.String("hello")}); err != nil {
+		if _, err := s.SaveRecord(&demopb.TypedRecord{Id: proto.Int64(28001), ValString: proto.String("hello")}); err != nil {
 			return nil, err
 		}
 		return nil, nil
@@ -3689,7 +3689,7 @@ func TestIntegration_ScanPlan_UnsetFieldsOmitted(t *testing.T) {
 	store := setupStore(t)
 
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(18101), Price: proto.Int32(50)},
+		&demopb.Order{OrderId: proto.Int64(18101), Price: proto.Int32(50)},
 	)
 
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -3746,8 +3746,8 @@ func TestIntegration_FilterPlan_IsNull(t *testing.T) {
 	store := setupStore(t)
 
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(18201), Price: proto.Int32(100), Quantity: proto.Int32(5)},
-		&gen.Order{OrderId: proto.Int64(18202), Price: proto.Int32(200)},
+		&demopb.Order{OrderId: proto.Int64(18201), Price: proto.Int32(100), Quantity: proto.Int32(5)},
+		&demopb.Order{OrderId: proto.Int64(18202), Price: proto.Int32(200)},
 	)
 
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -3801,9 +3801,9 @@ func TestIntegration_Aggregation_AVG(t *testing.T) {
 	store := setupStore(t)
 
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(18301), Price: proto.Int32(10)},
-		&gen.Order{OrderId: proto.Int64(18302), Price: proto.Int32(20)},
-		&gen.Order{OrderId: proto.Int64(18303), Price: proto.Int32(30)},
+		&demopb.Order{OrderId: proto.Int64(18301), Price: proto.Int32(10)},
+		&demopb.Order{OrderId: proto.Int64(18302), Price: proto.Int32(20)},
+		&demopb.Order{OrderId: proto.Int64(18303), Price: proto.Int32(30)},
 	)
 
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -3857,10 +3857,10 @@ func TestIntegration_StreamingAggregation_SortedInput(t *testing.T) {
 	store := setupStore(t)
 
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(19001), Quantity: proto.Int32(1), Price: proto.Int32(100)},
-		&gen.Order{OrderId: proto.Int64(19002), Quantity: proto.Int32(1), Price: proto.Int32(200)},
-		&gen.Order{OrderId: proto.Int64(19003), Quantity: proto.Int32(2), Price: proto.Int32(300)},
-		&gen.Order{OrderId: proto.Int64(19004), Quantity: proto.Int32(2), Price: proto.Int32(400)},
+		&demopb.Order{OrderId: proto.Int64(19001), Quantity: proto.Int32(1), Price: proto.Int32(100)},
+		&demopb.Order{OrderId: proto.Int64(19002), Quantity: proto.Int32(1), Price: proto.Int32(200)},
+		&demopb.Order{OrderId: proto.Int64(19003), Quantity: proto.Int32(2), Price: proto.Int32(300)},
+		&demopb.Order{OrderId: proto.Int64(19004), Quantity: proto.Int32(2), Price: proto.Int32(400)},
 	)
 
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -3930,8 +3930,8 @@ func TestIntegration_ProjectionOverJoin(t *testing.T) {
 	store := setupStore(t)
 
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(19101), Price: proto.Int32(50)},
-		&gen.Order{OrderId: proto.Int64(19102), Price: proto.Int32(75)},
+		&demopb.Order{OrderId: proto.Int64(19101), Price: proto.Int32(50)},
+		&demopb.Order{OrderId: proto.Int64(19102), Price: proto.Int32(75)},
 	)
 
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -3997,9 +3997,9 @@ func TestIntegration_SortPlan_Reverse(t *testing.T) {
 	store := setupStore(t)
 
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(19201), Price: proto.Int32(10)},
-		&gen.Order{OrderId: proto.Int64(19202), Price: proto.Int32(30)},
-		&gen.Order{OrderId: proto.Int64(19203), Price: proto.Int32(20)},
+		&demopb.Order{OrderId: proto.Int64(19201), Price: proto.Int32(10)},
+		&demopb.Order{OrderId: proto.Int64(19202), Price: proto.Int32(30)},
+		&demopb.Order{OrderId: proto.Int64(19203), Price: proto.Int32(20)},
 	)
 
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -4049,10 +4049,10 @@ func TestIntegration_FilterPlan_CompoundPredicate(t *testing.T) {
 	store := setupStore(t)
 
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(19301), Price: proto.Int32(50), Quantity: proto.Int32(1)},
-		&gen.Order{OrderId: proto.Int64(19302), Price: proto.Int32(150), Quantity: proto.Int32(1)},
-		&gen.Order{OrderId: proto.Int64(19303), Price: proto.Int32(50), Quantity: proto.Int32(2)},
-		&gen.Order{OrderId: proto.Int64(19304), Price: proto.Int32(150), Quantity: proto.Int32(2)},
+		&demopb.Order{OrderId: proto.Int64(19301), Price: proto.Int32(50), Quantity: proto.Int32(1)},
+		&demopb.Order{OrderId: proto.Int64(19302), Price: proto.Int32(150), Quantity: proto.Int32(1)},
+		&demopb.Order{OrderId: proto.Int64(19303), Price: proto.Int32(50), Quantity: proto.Int32(2)},
+		&demopb.Order{OrderId: proto.Int64(19304), Price: proto.Int32(150), Quantity: proto.Int32(2)},
 	)
 
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -4105,11 +4105,11 @@ func TestIntegration_LimitOverSort(t *testing.T) {
 	store := setupStore(t)
 
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(19401), Price: proto.Int32(100)},
-		&gen.Order{OrderId: proto.Int64(19402), Price: proto.Int32(200)},
-		&gen.Order{OrderId: proto.Int64(19403), Price: proto.Int32(300)},
-		&gen.Order{OrderId: proto.Int64(19404), Price: proto.Int32(400)},
-		&gen.Order{OrderId: proto.Int64(19405), Price: proto.Int32(500)},
+		&demopb.Order{OrderId: proto.Int64(19401), Price: proto.Int32(100)},
+		&demopb.Order{OrderId: proto.Int64(19402), Price: proto.Int32(200)},
+		&demopb.Order{OrderId: proto.Int64(19403), Price: proto.Int32(300)},
+		&demopb.Order{OrderId: proto.Int64(19404), Price: proto.Int32(400)},
+		&demopb.Order{OrderId: proto.Int64(19405), Price: proto.Int32(500)},
 	)
 
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -4160,7 +4160,7 @@ func TestIntegration_UpdatePlan_ClearField(t *testing.T) {
 	store := setupStore(t)
 
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(19501), Price: proto.Int32(100), Quantity: proto.Int32(5)},
+		&demopb.Order{OrderId: proto.Int64(19501), Price: proto.Int32(100), Quantity: proto.Int32(5)},
 	)
 
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -4194,7 +4194,7 @@ func TestIntegration_UpdatePlan_ClearField(t *testing.T) {
 		if err != nil {
 			t.Fatalf("LoadRecord: %v", err)
 		}
-		updated := rec.Record.(*gen.Order)
+		updated := rec.Record.(*demopb.Order)
 		if updated.Quantity != nil {
 			t.Errorf("quantity should be cleared (nil), got %v", updated.GetQuantity())
 		}
@@ -4214,9 +4214,9 @@ func TestIntegration_FilterPlan_OrPredicate(t *testing.T) {
 	store := setupStore(t)
 
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(19601), Price: proto.Int32(10)},
-		&gen.Order{OrderId: proto.Int64(19602), Price: proto.Int32(50)},
-		&gen.Order{OrderId: proto.Int64(19603), Price: proto.Int32(100)},
+		&demopb.Order{OrderId: proto.Int64(19601), Price: proto.Int32(10)},
+		&demopb.Order{OrderId: proto.Int64(19602), Price: proto.Int32(50)},
+		&demopb.Order{OrderId: proto.Int64(19603), Price: proto.Int32(100)},
 	)
 
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -4273,9 +4273,9 @@ func TestIntegration_IndexScan_FullRange(t *testing.T) {
 	store := setupStore(t)
 
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(19701), Price: proto.Int32(10)},
-		&gen.Order{OrderId: proto.Int64(19702), Price: proto.Int32(20)},
-		&gen.Order{OrderId: proto.Int64(19703), Price: proto.Int32(30)},
+		&demopb.Order{OrderId: proto.Int64(19701), Price: proto.Int32(10)},
+		&demopb.Order{OrderId: proto.Int64(19702), Price: proto.Int32(20)},
+		&demopb.Order{OrderId: proto.Int64(19703), Price: proto.Int32(30)},
 	)
 
 	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -4335,13 +4335,13 @@ func TestIntegration_LoadByKeys_Resume(t *testing.T) {
 	ctx := context.Background()
 	store := setupStore(t)
 
-	insertOrders(t, store, &gen.Order{
+	insertOrders(t, store, &demopb.Order{
 		OrderId: proto.Int64(1),
 		Price:   proto.Int32(100),
-	}, &gen.Order{
+	}, &demopb.Order{
 		OrderId: proto.Int64(2),
 		Price:   proto.Int32(200),
-	}, &gen.Order{
+	}, &demopb.Order{
 		OrderId: proto.Int64(3),
 		Price:   proto.Int32(300),
 	})
@@ -4414,11 +4414,11 @@ func TestIntegration_ArrayAggStraddle(t *testing.T) {
 	ctx := context.Background()
 	store := setupStore(t)
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(50)},
-		&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(50)},
-		&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(50)},
-		&gen.Order{OrderId: proto.Int64(4), Price: proto.Int32(150)},
-		&gen.Order{OrderId: proto.Int64(5), Price: proto.Int32(150)},
+		&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(50)},
+		&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(50)},
+		&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(50)},
+		&demopb.Order{OrderId: proto.Int64(4), Price: proto.Int32(150)},
+		&demopb.Order{OrderId: proto.Int64(5), Price: proto.Int32(150)},
 	)
 	var got []string
 	var continuation []byte

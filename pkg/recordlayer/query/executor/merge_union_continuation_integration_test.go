@@ -19,7 +19,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -43,7 +43,7 @@ func priceProbeIndexPlan(t *testing.T, bindingID values.CorrelationIdentifier) p
 		"order_price_idx",
 		[]*predicates.ComparisonRange{res.Range},
 		[]string{"Order"},
-		PositionalTypeForRecordLayout((&gen.Order{}).ProtoReflect().Descriptor(), false),
+		PositionalTypeForRecordLayout((&demopb.Order{}).ProtoReflect().Descriptor(), false),
 		false,
 	)).WithKeyComponentTypes([]values.Type{values.NullableInt})
 }
@@ -70,11 +70,11 @@ func renderOrderID(qr QueryResult) (string, error) {
 func insertInUnionOrders(t *testing.T, store *recordlayer.FDBRecordStore) {
 	t.Helper()
 	insertOrders(t, store,
-		&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(50)},
-		&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(50)},
-		&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(150)},
-		&gen.Order{OrderId: proto.Int64(4), Price: proto.Int32(150)},
-		&gen.Order{OrderId: proto.Int64(5), Price: proto.Int32(250)},
+		&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(50)},
+		&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(50)},
+		&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(150)},
+		&demopb.Order{OrderId: proto.Int64(4), Price: proto.Int32(150)},
+		&demopb.Order{OrderId: proto.Int64(5), Price: proto.Int32(250)},
 	)
 }
 

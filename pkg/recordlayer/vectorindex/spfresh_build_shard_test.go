@@ -3,7 +3,7 @@ package vectorindex
 import (
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 )
@@ -17,7 +17,7 @@ func TestSPFreshShardGate(t *testing.T) {
 		return len(md.RecordTypes()) == 1 || md.PrimaryKeyHasRecordTypePrefix()
 	}
 
-	ub := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	ub := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	ub.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	ub.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	ub.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -29,7 +29,7 @@ func TestSPFreshShardGate(t *testing.T) {
 		t.Fatal("bare-PK multi-type store must be shard-UNSAFE (falls back to S=1)")
 	}
 
-	sb := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	sb := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	sb.GetRecordType("Order").SetPrimaryKey(recordlayer.Concat(recordlayer.RecordTypeKey(), recordlayer.Field("order_id")))
 	sb.GetRecordType("Customer").SetPrimaryKey(recordlayer.Concat(recordlayer.RecordTypeKey(), recordlayer.Field("customer_id")))
 	sb.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Concat(recordlayer.RecordTypeKey(), recordlayer.Field("id")))

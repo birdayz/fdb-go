@@ -3,7 +3,7 @@ package recordlayer
 import (
 	"context"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -14,7 +14,7 @@ var _ = Describe("ContinuationStability", func() {
 	ctx := context.Background()
 
 	baseMetaData := func() *RecordMetaDataBuilder {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -50,7 +50,7 @@ var _ = Describe("ContinuationStability", func() {
 				}
 				break
 			}
-			order := result.GetValue().Record.(*gen.Order)
+			order := result.GetValue().Record.(*demopb.Order)
 			ids = append(ids, order.GetOrderId())
 		}
 		return scanResult{ids: ids, continuation: contBytes}
@@ -104,7 +104,7 @@ var _ = Describe("ContinuationStability", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 			for i := int64(1); i <= 10; i++ {
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 				Expect(err).NotTo(HaveOccurred())
 			}
 			return nil, nil
@@ -164,7 +164,7 @@ var _ = Describe("ContinuationStability", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 			for _, id := range []int64{10, 20, 30, 40, 50} {
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(int32(id))})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(id), Price: proto.Int32(int32(id))})
 				Expect(err).NotTo(HaveOccurred())
 			}
 			return nil, nil
@@ -193,7 +193,7 @@ var _ = Describe("ContinuationStability", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
 			Expect(err).NotTo(HaveOccurred())
 			for _, id := range []int64{15, 25, 35} {
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(int32(id))})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(id), Price: proto.Int32(int32(id))})
 				Expect(err).NotTo(HaveOccurred())
 			}
 			return nil, nil
@@ -229,7 +229,7 @@ var _ = Describe("ContinuationStability", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 			for i := int64(1); i <= 5; i++ {
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 				Expect(err).NotTo(HaveOccurred())
 			}
 			return nil, nil
@@ -287,7 +287,7 @@ var _ = Describe("ContinuationStability", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 			for i := int64(1); i <= 10; i++ {
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 				Expect(err).NotTo(HaveOccurred())
 			}
 			return nil, nil
@@ -317,7 +317,7 @@ var _ = Describe("ContinuationStability", func() {
 			err = store.DeleteAllRecords()
 			Expect(err).NotTo(HaveOccurred())
 			for _, id := range []int64{1, 5, 10, 15, 20} {
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(int32(id * 10))})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(id), Price: proto.Int32(int32(id * 10))})
 				Expect(err).NotTo(HaveOccurred())
 			}
 			return nil, nil
@@ -354,7 +354,7 @@ var _ = Describe("ContinuationStability", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 			for i := int64(1); i <= 5; i++ {
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 				Expect(err).NotTo(HaveOccurred())
 			}
 			return nil, nil

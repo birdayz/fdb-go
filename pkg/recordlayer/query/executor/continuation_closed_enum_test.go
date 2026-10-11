@@ -8,7 +8,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 )
 
 // A buffered row resumes as the first page read it (RFC-257 WS-J, the
@@ -24,12 +24,12 @@ func TestContValue_ClosedEnumUndeclaredNumberResumesAsRead(t *testing.T) {
 	t.Parallel()
 	// Field 2 of Flower is its proto2 (closed) Color enum; 9 is not declared.
 	undeclared := protowire.AppendVarint(protowire.AppendTag(nil, 2, protowire.VarintType), 9)
-	md := (&gen.Flower{}).ProtoReflect().Descriptor()
+	md := (&demopb.Flower{}).ProtoReflect().Descriptor()
 	color := md.Fields().ByName("color")
 
 	dynamic := dynamicpb.NewMessage(md)
 	dynamic.SetUnknown(undeclared)
-	generated := &gen.Flower{}
+	generated := &demopb.Flower{}
 	generated.ProtoReflect().SetUnknown(undeclared)
 
 	resolve := func(string) (protoreflect.MessageDescriptor, error) { return md, nil }

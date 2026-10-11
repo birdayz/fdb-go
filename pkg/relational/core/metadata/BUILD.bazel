@@ -46,6 +46,7 @@ go_test(
     embed = [":metadata"],
     deps = [
         "//gen",
+        "//gen/demopb",
         "//pkg/recordlayer",
         "//pkg/recordlayer/query/plan/cascades",
         "//pkg/relational/api",

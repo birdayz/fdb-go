@@ -7,7 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -47,7 +47,7 @@ var _ = Describe("BITMAP_VALUE Index Conformance", func() {
 		It("should produce identical bitmap entries visible to both Go and Java", func() {
 			// Save 3 orders in price=100 group at positions 3, 7, 20
 			for _, id := range []int64{3, 7, 20} {
-				err := store.SaveOrderGo(ctx, &gen.Order{
+				err := store.SaveOrderGo(ctx, &demopb.Order{
 					OrderId: proto.Int64(id),
 					Price:   proto.Int32(100),
 				})
@@ -85,7 +85,7 @@ var _ = Describe("BITMAP_VALUE Index Conformance", func() {
 		It("should produce identical bitmap entries visible to both Go and Java", func() {
 			// Java saves 3 orders in price=200 group at positions 1, 5, 10
 			for _, id := range []int64{1, 5, 10} {
-				err := store.SaveOrderJava(ctx, &gen.Order{
+				err := store.SaveOrderJava(ctx, &demopb.Order{
 					OrderId: proto.Int64(id),
 					Price:   proto.Int32(200),
 				})
@@ -118,7 +118,7 @@ var _ = Describe("BITMAP_VALUE Index Conformance", func() {
 		It("should produce correct combined bitmaps", func() {
 			// Go saves positions 2 and 8 in price=300
 			for _, id := range []int64{2, 8} {
-				err := store.SaveOrderGo(ctx, &gen.Order{
+				err := store.SaveOrderGo(ctx, &demopb.Order{
 					OrderId: proto.Int64(id),
 					Price:   proto.Int32(300),
 				})
@@ -127,7 +127,7 @@ var _ = Describe("BITMAP_VALUE Index Conformance", func() {
 
 			// Java saves positions 4 and 12 in price=300
 			for _, id := range []int64{4, 12} {
-				err := store.SaveOrderJava(ctx, &gen.Order{
+				err := store.SaveOrderJava(ctx, &demopb.Order{
 					OrderId: proto.Int64(id),
 					Price:   proto.Int32(300),
 				})
@@ -159,7 +159,7 @@ var _ = Describe("BITMAP_VALUE Index Conformance", func() {
 		It("should clear the bit in both Go and Java scans", func() {
 			// Java saves positions 3, 7, 11 in price=400
 			for _, id := range []int64{3, 7, 11} {
-				err := store.SaveOrderJava(ctx, &gen.Order{
+				err := store.SaveOrderJava(ctx, &demopb.Order{
 					OrderId: proto.Int64(id),
 					Price:   proto.Int32(400),
 				})
@@ -199,7 +199,7 @@ var _ = Describe("BITMAP_VALUE Index Conformance", func() {
 		It("should clear the bit in both Go and Java scans", func() {
 			// Go saves positions 1, 6, 14 in price=500
 			for _, id := range []int64{1, 6, 14} {
-				err := store.SaveOrderGo(ctx, &gen.Order{
+				err := store.SaveOrderGo(ctx, &demopb.Order{
 					OrderId: proto.Int64(id),
 					Price:   proto.Int32(500),
 				})
@@ -238,7 +238,7 @@ var _ = Describe("BITMAP_VALUE Index Conformance", func() {
 		It("should produce identical aggregate bitmaps from Go and Java", func() {
 			// Go saves positions 3, 7, 20 in price=600 (spans two aligned blocks)
 			for _, id := range []int64{3, 7, 20} {
-				err := store.SaveOrderGo(ctx, &gen.Order{
+				err := store.SaveOrderGo(ctx, &demopb.Order{
 					OrderId: proto.Int64(id),
 					Price:   proto.Int32(600),
 				})
@@ -297,7 +297,7 @@ func NewBitmapValueConformanceStore(recordDB *recordlayer.FDBDatabase, keyspace 
 		recordlayer.GroupBy(recordlayer.Field("order_id"), recordlayer.Field("price")))
 	bitmapIdx.Options[recordlayer.IndexOptionBitmapValueEntrySize] = "16"
 
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -335,7 +335,7 @@ func (s *BitmapValueConformanceStore) buildJavaParams() map[string]any {
 }
 
 // SaveOrderGo saves an order via Go (with BITMAP_VALUE index maintenance).
-func (s *BitmapValueConformanceStore) SaveOrderGo(ctx context.Context, order *gen.Order) error {
+func (s *BitmapValueConformanceStore) SaveOrderGo(ctx context.Context, order *demopb.Order) error {
 	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
@@ -349,7 +349,7 @@ func (s *BitmapValueConformanceStore) SaveOrderGo(ctx context.Context, order *ge
 }
 
 // SaveOrderJava saves an order via Java (with BITMAP_VALUE index maintenance).
-func (s *BitmapValueConformanceStore) SaveOrderJava(ctx context.Context, order *gen.Order) error {
+func (s *BitmapValueConformanceStore) SaveOrderJava(ctx context.Context, order *demopb.Order) error {
 	params := s.buildJavaParams()
 	params["order"] = order
 	return s.java.InvokeAs(ctx, "saveBitmapValueRecord", params, nil)

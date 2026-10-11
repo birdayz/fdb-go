@@ -3,7 +3,7 @@ package recordlayer
 import (
 	"context"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -14,7 +14,7 @@ var _ = Describe("MaxEverTupleIndex", func() {
 	ctx := context.Background()
 
 	baseMetaData := func() *RecordMetaDataBuilder {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -36,7 +36,7 @@ var _ = Describe("MaxEverTupleIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i, price := range []int32{100, 300, 200} {
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)})
 				Expect(err).NotTo(HaveOccurred())
 			}
 
@@ -67,9 +67,9 @@ var _ = Describe("MaxEverTupleIndex", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(500)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(500)})
 			Expect(err).NotTo(HaveOccurred())
 
 			deleted, err := store.DeleteRecord(tuple.Tuple{int64(2)})
@@ -100,9 +100,9 @@ var _ = Describe("MaxEverTupleIndex", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(-10)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(-10)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(-5)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(-5)})
 			Expect(err).NotTo(HaveOccurred())
 
 			entries, err := AsList(ctx, store.ScanIndex(maxIdx, TupleRangeAll, nil, ForwardScan()))
@@ -130,10 +130,10 @@ var _ = Describe("MaxEverTupleIndex", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
 			// No price (null)
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2)})
 			Expect(err).NotTo(HaveOccurred())
 
 			entries, err := AsList(ctx, store.ScanIndex(maxIdx, TupleRangeAll, nil, ForwardScan()))
@@ -159,9 +159,9 @@ var _ = Describe("MaxEverTupleIndex", func() {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(500)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(500)})
 			Expect(err).NotTo(HaveOccurred())
 			return nil, nil
 		})
@@ -193,7 +193,7 @@ var _ = Describe("MinEverTupleIndex", func() {
 	ctx := context.Background()
 
 	baseMetaData := func() *RecordMetaDataBuilder {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -215,7 +215,7 @@ var _ = Describe("MinEverTupleIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i, price := range []int32{300, 100, 200} {
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)})
 				Expect(err).NotTo(HaveOccurred())
 			}
 
@@ -243,9 +243,9 @@ var _ = Describe("MinEverTupleIndex", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(50)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(50)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
 			Expect(err).NotTo(HaveOccurred())
 
 			deleted, err := store.DeleteRecord(tuple.Tuple{int64(1)})
@@ -276,9 +276,9 @@ var _ = Describe("MinEverTupleIndex", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(-20)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(-20)})
 			Expect(err).NotTo(HaveOccurred())
 
 			entries, err := AsList(ctx, store.ScanIndex(minIdx, TupleRangeAll, nil, ForwardScan()))

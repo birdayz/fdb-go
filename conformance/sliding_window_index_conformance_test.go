@@ -17,6 +17,8 @@ import (
 	"google.golang.org/protobuf/types/known/anypb"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -240,7 +242,7 @@ func NewSlidingWindowConformanceStore(recordDB *recordlayer.FDBDatabase, keyspac
 		return nil, err
 	}
 
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -336,7 +338,7 @@ func (s *SlidingWindowConformanceStore) SaveOrderGo(ctx context.Context, orderID
 		if err != nil {
 			return nil, err
 		}
-		_, err = st.SaveRecord(&gen.Order{
+		_, err = st.SaveRecord(&demopb.Order{
 			OrderId:    proto.Int64(orderID),
 			Price:      proto.Int32(price),
 			VectorData: conformanceSerializeVector(vec),
@@ -473,7 +475,7 @@ var _ = Describe("Sliding pending replay conformance", func() {
 					if id == 0 {
 						return nil
 					}
-					return &recordlayer.FDBStoredRecord[proto.Message]{Record: &gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(step.price), VectorData: conformanceSerializeVector([]float64{float64(id), 0, 0})}, PrimaryKey: tuple.Tuple{id}, RecordType: fixture.MetaData.GetRecordType("Order")}
+					return &recordlayer.FDBStoredRecord[proto.Message]{Record: &demopb.Order{OrderId: proto.Int64(id), Price: proto.Int32(step.price), VectorData: conformanceSerializeVector([]float64{float64(id), 0, 0})}, PrimaryKey: tuple.Tuple{id}, RecordType: fixture.MetaData.GetRecordType("Order")}
 				}
 				var payload []byte
 				_, err = env.RecordDB.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {

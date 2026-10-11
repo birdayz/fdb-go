@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 )
@@ -17,16 +17,16 @@ var testUnionDataLarge []byte
 
 func init() {
 	// Create test data once
-	order := &gen.Order{
+	order := &demopb.Order{
 		OrderId: proto.Int64(1001),
 		Price:   proto.Int32(25),
-		Flower: &gen.Flower{
+		Flower: &demopb.Flower{
 			Type:  proto.String("Rose"),
-			Color: gen.Color_RED.Enum(),
+			Color: demopb.Color_RED.Enum(),
 		},
 	}
 
-	union := &gen.UnionDescriptor{
+	union := &demopb.UnionDescriptor{
 		XOrder: order,
 	}
 
@@ -37,15 +37,15 @@ func init() {
 	}
 
 	// Large record with 50KB padding
-	largeOrder := &gen.Order{
+	largeOrder := &demopb.Order{
 		OrderId: proto.Int64(2001),
 		Price:   proto.Int32(999),
-		Flower: &gen.Flower{
+		Flower: &demopb.Flower{
 			Type:  proto.String(strings.Repeat("X", 50_000)),
-			Color: gen.Color_BLUE.Enum(),
+			Color: demopb.Color_BLUE.Enum(),
 		},
 	}
-	largeUnion := &gen.UnionDescriptor{
+	largeUnion := &demopb.UnionDescriptor{
 		XOrder: largeOrder,
 	}
 	testUnionDataLarge, err = proto.Marshal(largeUnion)
@@ -56,15 +56,15 @@ func init() {
 
 // BenchmarkProtoMarshal_Small measures proto.Marshal of a small Order (~30 bytes).
 func BenchmarkProtoMarshal_Small(b *testing.B) {
-	order := &gen.Order{
+	order := &demopb.Order{
 		OrderId: proto.Int64(1001),
 		Price:   proto.Int32(25),
-		Flower: &gen.Flower{
+		Flower: &demopb.Flower{
 			Type:  proto.String("Rose"),
-			Color: gen.Color_RED.Enum(),
+			Color: demopb.Color_RED.Enum(),
 		},
 	}
-	union := &gen.UnionDescriptor{XOrder: order}
+	union := &demopb.UnionDescriptor{XOrder: order}
 
 	b.ResetTimer()
 	b.ReportAllocs()
@@ -78,15 +78,15 @@ func BenchmarkProtoMarshal_Small(b *testing.B) {
 
 // BenchmarkProtoMarshal_Large measures proto.Marshal of a 50KB Order.
 func BenchmarkProtoMarshal_Large(b *testing.B) {
-	order := &gen.Order{
+	order := &demopb.Order{
 		OrderId: proto.Int64(2001),
 		Price:   proto.Int32(999),
-		Flower: &gen.Flower{
+		Flower: &demopb.Flower{
 			Type:  proto.String(strings.Repeat("X", 50_000)),
-			Color: gen.Color_BLUE.Enum(),
+			Color: demopb.Color_BLUE.Enum(),
 		},
 	}
-	union := &gen.UnionDescriptor{XOrder: order}
+	union := &demopb.UnionDescriptor{XOrder: order}
 
 	b.ResetTimer()
 	b.ReportAllocs()
@@ -103,7 +103,7 @@ func BenchmarkProtoUnmarshal_Small(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		union := &gen.UnionDescriptor{}
+		union := &demopb.UnionDescriptor{}
 		if err := proto.Unmarshal(testUnionData, union); err != nil {
 			b.Fatal(err)
 		}
@@ -115,7 +115,7 @@ func BenchmarkProtoUnmarshal_Large(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		union := &gen.UnionDescriptor{}
+		union := &demopb.UnionDescriptor{}
 		if err := proto.Unmarshal(testUnionDataLarge, union); err != nil {
 			b.Fatal(err)
 		}
@@ -155,15 +155,15 @@ func BenchmarkDeserializeAndDiscover_Large(b *testing.B) {
 
 // BenchmarkProtoMarshalVT_Small measures vtprotobuf MarshalVT of a small Order.
 func BenchmarkProtoMarshalVT_Small(b *testing.B) {
-	order := &gen.Order{
+	order := &demopb.Order{
 		OrderId: proto.Int64(1001),
 		Price:   proto.Int32(25),
-		Flower: &gen.Flower{
+		Flower: &demopb.Flower{
 			Type:  proto.String("Rose"),
-			Color: gen.Color_RED.Enum(),
+			Color: demopb.Color_RED.Enum(),
 		},
 	}
-	union := &gen.UnionDescriptor{XOrder: order}
+	union := &demopb.UnionDescriptor{XOrder: order}
 
 	b.ResetTimer()
 	b.ReportAllocs()
@@ -177,15 +177,15 @@ func BenchmarkProtoMarshalVT_Small(b *testing.B) {
 
 // BenchmarkProtoMarshalVT_Large measures vtprotobuf MarshalVT of a 50KB Order.
 func BenchmarkProtoMarshalVT_Large(b *testing.B) {
-	order := &gen.Order{
+	order := &demopb.Order{
 		OrderId: proto.Int64(2001),
 		Price:   proto.Int32(999),
-		Flower: &gen.Flower{
+		Flower: &demopb.Flower{
 			Type:  proto.String(strings.Repeat("X", 50_000)),
-			Color: gen.Color_BLUE.Enum(),
+			Color: demopb.Color_BLUE.Enum(),
 		},
 	}
-	union := &gen.UnionDescriptor{XOrder: order}
+	union := &demopb.UnionDescriptor{XOrder: order}
 
 	b.ResetTimer()
 	b.ReportAllocs()
@@ -202,7 +202,7 @@ func BenchmarkProtoUnmarshalVT_Small(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		union := &gen.UnionDescriptor{}
+		union := &demopb.UnionDescriptor{}
 		if err := union.UnmarshalVT(testUnionData); err != nil {
 			b.Fatal(err)
 		}
@@ -214,7 +214,7 @@ func BenchmarkProtoUnmarshalVT_Large(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		union := &gen.UnionDescriptor{}
+		union := &demopb.UnionDescriptor{}
 		if err := union.UnmarshalVT(testUnionDataLarge); err != nil {
 			b.Fatal(err)
 		}
@@ -226,7 +226,7 @@ func BenchmarkProtoUnmarshalVTPool_Small(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		union := gen.UnionDescriptorFromVTPool()
+		union := demopb.UnionDescriptorFromVTPool()
 		if err := union.UnmarshalVT(testUnionData); err != nil {
 			b.Fatal(err)
 		}
@@ -239,7 +239,7 @@ func BenchmarkProtoUnmarshalVTPool_Large(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		union := gen.UnionDescriptorFromVTPool()
+		union := demopb.UnionDescriptorFromVTPool()
 		if err := union.UnmarshalVT(testUnionDataLarge); err != nil {
 			b.Fatal(err)
 		}
@@ -292,7 +292,7 @@ func TestDeserializeWithUnknownFields(t *testing.T) {
 	}
 	// Without it the record reads.
 	msg, err := store.deserializeRecord(testUnionData, metaData.GetRecordType("Order"))
-	if err != nil || msg.(*gen.Order).GetOrderId() != 1001 {
+	if err != nil || msg.(*demopb.Order).GetOrderId() != 1001 {
 		t.Fatalf("deserializeRecord: %v, %v", msg, err)
 	}
 }
@@ -315,7 +315,7 @@ func TestDeserializationWorks(t *testing.T) {
 	}
 
 	// Verify the result
-	order := msg.(*gen.Order)
+	order := msg.(*demopb.Order)
 	if *order.OrderId != 1001 {
 		t.Errorf("Expected OrderId 1001, got %d", *order.OrderId)
 	}

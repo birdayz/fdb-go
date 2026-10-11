@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -35,7 +36,7 @@ var _ = Describe("Vector index pending queue", func() {
 			store, err := recordlayer.NewStoreBuilder().SetContext(rc).SetMetaDataProvider(md).SetSubspace(specSubspace()).Create()
 			Expect(err).NotTo(HaveOccurred())
 			for i := int64(1); i <= 12; i++ {
-				_, err := store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(i), Quantity: proto.Int32(1), Price: proto.Int32(int32(i)), CoordX: proto.Int64(0)}, "price"))
+				_, err := store.SaveRecord(withVector(&demopb.Order{OrderId: proto.Int64(i), Quantity: proto.Int32(1), Price: proto.Int32(int32(i)), CoordX: proto.Int64(0)}, "price"))
 				Expect(err).NotTo(HaveOccurred())
 			}
 			snapshot := func() []fdb.KeyValue {
@@ -48,11 +49,11 @@ var _ = Describe("Vector index pending queue", func() {
 			Expect(before).NotTo(BeEmpty())
 			// Record 5 again, its (quantity, price) entry unchanged, another
 			// field changed.
-			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(5), Quantity: proto.Int32(1), Price: proto.Int32(5), CoordX: proto.Int64(99)}, "price"))
+			_, err = store.SaveRecord(withVector(&demopb.Order{OrderId: proto.Int64(5), Quantity: proto.Int32(1), Price: proto.Int32(5), CoordX: proto.Int64(99)}, "price"))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(snapshot()).To(Equal(before), "the graph's bytes are unchanged")
 			// A save that changes the vector does touch the graph: the control.
-			_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(5), Quantity: proto.Int32(1), Price: proto.Int32(500), CoordX: proto.Int64(99)}, "price"))
+			_, err = store.SaveRecord(withVector(&demopb.Order{OrderId: proto.Int64(5), Quantity: proto.Int32(1), Price: proto.Int32(500), CoordX: proto.Int64(99)}, "price"))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(snapshot()).NotTo(Equal(before))
 			return nil, nil
@@ -81,7 +82,7 @@ var _ = Describe("Vector index pending queue", func() {
 			Expect(err).NotTo(HaveOccurred())
 			record := func(other int64) *recordlayer.FDBStoredRecord[proto.Message] {
 				return &recordlayer.FDBStoredRecord[proto.Message]{
-					Record:     withVector(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(20), CoordX: proto.Int64(other)}, "price", "quantity"),
+					Record:     withVector(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(20), CoordX: proto.Int64(other)}, "price", "quantity"),
 					PrimaryKey: tuple.Tuple{int64(1)}, RecordType: md.GetRecordType("Order"),
 				}
 			}
@@ -112,7 +113,7 @@ var _ = Describe("Vector index pending queue", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(maintainer.IsPendingWriteQueueAllowed()).To(BeTrue())
 			makeRecord := func(x, y int32) *recordlayer.FDBStoredRecord[proto.Message] {
-				return &recordlayer.FDBStoredRecord[proto.Message]{Record: withVector(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(x), Quantity: proto.Int32(y)}, "price", "quantity"), PrimaryKey: tuple.Tuple{int64(1)}, RecordType: md.GetRecordType("Order")}
+				return &recordlayer.FDBStoredRecord[proto.Message]{Record: withVector(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(x), Quantity: proto.Int32(y)}, "price", "quantity"), PrimaryKey: tuple.Tuple{int64(1)}, RecordType: md.GetRecordType("Order")}
 			}
 			original := makeRecord(10, 20)
 			data, err := maintainer.SerializePendingWriteQueue(nil, original)
@@ -121,8 +122,8 @@ var _ = Describe("Vector index pending queue", func() {
 			Expect(data.UnmarshalTo(&decoded)).To(Succeed())
 			Expect(decoded.GetNewEntries()).To(HaveLen(1))
 			Expect(decoded.GetNewEntries()[0].GetPrimaryKey()).To(Equal(tuple.Tuple{int64(1)}.Pack()))
-			original.Record.(*gen.Order).Price = proto.Int32(999)
-			withVector(original.Record.(*gen.Order), "price", "quantity")
+			original.Record.(*demopb.Order).Price = proto.Int32(999)
+			withVector(original.Record.(*demopb.Order), "price", "quantity")
 			allow = false
 			Expect(maintainer.UpdateFromQueue(data)).To(Succeed())
 			results, err := store.SearchVectorIndex(index, []float64{10, 20}, 10, 100)
@@ -187,7 +188,7 @@ var _ = Describe("Vector index pending queue", func() {
 				Expect(err).NotTo(HaveOccurred())
 				maintainer, err := store.GetIndexMaintainer(index)
 				Expect(err).NotTo(HaveOccurred())
-				record := &recordlayer.FDBStoredRecord[proto.Message]{Record: withVector(&gen.Order{OrderId: proto.Int64(11), Quantity: proto.Int32(7), Price: proto.Int32(42)}, "price"), PrimaryKey: primaryKey, RecordType: md.GetRecordType("Order")}
+				record := &recordlayer.FDBStoredRecord[proto.Message]{Record: withVector(&demopb.Order{OrderId: proto.Int64(11), Quantity: proto.Int32(7), Price: proto.Int32(42)}, "price"), PrimaryKey: primaryKey, RecordType: md.GetRecordType("Order")}
 				data, err := maintainer.SerializePendingWriteQueue(nil, record)
 				Expect(err).NotTo(HaveOccurred())
 				var entries gen.OldAndNewIndexEntries
@@ -227,7 +228,7 @@ var _ = Describe("Vector index pending queue", func() {
 			maintainer, err := store.GetIndexMaintainer(index)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(maintainer.IsPendingWriteQueueAllowed()).To(BeTrue())
-			record := &recordlayer.FDBStoredRecord[proto.Message]{Record: withVector(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), CoordX: proto.Int64(3), CoordY: proto.Int64(4)}, "coord_x", "coord_y"), PrimaryKey: tuple.Tuple{int64(1)}, RecordType: md.GetRecordType("Order")}
+			record := &recordlayer.FDBStoredRecord[proto.Message]{Record: withVector(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), CoordX: proto.Int64(3), CoordY: proto.Int64(4)}, "coord_x", "coord_y"), PrimaryKey: tuple.Tuple{int64(1)}, RecordType: md.GetRecordType("Order")}
 			inserted, err := maintainer.SerializePendingWriteQueue(nil, record)
 			Expect(err).NotTo(HaveOccurred())
 			removed, err := maintainer.SerializePendingWriteQueue(record, nil)
@@ -278,7 +279,7 @@ var _ = Describe("Nested vector pending queue Any compatibility", func() {
 				builder.AddIndex("Order", index)
 				md, err := builder.Build()
 				Expect(err).NotTo(HaveOccurred())
-				record := &recordlayer.FDBStoredRecord[proto.Message]{Record: withVector(&gen.Order{OrderId: proto.Int64(1), Quantity: proto.Int32(7), Price: proto.Int32(42), CoordX: proto.Int64(3), CoordY: proto.Int64(4)}, vectorFields...), PrimaryKey: tuple.Tuple{int64(1)}, RecordType: md.GetRecordType("Order")}
+				record := &recordlayer.FDBStoredRecord[proto.Message]{Record: withVector(&demopb.Order{OrderId: proto.Int64(1), Quantity: proto.Int32(7), Price: proto.Int32(42), CoordX: proto.Int64(3), CoordY: proto.Int64(4)}, vectorFields...), PrimaryKey: tuple.Tuple{int64(1)}, RecordType: md.GetRecordType("Order")}
 				// The delete's record is committed first, so a refused payload
 				// rolls back only its own application.
 				_, err = sharedDB.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {

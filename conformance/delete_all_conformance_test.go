@@ -6,7 +6,7 @@ import (
 	"context"
 	"fmt"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -43,7 +43,7 @@ var _ = Describe("DeleteAllRecords Conformance", func() {
 
 		// Build metadata matching Java's createIndexedMetaData()
 		priceIdx = recordlayer.NewIndex("Order$price", recordlayer.Field("price"))
-		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -76,7 +76,7 @@ var _ = Describe("DeleteAllRecords Conformance", func() {
 			if err != nil {
 				return nil, err
 			}
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(orderID),
 				Price:   proto.Int32(price),
 			})
@@ -168,7 +168,7 @@ var _ = Describe("DeleteAllRecords Conformance", func() {
 			// Java saves 3 orders
 			for i, price := range []int32{100, 200, 300} {
 				params := buildJavaParams()
-				params["order"] = &gen.Order{
+				params["order"] = &demopb.Order{
 					OrderId: proto.Int64(int64(i + 1)),
 					Price:   proto.Int32(price),
 				}
@@ -197,7 +197,7 @@ var _ = Describe("DeleteAllRecords Conformance", func() {
 
 			// Java saves order 2
 			params := buildJavaParams()
-			params["order"] = &gen.Order{
+			params["order"] = &demopb.Order{
 				OrderId: proto.Int64(2),
 				Price:   proto.Int32(200),
 			}
@@ -233,7 +233,7 @@ var _ = Describe("DeleteAllRecords Conformance", func() {
 
 			// Java saves new records into the cleared store
 			params := buildJavaParams()
-			params["order"] = &gen.Order{
+			params["order"] = &demopb.Order{
 				OrderId: proto.Int64(10),
 				Price:   proto.Int32(999),
 			}

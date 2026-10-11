@@ -8,7 +8,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/dst"
 	fdb "fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -61,7 +61,7 @@ func TestSimFDB_ContinuationResumeAcrossFaultedWrite(t *testing.T) {
 					return nil, err
 				}
 				for i := 0; i < 20; i++ {
-					if _, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(i)), Price: proto.Int32(int32(i))}); err != nil {
+					if _, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(int64(i)), Price: proto.Int32(int32(i))}); err != nil {
 						return nil, err
 					}
 				}
@@ -85,7 +85,7 @@ func TestSimFDB_ContinuationResumeAcrossFaultedWrite(t *testing.T) {
 						return nil, err
 					}
 					for _, r := range recs {
-						pks = append(pks, r.Record.(*gen.Order).GetOrderId())
+						pks = append(pks, r.Record.(*demopb.Order).GetOrderId())
 					}
 					next = c
 					return nil, nil
@@ -183,7 +183,7 @@ func TestSimFDB_ContinuationResumeAcrossFaultedInsert(t *testing.T) {
 					return nil, err
 				}
 				for i := 0; i < 20; i++ {
-					if _, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(i)), Price: proto.Int32(int32(i))}); err != nil {
+					if _, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(int64(i)), Price: proto.Int32(int32(i))}); err != nil {
 						return nil, err
 					}
 				}
@@ -207,7 +207,7 @@ func TestSimFDB_ContinuationResumeAcrossFaultedInsert(t *testing.T) {
 						return nil, err
 					}
 					for _, r := range recs {
-						pks = append(pks, r.Record.(*gen.Order).GetOrderId())
+						pks = append(pks, r.Record.(*demopb.Order).GetOrderId())
 					}
 					next = c
 					return nil, nil
@@ -231,7 +231,7 @@ func TestSimFDB_ContinuationResumeAcrossFaultedInsert(t *testing.T) {
 			if err != nil {
 				t.Fatalf("open store: %v", err)
 			}
-			if _, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(25), Price: proto.Int32(25)}); err != nil {
+			if _, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(25), Price: proto.Int32(25)}); err != nil {
 				t.Fatalf("save: %v", err)
 			}
 			sim.InjectOnce(tc.inject)
@@ -291,7 +291,7 @@ func TestSimFDB_ContinuationResumeUnderRetryingTransaction(t *testing.T) {
 					return nil, err
 				}
 				for i := 0; i < 20; i++ {
-					if _, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(i)), Price: proto.Int32(int32(i))}); err != nil {
+					if _, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(int64(i)), Price: proto.Int32(int32(i))}); err != nil {
 						return nil, err
 					}
 				}
@@ -317,7 +317,7 @@ func TestSimFDB_ContinuationResumeUnderRetryingTransaction(t *testing.T) {
 					return nil, err
 				}
 				for _, r := range recs {
-					page1 = append(page1, r.Record.(*gen.Order).GetOrderId())
+					page1 = append(page1, r.Record.(*demopb.Order).GetOrderId())
 				}
 				cont = c
 				return nil, nil
@@ -348,7 +348,7 @@ func TestSimFDB_ContinuationResumeUnderRetryingTransaction(t *testing.T) {
 				}
 				tail = tail[:0] // reset per attempt — keep only the final successful attempt's rows
 				for _, r := range recs {
-					tail = append(tail, r.Record.(*gen.Order).GetOrderId())
+					tail = append(tail, r.Record.(*demopb.Order).GetOrderId())
 				}
 				// Non-empty mutation on an already-scanned key so the commit isn't short-circuited
 				// and the tail stays invariant to it.

@@ -10,7 +10,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 )
 
 var _ = Describe("FDBDatabaseRunner", func() {
@@ -21,7 +21,7 @@ var _ = Describe("FDBDatabaseRunner", func() {
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -41,7 +41,7 @@ var _ = Describe("FDBDatabaseRunner", func() {
 				}
 				id := int64(1)
 				price := int32(100)
-				return store.SaveRecord(&gen.Order{OrderId: &id, Price: &price})
+				return store.SaveRecord(&demopb.Order{OrderId: &id, Price: &price})
 			})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).NotTo(BeNil())

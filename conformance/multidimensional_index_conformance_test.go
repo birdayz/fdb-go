@@ -14,7 +14,7 @@ import (
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -708,7 +708,7 @@ func NewMultidimensionalIndexConformanceStore(recordDB *recordlayer.FDBDatabase,
 	)
 	mdIdx := recordlayer.NewMultidimensionalIndex("order_coord_md", dimExpr)
 
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -752,7 +752,7 @@ func (s *MultidimensionalIndexConformanceStore) SaveOrderGo(ctx context.Context,
 		if err != nil {
 			return nil, err
 		}
-		_, err = store.SaveRecord(&gen.Order{
+		_, err = store.SaveRecord(&demopb.Order{
 			OrderId: proto.Int64(orderID),
 			CoordX:  proto.Int64(x),
 			CoordY:  proto.Int64(y),
@@ -764,7 +764,7 @@ func (s *MultidimensionalIndexConformanceStore) SaveOrderGo(ctx context.Context,
 
 func (s *MultidimensionalIndexConformanceStore) SaveOrderJava(ctx context.Context, orderID, x, y int64) error {
 	params := s.buildJavaParams()
-	params["order"] = &gen.Order{
+	params["order"] = &demopb.Order{
 		OrderId: proto.Int64(orderID),
 		CoordX:  proto.Int64(x),
 		CoordY:  proto.Int64(y),

@@ -5,7 +5,7 @@ import (
 	"math"
 	"math/big"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
@@ -17,7 +17,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 	ctx := context.Background()
 
 	baseMetaData := func() *RecordMetaDataBuilder {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -72,19 +72,19 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Record at timestamp 1500 (inside window)
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(1), Price: proto.Int32(300), Quantity: proto.Int32(1500),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Record at timestamp 1200 (inside window)
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(2), Price: proto.Int32(100), Quantity: proto.Int32(1200),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Record at timestamp 1800 (inside window)
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(3), Price: proto.Int32(200), Quantity: proto.Int32(1800),
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -133,13 +133,13 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Record ts=1500 → window [1000, 2000)
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(1500),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Record ts=2500 → window [2000, 3000)
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(2), Price: proto.Int32(200), Quantity: proto.Int32(2500),
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -189,15 +189,15 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Records with widely different timestamps
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(1), Price: proto.Int32(50), Quantity: proto.Int32(0),
 			})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(2), Price: proto.Int32(300), Quantity: proto.Int32(999999),
 			})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(3), Price: proto.Int32(150), Quantity: proto.Int32(500000),
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -248,15 +248,15 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(1000),
 			})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(2), Price: proto.Int32(500), Quantity: proto.Int32(1000),
 			})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(3), Price: proto.Int32(300), Quantity: proto.Int32(1000),
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -303,15 +303,15 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(1000),
 			})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(2), Price: proto.Int32(200), Quantity: proto.Int32(1000),
 			})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(3), Price: proto.Int32(300), Quantity: proto.Int32(1000),
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -363,11 +363,11 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(1000),
 			})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(2), Price: proto.Int32(200), Quantity: proto.Int32(1000),
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -382,7 +382,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 			Expect(entries[1].Key[0]).To(Equal(int64(200)))
 
 			// Update order 1 to have a higher score than order 2
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(1), Price: proto.Int32(500), Quantity: proto.Int32(1000),
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -428,11 +428,11 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(1500),
 			})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(2), Price: proto.Int32(200), Quantity: proto.Int32(2500),
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -513,7 +513,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 
 			// Insert 5 records with different scores
 			for i, p := range []int32{500, 100, 300, 200, 400} {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId:  proto.Int64(int64(i + 1)),
 					Price:    proto.Int32(p),
 					Quantity: proto.Int32(1000),
@@ -584,7 +584,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 
 			// All records in the same window [1000, 2000)
 			for i, p := range []int32{500, 100, 300, 200, 400} {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId:  proto.Int64(int64(i + 1)),
 					Price:    proto.Int32(p),
 					Quantity: proto.Int32(1500),
@@ -644,19 +644,19 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Record at ts=500, before window [1000, 2000)
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(500),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Record at ts=2500, after window [1000, 2000)
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(2), Price: proto.Int32(200), Quantity: proto.Int32(2500),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Record at ts=1500, inside window
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(3), Price: proto.Int32(300), Quantity: proto.Int32(1500),
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -698,7 +698,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i := 1; i <= 5; i++ {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId:  proto.Int64(int64(i)),
 					Price:    proto.Int32(int32(i * 100)),
 					Quantity: proto.Int32(1000),
@@ -756,7 +756,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(1500),
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -827,7 +827,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(1000),
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -872,7 +872,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(1000),
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -913,7 +913,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i, p := range []int32{100, 200, 300, 400, 500} {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId:  proto.Int64(int64(i + 1)),
 					Price:    proto.Int32(p),
 					Quantity: proto.Int32(1000),
@@ -961,15 +961,15 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(1000),
 			})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(2), Price: proto.Int32(500), Quantity: proto.Int32(1000),
 			})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(3), Price: proto.Int32(300), Quantity: proto.Int32(1000),
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -1023,19 +1023,19 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Group 1 (order_id=1): price=300, ts=1000
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(1), Price: proto.Int32(300), Quantity: proto.Int32(1000),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Group 2 (order_id=2): price=100, ts=1000
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(2), Price: proto.Int32(100), Quantity: proto.Int32(1000),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Group 3 (order_id=3): price=500, ts=1000
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(3), Price: proto.Int32(500), Quantity: proto.Int32(1000),
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -1097,13 +1097,13 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Inside window [1000, 2000)
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(1500),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Outside window [1000, 2000) but still in all-time
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(2), Price: proto.Int32(200), Quantity: proto.Int32(500),
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -1190,13 +1190,13 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// ts=500: in "weekly" [0, 5000) but NOT in "daily" [1000, 2000)
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(500),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			// ts=1500: in both "daily" and "weekly"
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(2), Price: proto.Int32(200), Quantity: proto.Int32(1500),
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -1296,7 +1296,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 			prices := []int32{500, 100, 300, 200, 400}
 			records := make([]*FDBStoredRecord[proto.Message], 5)
 			for i, p := range prices {
-				rec, err := store.SaveRecord(&gen.Order{
+				rec, err := store.SaveRecord(&demopb.Order{
 					OrderId:  proto.Int64(int64(i + 1)),
 					Price:    proto.Int32(p),
 					Quantity: proto.Int32(1000),
@@ -1353,7 +1353,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Record at ts=500 — outside all windows.
-			rec, err := store.SaveRecord(&gen.Order{
+			rec, err := store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(500),
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -1399,11 +1399,11 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			rec1, err := store.SaveRecord(&gen.Order{
+			rec1, err := store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(1000),
 			})
 			Expect(err).NotTo(HaveOccurred())
-			rec2, err := store.SaveRecord(&gen.Order{
+			rec2, err := store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(2), Price: proto.Int32(200), Quantity: proto.Int32(1000),
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -1456,15 +1456,15 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// 3 records in all-time, 2 in window [1000, 2000)
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(500),
 			})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(2), Price: proto.Int32(200), Quantity: proto.Int32(1200),
 			})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(3), Price: proto.Int32(300), Quantity: proto.Int32(1800),
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -1516,7 +1516,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i, p := range []int32{300, 100, 200} {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId:  proto.Int64(int64(i + 1)),
 					Price:    proto.Int32(p),
 					Quantity: proto.Int32(1000),
@@ -1577,7 +1577,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i, p := range []int32{300, 100, 200} {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId:  proto.Int64(int64(i + 1)),
 					Price:    proto.Int32(p),
 					Quantity: proto.Int32(1000),
@@ -1631,11 +1631,11 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(1000),
 			})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(2), Price: proto.Int32(200), Quantity: proto.Int32(1000),
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -1769,7 +1769,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Group 1, two scores: 100 and 300
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(1000),
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -1822,7 +1822,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i, p := range []int32{300, 100, 200} {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId:  proto.Int64(int64(i + 1)),
 					Price:    proto.Int32(p),
 					Quantity: proto.Int32(1000),
@@ -1882,7 +1882,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i, p := range []int32{300, 100, 200} {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId:  proto.Int64(int64(i + 1)),
 					Price:    proto.Int32(p),
 					Quantity: proto.Int32(1000),
@@ -1941,7 +1941,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i := int64(1); i <= 5; i++ {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId:  proto.Int64(i),
 					Price:    proto.Int32(int32(i * 100)),
 					Quantity: proto.Int32(1000),
@@ -2018,7 +2018,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i := int64(1); i <= 10; i++ {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId:  proto.Int64(i),
 					Price:    proto.Int32(int32(i * 100)),
 					Quantity: proto.Int32(1000),
@@ -2168,17 +2168,17 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Two records with the SAME score (price=100, ts=1000).
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(1000),
 			})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(2), Price: proto.Int32(100), Quantity: proto.Int32(1000),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			// One record with score=200
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(3), Price: proto.Int32(200), Quantity: proto.Int32(1000),
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -2231,11 +2231,11 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(1000),
 			})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(2), Price: proto.Int32(200), Quantity: proto.Int32(1000),
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -2284,7 +2284,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 
 			// Save 5 records with ascending prices (scores).
 			for i, p := range []int32{100, 200, 300, 400, 500} {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId:  proto.Int64(int64(i + 1)),
 					Price:    proto.Int32(p),
 					Quantity: proto.Int32(1000),
@@ -2359,19 +2359,19 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Record 1: price=300, timestamp=1500 (in window [1000,2000))
-			rec1, err := store.SaveRecord(&gen.Order{
+			rec1, err := store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(1), Price: proto.Int32(300), Quantity: proto.Int32(1500),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Record 2: price=100, timestamp=1200 (in window [1000,2000))
-			rec2, err := store.SaveRecord(&gen.Order{
+			rec2, err := store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(2), Price: proto.Int32(100), Quantity: proto.Int32(1200),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Record 3: price=200, timestamp=500 (NOT in window [1000,2000), only in all-time)
-			rec3, err := store.SaveRecord(&gen.Order{
+			rec3, err := store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(3), Price: proto.Int32(200), Quantity: proto.Int32(500),
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -2464,15 +2464,15 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// Save 3 records with different scores.
-				rec1, err := store.SaveRecord(&gen.Order{
+				rec1, err := store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(1), Price: proto.Int32(300), Quantity: proto.Int32(1000),
 				})
 				Expect(err).NotTo(HaveOccurred())
-				rec2, err := store.SaveRecord(&gen.Order{
+				rec2, err := store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(2), Price: proto.Int32(100), Quantity: proto.Int32(1000),
 				})
 				Expect(err).NotTo(HaveOccurred())
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(3), Price: proto.Int32(200), Quantity: proto.Int32(1000),
 				})
 				Expect(err).NotTo(HaveOccurred())
@@ -2527,7 +2527,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// Record at ts=500 — outside the window.
-				rec, err := store.SaveRecord(&gen.Order{
+				rec, err := store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(500),
 				})
 				Expect(err).NotTo(HaveOccurred())
@@ -2577,7 +2577,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Save a record so the leaderboard has data.
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(1000),
 			})
 			Expect(err).NotTo(HaveOccurred())

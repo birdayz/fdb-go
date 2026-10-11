@@ -8,6 +8,8 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
 )
@@ -17,7 +19,7 @@ import (
 // Customer / TypedRecord as tables with int64 primary keys.
 func buildTestTemplate(t *testing.T) *RecordLayerSchemaTemplate {
 	t.Helper()
-	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -60,7 +62,7 @@ func TestSchemaTemplate_VersionIndependentFromMetadata(t *testing.T) {
 	// constructor mirrors fromRecordMetadata(md, name, md.getVersion())
 	// but the explicit-version constructor lets the catalog pin a
 	// different number.
-	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -320,7 +322,7 @@ func TestSchemaTemplate_ViewsAndRoutinesEmpty(t *testing.T) {
 
 func TestSchemaTemplate_IndexesWithSecondaryIndex(t *testing.T) {
 	t.Parallel()
-	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -376,7 +378,7 @@ func TestSchemaTemplate_IndexIsSparseWhenPredicateSet(t *testing.T) {
 	t.Parallel()
 	// Java's RecordLayerIndex.isSparse() returns predicate != null.
 	// Build an index with a predicate and assert IsSparse reports true.
-	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -412,7 +414,7 @@ func TestSchemaTemplate_UniversalIndexNotDuplicatedIntoEachTable(t *testing.T) {
 	// Universal indexes are reachable via Indexes() and
 	// GetAllIndexes() but must NOT appear in table.Indexes() for every
 	// table. Matches RecordMetadataDeserializer.generateTableBuilder.
-	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -511,7 +513,7 @@ func TestSchemaTemplate_Visitor(t *testing.T) {
 	// Build with a secondary index so the cascade visits an Index too —
 	// the default demo template has no indexes, which would make an
 	// index-cascade regression silent.
-	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))

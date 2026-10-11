@@ -8,7 +8,7 @@ import (
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
@@ -24,7 +24,7 @@ import (
 var _ = Describe("index-state read conflicts", func() {
 	ctx := context.Background()
 	md := func() *RecordMetaData {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -62,7 +62,7 @@ var _ = Describe("index-state read conflicts", func() {
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
-		_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(1), Name: proto.String("w")})
+		_, err = store.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(1), Name: proto.String("w")})
 		Expect(err).NotTo(HaveOccurred())
 		return reader.Commit()
 	}

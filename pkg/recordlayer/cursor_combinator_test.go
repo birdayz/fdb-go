@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"slices"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
@@ -144,7 +144,7 @@ func populate10Orders(ctx context.Context, metaData *RecordMetaData) {
 			return nil, err
 		}
 		for i := range int64(10) {
-			order := &gen.Order{
+			order := &demopb.Order{
 				OrderId: proto.Int64(i + 1),
 				Price:   proto.Int32(int32((i + 1) * 10)),
 			}
@@ -165,7 +165,7 @@ var _ = Describe("CursorCombinators", func() {
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -190,7 +190,7 @@ var _ = Describe("CursorCombinators", func() {
 			filtered := Filter(
 				mustSeq(cursor, ctx),
 				func(rec *FDBStoredRecord[proto.Message]) bool {
-					return rec.Record.(*gen.Order).GetPrice() > 1000
+					return rec.Record.(*demopb.Order).GetPrice() > 1000
 				},
 			)
 
@@ -223,11 +223,11 @@ var _ = Describe("CursorCombinators", func() {
 					Filter(
 						mustSeq(cursor, ctx),
 						func(rec *FDBStoredRecord[proto.Message]) bool {
-							return rec.Record.(*gen.Order).GetPrice() > 30
+							return rec.Record.(*demopb.Order).GetPrice() > 30
 						},
 					),
 					func(rec *FDBStoredRecord[proto.Message]) int64 {
-						return rec.Record.(*gen.Order).GetOrderId()
+						return rec.Record.(*demopb.Order).GetOrderId()
 					},
 				),
 				3,
@@ -368,7 +368,7 @@ var _ = Describe("CursorCombinators", func() {
 			cursor2 := store.ScanRecords(nil, ForwardScan())
 			var sum int32
 			err = ForEach(ctx, cursor2, func(rec *FDBStoredRecord[proto.Message]) error {
-				sum += rec.Record.(*gen.Order).GetPrice()
+				sum += rec.Record.(*demopb.Order).GetPrice()
 				return nil
 			})
 			if err != nil {
@@ -391,7 +391,7 @@ var _ = Describe("CursorCombinators", func() {
 				return nil, err
 			}
 			for i := range int64(10) {
-				order := &gen.Order{OrderId: proto.Int64(i + 1), Price: proto.Int32(int32((i + 1) * 10))}
+				order := &demopb.Order{OrderId: proto.Int64(i + 1), Price: proto.Int32(int32((i + 1) * 10))}
 				if _, saveErr := store.SaveRecord(order); saveErr != nil {
 					return nil, saveErr
 				}
@@ -406,7 +406,7 @@ var _ = Describe("CursorCombinators", func() {
 			}
 			Expect(records).To(HaveLen(7))
 			// First returned record should be order_id=4
-			Expect(records[0].Record.(*gen.Order).GetOrderId()).To(Equal(int64(4)))
+			Expect(records[0].Record.(*demopb.Order).GetOrderId()).To(Equal(int64(4)))
 
 			return nil, nil
 		})
@@ -422,7 +422,7 @@ var _ = Describe("CursorCombinators", func() {
 				return nil, err
 			}
 			for i := range int64(10) {
-				order := &gen.Order{OrderId: proto.Int64(i + 1), Price: proto.Int32(int32((i + 1) * 10))}
+				order := &demopb.Order{OrderId: proto.Int64(i + 1), Price: proto.Int32(int32((i + 1) * 10))}
 				if _, saveErr := store.SaveRecord(order); saveErr != nil {
 					return nil, saveErr
 				}
@@ -437,8 +437,8 @@ var _ = Describe("CursorCombinators", func() {
 				return nil, scanErr
 			}
 			Expect(records).To(HaveLen(2))
-			Expect(records[0].Record.(*gen.Order).GetOrderId()).To(Equal(int64(4)))
-			Expect(records[1].Record.(*gen.Order).GetOrderId()).To(Equal(int64(5)))
+			Expect(records[0].Record.(*demopb.Order).GetOrderId()).To(Equal(int64(4)))
+			Expect(records[1].Record.(*demopb.Order).GetOrderId()).To(Equal(int64(5)))
 
 			return nil, nil
 		})
@@ -1629,7 +1629,7 @@ var _ = Describe("CursorCombinators", func() {
 
 		// Verify order
 		for i, rec := range records {
-			order := rec.Record.(*gen.Order)
+			order := rec.Record.(*demopb.Order)
 			Expect(order.GetOrderId()).To(Equal(int64(i + 1)))
 		}
 	})
@@ -1766,7 +1766,7 @@ var _ = Describe("CursorCombinators", func() {
 				return nil, err
 			}
 			for i := range int64(10) {
-				order := &gen.Order{OrderId: proto.Int64(i + 1), Price: proto.Int32(int32((i + 1) * 10))}
+				order := &demopb.Order{OrderId: proto.Int64(i + 1), Price: proto.Int32(int32((i + 1) * 10))}
 				if _, saveErr := store.SaveRecord(order); saveErr != nil {
 					return nil, saveErr
 				}

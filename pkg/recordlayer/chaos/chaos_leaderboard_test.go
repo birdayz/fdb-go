@@ -6,7 +6,7 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
 )
 
@@ -21,7 +21,7 @@ type leaderboardWindowUpdater interface {
 // quantity is the timestamp. No grouping.
 func buildLeaderboardMetadata() (*recordlayer.RecordMetaData, *recordlayer.Index) {
 	builder := recordlayer.NewRecordMetaDataBuilder()
-	builder.SetRecords(gen.File_record_layer_demo_proto)
+	builder.SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -163,13 +163,13 @@ func TestLeaderboardBasicVerify(t *testing.T) {
 	setupAllTimeWindow(t, s, idx)
 
 	// Timestamp (quantity) must be within the all-time window [MinInt64, MaxInt64).
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(1000)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(1000)})
 	verifyAll(t, s, idx)
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200), Quantity: proto.Int32(2000)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200), Quantity: proto.Int32(2000)})
 	verifyAll(t, s, idx)
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(300), Quantity: proto.Int32(3000)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(300), Quantity: proto.Int32(3000)})
 	verifyAll(t, s, idx)
 
 	// Delete one and re-verify.
@@ -177,7 +177,7 @@ func TestLeaderboardBasicVerify(t *testing.T) {
 	verifyAll(t, s, idx)
 
 	// Re-insert with different score.
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(50), Quantity: proto.Int32(1500)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(50), Quantity: proto.Int32(1500)})
 	verifyAll(t, s, idx)
 }
 
@@ -192,15 +192,15 @@ func TestLeaderboardCommitUnknown(t *testing.T) {
 	setupAllTimeWindow(t, s, idx)
 
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(1000)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(1000)})
 	verifyAll(t, s, idx)
 
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200), Quantity: proto.Int32(2000)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200), Quantity: proto.Int32(2000)})
 	verifyAll(t, s, idx)
 
 	// Third save, no fault.
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(50), Quantity: proto.Int32(3000)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(50), Quantity: proto.Int32(3000)})
 	verifyAll(t, s, idx)
 }
 
@@ -214,18 +214,18 @@ func TestLeaderboardCommitUnknownOverwrite(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 	setupAllTimeWindow(t, s, idx)
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(1000)})
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200), Quantity: proto.Int32(2000)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(1000)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200), Quantity: proto.Int32(2000)})
 	verifyAll(t, s, idx)
 
 	// Overwrite pk=1: price 100→500 with commit-unknown.
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(500), Quantity: proto.Int32(1000)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(500), Quantity: proto.Int32(1000)})
 	verifyAll(t, s, idx)
 
 	// Overwrite pk=2: price 200→50, changing timestamp too.
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(50), Quantity: proto.Int32(4000)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(50), Quantity: proto.Int32(4000)})
 	verifyAll(t, s, idx)
 }
 
@@ -238,9 +238,9 @@ func TestLeaderboardCommitUnknownDelete(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 	setupAllTimeWindow(t, s, idx)
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(1000)})
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200), Quantity: proto.Int32(2000)})
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(300), Quantity: proto.Int32(3000)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(1000)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200), Quantity: proto.Int32(2000)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(300), Quantity: proto.Int32(3000)})
 	verifyAll(t, s, idx)
 
 	// Delete pk=2 with commit-unknown.
@@ -265,9 +265,9 @@ func TestLeaderboardDuplicateScores(t *testing.T) {
 
 	// Three records with the same score=100 but different timestamps.
 	// Each gets a different score key because the timestamp is part of the key.
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(1000)})
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100), Quantity: proto.Int32(2000)})
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(100), Quantity: proto.Int32(3000)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(1000)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(100), Quantity: proto.Int32(2000)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(100), Quantity: proto.Int32(3000)})
 	verifyAll(t, s, idx)
 
 	// Delete one.
@@ -292,14 +292,14 @@ func TestLeaderboardDuplicateScoresCommitUnknown(t *testing.T) {
 	setupAllTimeWindow(t, s, idx)
 
 	// Setup: three records with similar scores.
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(1000)})
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100), Quantity: proto.Int32(2000)})
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(200), Quantity: proto.Int32(3000)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(1000)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(100), Quantity: proto.Int32(2000)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(200), Quantity: proto.Int32(3000)})
 	verifyAll(t, s, idx)
 
 	// Save duplicate score with commit-unknown.
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(4), Price: proto.Int32(100), Quantity: proto.Int32(4000)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(4), Price: proto.Int32(100), Quantity: proto.Int32(4000)})
 	verifyAll(t, s, idx)
 
 	// Delete one of the duplicates with commit-unknown.
@@ -309,7 +309,7 @@ func TestLeaderboardDuplicateScoresCommitUnknown(t *testing.T) {
 
 	// Overwrite pk=2 from score=100→300 with commit-unknown.
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(300), Quantity: proto.Int32(2000)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(300), Quantity: proto.Int32(2000)})
 	verifyAll(t, s, idx)
 }
 
@@ -321,7 +321,7 @@ func TestLeaderboardDeleteAllRecords(t *testing.T) {
 	setupAllTimeWindow(t, s, idx)
 
 	for i := int64(1); i <= 10; i++ {
-		s.SaveRecord(&gen.Order{
+		s.SaveRecord(&demopb.Order{
 			OrderId:  proto.Int64(i),
 			Price:    proto.Int32(int32(i * 10)),
 			Quantity: proto.Int32(int32(i * 1000)),
@@ -337,7 +337,7 @@ func TestLeaderboardDeleteAllRecords(t *testing.T) {
 	setupAllTimeWindow(t, s, idx)
 
 	// Re-add after delete-all.
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(99), Price: proto.Int32(42), Quantity: proto.Int32(5000)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(99), Price: proto.Int32(42), Quantity: proto.Int32(5000)})
 	verifyAll(t, s, idx)
 }
 
@@ -357,7 +357,7 @@ func TestLeaderboardRandomFaults(t *testing.T) {
 		pk := s.Rng.Int64N(maxPK) + 1
 		if s.Rng.Float64() < 0.7 {
 			// 70% saves with varying scores and timestamps.
-			s.SaveRecord(&gen.Order{
+			s.SaveRecord(&demopb.Order{
 				OrderId:  proto.Int64(pk),
 				Price:    proto.Int32(s.Rng.Int32N(10) * 100),
 				Quantity: proto.Int32(s.Rng.Int32N(10000)),
@@ -392,7 +392,7 @@ func TestLeaderboardHeavyFaultStress(t *testing.T) {
 	for i := 0; i < numOps; i++ {
 		pk := s.Rng.Int64N(maxPK) + 1
 		if s.Rng.Float64() < 0.6 {
-			s.SaveRecord(&gen.Order{
+			s.SaveRecord(&demopb.Order{
 				OrderId:  proto.Int64(pk),
 				Price:    proto.Int32(s.Rng.Int32N(5) * 100), // small score space
 				Quantity: proto.Int32(s.Rng.Int32N(5000)),
@@ -419,21 +419,21 @@ func TestLeaderboardOverwriteChangesScore(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 	setupAllTimeWindow(t, s, idx)
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(1000)})
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200), Quantity: proto.Int32(2000)})
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(300), Quantity: proto.Int32(3000)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(1000)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200), Quantity: proto.Int32(2000)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(300), Quantity: proto.Int32(3000)})
 	verifyAll(t, s, idx)
 
 	// Move pk=1 from lowest to highest score.
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(400), Quantity: proto.Int32(1000)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(400), Quantity: proto.Int32(1000)})
 	verifyAll(t, s, idx)
 
 	// Move pk=2 down to lowest.
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(50), Quantity: proto.Int32(2000)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(50), Quantity: proto.Int32(2000)})
 	verifyAll(t, s, idx)
 
 	// Overwrite with same values (no-op path in indexEntriesEqual).
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(300), Quantity: proto.Int32(3000)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(300), Quantity: proto.Int32(3000)})
 	verifyAll(t, s, idx)
 }
 
@@ -476,11 +476,11 @@ func TestLeaderboardMultipleWindows(t *testing.T) {
 	}
 
 	// Record with ts=1500 (inside bounded window).
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(1500)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(1500)})
 	// Record with ts=500 (outside bounded window, but inside all-time).
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200), Quantity: proto.Int32(500)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200), Quantity: proto.Int32(500)})
 	// Record with ts=2500 (outside bounded window, but inside all-time).
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(300), Quantity: proto.Int32(2500)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(300), Quantity: proto.Int32(2500)})
 
 	s.Verify()
 
@@ -554,16 +554,16 @@ func TestLeaderboardMultipleWindowsCommitUnknown(t *testing.T) {
 
 	// Save records with commit-unknown across both windows.
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(1500)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(1500)})
 	verifyAll(t, s, idx)
 
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200), Quantity: proto.Int32(500)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200), Quantity: proto.Int32(500)})
 	verifyAll(t, s, idx)
 
 	// Overwrite pk=1 to move it out of the bounded window.
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(150), Quantity: proto.Int32(500)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(150), Quantity: proto.Int32(500)})
 	verifyAll(t, s, idx)
 
 	// Delete pk=2 with commit-unknown.
@@ -608,14 +608,14 @@ func TestLeaderboardHighScoreFirst(t *testing.T) {
 		t.Fatalf("chaos: setup highScoreFirst window: %v", err)
 	}
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(1000)})
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200), Quantity: proto.Int32(2000)})
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(300), Quantity: proto.Int32(3000)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(1000)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200), Quantity: proto.Int32(2000)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(300), Quantity: proto.Int32(3000)})
 	verifyAll(t, s, idx)
 
 	// Overwrite with commit-unknown.
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(400), Quantity: proto.Int32(1000)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(400), Quantity: proto.Int32(1000)})
 	verifyAll(t, s, idx)
 
 	// Delete with commit-unknown.
@@ -666,7 +666,7 @@ func TestLeaderboardHighScoreFirstStress(t *testing.T) {
 	for i := 0; i < numOps; i++ {
 		pk := s.Rng.Int64N(maxPK) + 1
 		if s.Rng.Float64() < 0.6 {
-			s.SaveRecord(&gen.Order{
+			s.SaveRecord(&demopb.Order{
 				OrderId:  proto.Int64(pk),
 				Price:    proto.Int32(s.Rng.Int32N(5) * 100),
 				Quantity: proto.Int32(s.Rng.Int32N(5000)),
@@ -700,7 +700,7 @@ func TestLeaderboardAllFaultTypes(t *testing.T) {
 	for i := 0; i < numOps; i++ {
 		pk := s.Rng.Int64N(maxPK) + 1
 		if s.Rng.Float64() < 0.7 {
-			s.SaveRecord(&gen.Order{
+			s.SaveRecord(&demopb.Order{
 				OrderId:  proto.Int64(pk),
 				Price:    proto.Int32(s.Rng.Int32N(10) * 100),
 				Quantity: proto.Int32(s.Rng.Int32N(10000)),

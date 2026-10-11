@@ -96,6 +96,7 @@ go_test(
     tags = ["resources:memory:800"],
     deps = [
         "//gen",
+        "//gen/demopb",
         "//pkg/dst",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",

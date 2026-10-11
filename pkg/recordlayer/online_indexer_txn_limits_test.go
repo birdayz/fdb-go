@@ -3,7 +3,7 @@ package recordlayer
 import (
 	"context"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
@@ -27,7 +27,7 @@ var _ = Describe("Online indexer transaction limits", func() {
 				return nil, err
 			}
 			for i := int64(1); i <= 5; i++ {
-				if _, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(10 * i))}); err != nil {
+				if _, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(10 * i))}); err != nil {
 					return nil, err
 				}
 			}

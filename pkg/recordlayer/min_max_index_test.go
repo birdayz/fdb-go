@@ -3,7 +3,7 @@ package recordlayer
 import (
 	"context"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -14,7 +14,7 @@ var _ = Describe("MaxEverLongIndex", func() {
 	ctx := context.Background()
 
 	baseMetaData := func() *RecordMetaDataBuilder {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -36,7 +36,7 @@ var _ = Describe("MaxEverLongIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i, price := range []int32{100, 300, 200} {
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)})
 				Expect(err).NotTo(HaveOccurred())
 			}
 
@@ -65,9 +65,9 @@ var _ = Describe("MaxEverLongIndex", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(500)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(500)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Delete the max record
@@ -102,11 +102,11 @@ var _ = Describe("MaxEverLongIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// price=100: orders 1,3; price=200: order 2
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
 
 			entries, err := AsList(ctx, store.ScanIndex(maxIdx, TupleRangeAll, nil, ForwardScan()))
@@ -140,7 +140,7 @@ var _ = Describe("MaxEverLongIndex", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(-100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(-100)})
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("negative value"))
 
@@ -164,11 +164,11 @@ var _ = Describe("MaxEverLongIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Insert with price 500
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(500)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(500)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Update price to 200 (lower)
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Max should still be 500 (MAX never decreases)
@@ -198,7 +198,7 @@ var _ = Describe("MaxEverLongIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i, price := range []int32{100, 500, 300} {
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)})
 				Expect(err).NotTo(HaveOccurred())
 			}
 			return nil, nil
@@ -229,7 +229,7 @@ var _ = Describe("MinEverLongIndex", func() {
 	ctx := context.Background()
 
 	baseMetaData := func() *RecordMetaDataBuilder {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -251,7 +251,7 @@ var _ = Describe("MinEverLongIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i, price := range []int32{300, 100, 200} {
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)})
 				Expect(err).NotTo(HaveOccurred())
 			}
 
@@ -280,9 +280,9 @@ var _ = Describe("MinEverLongIndex", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(500)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(500)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Delete the min record
@@ -316,11 +316,11 @@ var _ = Describe("MinEverLongIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Insert with price 100
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Update price to 500 (higher)
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(500)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(500)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Min should still be 100 (MIN never increases)

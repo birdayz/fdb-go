@@ -1,0 +1,17 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "demopb",
+    srcs = [
+        "record_layer_demo.pb.go",
+        "record_layer_demo_vtproto.pb.go",
+    ],
+    importpath = "fdb.dev/gen/demopb",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//gen",
+        "@com_github_planetscale_vtprotobuf//protohelpers",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//runtime/protoimpl",
+    ],
+)

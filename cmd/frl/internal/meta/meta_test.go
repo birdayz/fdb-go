@@ -12,6 +12,7 @@ import (
 
 	configv1 "fdb.dev/cmd/frl/gen/frl/config/v1"
 	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
 )
 
@@ -19,7 +20,7 @@ import (
 // built from the conformance Records descriptor. Used by FileSource tests.
 func sampleMetaDataBytes(t *testing.T) []byte {
 	t.Helper()
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))

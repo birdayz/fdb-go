@@ -7,7 +7,7 @@ import (
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -30,7 +30,7 @@ func (b indexEntryBinding) GetCorrelationBinding(id values.CorrelationIdentifier
 var _ = Describe("IndexEntryObjectValue over scanned entries", func() {
 	It("reads KEY and VALUE elements of a key-with-value index entry", func() {
 		ctx := context.Background()
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -47,13 +47,13 @@ var _ = Describe("IndexEntryObjectValue over scanned entries", func() {
 			if err != nil {
 				return nil, err
 			}
-			if _, err := store.SaveRecord(&gen.TypedRecord{
+			if _, err := store.SaveRecord(&demopb.TypedRecord{
 				Id: proto.Int64(7), ValFloat: proto.Float32(2.5),
 				ValString: proto.String("s"), ValBytes: []byte{1, 2}, ValDouble: proto.Float64(0.25),
 			}); err != nil {
 				return nil, err
 			}
-			if _, err := store.SaveRecord(&gen.TypedRecord{Id: proto.Int64(8)}); err != nil {
+			if _, err := store.SaveRecord(&demopb.TypedRecord{Id: proto.Int64(8)}); err != nil {
 				return nil, err
 			}
 			entries, err = AsList(ctx, store.ScanIndex(idx, TupleRangeAll, nil, ForwardScan()))

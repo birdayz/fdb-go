@@ -24,7 +24,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -132,7 +132,7 @@ contexts:
 // integration tests. Single Order index on `price` so index scan /
 // index ls have something to show.
 func buildIntegrationMetaData() *recordlayer.RecordMetaData {
-	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -157,7 +157,7 @@ func seedStore(ctx context.Context, db *recordlayer.FDBDatabase, md *recordlayer
 			return nil, err
 		}
 		for i := int64(1); i <= 3; i++ {
-			order := &gen.Order{
+			order := &demopb.Order{
 				OrderId: proto.Int64(i),
 				Price:   proto.Int32(int32(100 * i)),
 			}
@@ -179,7 +179,7 @@ var (
 
 // countMetaData is the demo metadata with configure applied.
 func countMetaData(configure func(*recordlayer.RecordMetaDataBuilder)) (*recordlayer.RecordMetaData, error) {
-	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -211,7 +211,7 @@ func seedOrdersAndCustomers(ctx context.Context, db *recordlayer.FDBDatabase, md
 			return nil, err
 		}
 		for i := int64(101); i <= 102; i++ {
-			if _, err := store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(i)}); err != nil {
+			if _, err := store.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(i)}); err != nil {
 				return nil, err
 			}
 		}
@@ -684,7 +684,7 @@ func TestIntegration_RecordScan_NewerMetadataDoesNotMutateStore(t *testing.T) {
 	// Newer metadata: the fixture's shape plus one more index. AddIndex
 	// bumps the metadata version past the store header's, which is
 	// exactly the state that makes checkPossiblyRebuild want to write.
-	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))

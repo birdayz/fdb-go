@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -15,20 +15,20 @@ import (
 // makeLargeOrder creates an Order with a large enough Flower.Type string to
 // produce a serialized size exceeding the target bytes. Returns the order and
 // its approximate serialized size.
-func makeLargeOrder(orderID int64, targetSize int) *gen.Order {
+func makeLargeOrder(orderID int64, targetSize int) *demopb.Order {
 	// Flower.Type is a string field — fill it to push the serialized size past the target.
 	// Protobuf overhead is small, so the string length is close to the total size.
 	padding := strings.Repeat("X", targetSize)
-	return &gen.Order{
+	return &demopb.Order{
 		OrderId: proto.Int64(orderID),
 		Price:   proto.Int32(42),
-		Flower:  &gen.Flower{Type: proto.String(padding), Color: gen.Color_RED.Enum()},
+		Flower:  &demopb.Flower{Type: proto.String(padding), Color: demopb.Color_RED.Enum()},
 	}
 }
 
 func splitMetadata() *RecordMetaData {
 	builder := NewRecordMetaDataBuilder().
-		SetRecords(gen.File_record_layer_demo_proto).
+		SetRecords(demopb.File_record_layer_demo_proto).
 		SetSplitLongRecords(true)
 	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
@@ -68,7 +68,7 @@ var _ = Describe("SplitRecords", func() {
 			Expect(loaded.Split).To(BeTrue())
 			Expect(loaded.KeyCount).To(Equal(3))
 
-			order, ok := loaded.Record.(*gen.Order)
+			order, ok := loaded.Record.(*demopb.Order)
 			Expect(ok).To(BeTrue())
 			Expect(*order.OrderId).To(Equal(int64(1)))
 			Expect(*order.Price).To(Equal(int32(42)))
@@ -93,10 +93,10 @@ var _ = Describe("SplitRecords", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Small record — should NOT be split even when splitLongRecords is enabled
-			smallOrder := &gen.Order{
+			smallOrder := &demopb.Order{
 				OrderId: proto.Int64(2),
 				Price:   proto.Int32(10),
-				Flower:  &gen.Flower{Type: proto.String("Rose"), Color: gen.Color_RED.Enum()},
+				Flower:  &demopb.Flower{Type: proto.String("Rose"), Color: demopb.Color_RED.Enum()},
 			}
 			stored, err := store.SaveRecord(smallOrder)
 			Expect(err).NotTo(HaveOccurred())
@@ -108,7 +108,7 @@ var _ = Describe("SplitRecords", func() {
 			Expect(loaded).NotTo(BeNil())
 			Expect(loaded.Split).To(BeFalse())
 
-			order, ok := loaded.Record.(*gen.Order)
+			order, ok := loaded.Record.(*demopb.Order)
 			Expect(ok).To(BeTrue())
 			Expect(*order.OrderId).To(Equal(int64(2)))
 
@@ -121,7 +121,7 @@ var _ = Describe("SplitRecords", func() {
 		ctx := context.Background()
 
 		// Metadata WITHOUT splitLongRecords
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -221,7 +221,7 @@ var _ = Describe("SplitRecords", func() {
 			Expect(loaded.Split).To(BeTrue())
 			Expect(loaded.KeyCount).To(Equal(2))
 
-			order, ok := loaded.Record.(*gen.Order)
+			order, ok := loaded.Record.(*demopb.Order)
 			Expect(ok).To(BeTrue())
 			Expect(len(*order.Flower.Type)).To(Equal(120_000))
 
@@ -250,10 +250,10 @@ var _ = Describe("SplitRecords", func() {
 			Expect(stored.Split).To(BeTrue())
 
 			// Overwrite with a small record — should clear all split chunks
-			small := &gen.Order{
+			small := &demopb.Order{
 				OrderId: proto.Int64(5),
 				Price:   proto.Int32(99),
-				Flower:  &gen.Flower{Type: proto.String("Tiny"), Color: gen.Color_BLUE.Enum()},
+				Flower:  &demopb.Flower{Type: proto.String("Tiny"), Color: demopb.Color_BLUE.Enum()},
 			}
 			stored2, err := store.SaveRecord(small)
 			Expect(err).NotTo(HaveOccurred())
@@ -265,7 +265,7 @@ var _ = Describe("SplitRecords", func() {
 			Expect(loaded).NotTo(BeNil())
 			Expect(loaded.Split).To(BeFalse())
 
-			order, ok := loaded.Record.(*gen.Order)
+			order, ok := loaded.Record.(*demopb.Order)
 			Expect(ok).To(BeTrue())
 			Expect(*order.Flower.Type).To(Equal("Tiny"))
 
@@ -288,10 +288,10 @@ var _ = Describe("SplitRecords", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Save a mix: small, large, small, large
-			small1 := &gen.Order{
+			small1 := &demopb.Order{
 				OrderId: proto.Int64(10),
 				Price:   proto.Int32(1),
-				Flower:  &gen.Flower{Type: proto.String("Rose"), Color: gen.Color_RED.Enum()},
+				Flower:  &demopb.Flower{Type: proto.String("Rose"), Color: demopb.Color_RED.Enum()},
 			}
 			_, err = store.SaveRecord(small1)
 			Expect(err).NotTo(HaveOccurred())
@@ -300,10 +300,10 @@ var _ = Describe("SplitRecords", func() {
 			_, err = store.SaveRecord(large1)
 			Expect(err).NotTo(HaveOccurred())
 
-			small2 := &gen.Order{
+			small2 := &demopb.Order{
 				OrderId: proto.Int64(30),
 				Price:   proto.Int32(3),
-				Flower:  &gen.Flower{Type: proto.String("Lily"), Color: gen.Color_BLUE.Enum()},
+				Flower:  &demopb.Flower{Type: proto.String("Lily"), Color: demopb.Color_BLUE.Enum()},
 			}
 			_, err = store.SaveRecord(small2)
 			Expect(err).NotTo(HaveOccurred())
@@ -325,7 +325,7 @@ var _ = Describe("SplitRecords", func() {
 					break
 				}
 				rec := result.GetValue()
-				order, ok := rec.Record.(*gen.Order)
+				order, ok := rec.Record.(*demopb.Order)
 				Expect(ok).To(BeTrue())
 				foundIDs = append(foundIDs, *order.OrderId)
 			}
@@ -376,7 +376,7 @@ var _ = Describe("SplitRecords", func() {
 					Expect(contErr).NotTo(HaveOccurred())
 					break
 				}
-				order, ok := result.GetValue().Record.(*gen.Order)
+				order, ok := result.GetValue().Record.(*demopb.Order)
 				Expect(ok).To(BeTrue())
 				batch1 = append(batch1, *order.OrderId)
 			}
@@ -398,7 +398,7 @@ var _ = Describe("SplitRecords", func() {
 					Expect(contErr).NotTo(HaveOccurred())
 					break
 				}
-				order, ok := result.GetValue().Record.(*gen.Order)
+				order, ok := result.GetValue().Record.(*demopb.Order)
 				Expect(ok).To(BeTrue())
 				batch2 = append(batch2, *order.OrderId)
 			}
@@ -417,7 +417,7 @@ var _ = Describe("SplitRecords", func() {
 					Expect(result.GetNoNextReason()).To(Equal(SourceExhausted))
 					break
 				}
-				order, ok := result.GetValue().Record.(*gen.Order)
+				order, ok := result.GetValue().Record.(*demopb.Order)
 				Expect(ok).To(BeTrue())
 				batch3 = append(batch3, *order.OrderId)
 			}
@@ -443,10 +443,10 @@ var _ = Describe("SplitRecords", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Save one small, one large
-			small := &gen.Order{
+			small := &demopb.Order{
 				OrderId: proto.Int64(100),
 				Price:   proto.Int32(1),
-				Flower:  &gen.Flower{Type: proto.String("Rose"), Color: gen.Color_RED.Enum()},
+				Flower:  &demopb.Flower{Type: proto.String("Rose"), Color: demopb.Color_RED.Enum()},
 			}
 			_, err = store.SaveRecord(small)
 			Expect(err).NotTo(HaveOccurred())
@@ -542,7 +542,7 @@ var _ = Describe("SplitRecords", func() {
 				if !result.HasNext() {
 					break
 				}
-				order, ok := result.GetValue().Record.(*gen.Order)
+				order, ok := result.GetValue().Record.(*demopb.Order)
 				Expect(ok).To(BeTrue())
 				foundIDs = append(foundIDs, *order.OrderId)
 			}

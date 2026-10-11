@@ -12,6 +12,8 @@ import (
 	"fdb.dev/pkg/recordlayer/internal/tuplefast"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
@@ -533,7 +535,7 @@ func FuzzDeserializeRecord(f *testing.F) {
 // fuzzBuildMetaData creates a RecordMetaData for fuzz targets (no FDB needed).
 func fuzzBuildMetaData(f *testing.F) *RecordMetaData {
 	f.Helper()
-	builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -546,13 +548,13 @@ func fuzzBuildMetaData(f *testing.F) *RecordMetaData {
 
 // fuzzUnionSeeds returns valid union-serialized record bytes for seed corpus.
 func fuzzUnionSeeds() [][]byte {
-	order := &gen.UnionDescriptor{XOrder: &gen.Order{
+	order := &demopb.UnionDescriptor{XOrder: &demopb.Order{
 		OrderId: proto.Int64(1), Price: proto.Int32(42),
 	}}
-	customer := &gen.UnionDescriptor{XCustomer: &gen.Customer{
+	customer := &demopb.UnionDescriptor{XCustomer: &demopb.Customer{
 		CustomerId: proto.Int64(1), Name: proto.String("test"),
 	}}
-	empty := &gen.UnionDescriptor{XOrder: &gen.Order{}}
+	empty := &demopb.UnionDescriptor{XOrder: &demopb.Order{}}
 
 	var seeds [][]byte
 	for _, msg := range []proto.Message{order, customer, empty} {
@@ -859,7 +861,7 @@ func FuzzRecordMetaDataFromProto(f *testing.F) {
 // Returns nil if any step fails (the fuzz target tolerates fewer
 // seeds gracefully).
 func buildSeedMetaDataBytes(withValueIndex, withCountIndex, withSumIndex bool) []byte {
-	builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))

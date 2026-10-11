@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
@@ -16,7 +16,7 @@ var _ = Describe("MaxEverVersionIndex", func() {
 	ctx := context.Background()
 
 	buildMeta := func(indexes ...*Index) *RecordMetaData {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -54,7 +54,7 @@ var _ = Describe("MaxEverVersionIndex", func() {
 			if err != nil {
 				return nil, err
 			}
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			return nil, err
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -112,7 +112,7 @@ var _ = Describe("MaxEverVersionIndex", func() {
 			if err != nil {
 				return nil, err
 			}
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			return nil, err
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -124,7 +124,7 @@ var _ = Describe("MaxEverVersionIndex", func() {
 			if err != nil {
 				return nil, err
 			}
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
 			return nil, err
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -177,7 +177,7 @@ var _ = Describe("MaxEverVersionIndex", func() {
 			if err != nil {
 				return nil, err
 			}
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			return nil, err
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -239,7 +239,7 @@ var _ = Describe("MaxEverVersionIndex", func() {
 			if err != nil {
 				return nil, err
 			}
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			return nil, err
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -251,7 +251,7 @@ var _ = Describe("MaxEverVersionIndex", func() {
 			if err != nil {
 				return nil, err
 			}
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)})
 			return nil, err
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -300,11 +300,11 @@ var _ = Describe("MaxEverVersionIndex", func() {
 			if err != nil {
 				return nil, err
 			}
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			if err != nil {
 				return nil, err
 			}
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
 			return nil, err
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -316,7 +316,7 @@ var _ = Describe("MaxEverVersionIndex", func() {
 			if err != nil {
 				return nil, err
 			}
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(100)})
 			return nil, err
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -372,7 +372,7 @@ var _ = Describe("MaxEverVersionIndex", func() {
 			if err != nil {
 				return nil, err
 			}
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			return nil, err
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -385,7 +385,7 @@ var _ = Describe("MaxEverVersionIndex", func() {
 				return nil, err
 			}
 			// Re-save with same price but different tags — triggers update
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Tags: []string{"updated"}})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Tags: []string{"updated"}})
 			return nil, err
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -432,11 +432,11 @@ var _ = Describe("MaxEverVersionIndex", func() {
 			if err != nil {
 				return nil, err
 			}
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			if err != nil {
 				return nil, err
 			}
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
 			return nil, err
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -498,7 +498,7 @@ var _ = Describe("MaxEverVersionIndex", func() {
 			if err != nil {
 				return nil, err
 			}
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(42), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(42), Price: proto.Int32(100)})
 			return nil, err
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -546,15 +546,15 @@ var _ = Describe("MaxEverVersionIndex", func() {
 			if err != nil {
 				return nil, err
 			}
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			if err != nil {
 				return nil, err
 			}
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
 			if err != nil {
 				return nil, err
 			}
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(300)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(300)})
 			return nil, err
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -609,11 +609,11 @@ var _ = Describe("MaxEverVersionIndex", func() {
 			if err != nil {
 				return nil, err
 			}
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			if err != nil {
 				return nil, err
 			}
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
 			return nil, err
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -661,7 +661,7 @@ var _ = Describe("MaxEverVersionIndex", func() {
 	// 11. Metadata validation: requires storeRecordVersions
 	// =========================================================================
 	It("metadata validation: builds without SetStoreRecordVersions, as Java does", func() {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -678,7 +678,7 @@ var _ = Describe("MaxEverVersionIndex", func() {
 	// 12. Metadata validation: requires GroupingKeyExpression
 	// =========================================================================
 	It("metadata validation: requires GroupingKeyExpression", func() {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -695,7 +695,7 @@ var _ = Describe("MaxEverVersionIndex", func() {
 	// 13. Metadata validation: version must be in grouped portion (not grouping)
 	// =========================================================================
 	It("metadata validation: version in grouping portion rejected", func() {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -710,7 +710,7 @@ var _ = Describe("MaxEverVersionIndex", func() {
 	})
 
 	It("metadata validation: version in grouping portion with field in grouped rejected", func() {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -731,7 +731,7 @@ var _ = Describe("MaxEverVersionIndex", func() {
 	// 14. Metadata validation: exactly 1 version column in grouped
 	// =========================================================================
 	It("metadata validation: 0 version columns in grouped rejected", func() {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -747,7 +747,7 @@ var _ = Describe("MaxEverVersionIndex", func() {
 	})
 
 	It("metadata validation: 2 version columns in grouped rejected", func() {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -778,11 +778,11 @@ var _ = Describe("MaxEverVersionIndex", func() {
 			if err != nil {
 				return nil, err
 			}
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			if err != nil {
 				return nil, err
 			}
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
 			return nil, err
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -793,7 +793,7 @@ var _ = Describe("MaxEverVersionIndex", func() {
 			if err != nil {
 				return nil, err
 			}
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(100)})
 			return nil, err
 		})
 		Expect(err).NotTo(HaveOccurred())

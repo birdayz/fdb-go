@@ -4,6 +4,8 @@ import (
 	"errors"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -12,8 +14,8 @@ import (
 
 // newOrder constructs an Order with sensible defaults for key expression tests.
 // Order has: order_id (int64), flower (Flower msg), price (int32), tags (repeated string), quantity (int32)
-func newOrder(id int64, price int32, tags ...string) *gen.Order {
-	return &gen.Order{
+func newOrder(id int64, price int32, tags ...string) *demopb.Order {
+	return &demopb.Order{
 		OrderId: proto.Int64(id),
 		Price:   proto.Int32(price),
 		Tags:    tags,
@@ -21,10 +23,10 @@ func newOrder(id int64, price int32, tags ...string) *gen.Order {
 }
 
 // newOrderWithFlower constructs an Order that has a Flower sub-message.
-func newOrderWithFlower(id int64, flowerType string, color gen.Color) *gen.Order {
-	return &gen.Order{
+func newOrderWithFlower(id int64, flowerType string, color demopb.Color) *demopb.Order {
+	return &demopb.Order{
 		OrderId: proto.Int64(id),
-		Flower: &gen.Flower{
+		Flower: &demopb.Flower{
 			Type:  proto.String(flowerType),
 			Color: color.Enum(),
 		},
@@ -43,7 +45,7 @@ func asStored(msg proto.Message) *FDBStoredRecord[proto.Message] {
 // every production evaluation sees, and the one a record type key needs: the
 // key is a property of the record's type, not of the expression.
 func storedAs(msg proto.Message, typeName string, keys map[string]any) *FDBStoredRecord[proto.Message] {
-	b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -82,7 +84,7 @@ var _ = Describe("KeyExpression unit tests", func() {
 
 			It("extracts string field from Customer", func() {
 				expr := Field("name")
-				c := &gen.Customer{CustomerId: proto.Int64(1), Name: proto.String("Alice")}
+				c := &demopb.Customer{CustomerId: proto.Int64(1), Name: proto.String("Alice")}
 				result, err := expr.Evaluate(asStored(c), c)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result).To(Equal([][]any{{"Alice"}}))
@@ -90,7 +92,7 @@ var _ = Describe("KeyExpression unit tests", func() {
 
 			It("returns nil for unset proto2 optional scalar", func() {
 				expr := Field("price")
-				order := &gen.Order{OrderId: proto.Int64(1)} // price not set
+				order := &demopb.Order{OrderId: proto.Int64(1)} // price not set
 				result, err := expr.Evaluate(asStored(order), order)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result).To(Equal([][]any{{nil}}))
@@ -98,7 +100,7 @@ var _ = Describe("KeyExpression unit tests", func() {
 
 			It("returns nil for unset optional string field", func() {
 				expr := Field("name")
-				c := &gen.Customer{CustomerId: proto.Int64(1)} // name not set
+				c := &demopb.Customer{CustomerId: proto.Int64(1)} // name not set
 				result, err := expr.Evaluate(asStored(c), c)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result).To(Equal([][]any{{nil}}))
@@ -274,7 +276,7 @@ var _ = Describe("KeyExpression unit tests", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(Equal([][]any{{int64(5)}}))
 
-			customer := &gen.Customer{CustomerId: proto.Int64(1)}
+			customer := &demopb.Customer{CustomerId: proto.Int64(1)}
 			result, err = expr.Evaluate(storedAs(customer, "Customer", keys), customer)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(Equal([][]any{{int64(6)}}))
@@ -292,7 +294,7 @@ var _ = Describe("KeyExpression unit tests", func() {
 			order := newOrder(1, 10)
 
 			build := func(orderTypeKey int64) *RecordMetaData {
-				b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+				b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 				b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 				b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 				b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -454,7 +456,7 @@ var _ = Describe("KeyExpression unit tests", func() {
 
 		It("three scalar children concatenate correctly", func() {
 			expr := Concat(Field("order_id"), Field("price"), Field("quantity"))
-			order := &gen.Order{
+			order := &demopb.Order{
 				OrderId:  proto.Int64(3),
 				Price:    proto.Int32(50),
 				Quantity: proto.Int32(10),
@@ -526,7 +528,7 @@ var _ = Describe("KeyExpression unit tests", func() {
 	Describe("NestingKeyExpression", func() {
 		It("Nest evaluates child on the sub-message", func() {
 			expr := Nest("flower", Field("type"))
-			order := newOrderWithFlower(1, "rose", gen.Color_RED)
+			order := newOrderWithFlower(1, "rose", demopb.Color_RED)
 			result, err := expr.Evaluate(asStored(order), order)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(Equal([][]any{{"rose"}}))
@@ -534,7 +536,7 @@ var _ = Describe("KeyExpression unit tests", func() {
 
 		It("Nest evaluates enum field in sub-message as int64", func() {
 			expr := Nest("flower", Field("color"))
-			order := newOrderWithFlower(1, "rose", gen.Color_BLUE) // BLUE=2
+			order := newOrderWithFlower(1, "rose", demopb.Color_BLUE) // BLUE=2
 			result, err := expr.Evaluate(asStored(order), order)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(Equal([][]any{{int64(2)}}))
@@ -542,7 +544,7 @@ var _ = Describe("KeyExpression unit tests", func() {
 
 		It("Nest on unset message field delegates child to nil → returns nil for scalar child", func() {
 			expr := Nest("flower", Field("type"))
-			order := &gen.Order{OrderId: proto.Int64(1)} // flower not set
+			order := &demopb.Order{OrderId: proto.Int64(1)} // flower not set
 			result, err := expr.Evaluate(asStored(order), order)
 			Expect(err).NotTo(HaveOccurred())
 			// Child Field("type") on nil message → [[nil]]
@@ -602,7 +604,7 @@ var _ = Describe("KeyExpression unit tests", func() {
 
 		It("Nest with composite child concatenates sub-message fields", func() {
 			expr := Nest("flower", Concat(Field("type"), Field("color")))
-			order := newOrderWithFlower(1, "lily", gen.Color_YELLOW) // YELLOW=3
+			order := newOrderWithFlower(1, "lily", demopb.Color_YELLOW) // YELLOW=3
 			result, err := expr.Evaluate(asStored(order), order)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(Equal([][]any{{"lily", int64(3)}}))

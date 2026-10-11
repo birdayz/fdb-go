@@ -4,7 +4,7 @@ import (
 	"context"
 	"math"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
@@ -26,7 +26,7 @@ var _ = Describe("BUG1_ByteScanLimit_OffByOne", func() {
 	var metaData *RecordMetaData
 
 	BeforeEach(func() {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -45,7 +45,7 @@ var _ = Describe("BUG1_ByteScanLimit_OffByOne", func() {
 
 			// Save 3 identical records so each has the same byte size
 			for i := int64(1); i <= 3; i++ {
-				order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(100)}
+				order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(100)}
 				_, err := store.SaveRecord(order)
 				Expect(err).NotTo(HaveOccurred())
 			}

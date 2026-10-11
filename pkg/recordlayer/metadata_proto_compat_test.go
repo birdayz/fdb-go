@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -25,7 +27,7 @@ import (
 // load path (RecordMetaDataFromProto -> ... -> Build, validators included).
 func bareTypeRoundTrip(t *testing.T, mutate func(*gen.Index)) (*RecordMetaData, error) {
 	t.Helper()
-	b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))

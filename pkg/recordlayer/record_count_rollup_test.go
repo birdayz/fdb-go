@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -22,7 +22,7 @@ var _ = Describe("RecordCountRollup", func() {
 	// recordTypeKeyedMetaData gives all three demo types a record-type-prefixed
 	// primary key, which is what a store counting by record type needs.
 	recordTypeKeyedMetaData := func() *RecordMetaDataBuilder {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Concat(RecordTypeKey(), Field("order_id")))
 		builder.GetRecordType("Customer").SetPrimaryKey(Concat(RecordTypeKey(), Field("customer_id")))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Concat(RecordTypeKey(), Field("id")))
@@ -31,19 +31,19 @@ var _ = Describe("RecordCountRollup", func() {
 
 	saveOrders := func(store *FDBRecordStore, n int64) {
 		for i := int64(1); i <= n; i++ {
-			_, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
+			_, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
 			Expect(err).NotTo(HaveOccurred())
 		}
 	}
 	saveCustomers := func(store *FDBRecordStore, n int64) {
 		for i := int64(1); i <= n; i++ {
-			_, err := store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(i), Name: proto.String("c")})
+			_, err := store.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(i), Name: proto.String("c")})
 			Expect(err).NotTo(HaveOccurred())
 		}
 	}
 	saveTypedRecords := func(store *FDBRecordStore, n int64) {
 		for i := int64(1); i <= n; i++ {
-			_, err := store.SaveRecord(&gen.TypedRecord{Id: proto.Int64(i), ValInt32: proto.Int32(1)})
+			_, err := store.SaveRecord(&demopb.TypedRecord{Id: proto.Int64(i), ValInt32: proto.Int32(1)})
 			Expect(err).NotTo(HaveOccurred())
 		}
 	}
@@ -124,7 +124,7 @@ var _ = Describe("RecordCountRollup", func() {
 					return nil, err
 				}
 				for i := from + 1; i <= from+perTx; i++ {
-					if _, err := store.SaveRecord(&gen.Order{
+					if _, err := store.SaveRecord(&demopb.Order{
 						OrderId: proto.Int64(i), Price: proto.Int32(int32(i)),
 					}); err != nil {
 						return nil, err

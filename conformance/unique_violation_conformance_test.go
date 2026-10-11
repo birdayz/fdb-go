@@ -12,7 +12,7 @@ import (
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -43,7 +43,7 @@ func NewUniqueViolationConformanceStore(recordDB *recordlayer.FDBDatabase, keysp
 	uniqueIdx := recordlayer.NewIndex("Order$price_unique", recordlayer.Field("price"))
 	uniqueIdx.SetUnique()
 
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -81,7 +81,7 @@ func (s *UniqueViolationConformanceStore) buildJavaParams() map[string]any {
 }
 
 // SaveOrderGo saves an order with Go (with unique index maintenance).
-func (s *UniqueViolationConformanceStore) SaveOrderGo(ctx context.Context, order *gen.Order) error {
+func (s *UniqueViolationConformanceStore) SaveOrderGo(ctx context.Context, order *demopb.Order) error {
 	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
@@ -203,7 +203,7 @@ func (s *UniqueViolationConformanceStore) GetIndexStateGo(ctx context.Context) (
 }
 
 // SaveOrderJava saves an order via Java (with unique index maintenance).
-func (s *UniqueViolationConformanceStore) SaveOrderJava(ctx context.Context, order *gen.Order) error {
+func (s *UniqueViolationConformanceStore) SaveOrderJava(ctx context.Context, order *demopb.Order) error {
 	params := s.buildJavaParams()
 	params["order"] = order
 	return s.java.InvokeAs(ctx, "saveWithUniqueIndex", params, nil)
@@ -241,7 +241,7 @@ func (s *UniqueViolationConformanceStore) ScanUniqueIndexJava(ctx context.Contex
 
 // SaveDuplicateJava saves two orders with the same price in a single Java transaction.
 // Returns the Java exception if a uniqueness violation is detected.
-func (s *UniqueViolationConformanceStore) SaveDuplicateJava(ctx context.Context, order1 *gen.Order, order2 *gen.Order) error {
+func (s *UniqueViolationConformanceStore) SaveDuplicateJava(ctx context.Context, order1 *demopb.Order, order2 *demopb.Order) error {
 	params := s.buildJavaParams()
 	params["order1"] = order1
 	params["order2"] = order2
@@ -255,7 +255,7 @@ func (s *UniqueViolationConformanceStore) MarkIndexWriteOnlyJava(ctx context.Con
 }
 
 // SaveDuringWriteOnlyJava saves an order via Java when the index is in WRITE_ONLY state.
-func (s *UniqueViolationConformanceStore) SaveDuringWriteOnlyJava(ctx context.Context, order *gen.Order) error {
+func (s *UniqueViolationConformanceStore) SaveDuringWriteOnlyJava(ctx context.Context, order *demopb.Order) error {
 	params := s.buildJavaParams()
 	params["order"] = order
 	return s.java.InvokeAs(ctx, "saveWithUniqueIndexDuringWriteOnly", params, nil)
@@ -354,7 +354,7 @@ var _ = Describe("Unique Violation Conformance", func() {
 	Describe("Cross-language unique violation detection (READABLE)", func() {
 		It("Go saves record, Java detects unique violation", func() {
 			// Go saves Order(id=1, price=500)
-			order1 := &gen.Order{
+			order1 := &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(500),
 			}
@@ -363,7 +363,7 @@ var _ = Describe("Unique Violation Conformance", func() {
 
 			// Java saves Order(id=2, price=500) in a separate tx -- should throw
 			// RecordIndexUniquenessViolation because price=500 entry already exists.
-			order2 := &gen.Order{
+			order2 := &demopb.Order{
 				OrderId: proto.Int64(2),
 				Price:   proto.Int32(500),
 			}
@@ -373,7 +373,7 @@ var _ = Describe("Unique Violation Conformance", func() {
 
 		It("Java saves record, Go detects unique violation", func() {
 			// Java saves Order(id=1, price=500)
-			order1 := &gen.Order{
+			order1 := &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(500),
 			}
@@ -381,7 +381,7 @@ var _ = Describe("Unique Violation Conformance", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Go saves Order(id=2, price=500) -- should throw RecordIndexUniquenessViolationError
-			order2 := &gen.Order{
+			order2 := &demopb.Order{
 				OrderId: proto.Int64(2),
 				Price:   proto.Int32(500),
 			}
@@ -398,7 +398,7 @@ var _ = Describe("Unique Violation Conformance", func() {
 		It("Go writes, both scan unique index", func() {
 			// Go saves 3 orders with distinct prices
 			for i := int64(1); i <= 3; i++ {
-				order := &gen.Order{
+				order := &demopb.Order{
 					OrderId: proto.Int64(i),
 					Price:   proto.Int32(int32(i * 100)),
 				}
@@ -432,7 +432,7 @@ var _ = Describe("Unique Violation Conformance", func() {
 		It("Java writes, both scan unique index", func() {
 			// Java saves 3 orders with distinct prices
 			for i := int64(1); i <= 3; i++ {
-				order := &gen.Order{
+				order := &demopb.Order{
 					OrderId: proto.Int64(i),
 					Price:   proto.Int32(int32(i * 200)),
 				}
@@ -474,7 +474,7 @@ var _ = Describe("Unique Violation Conformance", func() {
 			Expect(state).To(Equal("WRITE_ONLY"))
 
 			// Go saves Order(id=1, price=500) -- no violation yet
-			order1 := &gen.Order{
+			order1 := &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(500),
 			}
@@ -482,7 +482,7 @@ var _ = Describe("Unique Violation Conformance", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Go saves Order(id=2, price=500) -- violation stored, NOT thrown
-			order2 := &gen.Order{
+			order2 := &demopb.Order{
 				OrderId: proto.Int64(2),
 				Price:   proto.Int32(500),
 			}
@@ -516,7 +516,7 @@ var _ = Describe("Unique Violation Conformance", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Java saves Order(id=1, price=500)
-			order1 := &gen.Order{
+			order1 := &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(500),
 			}
@@ -524,7 +524,7 @@ var _ = Describe("Unique Violation Conformance", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Java saves Order(id=2, price=500) -- violation stored
-			order2 := &gen.Order{
+			order2 := &demopb.Order{
 				OrderId: proto.Int64(2),
 				Price:   proto.Int32(500),
 			}

@@ -6,7 +6,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -150,7 +150,7 @@ func TestPositionalRow_ShadowAssert(t *testing.T) {
 // fields.
 func TestProtoToPositional_ShadowsMap(t *testing.T) {
 	t.Parallel()
-	msg := &gen.TypedRecord{
+	msg := &demopb.TypedRecord{
 		Id:        proto.Int64(7),
 		ValInt64:  proto.Int64(42),
 		ValString: proto.String("alice"),
@@ -197,7 +197,7 @@ func TestProtoToPositional_EmptyRepeatedIsEmptyArray(t *testing.T) {
 	t.Parallel()
 	// Tags is a FLAT repeated field: the non-nullable-array storage shape.
 	// Never set -> zero elements -> nothing on the wire.
-	msg := &gen.Order{OrderId: proto.Int64(1)}
+	msg := &demopb.Order{OrderId: proto.Int64(1)}
 	row := protoToPositional(msg)
 	v, ok := getByName(row, "tags")
 	if !ok {
@@ -214,7 +214,7 @@ func TestProtoToPositional_EmptyRepeatedIsEmptyArray(t *testing.T) {
 	// A POPULATED repeated field still carries its elements, and a SINGULAR
 	// field that is genuinely unset is still NULL — the repeated-first branch
 	// must not flatten real absence.
-	pop := protoToPositional(&gen.Order{OrderId: proto.Int64(2), Tags: []string{"a", "b"}})
+	pop := protoToPositional(&demopb.Order{OrderId: proto.Int64(2), Tags: []string{"a", "b"}})
 	if v, ok := getByName(pop, "tags"); !ok || !reflect.DeepEqual(v, []any{"a", "b"}) {
 		t.Fatalf("populated TAGS = (%#v,%v), want ([a b],true)", v, ok)
 	}

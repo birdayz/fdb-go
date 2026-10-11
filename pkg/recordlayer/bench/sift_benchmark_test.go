@@ -14,7 +14,7 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
 )
 
@@ -137,7 +137,7 @@ func TestSIFTBenchmark(t *testing.T) {
 			}
 			if parallelism <= 1 {
 				for i := batchStart; i < batchEnd; i++ {
-					_, err := store.SaveRecord(&gen.Order{
+					_, err := store.SaveRecord(&demopb.Order{
 						OrderId:    proto.Int64(int64(i)),
 						Price:      proto.Int32(int32(i % 1000)),
 						VectorData: serializeVectorF32(baseVecs[i]),
@@ -156,7 +156,7 @@ func TestSIFTBenchmark(t *testing.T) {
 					go func(id int) {
 						defer wg.Done()
 						defer func() { <-sem }()
-						_, err := store.SaveRecord(&gen.Order{
+						_, err := store.SaveRecord(&demopb.Order{
 							OrderId:    proto.Int64(int64(id)),
 							Price:      proto.Int32(int32(id % 1000)),
 							VectorData: serializeVectorF32(baseVecs[id]),

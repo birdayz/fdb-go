@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -123,7 +125,7 @@ var _ = Describe("OnlineIndexer follow-up liveness", func() {
 				Expect(err).NotTo(HaveOccurred())
 			}
 			for id := int64(1); id <= 8; id++ {
-				_, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(id), Quantity: proto.Int32(7), Price: proto.Int32(int32(id))})
+				_, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(id), Quantity: proto.Int32(7), Price: proto.Int32(int32(id))})
 				Expect(err).NotTo(HaveOccurred())
 			}
 			for _, index := range oi.queuedIndexes {

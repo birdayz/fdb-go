@@ -8,7 +8,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 )
@@ -22,7 +22,7 @@ func TestWriteRecordAsJSON_ValidJSONWithNUL(t *testing.T) {
 	rec := &recordlayer.FDBStoredRecord[proto.Message]{
 		PrimaryKey: tuple.Tuple{"has\x00nul"},
 		RecordType: &recordlayer.RecordType{Name: "Order"},
-		Record:     &gen.Order{OrderId: proto.Int64(42)},
+		Record:     &demopb.Order{OrderId: proto.Int64(42)},
 	}
 	var buf bytes.Buffer
 	if err := writeRecordAsJSON(&buf, nil, rec); err != nil {
@@ -50,7 +50,7 @@ func TestWriteRecordAsJSON_HappyPath(t *testing.T) {
 	rec := &recordlayer.FDBStoredRecord[proto.Message]{
 		PrimaryKey: tuple.Tuple{int64(42)},
 		RecordType: &recordlayer.RecordType{Name: "Order"},
-		Record:     &gen.Order{OrderId: proto.Int64(42), Price: proto.Int32(100)},
+		Record:     &demopb.Order{OrderId: proto.Int64(42), Price: proto.Int32(100)},
 	}
 	var buf bytes.Buffer
 	if err := writeRecordAsJSON(&buf, nil, rec); err != nil {
@@ -83,7 +83,7 @@ func TestWriteRecordAsJSON_NilRecordType(t *testing.T) {
 	rec := &recordlayer.FDBStoredRecord[proto.Message]{
 		PrimaryKey: tuple.Tuple{int64(1)},
 		RecordType: nil,
-		Record:     &gen.Order{OrderId: proto.Int64(1)},
+		Record:     &demopb.Order{OrderId: proto.Int64(1)},
 	}
 	var buf bytes.Buffer
 	if err := writeRecordAsJSON(&buf, nil, rec); err != nil {

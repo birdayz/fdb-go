@@ -9,7 +9,7 @@ import (
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -27,12 +27,12 @@ var _ = Describe("A closed enum's undeclared number on the other save paths", fu
 	ctx := context.Background()
 	// TypedRecord's val_enum (field 13) is the proto2, so closed, Color; 9 is
 	// not one of its values.
-	held := func() *gen.TypedRecord {
-		return &gen.TypedRecord{Id: proto.Int64(1), ValEnum: gen.Color(9).Enum()}
+	held := func() *demopb.TypedRecord {
+		return &demopb.TypedRecord{Id: proto.Int64(1), ValEnum: demopb.Color(9).Enum()}
 	}
 	undeclared := protowire.AppendVarint(protowire.AppendTag(nil, 13, protowire.VarintType), 9)
 	metaData := func() *RecordMetaData {
-		b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -106,7 +106,7 @@ var _ = Describe("A closed enum's undeclared number on the other save paths", fu
 			valEnum := r.Descriptor().Fields().ByName("val_enum")
 			Expect(r.Has(valEnum)).To(BeFalse(), "the previewed record's val_enum")
 			Expect([]byte(r.GetUnknown())).To(Equal(undeclared), "the previewed record's unknown fields")
-			Expect(in.GetValEnum()).To(Equal(gen.Color(9)), "the caller's record is not changed")
+			Expect(in.GetValEnum()).To(Equal(demopb.Color(9)), "the caller's record is not changed")
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())

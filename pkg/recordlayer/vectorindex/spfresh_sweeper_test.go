@@ -7,7 +7,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer/vectorcodec"
@@ -28,7 +28,7 @@ func newSweeperTenant(name string, seedN int, build bool) (SPFreshTenant, subspa
 		recordlayer.IndexOptionSPFreshCellTarget:    "4",
 		recordlayer.IndexOptionSPFreshCellMax:       "8",
 	}
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -52,7 +52,7 @@ func newSweeperTenant(name string, seedN int, build bool) (SPFreshTenant, subspa
 			store, serr := storeBuilder(rtx)
 			Expect(serr).NotTo(HaveOccurred())
 			for i := 0; i < seedN; i++ {
-				if _, serr := store.SaveRecord(&gen.Order{
+				if _, serr := store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(int64(i + 1)),
 					Price:   proto.Int32(int32(i % 3)), Quantity: proto.Int32(int32(i % 2)),
 				}); serr != nil {

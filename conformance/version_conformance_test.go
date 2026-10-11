@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"github.com/google/uuid"
@@ -45,7 +45,7 @@ var _ = Describe("Record Version Conformance", func() {
 		java = NewJavaInvoker()
 
 		// Create versioned metadata for Go side
-		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -93,7 +93,7 @@ var _ = Describe("Record Version Conformance", func() {
 		}
 	})
 
-	saveOrderWithGoVersioned := func(order *gen.Order) []byte {
+	saveOrderWithGoVersioned := func(order *demopb.Order) []byte {
 		_, vs, err := env.RecordDB.RunWithVersionstamp(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			store, err := recordlayer.NewStoreBuilder().
 				SetContext(rtx).
@@ -140,7 +140,7 @@ var _ = Describe("Record Version Conformance", func() {
 		return result
 	}
 
-	saveOrderWithJavaVersioned := func(order *gen.Order) {
+	saveOrderWithJavaVersioned := func(order *demopb.Order) {
 		params := buildJavaParams()
 		params["order"] = order
 		err := java.InvokeAs(ctx, "saveOrderVersioned", params, nil)
@@ -237,7 +237,7 @@ var _ = Describe("Record Version Conformance", func() {
 			vs1 := saveOrderWithGoVersioned(StandardOrder(10))
 
 			// Update with new data
-			updated := NewOrder(10).WithPrice(999).WithFlower("Updated", gen.Color_BLUE).Build()
+			updated := NewOrder(10).WithPrice(999).WithFlower("Updated", demopb.Color_BLUE).Build()
 			vs2 := saveOrderWithGoVersioned(updated)
 
 			// Versionstamps should differ (different transactions)

@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -15,7 +15,7 @@ var _ = Describe("SaveRecordWithOptions_ErrorPaths", func() {
 	var metaData *RecordMetaData
 
 	BeforeEach(func() {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -33,9 +33,9 @@ var _ = Describe("SaveRecordWithOptions_ErrorPaths", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Flower is not registered as a record type -- it's a nested message, not a union member
-			flower := &gen.Flower{
+			flower := &demopb.Flower{
 				Type:  proto.String("Rose"),
-				Color: gen.Color_RED.Enum(),
+				Color: demopb.Color_RED.Enum(),
 			}
 			_, err = store.SaveRecord(flower)
 			var mdErr *MetaDataError
@@ -54,7 +54,7 @@ var _ = Describe("SaveRecordWithOptions_ErrorPaths", func() {
 				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(specSubspace()).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			order := &gen.Order{
+			order := &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(100),
 			}
@@ -62,7 +62,7 @@ var _ = Describe("SaveRecordWithOptions_ErrorPaths", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Insert same key again -- should fail
-			order2 := &gen.Order{
+			order2 := &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(200),
 			}
@@ -83,7 +83,7 @@ var _ = Describe("SaveRecordWithOptions_ErrorPaths", func() {
 				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(specSubspace()).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			order := &gen.Order{
+			order := &demopb.Order{
 				OrderId: proto.Int64(999),
 				Price:   proto.Int32(100),
 			}
@@ -104,7 +104,7 @@ var _ = Describe("SaveRecordWithOptions_ErrorPaths", func() {
 				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(specSubspace()).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			order1 := &gen.Order{
+			order1 := &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(100),
 			}
@@ -112,7 +112,7 @@ var _ = Describe("SaveRecordWithOptions_ErrorPaths", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Overwrite with different price -- should succeed (no existence check)
-			order2 := &gen.Order{
+			order2 := &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(200),
 			}
@@ -124,7 +124,7 @@ var _ = Describe("SaveRecordWithOptions_ErrorPaths", func() {
 			loaded, err := store.LoadRecord(tuple.Tuple{int64(1)})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(loaded).NotTo(BeNil())
-			Expect(loaded.Record.(*gen.Order).GetPrice()).To(Equal(int32(200)))
+			Expect(loaded.Record.(*demopb.Order).GetPrice()).To(Equal(int32(200)))
 
 			return nil, nil
 		})
@@ -139,14 +139,14 @@ var _ = Describe("SaveRecordWithOptions_ErrorPaths", func() {
 				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(specSubspace()).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			order1 := &gen.Order{
+			order1 := &demopb.Order{
 				OrderId: proto.Int64(5),
 				Price:   proto.Int32(50),
 			}
 			_, err = store.InsertRecord(order1)
 			Expect(err).NotTo(HaveOccurred())
 
-			order2 := &gen.Order{
+			order2 := &demopb.Order{
 				OrderId: proto.Int64(5),
 				Price:   proto.Int32(500),
 			}
@@ -155,7 +155,7 @@ var _ = Describe("SaveRecordWithOptions_ErrorPaths", func() {
 
 			loaded, err := store.LoadRecord(tuple.Tuple{int64(5)})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(loaded.Record.(*gen.Order).GetPrice()).To(Equal(int32(500)))
+			Expect(loaded.Record.(*demopb.Order).GetPrice()).To(Equal(int32(500)))
 
 			return nil, nil
 		})

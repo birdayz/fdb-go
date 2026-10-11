@@ -3,7 +3,7 @@ package recordlayer
 import (
 	"context"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -19,7 +19,7 @@ func populate20Orders(ctx context.Context, metaData *RecordMetaData, ks subspace
 			return nil, err
 		}
 		for i := range int64(20) {
-			order := &gen.Order{
+			order := &demopb.Order{
 				OrderId: proto.Int64(i),
 				Price:   proto.Int32(int32(i * 10)),
 			}
@@ -40,7 +40,7 @@ var _ = Describe("ContinuationToken", func() {
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -77,7 +77,7 @@ var _ = Describe("ContinuationToken", func() {
 					continuation = result.GetContinuation()
 					break
 				}
-				order := result.GetValue().Record.(*gen.Order)
+				order := result.GetValue().Record.(*demopb.Order)
 				firstBatch = append(firstBatch, order.GetOrderId())
 			}
 			_ = cursor.Close()
@@ -101,7 +101,7 @@ var _ = Describe("ContinuationToken", func() {
 				if !result.HasNext() {
 					break
 				}
-				order := result.GetValue().Record.(*gen.Order)
+				order := result.GetValue().Record.(*demopb.Order)
 				secondBatch = append(secondBatch, order.GetOrderId())
 			}
 			_ = cursor2.Close()
@@ -153,7 +153,7 @@ var _ = Describe("ContinuationToken", func() {
 					lastCont = result.GetContinuation()
 					break
 				}
-				order := result.GetValue().Record.(*gen.Order)
+				order := result.GetValue().Record.(*demopb.Order)
 				ids = append(ids, order.GetOrderId())
 			}
 
@@ -196,7 +196,7 @@ var _ = Describe("ContinuationToken", func() {
 				if !result.HasNext() {
 					break
 				}
-				order := result.GetValue().Record.(*gen.Order)
+				order := result.GetValue().Record.(*demopb.Order)
 				ids = append(ids, order.GetOrderId())
 			}
 
@@ -248,7 +248,7 @@ var _ = Describe("ContinuationToken", func() {
 						lastCont = result.GetContinuation()
 						break
 					}
-					order := result.GetValue().Record.(*gen.Order)
+					order := result.GetValue().Record.(*demopb.Order)
 					ids = append(ids, order.GetOrderId())
 				}
 
@@ -393,7 +393,7 @@ var _ = Describe("ContinuationToken", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.HasNext()).To(BeTrue())
 
-			firstID := result.GetValue().Record.(*gen.Order).GetOrderId()
+			firstID := result.GetValue().Record.(*demopb.Order).GetOrderId()
 			Expect(firstID).To(Equal(int64(0)))
 
 			cont := result.GetContinuation()
@@ -410,7 +410,7 @@ var _ = Describe("ContinuationToken", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result2.HasNext()).To(BeTrue())
 
-			secondID := result2.GetValue().Record.(*gen.Order).GetOrderId()
+			secondID := result2.GetValue().Record.(*demopb.Order).GetOrderId()
 			Expect(secondID).To(Equal(int64(1)))
 			_ = cursor2.Close()
 

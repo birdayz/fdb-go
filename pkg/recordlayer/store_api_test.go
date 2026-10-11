@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
@@ -20,7 +22,7 @@ var _ = Describe("FDBRecordStore API", func() {
 
 	// Helper: create metadata builder with Order/Customer/TypedRecord types set up.
 	baseMetaData := func() *RecordMetaDataBuilder {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -139,7 +141,7 @@ var _ = Describe("FDBRecordStore API", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// Save a record so the store has data.
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(10)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(10)})
 				Expect(err).NotTo(HaveOccurred())
 
 				// Mark unique index WRITE_ONLY, add a uniqueness violation, mark complete.
@@ -274,7 +276,7 @@ var _ = Describe("FDBRecordStore API", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 5; i++ {
-					_, err = store.SaveRecord(&gen.Order{
+					_, err = store.SaveRecord(&demopb.Order{
 						OrderId:  proto.Int64(i),
 						Price:    proto.Int32(int32(i * 100)),
 						Quantity: proto.Int32(int32(i * 10)),
@@ -338,7 +340,7 @@ var _ = Describe("FDBRecordStore API", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 5; i++ {
-					_, err = store.SaveRecord(&gen.Order{
+					_, err = store.SaveRecord(&demopb.Order{
 						OrderId: proto.Int64(i),
 						Price:   proto.Int32(int32(i * 100)),
 					})
@@ -501,7 +503,7 @@ var _ = Describe("FDBRecordStore API", func() {
 				_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 					store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).SetFormatVersion(format).Create()
 					Expect(err).NotTo(HaveOccurred())
-					record, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10)})
+					record, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(10)})
 					Expect(err).NotTo(HaveOccurred())
 					Expect(record.Version).NotTo(BeNil())
 					Expect(record.Version.IsComplete()).To(BeFalse())
@@ -566,7 +568,7 @@ var _ = Describe("FDBRecordStore API", func() {
 							if headerUpdate {
 								Expect(store.SetHeaderUserField("changed", []byte("new"))).To(Succeed())
 							} else {
-								_, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10)})
+								_, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(10)})
 								Expect(err).NotTo(HaveOccurred())
 							}
 							Expect(DeleteStore(deleteContext, ks)).To(Succeed())
@@ -707,7 +709,7 @@ var _ = Describe("FDBRecordStore API", func() {
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
 
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 				Expect(err).NotTo(HaveOccurred())
 				return nil, nil
 			})
@@ -775,7 +777,7 @@ var _ = Describe("FDBRecordStore API", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 5; i++ {
-					_, err = store.SaveRecord(&gen.Order{
+					_, err = store.SaveRecord(&demopb.Order{
 						OrderId: proto.Int64(i),
 						Price:   proto.Int32(int32(i * 100)),
 					})
@@ -963,7 +965,7 @@ var _ = Describe("FDBRecordStore API", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// DryRun should succeed and return a record.
-				order := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
+				order := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
 				result, err := store.DryRunSaveRecord(order, RecordExistenceCheckNone)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result).NotTo(BeNil())
@@ -1015,7 +1017,7 @@ var _ = Describe("FDBRecordStore API", func() {
 				if c.large {
 					tag = large
 				}
-				order := &gen.Order{OrderId: proto.Int64(7), Price: proto.Int32(1), Tags: []string{tag}}
+				order := &demopb.Order{OrderId: proto.Int64(7), Price: proto.Int32(1), Tags: []string{tag}}
 				open := func(rtx *FDBRecordContext) *FDBRecordStore {
 					b := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks)
 					if c.formatVersion != 0 {
@@ -1059,7 +1061,7 @@ var _ = Describe("FDBRecordStore API", func() {
 			ks := specSubspace()
 			md, err := baseMetaData().SetSplitLongRecords(false).Build()
 			Expect(err).NotTo(HaveOccurred())
-			order := &gen.Order{OrderId: proto.Int64(8), Tags: []string{strings.Repeat("y", splitRecordSize+1)}}
+			order := &demopb.Order{OrderId: proto.Int64(8), Tags: []string{strings.Repeat("y", splitRecordSize+1)}}
 			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
@@ -1086,12 +1088,12 @@ var _ = Describe("FDBRecordStore API", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// First, actually save a record.
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 				Expect(err).NotTo(HaveOccurred())
 
 				// DryRun with ERROR_IF_EXISTS should fail.
 				_, err = store.DryRunSaveRecord(
-					&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)},
+					&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)},
 					RecordExistenceCheckErrorIfExists,
 				)
 				Expect(err).To(HaveOccurred())
@@ -1100,7 +1102,7 @@ var _ = Describe("FDBRecordStore API", func() {
 
 				// DryRun with ERROR_IF_NOT_EXISTS on non-existent record should fail.
 				_, err = store.DryRunSaveRecord(
-					&gen.Order{OrderId: proto.Int64(999), Price: proto.Int32(200)},
+					&demopb.Order{OrderId: proto.Int64(999), Price: proto.Int32(200)},
 					RecordExistenceCheckErrorIfNotExists,
 				)
 				Expect(err).To(HaveOccurred())
@@ -1140,7 +1142,7 @@ var _ = Describe("FDBRecordStore API", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				stored, derr := store.DryRunSaveRecord(
-					&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)},
+					&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)},
 					RecordExistenceCheckNone,
 				)
 				if derr != nil {
@@ -1177,14 +1179,14 @@ var _ = Describe("FDBRecordStore API", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// Normal save fails.
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 				Expect(err).To(HaveOccurred())
 				var lockErr *StoreIsLockedForRecordUpdatesError
 				Expect(errors.As(err, &lockErr)).To(BeTrue())
 
 				// Override lock save succeeds.
 				saved, err := store.OverrideLockSaveRecord(
-					&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)},
+					&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)},
 					RecordExistenceCheckNone,
 				)
 				Expect(err).NotTo(HaveOccurred())
@@ -1192,7 +1194,7 @@ var _ = Describe("FDBRecordStore API", func() {
 				Expect(saved.PrimaryKey).To(Equal(tuple.Tuple{int64(1)}))
 
 				// Normal save still fails (overrideLock flag was reset).
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
 				Expect(err).To(HaveOccurred())
 				Expect(errors.As(err, &lockErr)).To(BeTrue())
 
@@ -1212,7 +1214,7 @@ var _ = Describe("FDBRecordStore API", func() {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 				Expect(err).NotTo(HaveOccurred())
 				return nil, store.SetStoreLockState(gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "test lock")
 			})
@@ -1225,7 +1227,7 @@ var _ = Describe("FDBRecordStore API", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				_, err = store.OverrideLockSaveRecord(
-					&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)},
+					&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)},
 					RecordExistenceCheckErrorIfExists,
 				)
 				Expect(err).To(HaveOccurred())
@@ -1251,7 +1253,7 @@ var _ = Describe("FDBRecordStore API", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// Save a record.
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 				Expect(err).NotTo(HaveOccurred())
 
 				// DryRun should return true.
@@ -1300,7 +1302,7 @@ var _ = Describe("FDBRecordStore API", func() {
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
 
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(42), Price: proto.Int32(999)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(42), Price: proto.Int32(999)})
 				Expect(err).NotTo(HaveOccurred())
 
 				exists, err := store.DryRunDeleteRecord(tuple.Tuple{int64(42)})
@@ -1332,7 +1334,7 @@ var _ = Describe("FDBRecordStore API", func() {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 				Expect(err).NotTo(HaveOccurred())
 				return nil, store.SetStoreLockState(gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "test lock")
 			})
@@ -1393,7 +1395,7 @@ var _ = Describe("FDBRecordStore API", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// Save a record so the index has data.
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(10)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(10)})
 				Expect(err).NotTo(HaveOccurred())
 
 				// Mark WRITE_ONLY, add violation, mark complete, then READABLE_UNIQUE_PENDING.
@@ -1636,7 +1638,7 @@ var _ = Describe("FDBRecordStore API", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 5; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 
@@ -1685,7 +1687,7 @@ var _ = Describe("FDBRecordStore API", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 5; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 
@@ -1744,14 +1746,14 @@ var _ = Describe("FDBRecordStore API", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// Save a small record (unsplit, but still uses split format with suffix).
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 				Expect(err).NotTo(HaveOccurred())
 
 				// Save a large record that will be split into chunks.
 				_, err = store.SaveRecord(makeLargeOrder(2, 250_000))
 				Expect(err).NotTo(HaveOccurred())
 
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(300)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(300)})
 				Expect(err).NotTo(HaveOccurred())
 
 				// ScanRecordKeys should return exactly 3 PKs despite split KV entries.
@@ -1778,11 +1780,11 @@ var _ = Describe("FDBRecordStore API", func() {
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
 
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(10), Price: proto.Int32(100)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(10), Price: proto.Int32(100)})
 				Expect(err).NotTo(HaveOccurred())
-				_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(20), Name: proto.String("Alice")})
+				_, err = store.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(20), Name: proto.String("Alice")})
 				Expect(err).NotTo(HaveOccurred())
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(30), Price: proto.Int32(300)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(30), Price: proto.Int32(300)})
 				Expect(err).NotTo(HaveOccurred())
 
 				keys, err := AsList(ctx, store.ScanRecordKeys(nil, ForwardScan()))
@@ -1809,7 +1811,7 @@ var _ = Describe("FDBRecordStore API", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 5; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 
@@ -1854,12 +1856,12 @@ var _ = Describe("FDBRecordStore API", func() {
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
 
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 				Expect(err).NotTo(HaveOccurred())
 				// 250KB record — split into 3 chunks
 				_, err = store.SaveRecord(makeLargeOrder(2, 250_000))
 				Expect(err).NotTo(HaveOccurred())
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(300)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(300)})
 				Expect(err).NotTo(HaveOccurred())
 
 				// Paginate with limit=1 — forces continuation after each PK.
@@ -1908,7 +1910,7 @@ var _ = Describe("FDBRecordStore API", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// Save one record normally.
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Quantity: proto.Int32(10), Price: proto.Int32(100)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Quantity: proto.Int32(10), Price: proto.Int32(100)})
 				Expect(err).NotTo(HaveOccurred())
 
 				// Mark index WRITE_ONLY so we can create violations.
@@ -1916,9 +1918,9 @@ var _ = Describe("FDBRecordStore API", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// Save duplicate records (WRITE_ONLY allows duplicates for unique indexes).
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Quantity: proto.Int32(10), Price: proto.Int32(200)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Quantity: proto.Int32(10), Price: proto.Int32(200)})
 				Expect(err).NotTo(HaveOccurred())
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Quantity: proto.Int32(10), Price: proto.Int32(300)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Quantity: proto.Int32(10), Price: proto.Int32(300)})
 				Expect(err).NotTo(HaveOccurred())
 
 				// Manually record uniqueness violations.
@@ -1966,13 +1968,13 @@ var _ = Describe("FDBRecordStore API", func() {
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
 
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Quantity: proto.Int32(20), Price: proto.Int32(100)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Quantity: proto.Int32(20), Price: proto.Int32(100)})
 				Expect(err).NotTo(HaveOccurred())
 
 				_, err = store.MarkIndexWriteOnly("Order$unique_qty")
 				Expect(err).NotTo(HaveOccurred())
 
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Quantity: proto.Int32(20), Price: proto.Int32(200)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Quantity: proto.Int32(20), Price: proto.Int32(200)})
 				Expect(err).NotTo(HaveOccurred())
 
 				idx := md.GetIndex("Order$unique_qty")
@@ -2010,7 +2012,7 @@ var _ = Describe("FDBRecordStore API", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 10; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 
@@ -2035,7 +2037,7 @@ var _ = Describe("FDBRecordStore API", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 5; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 
@@ -2085,7 +2087,7 @@ var _ = Describe("FDBRecordStore API", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 10; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 

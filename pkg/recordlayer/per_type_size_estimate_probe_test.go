@@ -35,7 +35,7 @@ import (
 	"context"
 	"fmt"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
@@ -47,7 +47,7 @@ var _ = Describe("PerTypeSizeEstimateProbe", func() {
 	It("measures whether a per-type range estimate discriminates a big and a small table", func() {
 		ctx := context.Background()
 
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		// Record-type-PREFIXED primary keys: this is what makes each type a
 		// contiguous range, and it is what the relational builder does for every
 		// SQL table (metadata/builder.go, RecordTypeKey() prepended).
@@ -84,13 +84,13 @@ var _ = Describe("PerTypeSizeEstimateProbe", func() {
 			}
 		}
 		write(func(store *FDBRecordStore, i int) error {
-			_, e := store.SaveRecord(&gen.Order{
+			_, e := store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(int64(i)), Price: proto.Int32(int32(i % 100)),
 			})
 			return e
 		}, orders)
 		write(func(store *FDBRecordStore, i int) error {
-			_, e := store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(int64(i))})
+			_, e := store.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(int64(i))})
 			return e
 		}, customers)
 

@@ -7,7 +7,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	fdb "fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -32,7 +32,7 @@ func TestSimFDB_InterleavedTransactionsConflict(t *testing.T) {
 		if err != nil {
 			return nil, err
 		}
-		_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+		_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 		return nil, err
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
@@ -66,12 +66,12 @@ func TestSimFDB_InterleavedTransactionsConflict(t *testing.T) {
 		if err != nil || rec == nil {
 			t.Fatalf("load record 1: %v", err)
 		}
-		return rec.Record.(*gen.Order).GetPrice()
+		return rec.Record.(*demopb.Order).GetPrice()
 	}
-	if _, err := storeA.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(priceOf(storeA) + 10)}); err != nil {
+	if _, err := storeA.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(priceOf(storeA) + 10)}); err != nil {
 		t.Fatalf("save A: %v", err)
 	}
-	if _, err := storeB.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(priceOf(storeB) + 20)}); err != nil {
+	if _, err := storeB.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(priceOf(storeB) + 20)}); err != nil {
 		t.Fatalf("save B: %v", err)
 	}
 

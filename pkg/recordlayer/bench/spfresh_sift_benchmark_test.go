@@ -17,7 +17,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 )
@@ -97,7 +97,7 @@ func TestSPFreshSIFTBenchmark(t *testing.T) {
 	if lmax := os.Getenv("SIFT_LMAX"); lmax != "" {
 		spfIdx.Options[recordlayer.IndexOptionSPFreshLmax] = lmax
 	}
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	// SIFT_SHARD_SAFE=1 gives all record types a RecordTypeKey prefix, which
 	// satisfies RFC-103's parallel-staging gate (PrimaryKeyHasRecordTypePrefix)
 	// so the bulk build shards the staging scan (S=8); the default bare PKs are
@@ -142,7 +142,7 @@ func TestSPFreshSIFTBenchmark(t *testing.T) {
 				return nil, serr
 			}
 			for i := lo; i < hi; i++ {
-				if _, serr := store.SaveRecord(&gen.Order{
+				if _, serr := store.SaveRecord(&demopb.Order{
 					OrderId:    proto.Int64(int64(i)),
 					VectorData: vectorindex.SerializeVector(baseF64[i]),
 				}); serr != nil {
@@ -522,7 +522,7 @@ func TestSPFreshForegroundFillBenchmark(t *testing.T) {
 	if lmax := os.Getenv("SIFT_LMAX"); lmax != "" {
 		spfIdx.Options[recordlayer.IndexOptionSPFreshLmax] = lmax
 	}
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -562,7 +562,7 @@ func TestSPFreshForegroundFillBenchmark(t *testing.T) {
 					}
 					for i := b; i < be; i++ {
 						src.at(i, vbuf)
-						if _, serr := store.SaveRecord(&gen.Order{
+						if _, serr := store.SaveRecord(&demopb.Order{
 							OrderId: proto.Int64(int64(i)), VectorData: vectorindex.SerializeVector(vbuf),
 						}); serr != nil {
 							return nil, serr

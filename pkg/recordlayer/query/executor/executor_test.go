@@ -14,6 +14,8 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -2070,7 +2072,7 @@ func TestRecursiveDfsJoin_Postorder(t *testing.T) {
 
 func TestProtoToMap_AllSetFields(t *testing.T) {
 	t.Parallel()
-	order := &gen.Order{
+	order := &demopb.Order{
 		OrderId:  proto.Int64(42),
 		Price:    proto.Int32(199),
 		Quantity: proto.Int32(5),
@@ -2090,7 +2092,7 @@ func TestProtoToMap_AllSetFields(t *testing.T) {
 
 func TestProtoToMap_UnsetFieldsOmitted(t *testing.T) {
 	t.Parallel()
-	order := &gen.Order{
+	order := &demopb.Order{
 		OrderId: proto.Int64(1),
 	}
 	m := protoToMap(order)
@@ -2116,7 +2118,7 @@ func TestProtoToMap_NilMessage(t *testing.T) {
 
 func TestGoToProtoValue_Int32(t *testing.T) {
 	t.Parallel()
-	order := (&gen.Order{}).ProtoReflect().Descriptor()
+	order := (&demopb.Order{}).ProtoReflect().Descriptor()
 	fd := order.Fields().ByName("price") // int32 field
 
 	v, err := goToProtoValue(fd, int64(42))
@@ -2138,7 +2140,7 @@ func TestGoToProtoValue_Int32(t *testing.T) {
 
 func TestGoToProtoValue_Int64(t *testing.T) {
 	t.Parallel()
-	order := (&gen.Order{}).ProtoReflect().Descriptor()
+	order := (&demopb.Order{}).ProtoReflect().Descriptor()
 	fd := order.Fields().ByName("order_id") // int64 field
 
 	v, err := goToProtoValue(fd, int64(123))
@@ -2155,7 +2157,7 @@ func TestGoToProtoValue_Int64(t *testing.T) {
 // DOUBLE/FLOAT column flows an int64 and must widen, not error.
 func TestGoToProtoValue_IntToDoubleWidens(t *testing.T) {
 	t.Parallel()
-	typed := (&gen.TypedRecord{}).ProtoReflect().Descriptor()
+	typed := (&demopb.TypedRecord{}).ProtoReflect().Descriptor()
 	v, err := goToProtoValue(typed.Fields().ByName("val_double"), int64(60))
 	if err != nil {
 		t.Fatalf("int64 → DOUBLE should widen, got: %v", err)
@@ -2167,7 +2169,7 @@ func TestGoToProtoValue_IntToDoubleWidens(t *testing.T) {
 
 func TestGoToProtoValue_IntToFloatWidens(t *testing.T) {
 	t.Parallel()
-	typed := (&gen.TypedRecord{}).ProtoReflect().Descriptor()
+	typed := (&demopb.TypedRecord{}).ProtoReflect().Descriptor()
 	v, err := goToProtoValue(typed.Fields().ByName("val_float"), int64(7))
 	if err != nil {
 		t.Fatalf("int64 → FLOAT should widen, got: %v", err)
@@ -2183,7 +2185,7 @@ func TestGoToProtoValue_IntToFloatWidens(t *testing.T) {
 // generic Go error.
 func TestGoToProtoValue_DoubleToIntRejects22000(t *testing.T) {
 	t.Parallel()
-	typed := (&gen.TypedRecord{}).ProtoReflect().Descriptor()
+	typed := (&demopb.TypedRecord{}).ProtoReflect().Descriptor()
 	_, err := goToProtoValue(typed.Fields().ByName("val_int64"), float64(20.0))
 	var apiErr *api.Error
 	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeCannotConvertType {
@@ -2196,7 +2198,7 @@ func TestGoToProtoValue_DoubleToIntRejects22000(t *testing.T) {
 // converter rather than the old generic fmt.Errorf.
 func TestGoToProtoValue_StringToIntRejects22000(t *testing.T) {
 	t.Parallel()
-	typed := (&gen.TypedRecord{}).ProtoReflect().Descriptor()
+	typed := (&demopb.TypedRecord{}).ProtoReflect().Descriptor()
 	_, err := goToProtoValue(typed.Fields().ByName("val_int64"), "nope")
 	var apiErr *api.Error
 	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeCannotConvertType {
@@ -2206,7 +2208,7 @@ func TestGoToProtoValue_StringToIntRejects22000(t *testing.T) {
 
 func TestGoToProtoValue_String(t *testing.T) {
 	t.Parallel()
-	typed := (&gen.TypedRecord{}).ProtoReflect().Descriptor()
+	typed := (&demopb.TypedRecord{}).ProtoReflect().Descriptor()
 	fd := typed.Fields().ByName("val_string")
 
 	v, err := goToProtoValue(fd, "hello")
@@ -2220,7 +2222,7 @@ func TestGoToProtoValue_String(t *testing.T) {
 
 func TestGoToProtoValue_Bool(t *testing.T) {
 	t.Parallel()
-	typed := (&gen.TypedRecord{}).ProtoReflect().Descriptor()
+	typed := (&demopb.TypedRecord{}).ProtoReflect().Descriptor()
 	fd := typed.Fields().ByName("val_bool")
 
 	v, err := goToProtoValue(fd, true)
@@ -2234,7 +2236,7 @@ func TestGoToProtoValue_Bool(t *testing.T) {
 
 func TestGoToProtoValue_Double(t *testing.T) {
 	t.Parallel()
-	typed := (&gen.TypedRecord{}).ProtoReflect().Descriptor()
+	typed := (&demopb.TypedRecord{}).ProtoReflect().Descriptor()
 	fd := typed.Fields().ByName("val_double")
 
 	v, err := goToProtoValue(fd, 3.14)
@@ -2248,7 +2250,7 @@ func TestGoToProtoValue_Double(t *testing.T) {
 
 func TestGoToProtoValue_TypeError(t *testing.T) {
 	t.Parallel()
-	order := (&gen.Order{}).ProtoReflect().Descriptor()
+	order := (&demopb.Order{}).ProtoReflect().Descriptor()
 	fd := order.Fields().ByName("price")
 
 	_, err := goToProtoValue(fd, "not_a_number")
@@ -2259,7 +2261,7 @@ func TestGoToProtoValue_TypeError(t *testing.T) {
 
 func TestGoToProtoValue_Float(t *testing.T) {
 	t.Parallel()
-	typed := (&gen.TypedRecord{}).ProtoReflect().Descriptor()
+	typed := (&demopb.TypedRecord{}).ProtoReflect().Descriptor()
 	fd := typed.Fields().ByName("val_float")
 
 	v, err := goToProtoValue(fd, float64(2.5))
@@ -2281,9 +2283,9 @@ func TestGoToProtoValue_Float(t *testing.T) {
 
 func TestGoToProtoValue_Overflow(t *testing.T) {
 	t.Parallel()
-	order := (&gen.Order{}).ProtoReflect().Descriptor()
+	order := (&demopb.Order{}).ProtoReflect().Descriptor()
 	int32Field := order.Fields().ByName("price")
-	typed := (&gen.TypedRecord{}).ProtoReflect().Descriptor()
+	typed := (&demopb.TypedRecord{}).ProtoReflect().Descriptor()
 	float32Field := typed.Fields().ByName("val_float")
 
 	t.Run("int32 overflow from int64", func(t *testing.T) {
@@ -2350,8 +2352,8 @@ func TestGoToProtoValue_Overflow(t *testing.T) {
 func TestGoToProtoValue_ConsistentWithConvertToProtoValue(t *testing.T) {
 	t.Parallel()
 
-	orderDesc := (&gen.Order{}).ProtoReflect().Descriptor()
-	typedDesc := (&gen.TypedRecord{}).ProtoReflect().Descriptor()
+	orderDesc := (&demopb.Order{}).ProtoReflect().Descriptor()
+	typedDesc := (&demopb.TypedRecord{}).ProtoReflect().Descriptor()
 
 	cases := []struct {
 		name string
@@ -2392,7 +2394,7 @@ func TestGoToProtoValue_ConsistentWithConvertToProtoValue(t *testing.T) {
 
 func TestGoToProtoValue_Bytes(t *testing.T) {
 	t.Parallel()
-	typed := (&gen.TypedRecord{}).ProtoReflect().Descriptor()
+	typed := (&demopb.TypedRecord{}).ProtoReflect().Descriptor()
 	fd := typed.Fields().ByName("val_bytes")
 
 	data := []byte{0x01, 0x02, 0x03}
@@ -3672,7 +3674,7 @@ func TestEvaluationContext_GetOrCreateTempTable_DistinctIDs(t *testing.T) {
 
 func TestGoToProtoValue_EnumField(t *testing.T) {
 	t.Parallel()
-	msg := &gen.TypedRecord{}
+	msg := &demopb.TypedRecord{}
 	fd := msg.ProtoReflect().Descriptor().Fields().ByName("val_enum")
 	pv, err := goToProtoValue(fd, int64(2))
 	if err != nil {
@@ -3890,7 +3892,7 @@ func TestScalarProtoToGo_Enum(t *testing.T) {
 
 func TestProtoFieldToGo_ScalarField(t *testing.T) {
 	t.Parallel()
-	order := &gen.Order{Price: proto.Int32(42)}
+	order := &demopb.Order{Price: proto.Int32(42)}
 	refl := order.ProtoReflect()
 	fd := refl.Descriptor().Fields().ByName("price")
 	got := protoFieldToGo(fd, refl.Get(fd))
@@ -3901,7 +3903,7 @@ func TestProtoFieldToGo_ScalarField(t *testing.T) {
 
 func TestProtoFieldToGo_RepeatedStringField(t *testing.T) {
 	t.Parallel()
-	order := &gen.Order{Tags: []string{"a", "b", "c"}}
+	order := &demopb.Order{Tags: []string{"a", "b", "c"}}
 	refl := order.ProtoReflect()
 	fd := refl.Descriptor().Fields().ByName("tags")
 	got := protoFieldToGo(fd, refl.Get(fd))
@@ -3919,7 +3921,7 @@ func TestProtoFieldToGo_RepeatedStringField(t *testing.T) {
 
 func TestProtoFieldToGo_EmptyRepeated(t *testing.T) {
 	t.Parallel()
-	order := &gen.Order{Tags: []string{}}
+	order := &demopb.Order{Tags: []string{}}
 	refl := order.ProtoReflect()
 	fd := refl.Descriptor().Fields().ByName("tags")
 	if refl.Has(fd) {
@@ -3933,14 +3935,14 @@ func TestProtoFieldToGo_EmptyRepeated(t *testing.T) {
 
 func TestProtoFieldToGo_MessageField(t *testing.T) {
 	t.Parallel()
-	flower := &gen.Flower{Type: proto.String("rose")}
-	order := &gen.Order{Flower: flower}
+	flower := &demopb.Flower{Type: proto.String("rose")}
+	order := &demopb.Order{Flower: flower}
 	refl := order.ProtoReflect()
 	fd := refl.Descriptor().Fields().ByName("flower")
 	got := protoFieldToGo(fd, refl.Get(fd))
-	msg, ok := got.(*gen.Flower)
+	msg, ok := got.(*demopb.Flower)
 	if !ok {
-		t.Fatalf("got type %T, want *gen.Flower", got)
+		t.Fatalf("got type %T, want *demopb.Flower", got)
 	}
 	if msg.GetType() != "rose" {
 		t.Errorf("got %q, want rose", msg.GetType())
@@ -3953,7 +3955,7 @@ func TestProtoFieldToGo_MessageField(t *testing.T) {
 
 func TestProtoToMap_TypedRecord_AllKinds(t *testing.T) {
 	t.Parallel()
-	rec := &gen.TypedRecord{
+	rec := &demopb.TypedRecord{
 		Id:          proto.Int64(1),
 		ValInt32:    proto.Int32(32),
 		ValInt64:    proto.Int64(64),
@@ -4011,7 +4013,7 @@ func TestProtoToMap_TypedRecord_AllKinds(t *testing.T) {
 
 func TestProtoToMap_RepeatedField(t *testing.T) {
 	t.Parallel()
-	order := &gen.Order{
+	order := &demopb.Order{
 		OrderId: proto.Int64(1),
 		Tags:    []string{"x", "y"},
 	}
@@ -4027,14 +4029,14 @@ func TestProtoToMap_RepeatedField(t *testing.T) {
 
 func TestProtoToMap_MessageField(t *testing.T) {
 	t.Parallel()
-	order := &gen.Order{
+	order := &demopb.Order{
 		OrderId: proto.Int64(1),
-		Flower:  &gen.Flower{Type: proto.String("tulip")},
+		Flower:  &demopb.Flower{Type: proto.String("tulip")},
 	}
 	m := protoToMap(order)
-	flower, ok := m["flower"].(*gen.Flower)
+	flower, ok := m["flower"].(*demopb.Flower)
 	if !ok {
-		t.Fatalf("flower type %T, want *gen.Flower", m["flower"])
+		t.Fatalf("flower type %T, want *demopb.Flower", m["flower"])
 	}
 	if flower.GetType() != "tulip" {
 		t.Errorf("got %q, want tulip", flower.GetType())
@@ -4043,8 +4045,8 @@ func TestProtoToMap_MessageField(t *testing.T) {
 
 func TestProtoToMap_EnumField(t *testing.T) {
 	t.Parallel()
-	blue := gen.Color_BLUE
-	rec := &gen.TypedRecord{
+	blue := demopb.Color_BLUE
+	rec := &demopb.TypedRecord{
 		Id:      proto.Int64(1),
 		ValEnum: &blue,
 	}
@@ -4053,14 +4055,14 @@ func TestProtoToMap_EnumField(t *testing.T) {
 	if !ok {
 		t.Fatal("missing val_enum")
 	}
-	if got != int64(gen.Color_BLUE) {
-		t.Errorf("val_enum = %v, want %d", got, gen.Color_BLUE)
+	if got != int64(demopb.Color_BLUE) {
+		t.Errorf("val_enum = %v, want %d", got, demopb.Color_BLUE)
 	}
 }
 
 func TestProtoToMap_BytesField(t *testing.T) {
 	t.Parallel()
-	order := &gen.Order{
+	order := &demopb.Order{
 		OrderId:    proto.Int64(1),
 		VectorData: []byte{0xCA, 0xFE},
 	}
@@ -4085,7 +4087,7 @@ func TestProtoToMap_BytesField(t *testing.T) {
 // before the shadow comparison could notice anything.
 func TestProtoToMap_KeysAreTheDescriptorSpelling(t *testing.T) {
 	t.Parallel()
-	order := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(99)}
+	order := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(99)}
 	m := protoToMap(order)
 	want := map[string]struct{}{"order_id": {}, "price": {}, "tags": {}}
 	for key := range m {
@@ -4106,7 +4108,7 @@ func TestProtoToMap_KeysAreTheDescriptorSpelling(t *testing.T) {
 
 func TestGoToProtoValue_Int32FromInt(t *testing.T) {
 	t.Parallel()
-	fd := (&gen.Order{}).ProtoReflect().Descriptor().Fields().ByName("price")
+	fd := (&demopb.Order{}).ProtoReflect().Descriptor().Fields().ByName("price")
 	v, err := goToProtoValue(fd, int(77))
 	if err != nil {
 		t.Fatal(err)
@@ -4118,7 +4120,7 @@ func TestGoToProtoValue_Int32FromInt(t *testing.T) {
 
 func TestGoToProtoValue_Int64FromInt(t *testing.T) {
 	t.Parallel()
-	fd := (&gen.Order{}).ProtoReflect().Descriptor().Fields().ByName("order_id")
+	fd := (&demopb.Order{}).ProtoReflect().Descriptor().Fields().ByName("order_id")
 	v, err := goToProtoValue(fd, int(999))
 	if err != nil {
 		t.Fatal(err)
@@ -4130,7 +4132,7 @@ func TestGoToProtoValue_Int64FromInt(t *testing.T) {
 
 func TestGoToProtoValue_TypeErrors(t *testing.T) {
 	t.Parallel()
-	typed := (&gen.TypedRecord{}).ProtoReflect().Descriptor()
+	typed := (&demopb.TypedRecord{}).ProtoReflect().Descriptor()
 	tests := []struct {
 		name  string
 		field string
@@ -4162,7 +4164,7 @@ func TestGoToProtoValue_TypeErrors(t *testing.T) {
 
 func TestProtoRoundTrip_AllScalarKinds(t *testing.T) {
 	t.Parallel()
-	rec := &gen.TypedRecord{
+	rec := &demopb.TypedRecord{
 		Id:          proto.Int64(7),
 		ValInt32:    proto.Int32(-42),
 		ValInt64:    proto.Int64(math.MaxInt64),
@@ -4179,7 +4181,7 @@ func TestProtoRoundTrip_AllScalarKinds(t *testing.T) {
 
 	m := protoToMap(rec)
 
-	dst := &gen.TypedRecord{}
+	dst := &demopb.TypedRecord{}
 	refl := dst.ProtoReflect()
 	desc := refl.Descriptor()
 
@@ -4242,7 +4244,7 @@ func TestProtoRoundTrip_AllScalarKinds(t *testing.T) {
 
 func TestFromStoredRecord(t *testing.T) {
 	t.Parallel()
-	order := &gen.Order{
+	order := &demopb.Order{
 		OrderId:  proto.Int64(42),
 		Price:    proto.Int32(199),
 		Quantity: proto.Int32(3),
@@ -6543,7 +6545,7 @@ func TestExecuteExplode_ProtoDeclaredShape(t *testing.T) {
 		for _, duplicate := range []bool{false, true} {
 			t.Run(fmt.Sprintf("duplicate=%v/nullable=%v", duplicate, nullable), func(t *testing.T) {
 				t.Parallel()
-				message := &gen.Order{OrderId: proto.Int64(99)}
+				message := &demopb.Order{OrderId: proto.Int64(99)}
 				original := PositionalTypeForDescriptor(message.ProtoReflect().Descriptor())
 				fields := append([]values.Field(nil), original.Fields...)
 				if duplicate {

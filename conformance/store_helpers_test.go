@@ -6,7 +6,7 @@ import (
 	"context"
 	"fmt"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -66,7 +66,7 @@ func NewConformanceStoreWithTenant(recordDB *recordlayer.FDBDatabase, metaData *
 // SaveRecord saves a record using Go and validates it with Java
 // This is transparent to tests - they just call SaveRecord and both implementations are checked
 func (c *ConformanceStore) SaveRecord(ctx context.Context, msg proto.Message) error {
-	order, ok := msg.(*gen.Order)
+	order, ok := msg.(*demopb.Order)
 	if !ok {
 		return fmt.Errorf("only Order records are supported in conformance tests")
 	}
@@ -90,7 +90,7 @@ func (c *ConformanceStore) SaveRecord(ctx context.Context, msg proto.Message) er
 	}
 
 	// 2. Read with Java (validate Java can read what Go wrote)
-	var javaOrder gen.Order
+	var javaOrder demopb.Order
 	params := c.buildJavaParams()
 	params["orderID"] = *order.OrderId
 	err = c.java.InvokeAs(ctx, "loadOrder", params, &javaOrder)
@@ -113,7 +113,7 @@ func (c *ConformanceStore) SaveRecord(ctx context.Context, msg proto.Message) er
 }
 
 // LoadRecord loads a record using Go and validates with Java
-func (c *ConformanceStore) LoadRecord(ctx context.Context, orderID int64) (*gen.Order, error) {
+func (c *ConformanceStore) LoadRecord(ctx context.Context, orderID int64) (*demopb.Order, error) {
 	// 1. Load with Go
 	goOrder, err := c.loadRecordWithGo(ctx, orderID)
 	if err != nil {
@@ -121,7 +121,7 @@ func (c *ConformanceStore) LoadRecord(ctx context.Context, orderID int64) (*gen.
 	}
 
 	// 2. Cross-check with Java
-	var javaOrder gen.Order
+	var javaOrder demopb.Order
 	params := c.buildJavaParams()
 	params["orderID"] = orderID
 	err = c.java.InvokeAs(ctx, "loadOrder", params, &javaOrder)
@@ -242,7 +242,7 @@ func (c *ConformanceStore) RecordExists(ctx context.Context, orderID int64) (boo
 
 // SaveRecordWithOptions saves a record with existence checking
 func (c *ConformanceStore) SaveRecordWithOptions(ctx context.Context, msg proto.Message, existenceCheck recordlayer.RecordExistenceCheck) error {
-	order, ok := msg.(*gen.Order)
+	order, ok := msg.(*demopb.Order)
 	if !ok {
 		return fmt.Errorf("only Order records are supported in conformance tests")
 	}
@@ -266,7 +266,7 @@ func (c *ConformanceStore) SaveRecordWithOptions(ctx context.Context, msg proto.
 	}
 
 	// Cross-check: Read with Java (validate Java can read what Go wrote)
-	var javaOrder gen.Order
+	var javaOrder demopb.Order
 	params := c.buildJavaParams()
 	params["orderID"] = *order.OrderId
 	err = c.java.InvokeAs(ctx, "loadOrder", params, &javaOrder)
@@ -299,8 +299,8 @@ func (c *ConformanceStore) UpdateRecord(ctx context.Context, msg proto.Message) 
 }
 
 // loadRecordWithGo is a helper that loads a record using only Go (for internal use)
-func (c *ConformanceStore) loadRecordWithGo(ctx context.Context, orderID int64) (*gen.Order, error) {
-	var order *gen.Order
+func (c *ConformanceStore) loadRecordWithGo(ctx context.Context, orderID int64) (*demopb.Order, error) {
+	var order *demopb.Order
 	_, err := c.recordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).
@@ -320,7 +320,7 @@ func (c *ConformanceStore) loadRecordWithGo(ctx context.Context, orderID int64) 
 			return nil, fmt.Errorf("record not found: %d", orderID)
 		}
 
-		order = storedRecord.Record.(*gen.Order)
+		order = storedRecord.Record.(*demopb.Order)
 		return nil, nil
 	})
 	return order, err

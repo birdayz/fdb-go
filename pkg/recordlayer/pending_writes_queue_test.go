@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -21,11 +23,11 @@ import (
 var _ = Describe("PendingWritesQueue", func() {
 	var ctx context.Context
 	var root subspace.Subspace
-	var queue *PendingWritesQueue[*gen.Order]
+	var queue *PendingWritesQueue[*demopb.Order]
 	BeforeEach(func() {
 		ctx = context.Background()
 		root = specSubspace()
-		queue = NewPendingWritesQueue(root.Sub("entries"), root.Sub("size"), 100, &gen.Order{})
+		queue = NewPendingWritesQueue(root.Sub("entries"), root.Sub("size"), 100, &demopb.Order{})
 	})
 	open := func() *FDBRecordContext {
 		tx, err := sharedDB.CreateWritableTransaction()
@@ -34,7 +36,7 @@ var _ = Describe("PendingWritesQueue", func() {
 		DeferCleanup(rc.Cancel)
 		return rc
 	}
-	readOne := func(rc *FDBRecordContext) *PendingWritesQueueEntry[*gen.Order] {
+	readOne := func(rc *FDBRecordContext) *PendingWritesQueueEntry[*demopb.Order] {
 		cur := queue.GetQueueCursor(rc, ForwardScan(), nil)
 		defer cur.Close()
 		row, err := cur.OnNext(ctx)
@@ -48,7 +50,7 @@ var _ = Describe("PendingWritesQueue", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(size).To(BeNil())
 			for i, incarnation := range []int32{2, 1, 2} {
-				if err := queue.Enqueue(rc, &gen.Order{OrderId: proto.Int64(int64(i + 1)), Tags: []string{strings.Repeat("x", 120000)}}, incarnation); err != nil {
+				if err := queue.Enqueue(rc, &demopb.Order{OrderId: proto.Int64(int64(i + 1)), Tags: []string{strings.Repeat("x", 120000)}}, incarnation); err != nil {
 					return nil, err
 				}
 			}
@@ -96,7 +98,7 @@ var _ = Describe("PendingWritesQueue", func() {
 	It("cancels before scanning without consuming an entry or its continuation", func() {
 		seed := open()
 		for id := int64(1); id <= 2; id++ {
-			Expect(queue.Enqueue(seed, &gen.Order{OrderId: proto.Int64(id)}, 0)).To(Succeed())
+			Expect(queue.Enqueue(seed, &demopb.Order{OrderId: proto.Int64(id)}, 0)).To(Succeed())
 		}
 		Expect(seed.Commit()).To(Succeed())
 		rc := open()
@@ -248,11 +250,11 @@ var _ = Describe("PendingWritesQueue", func() {
 	})
 	It("rejects malformed clear keys without clearing a queue prefix or changing its counter", func() {
 		seed := open()
-		Expect(queue.Enqueue(seed, &gen.Order{OrderId: proto.Int64(1)}, 0)).To(Succeed())
+		Expect(queue.Enqueue(seed, &demopb.Order{OrderId: proto.Int64(1)}, 0)).To(Succeed())
 		Expect(seed.Commit()).To(Succeed())
 		for _, key := range []tuple.Tuple{nil, {int64(0)}, {int64(0), tuple.IncompleteVersionstamp(0)}, {int64(0), "extra", "suffix"}} {
 			rc := open()
-			err := queue.ClearEntry(rc, &PendingWritesQueueEntry[*gen.Order]{Key: key})
+			err := queue.ClearEntry(rc, &PendingWritesQueueEntry[*demopb.Order]{Key: key})
 			Expect(err).To(HaveOccurred(), "key=%v", key)
 			Expect(readOne(rc).Payload.GetOrderId()).To(Equal(int64(1)))
 			size, err := queue.GetQueueSizeNoConflict(rc)
@@ -262,7 +264,7 @@ var _ = Describe("PendingWritesQueue", func() {
 		}
 	})
 	It("rejects capacity within one transaction but allows soft concurrent capacity", func() {
-		queue = NewPendingWritesQueue(root.Sub("entries"), root.Sub("size"), 1, &gen.Order{})
+		queue = NewPendingWritesQueue(root.Sub("entries"), root.Sub("size"), 1, &demopb.Order{})
 		a, b := open(), open()
 		size, err := queue.GetQueueSizeNoConflict(a)
 		Expect(err).NotTo(HaveOccurred())
@@ -270,12 +272,12 @@ var _ = Describe("PendingWritesQueue", func() {
 		size, err = queue.GetQueueSizeNoConflict(b)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(size).To(BeNil())
-		Expect(queue.Enqueue(a, &gen.Order{OrderId: proto.Int64(1)}, 0)).To(Succeed())
-		err = queue.Enqueue(a, &gen.Order{OrderId: proto.Int64(2)}, 0)
+		Expect(queue.Enqueue(a, &demopb.Order{OrderId: proto.Int64(1)}, 0)).To(Succeed())
+		err = queue.Enqueue(a, &demopb.Order{OrderId: proto.Int64(2)}, 0)
 		var full *PendingWritesQueueTooLargeError
 		Expect(errors.As(err, &full)).To(BeTrue())
 		Expect(full.CurrentSize).To(Equal(int64(1)))
-		Expect(queue.Enqueue(b, &gen.Order{OrderId: proto.Int64(3)}, 0)).To(Succeed())
+		Expect(queue.Enqueue(b, &demopb.Order{OrderId: proto.Int64(3)}, 0)).To(Succeed())
 		Expect(a.Commit()).To(Succeed())
 		Expect(b.Commit()).To(Succeed())
 		c := open()
@@ -285,7 +287,7 @@ var _ = Describe("PendingWritesQueue", func() {
 	})
 	It("conflicts concurrent clears of the same split entry without counter drift", func() {
 		seed := open()
-		Expect(queue.Enqueue(seed, &gen.Order{OrderId: proto.Int64(1), Tags: []string{strings.Repeat("x", 120000)}}, 0)).To(Succeed())
+		Expect(queue.Enqueue(seed, &demopb.Order{OrderId: proto.Int64(1), Tags: []string{strings.Repeat("x", 120000)}}, 0)).To(Succeed())
 		Expect(seed.Commit()).To(Succeed())
 		a, b := open(), open()
 		ea, eb := readOne(a), readOne(b)
@@ -306,7 +308,7 @@ var _ = Describe("PendingWritesQueue", func() {
 		empty, err := queue.IsQueueEmpty(emptyTx)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(empty).To(BeTrue())
-		Expect(queue.Enqueue(producer, &gen.Order{OrderId: proto.Int64(1)}, 0)).To(Succeed())
+		Expect(queue.Enqueue(producer, &demopb.Order{OrderId: proto.Int64(1)}, 0)).To(Succeed())
 		Expect(producer.Commit()).To(Succeed())
 		emptyTx.Transaction().Set(root.Pack(nil), []byte("force conflict validation"))
 		err = emptyTx.Commit()
@@ -316,11 +318,11 @@ var _ = Describe("PendingWritesQueue", func() {
 	})
 	It("snapshot traversal does not conflict with a concurrent enqueue", func() {
 		seed := open()
-		Expect(queue.Enqueue(seed, &gen.Order{OrderId: proto.Int64(1)}, 0)).To(Succeed())
+		Expect(queue.Enqueue(seed, &demopb.Order{OrderId: proto.Int64(1)}, 0)).To(Succeed())
 		Expect(seed.Commit()).To(Succeed())
 		reader, producer := open(), open()
 		entry := readOne(reader)
-		Expect(queue.Enqueue(producer, &gen.Order{OrderId: proto.Int64(2)}, 0)).To(Succeed())
+		Expect(queue.Enqueue(producer, &demopb.Order{OrderId: proto.Int64(2)}, 0)).To(Succeed())
 		Expect(producer.Commit()).To(Succeed())
 		Expect(queue.ClearEntry(reader, entry)).To(Succeed())
 		Expect(reader.Commit()).To(Succeed())

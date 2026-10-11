@@ -16,7 +16,7 @@ import (
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -277,7 +277,7 @@ var _ = Describe("GuardiANN index persisted bytes through the record layer", fun
 					}
 					store.GetIndexDeferredMaintenanceControl().SetAutoMergeDuringCommit(autoMerge)
 					if op[0] == "save" {
-						_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(id), VectorData: vectorindex.SerializeVector([]float64{x, y})})
+						_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(id), VectorData: vectorindex.SerializeVector([]float64{x, y})})
 					} else {
 						_, err = store.DeleteRecord(tuple.Tuple{id})
 					}
@@ -345,7 +345,7 @@ var _ = Describe("GuardiANN merge lock across engines", func() {
 						return nil, err
 					}
 					store.GetIndexDeferredMaintenanceControl().SetAutoMergeDuringCommit(false)
-					_, err = store.SaveRecord(&gen.Order{
+					_, err = store.SaveRecord(&demopb.Order{
 						OrderId:    proto.Int64(i),
 						VectorData: vectorindex.SerializeVector([]float64{0.01 * float64(i), 0.02 * float64(i%3)}),
 					})
@@ -459,7 +459,7 @@ func guardiannRecordMetaDataGo() (*recordlayer.RecordMetaData, *recordlayer.Inde
 	} {
 		index.Options[k] = v
 	}
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"math"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -16,7 +16,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 	ctx := context.Background()
 
 	baseMetaData := func() *RecordMetaDataBuilder {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -48,7 +48,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 				{2, 200, 20},
 				{3, 300, 30},
 			} {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(o.id),
 					CoordX:  proto.Int64(o.price),
 					CoordY:  proto.Int64(o.quantity),
@@ -103,7 +103,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i := 0; i < partitions; i++ {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(int64(i)),
 					Price:   proto.Int32(int32(i)), // distinct prefix per record
 					CoordX:  proto.Int64(int64(i * 10)),
@@ -151,7 +151,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i := 0; i < partitions; i++ {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(int64(i)),
 					Price:   proto.Int32(int32(i)),
 					CoordX:  proto.Int64(int64(i * 10)),
@@ -225,7 +225,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 			// One partition (price=1), two points in it (coord_x=10,20) — the
 			// per-leg cost every leg re-scans identically.
 			for i, x := range []int64{10, 20} {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(int64(i + 1)),
 					Price:   proto.Int32(1),
 					CoordX:  proto.Int64(x),
@@ -302,7 +302,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 			// Real data — without the fix, findNextPrefix would actually
 			// find this prefix and the escaped read would succeed.
 			for i, x := range []int64{10, 20} {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(int64(i + 1)),
 					Price:   proto.Int32(1),
 					CoordX:  proto.Int64(x),
@@ -418,7 +418,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Save one order.
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(1),
 				CoordX:  proto.Int64(100),
 				CoordY:  proto.Int64(10),
@@ -461,7 +461,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Save original order.
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(1),
 				CoordX:  proto.Int64(100),
 				CoordY:  proto.Int64(10),
@@ -469,7 +469,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Update same order with new price and quantity.
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(1),
 				CoordX:  proto.Int64(500),
 				CoordY:  proto.Int64(50),
@@ -517,7 +517,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for _, o := range orders {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(o.id),
 					CoordX:  proto.Int64(o.price),
 					CoordY:  proto.Int64(o.quantity),
@@ -562,7 +562,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 
 			// Save 3.
 			for _, id := range []int64{1, 2, 3} {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(id),
 					CoordX:  proto.Int64(int64(id * 100)),
 					CoordY:  proto.Int64(int64(id * 10)),
@@ -576,7 +576,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 			Expect(existed).To(BeTrue())
 
 			// Save #4.
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(4),
 				CoordX:  proto.Int64(400),
 				CoordY:  proto.Int64(40),
@@ -643,7 +643,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for _, o := range orders {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(o.id),
 					CoordX:  proto.Int64(o.price),
 					CoordY:  proto.Int64(o.quantity),
@@ -723,7 +723,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 
 			// Insert n records.
 			for i := 1; i <= n; i++ {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(int64(i)),
 					CoordX:  proto.Int64(int64(i * 100)),
 					CoordY:  proto.Int64(int64(i * 10)),
@@ -738,7 +738,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 			// Update every record with new coordinates. This exercises
 			// delete-old-entry + insert-new-entry through the split tree.
 			for i := 1; i <= n; i++ {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(int64(i)),
 					CoordX:  proto.Int64(int64(i*100 + 1)),
 					CoordY:  proto.Int64(int64(i*10 + 1)),
@@ -785,7 +785,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 			// Save 15 records.
 			const n = 15
 			for i := 1; i <= n; i++ {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(int64(i)),
 					CoordX:  proto.Int64(int64(i * 100)),
 					CoordY:  proto.Int64(int64(i * 10)),
@@ -857,7 +857,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 
 			// Save 10 records.
 			for i := 1; i <= 10; i++ {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(int64(i)),
 					CoordX:  proto.Int64(int64(i * 50)),
 					CoordY:  proto.Int64(int64(i * 5)),
@@ -924,7 +924,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 			}
 
 			for _, tc := range cases {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(tc.id),
 					CoordX:  proto.Int64(tc.price),
 					CoordY:  proto.Int64(tc.quantity),
@@ -991,14 +991,14 @@ var _ = Describe("MultidimensionalIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Save two orders with identical (price=100, quantity=10) but different PKs.
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(1),
 				CoordX:  proto.Int64(100),
 				CoordY:  proto.Int64(10),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(2),
 				CoordX:  proto.Int64(100),
 				CoordY:  proto.Int64(10),
@@ -1054,7 +1054,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 			// Save 20 records (enough for multi-level R-tree with MaxM=4).
 			const n = 20
 			for i := 1; i <= n; i++ {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(int64(i)),
 					CoordX:  proto.Int64(int64(i * 50)),
 					CoordY:  proto.Int64(int64(i * 7)),
@@ -1076,7 +1076,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 
 			// Save new records — only new ones should appear.
 			for i := 100; i < 105; i++ {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(int64(i)),
 					CoordX:  proto.Int64(int64(i * 10)),
 					CoordY:  proto.Int64(int64(i * 3)),
@@ -1126,7 +1126,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 			// Insert 30 records spread across coordinate space.
 			const n = 30
 			for i := 1; i <= n; i++ {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(int64(i)),
 					CoordX:  proto.Int64(int64(i * 10)),
 					CoordY:  proto.Int64(int64(i * 10)),
@@ -1190,7 +1190,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 
 			// Save 5 orders.
 			for i := 1; i <= 5; i++ {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(int64(i)),
 					CoordX:  proto.Int64(int64(i * 100)),
 					CoordY:  proto.Int64(int64(i * 10)),
@@ -1244,7 +1244,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 			// Insert 20 records.
 			const n = 20
 			for i := 1; i <= n; i++ {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(int64(i)),
 					CoordX:  proto.Int64(int64(i * 10)),
 					CoordY:  proto.Int64(int64(i * 10)),
@@ -1325,7 +1325,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 			}
 
 			for _, o := range orders {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId:  proto.Int64(o.id),
 					CoordX:   proto.Int64(o.price),
 					Quantity: proto.Int32(o.quantity),
@@ -1385,7 +1385,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 			}
 
 			for _, o := range orders {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId:  proto.Int64(o.id),
 					CoordX:   proto.Int64(o.price),
 					Quantity: proto.Int32(o.quantity),
@@ -1429,7 +1429,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 			// Save 12 orders across 3 prefixes.
 			for i := 1; i <= 12; i++ {
 				qty := int32(((i-1)/4 + 1) * 10) // 10, 10, 10, 10, 20, 20, 20, 20, 30, 30, 30, 30
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId:  proto.Int64(int64(i)),
 					CoordX:   proto.Int64(int64(i * 100)),
 					Quantity: proto.Int32(qty),
@@ -1483,7 +1483,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 				qty := int32(p * 10)
 				for j := 1; j <= perPrefix; j++ {
 					price := int64(p*1000 + j)
-					_, err = store.SaveRecord(&gen.Order{
+					_, err = store.SaveRecord(&demopb.Order{
 						OrderId:  proto.Int64(id),
 						CoordX:   proto.Int64(price),
 						Quantity: proto.Int32(qty),
@@ -1581,7 +1581,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 				qty := int32((p + 1) * 10)
 				for j := 0; j < n; j++ {
 					price := int64((p+1)*1000 + j)
-					_, err = store.SaveRecord(&gen.Order{
+					_, err = store.SaveRecord(&demopb.Order{
 						OrderId:  proto.Int64(id),
 						CoordX:   proto.Int64(price),
 						Quantity: proto.Int32(qty),
@@ -1698,7 +1698,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 			}
 
 			for _, o := range orders {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId:  proto.Int64(o.id),
 					CoordX:   proto.Int64(o.price),
 					Quantity: proto.Int32(o.quantity),
@@ -1745,7 +1745,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 			// Save 10 records.
 			const n = 10
 			for i := 1; i <= n; i++ {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(int64(i)),
 					CoordX:  proto.Int64(int64(i * 100)),
 					CoordY:  proto.Int64(int64(i * 10)),

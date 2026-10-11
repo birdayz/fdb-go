@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
@@ -49,7 +49,7 @@ var _ = Describe("Scan Conformance", func() {
 		return params
 	}
 
-	saveOrdersWithGo := func(orders []*gen.Order) {
+	saveOrdersWithGo := func(orders []*demopb.Order) {
 		_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			store, err := recordlayer.NewStoreBuilder().
 				SetContext(rtx).
@@ -70,8 +70,8 @@ var _ = Describe("Scan Conformance", func() {
 		Expect(err).NotTo(HaveOccurred())
 	}
 
-	scanOrdersWithGo := func(limit int) []*gen.Order {
-		var result []*gen.Order
+	scanOrdersWithGo := func(limit int) []*demopb.Order {
+		var result []*demopb.Order
 		_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			store, err := recordlayer.NewStoreBuilder().
 				SetContext(rtx).
@@ -93,7 +93,7 @@ var _ = Describe("Scan Conformance", func() {
 			}
 
 			for _, rec := range records {
-				order, ok := rec.Record.(*gen.Order)
+				order, ok := rec.Record.(*demopb.Order)
 				if ok {
 					result = append(result, order)
 				}
@@ -126,7 +126,7 @@ var _ = Describe("Scan Conformance", func() {
 		return results
 	}
 
-	saveOrderWithJava := func(order *gen.Order) {
+	saveOrderWithJava := func(order *demopb.Order) {
 		params := buildJavaParams()
 		params["order"] = order
 		err := java.InvokeAs(ctx, "saveOrder", params, nil)
@@ -185,10 +185,10 @@ var _ = Describe("Scan Conformance", func() {
 
 	Describe("Cross-scan ordering", func() {
 		It("should return same order from Go and Java scans", func() {
-			orders := []*gen.Order{
-				NewOrder(5005).WithPrice(50).WithFlower("Rose", gen.Color_RED).Build(),
-				NewOrder(5001).WithPrice(10).WithFlower("Tulip", gen.Color_BLUE).Build(),
-				NewOrder(5003).WithPrice(30).WithFlower("Lily", gen.Color_YELLOW).Build(),
+			orders := []*demopb.Order{
+				NewOrder(5005).WithPrice(50).WithFlower("Rose", demopb.Color_RED).Build(),
+				NewOrder(5001).WithPrice(10).WithFlower("Tulip", demopb.Color_BLUE).Build(),
+				NewOrder(5003).WithPrice(30).WithFlower("Lily", demopb.Color_YELLOW).Build(),
 			}
 			saveOrdersWithGo(orders)
 
@@ -221,9 +221,9 @@ var _ = Describe("Scan Conformance", func() {
 		It("should preserve flower data in both directions", func() {
 			order := NewOrder(6001).
 				WithPrice(42).
-				WithFlower("Orchid", gen.Color_PINK).
+				WithFlower("Orchid", demopb.Color_PINK).
 				Build()
-			saveOrdersWithGo([]*gen.Order{order})
+			saveOrdersWithGo([]*demopb.Order{order})
 
 			javaResults := scanOrdersWithJava(0)
 			Expect(javaResults).To(HaveLen(1))
@@ -238,7 +238,7 @@ var _ = Describe("Scan Conformance", func() {
 			Expect(*goResults[0].OrderId).To(Equal(int64(6001)))
 			Expect(*goResults[0].Price).To(Equal(int32(42)))
 			Expect(*goResults[0].Flower.Type).To(Equal("Orchid"))
-			Expect(*goResults[0].Flower.Color).To(Equal(gen.Color_PINK))
+			Expect(*goResults[0].Flower.Color).To(Equal(demopb.Color_PINK))
 		})
 	})
 })

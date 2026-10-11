@@ -9,6 +9,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -27,7 +28,7 @@ func TestExecutePlanRejectsFilteredIndexesAtEveryIndexLeaf(t *testing.T) {
 	ctx := context.Background()
 	ks := testSubspace(t)
 
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -45,7 +46,7 @@ func TestExecutePlanRejectsFilteredIndexesAtEveryIndexLeaf(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build metadata: %v", err)
 	}
-	orderType := PositionalTypeForRecordLayout((&gen.Order{}).ProtoReflect().Descriptor(), false)
+	orderType := PositionalTypeForRecordLayout((&demopb.Order{}).ProtoReflect().Descriptor(), false)
 	priceOrdinal, ok := orderType.FieldIndexUnique("price")
 	if !ok {
 		t.Fatal("Order exact row type has no unique price field")
@@ -134,8 +135,8 @@ func TestExecutePlanTransactionalIndexState(t *testing.T) {
 				seed := setupStore(t,
 					recordlayer.NewCountIndex("state_count", recordlayer.GroupAll(recordlayer.Field("price"))),
 					recordlayer.NewVectorIndex("state_vector", recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0), 2))
-				insertOrders(t, seed, withVector(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(20)}, "price", "quantity"))
-				orderType := PositionalTypeForRecordLayout((&gen.Order{}).ProtoReflect().Descriptor(), false)
+				insertOrders(t, seed, withVector(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(20)}, "price", "quantity"))
+				orderType := PositionalTypeForRecordLayout((&demopb.Order{}).ProtoReflect().Descriptor(), false)
 				name := "order_price_idx"
 				var plan plans.RecordQueryPlan
 				switch route {
@@ -244,7 +245,7 @@ func TestFilteredIndexProofChecksCurrentMetadata(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	ks := testSubspace(t)
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))

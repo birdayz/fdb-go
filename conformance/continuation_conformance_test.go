@@ -11,6 +11,8 @@ import (
 	"strings"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/executor"
@@ -140,7 +142,7 @@ var _ = Describe("Continuation Token Conformance", func() {
 			Expect(result.Bytes).To(Equal(wantBytes), tc.name)
 			_, err = env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 				root := env.Keyspace.Sub("pendingQueueLimits")
-				queue := recordlayer.NewPendingWritesQueue(root.Sub("entries"), root.Sub("size"), 0, &gen.Order{})
+				queue := recordlayer.NewPendingWritesQueue(root.Sub("entries"), root.Sub("size"), 0, &demopb.Order{})
 				props := recordlayer.DefaultExecuteProperties()
 				props.ScannedRecordsLimit, props.ScannedBytesLimit, props.ReturnedRowLimit = tc.scanLimit, int64(tc.byteLimit), tc.rowLimit
 				props.FailOnScanLimitReached = tc.fail
@@ -217,7 +219,7 @@ var _ = Describe("Continuation Token Conformance", func() {
 	})
 
 	It("pins Java pending queue envelope and Any validation", func() {
-		order, err := anypb.New(&gen.Order{OrderId: proto.Int64(42)})
+		order, err := anypb.New(&demopb.Order{OrderId: proto.Int64(42)})
 		Expect(err).NotTo(HaveOccurred())
 		operation, err := anypb.New(&gen.PendingWritesQueueEntry{Operation: gen.PendingWritesQueueEntry_UPDATE.Enum()})
 		Expect(err).NotTo(HaveOccurred())
@@ -233,8 +235,8 @@ var _ = Describe("Continuation Token Conformance", func() {
 			{name: "default URL", version: proto.Int32(1), payload: order, value: 42},
 			{name: "absent version", payload: order, value: 42},
 			{name: "negative version", version: proto.Int32(-1), payload: order, value: 42},
-			{name: "custom URL", version: proto.Int32(1), payload: &anypb.Any{TypeUrl: "example.test/" + string(gen.File_record_layer_demo_proto.Messages().ByName("Order").FullName()), Value: order.Value}, value: 42},
-			{name: "slashless URL", version: proto.Int32(1), payload: &anypb.Any{TypeUrl: string(gen.File_record_layer_demo_proto.Messages().ByName("Order").FullName()), Value: order.Value}, errorText: "Pending writes queue entry payload type does not match the queue's bound type"},
+			{name: "custom URL", version: proto.Int32(1), payload: &anypb.Any{TypeUrl: "example.test/" + string(demopb.File_record_layer_demo_proto.Messages().ByName("Order").FullName()), Value: order.Value}, value: 42},
+			{name: "slashless URL", version: proto.Int32(1), payload: &anypb.Any{TypeUrl: string(demopb.File_record_layer_demo_proto.Messages().ByName("Order").FullName()), Value: order.Value}, errorText: "Pending writes queue entry payload type does not match the queue's bound type"},
 			{name: "malformed envelope", rawEnvelope: []byte{0xff}, errorText: "Failed to parse pending writes queue entry"},
 			{name: "future version", version: proto.Int32(2), payload: order, errorText: "Pending writes queue entry version is newer than this reader supports"},
 			{name: "missing payload", version: proto.Int32(1), errorText: "Pending writes queue entry payload type does not match the queue's bound type"},
@@ -307,7 +309,7 @@ var _ = Describe("Continuation Token Conformance", func() {
 						Expect(base64.StdEncoding.EncodeToString(serialized)).To(Equal(result.Serialized), tc.name)
 					}
 				} else {
-					queue := recordlayer.NewPendingWritesQueue(root.Sub("entries"), root.Sub("size"), 0, &gen.Order{})
+					queue := recordlayer.NewPendingWritesQueue(root.Sub("entries"), root.Sub("size"), 0, &demopb.Order{})
 					cursor := queue.GetQueueCursor(rtx, recordlayer.ForwardScan(), nil)
 					defer cursor.Close()
 					item, err := cursor.OnNext(ctx)
@@ -361,12 +363,12 @@ var _ = Describe("Continuation Token Conformance", func() {
 		for _, javaWriter := range []bool{true, false} {
 			for _, skip := range []int{0, 1, 5} {
 				root := env.Keyspace.Sub("pendingQueueSkip")
-				queue := recordlayer.NewPendingWritesQueue(root.Sub("entries"), root.Sub("size"), 0, &gen.Order{})
+				queue := recordlayer.NewPendingWritesQueue(root.Sub("entries"), root.Sub("size"), 0, &demopb.Order{})
 				if !javaWriter {
 					_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 						rtx.ClearRange(root)
 						for id := int64(1); id <= 3; id++ {
-							if err := queue.Enqueue(rtx, &gen.Order{OrderId: proto.Int64(id), Tags: []string{strings.Repeat("x", 120000)}}, 0); err != nil {
+							if err := queue.Enqueue(rtx, &demopb.Order{OrderId: proto.Int64(id), Tags: []string{strings.Repeat("x", 120000)}}, 0); err != nil {
 								return nil, err
 							}
 						}
@@ -490,7 +492,7 @@ var _ = Describe("Continuation Token Conformance", func() {
 						Expect(result.Nullable).To(Equal(nullable))
 						Expect(result.Tags).To(Equal([]string{"a"}))
 					}
-					message := &gen.Order{OrderId: proto.Int64(99), Tags: []string{"a"}}
+					message := &demopb.Order{OrderId: proto.Int64(99), Tags: []string{"a"}}
 					original := executor.PositionalTypeForDescriptor(message.ProtoReflect().Descriptor())
 					fields := append([]values.Field(nil), original.Fields...)
 					if duplicateNames {
@@ -673,8 +675,8 @@ var _ = Describe("Continuation Token Conformance", func() {
 		return result
 	}
 
-	scanWithGo := func(limit int, continuation []byte) ([]*gen.Order, []byte, bool) {
-		var orders []*gen.Order
+	scanWithGo := func(limit int, continuation []byte) ([]*demopb.Order, []byte, bool) {
+		var orders []*demopb.Order
 		var nextCont []byte
 		var sourceExhausted bool
 
@@ -707,7 +709,7 @@ var _ = Describe("Continuation Token Conformance", func() {
 					sourceExhausted = result.GetNoNextReason().IsSourceExhausted()
 					break
 				}
-				order := result.GetValue().Record.(*gen.Order)
+				order := result.GetValue().Record.(*demopb.Order)
 				orders = append(orders, order)
 			}
 			return nil, nil

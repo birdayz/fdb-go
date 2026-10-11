@@ -15,6 +15,8 @@ import (
 	"google.golang.org/protobuf/types/dynamicpb"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	gofdb "fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -64,7 +66,7 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 	})
 
 	buildMetaDataProto := func(version int32) *gen.MetaData {
-		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -285,7 +287,7 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 		It("Java loads Go-written metadata and scans Go-written records", func() {
 			// Direction: Go saves both metadata and Order records; Java
 			// LOADS the metadata fresh and uses it to scan.
-			orders := []*gen.Order{
+			orders := []*demopb.Order{
 				{OrderId: proto.Int64(1), Price: proto.Int32(100)},
 				{OrderId: proto.Int64(2), Price: proto.Int32(250)},
 				{OrderId: proto.Int64(3), Price: proto.Int32(50)},
@@ -358,7 +360,7 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 			//   - VALUE-index key tuple shape
 			//   - per-record index entries written by Go are readable by Java
 			//     using only the proto-serialized metadata.
-			orders := []*gen.Order{
+			orders := []*demopb.Order{
 				{OrderId: proto.Int64(1), Price: proto.Int32(100)},
 				{OrderId: proto.Int64(2), Price: proto.Int32(50)},
 				{OrderId: proto.Int64(3), Price: proto.Int32(150)},
@@ -369,7 +371,7 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 				// Java's createCompositeIndexedMetaData uses
 				// "Order$price_id" so the index name is byte-identical
 				// across the wire and the Java step can reference it.
-				builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+				builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 				builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 				builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 				builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -518,7 +520,7 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 			// breaking COUNT.
 			//
 			// Setup: 4 Orders with prices 100, 50, 150, 200 → SUM=500.
-			orders := []*gen.Order{
+			orders := []*demopb.Order{
 				{OrderId: proto.Int64(1), Price: proto.Int32(100)},
 				{OrderId: proto.Int64(2), Price: proto.Int32(50)},
 				{OrderId: proto.Int64(3), Price: proto.Int32(150)},
@@ -526,7 +528,7 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 			}
 
 			_, err := goRecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
-				builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+				builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 				builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 				builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 				builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -595,7 +597,7 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 			//
 			// Setup: 3 Orders at price=100, 1 at price=50, 1 at price=150
 			// → COUNT(price=100)=3, COUNT(price=50)=1, COUNT(price=150)=1.
-			orders := []*gen.Order{
+			orders := []*demopb.Order{
 				{OrderId: proto.Int64(1), Price: proto.Int32(100)},
 				{OrderId: proto.Int64(2), Price: proto.Int32(100)},
 				{OrderId: proto.Int64(3), Price: proto.Int32(50)},
@@ -604,7 +606,7 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 			}
 
 			_, err := goRecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
-				builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+				builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 				builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 				builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 				builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -676,7 +678,7 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 			// uses FDB's BYTE_MAX atomic (one-way), distinct from SUM
 			// (ADD) and COUNT (+1). Pins MAX_EVER wire format
 			// independently. Setup: 4 prices [100, 50, 150, 200] → max=200.
-			orders := []*gen.Order{
+			orders := []*demopb.Order{
 				{OrderId: proto.Int64(1), Price: proto.Int32(100)},
 				{OrderId: proto.Int64(2), Price: proto.Int32(50)},
 				{OrderId: proto.Int64(3), Price: proto.Int32(150)},
@@ -684,7 +686,7 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 			}
 
 			_, err := goRecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
-				builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+				builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 				builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 				builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 				builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -770,7 +772,7 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 				// Two Orders + three Customers — asymmetric counts so a
 				// type-tag mix-up (Order misclassified as Customer or
 				// vice versa) shows up cleanly.
-				orders := []*gen.Order{
+				orders := []*demopb.Order{
 					{OrderId: proto.Int64(1), Price: proto.Int32(100)},
 					{OrderId: proto.Int64(2), Price: proto.Int32(200)},
 				}
@@ -779,7 +781,7 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 						return nil, saveErr
 					}
 				}
-				customers := []*gen.Customer{
+				customers := []*demopb.Customer{
 					{CustomerId: proto.Int64(10), Name: proto.String("alice")},
 					{CustomerId: proto.Int64(20), Name: proto.String("bob")},
 					{CustomerId: proto.Int64(30), Name: proto.String("carol")},
@@ -981,7 +983,7 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 			for i := range tags {
 				tags[i] = string(largeTag)
 			}
-			bigOrder := &gen.Order{
+			bigOrder := &demopb.Order{
 				OrderId: proto.Int64(7),
 				Price:   proto.Int32(999),
 				Tags:    tags,
@@ -989,7 +991,7 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 
 			_, err := goRecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 				builder := recordlayer.NewRecordMetaDataBuilder().
-					SetRecords(gen.File_record_layer_demo_proto).
+					SetRecords(demopb.File_record_layer_demo_proto).
 					SetSplitLongRecords(true)
 				builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 				builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
@@ -1071,7 +1073,7 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 
 			// Go loads metadata, opens store, scans Orders.
 			var loadedMD *gen.MetaData
-			var scannedOrders []*gen.Order
+			var scannedOrders []*demopb.Order
 			_, err = goRecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 				mdStore := recordlayer.NewFDBMetaDataStore(ss)
 				var loadErr error
@@ -1107,7 +1109,7 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 					if marshalErr != nil {
 						return nil, marshalErr
 					}
-					order := &gen.Order{}
+					order := &demopb.Order{}
 					if unmarshalErr := proto.Unmarshal(data, order); unmarshalErr != nil {
 						return nil, unmarshalErr
 					}

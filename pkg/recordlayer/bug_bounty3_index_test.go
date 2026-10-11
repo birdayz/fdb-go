@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -53,7 +53,7 @@ var _ = Describe("BugBounty3Index", func() {
 				1,
 			)
 
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -68,7 +68,7 @@ var _ = Describe("BugBounty3Index", func() {
 				if err != nil {
 					return nil, err
 				}
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(500)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(500)})
 				return nil, err
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -118,7 +118,7 @@ var _ = Describe("BugBounty3Index", func() {
 				1,
 			)
 
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -133,7 +133,7 @@ var _ = Describe("BugBounty3Index", func() {
 				if err != nil {
 					return nil, err
 				}
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(1000)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(1000)})
 				return nil, err
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -146,7 +146,7 @@ var _ = Describe("BugBounty3Index", func() {
 				if err != nil {
 					return nil, err
 				}
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 				return nil, err
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -213,7 +213,7 @@ var _ = Describe("BugBounty3Index", func() {
 			// Java requires GroupingKeyExpression; Go should too for correctness.
 			idx := NewCountNotNullIndex("count_notnull_price_ungrouped", Ungrouped(Field("price")))
 
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -227,19 +227,19 @@ var _ = Describe("BugBounty3Index", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// Record 1: price=100 (non-null) → should be counted
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 				Expect(err).NotTo(HaveOccurred())
 
 				// Record 2: price=200 (non-null) → should be counted
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
 				Expect(err).NotTo(HaveOccurred())
 
 				// Record 3: price=nil (null) → should NOT be counted
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(3)})
 				Expect(err).NotTo(HaveOccurred())
 
 				// Record 4: price=nil (null) → should NOT be counted
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(4)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(4)})
 				Expect(err).NotTo(HaveOccurred())
 
 				// Scan the COUNT_NOT_NULL index.
@@ -266,7 +266,7 @@ var _ = Describe("BugBounty3Index", func() {
 			// the root is not a GroupingKeyExpression. Our Build() now does the same.
 			idx := NewCountNotNullIndex("count_notnull_bare_field", Field("price"))
 
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -306,7 +306,7 @@ var _ = Describe("BugBounty3Index", func() {
 			// Our Build() now does the same.
 			idx := NewSumIndex("sum_bare_price", Field("price"))
 
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -325,7 +325,7 @@ var _ = Describe("BugBounty3Index", func() {
 			// groupingCount = 0, groupedCount = 1. Works correctly.
 			idx := NewSumIndex("sum_ungrouped_price", Ungrouped(Field("price")))
 
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -338,10 +338,10 @@ var _ = Describe("BugBounty3Index", func() {
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
 
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 				Expect(err).NotTo(HaveOccurred())
 
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
 				Expect(err).NotTo(HaveOccurred())
 
 				entries, err := AsList(ctx, store.ScanIndex(idx, TupleRangeAll, nil, ForwardScan()))
@@ -374,7 +374,7 @@ var _ = Describe("BugBounty3Index", func() {
 		It("MAX_EVER_LONG without GroupingKeyExpression is rejected at Build time", func() {
 			idx := NewMaxEverLongIndex("max_ever_bare_price", Field("price"))
 
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -389,7 +389,7 @@ var _ = Describe("BugBounty3Index", func() {
 		It("MIN_EVER_LONG without GroupingKeyExpression is rejected at Build time", func() {
 			idx := NewMinEverLongIndex("min_ever_bare_price", Field("price"))
 
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -444,7 +444,7 @@ var _ = Describe("BugBounty3Index", func() {
 			// Each tag value gets +1 in the count index
 			idx := NewCountIndex("count_by_tag", GroupAll(FanOut("tags")))
 
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -460,7 +460,7 @@ var _ = Describe("BugBounty3Index", func() {
 				if err != nil {
 					return nil, err
 				}
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(1),
 					Price:   proto.Int32(100),
 					Tags:    []string{"alpha", "alpha"},
@@ -500,7 +500,7 @@ var _ = Describe("BugBounty3Index", func() {
 				if err != nil {
 					return nil, err
 				}
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(1),
 					Price:   proto.Int32(100),
 					Tags:    []string{"alpha"},

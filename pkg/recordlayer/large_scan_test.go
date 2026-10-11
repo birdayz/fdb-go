@@ -9,7 +9,7 @@ import (
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 )
 
 var _ = Describe("LargeScanSequentialAccess", func() {
@@ -18,7 +18,7 @@ var _ = Describe("LargeScanSequentialAccess", func() {
 
 		const numRecords = 10_000
 
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -40,12 +40,12 @@ var _ = Describe("LargeScanSequentialAccess", func() {
 			}
 
 			for i := 0; i < numRecords; i++ {
-				record := &gen.Order{
+				record := &demopb.Order{
 					OrderId: proto.Int64(int64(i)),
 					Price:   proto.Int32(int32(i)),
-					Flower: &gen.Flower{
+					Flower: &demopb.Flower{
 						Type:  proto.String(fmt.Sprintf("sequential_%d", i)),
-						Color: gen.Color_RED.Enum(),
+						Color: demopb.Color_RED.Enum(),
 					},
 				}
 
@@ -87,7 +87,7 @@ var _ = Describe("LargeScanSequentialAccess", func() {
 			recordCount := 0
 			for record, iterErr := range Seq2(cursor, ctx) {
 				Expect(iterErr).NotTo(HaveOccurred())
-				order, ok := record.Record.(*gen.Order)
+				order, ok := record.Record.(*demopb.Order)
 				if !ok {
 					return nil, fmt.Errorf("unexpected record type: %T", record.Record)
 				}
@@ -118,7 +118,7 @@ var _ = Describe("BasicContinuation", func() {
 		const numRecords = 1000
 		const batchSize = 50
 
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -140,12 +140,12 @@ var _ = Describe("BasicContinuation", func() {
 			}
 
 			for i := 0; i < numRecords; i++ {
-				record := &gen.Order{
+				record := &demopb.Order{
 					OrderId: proto.Int64(int64(i)),
 					Price:   proto.Int32(int32(i * 10)),
-					Flower: &gen.Flower{
+					Flower: &demopb.Flower{
 						Type:  proto.String(fmt.Sprintf("flower_%d", i)),
-						Color: gen.Color_BLUE.Enum(),
+						Color: demopb.Color_BLUE.Enum(),
 					},
 				}
 
@@ -199,7 +199,7 @@ var _ = Describe("BasicContinuation", func() {
 					return nil, lErr
 				}
 				for _, record := range batch {
-					order, ok := record.Record.(*gen.Order)
+					order, ok := record.Record.(*demopb.Order)
 					if !ok {
 						return nil, fmt.Errorf("unexpected record type: %T", record.Record)
 					}
@@ -220,7 +220,7 @@ var _ = Describe("BasicContinuation", func() {
 						return nil, fmt.Errorf("flower type mismatch for record %d: got %s, expected %s", expectedID, order.GetFlower().GetType(), expectedFlowerType)
 					}
 
-					if order.GetFlower().GetColor() != gen.Color_BLUE {
+					if order.GetFlower().GetColor() != demopb.Color_BLUE {
 						return nil, fmt.Errorf("flower color mismatch for record %d: got %v, expected BLUE", expectedID, order.GetFlower().GetColor())
 					}
 
@@ -268,7 +268,7 @@ var _ = Describe("TimeLimitScan", func() {
 	ctx := context.Background()
 
 	baseMetaData := func() *RecordMetaDataBuilder {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -292,7 +292,7 @@ var _ = Describe("TimeLimitScan", func() {
 				return nil, err
 			}
 			for i := int64(1); i <= 100; i++ {
-				order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))}
+				order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))}
 				_, err = store.SaveRecord(order)
 				if err != nil {
 					return nil, err
@@ -352,7 +352,7 @@ var _ = Describe("TimeLimitScan", func() {
 				return nil, err
 			}
 			for i := int64(1); i <= 100; i++ {
-				order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))}
+				order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))}
 				_, err = store.SaveRecord(order)
 				if err != nil {
 					return nil, err
@@ -408,7 +408,7 @@ var _ = Describe("TimeLimitScan", func() {
 				return nil, err
 			}
 			for i := int64(1); i <= 50; i++ {
-				order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))}
+				order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))}
 				_, err = store.SaveRecord(order)
 				if err != nil {
 					return nil, err
@@ -492,7 +492,7 @@ var _ = Describe("TimeLimitScan", func() {
 				return nil, err
 			}
 			for i := int64(1); i <= 10; i++ {
-				order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))}
+				order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))}
 				_, err = store.SaveRecord(order)
 				if err != nil {
 					return nil, err

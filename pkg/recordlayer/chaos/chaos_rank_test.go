@@ -6,7 +6,7 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
 )
 
@@ -14,7 +14,7 @@ import (
 // No grouping — the ranked set contains all prices globally.
 func buildRankIndexMetadata() *recordlayer.RecordMetaData {
 	builder := recordlayer.NewRecordMetaDataBuilder()
-	builder.SetRecords(gen.File_record_layer_demo_proto)
+	builder.SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -35,13 +35,13 @@ func TestRankIndexBasicVerify(t *testing.T) {
 	md := buildRankIndexMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 	s.Verify()
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
 	s.Verify()
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(300)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(300)})
 	s.Verify()
 
 	// Delete one and re-verify.
@@ -49,7 +49,7 @@ func TestRankIndexBasicVerify(t *testing.T) {
 	s.Verify()
 
 	// Re-insert with different price.
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(50)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(50)})
 	s.Verify()
 }
 
@@ -62,16 +62,16 @@ func TestRankIndexCommitUnknown(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 	s.Verify() // B-tree: 1 entry. Ranked set: score=100, rank=0.
 
 	// Second save, also with fault.
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
 	s.Verify() // B-tree: 2 entries. Ranked set: 100→rank 0, 200→rank 1.
 
 	// Third save, no fault.
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(50)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(50)})
 	s.Verify() // Ranked set: 50→0, 100→1, 200→2.
 }
 
@@ -83,8 +83,8 @@ func TestRankIndexCommitUnknownOverwrite(t *testing.T) {
 	md := buildRankIndexMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
 	s.Verify()
 
 	// Overwrite pk=1: price 100→500 with commit-unknown.
@@ -92,7 +92,7 @@ func TestRankIndexCommitUnknownOverwrite(t *testing.T) {
 	// Retry: old={pk=1, price=500}, new={pk=1, price=500} → removeCommonEntries filters.
 	// No ranked set operations on retry.
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(500)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(500)})
 	s.Verify() // Ranked set: 200→0, 500→1.
 }
 
@@ -102,9 +102,9 @@ func TestRankIndexCommitUnknownDelete(t *testing.T) {
 	md := buildRankIndexMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(300)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(300)})
 	s.Verify()
 
 	// Delete pk=2 with commit-unknown.
@@ -129,9 +129,9 @@ func TestRankIndexDuplicateScores(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 
 	// Three records, all price=100.
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(100)})
 	s.Verify() // B-tree: 3 entries. Ranked set: 1 distinct score (100→rank 0).
 
 	// Delete one — score should remain in ranked set (two more records have it).
@@ -156,14 +156,14 @@ func TestRankIndexDuplicateScoresCommitUnknown(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 
 	// Setup: three records with same score.
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(200)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(200)})
 	s.Verify()
 
 	// Save a new duplicate score with commit-unknown.
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(4), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(4), Price: proto.Int32(100)})
 	s.Verify() // B-tree: 4 entries. Ranked set: 100→0, 200→1.
 
 	// Delete one of the duplicates with commit-unknown.
@@ -177,7 +177,7 @@ func TestRankIndexDuplicateScoresCommitUnknown(t *testing.T) {
 	// First commit: remove B-tree (100, pk=2), add (300, pk=2). Ranked set: check remaining 100 entries (pk=4 still there) → don't remove 100, add 300.
 	// Retry: old={pk=2, price=300}, new={pk=2, price=300} → removeCommonEntries filters. No-op.
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(300)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(300)})
 	s.Verify() // Ranked set: 100→0, 200→1, 300→2.
 
 	// Delete the LAST record with score 100 (pk=4) under commit-unknown.
@@ -195,17 +195,17 @@ func TestRankIndexOverwriteChangesRank(t *testing.T) {
 	md := buildRankIndexMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(300)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(300)})
 	s.Verify()
 
 	// Move pk=1 from lowest (rank 0) to highest (rank 2).
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(400)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(400)})
 	s.Verify() // Ranked set: 200→0, 300→1, 400→2.
 
 	// Move pk=2 down to lowest.
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(50)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(50)})
 	s.Verify() // Ranked set: 50→0, 300→1, 400→2.
 }
 
@@ -216,7 +216,7 @@ func TestRankIndexDeleteAllRecords(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 
 	for i := int64(1); i <= 10; i++ {
-		s.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
+		s.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
 	}
 	s.Verify()
 
@@ -224,7 +224,7 @@ func TestRankIndexDeleteAllRecords(t *testing.T) {
 	s.Verify()
 
 	// Re-add after delete-all.
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(99), Price: proto.Int32(42)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(99), Price: proto.Int32(42)})
 	s.Verify()
 }
 
@@ -237,7 +237,7 @@ func TestRankIndexDeleteAllRecords(t *testing.T) {
 // ranked set count, and ranks account for each duplicate individually.
 func buildRankIndexCountDuplicatesMetadata() *recordlayer.RecordMetaData {
 	builder := recordlayer.NewRecordMetaDataBuilder()
-	builder.SetRecords(gen.File_record_layer_demo_proto)
+	builder.SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -260,9 +260,9 @@ func TestRankIndexCountDuplicatesBasic(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 
 	// Three records with same score — each gets its own rank.
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(200)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(200)})
 	s.Verify()
 
 	// Delete one duplicate.
@@ -283,7 +283,7 @@ func TestRankIndexCountDuplicatesCommitUnknown(t *testing.T) {
 	// The retry should see the B-tree entry already exists (removeCommonEntries
 	// filters it out) so no ranked set operation on retry.
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 	s.Verify()
 
 	// Second record with same score and commit-unknown.
@@ -292,7 +292,7 @@ func TestRankIndexCountDuplicatesCommitUnknown(t *testing.T) {
 	// Retry: old={pk=2, price=100}, new={pk=2, price=100} → removeCommonEntries filters.
 	// No ranked set operations on retry. Should be safe.
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
 	s.Verify()
 }
 
@@ -303,9 +303,9 @@ func TestRankIndexCountDuplicatesDeleteCommitUnknown(t *testing.T) {
 	md := buildRankIndexCountDuplicatesMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(200)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(200)})
 	s.Verify()
 
 	// Delete one of the duplicates with commit-unknown.
@@ -328,7 +328,7 @@ func TestRankIndexCountDuplicatesRandomStress(t *testing.T) {
 	for i := 0; i < numOps; i++ {
 		pk := s.Rng.Int64N(maxPK) + 1
 		if s.Rng.Float64() < 0.7 {
-			s.SaveRecord(&gen.Order{
+			s.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(pk),
 				Price:   proto.Int32(s.Rng.Int32N(5) * 100), // small price space, lots of duplicates
 			})
@@ -361,7 +361,7 @@ func TestRankIndexRandomStress(t *testing.T) {
 		pk := s.Rng.Int64N(maxPK) + 1
 		if s.Rng.Float64() < 0.7 {
 			// 70% saves with a small price space to force duplicate scores.
-			s.SaveRecord(&gen.Order{
+			s.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(pk),
 				Price:   proto.Int32(s.Rng.Int32N(10) * 100), // 0-900, lots of duplicates
 			})
@@ -394,7 +394,7 @@ func TestRankIndexHeavyFaultStress(t *testing.T) {
 	for i := 0; i < numOps; i++ {
 		pk := s.Rng.Int64N(maxPK) + 1
 		if s.Rng.Float64() < 0.6 {
-			s.SaveRecord(&gen.Order{
+			s.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(pk),
 				Price:   proto.Int32(s.Rng.Int32N(5) * 100), // very small price space
 			})
@@ -425,7 +425,7 @@ func TestRankIndexCountDuplicatesHeavyFaultStress(t *testing.T) {
 	for i := 0; i < numOps; i++ {
 		pk := s.Rng.Int64N(maxPK) + 1
 		if s.Rng.Float64() < 0.6 {
-			s.SaveRecord(&gen.Order{
+			s.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(pk),
 				Price:   proto.Int32(s.Rng.Int32N(5) * 100),
 			})

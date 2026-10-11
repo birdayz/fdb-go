@@ -6,7 +6,7 @@ import (
 	"context"
 	"fmt"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -55,7 +55,7 @@ var _ = Describe("Composite Index Conformance (PK Dedup)", func() {
 		It("should produce identical deduplicated index entries", func() {
 			// Save orders with Go
 			for i := int64(1); i <= 3; i++ {
-				order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))}
+				order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))}
 				err := store.SaveOrderGo(ctx, order)
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -93,7 +93,7 @@ var _ = Describe("Composite Index Conformance (PK Dedup)", func() {
 		It("should produce identical deduplicated index entries", func() {
 			// Save orders with Java
 			for i := int64(1); i <= 3; i++ {
-				order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))}
+				order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))}
 				err := store.SaveOrderJava(ctx, order)
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -125,14 +125,14 @@ var _ = Describe("Composite Index Conformance (PK Dedup)", func() {
 		It("Go and Java produce interchangeable composite index entries", func() {
 			// Go writes odd orders
 			for i := int64(1); i <= 5; i += 2 {
-				order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))}
+				order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))}
 				err := store.SaveOrderGo(ctx, order)
 				Expect(err).NotTo(HaveOccurred())
 			}
 
 			// Java writes even orders
 			for i := int64(2); i <= 4; i += 2 {
-				order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))}
+				order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))}
 				err := store.SaveOrderJava(ctx, order)
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -174,7 +174,7 @@ func NewCompositeIndexConformanceStore(recordDB *recordlayer.FDBDatabase, keyspa
 	compositeIndex := recordlayer.NewIndex("Order$price_id",
 		recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("order_id")))
 
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -212,7 +212,7 @@ func (s *CompositeIndexConformanceStore) buildJavaParams() map[string]any {
 }
 
 // SaveOrderGo saves an order with Go (with composite index maintenance).
-func (s *CompositeIndexConformanceStore) SaveOrderGo(ctx context.Context, order *gen.Order) error {
+func (s *CompositeIndexConformanceStore) SaveOrderGo(ctx context.Context, order *demopb.Order) error {
 	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
@@ -226,7 +226,7 @@ func (s *CompositeIndexConformanceStore) SaveOrderGo(ctx context.Context, order 
 }
 
 // SaveOrderJava saves an order via Java (with composite index maintenance).
-func (s *CompositeIndexConformanceStore) SaveOrderJava(ctx context.Context, order *gen.Order) error {
+func (s *CompositeIndexConformanceStore) SaveOrderJava(ctx context.Context, order *demopb.Order) error {
 	params := s.buildJavaParams()
 	params["order"] = order
 	return s.java.InvokeAs(ctx, "saveOrderWithCompositeIndex", params, nil)
@@ -280,8 +280,8 @@ func (s *CompositeIndexConformanceStore) ScanIndexJava(ctx context.Context) ([]I
 }
 
 // LoadOrderGo loads an order using Go.
-func (s *CompositeIndexConformanceStore) LoadOrderGo(ctx context.Context, orderID int64) (*gen.Order, error) {
-	var order *gen.Order
+func (s *CompositeIndexConformanceStore) LoadOrderGo(ctx context.Context, orderID int64) (*demopb.Order, error) {
+	var order *demopb.Order
 	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
@@ -295,17 +295,17 @@ func (s *CompositeIndexConformanceStore) LoadOrderGo(ctx context.Context, orderI
 		if rec == nil {
 			return nil, nil
 		}
-		order = rec.Record.(*gen.Order)
+		order = rec.Record.(*demopb.Order)
 		return nil, nil
 	})
 	return order, err
 }
 
 // LoadOrderJava loads an order using Java.
-func (s *CompositeIndexConformanceStore) LoadOrderJava(ctx context.Context, orderID int64) (*gen.Order, error) {
+func (s *CompositeIndexConformanceStore) LoadOrderJava(ctx context.Context, orderID int64) (*demopb.Order, error) {
 	params := s.buildJavaParams()
 	params["orderID"] = orderID
-	var order gen.Order
+	var order demopb.Order
 	if err := s.java.InvokeAs(ctx, "loadOrderWithCompositeIndex", params, &order); err != nil {
 		return nil, err
 	}
@@ -313,7 +313,7 @@ func (s *CompositeIndexConformanceStore) LoadOrderJava(ctx context.Context, orde
 }
 
 // SaveAndCrossCheck saves with Go and verifies Java reads same data.
-func (s *CompositeIndexConformanceStore) SaveAndCrossCheck(ctx context.Context, order *gen.Order) error {
+func (s *CompositeIndexConformanceStore) SaveAndCrossCheck(ctx context.Context, order *demopb.Order) error {
 	if err := s.SaveOrderGo(ctx, order); err != nil {
 		return fmt.Errorf("go save failed: %w", err)
 	}

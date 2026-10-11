@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/recordlayer"
@@ -110,7 +110,7 @@ func TestExhaustion_AStoreMatchingNoPredictionFails(t *testing.T) {
 func modelPrice(d *driver, pk int64) int32 {
 	for _, r := range d.model.Records {
 		if r.PrimaryKey[0] == pk {
-			return r.Message.(*gen.Order).GetPrice()
+			return r.Message.(*demopb.Order).GetPrice()
 		}
 	}
 	return -1

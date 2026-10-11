@@ -6,7 +6,7 @@ import (
 	"math"
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
 )
@@ -24,7 +24,7 @@ import (
 // given explicit record type keys, returning the Build error unchanged so the
 // caller can assert on it.
 func keyMetaData(keys map[string]any) (*RecordMetaData, error) {
-	b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	b.GetRecordType("Order").SetPrimaryKey(Concat(RecordTypeKey(), Field("order_id")))
 	b.GetRecordType("Customer").SetPrimaryKey(Concat(RecordTypeKey(), Field("customer_id")))
 	b.GetRecordType("TypedRecord").SetPrimaryKey(Concat(RecordTypeKey(), Field("id")))

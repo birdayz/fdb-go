@@ -3,7 +3,7 @@ package vectorindex
 import (
 	"context"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 
@@ -32,7 +32,7 @@ var _ = Describe("DeleteRecordsWhere vector index scoping", func() {
 		// reaches into it aligns with the primary key.
 		vecIdx := recordlayer.NewVectorIndex("vec_split_bound",
 			recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("vector_data")), 1), 3)
-		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(
 			recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("vector_data"), recordlayer.Field("order_id")))
 		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
@@ -47,7 +47,7 @@ var _ = Describe("DeleteRecordsWhere vector index scoping", func() {
 			Expect(serr).NotTo(HaveOccurred())
 
 			vector := SerializeVector([]float64{1, 2, 3})
-			_, e := store.SaveRecord(&gen.Order{
+			_, e := store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(1), Quantity: proto.Int32(7), VectorData: vector,
 			})
 			Expect(e).NotTo(HaveOccurred())

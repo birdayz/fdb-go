@@ -5,6 +5,8 @@ import (
 	"errors"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
@@ -23,7 +25,7 @@ var _ = Describe("FDBMetaDataStore", func() {
 	// SaveRecordMetaData validates like Java's saveAndSetCurrent, so bare
 	// version-only protos are rejected ("new metadata does not build").
 	buildMDProto := func(version int, configure func(b *RecordMetaDataBuilder)) *gen.MetaData {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))

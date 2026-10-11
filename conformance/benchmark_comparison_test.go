@@ -8,7 +8,7 @@ import (
 	"os"
 	"time"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -59,13 +59,13 @@ var _ = Describe("Performance Comparison: Go vs Java", Label("benchmark"), func(
 	})
 
 	// benchOrder creates a simple Order.
-	benchOrder := func(id int64, price int32) *gen.Order {
-		return &gen.Order{
+	benchOrder := func(id int64, price int32) *demopb.Order {
+		return &demopb.Order{
 			OrderId: proto.Int64(id),
 			Price:   proto.Int32(price),
-			Flower: &gen.Flower{
+			Flower: &demopb.Flower{
 				Type:  proto.String("Rose"),
-				Color: gen.Color_RED.Enum(),
+				Color: demopb.Color_RED.Enum(),
 			},
 		}
 	}
@@ -321,7 +321,7 @@ var _ = Describe("Performance Comparison: Go vs Java", Label("benchmark"), func(
 
 	// buildBasicMD creates metadata without indexes (matching Java's benchMetaData).
 	buildBasicMD := func() *recordlayer.RecordMetaData {
-		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -332,7 +332,7 @@ var _ = Describe("Performance Comparison: Go vs Java", Label("benchmark"), func(
 
 	// buildIndexedMD creates metadata with a VALUE index on price (matching Java's benchMetaDataWithIndex).
 	buildIndexedMD := func() *recordlayer.RecordMetaData {
-		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -498,10 +498,10 @@ func runGoSaveWithIndex(md *recordlayer.RecordMetaData, ss subspace.Subspace, it
 			if err != nil {
 				return nil, err
 			}
-			return store.SaveRecord(&gen.Order{
+			return store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(i),
 				Price:   proto.Int32(100),
-				Flower:  &gen.Flower{Type: proto.String("Rose"), Color: gen.Color_RED.Enum()},
+				Flower:  &demopb.Flower{Type: proto.String("Rose"), Color: demopb.Color_RED.Enum()},
 			})
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -523,10 +523,10 @@ func runGoScanIndex(md *recordlayer.RecordMetaData, ss subspace.Subspace, iterat
 			return nil, err
 		}
 		for j := int64(1); j <= 100; j++ {
-			if _, err := store.SaveRecord(&gen.Order{
+			if _, err := store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(j),
 				Price:   proto.Int32(int32(j * 10)),
-				Flower:  &gen.Flower{Type: proto.String("Rose"), Color: gen.Color_RED.Enum()},
+				Flower:  &demopb.Flower{Type: proto.String("Rose"), Color: demopb.Color_RED.Enum()},
 			}); err != nil {
 				return nil, err
 			}
@@ -582,10 +582,10 @@ func runGoSaveBatch(md *recordlayer.RecordMetaData, ss subspace.Subspace, iterat
 				return nil, err
 			}
 			for j := 0; j < 10; j++ {
-				if _, err := store.SaveRecord(&gen.Order{
+				if _, err := store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(batch*10 + int64(j)),
 					Price:   proto.Int32(int32(100 + j)),
-					Flower:  &gen.Flower{Type: proto.String("Rose"), Color: gen.Color_RED.Enum()},
+					Flower:  &demopb.Flower{Type: proto.String("Rose"), Color: demopb.Color_RED.Enum()},
 				}); err != nil {
 					return nil, err
 				}

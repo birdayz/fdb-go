@@ -6,7 +6,7 @@ import (
 	"context"
 	"fmt"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -60,7 +60,7 @@ var _ = Describe("Customer Conformance", func() {
 			id := int64(2001)
 			name := "Alice Johnson"
 			email := "alice@example.com"
-			customer := &gen.Customer{
+			customer := &demopb.Customer{
 				CustomerId: &id,
 				Name:       &name,
 				Email:      &email,
@@ -120,7 +120,7 @@ var _ = Describe("Customer Conformance", func() {
 			id := int64(5001)
 			updatedName := "Updated Customer"
 			updatedEmail := "updated@example.com"
-			updated := &gen.Customer{
+			updated := &demopb.Customer{
 				CustomerId: &id,
 				Name:       &updatedName,
 				Email:      &updatedEmail,
@@ -244,7 +244,7 @@ var _ = Describe("Customer Conformance", func() {
 		It("should handle empty string fields", func() {
 			id := int64(9001)
 			emptyStr := ""
-			customer := &gen.Customer{
+			customer := &demopb.Customer{
 				CustomerId: &id,
 				Name:       &emptyStr,
 				Email:      &emptyStr,
@@ -334,7 +334,7 @@ var _ = Describe("Customer Direct Store Operations", func() {
 			}
 			Expect(storedRecord).NotTo(BeNil())
 
-			loaded := storedRecord.Record.(*gen.Customer)
+			loaded := storedRecord.Record.(*demopb.Customer)
 			Expect(*loaded.CustomerId).To(Equal(int64(42)))
 			Expect(*loaded.Name).To(Equal("Customer_42"))
 
@@ -378,7 +378,7 @@ func (c *CustomerConformanceStore) buildJavaParams() map[string]any {
 }
 
 // SaveCustomer saves a Customer via Java, then cross-checks by loading with Go.
-func (c *CustomerConformanceStore) SaveCustomer(ctx context.Context, customer *gen.Customer) error {
+func (c *CustomerConformanceStore) SaveCustomer(ctx context.Context, customer *demopb.Customer) error {
 	// 1. Save with Java
 	params := c.buildJavaParams()
 	params["customer"] = customer
@@ -393,7 +393,7 @@ func (c *CustomerConformanceStore) SaveCustomer(ctx context.Context, customer *g
 	}
 
 	// 3. Java also loads to get authoritative result
-	var javaCustomer gen.Customer
+	var javaCustomer demopb.Customer
 	params = c.buildJavaParams()
 	params["customerID"] = *customer.CustomerId
 	if err := c.java.InvokeAs(ctx, "loadCustomer", params, &javaCustomer); err != nil {
@@ -409,13 +409,13 @@ func (c *CustomerConformanceStore) SaveCustomer(ctx context.Context, customer *g
 }
 
 // LoadCustomer loads a Customer with both Go and Java, verifying they match
-func (c *CustomerConformanceStore) LoadCustomer(ctx context.Context, customerID int64) (*gen.Customer, error) {
+func (c *CustomerConformanceStore) LoadCustomer(ctx context.Context, customerID int64) (*demopb.Customer, error) {
 	goCustomer, err := c.loadWithGo(ctx, customerID)
 	if err != nil {
 		return nil, fmt.Errorf("go load failed: %w", err)
 	}
 
-	var javaCustomer gen.Customer
+	var javaCustomer demopb.Customer
 	params := c.buildJavaParams()
 	params["customerID"] = customerID
 	if err := c.java.InvokeAs(ctx, "loadCustomer", params, &javaCustomer); err != nil {
@@ -475,7 +475,7 @@ func (c *CustomerConformanceStore) CustomerExists(ctx context.Context, customerI
 }
 
 // JavaSaveThenGoLoad has Java save a Customer, then Go loads it
-func (c *CustomerConformanceStore) JavaSaveThenGoLoad(ctx context.Context, customer *gen.Customer) (*gen.Customer, error) {
+func (c *CustomerConformanceStore) JavaSaveThenGoLoad(ctx context.Context, customer *demopb.Customer) (*demopb.Customer, error) {
 	params := c.buildJavaParams()
 	params["customer"] = customer
 	if err := c.java.InvokeAs(ctx, "saveCustomer", params, nil); err != nil {
@@ -490,8 +490,8 @@ func (c *CustomerConformanceStore) JavaSaveThenGoLoad(ctx context.Context, custo
 	return goCustomer, nil
 }
 
-func (c *CustomerConformanceStore) loadWithGo(ctx context.Context, customerID int64) (*gen.Customer, error) {
-	var customer *gen.Customer
+func (c *CustomerConformanceStore) loadWithGo(ctx context.Context, customerID int64) (*demopb.Customer, error) {
+	var customer *demopb.Customer
 	_, err := c.recordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).
@@ -510,7 +510,7 @@ func (c *CustomerConformanceStore) loadWithGo(ctx context.Context, customerID in
 			return nil, fmt.Errorf("customer not found: %d", customerID)
 		}
 
-		customer = storedRecord.Record.(*gen.Customer)
+		customer = storedRecord.Record.(*demopb.Customer)
 		return nil, nil
 	})
 	return customer, err

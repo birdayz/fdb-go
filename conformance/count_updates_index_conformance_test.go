@@ -6,7 +6,7 @@ import (
 	"context"
 	"fmt"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -46,7 +46,7 @@ var _ = Describe("COUNT_UPDATES Index Conformance", func() {
 		It("should count inserts via both Go and Java scan", func() {
 			// Save 3 orders with price=100
 			for i := int64(1); i <= 3; i++ {
-				err := store.SaveOrderGo(ctx, &gen.Order{
+				err := store.SaveOrderGo(ctx, &demopb.Order{
 					OrderId: proto.Int64(i),
 					Price:   proto.Int32(100),
 				})
@@ -70,7 +70,7 @@ var _ = Describe("COUNT_UPDATES Index Conformance", func() {
 	Describe("Java writes, both scan", func() {
 		It("should count inserts via both Go and Java scan", func() {
 			for i := int64(1); i <= 2; i++ {
-				err := store.SaveOrderJava(ctx, &gen.Order{
+				err := store.SaveOrderJava(ctx, &demopb.Order{
 					OrderId: proto.Int64(i),
 					Price:   proto.Int32(200),
 				})
@@ -95,7 +95,7 @@ var _ = Describe("COUNT_UPDATES Index Conformance", func() {
 		It("should keep count unchanged when Go deletes a Java-written record", func() {
 			// Java saves 3 orders
 			for i := int64(1); i <= 3; i++ {
-				err := store.SaveOrderJava(ctx, &gen.Order{
+				err := store.SaveOrderJava(ctx, &demopb.Order{
 					OrderId: proto.Int64(i),
 					Price:   proto.Int32(300),
 				})
@@ -129,7 +129,7 @@ var _ = Describe("COUNT_UPDATES Index Conformance", func() {
 		It("should keep count unchanged when Java deletes a Go-written record", func() {
 			// Go saves 3 orders
 			for i := int64(1); i <= 3; i++ {
-				err := store.SaveOrderGo(ctx, &gen.Order{
+				err := store.SaveOrderGo(ctx, &demopb.Order{
 					OrderId: proto.Int64(i),
 					Price:   proto.Int32(400),
 				})
@@ -163,7 +163,7 @@ var _ = Describe("COUNT_UPDATES Index Conformance", func() {
 	Describe("Update always increments", func() {
 		It("should increment count on update even when key unchanged", func() {
 			// Save order with price=500
-			err := store.SaveOrderGo(ctx, &gen.Order{
+			err := store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(500),
 			})
@@ -176,7 +176,7 @@ var _ = Describe("COUNT_UPDATES Index Conformance", func() {
 			Expect(goEntries[0].Count).To(Equal(int64(1)))
 
 			// Update same order, same price — count should STILL increment
-			err = store.SaveOrderJava(ctx, &gen.Order{
+			err = store.SaveOrderJava(ctx, &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(500),
 			})
@@ -215,7 +215,7 @@ type CountUpdatesIndexConformanceStore struct {
 func NewCountUpdatesIndexConformanceStore(recordDB *recordlayer.FDBDatabase, keyspace subspace.Subspace, clusterFile string, tenantName string) (*CountUpdatesIndexConformanceStore, error) {
 	countIdx := recordlayer.NewCountUpdatesIndex("count_updates_price", recordlayer.GroupAll(recordlayer.Field("price")))
 
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -252,7 +252,7 @@ func (s *CountUpdatesIndexConformanceStore) buildJavaParams() map[string]any {
 	return params
 }
 
-func (s *CountUpdatesIndexConformanceStore) SaveOrderGo(ctx context.Context, order *gen.Order) error {
+func (s *CountUpdatesIndexConformanceStore) SaveOrderGo(ctx context.Context, order *demopb.Order) error {
 	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
@@ -265,7 +265,7 @@ func (s *CountUpdatesIndexConformanceStore) SaveOrderGo(ctx context.Context, ord
 	return err
 }
 
-func (s *CountUpdatesIndexConformanceStore) SaveOrderJava(ctx context.Context, order *gen.Order) error {
+func (s *CountUpdatesIndexConformanceStore) SaveOrderJava(ctx context.Context, order *demopb.Order) error {
 	params := s.buildJavaParams()
 	params["order"] = order
 	return s.java.InvokeAs(ctx, "saveOrderWithCountUpdatesIndex", params, nil)

@@ -72,7 +72,7 @@ go_test(
     embed = [":simfdb"],
     tags = ["resources:memory:400"],
     deps = [
-        "//gen",
+        "//gen/demopb",
         "//pkg/dst",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",

@@ -12,7 +12,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -118,7 +118,7 @@ func TestFDB_SPFreshScanModes(t *testing.T) {
 			t.Parallel()
 			ctx := context.Background()
 			ks := subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
-			builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -142,7 +142,7 @@ func TestFDB_SPFreshScanModes(t *testing.T) {
 					return nil, err
 				}
 				for i := int64(1); i <= 3; i++ {
-					if _, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10)), Quantity: proto.Int32(int32(i))}); err != nil {
+					if _, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10)), Quantity: proto.Int32(int32(i))}); err != nil {
 						return nil, err
 					}
 				}

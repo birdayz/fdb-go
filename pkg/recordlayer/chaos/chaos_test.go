@@ -16,7 +16,7 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/vectorcodec"
 	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
@@ -86,7 +86,7 @@ func TestMain(m *testing.M) {
 // buildTestMetadata creates metadata with record counting and a VALUE index.
 func buildTestMetadata() *recordlayer.RecordMetaData {
 	builder := recordlayer.NewRecordMetaDataBuilder()
-	builder.SetRecords(gen.File_record_layer_demo_proto)
+	builder.SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -106,21 +106,21 @@ func TestBasicSaveVerify(t *testing.T) {
 	md := buildTestMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(1),
 		Price:   proto.Int32(100),
-		Flower:  &gen.Flower{Type: proto.String("Rose"), Color: gen.Color_RED.Enum()},
+		Flower:  &demopb.Flower{Type: proto.String("Rose"), Color: demopb.Color_RED.Enum()},
 	})
 	s.Verify()
 
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(2),
 		Price:   proto.Int32(200),
-		Flower:  &gen.Flower{Type: proto.String("Tulip"), Color: gen.Color_BLUE.Enum()},
+		Flower:  &demopb.Flower{Type: proto.String("Tulip"), Color: demopb.Color_BLUE.Enum()},
 	})
 	s.Verify()
 
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(3),
 		Price:   proto.Int32(300),
 	})
@@ -133,15 +133,15 @@ func TestBasicSaveDeleteVerify(t *testing.T) {
 	md := buildTestMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
 	s.Verify()
 
 	s.DeleteRecord(tuple.Tuple{int64(1)})
 	s.Verify()
 
 	// Save again with same PK (re-insert after delete)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(150)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(150)})
 	s.Verify()
 }
 
@@ -151,11 +151,11 @@ func TestOverwriteExistingRecord(t *testing.T) {
 	md := buildTestMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 	s.Verify()
 
 	// Overwrite with different data
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(999)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(999)})
 	s.Verify()
 }
 
@@ -166,7 +166,7 @@ func TestDeleteAllRecords(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 
 	for i := int64(1); i <= 10; i++ {
-		s.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
+		s.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
 	}
 	s.Verify()
 
@@ -174,7 +174,7 @@ func TestDeleteAllRecords(t *testing.T) {
 	s.Verify()
 
 	// Save after delete-all
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(99), Price: proto.Int32(42)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(99), Price: proto.Int32(42)})
 	s.Verify()
 }
 
@@ -187,7 +187,7 @@ func TestCommitUnknownSingleSave(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 	s.Verify() // COUNT must be 1, not 2
 }
 
@@ -198,15 +198,15 @@ func TestCommitUnknownMultipleSaves(t *testing.T) {
 	md := buildTestMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 	s.Verify()
 
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
 	s.Verify() // COUNT must be 2
 
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(300)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(300)})
 	s.Verify() // COUNT must be 3
 }
 
@@ -218,8 +218,8 @@ func TestCommitUnknownDelete(t *testing.T) {
 	md := buildTestMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
 	s.Verify()
 
 	s.InjectOnce(FaultCommitUnknown)
@@ -234,11 +234,11 @@ func TestCommitUnknownOverwrite(t *testing.T) {
 	md := buildTestMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 	s.Verify()
 
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(999)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(999)})
 	s.Verify() // COUNT must still be 1
 }
 
@@ -257,7 +257,7 @@ func TestRandomWithFaults(t *testing.T) {
 		pk := s.Rng.Int64N(maxPK) + 1
 		if s.Rng.Float64() < 0.7 {
 			// 70% saves
-			s.SaveRecord(&gen.Order{
+			s.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(pk),
 				Price:   proto.Int32(s.Rng.Int32N(10000)),
 			})
@@ -281,7 +281,7 @@ func TestRandomWithFaults(t *testing.T) {
 // buildCountIndexMetadata creates metadata with a COUNT index (grouped by price).
 func buildCountIndexMetadata() *recordlayer.RecordMetaData {
 	builder := recordlayer.NewRecordMetaDataBuilder()
-	builder.SetRecords(gen.File_record_layer_demo_proto)
+	builder.SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -298,7 +298,7 @@ func buildCountIndexMetadata() *recordlayer.RecordMetaData {
 // buildSumIndexMetadata creates metadata with a SUM index (total price, ungrouped).
 func buildSumIndexMetadata() *recordlayer.RecordMetaData {
 	builder := recordlayer.NewRecordMetaDataBuilder()
-	builder.SetRecords(gen.File_record_layer_demo_proto)
+	builder.SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -315,7 +315,7 @@ func buildSumIndexMetadata() *recordlayer.RecordMetaData {
 // buildCountUpdatesMetadata creates metadata with a COUNT_UPDATES index.
 func buildCountUpdatesMetadata() *recordlayer.RecordMetaData {
 	builder := recordlayer.NewRecordMetaDataBuilder()
-	builder.SetRecords(gen.File_record_layer_demo_proto)
+	builder.SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -336,16 +336,16 @@ func TestCountIndexCommitUnknown(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 	s.Verify() // COUNT for price=100 must be 1, not 2
 
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
 	s.Verify() // COUNT for price=100 must be 2
 
 	// Overwrite with different price under commit-unknown
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)})
 	s.Verify() // COUNT: price=100 → 1, price=200 → 1
 }
 
@@ -356,16 +356,16 @@ func TestSumIndexCommitUnknown(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 	s.Verify() // SUM must be 100, not 200
 
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(300)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(300)})
 	s.Verify() // SUM must be 400
 
 	// Overwrite: change price from 100 to 500 under commit-unknown
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(500)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(500)})
 	s.Verify() // SUM must be 800 (500 + 300)
 }
 
@@ -379,7 +379,7 @@ func TestCountUpdatesCommitUnknown(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 
 	// KNOWN: commit-unknown causes double-count (expected=1, actual=2).
 	// This matches Java behavior — COUNT_UPDATES is inherently non-idempotent.
@@ -394,11 +394,11 @@ func TestCountUpdatesMultipleCommitUnknown(t *testing.T) {
 	md := buildCountUpdatesMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 	s.Verify()
 
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)})
 
 	// KNOWN: commit-unknown causes double-count (expected=2, actual=3).
 	t.Log("COUNT_UPDATES double-counts under commit-unknown (known, matches Java)")
@@ -416,7 +416,7 @@ func TestRandomWithCountIndex(t *testing.T) {
 	for i := 0; i < numOps; i++ {
 		pk := s.Rng.Int64N(maxPK) + 1
 		if s.Rng.Float64() < 0.7 {
-			s.SaveRecord(&gen.Order{
+			s.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(pk),
 				Price:   proto.Int32(s.Rng.Int32N(5) * 100), // small price space → grouping collisions
 			})
@@ -444,7 +444,7 @@ func TestRandomWithSumIndex(t *testing.T) {
 	for i := 0; i < numOps; i++ {
 		pk := s.Rng.Int64N(maxPK) + 1
 		if s.Rng.Float64() < 0.7 {
-			s.SaveRecord(&gen.Order{
+			s.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(pk),
 				Price:   proto.Int32(s.Rng.Int32N(1000)),
 			})
@@ -474,7 +474,7 @@ func TestRandomWithCountUpdatesIndex(t *testing.T) {
 	for i := 0; i < numOps; i++ {
 		pk := s.Rng.Int64N(maxPK) + 1
 		if s.Rng.Float64() < 0.7 {
-			s.SaveRecord(&gen.Order{
+			s.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(pk),
 				Price:   proto.Int32(s.Rng.Int32N(1000)),
 			})
@@ -496,7 +496,7 @@ func TestRandomWithCountUpdatesIndex(t *testing.T) {
 // on Order's coord_x and coord_y fields, int64 as Java's dimensions must be.
 func buildMultidimensionalMetadata() *recordlayer.RecordMetaData {
 	builder := recordlayer.NewRecordMetaDataBuilder()
-	builder.SetRecords(gen.File_record_layer_demo_proto)
+	builder.SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -523,21 +523,21 @@ func TestMultidimensionalBasicSave(t *testing.T) {
 	md := buildMultidimensionalMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(1),
 		CoordX:  proto.Int64(100),
 		CoordY:  proto.Int64(10),
 	})
 	s.Verify()
 
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(2),
 		CoordX:  proto.Int64(200),
 		CoordY:  proto.Int64(20),
 	})
 	s.Verify()
 
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(3),
 		CoordX:  proto.Int64(300),
 		CoordY:  proto.Int64(30),
@@ -553,7 +553,7 @@ func TestMultidimensionalCommitUnknownInsert(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(1),
 		CoordX:  proto.Int64(100),
 		CoordY:  proto.Int64(10),
@@ -569,7 +569,7 @@ func TestMultidimensionalCommitUnknownOverwrite(t *testing.T) {
 	md := buildMultidimensionalMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(1),
 		CoordX:  proto.Int64(100),
 		CoordY:  proto.Int64(10),
@@ -578,7 +578,7 @@ func TestMultidimensionalCommitUnknownOverwrite(t *testing.T) {
 
 	// Overwrite with different coordinates under commit-unknown.
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(1),
 		CoordX:  proto.Int64(999),
 		CoordY:  proto.Int64(99),
@@ -593,12 +593,12 @@ func TestMultidimensionalCommitUnknownDelete(t *testing.T) {
 	md := buildMultidimensionalMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(1),
 		CoordX:  proto.Int64(100),
 		CoordY:  proto.Int64(10),
 	})
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(2),
 		CoordX:  proto.Int64(200),
 		CoordY:  proto.Int64(20),
@@ -625,7 +625,7 @@ func TestMultidimensionalRandomStress(t *testing.T) {
 		pk := s.Rng.Int64N(maxPK) + 1
 		if s.Rng.Float64() < 0.7 {
 			// 70% saves with random coordinates.
-			s.SaveRecord(&gen.Order{
+			s.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(pk),
 				CoordX:  proto.Int64(s.Rng.Int64N(1000)),
 				CoordY:  proto.Int64(s.Rng.Int64N(500)),
@@ -650,7 +650,7 @@ func TestMultidimensionalRandomStress(t *testing.T) {
 // vector_data, records carrying (price, quantity) as a 2D vector (withVector).
 func buildVectorMetadata() *recordlayer.RecordMetaData {
 	builder := recordlayer.NewRecordMetaDataBuilder()
-	builder.SetRecords(gen.File_record_layer_demo_proto)
+	builder.SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -681,21 +681,21 @@ func TestVectorBasicSave(t *testing.T) {
 	md := buildVectorMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(withVector(&gen.Order{
+	s.SaveRecord(withVector(&demopb.Order{
 		OrderId:  proto.Int64(1),
 		Price:    proto.Int32(100),
 		Quantity: proto.Int32(10),
 	}, "price", "quantity"))
 	s.Verify()
 
-	s.SaveRecord(withVector(&gen.Order{
+	s.SaveRecord(withVector(&demopb.Order{
 		OrderId:  proto.Int64(2),
 		Price:    proto.Int32(200),
 		Quantity: proto.Int32(20),
 	}, "price", "quantity"))
 	s.Verify()
 
-	s.SaveRecord(withVector(&gen.Order{
+	s.SaveRecord(withVector(&demopb.Order{
 		OrderId:  proto.Int64(3),
 		Price:    proto.Int32(300),
 		Quantity: proto.Int32(30),
@@ -713,7 +713,7 @@ func TestVectorCommitUnknownInsert(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(withVector(&gen.Order{
+	s.SaveRecord(withVector(&demopb.Order{
 		OrderId:  proto.Int64(1),
 		Price:    proto.Int32(100),
 		Quantity: proto.Int32(10),
@@ -730,7 +730,7 @@ func TestVectorCommitUnknownOverwrite(t *testing.T) {
 	md := buildVectorMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(withVector(&gen.Order{
+	s.SaveRecord(withVector(&demopb.Order{
 		OrderId:  proto.Int64(1),
 		Price:    proto.Int32(100),
 		Quantity: proto.Int32(10),
@@ -739,7 +739,7 @@ func TestVectorCommitUnknownOverwrite(t *testing.T) {
 
 	// Overwrite with different vector under commit-unknown.
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(withVector(&gen.Order{
+	s.SaveRecord(withVector(&demopb.Order{
 		OrderId:  proto.Int64(1),
 		Price:    proto.Int32(999),
 		Quantity: proto.Int32(99),
@@ -754,12 +754,12 @@ func TestVectorCommitUnknownDelete(t *testing.T) {
 	md := buildVectorMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(withVector(&gen.Order{
+	s.SaveRecord(withVector(&demopb.Order{
 		OrderId:  proto.Int64(1),
 		Price:    proto.Int32(100),
 		Quantity: proto.Int32(10),
 	}, "price", "quantity"))
-	s.SaveRecord(withVector(&gen.Order{
+	s.SaveRecord(withVector(&demopb.Order{
 		OrderId:  proto.Int64(2),
 		Price:    proto.Int32(200),
 		Quantity: proto.Int32(20),
@@ -786,7 +786,7 @@ func TestVectorRandomStress(t *testing.T) {
 		pk := s.Rng.Int64N(maxPK) + 1
 		if s.Rng.Float64() < 0.7 {
 			// 70% saves with random vector coordinates.
-			s.SaveRecord(withVector(&gen.Order{
+			s.SaveRecord(withVector(&demopb.Order{
 				OrderId:  proto.Int64(pk),
 				Price:    proto.Int32(s.Rng.Int32N(1000)),
 				Quantity: proto.Int32(s.Rng.Int32N(500)),
@@ -808,7 +808,7 @@ func TestVectorRandomStress(t *testing.T) {
 // withVector sets o's vector_data to the named numeric fields as Java's
 // RealVector bytes, the only vector form Java's maintainer reads; an unset
 // field leaves the vector null, which the index skips.
-func withVector(o *gen.Order, fields ...string) *gen.Order {
+func withVector(o *demopb.Order, fields ...string) *demopb.Order {
 	vec := make([]float64, 0, len(fields))
 	for _, f := range fields {
 		var v float64
@@ -851,7 +851,7 @@ func serializeVecForChaos(vec []float64) []byte {
 // using RaBitQ quantization on the vector_data bytes field.
 func buildVectorHighDimRaBitQMetadata() *recordlayer.RecordMetaData {
 	builder := recordlayer.NewRecordMetaDataBuilder()
-	builder.SetRecords(gen.File_record_layer_demo_proto)
+	builder.SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -920,7 +920,7 @@ func TestVectorHighDimRaBitQBasic(t *testing.T) {
 		}
 
 		for i, vec := range vectors {
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId:    proto.Int64(int64(i + 1)),
 				VectorData: serializeVecForChaos(vec),
 			})
@@ -1002,7 +1002,7 @@ func TestVectorHighDimRaBitQBasic(t *testing.T) {
 // Primary entries: [quantity, price, trimmedPK...], Permuted: [price, quantity].
 func buildPermutedMaxChaosMetadata() *recordlayer.RecordMetaData {
 	builder := recordlayer.NewRecordMetaDataBuilder()
-	builder.SetRecords(gen.File_record_layer_demo_proto)
+	builder.SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -1022,13 +1022,13 @@ func TestPermutedMaxBasicVerify(t *testing.T) {
 	md := buildPermutedMaxChaosMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(5)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(5)})
 	s.Verify()
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200), Quantity: proto.Int32(5)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200), Quantity: proto.Int32(5)})
 	s.Verify()
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(300), Quantity: proto.Int32(10)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(300), Quantity: proto.Int32(10)})
 	s.Verify()
 }
 
@@ -1040,7 +1040,7 @@ func TestPermutedMaxCommitUnknownInsert(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(5)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(5)})
 	s.Verify()
 }
 
@@ -1051,11 +1051,11 @@ func TestPermutedMaxCommitUnknownOverwriteHigher(t *testing.T) {
 	md := buildPermutedMaxChaosMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(5)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(5)})
 	s.Verify()
 
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(50)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(50)})
 	s.Verify() // Permuted should show max quantity=50 for group
 }
 
@@ -1066,14 +1066,14 @@ func TestPermutedMaxCommitUnknownOverwriteLower(t *testing.T) {
 	md := buildPermutedMaxChaosMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(50)})
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100), Quantity: proto.Int32(30)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(50)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(100), Quantity: proto.Int32(30)})
 	s.Verify()
 
 	// Overwrite pk=1 from qty=50 to qty=10 under commit-unknown.
 	// Max for group price=100 should become 30 (from pk=2).
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(10)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(10)})
 	s.Verify()
 }
 
@@ -1084,8 +1084,8 @@ func TestPermutedMaxCommitUnknownDelete(t *testing.T) {
 	md := buildPermutedMaxChaosMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(50)})
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100), Quantity: proto.Int32(30)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(50)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(100), Quantity: proto.Int32(30)})
 	s.Verify()
 
 	s.InjectOnce(FaultCommitUnknown)
@@ -1100,8 +1100,8 @@ func TestPermutedMaxDeleteLastInGroup(t *testing.T) {
 	md := buildPermutedMaxChaosMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(50)})
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200), Quantity: proto.Int32(30)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(50)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200), Quantity: proto.Int32(30)})
 	s.Verify()
 
 	// Delete the only record in group price=100
@@ -1122,7 +1122,7 @@ func TestPermutedMaxDeleteAllRecords(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 
 	for i := int64(1); i <= 10; i++ {
-		s.SaveRecord(&gen.Order{
+		s.SaveRecord(&demopb.Order{
 			OrderId:  proto.Int64(i),
 			Price:    proto.Int32(int32(i%3) * 100),
 			Quantity: proto.Int32(int32(i * 10)),
@@ -1134,7 +1134,7 @@ func TestPermutedMaxDeleteAllRecords(t *testing.T) {
 	s.Verify()
 
 	// Re-add after delete-all.
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(99), Price: proto.Int32(42), Quantity: proto.Int32(7)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(99), Price: proto.Int32(42), Quantity: proto.Int32(7)})
 	s.Verify()
 }
 
@@ -1151,7 +1151,7 @@ func TestPermutedMaxRandomStress(t *testing.T) {
 	for i := 0; i < numOps; i++ {
 		pk := s.Rng.Int64N(maxPK) + 1
 		if s.Rng.Float64() < 0.7 {
-			s.SaveRecord(&gen.Order{
+			s.SaveRecord(&demopb.Order{
 				OrderId:  proto.Int64(pk),
 				Price:    proto.Int32(s.Rng.Int32N(5) * 100), // small price space → grouping collisions
 				Quantity: proto.Int32(s.Rng.Int32N(500)),
@@ -1175,7 +1175,7 @@ func TestPermutedMaxRandomStress(t *testing.T) {
 // Groups by quantity, aggregated value is price. permutedSize=1.
 func buildPermutedMinChaosMetadata() *recordlayer.RecordMetaData {
 	builder := recordlayer.NewRecordMetaDataBuilder()
-	builder.SetRecords(gen.File_record_layer_demo_proto)
+	builder.SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -1195,13 +1195,13 @@ func TestPermutedMinBasicVerify(t *testing.T) {
 	md := buildPermutedMinChaosMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(50)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(50)})
 	s.Verify()
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100), Quantity: proto.Int32(10)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(100), Quantity: proto.Int32(10)})
 	s.Verify()
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(200), Quantity: proto.Int32(30)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(200), Quantity: proto.Int32(30)})
 	s.Verify()
 }
 
@@ -1212,7 +1212,7 @@ func TestPermutedMinCommitUnknownInsert(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(50)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(50)})
 	s.Verify()
 }
 
@@ -1223,11 +1223,11 @@ func TestPermutedMinCommitUnknownOverwriteLower(t *testing.T) {
 	md := buildPermutedMinChaosMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(50)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(50)})
 	s.Verify()
 
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(5)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(5)})
 	s.Verify() // Permuted should show min quantity=5 for group price=100
 }
 
@@ -1238,14 +1238,14 @@ func TestPermutedMinCommitUnknownOverwriteHigher(t *testing.T) {
 	md := buildPermutedMinChaosMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(10)})
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100), Quantity: proto.Int32(50)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(10)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(100), Quantity: proto.Int32(50)})
 	s.Verify()
 
 	// Overwrite pk=1 from qty=10 to qty=80 under commit-unknown.
 	// Min for group price=100 should become 50 (from pk=2).
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(80)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(80)})
 	s.Verify()
 }
 
@@ -1255,8 +1255,8 @@ func TestPermutedMinCommitUnknownDelete(t *testing.T) {
 	md := buildPermutedMinChaosMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(10)})
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100), Quantity: proto.Int32(50)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(10)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(100), Quantity: proto.Int32(50)})
 	s.Verify()
 
 	// Delete record with min — min should shift to pk=2's quantity=50
@@ -1271,8 +1271,8 @@ func TestPermutedMinDeleteLastInGroup(t *testing.T) {
 	md := buildPermutedMinChaosMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(10)})
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200), Quantity: proto.Int32(50)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(10)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200), Quantity: proto.Int32(50)})
 	s.Verify()
 
 	s.InjectOnce(FaultCommitUnknown)
@@ -1291,7 +1291,7 @@ func TestPermutedMinDeleteAllRecords(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 
 	for i := int64(1); i <= 10; i++ {
-		s.SaveRecord(&gen.Order{
+		s.SaveRecord(&demopb.Order{
 			OrderId:  proto.Int64(i),
 			Price:    proto.Int32(int32(i%3) * 100),
 			Quantity: proto.Int32(int32(i * 10)),
@@ -1302,7 +1302,7 @@ func TestPermutedMinDeleteAllRecords(t *testing.T) {
 	s.DeleteAllRecords()
 	s.Verify()
 
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(99), Price: proto.Int32(42), Quantity: proto.Int32(7)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(99), Price: proto.Int32(42), Quantity: proto.Int32(7)})
 	s.Verify()
 }
 
@@ -1319,7 +1319,7 @@ func TestPermutedMinRandomStress(t *testing.T) {
 	for i := 0; i < numOps; i++ {
 		pk := s.Rng.Int64N(maxPK) + 1
 		if s.Rng.Float64() < 0.7 {
-			s.SaveRecord(&gen.Order{
+			s.SaveRecord(&demopb.Order{
 				OrderId:  proto.Int64(pk),
 				Price:    proto.Int32(s.Rng.Int32N(5) * 100),
 				Quantity: proto.Int32(s.Rng.Int32N(500)),
@@ -1347,7 +1347,7 @@ func TestVectorHighDimRaBitQCommitUnknown(t *testing.T) {
 	// Use 2D vectors of (Price, Quantity) for the chaos model's checks,
 	// but with RaBitQ enabled to exercise the quantization pipeline under faults.
 	builder := recordlayer.NewRecordMetaDataBuilder()
-	builder.SetRecords(gen.File_record_layer_demo_proto)
+	builder.SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -1377,14 +1377,14 @@ func TestVectorHighDimRaBitQCommitUnknown(t *testing.T) {
 	// Commit enough distinct authoritative records to establish the centroid
 	// and then write a quantized node, even if every subsequent update repeats.
 	for pk := int64(1); pk <= 13; pk++ {
-		s.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(pk), Price: proto.Int32(int32(pk * 7)), Quantity: proto.Int32(int32(pk * 11))}, "price", "quantity"))
+		s.SaveRecord(withVector(&demopb.Order{OrderId: proto.Int64(pk), Price: proto.Int32(int32(pk * 7)), Quantity: proto.Int32(int32(pk * 11))}, "price", "quantity"))
 	}
 	assertChaosRaBitQActive(t, s.cleanDB, md, s.sub, "order_vec_rabitq_chaos")
 
 	const numOps = 20
 	for i := 0; i < numOps; i++ {
 		pk := s.Rng.Int64N(10) + 1
-		s.SaveRecord(withVector(&gen.Order{
+		s.SaveRecord(withVector(&demopb.Order{
 			OrderId:  proto.Int64(pk),
 			Price:    proto.Int32(s.Rng.Int32N(500)),
 			Quantity: proto.Int32(s.Rng.Int32N(500)),
@@ -1406,7 +1406,7 @@ func TestVectorHighDimRaBitQCommitUnknown(t *testing.T) {
 // the counted field grouped (validateGrouping(1)).
 func buildCountNotNullMetadata() *recordlayer.RecordMetaData {
 	builder := recordlayer.NewRecordMetaDataBuilder()
-	builder.SetRecords(gen.File_record_layer_demo_proto)
+	builder.SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -1430,22 +1430,22 @@ func TestCountNotNullCommitUnknown(t *testing.T) {
 
 	// Insert record with price set → should be counted
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 	s.Verify()
 
 	// Insert record WITHOUT price set → should NOT be counted
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2)})
 	s.Verify()
 
 	// Overwrite record 1 with different price under commit-unknown
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)})
 	s.Verify()
 
 	// Set price on record 2 (was nil → now has value) under commit-unknown
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
 	s.Verify()
 }
 
@@ -1456,15 +1456,15 @@ func TestCountNotNullNilToSet(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 
 	// Save without price
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1)})
 	s.Verify()
 
 	// Now set price → count should increase
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(50)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(50)})
 	s.Verify()
 
 	// Clear price back to nil → count should decrease
-	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1)})
+	s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1)})
 	s.Verify()
 }
 
@@ -1481,7 +1481,7 @@ func TestRandomWithCountNotNullIndex(t *testing.T) {
 	for i := 0; i < numOps; i++ {
 		pk := s.Rng.Int64N(maxPK) + 1
 		if s.Rng.Float64() < 0.7 {
-			order := &gen.Order{OrderId: proto.Int64(pk)}
+			order := &demopb.Order{OrderId: proto.Int64(pk)}
 			// 70% chance of setting price, 30% leave nil
 			if s.Rng.Float64() < 0.7 {
 				order.Price = proto.Int32(s.Rng.Int32N(5) * 100)

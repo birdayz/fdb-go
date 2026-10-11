@@ -10,7 +10,7 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
 )
 
@@ -63,7 +63,7 @@ func TestIntraTransactionRace(t *testing.T) {
 					defer wg.Done()
 					for i := 0; i < 10; i++ {
 						pk := int64(id*100 + i)
-						_, err := store.SaveRecord(&gen.Order{
+						_, err := store.SaveRecord(&demopb.Order{
 							OrderId:  proto.Int64(pk),
 							Price:    proto.Int32(int32(pk * 7)),
 							Quantity: proto.Int32(int32(i + 1)),
@@ -194,7 +194,7 @@ func TestConcurrentSave200(t *testing.T) {
 			wg.Add(1)
 			go func(id int) {
 				defer wg.Done()
-				_, err := store.SaveRecord(&gen.Order{
+				_, err := store.SaveRecord(&demopb.Order{
 					OrderId:  proto.Int64(int64(id)),
 					Price:    proto.Int32(int32(id * 3)),
 					Quantity: proto.Int32(int32(id%10 + 1)),

@@ -7,7 +7,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/gomega"
@@ -18,7 +18,7 @@ var _ = Describe("SPFresh recall monitor (RFC-156 ground-truth)", func() {
 	ctx := context.Background()
 
 	recallMetadata := func() *recordlayer.RecordMetaDataBuilder {
-		b := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		b := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 		b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 		b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -60,7 +60,7 @@ var _ = Describe("SPFresh recall monitor (RFC-156 ground-truth)", func() {
 			id := int64(1)
 			for p := int32(0); p < 8; p++ {
 				for q := int32(0); q < 8; q++ {
-					if _, serr := store.SaveRecord(&gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(p), Quantity: proto.Int32(q)}); serr != nil {
+					if _, serr := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(id), Price: proto.Int32(p), Quantity: proto.Int32(q)}); serr != nil {
 						return nil, serr
 					}
 					id++
@@ -151,7 +151,7 @@ var _ = Describe("SPFresh recall monitor (RFC-156 ground-truth)", func() {
 			id := int64(1)
 			for p := int32(0); p < 8; p++ {
 				for q := int32(0); q < 8; q++ {
-					if _, serr := store.SaveRecord(&gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(p), Quantity: proto.Int32(q)}); serr != nil {
+					if _, serr := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(id), Price: proto.Int32(p), Quantity: proto.Int32(q)}); serr != nil {
 						return nil, serr
 					}
 					id++
@@ -279,7 +279,7 @@ var _ = Describe("SPFresh recall monitor (RFC-156 ground-truth)", func() {
 				return nil, serr
 			}
 			for id := int64(1); id <= 30; id++ {
-				if _, serr := store.SaveRecord(&gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(int32(id % 6)), Quantity: proto.Int32(int32(id / 6))}); serr != nil {
+				if _, serr := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(id), Price: proto.Int32(int32(id % 6)), Quantity: proto.Int32(int32(id / 6))}); serr != nil {
 					return nil, serr
 				}
 			}
@@ -398,7 +398,7 @@ var _ = Describe("SPFresh recall monitor (RFC-156 ground-truth)", func() {
 				return nil, serr
 			}
 			for i := 1; i <= n; i++ {
-				if _, serr := store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(i)), VectorData: SerializeVector(mkVec(i))}); serr != nil {
+				if _, serr := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(int64(i)), VectorData: SerializeVector(mkVec(i))}); serr != nil {
 					return nil, serr
 				}
 			}

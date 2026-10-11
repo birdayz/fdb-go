@@ -10,7 +10,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer/vectorcodec"
@@ -37,7 +37,7 @@ func newConcurrencyIndex(name string) (*recordlayer.Index, func(*recordlayer.FDB
 		recordlayer.IndexOptionSPFreshCellTarget:    "4",
 		recordlayer.IndexOptionSPFreshCellMax:       "8",
 	}
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -63,7 +63,7 @@ func newConcurrencyIndex(name string) (*recordlayer.Index, func(*recordlayer.FDB
 		store, serr := storeBuilder(rtx)
 		Expect(serr).NotTo(HaveOccurred())
 		for i := int64(1); i <= 40; i++ {
-			if _, serr := store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i % 11)), Quantity: proto.Int32(int32(i % 9))}); serr != nil {
+			if _, serr := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i % 11)), Quantity: proto.Int32(int32(i % 9))}); serr != nil {
 				return nil, serr
 			}
 		}
@@ -155,7 +155,7 @@ var _ = Describe("SPFresh concurrency: same-pk writers + multi-rebalancer", func
 							return nil, derr
 						}
 						p, q := int32((w*37+i*17)%200), int32((w*23+i*11)%200)
-						_, serr = store.SaveRecord(&gen.Order{OrderId: proto.Int64(pk), Price: proto.Int32(p), Quantity: proto.Int32(q)})
+						_, serr = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(pk), Price: proto.Int32(p), Quantity: proto.Int32(q)})
 						return nil, serr
 					})
 					if werr != nil {
@@ -288,7 +288,7 @@ var _ = Describe("SPFresh concurrency: same-pk writers + multi-rebalancer", func
 						if serr != nil {
 							return nil, serr
 						}
-						_, serr = store.SaveRecord(&gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(p), Quantity: proto.Int32(q)})
+						_, serr = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(id), Price: proto.Int32(p), Quantity: proto.Int32(q)})
 						return nil, serr
 					})
 					if werr != nil {
@@ -397,7 +397,7 @@ var _ = Describe("SPFresh concurrency: same-pk writers + multi-rebalancer", func
 			}
 			for id := int64(100); id < 160; id++ {
 				p, q := int32(4+id%3), int32(4+(id/3)%3)
-				if _, serr := store.SaveRecord(&gen.Order{OrderId: proto.Int64(id), Price: &p, Quantity: &q}); serr != nil {
+				if _, serr := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(id), Price: &p, Quantity: &q}); serr != nil {
 					return nil, serr
 				}
 			}

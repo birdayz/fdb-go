@@ -8,7 +8,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 )
@@ -31,7 +31,7 @@ var _ = Describe("HNSW efSearch scan option", func() {
 			store, err := recordlayer.NewStoreBuilder().SetContext(rc).SetMetaDataProvider(md).SetSubspace(ks).Create()
 			Expect(err).NotTo(HaveOccurred())
 			for i := int64(1); i <= 8; i++ {
-				_, err := store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i)), Quantity: proto.Int32(int32(i))}, "price", "quantity"))
+				_, err := store.SaveRecord(withVector(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i)), Quantity: proto.Int32(int32(i))}, "price", "quantity"))
 				Expect(err).NotTo(HaveOccurred())
 			}
 			return nil, nil

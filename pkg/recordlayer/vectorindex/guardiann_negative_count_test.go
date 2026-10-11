@@ -8,7 +8,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 )
@@ -38,7 +38,7 @@ var _ = Describe("GuardiANN negative task count", func() {
 				return nil, err
 			}
 			for i := int64(1); i <= 13; i++ {
-				if _, err := store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i)), Quantity: proto.Int32(1)}, "price")); err != nil {
+				if _, err := store.SaveRecord(withVector(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i)), Quantity: proto.Int32(1)}, "price")); err != nil {
 					return nil, err
 				}
 			}

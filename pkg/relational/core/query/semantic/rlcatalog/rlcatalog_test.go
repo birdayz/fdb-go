@@ -8,7 +8,7 @@ import (
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/types/descriptorpb"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/core/query/semantic"
 	"fdb.dev/pkg/relational/core/query/semantic/rlcatalog"
@@ -18,7 +18,7 @@ import (
 // enough to exercise LookupTable / LookupColumn / Indexes round-trip.
 func buildMetaData(t *testing.T) *recordlayer.RecordMetaData {
 	t.Helper()
-	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -251,7 +251,7 @@ func TestWrap_AllTableNames_PreservesCasing(t *testing.T) {
 // type; universal indexes intentionally stay out (different scope).
 func TestWrap_Indexes(t *testing.T) {
 	t.Parallel()
-	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -334,7 +334,7 @@ func TestWrap_ProtoKindToSQL_FullMapping(t *testing.T) {
 	if flower.Type != "RECORD" {
 		t.Errorf("flower.Type: got %q, want RECORD", flower.Type)
 	}
-	flowerDescriptor := gen.File_record_layer_demo_proto.Messages().ByName("Order").Fields().ByName("flower")
+	flowerDescriptor := demopb.File_record_layer_demo_proto.Messages().ByName("Order").Fields().ByName("flower")
 	wantStructTypeName := string(flowerDescriptor.Message().FullName())
 	if flower.StructTypeName != wantStructTypeName {
 		t.Errorf("flower.StructTypeName: got %q, want descriptor identity %q", flower.StructTypeName, wantStructTypeName)
@@ -362,7 +362,7 @@ func TestWrap_NilMetaData(t *testing.T) {
 // --- Benchmarks ----------------------------------------------------
 
 func BenchmarkWrap_LookupTable_Hit(b *testing.B) {
-	bldr := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	bldr := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	bldr.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	bldr.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	bldr.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -378,7 +378,7 @@ func BenchmarkWrap_LookupTable_Hit(b *testing.B) {
 }
 
 func BenchmarkWrap_LookupTable_Miss(b *testing.B) {
-	bldr := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	bldr := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	bldr.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	bldr.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	bldr.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -394,7 +394,7 @@ func BenchmarkWrap_LookupTable_Miss(b *testing.B) {
 }
 
 func BenchmarkWrap_LookupColumn(b *testing.B) {
-	bldr := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	bldr := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	bldr.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	bldr.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	bldr.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))

@@ -13,6 +13,8 @@ import (
 	"fdb.dev/pkg/recordlayer/vectorindex"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -99,7 +101,7 @@ func mapMetaData(root recordlayer.KeyExpression) *gen.MetaData {
 // demoMetaDataWithRoot is the demo records with one value index on Order whose
 // root is root, written without Go's Build.
 func demoMetaDataWithRoot(root recordlayer.KeyExpression) *gen.MetaData {
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -1424,7 +1426,7 @@ type validatorIndex struct {
 // indexes and former indexes, serialized without Go's Build so a shape Go
 // refuses reaches both loaders.
 func indexValidationMetaData(storeVersions bool, indexes []validatorIndex, formers []*gen.FormerIndex) *gen.MetaData {
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -2138,7 +2140,7 @@ var _ = Describe("A windowed VECTOR index is validated as Java validates it", fu
 // Order that Java builds (the sliding-window conformance shape), its Index
 // message edited by edit.
 func windowedEdited(edit func(*gen.Index)) *gen.MetaData {
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -2230,7 +2232,7 @@ var _ = Describe("The online build of one index presets its record types' range 
 			clusterFile, err := sharedContainer.ClusterFile(ctx)
 			Expect(err).NotTo(HaveOccurred())
 
-			builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Concat(recordlayer.RecordTypeKey(), recordlayer.Field("order_id")))
 			if orderKey != nil {
 				builder.GetRecordType("Order").SetRecordTypeKey(orderKey)
@@ -2264,12 +2266,12 @@ var _ = Describe("The online build of one index presets its record types' range 
 					return nil, err
 				}
 				for i := int64(1); i <= 3; i++ {
-					if _, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(10 * i))}); err != nil {
+					if _, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(10 * i))}); err != nil {
 						return nil, err
 					}
 				}
 				for i := int64(101); i <= 102; i++ {
-					if _, err := store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(i)}); err != nil {
+					if _, err := store.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(i)}); err != nil {
 						return nil, err
 					}
 				}

@@ -7,7 +7,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
@@ -26,7 +26,7 @@ var _ = Describe("Vector index store timer counters", func() {
 		vecIdx.Options[recordlayer.IndexOptionGuardiannPrimaryClusterMin] = "1"
 		vecIdx.Options[recordlayer.IndexOptionGuardiannPrimaryClusterMax] = "2"
 		vecIdx.Options[recordlayer.IndexOptionGuardiannCollapseMinDuplicates] = "1"
-		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -41,7 +41,7 @@ var _ = Describe("Vector index store timer counters", func() {
 			// In-transaction maintenance, as embedded relational runs it.
 			store.GetIndexDeferredMaintenanceControl().SetAutoMergeDuringCommit(true)
 			for id := int64(1); id <= 6; id++ {
-				_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(int32(10 * id)), Quantity: proto.Int32(1)}, "price"))
+				_, err = store.SaveRecord(withVector(&demopb.Order{OrderId: proto.Int64(id), Price: proto.Int32(int32(10 * id)), Quantity: proto.Int32(1)}, "price"))
 				Expect(err).NotTo(HaveOccurred())
 			}
 			Expect(timer.GetCount(CountVectorTaskEnqueued)).To(BeNumerically(">", 0), "a cluster past its maximum enqueues a split")
@@ -66,7 +66,7 @@ var _ = Describe("Vector index store timer counters", func() {
 	It("counts HNSW node reads and writes", func() {
 		ks := specSubspace()
 		vecIdx := recordlayer.NewVectorIndex("vec_hnsw_counted", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("vector_data")), 1), 1)
-		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -79,7 +79,7 @@ var _ = Describe("Vector index store timer counters", func() {
 			store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 			for id := int64(1); id <= 4; id++ {
-				_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(int32(10 * id)), Quantity: proto.Int32(1)}, "price"))
+				_, err = store.SaveRecord(withVector(&demopb.Order{OrderId: proto.Int64(id), Price: proto.Int32(int32(10 * id)), Quantity: proto.Int32(1)}, "price"))
 				Expect(err).NotTo(HaveOccurred())
 			}
 			Expect(timer.GetCount(CountVectorNode0Writes)).To(BeNumerically(">=", 4), "each insert writes its layer-0 node")

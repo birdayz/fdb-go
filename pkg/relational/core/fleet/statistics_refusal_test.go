@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
 	"google.golang.org/protobuf/proto"
 )
@@ -57,7 +59,7 @@ func TestSyntheticRefusalIsRefusedNotFailed(t *testing.T) {
 
 	// Control: ordinary metadata is not refused, or the arm above would fire for
 	// every tenant and this test would pass while the feature was disabled.
-	plainBuilder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	plainBuilder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	plainBuilder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	plainBuilder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	plainBuilder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -74,7 +76,7 @@ func TestSyntheticRefusalIsRefusedNotFailed(t *testing.T) {
 // what this port preserves opaquely and does not model.
 func syntheticMetaData(t *testing.T) *recordlayer.RecordMetaData {
 	t.Helper()
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))

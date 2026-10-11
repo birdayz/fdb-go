@@ -24,7 +24,7 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
 	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
 )
@@ -168,7 +168,7 @@ func vecBuildMetaData(dims int, useRaBitQ bool) (*recordlayer.RecordMetaData, *r
 		vecIdx.Options["hnswUseRaBitQ"] = "true"
 	}
 
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -227,7 +227,7 @@ func vecInsertVectorsParallel(tb testing.TB, db *recordlayer.FDBDatabase, md *re
 			if parallelism <= 1 {
 				// Sequential path.
 				for i := batchStart; i < batchEnd; i++ {
-					_, err := store.SaveRecord(&gen.Order{
+					_, err := store.SaveRecord(&demopb.Order{
 						OrderId:    proto.Int64(int64(i)),
 						Price:      proto.Int32(int32(i % 1000)),
 						VectorData: serializeVector(vectors[i]),
@@ -248,7 +248,7 @@ func vecInsertVectorsParallel(tb testing.TB, db *recordlayer.FDBDatabase, md *re
 					go func(id int) {
 						defer wg.Done()
 						defer func() { <-sem }()
-						_, err := store.SaveRecord(&gen.Order{
+						_, err := store.SaveRecord(&demopb.Order{
 							OrderId:    proto.Int64(int64(id)),
 							Price:      proto.Int32(int32(id % 1000)),
 							VectorData: serializeVector(vectors[id]),
@@ -318,7 +318,7 @@ func BenchmarkVectorInsert(b *testing.B) {
 			if err != nil {
 				return nil, err
 			}
-			return store.SaveRecord(&gen.Order{
+			return store.SaveRecord(&demopb.Order{
 				OrderId:    proto.Int64(int64(i)),
 				Price:      proto.Int32(100),
 				VectorData: serializeVector(vectors[i]),
@@ -471,7 +471,7 @@ func BenchmarkVectorInsertParallel(b *testing.B) {
 				wg.Add(1)
 				go func(id int) {
 					defer wg.Done()
-					_, err := store.SaveRecord(&gen.Order{
+					_, err := store.SaveRecord(&demopb.Order{
 						OrderId:    proto.Int64(int64(id)),
 						Price:      proto.Int32(100),
 						VectorData: serializeVector(vectors[id]),
@@ -756,7 +756,7 @@ func TestVectorStressManual(t *testing.T) {
 			if err != nil {
 				return nil, err
 			}
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId:    proto.Int64(id),
 				Price:      proto.Int32(100),
 				VectorData: serializeVector(vec),
@@ -1183,7 +1183,7 @@ func TestVectorBuildLarge(t *testing.T) {
 				return nil, err
 			}
 			for i := batchStart; i < end; i++ {
-				if _, err := store.SaveRecord(&gen.Order{
+				if _, err := store.SaveRecord(&demopb.Order{
 					OrderId:    proto.Int64(int64(i)),
 					Price:      proto.Int32(int32(i % 1000)),
 					VectorData: serializeVector(buf[i-batchStart]),
@@ -1321,7 +1321,7 @@ func TestVectorIngestSweep(t *testing.T) {
 					return nil, err
 				}
 				for i := start; i < end; i++ {
-					if _, err := store.SaveRecord(&gen.Order{
+					if _, err := store.SaveRecord(&demopb.Order{
 						OrderId: proto.Int64(int64(i)), Price: proto.Int32(int32(i % 1000)),
 						VectorData: serializeVector(buf[i-start]),
 					}); err != nil {

@@ -14,7 +14,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -123,7 +123,7 @@ func TestFDB_AggregateScanModes(t *testing.T) {
 				t.Parallel()
 				ctx := context.Background()
 				ks := subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
-				builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+				builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 				builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 				builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 				builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -173,7 +173,7 @@ func TestFDB_AggregateScanModes(t *testing.T) {
 						return nil, err
 					}
 					for i := int64(1); i <= 3; i++ {
-						if _, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10)), Quantity: proto.Int32(int32(i))}); err != nil {
+						if _, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10)), Quantity: proto.Int32(int32(i))}); err != nil {
 							return nil, err
 						}
 					}
@@ -278,7 +278,7 @@ func testPermutedExtremumConcurrentInsert(t *testing.T, db *FDBDatabase, maximum
 		first, second = second, first
 	}
 	fn.Index = idx.Name
-	builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -296,7 +296,7 @@ func testPermutedExtremumConcurrentInsert(t *testing.T, db *FDBDatabase, maximum
 			return nil, err
 		}
 		for i, quantity := range []int32{first, second} {
-			if _, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(10), Quantity: proto.Int32(quantity)}); err != nil {
+			if _, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(10), Quantity: proto.Int32(quantity)}); err != nil {
 				return nil, err
 			}
 		}
@@ -327,7 +327,7 @@ func testPermutedExtremumConcurrentInsert(t *testing.T, db *FDBDatabase, maximum
 		if err != nil {
 			return nil, err
 		}
-		_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(10), Quantity: proto.Int32(7)})
+		_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(10), Quantity: proto.Int32(7)})
 		return nil, err
 	})
 	if err != nil {

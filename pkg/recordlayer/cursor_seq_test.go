@@ -5,7 +5,7 @@ import (
 	"iter"
 	"slices"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
@@ -29,7 +29,7 @@ var _ = Describe("CursorSeqInterface", func() {
 	var metaData *RecordMetaData
 
 	BeforeEach(func() {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -47,21 +47,21 @@ var _ = Describe("CursorSeqInterface", func() {
 			CreateOrOpen()
 		Expect(err).NotTo(HaveOccurred())
 
-		testOrders := []*gen.Order{
+		testOrders := []*demopb.Order{
 			{
 				OrderId: proto.Int64(1001),
 				Price:   proto.Int32(10),
-				Flower:  &gen.Flower{Type: proto.String("Rose"), Color: gen.Color_RED.Enum()},
+				Flower:  &demopb.Flower{Type: proto.String("Rose"), Color: demopb.Color_RED.Enum()},
 			},
 			{
 				OrderId: proto.Int64(1002),
 				Price:   proto.Int32(25),
-				Flower:  &gen.Flower{Type: proto.String("Tulip"), Color: gen.Color_YELLOW.Enum()},
+				Flower:  &demopb.Flower{Type: proto.String("Tulip"), Color: demopb.Color_YELLOW.Enum()},
 			},
 			{
 				OrderId: proto.Int64(1003),
 				Price:   proto.Int32(50),
-				Flower:  &gen.Flower{Type: proto.String("Lily"), Color: gen.Color_BLUE.Enum()},
+				Flower:  &demopb.Flower{Type: proto.String("Lily"), Color: demopb.Color_BLUE.Enum()},
 			},
 		}
 
@@ -85,7 +85,7 @@ var _ = Describe("CursorSeqInterface", func() {
 			var orderIDs []int64
 			for record, iterErr := range Seq2(cursor, scanCtx) {
 				Expect(iterErr).NotTo(HaveOccurred())
-				order := record.Record.(*gen.Order)
+				order := record.Record.(*demopb.Order)
 				orderIDs = append(orderIDs, *order.OrderId)
 			}
 
@@ -110,7 +110,7 @@ var _ = Describe("CursorSeqInterface", func() {
 			var orderIDs []int64
 			for record, err := range Seq2(cursor, scanCtx) {
 				Expect(err).NotTo(HaveOccurred())
-				order := record.Record.(*gen.Order)
+				order := record.Record.(*demopb.Order)
 				orderIDs = append(orderIDs, *order.OrderId)
 			}
 
@@ -155,7 +155,7 @@ var _ = Describe("CursorSeqInterface", func() {
 				break
 			}
 			Expect(found).To(BeTrue(), "no records found")
-			firstOrder := firstRecord.Record.(*gen.Order)
+			firstOrder := firstRecord.Record.(*demopb.Order)
 			Expect(*firstOrder.OrderId).To(Equal(int64(1001)))
 
 			GinkgoWriter.Printf("Standard library integration works: count=%d, first=%d\n", count, *firstOrder.OrderId)
@@ -177,14 +177,14 @@ var _ = Describe("CursorSeqInterface", func() {
 			expensiveOrders := Filter(
 				mustSeq(cursor, scanCtx),
 				func(record *FDBStoredRecord[proto.Message]) bool {
-					order := record.Record.(*gen.Order)
+					order := record.Record.(*demopb.Order)
 					return *order.Price > 20
 				},
 			)
 
 			expensiveOrderIDs := slices.Collect(
 				Map(expensiveOrders, func(record *FDBStoredRecord[proto.Message]) int64 {
-					order := record.Record.(*gen.Order)
+					order := record.Record.(*demopb.Order)
 					return *order.OrderId
 				}),
 			)
@@ -212,8 +212,8 @@ var _ = Describe("CursorSeqInterface", func() {
 
 			Expect(limitedOrders).To(HaveLen(2))
 
-			firstOrder := limitedOrders[0].Record.(*gen.Order)
-			secondOrder := limitedOrders[1].Record.(*gen.Order)
+			firstOrder := limitedOrders[0].Record.(*demopb.Order)
+			secondOrder := limitedOrders[1].Record.(*demopb.Order)
 
 			Expect(*firstOrder.OrderId).To(Equal(int64(1001)))
 			Expect(*secondOrder.OrderId).To(Equal(int64(1002)))

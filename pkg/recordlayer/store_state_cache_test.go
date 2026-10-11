@@ -14,6 +14,8 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 )
 
 var _ = Describe("Store State Cache", func() {
@@ -24,7 +26,7 @@ var _ = Describe("Store State Cache", func() {
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -35,7 +37,7 @@ var _ = Describe("Store State Cache", func() {
 
 	// Helper: metadata with an index.
 	buildMetaDataWithIndex := func() *RecordMetaData {
-		b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -1273,7 +1275,7 @@ var _ = Describe("Store State Cache", func() {
 				if err != nil {
 					return nil, err
 				}
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(42),
 					Price:   proto.Int32(100),
 				})
@@ -1307,7 +1309,7 @@ var _ = Describe("Store State Cache", func() {
 				rec, err := store.LoadRecord(tuple.Tuple{int64(42)})
 				Expect(err).NotTo(HaveOccurred())
 				Expect(rec).NotTo(BeNil())
-				order := rec.Record.(*gen.Order)
+				order := rec.Record.(*demopb.Order)
 				Expect(order.GetOrderId()).To(Equal(int64(42)))
 				Expect(order.GetPrice()).To(Equal(int32(100)))
 				return nil, nil

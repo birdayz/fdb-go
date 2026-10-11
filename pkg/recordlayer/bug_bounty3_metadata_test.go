@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -76,7 +78,7 @@ func TestBug1_BindRecordTypeKeyExpressionsShallow_GroupingKE(t *testing.T) {
 
 	countIdx := NewCountIndex("count_by_type_price", indexExpr)
 
-	builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(Concat(RecordTypeKey(), Field("order_id")))
 	builder.GetRecordType("Customer").SetPrimaryKey(Concat(RecordTypeKey(), Field("customer_id")))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(Concat(RecordTypeKey(), Field("id")))
@@ -88,7 +90,7 @@ func TestBug1_BindRecordTypeKeyExpressionsShallow_GroupingKE(t *testing.T) {
 
 	// The whole index expression is evaluated, not just the leaf, so the
 	// nesting the original bug could not descend through is on the path.
-	order := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
+	order := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
 	typeKey := recordTypeKeyOfEvaluated(t, md, md.GetIndex("count_by_type_price").RootExpression, order, "Order")
 	assertIntegerRecordTypeKey(t, typeKey, "GroupingKeyExpression")
 
@@ -110,7 +112,7 @@ func TestBug1_BindRecordTypeKeyExpressionsShallow_KeyWithValueKE(t *testing.T) {
 
 	idx := NewIndex("covering_idx", kwv)
 
-	builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -120,7 +122,7 @@ func TestBug1_BindRecordTypeKeyExpressionsShallow_KeyWithValueKE(t *testing.T) {
 		t.Fatalf("Build() failed: %v", err)
 	}
 
-	order := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(2)}
+	order := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(2)}
 	typeKey := recordTypeKeyOfEvaluated(t, md, md.GetIndex("covering_idx").RootExpression, order, "Order")
 	assertIntegerRecordTypeKey(t, typeKey, "KeyWithValueExpression")
 	_ = rtKey
@@ -139,7 +141,7 @@ func TestBug1_BindRecordTypeKeyExpressionsShallow_NestedComposite(t *testing.T) 
 
 	idx := NewIndex("nested_concat_idx", outerConcat)
 
-	builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -149,7 +151,7 @@ func TestBug1_BindRecordTypeKeyExpressionsShallow_NestedComposite(t *testing.T) 
 		t.Fatalf("Build() failed: %v", err)
 	}
 
-	order := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(2)}
+	order := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(2)}
 	typeKey := recordTypeKeyOfEvaluated(t, md, md.GetIndex("nested_concat_idx").RootExpression, order, "Order")
 	assertIntegerRecordTypeKey(t, typeKey, "nested CompositeKeyExpression")
 	_ = rtKey
@@ -179,7 +181,7 @@ func TestBug1_BindRecordTypeKeyExpressionsShallow_NestedComposite(t *testing.T) 
 func TestBug2_TypeKeysMapIgnoresInt32(t *testing.T) {
 	t.Parallel()
 
-	builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -225,7 +227,7 @@ func TestBug2_TypeKeysMapIgnoresInt32(t *testing.T) {
 
 	// Now test that a RecordTypeKeyExpression evaluates correctly for Order type.
 	// Create a fresh metadata with RecordTypeKey in the PK.
-	builder2 := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder2 := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder2.GetRecordType("Order").SetPrimaryKey(Concat(RecordTypeKey(), Field("order_id")))
 	builder2.GetRecordType("Customer").SetPrimaryKey(Concat(RecordTypeKey(), Field("customer_id")))
 	builder2.GetRecordType("TypedRecord").SetPrimaryKey(Concat(RecordTypeKey(), Field("id")))
@@ -251,7 +253,7 @@ func TestBug2_TypeKeysMapIgnoresInt32(t *testing.T) {
 	orderRT4 := md4.GetRecordType("Order")
 	pk := orderRT4.PrimaryKey
 
-	order := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
+	order := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
 	results, err := pk.Evaluate(nil, order)
 	if err != nil {
 		t.Fatalf("Evaluate PK failed: %v", err)
@@ -419,7 +421,7 @@ func TestBug4_GroupingFromProtoNoValidation(t *testing.T) {
 func TestBug5_FormerIndexSubspaceKeyTypeChangesOnRoundTrip(t *testing.T) {
 	t.Parallel()
 
-	builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -474,7 +476,7 @@ func TestBug5_FormerIndexSubspaceKeyTypeChangesOnRoundTrip(t *testing.T) {
 	// Now the real test: create a new index with the same int subspace key.
 	// The former index check at metadata.go:462 uses ==, which fails for
 	// int(42) != int64(42).
-	builder2 := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder2 := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder2.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	builder2.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	builder2.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -594,7 +596,7 @@ func TestBug6_RecordTypeKeyNestIsTheThenJavaWrites(t *testing.T) {
 func TestBug7_SetRecordCountKeyVersionBump(t *testing.T) {
 	t.Parallel()
 
-	builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -877,7 +879,7 @@ func TestBug12_ProtoDeserializationDropsIndexForUnknownRecordType(t *testing.T) 
 
 	// Build metadata with an index, serialize, then manually modify the proto
 	// to reference a non-existent record type.
-	builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))

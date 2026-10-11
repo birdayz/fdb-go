@@ -7,6 +7,7 @@ import (
 	"sort"
 
 	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -136,7 +137,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 	ctx := context.Background()
 
 	baseMetaData := func() *recordlayer.RecordMetaDataBuilder {
-		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -161,7 +162,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for _, o := range []struct{ id, price int64 }{{1, 10}, {2, 20}} {
-				_, err = store.SaveRecord(withVector(&gen.Order{
+				_, err = store.SaveRecord(withVector(&demopb.Order{
 					OrderId: proto.Int64(o.id), Price: proto.Int32(int32(o.price)),
 					CoordX: proto.Int64(o.id), CoordY: proto.Int64(o.id),
 				}, "coord_x", "coord_y"))
@@ -234,7 +235,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 
 			// Insert prices 50, 40, 30 — fills the window.
 			for i, price := range []int32{50, 40, 30} {
-				_, err = store.SaveRecord(withVector(&gen.Order{
+				_, err = store.SaveRecord(withVector(&demopb.Order{
 					OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price),
 					CoordX: proto.Int64(int64(i)), CoordY: proto.Int64(int64(i)),
 				}, "coord_x", "coord_y"))
@@ -249,7 +250,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 			Expect(boundary).To(Equal(tuple.Tuple{int64(50), int64(1)}))
 
 			// A BETTER entry (price 20) evicts the worst (price 50, PK 1).
-			_, err = store.SaveRecord(withVector(&gen.Order{
+			_, err = store.SaveRecord(withVector(&demopb.Order{
 				OrderId: proto.Int64(4), Price: proto.Int32(20),
 				CoordX: proto.Int64(9), CoordY: proto.Int64(9),
 			}, "coord_x", "coord_y"))
@@ -268,7 +269,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 
 			// A WORSE entry (price 100) never reaches the delegate, but is
 			// still tracked in the entry list.
-			_, err = store.SaveRecord(withVector(&gen.Order{
+			_, err = store.SaveRecord(withVector(&demopb.Order{
 				OrderId: proto.Int64(5), Price: proto.Int32(100),
 				CoordX: proto.Int64(11), CoordY: proto.Int64(11),
 			}, "coord_x", "coord_y"))
@@ -304,7 +305,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i, price := range []int32{30, 40, 50} {
-				_, err = store.SaveRecord(withVector(&gen.Order{
+				_, err = store.SaveRecord(withVector(&demopb.Order{
 					OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price),
 					CoordX: proto.Int64(int64(i)), CoordY: proto.Int64(int64(i)),
 				}, "coord_x", "coord_y"))
@@ -320,7 +321,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 			Expect(boundary).To(Equal(tuple.Tuple{int64(30), int64(1)}))
 
 			// A larger price evicts the smallest.
-			_, err = store.SaveRecord(withVector(&gen.Order{
+			_, err = store.SaveRecord(withVector(&demopb.Order{
 				OrderId: proto.Int64(4), Price: proto.Int32(60),
 				CoordX: proto.Int64(9), CoordY: proto.Int64(9),
 			}, "coord_x", "coord_y"))
@@ -331,7 +332,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 			Expect(boundary).To(Equal(tuple.Tuple{int64(40), int64(2)}))
 
 			// A smaller price is tracked but never indexed.
-			_, err = store.SaveRecord(withVector(&gen.Order{
+			_, err = store.SaveRecord(withVector(&demopb.Order{
 				OrderId: proto.Int64(5), Price: proto.Int32(1),
 				CoordX: proto.Int64(11), CoordY: proto.Int64(11),
 			}, "coord_x", "coord_y"))
@@ -392,7 +393,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i, price := range dirCase.prices {
-					_, err = store.SaveRecord(withVector(&gen.Order{
+					_, err = store.SaveRecord(withVector(&demopb.Order{
 						OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price),
 						CoordX: proto.Int64(int64(i)), CoordY: proto.Int64(int64(i)),
 					}, "coord_x", "coord_y"))
@@ -438,7 +439,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i, price := range []int32{10, 20, 30} {
-				_, err = store.SaveRecord(withVector(&gen.Order{
+				_, err = store.SaveRecord(withVector(&demopb.Order{
 					OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price),
 					CoordX: proto.Int64(int64(i)), CoordY: proto.Int64(int64(i)),
 				}, "coord_x", "coord_y"))
@@ -480,7 +481,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(withVector(&gen.Order{
+			_, err = store.SaveRecord(withVector(&demopb.Order{
 				OrderId: proto.Int64(1), Price: proto.Int32(10),
 				CoordX: proto.Int64(1), CoordY: proto.Int64(1),
 			}, "coord_x", "coord_y"))
@@ -528,7 +529,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 			}{
 				{1, 7, 10}, {2, 7, 20}, {3, 7, 30}, {4, 8, 15}, {5, 8, 25},
 			} {
-				_, err = store.SaveRecord(withVector(&gen.Order{
+				_, err = store.SaveRecord(withVector(&demopb.Order{
 					OrderId:  proto.Int64(o.id),
 					Quantity: proto.Int32(int32(o.qty)),
 					Price:    proto.Int32(int32(o.price)),
@@ -588,7 +589,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 			for _, o := range []struct{ id, qty, price int64 }{
 				{1, 7, 10}, {2, 7, 20}, {3, 8, 15},
 			} {
-				_, err = store.SaveRecord(withVector(&gen.Order{
+				_, err = store.SaveRecord(withVector(&demopb.Order{
 					OrderId:  proto.Int64(o.id),
 					Quantity: proto.Int32(int32(o.qty)),
 					Price:    proto.Int32(int32(o.price)),
@@ -647,7 +648,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(withVector(&gen.Order{
+			_, err = store.SaveRecord(withVector(&demopb.Order{
 				OrderId: proto.Int64(1), Quantity: proto.Int32(7), Price: proto.Int32(10),
 				CoordX: proto.Int64(1), CoordY: proto.Int64(1),
 			}, "coord_x", "coord_y"))
@@ -729,7 +730,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 			for _, o := range []struct{ id, qty, price int64 }{
 				{1, 7, 100}, {2, 7, 200}, {3, 8, 100},
 			} {
-				_, e := store.SaveRecord(withVector(&gen.Order{
+				_, e := store.SaveRecord(withVector(&demopb.Order{
 					OrderId:  proto.Int64(o.id),
 					Quantity: proto.Int32(int32(o.qty)),
 					Price:    proto.Int32(int32(o.price)),
@@ -811,7 +812,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 				for _, o := range []struct{ id, qty, price int64 }{
 					{1, 7, 10}, {2, 7, 20}, {3, 8, 15},
 				} {
-					_, e := store.SaveRecord(withVector(&gen.Order{
+					_, e := store.SaveRecord(withVector(&demopb.Order{
 						OrderId:  proto.Int64(o.id),
 						Quantity: proto.Int32(int32(o.qty)),
 						Price:    proto.Int32(int32(o.price)),
@@ -874,7 +875,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 			Expect(serr).NotTo(HaveOccurred())
 
 			for i, price := range []int32{10, 20, 30} {
-				_, e := store.SaveRecord(&gen.Order{
+				_, e := store.SaveRecord(&demopb.Order{
 					OrderId:    proto.Int64(int64(i + 1)),
 					Price:      proto.Int32(price),
 					VectorData: SerializeVector([]float64{float64(i), 0, 0}),
@@ -950,7 +951,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 			Expect(serr).NotTo(HaveOccurred())
 
 			for _, o := range []struct{ id, qty, price int64 }{{1, 7, 10}, {2, 8, 20}} {
-				_, e := store.SaveRecord(withVector(&gen.Order{
+				_, e := store.SaveRecord(withVector(&demopb.Order{
 					OrderId:  proto.Int64(o.id),
 					Quantity: proto.Int32(int32(o.qty)),
 					Price:    proto.Int32(int32(o.price)),
@@ -1005,7 +1006,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 			Expect(serr).NotTo(HaveOccurred())
 
 			for i, price := range []int32{10, 20, 30} {
-				_, e := store.SaveRecord(withVector(&gen.Order{
+				_, e := store.SaveRecord(withVector(&demopb.Order{
 					OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price),
 					CoordX: proto.Int64(int64(i)), CoordY: proto.Int64(int64(i)),
 				}, "coord_x", "coord_y"))
@@ -1077,7 +1078,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 			Expect(serr).NotTo(HaveOccurred())
 
 			for i, price := range []int32{30, 20, 10} {
-				_, e := store.SaveRecord(withVector(&gen.Order{
+				_, e := store.SaveRecord(withVector(&demopb.Order{
 					OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price),
 					CoordX: proto.Int64(int64(i)), CoordY: proto.Int64(int64(i)),
 				}, "coord_x", "coord_y"))
@@ -1120,7 +1121,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 			Expect(serr).NotTo(HaveOccurred())
 
 			for i, price := range []int32{10, 20, 30} {
-				_, e := store.SaveRecord(withVector(&gen.Order{
+				_, e := store.SaveRecord(withVector(&demopb.Order{
 					OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price),
 					CoordX: proto.Int64(int64(i)), CoordY: proto.Int64(int64(i)),
 				}, "coord_x", "coord_y"))
@@ -1143,7 +1144,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 			// The store is usable afterwards: a fresh save fills the window
 			// again rather than evicting against a boundary that named a
 			// record delete-all removed.
-			_, e := store.SaveRecord(withVector(&gen.Order{
+			_, e := store.SaveRecord(withVector(&demopb.Order{
 				OrderId: proto.Int64(9), Price: proto.Int32(5),
 				CoordX: proto.Int64(9), CoordY: proto.Int64(9),
 			}, "coord_x", "coord_y"))
@@ -1180,7 +1181,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(serr).NotTo(HaveOccurred())
 
-			_, e := store.SaveRecord(withVector(&gen.Order{
+			_, e := store.SaveRecord(withVector(&demopb.Order{
 				OrderId: proto.Int64(1), Price: proto.Int32(10),
 				CoordX: proto.Int64(3), CoordY: proto.Int64(4),
 			}, "coord_x", "coord_y"))
@@ -1211,7 +1212,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(withVector(&gen.Order{
+			_, err = store.SaveRecord(withVector(&demopb.Order{
 				OrderId: proto.Int64(1), Price: proto.Int32(10),
 				CoordX: proto.Int64(3), CoordY: proto.Int64(4),
 			}, "coord_x", "coord_y"))
@@ -1266,7 +1267,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 									if tied {
 										price = 10
 									}
-									record, err := store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(price), Quantity: proto.Int32(7), CoordX: proto.Int64(id), CoordY: proto.Int64(0)}, "coord_x", "coord_y"))
+									record, err := store.SaveRecord(withVector(&demopb.Order{OrderId: proto.Int64(id), Price: proto.Int32(price), Quantity: proto.Int32(7), CoordX: proto.Int64(id), CoordY: proto.Int64(0)}, "coord_x", "coord_y"))
 									Expect(err).NotTo(HaveOccurred())
 									saved = append(saved, record)
 								}
@@ -1288,11 +1289,11 @@ var _ = Describe("SlidingWindowIndex", func() {
 									// window (SW_DELEGATE_INSERT), and the graph, holding the
 									// node already, leaves it at its stored vector, as Java's
 									// HNSW Insert does (Insert.java:195-197).
-									stored := record.Record.(*gen.Order)
+									stored := record.Record.(*demopb.Order)
 									storedX, storedY := stored.GetCoordX(), stored.GetCoordY()
 									refreshed := *record
 									refreshed.Record = proto.Clone(record.Record)
-									order := refreshed.Record.(*gen.Order)
+									order := refreshed.Record.(*demopb.Order)
 									order.CoordX = proto.Int64(100 + order.GetOrderId())
 									order.CoordY = proto.Int64(99)
 									withVector(order, "coord_x", "coord_y")
@@ -1313,7 +1314,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 									Expect(timer.GetCount(recordlayer.CountSWReinsertAlreadyTracked)).To(Equal(int64(1)))
 									inWindow := false
 									for _, pk := range pks {
-										if pk == record.Record.(*gen.Order).GetOrderId() {
+										if pk == record.Record.(*demopb.Order).GetOrderId() {
 											inWindow = true
 										}
 									}
@@ -1358,7 +1359,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
-			saved, err := store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), CoordX: proto.Int64(0), CoordY: proto.Int64(0)}, "coord_x", "coord_y"))
+			saved, err := store.SaveRecord(withVector(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), CoordX: proto.Int64(0), CoordY: proto.Int64(0)}, "coord_x", "coord_y"))
 			Expect(err).NotTo(HaveOccurred())
 			sw := slidingWindowSubspaceFor(store.Subspace(), idx)
 			meta := swPartitionSub(sw, nil).Sub(slidingWindowMetaSubspaceKey)
@@ -1397,7 +1398,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(store.GetIndexState(idx.Name)).To(Equal(recordlayer.IndexStateWriteOnly))
 
-			saved, err := store.SaveRecord(withVector(&gen.Order{
+			saved, err := store.SaveRecord(withVector(&demopb.Order{
 				OrderId: proto.Int64(1), Price: proto.Int32(10),
 				CoordX: proto.Int64(0), CoordY: proto.Int64(0),
 			}, "coord_x", "coord_y"))
@@ -1430,7 +1431,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 			// window of 2 the next insert takes the window-full branch, compares
 			// against the boundary, and — being worse — never enters the graph,
 			// so the window silently holds one record instead of two.
-			_, err = store.SaveRecord(withVector(&gen.Order{
+			_, err = store.SaveRecord(withVector(&demopb.Order{
 				OrderId: proto.Int64(2), Price: proto.Int32(20),
 				CoordX: proto.Int64(1), CoordY: proto.Int64(1),
 			}, "coord_x", "coord_y"))
@@ -1469,7 +1470,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i, price := range []int32{10, 20, 30} {
-				_, err = store.SaveRecord(withVector(&gen.Order{
+				_, err = store.SaveRecord(withVector(&demopb.Order{
 					OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price),
 					CoordX: proto.Int64(int64(i)), CoordY: proto.Int64(int64(i)),
 				}, "coord_x", "coord_y"))
@@ -1497,7 +1498,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 
 			// And the rebuild really does refill the window.
 			for i, price := range []int32{10, 20, 30} {
-				_, err = store.SaveRecord(withVector(&gen.Order{
+				_, err = store.SaveRecord(withVector(&demopb.Order{
 					OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price),
 					CoordX: proto.Int64(int64(i)), CoordY: proto.Int64(int64(i)),
 				}, "coord_x", "coord_y"))
@@ -1544,7 +1545,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 			// Partition 1 holds two records in-window plus one in overflow, so
 			// the move also has to trigger a re-election on the way out.
 			for _, o := range []struct{ id, price int64 }{{1, 10}, {2, 20}, {3, 30}} {
-				_, e := store.SaveRecord(withVector(&gen.Order{
+				_, e := store.SaveRecord(withVector(&demopb.Order{
 					OrderId: proto.Int64(o.id), Quantity: proto.Int32(1),
 					Price:  proto.Int32(int32(o.price)),
 					CoordX: proto.Int64(o.id), CoordY: proto.Int64(o.id),
@@ -1569,7 +1570,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 			Expect(graphPKs(1)).To(Equal([]int64{1, 2}))
 
 			// Move order 1 to partition 2, keeping its price.
-			_, err = store.SaveRecord(withVector(&gen.Order{
+			_, err = store.SaveRecord(withVector(&demopb.Order{
 				OrderId: proto.Int64(1), Quantity: proto.Int32(2),
 				Price:  proto.Int32(10),
 				CoordX: proto.Int64(1), CoordY: proto.Int64(1),
@@ -1623,7 +1624,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i, price := range []int32{10, 20, 30} {
-				_, err = store.SaveRecord(withVector(&gen.Order{
+				_, err = store.SaveRecord(withVector(&demopb.Order{
 					OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price),
 					CoordX: proto.Int64(int64(i)), CoordY: proto.Int64(int64(i)),
 				}, "coord_x", "coord_y"))
@@ -1633,7 +1634,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 
 			// Move PK 1 from the best position to the worst. It leaves the
 			// window; PK 3 (price 30) is re-elected in its place.
-			_, err = store.SaveRecord(withVector(&gen.Order{
+			_, err = store.SaveRecord(withVector(&demopb.Order{
 				OrderId: proto.Int64(1), Price: proto.Int32(99),
 				CoordX: proto.Int64(0), CoordY: proto.Int64(0),
 			}, "coord_x", "coord_y"))
@@ -1663,7 +1664,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 
 var _ = Describe("SlidingWindowIndex validation", func() {
 	baseMetaData := func() *recordlayer.RecordMetaDataBuilder {
-		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -1839,7 +1840,7 @@ var _ = Describe("SlidingWindowIndex validation", func() {
 			store, serr := recordlayer.NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(serr).NotTo(HaveOccurred())
-			_, saveErr := store.SaveRecord(&gen.Order{
+			_, saveErr := store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(1), Price: proto.Int32(10),
 				VectorData: SerializeVector([]float64{1, 2, 3}),
 			})

@@ -11,6 +11,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
@@ -66,7 +67,7 @@ func TestGoOnlyCollationError(t *testing.T) {
 var _ = Describe("Go-only collation guard", func() {
 	ctx := context.Background()
 	build := func(configure func(*RecordMetaDataBuilder)) *RecordMetaData {
-		b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		b.GetRecordType("Order").SetPrimaryKey(Concat(RecordTypeKey(), Field("order_id")))
 		b.GetRecordType("Customer").SetPrimaryKey(Concat(RecordTypeKey(), Field("customer_id")))
 		b.GetRecordType("TypedRecord").SetPrimaryKey(Concat(RecordTypeKey(), Field("id")))
@@ -97,8 +98,8 @@ var _ = Describe("Go-only collation guard", func() {
 		Expect(err).NotTo(HaveOccurred())
 		return kvs
 	}
-	customer := func(id int64) *gen.Customer {
-		return &gen.Customer{CustomerId: proto.Int64(id), Name: proto.String("Résumé")}
+	customer := func(id int64) *demopb.Customer {
+		return &demopb.Customer{CustomerId: proto.Int64(id), Name: proto.String("Résumé")}
 	}
 
 	for _, name := range []string{CollateFuncJRE, CollateFuncICU} {
@@ -137,7 +138,7 @@ var _ = Describe("Go-only collation guard", func() {
 				Expect(guard(err, name).IndexName).To(Equal(index.Name))
 				_, err = store.SaveRecordBatch([]proto.Message{customer(2)})
 				guard(err, name)
-				_, err = store.SaveRecordBatch([]proto.Message{&gen.Order{OrderId: proto.Int64(99)}, customer(2)})
+				_, err = store.SaveRecordBatch([]proto.Message{&demopb.Order{OrderId: proto.Int64(99)}, customer(2)})
 				guard(err, name)
 				_, err = store.SaveRecordsPipelined([]proto.Message{customer(2)}, RecordExistenceCheckNone)
 				guard(err, name)
@@ -154,7 +155,7 @@ var _ = Describe("Go-only collation guard", func() {
 				guard(err, name)
 				Expect(contents(store)).To(Equal(before), "refusal must precede all mutations, even if the caller commits")
 				// The guard is scoped to the indexed type, not the whole store.
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1)})
 				Expect(err).NotTo(HaveOccurred())
 				// Range clearing copies existing prefix bytes; it evaluates no collation.
 				Expect(store.DeleteRecordsWhere(pk[:1])).To(Succeed())
@@ -224,11 +225,11 @@ var _ = Describe("Go-only collation guard", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(store.ensureStoreStateLoadedErr()).To(Succeed())
 				before := contents(store)
-				replacement := &gen.Order{OrderId: proto.Int64(1)}
+				replacement := &demopb.Order{OrderId: proto.Int64(1)}
 				_, err = store.SaveRecord(replacement)
 				Expect(guard(err, CollateFuncJRE).IndexName).To(Equal(index.Name))
 				Expect(contents(store)).To(Equal(before))
-				_, err = store.SaveRecordBatch([]proto.Message{&gen.Order{OrderId: proto.Int64(99)}, replacement})
+				_, err = store.SaveRecordBatch([]proto.Message{&demopb.Order{OrderId: proto.Int64(99)}, replacement})
 				guard(err, CollateFuncJRE)
 				Expect(contents(store)).To(Equal(before), "the old type's index must be checked before even the first batch write")
 				return nil, nil
@@ -249,7 +250,7 @@ var _ = Describe("Go-only collation guard", func() {
 		})).To(Succeed())
 		Expect(run(md, false, func(store *FDBRecordStore) error {
 			before := contents(store)
-			_, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(2)})
+			_, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2)})
 			Expect(guard(err, CollateFuncICU).IndexName).To(Equal(index.Name))
 			_, err = store.SaveRecordBatch([]proto.Message{customer(3)})
 			guard(err, CollateFuncICU)
@@ -324,7 +325,7 @@ var _ = Describe("Go-only collation guard", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(store.ensureStoreStateLoadedErr()).To(Succeed())
 				before := contents(store)
-				_, err = store.SaveRecordBatch([]proto.Message{&gen.Order{OrderId: proto.Int64(99)}, customer(2)})
+				_, err = store.SaveRecordBatch([]proto.Message{&demopb.Order{OrderId: proto.Int64(99)}, customer(2)})
 				guard(err, CollateFuncJRE)
 				Expect(contents(store)).To(Equal(before), "the legacy fallback must refuse before its first save")
 				return nil, nil

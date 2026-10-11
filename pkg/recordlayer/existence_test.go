@@ -9,14 +9,14 @@ import (
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 )
 
 var _ = Describe("RecordExists_BasicFunctionality", func() {
 	var recordMetaData *RecordMetaData
 
 	BeforeEach(func() {
-		fileDesc := gen.File_record_layer_demo_proto
+		fileDesc := demopb.File_record_layer_demo_proto
 		metaDataBuilder := NewRecordMetaDataBuilder().SetRecords(fileDesc)
 		metaDataBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		metaDataBuilder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
@@ -62,12 +62,12 @@ var _ = Describe("RecordExists_BasicFunctionality", func() {
 				return nil, err
 			}
 
-			order := &gen.Order{
+			order := &demopb.Order{
 				OrderId: proto.Int64(1001),
 				Price:   proto.Int32(50),
-				Flower: &gen.Flower{
+				Flower: &demopb.Flower{
 					Type:  proto.String("Rose"),
-					Color: gen.Color_RED.Enum(),
+					Color: demopb.Color_RED.Enum(),
 				},
 			}
 
@@ -109,12 +109,12 @@ var _ = Describe("RecordExists_BasicFunctionality", func() {
 				return nil, err
 			}
 
-			order := &gen.Order{
+			order := &demopb.Order{
 				OrderId: proto.Int64(1002),
 				Price:   proto.Int32(75),
-				Flower: &gen.Flower{
+				Flower: &demopb.Flower{
 					Type:  proto.String("Tulip"),
-					Color: gen.Color_YELLOW.Enum(),
+					Color: demopb.Color_YELLOW.Enum(),
 				},
 			}
 
@@ -163,7 +163,7 @@ var _ = Describe("RecordExistenceCheck_ErrorIfExists", func() {
 	var recordMetaData *RecordMetaData
 
 	BeforeEach(func() {
-		fileDesc := gen.File_record_layer_demo_proto
+		fileDesc := demopb.File_record_layer_demo_proto
 		metaDataBuilder := NewRecordMetaDataBuilder().SetRecords(fileDesc)
 		metaDataBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		metaDataBuilder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
@@ -185,12 +185,12 @@ var _ = Describe("RecordExistenceCheck_ErrorIfExists", func() {
 				CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			order := &gen.Order{
+			order := &demopb.Order{
 				OrderId: proto.Int64(2001),
 				Price:   proto.Int32(100),
-				Flower: &gen.Flower{
+				Flower: &demopb.Flower{
 					Type:  proto.String("Daisy"),
-					Color: gen.Color_YELLOW.Enum(),
+					Color: demopb.Color_YELLOW.Enum(),
 				},
 			}
 
@@ -217,7 +217,7 @@ var _ = Describe("RecordExistenceCheck_ErrorIfExists", func() {
 				return nil, err
 			}
 
-			order := &gen.Order{
+			order := &demopb.Order{
 				OrderId: proto.Int64(2001),
 				Price:   proto.Int32(100),
 			}
@@ -235,12 +235,12 @@ var _ = Describe("RecordExistenceCheck_ErrorIfExists", func() {
 				CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			order := &gen.Order{
+			order := &demopb.Order{
 				OrderId: proto.Int64(2001),
 				Price:   proto.Int32(200),
-				Flower: &gen.Flower{
+				Flower: &demopb.Flower{
 					Type:  proto.String("Lily"),
-					Color: gen.Color_YELLOW.Enum(),
+					Color: demopb.Color_YELLOW.Enum(),
 				},
 			}
 
@@ -259,7 +259,7 @@ var _ = Describe("InsertRecord", func() {
 	var recordMetaData *RecordMetaData
 
 	BeforeEach(func() {
-		fileDesc := gen.File_record_layer_demo_proto
+		fileDesc := demopb.File_record_layer_demo_proto
 		metaDataBuilder := NewRecordMetaDataBuilder().SetRecords(fileDesc)
 		metaDataBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		metaDataBuilder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
@@ -281,12 +281,12 @@ var _ = Describe("InsertRecord", func() {
 				CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			order := &gen.Order{
+			order := &demopb.Order{
 				OrderId: proto.Int64(3001),
 				Price:   proto.Int32(150),
-				Flower: &gen.Flower{
+				Flower: &demopb.Flower{
 					Type:  proto.String("Orchid"),
-					Color: gen.Color_PINK.Enum(),
+					Color: demopb.Color_PINK.Enum(),
 				},
 			}
 
@@ -313,7 +313,7 @@ var _ = Describe("InsertRecord", func() {
 				return nil, err
 			}
 
-			order := &gen.Order{
+			order := &demopb.Order{
 				OrderId: proto.Int64(3001),
 				Price:   proto.Int32(150),
 			}
@@ -331,12 +331,12 @@ var _ = Describe("InsertRecord", func() {
 				CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			order := &gen.Order{
+			order := &demopb.Order{
 				OrderId: proto.Int64(3001),
 				Price:   proto.Int32(250),
-				Flower: &gen.Flower{
+				Flower: &demopb.Flower{
 					Type:  proto.String("Carnation"),
-					Color: gen.Color_RED.Enum(),
+					Color: demopb.Color_RED.Enum(),
 				},
 			}
 
@@ -355,7 +355,7 @@ var _ = Describe("UpdateRecord", func() {
 	var recordMetaData *RecordMetaData
 
 	BeforeEach(func() {
-		fileDesc := gen.File_record_layer_demo_proto
+		fileDesc := demopb.File_record_layer_demo_proto
 		metaDataBuilder := NewRecordMetaDataBuilder().SetRecords(fileDesc)
 		metaDataBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		metaDataBuilder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
@@ -377,12 +377,12 @@ var _ = Describe("UpdateRecord", func() {
 				CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			order := &gen.Order{
+			order := &demopb.Order{
 				OrderId: proto.Int64(4001),
 				Price:   proto.Int32(100),
-				Flower: &gen.Flower{
+				Flower: &demopb.Flower{
 					Type:  proto.String("Iris"),
-					Color: gen.Color_BLUE.Enum(),
+					Color: demopb.Color_BLUE.Enum(),
 				},
 			}
 
@@ -411,12 +411,12 @@ var _ = Describe("UpdateRecord", func() {
 				return nil, err
 			}
 
-			order := &gen.Order{
+			order := &demopb.Order{
 				OrderId: proto.Int64(4002),
 				Price:   proto.Int32(100),
-				Flower: &gen.Flower{
+				Flower: &demopb.Flower{
 					Type:  proto.String("Peony"),
-					Color: gen.Color_PINK.Enum(),
+					Color: demopb.Color_PINK.Enum(),
 				},
 			}
 
@@ -434,12 +434,12 @@ var _ = Describe("UpdateRecord", func() {
 				CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			order := &gen.Order{
+			order := &demopb.Order{
 				OrderId: proto.Int64(4002),
 				Price:   proto.Int32(200),
-				Flower: &gen.Flower{
+				Flower: &demopb.Flower{
 					Type:  proto.String("Peony"),
-					Color: gen.Color_RED.Enum(),
+					Color: demopb.Color_RED.Enum(),
 				},
 			}
 
@@ -463,9 +463,9 @@ var _ = Describe("UpdateRecord", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(storedRecord).NotTo(BeNil())
 
-			order := storedRecord.Record.(*gen.Order)
+			order := storedRecord.Record.(*demopb.Order)
 			Expect(*order.Price).To(Equal(int32(200)))
-			Expect(*order.Flower.Color).To(Equal(gen.Color_RED))
+			Expect(*order.Flower.Color).To(Equal(demopb.Color_RED))
 
 			return nil, nil
 		})
@@ -477,7 +477,7 @@ var _ = Describe("RecordExistenceCheck_ErrorIfTypeChanged", func() {
 	var recordMetaData *RecordMetaData
 
 	BeforeEach(func() {
-		fileDesc := gen.File_record_layer_demo_proto
+		fileDesc := demopb.File_record_layer_demo_proto
 		metaDataBuilder := NewRecordMetaDataBuilder().SetRecords(fileDesc)
 		metaDataBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		metaDataBuilder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
@@ -502,12 +502,12 @@ var _ = Describe("RecordExistenceCheck_ErrorIfTypeChanged", func() {
 				return nil, err
 			}
 
-			order := &gen.Order{
+			order := &demopb.Order{
 				OrderId: proto.Int64(5001),
 				Price:   proto.Int32(42),
-				Flower: &gen.Flower{
+				Flower: &demopb.Flower{
 					Type:  proto.String("Tulip"),
-					Color: gen.Color_YELLOW.Enum(),
+					Color: demopb.Color_YELLOW.Enum(),
 				},
 			}
 			_, err = store.SaveRecord(order)
@@ -526,7 +526,7 @@ var _ = Describe("RecordExistenceCheck_ErrorIfTypeChanged", func() {
 				return nil, err
 			}
 
-			customer := &gen.Customer{
+			customer := &demopb.Customer{
 				CustomerId: proto.Int64(5001),
 				Name:       proto.String("Alice"),
 				Email:      proto.String("alice@example.com"),
@@ -556,12 +556,12 @@ var _ = Describe("RecordExistenceCheck_ErrorIfTypeChanged", func() {
 				return nil, err
 			}
 
-			order := &gen.Order{
+			order := &demopb.Order{
 				OrderId: proto.Int64(5002),
 				Price:   proto.Int32(100),
-				Flower: &gen.Flower{
+				Flower: &demopb.Flower{
 					Type:  proto.String("Rose"),
-					Color: gen.Color_RED.Enum(),
+					Color: demopb.Color_RED.Enum(),
 				},
 			}
 			_, err = store.SaveRecord(order)
@@ -580,12 +580,12 @@ var _ = Describe("RecordExistenceCheck_ErrorIfTypeChanged", func() {
 				return nil, err
 			}
 
-			order := &gen.Order{
+			order := &demopb.Order{
 				OrderId: proto.Int64(5002),
 				Price:   proto.Int32(200),
-				Flower: &gen.Flower{
+				Flower: &demopb.Flower{
 					Type:  proto.String("Rose"),
-					Color: gen.Color_BLUE.Enum(),
+					Color: demopb.Color_BLUE.Enum(),
 				},
 			}
 			_, err = store.SaveRecordWithOptions(order, RecordExistenceCheckErrorIfTypeChanged)
@@ -608,7 +608,7 @@ var _ = Describe("RecordExistenceCheck_ErrorIfTypeChanged", func() {
 				return nil, err
 			}
 
-			order := &gen.Order{
+			order := &demopb.Order{
 				OrderId: proto.Int64(5003),
 				Price:   proto.Int32(50),
 			}
@@ -636,7 +636,7 @@ var _ = Describe("RecordExistenceCheck_ErrorIfTypeChanged", func() {
 				return nil, err
 			}
 
-			order := &gen.Order{
+			order := &demopb.Order{
 				OrderId: proto.Int64(5004),
 				Price:   proto.Int32(75),
 			}
@@ -656,7 +656,7 @@ var _ = Describe("RecordExistenceCheck_ErrorIfTypeChanged", func() {
 				return nil, err
 			}
 
-			customer := &gen.Customer{
+			customer := &demopb.Customer{
 				CustomerId: proto.Int64(5004),
 				Name:       proto.String("Bob"),
 			}
@@ -683,7 +683,7 @@ var _ = Describe("RecordExistenceCheck_ErrorIfTypeChanged", func() {
 				return nil, err
 			}
 
-			order := &gen.Order{
+			order := &demopb.Order{
 				OrderId: proto.Int64(5099),
 				Price:   proto.Int32(999),
 			}

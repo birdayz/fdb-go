@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"time"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -23,7 +23,7 @@ var _ = Describe("RebuildIndex", func() {
 
 	// Helper: create metadata with an Order type (PK on order_id).
 	baseMetaData := func() *RecordMetaDataBuilder {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -46,7 +46,7 @@ var _ = Describe("RebuildIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i := int64(1); i <= 10; i++ {
-				order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))}
+				order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))}
 				_, err = store.SaveRecord(order)
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -117,7 +117,7 @@ var _ = Describe("RebuildIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i := int64(1); i <= 5; i++ {
-				order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))}
+				order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))}
 				_, err = store.SaveRecord(order)
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -167,12 +167,12 @@ var _ = Describe("RebuildIndex", func() {
 
 			// Insert Orders and Customers.
 			for i := int64(1); i <= 5; i++ {
-				order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))}
+				order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))}
 				_, err = store.SaveRecord(order)
 				Expect(err).NotTo(HaveOccurred())
 			}
 			for i := int64(101); i <= 103; i++ {
-				cust := &gen.Customer{CustomerId: proto.Int64(i), Name: proto.String("cust")}
+				cust := &demopb.Customer{CustomerId: proto.Int64(i), Name: proto.String("cust")}
 				_, err = store.SaveRecord(cust)
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -205,7 +205,7 @@ var _ = Describe("RebuildIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i := int64(1); i <= 3; i++ {
-				order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))}
+				order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))}
 				_, err = store.SaveRecord(order)
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -242,7 +242,7 @@ var _ = Describe("RebuildIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i := int64(1); i <= 5; i++ {
-				cust := &gen.Customer{CustomerId: proto.Int64(i), Name: proto.String("cust" + string(rune('A'+i-1)))}
+				cust := &demopb.Customer{CustomerId: proto.Int64(i), Name: proto.String("cust" + string(rune('A'+i-1)))}
 				_, err = store.SaveRecord(cust)
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -275,10 +275,10 @@ var _ = Describe("RebuildIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Insert two customers with same name — no index so no uniqueness check.
-			cust1 := &gen.Customer{CustomerId: proto.Int64(1), Name: proto.String("Alice")}
+			cust1 := &demopb.Customer{CustomerId: proto.Int64(1), Name: proto.String("Alice")}
 			_, err = store.SaveRecord(cust1)
 			Expect(err).NotTo(HaveOccurred())
-			cust2 := &gen.Customer{CustomerId: proto.Int64(2), Name: proto.String("Alice")}
+			cust2 := &demopb.Customer{CustomerId: proto.Int64(2), Name: proto.String("Alice")}
 			_, err = store.SaveRecord(cust2)
 			Expect(err).NotTo(HaveOccurred())
 			return nil, nil
@@ -364,7 +364,7 @@ var _ = Describe("RebuildIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i := int64(1); i <= 3; i++ {
-				order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))}
+				order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))}
 				_, err = store.SaveRecord(order)
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -383,7 +383,7 @@ var _ = Describe("RebuildIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i := int64(4); i <= 6; i++ {
-				order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))}
+				order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))}
 				_, err = store.SaveRecord(order)
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -473,7 +473,7 @@ var _ = Describe("RebuildIndex", func() {
 					return nil, err
 				}
 				for i := int64(1); i <= 5; i++ {
-					order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))}
+					order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))}
 					_, err = store.SaveRecord(order)
 					if err != nil {
 						return nil, err
@@ -545,7 +545,7 @@ var _ = Describe("RebuildIndex", func() {
 					return nil, err
 				}
 				for i := int64(1); i <= 3; i++ {
-					order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))}
+					order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))}
 					_, err = store.SaveRecord(order)
 					if err != nil {
 						return nil, err
@@ -633,14 +633,14 @@ var _ = Describe("RebuildIndex", func() {
 					return nil, err
 				}
 				for i := int64(1); i <= 3; i++ {
-					order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))}
+					order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))}
 					_, err = store.SaveRecord(order)
 					if err != nil {
 						return nil, err
 					}
 				}
 				for i := int64(101); i <= 102; i++ {
-					cust := &gen.Customer{CustomerId: proto.Int64(i), Name: proto.String(fmt.Sprintf("cust%d", i))}
+					cust := &demopb.Customer{CustomerId: proto.Int64(i), Name: proto.String(fmt.Sprintf("cust%d", i))}
 					_, err = store.SaveRecord(cust)
 					if err != nil {
 						return nil, err
@@ -709,7 +709,7 @@ var _ = Describe("RebuildIndex", func() {
 					return nil, err
 				}
 				for i := int64(1); i <= 201; i++ {
-					order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))}
+					order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))}
 					_, err = store.SaveRecord(order)
 					if err != nil {
 						return nil, err
@@ -756,7 +756,7 @@ var _ = Describe("RebuildIndex", func() {
 					return nil, err
 				}
 				for i := int64(1); i <= 201; i++ {
-					order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))}
+					order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))}
 					_, err = store.SaveRecord(order)
 					if err != nil {
 						return nil, err
@@ -788,7 +788,7 @@ var _ = Describe("RebuildIndex", func() {
 					"WriteOnlyIfTooLargePolicy should mark index WRITE_ONLY for >200 records")
 
 				// New writes should maintain the WRITE_ONLY index
-				order := &gen.Order{OrderId: proto.Int64(999), Price: proto.Int32(42)}
+				order := &demopb.Order{OrderId: proto.Int64(999), Price: proto.Int32(42)}
 				_, err = store.SaveRecord(order)
 				Expect(err).NotTo(HaveOccurred())
 				return nil, nil
@@ -828,7 +828,7 @@ var _ = Describe("RebuildIndex", func() {
 					return nil, err
 				}
 				for i := int64(1); i <= 300; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
 					if err != nil {
 						return nil, err
 					}
@@ -856,7 +856,7 @@ var _ = Describe("RebuildIndex", func() {
 				Expect(store.IsIndexWriteOnly("Order$price")).To(BeTrue())
 
 				// Save a new record while WRITE_ONLY — it should be indexed.
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(301), Price: proto.Int32(3010)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(301), Price: proto.Int32(3010)})
 				return nil, err
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -916,7 +916,7 @@ var _ = Describe("RebuildIndex", func() {
 					return nil, err
 				}
 				for i := int64(1); i <= 300; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
 					if err != nil {
 						return nil, err
 					}
@@ -1003,7 +1003,7 @@ var _ = Describe("RebuildIndex", func() {
 					return nil, err
 				}
 				for i := int64(1); i <= 5; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 					if err != nil {
 						return nil, err
 					}
@@ -1050,7 +1050,7 @@ var _ = Describe("RebuildIndex", func() {
 					return nil, err
 				}
 				for i := int64(1); i <= 5; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 					if err != nil {
 						return nil, err
 					}
@@ -1117,7 +1117,7 @@ var _ = Describe("RebuildIndex", func() {
 					return nil, err
 				}
 				for i := int64(1); i <= 5; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 					if err != nil {
 						return nil, err
 					}
@@ -1171,7 +1171,7 @@ var _ = Describe("RebuildIndex", func() {
 					return nil, err
 				}
 				for i := int64(1); i <= 5; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 					if err != nil {
 						return nil, err
 					}
@@ -1221,7 +1221,7 @@ var _ = Describe("RebuildIndex", func() {
 					return nil, err
 				}
 				for i := int64(1); i <= 201; i++ {
-					order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))}
+					order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))}
 					_, err = store.SaveRecord(order)
 					if err != nil {
 						return nil, err

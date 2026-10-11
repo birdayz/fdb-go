@@ -5,6 +5,8 @@ import (
 	"errors"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
@@ -55,7 +57,7 @@ var _ = Describe("a vector index in a binary that does not link vectorindex", fu
 				if err != nil {
 					return nil, err
 				}
-				return store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(1), Quantity: proto.Int32(1)})
+				return store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(1), Quantity: proto.Int32(1)})
 			})
 			expectNotLinked(err, idx.Name, idx.Type)
 		})

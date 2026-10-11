@@ -3,7 +3,7 @@ package recordlayer
 import (
 	"context"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -30,7 +30,7 @@ var _ = Describe("OnlineIndexer SetRecordTypes with a SQL identifier", func() {
 
 	renamedMetaData := func(withIndex *Index) *RecordMetaData {
 		GinkgoHelper()
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -167,7 +167,7 @@ var _ = Describe("OnlineIndexer SetRecordTypes with a SQL identifier", func() {
 var _ = Describe("OnlineIndexer SetRecordTypes with an unresolvable name", func() {
 	It("refuses to build rather than producing an empty readable index", func() {
 		priceIdx := NewIndex("price_idx_unres", Field("price"))
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))

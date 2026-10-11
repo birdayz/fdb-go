@@ -4,6 +4,8 @@ import (
 	"context"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -41,7 +43,7 @@ var _ = Describe("BugBounty3Store", func() {
 	It("BUG1: reverse scan continuation leaks version from previous record to next record", func() {
 		ks := specSubspace()
 
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -60,7 +62,7 @@ var _ = Describe("BugBounty3Store", func() {
 
 			for i := int64(1); i <= 4; i++ {
 				price := int32(i * 100)
-				_, err := store.SaveRecord(&gen.Order{OrderId: &i, Price: &price})
+				_, err := store.SaveRecord(&demopb.Order{OrderId: &i, Price: &price})
 				if err != nil {
 					return nil, err
 				}
@@ -212,7 +214,7 @@ var _ = Describe("BugBounty3Store", func() {
 	It("BUG2: hasMoreKVs reports ReturnLimitReached when only version metadata KV remains", func() {
 		ks := specSubspace()
 
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -229,7 +231,7 @@ var _ = Describe("BugBounty3Store", func() {
 			}
 			for i := int64(1); i <= 2; i++ {
 				price := int32(i * 100)
-				if _, err := store.SaveRecord(&gen.Order{OrderId: &i, Price: &price}); err != nil {
+				if _, err := store.SaveRecord(&demopb.Order{OrderId: &i, Price: &price}); err != nil {
 					return nil, err
 				}
 			}
@@ -335,7 +337,7 @@ var _ = Describe("BugBounty3Store", func() {
 	It("BUG3: DeleteAllRecords creates phantom count at ungrouped key for per-type counting", func() {
 		ks := specSubspace()
 
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Concat(RecordTypeKey(), Field("order_id")))
 		builder.GetRecordType("Customer").SetPrimaryKey(Concat(RecordTypeKey(), Field("customer_id")))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Concat(RecordTypeKey(), Field("id")))
@@ -354,7 +356,7 @@ var _ = Describe("BugBounty3Store", func() {
 			// Save 3 orders
 			for i := int64(1); i <= 3; i++ {
 				price := int32(i * 100)
-				if _, err := store.SaveRecord(&gen.Order{OrderId: &i, Price: &price}); err != nil {
+				if _, err := store.SaveRecord(&demopb.Order{OrderId: &i, Price: &price}); err != nil {
 					return nil, err
 				}
 			}
@@ -367,7 +369,7 @@ var _ = Describe("BugBounty3Store", func() {
 			// Save 2 new orders
 			for i := int64(10); i <= 11; i++ {
 				price := int32(i * 100)
-				if _, err := store.SaveRecord(&gen.Order{OrderId: &i, Price: &price}); err != nil {
+				if _, err := store.SaveRecord(&demopb.Order{OrderId: &i, Price: &price}); err != nil {
 					return nil, err
 				}
 			}
@@ -421,7 +423,7 @@ var _ = Describe("BugBounty3Store", func() {
 	It("BUG4: DeleteAllRecords then SaveRecord in same tx — count should reflect new records", func() {
 		ks := specSubspace()
 
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -438,7 +440,7 @@ var _ = Describe("BugBounty3Store", func() {
 			}
 			for i := int64(1); i <= 5; i++ {
 				price := int32(i * 100)
-				if _, err := store.SaveRecord(&gen.Order{OrderId: &i, Price: &price}); err != nil {
+				if _, err := store.SaveRecord(&demopb.Order{OrderId: &i, Price: &price}); err != nil {
 					return nil, err
 				}
 			}
@@ -466,7 +468,7 @@ var _ = Describe("BugBounty3Store", func() {
 			// Save 2 new records in the same transaction
 			for i := int64(10); i <= 11; i++ {
 				price := int32(i * 100)
-				if _, err := store.SaveRecord(&gen.Order{OrderId: &i, Price: &price}); err != nil {
+				if _, err := store.SaveRecord(&demopb.Order{OrderId: &i, Price: &price}); err != nil {
 					return nil, err
 				}
 			}
@@ -505,7 +507,7 @@ var _ = Describe("BugBounty3Store", func() {
 	It("BUG5: interleaved SaveRecord and DeleteAllRecords in same tx — count correctness", func() {
 		ks := specSubspace()
 
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -523,7 +525,7 @@ var _ = Describe("BugBounty3Store", func() {
 			// Save 2 records
 			for i := int64(1); i <= 2; i++ {
 				price := int32(i * 100)
-				if _, err := store.SaveRecord(&gen.Order{OrderId: &i, Price: &price}); err != nil {
+				if _, err := store.SaveRecord(&demopb.Order{OrderId: &i, Price: &price}); err != nil {
 					return nil, err
 				}
 			}
@@ -536,7 +538,7 @@ var _ = Describe("BugBounty3Store", func() {
 			// Save 1 more record
 			price := int32(300)
 			id := int64(3)
-			if _, err := store.SaveRecord(&gen.Order{OrderId: &id, Price: &price}); err != nil {
+			if _, err := store.SaveRecord(&demopb.Order{OrderId: &id, Price: &price}); err != nil {
 				return nil, err
 			}
 
@@ -567,7 +569,7 @@ var _ = Describe("BugBounty3Store", func() {
 	It("BUG6: reverse scan split records + versioning + continuation leaks version", func() {
 		ks := specSubspace()
 
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -589,7 +591,7 @@ var _ = Describe("BugBounty3Store", func() {
 
 			for i := int64(1); i <= 3; i++ {
 				price := int32(i * 100)
-				if _, err := store.SaveRecord(&gen.Order{OrderId: &i, Price: &price}); err != nil {
+				if _, err := store.SaveRecord(&demopb.Order{OrderId: &i, Price: &price}); err != nil {
 					return nil, err
 				}
 			}
@@ -682,7 +684,7 @@ var _ = Describe("BugBounty3Store", func() {
 	It("BUG7-reframed: neither DryRunSaveRecord nor DryRunDeleteRecord checks the lock — matches Java", func() {
 		ks := specSubspace()
 
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -697,7 +699,7 @@ var _ = Describe("BugBounty3Store", func() {
 			// Save a record first
 			id := int64(1)
 			price := int32(100)
-			_, err = store.SaveRecord(&gen.Order{OrderId: &id, Price: &price})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: &id, Price: &price})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Lock the store
@@ -709,7 +711,7 @@ var _ = Describe("BugBounty3Store", func() {
 			// DryRunSaveRecord PREVIEWS success on a locked store — Java's isDryRun
 			// path early-returns before the lock check (NOT a lock error).
 			stored, err := store.DryRunSaveRecord(
-				&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)},
+				&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)},
 				RecordExistenceCheckNone,
 			)
 			Expect(err).NotTo(HaveOccurred(),
@@ -789,7 +791,7 @@ var _ = Describe("BugBounty3Store", func() {
 	It("BUG9: TypedFDBRecordStore.LoadRecord drops Version field from stored record", func() {
 		ks := specSubspace()
 
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -806,7 +808,7 @@ var _ = Describe("BugBounty3Store", func() {
 			}
 			id := int64(1)
 			price := int32(100)
-			_, err = store.SaveRecord(&gen.Order{OrderId: &id, Price: &price})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: &id, Price: &price})
 			return nil, err
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -827,7 +829,7 @@ var _ = Describe("BugBounty3Store", func() {
 				"base store LoadRecord should return Version")
 
 			// Typed store: Version is LOST
-			typedStore, err := GetTypedRecordStore[*gen.Order](store, "Order")
+			typedStore, err := GetTypedRecordStore[*demopb.Order](store, "Order")
 			Expect(err).NotTo(HaveOccurred())
 			typedRecord, err := typedStore.LoadRecord(tuple.Tuple{int64(1)})
 			Expect(err).NotTo(HaveOccurred())
@@ -858,7 +860,7 @@ var _ = Describe("BugBounty3Store", func() {
 	It("BUG10: TypedFDBRecordStore.SaveRecord drops Version field from result", func() {
 		ks := specSubspace()
 
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -876,18 +878,18 @@ var _ = Describe("BugBounty3Store", func() {
 			// Base store SaveRecord returns Version
 			id := int64(1)
 			price := int32(100)
-			baseSaved, err := store.SaveRecord(&gen.Order{OrderId: &id, Price: &price})
+			baseSaved, err := store.SaveRecord(&demopb.Order{OrderId: &id, Price: &price})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(baseSaved.Version).NotTo(BeNil(),
 				"base store SaveRecord should return Version (incomplete)")
 
 			// Typed store SaveRecord DROPS Version
-			typedStore, err := GetTypedRecordStore[*gen.Order](store, "Order")
+			typedStore, err := GetTypedRecordStore[*demopb.Order](store, "Order")
 			Expect(err).NotTo(HaveOccurred())
 
 			id2 := int64(2)
 			price2 := int32(200)
-			typedSaved, err := typedStore.SaveRecord(&gen.Order{OrderId: &id2, Price: &price2})
+			typedSaved, err := typedStore.SaveRecord(&demopb.Order{OrderId: &id2, Price: &price2})
 			Expect(err).NotTo(HaveOccurred())
 
 			// THE BUG: Version is nil in typed save result

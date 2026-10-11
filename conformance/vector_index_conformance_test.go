@@ -20,7 +20,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -132,7 +132,7 @@ var _ = Describe("Legacy Go RaBitQ migration conformance", func() {
 			"hnswUseRaBitQ": "true", "hnswRaBitQNumExBits": "4",
 			"hnswSampleVectorStatsProbability": "1.0", "hnswMaintainStatsProbability": "1.0", "hnswStatsThreshold": "11",
 		}
-		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -180,7 +180,7 @@ var _ = Describe("Legacy Go RaBitQ migration conformance", func() {
 			}
 		}
 		runGo(func(store *recordlayer.FDBRecordStore, tx fdb.WritableTransaction) {
-			_, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), VectorData: conformanceSerializeVector([]float64{-3, 8, 2, 6})})
+			_, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), VectorData: conformanceSerializeVector([]float64{-3, 8, 2, 6})})
 			Expect(err).NotTo(HaveOccurred())
 			ss := store.IndexSubspace(index)
 			tx.ClearRange(ss)
@@ -202,14 +202,14 @@ var _ = Describe("Legacy Go RaBitQ migration conformance", func() {
 			// The historical producer used a threshold forbidden by Java.
 			// Rebuild its unchanged bytes under valid settings from records.
 			for id := int64(100); id < 111; id++ {
-				_, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(id), VectorData: conformanceSerializeVector([]float64{float64(id), 2, 3, 4})})
+				_, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(id), VectorData: conformanceSerializeVector([]float64{float64(id), 2, 3, 4})})
 				Expect(err).NotTo(HaveOccurred())
 			}
 			Expect(store.RebuildIndex(index)).To(Succeed())
 		})
 		java("search", 0, withBootstrap(2), false)
 		runGo(func(store *recordlayer.FDBRecordStore, tx fdb.WritableTransaction) {
-			_, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), VectorData: conformanceSerializeVector([]float64{1, 2, 3, 4})})
+			_, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), VectorData: conformanceSerializeVector([]float64{1, 2, 3, 4})})
 			Expect(err).NotTo(HaveOccurred())
 		})
 		java("save", 4, withBootstrap(2, 3, 4), false)
@@ -696,7 +696,7 @@ func NewVectorIndexConformanceStore(recordDB *recordlayer.FDBDatabase, keyspace 
 	// Set the metric to match Java side.
 	vecIdx.Options[recordlayer.IndexOptionVectorMetric] = "EUCLIDEAN_SQUARE_METRIC"
 
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -776,7 +776,7 @@ func (s *VectorIndexConformanceStore) SaveOrderGo(ctx context.Context, orderID i
 			return nil, err
 		}
 		vectorBytes := conformanceSerializeVector(vec)
-		_, err = store.SaveRecord(&gen.Order{
+		_, err = store.SaveRecord(&demopb.Order{
 			OrderId:    proto.Int64(orderID),
 			VectorData: vectorBytes,
 		})
@@ -800,7 +800,7 @@ func (s *VectorIndexConformanceStore) LoadOrderGo(ctx context.Context, orderID i
 		if rec == nil {
 			return nil, nil
 		}
-		order := rec.Record.(*gen.Order)
+		order := rec.Record.(*demopb.Order)
 		result = &VectorOrderResult{
 			OrderID: order.GetOrderId(),
 			Vector:  deserializeVectorConformance(order.GetVectorData()),
@@ -1231,7 +1231,7 @@ var _ = Describe("RaBitQ VECTOR Index Conformance", func() {
 				for k, v := range r.options {
 					idx.Options[k] = v
 				}
-				builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+				builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 				builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 				builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 				builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -1263,7 +1263,7 @@ var _ = Describe("RaBitQ VECTOR Index Conformance", func() {
 							_, err = store.DeleteRecord(tuple.Tuple{id})
 							return nil, err
 						}
-						_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(id), VectorData: conformanceSerializeVector(vec)})
+						_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(id), VectorData: conformanceSerializeVector(vec)})
 						return nil, err
 					})
 					Expect(err).NotTo(HaveOccurred())
@@ -1377,7 +1377,7 @@ func NewRaBitQConformanceStore(recordDB *recordlayer.FDBDatabase, keyspace subsp
 	vecIdx.Options["hnswUseRaBitQ"] = "true"
 	vecIdx.Options["hnswRaBitQNumExBits"] = "4"
 
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -1422,7 +1422,7 @@ func (s *RaBitQConformanceStore) SaveOrderGo(ctx context.Context, orderID int64,
 			return nil, err
 		}
 		vectorBytes := conformanceSerializeVector(vec)
-		_, err = store.SaveRecord(&gen.Order{
+		_, err = store.SaveRecord(&demopb.Order{
 			OrderId:    proto.Int64(orderID),
 			VectorData: vectorBytes,
 		})
@@ -1446,7 +1446,7 @@ func (s *RaBitQConformanceStore) LoadOrderGo(ctx context.Context, orderID int64)
 		if rec == nil {
 			return nil, nil
 		}
-		order := rec.Record.(*gen.Order)
+		order := rec.Record.(*demopb.Order)
 		result = &VectorOrderResult{
 			OrderID: order.GetOrderId(),
 			Vector:  deserializeVectorConformance(order.GetVectorData()),
@@ -1590,7 +1590,7 @@ var _ = Describe("Vector pending entry conformance", func() {
 		fixture, err := NewVectorIndexConformanceStore(env.RecordDB, env.Keyspace, env.ClusterFile, env.TenantName)
 		Expect(err).NotTo(HaveOccurred())
 		makeRecord := func(vector []float64) *recordlayer.FDBStoredRecord[proto.Message] {
-			return &recordlayer.FDBStoredRecord[proto.Message]{Record: &gen.Order{OrderId: proto.Int64(42), VectorData: conformanceSerializeVector(vector)}, PrimaryKey: tuple.Tuple{int64(42)}, RecordType: fixture.MetaData.GetRecordType("Order")}
+			return &recordlayer.FDBStoredRecord[proto.Message]{Record: &demopb.Order{OrderId: proto.Int64(42), VectorData: conformanceSerializeVector(vector)}, PrimaryKey: tuple.Tuple{int64(42)}, RecordType: fixture.MetaData.GetRecordType("Order")}
 		}
 		oldRecord, newRecord := makeRecord([]float64{1, 2, 3}), makeRecord([]float64{4, 5, 6})
 		for _, operation := range []string{"insert", "update", "delete"} {
@@ -1720,7 +1720,7 @@ var _ = Describe("An HNSW index with more RaBitQ extra bits than the quantizer e
 				"hnswUseRaBitQ": "true", "hnswRaBitQNumExBits": fmt.Sprint(c.bits),
 				"hnswSampleVectorStatsProbability": "1.0", "hnswMaintainStatsProbability": "1.0", "hnswStatsThreshold": "11",
 			}
-			builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -1746,12 +1746,12 @@ var _ = Describe("An HNSW index with more RaBitQ extra bits than the quantizer e
 			var goInserts []string
 			for i, v := range vectors {
 				goInserts = append(goInserts, outcome(func(s *recordlayer.FDBRecordStore) error {
-					_, err := s.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(i)), VectorData: conformanceSerializeVector(v)})
+					_, err := s.SaveRecord(&demopb.Order{OrderId: proto.Int64(int64(i)), VectorData: conformanceSerializeVector(v)})
 					return err
 				}))
 			}
 			goResave := outcome(func(s *recordlayer.FDBRecordStore) error {
-				_, err := s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(7), VectorData: conformanceSerializeVector(vectors[1])})
+				_, err := s.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(7), VectorData: conformanceSerializeVector(vectors[1])})
 				return err
 			})
 			goSearch := outcome(search)
@@ -1824,7 +1824,7 @@ var _ = Describe("A VECTOR index reads value column 0 as Java's maintainer does"
 				root = recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0)
 			}
 			index := recordlayer.NewVectorIndex("order_vector_columns", root, 2)
-			builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -1842,12 +1842,12 @@ var _ = Describe("A VECTOR index reads value column 0 as Java's maintainer does"
 				})
 				return javaOutcomeClass(err)
 			}
-			save := func(o *gen.Order) string {
+			save := func(o *demopb.Order) string {
 				return run(func(s *recordlayer.FDBRecordStore) error { _, err := s.SaveRecord(o); return err })
 			}
 			goOutcome := map[string]string{}
-			goOutcome["saveNull"] = save(&gen.Order{OrderId: proto.Int64(1)})
-			goOutcome["save"] = save(&gen.Order{
+			goOutcome["saveNull"] = save(&demopb.Order{OrderId: proto.Int64(1)})
+			goOutcome["save"] = save(&demopb.Order{
 				OrderId: proto.Int64(2), Price: proto.Int32(1), Quantity: proto.Int32(2),
 				VectorData: conformanceSerializeVector([]float64{1, 2}),
 			})
@@ -1866,7 +1866,7 @@ var _ = Describe("A VECTOR index reads value column 0 as Java's maintainer does"
 				if _, err := s.MarkIndexDisabled(index.Name); err != nil {
 					return err
 				}
-				if _, err := s.SaveRecord(&gen.Order{
+				if _, err := s.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(3), Price: proto.Int32(3), Quantity: proto.Int32(4),
 					VectorData: conformanceSerializeVector([]float64{3, 4}),
 				}); err != nil {
@@ -1879,7 +1879,7 @@ var _ = Describe("A VECTOR index reads value column 0 as Java's maintainer does"
 				_, err := s.DeleteRecord(tuple.Tuple{int64(3)})
 				return err
 			})
-			goOutcome["saveUnknownType"] = save(&gen.Order{
+			goOutcome["saveUnknownType"] = save(&demopb.Order{
 				OrderId: proto.Int64(4), Price: proto.Int32(5),
 				VectorData: []byte{7, 0, 0, 0, 0, 0, 0, 0, 0},
 			})

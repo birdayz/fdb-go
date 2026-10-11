@@ -20,7 +20,7 @@ go_test(
         "stress",
     ],
     deps = [
-        "//gen",
+        "//gen/demopb",
         "//pkg/fdbgo/client",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",

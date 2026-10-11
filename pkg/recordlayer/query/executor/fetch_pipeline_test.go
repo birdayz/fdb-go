@@ -8,7 +8,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/recordlayer"
 )
@@ -56,7 +56,7 @@ func TestIntegrationIndexAndPartialFetchesPipeline(t *testing.T) {
 			base := setupStore(t)
 			const count = 12
 			for i := int64(1); i <= count; i++ {
-				insertOrders(t, base, &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))})
+				insertOrders(t, base, &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))})
 			}
 			_, err := testDB.Run(context.Background(), func(rtx *recordlayer.FDBRecordContext) (any, error) {
 				probe := &fetchWindowProbe{WritableTransaction: rtx.Transaction(), prefix: testSubspace(t).Sub(recordlayer.RecordKey).Bytes()}

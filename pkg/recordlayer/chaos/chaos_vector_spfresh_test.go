@@ -9,7 +9,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 )
@@ -45,7 +45,7 @@ const spfreshChaosIndex = "spf_chaos"
 // exercise the full split/merge lifecycle.
 func spfreshChaosMetadata(t testing.TB) *recordlayer.RecordMetaData {
 	t.Helper()
-	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -73,8 +73,8 @@ func spfreshChaosMetadata(t testing.TB) *recordlayer.RecordMetaData {
 	return md
 }
 
-func spfOrder(id int64, price, quantity int32) *gen.Order {
-	return &gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(price), Quantity: proto.Int32(quantity)}
+func spfOrder(id int64, price, quantity int32) *demopb.Order {
+	return &demopb.Order{OrderId: proto.Int64(id), Price: proto.Int32(price), Quantity: proto.Int32(quantity)}
 }
 
 // Sanity: with no faults the verifier, the SPFresh search wrapper, and the

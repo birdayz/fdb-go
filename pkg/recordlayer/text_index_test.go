@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -15,7 +15,7 @@ var _ = Describe("TEXT index", func() {
 	ctx := context.Background()
 
 	baseMetaData := func() *RecordMetaDataBuilder {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -56,7 +56,7 @@ var _ = Describe("TEXT index", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Customer{
+			_, err = store.SaveRecord(&demopb.Customer{
 				CustomerId: proto.Int64(1),
 				Name:       proto.String("hello"),
 			})
@@ -93,7 +93,7 @@ var _ = Describe("TEXT index", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Customer{
+			_, err = store.SaveRecord(&demopb.Customer{
 				CustomerId: proto.Int64(1),
 				Name:       proto.String("hello world"),
 			})
@@ -136,7 +136,7 @@ var _ = Describe("TEXT index", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// "hello world hello" — "hello" at positions 0 and 2, "world" at position 1.
-			_, err = store.SaveRecord(&gen.Customer{
+			_, err = store.SaveRecord(&demopb.Customer{
 				CustomerId: proto.Int64(1),
 				Name:       proto.String("hello world hello"),
 			})
@@ -182,13 +182,13 @@ var _ = Describe("TEXT index", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Customer{
+			_, err = store.SaveRecord(&demopb.Customer{
 				CustomerId: proto.Int64(1),
 				Name:       proto.String("hello alice"),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Customer{
+			_, err = store.SaveRecord(&demopb.Customer{
 				CustomerId: proto.Int64(2),
 				Name:       proto.String("hello bob"),
 			})
@@ -239,7 +239,7 @@ var _ = Describe("TEXT index", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Customer{
+			_, err = store.SaveRecord(&demopb.Customer{
 				CustomerId: proto.Int64(1),
 				Name:       proto.String("hello world"),
 			})
@@ -289,14 +289,14 @@ var _ = Describe("TEXT index", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Customer{
+			_, err = store.SaveRecord(&demopb.Customer{
 				CustomerId: proto.Int64(1),
 				Name:       proto.String("hello world"),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Update: change name from "hello world" to "goodbye world".
-			_, err = store.SaveRecord(&gen.Customer{
+			_, err = store.SaveRecord(&demopb.Customer{
 				CustomerId: proto.Int64(1),
 				Name:       proto.String("goodbye world"),
 			})
@@ -344,7 +344,7 @@ var _ = Describe("TEXT index", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Customer 1: group=100, name="hello world"
-			_, err = store.SaveRecord(&gen.Customer{
+			_, err = store.SaveRecord(&demopb.Customer{
 				CustomerId: proto.Int64(1),
 				Name:       proto.String("hello world"),
 				Price:      proto.Int32(100),
@@ -352,7 +352,7 @@ var _ = Describe("TEXT index", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Customer 2: group=200, name="hello there"
-			_, err = store.SaveRecord(&gen.Customer{
+			_, err = store.SaveRecord(&demopb.Customer{
 				CustomerId: proto.Int64(2),
 				Name:       proto.String("hello there"),
 				Price:      proto.Int32(200),
@@ -409,13 +409,13 @@ var _ = Describe("TEXT index", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Customer{
+			_, err = store.SaveRecord(&demopb.Customer{
 				CustomerId: proto.Int64(1),
 				Name:       proto.String("alpha beta"),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Customer{
+			_, err = store.SaveRecord(&demopb.Customer{
 				CustomerId: proto.Int64(2),
 				Name:       proto.String("gamma delta"),
 			})
@@ -458,13 +458,13 @@ var _ = Describe("TEXT index", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Save many records to produce many token-document pairs.
-			_, err = store.SaveRecord(&gen.Customer{
+			_, err = store.SaveRecord(&demopb.Customer{
 				CustomerId: proto.Int64(1),
 				Name:       proto.String("alpha bravo charlie"),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Customer{
+			_, err = store.SaveRecord(&demopb.Customer{
 				CustomerId: proto.Int64(2),
 				Name:       proto.String("delta echo foxtrot"),
 			})
@@ -527,7 +527,7 @@ var _ = Describe("TEXT index", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Customer{
+			_, err = store.SaveRecord(&demopb.Customer{
 				CustomerId: proto.Int64(1),
 				Name:       proto.String("hello world hello"),
 			})
@@ -565,7 +565,7 @@ var _ = Describe("TEXT index", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Customer{
+			_, err = store.SaveRecord(&demopb.Customer{
 				CustomerId: proto.Int64(1),
 				Name:       proto.String(""),
 			})
@@ -600,7 +600,7 @@ var _ = Describe("TEXT index", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Customer with no name set (nil in proto2).
-			_, err = store.SaveRecord(&gen.Customer{
+			_, err = store.SaveRecord(&demopb.Customer{
 				CustomerId: proto.Int64(1),
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -635,7 +635,7 @@ var _ = Describe("TEXT index", func() {
 
 			// Save 50 customers all containing the word "customer".
 			for i := int64(1); i <= 50; i++ {
-				_, err = store.SaveRecord(&gen.Customer{
+				_, err = store.SaveRecord(&demopb.Customer{
 					CustomerId: proto.Int64(i),
 					Name:       proto.String("customer"),
 				})
@@ -680,13 +680,13 @@ var _ = Describe("TEXT index", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Customer{
+			_, err = store.SaveRecord(&demopb.Customer{
 				CustomerId: proto.Int64(1),
 				Name:       proto.String("alpha bravo"),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Customer{
+			_, err = store.SaveRecord(&demopb.Customer{
 				CustomerId: proto.Int64(2),
 				Name:       proto.String("charlie delta"),
 			})
@@ -742,13 +742,13 @@ var _ = Describe("TEXT index", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Customer{
+			_, err = store.SaveRecord(&demopb.Customer{
 				CustomerId: proto.Int64(1),
 				Name:       proto.String("hello world"),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Customer{
+			_, err = store.SaveRecord(&demopb.Customer{
 				CustomerId: proto.Int64(2),
 				Name:       proto.String("foo bar"),
 			})
@@ -820,7 +820,7 @@ var _ = Describe("TEXT index", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Save with mixed case and diacritics.
-			_, err = store.SaveRecord(&gen.Customer{
+			_, err = store.SaveRecord(&demopb.Customer{
 				CustomerId: proto.Int64(1),
 				Name:       proto.String("Caf\u00e9 HELLO"),
 			})
@@ -866,7 +866,7 @@ var _ = Describe("TEXT index", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Customer{
+			_, err = store.SaveRecord(&demopb.Customer{
 				CustomerId: proto.Int64(1),
 				Name:       proto.String("   "),
 			})
@@ -900,7 +900,7 @@ var _ = Describe("TEXT index", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// "the quick brown fox jumped over the lazy dog" — "the" at positions 0 and 6.
-			_, err = store.SaveRecord(&gen.Customer{
+			_, err = store.SaveRecord(&demopb.Customer{
 				CustomerId: proto.Int64(1),
 				Name:       proto.String("the quick brown fox jumped over the lazy dog"),
 			})
@@ -936,14 +936,14 @@ var _ = Describe("TEXT index", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Customer{
+			_, err = store.SaveRecord(&demopb.Customer{
 				CustomerId: proto.Int64(1),
 				Name:       proto.String("hello world"),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Update to empty string.
-			_, err = store.SaveRecord(&gen.Customer{
+			_, err = store.SaveRecord(&demopb.Customer{
 				CustomerId: proto.Int64(1),
 				Name:       proto.String(""),
 			})
@@ -976,9 +976,9 @@ var _ = Describe("TEXT index", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(1),
-				Flower:  &gen.Flower{Type: proto.String("red roses")},
+				Flower:  &demopb.Flower{Type: proto.String("red roses")},
 				Price:   proto.Int32(100),
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -1017,7 +1017,7 @@ var _ = Describe("TEXT index", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			cust := &gen.Customer{
+			cust := &demopb.Customer{
 				CustomerId: proto.Int64(1),
 				Name:       proto.String("hello world"),
 			}
@@ -1062,7 +1062,7 @@ var _ = Describe("TEXT index", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Customer{
+			_, err = store.SaveRecord(&demopb.Customer{
 				CustomerId: proto.Int64(1),
 				Name:       proto.String("hello, world! foo."),
 			})
@@ -1108,13 +1108,13 @@ var _ = Describe("TEXT index", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Customer{
+			_, err = store.SaveRecord(&demopb.Customer{
 				CustomerId: proto.Int64(1),
 				Name:       proto.String("hello alice"),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Customer{
+			_, err = store.SaveRecord(&demopb.Customer{
 				CustomerId: proto.Int64(2),
 				Name:       proto.String("hello bob"),
 			})
@@ -1167,7 +1167,7 @@ var _ = Describe("TEXT index", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Save a Customer with "hello".
-			_, err = store.SaveRecord(&gen.Customer{
+			_, err = store.SaveRecord(&demopb.Customer{
 				CustomerId: proto.Int64(1),
 				Name:       proto.String("hello"),
 			})
@@ -1175,7 +1175,7 @@ var _ = Describe("TEXT index", func() {
 
 			// Save an Order with a DIFFERENT primary key (TEXT index is only on Customer).
 			// Using PK 999 to avoid collision with Customer PK 1 in shared key space.
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(999),
 				Price:   proto.Int32(100),
 			})
@@ -1210,7 +1210,7 @@ var _ = Describe("TEXT index", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Customer{
+			_, err = store.SaveRecord(&demopb.Customer{
 				CustomerId: proto.Int64(1),
 				Name:       proto.String("hello world"),
 			})
@@ -1243,7 +1243,7 @@ var _ = Describe("TEXT index", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Customer{
+			_, err = store.SaveRecord(&demopb.Customer{
 				CustomerId: proto.Int64(1),
 				Name:       proto.String("order 12345 confirmed"),
 			})
@@ -1283,7 +1283,7 @@ var _ = Describe("TEXT index", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Customer{
+			_, err = store.SaveRecord(&demopb.Customer{
 				CustomerId: proto.Int64(1),
 				Name:       proto.String("alpha bravo charlie delta"),
 			})
@@ -1336,14 +1336,14 @@ var _ = Describe("TEXT index", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Customer{
+			_, err = store.SaveRecord(&demopb.Customer{
 				CustomerId: proto.Int64(1),
 				Name:       proto.String("the quick brown fox"),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Update to different text with "the" still present.
-			_, err = store.SaveRecord(&gen.Customer{
+			_, err = store.SaveRecord(&demopb.Customer{
 				CustomerId: proto.Int64(1),
 				Name:       proto.String("the slow gray cat"),
 			})
@@ -1390,7 +1390,7 @@ var _ = Describe("TEXT index", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// 26 distinct words.
-			_, err = store.SaveRecord(&gen.Customer{
+			_, err = store.SaveRecord(&demopb.Customer{
 				CustomerId: proto.Int64(1),
 				Name:       proto.String("alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa quebec romeo sierra tango uniform victor whiskey xray yankee zulu"),
 			})
@@ -1435,7 +1435,7 @@ var _ = Describe("TEXT index", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Customer{
+			_, err = store.SaveRecord(&demopb.Customer{
 				CustomerId: proto.Int64(1),
 				Name:       proto.String("a b c"),
 			})
@@ -1471,7 +1471,7 @@ var _ = Describe("TEXT index", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Customer{
+			_, err = store.SaveRecord(&demopb.Customer{
 				CustomerId: proto.Int64(1),
 				Name:       proto.String("apple apricot banana cherry"),
 			})
@@ -1547,7 +1547,7 @@ var _ = Describe("TEXT index", func() {
 			// Create 30 customers, all with "common" in their name.
 			// bunchSize=20, so this forces at least 2 bunches for the "common" token.
 			for i := int64(1); i <= 30; i++ {
-				_, err = store.SaveRecord(&gen.Customer{
+				_, err = store.SaveRecord(&demopb.Customer{
 					CustomerId: proto.Int64(i),
 					Name:       proto.String("common"),
 				})
@@ -1586,15 +1586,15 @@ var _ = Describe("TEXT index", func() {
 				SetContext(rtx).SetMetaDataProvider(md1).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(1), Name: proto.String("alpha bravo")})
+			_, err = store.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(1), Name: proto.String("alpha bravo")})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(2), Name: proto.String("charlie delta")})
+			_, err = store.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(2), Name: proto.String("charlie delta")})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(3), Name: proto.String("echo foxtrot")})
+			_, err = store.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(3), Name: proto.String("echo foxtrot")})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(4), Name: proto.String("golf hotel")})
+			_, err = store.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(4), Name: proto.String("golf hotel")})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(5), Name: proto.String("india juliet")})
+			_, err = store.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(5), Name: proto.String("india juliet")})
 			Expect(err).NotTo(HaveOccurred())
 
 			return nil, nil
@@ -1663,15 +1663,15 @@ var _ = Describe("TEXT index", func() {
 				SetContext(rtx).SetMetaDataProvider(md1).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(1), Name: proto.String("alpha bravo")})
+			_, err = store.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(1), Name: proto.String("alpha bravo")})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(2), Name: proto.String("charlie delta")})
+			_, err = store.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(2), Name: proto.String("charlie delta")})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(3), Name: proto.String("echo foxtrot")})
+			_, err = store.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(3), Name: proto.String("echo foxtrot")})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(4), Name: proto.String("golf hotel")})
+			_, err = store.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(4), Name: proto.String("golf hotel")})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(5), Name: proto.String("india juliet")})
+			_, err = store.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(5), Name: proto.String("india juliet")})
 			Expect(err).NotTo(HaveOccurred())
 
 			return nil, nil
@@ -1745,11 +1745,11 @@ var _ = Describe("TEXT index", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(1), Name: proto.String("alpha bravo")})
+			_, err = store.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(1), Name: proto.String("alpha bravo")})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(2), Name: proto.String("charlie delta")})
+			_, err = store.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(2), Name: proto.String("charlie delta")})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(3), Name: proto.String("echo foxtrot")})
+			_, err = store.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(3), Name: proto.String("echo foxtrot")})
 			Expect(err).NotTo(HaveOccurred())
 
 			return nil, nil
@@ -1802,9 +1802,9 @@ var _ = Describe("TEXT index", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(1), Name: proto.String("alpha bravo")})
+			_, err = store.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(1), Name: proto.String("alpha bravo")})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(2), Name: proto.String("charlie delta")})
+			_, err = store.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(2), Name: proto.String("charlie delta")})
 			Expect(err).NotTo(HaveOccurred())
 
 			return nil, nil
@@ -1817,7 +1817,7 @@ var _ = Describe("TEXT index", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(1), Name: proto.String("xray yankee")})
+			_, err = store.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(1), Name: proto.String("xray yankee")})
 			Expect(err).NotTo(HaveOccurred())
 
 			return nil, nil
@@ -1878,7 +1878,7 @@ var _ = Describe("TEXT index", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Customer{
+			_, err = store.SaveRecord(&demopb.Customer{
 				CustomerId: proto.Int64(1),
 				Name:       proto.String("hello world"),
 				Price:      proto.Int32(100),
@@ -1913,7 +1913,7 @@ var _ = Describe("TEXT index", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Customer{
+			_, err = store.SaveRecord(&demopb.Customer{
 				CustomerId: proto.Int64(1),
 				Name:       proto.String("hello world"),
 				Price:      proto.Int32(999),
@@ -1977,12 +1977,12 @@ var _ = Describe("TEXT index", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(1), Name: proto.String("hello world")})
+			_, err = store.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(1), Name: proto.String("hello world")})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(2), Name: proto.String("foo bar")})
+			_, err = store.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(2), Name: proto.String("foo bar")})
 			Expect(err).NotTo(HaveOccurred())
 			// Use non-overlapping PK for order.
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(100), Price: proto.Int32(42)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(100), Price: proto.Int32(42)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Verify TEXT index has 4 tokens before delete.
@@ -2058,7 +2058,7 @@ var _ = Describe("TEXT index", func() {
 			// 3 separate BunchedMap entries (each in its own token subspace).
 			for i := int64(1); i <= 3; i++ {
 				names := []string{"alpha", "bravo", "charlie"}
-				_, err = store.SaveRecord(&gen.Customer{
+				_, err = store.SaveRecord(&demopb.Customer{
 					CustomerId: proto.Int64(i),
 					Name:       proto.String(names[i-1]),
 				})
@@ -2134,7 +2134,7 @@ var _ = Describe("TEXT index", func() {
 
 			for i := int64(1); i <= 3; i++ {
 				names := []string{"alpha", "bravo", "charlie"}
-				_, err = store.SaveRecord(&gen.Customer{
+				_, err = store.SaveRecord(&demopb.Customer{
 					CustomerId: proto.Int64(i),
 					Name:       proto.String(names[i-1]),
 				})
@@ -2190,7 +2190,7 @@ var _ = Describe("TEXT index", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i, name := range []string{"alpha", "bravo"} {
-				_, err = store.SaveRecord(&gen.Customer{
+				_, err = store.SaveRecord(&demopb.Customer{
 					CustomerId: proto.Int64(int64(i + 1)),
 					Name:       proto.String(name),
 				})

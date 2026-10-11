@@ -12,6 +12,8 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -131,7 +133,7 @@ func (e *restoreEnv) bind(db, schema string, version int, md []byte) {
 	})
 	if md != nil {
 		e.openStore(db, schema, md, func(store *recordlayer.FDBRecordStore) error {
-			_, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10)})
+			_, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(10)})
 			return err
 		})
 	}

@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -18,7 +18,7 @@ var _ = Describe("Tenant isolation for record stores", func() {
 
 	// Build metadata with Order type + VALUE index on price + record count.
 	buildMetaData := func() *RecordMetaData {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -78,7 +78,7 @@ var _ = Describe("Tenant isolation for record stores", func() {
 		_, err := dbA.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store := openStore(dbA, rtx, md, ss)
 			for i := range int64(5) {
-				_, err := store.SaveRecord(&gen.Order{
+				_, err := store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(i + 1),
 					Price:   proto.Int32(int32((i + 1) * 100)),
 				})
@@ -118,7 +118,7 @@ var _ = Describe("Tenant isolation for record stores", func() {
 		_, err := dbA.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store := openStore(dbA, rtx, md, ss)
 			for i := range int64(3) {
-				_, err := store.SaveRecord(&gen.Order{
+				_, err := store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(i + 1),
 					Price:   proto.Int32(int32((i + 1) * 10)),
 				})
@@ -132,7 +132,7 @@ var _ = Describe("Tenant isolation for record stores", func() {
 		_, err = dbB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store := openStore(dbB, rtx, md, ss)
 			for i := range int64(7) {
-				_, err := store.SaveRecord(&gen.Order{
+				_, err := store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(i + 100),
 					Price:   proto.Int32(int32((i + 100) * 10)),
 				})
@@ -152,7 +152,7 @@ var _ = Describe("Tenant isolation for record stores", func() {
 
 			// Verify the IDs are 1, 2, 3 — not any of B's 100-106.
 			for i, rec := range records {
-				order := rec.Record.(*gen.Order)
+				order := rec.Record.(*demopb.Order)
 				Expect(order.GetOrderId()).To(Equal(int64(i + 1)))
 			}
 
@@ -169,7 +169,7 @@ var _ = Describe("Tenant isolation for record stores", func() {
 			Expect(records).To(HaveLen(7), "tenant B must see exactly 7 records")
 
 			for i, rec := range records {
-				order := rec.Record.(*gen.Order)
+				order := rec.Record.(*demopb.Order)
 				Expect(order.GetOrderId()).To(Equal(int64(i + 100)))
 			}
 
@@ -191,7 +191,7 @@ var _ = Describe("Tenant isolation for record stores", func() {
 		_, err := dbA.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store := openStore(dbA, rtx, md, ss)
 			for i := range int64(4) {
-				_, err := store.SaveRecord(&gen.Order{
+				_, err := store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(i + 1),
 					Price:   proto.Int32(int32(i * 50)),
 				})
@@ -205,7 +205,7 @@ var _ = Describe("Tenant isolation for record stores", func() {
 		_, err = dbB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store := openStore(dbB, rtx, md, ss)
 			for i := range int64(2) {
-				_, err := store.SaveRecord(&gen.Order{
+				_, err := store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(i + 1),
 					Price:   proto.Int32(int32(i * 99)),
 				})
@@ -253,7 +253,7 @@ var _ = Describe("Tenant isolation for record stores", func() {
 		_, err := dbA.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store := openStore(dbA, rtx, md, ss)
 			for i := range int64(3) {
-				_, err := store.SaveRecord(&gen.Order{
+				_, err := store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(i + 1),
 					Price:   proto.Int32(int32((i + 1) * 100)),
 				})
@@ -267,7 +267,7 @@ var _ = Describe("Tenant isolation for record stores", func() {
 		_, err = dbB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store := openStore(dbB, rtx, md, ss)
 			for i := range int64(2) {
-				_, err := store.SaveRecord(&gen.Order{
+				_, err := store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(i + 50),
 					Price:   proto.Int32(int32(999 - i)),
 				})
@@ -324,7 +324,7 @@ var _ = Describe("Tenant isolation for record stores", func() {
 		// Save order ID=42 in tenant A with price 500.
 		_, err := dbA.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store := openStore(dbA, rtx, md, ss)
-			_, err := store.SaveRecord(&gen.Order{
+			_, err := store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(42),
 				Price:   proto.Int32(500),
 			})
@@ -336,7 +336,7 @@ var _ = Describe("Tenant isolation for record stores", func() {
 		// Save order ID=42 in tenant B with a DIFFERENT price (999).
 		_, err = dbB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store := openStore(dbB, rtx, md, ss)
-			_, err := store.SaveRecord(&gen.Order{
+			_, err := store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(42),
 				Price:   proto.Int32(999),
 			})
@@ -351,7 +351,7 @@ var _ = Describe("Tenant isolation for record stores", func() {
 			rec, err := store.LoadRecord(tuple.Tuple{int64(42)})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(rec).NotTo(BeNil())
-			order := rec.Record.(*gen.Order)
+			order := rec.Record.(*demopb.Order)
 			Expect(order.GetPrice()).To(Equal(int32(500)),
 				"tenant A must see its own data, not B's")
 			return nil, nil
@@ -364,7 +364,7 @@ var _ = Describe("Tenant isolation for record stores", func() {
 			rec, err := store.LoadRecord(tuple.Tuple{int64(42)})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(rec).NotTo(BeNil())
-			order := rec.Record.(*gen.Order)
+			order := rec.Record.(*demopb.Order)
 			Expect(order.GetPrice()).To(Equal(int32(999)),
 				"tenant B must see its own data, not A's")
 			return nil, nil
@@ -386,7 +386,7 @@ var _ = Describe("Tenant isolation for record stores", func() {
 			db := tenantDB
 			_, err := db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store := openStore(db, rtx, md, ss)
-				_, err := store.SaveRecord(&gen.Order{
+				_, err := store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(1),
 					Price:   proto.Int32(100),
 				})
@@ -426,7 +426,7 @@ var _ = Describe("Tenant isolation for record stores", func() {
 			rec, err := store.LoadRecord(tuple.Tuple{int64(1)})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(rec).NotTo(BeNil(), "tenant B record must NOT be deleted by A's delete")
-			Expect(rec.Record.(*gen.Order).GetPrice()).To(Equal(int32(100)))
+			Expect(rec.Record.(*demopb.Order).GetPrice()).To(Equal(int32(100)))
 
 			count, err := store.GetRecordCount()
 			Expect(err).NotTo(HaveOccurred())

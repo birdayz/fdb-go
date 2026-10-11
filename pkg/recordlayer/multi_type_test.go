@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -13,7 +13,7 @@ import (
 
 // multiTypeMetaData returns metadata with both Order and Customer registered.
 func multiTypeMetaData() *RecordMetaData {
-	builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -39,16 +39,16 @@ var _ = Describe("MultiTypeRecords", func() {
 				return nil, err
 			}
 
-			order := &gen.Order{
+			order := &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(100),
-				Flower:  &gen.Flower{Type: proto.String("Rose"), Color: gen.Color_RED.Enum()},
+				Flower:  &demopb.Flower{Type: proto.String("Rose"), Color: demopb.Color_RED.Enum()},
 			}
 			if _, err := store.SaveRecord(order); err != nil {
 				return nil, err
 			}
 
-			customer := &gen.Customer{
+			customer := &demopb.Customer{
 				CustomerId: proto.Int64(1),
 				Name:       proto.String("Alice"),
 				Email:      proto.String("alice@example.com"),
@@ -94,7 +94,7 @@ var _ = Describe("MultiTypeRecords", func() {
 
 			// Save 2 orders and 2 customers
 			for i := int64(1); i <= 2; i++ {
-				order := &gen.Order{
+				order := &demopb.Order{
 					OrderId: proto.Int64(i),
 					Price:   proto.Int32(int32(i * 10)),
 				}
@@ -102,7 +102,7 @@ var _ = Describe("MultiTypeRecords", func() {
 					return nil, err
 				}
 
-				customer := &gen.Customer{
+				customer := &demopb.Customer{
 					CustomerId: proto.Int64(i + 100), // Different IDs to avoid key overlap
 					Name:       proto.String("Customer"),
 				}
@@ -126,9 +126,9 @@ var _ = Describe("MultiTypeRecords", func() {
 
 				rec := result.GetValue()
 				switch rec.Record.(type) {
-				case *gen.Order:
+				case *demopb.Order:
 					orderCount++
-				case *gen.Customer:
+				case *demopb.Customer:
 					customerCount++
 				default:
 					Fail("Unexpected record type")
@@ -157,7 +157,7 @@ var _ = Describe("MultiTypeRecords", func() {
 			}
 
 			// Save order with primary key 42
-			order := &gen.Order{
+			order := &demopb.Order{
 				OrderId: proto.Int64(42),
 				Price:   proto.Int32(99),
 			}
@@ -166,7 +166,7 @@ var _ = Describe("MultiTypeRecords", func() {
 			}
 
 			// Save customer with same primary key 42 — overwrites the order
-			customer := &gen.Customer{
+			customer := &demopb.Customer{
 				CustomerId: proto.Int64(42),
 				Name:       proto.String("Bob"),
 			}
@@ -207,13 +207,13 @@ var _ = Describe("MultiTypeRecords", func() {
 
 			// Save 3 orders and 2 customers
 			for i := int64(1); i <= 3; i++ {
-				order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))}
+				order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))}
 				if _, err := store.SaveRecord(order); err != nil {
 					return nil, err
 				}
 			}
 			for i := int64(101); i <= 102; i++ {
-				customer := &gen.Customer{CustomerId: proto.Int64(i), Name: proto.String("Test")}
+				customer := &demopb.Customer{CustomerId: proto.Int64(i), Name: proto.String("Test")}
 				if _, err := store.SaveRecord(customer); err != nil {
 					return nil, err
 				}
@@ -272,7 +272,7 @@ var _ = Describe("MultiTypeRecords", func() {
 		// Metadata with RecordTypeKey() as first PK component — triggers fast path.
 		var rtMetaData *RecordMetaData
 		BeforeEach(func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Concat(RecordTypeKey(), Field("order_id")))
 			builder.GetRecordType("Customer").SetPrimaryKey(Concat(RecordTypeKey(), Field("customer_id")))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Concat(RecordTypeKey(), Field("id")))
@@ -291,12 +291,12 @@ var _ = Describe("MultiTypeRecords", func() {
 				}
 				// Save 5 orders and 3 customers
 				for i := int64(1); i <= 5; i++ {
-					if _, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))}); err != nil {
+					if _, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))}); err != nil {
 						return nil, err
 					}
 				}
 				for i := int64(1); i <= 3; i++ {
-					if _, err := store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(i), Name: proto.String("Cust")}); err != nil {
+					if _, err := store.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(i), Name: proto.String("Cust")}); err != nil {
 						return nil, err
 					}
 				}
@@ -332,12 +332,12 @@ var _ = Describe("MultiTypeRecords", func() {
 				}
 				// Save 10 orders + 5 customers
 				for i := int64(1); i <= 10; i++ {
-					if _, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(100)}); err != nil {
+					if _, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(100)}); err != nil {
 						return nil, err
 					}
 				}
 				for i := int64(1); i <= 5; i++ {
-					if _, err := store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(i), Name: proto.String("C")}); err != nil {
+					if _, err := store.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(i), Name: proto.String("C")}); err != nil {
 						return nil, err
 					}
 				}
@@ -379,12 +379,12 @@ var _ = Describe("MultiTypeRecords", func() {
 					return nil, err
 				}
 				for i := int64(1); i <= 5; i++ {
-					if _, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))}); err != nil {
+					if _, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))}); err != nil {
 						return nil, err
 					}
 				}
 				for i := int64(1); i <= 3; i++ {
-					if _, err := store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(i), Name: proto.String("C")}); err != nil {
+					if _, err := store.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(i), Name: proto.String("C")}); err != nil {
 						return nil, err
 					}
 				}
@@ -416,7 +416,7 @@ var _ = Describe("MultiTypeRecords", func() {
 					return nil, err
 				}
 				for i := int64(1); i <= 3; i++ {
-					if _, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(100)}); err != nil {
+					if _, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(100)}); err != nil {
 						return nil, err
 					}
 				}

@@ -448,6 +448,7 @@ go_test(
     tags = ["resources:memory:800"],
     deps = [
         "//gen",
+        "//gen/demopb",
         "//pkg/async/rtree",
         "//pkg/dst",
         "//pkg/fdbgo/fdb",
@@ -501,7 +502,7 @@ go_test(
         "resources:memory:4300",
     ],
     deps = [
-        "//gen",
+        "//gen/demopb",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",

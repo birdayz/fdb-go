@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -15,7 +15,7 @@ var _ = Describe("API Coverage 2", func() {
 	ctx := context.Background()
 
 	baseMetaData := func() *RecordMetaDataBuilder {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -33,11 +33,11 @@ var _ = Describe("API Coverage 2", func() {
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
 
-				typedStore, err := GetTypedRecordStore[*gen.Order](store, "Order")
+				typedStore, err := GetTypedRecordStore[*demopb.Order](store, "Order")
 				Expect(err).NotTo(HaveOccurred())
 				Expect(typedStore).NotTo(BeNil())
 
-				order := &gen.Order{OrderId: proto.Int64(42), Price: proto.Int32(999)}
+				order := &demopb.Order{OrderId: proto.Int64(42), Price: proto.Int32(999)}
 				saved, err := typedStore.SaveRecord(order)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(saved).NotTo(BeNil())
@@ -63,7 +63,7 @@ var _ = Describe("API Coverage 2", func() {
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
 
-				_, typedErr := GetTypedRecordStore[*gen.Order](store, "DoesNotExist")
+				_, typedErr := GetTypedRecordStore[*demopb.Order](store, "DoesNotExist")
 				Expect(typedErr).To(HaveOccurred())
 				var mdErr *MetaDataError
 				Expect(errors.As(typedErr, &mdErr)).To(BeTrue())
@@ -75,7 +75,7 @@ var _ = Describe("API Coverage 2", func() {
 
 		It("returns error for nil store", func() {
 			Expect(func() {
-				_, _ = GetTypedRecordStore[*gen.Order](nil, "Order")
+				_, _ = GetTypedRecordStore[*demopb.Order](nil, "Order")
 			}).To(Panic())
 		})
 	})
@@ -197,7 +197,7 @@ var _ = Describe("API Coverage 2", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 20; i++ {
-					order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))}
+					order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))}
 					_, err = store.SaveRecord(order)
 					Expect(err).NotTo(HaveOccurred())
 				}
@@ -515,7 +515,7 @@ var _ = Describe("API Coverage 2", func() {
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
 
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 				Expect(err).NotTo(HaveOccurred())
 				return nil, nil
 			})
@@ -819,7 +819,7 @@ var _ = Describe("API Coverage 2", func() {
 
 	Describe("RecordMetaDataBuilder", func() {
 		It("SetRecords sets the proto file descriptor", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			// Verify we can get record types from it.
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))

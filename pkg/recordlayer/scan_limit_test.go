@@ -3,7 +3,7 @@ package recordlayer
 import (
 	"context"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
@@ -93,7 +93,7 @@ var _ = Describe("ByteScanLimit", func() {
 	var metaData *RecordMetaData
 
 	BeforeEach(func() {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -111,7 +111,7 @@ var _ = Describe("ByteScanLimit", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i := int64(1); i <= 3; i++ {
-				order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))}
+				order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))}
 				_, err := store.SaveRecord(order)
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -155,12 +155,12 @@ var _ = Describe("ByteScanLimit", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i := int64(1); i <= 10; i++ {
-				order := &gen.Order{
+				order := &demopb.Order{
 					OrderId: proto.Int64(i),
 					Price:   proto.Int32(int32(i * 100)),
-					Flower: &gen.Flower{
+					Flower: &demopb.Flower{
 						Type:  proto.String("Rose"),
-						Color: gen.Color_RED.Enum(),
+						Color: demopb.Color_RED.Enum(),
 					},
 				}
 				_, err := store.SaveRecord(order)
@@ -212,12 +212,12 @@ var _ = Describe("ByteScanLimit", func() {
 
 			// Save 20 records with larger payloads to ensure byte limit triggers
 			for i := int64(1); i <= 20; i++ {
-				order := &gen.Order{
+				order := &demopb.Order{
 					OrderId: proto.Int64(i),
 					Price:   proto.Int32(int32(i * 100)),
-					Flower: &gen.Flower{
+					Flower: &demopb.Flower{
 						Type:  proto.String("LongFlowerNameForByteSize"),
-						Color: gen.Color_RED.Enum(),
+						Color: demopb.Color_RED.Enum(),
 					},
 				}
 				_, err := store.SaveRecord(order)
@@ -285,7 +285,7 @@ var _ = Describe("ByteScanLimit", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i := int64(1); i <= 5; i++ {
-				order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))}
+				order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))}
 				_, err := store.SaveRecord(order)
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -316,7 +316,7 @@ var _ = Describe("ScannedRecordsLimit_BoundaryTests", func() {
 	var metaData *RecordMetaData
 
 	BeforeEach(func() {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -334,7 +334,7 @@ var _ = Describe("ScannedRecordsLimit_BoundaryTests", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i := int64(1); i <= 3; i++ {
-				order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))}
+				order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))}
 				_, err := store.SaveRecord(order)
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -378,7 +378,7 @@ var _ = Describe("ScannedRecordsLimit_BoundaryTests", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i := int64(1); i <= 5; i++ {
-				order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))}
+				order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))}
 				_, err := store.SaveRecord(order)
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -410,7 +410,7 @@ var _ = Describe("RowLimit_SourceExhausted", func() {
 	var metaData *RecordMetaData
 
 	BeforeEach(func() {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -428,7 +428,7 @@ var _ = Describe("RowLimit_SourceExhausted", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i := int64(1); i <= 3; i++ {
-				order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))}
+				order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))}
 				_, err := store.SaveRecord(order)
 				Expect(err).NotTo(HaveOccurred())
 			}

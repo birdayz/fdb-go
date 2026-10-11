@@ -18,7 +18,7 @@ go_test(
     srcs = ["rlcatalog_test.go"],
     deps = [
         ":rlcatalog",
-        "//gen",
+        "//gen/demopb",
         "//pkg/recordlayer",
         "//pkg/relational/core/query/semantic",
         "@org_golang_google_protobuf//proto",

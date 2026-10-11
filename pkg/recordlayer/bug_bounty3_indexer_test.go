@@ -6,7 +6,7 @@ import (
 	"errors"
 	"time"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -20,7 +20,7 @@ var _ = Describe("BugBounty3Indexer", func() {
 
 	// Helper: create metadata with Order + Customer types and NO indexes.
 	baseMetaData := func() *RecordMetaDataBuilder {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -410,11 +410,11 @@ var _ = Describe("BugBounty3Indexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 5; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 				for i := int64(101); i <= 105; i++ {
-					_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(i), Name: proto.String("test")})
+					_, err = store.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(i), Name: proto.String("test")})
 					Expect(err).NotTo(HaveOccurred())
 				}
 				return nil, nil
@@ -489,7 +489,7 @@ var _ = Describe("BugBounty3Indexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 5; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 				return nil, nil
@@ -562,7 +562,7 @@ var _ = Describe("BugBounty3Indexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 10; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 				return nil, nil
@@ -638,7 +638,7 @@ var _ = Describe("BugBounty3Indexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 10; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 				return nil, nil
@@ -738,7 +738,7 @@ var _ = Describe("BugBounty3Indexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 5; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 				return nil, nil
@@ -846,7 +846,7 @@ var _ = Describe("BugBounty3Indexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 6; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 				return nil, nil
@@ -907,7 +907,7 @@ var _ = Describe("BugBounty3Indexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 3; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 				return nil, nil
@@ -1018,7 +1018,7 @@ var _ = Describe("BugBounty3Indexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 50; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 				return nil, nil

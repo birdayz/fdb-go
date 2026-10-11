@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -15,7 +15,7 @@ var _ = Describe("CountNotNullIndex", func() {
 	ctx := context.Background()
 
 	baseMetaData := func() *RecordMetaDataBuilder {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -39,15 +39,15 @@ var _ = Describe("CountNotNullIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Order with price=100
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Order without price (nil) — should NOT be counted (null grouped column)
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Order with price=200
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(200)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(200)})
 			Expect(err).NotTo(HaveOccurred())
 
 			entries, err := AsList(ctx, store.ScanIndex(idx, TupleRangeAll, nil, ForwardScan()))
@@ -90,9 +90,9 @@ var _ = Describe("CountNotNullIndex", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Delete one
@@ -125,9 +125,9 @@ var _ = Describe("CountNotNullIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// One with price, one without
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Delete the null-price order — count should stay the same (null was never counted)
@@ -160,7 +160,7 @@ var _ = Describe("CountNotNullIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Save without price — null grouped column → not counted, no entry written
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1)})
 			Expect(err).NotTo(HaveOccurred())
 
 			entries, err := AsList(ctx, store.ScanIndex(idx, TupleRangeAll, nil, ForwardScan()))
@@ -168,7 +168,7 @@ var _ = Describe("CountNotNullIndex", func() {
 			Expect(entries).To(HaveLen(0))
 
 			// Update to have price → now counted
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(50)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(50)})
 			Expect(err).NotTo(HaveOccurred())
 
 			entries, err = AsList(ctx, store.ScanIndex(idx, TupleRangeAll, nil, ForwardScan()))
@@ -196,11 +196,11 @@ var _ = Describe("CountNotNullIndex", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2)}) // no price
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2)}) // no price
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(200)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(200)})
 			Expect(err).NotTo(HaveOccurred())
 
 			entries, err := AsList(ctx, store.ScanIndex(idx, TupleRangeAll, nil, ForwardScan()))
@@ -227,11 +227,11 @@ var _ = Describe("CountNotNullIndex", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2)}) // no price
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2)}) // no price
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(200)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(200)})
 			Expect(err).NotTo(HaveOccurred())
 
 			result, err := store.EvaluateAggregateFunction(ctx, []string{"Order"},
@@ -279,17 +279,17 @@ var _ = Describe("CountNotNullIndex", func() {
 
 			// quantity UNSET (null grouping column), price set. Java counts it
 			// under the null group; a whole-key null check drops it silently.
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// quantity set — the control group, which a whole-key check also counts.
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Quantity: proto.Int32(7), Price: proto.Int32(200)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Quantity: proto.Int32(7), Price: proto.Int32(200)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// price UNSET — dropped by BOTH readings, because price is the
 			// grouped column. Present so the assertion below cannot pass by the
 			// maintainer having simply stopped filtering nulls at all.
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Quantity: proto.Int32(7)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Quantity: proto.Int32(7)})
 			Expect(err).NotTo(HaveOccurred())
 
 			entries, err := AsList(ctx, store.ScanIndex(idx, TupleRangeAll, nil, ForwardScan()))

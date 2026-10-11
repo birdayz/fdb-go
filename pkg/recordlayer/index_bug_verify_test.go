@@ -7,7 +7,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 )
 
 var _ = Describe("IndexBugVerify", func() {
@@ -20,7 +20,7 @@ var _ = Describe("IndexBugVerify", func() {
 			ctx := context.Background()
 			ss := specSubspace()
 
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -38,7 +38,7 @@ var _ = Describe("IndexBugVerify", func() {
 				if err != nil {
 					return nil, err
 				}
-				_, err = store.SaveRecord(&gen.Order{OrderId: intPtr(1), Price: int32Ptr(42)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: intPtr(1), Price: int32Ptr(42)})
 				return nil, err
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -50,7 +50,7 @@ var _ = Describe("IndexBugVerify", func() {
 				if err != nil {
 					return nil, err
 				}
-				_, err = store.SaveRecord(&gen.Order{OrderId: intPtr(2), Price: int32Ptr(42)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: intPtr(2), Price: int32Ptr(42)})
 				return nil, err
 			})
 			Expect(err).To(HaveOccurred())
@@ -62,7 +62,7 @@ var _ = Describe("IndexBugVerify", func() {
 			ctx := context.Background()
 			ss := specSubspace()
 
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -80,12 +80,12 @@ var _ = Describe("IndexBugVerify", func() {
 				if err != nil {
 					return nil, err
 				}
-				_, err = store.SaveRecord(&gen.Order{OrderId: intPtr(1), Price: int32Ptr(42)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: intPtr(1), Price: int32Ptr(42)})
 				if err != nil {
 					return nil, err
 				}
 				// Update same record (same PK) — no violation.
-				_, err = store.SaveRecord(&gen.Order{OrderId: intPtr(1), Price: int32Ptr(42)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: intPtr(1), Price: int32Ptr(42)})
 				return nil, err
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -106,7 +106,7 @@ var _ = Describe("IndexBugVerify", func() {
 			)
 			countIdx.Type = "count_not_null"
 
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -126,7 +126,7 @@ var _ = Describe("IndexBugVerify", func() {
 					return nil, err
 				}
 				// flower is nil — COUNT_NOT_NULL should skip this record.
-				_, err = store.SaveRecord(&gen.Order{OrderId: intPtr(1), Price: int32Ptr(10)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: intPtr(1), Price: int32Ptr(10)})
 				return nil, err
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -158,7 +158,7 @@ var _ = Describe("IndexBugVerify", func() {
 			)
 			countIdx.Type = "count_not_null"
 
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -176,10 +176,10 @@ var _ = Describe("IndexBugVerify", func() {
 				if err != nil {
 					return nil, err
 				}
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId: intPtr(1),
 					Price:   int32Ptr(10),
-					Flower:  &gen.Flower{Type: &flowerType},
+					Flower:  &demopb.Flower{Type: &flowerType},
 				})
 				return nil, err
 			})
@@ -215,7 +215,7 @@ var _ = Describe("IndexBugVerify", func() {
 			idx := NewIndex("Order$id_price_unique", Concat(Field("order_id"), Field("price")))
 			idx.SetUnique()
 
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -233,11 +233,11 @@ var _ = Describe("IndexBugVerify", func() {
 				if err != nil {
 					return nil, err
 				}
-				_, err = store.SaveRecord(&gen.Order{OrderId: intPtr(1), Price: int32Ptr(42)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: intPtr(1), Price: int32Ptr(42)})
 				if err != nil {
 					return nil, err
 				}
-				_, err = store.SaveRecord(&gen.Order{OrderId: intPtr(2), Price: int32Ptr(42)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: intPtr(2), Price: int32Ptr(42)})
 				return nil, err
 			})
 			Expect(err).NotTo(HaveOccurred())

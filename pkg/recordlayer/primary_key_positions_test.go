@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
 
@@ -137,7 +137,7 @@ func TestUniversalIndexPositionsDoNotDependOnMapIterationOrder(t *testing.T) {
 	const builds = 40
 	seen := map[string]int{}
 	for i := 0; i < builds; i++ {
-		b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		// Only `price` is declared by all three types, so it is the only legal
 		// universal index key here -- and Order alone is keyed on it, which is
 		// what gives the record types disagreeing answers to "does this index
@@ -177,7 +177,7 @@ func TestUniversalIndexPositionsDoNotDependOnMapIterationOrder(t *testing.T) {
 // three -- so that a universal index key can overlap every primary key and the
 // arms differ in registration alone.
 func buildPriceKeyedMetaData(register func(*RecordMetaDataBuilder, *Index), indexName string) (*RecordMetaData, error) {
-	b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	b.GetRecordType("Order").SetPrimaryKey(Field("price"))
 	b.GetRecordType("Customer").SetPrimaryKey(Field("price"))
 	b.GetRecordType("TypedRecord").SetPrimaryKey(Field("price"))
@@ -263,7 +263,7 @@ func TestPreUpgradeTrimmedEntryWithAPartialOverlapReadsBackAShortWrongPrimaryKey
 	// position 0 and `order_id` does not, so an older build computed positions
 	// [0, -1] and wrote the entry as (price, order_id) -- length 2, the primary
 	// key trimmed from two components down to one.
-	b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	b.GetRecordType("Order").SetPrimaryKey(Concat(Field("price"), Field("order_id")))
 	b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))

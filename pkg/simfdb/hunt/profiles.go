@@ -1,7 +1,7 @@
 package hunt
 
 import (
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
 )
 
@@ -35,7 +35,7 @@ func Profiles() []Profile {
 
 func newBuilder() *recordlayer.RecordMetaDataBuilder {
 	b := recordlayer.NewRecordMetaDataBuilder()
-	b.SetRecords(gen.File_record_layer_demo_proto)
+	b.SetRecords(demopb.File_record_layer_demo_proto)
 	b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))

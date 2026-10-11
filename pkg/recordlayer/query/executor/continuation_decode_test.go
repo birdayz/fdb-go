@@ -28,6 +28,8 @@ import (
 	"google.golang.org/protobuf/types/dynamicpb"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -236,7 +238,7 @@ func FuzzSortContinuation(f *testing.F) {
 		recordlayer.NewBytesContinuation([]byte("INNER")),
 		[]QueryResult{dmap(map[string]any{
 			"arr":    []any{int64(1), "x", []any{nil}},
-			"struct": &gen.Flower{Type: proto.String("rose")},
+			"struct": &demopb.Flower{Type: proto.String("rose")},
 		})},
 		false,
 	); err == nil {
@@ -631,7 +633,7 @@ func unregisteredDynamicMessage(tb testing.TB) (*dynamicpb.Message, protoreflect
 // resolver executeInMemorySort hands decodeSortContinuation.
 func demoMetadataResolver(tb testing.TB) protoDescriptorResolver {
 	tb.Helper()
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -728,8 +730,8 @@ func TestContValue_ListRoundTrip_F53(t *testing.T) {
 func TestSortContinuation_ArrayAndStructSlots_F53(t *testing.T) {
 	t.Parallel()
 
-	flower := &gen.Flower{Type: proto.String("rose"), Color: gen.Color_RED.Enum()}
-	elem := &gen.Flower{Type: proto.String("lily"), Color: gen.Color_BLUE.Enum()}
+	flower := &demopb.Flower{Type: proto.String("rose"), Color: demopb.Color_RED.Enum()}
+	elem := &demopb.Flower{Type: proto.String("lily"), Color: demopb.Color_BLUE.Enum()}
 	names := []string{"FLOWER", "TAGS", "STRUCT_ARR", "PRICE"}
 	slots := []any{flower, []any{"a", "b"}, []any{elem}, int64(5)}
 	buf := []QueryResult{dorder(names, slots)}
@@ -912,7 +914,7 @@ func TestSortContinuation_DynamicSchemaFallback_F54(t *testing.T) {
 func TestDecodeAggregateContinuation_ProtoPlaceholderRejected_F53(t *testing.T) {
 	t.Parallel()
 
-	flower := &gen.Flower{Type: proto.String("rose")}
+	flower := &demopb.Flower{Type: proto.String("rose")}
 	flowerVal := mustContValue(t, flower)
 	validOne := mustContValue(t, int64(1))
 
@@ -1017,7 +1019,7 @@ func TestContValue_RetiredJSONTagRejected_F53(t *testing.T) {
 
 // TestSortContinuation_GeneratedTypeIdentity_F54 pins that a buffered STRUCT
 // slot encoded from a GENERATED message (flag 0) restores with the SAME
-// concrete Go type a freshly-read row carries (*gen.Flower, not
+// concrete Go type a freshly-read row carries (*demopb.Flower, not
 // *dynamicpb.Message). The group/dedup keys (computeGroupKey, packedDedupKey,
 // mergeSortCursor.extractKey) fall back to %T:%v for composite slots, so a
 // restored slot with a different concrete type would NEVER key-match an equal
@@ -1030,8 +1032,8 @@ func TestContValue_RetiredJSONTagRejected_F53(t *testing.T) {
 func TestSortContinuation_GeneratedTypeIdentity_F54(t *testing.T) {
 	t.Parallel()
 
-	flower := &gen.Flower{Type: proto.String("rose"), Color: gen.Color_RED.Enum()}
-	elem := &gen.Flower{Type: proto.String("lily"), Color: gen.Color_BLUE.Enum()}
+	flower := &demopb.Flower{Type: proto.String("rose"), Color: demopb.Color_RED.Enum()}
+	elem := &demopb.Flower{Type: proto.String("lily"), Color: demopb.Color_BLUE.Enum()}
 	names := []string{"FLOWER", "STRUCT_ARR", "ID"}
 	slots := []any{flower, []any{elem}, int64(1)}
 	buf := []QueryResult{dorder(names, slots)}
@@ -1064,9 +1066,9 @@ func TestSortContinuation_GeneratedTypeIdentity_F54(t *testing.T) {
 			}
 			gotSlots := got[0].Positional.Slots
 
-			gotFlower, ok := gotSlots[0].(*gen.Flower)
+			gotFlower, ok := gotSlots[0].(*demopb.Flower)
 			if !ok {
-				t.Fatalf("slots[0] = %T, want *gen.Flower — a dynamicpb restore breaks %%T-keyed group/dedup identity across the checkpoint", gotSlots[0])
+				t.Fatalf("slots[0] = %T, want *demopb.Flower — a dynamicpb restore breaks %%T-keyed group/dedup identity across the checkpoint", gotSlots[0])
 			}
 			if !proto.Equal(gotFlower, flower) {
 				t.Errorf("slots[0] = %v, want %v", gotFlower, flower)
@@ -1076,9 +1078,9 @@ func TestSortContinuation_GeneratedTypeIdentity_F54(t *testing.T) {
 			if !ok || len(arr) != 1 {
 				t.Fatalf("slots[1] = %#v (%T), want a 1-element []any", gotSlots[1], gotSlots[1])
 			}
-			gotElem, ok := arr[0].(*gen.Flower)
+			gotElem, ok := arr[0].(*demopb.Flower)
 			if !ok {
-				t.Fatalf("slots[1][0] = %T, want *gen.Flower (identity must hold inside ARRAY-OF-STRUCT too)", arr[0])
+				t.Fatalf("slots[1][0] = %T, want *demopb.Flower (identity must hold inside ARRAY-OF-STRUCT too)", arr[0])
 			}
 			if !proto.Equal(gotElem, elem) {
 				t.Errorf("slots[1][0] = %v, want %v", gotElem, elem)
@@ -1111,7 +1113,7 @@ func TestContProtoMessage_RepresentationFlag_F55(t *testing.T) {
 	t.Parallel()
 
 	// Generated message → flag 0.
-	encGen := mustContValue(t, &gen.Flower{Type: proto.String("rose")})
+	encGen := mustContValue(t, &demopb.Flower{Type: proto.String("rose")})
 	if encGen[0] != contValProtoMsg || encGen[1] != 0 {
 		t.Errorf("generated message encodes [tag flag] = [%d %d], want [%d 0]", encGen[0], encGen[1], contValProtoMsg)
 	}
@@ -1125,7 +1127,7 @@ func TestContProtoMessage_RepresentationFlag_F55(t *testing.T) {
 
 	// A dynamicpb message over a REGISTERED descriptor → still flag 1: the
 	// name cannot pick the representation, only the concrete type can.
-	dyn := dynamicpb.NewMessage((&gen.Flower{}).ProtoReflect().Descriptor())
+	dyn := dynamicpb.NewMessage((&demopb.Flower{}).ProtoReflect().Descriptor())
 	encDyn := mustContValue(t, dyn)
 	if encDyn[0] != contValProtoMsg || encDyn[1] != 1 {
 		t.Errorf("dynamicpb-over-registered-descriptor encodes [tag flag] = [%d %d], want [%d 1]", encDyn[0], encDyn[1], contValProtoMsg)
@@ -1138,7 +1140,7 @@ func TestContProtoMessage_RepresentationFlag_F55(t *testing.T) {
 // type's full name IS registered in protoregistry.GlobalTypes. The restore
 // must rebuild the ENCODED representation (flag 1 → metadata resolver →
 // dynamicpb), NOT registry-first: a registry rebuild would hand back
-// *gen.Flower, and the %T-keyed group/dedup keys would never match an equal
+// *demopb.Flower, and the %T-keyed group/dedup keys would never match an equal
 // fresh dynamicpb row — equal rows straddling a checkpoint split into
 // duplicate groups / duplicate DISTINCT rows (wrong results, no error).
 func TestSortContinuation_DynamicMessageOfRegisteredType_F55(t *testing.T) {
@@ -1146,7 +1148,7 @@ func TestSortContinuation_DynamicMessageOfRegisteredType_F55(t *testing.T) {
 
 	// dynamicpb messages over the REGISTERED Flower descriptor — the shape a
 	// dynamic schema importing the compiled demo file materializes.
-	flowerDesc := (&gen.Flower{}).ProtoReflect().Descriptor()
+	flowerDesc := (&demopb.Flower{}).ProtoReflect().Descriptor()
 	newDynFlower := func(typ string) *dynamicpb.Message {
 		m := dynamicpb.NewMessage(flowerDesc)
 		m.Set(flowerDesc.Fields().ByName("type"), protoreflect.ValueOfString(typ))
@@ -1166,7 +1168,7 @@ func TestSortContinuation_DynamicMessageOfRegisteredType_F55(t *testing.T) {
 		t.Parallel()
 		// The demo metadata carries Flower, so the PRODUCTION resolver finds
 		// it — and the registry carries it too, so a registry-first decode
-		// would wrongly restore *gen.Flower.
+		// would wrongly restore *demopb.Flower.
 		_, got, _, decErr := decodeSortContinuation(encoded, demoMetadataResolver(t))
 		if decErr != nil {
 			t.Fatalf("decode: %v", decErr)

@@ -3,7 +3,7 @@ package recordlayer
 import (
 	"context"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -26,7 +26,7 @@ var _ = Describe("PermutedMinNullSemantics", func() {
 	ctx := context.Background()
 
 	baseMetaData := func() *RecordMetaDataBuilder {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -63,7 +63,7 @@ var _ = Describe("PermutedMinNullSemantics", func() {
 			// price=200 : quantities {NULL, NULL}  -> MIN NULL, MAX NULL
 			// price=300 : quantities {4}           -> MIN 4,  MAX 4
 			save := func(id int64, price int32, qty *int32) {
-				rec := &gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(price)}
+				rec := &demopb.Order{OrderId: proto.Int64(id), Price: proto.Int32(price)}
 				rec.Quantity = qty
 				_, serr := store.SaveRecord(rec)
 				Expect(serr).NotTo(HaveOccurred())

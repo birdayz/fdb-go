@@ -5,7 +5,7 @@ import (
 	"math"
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -214,7 +214,7 @@ func TestPackedDedupKeyProtoCanonicalAcrossGeneratedAndDynamicRepresentations(t 
 
 	nan32A := math.Float32frombits(0x7fc00001)
 	nan64A := math.Float64frombits(0x7ff8000000000001)
-	generated := &gen.TypedRecord{ValFloat: &nan32A, ValDouble: &nan64A}
+	generated := &demopb.TypedRecord{ValFloat: &nan32A, ValDouble: &nan64A}
 
 	nan32B := math.Float32frombits(0xffd23456)
 	nan64B := math.Float64frombits(0xfff123456789abcd)
@@ -235,7 +235,7 @@ func TestPackedDedupKeyProtoCanonicalAcrossGeneratedAndDynamicRepresentations(t 
 
 	negative32 := math.Float32frombits(0x80000000)
 	negative64 := math.Copysign(0, -1)
-	negative := &gen.TypedRecord{ValFloat: &negative32, ValDouble: &negative64}
+	negative := &demopb.TypedRecord{ValFloat: &negative32, ValDouble: &negative64}
 	positive := dynamicpb.NewMessage(generated.ProtoReflect().Descriptor())
 	positive.Set(positive.Descriptor().Fields().ByName("val_float"), protoreflect.ValueOfFloat32(0))
 	positive.Set(positive.Descriptor().Fields().ByName("val_double"), protoreflect.ValueOfFloat64(0))
@@ -247,7 +247,7 @@ func TestPackedDedupKeyProtoCanonicalAcrossGeneratedAndDynamicRepresentations(t 
 func TestPackedDedupKeyTypedNilProtoFailsLoudly(t *testing.T) {
 	t.Parallel()
 
-	var typedNil *gen.TypedRecord
+	var typedNil *demopb.TypedRecord
 	if _, err := packedDedupKey([]any{typedNil}); err == nil {
 		t.Fatal("typed-nil protobuf STRUCT must return an error, not panic or encode ambiguously")
 	}

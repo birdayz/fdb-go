@@ -10,7 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -25,7 +25,7 @@ var _ = Describe("Store Stress", func() {
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -55,7 +55,7 @@ var _ = Describe("Store Stress", func() {
 					defer wg.Done()
 					for i := 0; i < recordsPerWorker; i++ {
 						id := int64(worker*1000 + i)
-						_, err := store.SaveRecord(&gen.Order{
+						_, err := store.SaveRecord(&demopb.Order{
 							OrderId: proto.Int64(id),
 							Price:   proto.Int32(int32(id)),
 						})
@@ -89,7 +89,7 @@ var _ = Describe("Store Stress", func() {
 
 			// Pre-populate 20 records.
 			for i := int64(0); i < 20; i++ {
-				_, err := store.SaveRecord(&gen.Order{
+				_, err := store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(i),
 					Price:   proto.Int32(int32(i * 10)),
 				})
@@ -131,7 +131,7 @@ var _ = Describe("Store Stress", func() {
 					defer wg.Done()
 					for i := 0; i < 5; i++ {
 						id := int64(100 + worker*100 + i)
-						_, err := store.SaveRecord(&gen.Order{
+						_, err := store.SaveRecord(&demopb.Order{
 							OrderId: proto.Int64(id),
 							Price:   proto.Int32(int32(id)),
 						})
@@ -161,7 +161,7 @@ var _ = Describe("Store Stress", func() {
 			}
 
 			// Pre-save a record.
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(42),
 				Price:   proto.Int32(100),
 			})

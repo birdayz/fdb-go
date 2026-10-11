@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -39,7 +39,7 @@ var _ = Describe("Index Scan Continuation Conformance", func() {
 
 		// Create metadata with price VALUE index
 		idx = recordlayer.NewIndex("Order$price", recordlayer.Field("price"))
-		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -60,7 +60,7 @@ var _ = Describe("Index Scan Continuation Conformance", func() {
 				return nil, err
 			}
 			for i := int64(1); i <= 10; i++ {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(i),
 					Price:   proto.Int32(int32(i * 100)),
 				})

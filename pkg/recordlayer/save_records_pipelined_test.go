@@ -9,7 +9,7 @@ import (
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -21,7 +21,7 @@ var _ = Describe("SaveRecordsPipelined", func() {
 	ctx := context.Background()
 	priceIndex := NewIndex("Order$price", Field("price"))
 	metaData := func(split bool) *RecordMetaData {
-		b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -40,8 +40,8 @@ var _ = Describe("SaveRecordsPipelined", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 	}
-	order := func(id int64, price int32) *gen.Order {
-		return &gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(price)}
+	order := func(id int64, price int32) *demopb.Order {
+		return &demopb.Order{OrderId: proto.Int64(id), Price: proto.Int32(price)}
 	}
 	prices := func(s *FDBRecordStore) []int64 {
 		entries, err := AsList(ctx, s.ScanIndex(priceIndex, TupleRangeAll, nil, ForwardScan()))
@@ -137,16 +137,16 @@ var _ = Describe("SaveRecordsPipelined", func() {
 		md, ss := metaData(true), specSubspace()
 		long := strings.Repeat("x", 3*splitRecordSize)
 		inStore(md, ss, func(s *FDBRecordStore) {
-			_, err := s.SaveRecord(&gen.TypedRecord{Id: proto.Int64(1), ValString: proto.String(long)})
+			_, err := s.SaveRecord(&demopb.TypedRecord{Id: proto.Int64(1), ValString: proto.String(long)})
 			Expect(err).NotTo(HaveOccurred())
 		})
 		inStore(md, ss, func(s *FDBRecordStore) {
-			_, err := s.SaveRecordsPipelined([]proto.Message{&gen.TypedRecord{Id: proto.Int64(1), ValString: proto.String("short")}}, RecordExistenceCheckErrorIfExists)
+			_, err := s.SaveRecordsPipelined([]proto.Message{&demopb.TypedRecord{Id: proto.Int64(1), ValString: proto.String("short")}}, RecordExistenceCheckErrorIfExists)
 			var exists *RecordAlreadyExistsError
 			Expect(errors.As(err, &exists)).To(BeTrue(), "error %v", err)
 		})
 		inStore(md, ss, func(s *FDBRecordStore) {
-			saved, err := s.SaveRecordsPipelined([]proto.Message{&gen.TypedRecord{Id: proto.Int64(1), ValString: proto.String("short")}}, RecordExistenceCheckNone)
+			saved, err := s.SaveRecordsPipelined([]proto.Message{&demopb.TypedRecord{Id: proto.Int64(1), ValString: proto.String("short")}}, RecordExistenceCheckNone)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(saved[0].Split).To(BeFalse())
 			// The replaced record's chunks are cleared: only the unsplit key is left.

@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -15,7 +15,7 @@ var _ = Describe("BitmapValueIndex", func() {
 	ctx := context.Background()
 
 	baseMetaData := func() *RecordMetaDataBuilder {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -62,7 +62,7 @@ var _ = Describe("BitmapValueIndex", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(5), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(5), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Scan BY_GROUP to get raw bitmap entries.
@@ -103,7 +103,7 @@ var _ = Describe("BitmapValueIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for _, id := range []int64{0, 3, 7} {
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(100)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(id), Price: proto.Int32(100)})
 				Expect(err).NotTo(HaveOccurred())
 			}
 
@@ -143,13 +143,13 @@ var _ = Describe("BitmapValueIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Price=100: order_ids 1, 5
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(5), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(5), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Price=200: order_id 3
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(200)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(200)})
 			Expect(err).NotTo(HaveOccurred())
 
 			entries, err := AsList(ctx, store.ScanIndexByType(idx, IndexScanByGroup, TupleRangeAll, nil, ForwardScan()))
@@ -194,9 +194,9 @@ var _ = Describe("BitmapValueIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Insert two records.
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(5), Price: proto.Int32(200)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(5), Price: proto.Int32(200)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Both bits should be set.
@@ -253,7 +253,7 @@ var _ = Describe("BitmapValueIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Insert order_id=10 with price=100.
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(10), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(10), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
 
 			entries, err := AsList(ctx, store.ScanIndexByType(idx, IndexScanByGroup, TupleRangeAll, nil, ForwardScan()))
@@ -265,7 +265,7 @@ var _ = Describe("BitmapValueIndex", func() {
 			Expect(hasBit(bm, 10)).To(BeTrue())
 
 			// Update: change price from 100 to 200 (same PK, different group).
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(10), Price: proto.Int32(200)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(10), Price: proto.Int32(200)})
 			Expect(err).NotTo(HaveOccurred())
 
 			entries, err = AsList(ctx, store.ScanIndexByType(idx, IndexScanByGroup, TupleRangeAll, nil, ForwardScan()))
@@ -302,11 +302,11 @@ var _ = Describe("BitmapValueIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Save order with quantity set — should produce bitmap entry.
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(5)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(5)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Save order WITHOUT quantity — position is nil, should be skipped.
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
 
 			entries, err := AsList(ctx, store.ScanIndexByType(idx, IndexScanByGroup, TupleRangeAll, nil, ForwardScan()))
@@ -341,11 +341,11 @@ var _ = Describe("BitmapValueIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Position 5: aligned to 0 (5 < 16), offset 5.
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(5), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(5), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Position 20: aligned to 16 (20 / 16 = 1, remainder 4), offset 4.
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(20), Price: proto.Int32(200)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(20), Price: proto.Int32(200)})
 			Expect(err).NotTo(HaveOccurred())
 
 			entries, err := AsList(ctx, store.ScanIndexByType(idx, IndexScanByGroup, TupleRangeAll, nil, ForwardScan()))
@@ -390,7 +390,7 @@ var _ = Describe("BitmapValueIndex", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(15), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(15), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
 
 			entries, err := AsList(ctx, store.ScanIndexByType(idx, IndexScanByGroup, TupleRangeAll, nil, ForwardScan()))
@@ -428,7 +428,7 @@ var _ = Describe("BitmapValueIndex", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(20005), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(20005), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
 
 			entries, err := AsList(ctx, store.ScanIndexByType(idx, IndexScanByGroup, TupleRangeAll, nil, ForwardScan()))
@@ -466,7 +466,7 @@ var _ = Describe("BitmapValueIndex", func() {
 
 			// Insert positions 0..9 (all in aligned block 0).
 			for i := int64(0); i < 10; i++ {
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
 				Expect(err).NotTo(HaveOccurred())
 			}
 
@@ -518,13 +518,13 @@ var _ = Describe("BitmapValueIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Positions in block 0 (aligned 0): 3
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
 			// Positions in block 1 (aligned 10): 15
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(15), Price: proto.Int32(200)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(15), Price: proto.Int32(200)})
 			Expect(err).NotTo(HaveOccurred())
 			// Positions in block 2 (aligned 20): 22
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(22), Price: proto.Int32(300)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(22), Price: proto.Int32(300)})
 			Expect(err).NotTo(HaveOccurred())
 
 			entries, err := AsList(ctx, store.ScanIndexByType(idx, IndexScanByGroup, TupleRangeAll, nil, ForwardScan()))
@@ -572,7 +572,7 @@ var _ = Describe("BitmapValueIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// First record at position 5.
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(5), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(5), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
 
 			return nil, nil
@@ -618,7 +618,7 @@ var _ = Describe("BitmapValueIndex", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId:  proto.Int64(1),
 				Price:    proto.Int32(5),
 				Quantity: proto.Int32(10),
@@ -635,7 +635,7 @@ var _ = Describe("BitmapValueIndex", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(&demopb.Order{
 				OrderId:  proto.Int64(2),
 				Price:    proto.Int32(5),
 				Quantity: proto.Int32(10),
@@ -667,11 +667,11 @@ var _ = Describe("BitmapValueIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Price=100 group: positions 3, 7, 20 (spans two aligned blocks: 0 and 16)
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(7), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(7), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(20), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(20), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Aggregate for price=100 group should combine bitmaps.
@@ -755,7 +755,7 @@ var _ = Describe("BitmapValueIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i := int64(0); i < 20; i++ {
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i % 3))})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i % 3))})
 				Expect(err).NotTo(HaveOccurred())
 			}
 			return nil, nil
@@ -827,11 +827,11 @@ var _ = Describe("BitmapValueIndex", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(7), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(7), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(200)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(200)})
 			Expect(err).NotTo(HaveOccurred())
 
 			return nil, nil
@@ -892,7 +892,7 @@ var _ = Describe("BitmapValueIndex", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// ScanIndex (BY_VALUE default) should reject BITMAP_VALUE — matches Java.
@@ -922,9 +922,9 @@ var _ = Describe("BitmapValueIndex", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
 			Expect(err).NotTo(HaveOccurred())
 
 			entries, err := AsList(ctx, store.ScanIndexByType(idx, IndexScanByGroup, TupleRangeAll, nil, ForwardScan()))
@@ -961,7 +961,7 @@ var _ = Describe("BitmapValueIndex", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			order := &gen.Order{OrderId: proto.Int64(5), Price: proto.Int32(100)}
+			order := &demopb.Order{OrderId: proto.Int64(5), Price: proto.Int32(100)}
 			_, err = store.SaveRecord(order)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -1002,17 +1002,17 @@ var _ = Describe("BitmapValueIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Price=100: order_ids 1, 4
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(4), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(4), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Price=200: order_id 2
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Price=300: order_id 6
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(6), Price: proto.Int32(300)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(6), Price: proto.Int32(300)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Scan all groups.
@@ -1055,9 +1055,9 @@ var _ = Describe("BitmapValueIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Positions in blocks 0 and 10.
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(15), Price: proto.Int32(200)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(15), Price: proto.Int32(200)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Forward.
@@ -1099,7 +1099,7 @@ var _ = Describe("BitmapValueIndex", func() {
 
 			// Create entries in 4 blocks: 0, 10, 20, 30.
 			for _, pos := range []int64{3, 15, 22, 31} {
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(pos), Price: proto.Int32(int32(pos))})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(pos), Price: proto.Int32(int32(pos))})
 				Expect(err).NotTo(HaveOccurred())
 			}
 
@@ -1162,7 +1162,7 @@ var _ = Describe("BitmapValueIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for _, pos := range []int64{1, 2} {
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(pos), Price: proto.Int32(int32(pos))})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(pos), Price: proto.Int32(int32(pos))})
 				Expect(err).NotTo(HaveOccurred())
 			}
 
@@ -1217,7 +1217,7 @@ var _ = Describe("BitmapValueIndex", func() {
 
 			// Insert all 10 positions in block 0.
 			for i := int64(0); i < 10; i++ {
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))})
 				Expect(err).NotTo(HaveOccurred())
 			}
 
@@ -1258,7 +1258,7 @@ var _ = Describe("BitmapValueIndex", func() {
 
 			// Insert positions 1, 3, 5, 7.
 			for _, pos := range []int64{1, 3, 5, 7} {
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(pos), Price: proto.Int32(int32(pos))})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(pos), Price: proto.Int32(int32(pos))})
 				Expect(err).NotTo(HaveOccurred())
 			}
 
@@ -1303,7 +1303,7 @@ var _ = Describe("BitmapValueIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i := int64(0); i < 10; i++ {
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))})
 				Expect(err).NotTo(HaveOccurred())
 			}
 
@@ -1349,13 +1349,13 @@ var _ = Describe("BitmapValueIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Price=100: positions 1, 3
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Price=200: position 2
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Aggregate for price=100 only.

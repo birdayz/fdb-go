@@ -6,7 +6,7 @@ import (
 	"context"
 	"fmt"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -120,7 +120,7 @@ var _ = Describe("Multi-Type and Universal Index Entry Conformance", func() {
 
 				// Go writes.
 				for i := int64(1); i <= 3; i++ {
-					err := store.SaveOrderGo(ctx, &gen.Order{
+					err := store.SaveOrderGo(ctx, &demopb.Order{
 						OrderId: proto.Int64(i),
 						Price:   proto.Int32(int32(i * 100)),
 					})
@@ -163,7 +163,7 @@ var _ = Describe("Multi-Type and Universal Index Entry Conformance", func() {
 				// reading Java's bytes are different claims, and only the second
 				// catches a decoder that compensates for its own encoder.
 				for i := int64(1); i <= 3; i++ {
-					err := store.SaveOrderJava(ctx, &gen.Order{
+					err := store.SaveOrderJava(ctx, &demopb.Order{
 						OrderId: proto.Int64(i),
 						Price:   proto.Int32(int32(i * 100)),
 					})
@@ -207,7 +207,7 @@ func NewSharedIndexConformanceStore(
 ) (*SharedIndexConformanceStore, error) {
 	idx := recordlayer.NewIndex(indexName, recordlayer.Field("price"))
 
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("price"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("price"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("price"))
@@ -246,7 +246,7 @@ func (s *SharedIndexConformanceStore) buildJavaParams() map[string]any {
 	return params
 }
 
-func (s *SharedIndexConformanceStore) SaveOrderGo(ctx context.Context, order *gen.Order) error {
+func (s *SharedIndexConformanceStore) SaveOrderGo(ctx context.Context, order *demopb.Order) error {
 	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
@@ -259,7 +259,7 @@ func (s *SharedIndexConformanceStore) SaveOrderGo(ctx context.Context, order *ge
 	return err
 }
 
-func (s *SharedIndexConformanceStore) SaveOrderJava(ctx context.Context, order *gen.Order) error {
+func (s *SharedIndexConformanceStore) SaveOrderJava(ctx context.Context, order *demopb.Order) error {
 	params := s.buildJavaParams()
 	params["order"] = order
 	return s.java.InvokeAs(ctx, "saveOrderWithSharedIndex", params, nil)

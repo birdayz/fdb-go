@@ -14,6 +14,8 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 )
 
 // markRangeSetComplete inserts the full range into the IndexingRangeSet so that
@@ -34,7 +36,7 @@ var _ = Describe("IndexState", func() {
 		ctx = context.Background()
 
 		priceIndex := NewIndex("Order$price", Field("price"))
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -52,7 +54,7 @@ var _ = Describe("IndexState", func() {
 			rtx := sharedDB.NewRecordContext(tx)
 			store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(specSubspace()).Create()
 			Expect(err).NotTo(HaveOccurred())
-			record, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			record, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
 			if disabled {
 				_, err = store.MarkIndexDisabled("Order$price")
@@ -69,7 +71,7 @@ var _ = Describe("IndexState", func() {
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(specSubspace()).Create()
 			Expect(err).NotTo(HaveOccurred())
-			record, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			record, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
 			other, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(specSubspace()).Open()
 			Expect(err).NotTo(HaveOccurred())
@@ -169,7 +171,7 @@ var _ = Describe("IndexState", func() {
 			Expect(changed).To(BeTrue())
 			Expect(store.GetStoreHeader()).NotTo(BeNil(), "state mutations must preload the persisted header")
 			Expect(store.IsCacheable()).To(BeTrue())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			var locked *StoreIsLockedForRecordUpdatesError
 			Expect(errors.As(err, &locked)).To(BeTrue())
 			Expect(locked.Reason).To(Equal("locked before lazy open"))
@@ -389,7 +391,7 @@ var _ = Describe("IndexState", func() {
 
 			uniqueIdx := NewIndex("Order$unique_price", Field("price"))
 			uniqueIdx.SetUnique()
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -476,7 +478,7 @@ var _ = Describe("IndexState", func() {
 				}
 				id := int64(1)
 				price := int32(100)
-				_, err = store.SaveRecord(&gen.Order{OrderId: &id, Price: &price})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: &id, Price: &price})
 				return nil, err
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -565,7 +567,7 @@ var _ = Describe("IndexState", func() {
 				}
 				id := int64(1)
 				price := int32(100)
-				_, err = store.SaveRecord(&gen.Order{OrderId: &id, Price: &price})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: &id, Price: &price})
 				return nil, err
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -716,7 +718,7 @@ var _ = Describe("IndexState", func() {
 
 			uniqueIdx := NewIndex("Order$unique_price", Field("price"))
 			uniqueIdx.SetUnique()
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -730,7 +732,7 @@ var _ = Describe("IndexState", func() {
 				if err != nil {
 					return nil, err
 				}
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 				if err != nil {
 					return nil, err
 				}
@@ -761,7 +763,7 @@ var _ = Describe("IndexState", func() {
 
 			uniqueIdx := NewIndex("Order$unique_price", Field("price"))
 			uniqueIdx.SetUnique()
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -776,11 +778,11 @@ var _ = Describe("IndexState", func() {
 					return nil, err
 				}
 				// Save records with distinct prices — no violations
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 				if err != nil {
 					return nil, err
 				}
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
 				if err != nil {
 					return nil, err
 				}
@@ -806,7 +808,7 @@ var _ = Describe("IndexState", func() {
 
 			uniqueIdx := NewIndex("Order$unique_price", Field("price"))
 			uniqueIdx.SetUnique()
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -860,7 +862,7 @@ var _ = Describe("IndexState", func() {
 
 			// Phase 1: Insert records with duplicate prices (no unique index yet).
 			_, builder := func() (*RecordMetaData, *RecordMetaDataBuilder) {
-				b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+				b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 				b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 				b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 				b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -876,16 +878,16 @@ var _ = Describe("IndexState", func() {
 					return nil, err
 				}
 				// Two orders with same price = uniqueness violation
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 				if err != nil {
 					return nil, err
 				}
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
 				if err != nil {
 					return nil, err
 				}
 				// One order with distinct price
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(200)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(200)})
 				return nil, err
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -894,7 +896,7 @@ var _ = Describe("IndexState", func() {
 			uniqueIdx := NewIndex("Order$unique_price", Field("price"))
 			uniqueIdx.SetUnique()
 			_, builder2 := func() (*RecordMetaData, *RecordMetaDataBuilder) {
-				b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+				b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 				b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 				b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 				b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -955,7 +957,7 @@ var _ = Describe("IndexState", func() {
 
 			// Phase 1: Insert records with distinct prices.
 			_, builder := func() (*RecordMetaData, *RecordMetaDataBuilder) {
-				b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+				b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 				b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 				b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 				b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -970,15 +972,15 @@ var _ = Describe("IndexState", func() {
 				if err != nil {
 					return nil, err
 				}
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 				if err != nil {
 					return nil, err
 				}
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
 				if err != nil {
 					return nil, err
 				}
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(300)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(300)})
 				return nil, err
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -987,7 +989,7 @@ var _ = Describe("IndexState", func() {
 			uniqueIdx := NewIndex("Order$unique_price", Field("price"))
 			uniqueIdx.SetUnique()
 			_, builder2 := func() (*RecordMetaData, *RecordMetaDataBuilder) {
-				b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+				b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 				b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 				b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 				b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -1043,7 +1045,7 @@ var _ = Describe("IndexState", func() {
 
 			uniqueIdx := NewIndex("Order$unique_price", Field("price"))
 			uniqueIdx.SetUnique()
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -1092,7 +1094,7 @@ var _ = Describe("IndexState", func() {
 var _ = Describe("Replacement retirement", func() {
 	var md *RecordMetaData
 	BeforeEach(func() {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -1107,7 +1109,7 @@ var _ = Describe("Replacement retirement", func() {
 	})
 
 	It("stores full overlapping primary keys in violations and removes only resolved value groups", func() {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Concat(Field("price"), Field("order_id")))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -1123,7 +1125,7 @@ var _ = Describe("Replacement retirement", func() {
 			_, err = store.MarkIndexWriteOnly(index.Name)
 			Expect(err).NotTo(HaveOccurred())
 			for id, price := range []int32{100, 100, 100, 200, 200} {
-				_, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(id + 1)), Price: proto.Int32(price)})
+				_, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(int64(id + 1)), Price: proto.Int32(price)})
 				Expect(err).NotTo(HaveOccurred())
 			}
 			space := ss.Sub(IndexUniquenessViolationsKey, index.SubspaceTupleKey())
@@ -1177,7 +1179,7 @@ var _ = Describe("Replacement retirement", func() {
 				Expect(err).NotTo(HaveOccurred())
 			}
 			for _, id := range []int64{1, 2} {
-				_, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(100)})
+				_, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(id), Price: proto.Int32(100)})
 				Expect(err).NotTo(HaveOccurred())
 			}
 			Expect(store.RebuildIndex(md.GetIndex("original"))).To(Succeed())
@@ -1225,7 +1227,7 @@ var _ = Describe("Replacement retirement", func() {
 			rtx := NewFDBRecordContext(tx, nil)
 			store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(specSubspace()).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
-			saved, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			saved, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
 			other := *saved
 			other.RecordType = md.GetRecordType("Customer")
@@ -1258,7 +1260,7 @@ var _ = Describe("Replacement retirement", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(second.indexStates["original"]).To(Equal(IndexStateReadable), "the handle's open-time snapshot remains stale")
 			for _, id := range []int64{1, 2} {
-				_, err := second.SaveRecord(&gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(100)})
+				_, err := second.SaveRecord(&demopb.Order{OrderId: proto.Int64(id), Price: proto.Int32(100)})
 				Expect(err).NotTo(HaveOccurred(), "WRITE_ONLY records uniqueness violations instead of rejecting the write")
 			}
 			violations, err := second.ScanUniquenessViolations(md.GetIndex("original"))
@@ -1401,7 +1403,7 @@ var _ = Describe("Replacement retirement", func() {
 		}
 		It("honors "+label+" replacement options without changing the original index version", func() {
 			metadata := func(replaced bool, version int) *RecordMetaData {
-				builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+				builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 				builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 				builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 				builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -1429,7 +1431,7 @@ var _ = Describe("Replacement retirement", func() {
 					_, err := store.MarkIndexWriteOnly(name)
 					Expect(err).NotTo(HaveOccurred())
 				}
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 				Expect(err).NotTo(HaveOccurred())
 				return nil, store.RebuildIndex(before.GetIndex("original"))
 			})
@@ -1481,7 +1483,7 @@ var _ = Describe("Replacement retirement", func() {
 					_, err := store.MarkIndexWriteOnly(name)
 					Expect(err).NotTo(HaveOccurred())
 				}
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 				Expect(err).NotTo(HaveOccurred())
 				return nil, store.RebuildIndex(md.GetIndex("original"))
 			})
@@ -1523,7 +1525,7 @@ var _ = Describe("Replacement retirement", func() {
 				Expect(err).NotTo(HaveOccurred())
 			}
 			for id := int64(1); id <= 5; id++ {
-				_, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(int32(id * 100))})
+				_, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(id), Price: proto.Int32(int32(id * 100))})
 				Expect(err).NotTo(HaveOccurred())
 			}
 			return nil, store.RebuildIndex(md.GetIndex("original"))
@@ -1658,7 +1660,7 @@ var _ = Describe("Replacement retirement", func() {
 					if err != nil {
 						return err
 					}
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 					return err
 				}
 				build := func(rtx *FDBRecordContext) error {
@@ -1920,7 +1922,7 @@ var _ = Describe("Replacement retirement", func() {
 				return nil, nil
 			})
 			Expect(err).NotTo(HaveOccurred())
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -2067,7 +2069,7 @@ var _ = Describe("Replacement retirement", func() {
 			label = "with new replacement metadata"
 		}
 		It("recreates a deleted store "+label+" without reusing its old callback", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -2094,7 +2096,7 @@ var _ = Describe("Replacement retirement", func() {
 					Expect(err).NotTo(HaveOccurred())
 					Expect(fresh.RebuildIndex(original)).To(Succeed())
 				}
-				_, err = fresh.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+				_, err = fresh.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 				return nil, err
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -2245,7 +2247,7 @@ var _ = Describe("Transactional function selection", func() {
 					_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 						store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Create()
 						Expect(err).NotTo(HaveOccurred())
-						_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+						_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 						Expect(err).NotTo(HaveOccurred())
 						_, err = store.MarkIndexDisabled(index.Name)
 						Expect(err).NotTo(HaveOccurred())
@@ -2305,7 +2307,7 @@ var _ = Describe("Transactional function selection", func() {
 				rtx := sharedDB.NewRecordContext(tx)
 				first, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(specSubspace()).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
-				record, err := first.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+				record, err := first.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 				Expect(err).NotTo(HaveOccurred())
 				second, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(specSubspace()).Open()
 				Expect(err).NotTo(HaveOccurred())
@@ -2354,7 +2356,7 @@ var _ = Describe("Bulk deletion state conflicts", func() {
 		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			builder, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Create()
 			Expect(err).NotTo(HaveOccurred())
-			_, err = builder.SaveRecord(&gen.Order{OrderId: proto.Int64(1)})
+			_, err = builder.SaveRecord(&demopb.Order{OrderId: proto.Int64(1)})
 			Expect(err).NotTo(HaveOccurred())
 			_, err = builder.MarkIndexDisabled(index.Name)
 			Expect(err).NotTo(HaveOccurred())
@@ -2403,7 +2405,7 @@ var _ = Describe("Bulk deletion state conflicts", func() {
 				_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 					store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
 					Expect(err).NotTo(HaveOccurred())
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1)})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1)})
 					Expect(err).NotTo(HaveOccurred())
 					_, err = store.MarkIndexDisabled(index.Name)
 					Expect(err).NotTo(HaveOccurred())
@@ -2519,7 +2521,7 @@ var _ = Describe("Shared index-state lifecycle coherence", func() {
 			writer, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Create()
 			Expect(err).NotTo(HaveOccurred())
 			for id := int64(1); id <= 2; id++ {
-				_, err := writer.SaveRecord(&gen.Order{OrderId: proto.Int64(id)})
+				_, err := writer.SaveRecord(&demopb.Order{OrderId: proto.Int64(id)})
 				Expect(err).NotTo(HaveOccurred())
 			}
 			setter := writer
@@ -2613,7 +2615,7 @@ var _ = Describe("Shared index-state lifecycle coherence", func() {
 				}
 				done := make(chan error, 1)
 				go func() {
-					_, err := writer.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(37)})
+					_, err := writer.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(37)})
 					done <- err
 				}()
 				close(barrier.resume)
@@ -2658,7 +2660,7 @@ var _ = Describe("Shared index-state lifecycle coherence", func() {
 				barrier.paused.Store(false)
 				done := make(chan error, 1)
 				go func() {
-					record := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(37)}
+					record := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(37)}
 					if batch {
 						_, err := first.SaveRecordBatch([]proto.Message{record})
 						done <- err
@@ -2715,7 +2717,7 @@ var _ = Describe("Shared index-state lifecycle coherence", func() {
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(v1).SetSubspace(ss).Create()
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
 			_, err = store.MarkIndexDisabled("reused")
 			return nil, err
@@ -2952,7 +2954,7 @@ var _ = Describe("Index-state initialization versus context clearing", func() {
 			raw, err = tx.Get(stateSS.Pack(tuple.Tuple{"state"})).Get()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(raw).To(Equal(tuple.Tuple{int64(IndexStateDisabled)}.Pack()))
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(42)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(42)})
 			Expect(err).NotTo(HaveOccurred())
 			entries, err := tx.GetRange(store.IndexSubspace(md.GetIndex("state")), fdb.RangeOptions{}).GetSliceWithError()
 			Expect(err).NotTo(HaveOccurred())
@@ -3002,7 +3004,7 @@ var _ = Describe("Shared index-state explicit reload", func() {
 			Expect(handle.GetAllIndexStatesMap()).To(HaveKeyWithValue("state", IndexStateDisabled))
 			Expect(handle.GetRecordStoreState().IndexStates).To(HaveKeyWithValue("state", IndexStateDisabled))
 		}
-		_, err = second.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(42)})
+		_, err = second.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(42)})
 		Expect(err).NotTo(HaveOccurred())
 		entries, err := tx.GetRange(second.IndexSubspace(md.GetIndex("state")), fdb.RangeOptions{}).GetSliceWithError()
 		Expect(err).NotTo(HaveOccurred())
@@ -3062,7 +3064,7 @@ var _ = Describe("Index-state clear cache coherence", func() {
 				Expect(store.GetIndexState("state")).To(Equal(IndexStateReadable))
 				Expect(store.GetAllIndexStatesMap()).NotTo(HaveKey("state"))
 				Expect(store.GetRecordStoreState().IndexStates).NotTo(HaveKey("state"))
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(42)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(42)})
 				return nil, err
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -3077,7 +3079,7 @@ var _ = Describe("Index-state clear cache coherence", func() {
 				Expect(stamp).NotTo(Equal(admitted.GetMetaDataVersionStamp()), "the clear must invalidate shared cache entries before it commits")
 				Expect(store.GetIndexState("state")).To(Equal(IndexStateReadable))
 				if mode == "clearOnly" {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(42)})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(42)})
 					Expect(err).NotTo(HaveOccurred())
 				}
 				entries, err := AsList(ctx, store.ScanIndex(md.GetIndex("state"), TupleRangeAll, nil, ForwardScan()))
@@ -3123,7 +3125,7 @@ var _ = Describe("Reload and uniqueness cleanup lock ordering", func() {
 		_, err = store.MarkIndexWriteOnly(idx.Name)
 		Expect(err).NotTo(HaveOccurred())
 		for _, id := range []int64{1, 2} {
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(42)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(id), Price: proto.Int32(42)})
 			Expect(err).NotTo(HaveOccurred())
 		}
 		rows, err := store.ScanUniquenessViolations(idx)

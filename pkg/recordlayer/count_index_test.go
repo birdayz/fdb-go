@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -15,7 +15,7 @@ var _ = Describe("CountIndex", func() {
 	ctx := context.Background()
 
 	baseMetaData := func() *RecordMetaDataBuilder {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -39,12 +39,12 @@ var _ = Describe("CountIndex", func() {
 
 			// Insert 5 orders: 3 with price=100, 2 with price=200
 			for i := int64(1); i <= 3; i++ {
-				order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(100)}
+				order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(100)}
 				_, err = store.SaveRecord(order)
 				Expect(err).NotTo(HaveOccurred())
 			}
 			for i := int64(4); i <= 5; i++ {
-				order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(200)}
+				order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(200)}
 				_, err = store.SaveRecord(order)
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -83,7 +83,7 @@ var _ = Describe("CountIndex", func() {
 
 			// Insert 3 orders with price=100
 			for i := int64(1); i <= 3; i++ {
-				order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(100)}
+				order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(100)}
 				_, err = store.SaveRecord(order)
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -120,16 +120,16 @@ var _ = Describe("CountIndex", func() {
 
 			// Insert 2 orders with price=100, 1 with price=200
 			for i := int64(1); i <= 2; i++ {
-				order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(100)}
+				order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(100)}
 				_, err = store.SaveRecord(order)
 				Expect(err).NotTo(HaveOccurred())
 			}
-			order := &gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(200)}
+			order := &demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(200)}
 			_, err = store.SaveRecord(order)
 			Expect(err).NotTo(HaveOccurred())
 
 			// Update order 1 to change price from 100 to 200
-			updatedOrder := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)}
+			updatedOrder := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)}
 			_, err = store.SaveRecord(updatedOrder)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -166,7 +166,7 @@ var _ = Describe("CountIndex", func() {
 
 			// Insert 4 orders
 			for i := int64(1); i <= 4; i++ {
-				order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))}
+				order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))}
 				_, err = store.SaveRecord(order)
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -199,16 +199,16 @@ var _ = Describe("CountIndex", func() {
 
 			// Insert orders with prices 100, 200, 300
 			for i := int64(1); i <= 3; i++ {
-				order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(100)}
+				order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(100)}
 				_, err = store.SaveRecord(order)
 				Expect(err).NotTo(HaveOccurred())
 			}
 			for i := int64(4); i <= 5; i++ {
-				order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(200)}
+				order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(200)}
 				_, err = store.SaveRecord(order)
 				Expect(err).NotTo(HaveOccurred())
 			}
-			order := &gen.Order{OrderId: proto.Int64(6), Price: proto.Int32(300)}
+			order := &demopb.Order{OrderId: proto.Int64(6), Price: proto.Int32(300)}
 			_, err = store.SaveRecord(order)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -260,7 +260,7 @@ var _ = Describe("CountIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for _, price := range []int32{100, 200} {
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(price)), Price: proto.Int32(price)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(int64(price)), Price: proto.Int32(price)})
 				Expect(err).NotTo(HaveOccurred())
 			}
 
@@ -321,15 +321,15 @@ var _ = Describe("CountIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Save records in built range — should update count.
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Save records outside built range — should NOT update count.
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(7), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(7), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(10), Price: proto.Int32(200)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(10), Price: proto.Int32(200)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Complete the range set so checkIndexBuilt passes, then mark readable.
@@ -376,11 +376,11 @@ var _ = Describe("CountIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// All saves should update the count — entire range is built.
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(200)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(200)})
 			Expect(err).NotTo(HaveOccurred())
 
 			_, err = store.MarkIndexReadable(countIdx.Name)
@@ -422,7 +422,7 @@ var _ = Describe("CountIndex", func() {
 
 			// Insert 3 records.
 			for i := int64(1); i <= 3; i++ {
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(100)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(100)})
 				Expect(err).NotTo(HaveOccurred())
 			}
 
@@ -467,9 +467,9 @@ var _ = Describe("CountIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Insert record in built range, then save outside built range.
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(7), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(7), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Delete the record outside built range — should NOT decrement.
@@ -509,12 +509,12 @@ var _ = Describe("CountIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i := int64(1); i <= 3; i++ {
-				order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(100)}
+				order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(100)}
 				_, err = store.SaveRecord(order)
 				Expect(err).NotTo(HaveOccurred())
 			}
 			for i := int64(4); i <= 5; i++ {
-				order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(200)}
+				order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(200)}
 				_, err = store.SaveRecord(order)
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -552,11 +552,11 @@ var _ = Describe("CountIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Insert 2 orders with price=100, 1 with price=200
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(200)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(200)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Delete the only price=200 order — should clear the entry entirely
@@ -591,7 +591,7 @@ var _ = Describe("CountIndex", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)})
 			Expect(err).NotTo(HaveOccurred())
 			_, err = store.DeleteRecord(tuple.Tuple{int64(1)})
 			Expect(err).NotTo(HaveOccurred())

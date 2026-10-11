@@ -6,6 +6,8 @@ import (
 	"fmt"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -16,7 +18,7 @@ var _ = Describe("RecordCounting", func() {
 	ctx := context.Background()
 
 	It("BasicCounting", func() {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -34,7 +36,7 @@ var _ = Describe("RecordCounting", func() {
 
 			// Insert 5 records
 			for i := range int64(5) {
-				order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))}
+				order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))}
 				if _, err := store.SaveRecord(order); err != nil {
 					return nil, err
 				}
@@ -52,7 +54,7 @@ var _ = Describe("RecordCounting", func() {
 	})
 
 	It("CountNotIncrementedOnUpdate", func() {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -69,13 +71,13 @@ var _ = Describe("RecordCounting", func() {
 			}
 
 			// Insert a record
-			order := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
+			order := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
 			if _, err := store.SaveRecord(order); err != nil {
 				return nil, err
 			}
 
 			// Update the same record (overwrite)
-			order2 := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)}
+			order2 := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)}
 			if _, err := store.SaveRecord(order2); err != nil {
 				return nil, err
 			}
@@ -93,7 +95,7 @@ var _ = Describe("RecordCounting", func() {
 	})
 
 	It("CountDecrementedOnDelete", func() {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -111,7 +113,7 @@ var _ = Describe("RecordCounting", func() {
 
 			// Insert 3 records
 			for i := range int64(3) {
-				order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))}
+				order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))}
 				if _, err := store.SaveRecord(order); err != nil {
 					return nil, err
 				}
@@ -137,7 +139,7 @@ var _ = Describe("RecordCounting", func() {
 
 	It("CountDisabledByDefault", func() {
 		// No SetRecordCountKey — counting should be disabled
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -153,7 +155,7 @@ var _ = Describe("RecordCounting", func() {
 			}
 
 			// Save a record — should work even without counting
-			order := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
+			order := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
 			if _, err := store.SaveRecord(order); err != nil {
 				return nil, err
 			}
@@ -168,7 +170,7 @@ var _ = Describe("RecordCounting", func() {
 	})
 
 	It("DeleteNonExistentDoesNotAffectCount", func() {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -185,7 +187,7 @@ var _ = Describe("RecordCounting", func() {
 			}
 
 			// Insert 1 record
-			order := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
+			order := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
 			if _, err := store.SaveRecord(order); err != nil {
 				return nil, err
 			}
@@ -209,7 +211,7 @@ var _ = Describe("RecordCounting", func() {
 	})
 
 	It("DeleteAllRecordsResetsCount", func() {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -227,7 +229,7 @@ var _ = Describe("RecordCounting", func() {
 
 			// Insert 5 records
 			for i := range int64(5) {
-				order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))}
+				order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))}
 				if _, err := store.SaveRecord(order); err != nil {
 					return nil, err
 				}
@@ -268,7 +270,7 @@ var _ = Describe("RecordCounting", func() {
 	// COUNT index grouped by record type, and never from the record count key.
 	It("per-type counts come from a COUNT index", func() {
 		build := func(configure func(*RecordMetaDataBuilder)) *RecordMetaData {
-			b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -289,11 +291,11 @@ var _ = Describe("RecordCounting", func() {
 					return nil, err
 				}
 				for i := int64(1); i <= 3; i++ {
-					if _, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(i)}); err != nil {
+					if _, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i)}); err != nil {
 						return nil, err
 					}
 				}
-				if _, err := store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(9)}); err != nil {
+				if _, err := store.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(9)}); err != nil {
 					return nil, err
 				}
 				n, err = store.GetSnapshotRecordCountForRecordType("Order")
@@ -322,7 +324,7 @@ var _ = Describe("RecordCounting", func() {
 	})
 
 	It("PerTypeCountingWithRecordTypeKey", func() {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -340,13 +342,13 @@ var _ = Describe("RecordCounting", func() {
 
 			// Insert 3 orders and 2 customers
 			for i := int64(1); i <= 3; i++ {
-				order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))}
+				order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))}
 				if _, err := store.SaveRecord(order); err != nil {
 					return nil, err
 				}
 			}
 			for i := int64(101); i <= 102; i++ {
-				customer := &gen.Customer{CustomerId: proto.Int64(i), Name: proto.String("Test")}
+				customer := &demopb.Customer{CustomerId: proto.Int64(i), Name: proto.String("Test")}
 				if _, err := store.SaveRecord(customer); err != nil {
 					return nil, err
 				}
@@ -390,7 +392,7 @@ var _ = Describe("RecordCounting", func() {
 	})
 
 	It("InsertDeleteInsertCount", func() {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -407,7 +409,7 @@ var _ = Describe("RecordCounting", func() {
 			}
 
 			// Insert
-			order := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
+			order := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
 			if _, err := store.SaveRecord(order); err != nil {
 				return nil, err
 			}
@@ -418,7 +420,7 @@ var _ = Describe("RecordCounting", func() {
 			}
 
 			// Re-insert (same key)
-			order2 := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)}
+			order2 := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)}
 			if _, err := store.SaveRecord(order2); err != nil {
 				return nil, err
 			}
@@ -435,7 +437,7 @@ var _ = Describe("RecordCounting", func() {
 	})
 
 	It("DisabledStateSkipsMutations", func() {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -453,7 +455,7 @@ var _ = Describe("RecordCounting", func() {
 
 			// Insert 3 records with counting active
 			for i := int64(1); i <= 3; i++ {
-				order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))}
+				order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))}
 				if _, err := store.SaveRecord(order); err != nil {
 					return nil, err
 				}
@@ -466,7 +468,7 @@ var _ = Describe("RecordCounting", func() {
 			Expect(store.UpdateRecordCountState(gen.DataStoreInfo_DISABLED)).To(Succeed())
 
 			// Saves should still work, but count should not be maintained
-			order4 := &gen.Order{OrderId: proto.Int64(4), Price: proto.Int32(40)}
+			order4 := &demopb.Order{OrderId: proto.Int64(4), Price: proto.Int32(40)}
 			_, err = store.SaveRecord(order4)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -489,7 +491,7 @@ var _ = Describe("RecordCounting", func() {
 	})
 
 	It("DisabledStateIsTerminal", func() {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -524,7 +526,7 @@ var _ = Describe("RecordCounting", func() {
 	})
 
 	It("WriteOnlyStateMaintainsCountButBlocksQuery", func() {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -542,7 +544,7 @@ var _ = Describe("RecordCounting", func() {
 
 			// Insert 2 records
 			for i := int64(1); i <= 2; i++ {
-				order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))}
+				order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))}
 				if _, err := store.SaveRecord(order); err != nil {
 					return nil, err
 				}
@@ -552,7 +554,7 @@ var _ = Describe("RecordCounting", func() {
 			Expect(store.UpdateRecordCountState(gen.DataStoreInfo_WRITE_ONLY)).To(Succeed())
 
 			// Saves should still maintain the count
-			order3 := &gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(30)}
+			order3 := &demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(30)}
 			_, err = store.SaveRecord(order3)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -578,7 +580,7 @@ var _ = Describe("RecordCounting", func() {
 	})
 
 	It("StateTransitionValidation", func() {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -612,7 +614,7 @@ var _ = Describe("RecordCounting", func() {
 	})
 
 	It("CountRecordsByScan", func() {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -629,7 +631,7 @@ var _ = Describe("RecordCounting", func() {
 
 			// Insert 5 records
 			for i := int64(1); i <= 5; i++ {
-				order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))}
+				order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))}
 				if _, err := store.SaveRecord(order); err != nil {
 					return nil, err
 				}
@@ -648,7 +650,7 @@ var _ = Describe("RecordCounting", func() {
 	})
 
 	It("CountRecords errors on a scan-limit truncation, not a partial count (RFC-106a)", func() {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -663,7 +665,7 @@ var _ = Describe("RecordCounting", func() {
 				return nil, err
 			}
 			for i := int64(1); i <= 10; i++ {
-				if _, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))}); err != nil {
+				if _, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))}); err != nil {
 					return nil, err
 				}
 			}

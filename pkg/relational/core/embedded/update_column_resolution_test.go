@@ -9,7 +9,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/descriptorpb"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 )
 
 // TestResolveUpdateColumn drives resolveUpdateColumn over Order (order_id,
@@ -19,7 +19,7 @@ import (
 // such field.
 func TestResolveUpdateColumn(t *testing.T) {
 	t.Parallel()
-	desc := (&gen.Order{}).ProtoReflect().Descriptor()
+	desc := (&demopb.Order{}).ProtoReflect().Descriptor()
 	for _, c := range []struct {
 		name     string
 		segments []string

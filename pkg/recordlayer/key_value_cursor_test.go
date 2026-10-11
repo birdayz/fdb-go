@@ -4,6 +4,8 @@ import (
 	"context"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -13,10 +15,10 @@ import (
 // Helper: save N orders with consecutive IDs [1..n] into a store.
 func saveOrders(store *FDBRecordStore, n int) {
 	for i := int64(1); i <= int64(n); i++ {
-		order := &gen.Order{
+		order := &demopb.Order{
 			OrderId: proto.Int64(i),
 			Price:   proto.Int32(int32(i * 10)),
-			Flower:  &gen.Flower{Type: proto.String("Rose"), Color: gen.Color_RED.Enum()},
+			Flower:  &demopb.Flower{Type: proto.String("Rose"), Color: demopb.Color_RED.Enum()},
 		}
 		_, err := store.SaveRecord(order)
 		Expect(err).NotTo(HaveOccurred())
@@ -35,7 +37,7 @@ func drainOrderIDs(cursor RecordCursor[*FDBStoredRecord[proto.Message]]) ([]int6
 		if !result.HasNext() {
 			break
 		}
-		order := result.GetValue().Record.(*gen.Order)
+		order := result.GetValue().Record.(*demopb.Order)
 		ids = append(ids, order.GetOrderId())
 	}
 	return ids, lastResult
@@ -49,7 +51,7 @@ var _ = Describe("KeyValueCursor", func() {
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))

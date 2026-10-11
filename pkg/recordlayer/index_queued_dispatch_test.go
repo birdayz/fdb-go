@@ -7,6 +7,8 @@ import (
 	"fmt"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -48,7 +50,7 @@ var _ = Describe("Queued store dispatch", func() {
 		Expect(err).NotTo(HaveOccurred())
 	}
 	order := func(id int64, partition int32) proto.Message {
-		return &gen.Order{OrderId: proto.Int64(id), Quantity: proto.Int32(partition), Price: proto.Int32(42)}
+		return &demopb.Order{OrderId: proto.Int64(id), Quantity: proto.Int32(partition), Price: proto.Int32(42)}
 	}
 	It("commits an empty drain heartbeat and cleans only its own session", func() {
 		md, index := makeMetadata()

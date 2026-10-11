@@ -6,7 +6,7 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
 )
 
@@ -14,7 +14,7 @@ import (
 // price in FDB key, flower.type in FDB value.
 func buildCoveringIndexMetadata() *recordlayer.RecordMetaData {
 	builder := recordlayer.NewRecordMetaDataBuilder()
-	builder.SetRecords(gen.File_record_layer_demo_proto)
+	builder.SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -34,7 +34,7 @@ func buildCoveringIndexMetadata() *recordlayer.RecordMetaData {
 // [price, order_id] in FDB key, [flower.type] in FDB value.
 func buildMultiKeyCoveringMetadata() *recordlayer.RecordMetaData {
 	builder := recordlayer.NewRecordMetaDataBuilder()
-	builder.SetRecords(gen.File_record_layer_demo_proto)
+	builder.SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -57,15 +57,15 @@ func TestCoveringIndexBasicVerify(t *testing.T) {
 	md := buildCoveringIndexMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(1),
 		Price:   proto.Int32(100),
-		Flower:  &gen.Flower{Type: proto.String("Rose"), Color: gen.Color_RED.Enum()},
+		Flower:  &demopb.Flower{Type: proto.String("Rose"), Color: demopb.Color_RED.Enum()},
 	})
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(2),
 		Price:   proto.Int32(200),
-		Flower:  &gen.Flower{Type: proto.String("Tulip"), Color: gen.Color_BLUE.Enum()},
+		Flower:  &demopb.Flower{Type: proto.String("Tulip"), Color: demopb.Color_BLUE.Enum()},
 	})
 	s.Verify()
 }
@@ -75,26 +75,26 @@ func TestCoveringIndexOverwrite(t *testing.T) {
 	md := buildCoveringIndexMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(1),
 		Price:   proto.Int32(100),
-		Flower:  &gen.Flower{Type: proto.String("Rose")},
+		Flower:  &demopb.Flower{Type: proto.String("Rose")},
 	})
 	s.Verify()
 
 	// Update: change both key column (price) and value column (flower.type).
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(1),
 		Price:   proto.Int32(200),
-		Flower:  &gen.Flower{Type: proto.String("Tulip")},
+		Flower:  &demopb.Flower{Type: proto.String("Tulip")},
 	})
 	s.Verify()
 
 	// Update: change only value column (flower.type), key column (price) stays.
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(1),
 		Price:   proto.Int32(200),
-		Flower:  &gen.Flower{Type: proto.String("Lily")},
+		Flower:  &demopb.Flower{Type: proto.String("Lily")},
 	})
 	s.Verify()
 }
@@ -104,10 +104,10 @@ func TestCoveringIndexDelete(t *testing.T) {
 	md := buildCoveringIndexMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(1),
 		Price:   proto.Int32(100),
-		Flower:  &gen.Flower{Type: proto.String("Rose")},
+		Flower:  &demopb.Flower{Type: proto.String("Rose")},
 	})
 	s.DeleteRecord(tuple.Tuple{int64(1)})
 	s.Verify()
@@ -118,15 +118,15 @@ func TestCoveringIndexDeleteAll(t *testing.T) {
 	md := buildCoveringIndexMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(1),
 		Price:   proto.Int32(100),
-		Flower:  &gen.Flower{Type: proto.String("Rose")},
+		Flower:  &demopb.Flower{Type: proto.String("Rose")},
 	})
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(2),
 		Price:   proto.Int32(200),
-		Flower:  &gen.Flower{Type: proto.String("Tulip")},
+		Flower:  &demopb.Flower{Type: proto.String("Tulip")},
 	})
 	s.DeleteAllRecords()
 	s.Verify()
@@ -140,10 +140,10 @@ func TestCoveringIndexCommitUnknownInsert(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(1),
 		Price:   proto.Int32(100),
-		Flower:  &gen.Flower{Type: proto.String("Rose")},
+		Flower:  &demopb.Flower{Type: proto.String("Rose")},
 	})
 	s.Verify()
 }
@@ -154,18 +154,18 @@ func TestCoveringIndexCommitUnknownOverwrite(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 
 	// First save (clean).
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(1),
 		Price:   proto.Int32(100),
-		Flower:  &gen.Flower{Type: proto.String("Rose")},
+		Flower:  &demopb.Flower{Type: proto.String("Rose")},
 	})
 
 	// Overwrite with commit-unknown.
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(1),
 		Price:   proto.Int32(200),
-		Flower:  &gen.Flower{Type: proto.String("Tulip")},
+		Flower:  &demopb.Flower{Type: proto.String("Tulip")},
 	})
 	s.Verify()
 }
@@ -175,10 +175,10 @@ func TestCoveringIndexCommitUnknownDelete(t *testing.T) {
 	md := buildCoveringIndexMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(1),
 		Price:   proto.Int32(100),
-		Flower:  &gen.Flower{Type: proto.String("Rose")},
+		Flower:  &demopb.Flower{Type: proto.String("Rose")},
 	})
 
 	s.InjectOnce(FaultCommitUnknown)
@@ -191,15 +191,15 @@ func TestCoveringIndexCommitUnknownDeleteAll(t *testing.T) {
 	md := buildCoveringIndexMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(1),
 		Price:   proto.Int32(100),
-		Flower:  &gen.Flower{Type: proto.String("Rose")},
+		Flower:  &demopb.Flower{Type: proto.String("Rose")},
 	})
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(2),
 		Price:   proto.Int32(200),
-		Flower:  &gen.Flower{Type: proto.String("Tulip")},
+		Flower:  &demopb.Flower{Type: proto.String("Tulip")},
 	})
 
 	s.InjectOnce(FaultCommitUnknown)
@@ -214,15 +214,15 @@ func TestMultiKeyCoveringBasicVerify(t *testing.T) {
 	md := buildMultiKeyCoveringMetadata()
 	s := NewScenario(t, testRealDB, md)
 
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(1),
 		Price:   proto.Int32(100),
-		Flower:  &gen.Flower{Type: proto.String("Rose")},
+		Flower:  &demopb.Flower{Type: proto.String("Rose")},
 	})
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(2),
 		Price:   proto.Int32(200),
-		Flower:  &gen.Flower{Type: proto.String("Tulip")},
+		Flower:  &demopb.Flower{Type: proto.String("Tulip")},
 	})
 	s.Verify()
 }
@@ -233,19 +233,19 @@ func TestMultiKeyCoveringCommitUnknown(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(1),
 		Price:   proto.Int32(100),
-		Flower:  &gen.Flower{Type: proto.String("Rose")},
+		Flower:  &demopb.Flower{Type: proto.String("Rose")},
 	})
 	s.Verify()
 
 	// Overwrite with fault.
 	s.InjectOnce(FaultCommitUnknown)
-	s.SaveRecord(&gen.Order{
+	s.SaveRecord(&demopb.Order{
 		OrderId: proto.Int64(1),
 		Price:   proto.Int32(300),
-		Flower:  &gen.Flower{Type: proto.String("Daisy")},
+		Flower:  &demopb.Flower{Type: proto.String("Daisy")},
 	})
 	s.Verify()
 }

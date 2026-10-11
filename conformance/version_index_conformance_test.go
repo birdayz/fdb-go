@@ -8,7 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -48,7 +48,7 @@ var _ = Describe("VERSION Index Conformance", func() {
 		It("should produce identical index entries visible to both Go and Java", func() {
 			// Save 3 orders in separate transactions (different versionstamps)
 			for i := int64(1); i <= 3; i++ {
-				err := store.SaveOrderGo(ctx, &gen.Order{
+				err := store.SaveOrderGo(ctx, &demopb.Order{
 					OrderId: proto.Int64(i),
 					Price:   proto.Int32(int32(i * 100)),
 				})
@@ -81,7 +81,7 @@ var _ = Describe("VERSION Index Conformance", func() {
 	Describe("Java writes with VERSION index, both scan", func() {
 		It("should produce identical index entries visible to both Go and Java", func() {
 			for i := int64(1); i <= 3; i++ {
-				err := store.SaveOrderJava(ctx, &gen.Order{
+				err := store.SaveOrderJava(ctx, &demopb.Order{
 					OrderId: proto.Int64(i),
 					Price:   proto.Int32(int32(i * 200)),
 				})
@@ -109,21 +109,21 @@ var _ = Describe("VERSION Index Conformance", func() {
 	Describe("Mixed writes: Go and Java both insert", func() {
 		It("should produce identically ordered entries with all records visible", func() {
 			// Go writes order 1
-			err := store.SaveOrderGo(ctx, &gen.Order{
+			err := store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(100),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Java writes order 2
-			err = store.SaveOrderJava(ctx, &gen.Order{
+			err = store.SaveOrderJava(ctx, &demopb.Order{
 				OrderId: proto.Int64(2),
 				Price:   proto.Int32(200),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Go writes order 3
-			err = store.SaveOrderGo(ctx, &gen.Order{
+			err = store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(3),
 				Price:   proto.Int32(300),
 			})
@@ -154,13 +154,13 @@ var _ = Describe("VERSION Index Conformance", func() {
 	Describe("Delete removes VERSION index entry cross-language", func() {
 		It("should remove entry when Go deletes a Java-written record", func() {
 			// Java writes 2 records
-			err := store.SaveOrderJava(ctx, &gen.Order{
+			err := store.SaveOrderJava(ctx, &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(100),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			err = store.SaveOrderJava(ctx, &gen.Order{
+			err = store.SaveOrderJava(ctx, &demopb.Order{
 				OrderId: proto.Int64(2),
 				Price:   proto.Int32(200),
 			})
@@ -187,13 +187,13 @@ var _ = Describe("VERSION Index Conformance", func() {
 
 		It("should remove entry when Java deletes a Go-written record", func() {
 			// Go writes 2 records
-			err := store.SaveOrderGo(ctx, &gen.Order{
+			err := store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(100),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			err = store.SaveOrderGo(ctx, &gen.Order{
+			err = store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(2),
 				Price:   proto.Int32(200),
 			})
@@ -221,7 +221,7 @@ var _ = Describe("VERSION Index Conformance", func() {
 	Describe("Update replaces VERSION index entry cross-language", func() {
 		It("should replace entry when Go updates a Java-written record", func() {
 			// Java writes order 1
-			err := store.SaveOrderJava(ctx, &gen.Order{
+			err := store.SaveOrderJava(ctx, &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(100),
 			})
@@ -234,7 +234,7 @@ var _ = Describe("VERSION Index Conformance", func() {
 			vsBefore := entriesBefore[0].VersionBytes
 
 			// Go updates order 1 (new price)
-			err = store.SaveOrderGo(ctx, &gen.Order{
+			err = store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(999),
 			})
@@ -270,7 +270,7 @@ var _ = Describe("VERSION Index Conformance", func() {
 					return nil, err
 				}
 				for i := int64(1); i <= 3; i++ {
-					_, err = st.SaveRecord(&gen.Order{
+					_, err = st.SaveRecord(&demopb.Order{
 						OrderId: proto.Int64(i),
 						Price:   proto.Int32(int32(i * 100)),
 					})
@@ -356,7 +356,7 @@ type VersionIndexConformanceStore struct {
 func NewVersionIndexConformanceStore(recordDB *recordlayer.FDBDatabase, keyspace subspace.Subspace, clusterFile string, tenantName string) (*VersionIndexConformanceStore, error) {
 	versionIdx := recordlayer.NewVersionIndex("Order$version", recordlayer.VersionKey())
 
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -394,7 +394,7 @@ func (s *VersionIndexConformanceStore) buildJavaParams() map[string]any {
 	return params
 }
 
-func (s *VersionIndexConformanceStore) SaveOrderGo(ctx context.Context, order *gen.Order) error {
+func (s *VersionIndexConformanceStore) SaveOrderGo(ctx context.Context, order *demopb.Order) error {
 	_, _, err := s.RecordDB.RunWithVersionstamp(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		st, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
@@ -407,7 +407,7 @@ func (s *VersionIndexConformanceStore) SaveOrderGo(ctx context.Context, order *g
 	return err
 }
 
-func (s *VersionIndexConformanceStore) SaveOrderJava(ctx context.Context, order *gen.Order) error {
+func (s *VersionIndexConformanceStore) SaveOrderJava(ctx context.Context, order *demopb.Order) error {
 	params := s.buildJavaParams()
 	params["order"] = order
 	return s.java.InvokeAs(ctx, "saveOrderWithVersionIndex", params, nil)

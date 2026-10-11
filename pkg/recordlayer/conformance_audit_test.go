@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
@@ -24,7 +24,7 @@ var _ = Describe("RFC 019 conformance audit", func() {
 	It("float32 proto field encodes as FDB float (type code 0x20), not double (0x21)", func() {
 		idx := NewIndex("TypedRecord$val_float", Field("val_float"))
 
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -38,7 +38,7 @@ var _ = Describe("RFC 019 conformance audit", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.TypedRecord{
+			_, err = store.SaveRecord(&demopb.TypedRecord{
 				Id:       proto.Int64(1),
 				ValFloat: proto.Float32(3.14),
 			})
@@ -80,7 +80,7 @@ var _ = Describe("RFC 019 conformance audit", func() {
 	// so the continuation must narrow the HIGH endpoint. Without this fix, the
 	// second page of a reverse scan returns duplicates of the first page.
 	It("reverse ScanRecordsByType with continuation returns distinct pages", func() {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Concat(RecordTypeKey(), Field("order_id")))
 		builder.GetRecordType("Customer").SetPrimaryKey(Concat(RecordTypeKey(), Field("customer_id")))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Concat(RecordTypeKey(), Field("id")))
@@ -97,7 +97,7 @@ var _ = Describe("RFC 019 conformance audit", func() {
 
 			// Save 10 orders and 5 customers to ensure prefix scan is needed
 			for i := int64(1); i <= 10; i++ {
-				if _, err := store.SaveRecord(&gen.Order{
+				if _, err := store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(i),
 					Price:   proto.Int32(int32(i * 10)),
 				}); err != nil {
@@ -105,7 +105,7 @@ var _ = Describe("RFC 019 conformance audit", func() {
 				}
 			}
 			for i := int64(1); i <= 5; i++ {
-				if _, err := store.SaveRecord(&gen.Customer{
+				if _, err := store.SaveRecord(&demopb.Customer{
 					CustomerId: proto.Int64(i),
 					Name:       proto.String(fmt.Sprintf("Cust%d", i)),
 				}); err != nil {
@@ -203,7 +203,7 @@ var _ = Describe("RFC 019 conformance audit", func() {
 	// scan range using RecordTypeIndex (the proto field number, e.g., 1).
 	// This means records are saved under PK prefix 42 but scanned under prefix 1.
 	It("ScanRecordsByType respects explicit record type key from SetRecordTypeKey", func() {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		// Set an explicit record type key of 42 (differs from auto-derived index which is 1)
 		builder.GetRecordType("Order").
 			SetPrimaryKey(Concat(RecordTypeKey(), Field("order_id"))).
@@ -234,7 +234,7 @@ var _ = Describe("RFC 019 conformance audit", func() {
 			// Save 5 orders. RecordTypeKeyExpression evaluates to 42 (explicit key),
 			// so PKs will be (42, 1), (42, 2), ..., (42, 5).
 			for i := int64(1); i <= 5; i++ {
-				_, err := store.SaveRecord(&gen.Order{
+				_, err := store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(i),
 					Price:   proto.Int32(int32(i * 100)),
 				})
@@ -245,7 +245,7 @@ var _ = Describe("RFC 019 conformance audit", func() {
 
 			// Save 3 customers under explicit key 99
 			for i := int64(1); i <= 3; i++ {
-				_, err := store.SaveRecord(&gen.Customer{
+				_, err := store.SaveRecord(&demopb.Customer{
 					CustomerId: proto.Int64(i),
 					Name:       proto.String(fmt.Sprintf("Cust%d", i)),
 				})

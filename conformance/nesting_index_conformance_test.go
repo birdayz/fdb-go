@@ -6,7 +6,7 @@ import (
 	"context"
 	"fmt"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -42,7 +42,7 @@ var _ = Describe("Nesting Index Conformance", func() {
 		It("Go saves, Go scans flower.type index", func() {
 			for i := int64(1); i <= 3; i++ {
 				flowers := []string{"Rose", "Tulip", "Orchid"}
-				order := NewOrder(i).WithPrice(int32(i*100)).WithFlower(flowers[i-1], gen.Color_RED).Build()
+				order := NewOrder(i).WithPrice(int32(i*100)).WithFlower(flowers[i-1], demopb.Color_RED).Build()
 				err := store.SaveOrderGo(ctx, order)
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -65,7 +65,7 @@ var _ = Describe("Nesting Index Conformance", func() {
 		It("Go saves, Java scans flower.type index", func() {
 			for i := int64(1); i <= 3; i++ {
 				flowers := []string{"Rose", "Tulip", "Orchid"}
-				order := NewOrder(i).WithPrice(int32(i*100)).WithFlower(flowers[i-1], gen.Color_RED).Build()
+				order := NewOrder(i).WithPrice(int32(i*100)).WithFlower(flowers[i-1], demopb.Color_RED).Build()
 				err := store.SaveOrderGo(ctx, order)
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -85,7 +85,7 @@ var _ = Describe("Nesting Index Conformance", func() {
 		It("Java saves, Go scans flower.type index", func() {
 			for i := int64(1); i <= 3; i++ {
 				flowers := []string{"Daisy", "Lily", "Sunflower"}
-				order := NewOrder(i).WithPrice(int32(i*100)).WithFlower(flowers[i-1], gen.Color_BLUE).Build()
+				order := NewOrder(i).WithPrice(int32(i*100)).WithFlower(flowers[i-1], demopb.Color_BLUE).Build()
 				err := store.SaveOrderJava(ctx, order)
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -110,7 +110,7 @@ var _ = Describe("Nesting Index Conformance", func() {
 
 	Describe("flower.color index (enum field)", func() {
 		It("Go saves, Go scans flower.color index", func() {
-			colors := []gen.Color{gen.Color_BLUE, gen.Color_RED, gen.Color_YELLOW}
+			colors := []demopb.Color{demopb.Color_BLUE, demopb.Color_RED, demopb.Color_YELLOW}
 			for i := int64(1); i <= 3; i++ {
 				order := NewOrder(i).WithPrice(int32(i*100)).WithFlower("Rose", colors[i-1]).Build()
 				err := store.SaveOrderGo(ctx, order)
@@ -122,18 +122,18 @@ var _ = Describe("Nesting Index Conformance", func() {
 			Expect(goEntries).To(HaveLen(3))
 
 			// Enum values sorted numerically: RED=1, BLUE=2, YELLOW=3
-			Expect(toInt64(goEntries[0].Key[0])).To(Equal(int64(gen.Color_RED)))
+			Expect(toInt64(goEntries[0].Key[0])).To(Equal(int64(demopb.Color_RED)))
 			Expect(toInt64(goEntries[0].PrimaryKey[0])).To(Equal(int64(2)))
 
-			Expect(toInt64(goEntries[1].Key[0])).To(Equal(int64(gen.Color_BLUE)))
+			Expect(toInt64(goEntries[1].Key[0])).To(Equal(int64(demopb.Color_BLUE)))
 			Expect(toInt64(goEntries[1].PrimaryKey[0])).To(Equal(int64(1)))
 
-			Expect(toInt64(goEntries[2].Key[0])).To(Equal(int64(gen.Color_YELLOW)))
+			Expect(toInt64(goEntries[2].Key[0])).To(Equal(int64(demopb.Color_YELLOW)))
 			Expect(toInt64(goEntries[2].PrimaryKey[0])).To(Equal(int64(3)))
 		})
 
 		It("Go saves, Java scans flower.color index", func() {
-			colors := []gen.Color{gen.Color_PINK, gen.Color_RED, gen.Color_BLUE}
+			colors := []demopb.Color{demopb.Color_PINK, demopb.Color_RED, demopb.Color_BLUE}
 			for i := int64(1); i <= 3; i++ {
 				order := NewOrder(i).WithPrice(int32(i*100)).WithFlower("Tulip", colors[i-1]).Build()
 				err := store.SaveOrderGo(ctx, order)
@@ -174,7 +174,7 @@ func NewNestingIndexConformanceStore(recordDB *recordlayer.FDBDatabase, keyspace
 	flowerColorIndex := recordlayer.NewIndex("order_flower_color",
 		recordlayer.Nest("flower", recordlayer.Field("color")))
 
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -213,7 +213,7 @@ func (s *NestingIndexConformanceStore) buildJavaParams() map[string]any {
 	return params
 }
 
-func (s *NestingIndexConformanceStore) SaveOrderGo(ctx context.Context, order *gen.Order) error {
+func (s *NestingIndexConformanceStore) SaveOrderGo(ctx context.Context, order *demopb.Order) error {
 	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
@@ -226,7 +226,7 @@ func (s *NestingIndexConformanceStore) SaveOrderGo(ctx context.Context, order *g
 	return err
 }
 
-func (s *NestingIndexConformanceStore) SaveOrderJava(ctx context.Context, order *gen.Order) error {
+func (s *NestingIndexConformanceStore) SaveOrderJava(ctx context.Context, order *demopb.Order) error {
 	params := s.buildJavaParams()
 	params["order"] = order
 	return s.java.InvokeAs(ctx, "saveOrderWithNestingIndex", params, nil)

@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -15,7 +15,7 @@ var _ = Describe("TypedStoreConformance", func() {
 	var metaData *RecordMetaData
 
 	BeforeEach(func() {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -35,15 +35,15 @@ var _ = Describe("TypedStoreConformance", func() {
 				CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			orderStore, err := GetTypedRecordStore[*gen.Order](baseStore, "Order")
+			orderStore, err := GetTypedRecordStore[*demopb.Order](baseStore, "Order")
 			Expect(err).NotTo(HaveOccurred())
 
-			order1 := &gen.Order{
+			order1 := &demopb.Order{
 				OrderId: proto.Int64(1001),
 				Price:   proto.Int32(25),
-				Flower: &gen.Flower{
+				Flower: &demopb.Flower{
 					Type:  proto.String("Rose"),
-					Color: gen.Color_RED.Enum(),
+					Color: demopb.Color_RED.Enum(),
 				},
 			}
 
@@ -55,7 +55,7 @@ var _ = Describe("TypedStoreConformance", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(baseLoaded).NotTo(BeNil(), "base store could not load record saved by typed store")
 
-			loadedOrder := baseLoaded.Record.(*gen.Order)
+			loadedOrder := baseLoaded.Record.(*demopb.Order)
 			GinkgoWriter.Printf("Base store loaded Order ID: %d, Price: %d, Type: %s\n",
 				*loadedOrder.OrderId, *loadedOrder.Price, *loadedOrder.Flower.Type)
 
@@ -75,15 +75,15 @@ var _ = Describe("TypedStoreConformance", func() {
 				CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			orderStore, err := GetTypedRecordStore[*gen.Order](baseStore, "Order")
+			orderStore, err := GetTypedRecordStore[*demopb.Order](baseStore, "Order")
 			Expect(err).NotTo(HaveOccurred())
 
-			order2 := &gen.Order{
+			order2 := &demopb.Order{
 				OrderId: proto.Int64(2002),
 				Price:   proto.Int32(50),
-				Flower: &gen.Flower{
+				Flower: &demopb.Flower{
 					Type:  proto.String("Tulip"),
-					Color: gen.Color_YELLOW.Enum(),
+					Color: demopb.Color_YELLOW.Enum(),
 				},
 			}
 
@@ -114,22 +114,22 @@ var _ = Describe("TypedStoreConformance", func() {
 				CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			orderStore, err := GetTypedRecordStore[*gen.Order](baseStore, "Order")
+			orderStore, err := GetTypedRecordStore[*demopb.Order](baseStore, "Order")
 			Expect(err).NotTo(HaveOccurred())
 
-			testOrder := &gen.Order{
+			testOrder := &demopb.Order{
 				OrderId: proto.Int64(9999),
 				Price:   proto.Int32(99),
-				Flower: &gen.Flower{
+				Flower: &demopb.Flower{
 					Type:  proto.String("TestFlower"),
-					Color: gen.Color_BLUE.Enum(),
+					Color: demopb.Color_BLUE.Enum(),
 				},
 			}
 
-			testOrder1 := proto.Clone(testOrder).(*gen.Order)
+			testOrder1 := proto.Clone(testOrder).(*demopb.Order)
 			testOrder1.OrderId = proto.Int64(3001)
 
-			testOrder2 := proto.Clone(testOrder).(*gen.Order)
+			testOrder2 := proto.Clone(testOrder).(*demopb.Order)
 			testOrder2.OrderId = proto.Int64(3002)
 
 			// Save with base store
@@ -152,8 +152,8 @@ var _ = Describe("TypedStoreConformance", func() {
 			Expect(rawData1).NotTo(BeNil(), "failed to retrieve raw data for base store record")
 			Expect(rawData2).NotTo(BeNil(), "failed to retrieve raw data for typed store record")
 
-			union1 := &gen.UnionDescriptor{}
-			union2 := &gen.UnionDescriptor{}
+			union1 := &demopb.UnionDescriptor{}
+			union2 := &demopb.UnionDescriptor{}
 
 			err = proto.Unmarshal(rawData1, union1)
 			Expect(err).NotTo(HaveOccurred())
@@ -186,28 +186,28 @@ var _ = Describe("TypedStoreConformance", func() {
 				CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			orderStore, err := GetTypedRecordStore[*gen.Order](baseStore, "Order")
+			orderStore, err := GetTypedRecordStore[*demopb.Order](baseStore, "Order")
 			Expect(err).NotTo(HaveOccurred())
 
 			// Save with base store
-			order1 := &gen.Order{
+			order1 := &demopb.Order{
 				OrderId: proto.Int64(3001),
 				Price:   proto.Int32(99),
-				Flower: &gen.Flower{
+				Flower: &demopb.Flower{
 					Type:  proto.String("TestFlower"),
-					Color: gen.Color_BLUE.Enum(),
+					Color: demopb.Color_BLUE.Enum(),
 				},
 			}
 			_, err = baseStore.SaveRecord(order1)
 			Expect(err).NotTo(HaveOccurred())
 
 			// Save with typed store
-			order2 := &gen.Order{
+			order2 := &demopb.Order{
 				OrderId: proto.Int64(3002),
 				Price:   proto.Int32(99),
-				Flower: &gen.Flower{
+				Flower: &demopb.Flower{
 					Type:  proto.String("TestFlower"),
-					Color: gen.Color_BLUE.Enum(),
+					Color: demopb.Color_BLUE.Enum(),
 				},
 			}
 			_, err = orderStore.SaveRecord(order2)
@@ -241,10 +241,10 @@ var _ = Describe("TypedStoreConformance", func() {
 				CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			orderStore, err := GetTypedRecordStore[*gen.Order](baseStore, "Order")
+			orderStore, err := GetTypedRecordStore[*demopb.Order](baseStore, "Order")
 			Expect(err).NotTo(HaveOccurred())
 
-			stored, err := orderStore.InsertRecord(&gen.Order{
+			stored, err := orderStore.InsertRecord(&demopb.Order{
 				OrderId: proto.Int64(5001),
 				Price:   proto.Int32(42),
 			})
@@ -267,16 +267,16 @@ var _ = Describe("TypedStoreConformance", func() {
 				CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			orderStore, err := GetTypedRecordStore[*gen.Order](baseStore, "Order")
+			orderStore, err := GetTypedRecordStore[*demopb.Order](baseStore, "Order")
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = orderStore.InsertRecord(&gen.Order{
+			_, err = orderStore.InsertRecord(&demopb.Order{
 				OrderId: proto.Int64(5002),
 				Price:   proto.Int32(10),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = orderStore.InsertRecord(&gen.Order{
+			_, err = orderStore.InsertRecord(&demopb.Order{
 				OrderId: proto.Int64(5002),
 				Price:   proto.Int32(20),
 			})
@@ -299,16 +299,16 @@ var _ = Describe("TypedStoreConformance", func() {
 				CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			orderStore, err := GetTypedRecordStore[*gen.Order](baseStore, "Order")
+			orderStore, err := GetTypedRecordStore[*demopb.Order](baseStore, "Order")
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = orderStore.SaveRecord(&gen.Order{
+			_, err = orderStore.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(5003),
 				Price:   proto.Int32(10),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			stored, err := orderStore.UpdateRecord(&gen.Order{
+			stored, err := orderStore.UpdateRecord(&demopb.Order{
 				OrderId: proto.Int64(5003),
 				Price:   proto.Int32(99),
 			})
@@ -330,10 +330,10 @@ var _ = Describe("TypedStoreConformance", func() {
 				CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			orderStore, err := GetTypedRecordStore[*gen.Order](baseStore, "Order")
+			orderStore, err := GetTypedRecordStore[*demopb.Order](baseStore, "Order")
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = orderStore.UpdateRecord(&gen.Order{
+			_, err = orderStore.UpdateRecord(&demopb.Order{
 				OrderId: proto.Int64(5004),
 				Price:   proto.Int32(99),
 			})
@@ -356,10 +356,10 @@ var _ = Describe("TypedStoreConformance", func() {
 				CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			orderStore, err := GetTypedRecordStore[*gen.Order](baseStore, "Order")
+			orderStore, err := GetTypedRecordStore[*demopb.Order](baseStore, "Order")
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = orderStore.SaveRecord(&gen.Order{
+			_, err = orderStore.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(5005),
 				Price:   proto.Int32(10),
 			})
@@ -388,14 +388,14 @@ var _ = Describe("TypedStoreConformance", func() {
 				CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			orderStore, err := GetTypedRecordStore[*gen.Order](baseStore, "Order")
+			orderStore, err := GetTypedRecordStore[*demopb.Order](baseStore, "Order")
 			Expect(err).NotTo(HaveOccurred())
 
 			exists, err := orderStore.RecordExists(tuple.Tuple{int64(5006)}, SerializableIsolation)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(exists).To(BeFalse())
 
-			_, err = orderStore.SaveRecord(&gen.Order{
+			_, err = orderStore.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(5006),
 				Price:   proto.Int32(50),
 			})
@@ -413,7 +413,7 @@ var _ = Describe("TypedStoreConformance", func() {
 		ctx := context.Background()
 
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-			mdBuilder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			mdBuilder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			mdBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			mdBuilder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			mdBuilder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -428,14 +428,14 @@ var _ = Describe("TypedStoreConformance", func() {
 				CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			orderStore, err := GetTypedRecordStore[*gen.Order](baseStore, "Order")
+			orderStore, err := GetTypedRecordStore[*demopb.Order](baseStore, "Order")
 			Expect(err).NotTo(HaveOccurred())
 
 			count, err := orderStore.GetRecordCount()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(count).To(Equal(int64(0)))
 
-			_, err = orderStore.SaveRecord(&gen.Order{
+			_, err = orderStore.SaveRecord(&demopb.Order{
 				OrderId: proto.Int64(6001),
 				Price:   proto.Int32(10),
 			})
@@ -460,7 +460,7 @@ var _ = Describe("TypedStoreConformance", func() {
 				CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			orderStore, err := GetTypedRecordStore[*gen.Order](baseStore, "Order")
+			orderStore, err := GetTypedRecordStore[*demopb.Order](baseStore, "Order")
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(orderStore.Context()).NotTo(BeNil())
@@ -474,7 +474,7 @@ var _ = Describe("TypedStoreConformance", func() {
 		ctx := context.Background()
 
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-			mdBuilder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			mdBuilder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			mdBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			mdBuilder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			mdBuilder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -489,11 +489,11 @@ var _ = Describe("TypedStoreConformance", func() {
 				CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			orderStore, err := GetTypedRecordStore[*gen.Order](baseStore, "Order")
+			orderStore, err := GetTypedRecordStore[*demopb.Order](baseStore, "Order")
 			Expect(err).NotTo(HaveOccurred())
 
 			for i := int64(1); i <= 3; i++ {
-				_, err = orderStore.SaveRecord(&gen.Order{
+				_, err = orderStore.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(i),
 					Price:   proto.Int32(int32(i)),
 				})
@@ -526,30 +526,30 @@ var _ = Describe("TypedStoreConformance", func() {
 				CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			orderStore, err := GetTypedRecordStore[*gen.Order](baseStore, "Order")
+			orderStore, err := GetTypedRecordStore[*demopb.Order](baseStore, "Order")
 			Expect(err).NotTo(HaveOccurred())
 
 			// Orders 1-3, a customer at 100, an order at 200: one key space.
 			for i := int64(1); i <= 3; i++ {
-				_, err = orderStore.SaveRecord(&gen.Order{
+				_, err = orderStore.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(i),
 					Price:   proto.Int32(int32(i * 10)),
 				})
 				Expect(err).NotTo(HaveOccurred())
 			}
-			_, err = baseStore.SaveRecord(&gen.Customer{
+			_, err = baseStore.SaveRecord(&demopb.Customer{
 				CustomerId: proto.Int64(100),
 				Name:       proto.String("Alice"),
 			})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = orderStore.SaveRecord(&gen.Order{OrderId: proto.Int64(200)})
+			_, err = orderStore.SaveRecord(&demopb.Order{OrderId: proto.Int64(200)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Java's typed scan reads every record through the typed serializer
 			// (FDBTypedRecordStore.java:200, FDBRecordStore.java:1465) and fails at
 			// the customer (TypedRecordSerializer.java:114).
 			cursor := orderStore.ScanRecords(nil, ForwardScan())
-			var orders []*gen.Order
+			var orders []*demopb.Order
 			var scanErr error
 			for rec, err := range Seq2(cursor, ctx) {
 				if err != nil {

@@ -6,7 +6,7 @@ import (
 	"context"
 	"fmt"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -58,7 +58,7 @@ var _ = Describe("CRUD Conformance", func() {
 		It("should handle orders with different prices", func() {
 			order := NewOrder(2002).
 				WithPrice(50).
-				WithFlower("Tulip", gen.Color_BLUE).
+				WithFlower("Tulip", demopb.Color_BLUE).
 				Build()
 
 			err := store.SaveRecord(ctx, order)
@@ -68,7 +68,7 @@ var _ = Describe("CRUD Conformance", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(*loaded.Price).To(Equal(int32(50)))
 			Expect(*loaded.Flower.Type).To(Equal("Tulip"))
-			Expect(*loaded.Flower.Color).To(Equal(gen.Color_BLUE))
+			Expect(*loaded.Flower.Color).To(Equal(demopb.Color_BLUE))
 		})
 
 		It("should handle minimal orders", func() {
@@ -83,7 +83,7 @@ var _ = Describe("CRUD Conformance", func() {
 	})
 
 	DescribeTable("Round-trip compatibility with various order types",
-		func(orderID int64, price int32, flowerType string, color gen.Color) {
+		func(orderID int64, price int32, flowerType string, color demopb.Color) {
 			// Create and save order (automatically validated with Java)
 			order := NewOrder(orderID).
 				WithPrice(price).
@@ -99,10 +99,10 @@ var _ = Describe("CRUD Conformance", func() {
 			Expect(*loaded.Flower.Type).To(Equal(flowerType))
 			Expect(*loaded.Flower.Color).To(Equal(color))
 		},
-		Entry("Small order", int64(100), int32(50), "Daisy", gen.Color_YELLOW),
-		Entry("Large order", int64(99999), int32(12345), "Orchid", gen.Color_PINK),
-		Entry("Zero price", int64(500), int32(0), "Tulip", gen.Color_BLUE),
-		Entry("Red rose", int64(1001), int32(10010), "Rose_1001", gen.Color_RED),
+		Entry("Small order", int64(100), int32(50), "Daisy", demopb.Color_YELLOW),
+		Entry("Large order", int64(99999), int32(12345), "Orchid", demopb.Color_PINK),
+		Entry("Zero price", int64(500), int32(0), "Tulip", demopb.Color_BLUE),
+		Entry("Red rose", int64(1001), int32(10010), "Rose_1001", demopb.Color_RED),
 	)
 
 	Describe("Error Handling", func() {
@@ -124,7 +124,7 @@ var _ = Describe("CRUD Conformance", func() {
 			// Save initial order
 			order1 := NewOrder(5001).
 				WithPrice(100).
-				WithFlower("Rose", gen.Color_RED).
+				WithFlower("Rose", demopb.Color_RED).
 				Build()
 			err := store.SaveRecord(ctx, order1)
 			Expect(err).NotTo(HaveOccurred())
@@ -132,7 +132,7 @@ var _ = Describe("CRUD Conformance", func() {
 			// Overwrite with different data
 			order2 := NewOrder(5001).
 				WithPrice(200).
-				WithFlower("Tulip", gen.Color_BLUE).
+				WithFlower("Tulip", demopb.Color_BLUE).
 				Build()
 			err = store.SaveRecord(ctx, order2)
 			Expect(err).NotTo(HaveOccurred())
@@ -142,7 +142,7 @@ var _ = Describe("CRUD Conformance", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(*loaded.Price).To(Equal(int32(200)))
 			Expect(*loaded.Flower.Type).To(Equal("Tulip"))
-			Expect(*loaded.Flower.Color).To(Equal(gen.Color_BLUE))
+			Expect(*loaded.Flower.Color).To(Equal(demopb.Color_BLUE))
 		})
 
 		It("should handle updating from full to minimal", func() {
@@ -180,7 +180,7 @@ var _ = Describe("CRUD Conformance", func() {
 			largeID := int64(9223372036854775000) // Close to max int64
 			order := NewOrder(largeID).
 				WithPrice(999).
-				WithFlower("Rare", gen.Color_PINK).
+				WithFlower("Rare", demopb.Color_PINK).
 				Build()
 			err := store.SaveRecord(ctx, order)
 			Expect(err).NotTo(HaveOccurred())
@@ -194,7 +194,7 @@ var _ = Describe("CRUD Conformance", func() {
 			maxPrice := int32(2147483647) // Max int32
 			order := NewOrder(7001).
 				WithPrice(maxPrice).
-				WithFlower("Diamond", gen.Color_PINK).
+				WithFlower("Diamond", demopb.Color_PINK).
 				Build()
 			err := store.SaveRecord(ctx, order)
 			Expect(err).NotTo(HaveOccurred())
@@ -207,7 +207,7 @@ var _ = Describe("CRUD Conformance", func() {
 		It("should handle order ID of 0", func() {
 			order := NewOrder(0).
 				WithPrice(42).
-				WithFlower("Lily", gen.Color_YELLOW).
+				WithFlower("Lily", demopb.Color_YELLOW).
 				Build()
 			err := store.SaveRecord(ctx, order)
 			Expect(err).NotTo(HaveOccurred())
@@ -222,7 +222,7 @@ var _ = Describe("CRUD Conformance", func() {
 		It("should handle negative order IDs", func() {
 			order := NewOrder(-1).
 				WithPrice(77).
-				WithFlower("Cactus", gen.Color_RED).
+				WithFlower("Cactus", demopb.Color_RED).
 				Build()
 			err := store.SaveRecord(ctx, order)
 			Expect(err).NotTo(HaveOccurred())
@@ -237,7 +237,7 @@ var _ = Describe("CRUD Conformance", func() {
 			largeNeg := int64(-9223372036854775000)
 			order2 := NewOrder(largeNeg).
 				WithPrice(1).
-				WithFlower("Edelweiss", gen.Color_BLUE).
+				WithFlower("Edelweiss", demopb.Color_BLUE).
 				Build()
 			err = store.SaveRecord(ctx, order2)
 			Expect(err).NotTo(HaveOccurred())
@@ -270,7 +270,7 @@ var _ = Describe("CRUD Conformance", func() {
 
 	Describe("All Color Variants", func() {
 		DescribeTable("should handle all color types",
-			func(orderID int64, color gen.Color) {
+			func(orderID int64, color demopb.Color) {
 				order := NewOrder(orderID).
 					WithPrice(100).
 					WithFlower("TestFlower", color).
@@ -282,10 +282,10 @@ var _ = Describe("CRUD Conformance", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(*loaded.Flower.Color).To(Equal(color))
 			},
-			Entry("RED", int64(10001), gen.Color_RED),
-			Entry("BLUE", int64(10002), gen.Color_BLUE),
-			Entry("YELLOW", int64(10003), gen.Color_YELLOW),
-			Entry("PINK", int64(10004), gen.Color_PINK),
+			Entry("RED", int64(10001), demopb.Color_RED),
+			Entry("BLUE", int64(10002), demopb.Color_BLUE),
+			Entry("YELLOW", int64(10003), demopb.Color_YELLOW),
+			Entry("PINK", int64(10004), demopb.Color_PINK),
 		)
 	})
 })

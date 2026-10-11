@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -110,7 +110,7 @@ func TestOracleHasTeethOverSimFDB(t *testing.T) {
 		if err != nil {
 			return nil, err
 		}
-		_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(500), Quantity: proto.Int32(9)})
+		_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(500), Quantity: proto.Int32(9)})
 		return nil, err
 	})
 	if err != nil {

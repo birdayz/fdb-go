@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -20,7 +22,7 @@ var _ = Describe("UniqueIndex_ReadableViolation", func() {
 	var metaData *RecordMetaData
 
 	BeforeEach(func() {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -40,12 +42,12 @@ var _ = Describe("UniqueIndex_ReadableViolation", func() {
 				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(specSubspace()).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			o1 := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
+			o1 := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
 			_, err = store.SaveRecord(o1)
 			Expect(err).NotTo(HaveOccurred())
 
 			// Same price, different PK → uniqueness violation
-			o2 := &gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)}
+			o2 := &demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)}
 			_, err = store.SaveRecord(o2)
 			Expect(err).To(HaveOccurred())
 
@@ -63,7 +65,7 @@ var _ = Describe("UniqueIndex_ReadableViolation", func() {
 		ctx := context.Background()
 
 		// Build metadata with a unique index on flower.type (nullable)
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -79,11 +81,11 @@ var _ = Describe("UniqueIndex_ReadableViolation", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Two orders with nil flower → null index key → no uniqueness check
-			o1 := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10)}
+			o1 := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(10)}
 			_, err = store.SaveRecord(o1)
 			Expect(err).NotTo(HaveOccurred())
 
-			o2 := &gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(20)}
+			o2 := &demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(20)}
 			_, err = store.SaveRecord(o2)
 			Expect(err).NotTo(HaveOccurred()) // Both null → no violation
 			return nil, nil
@@ -99,12 +101,12 @@ var _ = Describe("UniqueIndex_ReadableViolation", func() {
 				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(specSubspace()).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			o1 := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
+			o1 := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
 			_, err = store.SaveRecord(o1)
 			Expect(err).NotTo(HaveOccurred())
 
 			// Update same PK with new price → should succeed (own record)
-			o2 := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)}
+			o2 := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)}
 			_, err = store.SaveRecord(o2)
 			Expect(err).NotTo(HaveOccurred())
 			return nil, nil
@@ -164,7 +166,7 @@ var _ = Describe("IndexValueSizeError_Test", func() {
 // KeyExpression_ErrorPaths tests key expression validation errors.
 var _ = Describe("KeyExpression_ErrorPaths", func() {
 	It("FieldNotFound", func() {
-		order := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
+		order := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
 		expr := Field("nonexistent_field")
 		_, err := expr.Evaluate(nil, order)
 		Expect(err).To(HaveOccurred())
@@ -174,7 +176,7 @@ var _ = Describe("KeyExpression_ErrorPaths", func() {
 	})
 
 	It("RepeatedFieldWithFanTypeNone", func() {
-		order := &gen.Order{
+		order := &demopb.Order{
 			OrderId: proto.Int64(1),
 			Tags:    []string{"a", "b"},
 		}
@@ -199,7 +201,7 @@ var _ = Describe("KeyExpression_ErrorPaths", func() {
 
 	It("NestingIntoNilFieldReturnsNull", func() {
 		// Order without flower field set → NestingKeyExpression should return nil key component
-		order := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
+		order := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
 		expr := Nest("flower", Field("type"))
 		result, err := expr.Evaluate(nil, order)
 		Expect(err).NotTo(HaveOccurred())
@@ -210,7 +212,7 @@ var _ = Describe("KeyExpression_ErrorPaths", func() {
 	})
 
 	It("NestingFieldNotFoundInParent", func() {
-		order := &gen.Order{OrderId: proto.Int64(1)}
+		order := &demopb.Order{OrderId: proto.Int64(1)}
 		expr := Nest("nonexistent_parent", Field("type"))
 		_, err := expr.Evaluate(nil, order)
 		Expect(err).To(HaveOccurred())
@@ -330,7 +332,7 @@ var _ = Describe("SaveRecord_ValidationErrors", func() {
 	var metaData *RecordMetaData
 
 	BeforeEach(func() {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -346,7 +348,7 @@ var _ = Describe("SaveRecord_ValidationErrors", func() {
 				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(specSubspace()).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			flower := &gen.Flower{Type: proto.String("Rose"), Color: gen.Color_RED.Enum()}
+			flower := &demopb.Flower{Type: proto.String("Rose"), Color: demopb.Color_RED.Enum()}
 			_, err = store.SaveRecord(flower)
 			var mdErr *MetaDataError
 			Expect(errors.As(err, &mdErr)).To(BeTrue())
@@ -363,7 +365,7 @@ var _ = Describe("SaveRecord_ValidationErrors", func() {
 				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(specSubspace()).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			order := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
+			order := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
 			_, err = store.SaveRecordWithOptions(order, RecordExistenceCheckErrorIfNotExists)
 			Expect(err).To(HaveOccurred())
 
@@ -382,11 +384,11 @@ var _ = Describe("SaveRecord_ValidationErrors", func() {
 				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(specSubspace()).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			order := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
+			order := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
 			_, err = store.SaveRecord(order)
 			Expect(err).NotTo(HaveOccurred())
 
-			order2 := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)}
+			order2 := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)}
 			_, err = store.SaveRecordWithOptions(order2, RecordExistenceCheckErrorIfExists)
 			Expect(err).To(HaveOccurred())
 
@@ -406,12 +408,12 @@ var _ = Describe("SaveRecord_ValidationErrors", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Save Order with PK=1
-			order := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
+			order := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
 			_, err = store.SaveRecord(order)
 			Expect(err).NotTo(HaveOccurred())
 
 			// Try to overwrite with Customer PK=1, check type changed
-			customer := &gen.Customer{CustomerId: proto.Int64(1), Name: proto.String("Alice")}
+			customer := &demopb.Customer{CustomerId: proto.Int64(1), Name: proto.String("Alice")}
 			_, err = store.SaveRecordWithOptions(customer, RecordExistenceCheckErrorIfTypeChanged)
 			Expect(err).To(HaveOccurred())
 
@@ -431,7 +433,7 @@ var _ = Describe("SaveRecord_ValidationErrors", func() {
 				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(specSubspace()).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			order := &gen.Order{OrderId: proto.Int64(999), Price: proto.Int32(100)}
+			order := &demopb.Order{OrderId: proto.Int64(999), Price: proto.Int32(100)}
 			_, err = store.SaveRecordWithOptions(order, RecordExistenceCheckErrorIfNotExistsOrTypeChanged)
 			Expect(err).To(HaveOccurred())
 			var notExistErr *RecordDoesNotExistError
@@ -448,11 +450,11 @@ var _ = Describe("SaveRecord_ValidationErrors", func() {
 				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(specSubspace()).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			order := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
+			order := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
 			_, err = store.SaveRecord(order)
 			Expect(err).NotTo(HaveOccurred())
 
-			customer := &gen.Customer{CustomerId: proto.Int64(1), Name: proto.String("Bob")}
+			customer := &demopb.Customer{CustomerId: proto.Int64(1), Name: proto.String("Bob")}
 			_, err = store.SaveRecordWithOptions(customer, RecordExistenceCheckErrorIfNotExistsOrTypeChanged)
 			Expect(err).To(HaveOccurred())
 			var typeErr *RecordTypeChangedError
@@ -479,7 +481,7 @@ var _ = Describe("SaveRecord_ValidationErrors", func() {
 			}
 
 			// Try to update non-existent record with existence check
-			order := &gen.Order{OrderId: proto.Int64(999), Price: proto.Int32(100)}
+			order := &demopb.Order{OrderId: proto.Int64(999), Price: proto.Int32(100)}
 			_, err = store.SaveRecordWithOptions(order, RecordExistenceCheckErrorIfNotExists)
 			Expect(err).To(HaveOccurred())
 			// DoesNotExist error takes precedence over lock error
@@ -497,7 +499,7 @@ var _ = Describe("StoreBuilder_ErrorPaths", func() {
 		ctx := context.Background()
 
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -524,7 +526,7 @@ var _ = Describe("StoreBuilder_ErrorPaths", func() {
 // MetadataBuild_ErrorPaths tests metadata build validation errors.
 var _ = Describe("MetadataBuild_ErrorPaths", func() {
 	It("MissingPrimaryKey", func() {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		// Deliberately don't set primary key for Order
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -535,7 +537,7 @@ var _ = Describe("MetadataBuild_ErrorPaths", func() {
 	})
 
 	It("FormerIndexSubspaceKeyReuse", func() {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -671,7 +673,7 @@ var _ = Describe("IndexValueSizeError_Integration", func() {
 	It("LargeTagsExceedKeyLimit", func() {
 		ctx := context.Background()
 
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -687,7 +689,7 @@ var _ = Describe("IndexValueSizeError_Integration", func() {
 
 			// Create a tag string that exceeds keySizeLimit once packed into index entry
 			longTag := strings.Repeat("x", keySizeLimit+1)
-			order := &gen.Order{
+			order := &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(100),
 				Tags:    []string{longTag},
@@ -709,7 +711,7 @@ var _ = Describe("DeleteRecord_ErrorPaths", func() {
 	It("DeleteNonExistentReturnsNotDeleted", func() {
 		ctx := context.Background()
 
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -732,7 +734,7 @@ var _ = Describe("DeleteRecord_ErrorPaths", func() {
 	It("DeleteBlockedByLockReturnsNotDeletedForNonExistent", func() {
 		ctx := context.Background()
 
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -766,7 +768,7 @@ var _ = Describe("Phase 2 error types", func() {
 	var metaData *RecordMetaData
 
 	BeforeEach(func() {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -890,7 +892,7 @@ var _ = Describe("Phase 2 error types", func() {
 	})
 
 	It("MetaDataError on missing primary key", func() {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		// Deliberately set only two of three record types — Order has no primary key.
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -955,7 +957,7 @@ var _ = Describe("Error type coverage gaps", func() {
 	var metaData *RecordMetaData
 
 	BeforeEach(func() {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -1018,7 +1020,7 @@ var _ = Describe("Error type coverage gaps", func() {
 		ctx := context.Background()
 
 		// Build metadata with an index.
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -1056,7 +1058,7 @@ var _ = Describe("Error type coverage gaps", func() {
 	It("IndexNotReadableError via errors.As on DISABLED index scan", func() {
 		ctx := context.Background()
 
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -1090,7 +1092,7 @@ var _ = Describe("Error type coverage gaps", func() {
 	It("IndexNotBuiltError field verification on MarkIndexReadable", func() {
 		ctx := context.Background()
 
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))

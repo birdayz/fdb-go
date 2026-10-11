@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	. "github.com/onsi/ginkgo/v2"
@@ -42,7 +42,7 @@ var _ = Describe("Rebuild policy WRITE_ONLY_WITH_QUEUE", func() {
 				return nil, err
 			}
 			for id := int64(1); id <= 3; id++ {
-				if _, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(id), Quantity: proto.Int32(1), Price: proto.Int32(int32(id))}); err != nil {
+				if _, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(id), Quantity: proto.Int32(1), Price: proto.Int32(int32(id))}); err != nil {
 					return nil, err
 				}
 			}

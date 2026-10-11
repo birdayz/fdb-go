@@ -8,7 +8,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
@@ -25,7 +25,7 @@ var _ = Describe("Vector partition locks", func() {
 		ctx := context.Background()
 		ks := specSubspace()
 		vecIdx := recordlayer.NewVectorIndex("vec_partition_lock", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("vector_data")), 1), 1)
-		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -37,7 +37,7 @@ var _ = Describe("Vector partition locks", func() {
 			store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 			for id, q := range map[int64]int32{1: 1, 2: 1, 3: 2} {
-				_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(int32(id) * 10), Quantity: proto.Int32(q)}, "price"))
+				_, err = store.SaveRecord(withVector(&demopb.Order{OrderId: proto.Int64(id), Price: proto.Int32(int32(id) * 10), Quantity: proto.Int32(q)}, "price"))
 				Expect(err).NotTo(HaveOccurred())
 			}
 			m, err := store.GetIndexMaintainer(vecIdx)

@@ -13,7 +13,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer/vectorcodec"
@@ -167,7 +167,7 @@ var _ = Describe("Vector scan options", func() {
 		vecIdx := recordlayer.NewVectorIndex("vec_guardiann_opts", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("vector_data")), 1), 1)
 		vecIdx.Options[recordlayer.IndexOptionVectorEngine] = engine
 		vecIdx.Options[recordlayer.IndexOptionHNSWUseRaBitQ] = fmt.Sprint(useRaBitQ)
-		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -178,7 +178,7 @@ var _ = Describe("Vector scan options", func() {
 			store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 			for _, o := range []struct{ id, price, qty int64 }{{1, 10, 1}, {2, 20, 1}, {3, 50, 2}} {
-				_, err = store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(o.id), Price: proto.Int32(int32(o.price)), Quantity: proto.Int32(int32(o.qty))}, "price"))
+				_, err = store.SaveRecord(withVector(&demopb.Order{OrderId: proto.Int64(o.id), Price: proto.Int32(int32(o.price)), Quantity: proto.Int32(int32(o.qty))}, "price"))
 				Expect(err).NotTo(HaveOccurred())
 			}
 			ids := func(prefix tuple.Tuple, opts recordlayer.VectorIndexScanOptions) ([]int64, error) {

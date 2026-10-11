@@ -7,7 +7,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/dst"
 	fdb "fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -21,7 +21,7 @@ import (
 func buildOrderMetadata(t *testing.T) *recordlayer.RecordMetaData {
 	t.Helper()
 	b := recordlayer.NewRecordMetaDataBuilder()
-	b.SetRecords(gen.File_record_layer_demo_proto)
+	b.SetRecords(demopb.File_record_layer_demo_proto)
 	b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -65,7 +65,7 @@ func TestRecordLayerOverSimFDB(t *testing.T) {
 			return nil, err
 		}
 		for i := 0; i < 5; i++ {
-			if _, err := store.SaveRecord(&gen.Order{
+			if _, err := store.SaveRecord(&demopb.Order{
 				OrderId:  proto.Int64(int64(i)),
 				Price:    proto.Int32(int32(i * 100)),
 				Quantity: proto.Int32(int32(i)),
@@ -91,9 +91,9 @@ func TestRecordLayerOverSimFDB(t *testing.T) {
 		if rec == nil {
 			t.Fatal("record 3 not found after save")
 		}
-		order, ok := rec.Record.(*gen.Order)
+		order, ok := rec.Record.(*demopb.Order)
 		if !ok {
-			t.Fatalf("loaded record has type %T, want *gen.Order", rec.Record)
+			t.Fatalf("loaded record has type %T, want *demopb.Order", rec.Record)
 		}
 		if order.GetPrice() != 300 {
 			t.Fatalf("record 3 price = %d, want 300", order.GetPrice())
@@ -120,7 +120,7 @@ func TestSimFDBByteReproducibleAcrossRuns(t *testing.T) {
 				return nil, err
 			}
 			for i := 0; i < 8; i++ {
-				if _, err := store.SaveRecord(&gen.Order{
+				if _, err := store.SaveRecord(&demopb.Order{
 					OrderId:  proto.Int64(int64(i)),
 					Price:    proto.Int32(int32(i)),
 					Quantity: proto.Int32(int32(i % 3)),

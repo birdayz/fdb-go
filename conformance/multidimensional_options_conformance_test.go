@@ -13,7 +13,7 @@ import (
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -69,7 +69,7 @@ var _ = Describe("MULTIDIMENSIONAL index R-tree options", func() {
 			for k, v := range options {
 				index.Options[k] = v
 			}
-			builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -131,7 +131,7 @@ var _ = Describe("MULTIDIMENSIONAL index R-tree options", func() {
 				goRun(func(store *recordlayer.FDBRecordStore) {
 					for _, id := range ids {
 						x, y := coords(id)
-						_, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(id), CoordX: proto.Int64(x), CoordY: proto.Int64(y)})
+						_, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(id), CoordX: proto.Int64(x), CoordY: proto.Int64(y)})
 						Expect(err).NotTo(HaveOccurred())
 						live[id] = true
 					}

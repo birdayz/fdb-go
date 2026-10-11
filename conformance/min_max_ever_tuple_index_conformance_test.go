@@ -6,7 +6,7 @@ import (
 	"context"
 	"fmt"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -45,7 +45,7 @@ var _ = Describe("MAX_EVER_TUPLE Index Conformance", func() {
 	Describe("Go writes, both scan MAX_EVER_TUPLE index", func() {
 		It("should produce identical max entries visible to both Go and Java", func() {
 			for i, price := range []int32{100, 300, 200} {
-				err := store.SaveOrderGo(ctx, &gen.Order{
+				err := store.SaveOrderGo(ctx, &demopb.Order{
 					OrderId: proto.Int64(int64(i + 1)),
 					Price:   proto.Int32(price),
 				})
@@ -71,7 +71,7 @@ var _ = Describe("MAX_EVER_TUPLE Index Conformance", func() {
 	Describe("Java writes, both scan MAX_EVER_TUPLE index", func() {
 		It("should produce identical max entries visible to both Go and Java", func() {
 			for i, price := range []int32{150, 450, 250} {
-				err := store.SaveOrderJava(ctx, &gen.Order{
+				err := store.SaveOrderJava(ctx, &demopb.Order{
 					OrderId: proto.Int64(int64(i + 1)),
 					Price:   proto.Int32(price),
 				})
@@ -95,19 +95,19 @@ var _ = Describe("MAX_EVER_TUPLE Index Conformance", func() {
 
 	Describe("Mixed writes: Go and Java both insert", func() {
 		It("should track the global max across both writers", func() {
-			err := store.SaveOrderGo(ctx, &gen.Order{
+			err := store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(200),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			err = store.SaveOrderJava(ctx, &gen.Order{
+			err = store.SaveOrderJava(ctx, &demopb.Order{
 				OrderId: proto.Int64(2),
 				Price:   proto.Int32(500),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			err = store.SaveOrderGo(ctx, &gen.Order{
+			err = store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(3),
 				Price:   proto.Int32(300),
 			})
@@ -128,13 +128,13 @@ var _ = Describe("MAX_EVER_TUPLE Index Conformance", func() {
 
 	Describe("Delete does NOT revert max (_EVER semantics)", func() {
 		It("should preserve max after Go deletes the max record written by Java", func() {
-			err := store.SaveOrderJava(ctx, &gen.Order{
+			err := store.SaveOrderJava(ctx, &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(100),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			err = store.SaveOrderJava(ctx, &gen.Order{
+			err = store.SaveOrderJava(ctx, &demopb.Order{
 				OrderId: proto.Int64(2),
 				Price:   proto.Int32(500),
 			})
@@ -187,7 +187,7 @@ var _ = Describe("MIN_EVER_TUPLE Index Conformance", func() {
 	Describe("Go writes, both scan MIN_EVER_TUPLE index", func() {
 		It("should produce identical min entries visible to both Go and Java", func() {
 			for i, price := range []int32{300, 100, 200} {
-				err := store.SaveOrderGo(ctx, &gen.Order{
+				err := store.SaveOrderGo(ctx, &demopb.Order{
 					OrderId: proto.Int64(int64(i + 1)),
 					Price:   proto.Int32(price),
 				})
@@ -213,7 +213,7 @@ var _ = Describe("MIN_EVER_TUPLE Index Conformance", func() {
 	Describe("Java writes, both scan MIN_EVER_TUPLE index", func() {
 		It("should produce identical min entries visible to both Go and Java", func() {
 			for i, price := range []int32{350, 50, 250} {
-				err := store.SaveOrderJava(ctx, &gen.Order{
+				err := store.SaveOrderJava(ctx, &demopb.Order{
 					OrderId: proto.Int64(int64(i + 1)),
 					Price:   proto.Int32(price),
 				})
@@ -237,19 +237,19 @@ var _ = Describe("MIN_EVER_TUPLE Index Conformance", func() {
 
 	Describe("Mixed writes: Go and Java both insert", func() {
 		It("should track the global min across both writers", func() {
-			err := store.SaveOrderGo(ctx, &gen.Order{
+			err := store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(300),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			err = store.SaveOrderJava(ctx, &gen.Order{
+			err = store.SaveOrderJava(ctx, &demopb.Order{
 				OrderId: proto.Int64(2),
 				Price:   proto.Int32(50),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			err = store.SaveOrderGo(ctx, &gen.Order{
+			err = store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(3),
 				Price:   proto.Int32(200),
 			})
@@ -270,13 +270,13 @@ var _ = Describe("MIN_EVER_TUPLE Index Conformance", func() {
 
 	Describe("Delete does NOT revert min (_EVER semantics)", func() {
 		It("should preserve min after Java deletes the min record written by Go", func() {
-			err := store.SaveOrderGo(ctx, &gen.Order{
+			err := store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(400),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			err = store.SaveOrderGo(ctx, &gen.Order{
+			err = store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(2),
 				Price:   proto.Int32(75),
 			})
@@ -316,7 +316,7 @@ type MaxEverTupleIndexConformanceStore struct {
 func NewMaxEverTupleIndexConformanceStore(recordDB *recordlayer.FDBDatabase, keyspace subspace.Subspace, clusterFile string, tenantName string) (*MaxEverTupleIndexConformanceStore, error) {
 	maxIdx := recordlayer.NewMaxEverTupleIndex("max_ever_price_tuple", recordlayer.Ungrouped(recordlayer.Field("price")))
 
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -353,7 +353,7 @@ func (s *MaxEverTupleIndexConformanceStore) buildJavaParams() map[string]any {
 	return params
 }
 
-func (s *MaxEverTupleIndexConformanceStore) SaveOrderGo(ctx context.Context, order *gen.Order) error {
+func (s *MaxEverTupleIndexConformanceStore) SaveOrderGo(ctx context.Context, order *demopb.Order) error {
 	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
@@ -366,7 +366,7 @@ func (s *MaxEverTupleIndexConformanceStore) SaveOrderGo(ctx context.Context, ord
 	return err
 }
 
-func (s *MaxEverTupleIndexConformanceStore) SaveOrderJava(ctx context.Context, order *gen.Order) error {
+func (s *MaxEverTupleIndexConformanceStore) SaveOrderJava(ctx context.Context, order *demopb.Order) error {
 	params := s.buildJavaParams()
 	params["order"] = order
 	return s.java.InvokeAs(ctx, "saveOrderWithMaxEverTupleIndex", params, nil)
@@ -458,7 +458,7 @@ type MinEverTupleIndexConformanceStore struct {
 func NewMinEverTupleIndexConformanceStore(recordDB *recordlayer.FDBDatabase, keyspace subspace.Subspace, clusterFile string, tenantName string) (*MinEverTupleIndexConformanceStore, error) {
 	minIdx := recordlayer.NewMinEverTupleIndex("min_ever_price_tuple", recordlayer.Ungrouped(recordlayer.Field("price")))
 
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -495,7 +495,7 @@ func (s *MinEverTupleIndexConformanceStore) buildJavaParams() map[string]any {
 	return params
 }
 
-func (s *MinEverTupleIndexConformanceStore) SaveOrderGo(ctx context.Context, order *gen.Order) error {
+func (s *MinEverTupleIndexConformanceStore) SaveOrderGo(ctx context.Context, order *demopb.Order) error {
 	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
@@ -508,7 +508,7 @@ func (s *MinEverTupleIndexConformanceStore) SaveOrderGo(ctx context.Context, ord
 	return err
 }
 
-func (s *MinEverTupleIndexConformanceStore) SaveOrderJava(ctx context.Context, order *gen.Order) error {
+func (s *MinEverTupleIndexConformanceStore) SaveOrderJava(ctx context.Context, order *demopb.Order) error {
 	params := s.buildJavaParams()
 	params["order"] = order
 	return s.java.InvokeAs(ctx, "saveOrderWithMinEverTupleIndex", params, nil)

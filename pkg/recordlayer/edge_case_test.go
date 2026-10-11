@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -20,7 +22,7 @@ var _ = Describe("Edge case hardening", func() {
 	ctx := context.Background()
 
 	baseMetaData := func() *RecordMetaDataBuilder {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -149,7 +151,7 @@ var _ = Describe("Edge case hardening", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// Save a valid record
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(1),
 					Price:   proto.Int32(100),
 				})
@@ -196,7 +198,7 @@ var _ = Describe("Edge case hardening", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// order_id = 0
-				stored, err := store.SaveRecord(&gen.Order{
+				stored, err := store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(0),
 					Price:   proto.Int32(42),
 				})
@@ -207,7 +209,7 @@ var _ = Describe("Edge case hardening", func() {
 				loaded, err := store.LoadRecord(tuple.Tuple{int64(0)})
 				Expect(err).NotTo(HaveOccurred())
 				Expect(loaded).NotTo(BeNil())
-				order := loaded.Record.(*gen.Order)
+				order := loaded.Record.(*demopb.Order)
 				Expect(order.GetPrice()).To(Equal(int32(42)))
 
 				return nil, nil
@@ -226,7 +228,7 @@ var _ = Describe("Edge case hardening", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// order_id = MinInt64
-				stored, err := store.SaveRecord(&gen.Order{
+				stored, err := store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(-9223372036854775808),
 					Price:   proto.Int32(99),
 				})
@@ -236,7 +238,7 @@ var _ = Describe("Edge case hardening", func() {
 				loaded, err := store.LoadRecord(tuple.Tuple{int64(-9223372036854775808)})
 				Expect(err).NotTo(HaveOccurred())
 				Expect(loaded).NotTo(BeNil())
-				Expect(loaded.Record.(*gen.Order).GetPrice()).To(Equal(int32(99)))
+				Expect(loaded.Record.(*demopb.Order).GetPrice()).To(Equal(int32(99)))
 
 				return nil, nil
 			})
@@ -253,7 +255,7 @@ var _ = Describe("Edge case hardening", func() {
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
 
-				stored, err := store.SaveRecord(&gen.Order{
+				stored, err := store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(9223372036854775807),
 					Price:   proto.Int32(77),
 				})
@@ -400,7 +402,7 @@ var _ = Describe("Edge case hardening", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// Save order without setting price (proto2 optional → nil)
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(1),
 				})
 				Expect(err).NotTo(HaveOccurred())
@@ -430,10 +432,10 @@ var _ = Describe("Edge case hardening", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// Two records with nil (unset) price — nil should not trigger uniqueness
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1)})
 				Expect(err).NotTo(HaveOccurred())
 
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2)})
 				Expect(err).NotTo(HaveOccurred())
 
 				return nil, nil
@@ -454,7 +456,7 @@ var _ = Describe("Edge case hardening", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 5; i++ {
-					_, err = store.SaveRecord(&gen.Order{
+					_, err = store.SaveRecord(&demopb.Order{
 						OrderId: proto.Int64(i),
 						Price:   proto.Int32(int32(i * 10)),
 					})
@@ -500,7 +502,7 @@ var _ = Describe("Edge case hardening", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 10; i++ {
-					_, err = store.SaveRecord(&gen.Order{
+					_, err = store.SaveRecord(&demopb.Order{
 						OrderId: proto.Int64(i),
 						Price:   proto.Int32(int32(i * 10)),
 					})
@@ -579,9 +581,9 @@ var _ = Describe("Edge case hardening", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Both write to PK=1
-			_, err = store1.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store1.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store2.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)})
+			_, err = store2.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)})
 			Expect(err).NotTo(HaveOccurred())
 
 			// First commit succeeds
@@ -600,7 +602,7 @@ var _ = Describe("Edge case hardening", func() {
 
 	Describe("Metadata edge cases", func() {
 		It("Build fails when record type has no primary key", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			// Don't set primary key for Order
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -611,7 +613,7 @@ var _ = Describe("Edge case hardening", func() {
 		})
 
 		It("Build fails when primary key expression produces 0 columns", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(&EmptyKeyExpression{})
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -621,7 +623,7 @@ var _ = Describe("Edge case hardening", func() {
 		})
 
 		It("Build fails when index references non-existent field", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -681,13 +683,13 @@ var _ = Describe("Edge case hardening", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// Test with boundary int32 values in price field
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(1),
 					Price:   proto.Int32(2147483647), // MaxInt32
 				})
 				Expect(err).NotTo(HaveOccurred())
 
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(2),
 					Price:   proto.Int32(-2147483648), // MinInt32
 				})
@@ -695,11 +697,11 @@ var _ = Describe("Edge case hardening", func() {
 
 				loaded1, err := store.LoadRecord(tuple.Tuple{int64(1)})
 				Expect(err).NotTo(HaveOccurred())
-				Expect(loaded1.Record.(*gen.Order).GetPrice()).To(Equal(int32(2147483647)))
+				Expect(loaded1.Record.(*demopb.Order).GetPrice()).To(Equal(int32(2147483647)))
 
 				loaded2, err := store.LoadRecord(tuple.Tuple{int64(2)})
 				Expect(err).NotTo(HaveOccurred())
-				Expect(loaded2.Record.(*gen.Order).GetPrice()).To(Equal(int32(-2147483648)))
+				Expect(loaded2.Record.(*demopb.Order).GetPrice()).To(Equal(int32(-2147483648)))
 
 				return nil, nil
 			})
@@ -718,15 +720,15 @@ var _ = Describe("Edge case hardening", func() {
 
 				// 50KB string in the flower type field (below split threshold when serialized)
 				longStr := strings.Repeat("A", 50000)
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(1),
-					Flower:  &gen.Flower{Type: proto.String(longStr)},
+					Flower:  &demopb.Flower{Type: proto.String(longStr)},
 				})
 				Expect(err).NotTo(HaveOccurred())
 
 				loaded, err := store.LoadRecord(tuple.Tuple{int64(1)})
 				Expect(err).NotTo(HaveOccurred())
-				Expect(loaded.Record.(*gen.Order).GetFlower().GetType()).To(Equal(longStr))
+				Expect(loaded.Record.(*demopb.Order).GetFlower().GetType()).To(Equal(longStr))
 
 				return nil, nil
 			})
@@ -745,7 +747,7 @@ var _ = Describe("Edge case hardening", func() {
 
 				// Overwrite 10 times in the same transaction
 				for i := int32(0); i < 10; i++ {
-					_, err = store.SaveRecord(&gen.Order{
+					_, err = store.SaveRecord(&demopb.Order{
 						OrderId: proto.Int64(1),
 						Price:   proto.Int32(i),
 					})
@@ -754,7 +756,7 @@ var _ = Describe("Edge case hardening", func() {
 
 				loaded, err := store.LoadRecord(tuple.Tuple{int64(1)})
 				Expect(err).NotTo(HaveOccurred())
-				Expect(loaded.Record.(*gen.Order).GetPrice()).To(Equal(int32(9)))
+				Expect(loaded.Record.(*demopb.Order).GetPrice()).To(Equal(int32(9)))
 
 				return nil, nil
 			})
@@ -783,7 +785,7 @@ var _ = Describe("Edge case hardening", func() {
 					bigTags = append(bigTags, strings.Repeat("x", 18))
 				}
 
-				stored, err := store.SaveRecord(&gen.Order{
+				stored, err := store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(1),
 					Price:   proto.Int32(42),
 					Tags:    bigTags,
@@ -794,8 +796,8 @@ var _ = Describe("Edge case hardening", func() {
 				loaded, err := store.LoadRecord(tuple.Tuple{int64(1)})
 				Expect(err).NotTo(HaveOccurred())
 				Expect(loaded).NotTo(BeNil())
-				Expect(loaded.Record.(*gen.Order).GetPrice()).To(Equal(int32(42)))
-				Expect(len(loaded.Record.(*gen.Order).GetTags())).To(Equal(5000))
+				Expect(loaded.Record.(*demopb.Order).GetPrice()).To(Equal(int32(42)))
+				Expect(len(loaded.Record.(*demopb.Order).GetTags())).To(Equal(5000))
 
 				// Check if split or unsplit based on actual serialized size
 				if stored.ValueSize <= splitRecordSize {
@@ -822,7 +824,7 @@ var _ = Describe("Edge case hardening", func() {
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
 
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(&demopb.Order{
 					OrderId: proto.Int64(1),
 					Price:   proto.Int32(100),
 				})
@@ -839,7 +841,7 @@ var _ = Describe("Edge case hardening", func() {
 				loaded, err := store.LoadRecord(tuple.Tuple{int64(1)})
 				Expect(err).NotTo(HaveOccurred())
 				Expect(loaded).NotTo(BeNil())
-				Expect(loaded.Record.(*gen.Order).GetPrice()).To(Equal(int32(100)))
+				Expect(loaded.Record.(*demopb.Order).GetPrice()).To(Equal(int32(100)))
 				return nil, nil
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -856,7 +858,7 @@ var _ = Describe("Edge case hardening", func() {
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
 				for i := int64(1); i <= 5; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 				return nil, nil
@@ -950,7 +952,7 @@ var _ = Describe("Edge case hardening", func() {
 
 				// Insert 3
 				for i := int64(1); i <= 3; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 
@@ -968,7 +970,7 @@ var _ = Describe("Edge case hardening", func() {
 				Expect(count).To(Equal(int64(2)))
 
 				// Update existing (should NOT change count)
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(999)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(999)})
 				Expect(err).NotTo(HaveOccurred())
 
 				count, err = store.GetSnapshotRecordCount(tuple.Tuple{})
@@ -992,7 +994,7 @@ var _ = Describe("Edge case hardening", func() {
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
 
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 				Expect(err).NotTo(HaveOccurred())
 
 				count, err := store.GetSnapshotRecordCount(tuple.Tuple{})
@@ -1026,7 +1028,7 @@ var _ = Describe("Edge case hardening", func() {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 				Expect(err).NotTo(HaveOccurred())
 				return nil, store.SetStoreLockState(gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "migration in progress")
 			})
@@ -1044,7 +1046,7 @@ var _ = Describe("Edge case hardening", func() {
 				Expect(loaded).NotTo(BeNil())
 
 				// Save blocked
-				_, saveErr := store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
+				_, saveErr := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
 				Expect(saveErr).To(HaveOccurred())
 				var lockErr *StoreIsLockedForRecordUpdatesError
 				Expect(errors.As(saveErr, &lockErr)).To(BeTrue())
@@ -1057,7 +1059,7 @@ var _ = Describe("Edge case hardening", func() {
 
 	Describe("FormerIndex tracking", func() {
 		It("RemoveIndex creates a FormerIndex entry", func() {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))

@@ -6,7 +6,7 @@ import (
 	"context"
 	"fmt"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -88,7 +88,7 @@ var _ = Describe("Fan-Out Index Conformance", func() {
 	Describe("Multiple records with fan-out", func() {
 		It("should produce correct total entries across records", func() {
 			// Record 1: 2 tags, Record 2: 3 tags, Record 3: 1 tag = 6 total entries
-			orders := []*gen.Order{
+			orders := []*demopb.Order{
 				NewOrder(10).WithPrice(100).WithTags("a", "b").Build(),
 				NewOrder(20).WithPrice(200).WithTags("c", "d", "e").Build(),
 				NewOrder(30).WithPrice(300).WithTags("f").Build(),
@@ -228,7 +228,7 @@ type FanOutIndexConformanceStore struct {
 func NewFanOutIndexConformanceStore(recordDB *recordlayer.FDBDatabase, keyspace subspace.Subspace, clusterFile string, tenantName string) (*FanOutIndexConformanceStore, error) {
 	tagsIndex := recordlayer.NewIndex("Order$tags", recordlayer.FanOut("tags"))
 
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -266,7 +266,7 @@ func (s *FanOutIndexConformanceStore) buildJavaParams() map[string]any {
 }
 
 // SaveOrderGo saves an order with Go (with fan-out index maintenance).
-func (s *FanOutIndexConformanceStore) SaveOrderGo(ctx context.Context, order *gen.Order) error {
+func (s *FanOutIndexConformanceStore) SaveOrderGo(ctx context.Context, order *demopb.Order) error {
 	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
@@ -280,7 +280,7 @@ func (s *FanOutIndexConformanceStore) SaveOrderGo(ctx context.Context, order *ge
 }
 
 // SaveOrderJava saves an order via Java (with fan-out index maintenance).
-func (s *FanOutIndexConformanceStore) SaveOrderJava(ctx context.Context, order *gen.Order) error {
+func (s *FanOutIndexConformanceStore) SaveOrderJava(ctx context.Context, order *demopb.Order) error {
 	params := s.buildJavaParams()
 	params["order"] = order
 	return s.java.InvokeAs(ctx, "saveOrderWithFanOutIndex", params, nil)

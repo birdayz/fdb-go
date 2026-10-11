@@ -6,7 +6,7 @@ go_library(
     importpath = "fdb.dev/example",
     visibility = ["//visibility:private"],
     deps = [
-        "//gen",
+        "//gen/demopb",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",

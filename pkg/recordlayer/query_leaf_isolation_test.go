@@ -35,7 +35,7 @@ import (
 	"errors"
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -108,7 +108,7 @@ func TestQueryLeavesConsultIsolationLevel(t *testing.T) {
 	const indexName = "Order$price"
 	buildMetaData := func(t *testing.T) (*RecordMetaData, leafFixture) {
 		t.Helper()
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -152,7 +152,7 @@ func TestQueryLeavesConsultIsolationLevel(t *testing.T) {
 						return nil, err
 					}
 					for i := int64(1); i <= 5; i++ {
-						if _, err := store.SaveRecord(&gen.Order{
+						if _, err := store.SaveRecord(&demopb.Order{
 							OrderId: proto.Int64(i), Price: proto.Int32(int32(i)), Quantity: proto.Int32(int32(i)),
 						}); err != nil {
 							return nil, err
@@ -193,7 +193,7 @@ func TestQueryLeavesConsultIsolationLevel(t *testing.T) {
 					if err != nil {
 						return nil, err
 					}
-					_, err = store.SaveRecord(&gen.Order{
+					_, err = store.SaveRecord(&demopb.Order{
 						OrderId: proto.Int64(3), Price: proto.Int32(3000), Quantity: proto.Int32(3000),
 					})
 					return nil, err
@@ -211,7 +211,7 @@ func TestQueryLeavesConsultIsolationLevel(t *testing.T) {
 				// every serializable arm and a failure on every snapshot one.
 				// The ONLY thing that may conflict this commit is the read
 				// conflict range the scan above did or did not take.
-				if _, err := readerStore.SaveRecord(&gen.Customer{
+				if _, err := readerStore.SaveRecord(&demopb.Customer{
 					CustomerId: proto.Int64(99), Name: proto.String("reader"),
 				}); err != nil {
 					t.Fatalf("reader write: %v", err)

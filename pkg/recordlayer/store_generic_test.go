@@ -3,12 +3,12 @@ package recordlayer
 import (
 	"testing"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 )
 
 // Test helper to create a typed Order store using the new API
-func createTestOrderStore(baseStore *FDBRecordStore) *TypedFDBRecordStore[*gen.Order] {
-	orderStore, err := GetTypedRecordStore[*gen.Order](baseStore, "Order")
+func createTestOrderStore(baseStore *FDBRecordStore) *TypedFDBRecordStore[*demopb.Order] {
+	orderStore, err := GetTypedRecordStore[*demopb.Order](baseStore, "Order")
 	if err != nil {
 		panic(err)
 	}
@@ -51,7 +51,7 @@ func TestGenericTypedRecordStore_Creation(t *testing.T) {
 	}
 
 	// Create typed store using the generic constructor
-	typedStore, err := NewTypedRecordStore[*gen.Order](baseStore, recordType)
+	typedStore, err := NewTypedRecordStore[*demopb.Order](baseStore, recordType)
 	if err != nil {
 		t.Fatalf("Failed to create typed store: %v", err)
 	}

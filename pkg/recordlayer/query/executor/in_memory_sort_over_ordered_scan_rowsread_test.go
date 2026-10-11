@@ -28,7 +28,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -45,9 +45,9 @@ func TestFDB_InMemorySortRowsRead_RFC184(t *testing.T) {
 
 	// Seed enough rows that "reads ≤5" vs "reads all" is unambiguous.
 	const seeded = 400
-	orders := make([]*gen.Order, 0, seeded)
+	orders := make([]*demopb.Order, 0, seeded)
 	for i := 1; i <= seeded; i++ {
-		orders = append(orders, &gen.Order{
+		orders = append(orders, &demopb.Order{
 			OrderId: proto.Int64(int64(i)),
 			Price:   proto.Int32(int32(i)),
 		})
@@ -91,7 +91,7 @@ func TestFDB_InMemorySortRowsRead_RFC184(t *testing.T) {
 
 	scan := func() plans.RecordQueryPlan {
 		return mustExecutorConstruct(plans.NewRecordQueryScanPlan(
-			[]string{"Order"}, PositionalTypeForRecordLayout((&gen.Order{}).ProtoReflect().Descriptor(), false), false))
+			[]string{"Order"}, PositionalTypeForRecordLayout((&demopb.Order{}).ProtoReflect().Descriptor(), false), false))
 	}
 	sortByPK := func(inner plans.RecordQueryPlan) plans.RecordQueryPlan {
 		return mustExecutorConstruct(plans.NewRecordQueryInMemorySortPlan(inner, []plans.SortKey{{
@@ -162,7 +162,7 @@ func TestFDB_InMemorySortRowsRead_RFC184(t *testing.T) {
 		}
 		selectiveIndex := mustExecutorConstruct(plans.NewRecordQueryIndexPlan(
 			"order_price_idx", []*predicates.ComparisonRange{res.Range}, []string{"Order"},
-			PositionalTypeForRecordLayout((&gen.Order{}).ProtoReflect().Descriptor(), false), false)).
+			PositionalTypeForRecordLayout((&demopb.Order{}).ProtoReflect().Descriptor(), false), false)).
 			WithKeyComponentTypes([]values.Type{values.NullableInt})
 
 		if scansAtMost(t, scan(), 50) {

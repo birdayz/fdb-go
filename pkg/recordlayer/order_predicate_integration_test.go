@@ -9,6 +9,8 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 )
 
 var _ = Describe("Order function and predicate integration", func() {
@@ -20,7 +22,7 @@ var _ = Describe("Order function and predicate integration", func() {
 
 	// Helper: build standard metadata with an Order index.
 	buildMetadata := func(idx *Index) *RecordMetaData {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -34,7 +36,7 @@ var _ = Describe("Order function and predicate integration", func() {
 	saveOrders := func(store *FDBRecordStore, prices []*int32) {
 		for i, p := range prices {
 			id := int64(i + 1)
-			order := &gen.Order{OrderId: &id}
+			order := &demopb.Order{OrderId: &id}
 			if p != nil {
 				order.Price = p
 			}
@@ -165,7 +167,7 @@ var _ = Describe("Order function and predicate integration", func() {
 			// Update order 2 (price 500 → 200)
 			id := int64(2)
 			newPrice := int32(200)
-			_, err = store.SaveRecord(&gen.Order{OrderId: &id, Price: &newPrice})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: &id, Price: &newPrice})
 			Expect(err).NotTo(HaveOccurred())
 
 			entries, err := AsList(ctx, store.ScanIndex(idx, TupleRangeAll, nil, ForwardScan()))
@@ -362,7 +364,7 @@ var _ = Describe("Order function and predicate integration", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		// Build original metadata.
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -390,11 +392,11 @@ var _ = Describe("Order function and predicate integration", func() {
 
 		// Verify the rebuilt predicate evaluator works correctly on real messages.
 		pred := roundTrippedIdx.Predicate
-		Expect(pred(&gen.Order{Price: proto.Int32(100)})).To(BeFalse(), "100 should not match > 500")
-		Expect(pred(&gen.Order{Price: proto.Int32(500)})).To(BeFalse(), "500 should not match > 500")
-		Expect(pred(&gen.Order{Price: proto.Int32(700)})).To(BeTrue(), "700 should match > 500")
-		Expect(pred(&gen.Order{Price: proto.Int32(900)})).To(BeTrue(), "900 should match > 500")
-		Expect(pred(&gen.Order{})).To(BeFalse(), "unset price should not match > 500")
+		Expect(pred(&demopb.Order{Price: proto.Int32(100)})).To(BeFalse(), "100 should not match > 500")
+		Expect(pred(&demopb.Order{Price: proto.Int32(500)})).To(BeFalse(), "500 should not match > 500")
+		Expect(pred(&demopb.Order{Price: proto.Int32(700)})).To(BeTrue(), "700 should match > 500")
+		Expect(pred(&demopb.Order{Price: proto.Int32(900)})).To(BeTrue(), "900 should match > 500")
+		Expect(pred(&demopb.Order{})).To(BeFalse(), "unset price should not match > 500")
 	})
 
 	It("order function index -- unique enforcement on encoded bytes", func() {
@@ -403,7 +405,7 @@ var _ = Describe("Order function and predicate integration", func() {
 		orderIdx := NewIndex("Order$orderPrice", FunctionExpr(OrderFuncAscNullsFirst, Field("price")))
 		orderIdx.SetUnique()
 
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -420,7 +422,7 @@ var _ = Describe("Order function and predicate integration", func() {
 			if err != nil {
 				return nil, err
 			}
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(500)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(500)})
 			return nil, err
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -432,7 +434,7 @@ var _ = Describe("Order function and predicate integration", func() {
 			if err != nil {
 				return nil, err
 			}
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(300)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(300)})
 			return nil, err
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -444,7 +446,7 @@ var _ = Describe("Order function and predicate integration", func() {
 			if err != nil {
 				return nil, err
 			}
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(500)})
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(3), Price: proto.Int32(500)})
 			return nil, err
 		})
 		Expect(err).To(HaveOccurred())
@@ -456,7 +458,7 @@ var _ = Describe("Order function and predicate integration", func() {
 		// Create index with order_asc_nulls_first so byte ordering = natural ordering.
 		orderIdx := NewIndex("Order$ascPrice", FunctionExpr(OrderFuncAscNullsFirst, Field("price")))
 
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -476,7 +478,7 @@ var _ = Describe("Order function and predicate integration", func() {
 			for _, p := range []int32{100, 300, 500, 700, 900} {
 				id := int64(p)
 				price := p
-				_, err = store.SaveRecord(&gen.Order{OrderId: &id, Price: &price})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: &id, Price: &price})
 				if err != nil {
 					return nil, err
 				}

@@ -6,7 +6,7 @@ import (
 	"context"
 	"fmt"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -49,7 +49,7 @@ var _ = Describe("PERMUTED_MAX Index Conformance", func() {
 				id    int64
 				price int32
 			}{{1, 100}, {3, 100}, {2, 200}} {
-				err := store.SaveOrderGo(ctx, &gen.Order{
+				err := store.SaveOrderGo(ctx, &demopb.Order{
 					OrderId: proto.Int64(o.id),
 					Price:   proto.Int32(o.price),
 				})
@@ -87,7 +87,7 @@ var _ = Describe("PERMUTED_MAX Index Conformance", func() {
 				id    int64
 				price int32
 			}{{5, 150}, {7, 150}, {4, 300}} {
-				err := store.SaveOrderJava(ctx, &gen.Order{
+				err := store.SaveOrderJava(ctx, &demopb.Order{
 					OrderId: proto.Int64(o.id),
 					Price:   proto.Int32(o.price),
 				})
@@ -121,21 +121,21 @@ var _ = Describe("PERMUTED_MAX Index Conformance", func() {
 	Describe("Mixed writes: Go and Java both insert", func() {
 		It("should produce consistent BY_GROUP entries", func() {
 			// Go saves (id=1,price=100)
-			err := store.SaveOrderGo(ctx, &gen.Order{
+			err := store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(100),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Java saves (id=2,price=100)
-			err = store.SaveOrderJava(ctx, &gen.Order{
+			err = store.SaveOrderJava(ctx, &demopb.Order{
 				OrderId: proto.Int64(2),
 				Price:   proto.Int32(100),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Go saves (id=3,price=200)
-			err = store.SaveOrderGo(ctx, &gen.Order{
+			err = store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(3),
 				Price:   proto.Int32(200),
 			})
@@ -158,7 +158,7 @@ var _ = Describe("PERMUTED_MAX Index Conformance", func() {
 		It("should update BY_GROUP after deleting the max record", func() {
 			// Java saves (id=10,price=100), (id=20,price=100), (id=30,price=100)
 			for _, id := range []int64{10, 20, 30} {
-				err := store.SaveOrderJava(ctx, &gen.Order{
+				err := store.SaveOrderJava(ctx, &demopb.Order{
 					OrderId: proto.Int64(id),
 					Price:   proto.Int32(100),
 				})
@@ -192,7 +192,7 @@ var _ = Describe("PERMUTED_MAX Index Conformance", func() {
 		It("should update BY_GROUP after Java deletes the max record", func() {
 			// Go saves (id=40,price=200), (id=50,price=200), (id=60,price=200)
 			for _, id := range []int64{40, 50, 60} {
-				err := store.SaveOrderGo(ctx, &gen.Order{
+				err := store.SaveOrderGo(ctx, &demopb.Order{
 					OrderId: proto.Int64(id),
 					Price:   proto.Int32(200),
 				})
@@ -220,7 +220,7 @@ var _ = Describe("PERMUTED_MAX Index Conformance", func() {
 		It("should keep the same BY_GROUP entry when a non-max record is deleted", func() {
 			// Go saves (id=1,price=100), (id=5,price=100), (id=3,price=100)
 			for _, id := range []int64{1, 5, 3} {
-				err := store.SaveOrderGo(ctx, &gen.Order{
+				err := store.SaveOrderGo(ctx, &demopb.Order{
 					OrderId: proto.Int64(id),
 					Price:   proto.Int32(100),
 				})
@@ -284,7 +284,7 @@ var _ = Describe("PERMUTED_MIN Index Conformance", func() {
 				id    int64
 				price int32
 			}{{1, 100}, {3, 100}, {2, 200}} {
-				err := store.SaveOrderGo(ctx, &gen.Order{
+				err := store.SaveOrderGo(ctx, &demopb.Order{
 					OrderId: proto.Int64(o.id),
 					Price:   proto.Int32(o.price),
 				})
@@ -321,7 +321,7 @@ var _ = Describe("PERMUTED_MIN Index Conformance", func() {
 				id    int64
 				price int32
 			}{{5, 150}, {7, 150}, {4, 300}} {
-				err := store.SaveOrderJava(ctx, &gen.Order{
+				err := store.SaveOrderJava(ctx, &demopb.Order{
 					OrderId: proto.Int64(o.id),
 					Price:   proto.Int32(o.price),
 				})
@@ -356,7 +356,7 @@ var _ = Describe("PERMUTED_MIN Index Conformance", func() {
 		It("should update BY_GROUP after deleting the min record", func() {
 			// Java saves (id=10,price=100), (id=20,price=100), (id=30,price=100)
 			for _, id := range []int64{10, 20, 30} {
-				err := store.SaveOrderJava(ctx, &gen.Order{
+				err := store.SaveOrderJava(ctx, &demopb.Order{
 					OrderId: proto.Int64(id),
 					Price:   proto.Int32(100),
 				})
@@ -384,14 +384,14 @@ var _ = Describe("PERMUTED_MIN Index Conformance", func() {
 	Describe("Non-extremum insert doesn't change BY_GROUP min", func() {
 		It("should keep the same BY_GROUP min when a larger order_id is inserted", func() {
 			// Go saves (id=1,price=100) — min=1
-			err := store.SaveOrderGo(ctx, &gen.Order{
+			err := store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(100),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Go saves (id=5,price=100) — still min=1
-			err = store.SaveOrderGo(ctx, &gen.Order{
+			err = store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(5),
 				Price:   proto.Int32(100),
 			})
@@ -448,7 +448,7 @@ func NewPermutedMaxConformanceStore(recordDB *recordlayer.FDBDatabase, keyspace 
 	idx := recordlayer.NewPermutedMaxIndex("Order$maxOrderByPrice",
 		recordlayer.GroupBy(recordlayer.Field("order_id"), recordlayer.Field("price")), 1)
 
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -485,7 +485,7 @@ func (s *PermutedMaxConformanceStore) buildJavaParams() map[string]any {
 	return params
 }
 
-func (s *PermutedMaxConformanceStore) SaveOrderGo(ctx context.Context, order *gen.Order) error {
+func (s *PermutedMaxConformanceStore) SaveOrderGo(ctx context.Context, order *demopb.Order) error {
 	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
@@ -498,7 +498,7 @@ func (s *PermutedMaxConformanceStore) SaveOrderGo(ctx context.Context, order *ge
 	return err
 }
 
-func (s *PermutedMaxConformanceStore) SaveOrderJava(ctx context.Context, order *gen.Order) error {
+func (s *PermutedMaxConformanceStore) SaveOrderJava(ctx context.Context, order *demopb.Order) error {
 	params := s.buildJavaParams()
 	params["order"] = order
 	return s.java.InvokeAs(ctx, "saveOrderWithPermutedMaxIndex", params, nil)
@@ -616,7 +616,7 @@ func NewPermutedMinConformanceStore(recordDB *recordlayer.FDBDatabase, keyspace 
 	idx := recordlayer.NewPermutedMinIndex("Order$minOrderByPrice",
 		recordlayer.GroupBy(recordlayer.Field("order_id"), recordlayer.Field("price")), 1)
 
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -653,7 +653,7 @@ func (s *PermutedMinConformanceStore) buildJavaParams() map[string]any {
 	return params
 }
 
-func (s *PermutedMinConformanceStore) SaveOrderGo(ctx context.Context, order *gen.Order) error {
+func (s *PermutedMinConformanceStore) SaveOrderGo(ctx context.Context, order *demopb.Order) error {
 	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
@@ -666,7 +666,7 @@ func (s *PermutedMinConformanceStore) SaveOrderGo(ctx context.Context, order *ge
 	return err
 }
 
-func (s *PermutedMinConformanceStore) SaveOrderJava(ctx context.Context, order *gen.Order) error {
+func (s *PermutedMinConformanceStore) SaveOrderJava(ctx context.Context, order *demopb.Order) error {
 	params := s.buildJavaParams()
 	params["order"] = order
 	return s.java.InvokeAs(ctx, "saveOrderWithPermutedMinIndex", params, nil)

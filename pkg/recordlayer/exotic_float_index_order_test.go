@@ -5,7 +5,7 @@ import (
 	"math"
 	"sort"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	. "github.com/onsi/ginkgo/v2"
@@ -36,7 +36,7 @@ var _ = Describe("ExoticFloatIndexOrder", func() {
 
 	It("real index entries order exotic doubles by raw-bit total order; in-memory collapses NaNs canonically", func() {
 		idx := NewIndex("TypedRecord$val_double", Field("val_double"))
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -70,7 +70,7 @@ var _ = Describe("ExoticFloatIndexOrder", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i, v := range writeOrder {
-				_, err = store.SaveRecord(&gen.TypedRecord{
+				_, err = store.SaveRecord(&demopb.TypedRecord{
 					Id: proto.Int64(int64(i + 1)), ValDouble: proto.Float64(v),
 				})
 				Expect(err).NotTo(HaveOccurred())

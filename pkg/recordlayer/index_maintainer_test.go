@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -353,7 +353,7 @@ var _ = Describe("indexMaintainer internals", func() {
 		ctx := context.Background()
 
 		buildMeta := func(indexes ...*Index) *RecordMetaData {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -390,7 +390,7 @@ var _ = Describe("indexMaintainer internals", func() {
 
 				rec := &FDBStoredRecord[proto.Message]{
 					PrimaryKey: tuple.Tuple{int64(1)},
-					Record:     &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(500)},
+					Record:     &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(500)},
 				}
 				Expect(maintainer.Update(nil, rec)).To(Succeed())
 
@@ -421,7 +421,7 @@ var _ = Describe("indexMaintainer internals", func() {
 
 				rec := &FDBStoredRecord[proto.Message]{
 					PrimaryKey: tuple.Tuple{int64(1)},
-					Record:     &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(500)},
+					Record:     &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(500)},
 				}
 				// Insert first
 				Expect(maintainer.Update(nil, rec)).To(Succeed())
@@ -451,11 +451,11 @@ var _ = Describe("indexMaintainer internals", func() {
 
 				oldRec := &FDBStoredRecord[proto.Message]{
 					PrimaryKey: tuple.Tuple{int64(1)},
-					Record:     &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)},
+					Record:     &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)},
 				}
 				newRec := &FDBStoredRecord[proto.Message]{
 					PrimaryKey: tuple.Tuple{int64(1)},
-					Record:     &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)},
+					Record:     &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)},
 				}
 				// Insert old
 				Expect(maintainer.Update(nil, oldRec)).To(Succeed())
@@ -489,7 +489,7 @@ var _ = Describe("indexMaintainer internals", func() {
 
 				rec := &FDBStoredRecord[proto.Message]{
 					PrimaryKey: tuple.Tuple{int64(1)},
-					Record:     &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)},
+					Record:     &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)},
 				}
 				// Insert
 				Expect(maintainer.Update(nil, rec)).To(Succeed())
@@ -497,7 +497,7 @@ var _ = Describe("indexMaintainer internals", func() {
 				// Update with identical record (should be no-op for index)
 				samePriceRec := &FDBStoredRecord[proto.Message]{
 					PrimaryKey: tuple.Tuple{int64(1)},
-					Record:     &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)},
+					Record:     &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)},
 				}
 				Expect(maintainer.Update(rec, samePriceRec)).To(Succeed())
 
@@ -535,7 +535,7 @@ var _ = Describe("indexMaintainer internals", func() {
 		ctx := context.Background()
 
 		buildMeta := func(indexes ...*Index) *RecordMetaData {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -569,7 +569,7 @@ var _ = Describe("indexMaintainer internals", func() {
 
 				// Insert several records to populate index
 				for i := int64(1); i <= 5; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 
@@ -597,7 +597,7 @@ var _ = Describe("indexMaintainer internals", func() {
 
 				// Insert records with different prices
 				for i := int64(1); i <= 3; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 
@@ -627,7 +627,7 @@ var _ = Describe("indexMaintainer internals", func() {
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
 
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 				Expect(err).NotTo(HaveOccurred())
 
 				indexSub := store.subspace.Sub(IndexKey, priceIndex.SubspaceTupleKey())
@@ -648,10 +648,10 @@ var _ = Describe("indexMaintainer internals", func() {
 		It("returns nil entries when predicate filters out the record", func() {
 			priceIndex := NewIndex("Order$price", Field("price"))
 			priceIndex.SetPredicate(func(msg proto.Message) bool {
-				return msg.(*gen.Order).GetPrice() >= 500
+				return msg.(*demopb.Order).GetPrice() >= 500
 			})
 
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -670,7 +670,7 @@ var _ = Describe("indexMaintainer internals", func() {
 
 				rec := &FDBStoredRecord[proto.Message]{
 					PrimaryKey: tuple.Tuple{int64(1)},
-					Record:     &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)},
+					Record:     &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)},
 				}
 				entries, err := maintainer.evaluateIndex(rec)
 				Expect(err).NotTo(HaveOccurred())
@@ -684,10 +684,10 @@ var _ = Describe("indexMaintainer internals", func() {
 		It("returns entries when predicate matches", func() {
 			priceIndex := NewIndex("Order$price", Field("price"))
 			priceIndex.SetPredicate(func(msg proto.Message) bool {
-				return msg.(*gen.Order).GetPrice() >= 500
+				return msg.(*demopb.Order).GetPrice() >= 500
 			})
 
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -706,7 +706,7 @@ var _ = Describe("indexMaintainer internals", func() {
 
 				rec := &FDBStoredRecord[proto.Message]{
 					PrimaryKey: tuple.Tuple{int64(1)},
-					Record:     &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(600)},
+					Record:     &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(600)},
 				}
 				entries, err := maintainer.evaluateIndex(rec)
 				Expect(err).NotTo(HaveOccurred())
@@ -722,7 +722,7 @@ var _ = Describe("indexMaintainer internals", func() {
 		It("returns entries without predicate (all records indexed)", func() {
 			priceIndex := NewIndex("Order$price", Field("price"))
 
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -741,7 +741,7 @@ var _ = Describe("indexMaintainer internals", func() {
 
 				rec := &FDBStoredRecord[proto.Message]{
 					PrimaryKey: tuple.Tuple{int64(1)},
-					Record:     &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(50)},
+					Record:     &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(50)},
 				}
 				entries, err := maintainer.evaluateIndex(rec)
 				Expect(err).NotTo(HaveOccurred())
@@ -755,7 +755,7 @@ var _ = Describe("indexMaintainer internals", func() {
 		It("KeyWithValueExpression splits key and value portions", func() {
 			coveringIndex := NewIndex("covering", KeyWithValue(Concat(Field("price"), Nest("flower", Field("type"))), 1))
 
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -774,10 +774,10 @@ var _ = Describe("indexMaintainer internals", func() {
 
 				rec := &FDBStoredRecord[proto.Message]{
 					PrimaryKey: tuple.Tuple{int64(42)},
-					Record: &gen.Order{
+					Record: &demopb.Order{
 						OrderId: proto.Int64(42),
 						Price:   proto.Int32(999),
-						Flower:  &gen.Flower{Type: proto.String("Rose")},
+						Flower:  &demopb.Flower{Type: proto.String("Rose")},
 					},
 				}
 				entries, err := maintainer.evaluateIndex(rec)
@@ -797,7 +797,7 @@ var _ = Describe("indexMaintainer internals", func() {
 		It("FanOut produces multiple entries", func() {
 			tagIndex := NewIndex("Order$tags", FanOut("tags"))
 
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -816,7 +816,7 @@ var _ = Describe("indexMaintainer internals", func() {
 
 				rec := &FDBStoredRecord[proto.Message]{
 					PrimaryKey: tuple.Tuple{int64(1)},
-					Record: &gen.Order{
+					Record: &demopb.Order{
 						OrderId: proto.Int64(1),
 						Price:   proto.Int32(100),
 						Tags:    []string{"premium", "gift", "vip"},
@@ -836,7 +836,7 @@ var _ = Describe("indexMaintainer internals", func() {
 		ctx := context.Background()
 
 		buildMeta := func(indexes ...*Index) *RecordMetaData {
-			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -861,9 +861,9 @@ var _ = Describe("indexMaintainer internals", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// Two records without flower set — both should succeed
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 				Expect(err).NotTo(HaveOccurred())
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
 				Expect(err).NotTo(HaveOccurred())
 
 				return nil, nil
@@ -881,11 +881,11 @@ var _ = Describe("indexMaintainer internals", func() {
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
 
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 				Expect(err).NotTo(HaveOccurred())
 
 				// Re-save same record with same price via store (reloads existing record)
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 				Expect(err).NotTo(HaveOccurred())
 
 				return nil, nil
@@ -903,10 +903,10 @@ var _ = Describe("indexMaintainer internals", func() {
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
 
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 				Expect(err).NotTo(HaveOccurred())
 
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
 				Expect(err).To(HaveOccurred())
 
 				var violation *RecordIndexUniquenessViolationError

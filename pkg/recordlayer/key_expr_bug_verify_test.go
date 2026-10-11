@@ -1,7 +1,7 @@
 package recordlayer
 
 import (
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
@@ -12,7 +12,7 @@ var _ = Describe("KeyExprBugVerify", func() {
 	// Java checks message.hasField(fd) and returns null for unset fields.
 	Describe("Bug1: unset proto2 field returns nil", func() {
 		It("unset optional int64 field returns nil", func() {
-			order := &gen.Order{} // order_id is nil (unset)
+			order := &demopb.Order{} // order_id is nil (unset)
 			expr := Field("order_id")
 			result, err := expr.Evaluate(nil, order)
 			Expect(err).NotTo(HaveOccurred())
@@ -20,7 +20,7 @@ var _ = Describe("KeyExprBugVerify", func() {
 		})
 
 		It("unset optional string field returns nil", func() {
-			customer := &gen.Customer{} // name is nil (unset)
+			customer := &demopb.Customer{} // name is nil (unset)
 			expr := Field("name")
 			result, err := expr.Evaluate(nil, customer)
 			Expect(err).NotTo(HaveOccurred())
@@ -28,7 +28,7 @@ var _ = Describe("KeyExprBugVerify", func() {
 		})
 
 		It("set field returns actual value", func() {
-			order := &gen.Order{OrderId: proto.Int64(42)}
+			order := &demopb.Order{OrderId: proto.Int64(42)}
 			expr := Field("order_id")
 			result, err := expr.Evaluate(nil, order)
 			Expect(err).NotTo(HaveOccurred())
@@ -89,7 +89,7 @@ var _ = Describe("KeyExprBugVerify", func() {
 		})
 
 		It("nested chain with unset outer message field returns [[nil]]", func() {
-			order := &gen.Order{OrderId: proto.Int64(1)} // flower is nil
+			order := &demopb.Order{OrderId: proto.Int64(1)} // flower is nil
 			expr := Nest("flower", Field("type"))
 			result, err := expr.Evaluate(nil, order)
 			Expect(err).NotTo(HaveOccurred())
@@ -110,7 +110,7 @@ var _ = Describe("KeyExprBugVerify", func() {
 		// not the message's type name. The key belongs to the record's resolved
 		// type, and there is no record here to have one.
 		It("evaluates to NULL when a message is supplied without a record", func() {
-			order := &gen.Order{OrderId: proto.Int64(1)}
+			order := &demopb.Order{OrderId: proto.Int64(1)}
 			expr := RecordTypeKey()
 			result, err := expr.Evaluate(nil, order)
 			Expect(err).NotTo(HaveOccurred())
@@ -118,7 +118,7 @@ var _ = Describe("KeyExprBugVerify", func() {
 		})
 
 		It("works on a record whose type is resolved", func() {
-			order := &gen.Order{OrderId: proto.Int64(1)}
+			order := &demopb.Order{OrderId: proto.Int64(1)}
 			expr := RecordTypeKey()
 			result, err := expr.Evaluate(storedAs(order, "Order", map[string]any{"Order": 101}), order)
 			Expect(err).NotTo(HaveOccurred())

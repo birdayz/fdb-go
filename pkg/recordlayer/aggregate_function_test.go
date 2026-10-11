@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -15,7 +15,7 @@ var _ = Describe("EvaluateAggregateFunction", func() {
 	ctx := context.Background()
 
 	baseMetaData := func() *RecordMetaDataBuilder {
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -38,7 +38,7 @@ var _ = Describe("EvaluateAggregateFunction", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := range 5 {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(100)})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(100)})
 					Expect(err).NotTo(HaveOccurred())
 				}
 
@@ -69,7 +69,7 @@ var _ = Describe("EvaluateAggregateFunction", func() {
 
 				// price=100: 3 orders, price=200: 2 orders
 				for i, price := range []int32{100, 200, 100, 100, 200} {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)})
 					Expect(err).NotTo(HaveOccurred())
 				}
 
@@ -109,7 +109,7 @@ var _ = Describe("EvaluateAggregateFunction", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i, price := range []int32{100, 200, 300} {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)})
 					Expect(err).NotTo(HaveOccurred())
 				}
 
@@ -141,7 +141,7 @@ var _ = Describe("EvaluateAggregateFunction", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i, price := range []int32{100, 500, 200} {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)})
 					Expect(err).NotTo(HaveOccurred())
 				}
 
@@ -173,7 +173,7 @@ var _ = Describe("EvaluateAggregateFunction", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i, price := range []int32{300, 50, 200} {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)})
 					Expect(err).NotTo(HaveOccurred())
 				}
 
@@ -204,7 +204,7 @@ var _ = Describe("EvaluateAggregateFunction", func() {
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
 
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(42)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(42)})
 				Expect(err).NotTo(HaveOccurred())
 
 				result, err := store.EvaluateAggregateFunction(ctx, nil,
@@ -313,7 +313,7 @@ var _ = Describe("EvaluateAggregateFunction", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i, price := range []int32{300, 50, 200} {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)})
 					Expect(err).NotTo(HaveOccurred())
 				}
 
@@ -370,7 +370,7 @@ var _ = Describe("EvaluateAggregateFunction", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i, price := range []int32{100, 500, 200} {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)})
 					Expect(err).NotTo(HaveOccurred())
 				}
 
@@ -399,9 +399,9 @@ var _ = Describe("EvaluateAggregateFunction", func() {
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
 
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 				Expect(err).NotTo(HaveOccurred())
-				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(500)})
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(500)})
 				Expect(err).NotTo(HaveOccurred())
 
 				// Delete the max record
@@ -439,7 +439,7 @@ var _ = Describe("EvaluateAggregateFunction", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i, price := range []int32{100, 200} {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)})
 					Expect(err).NotTo(HaveOccurred())
 				}
 
@@ -528,7 +528,7 @@ var _ = Describe("EvaluateAggregateFunction", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i, price := range []int32{100, 100, 200} {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)})
 					Expect(err).NotTo(HaveOccurred())
 				}
 

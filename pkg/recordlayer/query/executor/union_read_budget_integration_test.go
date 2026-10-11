@@ -9,7 +9,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -93,9 +93,9 @@ func TestIntegration_UnionReadBudget(t *testing.T) {
 					extraIndexes = append(extraIndexes, recordlayer.NewCountIndex("budget_count", recordlayer.GroupAll(recordlayer.Field("order_id"))))
 				}
 				store := setupStore(t, extraIndexes...)
-				orders := make([]*gen.Order, 20)
+				orders := make([]*demopb.Order, 20)
 				for i := range orders {
-					orders[i] = &gen.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(50)}
+					orders[i] = &demopb.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(50)}
 				}
 				insertOrders(t, store, orders...)
 				if store.GetMetaData().IsSplitLongRecords() {
@@ -184,9 +184,9 @@ func TestIntegration_UnionChildBudgetResume(t *testing.T) {
 			ctx := context.Background()
 			store := setupStore(t)
 			insertOrders(t, store,
-				&gen.Order{OrderId: proto.Int64(2)},
-				&gen.Order{OrderId: proto.Int64(3)},
-				&gen.Order{OrderId: proto.Int64(4)},
+				&demopb.Order{OrderId: proto.Int64(2)},
+				&demopb.Order{OrderId: proto.Int64(3)},
+				&demopb.Order{OrderId: proto.Int64(4)},
 			)
 			_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 				s, err := recordlayer.NewStoreBuilder().SetContext(rtx).
@@ -194,7 +194,7 @@ func TestIntegration_UnionChildBudgetResume(t *testing.T) {
 				if err != nil {
 					return nil, err
 				}
-				_, err = s.SaveRecord(&gen.Customer{CustomerId: proto.Int64(1)})
+				_, err = s.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(1)})
 				return nil, err
 			})
 			if err != nil {
@@ -307,8 +307,8 @@ func TestIntegration_PermutedAggregateRepairStreamingMode(t *testing.T) {
 				recordlayer.GroupBy(recordlayer.Field("quantity"), recordlayer.Field("price")), 1)
 			store := setupStore(t, idx)
 			insertOrders(t, store,
-				&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(50)},
-				&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(50), Quantity: proto.Int32(7)},
+				&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(50)},
+				&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(50), Quantity: proto.Int32(7)},
 			)
 			_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 				ordinaryPrefix := testSubspace(t).Sub(recordlayer.IndexKey).Bytes()

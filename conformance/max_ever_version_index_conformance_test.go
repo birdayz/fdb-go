@@ -6,7 +6,7 @@ import (
 	"context"
 	"fmt"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -46,7 +46,7 @@ var _ = Describe("MAX_EVER_VERSION Index Conformance", func() {
 		It("should produce identical max-ever-version entries visible to both Go and Java", func() {
 			// Save 3 orders in separate transactions (different versionstamps)
 			for i := int64(1); i <= 3; i++ {
-				err := store.SaveOrderGo(ctx, &gen.Order{
+				err := store.SaveOrderGo(ctx, &demopb.Order{
 					OrderId: proto.Int64(i),
 					Price:   proto.Int32(int32(i * 100)),
 				})
@@ -74,7 +74,7 @@ var _ = Describe("MAX_EVER_VERSION Index Conformance", func() {
 	Describe("Java writes, both scan", func() {
 		It("should produce identical max-ever-version entries visible to both Go and Java", func() {
 			for i := int64(1); i <= 3; i++ {
-				err := store.SaveOrderJava(ctx, &gen.Order{
+				err := store.SaveOrderJava(ctx, &demopb.Order{
 					OrderId: proto.Int64(i),
 					Price:   proto.Int32(int32(i * 200)),
 				})
@@ -100,21 +100,21 @@ var _ = Describe("MAX_EVER_VERSION Index Conformance", func() {
 	Describe("Mixed writes: Go and Java alternating", func() {
 		It("should track the global max version across both writers", func() {
 			// Go saves order 1
-			err := store.SaveOrderGo(ctx, &gen.Order{
+			err := store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(100),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Java saves order 2
-			err = store.SaveOrderJava(ctx, &gen.Order{
+			err = store.SaveOrderJava(ctx, &demopb.Order{
 				OrderId: proto.Int64(2),
 				Price:   proto.Int32(200),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Go saves order 3 (latest tx = largest versionstamp)
-			err = store.SaveOrderGo(ctx, &gen.Order{
+			err = store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(3),
 				Price:   proto.Int32(300),
 			})
@@ -139,13 +139,13 @@ var _ = Describe("MAX_EVER_VERSION Index Conformance", func() {
 	Describe("Delete is no-op for _EVER semantics", func() {
 		It("should preserve max version after Go deletes a record", func() {
 			// Save 2 orders in separate transactions
-			err := store.SaveOrderGo(ctx, &gen.Order{
+			err := store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(100),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			err = store.SaveOrderGo(ctx, &gen.Order{
+			err = store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(2),
 				Price:   proto.Int32(200),
 			})
@@ -180,7 +180,7 @@ var _ = Describe("MAX_EVER_VERSION Index Conformance", func() {
 	Describe("Later write updates max cross-language", func() {
 		It("should update max when Go writes after Java", func() {
 			// Java saves order 1
-			err := store.SaveOrderJava(ctx, &gen.Order{
+			err := store.SaveOrderJava(ctx, &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(100),
 			})
@@ -193,7 +193,7 @@ var _ = Describe("MAX_EVER_VERSION Index Conformance", func() {
 			javaVS := javaOnly[0].VersionBytes
 
 			// Go saves order 2 (later tx = larger versionstamp)
-			err = store.SaveOrderGo(ctx, &gen.Order{
+			err = store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(2),
 				Price:   proto.Int32(200),
 			})
@@ -221,7 +221,7 @@ var _ = Describe("MAX_EVER_VERSION Index Conformance", func() {
 	Describe("Go deletes Java-written record, max persists", func() {
 		It("should preserve max version after deleting the only record", func() {
 			// Java saves order 1
-			err := store.SaveOrderJava(ctx, &gen.Order{
+			err := store.SaveOrderJava(ctx, &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(100),
 			})
@@ -256,7 +256,7 @@ var _ = Describe("MAX_EVER_VERSION Index Conformance", func() {
 	Describe("Wire format: versionstamp bytes match between Go and Java", func() {
 		It("should produce identical hex-encoded versionstamp bytes", func() {
 			// Save a record via Go
-			err := store.SaveOrderGo(ctx, &gen.Order{
+			err := store.SaveOrderGo(ctx, &demopb.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(42),
 			})
@@ -322,7 +322,7 @@ type MaxEverVersionConformanceStore struct {
 func NewMaxEverVersionConformanceStore(recordDB *recordlayer.FDBDatabase, keyspace subspace.Subspace, clusterFile string, tenantName string) (*MaxEverVersionConformanceStore, error) {
 	idx := recordlayer.NewMaxEverVersionIndex("Order$maxVersion", recordlayer.Ungrouped(recordlayer.VersionKey()))
 
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -360,7 +360,7 @@ func (s *MaxEverVersionConformanceStore) buildJavaParams() map[string]any {
 	return params
 }
 
-func (s *MaxEverVersionConformanceStore) SaveOrderGo(ctx context.Context, order *gen.Order) error {
+func (s *MaxEverVersionConformanceStore) SaveOrderGo(ctx context.Context, order *demopb.Order) error {
 	_, _, err := s.RecordDB.RunWithVersionstamp(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		st, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
@@ -373,7 +373,7 @@ func (s *MaxEverVersionConformanceStore) SaveOrderGo(ctx context.Context, order 
 	return err
 }
 
-func (s *MaxEverVersionConformanceStore) SaveOrderJava(ctx context.Context, order *gen.Order) error {
+func (s *MaxEverVersionConformanceStore) SaveOrderJava(ctx context.Context, order *demopb.Order) error {
 	params := s.buildJavaParams()
 	params["order"] = order
 	return s.java.InvokeAs(ctx, "saveOrderWithMaxEverVersionIndex", params, nil)

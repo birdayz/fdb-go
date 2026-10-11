@@ -14,6 +14,8 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/executor"
@@ -33,7 +35,7 @@ import (
 // (PREFER_INDEX, in-union size 24) when relational is set, and executed with
 // executor.ExecutePlan. The line has the target step's form, so the two compare.
 func wsfGoRecordLayerIn(ctx context.Context, prices []int, sort string, relational bool) string {
-	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -53,7 +55,7 @@ func wsfGoRecordLayerIn(ctx context.Context, prices []int, sort string, relation
 			return nil, err
 		}
 		for _, r := range [][2]int32{{1, 10}, {2, 10}, {3, 20}, {4, -1}, {5, 10}} {
-			order := &gen.Order{OrderId: proto.Int64(int64(r[0]))}
+			order := &demopb.Order{OrderId: proto.Int64(int64(r[0]))}
 			if r[1] >= 0 {
 				order.Price = proto.Int32(r[1])
 			}
@@ -108,7 +110,7 @@ func wsfGoRecordLayerIn(ctx context.Context, prices []int, sort string, relation
 // RecordQuery(Order, price IN prices, sort): a type filter over the full scan, a
 // select with the IN comparison, and a sort by the named field (none for "").
 func wsfGoPlanRecordLayerIn(ctx context.Context, prices []int, sort string, relational bool) (plans.RecordQueryPlan, int, error) {
-	desc := (&gen.Order{}).ProtoReflect().Descriptor()
+	desc := (&demopb.Order{}).ProtoReflect().Descriptor()
 	rowType := executor.PositionalTypeForRecordLayout(desc, false)
 	ordinal := func(field string) (int, string, error) {
 		fd := desc.Fields().ByName(protoreflect.Name(field))

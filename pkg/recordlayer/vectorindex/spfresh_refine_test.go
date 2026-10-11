@@ -9,7 +9,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -32,7 +32,7 @@ var _ = Describe("SPFresh refinement (RFC-104)", func() {
 	ctx := context.Background()
 
 	buildMeta := func(idx *recordlayer.Index) *recordlayer.RecordMetaData {
-		b := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		b := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 		b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 		b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -75,7 +75,7 @@ var _ = Describe("SPFresh refinement (RFC-104)", func() {
 				return nil, serr
 			}
 			for i := 0; i < n; i++ {
-				if _, serr = store.SaveRecord(&gen.Order{
+				if _, serr = store.SaveRecord(&demopb.Order{
 					OrderId:  proto.Int64(int64(i)),
 					Price:    proto.Int32(int32((i * 13) % 50)),
 					Quantity: proto.Int32(int32((i*7)%40 + 1)),

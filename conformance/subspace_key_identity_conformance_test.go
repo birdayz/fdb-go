@@ -14,6 +14,8 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 )
@@ -31,7 +33,7 @@ type javaVerdict struct {
 // proto. The keys are written into the proto packed, as Java writes them, so a
 // key Go's builder would refuse can still be put in front of both engines.
 func subspaceKeyTestProto(version int, keys []any, formers []*gen.FormerIndex, configure func(i int, idx *recordlayer.Index)) *gen.MetaData {
-	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))

@@ -3,7 +3,7 @@ package recordlayer
 import (
 	"context"
 
-	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -26,7 +26,7 @@ var _ = Describe("OnlineIndexerBugVerify", func() {
 			ks := specSubspace()
 
 			// Phase 1: Insert 9 records WITHOUT the COUNT index.
-			builder1 := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder1 := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder1.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder1.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder1.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -39,7 +39,7 @@ var _ = Describe("OnlineIndexerBugVerify", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 9; i++ {
-					order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(100))}
+					order := &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(100))}
 					_, err = store.SaveRecord(order)
 					Expect(err).NotTo(HaveOccurred())
 				}
@@ -49,7 +49,7 @@ var _ = Describe("OnlineIndexerBugVerify", func() {
 
 			// Phase 2: Build COUNT index online with limit=3 (forces 3 chunks).
 			countIdx := NewCountIndex("bug1_count", Ungrouped(EmptyKey()))
-			builder2 := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder2 := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder2.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder2.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder2.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -107,7 +107,7 @@ var _ = Describe("OnlineIndexerBugVerify", func() {
 			ks := specSubspace()
 
 			// Phase 1: Insert 10 Customers then 5 Orders.
-			builder1 := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder1 := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder1.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder1.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder1.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -120,11 +120,11 @@ var _ = Describe("OnlineIndexerBugVerify", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := int64(1); i <= 10; i++ {
-					_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(i), Name: proto.String("Cust")})
+					_, err = store.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(i), Name: proto.String("Cust")})
 					Expect(err).NotTo(HaveOccurred())
 				}
 				for i := int64(11); i <= 15; i++ {
-					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
 					Expect(err).NotTo(HaveOccurred())
 				}
 				return nil, nil
@@ -133,7 +133,7 @@ var _ = Describe("OnlineIndexerBugVerify", func() {
 
 			// Phase 2: Build Order-only VALUE index with limit=5.
 			priceIndex := NewIndex("bug2_price", Field("price"))
-			builder2 := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder2 := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 			builder2.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder2.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 			builder2.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))

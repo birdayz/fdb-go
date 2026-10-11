@@ -12,6 +12,8 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 
 	"fdb.dev/gen"
+
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
@@ -106,7 +108,7 @@ func TestSubspaceKeyIdentity(t *testing.T) {
 }
 
 func identityTestMetaData(version int, configure func(b *RecordMetaDataBuilder)) (*RecordMetaData, error) {
-	b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
@@ -605,7 +607,7 @@ func TestNilSubspaceKeyIsRefusedOnEveryPath(t *testing.T) {
 		t.Parallel()
 		// A pointer to a generated enum has the enum's methods; a nil one is
 		// Java's null, not a panic in Number.
-		idx := NewIndex("enum", Field("price")).SetSubspaceKey((*gen.Color)(nil))
+		idx := NewIndex("enum", Field("price")).SetSubspaceKey((*demopb.Color)(nil))
 		if idx.SubspaceTupleKey() != "enum" || idx.HasExplicitSubspaceKey() {
 			t.Errorf("a nil enum pointer changed the index: key %#v explicit %t", idx.SubspaceTupleKey(), idx.HasExplicitSubspaceKey())
 		}
@@ -613,7 +615,7 @@ func TestNilSubspaceKeyIsRefusedOnEveryPath(t *testing.T) {
 		refusedBy(t, err, nullKey)
 		// A non-nil enum pointer is its number, as Java's
 		// toTupleEquivalentValue makes a ProtocolMessageEnum.
-		if got := NewIndex("enum2", Field("price")).SetSubspaceKey(gen.Color_BLUE.Enum()).SubspaceTupleKey(); got != int64(2) {
+		if got := NewIndex("enum2", Field("price")).SetSubspaceKey(demopb.Color_BLUE.Enum()).SubspaceTupleKey(); got != int64(2) {
 			t.Errorf("an enum pointer key = %#v, want its number", got)
 		}
 	})
@@ -758,7 +760,7 @@ func TestNilSubspaceKeyIsRefusedOnEveryPath(t *testing.T) {
 		}
 		// Removed, it becomes a former index under the same key, which saves
 		// and reloads.
-		b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
