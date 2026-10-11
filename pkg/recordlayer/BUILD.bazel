@@ -264,6 +264,7 @@ go_test(
         "index_predicate_test.go",
         "index_queued_dispatch_test.go",
         "index_registration_matrix_test.go",
+        "index_scan_lazy_continuation_test.go",
         "index_scan_test.go",
         "index_scan_unit_test.go",
         "index_state_peek_test.go",

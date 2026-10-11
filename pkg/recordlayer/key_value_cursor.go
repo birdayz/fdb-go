@@ -10,6 +10,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"sync"
 
 	"fdb.dev/pkg/recordlayer/internal/tuplefast"
 
@@ -56,6 +57,27 @@ func wrapContinuation(innerBytes []byte) ([]byte, error) {
 		return nil, fmt.Errorf("marshal key-value cursor continuation: %w", err)
 	}
 	return out, nil
+}
+
+// keyValueContinuation is a KeyValueCursor position whose TO_NEW proto is built on
+// first ToBytes, mirroring Java's KeyValueCursorBase.Continuation (lastKey +
+// prefixLength, serialized in toBytes). Bytes equal wrapContinuation(suffix).
+type keyValueContinuation struct {
+	suffix []byte
+	once   sync.Once
+	bytes  []byte
+	err    error
+}
+
+// ToBytes returns the wrapped continuation, marshaling it once.
+func (c *keyValueContinuation) ToBytes() ([]byte, error) {
+	c.once.Do(func() { c.bytes, c.err = wrapContinuation(c.suffix) })
+	return c.bytes, c.err
+}
+
+// IsEnd matches BytesContinuation{wrapContinuation(suffix)}: only a nil suffix is end.
+func (c *keyValueContinuation) IsEnd() bool {
+	return c.suffix == nil
 }
 
 // unwrapContinuation extracts the inner continuation bytes from a
