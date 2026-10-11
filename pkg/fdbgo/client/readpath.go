@@ -241,6 +241,10 @@ func (tx *Transaction) getKeyImpl(ctx context.Context, selectorKey []byte, orEqu
 // to determine if the selector is fully resolved. Matches C++ getKey() which uses
 // the reply's KeySelector to drive the resolution loop.
 func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqual bool, offset int32, servers []ServerInfo) ([]byte, bool, int32, error) {
+	servers, ok := tx.db.failMon.liveServers(servers, EndpointGetKey)
+	if !ok {
+		return nil, false, 0, tx.db.allAlternativesFailed(ctx)
+	}
 	bestIdx, secondIdx := tx.db.queueModel.chooseTopTwo(servers)
 	if !tx.db.hedgeEnabled.Load() {
 		secondIdx = -1
@@ -261,7 +265,8 @@ func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqu
 				tx.db.handleDialError(ctx, server.Address)
 				return inFlightRPC{err: err, addr: server.Address}
 			}
-			replyToken, replyCh, replyHandle := conn.PrepareReply()
+			gkToken := getAdjustedEndpoint(server.Token, EndpointGetKey)
+			replyToken, replyCh, replyHandle := conn.PrepareReplyTo(gkToken)
 			req := types.GetKeyRequest{
 				Sel: types.KeySelectorRef{
 					Key:     selectorKey,
@@ -281,7 +286,6 @@ func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqu
 			bufp := getKeyBufPool.Get().(*[]byte)
 			reqData := req.MarshalFDBPooled(*bufp)
 			*bufp = reqData
-			gkToken := getAdjustedEndpoint(server.Token, EndpointGetKey)
 
 			delta := tx.db.queueModel.startRequest(server.Address)
 			start := time.Now()
@@ -318,7 +322,7 @@ func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqu
 	// both arms on timeout/cancel) exactly once, else its QueueModel delta leaks
 	// permanently and biases server selection. RFC-010 #5.
 	for _, o := range result.others {
-		tx.db.queueModel.endRequest(o.addr, o.delta, 0, false)
+		tx.db.endOther(o)
 	}
 
 	if result.addr != "" {
@@ -334,6 +338,7 @@ func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqu
 	}
 
 	key, replyOrEqual, replyOffset, penalty, err := parseGetKeyReply(result.body)
+	tx.db.noteReadBrokenPromise(err, servers, result.addr, EndpointGetKey)
 	tx.db.queueModel.endRequestFull(result.addr, result.delta, time.Since(result.start), err == nil, isFutureVersionOrProcessBehind(err), penalty)
 	return key, replyOrEqual, replyOffset, err
 }
@@ -456,6 +461,10 @@ func (tx *Transaction) getValueImpl(ctx context.Context, key []byte) ([]byte, er
 }
 
 func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []ServerInfo) ([]byte, error) {
+	servers, ok := tx.db.failMon.liveServers(servers, EndpointGetValue)
+	if !ok {
+		return nil, tx.db.allAlternativesFailed(ctx)
+	}
 	// Pick best + second-best for speculative hedge.
 	bestIdx, secondIdx := tx.db.queueModel.chooseTopTwo(servers)
 	if !tx.db.hedgeEnabled.Load() {
@@ -480,7 +489,7 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 				tx.db.handleDialError(ctx, server.Address)
 				return inFlightRPC{err: err, addr: server.Address}
 			}
-			replyToken, replyCh, replyHandle := conn.PrepareReply()
+			replyToken, replyCh, replyHandle := conn.PrepareReplyTo(server.Token)
 			body, poolBuf := buildGetValueRequest(key, readVersion, lockAware, tenantId, span, replyToken, server.Token)
 
 			delta := tx.db.queueModel.startRequest(server.Address)
@@ -518,7 +527,7 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 	// both arms on timeout/cancel) exactly once, else its QueueModel delta leaks
 	// permanently and biases server selection. RFC-010 #5.
 	for _, o := range result.others {
-		tx.db.queueModel.endRequest(o.addr, o.delta, 0, false)
+		tx.db.endOther(o)
 	}
 
 	// Process result.
@@ -538,6 +547,7 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 	}
 
 	val, penalty, err := parseGetValueReply(result.body)
+	tx.db.noteReadBrokenPromise(err, servers, result.addr, EndpointGetValue)
 	tx.db.queueModel.endRequestFull(result.addr, result.delta, time.Since(result.start), err == nil, isFutureVersionOrProcessBehind(err), penalty)
 	return val, err
 }
@@ -550,7 +560,7 @@ func (tx *Transaction) sendGetValueToServer(ctx context.Context, key []byte, ser
 		tx.db.handleDialError(ctx, server.Address)
 		return nil, err
 	}
-	replyToken, replyCh, replyHandle := conn.PrepareReply()
+	replyToken, replyCh, replyHandle := conn.PrepareReplyTo(server.Token)
 	defer replyHandle.Release()
 	body, poolBuf := buildGetValueRequest(key, readVersion, lockAware, tenantId, childSpanContext(tx.currentSpan()), replyToken, server.Token)
 
@@ -577,6 +587,7 @@ func (tx *Transaction) sendGetValueToServer(ctx context.Context, key []byte, ser
 		return nil, resp.Err
 	}
 	val, penalty, parseErr := parseGetValueReply(resp.Body)
+	tx.db.noteBrokenPromise(parseErr, server.Address, server.Token)
 	tx.db.queueModel.endRequestFull(server.Address, delta, time.Since(start), parseErr == nil, isFutureVersionOrProcessBehind(parseErr), penalty)
 	return val, parseErr
 }
@@ -924,6 +935,10 @@ func sendRangeRPC[T any](tx *Transaction, ctx context.Context, begin, end []byte
 	if byteTarget != ByteLimitUnlimited && byteTarget < replyByteLimit {
 		wireLimitBytes = int32(byteTarget)
 	}
+	servers, ok := tx.db.failMon.liveServers(servers, ops.endpoint)
+	if !ok {
+		return nil, false, tx.db.allAlternativesFailed(ctx)
+	}
 
 	bestIdx, secondIdx := tx.db.queueModel.chooseTopTwo(servers)
 	if !tx.db.hedgeEnabled.Load() {
@@ -945,9 +960,9 @@ func sendRangeRPC[T any](tx *Transaction, ctx context.Context, begin, end []byte
 				tx.db.handleDialError(ctx, server.Address)
 				return inFlightRPC{err: err, addr: server.Address}
 			}
-			replyToken, replyCh, replyHandle := conn.PrepareReply()
-			body, poolBuf := ops.build(begin, end, readVersion, wireLimit, wireLimitBytes, lockAware, tenantId, span, replyToken, server.Token)
 			gkvToken := getAdjustedEndpoint(server.Token, ops.endpoint)
+			replyToken, replyCh, replyHandle := conn.PrepareReplyTo(gkvToken)
+			body, poolBuf := ops.build(begin, end, readVersion, wireLimit, wireLimitBytes, lockAware, tenantId, span, replyToken, server.Token)
 
 			delta := tx.db.queueModel.startRequest(server.Address)
 			start := time.Now()
@@ -984,7 +999,7 @@ func sendRangeRPC[T any](tx *Transaction, ctx context.Context, begin, end []byte
 	// both arms on timeout/cancel) exactly once, else its QueueModel delta leaks
 	// permanently and biases server selection. RFC-010 #5.
 	for _, o := range result.others {
-		tx.db.queueModel.endRequest(o.addr, o.delta, 0, false)
+		tx.db.endOther(o)
 	}
 
 	if result.addr != "" {
@@ -1000,6 +1015,7 @@ func sendRangeRPC[T any](tx *Transaction, ctx context.Context, begin, end []byte
 	}
 
 	kvs, more, penalty, err := ops.parse(result.body)
+	tx.db.noteReadBrokenPromise(err, servers, result.addr, ops.endpoint)
 	tx.db.queueModel.endRequestFull(result.addr, result.delta, time.Since(result.start), err == nil, isFutureVersionOrProcessBehind(err), penalty)
 	return kvs, more, err
 }
@@ -1537,6 +1553,10 @@ func buildWatchValueRequest(key, value []byte, readVersion int64, tenantId int64
 }
 
 func (tx *Transaction) sendWatch(ctx context.Context, key, value []byte, readVersion int64, span types.SpanContext, servers []ServerInfo) error {
+	servers, ok := tx.db.failMon.liveServers(servers, EndpointWatchValue)
+	if !ok {
+		return tx.db.allAlternativesFailed(ctx)
+	}
 	_, chosenIdx := tx.db.queueModel.chooseServer(servers)
 	order := loadBalanceOrder(servers, chosenIdx)
 
@@ -1551,9 +1571,9 @@ func (tx *Transaction) sendWatch(ctx context.Context, key, value []byte, readVer
 			tx.db.handleDialError(ctx, server.Address)
 			continue
 		}
-		replyToken, replyCh, replyHandle := conn.PrepareReply()
-		reqData := buildWatchValueRequest(key, value, readVersion, tenantId, span, replyToken)
 		watchToken := getAdjustedEndpoint(server.Token, EndpointWatchValue)
+		replyToken, replyCh, replyHandle := conn.PrepareReplyTo(watchToken)
+		reqData := buildWatchValueRequest(key, value, readVersion, tenantId, span, replyToken)
 
 		delta := tx.db.queueModel.startRequest(server.Address)
 		start := time.Now()

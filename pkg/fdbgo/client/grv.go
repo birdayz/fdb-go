@@ -1341,6 +1341,10 @@ retry:
 		startIdx := db.proxyRR.nextGRV(len(proxies))
 		for i := 0; i < len(proxies); i++ {
 			proxy := proxies[(startIdx+i)%len(proxies)]
+			// basicLoadBalance skips a permanently failed alternative (LoadBalance.actor.h:790).
+			if db.failMon.endpointFailed(proxy.Address, proxy.Token) {
+				continue
+			}
 			conn, err := db.getOrDial(ctx, proxy.Address)
 			if err != nil {
 				if ended := grvRPCEnded(ctx, db); ended != nil {
@@ -1350,7 +1354,7 @@ retry:
 				continue
 			}
 
-			replyToken, replyCh, replyHandle := conn.PrepareReply()
+			replyToken, replyCh, replyHandle := conn.PrepareReplyTo(proxy.Token)
 			body := buildGetReadVersionRequest(replyToken, flags, txnCount, span, tags)
 
 			if err := sendReadFrame(ctx, conn, proxy.Token, body, replyHandle); err != nil {
@@ -1395,8 +1399,9 @@ retry:
 			// on the next alternative rather than returning them to the transaction.
 			if dispositionForReplyError(perr, false) == replyTryNextAlternative {
 				db.metrics.grvInBandMaybeDelivered.Add(1)
-				// Preserve the healthy connection: another role at this address may
-				// have an in-flight commit whose result would be lost by closing it.
+				db.noteBrokenPromise(perr, proxy.Address, proxy.Token)
+				// Only that endpoint is marked (genericactors.actor.h:397-402); keep the
+				// healthy connection: another role at this address may have an in-flight commit.
 				continue
 			}
 			return v, lk, rkD, rkB, tti, ptd, attemptEpoch, perr

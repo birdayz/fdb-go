@@ -22,7 +22,7 @@ func observePool(t *testing.T) *[]chan Response {
 }
 
 func newTestConn() *Conn {
-	return &Conn{pending: make(map[UID]chan Response)}
+	return &Conn{pending: make(map[UID]pendingEntry)}
 }
 
 // TestReplyHandle_Cancel_WonRace_PoolsChannel: when Cancel runs before readLoop

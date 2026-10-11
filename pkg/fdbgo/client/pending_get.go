@@ -286,7 +286,9 @@ func (p *PendingGet) resolveReply(ctx context.Context, response transport.Respon
 		return value, err
 	}
 	if response.Err != nil {
-		p.tx.db.handleConnError(p.addr)
+		if !isEndpointNotFound(response.Err) {
+			p.tx.db.handleConnError(p.addr)
+		}
 	} else {
 		p.tx.db.locCache.invalidate(p.key, p.tenantID, false)
 	}

@@ -83,7 +83,7 @@ func TestSendPingWithReply_DropsToNilOnFullWriteCh(t *testing.T) {
 		ctx:     ctx,
 		cancel:  cancel,
 		writeCh: make(chan writeReq, 1),
-		pending: make(map[UID]chan Response),
+		pending: make(map[UID]pendingEntry),
 	}
 	c.writeCh <- writeReq{} // saturate the 1-slot writeCh (no writeLoop draining it)
 
@@ -130,12 +130,12 @@ func TestMonitor_DroppedPingRePingsInsteadOfStalling(t *testing.T) {
 		ctx:                 ctx,
 		cancel:              cancel,
 		writeCh:             make(chan writeReq, 1),
-		pending:             make(map[UID]chan Response),
+		pending:             make(map[UID]pendingEntry),
 		monitorLoopInterval: 5 * time.Millisecond,
 		monitorTimeout:      60 * time.Millisecond,
 	}
 	// Pending work so the monitor actually pings (C++ outstandingReplies > 0).
-	c.pending[UID{First: 99}] = make(chan Response, 1)
+	c.pending[UID{First: 99}] = pendingEntry{ch: make(chan Response, 1)}
 	// Occupy the only writeCh slot so every PING attempt drops to nil.
 	c.writeCh <- writeReq{}
 

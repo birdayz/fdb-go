@@ -44,6 +44,9 @@ project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (
   and tags now apply to every statement transaction, autocommit and read-only ones included.
 
 ### Changed
+- The client handles FDB's ENDPOINT_NOT_FOUND reply as libfdb_c does: a request to a role the server no
+  longer hosts fails at once as maybe-delivered instead of waiting for the RPC timeout, without closing
+  the connection, and later reads, GRVs, location lookups and commits skip that endpoint.
 - CI no longer runs `go test` or `go vet`: every test runs through Bazel. The GitHub-hosted
   `hosted-smoke.yml` workflow is retired; its secret scan, Bazel-anchor check and fresh-clone
   `go build ./...` moved into `ci.yml`'s `go install lane` job, and the wire-type oracle runs as

@@ -528,15 +528,19 @@ func (lc *locationCache) queryLocations(db *database, ctx context.Context, tenan
 
 		cycledAll := true
 		for _, proxy := range proxies {
+			locToken := getAdjustedEndpoint(proxy.Token, EndpointGetKeyServerLocations)
+			// basicLoadBalance skips a permanently failed alternative (LoadBalance.actor.h:790).
+			if db.failMon.endpointFailed(proxy.Address, locToken) {
+				continue
+			}
 			conn, err := db.getOrDial(ctx, proxy.Address)
 			if err != nil {
 				db.handleDialError(ctx, proxy.Address)
 				continue
 			}
 
-			replyToken, replyCh, replyHandle := conn.PrepareReply()
+			replyToken, replyCh, replyHandle := conn.PrepareReplyTo(locToken)
 			body := buildRequest(replyToken)
-			locToken := getAdjustedEndpoint(proxy.Token, EndpointGetKeyServerLocations)
 
 			if err := sendReadFrame(ctx, conn, locToken, body, replyHandle); err != nil {
 				replyHandle.Cancel()

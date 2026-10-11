@@ -997,14 +997,20 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 		return nil, nil, fmt.Errorf("no storage servers for key")
 	}
 
+	// Skip replicas whose endpoint is gone; with none left, send anyway and let
+	// the reply's failure route the read through the full path.
+	servers, ok := tx.db.failMon.liveServers(loc.Servers, EndpointGetValue)
+	if !ok {
+		servers = loc.Servers
+	}
 	// Send request without waiting for response.
-	for _, server := range loc.Servers {
+	for _, server := range servers {
 		conn, dialErr := tx.db.getOrDial(ctx, server.Address)
 		if dialErr != nil {
 			tx.db.handleDialError(ctx, server.Address)
 			continue
 		}
-		replyToken, replyCh, replyHandle := conn.PrepareReply()
+		replyToken, replyCh, replyHandle := conn.PrepareReplyTo(server.Token)
 		body, poolBuf := buildGetValueRequest(key, readVersion, tx.lockAware || tx.readLockAware, tx.tenantId, childSpanContext(tx.currentSpan()), replyToken, server.Token)
 		// RFC-114: stamp sentAt BEFORE sending. The frame may be written, and its reply
 		// delivered (stamping resp.RecvAt), before the send returns — RecvAt−sentAt

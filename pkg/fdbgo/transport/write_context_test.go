@@ -132,7 +132,7 @@ func TestWriteContextSocketFailureCompletesQueuedRequest(t *testing.T) {
 	writer := &blockingErrorWriter{reached: make(chan struct{}), release: make(chan struct{})}
 	conn := &Conn{
 		conn: network, wbuf: bufio.NewWriter(writer), writeCh: make(chan writeReq, 2),
-		ctx: connCtx, cancel: connCancel, pending: make(map[UID]chan Response),
+		ctx: connCtx, cancel: connCancel, pending: make(map[UID]pendingEntry),
 	}
 	conn.loopWG.Add(1)
 	loopDone := make(chan struct{})
@@ -190,11 +190,11 @@ func TestWriteContextSocketFailureCompletesQueuedRequest(t *testing.T) {
 func TestReplyHandleKeepReadyOrCancel(t *testing.T) {
 	t.Parallel()
 	for _, ready := range []bool{false, true} {
-		conn := &Conn{pending: make(map[UID]chan Response)}
+		conn := &Conn{pending: make(map[UID]pendingEntry)}
 		token, replies, handle := conn.PrepareReply()
 		if ready {
 			conn.pendingMu.Lock()
-			conn.pending[token] <- Response{Body: []byte("retained")}
+			conn.pending[token].ch <- Response{Body: []byte("retained")}
 			delete(conn.pending, token)
 			conn.pendingMu.Unlock()
 		}
@@ -216,12 +216,12 @@ func TestReplyHandleKeepReadyOrCancel(t *testing.T) {
 func TestReplyHandleTakeReadyOrCancel(t *testing.T) {
 	t.Parallel()
 	for _, ready := range []bool{false, true} {
-		conn := &Conn{pending: make(map[UID]chan Response)}
+		conn := &Conn{pending: make(map[UID]pendingEntry)}
 		token, _, handle := conn.PrepareReply()
 		if ready {
 			// Same publication critical section as the real connection reader.
 			conn.pendingMu.Lock()
-			conn.pending[token] <- Response{Body: []byte("retained")}
+			conn.pending[token].ch <- Response{Body: []byte("retained")}
 			delete(conn.pending, token)
 			conn.pendingMu.Unlock()
 		}

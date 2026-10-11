@@ -3,6 +3,10 @@ package client
 import (
 	"math"
 	"sync"
+	"sync/atomic"
+	"time"
+
+	"fdb.dev/pkg/fdbgo/transport"
 )
 
 // failureMonitor tracks per-endpoint health state. When an endpoint
@@ -23,7 +27,33 @@ type failureMonitor struct {
 	mu        sync.Mutex
 	failed    map[string]*failEntry
 	recovered chan struct{}
+	// epFailed holds endpoints the server reported not found; they never
+	// recover (FailureMonitor.actor.cpp:228-230). Copy-on-write: reads are lock-free.
+	epFailed atomic.Pointer[map[endpointKey]struct{}]
+	// C++ NetworkInfo's all-alternatives-failed clock, in nowSeconds.
+	oldestAltFailure, newestAltFailure, lastAltSkip float64
 }
+
+// allAlternativesFailedDelay knobs (flow/Knobs.cpp:284-290).
+const (
+	altFailureResetTime      = 5.0
+	altFailureMinDelay       = 0.05
+	altFailureDelayRatio     = 0.2
+	altFailureMaxDelay       = 1.0
+	altFailureSlowDelayRatio = 0.04
+	altFailureSlowMaxDelay   = 30.0
+	altFailureSkipDelay      = 1.0
+)
+
+// endpointKey is one request stream at one address, as C++ keys failedEndpoints.
+type endpointKey struct {
+	addr  string
+	token transport.UID
+}
+
+// maxFailedEndpoints is C++'s failedEndpoints cap; past it the set is cleared
+// (FailureMonitor.actor.cpp:131-134).
+const maxFailedEndpoints = 100000
 
 // failEntry is the per-endpoint failure state. Present in `failed` ⇔ isFailed.
 type failEntry struct {
@@ -144,4 +174,90 @@ func (fm *failureMonitor) excludedUntil(addr string) float64 {
 		return e.excludedUntil
 	}
 	return 0
+}
+
+// markEndpointNotFound records that addr no longer has the endpoint token
+// (SimpleFailureMonitor::endpointNotFound, FailureMonitor.actor.cpp:117-139).
+func (fm *failureMonitor) markEndpointNotFound(addr string, token transport.UID) {
+	fm.mu.Lock()
+	defer fm.mu.Unlock()
+	key := endpointKey{addr, token}
+	var next map[endpointKey]struct{}
+	if cur := fm.epFailed.Load(); cur != nil && len(*cur) <= maxFailedEndpoints {
+		if _, ok := (*cur)[key]; ok {
+			return
+		}
+		next = make(map[endpointKey]struct{}, len(*cur)+1)
+		for k := range *cur {
+			next[k] = struct{}{}
+		}
+	} else {
+		next = make(map[endpointKey]struct{})
+	}
+	next[key] = struct{}{}
+	fm.epFailed.Store(&next)
+}
+
+// endpointFailed reports whether the endpoint was reported not found; C++
+// loadBalance skips such an alternative (LoadBalance.actor.h:499) and
+// tryGetReply fails it without sending (fdbrpc.h:800-806).
+func (fm *failureMonitor) endpointFailed(addr string, token transport.UID) bool {
+	if fm == nil {
+		return false
+	}
+	set := fm.epFailed.Load()
+	if set == nil {
+		return false
+	}
+	_, ok := (*set)[endpointKey{addr, token}]
+	return ok
+}
+
+// liveServers drops replicas whose stream endpoint was reported not found.
+// ok is false when none remain: C++ loadBalance then fails with
+// all_alternatives_failed (LoadBalance.actor.h:617-634).
+func (fm *failureMonitor) liveServers(servers []ServerInfo, endpoint int) (live []ServerInfo, ok bool) {
+	if fm == nil {
+		return servers, true
+	}
+	set := fm.epFailed.Load()
+	if set == nil {
+		return servers, true
+	}
+	for i, s := range servers {
+		if _, failed := (*set)[endpointKey{s.Address, getAdjustedEndpoint(s.Token, endpoint)}]; failed {
+			if live == nil {
+				live = append(make([]ServerInfo, 0, len(servers)), servers[:i]...)
+			}
+		} else if live != nil {
+			live = append(live, s)
+		}
+	}
+	if live == nil {
+		return servers, true
+	}
+	return live, len(live) > 0
+}
+
+// allAlternativesFailedDelay is the wait before all_alternatives_failed: the
+// minimum, then growing with the storm's age (LoadBalance.actor.cpp:28-46).
+func (fm *failureMonitor) allAlternativesFailedDelay(now float64) time.Duration {
+	if fm == nil {
+		return time.Duration(altFailureMinDelay * float64(time.Second))
+	}
+	fm.mu.Lock()
+	defer fm.mu.Unlock()
+	if now-fm.newestAltFailure > altFailureResetTime {
+		fm.oldestAltFailure = now
+	}
+	d := altFailureMinDelay
+	if now-fm.lastAltSkip > altFailureSkipDelay {
+		fm.lastAltSkip = now
+	} else {
+		elapsed := now - fm.oldestAltFailure
+		d = math.Max(d, math.Min(elapsed*altFailureDelayRatio, altFailureMaxDelay))
+		d = math.Max(d, math.Min(elapsed*altFailureSlowDelayRatio, altFailureSlowMaxDelay))
+	}
+	fm.newestAltFailure = now
+	return time.Duration(d * float64(time.Second))
 }

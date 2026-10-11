@@ -47,7 +47,7 @@ func directConn(t *testing.T, nc *net.TCPConn) *Conn {
 	t.Cleanup(cancel)
 	return &Conn{
 		conn: nc, ctx: ctx, cancel: cancel, writeCh: make(chan writeReq, 8),
-		pending: make(map[UID]chan Response), raw: newRawWriter(nc), tailKick: make(chan struct{}, 1),
+		pending: make(map[UID]pendingEntry), raw: newRawWriter(nc), tailKick: make(chan struct{}, 1),
 	}
 }
 
