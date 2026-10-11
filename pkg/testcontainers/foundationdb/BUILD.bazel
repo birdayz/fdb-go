@@ -64,6 +64,7 @@ go_test(
         "@com_github_onsi_gomega//:gomega",
         "@com_github_testcontainers_testcontainers_go//:testcontainers-go",
         "@com_github_testcontainers_testcontainers_go//exec",
+        "@com_github_testcontainers_testcontainers_go//wait",
         "@org_golang_google_protobuf//proto",
     ],
 )

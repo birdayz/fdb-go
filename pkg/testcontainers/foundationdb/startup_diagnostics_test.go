@@ -12,6 +12,7 @@ import (
 
 	"github.com/docker/docker/client"
 	"github.com/testcontainers/testcontainers-go"
+	"github.com/testcontainers/testcontainers-go/wait"
 )
 
 func TestStartupLogTailIsBounded(t *testing.T) {
@@ -44,13 +45,13 @@ func TestStartupLogTailIsBounded(t *testing.T) {
 
 func TestCancelledStartupKeepsDiagnosticsAndCleansUp(t *testing.T) {
 	t.Parallel()
-	cli, err := newDockerClient()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	cli, err := testcontainers.NewDockerClientWithOpts(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer cli.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
 	if _, err := cli.Ping(ctx); err != nil {
 		t.Skipf("FDB not available (no Docker): %v", err)
 	}
@@ -82,6 +83,10 @@ func TestCancelledStartupKeepsDiagnosticsAndCleansUp(t *testing.T) {
 				}
 				if code != 0 {
 					return errors.New("could not write startup log marker")
+				}
+				// Exec's pipe write can finish before Docker has ingested the log.
+				if err := wait.ForLog(marker).WaitUntilReady(hookCtx, ctr); err != nil {
+					return err
 				}
 				faultAt = time.Now()
 				cancel()

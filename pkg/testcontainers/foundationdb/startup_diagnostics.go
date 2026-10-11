@@ -51,7 +51,7 @@ func startupDiagnostics(ctr testcontainers.Container) string {
 		stateText = fmt.Sprintf("status=%q exit=%d oom=%t", state.Status, state.ExitCode, state.OOMKilled)
 	}
 	prefix := fmt.Sprintf("container=%s %s", ctr.GetContainerID(), stateText)
-	cli, err := newDockerClient()
+	cli, err := testcontainers.NewDockerClientWithOpts(ctx)
 	if err != nil {
 		return prefix + "; logs unavailable"
 	}
