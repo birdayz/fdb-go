@@ -42,9 +42,9 @@ func (c *writeCompletion) complete(err error) {
 	c.release()
 }
 
-// SendFrameContext is a cancellable read-send. It copies body: after return the
-// caller may recycle its own encoding even if the queued copy has not yet been
-// written. enqueued reports ownership transfer, NOT delivery to the peer.
+// SendFrameContext is a cancellable read-send: a direct write never blocks and a
+// queued copy is abandoned on ctx. After return the caller may recycle body.
+// enqueued reports ownership transfer, NOT delivery to the peer.
 // At-most-once commit dispatch must continue to use SendFrame instead.
 func (c *Conn) SendFrameContext(ctx context.Context, token UID, body []byte) (enqueued bool, err error) {
 	return c.writeContext(ctx, token, body, false)
@@ -53,7 +53,7 @@ func (c *Conn) SendFrameContext(ctx context.Context, token UID, body []byte) (en
 // FlushContext waits for an ordered flush marker without coupling a read's
 // cancellation to the lifetime of the shared connection.
 func (c *Conn) FlushContext(ctx context.Context) error {
-	if !c.hasDirty.Load() {
+	if c.queued.Load() == 0 && c.ctx.Err() == nil {
 		return ctx.Err()
 	}
 	_, err := c.writeContext(ctx, UID{}, nil, true)
@@ -64,12 +64,15 @@ func (c *Conn) writeContext(ctx context.Context, token UID, body []byte, flush b
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
+	if !flush {
+		LogSend(token, body)
+		if direct, err := c.tryWriteDirect(token, body); direct {
+			return true, err
+		}
+	}
 	completion := newWriteCompletion()
 	defer completion.release() // caller reference, including abandonment
 	request := writeReq{token: token, body: bytes.Clone(body), owned: completion}
-	if !flush {
-		LogSend(token, request.body)
-	}
 	enqueued, err := c.enqueueOwned(ctx, request)
 	if !enqueued {
 		completion.release() // ownership never transferred to the writer
@@ -104,11 +107,7 @@ func (c *Conn) SendFrameDeferredContext(ctx context.Context, token UID, body []b
 	}
 	request := writeReq{token: token, body: bytes.Clone(body)}
 	LogSend(token, request.body)
-	enqueued, err := c.enqueueOwned(ctx, request)
-	if enqueued {
-		c.hasDirty.Store(true)
-	}
-	return enqueued, err
+	return c.enqueueOwned(ctx, request)
 }
 
 func (c *Conn) enqueueOwned(ctx context.Context, request writeReq) (bool, error) {
@@ -119,14 +118,13 @@ func (c *Conn) enqueueOwned(ctx context.Context, request writeReq) (bool, error)
 	if c.writeClosed || c.ctx.Err() != nil {
 		return false, errConnClosed
 	}
-	select {
-	case c.writeCh <- request:
+	if c.enqueue(request, ctx.Done()) {
 		return true, nil
-	case <-ctx.Done():
-		return false, ctx.Err()
-	case <-c.ctx.Done():
-		return false, errConnClosed
 	}
+	if err := ctx.Err(); err != nil && c.ctx.Err() == nil {
+		return false, err
+	}
+	return false, errConnClosed
 }
 
 // finishOwnedWrites runs after writer recovery has cancelled the connection,
