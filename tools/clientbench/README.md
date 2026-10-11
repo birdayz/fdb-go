@@ -31,9 +31,9 @@ bazelisk build //tools/clientbench/cmd/clientbench:clientbench_go \
   //tools/clientbench/cmd/clientbench:clientbench_cgo
 campaign=$(mktemp -d "$HOME/clientbench-r3.XXXXXXXX")
 mkdir "$campaign/bin"
-install -m755 bazel-bin/tools/clientbench/cmd/clientbench/clientbench_go_/clientbench_go \
+install -m755 "$(bazelisk cquery --output=files //tools/clientbench/cmd/clientbench:clientbench_go)" \
   "$campaign/bin/clientbench-go"
-install -m755 bazel-bin/tools/clientbench/cmd/clientbench/clientbench_cgo_/clientbench_cgo \
+install -m755 "$(bazelisk cquery --output=files //tools/clientbench/cmd/clientbench:clientbench_cgo)" \
   "$campaign/bin/clientbench-cgo"
 bazelisk shutdown
 ```
@@ -46,8 +46,12 @@ refusal. The fast lane also runs the Go fixture/counter/scheduling tests and
 Python plan/analyzer/process-cleanup tests. These are harness checks, not a
 replacement for candidate-client correctness or full CI validation.
 
-The Go target is `pure = "on"`, the CGo target is `pure = "off"`; their backend
-source files **and dependency graphs** are separate. Each process asserts the
+The Go target is `pure = "on"`, the CGo target is `pure = "off"` with target-local
+`gotags = ["libfdbc"]`; their backend source files **and dependency graphs** are
+separate. Ordinary `go build ./...` selects the Go backend even when cgo is enabled
+and does not require native FDB headers. Opting into the native backend outside
+Bazel requires `CGO_ENABLED=1 go build -tags libfdbc ./tools/clientbench/cmd/clientbench`
+and the FoundationDB headers and shared library. Each process asserts the
 absence/presence of a mapped `libfdb_c`, records its actual library hash and
 native client version, and hashes its own executable. An explicit positive
 `GOMAXPROCS` is required so runtime cleanup-counter per-P accounting cannot change
