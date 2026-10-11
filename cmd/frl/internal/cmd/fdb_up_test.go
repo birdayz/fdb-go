@@ -82,11 +82,12 @@ func TestFdbUpFailureRemovesOnlyOwnedContainer(t *testing.T) {
 		created         bool
 		runErr          bool
 		clusterMismatch bool
+		wantDiagnostics bool
 		wantErr         string
 	}{
 		{name: "name_race", runErr: true},
 		{name: "failed_start", created: true, runErr: true},
-		{name: "canceled_after_creation", created: true},
+		{name: "canceled_after_creation", created: true, wantDiagnostics: true},
 		{name: "name_replaced_after_creation", created: true, clusterMismatch: true},
 		{name: "unresolved_identity", clusterMismatch: true, wantErr: "found 0 containers"},
 	} {
@@ -97,6 +98,7 @@ func TestFdbUpFailureRemovesOnlyOwnedContainer(t *testing.T) {
 			// Another invocation's container holds the name with its own label.
 			labels := map[string]string{otherID: fdbInstanceLabelKey + "=" + strings.Repeat("0", 32)}
 			var removed []string
+			diagnosed := false
 			run := func(cleanupCtx context.Context, args ...string) (string, error) {
 				switch args[0] {
 				case "ps":
@@ -137,6 +139,13 @@ func TestFdbUpFailureRemovesOnlyOwnedContainer(t *testing.T) {
 						return "unexpected cluster file", nil
 					}
 					return "The database is available", nil
+				case "logs":
+					// Diagnostics must read our container while it still exists.
+					if args[len(args)-1] != ownedID || cleanupCtx.Err() != nil || len(removed) > 0 {
+						t.Errorf("diagnostics read %q after cleanup or under cancellation (%v)", args, cleanupCtx.Err())
+					}
+					diagnosed = true
+					return "FDBD joined cluster.", nil
 				case "rm":
 					if cleanupCtx.Err() != nil {
 						t.Errorf("cleanup inherited cancellation: %v", cleanupCtx.Err())
@@ -165,6 +174,9 @@ func TestFdbUpFailureRemovesOnlyOwnedContainer(t *testing.T) {
 			}
 			if !slices.Equal(removed, want) {
 				t.Fatalf("removed containers = %q, want %q", removed, want)
+			}
+			if diagnosed != tc.wantDiagnostics {
+				t.Fatalf("startup diagnostics collected = %v, want %v", diagnosed, tc.wantDiagnostics)
 			}
 		})
 	}
