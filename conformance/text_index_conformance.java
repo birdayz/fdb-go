@@ -9,12 +9,16 @@ import com.apple.foundationdb.record.IndexEntry;
 import com.apple.foundationdb.record.metadata.Index;
 import com.apple.foundationdb.record.metadata.IndexTypes;
 import com.apple.foundationdb.record.metadata.Key;
+import com.apple.foundationdb.record.provider.common.text.DefaultTextTokenizer;
+import com.apple.foundationdb.record.provider.common.text.TextTokenizer;
 import com.apple.foundationdb.record.provider.foundationdb.FDBRecordContext;
 import com.apple.foundationdb.record.provider.foundationdb.FDBRecordStore;
 import com.apple.foundationdb.record.RecordLayerDemo;
 import com.apple.foundationdb.record.RecordLayerDemo.Customer;
 import com.apple.foundationdb.subspace.Subspace;
 import com.apple.foundationdb.tuple.Tuple;
+import com.google.gson.Gson;
+import com.google.gson.reflect.TypeToken;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -124,6 +128,21 @@ class TextIndexSteps extends ConformanceBase {
             }
             map.put("positions", positions);
             result.add(map);
+        }
+        return result;
+    }
+
+    /** Java's default TEXT tokenizer, one token list per input text. */
+    @ConformanceStep("tokenizeDefault")
+    public List<List<String>> tokenizeDefault(String textsJson) {
+        List<String> texts = new Gson().fromJson(textsJson, new TypeToken<List<String>>(){}.getType());
+        List<List<String>> result = new ArrayList<>();
+        for (String text : texts) {
+            List<String> tokens = new ArrayList<>();
+            for (CharSequence token : DefaultTextTokenizer.instance().tokenizeToList(text, 0, TextTokenizer.TokenizerMode.INDEX)) {
+                tokens.add(token.toString());
+            }
+            result.add(tokens);
         }
         return result;
     }

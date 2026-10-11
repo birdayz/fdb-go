@@ -45,6 +45,9 @@ func TestHasLetterOrDigit(t *testing.T) {
 		{"empty string", "", false},
 		{"exclamation only", "!", false},
 		{"letter after punctuation", "!a", true},
+		{"supplementary letter only", "\U00010414", false},
+		{"supplementary digit only", "\U000104a0", false},
+		{"supplementary letter with BMP letter", "\U00010414a", true},
 	}
 	for _, tc := range cases {
 		tc := tc
@@ -369,4 +372,59 @@ func TestTextTokenizerRegistryConcurrency(t *testing.T) {
 	}
 	wg.Wait()
 	// If we reach here without a data race or panic, locking is correct.
+}
+
+// Expected tokens are Java 4.14.2.0 DefaultTextTokenizer's on JDK 21.0.9. Inputs
+// whose word segmentation differs are pinned in the conformance suite instead.
+func TestDefaultTextTokenizerMatchesJava(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		text string
+		want []string
+	}{
+		{"ΟΔΟΣ ΣΟΦΟΣ Σ ΣΑ ΑΣ. ΑΣ'Σ", []string{"οδος", "σοφος", "σ", "σα", "ας", "ασ'ς"}},
+		{"Ὀδυσσεύς", []string{"οδυσσευς"}},
+		{"𐐔𐐯𐑅𐐨𐑉𐐯𐐻 𐐔", nil},
+		{"𠀀𠀁 𠀂", nil},
+		{"𞤀𞤁𞤂", nil},
+		{"한국어 문장입니다", []string{"한국어", "문장입니다"}},
+		{"مرحبا بالعالم", []string{"مرحبا", "بالعالم"}},
+		{"שלום עולם", []string{"שלום", "עולם"}},
+		{"नमस्ते दुनिया", []string{"नमसत", "दनय"}},
+		{"হ্যালো", []string{"হযল"}},
+		{"தமிழ்", []string{"தமழ"}},
+		{"Привет мир ЁЖ", []string{"привет", "мир", "еж"}},
+		{"İstanbul ıi I", []string{"istanbul", "ıi", "i"}},
+		{"Straße STRASSE ß", []string{"straße", "strasse", "ß"}},
+		{"ﬁnance ﬂ ǅ ǆ", []string{"finance", "fl", "dz", "dz"}},
+		{"ＡＢＣ１２３ ｶﾀｶﾅ", []string{"abc123", "カタカナ"}},
+		{"e.g. U.S.A. 3.14 1,000 1.2.3 a.b", []string{"e.g", "u.s.a", "3.14", "1,000", "1.2.3", "a.b"}},
+		{"don't O'Neil l'homme rock'n'roll", []string{"don't", "o'neil", "l'homme", "rock'n'roll"}},
+		{"user@example.com http://x.y/z?a=b", []string{"user", "example.com", "http", "x.y", "z", "a", "b"}},
+		{"😀 👍🏽 👨\u200d👩\u200d👧 🇩🇪 a😀b", []string{"a", "b"}},
+		{"𝐀𝐁𝐂 𝟙𝟚", []string{"abc", "12"}},
+		{"Ⅻ ⅻ ℃", []string{"xii", "xii", "°c"}},
+		{"café naïve coöperate", []string{"cafe", "naive", "cooperate"}},
+		{"עִבְרִית", []string{"עברית"}},
+		{"ǰ ŉ ΐ ﬀ", []string{"j", "ʼn", "ι", "ff"}},
+		{"ꙮ ᏣᎳᎩ ⴀ Ⴀ", []string{"ꙮ", "ꮳꮃꭹ", "ⴀ", "ⴀ"}},
+		{"Α1Σ ΑΣ1 1Σ Σ1 ΑΣΑ ΑΣ\u0301 Α\u0301Σ", []string{"α1ς", "ας1", "1σ", "σ1", "ασα", "ας", "ας"}},
+		{"ΑΣ\u00adΣ Α\u00adΣ \u0345Σ", []string{"ασ\u00adς", "α\u00adς", "σ"}},
+		{"Σ\u0301 ΣΣ ΣΣΣ ὈΣ ἈΣ", []string{"σ", "σς", "σσς", "ος", "ας"}},
+		{"AΣ aΣ ǅΣ ꭜΣ ΑΣ\u200dΣ", []string{"aς", "aς", "dzς", "ꜧς", "ασ\u200dς"}},
+		{"a𐐔 𐐔a 𐒠1 1𐒠 𐒠 𝟙", []string{"a𐐼", "𐐼a", "𐒠1", "1𐒠", "1"}},
+		{"ΘΕΟΣ, ΚΑΙ ΣΥ; ΛΟΓΟΣ!", []string{"θεος", "και", "συ", "λογος"}},
+	}
+	for _, tc := range cases {
+		got, err := DefaultTextTokenizerInstance().TokenizeToList(tc.text, 0, TokenizerModeIndex)
+		if err != nil {
+			t.Fatalf("TokenizeToList(%q): %v", tc.text, err)
+		}
+		if len(got) == 0 {
+			got = nil
+		}
+		if !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("TokenizeToList(%q) = %q, want %q", tc.text, got, tc.want)
+		}
+	}
 }
