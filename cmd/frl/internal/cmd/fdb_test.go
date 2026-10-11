@@ -105,9 +105,9 @@ func TestConfigureNewOutcome(t *testing.T) {
 // The published port must not expose unauthenticated FDB on host LAN interfaces.
 func TestFdbRunArgs_LoopbackPublishNotHostNetwork(t *testing.T) {
 	t.Parallel()
-	args := fdbRunArgs("frl-fdb", "img:tag", 4689)
+	args := fdbRunArgs("frl-fdb", "img:tag", "dev.fdb.frl.instance=abc", 4689)
 	want := []string{
-		"run", "-d", "--name", "frl-fdb", "--network", "bridge",
+		"run", "-d", "--name", "frl-fdb", "--label", "dev.fdb.frl.instance=abc", "--network", "bridge",
 		"--publish", "127.0.0.1:4689:4689",
 		"--env", "FDB_NETWORKING_MODE=host",
 		"--env", "FDB_PORT=4689",
