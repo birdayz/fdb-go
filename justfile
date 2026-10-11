@@ -72,8 +72,8 @@ explain-diff OLD NEW:
 
 # Regenerate gomock mocks for api.* interfaces. Cleans mocks_*.go
 # first so removed interfaces / renamed files don't leave stale
-# mocks behind. Same-package output so tests elsewhere write
-# `api.NewMockSchema(ctrl)` with no extra import.
+# mocks behind. Output goes to the testonly apimock package so
+# production binaries never link gomock.
 generate-mocks:
     find pkg/relational/api -name 'mocks_*.go' -delete
     go generate ./pkg/relational/api/...

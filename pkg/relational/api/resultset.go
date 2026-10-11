@@ -3,7 +3,7 @@
 // Copyright 2021-2024 Apple Inc. and the FoundationDB project authors
 // Licensed under the Apache License, Version 2.0; translated to Go and modified.
 
-//go:generate go run go.uber.org/mock/mockgen -source=$GOFILE -destination=mocks_$GOFILE -package=api
+//go:generate go run go.uber.org/mock/mockgen -source=$GOFILE -destination=apimock/mocks_$GOFILE -package=apimock
 
 package api
 

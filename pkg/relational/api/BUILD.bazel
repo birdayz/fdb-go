@@ -17,9 +17,6 @@ go_library(
         "error.go",
         "keyset.go",
         "metadata.go",
-        "mocks_metadata.go",
-        "mocks_resultset.go",
-        "mocks_transaction.go",
         "option_contracts.go",
         "options.go",
         "parsetree.go",
@@ -35,10 +32,7 @@ go_library(
     ],
     importpath = "fdb.dev/pkg/relational/api",
     visibility = ["//visibility:public"],
-    deps = [
-        "//gen",
-        "@org_uber_go_mock//gomock",
-    ],
+    deps = ["//gen"],
 )
 
 go_test(

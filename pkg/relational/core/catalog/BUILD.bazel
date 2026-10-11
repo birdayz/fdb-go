@@ -73,6 +73,7 @@ go_test(
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",
         "//pkg/relational/api",
+        "//pkg/relational/api/apimock",
         "//pkg/relational/core/keyspace",
         "//pkg/relational/core/metadata",
         "//pkg/relational/core/parser",
