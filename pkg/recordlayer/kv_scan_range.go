@@ -50,9 +50,9 @@ func (b kvScanBounds) keyRange(continuation []byte, reverse bool) (fdb.KeyRange,
 		resume := make([]byte, 0, b.prefixLength+len(inner))
 		resume = append(append(resume, lowBytes[:b.prefixLength]...), inner...)
 		if reverse {
-			highBytes, highEndpoint = resume, EndpointTypeContinuation
+			highBytes, highEndpoint = resume, endpointTypeContinuation
 		} else {
-			lowBytes, lowEndpoint = resume, EndpointTypeContinuation
+			lowBytes, lowEndpoint = resume, endpointTypeContinuation
 		}
 	}
 	return tupleBoundsToRange(lowBytes, highBytes, lowEndpoint, highEndpoint)
@@ -105,7 +105,7 @@ func tupleBoundsToRange(lowBytes, highBytes []byte, lowEndpoint, highEndpoint En
 			return fdb.KeyRange{}, fmt.Errorf("strinc for exclusive low endpoint: %w", err)
 		}
 		lowBytes = inc
-	case EndpointTypeContinuation:
+	case endpointTypeContinuation:
 		// The very next key, including prefix matches.
 		lowBytes = append(lowBytes[:len(lowBytes):len(lowBytes)], 0x00)
 	case EndpointTypePrefixString:
@@ -114,7 +114,7 @@ func tupleBoundsToRange(lowBytes, highBytes []byte, lowEndpoint, highEndpoint En
 		return fdb.KeyRange{}, fmt.Errorf("incorrect low endpoint: %d", lowEndpoint)
 	}
 	switch highEndpoint {
-	case EndpointTypeRangeExclusive, EndpointTypeContinuation:
+	case EndpointTypeRangeExclusive, endpointTypeContinuation:
 	case EndpointTypeTreeEnd, EndpointTypeRangeInclusive:
 		// 0xFF escapes a \x00 inside packed strings/bytes, so such suffixed keys
 		// sort after the high tuple and stay outside a tuple-oriented range.
@@ -144,19 +144,19 @@ func verifyPrefixStringSemantics(lowBytes, highBytes []byte, lowEndpoint, highEn
 		return fmt.Errorf("PREFIX_STRING must specify non-null endpoints")
 	}
 	isPrefixOrCont := func(e EndpointType) bool {
-		return e == EndpointTypePrefixString || e == EndpointTypeContinuation
+		return e == EndpointTypePrefixString || e == endpointTypeContinuation
 	}
 	if !isPrefixOrCont(lowEndpoint) || !isPrefixOrCont(highEndpoint) {
 		return fmt.Errorf("PREFIX_STRING must be specified for both low and high endpoints")
 	}
 	var bound []byte
 	switch {
-	case lowEndpoint == EndpointTypeContinuation:
+	case lowEndpoint == endpointTypeContinuation:
 		if !hasCommonPrefix(lowBytes, highBytes, len(highBytes)-1) {
 			return fmt.Errorf("PREFIX_STRING continuation is not consistent with low endpoint")
 		}
 		bound = highBytes
-	case highEndpoint == EndpointTypeContinuation:
+	case highEndpoint == endpointTypeContinuation:
 		if !hasCommonPrefix(highBytes, lowBytes, len(lowBytes)-1) {
 			return fmt.Errorf("PREFIX_STRING continuation is not consistent with high endpoint")
 		}

@@ -89,7 +89,7 @@ class IndexContinuationRangeSteps extends ConformanceBase {
                 .setSubspace(new Subspace(subspace))
                 .setUserVersionChecker(ALWAYS_READABLE_CHECKER)
                 .createOrOpen();
-            byte[] contBytes = continuation == null || continuation.isEmpty() ? null : Base64.getDecoder().decode(continuation);
+            byte[] contBytes = continuation == null ? null : Base64.getDecoder().decode(continuation);
             ScanProperties props = new ScanProperties(ExecuteProperties.newBuilder().setReturnedRowLimit(limit).build(), reverse);
 
             List<List<Object>> keys = new ArrayList<>();

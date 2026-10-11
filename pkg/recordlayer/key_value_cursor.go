@@ -20,24 +20,11 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// continuationMagicNumber is the magic number Java's KeyValueCursorBase writes into
-// the protobuf-wrapped continuation (SerializationMode.TO_NEW) so the reader can
-// distinguish a wrapped token from a legacy raw-byte token.
+// continuationMagicNumber identifies Java's protobuf-wrapped key-value tokens.
 const continuationMagicNumber int64 = 6_773_487_359_078_157_740
 
-// wrapContinuation produces a protobuf-wrapped continuation token (TO_NEW format),
-// matching Java Record Layer 4.11.1.0: KeyValueCursorBase.Builder defaults
-// SerializationMode to TO_NEW and no production path selects TO_OLD, so Java emits
-// KeyValueCursorContinuation{inner_continuation, magic_number} — never raw bytes.
-// Go previously emitted raw bytes, a wire divergence (a Go-written continuation read
-// back by Java, or compared against Java's, would not round-trip identically).
-//
-// innerBytes is the FDB key suffix relative to the scan subspace and is always a
-// real (non-end) position — the end-of-scan case uses EndContinuation, never this.
-// An empty-but-present suffix still yields a proto carrying the magic number, which
-// is wire-distinguishable from an end/start token (nil), matching Java and avoiding
-// the old raw format's ambiguity where an empty suffix produced an empty, end-looking
-// token. The dual-read unwrapContinuation still accepts legacy raw tokens.
+// wrapContinuation matches Java's TO_NEW format: a suffix relative to the range's
+// common prefix. An empty-but-present suffix is a real position, distinct from nil.
 func wrapContinuation(innerBytes []byte) ([]byte, error) {
 	// A nil suffix is an end position; Java returns the end marker, not a wrapped
 	// token. The cursor already represents end via EndContinuation, so this is
@@ -73,28 +60,17 @@ func (c *keyValueContinuation) IsEnd() bool {
 	return c.suffix == nil
 }
 
-// unwrapContinuation extracts the inner continuation bytes from a
-// potentially protobuf-wrapped continuation token. Handles both:
-// - New format: protobuf-wrapped with magic number
-// - Old format: raw bytes (returned as-is for backward compatibility)
-// Matches Java's KeyValueCursorBase.Continuation.getInnerContinuation()
+// unwrapContinuation matches Java's getInnerContinuation: only a successfully
+// decoded proto carrying the magic number is unwrapped; other bytes stay intact.
 func unwrapContinuation(rawBytes []byte) []byte {
 	if rawBytes == nil {
 		return nil
 	}
 	msg := &gen.KeyValueCursorContinuation{}
 	if err := UnmarshalVTAsJava(msg, rawBytes); err != nil {
-		// Parse failed — treat as old-format raw bytes. This restart-free
-		// tolerance is Java-verified, NOT the swallow-and-restart bug class:
-		// KeyValueCursorBase.Continuation.getInnerContinuation
-		// (KeyValueCursorBase.java:218-223) deliberately returns rawBytes on
-		// InvalidProtocolBufferException so TO_OLD-serialized tokens keep
-		// working across the TO_NEW migration.
 		return rawBytes
 	}
 	if msg.MagicNumber == nil || *msg.MagicNumber != continuationMagicNumber {
-		// Magic number doesn't match — treat as old-format raw bytes
-		// (KeyValueCursorBase.java:212-216, same deliberate tolerance).
 		return rawBytes
 	}
 	return msg.InnerContinuation

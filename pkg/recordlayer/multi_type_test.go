@@ -406,6 +406,49 @@ var _ = Describe("MultiTypeRecords", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 
+		DescribeTable("distinguishes nil and empty continuations",
+			func(prefix, reverse bool) {
+				md := metaData
+				if prefix {
+					md = rtMetaData
+				}
+				ks := specSubspace()
+				_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+					store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+					if err != nil {
+						return nil, err
+					}
+					for i := int64(1); i <= 3; i++ {
+						if _, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i)}); err != nil {
+							return nil, err
+						}
+					}
+					props := ForwardScan()
+					props.Reverse = reverse
+					rows, err := AsList(ctx, store.ScanRecordsByType("Order", nil, props))
+					Expect(err).NotTo(HaveOccurred())
+					Expect(rows).To(HaveLen(3))
+					wrapped, err := wrapContinuation([]byte{})
+					Expect(err).NotTo(HaveOccurred())
+					for _, cont := range [][]byte{{}, wrapped} {
+						rows, err = AsList(ctx, store.ScanRecordsByType("Order", cont, props))
+						Expect(err).NotTo(HaveOccurred())
+						if reverse {
+							Expect(rows).To(BeEmpty(), "empty continuation resumes before the range prefix")
+						} else {
+							Expect(rows).To(HaveLen(3))
+						}
+					}
+					return nil, nil
+				})
+				Expect(err).NotTo(HaveOccurred())
+			},
+			Entry("prefix scan forward", true, false),
+			Entry("prefix scan reverse", true, true),
+			Entry("filtered scan forward", false, false),
+			Entry("filtered scan reverse", false, true),
+		)
+
 		It("falls back for non-RecordTypeKey PK", func() {
 			// The original metaData (without RecordTypeKey) should still work via filter
 			ks := specSubspace()

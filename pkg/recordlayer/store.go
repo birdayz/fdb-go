@@ -1685,9 +1685,6 @@ func (store *FDBRecordStore) ScanRecordsByType(recordTypeName string, continuati
 		// Use GetRecordTypeKey() to respect explicit keys from SetRecordTypeKey().
 		// Matches Java's RecordType.getRecordTypeKey().
 		rtk := recordType.GetRecordTypeKey()
-		if len(continuation) == 0 {
-			continuation = nil
-		}
 		return store.ScanRecordsInRange(
 			tuple.Tuple{rtk}, tuple.Tuple{rtk},
 			EndpointTypeRangeInclusive, EndpointTypeRangeInclusive,

@@ -16,8 +16,8 @@ const (
 	EndpointTypeRangeInclusive
 	// EndpointTypeRangeExclusive excludes the endpoint from the range
 	EndpointTypeRangeExclusive
-	// EndpointTypeContinuation indicates continuation from a previous scan
-	EndpointTypeContinuation
+	// Continuations are applied internally after the original range determines the prefix.
+	endpointTypeContinuation
 	// EndpointTypePrefixString for prefix-string-based ranges.
 	// When used, the tuple is packed and the trailing null byte (string
 	// terminator in FDB tuple encoding) is stripped.  For the low

@@ -211,6 +211,16 @@ var _ = Describe("Narrowed-range continuation conformance", func() {
 		return p
 	}
 
+	It("preserves an empty non-nil continuation in a reverse record scan", func() {
+		for _, scan := range []func(string, string, string, bool, int, []byte) page{scanJava, scanGo} {
+			Expect(scan("", "", "pkPrefixAb", true, 0, nil).keys).To(HaveLen(5))
+			p := scan("", "", "pkPrefixAb", true, 0, []byte{})
+			Expect(p.keys).To(BeEmpty())
+			Expect(p.cont).To(BeNil())
+			Expect(p.exhausted).To(BeTrue())
+		}
+	})
+
 	DescribeTable("both engines agree page by page, each resuming the other's token",
 		func(indexName, scanType, rng string, wantRows, pageSize int) {
 			for _, reverse := range []bool{false, true} {

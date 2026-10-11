@@ -45,6 +45,7 @@ project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (
   and tags now apply to every statement transaction, autocommit and read-only ones included.
 
 ### Changed
+- `EndpointTypeContinuation` is internal; scan callers supply the original range endpoints and pass the continuation separately.
 - The client handles FDB's ENDPOINT_NOT_FOUND reply as libfdb_c does: a request to a role the server no
   longer hosts fails at once as maybe-delivered instead of waiting for the RPC timeout, without closing
   the connection, and later reads, GRVs, location lookups and commits skip that endpoint.
@@ -252,6 +253,7 @@ project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (
 - Record scans with an inclusive high bound end at `pack(high)+\xFF`, as Java's `TupleRange.toRange`, not at `strinc(pack(high))`.
 - Key-value cursors reject invalid endpoint pairs (e.g. a TREE_END low, mismatched PREFIX_STRING bounds) with an error, as Java's `TupleRange.toRange` does, instead of scanning the whole subspace.
 - Record and COUNT/atomic cursors implement PREFIX_STRING ranges.
+- Reverse `ScanRecordsByType` scans preserve empty non-nil continuations as positions before the range prefix, returning no rows as Java does.
 - Key-value cursor continuations on narrowed ranges are byte-identical to Java's, and resuming a Java token stays inside the range. Previously Go resuming a Java token could return rows outside the range, and Java resuming a Go token rebuilt a key with the shared prefix doubled. `TupleRange.Prepend` turns an open bound into the inclusive prefix as Java does, and atomic aggregate indexes (COUNT, SUM, ...) accept `BY_GROUP` scans.
 
 ## [v0.1.0] - 2026-08-26

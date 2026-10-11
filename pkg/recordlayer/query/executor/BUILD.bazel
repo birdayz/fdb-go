@@ -332,6 +332,7 @@ go_test(
         "fetch_pipeline_test.go",
         "aggregate_constant_pool_test.go",
         "continuation_registry_shadow_test.go",
+        "scan_prefix_string_resume_integration_test.go",
     ],
     tags = ["resources:memory:400"],
     deps = [
