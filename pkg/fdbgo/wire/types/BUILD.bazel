@@ -70,6 +70,7 @@ go_test(
         "ground_truth_test.go",
         "inline_error_test.go",
         "key_value_vector_test.go",
+        "keyrange_equals_key_after_test.go",
         "keyrangeref_test.go",
         "locations_marshal_test.go",
         "mappedkeyvalues_ground_truth_test.go",
