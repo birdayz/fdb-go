@@ -125,7 +125,7 @@ func TestIndexCursorLazyContinuationBytes(t *testing.T) {
 					break
 				}
 				key := tc.kvs[row].Key
-				suffix := []byte(key[c.prefixLength:])
+				suffix := []byte(key[c.prefixLength:]) // Java's slice, computed independently of keySuffix
 				eager, err := wrapContinuation(suffix)
 				if err != nil {
 					t.Fatal(err)
@@ -276,5 +276,24 @@ func TestKeyContinuationEmptySuffixMatchesJava(t *testing.T) {
 	}
 	if (&keyValueContinuation{suffix: key[pl:]}).IsEnd() {
 		t.Error("an empty suffix is a real position, not the end")
+	}
+}
+
+func TestKeySuffix(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		key  []byte
+		pl   int
+		want []byte
+	}{
+		{[]byte{1, 2, 3}, 1, []byte{2, 3}},
+		{[]byte{1, 2}, 2, []byte{}}, // equal to the prefix: empty, not nil
+		{[]byte{1}, 2, []byte{1}},   // shorter: kept whole
+		{nil, 0, nil},
+	} {
+		got := keySuffix(tc.key, tc.pl)
+		if !bytes.Equal(got, tc.want) || (got == nil) != (tc.want == nil) {
+			t.Errorf("keySuffix(%x, %d) = %x (nil=%v), want %x (nil=%v)", tc.key, tc.pl, got, got == nil, tc.want, tc.want == nil)
+		}
 	}
 }

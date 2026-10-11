@@ -58,6 +58,15 @@ func wrapContinuation(innerBytes []byte) ([]byte, error) {
 	return out, nil
 }
 
+// keySuffix is Java's lastKey[prefixLength:] (KeyValueCursorBase.java:233-235): a key
+// equal to the prefix is an empty but present suffix. A shorter key is kept whole.
+func keySuffix(key []byte, prefixLength int) []byte {
+	if len(key) >= prefixLength {
+		return key[prefixLength:]
+	}
+	return key
+}
+
 // keyValueContinuation defers the proto marshal to ToBytes: most rows' continuations
 // are never serialized (Java's KeyValueCursorBase.Continuation.toBytes is lazy too).
 type keyValueContinuation struct {
@@ -278,16 +287,9 @@ func (c *keyValueCursor) OnNext(ctx context.Context) (RecordCursorResult[*FDBSto
 	// For unsplit records, this is the key at suffix 0.
 	// For split records, this is the last chunk's key (e.g., suffix 3).
 	// This ensures resuming starts after the complete record.
-	var keySuffix []byte
-	if len(lastKey) >= c.prefixLength {
-		keySuffix = lastKey[c.prefixLength:]
-	} else {
-		keySuffix = lastKey
-	}
-
-	continuationBytes, err := wrapContinuation(keySuffix)
+	continuationBytes, err := c.makeKeyContinuation(lastKey)
 	if err != nil {
-		return RecordCursorResult[*FDBStoredRecord[proto.Message]]{}, fmt.Errorf("failed to wrap continuation: %w", err)
+		return RecordCursorResult[*FDBStoredRecord[proto.Message]]{}, err
 	}
 	c.continuation = continuationBytes
 
@@ -771,13 +773,7 @@ func (c *keyValueCursor) nextKV() (fdb.KeyValue, bool, error) {
 
 // makeKeyContinuation creates a proto-wrapped continuation from an FDB key.
 func (c *keyValueCursor) makeKeyContinuation(key fdb.Key) ([]byte, error) {
-	var keySuffix []byte
-	if len(key) >= c.prefixLength {
-		keySuffix = key[c.prefixLength:]
-	} else {
-		keySuffix = key
-	}
-	cont, err := wrapContinuation(keySuffix)
+	cont, err := wrapContinuation(keySuffix(key, c.prefixLength))
 	if err != nil {
 		return nil, fmt.Errorf("failed to wrap continuation: %w", err)
 	}

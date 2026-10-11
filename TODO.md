@@ -1509,6 +1509,10 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   allocation (GC is ~39% of planner CPU); split 2, vector indexes out of
   `pkg/recordlayer` behind a maintainer registry (58 -> ~38 test targets per
   vector change); a Bazel cache shared by both CI runners.
+- [ ] Port Java's `calculatePrefixLength` (KeyValueCursorBase.java:425-432) and its resume
+  (`:322-333`) to the index, count, bitmap, record-key and store key-value cursors; Go's
+  subspace-length prefix diverges on narrowed ranges (DIVERGENCES.md "Key-value
+  continuation prefix length"). Also fix the COMPATIBLE claim in wire_compat_audit.md §3.2.
 
 ## Test lanes and test-speed work (committed with the temporal change)
 

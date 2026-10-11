@@ -183,6 +183,43 @@ var _ = Describe("CountIndex", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	// The ungrouped row sits exactly at the index prefix; its continuation must be the
+	// empty suffix, or a reverse resume ends at prefix+prefix and returns the row again.
+	It("does not repeat the ungrouped row when a reverse scan resumes after it", func() {
+		ks := specSubspace()
+		countIdx := NewCountIndex("total_count", Ungrouped(EmptyKey()))
+		builder := baseMetaData()
+		builder.AddUniversalIndex(countIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+			for i := int64(1); i <= 3; i++ {
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(100)})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			props := ReverseScan()
+			props.ExecuteProperties = props.ExecuteProperties.WithScannedRecordsLimit(1)
+			first, cont, err := AsListWithContinuation(ctx, store.ScanIndex(countIdx, TupleRangeAll, nil, props))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(first).To(HaveLen(1))
+			Expect(first[0].Value).To(Equal(tuple.Tuple{int64(3)}))
+			Expect(cont).NotTo(BeNil(), "the scan limit stops after the row, so there is a continuation")
+
+			props = ReverseScan()
+			props.ExecuteProperties = props.ExecuteProperties.WithScannedRecordsLimit(1)
+			rest, _, err := AsListWithContinuation(ctx, store.ScanIndex(countIdx, TupleRangeAll, cont, props))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(rest).To(BeEmpty(), "resuming after the only row must not return it again")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	It("scans specific grouping key with TupleRangeAllOf", func() {
 		ks := specSubspace()
 
