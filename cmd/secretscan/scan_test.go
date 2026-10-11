@@ -57,6 +57,7 @@ func TestNameRules(t *testing.T) {
 		"certs/server.pem":               "key or certificate store",
 		"certs/server.key":               "key or certificate store",
 		"certs/client.p12":               "key or certificate store",
+		"certs/keys.jceks":               "key or certificate store",
 		".env":                           "credentials file",
 		"deploy/.env.production":         "credentials file",
 		".netrc":                         "credentials file",

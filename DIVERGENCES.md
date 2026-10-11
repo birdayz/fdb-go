@@ -3915,17 +3915,21 @@ what Go writes, and in both a Java reader reads what Go writes:
   and a seeded key manager random gives both engines the same IVs. A key the key manager
   reports as another algorithm is refused as Java's AES cipher refuses it ("Wrong algorithm: AES
   or Rijndael required"; measured against the JVM for an HmacSHA256 key).
-- **A key store must be PKCS12**, the JDK's default type and what `keytool` writes. A JCEKS file is
-  refused as "Key store loading failed", its cause naming the conversion (`keytool -importkeystore
-  -deststoretype PKCS12`, `pkg/recordlayer/keystore_key_manager.go:385`). A JKS file cannot hold a
-  secret key, so neither engine serves a key from one: Go refuses it at load, Java when a key is
-  read. Within PKCS12, Go reads the protections the JDK writes (`pbeDecrypt`,
-  `keystore_key_manager.go:508`): PBES2 (PBKDF2 with an HMAC-SHA PRF, AES-128/192/256-CBC), the
-  JDK 12+ default, and the older pbeWithSHAAnd3-KeyTripleDES-CBC, under a MAC over SHA-1, SHA-224,
-  SHA-256, SHA-384 or SHA-512. As in the JDK, a key's password and the store's password must be
-  printable ASCII ("Password is not ASCII", `checkPBEPassword`, `keystore_key_manager.go:242-252`).
-  The JDK derives the key-entry and the MAC keys through a `PBEKey`, and was measured refusing to
-  store either.
+- **A key store is PKCS12 or JCEKS**, the types `KeyStore.getInstance(File, password)` detects
+  that hold a secret key. A JKS file cannot hold one, so neither engine serves a key from it: Go
+  refuses it at load, Java when a key is read. Within PKCS12, Go reads the protections the JDK
+  writes (`pbeDecrypt`, `keystore_key_manager.go:530`): PBES2 (PBKDF2 with an HMAC-SHA PRF,
+  AES-128/192/256-CBC), the JDK 12+ default, and the older pbeWithSHAAnd3-KeyTripleDES-CBC, under a
+  MAC over SHA-1, SHA-224, SHA-256, SHA-384 or SHA-512. As in the JDK, a key's password and the
+  store's password must be printable ASCII ("Password is not ASCII", `checkPBEPassword`,
+  `keystore_key_manager.go:245-255`). The JDK derives the key-entry and the MAC keys through a
+  `PBEKey`, and was measured refusing to store either. A JCEKS store is read as SunJCE's
+  `JceKeyStore` reads it (`pkg/recordlayer/jceks.go`, ported from pyjks): its SHA-1 digest keyed by
+  the store password (any characters), and each secret key a serialized SealedObject sealed with
+  PBEWithMD5AndTripleDES under the key password (printable ASCII, the empty one admitted), around a
+  SecretKeySpec or a KeyRep. A wrong store password is Java's "Keystore was tampered with, or
+  password was incorrect"; a key that does not unseal, or a private-key or certificate entry, is
+  "cannot load key". Measured on JDK 21 and pinned by `jceks_test.go` and the JVM spec.
 - **Compressed bytes are Go's deflate, not the JDK's zlib.** Both write a zlib stream (Java's
   `Deflater.finish()` then `FULL_FLUSH`, `TransformedRecordSerializer.java:133-134`; Go's
   `compress/zlib`, `transformed_record_serializer.go:444-480`). Each engine inflates the other's,
@@ -3961,9 +3965,9 @@ Pinned by `pkg/recordlayer/transformed_record_serializer_test.go`,
 and the JVM spec "RFC-257 TransformedRecordSerializer records are read and written as Java's"
 (`conformance/transformed_serializer_conformance_test.go:34`): the no-serializer read of each
 transformation and the "cannot decrypt" arm, Go reading each kind of key store the JDK writes
-(PBES2, the empty password, a separate key password, the pre-12 3DES/HmacPBESHA1 protection) and
-refusing the JCEKS one, the JDK refusing a non-ASCII store password, and both engines refusing an
-HmacSHA256 key.
+(PBES2, the empty password, a separate key password, the pre-12 3DES/HmacPBESHA1 protection, and
+JCEKS under the same passwords) and the round trip through a PKCS12 and a JCEKS store, the JDK
+refusing a non-ASCII store password, and both engines refusing an HmacSHA256 key.
 
 ## Assignment and arithmetic where the target crashes, and where Go's types run out (RFC-257 WS-J)
 

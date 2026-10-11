@@ -16,7 +16,7 @@ import (
 // 12+ layout: no key store file may be committed (cmd/secretscan). What they
 // pin is the key manager's logic. Reading the bytes the JDK itself writes
 // (PBES2, the empty password, a separate entry password, legacy 3DES under an
-// HmacPBESHA1 MAC, the JCEKS refusal, the non-ASCII refusal) is pinned against
+// HmacPBESHA1 MAC, JCEKS stores, the non-ASCII refusal) is pinned against
 // the JVM by the conformance spec "TransformedRecordSerializer records are
 // read and written as Java's". Each store holds "k1" (16 bytes 0x01..0x10) and
 // "Mixed-Case" (32 bytes 0x20..0x3f), stored under the alias "mixed-case".
@@ -300,8 +300,8 @@ func TestKeyStoreKeyManager_BuildRefusals(t *testing.T) {
 	if err := os.WriteFile(garbage, []byte("not a key store"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// A JCEKS file starts with the magic 0xCECECECE (the JVM spec refuses a
-	// whole one the JDK writes).
+	// A JCEKS file, by its magic 0xCECECECE, cut short (jceks_test.go reads
+	// whole ones).
 	jceks := filepath.Join(dir, "store.jceks")
 	if err := os.WriteFile(jceks, []byte{0xce, 0xce, 0xce, 0xce, 0, 0, 0, 2}, 0o600); err != nil {
 		t.Fatal(err)
@@ -324,7 +324,7 @@ func TestKeyStoreKeyManager_BuildRefusals(t *testing.T) {
 		{"not a key store", NewKeyStoreSerializationKeyManagerBuilder().SetKeyStoreFileName(garbage).
 			SetDefaultKeyEntryAlias("k1"), "Key store loading failed", "not a PKCS12 key store"},
 		{"JCEKS", NewKeyStoreSerializationKeyManagerBuilder().SetKeyStoreFileName(jceks).
-			SetKeyStorePassword("storepass").SetDefaultKeyEntryAlias("k1"), "Key store loading failed", "JCEKS"},
+			SetKeyStorePassword("storepass").SetDefaultKeyEntryAlias("k1"), "Key store loading failed", "Invalid keystore format"},
 		{
 			"no aliases", NewKeyStoreSerializationKeyManagerBuilder().SetKeyStoreFileName(store).SetKeyStorePassword("storepass"),
 			"must specify key alias list or single default alias", "",
