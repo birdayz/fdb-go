@@ -133,6 +133,42 @@ func TestReapLeakedContainersScript(t *testing.T) {
 func TestMergeCurrentMasterScript(t *testing.T) {
 	t.Parallel()
 	runShellSuite(t, "merge_current_master_test.sh")
+	for _, variable := range []string{"XDG_CONFIG_HOME", "GIT_CONFIG_GLOBAL"} {
+		t.Run(variable, func(t *testing.T) {
+			t.Parallel()
+			caller := t.TempDir()
+			config := filepath.Join(caller, "git", "config")
+			if err := os.MkdirAll(filepath.Dir(config), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			const original = "[maintenance]\n\tauto = true\n"
+			if err := os.WriteFile(config, []byte(original), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command("bash", "merge_current_master_test.sh")
+			for _, entry := range os.Environ() {
+				if !strings.HasPrefix(entry, "GIT_CONFIG_GLOBAL=") && !strings.HasPrefix(entry, "XDG_CONFIG_HOME=") {
+					cmd.Env = append(cmd.Env, entry)
+				}
+			}
+			value := caller
+			if variable == "GIT_CONFIG_GLOBAL" {
+				value = config
+			}
+			cmd.Env = append(cmd.Env, variable+"="+value)
+			out, err := cmd.CombinedOutput()
+			if err != nil || !strings.Contains(string(out), "ALL OK") {
+				t.Fatalf("merge fixture failed: %v\n%s", err, out)
+			}
+			got, err := os.ReadFile(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != original {
+				t.Fatalf("fixture changed caller's %s configuration: %q", variable, got)
+			}
+		})
+	}
 }
 
 // TestWireOracleScopeScript drives the PR scope decision for the wire-type oracle job:
