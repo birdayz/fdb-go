@@ -105,18 +105,18 @@ func (input *commitInput) commitNative(ctx context.Context) (result commitOutcom
 		marshalBufPool.Put(poolBuf)
 		return result, err
 	}
-	if err := conn.SendFrame(proxy.Token, body); err != nil {
-		// Do NOT return poolBuf to the pool on a SendFrame error: the frame may have been enqueued
-		// just before the connection ctx was cancelled (SendFrame's post-enqueue ctx.Done path,
-		// conn.go:454), leaving writeLoop still reading `body` inside WriteFrame. Reusing the pooled
-		// buffer now would race that read. Drop it — GC reclaims it once writeLoop lets go.
-		// (The success-path Put below is safe: WriteFrame copied body before errCh fired.)
+	// Native owner drop cancels only this wait; queued bytes own their storage
+	// independently and may still reach the server after the actor is gone.
+	_, sendErr := conn.SendFrameContext(ctx, proxy.Token, body)
+	marshalBufPool.Put(poolBuf)
+	if sendErr != nil {
 		replyHandle.Cancel()
+		if ctx.Err() != nil {
+			return result, ctx.Err()
+		}
 		input.db.handleConnError(proxy.Address)
 		return result, input.unknownResult(ctx)
 	}
-	// body is copied into WriteFrame's own buffer — safe to return to pool.
-	marshalBufPool.Put(poolBuf)
 
 	// Wait for reply or proxy-change (commit_unknown_result either way).
 	resp, err := waitReplyOrProxiesChanged(replyCh, ctx, proxiesChanged)

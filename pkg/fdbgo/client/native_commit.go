@@ -49,7 +49,7 @@ func (n *nativeCommit) deliver() {
 func (n *nativeCommit) stop() { n.cancel() }
 
 // Start under the execution lease, before Reset can retire this admission.
-func (tx *Transaction) startNativeCommit(caller context.Context, inc *readIncarnation, completion *versionstampCompletion, input *commitInput, started time.Time, tok cacheToken) (*nativeCommit, error) {
+func (tx *Transaction) startNativeCommit(caller context.Context, inc *readIncarnation, completion *versionstampCompletion, input *commitInput, tok cacheToken) (*nativeCommit, error) {
 	tx.readErrMu.Lock()
 	defer tx.readErrMu.Unlock()
 	if inc.cause != nil {
@@ -70,7 +70,7 @@ func (tx *Transaction) startNativeCommit(caller context.Context, inc *readIncarn
 	inc.nativeCommits[n] = struct{}{}
 	n.cleanup = runtime.AddCleanup(tx, (*nativeCommit).stop, n)
 	input.versionstamp = nil // the worker must not root completion.tx
-	go n.run(caller, input, started, tok)
+	go n.run(caller, input, tok)
 	return n, nil
 }
 
@@ -87,7 +87,10 @@ func (n *nativeCommit) call(caller context.Context, input *commitInput) (result 
 		if n.ctx.Err() != nil {
 			cancel()
 		}
-		err = input.readState.ensureReadVersionFlags(ctx, grvFlagCausalReadRisky)
+		input.readVersion, err = input.readState.readVersionForOperation(ctx, grvFlagCausalReadRisky)
+		if err == nil {
+			err = ctx.Err()
+		}
 		stop()
 		cancel()
 		if err != nil {
@@ -95,16 +98,16 @@ func (n *nativeCommit) call(caller context.Context, input *commitInput) (result 
 			return result, err, nil
 		}
 		input.readState.readVersionMu.Lock()
-		input.readVersion = input.readState.readVersion
 		input.metricStart = input.readState.metricStart
 		input.readState.readVersionMu.Unlock()
 		input.readState = nil
 	}
+	input.commitStarted = time.Now()
 	result, err = input.commitNative(n.ctx)
 	return result, err, nil
 }
 
-func (n *nativeCommit) run(caller context.Context, input *commitInput, started time.Time, tok cacheToken) {
+func (n *nativeCommit) run(caller context.Context, input *commitInput, tok cacheToken) {
 	defer input.db.wg.Done()
 	defer close(n.finished)
 	defer n.cleanup.Stop()
@@ -131,7 +134,7 @@ func (n *nativeCommit) run(caller context.Context, input *commitInput, started t
 		n.selectResult(err, true, panicked)
 	}
 	if err == nil && panicked == nil {
-		input.publishSuccess(started, tok, result)
+		input.publishSuccess(input.commitStarted, tok, result)
 		if completion != nil {
 			completion.tx.publishCommit(completion.inc, nil, result)
 		}

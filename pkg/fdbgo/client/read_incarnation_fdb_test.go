@@ -274,17 +274,11 @@ func TestReadIncarnation_GRVHeldCancellationAndResetIsolation(t *testing.T) {
 				oldDone <- err
 			}()
 			waitReadParked(t, ctx, parked, "GRV")
-			held := false
-			for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
-				if !tx.readVersionMu.TryLock() {
-					held = true
-					break
-				}
-				tx.readVersionMu.Unlock()
-				time.Sleep(time.Millisecond)
-			}
-			if !held {
-				t.Fatal("read did not hold readVersionMu across its uncached GRV")
+			tx.readVersionMu.Lock()
+			pending := tx.pendingReadVersion != nil
+			tx.readVersionMu.Unlock()
+			if !pending {
+				t.Fatal("read has no pending uncached GRV")
 			}
 
 			switch action {

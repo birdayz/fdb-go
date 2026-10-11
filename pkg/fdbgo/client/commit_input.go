@@ -24,6 +24,7 @@ type commitInput struct {
 	span           types.SpanContext
 	tags           []string
 	metricStart    time.Time
+	commitStarted  time.Time
 	versionstamp   *versionstampCompletion
 }
 

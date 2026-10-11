@@ -758,65 +758,10 @@ func (tx *Transaction) readVersionForOperation(parentCtx context.Context, extraF
 	if tx.beforeReadVersionLock != nil {
 		tx.beforeReadVersionLock()
 	}
-	tx.readVersionMu.Lock()
-	// Entry validation precedes this lock. Reset can retire the operation
-	// while it waits; never acquire the replacement's cached read version.
-	if err := tx.readEntryError(ctx); err != nil {
-		tx.readVersionMu.Unlock()
+	rv, userSet, err := tx.cachedOrFetchReadVersion(ctx, extraFlags)
+	if err != nil {
 		return 0, err
 	}
-	if tx.metricStart.IsZero() {
-		// RFC-114 total-latency anchor: stamp at this transaction's FIRST GRV (the
-		// first read, or the commit-path GRV for a write-only txn) — ≈ C++
-		// trState->startTime, set at getReadVersion. Cleared on commit-reuse
-		// (postCommitReset), NOT on OnError, so it spans retries but excludes the
-		// idle gap before a reused handle's next transaction begins.
-		tx.metricStart = time.Now()
-		// RFC-115 §4 Layer 2: start the "Transaction" otel span at the same first-GRV
-		// anchor (single-entry, under readVersionMu). No-op unless sampled + a real tracer.
-		tx.ensureTxSpan()
-	}
-	if !tx.hasReadVersion {
-		flags := tx.grvFlags() | extraFlags
-		rv, locked, rvAt, err := tx.db.grvBatchers[grvBatcherIndex(flags)].getReadVersion(tx.db, ctx, flags, tx.currentSpan(), tx.tags, tx.useGrvCache, tx.skipGrvCache)
-		if err != nil {
-			tx.readVersionMu.Unlock()
-			return 0, tx.mapReadError(ctx, err)
-		}
-		// Database-lock enforcement — the C++ extractReadVersion analog
-		// (NativeAPI.actor.cpp:7425-7426): a locked database refuses reads
-		// from transactions that are not lock-aware. Both LOCK_AWARE and
-		// READ_LOCK_AWARE set C++'s options.lockAware (:7077-7091). Checked
-		// BEFORE the version is adopted, like C++'s throw. database_locked
-		// (1038) is OnError-retryable, so a Run loop retries (refetching a
-		// GRV) until the lock is released or the budget ends — same as C++.
-		if locked && !(tx.lockAware || tx.readLockAware) {
-			tx.readVersionMu.Unlock()
-			return 0, &wire.FDBError{Code: ErrDatabaseLocked}
-		}
-		tx.readVersion = rv
-		tx.hasReadVersion = true
-		// Stamp the MVCC-window anchor at every GRV, not only the first: OnError
-		// clears it and the retry's GRV opens a new 5-second window.
-		//
-		// The instant comes FROM the GRV, not from now(): for a proxy round
-		// trip it is the pre-RPC request time, and for a USE_GRV_CACHE hit it is
-		// when that cached version was originally obtained — up to
-		// maxVersionCacheLag ago. Stamping now() here instead made the anchor
-		// NEWER than the window it names, so a budget built on it under-counted
-		// the age and could let a nominally-in-budget page start against a
-		// version FDB was about to refuse with 1007.
-		tx.readVersionInstant = rvAt
-	}
-	// C++ DatabaseContext::validateVersion() on a user-set read version: reject a
-	// version below the smallest-seen floor (genuinely ancient) or an absurd
-	// future. Post-RFC-104 the floor is the SMALLEST version seen (see
-	// updateMinAcceptable), so a recent pinned version is never spuriously
-	// rejected. If the client hasn't seen any version yet, a GRV establishes the
-	// floor first.
-	userSet := tx.userSetReadVersion
-	rv := tx.readVersion
-	tx.readVersionMu.Unlock()
 	if tx.db != nil && userSet {
 		// Read through the stamp: a floor established under a PREVIOUS cluster
 		// reads as unset, which re-arms this bootstrap so the floor is re-derived
@@ -1960,7 +1905,7 @@ func (tx *Transaction) commitAdmitted(parent context.Context, completion *versio
 		return nil
 	}
 	tx.captureNativeReadState(input)
-	native, err := tx.startNativeCommit(op.parent, op.inc, completion, input, commitStart, commitTok)
+	native, err := tx.startNativeCommit(op.parent, op.inc, completion, input, commitTok)
 	if err != nil {
 		return err
 	}
@@ -2521,6 +2466,7 @@ func (tx *Transaction) stateSetReadVersion(version int64) {
 	tx.readVersion = version
 	tx.hasReadVersion = true
 	tx.userSetReadVersion = true
+	tx.pendingReadVersion = nil // an older GRV may finish, but cannot replace this explicit version
 	// A caller-supplied version's MVCC window opened on the cluster at an instant
 	// this client never observed, so there is no anchor to report. Zeroing (rather
 	// than leaving a prior GRV's stamp) keeps "instant describes the CURRENT read

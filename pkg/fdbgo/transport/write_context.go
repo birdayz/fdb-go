@@ -42,10 +42,10 @@ func (c *writeCompletion) complete(err error) {
 	c.release()
 }
 
-// SendFrameContext is a cancellable read-send: a direct write never blocks and a
-// queued copy is abandoned on ctx. After return the caller may recycle body.
-// enqueued reports ownership transfer, NOT delivery to the peer.
-// At-most-once commit dispatch must continue to use SendFrame instead.
+// SendFrameContext cancels the wait, not already-enqueued bytes. A direct write
+// never blocks; queued bytes own a copy, so the caller may recycle body on return.
+// enqueued reports ownership transfer, NOT delivery to the peer. An at-most-once
+// commit must use its native-owner context, never public/caller cancellation.
 func (c *Conn) SendFrameContext(ctx context.Context, token UID, body []byte) (enqueued bool, err error) {
 	return c.writeContext(ctx, token, body, false)
 }

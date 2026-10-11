@@ -106,6 +106,38 @@ func TestCommitGRV_TransactionAndCallerLifetimes(t *testing.T) {
 	}
 }
 
+func TestCommitGRV_LatencyExcludesReadVersionWait(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), commitLifetimeTimeout)
+	defer cancel()
+	db, gate, _ := newGRVReplyGateDB(t, ctx)
+	before := db.db.metrics.Snapshot()
+	tx := db.CreateTransaction()
+	tx.Set([]byte(t.Name()), []byte("late-native-success"))
+	gate.arm(1, false)
+	done := startGatedCommit(tx, ctx)
+	waitCommitLifetimeGate(t, ctx, gate.heldCh, "native GRV before latency sample")
+	native := currentNativeCommit(t, tx)
+	heldAt := time.Now()
+	tx.Cancel()
+	awaitCommitLifetimeCode(t, ctx, done, 1025, "public wait before native latency sample")
+	time.Sleep(20 * time.Millisecond)
+	held := time.Since(heldAt).Seconds()
+	gate.release()
+	waitCommitLifetimeGate(t, ctx, native.finished, "late native latency sample")
+	after := db.db.metrics.Snapshot()
+	commit := after.CommitLatency.Sum - before.CommitLatency.Sum
+	total := after.TransactionLatency.Sum - before.TransactionLatency.Sum
+	grv := after.GRVLatency.Sum - before.GRVLatency.Sum
+	if after.CommitLatency.Count-before.CommitLatency.Count != 1 || after.TransactionLatency.Count-before.TransactionLatency.Count != 1 {
+		t.Fatal("late native success did not publish exactly one commit/transaction sample")
+	}
+	if total-commit < held || grv < held {
+		t.Fatalf("GRV hold %.6fs must be excluded from commit %.6fs, included in total %.6fs and GRV %.6fs", held, commit, total, grv)
+	}
+	runtime.KeepAlive(tx)
+}
+
 func abandonCommitGRV(t *testing.T, ctx context.Context) (*Database, *grvReplyGate, *nativeCommit, weak.Pointer[Transaction], []byte) {
 	t.Helper()
 	db, gate, _ := newGRVReplyGateDB(t, ctx)
