@@ -86,6 +86,11 @@ func Open(clusterFile string) (fdb.BackendDatabase, error) {
 	if err := fdb.APIVersion(apiVersion); err != nil {
 		return nil, err
 	}
+	return openSharedDatabase(clusterFile)
+}
+
+// openSharedDatabase serializes cgofdb's cache and tracks every owner of its handles.
+func openSharedDatabase(clusterFile string) (*database, error) {
 	openMu.Lock()
 	defer openMu.Unlock()
 	s, ok := openRefs[clusterFile]

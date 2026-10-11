@@ -256,10 +256,8 @@ type CMappedRow struct {
 var (
 	cNetworkOnce sync.Once
 	cNetworkErr  error
-	// cNetworkKeepalive pins the cgofdb Database that started the network. It is
-	// deliberately never closed: cgofdb caches one handle per cluster file and
-	// Close() destroys it for every sharer.
-	cNetworkKeepalive cgofdb.Database
+	// Retain a counted owner so backend Close cannot destroy the shared handle.
+	cNetworkKeepalive *database
 )
 
 func cEnsureNetwork(clusterFile string) error {
@@ -268,7 +266,7 @@ func cEnsureNetwork(clusterFile string) error {
 			cNetworkErr = fmt.Errorf("select api version %d: %w", apiVersion, err)
 			return
 		}
-		db, err := cgofdb.OpenDatabase(clusterFile)
+		db, err := openSharedDatabase(clusterFile)
 		if err != nil {
 			cNetworkErr = fmt.Errorf("start libfdb_c network via cgofdb: %w", err)
 			return

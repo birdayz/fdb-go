@@ -1,30 +1,70 @@
-load("@rules_go//go:def.bzl", "go_library")
+load("@rules_cc//cc:cc_import.bzl", "cc_import")
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load("@rules_go//go:def.bzl", "go_library", "go_test")
 
-# Only backend_stub.go is built by bazel/gazelle: the real backend (backend.go, options.go)
-# and the differential test are //go:build cgo && libfdbc, and bazel does not set the
-# `libfdbc` tag — so a default `bazelisk build/test //...` never compiles the cgo backend or
-# links libfdb_c. The real backend and the cross-client differential are exercised by
-# `go test -tags libfdbc ./pkg/fdbgo/libfdbc/...`, which ci.yml's libfdbc-differential job
-# runs on every push to master and every pull request as the required check "Cross-client
-# wire differential (-tags libfdbc)".
-# The stub here just keeps the package importable in the default build.
-#
-# The excludes below are load-bearing, not cosmetic. mappedrange_cref.go carries `import "C"`,
-# and gazelle infers `cgo = True` on this go_library from the mere presence of that import —
-# even though the file is tag-excluded from srcs and the only src is the non-cgo stub. That
-# attribute would pull a C toolchain into the default `//...` build for a target that compiles
-# no C at all. Excluding the tag-gated files tells gazelle what the build tags already say:
-# bazel never builds them. Without these lines `just gazelle` re-adds `cgo = True` on every
-# run, so a hand-revert does not survive the next invocation.
-#
-# gazelle:exclude backend.go
-# gazelle:exclude options.go
-# gazelle:exclude mappedrange_cref.go
-# gazelle:exclude range_cref.go
+# Hand-maintained: the default stub and native backend share an import path.
+# gazelle:ignore
+
 go_library(
     name = "libfdbc",
     srcs = ["backend_stub.go"],
     importpath = "fdb.dev/pkg/fdbgo/libfdbc",
     visibility = ["//visibility:public"],
     deps = ["//pkg/fdbgo/fdb"],
+)
+
+cc_import(
+    name = "fdb_c_shared",
+    shared_library = "@libfdb_c_linux_x86_64//file",
+    target_compatible_with = [
+        "@platforms//cpu:x86_64",
+        "@platforms//os:linux",
+    ],
+)
+
+# Also consumed by the upstream Apple binding's post-Gazelle cdeps patch.
+cc_library(
+    name = "fdb_c",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":fdb_c_shared",
+        "@fdb_c_headers//:headers",
+    ],
+)
+
+go_library(
+    name = "libfdbc_native",
+    srcs = [
+        "backend.go",
+        "mappedrange_cref.go",
+        "options.go",
+        "range_cref.go",
+    ],
+    cgo = True,
+    cdeps = [":fdb_c"],
+    importpath = "fdb.dev/pkg/fdbgo/libfdbc",
+    target_compatible_with = [
+        "@platforms//cpu:x86_64",
+        "@platforms//os:linux",
+    ],
+    deps = [
+        "//pkg/fdbgo/fdb",
+        "@com_github_apple_foundationdb_bindings_go//src/fdb",
+    ],
+)
+
+go_test(
+    name = "network_lifecycle_test",
+    srcs = ["network_lifecycle_test.go"],
+    embed = [":libfdbc_native"],
+    gotags = ["libfdbc"],
+    pure = "off",
+    target_compatible_with = [
+        "@platforms//cpu:x86_64",
+        "@platforms//os:linux",
+    ],
+    deps = [
+        "//pkg/fdbgo/fdb",
+        "//pkg/testcontainers/foundationdb",
+    ],
 )

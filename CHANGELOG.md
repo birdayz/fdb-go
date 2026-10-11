@@ -251,6 +251,7 @@ project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (
 
 ### Fixed
 - The client's read-your-writes key index stays sorted across mutations, avoiding a full re-sort on interleaved range reads; arbitrary key insertion and deletion still shift a linear slice suffix.
+- The CGo backend and raw C reference share serialized database-handle ownership, preventing concurrent cache writes during startup and premature destruction of retained handles.
 - The client's `OpenDatabaseCoordRequest` carries the coordinator list, hostnames and known `ClientDBInfo` id, byte for byte as libfdb_c 7.3.77. Without the list, a restarted coordinator that heard from a Go client first stopped serving every client, libfdb_c included, and Go transactions waited until their deadline. The client now long-polls the coordinators for topology changes, as libfdb_c does, instead of polling every 5 s.
 - `tools/clientbench` provides separate Go/CGo measurement executables, counterbalanced campaigns and paired latency/window/drained/shutdown CPU analysis with reproducible R3-design instructions; native builds require the explicit `libfdbc` tag.
 - Record scans with an inclusive high bound end at `pack(high)+\xFF`, as Java's `TupleRange.toRange`, not at `strinc(pack(high))`.

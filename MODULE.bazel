@@ -6,6 +6,7 @@ module(
 # Go
 bazel_dep(name = "rules_go", version = "0.60.0")
 bazel_dep(name = "gazelle", version = "0.47.0")
+bazel_dep(name = "platforms", version = "1.0.0")
 
 # Shell (sh_binary for codegen wrappers, e.g. the ANTLR parser generator).
 bazel_dep(name = "rules_shell", version = "0.6.1")
@@ -14,7 +15,10 @@ go_deps = use_extension("@gazelle//:extensions.bzl", "go_deps")
 go_deps.from_file(go_mod = "//:go.mod")
 go_deps.module_override(
     patch_strip = 1,
-    patches = ["//patches:fdb-go-range-iterator-done.patch"],
+    patches = [
+        "//patches:fdb-go-range-iterator-done.patch",
+        "//patches:fdb-go-native-cdeps.patch",
+    ],
     path = "github.com/apple/foundationdb/bindings/go",
 )
 use_repo(
@@ -90,7 +94,10 @@ cc_library(
     ]),
     includes = ["flow/include"],
 )
-exports_files(["flow/flat_buffers.cpp"])
+exports_files([
+    "flow/flat_buffers.cpp",
+    "bindings/c/foundationdb/fdb_c_types.h",
+])
 
 # Binding tester Python files (for conformance testing).
 filegroup(
@@ -187,6 +194,35 @@ filegroup(
     sha256 = "60ffda04fd49968b5c992104160b2147d04e55bdddeaa5d5e78c7f0baf0d211d",
     strip_prefix = "foundationdb-7.3.77",
     urls = ["https://files.pythonhosted.org/packages/cd/b7/9b3de7fcc3280cb7661499bd8889882de7bafbda6153b4bc408ac2faadbe/foundationdb-7.3.77.tar.gz"],
+)
+
+# Official generated C headers; the release omits fdb_c_types.h, taken from the same source pin.
+http_archive(
+    name = "fdb_c_headers",
+    build_file_content = """\
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+package(default_visibility = ["//visibility:public"])
+
+genrule(
+    name = "types_header",
+    srcs = ["@foundationdb//:bindings/c/foundationdb/fdb_c_types.h"],
+    outs = ["fdb_c_types.h"],
+    cmd = "cp $(location @foundationdb//:bindings/c/foundationdb/fdb_c_types.h) $@",
+)
+
+cc_library(
+    name = "headers",
+    hdrs = [
+        "fdb_c.h",
+        "fdb_c_apiversion.g.h",
+        "fdb_c_options.g.h",
+        ":types_header",
+    ],
+    include_prefix = "foundationdb",
+)
+""",
+    sha256 = "73b1efca62bf1779e0d4d62131514c96f689db82865695618086e73a057ea385",
+    urls = ["https://github.com/apple/foundationdb/releases/download/7.3.77/fdb-headers-7.3.77.tar.gz"],
 )
 
 # libfdb_c 7.3.77 for the Java conformance server; fdb-java 7.1.26 (unpinned, no maven lock) runs
