@@ -1,0 +1,21 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "recovery_test",
+    timeout = "long",
+    srcs = ["coordinator_restart_test.go"],
+    args = ["-test.timeout=6m"],
+    data = glob(["testdata/**"]),
+    embedsrcs = ["testdata/cluster.bash"],
+    tags = [
+        "resources:cpu:3",
+        "resources:memory:1200",
+        "test-full",
+    ],
+    deps = [
+        "//pkg/fdbgo/client",
+        "//pkg/testcontainers/foundationdb",
+        "@com_github_testcontainers_testcontainers_go//:testcontainers-go",
+        "@com_github_testcontainers_testcontainers_go//exec",
+    ],
+)

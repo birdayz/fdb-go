@@ -1,13 +1,24 @@
 package client
 
 import (
+	"context"
+	"errors"
+	"math/rand/v2"
+	"slices"
 	"time"
+
+	"fdb.dev/pkg/fdbgo/transport"
 )
 
 const (
-	topologySteadyInterval = 5 * time.Second        // background poll when idle
-	topologyRapidInterval  = 200 * time.Millisecond // fast retry after a kick
-	topologyRapidBurst     = 10                     // rapid refreshes before reverting
+	// coordinatorReconnectionDelay is CLIENT_KNOBS->COORDINATOR_RECONNECTION_DELAY
+	// (ClientKnobs.cpp:52): the pause after a sweep in which every coordinator failed.
+	coordinatorReconnectionDelay = time.Second
+	// coordinatorLongPollCeiling bounds one long poll. A coordinator answers an
+	// unchanged poll within CLIENT_REGISTER_INTERVAL (600s, jittered;
+	// ServerKnobs.cpp:782, Coordination.actor.cpp:245-249); past the ceiling the
+	// poll is re-sent, never counted as a failure.
+	coordinatorLongPollCeiling = 15 * time.Minute
 	// maxForwardHops bounds a pathological coordinator-forward cycle (RFC-111 §5).
 	// C++ has no hop bound (actor fair-scheduling paces it); a Go tight loop needs
 	// one. Reset on every successful non-forward connect, so a legitimate long
@@ -15,92 +26,118 @@ const (
 	maxForwardHops = 10
 )
 
-// topologyMonitor periodically refreshes the cluster topology from coordinators.
-// After an RPC-failure kick, switches to rapid polling for fast recovery before
-// reverting to steady-state interval. The C++ client uses long-poll to the
-// cluster controller; we approximate with kick-triggered bursts since we talk
-// directly to coordinators.
+// coordPollFunc sends one OpenDatabaseCoordRequest carrying known to addr.
+type coordPollFunc func(ctx context.Context, snap *ClusterFile, addr string, known transport.UID) (*DBInfo, error)
+
+// topologyMonitor follows ClientDBInfo the way C++ monitorProxies does
+// (MonitorLeader.actor.cpp:984-1005): one long-poll generation per coordinator
+// set, restarted when the set changes.
 func (db *database) topologyMonitor() {
 	defer db.wg.Done()
-	// RFC-110: a panic in refreshTopology (a wire-decode invariant, a nil-deref)
-	// must not abort the host — libfdb_c's monitorProxies never lets a round
-	// failure take down the network thread. The backstop recovers + counts +
-	// rate-limited-logs; on a recovered panic we drop out of rapid-poll to the
-	// steady interval so a deterministic bug re-fires at ≤1/steady, not every
-	// 200ms (the monitorProxies post-failed-sweep COORDINATOR_RECONNECTION_DELAY
-	// analog).
+	// RFC-110: a panic in a generation must not abort the host; pace the restart
+	// like a failed sweep so a deterministic bug re-fires at most once a second.
 	pb := &panicBackstop{name: "topologyMonitor", db: db}
-	ticker := time.NewTicker(topologySteadyInterval)
-	defer ticker.Stop()
-	rapidLeft := 0
-	for {
-		select {
-		case <-ticker.C:
-			if pb.run(db.refreshTopology) {
-				rapidLeft = 0
-				ticker.Reset(topologySteadyInterval)
-				continue
-			}
-			if rapidLeft > 0 {
-				rapidLeft--
-				if rapidLeft == 0 {
-					ticker.Reset(topologySteadyInterval)
-				}
-			}
-		case <-db.topologyKick:
-			if pb.run(db.refreshTopology) {
-				rapidLeft = 0
-				ticker.Reset(topologySteadyInterval)
-				continue
-			}
-			rapidLeft = topologyRapidBurst
-			ticker.Reset(topologyRapidInterval)
-		case <-db.ctx.Done():
-			return
+	var known transport.UID
+	if cur := db.dbInfo.Load(); cur != nil {
+		known = cur.ID
+	}
+	for db.ctx.Err() == nil {
+		if pb.run(func() { db.monitorProxiesOneGeneration(db.pollCoordinator, coordinatorReconnectionDelay, &known) }) {
+			db.sleep(coordinatorReconnectionDelay)
 		}
 	}
 }
 
-// kickTopology triggers an immediate topology refresh. Non-blocking.
-// Called when an RPC to a proxy fails (connection error, broken_promise, etc.).
+// monitorProxiesOneGeneration ports C++ monitorProxiesOneGeneration
+// (MonitorLeader.actor.cpp:840-982). It polls one coordinator at a time with the
+// id of the last ClientDBInfo received, so the coordinator answers only when the
+// info changes; a failure moves to the next coordinator, and a sweep in which all
+// failed pauses reconnectDelay. It returns when the coordinator set changes.
+func (db *database) monitorProxiesOneGeneration(poll coordPollFunc, reconnectDelay time.Duration, known *transport.UID) {
+	snap := db.connRecord.get()
+	if snap == nil || len(snap.Coordinators) == 0 {
+		db.sleep(reconnectDelay)
+		return
+	}
+	addrs := slices.Clone(snap.Coordinators)
+	rand.Shuffle(len(addrs), func(i, j int) { addrs[i], addrs[j] = addrs[j], addrs[i] })
+	index, successIndex := 0, 0
+	allConnectionsFailed := false
+	for db.ctx.Err() == nil {
+		// Path B (:888-900): every coordinator of this set failed, so another
+		// process may have rotated the set and rewritten the cluster file.
+		if allConnectionsFailed && db.connRecord.adoptStoredIfChanged() {
+			db.onCoordinatorSetAdopted()
+			return
+		}
+		info, err := poll(db.ctx, snap, addrs[index], *known)
+		if errors.Is(err, errLongPollExpired) {
+			continue
+		}
+		if err == nil && info.Forward != "" {
+			// Path A (:940-948): a coordinator forwarded us to a new set.
+			if db.followForward(snap, info.Forward) {
+				db.onCoordinatorSetAdopted()
+				return
+			}
+			err = errors.New("coordinator forward could not be followed")
+		}
+		if err != nil {
+			// :969-980: next coordinator; pause once the sweep wraps around.
+			index = (index + 1) % len(addrs)
+			if index == successIndex {
+				allConnectionsFailed = true
+				db.sleep(reconnectDelay)
+			}
+			continue
+		}
+		db.forwardHops = 0
+		// The new coordinators answered with real proxies — now safe to persist a
+		// forward adopted in memory on a previous round (deferred-persist, Path A).
+		db.connRecord.persistIfDirty()
+		// Installing the proxies IS the handoff when a coordinator-set adoption was
+		// pending: the epoch changes here, inside the same act that publishes them.
+		db.installProxySet(info)
+		// C++ sets clientInfo unconditionally (:966), so the next poll waits on
+		// this id even when the proxies did not change.
+		*known = info.ID
+		successIndex = index
+		allConnectionsFailed = false
+	}
+}
+
+// pollCoordinator is the production coordPollFunc. A non-zero known makes it a
+// long poll, which C++ waits on with no client timeout (tryGetReply, :920-926);
+// a dead coordinator surfaces as a connection error via the connection monitor.
+func (db *database) pollCoordinator(ctx context.Context, snap *ClusterFile, addr string, known transport.UID) (*DBInfo, error) {
+	conn, err := db.getOrDial(ctx, addr)
+	if err != nil {
+		return nil, err
+	}
+	timeout := coordinatorLongPollCeiling
+	if known == (transport.UID{}) {
+		timeout = CoordinatorTimeout
+	}
+	return db.openDatabaseCoord(ctx, conn, snap, known, timeout)
+}
+
+// sleep waits d or until the database closes.
+func (db *database) sleep(d time.Duration) {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+	case <-db.ctx.Done():
+	}
+}
+
+// kickTopology records that a proxy RPC failed. Non-blocking. The monitor learns
+// of new proxies from its long poll, as C++ does, so nothing waits on this.
 func (db *database) kickTopology() {
 	select {
 	case db.topologyKick <- struct{}{}:
 	default:
 	}
-}
-
-// refreshTopology races all coordinators in parallel to fetch fresh ClientDBInfo.
-// On success, atomically swaps dbInfo if proxies changed. It also follows a
-// coordinator-set rotation: a forwarded connection string (Path A) or, when every
-// coordinator is unreachable, an externally-rewritten cluster file (Path B) — so a
-// `coordinators auto`/`change` no longer strands the client (RFC-111).
-func (db *database) refreshTopology() {
-	snap := db.connRecord.get()
-	newInfo, err := db.tryAllCoordinators(db.ctx, snap)
-	if err != nil {
-		// Path B: all coordinators unreachable — adopt a rotated set from the file.
-		if db.connRecord.adoptStoredIfChanged() {
-			db.onCoordinatorSetAdopted()
-			db.kickTopology()
-		}
-		return
-	}
-	if newInfo.Forward != "" {
-		// Path A: a coordinator forwarded us to a new set. Adopt + re-poll now.
-		if db.followForward(snap, newInfo.Forward) {
-			db.onCoordinatorSetAdopted()
-			db.kickTopology()
-		}
-		return
-	}
-	db.forwardHops = 0
-	// The new coordinators answered with real proxies — now safe to persist a
-	// forward we adopted in memory on a previous round (deferred-persist, Path A).
-	db.connRecord.persistIfDirty()
-	// Installing the proxies IS the handoff when a coordinator-set adoption was
-	// pending: the epoch changes here, inside the same act that publishes them.
-	db.installProxySet(newInfo)
 }
 
 // followForward adopts a forwarded connection string (RFC-111 Path A). Returns

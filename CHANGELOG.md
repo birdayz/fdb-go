@@ -213,6 +213,8 @@ project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (
 - **Breaking (storage):** the default TEXT tokenizer lowercases a word-final capital sigma to `ς` and drops a word with no letter or digit in the Basic Multilingual Plane, as Java's `DefaultTextTokenizer` does; rebuild Go-written TEXT indexes over Greek or supplementary-plane text.
 - Runnable SQL/typed-store quickstarts check errors; default cluster lookup follows C++ precedence and routine SQL warm-up logs only at Debug.
 
+### Fixed
+- The client's `OpenDatabaseCoordRequest` carries the coordinator list, hostnames and known `ClientDBInfo` id, byte for byte as libfdb_c 7.3.77. Without the list, a restarted coordinator that heard from a Go client first stopped serving every client, libfdb_c included, and Go transactions waited until their deadline. The client now long-polls the coordinators for topology changes, as libfdb_c does, instead of polling every 5 s.
 - `tools/clientbench` provides separate Go/CGo measurement executables, counterbalanced campaigns and paired latency/window/drained/shutdown CPU analysis with reproducible R3-design instructions.
 
 ## [v0.1.0] - 2026-08-26

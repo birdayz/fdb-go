@@ -725,7 +725,7 @@ func (db *database) tryAllCoordinators(ctx context.Context, snap *ClusterFile) (
 		// Defensive — production cluster-file parsing rejects empty
 		// coordinator lists, but a hand-constructed *database in tests can
 		// reach this path. Without the guard, the for-loop below returns
-		// (nil, nil) and refreshTopology eventually nil-derefs in dbInfoEqual.
+		// (nil, nil) and bootstrap nil-derefs the info.
 		return nil, fmt.Errorf("no coordinators configured")
 	}
 	if len(snap.Coordinators) == 1 {
@@ -778,7 +778,7 @@ func (db *database) tryOneCoordinator(ctx context.Context, snap *ClusterFile, ad
 	if dialErr != nil {
 		return nil, dialErr
 	}
-	info, err = db.openDatabaseCoord(ctx, conn, snap, addr)
+	info, err = db.openDatabaseCoord(ctx, conn, snap, transport.UID{}, CoordinatorTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("coordinator %s: %w", addr, err)
 	}

@@ -199,10 +199,8 @@ func TestTopologyMonitor_ShutsDownOnCtxDone(t *testing.T) {
 		connPool:       make(map[string]*transport.Conn),
 		connRecord:     newConnRecord(&ClusterFile{Coordinators: nil}, "", nil),
 	}
-	// Seed dbInfo so refreshTopology has something to compare against.
-	// With Coordinators: nil, tryAllCoordinators returns an
-	// "no coordinators configured" error and refreshTopology takes its
-	// err early-out before reaching installProxySet.
+	// With Coordinators: nil the monitor has nothing to poll and only waits
+	// out the reconnection delay, which must yield to ctx.
 	db.dbInfo.Store(&DBInfo{})
 
 	db.wg.Add(1)
@@ -233,7 +231,7 @@ func TestTopologyMonitor_ConsumesKickWithoutBlocking(t *testing.T) {
 		proxiesChanged: make(chan struct{}),
 		failMon:        newFailureMonitor(),
 		connPool:       make(map[string]*transport.Conn),
-		connRecord:     newConnRecord(&ClusterFile{Coordinators: nil}, "", nil), // tryAllCoordinators errors → refreshTopology no-ops
+		connRecord:     newConnRecord(&ClusterFile{Coordinators: nil}, "", nil), // nothing to poll
 	}
 	db.dbInfo.Store(&DBInfo{})
 

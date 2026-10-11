@@ -439,7 +439,7 @@ func debugCoordinatorExchange(t *testing.T, ctx context.Context, cf *ClusterFile
 	time.Sleep(500 * time.Millisecond)
 
 	replyToken := transport.NewUID()
-	body := buildOpenDatabaseCoordRequest(cf, replyToken)
+	body := buildOpenDatabaseCoordRequest(cf, transport.UID{}, replyToken)
 	t.Logf("request body (%d bytes)", len(body))
 	t.Logf("reply token: %016x:%016x", replyToken.First, replyToken.Second)
 
@@ -464,7 +464,7 @@ func debugCoordinatorExchange(t *testing.T, ctx context.Context, cf *ClusterFile
 		time.Sleep(200 * time.Millisecond)
 
 		replyToken = transport.NewUID()
-		body = buildOpenDatabaseCoordRequest(cf, replyToken)
+		body = buildOpenDatabaseCoordRequest(cf, transport.UID{}, replyToken)
 
 		destToken := transport.WellKnownToken(testTokenID)
 		payloadLen2 := 16 + len(body)
