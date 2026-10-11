@@ -62,7 +62,7 @@ func TestGetFuture_ConcurrentGet(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				if v, err := f.Get(); err != nil || string(v) != "v" {
-					errs <- errors.New("concurrent Get returned " + string(v))
+					errs <- fmt.Errorf("concurrent Get = %q, %v", v, err)
 				}
 			}()
 		}

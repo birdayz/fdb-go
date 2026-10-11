@@ -114,6 +114,14 @@ go_test(
     deps = ["//pkg/fdbgo/wire"],
 )
 
+# gazelle:exclude pending_get_abort_unit_test.go
+go_test(
+    name = "pending_get_abort_unit_test",
+    srcs = ["pending_get_abort_unit_test.go"],
+    embed = [":client"],
+    deps = ["//pkg/fdbgo/transport"],
+)
+
 # gazelle:exclude ryw_issue_view_unit_test.go
 # gazelle:exclude ryw_range_cut_unit_test.go
 go_test(

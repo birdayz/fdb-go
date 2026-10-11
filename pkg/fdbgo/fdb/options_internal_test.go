@@ -44,9 +44,11 @@ func TestNewFutureNilCancel_CancelRunsHook(t *testing.T) {
 	t.Parallel()
 	release := make(chan struct{})
 	polled := make(chan struct{})
-	f := newFutureNilCancel(
+	var f FutureNil
+	f = newFutureNilCancel(
 		func() error { <-release; close(polled); return errors.New("polled") },
-		func() { close(release) },
+		// Waiting here lets fn publish first if Cancel ran the hook before completing.
+		func() { close(release); <-polled; f.BlockUntilReady() },
 	)
 	f.Cancel()
 	select {
