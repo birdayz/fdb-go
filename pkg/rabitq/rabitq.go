@@ -737,6 +737,12 @@ func (q *Quantizer) NewScorer(query []float64) *Scorer {
 	}
 }
 
+// Reset makes s the scorer NewScorer(query) of its quantizer, reusing its buffers.
+func (s *Scorer) Reset(query []float64) {
+	s.query = append(s.query[:0], query...)
+	s.gAdd = dot(s.query, s.query)
+}
+
 // Score estimates the distance to one stored code. Identical math to
 // Distance (EstimateDistance), minus the per-code allocations.
 func (s *Scorer) Score(data []byte, numDimensions int) (float64, error) {

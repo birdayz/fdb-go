@@ -273,31 +273,37 @@ func kMeansLloyd(random *splittableRandom, codec *guardiannVectorCodec, vectors 
 		}
 		return res, nil
 	}
-	next := make([][]float64, k)
+	centroids, next := make([][]float64, k), make([][]float64, k)
 	for c := range next {
-		next[c] = make([]float64, dims)
+		centroids[c], next[c] = make([]float64, dims), make([]float64, dims)
 	}
-	var best *kMeansResult
+	assignment, distances := make([]int, n), make([]float64, n)
+	projected, sizes := make([]int, k), make([]int, k)
+	best := kMeansResult{
+		centroids: make([]gVector, k), clusterSizes: make([]int, k),
+		assignment: make([]int, n), distances: make([]float64, n),
+	}
+	for c := range best.centroids {
+		best.centroids[c] = gVector{data: make([]float64, dims), typ: vectorcodec.TypeDouble}
+	}
 	for r := 0; r <= maxRestarts; r++ {
-		centroids, toFirst, err := l.initKMeansPP(random, k)
+		seeded, err := l.initKMeansPP(random, centroids)
 		if err != nil {
 			return kMeansResult{}, err
 		}
-		assignment := make([]int, n)
 		for i := range assignment {
 			assignment[i] = -1
 		}
-		sizes := make([]int, k)
 		for iteration := 0; iteration < maxIterations; iteration++ {
-			projected := make([]int, k)
+			clear(projected)
 			for c := range next {
 				clear(next[c])
 			}
-			changed, err := l.assign(centroids, toFirst, assignment, projected, next, nil)
+			changed, err := l.assign(centroids, seeded, assignment, projected, next, nil)
 			if err != nil {
 				return kMeansResult{}, err
 			}
-			toFirst = nil
+			seeded = nil
 			copy(sizes, projected)
 			if changed == 0 && stopWhenStable {
 				break
@@ -325,30 +331,25 @@ func kMeansLloyd(random *splittableRandom, codec *guardiannVectorCodec, vectors 
 			}
 			centroids, next = next, centroids
 		}
-		projected := make([]int, k)
-		cand := kMeansResult{distances: make([]float64, n)}
-		if _, err = l.assign(centroids, nil, assignment, projected, nil, cand.distances); err != nil {
+		clear(projected)
+		if _, err = l.assign(centroids, nil, assignment, projected, nil, distances); err != nil {
 			return kMeansResult{}, err
 		}
-		cand.clusterSizes, cand.assignment = projected, append([]int(nil), assignment...)
-		for _, d := range cand.distances {
-			cand.objective += d
+		objective := 0.0
+		for _, d := range distances {
+			objective += d
 		}
-		for _, c := range centroids {
-			cand.centroids = append(cand.centroids, gVector{data: append([]float64(nil), c...), typ: vectorcodec.TypeDouble})
-		}
-		if best == nil || cand.objective < best.objective {
-			best = &cand
-		}
-		if r < maxRestarts {
-			// centroids and next alias the working buffers; restart with fresh ones.
-			next = make([][]float64, k)
-			for c := range next {
-				next[c] = make([]float64, dims)
+		if r == 0 || objective < best.objective {
+			best.objective = objective
+			copy(best.clusterSizes, projected)
+			copy(best.assignment, assignment)
+			copy(best.distances, distances)
+			for c, centroid := range centroids {
+				copy(best.centroids[c].data, centroid)
 			}
 		}
 	}
-	return *best, nil
+	return best, nil
 }
 
 // Kept out of line, as l2SquaredSequentialPair; the loop around it runs faster.
@@ -361,6 +362,20 @@ func addInto(dst, v []float64) {
 	v = v[:len(dst)]
 	for i := range dst {
 		dst[i] += v[i]
+	}
+}
+
+// addInto4 is addInto of a, b, c and d in turn, in one pass over dst.
+//
+//go:noinline
+func addInto4(dst, a, b, c, d []float64) {
+	n := len(dst)
+	if len(a) < n || len(b) < n || len(c) < n || len(d) < n {
+		panic("addInto4: vector shorter than sum")
+	}
+	a, b, c, d = a[:n], b[:n], c[:n], d[:n]
+	for i, s := range dst {
+		dst[i] = s + a[i] + b[i] + c[i] + d[i]
 	}
 }
 
@@ -382,17 +397,31 @@ const (
 )
 
 // lloyd is a fit's vectors with what their objectives reuse: each vector's
-// kind and, for plain cosine, its squared norm.
+// kind and, for plain cosine, its squared norm; and the buffers its restarts
+// reuse.
 type lloyd struct {
 	a       kMeansAdapter
 	vectors []gVector
 	kinds   []objKind
 	norms   []float64
-	scratch []float64
+	scorers []*rabitq.Scorer // by target slot
+	targets []target
+	pending [][]int      // vectors assign has yet to sum, by centroid
+	seeded  [2][]float64 // initKMeansPP's k = 2 result
+	weights []float64    // k > 2 seeding
+	latest  []float64
+	// rows[j] is every vector's objective against vectors[j]: a k = 2
+	// restart's seeds are vectors, so its seeding and first assignment read
+	// rows, computed once per fit.
+	rows      [][]float64
+	rowFloats int
 }
 
+// rowCacheFloats bounds the row cache at 16 MiB; past it rows are recomputed.
+const rowCacheFloats = 1 << 21
+
 func newLloyd(a kMeansAdapter, vectors []gVector) *lloyd {
-	l := &lloyd{a: a, vectors: vectors, kinds: make([]objKind, len(vectors))}
+	l := &lloyd{a: a, vectors: vectors, kinds: make([]objKind, len(vectors)), rows: make([][]float64, len(vectors))}
 	if a.plainCosine() {
 		l.norms = make([]float64, len(vectors))
 	}
@@ -416,15 +445,40 @@ type target struct {
 	scorer *rabitq.Scorer // its RaBitQ scorer
 }
 
-func (l *lloyd) target(c []float64) target {
+// target is c's target, whose scorer is the one at slot, reset to c: slot 0
+// serves objectivesTo, slot c+1 assign's centroid c.
+func (l *lloyd) target(c []float64, slot int) target {
 	t := target{c: c}
 	if l.norms != nil {
 		t.norm = dotSequential(c, c)
 	}
-	if l.a.codec.quantizer != nil {
-		t.scorer = l.a.codec.quantizer.NewScorer(c)
+	if q := l.a.codec.quantizer; q != nil {
+		for len(l.scorers) <= slot {
+			l.scorers = append(l.scorers, nil)
+		}
+		if l.scorers[slot] == nil {
+			l.scorers[slot] = q.NewScorer(c)
+		} else {
+			l.scorers[slot].Reset(c)
+		}
+		t.scorer = l.scorers[slot]
 	}
 	return t
+}
+
+// row is rows[j], computing it on first use. Callers never write it.
+func (l *lloyd) row(j int) ([]float64, error) {
+	if l.rows[j] != nil {
+		return l.rows[j], nil
+	}
+	out := make([]float64, len(l.vectors))
+	if err := l.objectivesTo(l.vectors[j].data, out); err != nil {
+		return nil, err
+	}
+	if l.rowFloats+len(out) <= rowCacheFloats {
+		l.rows[j], l.rowFloats = out, l.rowFloats+len(out)
+	}
+	return out, nil
 }
 
 // codeObjective is the objective of a code whose Dot with the scorer's query is dot.
@@ -450,7 +504,7 @@ func (l *lloyd) objective(i int, t target) (float64, error) {
 // vectors per kernel pass where their kinds allow. Every objective error is
 // notFiniteDistance, so the order passes run in never changes a fit's error.
 func (l *lloyd) objectivesTo(c []float64, out []float64) error {
-	t := l.target(c)
+	t := l.target(c, 0)
 	vs := l.vectors
 	for i := 0; i < len(vs); {
 		kind := l.kinds[i]
@@ -486,24 +540,18 @@ func (l *lloyd) objectivesTo(c []float64, out []float64) error {
 }
 
 // assign assigns each vector to its nearest centroid, with next also summing
-// it into next[c] in vector order and with distances recording it. toFirst,
-// when set, holds the vectors' objectives against centroids[0].
-func (l *lloyd) assign(centroids [][]float64, toFirst []float64, assignment, projected []int,
+// it into next[c] in vector order and with distances recording it. seeded,
+// when set, holds the vectors' objectives against both centroids of k = 2.
+func (l *lloyd) assign(centroids, seeded [][]float64, assignment, projected []int,
 	next [][]float64, distances []float64,
 ) (int, error) {
 	k := len(centroids)
-	targets := make([]target, k)
-	for c := range centroids {
-		targets[c] = l.target(centroids[c])
-	}
-	var toSecond []float64
-	if toFirst != nil && k == 2 {
-		if cap(l.scratch) < len(l.vectors) {
-			l.scratch = make([]float64, len(l.vectors))
+	if next != nil {
+		for len(l.pending) < k {
+			l.pending = append(l.pending, make([]int, 0, 4))
 		}
-		toSecond = l.scratch[:len(l.vectors)]
-		if err := l.objectivesTo(centroids[1], toSecond); err != nil {
-			return 0, err
+		for c := range l.pending {
+			l.pending[c] = l.pending[c][:0]
 		}
 	}
 	changed := 0
@@ -514,7 +562,14 @@ func (l *lloyd) assign(centroids [][]float64, toFirst []float64, assignment, pro
 		}
 		projected[bestC]++
 		if next != nil {
-			addInto(next[bestC], l.vectors[i].data)
+			// Four vectors per pass over the sum, while they are still cached.
+			p := append(l.pending[bestC], i)
+			if len(p) == 4 {
+				v := l.vectors
+				addInto4(next[bestC], v[p[0]].data, v[p[1]].data, v[p[2]].data, v[p[3]].data)
+				p = p[:0]
+			}
+			l.pending[bestC] = p
 		}
 		if distances != nil {
 			distances[i] = bestScore
@@ -527,6 +582,18 @@ func (l *lloyd) assign(centroids [][]float64, toFirst []float64, assignment, pro
 			apply(i, 0, s0)
 		}
 	}
+	if seeded != nil {
+		for i := range l.vectors {
+			nearer(i, seeded[0][i], seeded[1][i])
+		}
+		l.sumPending(next)
+		return changed, nil
+	}
+	targets := l.targets[:0]
+	for c := range centroids {
+		targets = append(targets, l.target(centroids[c], c+1))
+	}
+	l.targets = targets
 	vs := l.vectors
 	for i := 0; i < len(vs); {
 		if k != 2 {
@@ -545,11 +612,6 @@ func (l *lloyd) assign(centroids [][]float64, toFirst []float64, assignment, pro
 				}
 			}
 			apply(i, bestC, bestScore)
-			i++
-			continue
-		}
-		if toSecond != nil {
-			nearer(i, toFirst[i], toSecond[i])
 			i++
 			continue
 		}
@@ -599,27 +661,48 @@ func (l *lloyd) assign(centroids [][]float64, toFirst []float64, assignment, pro
 		nearer(i, s0, s1)
 		i++
 	}
+	l.sumPending(next)
 	return changed, nil
 }
 
-// initKMeansPP is k-means++ seeding. It also returns the vectors' objectives
-// against the first centroid when they are still exact (k = 2).
-func (l *lloyd) initKMeansPP(random *splittableRandom, k int) ([][]float64, []float64, error) {
+// sumPending sums the vectors assign has yet to sum.
+func (l *lloyd) sumPending(next [][]float64) {
+	if next == nil {
+		return
+	}
+	for c, p := range l.pending[:len(next)] {
+		for _, i := range p {
+			addInto(next[c], l.vectors[i].data)
+		}
+	}
+}
+
+// initKMeansPP is k-means++ seeding into centroids. For k = 2 it also returns
+// the vectors' objectives against both seeds, the rows of their vectors.
+func (l *lloyd) initKMeansPP(random *splittableRandom, centroids [][]float64) ([][]float64, error) {
 	vectors := l.vectors
-	n := len(vectors)
-	centroids := make([][]float64, 0, k)
-	latest := append([]float64(nil), vectors[random.nextInt(n)].data...)
-	centroids = append(centroids, latest)
-	weights := make([]float64, n)
-	if err := l.objectivesTo(latest, weights); err != nil {
-		return nil, nil, err
+	n, k := len(vectors), len(centroids)
+	first := random.nextInt(n)
+	copy(centroids[0], vectors[first].data)
+	var weights []float64
+	var err error
+	if k == 2 {
+		weights, err = l.row(first)
+	} else {
+		if l.weights == nil {
+			l.weights, l.latest = make([]float64, n), make([]float64, n)
+		}
+		weights = l.weights
+		err = l.objectivesTo(centroids[0], weights)
+	}
+	if err != nil {
+		return nil, err
 	}
 	total := 0.0
 	for _, w := range weights {
 		total += w
 	}
-	var latestObjectives []float64
-	for len(centroids) < k {
+	for c := 1; c < k; c++ {
 		var chosen int
 		if total == 0 {
 			chosen = random.nextInt(n)
@@ -635,17 +718,21 @@ func (l *lloyd) initKMeansPP(random *splittableRandom, k int) ([][]float64, []fl
 				}
 			}
 		}
-		latest = append([]float64(nil), vectors[chosen].data...)
-		centroids = append(centroids, latest)
-		if len(centroids) < k {
-			if latestObjectives == nil {
-				latestObjectives = make([]float64, n)
+		copy(centroids[c], vectors[chosen].data)
+		if k == 2 {
+			second, err := l.row(chosen)
+			if err != nil {
+				return nil, err
 			}
-			if err := l.objectivesTo(latest, latestObjectives); err != nil {
-				return nil, nil, err
+			l.seeded = [2][]float64{weights, second}
+			return l.seeded[:], nil
+		}
+		if c+1 < k {
+			if err := l.objectivesTo(centroids[c], l.latest); err != nil {
+				return nil, err
 			}
 			total = 0
-			for i, d := range latestObjectives {
+			for i, d := range l.latest {
 				if d < weights[i] {
 					weights[i] = d
 				}
@@ -653,10 +740,7 @@ func (l *lloyd) initKMeansPP(random *splittableRandom, k int) ([][]float64, []fl
 			}
 		}
 	}
-	if k != 2 {
-		weights = nil
-	}
-	return centroids, weights, nil
+	return nil, nil
 }
 
 // farthest is the index of the vector farthest from its nearest centroid.
