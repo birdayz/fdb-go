@@ -2,14 +2,8 @@
 // and non-race PR CI. The fast local lane retains the loader/census gates.
 //
 // It is a separate package from the corpus's loader/census gates so that
-// those stay a pure no-FDB target; this target is the one that pays for a
-// container and executes every committed scenario. The nightly corpus job
-// re-runs the same target on master as the scheduled heartbeat.
-//
-// Run it alone:
-//
-//	bazelisk test //pkg/relational/conformance/factorycorpus/full:full_test \
-//	  --test_output=streamed --nocache_test_results
+// those stay a pure no-FDB target; this target executes every committed
+// scenario against SimFDB.
 package full_test
 
 import (
@@ -20,14 +14,12 @@ import (
 	"sort"
 	"sync"
 	"testing"
-	"time"
 
+	"fdb.dev/pkg/dst"
+	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/conformance/factorycorpus"
-	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
-
-	// The corpus runner opens database/sql connections against the "fdbsql"
-	// driver; the import registers it in this test binary.
-	_ "fdb.dev/pkg/relational/sqldriver"
+	"fdb.dev/pkg/relational/sqldriver"
+	"fdb.dev/pkg/simfdb"
 )
 
 // corpusDir is the parent package's testdata. The corpus lives there, with the
@@ -38,38 +30,15 @@ const corpusDir = "../testdata"
 var clusterFilePath string
 
 func TestMain(m *testing.M) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-
-	container, err := foundationdbtc.Run(ctx, "")
-	if err != nil {
-		if os.Getenv("CI") != "" {
-			fmt.Fprintf(os.Stderr, "FATAL: FDB container startup failed in CI — the full factory corpus would silently skip: %v\n", err)
-			os.Exit(1)
-		}
-		os.Exit(m.Run())
-	}
-	defer container.Terminate(context.Background()) //nolint:errcheck
-
-	clusterContent, err := container.ClusterFile(ctx)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "cluster file: %v\n", err)
-		os.Exit(1)
-	}
-	tmp, err := os.CreateTemp("", "fdb-factorycorpus-full-*.cluster")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "temp file: %v\n", err)
-		os.Exit(1)
-	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.WriteString(clusterContent); err != nil {
-		fmt.Fprintf(os.Stderr, "write cluster file: %v\n", err)
-		os.Exit(1)
-	}
-	tmp.Close()
-	clusterFilePath = tmp.Name()
-
-	os.Exit(m.Run())
+	env := dst.NewSim(745)
+	env.Buggify = dst.DisabledBuggifier()
+	sim := simfdb.New(env)
+	backend := recordlayer.NewFDBDatabaseWithBackend(sim).SetEnv(env)
+	clusterFilePath = "factorycorpus/full"
+	unregister := sqldriver.RegisterBackend(clusterFilePath, backend)
+	code := m.Run()
+	unregister()
+	os.Exit(code)
 }
 
 // The corpus runs as fullShards top-level tests, one per Bazel shard
@@ -77,7 +46,7 @@ func TestMain(m *testing.M) {
 // must equal fullShards). One process replaying all ~8000 scenarios was the
 // suite's longest pole: 873 s on CI, most of it after every other target had
 // finished, with the other cores idle. Each shard is its own process with its
-// own container and loads only its own files.
+// own SimFDB backend and loads only its own files.
 const fullShards = 8
 
 func TestFDB_FactoryCorpusFull0(t *testing.T) { runShard(t, 0) }
@@ -172,9 +141,6 @@ func TestFDB_FactoryCorpusShardsCoverTheCorpus(t *testing.T) {
 // runShard executes every committed scenario of one shard.
 func runShard(t *testing.T, shard int) {
 	t.Parallel()
-	if clusterFilePath == "" {
-		t.Skip("FDB not available (no Docker)")
-	}
 	var files []*factorycorpus.Scenario
 	for _, path := range shardFiles(t, shard) {
 		f, err := factorycorpus.Load(path)
