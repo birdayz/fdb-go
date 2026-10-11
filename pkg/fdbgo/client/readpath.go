@@ -243,7 +243,7 @@ func (tx *Transaction) getKeyImpl(ctx context.Context, selectorKey []byte, orEqu
 func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqual bool, offset int32, servers []ServerInfo) ([]byte, bool, int32, error) {
 	servers, ok := tx.db.failMon.liveServers(servers, EndpointGetKey)
 	if !ok {
-		return nil, false, 0, &wire.FDBError{Code: ErrAllAlternativesFailed}
+		return nil, false, 0, tx.db.allAlternativesFailed(ctx)
 	}
 	bestIdx, secondIdx := tx.db.queueModel.chooseTopTwo(servers)
 	if !tx.db.hedgeEnabled.Load() {
@@ -322,7 +322,7 @@ func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqu
 	// both arms on timeout/cancel) exactly once, else its QueueModel delta leaks
 	// permanently and biases server selection. RFC-010 #5.
 	for _, o := range result.others {
-		tx.db.queueModel.endRequest(o.addr, o.delta, 0, false)
+		tx.db.endOther(o)
 	}
 
 	if result.addr != "" {
@@ -463,7 +463,7 @@ func (tx *Transaction) getValueImpl(ctx context.Context, key []byte) ([]byte, er
 func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []ServerInfo) ([]byte, error) {
 	servers, ok := tx.db.failMon.liveServers(servers, EndpointGetValue)
 	if !ok {
-		return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
+		return nil, tx.db.allAlternativesFailed(ctx)
 	}
 	// Pick best + second-best for speculative hedge.
 	bestIdx, secondIdx := tx.db.queueModel.chooseTopTwo(servers)
@@ -527,7 +527,7 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 	// both arms on timeout/cancel) exactly once, else its QueueModel delta leaks
 	// permanently and biases server selection. RFC-010 #5.
 	for _, o := range result.others {
-		tx.db.queueModel.endRequest(o.addr, o.delta, 0, false)
+		tx.db.endOther(o)
 	}
 
 	// Process result.
@@ -937,7 +937,7 @@ func sendRangeRPC[T any](tx *Transaction, ctx context.Context, begin, end []byte
 	}
 	servers, ok := tx.db.failMon.liveServers(servers, ops.endpoint)
 	if !ok {
-		return nil, false, &wire.FDBError{Code: ErrAllAlternativesFailed}
+		return nil, false, tx.db.allAlternativesFailed(ctx)
 	}
 
 	bestIdx, secondIdx := tx.db.queueModel.chooseTopTwo(servers)
@@ -999,7 +999,7 @@ func sendRangeRPC[T any](tx *Transaction, ctx context.Context, begin, end []byte
 	// both arms on timeout/cancel) exactly once, else its QueueModel delta leaks
 	// permanently and biases server selection. RFC-010 #5.
 	for _, o := range result.others {
-		tx.db.queueModel.endRequest(o.addr, o.delta, 0, false)
+		tx.db.endOther(o)
 	}
 
 	if result.addr != "" {
@@ -1555,7 +1555,7 @@ func buildWatchValueRequest(key, value []byte, readVersion int64, tenantId int64
 func (tx *Transaction) sendWatch(ctx context.Context, key, value []byte, readVersion int64, span types.SpanContext, servers []ServerInfo) error {
 	servers, ok := tx.db.failMon.liveServers(servers, EndpointWatchValue)
 	if !ok {
-		return &wire.FDBError{Code: ErrAllAlternativesFailed}
+		return tx.db.allAlternativesFailed(ctx)
 	}
 	_, chosenIdx := tx.db.queueModel.chooseServer(servers)
 	order := loadBalanceOrder(servers, chosenIdx)

@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"errors"
+	"math/rand/v2"
 	"time"
 
 	"fdb.dev/pkg/fdbgo/transport"
@@ -27,6 +28,28 @@ func (db *database) handleReadConnError(addr string, err error) {
 	if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) && !isEndpointNotFound(err) {
 		db.handleConnError(addr)
 	}
+}
+
+// endOther ends a started request that did not win the hedge, reporting the
+// transport failure it carried.
+func (db *database) endOther(o rpcAccount) {
+	if o.err == nil {
+		db.queueModel.endRequest(o.addr, o.delta, 0, false)
+		return
+	}
+	db.handleReadConnError(o.addr, o.err)
+	db.queueModel.endRequest(o.addr, o.delta, readFailureLatency(o.err, o.start), false)
+}
+
+// allAlternativesFailed waits C++'s allAlternativesFailedDelay, jittered like
+// delayJittered (flow.h:1481-1484), before reporting all_alternatives_failed,
+// so a dead-endpoint storm cannot spin location lookups.
+func (db *database) allAlternativesFailed(ctx context.Context) error {
+	d := db.failMon.allAlternativesFailedDelay(nowSeconds())
+	if err := sleepCtx(ctx, time.Duration(float64(d)*(0.9+0.2*rand.Float64()))); err != nil {
+		return err
+	}
+	return &wire.FDBError{Code: ErrAllAlternativesFailed}
 }
 
 // isEndpointNotFound reports a reply failed by ENDPOINT_NOT_FOUND. The connection

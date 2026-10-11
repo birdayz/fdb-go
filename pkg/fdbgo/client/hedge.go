@@ -15,6 +15,7 @@ type rpcAccount struct {
 	addr  string
 	delta float64
 	start time.Time
+	err   error // transport failure of this request, for the caller to report
 }
 
 // hedgeResult is the result of a hedged RPC.
@@ -83,7 +84,19 @@ func sendFrameWithHedge(
 	case resp := <-pResult.replyCh:
 		// Primary replied before hedge timer. Use it.
 		pResult.replyHandle.Release()
-		return processReply(pResult, resp)
+		res := processReply(pResult, resp)
+		if res.err == nil {
+			return res
+		}
+		// A failed alternative is not a tried secondary: C++ loadBalance moves on
+		// to the next one (LoadBalance.actor.h:703-708, nextAlt at :728).
+		sResult := secondary()
+		if sResult.err != nil {
+			return res
+		}
+		out := waitForReply(ctx, sResult, timeout)
+		out.others = append(out.others, rpcAccount{addr: res.addr, delta: res.delta, start: res.start, err: res.err})
+		return out
 
 	case <-timer.C:
 		// Hedge timer fired — send to secondary.

@@ -4,6 +4,7 @@ import (
 	"math"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"fdb.dev/pkg/fdbgo/transport"
 )
@@ -30,7 +31,20 @@ type failureMonitor struct {
 	// recover (FailureMonitor.actor.cpp:228-230 permanentlyFailed).
 	epFailed map[endpointKey]struct{}
 	epCount  atomic.Int32 // len(epFailed); lets the read hot path skip the lock
+	// C++ NetworkInfo's all-alternatives-failed clock, in nowSeconds.
+	oldestAltFailure, newestAltFailure, lastAltSkip float64
 }
+
+// allAlternativesFailedDelay knobs (flow/Knobs.cpp:284-290).
+const (
+	altFailureResetTime      = 5.0
+	altFailureMinDelay       = 0.05
+	altFailureDelayRatio     = 0.2
+	altFailureMaxDelay       = 1.0
+	altFailureSlowDelayRatio = 0.04
+	altFailureSlowMaxDelay   = 30.0
+	altFailureSkipDelay      = 1.0
+)
 
 // endpointKey is one request stream at one address, as C++ keys failedEndpoints.
 type endpointKey struct {
@@ -210,4 +224,27 @@ func (fm *failureMonitor) liveServers(servers []ServerInfo, endpoint int) (live 
 		return servers, true
 	}
 	return live, len(live) > 0
+}
+
+// allAlternativesFailedDelay is the wait before all_alternatives_failed: the
+// minimum, then growing with the storm's age (LoadBalance.actor.cpp:28-46).
+func (fm *failureMonitor) allAlternativesFailedDelay(now float64) time.Duration {
+	if fm == nil {
+		return time.Duration(altFailureMinDelay * float64(time.Second))
+	}
+	fm.mu.Lock()
+	defer fm.mu.Unlock()
+	if now-fm.newestAltFailure > altFailureResetTime {
+		fm.oldestAltFailure = now
+	}
+	d := altFailureMinDelay
+	if now-fm.lastAltSkip > altFailureSkipDelay {
+		fm.lastAltSkip = now
+	} else {
+		elapsed := now - fm.oldestAltFailure
+		d = math.Max(d, math.Min(elapsed*altFailureDelayRatio, altFailureMaxDelay))
+		d = math.Max(d, math.Min(elapsed*altFailureSlowDelayRatio, altFailureSlowMaxDelay))
+	}
+	fm.newestAltFailure = now
+	return time.Duration(d * float64(time.Second))
 }
