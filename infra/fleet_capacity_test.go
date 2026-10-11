@@ -413,9 +413,10 @@ func TestSelfHostedJobsReapLeakedContainersFirst(t *testing.T) {
 			Jobs map[string]struct {
 				RunsOn yaml.Node `yaml:"runs-on"`
 				Steps  []struct {
-					Uses string `yaml:"uses"`
-					Run  string `yaml:"run"`
-					If   string `yaml:"if"`
+					Uses string            `yaml:"uses"`
+					Run  string            `yaml:"run"`
+					If   string            `yaml:"if"`
+					Env  map[string]string `yaml:"env"`
 				} `yaml:"steps"`
 			} `yaml:"jobs"`
 		}
@@ -443,6 +444,17 @@ func TestSelfHostedJobsReapLeakedContainersFirst(t *testing.T) {
 				strings.TrimSpace(job.Steps[i].Run) != "infra/reap-leaked-containers.sh" {
 				t.Errorf("%s: job %q runs self-hosted but its first step after checkout is not "+
 					"an unconditional `run: infra/reap-leaked-containers.sh`", filepath.Base(p), name)
+				continue
+			}
+			// Next, the PR is re-merged onto current master, so jobs share a cached base.
+			i++
+			if i >= len(job.Steps) || job.Steps[i].If != "" ||
+				strings.TrimSpace(job.Steps[i].Run) != "infra/merge-current-master.sh" ||
+				job.Steps[i].Env["PR_HEAD_SHA"] != "${{ github.event.pull_request.head.sha }}" ||
+				job.Steps[i].Env["PR_BASE_REF"] != "${{ github.base_ref }}" {
+				t.Errorf("%s: job %q runs self-hosted but does not re-merge the PR onto current "+
+					"master right after the reaper (`run: infra/merge-current-master.sh` with "+
+					"PR_HEAD_SHA and PR_BASE_REF)", filepath.Base(p), name)
 			}
 		}
 	}
