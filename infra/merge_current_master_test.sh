@@ -99,7 +99,7 @@ check "stale merge ref is re-merged onto current master" pull_request 0 "$MASTER
 setup 250
 check "base more than 200 commits ahead deepens history" pull_request 0 "$MASTER" "merged into current master"
 setup 3 conflict
-check "conflict with current master fails the job" pull_request 1 any "cannot merge this PR into current master"
+check "conflict with current master fails the job, naming the file" pull_request 1 any "unmerged: shared.txt"
 [ "$(git status --porcelain | grep -c '^UU')" -eq 0 ] && ok "conflict leaves no half-merge" || bad "conflict left a half-merge"
 setup 3
 HEAD_SHA=0123456789abcdef0123456789abcdef01234567 check "unfetchable PR head keeps the merge ref" pull_request 0 stale "testing GitHub's merge ref"
