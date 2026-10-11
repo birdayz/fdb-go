@@ -41,7 +41,8 @@ exports_files([
 # regen. These mirror the tags set repo-wide in `.bazelrc`
 # (--@rules_go//go/config:tags=...): each gates a bazel-only test suite that a plain
 # `go test ./...` must skip — `bazelrunfiles` (conformance/bindingtester, and the
-# stacktester, whose cgo needs @foundationdb's fdb_c.h), `stress`
+# stacktester and libfdb_c differential tests, whose cgo needs @foundationdb's
+# fdb_c.h), `stress`
 # (heavy benchmarks under pkg/relational/sqldriver/stress), and `factorycorpus` (the
 # full RFC-201 committed corpus under
 # pkg/relational/conformance/factorycorpus/full). Caveat of enabling a tag globally:

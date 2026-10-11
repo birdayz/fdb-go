@@ -66,8 +66,9 @@ test --local_resources=memory=HOST_RAM*0.8
 # The compact FDB C++ build asks for more RAM than CI's build pool: run it alone, not fail it.
 # Bazel 9.0.1 defaults this to true but plans to flip it (b/405364605).
 build --allow_one_action_on_resource_unavailable
-# `bazelrunfiles`: runfiles-only suites (conformance, bindingtester) and the stacktester,
-#   whose cgo needs @foundationdb's fdb_c.h — excluded from plain `go build/test ./...`.
+# `bazelrunfiles`: runfiles-only suites (conformance, bindingtester), the stacktester and
+#   the libfdb_c differential tests, whose cgo needs @foundationdb's fdb_c.h — excluded
+#   from plain `go build/test ./...`.
 # `stress`: heavy million-row stress benchmarks under //pkg/relational/sqldriver/stress.
 #   The target is `manual` (runs only when invoked, e.g. by nightly), so setting the tag
 #   globally is inert for `bazel test //...`; it just lets that one target compile when

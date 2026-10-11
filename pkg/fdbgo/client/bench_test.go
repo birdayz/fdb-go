@@ -1,3 +1,5 @@
+//go:build bazelrunfiles
+
 package client
 
 import (
