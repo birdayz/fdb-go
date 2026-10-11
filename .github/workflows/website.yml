@@ -96,12 +96,9 @@ jobs:
             exit 0
           fi
           rm -f "$out"
-          # Failing keeps the current deployment; a site-content deploy still goes out without it.
-          if [ "$GITHUB_EVENT_NAME" = workflow_run ]; then
-            echo "::error::no master test report to publish"
-            exit 1
-          fi
-          echo "::warning::no master test report to publish; deploying without one"
+          # Pages replaces the whole site, so every event must preserve the published report.
+          echo "::error::no master test report to publish"
+          exit 1
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
