@@ -87,6 +87,14 @@ go_test(
     embed = [":client"],
 )
 
+# gazelle:exclude reply_error_alloc_unit_test.go
+go_test(
+    name = "reply_error_alloc_unit_test",
+    srcs = ["reply_error_alloc_unit_test.go"],
+    embed = [":client"],
+    deps = ["//pkg/fdbgo/wire"],
+)
+
 # gazelle:exclude ryw_issue_view_unit_test.go
 # gazelle:exclude ryw_range_cut_unit_test.go
 go_test(

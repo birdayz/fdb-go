@@ -45,12 +45,8 @@ const (
 // basicLoadBalance does.
 //
 // BOTH callers pass through here unconditionally, and nil is the HOT path --
-// every successful GRV and every successful commit reaches it. nil needs no
-// guard of its own: isMaybeDelivered is an errors.As test, which is false for
-// nil. An explicit `err == nil` clause used to sit here; deleting it reddened
-// nothing, because it never did any work, so it is gone rather than left
-// looking load-bearing. The nil cases in the test pin the CONTRACT, not that
-// clause.
+// every successful GRV and every successful commit reaches it; isMaybeDelivered
+// answers nil without allocating (fdbErrorCode).
 func dispositionForReplyError(err error, atMostOnce bool) replyDisposition {
 	if !isMaybeDelivered(err) {
 		return replySurfaceError

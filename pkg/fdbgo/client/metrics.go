@@ -3,7 +3,6 @@ package client
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"math"
 
@@ -99,8 +98,8 @@ func (tx *Transaction) getEstimatedRangeSizeBytesImpl(ctx context.Context, begin
 
 // isFutureVersion returns true if the error is FDB error 1009.
 func isFutureVersion(err error) bool {
-	var fdbErr *wire.FDBError
-	return errors.As(err, &fdbErr) && fdbErr.Code == ErrFutureVersion
+	code, ok := fdbErrorCode(err)
+	return ok && code == ErrFutureVersion
 }
 
 // sendWaitMetrics sends a WaitMetricsRequest to a storage server and returns
@@ -335,8 +334,8 @@ func parseSplitRangeReply(data []byte) ([][]byte, error) {
 }
 
 func isOperationFailed(err error) bool {
-	var fdbErr *wire.FDBError
-	return errors.As(err, &fdbErr) && fdbErr.Code == ErrOperationFailed
+	code, ok := fdbErrorCode(err)
+	return ok && code == ErrOperationFailed
 }
 
 // parseWaitMetricsReply parses the ErrorOr-wrapped StorageMetrics reply.

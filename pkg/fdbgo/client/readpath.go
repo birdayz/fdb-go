@@ -1004,16 +1004,26 @@ func sendRangeRPC[T any](tx *Transaction, ctx context.Context, begin, end []byte
 	return kvs, more, err
 }
 
+// fdbErrorCode returns err's FDB error code. errors.AsType, unlike errors.As,
+// does not heap-allocate a target on every call.
+func fdbErrorCode(err error) (int, bool) {
+	fdbErr, ok := errors.AsType[*wire.FDBError](err)
+	if !ok || fdbErr == nil {
+		return 0, false
+	}
+	return fdbErr.Code, true
+}
+
 // isWrongShardServer returns true if the error is FDB error 1001 (wrong_shard_server).
 func isWrongShardServer(err error) bool {
-	var fdbErr *wire.FDBError
-	return errors.As(err, &fdbErr) && fdbErr.Code == ErrWrongShardServer
+	code, ok := fdbErrorCode(err)
+	return ok && code == ErrWrongShardServer
 }
 
 // isAllAlternativesFailed returns true if the error is FDB error 1006.
 func isAllAlternativesFailed(err error) bool {
-	var fdbErr *wire.FDBError
-	return errors.As(err, &fdbErr) && fdbErr.Code == ErrAllAlternativesFailed
+	code, ok := fdbErrorCode(err)
+	return ok && code == ErrAllAlternativesFailed
 }
 
 // isMaybeDelivered reports whether err carries request_maybe_delivered (1030)
@@ -1033,23 +1043,16 @@ func isAllAlternativesFailed(err error) bool {
 // the same for teardowns coded 1030; this predicate is what additionally catches
 // an IN-BAND 1100, which no transport arm ever sees.
 func isMaybeDelivered(err error) bool {
-	var fdbErr *wire.FDBError
-	return errors.As(err, &fdbErr) &&
-		(fdbErr.Code == ErrRequestMaybeDelivered || fdbErr.Code == ErrBrokenPromise)
+	code, ok := fdbErrorCode(err)
+	return ok && (code == ErrRequestMaybeDelivered || code == ErrBrokenPromise)
 }
 
 // isFutureVersionOrProcessBehind returns true for errors that should trigger
 // future_version backoff in the QueueModel. Matches C++ ModelHolder::release()
 // which passes futureVersion=true for future_version (1009) and process_behind (1037).
 func isFutureVersionOrProcessBehind(err error) bool {
-	if err == nil {
-		return false
-	}
-	var fdbErr *wire.FDBError
-	if !errors.As(err, &fdbErr) {
-		return false
-	}
-	return fdbErr.Code == ErrFutureVersion || fdbErr.Code == ErrProcessBehind
+	code, ok := fdbErrorCode(err)
+	return ok && (code == ErrFutureVersion || code == ErrProcessBehind)
 }
 
 // resolveFallback runs the sequential fallback after the speculative hedge fails: it tries every replica
