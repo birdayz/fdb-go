@@ -1076,6 +1076,10 @@ type PendingGet struct {
 	done    bool
 	memoVal []byte
 	memoErr error
+	// settledFlag mirrors done for waiters that must not block on mu; settled
+	// is closed when done, made on demand by such a waiter.
+	settledFlag atomic.Bool
+	settled     atomic.Pointer[chan struct{}]
 }
 
 // GetKey resolves a key selector to the actual key in the database.

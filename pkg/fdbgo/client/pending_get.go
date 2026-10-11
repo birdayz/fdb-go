@@ -13,13 +13,22 @@ import (
 // retained context. A retired future may consume a ready reply, never retry
 // through the replacement transaction. Repeated callers receive the memo.
 func (p *PendingGet) Resolve() ([]byte, error) {
-	p.mu.Lock()
-	if p.done {
-		value, err := p.memoVal, p.memoErr
-		p.mu.Unlock()
-		return value, err
+	val, err, _ := p.ResolveOrAbort(nil)
+	return val, err
+}
+
+// handoff carries an aborted wait's remaining work to a goroutine that finishes
+// the read, so commit still sees it, as C++ keeps a cancelled read in `reading`.
+type handoff struct{ finish func() ([]byte, error) }
+
+func (*handoff) Error() string { return "fdbgo: pending get handed off" }
+
+// ResolveOrAbort is Resolve whose waits also end when abort closes, as a
+// cancelled future's waiter wakes in libfdb_c; the read still completes.
+func (p *PendingGet) ResolveOrAbort(abort <-chan struct{}) ([]byte, error, bool) {
+	if p.settledFlag.Load() {
+		return p.memoVal, p.memoErr, false
 	}
-	p.mu.Unlock()
 	op := p.tx.readOperation(p.ctx)
 	p.tx.readErrMu.Lock()
 	inc := p.tx.readLife
@@ -33,24 +42,93 @@ func (p *PendingGet) Resolve() ([]byte, error) {
 	if inc.gen == p.gen {
 		lease = p.tx.enterReadState(p.ctx, inc, false)
 	}
-	defer lease.release()
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	if !p.lockOrWait(abort) {
+		lease.release()
+		if p.settledFlag.Load() {
+			return p.memoVal, p.memoErr, false
+		}
+		return nil, nil, true
+	}
+	handedOff := false
+	defer func() {
+		if handedOff {
+			return
+		}
+		if !p.done { // only a panic gets here unsettled; settle so queued waiters wake
+			p.completeLocked(nil, errReadPanicked)
+		}
+		p.mu.Unlock()
+		lease.release()
+	}()
 	if p.done {
-		return p.memoVal, p.memoErr
+		return p.memoVal, p.memoErr, false
 	}
 	if lease == nil {
 		p.retireLocked()
-		return p.memoVal, p.memoErr
+		return p.memoVal, p.memoErr, false
 	}
 	parent := p.ctx
 	if op := p.tx.readOperation(p.ctx); op != nil {
 		parent = op.parent
 	}
 	ctx := context.WithValue(p.ctx, readContextKey{p.tx}, &readOperation{inc: inc, parent: parent, lease: lease})
-	val, err := p.resolve(ctx)
+	val, err := p.resolve(ctx, abort)
+	if h, ok := err.(*handoff); ok {
+		handedOff = true
+		go p.finishHandoff(h, lease)
+		return nil, nil, true
+	}
 	p.completeLocked(val, err)
-	return p.memoVal, p.memoErr
+	return p.memoVal, p.memoErr, false
+}
+
+// finishHandoff completes a handed-off read, then releases what the aborted
+// waiter held.
+func (p *PendingGet) finishHandoff(h *handoff, lease *executionLease) {
+	defer lease.release()
+	defer p.mu.Unlock()
+	v, e := recoverRead(p, h.finish)
+	p.completeLocked(v, e)
+}
+
+var errReadPanicked = errors.New("fdbgo: panic resolving a pipelined read")
+
+// recoverRead runs fn on a read's own goroutine, turning a panic into the
+// read's error so the process survives, as the network thread does in C++.
+func recoverRead(p *PendingGet, fn func() ([]byte, error)) (val []byte, err error) {
+	pb := &panicBackstop{name: "pipelined read", db: p.tx.db}
+	if pb.run(func() { val, err = fn() }) {
+		return nil, errReadPanicked
+	}
+	return val, err
+}
+
+// lockOrWait takes mu. With an abort it does not block on mu: it waits for the
+// holder, which always completes the read, to settle it, or for abort.
+func (p *PendingGet) lockOrWait(abort <-chan struct{}) bool {
+	if abort == nil {
+		p.mu.Lock()
+		return true
+	}
+	if p.mu.TryLock() {
+		return true
+	}
+	ch := p.settled.Load()
+	if ch == nil {
+		c := make(chan struct{})
+		if p.settled.CompareAndSwap(nil, &c) {
+			ch = &c
+		} else {
+			ch = p.settled.Load()
+		}
+	}
+	if !p.settledFlag.Load() {
+		select {
+		case <-*ch:
+		case <-abort:
+		}
+	}
+	return false
 }
 
 func (p *PendingGet) interruption() error {
@@ -109,6 +187,12 @@ func (p *PendingGet) completeLocked(value []byte, err error) {
 	// The cache retains the reply; this future owns a separate, mutable memo.
 	p.memoVal = bytes.Clone(value)
 	p.memoErr = p.tx.trackReadErrorGen(err, p.gen)
+	// After the memo: lock-free readers return it once they see the flag.
+	if !p.settledFlag.Swap(true) {
+		if ch := p.settled.Load(); ch != nil {
+			close(*ch)
+		}
+	}
 	if p.cancel != nil {
 		p.cancel()
 		p.cancel = nil
@@ -120,32 +204,60 @@ func (p *PendingGet) completeLocked(value []byte, err error) {
 	p.tx.readErrMu.Unlock()
 }
 
-func (p *PendingGet) resolve(ctx context.Context) ([]byte, error) {
+// full re-sends the read; with an abort it runs on its own goroutine so the
+// wait can be handed off.
+func (p *PendingGet) full(ctx context.Context, abort <-chan struct{}) ([]byte, error) {
+	if abort == nil {
+		return p.resolveFull(ctx)
+	}
+	type result struct {
+		val []byte
+		err error
+	}
+	res := make(chan result, 1)
+	go func() {
+		v, e := recoverRead(p, func() ([]byte, error) { return p.resolveFull(ctx) })
+		res <- result{v, e}
+	}()
+	select {
+	case r := <-res:
+		return r.val, r.err
+	case <-abort:
+		return nil, &handoff{finish: func() ([]byte, error) {
+			r := <-res
+			return r.val, r.err
+		}}
+	}
+}
+
+func (p *PendingGet) resolve(ctx context.Context, abort <-chan struct{}) ([]byte, error) {
 	if !p.flushed {
 		p.flushed = true
 		if err := p.conn.FlushContext(ctx); err != nil {
 			if response, ready := p.replyHandle.TakeReadyOrCancel(); ready {
 				p.replyConsumed = true
-				return p.resolveReply(ctx, response)
+				return p.resolveReply(ctx, response, abort)
 			}
 			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 				p.tx.db.handleConnError(p.addr)
 			}
 			p.releaseWireLocked()
-			return p.resolveFull(ctx)
+			return p.full(ctx, abort)
 		}
 	}
 	select {
 	case response := <-p.replyCh:
 		p.replyConsumed = true
-		return p.resolveReply(ctx, response)
+		return p.resolveReply(ctx, response, abort)
 	case <-p.timer.C:
 		p.releaseWireLocked()
-		return p.resolveFull(ctx)
+		return p.full(ctx, abort)
+	case <-abort:
+		return nil, &handoff{finish: func() ([]byte, error) { return p.resolve(ctx, nil) }}
 	case <-ctx.Done():
 		if response, ready := p.replyHandle.TakeReadyOrCancel(); ready {
 			p.replyConsumed = true
-			return p.resolveReply(ctx, response)
+			return p.resolveReply(ctx, response, abort)
 		}
 		return nil, p.interruption()
 	}
@@ -165,7 +277,7 @@ func (p *PendingGet) readReply(response transport.Response) ([]byte, error, bool
 	return value, err, false
 }
 
-func (p *PendingGet) resolveReply(ctx context.Context, response transport.Response) ([]byte, error) {
+func (p *PendingGet) resolveReply(ctx context.Context, response transport.Response, abort <-chan struct{}) ([]byte, error) {
 	value, err, retry := p.readReply(response)
 	if !retry {
 		if err == nil && !p.tx.rywDisabled {
@@ -179,7 +291,7 @@ func (p *PendingGet) resolveReply(ctx context.Context, response transport.Respon
 		p.tx.db.locCache.invalidate(p.key, p.tenantID, false)
 	}
 	p.releaseWireLocked()
-	return p.resolveFull(ctx)
+	return p.full(ctx, abort)
 }
 
 func (p *PendingGet) resolveFull(ctx context.Context) ([]byte, error) {

@@ -51,6 +51,10 @@ project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (
 - `TransformedRecordSerializer` encrypts and decrypts under every AES transformation Java's serializer can run with its 16-byte IV (CBC and PCBC with any SunJCE padding, CTR, CFB and OFB of 8 to 128 bits, and the `AES_128`/`AES_192`/`AES_256` forms), not only `AES/CBC/PKCS5Padding`. Other names still fail with "encryption error" or "decryption error".
 - `TransformedRecordSerializer` encrypts and decrypts under every AES transformation Java's serializer can run with its 16-byte IV (CBC and PCBC with any SunJCE padding, CTS, CTR, CFB and OFB of 8 to 128 bits, the `AES_128`/`AES_192`/`AES_256` forms and the NIST AES OIDs, as measured on JDK 21), not only `AES/CBC/PKCS5Padding`. Other names still fail with "encryption error" or "decryption error".
 - `TransformedRecordSerializer` encrypts and decrypts under every AES transformation Java's serializer can run with its 16-byte IV (CBC and PCBC with any SunJCE padding, CTS, CTR, CFB and OFB of 1 to 16 whole bytes, the `AES_128`/`AES_192`/`AES_256` forms and the NIST AES OIDs, as measured on JDK 21), not only `AES/CBC/PKCS5Padding`. Other names still fail with "encryption error" or "decryption error".
+- `fdb` futures behave like libfdb_c's: `Cancel` on a future that is not ready completes it with
+  `operation_cancelled` (1101) (it was a no-op), a pipelined `Get` future becomes ready while only
+  `IsReady` is polled (it stayed not-ready until `Get`), and one future may be read from several
+  goroutines.
 - SQL planning has no task budget by default, as in Java (was 150,000 tasks, 250,000 right-deep); the
   caller's context bounds it, and `MAX_TOTAL_TASK_COUNT`, `MAX_TASK_QUEUE_SIZE` and
   `MAX_NUM_MATCHES_PER_RULE_CALL` opt into Java's caps (54F02 when exhausted).

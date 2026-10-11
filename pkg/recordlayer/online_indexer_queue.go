@@ -382,7 +382,7 @@ func (oi *OnlineIndexer) cleanupHeartbeatAttempt(ctx context.Context, heartbeat 
 	future := tx.Commit()
 	defer future.Cancel()
 	// A dispatched pure-Go commit is deliberately detached and its Future.Cancel
-	// is a no-op. Do not enter Get until ready: polling the nonblocking readiness
+	// does not stop it. Do not enter Get until ready: polling the nonblocking readiness
 	// contract bounds our wait without abandoning a blocked Get goroutine. The
 	// backend may still finish its detached own-key clear after we return; the
 	// reads above make it conflict with any write of the key since.

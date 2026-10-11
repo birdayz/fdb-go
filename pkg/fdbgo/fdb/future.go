@@ -1,6 +1,9 @@
 package fdb
 
 import (
+	"sync"
+	"sync/atomic"
+
 	"fdb.dev/pkg/fdbgo/client"
 )
 
@@ -11,16 +14,23 @@ type Future interface {
 	Cancel()
 }
 
-// futureBase provides goroutine-backed future implementation.
-// All read operations (Get, GetRange, etc.) start a goroutine and store
-// the result in the future. Get() blocks until the goroutine completes.
+// futureBase is the completion shared by every future: the operation or a
+// Cancel publishes exactly once, and readers wait on done.
 type futureBase struct {
 	done chan struct{}
+	once sync.Once
 	err  error
 }
 
 func (f *futureBase) init() {
 	f.done = make(chan struct{})
+}
+
+func (f *futureBase) finish(set func()) {
+	f.once.Do(func() {
+		set()
+		close(f.done)
+	})
 }
 
 func (f *futureBase) BlockUntilReady() {
@@ -36,10 +46,21 @@ func (f *futureBase) IsReady() bool {
 	}
 }
 
+// Cancel completes a future that is not yet ready with operation_cancelled
+// (1101), as fdb_future_cancel does; the operation itself is not stopped.
 func (f *futureBase) Cancel() {
-	// In the pure Go client, cancellation is a no-op on futures since
-	// the underlying operation is already in-flight. The transaction's
-	// Cancel() method is the proper way to cancel operations.
+	f.finish(func() { f.err = Error{Code: 1101} })
+}
+
+// runFuture resolves f from fn on its own goroutine; a Cancel may win.
+func runFuture[T any](f *futureBase, val *T, fn func() (T, error)) {
+	go func() {
+		var v T
+		var err error
+		defer func() { f.finish(func() { *val, f.err = v, err }) }()
+		defer recoverFuturePanic(func(e error) { err = e })
+		v, err = fn()
+	}()
 }
 
 // FutureByteSlice represents the asynchronous result of a function that
@@ -71,53 +92,67 @@ func (f *futureByteSlice) MustGet() []byte {
 func newReadyFutureByteSlice(val []byte, err error) FutureByteSlice {
 	f := &futureByteSlice{}
 	f.init()
-	f.val = val
-	f.err = err
-	close(f.done)
+	f.finish(func() { f.val, f.err = val, err })
 	return f
 }
 
 func newFutureByteSlice(fn func() ([]byte, error)) FutureByteSlice {
 	f := &futureByteSlice{}
 	f.init()
-	go func() {
-		defer close(f.done)
-		defer recoverFuturePanic(func(e error) { f.err = e }) // RFC-110
-		f.val, f.err = fn()
-	}()
+	runFuture(&f.futureBase, &f.val, fn)
 	return f
 }
 
-// newPendingFutureByteSlice creates a future backed by a PendingGet.
-// No goroutine is spawned. Resolve() is called lazily on first Get()/MustGet().
-//
-// This is critical for pipelining: N tx.Get() calls write N frames to the
-// buffer via SendFrameDeferred. If we spawned a goroutine per Get, it would
-// race to call Flush() before all N frames are queued, defeating batching.
-// With lazy resolve, the first MustGet() flushes all N frames at once.
+// newPendingFutureByteSlice wraps a pipelined read. Get resolves it on the
+// caller's goroutine, so N Gets flush their N queued frames together; polling
+// IsReady starts a background resolve instead, so it does become ready.
+// A Get that is not yet ready makes one wake channel; nothing else allocates.
 func newPendingFutureByteSlice(pending *client.PendingGet) FutureByteSlice {
 	return &pendingFutureByteSlice{pending: pending}
 }
 
-// pendingFutureByteSlice resolves lazily — no goroutine, no channel.
-// Matches C++ client where futures are resolved by the network thread
-// and Get() blocks on the result directly.
-//
-// Single-goroutine: each future is created by tx.Get() and resolved by
-// the same goroutine. No sync.Once needed — plain bool flag suffices.
-type pendingFutureByteSlice struct {
-	pending  *client.PendingGet
-	val      []byte
-	err      error
-	resolved bool
+// pendingRead is the part of *client.PendingGet a pipelined future waits on.
+type pendingRead interface {
+	ResolveOrAbort(abort <-chan struct{}) ([]byte, error, bool)
 }
 
+type pendingFutureByteSlice struct {
+	pending pendingRead
+	once    sync.Once
+	ready   atomic.Bool
+	polled  atomic.Bool
+	val     []byte
+	err     error
+
+	wakeMu sync.Mutex
+	wake   chan struct{} // closed by Cancel so blocked waiters return
+	woken  bool
+}
+
+func (f *pendingFutureByteSlice) finish(val []byte, err error) {
+	f.once.Do(func() {
+		f.val, f.err = val, err
+		f.ready.Store(true)
+	})
+}
+
+// resolve may run on several goroutines: PendingGet.Resolve is memoized.
 func (f *pendingFutureByteSlice) resolve() {
-	if !f.resolved {
-		var err error
-		f.val, err = f.pending.Resolve()
-		f.err = convertError(err)
-		f.resolved = true
+	if f.ready.Load() {
+		return
+	}
+	f.wakeMu.Lock()
+	if f.wake == nil {
+		f.wake = make(chan struct{})
+	}
+	wake := f.wake
+	f.wakeMu.Unlock()
+	if f.ready.Load() { // a Cancel that found no channel completed first
+		return
+	}
+	val, err, abandoned := f.pending.ResolveOrAbort(wake)
+	if !abandoned {
+		f.finish(val, convertError(err))
 	}
 }
 
@@ -136,9 +171,29 @@ func (f *pendingFutureByteSlice) MustGet() []byte {
 
 func (f *pendingFutureByteSlice) BlockUntilReady() { f.resolve() }
 
-func (f *pendingFutureByteSlice) IsReady() bool { return f.resolved }
+func (f *pendingFutureByteSlice) IsReady() bool {
+	if f.ready.Load() {
+		return true
+	}
+	if f.polled.CompareAndSwap(false, true) {
+		go func() {
+			defer recoverFuturePanic(func(e error) { f.finish(nil, e) })
+			f.resolve()
+		}()
+	}
+	return false
+}
 
-func (f *pendingFutureByteSlice) Cancel() {}
+// Cancel wakes blocked waiters; the read still completes, for commit.
+func (f *pendingFutureByteSlice) Cancel() {
+	f.finish(nil, Error{Code: 1101})
+	f.wakeMu.Lock()
+	if f.wake != nil && !f.woken {
+		f.woken = true
+		close(f.wake)
+	}
+	f.wakeMu.Unlock()
+}
 
 // FutureNil represents the asynchronous result of a function that has no
 // return value.
@@ -166,15 +221,11 @@ func (f *futureNil) MustGet() {
 func newFutureNil(fn func() error) FutureNil {
 	f := &futureNil{}
 	f.init()
-	go func() {
-		defer close(f.done)
-		defer recoverFuturePanic(func(e error) { f.err = e }) // RFC-110
-		f.err = fn()
-	}()
+	runFuture(&f.futureBase, new(struct{}), func() (struct{}, error) { return struct{}{}, fn() })
 	return f
 }
 
-// cancellableFutureNil is a FutureNil whose Cancel() runs a hook, instead of the base no-op. Watch()
+// cancellableFutureNil is a FutureNil whose Cancel() completes with 1101 and runs a hook. Watch()
 // uses it so that an app freeing an unneeded watch by Cancel()ing the returned future actually
 // cancels the underlying watch (its context → the long-poll drains and releases its
 // outstanding-watch slot). Without this the slot stays charged until the key changes.
@@ -184,6 +235,7 @@ type cancellableFutureNil struct {
 }
 
 func (f *cancellableFutureNil) Cancel() {
+	f.futureBase.Cancel() // before the hook, whose wake-up would publish its ctx error
 	if f.cancel != nil {
 		f.cancel()
 	}
@@ -192,11 +244,7 @@ func (f *cancellableFutureNil) Cancel() {
 func newFutureNilCancel(fn func() error, cancel func()) FutureNil {
 	f := &cancellableFutureNil{cancel: cancel}
 	f.init()
-	go func() {
-		defer close(f.done)
-		defer recoverFuturePanic(func(e error) { f.err = e }) // RFC-110
-		f.err = fn()
-	}()
+	runFuture(&f.futureBase, new(struct{}), func() (struct{}, error) { return struct{}{}, fn() })
 	return f
 }
 
@@ -229,20 +277,14 @@ func (f *futureKey) MustGet() Key {
 func newReadyFutureKey(val Key, err error) FutureKey {
 	f := &futureKey{}
 	f.init()
-	f.val = val
-	f.err = err
-	close(f.done)
+	f.finish(func() { f.val, f.err = val, err })
 	return f
 }
 
 func newFutureKey(fn func() (Key, error)) FutureKey {
 	f := &futureKey{}
 	f.init()
-	go func() {
-		defer close(f.done)
-		defer recoverFuturePanic(func(e error) { f.err = e }) // RFC-110
-		f.val, f.err = fn()
-	}()
+	runFuture(&f.futureBase, &f.val, fn)
 	return f
 }
 
@@ -275,20 +317,14 @@ func (f *futureInt64) MustGet() int64 {
 func newReadyFutureInt64(val int64, err error) FutureInt64 {
 	f := &futureInt64{}
 	f.init()
-	f.val = val
-	f.err = err
-	close(f.done)
+	f.finish(func() { f.val, f.err = val, err })
 	return f
 }
 
 func newFutureInt64(fn func() (int64, error)) FutureInt64 {
 	f := &futureInt64{}
 	f.init()
-	go func() {
-		defer close(f.done)
-		defer recoverFuturePanic(func(e error) { f.err = e }) // RFC-110
-		f.val, f.err = fn()
-	}()
+	runFuture(&f.futureBase, &f.val, fn)
 	return f
 }
 
@@ -321,11 +357,7 @@ func (f *futureKeyArray) MustGet() []Key {
 func newFutureKeyArray(fn func() ([]Key, error)) FutureKeyArray {
 	f := &futureKeyArray{}
 	f.init()
-	go func() {
-		defer close(f.done)
-		defer recoverFuturePanic(func(e error) { f.err = e }) // RFC-110
-		f.val, f.err = fn()
-	}()
+	runFuture(&f.futureBase, &f.val, fn)
 	return f
 }
 

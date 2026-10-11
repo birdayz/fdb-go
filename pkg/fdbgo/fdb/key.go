@@ -19,7 +19,8 @@
 //   - Error messages: Error.Error() returns "FoundationDB error: <code>" rather
 //     than the human-readable description from libfdb_c. Use Error.Code for
 //     programmatic matching.
-//   - Future.Cancel() is a no-op — the underlying operation runs to completion.
+//   - Future.Cancel() completes the future with operation_cancelled (1101); the
+//     operation behind it continues, except a watch, which is cancelled.
 //   - No per-transaction context.Context: matching the Apple binding, methods
 //     like Get/GetRange do not accept a context parameter. Use SetTimeout for
 //     deadlines, or call Cancel() from another goroutine for cancellation.

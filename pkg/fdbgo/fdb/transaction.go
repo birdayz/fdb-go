@@ -330,8 +330,7 @@ func (tr Transaction) Cancel() {
 }
 
 // OnError determines whether an error is retryable. The returned FutureNil
-// includes the retry delay — the delay runs when Get() is called, not when
-// OnError() is called. This matches Apple binding semantics.
+// includes the retry delay, which starts at once; Cancel does not stop the reset.
 func (tr Transaction) OnError(e Error) FutureNil {
 	inner, ctx := tr.t.inner, tr.t.ctx
 	return newFutureNil(func() error {
@@ -411,8 +410,8 @@ func (tr Transaction) Watch(key KeyConvertible) FutureNil {
 	act := inner.WatchActivationFor(watchCtx)
 	// Cancel() on the returned future cancels THIS watch (its scoped context → WatchPoll drains and
 	// releases the outstanding-watch slot), so an app can free ONE unneeded watch without touching the
-	// transaction's other watches — the base future Cancel() is a no-op, which would leave
-	// the slot charged until the key changed. On a setup failure watchCancel is nil (already
+	// transaction's other watches — the base future Cancel() only completes the future, which
+	// would leave the slot charged until the key changed. On a setup failure watchCancel is nil (already
 	// cancelled+deregistered in WatchSetup); guard the hook.
 	cancelHook := func() {}
 	if watchCancel != nil {
@@ -474,11 +473,7 @@ func (tr Transaction) LocalityGetAddressesForKey(key KeyConvertible) FutureStrin
 func newFutureStringSlice(fn func() ([]string, error)) FutureStringSlice {
 	f := &futureStringSlice{}
 	f.init()
-	go func() {
-		defer close(f.done)
-		defer recoverFuturePanic(func(e error) { f.err = e }) // RFC-110
-		f.val, f.err = fn()
-	}()
+	runFuture(&f.futureBase, &f.val, fn)
 	return f
 }
 
