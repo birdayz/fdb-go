@@ -253,7 +253,11 @@ func TestKeyContinuationEmptySuffixMatchesJava(t *testing.T) {
 	pl := len(key)
 	want := binary.LittleEndian.AppendUint64([]byte{0x0A, 0x00, 0x11}, uint64(continuationMagicNumber))
 
-	idx, err := (&indexCursor{prefixLength: pl}).makeContinuation(key).ToBytes()
+	kc, err := (&indexCursor{prefixLength: pl}).makeContinuation(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	idx, err := kc.ToBytes()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,16 +286,22 @@ func TestKeyContinuationEmptySuffixMatchesJava(t *testing.T) {
 func TestKeySuffix(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
-		key  []byte
-		pl   int
-		want []byte
+		key     []byte
+		pl      int
+		want    []byte
+		wantErr bool
 	}{
-		{[]byte{1, 2, 3}, 1, []byte{2, 3}},
-		{[]byte{1, 2}, 2, []byte{}}, // equal to the prefix: empty, not nil
-		{[]byte{1}, 2, []byte{1}},   // shorter: kept whole
-		{nil, 0, nil},
+		{[]byte{1, 2, 3}, 1, []byte{2, 3}, false},
+		{[]byte{1, 2}, 2, []byte{}, false}, // equal to the prefix: empty, not nil
+		{[]byte{1}, 2, nil, true},          // shorter: Java's substring throws
+		{[]byte{1}, -1, nil, true},
+		{nil, 0, nil, false},
 	} {
-		got := keySuffix(tc.key, tc.pl)
+		got, err := keySuffix(tc.key, tc.pl)
+		if (err != nil) != tc.wantErr {
+			t.Errorf("keySuffix(%x, %d) err = %v, want error %v", tc.key, tc.pl, err, tc.wantErr)
+			continue
+		}
 		if !bytes.Equal(got, tc.want) || (got == nil) != (tc.want == nil) {
 			t.Errorf("keySuffix(%x, %d) = %x (nil=%v), want %x (nil=%v)", tc.key, tc.pl, got, got == nil, tc.want, tc.want == nil)
 		}

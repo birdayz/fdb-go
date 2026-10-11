@@ -58,15 +58,6 @@ func wrapContinuation(innerBytes []byte) ([]byte, error) {
 	return out, nil
 }
 
-// keySuffix is Java's lastKey[prefixLength:] (KeyValueCursorBase.java:233-235): a key
-// equal to the prefix is an empty but present suffix. A shorter key is kept whole.
-func keySuffix(key []byte, prefixLength int) []byte {
-	if len(key) >= prefixLength {
-		return key[prefixLength:]
-	}
-	return key
-}
-
 // keyValueContinuation defers the proto marshal to ToBytes: most rows' continuations
 // are never serialized (Java's KeyValueCursorBase.Continuation.toBytes is lazy too).
 type keyValueContinuation struct {
@@ -138,7 +129,9 @@ type keyValueCursor struct {
 	recordsScanned int // Records scanned by THIS cursor (including skipped ones) — the
 	// local "free initial pass" gate (Java's per-cursor CursorLimitManager.usedInitialPass);
 	// always allows this cursor's own first scan even if scanState is already past its budget.
-	prefixLength int // Length of the subspace prefix for continuation handling
+	keyPrefixLength int // records subspace length: where a key's primary-key tuple starts
+	bounds          kvScanBounds
+	prefixLength    int // continuation prefix length (Java's calculatePrefixLength)
 
 	// scanState is the (possibly shared) scanned-records/scanned-bytes/time
 	// counter set that ScannedRecordsLimit/ScannedBytesLimit/TimeLimit are
@@ -311,7 +304,7 @@ func (c *keyValueCursor) readNextRecord(ctx context.Context) (*FDBStoredRecord[p
 
 	recordsSubspace := c.recordsSubspace
 
-	prefixLen := c.prefixLength
+	prefixLen := c.keyPrefixLength
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -445,11 +438,11 @@ func (c *keyValueCursor) peekVersionKey(recordsSubspace subspace.Subspace, prima
 	if !ok {
 		return nil, nil
 	}
-	if len(kv.Key) <= c.prefixLength {
+	if len(kv.Key) <= c.keyPrefixLength {
 		c.bufferedKV = &kv
 		return nil, nil
 	}
-	tupleBytes := kv.Key[c.prefixLength:]
+	tupleBytes := kv.Key[c.keyPrefixLength:]
 	suffix, pkEnd, err := tuplefast.SplitKeySuffix(tupleBytes)
 	if err != nil {
 		c.bufferedKV = &kv
@@ -545,11 +538,11 @@ func (c *keyValueCursor) readNextBareRecord(ctx context.Context) (*FDBStoredReco
 	if !ok {
 		return nil, nil, nil // exhausted
 	}
-	if len(kv.Key) <= c.prefixLength {
-		return nil, nil, fmt.Errorf("record cursor: key length %d <= subspace prefix length %d (malformed or out-of-range key under the records subspace)", len(kv.Key), c.prefixLength)
+	if len(kv.Key) <= c.keyPrefixLength {
+		return nil, nil, fmt.Errorf("record cursor: key length %d <= subspace prefix length %d (malformed or out-of-range key under the records subspace)", len(kv.Key), c.keyPrefixLength)
 	}
 	// The whole tuple after the prefix is the primary key — there is no suffix.
-	primaryKey, pkErr := tuplefast.Unpack(kv.Key[c.prefixLength:])
+	primaryKey, pkErr := tuplefast.Unpack(kv.Key[c.keyPrefixLength:])
 	if pkErr != nil {
 		return nil, nil, fmt.Errorf("failed to unpack legacy primary key: %w", pkErr)
 	}
@@ -611,11 +604,11 @@ func (c *keyValueCursor) readSplitRecord(
 			break // Iterator exhausted
 		}
 
-		if len(kv.Key) <= c.prefixLength {
+		if len(kv.Key) <= c.keyPrefixLength {
 			c.bufferedKV = &kv
 			break
 		}
-		chunkTuple := kv.Key[c.prefixLength:]
+		chunkTuple := kv.Key[c.keyPrefixLength:]
 		suffix, chunkPKEnd, splitErr := tuplefast.SplitKeySuffix(chunkTuple)
 		if splitErr != nil {
 			c.bufferedKV = &kv
@@ -773,7 +766,11 @@ func (c *keyValueCursor) nextKV() (fdb.KeyValue, bool, error) {
 
 // makeKeyContinuation creates a proto-wrapped continuation from an FDB key.
 func (c *keyValueCursor) makeKeyContinuation(key fdb.Key) ([]byte, error) {
-	cont, err := wrapContinuation(keySuffix(key, c.prefixLength))
+	suffix, err := keySuffix(key, c.prefixLength)
+	if err != nil {
+		return nil, err
+	}
+	cont, err := wrapContinuation(suffix)
 	if err != nil {
 		return nil, fmt.Errorf("failed to wrap continuation: %w", err)
 	}
@@ -828,69 +825,10 @@ func sameTuple(a, b tuple.Tuple) bool {
 
 // initIterator sets up the FDB range iterator
 func (c *keyValueCursor) initIterator() error {
-	recordsSubspace := c.store.subspace.Sub(RecordKey)
-
-	// Build range based on endpoints
-	var begin, end fdb.Key
-
-	// Handle low endpoint
-	switch c.lowEndpoint {
-	case EndpointTypeTreeStart:
-		begin = recordsSubspace.FDBKey()
-	case EndpointTypeRangeInclusive:
-		begin = recordsSubspace.Pack(c.low)
-	case EndpointTypeRangeExclusive:
-		packedKey := recordsSubspace.Pack(c.low)
-		// Use Strinc to skip past ALL keys with this prefix.
-		// append(0x00) is wrong because pack(pk)\x00 < pack(pk, suffix)
-		// so the boundary record would still be included.
-		// Matches Java's ByteArrayUtil.strinc() for exclusive low endpoints.
-		strincKey, strincErr := fdb.Strinc(packedKey)
-		if strincErr != nil {
-			return fmt.Errorf("failed to compute strinc for exclusive low endpoint: %w", strincErr)
-		}
-		begin = strincKey
-	case EndpointTypeContinuation:
-		if c.continuation != nil {
-			innerContinuation := unwrapContinuation(c.continuation)
-			fullKey := append(recordsSubspace.FDBKey(), innerContinuation...)
-			begin = append(fullKey, 0x00) // Start after the continuation key
-		} else {
-			begin = recordsSubspace.FDBKey()
-		}
-	default:
-		begin = recordsSubspace.Pack(c.low)
+	rng, err := c.bounds.keyRange(c.continuation, c.scanProperties.IsReverse())
+	if err != nil {
+		return err
 	}
-
-	// Handle high endpoint
-	switch c.highEndpoint {
-	case EndpointTypeTreeEnd:
-		_, endKey := recordsSubspace.FDBRangeKeys()
-		end = endKey.FDBKey()
-	case EndpointTypeRangeInclusive:
-		packedKey := recordsSubspace.Pack(c.high)
-		var strincErr error
-		end, strincErr = fdb.Strinc(packedKey)
-		if strincErr != nil {
-			return fmt.Errorf("failed to compute strinc for high endpoint: %w", strincErr)
-		}
-	case EndpointTypeRangeExclusive:
-		end = recordsSubspace.Pack(c.high)
-	case EndpointTypeContinuation:
-		if c.continuation != nil {
-			innerContinuation := unwrapContinuation(c.continuation)
-			fullKey := append(recordsSubspace.FDBKey(), innerContinuation...)
-			end = fullKey // exclusive: FDB won't return this key
-		} else {
-			_, endKey := recordsSubspace.FDBRangeKeys()
-			end = endKey.FDBKey()
-		}
-	default:
-		end = recordsSubspace.Pack(c.high)
-	}
-
-	// Create range
-	rng := fdb.KeyRange{Begin: begin, End: end}
 
 	// Get range options
 	options := fdb.RangeOptions{

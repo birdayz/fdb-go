@@ -257,21 +257,22 @@ protected int calculatePrefixLength() {
 ```
 Java calculates the common prefix of low and high byte ranges. For `TupleRange.ALL`, low = high = `subspace.pack()`, so `prefixLength = subspace.pack().length`.
 
-**Go** (`store.go:958`):
-```go
-prefixLength := len(recordsSubspace.FDBKey())
-```
-Go uses the subspace prefix length directly. For index cursors (`index_scan.go:195`): `prefixLength: len(indexSubspace.FDBKey())`.
+**Go** (`kv_scan_range.go`, `newKVScanBounds`): ports `calculatePrefixLength`, the
+PREFIX_STRING minus-one rule and the `lowBytes[0:prefixLength] + inner` resume for the
+index, count/atomic, bitmap and record key-value cursors.
 
-**Verdict**: COMPATIBLE for `TupleRange.ALL` (the common case). For narrower ranges (e.g., `TupleRange.allOf(somePrefix)`), Java might compute a longer common prefix, resulting in shorter continuation tokens. However, Go's approach of using the subspace length produces valid continuation tokens that Java can consume -- they just include a few extra prefix bytes. When Java produces a continuation with a shorter prefix, Go correctly reconstructs the full key by prepending the subspace bytes.
-
-**Risk**: UNTESTED for non-ALL ranges where Go produces a continuation and Java resumes (or vice versa). The extra bytes in Go's continuation would not cause errors but would be slightly redundant.
+**Verdict**: COMPATIBLE (corrected). This section originally said Go's subspace-length
+prefix was compatible on narrowed ranges. It was not: on `allOf(prefix)`, a leading-column
+equality or a grouped aggregate lookup, the token bytes differed, and resuming the other
+engine's token could return rows outside the range, skip or repeat rows, or end early.
+Pinned by `continuation_prefix_length_test.go` and the narrowed-range cases in
+`conformance/index_continuation_conformance_test.go`.
 
 ### 3.3 Continuation Application
 
 **Java**: Forward scan sets `lowEndpoint = CONTINUATION`, `lowBytes = prefix + continuation + \x00`. Reverse scan sets `highEndpoint = CONTINUATION`, `highBytes = prefix + continuation` (exclusive).
 
-**Go** (`key_value_cursor.go:461-465`): Forward: `begin = subspaceKey + continuation + \x00`. Reverse: `end = subspaceKey + continuation` (exclusive).
+**Go** (`kv_scan_range.go`, `kvScanBounds.keyRange`): the same, with the prefix from §3.2.
 
 **Verdict**: COMPATIBLE -- same byte manipulation for both directions.
 

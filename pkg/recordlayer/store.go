@@ -1772,10 +1772,8 @@ func (store *FDBRecordStore) ScanRecordsInRange(
 	continuation []byte,
 	scanProperties ScanProperties,
 ) RecordCursor[*FDBStoredRecord[proto.Message]] {
-	// Calculate the prefix length for proper continuation handling
-	// This is the length of the records subspace prefix
 	recordsSubspace := store.recordsSubspace
-	prefixLength := len(recordsSubspace.FDBKey())
+	bounds := newKVScanBounds(recordsSubspace, low, high, lowEndpoint, highEndpoint)
 
 	return instrumentCursor(store.context.Timer(), EventScanRecords, &keyValueCursor{
 		store:               store,
@@ -1785,7 +1783,9 @@ func (store *FDBRecordStore) ScanRecordsInRange(
 		highEndpoint:        highEndpoint,
 		continuation:        continuation,
 		scanProperties:      scanProperties,
-		prefixLength:        prefixLength,
+		keyPrefixLength:     len(recordsSubspace.Bytes()),
+		bounds:              bounds,
+		prefixLength:        bounds.prefixLength,
 		scanState:           resolveScanLimiterState(scanProperties.ExecuteProperties),
 		recordsSubspace:     recordsSubspace,
 		storeRecordVersions: store.metaData.IsStoreRecordVersions(),

@@ -1390,21 +1390,6 @@ OUTPUT slot by ordinal (SortKey.Pos carried through the union lift;
 translateSort bakes the slot). Both are Go read-side extensions on a surface
 where Java's own behavior is non-standard; wire compat is untouched.
 
-## Key-value continuation prefix length: subspace length vs Java's range common prefix (OPEN, wire bug)
-
-Java's `KeyValueCursorBase` strips `prefixLength` bytes from `lastKey`, and
-`prefixLength` is the common prefix of the packed low and high range bounds
-(`calculatePrefixLength`, `KeyValueCursorBase.java:425-432`, called at `:315`; minus 1
-when both ends are PREFIX_STRING, `:318-320`). On resume it rebuilds
-`lowBytes[0:prefixLength] + inner` (`:322-333`). Go strips and rebuilds with
-`len(subspace.FDBKey())` instead (index, count, bitmap, record-key and store cursors).
-For any narrowed range (`allOf(prefix)`, an equality on a leading column, grouped
-aggregate lookups) the `inner_continuation` bytes differ from Java's. When Go resumes
-a Java token it builds `subspace + rest`, which can fall below the range's low bound.
-The continuation replaces `begin` outright, so the scan can return rows outside the
-range. Cross-language conformance covers only `TupleRange.ALL`, which is why this was
-missed. Fix: port `calculatePrefixLength` and the matching resume to every cursor site.
-
 ## Cursor/continuation surface — systematic hunt (RFC-180 wave 2)
 
 Four parallel Java-vs-Go sweeps (FlatMapPipelinedCursor; union/intersection

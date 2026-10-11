@@ -31,6 +31,7 @@ type countKVCursor struct {
 	iterator     rangeIterator
 	closed       bool
 	returned     int // also this cursor's own free-initial-pass gate (Java's usedInitialPass)
+	bounds       kvScanBounds
 	prefixLength int
 	lastCont     []byte
 	tupleValues  bool // if true, decode values as tuple-packed bytes
@@ -48,6 +49,7 @@ type countKVCursor struct {
 func newCountIndexCursor(index *Index, indexSubspace subspace.Subspace, tx fdb.WritableTransaction,
 	scanRange TupleRange, continuation []byte, scanProperties ScanProperties,
 ) RecordCursor[*IndexEntry] {
+	bounds := newKVScanBounds(indexSubspace, scanRange.Low, scanRange.High, scanRange.LowEndpoint, scanRange.HighEndpoint)
 	return &countKVCursor{
 		index:         index,
 		indexSubspace: indexSubspace,
@@ -55,7 +57,8 @@ func newCountIndexCursor(index *Index, indexSubspace subspace.Subspace, tx fdb.W
 		tupleRange:    scanRange,
 		continuation:  continuation,
 		scanProps:     scanProperties,
-		prefixLength:  len(indexSubspace.FDBKey()),
+		bounds:        bounds,
+		prefixLength:  bounds.prefixLength,
 	}
 }
 
@@ -64,6 +67,7 @@ func newCountIndexCursor(index *Index, indexSubspace subspace.Subspace, tx fdb.W
 func newTupleValueIndexCursor(index *Index, indexSubspace subspace.Subspace, tx fdb.WritableTransaction,
 	scanRange TupleRange, continuation []byte, scanProperties ScanProperties,
 ) RecordCursor[*IndexEntry] {
+	bounds := newKVScanBounds(indexSubspace, scanRange.Low, scanRange.High, scanRange.LowEndpoint, scanRange.HighEndpoint)
 	return &countKVCursor{
 		index:         index,
 		indexSubspace: indexSubspace,
@@ -71,7 +75,8 @@ func newTupleValueIndexCursor(index *Index, indexSubspace subspace.Subspace, tx 
 		tupleRange:    scanRange,
 		continuation:  continuation,
 		scanProps:     scanProperties,
-		prefixLength:  len(indexSubspace.FDBKey()),
+		bounds:        bounds,
+		prefixLength:  bounds.prefixLength,
 		tupleValues:   true,
 	}
 }
@@ -84,53 +89,10 @@ func (c *countKVCursor) initIterator() error {
 	// first OnNext (resolveScanLimiterState is a no-op passthrough for the shared, non-nil case:
 	// that pointer's StartTime was already fixed when the caller minted it).
 	c.scanState = resolveScanLimiterState(c.scanProps.ExecuteProperties)
-	// Compute begin from TupleRange low endpoint
-	var begin fdb.Key
-	switch c.tupleRange.LowEndpoint {
-	case EndpointTypeTreeStart:
-		begin = c.indexSubspace.FDBKey()
-	case EndpointTypeRangeInclusive:
-		begin = c.indexSubspace.Pack(c.tupleRange.Low)
-	case EndpointTypeRangeExclusive:
-		packed := c.indexSubspace.Pack(c.tupleRange.Low)
-		var err error
-		begin, err = fdb.Strinc(packed)
-		if err != nil {
-			return fmt.Errorf("strinc for exclusive low endpoint: %w", err)
-		}
-	default:
-		begin = c.indexSubspace.FDBKey()
+	rng, err := c.bounds.keyRange(c.continuation, c.scanProps.IsReverse())
+	if err != nil {
+		return err
 	}
-
-	// Compute end from TupleRange high endpoint
-	var end fdb.Key
-	switch c.tupleRange.HighEndpoint {
-	case EndpointTypeTreeEnd:
-		_, endKey := c.indexSubspace.FDBRangeKeys()
-		end = endKey.FDBKey()
-	case EndpointTypeRangeInclusive:
-		packed := c.indexSubspace.Pack(c.tupleRange.High)
-		end = append(packed, 0xFF)
-	case EndpointTypeRangeExclusive:
-		end = c.indexSubspace.Pack(c.tupleRange.High)
-	default:
-		_, endKey := c.indexSubspace.FDBRangeKeys()
-		end = endKey.FDBKey()
-	}
-
-	// Apply continuation — overrides one endpoint
-	if c.continuation != nil {
-		innerCont := unwrapContinuation(c.continuation)
-		fullKey := append(append(fdb.Key(nil), c.indexSubspace.FDBKey()...), innerCont...)
-
-		if c.scanProps.IsReverse() {
-			end = fullKey
-		} else {
-			begin = append(fullKey, 0x00)
-		}
-	}
-
-	rng := fdb.KeyRange{Begin: begin, End: end}
 	options := fdb.RangeOptions{
 		Mode:    c.scanProps.CursorStreamingMode.ToFDB(),
 		Reverse: c.scanProps.IsReverse(),
@@ -302,7 +264,11 @@ func (c *countKVCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexEn
 }
 
 func (c *countKVCursor) makeContinuation(key fdb.Key) ([]byte, error) {
-	return wrapContinuation(keySuffix(key, c.prefixLength))
+	suffix, err := keySuffix(key, c.prefixLength)
+	if err != nil {
+		return nil, err
+	}
+	return wrapContinuation(suffix)
 }
 
 func (c *countKVCursor) Close() error {

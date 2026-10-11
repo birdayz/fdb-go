@@ -117,13 +117,13 @@ var _ = Describe("Index Scan Unit Tests", func() {
 			Expect(prepended.HighEndpoint).To(Equal(EndpointTypeRangeExclusive))
 		})
 
-		It("handles nil low/high by returning just the prefix", func() {
+		It("turns nil low/high into the prefix, inclusive (Java's TupleRange.prepend)", func() {
 			r := TupleRangeAll // Low and High are nil
 			prepended := r.Prepend(tuple.Tuple{"pfx"})
 			Expect(prepended.Low).To(Equal(tuple.Tuple{"pfx"}))
 			Expect(prepended.High).To(Equal(tuple.Tuple{"pfx"}))
-			Expect(prepended.LowEndpoint).To(Equal(EndpointTypeTreeStart))
-			Expect(prepended.HighEndpoint).To(Equal(EndpointTypeTreeEnd))
+			Expect(prepended.LowEndpoint).To(Equal(EndpointTypeRangeInclusive))
+			Expect(prepended.HighEndpoint).To(Equal(EndpointTypeRangeInclusive))
 		})
 
 		It("preserves endpoint types", func() {
@@ -436,7 +436,9 @@ var _ = Describe("Index Scan Unit Tests", func() {
 				prefixLength:  len(ss.FDBKey()),
 			}
 			fullKey := ss.Pack(tuple.Tuple{int64(42)})
-			cont, err := c.makeContinuation(fullKey).ToBytes()
+			kc, err := c.makeContinuation(fullKey)
+			Expect(err).NotTo(HaveOccurred())
+			cont, err := kc.ToBytes()
 			Expect(err).NotTo(HaveOccurred())
 			// TO_NEW proto-wrapped (Java 4.11.1.0 default): the packed tuple suffix
 			// (without subspace prefix) round-trips back through the dual-reader.
@@ -444,16 +446,15 @@ var _ = Describe("Index Scan Unit Tests", func() {
 			Expect(unwrapContinuation(cont)).To(Equal(suffix))
 		})
 
-		It("uses full key when key is shorter than prefix", func() {
+		It("rejects a key shorter than the prefix, as Java's substring does", func() {
 			ss := subspace.Sub("idx")
 			c := &indexCursor{
 				indexSubspace: ss,
 				prefixLength:  len(ss.FDBKey()),
 			}
 			shortKey := fdb.Key{0x01}
-			cont, err := c.makeContinuation(shortKey).ToBytes()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(unwrapContinuation(cont)).To(Equal([]byte(shortKey)))
+			_, err := c.makeContinuation(shortKey)
+			Expect(err).To(HaveOccurred())
 		})
 	})
 

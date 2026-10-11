@@ -1311,16 +1311,17 @@ var _ = Describe("KeyValueCursor", func() {
 				contBytes, contErr := last1.GetContinuation().ToBytes()
 				Expect(contErr).NotTo(HaveOccurred())
 
-				// Resume: use continuation with TREE_START/TREE_END won't work
-				// because ScanRecordsInRange doesn't wire continuation into
-				// endpoints. Use ScanRecords which handles continuation properly.
-				unlimitedProps := ForwardScan()
-				cursor2 := store.ScanRecords(contBytes, unlimitedProps)
+				// A token resumes only the range that minted it: its prefix is the
+				// range's common prefix (Java's calculatePrefixLength).
+				cursor2 := store.ScanRecordsInRange(
+					tuple.Tuple{int64(2)}, tuple.Tuple{int64(8)},
+					EndpointTypeRangeInclusive, EndpointTypeRangeInclusive,
+					contBytes, ForwardScan(),
+				)
 				ids2, last2 := drainOrderIDs(cursor2)
 				_ = cursor2.Close()
 
-				// Continuation resumes at record after 4, gets 5..10
-				Expect(ids2).To(Equal([]int64{5, 6, 7, 8, 9, 10}))
+				Expect(ids2).To(Equal([]int64{5, 6, 7, 8}))
 				Expect(last2.GetNoNextReason()).To(Equal(SourceExhausted))
 				return nil, nil
 			})

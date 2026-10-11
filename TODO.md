@@ -1509,10 +1509,6 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   allocation (GC is ~39% of planner CPU); split 2, vector indexes out of
   `pkg/recordlayer` behind a maintainer registry (58 -> ~38 test targets per
   vector change); a Bazel cache shared by both CI runners.
-- [ ] Port Java's `calculatePrefixLength` (KeyValueCursorBase.java:425-432) and its resume
-  (`:322-333`) to the index, count, bitmap, record-key and store key-value cursors; Go's
-  subspace-length prefix diverges on narrowed ranges (DIVERGENCES.md "Key-value
-  continuation prefix length"). Also fix the COMPATIBLE claim in wire_compat_audit.md §3.2.
 
 ## Test lanes and test-speed work (committed with the temporal change)
 
@@ -1543,3 +1539,13 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   the fast lane. The test-suite speed investigation owns this now.
   - The race lane's timeout (1h0m16s, run 37669344266) is fixed by the split:
     it runs `sqldriver` (the driver's own tests) in about 11 min, green.
+
+## Row-limit lookahead at an exact page boundary
+
+- [ ] Go's key-value cursors (index_scan.go, count/bitmap, key_value_cursor.go) peek one
+  row past `ReturnedRowLimit` and report `SourceExhausted` with an end continuation when the
+  page ends exactly at the range end. Java's `KeyValueCursorBase` (KeyValueCursorBase.java:
+  113-115) passes the limit down without a lookahead and reports `RETURN_LIMIT_REACHED`
+  with a lastKey token; its next page is empty and exhausted. Rows agree; the page count,
+  stop reason and token differ. `conformance/index_continuation_range_conformance_test.go`
+  picks page sizes that avoid the boundary until this is ported.

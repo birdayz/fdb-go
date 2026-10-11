@@ -372,16 +372,6 @@ func executeScanWithRowLayout(
 			) (recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]], error) {
 				if len(recordTypePrefix) > 0 {
 					tupleRange = tupleRange.Prepend(recordTypePrefix)
-					// Clamp unbounded endpoints to the record-type prefix so
-					// the scan stays within this type's key range.
-					if tupleRange.HighEndpoint == recordlayer.EndpointTypeTreeEnd {
-						tupleRange.High = append(tuple.Tuple(nil), recordTypePrefix...)
-						tupleRange.HighEndpoint = recordlayer.EndpointTypeRangeInclusive
-					}
-					if tupleRange.LowEndpoint == recordlayer.EndpointTypeTreeStart {
-						tupleRange.Low = append(tuple.Tuple(nil), recordTypePrefix...)
-						tupleRange.LowEndpoint = recordlayer.EndpointTypeRangeInclusive
-					}
 				}
 
 				lowEndpoint := tupleRange.LowEndpoint
