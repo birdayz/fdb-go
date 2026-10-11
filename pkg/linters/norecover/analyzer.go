@@ -22,7 +22,7 @@ import (
 	"golang.org/x/tools/go/analysis"
 )
 
-// allowlist maps a repo-relative file path (matched as a suffix of the compiled
+// Allowlist maps a repo-relative file path (matched as a suffix of the compiled
 // file's path) to the number of recover() calls permitted in it. These are the
 // deliberate panic→error boundary sites documented in docs/panic-audit.md §2. Keep
 // the two in sync: this map is the executable allowlist; the doc is its rationale.

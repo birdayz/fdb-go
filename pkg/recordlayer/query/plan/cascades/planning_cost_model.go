@@ -1944,32 +1944,6 @@ func warnUnclassifiedPlanType(
 	)
 }
 
-// scanLikeCost is the metadata-independent leaf cost for the concrete join-ordering
-// recursion (provably-unique full-equality bind → exact physical multiplicity;
-// else table cardinality ×
-// per-comparison selectivity × the physical-wrapper discount). The scan/index
-// WRAPPER HintCost is metadata-aware (unique/covering) for the memo cost framework;
-// the join-ordering cost deliberately uses selectivity-only leaf cost so it is
-// consistent without PlanContext (RFC-069).
-//
-// uniqueKeyColumnCount gates the multiplicity shortcut: a fully equality-bound
-// access is bounded only when the access is provably unique and every equality
-// component has a known physical multiplicity. A primary-key scan with every
-// PK column bound is unique; a secondary INDEX scan may be non-unique
-// (pass false) — `status = ?` binds the whole index key but selects a large bucket,
-// and costing that as a point probe would let join ordering drive off a big bucket as
-// if it were one row. Without PlanContext we cannot prove a secondary
-// index unique, so we conservatively fall through to the selectivity estimate; the
-// metadata-aware wrapper HintCost still recognises unique indexes for the memo cost.
-//
-// The first seek's CPU is FetchCPU, not ScanCPU: an ordinary singleton
-// full-PK/full-unique-index equality bind uses ONE isolated GetRange call (proven
-// against the executor — key_value_cursor.go's initIterator, flat_map_cursor.go's
-// unpipelined per-outer-row ExecutePlan — see FetchCPU's doc comment for the full
-// trace). ScanCPU is the AMORTIZED per-row rate for a range read that streams back
-// MANY rows in one call. A signed-zero Cartesian set adds explicit range seeks
-// and marginal row cost through the shared shape; it is never mispriced as a
-// singleton point probe.
 // scanLikeCostSpec is the complete leaf classification shared by the ordinary
 // concrete-cost walk and the FK-cap fixed-CPU decomposition. Keeping primary-
 // key coverage, secondary-index uniqueness, physical equality shape, and
@@ -2129,6 +2103,27 @@ func additionalPhysicalRangeSeekCPU(shape properties.PhysicalEqualityShape) floa
 	)
 }
 
+// scanLikeCost is the leaf cost for the concrete join-ordering recursion
+// (provably-unique full-equality bind → exact physical multiplicity; else table
+// cardinality × per-comparison selectivity × the physical-wrapper discount).
+//
+// uniqueKeyColumnCount gates the multiplicity shortcut: a fully equality-bound
+// access is bounded only when the access is provably unique and every equality
+// component has a known physical multiplicity. A primary-key scan with every
+// PK column bound is unique; a secondary INDEX scan is unique only when
+// PlanContext metadata proves it (pass 0 otherwise, including without a
+// PlanContext) — `status = ?` binds the whole index key but selects a large
+// bucket, and costing that as a point probe would let join ordering drive off a
+// big bucket as if it were one row.
+//
+// The first seek's CPU is FetchCPU, not ScanCPU: an ordinary singleton
+// full-PK/full-unique-index equality bind uses ONE isolated GetRange call (proven
+// against the executor — key_value_cursor.go's initIterator, flat_map_cursor.go's
+// unpipelined per-outer-row ExecutePlan — see FetchCPU's doc comment for the full
+// trace). ScanCPU is the AMORTIZED per-row rate for a range read that streams back
+// MANY rows in one call. A signed-zero Cartesian set adds explicit range seeks
+// and marginal row cost through the shared shape; it is never mispriced as a
+// singleton point probe.
 func scanLikeCost(
 	comps []*predicates.ComparisonRange,
 	physicalTypes []values.Type,
@@ -2264,12 +2259,6 @@ func walkConcretePlan(p plans.RecordQueryPlan, counts *expressionCounts, ctx Pla
 	}
 }
 
-// countConcreteNode adds plan node p's OWN operator contribution to counts (no
-// recursion) and returns skipChildren=true when the caller must NOT descend into p's
-// children — either a full-PK point probe, which already accounts for its scan, or a
-// multi-intersection, whose aggregate legs are deliberately folded into one logical
-// access. Split out of walkConcretePlan so a node's own contribution is expressible
-// independently of the descent.
 type concreteCountKind uint8
 
 const (
@@ -2386,6 +2375,12 @@ func classifyConcretePlan(p plans.RecordQueryPlan) (classification concretePlanC
 	}
 }
 
+// countConcreteNode adds plan node p's OWN operator contribution to counts (no
+// recursion) and returns skipChildren=true when the caller must NOT descend into p's
+// children — either a full-PK point probe, which already accounts for its scan, or a
+// multi-intersection, whose aggregate legs are deliberately folded into one logical
+// access. Split out of walkConcretePlan so a node's own contribution is expressible
+// independently of the descent.
 func countConcreteNode(p plans.RecordQueryPlan, counts *expressionCounts, ctx PlanContext) (skipChildren bool) {
 	classification, known := classifyConcretePlan(p)
 	if !known {

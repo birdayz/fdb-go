@@ -326,7 +326,7 @@ func (d *FDBDatabase) RunWithMaxAttempts(ctx context.Context, maxAttempts int, f
 	return result, err
 }
 
-// runClientLoop runs fn through the transactor's own retry loop, which is
+// RunClientLoop runs fn through the transactor's own retry loop, which is
 // unbounded on the pure-Go client and libfdb_c and capped at 100 retries on
 // SimFDB. Only SPFresh's background lifecycles use it (spfreshRun): RFC-094
 // keeps them on the client loop, and nothing else may.
@@ -646,15 +646,15 @@ type commitCheckRegistration struct {
 	active bool // protected by FDBRecordContext.commitMu
 }
 
+// nextTransactionID generates unique IDs for FDBRecordContext instances.
+var nextTransactionID atomic.Int64
+
 // FDBRecordContext represents a transactional context for record operations.
 // It wraps an FDB transaction and provides additional record layer functionality.
 // Goroutine-safe: all mutable fields are protected by atomics, mutexes, or the
 // lockRegistry. Multiple goroutines may safely operate on the same context
 // within a single FDB transaction (matching Java's CompletableFuture model).
 // Matches Java's FDBRecordContext.
-// nextTransactionID generates unique IDs for FDBRecordContext instances.
-var nextTransactionID atomic.Int64
-
 type FDBRecordContext struct {
 	tx            fdb.WritableTransaction
 	ctx           context.Context
@@ -1142,7 +1142,7 @@ func (rc *FDBRecordContext) AddCommitCheck(check CommitCheckFunc) {
 	rc.commitChecks = append(rc.commitChecks, &commitCheckRegistration{check: check, active: true})
 }
 
-// getOrCreateCommitCheck returns the named check, invoking ifNotExists only when
+// GetOrCreateCommitCheck returns the named check, invoking ifNotExists only when
 // absent. The supplier runs under the registration lock and must not call back
 // into context hook registration. The supplied check runs outside that lock.
 // Matches Java's FDBRecordContext.getOrCreateCommitCheck().

@@ -1563,10 +1563,6 @@ func (c *rywCache) addClearedRangeLocked(begin, end []byte) {
 	}
 }
 
-// applyAtomic applies an atomic mutation to a base value, mirroring the C++
-// implementations in fdbclient/include/fdbclient/Atomic.h exactly.
-//
-// Convention: base==nil means "key absent" (C++ Optional<ValueRef> not present).
 // isUnresolvedVersionstamp reports whether op is a versionstamped mutation, which
 // cannot be resolved client-side: the 10-byte stamp is assigned at commit, so the
 // resolved key (SetVersionstampedKey) or value (SetVersionstampedValue) is unknown
@@ -1667,6 +1663,10 @@ func resolveAtomics(base []byte, atomics []rywMutation) (result []byte, cleared,
 	return base, cleared, false
 }
 
+// applyAtomic applies an atomic mutation to a base value, mirroring the C++
+// implementations in fdbclient/include/fdbclient/Atomic.h exactly.
+//
+// Convention: base==nil means "key absent" (C++ Optional<ValueRef> not present).
 // base==[]byte{} means "key present with empty value".
 // Returns (result, cleared). cleared=true means the key should be removed
 // (only happens for CompareAndClear).

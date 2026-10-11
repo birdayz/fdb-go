@@ -9,12 +9,6 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
-// foldBlock builds the block select for proj. A WHERE filter under the list
-// contributes its quantifier and predicates; a join select under that (or
-// directly under the list) contributes its quantifiers and predicates when the
-// list and WHERE read its sources. A WHERE never merges into an outer join's ON
-// predicates: it stays above that join's select. A block that ranges over its
-// input reads the sources below it through the input's row (readThroughRow).
 // scopeBodies holds the derived-table and CTE bodies of a translation. SQL
 // scoping hides a body's sources from the blocks around it, so a read above a
 // body never reads a source inside it: a same-named one is an outer row.
@@ -32,6 +26,12 @@ func (b scopeBodies) hides(ref *expressions.Reference) bool {
 	return false
 }
 
+// foldBlock builds the block select for proj. A WHERE filter under the list
+// contributes its quantifier and predicates; a join select under that (or
+// directly under the list) contributes its quantifiers and predicates when the
+// list and WHERE read its sources. A WHERE never merges into an outer join's ON
+// predicates: it stays above that join's select. A block that ranges over its
+// input reads the sources below it through the input's row (readThroughRow).
 func foldBlock(result values.Value, from expressions.Quantifier, bodies scopeBodies) (*expressions.SelectExpression, error) {
 	qs := []expressions.Quantifier{from}
 	if from.GetRangesOver() == nil {

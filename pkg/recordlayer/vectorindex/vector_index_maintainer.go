@@ -1071,7 +1071,7 @@ func (m *vectorIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
 	return nil
 }
 
-// guardiannSearchConfig is GuardiannVectorIndexEngine.searchConfig.
+// guardiannSearchConfigOf is GuardiannVectorIndexEngine.searchConfig.
 func guardiannSearchConfigOf(o recordlayer.VectorIndexScanOptions) (guardiannSearchConfig, error) {
 	c := defaultGuardiannSearchConfig()
 	setF := func(dst *float64, v *float64) {

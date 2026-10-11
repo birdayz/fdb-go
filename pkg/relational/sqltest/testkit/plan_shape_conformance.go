@@ -10,7 +10,7 @@ import (
 	"fdb.dev/pkg/relational/core/embedded"
 )
 
-// planExplainVia retrieves the Cascades physical plan Explain string
+// ExplainVia retrieves the Cascades physical plan Explain string
 // via the underlying EmbeddedConnection for the given query.
 func ExplainVia(t *testing.T, ctx context.Context, db *sql.DB, query string) string {
 	t.Helper()
@@ -37,7 +37,7 @@ func ExplainVia(t *testing.T, ctx context.Context, db *sql.DB, query string) str
 	return plan
 }
 
-// setupPlanShapeDB creates a fresh database + schema for a plan-shape subtest.
+// SetupPlanShapeDB creates a fresh database + schema for a plan-shape subtest.
 // Returns a *sql.DB connected to the created schema.
 func SetupPlanShapeDB(t *testing.T, suffix, templateDDL string) *sql.DB {
 	t.Helper()

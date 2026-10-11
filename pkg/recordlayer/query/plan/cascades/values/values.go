@@ -177,7 +177,7 @@ func (c *ConstantValue) Type() Type {
 	return WithNullability(c.Typ, c.Value == nil)
 }
 
-// FieldValue references a column by name on a base value. In the full
+// fieldValue references a column by name on a base value. In the full
 // Java model, FieldValue always has a child value (typically a
 // QuantifiedObjectValue correlated to a quantifier) and a FieldPath
 // (multi-step for nested access). In Go, Child is optional for backward
@@ -294,19 +294,6 @@ type resolvedAccessor struct {
 	fieldType *exactType
 }
 
-// FieldPath is the multi-accessor path — Java's FieldValue.FieldPath
-// (FieldValue.java:373): ONE FieldValue node holds a whole path, never chained
-// nodes. IMMUTABLE after construction (replace-never-mutate):
-// FieldValue copy sites share the pointer; WithSuffix
-// returns a NEW path (Java :525-534). Single-accessor paths come from the
-// resolver's construction binds and the seed machinery;
-// multi-accessor paths are produced by the
-// baked compose rule (fusing an inner path with an outer suffix).
-// INVARIANT: a FieldPath carried by a FieldValue is NON-EMPTY — a zero-step
-// path reads nothing and is not a meaningful accessor (Java's FieldPath.EMPTY
-// exists only for prefix arithmetic Go doesn't port). Both constructors
-// (newFieldPathOfSingle, WithSuffix) uphold it; Root()/Last() panic on a
-// hand-built violation rather than tolerating it.
 // OrdinalDomain names the LAYOUT an ordinal indexes — the third element of
 // column identity (RFC-197: identity is (correlation, domain, ordinal path)).
 //
@@ -424,6 +411,19 @@ func OrdinalDomainOfType(t Type) OrdinalDomain {
 	return OrdinalDomainOfColumnNames(names)
 }
 
+// fieldPath is the multi-accessor path — Java's FieldValue.FieldPath
+// (FieldValue.java:373): ONE FieldValue node holds a whole path, never chained
+// nodes. IMMUTABLE after construction (replace-never-mutate):
+// FieldValue copy sites share the pointer; WithSuffix
+// returns a NEW path (Java :525-534). Single-accessor paths come from the
+// resolver's construction binds and the seed machinery;
+// multi-accessor paths are produced by the
+// baked compose rule (fusing an inner path with an outer suffix).
+// INVARIANT: a FieldPath carried by a FieldValue is NON-EMPTY — a zero-step
+// path reads nothing and is not a meaningful accessor (Java's FieldPath.EMPTY
+// exists only for prefix arithmetic Go doesn't port). Both constructors
+// (newFieldPathOfSingle, WithSuffix) uphold it; Root()/Last() panic on a
+// hand-built violation rather than tolerating it.
 type fieldPath struct {
 	Accessors []resolvedAccessor
 

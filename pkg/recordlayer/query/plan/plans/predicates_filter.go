@@ -305,7 +305,7 @@ func translatePredicatePhysicalEdge(
 	)
 }
 
-// reanchorPredicateForInput crosses the selected child's checked producer and
+// reanchorPredicateForInputWithAlias crosses the selected child's checked producer and
 // layout lineage for every Value embedded in a predicate. A residual filter can
 // sit directly above a materialized NLJ/FlatMap whose exact source windows use
 // physical record names (BOOKS, AWARDS) while the logical predicate still uses

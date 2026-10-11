@@ -103,13 +103,6 @@ func (p *RecordQueryComparatorPlan) GetChildren() []RecordQueryPlan {
 	return plansFromQuantifiers(p.childQs)
 }
 
-// EqualsWithoutChildren compares comparison keys (semantic Value identity —
-// see semanticValueEquals), reference index, and reverse flag. The keys join
-// equality per RFC-176 §1: before P2, equality checked only the key COUNT
-// while the hash folded the full keys, so two plans with equal counts but
-// different keys compared equal yet hashed apart — a live plan-level
-// equal⟹same-hash violation (a hash-first memo lookup misses the "equal"
-// member and inserts a duplicate).
 // structuralKey lists the fields that distinguish this comparator in the memo:
 // reverse flag, reference-plan index, and the comparison-key Values. Children
 // are excluded. abortOnComparisonFailure is intentionally NOT included — it is
@@ -125,6 +118,8 @@ func (p *RecordQueryComparatorPlan) structuralKey() *structuralKey {
 		Values(p.comparisonKeyValues)
 }
 
+// EqualsPlanWithoutChildren compares structuralKeys; comparison keys match by
+// semantic Value identity (semanticValueEquals), not pointer.
 func (p *RecordQueryComparatorPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryComparatorPlan)
 	return ok && p.keyFor(p).Equal(o.keyFor(o))

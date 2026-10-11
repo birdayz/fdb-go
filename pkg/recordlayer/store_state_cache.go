@@ -130,11 +130,6 @@ func loadCacheEntry(store *FDBRecordStore, existenceCheck StoreExistenceCheck) (
 	}, nil
 }
 
-// loadRecordStoreState reads store header + index states from FDB.
-// Issues both GetRange calls (store info + index states) in parallel using
-// FDB's future-based API, then resolves sequentially.
-// This is a pure function — it does NOT mutate store fields.
-// The caller is responsible for setting store.storeHeader and store.indexStates.
 // storeSubspaceKeys caches derived subspace keys for a store's subspace.
 // Avoids recomputing the same subspace operations on every Open().
 type storeSubspaceKeys struct {
@@ -269,6 +264,11 @@ func newStoreSubspaceKeys(ss subspace.Subspace) *storeSubspaceKeys {
 	}
 }
 
+// loadRecordStoreState reads store header + index states from FDB.
+// Issues both reads (store-info Get + index-state GetRange) in parallel using
+// FDB's future-based API, then resolves sequentially.
+// This is a pure function — it does NOT mutate store fields.
+// The caller is responsible for setting store.storeHeader and store.indexStates.
 func loadRecordStoreState(store *FDBRecordStore, existenceCheck StoreExistenceCheck) (*RecordStoreState, error) {
 	tx := store.context.Transaction()
 

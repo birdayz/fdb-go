@@ -411,7 +411,7 @@ func (t *cascadesTranslator) scopeBodies() scopeBodies {
 	return bodies
 }
 
-// blockSelect states a SELECT list as Java's query block does
+// blockSelectOf states a SELECT list as Java's query block does
 // (LogicalOperator.generateSimpleSelect): one SelectExpression owning the
 // block's FROM quantifiers and WHERE predicates, whose result value is the
 // projected row. Go builds the WHERE as a filter and a join as its own select

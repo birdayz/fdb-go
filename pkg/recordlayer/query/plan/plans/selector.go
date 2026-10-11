@@ -163,7 +163,7 @@ func (p *RecordQuerySelectorPlan) structuralKey() *structuralKey {
 		}, []byte(p.planSelector.String()))
 }
 
-// EqualsWithoutChildren compares reverse flag and plan selector.
+// EqualsPlanWithoutChildren compares reverse flag and plan selector.
 func (p *RecordQuerySelectorPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQuerySelectorPlan)
 	return ok && p.keyFor(p).Equal(o.keyFor(o))

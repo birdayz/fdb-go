@@ -2166,6 +2166,10 @@ func promoteInListItemsToDeclaredType(left values.Value, rhs []values.Value) []v
 	return out
 }
 
+// inListPromotionMessage is Java's SemanticException text for a value that
+// cannot be promoted (INCOMPATIBLE_TYPE, reported as 22000).
+const inListPromotionMessage = "A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable."
+
 // allInListItemsConstant reports whether every IN-list item can be folded at
 // PLAN time. IsConstantValue recurses through children, so a composite holding
 // a column reference — `a + 1`, or a one-field record around a column — is
@@ -2175,10 +2179,6 @@ func promoteInListItemsToDeclaredType(left values.Value, rhs []values.Value) []v
 // reaching here, so a nil that survives is a resolver bug rather than a runtime
 // list, and routing it to the constant fork keeps it failing where it already
 // fails instead of silently changing shape.
-// inListPromotionMessage is Java's SemanticException text for a value that
-// cannot be promoted (INCOMPATIBLE_TYPE, reported as 22000).
-const inListPromotionMessage = "A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable."
-
 func allInListItemsConstant(rhs []values.Value) bool {
 	for _, v := range rhs {
 		if v == nil {

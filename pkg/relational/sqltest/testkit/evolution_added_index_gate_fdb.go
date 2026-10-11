@@ -48,7 +48,7 @@ import (
 	"fdb.dev/pkg/relational/core/keyspace"
 )
 
-// evolHarness wires a catalog over the same keyspace the sqldriver uses, so a
+// EvolHarness wires a catalog over the same keyspace the sqldriver uses, so a
 // template evolved here is the template the driver plans against. The evolution
 // path itself is catalog-level (SaveSchemaTemplate at a higher version, then
 // RepairSchema to rebind) because the SQL surface has no statement that rebinds
@@ -85,7 +85,7 @@ func (h *EvolHarness) MustRun(t *testing.T, what string, fn func(txn api.Transac
 	}
 }
 
-// evolReopen returns a FRESH *sql.DB, so the query below plans against the
+// EvolReopen returns a FRESH *sql.DB, so the query below plans against the
 // evolved metadata with nothing cached from before the rebind.
 func EvolReopen(t *testing.T, dbPath, schemaName string) *sql.DB {
 	t.Helper()
@@ -98,7 +98,7 @@ func EvolReopen(t *testing.T, dbPath, schemaName string) *sql.DB {
 	return db
 }
 
-// evolIndexStates reads the schema's index-state subspace exactly as the
+// EvolIndexStates reads the schema's index-state subspace exactly as the
 // planner does (recordlayer.LoadIndexStates, the same call fetchReadableIndexes
 // makes). An empty map is "every index readable" as far as the planner knows.
 func EvolIndexStates(t *testing.T, dbPath, schemaName string) map[string]recordlayer.IndexState {

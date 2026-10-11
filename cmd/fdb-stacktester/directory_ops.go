@@ -62,7 +62,7 @@ func (sm *StackMachine) appendNull() {
 	sm.dirList = append(sm.dirList, dirEntry{})
 }
 
-// popTuple pops a count and then that many elements from the stack,
+// popTupleAsPath pops a count and then that many elements from the stack,
 // returning them as a []string path.
 func (sm *StackMachine) popTupleAsPath() []string {
 	count := int(sm.popInt64())

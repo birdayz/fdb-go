@@ -352,7 +352,7 @@ func (p *RecordQueryAggregateIndexPlan) structuralKey() *structuralKey {
 		Sub(p.indexPlan.structuralKey())
 }
 
-// EqualsWithoutChildren compares index plan, record type name, and
+// EqualsPlanWithoutChildren compares index plan, record type name, and
 // result type.
 func (p *RecordQueryAggregateIndexPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryAggregateIndexPlan)

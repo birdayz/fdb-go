@@ -16,7 +16,7 @@ import (
 	"testing"
 )
 
-// rfc128DB seeds a single-column table t(id) with ids 1..10 and returns a *sql.DB
+// RFC128DB seeds a single-column table t(id) with ids 1..10 and returns a *sql.DB
 // bound to it. Each call uses a unique db/template name (tag) for t.Parallel
 // isolation.
 func RFC128DB(t *testing.T, tag string) (*sql.DB, context.Context) {
@@ -52,7 +52,7 @@ func RFC128DB(t *testing.T, tag string) (*sql.DB, context.Context) {
 	return db, ctx
 }
 
-// getInts runs a single-int-column query and returns the rows in order.
+// GetInts runs a single-int-column query and returns the rows in order.
 func GetInts(t *testing.T, ctx context.Context, db queryer, q string) []int64 {
 	t.Helper()
 	rows, err := db.QueryContext(ctx, q)
@@ -78,7 +78,7 @@ type queryer interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }
 
-// explainPlan returns the EXPLAIN PLAN text for q.
+// ExplainPlan returns the EXPLAIN PLAN text for q.
 func ExplainPlan(t *testing.T, ctx context.Context, db *sql.DB, q string) string {
 	t.Helper()
 	rows, err := db.QueryContext(ctx, "EXPLAIN "+q)

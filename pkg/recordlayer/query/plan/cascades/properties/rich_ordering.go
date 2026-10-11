@@ -382,7 +382,7 @@ func (o *RichOrdering) GetOrderingKeys() []values.Value {
 	return result
 }
 
-// SortOrder returns the aggregate sort order of a value's bindings.
+// SortOrderOf returns the aggregate sort order of a value's bindings.
 // If all bindings are sorted with the same direction, returns that
 // direction. If mixed or all fixed, returns ProvidedSortOrderFixed.
 func SortOrderOf(bindings []OrderingBinding) ProvidedSortOrder {
@@ -432,7 +432,7 @@ func HasMultipleFixedBindings(bindings []OrderingBinding) bool {
 	return false
 }
 
-// FixedBinding returns the single fixed binding from the list.
+// SingleFixedBinding returns the single fixed binding from the list.
 // Panics if there isn't exactly one.
 func SingleFixedBinding(bindings []OrderingBinding) OrderingBinding {
 	for _, b := range bindings {

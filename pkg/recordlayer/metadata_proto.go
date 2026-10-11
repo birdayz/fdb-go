@@ -819,7 +819,7 @@ func (e *UnsupportedValueTypeError) Error() string {
 
 func (*UnsupportedValueTypeError) JavaRecordCoreException() {}
 
-// valueToProto serializes a Go value to a Value proto.
+// ValueToProto serializes a Go value to a Value proto.
 // Matches Java's LiteralKeyExpression.toProtoValue().
 func ValueToProto(v any) (*gen.Value, error) {
 	if v == nil {
@@ -865,7 +865,7 @@ func protoDeserializationError(err error) error {
 	return err
 }
 
-// valueFromProto deserializes a Value proto to a Go value, as Java's
+// ValueFromProto deserializes a Value proto to a Go value, as Java's
 // LiteralKeyExpression.fromProtoValue does (protovalue.FromProto): the one
 // field set, nil when none is, and a RecordCoreError "More than one value
 // encoded in value" when several are.

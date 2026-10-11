@@ -9,7 +9,7 @@ import (
 	"fdb.dev/pkg/relational/core/embedded"
 )
 
-// syncCaptureLogger is a concurrency-safe PlanGenerationLogger for tests.
+// SyncCaptureLogger is a concurrency-safe PlanGenerationLogger for tests.
 type SyncCaptureLogger struct {
 	mu     sync.Mutex
 	events []embedded.PlanGenerationInfo
@@ -29,7 +29,7 @@ func (l *SyncCaptureLogger) Snapshot() []embedded.PlanGenerationInfo {
 	return out
 }
 
-// installLogger pins a single *sql.Conn and installs a planning-metrics
+// InstallLogger pins a single *sql.Conn and installs a planning-metrics
 // logger on its underlying EmbeddedConnection via Raw. The returned *sql.Conn
 // must be used for all subsequent statements so the logger-equipped
 // connection is the one that plans them.

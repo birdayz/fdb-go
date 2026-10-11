@@ -11,7 +11,7 @@ import (
 	"fdb.dev/pkg/relational/core/embedded"
 )
 
-// prebindScalarSubqueries evaluates each planned scalar subquery against the
+// PrebindScalarSubqueries evaluates each planned scalar subquery against the
 // store and returns an EvaluationContext with the results bound — the
 // direct-executor analog of the sql driver fetchPage's pre-pass. Executing a
 // subquery-bearing plan WITHOUT this fails loudly with

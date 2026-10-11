@@ -43,7 +43,7 @@ import (
 // A marker can never be mistaken for data: no expectation in this suite matches
 // one, so every degenerate row fails its assertion and says why.
 
-// positionalSprint renders a row as its whole slot list ("[a b c]"), so the
+// PositionalSprint renders a row as its whole slot list ("[a b c]"), so the
 // assertion pins slot ORDER as well as the values.
 func PositionalSprint(r executor.QueryResult) string {
 	if r.Positional == nil {
@@ -52,7 +52,7 @@ func PositionalSprint(r executor.QueryResult) string {
 	return fmt.Sprint(r.Positional.Slots)
 }
 
-// positionalPipeSprint renders a row as its slot values joined by "|", in SLOT
+// PositionalPipeSprint renders a row as its slot values joined by "|", in SLOT
 // order. It is the order-sensitive replacement for the sorted-map-key rendering:
 // same separator, same per-value formatting, so a converted site's expectations
 // change only where the positional order differs from the alphabetical one.
@@ -67,7 +67,7 @@ func PositionalPipeSprint(r executor.QueryResult) string {
 	return strings.Join(parts, "|")
 }
 
-// positionalNamedPipeSprint renders a row as "NAME=value" pairs joined by "|", in
+// PositionalNamedPipeSprint renders a row as "NAME=value" pairs joined by "|", in
 // SLOT order.
 //
 // It is the order-sensitive replacement for the OTHER blind form in this suite:
@@ -107,7 +107,7 @@ func PositionalNamedPipeSprint(r executor.QueryResult) string {
 	return strings.Join(parts, "|")
 }
 
-// positionalSlots returns a row's slot VALUES in slot order, untyped and
+// PositionalSlots returns a row's slot VALUES in slot order, untyped and
 // unrendered.
 //
 // The renderers above cover assertions that compare a row as a STRING. The other

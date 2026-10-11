@@ -88,7 +88,7 @@ func (p *RecordQueryDeletePlan) GetChildren() []RecordQueryPlan {
 	return []RecordQueryPlan{inner}
 }
 
-// EqualsWithoutChildren compares targetRecordType.
+// structuralKey folds targetRecordType.
 func (p *RecordQueryDeletePlan) structuralKey() *structuralKey {
 	return newStructuralKey().Str(p.targetRecordType)
 }

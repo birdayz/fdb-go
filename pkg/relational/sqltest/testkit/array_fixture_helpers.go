@@ -8,7 +8,7 @@ import (
 	"google.golang.org/protobuf/types/dynamicpb"
 )
 
-// setArrayField sets an ARRAY column on a dynamic message regardless of the
+// SetArrayField sets an ARRAY column on a dynamic message regardless of the
 // stored shape (flat repeated vs NullableArrayWrapper — nullable arrays are
 // stored wrapped, Java's wire shape). Element values for struct arrays must
 // be built from arrayElementMessageDescriptor(fd), not fd.Message(), because
@@ -33,7 +33,7 @@ func SetArrayField(m *dynamicpb.Message, fd protoreflect.FieldDescriptor, vals .
 	m.Set(fd, protoreflect.ValueOfList(list))
 }
 
-// arrayElementMessageDescriptor returns the element MESSAGE descriptor of a
+// ArrayElementMessageDescriptor returns the element MESSAGE descriptor of a
 // struct-array column (through the NullableArrayWrapper when present).
 func ArrayElementMessageDescriptor(fd protoreflect.FieldDescriptor) protoreflect.MessageDescriptor {
 	inner, _, ok := values.EffectiveListField(fd)

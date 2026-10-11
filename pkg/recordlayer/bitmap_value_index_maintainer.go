@@ -108,7 +108,7 @@ func bitmapByteSize(entrySize int64) int {
 	return int((entrySize + 7) / 8)
 }
 
-// filteredIndexEntries is Java's StandardIndexMaintainer.filteredIndexEntries
+// FilteredIndexEntries is Java's StandardIndexMaintainer.filteredIndexEntries
 // over the bitmap index's evaluated entries (see standardIndexMaintainer's).
 func (m *bitmapValueIndexMaintainer) FilteredIndexEntries(record *FDBStoredRecord[proto.Message]) ([]EvaluatedIndexEntry, error) {
 	values := indexValuesFor(m.store, m.index, record)

@@ -8,7 +8,7 @@ import (
 	"fdb.dev/pkg/relational/core/embedded"
 )
 
-// queryLabels are the labels the driver reports for sql's result columns,
+// QueryLabels are the labels the driver reports for sql's result columns,
 // upper-cased for comparison.
 func QueryLabels(t *testing.T, sql string, md *recordlayer.RecordMetaData) []string {
 	t.Helper()

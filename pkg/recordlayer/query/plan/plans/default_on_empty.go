@@ -221,7 +221,7 @@ func (p *RecordQueryDefaultOnEmptyPlan) GetChildren() []RecordQueryPlan {
 	return []RecordQueryPlan{inner}
 }
 
-// EqualsWithoutChildren compares the default value by semantic Value identity
+// structuralKey folds the default value by semantic Value identity
 // (RFC-176 P2 — see semanticValueEquals).
 func (p *RecordQueryDefaultOnEmptyPlan) structuralKey() *structuralKey {
 	return newStructuralKey().Value(p.defaultValue)

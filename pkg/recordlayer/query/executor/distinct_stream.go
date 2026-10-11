@@ -139,6 +139,10 @@ func (d *distinctStreamContinuation) IsEnd() bool { return false }
 
 var _ recordlayer.RecordCursor[QueryResult] = (*distinctStreamCursor)(nil)
 
+// queryResultDistinctKeyer packs a row's DISTINCT identity; injected so value and
+// primary-key DISTINCT share one cursor.
+type queryResultDistinctKeyer func(QueryResult) (string, error)
+
 // distinctHashCursor is the shared resume-clean hash executor for unordered
 // value DISTINCT and unordered primary-key DISTINCT. Its injected keyer picks
 // the identity; the cursor charges the packed keys to a bounded set and carries
@@ -158,8 +162,6 @@ var _ recordlayer.RecordCursor[QueryResult] = (*distinctStreamCursor)(nil)
 // wrong rows). This continuation is Go-internal; there is no Java wire format
 // to match — Java's equivalent plan keeps no dedup state across a resume at all
 // and re-admits the duplicate.
-type queryResultDistinctKeyer func(QueryResult) (string, error)
-
 type distinctHashCursor struct {
 	inner recordlayer.RecordCursor[QueryResult]
 	// base is the COMMITTED set this page resumed from, shared and READ-ONLY:

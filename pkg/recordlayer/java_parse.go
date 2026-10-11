@@ -55,7 +55,7 @@ func (e *NumberFormatError) As(target any) bool {
 	return false
 }
 
-// javaParseInt is Java's Integer.parseInt(s) (radix 10): an optional leading
+// JavaParseInt is Java's Integer.parseInt(s) (radix 10): an optional leading
 // '+' or '-', then one or more decimal digits, within int32. A digit is what
 // Character.digit(char, 10) accepts, any Unicode decimal digit (general
 // category Nd) in the Basic Multilingual Plane: Java walks UTF-16 chars, so a
@@ -117,7 +117,7 @@ func javaDecimalDigit(r rune) int {
 	return -1
 }
 
-// javaParseDouble is Java's Double.parseDouble (javanum.ParseDouble), its
+// JavaParseDouble is Java's Double.parseDouble (javanum.ParseDouble), its
 // NumberFormatException reported as this package's NumberFormatError.
 func JavaParseDouble(s string) (float64, error) {
 	v, err := javanum.ParseDouble(s)

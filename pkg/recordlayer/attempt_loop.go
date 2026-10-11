@@ -83,7 +83,7 @@ var nextAttemptCallID atomic.Uint64
 // attempt-loop execution, on the loop's goroutine, as the execution ends.
 type AttemptObserver func(call AttemptCall, err error)
 
-// spfreshStalledSealBound is SimFDB's former retry backstop: under a simulated
+// SPFreshStalledSealBound is SimFDB's former retry backstop: under a simulated
 // environment, this many consecutive uncounted retries that each met the same
 // sealed postings fail the call (SPFreshStalledSealError).
 const SPFreshStalledSealBound = 100

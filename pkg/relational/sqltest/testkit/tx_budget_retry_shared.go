@@ -58,7 +58,7 @@ type txBeginner interface {
 	BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error)
 }
 
-// txRetryOpts configures retryTx. The zero value is usable: three attempts, no
+// TxRetryOpts configures RetryTx. The zero value is usable: three attempts, no
 // hooks.
 type TxRetryOpts struct {
 	// Attempts bounds the retry. Bounded on purpose: an explicit transaction
@@ -78,7 +78,7 @@ type TxRetryOpts struct {
 	OnRetry func(attempt int, err error)
 }
 
-// txAttempt is what retryTx hands each attempt. The attempt number is exposed
+// TxAttempt is what RetryTx hands each attempt. The attempt number is exposed
 // because a test that injects a one-shot spike must be able to assert the spike
 // actually pre-empted something — a retry that never fired proves nothing.
 type TxAttempt struct {
@@ -86,7 +86,7 @@ type TxAttempt struct {
 	Num int
 }
 
-// retryTx runs body inside an explicit transaction, restarting the WHOLE
+// RetryTx runs body inside an explicit transaction, restarting the WHOLE
 // transaction when it is pre-empted for outliving its MVCC window.
 //
 // Restarting the whole thing is the only thing that CAN work and also the only
@@ -145,7 +145,7 @@ func RetryTx(t *testing.T, b txBeginner, o TxRetryOpts, body func(TxAttempt) err
 		"attempts; last error: %v", attempts, last)
 }
 
-// spikeOnce returns retry options that end a one-shot clock spike after the
+// SpikeOnce returns retry options that end a one-shot clock spike after the
 // first pre-emption, plus a pointer that records the attempt the body last ran.
 //
 // The one-shot lifetime is the point rather than a convenience. A spike that
@@ -165,7 +165,7 @@ func SpikeOnce(clk *lateClock, ranAttempt *int) TxRetryOpts {
 	}
 }
 
-// mustHaveRetried fails unless the injected spike actually pre-empted an
+// MustHaveRetried fails unless the injected spike actually pre-empted an
 // attempt. Without it a converted test degrades silently into one that never
 // exercises the retry — green, and proving nothing about the condition it was
 // converted for.
@@ -181,7 +181,7 @@ func MustHaveRetried(t *testing.T, attemptsRun int) {
 	}
 }
 
-// spikedClusterKey registers a REAL FoundationDB-backed database whose record
+// SpikedClusterKey registers a REAL FoundationDB-backed database whose record
 // layer measures elapsed time on a one-shot late clock, and returns the key to
 // pass as `cluster_file=` in a DSN.
 //
@@ -208,7 +208,7 @@ func SpikedClusterKey(t *testing.T, lateBy time.Duration) (string, *lateClock) {
 	return key, clk
 }
 
-// spikedDSN is the DSN form the converted tests use, so the cluster_file key is
+// SpikedDSN is the DSN form the converted tests use, so the cluster_file key is
 // the ONLY difference from the handle they opened before conversion.
 func SpikedDSN(key, dbPath, schema string) string {
 	if schema == "" {
@@ -217,7 +217,7 @@ func SpikedDSN(key, dbPath, schema string) string {
 	return fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", strings.ToUpper(dbPath), key, strings.ToUpper(schema))
 }
 
-// openSpiked opens a handle on a spiked backend and closes it with the test.
+// OpenSpiked opens a handle on a spiked backend and closes it with the test.
 func OpenSpiked(t *testing.T, key, dbPath, schema string) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("fdbsql", SpikedDSN(key, dbPath, schema))

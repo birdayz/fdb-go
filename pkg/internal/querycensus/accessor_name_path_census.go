@@ -62,17 +62,17 @@ import (
 var (
 	accessorPathMu     sync.Mutex
 	accessorPathCounts [values.AccessorPathClassCount]int
+	// accessorPathDottedOrigins keeps ONE stack per distinct witness. The name
+	// alone says a display rendering became an identity; only the stack says WHO
+	// rendered it, and with three occurrences guessing from grep is slower and
+	// less certain than asking the program.
+	accessorPathDottedOrigins = map[string]struct{}{}
 	// accessorPathDottedWitnesses records the distinct flat-dotted names that
 	// reached the ratchet arm. The class count alone cannot name a producer, and
 	// with a population this small the names ARE the investigation: three
 	// declines out of 270k is a findable set of call sites, not a statistical
 	// trend. Capped so a regression that arms this broadly cannot turn the census
 	// into a memory leak.
-	// accessorPathDottedOrigins keeps ONE stack per distinct witness. The name
-	// alone says a display rendering became an identity; only the stack says WHO
-	// rendered it, and with three occurrences guessing from grep is slower and
-	// less certain than asking the program.
-	accessorPathDottedOrigins   = map[string]struct{}{}
 	accessorPathDottedWitnesses = map[string]int{}
 )
 

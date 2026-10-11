@@ -323,12 +323,12 @@ func withMonitorCadence(loop, timeout time.Duration) connOption {
 	}
 }
 
-// dialWith is the implementation behind Dial, plus test-only connOptions.
 // defaultHandshakeTimeout bounds the TLS upgrade + ConnectPacket exchange when the
 // caller's ctx carries no deadline. The handshake is normally sub-second; this is a
 // generous ceiling so a stalled peer can't wedge the dial forever.
 const defaultHandshakeTimeout = 10 * time.Second
 
+// dialWith is the implementation behind Dial, plus test-only connOptions.
 func dialWith(ctx context.Context, addr string, dialFn DialFunc, tlsConfig *tls.Config, opts ...connOption) (*Conn, error) {
 	if dialFn == nil {
 		var d net.Dialer
@@ -1251,7 +1251,7 @@ func (c *Conn) sendPingWithReply() <-chan struct{} {
 	return done
 }
 
-// PingRequest file identifier from C++ flow/genericactors.actor.h.
+// pingRequestFileID is the PingRequest file identifier from C++ flow/genericactors.actor.h.
 const pingRequestFileID uint32 = 4707015
 
 // pingRequestVTable: PingRequest has 1 field (bytes/RelativeOffset, 4 bytes, align 4).
@@ -1304,7 +1304,7 @@ func BuildPingRequest(replyToken UID) []byte {
 	)
 }
 
-// fastRNG is a per-goroutine fast PRNG for UID generation.
+// fastRNGState is the shared, atomically advanced PRNG state for UID generation.
 // Uses SplitMix64 (same as java.util.SplittableRandom). Seeded from crypto/rand.
 // Reply tokens only need uniqueness within a connection, not crypto security.
 var fastRNGState atomic.Uint64

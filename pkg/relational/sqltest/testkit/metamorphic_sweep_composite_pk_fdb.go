@@ -33,7 +33,7 @@ import (
 	"strings"
 )
 
-// mhcpkRowsOnConn is mmRows over a pinned *sql.Conn (the paged reader).
+// MhcpkRowsOnConn is QueryRowStrings over a pinned *sql.Conn (the paged reader).
 func MhcpkRowsOnConn(ctx context.Context, conn *sql.Conn, q string) ([]string, error) {
 	rows, err := conn.QueryContext(ctx, q)
 	if err != nil {

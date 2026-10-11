@@ -87,7 +87,7 @@ func (p *RecordQueryTextIndexPlan) structuralKey() *structuralKey {
 		Str(p.textScan.SuffixComparisons)
 }
 
-// EqualsWithoutChildren compares index name, text scan, and reverse.
+// EqualsPlanWithoutChildren compares index name, text scan, and reverse.
 func (p *RecordQueryTextIndexPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryTextIndexPlan)
 	return ok && p.keyFor(p).Equal(o.keyFor(o))

@@ -20,7 +20,7 @@ import (
 	"testing"
 )
 
-// explainOnConn returns the EXPLAIN plan text for q on the pinned connection,
+// ExplainConn returns the EXPLAIN plan text for q on the pinned connection,
 // so the connection's api.Options are the ones in effect. EXPLAIN routes
 // through the same planSelectCascades the real query path uses.
 func ExplainConn(t *testing.T, ctx context.Context, conn *sql.Conn, q string) string {
@@ -32,7 +32,7 @@ func ExplainConn(t *testing.T, ctx context.Context, conn *sql.Conn, q string) st
 	return plan
 }
 
-// scanInt64Rows drains q into a slice of the first column's values.
+// ScanInt64Rows drains q into a slice of the first column's values.
 func ScanInt64Rows(t *testing.T, ctx context.Context, conn *sql.Conn, q string) []int64 {
 	t.Helper()
 	rows, err := conn.QueryContext(ctx, q)

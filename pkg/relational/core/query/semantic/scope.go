@@ -1159,8 +1159,6 @@ func (e *SourceNotFoundError) Error() string {
 		e.Alias, joinStrings(names, ", "))
 }
 
-// DuplicateAliasError is returned by AddSource when the same alias
-// is already registered at this scope level.
 // UnresolvableSourceError reports an attempt to add a scope source with no
 // Table — the declared-but-underivable CTE tombstone reaching a resolver.
 type UnresolvableSourceError struct {
@@ -1171,6 +1169,8 @@ func (e *UnresolvableSourceError) Error() string {
 	return "source " + e.Alias.Name() + " has no resolvable schema in this context"
 }
 
+// DuplicateAliasError is returned by AddSource when the same alias
+// is already registered at this scope level.
 type DuplicateAliasError struct {
 	Alias Identifier
 }

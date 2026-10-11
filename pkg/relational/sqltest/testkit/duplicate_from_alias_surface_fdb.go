@@ -72,7 +72,7 @@ import (
 // each sits beside an UNDUPLICATED control so a shared regression cannot pass by
 // agreeing with itself.
 
-// dupAliasSurfaceDB provisions the shared fixture. zn.id ∈ {1,2} and
+// DupAliasSurfaceDB provisions the shared fixture. zn.id ∈ {1,2} and
 // zp.pid ∈ {5,7,9} are disjoint ranges; zn.k runs WITH id while zp.w runs
 // AGAINST pid, so neither a wrong leg nor a wrong column within a leg can tie.
 func DupAliasSurfaceDB(t *testing.T, tag string) (*sql.DB, context.Context) {

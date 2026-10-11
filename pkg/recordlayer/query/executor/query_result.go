@@ -114,6 +114,16 @@ func stampRowLayout(result QueryResult, layout values.OrdinalLayout) QueryResult
 	return result
 }
 
+// positionalTypeKey distinguishes the plain row shape from the
+// __ROW_VERSION-extended one. Both live in ONE cache under ONE counter so the
+// bound below actually covers both: a second sync.Map "with the same lifecycle"
+// shares nothing — the wipe never reaches it, and descriptor churn in a
+// version-storing store grows it forever.
+type positionalTypeKey struct {
+	desc           protoreflect.MessageDescriptor
+	withRowVersion bool
+}
+
 // positionalTypeCache caches the row-invariant PositionalRow.Type per message
 // descriptor. The RecordType depends only on the descriptor (field names in
 // declaration order), never the row, and rebuilding it per scanned row made
@@ -126,16 +136,6 @@ func stampRowLayout(result QueryResult, layout values.OrdinalLayout) QueryResult
 // is BOUNDED (wipe-at-cap in protoToPositional): entries are pure derivations,
 // a rare wipe just re-warms. A racy duplicate Store is harmless: both values
 // are structurally equal.
-// positionalTypeKey distinguishes the plain row shape from the
-// __ROW_VERSION-extended one. Both live in ONE cache under ONE counter so the
-// bound below actually covers both: a second sync.Map "with the same lifecycle"
-// shares nothing — the wipe never reaches it, and descriptor churn in a
-// version-storing store grows it forever.
-type positionalTypeKey struct {
-	desc           protoreflect.MessageDescriptor
-	withRowVersion bool
-}
-
 var positionalTypeCache sync.Map // positionalTypeKey -> *values.RecordType
 
 // positionalTypeCacheMu serializes the MISS path (build + wipe-at-cap +

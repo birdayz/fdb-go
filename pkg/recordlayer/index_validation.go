@@ -144,8 +144,7 @@ func (store *FDBRecordStore) recordTypeHasIndex(rt *RecordType, index *Index) bo
 	return false
 }
 
-// ScanRecords is needed by ValidateIndex — let's check if it exists already.
-// It should scan all records. If it doesn't exist, we scan via the records subspace.
+// scanAllRecords materializes every record in the store.
 func (store *FDBRecordStore) scanAllRecords(ctx context.Context) ([]*FDBStoredRecord[proto.Message], error) {
 	cursor := store.ScanRecords(nil, ForwardScan())
 	return AsList(ctx, cursor)

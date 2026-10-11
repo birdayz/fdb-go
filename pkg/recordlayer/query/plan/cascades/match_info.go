@@ -275,7 +275,6 @@ func (r *RegularMatchInfo) GetConstraint() *QueryPlanConstraint {
 	return composeQueryPlanConstraints(constraints...)
 }
 
-// IsAdjusted returns false -- RegularMatchInfo is not adjusted.
 // GetChildPartialMatchMaybe returns the child PartialMatch for the
 // given quantifier alias, or nil if no child match exists for that
 // alias. Ports Java's RegularMatchInfo.getChildPartialMatchMaybe.
@@ -308,6 +307,7 @@ func (r *RegularMatchInfo) GetChildPartialMatchMap() map[values.CorrelationIdent
 	return result
 }
 
+// IsAdjusted returns false -- RegularMatchInfo is not adjusted.
 func (r *RegularMatchInfo) IsAdjusted() bool { return false }
 
 // IsRegular returns true -- RegularMatchInfo is a regular match.

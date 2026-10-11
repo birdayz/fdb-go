@@ -404,7 +404,7 @@ func (m *timeWindowLeaderboardIndexMaintainer) ScanByTimeWindow(
 	return m.scanWithTimeWindow(leaderboardType, leaderboardTimestamp, scanRange, false, continuation, scanProperties)
 }
 
-// ScanByRank converts a rank range to a score range and scans.
+// ScanByRankInTimeWindow converts a rank range to a score range and scans.
 // Matches Java's scan(BY_RANK, ...) for TIME_WINDOW_LEADERBOARD.
 func (m *timeWindowLeaderboardIndexMaintainer) ScanByRankInTimeWindow(
 	leaderboardType int,

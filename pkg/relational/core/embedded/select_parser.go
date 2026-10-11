@@ -49,7 +49,6 @@ import (
 // Phase 1c. Phase 2 Cascades subsumes this into Logical* expression
 // builders.
 
-// selectQuery holds the parsed components of a SELECT statement.
 // groupKeyRef is one GROUP BY key as the parse tree stated it. A bare column
 // carries bare/qualifier segments (qualification is FullId SEGMENT COUNT,
 // never a dot scan of display); an expression key carries expr (evaluated per
@@ -149,6 +148,7 @@ func stripGroupKeyLeadingSegments(k logical.GroupKey, stripped string) logical.G
 	return logical.GroupKey{Display: stripped, Bare: stripped, Value: k.Value}
 }
 
+// selectQuery holds the parsed components of a SELECT statement.
 type selectQuery struct {
 	resolvedSource logical.ScanSource
 	bindings       *bindingAllocator
@@ -885,17 +885,6 @@ func extractFromQueryTerm(body *antlrgen.QueryTermDefaultContext) (*selectQuery,
 	return extractFromSimpleTable(simpleTable)
 }
 
-// selectClassification holds the classified SELECT-list elements,
-// GROUP BY keys, HAVING expression, ORDER BY clauses, and all the
-// reclassification/harvest results. It contains everything
-// extractFromSimpleTable produces EXCEPT the FROM-derived fields
-// (tableName, tableAlias, joins, derivedQuery, whereExpr) and the
-// limit/offset fields.
-//
-// Embedded by selectQuery so the classification fields are promoted —
-// code that reads sq.projCols, sq.aggCols, etc. works unchanged.
-// PlanVisitor constructs a selectQuery directly from a
-// selectClassification + fromSource without any bridge method.
 // projCol is one projected column: the name (the load-bearing OUTPUT label —
 // every naming consumer reads it) plus the parse-tree reference segments for
 // plain column items (zero values for computed/sentinel entries, and cleared
@@ -941,6 +930,17 @@ func projColRef(col projCol, rendered string) logical.ColumnRef {
 	return logical.ColumnRefFor(col.bare, col.qualifier, col.qualified, rendered)
 }
 
+// selectClassification holds the classified SELECT-list elements,
+// GROUP BY keys, HAVING expression, ORDER BY clauses, and all the
+// reclassification/harvest results. It contains everything
+// extractFromSimpleTable produces EXCEPT the FROM-derived fields
+// (tableName, tableAlias, joins, derivedQuery, whereExpr) and the
+// limit/offset fields.
+//
+// Embedded by selectQuery so the classification fields are promoted —
+// code that reads sq.projCols, sq.aggCols, etc. works unchanged.
+// PlanVisitor constructs a selectQuery directly from a
+// selectClassification + fromSource without any bridge method.
 type selectClassification struct {
 	selectSlots               []selectOutputSlot // identity and typed syntax of every expanded visible position
 	selectCols, selectAliases []string           // expanded visible slots, retained across aggregate reclassification
@@ -1064,12 +1064,6 @@ func selectQueryFromClassification(cls *selectClassification, fs *fromSource) *s
 	return sq
 }
 
-// classifySelectElements walks the SELECT, GROUP BY, HAVING, ORDER BY,
-// and LIMIT clauses of a SimpleTableContext and returns a
-// selectClassification. This is the pure parse-tree classification
-// logic extracted from extractFromSimpleTable — it does NOT parse the
-// FROM clause. Both extractFromSimpleTable (proto path) and
-// PlanVisitor.VisitSimpleTable (Cascades path) delegate here.
 // starExpander returns the columns a SELECT-list star expands to, in FROM
 // order, for one qualifier ("" = the bare `*`). ok=false means the sources'
 // columns are not knowable here — deliberately distinct from an empty slice,
@@ -1143,6 +1137,12 @@ func selectOutputSlots(simpleTable *antlrgen.SimpleTableContext, expandStar star
 	return slots
 }
 
+// classifySelectElements walks the SELECT, GROUP BY, HAVING, ORDER BY,
+// and LIMIT clauses of a SimpleTableContext and returns a
+// selectClassification. This is the pure parse-tree classification
+// logic extracted from extractFromSimpleTable — it does NOT parse the
+// FROM clause. Both extractFromSimpleTable (proto path) and
+// PlanVisitor.VisitSimpleTable (Cascades path) delegate here.
 func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar starExpander) (*selectClassification, error) {
 	if expandStar == nil && simpleTable.FromClause() == nil {
 		expandStar = func(qualifier string) ([]projCol, bool) {
@@ -3411,9 +3411,6 @@ func containsNestedAggregate(tree antlr.Tree) bool {
 	return false
 }
 
-// usingSource is one candidate left source for a chained USING's column
-// lookup: the alias the predicate must qualify with, and the base table whose
-// columns decide whether it owns the column at all.
 // cteNamePredicate answers "is this FROM source a CTE?" for a scope map, which
 // retargetUsingJoins needs because a CTE is referenced by a bare name that no
 // structural flag on the join distinguishes from a table. A nil or empty map
@@ -3428,6 +3425,9 @@ func cteNamePredicate(cteScopes map[string]semantic.ScopeSource) func(string) bo
 	}
 }
 
+// usingSource is one candidate left source for a chained USING's column
+// lookup: the alias the predicate must qualify with, and the base table whose
+// columns decide whether it owns the column at all.
 type usingSource struct {
 	alias string
 	table string

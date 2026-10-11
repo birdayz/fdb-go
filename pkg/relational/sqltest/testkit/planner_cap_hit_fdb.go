@@ -9,7 +9,7 @@ import (
 	"fdb.dev/pkg/relational/api"
 )
 
-// assertPlannerCapHit pins the properties that distinguish an exhausted
+// AssertPlannerCapHit pins the properties that distinguish an exhausted
 // planning budget from every other planner failure: the cap sentinel survives
 // as a cause, the SQLSTATE is the class-54 program-limit code (Go-only — Java's
 // SQL layer never enables these caps, so there is no Java code to port), the

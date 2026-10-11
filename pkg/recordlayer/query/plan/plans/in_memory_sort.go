@@ -251,19 +251,6 @@ func (p *RecordQueryInMemorySortPlan) GetChildren() []RecordQueryPlan {
 	return []RecordQueryPlan{inner}
 }
 
-// EqualsWithoutChildren compares the sort keys by SEMANTIC identity (RFC-176 P2
-// / F21): each key's plan-time-baked ValueExpr is compared via the plans-package
-// semanticValueEquals (semantic Value equality under the empty alias map), not
-// by pointer. Two independently-built sort keys over the same Value are the same
-// plan — pointer identity would spuriously split them into distinct memo members
-// (the incomplete-F21 case). Desc / NullsFirst are the direction.
-//
-// SortKey.Field is DISPLAY-ONLY and is NOT folded (RFC-197 item 3). It used to be,
-// "so an explain-name difference still separates identities" — but a display-name
-// difference IS NOT an identity difference, and folding it splits one plan into
-// two memo members whenever two producers render the same baked key under
-// different names. The ordinal-addressed ValueExpr is the identity; the string
-// beside it is what Explain prints.
 // structuralKey folds the InMemorySort identity: the ordered sort-key list via
 // sortKeyEqual (Desc / NullsFirst + semantic ValueExpr). Drives both Equals and
 // Hash.
@@ -271,6 +258,7 @@ func (p *RecordQueryInMemorySortPlan) structuralKey() *structuralKey {
 	return newStructuralKey().SortKeys(p.sortKeys)
 }
 
+// EqualsPlanWithoutChildren compares structuralKeys (see structuralKey).
 func (p *RecordQueryInMemorySortPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryInMemorySortPlan)
 	return ok && p.keyFor(p).Equal(o.keyFor(o))

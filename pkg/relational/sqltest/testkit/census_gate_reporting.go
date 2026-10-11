@@ -38,19 +38,19 @@ import (
 	"strings"
 )
 
-// censusGateSuiteName is the identity failing gates report under. It is a
+// CensusGateSuiteName is the identity failing gates report under. It is a
 // test-shaped name on purpose: it is what appears after `--- FAIL:`, so it is
 // what a reader greps for and what a log scraper attributes the failure to.
 const CensusGateSuiteName = "TestWholeCorpusCensusGates"
 
-// censusGate is one whole-corpus assertion: a name, and a check that writes its
+// CensusGate is one whole-corpus assertion: a name, and a check that writes its
 // reasoning to the writer and reports whether it FAILED.
 type CensusGate struct {
 	Name string
 	Run  func(io.Writer) bool
 }
 
-// runCensusGates runs every gate and renders the outcome in go test's own output
+// RunCensusGates runs every gate and renders the outcome in go test's own output
 // format, returning whether any failed.
 //
 // Passing gates still have their prose emitted verbatim — several report

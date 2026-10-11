@@ -51,23 +51,6 @@ import (
 	"testing"
 )
 
-// floatOrderingRows is the probe ladder: every IEEE-754 edge class, with both
-// NaN signs carrying DISTINCT payloads.
-//
-// The ids are chosen adversarially, and this is the property the whole test
-// rests on. Physically the rows come back in the order
-//
-//	70(negNaN) 10(-Inf) 20(-1.5) 30(-0.0) 40(+0.0) 50(1.5) 60(+Inf) 5(posNaN)
-//
-// while `ORDER BY e, id` demands
-//
-//	10 20 30 40 50 60 then the NaN tie class by id: 5 70
-//
-// so the two disagree on BOTH dimensions at once: where the NaN block sits
-// (physically split to the two ends, logically one block at the tail) AND the
-// tie-break inside it. Giving the negative NaN the SMALLER id — the obvious
-// choice, since it is physically first — would make the tie-break agree by
-// accident and hide half the defect from a test that is otherwise correct.
 type floatOrderingRow struct {
 	id   int64
 	seed string
@@ -85,6 +68,23 @@ type floatOrderingRow struct {
 	label         string
 }
 
+// floatOrderingRows is the probe ladder: every IEEE-754 edge class, with both
+// NaN signs carrying DISTINCT payloads.
+//
+// The ids are chosen adversarially, and this is the property the whole test
+// rests on. Physically the rows come back in the order
+//
+//	70(negNaN) 10(-Inf) 20(-1.5) 30(-0.0) 40(+0.0) 50(1.5) 60(+Inf) 5(posNaN)
+//
+// while `ORDER BY e, id` demands
+//
+//	10 20 30 40 50 60 then the NaN tie class by id: 5 70
+//
+// so the two disagree on BOTH dimensions at once: where the NaN block sits
+// (physically split to the two ends, logically one block at the tail) AND the
+// tie-break inside it. Giving the negative NaN the SMALLER id — the obvious
+// choice, since it is physically first — would make the tie-break agree by
+// accident and hide half the defect from a test that is otherwise correct.
 var floatOrderingRows = []floatOrderingRow{
 	{id: 10, seed: "1.0e308", makeNonFinite: "e * -10.0", label: "-Inf"},
 	{id: 20, seed: "-1.5", label: "-1.5"},
@@ -100,7 +100,7 @@ var floatOrderingRows = []floatOrderingRow{
 	{id: 5, seed: "0.0", makeNonFinite: "CAST('NaN' AS DOUBLE)", label: "posNaN"},
 }
 
-// seedFloatOrderingLadder writes the ladder into tbl with a constant `a` so an
+// SeedFloatOrderingLadder writes the ladder into tbl with a constant `a` so an
 // equality on the index's leading column binds and leaves the float as the
 // leading SORTED coordinate.
 func SeedFloatOrderingLadder(t *testing.T, db *sql.DB, ctx context.Context, tbl string) {
@@ -120,7 +120,7 @@ func SeedFloatOrderingLadder(t *testing.T, db *sql.DB, ctx context.Context, tbl 
 	}
 }
 
-// assertFloatLadderStored fails loudly if the ladder did not land as intended.
+// AssertFloatLadderStored fails loudly if the ladder did not land as intended.
 // Every assertion below is meaningless without it: if the write path silently
 // rejected the non-finite values (or started rejecting them after a guard
 // change), the test would be comparing two tables of ordinary finite doubles

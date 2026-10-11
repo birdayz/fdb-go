@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// sortedRowStrings runs q and returns each row rendered by fmt, sorted, so an
+// SortedRowStrings runs q and returns each row rendered by fmt, sorted, so an
 // expected multiset of rows compares as one string.
 func SortedRowStrings(t *testing.T, db *sql.DB, ctx context.Context, q string) []string {
 	t.Helper()

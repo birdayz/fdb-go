@@ -184,7 +184,7 @@ func (e *memoEquality) equalBody(memberRef *Reference, member RelationalExpressi
 	return matchQuantifierBindings(member, expression, bound, e.dependencies, e.references, nil)
 }
 
-// References compare complete exploratory and final populations separately.
+// references compare complete exploratory and final populations separately.
 // Containment is directional: an existing group may expose more alternatives.
 func (e *memoEquality) references(a, b *Reference, aliases *AliasMap) bool {
 	a, b = canonicalReferenceReadOnly(a), canonicalReferenceReadOnly(b)

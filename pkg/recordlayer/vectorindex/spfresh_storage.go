@@ -24,7 +24,7 @@ var errSPFreshNotFound = errors.New("spfresh: not found")
 
 // --- META: generation, ID blocks, transform ---
 
-// readGenerationForWrite REAL-reads META's current-generation key — the write
+// spfreshReadGenerationForWrite REAL-reads META's current-generation key — the write
 // fence (RFC-094 §3): the value check covers transactions that start after a
 // flip, the conflict range covers in-flight writers racing one. Returns
 // errSPFreshNotFound when no generation has ever been established.
@@ -42,7 +42,7 @@ func spfreshReadGenerationForWrite(tx fdb.WritableTransaction, s *spfreshStorage
 	return int64(binary.LittleEndian.Uint64(data)), nil
 }
 
-// readGenerationSnapshot is the query-path variant: no conflict range (queries
+// spfreshReadGenerationSnapshot is the query-path variant: no conflict range (queries
 // never abort anyone; staleness degrades to partial-at-worst under MVCC).
 func spfreshReadGenerationSnapshot(tx fdb.ReadTransaction, s *spfreshStorage) (int64, error) {
 	data, err := tx.Snapshot().Get(s.metaKey(spfreshMetaGeneration)).Get()
@@ -498,9 +498,6 @@ func spfreshTaskClaim(tx fdb.WritableTransaction, s *spfreshStorage, kind, id in
 
 // --- CHANGELOG (versionstamped, ordered; distinct user-versions per tx) ---
 
-// spfreshAppendDeltas writes the deltas with versionstamped keys; the 2-byte
-// user-version disambiguates multiple entries in one transaction (RFC-094 §3;
-// FDB-author r3 #6).
 // spfreshMaxDeltasPerTx is the changelog's single-transaction delta cap: the
 // versionstamp user-version that disambiguates entries in one tx is 2 bytes, so
 // at most 65536 deltas (indices 0..0xffff) fit one transaction. Callers that
@@ -508,6 +505,9 @@ func spfreshTaskClaim(tx fdb.WritableTransaction, s *spfreshStorage, kind, id in
 // clear message rather than fall into the generic error here.
 const spfreshMaxDeltasPerTx = 0x10000 // 65536
 
+// spfreshAppendDeltas writes the deltas with versionstamped keys; the 2-byte
+// user-version disambiguates multiple entries in one transaction (RFC-094 §3;
+// FDB-author r3 #6).
 func spfreshAppendDeltas(tx fdb.WritableTransaction, s *spfreshStorage, deltas []spfreshDelta) error {
 	for i, d := range deltas {
 		if i >= spfreshMaxDeltasPerTx {

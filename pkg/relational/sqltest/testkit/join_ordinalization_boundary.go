@@ -34,7 +34,7 @@ import (
 	"testing"
 )
 
-// pinExplain returns the EXPLAIN output for q.
+// PinExplain returns the EXPLAIN output for q.
 func PinExplain(t *testing.T, db *sql.DB, ctx context.Context, q string) string {
 	t.Helper()
 	var plan string
@@ -44,7 +44,7 @@ func PinExplain(t *testing.T, db *sql.DB, ctx context.Context, q string) string 
 	return plan
 }
 
-// pinRows runs q and renders every row as "v1|v2|...|vN" in scan
+// PinRows runs q and renders every row as "v1|v2|...|vN" in scan
 // order (callers sort when the query has no ORDER BY). A query error here is
 // also the guard against the ordinal model's loud internal errors
 // (OrdinalResolutionError / BakedNameContextError / OrdinalBakeError) — those

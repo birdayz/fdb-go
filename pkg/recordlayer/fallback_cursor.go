@@ -9,7 +9,7 @@ import (
 	"fmt"
 )
 
-// FallbackCursor wraps an inner cursor with automatic failover to a fallback.
+// fallbackCursor wraps an inner cursor with automatic failover to a fallback.
 // If the inner cursor returns an error, it closes the inner and switches to a
 // fallback cursor. The fallback factory receives the last successful result
 // (nil if none) so it can resume from that point.
