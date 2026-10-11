@@ -302,6 +302,13 @@ func TestPeerDisconnect_FailsInFlightReplyImmediately(t *testing.T) {
 // container (RFC-010).
 func startProxyFDB(t *testing.T, ctx context.Context) *ClusterFile {
 	t.Helper()
+	cf, _ := startProxyFDBContainer(t, ctx)
+	return cf
+}
+
+// startProxyFDBContainer is startProxyFDB that also returns the container.
+func startProxyFDBContainer(t *testing.T, ctx context.Context) (*ClusterFile, *tcfdb.Container) {
+	t.Helper()
 
 	container, err := tcfdb.Run(ctx, "", tcfdb.WithStorageEngine("ssd"), tcfdb.WithDirectIP())
 	if err != nil {
@@ -335,7 +342,18 @@ func startProxyFDB(t *testing.T, ctx context.Context) *ClusterFile {
 		ID:           internalCF.ID,
 		Coordinators: cf.Coordinators,
 	}
-	return connectCF
+	return connectCF, container
+}
+
+// replaceProxies changes the proxy counts, which recovers the cluster onto new
+// proxy interfaces. C++ fails an endpoint that answered broken_promise for good
+// (FailureMonitor.actor.cpp:117-137, :184-197), so a request whose only proxy
+// did so waits for a replacement, as a dying proxy's successor provides.
+func replaceProxies(t *testing.T, ctx context.Context, c *tcfdb.Container) {
+	t.Helper()
+	if out, err := c.FDBCLIExec(ctx, "configure grv_proxies=2 commit_proxies=2"); err != nil {
+		t.Fatalf("configure new proxies: %v: %s", err, out)
+	}
 }
 
 // newDropReplyTestDB starts an FDB container and returns a Database that dials

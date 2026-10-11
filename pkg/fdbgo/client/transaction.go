@@ -36,6 +36,7 @@ const (
 	ErrTransactionTimedOut       = 1031 // transaction_timed_out (NEVER retryable)
 	ErrAccessedUnreadable        = 1036 // accessed_unreadable — read of a pending versionstamped key (NOT retryable; RFC-098)
 	ErrProcessBehind             = 1037 // process_behind
+	ErrServerOverloaded          = 1211 // server_overloaded
 	ErrWatchCancelled            = 1029 // watch_cancelled — SS watch limit exceeded; client polls instead
 	ErrTooManyWatches            = 1032 // too_many_watches — outstanding-watch cap exceeded (client-side)
 	ErrTimedOut                  = 1004 // timed_out — the SS occasionally times out a watch; re-arm

@@ -138,7 +138,7 @@ func TestFDBVersionstampWaitsForUncertaintyBarrier(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	db, sd := newSimTestDB(t, ctx)
+	db, sd, container := newSimTestDBContainer(t, ctx)
 	tx := db.CreateTransaction()
 	defer tx.Cancel()
 	tx.Set([]byte(t.Name()), []byte("value"))
@@ -182,6 +182,10 @@ func TestFDBVersionstampWaitsForUncertaintyBarrier(t *testing.T) {
 	default:
 	}
 	barrier.unblock()
+	// The 1100 failed the only commit proxy endpoint for good, as C++
+	// waitValueOrSignal does (genericactors.actor.h:397-402), so the fence's
+	// dummy commit waits for a replacement proxy (LoadBalance.actor.h:796-807).
+	replaceProxies(t, ctx, container)
 	select {
 	case err := <-done:
 		requireCommitLifetimeCode(t, err, 1021, "normalized Commit result")

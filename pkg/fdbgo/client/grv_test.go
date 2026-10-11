@@ -9,6 +9,7 @@ import (
 
 	"fdb.dev/pkg/fdbgo/transport"
 	"fdb.dev/pkg/fdbgo/wire/types"
+	tcfdb "fdb.dev/pkg/testcontainers/foundationdb"
 )
 
 func TestGRVBatcherInitialWindow(t *testing.T) {
@@ -27,11 +28,10 @@ func TestGRVBatcherInitialWindow(t *testing.T) {
 	}
 }
 
-func newDeadlineRecoveryGRVDatabase(t *testing.T, ctx context.Context) (*Database, *atomic.Bool, <-chan struct{}) {
+func newDeadlineRecoveryGRVDatabase(t *testing.T, ctx context.Context) (*Database, *atomic.Bool, <-chan struct{}, *tcfdb.Container) {
 	t.Helper()
-	sd := newSimDialer()
-	db := newTestDatabase(t, ctx, sharedClusterFile, sd.dial)
-	t.Cleanup(func() { db.Close() })
+	// Its own cluster: the test recovers it onto new proxies.
+	db, sd, container := newSimTestDBContainer(t, ctx)
 	if _, err := db.CreateTransaction().GetReadVersion(ctx); err != nil {
 		t.Fatalf("warm GRV: %v", err)
 	}
@@ -56,14 +56,14 @@ func newDeadlineRecoveryGRVDatabase(t *testing.T, ctx context.Context) (*Databas
 	for _, proxy := range proxies {
 		sd.armAddr(proxy.Address)
 	}
-	return db, recovering, injected
+	return db, recovering, injected, container
 }
 
 func TestGRVBatcherRecoveryOutlivesCoordinatorTimeout(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	db, recovering, injected := newDeadlineRecoveryGRVDatabase(t, ctx)
+	db, recovering, injected, container := newDeadlineRecoveryGRVDatabase(t, ctx)
 	done := make(chan grvResult, 1)
 	go func() {
 		rv, err := db.CreateTransaction().GetReadVersion(ctx)
@@ -85,7 +85,10 @@ func TestGRVBatcherRecoveryOutlivesCoordinatorTimeout(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}
+	// The proxy that answered broken_promise is failed for good, as in C++; the
+	// recovery ends when its replacement is published.
 	recovering.Store(false)
+	replaceProxies(t, ctx, container)
 	select {
 	case result := <-done:
 		if result.err != nil || result.version <= 0 {
