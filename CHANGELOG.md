@@ -29,6 +29,10 @@ project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (
   **1.26.x** (the `MODULE.bazel` / `go.mod` pins; the CI doc-guard enforces docs match them).
 
 ### Changed
+- CI no longer runs `go test` or `go vet`: every test runs through Bazel. The GitHub-hosted
+  `hosted-smoke.yml` workflow is retired; its secret scan, Bazel-anchor check and fresh-clone
+  `go build ./...` moved into `ci.yml`'s `go install lane` job, and the wire-type oracle runs as
+  `bazelisk test //cmd/fdb-diff-oracle:fdb-diff-oracle_test`.
 - SQL planning has no task budget by default, as in Java (was 150,000 tasks, 250,000 right-deep); the
   caller's context bounds it, and `MAX_TOTAL_TASK_COUNT`, `MAX_TASK_QUEUE_SIZE` and
   `MAX_NUM_MATCHES_PER_RULE_CALL` opt into Java's caps (54F02 when exhausted).

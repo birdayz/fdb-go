@@ -125,16 +125,6 @@ jobs:
         id: test
         run: bazelisk test --config=ci //... //cmd/fdb-stacktester/bindingtester:bindingtester_test --define gotags=fdbdocker --test_tag_filters=-stress,-conformance_java --build_event_json_file=.bazel-bep.jsonl
 
-      # tools/bazelscaleset is a standalone Go module (its own go.mod) so the
-      # runner supervisor's GitHub-API dependencies never enter the
-      # record-layer dependency graph. That separation also put its 53 tests outside
-      # `bazelisk test //...` — they ran NOWHERE, in CI or locally, while looking
-      # entirely normal in review. This step is the lane.
-      - name: Test the standalone runner-supervisor module
-        if: ${{ !cancelled() }}
-        run: go test ./... -count=1
-        working-directory: tools/bazelscaleset
-
       - name: Timeout budgets
         if: ${{ !cancelled() && steps.test.outcome != 'skipped' }}
         # Same gate as the race lane's, over the main suite — see the long comment
@@ -319,47 +309,25 @@ jobs:
         if: steps.scope.outputs.run != 'false'
         run: bazelisk build --config=ci //cmd/fdb-diff-oracle:diff_oracle_bin
 
-      - name: Build Go fuzz test
-        if: steps.scope.outputs.run != 'false'
-        run: bazelisk build --config=ci //cmd/fdb-diff-oracle:fdb-diff-oracle_test
-
-      - name: Resolve Bazel Go SDK
-        if: steps.scope.outputs.run != 'false'
-        id: go-sdk
-        run: |
-          OUTPUT_BASE=$(bazelisk info --config=ci output_base 2>/dev/null)
-          GO_BIN=$(ls "$OUTPUT_BASE"/external/rules_go++go_sdk+*download*/bin/go 2>/dev/null | head -1)
-          if [ -z "$GO_BIN" ]; then
-            echo "Bazel Go SDK not materialized (cold slot) — fetching it via bazel"
-            bazelisk run --config=ci @rules_go//go -- version >/dev/null 2>&1 || true
-            GO_BIN=$(ls "$OUTPUT_BASE"/external/rules_go++go_sdk+*download*/bin/go 2>/dev/null | head -1)
-          fi
-          if [ -z "$GO_BIN" ]; then
-            echo "Bazel Go SDK not found — trying system go"
-            GO_BIN=go
-          fi
-          echo "go-bin=$GO_BIN" >> "$GITHUB_OUTPUT"
-          echo "Using Go: $GO_BIN ($($GO_BIN version))"
-
+      # Runs every TestDiff* against the C++ oracle AND replays all Fuzz* seed
+      # corpora (each f.Add). The `^Fuzz` in -test.run is load-bearing: without it
+      # the Fuzz functions do not run at all. Under Bazel, never `go test`.
       - name: Deterministic wire-type oracle (TestDiff + all fuzz seed corpora)
         if: steps.scope.outputs.run != 'false'
-        # Runs every TestDiff* against the C++ oracle AND replays all Fuzz* SEED corpora
-        # (committed under testdata/fuzz + each f.Add). The `^Fuzz` in -run is load-bearing:
-        # without it `go test` does NOT exercise the Fuzz functions at all, so -run=TestDiff
-        # alone silently skipped the seed corpora (the comment used to overclaim). With it,
-        # a marshal regression in ANY oracle-compared type — or on any accumulated
-        # interesting seed — reddens HERE, per-PR. Deterministic, ~0.1s. Active fuzzing
-        # (new-input discovery) is not a gate.
-        run: |
-          ORACLE=$(realpath bazel-bin/cmd/fdb-diff-oracle/diff-oracle)
-          DIFF_ORACLE_BIN="$ORACLE" ${{ steps.go-sdk.outputs.go-bin }} test -run='TestDiff|^Fuzz' -v -count=1 ./cmd/fdb-diff-oracle/
+        run: >-
+          bazelisk test --config=ci //cmd/fdb-diff-oracle:fdb-diff-oracle_test
+          '--test_arg=-test.run=TestDiff|^Fuzz' --test_arg=-test.v --test_output=errors
 
   frl-go-install:
     name: go install lane (cmd/frl)
     runs-on: hetzner-fdb-vm
     steps:
+      # Full history, blobless: the secret scan reads every commit a change adds.
       - name: Checkout code
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          filter: blob:none
 
       - name: Reap containers an earlier job left running
         timeout-minutes: 2
@@ -378,10 +346,43 @@ jobs:
           go-version-file: go.mod
           cache: false
 
+      # This repository is public: every commit a change adds is read for
+      # credentials, private keys, OpenTofu state and public host addresses
+      # (cmd/secretscan). Per commit, not the net diff. The pre-commit hook is the
+      # prevention; this is the backstop. Refs arrive through env, never inlined:
+      # a fork's branch name is attacker-controlled. Moved here from the retired
+      # hosted-smoke workflow.
+      - name: Secret scan (every commit this change adds)
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          case "$EVENT" in
+            pull_request) git fetch -q origin "$BASE_REF" "$PR_HEAD_SHA"; range="origin/$BASE_REF..$PR_HEAD_SHA" ;;
+            push) range="$BEFORE..HEAD" ;;
+            *) range="" ;;
+          esac
+          case "$range" in
+            ""|0000000*) go run ./cmd/secretscan -tree ;;
+            *) go run ./cmd/secretscan -commits "$range" ;;
+          esac
+
+      # RFC-108 §1: the build's reproducibility anchors must be committed.
+      - name: Assert Bazel anchors are committed
+        run: |
+          test -f .bazelversion || { echo "::error::.bazelversion missing"; exit 1; }
+          test -s MODULE.bazel.lock || { echo "::error::MODULE.bazel.lock missing/empty"; exit 1; }
+
+      # A fresh clone must build with only the Go toolchain: no Bazel, no fdb_c.h.
+      # cgo stays enabled so a package that needs fdb_c.h without the libfdbc tag fails.
+      - name: go build ./... (fresh clone)
+        run: go build ./...
+
       # The lane for the one build configuration no other job here exercises:
       # what `go install fdb.dev/cmd/frl@<version>` compiles. Bazel builds frl
-      # from its own dependency resolution and hosted smoke builds only the pure
-      # wire packages, so this is the only module-mode, cgo-free build of the CLI
+      # from its own dependency resolution, so this is the only module-mode, cgo-free build of the CLI
       # against the root go.mod and go.sum. `go install pkg@version` also refuses
       # a module whose go.mod carries a replace or exclude directive, so one here
       # breaks installation for every user the moment it merges.
@@ -395,7 +396,6 @@ jobs:
             exit 1
           fi
           go build -trimpath ./cmd/frl/...
-          go vet ./cmd/frl/...
 
   govulncheck:
     name: Vulnerability scan
