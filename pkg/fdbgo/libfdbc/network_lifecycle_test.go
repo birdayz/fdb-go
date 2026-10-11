@@ -4,13 +4,16 @@ package libfdbc
 
 import (
 	"context"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"fdb.dev/pkg/fdbgo/fdb"
 	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
+	cgofdb "github.com/apple/foundationdb/bindings/go/src/fdb"
 )
 
 func TestCNetworkUsesSharedOpenOwnership(t *testing.T) {
@@ -74,6 +77,39 @@ func TestCNetworkUsesSharedOpenOwnership(t *testing.T) {
 	}
 	reopened.Close()
 	requireOpenRefs(t, clusterFile, 1)
+}
+
+func TestOpenFailureReturnsNilBackend(t *testing.T) {
+	// StopNetwork is irreversible and process-wide; exercise it in a child.
+	const childEnv = "FDBGO_TEST_STOPPED_NETWORK"
+	if os.Getenv(childEnv) != "1" {
+		t.Parallel()
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestOpenFailureReturnsNilBackend$", "-test.v")
+		cmd.Env = append(os.Environ(), childEnv+"=1")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("stopped-network child: %v\n%s", err, out)
+		}
+		return
+	}
+
+	// Opening starts the real C network; cluster-file loading is deferred.
+	backend, err := Open(filepath.Join(t.TempDir(), "network-start.cluster"))
+	if err != nil {
+		t.Fatalf("start network: %v", err)
+	}
+	backend.Close()
+	if err := cgofdb.StopNetwork(); err != nil {
+		t.Fatalf("stop network: %v", err)
+	}
+	backend, err = Open(filepath.Join(t.TempDir(), "network-stopped.cluster"))
+	if !errors.Is(err, cgofdb.ErrNetworkIsStopped) {
+		t.Fatalf("Open after StopNetwork returned %v, want ErrNetworkIsStopped", err)
+	}
+	if backend != nil {
+		t.Fatalf("failed Open returned a non-nil backend: %#v (error: %v)", backend, err)
+	}
 }
 
 func requireOpenRefs(t *testing.T, clusterFile string, want int) *sharedDB {

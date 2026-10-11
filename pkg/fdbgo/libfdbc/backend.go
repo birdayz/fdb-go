@@ -86,7 +86,11 @@ func Open(clusterFile string) (fdb.BackendDatabase, error) {
 	if err := fdb.APIVersion(apiVersion); err != nil {
 		return nil, err
 	}
-	return openSharedDatabase(clusterFile)
+	db, err := openSharedDatabase(clusterFile)
+	if err != nil {
+		return nil, err
+	}
+	return db, nil
 }
 
 // openSharedDatabase serializes cgofdb's cache and tracks every owner of its handles.

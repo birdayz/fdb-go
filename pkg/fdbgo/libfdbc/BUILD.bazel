@@ -66,5 +66,6 @@ go_test(
     deps = [
         "//pkg/fdbgo/fdb",
         "//pkg/testcontainers/foundationdb",
+        "@com_github_apple_foundationdb_bindings_go//src/fdb",
     ],
 )
