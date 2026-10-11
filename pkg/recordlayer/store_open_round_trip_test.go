@@ -17,7 +17,7 @@ import (
 
 // roundTripTx instruments the two reads loadRecordStoreState issues: the
 // store-header Get and the snapshot index-state range read. GetRange issues its
-// first batch when called, so its return marks the read as on the wire. The
+// first batch when called, so its return marks the read as initiated. The
 // header future does not complete until then (or a timeout passes), so a
 // sequential implementation shows up as rangeBeforeHeader=false instead of
 // hanging.
@@ -31,7 +31,6 @@ type roundTripTx struct {
 	rangeConsumed atomic.Int32
 	// Set once the header future resolves: whether the range read was issued first.
 	rangeBeforeHeader atomic.Bool
-	headerResolved    atomic.Bool
 	// Options and isolation of the index-state read, pinned to what the
 	// sequential implementation used.
 	rangeSnapshot bool
@@ -104,7 +103,6 @@ func (f *gatedHeaderFuture) Get() ([]byte, error) {
 		f.tx.rangeBeforeHeader.Store(true)
 	case <-time.After(2 * time.Second):
 	}
-	f.tx.headerResolved.Store(true)
 	v, err := f.FutureByteSlice.Get()
 	if f.tx.headerErr != nil {
 		return nil, f.tx.headerErr
@@ -149,10 +147,9 @@ var _ = Describe("StoreOpen round trips", func() {
 		return rt, inner, err
 	}
 
-	// On an early return the issued index-state read is left to the
-	// transaction, whose commit waits on every issued read: it must still
-	// commit cleanly.
-	expectIssuedReadDrainedByCommit := func(rt *roundTripTx, inner fdb.Transaction) {
+	// An early return leaves the issued index-state result unconsumed;
+	// that must not prevent the transaction from committing cleanly.
+	expectUnconsumedReadCommits := func(rt *roundTripTx, inner fdb.Transaction) {
 		Expect(rt.rangeCalls.Load()).To(Equal(int32(1)), "index-state range read issued once")
 		Expect(rt.rangeConsumed.Load()).To(BeZero(), "early return must not consume the read")
 		Expect(inner.Commit().Get()).To(Succeed())
@@ -169,7 +166,7 @@ var _ = Describe("StoreOpen round trips", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(rt.headerGets.Load()).To(BeNumerically(">=", 1))
 		Expect(rt.rangeBeforeHeader.Load()).To(BeTrue(),
-			"index-state read waited for the header read: two sequential round trips instead of one")
+			"index-state read was not initiated before awaiting the header result")
 		Expect(rt.rangeCalls.Load()).To(Equal(int32(1)))
 		Expect(rt.rangeConsumed.Load()).To(Equal(int32(1)))
 		// Same read as the sequential code: snapshot isolation, default options
@@ -188,14 +185,14 @@ var _ = Describe("StoreOpen round trips", func() {
 		var fe fdb.Error
 		Expect(errors.As(err, &fe)).To(BeTrue())
 		Expect(fe.Code).To(Equal(1009), "header error must win")
-		expectIssuedReadDrainedByCommit(rt, inner)
+		expectUnconsumedReadCommits(rt, inner)
 	})
 
-	It("leaves the issued index-state read to commit when the store does not exist", func() {
+	It("commits with the index-state result unconsumed when the store does not exist", func() {
 		ss := specSubspace()
 		rt, inner, err := open(ss, ExistenceCheckErrorIfNotExists, nil)
 		var dne *RecordStoreDoesNotExistError
 		Expect(errors.As(err, &dne)).To(BeTrue(), "got %v", err)
-		expectIssuedReadDrainedByCommit(rt, inner)
+		expectUnconsumedReadCommits(rt, inner)
 	})
 })
