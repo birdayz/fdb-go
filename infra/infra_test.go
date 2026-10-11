@@ -45,6 +45,7 @@ var templateVars = map[string]string{
 	"mc_sha256":           strings.Repeat("0", 64),
 	"fdb_clients_sha256":  strings.Repeat("0", 64),
 	"runner_mode":         "classic",
+	"nat":                 "false",
 
 	"bazelscaleset_app_client_id":       "Iv23litTscHcbrnmhtKa",
 	"bazelscaleset_app_installation_id": "143183909",
@@ -542,5 +543,219 @@ func TestFRLReleaseLegalNotices(t *testing.T) {
 				t.Fatalf("smoke check for %s notice: %v\n%s", damage, err, out)
 			}
 		})
+	}
+}
+
+// TestCloudInitBringsUpThePrivateNIC runs the rendered bootcmd netplan script twice under sh:
+// without it the private NIC stays down and every Bazel job dies on the unreachable cache.
+func TestCloudInitBringsUpThePrivateNIC(t *testing.T) {
+	t.Parallel()
+	for _, nat := range []string{"false", "true"} {
+		t.Run("nat="+nat, func(t *testing.T) {
+			var doc struct {
+				Bootcmd []string `yaml:"bootcmd"`
+			}
+			renderWith(t, map[string]string{"nat": nat}, &doc)
+			var script string
+			for _, c := range doc.Bootcmd {
+				if strings.Contains(c, "60-ci-fleet.yaml") {
+					script = c
+				}
+			}
+			if script == "" {
+				t.Fatal("bootcmd writes no /etc/netplan/60-ci-fleet.yaml")
+			}
+			// A hot-plugged NIC stays down until the file is applied, so apply must be there.
+			if n := strings.Count(script, "netplan apply"); n != 1 {
+				t.Fatalf("bootcmd runs `netplan apply` %d times, want 1", n)
+			}
+			dir := t.TempDir()
+			script = strings.ReplaceAll(script, "/etc/netplan/", dir+"/")
+			script = strings.ReplaceAll(script, "netplan apply", "touch "+dir+"/applied")
+			boot := func() []byte {
+				// cloud-init runs bootcmd with /bin/sh, on every boot.
+				if out, err := exec.Command("sh", "-c", script).CombinedOutput(); err != nil {
+					t.Fatalf("netplan script failed: %v\n%s", err, out)
+				}
+				data, err := os.ReadFile(filepath.Join(dir, "60-ci-fleet.yaml"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				return data
+			}
+			data := boot()
+			if _, err := os.Stat(filepath.Join(dir, "applied")); err != nil {
+				t.Fatal("first boot did not apply the netplan file")
+			}
+			if err := os.Remove(filepath.Join(dir, "applied")); err != nil {
+				t.Fatal(err)
+			}
+			if again := boot(); string(again) != string(data) {
+				t.Fatalf("second boot changed the netplan file:\n%s\nthen\n%s", data, again)
+			}
+			if _, err := os.Stat(filepath.Join(dir, "applied")); err == nil {
+				t.Error("second boot re-applied an unchanged netplan file")
+			}
+			var np struct {
+				Network struct {
+					Ethernets map[string]struct {
+						Match       map[string]string   `yaml:"match"`
+						DHCP4       bool                `yaml:"dhcp4"`
+						Routes      []map[string]string `yaml:"routes"`
+						Nameservers struct {
+							Addresses []string `yaml:"addresses"`
+						} `yaml:"nameservers"`
+					} `yaml:"ethernets"`
+				} `yaml:"network"`
+			}
+			if err := yaml.Unmarshal(data, &np); err != nil {
+				t.Fatalf("written netplan is not YAML: %v\n%s", err, data)
+			}
+			e, ok := np.Network.Ethernets["ci-fleet"]
+			if !ok || e.Match["name"] != "enp*" || !e.DHCP4 {
+				t.Fatalf("netplan does not DHCP the private enp* NIC:\n%s", data)
+			}
+			routed := len(e.Routes) == 1 && e.Routes[0]["to"] == "default" && e.Routes[0]["via"] == "10.77.0.1" &&
+				len(e.Nameservers.Addresses) > 0
+			if routed != (nat == "true") {
+				t.Errorf("default route via the NAT gateway = %v, want %v:\n%s", routed, nat == "true", data)
+			}
+		})
+	}
+}
+
+// TestCloudInitMcInstallIsBestEffort pins that a failed or mismatched mc download (dl.min.io
+// answers 410) neither aborts provisioning under set -eu nor leaves an unverified binary.
+func TestCloudInitMcInstallIsBestEffort(t *testing.T) {
+	t.Parallel()
+	var doc struct {
+		Runcmd []any `yaml:"runcmd"`
+	}
+	renderWith(t, nil, &doc)
+	var line string
+	for _, c := range doc.Runcmd {
+		if s, ok := c.(string); ok {
+			for _, l := range strings.Split(s, "\n") {
+				if strings.Contains(l, "client/mc/release") {
+					line = l
+				}
+			}
+		}
+	}
+	if line == "" {
+		t.Fatal("runcmd installs no mc")
+	}
+	for _, tc := range []struct {
+		name, stub string
+		installed  bool
+	}{
+		{"download fails", "exit 1", false},
+		{"checksum mismatch leaves a file", `echo bad > "$3"; exit 1`, false},
+		{"download verifies", `echo good > "$3"`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			fv := filepath.Join(dir, "fetch-verified.sh")
+			if err := os.WriteFile(fv, []byte("#!/bin/sh\n"+tc.stub+"\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			mc := filepath.Join(dir, "mc")
+			script := "set -eu\nFV=" + fv + "\n" + strings.ReplaceAll(line, "/usr/local/bin/mc", mc) + "\necho survived\n"
+			out, err := exec.Command("sh", "-c", script).CombinedOutput()
+			if err != nil || !strings.Contains(string(out), "survived") {
+				t.Fatalf("mc install aborted provisioning: %v\n%s", err, out)
+			}
+			st, statErr := os.Stat(mc)
+			if tc.installed != (statErr == nil) {
+				t.Fatalf("mc present = %v, want %v", statErr == nil, tc.installed)
+			}
+			if tc.installed && st.Mode()&0o111 == 0 {
+				t.Error("installed mc is not executable")
+			}
+		})
+	}
+}
+
+// TestCloudInitBazelRemoteSurvivesReplace pins that the bazel-remote item, which runs under
+// the docker block's leaked set -eu before runner registration, (re)starts an existing container
+// and never aborts.
+func TestCloudInitBazelRemoteSurvivesReplace(t *testing.T) {
+	t.Parallel()
+	var doc struct {
+		Runcmd []any `yaml:"runcmd"`
+	}
+	renderWith(t, nil, &doc)
+	var item string
+	for _, c := range doc.Runcmd {
+		if s, ok := c.(string); ok && strings.Contains(s, "--name bazel-remote") {
+			item = s
+		}
+	}
+	if item == "" {
+		t.Fatal("runcmd starts no bazel-remote")
+	}
+	for _, tc := range []struct {
+		name, host, start, run string
+		wantRun, wantErr       bool
+	}{
+		// A second docker run exits 125 on the name conflict, as the real one does.
+		{"existing container, running or stopped", "gh-runner-fdb", "exit 0", "exit 125", false, false},
+		{"fresh box", "gh-runner-fdb", "exit 1", "exit 0", true, false},
+		{"pull fails", "gh-runner-fdb", "exit 1", "exit 1", true, true},
+		{"other box", "gh-runner-drain-0", "exit 0", "exit 125", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			calls := filepath.Join(dir, "calls")
+			for name, body := range map[string]string{
+				"hostname": "echo " + tc.host,
+				"install":  "exit 0",
+				"id":       "echo 1000",
+				"docker":   `echo "$1" >> ` + calls + "\n[ \"$1\" = start ] && " + tc.start + "\n" + tc.run,
+			} {
+				if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cmd := exec.Command("sh", "-c", "set -eu\n"+item+"\necho survived\n")
+			cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"))
+			out, err := cmd.CombinedOutput()
+			if err != nil || !strings.Contains(string(out), "survived") {
+				t.Fatalf("bazel-remote item aborted provisioning: %v\n%s", err, out)
+			}
+			got, _ := os.ReadFile(calls)
+			if tc.host != "gh-runner-fdb" && len(got) != 0 {
+				t.Fatalf("docker called on a box without the cache: %q", got)
+			}
+			if ran := strings.Contains(string(got), "run"); ran != tc.wantRun {
+				t.Fatalf("docker run called = %v, want %v (calls: %q)", ran, tc.wantRun, got)
+			}
+			if reported := strings.Contains(string(out), "::error::"); reported != tc.wantErr {
+				t.Errorf("::error:: reported = %v, want %v\n%s", reported, tc.wantErr, out)
+			}
+		})
+	}
+}
+
+// renderWith renders cloud-init.yaml with templateVars plus overrides and parses it into doc.
+func renderWith(t *testing.T, overrides map[string]string, doc any) {
+	t.Helper()
+	tmpl, err := os.ReadFile("cloud-init.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	vars := map[string]string{}
+	for k, v := range templateVars {
+		vars[k] = v
+	}
+	for k, v := range overrides {
+		vars[k] = v
+	}
+	rendered, err := renderTemplate(string(tmpl), vars)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := yaml.Unmarshal([]byte(rendered), doc); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -164,7 +164,9 @@ jobs:
           fi
           if ! command -v mc &>/dev/null; then
             mkdir -p "$HOME/.local/bin"
-            curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o "$HOME/.local/bin/mc"
+            # dl.min.io answers 410 for mc downloads; the upload is best effort, so skip it rather than fail.
+            curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o "$HOME/.local/bin/mc" ||
+              { echo "::notice::mc unavailable; skipping the report upload"; exit 0; }
             chmod +x "$HOME/.local/bin/mc"
             export PATH="$HOME/.local/bin:$PATH"
           fi

@@ -5,8 +5,8 @@
 #
 # server: also runs bazel-remote, published on the private IP only.
 # Both: point /etc/bazel.bazelrc at it. The local --disk_cache stays as the
-# first tier; an unreachable remote cache only warns (Bazel falls back to
-# local execution), and --remote_timeout bounds the wait.
+# first tier. An unreachable remote cache fails every Bazel job (exit 34), so
+# the server is a single point of failure for the fleet.
 #
 # Rollback: delete the marked block from /etc/bazel.bazelrc (and, on the
 # server, `docker rm -f bazel-remote`).
