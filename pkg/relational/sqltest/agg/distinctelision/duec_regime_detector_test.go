@@ -342,7 +342,7 @@ func TestDuecRegimeVerdict_WithholdsWithoutSamples(t *testing.T) {
 // see the condition it guards is worse than no detector: it reads as armed.
 //
 // The wrapping half is load-bearing for both spellings. The probe never sees a
-// bare fdb.Error: connection.go's translateFDBCode turns 1007 into
+// bare fdb.Error: api.TranslateFDBError turns 1007 into
 // api.Error{Code: 40001} and keeps the original as the cause, and database/sql
 // hands that through.
 //
@@ -375,12 +375,12 @@ func TestDuecMeasurementWindowLost(t *testing.T) {
 		},
 
 		// --- spelling 2: FDB's own 1007 (the residual carrier) ---
-		// As the relational layer now delivers it: translateFDBCode's 1007 arm
+		// As the relational layer now delivers it: TranslateFDBError's 1007 arm
 		// attaches the SAME marker the pre-emption carries, so both producers
 		// answer the one predicate and this test does not have to know that 1007
 		// is a number.
 		{
-			"FDB's 1007, marked at translateFDBCode",
+			"FDB's 1007, marked at TranslateFDBError",
 			api.MarkFDBTransactionTooOld(fdb.Error{Code: 1007}),
 			true,
 		},

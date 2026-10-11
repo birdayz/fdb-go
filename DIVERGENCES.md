@@ -4272,3 +4272,16 @@ The Go driver takes connection options from the DSN query string. Java takes the
 - **Booleans accept only `true`/`false`, in any case.** Java's `Boolean::parseBoolean` (TypeContract.java:36) reads every other value as false, so `dry_run=1` would silently mean "off". Go rejects everything else with 22023: `""`, a bare `?flag`, `1`/`0`, `t`/`f`, `yes`/`no`, `on`/`off`, and padded values. This covers every boolean DSN parameter.
 - **`transaction_timeout` is at most 2147483647.** The Java contract allows any long (Options.java:586). FDB's `TIMEOUT` option takes [0, INT_MAX] (`extractIntOption`, ReadYourWrites.actor.cpp:2571), so a larger value fails every transaction with 2006. Go rejects it when the DSN is opened. A value passed to `SetOption` keeps the Java contract and fails at the transaction with 2006, as in both clients.
 - **A malformed query string is 22023.** A bad escape or a `;` separator is refused. Go's `url.Query` would otherwise drop the pair, and the limit it carried, without an error.
+
+## FDB errors: Go gives more FDB codes a SQLSTATE than Java
+
+Java turns an `FDBException` into a typed `RecordCoreException` (FDBExceptions.java:194-211), and `ExceptionUtil.recordCoreToRelationalException` maps only `FDBStoreTransactionTimeoutException` (1031 → 53F00). Every other FDB failure falls through to `UNKNOWN` (XXXXX). The exception is 1020 at commit, which `RecordContextTransaction.commit` maps to 40001 (RecordContextTransaction.java:66-68). Go's single mapper, `api.TranslateFDBError`, also covers:
+
+| FDB code | Go | Java |
+|---|---|---|
+| 1007 `transaction_too_old` | 40001, carrying the too-old marker (`api.IsTransactionTimeLimit`) | XXXXX |
+| 1020 `not_committed` outside commit | 40001 | XXXXX (40001 only at commit) |
+| 1025 `transaction_cancelled`, 2017 `used_during_commit` | 25F01 | XXXXX |
+| 1021 `commit_unknown_result` | 40003 (see Go-only SQLSTATEs) | XXXXX |
+
+An FDB code Go does not map reaches the caller with no SQLSTATE: the FDB error itself, which `errors.As` still matches. Java reports XXXXX.

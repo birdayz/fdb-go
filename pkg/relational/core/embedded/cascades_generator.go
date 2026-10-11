@@ -2583,7 +2583,7 @@ func enumValuesAsNames(v any, t values.Type) any {
 //   - the budget is exhausted: fail 40001 NAMING THE 5-SECOND WINDOW. It is
 //     40001 and not 54F01 because no limit the caller can raise makes an FDB
 //     transaction live longer than five seconds, and it is the same code
-//     translateFDBCode assigns to FDB's own transaction_too_old (1007), so
+//     api.TranslateFDBError assigns to FDB's own transaction_too_old (1007), so
 //     retry logic is uniform whether the driver pre-empts or FDB does.
 //     Pre-empting here also keeps the zero-progress liveness tripwire honest:
 //     without it an exhausted budget produces a rowless unadvanced page and a

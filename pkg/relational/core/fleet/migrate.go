@@ -85,7 +85,7 @@ func SaveTemplate(ctx context.Context, db *recordlayer.FDBDatabase, cat api.Stor
 func RestoreTemplateVersion(ctx context.Context, db *recordlayer.FDBDatabase, cat *catalog.RecordLayerStoreCatalog,
 	ks *keyspace.RelationalKeyspace, templateName string, version int, md []byte,
 ) error {
-	return cat.RestoreTemplateVersion(ctx, db, ks, templateName, version, md)
+	return api.TranslateFDBError(cat.RestoreTemplateVersion(ctx, db, ks, templateName, version, md))
 }
 
 // Migrate rebinds every target onto template version targetVersion, ONE

@@ -20,6 +20,7 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
+	apiddl "fdb.dev/pkg/relational/api/ddl"
 	"fdb.dev/pkg/relational/core/embedded"
 	"fdb.dev/pkg/simfdb"
 )
@@ -320,14 +321,30 @@ func TestDSN_CatalogStoreFDBErrorsAreTranslated(t *testing.T) {
 			if _, err := db.ExecContext(ctx, "CREATE SCHEMA /FRL/simdb/warm WITH TEMPLATE tmpl"); err != nil {
 				t.Fatal(err)
 			}
+			check := func(what string, err error) {
+				t.Helper()
+				var apiErr *api.Error
+				if !errors.As(err, &apiErr) || apiErr.Code != tc.want || api.IsTransactionTimeLimit(err) != tc.tooOld ||
+					!fromCatalogStore(err) {
+					t.Fatalf("%s: got %v, want %s from the catalog store (too-old marker %v)", what, err, tc.want, tc.tooOld)
+				}
+			}
 			rec.failGets.Store(tc.code)
 			_, err := db.ExecContext(ctx, "CREATE SCHEMA /FRL/simdb/x WITH TEMPLATE tmpl")
-			rec.failGets.Store(0)
-			var apiErr *api.Error
-			if !errors.As(err, &apiErr) || apiErr.Code != tc.want || api.IsTransactionTimeLimit(err) != tc.tooOld ||
-				!fromCatalogStore(err) {
-				t.Fatalf("got %v, want %s from the catalog store (too-old marker %v)", err, tc.want, tc.tooOld)
+			check("statement", err)
+			c, err := db.Conn(ctx)
+			if err != nil {
+				t.Fatal(err)
 			}
+			defer c.Close()
+			err = c.Raw(func(dc any) error {
+				return dc.(*embedded.EmbeddedConnection).ApplyMetadataOperation(ctx,
+					func(f apiddl.MetadataOperationsFactory, txn api.Transaction) error {
+						return f.CreateDatabase("/FRL/OTHER", *api.NoOptions()).Execute(txn)
+					})
+			})
+			rec.failGets.Store(0)
+			check("ApplyMetadataOperation", err)
 		})
 	}
 }

@@ -28,7 +28,6 @@ go_library(
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
-        "//pkg/fdbgo/wire",
         "//pkg/recordlayer",
         "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/relational/api",

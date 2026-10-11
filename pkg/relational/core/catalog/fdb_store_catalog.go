@@ -8,16 +8,13 @@
 package catalog
 
 import (
-	"errors"
 	"fmt"
 
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen"
-	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
-	"fdb.dev/pkg/fdbgo/wire"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/metadata"
@@ -192,12 +189,10 @@ func (c *RecordLayerStoreCatalog) SchemaTemplateCatalog() api.SchemaTemplateCata
 }
 
 // storeError leaves an FDB-coded failure unconverted so the connection's
-// translateFDBError maps it (1031 53F00, 1007 40001, ...); anything else is
+// api.TranslateFDBError maps it (1031 53F00, 1007 40001, ...); anything else is
 // XX000, where Java's ExceptionUtil falls back to XXXXX (UNKNOWN).
 func storeError(err error, msg string) error {
-	var fe fdb.Error
-	var we *wire.FDBError
-	if errors.As(err, &fe) || errors.As(err, &we) {
+	if _, ok := api.FDBErrorCode(err); ok {
 		return fmt.Errorf("%s: %w", msg, err)
 	}
 	return api.WrapErrorf(err, api.ErrCodeInternalError, "%s", msg)

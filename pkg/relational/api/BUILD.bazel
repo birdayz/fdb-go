@@ -15,6 +15,7 @@ go_library(
         "direct_access.go",
         "errcode.go",
         "error.go",
+        "fdb_error.go",
         "keyset.go",
         "metadata.go",
         "option_contracts.go",
@@ -32,7 +33,11 @@ go_library(
     ],
     importpath = "fdb.dev/pkg/relational/api",
     visibility = ["//visibility:public"],
-    deps = ["//gen"],
+    deps = [
+        "//gen",
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/wire",
+    ],
 )
 
 go_test(

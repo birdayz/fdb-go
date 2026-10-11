@@ -1277,7 +1277,7 @@ func (c *EmbeddedConnection) ApplyMetadataOperation(ctx context.Context, op func
 	_, err := c.sess.DB.RunWithMaxAttempts(ctx, 1, configured(c.Options(), func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		return nil, op(c.sess.Factory, catalog.NewFDBTransaction(rctx))
 	}))
-	return err
+	return translateFDBError(err)
 }
 
 // checkDDLDatabaseScope rejects a DDL statement whose resolved database path
