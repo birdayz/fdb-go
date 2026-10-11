@@ -986,6 +986,7 @@ func TestDecodeCodeEstimatesAsItsBytes(t *testing.T) {
 				if a, b, c, e := DotFour(code, others[0], others[1], others[2], q0); a != d0 || b != others[0].Dot(q0) || c != others[1].Dot(q0) || e != others[2].Dot(q0) {
 					t.Fatalf("metric %v exBits %d: DotFour %v %v %v %v", metric, exBits, a, b, c, e)
 				}
+				reset := q.NewScorer(vec)
 				for i, pair := range []struct {
 					query []float64
 					dot   float64
@@ -1000,6 +1001,13 @@ func TestDecodeCodeEstimatesAsItsBytes(t *testing.T) {
 					got, gerr = sc.Finish(code, pair.dot)
 					if (werr == nil) != (gerr == nil) || got != want {
 						t.Fatalf("metric %v exBits %d query %d: Finish %v, %v; Score %v, %v", metric, exBits, i, got, gerr, want, werr)
+					}
+					// A scorer reset to the query is the new scorer.
+					reset.Reset(pair.query)
+					score, serr := reset.Score(data, dims)
+					finish, ferr := reset.Finish(code, pair.dot)
+					if (serr == nil) != (werr == nil) || (ferr == nil) != (werr == nil) || score != want || finish != want {
+						t.Fatalf("metric %v exBits %d query %d: reset Score %v, %v; Finish %v, %v; want %v, %v", metric, exBits, i, score, serr, finish, ferr, want, werr)
 					}
 				}
 			}

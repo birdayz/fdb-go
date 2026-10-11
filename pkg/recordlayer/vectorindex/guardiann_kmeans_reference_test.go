@@ -372,6 +372,25 @@ func TestKMeansFitMatchesReference(t *testing.T) {
 	}
 }
 
+// A row past the cache's budget is the row, and is not kept.
+func TestLloydRowPastCacheBudget(t *testing.T) {
+	t.Parallel()
+	vectors := make([]gVector, 5)
+	for i := range vectors {
+		vectors[i] = gVector{data: []float64{float64(i), float64(i * i), 1}, typ: vectorcodec.TypeDouble}
+	}
+	a := kMeansAdapter{codec: &guardiannVectorCodec{config: guardiannConfig{metric: VectorMetricEuclidean}}}
+	cached, full := newLloyd(a, vectors), newLloyd(a, vectors)
+	full.rowFloats = rowCacheFloats
+	for j := range vectors {
+		want, werr := cached.row(j)
+		got, gerr := full.row(j)
+		if werr != nil || gerr != nil || !reflect.DeepEqual(got, want) || cached.rows[j] == nil || full.rows[j] != nil {
+			t.Fatalf("row %d: %v (%v), want %v (%v); kept %v, past the budget %v", j, got, gerr, want, werr, cached.rows[j], full.rows[j])
+		}
+	}
+}
+
 // Each multi-sum kernel's sums are the scalar sums, bit for bit.
 func TestPassKernelsMatchScalar(t *testing.T) {
 	t.Parallel()
@@ -413,6 +432,14 @@ func TestPassKernelsMatchScalar(t *testing.T) {
 		f0, f1, f2, f3 = dotSequentialFour(c[0], v[0], v[1], v[2], v[3])
 		for j, s := range [4]float64{f0, f1, f2, f3} {
 			check("dot four", s, dotSequential(v[j], c[0]))
+		}
+		sum4, sum := append([]float64(nil), c[0]...), append([]float64(nil), c[0]...)
+		addInto4(sum4, v[0], v[1], v[2], v[3])
+		for _, x := range v {
+			addInto(sum, x)
+		}
+		for j := range sum {
+			check("add four", sum4[j], sum[j])
 		}
 	}
 }
