@@ -6,8 +6,8 @@ import (
 	"fdb.dev/pkg/fdbgo/wire"
 )
 
-// executionLease protects reset-owned state, not wire I/O ownership. All fields
-// are guarded by readErrMu. Nested operations borrow the same token.
+// executionLease protects reset-owned state, not wire I/O ownership. tx and inc
+// are immutable; readErrMu guards active. Nested operations borrow the same token.
 type executionLease struct {
 	tx     *Transaction
 	inc    *readIncarnation
@@ -30,18 +30,22 @@ func (l *executionLease) release() {
 	l.tx.readErrMu.Unlock()
 }
 
-// enterState admits synchronous, context-free state access. The lease, rather
-// than a separate readiness check, protects the entire mutable-state phase.
+// enterState admits synchronous, context-free state access; the lease protects the
+// whole mutable-state phase. Keep it inlinable (TestStateLeaseDoesNotAllocate).
 func (tx *Transaction) enterState() *executionLease {
+	return &executionLease{tx: tx, inc: tx.admitState(), active: true}
+}
+
+// admitState waits out a turnover and counts one user of the current incarnation.
+func (tx *Transaction) admitState() *readIncarnation {
 	for {
 		tx.readErrMu.Lock()
 		ready := tx.readReady
 		if ready == nil {
 			inc := tx.readIncarnationLocked()
 			inc.users++
-			lease := &executionLease{tx: tx, inc: inc, active: true}
 			tx.readErrMu.Unlock()
-			return lease
+			return inc
 		}
 		tx.readErrMu.Unlock()
 		<-ready
