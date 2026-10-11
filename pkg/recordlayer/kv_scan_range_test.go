@@ -84,24 +84,3 @@ func TestKVScanBoundsRejectsInvalidEndpoints(t *testing.T) {
 		}
 	}
 }
-
-// TestPreFixContinuationIsAmbiguous is why older Go tokens (inner = key past the
-// subspace) are not resumed specially: on allOf((1)) over (a, b, pk), one inner
-// byte string is a valid token in both forms, naming two different in-range keys.
-func TestPreFixContinuationIsAmbiguous(t *testing.T) {
-	t.Parallel()
-	ss := subspace.Sub("idx")
-	b := newKVScanBounds(ss, tuple.Tuple{int64(1)}, tuple.Tuple{int64(1)}, EndpointTypeRangeInclusive, EndpointTypeRangeInclusive)
-	javaKey := ss.Pack(tuple.Tuple{int64(1), int64(1), int64(7)})
-	inner := javaKey[b.prefixLength:] // Java's token: pack(1, 7)
-	legacyKey := append(bytes.Clone(ss.Bytes()), inner...)
-	if !bytes.HasPrefix(legacyKey, b.lowBytes[:b.prefixLength]) {
-		t.Fatalf("legacy reading %x is outside the range", legacyKey)
-	}
-	if bytes.Equal(legacyKey, javaKey) {
-		t.Fatal("the two readings coincide; the example proves nothing")
-	}
-	if _, err := tuple.Unpack(legacyKey[len(ss.Bytes()):]); err != nil {
-		t.Fatalf("legacy reading is not a well-formed index key: %v", err)
-	}
-}

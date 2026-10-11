@@ -51,7 +51,7 @@ var _ = Describe("Narrowed-range continuation conformance", func() {
 		}
 		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
-		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("name"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
 		builder.AddIndex("Order", indexes["Order$qty_price"])
 		builder.AddIndex("Order", indexes["Order$cnt_qty_price"])
@@ -86,7 +86,7 @@ var _ = Describe("Narrowed-range continuation conformance", func() {
 					return nil, err
 				}
 			}
-			for i, name := range []string{"aa", "ab", "abc", "abd", "abz", "ac", "b"} {
+			for i, name := range []string{"aa", "ab", "aba", "abc", "abd", "abz", "ac", "b"} {
 				if _, err := store.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(int64(101 + i)), Name: proto.String(name)}); err != nil {
 					return nil, err
 				}
@@ -103,10 +103,11 @@ var _ = Describe("Narrowed-range continuation conformance", func() {
 	})
 
 	ranges := map[string]recordlayer.TupleRange{
-		"allOf11":   recordlayer.TupleRangeAllOf(tuple.Tuple{int64(11)}),
-		"between11": recordlayer.TupleRangeBetweenInclusive(tuple.Tuple{int64(11), int64(2)}, tuple.Tuple{int64(11), int64(8)}),
-		"prefixAb":  recordlayer.TupleRangePrefixString("ab"),
-		"pk5to9":    recordlayer.TupleRangeBetweenInclusive(tuple.Tuple{int64(5)}, tuple.Tuple{int64(9)}),
+		"allOf11":    recordlayer.TupleRangeAllOf(tuple.Tuple{int64(11)}),
+		"between11":  recordlayer.TupleRangeBetweenInclusive(tuple.Tuple{int64(11), int64(2)}, tuple.Tuple{int64(11), int64(8)}),
+		"prefixAb":   recordlayer.TupleRangePrefixString("ab"),
+		"pkPrefixAb": recordlayer.TupleRangePrefixString("ab"),
+		"pk5to9":     recordlayer.TupleRangeBetweenInclusive(tuple.Tuple{int64(5)}, tuple.Tuple{int64(9)}),
 	}
 
 	type page struct {
@@ -244,9 +245,10 @@ var _ = Describe("Narrowed-range continuation conformance", func() {
 		// (TODO.md, "row-limit lookahead").
 		Entry("VALUE index, equality on the leading column", "Order$qty_price", "BY_VALUE", "allOf11", 6, 4),
 		Entry("VALUE index, betweenInclusive under one leading value", "Order$qty_price", "BY_VALUE", "between11", 3, 2),
-		Entry("VALUE index, PREFIX_STRING", "Customer$name", "BY_VALUE", "prefixAb", 4, 3),
+		Entry("VALUE index, PREFIX_STRING", "Customer$name", "BY_VALUE", "prefixAb", 5, 3),
 		Entry("COUNT index, grouped lookup", "Order$cnt_qty_price", "BY_GROUP", "allOf11", 6, 4),
 		Entry("BITMAP_VALUE index, grouped lookup", "Order$bm_qty", "BY_GROUP", "allOf11", 4, 3),
 		Entry("record scan over a primary-key range", "", "", "pk5to9", 5, 2),
+		Entry("record scan, PREFIX_STRING over string primary keys", "", "", "pkPrefixAb", 5, 2),
 	)
 })

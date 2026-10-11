@@ -38,7 +38,7 @@ class IndexContinuationRangeSteps extends ConformanceBase {
         metaDataBuilder.getRecordType("Order")
             .setPrimaryKey(Key.Expressions.field("order_id"));
         metaDataBuilder.getRecordType("Customer")
-            .setPrimaryKey(Key.Expressions.field("customer_id"));
+            .setPrimaryKey(Key.Expressions.field("name"));
         metaDataBuilder.getRecordType("TypedRecord")
             .setPrimaryKey(Key.Expressions.field("id"));
         metaDataBuilder.addIndex("Order", new Index("Order$qty_price",
@@ -62,6 +62,8 @@ class IndexContinuationRangeSteps extends ConformanceBase {
             case "between11":
                 return TupleRange.betweenInclusive(Tuple.from(11L, 2L), Tuple.from(11L, 8L));
             case "prefixAb":
+                return TupleRange.prefixedBy("ab");
+            case "pkPrefixAb":
                 return TupleRange.prefixedBy("ab");
             case "pk5to9":
                 return TupleRange.betweenInclusive(Tuple.from(5L), Tuple.from(9L));

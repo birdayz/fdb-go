@@ -159,6 +159,7 @@ go_test(
         "resultset_test.go",
         "rfc232_exact_value_views_test.go",
         "row_path_single_owner_test.go",
+        "scan_prefix_string_resume_integration_test.go",
         "scan_range_binding_test.go",
         "scan_range_execution_identity_test.go",
         "scan_range_null_boundary_test.go",

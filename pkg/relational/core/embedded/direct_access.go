@@ -548,12 +548,8 @@ func scanDirectPage(ctx context.Context, t directTable, prefix tuple.Tuple, cont
 	}
 	r := recordlayer.TupleRangeAllOf(whole)
 	props := recordlayer.NewScanProperties(recordlayer.DefaultExecuteProperties().WithReturnedRowLimit(limit))
-	low := r.LowEndpoint
-	if state != nil {
-		// The cursor resumes after the continuation's key, within the range.
-		low = recordlayer.EndpointTypeContinuation
-	}
-	cursor := t.store.ScanRecordsInRange(r.Low, r.High, low, r.HighEndpoint, state, props)
+	// The cursor resumes after the continuation's key, within the range.
+	cursor := t.store.ScanRecordsInRange(r.Low, r.High, r.LowEndpoint, r.HighEndpoint, state, props)
 	defer cursor.Close()
 	var out []proto.Message
 	for {
