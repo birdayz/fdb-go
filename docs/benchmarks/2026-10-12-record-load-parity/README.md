@@ -6,7 +6,7 @@ range read. It is **not a performance improvement**: time and allocations increa
 ## Source and environment
 
 - Baseline: `32ec8ae6490b51d574923ea324a03a6ebc87a4b4` (branch merge-base).
-- Candidate implementation: `747132539768bde161cd4ed141cd4f75c331d523`.
+- Candidate implementation: `4ba17069f5446d5012a88fcf303bb714359f8de0`.
   The candidate binary was built from the source subsequently committed at this
   revision. This report and the raw-output files are documentation-only additions.
 - Linux amd64, AMD Ryzen 9 3900X, 24 logical CPUs, Go 1.26.9.
@@ -15,8 +15,8 @@ range read. It is **not a performance improvement**: time and allocations increa
   toolchain. Container startup and benchmark setup are outside the measured loop.
 - Five samples per benchmark, three seconds per sample, `-benchmem`; each table
   cell is the median of all five samples. Runs were sequential, baseline then
-  candidate, under the shared heavy-work lock at nice level 15. No local validation
-  overlapped this paired run. The host also runs other work: these five samples
+  candidate, under the shared heavy-work lock at nice level 15. The fast-lane lock
+  was held as well, so no local validation overlapped this paired run. The host also runs other work: these five samples
   do not establish statistical significance or predict production latency.
 - Workload source: [`benchmark_test.go`](../../../pkg/recordlayer/benchmark_test.go).
   Save and load operations include the transaction/context lifecycle. Save includes
@@ -28,11 +28,11 @@ range read. It is **not a performance improvement**: time and allocations increa
 
 | Benchmark | Before ns/op | After ns/op | Time change | Before B/op | After B/op | Before allocs/op | After allocs/op |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| SaveRecord | 1,010,773 | 1,018,675 | +0.78% | 21,458 | 23,016 | 289 | 313 |
-| LoadRecord | 215,370 | 264,689 | +22.90% | 12,989 | 14,682 | 180 | 205 |
-| SaveRecordWithIndex | 1,013,865 | 1,173,299 | +15.73% | 25,656 | 27,346 | 359 | 384 |
-| ScanIndexRecords/serial (1,000 records/op) | 58,683,625 | 84,259,234 | +43.58% | 3,375,851 | 5,394,481 | 41,222 | 72,109 |
-| ScanIndexRecords/pipelined (1,000 records/op) | 24,735,823 | 26,638,001 | +7.69% | 3,969,387 | 6,014,289 | 47,381 | 78,202 |
+| SaveRecord | 1,012,164 | 1,026,613 | +1.43% | 21,482 | 23,248 | 289 | 315 |
+| LoadRecord | 217,572 | 292,130 | +34.27% | 12,981 | 15,106 | 180 | 208 |
+| SaveRecordWithIndex | 1,013,680 | 1,044,312 | +3.02% | 25,658 | 27,573 | 359 | 386 |
+| ScanIndexRecords/serial (1,000 records/op) | 56,096,515 | 96,754,072 | +72.48% | 3,375,665 | 5,839,693 | 41,223 | 75,119 |
+| ScanIndexRecords/pipelined (1,000 records/op) | 25,207,393 | 26,001,115 | +3.15% | 3,967,903 | 6,473,147 | 47,378 | 81,236 |
 
 Raw samples: [before.txt](before.txt), [after.txt](after.txt). Save benchmarks reuse
 one benchmark-specific subspace across repetitions; the first repetition therefore
@@ -44,8 +44,10 @@ than treating the median percentage as a precise causal estimate.
 Modern record loads now consume the entire strict record subspace, including inline
 versions and malformed suffixes, instead of issuing a point probe. The extra work
 preserves Java conflict ranges, corruption checks and size/version accounting.
-Pipelining still issues the window's ranges before waiting, but does not eliminate
-the additional decoding, result buffering and allocation costs. The regression is
+Raw range rows are validated and reassembled incrementally, matching Java's early
+corruption completion without waiting for later batches. Pipelining still issues
+the window's ranges before waiting, but does not eliminate the additional iterator,
+validation, reassembly and allocation costs. The regression is
 reported rather than hidden by retaining the incorrect point-read fast path.
 
 ## Reproduction
@@ -62,7 +64,8 @@ cp bazel-bin/pkg/recordlayer/recordlayer_test_/recordlayer_test /tmp/recordlayer
 Then run the two binaries sequentially (the measured run used the same flags):
 
 ```sh
-nice -n 15 flock --close ~/.local/share/fdb-perf/validation/heavy.lock bash -c '
+nice -n 15 flock --close ~/.local/share/fdb-perf/validation/heavy.lock \
+  flock --close ~/.local/share/fdb-perf/validation/fast.lock bash -c '
   set -e
   for revision in BEFORE AFTER; do
     /tmp/recordlayer-$revision -test.run="^$" -test.benchtime=3s \
@@ -77,7 +80,7 @@ SHA-256 of the actual measured binaries:
 
 ```text
 30fffc872aee6238608fd215286e11f354d0a521490d8cfc334a872b6e166b24  baseline
-238355673145aad97f3462a0ce424ea69a00c73bf6ee2f644b9b5f5a0ead4af4  candidate
+e2c8f49f85794b9b2fb51697fa6112425279a3f7e8615bdee338a545af5fd842  candidate
 ```
 
 ## Correctness evidence
@@ -87,8 +90,10 @@ failures: T1 loaded a record, T2 inserted an absent record-subspace key and comm
 and T1 incorrectly committed instead of returning conflict 1020. Actual-key and
 unrelated-primary-key controls distinguished missing conflict ranges from an
 invalid harness. The final implementation's fast-lane hook passed all 123 targets
-(2 executed, 121 cached); the immediately preceding run executed 47 targets and
-passed all Record Layer and executor regressions, but failed a Docker cleanup test.
+(50 executed, 73 cached). Four additional synchronous/asynchronous × blocked/error
+tail regressions pin immediate corruption readiness and error precedence. An earlier
+run executed 47 targets and passed all Record Layer and executor regressions, but
+failed a Docker cleanup test.
 
 That earlier failure was `TestRun_InterruptedFileAllocation/{tmpfs,disk}` in
 `//pkg/testcontainers/foundationdb:foundationdb_test`: fault and commit/read controls

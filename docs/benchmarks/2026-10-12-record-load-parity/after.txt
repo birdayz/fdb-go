@@ -1,29 +1,29 @@
 goos: linux
 goarch: amd64
 cpu: AMD Ryzen 9 3900X 12-Core Processor            
-BenchmarkSaveRecord-24             	    3586	   1124295 ns/op	   20183 B/op	     270 allocs/op
-BenchmarkSaveRecord-24             	    3076	   1312269 ns/op	   23064 B/op	     313 allocs/op
-BenchmarkSaveRecord-24             	    3591	   1015834 ns/op	   22989 B/op	     313 allocs/op
-BenchmarkSaveRecord-24             	    3573	   1018675 ns/op	   23016 B/op	     313 allocs/op
-BenchmarkSaveRecord-24             	    3589	   1018099 ns/op	   23034 B/op	     313 allocs/op
-BenchmarkLoadRecord-24             	   13771	    262521 ns/op	   14677 B/op	     205 allocs/op
-BenchmarkLoadRecord-24             	   13806	    264689 ns/op	   14682 B/op	     205 allocs/op
-BenchmarkLoadRecord-24             	   13738	    257449 ns/op	   14673 B/op	     205 allocs/op
-BenchmarkLoadRecord-24             	   14348	    285950 ns/op	   14687 B/op	     205 allocs/op
-BenchmarkLoadRecord-24             	   10000	    302939 ns/op	   14684 B/op	     205 allocs/op
-BenchmarkSaveRecordWithIndex-24    	    3536	   1173299 ns/op	   23822 B/op	     320 allocs/op
-BenchmarkSaveRecordWithIndex-24    	    3441	   1012199 ns/op	   27346 B/op	     384 allocs/op
-BenchmarkSaveRecordWithIndex-24    	    3573	   1074041 ns/op	   27323 B/op	     384 allocs/op
-BenchmarkSaveRecordWithIndex-24    	    3564	   1220034 ns/op	   27364 B/op	     384 allocs/op
-BenchmarkSaveRecordWithIndex-24    	    3554	   1244356 ns/op	   27377 B/op	     384 allocs/op
-BenchmarkScanIndexRecords/serial-24         	      43	  86955186 ns/op	 5395522 B/op	   72109 allocs/op
-BenchmarkScanIndexRecords/serial-24         	      40	  84259234 ns/op	 5393554 B/op	   72106 allocs/op
-BenchmarkScanIndexRecords/serial-24         	      44	  84088494 ns/op	 5396861 B/op	   72112 allocs/op
-BenchmarkScanIndexRecords/serial-24         	      43	  83736903 ns/op	 5393337 B/op	   72107 allocs/op
-BenchmarkScanIndexRecords/serial-24         	      37	  90279611 ns/op	 5394481 B/op	   72109 allocs/op
-BenchmarkScanIndexRecords/pipelined-24      	     152	  29425695 ns/op	 6005158 B/op	   78178 allocs/op
-BenchmarkScanIndexRecords/pipelined-24      	     136	  26638001 ns/op	 6014289 B/op	   78202 allocs/op
-BenchmarkScanIndexRecords/pipelined-24      	     133	  25591125 ns/op	 6022446 B/op	   78222 allocs/op
-BenchmarkScanIndexRecords/pipelined-24      	     136	  24789396 ns/op	 6019412 B/op	   78208 allocs/op
-BenchmarkScanIndexRecords/pipelined-24      	     100	  42497953 ns/op	 5942438 B/op	   78015 allocs/op
+BenchmarkSaveRecord-24             	    3543	   1012855 ns/op	   20395 B/op	     271 allocs/op
+BenchmarkSaveRecord-24             	    3586	   1013537 ns/op	   23236 B/op	     315 allocs/op
+BenchmarkSaveRecord-24             	    3532	   1033909 ns/op	   23292 B/op	     315 allocs/op
+BenchmarkSaveRecord-24             	    3535	   1026613 ns/op	   23248 B/op	     315 allocs/op
+BenchmarkSaveRecord-24             	    3396	   1035760 ns/op	   23259 B/op	     315 allocs/op
+BenchmarkLoadRecord-24             	   13141	    292130 ns/op	   15108 B/op	     208 allocs/op
+BenchmarkLoadRecord-24             	   12382	    340989 ns/op	   15097 B/op	     208 allocs/op
+BenchmarkLoadRecord-24             	   12398	    295009 ns/op	   15106 B/op	     208 allocs/op
+BenchmarkLoadRecord-24             	   13072	    267724 ns/op	   15109 B/op	     208 allocs/op
+BenchmarkLoadRecord-24             	   13105	    278617 ns/op	   15106 B/op	     208 allocs/op
+BenchmarkSaveRecordWithIndex-24    	    3495	   1065696 ns/op	   24018 B/op	     321 allocs/op
+BenchmarkSaveRecordWithIndex-24    	    3214	   1083819 ns/op	   27615 B/op	     386 allocs/op
+BenchmarkSaveRecordWithIndex-24    	    3495	   1042542 ns/op	   27615 B/op	     386 allocs/op
+BenchmarkSaveRecordWithIndex-24    	    3452	   1044312 ns/op	   27573 B/op	     386 allocs/op
+BenchmarkSaveRecordWithIndex-24    	    3542	   1031572 ns/op	   27556 B/op	     385 allocs/op
+BenchmarkScanIndexRecords/serial-24         	      33	  96754072 ns/op	 5845087 B/op	   75128 allocs/op
+BenchmarkScanIndexRecords/serial-24         	      37	  98469194 ns/op	 5837728 B/op	   75119 allocs/op
+BenchmarkScanIndexRecords/serial-24         	      34	  99783428 ns/op	 5839868 B/op	   75122 allocs/op
+BenchmarkScanIndexRecords/serial-24         	      34	  95303419 ns/op	 5834070 B/op	   75114 allocs/op
+BenchmarkScanIndexRecords/serial-24         	      37	  90253992 ns/op	 5839693 B/op	   75118 allocs/op
+BenchmarkScanIndexRecords/pipelined-24      	     135	  25755129 ns/op	 6474180 B/op	   81245 allocs/op
+BenchmarkScanIndexRecords/pipelined-24      	     139	  25323420 ns/op	 6473147 B/op	   81243 allocs/op
+BenchmarkScanIndexRecords/pipelined-24      	     139	  26121621 ns/op	 6469003 B/op	   81230 allocs/op
+BenchmarkScanIndexRecords/pipelined-24      	     139	  26001115 ns/op	 6470082 B/op	   81234 allocs/op
+BenchmarkScanIndexRecords/pipelined-24      	     141	  26137680 ns/op	 6473483 B/op	   81236 allocs/op
 PASS
