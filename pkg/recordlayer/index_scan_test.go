@@ -103,18 +103,44 @@ type indexRecordProbeRange struct {
 	probe *indexRecordRangeProbe
 }
 
-func (r indexRecordProbeRange) GetSliceWithError() ([]fdb.KeyValue, error) {
-	defer func() {
-		r.probe.mu.Lock()
-		r.probe.outstanding--
-		r.probe.mu.Unlock()
-	}()
-	select {
-	case <-r.probe.window:
-		return r.RangeResult.GetSliceWithError()
-	case <-r.probe.ctx.Done():
-		return nil, r.probe.ctx.Err()
+func (r indexRecordProbeRange) Iterator() fdb.RangeIterator {
+	return &indexRecordProbeIterator{RangeIterator: r.RangeResult.Iterator(), probe: r.probe}
+}
+
+type indexRecordProbeIterator struct {
+	fdb.RangeIterator
+	probe    *indexRecordRangeProbe
+	started  bool
+	finished bool
+	err      error
+}
+
+func (i *indexRecordProbeIterator) Advance() bool {
+	if !i.started {
+		i.started = true
+		select {
+		case <-i.probe.window:
+		case <-i.probe.ctx.Done():
+			i.err = i.probe.ctx.Err()
+		}
 	}
+	if i.err != nil || !i.RangeIterator.Advance() {
+		if !i.finished {
+			i.finished = true
+			i.probe.mu.Lock()
+			i.probe.outstanding--
+			i.probe.mu.Unlock()
+		}
+		return false
+	}
+	return true
+}
+
+func (i *indexRecordProbeIterator) Get() (fdb.KeyValue, error) {
+	if i.err != nil {
+		return fdb.KeyValue{}, i.err
+	}
+	return i.RangeIterator.Get()
 }
 
 var _ = Describe("IndexScanning", func() {

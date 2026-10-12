@@ -44,13 +44,35 @@ type fetchWindowRange struct {
 	ctx    context.Context
 }
 
-func (r fetchWindowRange) GetSliceWithError() ([]fdb.KeyValue, error) {
-	select {
-	case <-r.window:
-		return r.RangeResult.GetSliceWithError()
-	case <-r.ctx.Done():
-		return nil, r.ctx.Err()
+func (r fetchWindowRange) Iterator() fdb.RangeIterator {
+	return &fetchWindowIterator{RangeIterator: r.RangeResult.Iterator(), window: r.window, ctx: r.ctx}
+}
+
+type fetchWindowIterator struct {
+	fdb.RangeIterator
+	window  <-chan struct{}
+	ctx     context.Context
+	started bool
+	err     error
+}
+
+func (i *fetchWindowIterator) Advance() bool {
+	if !i.started {
+		i.started = true
+		select {
+		case <-i.window:
+		case <-i.ctx.Done():
+			i.err = i.ctx.Err()
+		}
 	}
+	return i.err == nil && i.RangeIterator.Advance()
+}
+
+func (i *fetchWindowIterator) Get() (fdb.KeyValue, error) {
+	if i.err != nil {
+		return fdb.KeyValue{}, i.err
+	}
+	return i.RangeIterator.Get()
 }
 
 func TestIntegrationIndexAndPartialFetchesPipeline(t *testing.T) {

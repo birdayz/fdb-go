@@ -268,13 +268,15 @@ type pendingRecordLoad struct {
 	asyncRange *pendingRecordRange
 }
 
-// RangeResult has no readiness operation. Async record loads drain only the
-// issued range in the background; decoding, limit accounting and timers stay
-// on the caller. The channel publishes both rows and errors for deadline checks.
+// RangeResult has no readiness operation. The worker owns raw reassembly and
+// validation, stopping at the first corrupt key without waiting for later batches.
+// Store deserialization, limit accounting and timers remain on the caller.
 type pendingRecordRange struct {
-	done chan struct{}
-	kvs  []fdb.KeyValue
-	err  error
+	done    chan struct{}
+	value   []byte
+	version *FDBRecordVersion
+	sizes   sizeInfo
+	err     error
 }
 
 func (p *pendingRecordLoad) startReadiness() {
@@ -283,9 +285,11 @@ func (p *pendingRecordLoad) startReadiness() {
 	}
 	r := &pendingRecordRange{done: make(chan struct{})}
 	p.asyncRange = r
-	rangeRead := p.rangeRead
+	// Copy the already-captured local version inputs; never access context state
+	// from the worker. Closing done publishes its exclusively owned result.
+	load := *p
 	go func() {
-		r.kvs, r.err = rangeRead.GetSliceWithError()
+		r.value, r.version, r.err = load.readRange(&r.sizes)
 		close(r.done)
 	}()
 }
@@ -343,26 +347,28 @@ func (p *pendingRecordLoad) finish(sizes *sizeInfo) ([]byte, *FDBRecordVersion, 
 		}
 		return value, nil, nil
 	}
+	if p.asyncRange != nil {
+		<-p.asyncRange.done
+		*sizes = p.asyncRange.sizes
+		return p.asyncRange.value, p.asyncRange.version, p.asyncRange.err
+	}
+	return p.readRange(sizes)
+}
+
+func (p *pendingRecordLoad) readRange(sizes *sizeInfo) ([]byte, *FDBRecordVersion, error) {
 	*sizes = p.localSize
 	if p.localErr != nil {
 		return nil, nil, p.localErr
 	}
-	var kvs []fdb.KeyValue
-	var err error
-	if p.asyncRange != nil {
-		<-p.asyncRange.done
-		kvs, err = p.asyncRange.kvs, p.asyncRange.err
-	} else {
-		kvs, err = p.rangeRead.GetSliceWithError()
-	}
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to read record range: %w", err)
-	}
-
 	var result []byte
 	version := p.version
 	var lastIndex int64
-	for _, kv := range kvs {
+	iter := p.rangeRead.Iterator()
+	for iter.Advance() {
+		kv, err := iter.Get()
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to read record range: %w", err)
+		}
 		subkey, err := tuplefast.SubspaceUnpack(kv.Key, len(p.prefix))
 		if err != nil {
 			return nil, nil, &RecordCoreArgumentError{Message: fmt.Sprintf("unable to unpack split key for %v: %v", p.primaryKey, err)}
@@ -407,6 +413,9 @@ func (p *pendingRecordLoad) finish(sizes *sizeInfo) ([]byte, *FDBRecordVersion, 
 		sizes.KeyCount++
 		sizes.KeySize += len(kv.Key)
 		sizes.ValueSize += len(kv.Value)
+	}
+	if _, err := iter.Get(); err != nil {
+		return nil, nil, fmt.Errorf("failed to read record range: %w", err)
 	}
 	if result == nil && version != nil {
 		return nil, nil, &FoundSplitWithoutStartError{NextIndex: recordVersionSuffix, KeyTuple: p.primaryKey}

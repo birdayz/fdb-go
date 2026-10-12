@@ -191,9 +191,22 @@ type recordingRange struct {
 	log *[]string
 }
 
-func (r recordingRange) GetSliceWithError() ([]fdb.KeyValue, error) {
-	*r.log = append(*r.log, "wait")
-	return r.RangeResult.GetSliceWithError()
+func (r recordingRange) Iterator() fdb.RangeIterator {
+	return &recordingRangeIterator{RangeIterator: r.RangeResult.Iterator(), log: r.log}
+}
+
+type recordingRangeIterator struct {
+	fdb.RangeIterator
+	log    *[]string
+	waited bool
+}
+
+func (it *recordingRangeIterator) Advance() bool {
+	if !it.waited {
+		*it.log = append(*it.log, "wait")
+		it.waited = true
+	}
+	return it.RangeIterator.Advance()
 }
 
 // orderedReadTx records when each Get is issued and when its value is taken.
@@ -236,9 +249,26 @@ func (tx orderedReadTx) GetRange(r fdb.Range, options fdb.RangeOptions) fdb.Rang
 	return orderedRange{events: tx.events}
 }
 
-func (r orderedRange) GetSliceWithError() ([]fdb.KeyValue, error) {
-	*r.events = append(*r.events, "wait range")
-	return nil, nil
+func (r orderedRange) Iterator() fdb.RangeIterator {
+	return &orderedRangeIterator{events: r.events}
+}
+
+type orderedRangeIterator struct {
+	fdb.RangeIterator
+	events *[]string
+	waited bool
+}
+
+func (it *orderedRangeIterator) Advance() bool {
+	if !it.waited {
+		*it.events = append(*it.events, "wait range")
+		it.waited = true
+	}
+	return false
+}
+
+func (it *orderedRangeIterator) Get() (fdb.KeyValue, error) {
+	return fdb.KeyValue{}, nil
 }
 
 var _ = Describe("startLoadWithSplit", func() {
