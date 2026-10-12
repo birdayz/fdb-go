@@ -136,7 +136,7 @@ The owner delegated release decisions; API reduction remains a v0.3.0 launch wor
 | Re-measured performance with a committed harness (`/tmp/hn-perf` is gone) | in progress: the Go/CGo harness landed ([#822]); re-measurement pending | perf-lead2 |
 | Architecture page | not started | release-ws |
 | Compatibility table and FDB 8.0 stance | done [#788]: `docs/compatibility.md` | hn-compat-ws2 |
-| Known gaps in one list | in progress: STATUS.md lists the six launch concerns and scoped mitigations in the v0.2.0 candidate | release-gpt |
+| Known gaps in one list | in progress: STATUS.md lists the five launch concerns and scoped mitigations in the v0.2.0 candidate | release-gpt |
 | Answer on the N+1 question | not started: [#798] landed; FlatMap still open | hn-sql-ws3 |
 | Answer on the 5 s per-RPC timeout question | not started: after the client timeout fixes | hn-client-ws2 |
 | Answer on bus factor | not started | owner |

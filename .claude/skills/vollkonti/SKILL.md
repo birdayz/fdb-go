@@ -15,7 +15,9 @@ You are starting a shift in a Vollkontinuierliches Schichtsystem (continuous 24/
 | Swing shift | 14:00 — 22:00 | `swingshift-N` |
 | Night shift | 22:00 — 06:00 | `nightshift-N` |
 
-Determine which shift type matches the current time. The number N increments globally — check `ls shifts/*.md | sort -r | head -1` to find the last shift, extract the number, then increment.
+Determine which shift type matches the current time. The number N increments globally — check `ls shifts/*.md | sort -r | head -1` to find the last shift, extract the number, then increment (start at 1 if there is none).
+
+`shifts/` is local and gitignored: handovers are not in the repository, and a fresh clone has none.
 
 **Filenames are date-prefixed:** `shifts/YYYY-MM-DD-{shift-name}.md` (e.g., `shifts/2026-04-12-swingshift-8.md`). Date prefix means `ls | sort -r` gives reverse-chronological order instantly.
 
@@ -35,6 +37,8 @@ Read the latest handover document:
 ls shifts/*.md | sort -r | head -1
 ```
 Read it thoroughly. This is your ONLY briefing — you have zero prior context.
+
+If there is no handover, brief yourself from `STATUS.md`, `TODO.md`, open PRs and `git log`.
 
 ## Step 3: Start shift
 

@@ -89,29 +89,22 @@ Each is described in full under Compatibility or Changed below.
   `go build ./...` moved into `ci.yml`'s `go install lane` job, and the wire-type oracle runs as
   `bazelisk test //cmd/fdb-diff-oracle:fdb-diff-oracle_test`.
 - Tenant commits fence uncertain delivery in the tenant's keyspace, preventing a late commit after error 1021; all commits propagate a failed fence's error instead of returning an unfenced `commit_unknown_result`.
-- **Breaking:** `client.Transaction.SetLockAware` and `SetReadLockAware` take no argument; like the C options they only set.
 - **Breaking:** as in `libfdb_c`, a `SetReadLockAware` transaction fails a commit with writes with
   2023 unless `SetLockAware` is also set, and `SetSizeLimit` outside [32, 10,000,000] (0 included)
   fails every later operation with 2006, not only the commit. `client.Transaction.SetLockAware` and
   `SetReadLockAware` take no argument.
-- `fdb.APIVersion` and `client.WithAPIVersion` accept 510-730 (`client.MinAPIVersion`-`client.MaxAPIVersion`) and refuse other versions with `api_version_not_supported` (2203), as libfdb_c 7.3.77; 731 and above were accepted, and a version below 510 was 2201. A different version after one is selected stays 2201.
 - `fdb.APIVersion` and `client.WithAPIVersion` refuse a version outside 510-730
   (`client.MinAPIVersion`-`client.MaxAPIVersion`) with `api_version_not_supported` (2203), the
   Apple Go binding's code; 730 is libfdb_c 7.3.77's maximum and 510 this client's floor. Before,
   `fdb.APIVersion` accepted 731 and above and answered 2201 below 510, and `client.WithAPIVersion`
   accepted any non-zero version. A different version after one is selected stays 2201.
 - The R-tree takes any `rtreeMinimumM`, `rtreeMaximumM` and `rtreeSplitS`, as Java does; `rtree.ValidateRTreeConfig` is gone. A configuration that cannot keep the node invariants fails where Java's does (`rtree.VerifyError`, `IndexOutOfBoundsError`, `NegativeArraySizeError`, `ArithmeticError`), and a non-root node outside [minM, maxM] is refused on read (`javanum.IllegalStateError`, also `recordlayer.IllegalStateError`). An index an earlier Go build wrote under a configuration whose splits leave nodes out of that range (for example minM 4, maxM 6, splitS 2) now fails on read, as it does in Java: redefine it under options whose splits keep the range (minM at most ⌊(maxM+1)/2⌋), since a rebuild under the same options fails again.
-- `TransformedRecordSerializer` encrypts and decrypts under every AES transformation Java's serializer can run with its 16-byte IV (CBC and PCBC with any SunJCE padding, CTR, CFB and OFB of 8 to 128 bits, and the `AES_128`/`AES_192`/`AES_256` forms), not only `AES/CBC/PKCS5Padding`. Other names still fail with "encryption error" or "decryption error".
-- `TransformedRecordSerializer` encrypts and decrypts under every AES transformation Java's serializer can run with its 16-byte IV (CBC and PCBC with any SunJCE padding, CTS, CTR, CFB and OFB of 8 to 128 bits, the `AES_128`/`AES_192`/`AES_256` forms and the NIST AES OIDs, as measured on JDK 21), not only `AES/CBC/PKCS5Padding`. Other names still fail with "encryption error" or "decryption error".
 - `TransformedRecordSerializer` encrypts and decrypts under every AES transformation Java's serializer can run with its 16-byte IV (CBC and PCBC with any SunJCE padding, CTS, CTR, CFB and OFB of 1 to 16 whole bytes, the `AES_128`/`AES_192`/`AES_256` forms and the NIST AES OIDs, as measured on JDK 21), not only `AES/CBC/PKCS5Padding`. Other names still fail with "encryption error" or "decryption error".
 - `fdb` futures behave like libfdb_c's: `Cancel` on a future that is not ready completes it with
   `operation_cancelled` (1101) (it was a no-op), a pipelined `Get` future becomes ready while only
   `IsReady` is polled (it stayed not-ready until `Get`), and one future may be read from several
   goroutines.
 - `KeyStoreSerializationKeyManager` reads JCEKS key stores, as Java's `KeyStore.getInstance(File, password)` detects them, besides PKCS12: AES keys sealed with PBEWithMD5AndTripleDES, Java's errors for a wrong store or key password. Ported from pyjks (MIT; see NOTICE).
-- An FDB error inside a catalog operation (DDL, schema lookup) now carries the same SQLSTATE as
-  anywhere else, for example 53F00 for a transaction timeout or 40001 for transaction_too_old,
-  instead of XX000.
 - An FDB error inside a catalog operation (DDL, `ApplyMetadataOperation`,
   `fleet.RestoreTemplateVersion`) now carries the same SQLSTATE as anywhere else, for example 53F00
   for a transaction timeout or 40001 for transaction_too_old, instead of XX000. The mapper is
@@ -122,8 +115,6 @@ Each is described in full under Compatibility or Changed below.
 - `OnlineIndexer.MergeIndexes` holds no session, as Java's `mergeIndex`: it writes no heartbeat (which blocked Java's exclusive builders), checks no index state, and proceeds under a live peer and over a DISABLED target.
 - `plandiff.SeedCorpus`, `SeedRunCorpus`, `ApplyRFC082Divergences` and `IsKnownRed` moved to the
   testonly package `plandiff/seedcorpus`; `plandiff` keeps the `Query` and `RunQuery` types.
-- The gomock `Mock*` types move from `pkg/relational/api` to the test-only package
-  `pkg/relational/api/apimock`, so production binaries no longer link `go.uber.org/mock`.
 - **Breaking (API):** the gomock `Mock*` types move from `pkg/relational/api` to the Bazel
   `testonly` package `pkg/relational/api/apimock`, so production binaries no longer link
   `go.uber.org/mock`. Migrate `api.NewMockX(ctrl)` → `apimock.NewMockX(ctrl)`.
