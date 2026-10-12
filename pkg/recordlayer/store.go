@@ -374,7 +374,7 @@ func (store *FDBRecordStore) LoadRecordAsync(primaryKey tuple.Tuple, scanState *
 	load.first = store.startRecordLoad(store.context.Transaction(), primaryKey)
 	load.first.raw.startReadiness()
 	load.issueCost = time.Since(issueStart)
-	return NewPendingRead(load.finish, load.ready)
+	return load
 }
 
 // pendingStoreRecordLoad adds the separate legacy version read to SplitHelper.
@@ -412,9 +412,21 @@ type recordLoad struct {
 	issueCost  time.Duration
 	loadCost   time.Duration
 	loaded     bool
+	done       bool
 	record     *FDBStoredRecord[proto.Message]
 	loadErr    error
 }
+
+func (l *recordLoad) Get() (*FDBStoredRecord[proto.Message], error) {
+	if !l.done {
+		record, err := l.finish()
+		// Release read and context state while retaining the terminal result.
+		*l = recordLoad{done: true, record: record, loadErr: err}
+	}
+	return l.record, l.loadErr
+}
+
+func (l *recordLoad) IsReady() bool { return l.done || l.ready() }
 
 func (l *recordLoad) ready() bool {
 	if !l.first.raw.ready() {
