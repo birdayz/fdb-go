@@ -2,6 +2,7 @@ package client
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"sort"
 
@@ -190,7 +191,46 @@ func (cur *rywSegCursor) prev() {
 	cur.seek(cur.c.prevBoundaryLocked(cur.begin, cur.hi, cur.includeWrites))
 }
 
-// boundCandidatesLocked gathers merged-boundary candidates in a bounded neighborhood of
+// rywBoundary keeps keyAfter virtual until a selected boundary must escape the search,
+// like C++ ExtStringRef (SnapshotCache.h). A successor appends zero; it never increments.
+type rywBoundary struct {
+	key   []byte
+	after bool
+}
+
+func (b rywBoundary) size() int {
+	if b.after {
+		return len(b.key) + 1
+	}
+	return len(b.key)
+}
+
+func (b rywBoundary) compare(other rywBoundary) int {
+	n := min(len(b.key), len(other.key))
+	if c := bytes.Compare(b.key[:n], other.key[:n]); c != 0 {
+		return c
+	}
+	for _, v := range b.key[n:] {
+		if v != 0 {
+			return 1
+		}
+	}
+	for _, v := range other.key[n:] {
+		if v != 0 {
+			return -1
+		}
+	}
+	return cmp.Compare(b.size(), other.size())
+}
+
+func (b rywBoundary) materialize() []byte {
+	if b.after {
+		return keyAfterBytes(b.key)
+	}
+	return b.key
+}
+
+// boundCandidatesLocked visits merged-boundary candidates in a bounded neighborhood of
 // p from every source (write keys + their successors, cleared bounds, cache-entry
 // bounds, cache keys + their successors), plus allKeysBegin and hi. It must contain the
 // floor (largest boundary <= p) and ceil (smallest boundary > p); prevBoundaryLocked
@@ -237,19 +277,19 @@ func (cur *rywSegCursor) prev() {
 // contributed whether or not the fragment holds rows.
 //
 // Caller holds c.mu.
-func (c *rywCache) boundCandidatesLocked(p, hi []byte, includeWrites bool) [][]byte {
-	var cands [][]byte
-	add := func(b []byte) {
-		if bytes.Compare(b, allKeysBegin) >= 0 && bytes.Compare(b, hi) <= 0 {
-			cands = append(cands, b)
+func (c *rywCache) boundCandidatesLocked(p, hi []byte, includeWrites bool, visit func(rywBoundary)) {
+	addBound := func(b rywBoundary) {
+		if b.compare(rywBoundary{key: allKeysBegin}) >= 0 && b.compare(rywBoundary{key: hi}) <= 0 {
+			visit(b)
 		}
 	}
-	addKey := func(k []byte) { add(k); add(keyAfterBytes(k)) }
+	add := func(k []byte) { addBound(rywBoundary{key: k}) }
+	addKey := func(k []byte) { add(k); addBound(rywBoundary{key: k, after: true}) }
 	add(allKeysBegin)
 	add(hi)
 	if includeWrites {
 		c.ensureSortedLocked()
-		i := sort.SearchStrings(c.sortedKeys, string(p)) // first key >= p
+		i := sort.Search(len(c.sortedKeys), func(i int) bool { return c.sortedKeys[i] >= string(p) })
 		for j := i - 2; j <= i+1; j++ {
 			if j >= 0 && j < len(c.sortedKeys) {
 				addKey([]byte(c.sortedKeys[j]))
@@ -296,34 +336,34 @@ func (c *rywCache) boundCandidatesLocked(p, hi []byte, includeWrites bool) [][]b
 			}
 		}
 	}
-	return cands
 }
 
 // mergedBoundsLocked returns the merged segment [floor, ceil) containing p:
 // floor = largest boundary <= p, ceil = smallest boundary > p. Caller holds c.mu.
 func (c *rywCache) mergedBoundsLocked(p, hi []byte, includeWrites bool) (floor, ceil []byte) {
-	floor, ceil = allKeysBegin, hi
-	for _, b := range c.boundCandidatesLocked(p, hi, includeWrites) {
-		if bytes.Compare(b, p) <= 0 {
-			if bytes.Compare(b, floor) > 0 {
-				floor = b
+	lo, up := rywBoundary{key: allKeysBegin}, rywBoundary{key: hi}
+	probe := rywBoundary{key: p}
+	c.boundCandidatesLocked(p, hi, includeWrites, func(b rywBoundary) {
+		if b.compare(probe) <= 0 {
+			if b.compare(lo) > 0 {
+				lo = b
 			}
-		} else if bytes.Compare(b, ceil) < 0 {
-			ceil = b
+		} else if b.compare(up) < 0 {
+			up = b
 		}
-	}
-	return floor, ceil
+	})
+	return lo.materialize(), up.materialize()
 }
 
 // prevBoundaryLocked returns the largest merged boundary strictly < x. Caller holds c.mu.
 func (c *rywCache) prevBoundaryLocked(x, hi []byte, includeWrites bool) []byte {
-	best := allKeysBegin
-	for _, b := range c.boundCandidatesLocked(x, hi, includeWrites) {
-		if bytes.Compare(b, x) < 0 && bytes.Compare(b, best) > 0 {
+	best, probe := rywBoundary{key: allKeysBegin}, rywBoundary{key: x}
+	c.boundCandidatesLocked(x, hi, includeWrites, func(b rywBoundary) {
+		if b.compare(probe) < 0 && b.compare(best) > 0 {
 			best = b
 		}
-	}
-	return best
+	})
+	return best.materialize()
 }
 
 // keySelResult is the outcome of resolveKeySelectorFromCache.
