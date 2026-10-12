@@ -258,14 +258,19 @@ func loadWithSplit(
 // pendingRecordLoad starts the range before waiting, preserving record-fetch
 // and old-record-read pipelining. Inline versions are part of that same read.
 type pendingRecordLoad struct {
+	pendingRecordRangeInput
+	value      fdb.FutureByteSlice // legacy bare-key layout only
+	asyncRange *pendingRecordRange
+}
+
+// Keep the worker's shallow snapshot separate from caller-only load state.
+type pendingRecordRangeInput struct {
 	primaryKey tuple.Tuple
 	prefix     []byte
-	value      fdb.FutureByteSlice // legacy bare-key layout only
 	rangeRead  fdb.RangeResult
 	version    *FDBRecordVersion
 	localSize  sizeInfo
 	localErr   error
-	asyncRange *pendingRecordRange
 }
 
 // RangeResult has no readiness operation. The worker owns raw reassembly and
@@ -287,11 +292,12 @@ func (p *pendingRecordLoad) startReadiness() {
 	p.asyncRange = r
 	// Copy the already-captured local version inputs; never access context state
 	// from the worker. Closing done publishes its exclusively owned result.
-	load := *p
-	go func() {
-		r.value, r.version, r.err = load.readRange(&r.sizes)
-		close(r.done)
-	}()
+	go readRecordRange(r, p.pendingRecordRangeInput)
+}
+
+func readRecordRange(r *pendingRecordRange, input pendingRecordRangeInput) {
+	r.value, r.version, r.err = input.readRange(&r.sizes)
+	close(r.done)
 }
 
 func (p *pendingRecordLoad) ready() bool {
@@ -326,7 +332,7 @@ func startLoadWithSplit(
 	omitUnsplitRecordSuffix bool,
 	recordContext *FDBRecordContext,
 ) pendingRecordLoad {
-	p := pendingRecordLoad{primaryKey: primaryKey, prefix: recordSubspace.Pack(primaryKey)}
+	p := pendingRecordLoad{pendingRecordRangeInput: pendingRecordRangeInput{primaryKey: primaryKey, prefix: recordSubspace.Pack(primaryKey)}}
 	if !splitLongRecords && omitUnsplitRecordSuffix {
 		p.value = tx.Get(fdb.Key(p.prefix))
 		return p
@@ -366,7 +372,7 @@ func (p *pendingRecordLoad) finish(sizes *sizeInfo) ([]byte, *FDBRecordVersion, 
 	return p.readRange(sizes)
 }
 
-func (p *pendingRecordLoad) readRange(sizes *sizeInfo) ([]byte, *FDBRecordVersion, error) {
+func (p *pendingRecordRangeInput) readRange(sizes *sizeInfo) ([]byte, *FDBRecordVersion, error) {
 	*sizes = p.localSize
 	if p.localErr != nil {
 		return nil, nil, p.localErr

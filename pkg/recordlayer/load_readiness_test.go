@@ -3,6 +3,8 @@ package recordlayer
 import (
 	"bytes"
 	"errors"
+	"os"
+	"os/exec"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -37,10 +39,10 @@ func TestRecordRangeReadiness(t *testing.T) {
 			if fails {
 				wantErr = fdb.Error{Code: 1007}
 			}
-			p := pendingRecordLoad{
+			p := pendingRecordLoad{pendingRecordRangeInput: pendingRecordRangeInput{
 				primaryKey: pk, prefix: ss.Pack(pk),
 				rangeRead: gatedRecordRange{release: release, rows: rows, err: wantErr},
-			}
+			}}
 			p.startReadiness()
 			if p.ready() {
 				t.Fatal("range reported ready before its rows/error were available")
@@ -70,8 +72,270 @@ func TestRecordRangeReadiness(t *testing.T) {
 	}
 }
 
+func TestRecordRangeReadinessInputSnapshot(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"rows", "corrupt-head", "range-error", "discard"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			ss := subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
+			pk := tuple.Tuple{int64(7)}
+			version, err := IncompleteVersion(17)
+			if err != nil {
+				t.Fatal(err)
+			}
+			localSize := sizeInfo{KeyCount: 1, KeySize: 23, ValueSize: VersionBytes + 1, VersionedInline: true}
+			rows := []fdb.KeyValue{
+				{Key: ss.Pack(appendToTuple(pk, 1)), Value: []byte("first")},
+				{Key: ss.Pack(appendToTuple(pk, 2)), Value: []byte("second")},
+			}
+			if mode == "corrupt-head" {
+				rows = rows[1:]
+			}
+			var rangeErr error
+			if mode == "range-error" {
+				rangeErr = fdb.Error{Code: 1007}
+			}
+			entered, release := make(chan struct{}), make(chan struct{})
+			var once sync.Once
+			unblock := func() { once.Do(func() { close(release) }) }
+			p := pendingRecordLoad{pendingRecordRangeInput: pendingRecordRangeInput{
+				primaryKey: pk, prefix: ss.Pack(pk), version: version, localSize: localSize,
+				rangeRead: gatedRecordRange{entered: entered, release: release, rows: rows, err: rangeErr},
+			}}
+			p.startReadiness()
+			result := p.asyncRange
+			t.Cleanup(func() {
+				unblock()
+				select {
+				case <-result.done:
+				case <-time.After(5 * time.Second):
+					t.Error("range worker did not finish after release")
+				}
+			})
+			select {
+			case <-entered:
+			case <-time.After(5 * time.Second):
+				t.Fatal("range worker did not enter its iterator")
+			}
+			if p.ready() {
+				t.Fatal("blocked worker reported ready")
+			}
+			// Replace field slots, not shared backing arrays: the snapshot is shallow.
+			p.pendingRecordRangeInput = pendingRecordRangeInput{
+				primaryKey: tuple.Tuple{int64(99)}, prefix: []byte("wrong-prefix"),
+				localErr: errors.New("replaced caller input"),
+			}
+			if mode == "discard" {
+				p = pendingRecordLoad{}
+			}
+			unblock()
+			select {
+			case <-result.done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("range worker did not publish its result")
+			}
+			if mode != "discard" {
+				if !p.ready() {
+					t.Fatal("completed worker did not report ready")
+				}
+				var sizes sizeInfo
+				value, gotVersion, err := p.finish(&sizes)
+				if !bytes.Equal(value, result.value) || gotVersion != result.version || err != result.err || sizes != result.sizes {
+					t.Fatal("finish did not return every published result field")
+				}
+			}
+			wantSizes := localSize
+			switch mode {
+			case "corrupt-head":
+				var got *FoundSplitWithoutStartError
+				if !errors.As(result.err, &got) || got.NextIndex != 2 || len(got.KeyTuple) != 1 || got.KeyTuple[0] != pk[0] {
+					t.Fatalf("captured corrupt-head error = %v", result.err)
+				}
+			case "range-error":
+				if !errors.Is(result.err, rangeErr) {
+					t.Fatalf("captured range error = %v, want %v", result.err, rangeErr)
+				}
+			default:
+				if result.err != nil || result.version != version || !bytes.Equal(result.value, []byte("firstsecond")) {
+					t.Fatalf("captured result = %q, version=%v, error=%v", result.value, result.version, result.err)
+				}
+				wantSizes.KeyCount += 2
+				wantSizes.KeySize += len(rows[0].Key) + len(rows[1].Key)
+				wantSizes.ValueSize += 11
+				wantSizes.IsSplit = true
+			}
+			if result.err != nil && (result.value != nil || result.version != nil) {
+				t.Fatalf("failed result leaked value/version: %q, %v", result.value, result.version)
+			}
+			if result.sizes != wantSizes {
+				t.Fatalf("captured sizes = %+v, want %+v", result.sizes, wantSizes)
+			}
+		})
+	}
+}
+
+func TestRecordRangeReadinessLocalInputs(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"local-error", "version-only"} {
+		for _, async := range []bool{false, true} {
+			name := mode + "/sync"
+			if async {
+				name = mode + "/async"
+			}
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				pk := tuple.Tuple{int64(7)}
+				version, err := IncompleteVersion(17)
+				if err != nil {
+					t.Fatal(err)
+				}
+				wantSizes := sizeInfo{KeyCount: 1, KeySize: 23, ValueSize: VersionBytes + 1, VersionedInline: true}
+				reader := &allocationRecordRange{}
+				p := pendingRecordLoad{pendingRecordRangeInput: pendingRecordRangeInput{
+					primaryKey: pk, version: version, localSize: wantSizes, rangeRead: reader,
+				}}
+				var wantErr error
+				if mode == "local-error" {
+					wantErr = errors.New("captured local version error")
+					p.localErr = wantErr
+				} else {
+					release := make(chan struct{})
+					close(release)
+					p.rangeRead = gatedRecordRange{release: release}
+				}
+				if async {
+					p.startReadiness()
+					select {
+					case <-p.asyncRange.done:
+					case <-time.After(5 * time.Second):
+						t.Fatal("local-input worker did not finish")
+					}
+				}
+				var sizes sizeInfo
+				value, gotVersion, err := p.finish(&sizes)
+				if value != nil || gotVersion != nil || sizes != wantSizes {
+					t.Fatalf("local-input result = %q, version=%v, sizes=%+v; want nil, nil, %+v", value, gotVersion, sizes, wantSizes)
+				}
+				if mode == "local-error" {
+					if err != wantErr || reader.iterators != 0 || reader.advances != 0 || reader.gets != 0 {
+						t.Fatalf("local error = %v; range operations = %d/%d/%d; want captured error before iterator", err, reader.iterators, reader.advances, reader.gets)
+					}
+				} else {
+					var got *FoundSplitWithoutStartError
+					if !errors.As(err, &got) || got.NextIndex != recordVersionSuffix || len(got.KeyTuple) != 1 || got.KeyTuple[0] != pk[0] {
+						t.Fatalf("version-only error = %v", err)
+					}
+				}
+			})
+		}
+	}
+}
+
+// Measure the actual worker in a child so parallel tests cannot contribute to
+// AllocsPerRun's process-wide counter. The preallocated iterator is reused only
+// after each read has completed, and the synchronous read is the control.
+func TestRecordRangeReadinessAllocations(t *testing.T) {
+	const childEnv = "FDB_RECORD_RANGE_ALLOCATION_CHILD"
+	if os.Getenv(childEnv) != "1" {
+		t.Parallel()
+		executable, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.CommandContext(t.Context(), executable, "-test.run=^TestRecordRangeReadinessAllocations$", "-test.v")
+		cmd.Env = append(os.Environ(), childEnv+"=1")
+		output, err := cmd.CombinedOutput()
+		if err != nil || !bytes.Contains(output, []byte("allocations per range read:")) {
+			t.Fatalf("isolated range allocation test: %v\n%s", err, output)
+		}
+		t.Logf("%s", output)
+		return
+	}
+
+	ss := subspace.FromBytes([]byte("range-allocation"))
+	pk := tuple.Tuple{int64(7)}
+	version, err := IncompleteVersion(17)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := &allocationRecordRange{row: fdb.KeyValue{
+		Key: ss.Pack(appendToTuple(pk, unsplitRecord)), Value: []byte("record"),
+	}}
+	var p pendingRecordLoad
+	p.primaryKey, p.prefix, p.rangeRead = pk, ss.Pack(pk), reader
+	p.version = version
+	p.localSize = sizeInfo{KeyCount: 1, KeySize: 23, ValueSize: VersionBytes + 1, VersionedInline: true}
+	wantSizes := p.localSize
+	wantSizes.KeyCount++
+	wantSizes.KeySize += len(reader.row.Key)
+	wantSizes.ValueSize += len(reader.row.Value)
+	var sizes sizeInfo
+	check := func(value []byte, gotVersion *FDBRecordVersion, err error) {
+		if err != nil || !bytes.Equal(value, reader.row.Value) || gotVersion != version || sizes != wantSizes {
+			t.Fatalf("allocation read = %q, version=%v, sizes=%+v, err=%v; want version=%v sizes=%+v", value, gotVersion, sizes, err, version, wantSizes)
+		}
+	}
+	const runs = 1000
+	synchronous := testing.AllocsPerRun(runs, func() {
+		check(p.readRange(&sizes))
+	})
+	checkCounts := func(reads int) {
+		if reader.iterators != reads || reader.advances != 2*reads || reader.gets != 2*reads {
+			t.Fatalf("iterator population = %d iterators, %d advances, %d gets; want %d, %d, %d", reader.iterators, reader.advances, reader.gets, reads, 2*reads, 2*reads)
+		}
+	}
+	checkCounts(runs + 1) // AllocsPerRun includes one warmup.
+	asynchronous := testing.AllocsPerRun(runs, func() {
+		p.startReadiness()
+		check(p.finish(&sizes)) // Drain the worker before reusing its iterator.
+	})
+	checkCounts(2 * (runs + 1))
+	t.Logf("allocations per range read: async=%.0f sync=%.0f additional=%.0f; reads=%d iterators=%d advances=%d gets=%d", asynchronous, synchronous, asynchronous-synchronous, 2*(runs+1), reader.iterators, reader.advances, reader.gets)
+	if asynchronous <= 0 || asynchronous-synchronous != 3 {
+		t.Fatalf("range readiness adds %.0f allocations to %.0f synchronous allocations, want 3", asynchronous-synchronous, synchronous)
+	}
+}
+
+// This pure range/iterator fixture has no database behavior and allocates no
+// per-read state; it isolates worker overhead from the same real range reader.
+type allocationRecordRange struct {
+	fdb.RangeResult
+	fdb.RangeIterator
+	row                       fdb.KeyValue
+	index                     int
+	iterators, advances, gets int
+}
+
+func (r *allocationRecordRange) Iterator() fdb.RangeIterator {
+	r.iterators++
+	r.index = -1
+	return r
+}
+
+func (r *allocationRecordRange) Advance() bool {
+	r.advances++
+	r.index++
+	return r.index == 0
+}
+
+func (r *allocationRecordRange) Get() (fdb.KeyValue, error) {
+	r.gets++
+	if r.index == 0 {
+		return r.row, nil
+	}
+	return fdb.KeyValue{}, nil
+}
+
+func (r *allocationRecordRange) MustGet() fdb.KeyValue {
+	kv, _ := r.Get()
+	return kv
+}
+
+func (*allocationRecordRange) SetTraceLog(func(int, int, int, bool, error)) {}
+
 type gatedRecordRange struct {
 	fdb.RangeResult
+	entered chan<- struct{}
 	release <-chan struct{}
 	rows    []fdb.KeyValue
 	err     error
@@ -83,6 +347,9 @@ func (r gatedRecordRange) GetSliceWithError() ([]fdb.KeyValue, error) {
 }
 
 func (r gatedRecordRange) Iterator() fdb.RangeIterator {
+	if r.entered != nil {
+		close(r.entered)
+	}
 	return &gatedRecordIterator{rangeRead: r, index: -1}
 }
 
@@ -144,7 +411,7 @@ func TestRecordRangeRejectsCorruptHeadBeforeTail(t *testing.T) {
 					unblock()
 				}
 				rangeRead := &corruptHeadRange{iter: iter}
-				p := pendingRecordLoad{primaryKey: pk, prefix: ss.Pack(pk), rangeRead: rangeRead}
+				p := pendingRecordLoad{pendingRecordRangeInput: pendingRecordRangeInput{primaryKey: pk, prefix: ss.Pack(pk), rangeRead: rangeRead}}
 				var value []byte
 				var version *FDBRecordVersion
 				var sizes sizeInfo

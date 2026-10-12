@@ -341,7 +341,7 @@ func (tx loadParityCallbackReadTransaction) GetRange(r fdb.Range, options fdb.Ra
 	return tx.getRange(r, options)
 }
 
-func testLoadParityCallbacks(t *testing.T, db *FDBDatabase) {
+func testLoadParityCallbacks(t *testing.T, db *FDBDatabase, async bool) {
 	for _, populated := range []bool{false, true} {
 		for _, stage := range []string{"none", "range", "pack", "key"} {
 			t.Run(fmt.Sprintf("populated=%t/update=%s", populated, stage), func(t *testing.T) {
@@ -407,6 +407,9 @@ func testLoadParityCallbacks(t *testing.T, db *FDBDatabase) {
 				if got := strings.Join(events, ","); got != "Pack(pk),FDBKey#1,GetRange,Pack(pk,-1),FDBKey#2" {
 					t.Fatalf("load callback order = %s", got)
 				}
+				if async {
+					pending.startReadiness()
+				}
 				// The local version is captured at issuance, not while finishing.
 				rc.AddToLocalVersionCache(versionKey, 55)
 				prefix := bytes.Clone(pending.prefix)
@@ -452,7 +455,11 @@ func TestFDB_RecordLoadParity(t *testing.T) {
 	db := newLoadParityDatabase(t)
 	t.Run("range-boundaries", func(t *testing.T) { testLoadParityBoundaries(t, db) })
 	t.Run("inline-versions", func(t *testing.T) { testLoadParityVersions(t, db) })
-	t.Run("callbacks", func(t *testing.T) { testLoadParityCallbacks(t, db) })
+	t.Run("callbacks", func(t *testing.T) {
+		for _, async := range []bool{false, true} {
+			t.Run(fmt.Sprintf("async=%t", async), func(t *testing.T) { testLoadParityCallbacks(t, db, async) })
+		}
+	})
 	t.Run("corruption", func(t *testing.T) { testLoadParityCorruption(t, db) })
 	t.Run("stored-incomplete-version", func(t *testing.T) {
 		root := subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
