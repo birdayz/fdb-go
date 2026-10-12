@@ -81,9 +81,9 @@ var _ = Describe("SaveRecordsPipelined", func() {
 			tx := recordingReadTx{ReadTransaction: s.context.Transaction(), log: &log}
 			window := []proto.Message{order(1, 10), order(2, 20), order(1, 30)}
 			loads := s.startExistingRecordLoads(tx, window)
-			// Two reads (unsplit key, first chunk) for each distinct key; the
-			// repeated key reads at its save.
-			Expect(log).To(Equal([]string{"send", "send", "send", "send"}))
+			// One whole-record range per distinct key; a repeated key reads
+			// only at its save, after the preceding save has taken effect.
+			Expect(log).To(Equal([]string{"send", "send"}))
 			Expect(loads[2].sent).To(BeFalse())
 			for i, record := range window {
 				_, err := s.saveRecordInternal(record, RecordExistenceCheckNone, false, &loads[i], nil)
@@ -181,6 +181,34 @@ func (f recordingFuture) Get() ([]byte, error) {
 	return f.FutureByteSlice.Get()
 }
 
+func (tx recordingReadTx) GetRange(r fdb.Range, options fdb.RangeOptions) fdb.RangeResult {
+	*tx.log = append(*tx.log, "send")
+	return recordingRange{RangeResult: tx.ReadTransaction.GetRange(r, options), log: tx.log}
+}
+
+type recordingRange struct {
+	fdb.RangeResult
+	log *[]string
+}
+
+func (r recordingRange) Iterator() fdb.RangeIterator {
+	return &recordingRangeIterator{RangeIterator: r.RangeResult.Iterator(), log: r.log}
+}
+
+type recordingRangeIterator struct {
+	fdb.RangeIterator
+	log    *[]string
+	waited bool
+}
+
+func (it *recordingRangeIterator) Advance() bool {
+	if !it.waited {
+		*it.log = append(*it.log, "wait")
+		it.waited = true
+	}
+	return it.RangeIterator.Advance()
+}
+
 // orderedReadTx records when each Get is issued and when its value is taken.
 type orderedReadTx struct {
 	fdb.ReadTransaction
@@ -205,27 +233,68 @@ func (f orderedFuture) Get() ([]byte, error) {
 	return nil, nil
 }
 
+type orderedRange struct {
+	fdb.RangeResult
+	events *[]string
+}
+
+func (tx orderedReadTx) GetRange(r fdb.Range, options fdb.RangeOptions) fdb.RangeResult {
+	ss := subspace.FromBytes([]byte("records")).Sub(int64(7))
+	begin, end := ss.FDBRangeKeys()
+	gotBegin, gotEnd := r.(fdb.ExactRange).FDBRangeKeys()
+	Expect(gotBegin.FDBKey()).To(Equal(begin.FDBKey()))
+	Expect(gotEnd.FDBKey()).To(Equal(end.FDBKey()))
+	Expect(options).To(Equal(fdb.RangeOptions{Mode: fdb.StreamingModeWantAll}))
+	*tx.events = append(*tx.events, "send range")
+	return orderedRange{events: tx.events}
+}
+
+func (r orderedRange) Iterator() fdb.RangeIterator {
+	return &orderedRangeIterator{events: r.events}
+}
+
+type orderedRangeIterator struct {
+	fdb.RangeIterator
+	events *[]string
+	waited bool
+}
+
+func (it *orderedRangeIterator) Advance() bool {
+	if !it.waited {
+		*it.events = append(*it.events, "wait range")
+		it.waited = true
+	}
+	return false
+}
+
+func (it *orderedRangeIterator) Get() (fdb.KeyValue, error) {
+	return fdb.KeyValue{}, nil
+}
+
 var _ = Describe("startLoadWithSplit", func() {
 	ss := subspace.FromBytes([]byte("records"))
 	pk := tuple.Tuple{int64(7)}
-	load := func(probeSplit bool) []string {
-		var events []string
-		tx := orderedReadTx{events: &events, names: map[string]string{
-			string(ss.Pack(tuple.Tuple{int64(7), unsplitRecord})):    "unsplit",
-			string(ss.Pack(tuple.Tuple{int64(7), startSplitRecord})): "first chunk",
-		}}
-		p := startLoadWithSplit(tx, ss, pk, true, false, probeSplit)
-		value, err := p.finish(&sizeInfo{})
-		Expect(err).NotTo(HaveOccurred())
-		Expect(value).To(BeNil())
-		return events
-	}
 
-	It("sends a missing record's chunk read with its unsplit read when probing", func() {
-		Expect(load(true)).To(Equal([]string{"send unsplit", "send first chunk", "wait unsplit", "wait first chunk"}))
+	It("issues one unlimited record range before waiting, whether splitting is enabled or not", func() {
+		for _, split := range []bool{false, true} {
+			var events []string
+			p := startLoadWithSplit(orderedReadTx{events: &events}, ss, pk, split, false, nil)
+			Expect(events).To(Equal([]string{"send range"}))
+			value, version, err := p.finish(&sizeInfo{})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(value).To(BeNil())
+			Expect(version).To(BeNil())
+			Expect(events).To(Equal([]string{"send range", "wait range"}))
+		}
 	})
 
-	It("keeps loadWithSplit's one read at a time otherwise", func() {
-		Expect(load(false)).To(Equal([]string{"send unsplit", "wait unsplit", "send first chunk", "wait first chunk"}))
+	It("keeps legacy bare-key loads as a single point read", func() {
+		var events []string
+		tx := orderedReadTx{events: &events, names: map[string]string{string(ss.Pack(pk)): "legacy"}}
+		p := startLoadWithSplit(tx, ss, pk, false, true, nil)
+		Expect(events).To(Equal([]string{"send legacy"}))
+		_, _, err := p.finish(&sizeInfo{})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(events).To(Equal([]string{"send legacy", "wait legacy"}))
 	})
 })

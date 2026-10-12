@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"google.golang.org/protobuf/proto"
 
@@ -13,35 +14,65 @@ import (
 	"fdb.dev/pkg/recordlayer"
 )
 
-// fetchWindowProbe counts record reads issued before the first is waited on.
+// A record range cannot complete until the caller has issued a whole window.
+// Background waits are allowed; a serial fetch cannot pass this gate. The
+// deadline makes that regression fail rather than hang the suite.
 type fetchWindowProbe struct {
 	fdb.WritableTransaction
-	prefix       []byte
-	issued       int
-	issuedAtWait int
-	waited       bool
+	prefix []byte
+	issued int
+	window chan struct{}
+	ctx    context.Context
 }
 
-func (p *fetchWindowProbe) Get(key fdb.KeyConvertible) fdb.FutureByteSlice {
-	future := p.WritableTransaction.Get(key)
-	if !bytes.HasPrefix(key.FDBKey(), p.prefix) {
-		return future
+func (p *fetchWindowProbe) GetRange(r fdb.Range, options fdb.RangeOptions) fdb.RangeResult {
+	result := p.WritableTransaction.GetRange(r, options)
+	begin, _ := r.FDBRangeKeySelectors()
+	if !bytes.HasPrefix(begin.FDBKeySelector().Key.FDBKey(), p.prefix) {
+		return result
 	}
 	p.issued++
-	return &fetchWindowFuture{FutureByteSlice: future, probe: p}
-}
-
-type fetchWindowFuture struct {
-	fdb.FutureByteSlice
-	probe *fetchWindowProbe
-}
-
-func (f *fetchWindowFuture) Get() ([]byte, error) {
-	if !f.probe.waited {
-		f.probe.waited = true
-		f.probe.issuedAtWait = f.probe.issued
+	if p.issued == recordlayer.DefaultPipelineSize {
+		close(p.window)
 	}
-	return f.FutureByteSlice.Get()
+	return fetchWindowRange{RangeResult: result, window: p.window, ctx: p.ctx}
+}
+
+type fetchWindowRange struct {
+	fdb.RangeResult
+	window <-chan struct{}
+	ctx    context.Context
+}
+
+func (r fetchWindowRange) Iterator() fdb.RangeIterator {
+	return &fetchWindowIterator{RangeIterator: r.RangeResult.Iterator(), window: r.window, ctx: r.ctx}
+}
+
+type fetchWindowIterator struct {
+	fdb.RangeIterator
+	window  <-chan struct{}
+	ctx     context.Context
+	started bool
+	err     error
+}
+
+func (i *fetchWindowIterator) Advance() bool {
+	if !i.started {
+		i.started = true
+		select {
+		case <-i.window:
+		case <-i.ctx.Done():
+			i.err = i.ctx.Err()
+		}
+	}
+	return i.err == nil && i.RangeIterator.Advance()
+}
+
+func (i *fetchWindowIterator) Get() (fdb.KeyValue, error) {
+	if i.err != nil {
+		return fdb.KeyValue{}, i.err
+	}
+	return i.RangeIterator.Get()
 }
 
 func TestIntegrationIndexAndPartialFetchesPipeline(t *testing.T) {
@@ -58,8 +89,13 @@ func TestIntegrationIndexAndPartialFetchesPipeline(t *testing.T) {
 			for i := int64(1); i <= count; i++ {
 				insertOrders(t, base, &demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))})
 			}
-			_, err := testDB.Run(context.Background(), func(rtx *recordlayer.FDBRecordContext) (any, error) {
-				probe := &fetchWindowProbe{WritableTransaction: rtx.Transaction(), prefix: testSubspace(t).Sub(recordlayer.RecordKey).Bytes()}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				probe := &fetchWindowProbe{
+					WritableTransaction: rtx.Transaction(), prefix: testSubspace(t).Sub(recordlayer.RecordKey).Bytes(),
+					window: make(chan struct{}), ctx: ctx,
+				}
 				store, err := recordlayer.NewStoreBuilder().SetContext(testDB.NewRecordContext(probe)).SetMetaDataProvider(base.GetMetaData()).SetSubspace(testSubspace(t)).Open()
 				if err != nil {
 					return nil, err
@@ -86,9 +122,8 @@ func TestIntegrationIndexAndPartialFetchesPipeline(t *testing.T) {
 				if err != nil || end.HasNext() {
 					return nil, fmt.Errorf("end: %v, %v", end, err)
 				}
-				// A serial fetch waits after its single read: one round trip per row.
-				if probe.issuedAtWait != recordlayer.DefaultPipelineSize {
-					return nil, fmt.Errorf("record reads in flight at first wait = %d, want %d", probe.issuedAtWait, recordlayer.DefaultPipelineSize)
+				if probe.issued != count {
+					return nil, fmt.Errorf("record ranges issued = %d, want %d", probe.issued, count)
 				}
 				return nil, nil
 			})

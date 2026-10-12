@@ -41,6 +41,21 @@ higher-level storage layout; it does not remove the exceptions below.
 | **Store format** | An unpinned Go open can upgrade an older store to format 14 when its transaction commits. Java's default 7 is not its maximum: Java 4.14.2.0 can open 14 and 15. Older readers and downgrade paths must be checked separately. |
 | **Earlier Go SQL storage** | The v0.2.0 candidate changes the relational catalog/database/schema keyspace from v0.1.0's. There is no automatic migration from the old Go layout. A common FDB cluster does not make these layouts interchangeable. |
 
+### Single-record reads and conflicts
+
+Modern record loads read the complete strict record subspace, `[packedPK + 00,
+packedPK + ff)`, including inline versions and absent split suffixes. Saves,
+deletes, dry runs, batch saves and index-record fetches use that same load.
+The legacy layout without an unsplit suffix retains its bare-key point read;
+old-format versions are read separately. Standalone `LoadRecordVersion` remains
+a point read. `RecordExists` instead reads the first physical key under the
+primary-key prefix, including the bare key, matching Java's limit-one scan.
+
+Go has no Record Layer context-property storage or `LOAD_RECORDS_VIA_GETS`
+setting. It implements Java's default range path; Java's optional GETS path
+also protects the entire record range, but differs on some malformed layouts.
+Neither read strategy changes the persisted record or version bytes.
+
 ### Vector defaults are layer-specific
 
 `DefaultHNSWConfig` is a low-level HNSW configuration, not a general promise about

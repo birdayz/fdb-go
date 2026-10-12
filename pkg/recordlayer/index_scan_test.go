@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"sync"
+	"time"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -13,6 +15,133 @@ import (
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 )
+
+// A record range may wait in a background goroutine, but cannot materialize
+// until the issuing caller has filled a window. A serial fetch times out.
+type indexRecordRangeProbe struct {
+	fdb.WritableTransaction
+	records subspace.Subspace
+	ctx     context.Context
+	window  chan struct{}
+	target  int
+
+	mu          sync.Mutex
+	stats       indexRecordRangeStats
+	outstanding int
+}
+
+type indexRecordRangeStats struct {
+	issued          map[int64]int
+	ranges          int
+	properRanges    int
+	pointGets       int
+	issuedAtRelease int
+	maxOutstanding  int
+}
+
+func newIndexRecordRangeProbe(ctx context.Context, tx fdb.WritableTransaction, records subspace.Subspace, target int) *indexRecordRangeProbe {
+	return &indexRecordRangeProbe{
+		WritableTransaction: tx, records: records, ctx: ctx, target: target,
+		window: make(chan struct{}), stats: indexRecordRangeStats{issued: make(map[int64]int)},
+	}
+}
+
+func (p *indexRecordRangeProbe) Get(key fdb.KeyConvertible) fdb.FutureByteSlice {
+	if bytes.HasPrefix(key.FDBKey(), p.records.Bytes()) {
+		p.mu.Lock()
+		p.stats.pointGets++
+		p.mu.Unlock()
+	}
+	return p.WritableTransaction.Get(key)
+}
+
+func (p *indexRecordRangeProbe) GetRange(r fdb.Range, options fdb.RangeOptions) fdb.RangeResult {
+	result := p.WritableTransaction.GetRange(r, options)
+	beginSelector, endSelector := r.FDBRangeKeySelectors()
+	begin, end := beginSelector.FDBKeySelector().Key.FDBKey(), endSelector.FDBKeySelector().Key.FDBKey()
+	if !bytes.HasPrefix(begin, p.records.Bytes()) || len(begin) <= len(p.records.Bytes()) || begin[len(begin)-1] != 0 {
+		return result
+	}
+	pk, err := p.records.Unpack(begin[:len(begin)-1])
+	if err != nil || len(pk) != 1 {
+		return result
+	}
+	id, ok := pk[0].(int64)
+	if !ok {
+		return result
+	}
+	p.mu.Lock()
+	p.stats.issued[id]++
+	p.stats.ranges++
+	wantEnd := append(append([]byte(nil), begin[:len(begin)-1]...), 0xff)
+	if bytes.Equal(end, wantEnd) && options.Mode == fdb.StreamingModeWantAll && options.Limit == 0 && !options.Reverse {
+		p.stats.properRanges++
+	}
+	p.outstanding++
+	p.stats.maxOutstanding = max(p.stats.maxOutstanding, p.outstanding)
+	if p.stats.ranges == p.target {
+		p.stats.issuedAtRelease = p.stats.ranges
+		close(p.window)
+	}
+	p.mu.Unlock()
+	return indexRecordProbeRange{RangeResult: result, probe: p}
+}
+
+func (p *indexRecordRangeProbe) snapshot() indexRecordRangeStats {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	s := p.stats
+	s.issued = make(map[int64]int, len(p.stats.issued))
+	for id, count := range p.stats.issued {
+		s.issued[id] = count
+	}
+	return s
+}
+
+type indexRecordProbeRange struct {
+	fdb.RangeResult
+	probe *indexRecordRangeProbe
+}
+
+func (r indexRecordProbeRange) Iterator() fdb.RangeIterator {
+	return &indexRecordProbeIterator{RangeIterator: r.RangeResult.Iterator(), probe: r.probe}
+}
+
+type indexRecordProbeIterator struct {
+	fdb.RangeIterator
+	probe    *indexRecordRangeProbe
+	started  bool
+	finished bool
+	err      error
+}
+
+func (i *indexRecordProbeIterator) Advance() bool {
+	if !i.started {
+		i.started = true
+		select {
+		case <-i.probe.window:
+		case <-i.probe.ctx.Done():
+			i.err = i.probe.ctx.Err()
+		}
+	}
+	if i.err != nil || !i.RangeIterator.Advance() {
+		if !i.finished {
+			i.finished = true
+			i.probe.mu.Lock()
+			i.probe.outstanding--
+			i.probe.mu.Unlock()
+		}
+		return false
+	}
+	return true
+}
+
+func (i *indexRecordProbeIterator) Get() (fdb.KeyValue, error) {
+	if i.err != nil {
+		return fdb.KeyValue{}, i.err
+	}
+	return i.RangeIterator.Get()
+}
 
 var _ = Describe("IndexScanning", func() {
 	ctx := context.Background()
@@ -935,7 +1064,9 @@ var _ = Describe("IndexScanning", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-				probe := newRecordFetchProbe(rtx.Transaction(), ks.Sub(RecordKey))
+				probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+				defer cancel()
+				probe := newIndexRecordRangeProbe(probeCtx, rtx.Transaction(), ks.Sub(RecordKey), DefaultPipelineSize)
 				store, err := NewStoreBuilder().SetContext(sharedDB.NewRecordContext(probe)).SetMetaDataProvider(metaData).SetSubspace(ks).Open()
 				Expect(err).NotTo(HaveOccurred())
 				records, err := AsList(ctx, store.ScanIndexRecords("Order$price", TupleRangeAll, nil, ForwardScan()))
@@ -944,9 +1075,15 @@ var _ = Describe("IndexScanning", func() {
 				for i, rec := range records {
 					Expect(rec.Record.PrimaryKey).To(Equal(tuple.Tuple{int64(i + 1)}))
 				}
-				// Serial fetching waits after one issued read: one round trip per row.
-				Expect(probe.issuedAtWait).To(Equal(DefaultPipelineSize))
-				Expect(probe.maxOutstanding).To(Equal(DefaultPipelineSize))
+				stats := probe.snapshot()
+				Expect(stats.issuedAtRelease).To(Equal(DefaultPipelineSize))
+				Expect(stats.maxOutstanding).To(Equal(DefaultPipelineSize))
+				Expect(stats.ranges).To(Equal(count))
+				Expect(stats.properRanges).To(Equal(count))
+				Expect(stats.pointGets).To(BeZero())
+				for id := int64(1); id <= count; id++ {
+					Expect(stats.issued[id]).To(Equal(1))
+				}
 				return nil, nil
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -967,7 +1104,9 @@ var _ = Describe("IndexScanning", func() {
 			var resume []byte
 			for attempt := 0; attempt < 2; attempt++ {
 				_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-					probe := newRecordFetchProbe(rtx.Transaction(), ks.Sub(RecordKey))
+					probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+					defer cancel()
+					probe := newIndexRecordRangeProbe(probeCtx, rtx.Transaction(), ks.Sub(RecordKey), 6-2*attempt)
 					store, err := NewStoreBuilder().SetContext(sharedDB.NewRecordContext(probe)).SetMetaDataProvider(metaData).SetSubspace(ks).Open()
 					Expect(err).NotTo(HaveOccurred())
 					cursor := store.ScanIndexRecords("Order$price", TupleRangeAll, resume, ForwardScan())
@@ -987,7 +1126,13 @@ var _ = Describe("IndexScanning", func() {
 					var storageErr *RecordCoreStorageError
 					Expect(errors.As(err, &storageErr)).To(BeTrue(), "%v", err)
 					Expect(storageErr.PrimaryKey).To(Equal(tuple.Tuple{int64(3)}))
-					Expect(probe.issued).To(HaveKey(int64(6)))
+					stats := probe.snapshot()
+					Expect(stats.issued[int64(6)]).To(Equal(1))
+					Expect(stats.ranges).To(Equal(6 - 2*attempt))
+					Expect(stats.properRanges).To(Equal(stats.ranges))
+					Expect(stats.issuedAtRelease).To(Equal(stats.ranges))
+					Expect(stats.maxOutstanding).To(Equal(stats.ranges))
+					Expect(stats.pointGets).To(BeZero())
 					_, again := cursor.OnNext(ctx)
 					Expect(again).To(MatchError(err))
 					return nil, nil
@@ -1023,7 +1168,9 @@ var _ = Describe("IndexScanning", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-				probe := newRecordFetchProbe(rtx.Transaction(), ks.Sub(RecordKey))
+				probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+				defer cancel()
+				probe := newIndexRecordRangeProbe(probeCtx, rtx.Transaction(), ks.Sub(RecordKey), DefaultPipelineSize)
 				store, err := NewStoreBuilder().SetContext(sharedDB.NewRecordContext(probe)).SetMetaDataProvider(metaData).SetSubspace(ks).Open()
 				Expect(err).NotTo(HaveOccurred())
 				records, err := AsList(ctx, store.ScanIndexRecords("Order$price", TupleRangeAll, nil, ForwardScan()))
@@ -1039,9 +1186,17 @@ var _ = Describe("IndexScanning", func() {
 					Expect(proto.Equal(rec.Record.Record, want.Record)).To(BeTrue())
 					Expect(rec.Record.Version).To(Equal(want.Version))
 				}
-				Expect(probe.issuedAtWait).To(Equal(DefaultPipelineSize))
-				// Serial version reads would wait after one record's reads.
-				Expect(probe.versionsAtWait).To(Equal(DefaultPipelineSize))
+				stats := probe.snapshot()
+				Expect(stats.issuedAtRelease).To(Equal(DefaultPipelineSize))
+				Expect(stats.maxOutstanding).To(Equal(DefaultPipelineSize))
+				// Twelve pipelined fetches plus twelve direct cross-check loads:
+				// each includes the inline version in one full record range.
+				Expect(stats.ranges).To(Equal(24))
+				Expect(stats.properRanges).To(Equal(24))
+				Expect(stats.pointGets).To(BeZero())
+				for id := int64(1); id <= 12; id++ {
+					Expect(stats.issued[id]).To(Equal(2))
+				}
 				return nil, nil
 			})
 			Expect(err).NotTo(HaveOccurred())

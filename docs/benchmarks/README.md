@@ -2,6 +2,11 @@
 
 Raw output behind the tables in the top-level README.
 
+## Change-specific comparisons
+
+- [2026-10-12: record-load range-read parity](2026-10-12-record-load-parity/README.md)
+  — before/after latency and allocations, including the cost of Java-compatible reads.
+
 ## 2026-10-12, master 9a9a448
 
 AMD Ryzen 9 3900X (24 threads), Linux, Go 1.26.9. Single-node FoundationDB 7.3.77

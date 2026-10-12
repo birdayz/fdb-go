@@ -93,7 +93,7 @@ func saveWithSplit(
 
 		// Clear previous record data
 		if !hasVersionInKey {
-			clearPreviousRecord(tx, recordSubspace, primaryKey, splitLongRecords, oldsizeInfo)
+			clearPreviousRecord(recordContext, tx, recordSubspace, primaryKey, splitLongRecords, oldsizeInfo)
 		}
 
 		if sizes != nil {
@@ -153,7 +153,7 @@ func saveWithSplit(
 
 	// Clear previous record data
 	if !hasVersionInKey {
-		clearPreviousRecord(tx, recordSubspace, primaryKey, splitLongRecords, oldsizeInfo)
+		clearPreviousRecord(recordContext, tx, recordSubspace, primaryKey, splitLongRecords, oldsizeInfo)
 	}
 
 	// Unsplit: single KV pair at suffix 0. Keep the complete-key path's
@@ -203,12 +203,21 @@ func writeSplitValue(recordContext *FDBRecordContext, tx fdb.WritableTransaction
 // Otherwise, clears just the unsplit key.
 // Matches Java's SplitHelper behavior with clearBasedOnPrevioussizeInfo.
 func clearPreviousRecord(
+	recordContext *FDBRecordContext,
 	tx fdb.WritableTransaction,
 	recordSubspace subspace.Subspace,
 	primaryKey tuple.Tuple,
 	splitLongRecords bool,
 	oldsizeInfo *sizeInfo,
 ) {
+	// A later save without a version must not commit a previous save's
+	// deferred version mutation. Java leaves the local-version cache intact.
+	if recordContext != nil {
+		versionKey := recordSubspace.Pack(appendToTuple(primaryKey, recordVersionSuffix))
+		if _, ok := recordContext.GetLocalVersion(versionKey); ok {
+			recordContext.RemoveVersionMutation(versionKey)
+		}
+	}
 	if oldsizeInfo == nil {
 		// No previous record — nothing to clear
 		return
@@ -231,34 +240,70 @@ func clearPreviousRecord(
 	}
 }
 
-// loadWithSplit loads a record that may be split across multiple KV pairs.
-// Returns the reassembled record bytes and size info, or nil if not found.
-// Matches Java's SplitHelper.loadWithSplit().
+// loadWithSplit loads the entire record range, as Java's SingleKeyUnsplitter
+// does, except for the legacy bare-key layout, which remains a point read.
 func loadWithSplit(
 	tx fdb.ReadTransaction,
 	recordSubspace subspace.Subspace,
 	primaryKey tuple.Tuple,
 	splitLongRecords bool,
 	omitUnsplitRecordSuffix bool,
-	sizeInfo *sizeInfo,
+	sizes *sizeInfo,
 ) ([]byte, error) {
-	p := startLoadWithSplit(tx, recordSubspace, primaryKey, splitLongRecords, omitUnsplitRecordSuffix, false)
-	return p.finish(sizeInfo)
+	p := startLoadWithSplit(tx, recordSubspace, primaryKey, splitLongRecords, omitUnsplitRecordSuffix, nil)
+	value, _, err := p.finish(sizes)
+	return value, err
 }
 
-// pendingRecordLoad is loadWithSplit with its first reads sent and not yet
-// waited for. probeSplit also sends the first split chunk's read, which a
-// missing record needs next, so the miss costs one round trip, not two.
+// pendingRecordLoad starts the range before waiting, preserving record-fetch
+// and old-record-read pipelining. Inline versions are part of that same read.
 type pendingRecordLoad struct {
-	tx               fdb.ReadTransaction
-	recordSubspace   subspace.Subspace
-	primaryKey       tuple.Tuple
-	splitLongRecords bool
-	legacy           bool
-	key              []byte // the bare key (legacy layout) or the unsplit key
-	value            fdb.FutureByteSlice
-	firstSplitKey    []byte // with firstSplit, when probed
-	firstSplit       fdb.FutureByteSlice
+	primaryKey tuple.Tuple
+	prefix     []byte
+	value      fdb.FutureByteSlice // legacy bare-key layout only
+	rangeRead  fdb.RangeResult
+	version    *FDBRecordVersion
+	localSize  sizeInfo
+	localErr   error
+	asyncRange *pendingRecordRange
+}
+
+// RangeResult has no readiness operation. The worker owns raw reassembly and
+// validation, stopping at the first corrupt key without waiting for later batches.
+// Store deserialization, limit accounting and timers remain on the caller.
+type pendingRecordRange struct {
+	done    chan struct{}
+	value   []byte
+	version *FDBRecordVersion
+	sizes   sizeInfo
+	err     error
+}
+
+func (p *pendingRecordLoad) startReadiness() {
+	if p.rangeRead == nil {
+		return
+	}
+	r := &pendingRecordRange{done: make(chan struct{})}
+	p.asyncRange = r
+	// Copy the already-captured local version inputs; never access context state
+	// from the worker. Closing done publishes its exclusively owned result.
+	load := *p
+	go func() {
+		r.value, r.version, r.err = load.readRange(&r.sizes)
+		close(r.done)
+	}()
+}
+
+func (p *pendingRecordLoad) ready() bool {
+	if p.value != nil {
+		return p.value.IsReady()
+	}
+	select {
+	case <-p.asyncRange.done:
+		return true
+	default:
+		return false
+	}
 }
 
 func startLoadWithSplit(
@@ -267,165 +312,115 @@ func startLoadWithSplit(
 	primaryKey tuple.Tuple,
 	splitLongRecords bool,
 	omitUnsplitRecordSuffix bool,
-	probeSplit bool,
+	recordContext *FDBRecordContext,
 ) pendingRecordLoad {
-	p := pendingRecordLoad{
-		tx:               tx,
-		recordSubspace:   recordSubspace,
-		primaryKey:       primaryKey,
-		splitLongRecords: splitLongRecords,
-	}
+	p := pendingRecordLoad{primaryKey: primaryKey, prefix: recordSubspace.Pack(primaryKey)}
 	if !splitLongRecords && omitUnsplitRecordSuffix {
-		// Legacy unsplit layout: the value is at the bare key with no suffix.
-		// Matches Java's SplitHelper.loadUnsplitLegacy().
-		p.legacy = true
-		p.key = recordSubspace.Pack(primaryKey)
-	} else {
-		// Try unsplit first (most common case).
-		// Use PackConcatWithPrefix to avoid the intermediate tuple allocation
-		// from appendToTuple(primaryKey, unsplitRecord).
-		p.key = tuple.PackConcatWithPrefix(recordSubspace.Bytes(), primaryKey, unsplitSuffix)
+		p.value = tx.Get(fdb.Key(p.prefix))
+		return p
 	}
-	p.value = tx.Get(fdb.Key(p.key))
-	if probeSplit && splitLongRecords {
-		p.firstSplitKey = recordSubspace.Pack(appendToTuple(primaryKey, startSplitRecord))
-		p.firstSplit = tx.Get(fdb.Key(p.firstSplitKey))
+	// Subspace.range(), not PrefixRange: exclude the bare key and pk+ff.
+	begin := append(append([]byte(nil), p.prefix...), 0x00)
+	end := append(append([]byte(nil), p.prefix...), 0xff)
+	p.rangeRead = tx.GetRange(fdb.KeyRange{Begin: fdb.Key(begin), End: fdb.Key(end)}, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll})
+	if recordContext != nil {
+		versionKey := recordSubspace.Pack(appendToTuple(primaryKey, recordVersionSuffix))
+		if local, ok := recordContext.GetLocalVersion(versionKey); ok {
+			p.version, p.localErr = IncompleteVersion(local)
+			p.localSize = sizeInfo{KeyCount: 1, KeySize: len(versionKey), ValueSize: VersionBytes + 1, VersionedInline: true}
+		}
 	}
 	return p
 }
 
-func (p *pendingRecordLoad) finish(sizeInfo *sizeInfo) ([]byte, error) {
-	tx, recordSubspace, primaryKey := p.tx, p.recordSubspace, p.primaryKey
-	value, err := p.value.Get()
-	if p.legacy {
+func (p *pendingRecordLoad) finish(sizes *sizeInfo) ([]byte, *FDBRecordVersion, error) {
+	if sizes == nil {
+		sizes = &sizeInfo{}
+	}
+	if p.value != nil {
+		value, err := p.value.Get()
 		if err != nil {
-			return nil, fmt.Errorf("failed to get legacy unsplit record: %w", err)
+			return nil, nil, fmt.Errorf("failed to get legacy unsplit record: %w", err)
 		}
-		if value == nil {
-			return nil, nil
+		if value != nil {
+			*sizes = sizeInfo{KeyCount: 1, KeySize: len(p.prefix), ValueSize: len(value)}
 		}
-		sizeInfo.KeyCount = 1
-		sizeInfo.KeySize = len(p.key)
-		sizeInfo.ValueSize = len(value)
-		sizeInfo.IsSplit = false
-		return value, nil
+		return value, nil, nil
 	}
-	if err != nil {
-		return nil, fmt.Errorf("failed to get unsplit record: %w", err)
+	if p.asyncRange != nil {
+		<-p.asyncRange.done
+		*sizes = p.asyncRange.sizes
+		return p.asyncRange.value, p.asyncRange.version, p.asyncRange.err
 	}
+	return p.readRange(sizes)
+}
 
-	if value != nil {
-		// A probed chunk read is not waited on: the serial path never sends it.
-		sizeInfo.KeyCount = 1
-		sizeInfo.KeySize = len(p.key)
-		sizeInfo.ValueSize = len(value)
-		sizeInfo.IsSplit = false
-		return value, nil
+func (p *pendingRecordLoad) readRange(sizes *sizeInfo) ([]byte, *FDBRecordVersion, error) {
+	*sizes = p.localSize
+	if p.localErr != nil {
+		return nil, nil, p.localErr
 	}
-
-	if !p.splitLongRecords {
-		// Not found and splitting not enabled — record doesn't exist
-		return nil, nil
-	}
-
-	// Check for split record: scan from suffix 1 onwards
-	firstSplitKey, firstSplit := p.firstSplitKey, p.firstSplit
-	if firstSplit == nil {
-		firstSplitKey = recordSubspace.Pack(appendToTuple(primaryKey, startSplitRecord))
-		firstSplit = tx.Get(fdb.Key(firstSplitKey))
-	}
-	firstValue, err := firstSplit.Get()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get first split chunk: %w", err)
-	}
-
-	if firstValue == nil {
-		// Neither unsplit nor split — record doesn't exist
-		return nil, nil
-	}
-
-	// Record is split — scan for remaining chunks
-	// Range from suffix 2 to end of primary key subspace
-	nextSplitKeyTuple := appendToTuple(primaryKey, startSplitRecord+1)
-	rangeBegin := recordSubspace.Pack(nextSplitKeyTuple)
-
-	// End is exclusive: everything under this pk but beyond valid split suffixes.
-	// Using the pk subspace end key covers all remaining split parts.
-	pkSubspace := recordSubspace.Sub(primaryKey...)
-	_, rangeEnd := pkSubspace.FDBRangeKeys()
-
-	rangeResult := tx.GetRange(fdb.KeyRange{
-		Begin: fdb.Key(rangeBegin),
-		End:   rangeEnd,
-	}, fdb.RangeOptions{
-		Mode: fdb.StreamingModeWantAll,
-	})
-
-	kvs, err := rangeResult.GetSliceWithError()
-	if err != nil {
-		return nil, fmt.Errorf("failed to read split record chunks: %w", err)
-	}
-
-	// Reassemble: first chunk + remaining chunks
-	totalSize := len(firstValue)
-	for _, kv := range kvs {
-		totalSize += len(kv.Value)
-	}
-
-	result := make([]byte, 0, totalSize)
-	result = append(result, firstValue...)
-
-	sizeInfo.KeyCount = 1
-	sizeInfo.KeySize = len(firstSplitKey)
-	sizeInfo.ValueSize = len(firstValue)
-
-	// Validate sequential indices and concatenate
-	expectedIndex := startSplitRecord + 1
-	for _, kv := range kvs {
-		keyTuple, unpackErr := tuplefast.SubspaceUnpack(kv.Key, len(recordSubspace.Bytes()))
-		if unpackErr != nil {
-			return nil, fmt.Errorf("failed to unpack split key: %w", unpackErr)
+	var result []byte
+	version := p.version
+	var lastIndex int64
+	iter := p.rangeRead.Iterator()
+	for iter.Advance() {
+		kv, err := iter.Get()
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to read record range: %w", err)
 		}
-		if len(keyTuple) == 0 {
-			return nil, fmt.Errorf("split record key has no suffix")
+		subkey, err := tuplefast.SubspaceUnpack(kv.Key, len(p.prefix))
+		if err != nil {
+			return nil, nil, &RecordCoreArgumentError{Message: fmt.Sprintf("unable to unpack split key for %v: %v", p.primaryKey, err)}
 		}
-
-		suffix, ok := keyTuple[len(keyTuple)-1].(int64)
+		if len(subkey) != 1 {
+			return nil, nil, &RecordCoreError{Message: fmt.Sprintf("Expected only a single key extension for split record: %v", p.primaryKey)}
+		}
+		index, ok := subkey[0].(int64)
 		if !ok {
-			return nil, fmt.Errorf("split record suffix is not int64: %T", keyTuple[len(keyTuple)-1])
+			return nil, nil, &RecordCoreArgumentError{Message: fmt.Sprintf("split record suffix is not an integer: %v", subkey)}
 		}
-
-		// Version keys are part of the record's storage footprint
-		if suffix == recordVersionSuffix {
-			sizeInfo.KeyCount++
-			sizeInfo.KeySize += len(kv.Key)
-			sizeInfo.ValueSize += len(kv.Value)
-			sizeInfo.VersionedInline = true
-			continue
-		}
-
-		if suffix != expectedIndex {
-			// Always OUT-OF-ORDER here, never without-start. Java picks between
-			// the two on `lastIndex >= START_SPLIT_RECORD`
-			// (SplitHelper.java:824-835), and this loop only runs after the start
-			// segment has already been read (expectedIndex begins at
-			// startSplitRecord+1), so the start is known present.
-			return nil, &FoundSplitOutOfOrderError{
-				Expected: expectedIndex,
-				Found:    suffix,
-				KeyTuple: keyTuple,
+		switch {
+		case index == unsplitRecord:
+			if result != nil {
+				return nil, nil, &RecordCoreError{Message: fmt.Sprintf("More than one unsplit value: %v", p.primaryKey)}
 			}
+			result = kv.Value
+			sizes.IsSplit = false
+		case index == lastIndex+1 || (lastIndex == recordVersionSuffix && index == startSplitRecord):
+			if index == startSplitRecord {
+				if result != nil {
+					return nil, nil, &RecordCoreError{Message: fmt.Sprintf("Unsplit value followed by split: %v", p.primaryKey)}
+				}
+				result = kv.Value
+				sizes.IsSplit = true
+			} else {
+				result = append(result, kv.Value...)
+			}
+			lastIndex = index
+		case index == recordVersionSuffix:
+			version, err = unpackVersion(kv.Value)
+			if err != nil {
+				return nil, nil, err
+			}
+			sizes.VersionedInline = true
+		default:
+			if lastIndex >= startSplitRecord {
+				return nil, nil, &FoundSplitOutOfOrderError{Expected: lastIndex + 1, Found: index, KeyTuple: p.primaryKey}
+			}
+			return nil, nil, &FoundSplitWithoutStartError{NextIndex: index, KeyTuple: p.primaryKey}
 		}
-
-		result = append(result, kv.Value...)
-		sizeInfo.KeyCount++
-		sizeInfo.KeySize += len(kv.Key)
-		sizeInfo.ValueSize += len(kv.Value)
-		expectedIndex++
+		sizes.KeyCount++
+		sizes.KeySize += len(kv.Key)
+		sizes.ValueSize += len(kv.Value)
 	}
-
-	sizeInfo.IsSplit = true
-	return result, nil
+	if _, err := iter.Get(); err != nil {
+		return nil, nil, fmt.Errorf("failed to read record range: %w", err)
+	}
+	if result == nil && version != nil {
+		return nil, nil, &FoundSplitWithoutStartError{NextIndex: recordVersionSuffix, KeyTuple: p.primaryKey}
+	}
+	return result, version, nil
 }
 
 // deleteSplit deletes a record that may be split across multiple KV pairs.
@@ -490,31 +485,18 @@ func recordExistsWithSplit(
 		return value != nil, nil
 	}
 
-	// Check unsplit key
-	unsplitKeyTuple := appendToTuple(primaryKey, unsplitRecord)
-	unsplitKey := recordSubspace.Pack(unsplitKeyTuple)
-
-	value, err := tx.Get(fdb.Key(unsplitKey)).Get()
+	// Java keyExists uses Range.startsWith, including the bare key, and stops
+	// after one physical key. It does not validate or load the whole record.
+	r, err := fdb.PrefixRange(recordSubspace.Pack(primaryKey))
 	if err != nil {
+		return false, fmt.Errorf("record existence range: %w", err)
+	}
+	iter := tx.GetRange(r, fdb.RangeOptions{Limit: 1}).Iterator()
+	found := iter.Advance()
+	if _, err := iter.Get(); err != nil {
 		return false, fmt.Errorf("failed to check record existence: %w", err)
 	}
-	if value != nil {
-		return true, nil
-	}
-
-	if !splitLongRecords {
-		return false, nil
-	}
-
-	// Check first split key
-	firstSplitKeyTuple := appendToTuple(primaryKey, startSplitRecord)
-	firstSplitKey := recordSubspace.Pack(firstSplitKeyTuple)
-
-	value, err = tx.Get(fdb.Key(firstSplitKey)).Get()
-	if err != nil {
-		return false, fmt.Errorf("failed to check split record existence: %w", err)
-	}
-	return value != nil, nil
+	return found, nil
 }
 
 // clearRecordKeyRange clears all keys for a primary key (version, unsplit, and all split chunks).

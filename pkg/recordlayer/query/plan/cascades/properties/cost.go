@@ -113,7 +113,7 @@ const (
 	// amortized across a shared streaming iterator returning many rows.
 	// Two executor paths verified to have this exact shape:
 	//   - RecordQueryFetchFromPartialRecordPlan: split_helper.go's
-	//     loadWithSplit does one blocking tx.Get(unsplitKey).Get() per index
+	//     loadWithSplit reads one record-prefix range per index
 	//     entry (the common unsplit-record case), called once per resolved
 	//     entry with NO batching across entries (flat_map_cursor.go's own
 	//     comment: "Go simplification: no async pipelining").

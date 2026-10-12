@@ -515,7 +515,7 @@ var _ = Describe("SplitHelper", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 
-		It("does not find a split record when splitLongRecords=false", func() {
+		It("loads existing split data even when new records may not be split", func() {
 			rs := recordSub()
 			pk := tuple.Tuple{int64(104)}
 
@@ -527,7 +527,8 @@ var _ = Describe("SplitHelper", func() {
 				si := &sizeInfo{}
 				loaded, err := loadWithSplit(tx, rs, pk, false, false, si)
 				Expect(err).NotTo(HaveOccurred())
-				Expect(loaded).To(BeNil())
+				Expect(loaded).To(Equal(makeTestBytes(splitRecordSize)))
+				Expect(si.IsSplit).To(BeTrue())
 
 				return nil, nil
 			})
@@ -560,7 +561,7 @@ var _ = Describe("SplitHelper", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 
-		It("skips version key at suffix -1 during split reassembly", func() {
+		It("counts the inline version without adding it to the reassembled record", func() {
 			rs := recordSub()
 			pk := tuple.Tuple{int64(106)}
 			original := makeTestBytes(splitRecordSize + 10)
@@ -572,15 +573,19 @@ var _ = Describe("SplitHelper", func() {
 				tx.Set(fdb.Key(rs.Pack(appendToTuple(pk, startSplitRecord+1))),
 					original[splitRecordSize:])
 
-				// Also write a version key at suffix -1 (should be ignored by loadWithSplit)
-				tx.Set(fdb.Key(rs.Pack(appendToTuple(pk, recordVersionSuffix))),
-					[]byte("fake-version"))
+				version, err := NewCompleteVersion(make([]byte, GlobalVersionBytes), 7)
+				Expect(err).NotTo(HaveOccurred())
+				packed, err := packVersion(version)
+				Expect(err).NotTo(HaveOccurred())
+				tx.Set(fdb.Key(rs.Pack(appendToTuple(pk, recordVersionSuffix))), packed)
 
 				si := &sizeInfo{}
 				loaded, err := loadWithSplit(tx, rs, pk, true, false, si)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(bytes.Equal(loaded, original)).To(BeTrue())
-				Expect(si.KeyCount).To(Equal(2)) // version key not counted
+				Expect(si.KeyCount).To(Equal(3))
+				Expect(si.VersionedInline).To(BeTrue())
+				Expect(si.ValueSize).To(Equal(len(original) + VersionBytes + 1))
 
 				return nil, nil
 			})
@@ -787,7 +792,7 @@ var _ = Describe("SplitHelper", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 
-		It("only checks unsplit when splitLongRecords=false", func() {
+		It("checks any record suffix even when new records may not be split", func() {
 			rs := recordSub()
 			pk := tuple.Tuple{int64(303)}
 
@@ -797,7 +802,7 @@ var _ = Describe("SplitHelper", func() {
 
 				exists, err := recordExistsWithSplit(tx, rs, pk, false, false)
 				Expect(err).NotTo(HaveOccurred())
-				Expect(exists).To(BeFalse())
+				Expect(exists).To(BeTrue())
 
 				return nil, nil
 			})
@@ -835,7 +840,7 @@ var _ = Describe("SplitHelper", func() {
 				key := rs.Pack(appendToTuple(pk, unsplitRecord))
 				tx.Set(fdb.Key(key), []byte("keep-me"))
 
-				clearPreviousRecord(tx, rs, pk, true, nil)
+				clearPreviousRecord(nil, tx, rs, pk, true, nil)
 
 				val, err := tx.Get(fdb.Key(key)).Get()
 				Expect(err).NotTo(HaveOccurred())
@@ -858,7 +863,7 @@ var _ = Describe("SplitHelper", func() {
 				tx.Set(fdb.Key(rs.Pack(appendToTuple(pk, startSplitRecord+2))), []byte("c3"))
 
 				oldSI := &sizeInfo{IsSplit: true}
-				clearPreviousRecord(tx, rs, pk, true, oldSI)
+				clearPreviousRecord(nil, tx, rs, pk, true, oldSI)
 
 				// All keys should be gone
 				for _, suffix := range []int64{recordVersionSuffix, startSplitRecord, startSplitRecord + 1, startSplitRecord + 2} {
@@ -882,7 +887,7 @@ var _ = Describe("SplitHelper", func() {
 
 				// splitLongRecords=true triggers range clear even with IsSplit=false
 				oldSI := &sizeInfo{IsSplit: false}
-				clearPreviousRecord(tx, rs, pk, true, oldSI)
+				clearPreviousRecord(nil, tx, rs, pk, true, oldSI)
 
 				val, err := tx.Get(fdb.Key(rs.Pack(appendToTuple(pk, unsplitRecord)))).Get()
 				Expect(err).NotTo(HaveOccurred())
@@ -909,7 +914,7 @@ var _ = Describe("SplitHelper", func() {
 
 				// splitLongRecords=false, IsSplit=false, VersionedInline=false
 				oldSI := &sizeInfo{IsSplit: false, VersionedInline: false}
-				clearPreviousRecord(tx, rs, pk, false, oldSI)
+				clearPreviousRecord(nil, tx, rs, pk, false, oldSI)
 
 				// Unsplit key cleared
 				val, err := tx.Get(fdb.Key(unsplitKey)).Get()
@@ -937,7 +942,7 @@ var _ = Describe("SplitHelper", func() {
 				tx.Set(fdb.Key(versionKey), []byte("version"))
 
 				oldSI := &sizeInfo{IsSplit: false, VersionedInline: true}
-				clearPreviousRecord(tx, rs, pk, false, oldSI)
+				clearPreviousRecord(nil, tx, rs, pk, false, oldSI)
 
 				// Both cleared
 				val, err := tx.Get(fdb.Key(unsplitKey)).Get()
