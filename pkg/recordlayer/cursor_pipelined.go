@@ -63,6 +63,8 @@ type mapPipelinedCursor[T, V any] struct {
 	issue    func(T) PendingRead[V]
 	size     int
 	pipeline []mapPipelineEntry[V]
+	head     int
+	count    int
 	stop     *RecordCursorResult[V]
 	last     RecordCursorResult[V]
 	hasLast  bool
@@ -70,10 +72,47 @@ type mapPipelinedCursor[T, V any] struct {
 	closed   bool
 }
 
+// Offsets are relative to the head; subtract before adding to avoid overflow.
+func (c *mapPipelinedCursor[T, V]) pipelineIndex(offset int) int {
+	if offset >= len(c.pipeline)-c.head {
+		return offset - (len(c.pipeline) - c.head)
+	}
+	return c.head + offset
+}
+
+func (c *mapPipelinedCursor[T, V]) push(entry mapPipelineEntry[V]) {
+	if c.count == len(c.pipeline) {
+		capacity := 1
+		if c.count > 0 {
+			capacity = c.size
+			if c.count <= c.size/2 {
+				capacity = 2 * c.count
+			}
+		}
+		pipeline := make([]mapPipelineEntry[V], capacity)
+		n := copy(pipeline, c.pipeline[c.head:])
+		copy(pipeline[n:], c.pipeline[:c.head])
+		c.pipeline, c.head = pipeline, 0
+	}
+	c.pipeline[c.pipelineIndex(c.count)] = entry
+	c.count++
+}
+
+func (c *mapPipelinedCursor[T, V]) pop() mapPipelineEntry[V] {
+	entry := c.pipeline[c.head]
+	c.pipeline[c.head] = mapPipelineEntry[V]{}
+	c.head++
+	if c.head == len(c.pipeline) {
+		c.head = 0
+	}
+	c.count--
+	return entry
+}
+
 func (c *mapPipelinedCursor[T, V]) fail(err error) (RecordCursorResult[V], error) {
 	c.err = err
 	clear(c.pipeline)
-	c.pipeline = nil
+	c.pipeline, c.head, c.count = nil, 0, 0
 	return RecordCursorResult[V]{}, err
 }
 
@@ -90,7 +129,7 @@ func (c *mapPipelinedCursor[T, V]) OnNext(ctx context.Context) (RecordCursorResu
 	if err := ctx.Err(); err != nil {
 		return RecordCursorResult[V]{}, err
 	}
-	for c.stop == nil && len(c.pipeline) < c.size {
+	for c.stop == nil && c.count < c.size {
 		source, err := c.inner.OnNext(ctx)
 		if err != nil {
 			return c.fail(err)
@@ -105,17 +144,15 @@ func (c *mapPipelinedCursor[T, V]) OnNext(ctx context.Context) (RecordCursorResu
 			}
 			break
 		}
-		c.pipeline = append(c.pipeline, mapPipelineEntry[V]{
+		c.push(mapPipelineEntry[V]{
 			pending: c.issue(source.GetValue()), continuation: source.GetContinuation(),
 		})
 	}
-	if len(c.pipeline) == 0 {
+	if c.count == 0 {
 		c.last, c.hasLast = *c.stop, true
 		return c.last, nil
 	}
-	entry := c.pipeline[0]
-	c.pipeline[0] = mapPipelineEntry[V]{}
-	c.pipeline = c.pipeline[1:]
+	entry := c.pop()
 	value, err := entry.pending.Get()
 	if err != nil {
 		return c.fail(err)
@@ -130,17 +167,23 @@ func (c *mapPipelinedCursor[T, V]) OnNext(ctx context.Context) (RecordCursorResu
 func (c *mapPipelinedCursor[T, V]) keepCompletedPrefix() error {
 	continuation := c.last.GetContinuation()
 	keep := 0
-	for ; keep < len(c.pipeline) && c.pipeline[keep].pending.IsReady(); keep++ {
-		if _, err := c.pipeline[keep].pending.Get(); err != nil {
+	for ; keep < c.count; keep++ {
+		entry := c.pipeline[c.pipelineIndex(keep)]
+		if !entry.pending.IsReady() {
+			break
+		}
+		if _, err := entry.pending.Get(); err != nil {
 			return err
 		}
-		continuation = c.pipeline[keep].continuation
+		continuation = entry.continuation
 	}
-	if keep == len(c.pipeline) {
+	if keep == c.count {
 		return nil
 	}
-	clear(c.pipeline[keep:])
-	c.pipeline = c.pipeline[:keep]
+	for i := keep; i < c.count; i++ {
+		c.pipeline[c.pipelineIndex(i)] = mapPipelineEntry[V]{}
+	}
+	c.count = keep
 	stop := NewResultNoNext[V](TimeLimitReached, continuation)
 	c.stop = &stop
 	return nil
@@ -149,7 +192,7 @@ func (c *mapPipelinedCursor[T, V]) keepCompletedPrefix() error {
 func (c *mapPipelinedCursor[T, V]) Close() error {
 	c.closed = true
 	clear(c.pipeline)
-	c.pipeline = nil
+	c.pipeline, c.head, c.count = nil, 0, 0
 	return c.inner.Close()
 }
 
