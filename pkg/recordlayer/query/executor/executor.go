@@ -1403,6 +1403,7 @@ func (c *indexFetchCursor) finish(entry *recordlayer.IndexEntry, pk tuple.Tuple,
 		// continuing would return fewer rows and hide the corruption. Raise the
 		// same typed error Java throws, carrying its INDEX_NAME / PRIMARY_KEY /
 		// INDEX_KEY log info.
+		c.store.Context().Timer().Increment(recordlayer.CountBadIndexEntry)
 		return QueryResult{}, &recordlayer.RecordCoreStorageError{
 			Message:    "record not found from index entry",
 			IndexName:  indexName,
@@ -1994,6 +1995,7 @@ func (c *fetchFullRecordCursor) finish(row QueryResult, rec *recordlayer.FDBStor
 		// Java IndexOrphanBehavior.ERROR — see indexFetchCursor for the full
 		// reasoning. Silently continuing would return fewer rows and hide index
 		// corruption.
+		c.store.Context().Timer().Increment(recordlayer.CountBadIndexEntry)
 		return QueryResult{}, &recordlayer.RecordCoreStorageError{
 			Message:    "record not found from index entry",
 			PrimaryKey: pk,

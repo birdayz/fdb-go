@@ -816,6 +816,7 @@ func (c *indexRecordLoader) finish(entry *IndexEntry, pk tuple.Tuple, rec *FDBSt
 		// same typed error Java throws. (The index scrubber, which repairs
 		// orphans, has its own SKIP/RETURN path in index_validation.go and does
 		// not come through here.)
+		c.store.context.Timer().Increment(CountBadIndexEntry)
 		return nil, &RecordCoreStorageError{
 			Message:    "record not found from index entry",
 			IndexName:  indexName,

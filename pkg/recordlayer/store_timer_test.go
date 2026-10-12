@@ -606,6 +606,24 @@ var _ = Describe("StoreTimer", func() {
 					}
 					Expect(timer.GetCount(EventLoadRecord)).To(Equal(int64(1)))
 					Expect(timer.GetTimeNanos(EventLoadRecord)).To(BeNumerically(">", 0))
+					wantBadEntries := int64(0)
+					if outcome == "missing" {
+						wantBadEntries = 1
+					}
+					Expect(timer.GetCount(CountBadIndexEntry)).To(Equal(wantBadEntries))
+					Expect(timer.GetTimeNanos(CountBadIndexEntry)).To(BeZero())
+					if outcome == "missing" {
+						// Non-error index inspection reports the orphan without fetching it.
+						timer.Reset()
+						index := indexedMD.GetIndex("order_price")
+						entries, err := AsList(ctx, store.ScanIndex(index, TupleRangeAll, nil, ForwardScan()))
+						Expect(err).NotTo(HaveOccurred())
+						Expect(entries).To(HaveLen(1))
+						validation, err := store.ValidateIndex(ctx, index)
+						Expect(err).NotTo(HaveOccurred())
+						Expect(validation.OrphanedEntries).To(HaveLen(1))
+						Expect(timer.GetCount(CountBadIndexEntry)).To(BeZero())
+					}
 					return nil, nil
 				})
 				Expect(err).NotTo(HaveOccurred())

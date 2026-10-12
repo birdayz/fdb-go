@@ -272,7 +272,7 @@ Each is described in full under Compatibility or Changed below.
 - `fdb` `GetRange` sends its first batch at the call, as Apple's Go binding does: the rows reflect the transaction's writes as of that call, and commit waits for every issued range read (also one never consumed) and keeps its read conflict, as libfdb_c does. `GetSliceWithError` over more than batch 1's bytes (about 4 KB in the default mode) now takes two sequential round trips, batch 1 and then the rest, as libfdb_c does. `client.Transaction.StartGetRange` starts such a read and returns at once; `Database.Metrics()` (on `fdb.Database` too) reports `TransactionGetRangeRequests`. A watch whose read fails no longer leaves a read conflict.
 
 ### Fixed
-- Record-store load, save and delete timers count missing records and failed completions, including the nested loads in saves, deletes and dry runs, as Java does.
+- Record-store load, save and delete timers count missing records and failed completions, including nested loads in saves, deletes and dry runs; erroring orphan index fetches increment the bad-index-entry counter, as Java does.
 - The published test report counts individual test cases again: CI downloads remote-cached test logs, every shard is counted, and a missing log fails the report instead of counting one test per target.
 - The client's read-your-writes key index stays sorted across mutations, avoiding a full re-sort on interleaved range reads; arbitrary key insertion and deletion still shift a linear slice suffix.
 - The CGo backend and raw C reference share serialized database-handle ownership, preventing concurrent cache writes during startup and premature destruction of retained handles.

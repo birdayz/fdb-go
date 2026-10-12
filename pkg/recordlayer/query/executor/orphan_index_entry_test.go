@@ -9,6 +9,7 @@ import (
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -88,6 +89,8 @@ func TestIntegration_OrphanIndexEntry_RaisesStorageError(t *testing.T) {
 	// order_price_idx indexes only price, so a full-record projection is
 	// non-covering → the plan fetches through indexFetchCursor → the orphan path.
 	_, err = testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		timer := recordlayer.NewStoreTimer()
+		rtx.SetTimer(timer)
 		s, oerr := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
 			SetSubspace(testSubspace(t)).Open()
@@ -141,10 +144,67 @@ func TestIntegration_OrphanIndexEntry_RaisesStorageError(t *testing.T) {
 		if len(storageErr.IndexKey) == 0 {
 			t.Errorf("index key = %v, want non-empty (indexed value + pk)", storageErr.IndexKey)
 		}
+		if count := timer.GetCount(recordlayer.CountBadIndexEntry); count != 1 {
+			t.Errorf("bad index entries = %d, want 1", count)
+		}
 		return nil, nil
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestIntegration_IndexFetchBadEntryCounter(t *testing.T) {
+	t.Parallel()
+	store := setupStore(t)
+	for _, api := range []string{"index", "partial-record"} {
+		for _, outcome := range []string{"found", "missing", "decode-error", "nil-pk"} {
+			t.Run(api+"/"+outcome, func(t *testing.T) {
+				timer := recordlayer.NewStoreTimer()
+				store.Context().SetTimer(timer)
+				pk := tuple.Tuple{int64(1)}
+				var record *recordlayer.FDBStoredRecord[proto.Message]
+				var loadErr error
+				switch outcome {
+				case "found":
+					record = &recordlayer.FDBStoredRecord[proto.Message]{PrimaryKey: pk, Record: &demopb.Order{OrderId: proto.Int64(1)}}
+				case "decode-error":
+					loadErr = &recordlayer.RecordDeserializationError{PrimaryKey: pk, Cause: fdb.Error{Code: 1007}}
+				case "nil-pk":
+					pk = nil
+				}
+				var result QueryResult
+				var err error
+				if api == "index" {
+					cursor := indexFetchCursor{store: store}
+					result, err = cursor.finish(&recordlayer.IndexEntry{Key: tuple.Tuple{int64(100), int64(1)}}, pk, record, loadErr)
+				} else {
+					cursor := fetchFullRecordCursor{store: store}
+					result, err = cursor.finish(QueryResult{PrimaryKey: pk}, record, loadErr)
+				}
+				if outcome == "found" {
+					if err != nil || result.Record != record {
+						t.Fatalf("found result = %v, %v", result, err)
+					}
+				} else if outcome == "decode-error" {
+					if !errors.Is(err, loadErr) {
+						t.Fatalf("load error = %v, want %v", err, loadErr)
+					}
+				} else {
+					var storageErr *recordlayer.RecordCoreStorageError
+					if !errors.As(err, &storageErr) {
+						t.Fatalf("missing record/key error = %v, want RecordCoreStorageError", err)
+					}
+				}
+				want := int64(0)
+				if outcome == "missing" {
+					want = 1
+				}
+				if count := timer.GetCount(recordlayer.CountBadIndexEntry); count != want {
+					t.Fatalf("bad index entries = %d, want %d", count, want)
+				}
+			})
+		}
 	}
 }
 
