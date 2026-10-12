@@ -104,9 +104,13 @@ go_test(
 )
 
 # gazelle:exclude lease_alloc_unit_test.go
+# gazelle:exclude lazy_successor_unit_test.go
 go_test(
     name = "lease_alloc_unit_test",
-    srcs = ["lease_alloc_unit_test.go"],
+    srcs = [
+        "lazy_successor_unit_test.go",
+        "lease_alloc_unit_test.go",
+    ],
     embed = [":client"],
 )
 

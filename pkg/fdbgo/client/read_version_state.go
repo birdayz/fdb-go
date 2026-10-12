@@ -100,9 +100,11 @@ func (tx *Transaction) fetchReadVersion(ctx context.Context, extraFlags uint32, 
 }
 
 // Turnover has drained public state users and cancelled retained native work.
+// Non-retry state can stay absent until readIncarnationLocked admits reuse.
 func (tx *Transaction) resetReadVersionState(preserveMetricStart bool) {
-	next := &readVersionState{}
+	var next *readVersionState
 	if preserveMetricStart {
+		next = &readVersionState{}
 		tx.readVersionMu.Lock()
 		next.metricStart = tx.metricStart
 		tx.readVersionMu.Unlock()
