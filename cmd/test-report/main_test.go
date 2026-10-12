@@ -121,3 +121,18 @@ func TestParseBEPMultiShardGinkgoRendersEveryCase(t *testing.T) {
 		t.Fatal("a single shard's Ginkgo tree would hide the other shard's specs")
 	}
 }
+
+func TestParseBEPValidatesOnlyTheFinalAttempt(t *testing.T) {
+	t.Parallel()
+	remote := testBEPResult{label: "//pkg:r_test", run: 1, shard: 1, attempt: 1, status: "FAILED", xmlURI: "bytestream://cache/blobs/abc/12"}
+	local := testBEPResult{label: "//pkg:r_test", run: 1, shard: 1, attempt: 2, status: "PASSED", xmlURI: writeJUnit(t, "R1")}
+	for name, order := range map[string][]testBEPResult{"earlier first": {remote, local}, "later first": {local, remote}} {
+		targets, err := parseBEP(writeBEP(t, order...))
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if len(targets) != 1 || len(targets[0].Tests) != 1 || targets[0].Tests[0].Name != "R1" {
+			t.Fatalf("%s: got %+v, want the final attempt's case R1", name, targets)
+		}
+	}
+}

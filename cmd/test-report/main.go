@@ -390,7 +390,7 @@ func parseBEP(path string) ([]*TargetResult, error) {
 	// Collect the final attempt of every run and shard; each has its own test.xml.
 	type targetInfo struct {
 		label      string
-		xmlPath    string
+		xmlURI     string
 		status     string
 		durationMs int64
 		cached     bool
@@ -426,11 +426,7 @@ func parseBEP(path string) ([]*TargetResult, error) {
 			}
 			for _, out := range ev.TestResult.TestActionOutput {
 				if out.Name == "test.xml" {
-					path, err := uriToPath(out.URI)
-					if err != nil {
-						return nil, fmt.Errorf("%s: %w", id.Label, err)
-					}
-					info.xmlPath = path
+					info.xmlURI = out.URI
 				}
 			}
 			targets[key] = info
@@ -460,8 +456,12 @@ func parseBEP(path string) ([]*TargetResult, error) {
 	byLabel := make(map[string]*TargetResult)
 	for _, key := range keys {
 		info := targets[key]
-		if info.xmlPath == "" {
+		if info.xmlURI == "" {
 			return nil, fmt.Errorf("%s: BEP test result has no test.xml", info.label)
+		}
+		xmlPath, err := uriToPath(info.xmlURI)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", info.label, err)
 		}
 		tr := byLabel[info.label]
 		if tr == nil {
@@ -477,13 +477,13 @@ func parseBEP(path string) ([]*TargetResult, error) {
 		// Bazel collects into test.outputs/ next to test.xml. This has individual spec
 		// names, durations, and Describe/Context hierarchy — the standard test.xml only
 		// sees the bootstrap function.
-		ginkgoPath := filepath.Join(filepath.Dir(info.xmlPath), "test.outputs", "ginkgo-report.json")
+		ginkgoPath := filepath.Join(filepath.Dir(xmlPath), "test.outputs", "ginkgo-report.json")
 		var cases []TestResult
 		if ginkgoCases, tree, err := parseGinkgoTreeJSON(ginkgoPath); err == nil && len(ginkgoCases) > 0 {
 			cases = ginkgoCases
 			tr.Tree = tree
 		} else {
-			cases, err = parseJUnitXML(info.xmlPath)
+			cases, err = parseJUnitXML(xmlPath)
 			if err != nil {
 				return nil, fmt.Errorf("%s: %w", info.label, err)
 			}
