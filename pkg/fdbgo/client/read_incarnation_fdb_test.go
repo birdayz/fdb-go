@@ -326,7 +326,7 @@ func TestReadIncarnation_EarlyReplacementTimeoutStopsHeldGRV(t *testing.T) {
 	cleanup()
 	captured := tx.readOperation(waiting)
 	tx.resetFields(false)
-	finish()
+	finish.finish()
 	if captured == nil || captured.lease != nil {
 		t.Fatalf("canceled turnover waiter = %v, want an early capture without a lease", captured)
 	}

@@ -3214,8 +3214,8 @@ func (tx *Transaction) stateAddWriteConflictKey(key []byte) {
 // Preserves committedVersion and txnBatchId for
 // GetCommittedVersion/GetVersionstamp queries.
 func (tx *Transaction) postCommitReset() {
-	finish := tx.startTurnover()
-	defer finish()
+	turnover := tx.startTurnover()
+	defer turnover.finish()
 	tx.postCommitResetFields()
 }
 
@@ -3250,17 +3250,17 @@ func (tx *Transaction) postCommitResetFields() {
 // persistent options revert to DB defaults); false = OnError retry (resetRyow's applyPersistentOptions →
 // per-txn persistent options PRESERVED). Non-persistent options are cleared to DB defaults on both.
 func (tx *Transaction) reset(userReset bool) {
-	finish := tx.startTurnover()
-	defer finish()
+	turnover := tx.startTurnover()
+	defer turnover.finish()
 	tx.resetFields(userReset)
 }
 
 func (tx *Transaction) resetExpected(userReset bool, expected *readIncarnation, released *executionLease, conflicts []KeyRange) error {
-	finish, err := tx.beginTurnover(expected, released)
+	turnover, err := tx.beginTurnover(expected, released)
 	if err != nil {
 		return err
 	}
-	defer finish()
+	defer turnover.finish()
 	tx.resetFields(userReset)
 	tx.readConflicts = append(tx.readConflicts, conflicts...)
 	return nil

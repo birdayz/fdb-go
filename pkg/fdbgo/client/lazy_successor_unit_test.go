@@ -116,7 +116,7 @@ func TestLazySuccessorPublication(t *testing.T) {
 					published := false
 					defer func() {
 						if !published {
-							finish()
+							finish.finish()
 						}
 					}()
 					ready := tx.readReady
@@ -162,7 +162,7 @@ func TestLazySuccessorPublication(t *testing.T) {
 						t.Fatal("replacement was published before finish")
 					default:
 					}
-					finish()
+					finish.finish()
 					published = true
 					select {
 					case <-ready:
