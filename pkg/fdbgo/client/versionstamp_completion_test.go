@@ -50,14 +50,36 @@ func TestVersionstampNativeCompletionSelection(t *testing.T) {
 			tx := newTestTx()
 			defer tx.Cancel()
 			p := pendingStamp(t, ctx, tx)
+			requireOutstanding := func(want int) {
+				t.Helper()
+				tx.readErrMu.Lock()
+				defer tx.readErrMu.Unlock()
+				inc := p.completion.inc
+				n := len(inc.versionstamps)
+				if inc.versionstamp != nil && !inc.versionstamp.ready {
+					n++
+				}
+				for c := range inc.versionstamps {
+					if c == inc.versionstamp || c.ready || c.inc != inc {
+						t.Fatal("overflow contains latest, selected, or foreign completion")
+					}
+				}
+				if n != want {
+					t.Fatalf("outstanding completions=%d, want %d", n, want)
+				}
+			}
+			requireOutstanding(1)
 			p.completion.finishNative(commitOutcome{version: 0x0102030405060708, batchID: 0x090a}, tc.err)
 			if tc.pending {
+				requireOutstanding(1)
 				requireStampPending(t, p)
 				tx.Cancel()
+				requireOutstanding(0)
 				_, err := p.Resolve()
 				requireCommitLifetimeCode(t, err, 1025, "retirement after excluded completion")
 				return
 			}
+			requireOutstanding(0)
 			// Selected native results survive all later retirement paths.
 			tx.Cancel()
 			tx.Reset()
@@ -67,12 +89,7 @@ func TestVersionstampNativeCompletionSelection(t *testing.T) {
 			} else if err != nil || !bytes.Equal(value, []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}) {
 				t.Fatalf("immutable CommitID: %x, %v", value, err)
 			}
-			tx.readErrMu.Lock()
-			n := len(p.completion.inc.versionstamps)
-			tx.readErrMu.Unlock()
-			if n != 0 {
-				t.Fatalf("selected records retained: %d", n)
-			}
+			requireOutstanding(0)
 		})
 	}
 }

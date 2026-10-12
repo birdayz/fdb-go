@@ -25,6 +25,7 @@ type readIncarnation struct {
 	issuedReads     int
 	issuedReadsDone chan struct{}
 
+	// Keep latest inline; overflow strongly retains displaced, unready producers.
 	versionstamp  *versionstampCompletion
 	versionstamps map[*versionstampCompletion]struct{}
 	nativeCommits map[*nativeCommit]struct{}
@@ -67,6 +68,9 @@ func recordReadCauseLocked(inc *readIncarnation, cause error) {
 	if inc.cause == nil {
 		inc.cause = cause
 		inc.timerGen++
+		if inc.versionstamp != nil {
+			inc.versionstamp.selectLocked(commitOutcome{}, cause, true)
+		}
 		for completion := range inc.versionstamps {
 			completion.selectLocked(commitOutcome{}, cause, true)
 		}
