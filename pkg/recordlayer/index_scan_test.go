@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"testing"
 	"time"
 
 	"fdb.dev/gen/demopb"
@@ -15,6 +16,114 @@ import (
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 )
+
+type controlledIndexRecordRead struct {
+	record     *FDBStoredRecord[proto.Message]
+	err        error
+	ready      bool
+	gets       int
+	readyCalls int
+}
+
+func (p *controlledIndexRecordRead) Get() (*FDBStoredRecord[proto.Message], error) {
+	p.gets++
+	return p.record, p.err
+}
+
+func (p *controlledIndexRecordRead) IsReady() bool {
+	p.readyCalls++
+	return p.ready
+}
+
+func TestIndexRecordLoadPendingRead(t *testing.T) {
+	t.Parallel()
+	for _, outcome := range []string{"success", "load-error", "record-and-error", "orphan", "orphan-nil-index"} {
+		t.Run(outcome, func(t *testing.T) {
+			t.Parallel()
+			entry := &IndexEntry{
+				Index: NewIndex("original", Field("price")),
+				Key:   tuple.Tuple{int64(100), int64(1)},
+			}
+			if outcome == "orphan-nil-index" {
+				entry.Index = nil
+			}
+			issuedPK := entry.PrimaryKey()
+			record := &FDBStoredRecord[proto.Message]{PrimaryKey: issuedPK, Record: &demopb.Order{OrderId: proto.Int64(1)}}
+			inner := &controlledIndexRecordRead{}
+			cause := errors.New("read failed")
+			switch outcome {
+			case "success":
+				inner.record = record
+			case "load-error":
+				inner.err = cause
+			case "record-and-error":
+				inner.record, inner.err = record, cause
+			}
+			ctx := NewFDBRecordContext(nil, nil)
+			ctx.SetTimer(NewStoreTimer())
+			load := &indexRecordLoad{
+				loader:  &indexRecordLoader{store: &FDBRecordStore{context: ctx}},
+				pending: inner, entry: entry, primaryKey: issuedPK,
+			}
+			// The issued key is retained, but finish must observe current entry metadata.
+			entry.Key = tuple.Tuple{int64(200), int64(2)}
+			wantIndexName := ""
+			if entry.Index != nil {
+				entry.Index = NewIndex("updated", Field("price"))
+				entry.primaryKey = nil
+				wantIndexName = "updated"
+				if !bytes.Equal(entry.PrimaryKey().Pack(), (tuple.Tuple{int64(2)}).Pack()) {
+					t.Fatal("entry primary-key update did not take effect")
+				}
+			}
+			for i, ready := range []bool{false, true, false} {
+				inner.ready = ready
+				if got := load.IsReady(); got != ready || inner.readyCalls != i+1 {
+					t.Fatalf("IsReady = %t, calls = %d; want %t, %d", got, inner.readyCalls, ready, i+1)
+				}
+				if inner.gets != 0 || load.pending == nil || load.record != nil || load.err != nil {
+					t.Fatal("IsReady resolved or mapped the record")
+				}
+			}
+			got, gotErr := load.Get()
+			switch outcome {
+			case "success":
+				if gotErr != nil || got == nil || got.IndexEntry != entry || got.Record != record {
+					t.Fatalf("Get = (%v, %v), want original record and current entry", got, gotErr)
+				}
+			case "load-error", "record-and-error":
+				if got != nil || !errors.Is(gotErr, cause) || errors.Unwrap(gotErr) != cause ||
+					gotErr.Error() != "load record for index entry (1): read failed" {
+					t.Fatalf("Get = (%v, %v), want wrapped read error for issued key (1)", got, gotErr)
+				}
+			default:
+				var storageErr *RecordCoreStorageError
+				if got != nil || !errors.As(gotErr, &storageErr) {
+					t.Fatalf("Get = (%v, %v), want orphan error", got, gotErr)
+				}
+				if storageErr.Message != "record not found from index entry" || storageErr.IndexName != wantIndexName ||
+					!bytes.Equal(storageErr.PrimaryKey.Pack(), issuedPK.Pack()) || !bytes.Equal(storageErr.IndexKey.Pack(), entry.Key.Pack()) {
+					t.Fatalf("orphan error lost issued key or current entry metadata: %+v", storageErr)
+				}
+			}
+			if load.loader != nil || load.pending != nil || load.entry != nil || load.primaryKey != nil {
+				t.Fatal("completed load retained intermediate state")
+			}
+			inner.ready, inner.record, inner.err = false, nil, errors.New("changed after Get")
+			for range 3 {
+				if !load.IsReady() || inner.readyCalls != 3 {
+					t.Fatal("completed readiness consulted the inner read")
+				}
+				if again, againErr := load.Get(); again != got || againErr != gotErr {
+					t.Fatalf("Get changed result: (%p, %v), first (%p, %v)", again, againErr, got, gotErr)
+				}
+			}
+			if inner.gets != 1 {
+				t.Fatalf("inner Get calls = %d, want 1", inner.gets)
+			}
+		})
+	}
+}
 
 // A record range may wait in a background goroutine, but cannot materialize
 // until the issuing caller has filled a window. A serial fetch times out.

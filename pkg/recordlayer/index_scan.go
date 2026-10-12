@@ -794,10 +794,28 @@ type indexRecordLoader struct {
 
 func (c *indexRecordLoader) load(entry *IndexEntry) PendingRead[*FDBIndexedRecord] {
 	pk := entry.PrimaryKey()
-	return MapPendingRead(c.store.LoadRecordAsync(pk, c.scanState), func(rec *FDBStoredRecord[proto.Message], err error) (*FDBIndexedRecord, error) {
-		return c.finish(entry, pk, rec, err)
-	})
+	return &indexRecordLoad{loader: c, pending: c.store.LoadRecordAsync(pk, c.scanState), entry: entry, primaryKey: pk}
 }
+
+type indexRecordLoad struct {
+	loader     *indexRecordLoader
+	pending    PendingRead[*FDBStoredRecord[proto.Message]] // nil after completion
+	entry      *IndexEntry
+	primaryKey tuple.Tuple
+	record     *FDBIndexedRecord
+	err        error
+}
+
+func (l *indexRecordLoad) Get() (*FDBIndexedRecord, error) {
+	if l.pending != nil {
+		record, err := l.pending.Get()
+		indexed, err := l.loader.finish(l.entry, l.primaryKey, record, err)
+		*l = indexRecordLoad{record: indexed, err: err}
+	}
+	return l.record, l.err
+}
+
+func (l *indexRecordLoad) IsReady() bool { return l.pending == nil || l.pending.IsReady() }
 
 func (c *indexRecordLoader) finish(entry *IndexEntry, pk tuple.Tuple, rec *FDBStoredRecord[proto.Message], err error) (*FDBIndexedRecord, error) {
 	indexName := ""
