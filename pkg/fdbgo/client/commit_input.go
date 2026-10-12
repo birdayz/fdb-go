@@ -17,12 +17,14 @@ type commitInput struct {
 	readConflicts  []KeyRange
 	writeConflicts []KeyRange
 	readVersion    int64
+	readState      *Transaction // native GRV owner, sharing only readVersionState
 	tenantID       int64
 	lockAware      bool
 	isDummy        bool
 	span           types.SpanContext
 	tags           []string
 	metricStart    time.Time
+	commitStarted  time.Time
 	versionstamp   *versionstampCompletion
 }
 
@@ -92,6 +94,46 @@ func (tx *Transaction) publishCommit(inc *readIncarnation, released *executionLe
 	tx.readErrMu.Unlock()
 	tx.fireWatchActivation(result.version, false)
 	tx.postCommitResetFields()
+}
+
+// The native owner shares the existing GRV future, but neither the public
+// resetPromise nor a back-reference to the public transaction.
+func (tx *Transaction) captureNativeReadState(input *commitInput) {
+	tx.readVersionMu.Lock()
+	if tx.metricStart.IsZero() {
+		tx.metricStart = time.Now()
+		tx.ensureTxSpan()
+	}
+	tx.readVersionMu.Unlock()
+	native := &Transaction{
+		db: tx.db, readVersionState: tx.readVersionState,
+		txOptions: txOptions{
+			priority: tx.priority, causalReadRisky: tx.causalReadRisky,
+			lockAware: tx.lockAware, readLockAware: tx.readLockAware,
+			useGrvCache: tx.useGrvCache, skipGrvCache: tx.skipGrvCache,
+			tags: input.tags,
+		},
+	}
+	span := input.span
+	native.spanContext.Store(&span)
+	input.readState = native
+}
+
+// Native success updates database-wide observations even if resetPromise already
+// ended the public wait (NativeAPI.actor.cpp:6657–6682).
+func (input *commitInput) publishSuccess(started time.Time, tok cacheToken, result commitOutcome) {
+	if input.db == nil {
+		return
+	}
+	input.db.metrics.transactionsCommitCompleted.Add(1)
+	now := time.Now()
+	input.db.metrics.observeCommitLatency(now.Sub(started))
+	if !input.metricStart.IsZero() {
+		input.db.metrics.observeTotalLatency(now.Sub(input.metricStart))
+	}
+	if result.version > 0 {
+		input.db.grvCache.update(tok.withEpoch(result.epoch), started, result.version)
+	}
 }
 
 // This private entry also serves direct barrier tests; live Commit captures the

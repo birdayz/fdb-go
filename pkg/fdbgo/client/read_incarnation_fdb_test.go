@@ -242,7 +242,7 @@ func TestReadIncarnation_GRVHeldCancellationAndResetIsolation(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), readIncarnationTestTimeout)
 			defer cancel()
 
-			db, sd := newSimTestDB(t, ctx)
+			db, gate, _ := newGRVReplyGateDB(t, ctx)
 			key := []byte(t.Name() + "_key")
 			oldValue := []byte("old-generation-value")
 			newValue := []byte("new-generation-value")
@@ -253,17 +253,7 @@ func TestReadIncarnation_GRVHeldCancellationAndResetIsolation(t *testing.T) {
 				t.Fatalf("seed: %v", err)
 			}
 
-			parked := make(chan struct{}, 1)
-			release, releaseIt := releaseGate(t)
-			sd.setIntercept(func(_ int, _ transport.UID, body []byte) ([]byte, bool) {
-				select {
-				case parked <- struct{}{}:
-				default:
-				}
-				<-release // No GRV reply can complete, including another proxy's.
-				return body, false
-			})
-			sd.armAll()
+			gate.arm(1, false)
 
 			tx := db.CreateTransaction() // No SetReadVersion: the first read must wait on GRV.
 			tx.SetSkipGrvCache()
@@ -273,18 +263,12 @@ func TestReadIncarnation_GRVHeldCancellationAndResetIsolation(t *testing.T) {
 				_, err := tx.Get(ctx, key)
 				oldDone <- err
 			}()
-			waitReadParked(t, ctx, parked, "GRV")
-			held := false
-			for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
-				if !tx.readVersionMu.TryLock() {
-					held = true
-					break
-				}
-				tx.readVersionMu.Unlock()
-				time.Sleep(time.Millisecond)
-			}
-			if !held {
-				t.Fatal("read did not hold readVersionMu across its uncached GRV")
+			waitReadParked(t, ctx, gate.heldCh, "actual GRV reply")
+			tx.readVersionMu.Lock()
+			pending := tx.pendingReadVersion != nil
+			tx.readVersionMu.Unlock()
+			if !pending {
+				t.Fatal("read has no pending uncached GRV")
 			}
 
 			switch action {
@@ -296,15 +280,14 @@ func TestReadIncarnation_GRVHeldCancellationAndResetIsolation(t *testing.T) {
 				select {
 				case <-resetDone:
 				case <-time.After(5 * time.Second):
-					t.Fatal("Reset waited on the lock held by its own cancelled GRV")
+					t.Fatal("Reset waited for its own cancelled pending GRV")
 				}
 			}
 			waitForFDB1025(t, oldDone, "old-generation GRV read after "+action)
 
 			// Let the obsolete real GRV reply arrive only after its operation has
 			// completed with 1025. It must neither fail nor satisfy the new incarnation.
-			releaseIt()
-			sd.setIntercept(nil)
+			gate.release()
 			if action == "Cancel" {
 				tx.Reset()
 			}

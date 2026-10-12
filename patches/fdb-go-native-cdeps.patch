@@ -1,0 +1,13 @@
+--- a/src/fdb/BUILD.bazel
++++ b/src/fdb/BUILD.bazel
+@@ -21,6 +21,10 @@
+         "transaction.go",
+     ],
+     cgo = True,
++    cdeps = select({
++        "@io_bazel_rules_go//go/platform:linux_amd64": ["@@//pkg/fdbgo/libfdbc:fdb_c"],
++        "//conditions:default": [],
++    }),
+     clinkopts = [
+         "-lfdb_c -lm",
+     ] + select({

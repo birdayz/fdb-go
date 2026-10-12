@@ -14,7 +14,7 @@ var borrowReplyToken = transport.UID{First: 7, Second: 9}
 
 // borrowTx buffers every operand kind; 50 Sets promote it to the bulk slab.
 func borrowTx(n int, fill byte) *Transaction {
-	tx := &Transaction{}
+	tx := &Transaction{readVersionState: &readVersionState{}}
 	tx.tenantId = NoTenantID
 	tx.readVersion = 42
 	for i := range n {

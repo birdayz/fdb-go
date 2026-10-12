@@ -36,6 +36,7 @@ var Allowlist = map[string]int{
 	"pkg/fdbgo/client/panicbackstop.go": 1,
 	"pkg/fdbgo/client/database.go":      2,
 	"pkg/fdbgo/client/grv.go":           1,
+	"pkg/fdbgo/client/native_commit.go": 1,
 	"pkg/fdbgo/transport/conn.go":       2,
 	"pkg/fdbgo/fdb/panic.go":            1,
 	"pkg/fdbgo/fdb/transaction.go":      1,

@@ -975,27 +975,13 @@ func (d *Database) Transact(ctx context.Context, fn func(tx *Transaction) (any, 
 			continue // tx has been reset in place, retryCount/backoff preserved
 		}
 
-		// Honor a cancellation/deadline that arrived *during* fn before starting the
-		// commit: skip creating the commit at all on an already-dead ctx. This is a
-		// fast-abort, NOT the only GRV-abort point — the commit-path GRV inside Commit
-		// (ensureReadVersion, transaction.go:1106) is itself ctx-bounded (RFC-093);
-		// only the commit RPC + commit_unknown_result barrier are detached, inside
-		// Commit (transaction.go:1126).
+		// A caller cancellation during fn must not start a new commit.
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
 
-		// RFC-093: pass the LIVE ctx — the cancel/detach split lives inside Commit, not
-		// here. A prior attempt that prefetched the commit read version in this loop
-		// under the live ctx was reverted: done unconditionally it regresses Commit's
-		// read-only/no-op fast path (which returns without a GRV when there are no
-		// mutations or write-conflicts — transaction.go:1094), forcing an unnecessary
-		// GRV RPC that can block/fail a no-op txn; gating it on "has writes"
-		// would duplicate Commit's gate under conflictMu. So Commit owns the split: it
-		// threads this live ctx to its own ensureReadVersion (GRV cancellable, so a
-		// cancel during the commit-path read version aborts promptly) and re-applies
-		// WithoutCancel to ONLY the commit RPC + commit_unknown_result barrier
-		// (transaction.go:1126). The retry backoff below still honors ctx via OnError.
+		// Commit owns the cancellable GRV / detached-native split; prefetching here
+		// would force a GRV on the no-write fast path.
 		if err := tx.Commit(ctx); err != nil {
 			if retryErr := tx.OnError(ctx, err); retryErr != nil {
 				return nil, retryErr
@@ -1032,6 +1018,7 @@ func (d *Database) ReadTransact(ctx context.Context, fn func(tx *Transaction) (a
 func (d *Database) CreateTransaction() *Transaction {
 	tx := &Transaction{
 		committedVersion: -1, // C++ TransactionState::committedVersion starts at invalidVersion.
+		readVersionState: &readVersionState{},
 		db:               d.db,
 		txOptions:        txOptions{tenantId: NoTenantID},
 		creationTime:     time.Now(),
@@ -1185,13 +1172,14 @@ func (d *Database) Close() error {
 		d.db.closed = true
 		d.db.closeMu.Unlock()
 		d.db.cancel()
-		d.db.wg.Wait()
+		// Native commits may be blocked in SendFrame: close their sockets before joining.
 		d.db.connMu.Lock()
 		for addr, conn := range d.db.connPool {
 			conn.Close()
 			delete(d.db.connPool, addr)
 		}
 		d.db.connMu.Unlock()
+		d.db.wg.Wait()
 	})
 	return nil
 }

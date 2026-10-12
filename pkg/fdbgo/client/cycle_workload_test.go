@@ -659,12 +659,10 @@ func isCommitReplyBody(body []byte) bool {
 	return binary.LittleEndian.Uint32(body[4:8]) == commitReplyEnvelopeFileID
 }
 
-// everyNthCommitReplyDrop returns a frameIntercept that DROPS every n-th commit (CommitID) reply,
-// passing every read / GRV / locate / unknown frame verbatim. A dropped commit reply makes the client's
-// waitReplyOrProxiesChanged time out (DefaultRPCTimeout) → commit_unknown_result (1021) — the faithful
-// wire model of a lost commit reply where the commit MAY have applied at the proxy (1021 is
-// client-minted from an ambiguous RPC, never proxy-sent; RFC-123 §2). counter advances only on an
-// actual drop — the only witness the fault fired, since a dropped frame leaves no other artifact.
+// everyNthCommitReplyDrop returns a frameIntercept that DROPS every n-th commit (CommitID) reply and
+// severs its connection, passing every read / GRV / locate / unknown frame verbatim. The commit MAY
+// have applied, and the client sees its connection fail → commit_unknown_result (1021), minted
+// client-side (RFC-123 §2). counter advances only on an actual drop.
 //
 // Content-discrimination is mandatory (RFC-120 §3.2): the single-process container collocates commit /
 // GRV / storage on ONE connection, so this MUST drop only commit replies. In particular GRV replies
@@ -681,26 +679,22 @@ func everyNthCommitReplyDrop(n int, counter *atomic.Int64) frameIntercept {
 		}
 		if commitSeen.Add(1)%int64(n) == 0 {
 			counter.Add(1)
-			return nil, true // DROP → client commit RPC times out → commit_unknown_result (1021)
+			return severConn, true // DROP + sever → commit_unknown_result (1021)
 		}
 		return body, false
 	}
 }
 
 // TestCycle_SurvivesDroppedCommitReply runs the Cycle workload through SimTransport while every 8th
-// commit reply is DROPPED — the faithful commit_unknown_result (1021) fault: the commit MAY have applied
-// at the proxy, but the client's commit RPC times out and learns nothing. The client's recovery
+// commit reply is DROPPED with its connection — the faithful commit_unknown_result (1021) fault: the
+// commit MAY have applied at the proxy, but the client learns nothing. The client's recovery
 // (commitDummyTransaction synchronization barrier + onError(1021) self-conflicting retry) must absorb
 // every such drop; the retry re-runs the swap fn from scratch (a FRESH valid transposition of the
 // current ring, never a replay), so the ring stays exactly one Hamiltonian cycle whether or not the
 // dropped-reply commit applied (committed merely under-counts the applied-but-unknown ones).
 //
-// Flake-free despite the 5s-per-drop cost: 1021 is onErrorRetryable, the swap-actor loop is workCtx-
-// bounded, and the dummy barrier — which runs under context.WithoutCancel (transaction.go:1616), NOT
-// workCtx — terminates by a clean reply ((n-1)/n per attempt) + the outer ctx. n=8 (fewer drops than
-// the read tests' 1/4, matching the higher per-drop cost) keeps committed orders above the >0 floor.
-// The outer ctx (180s) must exceed window (30s) + the worst-case commit/dummy tail with comfortable
-// margin (RFC-123 §4.1) — do NOT shrink it toward window+ε or the tail wedges into a real ctx deadline.
+// The retry loop observes workCtx; an admitted native commit and its fence outlive that caller.
+// The outer ctx (180s) leaves room beyond the workload window (30s) for the recovery tail.
 func TestCycle_SurvivesDroppedCommitReply(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)

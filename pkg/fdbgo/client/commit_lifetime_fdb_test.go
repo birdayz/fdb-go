@@ -60,6 +60,27 @@ func awaitCommitLifetimeResult(t *testing.T, ctx context.Context, result <-chan 
 	}
 }
 
+func awaitCommitLifetimeCode(t *testing.T, ctx context.Context, result <-chan error, code int, what string) {
+	t.Helper()
+	select {
+	case err := <-result:
+		requireCommitLifetimeCode(t, err, code, what)
+	case <-ctx.Done():
+		t.Fatalf("timed out waiting for %s: %v", what, ctx.Err())
+	}
+}
+
+func currentNativeCommit(t *testing.T, tx *Transaction) *nativeCommit {
+	t.Helper()
+	tx.readErrMu.Lock()
+	defer tx.readErrMu.Unlock()
+	for native := range tx.readLife.nativeCommits {
+		return native
+	}
+	t.Fatal("no native commit at the dispatch gate")
+	return nil
+}
+
 func readCommitLifetimeValue(t *testing.T, ctx context.Context, db *Database, key []byte) []byte {
 	t.Helper()
 	v, err := db.ReadTransact(ctx, func(tx *Transaction) (any, error) {
@@ -108,7 +129,7 @@ func distinctCommitLifetimeReadVersion(t *testing.T, ctx context.Context, db *Da
 	}
 }
 
-func TestFDBDetachedCommitResetPreservesBothGenerations(t *testing.T) {
+func TestFDBResetDropsNativeCommitAndPreservesReplacement(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), commitLifetimeTimeout)
 	defer cancel()
@@ -132,6 +153,7 @@ func TestFDBDetachedCommitResetPreservesBothGenerations(t *testing.T) {
 	oldDone := make(chan error, 1)
 	go func() { oldDone <- tx.Commit(ctx) }()
 	waitCommitLifetimeGate(t, ctx, pause.reached, "detached old commit")
+	native := currentNativeCommit(t, tx)
 
 	tx.Reset()
 	newRV := distinctCommitLifetimeReadVersion(t, ctx, db, oldRV, advanceKey)
@@ -146,9 +168,10 @@ func TestFDBDetachedCommitResetPreservesBothGenerations(t *testing.T) {
 	}
 
 	pause.unblock()
-	awaitCommitLifetimeResult(t, ctx, oldDone, "old detached commit")
-	if got := readCommitLifetimeValue(t, ctx, db, oldKey); !bytes.Equal(got, []byte("old-value")) {
-		t.Fatalf("detached old mutation not durable: got %q", got)
+	awaitCommitLifetimeCode(t, ctx, oldDone, 1025, "old public wait after Reset")
+	waitCommitLifetimeGate(t, ctx, native.finished, "old native actor after Reset")
+	if got := readCommitLifetimeValue(t, ctx, db, oldKey); got != nil {
+		t.Fatalf("Reset did not drop the unsent native actor: %q", got)
 	}
 	if got := readCommitLifetimeValue(t, ctx, db, newKey); got != nil {
 		t.Fatalf("replacement write escaped after old completion: %q", got)
@@ -186,9 +209,11 @@ func TestFDBDetachedCommitCancelDoesNotReviveHandle(t *testing.T) {
 	oldDone := make(chan error, 1)
 	go func() { oldDone <- tx.Commit(ctx) }()
 	waitCommitLifetimeGate(t, ctx, pause.reached, "detached commit before Cancel")
+	native := currentNativeCommit(t, tx)
 	tx.Cancel()
+	awaitCommitLifetimeCode(t, ctx, oldDone, 1025, "public commit after Cancel")
 	pause.unblock()
-	awaitCommitLifetimeResult(t, ctx, oldDone, "detached commit after Cancel")
+	waitCommitLifetimeGate(t, ctx, native.finished, "retained native commit after Cancel")
 
 	if got := readCommitLifetimeValue(t, ctx, db, key); !bytes.Equal(got, []byte("old-value")) {
 		t.Fatalf("actual detached outcome was not durable: got %q", got)
@@ -225,6 +250,7 @@ func TestFDBOlderDetachedCompletionCannotOverwriteNewerCommit(t *testing.T) {
 	oldDone := make(chan error, 1)
 	go func() { oldDone <- tx.Commit(ctx) }()
 	waitCommitLifetimeGate(t, ctx, pause.reached, "first-generation commit")
+	native := currentNativeCommit(t, tx)
 
 	tx.Reset()
 	tx.Set(newKey, []byte("new-value"))
@@ -242,9 +268,10 @@ func TestFDBOlderDetachedCompletionCannotOverwriteNewerCommit(t *testing.T) {
 
 	tx.Set(newestKey, []byte("newest-value"))
 	pause.unblock()
-	awaitCommitLifetimeResult(t, ctx, oldDone, "first-generation detached commit")
-	if got := readCommitLifetimeValue(t, ctx, db, oldKey); !bytes.Equal(got, []byte("old-value")) {
-		t.Fatalf("first-generation mutation not durable: got %q", got)
+	awaitCommitLifetimeCode(t, ctx, oldDone, 1025, "first-generation public wait")
+	waitCommitLifetimeGate(t, ctx, native.finished, "first-generation native actor")
+	if got := readCommitLifetimeValue(t, ctx, db, oldKey); got != nil {
+		t.Fatalf("Reset did not drop the first-generation actor: %q", got)
 	}
 	if got := readCommitLifetimeValue(t, ctx, db, newKey); !bytes.Equal(got, []byte("new-value")) {
 		t.Fatalf("second-generation mutation not durable: got %q", got)

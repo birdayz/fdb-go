@@ -1,1 +1,4 @@
-exports_files(["fdb-go-range-iterator-done.patch"])
+exports_files([
+    "fdb-go-native-cdeps.patch",
+    "fdb-go-range-iterator-done.patch",
+])

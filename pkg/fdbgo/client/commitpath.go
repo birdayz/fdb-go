@@ -45,6 +45,9 @@ func (input *commitInput) commitNative(ctx context.Context) (result commitOutcom
 	if hook := input.db.beforeCommitProxySelect.Load(); hook != nil {
 		(*hook)()
 	}
+	if err := ctx.Err(); err != nil {
+		return result, err
+	}
 	// The epoch comes out of the SAME atomic load as the proxy, so it is the
 	// epoch of the cluster this attempt actually binds to — not an approximation
 	// of it, and not a value a handoff can overtake. There is no window here to
@@ -97,21 +100,26 @@ func (input *commitInput) commitNative(ctx context.Context) (result commitOutcom
 	// channel and miss the change.
 	proxiesChanged := input.db.waitProxiesChanged()
 
-	if err := conn.SendFrame(proxy.Token, body); err != nil {
-		// Do NOT return poolBuf to the pool on a SendFrame error: the frame may have been enqueued
-		// just before the connection ctx was cancelled (SendFrame's post-enqueue ctx.Done path,
-		// conn.go:454), leaving writeLoop still reading `body` inside WriteFrame. Reusing the pooled
-		// buffer now would race that read. Drop it — GC reclaims it once writeLoop lets go.
-		// (The success-path Put below is safe: WriteFrame copied body before errCh fired.)
+	if err := ctx.Err(); err != nil {
 		replyHandle.Cancel()
+		marshalBufPool.Put(poolBuf)
+		return result, err
+	}
+	// Native owner drop cancels only this wait; queued bytes own their storage
+	// independently and may still reach the server after the actor is gone.
+	_, sendErr := conn.SendFrameContext(ctx, proxy.Token, body)
+	marshalBufPool.Put(poolBuf)
+	if sendErr != nil {
+		replyHandle.Cancel()
+		if ctx.Err() != nil {
+			return result, ctx.Err()
+		}
 		input.db.handleConnError(proxy.Address)
 		return result, input.unknownResult(ctx)
 	}
-	// body is copied into WriteFrame's own buffer — safe to return to pool.
-	marshalBufPool.Put(poolBuf)
 
 	// Wait for reply or proxy-change (commit_unknown_result either way).
-	resp, err := waitReplyOrProxiesChanged(replyCh, ctx, DefaultRPCTimeout, proxiesChanged)
+	resp, err := waitReplyOrProxiesChanged(replyCh, ctx, proxiesChanged)
 	if err != nil {
 		replyHandle.Cancel()
 		return result, input.unknownResult(ctx)
@@ -155,12 +163,7 @@ func (input *commitInput) commitNative(ctx context.Context) (result commitOutcom
 		//
 		// This DOES newly route an in-band 1100 into commitDummyTransaction
 		// below, which is correct -- C++ tryCommit does exactly that on
-		// request_maybe_delivered before throwing commit_unknown_result. The
-		// barrier runs on a WithoutCancel context, so it is not bounded by the
-		// caller deadline; that is deliberate and pre-dates this arm (RFC-093,
-		// transaction.go: a late caller cancel must not yank an in-flight commit
-		// nor no-op the barrier). What bounds it is db.ctx -- the GRV loop selects
-		// on db.ctx.Done() -- so closing the database is the escape.
+		// request_maybe_delivered before throwing commit_unknown_result.
 		commitErr = &wire.FDBError{Code: ErrCommitUnknownResult}
 	}
 	if commitErr != nil && !input.isDummy {
@@ -177,6 +180,9 @@ func (input *commitInput) commitNative(ctx context.Context) (result commitOutcom
 // C++ tryCommit lets a failed fence escape instead of reporting an unfenced 1021
 // (NativeAPI.actor.cpp:6749-6750).
 func (input *commitInput) unknownResult(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if !input.isDummy {
 		if err := input.commitDummyTransaction(ctx); err != nil {
 			return err

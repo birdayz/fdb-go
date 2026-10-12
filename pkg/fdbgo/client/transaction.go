@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"runtime"
 	"slices"
 	"sort"
 	"sync"
@@ -365,49 +366,7 @@ type Transaction struct {
 	// accessors and all field references work unchanged via promotion.
 	txOptions
 
-	// Read-version state — readVersionMu guards readVersion/hasReadVersion/
-	// userSetReadVersion (concurrent ensureReadVersion vs the reset paths) AND
-	// metricStart, the RFC-114 total-latency anchor: stamped at the first GRV
-	// (≈ C++ trState->startTime), cleared on the reuse boundaries
-	// (postCommitReset / user Reset) but NOT on OnError so total latency spans
-	// retries — the documented RFC-114 divergence from C++'s per-attempt reset.
-	// Lock order: readVersionMu → traceMu, never the reverse.
-	readVersionMu      sync.Mutex
-	readVersion        int64
-	hasReadVersion     bool
-	userSetReadVersion bool // SetReadVersion was called → validateVersion applies
-	metricStart        time.Time
-
-	// readVersionInstant is when THIS read version was obtained from the cluster —
-	// the instant FDB's 5-second MVCC window opened for it.
-	//
-	// It rides with hasReadVersion STRUCTURALLY rather than by hand: the accessor
-	// reports not-ok whenever no read version is held, so every path that drops the
-	// version (reset on OnError, postCommitReset on commit-reuse) retires the
-	// instant with it and cannot forget to. Explicit clears at those sites were
-	// tried and removed — they were redundant with the gate, and redundancy there
-	// is actively harmful: with two mechanisms covering one rule, neither is
-	// individually detectable by a mutation, so a test can go on passing while
-	// either is broken.
-	//
-	// SetReadVersion is the one path the gate cannot cover, because it leaves
-	// hasReadVersion true; it clears this field explicitly, and that clear IS
-	// mutation-detectable on its own.
-	//
-	// It is a SEPARATE field from metricStart and must stay one, because the two
-	// need OPPOSITE reset disciplines. metricStart deliberately survives OnError so
-	// RFC-114's total latency spans retries. This must NOT: OnError takes a NEW read
-	// version, so the 5-second window RESTARTS, and a budget anchored on a
-	// spans-retries field would charge a fresh window for a previous attempt's time
-	// and fail work the cluster would have served. Per-attempt is also what C++ does
-	// (trState->startTime is re-stamped at cloneAndReset); metricStart's spanning is
-	// the documented RFC-114 divergence, not the model.
-	//
-	// Zero means "no instant known", which is the honest answer for a user-supplied
-	// read version (SetReadVersion): that version's window opened on the cluster at
-	// a time this client never saw. Consumers must handle the not-ok case rather
-	// than treat zero as an anchor.
-	readVersionInstant time.Time
+	*readVersionState // shared with native commit; replaced, never cleared, by Reset
 
 	// Commit results — written by the commit path, consumed by
 	// GetCommittedVersion/GetVersionstamp after a commit; preserved by
@@ -799,65 +758,10 @@ func (tx *Transaction) readVersionForOperation(parentCtx context.Context, extraF
 	if tx.beforeReadVersionLock != nil {
 		tx.beforeReadVersionLock()
 	}
-	tx.readVersionMu.Lock()
-	// Entry validation precedes this lock. Reset can retire the operation
-	// while it waits; never acquire the replacement's cached read version.
-	if err := tx.readEntryError(ctx); err != nil {
-		tx.readVersionMu.Unlock()
+	rv, userSet, err := tx.cachedOrFetchReadVersion(ctx, extraFlags)
+	if err != nil {
 		return 0, err
 	}
-	if tx.metricStart.IsZero() {
-		// RFC-114 total-latency anchor: stamp at this transaction's FIRST GRV (the
-		// first read, or the commit-path GRV for a write-only txn) — ≈ C++
-		// trState->startTime, set at getReadVersion. Cleared on commit-reuse
-		// (postCommitReset), NOT on OnError, so it spans retries but excludes the
-		// idle gap before a reused handle's next transaction begins.
-		tx.metricStart = time.Now()
-		// RFC-115 §4 Layer 2: start the "Transaction" otel span at the same first-GRV
-		// anchor (single-entry, under readVersionMu). No-op unless sampled + a real tracer.
-		tx.ensureTxSpan()
-	}
-	if !tx.hasReadVersion {
-		flags := tx.grvFlags() | extraFlags
-		rv, locked, rvAt, err := tx.db.grvBatchers[grvBatcherIndex(flags)].getReadVersion(tx.db, ctx, flags, tx.currentSpan(), tx.tags, tx.useGrvCache, tx.skipGrvCache)
-		if err != nil {
-			tx.readVersionMu.Unlock()
-			return 0, tx.mapReadError(ctx, err)
-		}
-		// Database-lock enforcement — the C++ extractReadVersion analog
-		// (NativeAPI.actor.cpp:7425-7426): a locked database refuses reads
-		// from transactions that are not lock-aware. Both LOCK_AWARE and
-		// READ_LOCK_AWARE set C++'s options.lockAware (:7077-7091). Checked
-		// BEFORE the version is adopted, like C++'s throw. database_locked
-		// (1038) is OnError-retryable, so a Run loop retries (refetching a
-		// GRV) until the lock is released or the budget ends — same as C++.
-		if locked && !(tx.lockAware || tx.readLockAware) {
-			tx.readVersionMu.Unlock()
-			return 0, &wire.FDBError{Code: ErrDatabaseLocked}
-		}
-		tx.readVersion = rv
-		tx.hasReadVersion = true
-		// Stamp the MVCC-window anchor at every GRV, not only the first: OnError
-		// clears it and the retry's GRV opens a new 5-second window.
-		//
-		// The instant comes FROM the GRV, not from now(): for a proxy round
-		// trip it is the pre-RPC request time, and for a USE_GRV_CACHE hit it is
-		// when that cached version was originally obtained — up to
-		// maxVersionCacheLag ago. Stamping now() here instead made the anchor
-		// NEWER than the window it names, so a budget built on it under-counted
-		// the age and could let a nominally-in-budget page start against a
-		// version FDB was about to refuse with 1007.
-		tx.readVersionInstant = rvAt
-	}
-	// C++ DatabaseContext::validateVersion() on a user-set read version: reject a
-	// version below the smallest-seen floor (genuinely ancient) or an absurd
-	// future. Post-RFC-104 the floor is the SMALLEST version seen (see
-	// updateMinAcceptable), so a recent pinned version is never spuriously
-	// rejected. If the client hasn't seen any version yet, a GRV establishes the
-	// floor first.
-	userSet := tx.userSetReadVersion
-	rv := tx.readVersion
-	tx.readVersionMu.Unlock()
 	if tx.db != nil && userSet {
 		// Read through the stamp: a floor established under a PREVIOUS cluster
 		// reads as unset, which re-arms this bootstrap so the floor is re-derived
@@ -1952,8 +1856,10 @@ func (tx *Transaction) commitAdmitted(parent context.Context, completion *versio
 
 	// No read version yet means no reads, so no causal consistency: a risky GRV, as
 	// C++ tryCommit (NativeAPI.actor.cpp:6576-6578). ReadSnapshot=0 would crash the server.
-	if err := tx.ensureReadVersionFlags(ctx, grvFlagCausalReadRisky); err != nil {
-		return err
+	if tx.isDummy {
+		if err := tx.ensureReadVersionFlags(ctx, grvFlagCausalReadRisky); err != nil {
+			return err
+		}
 	}
 
 	// Pass the SAME validated snapshot to the marshal so the shipped mutation
@@ -1962,16 +1868,8 @@ func (tx *Transaction) commitAdmitted(parent context.Context, completion *versio
 	// goroutine between validation and marshal (allowed by the concurrent-use
 	// contract) would ship an UNVALIDATED mutation to the commit proxy.
 	//
-	// RFC-090/093: detach ONLY the commit RPC + its commit_unknown_result
-	// idempotency barrier (commitDummyTransaction) from the caller ctx. The GRV
-	// above (ensureReadVersionFlags) is deliberately left on the LIVE ctx
-	// (RFC-093) so a cancel during the commit-path read version aborts promptly —
-	// a GRV is a cancellable read, matching C++ NativeAPI.actor.cpp (the GRV future
-	// is cancelled uniformly with the commit). Here we WithoutCancel so a late
-	// caller-ctx cancel can neither yank an in-flight commit nor abort its fence.
-	// The caller waits for recovery or Database.Close, without a deadline.
-	// For callers passing
-	// context.Background() (nothing to strip), WithoutCancel is observably inert.
+	// Caller cancellation ends at the commit GRV; resetPromise still ends the
+	// public wait without cancelling the retained native actor.
 	// Captured together, both BEFORE dispatch: the instant this version's MVCC
 	// window opened, and the cache generation it is entitled to publish
 	// against. Loading the generation after the commit returns would let a
@@ -1985,64 +1883,40 @@ func (tx *Transaction) commitAdmitted(parent context.Context, completion *versio
 		commitTok = tx.db.grvCache.token()
 	}
 	input := tx.captureCommitVectors(shipMuts, coalesced, shipConflicts)
-	defer input.release() // a panicking commit must not pin the slab forever
+	defer func() {
+		if input != nil {
+			input.release()
+		}
+	}()
 	input.versionstamp = completion
 	if err := tx.readEntryError(ctx); err != nil {
 		return err
 	}
-	op.lease.release()
-	result, err := input.commit(context.WithoutCancel(ctx))
-	// Before publishCommit's reset, so the slab can return to the pool.
-	input.release()
+	if tx.isDummy {
+		// The dummy is a child of the native actor, not a new detached caller.
+		op.lease.release()
+		result, err := input.commit(ctx)
+		input.release()
+		if err != nil {
+			return err
+		}
+		input.publishSuccess(commitStart, commitTok, result)
+		tx.publishCommit(op.inc, op.lease, result)
+		return nil
+	}
+	tx.captureNativeReadState(input)
+	native, err := tx.startNativeCommit(op.parent, op.inc, completion, input, commitTok)
 	if err != nil {
 		return err
 	}
-
-	// C++ ++transactionsCommitCompleted on tryCommit success (:6673). RFC-097.
-	// RFC-114: on the same success, sample the commit round-trip (C++
-	// commitLatencies, NativeAPI.actor.cpp:6681) and the total transaction latency
-	// now-metricStart (C++ latencies, :6682). Read-only txns return at the fast
-	// path above and never reach here, so they contribute to neither — matching C++.
-	// Divergence (documented in RFC-114): metricStart is NOT reset on OnError retry,
-	// so total latency spans all retries (whole-transaction wall-clock), whereas C++
-	// resets trState->startTime per attempt and measures only the current attempt's
-	// GRV→commit. Identical for a no-retry commit (the common case). metricStart is
-	// re-anchored on commit-reuse (postCommitReset), so a reused handle measures only
-	// the transaction that just committed, not the prior one.
-	if tx.db != nil {
-		tx.db.metrics.transactionsCommitCompleted.Add(1)
-		now := time.Now()
-		tx.db.metrics.observeCommitLatency(now.Sub(commitStart))
-		metricStart := input.metricStart
-		if !metricStart.IsZero() {
-			tx.db.metrics.observeTotalLatency(now.Sub(metricStart))
-		}
+	input = nil // native now owns the operand borrow
+	op.lease.release()
+	<-native.done
+	runtime.KeepAlive(tx)
+	if native.panicked != nil {
+		panic(native.panicked)
 	}
-
-	// Feed committed version to GRV cache so a later opted-in read sees this
-	// write. Unconditional — population runs for every transaction regardless
-	// of USE_GRV_CACHE; only cache READS are opt-in (RFC-104).
-	//
-	// Stamped with commitStart, the instant BEFORE the commit was dispatched,
-	// never with now(): this version's MVCC window opened when the proxy
-	// assigned it, which is somewhere inside the round trip that just
-	// finished. Dating it now() would claim the window opened after it closed
-	// on the far side, and an opted-in reader served this entry would then
-	// budget against a window already partly spent. C++ stamps the same site
-	// from a pre-reply instant — `state double grvTime = now();` captured
-	// before `wait(reply)` and handed to updateCachedReadVersion
-	// (NativeAPI.actor.cpp:6645, :6657). commitStart is marginally earlier
-	// still (before dispatch rather than after), which is the safe direction.
-	if result.version > 0 {
-		// Generation from dispatch (an invalidation during the commit must still
-		// refuse it); EPOCH from the proxy binding inside commit(), which is the
-		// cluster this version actually came from.
-		tx.db.grvCache.update(commitTok.withEpoch(result.epoch),
-			commitStart, result.version)
-	}
-
-	tx.publishCommit(op.inc, op.lease, result)
-	return nil
+	return native.err
 }
 
 // Cancel cancels the transaction. All subsequent operations will return an error.
@@ -2308,6 +2182,8 @@ func (tx *Transaction) newWatchCtx(parent context.Context) (context.Context, con
 }
 
 func (tx *Transaction) stateGetCommittedVersion() (int64, error) {
+	tx.readErrMu.Lock()
+	defer tx.readErrMu.Unlock()
 	return tx.committedVersion, nil
 }
 
@@ -2590,6 +2466,7 @@ func (tx *Transaction) stateSetReadVersion(version int64) {
 	tx.readVersion = version
 	tx.hasReadVersion = true
 	tx.userSetReadVersion = true
+	tx.pendingReadVersion = nil // an older GRV may finish, but cannot replace this explicit version
 	// A caller-supplied version's MVCC window opened on the cluster at an instant
 	// this client never observed, so there is no anchor to report. Zeroing (rather
 	// than leaving a prior GRV's stamp) keeps "instant describes the CURRENT read
@@ -3344,11 +3221,7 @@ func (tx *Transaction) postCommitReset() {
 
 func (tx *Transaction) postCommitResetFields() {
 	tx.state.Store(int32(txStateActive))
-	tx.readVersionMu.Lock()
-	tx.hasReadVersion = false
-	tx.userSetReadVersion = false
-	tx.readVersion = 0
-	tx.readVersionMu.Unlock()
+	tx.resetReadVersionState(false)
 	// Hold conflictMu while clearing ALL three buffers: Watch() goroutines may
 	// be concurrently calling AddReadConflictKey() which appends under this lock,
 	// and a concurrent Set/Commit reads mutations under it (concurrent-use
@@ -3363,15 +3236,6 @@ func (tx *Transaction) postCommitResetFields() {
 	tx.ryw.reset()
 	tx.deferredErr.Store(nil) // C++ resetRyow clears deferredError (ReadYourWrites.actor.cpp:2719)
 	tx.hadRead.Store(false)
-	// RFC-114: a committed, auto-reset handle begins a NEW logical transaction, so
-	// CLEAR the total-latency anchor — the next transaction re-stamps it at ITS first
-	// GRV (ensureReadVersion), excluding any idle gap before its first op. (creationTime/
-	// deadline are deliberately left alone — this is the metric boundary, not a timeout
-	// reset.) Without this, a reused handle's next commit would measure from the prior
-	// transaction's start, folding in its work + the idle time between them.
-	tx.readVersionMu.Lock()
-	tx.metricStart = time.Time{}
-	tx.readVersionMu.Unlock()
 	// RFC-115 §4 Layer 2: end this committed transaction's "Transaction" otel span and
 	// re-anchor a fresh wire span — a reused handle begins a NEW logical transaction, so
 	// it must NOT carry the just-committed transaction's traceID. The next op's first GRV
@@ -3407,15 +3271,10 @@ func (tx *Transaction) resetFields(userReset bool) {
 		tx.retryCount = 0
 		tx.backoff = 0
 		tx.creationTime = time.Now()
-		tx.metricStart = time.Time{}
 	}
 	tx.cancelWatches()
 	tx.state.Store(int32(txStateActive))
-	tx.readVersionMu.Lock()
-	tx.hasReadVersion = false
-	tx.userSetReadVersion = false // C++ creates fresh state on reset
-	tx.readVersion = 0
-	tx.readVersionMu.Unlock()
+	tx.resetReadVersionState(!userReset)
 	// NativeAPI TransactionState::cloneAndReset preserves the last committed version.
 	tx.hasCommitted = false
 	tx.txnBatchId = 0

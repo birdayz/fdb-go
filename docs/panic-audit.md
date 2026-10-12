@@ -75,6 +75,7 @@ allowlist (file → permitted AST count). Keep the two in sync.
 | `pkg/fdbgo/client/panicbackstop.go` | 1 | client callback/goroutine backstop: panic → error/log, never crash the host |
 | `pkg/fdbgo/client/database.go` | 2 | `Run`/retry callback backstop on the client transact loop |
 | `pkg/fdbgo/client/grv.go` | 1 | background GRV goroutine: a panic fails the conn, not the process |
+| `pkg/fdbgo/client/native_commit.go` | 1 | retained native commit actor: count/log panics; rethrow to a still-waiting caller, never publish a successful versionstamp |
 | `pkg/fdbgo/transport/conn.go` | 2 | read/write IO goroutines: panic → fail connection |
 | `pkg/fdbgo/fdb/panic.go` | 1 | `panicToError` — a panicking user closure becomes a tx error |
 | `pkg/fdbgo/fdb/transaction.go` | 1 | `Transact` closure boundary |

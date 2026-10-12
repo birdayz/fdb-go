@@ -48,7 +48,16 @@ func (c *versionstampCompletion) selectLocked(result commitOutcome, err error, r
 // and excludes actor_cancelled. Go caller interruption is likewise not a shared
 // promise failure. Incarnation retirement has its own first-cause authority.
 func (c *versionstampCompletion) finishNative(result commitOutcome, err error) {
-	if c == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if c == nil {
+		return
+	}
+	c.tx.readErrMu.Lock()
+	c.finishNativeLocked(result, err)
+	c.tx.readErrMu.Unlock()
+}
+
+func (c *versionstampCompletion) finishNativeLocked(result commitOutcome, err error) {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return
 	}
 	// flow/Error.h aliases actor_cancelled to operation_cancelled (1101).
@@ -58,9 +67,7 @@ func (c *versionstampCompletion) finishNative(result commitOutcome, err error) {
 	if err != nil {
 		err = &wire.FDBError{Code: 2020}
 	}
-	c.tx.readErrMu.Lock()
 	c.selectLocked(result, err, false)
-	c.tx.readErrMu.Unlock()
 }
 
 func (c *versionstampCompletion) finishNoWrite() {

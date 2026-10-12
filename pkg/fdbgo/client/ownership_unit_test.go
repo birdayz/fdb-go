@@ -63,6 +63,42 @@ func TestOwnedMutationSnapshotSurvivesArenaReuse(t *testing.T) {
 	assertOwnedConflicts(t, "detached after reset", input.writeConflicts, pointConflict("original"))
 }
 
+func TestNativeCommitCapturesReadStateOptions(t *testing.T) {
+	t.Parallel()
+	tx := &Transaction{}
+	tx.SetPriority(PriorityBatch)
+	tx.SetUseGrvCache()
+	tx.SetSkipGrvCache()
+	tx.SetCausalReadRisky(true)
+	tx.SetReadLockAware()
+	if err := tx.SetTag("captured-tag"); err != nil {
+		t.Fatal(err)
+	}
+	lease := tx.enterState()
+	input := tx.captureCommit(nil, nil)
+	defer input.release()
+	tx.captureNativeReadState(input)
+	lease.release()
+	captured := input.readState
+	if captured == tx || captured.readVersionState != tx.readVersionState {
+		t.Fatal("native GRV must share only the read-version future, not the public transaction")
+	}
+	tx.Reset()
+	tx.SetReadVersion(123)
+	tx.SetPriority(PrioritySystemImmediate)
+	tx.SetCausalReadRisky(false)
+	tx.SetLockAware()
+	if err := tx.SetTag("successor-tag"); err != nil {
+		t.Fatal(err)
+	}
+	if captured.priority != PriorityBatch || !captured.useGrvCache || !captured.skipGrvCache || !captured.causalReadRisky || !captured.readLockAware || captured.lockAware || len(captured.tags) != 1 || captured.tags[0] != "captured-tag" {
+		t.Fatalf("native GRV options changed with successor: %+v", &captured.txOptions)
+	}
+	if captured.readVersionState == tx.readVersionState {
+		t.Fatal("native captured read future followed Reset into successor")
+	}
+}
+
 func TestMutationInputsOwnedByTransaction(t *testing.T) {
 	t.Parallel()
 	operand := []byte("\x01\x02\x03\x04\x05\x06\x07\x08")
