@@ -12,10 +12,44 @@ semantics, and required dependency versions.
 
 This changelog starts **2026-06-20**; earlier history is in `git log`. The first tagged release is
 **v0.1.0** (2026-08-26). v0.1.0 shipped the `frl` CLI from a parallel nested-module tag,
-`cmd/frl/v0.1.0`; from the next release `frl` is a package of the root module and ships under the
+`cmd/frl/v0.1.0`; from v0.2.0 `frl` is a package of the root module and ships under the
 project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (`RELEASE.md`).
 
 ## [Unreleased]
+
+### Breaking changes
+Each is described in full under Compatibility or Changed below.
+- **SQL storage:** the relational key space is Java's `RelationalKeyspaceProvider` layout; SQL data
+  written by v0.1.0 is not migrated (`docs/upgrade.md`). A database path is `/DOMAIN/DATABASE`, and
+  its domain must be registered once per process (`sqldriver.RegisterDomainIfNotExists`).
+- **Collated indexes** fail with `GoOnlyCollationError` unless the store opts into Go-only bytes
+  with `StoreBuilder.SetGoOnlyCollation(true)` (#790).
+- **VECTOR indexes** read value column 0 as serialized vector bytes (#815), are refused at build
+  without a dimension count or with a structure Java refuses (#809), and accept only Java's metric
+  names and options (#804).
+- **TEXT indexes:** the default tokenizer handles a word-final capital sigma and supplementary-plane
+  text as Java does; rebuild Go-written TEXT indexes over such text (#803).
+- **Pure-Go client:** API versions outside 510-730 are refused with 2203 (#823).
+  `SetLockAware`/`SetReadLockAware` take no argument, a read-lock-aware commit with writes fails
+  with 2023 unless the transaction is also lock-aware, and `SetSizeLimit` outside
+  [32, 10,000,000] is a deferred error (#820). `SetTimeout` outside [0, INT_MAX] is a deferred
+  2006 (#799).
+- **Continuations:** restart paged queries across this release; plan changes and cursor
+  encoding corrections do not preserve old tokens. See `docs/upgrade.md`.
+- **Record layer:** `FDBDatabase.Run` and its variants make at most 10 attempts by default, and a
+  body that commits the context it was handed is refused. A typed record store reads and writes
+  only its record type's union field, `NewTypedRecordStore` takes `baseStore` and `recordType` and returns an error, and every
+  save resolves the record type by the record's descriptor (#842, #852).
+  `FindRegisteredMessageType` is replaced by `GeneratedMessageType` (#842).
+- **SQL driver:** an unknown DSN parameter, or a DSN boolean other than `true`/`false`, fails at
+  open with 22023 (#799).
+- **Go API moves:** the gomock mocks moved to `pkg/relational/api/apimock` (#810), the demo protos
+  to `fdb.dev/gen/demopb` (#842), and index-predicate normalization, the plan walkers and the
+  R-tree to `pkg/recordlayer/indexpredicate`, `pkg/recordlayer/query/plan/plans` and
+  `pkg/async/rtree`. The planner census left the public `values`, `cascades`, `executor` and
+  `core/query` packages (#836). `keyspace.FDBResolver` is removed.
+- **frl:** `frl` is a package of the root module; retiring the nested module requires
+  the post-publication retraction procedure in `RELEASE.md`.
 
 ### Compatibility
 - **Collation:** collated index access and writes that evaluate collated primary/count keys now fail with `GoOnlyCollationError` unless the store explicitly opts into Go-only bytes with `StoreBuilder.SetGoOnlyCollation(true)`; existing keys are not migrated.
@@ -23,20 +57,19 @@ project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (
 - **Wire format:** the Java target is upgraded to `fdb-record-layer-core` 4.14.2.0 (RFC-257). Records Java writes through `TransformedRecordSerializer` (compressed, encrypted) are
   read and written. Stores written only by an earlier pre-release Go build are not supported:
   recreate them.
-- **SQL behaviour:** follows Java 4.14.2.0 where both engines run a query; see the PR for the
+- **SQL behaviour:** follows Java 4.14.2.0 where both engines run a query; see Changed for the
   per-change list.
-- **FDB client option semantics:** as v0.1.0 except `SetReadLockAware` and `SetSizeLimit` (see
-  Changed). The honored / `UnsupportedOptionError` / safe-no-op classification in
-  `pkg/fdbgo/fdb/OPTIONS.md` still holds against `libfdb_c` 7.3.77.
 - **FDB client option semantics:** the honored / `UnsupportedOptionError` / safe-no-op
-  classification in `pkg/fdbgo/fdb/OPTIONS.md` still holds against `libfdb_c` 7.3.77, with one change:
-  `Transaction.SetTimeout` outside [0, INT_MAX] now records a deferred 2006
-  (`invalid_option_value`) like libfdb_c, where a negative value used to disable the timeout (0 still disables it).
-- **Continuation tokens:** key-value cursor tokens (index, COUNT/atomic, BITMAP_VALUE and record scans) strip Java's range common prefix (`KeyValueCursorBase.calculatePrefixLength`), so a token is valid only for the range that minted it, as in Java.
+  classification in `pkg/fdbgo/fdb/OPTIONS.md` still holds against `libfdb_c` 7.3.77. Changed since
+  v0.1.0: `SetReadLockAware` and `SetSizeLimit` (see Changed), and `Transaction.SetTimeout` outside
+  [0, INT_MAX] records a deferred 2006 (`invalid_option_value`) like libfdb_c, where a negative
+  value used to disable the timeout (0 still disables it).
+- **Continuation tokens:** key-value cursor tokens (index, COUNT/atomic, BITMAP_VALUE and record scans) strip Java's range common prefix (`KeyValueCursorBase.calculatePrefixLength`), so a token is valid only for the range that minted it, as in Java. Restart paged queries across this encoding correction (#871).
 - **DSN booleans are strictly `true`/`false`** (any case): a bare `?flag`, `1`/`0`, `t`/`f`,
   `yes`/`no` and `on`/`off` now fail at open with 22023.
 - **Required versions:** Java `fdb-record-layer-core` **4.14.2.0**, FDB C++ client **7.3.77**, Go
-  **1.26.x** (the `MODULE.bazel` / `go.mod` pins; the CI doc-guard enforces docs match them).
+  **1.26.0** or newer (`go.mod` says `go 1.26.0`; its `toolchain go1.26.9` line pins the
+  toolchain this repository builds and tests with).
 
 ### Added
 - The SQL driver DSN sets `max_rows`, `execution_scanned_rows_limit`, `execution_scanned_bytes_limit`,
@@ -56,31 +89,22 @@ project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (
   `go build ./...` moved into `ci.yml`'s `go install lane` job, and the wire-type oracle runs as
   `bazelisk test //cmd/fdb-diff-oracle:fdb-diff-oracle_test`.
 - Tenant commits fence uncertain delivery in the tenant's keyspace, preventing a late commit after error 1021; all commits propagate a failed fence's error instead of returning an unfenced `commit_unknown_result`.
-- **Breaking:** `client.Transaction.SetLockAware` and `SetReadLockAware` take no argument; like the C options they only set.
 - **Breaking:** as in `libfdb_c`, a `SetReadLockAware` transaction fails a commit with writes with
   2023 unless `SetLockAware` is also set, and `SetSizeLimit` outside [32, 10,000,000] (0 included)
   fails every later operation with 2006, not only the commit. `client.Transaction.SetLockAware` and
   `SetReadLockAware` take no argument.
-- `fdb.APIVersion` and `client.WithAPIVersion` accept 510-730 (`client.MinAPIVersion`-`client.MaxAPIVersion`) and refuse other versions with `api_version_not_supported` (2203), as libfdb_c 7.3.77; 731 and above were accepted, and a version below 510 was 2201. A different version after one is selected stays 2201.
 - `fdb.APIVersion` and `client.WithAPIVersion` refuse a version outside 510-730
   (`client.MinAPIVersion`-`client.MaxAPIVersion`) with `api_version_not_supported` (2203), the
   Apple Go binding's code; 730 is libfdb_c 7.3.77's maximum and 510 this client's floor. Before,
   `fdb.APIVersion` accepted 731 and above and answered 2201 below 510, and `client.WithAPIVersion`
   accepted any non-zero version. A different version after one is selected stays 2201.
-- The R-tree takes any `rtreeMinimumM`, `rtreeMaximumM` and `rtreeSplitS`, as Java does; `rtree.ValidateRTreeConfig` is gone. A configuration that cannot keep the node invariants fails where Java's does (`rtree.VerifyError`, `IndexOutOfBoundsError`, `NegativeArraySizeError`, `ArithmeticError`), and a non-root node outside [minM, maxM] is refused on read (`javanum.IllegalStateError`, also `recordlayer.IllegalStateError`).
-- The R-tree takes any `rtreeMinimumM`, `rtreeMaximumM` and `rtreeSplitS`, as Java does; `rtree.ValidateRTreeConfig` is gone. A configuration that cannot keep the node invariants fails where Java's does (`rtree.VerifyError`, `IndexOutOfBoundsError`, `NegativeArraySizeError`, `ArithmeticError`), and a non-root node outside [minM, maxM] is refused on read (`javanum.IllegalStateError`, also `recordlayer.IllegalStateError`). An index an earlier Go build wrote under a configuration whose splits leave nodes out of that range (for example minM 4, maxM 6, splitS 2) now fails on read, as it does in Java: rebuild it.
 - The R-tree takes any `rtreeMinimumM`, `rtreeMaximumM` and `rtreeSplitS`, as Java does; `rtree.ValidateRTreeConfig` is gone. A configuration that cannot keep the node invariants fails where Java's does (`rtree.VerifyError`, `IndexOutOfBoundsError`, `NegativeArraySizeError`, `ArithmeticError`), and a non-root node outside [minM, maxM] is refused on read (`javanum.IllegalStateError`, also `recordlayer.IllegalStateError`). An index an earlier Go build wrote under a configuration whose splits leave nodes out of that range (for example minM 4, maxM 6, splitS 2) now fails on read, as it does in Java: redefine it under options whose splits keep the range (minM at most ⌊(maxM+1)/2⌋), since a rebuild under the same options fails again.
-- `TransformedRecordSerializer` encrypts and decrypts under every AES transformation Java's serializer can run with its 16-byte IV (CBC and PCBC with any SunJCE padding, CTR, CFB and OFB of 8 to 128 bits, and the `AES_128`/`AES_192`/`AES_256` forms), not only `AES/CBC/PKCS5Padding`. Other names still fail with "encryption error" or "decryption error".
-- `TransformedRecordSerializer` encrypts and decrypts under every AES transformation Java's serializer can run with its 16-byte IV (CBC and PCBC with any SunJCE padding, CTS, CTR, CFB and OFB of 8 to 128 bits, the `AES_128`/`AES_192`/`AES_256` forms and the NIST AES OIDs, as measured on JDK 21), not only `AES/CBC/PKCS5Padding`. Other names still fail with "encryption error" or "decryption error".
 - `TransformedRecordSerializer` encrypts and decrypts under every AES transformation Java's serializer can run with its 16-byte IV (CBC and PCBC with any SunJCE padding, CTS, CTR, CFB and OFB of 1 to 16 whole bytes, the `AES_128`/`AES_192`/`AES_256` forms and the NIST AES OIDs, as measured on JDK 21), not only `AES/CBC/PKCS5Padding`. Other names still fail with "encryption error" or "decryption error".
 - `fdb` futures behave like libfdb_c's: `Cancel` on a future that is not ready completes it with
   `operation_cancelled` (1101) (it was a no-op), a pipelined `Get` future becomes ready while only
   `IsReady` is polled (it stayed not-ready until `Get`), and one future may be read from several
   goroutines.
 - `KeyStoreSerializationKeyManager` reads JCEKS key stores, as Java's `KeyStore.getInstance(File, password)` detects them, besides PKCS12: AES keys sealed with PBEWithMD5AndTripleDES, Java's errors for a wrong store or key password. Ported from pyjks (MIT; see NOTICE).
-- An FDB error inside a catalog operation (DDL, schema lookup) now carries the same SQLSTATE as
-  anywhere else, for example 53F00 for a transaction timeout or 40001 for transaction_too_old,
-  instead of XX000.
 - An FDB error inside a catalog operation (DDL, `ApplyMetadataOperation`,
   `fleet.RestoreTemplateVersion`) now carries the same SQLSTATE as anywhere else, for example 53F00
   for a transaction timeout or 40001 for transaction_too_old, instead of XX000. The mapper is
@@ -91,8 +115,6 @@ project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (
 - `OnlineIndexer.MergeIndexes` holds no session, as Java's `mergeIndex`: it writes no heartbeat (which blocked Java's exclusive builders), checks no index state, and proceeds under a live peer and over a DISABLED target.
 - `plandiff.SeedCorpus`, `SeedRunCorpus`, `ApplyRFC082Divergences` and `IsKnownRed` moved to the
   testonly package `plandiff/seedcorpus`; `plandiff` keeps the `Query` and `RunQuery` types.
-- The gomock `Mock*` types move from `pkg/relational/api` to the test-only package
-  `pkg/relational/api/apimock`, so production binaries no longer link `go.uber.org/mock`.
 - **Breaking (API):** the gomock `Mock*` types move from `pkg/relational/api` to the Bazel
   `testonly` package `pkg/relational/api/apimock`, so production binaries no longer link
   `go.uber.org/mock`. Migrate `api.NewMockX(ctrl)` → `apimock.NewMockX(ctrl)`.
@@ -153,8 +175,8 @@ project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (
 - An unknown column is 42703 `Attempting to query non existing column X`, Java's text, with the reference as written (`T.X`, `Q.ID` for an unknown qualifier) in every clause and in UPDATE's SET; a qualified star over no source and a JOIN USING column missing from either side are `Unknown reference X`.
 - A query block reports its faults in Java's clause order: a join's ON first, then the WHERE, then the select list (an unknown function in the select list included).
 - `frl` is a package of the root module and releases under the project's `vX.Y.Z` tag. The nested
-  module `fdb.dev/cmd/frl` is retracted (`cmd/frl/v0.1.1`), so `go install fdb.dev/cmd/frl@latest`
-  builds `frl` from the root module. A module that requires `fdb.dev/cmd/frl` drops it with
+  module `fdb.dev/cmd/frl` is scheduled for retraction (`cmd/frl/v0.1.1`) only after the root
+  v0.2.0 release is available as proxy `@latest` (`RELEASE.md`); no retraction is asserted yet. A module that requires `fdb.dev/cmd/frl` drops it with
   `go get fdb.dev/cmd/frl@none` before upgrading `fdb.dev`, or the build reports an ambiguous import.
 - SQL `LIKE` follows Java 4.14.2.0: wildcards cross newlines, `LIKE NULL` is allowed, and invalid escapes raise 22019/2200B/22025 per row.
 - SQL comments follow Java 4.14.2.0: block comments nest, an unterminated one is 42601, and `#` is no longer a comment.
@@ -242,7 +264,7 @@ project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (
 - **Breaking (storage):** the default TEXT tokenizer lowercases a word-final capital sigma to `ς` and drops a word with no letter or digit in the Basic Multilingual Plane, as Java's `DefaultTextTokenizer` does; rebuild Go-written TEXT indexes over Greek or supplementary-plane text.
 - Runnable SQL/typed-store quickstarts check errors; default cluster lookup follows C++ precedence and routine SQL warm-up logs only at Debug.
 - Scalar literals and prepared values reuse immutable SQL plans through per-execution constant pools and checked type, equality and specialization constraints.
-- **Breaking:** a typed record store works over any metadata's union and reads and writes only its record type's union field, as Java's `TypedRecordSerializer`: loading, deleting or overwriting a record of another type fails with `RecordDeserializationError` ("Specified union field was not set"), and so does `ScanRecords` at the first such record (it skipped them); saving one fails with `RecordSerializationError`. A Go type the metadata does not decode the record type as is refused on load ("Builder does not match union type"; a save of it, typed or not, fails first with `MetaDataError` "descriptor did not match record type"), and one of another message at construction ("fieldDescriptor and getter do not match"). `NewTypedRecordStore` takes the record type only (its demo-union wrap/unwrap functions are gone) and returns an error.
+- **Breaking:** a typed record store works over any metadata's union and reads and writes only its record type's union field, as Java's `TypedRecordSerializer`: loading, deleting or overwriting a record of another type fails with `RecordDeserializationError` ("Specified union field was not set"), and so does `ScanRecords` at the first such record (it skipped them); saving one fails with `RecordSerializationError`. A Go type the metadata does not decode the record type as is refused on load ("Builder does not match union type"; a save of it, typed or not, fails first with `MetaDataError` "descriptor did not match record type"), and one of another message at construction ("fieldDescriptor and getter do not match"). `NewTypedRecordStore` takes `baseStore` and `recordType` (its demo-union wrap/unwrap functions are gone) and returns an error.
 - A struct value buffered in a continuation resumes with the store metadata's descriptor, as Java's does; a compiled Go message that only shares its full name no longer decodes it. **Breaking:** `recordlayer.FindRegisteredMessageType(name)` is replaced by `GeneratedMessageType(descriptor)`, which answers only the compiled type whose descriptor that is. A buffered struct value whose type is in neither the metadata nor the plan now fails the resume instead of decoding through the global registry.
 - **Breaking:** the demo schema (`record_layer_demo.proto`: `Order`, `Customer`, `Flower`, `TypedRecord`, `UnionDescriptor`, the `Color` enum) moved from `fdb.dev/gen` to `fdb.dev/gen/demopb`, so the driver and `frl` no longer register `com.apple.foundationdb.record` demo messages.
 - `RecordMetaDataFromProto` takes options (`MetaDataProtoOption`): `WithLocalFileDescriptor`, Java's `RecordMetaDataBuilder.setLocalFileDescriptor`, makes meta-data loaded from its stored proto use the compiled (local) descriptors and the local union's record type keys once they validate as an evolution of the stored ones (checked by `WithEvolutionValidator`'s validator, Java's `setEvolutionValidator`, else the default), so compiled records can be saved; such meta-data refuses `ToProto`. `RecordMetaData.GetRecordTypeForDescriptor` is Java's `getRecordTypeForDescriptor`.
@@ -253,6 +275,7 @@ project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (
 - The published test report counts individual test cases again: CI downloads remote-cached test logs, every shard is counted, and a missing log fails the report instead of counting one test per target.
 - The client's read-your-writes key index stays sorted across mutations, avoiding a full re-sort on interleaved range reads; arbitrary key insertion and deletion still shift a linear slice suffix.
 - The CGo backend and raw C reference share serialized database-handle ownership, preventing concurrent cache writes during startup and premature destruction of retained handles.
+- Cursor continuations encode an empty suffix when a key equals its prefix, as in Java (#868).
 - The client's `OpenDatabaseCoordRequest` carries the coordinator list, hostnames and known `ClientDBInfo` id, byte for byte as libfdb_c 7.3.77. Without the list, a restarted coordinator that heard from a Go client first stopped serving every client, libfdb_c included, and Go transactions waited until their deadline. The client now long-polls the coordinators for topology changes, as libfdb_c does, instead of polling every 5 s.
 - `tools/clientbench` provides separate Go/CGo measurement executables, counterbalanced campaigns and paired latency/window/drained/shutdown CPU analysis with reproducible R3-design instructions; native builds require the explicit `libfdbc` tag.
 - Record scans with an inclusive high bound end at `pack(high)+\xFF`, as Java's `TupleRange.toRange`, not at `strinc(pack(high))`.

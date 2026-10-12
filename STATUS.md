@@ -1,8 +1,8 @@
 # Project status
 
-**Pre-1.0; not declared production-ready.** This is the current readiness
-statement for the development tree, not a certification of a tagged release or
-of a particular deployment. Pin a commit and evaluate it against your workload.
+**Pre-1.0; not declared production-ready.** This readiness statement covers
+the v0.2.0 release candidate. No v0.2.0 tag or deployment certification is
+asserted here. Pin a revision and evaluate it against your workload.
 
 The project contains three independently useful layers:
 
@@ -18,6 +18,31 @@ compatibility with every feature or every server release. See
 [compatibility](docs/compatibility.md) for exceptions and source references and
 [upgrading](docs/upgrade.md) before opening existing data. `MODULE.bazel`,
 `go.mod` and `.bazelversion` are the dependency/build pins.
+
+## Known gaps in v0.2.0
+
+These five launch gaps remain open in the release candidate. Further work is
+planned for v0.3.0; each has a mitigation where one exists.
+
+- **Per-RPC 5 s read timeouts, which libfdb_c does not have.** A read reply
+  slower than 5 s is abandoned and re-sent, to another replica first; libfdb_c
+  keeps waiting. Commits have no such timeout (#882).
+- **Read-only transaction allocation remains a launch concern.** The historical
+  observation was about 38 KB per transaction before allocation cuts; there is
+  no current-cut allocation measurement here. Go heap counters exclude the
+  native C++ heap, so they do not establish total-memory ratios. Measure your
+  workload; batching reads can amortize transaction overhead.
+- **Limited real-cluster fault testing.** The `test-full` coordinator-restart
+  regression kills every fdbserver and checks recovery with the Go client first.
+  Broader role failures, partitions and coordinator reconfiguration are not
+  established by that case. Rehearse them on your cluster (below).
+- **Planning cost remains a launch concern.** Historical timings do not establish
+  latency for the cut or your queries. Prepared statements reuse plans across
+  bindings; bound planning with a context deadline and opt into task/queue/match
+  budgets, since there is no task budget by default (as in Java).
+- **No resource limits by default** (as in Java). Set them in the DSN:
+  `max_rows`, `execution_scanned_rows_limit`, `execution_scanned_bytes_limit`,
+  `execution_time_limit`, `max_statement_memory_bytes` and `transaction_timeout`.
 
 ## Evidence and its limits
 
@@ -37,9 +62,9 @@ compatibility with every feature or every server release. See
 
 No fresh full-suite, recovery or workload result is asserted by this page.
 Historical production-tier verdicts relied in part on scheduled workflows that
-have since been removed. They are not current readiness evidence. `PORT.md`,
-`road-to-prod.md`, `PRODUCTION_READINESS.md` and `TODO-production.md` are historical
-material, not competing current verdicts.
+have since been removed. They are not current readiness evidence. The former
+`PORT.md`, `road-to-prod.md` and `PRODUCTION_READINESS.md` remain in git history;
+`TODO-production.md` is historical material, not a competing current verdict.
 
 ## Before relying on a deployment
 

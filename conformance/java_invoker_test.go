@@ -130,7 +130,7 @@ func NewJavaInvoker() *JavaInvoker {
 // state-leaks from prior conformance specs (existence_check_*,
 // error_*, the dropped setup-INSERT-error corpus entries before they
 // were dropped, etc.) compound into Java-side hangs at >30s
-// per-request latency. The investigation in shifts/ uncovered the
+// per-request latency. A shift investigation uncovered the
 // trigger: ~11 setup-time INSERT errors compound state in
 // fdb-relational 4.12.11.0's error-path teardown.
 //

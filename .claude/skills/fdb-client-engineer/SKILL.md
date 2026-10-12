@@ -25,7 +25,7 @@ This skill is the **entry point and orchestrator** for client work. It owns the 
 
 ## 0. Before you touch anything: verify the work is real
 
-The tracking docs (`TODO.md`, `TODO_client.md`, `TODO-production.md`, `shifts/*-fdbgo-client-*.md`)
+The tracking docs (`TODO.md`, `TODO-production.md`, local `shifts/*-fdbgo-client-*.md`)
 **go stale fast** — client work moves in tight RFC cycles and the checkboxes lag. Treating a
 stale TODO as open wastes a full RFC. **Before scoping anything:**
 
@@ -216,8 +216,7 @@ TODO mark.
 
 - **Authoritative & current:** the `rfcs/NNN-*.md` `Status:` lines + `git log -- pkg/fdbgo/`.
   Trust these over the TODO checkboxes.
-- **`TODO.md`** "Native fdbgo client" section + "Known gaps"; **`TODO_client.md`** (the original
-  15-finding audit — mostly closed, treat as history); **`TODO-production.md`** P0–P3 (the SaaS
+- **`TODO.md`** "Native fdbgo client" section + "Known gaps"; **`TODO-production.md`** P0–P3 (the SaaS
   control-plane roadmap; client items: P1.6/P1.8/P1.9/P2.2/P3.3 are the live ones).
 - **`pkg/fdbgo/client/CRASH_BUG.md`** (resolved — keep for the methodology), `fdb/API_PARITY.md`,
   `bench/PERFORMANCE.md`.

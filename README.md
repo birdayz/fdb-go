@@ -22,6 +22,25 @@ names identify upstream projects and compatibility targets, not an endorsement.
 [Status](STATUS.md) · [Compatibility](docs/compatibility.md) ·
 [Operator guide](docs/operations.md) · [Website](https://fdb.dev/)
 
+## How it is built
+
+This project is built with AI coding agents under human direction. A maintainer
+sets priorities and review requirements. Agent instructions remain in the tree
+(`CLAUDE.md`, `AGENTS.md`, `.claude/`).
+
+The test infrastructure includes these external references and fault models:
+
+- **Java conformance:** covered cases compare shared-store reads/writes and SQL
+  behavior with Java Record Layer / Relational 4.14.2.0 ([`conformance/`](conformance/),
+  [`pkg/relational/conformance/`](pkg/relational/conformance/)).
+- **libfdb_c differential:** the pure-Go client runs the same operations as
+  Apple's C client and is compared with it ([`pkg/fdbgo/bench/`](pkg/fdbgo/bench/)).
+- **FoundationDB binding tester:** the official binding tester drives the Go
+  bindings through a stack tester ([`cmd/fdb-stacktester/`](cmd/fdb-stacktester/)).
+- **Deterministic simulation:** seeded operations and fault injection exercise
+  an in-memory FDB model ([`pkg/dst/`](pkg/dst/),
+  [`pkg/simfdb/`](pkg/simfdb/)).
+
 ## Choose a layer
 
 | API | Use it for | Package |
@@ -181,9 +200,53 @@ commit and executed lanes; a badge alone does not establish a full-suite pass.
 Previous Go-vs-libfdb_c speedup and write-parity claims were withdrawn because the
 measurements used obsolete GRV-cache semantics and mislabeled netem delay.
 [Correction and benchmark methodology](pkg/fdbgo/bench/PERFORMANCE.md).
-No replacement speed claim is made.
+The separate historical R17 experiment below does not measure current master.
+
+### Performance vs libfdb_c
+
+R17 compared the **frozen R16 NEW patchset, not current master or the v0.2.0
+cut**, with FDB 7.3.77's native client through CGo. Ratios are geometric means of
+160 within-block NEW/CGo ratios per workload, not ratios of displayed medians.
+The five endpoints were pre-registered; both 99% moving-block bootstrap
+intervals (L8 and L16, 100,000 draws each) had to have upper bounds below 1.
+
+| Measure | Workload | NEW / CGo | L8 99% CI | L16 99% CI |
+|---|---|---:|---|---|
+| CPU/transaction, startup through shutdown (E−A) | `batchset50` | 0.862469 | [0.850940, 0.874873] | [0.850373, 0.875916] |
+| CPU/transaction, measured window (C−B) | `batchset50` | 0.788291 | [0.776788, 0.801047] | [0.776380, 0.801644] |
+| Mean latency | `read1000` | 0.625737 | [0.603494, 0.650043] | [0.600815, 0.652733] |
+| p99 latency | `read1000` | 0.507259 | [0.466695, 0.548761] | [0.463166, 0.549550] |
+| CPU/transaction, startup through shutdown (E−A) | `read1000` | 0.908661 | [0.885677, 0.933150] | [0.883870, 0.934491] |
+
+- One previously used Hetzner ccx43 instance (16 vCPUs), reimaged with Ubuntu
+  24.04 and a fresh FDB 7.3.77 cluster. No independent host/fleet replication.
+- 640 serial processes, one worker, `GOMAXPROCS=8`, Go 1.26.9, API 730.
+  `read1000`: one Get/read-only transaction, 5,000 measured + 200 warmup;
+  `batchset50`: 50 distinct 100-byte Sets/commit, 2,500 measured + 200 warmup.
+- E−A includes startup, fixture, warmup, validation, CSV, forced GC/finalizers
+  and shutdown; it excludes preceding identity hashing, final JSON and process
+  exit. It is **not isolated steady-state CPU**. Deferred cleanup can cross the
+  C−B window boundaries. Go heap counters do not measure the native C++ heap.
+- NEW source: base `7922a2e5a8e3a2d6cf17dfee8b8134181c88b298` plus frozen patch
+  SHA-256 `d0a6ae57ac1143aa1247ce2461f84f74264825f901a53cb7ab943a0efe83be85`;
+  CGo source: `8ab5c5a4d6ee4858a4eacd6ac58e2a7be85dbead`.
+- Results archive SHA-256
+  `4943768b532b2c57797c677f37b9381c10d922fbee81ef7821a3174a29d2e6f0`.
+  [R17 tables](tools/clientbench/results/r17/TABLES.md) are a formatting-only copy
+  from the retained experiment; named raw artifacts remain in the retained
+  archive, not at the tables URL. [`tools/clientbench`](tools/clientbench/) (#822) is the
+  harness; reproducing R17 requires its frozen sources, protocol and artifacts,
+  not simply building current master.
+
+The intervals depend on block-resampling assumptions on this one instance.
+These results establish neither current-master performance nor general capacity,
+universal Go-vs-C++ superiority, or source correctness.
 
 ## Building and contributing
+
+A full clone was about 440 MiB during release preparation; history is retained.
+`git clone --filter=blob:none https://github.com/birdayz/fdb-go.git` fetches
+historical file contents on demand.
 
 Development uses Bazel via bazelisk, `just`, and Docker for testcontainers:
 

@@ -7,7 +7,7 @@ transaction limits, the online-index lifecycle, schema evolution, backup, observ
 page does not repeat those; it links to them and covers only what changes when there are N tenants
 on one cluster.
 
-Status claims about the codebase as a whole live in [`road-to-prod.md`](../road-to-prod.md), which
+Status claims about the codebase as a whole live in [STATUS.md](../STATUS.md), which
 is the authority. This page is scoped to the multi-tenant question and carries a `file:line`
 citation for every claim, because an operator guide is worthless unless every sentence in it is
 checkable.
@@ -946,10 +946,10 @@ decision, not an implementation detail.
 This is the list to put in front of anyone writing SQL against a tenant database. Every entry was
 re-verified against master while writing this page, against the code and its committed pins rather
 than against the prose that described them. That pass **refuted six claims** the previous revision
-of `road-to-prod.md`'s watch-list asserted as live — the nullable-array wire divergence (fixed), the
+of the former `road-to-prod.md`'s watch-list asserted as live — the nullable-array wire divergence (fixed), the
 LEFT-JOIN `isNullable` divergence (inverted), both client-side watch claims (fixed), projected
 `EXISTS` (narrowed), and string functions as unsupported (Go supports them). `road-to-prod.md` was
-corrected in the same pass, so the two pages now agree; the refutations are recorded here as well,
+corrected in the same pass (it has since been removed); the refutations are recorded here as well,
 because a reader who has seen the old list needs to know which way each one moved.
 
 ### The silent ones — no error, wrong expectation
@@ -1074,7 +1074,7 @@ It is a read-side extension with zero wire impact, so it is safe. But a tenant q
   Budget watches per tenant against it — this is a shared, per-process resource, so one tenant can
   exhaust it for the rest.
 
-**Both of these refute `road-to-prod.md`'s client-side operational list**, which recorded
+**Both of these refute the former `road-to-prod.md`'s client-side operational list**, which recorded
 "watches register at read version, not commit-gated; no `too_many_watches` limit".
 
 ### Not a tenant-contract item any more

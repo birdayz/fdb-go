@@ -100,6 +100,8 @@ website/.hugo_build.lock
 
 # ephemeral working notes (belong in /tmp scratchpad or shifts/ handovers)
 scratchpad/
+# shift handovers stay local
+shifts/
 
 # Stray `go build ./cmd/<x>` output at the repo root. `go build` with no -o
 # drops the binary in the CWD, and `git add -A` then commits several MB of it.

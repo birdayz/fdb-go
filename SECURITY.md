@@ -19,7 +19,7 @@ window for a fix before public disclosure.
 ## Scope
 
 This project is **pre-1.0 and not yet declared production-ready** (see
-`PRODUCTION_READINESS.md` and `TODO-production.md`). Of particular interest:
+[STATUS.md](STATUS.md)). Of particular interest:
 
 - **Wire-format / data-integrity** issues — anything where Go and Java
   (`fdb-record-layer` 4.14.2.0) would read/write incompatible bytes, or where

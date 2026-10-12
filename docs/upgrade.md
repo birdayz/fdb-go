@@ -7,7 +7,7 @@ pair of Go revisions. The current readiness statement is [STATUS.md](../STATUS.m
 
 ## From v0.1.0 SQL storage
 
-The unreleased tree uses Java's relational keyspace: the catalog store is
+The v0.2.0 candidate uses Java's relational keyspace: the catalog store is
 `(NULL, NULL, 0)` and schema stores are `(domain, database, schema)`, with directory
 and interning layers resolving those names. Earlier Go SQL builds used a different
 layout. **The old layout is not automatically migrated.** See the breaking-storage

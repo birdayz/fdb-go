@@ -204,7 +204,7 @@ func buildPriceKeyedMetaData(register func(*RecordMetaDataBuilder, *Index), inde
 //
 // THE REMEDY IS NOT RESTATED HERE. DIVERGENCES.md, "UPGRADING BREAKS EXISTING
 // DATA FOR THE AFFECTED INDEXES, SILENTLY", is where it lives; that section in
-// turn defers to cq90BumpIndexVersion and road-to-prod.md for the bump itself,
+// turn defers to cq90BumpIndexVersion for the bump itself,
 // so it is the entry point rather than the sole copy. An earlier version
 // of this header said "bump the affected index's lastModifiedVersion, which IS
 // persisted and does trigger a rebuild" -- which is the form that is SILENTLY

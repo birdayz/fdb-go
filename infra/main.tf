@@ -111,7 +111,7 @@ locals {
     # and starting both again.
     runner_version = "2.337.0"
     runner_sha256  = "70920811a4f8ad4328818682bca5c6469c1c942fab52448868071d0063816613"
-    # Go toolchain. MUST match go.mod's `go` directive: the workflows that do not go
+    # Go toolchain. Match go.mod's `toolchain` directive (or `go` when absent): the workflows that do not go
     # through Bazel run the system `go` directly (the libfdbc cgo build hardcodes
     # GO_BIN="go", and the Bazel-SDK resolver falls back to it), so a box without Go on
     # PATH fails those jobs with `go: command not found` — exit 127, not a test failure.
