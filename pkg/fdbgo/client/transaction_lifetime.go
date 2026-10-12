@@ -130,18 +130,24 @@ func retirePending(pending []*PendingGet, join bool) {
 	}
 }
 
-// beginTurnover returns with resetMu held and no old state users. Its finish
-// closure publishes the fully rebuilt replacement and releases resetMu.
-// Internal callers must release their token BEFORE requesting turnover.
-func (tx *Transaction) beginTurnover(expected *readIncarnation, released *executionLease) (func(), error) {
+// turnoverToken owns publication and resetMu until finish is called exactly once.
+type turnoverToken struct {
+	tx    *Transaction
+	ready chan struct{}
+}
+
+// beginTurnover returns with resetMu held and no old state users. Its token
+// publishes the fully rebuilt replacement and releases resetMu.
+// Internal callers must release their lease BEFORE requesting turnover.
+func (tx *Transaction) beginTurnover(expected *readIncarnation, released *executionLease) (turnoverToken, error) {
 	if released != nil && released.tx != tx {
-		return nil, &wire.FDBError{Code: ErrClientInvalidOperation}
+		return turnoverToken{}, &wire.FDBError{Code: ErrClientInvalidOperation}
 	}
 	tx.readErrMu.Lock()
 	selfWait := released != nil && released.active
 	tx.readErrMu.Unlock()
 	if selfWait {
-		return nil, &wire.FDBError{Code: ErrClientInvalidOperation}
+		return turnoverToken{}, &wire.FDBError{Code: ErrClientInvalidOperation}
 	}
 	tx.resetMu.Lock()
 	if tx.beforeTurnoverRetirement != nil {
@@ -156,14 +162,14 @@ func (tx *Transaction) beginTurnover(expected *readIncarnation, released *execut
 		if cause == nil {
 			cause = &wire.FDBError{Code: ErrTransactionCancelled}
 		}
-		return nil, cause
+		return turnoverToken{}, cause
 	}
 	// Expected-owner validation and retirement are one leaf-locked claim.
 	// Releasing it here lets a completed Cancel/timeout be erased by reset.
 	return tx.turnoverLocked(old), nil
 }
 
-func (tx *Transaction) startTurnover() func() {
+func (tx *Transaction) startTurnover() turnoverToken {
 	tx.resetMu.Lock()
 	tx.readErrMu.Lock()
 	return tx.turnoverLocked(tx.readIncarnationLocked())
@@ -171,8 +177,8 @@ func (tx *Transaction) startTurnover() func() {
 
 // turnoverLocked enters with resetMu and readErrMu held. It releases readErrMu
 // before delivering cancellation or waiting, and owns resetMu through the
-// returned publication closure.
-func (tx *Transaction) turnoverLocked(old *readIncarnation) func() {
+// returned publication token.
+func (tx *Transaction) turnoverLocked(old *readIncarnation) turnoverToken {
 	pending := tx.detachPendingLocked(old)
 	ready := make(chan struct{})
 	tx.readReady = ready
@@ -202,26 +208,29 @@ func (tx *Transaction) turnoverLocked(old *readIncarnation) func() {
 		<-drained
 	}
 	retirePending(pending, true)
-	return func() {
-		tx.readErrMu.Lock()
-		// Captured successors and positive final timeouts must exist at publication.
-		// Construct behind readReady so the timebomb is armed only once below.
-		inc := tx.readLife
-		if inc != nil || tx.timeoutNs.Load() > 0 {
-			inc = tx.readIncarnationLocked()
-		}
-		tx.readReady = nil
-		var cause error
-		if inc != nil {
-			tx.armReadTimeoutLocked(inc)
-			cause = inc.cause
-		}
-		close(ready)
-		tx.readErrMu.Unlock()
-		tx.resetMu.Unlock()
-		if cause != nil {
-			inc.cancel(cause)
-		}
+	return turnoverToken{tx: tx, ready: ready}
+}
+
+func (token turnoverToken) finish() {
+	tx := token.tx
+	tx.readErrMu.Lock()
+	// Captured successors and positive final timeouts must exist at publication.
+	// Construct behind readReady so the timebomb is armed only once below.
+	inc := tx.readLife
+	if inc != nil || tx.timeoutNs.Load() > 0 {
+		inc = tx.readIncarnationLocked()
+	}
+	tx.readReady = nil
+	var cause error
+	if inc != nil {
+		tx.armReadTimeoutLocked(inc)
+		cause = inc.cause
+	}
+	close(token.ready)
+	tx.readErrMu.Unlock()
+	tx.resetMu.Unlock()
+	if cause != nil {
+		inc.cancel(cause)
 	}
 }
 

@@ -78,11 +78,11 @@ func (input *commitInput) release() {
 // publishCommit does not reinterpret the detached operation's outcome. A stale
 // completion returns to its caller but cannot publish into or reset a successor.
 func (tx *Transaction) publishCommit(inc *readIncarnation, released *executionLease, result commitOutcome) {
-	finish, err := tx.beginTurnover(inc, released)
+	turnover, err := tx.beginTurnover(inc, released)
 	if err != nil {
 		return
 	}
-	defer finish()
+	defer turnover.finish()
 	tx.committedVersion = result.version
 	tx.txnBatchId = result.batchID
 	tx.commitEpoch.Store(result.epoch)

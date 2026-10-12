@@ -41,7 +41,7 @@ func TestExecutionLeaseEnterStateWaitsForAtomicReadyPublication(t *testing.T) {
 	go func() { entered <- tx.enterState() }()
 	requireLifetimeTestBlocked(t, entered, "enterState")
 
-	finish()
+	finish.finish()
 	lease := receiveLifetimeTest(t, entered, "enterState after ready publication")
 	defer lease.release()
 	tx.readErrMu.Lock()
@@ -94,7 +94,7 @@ func TestExecutionLeaseSuccessiveTurnoversRevalidateIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	finish()
+	finish.finish()
 	if lease := tx.enterReadState(context.Background(), firstInc, false); lease != nil {
 		lease.release()
 		t.Fatal("first incarnation was admitted after turnover")
@@ -110,7 +110,7 @@ func TestExecutionLeaseSuccessiveTurnoversRevalidateIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	finish()
+	finish.finish()
 	if lease := tx.enterReadState(context.Background(), secondInc, false); lease != nil {
 		lease.release()
 		t.Fatal("second incarnation was admitted after successive turnover")
@@ -132,7 +132,7 @@ func TestExecutionLeaseOldReadNeverAdmitsReplacement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	finish()
+	finish.finish()
 
 	if lease := tx.enterReadState(context.Background(), oldInc, true); lease != nil {
 		lease.release()
@@ -203,11 +203,11 @@ func TestExecutionLeaseReleasedOldTokenCannotResetNewIncarnation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	finish()
+	finish.finish()
 
 	finish, err = tx.beginTurnover(oldInc, old)
-	if finish != nil {
-		finish()
+	if finish.tx != nil {
+		finish.finish()
 		t.Fatal("stale token obtained turnover ownership")
 	}
 	if fdbCodeOf(err) != ErrTransactionCancelled {
@@ -241,7 +241,7 @@ func TestExecutionLeaseCanceledWaitingReadHoldsNoLease(t *testing.T) {
 	if users != 0 {
 		t.Fatalf("canceled waiting read retained state lease: users=%d", users)
 	}
-	finish()
+	finish.finish()
 }
 
 func TestExecutionLeaseGetPipelinedDoesNotReleaseBorrowedLease(t *testing.T) {
@@ -313,7 +313,7 @@ func TestExecutionLeaseEarlyReplacementCaptureArmsTimeout(t *testing.T) {
 			cleanup()
 			captured := tx.readOperation(waiting)
 			tx.resetFields(userReset)
-			finish()
+			finish.finish()
 			if captured == nil || captured.lease != nil {
 				t.Fatalf("canceled turnover waiter = %v, want a captured incarnation without a lease", captured)
 			}
@@ -356,7 +356,7 @@ func TestExecutionLeaseOptionsAfterCancellationDoNotReviveRead(t *testing.T) {
 	if op := tx.readOperation(ctx); op == nil || op.inc != replacement || op.lease != nil {
 		t.Fatalf("canceled waiter state: op=%v replacement=%p", op, replacement)
 	}
-	finish()
+	finish.finish()
 
 	tx.SetRetryLimit(7)
 	if !tx.hasRetryLimit || tx.retryLimit != 7 {
@@ -432,7 +432,7 @@ func TestCheckTimeoutCanceledTurnoverWaiterDoesNotPublish(t *testing.T) {
 	cancel()
 	err := tx.checkTimeout(parent)
 	tx.resetFields(true)
-	finish()
+	finish.finish()
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled unadmitted waiter = %v, want context.Canceled", err)
 	}
