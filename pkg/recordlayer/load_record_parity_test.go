@@ -191,11 +191,268 @@ func TestFDB_LoadRecordAsyncAllocations(t *testing.T) {
 	}
 }
 
+var recordRangeBoundsAllocationSink [2][]byte
+
+// Run the allocation counter in a child with no concurrent test workers.
+func TestRecordRangeBoundsAllocations(t *testing.T) {
+	const childEnv = "FDB_RECORD_RANGE_BOUNDS_ALLOCATION_CHILD"
+	if os.Getenv(childEnv) != "1" {
+		t.Parallel()
+		executable, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.CommandContext(t.Context(), executable, "-test.run=^TestRecordRangeBoundsAllocations$", "-test.v")
+		cmd.Env = append(os.Environ(), childEnv+"=1")
+		output, err := cmd.CombinedOutput()
+		if err != nil || !bytes.Contains(output, []byte("range bounds allocations: cases=14")) {
+			t.Fatalf("isolated allocation test: %v\n%s", err, output)
+		}
+		t.Logf("%s", output)
+		return
+	}
+
+	lengths := []int{0, 1, 7, 8, 15, 16, 31, 32, 63, 64, 127, 128, 1024, 8192}
+	for _, length := range lengths {
+		t.Run(fmt.Sprintf("prefix=%d", length), func(t *testing.T) {
+			prefix := bytes.Repeat([]byte{0x42}, length)
+			allocs := testing.AllocsPerRun(1000, func() {
+				recordRangeBoundsAllocationSink[0], recordRangeBoundsAllocationSink[1] = recordRangeBounds(prefix)
+			})
+			begin, end := recordRangeBoundsAllocationSink[0], recordRangeBoundsAllocationSink[1]
+			if len(begin) != length+1 || len(end) != length+1 || begin[length] != 0x00 || end[length] != 0xff ||
+				!bytes.Equal(begin[:length], prefix) || !bytes.Equal(end[:length], prefix) {
+				t.Fatal("allocation sample returned incorrect range bounds")
+			}
+			t.Logf("range bounds allocations: prefix=%d allocations=%.0f", length, allocs)
+			if allocs != 1 {
+				t.Errorf("range bounds allocations = %.0f, want 1", allocs)
+			}
+		})
+	}
+	t.Logf("range bounds allocations: cases=%d", len(lengths))
+}
+
+func TestRecordRangeBoundsOwnership(t *testing.T) {
+	t.Parallel()
+	for _, length := range []int{0, 1, 7, 8, 15, 16, 31, 32, 63, 64, 127, 128, 1024, 8192} {
+		for _, direction := range []string{"begin", "end"} {
+			for _, operation := range []string{"mutate", "append", "reslice"} {
+				t.Run(fmt.Sprintf("prefix=%d/%s/%s", length, direction, operation), func(t *testing.T) {
+					// Spare capacity and embedded 00/ff expose prefix aliasing too.
+					storage := bytes.Repeat([]byte{0xa5}, length+32)
+					for i := range length {
+						storage[i] = byte(i)
+					}
+					prefix := storage[:length]
+					before := bytes.Clone(storage)
+					begin, end := recordRangeBounds(prefix)
+					wantBegin := append(bytes.Clone(prefix), 0x00)
+					wantEnd := append(bytes.Clone(prefix), 0xff)
+					if !bytes.Equal(begin, wantBegin) || !bytes.Equal(end, wantEnd) || !bytes.Equal(storage, before) {
+						t.Fatal("incorrect bounds or modified prefix backing storage")
+					}
+					if length > 0 {
+						prefix[0] ^= 0xff
+						if !bytes.Equal(begin, wantBegin) || !bytes.Equal(end, wantEnd) {
+							t.Fatal("prefix mutation changed bounds")
+						}
+						prefix[0] ^= 0xff
+					}
+					changed, other, wantOther := begin, end, wantEnd
+					if direction == "end" {
+						changed, other, wantOther = end, begin, wantBegin
+					}
+					switch operation {
+					case "mutate":
+						for i := range changed {
+							changed[i] ^= 0xff
+						}
+					case "append":
+						changed = append(changed, 0x5a)
+						if changed[len(changed)-1] != 0x5a {
+							t.Fatal("append did not add the sentinel")
+						}
+					case "reslice":
+						expanded := changed[:cap(changed)]
+						for i := len(changed); i < len(expanded); i++ {
+							expanded[i] = 0x5a
+						}
+					}
+					if !bytes.Equal(other, wantOther) {
+						t.Fatalf("%s of %s changed the other endpoint", operation, direction)
+					}
+					if !bytes.Equal(storage, before) {
+						t.Fatalf("%s of %s changed prefix backing storage", operation, direction)
+					}
+				})
+			}
+		}
+	}
+	t.Run("nil-prefix", func(t *testing.T) {
+		begin, end := recordRangeBounds(nil)
+		if !bytes.Equal(begin, []byte{0}) || !bytes.Equal(end, []byte{0xff}) {
+			t.Fatalf("nil prefix bounds = %x, %x", begin, end)
+		}
+	})
+	t.Run("retained-endpoints", func(t *testing.T) {
+		for _, retainEnd := range []bool{false, true} {
+			begin, end := recordRangeBounds([]byte{0x00, 0xff, 0x42})
+			retained := begin
+			if retainEnd {
+				retained = end
+			}
+			want := bytes.Clone(retained)
+			for range 32 {
+				nextBegin, nextEnd := recordRangeBounds([]byte{0x00, 0xff, 0x42})
+				clear(nextBegin)
+				clear(nextEnd)
+			}
+			if !bytes.Equal(retained, want) {
+				t.Fatalf("later calls changed retained endpoint (end=%t)", retainEnd)
+			}
+		}
+	})
+}
+
+type loadParityCallbackSubspace struct {
+	subspace.Subspace
+	pack func(tuple.Tuple) fdb.Key
+}
+
+func (s loadParityCallbackSubspace) Pack(key tuple.Tuple) fdb.Key { return s.pack(key) }
+
+type loadParityCallbackKey struct {
+	key      fdb.Key
+	callback func()
+}
+
+func (k loadParityCallbackKey) FDBKey() fdb.Key {
+	k.callback()
+	return k.key
+}
+
+type loadParityCallbackReadTransaction struct {
+	fdb.ReadTransaction
+	getRange func(fdb.Range, fdb.RangeOptions) fdb.RangeResult
+}
+
+func (tx loadParityCallbackReadTransaction) GetRange(r fdb.Range, options fdb.RangeOptions) fdb.RangeResult {
+	return tx.getRange(r, options)
+}
+
+func testLoadParityCallbacks(t *testing.T, db *FDBDatabase) {
+	for _, populated := range []bool{false, true} {
+		for _, stage := range []string{"none", "range", "pack", "key"} {
+			t.Run(fmt.Sprintf("populated=%t/update=%s", populated, stage), func(t *testing.T) {
+				rc := loadParityContext(t, db)
+				rs := subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
+				keyBytes := fdb.Key{0x00, 0xff, 0x42}
+				pk := tuple.Tuple{keyBytes}
+				data := []byte("callback record")
+				rc.Transaction().Set(rs.Pack(appendToTuple(pk, unsplitRecord)), data)
+				// A custom Pack may choose a distinct version key, not merely pk+-1.
+				versionKey := rs.Sub("custom-version").Pack(appendToTuple(pk, recordVersionSuffix))
+				wantLocal := -1
+				if populated {
+					rc.AddToLocalVersionCache(versionKey, 7)
+					wantLocal = 7
+				}
+				var events []string
+				keyCalls := 0
+				pk = tuple.Tuple{loadParityCallbackKey{key: keyBytes, callback: func() {
+					keyCalls++
+					events = append(events, fmt.Sprintf("FDBKey#%d", keyCalls))
+					if keyCalls == 2 && stage == "key" {
+						rc.AddToLocalVersionCache(versionKey, 33)
+						wantLocal = 33
+					}
+				}}}
+				space := loadParityCallbackSubspace{Subspace: rs, pack: func(key tuple.Tuple) fdb.Key {
+					if len(key) == 1 {
+						events = append(events, "Pack(pk)")
+						return rs.Pack(key)
+					}
+					if len(key) != 2 || key[1] != recordVersionSuffix {
+						t.Fatalf("unexpected Pack tuple: %v", key)
+					}
+					events = append(events, "Pack(pk,-1)")
+					packed := rs.Sub("custom-version").Pack(key)
+					if stage == "pack" {
+						rc.AddToLocalVersionCache(packed, 22)
+						wantLocal = 22
+					}
+					return packed
+				}}
+				var retainedBegin, retainedEnd []byte
+				tx := loadParityCallbackReadTransaction{ReadTransaction: rc.Transaction(), getRange: func(r fdb.Range, options fdb.RangeOptions) fdb.RangeResult {
+					events = append(events, "GetRange")
+					if options != (fdb.RangeOptions{Mode: fdb.StreamingModeWantAll}) {
+						t.Fatalf("range options = %+v", options)
+					}
+					begin, end := r.(fdb.ExactRange).FDBRangeKeys()
+					retainedBegin, retainedEnd = begin.FDBKey(), end.FDBKey()
+					if stage == "range" {
+						done := make(chan struct{})
+						go func() {
+							rc.AddToLocalVersionCache(versionKey, 11)
+							close(done)
+						}()
+						<-done
+						wantLocal = 11
+					}
+					return rc.Transaction().GetRange(r, options)
+				}}
+				pending := startLoadWithSplit(tx, space, pk, true, false, rc)
+				if got := strings.Join(events, ","); got != "Pack(pk),FDBKey#1,GetRange,Pack(pk,-1),FDBKey#2" {
+					t.Fatalf("load callback order = %s", got)
+				}
+				// The local version is captured at issuance, not while finishing.
+				rc.AddToLocalVersionCache(versionKey, 55)
+				prefix := bytes.Clone(pending.prefix)
+				wantEnd := bytes.Clone(retainedEnd)
+				retainedBegin = append(retainedBegin, 0x5a)
+				clear(retainedBegin)
+				if !bytes.Equal(retainedEnd, wantEnd) {
+					t.Fatal("retaining transaction's begin append/mutation changed end")
+				}
+				clear(retainedEnd)
+				if !bytes.Equal(pending.prefix, prefix) {
+					t.Fatal("retaining transaction changed the packed prefix")
+				}
+				var sizes sizeInfo
+				value, version, err := pending.finish(&sizes)
+				if err != nil || !bytes.Equal(value, data) {
+					t.Fatalf("read after endpoint mutation = %x, error=%v", value, err)
+				}
+				wantSizes := sizeInfo{KeyCount: 1, KeySize: len(rs.Pack(tuple.Tuple{keyBytes, unsplitRecord})), ValueSize: len(data)}
+				if wantLocal < 0 {
+					if version != nil {
+						t.Fatalf("initially absent local version = %v", version)
+					}
+				} else {
+					if version == nil || version.IsComplete() || version.GetLocalVersion() != wantLocal {
+						t.Fatalf("captured version = %v, want incomplete %d", version, wantLocal)
+					}
+					wantSizes.KeyCount++
+					wantSizes.KeySize += len(versionKey)
+					wantSizes.ValueSize += VersionBytes + 1
+					wantSizes.VersionedInline = true
+				}
+				if sizes != wantSizes {
+					t.Fatalf("read sizes = %+v, want %+v", sizes, wantSizes)
+				}
+			})
+		}
+	}
+}
+
 func TestFDB_RecordLoadParity(t *testing.T) {
 	t.Parallel()
 	db := newLoadParityDatabase(t)
 	t.Run("range-boundaries", func(t *testing.T) { testLoadParityBoundaries(t, db) })
 	t.Run("inline-versions", func(t *testing.T) { testLoadParityVersions(t, db) })
+	t.Run("callbacks", func(t *testing.T) { testLoadParityCallbacks(t, db) })
 	t.Run("corruption", func(t *testing.T) { testLoadParityCorruption(t, db) })
 	t.Run("stored-incomplete-version", func(t *testing.T) {
 		root := subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
