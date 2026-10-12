@@ -10,6 +10,7 @@ package recordlayer
 import (
 	"fmt"
 	"maps"
+	"time"
 
 	"fdb.dev/pkg/recordlayer/internal/tuplefast"
 
@@ -380,10 +381,14 @@ func (store *FDBRecordStore) DryRunSaveRecord(
 		primaryKey[i] = v
 	}
 
+	defer store.context.Timer().RecordSince(EventSaveRecord, time.Now())
+
 	// Load existing record for existence/type validation.
 	recordsSubspace := store.subspace.Sub(RecordKey)
 	splitEnabled := store.metaData.IsSplitLongRecords()
 	var oldsizeInfo sizeInfo
+	loadTimer := recordLoadTimer{timer: store.context.Timer(), start: time.Now()}
+	defer loadTimer.finish()
 	load := store.startRecordLoad(store.context.Transaction(), primaryKey)
 	oldValue, oldVersion, err := load.raw.finish(&oldsizeInfo)
 	if err != nil {
@@ -409,6 +414,8 @@ func (store *FDBRecordStore) DryRunSaveRecord(
 			return nil, fmt.Errorf("load old record version for dry-run save: %w", err)
 		}
 	}
+
+	loadTimer.finish()
 
 	if existenceCheck.ErrorIfExists() && oldRecordExists {
 		return nil, &RecordAlreadyExistsError{
@@ -489,6 +496,7 @@ func (store *FDBRecordStore) DryRunSaveRecord(
 // which only loads the record without calling validateRecordUpdateAllowed.
 // Matches Java's FDBRecordStore.dryRunDeleteRecordAsync().
 func (store *FDBRecordStore) DryRunDeleteRecord(primaryKey tuple.Tuple) (bool, error) {
+	defer store.context.Timer().RecordSince(EventLoadRecord, time.Now())
 	var sizeInfo sizeInfo
 	load := store.startRecordLoad(store.context.Transaction(), primaryKey)
 	value, version, err := load.raw.finish(&sizeInfo)

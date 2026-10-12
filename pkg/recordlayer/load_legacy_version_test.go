@@ -65,9 +65,11 @@ func runLegacyVersionAPI(t *testing.T, store *FDBRecordStore, api string, exists
 		pending := store.LoadRecordAsync(pk, scan)
 		got, err = pending.Get()
 		charged := scan.BytesScanned()
-		wantCount := int64(0)
+		elapsed := timer.GetTimeNanos(EventLoadRecord)
+		if elapsed <= 0 {
+			t.Fatalf("load time = %d, want recorded duration", elapsed)
+		}
 		if got != nil && err == nil {
-			wantCount = 1
 			if charged != int64(got.KeySize+got.ValueSize) {
 				t.Fatalf("loaded byte charge = %d, want %d", charged, got.KeySize+got.ValueSize)
 			}
@@ -80,8 +82,8 @@ func runLegacyVersionAPI(t *testing.T, store *FDBRecordStore, api string, exists
 				t.Fatalf("public LoadRecordAsync changed result: (%p, %v), first (%p, %v)", again, againErr, got, err)
 			}
 		}
-		if timer.GetCount(EventLoadRecord) != wantCount || scan.BytesScanned() != charged {
-			t.Fatalf("repeated Get accounting: timer=%d bytes=%d; want %d,%d", timer.GetCount(EventLoadRecord), scan.BytesScanned(), wantCount, charged)
+		if timer.GetCount(EventLoadRecord) != 1 || timer.GetTimeNanos(EventLoadRecord) != elapsed || scan.BytesScanned() != charged {
+			t.Fatalf("repeated Get accounting: timer=%d time=%d bytes=%d; want 1,%d,%d", timer.GetCount(EventLoadRecord), timer.GetTimeNanos(EventLoadRecord), scan.BytesScanned(), elapsed, charged)
 		}
 		if err != nil && got != nil {
 			t.Fatalf("failed public LoadRecordAsync returned record: %v", got)
