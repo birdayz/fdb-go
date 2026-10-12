@@ -152,9 +152,11 @@ go_test(
 # gazelle:exclude ryw_sorted_index_unit_test.go
 # gazelle:exclude ryw_issue_view_unit_test.go
 # gazelle:exclude ryw_range_cut_unit_test.go
+# gazelle:exclude ryw_bound_unit_test.go
 go_test(
     name = "ryw_issue_view_unit_test",
     srcs = [
+        "ryw_bound_unit_test.go",
         "ryw_getrange_helper_test.go",
         "ryw_issue_view_unit_test.go",
         "ryw_range_cut_unit_test.go",
