@@ -17,8 +17,8 @@ it updates release decisions and evidence, not a fresh audit of every row.
 
 - Public API reduction D5 remains for v0.3.0, the HN launch release (§1).
   v0.2.0 preparation does not declare launch readiness.
-- Every open H row fixed, or listed as a known gap in `STATUS.md` (release-ws). Six are open: 5 s
-  per-RPC timeouts on commits and reads, commit ignoring ctx and timeout, 38 KB per read-only
+- Every open H row fixed, or listed as a known gap in `STATUS.md` (release-ws). Five are open: 5 s
+  per-RPC read timeouts, 38 KB per read-only
   transaction, real-cluster fault testing, planning cost, unbounded default limits.
 - Release (release-ws prepares, the owner tags), per `RELEASE.md`: the cut PR (step 1), then green
   CI including the full lane and the dry run on the cut commit (steps 2–3), then
@@ -49,8 +49,8 @@ The owner delegated release decisions; API reduction remains a v0.3.0 launch wor
 | H | A GRV wait over 30 s returns a non-retryable `DeadlineExceeded` during recoveries | done [#789]: the batch waits on the database context; regression holds a GRV past 31 s. [#844] fixes the coordinator wedge behind it | perf-lead2 |
 | H | Tenant `commit_unknown_result` fence uses the unprefixed key, so a commit can land after 1021 is returned | done [#800] | hn-client-ws2 |
 | H | Endpoint-not-found replies are dropped | done [#835], [#857] (hedge fail-over fix) | hn-client-ws2 |
-| H | 5 s per-RPC timeouts that libfdb_c lacks | in progress: GRV replies done [#789]; commits and reads still time out | hn-client-ws2 |
-| H | Commit ignores ctx and timeout | in progress: client work under way; current public wait still strips transaction timeout, Cancel and Reset. Remains a known gap in STATUS.md | client-gpt |
+| H | 5 s per-RPC timeouts that libfdb_c lacks | in progress: GRV replies done [#789], commits done [#882]; reads still time out | hn-client-ws2 |
+| H | Commit ignores ctx and timeout | done [#882]: transaction timeout and Cancel end the public wait; Reset, collection and database close drop native work | client-gpt |
 | H | 38 KB allocated per read-only transaction | in progress: [#832] and [#843] cut allocations; re-measure pending | hn-client-ws2 |
 | H | Lazy futures | done [#840] | hn-client-ws2 |
 | H | `APIVersion` above 730 accepted | done [#823] | hn-client-ws2 |
@@ -174,3 +174,4 @@ The owner delegated release decisions; API reduction remains a v0.3.0 launch wor
 [#843]: https://github.com/birdayz/fdb-go/pull/843
 [#844]: https://github.com/birdayz/fdb-go/pull/844
 [#857]: https://github.com/birdayz/fdb-go/pull/857
+[#882]: https://github.com/birdayz/fdb-go/pull/882

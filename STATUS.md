@@ -21,18 +21,12 @@ compatibility with every feature or every server release. See
 
 ## Known gaps in v0.2.0
 
-These six launch gaps remain open in the release candidate. Further work is
+These five launch gaps remain open in the release candidate. Further work is
 planned for v0.3.0; each has a mitigation where one exists.
 
-- **Per-RPC 5 s timeouts on commits and reads, which libfdb_c does not have.** A
-  commit whose reply takes longer fails with `commit_unknown_result` (1021); a
-  slower read reply is abandoned and re-sent, to another replica first. Make
-  transactions idempotent and retry 1021 as maybe-committed, as with libfdb_c.
-- **A commit's public wait ignores transaction timeout, `Cancel` and `Reset`.**
-  The send uses `context.WithoutCancel`; the 5 s RPC limit can trigger an
-  uncertain-result fence whose retries outlive it. A caller deadline alone does
-  not terminate that wait. Use a separate database handle when isolation is
-  required; closing it is an escape, not proof that the commit did not happen.
+- **Per-RPC 5 s read timeouts, which libfdb_c does not have.** A read reply
+  slower than 5 s is abandoned and re-sent, to another replica first; libfdb_c
+  keeps waiting. Commits have no such timeout (#882).
 - **Read-only transaction allocation remains a launch concern.** The historical
   observation was about 38 KB per transaction before allocation cuts; there is
   no current-cut allocation measurement here. Go heap counters exclude the
