@@ -19,7 +19,7 @@ func TestFoundationDBDatabaseConnection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to start container: %v", err)
 	}
-	defer container.Terminate(ctx)
+	defer foundationdb.TerminateT(t, ctx, container)
 
 	path, err := container.ClusterFilePath(ctx)
 	if err != nil {

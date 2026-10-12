@@ -2,6 +2,7 @@ package foundationdb
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -18,7 +19,11 @@ import (
 //	    foundationdb.WithStorageEngine("ssd"),
 //	    foundationdb.WithRedundancyMode("double"),
 //	)
-//	defer cluster.Terminate(ctx)
+//	defer func() {
+//	    if err := cluster.Terminate(ctx); err != nil {
+//	        log.Printf("terminate cluster: %v", err)
+//	    }
+//	}()
 //	cf, _ := cluster.ClusterFile(ctx)
 type Cluster struct {
 	Coordinator *Container
@@ -61,8 +66,7 @@ func RunCluster(ctx context.Context, size int, opts ...testcontainers.ContainerC
 	coordOpts := rebuildOpts(cfg, nw, "fdb-coordinator")
 	coordinator, err := Run(ctx, "", coordOpts...)
 	if err != nil {
-		nw.Remove(ctx)
-		return nil, fmt.Errorf("start coordinator: %w", err)
+		return nil, errors.Join(fmt.Errorf("start coordinator: %w", err), cluster.Terminate(ctx))
 	}
 	cluster.Coordinator = coordinator
 	cluster.Replicas = append(cluster.Replicas, coordinator)
@@ -87,30 +91,26 @@ func RunCluster(ctx context.Context, size int, opts ...testcontainers.ContainerC
 
 		replica, err := Run(ctx, "", replicaOpts...)
 		if err != nil {
-			cluster.Terminate(ctx)
-			return nil, fmt.Errorf("start replica %d: %w", i, err)
+			return nil, errors.Join(fmt.Errorf("start replica %d: %w", i, err), cluster.Terminate(ctx))
 		}
 		cluster.Replicas = append(cluster.Replicas, replica)
 	}
 
 	// Wait for all replicas to be visible in the cluster.
 	if err := cluster.waitForCluster(ctx, size); err != nil {
-		cluster.Terminate(ctx)
-		return nil, err
+		return nil, errors.Join(err, cluster.Terminate(ctx))
 	}
 
 	// Reconfigure redundancy now that all processes are up.
 	if cfg.redundancyMode != "single" && size > 1 {
 		cmd := fmt.Sprintf("configure %s", cfg.redundancyMode)
 		if err := coordinator.configureWithRetry(ctx, "configure redundancy", cmd); err != nil {
-			cluster.Terminate(ctx)
-			return nil, err
+			return nil, errors.Join(err, cluster.Terminate(ctx))
 		}
 		// Wait for the cluster to stabilize after redundancy change.
 		// FDB needs time to replicate data to meet the new policy.
 		if err := cluster.waitForHealthy(ctx); err != nil {
-			cluster.Terminate(ctx)
-			return nil, fmt.Errorf("wait for healthy after redundancy change: %w", err)
+			return nil, errors.Join(fmt.Errorf("wait for healthy after redundancy change: %w", err), cluster.Terminate(ctx))
 		}
 	}
 
@@ -189,18 +189,29 @@ func (c *Cluster) ClusterFile(ctx context.Context) (string, error) {
 	return c.Coordinator.ClusterFile(ctx)
 }
 
-// Terminate stops all containers and removes the network.
-func (c *Cluster) Terminate(ctx context.Context) error {
-	var firstErr error
+// GetContainerID returns the comma-separated IDs of all cluster containers.
+func (c *Cluster) GetContainerID() string {
+	ids := make([]string, 0, len(c.Replicas))
 	for _, r := range c.Replicas {
-		if err := r.Terminate(ctx); err != nil && firstErr == nil {
-			firstErr = err
+		ids = append(ids, r.GetContainerID())
+	}
+	return strings.Join(ids, ",")
+}
+
+// Terminate stops all containers and removes the network, reporting every failure.
+func (c *Cluster) Terminate(ctx context.Context) error {
+	var errs []error
+	for _, r := range c.Replicas {
+		if err := Terminate(ctx, r); err != nil {
+			errs = append(errs, err)
 		}
 	}
 	if c.network != nil {
-		c.network.Remove(ctx)
+		if err := c.network.Remove(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("remove network %s: %w", c.network.ID, err))
+		}
 	}
-	return firstErr
+	return errors.Join(errs...)
 }
 
 // InternalClusterFile returns the cluster file for containers on the same network.

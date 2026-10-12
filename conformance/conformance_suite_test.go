@@ -58,7 +58,7 @@ var _ = AfterSuite(func() {
 
 	if sharedContainer != nil {
 		GinkgoWriter.Println("🧹 Terminating shared FDB container...")
-		_ = sharedContainer.Terminate(suiteCtx)
+		Expect(foundationdbtc.Terminate(suiteCtx, sharedContainer)).To(Succeed())
 	}
 })
 

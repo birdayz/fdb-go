@@ -2,6 +2,8 @@ package ddl_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -20,16 +22,30 @@ import (
 // fdbTestDB is set by TestMain for FDB integration tests.
 var fdbTestDB *recordlayer.FDBDatabase
 
-func TestMain(m *testing.M) {
+func TestMain(m *testing.M) { os.Exit(runTests(m)) }
+
+func runTests(m *testing.M) (code int) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
 	container, err := foundationdbtc.Run(ctx, "")
 	if err != nil {
+		var terminationErr *foundationdbtc.TerminationError
+		if errors.As(err, &terminationErr) {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			return 1
+		}
 		// No Docker available — in-memory tests still run.
-		os.Exit(m.Run())
+		return m.Run()
 	}
-	defer container.Terminate(context.Background()) //nolint:errcheck
+	defer func() {
+		if err := foundationdbtc.Terminate(context.Background(), container); err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			if code == 0 {
+				code = 1
+			}
+		}
+	}()
 
 	clusterFile, err := container.ClusterFile(ctx)
 	if err != nil {
@@ -53,7 +69,7 @@ func TestMain(m *testing.M) {
 	}
 	fdbTestDB = recordlayer.NewFDBDatabase(rawDB)
 
-	os.Exit(m.Run())
+	return m.Run()
 }
 
 func newFDBEnv(t *testing.T) (api.StoreCatalog, *keyspace.RelationalKeyspace, *ddl.RecordLayerMetadataOperationsFactory) {

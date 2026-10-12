@@ -2,6 +2,7 @@ package seedcorpus
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -19,16 +20,28 @@ var goSQLClusterFilePath string
 func TestMain(m *testing.M) { os.Exit(runTests(m)) }
 
 // runTests returns the exit code so its deferred cleanup runs before os.Exit.
-func runTests(m *testing.M) int {
+func runTests(m *testing.M) (code int) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
 	container, err := foundationdbtc.Run(ctx, "")
 	if err != nil {
+		var terminationErr *foundationdbtc.TerminationError
+		if errors.As(err, &terminationErr) {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			return 1
+		}
 		// No Docker — run non-FDB tests only.
 		return m.Run()
 	}
-	defer container.Terminate(context.Background()) //nolint:errcheck
+	defer func() {
+		if err := foundationdbtc.Terminate(context.Background(), container); err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			if code == 0 {
+				code = 1
+			}
+		}
+	}()
 
 	path, err := container.ClusterFilePath(ctx)
 	if err != nil {

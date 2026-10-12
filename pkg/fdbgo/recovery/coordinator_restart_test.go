@@ -99,7 +99,7 @@ func startCluster(t *testing.T, ctx context.Context) *tcfdb.Container {
 	t.Cleanup(func() {
 		cleanup, stop := context.WithTimeout(context.Background(), 30*time.Second)
 		defer stop()
-		if err := c.Terminate(cleanup); err != nil {
+		if err := tcfdb.Terminate(cleanup, c); err != nil {
 			t.Errorf("terminate container: %v", err)
 		}
 	})

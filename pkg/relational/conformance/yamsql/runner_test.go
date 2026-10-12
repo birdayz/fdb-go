@@ -3,6 +3,7 @@ package yamsql_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,12 +18,19 @@ import (
 
 var clusterFilePath string
 
-func TestMain(m *testing.M) {
+func TestMain(m *testing.M) { os.Exit(runTests(m)) }
+
+func runTests(m *testing.M) (code int) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
 	container, err := foundationdbtc.Run(ctx, "")
 	if err != nil {
+		var terminationErr *foundationdbtc.TerminationError
+		if errors.As(err, &terminationErr) {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			return 1
+		}
 		// RFC-180 Y6: in CI a startup failure must be FATAL, never a silent
 		// all-skip — a Docker hiccup would otherwise convert the 319-scenario
 		// corpus into a green run that executed nothing (the dark-safety-net
@@ -30,31 +38,38 @@ func TestMain(m *testing.M) {
 		// only for genuinely Docker-less local machines.
 		if os.Getenv("CI") != "" {
 			fmt.Fprintf(os.Stderr, "FATAL: FDB container startup failed in CI — the yamsql corpus would silently skip: %v\n", err)
-			os.Exit(1)
+			return 1
 		}
-		os.Exit(m.Run())
+		return m.Run()
 	}
-	defer container.Terminate(context.Background()) //nolint:errcheck
+	defer func() {
+		if err := foundationdbtc.Terminate(context.Background(), container); err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			if code == 0 {
+				code = 1
+			}
+		}
+	}()
 
 	clusterContent, err := container.ClusterFile(ctx)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ClusterFile: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	tmp, err := os.CreateTemp("", "fdb-yamsql-*.cluster")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "CreateTemp: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	defer os.Remove(tmp.Name())
 	if _, err := tmp.WriteString(clusterContent); err != nil {
 		fmt.Fprintf(os.Stderr, "WriteString: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	tmp.Close()
 	clusterFilePath = tmp.Name()
 
-	os.Exit(m.Run())
+	return m.Run()
 }
 
 // TestYamsqlConformance walks testdata/*.yaml and runs each scenario

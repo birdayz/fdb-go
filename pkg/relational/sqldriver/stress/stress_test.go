@@ -41,7 +41,9 @@ var clusterFilePath string
 // container. Unset (the normal case) keeps the testcontainer path unchanged.
 const clusterFileEnv = "FDB_STRESS_CLUSTER_FILE"
 
-func TestMain(m *testing.M) {
+func TestMain(m *testing.M) { os.Exit(runTests(m)) }
+
+func runTests(m *testing.M) (code int) {
 	if external := os.Getenv(clusterFileEnv); external != "" {
 		// Fail loudly rather than falling back to a container: someone who set
 		// this variable asked for a specific cluster, and silently stressing a
@@ -53,14 +55,14 @@ func TestMain(m *testing.M) {
 		// client is going to read this file, so read it here.
 		if content, err := os.ReadFile(external); err != nil {
 			fmt.Fprintf(os.Stderr, "stress: %s=%q is not readable: %v\n", clusterFileEnv, external, err)
-			os.Exit(1)
+			return 1
 		} else if len(bytes.TrimSpace(content)) == 0 {
 			fmt.Fprintf(os.Stderr, "stress: %s=%q is empty — not a cluster file\n", clusterFileEnv, external)
-			os.Exit(1)
+			return 1
 		}
 		fmt.Fprintf(os.Stderr, "stress: using external cluster file %s\n", external)
 		clusterFilePath = external
-		os.Exit(m.Run())
+		return m.Run()
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -68,31 +70,43 @@ func TestMain(m *testing.M) {
 
 	container, err := foundationdbtc.Run(ctx, "", foundationdbtc.WithStorageEngine("ssd"))
 	if err != nil {
+		var terminationErr *foundationdbtc.TerminationError
+		if errors.As(err, &terminationErr) {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			return 1
+		}
 		fmt.Fprintf(os.Stderr, "stress: no Docker, skipping\n")
-		os.Exit(0)
+		return 0
 	}
-	defer container.Terminate(context.Background()) //nolint:errcheck
+	defer func() {
+		if err := foundationdbtc.Terminate(context.Background(), container); err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			if code == 0 {
+				code = 1
+			}
+		}
+	}()
 
 	clusterContent, err := container.ClusterFile(ctx)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ClusterFile: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 
 	tmp, err := os.CreateTemp("", "fdb-stress-*.cluster")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "CreateTemp: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	defer os.Remove(tmp.Name())
 	if _, err := tmp.WriteString(clusterContent); err != nil {
 		fmt.Fprintf(os.Stderr, "WriteString: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	tmp.Close()
 	clusterFilePath = tmp.Name()
 
-	os.Exit(m.Run())
+	return m.Run()
 }
 
 type stressHarness struct {

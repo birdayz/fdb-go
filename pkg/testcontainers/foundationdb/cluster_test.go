@@ -21,7 +21,7 @@ func TestRunCluster_ThreeReplicas(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunCluster: %v", err)
 	}
-	defer cluster.Terminate(ctx)
+	defer TerminateT(t, ctx, cluster)
 
 	// Verify cluster size.
 	if cluster.Size() != 3 {
@@ -80,7 +80,7 @@ func TestRunCluster_Single(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunCluster: %v", err)
 	}
-	defer cluster.Terminate(ctx)
+	defer TerminateT(t, ctx, cluster)
 
 	if cluster.Size() != 1 {
 		t.Fatalf("Size: got %d, want 1", cluster.Size())

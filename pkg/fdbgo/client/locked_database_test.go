@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"fdb.dev/pkg/fdbgo/wire"
+	tcfdb "fdb.dev/pkg/testcontainers/foundationdb"
 )
 
 // TestFDB_DatabaseLocked_ReadPathEnforcement pins the locked-database read
@@ -29,7 +30,7 @@ func TestFDB_DatabaseLocked_ReadPathEnforcement(t *testing.T) {
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cleanupCancel()
-		container.Terminate(cleanupCtx)
+		tcfdb.TerminateT(t, cleanupCtx, container)
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)

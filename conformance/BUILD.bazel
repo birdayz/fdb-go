@@ -607,6 +607,7 @@ go_test(
     ],
     deps = [
         "//gen",
+        "//gen/demopb",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",

@@ -18,12 +18,16 @@ func TestExecOutputEndsAtTheContextDeadline(t *testing.T) {
 	defer cancel()
 	container, err := Run(ctx, "")
 	if err != nil {
+		var terminationErr *TerminationError
+		if errors.As(err, &terminationErr) {
+			t.Fatalf("container startup cleanup failed: %v", err)
+		}
 		t.Skipf("FDB not available (no Docker): %v", err)
 	}
 	defer func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cleanupCancel()
-		_ = container.Terminate(cleanupCtx)
+		TerminateT(t, cleanupCtx, container)
 	}()
 
 	short, shortCancel := context.WithTimeout(ctx, 2*time.Second)

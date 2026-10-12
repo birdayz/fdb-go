@@ -2,6 +2,7 @@ package simfdb_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	mrand "math/rand/v2"
 	"os"
@@ -58,6 +59,10 @@ func getRealDB(t *testing.T) fdb.BackendDatabase {
 		realDB = d
 	})
 	if realDBErr != nil || realDB == nil {
+		var terminationErr *foundationdbtc.TerminationError
+		if errors.As(realDBErr, &terminationErr) {
+			t.Fatalf("FDB startup cleanup failed: %v", realDBErr)
+		}
 		if simfdb.DockerRequired {
 			t.Fatalf("FDB container unavailable under the fdbdocker build tag: %v.\n"+
 				"    This build asserts the differential RAN. Skipping it produces a green suite "+

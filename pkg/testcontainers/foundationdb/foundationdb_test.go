@@ -18,7 +18,7 @@ func TestRun_DefaultOptions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	defer container.Terminate(ctx)
+	defer TerminateT(t, ctx, container)
 
 	// Verify default config.
 	if container.APIVersion() != defaultAPIVersion {
@@ -78,7 +78,7 @@ func TestRun_WithCustomOptions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	defer container.Terminate(ctx)
+	defer TerminateT(t, ctx, container)
 
 	if container.Database() != "custom_db" {
 		t.Fatalf("Database: got %q, want %q", container.Database(), "custom_db")
@@ -98,7 +98,7 @@ func TestRun_WithoutInit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	defer container.Terminate(ctx)
+	defer TerminateT(t, ctx, container)
 
 	// Container is running but database is NOT configured.
 	state, err := container.State(ctx)
@@ -126,7 +126,7 @@ func TestClusterFilePath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	defer container.Terminate(ctx)
+	defer TerminateT(t, ctx, container)
 
 	path, err := container.ClusterFilePath(ctx)
 	if err != nil {
@@ -158,7 +158,7 @@ func TestMustClusterFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	defer container.Terminate(ctx)
+	defer TerminateT(t, ctx, container)
 
 	cf := container.MustClusterFile(ctx)
 	if cf == "" {
@@ -176,7 +176,7 @@ func TestFDBCLIExec(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	defer container.Terminate(ctx)
+	defer TerminateT(t, ctx, container)
 
 	output, err := container.FDBCLIExec(ctx, "status minimal")
 	if err != nil {
@@ -198,7 +198,7 @@ func TestInitializeDatabase_Idempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	defer container.Terminate(ctx)
+	defer TerminateT(t, ctx, container)
 
 	// Calling InitializeDatabase again should not fail.
 	err = container.InitializeDatabase(ctx)
@@ -217,7 +217,7 @@ func TestInternalClusterFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	defer container.Terminate(ctx)
+	defer TerminateT(t, ctx, container)
 
 	icf := container.InternalClusterFile()
 	cf, _ := container.ClusterFile(ctx)
@@ -249,7 +249,7 @@ func TestNetworkName_DefaultBridge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	defer container.Terminate(ctx)
+	defer TerminateT(t, ctx, container)
 
 	if name := container.NetworkName(); name != "" {
 		t.Fatalf("NetworkName: got %q, want empty", name)
@@ -266,13 +266,13 @@ func TestMultipleContainers_Isolation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run container 1: %v", err)
 	}
-	defer c1.Terminate(ctx)
+	defer TerminateT(t, ctx, c1)
 
 	c2, err := Run(ctx, "")
 	if err != nil {
 		t.Fatalf("Run container 2: %v", err)
 	}
-	defer c2.Terminate(ctx)
+	defer TerminateT(t, ctx, c2)
 
 	// Different containers should have different IPs.
 	if c1.containerIP == c2.containerIP {
@@ -304,7 +304,7 @@ func TestPause_Unpause(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	defer container.Terminate(ctx)
+	defer TerminateT(t, ctx, container)
 
 	// Pause the container.
 	if err := container.Pause(ctx); err != nil {
@@ -357,7 +357,7 @@ func TestWithNetwork_SharedNetwork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	defer container.Terminate(ctx)
+	defer TerminateT(t, ctx, container)
 
 	if container.NetworkName() != nw.Name {
 		t.Fatalf("NetworkName: got %q, want %q", container.NetworkName(), nw.Name)
@@ -408,7 +408,7 @@ func TestWithVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run with version 7.1.61: %v", err)
 	}
-	defer container.Terminate(ctx)
+	defer TerminateT(t, ctx, container)
 
 	if container.Version() != "7.1.61" {
 		t.Fatalf("Version: got %q, want 7.1.61", container.Version())

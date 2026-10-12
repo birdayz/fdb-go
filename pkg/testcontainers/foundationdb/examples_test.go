@@ -12,13 +12,17 @@ func ExampleRun() {
 	// Start a FoundationDB container — auto-initialized, ready to use.
 	container, err := Run(ctx, "")
 	if err != nil {
-		log.Fatal(err)
+		log.Panic(err)
 	}
-	defer container.Terminate(ctx)
+	defer func() {
+		if err := Terminate(ctx, container); err != nil {
+			log.Panic(err)
+		}
+	}()
 
 	clusterFile, err := container.ClusterFile(ctx)
 	if err != nil {
-		log.Fatal(err)
+		log.Panic(err)
 	}
 
 	fmt.Printf("Cluster file: %s\n", clusterFile)
@@ -33,9 +37,13 @@ func ExampleRun_withCustomConfiguration() {
 		WithVersion("7.1.61"),
 	)
 	if err != nil {
-		log.Fatal(err)
+		log.Panic(err)
 	}
-	defer container.Terminate(ctx)
+	defer func() {
+		if err := Terminate(ctx, container); err != nil {
+			log.Panic(err)
+		}
+	}()
 
 	fmt.Printf("Database: %s\n", container.Database())
 	fmt.Printf("API Version: %d\n", container.APIVersion())
@@ -47,13 +55,17 @@ func ExampleContainer_FDBCLIExec() {
 
 	container, err := Run(ctx, "")
 	if err != nil {
-		log.Fatal(err)
+		log.Panic(err)
 	}
-	defer container.Terminate(ctx)
+	defer func() {
+		if err := Terminate(ctx, container); err != nil {
+			log.Panic(err)
+		}
+	}()
 
 	output, err := container.FDBCLIExec(ctx, "status minimal")
 	if err != nil {
-		log.Fatal(err)
+		log.Panic(err)
 	}
 
 	fmt.Printf("FDB status: %s\n", output)
@@ -65,17 +77,25 @@ func ExampleWithNetwork() {
 	// Create a shared network for multi-container setups.
 	nw, err := CreateNetwork(ctx)
 	if err != nil {
-		log.Fatal(err)
+		log.Panic(err)
 	}
-	defer nw.Remove(ctx)
+	defer func() {
+		if err := nw.Remove(ctx); err != nil {
+			log.Panicf("remove network %s: %v", nw.ID, err)
+		}
+	}()
 
 	container, err := Run(ctx, "",
 		WithNetwork(nw, "fdb-primary"),
 	)
 	if err != nil {
-		log.Fatal(err)
+		log.Panic(err)
 	}
-	defer container.Terminate(ctx)
+	defer func() {
+		if err := Terminate(ctx, container); err != nil {
+			log.Panic(err)
+		}
+	}()
 
 	fmt.Printf("Network: %s\n", container.NetworkName())
 	fmt.Printf("Internal address: %s\n", container.InternalAddress())

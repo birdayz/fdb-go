@@ -49,7 +49,7 @@ func TestBindingTester(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start FDB: %v", err)
 	}
-	defer fdbContainer.Terminate(ctx)
+	defer tcfdb.TerminateT(t, ctx, fdbContainer)
 
 	clusterFile := fdbContainer.InternalClusterFile()
 	networkName := fdbContainer.NetworkName()
@@ -79,7 +79,7 @@ func TestBindingTester(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start tester container: %v", err)
 	}
-	defer testerContainer.Terminate(ctx)
+	defer tcfdb.TerminateT(t, ctx, &tcfdb.Container{Container: testerContainer})
 
 	err = testerContainer.CopyToContainer(ctx, []byte(clusterFile), "/etc/foundationdb/fdb.cluster", 0o644)
 	if err != nil {

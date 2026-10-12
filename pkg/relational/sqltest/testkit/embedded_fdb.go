@@ -8,6 +8,7 @@ package testkit
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -37,38 +38,52 @@ var clusterFilePath string
 // mechanism lives in
 // pkg/recordlayer/query/plan/cascades/values/w1_unresolved_reference_test.go.
 
-func Main(m *testing.M) {
+func Main(m *testing.M) { os.Exit(runTests(m)) }
+
+func runTests(m *testing.M) (code int) {
 	checkRegistered()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
 	container, err := foundationdbtc.Run(ctx, "")
 	if err != nil {
+		var terminationErr *foundationdbtc.TerminationError
+		if errors.As(err, &terminationErr) {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			return 1
+		}
 		// No Docker — run non-FDB tests only.
-		os.Exit(m.Run())
+		return m.Run()
 	}
-	defer container.Terminate(context.Background()) //nolint:errcheck
+	defer func() {
+		if err := foundationdbtc.Terminate(context.Background(), container); err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			if code == 0 {
+				code = 1
+			}
+		}
+	}()
 
 	clusterContent, err := container.ClusterFile(ctx)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ClusterFile: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 
 	tmp, err := os.CreateTemp("", "fdb-sqldriver-*.cluster")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "CreateTemp: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	defer os.Remove(tmp.Name())
 	if _, err := tmp.WriteString(clusterContent); err != nil {
 		fmt.Fprintf(os.Stderr, "WriteString: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	tmp.Close()
 	clusterFilePath = tmp.Name()
 
-	os.Exit(runUnderLegIdentityCensus(m))
+	return runUnderLegIdentityCensus(m)
 }
 
 // runUnderLegIdentityCensus runs the suite under the leg-identity census and

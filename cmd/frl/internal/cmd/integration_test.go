@@ -53,6 +53,11 @@ func TestMain(m *testing.M) {
 		foundationdbtc.WithStorageEngine("memory"),
 	)
 	if err != nil {
+		var terminationErr *foundationdbtc.TerminationError
+		if errors.As(err, &terminationErr) {
+			fmt.Fprintf(os.Stderr, "integration startup cleanup failed: %v\n", err)
+			os.Exit(1)
+		}
 		// No Docker — run unit tests only; integration tests skip via
 		// bindConfig/requireFixture ("FDB not available (no Docker)").
 		fmt.Fprintf(os.Stderr, "frl integration fixture unavailable (running unit tests only): %v\n", err)

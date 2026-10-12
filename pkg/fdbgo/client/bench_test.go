@@ -30,7 +30,7 @@ import (
 
 func BenchmarkGetValue_PureGo(b *testing.B) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
+	b.Cleanup(cancel)
 
 	db := openBenchDB(b, ctx)
 	defer db.Close()
@@ -61,13 +61,13 @@ func BenchmarkGetValue_PureGo(b *testing.B) {
 
 func BenchmarkGetValue_CGo(b *testing.B) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
+	b.Cleanup(cancel)
 
 	container, err := tcfdb.Run(ctx, "", tcfdb.WithStorageEngine("ssd"), tcfdb.WithDirectIP())
 	if err != nil {
 		b.Fatalf("start container: %v", err)
 	}
-	b.Cleanup(func() { container.Terminate(ctx) })
+	b.Cleanup(func() { tcfdb.TerminateT(b, ctx, container) })
 
 	connStr, err := container.ClusterFile(ctx)
 	if err != nil {
@@ -113,7 +113,7 @@ func openBenchDB(b *testing.B, ctx context.Context) *Database {
 	if err != nil {
 		b.Fatalf("start FDB container: %v", err)
 	}
-	b.Cleanup(func() { container.Terminate(ctx) })
+	b.Cleanup(func() { tcfdb.TerminateT(b, ctx, container) })
 
 	connStr, err := container.ClusterFile(ctx)
 	if err != nil {

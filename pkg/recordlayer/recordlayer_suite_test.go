@@ -78,7 +78,7 @@ var _ = SynchronizedAfterSuite(func() {
 }, func() {
 	// Process #1 only: terminate container
 	if sharedContainer != nil {
-		_ = sharedContainer.Terminate(context.Background())
+		Expect(foundationdbtc.Terminate(context.Background(), sharedContainer)).To(Succeed())
 	}
 })
 

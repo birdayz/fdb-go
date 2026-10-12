@@ -30,7 +30,7 @@ func TestQuickstartRunsTwice(t *testing.T) {
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		if err := container.Terminate(ctx); err != nil {
+		if err := foundationdbtc.Terminate(ctx, container); err != nil {
 			t.Error(err)
 		}
 	})

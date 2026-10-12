@@ -3,6 +3,7 @@ package factory_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -17,39 +18,53 @@ import (
 
 var clusterFilePath string
 
-func TestMain(m *testing.M) {
+func TestMain(m *testing.M) { os.Exit(runTests(m)) }
+
+func runTests(m *testing.M) (code int) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
 	container, err := foundationdbtc.Run(ctx, "")
 	if err != nil {
+		var terminationErr *foundationdbtc.TerminationError
+		if errors.As(err, &terminationErr) {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			return 1
+		}
 		if os.Getenv("CI") != "" {
 			fmt.Fprintf(os.Stderr, "FATAL: FDB container startup failed in CI: %v\n", err)
-			os.Exit(1)
+			return 1
 		}
-		os.Exit(m.Run())
+		return m.Run()
 	}
-	defer container.Terminate(context.Background()) //nolint:errcheck
+	defer func() {
+		if err := foundationdbtc.Terminate(context.Background(), container); err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			if code == 0 {
+				code = 1
+			}
+		}
+	}()
 
 	clusterContent, err := container.ClusterFile(ctx)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "cluster file: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	tmp, err := os.CreateTemp("", "fdb-factory-*.cluster")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "temp file: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	defer os.Remove(tmp.Name())
 	if _, err := tmp.WriteString(clusterContent); err != nil {
 		fmt.Fprintf(os.Stderr, "write cluster file: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	tmp.Close()
 	clusterFilePath = tmp.Name()
 
-	os.Exit(m.Run())
+	return m.Run()
 }
 
 // TestFDB_SecondPlanIndexFreePreconditionStaysRetired pins why the second-plan

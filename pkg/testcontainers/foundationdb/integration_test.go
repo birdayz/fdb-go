@@ -29,7 +29,7 @@ func TestGoWriteGoReadWithTestcontainer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to start container: %v", err)
 	}
-	defer container.Terminate(ctx)
+	defer foundationdb.TerminateT(t, ctx, container)
 
 	path, err := container.ClusterFilePath(ctx)
 	if err != nil {
@@ -134,7 +134,7 @@ func TestMultipleContainersIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to start first container: %v", err)
 	}
-	defer container1.Terminate(ctx)
+	defer foundationdb.TerminateT(t, ctx, container1)
 
 	container2, err := foundationdb.Run(ctx, "",
 		foundationdb.WithDatabase("test_db_2"),
@@ -142,7 +142,7 @@ func TestMultipleContainersIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to start second container: %v", err)
 	}
-	defer container2.Terminate(ctx)
+	defer foundationdb.TerminateT(t, ctx, container2)
 
 	connStr1, err := container1.ConnectionString(ctx)
 	if err != nil {
@@ -175,7 +175,7 @@ func TestFoundationDBContainerConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to start container: %v", err)
 	}
-	defer container.Terminate(ctx)
+	defer foundationdb.TerminateT(t, ctx, container)
 
 	if container.Database() != "custom_test_db" {
 		t.Fatalf("Expected database 'custom_test_db', got: %s", container.Database())

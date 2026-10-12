@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -33,26 +34,22 @@ func startFDBContainer(ctx context.Context) (*tcfdb.Container, *ClusterFile, err
 
 	connStr, err := container.ClusterFile(ctx)
 	if err != nil {
-		container.Terminate(ctx)
-		return nil, nil, fmt.Errorf("get cluster file: %w", err)
+		return nil, nil, errors.Join(fmt.Errorf("get cluster file: %w", err), tcfdb.Terminate(ctx, container))
 	}
 
 	cf, err := ParseClusterString(connStr)
 	if err != nil {
-		container.Terminate(ctx)
-		return nil, nil, fmt.Errorf("parse cluster string: %w", err)
+		return nil, nil, errors.Join(fmt.Errorf("parse cluster string: %w", err), tcfdb.Terminate(ctx, container))
 	}
 
 	if err := container.WaitAvailable(ctx); err != nil {
-		container.Terminate(ctx)
-		return nil, nil, err
+		return nil, nil, errors.Join(err, tcfdb.Terminate(ctx, container))
 	}
 
 	// Read internal cluster file for correct cluster key.
 	_, internalReader, err := container.Exec(ctx, []string{"cat", "/var/fdb/fdb.cluster"})
 	if err != nil {
-		container.Terminate(ctx)
-		return nil, nil, fmt.Errorf("read internal cluster file: %w", err)
+		return nil, nil, errors.Join(fmt.Errorf("read internal cluster file: %w", err), tcfdb.Terminate(ctx, container))
 	}
 	internalBytes, _ := io.ReadAll(internalReader)
 	internalStr := string(internalBytes)
@@ -61,8 +58,7 @@ func startFDBContainer(ctx context.Context) (*tcfdb.Container, *ClusterFile, err
 	}
 	internalCF, err := ParseClusterString(strings.TrimSpace(internalStr))
 	if err != nil {
-		container.Terminate(ctx)
-		return nil, nil, fmt.Errorf("parse internal cluster: %w", err)
+		return nil, nil, errors.Join(fmt.Errorf("parse internal cluster: %w", err), tcfdb.Terminate(ctx, container))
 	}
 
 	connectCF := &ClusterFile{
@@ -92,7 +88,12 @@ func TestMain(m *testing.M) {
 	// Cleanup: terminate the shared container.
 	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cleanupCancel()
-	container.Terminate(cleanupCtx)
+	if err := tcfdb.Terminate(cleanupCtx, container); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		if code == 0 {
+			code = 1
+		}
+	}
 
 	os.Exit(code)
 }

@@ -317,7 +317,7 @@ func startProxyFDBContainer(t *testing.T, ctx context.Context) (*ClusterFile, *t
 	t.Cleanup(func() {
 		termCtx, termCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer termCancel()
-		container.Terminate(termCtx)
+		tcfdb.TerminateT(t, termCtx, container)
 	})
 
 	connStr, err := container.ClusterFile(ctx)
@@ -955,7 +955,7 @@ func TestRead_BoundedByTimeout_NoHang(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start FDB container: %v", err)
 	}
-	defer container.Terminate(ctx)
+	defer tcfdb.TerminateT(t, ctx, container)
 
 	connStr, err := container.ClusterFile(ctx)
 	if err != nil {

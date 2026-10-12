@@ -29,6 +29,7 @@ func TestIsTransientContainerErr(t *testing.T) {
 		{"plain error", errors.New("boom"), false},
 		{"deterministic cause with misleading logs", &startupFailureError{cause: errors.New("bad config"), diagnostics: "container exited; is not running; failed to start"}, false},
 		{"transient cause with harmless logs", &startupFailureError{cause: errors.New("container abc is not running"), diagnostics: "startup logs"}, true},
+		{"transient cause with cleanup failure", &startupFailureError{cause: errors.New("container abc is not running"), cleanupErr: errors.New("stop failed"), diagnostics: "startup logs"}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -77,6 +78,35 @@ func TestRetryContainerStart(t *testing.T) {
 		}
 		if calls != 1 {
 			t.Errorf("deterministic error must fail fast (1 attempt), got %d", calls)
+		}
+	})
+
+	t.Run("does not hide failed cleanup behind a successful retry", func(t *testing.T) {
+		t.Parallel()
+		cleanupFailure := errors.New("Docker stop failed")
+		cleanupErr := Terminate(context.Background(), &Container{Container: &cleanupContainer{id: "failed-start-123", err: cleanupFailure}})
+		failure := &startupFailureError{
+			cause:       transient,
+			cleanupErr:  cleanupErr,
+			diagnostics: "cleanup incomplete: " + cleanupErr.Error(),
+		}
+		calls := 0
+		c, err := retryContainerStart(context.Background(), 3, noBackoff, func() (*Container, error) {
+			calls++
+			if calls == 1 {
+				return nil, failure
+			}
+			return &Container{}, nil
+		})
+		if calls != 1 || c != nil {
+			t.Fatalf("failed cleanup must stop retries: calls=%d container=%v", calls, c)
+		}
+		var terminationErr *TerminationError
+		if !errors.Is(err, transient) || !errors.Is(err, cleanupFailure) || !errors.As(err, &terminationErr) {
+			t.Fatalf("startup must retain cause and identifiable cleanup failure: %v", err)
+		}
+		if terminationErr.ContainerID != "failed-start-123" || terminationErr.Error() != "terminate container failed-start-123: Docker stop failed" {
+			t.Fatalf("cleanup error = %v, want failed container ID and Docker error", terminationErr)
 		}
 	})
 

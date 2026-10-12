@@ -23,7 +23,7 @@ func TestWithProcessCount_Single(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	defer container.Terminate(ctx)
+	defer TerminateT(t, ctx, container)
 
 	count, err := container.countProcesses(ctx)
 	if err != nil {
@@ -60,7 +60,7 @@ func TestWithProcessCount_Three(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	defer container.Terminate(ctx)
+	defer TerminateT(t, ctx, container)
 
 	// OS-level: verify 3 fdbserver processes are running.
 	osCount, err := container.countProcesses(ctx)
@@ -114,7 +114,7 @@ func TestWithKnob_AppliedToProcess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	defer container.Terminate(ctx)
+	defer TerminateT(t, ctx, container)
 
 	// Poll the knob check instead of a one-shot snapshot. `configure new` (InitializeDatabase)
 	// triggers a cluster recovery that can restart the single, fdbmonitor-managed fdbserver; on a
@@ -162,7 +162,7 @@ func TestWithKnob_AppliedToAllProcesses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	defer container.Terminate(ctx)
+	defer TerminateT(t, ctx, container)
 
 	// Poll the per-process knob check instead of taking a single snapshot. The
 	// secondary fdbserver is started UNSUPERVISED (a backgrounded shell in

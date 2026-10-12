@@ -87,7 +87,7 @@ func TestConsistencyCheck_AfterGoClientWrites(t *testing.T) {
 		// replication-health failures behind a green "no Docker" lie.
 		t.Fatalf("RunCluster(3, double): %v", err)
 	}
-	defer cluster.Terminate(ctx)
+	defer foundationdb.TerminateT(t, ctx, cluster)
 
 	// Connect the pure-Go client.
 	path, err := cluster.Coordinator.ClusterFilePath(ctx)

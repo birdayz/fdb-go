@@ -61,7 +61,7 @@ var _ = SynchronizedAfterSuite(func() {
 	}
 }, func() {
 	if sharedContainer != nil {
-		_ = sharedContainer.Terminate(context.Background())
+		Expect(foundationdbtc.Terminate(context.Background(), sharedContainer)).To(Succeed())
 	}
 })
 
