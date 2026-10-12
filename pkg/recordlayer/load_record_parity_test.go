@@ -100,9 +100,9 @@ func loadParityRead(store *FDBRecordStore, async bool) (*FDBStoredRecord[proto.M
 	return store.LoadRecord(pk)
 }
 
-// Keep the process-wide allocation counter away from parallel tests. Both
+// Keep the process-wide allocation counter away from parallel tests. Issuance
 // measurements use a real transaction's local write and the worker-free format-4
-// layout; only the public API adds the pending load's lifetime state.
+// layout, isolating the lifetime state added by each pending read wrapper.
 func TestFDB_LoadRecordAsyncAllocations(t *testing.T) {
 	const childEnv = "FDB_RECORD_LOAD_ALLOCATION_CHILD"
 	if os.Getenv(childEnv) != "1" {
@@ -125,7 +125,16 @@ func TestFDB_LoadRecordAsyncAllocations(t *testing.T) {
 	ctx := loadParityContext(t, db)
 	root := subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
 	store := legacyVersionStore(t, ctx, root, loadParityMetaData(t, false, false), 4, true)
-	pk := tuple.Tuple{int64(1)}
+	entry := &IndexEntry{
+		Index: NewIndex("Order$order_id", Field("order_id")),
+		Key:   tuple.Tuple{int64(1), int64(1)},
+	}
+	// Warm the lazy primary-key extraction outside the issuance measurements.
+	pk := entry.PrimaryKey()
+	if !bytes.Equal(pk.Pack(), (tuple.Tuple{int64(1)}).Pack()) {
+		t.Fatalf("allocation entry primary key = %v, want [1]", pk)
+	}
+	scanState := NewScanLimiterState()
 	order := &demopb.Order{OrderId: proto.Int64(1)}
 	data, err := proto.Marshal(&demopb.UnionDescriptor{XOrder: order})
 	if err != nil {
@@ -147,20 +156,38 @@ func TestFDB_LoadRecordAsyncAllocations(t *testing.T) {
 	}
 	var pending PendingRead[*FDBStoredRecord[proto.Message]]
 	public := testing.AllocsPerRun(1000, func() {
-		pending = store.LoadRecordAsync(pk, nil)
+		pending = store.LoadRecordAsync(pk, scanState)
 	})
 	if !pending.IsReady() {
 		t.Fatal("public allocation sample was not immediately ready")
 	}
 	got, err := pending.Get()
-	if err != nil || got == nil || !proto.Equal(got.Record, order) {
+	if err != nil || got == nil || !proto.Equal(got.Record, order) || !bytes.Equal(got.PrimaryKey.Pack(), pk.Pack()) {
 		t.Fatalf("public allocation sample = %v, error=%v", got, err)
 	}
 	t.Logf("allocations per issue: public=%.0f raw=%.0f additional=%.0f", public, issued, public-issued)
 	// One escaping recordLoad owns the PendingRead state. An extra pendingFunc
 	// and its two bound method closures would add three more allocations.
-	if issued <= 0 || public-issued != 1 {
+	if issued <= 0 || public <= 0 || public-issued != 1 {
 		t.Fatalf("LoadRecordAsync adds %.0f allocations to %.0f raw-read allocations, want 1", public-issued, issued)
+	}
+
+	loader := &indexRecordLoader{store: store, scanState: scanState}
+	var indexedPending PendingRead[*FDBIndexedRecord]
+	indexed := testing.AllocsPerRun(1000, func() {
+		indexedPending = loader.load(entry)
+	})
+	if !indexedPending.IsReady() {
+		t.Fatal("index allocation sample was not immediately ready")
+	}
+	indexedRecord, err := indexedPending.Get()
+	if err != nil || indexedRecord == nil || indexedRecord.IndexEntry != entry || indexedRecord.Record == nil ||
+		!proto.Equal(indexedRecord.Record.Record, order) || !bytes.Equal(indexedRecord.Record.PrimaryKey.Pack(), pk.Pack()) {
+		t.Fatalf("index allocation sample = %v, error=%v", indexedRecord, err)
+	}
+	t.Logf("allocations per index issue: indexed=%.0f public=%.0f additional=%.0f", indexed, public, indexed-public)
+	if indexed-public != 1 {
+		t.Fatalf("indexRecordLoader.load adds %.0f allocations to %.0f public-load allocations, want 1", indexed-public, public)
 	}
 }
 
