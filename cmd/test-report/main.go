@@ -184,7 +184,10 @@ type bepID struct {
 }
 
 type bepTestResultID struct {
-	Label string `json:"label"`
+	Label   string `json:"label"`
+	Run     int    `json:"run"`
+	Shard   int    `json:"shard"`
+	Attempt int    `json:"attempt"`
 }
 
 type bepTestResult struct {
@@ -384,15 +387,20 @@ func parseBEP(path string) ([]*TargetResult, error) {
 	}
 	defer f.Close()
 
-	// Collect testResult events keyed by label.
+	// Collect the final attempt of every run and shard; each has its own test.xml.
 	type targetInfo struct {
 		label      string
-		xmlPath    string
+		xmlURI     string
 		status     string
 		durationMs int64
 		cached     bool
+		attempt    int
 	}
-	targets := make(map[string]*targetInfo)
+	type resultKey struct {
+		label      string
+		run, shard int
+	}
+	targets := make(map[resultKey]*targetInfo)
 
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 4<<20), 4<<20) // 4MB max line — BEP events can be large
@@ -402,70 +410,102 @@ func parseBEP(path string) ([]*TargetResult, error) {
 			continue // skip malformed lines
 		}
 		if ev.ID.TestResult != nil && ev.TestResult != nil {
-			label := ev.ID.TestResult.Label
+			id := ev.ID.TestResult
+			key := resultKey{label: id.Label, run: id.Run, shard: id.Shard}
+			if prev := targets[key]; prev != nil && prev.attempt > id.Attempt {
+				continue
+			}
 			info := &targetInfo{
-				label:  label,
-				status: ev.TestResult.Status,
-				cached: ev.TestResult.CachedLocally,
+				label:   id.Label,
+				status:  ev.TestResult.Status,
+				cached:  ev.TestResult.CachedLocally,
+				attempt: id.Attempt,
 			}
 			if ms, _ := strconv.ParseInt(ev.TestResult.DurationMillis, 10, 64); ms > 0 {
 				info.durationMs = ms
 			}
 			for _, out := range ev.TestResult.TestActionOutput {
 				if out.Name == "test.xml" {
-					info.xmlPath = uriToPath(out.URI)
+					info.xmlURI = out.URI
 				}
 			}
-			targets[label] = info
+			targets[key] = info
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("scanning BEP: %w", err)
 	}
 
-	// Build TargetResults from JUnit XML files.
-	var results []*TargetResult
-	for _, info := range targets {
-		tr := &TargetResult{
-			Target:    info.label,
-			SuiteTime: time.Duration(info.durationMs) * time.Millisecond,
-			Cached:    info.cached,
+	keys := make([]resultKey, 0, len(targets))
+	for key := range targets {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		a, b := keys[i], keys[j]
+		if a.label != b.label {
+			return a.label < b.label
 		}
+		if a.run != b.run {
+			return a.run < b.run
+		}
+		return a.shard < b.shard
+	})
 
-		if info.xmlPath != "" {
-			// Check for Ginkgo's tree-structured JSON report alongside the standard test.xml.
-			// Ginkgo suites write to $TEST_UNDECLARED_OUTPUTS_DIR/ginkgo-report.json which
-			// Bazel collects into test.outputs/ next to test.xml. This has individual spec
-			// names, durations, and Describe/Context hierarchy — the standard test.xml only
-			// sees the bootstrap function.
-			ginkgoPath := filepath.Join(filepath.Dir(info.xmlPath), "test.outputs", "ginkgo-report.json")
-			if ginkgoCases, tree, err := parseGinkgoTreeJSON(ginkgoPath); err == nil && len(ginkgoCases) > 0 {
-				tr.Tests = ginkgoCases
-				tr.Tree = tree
-			} else {
-				cases, err := parseJUnitXML(info.xmlPath)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "warning: %s: %v\n", info.label, err)
-				} else {
-					tr.Tests = cases
-				}
+	// Build one TargetResult per label from its JUnit XML files.
+	var results []*TargetResult
+	byLabel := make(map[string]*TargetResult)
+	for _, key := range keys {
+		info := targets[key]
+		if info.xmlURI == "" {
+			return nil, fmt.Errorf("%s: BEP test result has no test.xml", info.label)
+		}
+		xmlPath, err := uriToPath(info.xmlURI)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", info.label, err)
+		}
+		tr := byLabel[info.label]
+		if tr == nil {
+			tr = &TargetResult{Target: info.label, Cached: true}
+			byLabel[info.label] = tr
+			results = append(results, tr)
+		}
+		tr.SuiteTime += time.Duration(info.durationMs) * time.Millisecond
+		tr.Cached = tr.Cached && info.cached
+
+		// Check for Ginkgo's tree-structured JSON report alongside the standard test.xml.
+		// Ginkgo suites write to $TEST_UNDECLARED_OUTPUTS_DIR/ginkgo-report.json which
+		// Bazel collects into test.outputs/ next to test.xml. This has individual spec
+		// names, durations, and Describe/Context hierarchy — the standard test.xml only
+		// sees the bootstrap function.
+		ginkgoPath := filepath.Join(filepath.Dir(xmlPath), "test.outputs", "ginkgo-report.json")
+		var cases []TestResult
+		if ginkgoCases, tree, err := parseGinkgoTreeJSON(ginkgoPath); err == nil && len(ginkgoCases) > 0 {
+			cases = ginkgoCases
+			tr.Tree = tree
+		} else {
+			cases, err = parseJUnitXML(xmlPath)
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", info.label, err)
 			}
 		}
 
-		// If no test cases from XML (e.g. XML missing or empty), synthesize from BEP status.
-		if len(tr.Tests) == 0 {
+		// A test binary with no test cases still has a target-level outcome.
+		if len(cases) == 0 {
 			status := StatusPass
 			if info.status == "FAILED" || info.status == "TIMEOUT" {
 				status = StatusFail
 			}
-			tr.Tests = []TestResult{{
+			cases = []TestResult{{
 				Name:     "(target)",
 				Status:   status,
-				Duration: tr.SuiteTime,
+				Duration: time.Duration(info.durationMs) * time.Millisecond,
 			}}
 		}
-
-		results = append(results, tr)
+		// One tree describes one result; a multi-shard or multi-run target renders its flat case list.
+		if len(tr.Tests) > 0 {
+			tr.Tree = nil
+		}
+		tr.Tests = append(tr.Tests, cases...)
 	}
 
 	return results, nil
@@ -526,8 +566,12 @@ func isGinkgoInfraNode(name string) bool {
 }
 
 // uriToPath converts a file:// URI to a filesystem path.
-func uriToPath(uri string) string {
-	return strings.TrimPrefix(uri, "file://")
+func uriToPath(uri string) (string, error) {
+	path, ok := strings.CutPrefix(uri, "file://")
+	if !ok {
+		return "", fmt.Errorf("test.xml is not local (%s); download test logs before reporting", uri)
+	}
+	return path, nil
 }
 
 // ---- formatting ----
