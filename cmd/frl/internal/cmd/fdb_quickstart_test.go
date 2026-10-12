@@ -43,29 +43,7 @@ func TestFDBQuickstartShell(t *testing.T) {
 					logPath := filepath.Join(dir, "calls")
 					newCluster := filepath.Join(dir, "disposable cluster.cluster")
 					oldCluster := filepath.Join(dir, "real cluster.cluster")
-					files := map[string]string{
-						"calls": "",
-						"go": `#!/bin/sh
-printf 'go|%s|%s\n' "$*" "$FDB_CLUSTER_FILE" >> "$QUICKSTART_LOG"
-case "$*" in
-  'build -o frl ./cmd/frl') exit "$QUICKSTART_BUILD_STATUS" ;;
-  'run ./example/sql') exit "$QUICKSTART_SQL_STATUS" ;;
-  'run ./example') exit 0 ;;
-  *) exit 99 ;;
-esac
-`,
-						"frl": `#!/bin/sh
-printf 'frl|%s|%s\n' "$*" "$FDB_CLUSTER_FILE" >> "$QUICKSTART_LOG"
-[ "$*" = 'fdb up' ] || exit 99
-[ "$QUICKSTART_UP_STATUS" -eq 0 ] || exit "$QUICKSTART_UP_STATUS"
-printf '%s\n' "$QUICKSTART_CLUSTER"
-`,
-					}
-					for name, content := range files {
-						if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o700); err != nil {
-							t.Fatal(err)
-						}
-					}
+					fdbQuickstartFixtures(t, dir)
 
 					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 					defer cancel()
@@ -116,6 +94,52 @@ printf '%s\n' "$QUICKSTART_CLUSTER"
 				})
 			}
 		})
+	}
+}
+
+func TestFDBQuickstartFixturesUseRunfiles(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fdbQuickstartFixtures(t, dir)
+	for _, name := range []string{"go", "frl"} {
+		path, err := runfiles.Rlocation("_main/cmd/frl/internal/cmd/testdata/quickstart/" + name + ".sh")
+		if err != nil {
+			t.Fatal(err)
+		}
+		fixture, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		executable, err := os.Stat(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Copies reintroduce writable executable descriptors during parallel forks.
+		if !os.SameFile(fixture, executable) {
+			t.Errorf("%s: executable must reuse the runfile inode, not a writable copy", name)
+		}
+	}
+}
+
+func fdbQuickstartFixtures(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, "calls"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Concurrent forks can retain script writers until exec, causing ETXTBSY
+	// even after WriteFile returns. Reuse runfiles without opening them for write.
+	for _, name := range []string{"go", "frl"} {
+		path, err := runfiles.Rlocation("_main/cmd/frl/internal/cmd/testdata/quickstart/" + name + ".sh")
+		if err != nil {
+			t.Fatal(err)
+		}
+		path, err = filepath.Abs(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(path, filepath.Join(dir, name)); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
