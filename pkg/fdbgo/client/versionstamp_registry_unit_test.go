@@ -57,7 +57,7 @@ func requireRegistry(t *testing.T, tx *Transaction, inc *readIncarnation, latest
 func requireRegistryReady(t *testing.T, p *PendingVersionstamp, value []byte, code int) {
 	t.Helper()
 	select {
-	case <-p.completion.done:
+	case <-p.done:
 	default:
 		t.Fatal("versionstamp result was not selected")
 	}
@@ -74,7 +74,7 @@ func requireRegistryReady(t *testing.T, p *PendingVersionstamp, value []byte, co
 func requireRegistryPending(t *testing.T, p *PendingVersionstamp) {
 	t.Helper()
 	select {
-	case <-p.completion.done:
+	case <-p.done:
 		t.Fatal("pending producer was selected")
 	default:
 	}
@@ -257,8 +257,8 @@ func TestVersionstampRegistrySingleProducerAllocations(t *testing.T) {
 		inc.versionstamp, inc.versionstamps = nil, nil
 		tx.newVersionstampLocked(inc)
 	})
-	if allocs != 2 {
-		t.Fatalf("VERSIONSTAMP_REGISTRY_ALLOC: got %v, want completion and done channel only (2)", allocs)
+	if allocs != 1 {
+		t.Fatalf("VERSIONSTAMP_REGISTRY_ALLOC: got %v, want unobserved completion only (1)", allocs)
 	}
 	if inc.versionstamp == nil || inc.versionstamps != nil {
 		t.Fatal("first completion did not remain inline")

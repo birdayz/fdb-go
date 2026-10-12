@@ -33,7 +33,7 @@ func TestFDBVersionstampSelectionBeforeMetrics(t *testing.T) {
 	defer unlock()
 	done := make(chan error, 1)
 	go func() { done <- tx.Commit(ctx) }()
-	waitCommitLifetimeGate(t, ctx, p.completion.done, "native selection before metrics")
+	waitCommitLifetimeGate(t, ctx, p.done, "native selection before metrics")
 	select {
 	case err := <-done:
 		t.Fatalf("Commit passed the held metrics gate: %v", err)
@@ -353,7 +353,7 @@ func TestFDBVersionstampOlderSuccessRetainsLatestProducer(t *testing.T) {
 				} else {
 					db.db.metrics.commitLatency.mu.Lock()
 					var once sync.Once
-					reached = first.completion.done
+					reached = first.done
 					unblock = func() { once.Do(db.db.metrics.commitLatency.mu.Unlock) }
 				}
 				defer unblock()
