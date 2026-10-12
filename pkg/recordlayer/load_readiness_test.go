@@ -310,7 +310,7 @@ func TestRecordLoadPendingReadMemoizesResult(t *testing.T) {
 			close(done)
 			raw := &pendingRecordRange{done: done, value: data, sizes: sizeInfo{KeyCount: 1, KeySize: 11, ValueSize: len(data)}}
 			legacy := &countedLegacyVersionRead{version: version}
-			wantLegacyGets, wantTimer := 1, int64(1)
+			wantLegacyGets, wantRecord := 1, true
 			wantBytes := int64(raw.sizes.KeySize + raw.sizes.ValueSize)
 			var wantCause error
 			switch outcome {
@@ -318,18 +318,18 @@ func TestRecordLoadPendingReadMemoizesResult(t *testing.T) {
 				legacy.version = nil
 			case "legacy-error":
 				wantCause = fdb.Error{Code: 1007}
-				legacy.err, wantTimer = wantCause, 0
+				legacy.err, wantRecord = wantCause, false
 			case "missing":
 				raw.value, raw.sizes = nil, sizeInfo{}
-				wantLegacyGets, wantTimer, wantBytes = 0, 0, 0
+				wantLegacyGets, wantRecord, wantBytes = 0, false, 0
 			case "range-error":
 				wantCause = fdb.Error{Code: 1007}
 				raw.err = wantCause
-				wantLegacyGets, wantTimer, wantBytes = 0, 0, 0
+				wantLegacyGets, wantRecord, wantBytes = 0, false, 0
 			case "deserialize-error":
 				raw.value = []byte{0xff}
 				raw.sizes.ValueSize = 1
-				wantLegacyGets, wantTimer, wantBytes = 0, 0, 12
+				wantLegacyGets, wantRecord, wantBytes = 0, false, 12
 			case "inline-version":
 				raw.version, wantLegacyGets = version, 0
 			}
@@ -351,6 +351,10 @@ func TestRecordLoadPendingReadMemoizesResult(t *testing.T) {
 				t.Fatalf("readiness accounting: timer=%d bytes=%d legacy gets=%d", timer.GetCount(EventLoadRecord), scan.BytesScanned(), legacy.gets)
 			}
 			got, gotErr := pending.Get()
+			elapsed := timer.GetTimeNanos(EventLoadRecord)
+			if elapsed <= 0 {
+				t.Fatalf("load time = %d, want recorded duration", elapsed)
+			}
 			if _, direct := any(load).(PendingRead[*FDBStoredRecord[proto.Message]]); direct {
 				if load.store != nil || load.primaryKey != nil || load.scanState != nil || load.first.raw.asyncRange != nil || load.first.oldVersion != nil {
 					t.Fatal("completed load retained intermediate store/read state")
@@ -367,8 +371,8 @@ func TestRecordLoadPendingReadMemoizesResult(t *testing.T) {
 			} else if wantCause == nil && gotErr != nil {
 				t.Fatal(gotErr)
 			}
-			if (got != nil) != (wantTimer == 1) {
-				t.Fatalf("record = %v, error = %v, want record present = %t", got, gotErr, wantTimer == 1)
+			if (got != nil) != wantRecord {
+				t.Fatalf("record = %v, error = %v, want record present = %t", got, gotErr, wantRecord)
 			}
 			if got != nil && (!proto.Equal(got.Record, order) || !got.Version.Equal(legacy.version)) {
 				t.Fatalf("wrong record/version: %+v", got)
@@ -383,8 +387,8 @@ func TestRecordLoadPendingReadMemoizesResult(t *testing.T) {
 					t.Fatalf("Get changed result: (%p, %v), first (%p, %v)", again, againErr, got, gotErr)
 				}
 			}
-			if timer.GetCount(EventLoadRecord) != wantTimer || scan.BytesScanned() != wantBytes || legacy.gets != wantLegacyGets {
-				t.Fatalf("final accounting: timer=%d bytes=%d legacy gets=%d; want %d,%d,%d", timer.GetCount(EventLoadRecord), scan.BytesScanned(), legacy.gets, wantTimer, wantBytes, wantLegacyGets)
+			if timer.GetCount(EventLoadRecord) != 1 || timer.GetTimeNanos(EventLoadRecord) != elapsed || scan.BytesScanned() != wantBytes || legacy.gets != wantLegacyGets {
+				t.Fatalf("final accounting: timer=%d time=%d bytes=%d legacy gets=%d; want 1,%d,%d,%d", timer.GetCount(EventLoadRecord), timer.GetTimeNanos(EventLoadRecord), scan.BytesScanned(), legacy.gets, elapsed, wantBytes, wantLegacyGets)
 			}
 		})
 	}

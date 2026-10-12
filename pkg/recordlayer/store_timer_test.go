@@ -436,6 +436,31 @@ var _ = Describe("StoreTimer", func() {
 			Expect(timer.GetTimeNanos(EventOpenStore)).To(BeNumerically(">", 0))
 		})
 
+		It("does not instrument save validation before the load is issued", func() {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				timer := NewStoreTimer()
+				rtx.SetTimer(timer)
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(specSubspace()).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				timer.Reset()
+				_, err = store.SaveRecord(nil)
+				Expect(err).To(HaveOccurred())
+				_, err = store.DryRunSaveRecord(nil, RecordExistenceCheckNone)
+				Expect(err).To(HaveOccurred())
+				_, err = store.SaveRecordsPipelined([]proto.Message{nil}, RecordExistenceCheckNone)
+				Expect(err).To(HaveOccurred())
+				Expect(timer.GetCount(EventSaveRecord)).To(BeZero())
+				Expect(timer.GetTimeNanos(EventSaveRecord)).To(BeZero())
+				Expect(timer.GetCount(EventLoadRecord)).To(BeZero())
+				Expect(timer.GetTimeNanos(EventLoadRecord)).To(BeZero())
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
 		It("records EventSaveRecord on save", func() {
 			timer := NewStoreTimer()
 			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
