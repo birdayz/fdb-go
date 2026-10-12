@@ -59,7 +59,33 @@ func runLegacyVersionAPI(t *testing.T, store *FDBRecordStore, api string, exists
 	case "LoadRecord":
 		got, err = store.LoadRecord(pk)
 	case "LoadRecordAsync":
-		got, err = store.LoadRecordAsync(pk, nil).Get()
+		timer := NewStoreTimer()
+		store.context.SetTimer(timer)
+		scan := NewScanLimiterState()
+		pending := store.LoadRecordAsync(pk, scan)
+		got, err = pending.Get()
+		charged := scan.BytesScanned()
+		wantCount := int64(0)
+		if got != nil && err == nil {
+			wantCount = 1
+			if charged != int64(got.KeySize+got.ValueSize) {
+				t.Fatalf("loaded byte charge = %d, want %d", charged, got.KeySize+got.ValueSize)
+			}
+		}
+		for range 3 {
+			if !pending.IsReady() {
+				t.Fatal("completed public LoadRecordAsync is not ready")
+			}
+			if again, againErr := pending.Get(); again != got || againErr != err {
+				t.Fatalf("public LoadRecordAsync changed result: (%p, %v), first (%p, %v)", again, againErr, got, err)
+			}
+		}
+		if timer.GetCount(EventLoadRecord) != wantCount || scan.BytesScanned() != charged {
+			t.Fatalf("repeated Get accounting: timer=%d bytes=%d; want %d,%d", timer.GetCount(EventLoadRecord), scan.BytesScanned(), wantCount, charged)
+		}
+		if err != nil && got != nil {
+			t.Fatalf("failed public LoadRecordAsync returned record: %v", got)
+		}
 	case "DeleteRecord", "DryRunDeleteRecord":
 		var deleted bool
 		if api == "DeleteRecord" {

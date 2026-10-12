@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -97,6 +98,70 @@ func loadParityRead(store *FDBRecordStore, async bool) (*FDBStoredRecord[proto.M
 		return store.LoadRecordAsync(pk, nil).Get()
 	}
 	return store.LoadRecord(pk)
+}
+
+// Keep the process-wide allocation counter away from parallel tests. Both
+// measurements use a real transaction's local write and the worker-free format-4
+// layout; only the public API adds the pending load's lifetime state.
+func TestFDB_LoadRecordAsyncAllocations(t *testing.T) {
+	const childEnv = "FDB_RECORD_LOAD_ALLOCATION_CHILD"
+	if os.Getenv(childEnv) != "1" {
+		t.Parallel()
+		executable, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.CommandContext(t.Context(), executable, "-test.run=^TestFDB_LoadRecordAsyncAllocations$", "-test.v")
+		cmd.Env = append(os.Environ(), childEnv+"=1")
+		output, err := cmd.CombinedOutput()
+		if err != nil || !bytes.Contains(output, []byte("allocations per issue:")) {
+			t.Fatalf("isolated allocation test: %v\n%s", err, output)
+		}
+		t.Logf("%s", output)
+		return
+	}
+
+	db := newLoadParityDatabase(t)
+	ctx := loadParityContext(t, db)
+	root := subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
+	store := legacyVersionStore(t, ctx, root, loadParityMetaData(t, false, false), 4, true)
+	pk := tuple.Tuple{int64(1)}
+	order := &demopb.Order{OrderId: proto.Int64(1)}
+	data, err := proto.Marshal(&demopb.UnionDescriptor{XOrder: order})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recordKey, _ := legacyVersionKeys(root, 4)
+	ctx.Transaction().Set(recordKey, data)
+	var first pendingStoreRecordLoad
+	issued := testing.AllocsPerRun(1000, func() {
+		first = store.startRecordLoad(ctx.Transaction(), pk)
+	})
+	if first.raw.value == nil || first.raw.rangeRead != nil || first.raw.asyncRange != nil || !first.raw.ready() {
+		t.Fatal("allocation control did not use the ready bare-key path")
+	}
+	var sizes sizeInfo
+	value, _, err := first.raw.finish(&sizes)
+	if err != nil || !bytes.Equal(value, data) || sizes.KeySize != len(recordKey) || sizes.ValueSize != len(data) {
+		t.Fatalf("allocation control read = %x, sizes=%+v, error=%v", value, sizes, err)
+	}
+	var pending PendingRead[*FDBStoredRecord[proto.Message]]
+	public := testing.AllocsPerRun(1000, func() {
+		pending = store.LoadRecordAsync(pk, nil)
+	})
+	if !pending.IsReady() {
+		t.Fatal("public allocation sample was not immediately ready")
+	}
+	got, err := pending.Get()
+	if err != nil || got == nil || !proto.Equal(got.Record, order) {
+		t.Fatalf("public allocation sample = %v, error=%v", got, err)
+	}
+	t.Logf("allocations per issue: public=%.0f raw=%.0f additional=%.0f", public, issued, public-issued)
+	// One escaping recordLoad owns the PendingRead state. An extra pendingFunc
+	// and its two bound method closures would add three more allocations.
+	if issued <= 0 || public-issued != 1 {
+		t.Fatalf("LoadRecordAsync adds %.0f allocations to %.0f raw-read allocations, want 1", public-issued, issued)
+	}
 }
 
 func TestFDB_RecordLoadParity(t *testing.T) {
