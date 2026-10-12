@@ -81,6 +81,8 @@ build --@rules_go//go/config:tags=bazelrunfiles,stress
 common:ci --announce_rc
 test:ci --test_summary=detailed
 test:ci --profile=bazel-profile.json.gz
+# The test report reads per-case JUnit XML; remote-cache hits otherwise leave it remote.
+test:ci --remote_download_regex=.*/testlogs/.*/test\.(xml|outputs/.*)$
 # The 7.6 GB runners hold 0.6 of RAM for tests: 4500 MB measured safe, the
 # runner minus its idle baseline (~730 MB) and the Bazel server (~2500 MB).
 test:ci --local_resources=memory=HOST_RAM*0.6
