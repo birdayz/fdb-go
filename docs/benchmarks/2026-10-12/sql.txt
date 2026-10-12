@@ -1,0 +1,23 @@
+goos: linux
+goarch: amd64
+cpu: AMD Ryzen 9 3900X 12-Core Processor            
+BenchmarkFDB_PlanCacheHit-24       	    4507	    787210 ns/op	   99095 B/op	    1477 allocs/op
+BenchmarkFDB_PlanCacheHit-24       	    4430	    809003 ns/op	   99012 B/op	    1477 allocs/op
+BenchmarkFDB_PlanCacheHit-24       	    4636	    787987 ns/op	   99028 B/op	    1477 allocs/op
+BenchmarkFDB_PlanCacheHit-24       	    4599	    787698 ns/op	   99036 B/op	    1477 allocs/op
+BenchmarkFDB_PlanCacheHit-24       	    4621	    808118 ns/op	   98988 B/op	    1477 allocs/op
+BenchmarkFDB_PlanCacheMiss-24      	    4740	    739257 ns/op	   99166 B/op	    1481 allocs/op
+BenchmarkFDB_PlanCacheMiss-24      	    4920	    751308 ns/op	   99218 B/op	    1481 allocs/op
+BenchmarkFDB_PlanCacheMiss-24      	    4574	    751070 ns/op	   99180 B/op	    1481 allocs/op
+BenchmarkFDB_PlanCacheMiss-24      	    4616	    788192 ns/op	   99161 B/op	    1481 allocs/op
+BenchmarkFDB_PlanCacheMiss-24      	    4506	    772061 ns/op	   99170 B/op	    1481 allocs/op
+BenchmarkFDB_TimestampInsert-24    	    1395	   2537334 ns/op	  257602 B/op	    4168 allocs/op
+BenchmarkFDB_TimestampInsert-24    	    1398	   2548496 ns/op	  257309 B/op	    4168 allocs/op
+BenchmarkFDB_TimestampInsert-24    	    1419	   2525014 ns/op	  257475 B/op	    4169 allocs/op
+BenchmarkFDB_TimestampInsert-24    	    1419	   2532691 ns/op	  257815 B/op	    4171 allocs/op
+BenchmarkFDB_TimestampInsert-24    	    1387	   2531777 ns/op	  257926 B/op	    4173 allocs/op
+BenchmarkFDB_IndexScanRange-24     	    1506	   2365781 ns/op	  373253 B/op	    5153 allocs/op
+BenchmarkFDB_IndexScanRange-24     	    1464	   2388239 ns/op	  374801 B/op	    5155 allocs/op
+BenchmarkFDB_IndexScanRange-24     	    1491	   2363735 ns/op	  373157 B/op	    5153 allocs/op
+BenchmarkFDB_IndexScanRange-24     	    1461	   2375244 ns/op	  374438 B/op	    5155 allocs/op
+BenchmarkFDB_IndexScanRange-24     	    1453	   2362305 ns/op	  372926 B/op	    5153 allocs/op

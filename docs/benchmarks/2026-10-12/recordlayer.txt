@@ -1,0 +1,28 @@
+goos: linux
+goarch: amd64
+cpu: AMD Ryzen 9 3900X 12-Core Processor            
+BenchmarkSaveRecord-24             	    3578	   1008628 ns/op	   18950 B/op	     250 allocs/op
+BenchmarkSaveRecord-24             	    3583	   1011620 ns/op	   21528 B/op	     289 allocs/op
+BenchmarkSaveRecord-24             	    3534	   1011847 ns/op	   21471 B/op	     289 allocs/op
+BenchmarkSaveRecord-24             	    3565	   1011414 ns/op	   21453 B/op	     289 allocs/op
+BenchmarkSaveRecord-24             	    3590	   1013486 ns/op	   21479 B/op	     289 allocs/op
+BenchmarkLoadRecord-24             	   16512	    213820 ns/op	   12985 B/op	     180 allocs/op
+BenchmarkLoadRecord-24             	   16300	    210450 ns/op	   12984 B/op	     180 allocs/op
+BenchmarkLoadRecord-24             	   16375	    211069 ns/op	   12976 B/op	     180 allocs/op
+BenchmarkLoadRecord-24             	   17481	    205463 ns/op	   12973 B/op	     180 allocs/op
+BenchmarkLoadRecord-24             	   17227	    208069 ns/op	   12981 B/op	     180 allocs/op
+BenchmarkSaveRecordWithIndex-24    	    3574	   1007443 ns/op	   22420 B/op	     300 allocs/op
+BenchmarkSaveRecordWithIndex-24    	    3526	   1011363 ns/op	   25674 B/op	     359 allocs/op
+BenchmarkSaveRecordWithIndex-24    	    3580	   1015478 ns/op	   25648 B/op	     359 allocs/op
+BenchmarkSaveRecordWithIndex-24    	    3576	   1015876 ns/op	   25630 B/op	     359 allocs/op
+BenchmarkSaveRecordWithIndex-24    	    3578	   1014633 ns/op	   25641 B/op	     359 allocs/op
+BenchmarkScanIndexRecords/serial-24         	      58	  58298734 ns/op	 3374627 B/op	   41221 allocs/op
+BenchmarkScanIndexRecords/serial-24         	      60	  58619427 ns/op	 3376837 B/op	   41224 allocs/op
+BenchmarkScanIndexRecords/serial-24         	      63	  56895305 ns/op	 3377998 B/op	   41225 allocs/op
+BenchmarkScanIndexRecords/serial-24         	      56	  56531016 ns/op	 3374575 B/op	   41219 allocs/op
+BenchmarkScanIndexRecords/serial-24         	      62	  57848560 ns/op	 3374476 B/op	   41220 allocs/op
+BenchmarkScanIndexRecords/pipelined-24      	     151	  23614424 ns/op	 3968189 B/op	   47378 allocs/op
+BenchmarkScanIndexRecords/pipelined-24      	     152	  23583679 ns/op	 3967944 B/op	   47375 allocs/op
+BenchmarkScanIndexRecords/pipelined-24      	     152	  23546581 ns/op	 3968609 B/op	   47378 allocs/op
+BenchmarkScanIndexRecords/pipelined-24      	     151	  23610446 ns/op	 3968016 B/op	   47375 allocs/op
+BenchmarkScanIndexRecords/pipelined-24      	     153	  23601180 ns/op	 3967987 B/op	   47379 allocs/op
