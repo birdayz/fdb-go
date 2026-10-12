@@ -71,6 +71,10 @@ func (tx *Transaction) enterReadState(ctx context.Context, inc *readIncarnation,
 
 // enterReadStateFor with issued also counts the lease as an issued read, under the same lock.
 func (tx *Transaction) enterReadStateFor(ctx context.Context, inc *readIncarnation, wait, issued bool) *executionLease {
+	return tx.enterReadStateInto(ctx, inc, wait, issued, nil)
+}
+
+func (tx *Transaction) enterReadStateInto(ctx context.Context, inc *readIncarnation, wait, issued bool, lease *executionLease) *executionLease {
 	for {
 		tx.readErrMu.Lock()
 		if tx.readLife != inc {
@@ -83,7 +87,10 @@ func (tx *Transaction) enterReadStateFor(ctx context.Context, inc *readIncarnati
 			if issued {
 				inc.issuedReads++
 			}
-			lease := &executionLease{tx: tx, inc: inc, active: true, issued: issued}
+			if lease == nil {
+				lease = &executionLease{}
+			}
+			*lease = executionLease{tx: tx, inc: inc, active: true, issued: issued}
 			tx.readErrMu.Unlock()
 			return lease
 		}

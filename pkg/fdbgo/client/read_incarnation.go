@@ -33,10 +33,20 @@ type readIncarnation struct {
 type readContextKey struct{ tx *Transaction }
 
 type readOperation struct {
-	inc      *readIncarnation
-	parent   context.Context
-	lease    *executionLease
-	entryErr *wire.FDBError
+	context.Context
+	tx           *Transaction
+	inc          *readIncarnation
+	parent       context.Context
+	lease        *executionLease
+	leaseStorage executionLease
+	entryErr     *wire.FDBError
+}
+
+func (op *readOperation) Value(key any) any {
+	if k, ok := key.(readContextKey); ok && k.tx == op.tx {
+		return op
+	}
+	return op.Context.Value(key)
 }
 
 func (tx *Transaction) readIncarnationLocked() *readIncarnation {
@@ -160,7 +170,6 @@ func (tx *Transaction) opContext(parent context.Context) (context.Context, conte
 // opContextFor with issued counts the new lease as an issued read Commit waits on;
 // counted reports whether it did (a borrowed or refused lease counts nothing).
 func (tx *Transaction) opContextFor(parent context.Context, issued bool) (context.Context, context.CancelFunc, bool) {
-	key := readContextKey{tx}
 	if op := tx.readOperation(parent); op != nil {
 		tx.readErrMu.Lock()
 		borrow := op.lease != nil && op.lease.active
@@ -168,12 +177,12 @@ func (tx *Transaction) opContextFor(parent context.Context, issued bool) (contex
 		if borrow {
 			return parent, func() {}, false
 		}
-		lease := tx.enterReadStateFor(parent, op.inc, false, issued)
-		if lease == nil {
+		nested := &readOperation{Context: parent, tx: tx, inc: op.inc, parent: op.parent, entryErr: op.entryErr}
+		nested.lease = tx.enterReadStateInto(parent, op.inc, false, issued, &nested.leaseStorage)
+		if nested.lease == nil {
 			return parent, func() {}, false
 		}
-		ctx := context.WithValue(parent, key, &readOperation{inc: op.inc, parent: op.parent, lease: lease, entryErr: op.entryErr})
-		return ctx, lease.release, issued
+		return nested, nested.lease.release, issued
 	}
 	tx.readErrMu.Lock()
 	inc := tx.readIncarnationLocked()
@@ -187,19 +196,18 @@ func (tx *Transaction) opContextFor(parent context.Context, issued bool) (contex
 		inc.cancel(cause)
 		cancel(cause)
 	}
-	lease := tx.enterReadStateFor(ctx, inc, true, issued)
-	var entryErr *wire.FDBError
-	if lease != nil {
+	op := &readOperation{Context: ctx, tx: tx, inc: inc, parent: parent}
+	op.lease = tx.enterReadStateInto(ctx, inc, true, issued, &op.leaseStorage)
+	if op.lease != nil {
 		// The lease pins this incarnation's slot across reset. Preserve even a
 		// clean entry through nested work; later poison gates later operations.
-		entryErr = tx.deferredErr.Load()
+		op.entryErr = tx.deferredErr.Load()
 	}
-	ctx = context.WithValue(ctx, key, &readOperation{inc: inc, parent: parent, lease: lease, entryErr: entryErr})
-	return ctx, func() {
+	return op, func() {
 		stop()
 		cancel(nil)
-		lease.release()
-	}, lease != nil && issued
+		op.lease.release()
+	}, op.lease != nil && issued
 }
 
 func (tx *Transaction) readOperation(ctx context.Context) *readOperation {
