@@ -11,6 +11,18 @@ live 4.14.2.0 in `just test-full` and PR CI's `conformance-java` job with a stal
 and the suite is green). Entries below that cite 4.12.11 record the previous pin;
 not every one has been re-measured on 4.14.2.0.
 
+## Record-load strategy
+
+Go implements Java 4.14.2.0's default `SplitHelper.loadWithSplit` range read,
+including inline versions and the full strict record-prefix read conflict.
+Java's `LOAD_RECORDS_VIA_GETS` context property is not exposed: Go has no Record
+Layer context-property storage. The optional Java path uses point reads plus an
+explicit full-record conflict range; it has different corruption checks and is
+not the Go loading algorithm. The legacy bare-key load and standalone version
+read remain point reads; existence uses Java's separate limit-one prefix scan.
+See [compatibility boundaries](docs/compatibility.md#single-record-reads-and-conflicts)
+and the `splitReadConflictProbe` Java conformance pin.
+
 ## Intentional Architectural Decisions (no functional difference)
 
 ### Default format version for a NEW store: Go writes 14, Java writes 7 (DECIDED — keep 14)

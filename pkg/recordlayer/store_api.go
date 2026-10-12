@@ -384,14 +384,8 @@ func (store *FDBRecordStore) DryRunSaveRecord(
 	recordsSubspace := store.subspace.Sub(RecordKey)
 	splitEnabled := store.metaData.IsSplitLongRecords()
 	var oldsizeInfo sizeInfo
-	oldValue, err := loadWithSplit(
-		store.context.Transaction(),
-		recordsSubspace,
-		primaryKey,
-		splitEnabled,
-		store.omitUnsplitRecordSuffix(),
-		&oldsizeInfo,
-	)
+	load := store.startRecordLoad(store.context.Transaction(), primaryKey)
+	oldValue, oldVersion, err := load.raw.finish(&oldsizeInfo)
 	if err != nil {
 		return nil, fmt.Errorf("load existing record: %w", err)
 	}
@@ -407,6 +401,12 @@ func (store *FDBRecordStore) DryRunSaveRecord(
 		oldRT, oldMsg, oldWire, deserErr = store.deserializeAndDiscover(oldValue)
 		if deserErr != nil {
 			return nil, &RecordDeserializationError{PrimaryKey: primaryKey, Cause: deserErr}
+		}
+	}
+
+	if oldRecordExists {
+		if _, err := load.finishVersion(oldVersion); err != nil {
+			return nil, fmt.Errorf("load old record version for dry-run save: %w", err)
 		}
 	}
 
@@ -489,17 +489,9 @@ func (store *FDBRecordStore) DryRunSaveRecord(
 // which only loads the record without calling validateRecordUpdateAllowed.
 // Matches Java's FDBRecordStore.dryRunDeleteRecordAsync().
 func (store *FDBRecordStore) DryRunDeleteRecord(primaryKey tuple.Tuple) (bool, error) {
-	recordsSubspace := store.subspace.Sub(RecordKey)
-	splitEnabled := store.metaData.IsSplitLongRecords()
 	var sizeInfo sizeInfo
-	value, err := loadWithSplit(
-		store.context.Transaction(),
-		recordsSubspace,
-		primaryKey,
-		splitEnabled,
-		store.omitUnsplitRecordSuffix(),
-		&sizeInfo,
-	)
+	load := store.startRecordLoad(store.context.Transaction(), primaryKey)
+	value, version, err := load.raw.finish(&sizeInfo)
 	if err != nil {
 		return false, fmt.Errorf("dry run delete record: %w", err)
 	}
@@ -511,6 +503,9 @@ func (store *FDBRecordStore) DryRunDeleteRecord(primaryKey tuple.Tuple) (bool, e
 	// fails the preview as it fails the delete.
 	if _, _, _, err := store.deserializeAndDiscover(value); err != nil {
 		return false, &RecordDeserializationError{PrimaryKey: primaryKey, Cause: err}
+	}
+	if _, err := load.finishVersion(version); err != nil {
+		return false, fmt.Errorf("load old record version for dry-run delete: %w", err)
 	}
 	return true, nil
 }

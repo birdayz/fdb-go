@@ -124,6 +124,14 @@ class ConformanceBase {
      * Create an FDBRecordContext from a tenant transaction using reflection.
      */
     static FDBRecordContext createContextFromTransaction(FDBDatabase db, Transaction transaction) {
+        FDBRecordContextConfig config = FDBRecordContextConfig.newBuilder()
+            .setTimer(new com.apple.foundationdb.record.provider.foundationdb.FDBStoreTimer())
+            .build();
+        return createContextFromTransaction(db, transaction, config);
+    }
+
+    static FDBRecordContext createContextFromTransaction(FDBDatabase db, Transaction transaction,
+                                                        FDBRecordContextConfig config) {
         try {
             Constructor<FDBRecordContext> constructor = FDBRecordContext.class.getDeclaredConstructor(
                 FDBDatabase.class,
@@ -132,9 +140,6 @@ class ConformanceBase {
                 com.apple.foundationdb.record.provider.foundationdb.FDBStoreTimer.class
             );
             constructor.setAccessible(true);
-            FDBRecordContextConfig config = FDBRecordContextConfig.newBuilder()
-                .setTimer(new com.apple.foundationdb.record.provider.foundationdb.FDBStoreTimer())
-                .build();
             return constructor.newInstance(db, transaction, config, null);
         } catch (Exception e) {
             throw new RuntimeException("Failed to create FDBRecordContext from transaction: " + e.getMessage(), e);

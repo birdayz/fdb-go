@@ -16,7 +16,7 @@ import (
 // against the executor (key_value_cursor.go's initIterator issues its own
 // GetRange per invocation; flat_map_cursor.go's OnNext opens a fresh inner
 // cursor per outer row with NO pipelining; split_helper.go's loadWithSplit
-// does one blocking tx.Get().Get() in the common unsplit case — see
+// reads one record-prefix range in the common unsplit case — see
 // properties.FetchCPU's doc comment for the full trace). Charging the
 // AMORTIZED sequential-scan rate (ScanCPU) — or, worse, literally zero — for
 // this isolated round trip was pricing the identical physical operation

@@ -9,7 +9,6 @@ import (
 	"fmt"
 
 	"fdb.dev/pkg/fdbgo/fdb"
-	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
 )
@@ -21,7 +20,7 @@ var unsplitSuffix = tuple.Tuple{unsplitRecord}
 // SaveRecordBatch saves multiple records with pipelined existence checks.
 //
 // Instead of N sequential blocking FDB reads (one per record in SaveRecord),
-// this method issues all existence-check Gets up front as futures, then
+// this method issues all existing-record ranges up front as futures, then
 // collects them in one batch. This turns N round trips into ~1 round trip
 // for the existence checks, significantly improving throughput for batch inserts.
 //
@@ -76,15 +75,14 @@ func (store *FDBRecordStore) SaveRecordBatch(
 	recordsSubspace := store.recordsSubspace
 	splitEnabled := store.metaData.IsSplitLongRecords()
 
-	// --- Phase 1: Extract PKs and issue all Get futures (non-blocking) ---
+	// --- Phase 1: Extract PKs and issue all record ranges (non-blocking) ---
 	type pendingRecord struct {
 		record     proto.Message
 		write      proto.Message // what the save serializes (asJavaForSave)
 		recordType *RecordType
 		primaryKey tuple.Tuple
 		unsplitKey fdb.Key // pre-computed, reused for save
-		unsplitFut fdb.FutureByteSlice
-		splitFut   fdb.FutureByteSlice // nil if !splitEnabled
+		load       pendingStoreRecordLoad
 		oldExists  bool
 		oldSize    sizeInfo
 		oldType    *RecordType
@@ -134,8 +132,7 @@ func (store *FDBRecordStore) SaveRecordBatch(
 			primaryKey[j] = v
 		}
 
-		// Issue Get futures for both unsplit and first-split keys.
-		// All futures are pipelined: N×2 frames queued, one TCP flush.
+		// Issue the whole record range before waiting on any batch member.
 		unsplitKeyTuple := appendToTuple(primaryKey, unsplitRecord)
 		unsplitKey := fdb.Key(recordsSubspace.Pack(unsplitKeyTuple))
 		previous := -1
@@ -144,12 +141,9 @@ func (store *FDBRecordStore) SaveRecordBatch(
 		}
 		lastForKey[string(unsplitKey)] = i
 		// A repeated key replaces the earlier batch entry, so it reads nothing.
-		var unsplitFut, splitFut fdb.FutureByteSlice
+		var load pendingStoreRecordLoad
 		if previous < 0 {
-			unsplitFut = tx.Get(unsplitKey)
-			if splitEnabled {
-				splitFut = tx.Get(fdb.Key(recordsSubspace.Pack(appendToTuple(primaryKey, startSplitRecord))))
-			}
+			load = store.startRecordLoad(tx, primaryKey)
 		}
 
 		pending[i] = pendingRecord{
@@ -158,8 +152,7 @@ func (store *FDBRecordStore) SaveRecordBatch(
 			recordType: recordType,
 			primaryKey: primaryKey,
 			unsplitKey: unsplitKey,
-			unsplitFut: unsplitFut,
-			splitFut:   splitFut,
+			load:       load,
 			previous:   previous,
 		}
 	}
@@ -177,7 +170,7 @@ func (store *FDBRecordStore) SaveRecordBatch(
 	}
 
 	// --- Phase 2: Collect futures + save each record ---
-	// By now FDB has pipelined all N Gets over the wire. Collecting them
+	// By now FDB has pipelined all N ranges over the wire. Collecting them
 	// costs ~1 round trip total instead of N sequential round trips.
 
 	results := make([]*FDBStoredRecord[proto.Message], len(records))
@@ -210,33 +203,10 @@ func (store *FDBRecordStore) SaveRecordBatch(
 			}
 			continue
 		}
-		// Resolve pipelined existence checks (both unsplit + split).
-		unsplitVal, err := p.unsplitFut.Get()
-		if err != nil {
-			return nil, fmt.Errorf("record %d: unsplit check: %w", i, err)
-		}
-
-		var oldValue []byte
 		var oldsizeInfo sizeInfo
-		if unsplitVal != nil {
-			oldValue = unsplitVal
-			oldsizeInfo.KeyCount = 1
-			oldsizeInfo.KeySize = len(p.unsplitKey)
-			oldsizeInfo.ValueSize = len(unsplitVal)
-			oldsizeInfo.IsSplit = false
-		} else if splitEnabled {
-			splitVal, splitErr := p.splitFut.Get()
-			if splitErr != nil {
-				return nil, fmt.Errorf("record %d: split check: %w", i, splitErr)
-			}
-			if splitVal != nil {
-				// Record exists as split — load split chunks only (unsplit
-				// already checked via pipeline and returned nil).
-				oldValue, err = loadSplitOnly(tx, recordsSubspace, p.primaryKey, &oldsizeInfo)
-				if err != nil {
-					return nil, fmt.Errorf("record %d: split load: %w", i, err)
-				}
-			}
+		oldValue, oldVersion, err := p.load.raw.finish(&oldsizeInfo)
+		if err != nil {
+			return nil, fmt.Errorf("record %d: existing record load: %w", i, err)
 		}
 		oldRecordExists := oldValue != nil
 		// Each record saves as SaveRecord saves it: the existing record is
@@ -251,6 +221,12 @@ func (store *FDBRecordStore) SaveRecordBatch(
 				return nil, &RecordDeserializationError{PrimaryKey: p.primaryKey, Cause: err}
 			}
 		}
+		if oldRecordExists {
+			p.oldVersion, err = p.load.finishVersion(oldVersion)
+			if err != nil {
+				return nil, fmt.Errorf("record %d: load old record version: %w", i, err)
+			}
+		}
 		if !lockChecked {
 			if err := store.validateRecordUpdateAllowedLocked(); err != nil {
 				return nil, err
@@ -263,12 +239,6 @@ func (store *FDBRecordStore) SaveRecordBatch(
 		}
 		p.oldExists, p.oldSize = oldRecordExists, oldsizeInfo
 		p.oldType, p.oldRecord, p.oldWire = oldRT, oldMsg, oldWire
-		if oldRecordExists && store.metaData.IsStoreRecordVersions() && store.hasVersionIndex() {
-			p.oldVersion, err = store.LoadRecordVersion(p.primaryKey, false)
-			if err != nil {
-				return nil, fmt.Errorf("record %d: load old record version: %w", i, err)
-			}
-		}
 	}
 
 	// No record mutation precedes the whole batch's collation preflight.
@@ -280,10 +250,10 @@ func (store *FDBRecordStore) SaveRecordBatch(
 		if p.previous >= 0 {
 			old := results[p.previous]
 			oldRT, oldMsg, oldWire, oldVersion = old.RecordType, old.Record, old.wire, old.Version
-			oldsizeInfo = sizeInfo{KeyCount: old.KeyCount, KeySize: old.KeySize, ValueSize: old.ValueSize, IsSplit: old.Split}
-		}
-		if oldRecordExists && store.metaData.IsStoreRecordVersions() {
-			oldsizeInfo.VersionedInline = !store.useOldVersionFormat()
+			oldsizeInfo = sizeInfo{
+				KeyCount: old.KeyCount, KeySize: old.KeySize, ValueSize: old.ValueSize, IsSplit: old.Split,
+				VersionedInline: old.Version != nil && !store.useOldVersionFormat(),
+			}
 		}
 
 		// Serialize
@@ -433,42 +403,4 @@ func (store *FDBRecordStore) checkLegacyBatchCollation(records []proto.Message) 
 		previous[packed] = rt
 	}
 	return nil
-}
-
-// loadSplitOnly checks for a split record without checking unsplit first.
-// Used by SaveRecordBatch when the unsplit check was already done via pipeline.
-func loadSplitOnly(
-	tx fdb.ReadTransaction,
-	recordSubspace subspace.Subspace,
-	primaryKey tuple.Tuple,
-	si *sizeInfo,
-) ([]byte, error) {
-	firstSplitKeyTuple := appendToTuple(primaryKey, startSplitRecord)
-	firstSplitKey := recordSubspace.Pack(firstSplitKeyTuple)
-
-	rangeEnd := recordSubspace.Pack(appendToTuple(primaryKey, 256))
-
-	kvs, err := tx.GetRange(
-		fdb.KeyRange{Begin: fdb.Key(firstSplitKey), End: fdb.Key(rangeEnd)},
-		fdb.RangeOptions{},
-	).GetSliceWithError()
-	if err != nil {
-		return nil, fmt.Errorf("split record range read: %w", err)
-	}
-
-	if len(kvs) == 0 {
-		return nil, nil
-	}
-
-	var totalData []byte
-	for _, kv := range kvs {
-		totalData = append(totalData, kv.Value...)
-	}
-	si.KeyCount = len(kvs)
-	si.IsSplit = true
-	si.ValueSize = len(totalData)
-	if len(kvs) > 0 {
-		si.KeySize = len(kvs[0].Key)
-	}
-	return totalData, nil
 }

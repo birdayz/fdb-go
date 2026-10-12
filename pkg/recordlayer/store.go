@@ -370,45 +370,78 @@ func (store *FDBRecordStore) LoadRecord(primaryKey tuple.Tuple) (*FDBStoredRecor
 // Get finishes the load. A non-nil scanState is charged the loaded bytes.
 func (store *FDBRecordStore) LoadRecordAsync(primaryKey tuple.Tuple, scanState *ScanLimiterState) PendingRead[*FDBStoredRecord[proto.Message]] {
 	issueStart := time.Now()
-	load := &recordLoad{
-		store: store, tx: store.context.Transaction(), primaryKey: primaryKey, scanState: scanState,
-		split: store.metaData.IsSplitLongRecords(),
-	}
-	load.first = startLoadWithSplit(load.tx, store.recordsSubspace, primaryKey, load.split, store.omitUnsplitRecordSuffix(), false)
-	if store.metaData.IsStoreRecordVersions() {
-		load.version = store.loadRecordVersionAsync(primaryKey, false)
-	}
+	load := &recordLoad{store: store, primaryKey: primaryKey, scanState: scanState}
+	load.first = store.startRecordLoad(store.context.Transaction(), primaryKey)
+	load.first.raw.startReadiness()
 	load.issueCost = time.Since(issueStart)
 	return NewPendingRead(load.finish, load.ready)
 }
 
-// recordLoad is one issued LoadRecordAsync; split and omitSuffix are fixed at issue.
+// pendingStoreRecordLoad adds the separate legacy version read to SplitHelper.
+// Modern versions always come from the record range, even if new saves no
+// longer store versions. Java loadTypedRecord only issues a separate old-format read.
+type pendingStoreRecordLoad struct {
+	raw        pendingRecordLoad
+	oldVersion PendingRead[*FDBRecordVersion]
+}
+
+func (store *FDBRecordStore) startRecordLoad(tx fdb.ReadTransaction, primaryKey tuple.Tuple) pendingStoreRecordLoad {
+	var load pendingStoreRecordLoad
+	if store.useOldVersionFormat() {
+		load.oldVersion = store.loadRecordVersionAsync(primaryKey, false)
+	}
+	load.raw = startLoadWithSplit(tx, store.recordsSubspace, primaryKey, store.metaData.IsSplitLongRecords(), store.omitUnsplitRecordSuffix(), store.context)
+	return load
+}
+
+// The legacy version future is observed only after successful deserialization,
+// preserving Java deserializeRecord's error precedence. An inline version wins.
+func (load *pendingStoreRecordLoad) finishVersion(inline *FDBRecordVersion) (*FDBRecordVersion, error) {
+	if inline == nil && load.oldVersion != nil {
+		return load.oldVersion.Get()
+	}
+	return inline, nil
+}
+
+// recordLoad is one issued LoadRecordAsync; layout and local version are fixed at issue.
 type recordLoad struct {
 	store      *FDBRecordStore
-	tx         fdb.ReadTransaction
 	primaryKey tuple.Tuple
 	scanState  *ScanLimiterState
-	split      bool
-	first      pendingRecordLoad
-	version    PendingRead[*FDBRecordVersion]
+	first      pendingStoreRecordLoad
 	issueCost  time.Duration
+	loadCost   time.Duration
+	loaded     bool
+	record     *FDBStoredRecord[proto.Message]
+	loadErr    error
 }
 
-// A missing unsplit value of a splitting store still needs the chunk reads.
 func (l *recordLoad) ready() bool {
-	if !l.first.value.IsReady() || (l.version != nil && !l.version.IsReady()) {
+	if !l.first.raw.ready() {
 		return false
 	}
-	value, err := l.first.value.Get()
-	return err != nil || value != nil || !l.split
+	if l.first.oldVersion == nil || l.first.oldVersion.IsReady() {
+		return true
+	}
+	// A missing/corrupt record, or one with its own inline version, does not
+	// depend on the legacy version future. Memoize decoding and accounting.
+	l.load()
+	return l.loadErr != nil || l.record == nil || l.record.Version != nil
 }
 
-// The load timer counts the caller's issue and wait, not time queued behind earlier rows.
-func (l *recordLoad) finish() (*FDBStoredRecord[proto.Message], error) {
-	waitStart := time.Now()
+func (l *recordLoad) load() {
+	if !l.loaded {
+		start := time.Now()
+		l.record, l.loadErr = l.loadRawRecord()
+		l.loadCost = time.Since(start)
+		l.loaded = true
+	}
+}
+
+func (l *recordLoad) loadRawRecord() (*FDBStoredRecord[proto.Message], error) {
 	store, primaryKey := l.store, l.primaryKey
 	var sizeInfo sizeInfo
-	value, err := l.first.finish(&sizeInfo)
+	value, version, err := l.first.raw.finish(&sizeInfo)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load record %v: %w", primaryKey, err)
 	}
@@ -436,21 +469,26 @@ func (l *recordLoad) finish() (*FDBStoredRecord[proto.Message], error) {
 		ValueSize:  sizeInfo.ValueSize,
 		KeySize:    sizeInfo.KeySize,
 		Split:      sizeInfo.IsSplit,
+		Version:    version,
 	}
-
-	// Load version if versioning is enabled.
-	// Matches Java's loadTypedRecord which eagerly loads the version.
-	if l.version != nil {
-		ver, err := l.version.Get()
-		if err != nil {
-			return nil, fmt.Errorf("load record version for %v: %w", primaryKey, err)
-		}
-		stored.Version = ver
-	}
-
-	store.context.Timer().Record(EventLoadRecord, (l.issueCost + time.Since(waitStart)).Nanoseconds())
 
 	return stored, nil
+}
+
+// The load timer counts the caller's issue and wait, not time queued behind earlier rows.
+func (l *recordLoad) finish() (*FDBStoredRecord[proto.Message], error) {
+	l.load()
+	if l.loadErr != nil || l.record == nil {
+		return l.record, l.loadErr
+	}
+	start := time.Now()
+	version, err := l.first.finishVersion(l.record.Version)
+	if err != nil {
+		return nil, fmt.Errorf("load record version for %v: %w", l.primaryKey, err)
+	}
+	l.record.Version = version
+	l.store.context.Timer().Record(EventLoadRecord, (l.issueCost + l.loadCost + time.Since(start)).Nanoseconds())
+	return l.record, nil
 }
 
 // SaveRecord saves a protobuf record to the store.
@@ -477,14 +515,8 @@ func (store *FDBRecordStore) deleteRecord(primaryKey tuple.Tuple, typed *typedRe
 
 	// Load existing record to get size info and record data (for counting)
 	var oldsizeInfo sizeInfo
-	value, err := loadWithSplit(
-		store.context.Transaction(),
-		recordsSubspace,
-		primaryKey,
-		splitEnabled,
-		store.omitUnsplitRecordSuffix(),
-		&oldsizeInfo,
-	)
+	load := store.startRecordLoad(store.context.Transaction(), primaryKey)
+	value, oldRecordVersion, err := load.raw.finish(&oldsizeInfo)
 	if err != nil {
 		return false, fmt.Errorf("failed to load record for deletion %v: %w", primaryKey, err)
 	}
@@ -507,6 +539,11 @@ func (store *FDBRecordStore) deleteRecord(primaryKey tuple.Tuple, typed *typedRe
 		}
 	}
 
+	oldRecordVersion, err = load.finishVersion(oldRecordVersion)
+	if err != nil {
+		return false, fmt.Errorf("load old record version for deletion: %w", err)
+	}
+
 	// Then the lock, before any write (validateRecordUpdateAllowed inside the
 	// load's continuation, :1770-1771).
 	if err := store.validateRecordUpdateAllowed(); err != nil {
@@ -517,32 +554,11 @@ func (store *FDBRecordStore) deleteRecord(primaryKey tuple.Tuple, typed *typedRe
 		return false, err
 	}
 
-	// Mark the inline version for cleanup by deleteSplit — but only in the modern
-	// layout. In the legacy layout the version lives in the separate RecordVersionKey(8)
-	// subspace, not inline, so deleteSplit must not try to clear pk+-1 (it's cleared
-	// explicitly below).
-	if store.metaData.IsStoreRecordVersions() {
-		oldsizeInfo.VersionedInline = !store.useOldVersionFormat()
-	}
-
-	// Load old record's version BEFORE deleteSplit clears the FDB keys and
-	// BEFORE we clean up the local version cache. We need the old version to
-	// remove the old VERSION index entry.
-	// Matches Java's loadExistingRecord which returns the full record including version.
-	var oldRecordVersion *FDBRecordVersion
-	if store.metaData.IsStoreRecordVersions() && store.hasVersionIndex() {
-		ver, verErr := store.LoadRecordVersion(primaryKey, false)
-		if verErr != nil {
-			return false, fmt.Errorf("load old record version for index update: %w", verErr)
-		}
-		oldRecordVersion = ver
-	}
-
 	// Delete all KV pairs for this record
 	deleteSplit(store.context.Transaction(), recordsSubspace, primaryKey, splitEnabled, store.omitUnsplitRecordSuffix(), &oldsizeInfo)
 
 	// Clean up the record version. Matches Java's deleteTypedRecord.
-	if store.metaData.IsStoreRecordVersions() {
+	if store.metaData.IsStoreRecordVersions() || (oldRecordVersion != nil && !oldRecordVersion.IsComplete()) {
 		versionKey := store.versionKey(primaryKey)
 		if store.useOldVersionFormat() {
 			// Legacy layout: the version lives in the separate subspace and was NOT
@@ -681,7 +697,7 @@ type saveTarget struct {
 type existingRecordLoad struct {
 	target  saveTarget
 	err     error
-	pending pendingRecordLoad
+	pending pendingStoreRecordLoad
 	sent    bool
 }
 
@@ -701,14 +717,7 @@ func (store *FDBRecordStore) startExistingRecordLoads(tx fdb.ReadTransaction, wi
 			continue
 		}
 		keys = append(keys, key)
-		load.pending = startLoadWithSplit(
-			tx,
-			store.recordsSubspace,
-			load.target.primaryKey,
-			store.metaData.IsSplitLongRecords(),
-			store.omitUnsplitRecordSuffix(),
-			true,
-		)
+		load.pending = store.startRecordLoad(tx, load.target.primaryKey)
 		load.sent = true
 	}
 	return loads
@@ -802,19 +811,13 @@ func (store *FDBRecordStore) saveRecordInternal(
 	// This is needed for: existence checks, record counting, and future
 	// index updates / version management.
 	var oldsizeInfo sizeInfo
-	var oldValue []byte
+	var pending pendingStoreRecordLoad
 	if load != nil && load.sent {
-		oldValue, err = load.pending.finish(&oldsizeInfo)
+		pending = load.pending
 	} else {
-		oldValue, err = loadWithSplit(
-			store.context.Transaction(),
-			recordsSubspace,
-			primaryKey,
-			splitEnabled,
-			store.omitUnsplitRecordSuffix(),
-			&oldsizeInfo,
-		)
+		pending = store.startRecordLoad(store.context.Transaction(), primaryKey)
 	}
+	oldValue, oldRecordVersion, err := pending.raw.finish(&oldsizeInfo)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load existing record: %w", err)
 	}
@@ -840,6 +843,13 @@ func (store *FDBRecordStore) saveRecordInternal(
 			if err := typed.checkDeserialized(primaryKey, cachedOldRT); err != nil {
 				return nil, err
 			}
+		}
+	}
+
+	if oldRecordExists {
+		oldRecordVersion, err = pending.finishVersion(oldRecordVersion)
+		if err != nil {
+			return nil, fmt.Errorf("load old record version for save: %w", err)
 		}
 	}
 
@@ -900,27 +910,6 @@ func (store *FDBRecordStore) saveRecordInternal(
 	stored, err := store.writeStoredRecord(data, recordType, primaryKey)
 	if err != nil {
 		return nil, err
-	}
-
-	// Load old record's version BEFORE saveWithSplit clears the version key
-	// and BEFORE saveRecordVersion overwrites the local version cache. We need
-	// the old version to remove the old VERSION index entry on update.
-	// Matches Java's loadExistingRecord which returns the full record including version.
-	var oldRecordVersion *FDBRecordVersion
-	if oldRecordExists && store.metaData.IsStoreRecordVersions() && store.hasVersionIndex() {
-		ver, verErr := store.LoadRecordVersion(primaryKey, false)
-		if verErr != nil {
-			return nil, fmt.Errorf("load old record version for index update: %w", verErr)
-		}
-		oldRecordVersion = ver
-	}
-
-	// If versioning is enabled, mark old record as having an inline version so the
-	// split helper clears it — but only in the modern layout. In the legacy layout
-	// the version lives in the separate subspace and is overwritten in place by
-	// saveRecordVersion below, so it must not be treated as inline.
-	if store.metaData.IsStoreRecordVersions() && oldRecordExists {
-		oldsizeInfo.VersionedInline = !store.useOldVersionFormat()
 	}
 
 	// Save using split helper (handles both split and unsplit data)
@@ -1058,17 +1047,6 @@ func (store *FDBRecordStore) AddRecordReadConflict(primaryKey tuple.Tuple) error
 func (store *FDBRecordStore) AddRecordWriteConflict(primaryKey tuple.Tuple) error {
 	recordRange := store.getRangeForRecord(primaryKey)
 	return store.context.Transaction().AddWriteConflictRange(recordRange)
-}
-
-// hasVersionIndex returns true if any index uses IndexTypeVersion.
-// Used to decide whether old record versions need to be loaded for index maintenance.
-func (store *FDBRecordStore) hasVersionIndex() bool {
-	for _, idx := range store.metaData.GetAllIndexes() {
-		if idx.Type == IndexTypeVersion {
-			return true
-		}
-	}
-	return false
 }
 
 // getRangeForRecord calculates the key range that covers all possible record type variants

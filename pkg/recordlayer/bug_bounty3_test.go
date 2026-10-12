@@ -282,6 +282,7 @@ var _ = Describe("Bug Bounty Round 3", func() {
 			oldsizeInfo := &sizeInfo{} // Zero-value, IsSplit=false
 			// Condition: oldsizeInfo.IsSplit || splitLongRecords = false || true = true
 			clearPreviousRecord(
+				store.context,
 				store.context.Transaction(),
 				recordsSubspace,
 				tuple.Tuple{}, // empty primary key

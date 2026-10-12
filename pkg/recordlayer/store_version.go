@@ -128,6 +128,11 @@ func unpackVersion(value []byte) (*FDBRecordVersion, error) {
 	if !ok {
 		return nil, fmt.Errorf("version tuple element is not a Versionstamp: %T", t[0])
 	}
+	// Java fromVersionstamp preserves completeness, even for raw values that
+	// contain an incomplete marker rather than a committed versionstamp.
+	if !isGlobalVersionComplete(vs.TransactionVersion[:]) {
+		return IncompleteVersion(int(vs.UserVersion))
+	}
 	return NewCompleteVersion(vs.TransactionVersion[:], int(vs.UserVersion))
 }
 

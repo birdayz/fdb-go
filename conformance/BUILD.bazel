@@ -725,6 +725,7 @@ go_test(
         "schema_template_catalog_conformance_test.go",
         "sliding_window_index_conformance_test.go",
         "split_conformance_test.go",
+        "split_read_conflict_conformance_test.go",
         "store_header_conformance_test.go",
         "store_header_v2_conformance_test.go",
         "store_helpers_test.go",
