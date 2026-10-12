@@ -306,6 +306,18 @@ func (p *pendingRecordLoad) ready() bool {
 	}
 }
 
+func recordRangeBounds(prefix []byte) (begin, end []byte) {
+	n := len(prefix) + 1
+	buf := make([]byte, 2*n)
+	// Full capacities isolate endpoint appends/reslices. Retaining either
+	// endpoint keeps the shared storage for both alive.
+	begin, end = buf[:n:n], buf[n:2*n:2*n]
+	copy(begin, prefix)
+	copy(end, prefix)
+	end[n-1] = 0xff
+	return begin, end
+}
+
 func startLoadWithSplit(
 	tx fdb.ReadTransaction,
 	recordSubspace subspace.Subspace,
@@ -320,8 +332,7 @@ func startLoadWithSplit(
 		return p
 	}
 	// Subspace.range(), not PrefixRange: exclude the bare key and pk+ff.
-	begin := append(append([]byte(nil), p.prefix...), 0x00)
-	end := append(append([]byte(nil), p.prefix...), 0xff)
+	begin, end := recordRangeBounds(p.prefix)
 	p.rangeRead = tx.GetRange(fdb.KeyRange{Begin: fdb.Key(begin), End: fdb.Key(end)}, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll})
 	if recordContext != nil {
 		versionKey := recordSubspace.Pack(appendToTuple(primaryKey, recordVersionSuffix))
