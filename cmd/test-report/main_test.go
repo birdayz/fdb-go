@@ -89,3 +89,35 @@ func TestParseBEPCountsEveryShardAndLastAttempt(t *testing.T) {
 		t.Fatalf("test cases = %s, want %s", got, want)
 	}
 }
+
+func writeGinkgoShard(t *testing.T, spec string) string {
+	t.Helper()
+	uri := writeJUnit(t, "bootstrap")
+	dir := filepath.Join(filepath.Dir(strings.TrimPrefix(uri, "file://")), "test.outputs")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	report := `[{"containers":["Suite"],"name":"` + spec + `","state":"passed","duration_ms":1}]`
+	if err := os.WriteFile(filepath.Join(dir, "ginkgo-report.json"), []byte(report), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return uri
+}
+
+func TestParseBEPMultiShardGinkgoRendersEveryCase(t *testing.T) {
+	t.Parallel()
+	bep := writeBEP(t,
+		testBEPResult{label: "//pkg:g_test", run: 1, shard: 1, attempt: 1, status: "PASSED", xmlURI: writeGinkgoShard(t, "S1")},
+		testBEPResult{label: "//pkg:g_test", run: 1, shard: 2, attempt: 1, status: "PASSED", xmlURI: writeGinkgoShard(t, "S2")},
+	)
+	targets, err := parseBEP(bep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 1 || len(targets[0].Tests) != 2 {
+		t.Fatalf("got %d targets, want one with both shard specs", len(targets))
+	}
+	if targets[0].Tree != nil {
+		t.Fatal("a single shard's Ginkgo tree would hide the other shard's specs")
+	}
+}

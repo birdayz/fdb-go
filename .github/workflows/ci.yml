@@ -142,15 +142,18 @@ jobs:
       # aborted first): there's no BEP then, and `> test-report.html` would otherwise
       # truncate an EMPTY report and publish it, masking the real failure (codex).
       - name: Generate test report
+        id: report
         if: ${{ !cancelled() && steps.test.outcome != 'skipped' }}
         run: |
           bazelisk build --config=ci //cmd/test-report
           BAZEL_BIN=$(bazelisk info --config=ci bazel-bin 2>/dev/null)
-          "$BAZEL_BIN/cmd/test-report/test-report_/test-report" .bazel-bep.jsonl > test-report.html
+          "$BAZEL_BIN/cmd/test-report/test-report_/test-report" .bazel-bep.jsonl > test-report.html.tmp
+          mv test-report.html.tmp test-report.html
           echo "Report generated: $(grep 'stat-total' test-report.html | grep -oP '>\K\d+(?=</span>)') tests"
 
+      # website.yml publishes this artifact; a failed generation must not replace the live report.
       - name: Upload test report as artifact
-        if: ${{ !cancelled() && steps.test.outcome != 'skipped' }}
+        if: ${{ !cancelled() && steps.report.outcome == 'success' }}
         uses: actions/upload-artifact@v7
         with:
           name: test-report
@@ -224,7 +227,8 @@ jobs:
         run: |
           bazelisk build --config=ci //cmd/test-report
           BAZEL_BIN=$(bazelisk info --config=ci bazel-bin 2>/dev/null)
-          "$BAZEL_BIN/cmd/test-report/test-report_/test-report" .bazel-bep.jsonl > test-report.html
+          "$BAZEL_BIN/cmd/test-report/test-report_/test-report" .bazel-bep.jsonl > test-report.html.tmp
+          mv test-report.html.tmp test-report.html
 
       - name: Upload test report and timing data as artifact
         if: ${{ !cancelled() && steps.test.outcome != 'skipped' }}

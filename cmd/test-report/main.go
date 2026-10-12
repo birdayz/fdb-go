@@ -501,6 +501,10 @@ func parseBEP(path string) ([]*TargetResult, error) {
 				Duration: time.Duration(info.durationMs) * time.Millisecond,
 			}}
 		}
+		// One tree describes one result; a multi-shard or multi-run target renders its flat case list.
+		if len(tr.Tests) > 0 {
+			tr.Tree = nil
+		}
 		tr.Tests = append(tr.Tests, cases...)
 	}
 
