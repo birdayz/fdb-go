@@ -64,7 +64,8 @@ type mapPipelinedCursor[T, V any] struct {
 	size     int
 	pipeline []mapPipelineEntry[V]
 	stop     *RecordCursorResult[V]
-	last     *RecordCursorResult[V]
+	last     RecordCursorResult[V]
+	hasLast  bool
 	err      error
 	closed   bool
 }
@@ -77,8 +78,8 @@ func (c *mapPipelinedCursor[T, V]) fail(err error) (RecordCursorResult[V], error
 }
 
 func (c *mapPipelinedCursor[T, V]) OnNext(ctx context.Context) (RecordCursorResult[V], error) {
-	if c.last != nil && !c.last.HasNext() {
-		return *c.last, nil
+	if c.hasLast && !c.last.HasNext() {
+		return c.last, nil
 	}
 	if c.closed {
 		return RecordCursorResult[V]{}, context.Canceled
@@ -97,7 +98,7 @@ func (c *mapPipelinedCursor[T, V]) OnNext(ctx context.Context) (RecordCursorResu
 		if !source.HasNext() {
 			stop := NewResultNoNext[V](source.GetNoNextReason(), source.GetContinuation())
 			c.stop = &stop
-			if source.GetNoNextReason() == TimeLimitReached && c.last != nil {
+			if source.GetNoNextReason() == TimeLimitReached && c.hasLast {
 				if err := c.keepCompletedPrefix(); err != nil {
 					return c.fail(err)
 				}
@@ -109,8 +110,8 @@ func (c *mapPipelinedCursor[T, V]) OnNext(ctx context.Context) (RecordCursorResu
 		})
 	}
 	if len(c.pipeline) == 0 {
-		c.last = c.stop
-		return *c.last, nil
+		c.last, c.hasLast = *c.stop, true
+		return c.last, nil
 	}
 	entry := c.pipeline[0]
 	c.pipeline[0] = mapPipelineEntry[V]{}
@@ -120,7 +121,7 @@ func (c *mapPipelinedCursor[T, V]) OnNext(ctx context.Context) (RecordCursorResu
 		return c.fail(err)
 	}
 	result := NewResultWithValue(value, entry.continuation)
-	c.last = &result
+	c.last, c.hasLast = result, true
 	return result, nil
 }
 
