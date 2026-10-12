@@ -165,6 +165,45 @@ var _ = Describe("A store writing through TransformedRecordSerializer", func() {
 		})).To(Succeed())
 	})
 
+	It("annotates a public load refused after a successful decryption retry", func() {
+		ks, md, key := specSubspace(), metaData(), newKey()
+		original := order(17, "retry annotation")
+		Expect(md.Version()).To(BeNumerically(">", 0), "the annotation must not match the error's zero default")
+		Expect(withStore(ks, md, encrypting(key), func(s *FDBRecordStore) error {
+			_, err := s.SaveRecord(original)
+			return err
+		})).To(Succeed())
+
+		km := &flakyKeyManager{FixedZeroKeyManager: NewFixedZeroKeyManager(key, "", nil), failures: 1}
+		reader, err := NewTransformedRecordSerializerJCEBuilder().SetKeyManager(km).
+			SetDeserializeReattemptCount(1).SetFailOnDeserializeReattempt(true).Build()
+		Expect(err).NotTo(HaveOccurred())
+		err = withStore(ks, md, reader, func(s *FDBRecordStore) error {
+			record, err := s.LoadRecord(tuple.Tuple{int64(17)})
+			Expect(record).To(BeNil())
+			return err
+		})
+		var deser *RecordDeserializationError
+		Expect(errors.As(err, &deser)).To(BeTrue(), "%v", err)
+		Expect(deser.PrimaryKey).To(Equal(tuple.Tuple{int64(17)}))
+		var rse *RecordSerializationError
+		Expect(errors.As(err, &rse)).To(BeTrue(), "%v", err)
+		Expect(rse.RetryCount).To(Equal(1))
+		Expect(rse.RetryResult).To(Equal("success"))
+		Expect(rse.MetaDataVersion).To(Equal(md.Version()))
+		Expect(rse.Cause).NotTo(BeNil())
+		Expect(rse.Cause.Error()).To(Equal("key service unavailable"))
+		Expect(withStore(ks, md, reader, func(s *FDBRecordStore) error {
+			record, err := s.LoadRecord(tuple.Tuple{int64(17)})
+			if err != nil {
+				return err
+			}
+			Expect(record).NotTo(BeNil())
+			Expect(proto.Equal(record.Record, original)).To(BeTrue())
+			return nil
+		})).To(Succeed())
+	})
+
 	It("keeps the serializer on a copied builder and builds an index through the store's", func() {
 		ss, key := specSubspace(), newKey()
 		mb := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)

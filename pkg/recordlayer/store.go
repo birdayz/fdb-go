@@ -2506,9 +2506,11 @@ func (store *FDBRecordStore) readStoredRecord(stored []byte) ([]byte, error) {
 		reader = plainTransformedReader
 	}
 	out, err := reader.untransform(stored)
-	var rse *RecordSerializationError
-	if err != nil && errors.As(err, &rse) && rse.RetryResult == "success" && store.metaData != nil {
-		rse.MetaDataVersion = store.metaData.Version()
+	if err != nil {
+		var rse *RecordSerializationError
+		if errors.As(err, &rse) && rse.RetryResult == "success" && store.metaData != nil {
+			rse.MetaDataVersion = store.metaData.Version()
+		}
 	}
 	return out, err
 }

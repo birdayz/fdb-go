@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	mathrand "math/rand/v2"
 	"os"
@@ -990,6 +991,148 @@ func TestTransformedSerializer_ZlibStateIsReused(t *testing.T) {
 	if err != nil || !bytes.Equal(out, union) {
 		t.Fatalf("a reused reader read %d bytes, %v", len(out), err)
 	}
+}
+
+// An As method on a key manager's error is observable even without metadata.
+type readStoredRecordAsError struct {
+	calls int
+	rse   *RecordSerializationError
+}
+
+func (*readStoredRecordAsError) Error() string { return "key manager refusal" }
+
+func (e *readStoredRecordAsError) As(target any) bool {
+	e.calls++
+	if p, ok := target.(**RecordSerializationError); ok && e.rse != nil {
+		*p = e.rse
+		return true
+	}
+	return false
+}
+
+func TestReadStoredRecordErrorAnnotation(t *testing.T) {
+	t.Parallel()
+	key := aesKey(t, 16)
+	stored, err := mustSerializer(t, NewTransformedRecordSerializerJCEBuilder().
+		SetEncryptWhenSerializing(true).SetEncryptionKey(key)).transform(unionOf(sonnet108), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name     string
+		result   string
+		metadata bool
+		customAs bool
+	}{
+		{name: "nonmatching", metadata: true},
+		{name: "wrapped success", result: "success", metadata: true},
+		{name: "wrapped failure", result: "failure", metadata: true},
+		{name: "success without metadata", result: "success"},
+		{name: "custom As without metadata", result: "success", customAs: true},
+		{name: "nonmatching custom As without metadata", customAs: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var rse *RecordSerializationError
+			refusal := errors.New("key manager refusal")
+			if tc.result != "" {
+				rse = &RecordSerializationError{Message: "key manager refusal", RetryResult: tc.result, MetaDataVersion: 7}
+				refusal = fmt.Errorf("wrapped: %w", rse)
+			}
+			custom := &readStoredRecordAsError{rse: rse}
+			if tc.customAs {
+				refusal = custom
+			}
+			// A real serializer propagates the key manager's own error unchanged.
+			km := &validationKeyManager{keys: map[int32][]byte{0: key}, calls: 1, laterErr: refusal}
+			store := &FDBRecordStore{serializer: mustSerializer(t, NewTransformedRecordSerializerJCEBuilder().SetKeyManager(km))}
+			if tc.metadata {
+				store.metaData = &RecordMetaData{version: 23}
+			}
+			out, err := store.readStoredRecord(stored)
+			if out != nil || err != refusal || km.calls != 2 {
+				t.Fatalf("read = %x, %v; want nil, identical error %v after one key lookup (calls=%d)", out, err, refusal, km.calls)
+			}
+			if rse != nil {
+				wantVersion := 7
+				if tc.metadata && tc.result == "success" {
+					wantVersion = 23
+				}
+				if rse.MetaDataVersion != wantVersion || rse.RetryResult != tc.result {
+					t.Fatalf("annotation = %+v, want version %d, result %q", rse, wantVersion, tc.result)
+				}
+			}
+			if tc.customAs && custom.calls != 1 {
+				t.Fatalf("custom As calls = %d, want 1 even without metadata", custom.calls)
+			}
+		})
+	}
+}
+
+// Both paths publish their outputs so the allocation comparison has identical
+// escape and byte-ownership requirements. Only the isolated benchmark uses it.
+var readStoredRecordAllocationOutputs [2][]byte
+
+func TestReadStoredRecordDoesNotAllocate(t *testing.T) {
+	t.Parallel()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const bench = "BenchmarkReadStoredRecordAllocations"
+	output, err := exec.CommandContext(t.Context(), executable,
+		"-test.run=^$", "-test.bench=^"+bench+"$", "-test.benchtime=1x").CombinedOutput()
+	t.Logf("%s", output)
+	if err != nil || !bytes.Contains(output, []byte("readStoredRecord allocation cases=4")) {
+		t.Fatalf("allocation benchmark: %v\n%s", err, output)
+	}
+}
+
+func BenchmarkReadStoredRecordAllocations(b *testing.B) {
+	configured, err := NewTransformedRecordSerializerBuilder().SetCompressWhenSerializing(true).Build()
+	if err != nil {
+		b.Fatal(err)
+	}
+	union := unionOf(sonnet108)
+	cases := 0
+	for _, serializer := range []*TransformedRecordSerializer{nil, configured} {
+		store := &FDBRecordStore{serializer: serializer}
+		reader := serializer
+		if reader == nil {
+			reader = plainTransformedReader
+		}
+		for _, prefixed := range []bool{false, true} {
+			stored := union
+			if prefixed {
+				stored = append([]byte{transformPrefixClear}, union...)
+			}
+			const samples = 1000
+			direct := testing.AllocsPerRun(samples, func() {
+				readStoredRecordAllocationOutputs[0], err = reader.untransform(stored)
+				if err != nil {
+					b.Fatal(err)
+				}
+			})
+			wrapper := testing.AllocsPerRun(samples, func() {
+				readStoredRecordAllocationOutputs[1], err = store.readStoredRecord(stored)
+				if err != nil {
+					b.Fatal(err)
+				}
+			})
+			payload := stored[len(stored)-len(union):]
+			for i, out := range readStoredRecordAllocationOutputs {
+				if !bytes.Equal(out, union) || &out[0] != &payload[0] {
+					b.Fatalf("path %d did not return the unchanged borrowed payload", i)
+				}
+			}
+			b.Logf("readStoredRecord allocations: configured=%t prefixed=%t samples=%d direct=%.0f wrapper=%.0f overhead=%.0f",
+				serializer != nil, prefixed, samples, direct, wrapper, wrapper-direct)
+			if direct != 0 || wrapper != direct {
+				b.Errorf("want zero wrapper overhead over an allocation-free direct read, got direct=%g wrapper=%g", direct, wrapper)
+			}
+			cases++
+		}
+	}
+	b.Logf("readStoredRecord allocation cases=%d", cases)
 }
 
 // TestDecodeTransformPrefixDoesNotAllocate: the prefix is decoded once per
