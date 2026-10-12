@@ -26,10 +26,12 @@ type versionstampCompletion struct {
 
 func (tx *Transaction) newVersionstampLocked(inc *readIncarnation) *versionstampCompletion {
 	c := &versionstampCompletion{tx: tx, inc: inc, done: make(chan struct{})}
-	if inc.versionstamps == nil {
-		inc.versionstamps = make(map[*versionstampCompletion]struct{})
+	if previous := inc.versionstamp; previous != nil && !previous.ready {
+		if inc.versionstamps == nil {
+			inc.versionstamps = make(map[*versionstampCompletion]struct{})
+		}
+		inc.versionstamps[previous] = struct{}{}
 	}
-	inc.versionstamps[c] = struct{}{}
 	inc.versionstamp = c
 	return c
 }
