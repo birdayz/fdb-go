@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
 	"testing"
 )
 
@@ -219,5 +221,121 @@ func TestMapPipelinedCanceledContextDoesNotPullSource(t *testing.T) {
 	r, err := inner.OnNext(context.Background())
 	if err != nil || !r.HasNext() || r.GetValue() != 1 || len(probe.take()) != 0 {
 		t.Fatalf("canceled pipeline consumed source: %v, %v", r, err)
+	}
+}
+
+func TestMapPipelinedReturnedResultsAndCachedTerminal(t *testing.T) {
+	t.Parallel()
+	for _, reason := range []NoNextReason{SourceExhausted, TimeLimitReached} {
+		t.Run(fmt.Sprint(reason), func(t *testing.T) {
+			t.Parallel()
+			var stopCont RecordCursorContinuation = &EndContinuation{}
+			if reason == TimeLimitReached {
+				stopCont = NewBytesContinuation(ListCursorContinuation(2))
+			}
+			probe := &pipelineProbe{ready: map[int]bool{1: true}}
+			cursor := MapPipelined[int, int](newOOBStopCursorUnit([]int{0, 1}, reason, stopCont), probe.issue, 2)
+			defer cursor.Close()
+			ctx := context.Background()
+			var rows [2]RecordCursorResult[int]
+			for i := range rows {
+				r, err := cursor.OnNext(ctx)
+				if err != nil || !r.HasNext() || r.GetValue() != i*10 {
+					t.Fatalf("row %d: %v, %v", i, r, err)
+				}
+				rows[i] = r
+			}
+			terminal, err := cursor.OnNext(ctx)
+			if err != nil || terminal.HasNext() || terminal.GetNoNextReason() != reason || terminal.GetContinuation() != stopCont {
+				t.Fatalf("terminal: %v, %v", terminal, err)
+			}
+			canceled, cancel := context.WithCancel(ctx)
+			cancel()
+			cached, err := cursor.OnNext(canceled)
+			if err != nil || cached != terminal {
+				t.Fatalf("cached terminal after cancellation: %v, %v; want %v", cached, err, terminal)
+			}
+			if err := cursor.Close(); err != nil {
+				t.Fatal(err)
+			}
+			for _, nextCtx := range []context.Context{ctx, canceled} {
+				cached, err = cursor.OnNext(nextCtx)
+				if err != nil || cached != terminal {
+					t.Fatalf("cached terminal after close: %v, %v; want %v", cached, err, terminal)
+				}
+			}
+			for i, r := range rows {
+				if !r.HasNext() || r.GetValue() != i*10 {
+					t.Fatalf("previously returned row %d changed: %v", i, r)
+				}
+				cont, err := r.GetContinuation().ToBytes()
+				if err != nil || !bytes.Equal(cont, ListCursorContinuation(i+1)) {
+					t.Fatalf("previously returned row %d continuation = %x, %v", i, cont, err)
+				}
+			}
+			expectEvents(t, probe.take(), "issue 0", "issue 1", "resolve 0", "resolve 1")
+		})
+	}
+}
+
+type pipelineAllocationPending struct {
+	gets int
+}
+
+func (p *pipelineAllocationPending) Get() (int, error) {
+	p.gets++
+	return 0, nil
+}
+
+func (*pipelineAllocationPending) IsReady() bool { return true }
+
+// Publish the by-value result just as an escaping caller would. Only the
+// isolated benchmark uses this sink; allocation counts are process-wide.
+var pipelineAllocationResult RecordCursorResult[int]
+
+func TestMapPipelinedOnNextDoesNotAllocate(t *testing.T) {
+	t.Parallel()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	output, err := exec.CommandContext(t.Context(), executable,
+		"-test.run=^$", "-test.bench=^BenchmarkMapPipelinedOnNextAllocations$", "-test.benchtime=1x").CombinedOutput()
+	t.Logf("%s", output)
+	if err != nil || !bytes.Contains(output, []byte("mapPipelined OnNext allocations: samples=1000 pendingGets=1001")) {
+		t.Fatalf("isolated allocation benchmark: %v\n%s", err, output)
+	}
+}
+
+func BenchmarkMapPipelinedOnNextAllocations(b *testing.B) {
+	pending := &pipelineAllocationPending{}
+	continuation := NewBytesContinuation([]byte{1})
+	entry := mapPipelineEntry[int]{pending: pending, continuation: continuation}
+	var pipeline [1]mapPipelineEntry[int]
+	stop := NewResultNoNext[int](SourceExhausted, &EndContinuation{})
+	cursor := &mapPipelinedCursor[int, int]{size: 1, stop: &stop}
+	ctx := context.Background()
+	const samples = 1000
+	allocations := testing.AllocsPerRun(samples, func() {
+		// Restore the cleared queue slot without changing the previous result.
+		// The existing stop prevents source pulls, mappings, or queue growth.
+		pipeline[0] = entry
+		cursor.pipeline = pipeline[:]
+		var err error
+		pipelineAllocationResult, err = cursor.OnNext(ctx)
+		if err != nil || !pipelineAllocationResult.HasNext() || pipelineAllocationResult.GetValue() != 0 || pipelineAllocationResult.GetContinuation() != continuation {
+			b.Fatalf("OnNext = %v, %v", pipelineAllocationResult, err)
+		}
+	})
+	if pending.gets != samples+1 {
+		b.Fatalf("pending Get calls = %d, want %d including warmup", pending.gets, samples+1)
+	}
+	cont, err := pipelineAllocationResult.GetContinuation().ToBytes()
+	if err != nil || !bytes.Equal(cont, []byte{1}) || pipelineAllocationResult.GetContinuation().IsEnd() {
+		b.Fatalf("returned continuation = %x, %v", cont, err)
+	}
+	b.Logf("mapPipelined OnNext allocations: samples=%d pendingGets=%d allocations=%.0f", samples, pending.gets, allocations)
+	if allocations != 0 {
+		b.Fatalf("OnNext allocations = %g, want 0", allocations)
 	}
 }
