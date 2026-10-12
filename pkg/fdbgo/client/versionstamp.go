@@ -9,8 +9,8 @@ import (
 	"fdb.dev/pkg/fdbgo/wire"
 )
 
-// versionstampCompletion belongs to one admitted commit producer. All mutable
-// fields are protected by tx.readErrMu; closing done publishes an immutable result.
+// versionstampCompletion belongs to one admitted commit producer. Its fields use
+// tx.readErrMu; results publish through that lock or an observer's done channel.
 // Commit's return value is separate: a retired versionstamp cannot cancel a
 // dispatched commit, and a pre-native Commit failure does not complete the stamp.
 type versionstampCompletion struct {
@@ -25,7 +25,7 @@ type versionstampCompletion struct {
 }
 
 func (tx *Transaction) newVersionstampLocked(inc *readIncarnation) *versionstampCompletion {
-	c := &versionstampCompletion{tx: tx, inc: inc, done: make(chan struct{})}
+	c := &versionstampCompletion{tx: tx, inc: inc}
 	if previous := inc.versionstamp; previous != nil && !previous.ready {
 		if inc.versionstamps == nil {
 			inc.versionstamps = make(map[*versionstampCompletion]struct{})
@@ -42,7 +42,9 @@ func (c *versionstampCompletion) selectLocked(result commitOutcome, err error, r
 	}
 	c.result, c.err, c.retired, c.ready = result, err, retired, true
 	delete(c.inc.versionstamps, c)
-	close(c.done)
+	if c.done != nil {
+		close(c.done)
+	}
 }
 
 // finishNative runs at native commit completion, after uncertainty handling.
@@ -78,8 +80,8 @@ func (c *versionstampCompletion) finishNoWrite() {
 	c.tx.readErrMu.Unlock()
 }
 
-// value is called only after observing done, or under readErrMu. Give each handle
-// its own bytes: callers must not be able to mutate another future's result.
+// value requires readErrMu, a ready getter capture, or an observed done signal.
+// Each handle owns its bytes; callers cannot mutate another future's result.
 func (c *versionstampCompletion) value() ([]byte, error) {
 	if c.err != nil {
 		return nil, c.err
@@ -97,6 +99,7 @@ type PendingVersionstamp struct {
 	ctx        context.Context
 	cleanup    context.CancelFunc
 	completion *versionstampCompletion
+	done       <-chan struct{}
 	once       sync.Once
 	value      []byte
 	err        error
@@ -105,16 +108,17 @@ type PendingVersionstamp struct {
 func (p *PendingVersionstamp) Resolve() ([]byte, error) {
 	p.once.Do(func() {
 		defer p.cleanup()
+		done := p.done
 		// A selected native result is immutable, including when interruption
 		// is also ready by the time the consumer runs.
 		select {
-		case <-p.completion.done:
+		case <-done:
 		default:
 			select {
-			case <-p.completion.done:
+			case <-done:
 			case <-p.ctx.Done():
 				select {
-				case <-p.completion.done:
+				case <-done:
 				default:
 					p.err = p.completion.tx.mapReadError(p.ctx, p.ctx.Err())
 					return
@@ -157,9 +161,19 @@ func (tx *Transaction) GetVersionstampPending(parent context.Context) ([]byte, *
 		completion.selectLocked(commitOutcome{}, op.inc.cause, true)
 	}
 	ready := completion.ready
+	done := completion.done
+	if done == nil {
+		if ready {
+			// The mutex published these fields, not the shared signal's close.
+			done = closedDone
+		} else {
+			completion.done = make(chan struct{})
+			done = completion.done
+		}
+	}
 	tx.readErrMu.Unlock()
 	op.lease.release()
-	pending := &PendingVersionstamp{ctx: ctx, cleanup: cleanup, completion: completion}
+	pending := &PendingVersionstamp{ctx: ctx, cleanup: cleanup, completion: completion, done: done}
 	if ready {
 		value, err := pending.Resolve()
 		return value, nil, err

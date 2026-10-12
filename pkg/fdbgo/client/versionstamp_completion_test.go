@@ -23,7 +23,7 @@ func pendingStamp(t *testing.T, ctx context.Context, tx *Transaction) *PendingVe
 func requireStampPending(t *testing.T, p *PendingVersionstamp) {
 	t.Helper()
 	select {
-	case <-p.completion.done:
+	case <-p.done:
 		t.Fatal("versionstamp selected before native completion or retirement")
 	default:
 	}
