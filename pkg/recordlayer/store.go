@@ -394,6 +394,20 @@ func (store *FDBRecordStore) startRecordLoad(tx fdb.ReadTransaction, primaryKey 
 	return load
 }
 
+// recordLoadTimer ends at the load's completion, before a save/delete continues.
+// Deferred completion covers failures; an explicit completion records success once.
+type recordLoadTimer struct {
+	timer *StoreTimer
+	start time.Time
+}
+
+func (t *recordLoadTimer) finish() {
+	if !t.start.IsZero() {
+		t.timer.RecordSince(EventLoadRecord, t.start)
+		t.start = time.Time{}
+	}
+}
+
 // The legacy version future is observed only after successful deserialization,
 // preserving Java deserializeRecord's error precedence. An inline version wins.
 func (load *pendingStoreRecordLoad) finishVersion(inline *FDBRecordVersion) (*FDBRecordVersion, error) {
@@ -490,16 +504,18 @@ func (l *recordLoad) loadRawRecord() (*FDBStoredRecord[proto.Message], error) {
 // The load timer counts the caller's issue and wait, not time queued behind earlier rows.
 func (l *recordLoad) finish() (*FDBStoredRecord[proto.Message], error) {
 	l.load()
+	start := time.Now()
+	defer func() {
+		l.store.context.Timer().Record(EventLoadRecord, (l.issueCost + l.loadCost + time.Since(start)).Nanoseconds())
+	}()
 	if l.loadErr != nil || l.record == nil {
 		return l.record, l.loadErr
 	}
-	start := time.Now()
 	version, err := l.first.finishVersion(l.record.Version)
 	if err != nil {
 		return nil, fmt.Errorf("load record version for %v: %w", l.primaryKey, err)
 	}
 	l.record.Version = version
-	l.store.context.Timer().Record(EventLoadRecord, (l.issueCost + l.loadCost + time.Since(start)).Nanoseconds())
 	return l.record, nil
 }
 
@@ -522,11 +538,14 @@ func (store *FDBRecordStore) DeleteRecord(primaryKey tuple.Tuple) (bool, error) 
 // store's serializer, through which the existing record is read.
 func (store *FDBRecordStore) deleteRecord(primaryKey tuple.Tuple, typed *typedRecordSerializer) (bool, error) {
 	startTime := time.Now()
+	defer store.context.Timer().RecordSince(EventDeleteRecord, startTime)
 	recordsSubspace := store.recordsSubspace
 	splitEnabled := store.metaData.IsSplitLongRecords()
 
 	// Load existing record to get size info and record data (for counting)
 	var oldsizeInfo sizeInfo
+	loadTimer := recordLoadTimer{timer: store.context.Timer(), start: time.Now()}
+	defer loadTimer.finish()
 	load := store.startRecordLoad(store.context.Transaction(), primaryKey)
 	value, oldRecordVersion, err := load.raw.finish(&oldsizeInfo)
 	if err != nil {
@@ -555,6 +574,8 @@ func (store *FDBRecordStore) deleteRecord(primaryKey tuple.Tuple, typed *typedRe
 	if err != nil {
 		return false, fmt.Errorf("load old record version for deletion: %w", err)
 	}
+
+	loadTimer.finish()
 
 	// Then the lock, before any write (validateRecordUpdateAllowed inside the
 	// load's continuation, :1770-1771).
@@ -618,7 +639,6 @@ func (store *FDBRecordStore) deleteRecord(primaryKey tuple.Tuple, typed *typedRe
 
 	// Record instrumentation
 	timer := store.context.Timer()
-	timer.RecordSince(EventDeleteRecord, startTime)
 	timer.Increment(CountDeleteRecordKey)
 	timer.IncrementBy(CountDeleteRecordKeyBytes, int64(oldsizeInfo.KeySize))
 
@@ -815,6 +835,7 @@ func (store *FDBRecordStore) saveRecordInternal(
 	}
 	recordTypeName, recordType := target.recordTypeName, target.recordType
 	record, writeRecord, primaryKey := target.record, target.write, target.primaryKey
+	defer store.context.Timer().RecordSince(EventSaveRecord, startTime)
 
 	recordsSubspace := store.recordsSubspace
 	splitEnabled := store.metaData.IsSplitLongRecords()
@@ -823,6 +844,8 @@ func (store *FDBRecordStore) saveRecordInternal(
 	// This is needed for: existence checks, record counting, and future
 	// index updates / version management.
 	var oldsizeInfo sizeInfo
+	loadTimer := recordLoadTimer{timer: store.context.Timer(), start: time.Now()}
+	defer loadTimer.finish()
 	var pending pendingStoreRecordLoad
 	if load != nil && load.sent {
 		pending = load.pending
@@ -864,6 +887,8 @@ func (store *FDBRecordStore) saveRecordInternal(
 			return nil, fmt.Errorf("load old record version for save: %w", err)
 		}
 	}
+
+	loadTimer.finish()
 
 	// Perform existence checks
 	if existenceCheck != RecordExistenceCheckNone {
@@ -1000,7 +1025,6 @@ func (store *FDBRecordStore) saveRecordInternal(
 
 	// Record instrumentation
 	timer := store.context.Timer()
-	timer.RecordSince(EventSaveRecord, startTime)
 	timer.Increment(CountSaveRecordKey)
 	timer.IncrementBy(CountSaveRecordKeyBytes, int64(newsizeInfo.KeySize))
 	timer.IncrementBy(CountSaveRecordValueBytes, int64(newsizeInfo.ValueSize))

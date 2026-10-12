@@ -428,7 +428,7 @@ func TestRecordLoadReadinessDoesNotWaitForUnusedLegacyVersion(t *testing.T) {
 			t.Parallel()
 			done := make(chan struct{})
 			close(done)
-			load := recordLoad{first: pendingStoreRecordLoad{
+			load := recordLoad{store: &FDBRecordStore{context: NewFDBRecordContext(nil, nil)}, first: pendingStoreRecordLoad{
 				raw: pendingRecordLoad{asyncRange: &pendingRecordRange{done: done}},
 				oldVersion: NewPendingRead(func() (*FDBRecordVersion, error) {
 					t.Fatal("unused legacy version was awaited")

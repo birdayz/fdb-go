@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -473,6 +474,7 @@ var _ = Describe("StoreTimer", func() {
 				if err != nil {
 					return nil, err
 				}
+				timer.Reset()
 				_, err = store.LoadRecord(tuple.Tuple{int64(1)})
 				return nil, err
 			})
@@ -480,6 +482,189 @@ var _ = Describe("StoreTimer", func() {
 			Expect(timer.GetCount(EventLoadRecord)).To(Equal(int64(1)))
 			Expect(timer.GetTimeNanos(EventLoadRecord)).To(BeNumerically(">", 0))
 		})
+
+		for _, api := range []string{"sync", "async", "typed"} {
+			for _, outcome := range []string{"found", "missing", "error"} {
+				It("records EventLoadRecord once for "+api+"/"+outcome, func() {
+					_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+						timer := NewStoreTimer()
+						rtx.SetTimer(timer)
+						store, err := NewStoreBuilder().
+							SetContext(rtx).SetMetaDataProvider(md).SetSubspace(specSubspace()).CreateOrOpen()
+						if err != nil {
+							return nil, err
+						}
+						pk := tuple.Tuple{int64(1)}
+						switch outcome {
+						case "found":
+							_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1)})
+							if err != nil {
+								return nil, err
+							}
+						case "error":
+							// An invalid protobuf makes the load fail after its FDB read completes.
+							rtx.Transaction().Set(store.recordsSubspace.Pack(tuple.Tuple{int64(1), int64(0)}), []byte{0xff})
+						}
+						timer.Reset()
+						var found bool
+						switch api {
+						case "sync":
+							record, loadErr := store.LoadRecord(pk)
+							found, err = record != nil, loadErr
+						case "async":
+							pending := store.LoadRecordAsync(pk, nil)
+							record, loadErr := pending.Get()
+							found, err = record != nil, loadErr
+							elapsed := timer.GetTimeNanos(EventLoadRecord)
+							_, repeatedErr := pending.Get()
+							Expect(repeatedErr == loadErr).To(BeTrue())
+							Expect(timer.GetTimeNanos(EventLoadRecord)).To(Equal(elapsed))
+						case "typed":
+							typed, typedErr := NewTypedRecordStore[*demopb.Order](store, md.GetRecordType("Order"))
+							Expect(typedErr).NotTo(HaveOccurred())
+							record, loadErr := typed.LoadRecord(pk)
+							found, err = record != nil, loadErr
+						}
+						if outcome == "error" {
+							var deserializationErr *RecordDeserializationError
+							Expect(errors.As(err, &deserializationErr)).To(BeTrue(), "load error: %v", err)
+						} else {
+							Expect(err).NotTo(HaveOccurred())
+						}
+						Expect(found).To(Equal(outcome == "found"))
+						Expect(timer.GetCount(EventLoadRecord)).To(Equal(int64(1)))
+						Expect(timer.GetTimeNanos(EventLoadRecord)).To(BeNumerically(">", 0))
+						return nil, nil
+					})
+					Expect(err).NotTo(HaveOccurred())
+				})
+			}
+		}
+
+		for _, outcome := range []string{"found", "missing", "error"} {
+			It("records EventLoadRecord for index fetch/"+outcome, func() {
+				builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
+				builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+				builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+				builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+				builder.AddIndex("Order", NewIndex("order_price", Field("price")))
+				indexedMD, err := builder.Build()
+				Expect(err).NotTo(HaveOccurred())
+				_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+					timer := NewStoreTimer()
+					rtx.SetTimer(timer)
+					store, err := NewStoreBuilder().
+						SetContext(rtx).SetMetaDataProvider(indexedMD).SetSubspace(specSubspace()).CreateOrOpen()
+					if err != nil {
+						return nil, err
+					}
+					_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+					if err != nil {
+						return nil, err
+					}
+					key := store.recordsSubspace.Pack(tuple.Tuple{int64(1), int64(0)})
+					if outcome == "missing" {
+						rtx.Transaction().Clear(key) // Leave an orphan index entry.
+					} else if outcome == "error" {
+						rtx.Transaction().Set(key, []byte{0xff})
+					}
+					timer.Reset()
+					_, err = AsList(ctx, store.ScanIndexRecords("order_price", TupleRangeAll, nil, ForwardScan()))
+					if outcome == "missing" {
+						var orphanErr *RecordCoreStorageError
+						Expect(errors.As(err, &orphanErr)).To(BeTrue(), "index fetch error: %v", err)
+					} else if outcome == "error" {
+						var deserializationErr *RecordDeserializationError
+						Expect(errors.As(err, &deserializationErr)).To(BeTrue(), "index fetch error: %v", err)
+					} else {
+						Expect(err).NotTo(HaveOccurred())
+					}
+					Expect(timer.GetCount(EventLoadRecord)).To(Equal(int64(1)))
+					Expect(timer.GetTimeNanos(EventLoadRecord)).To(BeNumerically(">", 0))
+					return nil, nil
+				})
+				Expect(err).NotTo(HaveOccurred())
+			})
+		}
+
+		for _, api := range []string{"save", "typed-save", "pipelined-save", "dry-save", "delete", "typed-delete", "dry-delete"} {
+			for _, outcome := range []string{"found", "missing", "error"} {
+				It("records Java timer events for "+api+"/"+outcome, func() {
+					_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+						timer := NewStoreTimer()
+						rtx.SetTimer(timer)
+						store, err := NewStoreBuilder().
+							SetContext(rtx).SetMetaDataProvider(md).SetSubspace(specSubspace()).CreateOrOpen()
+						if err != nil {
+							return nil, err
+						}
+						record := &demopb.Order{OrderId: proto.Int64(1)}
+						if outcome == "found" {
+							_, err = store.SaveRecord(record)
+							if err != nil {
+								return nil, err
+							}
+						} else if outcome == "error" {
+							rtx.Transaction().Set(store.recordsSubspace.Pack(tuple.Tuple{int64(1), int64(0)}), []byte{0xff})
+						}
+						typed, err := NewTypedRecordStore[*demopb.Order](store, md.GetRecordType("Order"))
+						Expect(err).NotTo(HaveOccurred())
+						timer.Reset()
+						var event Event
+						switch api {
+						case "save":
+							event = EventSaveRecord
+							_, err = store.SaveRecordWithOptions(record, RecordExistenceCheckErrorIfNotExists)
+						case "typed-save":
+							event = EventSaveRecord
+							_, err = typed.SaveRecordWithOptions(record, RecordExistenceCheckErrorIfNotExists)
+						case "pipelined-save":
+							event = EventSaveRecord
+							_, err = store.SaveRecordsPipelined([]proto.Message{record}, RecordExistenceCheckErrorIfNotExists)
+						case "dry-save":
+							event = EventSaveRecord
+							_, err = store.DryRunSaveRecord(record, RecordExistenceCheckErrorIfNotExists)
+						case "delete":
+							event = EventDeleteRecord
+							_, err = store.DeleteRecord(tuple.Tuple{int64(1)})
+						case "typed-delete":
+							event = EventDeleteRecord
+							_, err = typed.DeleteRecord(tuple.Tuple{int64(1)})
+						case "dry-delete":
+							_, err = store.DryRunDeleteRecord(tuple.Tuple{int64(1)})
+						}
+						if outcome == "error" {
+							var deserializationErr *RecordDeserializationError
+							Expect(errors.As(err, &deserializationErr)).To(BeTrue(), "operation error: %v", err)
+						} else if outcome == "missing" && event == EventSaveRecord {
+							var missingErr *RecordDoesNotExistError
+							Expect(errors.As(err, &missingErr)).To(BeTrue(), "operation error: %v", err)
+						} else {
+							Expect(err).NotTo(HaveOccurred())
+						}
+						wantCounts := map[string]int64{"load": 1, "save": 0, "delete": 0}
+						if api != "dry-delete" {
+							if event == EventSaveRecord {
+								wantCounts["save"] = 1
+							} else {
+								wantCounts["delete"] = 1
+							}
+						}
+						Expect(map[string]int64{
+							"load":   timer.GetCount(EventLoadRecord),
+							"save":   timer.GetCount(EventSaveRecord),
+							"delete": timer.GetCount(EventDeleteRecord),
+						}).To(Equal(wantCounts))
+						Expect(timer.GetTimeNanos(EventLoadRecord)).To(BeNumerically(">", 0))
+						if api != "dry-delete" {
+							Expect(timer.GetTimeNanos(event)).To(BeNumerically(">", 0))
+						}
+						return nil, nil
+					})
+					Expect(err).NotTo(HaveOccurred())
+				})
+			}
+		}
 
 		It("records EventDeleteRecord on delete", func() {
 			timer := NewStoreTimer()
@@ -554,7 +739,8 @@ var _ = Describe("StoreTimer", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(timer.GetCount(EventSaveRecord)).To(Equal(int64(3)))
-			Expect(timer.GetCount(EventLoadRecord)).To(Equal(int64(2)))
+			// Three saves and the delete each load the existing record too.
+			Expect(timer.GetCount(EventLoadRecord)).To(Equal(int64(6)))
 			Expect(timer.GetCount(EventDeleteRecord)).To(Equal(int64(1)))
 			Expect(timer.GetCount(CountSaveRecordKey)).To(Equal(int64(3)))
 			Expect(timer.GetCount(CountDeleteRecordKey)).To(Equal(int64(1)))
