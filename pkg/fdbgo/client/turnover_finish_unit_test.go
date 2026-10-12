@@ -24,45 +24,73 @@ func TestReadOnlyCommitFinishAllocations(t *testing.T) {
 			t.Fatal("Commit did not publish its lazy replacement")
 		}
 	})
-	if allocs != 11 {
-		t.Fatalf("TURNOVER_FINISH_ALLOC: %v allocations, want 11", allocs)
+	if allocs != 10 {
+		t.Fatalf("TURNOVER_FINISH_ALLOC: %v allocations, want 10", allocs)
 	}
 	t.Logf("TURNOVER_FINISH_ALLOC: %v", allocs)
 }
 
 func TestTurnoverFinishPublishesOnUnwind(t *testing.T) {
 	t.Parallel()
-	tx := &Transaction{}
-	marker := &struct{}{}
-	var ready <-chan struct{}
-	func() {
-		defer func() {
-			if got := recover(); got != marker {
-				t.Fatalf("panic=%v, want unwind marker", got)
+	for _, observation := range []string{"unobserved", "observed"} {
+		t.Run(observation, func(t *testing.T) {
+			t.Parallel()
+			tx := &Transaction{}
+			t.Cleanup(tx.Cancel)
+			marker := &struct{}{}
+			var ready chan struct{}
+			var waiter *readinessTestWaiter
+			func() {
+				defer func() {
+					if got := recover(); got != marker {
+						t.Fatalf("panic=%v, want unwind marker", got)
+					}
+				}()
+				finish := tx.startTurnover()
+				defer finish.finish()
+				ready = tx.readReady
+				if ready != unobservedReadReady {
+					t.Fatal("turnover allocated an unobserved channel")
+				}
+				if observation == "observed" {
+					tx.readErrMu.Lock()
+					inc := tx.readIncarnationLocked()
+					tx.readErrMu.Unlock()
+					ctx := &readinessTestContext{Context: context.Background(), tx: tx, called: make(chan chan struct{}, 1)}
+					// Stack unwind always publishes before test cleanup drains.
+					waiter = startReadinessTestWaiter(t, func() {}, func() *executionLease { return tx.enterReadState(ctx, inc, true) })
+					ready = receiveReadinessTest(t, ctx.called)
+					if ready == nil || ready == unobservedReadReady {
+						t.Fatal("unwind waiter did not register a private channel")
+					}
+					waiter.requireBlocked(t)
+				}
+				panic(marker)
+			}()
+			if observation == "unobserved" {
+				requireReadinessTestOpen(t, ready)
+			} else {
+				receiveReadinessTest(t, ready)
+				lease := waiter.receive(t)
+				defer lease.release()
+				if lease == nil || lease.inc != tx.readLife {
+					t.Fatal("deferred finish did not admit its waiter")
+				}
 			}
-		}()
-		finish := tx.startTurnover()
-		ready = tx.readReady
-		defer finish.finish()
-		panic(marker)
-	}()
-	select {
-	case <-ready:
-	default:
-		t.Fatal("deferred finish did not close the publication channel")
+			if !tx.readErrMu.TryLock() {
+				t.Fatal("deferred finish retained the leaf lock")
+			}
+			barrier := tx.readReady
+			tx.readErrMu.Unlock()
+			if barrier != nil {
+				t.Fatal("deferred finish retained the readiness barrier")
+			}
+			if !tx.resetMu.TryLock() {
+				t.Fatal("deferred finish retained turnover ownership")
+			}
+			tx.resetMu.Unlock()
+		})
 	}
-	if !tx.readErrMu.TryLock() {
-		t.Fatal("deferred finish retained the leaf lock")
-	}
-	barrier := tx.readReady
-	tx.readErrMu.Unlock()
-	if barrier != nil {
-		t.Fatal("deferred finish retained the readiness barrier")
-	}
-	if !tx.resetMu.TryLock() {
-		t.Fatal("deferred finish retained turnover ownership")
-	}
-	tx.resetMu.Unlock()
 }
 
 func TestRejectedTurnoverHasNoFinishOwnership(t *testing.T) {
@@ -71,7 +99,7 @@ func TestRejectedTurnoverHasNoFinishOwnership(t *testing.T) {
 		t.Helper()
 		before, generation, ready := tx.readLife, tx.readGen, tx.readReady
 		finish, err := tx.beginTurnover(inc, released)
-		if finish.tx != nil || finish.ready != nil {
+		if finish.tx != nil {
 			t.Fatal("rejected turnover returned publication ownership")
 		}
 		requireLazySuccessorCode(t, err, want)

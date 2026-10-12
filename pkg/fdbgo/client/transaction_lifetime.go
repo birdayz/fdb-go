@@ -6,6 +6,10 @@ import (
 	"fdb.dev/pkg/fdbgo/wire"
 )
 
+// unobservedReadReady marks turnover without waiters. It stays open forever;
+// only admission waiters replace it with a private publication channel.
+var unobservedReadReady = make(chan struct{})
+
 // executionLease protects reset-owned state, not wire I/O ownership. tx and inc
 // are immutable; readErrMu guards active. Nested operations borrow the same token.
 type executionLease struct {
@@ -58,9 +62,18 @@ func (tx *Transaction) admitState() *readIncarnation {
 			tx.readErrMu.Unlock()
 			return inc
 		}
+		ready = tx.observeReadReadyLocked()
 		tx.readErrMu.Unlock()
 		<-ready
 	}
+}
+
+// observeReadReadyLocked registers a waiter while readErrMu holds publication.
+func (tx *Transaction) observeReadReadyLocked() chan struct{} {
+	if tx.readReady == unobservedReadReady {
+		tx.readReady = make(chan struct{})
+	}
+	return tx.readReady
 }
 
 // enterReadState never rebinds a captured operation to a replacement. A pending
@@ -93,6 +106,9 @@ func (tx *Transaction) enterReadStateInto(ctx context.Context, inc *readIncarnat
 			*lease = executionLease{tx: tx, inc: inc, active: true, issued: issued}
 			tx.readErrMu.Unlock()
 			return lease
+		}
+		if wait {
+			ready = tx.observeReadReadyLocked()
 		}
 		tx.readErrMu.Unlock()
 		if !wait {
@@ -132,8 +148,7 @@ func retirePending(pending []*PendingGet, join bool) {
 
 // turnoverToken owns publication and resetMu until finish is called exactly once.
 type turnoverToken struct {
-	tx    *Transaction
-	ready chan struct{}
+	tx *Transaction
 }
 
 // beginTurnover returns with resetMu held and no old state users. Its token
@@ -180,8 +195,7 @@ func (tx *Transaction) startTurnover() turnoverToken {
 // returned publication token.
 func (tx *Transaction) turnoverLocked(old *readIncarnation) turnoverToken {
 	pending := tx.detachPendingLocked(old)
-	ready := make(chan struct{})
-	tx.readReady = ready
+	tx.readReady = unobservedReadReady
 	tx.readLife = nil
 	tx.readGen++
 	tx.readErr = nil
@@ -208,7 +222,7 @@ func (tx *Transaction) turnoverLocked(old *readIncarnation) turnoverToken {
 		<-drained
 	}
 	retirePending(pending, true)
-	return turnoverToken{tx: tx, ready: ready}
+	return turnoverToken{tx: tx}
 }
 
 func (token turnoverToken) finish() {
@@ -220,13 +234,16 @@ func (token turnoverToken) finish() {
 	if inc != nil || tx.timeoutNs.Load() > 0 {
 		inc = tx.readIncarnationLocked()
 	}
+	ready := tx.readReady
 	tx.readReady = nil
 	var cause error
 	if inc != nil {
 		tx.armReadTimeoutLocked(inc)
 		cause = inc.cause
 	}
-	close(token.ready)
+	if ready != unobservedReadReady {
+		close(ready)
+	}
 	tx.readErrMu.Unlock()
 	tx.resetMu.Unlock()
 	if cause != nil {
