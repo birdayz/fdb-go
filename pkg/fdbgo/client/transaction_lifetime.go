@@ -204,13 +204,18 @@ func (tx *Transaction) turnoverLocked(old *readIncarnation) func() {
 	retirePending(pending, true)
 	return func() {
 		tx.readErrMu.Lock()
-		// Reads can capture the replacement during turnover. Arm its timebomb
-		// after reset-owned deadlines are final, whether it was captured early
-		// or constructed here. close(ready) remains the publication edge.
-		inc := tx.readIncarnationLocked()
+		// Captured successors and positive final timeouts must exist at publication.
+		// Construct behind readReady so the timebomb is armed only once below.
+		inc := tx.readLife
+		if inc != nil || tx.timeoutNs.Load() > 0 {
+			inc = tx.readIncarnationLocked()
+		}
 		tx.readReady = nil
-		tx.armReadTimeoutLocked(inc)
-		cause := inc.cause
+		var cause error
+		if inc != nil {
+			tx.armReadTimeoutLocked(inc)
+			cause = inc.cause
+		}
 		close(ready)
 		tx.readErrMu.Unlock()
 		tx.resetMu.Unlock()

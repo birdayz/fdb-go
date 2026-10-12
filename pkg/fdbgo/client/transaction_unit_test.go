@@ -421,6 +421,11 @@ func TestPostCommitReset_ClearsTransactionalState(t *testing.T) {
 	if got := txState(tx.state.Load()); got != txStateActive {
 		t.Errorf("state: got %d, want txStateActive", got)
 	}
+	if tx.readVersionState != nil {
+		t.Fatal("post-commit GRV state was eagerly allocated")
+	}
+	lease := tx.enterState()
+	defer lease.release()
 	if tx.hasReadVersion || tx.userSetReadVersion || tx.readVersion != 0 {
 		t.Errorf("readVersion fields not cleared: has=%v userSet=%v ver=%d",
 			tx.hasReadVersion, tx.userSetReadVersion, tx.readVersion)
