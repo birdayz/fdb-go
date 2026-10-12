@@ -59,7 +59,7 @@ func setupMultiShardEnvWithConfig(t *testing.T, ctx context.Context, cfg shardSi
 		tcfdb.WithKnob("storage_metrics_polling_delay", "1"),
 	)
 	g.Expect(err).ToNot(gomega.HaveOccurred())
-	t.Cleanup(func() { container.Terminate(context.Background()) })
+	t.Cleanup(func() { tcfdb.TerminateT(t, context.Background(), container) })
 
 	connStr, err := container.ClusterFile(ctx)
 	g.Expect(err).ToNot(gomega.HaveOccurred())

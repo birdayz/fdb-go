@@ -37,26 +37,34 @@ func TestMain(m *testing.M) {
 
 	connStr, err := container.ClusterFile(ctx)
 	if err != nil {
-		container.Terminate(ctx)
+		if cleanupErr := tcfdb.Terminate(ctx, container); cleanupErr != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", cleanupErr)
+		}
 		fmt.Fprintf(os.Stderr, "get cluster file: %v\n", err)
 		os.Exit(1)
 	}
 
 	cf, err := client.ParseClusterString(connStr)
 	if err != nil {
-		container.Terminate(ctx)
+		if cleanupErr := tcfdb.Terminate(ctx, container); cleanupErr != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", cleanupErr)
+		}
 		fmt.Fprintf(os.Stderr, "parse cluster string: %v\n", err)
 		os.Exit(1)
 	}
 	if err := container.WaitAvailable(ctx); err != nil {
-		container.Terminate(ctx)
+		if cleanupErr := tcfdb.Terminate(ctx, container); cleanupErr != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", cleanupErr)
+		}
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
 	}
 
 	_, internalReader, err := container.Exec(ctx, []string{"cat", "/var/fdb/fdb.cluster"})
 	if err != nil {
-		container.Terminate(ctx)
+		if cleanupErr := tcfdb.Terminate(ctx, container); cleanupErr != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", cleanupErr)
+		}
 		fmt.Fprintf(os.Stderr, "read internal cluster file: %v\n", err)
 		os.Exit(1)
 	}
@@ -67,7 +75,9 @@ func TestMain(m *testing.M) {
 	}
 	internalCF, err := client.ParseClusterString(strings.TrimSpace(internalStr))
 	if err != nil {
-		container.Terminate(ctx)
+		if cleanupErr := tcfdb.Terminate(ctx, container); cleanupErr != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", cleanupErr)
+		}
 		fmt.Fprintf(os.Stderr, "parse internal cluster: %v\n", err)
 		os.Exit(1)
 	}
@@ -85,7 +95,12 @@ func TestMain(m *testing.M) {
 
 	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cleanupCancel()
-	container.Terminate(cleanupCtx)
+	if err := tcfdb.Terminate(cleanupCtx, container); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		if code == 0 {
+			code = 1
+		}
+	}
 
 	os.Exit(code)
 }

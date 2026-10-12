@@ -1243,7 +1243,7 @@ func vecDiskBackedDB(t *testing.T) *recordlayer.FDBDatabase {
 	if err != nil {
 		t.Fatalf("start disk-backed FDB: %v", err)
 	}
-	t.Cleanup(func() { _ = container.Terminate(context.Background()) })
+	t.Cleanup(func() { foundationdbtc.TerminateT(t, context.Background(), container) })
 	clusterFile, err := container.ClusterFile(setupCtx)
 	if err != nil {
 		t.Fatalf("cluster file: %v", err)
@@ -1427,7 +1427,7 @@ func vecMultiProcDB(t *testing.T, procs int) *recordlayer.FDBDatabase {
 	if err != nil {
 		t.Fatalf("start %d-proc FDB: %v", procs, err)
 	}
-	t.Cleanup(func() { _ = container.Terminate(context.Background()) })
+	t.Cleanup(func() { foundationdbtc.TerminateT(t, context.Background(), container) })
 	clusterFile, err := container.ClusterFile(setupCtx)
 	if err != nil {
 		t.Fatalf("cluster file: %v", err)

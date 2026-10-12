@@ -173,8 +173,8 @@ func main() {
 	}
 }
 
-func runSeed(seed, ops int, testName, stacktester, btRunDir, seedDir string) SeedResult {
-	r := SeedResult{Seed: seed}
+func runSeed(seed, ops int, testName, stacktester, btRunDir, seedDir string) (r SeedResult) {
+	r = SeedResult{Seed: seed}
 
 	// Start FDB via testcontainers. WithDirectIP avoids Docker DNAT which
 	// confuses FDB's canonicalRemotePort tracking in the C binding (used by
@@ -192,7 +192,14 @@ func runSeed(seed, ops int, testName, stacktester, btRunDir, seedDir string) See
 	}
 	defer func() {
 		collectLogs(ctx, container, seedDir)
-		container.Terminate(ctx)
+		if err := foundationdb.Terminate(ctx, container); err != nil {
+			fmt.Fprintf(os.Stderr, "seed %d: %v\n", seed, err)
+			r.Pass = false
+			if r.Error != "" {
+				r.Error += "; "
+			}
+			r.Error += err.Error()
+		}
 	}()
 
 	// Get cluster file with direct IP for the Python tester.

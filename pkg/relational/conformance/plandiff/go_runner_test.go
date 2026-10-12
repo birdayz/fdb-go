@@ -24,36 +24,50 @@ import (
 // available. Empty value means "skip integration tests".
 var goSQLClusterFilePath string
 
-func TestMain(m *testing.M) {
+func TestMain(m *testing.M) { os.Exit(runTests(m)) }
+
+func runTests(m *testing.M) (code int) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
 	container, err := foundationdbtc.Run(ctx, "")
 	if err != nil {
+		var terminationErr *foundationdbtc.TerminationError
+		if errors.As(err, &terminationErr) {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			return 1
+		}
 		// No Docker — run non-FDB tests only.
-		os.Exit(m.Run())
+		return m.Run()
 	}
-	defer container.Terminate(context.Background()) //nolint:errcheck
+	defer func() {
+		if err := foundationdbtc.Terminate(context.Background(), container); err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			if code == 0 {
+				code = 1
+			}
+		}
+	}()
 
 	clusterContent, err := container.ClusterFile(ctx)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ClusterFile: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	tmp, err := os.CreateTemp("", "fdb-plandiff-*.cluster")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "CreateTemp: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	defer os.Remove(tmp.Name())
 	if _, err := tmp.WriteString(clusterContent); err != nil {
 		fmt.Fprintf(os.Stderr, "WriteString: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	tmp.Close()
 	goSQLClusterFilePath = tmp.Name()
 
-	os.Exit(m.Run())
+	return m.Run()
 }
 
 // TestWithTeardown drives every arm of the teardown reporting: a teardown that

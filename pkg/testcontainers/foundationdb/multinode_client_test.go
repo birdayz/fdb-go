@@ -37,7 +37,7 @@ func TestMultiNodeCluster_GoClientCRUD(t *testing.T) {
 		foundationdb.WithStorageEngine("memory"),
 	)
 	g.Expect(err).NotTo(HaveOccurred(), "RunCluster")
-	defer cluster.Terminate(ctx)
+	defer foundationdb.TerminateT(t, ctx, cluster)
 
 	// Log process IPs for debugging.
 	for i, r := range cluster.Replicas {

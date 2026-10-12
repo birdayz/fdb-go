@@ -76,7 +76,7 @@ type oldScenario struct {
 	doc      *yamsql.Scenario
 }
 
-func run(oldDir, outDir, censusPath string) int {
+func run(oldDir, outDir, censusPath string) (code int) {
 	old, err := loadOldCorpus(oldDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "INFRA: %v\n", err)
@@ -96,7 +96,14 @@ func run(oldDir, outDir, censusPath string) int {
 		fmt.Fprintf(os.Stderr, "INFRA: FDB container: %v\n", err)
 		return exitInfra
 	}
-	defer container.Terminate(context.Background()) //nolint:errcheck
+	defer func() {
+		if err := foundationdbtc.Terminate(context.Background(), container); err != nil {
+			fmt.Fprintf(os.Stderr, "INFRA: %v\n", err)
+			if code == exitOK {
+				code = exitInfra
+			}
+		}
+	}()
 
 	ctx := context.Background()
 	clusterContent, err := container.ClusterFile(ctx)

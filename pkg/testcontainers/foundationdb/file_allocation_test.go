@@ -2,6 +2,7 @@ package foundationdb
 
 import (
 	"context"
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -42,7 +43,7 @@ func TestRun_InterruptedFileAllocation(t *testing.T) {
 			defer func() {
 				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cleanupCancel()
-				if err := container.Terminate(cleanupCtx); err != nil {
+				if err := Terminate(cleanupCtx, container); err != nil {
 					t.Errorf("terminate: %v", err)
 				}
 			}()
@@ -119,9 +120,13 @@ func TestRun_KAIOOverride(t *testing.T) {
 			if container != nil {
 				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cleanupCancel()
-				if err := container.Terminate(cleanupCtx); err != nil {
+				if err := Terminate(cleanupCtx, container); err != nil {
 					t.Errorf("terminate: %v", err)
 				}
+			}
+			var terminationErr *TerminationError
+			if errors.As(err, &terminationErr) {
+				t.Fatalf("container startup cleanup failed: %v", err)
 			}
 			if err == nil || ctx.Err() != nil || logErr != nil || !strings.Contains(string(serverLog), "Fatal Error: Disk i/o operation failed") {
 				t.Fatalf("KAIO override did not reproduce the upstream failure: run=%v context=%v logs=%v\n%s", err, ctx.Err(), logErr, serverLog)

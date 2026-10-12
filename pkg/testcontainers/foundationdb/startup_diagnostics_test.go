@@ -67,7 +67,7 @@ func TestCancelledStartupKeepsDiagnosticsAndCleansUp(t *testing.T) {
 		if captured != nil {
 			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cleanupCancel()
-			_ = captured.Terminate(cleanupCtx)
+			TerminateT(t, cleanupCtx, &Container{Container: captured})
 		}
 	})
 	_, err = Run(ctx, "", testcontainers.WithEnv(map[string]string{"STARTUP_CANARY": canary}),
@@ -101,6 +101,10 @@ func TestCancelledStartupKeepsDiagnosticsAndCleansUp(t *testing.T) {
 	if captured == nil || faultAt.IsZero() {
 		t.Fatalf("startup did not reach the real cancellation fault: %v", err)
 	}
+	var terminationErr *TerminationError
+	if errors.As(err, &terminationErr) {
+		t.Errorf("container startup cleanup failed: %v", err)
+	}
 	if !errors.Is(err, context.Canceled) || !errors.Is(err, fault) {
 		t.Errorf("startup lost the original cancellation/fault: %v", err)
 	}
@@ -125,5 +129,8 @@ func TestCancelledStartupKeepsDiagnosticsAndCleansUp(t *testing.T) {
 	defer checkCancel()
 	if _, err := cli.ContainerInspect(checkCtx, captured.GetContainerID()); !client.IsErrNotFound(err) {
 		t.Errorf("cancelled startup left its container behind: %v", err)
+	} else {
+		// Startup already removed it; fallback cleanup must not terminate it twice.
+		captured = nil
 	}
 }

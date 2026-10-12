@@ -29,7 +29,9 @@ var (
 	testContainer *tc.Container
 )
 
-func TestMain(m *testing.M) {
+func TestMain(m *testing.M) { os.Exit(runTests(m)) }
+
+func runTests(m *testing.M) (code int) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
@@ -40,29 +42,36 @@ func TestMain(m *testing.M) {
 	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "start container: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	testContainer = container
-	defer container.Terminate(context.Background())
+	defer func() {
+		if err := tc.Terminate(context.Background(), container); err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			if code == 0 {
+				code = 1
+			}
+		}
+	}()
 
 	// Cluster file
 	connStr, err := container.ClusterFile(ctx)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "cluster file: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 
 	// Pure Go client — exact same hybrid cluster as fdb_test.go openTestDB
 	cf, err := client.ParseClusterString(connStr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "parse cluster: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 
 	_, internalReader, err := container.Exec(ctx, []string{"cat", "/var/fdb/fdb.cluster"})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "read internal: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	internalBytes, _ := io.ReadAll(internalReader)
 	internalStr := string(internalBytes)
@@ -72,7 +81,7 @@ func TestMain(m *testing.M) {
 	internalCF, err := client.ParseClusterString(strings.TrimSpace(internalStr))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "parse internal: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 
 	connectCF := &client.ClusterFile{
@@ -85,7 +94,7 @@ func TestMain(m *testing.M) {
 	goClient, err = gofdb.OpenDatabaseFromConfig(ctx, connectCF)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "open go db: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	defer goClient.Close()
 
@@ -95,7 +104,7 @@ func TestMain(m *testing.M) {
 	goRawClient, err = client.OpenDatabaseFromConfig(ctx, connectCF, client.WithAPIVersion(730))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "open raw client db: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	defer goRawClient.Close()
 
@@ -121,10 +130,10 @@ func TestMain(m *testing.M) {
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "seed: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 
-	os.Exit(m.Run())
+	return m.Run()
 }
 
 func BenchmarkGet(b *testing.B) {

@@ -164,7 +164,7 @@ func newGRVBlockTestDB(t *testing.T, ctx context.Context) (*Database, *grvBlockD
 	t.Cleanup(func() {
 		termCtx, termCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer termCancel()
-		container.Terminate(termCtx)
+		tcfdb.TerminateT(t, termCtx, container)
 	})
 
 	connStr, err := container.ClusterFile(ctx)

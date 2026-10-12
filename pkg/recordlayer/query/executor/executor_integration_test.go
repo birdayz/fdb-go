@@ -107,11 +107,13 @@ func integrationJoinResult(
 	return values.NewRawRecordConstructorValue(fields...)
 }
 
-func TestMain(m *testing.M) {
+func TestMain(m *testing.M) { os.Exit(runTests(m)) }
+
+func runTests(m *testing.M) (code int) {
 	// Allocation-only children run one exact test without FDB client/container
 	// background goroutines contributing to process-wide MemStats.
 	if allocs.IsChildProcess() {
-		os.Exit(m.Run())
+		return m.Run()
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -123,6 +125,15 @@ func TestMain(m *testing.M) {
 		panic("failed to start FDB container: " + err.Error())
 	}
 
+	defer func() {
+		if err := foundationdbtc.Terminate(context.Background(), container); err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			if code == 0 {
+				code = 1
+			}
+		}
+	}()
+
 	clusterFile, err := container.ClusterFile(ctx)
 	if err != nil {
 		panic("failed to get cluster file: " + err.Error())
@@ -132,6 +143,8 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		panic(err.Error())
 	}
+	defer os.Remove(tmpFile.Name())
+
 	_, _ = tmpFile.WriteString(clusterFile)
 	_ = tmpFile.Close()
 
@@ -142,11 +155,9 @@ func TestMain(m *testing.M) {
 	}
 	testDB = recordlayer.NewFDBDatabase(db)
 
-	code := m.Run()
+	code = m.Run()
 
-	_ = container.Terminate(context.Background())
-	_ = os.Remove(tmpFile.Name())
-	os.Exit(code)
+	return code
 }
 
 func testSubspace(t *testing.T) subspace.Subspace {

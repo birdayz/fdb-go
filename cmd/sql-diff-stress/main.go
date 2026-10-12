@@ -36,7 +36,7 @@ func main() {
 	os.Exit(run(*seeds, *seedStart, *templates))
 }
 
-func run(seeds, seedStart uint64, templates bool) int {
+func run(seeds, seedStart uint64, templates bool) (code int) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	container, err := foundationdbtc.Run(ctx, "")
 	cancel()
@@ -44,7 +44,14 @@ func run(seeds, seedStart uint64, templates bool) int {
 		fmt.Fprintf(os.Stderr, "INFRA: FDB container: %v\n", err)
 		return 2
 	}
-	defer container.Terminate(context.Background()) //nolint:errcheck
+	defer func() {
+		if err := foundationdbtc.Terminate(context.Background(), container); err != nil {
+			fmt.Fprintf(os.Stderr, "INFRA: %v\n", err)
+			if code == 0 {
+				code = 2
+			}
+		}
+	}()
 
 	ctx = context.Background()
 	clusterContent, err := container.ClusterFile(ctx)

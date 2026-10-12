@@ -108,6 +108,10 @@ func isTransientContainerErr(err error) bool {
 	// Diagnostic logs must not turn a deterministic startup failure into a retry.
 	var failure *startupFailureError
 	if errors.As(err, &failure) {
+		// Retrying must not turn failed cleanup into a successful startup.
+		if failure.cleanupErr != nil {
+			return false
+		}
 		err = failure.cause
 	}
 	s := err.Error()

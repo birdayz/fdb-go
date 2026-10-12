@@ -24,7 +24,9 @@ import (
 
 var testRealDB fdb.Database
 
-func TestMain(m *testing.M) {
+func TestMain(m *testing.M) { os.Exit(runTests(m)) }
+
+func runTests(m *testing.M) (code int) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
@@ -32,27 +34,46 @@ func TestMain(m *testing.M) {
 		foundationdbtc.WithAPIVersion(720),
 	)
 	if err != nil {
-		log.Fatalf("chaos: failed to start FDB container: %v", err)
+		log.Printf("chaos: failed to start FDB container: %v", err)
+		return 1
 	}
+
+	defer func() {
+		// Cleanup must outlive the startup and suite budgets.
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), time.Minute)
+		defer stopCancel()
+		if err := foundationdbtc.Terminate(stopCtx, container); err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			if code == 0 {
+				code = 1
+			}
+		}
+	}()
 
 	clusterFile, err := container.ClusterFile(ctx)
 	if err != nil {
-		log.Fatalf("chaos: failed to get cluster file: %v", err)
+		log.Printf("chaos: failed to get cluster file: %v", err)
+		return 1
 	}
 
 	tmpFile, err := os.CreateTemp("", "fdb_chaos_cluster_*.txt")
 	if err != nil {
-		log.Fatalf("chaos: failed to create temp file: %v", err)
+		log.Printf("chaos: failed to create temp file: %v", err)
+		return 1
 	}
+	defer os.Remove(tmpFile.Name())
+
 	if _, err := tmpFile.WriteString(clusterFile); err != nil {
-		log.Fatalf("chaos: failed to write cluster file: %v", err)
+		log.Printf("chaos: failed to write cluster file: %v", err)
+		return 1
 	}
 	tmpFile.Close()
 
 	fdb.MustAPIVersion(720)
 	testRealDB, err = fdb.OpenDatabase(tmpFile.Name())
 	if err != nil {
-		log.Fatalf("chaos: failed to open FDB: %v", err)
+		log.Printf("chaos: failed to open FDB: %v", err)
+		return 1
 	}
 
 	// The package budget every op and run context derives from.
@@ -71,16 +92,9 @@ func TestMain(m *testing.M) {
 	suite, suiteCancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	suiteCtx = suite
 
-	code := m.Run()
+	code = m.Run()
 	suiteCancel()
-	// A FRESH context: `ctx` above is the 2-minute bring-up budget and m.Run()
-	// has long outlived it, so terminating on it is a silent no-op that leaks
-	// the container into the next run.
-	stopCtx, stopCancel := context.WithTimeout(context.Background(), time.Minute)
-	_ = container.Terminate(stopCtx)
-	stopCancel()
-	_ = os.Remove(tmpFile.Name())
-	os.Exit(code)
+	return code
 }
 
 // buildTestMetadata creates metadata with record counting and a VALUE index.

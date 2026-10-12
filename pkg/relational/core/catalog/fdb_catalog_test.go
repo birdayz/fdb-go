@@ -8,6 +8,7 @@ package catalog
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"testing"
@@ -30,40 +31,56 @@ import (
 
 var testFDB *recordlayer.FDBDatabase
 
-func TestMain(m *testing.M) {
+func TestMain(m *testing.M) { os.Exit(runTests(m)) }
+
+func runTests(m *testing.M) (code int) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
 	container, err := foundationdbtc.Run(ctx, "", foundationdbtc.WithAPIVersion(720))
 	if err != nil {
-		log.Fatalf("fdb catalog test: failed to start FDB container: %v", err)
+		log.Printf("fdb catalog test: failed to start FDB container: %v", err)
+		return 1
 	}
+
+	defer func() {
+		if err := foundationdbtc.Terminate(ctx, container); err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			if code == 0 {
+				code = 1
+			}
+		}
+	}()
 
 	clusterFile, err := container.ClusterFile(ctx)
 	if err != nil {
-		log.Fatalf("fdb catalog test: failed to get cluster file: %v", err)
+		log.Printf("fdb catalog test: failed to get cluster file: %v", err)
+		return 1
 	}
 
 	tmpFile, err := os.CreateTemp("", "fdb_catalog_cluster_*.txt")
 	if err != nil {
-		log.Fatalf("fdb catalog test: failed to create temp file: %v", err)
+		log.Printf("fdb catalog test: failed to create temp file: %v", err)
+		return 1
 	}
+	defer os.Remove(tmpFile.Name())
+
 	if _, err := tmpFile.WriteString(clusterFile); err != nil {
-		log.Fatalf("fdb catalog test: failed to write cluster file: %v", err)
+		log.Printf("fdb catalog test: failed to write cluster file: %v", err)
+		return 1
 	}
 	tmpFile.Close()
 
 	fdb.MustAPIVersion(720)
 	rawDB, err := fdb.OpenDatabase(tmpFile.Name())
 	if err != nil {
-		log.Fatalf("fdb catalog test: failed to open FDB: %v", err)
+		log.Printf("fdb catalog test: failed to open FDB: %v", err)
+		return 1
 	}
 	testFDB = recordlayer.NewFDBDatabase(rawDB)
 
-	code := m.Run()
-	_ = container.Terminate(ctx)
-	_ = os.Remove(tmpFile.Name())
-	os.Exit(code)
+	code = m.Run()
+	return code
 }
 
 // newFDBCatalogInSubspace opens an FDB-backed StoreCatalog rooted at a

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -19,6 +20,7 @@ const (
 
 type startupFailureError struct {
 	cause       error
+	cleanupErr  error
 	diagnostics string
 }
 
@@ -26,7 +28,7 @@ func (e *startupFailureError) Error() string {
 	return fmt.Sprintf("%v; startup diagnostics: %s", e.cause, e.diagnostics)
 }
 
-func (e *startupFailureError) Unwrap() error { return e.cause }
+func (e *startupFailureError) Unwrap() error { return errors.Join(e.cause, e.cleanupErr) }
 
 // A cancelled startup still needs evidence before cleanup destroys the container.
 func startupFailure(ctr testcontainers.Container, cause error) error {
@@ -37,10 +39,11 @@ func startupFailure(ctr testcontainers.Container, cause error) error {
 	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cleanupCancel()
 	cleanup := ""
-	if err := ctr.Terminate(cleanupCtx); err != nil {
-		cleanup = "; cleanup incomplete"
+	cleanupErr := Terminate(cleanupCtx, &Container{Container: ctr})
+	if cleanupErr != nil {
+		cleanup = fmt.Sprintf("; cleanup incomplete: %v", cleanupErr)
 	}
-	return &startupFailureError{cause: cause, diagnostics: diagnostics + cleanup}
+	return &startupFailureError{cause: cause, cleanupErr: cleanupErr, diagnostics: diagnostics + cleanup}
 }
 
 func startupDiagnostics(ctr testcontainers.Container) string {

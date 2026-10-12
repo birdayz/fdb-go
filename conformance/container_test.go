@@ -4,6 +4,7 @@ package conformance_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 
@@ -39,8 +40,7 @@ func SetupTestEnvironment(ctx context.Context, dbName string) (*TestEnvironment,
 	// Get pure Go FDB database connection
 	db, err := openGoDatabase(ctx, container)
 	if err != nil {
-		_ = container.Terminate(ctx)
-		return nil, fmt.Errorf("failed to get database connection: %w", err)
+		return nil, errors.Join(fmt.Errorf("failed to get database connection: %w", err), foundationdbtc.Terminate(ctx, container))
 	}
 
 	// Create Record Layer database wrapper
@@ -52,15 +52,13 @@ func SetupTestEnvironment(ctx context.Context, dbName string) (*TestEnvironment,
 	// Create RecordMetaData for Order schema
 	metaData, err := createOrderMetaData()
 	if err != nil {
-		_ = container.Terminate(ctx)
-		return nil, fmt.Errorf("failed to create metadata: %w", err)
+		return nil, errors.Join(fmt.Errorf("failed to create metadata: %w", err), foundationdbtc.Terminate(ctx, container))
 	}
 
 	// Get cluster file for Java interop
 	clusterFile, err := container.ClusterFile(ctx)
 	if err != nil {
-		_ = container.Terminate(ctx)
-		return nil, fmt.Errorf("failed to get cluster file: %w", err)
+		return nil, errors.Join(fmt.Errorf("failed to get cluster file: %w", err), foundationdbtc.Terminate(ctx, container))
 	}
 
 	return &TestEnvironment{
@@ -75,7 +73,7 @@ func SetupTestEnvironment(ctx context.Context, dbName string) (*TestEnvironment,
 // Cleanup terminates the container and cleans up resources
 func (env *TestEnvironment) Cleanup(ctx context.Context) error {
 	if env.Container != nil {
-		return env.Container.Terminate(ctx)
+		return foundationdbtc.Terminate(ctx, env.Container)
 	}
 	return nil
 }

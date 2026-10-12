@@ -34,7 +34,7 @@ func TestCoordinatorBootstrap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start FDB container: %v", err)
 	}
-	defer container.Terminate(ctx)
+	defer tcfdb.TerminateT(t, ctx, container)
 
 	// Get connection string.
 	connStr, err := container.ClusterFile(ctx)
@@ -286,7 +286,7 @@ func TestGetRange(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start FDB container: %v", err)
 	}
-	defer container.Terminate(ctx)
+	defer tcfdb.TerminateT(t, ctx, container)
 
 	connStr, err := container.ClusterFile(ctx)
 	if err != nil {

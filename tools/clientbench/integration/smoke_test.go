@@ -36,7 +36,7 @@ func TestBothBackendsAgainstFDB(t *testing.T) {
 	t.Cleanup(func() {
 		stop, cancelStop := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancelStop()
-		if err := container.Terminate(stop); err != nil {
+		if err := foundationdb.Terminate(stop, container); err != nil {
 			t.Error(err)
 		}
 	})
