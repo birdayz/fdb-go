@@ -71,7 +71,7 @@ func (p *PendingGet) ResolveOrAbort(abort <-chan struct{}) ([]byte, error, bool)
 	if op := p.tx.readOperation(p.ctx); op != nil {
 		parent = op.parent
 	}
-	ctx := context.WithValue(p.ctx, readContextKey{p.tx}, &readOperation{inc: inc, parent: parent, lease: lease})
+	ctx := &readOperation{Context: p.ctx, tx: p.tx, inc: inc, parent: parent, lease: lease}
 	val, err := p.resolve(ctx, abort)
 	if h, ok := err.(*handoff); ok {
 		handedOff = true

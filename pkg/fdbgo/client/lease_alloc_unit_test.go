@@ -1,6 +1,137 @@
 package client
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+)
+
+type operationValueKey struct{}
+
+// Not parallel: AllocsPerRun counts process-wide allocations.
+func TestReadOperationContextAllocations(t *testing.T) {
+	cancellable, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	for name, parent := range map[string]context.Context{
+		"background":  context.Background(),
+		"value":       context.WithValue(context.Background(), operationValueKey{}, "caller"),
+		"cancellable": cancellable,
+	} {
+		t.Run(name, func(t *testing.T) {
+			tx := &Transaction{}
+			defer tx.Cancel()
+			n := testing.AllocsPerRun(100, func() {
+				ctx, release, _ := tx.opContextFor(parent, true)
+				_ = ctx.Done()
+				release()
+			})
+			if n > 8 {
+				t.Fatalf("READ_OPERATION_ALLOC: %v allocations per operation, want <= 8", n)
+			}
+			t.Logf("READ_OPERATION_ALLOC: %s = %v", name, n)
+		})
+	}
+}
+
+func TestReadOperationReentryUsesFreshLease(t *testing.T) {
+	t.Parallel()
+	tx := &Transaction{}
+	defer tx.Cancel()
+	old, releaseOld := tx.opContext(context.Background())
+	defer releaseOld()
+	oldOp := tx.readOperation(old)
+	oldOp.lease.release()
+	ctx, release, counted := tx.opContextFor(old, true)
+	defer release()
+	op := tx.readOperation(ctx)
+	if !counted || op == oldOp || op.lease == oldOp.lease || op.inc != oldOp.inc {
+		t.Fatal("reentry did not allocate a distinct lease on the captured incarnation")
+	}
+	releaseOld()
+	tx.readErrMu.Lock()
+	users, issued, active := op.inc.users, op.inc.issuedReads, op.lease.active
+	tx.readErrMu.Unlock()
+	if users != 1 || issued != 1 || !active {
+		t.Fatalf("old cleanup released the new lease: users=%d issued=%d active=%v", users, issued, active)
+	}
+	release()
+	tx.readErrMu.Lock()
+	users, issued = op.inc.users, op.inc.issuedReads
+	tx.readErrMu.Unlock()
+	if users != 0 || issued != 0 {
+		t.Fatalf("new cleanup retained its lease: users=%d issued=%d", users, issued)
+	}
+}
+
+func TestReadOperationContextPreservesParent(t *testing.T) {
+	t.Parallel()
+	parent, cancel := context.WithCancelCause(context.WithValue(context.Background(), operationValueKey{}, "caller"))
+	defer cancel(nil)
+	deadline := time.Now().Add(time.Hour)
+	parent, stop := context.WithDeadline(parent, deadline)
+	defer stop()
+	tx, other := &Transaction{}, &Transaction{}
+	defer tx.Cancel()
+	defer other.Cancel()
+	ctx, release := tx.opContext(parent)
+	defer release()
+	if got, ok := ctx.Deadline(); !ok || !got.Equal(deadline) {
+		t.Fatalf("operation deadline=(%v, %v), want %v", got, ok, deadline)
+	}
+	if ctx.Value(operationValueKey{}) != "caller" || ctx.Value(struct{ missing bool }{}) != nil {
+		t.Fatal("operation changed caller values")
+	}
+	override := context.WithValue(ctx, operationValueKey{}, "nested")
+	nested, releaseNested := tx.opContext(override)
+	defer releaseNested()
+	if nested != override || nested.Value(operationValueKey{}) != "nested" || tx.readOperation(nested) != tx.readOperation(ctx) {
+		t.Fatal("nested operation did not borrow the caller's context and lease")
+	}
+	otherCtx, releaseOther := other.opContext(override)
+	defer releaseOther()
+	if otherCtx.Value(operationValueKey{}) != "nested" || tx.readOperation(otherCtx) != tx.readOperation(ctx) || other.readOperation(otherCtx) == tx.readOperation(ctx) {
+		t.Fatal("second transaction shadowed the first transaction or caller value")
+	}
+	releaseOther()
+	if ctx.Err() != nil || parent.Err() != nil {
+		t.Fatal("releasing a child operation canceled its parent")
+	}
+	nilValue := context.WithValue(ctx, operationValueKey{}, nil)
+	otherCtx, releaseNil := other.opContext(nilValue)
+	defer releaseNil()
+	if otherCtx.Value(operationValueKey{}) != nil {
+		t.Fatal("operation ignored a nil-valued parent shadow")
+	}
+	child, cancelChild := context.WithCancelCause(ctx)
+	defer cancelChild(nil)
+	childCause := errors.New("child interruption")
+	cancelChild(childCause)
+	if context.Cause(child) != childCause || ctx.Err() != nil {
+		t.Fatal("derived child cancellation did not remain local")
+	}
+	waiting, stopWaiting := context.WithCancel(ctx)
+	defer stopWaiting()
+	after := make(chan struct{})
+	stopAfter := context.AfterFunc(ctx, func() { close(after) })
+	defer stopAfter()
+	cause := errors.New("caller interruption")
+	cancel(cause)
+	<-ctx.Done()
+	if !errors.Is(ctx.Err(), context.Canceled) || context.Cause(ctx) != cause {
+		t.Fatalf("operation interruption=(%v, %v), want caller cancellation and cause", ctx.Err(), context.Cause(ctx))
+	}
+	for name, done := range map[string]<-chan struct{}{"child": waiting.Done(), "AfterFunc": after} {
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatalf("%s derived from operation did not observe cancellation", name)
+		}
+	}
+	if context.Cause(waiting) != cause {
+		t.Fatalf("derived child cause=%v, want caller cause", context.Cause(waiting))
+	}
+}
 
 // Not parallel: AllocsPerRun panics under t.Parallel and counts process-wide.
 func TestStateLeaseDoesNotAllocate(t *testing.T) {
