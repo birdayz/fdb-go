@@ -119,7 +119,6 @@ func TestLazySuccessorPublication(t *testing.T) {
 							finish.finish()
 						}
 					}()
-					ready := tx.readReady
 					var captured *readIncarnation
 					captureEarly := func() {
 						parent, cancel := context.WithCancel(context.Background())
@@ -157,6 +156,12 @@ func TestLazySuccessorPublication(t *testing.T) {
 						}
 						tx.deadlineNs.Store(deadline.UnixNano())
 					}
+					tx.readErrMu.Lock()
+					ready := tx.readReady
+					tx.readErrMu.Unlock()
+					if ready == nil || (ready == unobservedReadReady) != (capture == "none") {
+						t.Fatal("readiness channel does not match the actual waiter population")
+					}
 					select {
 					case <-ready:
 						t.Fatal("replacement was published before finish")
@@ -166,8 +171,13 @@ func TestLazySuccessorPublication(t *testing.T) {
 					published = true
 					select {
 					case <-ready:
+						if capture == "none" {
+							t.Fatal("finish closed the unobserved readiness marker")
+						}
 					default:
-						t.Fatal("finish did not publish the replacement")
+						if capture != "none" {
+							t.Fatal("finish did not wake the replacement's observers")
+						}
 					}
 					if tx.readReady != nil || tx.readGen != old.gen+1 {
 						t.Fatal("finish left a readiness barrier or lost the generation")
