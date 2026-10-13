@@ -574,7 +574,6 @@ func TestRecordLoadPendingReadMemoizesResult(t *testing.T) {
 				t.Fatal(err)
 			}
 			done := make(chan struct{})
-			close(done)
 			raw := &pendingRecordRange{done: done, value: data, sizes: sizeInfo{KeyCount: 1, KeySize: 11, ValueSize: len(data)}}
 			legacy := &countedLegacyVersionRead{version: version}
 			wantLegacyGets, wantRecord := 1, true
@@ -601,12 +600,14 @@ func TestRecordLoadPendingReadMemoizesResult(t *testing.T) {
 				raw.version, wantLegacyGets = version, 0
 			}
 			timer, scan := NewStoreTimer(), NewScanLimiterState()
+			scan.startRecordLoadCharge()
+			finishRawRecordCharge(raw, scan)
 			ctx := NewFDBRecordContext(nil, nil)
 			ctx.SetTimer(timer)
 			load := &recordLoad{
 				store:      &FDBRecordStore{context: ctx, metaData: loadParityMetaData(t, false, true)},
-				primaryKey: tuple.Tuple{int64(1)}, scanState: scan,
-				first: pendingStoreRecordLoad{raw: pendingRecordLoad{asyncRange: raw}, oldVersion: legacy},
+				primaryKey: tuple.Tuple{int64(1)},
+				first:      pendingStoreRecordLoad{raw: pendingRecordLoad{asyncRange: raw}, oldVersion: legacy},
 			}
 			pending := recordLoadPendingRead(load)
 			for range 3 {
@@ -623,7 +624,7 @@ func TestRecordLoadPendingReadMemoizesResult(t *testing.T) {
 				t.Fatalf("load time = %d, want recorded duration", elapsed)
 			}
 			if _, direct := any(load).(PendingRead[*FDBStoredRecord[proto.Message]]); direct {
-				if load.store != nil || load.primaryKey != nil || load.scanState != nil || load.first.raw.asyncRange != nil || load.first.oldVersion != nil {
+				if load.store != nil || load.primaryKey != nil || load.first.raw.asyncRange != nil || load.first.oldVersion != nil {
 					t.Fatal("completed load retained intermediate store/read state")
 				}
 			}

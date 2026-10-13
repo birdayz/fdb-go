@@ -275,7 +275,8 @@ type pendingRecordRangeInput struct {
 
 // RangeResult has no readiness operation. The worker owns raw reassembly and
 // validation, stopping at the first corrupt key without waiting for later batches.
-// Store deserialization, limit accounting and timers remain on the caller.
+// Successful raw completion charges bytes before publication. Deserialization
+// and timers remain on the caller.
 type pendingRecordRange struct {
 	done    chan struct{}
 	value   []byte
@@ -285,23 +286,62 @@ type pendingRecordRange struct {
 }
 
 func (p *pendingRecordLoad) startReadiness() {
+	p.startReadinessWithCharges(nil)
+}
+
+func (p *pendingRecordLoad) startReadinessWithCharges(state *ScanLimiterState) {
 	if p.rangeRead == nil {
+		if p.value == nil || state == nil {
+			return
+		}
+		if p.value.IsReady() {
+			// Java's raw-load callback runs immediately on an already-ready future.
+			value, err := p.value.Get()
+			if err == nil && value != nil {
+				state.AddBytesScanned(int64(len(p.prefix) + len(value)))
+			}
+			return
+		}
+		r := &pendingRecordRange{done: make(chan struct{})}
+		p.asyncRange = r
+		state.startRecordLoadCharge()
+		go readBareRecord(r, p.value, len(p.prefix), state)
 		return
 	}
 	r := &pendingRecordRange{done: make(chan struct{})}
 	p.asyncRange = r
+	state.startRecordLoadCharge()
 	// Copy the already-captured local version inputs; never access context state
 	// from the worker. Closing done publishes its exclusively owned result.
-	go readRecordRange(r, p.pendingRecordRangeInput)
+	go readRecordRange(r, p.pendingRecordRangeInput, state)
 }
 
-func readRecordRange(r *pendingRecordRange, input pendingRecordRangeInput) {
-	r.value, r.version, r.err = input.readRange(&r.sizes)
+func finishRawRecordCharge(r *pendingRecordRange, state *ScanLimiterState) {
+	// FDBRecordStore.loadTypedRecord charges raw success before deserialization.
+	if r.err == nil {
+		state.AddBytesScanned(int64(r.sizes.KeySize + r.sizes.ValueSize))
+	}
 	close(r.done)
+	state.finishRecordLoadCharge()
+}
+
+func readRecordRange(r *pendingRecordRange, input pendingRecordRangeInput, state *ScanLimiterState) {
+	r.value, r.version, r.err = input.readRange(&r.sizes)
+	finishRawRecordCharge(r, state)
+}
+
+func readBareRecord(r *pendingRecordRange, future fdb.FutureByteSlice, keySize int, state *ScanLimiterState) {
+	r.value, r.err = future.Get()
+	if r.err != nil {
+		r.err = fmt.Errorf("failed to get legacy unsplit record: %w", r.err)
+	} else if r.value != nil {
+		r.sizes = sizeInfo{KeyCount: 1, KeySize: keySize, ValueSize: len(r.value)}
+	}
+	finishRawRecordCharge(r, state)
 }
 
 func (p *pendingRecordLoad) ready() bool {
-	if p.value != nil {
+	if p.asyncRange == nil && p.value != nil {
 		return p.value.IsReady()
 	}
 	select {
@@ -354,6 +394,11 @@ func (p *pendingRecordLoad) finish(sizes *sizeInfo) ([]byte, *FDBRecordVersion, 
 	if sizes == nil {
 		sizes = &sizeInfo{}
 	}
+	if p.asyncRange != nil {
+		<-p.asyncRange.done
+		*sizes = p.asyncRange.sizes
+		return p.asyncRange.value, p.asyncRange.version, p.asyncRange.err
+	}
 	if p.value != nil {
 		value, err := p.value.Get()
 		if err != nil {
@@ -363,11 +408,6 @@ func (p *pendingRecordLoad) finish(sizes *sizeInfo) ([]byte, *FDBRecordVersion, 
 			*sizes = sizeInfo{KeyCount: 1, KeySize: len(p.prefix), ValueSize: len(value)}
 		}
 		return value, nil, nil
-	}
-	if p.asyncRange != nil {
-		<-p.asyncRange.done
-		*sizes = p.asyncRange.sizes
-		return p.asyncRange.value, p.asyncRange.version, p.asyncRange.err
 	}
 	return p.readRange(sizes)
 }

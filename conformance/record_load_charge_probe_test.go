@@ -96,5 +96,6 @@ var _ = Describe("Quiesced Java record-load charges", func() {
 		for _, count := range arms {
 			Expect(count).To(Equal(repeats))
 		}
+		compareQuiescedGoRecordCharge(ctx, env, fixture)
 	})
 })

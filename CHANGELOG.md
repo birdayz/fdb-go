@@ -79,6 +79,7 @@ Each is described in full under Compatibility or Changed below.
   and tags now apply to every statement transaction, autocommit and read-only ones included.
 
 ### Changed
+- Issued record loads charge scan bytes when the raw read completes, including loads discarded by a failed index cursor. `ScanLimiterState.WaitForIssuedRecordLoadCharges` waits for those existing charges without issuing or materializing another record.
 - Record Layer `USE_REMOTE_FETCH`, `USE_REMOTE_FETCH_WITH_FALLBACK` and SQL `INDEX_FETCH_METHOD` remain unsupported pending RFC-258; raw mapped-range facade support does not enable them.
 - Update Go dependencies for archive containment, bounded group parsing, CEL JSON field privacy, and OpenTelemetry diagnostic privacy; these SDK updates do not patch the host Docker daemon.
 - `EndpointTypeContinuation` is internal; scan callers supply the original range endpoints and pass the continuation separately.

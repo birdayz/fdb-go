@@ -367,12 +367,13 @@ func (store *FDBRecordStore) LoadRecord(primaryKey tuple.Tuple) (*FDBStoredRecor
 }
 
 // LoadRecordAsync sends the record's reads now, like Java's loadRecordAsync;
-// Get finishes the load. A non-nil scanState is charged the loaded bytes.
+// Get finishes materialization. A non-nil scanState is charged when the raw
+// read completes, even if its issued load is never consumed.
 func (store *FDBRecordStore) LoadRecordAsync(primaryKey tuple.Tuple, scanState *ScanLimiterState) PendingRead[*FDBStoredRecord[proto.Message]] {
 	issueStart := time.Now()
-	load := &recordLoad{store: store, primaryKey: primaryKey, scanState: scanState}
+	load := &recordLoad{store: store, primaryKey: primaryKey}
 	load.first = store.startRecordLoad(store.context.Transaction(), primaryKey)
-	load.first.raw.startReadiness()
+	load.first.raw.startReadinessWithCharges(scanState)
 	load.issueCost = time.Since(issueStart)
 	return load
 }
@@ -421,7 +422,6 @@ func (load *pendingStoreRecordLoad) finishVersion(inline *FDBRecordVersion) (*FD
 type recordLoad struct {
 	store      *FDBRecordStore
 	primaryKey tuple.Tuple
-	scanState  *ScanLimiterState
 	first      pendingStoreRecordLoad
 	issueCost  time.Duration
 	loadCost   time.Duration
@@ -450,7 +450,7 @@ func (l *recordLoad) ready() bool {
 		return true
 	}
 	// A missing/corrupt record, or one with its own inline version, does not
-	// depend on the legacy version future. Memoize decoding and accounting.
+	// depend on the legacy version future. Memoize decoding to check that dependency.
 	l.load()
 	return l.loadErr != nil || l.record == nil || l.record.Version != nil
 }
@@ -470,10 +470,6 @@ func (l *recordLoad) loadRawRecord() (*FDBStoredRecord[proto.Message], error) {
 	value, version, err := l.first.raw.finish(&sizeInfo)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load record %v: %w", primaryKey, err)
-	}
-	// Java charges every completed load, found or not (FDBRecordStore.loadTypedRecord).
-	if l.scanState != nil {
-		l.scanState.AddBytesScanned(int64(sizeInfo.KeySize + sizeInfo.ValueSize))
 	}
 	if value == nil {
 		return nil, nil // Record not found
