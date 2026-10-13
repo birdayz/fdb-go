@@ -802,6 +802,239 @@ func TestLibFDBC_MappedRangeFacadeReadConflicts(t *testing.T) {
 	}
 }
 
+// A secondary range can hit QUICK_GET_KEY_VALUES_LIMIT independently of the
+// primary range. Its unread suffix must neither conflict nor fail the mapped
+// RYW check; primary reverse does not reverse the secondary range read.
+func TestLibFDBC_MappedRangeTruncatedSecondaryConflicts(t *testing.T) {
+	t.Parallel()
+	clusterFile := startCluster(t)
+	cdb, err := libfdbc.COpenDatabase(clusterFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cdb.Close)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	t.Cleanup(cancel)
+	goDB, err := fdbclient.OpenDatabase(ctx, clusterFile, fdbclient.WithAPIVersion(730))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { goDB.Close() })
+	facade := gofdb.WrapDatabase(goDB)
+	f := mdFixture{prefix: []byte(t.Name()), n: 1}
+	const secondaryCount = 2500
+	secondaryKey := func(i int) []byte {
+		return mdPack(f.prefix, []byte("REC"), []byte("pk-00000000"), []byte(fmt.Sprintf("s-%08d", i)))
+	}
+	secondaryValue := func(i int) []byte { return []byte(fmt.Sprintf("value-%08d", i)) }
+	seed, err := cdb.CreateTransaction()
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed.Set(f.indexEntryKey(0), []byte{})
+	for i := 0; i < secondaryCount; i++ {
+		seed.Set(secondaryKey(i), secondaryValue(i))
+	}
+	if err := seed.Commit(); err != nil {
+		seed.Close()
+		t.Fatal(err)
+	}
+	seed.Close()
+	begin, end := f.indexRange()
+	for _, reverse := range []bool{false, true} {
+		t.Run(fmt.Sprintf("reverse=%v", reverse), func(t *testing.T) {
+			readC := func(t *testing.T, tr libfdbc.CTxnHandle) libfdbc.CMappedRow {
+				t.Helper()
+				rows, more, err := libfdbc.CGetMappedRangeBatch(tr, begin, end, f.getRangeMapper(), 1, 0, libfdbc.CStreamingModeExact, 1, reverse, false)
+				if err != nil || len(rows) != 1 || !more {
+					t.Fatalf("C primary result: rows=%d more=%v err=%v", len(rows), more, err)
+				}
+				row := rows[0]
+				if row.Kind != libfdbc.CMappedKindGetRange || len(row.RangeRows) == 0 || len(row.RangeRows) >= secondaryCount {
+					t.Fatalf("C secondary truncation not exercised: kind=%d rows=%d total=%d", row.Kind, len(row.RangeRows), secondaryCount)
+				}
+				for i, secondary := range row.RangeRows {
+					if !bytes.Equal(secondary.Key, secondaryKey(i)) || !bytes.Equal(secondary.Value, secondaryValue(i)) {
+						t.Fatalf("C secondary row %d differs from seeded data", i)
+					}
+				}
+				return row
+			}
+			oracle, err := cdb.CreateTransaction()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer oracle.Close()
+			cRow := readC(t, oracle)
+			cutoff := append(bytes.Clone(cRow.RangeRows[len(cRow.RangeRows)-1].Key), 0)
+			boundaries, err := libfdbc.CReadConflictRangeBoundaries(oracle)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(boundaries) != 4 {
+				t.Fatalf("C conflict population=%d boundaries, want primary and secondary intervals", len(boundaries))
+			}
+			foundCutoff := false
+			for i := 0; i < len(boundaries); i += 2 {
+				if string(boundaries[i].Value) != "1" || string(boundaries[i+1].Value) != "0" || bytes.Compare(boundaries[i].Key, boundaries[i+1].Key) >= 0 {
+					t.Fatalf("invalid C conflict interval: %+v", boundaries[i:i+2])
+				}
+				if bytes.Equal(boundaries[i].Key, cRow.RangeBeginKey) {
+					if !bytes.Equal(boundaries[i+1].Key, cutoff) {
+						t.Fatalf("C secondary conflict end=%q want keyAfter(last)=%q", boundaries[i+1].Key, cutoff)
+					}
+					foundCutoff = true
+				}
+			}
+			if !foundCutoff {
+				t.Fatal("C conflict map omitted secondary interval")
+			}
+			compareGo := func(t *testing.T, row gofdb.MappedKeyValue) {
+				t.Helper()
+				if row.Kind != fdbclient.MappedResultGetRange || !row.GetRange.More || len(row.GetRange.Rows) != len(cRow.RangeRows) ||
+					!bytes.Equal(row.Key, cRow.Key) || !bytes.Equal(row.Value, cRow.Value) ||
+					!bytes.Equal(row.GetRange.Begin.Key, cRow.RangeBeginKey) || !bytes.Equal(row.GetRange.End.Key, cRow.RangeEndKey) {
+					t.Fatalf("truncated mapped result: C secondary=%d Go secondary=%d more=%v", len(cRow.RangeRows), len(row.GetRange.Rows), row.GetRange.More)
+				}
+				for i := range cRow.RangeRows {
+					if !bytes.Equal(cRow.RangeRows[i].Key, row.GetRange.Rows[i].Key) || !bytes.Equal(cRow.RangeRows[i].Value, row.GetRange.Rows[i].Value) {
+						t.Fatalf("truncated secondary row %d disagrees", i)
+					}
+				}
+			}
+			readFacade := func(t *testing.T, tr gofdb.Transaction) {
+				t.Helper()
+				reader, ok := any(tr).(gofdb.MappedRangeReader)
+				if !ok {
+					t.Fatal("pure-Go facade lacks mapped-range capability")
+				}
+				it := reader.GetMappedRange(gofdb.KeyRange{Begin: gofdb.Key(begin), End: gofdb.Key(end)}, f.getRangeMapper(), gofdb.RangeOptions{Limit: 1, Mode: gofdb.StreamingModeExact, Reverse: reverse}).Iterator()
+				if !it.Advance() {
+					_, err := it.Get()
+					t.Fatalf("facade failed to return primary row: %v", err)
+				}
+				row, err := it.Get()
+				if err != nil {
+					t.Fatal(err)
+				}
+				compareGo(t, row)
+				if it.Advance() {
+					t.Fatal("one-entry mapped facade repeated the primary row")
+				}
+				if _, err := it.Get(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, pendingTail := range []bool{false, true} {
+				t.Run(fmt.Sprintf("unread_tail_local_write=%v", pendingTail), func(t *testing.T) {
+					ct, err := cdb.CreateTransaction()
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer ct.Close()
+					gt := goDB.CreateTransaction()
+					defer gt.Cancel()
+					ft, err := facade.CreateTransaction()
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer ft.Cancel()
+					if pendingTail {
+						key := secondaryKey(secondaryCount - 1)
+						ct.Set(key, []byte("pending-tail"))
+						gt.Set(key, []byte("pending-tail"))
+						ft.Set(gofdb.Key(key), []byte("pending-tail"))
+					}
+					c := readC(t, ct)
+					if !reflect.DeepEqual(cRow, c) {
+						t.Fatal("local unread-tail write changed C mapped data")
+					}
+					rows, more, err := gt.GetMappedRangeWithByteTarget(ctx, begin, end, f.getRangeMapper(), 1, fdbclient.ByteLimitUnlimited, reverse)
+					if err != nil || len(rows) != 1 || !more {
+						t.Fatalf("direct Go primary result: rows=%d more=%v err=%v", len(rows), more, err)
+					}
+					compareGo(t, rows[0])
+					readFacade(t, ft)
+				})
+			}
+			writeConflict := func(t *testing.T, key []byte, version int64) {
+				t.Helper()
+				writer, err := facade.CreateTransaction()
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer writer.Cancel()
+				writer.SetReadVersion(version)
+				writer.Set(gofdb.Key(mdPack(f.prefix, []byte("WRITER-SENTINEL"))), []byte("w"))
+				if err := writer.AddWriteConflictKey(gofdb.Key(key)); err != nil {
+					t.Fatal(err)
+				}
+				if err := writer.Commit().Get(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, probe := range []struct {
+				name string
+				key  []byte
+				want int
+			}{
+				{"returned_secondary", cRow.RangeRows[0].Key, 1020},
+				{"exclusive_cutoff", cutoff, 0},
+				{"existing_unread_tail", secondaryKey(secondaryCount - 1), 0},
+			} {
+				t.Run(probe.name, func(t *testing.T) {
+					ct, err := cdb.CreateTransaction()
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer ct.Close()
+					readC(t, ct)
+					version, err := ct.GetReadVersion()
+					if err != nil {
+						t.Fatal(err)
+					}
+					ct.Set(mdPack(f.prefix, []byte("C-READER-SENTINEL")), []byte("c"))
+					writeConflict(t, probe.key, version)
+					cErr := ct.Commit()
+					cCode := 0
+					if cErr != nil {
+						var fe *libfdbc.CFDBError
+						if !errors.As(cErr, &fe) {
+							t.Fatal(cErr)
+						}
+						cCode = fe.Code
+					}
+					gt, err := facade.CreateTransaction()
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer gt.Cancel()
+					readFacade(t, gt)
+					version, err = gt.GetReadVersion().Get()
+					if err != nil {
+						t.Fatal(err)
+					}
+					gt.Set(gofdb.Key(mdPack(f.prefix, []byte("GO-READER-SENTINEL"))), []byte("g"))
+					writeConflict(t, probe.key, version)
+					gErr := gt.Commit().Get()
+					gCode := 0
+					if gErr != nil {
+						var fe gofdb.Error
+						if !errors.As(gErr, &fe) {
+							t.Fatal(gErr)
+						}
+						gCode = fe.Code
+					}
+					if cCode != probe.want || gCode != probe.want {
+						t.Fatalf("secondary probe %q: C=%d Go=%d want=%d", probe.key, cCode, gCode, probe.want)
+					}
+				})
+			}
+			t.Logf("compared %d/%d secondary rows and exact secondary conflict cutoff %q", len(cRow.RangeRows), secondaryCount, cutoff)
+		})
+	}
+}
+
 func TestLibFDBC_MappedRangeDeferredErrorPrecedence(t *testing.T) {
 	t.Parallel()
 	clusterFile := startCluster(t)

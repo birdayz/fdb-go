@@ -38,10 +38,11 @@ type mappedConformanceBatch struct {
 }
 
 type mappedConformanceFixture struct {
-	Mapper []byte                 `json:"mapper"`
-	Begin  []byte                 `json:"begin"`
-	End    []byte                 `json:"end"`
-	Rows   []mappedConformanceRow `json:"rows"`
+	Mapper    []byte                 `json:"mapper"`
+	Begin     []byte                 `json:"begin"`
+	End       []byte                 `json:"end"`
+	UnreadKey []byte                 `json:"unreadKey"`
+	Rows      []mappedConformanceRow `json:"rows"`
 }
 
 type mappedConformanceScan struct {
@@ -197,6 +198,78 @@ var _ = Describe("Mapped range facade Java conformance (RFC-258 PR1)", func() {
 			})
 		}
 	}
+
+	It("matches truncated secondary rows and permits local writes to their unread tail in both directions", func() {
+		const secondaryCount = 2500
+		truncatedRoot := root + "_truncated"
+		var truncated mappedConformanceFixture
+		Expect(java.InvokeAs(ctx, "seedTruncatedMappedRangeFixture", map[string]any{
+			"clusterFile": env.ClusterFile, "tenantName": env.TenantName, "root": truncatedRoot,
+			"secondaryCount": secondaryCount,
+		}, &truncated)).To(Succeed())
+		Expect(truncated.Rows).To(HaveLen(1))
+		Expect(truncated.Rows[0].Secondary).To(HaveLen(secondaryCount))
+		Expect(truncated.Mapper).To(Equal(tuple.Tuple{truncatedRoot, "records", "{K[3]}", "{K[2]}", "{...}"}.Pack()))
+		Expect(mappedConformanceBytes(truncated.UnreadKey)).To(Equal(truncated.Rows[0].Secondary[secondaryCount-1].Key))
+		Expect(truncated.UnreadKey).To(Equal(tuple.Tuple{truncatedRoot, "records", "group\x000", int64(0), int64(secondaryCount - 1)}.Pack()))
+
+		for _, reverse := range []bool{false, true} {
+			var control []mappedConformanceRow
+			for _, writeTail := range []bool{false, true} {
+				label := fmt.Sprintf("truncated secondary reverse=%v local-write-tail=%v", reverse, writeTail)
+				params := map[string]any{
+					"clusterFile": env.ClusterFile, "tenantName": env.TenantName, "root": truncatedRoot,
+					"mode": "ITERATOR", "limit": 1, "reverse": reverse,
+				}
+				if writeTail {
+					params["localWriteKey"] = BytesToIntArray(truncated.UnreadKey)
+				}
+				var oracle mappedConformanceScan
+				Expect(java.InvokeAs(ctx, "scanMappedRangeFixture", params, &oracle)).To(Succeed(), label+" Java must not raise 2039")
+				Expect(oracle.Rows).To(HaveLen(1), label)
+				Expect(oracle.BatchRows).To(Equal(oracle.Rows), label)
+				returned := len(oracle.Rows[0].Secondary)
+				// The public Java binding drops secondary More; its short result proves truncation.
+				Expect(returned).To(BeNumerically(">", 0), label)
+				Expect(returned).To(BeNumerically("<", secondaryCount), label+" must truncate the secondary range")
+				Expect(returned).To(Equal(2000), label+" pinned 7.3.77 QUICK_GET_KEY_VALUES_LIMIT")
+				want := truncated.Rows[0]
+				want.Secondary = want.Secondary[:returned]
+				Expect(oracle.Rows[0]).To(Equal(want), label+" returned secondary rows must be the written forward prefix")
+				if !writeTail {
+					control = oracle.Rows
+				} else {
+					Expect(oracle.Rows).To(Equal(control), label+" unread-tail write must not change the returned prefix")
+				}
+
+				transaction, err := tenant.CreateTransaction()
+				Expect(err).NotTo(HaveOccurred())
+				func() {
+					defer transaction.Cancel()
+					if writeTail {
+						transaction.Set(fdb.Key(truncated.UnreadKey), []byte{42})
+					}
+					reader, ok := any(transaction).(fdb.MappedRangeReader)
+					Expect(ok).To(BeTrue())
+					iterator := reader.GetMappedRange(fdb.KeyRange{Begin: fdb.Key(truncated.Begin), End: fdb.Key(truncated.End)}, truncated.Mapper,
+						fdb.RangeOptions{Mode: fdb.StreamingModeIterator, Limit: 1, Reverse: reverse}).Iterator()
+					var rows []mappedConformanceRow
+					for iterator.Advance() {
+						row, err := iterator.Get()
+						Expect(err).NotTo(HaveOccurred(), label)
+						Expect(row.Kind).To(Equal(fdb.MappedResultGetRange), label)
+						Expect(row.GetRange.More).To(BeTrue(), label+" must preserve secondary truncation metadata")
+						Expect(row.GetRange.Rows).To(HaveLen(returned), label)
+						Expect(bytes.Compare(row.GetRange.Rows[len(row.GetRange.Rows)-1].Key, truncated.UnreadKey)).To(BeNumerically("<", 0), label)
+						rows = append(rows, mappedConformanceConvert(row))
+					}
+					_, err = iterator.Get()
+					Expect(err).NotTo(HaveOccurred(), label+" Go must not raise 2039")
+					Expect(rows).To(Equal(oracle.Rows), label+" primary/secondary bytes")
+				}()
+			}
+		}
+	})
 
 	It("propagates Java mapper and read-your-writes error codes in both directions", func() {
 		for _, reverse := range []bool{false, true} {

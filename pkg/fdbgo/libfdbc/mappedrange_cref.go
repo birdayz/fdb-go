@@ -340,6 +340,24 @@ func (tr *CTxnHandle) Close() {
 	tr.ptr = nil
 }
 
+// GetReadVersion exposes the reader's version so a conflict probe can pin its
+// writer to that version without requesting a newer GRV on the reader's client.
+func (tr CTxnHandle) GetReadVersion() (int64, error) {
+	if !tr.Valid() {
+		return 0, &CFDBError{Code: 2015, Msg: "transaction is closed"}
+	}
+	f := C.fdb_transaction_get_read_version(tr.ptr)
+	defer C.fdb_future_destroy(f)
+	if err := cErr(C.fdb_future_block_until_ready(f)); err != nil {
+		return 0, err
+	}
+	var version C.int64_t
+	if err := cErr(C.fdb_future_get_int64(f, &version)); err != nil {
+		return 0, err
+	}
+	return int64(version), nil
+}
+
 // Set issues fdb_transaction_set, so a test can seed a cluster through the same
 // client it reads back with.
 func (tr CTxnHandle) Set(key, value []byte) {

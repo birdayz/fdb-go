@@ -88,14 +88,41 @@ class MappedRangeSteps extends ConformanceBase {
         }
     }
 
+    @ConformanceStep("seedTruncatedMappedRangeFixture")
+    public Map<String, Object> seedTruncated(String clusterFile, String tenantName, String root, int secondaryCount) {
+        Database database = createDatabase(clusterFile).database();
+        byte[] key = Tuple.from(root, "index", 0L, "group\u00000").pack();
+        byte[] value = new byte[] {0, (byte) 0xff, 42};
+        Tuple record = Tuple.from(root, "records", "group\u00000", 0L);
+        List<KeyValue> secondary = new ArrayList<>();
+        try (Tenant tenant = database.openTenant(tenantName.getBytes(StandardCharsets.UTF_8));
+             Transaction transaction = tenant.createTransaction()) {
+            transaction.set(key, value);
+            for (int i = 0; i < secondaryCount; i++) {
+                KeyValue kv = new KeyValue(record.add((long) i).pack(), Tuple.from("secondary", (long) i).pack());
+                secondary.add(kv);
+                transaction.set(kv.getKey(), kv.getValue());
+            }
+            transaction.commit().join();
+        }
+        byte[] prefix = record.pack();
+        com.apple.foundationdb.Range range = Tuple.from(root, "index").range();
+        return Map.of("mapper", encode(mapper(root)), "begin", encode(range.begin), "end", encode(range.end),
+                "unreadKey", encode(secondary.get(secondary.size() - 1).getKey()),
+                "rows", List.of(row(key, value, prefix, ByteArrayUtil.strinc(prefix), secondary)));
+    }
+
     @ConformanceStep("scanMappedRangeFixture")
     public Map<String, Object> scan(String clusterFile, String tenantName, String root,
-                                    String mode, int limit, boolean reverse) {
+                                    String mode, int limit, boolean reverse, byte[] localWriteKey) {
         Database database = createDatabase(clusterFile).database();
         StreamingMode streaming = StreamingMode.valueOf(mode);
         com.apple.foundationdb.Range range = Tuple.from(root, "index").range();
         try (Tenant tenant = database.openTenant(tenantName.getBytes(StandardCharsets.UTF_8));
              Transaction transaction = tenant.createTransaction()) {
+            if (localWriteKey != null) {
+                transaction.set(localWriteKey, new byte[] {42});
+            }
             List<Map<String, Object>> rows = new ArrayList<>();
             AsyncIterator<MappedKeyValue> iterator = transaction.getMappedRange(
                     KeySelector.firstGreaterOrEqual(range.begin), KeySelector.firstGreaterOrEqual(range.end),

@@ -450,9 +450,16 @@ func (tx *Transaction) addMappedRangeConflicts(begin, end []byte, reverse, more 
 			ranges = append(ranges, [2][]byte{k, keyAfterBytes(k)})
 		case MappedResultGetRange:
 			gr := &rows[i].GetRange
-			// The selectors the server actually resolved, not the mapper's
-			// intent — C++ passes getRange.begin/getRange.end straight through.
-			ranges = append(ranges, [2][]byte{gr.Begin.Key, gr.End.Key})
+			// Secondary reads are forward and may be truncated by server knobs.
+			// C++ :1186 applies the same prefix clamp as an ordinary forward read.
+			rangeEnd := gr.End.Key
+			if gr.More {
+				rangeEnd = gr.Begin.Key
+			}
+			if n := len(gr.Rows); n > 0 && bytes.Compare(rangeEnd, gr.Rows[n-1].Key) <= 0 {
+				rangeEnd = keyAfterBytes(gr.Rows[n-1].Key)
+			}
+			ranges = append(ranges, [2][]byte{gr.Begin.Key, rangeEnd})
 		}
 	}
 	// C++ interleaves the check and the insert: updateConflictMap<true>
