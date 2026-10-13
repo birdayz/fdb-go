@@ -78,8 +78,8 @@ func sendFrameWithHedge(
 	}
 
 	// Start hedge timer.
-	timer := time.NewTimer(hedgeDelay)
-	defer timer.Stop()
+	timer := getTimer(hedgeDelay)
+	defer putTimer(timer)
 
 	// Wait for primary reply or hedge timer.
 	select {
@@ -156,8 +156,8 @@ type inFlightRPC struct {
 }
 
 func waitForReply(ctx context.Context, inflight inFlightRPC, timeout time.Duration) hedgeResult {
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
+	timer := getTimer(timeout)
+	defer putTimer(timer)
 
 	select {
 	case resp := <-inflight.replyCh:
@@ -180,8 +180,8 @@ func waitForReply(ctx context.Context, inflight inFlightRPC, timeout time.Durati
 }
 
 func raceReplies(ctx context.Context, a, b inFlightRPC, timeout time.Duration) hedgeResult {
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
+	timer := getTimer(timeout)
+	defer putTimer(timer)
 
 	select {
 	case resp := <-a.replyCh:

@@ -80,6 +80,17 @@ go_test(
     deps = ["//pkg/fdbgo/wire/types"],
 )
 
+# gazelle:exclude hedge_timer_unit_test.go
+go_test(
+    name = "hedge_timer_unit_test",
+    srcs = ["hedge_timer_unit_test.go"],
+    embed = [":client"],
+    deps = [
+        "//pkg/fdbgo/transport",
+        "//pkg/fdbgo/wire",
+    ],
+)
+
 # gazelle:exclude coord_poll_unit_test.go
 go_test(
     name = "coord_poll_unit_test",
