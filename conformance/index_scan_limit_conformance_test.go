@@ -8,6 +8,8 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"fdb.dev/gen/demopb"
@@ -21,16 +23,17 @@ import (
 )
 
 type scanLimitRequest struct {
-	IndexName       string `json:"indexName"`
-	Streaming       string `json:"streaming"`
-	Records         bool   `json:"records"`
-	Reverse         bool   `json:"reverse"`
-	RowLimit        int    `json:"rowLimit"`
-	ScannedLimit    int    `json:"scannedLimit"`
-	ByteLimit       int64  `json:"byteLimit"`
-	TimeLimit       int64  `json:"timeLimit"`
-	FailOnScanLimit bool   `json:"failOnScanLimit"`
-	Continuation    string `json:"continuation"`
+	IndexName                       string `json:"indexName"`
+	Streaming                       string `json:"streaming"`
+	Records                         bool   `json:"records"`
+	Reverse                         bool   `json:"reverse"`
+	RowLimit                        int    `json:"rowLimit"`
+	ScannedLimit                    int    `json:"scannedLimit"`
+	ByteLimit                       int64  `json:"byteLimit"`
+	TimeLimit                       int64  `json:"timeLimit"`
+	FailOnScanLimit                 bool   `json:"failOnScanLimit"`
+	Continuation                    string `json:"continuation"`
+	HoldRecordLoadsUntilSourceError bool   `json:"holdRecordLoadsUntilSourceError"`
 }
 
 type scanLimitRangeOptions struct {
@@ -70,6 +73,7 @@ type scanLimitTransaction struct {
 	fdb.WritableTransaction
 	indexPrefix []byte
 	calls       []scanLimitRangeOptions
+	recordGate  *scanLimitRecordGate
 }
 
 func (t *scanLimitTransaction) observe(r fdb.Range, options fdb.RangeOptions) {
@@ -81,7 +85,7 @@ func (t *scanLimitTransaction) observe(r fdb.Range, options fdb.RangeOptions) {
 
 func (t *scanLimitTransaction) GetRange(r fdb.Range, options fdb.RangeOptions) fdb.RangeResult {
 	t.observe(r, options)
-	return t.WritableTransaction.GetRange(r, options)
+	return t.gateRecordRange(r, t.WritableTransaction.GetRange(r, options))
 }
 
 func (t *scanLimitTransaction) Snapshot() fdb.ReadTransaction {
@@ -95,7 +99,123 @@ type scanLimitSnapshot struct {
 
 func (s *scanLimitSnapshot) GetRange(r fdb.Range, options fdb.RangeOptions) fdb.RangeResult {
 	s.owner.observe(r, options)
-	return s.ReadTransaction.GetRange(r, options)
+	return s.owner.gateRecordRange(r, s.ReadTransaction.GetRange(r, options))
+}
+
+func (t *scanLimitTransaction) gateRecordRange(r fdb.Range, result fdb.RangeResult) fdb.RangeResult {
+	gate := t.recordGate
+	if gate == nil {
+		return result
+	}
+	begin, end := r.FDBRangeKeySelectors()
+	if !bytes.HasPrefix(begin.FDBKeySelector().Key.FDBKey(), gate.prefix) || !bytes.HasPrefix(end.FDBKeySelector().Key.FDBKey(), gate.prefix) {
+		return result
+	}
+	gate.issued.Add(1)
+	return scanLimitHeldRange{RangeResult: result, gate: gate}
+}
+
+type scanLimitRecordGate struct {
+	ctx           context.Context
+	prefix        []byte
+	release       chan struct{}
+	once          sync.Once
+	issued        atomic.Int32
+	nativeRows    atomic.Int32
+	sourceError   error
+	issuedAtError int32
+}
+
+func (g *scanLimitRecordGate) open() { g.once.Do(func() { close(g.release) }) }
+
+type scanLimitHeldRange struct {
+	fdb.RangeResult
+	gate *scanLimitRecordGate
+}
+
+func (r scanLimitHeldRange) Iterator() fdb.RangeIterator {
+	return &scanLimitHeldIterator{RangeIterator: r.RangeResult.Iterator(), gate: r.gate}
+}
+
+type scanLimitHeldIterator struct {
+	fdb.RangeIterator
+	gate    *scanLimitRecordGate
+	started bool
+	err     error
+}
+
+func (i *scanLimitHeldIterator) Advance() bool {
+	if i.started {
+		return i.err == nil && i.RangeIterator.Advance()
+	}
+	i.started = true
+	if !i.RangeIterator.Advance() {
+		_, i.err = i.RangeIterator.Get()
+		if i.err == nil {
+			i.err = fmt.Errorf("held record range positive control was empty")
+		}
+		return false
+	}
+	// Get is a reentrant peek at the actual native iterator's current row.
+	// Do not advance again, buffer replacement rows, or inject record data.
+	row, err := i.RangeIterator.Get()
+	if err != nil {
+		i.err = err
+		return false
+	}
+	if !bytes.HasPrefix(row.Key, i.gate.prefix) {
+		i.err = fmt.Errorf("held record range returned key outside record prefix")
+		return false
+	}
+	i.gate.nativeRows.Add(1)
+	select {
+	case <-i.gate.release:
+		return true
+	case <-i.gate.ctx.Done():
+		i.err = i.gate.ctx.Err()
+		return false
+	}
+}
+
+func (i *scanLimitHeldIterator) Get() (fdb.KeyValue, error) {
+	if i.err != nil {
+		return fdb.KeyValue{}, i.err
+	}
+	return i.RangeIterator.Get()
+}
+
+type scanLimitHeldCursor struct {
+	recordlayer.RecordCursor[*recordlayer.FDBIndexedRecord]
+	gate *scanLimitRecordGate
+}
+
+func (c *scanLimitHeldCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[*recordlayer.FDBIndexedRecord], error) {
+	next, err := c.RecordCursor.OnNext(ctx)
+	if err != nil {
+		select {
+		case <-c.gate.release:
+			Fail("held record gate opened before the actual source error")
+		default:
+		}
+		c.gate.sourceError = err
+		c.gate.issuedAtError = c.gate.issued.Load()
+		c.gate.open()
+	}
+	return next, err
+}
+
+func (c *scanLimitHeldCursor) Close() error {
+	c.gate.open()
+	return c.RecordCursor.Close()
+}
+
+func scanLimitAssertHeldRequest(req scanLimitRequest) {
+	GinkgoHelper()
+	Expect(req.Records && req.FailOnScanLimit && req.RowLimit == 0 && req.Continuation == "").To(BeTrue(), "held scheduling requires the current record-bearing exception cases without row limit or continuation")
+	valid := (req.ScannedLimit == 1 && req.ByteLimit == 0 && req.TimeLimit == 0) ||
+		(req.ScannedLimit == 0 && req.ByteLimit == 1 && req.TimeLimit == 0) ||
+		(req.ScannedLimit == 0 && req.ByteLimit == 0 && req.TimeLimit == 200)
+	Expect(valid).To(BeTrue(), "holding until error is unsafe for arbitrary limits that could fill the mapping pipeline")
 }
 
 func scanLimitBytes(value []byte) string { return base64.StdEncoding.EncodeToString(value) }
@@ -233,8 +353,21 @@ var _ = Describe("Ordinary index cursor Java limit conformance", func() {
 			}
 		}
 		var page scanLimitPage
+		var gate *scanLimitRecordGate
+		if req.HoldRecordLoadsUntilSourceError {
+			scanLimitAssertHeldRequest(req)
+			gateCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			defer cancel()
+			Expect(transaction.Options().SetTimeout((15 * time.Second).Milliseconds())).To(Succeed())
+			gate = &scanLimitRecordGate{ctx: gateCtx, prefix: ks.Sub(recordlayer.RecordKey).Bytes(), release: make(chan struct{})}
+			logged.recordGate = gate // Activate only after metadata/store opening.
+			defer gate.open()
+		}
 		if req.Records {
 			cursor := store.ScanIndexRecords(req.IndexName, recordlayer.TupleRangeAll, continuation, properties)
+			if gate != nil {
+				cursor = &scanLimitHeldCursor{RecordCursor: cursor, gate: gate}
+			}
 			page = scanLimitDrain(ctx, cursor, execution.ScanState, func(indexed *recordlayer.FDBIndexedRecord) scanLimitRow {
 				row := entryRow(indexed.IndexEntry)
 				data, err := proto.MarshalOptions{Deterministic: true}.Marshal(indexed.Record.Record)
@@ -247,6 +380,13 @@ var _ = Describe("Ordinary index cursor Java limit conformance", func() {
 			})
 		} else {
 			page = scanLimitDrain(ctx, store.ScanIndex(index, recordlayer.TupleRangeAll, continuation, properties), execution.ScanState, entryRow)
+		}
+		if gate != nil {
+			var sourceLimit *recordlayer.ScanLimitReachedError
+			Expect(errors.As(gate.sourceError, &sourceLimit)).To(BeTrue(), "the actual source scan error must release held native record reads")
+			Expect(gate.issuedAtError).To(Equal(int32(1)), "current held exception schedules issue exactly one record load")
+			Expect(gate.issued.Load()).To(Equal(gate.issuedAtError), "quiescence must not issue another record range")
+			Expect(gate.nativeRows.Load()).To(Equal(gate.issued.Load()), "each held read must consume a positive real native row after release")
 		}
 		page.RangeOptions = logged.calls
 		return page
@@ -361,9 +501,63 @@ var _ = Describe("Ordinary index cursor Java limit conformance", func() {
 			Expect(page.Reason).To(Equal("SCAN_LIMIT_REACHED"))
 		})
 	})
+	It("accepts only the three held schedules and rejects unsafe requests before opening a Java gate", func() {
+		base := scanLimitRequest{
+			IndexName: "version", Streaming: "ITERATOR", Records: true, Reverse: true,
+			FailOnScanLimit: true, HoldRecordLoadsUntilSourceError: true, ScannedLimit: 1,
+		}
+		accepted := 0
+		for _, profile := range []struct {
+			scanned int
+			bytes   int64
+			time    int64
+		}{{1, 0, 0}, {0, 1, 0}, {0, 0, 200}} {
+			req := base
+			req.ScannedLimit, req.ByteLimit, req.TimeLimit = profile.scanned, profile.bytes, profile.time
+			failures := InterceptGomegaFailures(func() { scanLimitAssertHeldRequest(req) })
+			Expect(failures).To(BeEmpty(), "approved held budget (%d,%d,%d)", profile.scanned, profile.bytes, profile.time)
+			accepted++
+		}
+		rejected := 0
+		for _, tc := range []struct {
+			name   string
+			mutate func(*scanLimitRequest)
+		}{
+			{"records_false", func(req *scanLimitRequest) { req.Records = false }},
+			{"fail_false", func(req *scanLimitRequest) { req.FailOnScanLimit = false }},
+			{"row_limit", func(req *scanLimitRequest) { req.RowLimit = 1 }},
+			{"continuation", func(req *scanLimitRequest) { req.Continuation = "FQU=" }},
+			{"scanned_two", func(req *scanLimitRequest) { req.ScannedLimit = 2 }},
+			{"bytes_two", func(req *scanLimitRequest) { req.ScannedLimit, req.ByteLimit = 0, 2 }},
+			{"time_199", func(req *scanLimitRequest) { req.ScannedLimit, req.TimeLimit = 0, 199 }},
+			{"no_budget", func(req *scanLimitRequest) { req.ScannedLimit = 0 }},
+			{"mixed_budget", func(req *scanLimitRequest) { req.ByteLimit = 1 }},
+		} {
+			req := base
+			tc.mutate(&req)
+			failures := InterceptGomegaFailures(func() { scanLimitAssertHeldRequest(req) })
+			Expect(failures).NotTo(BeEmpty(), "Go must reject unsafe held schedule %s", tc.name)
+			var ignored scanLimitPage
+			err := java.InvokeAs(ctx, "scanIndexScanLimits", map[string]any{
+				"clusterFile": env.ClusterFile, "tenantName": env.TenantName,
+				"subspace": BytesToIntArray(ks.Bytes()), "request": req,
+			}, &ignored)
+			Expect(err).To(HaveOccurred(), "Java must reject unsafe held schedule %s", tc.name)
+			Expect(err.Error()).To(ContainSubstring("held matrix schedule requires records, fail-on-limit"), "Java must reject %s at the early request guard, not a downstream gate", tc.name)
+			rejected++
+		}
+		Expect(accepted).To(Equal(3), "every accepted budget arm must be populated")
+		Expect(rejected).To(Equal(9), "every unsafe request guard arm must execute")
+		GinkgoWriter.Printf("HELD_SCHEDULE_GUARD_POPULATION accepted=%d rejected=%d\n", accepted, rejected)
+	})
+
+	// This matrix explicitly holds real record ranges until the source error.
+	// READY is separately pinned by 40 Java observations (20 READY/20 HELD)
+	// and eight real-FDB Go regressions (4 READY/4 HELD across indexes/directions).
 	It("raises Java ScanLimitReachedException for record, byte and time limits", func() {
 		forEachScan(func(req scanLimitRequest) {
 			req.FailOnScanLimit = true
+			req.HoldRecordLoadsUntilSourceError = req.Records
 			req.ScannedLimit = 1
 			page := compare(req)
 			Expect(page.ExceptionClass).To(Equal("ScanLimitReachedException"))

@@ -44,7 +44,8 @@ func MapPendingRead[T, V any](p PendingRead[T], f func(T, error) (V, error)) Pen
 // MapPipelined keeps up to pipelineSize mappings issued, counting the one being
 // returned, and yields them in source order with their source continuations.
 // It runs on the caller's goroutine; the overlap comes from reads in flight.
-// Matches Java's MapPipelinedCursor.
+// Matches Java's post-insertion head-readiness ordering; the synchronous source
+// cannot race a pending source advance against completion of a mapping.
 func MapPipelined[T, V any](inner RecordCursor[T], issue func(T) PendingRead[V], pipelineSize int) RecordCursor[V] {
 	if pipelineSize <= 0 {
 		_ = inner.Close()
@@ -147,6 +148,9 @@ func (c *mapPipelinedCursor[T, V]) OnNext(ctx context.Context) (RecordCursorResu
 		c.push(mapPipelineEntry[V]{
 			pending: c.issue(source.GetValue()), continuation: source.GetContinuation(),
 		})
+		if c.pipeline[c.head].pending.IsReady() {
+			break
+		}
 	}
 	if c.count == 0 {
 		c.last, c.hasLast = *c.stop, true
