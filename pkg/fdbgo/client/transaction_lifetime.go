@@ -19,6 +19,15 @@ type executionLease struct {
 	issued bool // counted in inc.issuedReads, which Commit waits on
 }
 
+func (l *executionLease) isActive() bool {
+	if l == nil {
+		return false
+	}
+	l.tx.readErrMu.Lock()
+	defer l.tx.readErrMu.Unlock()
+	return l.active
+}
+
 func (l *executionLease) release() {
 	if l == nil {
 		return

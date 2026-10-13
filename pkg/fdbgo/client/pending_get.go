@@ -67,11 +67,11 @@ func (p *PendingGet) ResolveOrAbort(abort <-chan struct{}) ([]byte, error, bool)
 		p.retireLocked()
 		return p.memoVal, p.memoErr, false
 	}
-	parent := p.ctx
-	if op := p.tx.readOperation(p.ctx); op != nil {
-		parent = op.parent
+	admission := readAdmission{tx: p.tx, inc: inc, parent: p.ctx}
+	if op != nil {
+		admission = op.readAdmission
 	}
-	ctx := &readOperation{Context: p.ctx, tx: p.tx, inc: inc, parent: parent, lease: lease}
+	ctx := &readOperation{Context: p.ctx, readAdmission: admission, lease: lease}
 	val, err := p.resolve(ctx, abort)
 	if h, ok := err.(*handoff); ok {
 		handedOff = true
