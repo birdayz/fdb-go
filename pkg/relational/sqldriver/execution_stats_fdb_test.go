@@ -3,14 +3,16 @@ package sqldriver_test
 // Post-execution query statistics (RFC-211), end to end over real FDB.
 //
 // The counters these tests pin are not new measurements. Go's ScanLimiterState
-// has always counted scanned records and bytes, because that is what the
-// scanned-rows / scanned-bytes limits are checked against — the ports of
+// counts scan attempts and bytes, against which scanned-rows / scanned-bytes
+// limits are checked — the ports of
 // Java's ExecuteState.getRecordsScanned() (ExecuteState.java:114) and
 // getBytesScanned() (:122). What was missing was any way to READ them: nothing
 // aggregated them per statement and nothing handed them to a caller. So these
 // tests are about delivery and arithmetic, and they pin EXACT counts rather
 // than bounds — a bound would pass with the arithmetic broken in either
-// direction.
+// direction. Ordinary index scans charge the terminal EOF attempt too:
+// KeyValueCursorBase.java:99-118 calls tryRecordScan before onHasNext, and
+// RecordScanLimiterFactory.java:125-137 counts even an unlimited scan attempt.
 //
 // The dimensions are deliberately separated, because they fail independently:
 // scanned is not returned (a filter makes them differ), scanned survives the
@@ -135,8 +137,8 @@ func drain(t *testing.T, rows *sql.Rows) int {
 }
 
 // TestFDB_ExecutionStats_FullScanPinsExactCounts is the base case: an
-// unfiltered scan of N rows must report N scanned and N returned, with real
-// bytes, one statement, and no retries.
+// unfiltered index scan of N rows must report N+1 scan attempts (including EOF)
+// and N returned, with real bytes, one statement, and no retries.
 //
 // It also pins the fields that identify the record — SQL text and plan hash —
 // because a stats record an operator cannot attribute to a query is telemetry
@@ -162,9 +164,9 @@ func TestFDB_ExecutionStats_FullScanPinsExactCounts(t *testing.T) {
 	}
 
 	s := cap.only(t)
-	if s.RecordsScanned != execStatsRows {
-		t.Errorf("RecordsScanned = %d, want %d (a full scan charges one record per row)",
-			s.RecordsScanned, execStatsRows)
+	if s.RecordsScanned != execStatsRows+1 {
+		t.Errorf("RecordsScanned = %d, want %d (one attempt per index entry plus EOF)",
+			s.RecordsScanned, execStatsRows+1)
 	}
 	if s.RowsReturned != execStatsRows {
 		t.Errorf("RowsReturned = %d, want %d", s.RowsReturned, execStatsRows)
@@ -228,9 +230,9 @@ func TestFDB_ExecutionStats_IndexEqualityIsSelective(t *testing.T) {
 	}
 
 	s := cap.only(t)
-	if s.RecordsScanned != wantMatches {
-		t.Errorf("RecordsScanned = %d, want %d (the index visits only the matching entries)",
-			s.RecordsScanned, wantMatches)
+	if s.RecordsScanned != wantMatches+1 {
+		t.Errorf("RecordsScanned = %d, want %d (matching index entries plus EOF)",
+			s.RecordsScanned, wantMatches+1)
 	}
 	if s.RecordsScanned >= execStatsRows {
 		t.Errorf("RecordsScanned = %d is not below the table size %d — the count is not tracking the access path",
@@ -246,7 +248,7 @@ func TestFDB_ExecutionStats_IndexEqualityIsSelective(t *testing.T) {
 // the whole table to find it.
 //
 // Cost attribution lives or dies on this distinction. A tenant issuing this
-// query costs the cluster ten reads and reports one row; a stats surface that
+// query visits ten index entries and reports one row; a stats surface that
 // conflated the two would report the cheapest possible number for the most
 // expensive shape. The filter is on `v`, which carries no index, so the scan
 // genuinely has to walk to the last row.
@@ -259,7 +261,8 @@ func TestFDB_ExecutionStats_ScannedExceedsReturned(t *testing.T) {
 	cap.reset()
 
 	// v == execStatsRows-1 is the LAST row, so the scan cannot short-circuit
-	// early and the scanned count is the full table.
+	// early. Pipelined index fetch also probes EOF before yielding the last
+	// matching row, even though the outer LIMIT stops after that row.
 	q := fmt.Sprintf("SELECT id FROM t WHERE v = %d LIMIT 1", execStatsRows-1)
 	rows, err := conn.QueryContext(ctx, q)
 	if err != nil {
@@ -273,9 +276,9 @@ func TestFDB_ExecutionStats_ScannedExceedsReturned(t *testing.T) {
 	if s.RowsReturned != 1 {
 		t.Errorf("RowsReturned = %d, want 1 (LIMIT 1)", s.RowsReturned)
 	}
-	if s.RecordsScanned != execStatsRows {
-		t.Errorf("RecordsScanned = %d, want %d — the true cost of finding one matching row",
-			s.RecordsScanned, execStatsRows)
+	if s.RecordsScanned != execStatsRows+1 {
+		t.Errorf("RecordsScanned = %d, want %d (all index entries plus the pipelined EOF attempt)",
+			s.RecordsScanned, execStatsRows+1)
 	}
 	if s.RecordsScanned == s.RowsReturned {
 		t.Errorf("RecordsScanned == RowsReturned == %d; the two dimensions are not being measured separately",
@@ -431,10 +434,10 @@ func TestFDB_ExecutionStats_ExplicitTransactionChargesPerStatement(t *testing.T)
 		t.Fatalf("want 2 execution-stats events (one per statement), got %d: %+v", len(events), events)
 	}
 	for i, s := range events {
-		if s.RecordsScanned != execStatsRows {
+		if s.RecordsScanned != execStatsRows+1 {
 			t.Errorf("statement %d: RecordsScanned = %d, want %d — each statement must be charged "+
-				"its OWN scan, not the transaction-scoped counter's running total",
-				i, s.RecordsScanned, execStatsRows)
+				"its OWN index scan and EOF attempt, not the transaction-scoped counter's running total",
+				i, s.RecordsScanned, execStatsRows+1)
 		}
 		if s.RowsReturned != execStatsRows {
 			t.Errorf("statement %d: RowsReturned = %d, want %d", i, s.RowsReturned, execStatsRows)
@@ -539,9 +542,9 @@ func TestFDB_ExecutionStats_DDLEmitsNoRecord(t *testing.T) {
 	if got := drain(t, rows); got != execStatsRows {
 		t.Fatalf("returned %d rows, want %d", got, execStatsRows)
 	}
-	if s := cap.only(t); s.RecordsScanned != execStatsRows {
-		t.Errorf("RecordsScanned = %d, want %d — the logger installed before the DDL is still live",
-			s.RecordsScanned, execStatsRows)
+	if s := cap.only(t); s.RecordsScanned != execStatsRows+1 {
+		t.Errorf("RecordsScanned = %d, want %d (index entries plus EOF) — the logger installed before the DDL is still live",
+			s.RecordsScanned, execStatsRows+1)
 	}
 }
 

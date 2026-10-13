@@ -58,10 +58,10 @@ type ExecutionStats struct {
 	// RowsAffected is the number of records mutated by a DML statement, and is
 	// zero for a SELECT.
 	RowsAffected int64
-	// RecordsScanned is the total records charged against the scan limiter
-	// across every page AND every transaction retry. A retried attempt's scan
-	// is counted: the cluster served those reads, and cost attribution that
-	// hid them would understate exactly the tenants worth knowing about.
+	// RecordsScanned is the total scan attempts charged against the scan limiter
+	// across every page AND every transaction retry. Ordinary index cursors
+	// include EOF and rejected attempts, so this is not a physical read count.
+	// Retried attempts are counted rather than hidden from cost attribution.
 	RecordsScanned int64
 	// BytesScanned is the total key+value bytes charged across every page and
 	// retry, on the same basis as RecordsScanned.

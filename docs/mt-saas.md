@@ -579,9 +579,10 @@ pair up 1:1, and `PlanHash` is the join key between them.
 One `ExecutionStats` is emitted per statement execution, carrying `SQL`, `PlanHash`,
 `ExecutionDuration`, `RowsReturned`, `RowsAffected`, `RecordsScanned`, `BytesScanned`, `Pages`,
 `Retries`, `SlowQuery` and `Err`. This is what per-tenant cost attribution needs: `RecordsScanned`
-and `BytesScanned` are what the *cluster* served, which is not the same number as the rows the
-tenant received — a filtered `LIMIT 1` over a million-row table returns one row and scans a
-million.
+and `BytesScanned` report scan-limiter charges, not the number of rows the tenant received.
+`RecordsScanned` includes ordinary index cursors' EOF and rejected attempts, so it is not a
+physical storage-read count. A filtered `LIMIT 1` can scan a million index entries to return
+one row, and pipelined index fetch can also charge the terminal EOF attempt.
 
 ```go
 type tenantExecLogger struct{ tenantID string }

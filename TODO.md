@@ -1542,10 +1542,25 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
 
 ## Row-limit lookahead at an exact page boundary
 
-- [ ] Go's key-value cursors (index_scan.go, count/bitmap, key_value_cursor.go) peek one
+- [x] Ordinary VALUE/VERSION index cursors now pass down the finite row budget,
+  report `RETURN_LIMIT_REACHED` with a last-key token at exact exhaustion, and
+  charge the terminal attempt. `conformance/index_scan_limit_conformance_test.go`
+  compares every boundary with Java, including empty final-page resumes.
+- [ ] Remaining key-value cursors (count/bitmap, key_value_cursor.go) peek one
   row past `ReturnedRowLimit` and report `SourceExhausted` with an end continuation when the
   page ends exactly at the range end. Java's `KeyValueCursorBase` (KeyValueCursorBase.java:
   113-115) passes the limit down without a lookahead and reports `RETURN_LIMIT_REACHED`
   with a lastKey token; its next page is empty and exhausted. Rows agree; the page count,
   stop reason and token differ. `conformance/index_continuation_range_conformance_test.go`
   picks page sizes that avoid the boundary until this is ported.
+
+## Pipelined mapping readiness parity
+
+- [ ] Compare Go `MapPipelined` refill (cursor_pipelined.go:132-156) with Java
+  `MapPipelinedCursor.tryToFillPipeline` (MapPipelinedCursor.java:137-164). Go
+  fills the configured window before yielding; Java can yield early when the
+  head mapping future is ready. This pre-existing scheduling difference may
+  affect attempts charged before a filtered outer limit or scan-limit error.
+  Pin it with real-FDB reads and controlled mapping readiness, not a timing-based
+  exact-count oracle. EOF attempts actually issued by either cursor must remain
+  charged; do not hide them in execution statistics.
