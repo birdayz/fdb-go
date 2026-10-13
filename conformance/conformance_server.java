@@ -67,6 +67,7 @@ class ConformanceServer {
         new UniqueViolationSteps(),
         new TupleOrderingSteps(),
         new MappedRangeSteps(),
+        new RecordLoadChargeProbeSteps(),
         new BitmapValueIndexSteps(),
         new TextIndexSteps(),
         new TimeWindowLeaderboardSteps(),

@@ -48,8 +48,10 @@ for exact primary ranges, with forward or reverse primary scans and forward
 secondary ranges. Snapshot transactions do not expose it. The `libfdbc` backend
 does not expose mapped reads: Apple's Go binding has no mapped-range API, and
 this repository's raw C mapped-range decoder is a test-only, non-ABI oracle.
-Record Layer remote-fetch dispatch and fallback are a separate implementation
-step; this capability alone does not enable remote fetch on index scans.
+Record Layer `IndexFetchMethod.USE_REMOTE_FETCH`, `USE_REMOTE_FETCH_WITH_FALLBACK`,
+and SQL `INDEX_FETCH_METHOD` remain unsupported. Remote-fetch dispatch and
+fallback are a separate implementation step; this capability alone does not
+enable remote fetch on index scans.
 
 ### Single-record reads and conflicts
 

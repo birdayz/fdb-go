@@ -4297,3 +4297,12 @@ Java turns an `FDBException` into a typed `RecordCoreException` (FDBExceptions.j
 | 1021 `commit_unknown_result` | 40003 (see Go-only SQLSTATEs) | XXXXX |
 
 An FDB code Go does not map reaches the caller with no SQLSTATE: the FDB error itself, which `errors.As` still matches. Java reports XXXXX.
+
+## Index remote fetch: Java feature gap (RFC-258)
+
+Go does not yet support Record Layer `IndexFetchMethod.USE_REMOTE_FETCH` or
+`USE_REMOTE_FETCH_WITH_FALLBACK`. The SQL `INDEX_FETCH_METHOD` option is parsed
+but not honored. Index scans use SCAN_AND_FETCH; the pure-Go facade's raw
+mapped-range capability is not Record Layer or SQL remote-fetch support.
+RFC-258 implements the missing scan/reconstruction/fallback, planner and SQL
+integration, and allocation work. See [compatibility boundaries](docs/compatibility.md#mapped-range-backend-capability).
