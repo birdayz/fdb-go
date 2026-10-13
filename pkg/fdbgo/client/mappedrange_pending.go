@@ -29,12 +29,18 @@ func (p *PendingMappedRange) Get() ([]MappedKeyValue, bool, error) {
 // StartGetMappedRange captures the transaction incarnation and arguments before
 // starting I/O, so Reset cannot move the pending read into the new transaction.
 func (tx *Transaction) StartGetMappedRange(parent context.Context, begin, end, mapper []byte, limit, byteTarget int, reverse bool) *PendingMappedRange {
+	return tx.StartGetMappedRangeWithSkip(parent, begin, end, mapper, limit, byteTarget, 0, reverse)
+}
+
+// StartGetMappedRangeWithSkip captures Skip with the original incarnation and
+// arguments. The pending read does not introduce an issued-read Commit barrier.
+func (tx *Transaction) StartGetMappedRangeWithSkip(parent context.Context, begin, end, mapper []byte, limit, byteTarget int, skip int32, reverse bool) *PendingMappedRange {
 	ctx, release := tx.opContext(parent)
 	begin, end, mapper = bytes.Clone(begin), bytes.Clone(end), bytes.Clone(mapper)
 	p := &PendingMappedRange{run: func() (rows []MappedKeyValue, more bool, err error) {
 		defer release()
 		if tx.rangeReadBackstop().run(func() {
-			rows, more, err = tx.GetMappedRangeWithByteTarget(ctx, begin, end, mapper, limit, byteTarget, reverse)
+			rows, more, err = tx.GetMappedRangeWithByteTargetAndSkip(ctx, begin, end, mapper, limit, byteTarget, skip, reverse)
 		}) {
 			err = tx.trackReadOperation(ctx, &wire.FDBError{Code: ErrInternalError})
 			return nil, false, err

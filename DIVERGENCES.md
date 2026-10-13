@@ -4417,3 +4417,23 @@ orphan behavior and fallback. Two differences remain:
 
 The SQL `INDEX_FETCH_METHOD` option is parsed but not yet honored; RFC-258's
 planner work adds it. See [compatibility boundaries](docs/compatibility.md#mapped-range-backend-capability).
+
+### Raw mapped-range Skip
+
+The optional raw `MappedRangeSkipReader` supports signed 32-bit initial Skip
+without mapping skipped secondary records. Positive Skip is resolved client-side
+with bounded native key reads; mapped requests always carry plain selectors.
+FDB 7.3.77 `storageserver.actor.cpp:6292-6304` constructs a tenant-check range
+before checking resolved inversion at line 6328, so raw mapped requests whose
+selectors resolve to begin > end are not supported. Nonpositive Skip retains the
+existing request path. Primary conflicts use the original range anchors; skipped
+secondary ranges are not added.
+
+**Deliberate difference:** Go does not reproduce the signed integer overflow in
+Java 4.14.2.0 `KeyValueCursorBase.java:344-353` (`begin.add(skip)`). Forward
+`Skip=MaxInt32` means an actual skip of that many rows, never a backward selector
+that returns rows before the requested begin. Originally empty or inverted bounds
+remain empty, and an exhausted positive Skip preserves the original primary
+conflicts. Snapshot and CGo facade transactions do not expose this capability.
+It is distinct from ordinary index cursor Skip; Record Layer remote-fetch scans
+continue routing positive Skip to SCAN_AND_FETCH.

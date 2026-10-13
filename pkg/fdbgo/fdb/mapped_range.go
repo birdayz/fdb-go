@@ -37,11 +37,20 @@ type MappedRangeIterator interface {
 	SetTraceLog(fn func(iteration, requested, returned int, more bool, err error))
 }
 
-var _ MappedRangeReader = Transaction{}
+var (
+	_ MappedRangeReader     = Transaction{}
+	_ MappedRangeSkipReader = Transaction{}
+)
 
 // GetMappedRange starts a mapped read. Mapping is performed by the storage server;
 // snapshot isolation and disabled read-your-writes are not supported by FDB.
 func (tr Transaction) GetMappedRange(r ExactRange, mapper []byte, options RangeOptions) MappedRangeResult {
+	return tr.GetMappedRangeWithSkip(r, mapper, options, 0)
+}
+
+// GetMappedRangeWithSkip skips primary rows on batch one only, resolving the
+// position client-side. Nonpositive values behave like zero; Skip never wraps.
+func (tr Transaction) GetMappedRangeWithSkip(r ExactRange, mapper []byte, options RangeOptions, skip int32) MappedRangeResult {
 	begin, end := cloneRangeKeys(r)
 	rr := goMappedRangeResult{tx: tr.t, begin: begin, end: end, mapper: bytes.Clone(mapper), options: options, limit: effectiveLimit(options.Limit)}
 	if options.Mode == StreamingModeExact && (options.Limit == 0 || options.Limit == -1) {
@@ -53,7 +62,7 @@ func (tr Transaction) GetMappedRange(r ExactRange, mapper []byte, options RangeO
 		rr.err = err
 		return rr
 	}
-	rr.first = tr.t.inner.StartGetMappedRange(tr.t.ctx, begin, end, rr.mapper, rr.limit, byteTarget, options.Reverse)
+	rr.first = tr.t.inner.StartGetMappedRangeWithSkip(tr.t.ctx, begin, end, rr.mapper, rr.limit, byteTarget, skip, options.Reverse)
 	return rr
 }
 

@@ -42,6 +42,13 @@ type MappedRangeReader interface {
 	GetMappedRange(r ExactRange, mapper []byte, options RangeOptions) MappedRangeResult
 }
 
+// MappedRangeSkipReader applies an initial primary-row Skip without fetching the
+// skipped records. It preserves those primary keys in the serializable conflict.
+// Skip has Java's signed 32-bit domain; negative values behave like zero.
+type MappedRangeSkipReader interface {
+	GetMappedRangeWithSkip(r ExactRange, mapper []byte, options RangeOptions, skip int32) MappedRangeResult
+}
+
 // ReadVersionInstantReporter is an OPTIONAL capability: a transaction that can say
 // WHEN its current read version was obtained, i.e. when FDB's 5-second MVCC window
 // opened for it. ok is false when no read version is held or when the version was

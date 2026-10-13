@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 	"testing"
 	"time"
 
@@ -18,14 +19,15 @@ import (
 )
 
 // Cross-client differential for fdb_transaction_get_mapped_range: the pure-Go
-// client and libfdb_c 7.3.77 issue the SAME mapped read against the SAME cluster
-// and must decode the reply identically.
+// client and libfdb_c 7.3.77 share one cluster and compare mapped row decoding.
+// Exhausted Skip uses an ordinary C scan plus exact empty mapped bounds; native
+// signed-offset wrapping is an explicit difference from Go's positive Skip.
 //
 // The oracle here is deliberately SPLIT, and the split is not incidental.
 //
-//   - The getRange arm is what libfdb_c's public API can represent, so a
-//     disagreement there is a bug in the pure-Go client, full stop. That arm is
-//     the authoritative half of this file.
+//   - The getRange arm is what libfdb_c's public API can represent, so differing
+//     decodes for the same native request are bugs in the pure-Go client. That
+//     arm is the authoritative half of this file.
 //
 //   - The getValue arm is NOT representable through the public header. fdb_c.h
 //     models FDBMappedKeyValue with a single FDBGetRangeReqAndResult and no
@@ -387,13 +389,60 @@ func mdSeedStreaming(t *testing.T, cdb *libfdbc.CDatabase, n int) mdFixture {
 // The mode is a C constant, not the Go mode converted by the production code.
 func mdDrainC(t *testing.T, tr libfdbc.CTxnHandle, f mdFixture, limit, mode int, reverse bool) ([]libfdbc.CMappedRow, []mdBatch) {
 	t.Helper()
+	return mdDrainCWithSkip(t, tr, f, limit, mode, 0, reverse)
+}
+
+// mdCExhaustedSkipBounds uses an ordinary scan to prove that Skip exhausts the
+// range. FDB 7.3.77 raw mapped requests require resolved begin <= end.
+func mdCExhaustedSkipBounds(t *testing.T, tr libfdbc.CTxnHandle, f mdFixture, skip int32) ([]byte, []byte) {
+	t.Helper()
 	begin, end := f.indexRange()
+	count := 0
+	for cursor, iteration := begin, 1; ; iteration++ {
+		rows, more, err := libfdbc.CGetRangeBatch(tr, cursor, end, 0, 0, libfdbc.CStreamingModeWantAll, iteration, false, true)
+		if err != nil {
+			t.Fatalf("ordinary C Skip oracle: %v", err)
+		}
+		for i, row := range rows {
+			if !bytes.Equal(row.Key, f.indexEntryKey(count+i)) {
+				t.Fatalf("ordinary C Skip oracle row %d: key=%q want=%q", count+i, row.Key, f.indexEntryKey(count+i))
+			}
+		}
+		count += len(rows)
+		if int64(count) > int64(skip) {
+			t.Fatalf("Skip %d does not exhaust ordinary C range: %d rows", skip, count)
+		}
+		if !more {
+			break
+		}
+		if len(rows) == 0 {
+			t.Fatal("ordinary C Skip oracle made no progress")
+		}
+		cursor = append(bytes.Clone(rows[len(rows)-1].Key), 0)
+	}
+	if f.n <= 0 || count != f.n {
+		t.Fatalf("ordinary C Skip oracle population=%d want positive fixture=%d", count, f.n)
+	}
+	return end, end
+}
+
+func mdDrainCWithSkip(t *testing.T, tr libfdbc.CTxnHandle, f mdFixture, limit, mode int, skip int32, reverse bool) ([]libfdbc.CMappedRow, []mdBatch) {
+	t.Helper()
+	begin, end := f.indexRange()
+	if skip >= int32(f.n) {
+		begin, end = mdCExhaustedSkipBounds(t, tr, f, skip)
+		skip = 0
+	}
 	remaining := gofdb.EffectiveRowLimit(limit)
 	var rows []libfdbc.CMappedRow
 	var batches []mdBatch
 	for iteration := 1; iteration <= f.n+1; iteration++ {
 		requested := remaining
-		batch, more, err := libfdbc.CGetMappedRangeBatch(tr, begin, end, f.getRangeMapper(), requested, 0, mode, iteration, reverse, false)
+		firstSkip := int32(0)
+		if iteration == 1 {
+			firstSkip = skip
+		}
+		batch, more, err := libfdbc.CGetMappedRangeBatchWithSkip(tr, begin, end, f.getRangeMapper(), requested, 0, mode, iteration, firstSkip, reverse, false)
 		if err != nil {
 			t.Fatalf("C mapped batch %d: %v", iteration, err)
 		}
@@ -1124,6 +1173,809 @@ func TestLibFDBC_MappedRangeRYWErrorConflictPrefix(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+func mdMappedErrorCode(t *testing.T, err error) int {
+	t.Helper()
+	if err == nil {
+		return 0
+	}
+	var ce *libfdbc.CFDBError
+	if errors.As(err, &ce) {
+		return ce.Code
+	}
+	var ge *wire.FDBError
+	if errors.As(err, &ge) {
+		return ge.Code
+	}
+	var fe gofdb.Error
+	if errors.As(err, &fe) {
+		return fe.Code
+	}
+	t.Fatalf("non-FDB mapped error: %T %v", err, err)
+	return -1
+}
+
+func mdSkipFacadeResult(t *testing.T, tr gofdb.Transaction, f mdFixture, mapper []byte, options gofdb.RangeOptions, skip int32) gofdb.MappedRangeResult {
+	t.Helper()
+	reader, ok := any(tr).(gofdb.MappedRangeSkipReader)
+	if !ok {
+		t.Fatal("pure-Go facade lacks mapped-range Skip capability")
+	}
+	begin, end := f.indexRange()
+	return reader.GetMappedRangeWithSkip(gofdb.KeyRange{Begin: gofdb.Key(begin), End: gofdb.Key(end)}, mapper, options, skip)
+}
+
+func TestLibFDBC_MappedRangeSkip(t *testing.T) {
+	t.Parallel()
+	clusterFile := startCluster(t)
+	cdb, err := libfdbc.COpenDatabase(clusterFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cdb.Close)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	t.Cleanup(cancel)
+	goDB, err := fdbclient.OpenDatabase(ctx, clusterFile, fdbclient.WithAPIVersion(730))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { goDB.Close() })
+	facade := gofdb.WrapDatabase(goDB)
+	f := mdSeedStreaming(t, cdb, 24)
+	begin, end := f.indexRange()
+	wantCount := func(skip int32, limit int) int {
+		if skip < 0 {
+			skip = 0
+		}
+		count := f.n - int(skip)
+		if count < 0 {
+			count = 0
+		}
+		if limit > 0 && count > limit {
+			count = limit
+		}
+		return count
+	}
+	for _, mode := range []struct {
+		name   string
+		goMode gofdb.StreamingMode
+		cMode  int
+		limits []int
+	}{
+		{"iterator", gofdb.StreamingModeIterator, libfdbc.CStreamingModeIterator, []int{0, 5}},
+		{"small", gofdb.StreamingModeSmall, libfdbc.CStreamingModeSmall, []int{0, 5}},
+		{"exact", gofdb.StreamingModeExact, libfdbc.CStreamingModeExact, []int{5}},
+		{"serial", gofdb.StreamingModeSerial, libfdbc.CStreamingModeSerial, []int{0, 5}},
+		{"large", gofdb.StreamingModeLarge, libfdbc.CStreamingModeLarge, []int{0, 5}},
+		{"want_all", gofdb.StreamingModeWantAll, libfdbc.CStreamingModeWantAll, []int{0, 5}},
+	} {
+		for _, skip := range []int32{-100, -1, 0, 1, 7, int32(f.n), int32(f.n + 3), 2147483646, 2147483647} {
+			for _, limit := range mode.limits {
+				for _, reverse := range []bool{false, true} {
+					t.Run(fmt.Sprintf("division/%s/skip=%d/limit=%d/reverse=%v", mode.name, skip, limit, reverse), func(t *testing.T) {
+						ct, err := cdb.CreateTransaction()
+						if err != nil {
+							t.Fatal(err)
+						}
+						defer ct.Close()
+						cRows, cBatches := mdDrainCWithSkip(t, ct, f, limit, mode.cMode, skip, reverse)
+						gt, err := facade.CreateTransaction()
+						if err != nil {
+							t.Fatal(err)
+						}
+						defer gt.Cancel()
+						it := mdSkipFacadeResult(t, gt, f, f.getRangeMapper(), gofdb.RangeOptions{Limit: limit, Mode: mode.goMode, Reverse: reverse}, skip).Iterator()
+						var gRows []gofdb.MappedKeyValue
+						var gBatches []mdBatch
+						it.SetTraceLog(func(iteration, requested, returned int, more bool, err error) {
+							if err != nil {
+								t.Fatal(err)
+							}
+							gBatches = append(gBatches, mdBatch{iteration, requested, returned, more})
+						})
+						for it.Advance() {
+							row, err := it.Get()
+							if err != nil {
+								t.Fatal(err)
+							}
+							gRows = append(gRows, row)
+							if len(gRows) > f.n {
+								t.Fatal("Skip iterator repeated rows")
+							}
+						}
+						if _, err := it.Get(); err != nil {
+							t.Fatal(err)
+						}
+						want := wantCount(skip, limit)
+						if len(cRows) != want || len(gRows) != want {
+							t.Fatalf("Skip population C=%d Go=%d want=%d", len(cRows), len(gRows), want)
+						}
+						if !reflect.DeepEqual(cBatches, gBatches) {
+							t.Fatalf("Skip division C=%+v Go=%+v", cBatches, gBatches)
+						}
+						needsMultiple := (mode.goMode == gofdb.StreamingModeSmall && want > 1) ||
+							(mode.goMode == gofdb.StreamingModeIterator && limit == 0 && want > 12)
+						if needsMultiple && len(cBatches) < 2 {
+							t.Fatal("Skip-once multi-batch comparison is vacuous")
+						}
+						if mode.goMode == gofdb.StreamingModeExact && len(cBatches) != 1 {
+							t.Fatalf("EXACT divided a row-bounded read: %+v", cBatches)
+						}
+						for i := range cRows {
+							mdCompareRangeRow(t, cRows[i], gRows[i])
+							index := i
+							if skip > 0 {
+								index += int(skip)
+							}
+							if reverse {
+								index = f.n - 1 - index
+							}
+							if !bytes.Equal(gRows[i].Key, f.indexEntryKey(index)) {
+								t.Fatalf("Skip/order at row %d differs from seeded primary %d", i, index)
+							}
+						}
+					})
+				}
+			}
+		}
+	}
+	for _, skip := range []int32{1, 7, int32(f.n), int32(f.n + 3), 2147483646, 2147483647} {
+		for _, reverse := range []bool{false, true} {
+			t.Run(fmt.Sprintf("conflicts/skip=%d/reverse=%v", skip, reverse), func(t *testing.T) {
+				ct, err := cdb.CreateTransaction()
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer ct.Close()
+				cBegin, cEnd, cSkip := begin, end, skip
+				if skip >= int32(f.n) {
+					cBegin, cEnd = mdCExhaustedSkipBounds(t, ct, f, skip)
+					cSkip = 0
+				}
+				cRows, cMore, err := libfdbc.CGetMappedRangeBatchWithSkip(ct, cBegin, cEnd, f.getRangeMapper(), 5, 0, libfdbc.CStreamingModeExact, 1, cSkip, reverse, false)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(cRows) != wantCount(skip, 5) {
+					t.Fatalf("C Skip population %d", len(cRows))
+				}
+				gt := goDB.CreateTransaction()
+				defer gt.Cancel()
+				gRows, gMore, err := gt.GetMappedRangeWithByteTargetAndSkip(ctx, begin, end, f.getRangeMapper(), 5, fdbclient.ByteLimitUnlimited, skip, reverse)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(cRows) != len(gRows) || cMore != gMore {
+					t.Fatalf("Skip first batch C=%d/%v Go=%d/%v", len(cRows), cMore, len(gRows), gMore)
+				}
+				for i := range cRows {
+					mdCompareRangeRow(t, cRows[i], gRows[i])
+				}
+				// Original anchors retain the skipped PRIMARY portion, including
+				// a resolved-empty read. Only returned secondaries contribute.
+				pBegin, pEnd := begin, end
+				if cMore && len(cRows) > 0 {
+					last := cRows[len(cRows)-1].Key
+					if reverse {
+						pBegin = last
+					} else {
+						pEnd = append(bytes.Clone(last), 0)
+					}
+				}
+				expected := []libfdbc.CKeyValue{{Key: pBegin, Value: []byte("1")}, {Key: pEnd, Value: []byte("0")}}
+				for _, row := range cRows {
+					expected = append(expected, libfdbc.CKeyValue{Key: row.RangeBeginKey, Value: []byte("1")}, libfdbc.CKeyValue{Key: row.RangeEndKey, Value: []byte("0")})
+				}
+				sort.Slice(expected, func(i, j int) bool { return bytes.Compare(expected[i].Key, expected[j].Key) < 0 })
+				boundaries, err := libfdbc.CReadConflictRangeBoundaries(ct)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if skip < int32(f.n) {
+					if !reflect.DeepEqual(boundaries, expected) {
+						t.Fatalf("Skip conflict boundaries C=%+v expected=%+v", boundaries, expected)
+					}
+				} else if len(boundaries) != 0 {
+					t.Fatalf("resolved-empty C row oracle added conflicts: %+v", boundaries)
+				}
+				skippedIndex := 0
+				if reverse {
+					skippedIndex = f.n - 1
+				}
+				probes := []struct {
+					name string
+					key  []byte
+					want int
+				}{
+					{"skipped_primary", f.indexEntryKey(skippedIndex), 1020},
+					{"skipped_secondary", f.splitRecordKey(skippedIndex, 0), 0},
+					{"exclusive_primary_end", pEnd, 0},
+				}
+				if len(cRows) > 0 {
+					probes = append(probes, struct {
+						name string
+						key  []byte
+						want int
+					}{"returned_secondary", cRows[0].RangeRows[0].Key, 1020})
+				}
+				for _, probe := range probes {
+					t.Run(probe.name, func(t *testing.T) {
+						reader, err := facade.CreateTransaction()
+						if err != nil {
+							t.Fatal(err)
+						}
+						defer reader.Cancel()
+						rows, err := mdSkipFacadeResult(t, reader, f, f.getRangeMapper(), gofdb.RangeOptions{Limit: 5, Mode: gofdb.StreamingModeExact, Reverse: reverse}, skip).GetSliceWithError()
+						if err != nil || len(rows) != len(cRows) {
+							t.Fatalf("Skip conflict reader rows=%d err=%v", len(rows), err)
+						}
+						version, err := reader.GetReadVersion().Get()
+						if err != nil {
+							t.Fatal(err)
+						}
+						reader.Set(gofdb.Key(mdPack(f.prefix, []byte("SKIP-READER-SENTINEL"))), []byte("r"))
+						writer, err := facade.CreateTransaction()
+						if err != nil {
+							t.Fatal(err)
+						}
+						defer writer.Cancel()
+						writer.SetReadVersion(version)
+						writer.Set(gofdb.Key(mdPack(f.prefix, []byte("SKIP-WRITER-SENTINEL"))), []byte("w"))
+						if err := writer.AddWriteConflictKey(gofdb.Key(probe.key)); err != nil {
+							t.Fatal(err)
+						}
+						if err := writer.Commit().Get(); err != nil {
+							t.Fatal(err)
+						}
+						if code := mdMappedErrorCode(t, reader.Commit().Get()); code != probe.want {
+							t.Fatalf("Skip conflict probe %q: code=%d want=%d", probe.key, code, probe.want)
+						}
+					})
+				}
+			})
+		}
+	}
+	for _, skip := range []int32{1, int32(f.n), int32(f.n + 3), 2147483646, 2147483647} {
+		for _, reverse := range []bool{false, true} {
+			for _, tc := range []struct {
+				name                                              string
+				primaryWrite, secondaryWrite, badMapper, disabled bool
+			}{
+				{name: "skipped_secondary_write", secondaryWrite: true},
+				{name: "skipped_primary_write", primaryWrite: true},
+				{name: "invalid_mapper", badMapper: true},
+				{name: "invalid_mapper_before_primary_ryw", badMapper: true, primaryWrite: true},
+				{name: "invalid_mapper_with_skipped_secondary", badMapper: true, secondaryWrite: true},
+				{name: "disabled_ryw", disabled: true},
+				{name: "disabled_before_invalid_mapper", disabled: true, badMapper: true},
+				{name: "disabled_before_primary_ryw", disabled: true, primaryWrite: true},
+			} {
+				t.Run(fmt.Sprintf("preflight/skip=%d/reverse=%v/%s", skip, reverse, tc.name), func(t *testing.T) {
+					ct, err := cdb.CreateTransaction()
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer ct.Close()
+					gt := goDB.CreateTransaction()
+					defer gt.Cancel()
+					ft, err := facade.CreateTransaction()
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer ft.Cancel()
+					index := 0
+					if reverse {
+						index = f.n - 1
+					}
+					var pendingKey []byte
+					if tc.primaryWrite {
+						pendingKey = f.indexEntryKey(index)
+					}
+					if tc.secondaryWrite {
+						pendingKey = f.splitRecordKey(index, 0)
+					}
+					if pendingKey != nil {
+						ct.Set(pendingKey, []byte("pending"))
+						gt.Set(pendingKey, []byte("pending"))
+						ft.Set(gofdb.Key(pendingKey), []byte("pending"))
+					}
+					if tc.disabled {
+						if err := ct.DisableReadYourWrites(); err != nil {
+							t.Fatal(err)
+						}
+						gt.SetReadYourWritesDisable()
+						if err := ft.Options().SetReadYourWritesDisable(); err != nil {
+							t.Fatal(err)
+						}
+					}
+					mapper := f.getRangeMapper()
+					if tc.badMapper {
+						mapper = []byte("\xff invalid tuple")
+					}
+					want := 0
+					if tc.primaryWrite {
+						want = 2039
+					}
+					if tc.badMapper && skip < int32(f.n) {
+						want = 2043
+					}
+					if tc.disabled {
+						want = 2108
+					}
+					var cRows []libfdbc.CMappedRow
+					var cMore bool
+					var cErr error
+					if skip < int32(f.n) {
+						cRows, cMore, cErr = libfdbc.CGetMappedRangeBatchWithSkip(ct, begin, end, mapper, 5, 0, libfdbc.CStreamingModeExact, 1, skip, reverse, false)
+					} else {
+						cBegin, cEnd := mdCExhaustedSkipBounds(t, ct, f, skip)
+						cRows, cMore, cErr = libfdbc.CGetMappedRangeBatch(ct, cBegin, cEnd, mapper, 5, 0, libfdbc.CStreamingModeExact, 1, reverse, false)
+					}
+					gRows, gMore, gErr := gt.GetMappedRangeWithByteTargetAndSkip(ctx, begin, end, mapper, 5, fdbclient.ByteLimitUnlimited, skip, reverse)
+					fRows, fErr := mdSkipFacadeResult(t, ft, f, mapper, gofdb.RangeOptions{Limit: 5, Mode: gofdb.StreamingModeExact, Reverse: reverse}, skip).GetSliceWithError()
+					cCode, gCode, fCode := mdMappedErrorCode(t, cErr), mdMappedErrorCode(t, gErr), mdMappedErrorCode(t, fErr)
+					cWant := want
+					if skip >= int32(f.n) {
+						// Exact empty bounds are only a row oracle: they bypass
+						// original-anchor primary RYW and disabled-RYW checks.
+						cWant = 0
+					}
+					if cCode != cWant || gCode != want || fCode != want {
+						t.Fatalf("Skip preflight C=%d want=%d directGo=%d facade=%d want=%d", cCode, cWant, gCode, fCode, want)
+					}
+					if want != 0 {
+						if len(cRows) != 0 || len(gRows) != 0 || len(fRows) != 0 || cMore || gMore {
+							t.Fatal("failed Skip read returned rows/more")
+						}
+					} else {
+						if len(cRows) != wantCount(skip, 5) || len(cRows) != len(gRows) || len(cRows) != len(fRows) || cMore != gMore {
+							t.Fatalf("successful Skip population C=%d Go=%d facade=%d", len(cRows), len(gRows), len(fRows))
+						}
+						for i := range cRows {
+							mdCompareRangeRow(t, cRows[i], gRows[i])
+							mdCompareRangeRow(t, cRows[i], fRows[i])
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+// Literal offsets pin Java's signed-int addition independently of the C helper.
+// Go deliberately treats positive MaxInt32 as forward Skip, not MinInt32.
+func TestLibFDBC_MappedRangeSkipLiteralOffsets(t *testing.T) {
+	t.Parallel()
+	clusterFile := startCluster(t)
+	cdb, err := libfdbc.COpenDatabase(clusterFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cdb.Close)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	t.Cleanup(cancel)
+	goDB, err := fdbclient.OpenDatabase(ctx, clusterFile, fdbclient.WithAPIVersion(730))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { goDB.Close() })
+	facade := gofdb.WrapDatabase(goDB)
+	f := mdSeedStreaming(t, cdb, 24)
+	// A constant mapper lets Java's wrapped-offset witness start at the database
+	// boundary without requiring unrelated primary keys/values to be tuples.
+	mapper := mdPack(f.prefix, []byte("REC"), []byte("pk-00000000"), []byte("{...}"))
+	for _, tc := range []struct {
+		name                                               string
+		skip                                               int32
+		forwardOffset, reverseOffset                       int32
+		forwardRows, reverseRows, forwardCode, reverseCode int
+		equalDisabled                                      bool
+	}{
+		{name: "negative_one", skip: -1, forwardOffset: 1, reverseOffset: 1, forwardRows: 5, reverseRows: 5},
+		{name: "negative_hundred", skip: -100, forwardOffset: 1, reverseOffset: 1, forwardRows: 5, reverseRows: 5},
+		{name: "max", skip: 2147483647, forwardOffset: -2147483648, reverseOffset: -2147483646, forwardRows: 5},
+		{name: "negative_equal_disabled", skip: -1, forwardOffset: 1, reverseOffset: 1, equalDisabled: true},
+		{name: "max_equal_disabled", skip: 2147483647, forwardOffset: -2147483648, reverseOffset: -2147483646, forwardCode: 2108, equalDisabled: true},
+	} {
+		for _, reverse := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/reverse=%v", tc.name, reverse), func(t *testing.T) {
+				literal, err := cdb.CreateTransaction()
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer literal.Close()
+				version, err := literal.GetReadVersion()
+				if err != nil {
+					t.Fatal(err)
+				}
+				wrapped, err := cdb.CreateTransaction()
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer wrapped.Close()
+				wrapped.SetReadVersion(version)
+				gt := goDB.CreateTransaction()
+				defer gt.Cancel()
+				gt.SetReadVersion(version)
+				ft, err := facade.CreateTransaction()
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer ft.Cancel()
+				ft.SetReadVersion(version)
+				begin, end := f.indexRange()
+				// Empty anchors exercise native boundary shortcuts without asking
+				// the storage server to resolve extreme signed offsets.
+				if tc.name == "max" {
+					if reverse {
+						end = []byte{}
+					} else {
+						begin = []byte{}
+					}
+				}
+				if tc.equalDisabled {
+					end = begin
+					if err := literal.DisableReadYourWrites(); err != nil {
+						t.Fatal(err)
+					}
+					if err := wrapped.DisableReadYourWrites(); err != nil {
+						t.Fatal(err)
+					}
+					gt.SetReadYourWritesDisable()
+					if err := ft.Options().SetReadYourWritesDisable(); err != nil {
+						t.Fatal(err)
+					}
+				}
+				bOffset, eOffset := tc.forwardOffset, int32(1)
+				wantRows, wantCode := tc.forwardRows, tc.forwardCode
+				if reverse {
+					bOffset, eOffset = 1, tc.reverseOffset
+					wantRows, wantCode = tc.reverseRows, tc.reverseCode
+				}
+				lRows, lMore, lErr := libfdbc.CGetMappedRangeBatchWithOffsets(literal, begin, end, mapper, 5, 0, libfdbc.CStreamingModeExact, 1, bOffset, eOffset, reverse, false)
+				cRows, cMore, cErr := libfdbc.CGetMappedRangeBatchWithSkip(wrapped, begin, end, mapper, 5, 0, libfdbc.CStreamingModeExact, 1, tc.skip, reverse, false)
+				gRows, gMore, gErr := gt.GetMappedRangeWithByteTargetAndSkip(ctx, begin, end, mapper, 5, fdbclient.ByteLimitUnlimited, tc.skip, reverse)
+				reader, ok := any(ft).(gofdb.MappedRangeSkipReader)
+				if !ok {
+					t.Fatal("pure-Go facade lacks mapped-range Skip capability")
+				}
+				fRows, fErr := reader.GetMappedRangeWithSkip(gofdb.KeyRange{Begin: gofdb.Key(begin), End: gofdb.Key(end)}, mapper, gofdb.RangeOptions{Limit: 5, Mode: gofdb.StreamingModeExact, Reverse: reverse}, tc.skip).GetSliceWithError()
+				goWantRows, goWantCode := wantRows, wantCode
+				if tc.skip == 2147483647 && !reverse {
+					goWantRows, goWantCode = 0, 0
+				}
+				for _, err := range []error{lErr, cErr} {
+					if code := mdMappedErrorCode(t, err); code != wantCode {
+						t.Fatalf("literal offset preflight code=%d want=%d: %v", code, wantCode, err)
+					}
+				}
+				for _, err := range []error{gErr, fErr} {
+					if code := mdMappedErrorCode(t, err); code != goWantCode {
+						t.Fatalf("nonwrapping Go Skip code=%d want=%d: %v", code, goWantCode, err)
+					}
+				}
+				if len(lRows) != wantRows || len(cRows) != wantRows || len(gRows) != goWantRows || len(fRows) != goWantRows || lMore != cMore || gMore != (goWantRows == 5) {
+					t.Fatalf("literal offsets rows literal=%d CSkip=%d want=%d directGo=%d facade=%d want=%d, more=%v/%v/%v", len(lRows), len(cRows), wantRows, len(gRows), len(fRows), goWantRows, lMore, cMore, gMore)
+				}
+				if lMore != (wantRows == 5) {
+					t.Fatalf("literal primary more=%v want=%v", lMore, wantRows == 5)
+				}
+				if !reflect.DeepEqual(lRows, cRows) {
+					t.Fatal("Skip oracle differs from independently supplied literal offsets")
+				}
+				for i := range gRows {
+					mdCompareRangeRow(t, lRows[i], gRows[i])
+					mdCompareRangeRow(t, lRows[i], fRows[i])
+				}
+				if wantCode == 0 {
+					lBounds, err := libfdbc.CReadConflictRangeBoundaries(literal)
+					if err != nil {
+						t.Fatal(err)
+					}
+					cBounds, err := libfdbc.CReadConflictRangeBoundaries(wrapped)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !reflect.DeepEqual(lBounds, cBounds) {
+						t.Fatalf("Skip vs literal conflict boundaries: %+v / %+v", cBounds, lBounds)
+					}
+					if tc.name == "max" && !reverse {
+						if len(lBounds) < 2 || len(lBounds[0].Key) != 0 || string(lBounds[0].Value) != "1" ||
+							!bytes.Equal(lBounds[1].Key, append(bytes.Clone(lRows[len(lRows)-1].Key), 0)) || string(lBounds[1].Value) != "0" {
+							t.Fatalf("wrapped C readToBegin/prefix conflict not exercised: %+v", lBounds)
+						}
+						// Go returns no rows, but the original nonempty interval
+						// still includes the absolute beginning in its conflict.
+						ft.Set(gofdb.Key(mdPack(f.prefix, []byte("OVERFLOW-READER"))), []byte("r"))
+						writer, err := facade.CreateTransaction()
+						if err != nil {
+							t.Fatal(err)
+						}
+						defer writer.Cancel()
+						writer.SetReadVersion(version)
+						writer.Set(gofdb.Key(mdPack(f.prefix, []byte("OVERFLOW-WRITER"))), []byte("w"))
+						if err := writer.AddWriteConflictKey(gofdb.Key{}); err != nil {
+							t.Fatal(err)
+						}
+						if err := writer.Commit().Get(); err != nil {
+							t.Fatal(err)
+						}
+						if code := mdMappedErrorCode(t, ft.Commit().Get()); code != 1020 {
+							t.Fatalf("exhausted Skip absolute-begin conflict=%d want1020", code)
+						}
+					}
+				}
+			})
+		}
+	}
+}
+
+// The selector path preserves a storage reply's more even when a reverse row
+// equals the requested begin. Resolving first and using the exact-range walk can
+// erase that flag; compare fetches and conflicts, not only the concatenated rows.
+func TestLibFDBC_MappedRangeSelectorReplyMore(t *testing.T) {
+	t.Parallel()
+	clusterFile := startCluster(t)
+	cdb, err := libfdbc.COpenDatabase(clusterFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cdb.Close)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	t.Cleanup(cancel)
+	goDB, err := fdbclient.OpenDatabase(ctx, clusterFile, fdbclient.WithAPIVersion(730))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { goDB.Close() })
+	facade := gofdb.WrapDatabase(goDB)
+	f := mdSeedStreaming(t, cdb, 2)
+	seed, err := cdb.CreateTransaction()
+	if err != nil {
+		t.Fatal(err)
+	}
+	primaryValue := bytes.Repeat([]byte("v"), 32)
+	seed.Set(f.indexEntryKey(0), primaryValue)
+	seed.Set(f.indexEntryKey(1), primaryValue)
+	if err := seed.Commit(); err != nil {
+		seed.Close()
+		t.Fatal(err)
+	}
+	seed.Close()
+	begin := f.indexEntryKey(0)
+	_, end := f.indexRange()
+	// SMALL targets 256 bytes; SS reserves 20%, rounded down to 51, for
+	// primary prefetch. Native mapped decrement charges primary+8 only.
+	primaryBytes := len(begin) + len(primaryValue)
+	if primaryBytes <= 51 || primaryBytes+8 >= 256 {
+		t.Fatalf("fixture misses byte-limit window: primary=%d native charge=%d", primaryBytes, primaryBytes+8)
+	}
+	for _, limit := range []int{0, 1000} {
+		t.Run(fmt.Sprintf("limit=%d", limit), func(t *testing.T) {
+			ct, err := cdb.CreateTransaction()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ct.Close()
+			version, err := ct.GetReadVersion()
+			if err != nil {
+				t.Fatal(err)
+			}
+			cRows, cMore, err := libfdbc.CGetMappedRangeBatchWithSkip(ct, begin, end, f.getRangeMapper(), limit, 256, libfdbc.CStreamingModeSmall, 1, 1, true, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(cRows) != 1 || !cMore || !bytes.Equal(cRows[0].Key, begin) || !bytes.Equal(cRows[0].Value, primaryValue) {
+				t.Fatalf("selector reply-more control not exercised: C rows=%d more=%v", len(cRows), cMore)
+			}
+			gt := goDB.CreateTransaction()
+			defer gt.Cancel()
+			gt.SetReadVersion(version)
+			gRows, gMore, err := gt.GetMappedRangeWithByteTargetAndSkip(ctx, begin, end, f.getRangeMapper(), limit, 256, 1, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(gRows) != 1 || gMore != cMore {
+				t.Fatalf("selector first batch C=%d/%v Go=%d/%v", len(cRows), cMore, len(gRows), gMore)
+			}
+			mdCompareRangeRow(t, cRows[0], gRows[0])
+			wantBounds := []libfdbc.CKeyValue{
+				{Key: begin, Value: []byte("1")}, {Key: end, Value: []byte("0")},
+				{Key: cRows[0].RangeBeginKey, Value: []byte("1")}, {Key: cRows[0].RangeEndKey, Value: []byte("0")},
+			}
+			sort.Slice(wantBounds, func(i, j int) bool { return bytes.Compare(wantBounds[i].Key, wantBounds[j].Key) < 0 })
+			firstBounds, err := libfdbc.CReadConflictRangeBoundaries(ct)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(firstBounds, wantBounds) {
+				t.Fatalf("selector first-batch conflicts C=%+v want=%+v", firstBounds, wantBounds)
+			}
+			budget := gofdb.EffectiveRowLimit(limit)
+			second, secondMore, err := libfdbc.CGetMappedRangeBatchWithSkip(ct, begin, begin, f.getRangeMapper(), budget-1, 256, libfdbc.CStreamingModeSmall, 2, 0, true, false)
+			if err != nil || len(second) != 0 || secondMore {
+				t.Fatalf("C terminal batch rows=%d more=%v err=%v", len(second), secondMore, err)
+			}
+			secondBounds, err := libfdbc.CReadConflictRangeBoundaries(ct)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(secondBounds, firstBounds) {
+				t.Fatalf("terminal empty batch changed C conflicts: %+v / %+v", secondBounds, firstBounds)
+			}
+			ft, err := facade.CreateTransaction()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ft.Cancel()
+			ft.SetReadVersion(version)
+			reader, ok := any(ft).(gofdb.MappedRangeSkipReader)
+			if !ok {
+				t.Fatal("pure-Go facade lacks mapped-range Skip capability")
+			}
+			it := reader.GetMappedRangeWithSkip(gofdb.KeyRange{Begin: gofdb.Key(begin), End: gofdb.Key(end)}, f.getRangeMapper(), gofdb.RangeOptions{Limit: limit, Mode: gofdb.StreamingModeSmall, Reverse: true}, 1).Iterator()
+			var batches []mdBatch
+			it.SetTraceLog(func(iteration, requested, returned int, more bool, err error) {
+				if err != nil {
+					t.Fatal(err)
+				}
+				batches = append(batches, mdBatch{iteration, requested, returned, more})
+			})
+			seen := 0
+			for it.Advance() {
+				row, err := it.Get()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if seen != 0 {
+					t.Fatal("selector probe repeated primary row")
+				}
+				mdCompareRangeRow(t, cRows[0], row)
+				seen++
+			}
+			if _, err := it.Get(); err != nil {
+				t.Fatal(err)
+			}
+			wantBatches := []mdBatch{{1, budget, 1, true}, {2, budget - 1, 0, false}}
+			if seen != 1 || !reflect.DeepEqual(batches, wantBatches) {
+				t.Fatalf("selector batch shape Go=%+v want=%+v rows=%d", batches, wantBatches, seen)
+			}
+			// The first batch still includes the skipped primary in its original
+			// end-anchor conflict, independent of the terminal empty fetch.
+			ft.Set(gofdb.Key(mdPack(f.prefix, []byte("REPLY-MORE-READER"))), []byte("r"))
+			writer, err := facade.CreateTransaction()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer writer.Cancel()
+			writer.SetReadVersion(version)
+			writer.Set(gofdb.Key(mdPack(f.prefix, []byte("REPLY-MORE-WRITER"))), []byte("w"))
+			if err := writer.AddWriteConflictKey(gofdb.Key(f.indexEntryKey(1))); err != nil {
+				t.Fatal(err)
+			}
+			if err := writer.Commit().Get(); err != nil {
+				t.Fatal(err)
+			}
+			if code := mdMappedErrorCode(t, ft.Commit().Get()); code != 1020 {
+				t.Fatalf("selector original-end conflict=%d want1020", code)
+			}
+			t.Logf("C first reply more=%v, primary+8=%d<256; compared both fetches and conflict intervals", cMore, primaryBytes+8)
+		})
+	}
+}
+
+// Java's wrapped forward offset bypasses its original-range inversion check.
+// Go rejects the inverted original bounds without checking or conflicting on
+// the swapped interval; the native empty-end shortcut makes this witness valid.
+func TestLibFDBC_MappedRangeSkipMaxEmptyEnd(t *testing.T) {
+	t.Parallel()
+	clusterFile := startCluster(t)
+	cdb, err := libfdbc.COpenDatabase(clusterFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cdb.Close)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	t.Cleanup(cancel)
+	goDB, err := fdbclient.OpenDatabase(ctx, clusterFile, fdbclient.WithAPIVersion(730))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { goDB.Close() })
+	facade := gofdb.WrapDatabase(goDB)
+	f := mdSeedStreaming(t, cdb, 2)
+	begin, end := f.indexEntryKey(1), []byte{}
+	inside := f.indexEntryKey(0)
+	for _, pending := range []bool{false, true} {
+		t.Run(fmt.Sprintf("pending_primary=%v", pending), func(t *testing.T) {
+			ct, err := cdb.CreateTransaction()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ct.Close()
+			version, err := ct.GetReadVersion()
+			if err != nil {
+				t.Fatal(err)
+			}
+			literal, err := cdb.CreateTransaction()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer literal.Close()
+			literal.SetReadVersion(version)
+			gt := goDB.CreateTransaction()
+			defer gt.Cancel()
+			gt.SetReadVersion(version)
+			ft, err := facade.CreateTransaction()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ft.Cancel()
+			ft.SetReadVersion(version)
+			if pending {
+				ct.Set(inside, []byte("pending"))
+				literal.Set(inside, []byte("pending"))
+				gt.Set(inside, []byte("pending"))
+				ft.Set(gofdb.Key(inside), []byte("pending"))
+			}
+			cRows, cMore, cErr := libfdbc.CGetMappedRangeBatchWithSkip(ct, begin, end, f.getRangeMapper(), 0, 256, libfdbc.CStreamingModeSmall, 1, 2147483647, false, false)
+			lRows, lMore, lErr := libfdbc.CGetMappedRangeBatchWithOffsets(literal, begin, end, f.getRangeMapper(), 0, 256, libfdbc.CStreamingModeSmall, 1, -2147483648, 1, false, false)
+			gRows, gMore, gErr := gt.GetMappedRangeWithByteTargetAndSkip(ctx, begin, end, f.getRangeMapper(), 0, 256, 2147483647, false)
+			reader, ok := any(ft).(gofdb.MappedRangeSkipReader)
+			if !ok {
+				t.Fatal("pure-Go facade lacks mapped-range Skip capability")
+			}
+			fRows, fErr := reader.GetMappedRangeWithSkip(gofdb.KeyRange{Begin: gofdb.Key(begin), End: gofdb.Key(end)}, f.getRangeMapper(), gofdb.RangeOptions{Mode: gofdb.StreamingModeSmall}, 2147483647).GetSliceWithError()
+			want := 0
+			if pending {
+				want = 2039
+			}
+			for _, err := range []error{cErr, lErr} {
+				if code := mdMappedErrorCode(t, err); code != want {
+					t.Fatalf("wrapped C Max empty-end code=%d want=%d: %v", code, want, err)
+				}
+			}
+			for _, err := range []error{gErr, fErr} {
+				if code := mdMappedErrorCode(t, err); code != 0 {
+					t.Fatalf("Go inverted Max bounds code=%d want0: %v", code, err)
+				}
+			}
+			if len(cRows) != 0 || len(lRows) != 0 || len(gRows) != 0 || len(fRows) != 0 || cMore || lMore || gMore {
+				t.Fatal("empty-end shortcut returned rows/more")
+			}
+			if pending {
+				return
+			}
+			wantBounds := []libfdbc.CKeyValue{{Key: end, Value: []byte("1")}, {Key: begin, Value: []byte("0")}}
+			for _, tr := range []libfdbc.CTxnHandle{ct, literal} {
+				bounds, err := libfdbc.CReadConflictRangeBoundaries(tr)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(bounds, wantBounds) {
+					t.Fatalf("safe Max empty-end conflicts C=%+v want=%+v", bounds, wantBounds)
+				}
+			}
+			ft.Set(gofdb.Key(mdPack(f.prefix, []byte("SAFE-MAX-READER"))), []byte("r"))
+			writer, err := facade.CreateTransaction()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer writer.Cancel()
+			writer.SetReadVersion(version)
+			writer.Set(gofdb.Key(mdPack(f.prefix, []byte("SAFE-MAX-WRITER"))), []byte("w"))
+			if err := writer.AddWriteConflictKey(gofdb.Key(inside)); err != nil {
+				t.Fatal(err)
+			}
+			if err := writer.Commit().Get(); err != nil {
+				t.Fatal(err)
+			}
+			if code := mdMappedErrorCode(t, ft.Commit().Get()); code != 0 {
+				t.Fatalf("Go inverted Max bounds conflict=%d want0", code)
+			}
+		})
 	}
 }
 

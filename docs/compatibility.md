@@ -59,6 +59,17 @@ on the mapped read, a request shape the server does not support for every range.
 Java sends that offset. The SQL `INDEX_FETCH_METHOD` option is not yet honored;
 RFC-258 tracks the planner and SQL integration.
 
+The optional raw `MappedRangeSkipReader` takes a signed 32-bit initial Skip and
+ignores nonpositive values. Positive Skip is resolved client-side with ordinary
+native key reads before sending a mapped request with plain selectors (offset 1
+at both ends). FDB 7.3.77 does not support raw mapped selectors that resolve to an
+inverted range. Large skips are resolved in bounded steps without integer
+wrapping; `MaxInt32` means skipping that many rows, unlike Java's overflowing
+forward selector addition. Skipped secondary records are not mapped, while
+original primary conflict coverage is retained. Later batches resume without
+reapplying Skip. Nonpositive Skip adds no resolution request. This raw capability
+does not change the Record Layer's positive-Skip route described above.
+
 ### Single-record reads and conflicts
 
 Modern record loads read the complete strict record subspace, `[packedPK + 00,
