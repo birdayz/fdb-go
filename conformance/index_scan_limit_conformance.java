@@ -2,6 +2,7 @@ package com.birdayz.conformance;
 
 import com.apple.foundationdb.record.CursorStreamingMode;
 import com.apple.foundationdb.record.ExecuteProperties;
+import com.apple.foundationdb.record.ExecuteState;
 import com.apple.foundationdb.record.IndexEntry;
 import com.apple.foundationdb.record.IndexScanType;
 import com.apple.foundationdb.record.RecordCursor;
@@ -17,9 +18,11 @@ import com.apple.foundationdb.record.metadata.Key;
 import com.apple.foundationdb.record.provider.foundationdb.FDBIndexedRecord;
 import com.apple.foundationdb.record.provider.foundationdb.FDBRecordContext;
 import com.apple.foundationdb.record.provider.foundationdb.FDBRecordStore;
+import com.apple.foundationdb.record.provider.foundationdb.FDBStoredRecord;
 import com.apple.foundationdb.record.provider.foundationdb.IndexOrphanBehavior;
 import com.apple.foundationdb.record.provider.foundationdb.KeyValueCursor;
 import com.apple.foundationdb.subspace.Subspace;
+import com.apple.foundationdb.tuple.Tuple;
 import com.google.protobuf.Message;
 
 import java.util.ArrayList;
@@ -27,6 +30,7 @@ import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 
 /** Ordinary VALUE/VERSION cursor boundaries; deliberately no remote-fetch APIs. */
 class IndexScanLimitSteps extends ConformanceBase {
@@ -67,6 +71,52 @@ class IndexScanLimitSteps extends ConformanceBase {
                 .setMetaDataProvider(metadata()).setUserVersionChecker(ALWAYS_READABLE_CHECKER).setFormatVersion(14).createOrOpen();
     }
 
+    private static final class TrackingBuilder extends FDBRecordStore.Builder {
+        @Override
+        public FDBRecordStore build() {
+            return new TrackingStore(this);
+        }
+    }
+
+    private static final class TrackingStore extends FDBRecordStore {
+        private final List<CompletableFuture<FDBStoredRecord<Message>>> issued = new ArrayList<>();
+        private volatile ExecuteState trackedState;
+
+        TrackingStore(FDBRecordStore.Builder builder) {
+            super(builder.getContext(), builder.getSubspaceProvider(), builder.getFormatVersionEnum(),
+                    builder.getMetaDataProvider(), builder.getSerializer(), builder.getIndexMaintainerRegistry(),
+                    builder.getIndexMaintenanceFilter(), builder.getPipelineSizer(), builder.getStoreStateCache(),
+                    builder.getStateCacheabilityOnOpen(), builder.getUserVersionChecker(),
+                    builder.getBypassFullStoreLockReason(), builder.getPlanSerializationRegistry());
+        }
+
+        @Override
+        public CompletableFuture<FDBStoredRecord<Message>> loadRecordInternal(Tuple primaryKey, ExecuteState state, boolean snapshot) {
+            CompletableFuture<FDBStoredRecord<Message>> future = super.loadRecordInternal(primaryKey, state, snapshot);
+            if (trackedState != null && state == trackedState) {
+                synchronized (issued) {
+                    issued.add(future);
+                }
+            }
+            return future;
+        }
+
+        void quiesceIssued() {
+            CompletableFuture<?>[] settled;
+            synchronized (issued) {
+                // Observe settlement only; queued load failures must not replace the cursor's error or stop reason.
+                settled = issued.stream().map(future -> future.handle((record, error) -> null))
+                        .toArray(CompletableFuture[]::new);
+            }
+            CompletableFuture.allOf(settled).join();
+        }
+    }
+
+    private static TrackingStore openTracking(FDBRecordContext context, byte[] subspace) {
+        return (TrackingStore) new TrackingBuilder().setContext(context).setSubspace(new Subspace(subspace))
+                .setMetaDataProvider(metadata()).setUserVersionChecker(ALWAYS_READABLE_CHECKER).setFormatVersion(14).createOrOpen();
+    }
+
     @ConformanceStep("seedIndexScanLimits")
     public int seed(String clusterFile, String tenantName, byte[] subspace, int count) {
         return runInContext(clusterFile, tenantName, context -> {
@@ -79,7 +129,8 @@ class IndexScanLimitSteps extends ConformanceBase {
         });
     }
 
-    private static Map<String, Object> terminal(RecordCursorResult<?> next, ExecuteProperties properties) {
+    private static Map<String, Object> terminal(RecordCursorResult<?> next, ExecuteProperties properties, TrackingStore store) {
+        store.quiesceIssued();
         return Map.of("reason", next.getNoNextReason().name(), "continuation", bytes(next.getContinuation().toBytes()),
                 "end", next.getContinuation().isEnd(), "scannedRecords", properties.getState().getRecordsScanned(),
                 "scannedBytes", properties.getState().getBytesScanned());
@@ -109,7 +160,7 @@ class IndexScanLimitSteps extends ConformanceBase {
     @ConformanceStep("scanIndexScanLimits")
     public Map<String, Object> scan(String clusterFile, String tenantName, byte[] subspace, Request request) {
         return runInContext(clusterFile, tenantName, context -> {
-            FDBRecordStore store = open(context, subspace);
+            TrackingStore store = openTracking(context, subspace);
             // The clock belongs to the transaction, not the subsequently-created ExecuteState.
             if (request.timeLimit > 0) {
                 try {
@@ -126,6 +177,7 @@ class IndexScanLimitSteps extends ConformanceBase {
             if (request.byteLimit > 0) builder.setScannedBytesLimit(request.byteLimit);
             if (request.timeLimit > 0) builder.setTimeLimit(request.timeLimit);
             ExecuteProperties properties = builder.build();
+            store.trackedState = properties.getState();
             ScanProperties scanProperties = new ScanProperties(properties, request.reverse);
             Index index = store.getRecordMetaData().getIndex(request.indexName);
             byte[] continuation = request.continuation == null || request.continuation.isEmpty()
@@ -153,17 +205,21 @@ class IndexScanLimitSteps extends ConformanceBase {
             result.put("end", false);
             result.put("exceptionClass", "");
             try (RecordCursor<?> closing = cursor) {
-                while (true) {
-                    RecordCursorResult<?> next = cursor.onNext().join();
-                    if (next.hasNext()) {
-                        rows.add(row(next));
-                    } else {
-                        result.putAll(terminal(next, properties));
-                        for (int repeat = 0; repeat < 2; repeat++) {
-                            repeats.add(terminal(cursor.onNext().join(), properties));
+                try {
+                    while (true) {
+                        RecordCursorResult<?> next = cursor.onNext().join();
+                        if (next.hasNext()) {
+                            rows.add(row(next));
+                        } else {
+                            result.putAll(terminal(next, properties, store));
+                            for (int repeat = 0; repeat < 2; repeat++) {
+                                repeats.add(terminal(cursor.onNext().join(), properties, store));
+                            }
+                            break;
                         }
-                        break;
                     }
+                } finally {
+                    store.quiesceIssued();
                 }
             } catch (RuntimeException error) {
                 Throwable root = error;

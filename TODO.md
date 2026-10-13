@@ -1554,13 +1554,11 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   stop reason and token differ. `conformance/index_continuation_range_conformance_test.go`
   picks page sizes that avoid the boundary until this is ported.
 
-## Pipelined mapping readiness parity
+## Issued-record load byte accounting
 
-- [ ] Compare Go `MapPipelined` refill (cursor_pipelined.go:132-156) with Java
-  `MapPipelinedCursor.tryToFillPipeline` (MapPipelinedCursor.java:137-164). Go
-  fills the configured window before yielding; Java can yield early when the
-  head mapping future is ready. This pre-existing scheduling difference may
-  affect attempts charged before a filtered outer limit or scan-limit error.
-  Pin it with real-FDB reads and controlled mapping readiness, not a timing-based
-  exact-count oracle. EOF attempts actually issued by either cursor must remain
-  charged; do not hide them in execution statistics.
+- [x] Successful raw record loads charge bytes at completion, even if a failed
+  index cursor discards the queued result (#912). Raw failures do not charge;
+  later decode/version failures retain successfully read bytes. Strict counters
+  are compared after already-issued loads quiesce, not at Java's racy
+  failure-instant snapshot. Real-FDB gated Java and Go regressions pin this
+  without additional reads or tolerance.

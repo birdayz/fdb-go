@@ -127,6 +127,7 @@ func scanLimitDrain[T any](ctx context.Context, cursor recordlayer.RecordCursor[
 	defer func() { Expect(cursor.Close()).To(Succeed()) }()
 	page := scanLimitPage{Rows: make([]scanLimitRow, 0), Repeats: make([]scanLimitTerminal, 0)}
 	terminal := func(next recordlayer.RecordCursorResult[T]) scanLimitTerminal {
+		state.WaitForIssuedRecordLoadCharges()
 		continuation, err := next.GetContinuation().ToBytes()
 		Expect(err).NotTo(HaveOccurred())
 		return scanLimitTerminal{
@@ -161,6 +162,7 @@ func scanLimitDrain[T any](ctx context.Context, cursor recordlayer.RecordCursor[
 		row.Continuation = scanLimitBytes(continuation)
 		page.Rows = append(page.Rows, row)
 	}
+	state.WaitForIssuedRecordLoadCharges()
 	page.ScannedRecords, page.ScannedBytes = state.RecordsScanned(), state.BytesScanned()
 	return page
 }
