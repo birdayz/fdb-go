@@ -802,7 +802,12 @@ func rangeScanImpl[T any](tx *Transaction, ctx context.Context, begin, end []byt
 					return nil, false, err
 				}
 
-				allKVs = append(allKVs, kvs...)
+				if len(allKVs) == 0 && len(kvs) > 0 {
+					// Parsers transfer fresh descriptors; fence spare capacity before later appends.
+					allKVs = kvs[:len(kvs):len(kvs)]
+				} else {
+					allKVs = append(allKVs, kvs...)
+				}
 				remaining -= len(kvs)
 
 				// RFC-115 §2: opt-in OOM ceiling. Checked AFTER each batch append so a

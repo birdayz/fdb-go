@@ -66,14 +66,17 @@ go_library(
 # gazelle:exclude commit_coalesce_unit_test.go
 # gazelle:exclude ownership_unit_test.go
 # gazelle:exclude read_result_ownership_unit_test.go
+# gazelle:exclude range_copy_unit_test.go
 go_test(
     name = "ownership_unit_test",
     srcs = [
         "commit_coalesce_unit_test.go",
         "ownership_unit_test.go",
+        "range_copy_unit_test.go",
         "read_result_ownership_unit_test.go",
     ],
     embed = [":client"],
+    deps = ["//pkg/fdbgo/wire/types"],
 )
 
 # gazelle:exclude coord_poll_unit_test.go
@@ -187,9 +190,11 @@ go_test(
 )
 
 # gazelle:exclude range_issue_fdb_test.go
+# gazelle:exclude range_copy_fdb_test.go
 go_test(
     name = "range_issue_fdb_test",
     srcs = [
+        "range_copy_fdb_test.go",
         "range_issue_fdb_test.go",
         "testmain_test.go",
     ],

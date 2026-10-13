@@ -1155,8 +1155,8 @@ func (c *rywCache) cacheServerResult(fetchBegin, fetchEnd []byte, serverKVs []Ke
 			lastKey := serverKVs[len(serverKVs)-1].Key
 			cacheEnd = append(append([]byte(nil), lastKey...), 0)
 		}
-		cacheKVs = make([]KeyValue, len(serverKVs))
-		copy(cacheKVs, serverKVs)
+		// insert retains its own descriptors; reply bytes remain immutable internally.
+		cacheKVs = serverKVs
 	}
 
 	c.serverCache.insert(cacheBegin, cacheEnd, cacheKVs)
