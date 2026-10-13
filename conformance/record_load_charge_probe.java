@@ -126,11 +126,15 @@ class RecordLoadChargeProbeSteps extends ConformanceBase {
             return CompletableFuture.allOf(snapshot.stream().map(load -> load.charged).toArray(CompletableFuture[]::new));
         }
 
-        CompletableFuture<Void> finishBeforeRealError() {
+        CompletableFuture<Void> beforeRealError() {
             return loadIssued.thenCompose(ignore -> nativeReady).thenCompose(ready -> {
                 require(ready, "the real record range must contain data");
-                release.complete(null);
-                return alreadyIssued();
+                if (releaseBeforeError) {
+                    release.complete(null);
+                    return alreadyIssued();
+                }
+                // Native I/O is ready, but the raw/mapping future stays held through the error.
+                return CompletableFuture.completedFuture(null);
             });
         }
     }
@@ -182,9 +186,9 @@ class RecordLoadChargeProbeSteps extends ConformanceBase {
                 @Override
                 public CompletableFuture<RecordCursorResult<IndexEntry>> onNext() {
                     calls++;
-                    if (calls == 2 && control.releaseBeforeError) {
-                        // Await only the issued record load, then let the REAL limit manager fail.
-                        return control.finishBeforeRealError().thenCompose(ignore -> real.onNext());
+                    if (calls == 2) {
+                        // Both arms observe native readiness before the REAL limit manager fails.
+                        return control.beforeRealError().thenCompose(ignore -> real.onNext());
                     }
                     return real.onNext();
                 }
@@ -330,6 +334,10 @@ class RecordLoadChargeProbeSteps extends ConformanceBase {
                             long completedAtFailure = issued.stream().filter(load -> load.charged.isDone()).count();
                             int rawAtFailure = control.rawRanges.get();
                             boolean gateClosedAtFailure = !control.release.isDone();
+                            boolean nativeReadyAtFailure = control.nativeReady.isDone()
+                                    && !control.nativeReady.isCompletedExceptionally()
+                                    && Boolean.TRUE.equals(control.nativeReady.getNow(false));
+                            require(nativeReadyAtFailure, "the real native record read must be ready before either arm's error");
                             require(issuedAtFailure == 1 && rawAtFailure == 1, "failure must leave exactly one already-issued real load/range");
                             require(issued.get(0).primaryKey.equals(Tuple.from(0L)), "the issued record must be VERSION's first primary key 0");
                             if (releaseBeforeError) {
@@ -361,6 +369,7 @@ class RecordLoadChargeProbeSteps extends ConformanceBase {
                             observation.put("completedLoadsAtFailure", completedAtFailure);
                             observation.put("rawRangesIssued", rawAtFailure);
                             observation.put("gateClosedAtFailure", gateClosedAtFailure);
+                            observation.put("nativeReadyAtFailure", nativeReadyAtFailure);
                             observation.put("indexBytes", control.indexBytes.get());
                             observation.put("recordBytes", control.recordBytes.get());
                             observation.put("failureBytes", failureBytes);

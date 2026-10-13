@@ -28,6 +28,7 @@ type recordLoadChargeObservation struct {
 	RawRangesIssued            int      `json:"rawRangesIssued"`
 	QuiescedLoads              int      `json:"quiescedLoads"`
 	GateClosedAtFailure        bool     `json:"gateClosedAtFailure"`
+	NativeReadyAtFailure       bool     `json:"nativeReadyAtFailure"`
 	IssuedLoadsAfterQuiescence int      `json:"issuedLoadsAfterQuiescence"`
 	RawRangesAfterQuiescence   int      `json:"rawRangesAfterQuiescence"`
 	RecordPrimaryKeys          []string `json:"recordPrimaryKeys"`
@@ -65,6 +66,7 @@ var _ = Describe("Quiesced Java record-load charges", func() {
 			Expect(observation.IssuedLoads).To(Equal(1))
 			Expect(observation.IssuedLoadsAtFailure).To(Equal(1))
 			Expect(observation.RawRangesIssued).To(Equal(1))
+			Expect(observation.NativeReadyAtFailure).To(BeTrue())
 			Expect(observation.QuiescedLoads).To(Equal(1))
 			Expect(observation.IssuedLoadsAfterQuiescence).To(Equal(1))
 			Expect(observation.RawRangesAfterQuiescence).To(Equal(1))
