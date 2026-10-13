@@ -11,7 +11,11 @@ func (c *indexCursor) withContext(rc *FDBRecordContext) *indexCursor {
 }
 
 func indexRangeOptions(props ScanProperties) fdb.RangeOptions {
-	options := fdb.RangeOptions{Mode: props.CursorStreamingMode.ToFDB(), Reverse: props.IsReverse(), Limit: props.ExecuteProperties.ReturnedRowLimit}
+	limit := props.ExecuteProperties.ReturnedRowLimit
+	if limit <= 0 {
+		limit = 0
+	}
+	options := fdb.RangeOptions{Mode: props.CursorStreamingMode.ToFDB(), Reverse: props.IsReverse(), Limit: limit}
 	// Java switches a finite WANT_ALL scan to EXACT; other explicit modes stay.
 	if props.CursorStreamingMode == StreamingModeWantAll && options.Limit > 0 {
 		options.Mode = fdb.StreamingModeExact

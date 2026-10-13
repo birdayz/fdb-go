@@ -256,6 +256,7 @@ go_test(
         "index_carry_class_test.go",
         "index_creates_duplicates_test.go",
         "index_cursor_java_limits_test.go",
+        "index_cursor_runner_time_test.go",
         "index_edge_cases_test.go",
         "index_entry_reader_fdb_test.go",
         "index_maintainer_delete_where_bound_test.go",

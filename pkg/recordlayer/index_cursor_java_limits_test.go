@@ -69,4 +69,16 @@ func TestFDB_IndexCursorJavaLimitBoundary(t *testing.T) {
 			})
 		}
 	}
+	for _, limit := range []int{-1, -2, -100} {
+		t.Run(fmt.Sprintf("nonpositive_limit=%d", limit), func(t *testing.T) {
+			store := open()
+			state := NewScanLimiterState()
+			execute := DefaultExecuteProperties().WithReturnedRowLimit(limit)
+			execute.ScanState = state
+			rows, err := AsList(context.Background(), store.ScanIndexRecords("price", TupleRangeAll, nil, NewScanProperties(execute)))
+			if err != nil || len(rows) != 1 || state.RecordsScanned() != 2 {
+				t.Fatalf("nonpositive limit%d is unlimited: rows=%d attempts=%d error=%v", limit, len(rows), state.RecordsScanned(), err)
+			}
+		})
+	}
 }
