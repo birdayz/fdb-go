@@ -365,6 +365,7 @@ func (d *FDBDatabase) runContexts(ctx context.Context, policy attemptPolicy, rou
 				tx.Options().SetCausalReadRisky()
 			}
 			recordCtx := &FDBRecordContext{
+				createTime:    d.env.Now(),
 				transactionID: nextTransactionID.Add(1),
 				tx:            tx,
 				ctx:           ctx,
@@ -659,6 +660,7 @@ type FDBRecordContext struct {
 	tx            fdb.WritableTransaction
 	ctx           context.Context
 	transactionID int64 // unique ID for logging/tracing
+	createTime    time.Time
 
 	// routeOwned marks a context a transaction route (Run and its variants,
 	// the runner's RunWithRetry) handed its body: the route commits it, and
@@ -788,9 +790,10 @@ func (rc *FDBRecordContext) PutSession(key string, value any) {
 // (the StoreTimer) would have repeated it exactly.
 func NewFDBRecordContext(tx fdb.WritableTransaction, env *dst.Env) *FDBRecordContext {
 	return &FDBRecordContext{
-		tx:  tx,
-		ctx: context.Background(),
-		env: env,
+		createTime: env.Now(),
+		tx:         tx,
+		ctx:        context.Background(),
+		env:        env,
 	}
 }
 

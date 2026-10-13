@@ -491,7 +491,11 @@ func (m *StandardIndexMaintainer) insertSingleEntry(entry EvaluatedIndexEntry, r
 // Creates a KeyValueCursor over the index subspace and maps KVs to IndexEntry.
 // Matches Java's standardIndexMaintainer.scan().
 func (m *StandardIndexMaintainer) Scan(scanRange TupleRange, continuation []byte, scanProperties ScanProperties) RecordCursor[*IndexEntry] {
-	return newIndexCursor(m.index, m.indexSubspace, m.tx, scanRange, continuation, scanProperties)
+	cursor := newIndexCursor(m.index, m.indexSubspace, m.tx, scanRange, continuation, scanProperties)
+	if store, ok := m.store.(*FDBRecordStore); ok {
+		cursor.withContext(store.context)
+	}
+	return cursor
 }
 
 // deleteWhereRange clears all index entries whose key starts with the given prefix

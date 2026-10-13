@@ -1542,10 +1542,23 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
 
 ## Row-limit lookahead at an exact page boundary
 
-- [ ] Go's key-value cursors (index_scan.go, count/bitmap, key_value_cursor.go) peek one
+- [x] Ordinary VALUE/VERSION index cursors now pass down the finite row budget,
+  report `RETURN_LIMIT_REACHED` with a last-key token at exact exhaustion, and
+  charge the terminal attempt. `conformance/index_scan_limit_conformance_test.go`
+  compares every boundary with Java, including empty final-page resumes.
+- [ ] Remaining key-value cursors (count/bitmap, key_value_cursor.go) peek one
   row past `ReturnedRowLimit` and report `SourceExhausted` with an end continuation when the
   page ends exactly at the range end. Java's `KeyValueCursorBase` (KeyValueCursorBase.java:
   113-115) passes the limit down without a lookahead and reports `RETURN_LIMIT_REACHED`
   with a lastKey token; its next page is empty and exhausted. Rows agree; the page count,
   stop reason and token differ. `conformance/index_continuation_range_conformance_test.go`
   picks page sizes that avoid the boundary until this is ported.
+
+## Issued-record load byte accounting
+
+- [x] Successful raw record loads charge bytes at completion, even if a failed
+  index cursor discards the queued result (#912). Raw failures do not charge;
+  later decode/version failures retain successfully read bytes. Strict counters
+  are compared after already-issued loads quiesce, not at Java's racy
+  failure-instant snapshot. Real-FDB gated Java and Go regressions pin this
+  without additional reads or tolerance.
