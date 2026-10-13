@@ -217,6 +217,14 @@ go_test(
     ],
 )
 
+# gazelle:exclude mappedrange_conflict_prefix_unit_test.go
+go_test(
+    name = "mappedrange_conflict_prefix_unit_test",
+    srcs = ["mappedrange_conflict_prefix_unit_test.go"],
+    embed = [":client"],
+    deps = ["//pkg/fdbgo/wire"],
+)
+
 go_test(
     name = "client_test",
     timeout = "eternal",

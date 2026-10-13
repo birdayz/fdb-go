@@ -152,6 +152,66 @@ func TestMappedRangeArgumentOwnershipAndReset(t *testing.T) {
 	}
 }
 
+// A caught mapped RYW error still leaves the unmodified prefix in the conflict
+// map (ReadYourWrites.actor.cpp:335-350). Do not read the probe key separately.
+func TestMappedRangeRYWErrorPreservesConflictPrefix(t *testing.T) {
+	t.Parallel()
+	for _, secondary := range []bool{false, true} {
+		for _, reverse := range []bool{false, true} {
+			for _, before := range []bool{false, true} {
+				t.Run(fmt.Sprintf("secondary=%v/reverse=%v/before=%v", secondary, reverse, before), func(t *testing.T) {
+					t.Parallel()
+					db, r, mapper := mappedFixture(t, 3)
+					pending := tuple.Tuple{t.Name(), "IDX", 1, 1}.Pack()
+					probe := tuple.Tuple{t.Name(), "IDX", 2, 2}.Pack()
+					if before {
+						probe = tuple.Tuple{t.Name(), "IDX", 0, 0}.Pack()
+					}
+					if secondary {
+						pending = tuple.Tuple{t.Name(), "REC", 0, 1}.Pack()
+						probe = tuple.Tuple{t.Name(), "REC", 0, 2}.Pack()
+						if before {
+							probe = tuple.Tuple{t.Name(), "REC", 0, 0}.Pack()
+						}
+					}
+					tr, err := db.CreateTransaction()
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer tr.Cancel()
+					tr.Set(fdb.Key(pending), []byte("pending"))
+					_, err = tr.GetMappedRange(r, mapper, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll, Reverse: reverse}).GetSliceWithError()
+					var fe fdb.Error
+					if !errors.As(err, &fe) || fe.Code != 2039 {
+						t.Fatalf("mapped read: %v, want 2039", err)
+					}
+					_, err = db.Transact(func(writer fdb.WritableTransaction) (any, error) {
+						writer.Set(fdb.Key(probe), []byte("external"))
+						return nil, nil
+					})
+					if err != nil {
+						t.Fatal(err)
+					}
+					want := 0
+					if before {
+						want = 1020
+					}
+					code := 0
+					if err := tr.Commit().Get(); err != nil {
+						if !errors.As(err, &fe) {
+							t.Fatal(err)
+						}
+						code = fe.Code
+					}
+					if code != want {
+						t.Fatalf("caught 2039 then external prefix write: commit=%d, want %d", code, want)
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestMappedRangeErrors(t *testing.T) {
 	t.Parallel()
 	db, r, mapper := mappedFixture(t, 1)

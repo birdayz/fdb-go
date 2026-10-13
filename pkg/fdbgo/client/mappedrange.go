@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 
 	"fdb.dev/pkg/fdbgo/transport"
@@ -471,13 +472,44 @@ func (tx *Transaction) addMappedRangeConflicts(begin, end []byte, reverse, more 
 	// that catches 2039 and commits anyway would ship a transaction missing the
 	// conflict ranges C++ had already banked.
 	for _, r := range ranges {
-		if bytes.Compare(r[0], r[1]) >= 0 {
-			continue // empty range contributes no conflict and cannot overlap a write
+		if err := tx.addMappedRangeConflictMustUnmodified(r[0], r[1]); err != nil {
+			return err
 		}
-		if tx.ryw.hasModificationsInRange(r[0], r[1]) {
-			return &wire.FDBError{Code: ErrGetMappedRangeReadsYourWrites}
+	}
+	return nil
+}
+
+// addMappedRangeConflictMustUnmodified mirrors updateConflictMap<true>: all
+// segments before the first operation or clear are unmodified and stay recorded
+// even when that modified segment raises 2039 (ReadYourWrites.actor.cpp:335-350).
+func (tx *Transaction) addMappedRangeConflictMustUnmodified(begin, end []byte) error {
+	if bytes.Compare(begin, end) >= 0 {
+		return nil
+	}
+	c := &tx.ryw
+	c.mu.Lock()
+	c.ensureSortedLocked()
+	prefixEnd := end
+	if i := sort.SearchStrings(c.sortedKeys, string(begin)); i < len(c.sortedKeys) && c.sortedKeys[i] < string(end) {
+		prefixEnd = []byte(c.sortedKeys[i])
+	}
+	if i := sort.Search(len(c.cleared), func(i int) bool {
+		return bytes.Compare(c.cleared[i].end, begin) > 0
+	}); i < len(c.cleared) && bytes.Compare(c.cleared[i].begin, prefixEnd) < 0 {
+		prefixEnd = c.cleared[i].begin
+		if bytes.Compare(prefixEnd, begin) < 0 {
+			prefixEnd = begin
 		}
-		tx.addReadConflicts([][2][]byte{r})
+	}
+	// WriteMap::is_unmodified_range ignores unreadable-only gaps. Every
+	// operation key rejects, regardless of dependency, value or unreadability.
+	prefixEnd = bytes.Clone(prefixEnd)
+	c.mu.Unlock()
+	if bytes.Compare(begin, prefixEnd) < 0 {
+		tx.addReadConflict(begin, prefixEnd)
+	}
+	if bytes.Compare(prefixEnd, end) < 0 {
+		return &wire.FDBError{Code: ErrGetMappedRangeReadsYourWrites}
 	}
 	return nil
 }

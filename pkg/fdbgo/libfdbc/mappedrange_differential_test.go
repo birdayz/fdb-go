@@ -1035,6 +1035,98 @@ func TestLibFDBC_MappedRangeTruncatedSecondaryConflicts(t *testing.T) {
 	}
 }
 
+// updateConflictMap<true> records each unmodified segment before throwing at
+// the first write. Both readers commit their own pending write after catching it.
+func TestLibFDBC_MappedRangeRYWErrorConflictPrefix(t *testing.T) {
+	t.Parallel()
+	clusterFile := startCluster(t)
+	cdb, err := libfdbc.COpenDatabase(clusterFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cdb.Close)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	t.Cleanup(cancel)
+	goDB, err := fdbclient.OpenDatabase(ctx, clusterFile, fdbclient.WithAPIVersion(730))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { goDB.Close() })
+	cCode := func(t *testing.T, err error) int {
+		if err == nil {
+			return 0
+		}
+		var fe *libfdbc.CFDBError
+		if !errors.As(err, &fe) {
+			t.Fatalf("non-FDB C error: %v", err)
+		}
+		return fe.Code
+	}
+	goCode := func(t *testing.T, err error) int {
+		if err == nil {
+			return 0
+		}
+		var fe *wire.FDBError
+		if !errors.As(err, &fe) {
+			t.Fatalf("non-FDB Go error: %v", err)
+		}
+		return fe.Code
+	}
+	for _, secondary := range []bool{false, true} {
+		for _, reverse := range []bool{false, true} {
+			for _, before := range []bool{false, true} {
+				t.Run(fmt.Sprintf("secondary=%v/reverse=%v/before=%v", secondary, reverse, before), func(t *testing.T) {
+					f := mdFixture{prefix: []byte(t.Name()), n: 3}
+					f.seedThroughC(t, cdb, 3)
+					begin, end := f.indexRange()
+					pending, probe := f.indexEntryKey(1), f.indexEntryKey(2)
+					if before {
+						probe = f.indexEntryKey(0)
+					}
+					if secondary {
+						pending, probe = f.splitRecordKey(0, 1), f.splitRecordKey(0, 2)
+						if before {
+							probe = f.splitRecordKey(0, 0)
+						}
+					}
+					ct, err := cdb.CreateTransaction()
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer ct.Close()
+					gt := goDB.CreateTransaction()
+					defer gt.Cancel()
+					ct.Set(pending, []byte("pending"))
+					gt.Set(pending, []byte("pending"))
+					_, _, ce := libfdbc.CGetMappedRange(ct, begin, end, f.getRangeMapper(), 0, reverse, false)
+					_, _, ge := gt.GetMappedRange(ctx, begin, end, f.getRangeMapper(), 0, reverse)
+					if cCode(t, ce) != 2039 || goCode(t, ge) != 2039 {
+						t.Fatalf("mapped read: C=%v Go=%v, want both 2039", ce, ge)
+					}
+					writer, err := cdb.CreateTransaction()
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer writer.Close()
+					writer.Set(probe, []byte("external"))
+					if err := writer.Commit(); err != nil {
+						t.Fatal(err)
+					}
+					cc, gc := cCode(t, ct.Commit()), goCode(t, gt.Commit(ctx))
+					want := 0
+					if before {
+						want = 1020
+					}
+					t.Logf("caught 2039: C commit=%d Go commit=%d, expected=%d (pending=%x probe=%x)", cc, gc, want, pending, probe)
+					if cc != want || gc != cc {
+						t.Fatalf("commit conflict prefix: C=%d Go=%d, want %d", cc, gc, want)
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestLibFDBC_MappedRangeDeferredErrorPrecedence(t *testing.T) {
 	t.Parallel()
 	clusterFile := startCluster(t)
