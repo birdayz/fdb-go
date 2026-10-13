@@ -45,12 +45,14 @@ var _ = Describe("Quiesced Java record-load charges", func() {
 		defer func() { Expect(env.Cleanup(context.Background())).To(Succeed()) }()
 
 		const repeats = 10
+		fixture := env.Keyspace.Sub("limits").Bytes()
+		Expect(fixture).To(Equal([]byte{0x05, 0x00, 0x02, 'l', 'i', 'm', 'i', 't', 's', 0x00}))
 		var result struct {
 			Observations []recordLoadChargeObservation `json:"observations"`
 		}
 		Expect(NewJavaInvoker().InvokeAs(ctx, "probeRecordLoadCharges", map[string]any{
 			"clusterFile": env.ClusterFile, "tenantName": env.TenantName,
-			"subspace": BytesToIntArray(env.Keyspace.Sub("limits").Bytes()), "repeats": repeats,
+			"subspace": BytesToIntArray(fixture), "repeats": repeats,
 		}, &result)).To(Succeed())
 		Expect(result.Observations).To(HaveLen(2 * repeats))
 		arms := make(map[string]int)

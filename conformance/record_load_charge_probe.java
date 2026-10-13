@@ -284,7 +284,8 @@ class RecordLoadChargeProbeSteps extends ConformanceBase {
     @ConformanceStep("probeRecordLoadCharges")
     public Map<String, Object> probe(String clusterFile, String tenantName, byte[] subspace, int repeats) throws Exception {
         require(repeats >= 10 && repeats <= 100, "readiness study requires 10..100 repeats per arm");
-        require(Arrays.equals(subspace, Tuple.from("limits").pack()), "89-byte fixture requires the exact limits subspace");
+        // The Go fixture's Sub(tuple.Tuple{}) contributes one nested empty tuple.
+        require(Arrays.equals(subspace, Tuple.from(Tuple.from(), "limits").pack()), "89-byte fixture requires the exact limits subspace");
         runInContext(clusterFile, tenantName, context -> {
             FDBRecordStore store = FDBRecordStore.newBuilder().setContext(context).setSubspace(new Subspace(subspace))
                     .setMetaDataProvider(metadata()).setUserVersionChecker(ALWAYS_READABLE_CHECKER).setFormatVersion(14).createOrOpen();
