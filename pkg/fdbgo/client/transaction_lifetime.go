@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"sync/atomic"
 
 	"fdb.dev/pkg/fdbgo/wire"
 )
@@ -10,22 +11,18 @@ import (
 // only admission waiters replace it with a private publication channel.
 var unobservedReadReady = make(chan struct{})
 
-// executionLease protects reset-owned state, not wire I/O ownership. tx and inc
-// are immutable; readErrMu guards active. Nested operations borrow the same token.
+// executionLease protects reset-owned state, not wire I/O ownership. Its identity
+// is immutable; readErrMu serializes accounting, while borrowers sample active.
+// A published token is never copied or reactivated.
 type executionLease struct {
 	tx     *Transaction
 	inc    *readIncarnation
-	active bool
+	active atomic.Bool
 	issued bool // counted in inc.issuedReads, which Commit waits on
 }
 
 func (l *executionLease) isActive() bool {
-	if l == nil {
-		return false
-	}
-	l.tx.readErrMu.Lock()
-	defer l.tx.readErrMu.Unlock()
-	return l.active
+	return l != nil && l.active.Load()
 }
 
 func (l *executionLease) release() {
@@ -34,18 +31,22 @@ func (l *executionLease) release() {
 	}
 	l.tx.readErrMu.Lock()
 	var issuedDone chan struct{}
-	if l.active && l.issued {
-		l.inc.issuedReads--
-		if l.inc.issuedReads == 0 {
-			issuedDone, l.inc.issuedReadsDone = l.inc.issuedReadsDone, nil
+	if l.active.Load() {
+		if l.issued {
+			l.inc.issuedReads--
+			if l.inc.issuedReads == 0 {
+				issuedDone, l.inc.issuedReadsDone = l.inc.issuedReadsDone, nil
+			}
 		}
-	}
-	if l.active {
-		l.active = false
 		l.inc.users--
-		if l.inc.users == 0 && l.inc.drained != nil {
-			close(l.inc.drained)
-			l.inc.drained = nil
+		var drained chan struct{}
+		if l.inc.users == 0 {
+			drained, l.inc.drained = l.inc.drained, nil
+		}
+		// Publish retirement before a drain notification can wake turnover.
+		l.active.Store(false)
+		if drained != nil {
+			close(drained)
 		}
 	}
 	l.tx.readErrMu.Unlock()
@@ -57,19 +58,23 @@ func (l *executionLease) release() {
 // enterState admits synchronous, context-free state access; the lease protects the
 // whole mutable-state phase. Keep it inlinable (TestStateLeaseDoesNotAllocate).
 func (tx *Transaction) enterState() *executionLease {
-	return &executionLease{tx: tx, inc: tx.admitState(), active: true}
+	lease := &executionLease{tx: tx}
+	tx.admitState(lease)
+	return lease
 }
 
-// admitState waits out a turnover and counts one user of the current incarnation.
-func (tx *Transaction) admitState() *readIncarnation {
+// admitState initializes a fresh, unpublished lease after waiting out turnover.
+func (tx *Transaction) admitState(lease *executionLease) {
 	for {
 		tx.readErrMu.Lock()
 		ready := tx.readReady
 		if ready == nil {
 			inc := tx.readIncarnationLocked()
 			inc.users++
+			lease.inc = inc
+			lease.active.Store(true)
 			tx.readErrMu.Unlock()
-			return inc
+			return
 		}
 		ready = tx.observeReadReadyLocked()
 		tx.readErrMu.Unlock()
@@ -112,7 +117,8 @@ func (tx *Transaction) enterReadStateInto(ctx context.Context, inc *readIncarnat
 			if lease == nil {
 				lease = &executionLease{}
 			}
-			*lease = executionLease{tx: tx, inc: inc, active: true, issued: issued}
+			lease.tx, lease.inc, lease.issued = tx, inc, issued
+			lease.active.Store(true)
 			tx.readErrMu.Unlock()
 			return lease
 		}
@@ -168,7 +174,7 @@ func (tx *Transaction) beginTurnover(expected *readIncarnation, released *execut
 		return turnoverToken{}, &wire.FDBError{Code: ErrClientInvalidOperation}
 	}
 	tx.readErrMu.Lock()
-	selfWait := released != nil && released.active
+	selfWait := released != nil && released.active.Load()
 	tx.readErrMu.Unlock()
 	if selfWait {
 		return turnoverToken{}, &wire.FDBError{Code: ErrClientInvalidOperation}

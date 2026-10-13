@@ -47,8 +47,8 @@ func TestExecutionLeaseEnterStateWaitsForAtomicReadyPublication(t *testing.T) {
 	tx.readErrMu.Lock()
 	current, ready := tx.readLife, tx.readReady
 	tx.readErrMu.Unlock()
-	if ready != nil || lease.inc != current || !lease.active {
-		t.Fatalf("admission was not an atomic claim on the published incarnation: ready=%v lease.inc=%p current=%p active=%v", ready != nil, lease.inc, current, lease.active)
+	if ready != nil || lease.inc != current || !lease.active.Load() {
+		t.Fatalf("admission was not an atomic claim on the published incarnation: ready=%v lease.inc=%p current=%p active=%v", ready != nil, lease.inc, current, lease.active.Load())
 	}
 }
 
@@ -162,14 +162,14 @@ func TestExecutionLeaseNestedOpContextBorrowsOuterLease(t *testing.T) {
 
 	releaseNested()
 	tx.readErrMu.Lock()
-	users, active := outerOp.inc.users, outerOp.lease.active
+	users, active := outerOp.inc.users, outerOp.lease.active.Load()
 	tx.readErrMu.Unlock()
 	if users != 1 || !active {
 		t.Fatalf("nested cleanup released outer lease: users=%d active=%v", users, active)
 	}
 	releaseOuter()
 	tx.readErrMu.Lock()
-	users, active = outerOp.inc.users, outerOp.lease.active
+	users, active = outerOp.inc.users, outerOp.lease.active.Load()
 	tx.readErrMu.Unlock()
 	if users != 0 || active {
 		t.Fatalf("outer cleanup did not release its lease: users=%d active=%v", users, active)
@@ -261,7 +261,7 @@ func TestExecutionLeaseGetPipelinedDoesNotReleaseBorrowedLease(t *testing.T) {
 		t.Fatalf("nested pipelined cache hit=(%q, %v, %v)", value, pending, err)
 	}
 	tx.readErrMu.Lock()
-	users, active := outer.inc.users, outer.lease.active
+	users, active := outer.inc.users, outer.lease.active.Load()
 	tx.readErrMu.Unlock()
 	if users != 1 || !active {
 		t.Fatalf("GetPipelined released borrowed lease: users=%d active=%v", users, active)
@@ -391,7 +391,7 @@ func TestCheckTimeoutBorrowsLeaseAndKeepsRetiredCause(t *testing.T) {
 				t.Fatalf("clean captured timeout check: %v", err)
 			}
 			tx.readErrMu.Lock()
-			users, active := op.inc.users, op.lease.active
+			users, active := op.inc.users, op.lease.active.Load()
 			tx.readErrMu.Unlock()
 			if users != 1 || !active {
 				t.Fatalf("nested check changed the outer lease: users=%d active=%v", users, active)

@@ -61,7 +61,7 @@ func TestReadOperationBorrowedPreparationKeepsOwner(t *testing.T) {
 				}
 			}
 			tx.readErrMu.Lock()
-			active, users := op.lease.active, op.inc.users
+			active, users := op.lease.active.Load(), op.inc.users
 			tx.readErrMu.Unlock()
 			if !active || users != 1 {
 				t.Errorf("BORROWED_PREPARATION_RELEASED_OWNER: active=%v users=%d", active, users)

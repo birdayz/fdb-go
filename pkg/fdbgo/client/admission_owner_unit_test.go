@@ -3,11 +3,136 @@ package client
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
+	"unsafe"
 
 	"fdb.dev/pkg/fdbgo/wire"
 )
+
+// The held mutex is the structural guard, not a benchmark threshold. A failed
+// observation is unblocked and joined before the test reports the dependency.
+func requireLeaseObservationWithoutAccountingLock(t *testing.T, tx *Transaction, observe func() bool) {
+	t.Helper()
+	tx.readErrMu.Lock()
+	started := make(chan struct{})
+	result := make(chan bool, 1)
+	go func() {
+		close(started)
+		result <- observe()
+	}()
+	<-started
+	select {
+	case ok := <-result:
+		tx.readErrMu.Unlock()
+		if !ok {
+			t.Fatal("lease observation returned the wrong value or authority")
+		}
+	case <-time.After(5 * time.Second):
+		tx.readErrMu.Unlock()
+		<-result
+		t.Fatal("LEASE_ACTIVE_LOCK_DEPENDENCY: observation waited for the accounting mutex")
+	}
+}
+
+func TestLeaseActiveObservationDoesNotAcquireAccountingLock(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"nil", "active", "released", "borrowed-operation"} {
+		t.Run(mode, func(t *testing.T) {
+			tx := &Transaction{}
+			defer tx.Cancel()
+			ctx, cleanup, owned := tx.opContextWithLease(context.Background(), false)
+			defer cleanup()
+			if mode == "released" {
+				owned.release()
+			}
+			requireLeaseObservationWithoutAccountingLock(t, tx, func() bool {
+				switch mode {
+				case "nil":
+					return !(*executionLease)(nil).isActive()
+				case "active":
+					return owned.isActive()
+				case "released":
+					return !owned.isActive()
+				default:
+					borrowed, releaseBorrowed, authority := tx.opContextWithLease(ctx, true)
+					releaseBorrowed()
+					return borrowed == ctx && authority == nil && tx.readOperation(borrowed).lease == owned
+				}
+			})
+		})
+	}
+}
+
+func TestLeaseDrainNotificationPublishesInactiveSingleWinner(t *testing.T) {
+	t.Parallel()
+	tx := &Transaction{}
+	defer tx.Cancel()
+	ctx, cleanup, owned := tx.opContextWithLease(context.Background(), true)
+	defer cleanup()
+	inc := tx.readOperation(ctx).inc
+	// Register the same zero-users and zero-issued notifications used by
+	// turnover/Commit. The actual release path must publish and close them.
+	tx.readErrMu.Lock()
+	drained, issuedDone := make(chan struct{}), make(chan struct{})
+	inc.drained, inc.issuedReadsDone = drained, issuedDone
+	tx.readErrMu.Unlock()
+	type observation struct {
+		active        bool
+		users, issued int
+		cleared       bool
+	}
+	observed := make(chan observation, 1)
+	watching := make(chan struct{})
+	go func() {
+		close(watching)
+		<-drained
+		// Do not acquire readErrMu before the active sample: that would hide
+		// an incorrectly ordered notification preceding the atomic store.
+		active := owned.isActive()
+		tx.readErrMu.Lock()
+		got := observation{active, inc.users, inc.issuedReads, inc.drained == nil && inc.issuedReadsDone == nil}
+		tx.readErrMu.Unlock()
+		observed <- got
+	}()
+	<-watching
+	var releases sync.WaitGroup
+	start := make(chan struct{})
+	for range 8 {
+		releases.Add(1)
+		go func() {
+			defer releases.Done()
+			<-start
+			owned.release()
+		}()
+	}
+	close(start)
+	releases.Wait()
+	got := <-observed
+	if got.active || got.users != 0 || got.issued != 0 || !got.cleared {
+		t.Fatalf("drained publication or duplicate release: %+v", got)
+	}
+	// Inactive alone does not promise this channel is closed; joined release
+	// completion does. Its notification remains outside the bookkeeping lock.
+	select {
+	case <-issuedDone:
+	default:
+		t.Fatal("completed release did not notify issued-read completion")
+	}
+}
+
+func TestExecutionLeaseAndOperationLayout(t *testing.T) {
+	pointer := unsafe.Sizeof((*Transaction)(nil))
+	wantLease := 2*pointer + 8
+	wantOperation := 8*pointer + wantLease
+	if got := unsafe.Sizeof(executionLease{}); got != wantLease {
+		t.Fatalf("executionLease size=%d, want %d (24 on 64-bit)", got, wantLease)
+	}
+	if got := unsafe.Sizeof(readOperation{}); got != wantOperation {
+		t.Fatalf("readOperation size=%d, want %d (88 on 64-bit)", got, wantOperation)
+	}
+}
 
 func TestAdmissionOwnedBorrowedFreshAndEffectiveLegacy(t *testing.T) {
 	t.Parallel()

@@ -86,7 +86,7 @@ func TestLazySuccessorFirstSetterAndOldContext(t *testing.T) {
 	defer release()
 	op := tx.readOperation(stale)
 	tx.readErrMu.Lock()
-	active := op.lease != nil && op.lease.active
+	active := op.lease != nil && op.lease.active.Load()
 	users := tx.readLife.users
 	tx.readErrMu.Unlock()
 	if op.inc != old.inc || active || users != 0 {

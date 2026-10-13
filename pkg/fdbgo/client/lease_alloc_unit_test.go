@@ -50,7 +50,7 @@ func TestReadOperationReentryUsesFreshLease(t *testing.T) {
 	}
 	releaseOld()
 	tx.readErrMu.Lock()
-	users, issued, active := op.inc.users, op.inc.issuedReads, op.lease.active
+	users, issued, active := op.inc.users, op.inc.issuedReads, op.lease.active.Load()
 	tx.readErrMu.Unlock()
 	if users != 1 || issued != 1 || !active {
 		t.Fatalf("old cleanup released the new lease: users=%d issued=%d active=%v", users, issued, active)

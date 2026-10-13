@@ -195,7 +195,7 @@ func TestTurnoverReadinessAdmissionOrder(t *testing.T) {
 								if issued {
 									wantIssued = 1
 								}
-								if lease != &storage || !lease.active || lease.inc != current || lease.issued != issued {
+								if lease != &storage || !lease.active.Load() || lease.inc != current || lease.issued != issued {
 									t.Fatal("admission did not claim the captured owner's inline lease")
 								}
 							} else if lease != nil {
@@ -257,7 +257,7 @@ func TestTurnoverReadinessContextFreePublication(t *testing.T) {
 			}
 			defer lease.release()
 			requireReadinessTestOpen(t, marker)
-			if tx.readReady != nil || lease.inc != tx.readLife || lease.inc == old || lease.inc.gen != old.gen+1 || !lease.active || tx.hasReadVersion {
+			if tx.readReady != nil || lease.inc != tx.readLife || lease.inc == old || lease.inc.gen != old.gen+1 || !lease.active.Load() || tx.hasReadVersion {
 				t.Fatal("context-free admission missed the fully reset replacement")
 			}
 		})

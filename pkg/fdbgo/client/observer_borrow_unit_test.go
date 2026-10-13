@@ -92,7 +92,7 @@ func TestOnErrorBorrowedAdmissionIsReadOnly(t *testing.T) {
 				t.Errorf("OnError=%v, want original %v", err, tc.want)
 			}
 			tx.readErrMu.Lock()
-			active, users, current, completion := op.lease.active, op.inc.users, tx.readLife, op.inc.versionstamp
+			active, users, current, completion := op.lease.active.Load(), op.inc.users, tx.readLife, op.inc.versionstamp
 			afterCause := op.inc.cause
 			tx.readErrMu.Unlock()
 			if !active || users != 1 || current != op.inc || completion != nil || afterCause != cause || tx.state.Load() != state || tx.retryCount != retries || tx.backoff != backoff || watch.Err() != nil {
@@ -131,7 +131,7 @@ func TestCommitBorrowedAdmissionKeepsOwnerAndProducer(t *testing.T) {
 			// caller Err: even a canceled borrow reaches the authority guard.
 			requireScopeCode(t, err, want)
 			tx.readErrMu.Lock()
-			active, users, current, completion := op.lease.active, op.inc.users, tx.readLife, op.inc.versionstamp
+			active, users, current, completion := op.lease.active.Load(), op.inc.users, tx.readLife, op.inc.versionstamp
 			tx.readErrMu.Unlock()
 			if !active || users != 1 || current != op.inc || completion != nil {
 				t.Errorf("BORROWED_COMMIT_MUTATION: active=%v users=%d current=%v completion=%v", active, users, current == op.inc, completion)
