@@ -34,7 +34,6 @@ type RangeIterator interface {
 // goRangeResult is the pure-Go client's RangeResult implementation.
 type goRangeResult struct {
 	tx       *transaction
-	r        Range
 	options  RangeOptions
 	snapshot bool
 	first    *firstBatch
@@ -51,16 +50,23 @@ type firstBatch struct {
 }
 
 func newRangeResult(tx *transaction, r Range, options RangeOptions) RangeResult {
-	return startRangeResult(goRangeResult{tx: tx, r: cloneRange(r), options: options})
+	return startRangeResult(goRangeResult{tx: tx, options: options}, r)
 }
 
 func newSnapshotRangeResult(tx *transaction, r Range, options RangeOptions) RangeResult {
-	return startRangeResult(goRangeResult{tx: tx, r: cloneRange(r), options: options, snapshot: true})
+	return startRangeResult(goRangeResult{tx: tx, options: options, snapshot: true}, r)
 }
 
-func startRangeResult(rr goRangeResult) goRangeResult {
+func startRangeResult(rr goRangeResult, r Range) goRangeResult {
 	f := &firstBatch{}
 	rr.first = f
+	// Capture custom range/key callbacks before validating options, in call order.
+	exact, isExact := r.(ExactRange)
+	if isExact {
+		f.begin, f.end = cloneRangeKeys(exact)
+	} else {
+		r = cloneSelectorRange(r)
+	}
 	// EXACT without a limit (2210) and an invalid mode fail before the RYW checks and any I/O
 	// (fdb_c.cpp:996-1024); the client then raises cancelled, 2004 and 2012 in C++ order.
 	if rr.options.Mode == StreamingModeExact && (rr.options.Limit == 0 || rr.options.Limit == -1) {
@@ -72,26 +78,26 @@ func startRangeResult(rr goRangeResult) goRangeResult {
 		f.err = err
 		return rr
 	}
-	if _, exact := rr.r.(ExactRange); !exact {
+	if !isExact {
 		// Selector resolution reads; C++ rejects first on the raw selector keys.
-		bs, es := rr.r.FDBRangeKeySelectors()
+		bs, es := r.FDBRangeKeySelectors()
 		b, e := bs.FDBKeySelector().Key.FDBKey(), es.FDBKeySelector().Key.FDBKey()
 		if err := rangecheck.Check(rr.tx.ctx, rr.tx.inner, b, e, rr.options.Limit); err != nil {
 			f.err = convertError(err)
 			return rr
 		}
+		begin, end, err := resolveRange(rr.tx, r, rr.snapshot)
+		if err != nil {
+			f.err = convertError(err)
+			return rr
+		}
+		f.begin, f.end = begin, end
 	}
-	begin, end, err := resolveRange(rr.tx, rr.r, rr.snapshot)
-	if err != nil {
-		f.err = convertError(err)
-		return rr
-	}
-	f.begin, f.end = begin, end
 	f.limit = effectiveLimit(rr.options.Limit) // a limit < -1 stays as is, for the client's 2012
 	if rr.snapshot {
-		f.pending = rr.tx.inner.Snapshot().StartGetRange(rr.tx.ctx, begin, end, f.limit, byteTarget, rr.options.Reverse)
+		f.pending = rr.tx.inner.Snapshot().StartGetRange(rr.tx.ctx, f.begin, f.end, f.limit, byteTarget, rr.options.Reverse)
 	} else {
-		f.pending = rr.tx.inner.StartGetRange(rr.tx.ctx, begin, end, f.limit, byteTarget, rr.options.Reverse)
+		f.pending = rr.tx.inner.StartGetRange(rr.tx.ctx, f.begin, f.end, f.limit, byteTarget, rr.options.Reverse)
 	}
 	return rr
 }
@@ -101,11 +107,7 @@ func cloneRangeKeys(r ExactRange) ([]byte, []byte) {
 	return bytes.Clone(begin.FDBKey()), bytes.Clone(end.FDBKey())
 }
 
-func cloneRange(r Range) Range {
-	if exact, ok := r.(ExactRange); ok {
-		begin, end := cloneRangeKeys(exact)
-		return KeyRange{Begin: Key(begin), End: Key(end)}
-	}
+func cloneSelectorRange(r Range) Range {
 	begin, end := r.FDBRangeKeySelectors()
 	b, e := begin.FDBKeySelector(), end.FDBKeySelector()
 	b.Key = Key(bytes.Clone(b.Key.FDBKey()))
