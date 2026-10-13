@@ -21,13 +21,19 @@ bad() {
   fail=1
 }
 
+# Detached housekeeping can remove loose objects while another fixture clone copies them.
+disable_housekeeping() {
+  git -C "$1" config --local gc.auto 0 &&
+    git -C "$1" config --local maintenance.auto false
+}
+
 # origin: master m0, PR p1 adding pr.txt, GitHub's merge ref of p1 into m0, then master moves
 # on by $1 commits. $2: "conflict" (both sides edit shared.txt), "rebased" (p1 is cut from the
 # moved master, so a plain merge would fast-forward) or "orphan" (p1 shares no history).
 setup() {
   cd "$T" || exit 1
   rm -rf "$T/src" "$T/origin.git" "$T/work"
-  git init -q -b master "$T/src"
+  git init -q -b master "$T/src" && disable_housekeeping "$T/src" || exit 1
   (
     cd "$T/src" || exit 1
     echo base >shared.txt && echo 0 >master.txt && git add -A && git commit -qm m0
@@ -51,10 +57,10 @@ setup() {
       [ "${2:-}" != conflict ] || { echo master-side >shared.txt && git commit -qam conflict; }
     fi
   )
-  git clone -q --bare "$T/src" "$T/origin.git"
+  git clone -q --bare --no-local "$T/src" "$T/origin.git" && disable_housekeeping "$T/origin.git" || exit 1
   git -C "$T/src" push -q "$T/origin.git" refs/pull/1/merge:refs/pull/1/merge
   # What actions/checkout does: a depth-1 fetch of the merge ref, detached.
-  git init -q "$T/work" && cd "$T/work" || exit 1
+  git init -q "$T/work" && disable_housekeeping "$T/work" && cd "$T/work" || exit 1
   git remote add origin "file://$T/origin.git"
   git fetch -q --no-tags --depth=1 origin +refs/pull/1/merge:refs/remotes/pull/1/merge
   git checkout -q --detach refs/remotes/pull/1/merge
@@ -93,6 +99,14 @@ check() {
 
 echo "merge-current-master:"
 setup 3
+for repo in "$T/src" "$T/origin.git" "$T/work"; do
+  if [ "$(git -C "$repo" config --local --get gc.auto)" = 0 ] &&
+    [ "$(git -C "$repo" config --local --get maintenance.auto)" = false ]; then
+    ok "$(basename "$repo") disables automatic housekeeping"
+  else
+    bad "$(basename "$repo") allows automatic housekeeping"
+  fi
+done
 check "push keeps its own commit" push 0 stale ""
 setup 3
 check "stale merge ref is re-merged onto current master" pull_request 0 "$MASTER" "merged into current master"
