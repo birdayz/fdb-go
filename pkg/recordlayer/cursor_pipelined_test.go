@@ -384,7 +384,8 @@ func BenchmarkMapPipelinedFullTraversalAllocations(b *testing.B) {
 		}
 		b.Logf("pipeline full traversal: samples=%d rows=%d pulls=%d issues=%d gets=%d returned=%d continuations=%d terminals=%d allocations=%.0f", samples, rows, source.pulls, issues, gets, returned, continuations, terminals, counts[i])
 	}
-	// One cursor, one terminal result, and backing sizes 1, 2, 4, 8, 10.
+	// One cursor, one terminal result, and bounded queue backing. Ready heads
+	// need only one slot; pending heads can grow through sizes 1, 2, 4, 8, 10.
 	if counts[0] != counts[1] || counts[0] > 7 {
 		b.Fatalf("full traversal allocations: 1000 rows=%g, 4000 rows=%g; want equal and at most 7", counts[0], counts[1])
 	}
@@ -478,7 +479,9 @@ func newPipelineRingFixture(rows int, reason NoNextReason) *pipelineRingFixture 
 	f.source.stop = NewResultNoNext[int](reason, continuation)
 	for row := range rows {
 		f.source.rows[row] = NewResultWithValue(row, NewBytesContinuation(ListCursorContinuation(row+1)))
-		f.pending[row] = pipelineRingPending{value: row * 10, ready: true}
+		// Keep the head pending during issue so these queue tests exercise a
+		// full window and wrapped backing, rather than the ready-head shortcut.
+		f.pending[row] = pipelineRingPending{value: row * 10}
 	}
 	return f
 }
@@ -561,6 +564,9 @@ func TestMapPipelinedRepeatedWraps(t *testing.T) {
 				}
 			}
 			assertPipelineAllCleared(t, c.pipeline[:cap(c.pipeline)])
+			if width > 1 && wraps < 3 {
+				t.Fatalf("queue did not exercise repeated wrapping: width=%d wraps=%d", width, wraps)
+			}
 			t.Logf("width=%d rows=%d wraps=%d issued=%d pulls=%d", width, rows, wraps, f.issued, f.source.pulls)
 		})
 	}
@@ -608,6 +614,9 @@ func TestMapPipelinedWrappedTimeLimitPrefix(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			f := newPipelineRingFixture(8, TimeLimitReached)
+			for row := 4; row < len(f.pending); row++ {
+				f.pending[row].ready = true
+			}
 			if tc.keep < 4 {
 				f.pending[4+tc.keep].ready = false
 			}
@@ -624,6 +633,9 @@ func TestMapPipelinedWrappedTimeLimitPrefix(t *testing.T) {
 				}
 			}
 			backing := c.pipeline[:cap(c.pipeline)]
+			if c.head != 4 || c.count != 4 || len(backing) != 5 {
+				t.Fatalf("timeout probe is not a populated wrapped window: head=%d count=%d physical=%d", c.head, c.count, len(backing))
+			}
 			t.Logf("before timeout: head=%d count=%d physical=%d", c.head, c.count, len(backing))
 			if tc.fail {
 				for range 2 {

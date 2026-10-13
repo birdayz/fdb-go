@@ -1,5 +1,6 @@
 package com.birdayz.conformance;
 
+import com.apple.foundationdb.Database;
 import com.apple.foundationdb.KeySelector;
 import com.apple.foundationdb.KeyValue;
 import com.apple.foundationdb.Range;
@@ -28,6 +29,7 @@ import com.apple.foundationdb.record.TupleRange;
 import com.apple.foundationdb.record.metadata.Index;
 import com.apple.foundationdb.record.metadata.IndexTypes;
 import com.apple.foundationdb.record.metadata.Key;
+import com.apple.foundationdb.record.provider.foundationdb.FDBDatabase;
 import com.apple.foundationdb.record.provider.foundationdb.FDBIndexedRecord;
 import com.apple.foundationdb.record.provider.foundationdb.FDBRecordContext;
 import com.apple.foundationdb.record.provider.foundationdb.FDBRecordStore;
@@ -68,6 +70,7 @@ class IndexScanLimitSteps extends ConformanceBase {
         public long byteLimit;
         public long timeLimit;
         public boolean failOnScanLimit;
+        public boolean holdRecordLoadsUntilSourceError;
         public String continuation;
     }
 
@@ -123,6 +126,12 @@ class IndexScanLimitSteps extends ConformanceBase {
                 }
             }
             return future;
+        }
+
+        boolean hasOnePendingLoad() {
+            synchronized (issued) {
+                return issued.size() == 1 && !issued.get(0).isDone();
+            }
         }
 
         void quiesceIssued() {
@@ -538,76 +547,123 @@ class IndexScanLimitSteps extends ConformanceBase {
 
     @ConformanceStep("scanIndexScanLimits")
     public Map<String, Object> scan(String clusterFile, String tenantName, byte[] subspace, Request request) {
-        return runInContext(clusterFile, tenantName, context -> {
-            TrackingStore store = openTracking(context, subspace);
-            // The clock belongs to the transaction, not the subsequently-created ExecuteState.
-            if (request.timeLimit > 0) {
-                try {
-                    Thread.sleep(request.timeLimit + 25);
-                } catch (InterruptedException error) {
-                    Thread.currentThread().interrupt();
-                    throw new RuntimeException(error);
-                }
+        if (!request.holdRecordLoadsUntilSourceError) {
+            return runInContext(clusterFile, tenantName, context -> scanInContext(context, subspace, request, null));
+        }
+        boolean scanned = request.scannedLimit == 1 && request.byteLimit == 0 && request.timeLimit == 0;
+        boolean bytes = request.scannedLimit == 0 && request.byteLimit == 1 && request.timeLimit == 0;
+        boolean time = request.scannedLimit == 0 && request.byteLimit == 0 && request.timeLimit == 200;
+        proofRequire(request.records && request.failOnScanLimit && request.rowLimit == 0
+                        && (request.continuation == null || request.continuation.isEmpty()) && (scanned || bytes || time),
+                "held matrix schedule requires records, fail-on-limit, no row limit/continuation, and exactly scanned1, byte1, or time200");
+        HeadControl hold = new HeadControl(false);
+        ExecutorService callbacks = Executors.newFixedThreadPool(4);
+        FDBDatabase database = createDatabase(clusterFile);
+        Database nativeDatabase = database.database();
+        try (Tenant tenant = tenantName == null || tenantName.isEmpty() ? null
+                    : nativeDatabase.openTenant(tenantName.getBytes(StandardCharsets.UTF_8));
+             Transaction transaction = tenant == null ? nativeDatabase.createTransaction(callbacks) : tenant.createTransaction(callbacks);
+             FDBRecordContext context = createContextFromTransaction(database, headTransaction(transaction, Transaction.class, hold))) {
+            Map<String, Object> result = scanInContext(context, subspace, request, hold);
+            context.commitAsync().join();
+            return result;
+        } finally {
+            hold.release.complete(null);
+            callbacks.shutdownNow();
+        }
+    }
+
+    private static Map<String, Object> scanInContext(FDBRecordContext context, byte[] subspace, Request request, HeadControl hold) {
+        TrackingStore store = openTracking(context, subspace);
+        // The clock belongs to the transaction, not the subsequently-created ExecuteState.
+        if (request.timeLimit > 0) {
+            try {
+                Thread.sleep(request.timeLimit + 25);
+            } catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+                throw new RuntimeException(error);
             }
-            ExecuteProperties.Builder builder = ExecuteProperties.newBuilder().setReturnedRowLimit(request.rowLimit)
-                    .setDefaultCursorStreamingMode(CursorStreamingMode.valueOf(request.streaming))
-                    .setFailOnScanLimitReached(request.failOnScanLimit);
-            if (request.scannedLimit > 0) builder.setScannedRecordsLimit(request.scannedLimit);
-            if (request.byteLimit > 0) builder.setScannedBytesLimit(request.byteLimit);
-            if (request.timeLimit > 0) builder.setTimeLimit(request.timeLimit);
-            ExecuteProperties properties = builder.build();
-            store.trackedState = properties.getState();
-            ScanProperties scanProperties = new ScanProperties(properties, request.reverse);
-            Index index = store.getRecordMetaData().getIndex(request.indexName);
-            byte[] continuation = request.continuation == null || request.continuation.isEmpty()
-                    ? null : Base64.getDecoder().decode(request.continuation);
-            KeyValueCursor.Builder leafBuilder = KeyValueCursor.Builder.newBuilder(store.indexSubspace(index))
-                    .setContext(context).setRange(TupleRange.ALL).setContinuation(continuation).setScanProperties(scanProperties);
-            List<Map<String, Object>> rangeOptions;
-            try (KeyValueCursor leaf = leafBuilder.build()) {
-                // Native Java and Go streaming enum values differ by one.
-                rangeOptions = List.of(Map.of("mode", leafBuilder.getStreamingMode().code() + 1,
-                        "limit", leafBuilder.getLimit(), "reverse", request.reverse));
-            }
-            RecordCursor<?> cursor = request.records
-                    ? store.scanIndexRecords(index, IndexScanType.BY_VALUE, TupleRange.ALL, continuation,
-                            IndexOrphanBehavior.ERROR, scanProperties)
-                    : store.scanIndex(index, IndexScanType.BY_VALUE, TupleRange.ALL, continuation, scanProperties);
-            Map<String, Object> result = new HashMap<>();
-            List<Map<String, Object>> rows = new ArrayList<>();
-            List<Map<String, Object>> repeats = new ArrayList<>();
-            result.put("rows", rows);
-            result.put("repeats", repeats);
-            result.put("rangeOptions", rangeOptions);
-            result.put("reason", "");
-            result.put("continuation", "");
-            result.put("end", false);
-            result.put("exceptionClass", "");
-            try (RecordCursor<?> closing = cursor) {
-                try {
-                    while (true) {
-                        RecordCursorResult<?> next = cursor.onNext().join();
-                        if (next.hasNext()) {
-                            rows.add(row(next));
-                        } else {
-                            result.putAll(terminal(next, properties, store));
-                            for (int repeat = 0; repeat < 2; repeat++) {
-                                repeats.add(terminal(cursor.onNext().join(), properties, store));
-                            }
-                            break;
+        }
+        ExecuteProperties.Builder builder = ExecuteProperties.newBuilder().setReturnedRowLimit(request.rowLimit)
+                .setDefaultCursorStreamingMode(CursorStreamingMode.valueOf(request.streaming))
+                .setFailOnScanLimitReached(request.failOnScanLimit);
+        if (request.scannedLimit > 0) builder.setScannedRecordsLimit(request.scannedLimit);
+        if (request.byteLimit > 0) builder.setScannedBytesLimit(request.byteLimit);
+        if (request.timeLimit > 0) builder.setTimeLimit(request.timeLimit);
+        ExecuteProperties properties = builder.build();
+        store.trackedState = properties.getState();
+        ScanProperties scanProperties = new ScanProperties(properties, request.reverse);
+        Index index = store.getRecordMetaData().getIndex(request.indexName);
+        byte[] continuation = request.continuation == null || request.continuation.isEmpty()
+                ? null : Base64.getDecoder().decode(request.continuation);
+        KeyValueCursor.Builder leafBuilder = KeyValueCursor.Builder.newBuilder(store.indexSubspace(index))
+                .setContext(context).setRange(TupleRange.ALL).setContinuation(continuation).setScanProperties(scanProperties);
+        List<Map<String, Object>> rangeOptions;
+        try (KeyValueCursor leaf = leafBuilder.build()) {
+            // Native Java and Go streaming enum values differ by one.
+            rangeOptions = List.of(Map.of("mode", leafBuilder.getStreamingMode().code() + 1,
+                    "limit", leafBuilder.getLimit(), "reverse", request.reverse));
+        }
+        if (hold != null) {
+            proofRequire(store.getPipelineSize(PipelineOperation.INDEX_TO_RECORD) > 1,
+                    "held matrix schedule requires room to pull the real source error before awaiting a mapping");
+            proofRequire(!Boolean.TRUE.equals(context.getPropertyStorage().getPropertyValue(FDBRecordStoreProperties.LOAD_RECORDS_VIA_GETS)),
+                    "held matrix schedule requires real record range reads");
+            // Only record ranges are held; metadata opening and index reads retain their ordinary path.
+            hold.recordPrefix = store.recordsSubspace().pack();
+            hold.enabled = true;
+        }
+        RecordCursor<?> cursor = request.records
+                ? store.scanIndexRecords(index, IndexScanType.BY_VALUE, TupleRange.ALL, continuation,
+                        IndexOrphanBehavior.ERROR, scanProperties)
+                : store.scanIndex(index, IndexScanType.BY_VALUE, TupleRange.ALL, continuation, scanProperties);
+        Map<String, Object> result = new HashMap<>();
+        List<Map<String, Object>> rows = new ArrayList<>();
+        List<Map<String, Object>> repeats = new ArrayList<>();
+        result.put("rows", rows);
+        result.put("repeats", repeats);
+        result.put("rangeOptions", rangeOptions);
+        result.put("reason", "");
+        result.put("continuation", "");
+        result.put("end", false);
+        result.put("exceptionClass", "");
+        try (RecordCursor<?> closing = cursor) {
+            try {
+                while (true) {
+                    RecordCursorResult<?> next = cursor.onNext().join();
+                    if (next.hasNext()) {
+                        rows.add(row(next));
+                    } else {
+                        proofRequire(hold == null, "held matrix schedule must reach the real source exception, not a terminal result");
+                        result.putAll(terminal(next, properties, store));
+                        for (int repeat = 0; repeat < 2; repeat++) {
+                            repeats.add(terminal(cursor.onNext().join(), properties, store));
                         }
+                        break;
+                    }
+                }
+            } finally {
+                try {
+                    if (hold != null) {
+                        proofRequire(!hold.release.isDone() && hold.rawRanges.get() == 1 && store.hasOnePendingLoad(),
+                                "held matrix schedule must hold exactly one real original record load through the source error");
                     }
                 } finally {
+                    if (hold != null) hold.release.complete(null);
                     store.quiesceIssued();
                 }
-            } catch (RuntimeException error) {
-                Throwable root = error;
-                while (root.getCause() != null) root = root.getCause();
-                result.put("exceptionClass", root.getClass().getSimpleName());
             }
-            result.put("scannedRecords", properties.getState().getRecordsScanned());
-            result.put("scannedBytes", properties.getState().getBytesScanned());
-            return result;
-        });
+        } catch (RuntimeException error) {
+            Throwable root = error;
+            while (root.getCause() != null) root = root.getCause();
+            result.put("exceptionClass", root.getClass().getSimpleName());
+        }
+        if (hold != null) {
+            proofRequire(result.get("exceptionClass").equals("ScanLimitReachedException") && rows.isEmpty(),
+                    "held matrix schedule must preserve the real source exception with no offered rows");
+        }
+        result.put("scannedRecords", properties.getState().getRecordsScanned());
+        result.put("scannedBytes", properties.getState().getBytesScanned());
+        return result;
     }
 }
