@@ -47,12 +47,16 @@ Go already has the pieces below the Record Layer:
 | SQL option INDEX_FETCH_METHOD feeds the planner configuration | relational `OptionsUtils.getIndexFetchMethod`, `PlannerConfiguration.java:176` |
 | Java's own tests: RemoteFetchTest, RemoteFetchIndexScanTest, RemoteFetchMultiColumnKeyTest, RemoteFetchSplitRecordsTest, RemoteFetchWithoutSplitRecordsTest, RemoteFetchOldVersionTest | `fdb-record-layer-core/src/test/java/.../provider/foundationdb/` |
 
-libfdb_c constraints the Go client already follows: `getMappedRange` is
-forward only (reverse throws `unsupported_operation`,
-`fdbclient/ReadYourWrites.actor.cpp:1139`); it requires serializable reads and
-read-your-writes enabled, and fails with `get_mapped_range_reads_your_writes`
-if it would read the transaction's own writes (:1215–1240). With
-WITH_FALLBACK, those failures fall back exactly as Java does.
+libfdb_c constraints the Go client already follows: `getMappedRange` supports
+both directions. The public entry point (`fdbclient/ReadYourWrites.actor.cpp:1828–1832`)
+reaches the native read through `readWithConflictRangeRYW` and `readThrough`
+(:1196–1211, :1158) for reverse too; the throwing `read(GetMappedRangeReq<true>)`
+overload at :1139 is unreachable from it. Snapshot reads and disabled
+read-your-writes throw `unsupported_operation` (:1215–1237), and a read of the
+transaction's own writes fails with `get_mapped_range_reads_your_writes`. With
+WITH_FALLBACK, those failures fall back exactly as Java does. Regardless of scan
+direction, each row's secondary range arrives in forward order (Java notes this
+in `reconstructSingleRecord`).
 
 ### Design
 
@@ -102,8 +106,10 @@ WITH_FALLBACK, those failures fall back exactly as Java does.
 - **Wire/data plane:** the mapper bytes equal Java's for each index shape; read
   conflict ranges after a remote-fetch scan equal libfdb_c's (extend the
   existing mapped-range differential).
+- **Reverse scans:** remote fetch in reverse returns the same records, order and
+  continuations as Java.
 - **Fallback:** forced failures before and after the first result, unsupported
-  maintainer, reverse scans, read-your-writes conflicts, and the libfdb_c
+  maintainer, snapshot scans, read-your-writes conflicts, and the libfdb_c
   backend; each must continue exactly where Java's would.
 - **SQL:** a yamsql scenario with `INDEX_FETCH_METHOD` set, asserting the plan
   carries the method (EXPLAIN) and the rows match.
