@@ -372,6 +372,8 @@ go_test(
         "record_count_streaming_test.go",
         "record_count_test.go",
         "record_fetch_probe_test.go",
+        "record_load_charge_layout_test.go",
+        "record_load_charge_test.go",
         "record_type_key_canonical_test.go",
         "record_type_key_identity_test.go",
         "record_type_key_prefix_test.go",

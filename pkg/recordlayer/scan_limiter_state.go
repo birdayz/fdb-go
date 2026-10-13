@@ -7,6 +7,8 @@
 package recordlayer
 
 import (
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"fdb.dev/pkg/dst"
@@ -18,12 +20,13 @@ import (
 // Auto-commit pages/retries get fresh state; explicit transactions share it at the read-version instant.
 // Without ExecuteProperties.ScanState each leaf has private state.
 //
-// Concurrency: plain fields rely on the single-threaded executor (executor/package_invariant_test.go).
-// Concurrent cursors require synchronizing all fields, not just bytes.
+// Byte charges may complete on record-read workers. Other fields remain owned
+// by the single-threaded executor; this does not permit concurrent cursor use.
 type ScanLimiterState struct {
-	recordsScanned int
-	bytesScanned   int64
-	startTime      time.Time
+	recordsScanned    int
+	bytesScanned      atomic.Int64
+	recordLoadCharges sync.WaitGroup
+	startTime         time.Time
 
 	// env supplies the clock BOTH the anchor and every elapsed measurement are taken on. It is
 	// stored rather than passed per call so the two cannot come from different clocks: an
@@ -96,7 +99,7 @@ func (s *ScanLimiterState) BytesScanned() int64 {
 	if s == nil {
 		return 0
 	}
-	return s.bytesScanned
+	return s.bytesScanned.Load()
 }
 
 // AddBytesScanned charges n more bytes against the shared counter.
@@ -104,7 +107,29 @@ func (s *ScanLimiterState) AddBytesScanned(n int64) {
 	if s == nil {
 		return
 	}
-	s.bytesScanned += n
+	s.bytesScanned.Add(n)
+}
+
+func (s *ScanLimiterState) startRecordLoadCharge() {
+	if s != nil {
+		s.recordLoadCharges.Add(1)
+	}
+}
+
+func (s *ScanLimiterState) finishRecordLoadCharge() {
+	if s != nil {
+		s.recordLoadCharges.Done()
+	}
+}
+
+// WaitForIssuedRecordLoadCharges waits for already-issued raw record reads and
+// their byte accounting, not deserialization or separate legacy-version reads.
+// Stop issuing loads before calling this; issuance must not overlap the wait.
+// The transaction must remain open until its outstanding reads complete.
+func (s *ScanLimiterState) WaitForIssuedRecordLoadCharges() {
+	if s != nil {
+		s.recordLoadCharges.Wait()
+	}
 }
 
 // StartTime returns the current time-budget anchor, or zero for a nil receiver.
