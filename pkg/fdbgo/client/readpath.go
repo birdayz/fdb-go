@@ -208,6 +208,10 @@ func (tx *Transaction) getKeyImpl(ctx context.Context, selectorKey []byte, orEqu
 			// retries another alternative and exhausts to all_alternatives_failed,
 			// which this arm already absorbs.
 			if isWrongShardServer(err) || isAllAlternativesFailed(err) || isMaybeDelivered(err) {
+				// Native range reads switch to exact fallback on an initial wrong-shard reply.
+				if progressSteps == 0 && isWrongShardServer(err) {
+					needsRangeFallback = true
+				}
 				shardRetries++
 				if shardRetries > MaxWrongShardRetries {
 					// Transient routing error exhausted: retry the whole txn
@@ -225,7 +229,7 @@ func (tx *Transaction) getKeyImpl(ctx context.Context, selectorKey []byte, orEqu
 		}
 
 		if progressSteps == 0 {
-			needsRangeFallback = keyResolutionNeedsRangeFallback(replyKey, replyOrEqual, replyOffset, loc, isBackward)
+			needsRangeFallback = needsRangeFallback || keyResolutionNeedsRangeFallback(replyKey, replyOrEqual, replyOffset, loc, isBackward)
 		}
 		// C++ NativeAPI.actor.cpp:1823-1826: k = reply.sel; if (!k.offset && k.orEqual) return k.getKey();
 		// If offset==0 && orEqual==true, the selector is fully resolved.
