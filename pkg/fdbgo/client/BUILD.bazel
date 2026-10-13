@@ -21,6 +21,7 @@ go_library(
         "loadbalance.go",
         "locality.go",
         "mappedrange.go",
+        "mappedrange_pending.go",
         "metrics.go",
         "native_commit.go",
         "options.go",

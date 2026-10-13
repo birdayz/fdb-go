@@ -66,6 +66,7 @@ class ConformanceServer {
         new AggregateSteps(),
         new UniqueViolationSteps(),
         new TupleOrderingSteps(),
+        new MappedRangeSteps(),
         new BitmapValueIndexSteps(),
         new TextIndexSteps(),
         new TimeWindowLeaderboardSteps(),

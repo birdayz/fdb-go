@@ -701,6 +701,7 @@ go_test(
         "keyspace_domains_test.go",
         "keyspace_interop_conformance_test.go",
         "lifecycle_error_test.go",
+        "mapped_range_conformance_test.go",
         "max_ever_version_index_conformance_test.go",
         "metadata_proto_conformance_test.go",
         "metadata_store_conformance_test.go",

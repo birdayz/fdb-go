@@ -244,15 +244,10 @@ func (tx *Transaction) sendGetMappedRange(mapper []byte) func(ctx context.Contex
 	}
 }
 
-func (tx *Transaction) getMappedRangeImpl(ctx context.Context, begin, end []byte, mapper []byte, limit int, reverse bool) ([]MappedKeyValue, bool, error) {
+func (tx *Transaction) getMappedRangeImpl(ctx context.Context, begin, end []byte, mapper []byte, limit, byteTarget int, reverse bool) ([]MappedKeyValue, bool, error) {
 	ops := mappedRangeScanOps
 	ops.send = tx.sendGetMappedRange(mapper)
-	// ByteLimitUnlimited: getMappedRange has no streaming mode to derive a per-fetch byte
-	// target from — C++ reaches getExactRange for the mapped family through the same
-	// GetRangeLimits, but the mapped surface here takes a row limit only. Passing the
-	// unlimited sentinel keeps the flat replyByteLimit ceiling and the absorbing loop exactly
-	// as they were, rather than inventing a target this caller never asked for.
-	return rangeScanImpl(tx, ctx, begin, end, limit, ByteLimitUnlimited, reverse, ops)
+	return rangeScanImpl(tx, ctx, begin, end, limit, byteTarget, reverse, ops)
 }
 
 // FDB error codes specific to getMappedRange. Source of truth:
@@ -310,6 +305,12 @@ const (
 // front. Any caller building a remote-fetch cursor on top of this inherits the
 // same obligation.
 func (tx *Transaction) GetMappedRange(ctx context.Context, begin, end, mapper []byte, limit int, reverse bool) ([]MappedKeyValue, bool, error) {
+	return tx.GetMappedRangeWithByteTarget(ctx, begin, end, mapper, limit, ByteLimitUnlimited, reverse)
+}
+
+// GetMappedRangeWithByteTarget carries the streaming mode's per-fetch byte target,
+// as fdb_transaction_get_mapped_range does. Zero and ByteLimitUnlimited mean unlimited.
+func (tx *Transaction) GetMappedRangeWithByteTarget(ctx context.Context, begin, end, mapper []byte, limit, byteTarget int, reverse bool) ([]MappedKeyValue, bool, error) {
 	ctx, cancel := tx.opContext(ctx)
 	defer cancel()
 	// ThreadSafeTransaction checks deferredError before RYW's special-key
@@ -334,6 +335,10 @@ func (tx *Transaction) GetMappedRange(ctx context.Context, begin, end, mapper []
 	if limit < -1 {
 		return nil, false, &wire.FDBError{Code: ErrRangeLimitsInvalid}
 	}
+	byteTarget, err := normalizeByteTarget(byteTarget)
+	if err != nil {
+		return nil, false, err
+	}
 	// C++ :1823 — an inverted range is an empty result, not an error.
 	if bytes.Compare(begin, end) >= 0 {
 		return nil, false, nil
@@ -351,7 +356,7 @@ func (tx *Transaction) GetMappedRange(ctx context.Context, begin, end, mapper []
 		return nil, false, &wire.FDBError{Code: ErrUnsupportedOperation}
 	}
 
-	rows, more, err := tx.getMappedRangeImpl(ctx, begin, end, mapper, limit, reverse)
+	rows, more, err := tx.getMappedRangeImpl(ctx, begin, end, mapper, limit, byteTarget, reverse)
 	if err != nil {
 		return nil, false, tx.trackReadOperation(ctx, err)
 	}
