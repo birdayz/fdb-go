@@ -340,6 +340,24 @@ func (tr *CTxnHandle) Close() {
 	tr.ptr = nil
 }
 
+// GetReadVersion exposes the reader's version so a conflict probe can pin its
+// writer to that version without requesting a newer GRV on the reader's client.
+func (tr CTxnHandle) GetReadVersion() (int64, error) {
+	if !tr.Valid() {
+		return 0, &CFDBError{Code: 2015, Msg: "transaction is closed"}
+	}
+	f := C.fdb_transaction_get_read_version(tr.ptr)
+	defer C.fdb_future_destroy(f)
+	if err := cErr(C.fdb_future_block_until_ready(f)); err != nil {
+		return 0, err
+	}
+	var version C.int64_t
+	if err := cErr(C.fdb_future_get_int64(f, &version)); err != nil {
+		return 0, err
+	}
+	return int64(version), nil
+}
+
 // Set issues fdb_transaction_set, so a test can seed a cluster through the same
 // client it reads back with.
 func (tr CTxnHandle) Set(key, value []byte) {
@@ -420,14 +438,6 @@ func goBytes(p *C.uint8_t, n C.int) []byte {
 //
 // The bool result is the future's `more` flag.
 func CGetMappedRange(tr CTxnHandle, begin, end, mapper []byte, limit int, reverse bool, snapshot bool) ([]CMappedRow, bool, error) {
-	if !tr.Valid() {
-		return nil, false, &CFDBError{Code: 2015, Msg: "transaction is closed"}
-	}
-
-	bp, bl := cBytes(begin)
-	ep, el := cBytes(end)
-	mp, ml := cBytes(mapper)
-
 	mode := C.FDBStreamingMode(C.FDB_STREAMING_MODE_WANT_ALL)
 	if limit > 0 {
 		mode = C.FDBStreamingMode(C.FDB_STREAMING_MODE_EXACT)
@@ -435,11 +445,24 @@ func CGetMappedRange(tr CTxnHandle, begin, end, mapper []byte, limit int, revers
 		limit = 0
 	}
 
+	return CGetMappedRangeBatch(tr, begin, end, mapper, limit, 0, int(mode), 0, reverse, snapshot)
+}
+
+// CGetMappedRangeBatch passes the row limit, byte target, C streaming mode and
+// 1-based iteration through unchanged. A zero target lets libfdb_c derive its
+// own mode target, independently of the Go facade's ModeTargetBytes conversion.
+func CGetMappedRangeBatch(tr CTxnHandle, begin, end, mapper []byte, limit, targetBytes, mode, iteration int, reverse, snapshot bool) ([]CMappedRow, bool, error) {
+	if !tr.Valid() {
+		return nil, false, &CFDBError{Code: 2015, Msg: "transaction is closed"}
+	}
+	bp, bl := cBytes(begin)
+	ep, el := cBytes(end)
+	mp, ml := cBytes(mapper)
 	f := C.fdb_transaction_get_mapped_range(tr.ptr,
 		bp, bl, 0 /* begin_or_equal */, 1, /* begin_offset */
 		ep, el, 0 /* end_or_equal */, 1, /* end_offset */
 		mp, ml,
-		C.int(limit), 0 /* target_bytes */, mode, 0, /* iteration */
+		C.int(limit), C.int(targetBytes), C.FDBStreamingMode(mode), C.int(iteration),
 		cBool(snapshot), cBool(reverse))
 	runtime.KeepAlive(begin)
 	runtime.KeepAlive(end)
@@ -476,6 +499,28 @@ func CGetMappedRange(tr CTxnHandle, begin, end, mapper []byte, limit int, revers
 	// Everything is copied out by decodeMappedRow above; the deferred
 	// fdb_future_destroy is now safe.
 	return rows, more != 0, nil
+}
+
+// CReadConflictRangeBoundaries reads libfdb_c's transaction-local conflict map.
+// Values "1" and "0" mark the beginning and end of each read-conflict interval.
+func CReadConflictRangeBoundaries(tr CTxnHandle) ([]CKeyValue, error) {
+	prefix := []byte("\xff\xff/transaction/read_conflict_range/")
+	end := append([]byte(nil), prefix...)
+	end[len(end)-1]++
+	rows, more, err := CGetRangeBatch(tr, prefix, end, 0, 0, CStreamingModeWantAll, 1, false, true)
+	if err != nil {
+		return nil, err
+	}
+	if more {
+		return nil, fmt.Errorf("read-conflict boundary oracle exceeded one batch")
+	}
+	for i := range rows {
+		if len(rows[i].Key) < len(prefix) || string(rows[i].Key[:len(prefix)]) != string(prefix) {
+			return nil, fmt.Errorf("read-conflict boundary outside module: %q", rows[i].Key)
+		}
+		rows[i].Key = rows[i].Key[len(prefix):]
+	}
+	return rows, nil
 }
 
 // decodeMappedRow copies row i of the reply array — primary row and whichever

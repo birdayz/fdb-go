@@ -36,6 +36,12 @@ type CtxReadTransactor interface {
 	ReadTransactCtx(ctx context.Context, f func(ReadTransaction) (any, error)) (any, error)
 }
 
+// MappedRangeReader is an optional serializable read capability. The pure-Go
+// Transaction implements it; Snapshot and the libfdb_c backend do not.
+type MappedRangeReader interface {
+	GetMappedRange(r ExactRange, mapper []byte, options RangeOptions) MappedRangeResult
+}
+
 // ReadVersionInstantReporter is an OPTIONAL capability: a transaction that can say
 // WHEN its current read version was obtained, i.e. when FDB's 5-second MVCC window
 // opened for it. ok is false when no read version is held or when the version was

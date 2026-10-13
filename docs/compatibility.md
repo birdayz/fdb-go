@@ -41,6 +41,16 @@ higher-level storage layout; it does not remove the exceptions below.
 | **Store format** | An unpinned Go open can upgrade an older store to format 14 when its transaction commits. Java's default 7 is not its maximum: Java 4.14.2.0 can open 14 and 15. Older readers and downgrade paths must be checked separately. |
 | **Earlier Go SQL storage** | The v0.2.0 candidate changes the relational catalog/database/schema keyspace from v0.1.0's. There is no automatic migration from the old Go layout. A common FDB cluster does not make these layouts interchangeable. |
 
+### Mapped-range backend capability
+
+The pure-Go transaction exposes the optional `fdb.MappedRangeReader` capability
+for exact primary ranges, with forward or reverse primary scans and forward
+secondary ranges. Snapshot transactions do not expose it. The `libfdbc` backend
+does not expose mapped reads: Apple's Go binding has no mapped-range API, and
+this repository's raw C mapped-range decoder is a test-only, non-ABI oracle.
+Record Layer remote-fetch dispatch and fallback are a separate implementation
+step; this capability alone does not enable remote fetch on index scans.
+
 ### Single-record reads and conflicts
 
 Modern record loads read the complete strict record subspace, `[packedPK + 00,
