@@ -1037,24 +1037,11 @@ func extractPingReplyToken(body []byte) (UID, bool) {
 		return UID{}, false
 	}
 
-	// PingRequest has 1 field: reply (ReplyPromise).
-	// ReplyPromise uses save/load → serialized as opaque blob via WriteBytes.
-	// The blob contains the UID token (16 bytes: part[0] + part[1]).
+	// Object serialization wraps ReplyPromise's inline UID in a nested table.
 	if !r.FieldPresent(0) {
 		return UID{}, false
 	}
 
-	// Try reading as bytes (length-prefixed blob).
-	replyBytes := r.ReadBytes(0)
-	if replyBytes != nil && len(replyBytes) >= 16 {
-		uid := UID{
-			First:  binary.LittleEndian.Uint64(replyBytes[0:8]),
-			Second: binary.LittleEndian.Uint64(replyBytes[8:16]),
-		}
-		return uid, true
-	}
-
-	// Try reading as nested struct.
 	nestedR, err := r.ReadNestedReader(0)
 	if err != nil {
 		return UID{}, false
@@ -1265,10 +1252,10 @@ func (c *Conn) sendPingWithReply() <-chan struct{} {
 	return done
 }
 
-// pingRequestFileID is the PingRequest file identifier from C++ flow/genericactors.actor.h.
+// pingRequestFileID is from C++ fdbrpc/FlowTransport.actor.cpp.
 const pingRequestFileID uint32 = 4707015
 
-// pingRequestVTable: PingRequest has 1 field (bytes/RelativeOffset, 4 bytes, align 4).
+// pingRequestVTable: PingRequest has 1 field (ReplyPromise/RelativeOffset, align 4).
 // vtable[0] = 2*1+4 = 6 (vtable wire size)
 // vtable[1] = 4+4 = 8 (object size with soffset)
 // vtable[2] = 4 (field 0 offset)
@@ -1276,6 +1263,7 @@ var pingRequestVTable = wire.VTable{6, 8, 4}
 
 var pingRequestVTableClosure = []wire.VTable{
 	{6, 8, 4}, // PingRequest
+	types.ReplyPromiseVTable,
 	{6, 8, 4}, // FakeRoot
 }
 
@@ -1284,34 +1272,25 @@ var pingRequestTemplate = wire.NewMessageTemplate(
 )
 
 // BuildPingRequest builds a PingRequest FlatBuffers body.
-// PingRequest has one field: ReplyPromise<Void> serialized as a bytes blob
-// (Standalone<StringRef>) containing the 16-byte reply token UID.
-// The server extracts this token and sends back a VoidReply to it.
+// ReplyPromise's object-serializer trait emits a nested table with an inline UID.
 func BuildPingRequest(replyToken UID) []byte {
-	// The ReplyPromise is serialized via save/load trait → bytes blob.
-	// The blob contains the serialized Endpoint, which starts with the
-	// 16-byte token (two uint64 LE). This is the minimum the server
-	// needs to route the reply back.
-	var tokenBytes [16]byte
-	binary.LittleEndian.PutUint64(tokenBytes[0:8], replyToken.First)
-	binary.LittleEndian.PutUint64(tokenBytes[8:16], replyToken.Second)
-
 	return wire.MarshalDirect(
 		pingRequestTemplate,
 		func(endOff int) int {
-			// OOL: bytes blob = 4-byte length + 16-byte token + padding.
-			return wire.MeasureBytesOOL(endOff, tokenBytes[:])
+			return wire.MeasureObject(endOff, types.ReplyPromiseVTable, types.ReplyPromiseMaxAlign)
 		},
 		func(dw *wire.DirectWriter) int {
-			// Write the bytes blob (OOL data).
-			blobPos := dw.WriteBytesOOL(tokenBytes[:])
+			replyPos, reply := dw.WriteObject(types.ReplyPromiseVTable, types.ReplyPromiseMaxAlign)
+			tokenOff := int(types.ReplyPromiseVTable[types.ReplyPromiseSlotToken+2])
+			binary.LittleEndian.PutUint64(reply[tokenOff:], replyToken.First)
+			binary.LittleEndian.PutUint64(reply[tokenOff+8:], replyToken.Second)
 
 			// Write the PingRequest object.
 			objPos, obj := dw.WriteObject(pingRequestVTable, 4)
 
-			// Field 0: RelativeOffset to the bytes blob.
+			// Field 0: RelativeOffset to the ReplyPromise table.
 			fieldOff := int(pingRequestVTable[2]) // offset 4
-			wire.PatchRelOff(obj, fieldOff, objPos, blobPos)
+			wire.PatchRelOff(obj, fieldOff, objPos, replyPos)
 
 			return objPos
 		},

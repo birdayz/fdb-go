@@ -35,6 +35,7 @@ go_test(
         "conn_unit_test.go",
         "connclosed_error_test.go",
         "endpoint_not_found_test.go",
+        "ping_integration_test.go",
         "ping_test.go",
         "reply_pool_test.go",
         "sendframe_body_ownership_test.go",
@@ -46,6 +47,7 @@ go_test(
     embed = [":transport"],
     deps = [
         "//pkg/fdbgo/wire",
+        "//pkg/testcontainers/foundationdb",
         "@com_github_onsi_gomega//:gomega",
     ],
 )
