@@ -126,19 +126,26 @@ func keySelectorIsBackward(orEqual bool, offset int32) bool {
 // resolution (non-zero offset). The client must then locate the new shard and
 // re-issue the request with the updated selector.
 func (tx *Transaction) getKey(parentCtx context.Context, selectorKey []byte, orEqual bool, offset int32) ([]byte, error) {
+	key, _, err := tx.getKeyForRange(parentCtx, selectorKey, orEqual, offset)
+	return key, err
+}
+
+// getKeyForRange also reports whether the initial selector needs native range
+// fallback, so client-side mapped resolution preserves that pagination behavior.
+func (tx *Transaction) getKeyForRange(parentCtx context.Context, selectorKey []byte, orEqual bool, offset int32) ([]byte, bool, error) {
 	ctx, cancel := tx.opContext(parentCtx)
 	defer cancel()
 	if err := tx.ensureReadVersion(ctx); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if sp := tx.startOpSpan("fdbgo.getKey"); sp != nil { // RFC-115 §4 Layer 2 (C++ NAPI:getKey)
 		defer sp.End()
 	}
-	k, err := tx.getKeyImpl(ctx, selectorKey, orEqual, offset)
-	return k, tx.mapReadError(ctx, err)
+	k, fallback, err := tx.getKeyImpl(ctx, selectorKey, orEqual, offset)
+	return k, fallback, tx.mapReadError(ctx, err)
 }
 
-func (tx *Transaction) getKeyImpl(ctx context.Context, selectorKey []byte, orEqual bool, offset int32) ([]byte, error) {
+func (tx *Transaction) getKeyImpl(ctx context.Context, selectorKey []byte, orEqual bool, offset int32) ([]byte, bool, error) {
 	tx.hadRead.Store(true) // a read was issued — the rywDisabled GetKey choke (RFC-059)
 	// Three independent budgets, because getKey's loop iterates for two
 	// unrelated reasons: successful partial selector resolutions
@@ -153,6 +160,7 @@ func (tx *Transaction) getKeyImpl(ctx context.Context, selectorKey []byte, orEqu
 	//     genuinely stuck/pathological selector (or a misbehaving server), a
 	//     NON-retryable terminal error (retrying re-hits the same cap).
 	timeoutRetries, shardRetries, progressSteps := 0, 0, 0
+	needsRangeFallback := false
 	for {
 		// C++ short-circuits: if key == allKeysEnd → offset > 0 → return allKeysEnd
 		// if key == "" && offset <= 0 → return "" (empty key)
@@ -160,11 +168,11 @@ func (tx *Transaction) getKeyImpl(ctx context.Context, selectorKey []byte, orEqu
 		// key may be updated by a partial resolution from the previous iteration.
 		if bytes.Equal(selectorKey, allKeysEnd) {
 			if offset > 0 {
-				return bytes.Clone(allKeysEnd), nil
+				return bytes.Clone(allKeysEnd), needsRangeFallback, nil
 			}
 			orEqual = false // C++: k.orEqual = false
 		} else if len(selectorKey) == 0 && offset <= 0 {
-			return []byte{}, nil
+			return []byte{}, needsRangeFallback, nil
 		}
 
 		// A BACKWARD key selector on a shard boundary must resolve to the shard ENDING at the key, not the
@@ -174,10 +182,10 @@ func (tx *Transaction) getKeyImpl(ctx context.Context, selectorKey []byte, orEqu
 		isBackward := keySelectorIsBackward(orEqual, offset)
 		loc, err := tx.db.locCache.locate(tx.db, ctx, selectorKey, tx.tenantId, tx.currentSpan(), isBackward)
 		if err != nil {
-			return nil, fmt.Errorf("locate key: %w", err)
+			return nil, false, fmt.Errorf("locate key: %w", err)
 		}
 		if len(loc.Servers) == 0 {
-			return nil, fmt.Errorf("no storage servers for key")
+			return nil, false, fmt.Errorf("no storage servers for key")
 		}
 
 		replyKey, replyOrEqual, replyOffset, err := tx.sendGetKey(ctx, selectorKey, orEqual, offset, loc.Servers)
@@ -188,10 +196,10 @@ func (tx *Transaction) getKeyImpl(ctx context.Context, selectorKey []byte, orEqu
 			if isReplyTimeout(err) {
 				timeoutRetries++
 				if timeoutRetries > maxReadTimeoutRetries {
-					return nil, &wire.FDBError{Code: ErrTransactionTooOld}
+					return nil, false, &wire.FDBError{Code: ErrTransactionTooOld}
 				}
 				if err := sleepCtx(ctx, wrongShardRetryDelay); err != nil {
-					return nil, err
+					return nil, false, err
 				}
 				continue
 			}
@@ -205,23 +213,26 @@ func (tx *Transaction) getKeyImpl(ctx context.Context, selectorKey []byte, orEqu
 					// Transient routing error exhausted: retry the whole txn
 					// with a fresh read version (consistent with getValue/
 					// getRange; the read path never surfaces 1006 to the app).
-					return nil, &wire.FDBError{Code: ErrTransactionTooOld}
+					return nil, false, &wire.FDBError{Code: ErrTransactionTooOld}
 				}
 				tx.db.locCache.invalidate(selectorKey, tx.tenantId, isBackward)
 				if err := sleepCtx(ctx, wrongShardRetryDelay); err != nil {
-					return nil, err
+					return nil, false, err
 				}
 				continue
 			}
-			return nil, err
+			return nil, false, err
 		}
 
+		if progressSteps == 0 {
+			needsRangeFallback = keyResolutionNeedsRangeFallback(replyKey, replyOrEqual, replyOffset, loc, isBackward)
+		}
 		// C++ NativeAPI.actor.cpp:1823-1826: k = reply.sel; if (!k.offset && k.orEqual) return k.getKey();
 		// If offset==0 && orEqual==true, the selector is fully resolved.
 		// Otherwise, the storage server returned a partial resolution — the
 		// selector crossed a shard boundary. Update and loop.
 		if replyOffset == 0 && replyOrEqual {
-			return replyKey, nil
+			return replyKey, needsRangeFallback, nil
 		}
 		selectorKey = replyKey
 		orEqual = replyOrEqual
@@ -231,9 +242,19 @@ func (tx *Transaction) getKeyImpl(ctx context.Context, selectorKey []byte, orEqu
 			// The selector keeps resolving without converging — a pathological
 			// selector or a misbehaving server, NOT a transient condition.
 			// Non-retryable: a fresh read version would re-hit the same cap.
-			return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
+			return nil, false, &wire.FDBError{Code: ErrAllAlternativesFailed}
 		}
 	}
+}
+
+func keyResolutionNeedsRangeFallback(key []byte, orEqual bool, offset int32, loc LocationResult, reverse bool) bool {
+	complete := orEqual && offset == 0
+	if reverse {
+		// getKey may resolve across adjacent readable shards in one response.
+		return !complete || bytes.Compare(key, loc.ShardBegin) <= 0
+	}
+	// Mapped reads can use an interior partial FGE offset 1 directly, unlike getKey.
+	return (!complete && offset != 1) || (loc.ShardEnd != nil && bytes.Compare(key, loc.ShardEnd) >= 0)
 }
 
 // sendGetKey sends a GetKeyRequest and returns the full KeySelector from the reply.

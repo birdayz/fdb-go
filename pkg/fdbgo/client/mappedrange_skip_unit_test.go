@@ -12,6 +12,41 @@ import (
 	"fdb.dev/pkg/fdbgo/wire/types"
 )
 
+func TestKeyResolutionRangeFallback(t *testing.T) {
+	t.Parallel()
+	loc := LocationResult{ShardBegin: []byte("m"), ShardEnd: []byte("t")}
+	for _, tc := range []struct {
+		name    string
+		key     string
+		orEqual bool
+		offset  int32
+		reverse bool
+		want    bool
+	}{
+		{"forward_complete", "n", true, 0, false, false},
+		{"forward_at_begin", "m", true, 0, false, false},
+		{"forward_at_end", "t", true, 0, false, true},
+		{"forward_past_end", "u", true, 0, false, true},
+		{"forward_partial_one_interior", "n", false, 1, false, false},
+		{"forward_partial_one_at_end", "t", false, 1, false, true},
+		{"forward_partial_two", "n", false, 2, false, true},
+		{"reverse_complete", "n", true, 0, true, false},
+		{"reverse_at_begin", "m", true, 0, true, true},
+		{"reverse_before_begin", "l", true, 0, true, true},
+		{"reverse_partial", "n", false, 0, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := keyResolutionNeedsRangeFallback([]byte(tc.key), tc.orEqual, tc.offset, loc, tc.reverse); got != tc.want {
+				t.Fatalf("fallback=%v want=%v", got, tc.want)
+			}
+		})
+	}
+	if keyResolutionNeedsRangeFallback([]byte("z"), true, 0, LocationResult{ShardBegin: []byte("m")}, false) {
+		t.Fatal("unbounded shard end forced fallback for an interior key")
+	}
+}
+
 func TestMappedSkipResolutionStepsDoNotWrap(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {

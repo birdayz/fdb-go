@@ -83,6 +83,7 @@ go_test(
     deps = [
         ":libfdbc_native",
         "//pkg/fdbgo/client",
+        "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/testcontainers/foundationdb",
     ],

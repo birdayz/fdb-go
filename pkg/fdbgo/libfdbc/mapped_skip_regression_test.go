@@ -16,6 +16,7 @@ import (
 	"time"
 
 	fdbclient "fdb.dev/pkg/fdbgo/client"
+	gofdb "fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/fdbgo/libfdbc"
 	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
@@ -231,6 +232,130 @@ func TestLibFDBC_MappedSkipResolvesBeforeMappedRead(t *testing.T) {
 		}) {
 			return
 		}
+	}
+}
+
+// A full primary prefetch can report More at the final key. An unlimited-byte
+// read must finish successfully when its next continuation has equal bounds.
+func TestLibFDBC_MappedSkipEqualContinuation(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	ctr, err := foundationdbtc.Run(ctx, "", foundationdbtc.WithDirectIP())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		stop, cancelStop := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancelStop()
+		foundationdbtc.TerminateT(t, stop, ctr)
+	}()
+	cf, err := ctr.ClusterFile(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "fdb.cluster")
+	if err := os.WriteFile(path, []byte(cf), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cdb, err := libfdbc.COpenDatabase(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cdb.Close()
+	db, err := fdbclient.OpenDatabase(ctx, path, fdbclient.WithAPIVersion(730))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	facade := gofdb.WrapDatabase(db)
+	prefix := t.Name()
+	keys := [][]byte{tuple.Tuple{prefix, "IDX", 0}.Pack(), tuple.Tuple{prefix, "IDX", 1}.Pack()}
+	value := bytes.Repeat([]byte("v"), 20000)
+	mapper := tuple.Tuple{prefix, "REC", "{K[2]}", "{...}"}.Pack()
+	begin, end := keys[0], append(bytes.Clone(keys[1]), 0)
+	seed, err := cdb.CreateTransaction()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer seed.Close()
+	for i, key := range keys {
+		seed.Set(key, value)
+		seed.Set(tuple.Tuple{prefix, "REC", i, 0}.Pack(), []byte("secondary"))
+		primaryBytes := len(key) + len(value)
+		if primaryBytes <= 16000 || primaryBytes+8 >= 80000 {
+			t.Fatalf("primary %d misses 80KB prefetch window: bytes=%d charge=%d", i, primaryBytes, primaryBytes+8)
+		}
+	}
+	if err := seed.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	seed.Close()
+	for _, reverse := range []bool{false, true} {
+		t.Run(fmt.Sprintf("reverse=%v", reverse), func(t *testing.T) {
+			ct, err := cdb.CreateTransaction()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ct.Close()
+			if err := ct.SetTimeout(10000); err != nil {
+				t.Fatal(err)
+			}
+			version, err := ct.GetReadVersion()
+			if err != nil {
+				t.Fatal(err)
+			}
+			index, resolvedBegin, resolvedEnd := 1, keys[1], end
+			if reverse {
+				index, resolvedBegin, resolvedEnd = 0, begin, keys[1]
+			}
+			// With two row slots and an 80KB byte budget, one 20KB primary
+			// can report More only through the storage prefetch boundary.
+			witness, witnessMore, err := libfdbc.CGetMappedRangeBatch(ct, resolvedBegin, resolvedEnd, mapper, 2, 80000, libfdbc.CStreamingModeExact, 1, reverse, false)
+			if err != nil || len(witness) != 1 || !witnessMore || !bytes.Equal(witness[0].Key, keys[index]) {
+				t.Fatalf("storage More witness: C rows=%d more=%v err=%v", len(witness), witnessMore, err)
+			}
+			// The bounded C witness is a row oracle only. Its raw unbounded
+			// continuation can resolve beyond end, outside FDB 7.3.77's mapped contract.
+			cRows := witness
+			secondary := tuple.Tuple{prefix, "REC", index, 0}.Pack()
+			if !bytes.Equal(cRows[0].Key, keys[index]) || !bytes.Equal(cRows[0].Value, value) ||
+				cRows[0].Kind != libfdbc.CMappedKindGetRange || len(cRows[0].RangeRows) != 1 ||
+				!bytes.Equal(cRows[0].RangeRows[0].Key, secondary) || string(cRows[0].RangeRows[0].Value) != "secondary" {
+				t.Fatal("bounded C witness differs from seeded primary/secondary")
+			}
+			checkGo := func(rows []gofdb.MappedKeyValue, more bool, err error) {
+				t.Helper()
+				if err != nil || len(rows) != 1 || more {
+					t.Fatalf("Go unlimited equal continuation: rows=%d more=%v err=%v", len(rows), more, err)
+				}
+				row := rows[0]
+				if !bytes.Equal(row.Key, cRows[0].Key) || !bytes.Equal(row.Value, cRows[0].Value) ||
+					row.Kind != fdbclient.MappedResultGetRange || len(row.GetRange.Rows) != 1 || row.GetRange.More ||
+					!bytes.Equal(row.GetRange.Begin.Key, cRows[0].RangeBeginKey) || !bytes.Equal(row.GetRange.End.Key, cRows[0].RangeEndKey) ||
+					!bytes.Equal(row.GetRange.Rows[0].Key, secondary) || string(row.GetRange.Rows[0].Value) != "secondary" {
+					t.Fatal("Go unlimited result differs from C and seeded primary/secondary")
+				}
+			}
+			gt := db.CreateTransaction()
+			defer gt.Cancel()
+			gt.SetReadVersion(version)
+			rows, more, err := gt.GetMappedRangeWithByteTargetAndSkip(ctx, begin, end, mapper, 2, fdbclient.ByteLimitUnlimited, 1, reverse)
+			checkGo(rows, more, err)
+			ft, err := facade.CreateTransaction()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ft.Cancel()
+			ft.SetReadVersion(version)
+			reader, ok := any(ft).(gofdb.MappedRangeSkipReader)
+			if !ok {
+				t.Fatal("pure-Go facade lacks mapped Skip capability")
+			}
+			rows, err = reader.GetMappedRangeWithSkip(gofdb.KeyRange{Begin: gofdb.Key(begin), End: gofdb.Key(end)}, mapper,
+				gofdb.RangeOptions{Limit: 2, Mode: gofdb.StreamingModeExact, Reverse: reverse}, 1).GetSliceWithError()
+			checkGo(rows, false, err)
+		})
 	}
 }
 

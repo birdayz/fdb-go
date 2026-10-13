@@ -116,6 +116,9 @@ func (tx *Transaction) getMappedRangeSelectors(ctx context.Context, begin, end K
 	var materializedBytes int64
 	tx.hadRead.Store(true)
 	for {
+		if bytes.Compare(begin.Key, end.Key) >= 0 {
+			return output, nil
+		}
 		// NativeAPI:4632 precedes both location lookup and fallback resolution.
 		if len(end.Key) == 0 && (end.Offset < 1 || mappedSelectorIsFGE(end)) {
 			return output, nil

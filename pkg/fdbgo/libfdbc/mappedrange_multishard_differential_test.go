@@ -675,4 +675,131 @@ func TestLibFDBC_MappedRangeSkipAcrossShards(t *testing.T) {
 			})
 		}
 	}
+	t.Run("reverse_skip_fallback_at_begin", func(t *testing.T) {
+		mdShardReverseSkipFallbackAtBegin(t, ctx, env)
+	})
+}
+
+// Native reverse Skip that crosses the original end shard uses exact fallback,
+// which clears storage More when its final row equals the resolved begin.
+func mdShardReverseSkipFallbackAtBegin(t *testing.T, ctx context.Context, env mdShardEnv) {
+	t.Helper()
+	f := env.fixture
+	index := env.indices[env.middle] - 2
+	begin, resolvedEnd := f.indexEntryKey(index), f.indexEntryKey(index+1)
+	_, end := f.indexRange()
+	skip := int32(f.n - index - 1)
+	boundary := env.boundaries[env.middle]
+	if index < 0 || skip <= 0 || bytes.Compare(begin, env.boundaries[env.middle-1]) < 0 ||
+		bytes.Compare(resolvedEnd, boundary) >= 0 || bytes.Compare(boundary, end) >= 0 ||
+		bytes.Compare(f.indexEntryKey(f.n-1), env.boundaries[env.middle+1]) < 0 {
+		t.Fatalf("reverse Skip does not leave one row before a crossed physical boundary: index=%d skip=%d begin=%x resolvedEnd=%x boundary=%x end=%x", index, skip, begin, resolvedEnd, boundary, end)
+	}
+	value := bytes.Repeat([]byte("v"), 32)
+	primaryBytes := len(begin) + len(value)
+	if primaryBytes <= 51 || primaryBytes+8 >= 256 {
+		t.Fatalf("fallback fixture misses SMALL prefetch window: primary=%d charge=%d", primaryBytes, primaryBytes+8)
+	}
+	mdShardAssertFrozen(t, env)
+	seed, err := env.cdb.CreateTransaction()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer seed.Close()
+	seed.Set(begin, value)
+	if err := seed.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	seed.Close()
+	mdShardAssertFrozen(t, env)
+	ct, err := env.cdb.CreateTransaction()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ct.Close()
+	version, err := ct.GetReadVersion()
+	if err != nil {
+		t.Fatal(err)
+	}
+	native, err := env.backend.CreateWritableTransaction()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer native.Cancel()
+	native.SetReadVersion(version)
+	primary, err := native.Snapshot().GetRange(gofdb.KeyRange{Begin: gofdb.Key(begin), End: gofdb.Key(end)}, gofdb.RangeOptions{Mode: gofdb.StreamingModeWantAll}).GetSliceWithError()
+	if err != nil || len(primary) != int(skip)+1 {
+		t.Fatalf("ordinary C reverse-Skip population=%d want=%d err=%v", len(primary), int(skip)+1, err)
+	}
+	for j, row := range primary {
+		wantValue := bytes.Repeat([]byte{byte('A' + (index+j)%26)}, 10000)
+		if j == 0 {
+			wantValue = value
+		}
+		if !bytes.Equal(row.Key, f.indexEntryKey(index+j)) || !bytes.Equal(row.Value, wantValue) {
+			t.Fatalf("ordinary C primary %d differs from frozen fixture", j)
+		}
+	}
+	resolved, err := native.Snapshot().GetKey(gofdb.KeySelector{Key: gofdb.Key(end), Offset: 1 - int(skip)}).Get()
+	if err != nil || !bytes.Equal(resolved, resolvedEnd) {
+		t.Fatalf("ordinary C selector resolved=%x want=%x err=%v", resolved, resolvedEnd, err)
+	}
+	// Plain selectors in the resolved shard retain More, independently proving
+	// that the raw cross-shard request below needs the exact fallback correction.
+	witness, witnessMore, err := libfdbc.CGetMappedRangeBatch(ct, begin, resolvedEnd, f.getRangeMapper(), 2, 256, libfdbc.CStreamingModeSmall, 1, true, false)
+	if err != nil || len(witness) != 1 || !witnessMore || !bytes.Equal(witness[0].Key, begin) || !bytes.Equal(witness[0].Value, value) {
+		t.Fatalf("same-shard direct More witness: C rows=%d more=%v err=%v", len(witness), witnessMore, err)
+	}
+	cRows, cMore, err := libfdbc.CGetMappedRangeBatchWithSkip(ct, begin, end, f.getRangeMapper(), 2, 256, libfdbc.CStreamingModeSmall, 1, skip, true, false)
+	if err != nil || len(cRows) != 1 || cMore || !bytes.Equal(cRows[0].Key, begin) || !bytes.Equal(cRows[0].Value, value) {
+		t.Fatalf("cross-shard exact fallback: C rows=%d more=%v err=%v", len(cRows), cMore, err)
+	}
+	if !reflect.DeepEqual(cRows, witness) {
+		t.Fatal("fallback changed the primary/secondary row rather than only More")
+	}
+	mdShardAssertFrozen(t, env)
+	gt := env.goDB.CreateTransaction()
+	defer gt.Cancel()
+	gt.SetReadVersion(version)
+	gRows, gMore, err := gt.GetMappedRangeWithByteTargetAndSkip(ctx, begin, end, f.getRangeMapper(), 2, 256, skip, true)
+	if err != nil || len(gRows) != 1 || gMore {
+		t.Fatalf("cross-shard exact fallback: Go rows=%d more=%v err=%v; C=%d/%v", len(gRows), gMore, err, len(cRows), cMore)
+	}
+	mdCompareRangeRow(t, cRows[0], gRows[0])
+	ft, err := env.facade.CreateTransaction()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ft.Cancel()
+	ft.SetReadVersion(version)
+	reader, ok := any(ft).(gofdb.MappedRangeSkipReader)
+	if !ok {
+		t.Fatal("pure-Go facade lacks mapped Skip capability")
+	}
+	it := reader.GetMappedRangeWithSkip(gofdb.KeyRange{Begin: gofdb.Key(begin), End: gofdb.Key(end)}, f.getRangeMapper(),
+		gofdb.RangeOptions{Limit: 2, Mode: gofdb.StreamingModeSmall, Reverse: true}, skip).Iterator()
+	var batches []mdBatch
+	it.SetTraceLog(func(iteration, requested, returned int, more bool, err error) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		batches = append(batches, mdBatch{iteration, requested, returned, more})
+	})
+	seen := 0
+	for it.Advance() {
+		row, err := it.Get()
+		if err != nil || seen != 0 {
+			t.Fatalf("fallback facade row %d: %v", seen, err)
+		}
+		mdCompareRangeRow(t, cRows[0], row)
+		seen++
+	}
+	if _, err := it.Get(); err != nil {
+		t.Fatal(err)
+	}
+	if seen != 1 || !reflect.DeepEqual(batches, []mdBatch{{1, 2, 1, false}}) {
+		t.Fatalf("fallback facade must finish in one fetch: rows=%d batches=%+v", seen, batches)
+	}
+	mdShardAssertFrozen(t, env)
+	t.Logf("reverse Skip=%d crossed %x; ordinary C population=%d; primary+8=%d<256; direct native More=true, fallback C/Go More=false", skip, boundary, len(primary), primaryBytes+8)
 }

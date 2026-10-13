@@ -156,7 +156,7 @@ func TestMappedSkipPendingRetirementAcrossResolutionAndMappedRead(t *testing.T) 
 					if code := fdbCodeOf(tx.readIncarnationCause(originalInc)); code != 1025 {
 						t.Fatalf("retired original operation cause=%d, want literal1025", code)
 					}
-					rows, more, err = pending.Get()
+					rows, more, err := pending.Get()
 					if len(rows) != 0 || more || fdbCodeOf(err) != 1025 {
 						t.Fatalf("memoized pending changed after retirement: rows=%+v more=%v error=%v", rows, more, err)
 					}
