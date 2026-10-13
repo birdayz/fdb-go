@@ -309,9 +309,8 @@ var _ = Describe("Rank-valued scans", func() {
 										rightBytes, err := right.GetContinuation().ToBytes()
 										Expect(err).NotTo(HaveOccurred())
 										Expect(rightBytes).To(Equal(leftBytes))
-										end := !byteLimit && position == 3 && step > 0
-										Expect(left.GetContinuation().IsEnd()).To(Equal(end))
-										Expect(right.GetContinuation().IsEnd()).To(Equal(end))
+										Expect(left.GetContinuation().IsEnd()).To(BeFalse())
+										Expect(right.GetContinuation().IsEnd()).To(BeFalse())
 										if step == 0 {
 											i := position
 											if reverse {
@@ -321,12 +320,8 @@ var _ = Describe("Rank-valued scans", func() {
 											Expect(right.GetValue().Value).To(Equal(tuple.Tuple{want[i]}))
 											Expect(right.GetValue().Key).To(Equal(left.GetValue().Key))
 										} else {
-											wantReason := reason
-											if end {
-												wantReason = SourceExhausted
-											}
-											Expect(left.GetNoNextReason()).To(Equal(wantReason))
-											Expect(right.GetNoNextReason()).To(Equal(wantReason))
+											Expect(left.GetNoNextReason()).To(Equal(reason))
+											Expect(right.GetNoNextReason()).To(Equal(reason))
 											if step == 2 {
 												Expect(leftBytes).To(Equal(continuation))
 											}
@@ -335,6 +330,16 @@ var _ = Describe("Rank-valued scans", func() {
 									}
 									Expect(plain.Close()).To(Succeed())
 									Expect(enriched.Close()).To(Succeed())
+								}
+								// Java discovers exhaustion on the empty page after the final limit token.
+								for _, include := range []bool{false, true} {
+									last := store.ScanRankIndex(index, RankScanBounds{ScanType: kind, RankRange: scanRange, IncludeRankAsValue: include}, continuation, props)
+									result, err := last.OnNext(ctx)
+									Expect(err).NotTo(HaveOccurred())
+									Expect(result.HasNext()).To(BeFalse())
+									Expect(result.GetNoNextReason()).To(Equal(SourceExhausted))
+									Expect(result.GetContinuation().IsEnd()).To(BeTrue())
+									Expect(last.Close()).To(Succeed())
 								}
 								rtx.SetTimer(nil)
 							}

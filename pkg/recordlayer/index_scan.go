@@ -507,7 +507,9 @@ type indexCursor struct {
 
 	iterator     rangeIterator
 	closed       bool
-	recordsRead  int // also this cursor's own free-initial-pass gate (Java's usedInitialPass)
+	recordsRead  int
+	initialPass  bool
+	clock        *ScanLimiterState
 	bounds       kvScanBounds
 	prefixLength int
 	lastCont     *keyValueContinuation
@@ -548,9 +550,7 @@ func (c *indexCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexEntr
 	}
 	result, err := c.advance(ctx)
 	if err == nil && !result.HasNext() {
-		// Like Java's KeyValueCursorBase, preserve the first terminal result.
-		// Repeating the row-limit lookahead would otherwise consume entries
-		// and eventually replace a resumable limit with source exhaustion.
+		// Java replays the first terminal result on subsequent calls.
 		c.lastNoNext = result
 		c.hasNoNext = true
 	}
@@ -577,7 +577,14 @@ func (c *indexCursor) advance(ctx context.Context) (RecordCursorResult[*IndexEnt
 
 	executeProps := c.scanProps.GetExecuteProperties()
 
-	// Check row limit — peek ahead to distinguish ReturnLimitReached vs SourceExhausted
+	clock := c.clock
+	if clock == nil {
+		clock = c.scanState
+	}
+	if allowed, reason := tryIndexRecordScan(c.scanState, clock, executeProps, &c.initialPass); !allowed {
+		return noNextOrFail[*IndexEntry](executeProps, reason, c.limitContinuation())
+	}
+	// Java reports the passed-down row limit even if it exactly exhausted the source.
 	if executeProps.ReturnedRowLimit > 0 && c.recordsRead >= executeProps.ReturnedRowLimit {
 		if c.iterator.Advance() {
 			return NewResultNoNext[*IndexEntry](
@@ -591,38 +598,7 @@ func (c *indexCursor) advance(ctx context.Context) (RecordCursorResult[*IndexEnt
 		if _, err := c.iterator.Get(); err != nil {
 			return RecordCursorResult[*IndexEntry]{}, fmt.Errorf("index scan at row-limit boundary: %w", err)
 		}
-		return NewResultNoNext[*IndexEntry](
-			SourceExhausted,
-			&EndContinuation{},
-		), nil
-	}
-
-	// Check scanned records limit (free initial pass for first record, EXCEPT under
-	// FailOnScanLimitReached — Java's record-scan branch never grants the free pass in fail mode,
-	// CursorLimitManager.java:135-136; see key_value_cursor.go's OnNext for the full citation). The
-	// threshold is the (possibly shared) scanState, so every leg of an IN-join/IN-union over a
-	// secondary index charges the same aggregate budget instead of resetting per leg — see
-	// ScanLimiterState.
-	if executeProps.ScannedRecordsLimit > 0 &&
-		(c.recordsRead > 0 || executeProps.FailOnScanLimitReached) &&
-		c.scanState.RecordsScanned() >= executeProps.ScannedRecordsLimit {
-		return noNextOrFail[*IndexEntry](executeProps, ScanLimitReached, c.limitContinuation())
-	}
-
-	// Check time limit before reading next entry (free initial pass for first record — unconditional,
-	// Java never suppresses the time branch's free pass). Measured against the shared scanState's
-	// anchor, not this cursor's own construction time — matching Java's TimeScanLimiter anchored to
-	// FDBRecordContext.getTransactionCreateTime(). noNextOrFail (not a raw NewResultNoNext): Java
-	// throws on ANY halted limit under failOnScanLimitReached, not just the scanned-records one
-	// (CursorLimitManager.java:141-144).
-	if executeProps.TimeLimit > 0 && c.recordsRead > 0 && c.scanState.Elapsed() >= executeProps.TimeLimit {
-		return noNextOrFail[*IndexEntry](executeProps, TimeLimitReached, c.limitContinuation())
-	}
-
-	// Check byte limit BEFORE reading next entry (matching Java's CursorLimitManager.tryRecordScan).
-	// Allow at least one entry (free initial pass).
-	if executeProps.ScannedBytesLimit > 0 && c.recordsRead > 0 && c.scanState.BytesScanned() >= executeProps.ScannedBytesLimit {
-		return noNextOrFail[*IndexEntry](executeProps, ByteLimitReached, c.limitContinuation())
+		return NewResultNoNext[*IndexEntry](ReturnLimitReached, c.limitContinuation()), nil
 	}
 
 	if !c.iterator.Advance() {
@@ -650,7 +626,6 @@ func (c *indexCursor) advance(ctx context.Context) (RecordCursorResult[*IndexEnt
 
 	// Accumulate bytes scanned — checked pre-read on next call
 	c.scanState.AddBytesScanned(int64(len(kv.Key) + len(kv.Value)))
-	c.scanState.AddRecordScanned()
 
 	c.recordsRead++
 
@@ -714,19 +689,7 @@ func (c *indexCursor) initIterator() error {
 	if err != nil {
 		return err
 	}
-	options := fdb.RangeOptions{
-		Mode:    c.scanProps.CursorStreamingMode.ToFDB(),
-		Reverse: c.scanProps.IsReverse(),
-	}
-
-	// Each index entry is one KV, so FDB-level limit is safe (no split handling needed).
-	if c.scanProps.ExecuteProperties.ReturnedRowLimit > 0 {
-		limit := c.scanProps.ExecuteProperties.ReturnedRowLimit - c.recordsRead
-		if limit <= 0 {
-			limit = 1
-		}
-		options.Limit = saturatingAdd(limit, 1)
-	}
+	options := indexRangeOptions(c.scanProps)
 
 	var rangeResult fdb.RangeResult
 	if c.scanProps.ExecuteProperties.IsolationLevel == SnapshotIsolation {

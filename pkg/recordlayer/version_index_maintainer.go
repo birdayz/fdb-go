@@ -155,7 +155,7 @@ func (m *versionIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[pr
 // ScanIndexByType, which checks the maintainer type before dispatching. Java's
 // VersionIndexMaintainer.scan(IndexScanType, ...) throws if scanType != BY_VALUE.
 func (m *versionIndexMaintainer) Scan(scanRange TupleRange, continuation []byte, scanProperties ScanProperties) RecordCursor[*IndexEntry] {
-	return newIndexCursor(m.index, m.indexSubspace, m.tx, scanRange, continuation, scanProperties)
+	return newIndexCursor(m.index, m.indexSubspace, m.tx, scanRange, continuation, scanProperties).withContext(m.recordContext)
 }
 
 // CanDeleteWhere bounds the prefix by the index's matchable width. VERSION

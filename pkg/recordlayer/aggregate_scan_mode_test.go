@@ -213,7 +213,7 @@ func TestFDB_AggregateScanModes(t *testing.T) {
 							wantMode = fdb.StreamingModeSmall
 						} else if kind == "repair_want_all" {
 							props.DefaultCursorStreamingMode = StreamingModeWantAll
-							wantMode = fdb.StreamingModeWantAll
+							wantMode = fdb.StreamingModeExact // Java's finite WANT_ALL scan uses EXACT.
 						}
 						got, err = PermutedMinIgnoringNulls(ctx, func(r TupleRange, p ScanProperties) RecordCursor[*IndexEntry] {
 							return m.StandardIndexMaintainer.Scan(r, nil, p)

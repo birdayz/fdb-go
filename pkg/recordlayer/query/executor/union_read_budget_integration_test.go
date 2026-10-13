@@ -350,9 +350,13 @@ func TestIntegration_PermutedAggregateRepairStreamingMode(t *testing.T) {
 					if len(modes) == 0 {
 						t.Fatalf("no real %s range reached the observer", name)
 					}
+					wantMode := tc.effective.ToFDB()
+					if name == "repair" && tc.effective == recordlayer.StreamingModeWantAll {
+						wantMode = fdb.StreamingModeExact // The repair child has a finite row limit.
+					}
 					for _, mode := range modes {
-						if mode != tc.effective.ToFDB() {
-							t.Fatalf("%s used streaming mode %v, want effective override %v", name, mode, tc.effective.ToFDB())
+						if mode != wantMode {
+							t.Fatalf("%s used streaming mode %v, want effective mode %v", name, mode, wantMode)
 						}
 					}
 				}

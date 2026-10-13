@@ -692,6 +692,7 @@ go_test(
         "index_continuation_conformance_test.go",
         "index_continuation_range_conformance_test.go",
         "index_ddl_metadata_conformance_test.go",
+        "index_scan_limit_conformance_test.go",
         "index_shape_helpers_test.go",
         "index_state_conformance_test.go",
         "isolation_conformance_test.go",
