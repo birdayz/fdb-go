@@ -10,18 +10,10 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// BUG #1: ByteScanLimit off-by-one — keyValueCursor uses > instead of >= to
-// compare bytesScanned against ScannedBytesLimit. When bytesScanned equals
-// the limit exactly, Go allows one extra record read. Java's
-// ByteScanLimiter.hasBytesRemaining() uses `bytesRemaining > 0` which stops
-// at exactly 0 remaining (i.e., bytesScanned >= limit).
-//
-// File: key_value_cursor.go, line 147
-// File: index_scan.go, line 365 (same bug in indexCursor)
-//
-// This test creates records where we can precisely control the byte size,
-// sets the ScannedBytesLimit to exactly the size of the first record,
-// and verifies that only one record is returned (not two).
+// ByteScanLimit boundary: Java's ByteScanLimiter.hasBytesRemaining() is
+// `bytesRemaining > 0`, so the limit halts once bytesScanned >= limit. With the
+// limit at exactly one record's bytes, the second key-value halts and the
+// unsplitter finishes its record: two records, where a `>` check gives three.
 var _ = Describe("BUG1_ByteScanLimit_OffByOne", func() {
 	var metaData *RecordMetaData
 
@@ -86,7 +78,7 @@ var _ = Describe("BUG1_ByteScanLimit_OffByOne", func() {
 			}
 
 			Expect(count).To(Equal(2),
-				"bytesScanned == ScannedBytesLimit should stop the cursor (off-by-one: > vs >=)")
+				"bytesScanned == ScannedBytesLimit halts at the second key-value, which finishes its record")
 			Expect(lastResult.GetNoNextReason()).To(Equal(ByteLimitReached))
 			return nil, nil
 		})

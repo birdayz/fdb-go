@@ -7,14 +7,22 @@ import (
 )
 
 func (c *indexCursor) withContext(rc *FDBRecordContext) *indexCursor {
-	if rc != nil && c.scanProps.ExecuteProperties.TimeLimit > 0 {
-		c.clock = NewScanLimiterStateIn(rc.Env())
-		c.clock.AnchorAt(rc.createTime)
-	}
+	c.clock = transactionClock(rc, c.scanProps.ExecuteProperties, c.clock)
 	return c
 }
 
-func indexRangeOptions(props ScanProperties) fdb.RangeOptions {
+// transactionClock anchors a time limit at the transaction's creation, as
+// TimeScanLimiter does; without a context or time limit it returns fallback.
+func transactionClock(rc *FDBRecordContext, props ExecuteProperties, fallback *ScanLimiterState) *ScanLimiterState {
+	if rc == nil || props.TimeLimit <= 0 {
+		return fallback
+	}
+	clock := NewScanLimiterStateIn(rc.Env())
+	clock.AnchorAt(rc.createTime)
+	return clock
+}
+
+func kvRangeOptions(props ScanProperties) fdb.RangeOptions {
 	limit := props.ExecuteProperties.ReturnedRowLimit
 	if limit <= 0 {
 		limit = 0
@@ -47,7 +55,7 @@ func indexSkipRange(rng fdb.KeyRange, skip int, reverse bool) fdb.Range {
 }
 
 // CursorLimitManager charges attempts, including exhaustion and rejected scans.
-func tryIndexRecordScan(state, clock *ScanLimiterState, props ExecuteProperties, initialPass *bool) (bool, NoNextReason) {
+func tryScanLimits(state, clock *ScanLimiterState, props ExecuteProperties, initialPass *bool) (bool, NoNextReason) {
 	before := state.RecordsScanned()
 	state.AddRecordScanned()
 	if props.ScannedRecordsLimit > 0 && before >= props.ScannedRecordsLimit && (*initialPass || props.FailOnScanLimitReached) {

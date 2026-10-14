@@ -252,7 +252,7 @@ func (store *FDBRecordStore) SaveRecordBatch(
 			oldRT, oldMsg, oldWire, oldVersion = old.RecordType, old.Record, old.wire, old.Version
 			oldsizeInfo = sizeInfo{
 				KeyCount: old.KeyCount, KeySize: old.KeySize, ValueSize: old.ValueSize, IsSplit: old.Split,
-				VersionedInline: old.Version != nil && !store.useOldVersionFormat(),
+				VersionedInline: old.VersionedInline,
 			}
 		}
 

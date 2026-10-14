@@ -1792,11 +1792,7 @@ func (store *FDBRecordStore) newKeyValueCursor(
 		omitUnsplitRecordSuffix: store.omitUnsplitRecordSuffix() && !split,
 		useOldVersionFormat:     store.useOldVersionFormat(),
 	}
-	cursor.clock = cursor.scanState
-	if props.TimeLimit > 0 && store.context != nil {
-		cursor.clock = NewScanLimiterStateIn(store.context.Env())
-		cursor.clock.AnchorAt(store.context.createTime)
-	}
+	cursor.clock = transactionClock(store.context, props, cursor.scanState)
 	if cursor.omitUnsplitRecordSuffix {
 		cursor.selectorSkip = max(props.Skip, 0)
 	}
@@ -1844,15 +1840,12 @@ func (store *FDBRecordStore) CountRecords(
 			count++
 			continue
 		}
-		ok, reason, _, err := cursor.unsplit(ctx)
+		ok, reason, cont, err := cursor.unsplit(ctx)
 		if err != nil {
 			return count, err
 		}
 		if !ok {
-			if reason.IsOutOfBand() {
-				return count, &ScanLimitReachedError{Reason: reason}
-			}
-			return count, nil
+			return count, errIfDrainTruncated(NewResultNoNext[*FDBStoredRecord[proto.Message]](reason, cont))
 		}
 		count++
 	}

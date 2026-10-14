@@ -75,10 +75,10 @@ func unwrapContinuation(rawBytes []byte) []byte {
 	return msg.InnerContinuation
 }
 
-// rangeIterator is the minimal FDB range-scan iterator the cursor depends on.
+// rangeIterator is the minimal FDB range-scan iterator the cursors depend on.
 // *fdb.RangeIterator satisfies it; the interface exists so tests can inject a fake
-// that returns an error at a chosen position (the row-limit boundary), which a
-// concrete *fdb.RangeIterator can't be made to do deterministically.
+// that returns an error at a chosen position, which a concrete *fdb.RangeIterator
+// can't be made to do deterministically.
 type rangeIterator interface {
 	Advance() bool
 	Get() (fdb.KeyValue, error)
@@ -218,7 +218,8 @@ func (c *keyValueCursor) unsplit(ctx context.Context) (bool, NoNextReason, Recor
 		if c.hasInnerReason && c.innerReason == SourceExhausted {
 			return false, SourceExhausted, &EndContinuation{}, nil
 		}
-		return false, c.haltReason, c.unsplitContinuation(), nil
+		cont, err := c.unsplitContinuation()
+		return false, c.haltReason, cont, err
 	}
 	for {
 		if err := ctx.Err(); err != nil {
@@ -268,11 +269,10 @@ func (c *keyValueCursor) unsplit(ctx context.Context) (bool, NoNextReason, Recor
 		return false, 0, nil, &FoundSplitWithoutStartError{NextIndex: recordVersionSuffix, Reverse: c.reverse, KeyTuple: c.nextPrimaryKey()}
 	}
 	if !c.haveData {
-		reason := c.innerReason
-		if c.halted && reason != SourceExhausted {
-			reason = c.haltReason
-		}
-		return false, reason, c.unsplitContinuation(), nil
+		// Every key-value read in this call started a record, so the limits
+		// cannot have halted: the stop reason is the inner cursor's.
+		cont, err := c.unsplitContinuation()
+		return false, c.innerReason, cont, err
 	}
 	if !c.useOldVersionFormat {
 		// A version saved in this transaction is still a pending versionstamp.
@@ -295,7 +295,7 @@ func (c *keyValueCursor) unsplit(ctx context.Context) (bool, NoNextReason, Recor
 // tryRecordScan charges one scanned key-value; Java throws on a halt in fail mode.
 func (c *keyValueCursor) tryRecordScan() error {
 	props := c.scanProperties.ExecuteProperties
-	allowed, reason := tryIndexRecordScan(c.scanState, c.clock, props, &c.initialPass)
+	allowed, reason := tryScanLimits(c.scanState, c.clock, props, &c.initialPass)
 	c.halted, c.haltReason = !allowed, reason
 	if !allowed && props.FailOnScanLimitReached {
 		return &ScanLimitReachedError{Reason: reason}
@@ -446,18 +446,15 @@ func (c *keyValueCursor) assemble() []byte {
 }
 
 // unsplitContinuation is the unsplitter's current continuation.
-func (c *keyValueCursor) unsplitContinuation() RecordCursorContinuation {
+func (c *keyValueCursor) unsplitContinuation() (RecordCursorContinuation, error) {
 	if c.contEnd {
-		return &EndContinuation{}
-	}
-	if c.contKey == nil {
-		return &StartContinuation{}
+		return &EndContinuation{}, nil
 	}
 	cont, err := c.makeContinuation(c.contKey)
 	if err != nil {
-		return &StartContinuation{}
+		return nil, err
 	}
-	return cont
+	return cont, nil
 }
 
 // nextBareRecord is KeyValueCursorBase.onNext mapped to a record, for stores
@@ -471,7 +468,11 @@ func (c *keyValueCursor) nextBareRecord(ctx context.Context) (RecordCursorResult
 		return RecordCursorResult[*FDBStoredRecord[proto.Message]]{}, err
 	}
 	if c.halted {
-		return NewResultNoNext[*FDBStoredRecord[proto.Message]](c.haltReason, c.lastKeyContinuation()), nil
+		cont, err := c.lastKeyContinuation()
+		if err != nil {
+			return RecordCursorResult[*FDBStoredRecord[proto.Message]]{}, err
+		}
+		return NewResultNoNext[*FDBStoredRecord[proto.Message]](c.haltReason, cont), nil
 	}
 	kv, ok, err := c.nextKV()
 	if err != nil {
@@ -479,7 +480,11 @@ func (c *keyValueCursor) nextBareRecord(ctx context.Context) (RecordCursorResult
 	}
 	if !ok {
 		if c.innerLimit > 0 && c.valuesSeen >= c.innerLimit {
-			return NewResultNoNext[*FDBStoredRecord[proto.Message]](ReturnLimitReached, c.lastKeyContinuation()), nil
+			cont, err := c.lastKeyContinuation()
+			if err != nil {
+				return RecordCursorResult[*FDBStoredRecord[proto.Message]]{}, err
+			}
+			return NewResultNoNext[*FDBStoredRecord[proto.Message]](ReturnLimitReached, cont), nil
 		}
 		return NewResultNoNext[*FDBStoredRecord[proto.Message]](SourceExhausted, &EndContinuation{}), nil
 	}
@@ -498,16 +503,17 @@ func (c *keyValueCursor) nextBareRecord(ctx context.Context) (RecordCursorResult
 	return NewResultWithValue(record, cont), nil
 }
 
-// lastKeyContinuation is KeyValueCursorBase's continuation: the last key read, or end.
-func (c *keyValueCursor) lastKeyContinuation() RecordCursorContinuation {
+// lastKeyContinuation is KeyValueCursorBase's continuation: the last key read,
+// or end before any key, as Java's Continuation(null).
+func (c *keyValueCursor) lastKeyContinuation() (RecordCursorContinuation, error) {
 	if c.lastKey == nil {
-		return &EndContinuation{}
+		return &EndContinuation{}, nil
 	}
 	cont, err := c.makeContinuation(c.lastKey)
 	if err != nil {
-		return &EndContinuation{}
+		return nil, err
 	}
-	return cont
+	return cont, nil
 }
 
 // storedRecord is deserializeRecord. prefix is the records-subspace key up to the
@@ -583,7 +589,7 @@ func (c *keyValueCursor) initIterator() error {
 	}
 	inner := c.scanProperties
 	inner.ExecuteProperties.ReturnedRowLimit = c.innerLimit
-	options := indexRangeOptions(inner)
+	options := kvRangeOptions(inner)
 	var r fdb.Range = rng
 	if c.selectorSkip > 0 {
 		// KeyValueCursorBase skips by moving the begin (or reverse end) selector.

@@ -68,3 +68,26 @@ func TestKeyValueCursor_RowLimitDoesNotReadAhead(t *testing.T) {
 		t.Fatalf("row limit read ahead %d times", iterator.advances)
 	}
 }
+
+// A stop token that cannot be built must fail the scan: a substitute start or
+// end token would resume from the beginning or silently truncate.
+func TestKeyValueCursor_StopTokenErrorSurfaces(t *testing.T) {
+	t.Parallel()
+	unsplitter := &keyValueCursor{
+		iterator: &fakeRangeIterator{}, halted: true, haltReason: ScanLimitReached,
+		contKey: fdb.Key{0x01}, prefixLength: 5,
+	}
+	if res, err := unsplitter.OnNext(context.Background()); err == nil {
+		t.Fatalf("unsplitter stop with an unbuildable token returned %v", res.GetContinuation())
+	}
+	state := NewScanLimiterState()
+	state.AddRecordScanned()
+	bare := &keyValueCursor{
+		iterator: &fakeRangeIterator{}, omitUnsplitRecordSuffix: true, initialPass: true,
+		lastKey: fdb.Key{0x01}, prefixLength: 5, scanState: state, clock: state,
+		scanProperties: ScanProperties{ExecuteProperties: ExecuteProperties{ScannedRecordsLimit: 1}},
+	}
+	if res, err := bare.OnNext(context.Background()); err == nil {
+		t.Fatalf("bare stop with an unbuildable token returned %v", res.GetContinuation())
+	}
+}

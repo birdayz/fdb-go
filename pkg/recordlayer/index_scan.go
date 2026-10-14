@@ -588,7 +588,7 @@ func (c *indexCursor) advance(ctx context.Context) (RecordCursorResult[*IndexEnt
 	if clock == nil {
 		clock = c.scanState
 	}
-	if allowed, reason := tryIndexRecordScan(c.scanState, clock, executeProps, &c.initialPass); !allowed {
+	if allowed, reason := tryScanLimits(c.scanState, clock, executeProps, &c.initialPass); !allowed {
 		return noNextOrFail[*IndexEntry](executeProps, reason, c.limitContinuation())
 	}
 	// Java reports the passed-down row limit even if it exactly exhausted the source.
@@ -696,7 +696,7 @@ func (c *indexCursor) initIterator() error {
 	if err != nil {
 		return err
 	}
-	options := indexRangeOptions(c.scanProps)
+	options := kvRangeOptions(c.scanProps)
 	r := indexSkipRange(rng, c.scanProps.ExecuteProperties.Skip, options.Reverse)
 
 	var rangeResult fdb.RangeResult

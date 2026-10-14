@@ -32,6 +32,7 @@ func (p recordScanPage) pks() []int64 {
 func scanRecordPage(store *FDBRecordStore, execute ExecuteProperties, reverse bool, continuation []byte) recordScanPage {
 	var page recordScanPage
 	cursor := store.ScanRecords(continuation, NewScanProperties(execute).WithReverse(reverse))
+	defer func() { _ = cursor.Close() }()
 	for {
 		page.last, page.err = cursor.OnNext(context.Background())
 		if page.err != nil || !page.last.HasNext() {

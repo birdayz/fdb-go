@@ -191,7 +191,7 @@ var _ = Describe("BugBounty3Store", func() {
 
 	// An exact row limit over versioned records: Java's limitRowsTo returns
 	// RETURN_LIMIT_REACHED with the last record's token without reading ahead.
-	It("BUG2: exact row limit over versioned records reports ReturnLimitReached", func() {
+	It("exact row limit over versioned records reports ReturnLimitReached", func() {
 		ks := specSubspace()
 
 		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
