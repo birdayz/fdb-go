@@ -73,10 +73,11 @@ Nothing but the operation itself is timed:
   2 split: just over the 100,000-byte split threshold); C2 checks every
   record; SQL seeds a database it created (see below).
 - Every measured operation's result is verified under `b.StopTimer`, without
-  a receipt per operation: C1 and C2 check exact IDs and order, fields,
-  payload checksum and terminal reason (`ReturnLimitReached` for `limit1`,
-  otherwise `SourceExhausted`); SQL reads check exact rows; `TimestampInsert`
-  checks each insert affected one row.
+  a receipt per operation: C1 checks exact IDs and order, fields, payload
+  checksum and terminal reason (`ReturnLimitReached` for `limit1`, otherwise
+  `SourceExhausted`); C2 checks exact IDs and order, fields and the
+  `SourceExhausted` terminal reason (its rows carry no payload); SQL reads
+  check exact rows; `TimestampInsert` checks each insert affected one row.
 - C1, C2 and the SQL method benchmark run an instrumented operation (its own
   StoreTimer; measured operations have none) before and after the measured
   loop and assert the path: remote fetch has `remote_fetch` > 0, no
