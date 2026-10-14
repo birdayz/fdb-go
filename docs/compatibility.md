@@ -115,7 +115,11 @@ The pure-Go client resolves the skipped selector with a `GetKey` that is not
 bounded by the scan range. When Skip overshoots the remaining entries, Go reads
 keys beyond the range until the selector resolves and, in a serializable
 transaction, adds them to the read-conflict range; `libfdb_c` bounds both by the
-range. The query executor applies Skip above the index cursor instead of in it.
+range. Ordinary, covering and fetch query index plans pass Skip to the index
+cursor when binding a single physical range without a residual key filter, so
+skipped entries are neither scan-limit charges nor record loads. Multi-range
+`ScanRangeSet` and key-filtered plans, other index types, and the mapped reads
+of remote-fetch plans keep one outer Skip, plus the outer returned-row limit.
 See DIVERGENCES.md.
 
 ### Vector defaults are layer-specific

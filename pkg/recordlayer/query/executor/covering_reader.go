@@ -164,7 +164,7 @@ func executeCoveringIndexValueScan(
 	if err != nil {
 		return nil, fmt.Errorf("executor: building scan execution identity for %q: %w", p.GetIndexName(), err)
 	}
-	indexCursor, err := openIndexEntryCursor(p.GetIndexPlan(), salt, nil, store, evalCtx, continuation, props)
+	indexCursor, outerSkip, err := openIndexEntryCursor(p.GetIndexPlan(), salt, nil, store, evalCtx, continuation, props)
 	if err != nil {
 		return nil, err
 	}
@@ -172,7 +172,7 @@ func executeCoveringIndexValueScan(
 		inner:  indexCursor,
 		reader: reader,
 		binder: entryBinder{outer: evalCtx},
-	}, props.Skip, props.ReturnedRowLimit), nil
+	}, outerSkip, props.ReturnedRowLimit), nil
 }
 
 // coveringIndexCursor maps each scanned entry through the covering plan's
