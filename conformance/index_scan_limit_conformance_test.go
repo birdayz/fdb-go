@@ -670,31 +670,48 @@ var _ = Describe("Ordinary index cursor Java limit conformance", func() {
 			Expect(page.Selectors).To(Equal([]scanLimitSelectors{want}))
 		})
 	})
-	It("applies Skip as selector offsets on COUNT, MIN/MAX_EVER_TUPLE, MAX_EVER_VERSION and BITMAP_VALUE cursors", func() {
-		compareGroup := func(req scanLimitRequest) scanLimitPage {
-			var oracle scanLimitPage
-			Expect(java.InvokeAs(ctx, "scanIndexScanLimits", map[string]any{
-				"clusterFile": env.ClusterFile, "tenantName": env.TenantName, "subspace": BytesToIntArray(ks.Bytes()), "request": req,
-			}, &oracle)).To(Succeed())
-			got := scanGo(req)
-			Expect(got.ExceptionClass).To(Equal(oracle.ExceptionClass))
-			Expect(got.Rows).To(Equal(oracle.Rows), "index=%s reverse=%v row=%d skip=%d cont=%s",
-				req.IndexName, req.Reverse, req.RowLimit, req.Skip, req.Continuation)
-			Expect(got.Reason).To(Equal(oracle.Reason))
-			Expect(got.Continuation).To(Equal(oracle.Continuation))
-			Expect(got.End).To(Equal(oracle.End))
-			Expect(got.ScannedBytes).To(Equal(oracle.ScannedBytes))
-			Expect(got.Selectors).To(Equal(oracle.Selectors))
-			return oracle
-		}
+	It("matches Java row-limit boundaries, scan-attempt counters and Skip selector offsets on COUNT, MIN/MAX_EVER_TUPLE, MAX_EVER_VERSION and BITMAP_VALUE cursors", func() {
 		forEachGroupScan(func(req scanLimitRequest) {
-			baseline := compareGroup(req)
+			baseline := compare(req)
 			Expect(baseline.Rows).To(HaveLen(count))
+			Expect(baseline.Reason).To(Equal("SOURCE_EXHAUSTED"))
+			Expect(baseline.End).To(BeTrue())
+			Expect(baseline.ScannedRecords).To(Equal(count + 1))
+			Expect(baseline.Repeats).To(HaveLen(2))
+
+			for _, limit := range []int{1, count, count + 1} {
+				req.RowLimit = limit
+				page := compare(req)
+				Expect(page.Rows).To(HaveLen(min(limit, count)))
+				Expect(page.ScannedRecords).To(Equal(min(limit, count) + 1))
+				Expect(page.RangeOptions).To(Equal([]scanLimitRangeOptions{{int(fdb.StreamingModeIterator), limit, req.Reverse}}))
+				if limit <= count {
+					Expect(page.Reason).To(Equal("RETURN_LIMIT_REACHED"))
+					Expect(page.End).To(BeFalse())
+					Expect(page.Continuation).To(Equal(page.Rows[len(page.Rows)-1].Continuation))
+				} else {
+					Expect(page.Reason).To(Equal("SOURCE_EXHAUSTED"))
+					Expect(page.End).To(BeTrue())
+				}
+			}
+			// Resuming the exact-boundary page (rowCount == limit) produces an empty exhausted page.
+			req.RowLimit = count
+			exact := compare(req)
+			Expect(exact.Reason).To(Equal("RETURN_LIMIT_REACHED"))
+			req.Continuation = exact.Continuation
+			emptyAfterExact := compare(req)
+			Expect(emptyAfterExact.Rows).To(BeEmpty())
+			Expect(emptyAfterExact.Reason).To(Equal("SOURCE_EXHAUSTED"))
+			Expect(emptyAfterExact.End).To(BeTrue())
+			Expect(emptyAfterExact.ScannedRecords).To(Equal(1))
+
+			req.Continuation, req.RowLimit = "", 0
 			for _, skip := range []int{1, 3, count, count + 1, math.MaxInt32 - 1} {
 				req.Skip = skip
-				page := compareGroup(req)
+				page := compare(req)
 				Expect(page.Rows).To(Equal(baseline.Rows[min(skip, count):]))
 				Expect(page.Reason).To(Equal("SOURCE_EXHAUSTED"))
+				Expect(page.ScannedRecords).To(Equal(len(page.Rows) + 1))
 				Expect(page.Selectors).To(HaveLen(1))
 				if req.Reverse {
 					Expect(page.Selectors[0].EndOffset).To(Equal(1 - skip))
@@ -702,20 +719,35 @@ var _ = Describe("Ordinary index cursor Java limit conformance", func() {
 					Expect(page.Selectors[0].BeginOffset).To(Equal(1 + skip))
 				}
 			}
+			for _, skip := range []int{1, 3} {
+				req.Skip = skip
+				for _, limit := range []int{1, count - skip, count - skip + 1} {
+					req.RowLimit = limit
+					page := compare(req)
+					Expect(page.Rows).To(Equal(baseline.Rows[skip:min(skip+limit, count)]))
+					Expect(page.RangeOptions[0].Limit).To(Equal(limit))
+					if skip+limit <= count {
+						Expect(page.Reason).To(Equal("RETURN_LIMIT_REACHED"))
+					} else {
+						Expect(page.Reason).To(Equal("SOURCE_EXHAUSTED"))
+					}
+				}
+			}
 			// A resumed page re-applies the caller's Skip after its continuation.
 			req.Skip, req.RowLimit = 2, 0
 			for position, row := range baseline.Rows {
 				req.Continuation = row.Continuation
-				Expect(compareGroup(req).Rows).To(Equal(baseline.Rows[min(position+3, count):]))
+				Expect(compare(req).Rows).To(Equal(baseline.Rows[min(position+3, count):]))
 			}
 			req.Skip, req.RowLimit, req.Continuation = 1, 2, ""
-			first := compareGroup(req)
+			first := compare(req)
 			Expect(first.Rows).To(Equal(baseline.Rows[1:3]))
 			req.Continuation = first.Continuation
-			second := scanGo(req)
+			second := compare(req)
 			Expect(second.Rows).To(Equal(baseline.Rows[4:6]))
-			req.Continuation = second.Rows[len(second.Rows)-1].Continuation
-			Expect(compareGroup(req).Rows).To(BeEmpty())
+			Expect(second.Reason).To(Equal("RETURN_LIMIT_REACHED"))
+			req.Continuation = second.Continuation
+			Expect(compare(req).Rows).To(BeEmpty())
 
 			// Saturates Skip=MaxInt32 and 1<<32 selector offsets where Java's MaxInt32 wraps.
 			probe := scanLimitRequest{IndexName: req.IndexName, Reverse: req.Reverse, Streaming: "ITERATOR", Skip: math.MaxInt32, SelectorsOnly: true}
@@ -738,6 +770,7 @@ var _ = Describe("Ordinary index cursor Java limit conformance", func() {
 				Expect(page.ExceptionClass).To(BeEmpty())
 				Expect(page.Rows).To(BeEmpty())
 				Expect(page.Reason).To(Equal("SOURCE_EXHAUSTED"))
+				Expect(page.ScannedRecords).To(Equal(1))
 				Expect(page.RangeOptions).To(Equal(oracle.RangeOptions))
 				Expect(page.Selectors).To(Equal([]scanLimitSelectors{want}))
 			}

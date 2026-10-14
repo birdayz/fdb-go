@@ -30,25 +30,32 @@ type countKVCursor struct {
 
 	iterator     rangeIterator
 	closed       bool
-	returned     int // also this cursor's own free-initial-pass gate (Java's usedInitialPass)
+	returned     int
+	initialPass  bool
+	clock        *ScanLimiterState
 	bounds       kvScanBounds
 	prefixLength int
 	lastCont     []byte
+	lastNoNext   RecordCursorResult[*IndexEntry]
+	hasNoNext    bool
 	tupleValues  bool // if true, decode values as tuple-packed bytes
 
 	// scanState is the (possibly shared) scanned-records/scanned-bytes/time
 	// counter set for RFC-106a resource limits — see ScanLimiterState's doc
-	// comment. Each aggregate-index KV is a pre-aggregated group, so one KV
-	// read == one entry returned; `returned` doubles as the local
-	// scanned-records count (like index_scan's recordsRead). Never nil.
+	// comment. Never nil.
 	scanState *ScanLimiterState
+}
+
+func (c *countKVCursor) withContext(rc *FDBRecordContext) *countKVCursor {
+	c.clock = transactionClock(rc, c.scanProps.ExecuteProperties, c.clock)
+	return c
 }
 
 // newCountIndexCursor creates a cursor that scans a COUNT index.
 // Each entry's Value is the count decoded from the little-endian int64 FDB value.
 func newCountIndexCursor(index *Index, indexSubspace subspace.Subspace, tx fdb.WritableTransaction,
 	scanRange TupleRange, continuation []byte, scanProperties ScanProperties,
-) RecordCursor[*IndexEntry] {
+) *countKVCursor {
 	bounds := newKVScanBounds(indexSubspace, scanRange.Low, scanRange.High, scanRange.LowEndpoint, scanRange.HighEndpoint)
 	return &countKVCursor{
 		index:         index,
@@ -66,7 +73,7 @@ func newCountIndexCursor(index *Index, indexSubspace subspace.Subspace, tx fdb.W
 // Each entry's Value is decoded from tuple-packed bytes (for MIN_EVER_TUPLE/MAX_EVER_TUPLE).
 func newTupleValueIndexCursor(index *Index, indexSubspace subspace.Subspace, tx fdb.WritableTransaction,
 	scanRange TupleRange, continuation []byte, scanProperties ScanProperties,
-) RecordCursor[*IndexEntry] {
+) *countKVCursor {
 	bounds := newKVScanBounds(indexSubspace, scanRange.Low, scanRange.High, scanRange.LowEndpoint, scanRange.HighEndpoint)
 	return &countKVCursor{
 		index:         index,
@@ -93,21 +100,7 @@ func (c *countKVCursor) initIterator() error {
 	if err != nil {
 		return err
 	}
-	options := fdb.RangeOptions{
-		Mode:    c.scanProps.CursorStreamingMode.ToFDB(),
-		Reverse: c.scanProps.IsReverse(),
-	}
-
-	if c.scanProps.ExecuteProperties.ReturnedRowLimit > 0 {
-		limit := c.scanProps.ExecuteProperties.ReturnedRowLimit - c.returned
-		if limit <= 0 {
-			limit = 1
-		}
-		options.Limit = saturatingAdd(limit, 1)
-		if c.scanProps.CursorStreamingMode == StreamingModeWantAll {
-			options.Mode = fdb.StreamingModeExact
-		}
-	}
+	options := kvRangeOptions(c.scanProps)
 	r := indexSkipRange(rng, c.scanProps.ExecuteProperties.Skip, options.Reverse)
 
 	// Honor the requested isolation level, exactly as Java's KeyValueCursorBase does:
@@ -138,6 +131,19 @@ func (c *countKVCursor) initIterator() error {
 }
 
 func (c *countKVCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexEntry], error) {
+	if c.hasNoNext && !c.closed {
+		return c.lastNoNext, nil
+	}
+	result, err := c.advance(ctx)
+	if err == nil && !result.HasNext() {
+		// Java replays the first terminal result on subsequent calls.
+		c.lastNoNext = result
+		c.hasNoNext = true
+	}
+	return result, err
+}
+
+func (c *countKVCursor) advance(ctx context.Context) (RecordCursorResult[*IndexEntry], error) {
 	if c.closed {
 		return RecordCursorResult[*IndexEntry]{}, fmt.Errorf("cursor is closed")
 	}
@@ -155,15 +161,20 @@ func (c *countKVCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexEn
 
 	executeProps := c.scanProps.GetExecuteProperties()
 
-	// Check row limit FIRST so a MAX_ROWS/LIMIT-bounded scan stops cleanly with
-	// ReturnLimitReached before the scan-limit backstops can fire (RFC-106a:
-	// match index_scan ordering — a returned-row cap that is satisfied must not be
-	// turned into a 54F01 by an equal scan-record cap).
+	clock := c.clock
+	if clock == nil {
+		clock = c.scanState
+	}
+	if allowed, reason := tryScanLimits(c.scanState, clock, executeProps, &c.initialPass); !allowed {
+		return noNextOrFail[*IndexEntry](executeProps, reason, c.limitContinuation())
+	}
+
+	// Java reports the passed-down row limit even if it exactly exhausted the source.
 	if executeProps.ReturnedRowLimit > 0 && c.returned >= executeProps.ReturnedRowLimit {
 		if c.iterator.Advance() {
 			return NewResultNoNext[*IndexEntry](
 				ReturnLimitReached,
-				&BytesContinuation{bytes: c.lastCont},
+				c.limitContinuation(),
 			), nil
 		}
 		// Advance() returns false on exhaustion OR error — check Get() for the stored
@@ -173,33 +184,9 @@ func (c *countKVCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexEn
 			return RecordCursorResult[*IndexEntry]{}, fmt.Errorf("count index scan at row-limit boundary: %w", err)
 		}
 		return NewResultNoNext[*IndexEntry](
-			SourceExhausted,
-			&EndContinuation{},
+			ReturnLimitReached,
+			c.limitContinuation(),
 		), nil
-	}
-
-	// Scanned-records limit (RFC-106a parity): one aggregate-index KV per entry,
-	// so `returned` is the scanned-records count (local free-initial-pass gate, bypassed under
-	// FailOnScanLimitReached to match Java's CursorLimitManager.java:135-136); the
-	// threshold is the (possibly shared) scanState so every leg of an IN-join/IN-union
-	// charges the same aggregate budget instead of resetting per leg. noNextOrFail → 54F01.
-	if executeProps.ScannedRecordsLimit > 0 &&
-		(c.returned > 0 || executeProps.FailOnScanLimitReached) &&
-		c.scanState.RecordsScanned() >= executeProps.ScannedRecordsLimit {
-		return noNextOrFail[*IndexEntry](executeProps, ScanLimitReached, &BytesContinuation{bytes: c.lastCont})
-	}
-
-	// Time limit (free initial pass like the other leaf cursors, unconditional — Java never
-	// suppresses it), measured against the shared scanState's anchor rather than this cursor's own
-	// construction time. noNextOrFail: Java throws on ANY halted limit under
-	// FailOnScanLimitReached, not just the scanned-records one (CursorLimitManager.java:141-144).
-	if executeProps.TimeLimit > 0 && c.returned > 0 && c.scanState.Elapsed() >= executeProps.TimeLimit {
-		return noNextOrFail[*IndexEntry](executeProps, TimeLimitReached, &BytesContinuation{bytes: c.lastCont})
-	}
-
-	// Scanned-bytes limit (free initial pass).
-	if executeProps.ScannedBytesLimit > 0 && c.returned > 0 && c.scanState.BytesScanned() >= executeProps.ScannedBytesLimit {
-		return noNextOrFail[*IndexEntry](executeProps, ByteLimitReached, &BytesContinuation{bytes: c.lastCont})
 	}
 
 	if !c.iterator.Advance() {
@@ -256,7 +243,6 @@ func (c *countKVCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexEn
 	}
 
 	c.returned++
-	c.scanState.AddRecordScanned()
 
 	cont, err := c.makeContinuation(kv.Key)
 	if err != nil {
@@ -265,6 +251,13 @@ func (c *countKVCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexEn
 	c.lastCont = cont
 
 	return NewResultWithValue(entry, &BytesContinuation{bytes: cont}), nil
+}
+
+func (c *countKVCursor) limitContinuation() RecordCursorContinuation {
+	if c.lastCont != nil {
+		return &BytesContinuation{bytes: c.lastCont}
+	}
+	return &StartContinuation{}
 }
 
 func (c *countKVCursor) makeContinuation(key fdb.Key) ([]byte, error) {

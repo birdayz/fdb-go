@@ -426,10 +426,16 @@ func (m *atomicMutationIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
 // Scan scans index entries within the given tuple range.
 // Uses countKVCursor (int64 values) or tuple variant based on mutation type.
 func (m *atomicMutationIndexMaintainer) Scan(scanRange TupleRange, continuation []byte, scanProperties ScanProperties) RecordCursor[*IndexEntry] {
+	var cursor *countKVCursor
 	if m.mutation.tupleValues() {
-		return newTupleValueIndexCursor(m.index, m.indexSubspace, m.tx, scanRange, continuation, scanProperties)
+		cursor = newTupleValueIndexCursor(m.index, m.indexSubspace, m.tx, scanRange, continuation, scanProperties)
+	} else {
+		cursor = newCountIndexCursor(m.index, m.indexSubspace, m.tx, scanRange, continuation, scanProperties)
 	}
-	return newCountIndexCursor(m.index, m.indexSubspace, m.tx, scanRange, continuation, scanProperties)
+	if store, ok := m.store.(*FDBRecordStore); ok {
+		cursor.withContext(store.context)
+	}
+	return cursor
 }
 
 // indexAggregator is implemented by index maintainers that support aggregate evaluation.
