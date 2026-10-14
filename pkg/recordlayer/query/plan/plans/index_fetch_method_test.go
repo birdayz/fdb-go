@@ -1,6 +1,8 @@
 package plans
 
 import (
+	"reflect"
+	"strings"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/indexfetch"
@@ -27,33 +29,44 @@ func TestIndexPlan_FetchMethodDefaultsToScanAndFetch(t *testing.T) {
 // TestIndexPlan_FetchMethodSurvivesEveryCopy pins Java's copies (strictlySorted
 // :472-475, minimize :507-512, withIndexScanParameters :514-518): every
 // metadata-preserving copy keeps the method, or a rule that rewrites a stamped
-// scan would silently turn remote fetch off.
+// scan would silently turn remote fetch off. The census is of the type's own
+// With* methods, so a new one without a case here fails.
 func TestIndexPlan_FetchMethodSurvivesEveryCopy(t *testing.T) {
 	t.Parallel()
 	for _, method := range allIndexFetchMethods {
 		base := coveringTestIndexPlan(t, "IDX_A", []*predicates.ComparisonRange{pkOrderingEq(t, int64(5))}, false).
 			WithIndexFetchMethod(method)
 		copies := map[string]*RecordQueryIndexPlan{
-			"WithScanComparisons":           base.WithScanComparisons([]*predicates.ComparisonRange{pkOrderingEq(t, int64(7))}),
-			"WithKeyComponentTypes":         base.WithKeyComponentTypes([]values.Type{values.NotNullLong}),
-			"WithPrimaryKeyComponentTypes":  base.WithPrimaryKeyComponentTypes([]values.Type{values.NotNullLong}),
-			"WithPhysicalGroupingPrefixCnt": base.WithPhysicalGroupingPrefixCount(1),
-			"WithCommonPrimaryKey":          base.WithCommonPrimaryKey(nil),
-			"WithValueColumnNames":          base.WithValueColumnNames([]string{"B"}),
-			"WithColumnPaths":               base.WithColumnPaths(nil, nil),
-			"WithDistinctRecordsSignal":     base.WithDistinctRecordsSignal(false),
-			"WithIndexMetadata":             base.WithIndexMetadata([]string{"A"}, []string{"ID"}, true),
-			"WithOrderingColumns":           base.WithOrderingColumns(nil),
-			"WithOrderingKeyNamesUnavail":   base.WithOrderingKeyNamesUnavailable(),
-			"WithStrictlySorted":            base.WithStrictlySorted(),
-			"WithDistinctProofIndexName":    base.WithDistinctProofIndexName("IDX_U").(*RecordQueryIndexPlan),
-			"WithMatchedIndexPredicate":     base.WithMatchedIndexPredicate([]byte{1}),
-			"WithEntryReader":               base.WithEntryReader(nil),
+			"WithScanComparisons":             base.WithScanComparisons([]*predicates.ComparisonRange{pkOrderingEq(t, int64(7))}),
+			"WithKeyComponentTypes":           base.WithKeyComponentTypes([]values.Type{values.NotNullLong}),
+			"WithPrimaryKeyComponentTypes":    base.WithPrimaryKeyComponentTypes([]values.Type{values.NotNullLong}),
+			"WithPhysicalGroupingPrefixCount": base.WithPhysicalGroupingPrefixCount(1),
+			"WithCommonPrimaryKey":            base.WithCommonPrimaryKey(nil),
+			"WithValueColumnNames":            base.WithValueColumnNames([]string{"B"}),
+			"WithColumnPaths":                 base.WithColumnPaths(nil, nil),
+			"WithDistinctRecordsSignal":       base.WithDistinctRecordsSignal(false),
+			"WithIndexMetadata":               base.WithIndexMetadata([]string{"A"}, []string{"ID"}, true),
+			"WithOrderingColumns":             base.WithOrderingColumns(nil),
+			"WithOrderingKeyNamesUnavailable": base.WithOrderingKeyNamesUnavailable(),
+			"WithStrictlySorted":              base.WithStrictlySorted(),
+			"WithDistinctProofIndexName":      base.WithDistinctProofIndexName("IDX_U").(*RecordQueryIndexPlan),
+			"WithMatchedIndexPredicate":       base.WithMatchedIndexPredicate([]byte{1}),
+			"WithEntryReader":                 base.WithEntryReader(nil),
 		}
-		if len(copies) != 15 {
-			t.Fatalf("copy census = %d, want 15", len(copies))
+		planType := reflect.TypeOf(base)
+		for i := range planType.NumMethod() {
+			name := planType.Method(i).Name
+			if !strings.HasPrefix(name, "With") || name == "WithIndexFetchMethod" || name == "WithQuantifiers" {
+				continue
+			}
+			if _, ok := copies[name]; !ok {
+				t.Fatalf("%s copies RecordQueryIndexPlan with no case here", name)
+			}
 		}
 		for name, copied := range copies {
+			if _, ok := planType.MethodByName(name); !ok {
+				t.Fatalf("case %s names no method", name)
+			}
 			if got := copied.GetIndexFetchMethod(); got != method {
 				t.Errorf("%s dropped the fetch method: got %v, want %v", name, got, method)
 			}

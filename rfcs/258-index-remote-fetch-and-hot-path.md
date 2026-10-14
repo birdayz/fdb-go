@@ -120,7 +120,8 @@ in `reconstructSingleRecord`).
 1. Facade capability and mapped-range iteration, with the differential extended.
 2. Record Layer `ScanRemoteFetch`, reconstruction, dispatch, fallback, Java
    conformance.
-3. Planner, plan serialization and the SQL option, yamsql scenario.
+3. Planner and the SQL option, yamsql scenario; plan serialization is pinned
+   only (see Amendments).
 4. Allocation work on the remote-fetch path, with measurements.
 
 ### Amendments (PR3)

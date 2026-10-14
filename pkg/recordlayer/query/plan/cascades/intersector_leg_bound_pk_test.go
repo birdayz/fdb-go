@@ -170,7 +170,7 @@ func TestIntersector_ComparesOnTheComponentOneLegFixes(t *testing.T) {
 	result := withPrimaryKeyIntersector(compensationTestMemoizer(), ctx)([]Vectored[*SingleMatchedAccess]{
 		makeVectoredAccess(legA, 0),
 		makeVectoredAccess(legB, 1),
-	}, nil, newAccessRealizations(EmptyPlanContext()))
+	}, nil, make(accessRealizations))
 	got := intersectionPlansOf(t, result)
 	if len(got) != 1 {
 		var keys [][]string
@@ -207,7 +207,7 @@ func TestIntersector_AcceptsPrimaryKeyComponentFixedInEveryLeg(t *testing.T) {
 	result := withPrimaryKeyIntersector(compensationTestMemoizer(), ctx)([]Vectored[*SingleMatchedAccess]{
 		makeVectoredAccess(legA, 0),
 		makeVectoredAccess(legB, 1),
-	}, nil, newAccessRealizations(EmptyPlanContext()))
+	}, nil, make(accessRealizations))
 	got := intersectionPlansOf(t, result)
 	if len(got) == 0 {
 		t.Fatal("no intersection built although both legs fix VERSION to the same constant and continue with ID: " +
@@ -241,7 +241,7 @@ func TestIntersector_ComparesOnTheComponentLegsFixToDifferentConstants(t *testin
 	result := withPrimaryKeyIntersector(compensationTestMemoizer(), ctx)([]Vectored[*SingleMatchedAccess]{
 		makeVectoredAccess(legA, 0),
 		makeVectoredAccess(legB, 1),
-	}, nil, newAccessRealizations(EmptyPlanContext()))
+	}, nil, make(accessRealizations))
 	got := intersectionPlansOf(t, result)
 	if len(got) == 0 {
 		t.Fatal("no intersection built: comparing on (ID, VERSION) is sound here (the merge finds nothing, correctly)")
@@ -273,7 +273,7 @@ func TestIntersector_ThreeWayBuildsTheWidestPartitionOnBothComponents(t *testing
 		makeVectoredAccess(legA, 0),
 		makeVectoredAccess(legB, 1),
 		makeVectoredAccess(legV, 2),
-	}, nil, newAccessRealizations(EmptyPlanContext()))
+	}, nil, make(accessRealizations))
 	got := intersectionPlansOf(t, result)
 	if len(got) != 1 {
 		t.Fatalf("%d intersections built, want exactly one (the redundancy pruning keeps the widest sound partition)", len(got))
@@ -303,7 +303,7 @@ func TestIntersector_DeclinesWhenAComponentIsOrderedOnlyWithinAnUncomparableValu
 	result := withPrimaryKeyIntersector(compensationTestMemoizer(), ctx)([]Vectored[*SingleMatchedAccess]{
 		makeVectoredAccess(legA, 0),
 		makeVectoredAccess(legV, 1),
-	}, nil, newAccessRealizations(EmptyPlanContext()))
+	}, nil, make(accessRealizations))
 	if got := intersectionPlansOf(t, result); len(got) != 0 {
 		t.Fatalf("intersection built on %v over a leg whose ID is ordered only within SORT_KEY", comparisonKeyNames(t, got[0]))
 	}
@@ -323,7 +323,7 @@ func TestIntersector_DeclinesWhenTheLegsSortTheFreeComponentOppositely(t *testin
 	result := withPrimaryKeyIntersector(compensationTestMemoizer(), ctx)([]Vectored[*SingleMatchedAccess]{
 		makeVectoredAccess(legA, 0),
 		makeReverseVectoredAccess(legB, 1),
-	}, nil, newAccessRealizations(EmptyPlanContext()))
+	}, nil, make(accessRealizations))
 	if got := intersectionPlansOf(t, result); len(got) != 0 {
 		t.Fatalf("intersection built on %v (reverse=%v) over legs whose ID orders disagree", comparisonKeyNames(t, got[0]), got[0].IsReverse())
 	}
@@ -357,7 +357,7 @@ func TestIntersector_WidenedPartOrderingClaimIsVacuousByConstancy(t *testing.T) 
 			result := withPrimaryKeyIntersector(compensationTestMemoizer(), ctx)([]Vectored[*SingleMatchedAccess]{
 				makeVectoredAccess(legA, 0),
 				makeVectoredAccess(tc.legB, 1),
-			}, nil, newAccessRealizations(EmptyPlanContext()))
+			}, nil, make(accessRealizations))
 			got := intersectionPlansOf(t, result)
 			if len(got) != 1 {
 				t.Fatalf("%d intersections built, want one on (ID, VERSION) with VERSION %s in leg B", len(got), tc.fixed)
@@ -519,7 +519,7 @@ func TestIntersector_WidenedPartIgnoresItsRequestedDirection(t *testing.T) {
 			}
 			result := withPrimaryKeyIntersector(compensationTestMemoizer(), ctx)([]Vectored[*SingleMatchedAccess]{
 				mk(legA, 0), mk(legB, 1),
-			}, []*properties.RequestedOrdering{tc.requested}, newAccessRealizations(EmptyPlanContext()))
+			}, []*properties.RequestedOrdering{tc.requested}, make(accessRealizations))
 			got := intersectionPlansOf(t, result)
 			if len(got) != 1 {
 				t.Fatalf("%d intersections built, want one: the widened VERSION's requested direction is vacuous "+

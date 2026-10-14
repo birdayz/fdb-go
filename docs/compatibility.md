@@ -53,7 +53,8 @@ The Record Layer's `ScanIndexRecordsWithFetchMethod` supports
 pure-Go backend. On the `libfdbc` backend remote fetch reports Java's
 `UnsupportedRemoteFetchIndexException`, so `USE_REMOTE_FETCH` fails and
 `USE_REMOTE_FETCH_WITH_FALLBACK` scans the index and loads each record. A
-remote-fetch scan with a positive `ExecuteProperties.Skip` checks remote fetch's
+`ScanIndexRecordsWithFetchMethod` remote-fetch scan with a positive
+`ExecuteProperties.Skip` checks remote fetch's
 preconditions and then runs as SCAN_AND_FETCH: a skip would be a selector offset
 on the mapped read, a request shape the server does not support for every range.
 Java sends that offset. The SQL option `INDEX_FETCH_METHOD`, when set, is the

@@ -283,7 +283,7 @@ func TestIntegration_IndexFetchMethod_ImmediateFailures(t *testing.T) {
 	snapshot := recordlayer.DefaultExecuteProperties()
 	snapshot.IsolationLevel = recordlayer.IsolationLevelSnapshot
 	for _, method := range indexFetchMethods {
-		inUncommittedStore(t, store, func(s *recordlayer.FDBRecordStore, _ *recordlayer.StoreTimer) {
+		inUncommittedStore(t, store, func(s *recordlayer.FDBRecordStore, timer *recordlayer.StoreTimer) {
 			page := executeFetch(t, s, priceScan(method, false), nil, snapshot)
 			var unsupported *recordlayer.UnsupportedOperationError
 			if method == indexfetch.UseRemoteFetch {
@@ -294,6 +294,12 @@ func TestIntegration_IndexFetchMethod_ImmediateFailures(t *testing.T) {
 			}
 			if page.err != nil || !slices.Equal(page.ids, idRange(0, 4)) {
 				t.Fatalf("SNAPSHOT %v: rows %v err %v", method, page.ids, page.err)
+			}
+			// Java counts the refused mapped read, then falls back to the index scan.
+			if method == indexfetch.UseRemoteFetchWithFallback &&
+				(timer.GetCount(recordlayer.CountRemoteFetch) != 1 || timer.GetCount(recordlayer.EventScanIndex) == 0) {
+				t.Fatalf("SNAPSHOT WITH_FALLBACK: %d mapped reads, %d index scans; want 1 and the fallback scan",
+					timer.GetCount(recordlayer.CountRemoteFetch), timer.GetCount(recordlayer.EventScanIndex))
 			}
 		})
 	}
@@ -377,8 +383,8 @@ func TestIntegration_IndexFetchMethod_UnknownMethod(t *testing.T) {
 	inUncommittedStore(t, store, func(s *recordlayer.FDBRecordStore, _ *recordlayer.StoreTimer) {
 		page := executeFetch(t, s, priceScan(indexfetch.Method(7), false), nil, recordlayer.DefaultExecuteProperties())
 		var recordCore *recordlayer.RecordCoreError
-		if !errors.As(page.err, &recordCore) {
-			t.Fatalf("unknown method: err %v, want RecordCoreError", page.err)
+		if !errors.As(page.err, &recordCore) || recordCore.Message != "Unknown useIndexPrefetch option" {
+			t.Fatalf("unknown method: err %v, want Java's RecordCoreException", page.err)
 		}
 	})
 }

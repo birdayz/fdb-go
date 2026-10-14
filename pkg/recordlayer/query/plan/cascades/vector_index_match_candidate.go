@@ -299,6 +299,9 @@ func (c *VectorIndexScanMatchCandidate) bindingRangesEligible(
 // partition prefix) from the single DistanceRank binding (which carries the
 // query vector + k + ef_search). Ports Java's
 // VectorIndexScanMatchCandidate.toEquivalentPlan / toVectorIndexScanComparisons.
+//
+// A BY_DISTANCE scan never takes the configured fetch method: Java's
+// RecordQueryIndexPlan constructor downgrades it to SCAN_AND_FETCH.
 func (c *VectorIndexScanMatchCandidate) ToScanPlan(
 	_ PlanContext,
 	prefixMap map[values.CorrelationIdentifier]*predicates.ComparisonRange,

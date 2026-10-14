@@ -8,15 +8,7 @@ import (
 
 // One consumption shares scan plans and compensated singletons with its
 // intersections, like Java's bestMatchToPlanMap. Nothing outlives that batch.
-// ctx is the PlanContext the scans are built under (createScansForMatches).
-type accessRealizations struct {
-	ctx      PlanContext
-	byAccess map[accessRealizationKey]*realizedAccess
-}
-
-func newAccessRealizations(ctx PlanContext) *accessRealizations {
-	return &accessRealizations{ctx: ctx, byAccess: map[accessRealizationKey]*realizedAccess{}}
-}
+type accessRealizations map[accessRealizationKey]*realizedAccess
 
 type accessRealizationKey struct {
 	match   PartialMatch
@@ -32,13 +24,13 @@ type realizedAccess struct {
 	distinctReady  bool
 }
 
-func (r *accessRealizations) realize(access *SingleMatchedAccess) *realizedAccess {
+func (r accessRealizations) realize(ctx PlanContext, access *SingleMatchedAccess) *realizedAccess {
 	key := accessRealizationKey{access.GetPartialMatch(), access.IsReverseScanOrder()}
-	if realized, ok := r.byAccess[key]; ok {
+	if realized, ok := r[key]; ok {
 		return realized
 	}
-	realized := &realizedAccess{scan: createScanForAccess(r.ctx, access)}
-	r.byAccess[key] = realized
+	realized := &realizedAccess{scan: createScanForAccess(ctx, access)}
+	r[key] = realized
 	if realized.scan != nil {
 		expr, err := wrapAccessScan(access, realized.scan)
 		if err == nil {
@@ -48,8 +40,8 @@ func (r *accessRealizations) realize(access *SingleMatchedAccess) *realizedAcces
 	return realized
 }
 
-func (r *accessRealizations) single(memoizer Memoizer, access *SingleMatchedAccess) expressions.RelationalExpression {
-	realized := r.realize(access)
+func (r accessRealizations) single(ctx PlanContext, memoizer Memoizer, access *SingleMatchedAccess) expressions.RelationalExpression {
+	realized := r.realize(ctx, access)
 	if realized.singleComputed {
 		return realized.compensated
 	}
@@ -77,8 +69,8 @@ func (r *accessRealizations) single(memoizer Memoizer, access *SingleMatchedAcce
 	return expr
 }
 
-func (r *accessRealizations) distinctPlan(access *SingleMatchedAccess) expressions.RelationalExpression {
-	realized := r.realize(access)
+func (r accessRealizations) distinctPlan(ctx PlanContext, access *SingleMatchedAccess) expressions.RelationalExpression {
+	realized := r.realize(ctx, access)
 	if realized.distinctReady {
 		return realized.distinct
 	}

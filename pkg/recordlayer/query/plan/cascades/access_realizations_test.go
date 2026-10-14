@@ -73,18 +73,18 @@ func accessRealizationFixture(t *testing.T, duplicates, residual bool) (*SingleM
 func TestAccessRealizationsMatchDirectionAndScope(t *testing.T) {
 	t.Parallel()
 	access, memoizer := accessRealizationFixture(t, false, true)
-	realizations := newAccessRealizations(EmptyPlanContext())
-	forward := realizations.realize(access)
+	realizations := make(accessRealizations)
+	forward := realizations.realize(EmptyPlanContext(), access)
 	if forward.expression == nil || forward.scan == nil {
 		t.Fatal("missing forward scan")
 	}
 	assertAccessScanDirection(t, forward.scan, false)
-	if realizations.realize(access) != forward {
+	if realizations.realize(EmptyPlanContext(), access) != forward {
 		t.Fatal("same match and direction reconstructed its scan")
 	}
 	reverseAccess := NewSingleMatchedAccess(access.GetPartialMatch(), access.GetCompensation(),
 		access.GetCandidateTopAlias(), true, access.GetTopToTopTranslationMap(), access.GetSatisfyingRequestedOrderings())
-	reverse := realizations.realize(reverseAccess)
+	reverse := realizations.realize(EmptyPlanContext(), reverseAccess)
 	if reverse == forward || reverse.scan == nil {
 		t.Fatal("reverse access reused a forward scan")
 	}
@@ -94,22 +94,22 @@ func TestAccessRealizationsMatchDirectionAndScope(t *testing.T) {
 		pm.GetQueryExpression(), pm.GetCandidateRef(), pm.GetMatchInfo())
 	otherAccess := NewSingleMatchedAccess(otherMatch, access.GetCompensation(), access.GetCandidateTopAlias(),
 		false, access.GetTopToTopTranslationMap(), access.GetSatisfyingRequestedOrderings())
-	if other := realizations.realize(otherAccess); other == forward || other.expression == forward.expression {
+	if other := realizations.realize(EmptyPlanContext(), otherAccess); other == forward || other.expression == forward.expression {
 		t.Fatal("independent match was interned into another access")
 	}
-	if independent := newAccessRealizations(EmptyPlanContext()).realize(access); independent.expression == forward.expression {
+	if independent := make(accessRealizations).realize(EmptyPlanContext(), access); independent.expression == forward.expression {
 		t.Fatal("physical access escaped its consumption-local scope")
 	}
-	compensated := realizations.single(memoizer, access)
+	compensated := realizations.single(EmptyPlanContext(), memoizer, access)
 	if compensated == nil || compensated == forward.expression {
 		t.Fatal("residual compensation did not construct its filter")
 	}
 	groups := len(memoizer.memo.References())
-	if repeated := realizations.single(memoizer, access); repeated != compensated || len(memoizer.memo.References()) != groups {
+	if repeated := realizations.single(EmptyPlanContext(), memoizer, access); repeated != compensated || len(memoizer.memo.References()) != groups {
 		t.Fatal("singleton bookkeeping reapplied compensation and registered another subtree")
 	}
-	if len(realizations.byAccess) != 3 {
-		t.Fatalf("realizations=%d, want forward, reverse and independent match", len(realizations.byAccess))
+	if len(realizations) != 3 {
+		t.Fatalf("realizations=%d, want forward, reverse and independent match", len(realizations))
 	}
 }
 
@@ -135,10 +135,10 @@ func TestAccessRealizationsDistinctAndCompensation(t *testing.T) {
 			t.Run(map[bool]string{false: "plain", true: "fanout"}[duplicates]+"/"+map[bool]string{false: "exact", true: "residual"}[residual], func(t *testing.T) {
 				t.Parallel()
 				access, memoizer := accessRealizationFixture(t, duplicates, residual)
-				realizations := newAccessRealizations(EmptyPlanContext())
-				scan := realizations.realize(access).expression
-				distinct := realizations.distinctPlan(access)
-				if distinct == nil || realizations.distinctPlan(access) != distinct {
+				realizations := make(accessRealizations)
+				scan := realizations.realize(EmptyPlanContext(), access).expression
+				distinct := realizations.distinctPlan(EmptyPlanContext(), access)
+				if distinct == nil || realizations.distinctPlan(EmptyPlanContext(), access) != distinct {
 					t.Fatal("intersection rebuilt its distinct access")
 				}
 				if duplicates {
@@ -149,7 +149,7 @@ func TestAccessRealizationsDistinctAndCompensation(t *testing.T) {
 				} else if distinct != scan {
 					t.Fatal("non-fanout intersection rebuilt its access")
 				}
-				compensated := realizations.single(memoizer, access)
+				compensated := realizations.single(EmptyPlanContext(), memoizer, access)
 				if duplicates && residual {
 					if compensated != nil {
 						t.Fatal("impossible multi-quantifier compensation produced a singleton")
@@ -159,13 +159,13 @@ func TestAccessRealizationsDistinctAndCompensation(t *testing.T) {
 				}
 				impossible := NewSingleMatchedAccess(access.GetPartialMatch(), ImpossibleCompensation,
 					access.GetCandidateTopAlias(), false, access.GetTopToTopTranslationMap(), nil)
-				failed := newAccessRealizations(EmptyPlanContext())
+				failed := make(accessRealizations)
 				for i := range 2 {
-					if failed.single(memoizer, impossible) != nil {
+					if failed.single(EmptyPlanContext(), memoizer, impossible) != nil {
 						t.Fatalf("impossible compensation exposed its uncompensated scan on call %d", i+1)
 					}
 				}
-				if failed.realize(impossible).expression == nil {
+				if failed.realize(EmptyPlanContext(), impossible).expression == nil {
 					t.Fatal("impossible singleton must retain its scan for a possible compensated intersection")
 				}
 			})

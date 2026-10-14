@@ -4395,16 +4395,27 @@ An FDB code Go does not map reaches the caller with no SQLSTATE: the FDB error i
 The Record Layer supports `IndexFetchMethod.USE_REMOTE_FETCH` and
 `USE_REMOTE_FETCH_WITH_FALLBACK` with Java's records, continuations, limits,
 orphan behavior and fallback, and the planner stamps the SQL option
-`INDEX_FETCH_METHOD` on index plans as Java does. Three differences remain:
+`INDEX_FETCH_METHOD` on index plans as Java does. Four differences remain:
 
-- **Skip.** Java applies a positive `ExecuteProperties` skip to the mapped read as
-  a key-selector offset. Go never sends a mapped read with a selector offset,
-  because the server does not support that request shape for every range. After
-  remote fetch's own checks, Go runs a skipped remote-fetch scan as SCAN_AND_FETCH,
+- **Skip in `ScanIndexRecordsWithFetchMethod`.** Java applies a positive
+  `ExecuteProperties` skip to the mapped read as a key-selector offset. Go never
+  sends a mapped read with a selector offset, because the server does not support
+  that request shape for every range. After remote fetch's own checks, Go runs a
+  skipped remote-fetch scan as SCAN_AND_FETCH,
   which applies the same skip to its ordinary range read, so the scan records
   `scan_index` rather than `scan_remote_fetch_entry`. WITH_FALLBACK still wraps it:
   a failure re-runs the ordinary scan from the last returned row with the original
   skip, as Java's fallback does after a failed remote page.
+- **Skip and row limit of an index plan.** The executor applies a plan's skip and
+  row limit above the scan's range set, for every fetch method, where Java's
+  `RecordQueryIndexPlan` passes them into the scan. Rows, order, continuations
+  and the fallback, which applies both again from its resume point as Java's
+  `fallBackContinueFrom` does, are Java's. The counters differ: a skipped plan
+  reads and fetches the skipped entries, remotely too, and counts them in
+  `scan_remote_fetch_entry`, and a row-limited plan records one fewer
+  `scan_remote_fetch_entry` because the limit stops before the scan's final
+  result. The SQL layer never gives an index plan a skip; OFFSET belongs to the
+  limit operator above it.
 - **libfdb_c backend.** It has no mapped reads, so remote fetch there is
   unsupported: `USE_REMOTE_FETCH` fails and `USE_REMOTE_FETCH_WITH_FALLBACK` falls
   back, where Java fetches remotely.

@@ -1,7 +1,5 @@
-# index_fetch_fallback.yaml — RFC-258: INDEX_FETCH_METHOD =
-# USE_REMOTE_FETCH_WITH_FALLBACK, Java's default, over index_fetch_remote.yaml's
-# queries: the same rows and plans, falling back to SCAN_AND_FETCH wherever a
-# mapped read cannot serve the scan.
+# index_fetch_fallback.yaml — RFC-258: index plans under USE_REMOTE_FETCH_WITH_FALLBACK.
+# index_fetch_remote.yaml's queries with Java's default INDEX_FETCH_METHOD.
 name: index_fetch_fallback
 schema_template: |
   CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, c STRING, PRIMARY KEY (id))
@@ -21,11 +19,13 @@ setup:
 tests:
   - query: SELECT * FROM t WHERE a = 10
     plan_contains: IndexScan(IDX_A
+    plan_not_contains: COVERING
     rows:
       - [1, 10, 1, "one"]
       - [3, 10, 3, "three"]
   - query: SELECT id, c FROM t WHERE a >= 20 ORDER BY a DESC
     plan_contains: IndexScan(IDX_A
+    plan_not_contains: COVERING
     rows:
       - [4, "four"]
       - [5, "five"]
@@ -39,6 +39,7 @@ tests:
   # A two-column primary key: the mapper reads both key columns off the entry.
   - query: SELECT * FROM pair WHERE label = 'x'
     plan_contains: IndexScan(IDX_LABEL
+    plan_not_contains: COVERING
     rows:
       - [1, 1, "x"]
       - [2, 1, "x"]

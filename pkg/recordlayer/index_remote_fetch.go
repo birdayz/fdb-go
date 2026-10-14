@@ -267,7 +267,7 @@ func selectedAPIVersion() int {
 }
 
 func remoteFetchAPIVersionCheck(version int) error {
-	if version < remoteFetchMinAPIVersion {
+	if !SupportsRemoteFetch(version) {
 		return &UnsupportedMethodError{Message: "Index Remote Fetch can only be used with API_VERSION of at least 7.1."}
 	}
 	return nil

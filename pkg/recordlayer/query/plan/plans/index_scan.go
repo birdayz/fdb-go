@@ -499,9 +499,10 @@ func (p *RecordQueryIndexPlan) IsStrictlySorted() bool { return p.strictlySorted
 func (p *RecordQueryIndexPlan) GetIndexFetchMethod() indexfetch.Method { return p.indexFetchMethod }
 
 // WithIndexFetchMethod returns a copy that obtains its records with method.
-// Only BY_VALUE scans are stamped: Java's RecordQueryIndexPlan constructor
-// (:248-251) downgrades every other scan type to SCAN_AND_FETCH, the zero value
-// the aggregate (BY_GROUP) and windowed (BY_RANK) candidates keep.
+// The plan has no scan type, so Java's constructor downgrade of every non
+// BY_VALUE scan to SCAN_AND_FETCH (:248-251) is the caller's: only BY_VALUE
+// scans may be stamped, and the aggregate (BY_GROUP) and windowed (BY_RANK)
+// candidates keep the zero value. The executor remote-fetches BY_VALUE.
 func (p *RecordQueryIndexPlan) WithIndexFetchMethod(method indexfetch.Method) *RecordQueryIndexPlan {
 	cp := *p
 	cp.indexFetchMethod = method

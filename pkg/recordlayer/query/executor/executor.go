@@ -533,6 +533,10 @@ func executeIndexScan(
 		return nil, fmt.Errorf("executor: building legacy scan execution identity for %q: %w", p.GetIndexName(), err)
 	}
 	salts := []string{legacyFingerprintSalt}
+	if props.ScanState == nil {
+		// A remote scan and its fallback charge one budget, as Java's share ExecuteState.
+		props.ScanState = recordlayer.NewScanLimiterState()
+	}
 	scanAndFetch := func(continuation []byte) (recordlayer.RecordCursor[QueryResult], error) {
 		indexCursor, err := openIndexEntryCursor(p, fingerprintSalt, salts, store, evalCtx, continuation, props)
 		if err != nil {
@@ -547,9 +551,12 @@ func executeIndexScan(
 	case indexfetch.UseRemoteFetch:
 		return remoteFetchIndexRecords(p, fingerprintSalt, salts, store, evalCtx, continuation, props)
 	case indexfetch.UseRemoteFetchWithFallback:
+		// Opening fails only where scanning and fetching would too (binding,
+		// readability, the continuation); remote fetch's own failures, Java's
+		// construction-time ones included, come from the leaves into Fallback.
 		remote, err := remoteFetchIndexRecords(p, fingerprintSalt, salts, store, evalCtx, continuation, props)
 		if err != nil {
-			return scanAndFetch(continuation)
+			return nil, err
 		}
 		// Java's fallBackContinueFrom: resume after the last row returned, with
 		// the same skip and row limit, so both apply again from there.
@@ -568,7 +575,7 @@ func executeIndexScan(
 			return cursor
 		}), nil
 	default:
-		return nil, &recordlayer.RecordCoreError{Message: fmt.Sprintf("Unknown useIndexPrefetch option: %v", p.GetIndexFetchMethod())}
+		return nil, &recordlayer.RecordCoreError{Message: "Unknown useIndexPrefetch option", IndexName: p.GetIndexName()}
 	}
 }
 

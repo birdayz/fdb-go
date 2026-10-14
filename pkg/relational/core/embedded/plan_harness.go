@@ -451,8 +451,8 @@ func planReferenceToPhysical(
 	popts plannerOptions,
 ) (plans.RecordQueryPlan, *cascades.ExtractionVerificationReport, error) {
 	// The no-FDB harness has no connection, so its callers resolve api.Options
-	// themselves — plannerOptionsFrom(nil), the Java defaults, for every entry
-	// point but PlanQueryForTestWithDisabledRules. It still goes through
+	// themselves: plannerOptionsFrom(nil), a connection's defaults, unless the
+	// entry point takes options. It still goes through
 	// newCascadesPlanner so the harness and the production paths cannot diverge
 	// in how a planner is built.
 	planner := newCascadesPlanner(md, harnessPlannerOptions(popts), planningRules, stats)

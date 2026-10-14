@@ -429,8 +429,8 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `escaped_column_index` | 8 | 8 | 0 | 0 | AN ESCAPED COLUMN PLANS AS ITS UNESCAPED TWIN DOES. |
 | `escaped_table_secondary_index` | 4 | 4 | 0 | 0 | A TABLE WHOSE NAME ESCAPES COULD NOT BE GIVEN A SECONDARY INDEX AT ALL. |
 | `fanout_index_child_binding_prefix` | 3 | 3 | 0 | 0 | A fan-out index whose exploded element follows a scalar column: the element's |
-| `index_fetch_fallback` | 12 | 12 | 0 | 0 | RFC-258: INDEX_FETCH_METHOD = |
-| `index_fetch_remote` | 12 | 12 | 0 | 0 | RFC-258: INDEX_FETCH_METHOD = USE_REMOTE_FETCH. |
+| `index_fetch_fallback` | 12 | 12 | 0 | 0 | RFC-258: index plans under USE_REMOTE_FETCH_WITH_FALLBACK. |
+| `index_fetch_remote` | 12 | 12 | 0 | 0 | RFC-258: index plans under INDEX_FETCH_METHOD USE_REMOTE_FETCH. |
 | `index_range_and_or` | 10 | 10 | 0 | 0 | Port of Java standard-tests.yamsql — AND/OR range predicates with index. |
 | `index_range_predicates_java` | 10 | 10 | 0 | 0 | Index scan with range predicates |
 | `index_scan_direction` | 8 | 8 | 0 | 0 | Index scan direction tests |

@@ -29,14 +29,14 @@ import (
 // loops.
 func WithPrimaryKeyIntersector(memoizer Memoizer, ctx PlanContext) IntersectorFunc {
 	return func(accesses []Vectored[*SingleMatchedAccess], requestedOrderings []*properties.RequestedOrdering) *IntersectionResult {
-		return withPrimaryKeyIntersector(memoizer, ctx)(accesses, requestedOrderings, newAccessRealizations(ctx))
+		return withPrimaryKeyIntersector(memoizer, ctx)(accesses, requestedOrderings, make(accessRealizations))
 	}
 }
 
 type realizingIntersectorFunc func(
 	accesses []Vectored[*SingleMatchedAccess],
 	requestedOrderings []*properties.RequestedOrdering,
-	realizations *accessRealizations,
+	realizations accessRealizations,
 ) *IntersectionResult
 
 // Planner consumption shares its private batch across standalone and intersected accesses.
@@ -44,7 +44,7 @@ func withPrimaryKeyIntersector(memoizer Memoizer, ctx PlanContext) realizingInte
 	return func(
 		accesses []Vectored[*SingleMatchedAccess],
 		requestedOrderings []*properties.RequestedOrdering,
-		realizations *accessRealizations,
+		realizations accessRealizations,
 	) *IntersectionResult {
 		if len(accesses) < 2 {
 			return NoViableIntersection()
@@ -66,7 +66,7 @@ func withPrimaryKeyIntersector(memoizer Memoizer, ctx PlanContext) realizingInte
 		}
 
 		if realizations == nil {
-			realizations = newAccessRealizations(ctx)
+			realizations = make(accessRealizations)
 		}
 		intersectionInfos := initializeSingletonIntersectionInfos(memoizer, accesses, ctx, realizations)
 		var intersectionInfoOrder []intersectionInfoKey
@@ -242,7 +242,7 @@ func initializeSingletonIntersectionInfos(
 	memoizer Memoizer,
 	accesses []Vectored[*SingleMatchedAccess],
 	ctx PlanContext,
-	realizations *accessRealizations,
+	realizations accessRealizations,
 ) map[intersectionInfoKey]*IntersectionInfo {
 	infos := make(map[intersectionInfoKey]*IntersectionInfo, len(accesses))
 	for _, vectored := range accesses {
@@ -258,7 +258,7 @@ func initializeSingletonIntersectionInfos(
 		}
 
 		compensation := access.GetCompensation()
-		expr := realizations.single(memoizer, access)
+		expr := realizations.single(ctx, memoizer, access)
 		if expr == nil {
 			infos[intersectionInfoKeyForPartition(partition)] = IntersectionInfoOfImpossibleAccess(ordering, compensation)
 			continue
@@ -580,7 +580,7 @@ func createPrimaryKeyIntersection(
 	partition []Vectored[*SingleMatchedAccess],
 	requestedOrderings []*properties.RequestedOrdering,
 	ctx PlanContext,
-	realizations *accessRealizations,
+	realizations accessRealizations,
 ) primaryKeyIntersectionBuild {
 	accesses := make([]*SingleMatchedAccess, 0, len(partition))
 	scans := make([]plans.RecordQueryPlan, 0, len(partition))
@@ -593,7 +593,7 @@ func createPrimaryKeyIntersection(
 		}
 		seenCandidates[name] = struct{}{}
 
-		scan := realizations.realize(access).scan
+		scan := realizations.realize(ctx, access).scan
 		if scan == nil {
 			return primaryKeyIntersectionBuild{}
 		}
@@ -724,7 +724,7 @@ func createPrimaryKeyIntersection(
 
 	childQs := make([]expressions.Quantifier, 0, len(partition))
 	for _, access := range accesses {
-		expr := realizations.distinctPlan(access)
+		expr := realizations.distinctPlan(ctx, access)
 		if expr == nil {
 			return primaryKeyIntersectionBuild{}
 		}

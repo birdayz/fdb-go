@@ -441,7 +441,7 @@ func DataAccessForMatchPartition(
 	ctx PlanContext,
 	intersector IntersectorFunc,
 ) []expressions.RelationalExpression {
-	return dataAccessForMatchPartition(memoizer, requestedOrderings, partialMatches, ctx, intersector, newAccessRealizations(ctx))
+	return dataAccessForMatchPartition(memoizer, requestedOrderings, partialMatches, ctx, intersector, make(accessRealizations))
 }
 
 func dataAccessForMatchPartition(
@@ -450,7 +450,7 @@ func dataAccessForMatchPartition(
 	partialMatches []PartialMatch,
 	ctx PlanContext,
 	intersector IntersectorFunc,
-	realizations *accessRealizations,
+	realizations accessRealizations,
 ) []expressions.RelationalExpression {
 	if len(partialMatches) == 0 {
 		return nil
@@ -466,7 +466,7 @@ func dataAccessForMatchPartition(
 	for _, v := range bestMatches {
 		access := v.Value
 		pm := access.GetPartialMatch()
-		expr := realizations.single(memoizer, access)
+		expr := realizations.single(ctx, memoizer, access)
 		if expr == nil {
 			continue
 		}

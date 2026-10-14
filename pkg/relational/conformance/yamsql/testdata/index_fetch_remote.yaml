@@ -1,8 +1,7 @@
-# index_fetch_remote.yaml — RFC-258: INDEX_FETCH_METHOD = USE_REMOTE_FETCH. Every
-# BY_VALUE index scan fetches its records through a mapped read with no
-# fallback, so a broken remote path fails here instead of quietly scanning and
-# fetching. The plan text is the one SCAN_AND_FETCH gets: the option never
-# changes plan choice, and EXPLAIN does not render the method.
+# index_fetch_remote.yaml — RFC-258: index plans under INDEX_FETCH_METHOD USE_REMOTE_FETCH.
+# The rows of fetching, covering, aggregate, join, EXISTS and DML plans with
+# the method that has no fallback. EXPLAIN does not render the method; the
+# store counters that show the mapped read ran are in sqltest/plan/options.
 name: index_fetch_remote
 schema_template: |
   CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, c STRING, PRIMARY KEY (id))
@@ -22,11 +21,13 @@ setup:
 tests:
   - query: SELECT * FROM t WHERE a = 10
     plan_contains: IndexScan(IDX_A
+    plan_not_contains: COVERING
     rows:
       - [1, 10, 1, "one"]
       - [3, 10, 3, "three"]
   - query: SELECT id, c FROM t WHERE a >= 20 ORDER BY a DESC
     plan_contains: IndexScan(IDX_A
+    plan_not_contains: COVERING
     rows:
       - [4, "four"]
       - [5, "five"]
@@ -40,6 +41,7 @@ tests:
   # A two-column primary key: the mapper reads both key columns off the entry.
   - query: SELECT * FROM pair WHERE label = 'x'
     plan_contains: IndexScan(IDX_LABEL
+    plan_not_contains: COVERING
     rows:
       - [1, 1, "x"]
       - [2, 1, "x"]

@@ -1586,5 +1586,6 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
 - [ ] Adopt Java's USE_REMOTE_FETCH_WITH_FALLBACK as the effective default once
   RFC-258 PR4's allocation measurements land (owner ruling: its own PR). Today
   `plannerOptionsFrom` (`pkg/relational/core/embedded/planner_options.go`) reads
-  the option only when it is set; the flip reads it always, keeps the
-  `cacheKeyPart` default key, and removes DIVERGENCES.md's "SQL default" bullet.
+  the option only when it is set; the flip reads it always (an explicit nil is
+  WITH_FALLBACK too, as in OptionsUtils), keeps the `cacheKeyPart` default key,
+  and removes DIVERGENCES.md's "SQL default" bullet.

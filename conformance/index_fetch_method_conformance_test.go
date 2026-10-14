@@ -417,8 +417,14 @@ var _ = Describe("Index fetch method planner and SQL Java conformance (RFC-258)"
 						if oracle.IDs == nil {
 							oracle.IDs = []int64{}
 						}
+						// Go applies a plan's skip and row limit above its scan's
+						// ranges (DIVERGENCES.md), which changes the entry count only.
+						entriesDiffer := req.RowLimit == 0 && req.Skip == 0 && actual.RemoteEntries != oracle.RemoteEntries
+						if write && method == "USE_REMOTE_FETCH" && len(oracle.IDs) == 0 {
+							mismatches = append(mismatches, fmt.Sprintf("%+v: Java failed before returning a row", req))
+						}
 						if !slices.Equal(actual.IDs, oracle.IDs) || actual.ExceptionClass != oracle.ExceptionClass ||
-							actual.ErrorCode != oracle.ErrorCode || actual.RemoteFetches != oracle.RemoteFetches {
+							actual.ErrorCode != oracle.ErrorCode || actual.RemoteFetches != oracle.RemoteFetches || entriesDiffer {
 							mismatches = append(mismatches, fmt.Sprintf(
 								"%+v: Go %d rows %v.. err %s/%d fetches %d entries %d; Java %d rows %v.. err %s/%d fetches %d entries %d",
 								req, len(actual.IDs), indexFetchHead(actual.IDs), actual.ExceptionClass, actual.ErrorCode, actual.RemoteFetches, actual.RemoteEntries,
