@@ -317,6 +317,10 @@ func (tx *Transaction) GetMappedRange(ctx context.Context, begin, end, mapper []
 // GetMappedRangeWithByteTarget carries the streaming mode's per-fetch byte target,
 // as fdb_transaction_get_mapped_range does. Zero and ByteLimitUnlimited mean unlimited.
 func (tx *Transaction) GetMappedRangeWithByteTarget(ctx context.Context, begin, end, mapper []byte, limit, byteTarget int, reverse bool) ([]MappedKeyValue, bool, error) {
+	return tx.getMappedRangeWithByteTargetAndSkip(ctx, begin, end, mapper, limit, byteTarget, 0, reverse)
+}
+
+func (tx *Transaction) getMappedRangeWithByteTargetAndSkip(ctx context.Context, begin, end, mapper []byte, limit, byteTarget int, skip int32, reverse bool) ([]MappedKeyValue, bool, error) {
 	ctx, cancel := tx.opContext(ctx)
 	defer cancel()
 	// ThreadSafeTransaction checks deferredError before RYW's special-key
@@ -345,7 +349,7 @@ func (tx *Transaction) GetMappedRangeWithByteTarget(ctx context.Context, begin, 
 	if err != nil {
 		return nil, false, err
 	}
-	// C++ :1823 — an inverted range is an empty result, not an error.
+	// A positive Skip narrows the range and cannot make inverted bounds readable.
 	if bytes.Compare(begin, end) >= 0 {
 		return nil, false, nil
 	}
@@ -360,6 +364,18 @@ func (tx *Transaction) GetMappedRangeWithByteTarget(ctx context.Context, begin, 
 	// leaving it as an unstated property of the API surface.
 	if tx.rywDisabled {
 		return nil, false, &wire.FDBError{Code: ErrUnsupportedOperation}
+	}
+
+	if skip > 0 {
+		result, err := tx.getMappedRangeWithResolvedSkip(ctx, begin, end, mapper, newMappedRangeLimits(limit, byteTarget), skip, reverse)
+		if err != nil {
+			return nil, false, tx.trackReadOperation(ctx, err)
+		}
+		// Original anchors retain conflicts on skipped primaries, not secondaries.
+		if err := tx.addMappedRangeConflicts(begin, end, reverse, result.more, result.rows); err != nil {
+			return nil, false, err
+		}
+		return result.rows, result.more, nil
 	}
 
 	rows, more, err := tx.getMappedRangeImpl(ctx, begin, end, mapper, limit, byteTarget, reverse)
@@ -392,17 +408,8 @@ func (tx *Transaction) GetMappedRangeWithByteTarget(ctx context.Context, begin, 
 // not safe for the mustUnmodified check that shares this range, where a
 // superset turns a write C++ tolerates into get_mapped_range_reads_your_writes.
 //
-// C++'s readToBegin / readThroughEnd clamps (:263-265, :302-304) are omitted
-// because they are unreachable through this API, not because they are
-// unavailable. Both are guarded on the selector offsets — `begin.offset <= 0`
-// and `end.offset > 0` — and GetMappedRange resolves its plain key arguments as
-// firstGreaterOrEqual, i.e. offset 1 for both ends. That kills the readToBegin
-// arm outright. readThroughEnd survives the offset guard but is only ever set
-// by getRangeFallback (NativeAPI.actor.cpp:4483-4491) when the RESOLVED end key
-// is allKeys.end AND the result is not truncated, in which case it rewrites
-// rangeEnd from end.getKey() to getMaxReadKey() — the same value, since
-// getMaxReadKey() is what bounds `end` at the legal-range check above. So the
-// clamp is a no-op for every input this API accepts.
+// Positive Skip only narrows the range, so the original byte anchors also
+// describe its conflicts. Native database-edge clamps cannot expand these bounds.
 func primaryConflictRange(begin, end []byte, reverse, more bool, rows []MappedKeyValue) [2][]byte {
 	// The begin >= end case C++ handles by swapping is unreachable: GetMappedRange
 	// returns an empty result before issuing the read.
@@ -417,7 +424,7 @@ func primaryConflictRange(begin, end []byte, reverse, more bool, rows []MappedKe
 			if last := rows[n-1].Key; bytes.Compare(last, rangeBegin) < 0 {
 				rangeBegin = last
 			}
-			// read.end.offset > 0 always holds here (firstGreaterOrEqual).
+			// Positive reverse Skip cannot return a key at or beyond the original end.
 			if bytes.Compare(rangeEnd, rows[0].Key) <= 0 {
 				rangeEnd = keyAfterBytes(rows[0].Key)
 			}

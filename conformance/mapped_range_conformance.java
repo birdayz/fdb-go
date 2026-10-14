@@ -17,6 +17,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -112,21 +113,78 @@ class MappedRangeSteps extends ConformanceBase {
                 "rows", List.of(row(key, value, prefix, ByteArrayUtil.strinc(prefix), secondary)));
     }
 
+    private static com.apple.foundationdb.Range primaryRange(String root, boolean beginAtFirstKey) {
+        com.apple.foundationdb.Range range = Tuple.from(root, "index").range();
+        return beginAtFirstKey
+                ? new com.apple.foundationdb.Range(Tuple.from(root, "index", 0L, "group\u00000").pack(), range.end)
+                : range;
+    }
+
+    private static KeySelector[] initialSelectors(com.apple.foundationdb.Range range, boolean reverse, int skip,
+                                                    boolean emptyBeginAnchor, boolean emptyEndAnchor) {
+        KeySelector begin = KeySelector.firstGreaterOrEqual(emptyBeginAnchor ? new byte[0] : range.begin);
+        KeySelector end = KeySelector.firstGreaterOrEqual(emptyEndAnchor ? new byte[0] : range.end);
+        if (skip > 0) {
+            if (reverse) end = end.add(-skip);
+            else begin = begin.add(skip);
+        }
+        return new KeySelector[] {begin, end};
+    }
+
+    private static Map<String, Object> selector(KeySelector selector) {
+        return Map.of("key", encode(selector.getKey()), "orEqual", selector.orEqual(), "offset", selector.getOffset());
+    }
+
     @ConformanceStep("scanMappedRangeFixture")
     public Map<String, Object> scan(String clusterFile, String tenantName, String root,
                                     String mode, int limit, boolean reverse, byte[] localWriteKey) {
+        return scanWithSkip(clusterFile, tenantName, root, mode, limit, reverse, localWriteKey, 0, false, false, false, false);
+    }
+
+    @ConformanceStep("scanMappedRangeWithSkip")
+    public Map<String, Object> scanWithSelectorSkip(String clusterFile, String tenantName, String root,
+                                                  String mode, int limit, boolean reverse, byte[] localWriteKey, int skip,
+                                                  Boolean disableReadYourWrites, Boolean emptyBeginAnchor, Boolean emptyEndAnchor,
+                                                  Boolean beginAtFirstKey) {
+        KeySelector[] selectors = initialSelectors(primaryRange(root, Boolean.TRUE.equals(beginAtFirstKey)), reverse, skip,
+                Boolean.TRUE.equals(emptyBeginAnchor), Boolean.TRUE.equals(emptyEndAnchor));
+        Map<String, Object> result;
+        try {
+            result = new HashMap<>(scanWithSkip(clusterFile, tenantName, root, mode, limit, reverse, localWriteKey, skip,
+                    Boolean.TRUE.equals(disableReadYourWrites), Boolean.TRUE.equals(emptyBeginAnchor), Boolean.TRUE.equals(emptyEndAnchor),
+                    Boolean.TRUE.equals(beginAtFirstKey)));
+            result.put("errorCode", 0);
+        } catch (RuntimeException error) {
+            Integer errorCode = null;
+            for (Throwable cause = error; cause != null; cause = cause.getCause()) {
+                if (cause instanceof FDBException) {
+                    errorCode = ((FDBException) cause).getCode();
+                    break;
+                }
+            }
+            if (errorCode == null) throw error;
+            result = new HashMap<>(Map.of("rows", List.of(), "batchRows", List.of(), "batches", List.of(), "errorCode", errorCode));
+        }
+        result.put("initialSelectors", Map.of("begin", selector(selectors[0]), "end", selector(selectors[1])));
+        return result;
+    }
+
+    private Map<String, Object> scanWithSkip(String clusterFile, String tenantName, String root,
+                                            String mode, int limit, boolean reverse, byte[] localWriteKey, int skip, boolean disableReadYourWrites,
+                                            boolean emptyBeginAnchor, boolean emptyEndAnchor, boolean beginAtFirstKey) {
         Database database = createDatabase(clusterFile).database();
         StreamingMode streaming = StreamingMode.valueOf(mode);
-        com.apple.foundationdb.Range range = Tuple.from(root, "index").range();
+        com.apple.foundationdb.Range range = primaryRange(root, beginAtFirstKey);
         try (Tenant tenant = database.openTenant(tenantName.getBytes(StandardCharsets.UTF_8));
              Transaction transaction = tenant.createTransaction()) {
+            if (disableReadYourWrites) transaction.options().setReadYourWritesDisable();
             if (localWriteKey != null) {
                 transaction.set(localWriteKey, new byte[] {42});
             }
+            KeySelector[] selectors = initialSelectors(range, reverse, skip, emptyBeginAnchor, emptyEndAnchor);
             List<Map<String, Object>> rows = new ArrayList<>();
             AsyncIterator<MappedKeyValue> iterator = transaction.getMappedRange(
-                    KeySelector.firstGreaterOrEqual(range.begin), KeySelector.firstGreaterOrEqual(range.end),
-                    mapper(root), limit, reverse, streaming).iterator();
+                    selectors[0], selectors[1], mapper(root), limit, reverse, streaming).iterator();
             try {
                 while (iterator.hasNext()) {
                     rows.add(row(iterator.next()));
@@ -137,8 +195,8 @@ class MappedRangeSteps extends ConformanceBase {
 
             List<Map<String, Object>> batchRows = new ArrayList<>();
             List<Map<String, Object>> batches = new ArrayList<>();
-            KeySelector begin = KeySelector.firstGreaterOrEqual(range.begin);
-            KeySelector end = KeySelector.firstGreaterOrEqual(range.end);
+            KeySelector begin = selectors[0];
+            KeySelector end = selectors[1];
             int remaining = limit;
             for (int iteration = 1; ; iteration++) {
                 MappedRangeConformanceAccess.Batch batch = MappedRangeConformanceAccess.fetch(

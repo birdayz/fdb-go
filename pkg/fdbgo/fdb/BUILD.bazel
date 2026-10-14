@@ -52,6 +52,7 @@ go_test(
         "future_cancel_test.go",
         "future_pending_internal_test.go",
         "key_test.go",
+        "mapped_range_skip_test.go",
         "mapped_range_test.go",
         "mapped_range_truncated_test.go",
         "modebytes_test.go",

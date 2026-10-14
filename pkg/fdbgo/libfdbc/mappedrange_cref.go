@@ -465,6 +465,26 @@ func CGetMappedRange(tr CTxnHandle, begin, end, mapper []byte, limit int, revers
 // 1-based iteration through unchanged. A zero target lets libfdb_c derive its
 // own mode target, independently of the Go facade's ModeTargetBytes conversion.
 func CGetMappedRangeBatch(tr CTxnHandle, begin, end, mapper []byte, limit, targetBytes, mode, iteration int, reverse, snapshot bool) ([]CMappedRow, bool, error) {
+	return CGetMappedRangeBatchWithSkip(tr, begin, end, mapper, limit, targetBytes, mode, iteration, 0, reverse, snapshot)
+}
+
+// CGetMappedRangeBatchWithSkip applies Java KeyValueCursorBase's offsets to the
+// raw C selectors. It does not resolve them or derive them from Go facade code.
+func CGetMappedRangeBatchWithSkip(tr CTxnHandle, begin, end, mapper []byte, limit, targetBytes, mode, iteration int, skip int32, reverse, snapshot bool) ([]CMappedRow, bool, error) {
+	beginOffset, endOffset := int32(1), int32(1)
+	if skip > 0 {
+		if reverse {
+			endOffset -= skip
+		} else {
+			beginOffset += skip
+		}
+	}
+	return CGetMappedRangeBatchWithOffsets(tr, begin, end, mapper, limit, targetBytes, mode, iteration, beginOffset, endOffset, reverse, snapshot)
+}
+
+// CGetMappedRangeBatchWithOffsets bypasses Skip arithmetic, so literal offsets
+// can independently verify the Java-int overflow and nonpositive-Skip cases.
+func CGetMappedRangeBatchWithOffsets(tr CTxnHandle, begin, end, mapper []byte, limit, targetBytes, mode, iteration int, beginOffset, endOffset int32, reverse, snapshot bool) ([]CMappedRow, bool, error) {
 	if !tr.Valid() {
 		return nil, false, &CFDBError{Code: 2015, Msg: "transaction is closed"}
 	}
@@ -472,8 +492,8 @@ func CGetMappedRangeBatch(tr CTxnHandle, begin, end, mapper []byte, limit, targe
 	ep, el := cBytes(end)
 	mp, ml := cBytes(mapper)
 	f := C.fdb_transaction_get_mapped_range(tr.ptr,
-		bp, bl, 0 /* begin_or_equal */, 1, /* begin_offset */
-		ep, el, 0 /* end_or_equal */, 1, /* end_offset */
+		bp, bl, 0 /* begin_or_equal */, C.int(beginOffset),
+		ep, el, 0 /* end_or_equal */, C.int(endOffset),
 		mp, ml,
 		C.int(limit), C.int(targetBytes), C.FDBStreamingMode(mode), C.int(iteration),
 		cBool(snapshot), cBool(reverse))
