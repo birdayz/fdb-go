@@ -51,7 +51,7 @@ type remoteFetchRow struct {
 	IndexKey, PrimaryKey, Data, Version, Continuation []byte
 	Present                                           bool
 	KeyCount, KeySize, ValueSize                      int
-	Split                                             bool
+	Split, VersionedInline                            bool
 }
 
 type remoteFetchPage struct {
@@ -72,13 +72,14 @@ var _ = Describe("Index remote fetch", func() {
 
 	type layout struct {
 		split, compound bool
+		noVersions      bool
 		format          int32 // 0: the current format
 	}
 	current := layout{split: true}
 
 	metadata := func(l layout) *RecordMetaData {
 		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto).
-			SetSplitLongRecords(l.split).SetStoreRecordVersions(true)
+			SetSplitLongRecords(l.split).SetStoreRecordVersions(!l.noVersions)
 		pk := Field("order_id")
 		if l.compound {
 			pk = Concat(Field("quantity"), Field("order_id"))
@@ -96,6 +97,10 @@ var _ = Describe("Index remote fetch", func() {
 			NewRankIndex("rank", GroupBy(Field("price"))),
 			bitmap,
 		} {
+			if l.noVersions && index.Type == IndexTypeVersion {
+				// VERSION indexes require metadata to store record versions.
+				continue
+			}
 			builder.AddIndex("Order", index)
 		}
 		md, err := builder.Build()
@@ -168,6 +173,7 @@ var _ = Describe("Index remote fetch", func() {
 					row.Version = record.Version.ToBytes()
 				}
 				row.KeyCount, row.KeySize, row.ValueSize, row.Split = record.KeyCount, record.KeySize, record.ValueSize, record.Split
+				row.VersionedInline = record.VersionedInline
 			}
 			page.Rows = append(page.Rows, row)
 		}
@@ -249,6 +255,55 @@ var _ = Describe("Index remote fetch", func() {
 		Entry("multi-column primary key", layout{split: true, compound: true}, "price", "pk_first", "pk_second", "version"),
 		Entry("old version format without suffix", layout{format: 4}, "price"),
 		Entry("old version format with suffix", layout{format: 5}, "price"),
+	)
+
+	DescribeTable("preserves LoadRecord's inline-version size flag in remote records",
+		func(l layout) {
+			ks := specSubspace()
+			seed(ks, l, 1, func(id int) *demopb.Order {
+				o := order(id)
+				if l.split {
+					o.VectorData = bytes.Repeat([]byte{0x80}, 150_017)
+				}
+				return o
+			})
+			for _, method := range methods {
+				store := open(ks, l)
+				loaded, err := store.LoadRecord(tuple.Tuple{int64(0)})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(loaded).NotTo(BeNil())
+				Expect(loaded.VersionedInline).To(Equal(l.format == 0 && !l.noVersions))
+				Expect(loaded.Split).To(Equal(l.split))
+				if l.noVersions {
+					Expect(loaded.Version).To(BeNil())
+				} else {
+					Expect(loaded.Version).NotTo(BeNil())
+				}
+				page := scan(store, method, "price", 1, ForwardScan(), nil, IndexOrphanError)
+				Expect(page.Err).NotTo(HaveOccurred(), "%s", method)
+				Expect(page.Rows).To(HaveLen(1))
+				row := page.Rows[0]
+				Expect(row.VersionedInline).To(Equal(loaded.VersionedInline), "%s", method)
+				Expect(row.KeyCount).To(Equal(loaded.KeyCount))
+				Expect(row.KeySize).To(Equal(loaded.KeySize))
+				Expect(row.ValueSize).To(Equal(loaded.ValueSize))
+				Expect(row.Split).To(Equal(loaded.Split))
+				var version []byte
+				if loaded.Version != nil {
+					version = loaded.Version.ToBytes()
+				}
+				Expect(row.Version).To(Equal(version))
+				if method != IndexFetchScanAndFetch {
+					Expect(page.RemoteFetches).To(Equal(int64(1)), "must exercise the mapped-read route")
+				}
+			}
+		},
+		Entry("inline unsplit", layout{}),
+		Entry("inline split", current),
+		Entry("old format without suffix", layout{format: 4}),
+		Entry("old format with suffix", layout{format: 5}),
+		Entry("no version unsplit", layout{noVersions: true}),
+		Entry("no version split", layout{split: true, noVersions: true}),
 	)
 
 	It("resumes every continuation with every fetch method", func() {
