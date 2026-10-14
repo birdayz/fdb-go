@@ -21,7 +21,15 @@ inside a Git work tree.
 | `render_cloud_init.py` | `keys`: ed25519 host keys per host via `ssh-keygen`. `render`: cloud-config per host installing that key as the only host key (password login off, apt timers off) plus a `known_hosts` keyed by `HostKeyAlias`. | Refuses a private key passed as the controller public key, open key permissions, existing outputs, repo paths. |
 | `fdb_cluster.py` | `render`: cluster file (three coordinators), `configure new double <engine> ...`, systemd units pinning each process to one SMT sibling pair with `Restart=no`, an fdbmonitor-format record, nftables (VPC + controller only), `install-units.sh`. `check-roles`: status json against the layout. | Writes only to a new output directory. |
 | `placement_receipt.py` | `receipt`: takes status json, the benchmark's own fixture receipt and a placement probe (v2) listing every physical key of the record `(1,)` and index `(2,)` data subspaces. Store metadata is out of scope, and leftover ballast fails. It returns two verdicts. `integrity_ok` is about the input: a positive shared read version; complete boundaries over `[prefix, strinc(prefix))`; a complete scan of exactly those two subspaces; unique keys; for Record Layer stores the exact canonical key set (unsplit suffix 0, split 1 and 2, no version keys or strays); exactly 2 replicas, storage roles only, one server set per shard. `passed` is `integrity_ok` with every cell at the disjoint fraction. Per cell it reports the fraction of rows whose index entry and record chunks are on disjoint storage **processes**, with a label (`cross-server` or `partially colocated (f)`). Shards holding both kinds of key are counted descriptively. With double replication on three machines, machine-level disjointness is structurally 0 and is descriptive only. `compare`: both receipts have integrity and identical placement; partial placements compare normally. `controls`: the original must have integrity, and every injected defect must fail integrity. | Read-only on its inputs. `receipt` exits 0 passed, 3 integral but partial, 1 integrity failed. |
-| `seal_multinode.py` | `orders`/`check-orders`: frozen arm orders from the protocol seeds, with the same derivation `run.py` uses. `client-plans`: per (phase, workload) plans through the frozen `matrix_plan.make_plan` and `run.make_schedule`, checked against `orders.json`. `testingb-plans`: per-phase job lists with the exact sub-benchmark regex and each case's placement label fixed from `--placement-receipt STORE=PATH`. It refuses receipts without integrity, for another store/layout/record format/preset, or whose cell bounds differ from the scanned preset bounds; integral partial receipts seal under a `partially colocated (f)` label. | Leaves `new_harness_*` workloads/cells unsealed unless `--allow-new-harness` names them. |
+| `seal_multinode.py` | `orders`/`check-orders`: frozen arm orders from the protocol seeds, with the same derivation `run.py` uses. `client-plans`: per (phase, workload) plans through the frozen `matrix_plan.make_plan` and `run.make_schedule`, checked against `orders.json`. `testingb-plans`: per-phase job lists with the exact sub-benchmark regex and each case's placement label fixed from `--placement-receipt STORE=PATH`. It refuses receipts without integrity, for another store/layout/record format/preset, or whose cell bounds differ from the scanned preset bounds; integral partial receipts seal under a `partially colocated (f)` label. `client-plans --adapter --layout --source-receipt --vpc-cidr` seals each campaign's run as the R1 adapter command, which drivers fill with `render_run`. | Leaves `new_harness_*` workloads/cells unsealed unless `--allow-new-harness` names them. |
+| `placementprobe/` (Go) | H5 `probe`: boundaries and every physical key of the record `(1,)` and index `(2,)` subspaces at one read version, addresses bracketed by two read versions with data distribution off; emits `fdb-bench-placement-probe/v2`. H6 `ballast-write`, `ballast-clear`, `ballast-verify-empty` (data-distribution mode checked inside the committing transaction) and the scratch control fixture with its defects; emits `fdb-bench-ballast-receipt/v1`. The prefix comes from the benchmark's own fixture receipt. | Owned stores only; refuses before touching the cluster (exit 2). Outputs are exclusive and outside Git. |
+| `placement_command.py` | R2's `--placement-command`: H5 probe, `fdbcli status json`, then a receipt with the sealed preset, layout and record format. | Outputs outside Git; exit 0 integral receipt, 1 no integrity, 2 refused. |
+| `cluster_gate.py` | Shared by R1/R2: generated three-coordinator cluster-file guard, status-json verdict (data movement must be reported and zero with data distribution on; may be absent with it frozen), server gate and client CPU policy. | Missing status fields refuse the run. |
+| `client_campaign_mn.py` | R1: multi-node client adapter around the frozen `run.py` for plans sealed by `client-plans --adapter`. Checks manifest, plan and schedule hashes, the engine from status json, the data-movement pre-arm gate and check-roles before the campaign, before every arm and after it. | Refuses a client running `fdbserver`, a changed role/generation baseline, or any unsealed input. |
+| `bench_runner_mn.py` | R2: testing.B runner for `testingb-plans`. Rebuilds and compares the sealed plan, verifies each case's sealed placement receipt, takes fresh before/after receipts and compares them; a mismatch omits the case (raw data kept). | A correctness failure stops the phase. |
+| `node_sampler.py` | R3: 1 Hz `/proc/stat` and `/proc/vmstat` sampler pinned to the housekeeping CPUs, realtime and monotonic stamps, start/stop receipts (systemd units, `chronyc tracking`, boot ID). | Writes only to a new directory outside Git. |
+| `reconcile_telemetry.py` | R4: merges a phase's samples and receipts into one clean / contaminated / unverifiable verdict per case, with run windows widened by the sealed clock bound. Missing data makes a case unverifiable; a phase summary exists only once every case has a verdict. | Read-only on inputs; one exclusive report. Exit 0 all clean, 3 cases omitted, 2 input refused. |
+| `build_reconcile_input.py` | Builds R4's `fdb-bench-reconcile-input/v1` for one phase from the sealing manifest (checked against `--manifest-sha256`), the R1/R2 results, client chrony receipts and node telemetry directories. Missing per-case evidence is referenced and listed so R4 marks the case unverifiable. | Refuses changed sealed inputs, unpinned layouts, mismatched receipt hashes and outputs inside Git. |
 
 ## Caveats carried from the frozen harness
 
@@ -37,19 +45,11 @@ inside a Git work tree.
 
 ## Not provided here
 
-These need separate review before the campaign uses them:
-
-- The placement probe that writes `fdb-bench-placement-probe/v2`, qualified by on-cluster
-  original and mutation controls
-  (`LocalityGetBoundaryKeys`, `LocalityGetAddressesForKey`).
-- The ballast writer for the placement gate.
-- The multi-node client adapter and testing.B runner (derived from the
-  single-node `client_campaign.py`/`bench_runner.py`).
-- The per-node telemetry sampler and the server-telemetry reconciliation audit
-  (whole-case omission; missing data omits).
 - New harness workloads and cells (`range1000`, `mixed80_20`, `rows100`, a
   persistent SQL fixture). Those need their own reviewed harness commit and a
-  rebuild.
+  rebuild; the `sql/IDX_A` placement store depends on that fixture.
+- On-cluster qualification: the protocol's H5/H6 original and mutation controls
+  and the status-json field paths are checked on the real cluster before timing.
 
 ## Tests
 

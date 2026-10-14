@@ -1,5 +1,14 @@
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
+# The multi-node adapters import these modules.
+exports_files(
+    [
+        "bench_runner.py",
+        "client_campaign.py",
+    ],
+    visibility = ["//tools/benchcampaign/multinode:__pkg__"],
+)
+
 # Hermetic unit tests for the single-node campaign tooling: temp fixtures and
 # testdata/ only; no FDB, SSH, network, VM or /srv access.
 sh_test(

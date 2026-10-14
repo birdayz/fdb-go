@@ -175,20 +175,68 @@ def pins(paths, pin_globs):
     return resolved
 
 
+# The driver never runs run.py directly: R1 (client_campaign_mn.py) owns the
+# cluster, server, DD and lifetime guards around it. Each sealed campaign's
+# `run` is the complete R1 argv except for exactly these runtime placeholders,
+# which the driver substitutes with render_run(): the SHA-256 of this manifest
+# as acknowledged by the methodology reviewer, and the hard lifetime deadline.
+RUNTIME_PLACEHOLDERS = ('{manifest_sha256}', '{lifetime_deadline}')
+
+
+def adapter_command(args, phase, workload, plan_path):
+    """The sealed R1 argv for one campaign, or None when no adapter was sealed."""
+    if not args.adapter:
+        return None
+    absolute = {name: str(Path(getattr(args, name)).resolve())
+                for name in ('adapter', 'protocol', 'orders', 'layout', 'source_receipt', 'scripts_dir')}
+    return ['python3', '-B', absolute['adapter'], 'run', '--plan', str(Path(plan_path).resolve()),
+            '--manifest-sha256', '{manifest_sha256}',
+            '--output', str((Path(args.results_dir) / phase / workload).resolve()),
+            '--phase', phase, '--workload', workload, '--protocol', absolute['protocol'],
+            '--orders', absolute['orders'], '--layout', absolute['layout'], '--vpc-cidr', args.vpc_cidr,
+            '--source-receipt', absolute['source_receipt'], '--lifetime-deadline', '{lifetime_deadline}',
+            '--scripts', absolute['scripts_dir']]
+
+
+def render_run(run, manifest_sha256, lifetime_deadline):
+    """Driver side: substitute exactly the runtime placeholders; nothing else may be templated."""
+    if run is None:
+        raise ValueError('this campaign was sealed without --adapter; it has no runnable command')
+    if not re.fullmatch(r'[0-9a-f]{64}', manifest_sha256):
+        raise ValueError('manifest SHA-256 must be 64 lowercase hex digits')
+    mc.parse_deadline(str(lifetime_deadline))
+    if [a for a in run if a in RUNTIME_PLACEHOLDERS] != list(RUNTIME_PLACEHOLDERS):
+        raise ValueError('sealed run command must contain each runtime placeholder exactly once, in order')
+    out = [manifest_sha256 if a == '{manifest_sha256}' else str(lifetime_deadline) if a == '{lifetime_deadline}' else a
+           for a in run]
+    if any('{' in a or '}' in a for a in out):
+        raise ValueError('unexpected placeholder left in the sealed run command')
+    return out
+
+
 def seal_client(args):
     protocol = json.loads(Path(args.protocol).read_text())
     orders = json.loads(Path(args.orders).read_text())
     if orders != make_orders(protocol):
         raise ValueError('orders.json differs from the protocol seeds; reseal orders first')
     matrix_plan, run = load_frozen(args.scripts_dir)
-    pinned = pins([args.protocol, args.orders, args.harness_archive, *args.pin], args.pin_glob)
+    adapter_inputs = [args.adapter, args.layout, args.source_receipt, args.vpc_cidr]
+    if any(adapter_inputs) and not all(adapter_inputs):
+        raise ValueError('--adapter needs --layout, --source-receipt and --vpc-cidr (and vice versa)')
+    pinned = pins([args.protocol, args.orders, args.harness_archive, *args.pin,
+                   *([args.adapter, args.layout, args.source_receipt] if args.adapter else [])], args.pin_glob)
     out = Path(args.output_dir)
     mc.require_outside_repo(out, 'sealed plan dir')
     out.mkdir(parents=True, exist_ok=False)
     manifest = dict(campaign=protocol['campaign'], protocol_sha256=sha256(args.protocol),
                     orders_sha256=sha256(args.orders), generator_sha256=sha256(__file__),
                     scripts_dir=str(Path(args.scripts_dir).resolve()),
-                    pinned_files={str(p): sha256(p) for p in pinned}, campaigns=[], unsealed=[])
+                    pinned_files={str(p): sha256(p) for p in pinned}, campaigns=[], unsealed=[],
+                    run_contract=('each campaign run is the sealed R1 adapter argv; the driver substitutes only '
+                                  + ' and '.join(RUNTIME_PLACEHOLDERS) + ' via seal_multinode.render_run'
+                                  if args.adapter else
+                                  'no adapter sealed (--adapter absent): campaigns have run null and are not runnable; '
+                                  'never invoke run.py directly'))
     for phase in protocol['phases']:
         if phase['kind'] != 'client' or (args.phase and phase['id'] not in args.phase):
             continue
@@ -208,9 +256,9 @@ def seal_client(args):
                 phase=phase['id'], workload=workload, workers=phase['workers'], iterations=phase['iterations'],
                 warmup=phase['warmup'], blocks=phase['blocks'], runs=len(schedule), campaign=plan['campaign'],
                 campaign_wall_cap_seconds=plan['campaign_wall_cap_seconds'], timeout_seconds=plan['timeout_seconds'],
-                plan=str(folder / 'plan.json'), plan_sha256=sha256(folder / 'plan.json'),
-                run=['python3', '-B', str(Path(args.scripts_dir).resolve() / 'run.py'), '--plan',
-                     str(folder / 'plan.json'), '--output', str(Path(args.results_dir) / phase['id'] / workload)]))
+                plan=str((folder / 'plan.json').resolve()), plan_sha256=sha256(folder / 'plan.json'),
+                schedule=str((folder / 'schedule.json').resolve()), schedule_sha256=sha256(folder / 'schedule.json'),
+                run=adapter_command(args, phase['id'], workload, folder / 'plan.json')))
     mc.dump_json(out / 'manifest.json', manifest)
     return manifest
 
@@ -266,7 +314,8 @@ def placement_label(case, receipts):
     path = receipts.get(case['store'])
     if path is None:
         raise ValueError(f'no placement receipt for store {case["store"]}')
-    r = json.loads(Path(path).read_text())
+    path = Path(path).resolve()  # the sealed plan records the absolute, pinned path
+    r = json.loads(path.read_text())
     if r.get('format') != RECEIPT_FORMAT or r.get('integrity_ok') is not True or r.get('error_count') != 0 or r.get('errors'):
         raise ValueError(f'placement receipt {path} lacks integrity or has a wrong format; it proves nothing')
     for field, want in (('store', case['store']), ('layout', case['layout']), ('record_format', case['record_format']),
@@ -393,6 +442,10 @@ def main(argv=None):
             p.add_argument('--server-binary', required=True)
             p.add_argument('--harness-archive', required=True)
             p.add_argument('--results-dir', required=True)
+            p.add_argument('--adapter', help='client_campaign_mn.py (R1); seals each campaign run command')
+            p.add_argument('--layout', help='fdb_cluster.py layout.json (with --adapter)')
+            p.add_argument('--source-receipt', help='source receipt (with --adapter)')
+            p.add_argument('--vpc-cidr', help='VPC CIDR (with --adapter)')
         else:
             p.add_argument('--placement-receipt', action='append', default=[],
                            help='STORE=PATH placement_receipt.py receipt per M2 store (benchfetch/small, ...)')
