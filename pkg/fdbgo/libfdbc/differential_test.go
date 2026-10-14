@@ -610,6 +610,71 @@ func TestLibFDBC_RecordLayerDifferential(t *testing.T) {
 			t.Fatalf("empty range must iterate to 0 keys, got %d", len(g))
 		}
 	})
+
+	t.Run("record_layer_remote_fetch", func(t *testing.T) {
+		// RFC-258: this backend has no mapped reads, so USE_REMOTE_FETCH reports
+		// Java's unsupported remote fetch and WITH_FALLBACK scans and loads, with
+		// the records and tokens the pure-Go remote fetch returns.
+		ss := uniqueSubspace("remote_fetch")
+		saved := append([]*demopb.Order{makeOrder(7, 7, string(bigBlob(250_000)))}, orders...)
+		saveOrders(t, goDB, md, ss, saved)
+		type row struct{ data, token []byte }
+		scan := func(db *recordlayer.FDBDatabase, method recordlayer.IndexFetchMethod) ([]row, error) {
+			t.Helper()
+			var rows []row
+			_, err := db.Run(context.Background(), func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				rows = nil
+				store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				cursor := store.ScanIndexRecordsWithFetchMethod(md.GetIndex("price_idx"), method, recordlayer.IndexScanByValue,
+					recordlayer.TupleRangeAll, 1, nil, recordlayer.IndexOrphanError, recordlayer.ForwardScan())
+				defer func() { _ = cursor.Close() }()
+				for {
+					result, err := cursor.OnNext(context.Background())
+					if err != nil {
+						return nil, err
+					}
+					if !result.HasNext() {
+						return nil, nil
+					}
+					token, err := result.GetContinuation().ToBytes()
+					if err != nil {
+						return nil, err
+					}
+					data, err := proto.MarshalOptions{Deterministic: true}.Marshal(result.GetValue().Record.Record)
+					if err != nil {
+						return nil, err
+					}
+					rows = append(rows, row{data, token})
+				}
+			})
+			return rows, err
+		}
+		want, err := scan(goDB, recordlayer.IndexFetchUseRemoteFetch)
+		if err != nil || len(want) != len(saved) {
+			t.Fatalf("pure-Go remote fetch: %d rows, %v", len(want), err)
+		}
+		for _, method := range []recordlayer.IndexFetchMethod{recordlayer.IndexFetchScanAndFetch, recordlayer.IndexFetchUseRemoteFetchWithFallback} {
+			for name, db := range map[string]*recordlayer.FDBDatabase{"pure-Go": goDB, "libfdb_c": cgoDB} {
+				got, err := scan(db, method)
+				if err != nil || len(got) != len(want) {
+					t.Fatalf("%s %s: %d rows, %v", name, method, len(got), err)
+				}
+				for i := range want {
+					if !bytes.Equal(got[i].data, want[i].data) || !bytes.Equal(got[i].token, want[i].token) {
+						t.Fatalf("%s %s row %d differs from pure-Go remote fetch", name, method, i)
+					}
+				}
+			}
+		}
+		_, err = scan(cgoDB, recordlayer.IndexFetchUseRemoteFetch)
+		var unsupported *recordlayer.UnsupportedRemoteFetchIndexError
+		if !errors.As(err, &unsupported) {
+			t.Fatalf("libfdb_c USE_REMOTE_FETCH: %v, want UnsupportedRemoteFetchIndexError", err)
+		}
+	})
 }
 
 // ---- helpers ----

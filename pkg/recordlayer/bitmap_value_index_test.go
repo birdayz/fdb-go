@@ -897,8 +897,9 @@ var _ = Describe("BitmapValueIndex", func() {
 
 			// ScanIndex (BY_VALUE default) should reject BITMAP_VALUE — matches Java.
 			_, err = AsList(ctx, store.ScanIndex(idx, TupleRangeAll, nil, ForwardScan()))
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("BY_GROUP"))
+			var recordCore *RecordCoreError
+			Expect(errors.As(err, &recordCore)).To(BeTrue(), "%v", err)
+			Expect(recordCore.Message).To(Equal("Can only scan bitmap index by group."))
 
 			return nil, nil
 		})

@@ -113,6 +113,9 @@ var (
 	// EventRetryDelay is Java's Events.RETRY_DELAY: the backoff between a
 	// transaction runner's attempts (FDBDatabaseRunnerImpl.RunRetriable.handle).
 	EventRetryDelay = Event{"retry_delay", "Retry Delay", KindTimed}
+	// EventScanRemoteFetchEntry is Java's Events.SCAN_REMOTE_FETCH_ENTRY, timing
+	// each result of a remote-fetch index scan.
+	EventScanRemoteFetchEntry = Event{"scan_remote_fetch_entry", "Remote Fetch Index Entry", KindTimed}
 )
 
 // Standard count events — matching Java's FDBStoreTimer.Counts. The KindSize
@@ -131,6 +134,7 @@ var (
 	// Index-level count events — matching Java's FDBStoreTimer.Counts for index ops.
 	// Used by InstrumentedBunchedMap (TEXT index) and other index maintainers.
 	CountBadIndexEntry         = Event{"bad_index_entry", "Bad Index Entry", KindCount}
+	CountRemoteFetch           = Event{"remote_fetch", "Remote Fetch Reads", KindCount}
 	CountSaveIndexKey          = Event{"save_index_key", "Save Index Key", KindCount}
 	CountSaveIndexKeyBytes     = Event{"save_index_key_bytes", "Save Index Key Bytes", KindSize}
 	CountSaveIndexValueBytes   = Event{"save_index_value_bytes", "Save Index Value Bytes", KindSize}

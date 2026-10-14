@@ -81,6 +81,7 @@ Each is described in full under Compatibility or Changed below.
 
 ### Added
 - Pure-Go `fdb.MappedRangeReader` capability with byte-driven batch iteration for exact primary ranges; the libfdb_c backend does not expose it.
+- Record Layer remote-fetch index scans: `ScanIndexRecordsWithFetchMethod` with `USE_REMOTE_FETCH` and `USE_REMOTE_FETCH_WITH_FALLBACK`, `ScanIndexRemoteFetch` and `BuildSingleRecord`, with Java's `scan_remote_fetch_entry` event and `remote_fetch` count.
 - The SQL driver DSN sets `max_rows`, `execution_scanned_rows_limit`, `execution_scanned_bytes_limit`,
   `execution_time_limit`, `max_statement_memory_bytes`, `transaction_timeout`, and the planner knobs
   `plan_right_deep`, `disable_planner_rewriting` and `disabled_planner_rules`. The transaction timeout
@@ -90,7 +91,8 @@ Each is described in full under Compatibility or Changed below.
 - Ordinary index scans follow Java's row-limit tokens, scan-attempt counters and transaction-anchored time limits.
 - Ordinary index scans apply `ExecuteProperties.Skip` as Java's selector offsets (it was ignored); a skip saturates at `MaxInt32-1` instead of wrapping as Java's forward `MaxInt32` does.
 - Issued record loads charge scan bytes when the raw read completes, including loads discarded by a failed index cursor. `ScanLimiterState.WaitForIssuedRecordLoadCharges` waits for those existing charges without issuing or materializing another record.
-- Record Layer `USE_REMOTE_FETCH`, `USE_REMOTE_FETCH_WITH_FALLBACK` and SQL `INDEX_FETCH_METHOD` remain unsupported pending RFC-258; raw mapped-range facade support does not enable them.
+- SQL `INDEX_FETCH_METHOD` remains unsupported pending RFC-258's planner work.
+- `ScanIndex` and `ScanIndexByType` reject any other scan type on BITMAP_VALUE and TEXT indexes with Java's `RecordCoreException` messages (`ScanIndexByType` used to scan them), and report unsupported scan types as `*RecordCoreError`.
 - Update Go dependencies for archive containment, bounded group parsing, CEL JSON field privacy, and OpenTelemetry diagnostic privacy; these SDK updates do not patch the host Docker daemon.
 - `EndpointTypeContinuation` is internal; scan callers supply the original range endpoints and pass the continuation separately.
 - Commit has no synthetic reply timeout: transaction Cancel/timeout end the public wait while native GRV/commit/fence work remains owned by the transaction; Reset, owner collection, and database close drop that work.

@@ -4352,11 +4352,23 @@ Java turns an `FDBException` into a typed `RecordCoreException` (FDBExceptions.j
 
 An FDB code Go does not map reaches the caller with no SQLSTATE: the FDB error itself, which `errors.As` still matches. Java reports XXXXX.
 
-## Index remote fetch: Java feature gap (RFC-258)
+## Index remote fetch (RFC-258)
 
-Go does not yet support Record Layer `IndexFetchMethod.USE_REMOTE_FETCH` or
-`USE_REMOTE_FETCH_WITH_FALLBACK`. The SQL `INDEX_FETCH_METHOD` option is parsed
-but not honored. Index scans use SCAN_AND_FETCH; the pure-Go facade's raw
-mapped-range capability is not Record Layer or SQL remote-fetch support.
-RFC-258 implements the missing scan/reconstruction/fallback, planner and SQL
-integration, and allocation work. See [compatibility boundaries](docs/compatibility.md#mapped-range-backend-capability).
+The Record Layer supports `IndexFetchMethod.USE_REMOTE_FETCH` and
+`USE_REMOTE_FETCH_WITH_FALLBACK` with Java's records, continuations, limits,
+orphan behavior and fallback. Two differences remain:
+
+- **Skip.** Java applies a positive `ExecuteProperties` skip to the mapped read as
+  a key-selector offset. Go never sends a mapped read with a selector offset,
+  because the server does not support that request shape for every range. After
+  remote fetch's own checks, Go runs a skipped remote-fetch scan as SCAN_AND_FETCH,
+  which applies the same skip to its ordinary range read, so the scan records
+  `scan_index` rather than `scan_remote_fetch_entry`. WITH_FALLBACK still wraps it:
+  a failure re-runs the ordinary scan from the last returned row with the original
+  skip, as Java's fallback does after a failed remote page.
+- **libfdb_c backend.** It has no mapped reads, so remote fetch there is
+  unsupported: `USE_REMOTE_FETCH` fails and `USE_REMOTE_FETCH_WITH_FALLBACK` falls
+  back, where Java fetches remotely.
+
+The SQL `INDEX_FETCH_METHOD` option is parsed but not yet honored; RFC-258's
+planner work adds it. See [compatibility boundaries](docs/compatibility.md#mapped-range-backend-capability).
