@@ -146,6 +146,7 @@ go_library(
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/internal/fdbclient",
+        "//pkg/recordlayer/indexfetch",
         "//pkg/recordlayer/indexpredicate",
         "//pkg/recordlayer/internal/protovalue",
         "//pkg/recordlayer/internal/tuplefast",
