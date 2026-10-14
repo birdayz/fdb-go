@@ -244,7 +244,12 @@ def make_plan(protocol, orders, phase_id, pins, paths, network_receipt=None, har
 def parse_output(text, job, repeats=3, *, gomaxprocs):
     # testing.B appends -GOMAXPROCS to result names unless it is 1.
     suffix = '' if int(gomaxprocs) == 1 else '-'+str(int(gomaxprocs))
-    rows, audits = [], []
+    rows, audits, measured = [], [], []
+    # With -test.v, testing.B prints each body invocation's receipts as they are
+    # logged and a repeat's result line after its last (measured) invocation, so
+    # the last receipt of this case since the previous result line is the
+    # measured one; earlier ones belong to b.N calibration invocations.
+    pending = None
     for line in text.splitlines():
         if 'FDB_BENCH_AUDIT ' in line:
             try:
@@ -254,6 +259,8 @@ def parse_output(text, job, repeats=3, *, gomaxprocs):
             if not isinstance(audit, dict) or not isinstance(audit.get('case'), str):
                 raise CorrectnessFailure('audit lacks case')
             audits.append(audit)
+            if audit['case'] == job['name']:
+                pending = audit
         match = re.match(r'^(Benchmark\S+)\s+(\S+)\s+(.+)$', line.strip())
         if not match:
             continue
@@ -284,16 +291,32 @@ def parse_output(text, job, repeats=3, *, gomaxprocs):
             raise CorrectnessFailure('SQL physical prefix metric missing')
         if job['case']['write'] and int(n) != 1000:
             raise CorrectnessFailure('write benchmark did not use exactly 1000 iterations')
-        rows.append(dict(repeat=len(rows), N=int(n), metrics=metrics))
+        rows.append(dict(repeat=len(rows), N=int(n), metrics=metrics,
+                         measured_prefix_bytes=pending.get('prefix_bytes') if pending else None))
+        measured.append(pending)
+        pending = None
     if len(rows) != repeats:
         raise CorrectnessFailure(f'expected exactly {repeats} result rows, got {len(rows)}')
     if re.search(r'(?m)^(?:FAIL|--- FAIL:|panic:|fatal error:)', text) or not re.search(r'(?m)^PASS\s*$', text):
         raise CorrectnessFailure('benchmark process did not report PASS')
-    validate_audits(audits, job, rows)
+    validate_audits(audits, job, rows, measured)
     return rows, audits
 
 
-def validate_audits(audits, job, rows):
+def check_measured_prefix(rows, measured, what):
+    """Each result row's prefix-B against the receipt of its own measured invocation only.
+
+    A per-invocation database (SQL) may get another directory-layer prefix in a
+    calibration invocation; that is not a failure. Different prefixes between
+    measured rows are disclosed by bench_analyze.py as physical_prefix_confound."""
+    for r, a in zip(rows, measured):
+        if a is None:
+            raise CorrectnessFailure(what+' receipt missing for a measured invocation')
+        if r['metrics']['prefix-B'] != a['prefix_bytes']:
+            raise CorrectnessFailure(what+' physical prefix of a measured row differs from its own invocation receipt')
+
+
+def validate_audits(audits, job, rows, measured):
     c, kind = job['case'], job['case']['audit']
     matching = [a for a in audits if a['case'] == job['name']]
     if kind == 'none':
@@ -313,8 +336,9 @@ def validate_audits(audits, job, rows):
             raise CorrectnessFailure('wrong SQL audited population')
         if kind == 'sql-write' and any(a.get('first_id') != 1 or a.get('last_id') != 1000 for a in selected):
             raise CorrectnessFailure('wrong SQL write endpoints')
-        if any(r['metrics']['prefix-B'] != a['prefix_bytes'] for r in rows for a in matching):
-            raise CorrectnessFailure('SQL physical prefix differs between metrics and audits')
+        check_measured_prefix(rows, measured, 'SQL')
+        if any(a.get('rows') != c['rows'] for a in measured):
+            raise CorrectnessFailure('measured SQL invocation lacks its audited population')
         if kind == 'sql-read':
             for a in matching:
                 number(a.get('checksum'))
@@ -347,10 +371,18 @@ def validate_audits(audits, job, rows):
                 raise CorrectnessFailure('ordinary path audit failed')
             if kind == 'planskip' and method == 'SCAN_AND_FETCH' and a['record_loads'] != c['rows']:
                 raise CorrectnessFailure('ordinary Skip loaded discarded records')
-            if any(r['metrics']['prefix-B'] != a['prefix_bytes'] for r in rows):
+            # Record Layer stores live at a fixed subspace tuple: every receipt must match every row.
+            if kind != 'sql-fetch' and any(r['metrics']['prefix-B'] != a['prefix_bytes'] for r in rows):
                 raise CorrectnessFailure('physical prefix metric differs from audit')
+        if kind == 'sql-fetch' and before['prefix_bytes'] != after['prefix_bytes']:
+            raise CorrectnessFailure('SQL physical prefix changed within one invocation')
         if before['checksum'] != after['checksum']:
             raise CorrectnessFailure('before/after checksum mismatch')
+    if kind == 'sql-fetch':
+        # One database per body invocation: measured rows pair with their own 'after' receipt.
+        if any(a is None or a.get('phase') != 'after' for a in measured):
+            raise CorrectnessFailure('measured SQL invocation lacks its after receipt')
+        check_measured_prefix(rows, measured, 'SQL')
     fixtures = [a for a in audits if a.get('phase') == 'fixture']
     if not fixtures or any(a.get('rows') != 1000 for a in fixtures):
         raise CorrectnessFailure('missing/nonempty fixture receipt')

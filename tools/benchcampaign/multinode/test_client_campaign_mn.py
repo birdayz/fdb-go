@@ -69,7 +69,7 @@ def status(lay, dd_disabled=False, generation=3, mutate=None, moving_data=None):
     return s
 
 
-def protocol(client_workloads=('get100',)):
+def protocol(client_workloads=('get100',), new_harness=()):
     """A small version-2 multi-node protocol with one client and one testing.B phase."""
     return dict(
         version=2, campaign='mn-test', frozen_harness_revision='d' * 40, new_harness_revision=None,
@@ -84,7 +84,7 @@ def protocol(client_workloads=('get100',)):
         sample_policy=dict(cooldown_seconds=2, quiescence_seconds=1, max_steal_fraction=0.01),
         phases=[
             dict(id='M1w1', kind='client', engine='ssd-2', arms=['final-Go', 'CGo-7.3.77'], workloads=list(client_workloads),
-                 new_harness_workloads=[], workers=1, iterations=3000, warmup=200, blocks=6, repeats_per_arm_process=1,
+                 new_harness_workloads=list(new_harness), workers=1, iterations=3000, warmup=200, blocks=6, repeats_per_arm_process=1,
                  order_seed=742001, frozen_order_key='M1w1', per_workload_campaign_wall_cap_seconds=900,
                  per_process_timeout_seconds=180, wall_cap_seconds=2700),
             dict(id='M2rl', kind='testingb', engine='ssd-2', binary_kind='fetch', arms=['final-ordinary', 'final-remote'],
@@ -379,7 +379,7 @@ class CampaignFixture(Temp):
         if not HAVE_SCRIPTS:
             self.skipTest('frozen clientbench scripts not present')
         t = self.tmp
-        self.protocol_doc = protocol()
+        self.protocol_doc = self.make_protocol()
         self.lay = layout()
         (t / 'protocol.json').write_text(json.dumps(self.protocol_doc))
         (t / 'orders.json').write_text(json.dumps(sm.make_orders(self.protocol_doc)))
@@ -406,13 +406,19 @@ class CampaignFixture(Temp):
         with mock.patch('sys.stdout'):
             sm.main(argv)
 
-    def args(self, plans='plans', **over):
+    def make_protocol(self):
+        return protocol()
+
+    def args(self, plans='plans', workload=None, **over):
         """Exactly what the driver runs: the sealed run argv, rendered by seal_multinode.render_run."""
         manifest_path = self.tmp / plans / 'manifest.json'
-        campaign = json.loads(manifest_path.read_text())['campaigns'][0]
+        campaigns = json.loads(manifest_path.read_text())['campaigns']
+        campaign = next((c for c in campaigns if c['workload'] == workload), campaigns[0])
         argv = sm.render_run(campaign['run'], generic.sha(manifest_path), '2099-01-01T00:00:00Z')
         self.assertEqual(argv[:4], ['python3', '-B', str(Path(r1.__file__).resolve()), 'run'])
         args = r1.parser().parse_args(argv[3:])
+        if workload is not None and workload != campaign['workload']:
+            over['workload'] = workload  # a name with no sealed campaign
         for key, value in over.items():
             setattr(args, key, value)
         return args
@@ -594,12 +600,75 @@ class AdapterRunTest(CampaignFixture):
         state = json.loads((self.tmp / 'results' / 'M1w1' / 'client-phase-state.json').read_text())
         self.assertTrue(state['final_failure'])
 
+    def test_signal_killed_run_is_environmental_not_final(self):
+        # run.py records GNU time's 128+9 exit for a SIGKILLed client, then raises; stderr may be empty.
+        def killed(plan, schedule, plan_path, out, deadline):
+            entry = next(e for e in schedule if e['arm'] == 'final')
+            run = out / entry['run_id']
+            run.mkdir()
+            helper.snapshot(run / 'before')
+            generic.dump(run / 'result.json', dict(run_id=entry['run_id'], returncode=137))
+            (run / 'stderr.txt').write_text('')
+            raise RuntimeError('workload failure: ' + entry['run_id'])
+        helper = self.helper(execute=killed)
+        with self.assertRaisesRegex(RuntimeError, 'workload failure'):
+            self.run_adapter(self.args(), helper=helper)
+        self.assertEqual(self.adverse()['status'], 'environment-aborted')
+        state = json.loads((self.tmp / 'results' / 'M1w1' / 'client-phase-state.json').read_text())
+        self.assertFalse(state.get('final_failure', False))
+
     def test_rerun_of_an_attempted_case_is_refused(self):
         self.run_adapter(self.args())
         import shutil
         shutil.rmtree(self.tmp / 'results' / 'M1w1' / 'get100')
         with self.assertRaisesRegex(cg.EnvironmentFailure, 'already attempted'):
             self.run_adapter(self.args())
+
+
+class SealedPopulationTest(CampaignFixture):
+    """The real nine-workload M1 spec; range1000 and mixed80_20 need the unreviewed new harness."""
+    WORKLOADS = ('grv', 'get100', 'get1000', 'range100', 'range1000', 'set100', 'batchset50', 'batchset50x1000',
+                 'mixed80_20')
+
+    def make_protocol(self):
+        return protocol(self.WORKLOADS, new_harness=('range1000', 'mixed80_20'))
+
+    def test_all_sealed_workloads_run_in_order_past_the_unsealed_ones(self):
+        manifest = json.loads((self.tmp / 'plans' / 'manifest.json').read_text())
+        sealed = [c['workload'] for c in manifest['campaigns']]
+        self.assertEqual(sealed, ['grv', 'get100', 'get1000', 'range100', 'set100', 'batchset50', 'batchset50x1000'])
+        for workload in sealed:
+            with self.subTest(workload):
+                rc, _, _ = self.run_adapter(self.args(workload=workload))
+                self.assertEqual(rc, 0)
+        state = json.loads((self.tmp / 'results' / 'M1w1' / 'client-phase-state.json').read_text())
+        self.assertEqual(state['expected_cases'], sealed)
+        self.assertTrue((self.tmp / 'results' / 'M1w1' / 'client-phase-complete.json').is_file())
+        self.assertEqual(json.loads((self.tmp / 'results' / 'M1w1' / 'set100' / 'adapter.json').read_text())
+                         ['expected_case_population'], 7)
+
+    def test_out_of_order_and_unsealed_workloads_are_refused(self):
+        with self.assertRaisesRegex(cg.EnvironmentFailure, 'sealed workload prefix'):
+            self.run_adapter(self.args(workload='get100'))
+        with self.assertRaisesRegex(ValueError, 'differs from protocol|not a sealed workload'):
+            self.run_adapter(self.args(workload='range1000'))
+
+    def test_manifest_that_silently_drops_a_sealed_workload_is_refused(self):
+        manifest_path = self.tmp / 'plans' / 'manifest.json'
+        original = json.loads(manifest_path.read_text())
+        for name, edit in [
+                ('campaign dropped', lambda m: m.update(campaigns=[c for c in m['campaigns'] if c['workload'] != 'set100'])),
+                ('frozen workload passed off as unsealed', lambda m: (
+                    m.update(campaigns=[c for c in m['campaigns'] if c['workload'] != 'set100']),
+                    m['unsealed'].append(dict(phase='M1w1', workload='set100', reason='forged')))),
+                ('order changed', lambda m: m['campaigns'].insert(0, m['campaigns'].pop(1)))]:
+            with self.subTest(name):
+                manifest = json.loads(json.dumps(original))
+                edit(manifest)
+                manifest_path.write_text(json.dumps(manifest))
+                with self.assertRaisesRegex(ValueError, 'protocol order minus'):
+                    self.run_adapter(self.args(workload='grv', manifest_sha256=generic.sha(manifest_path)))
+        self.assertFalse((self.tmp / 'results' / 'M1w1' / 'grv').exists())
 
 
 class ValidatePlanTest(CampaignFixture):

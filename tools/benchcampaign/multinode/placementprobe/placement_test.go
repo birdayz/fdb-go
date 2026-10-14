@@ -16,23 +16,24 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
 
-// fakeCluster is an in-memory Cluster. Shard i (the number of global
-// boundaries <= key) is served by shards[i].
+// fakeCluster is an in-memory Cluster. Storage addresses come from the
+// \xff/keyServers entries in the data (value: comma-separated addresses), read
+// at the transaction's version, like libfdb_c's transactional lookup.
 type fakeCluster struct {
-	data       map[string][]byte
-	boundaries [][]byte
-	shards     [][]string
-	versions   []int64
-	reads      int
-	commits    int64
-	// boundariesAtV2, when set, replaces the boundary list from the second
-	// boundary read on (a shard move during the probe).
-	boundariesAtV2 [][]byte
-	boundaryReads  int
-	guardReads     [][]byte
+	data     map[string][]byte
+	versions []int64
+	reads    int
+	commits  int64
+	basis    string
+	// atVersion, when set for a version, mutates a copy of the data that the
+	// transaction at that version sees (a change inside the probe bracket).
+	atVersion  map[int64]func(map[string][]byte)
+	guardReads [][]byte
 }
 
 var _ Cluster = (*fakeCluster)(nil)
+
+func (f *fakeCluster) AddressBasis() string { return f.basis }
 
 func (f *fakeCluster) ReadVersion() (int64, error) {
 	f.reads++
@@ -42,58 +43,63 @@ func (f *fakeCluster) ReadVersion() (int64, error) {
 	return f.versions[len(f.versions)-1] + int64(f.reads), nil
 }
 
-func inRange(k, begin, end []byte) bool {
-	return bytes.Compare(k, begin) >= 0 && bytes.Compare(k, end) < 0
-}
-
-func (f *fakeCluster) BoundaryKeys(begin, end []byte, version int64) ([][]byte, error) {
+func (f *fakeCluster) At(version int64) (Txn, error) {
 	if version <= 0 {
-		return nil, errors.New("fake: boundary read without a read version")
+		return nil, errors.New("fake: no read version")
 	}
-	f.boundaryReads++
-	all := f.boundaries
-	if f.boundariesAtV2 != nil && f.boundaryReads > 1 {
-		all = f.boundariesAtV2
+	view := make(map[string][]byte, len(f.data))
+	for k, v := range f.data {
+		view[k] = v
 	}
-	out := [][]byte{}
-	for _, b := range all {
-		if inRange(b, begin, end) {
-			out = append(out, b)
-		}
+	if mutate := f.atVersion[version]; mutate != nil {
+		mutate(view)
 	}
-	return out, nil
+	return fakeTxn{data: view}, nil
 }
 
-func (f *fakeCluster) Keys(begin, end []byte, version int64) ([][]byte, error) {
-	if version <= 0 {
-		return nil, errors.New("fake: key read without a read version")
+type fakeTxn struct{ data map[string][]byte }
+
+func (t fakeTxn) sorted() []string {
+	keys := make([]string, 0, len(t.data))
+	for k := range t.data {
+		keys = append(keys, k)
 	}
-	var out [][]byte
-	for k := range f.data {
-		if inRange([]byte(k), begin, end) {
-			out = append(out, []byte(k))
-		}
-	}
-	sort.Slice(out, func(i, j int) bool { return bytes.Compare(out[i], out[j]) < 0 })
-	return out, nil
+	sort.Strings(keys)
+	return keys
 }
 
-func (f *fakeCluster) Addresses(key []byte) ([]string, error) {
-	shard := 0
-	for _, b := range f.boundaries {
-		if bytes.Compare(b, key) <= 0 {
-			shard++
-		}
-	}
-	return append([]string(nil), f.shards[shard]...), nil
-}
-
-func (f *fakeCluster) Get(key []byte, version int64, system bool) ([]byte, bool, error) {
-	if len(key) > 0 && key[0] == 0xff && !system {
-		return nil, false, errors.New("fake: system key without system option")
-	}
-	v, ok := f.data[string(key)]
+func (t fakeTxn) Get(key []byte) ([]byte, bool, error) {
+	v, ok := t.data[string(key)]
 	return v, ok, nil
+}
+
+func (t fakeTxn) Range(begin, end []byte, fromLastLessOrEqual bool) ([]KV, error) {
+	keys := t.sorted()
+	start := sort.SearchStrings(keys, string(begin))
+	if fromLastLessOrEqual && (start == len(keys) || keys[start] != string(begin)) && start > 0 {
+		start--
+	}
+	var out []KV
+	for _, k := range keys[start:] {
+		if k >= string(end) {
+			break
+		}
+		out = append(out, KV{Key: []byte(k), Value: t.data[k]})
+	}
+	return out, nil
+}
+
+func (t fakeTxn) Addresses(keys [][]byte) ([][]string, error) {
+	out := make([][]string, len(keys))
+	for i, k := range keys {
+		at := concat(KeyServersPrefix, k)
+		kvs, _ := t.Range(at, concat(at, []byte{0}), true) // the entry covering k
+		if len(kvs) == 0 {
+			return nil, errors.New("fake: no keyServers entry")
+		}
+		out[i] = strings.Split(string(kvs[0].Value), ",")
+	}
+	return out, nil
 }
 
 func (f *fakeCluster) Commit(guard func(read Reader) error, writes []Mutation) (int64, error) {
@@ -115,7 +121,7 @@ func (f *fakeCluster) Commit(guard func(read Reader) error, writes []Mutation) (
 			delete(f.data, string(m.Key))
 		case OpClearRange:
 			for k := range f.data {
-				if inRange([]byte(k), m.Key, m.End) {
+				if k >= string(m.Key) && k < string(m.End) {
 					delete(f.data, k)
 				}
 			}
@@ -133,23 +139,32 @@ func ddValue(mode int32) []byte {
 	return v
 }
 
-// synthetic is the cluster test_placementprobe.py describes: ROWS=20 orders,
-// boundaries at "\x01", prefix+(1,10) and prefix+(1,1000000), DD mode 0,
-// read versions 1001 and 1002, and a header key that is out of scope.
+func ksKey(k []byte) string { return string(concat(KeyServersPrefix, k)) }
+
+var (
+	writeToken = []byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}
+	testSHA    = strings.Repeat("a", 64)
+	testID     = ClusterIdentity{ConnectionStringID: "fdbbenchvpc:mn20261014", ClusterFileSHA256: strings.Repeat("c", 64)}
+)
+
+// synthetic is the cluster test_placementprobe.py describes: 20 orders;
+// keyServers entries at "", "\x01", prefix+(1,10) and prefix+(1,1000000);
+// DD mode 0 with the data-distribution-mode lock as moveKeysLock owner; read
+// versions 1001 and 1002; a store header that is out of scope.
 func synthetic(prefix []byte, suffixes []int64) *fakeCluster {
 	f := &fakeCluster{
-		data: map[string][]byte{string(DDModeKey): ddValue(0)},
-		boundaries: [][]byte{
-			{0x01}, pack(prefix, tuple.Tuple{int64(1), int64(10)}), pack(prefix, tuple.Tuple{int64(1), int64(1_000_000)}),
-		},
-		shards: [][]string{
-			{"10.88.0.11:4500", "10.88.0.12:4500"},
-			{"10.88.0.11:4504", "10.88.0.12:4502"},
-			{"10.88.0.12:4503", "10.88.0.13:4502"},
-			{"10.88.0.13:4503", "10.88.0.11:4505"},
+		data: map[string][]byte{
+			string(DDModeKey):            ddValue(0),
+			string(MoveKeysLockOwnerKey): DDModeLock,
+			string(MoveKeysLockWriteKey): writeToken,
 		},
 		versions: []int64{1001, 1002},
+		basis:    AddressTransactional,
 	}
+	f.data[ksKey(nil)] = []byte("10.88.0.11:4500,10.88.0.12:4500")
+	f.data[ksKey([]byte{0x01})] = []byte("10.88.0.11:4504,10.88.0.12:4502")
+	f.data[ksKey(pack(prefix, tuple.Tuple{int64(1), int64(10)}))] = []byte("10.88.0.12:4503,10.88.0.13:4502")
+	f.data[ksKey(pack(prefix, tuple.Tuple{int64(1), int64(1_000_000)}))] = []byte("10.88.0.13:4503,10.88.0.11:4505")
 	f.data[string(pack(prefix, tuple.Tuple{int64(0)}))] = []byte("store header: out of scope")
 	for i := int64(0); i < 20; i++ {
 		for _, s := range suffixes {
@@ -158,6 +173,22 @@ func synthetic(prefix []byte, suffixes []int64) *fakeCluster {
 		f.data[string(pack(prefix, tuple.Tuple{int64(2), IndexName, i, i}))] = []byte{}
 	}
 	return f
+}
+
+func owned(t *testing.T, name string) OwnedStore {
+	t.Helper()
+	p := stores[name].tuple.Pack()
+	n, rows := len(p), 20
+	r := FixtureReceipt{Phase: "fixture", Payload: stores[name].payload, PrefixBytes: &n, Rows: &rows}
+	s, err := OpenStore(name, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+func input(s OwnedStore) ProbeInput {
+	return ProbeInput{Store: s, FixtureSHA256: testSHA, Cluster: testID}
 }
 
 func asJSON(t *testing.T, v any) any {
@@ -179,10 +210,8 @@ func TestProbeMatchesGoldens(t *testing.T) {
 		suffixes []int64
 	}{{"benchfetch/small", []int64{0}}, {"benchfetch/split", []int64{1, 2}}} {
 		t.Run(tc.store, func(t *testing.T) {
-			prefix := stores[tc.store].tuple.Pack()
-			doc, err := Probe(synthetic(prefix, tc.suffixes), ProbeInput{
-				Store: tc.store, Prefix: prefix, FixtureSHA256: strings.Repeat("a", 64),
-			})
+			s := owned(t, tc.store)
+			doc, err := Probe(synthetic(s.prefix, tc.suffixes), input(s))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -203,22 +232,21 @@ func TestProbeMatchesGoldens(t *testing.T) {
 }
 
 func TestProbeListsOnlyTheTwoDataSubspaces(t *testing.T) {
-	prefix := stores["benchfetch/small"].tuple.Pack()
-	f := synthetic(prefix, []int64{0})
-	ballast := BallastKey(prefix, 3)
+	s := owned(t, "benchfetch/small")
+	f := synthetic(s.prefix, []int64{0})
+	ballast := BallastKey(s.prefix, 3)
 	f.data[string(ballast)] = []byte("leftover")
-	odd := pack(prefix, tuple.Tuple{int64(1), "not-an-int", int64(0)})
+	odd := pack(s.prefix, tuple.Tuple{int64(1), "not-an-int", int64(0)})
 	f.data[string(odd)] = []byte("x")
-	doc, err := Probe(f, ProbeInput{Store: "benchfetch/small", Prefix: prefix})
+	doc, err := Probe(f, input(s))
 	if err != nil {
 		t.Fatal(err)
 	}
-	header := hex.EncodeToString(pack(prefix, tuple.Tuple{int64(0)}))
 	seen := map[string]ProbeKey{}
 	for _, k := range doc.Keys {
 		seen[k.KeyHex] = k
 	}
-	if _, ok := seen[header]; ok {
+	if _, ok := seen[hex.EncodeToString(pack(s.prefix, tuple.Tuple{int64(0)}))]; ok {
 		t.Fatal("store header (metadata) must not be listed")
 	}
 	if k, ok := seen[hex.EncodeToString(ballast)]; !ok || k.ID == nil || *k.ID != BallastFirstID+3 {
@@ -232,27 +260,31 @@ func TestProbeListsOnlyTheTwoDataSubspaces(t *testing.T) {
 	}
 }
 
-func TestProbeRequiresDDOffUnlessDiagnostic(t *testing.T) {
-	prefix := stores["benchfetch/small"].tuple.Pack()
-	for _, tc := range []struct {
-		name    string
-		value   []byte
-		present bool
-	}{{"absent key means on", nil, false}, {"mode 1", ddValue(1), true}, {"mode 2", ddValue(2), true}} {
-		t.Run(tc.name, func(t *testing.T) {
-			f := synthetic(prefix, []int64{0})
-			delete(f.data, string(DDModeKey))
-			if tc.present {
-				f.data[string(DDModeKey)] = tc.value
-			}
-			if _, err := Probe(f, ProbeInput{Store: "benchfetch/small", Prefix: prefix}); err == nil {
-				t.Fatal("probe ran with data distribution not off")
+func TestProbeRequiresDDOffWithTheModeLock(t *testing.T) {
+	s := owned(t, "benchfetch/small")
+	cases := map[string]func(map[string][]byte){
+		"mode key absent (on)": func(d map[string][]byte) { delete(d, string(DDModeKey)) },
+		"mode 1":               func(d map[string][]byte) { d[string(DDModeKey)] = ddValue(1) },
+		"mode 2":               func(d map[string][]byte) { d[string(DDModeKey)] = ddValue(2) },
+		"owner is a data distributor": func(d map[string][]byte) {
+			d[string(MoveKeysLockOwnerKey)] = uidBytes(7, 7)
+		},
+		"owner absent": func(d map[string][]byte) { delete(d, string(MoveKeysLockOwnerKey)) },
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := synthetic(s.prefix, []int64{0})
+			mutate(f.data)
+			if _, err := Probe(f, input(s)); err == nil {
+				t.Fatal("probe emitted without DD off and the mode lock")
 			}
 		})
 	}
-	f := synthetic(prefix, []int64{0})
+	f := synthetic(s.prefix, []int64{0})
 	delete(f.data, string(DDModeKey))
-	doc, err := Probe(f, ProbeInput{Store: "benchfetch/small", Prefix: prefix, AllowDDOn: true})
+	in := input(s)
+	in.Diagnostic = true
+	doc, err := Probe(f, in)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,14 +293,92 @@ func TestProbeRequiresDDOffUnlessDiagnostic(t *testing.T) {
 	}
 }
 
-func TestProbeRefusesMovingBoundaries(t *testing.T) {
-	prefix := stores["benchfetch/small"].tuple.Pack()
-	f := synthetic(prefix, []int64{0})
-	f.boundariesAtV2 = append(append([][]byte(nil), f.boundaries...), pack(prefix, tuple.Tuple{int64(1), int64(15)}))
-	sort.Slice(f.boundariesAtV2, func(i, j int) bool { return bytes.Compare(f.boundariesAtV2[i], f.boundariesAtV2[j]) < 0 })
-	if _, err := Probe(f, ProbeInput{Store: "benchfetch/small", Prefix: prefix}); err == nil ||
-		!strings.Contains(err.Error(), "changed between V1 and V2") {
+// A toggle (0 -> 1 -> 0) and relocation inside the bracket can leave every
+// boundary key identical; the write token and the keyServers bytes catch it.
+func TestProbeRefusesChangesInsideTheBracket(t *testing.T) {
+	s := owned(t, "benchfetch/small")
+	relocate := func(d map[string][]byte) {
+		d[ksKey(pack(s.prefix, tuple.Tuple{int64(1), int64(10)}))] = []byte("10.88.0.11:4506,10.88.0.13:4504")
+	}
+	newToken := func(d map[string][]byte) { d[string(MoveKeysLockWriteKey)] = uidBytes(99, 99) }
+	newBoundary := func(d map[string][]byte) {
+		d[ksKey(pack(s.prefix, tuple.Tuple{int64(1), int64(15)}))] = []byte("10.88.0.12:4503,10.88.0.13:4502")
+	}
+	for name, tc := range map[string]struct {
+		mutate func(map[string][]byte)
+		want   string
+	}{
+		"toggle and relocate, identical boundaries": {func(d map[string][]byte) { newToken(d); relocate(d) }, "write token"},
+		"relocation alone":                          {relocate, "keyServers"},
+		"token alone":                               {newToken, "write token"},
+		"new boundary":                              {newBoundary, "keyServers"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := synthetic(s.prefix, []int64{0})
+			f.atVersion = map[int64]func(map[string][]byte){1002: tc.mutate}
+			_, err := Probe(f, input(s))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("got %v, want an error about %s", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestProbeRefusesALocationCacheBackend(t *testing.T) {
+	s := owned(t, "benchfetch/small")
+	f := synthetic(s.prefix, []int64{0})
+	f.basis = AddressLocationCache
+	if _, err := Probe(f, input(s)); err == nil || !strings.Contains(err.Error(), "diagnostic") {
 		t.Fatalf("got %v", err)
+	}
+	in := input(s)
+	in.Diagnostic = true
+	doc, err := Probe(f, in)
+	if err != nil || doc.AddressesBasis.Kind != AddressLocationCache {
+		t.Fatalf("diagnostic probe: %v", err)
+	}
+}
+
+func TestProbeAndOperationsRefuseAForeignPrefix(t *testing.T) {
+	small := owned(t, "benchfetch/small")
+	split := owned(t, "benchfetch/split")
+	forged := OwnedStore{name: "benchfetch/small", prefix: split.prefix}
+	f := synthetic(split.prefix, []int64{1, 2})
+	before := len(f.data)
+	if _, err := Probe(f, input(forged)); err == nil {
+		t.Fatal("probe accepted a foreign prefix")
+	}
+	if _, err := WriteBallast(f, forged, 1<<20); err == nil {
+		t.Fatal("ballast-write accepted a foreign prefix")
+	}
+	if _, err := ClearBallast(f, forged); err == nil {
+		t.Fatal("ballast-clear accepted a foreign prefix")
+	}
+	if _, err := VerifyBallastEmpty(f, OwnedStore{}); err == nil {
+		t.Fatal("a zero OwnedStore was accepted")
+	}
+	control, _ := OpenControlStore("benchfetch/control-split")
+	forgedControl := OwnedStore{name: "benchfetch/control-split", prefix: small.prefix}
+	if _, err := MutateControl(f, forgedControl, "stray-suffix"); err == nil {
+		t.Fatal("control-mutate accepted a foreign prefix")
+	}
+	if _, err := ClearControl(f, forgedControl); err == nil {
+		t.Fatal("control-clear accepted a foreign prefix")
+	}
+	if _, err := ClearControl(f, small); err == nil {
+		t.Fatal("control-clear accepted a benchmark store")
+	}
+	if _, err := WriteBallast(f, control, 1<<20); err == nil {
+		t.Fatal("ballast-write accepted a control store")
+	}
+	if f.commits != 0 || len(f.data) != before {
+		t.Fatalf("a refused operation wrote: %d commits", f.commits)
+	}
+	n, rows := len(split.prefix), 20
+	if _, err := OpenStore("benchfetch/small", FixtureReceipt{
+		Phase: "fixture", Payload: "small", PrefixBytes: &n, Rows: &rows, StorePrefixHex: hex.EncodeToString(split.prefix),
+	}); err == nil {
+		t.Fatal("OpenStore accepted another store's prefix")
 	}
 }
 
@@ -354,6 +464,18 @@ func TestResolvePrefix(t *testing.T) {
 	}
 }
 
+func TestParseClusterIdentity(t *testing.T) {
+	id, err := ParseClusterIdentity([]byte("# generated\nfdbbenchvpc:mn20261014@10.88.0.11:4500,10.88.0.12:4500,10.88.0.13:4500\n"))
+	if err != nil || id.ConnectionStringID != "fdbbenchvpc:mn20261014" || len(id.ClusterFileSHA256) != 64 {
+		t.Fatalf("%+v %v", id, err)
+	}
+	for _, bad := range []string{"", "# only a comment\n", "no-at-sign\n", "@10.88.0.11:4500\n", "noid@10.88.0.11:4500\n"} {
+		if _, err := ParseClusterIdentity([]byte(bad)); err == nil {
+			t.Errorf("accepted %q", bad)
+		}
+	}
+}
+
 func TestBallastRangeSitsBetweenRecordsAndIndex(t *testing.T) {
 	prefix := stores["benchfetch/split"].tuple.Pack()
 	begin, end, err := BallastRange(prefix)
@@ -373,7 +495,7 @@ func TestBallastRangeSitsBetweenRecordsAndIndex(t *testing.T) {
 	}
 }
 
-func TestDDModeDecoding(t *testing.T) {
+func TestDDModeDecodingAndLockConstant(t *testing.T) {
 	if m, err := DDMode(nil, false); err != nil || m != 1 {
 		t.Fatalf("absent: %d %v", m, err)
 	}
@@ -386,17 +508,21 @@ func TestDDModeDecoding(t *testing.T) {
 	if _, err := DDMode([]byte("0"), true); err == nil {
 		t.Fatal("a non-4-byte value must be refused")
 	}
+	// UID(6345, 3425) as two little-endian uint64.
+	if hex.EncodeToString(DDModeLock) != "c918000000000000610d000000000000" {
+		t.Fatalf("dataDistributionModeLock encoding %x", DDModeLock)
+	}
 }
 
 func TestWriteBallastOnlyWithDDOnIntoAnEmptyRange(t *testing.T) {
-	prefix := stores["benchfetch/small"].tuple.Pack()
-	f := synthetic(prefix, []int64{0})
-	if _, err := WriteBallast(f, "benchfetch/small", prefix, 1<<20); !errors.Is(err, ErrDDMode) {
+	s := owned(t, "benchfetch/small")
+	f := synthetic(s.prefix, []int64{0})
+	if _, err := WriteBallast(f, s, 1<<20); !errors.Is(err, ErrDDMode) {
 		t.Fatalf("DD off must refuse ballast writes, got %v", err)
 	}
 	delete(f.data, string(DDModeKey)) // absent = on
 	before := len(f.data)
-	r, err := WriteBallast(f, "benchfetch/small", prefix, 1<<20)
+	r, err := WriteBallast(f, s, 1<<20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -404,37 +530,32 @@ func TestWriteBallastOnlyWithDDOnIntoAnEmptyRange(t *testing.T) {
 	if r.KeysWritten != want || len(f.data) != before+want || r.Transactions != 1 {
 		t.Fatalf("receipt %+v, keys %d", r, len(f.data)-before)
 	}
-	begin, end, _ := BallastRange(prefix)
+	begin, end, _ := BallastRange(s.prefix)
 	for i := 0; i < want; i++ {
-		k := BallastKey(prefix, i)
-		if !inRange(k, begin, end) || !bytes.Equal(f.data[string(k)], BallastValue(i)) {
+		k := BallastKey(s.prefix, i)
+		if bytes.Compare(k, begin) < 0 || bytes.Compare(k, end) >= 0 || !bytes.Equal(f.data[string(k)], BallastValue(i)) {
 			t.Fatalf("ballast %d misplaced or wrong value", i)
 		}
 	}
 	if !bytes.Equal(f.guardReads[len(f.guardReads)-1], DDModeKey) {
 		t.Fatal("the DD mode must be read inside the writing transaction")
 	}
-	if _, err := WriteBallast(f, "benchfetch/small", prefix, 1<<20); err == nil {
+	if _, err := WriteBallast(f, s, 1<<20); err == nil {
 		t.Fatal("a non-empty ballast range must be refused")
 	}
-	for _, store := range []string{"benchfetch/control-small", "benchfetch/nope"} {
-		if _, err := WriteBallast(f, store, prefix, 1<<20); err == nil {
-			t.Fatalf("%s accepted", store)
-		}
-	}
-	big := synthetic(prefix, []int64{0})
+	big := synthetic(s.prefix, []int64{0})
 	delete(big.data, string(DDModeKey))
-	r, err = WriteBallast(big, "benchfetch/small", prefix, 16<<20)
+	r, err = WriteBallast(big, s, 16<<20)
 	if err != nil || r.Transactions != (r.KeysWritten+BallastKeysPerTransaction-1)/BallastKeysPerTransaction || r.Transactions < 2 {
 		t.Fatalf("batching: %+v %v", r, err)
 	}
 }
 
 func TestClearBallastOnlyWithDDOffAndOnlyTheBallast(t *testing.T) {
-	prefix := stores["benchfetch/small"].tuple.Pack()
-	f := synthetic(prefix, []int64{0})
+	s := owned(t, "benchfetch/small")
+	f := synthetic(s.prefix, []int64{0})
 	delete(f.data, string(DDModeKey))
-	if _, err := WriteBallast(f, "benchfetch/small", prefix, 1<<20); err != nil {
+	if _, err := WriteBallast(f, s, 1<<20); err != nil {
 		t.Fatal(err)
 	}
 	for _, mode := range [][]byte{nil, ddValue(1), ddValue(2)} {
@@ -442,96 +563,93 @@ func TestClearBallastOnlyWithDDOffAndOnlyTheBallast(t *testing.T) {
 		if mode != nil {
 			f.data[string(DDModeKey)] = mode
 		}
-		if _, err := ClearBallast(f, "benchfetch/small", prefix); !errors.Is(err, ErrDDMode) {
+		if _, err := ClearBallast(f, s); !errors.Is(err, ErrDDMode) {
 			t.Fatalf("mode %v: clear must be refused, got %v", mode, err)
 		}
 	}
 	f.data[string(DDModeKey)] = ddValue(0)
-	r, err := ClearBallast(f, "benchfetch/small", prefix)
+	r, err := ClearBallast(f, s)
 	if err != nil || len(r.CommittedVersions) != 1 {
 		t.Fatalf("%+v %v", r, err)
 	}
-	fresh := synthetic(prefix, []int64{0})
-	if !reflect.DeepEqual(f.data, fresh.data) {
-		t.Fatal("clearing must remove exactly the ballast: fixture, index, header and DD key untouched")
+	if !reflect.DeepEqual(f.data, synthetic(s.prefix, []int64{0}).data) {
+		t.Fatal("clearing must remove exactly the ballast: fixture, index, header and system keys untouched")
 	}
-	v, err := VerifyBallastEmpty(f, "benchfetch/small", prefix)
+	v, err := VerifyBallastEmpty(f, s)
 	if err != nil || v.Empty == nil || !*v.Empty || *v.KeysFound != 0 || v.ReadVersion <= 0 {
 		t.Fatalf("verify: %+v %v", v, err)
 	}
-	f.data[string(BallastKey(prefix, 9))] = []byte("x")
-	v, err = VerifyBallastEmpty(f, "benchfetch/small", prefix)
+	f.data[string(BallastKey(s.prefix, 9))] = []byte("x")
+	v, err = VerifyBallastEmpty(f, s)
 	if err == nil || v == nil || *v.Empty || *v.KeysFound != 1 {
 		t.Fatalf("non-empty verify must return a failing receipt: %+v %v", v, err)
 	}
 }
 
 func TestControlLifecycle(t *testing.T) {
-	store := "benchfetch/control-split"
-	prefix, err := ControlPrefix(store)
+	s, err := OpenControlStore("benchfetch/control-split")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ControlPrefix("benchfetch/small"); err == nil {
+	if _, err := OpenControlStore("benchfetch/small"); err == nil {
 		t.Fatal("a benchmark store is not a control store")
 	}
 	f := synthetic(stores["benchfetch/small"].tuple.Pack(), []int64{0})
-	r, fx, err := WriteControlFixture(f, store, prefix, 20)
+	r, fx, err := WriteControlFixture(f, s, 20)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.KeysWritten != 60 || *fx.Rows != 20 || *fx.Chunks != 2 || *fx.PrefixBytes != len(prefix) ||
-		fx.StorePrefixHex != hex.EncodeToString(prefix) || fx.Payload != "control-split" {
+	if r.KeysWritten != 60 || *fx.Rows != 20 || *fx.Chunks != 2 || *fx.PrefixBytes != len(s.prefix) ||
+		fx.StorePrefixHex != hex.EncodeToString(s.prefix) || fx.Payload != "control-split" {
 		t.Fatalf("receipt %+v fixture %+v", r, fx)
 	}
-	if got, err := ResolvePrefix(store, fx); err != nil || !bytes.Equal(got, prefix) {
+	reopened, err := OpenStore("benchfetch/control-split", fx)
+	if err != nil || !bytes.Equal(reopened.prefix, s.prefix) {
 		t.Fatalf("the control fixture receipt must resolve its own prefix: %v", err)
 	}
-	if _, _, err := WriteControlFixture(f, store, prefix, 20); err == nil {
+	if _, _, err := WriteControlFixture(f, s, 20); err == nil {
 		t.Fatal("a non-empty control store must be refused")
 	}
-	doc, err := Probe(f, ProbeInput{Store: store, Prefix: prefix})
+	doc, err := Probe(f, input(reopened))
 	if err != nil || len(doc.Keys) != 60 {
 		t.Fatalf("probe of the control store: %v", err)
 	}
-	key := func(s int64) string {
-		return string(pack(prefix, tuple.Tuple{int64(1), int64(ControlMutationID), s}))
+	key := func(sfx int64) string {
+		return string(pack(s.prefix, tuple.Tuple{int64(1), int64(ControlMutationID), sfx}))
 	}
-	if _, err := MutateControl(f, store, prefix, "delete-chunk"); err != nil {
+	if _, err := MutateControl(f, s, "delete-chunk"); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := f.data[key(2)]; ok {
 		t.Fatal("chunk 2 must be deleted")
 	}
-	if _, err := MutateControl(f, store, prefix, "delete-chunk"); err == nil {
+	if _, err := MutateControl(f, s, "delete-chunk"); err == nil {
 		t.Fatal("deleting an absent chunk must be refused")
 	}
-	for defect, s := range map[string]int64{"stray-suffix": 3, "version-key": -1} {
-		if _, err := MutateControl(f, store, prefix, defect); err != nil {
+	for defect, sfx := range map[string]int64{"stray-suffix": 3, "version-key": -1} {
+		if _, err := MutateControl(f, s, defect); err != nil {
 			t.Fatal(err)
 		}
-		if _, ok := f.data[key(s)]; !ok {
-			t.Fatalf("%s must write suffix %d", defect, s)
+		if _, ok := f.data[key(sfx)]; !ok {
+			t.Fatalf("%s must write suffix %d", defect, sfx)
 		}
 	}
-	if _, err := MutateControl(f, "benchfetch/control-small", stores["benchfetch/control-small"].tuple.Pack(), "stray-suffix"); err == nil {
+	smallControl, _ := OpenControlStore("benchfetch/control-small")
+	if _, err := MutateControl(f, smallControl, "stray-suffix"); err == nil {
 		t.Fatal("mutations run on the split control store only")
 	}
-	if _, err := MutateControl(f, store, prefix, "bogus"); err == nil {
+	if _, err := MutateControl(f, s, "bogus"); err == nil {
 		t.Fatal("unknown defect accepted")
 	}
-	c, err := ClearControl(f, store, prefix)
+	c, err := ClearControl(f, s)
 	if err != nil || !*c.Empty {
 		t.Fatalf("clear: %+v %v", c, err)
 	}
-	end, _ := strinc(prefix)
+	end, _ := strinc(s.prefix)
 	for k := range f.data {
-		if inRange([]byte(k), prefix, end) {
+		if k >= string(s.prefix) && k < string(end) {
 			t.Fatal("control store not empty")
 		}
-	}
-	if _, err := ClearControl(f, "benchfetch/small", prefix); err == nil {
-		t.Fatal("control-clear must refuse a benchmark store")
 	}
 }
 

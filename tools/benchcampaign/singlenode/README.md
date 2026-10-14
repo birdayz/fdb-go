@@ -7,11 +7,27 @@ plan before timing, never retry, keep all adverse data and refuse any run whose
 pinned inputs change. They were used for a real 16-vCPU campaign. The port
 replaces that campaign's addresses, keys, paths and constants with the flags and
 environment variables below. Apart from that parameterization, the logic is
-unchanged except for one bug fix: in `bench_runner.py`, the loop that parses
-GNU time CPU fields reused the variable holding the job's case key, so every
-row in `metrics.csv` was labelled `process_system_cpu_seconds` instead of its
-case. The loop now uses its own variable, and
-`test_run_metrics_csv_round_trips_through_analyze` pins the fix.
+unchanged except for these behaviour changes:
+
+- In `bench_runner.py`, the loop that parses GNU time CPU fields reused the
+  variable holding the job's case key, so every row in `metrics.csv` was
+  labelled `process_system_cpu_seconds` instead of its case. The loop now uses
+  its own variable, and `test_run_metrics_csv_round_trips_through_analyze` pins
+  the fix.
+- SQL physical prefixes are checked per measured invocation. The SQL
+  benchmarks create a database per body invocation, and testing.B runs a body
+  several times per repeat to size `b.N`, so calibration invocations may get
+  another directory-layer prefix. `parse_output` used to compare every result
+  row's `prefix-B` with every receipt of the case, a false correctness failure
+  (phase D1: 9 receipts for 3 rows, one calibration at 5 bytes, every measured
+  row 6). It now pairs each row with the last receipt of its case logged before
+  that row's result line, the measured invocation's (`measured_prefix_bytes`),
+  and requires only that pair to match: sql-read and sql-write, and sql-fetch
+  through its `after` receipt, whose `before` receipt must match it.
+  Record Layer cases keep the strict check: their store is a fixed subspace.
+  `bench_analyze.py` uses the same pairing and no longer rejects a process
+  whose receipts differ: differing measured prefixes are reported as
+  `physical_prefix_confound`.
 
 The benchmark binaries and their audit receipts are described in
 [`docs/benchmarks/campaign-harness.md`](../../../docs/benchmarks/campaign-harness.md).

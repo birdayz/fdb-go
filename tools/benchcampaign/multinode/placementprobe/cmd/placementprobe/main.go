@@ -1,8 +1,10 @@
 // Command placementprobe is the multi-node campaign's placement probe (H5) and
 // ballast/control writer (H6). See package placementprobe and the campaign
-// protocol's placement section.
+// protocol's placement section. Build placementprobe_cgo (libfdb_c) for
+// placement receipts; placementprobe_go has location-cache addresses and its
+// probes require --diagnostic.
 //
-//	placementprobe probe                --cluster-file F --store S --fixture-receipt R --output O [--allow-dd-on]
+//	placementprobe probe                --cluster-file F --store S --fixture-receipt R --output O [--diagnostic]
 //	placementprobe ballast-write        --cluster-file F --store S --fixture-receipt R --ballast-mib N --output O
 //	placementprobe ballast-clear        --cluster-file F --store S --fixture-receipt R --output O
 //	placementprobe ballast-verify-empty --cluster-file F --store S --fixture-receipt R --output O
@@ -10,9 +12,10 @@
 //	placementprobe control-mutate       --cluster-file F --store benchfetch/control-split --defect {delete-chunk,stray-suffix,version-key} --output O
 //	placementprobe control-clear        --cluster-file F --store benchfetch/control-{small,split} --output O
 //
-// Every output is created exclusively, outside any Git work tree. Exit status:
-// 0 success, 1 the operation ran but failed (receipt written when possible),
-// 2 refused or unusable input (nothing touched).
+// Every document records the cluster identity (cluster file SHA-256 and
+// description:id). Every output is created exclusively, outside any Git work
+// tree. Exit status: 0 success, 1 the operation ran but failed (receipt
+// written when possible), 2 refused or unusable input (nothing touched).
 package main
 
 import (
@@ -25,7 +28,6 @@ import (
 	"os"
 	"strings"
 
-	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/tools/benchcampaign/multinode/placementprobe"
 )
 
@@ -43,7 +45,7 @@ type options struct {
 	clusterFile, store, fixture, output, fixtureOut, defect string
 	ballastMiB, timeoutMillis                               int64
 	rows                                                    int
-	allowDDOn                                               bool
+	diagnostic                                              bool
 }
 
 func usage(w io.Writer) {
@@ -77,7 +79,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fs.Int64Var(&o.ballastMiB, "ballast-mib", 0, "ballast-write: ballast size in MiB")
 	fs.Int64Var(&o.timeoutMillis, "transaction-timeout-ms", 30000, "per-transaction timeout")
 	fs.IntVar(&o.rows, "rows", 1000, "control-write: fixture rows")
-	fs.BoolVar(&o.allowDDOn, "allow-dd-on", false, "probe: diagnostic probe while data distribution is on")
+	fs.BoolVar(&o.diagnostic, "diagnostic", false, "probe: allow location-cache addresses and DD on (never sealable)")
 	if err := fs.Parse(args[1:]); err != nil {
 		return 2
 	}
@@ -115,32 +117,37 @@ func checkOutput(path string) error {
 	return nil
 }
 
-// resolve returns the store prefix and, when a receipt was given, its SHA-256.
-func resolve(o options, control bool) ([]byte, string, error) {
-	if control {
+// openStore returns the owned store and, when a fixture receipt was given,
+// the receipt file's SHA-256.
+func openStore(cmd string, o options) (placementprobe.OwnedStore, string, error) {
+	control := strings.HasPrefix(o.store, "benchfetch/control-")
+	if strings.HasPrefix(cmd, "control-") {
 		if o.fixture != "" {
-			return nil, "", errors.New("control commands take no --fixture-receipt")
+			return placementprobe.OwnedStore{}, "", errors.New("control commands take no --fixture-receipt")
 		}
-		p, err := placementprobe.ControlPrefix(o.store)
-		return p, "", err
+		s, err := placementprobe.OpenControlStore(o.store)
+		return s, "", err
+	}
+	if control && cmd != "probe" {
+		return placementprobe.OwnedStore{}, "", errors.New("ballast commands refuse the scratch control stores")
 	}
 	if o.fixture == "" {
-		return nil, "", errors.New("--fixture-receipt is required: the prefix comes from the owned fixture receipt")
+		return placementprobe.OwnedStore{}, "", errors.New("--fixture-receipt is required: the prefix comes from the owned fixture receipt")
 	}
 	data, err := os.ReadFile(o.fixture)
 	if err != nil {
-		return nil, "", err
+		return placementprobe.OwnedStore{}, "", err
 	}
 	r, err := placementprobe.ParseFixtureReceipt(data, o.store)
 	if err != nil {
-		return nil, "", err
+		return placementprobe.OwnedStore{}, "", err
 	}
-	p, err := placementprobe.ResolvePrefix(o.store, r)
+	s, err := placementprobe.OpenStore(o.store, r)
 	if err != nil {
-		return nil, "", err
+		return placementprobe.OwnedStore{}, "", err
 	}
 	sum := sha256.Sum256(data)
-	return p, hex.EncodeToString(sum[:]), nil
+	return s, hex.EncodeToString(sum[:]), nil
 }
 
 func execute(cmd string, o options, stdout io.Writer) error {
@@ -150,18 +157,15 @@ func execute(cmd string, o options, stdout io.Writer) error {
 	if err := checkOutput(o.output); err != nil {
 		return err
 	}
-	control := strings.HasPrefix(cmd, "control-")
-	if !control && strings.HasPrefix(o.store, "benchfetch/control-") && cmd != "probe" {
-		return errors.New("ballast commands refuse the scratch control stores")
+	clusterBytes, err := os.ReadFile(o.clusterFile)
+	if err != nil {
+		return err
 	}
-	var prefix []byte
-	var fixtureSHA string
-	var err error
-	if cmd == "probe" && strings.HasPrefix(o.store, "benchfetch/control-") {
-		prefix, fixtureSHA, err = resolve(o, false) // the control-write fixture receipt
-	} else {
-		prefix, fixtureSHA, err = resolve(o, control)
+	identity, err := placementprobe.ParseClusterIdentity(clusterBytes)
+	if err != nil {
+		return err
 	}
+	store, fixtureSHA, err := openStore(cmd, o)
 	if err != nil {
 		return err
 	}
@@ -179,40 +183,45 @@ func execute(cmd string, o options, stdout io.Writer) error {
 			return errors.New("--defect is required")
 		}
 	}
-	if err := fdb.APIVersion(apiVersion); err != nil {
-		return err
-	}
-	db, err := fdb.OpenDatabase(o.clusterFile)
+	c, closeDB, err := openCluster(o.clusterFile, o.timeoutMillis)
 	if err != nil {
 		return err
 	}
-	defer db.Close()
-	c := placementprobe.FDBCluster{DB: db, TimeoutMillis: o.timeoutMillis, MaxAttempts: 10}
+	defer closeDB()
 	var out any
+	var receipt *placementprobe.BallastReceipt
 	var opErr error
 	switch cmd {
 	case "probe":
-		out, opErr = placementprobe.Probe(c, placementprobe.ProbeInput{
-			Store: o.store, Prefix: prefix, FixtureSHA256: fixtureSHA, AllowDDOn: o.allowDDOn,
+		var doc *placementprobe.ProbeDoc
+		doc, opErr = placementprobe.Probe(c, placementprobe.ProbeInput{
+			Store: store, FixtureSHA256: fixtureSHA, Cluster: identity, Diagnostic: o.diagnostic,
 		})
-	case "ballast-write":
-		out, opErr = placementprobe.WriteBallast(c, o.store, prefix, o.ballastMiB<<20)
-	case "ballast-clear":
-		out, opErr = placementprobe.ClearBallast(c, o.store, prefix)
-	case "ballast-verify-empty":
-		out, opErr = placementprobe.VerifyBallastEmpty(c, o.store, prefix)
-	case "control-write":
-		r, fx, err := placementprobe.WriteControlFixture(c, o.store, prefix, o.rows)
-		if err == nil {
-			err = placementprobe.WriteJSONExclusive(o.fixtureOut, fx)
+		if doc != nil {
+			out = doc
 		}
-		out, opErr = r, err
+	case "ballast-write":
+		receipt, opErr = placementprobe.WriteBallast(c, store, o.ballastMiB<<20)
+	case "ballast-clear":
+		receipt, opErr = placementprobe.ClearBallast(c, store)
+	case "ballast-verify-empty":
+		receipt, opErr = placementprobe.VerifyBallastEmpty(c, store)
+	case "control-write":
+		var fx placementprobe.FixtureReceipt
+		receipt, fx, opErr = placementprobe.WriteControlFixture(c, store, o.rows)
+		if opErr == nil {
+			opErr = placementprobe.WriteJSONExclusive(o.fixtureOut, fx)
+		}
 	case "control-mutate":
-		out, opErr = placementprobe.MutateControl(c, o.store, prefix, o.defect)
+		receipt, opErr = placementprobe.MutateControl(c, store, o.defect)
 	case "control-clear":
-		out, opErr = placementprobe.ClearControl(c, o.store, prefix)
+		receipt, opErr = placementprobe.ClearControl(c, store)
 	}
-	if !isNil(out) {
+	if receipt != nil {
+		receipt.Cluster = identity
+		out = receipt
+	}
+	if out != nil {
 		if err := placementprobe.WriteJSONExclusive(o.output, out); err != nil {
 			return operationFailed{errors.Join(opErr, err)}
 		}
@@ -222,17 +231,4 @@ func execute(cmd string, o options, stdout io.Writer) error {
 		return operationFailed{opErr}
 	}
 	return nil
-}
-
-// isNil reports a nil interface or a typed nil pointer result.
-func isNil(v any) bool {
-	switch p := v.(type) {
-	case nil:
-		return true
-	case *placementprobe.ProbeDoc:
-		return p == nil
-	case *placementprobe.BallastReceipt:
-		return p == nil
-	}
-	return false
 }

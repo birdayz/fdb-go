@@ -27,6 +27,14 @@ RECORD = ['10.88.0.13:4502', '10.88.0.11:4505']
 STORES = {'benchfetch/small': ('small', 'unsplit'), 'benchfetch/split': ('split', 'split')}
 
 
+FIXTURE_SHA = 'f' * 64  # synthetic fixture receipt hash recorded by the probe
+
+
+def cluster_id():
+    """Identity of the generated cluster file the tests write (layout()['cluster_file'] + newline)."""
+    return pr.cluster_identity((layout()['cluster_file'] + '\n').encode())
+
+
 def probe(store, record_servers=RECORD):
     name, record_format = STORES[store]
     prefix = pr.pack(['benchfetch', name])
@@ -38,7 +46,8 @@ def probe(store, record_servers=RECORD):
     return dict(format=pr.PROBE_FORMAT, store=store, store_prefix_hex=prefix.hex(), read_version=7,
                 boundaries_read_version=7, boundary_range_hex=[prefix.hex(), pr.strinc(prefix).hex()],
                 boundaries_complete=True, boundaries_hex=[(prefix + pr.pack([2])).hex()], keys=keys, keys_complete=True,
-                scanned_subspaces_hex=[(prefix + pr.pack([1])).hex(), (prefix + pr.pack([2])).hex()])
+                scanned_subspaces_hex=[(prefix + pr.pack([1])).hex(), (prefix + pr.pack([2])).hex()],
+                **pr.synthetic_provenance(prefix, fixture_sha256=FIXTURE_SHA, cluster=cluster_id()))
 
 
 def receipt(store, record_servers=RECORD):
@@ -47,34 +56,39 @@ def receipt(store, record_servers=RECORD):
     fixture = dict(phase='fixture', prefix_bytes=len(prefix), rows=1000, chunks=len(pr.RECORD_SUFFIXES[record_format]))
     return pr.build_receipt(status(layout(), dd_disabled=True), probe(store, record_servers), pr.PRESETS['benchfetch'],
                             layout='recordlayer', rows=1000, record_format=record_format, fixture=fixture,
-                            expect_prefix=prefix, preset='benchfetch')
+                            expect_prefix=prefix, preset='benchfetch', fixture_sha256=FIXTURE_SHA,
+                            expect_cluster=cluster_id())
 
 
 def bench_output(view, rows_override=None):
-    """What a passing frozen benchfetch process prints for this job (single-node test fixture shape)."""
+    """What a passing frozen benchfetch process prints with -test.v, in testing.B's order:
+    the fixture receipt, then per repeat the invocation's before/after receipts and its result line."""
     c = view['case']
     rows = rows_override or c['rows']
-    lines = [f"{view['name']}-8 100 100 ns/op 4 B/op 2 allocs/op {rows} rows/op 20 prefix-B" for _ in range(3)]
     fixture = dict(case=view['name'].split('/')[0], phase='fixture', rows=1000, prefix_bytes=20,
                    **{k: v for k, v in c['fields'].items() if k in ('payload', 'payload_bytes', 'chunks')})
     fixture['split'] = c['fields'].get('payload') == 'split'
-    audits = [fixture]
+    lines = ['log FDB_BENCH_AUDIT ' + json.dumps(fixture)]
     remote = view['arm'].endswith('-remote')
     for _ in range(3):
         for phase in ('before', 'after'):
-            audits.append(dict(case=view['name'], phase=phase, method='USE_REMOTE_FETCH' if remote else 'SCAN_AND_FETCH',
-                               rows=c['rows'], remote_openings=int(remote), remote_entries=c['rows'] + 4 if remote else 0,
-                               index_scans=0 if remote else 1, record_loads=0 if remote else c['rows'],
-                               checksum=42, prefix_bytes=20, **c['fields']))
-    return '\n'.join(lines + ['log FDB_BENCH_AUDIT ' + json.dumps(a) for a in audits] + ['PASS']) + '\n'
+            lines.append('log FDB_BENCH_AUDIT ' + json.dumps(dict(
+                case=view['name'], phase=phase, method='USE_REMOTE_FETCH' if remote else 'SCAN_AND_FETCH',
+                rows=c['rows'], remote_openings=int(remote), remote_entries=c['rows'] + 4 if remote else 0,
+                index_scans=0 if remote else 1, record_loads=0 if remote else c['rows'],
+                checksum=42, prefix_bytes=20, **c['fields'])))
+        lines.append(f"{view['name']}-8 100 100 ns/op 4 B/op 2 allocs/op {rows} rows/op 20 prefix-B")
+    return '\n'.join(lines + ['PASS']) + '\n'
 
 
 class FakeProcess:
     pid = 4242
-    returncode = 0
+
+    def __init__(self, returncode=0):
+        self.returncode = returncode
 
     def wait(self, timeout=None):
-        return 0
+        return self.returncode
 
 
 class Phase(Temp):
@@ -152,19 +166,27 @@ class Phase(Temp):
             stop_process_group=lambda p: None, check_builds=lambda: None)
 
     def spawn(self, command, stdout, stderr, env):
-        job = self.jobs[tuple(command[5:])]
+        # Jobs of one case and arm share an argv; the job is the folder GNU time writes into.
+        job = self.jobs[Path(command[3]).parent.name]
+        self.assertEqual(tuple(command[5:]), tuple(job['command']))
         self.spawned.append(job['id'])
         view = dict(job, case=r2.audit_case(self.cases[job['case']]))
-        stdout.write(self.output_for(view))
-        Path(command[3]).write_text('User time (seconds): 1.50\nSystem time (seconds): 0.25\n')
-        return FakeProcess()
+        rc, time_head = self.exit_for(job)
+        if rc == 0:
+            stdout.write(self.output_for(view))
+        Path(command[3]).write_text(time_head + 'User time (seconds): 1.50\nSystem time (seconds): 0.25\n')
+        return FakeProcess(rc)
+
+    def exit_for(self, job):
+        """(exit status of /usr/bin/time, its -o file's first line) for this job."""
+        return 0, ''
 
     def output_for(self, view):
         return bench_output(view)
 
     def run_phase(self, args=None, processes=((1, 'systemd'),), utc=cg.utc_now):
         self.calls, self.spawned = [], []
-        self.jobs = {tuple(j['command']): j for j in self.plan['jobs']}
+        self.jobs = {j['id']: j for j in self.plan['jobs']}
         self.cases = {c['key']: c for c in self.plan['cases']}
         clock = FakeClock()
         with mock.patch.object(cg, 'process_table', return_value=list(processes)), \
@@ -247,6 +269,19 @@ class RunPhaseTest(Phase):
                 self.assertEqual(self.run_phase(), 2)
                 self.assertEqual(list(self.out('omitted.json')), ['small-rows10-forward'])
 
+    def test_fresh_receipt_must_pass_sealed_errors_even_when_it_compares_equal(self):
+        stripped = receipt('benchfetch/small')
+        del stripped['provenance']  # placement, boundaries and identity fields unchanged: compare says equal
+        self.assertTrue(pr.compare(receipt('benchfetch/small'), stripped)['equal'])
+        self.fresh[('benchfetch/small', 'before')] = stripped
+        self.assertEqual(self.run_phase(), 2)
+        omitted = self.out('omitted.json')
+        self.assertEqual(list(omitted), ['small-rows10-forward'])
+        self.assertIn('not sealable', omitted['small-rows10-forward']['reason'])
+        other = receipt('benchfetch/small')
+        other['provenance']['cluster']['connection_string_id'] = 'fdbbenchvpc:other'
+        self.assertTrue(pr.sealed_errors(other, cluster_id()))
+
     def test_server_gate_omits_cases(self):
         lay = self.lay
         cases = [
@@ -271,6 +306,25 @@ class RunPhaseTest(Phase):
         first = self.out(f'{self.plan["jobs"][0]["id"]}/result.json')
         self.assertEqual(first['status'], 'environment-aborted')
         self.assertIn('fdbserver', first['error'])
+
+    def test_signal_killed_process_is_an_environmental_case_abort(self):
+        # GNU time exits 128+9 for a SIGKILLed child and says so only in its -o file; stderr stays empty.
+        first = self.plan['jobs'][0]['id']
+        self.exit_for = lambda job: (137, 'Command terminated by signal 9\n') if job['id'] == first else (0, '')
+        self.assertEqual(self.run_phase(), 2)  # not CorrectnessFailure: the phase continued
+        result = self.out(f'{first}/result.json')
+        self.assertEqual(result['status'], 'environment-aborted')
+        self.assertIn('exit 137', result['error'])
+        self.assertEqual(list(self.out('omitted.json')), ['small-rows10-forward'])
+        self.assertEqual(len(self.spawned), 13)  # the rest of the small case skipped, split ran whole
+
+    def test_environmental_exit_rule(self):
+        cases = [((137, '', 'Command terminated by signal 9\n'), True), ((143, '', ''), True), ((-9, '', ''), True),
+                 ((1, 'rpc: timed out', ''), True), ((1, '', 'Command terminated by signal 6\n'), True),
+                 ((1, 'FAIL: wrong rows', 'Command exited with non-zero status 1\n'), False), ((2, '', ''), False)]
+        for (rc, stderr, time_text), want in cases:
+            with self.subTest(rc=rc, stderr=stderr):
+                self.assertEqual(r2.environmental_exit(rc, stderr, time_text), want)
 
     def test_final_tree_correctness_failure_stops_the_phase(self):
         self.output_for = lambda view: bench_output(view, rows_override=7)
@@ -305,7 +359,9 @@ class PreflightTest(Phase):
         changed = json.loads(self.receipts['benchfetch/small'].read_text())
         changed['read_version'] = 8
         self.receipts['benchfetch/small'].write_text(json.dumps(changed))
-        self.refused(self.args(), 'pinned|differs')
+        # The edited receipt no longer re-validates (its preserved provenance is at
+        # read version 7), so the plan rebuild refuses it before the hash check.
+        self.refused(self.args(), 'pinned|differs|proves nothing')
 
     def test_tampered_plan_with_a_consistent_manifest_is_refused(self):
         plans = self.tmp / 'plans'
@@ -324,6 +380,33 @@ class PreflightTest(Phase):
                 (forged / 'manifest.json').write_text(json.dumps(manifest))
                 self.refused(self.args(plans=f'forged-{name}'), 'plan differs|case-major')
 
+    def test_manifest_population_must_be_protocol_minus_recorded_unsealed(self):
+        plans = self.tmp / 'plans'
+        manifest = json.loads((plans / 'manifest.json').read_text())
+        for name, unsealed in [('frozen case passed off as unsealed', dict(phase='M2rl', case='split-rows10-forward')),
+                               ('unknown case unsealed', dict(phase='M2rl', case='small-rows100-forward'))]:
+            with self.subTest(name):
+                forged = json.loads(json.dumps(manifest))
+                forged['unsealed'].append(dict(unsealed, reason='forged'))
+                (plans / 'manifest.json').write_text(json.dumps(forged))
+                self.refused(self.args(manifest_sha256=generic.sha(plans / 'manifest.json')), 'protocol cases minus')
+
+    def test_placement_command_needs_the_sealed_cluster_sha256(self):
+        t = self.tmp
+        command = t / 'placement_command.py'
+        command.write_text('# stand-in for placement_command.py\n')
+        self.pins.append(command)
+        self.seal(out='plans-pc')
+        cluster_sha = generic.sha(t / 'fdb.cluster')
+        base = [str(command), '--store', '{store}', '--when', '{when}', '--output', '{output}']
+        for name, extra in [('flag missing', []), ('wrong SHA-256', ['--expect-cluster-sha256', '0' * 64]),
+                            ('value missing', ['--expect-cluster-sha256'])]:
+            with self.subTest(name):
+                self.refused(self.args(plans='plans-pc', placement_command=json.dumps(base + extra)),
+                             'expect-cluster-sha256')
+        good = base + ['--expect-cluster-sha256', cluster_sha]
+        self.assertEqual(self.run_phase(self.args(plans='plans-pc', placement_command=json.dumps(good))), 0)
+
     def test_cluster_file_and_vpc(self):
         with self.assertRaisesRegex(cg.EnvironmentFailure, 'VPC'):
             self.run_phase(self.args(vpc_cidr='10.99.0.0/24'))
@@ -334,7 +417,8 @@ class PreflightTest(Phase):
         pinned = json.loads((self.tmp / 'plans' / 'manifest.json').read_text())['pinned_files']
         gate = cg.ServerGate(self.tmp / 'fdb.cluster', self.lay, 'ssd-2', 'disabled', self.command)
         self.calls = []
-        unit = r2.Case(dict(case, placement_receipt_sha256='0' * 64), self.tmp / 'case-x', gate, self.command, [], '', pinned)
+        unit = r2.Case(dict(case, placement_receipt_sha256='0' * 64), self.tmp / 'case-x', gate, self.command, [], '', pinned,
+                       cluster_id())
         with self.assertRaisesRegex(cg.EnvironmentFailure, 'changed since sealing'):
             unit.begin()
         self.assertEqual(self.calls, [])

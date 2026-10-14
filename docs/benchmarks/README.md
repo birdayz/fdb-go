@@ -11,6 +11,9 @@ Raw output behind the tables in the top-level README.
 - [2026-10-14: Record Layer on a dedicated 16-vCPU host](2026-10-14-hcloud-recordlayer/README.md)
   — legacy vs read-parity vs allocation-work trees, eight benchmarks, separating the
   parity change's cost from the allocation work.
+- [2026-10-14: remote fetch vs ordinary index fetch on a dedicated 16-vCPU host](2026-10-14-hcloud-remotefetch/README.md)
+  — `USE_REMOTE_FETCH` vs `SCAN_AND_FETCH` in the first remote-fetch tree and the final
+  tree, six cases, including a retained negative result for 1,000 split records.
 
 ## Change-specific comparisons
 

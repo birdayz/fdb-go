@@ -299,15 +299,15 @@ def bench_regex(name):
     return '/'.join('^' + re.escape(part) + '$' for part in name.split('/'))
 
 
-RECEIPT_FORMAT = 'fdb-bench-placement-receipt/v2'
-
-
-def placement_label(case, receipts):
+def placement_label(case, receipts, cluster_identity):
     """The case's fixed placement label from its store's receipt, decided before timing.
 
-    A receipt without integrity proves nothing and is refused. A receipt with
-    integrity but a cell below 1.0 still seals, under 'partially colocated (f)'
-    (protocol placement.acceptance). The receipt's cell must be exactly the
+    A receipt is refused unless placement_receipt.sealed_errors is empty for the
+    sealed cluster: integrity, transactional addresses, DD off with the mode lock,
+    unchanged write token and keyServers digest, a fixture receipt hash, and the
+    cluster identity of the pinned cluster file (refused on mismatch). A receipt
+    with integrity but a cell below 1.0 still seals, under 'partially colocated
+    (f)' (protocol placement.acceptance). The receipt's cell must be exactly the
     preset cell the benchmark scans: same preset, same [lo, hi) bounds, complete
     population; a same-named cell with other bounds is refused.
     """
@@ -316,8 +316,10 @@ def placement_label(case, receipts):
         raise ValueError(f'no placement receipt for store {case["store"]}')
     path = Path(path).resolve()  # the sealed plan records the absolute, pinned path
     r = json.loads(path.read_text())
-    if r.get('format') != RECEIPT_FORMAT or r.get('integrity_ok') is not True or r.get('error_count') != 0 or r.get('errors'):
-        raise ValueError(f'placement receipt {path} lacks integrity or has a wrong format; it proves nothing')
+    problems = pr.sealed_errors(r, cluster_identity)
+    if problems:
+        raise ValueError(f'placement receipt {path} lacks integrity or sealable provenance; it proves nothing: '
+                         + '; '.join(problems[:5]))
     for field, want in (('store', case['store']), ('layout', case['layout']), ('record_format', case['record_format']),
                         ('preset', case['placement_preset'])):
         if r.get(field) != want:
@@ -343,6 +345,7 @@ def testingb_plan(protocol, phase, frozen, binary, cluster_file, allowed, receip
     if set(phase['arms']) - set(TESTINGB_ARMS):
         raise ValueError(f'{phase["id"]}: unknown testing.B arms')
     cases, unsealed = [], []
+    identity = None  # of the pinned cluster file; every placement receipt must match it
     new = set(phase.get('new_harness_cells', []))
     whole_phase_new = phase.get('new_harness_phase', False)
     for case in testingb_cells(phase):
@@ -351,7 +354,9 @@ def testingb_plan(protocol, phase, frozen, binary, cluster_file, allowed, receip
             unsealed.append(dict(phase=phase['id'], case=case['key'], reason='requires reviewed new harness commit'))
         else:
             if phase['placement_required']:
-                case.update(placement_label(case, receipts or {}))
+                if identity is None:
+                    identity = pr.cluster_identity(Path(cluster_file).read_bytes())
+                case.update(placement_label(case, receipts or {}, identity))
             cases.append(case)
     jobs = []
     for ci, case in enumerate(cases):

@@ -3,8 +3,9 @@
 Pure-Go client at the final tree against its predecessor and against Apple's
 Go binding over `libfdb_c` 7.3.77. One closed-loop worker, 11 workloads,
 counterbalanced. This is **phase A** of the hcloud rebench campaign; the Record
-Layer results are in [phase B](../2026-10-14-hcloud-recordlayer/README.md), and
-the remote-fetch and SQL phases are reported separately when complete.
+Layer results are in [phase B](../2026-10-14-hcloud-recordlayer/README.md), the
+remote-fetch results in [phase C1](../2026-10-14-hcloud-remotefetch/README.md),
+and the remaining phases are reported separately when complete.
 
 ## Arms
 

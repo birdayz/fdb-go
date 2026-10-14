@@ -22,11 +22,13 @@ import placement_receipt as pr  # noqa: E402
 import seal_multinode as seal  # noqa: E402
 
 ROWS = 1000
+CLUSTER_TEXT = 'fdbbenchvpc:mn20261014@10.88.0.11:4500,10.88.0.12:4500,10.88.0.13:4500\n'
+CLUSTER_ID = pr.cluster_identity(CLUSTER_TEXT.encode())
 INDEX = ['10.88.0.11:4505', '10.88.0.13:4503']
 RECORDS = ['10.88.0.11:4504', '10.88.0.12:4502']
 
 
-def probe_doc(store, prefix_items, suffixes, record_addresses=RECORDS):
+def probe_doc(store, prefix_items, suffixes, record_addresses=RECORDS, fixture_sha256='a' * 64):
     prefix = pr.pack(list(prefix_items))
     keys = []
     for i in range(ROWS):
@@ -40,7 +42,8 @@ def probe_doc(store, prefix_items, suffixes, record_addresses=RECORDS):
                 boundaries_read_version=7, boundary_range_hex=[prefix.hex(), pr.strinc(prefix).hex()],
                 boundaries_complete=True, boundaries_hex=[(prefix + pr.pack([1, 1000000])).hex()],
                 scanned_subspaces_hex=[(prefix + pr.pack([1])).hex(), (prefix + pr.pack([2])).hex()],
-                keys_complete=True, keys=keys)
+                keys_complete=True, keys=keys,
+                **pr.synthetic_provenance(prefix, fixture_sha256=fixture_sha256, cluster=CLUSTER_ID))
 
 
 def status_doc():
@@ -89,11 +92,20 @@ class Temp(unittest.TestCase):
             fixtures[store] = str(path)
         self.fixtures = self.tmp / 'fixture-receipts.json'
         self.fixtures.write_text(json.dumps(fixtures))
+        self.fixture_paths = fixtures
+        self.cluster = self.tmp / 'fdb.cluster'
+        self.cluster.write_text(CLUSTER_TEXT)
+
+    def probe(self, store, **kw):
+        tup = pc.STORES[store][0]
+        suffixes = pr.RECORD_SUFFIXES[pc.STORES[store][2] or 'unsplit']
+        return probe_doc(store, tup, suffixes, fixture_sha256=pr.sha(self.fixture_paths[store]), **kw)
 
     def argv(self, store='benchfetch/small', when='before', **over):
         _, layout, fmt = pc.STORES[store]
         values = dict(store=store, case='small-rows10-forward', when=when, preset=pc.PRESET_OF[store], layout=layout,
-                      record_format=fmt or '', cluster_file='/etc/fdb.cluster', output=str(self.tmp / f'r-{when}.json'),
+                      record_format=fmt or '', cluster_file=str(self.cluster),
+                      expect_cluster_sha256=CLUSTER_ID['cluster_file_sha256'], output=str(self.tmp / f'r-{when}.json'),
                       placementprobe='/opt/placementprobe', fdbcli='/usr/bin/fdbcli',
                       fixture_receipts=str(self.fixtures), work_dir=str(self.tmp / 'work'))
         values.update(over)
@@ -105,12 +117,15 @@ class Temp(unittest.TestCase):
 
 class PlacementCommandTest(Temp):
     def test_writes_an_integral_receipt_for_the_sealed_case(self):
-        tools = FakeTools(probe_doc('benchfetch/small', ('benchfetch', 'small'), [0]))
+        tools = FakeTools(self.probe('benchfetch/small'))
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(pc.main(self.argv(), runner=tools), 0)
         r = json.loads((self.tmp / 'r-before.json').read_text())
         self.assertTrue(r['integrity_ok'], r['errors'])
         self.assertTrue(r['passed'])
+        self.assertEqual(r['sealed_errors'], [])
+        self.assertEqual(r['cluster'], CLUSTER_ID)
+        self.assertEqual(r['addresses_basis'], 'transactional')
         self.assertEqual((r['store'], r['preset'], r['layout'], r['record_format']),
                          ('benchfetch/small', 'benchfetch', 'recordlayer', 'unsplit'))
         self.assertEqual(r['cells']['rows10']['ids'], [100, 110])
@@ -118,13 +133,13 @@ class PlacementCommandTest(Temp):
         self.assertEqual(probe_call[:2], ['/opt/placementprobe', 'probe'])
         self.assertEqual(probe_call[probe_call.index('--fixture-receipt') + 1],
                          json.loads(self.fixtures.read_text())['benchfetch/small'])
-        self.assertEqual(tools.calls[1], ['/usr/bin/fdbcli', '-C', '/etc/fdb.cluster', '--exec', 'status json'])
+        self.assertEqual(tools.calls[1], ['/usr/bin/fdbcli', '-C', str(self.cluster), '--exec', 'status json'])
         work = self.tmp / 'work' / 'small-rows10-forward' / 'before'
         self.assertEqual(r['inputs']['probe_sha256'], pr.sha(work / 'probe.json'))
         self.assertEqual(json.loads((work / 'status.json').read_text()), status_doc())
 
     def test_split_and_partial_placement_are_receipts_not_errors(self):
-        colocated = probe_doc('benchfetch/split', ('benchfetch', 'split'), [1, 2], record_addresses=INDEX)
+        colocated = self.probe('benchfetch/split', record_addresses=INDEX)
         colocated['boundaries_hex'] = []  # one shard: legitimately colocated
         with contextlib.redirect_stdout(io.StringIO()):
             rc = pc.main(self.argv('benchfetch/split', case='split-rows10-forward'), runner=FakeTools(colocated))
@@ -136,14 +151,14 @@ class PlacementCommandTest(Temp):
         self.assertEqual(r['shared_shards'], 1)
 
     def test_integrity_failure_still_writes_the_receipt_and_exits_1(self):
-        bad = probe_doc('benchfetch/small', ('benchfetch', 'small'), [0])
+        bad = self.probe('benchfetch/small')
         bad['keys'].append(copy.deepcopy(bad['keys'][0]))
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(pc.main(self.argv(), runner=FakeTools(bad)), 1)
         self.assertFalse(json.loads((self.tmp / 'r-before.json').read_text())['integrity_ok'])
 
     def test_tool_failures_exit_1_without_a_receipt(self):
-        good = probe_doc('benchfetch/small', ('benchfetch', 'small'), [0])
+        good = self.probe('benchfetch/small')
         for i, tools in enumerate([FakeTools(good, probe_rc=1), FakeTools(good, status_rc=1)]):
             with self.subTest(i=i), contextlib.redirect_stderr(io.StringIO()):
                 out = self.tmp / f'fail-{i}.json'
@@ -167,6 +182,8 @@ class PlacementCommandTest(Temp):
             dict(output=str(repo / 'r.json')),
             dict(work_dir=str(repo / 'work')),
             dict(fixture_receipts=str(relative)),
+            dict(expect_cluster_sha256='0' * 64),
+            dict(expect_cluster_sha256='not-hex'),
         ]
         no_split = self.tmp / 'no-split.json'
         no_split.write_text(json.dumps({'benchfetch/small': json.loads(self.fixtures.read_text())['benchfetch/small']}))
@@ -185,6 +202,43 @@ class PlacementCommandTest(Temp):
         with contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(pc.main(self.argv(), runner=FakeTools(None)), 2)  # reused work dir
 
+    def test_provenance_defects_never_yield_a_sealable_receipt(self):
+        cases = {
+            'diagnostic addresses': lambda p: p['addresses_basis'].update(kind='location-cache (diagnostic)'),
+            'dd on (allow-dd-on probe)': lambda p: p['dd_mode'].update(required_off=False),
+            'probe on another cluster': lambda p: p.update(cluster=dict(connection_string_id='other:cluster',
+                                                                         cluster_file_sha256='9' * 64)),
+            'probe of another fixture receipt': lambda p: p.update(fixture_receipt_sha256='d' * 64),
+            'lock token changed': lambda p: p['move_keys_lock'].update(write_token_hex_at_v2='ff' * 16),
+        }
+        for i, (name, mutate) in enumerate(cases.items()):
+            probe = self.probe('benchfetch/small')
+            mutate(probe)
+            out = self.tmp / f'prov-{i}.json'
+            with self.subTest(name), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(pc.main(self.argv(output=str(out), work_dir=str(self.tmp / f'pw{i}')),
+                                         runner=FakeTools(probe)), 1)
+                r = json.loads(out.read_text())
+                self.assertFalse(r['integrity_ok'])
+                self.assertTrue(r['sealed_errors'])
+
+    def test_symlinked_case_directory_into_a_repo_is_refused(self):
+        repo = self.tmp / 'repo'
+        (repo / '.git').mkdir(parents=True)
+        work = self.tmp / 'work'
+        work.mkdir()
+        (work / 'small-rows10-forward').symlink_to(repo)
+        tools = FakeTools(self.probe('benchfetch/small'))
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(pc.main(self.argv(), runner=tools), 2)
+        self.assertEqual(tools.calls, [])
+        self.assertEqual(sorted(p.name for p in repo.iterdir()), ['.git'])
+        self.assertFalse((self.tmp / 'r-before.json').exists())
+        (work / 'small-rows10-forward').unlink()
+        (work / 'linked-root').symlink_to(work)
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(pc.main(self.argv(work_dir=str(work / 'linked-root')), runner=tools), 2)
+
     def test_r2_template_renders_into_this_command(self):
         try:
             import bench_runner_mn as r2
@@ -193,19 +247,20 @@ class PlacementCommandTest(Temp):
         template = ['python3', '-B', str(HERE / 'placement_command.py'),
                     '--store', '{store}', '--case', '{case}', '--when', '{when}', '--preset', '{preset}',
                     '--layout', '{layout}', '--record-format', '{record_format}',
-                    '--cluster-file', '{cluster_file}', '--output', '{output}',
+                    '--cluster-file', '{cluster_file}', '--expect-cluster-sha256', CLUSTER_ID['cluster_file_sha256'],
+                    '--output', '{output}',
                     '--placementprobe', '/opt/placementprobe', '--fdbcli', '/usr/bin/fdbcli',
                     '--fixture-receipts', str(self.fixtures), '--work-dir', str(self.tmp / 'work')]
         case = dict(store='benchfetch/planskip', key='skip3-rows10-forward', placement_preset='planskip',
                     layout='recordlayer', record_format='unsplit')
-        argv = r2.placement_argv(template, case, 'after', self.tmp / 'r-after.json', '/etc/fdb.cluster')
+        argv = r2.placement_argv(template, case, 'after', self.tmp / 'r-after.json', str(self.cluster))
         args = pc.parse_args(argv[3:])
         self.assertEqual((args.store, args.case, args.when, args.preset, args.record_format, args.output),
                          ('benchfetch/planskip', 'skip3-rows10-forward', 'after', 'planskip', 'unsplit',
                           str(self.tmp / 'r-after.json')))
         pc.validate(args)
         sql = dict(case, store='sql/IDX_A', placement_preset='sql', layout='opaque', record_format=None)
-        args = pc.parse_args(r2.placement_argv(template, sql, 'before', self.tmp / 'r-sql.json', '/c')[3:])
+        args = pc.parse_args(r2.placement_argv(template, sql, 'before', self.tmp / 'r-sql.json', str(self.cluster))[3:])
         self.assertEqual(args.record_format, '')
 
 
@@ -305,18 +360,31 @@ class SealRunTest(Temp):
         p = probe_doc('benchfetch/small', ('benchfetch', 'small'), [0])
         r = pr.build_receipt(status_doc(), p, pr.PRESETS['benchfetch'], layout='recordlayer', rows=ROWS,
                              record_format='unsplit', fixture=dict(phase='fixture', prefix_bytes=len(prefix), rows=ROWS),
-                             expect_prefix=prefix, preset='benchfetch')
+                             expect_prefix=prefix, preset='benchfetch', fixture_sha256='a' * 64,
+                             expect_cluster=CLUSTER_ID)
         (self.tmp / 'r.json').write_text(json.dumps(r))
         case = dict(store='benchfetch/small', layout='recordlayer', record_format='unsplit',
                     placement_preset='benchfetch', placement_cell='rows10')
         cwd = os.getcwd()
         os.chdir(self.tmp)
         try:
-            label = seal.placement_label(case, {'benchfetch/small': 'r.json'})
+            label = seal.placement_label(case, {'benchfetch/small': 'r.json'}, CLUSTER_ID)
         finally:
             os.chdir(cwd)
         self.assertEqual(label['placement_receipt'], str((self.tmp / 'r.json').resolve()))
         self.assertEqual(label['placement_label'], 'cross-server')
+        other = dict(connection_string_id='other:cluster', cluster_file_sha256='9' * 64)
+        with self.assertRaisesRegex(ValueError, 'cluster'):
+            seal.placement_label(case, {'benchfetch/small': str(self.tmp / 'r.json')}, other)
+        for name, edit in [('diagnostic', lambda d: d['provenance']['addresses_basis'].update(kind='location-cache (diagnostic)')),
+                           ('missing provenance', lambda d: d.pop('provenance')),
+                           ('dd on', lambda d: d['provenance']['dd_mode']['at_v2'].update(mode=1)),
+                           ('no fixture hash', lambda d: d['provenance'].update(fixture_receipt_sha256=None))]:
+            doc = json.loads((self.tmp / 'r.json').read_text())
+            edit(doc)
+            (self.tmp / f'bad-{name}.json').write_text(json.dumps(doc))
+            with self.subTest(name), self.assertRaisesRegex(ValueError, 'proves nothing'):
+                seal.placement_label(case, {'benchfetch/small': str(self.tmp / f'bad-{name}.json')}, CLUSTER_ID)
 
 
 if __name__ == '__main__':

@@ -9,10 +9,13 @@ Inputs (all produced outside timing):
              {"prefix_bytes": N, "rows": 1000, "chunks": 1|2,
               "store_prefix_hex": "..." (required for --layout opaque)}.
              It ties the probed prefix to the store the benchmark actually owns.
-  --probe    a placement probe document written by the placement probe tool (H5,
-             a NEW separately reviewed harness tool using LocalityGetBoundaryKeys
-             and LocalityGetAddressesForKey):
-               {"format": "fdb-bench-placement-probe/v2", "store": "benchfetch/small",
+  --cluster-file  the pinned cluster file; its SHA-256 and description:id must
+             equal the probe's recorded cluster identity.
+  --probe    a placement probe document written by placementprobe (H5,
+             placementprobe_cgo: one libfdb_c transaction at V1 for keys,
+             \xff/keyServers, DD mode, moveKeysLock and transactional
+             LocalityGetAddressesForKey; recheck at V2 >= V1):
+               {"format": "fdb-bench-placement-probe/v3", "store": "benchfetch/small",
                 "store_prefix_hex": "...", "read_version": 123,
                 "boundaries_read_version": 123,
                 "boundary_range_hex": [prefix, strinc(prefix)],
@@ -21,7 +24,15 @@ Inputs (all produced outside timing):
                 "scanned_subspaces_hex": [prefix+(1,), prefix+(2,)],
                 "keys_complete": true,                 # EVERY physical key of both subspaces
                 "keys": [{"kind": "index"|"record", "id": 0, "key_hex": "...",
-                          "addresses": ["10.88.0.12:4502", "10.88.0.13:4503"]}]}
+                          "addresses": ["10.88.0.12:4502", "10.88.0.13:4503"]}],
+                "fixture_receipt_sha256": "...", "cluster": {"connection_string_id", "cluster_file_sha256"},
+                "addresses_basis": {"kind": "transactional", "read_version": V1},
+                "recheck": {"read_version": V2, "boundaries_identical": true},
+                "dd_mode": {"required_off": true, "at_v1": {...mode 0...}, "at_v2": {...}},
+                "move_keys_lock": {owner hex at V1/V2 = dataDistributionModeLock, write token hex
+                                   at V1/V2, unchanged},
+                "key_servers": {"begin_hex", "end_hex", "entries", "sha256_at_v1", "sha256_at_v2",
+                                "unchanged"}}
 
 Probe scope. The probe lists every physical key of exactly two data subspaces of
 the store: the record subspace prefix+(1,) and the index subspace prefix+(2,),
@@ -46,7 +57,16 @@ receipt: two separate verdicts.
   * --layout opaque: index IDs and record IDs are both exactly 0..rows-1, one
     index entry per ID (and --records-per-id record keys when given);
   * every address a storage role in status json, exactly --replicas per key, one
-    server set per shard; the owned fixture receipt matches.
+    server set per shard; the owned fixture receipt matches;
+  * provenance: addresses_basis transactional at V1 (location-cache/diagnostic
+    documents FAIL integrity); recheck V2 >= V1 with identical boundaries; DD
+    required off, mode 0 with the key present at V1 and V2; moveKeysLock owner the
+    data-distribution-mode lock at V1 and V2 and the write token unchanged;
+    keyServers digest unchanged; the probe's fixture_receipt_sha256 equals the
+    --fixture-receipt file's; its cluster identity equals --cluster-file's.
+  The receipt preserves the provenance (`provenance`, `cluster`,
+  `key_servers_sha256`, `move_keys_write_token_hex`, `addresses_basis`);
+  sealed_errors() re-validates it for sealing and fresh case checks.
   Shards holding both index entries and records are legitimate colocation and are
   reported as `shared_shards` (descriptive), not as an integrity error.
   passed (full-disjointness acceptance): integrity_ok and every cell complete with
@@ -57,13 +77,18 @@ receipt: two separate verdicts.
   means the storage process (address): with double replication on three machines
   every two-machine team meets every other, so machine-level disjointness is
   structurally 0 and is reported only as a descriptive figure.
-compare:  both receipts integrity_ok and the same store, prefix, boundaries and
-          per-key server sets (partial placements compare fine).
+compare:  both receipts integrity_ok and the same store, prefix, boundaries, cluster,
+          keyServers digest, moveKeysLock write token and per-key server sets
+          (partial placements compare fine; any DD toggle since the other receipt
+          changes the write token).
 controls: mutation controls on a real probe: the original must be integrity_ok
           (its disjointness fraction is irrelevant) and each mutation (duplicate
           key, omitted chunk, stray suffix, version key, truncated boundaries,
-          incomplete key scan, zero read version, foreign address) must be
-          rejected BY INTEGRITY.
+          incomplete key scan, zero read version, foreign address) and each
+          provenance mutation (diagnostic addresses, DD on/not required, lock
+          owner/token changed, keyServers changed, early recheck, fixture or
+          cluster mismatch, any provenance field missing) must be rejected BY
+          INTEGRITY.
 Exit status: receipt 0 passed, 3 integrity_ok but some cell below the fraction
 (usable only under a partially-colocated label), 1 integrity failed;
 compare/controls 0 ok, 1 not; 2 unusable input.
@@ -74,12 +99,19 @@ import copy
 import hashlib
 import json
 from pathlib import Path
+import re
 import sys
 
 import mn_common as mc
 
-PROBE_FORMAT = 'fdb-bench-placement-probe/v2'
-RECEIPT_FORMAT = 'fdb-bench-placement-receipt/v2'
+PROBE_FORMAT = 'fdb-bench-placement-probe/v3'
+RECEIPT_FORMAT = 'fdb-bench-placement-receipt/v3'
+ADDRESS_TRANSACTIONAL = 'transactional'
+# dataDistributionModeLock = UID(6345, 3425) as two little-endian uint64 (7.3.77 SystemData.cpp).
+DD_MODE_LOCK_HEX = 'c918000000000000610d000000000000'
+KEY_SERVERS_PREFIX = b'\xff/keyServers/'
+PROVENANCE_FIELDS = ('fixture_receipt_sha256', 'cluster', 'addresses_basis', 'recheck', 'dd_mode', 'move_keys_lock',
+                     'key_servers')
 RECORD_KEY, INDEX_KEY = 1, 2
 # Canonical record-key suffixes of a new store (format >= SAVE_UNSPLIT_WITH_SUFFIX,
 # no store record versions): Java SplitHelper UNSPLIT_RECORD 0, START_SPLIT_RECORD 1.
@@ -202,6 +234,94 @@ def probe_integrity(probe, prefix, boundaries, brange, errors):
         errors.append('keys_complete is not true: the key scan may be partial')
 
 
+def cluster_identity(data):
+    """{connection_string_id, cluster_file_sha256} of cluster file bytes (as placementprobe computes it)."""
+    for line in data.decode().splitlines():
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        at, colon = line.find('@'), line.find(':')
+        if at <= 0 or colon <= 0 or colon > at:
+            raise InputError(f'malformed connection string {line!r}')
+        return dict(connection_string_id=line[:at], cluster_file_sha256=hashlib.sha256(data).hexdigest())
+    raise InputError('cluster file has no connection string')
+
+
+def _hex(v, nbytes):
+    return isinstance(v, str) and re.fullmatch(f'[0-9a-f]{{{2 * nbytes}}}', v) is not None
+
+
+def provenance_errors(probe, prefix, fixture_sha256, expect_cluster):
+    """Integrity of how the probe was taken: transactional addresses at V1, DD off
+    with the data-distribution-mode lock as moveKeysLock owner at V1 and V2, an
+    unchanged write token and keyServers digest, the owned fixture receipt and the
+    pinned cluster. Any failure means the document proves nothing."""
+    errors = []
+    rv = probe.get('read_version')
+    basis = probe.get('addresses_basis') or {}
+    if basis.get('kind') != ADDRESS_TRANSACTIONAL:
+        errors.append(f'addresses_basis kind {basis.get("kind")!r} is not transactional '
+                      '(location-cache/diagnostic addresses are not admissible)')
+    if basis.get('read_version') != rv:
+        errors.append('addresses were not read at the probe read version')
+    recheck = probe.get('recheck') or {}
+    v2 = recheck.get('read_version')
+    if not (_positive_int(rv) and _positive_int(v2) and v2 >= rv):
+        errors.append(f'recheck read version {v2!r} missing or before read version {rv!r}')
+    if recheck.get('boundaries_identical') is not True:
+        errors.append('boundaries were not rechecked identical at the recheck version')
+    dd = probe.get('dd_mode') or {}
+    if dd.get('required_off') is not True:
+        errors.append('probe did not require data distribution off (diagnostic)')
+    for which, version in (('at_v1', rv), ('at_v2', v2)):
+        m = dd.get(which) or {}
+        if m.get('mode') != 0 or m.get('key_present') is not True or m.get('read_version') != version:
+            errors.append(f'data distribution not off (mode 0, key present) {which}')
+    lock = probe.get('move_keys_lock') or {}
+    if (lock.get('owner_hex_at_v1') != DD_MODE_LOCK_HEX or lock.get('owner_hex_at_v2') != DD_MODE_LOCK_HEX or
+            lock.get('owner_is_dd_mode_lock') is not True):
+        errors.append('moveKeysLock owner is not the data-distribution-mode lock at V1 and V2')
+    w1, w2 = lock.get('write_token_hex_at_v1'), lock.get('write_token_hex_at_v2')
+    if not (_hex(w1, 16) and w1 == w2) or lock.get('write_token_unchanged') is not True:
+        errors.append('moveKeysLock write token missing or changed between V1 and V2')
+    ks = probe.get('key_servers') or {}
+    if (ks.get('begin_hex') != (KEY_SERVERS_PREFIX + prefix).hex() or
+            ks.get('end_hex') != (KEY_SERVERS_PREFIX + strinc(prefix)).hex()):
+        errors.append('key_servers range is not the store range')
+    d1, d2 = ks.get('sha256_at_v1'), ks.get('sha256_at_v2')
+    if not (_hex(d1, 32) and d1 == d2) or ks.get('unchanged') is not True or not _positive_int(ks.get('entries')):
+        errors.append('keyServers digest missing or changed between V1 and V2')
+    if fixture_sha256 is None:
+        errors.append('fixture receipt sha256 not supplied for verification')
+    elif probe.get('fixture_receipt_sha256') != fixture_sha256:
+        errors.append('probe fixture_receipt_sha256 differs from the fixture receipt file')
+    cluster = probe.get('cluster') or {}
+    if expect_cluster is None:
+        errors.append('cluster identity not supplied for verification')
+    elif (cluster.get('connection_string_id') != expect_cluster.get('connection_string_id') or
+          cluster.get('cluster_file_sha256') != expect_cluster.get('cluster_file_sha256')):
+        errors.append('probe cluster identity differs from the pinned cluster file')
+    return errors
+
+
+def synthetic_provenance(prefix, read_version=7, recheck_read_version=8, fixture_sha256='a' * 64, cluster=None,
+                         key_servers_sha256='b' * 64, write_token_hex='00' * 16):
+    """Valid provenance fields for SYNTHETIC test probes (never produced on a cluster)."""
+    return dict(
+        fixture_receipt_sha256=fixture_sha256,
+        cluster=cluster or dict(connection_string_id='fdbbenchvpc:mn20261014', cluster_file_sha256='c' * 64),
+        addresses_basis=dict(kind=ADDRESS_TRANSACTIONAL, read_version=read_version, method='synthetic'),
+        recheck=dict(read_version=recheck_read_version, boundaries_identical=True),
+        dd_mode=dict(required_off=True, at_v1=dict(read_version=read_version, mode=0, key_present=True),
+                     at_v2=dict(read_version=recheck_read_version, mode=0, key_present=True)),
+        move_keys_lock=dict(owner_hex_at_v1=DD_MODE_LOCK_HEX, owner_hex_at_v2=DD_MODE_LOCK_HEX, owner_is_dd_mode_lock=True,
+                            write_token_hex_at_v1=write_token_hex, write_token_hex_at_v2=write_token_hex,
+                            write_token_unchanged=True),
+        key_servers=dict(begin_hex=(KEY_SERVERS_PREFIX + prefix).hex(), end_hex=(KEY_SERVERS_PREFIX + strinc(prefix)).hex(),
+                         entries=3, sha256_at_v1=key_servers_sha256, sha256_at_v2=key_servers_sha256, unchanged=True,
+                         description='synthetic'))
+
+
 def fixture_integrity(fixture, prefix, layout, rows, record_format, errors):
     if not isinstance(fixture, dict):
         errors.append('missing owned fixture receipt')
@@ -240,7 +360,8 @@ def label(fraction):
 
 
 def build_receipt(status, probe, cells, layout='opaque', index_name='price_idx', rows=1000, record_format=None,
-                  expect_prefix=None, fixture=None, replicas=2, min_fraction=1.0, records_per_id=None, preset=None):
+                  expect_prefix=None, fixture=None, replicas=2, min_fraction=1.0, records_per_id=None, preset=None,
+                  fixture_sha256=None, expect_cluster=None):
     if not cells:
         raise InputError('no cells: a receipt must certify at least one cell')
     for name, (lo, hi) in cells.items():
@@ -250,6 +371,7 @@ def build_receipt(status, probe, cells, layout='opaque', index_name='price_idx',
     prefix, boundaries, brange, keys = load_probe(probe)
     errors = []
     probe_integrity(probe, prefix, boundaries, brange, errors)
+    errors += provenance_errors(probe, prefix, fixture_sha256, expect_cluster)
     if layout == 'recordlayer':
         if record_format not in RECORD_SUFFIXES:
             raise InputError('recordlayer layout needs record_format unsplit or split')
@@ -349,6 +471,10 @@ def build_receipt(status, probe, cells, layout='opaque', index_name='price_idx',
     passed = integrity_ok and all(c['passed'] for c in cell_out.values())
     return dict(format=RECEIPT_FORMAT, integrity_ok=integrity_ok, passed=passed, errors=errors[:200],
                 error_count=len(errors), preset=preset, shared_shards=shared_shards,
+                provenance={f: copy.deepcopy(probe.get(f)) for f in PROVENANCE_FIELDS},
+                cluster=probe.get('cluster'), addresses_basis=(probe.get('addresses_basis') or {}).get('kind'),
+                key_servers_sha256=(probe.get('key_servers') or {}).get('sha256_at_v1'),
+                move_keys_write_token_hex=(probe.get('move_keys_lock') or {}).get('write_token_hex_at_v1'),
                 store=probe.get('store'), store_prefix_hex=prefix.hex(), read_version=probe.get('read_version'),
                 layout=layout, record_format=record_format, replicas=replicas, min_disjoint_fraction=min_fraction,
                 disjointness_unit='storage process (address); machine level is descriptive only',
@@ -359,7 +485,8 @@ def build_receipt(status, probe, cells, layout='opaque', index_name='price_idx',
 
 def compare(a, b):
     diffs = []
-    for field in ('format', 'store', 'store_prefix_hex', 'boundaries_hex'):
+    for field in ('format', 'store', 'store_prefix_hex', 'boundaries_hex', 'cluster', 'key_servers_sha256',
+                  'move_keys_write_token_hex'):
         if a.get(field) != b.get(field):
             diffs.append(field + ' differs')
     if not (a.get('integrity_ok') is True and b.get('integrity_ok') is True):
@@ -405,16 +532,86 @@ def mutations(probe, layout, record_format):
     return out
 
 
+def provenance_mutations(probe):
+    """Named copies of a real probe, each with one provenance defect the receipt must reject."""
+    out = {}
+
+    def variant(name, fn):
+        p = copy.deepcopy(probe)
+        fn(p)
+        out[name] = p
+
+    def set_path(*path, value):
+        def fn(p):
+            d = p
+            for k in path[:-1]:
+                d = d.setdefault(k, {})
+            d[path[-1]] = value
+        return fn
+
+    rv = probe.get('read_version')
+    variant('diagnostic-addresses', set_path('addresses_basis', 'kind', value='location-cache (diagnostic)'))
+    variant('addresses-at-other-version', set_path('addresses_basis', 'read_version', value=(rv or 0) + 1))
+    variant('dd-not-required-off', set_path('dd_mode', 'required_off', value=False))
+    variant('dd-on-at-v1', set_path('dd_mode', 'at_v1', 'mode', value=1))
+    variant('dd-on-at-v2', set_path('dd_mode', 'at_v2', 'mode', value=1))
+    variant('dd-key-absent-at-v1', set_path('dd_mode', 'at_v1', 'key_present', value=False))
+    variant('recheck-before-v1', set_path('recheck', 'read_version', value=(rv or 0) - 1))
+    variant('boundaries-not-rechecked', set_path('recheck', 'boundaries_identical', value=False))
+    variant('lock-owner-taken', set_path('move_keys_lock', 'owner_hex_at_v2', value='07' * 16))
+    variant('lock-token-changed', set_path('move_keys_lock', 'write_token_hex_at_v2', value='ff' * 16))
+    variant('key-servers-changed', set_path('key_servers', 'sha256_at_v2', value='e' * 64))
+    variant('fixture-sha-mismatch', set_path('fixture_receipt_sha256', value='d' * 64))
+    variant('cluster-mismatch', set_path('cluster', 'connection_string_id', value='other:cluster'))
+    for field in PROVENANCE_FIELDS:
+        variant(f'missing-{field}', lambda p, f=field: p.pop(f, None))
+    return out
+
+
 def run_controls(status, probe, cells, **kw):
-    """Original judged by integrity only (a partial placement qualifies); mutations must fail integrity."""
+    """Original judged by integrity only (a partial placement qualifies); every
+    key mutation and every provenance mutation must fail integrity."""
     kw = dict(kw, min_fraction=0.0)
     original = build_receipt(status, probe, cells, **kw)
-    report = dict(original_integrity_ok=original['integrity_ok'], original_errors=original['errors'], mutations={})
-    for name, mutated in mutations(probe, kw.get('layout', 'opaque'), kw.get('record_format')).items():
-        r = build_receipt(status, mutated, cells, **kw)
-        report['mutations'][name] = dict(rejected=not r['integrity_ok'], errors=r['errors'][:3])
-    report['ok'] = original['integrity_ok'] and all(m['rejected'] for m in report['mutations'].values())
+    report = dict(original_integrity_ok=original['integrity_ok'], original_errors=original['errors'], mutations={},
+                  provenance_mutations={})
+    for group, variants in (('mutations', mutations(probe, kw.get('layout', 'opaque'), kw.get('record_format'))),
+                            ('provenance_mutations', provenance_mutations(probe))):
+        for name, mutated in variants.items():
+            r = build_receipt(status, mutated, cells, **kw)
+            report[group][name] = dict(rejected=not r['integrity_ok'], errors=r['errors'][:3])
+    report['ok'] = original['integrity_ok'] and all(
+        m['rejected'] for group in ('mutations', 'provenance_mutations') for m in report[group].values())
     return report
+
+
+def sealed_errors(receipt, expect_cluster):
+    """Why a receipt may not be used for sealing or a fresh case check ([] = usable).
+
+    Re-validates the preserved provenance, so a receipt lacking any field, or
+    built from a diagnostic probe, is refused even if its flags were edited."""
+    if receipt.get('format') != RECEIPT_FORMAT:
+        return [f'receipt format {receipt.get("format")!r} is not {RECEIPT_FORMAT}']
+    errors = []
+    if receipt.get('integrity_ok') is not True or receipt.get('error_count') != 0 or receipt.get('errors'):
+        errors.append('receipt lacks integrity')
+    prov = receipt.get('provenance')
+    if not isinstance(prov, dict) or any(f not in prov or prov[f] is None for f in PROVENANCE_FIELDS):
+        return errors + ['receipt lacks preserved provenance fields']
+    try:
+        prefix = bytes.fromhex(receipt.get('store_prefix_hex') or '')
+    except ValueError:
+        return errors + ['receipt store prefix is not hex']
+    probe_like = dict(prov, read_version=receipt.get('read_version'))
+    errors += provenance_errors(probe_like, prefix, prov.get('fixture_receipt_sha256'), expect_cluster)
+    if not _hex(prov.get('fixture_receipt_sha256'), 32):
+        errors.append('receipt lacks a fixture receipt sha256')
+    for field, value in (('cluster', prov.get('cluster')), ('addresses_basis', ADDRESS_TRANSACTIONAL),
+                         ('key_servers_sha256', prov['key_servers'].get('sha256_at_v1')),
+                         ('move_keys_write_token_hex', prov['move_keys_lock'].get('write_token_hex_at_v1'))):
+        if receipt.get(field) != value:
+            errors.append(f'receipt {field} disagrees with its provenance')
+    return errors
 
 
 def sha(path):
@@ -429,6 +626,7 @@ def main(argv=None):
         r.add_argument('--status', required=True)
         r.add_argument('--probe', required=True)
         r.add_argument('--fixture-receipt', required=True, help="the benchmark's own fixture/prefix receipt (JSON)")
+        r.add_argument('--cluster-file', required=True, help='the pinned cluster file the probe must have used')
         r.add_argument('--preset', choices=sorted(PRESETS))
         r.add_argument('--cell', action='append', default=[], help='NAME=LO:HI (IDs [LO,HI)); repeat')
         r.add_argument('--layout', choices=['recordlayer', 'opaque'], default='opaque')
@@ -453,15 +651,17 @@ def main(argv=None):
         kw = dict(layout=args.layout, index_name=args.index_name, rows=args.rows, record_format=args.record_format,
                   expect_prefix=pack(args.expect_prefix_tuple.split(',')) if args.expect_prefix_tuple else None,
                   fixture=json.loads(Path(args.fixture_receipt).read_text()), replicas=args.replicas,
-                  min_fraction=args.min_disjoint_fraction, records_per_id=args.records_per_id, preset=args.preset)
+                  min_fraction=args.min_disjoint_fraction, records_per_id=args.records_per_id, preset=args.preset,
+                  fixture_sha256=sha(args.fixture_receipt), expect_cluster=cluster_identity(Path(args.cluster_file).read_bytes()))
         status, probe = json.loads(Path(args.status).read_text()), json.loads(Path(args.probe).read_text())
         inputs = dict(status_sha256=sha(args.status), probe_sha256=sha(args.probe),
-                      fixture_receipt_sha256=sha(args.fixture_receipt))
+                      fixture_receipt_sha256=sha(args.fixture_receipt), cluster_file_sha256=sha(args.cluster_file))
         if args.command == 'controls':
             report = dict(run_controls(status, probe, cells, **kw), inputs=inputs)
             mc.dump_json(args.output, report)
             print(json.dumps({'ok': report['ok'], 'original_integrity_ok': report['original_integrity_ok'],
-                              'rejected': {k: v['rejected'] for k, v in report['mutations'].items()}}, sort_keys=True))
+                              'rejected': {k: v['rejected'] for g in ('mutations', 'provenance_mutations')
+                                           for k, v in report[g].items()}}, sort_keys=True))
             return 0 if report['ok'] else 1
         receipt = build_receipt(status, probe, cells, **kw)
         receipt['inputs'] = inputs

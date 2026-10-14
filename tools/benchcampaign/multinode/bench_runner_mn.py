@@ -12,7 +12,10 @@ run --manifest PLANS/manifest.json --manifest-sha256 SHA --phase M2rl
 process of every case. It must write a fresh placement_receipt.py receipt for
 the case's store to {output}; other placeholders: {store} {case} {when}
 (before|after) {preset} {layout} {record_format} {cluster_file}. Every absolute
-file path in it must be pinned in the sealing manifest.
+file path in it must be pinned in the sealing manifest; a template running
+placement_command.py must pass --expect-cluster-sha256 with the pinned cluster
+file's SHA-256 as a literal. Fresh receipts must pass
+placement_receipt.sealed_errors for that cluster's identity.
 
 Per phase: the manifest must hash to --manifest-sha256 (the acknowledged seal),
 the plan to its manifest entry, every manifest pin must still hold, and the plan
@@ -84,7 +87,7 @@ def audit_case(case):
     raise ValueError('unknown testing.B case ' + stem)
 
 
-def rebuild(plan, protocol, orders, phase_id):
+def rebuild(plan, protocol, orders, phase_id, manifest):
     """seal_multinode.testingb_plan from the pinned inputs; must equal the sealed plan."""
     if orders != sm.make_orders(protocol):
         raise EnvironmentFailure('orders.json differs from the protocol seeds')
@@ -105,6 +108,10 @@ def rebuild(plan, protocol, orders, phase_id):
     keys = [j['case'] for j in plan['jobs']]
     if [c['key'] for c in plan['cases']] != list(dict.fromkeys(keys)):
         raise EnvironmentFailure('jobs are not case-major in sealed case order')
+    try:
+        cg.sealed_testingb_cases(manifest, phase, plan)
+    except ValueError as exc:
+        raise EnvironmentFailure(str(exc)) from None
     return phase
 
 
@@ -117,13 +124,19 @@ def placement_argv(template, case, when, output, cluster):
     return argv
 
 
-def check_fresh_receipt(receipt, case, sealed, compare_path):
-    """A fresh receipt must have integrity, be for this case's store and cell, and equal the reference.
+def check_fresh_receipt(receipt, case, sealed, compare_path, identity):
+    """A fresh receipt must pass placement_receipt.sealed_errors for the sealed cluster
+    (integrity, transactional addresses, DD off with its mode lock, unchanged write
+    token and keyServers digest, fixture hash, cluster identity), be for this case's
+    store and cell, and equal the reference.
 
     The compare result is written to compare_path first, whatever it says: R4
     reads it as the case's placement-stability receipt."""
     diff = pr.compare(sealed, receipt)
     generic.dump(compare_path, diff, exclusive=True)
+    problems = pr.sealed_errors(receipt, identity)
+    if problems:
+        raise EnvironmentFailure(f'placement receipt for {case["key"]} is not sealable: ' + '; '.join(problems[:5]))
     if receipt.get('format') != pr.RECEIPT_FORMAT or receipt.get('integrity_ok') is not True or receipt.get('error_count') != 0:
         raise EnvironmentFailure(f'placement receipt for {case["key"]} lacks integrity: {receipt.get("errors", [])[:3]}')
     for field, want in (('store', case['store']), ('layout', case['layout']), ('record_format', case['record_format']),
@@ -138,6 +151,24 @@ def check_fresh_receipt(receipt, case, sealed, compare_path):
     return diff
 
 
+def environmental_exit(rc, stderr, time_text):
+    """single-node client_campaign.environmental_failure's rule for a nonzero exit, plus GNU time's
+    own record: /usr/bin/time exits 128+N when its child dies of signal N and writes
+    'Command terminated by signal N' to its -o file, possibly with an empty stderr."""
+    return (rc < 0 or rc >= 128 or bool(re.search(r'signal|timeout|timed out|killed', stderr, re.I))
+            or 'terminated by signal' in time_text)
+
+
+def placement_template_guard(template, cluster):
+    """placement_command.py must be told the sealed cluster file's SHA-256 as a literal."""
+    if '--expect-cluster-sha256' in template:
+        i = template.index('--expect-cluster-sha256')
+        if i + 1 >= len(template) or template[i + 1] != generic.sha(cluster):
+            raise EnvironmentFailure('--placement-command --expect-cluster-sha256 is not the pinned cluster file SHA-256')
+    elif any(Path(a).name == 'placement_command.py' for a in template):
+        raise EnvironmentFailure('--placement-command runs placement_command.py without --expect-cluster-sha256')
+
+
 def ensure_idle(helper, binary, owned=()):
     """Single-node ensure_idle plus fdbserver: no server process may run on the client."""
     helper.check_builds()
@@ -150,9 +181,9 @@ def ensure_idle(helper, binary, owned=()):
 class Case:
     """Case-level placement and server checks around a contiguous block of jobs."""
 
-    def __init__(self, case, folder, gate, command, template, cluster, pinned):
+    def __init__(self, case, folder, gate, command, template, cluster, pinned, identity):
         self.case, self.folder, self.gate, self.command = case, folder, gate, command
-        self.template, self.cluster, self.pinned = template, cluster, pinned
+        self.template, self.cluster, self.pinned, self.identity = template, cluster, pinned, identity
         self.before = None
 
     def placement(self, when):
@@ -179,13 +210,14 @@ class Case:
             cg.persist_receipts(self.gate, self.folder, 'before')
         sealed = json.loads(Path(sealed_path).read_text())
         self.before = self.placement('before')
-        check_fresh_receipt(self.before, self.case, sealed, self.folder / 'compare-sealed-before.json')
+        check_fresh_receipt(self.before, self.case, sealed, self.folder / 'compare-sealed-before.json', self.identity)
 
     def end(self):
         """Placement and status after the last process; both are taken even if one fails."""
         failures = []
         try:
-            check_fresh_receipt(self.placement('after'), self.case, self.before, self.folder / 'compare-before-after.json')
+            check_fresh_receipt(self.placement('after'), self.case, self.before, self.folder / 'compare-before-after.json',
+                                self.identity)
         except EnvironmentFailure as exc:
             failures.append(exc)
         try:
@@ -230,7 +262,7 @@ def run(args, command=None, helper=None, spawn=default_spawn, sleep=time.sleep, 
         raise EnvironmentFailure(f'runner code, inputs and placement command must be pinned in the manifest: {missing}')
     protocol, orders = json.loads(protocol_path.read_text()), json.loads(orders_path.read_text())
     layout = json.loads(layout_path.read_text())
-    phase = rebuild(plan, protocol, orders, args.phase)
+    phase = rebuild(plan, protocol, orders, args.phase, manifest)
     if not plan['engine'] == phase['engine'] == layout['engine']:
         raise EnvironmentFailure('plan, phase and layout engines differ')
     if not plan['placement_required']:
@@ -240,6 +272,11 @@ def run(args, command=None, helper=None, spawn=default_spawn, sleep=time.sleep, 
     last_job = {j['case']: j['id'] for j in plan['jobs']}
     binary = plan['jobs'][0]['command'][3]
     cluster = plan['env']['FDB_BENCH_CLUSTER_FILE']
+    try:
+        identity = pr.cluster_identity(Path(cluster).read_bytes())
+    except (OSError, pr.InputError) as exc:
+        raise EnvironmentFailure(f'pinned cluster file unusable: {exc}') from None
+    placement_template_guard(template, cluster)
     harness = (protocol['new_harness_revision'] if any(c['cell'] in phase.get('new_harness_cells', []) for c in plan['cases'])
                or phase.get('new_harness_phase') else protocol['frozen_harness_revision'])
     output.mkdir(parents=True, exist_ok=False)
@@ -292,7 +329,7 @@ def run(args, command=None, helper=None, spawn=default_spawn, sleep=time.sleep, 
             if key in omitted:
                 continue
             if current is None or current.case['key'] != key:
-                current = Case(cases[key], output / 'cases' / key, gate, command, template, cluster, pinned)
+                current = Case(cases[key], output / 'cases' / key, gate, command, template, cluster, pinned, identity)
                 try:
                     current.begin()
                 except EnvironmentFailure as exc:
@@ -372,9 +409,8 @@ def run(args, command=None, helper=None, spawn=default_spawn, sleep=time.sleep, 
                 gate.check(folder, 'status-after')
                 verify_all()
                 if rc:
-                    stderr = (folder / 'stderr.txt').read_text()
-                    if rc < 0 or 'signal' in stderr or 'timeout' in stderr.lower():
-                        raise EnvironmentFailure('benchmark signalled/environmental failure')
+                    if environmental_exit(rc, (folder / 'stderr.txt').read_text(), time_text):
+                        raise EnvironmentFailure(f'benchmark signalled/environmental failure (exit {rc})')
                     raise CorrectnessFailure('benchmark nonzero exit; raw logs retained')
                 rows, audits = generic.parse_output((folder / 'stdout.txt').read_text() + '\n' + (folder / 'stderr.txt').read_text(),
                                                     view, repeats=phase['repeats_per_arm_process'],

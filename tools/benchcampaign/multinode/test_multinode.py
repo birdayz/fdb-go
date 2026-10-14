@@ -558,10 +558,24 @@ def storage_status():
 
 
 PREFIX_SMALL = pr.pack(['benchfetch', 'small'])
+# Synthetic provenance (placement_receipt v3): the pinned cluster file and fixture
+# receipt hash every probe/receipt in these tests is verified against.
+CLUSTER_TEXT = 'fdbbenchvpc:mn20261014@10.88.0.11:4500,10.88.0.12:4500,10.88.0.13:4500\n'
+CLUSTER_ID = pr.cluster_identity(CLUSTER_TEXT.encode())
+FIXTURE_SHA = 'a' * 64
+VERIFIED = dict(fixture_sha256=FIXTURE_SHA, expect_cluster=CLUSTER_ID)
+
+
+def build(*args, **kw):
+    return pr.build_receipt(*args, **{**VERIFIED, **kw})
+
+
+def controls(*args, **kw):
+    return pr.run_controls(*args, **{**VERIFIED, **kw})
 
 
 def probe(prefix_items=('benchfetch', 'small'), rows=20, index_servers='AB', record_servers='CD', record_format='unsplit',
-          boundary_after_records=True, override=None):
+          boundary_after_records=True, override=None, fixture_sha256=FIXTURE_SHA):
     """A canonical, passing probe: every fixture key once, complete boundaries."""
     prefix = pr.pack(list(prefix_items))
     keys = []
@@ -576,7 +590,8 @@ def probe(prefix_items=('benchfetch', 'small'), rows=20, index_servers='AB', rec
     return dict(format=pr.PROBE_FORMAT, store='benchfetch/small', store_prefix_hex=prefix.hex(), read_version=7,
                 boundaries_read_version=7, boundary_range_hex=[prefix.hex(), pr.strinc(prefix).hex()],
                 boundaries_complete=True, boundaries_hex=boundaries, keys=keys, keys_complete=True,
-                scanned_subspaces_hex=[(prefix + pr.pack([1])).hex(), (prefix + pr.pack([2])).hex()])
+                scanned_subspaces_hex=[(prefix + pr.pack([1])).hex(), (prefix + pr.pack([2])).hex()],
+                **pr.synthetic_provenance(prefix, fixture_sha256=fixture_sha256, cluster=CLUSTER_ID))
 
 
 def fixture(prefix=PREFIX_SMALL, rows=20, chunks=1, **extra):
@@ -611,7 +626,7 @@ class PlacementTest(Temp):
         kw.setdefault('rows', 20)
         kw.setdefault('expect_prefix', PREFIX_SMALL)
         kw.setdefault('fixture', fixture(chunks=len(pr.RECORD_SUFFIXES[record_format])))
-        return pr.build_receipt(storage_status(), p, cells, record_format=record_format, **kw)
+        return build(storage_status(), p, cells, record_format=record_format, **kw)
 
     def assertRejected(self, r, text):
         self.assertFalse(r['passed'])
@@ -718,17 +733,17 @@ class PlacementTest(Temp):
             with self.subTest(text=text):
                 self.assertRejected(self.receipt(probe(), fixture=fx), text)
         self.assertTrue(self.receipt(probe(), fixture=fixture(store_prefix_hex=PREFIX_SMALL.hex()))['passed'])
-        r = pr.build_receipt(storage_status(), probe(), {'rows20': (0, 20)}, layout='opaque', rows=20, fixture=fixture())
+        r = build(storage_status(), probe(), {'rows20': (0, 20)}, layout='opaque', rows=20, fixture=fixture())
         self.assertRejected(r, 'opaque layout needs')
         with self.assertRaises(pr.InputError):
-            pr.build_receipt(storage_status(), probe(), {'rows20': (0, 20)}, layout='recordlayer', rows=20,
+            build(storage_status(), probe(), {'rows20': (0, 20)}, layout='recordlayer', rows=20,
                              fixture=fixture(), expect_prefix=PREFIX_SMALL)
         with self.assertRaises(pr.InputError):
-            pr.build_receipt(storage_status(), probe(), {'rows20': (0, 20)}, layout='recordlayer', rows=20,
+            build(storage_status(), probe(), {'rows20': (0, 20)}, layout='recordlayer', rows=20,
                              fixture=fixture(), record_format='unsplit')
         for cells in [{}, {'empty': (5, 5)}, {'backwards': (9, 3)}]:
             with self.subTest(cells=cells), self.assertRaises(pr.InputError):
-                pr.build_receipt(storage_status(), probe(), cells, layout='opaque', rows=20,
+                build(storage_status(), probe(), cells, layout='opaque', rows=20,
                                  fixture=fixture(store_prefix_hex=PREFIX_SMALL.hex()))
 
     def test_cluster_integrity_errors(self):
@@ -743,13 +758,13 @@ class PlacementTest(Temp):
 
     def test_opaque_layout(self):
         fx = fixture(store_prefix_hex=PREFIX_SMALL.hex())
-        r = pr.build_receipt(storage_status(), probe(), {'rows20': (0, 20)}, layout='opaque', rows=20, fixture=fx,
+        r = build(storage_status(), probe(), {'rows20': (0, 20)}, layout='opaque', rows=20, fixture=fx,
                              records_per_id=1)
         self.assertTrue(r['passed'], r['errors'])
-        r = pr.build_receipt(storage_status(), probe(rows=5), {'rows10': (0, 10)}, layout='opaque', rows=5, fixture=dict(fx, rows=5))
+        r = build(storage_status(), probe(rows=5), {'rows10': (0, 10)}, layout='opaque', rows=5, fixture=dict(fx, rows=5))
         self.assertEqual(r['cells']['rows10']['missing_ids'], 5)
         self.assertFalse(r['passed'])
-        r = pr.build_receipt(storage_status(), add_record(probe(), 3, [1]), {'rows20': (0, 20)}, layout='opaque',
+        r = build(storage_status(), add_record(probe(), 3, [1]), {'rows20': (0, 20)}, layout='opaque',
                              rows=20, fixture=fx, records_per_id=1)
         self.assertRejected(r, 'exactly 1 record keys')
 
@@ -782,15 +797,17 @@ class PlacementTest(Temp):
         self.assertFalse(corrupt['integrity_ok'])
         self.assertIn('without integrity', ' '.join(pr.compare(a, corrupt)['differences']))
         kw = dict(layout='recordlayer', rows=20, record_format='unsplit', expect_prefix=PREFIX_SMALL, fixture=fixture())
-        report = pr.run_controls(storage_status(), self.partial_probe(), {'rows20': (0, 20)}, **kw)
+        report = controls(storage_status(), self.partial_probe(), {'rows20': (0, 20)}, **kw)
         self.assertTrue(report['original_integrity_ok'])
         self.assertTrue(report['ok'], report['mutations'])
         self.assertTrue(all(m['rejected'] for m in report['mutations'].values()))
         status, probe_file, fx = self.tmp / 's.json', self.tmp / 'partial.json', self.tmp / 'fx.json'
         status.write_text(json.dumps(storage_status()))
-        probe_file.write_text(json.dumps(self.partial_probe()))
         fx.write_text(json.dumps(fixture()))
-        common = ['--status', str(status), '--probe', str(probe_file), '--fixture-receipt', str(fx), '--cell', 'rows20=0:20',
+        (self.tmp / 'fdb.cluster').write_text(CLUSTER_TEXT)
+        probe_file.write_text(json.dumps(dict(self.partial_probe(), fixture_receipt_sha256=pr.sha(fx))))
+        common = ['--status', str(status), '--probe', str(probe_file), '--fixture-receipt', str(fx),
+                  '--cluster-file', str(self.tmp / 'fdb.cluster'), '--cell', 'rows20=0:20',
                   '--rows', '20', '--layout', 'recordlayer', '--record-format', 'unsplit', '--expect-prefix-tuple', 'benchfetch,small']
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(pr.main(['receipt', *common, '--output', str(self.tmp / 'pr.json')]), 3)  # integral, partial
@@ -821,7 +838,7 @@ class PlacementTest(Temp):
         fx = fixture(store_prefix_hex=PREFIX_SMALL.hex())
         p = probe()
         p['keys'] = [k for k in p['keys'] if not (k['kind'] == 'index' and k['id'] == 3)]
-        r = pr.build_receipt(storage_status(), p, {'rows20': (0, 20)}, layout='opaque', rows=20, fixture=fx)
+        r = build(storage_status(), p, {'rows20': (0, 20)}, layout='opaque', rows=20, fixture=fx)
         self.assertFalse(r['integrity_ok'])
         self.assertTrue(any('ID population' in e for e in r['errors']), r['errors'])
 
@@ -830,16 +847,16 @@ class PlacementTest(Temp):
             with self.subTest(fmt=fmt):
                 kw = dict(layout='recordlayer', rows=20, record_format=fmt, expect_prefix=PREFIX_SMALL,
                           fixture=fixture(chunks=len(pr.RECORD_SUFFIXES[fmt])))
-                report = pr.run_controls(storage_status(), probe(record_format=fmt), {'rows20': (0, 20)}, **kw)
+                report = controls(storage_status(), probe(record_format=fmt), {'rows20': (0, 20)}, **kw)
                 self.assertTrue(report['original_integrity_ok'], report['original_errors'])
                 self.assertEqual(set(report['mutations']), {'duplicate-key', 'zero-read-version', 'truncated-boundaries',
                                                             'incomplete-key-scan', 'foreign-address', 'omitted-chunk',
                                                             'stray-suffix', 'version-key'})
                 self.assertTrue(report['ok'], report['mutations'])
-                bad = pr.run_controls(storage_status(), probe(record_format=fmt, boundary_after_records=False),
+                bad = controls(storage_status(), probe(record_format=fmt, boundary_after_records=False),
                                       {'rows20': (0, 20)}, **kw)
                 self.assertFalse(bad['ok'])  # a failing original can never certify controls
-        report = pr.run_controls(storage_status(), probe(), {'rows20': (0, 20)}, layout='opaque', rows=20,
+        report = controls(storage_status(), probe(), {'rows20': (0, 20)}, layout='opaque', rows=20,
                                  fixture=fixture(store_prefix_hex=PREFIX_SMALL.hex()), records_per_id=1)
         self.assertTrue(report['ok'], report)
         self.assertIn('omitted-record', report['mutations'])
@@ -847,20 +864,22 @@ class PlacementTest(Temp):
     def test_compare_controls_and_cli(self):
         status, p1, fx = self.tmp / 'status.json', self.tmp / 'p1.json', self.tmp / 'fixture.json'
         status.write_text(json.dumps(storage_status()))
-        p1.write_text(json.dumps(probe(rows=1000)))
         fx.write_text(json.dumps(fixture(rows=1000)))
-        common = ['--status', str(status), '--fixture-receipt', str(fx), '--preset', 'benchfetch', '--layout',
+        (self.tmp / 'fdb.cluster').write_text(CLUSTER_TEXT)
+        p1.write_text(json.dumps(probe(rows=1000, fixture_sha256=pr.sha(fx))))
+        common = ['--status', str(status), '--fixture-receipt', str(fx), '--cluster-file', str(self.tmp / 'fdb.cluster'),
+                  '--preset', 'benchfetch', '--layout',
                   'recordlayer', '--record-format', 'unsplit', '--expect-prefix-tuple', 'benchfetch,small']
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(pr.main(['receipt', *common, '--probe', str(p1), '--output', str(self.tmp / 'r1.json')]), 0)
             self.assertEqual(pr.main(['receipt', *common, '--probe', str(p1), '--output', str(self.tmp / 'r2.json')]), 0)
             self.assertEqual(pr.main(['compare', str(self.tmp / 'r1.json'), str(self.tmp / 'r2.json')]), 0)
-            moved = probe(rows=1000, record_servers='CE')
+            moved = probe(rows=1000, record_servers='CE', fixture_sha256=pr.sha(fx))
             (self.tmp / 'p3.json').write_text(json.dumps(moved))
             self.assertEqual(pr.main(['receipt', *common, '--probe', str(self.tmp / 'p3.json'), '--output', str(self.tmp / 'r3.json')]), 0)
             self.assertEqual(pr.main(['compare', str(self.tmp / 'r1.json'), str(self.tmp / 'r3.json')]), 1)
             self.assertEqual(pr.main(['controls', *common, '--probe', str(p1), '--output', str(self.tmp / 'c1.json')]), 0)
-            dup = probe(rows=1000)
+            dup = probe(rows=1000, fixture_sha256=pr.sha(fx))
             dup['keys'].append(dict(dup['keys'][1]))
             (self.tmp / 'p4.json').write_text(json.dumps(dup))
             self.assertEqual(pr.main(['receipt', *common, '--probe', str(self.tmp / 'p4.json'), '--output', str(self.tmp / 'r4.json')]), 1)
@@ -944,7 +963,7 @@ class SealTest(Temp):
         p.write_text(json.dumps(mini_protocol()))
         o.write_text(json.dumps(seal.make_orders(mini_protocol())))
         for name in ['fetch', 'sqlfetch', 'cluster', 'final', 'cgo', 'native', 'server', 'harness.tar.gz']:
-            (self.tmp / name).write_text(name)
+            (self.tmp / name).write_text(CLUSTER_TEXT if name == 'cluster' else name)
         return p, o
 
     def write_receipt(self, store, prefix_items, record_format, layout='recordlayer', override=None, extra_boundaries=()):
@@ -955,7 +974,7 @@ class SealTest(Temp):
         fx = fixture(prefix=prefix, rows=1000, chunks=len(pr.RECORD_SUFFIXES[record_format or 'unsplit']),
                      **({'store_prefix_hex': prefix.hex()} if layout == 'opaque' else {}))
         preset = 'sql' if layout == 'opaque' else 'benchfetch'
-        r = pr.build_receipt(storage_status(), p, pr.PRESETS[preset], layout=layout,
+        r = build(storage_status(), p, pr.PRESETS[preset], layout=layout,
                              rows=1000, record_format=record_format, fixture=fx,
                              expect_prefix=prefix if layout == 'recordlayer' else None, preset=preset)
         path = self.tmp / f'receipt-{store.replace("/", "-")}.json'
@@ -1018,7 +1037,7 @@ class SealTest(Temp):
         def receipt(cells, name):
             pb = probe(rows=1000, override=colocated)
             pb['boundaries_hex'] = sorted([(prefix + pr.pack([1, b])).hex() for b in (100, 110)] + pb['boundaries_hex'])
-            r = pr.build_receipt(storage_status(), pb, cells, layout='recordlayer', rows=1000, record_format='unsplit',
+            r = build(storage_status(), pb, cells, layout='recordlayer', rows=1000, record_format='unsplit',
                                  fixture=fixture(rows=1000), expect_prefix=prefix, preset='benchfetch')
             path = self.tmp / name
             path.write_text(json.dumps(r))

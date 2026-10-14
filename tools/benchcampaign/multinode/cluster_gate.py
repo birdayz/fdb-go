@@ -318,6 +318,37 @@ class ServerGate:
             raise EnvironmentFailure('missing committed user-key clear receipt')
 
 
+def sealed_client_workloads(manifest, phase):
+    """The phase's runnable workload order: the acknowledged manifest's sealed campaigns.
+
+    It must equal the protocol order minus exactly the workloads the manifest
+    records as unsealed, and only new-harness workloads may be unsealed; a
+    manifest that silently drops a sealed workload is refused."""
+    sealed = [c['workload'] for c in manifest['campaigns'] if c['phase'] == phase['id']]
+    unsealed = [u.get('workload') for u in manifest.get('unsealed', []) if u.get('phase') == phase['id']]
+    if (not sealed or len(set(sealed)) != len(sealed) or len(set(unsealed)) != len(unsealed)
+            or not set(unsealed) <= set(phase.get('new_harness_workloads', []))
+            or sealed != [w for w in phase['workloads'] if w not in set(unsealed)]):
+        raise ValueError(f'sealed campaigns of {phase["id"]} {sealed} are not the protocol order minus the recorded '
+                         f'unsealed new-harness workloads {unsealed}')
+    return sealed
+
+
+def sealed_testingb_cases(manifest, phase, plan):
+    """The sealed plan's cases must be the protocol's cases minus exactly the manifest's recorded unsealed ones."""
+    import seal_multinode as sm  # only the testing.B callers pin it
+    cells = {c['key']: c['cell'] for c in sm.testingb_cells(phase)}
+    keys = [c['key'] for c in plan['cases']]
+    unsealed = [u.get('case') for u in manifest.get('unsealed', []) if u.get('phase') == phase['id']]
+    allowed_new = set(phase.get('new_harness_cells', []))
+    if (not keys or len(set(unsealed)) != len(unsealed) or not set(unsealed) <= set(cells)
+            or not all(phase.get('new_harness_phase') or cells[k] in allowed_new for k in unsealed)
+            or keys != [k for k in cells if k not in set(unsealed)]):
+        raise ValueError(f'sealed cases of {phase["id"]} are not the protocol cases minus the recorded unsealed '
+                         f'new-harness cases {unsealed}')
+    return keys
+
+
 def persist_receipts(gate, folder, when):
     """Keep the status json and check-roles receipt the gate judged last, as
     status-<when>.json and check-roles-<when>.json, with their SHA-256 in

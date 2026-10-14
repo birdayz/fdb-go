@@ -155,6 +155,7 @@ def analyze(input_dir, output_dir):
     after = json.loads((after_path if after_path.exists() else inp/'pins.finally.json').read_text())
     if before != plan['expected_sha256'] or after != before:
         raise ValueError('phase input pins changed; not eligible for clean ratios')
+    measured = {}
     for job in plan['jobs']:
         if job['case']['key'] in omitted:
             continue
@@ -168,18 +169,16 @@ def analyze(input_dir, output_dir):
             raise ValueError('CSV differs from exact raw benchmark population')
         if json.loads((folder/'audits.json').read_text()) != audits:
             raise ValueError('audit artifact differs from raw log')
+        for p in parsed:
+            measured[job['case']['key'], job['block'], job['arm'], p['repeat']] = p['measured_prefix_bytes']
     # Preserve per-process physical-prefix evidence even where classic B emitted
-    # no benchmark metric. Only existing emitted receipts are used.
+    # no benchmark metric: the receipt of each row's own measured invocation
+    # (calibration invocations may have other SQL prefixes). Differing prefixes
+    # are disclosed as physical_prefix_confound, never rejected.
     for s in samples:
-        job = next(j for j in plan['jobs'] if j['case']['key'] == s['case'] and j['block'] == s['block'] and j['arm'] == s['arm'])
-        audit_path = inp/job['id']/'audits.json'
-        if audit_path.exists():
-            audits = json.loads(audit_path.read_text())
-            prefixes = {a['prefix_bytes'] for a in audits if a.get('case') == job['name'] and 'prefix_bytes' in a}
-            if len(prefixes) > 1:
-                raise ValueError('physical prefix changed within process')
-            if prefixes:
-                s['audit_prefix_bytes'] = next(iter(prefixes))
+        prefix = measured.get((s['case'], s['block'], s['arm'], s['repeat']))
+        if prefix is not None:
+            s['audit_prefix_bytes'] = prefix
     if not omitted:
         receipt = json.loads((inp/'complete.json').read_text())
         if receipt['samples'] != len(samples) or receipt['completed'] != len(plan['jobs']) or not receipt['pins_unchanged']:

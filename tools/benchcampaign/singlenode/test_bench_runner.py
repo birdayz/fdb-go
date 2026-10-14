@@ -63,32 +63,46 @@ class RunnerTests(unittest.TestCase):
         pins = {p: 'a'*64 for p in [*(str(r.ROOT/'bin'/b) for b in r.BINARIES), r.CLUSTER, r.ENGINE, r.HELPER, *paths.values(), '/p/network.json']}
         return r.make_plan(protocol, orders, phase, pins, paths, '/p/network.json' if phase == 'C3' else None)
 
-    def output(self, job, zero=False):
+    def output(self, job, zero=False, prefixes=None, measured=None):
+        """A -test.v log in testing.B's order: per repeat, the receipts of every body invocation
+        (calibrations first, the measured one last), then that repeat's result line.
+
+        prefixes: per repeat, the receipt prefix of each invocation (default one invocation, 20).
+        measured: per repeat, the prefix-B the result line reports (default the last receipt's)."""
         c = job['case']
-        metrics = f"100 ns/op {0 if zero else 4} B/op {0 if zero else 2} allocs/op"
+        prefixes = prefixes or [[20]] * 3
+        measured = measured or [p[-1] for p in prefixes]
+        remote = job['arm'].endswith('-remote')
+
+        def receipts(prefix):
+            if c['audit'] == 'classic-write':
+                return [dict(case=job['name'], first_id=0, count=1000, present=True, n=1000, prefix_bytes=prefix)]
+            if c['audit'] in ('sql-read', 'sql-write'):
+                return [dict(case=job['name'], rows=c['rows'], first_id=1, last_id=1000, query='SELECT a', checksum=42,
+                             prefix_bytes=prefix)]
+            if c['audit'] == 'none':
+                return []
+            return [dict(case=job['name'], phase=phase, method='USE_REMOTE_FETCH' if remote else 'SCAN_AND_FETCH',
+                         rows=c['rows'], remote_openings=int(remote), remote_entries=c['rows']+4 if remote else 0,
+                         index_scans=0 if remote else 1, record_loads=0 if remote else c['rows'],
+                         checksum=42, prefix_bytes=prefix, query='SELECT a', **c['fields']) for phase in ('before', 'after')]
+
+        lines = []
         if c['audit'] in ('fetch', 'planskip', 'sql-fetch'):
-            metrics += f" {c['rows']} rows/op 20 prefix-B"
-        if c['audit'] in ('sql-read', 'sql-write'):
-            metrics += ' 20 prefix-B'
-        lines = [f"{job['name']}-8 {1000 if c['write'] else 100} {metrics}" for _ in range(3)]
-        audits = []
-        if c['audit'] == 'classic-write':
-            audits = [dict(case=job['name'], first_id=0, count=1000, present=True, n=1000, prefix_bytes=20) for _ in range(3)]
-        elif c['audit'] in ('sql-read', 'sql-write'):
-            audits = [dict(case=job['name'], rows=c['rows'], first_id=1, last_id=1000, query='SELECT a', checksum=42, prefix_bytes=20) for _ in range(3)]
-        elif c['audit'] != 'none':
             fixture = dict(case=job['name'].split('/')[0], phase='fixture', rows=1000, prefix_bytes=20,
                            **{k: v for k, v in c['fields'].items() if k in ('payload', 'payload_bytes', 'chunks')})
             fixture['split'] = c['fields'].get('payload') == 'split'
-            audits.append(fixture)
-            remote = job['arm'].endswith('-remote')
-            for _ in range(3):
-                for phase in ('before', 'after'):
-                    audits.append(dict(case=job['name'], phase=phase, method='USE_REMOTE_FETCH' if remote else 'SCAN_AND_FETCH',
-                                       rows=c['rows'], remote_openings=int(remote), remote_entries=c['rows']+4 if remote else 0,
-                                       index_scans=0 if remote else 1, record_loads=0 if remote else c['rows'],
-                                       checksum=42, prefix_bytes=20, query='SELECT a', **c['fields']))
-        return '\n'.join(lines+['log FDB_BENCH_AUDIT '+json.dumps(x) for x in audits]+['PASS'])
+            lines.append('log FDB_BENCH_AUDIT '+json.dumps(fixture))
+        for invocations, row_prefix in zip(prefixes, measured):
+            for prefix in invocations:
+                lines += ['log FDB_BENCH_AUDIT '+json.dumps(x) for x in receipts(prefix)]
+            metrics = f"100 ns/op {0 if zero else 4} B/op {0 if zero else 2} allocs/op"
+            if c['audit'] in ('fetch', 'planskip', 'sql-fetch'):
+                metrics += f" {c['rows']} rows/op {row_prefix} prefix-B"
+            if c['audit'] in ('sql-read', 'sql-write'):
+                metrics += f' {row_prefix} prefix-B'
+            lines.append(f"{job['name']}-8 {1000 if c['write'] else 100} {metrics}")
+        return '\n'.join(lines+['PASS'])
 
     def test_frozen_populations_and_affinity(self):
         for phase, count in [('B', 144), ('C1', 192), ('D1', 54), ('C2', 48), ('D2', 24), ('C3', 24)]:
@@ -153,6 +167,42 @@ class RunnerTests(unittest.TestCase):
                   text.replace('FDB_BENCH_AUDIT {', 'FDB_BENCH_AUDIT INVALID {')]:
             with self.assertRaises(ValueError):
                 parse(b, j)
+
+    def test_sql_rows_pair_with_their_measured_invocation_receipt(self):
+        # BenchmarkFDB_IndexScanRange makes a database per body invocation: with
+        # -test.count=3 and calibration, 9 receipts for 3 rows; repeat 3's b.N=100
+        # calibration got a 5-byte prefix, its measured invocation 6.
+        j = next(j for j in self.plan('D1')['jobs'] if j['case']['key'] == 'FDB_IndexScanRange')
+        rows, audits = parse(self.output(j, prefixes=[[6, 6, 6], [6, 6, 6], [6, 5, 6]]), j)
+        self.assertEqual(len(audits), 9)
+        self.assertEqual([(r['metrics']['prefix-B'], r['measured_prefix_bytes']) for r in rows], [(6, 6)] * 3)
+        with self.assertRaisesRegex(r.CorrectnessFailure, 'its own invocation receipt'):
+            parse(self.output(j, prefixes=[[6, 6, 6], [6, 6, 6], [6, 6, 5]], measured=[6, 6, 6]), j)
+        # Measured rows may differ between repeats; bench_analyze discloses that as a confound.
+        rows, _ = parse(self.output(j, prefixes=[[5, 5], [6, 6], [6, 6]]), j)
+        self.assertEqual([r['metrics']['prefix-B'] for r in rows], [5, 6, 6])
+        # A repeat whose measured invocation logged no receipt is not paired with an earlier repeat's.
+        lines = self.output(j, prefixes=[[6, 6], [6], [6]]).splitlines()
+        receipt = next(i for i, line in enumerate(lines) if line.startswith(j['name']+'-8')) + 1
+        with self.assertRaisesRegex(r.CorrectnessFailure, 'receipt missing'):
+            parse('\n'.join(lines[:receipt] + lines[receipt+1:]), j)
+        w = next(j for j in self.plan('D1')['jobs'] if j['case']['key'] == 'FDB_TimestampInsert')
+        self.assertEqual(len(parse(self.output(w, prefixes=[[7, 6], [6, 6], [6, 6]]), w)[0]), 3)
+
+    def test_sql_fetch_rows_pair_with_their_measured_invocation_receipt(self):
+        j = next(j for j in self.plan('D2')['jobs'] if j['arm'] == 'final-remote')
+        rows, _ = parse(self.output(j, prefixes=[[7, 6], [6], [6, 8, 6]]), j)
+        self.assertEqual([r['measured_prefix_bytes'] for r in rows], [6, 6, 6])
+        with self.assertRaisesRegex(r.CorrectnessFailure, 'its own invocation receipt'):
+            parse(self.output(j, prefixes=[[6], [6], [6, 7]], measured=[6, 6, 6]), j)
+        text = self.output(j, prefixes=[[6], [6], [6]])
+        before = next(line for line in text.splitlines() if '"phase": "before"' in line)
+        with self.assertRaisesRegex(r.CorrectnessFailure, 'within one invocation'):
+            parse(text.replace(before, before.replace('"prefix_bytes": 6', '"prefix_bytes": 7')), j)
+        # Record Layer stores sit at a fixed subspace: any receipt differing from a row still fails.
+        f = next(j for j in self.plan('C2')['jobs'] if j['case']['audit'] == 'fetch')
+        with self.assertRaisesRegex(r.CorrectnessFailure, 'differs from audit'):
+            parse(self.output(f, prefixes=[[21, 20], [20], [20]]), f)
 
     def test_classic_reads_do_not_demand_fake_audits(self):
         j = next(j for j in self.plan()['jobs'] if j['case']['key'] == 'LoadRecord')
@@ -450,6 +500,45 @@ class AnalysisTests(unittest.TestCase):
             self.assertEqual(cases, {plan['cases'][0]['key']})
             report = a.analyze(output, folder/'report')
             self.assertEqual(report['raw_samples'], 54)
+
+    def test_sql_calibration_prefixes_are_not_a_within_process_change(self):
+        # Calibration invocations' SQL prefixes differ; each row's measured receipt decides,
+        # and differing measured prefixes between arms are disclosed, never rejected.
+        fixture = RunnerTests()
+        plan = fixture.plan('D1')
+        plan['cases'] = [c for c in plan['cases'] if c['key'] == 'FDB_IndexScanRange']
+        plan['jobs'] = [j for j in plan['jobs'] if j['case']['key'] == 'FDB_IndexScanRange']
+        plan['expected_sha256'][plan['paths']['analyzer']] = r.sha(a.__file__)
+        plan['bootstrap_resamples'] = 100
+        with tempfile.TemporaryDirectory() as folder:
+            inp = Path(folder)/'input'
+            inp.mkdir()
+            samples = []
+            for job in plan['jobs']:
+                run = inp/job['id']
+                run.mkdir()
+                measured = 5 if job['arm'] == 'legacy' else 6
+                text = fixture.output(job, prefixes=[[6, measured], [5, measured], [measured]])
+                (run/'stdout.txt').write_text(text)
+                (run/'stderr.txt').write_text('')
+                rows, audits = parse(text, job)
+                r.dump(run/'result.json', {'status': 'ok'})
+                r.dump(run/'audits.json', audits)
+                for row in rows:
+                    samples.append(dict(phase='D1', case=job['case']['key'], arm=job['arm'], block=job['block'],
+                                        position=job['position'], repeat=row['repeat'], N=row['N'], **row['metrics']))
+            r.dump(inp/'plan.json', plan)
+            r.dump(inp/'controller.json', {'plan_sha256': r.sha(inp/'plan.json')})
+            for name in ('pins.before.json', 'pins.after.json'):
+                r.dump(inp/name, plan['expected_sha256'])
+            r.dump(inp/'omitted.json', {})
+            r.dump(inp/'complete.json', {'samples': len(samples), 'completed': len(plan['jobs']), 'pins_unchanged': True})
+            r.write_metrics(inp/'metrics.csv', samples)
+            report = a.analyze(inp, Path(folder)/'report')
+        case = report['cases']['FDB_IndexScanRange']
+        self.assertEqual((case['status'], case['physical_prefix_lengths'], case['physical_prefix_confound']),
+                         ('ok', [5, 6], True))
+        self.assertTrue(all(c['physical_prefix_confound'] for c in report['comparisons']))
 
     def test_physical_prefix_confound_is_reported_not_hidden(self):
         p, rows = self.samples()

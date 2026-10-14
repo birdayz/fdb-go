@@ -25,32 +25,52 @@ type Mutation struct {
 	Value []byte // OpSet only
 }
 
+// KV is one key-value pair.
+type KV struct {
+	Key, Value []byte
+}
+
 // Reader reads a key inside the committing transaction (non-snapshot, so the
 // key joins the read-conflict set; system keys are readable).
 type Reader func(key []byte) (value []byte, present bool, err error)
 
+// Txn is ONE backend transaction pinned at a read version with
+// READ_SYSTEM_KEYS. Every method reads at that version.
+type Txn interface {
+	// Get reads one key.
+	Get(key []byte) (value []byte, present bool, err error)
+	// Range returns every pair of [begin, end), without a limit. With
+	// fromLastLessOrEqual it starts at the last key <= begin instead (the
+	// keyServers entry covering begin).
+	Range(begin, end []byte, fromLastLessOrEqual bool) ([]KV, error)
+	// Addresses returns each key's storage addresses (LocalityGetAddressesForKey
+	// in this transaction), in the order of keys.
+	Addresses(keys [][]byte) ([][]string, error)
+}
+
 // Cluster is everything the probe and the ballast tool need from
-// FoundationDB. The real implementation is FDBCluster; tests use a fake.
+// FoundationDB. Production backends: cmd/placementprobe backend_cgo.go
+// (libfdb_c, transactional addresses) and GoCluster (pure Go, diagnostic
+// addresses). Tests use a fake.
 type Cluster interface {
 	// ReadVersion returns a fresh read version.
 	ReadVersion() (int64, error)
-	// BoundaryKeys returns every shard boundary in [begin, end) at version,
-	// without a limit.
-	BoundaryKeys(begin, end []byte, version int64) ([][]byte, error)
-	// Keys returns every key in [begin, end) at version (snapshot read).
-	Keys(begin, end []byte, version int64) ([][]byte, error)
-	// Addresses returns the storage addresses holding key (location cache).
-	Addresses(key []byte) ([]string, error)
-	// Get reads one key at version; system permits \xff keys.
-	Get(key []byte, version int64, system bool) (value []byte, present bool, err error)
+	// At opens one transaction at version.
+	At(version int64) (Txn, error)
+	// AddressBasis is AddressTransactional or AddressLocationCache.
+	AddressBasis() string
 	// Commit runs guard and then applies writes in one transaction, retrying
 	// retryable errors; guard errors abort without retry. It returns the
 	// committed version.
 	Commit(guard func(read Reader) error, writes []Mutation) (int64, error)
 }
 
-// FDBCluster implements Cluster over the pure-Go client.
-type FDBCluster struct {
+// GoCluster implements Cluster over the pure-Go client. Its
+// LocalityGetAddressesForKey answers from the client location cache, unlike
+// libfdb_c's transactional getAddressesForKey, so its address basis is
+// diagnostic: probes from it are refused without --diagnostic and never pass
+// placement_receipt integrity. Ballast and control operations are exact.
+type GoCluster struct {
 	DB fdb.Database
 	// TimeoutMillis bounds each transaction (FDB transaction timeout option).
 	TimeoutMillis int64
@@ -58,10 +78,13 @@ type FDBCluster struct {
 	MaxAttempts int
 }
 
-var _ Cluster = FDBCluster{}
+var _ Cluster = GoCluster{}
+
+// AddressBasis implements Cluster.
+func (c GoCluster) AddressBasis() string { return AddressLocationCache }
 
 // ReadVersion implements Cluster.
-func (c FDBCluster) ReadVersion() (int64, error) {
+func (c GoCluster) ReadVersion() (int64, error) {
 	tr, err := c.DB.CreateTransaction()
 	if err != nil {
 		return 0, err
@@ -69,85 +92,69 @@ func (c FDBCluster) ReadVersion() (int64, error) {
 	return tr.GetReadVersion().Get()
 }
 
-func (c FDBCluster) at(version int64, system bool) (fdb.Transaction, error) {
+// At implements Cluster.
+func (c GoCluster) At(version int64) (Txn, error) {
 	tr, err := c.DB.CreateTransaction()
 	if err != nil {
-		return fdb.Transaction{}, err
+		return nil, err
 	}
 	if c.TimeoutMillis > 0 {
 		if err := tr.Options().SetTimeout(c.TimeoutMillis); err != nil {
-			return fdb.Transaction{}, err
+			return nil, err
 		}
 	}
-	if system {
-		if err := tr.Options().SetReadSystemKeys(); err != nil {
-			return fdb.Transaction{}, err
-		}
+	if err := tr.Options().SetReadSystemKeys(); err != nil {
+		return nil, err
 	}
 	tr.SetReadVersion(version)
-	return tr, nil
+	return goTxn{tr: tr}, nil
 }
 
-// BoundaryKeys implements Cluster: LocalityGetBoundaryKeys reads
-// \xff/keyServers at the given read version; limit 0 means unlimited.
-func (c FDBCluster) BoundaryKeys(begin, end []byte, version int64) ([][]byte, error) {
-	keys, err := c.DB.LocalityGetBoundaryKeys(fdb.KeyRange{Begin: fdb.Key(begin), End: fdb.Key(end)}, 0, version)
-	if err != nil {
-		return nil, err
-	}
-	out := make([][]byte, len(keys))
-	for i, k := range keys {
-		out[i] = append([]byte(nil), k...)
-	}
-	return out, nil
-}
+type goTxn struct{ tr fdb.Transaction }
 
-// Keys implements Cluster. The whole range is read in one transaction at
-// version, so it must finish within the MVCC window (about 5 s); a
-// transaction_too_old fails the probe rather than mixing versions.
-func (c FDBCluster) Keys(begin, end []byte, version int64) ([][]byte, error) {
-	tr, err := c.at(version, false)
-	if err != nil {
-		return nil, err
-	}
-	kvs, err := tr.Snapshot().GetRange(fdb.KeyRange{Begin: fdb.Key(begin), End: fdb.Key(end)},
-		fdb.RangeOptions{Mode: fdb.StreamingModeWantAll}).GetSliceWithError()
-	if err != nil {
-		return nil, err
-	}
-	out := make([][]byte, len(kvs))
-	for i, kv := range kvs {
-		out[i] = append([]byte(nil), kv.Key...)
-	}
-	return out, nil
-}
-
-// Addresses implements Cluster. LocalityGetAddressesForKey ignores the read
-// version (see the package comment); a fresh transaction per key costs no GRV.
-func (c FDBCluster) Addresses(key []byte) ([]string, error) {
-	tr, err := c.DB.CreateTransaction()
-	if err != nil {
-		return nil, err
-	}
-	return tr.LocalityGetAddressesForKey(fdb.Key(key)).Get()
-}
-
-// Get implements Cluster.
-func (c FDBCluster) Get(key []byte, version int64, system bool) ([]byte, bool, error) {
-	tr, err := c.at(version, system)
-	if err != nil {
-		return nil, false, err
-	}
-	v, err := tr.Get(fdb.Key(key)).Get()
+func (t goTxn) Get(key []byte) ([]byte, bool, error) {
+	v, err := t.tr.Get(fdb.Key(key)).Get()
 	if err != nil {
 		return nil, false, err
 	}
 	return v, v != nil, nil
 }
 
+func (t goTxn) Range(begin, end []byte, fromLastLessOrEqual bool) ([]KV, error) {
+	var r fdb.Range = fdb.KeyRange{Begin: fdb.Key(begin), End: fdb.Key(end)}
+	if fromLastLessOrEqual {
+		r = fdb.SelectorRange{Begin: fdb.LastLessOrEqual(fdb.Key(begin)), End: fdb.FirstGreaterOrEqual(fdb.Key(end))}
+	}
+	kvs, err := t.tr.Snapshot().GetRange(r, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll}).GetSliceWithError()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]KV, len(kvs))
+	for i, kv := range kvs {
+		out[i] = KV{Key: append([]byte(nil), kv.Key...), Value: append([]byte(nil), kv.Value...)}
+	}
+	return out, nil
+}
+
+func (t goTxn) Addresses(keys [][]byte) ([][]string, error) {
+	futures := make([]fdb.FutureStringSlice, len(keys))
+	for i, k := range keys {
+		futures[i] = t.tr.LocalityGetAddressesForKey(fdb.Key(k))
+	}
+	out := make([][]string, len(keys))
+	for i, f := range futures {
+		a, err := f.Get()
+		if err != nil {
+			return nil, err
+		}
+		out[i] = a
+	}
+	return out, nil
+}
+
 // Commit implements Cluster with an explicit OnError loop so the committed
 // version of the successful attempt is available.
-func (c FDBCluster) Commit(guard func(read Reader) error, writes []Mutation) (int64, error) {
+func (c GoCluster) Commit(guard func(read Reader) error, writes []Mutation) (int64, error) {
 	tr, err := c.DB.CreateTransaction()
 	if err != nil {
 		return 0, err
@@ -171,7 +178,7 @@ func (c FDBCluster) Commit(guard func(read Reader) error, writes []Mutation) (in
 	}
 }
 
-func (c FDBCluster) attempt(tr fdb.Transaction, guard func(read Reader) error, writes []Mutation) error {
+func (c GoCluster) attempt(tr fdb.Transaction, guard func(read Reader) error, writes []Mutation) error {
 	if c.TimeoutMillis > 0 {
 		if err := tr.Options().SetTimeout(c.TimeoutMillis); err != nil {
 			return err

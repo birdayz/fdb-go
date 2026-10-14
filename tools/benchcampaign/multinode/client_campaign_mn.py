@@ -109,6 +109,14 @@ def validate_plan(plan, schedule, protocol, orders, phase_id, workload):
     return phase
 
 
+def workload_order_guard(state, order, workload):
+    """Previously attempted workloads must be exactly the sealed order's prefix before this one."""
+    if workload not in order:
+        raise ValueError(f'{workload} is not a sealed workload of this phase')
+    if set(state['cases']) != set(order[:order.index(workload)]):
+        raise EnvironmentFailure('previously attempted cases must be the exact sealed workload prefix')
+
+
 def check_pair(before, after, plan):
     cg.telemetry_guard([before, after], plan)
     if cc.oom_count(after['/proc/vmstat']) != cc.oom_count(before['/proc/vmstat']):
@@ -190,6 +198,9 @@ def run(args, command=None, helper=None, sleep=time.sleep, clock=time.monotonic)
     phase = validate_plan(plan, schedule, protocol, orders, args.phase, args.workload)
     if phase['engine'] != layout['engine']:
         raise ValueError(f'phase engine {phase["engine"]} != layout engine {layout["engine"]}')
+    order = cg.sealed_client_workloads(manifest, phase)
+    if args.workload not in order:
+        raise ValueError(f'{args.workload} is not a sealed workload of {args.phase}')
     sealed_path = plan_path.parent / 'schedule.json'
     if cc.normalize_schedule(schedule) != cc.normalize_schedule(json.loads(sealed_path.read_text())):
         raise ValueError('runtime client schedule differs from presealed schedule')
@@ -214,20 +225,22 @@ def run(args, command=None, helper=None, sleep=time.sleep, clock=time.monotonic)
         left = cg.lifetime_left(args.lifetime_deadline)
         if state_path.exists():
             state = json.loads(state_path.read_text())
-            if state['protocol_sha256'] != generic.sha(protocol_path) or state['phase'] != args.phase or state.get('final_failure'):
+            if (state['protocol_sha256'] != generic.sha(protocol_path) or state['phase'] != args.phase or
+                    state.get('manifest_sha256') != args.manifest_sha256 or state['expected_cases'] != order or
+                    state.get('final_failure')):
                 raise EnvironmentFailure('phase inputs changed or final correctness failure already stopped phase')
             if args.workload in state['cases']:
                 raise EnvironmentFailure('case already attempted; automatic retry forbidden')
         else:
             if left < phase['wall_cap_seconds'] + cg.LIFETIME_RESERVE_SECONDS:
                 receipt = dict(reason='insufficient phase budget: cap + 600 s collection + 300 s teardown',
-                               remaining=left, phase=args.phase, expected_cases=phase['workloads'])
+                               remaining=left, phase=args.phase, expected_cases=order)
                 generic.dump(out / 'UNEXECUTED.json', receipt)
                 generic.dump(out.parent / 'client-phase-unexecuted.json', receipt)
                 return 2
             state = dict(phase=args.phase, phase_start_monotonic=now, protocol_sha256=generic.sha(protocol_path),
-                         expected_cases=phase['workloads'], cases={})
-        cc.workload_order_guard(state, phase, args.workload)
+                         manifest_sha256=args.manifest_sha256, expected_cases=order, cases={})
+        workload_order_guard(state, order, args.workload)
         state['cases'][args.workload] = dict(status='started')
         generic.dump(state_path, state)
         deadline = min(now + plan['campaign_wall_cap_seconds'], state['phase_start_monotonic'] + phase['wall_cap_seconds'],
@@ -239,7 +252,7 @@ def run(args, command=None, helper=None, sleep=time.sleep, clock=time.monotonic)
             plan_sha256=generic.sha(plan_path), schedule_sha256=generic.sha(sealed_path),
             manifest_sha256=args.manifest_sha256, layout_sha256=generic.sha(layout_path), harness_revision=harness,
             lifetime_deadline=args.lifetime_deadline, campaign_deadline_monotonic=deadline,
-            phase_wall_cap_seconds=phase['wall_cap_seconds'], expected_case_population=len(phase['workloads']),
+            phase_wall_cap_seconds=phase['wall_cap_seconds'], expected_case_population=len(order),
             engine=phase['engine'], vpc_cidr=args.vpc_cidr, no_per_arm_cluster_clear=True))
         env = {'PATH': '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin', 'HOME': str(Path.home()),
                **plan['environment']}

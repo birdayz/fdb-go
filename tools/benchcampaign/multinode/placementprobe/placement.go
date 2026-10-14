@@ -3,36 +3,51 @@
 //
 // The probe lists every physical key of a Record Layer store's record
 // subspace prefix+(1,) and index subspace prefix+(2,), the store's shard
-// boundaries, and the storage servers that hold each key, as the
-// fdb-bench-placement-probe/v2 document that
+// boundaries and the storage servers holding each key, as the
+// fdb-bench-placement-probe/v3 document that
 // tools/benchcampaign/multinode/placement_receipt.py judges. Store metadata
 // (header (0,), index state and other subspaces (3..10,)) is out of scope by
 // design and is never listed.
 //
-// Versioning. Keys and boundaries are read at one read version V1. Storage
-// addresses come from LocalityGetAddressesForKey, which in this client (and in
-// libfdb_c, NativeAPI getAddressesForKey) answers from the client location
-// cache and does NOT honour SetReadVersion. The probe therefore brackets the
-// address lookups: it reads the data-distribution mode at V1, looks up every
-// key's addresses in a fresh process (an empty location cache, so every shard
-// is located from the cluster), then takes a second read version V2 and
-// requires the boundary list at V2 to equal the list at V1 and, unless
-// explicitly allowed, the data-distribution mode to be off (0) at both V1 and
-// V2. With data distribution off no shard can move, so addresses located
-// between V1 and V2 describe the shard map at V1. The receipt's per-shard
-// consistency check and before/after compare remain the backstop.
+// One snapshot. Everything the placement claim rests on is read in ONE
+// transaction pinned at read version V1 with READ_SYSTEM_KEYS: the
+// data-distribution mode, the moveKeysLock owner and write token, the
+// \xff/keyServers entries of the store range (shard boundaries and team
+// identities, compared as raw bytes, never decoded), every key of the two data
+// subspaces, and every key's storage addresses. The production backend is
+// libfdb_c (cmd/placementprobe, build tag libfdbc): its getAddressesForKey
+// (NativeAPI.actor.cpp getAddressesForKeyActor) reads \xff/serverTag,
+// \xff/keyServers and \xff/serverList transactionally, so addresses are those
+// of the shard map at V1. The pure-Go client's LocalityGetAddressesForKey
+// answers from its location cache instead (a divergence from libfdb_c); that
+// backend is DIAGNOSTIC ONLY: its documents carry addresses_basis kind
+// "location-cache (diagnostic)", the probe refuses it without --diagnostic,
+// and placement_receipt.py fails such a document's integrity.
+//
+// Data distribution off is established by the moveKeysLock, not by boundary
+// identity: `datadistribution off` (ManagementAPI setDDMode, SpecialKeySpace
+// DataDistributionImpl::commit) writes mode 0, sets the lock owner to
+// dataDistributionModeLock and writes a fresh random write token, and every
+// lock acquisition or touch by a data mover writes a new token
+// (MoveKeys.actor.cpp checkMoveKeysLock). The probe requires mode 0 and that
+// owner at V1, then re-reads mode, owner, write token and the raw keyServers
+// entries at a later read version V2 >= V1 and emits nothing unless all are
+// unchanged: a toggle or relocation inside the bracket changes the token
+// and/or the keyServers bytes even when boundary keys stay identical.
 //
 // The ballast tool writes only into [prefix+(1,1000000), strinc(prefix+(1,)))
 // and only while data distribution is on; it clears only that range and only
-// while data distribution is off, reading \xff/dataDistributionMode inside the
-// clearing transaction so a concurrent mode change conflicts the commit. Every
-// prefix comes from the benchmark's own fixture receipt and must be one of the
-// owned stores.
+// while it is off, reading \xff/dataDistributionMode inside the committing
+// transaction so a concurrent mode change conflicts the commit. Every
+// destructive operation takes an OwnedStore, whose prefix can only come from
+// the store's fixture receipt (OpenStore) or the fixed scratch prefix
+// (OpenControlStore) and is re-validated at every call.
 package placementprobe
 
 import (
 	"bufio"
 	"bytes"
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -47,12 +62,14 @@ import (
 
 // Formats and fixed layout constants. They mirror placement_receipt.py.
 const (
-	ProbeFormat   = "fdb-bench-placement-probe/v2"
-	ReceiptFormat = "fdb-bench-ballast-receipt/v1"
-	Tool          = "placementprobe/v1"
-	// AddressMethod documents how addresses were obtained; see the package comment.
-	AddressMethod = "LocalityGetAddressesForKey: client location cache of a fresh process, NOT versioned; " +
-		"bracketed by identical boundaries at read versions V1 and V2"
+	ProbeFormat   = "fdb-bench-placement-probe/v3"
+	ReceiptFormat = "fdb-bench-ballast-receipt/v2"
+	Tool          = "placementprobe/v2"
+
+	// AddressTransactional is the only address basis placement receipts accept.
+	AddressTransactional = "transactional"
+	// AddressLocationCache marks diagnostic documents from the pure-Go backend.
+	AddressLocationCache = "location-cache (diagnostic)"
 
 	RecordKey = 1
 	IndexKey  = 2
@@ -70,11 +87,27 @@ const (
 	IndexName = "price_idx"
 )
 
-// DDModeKey is FoundationDB 7.3's dataDistributionModeKey
-// (fdbclient/SystemData.cpp). Its value is a BinaryWriter-encoded int
-// (4 bytes, little endian); absent means 1 (on). `fdbcli datadistribution off`
-// writes 0 (ManagementAPI setDDMode).
-var DDModeKey = []byte("\xff/dataDistributionMode")
+// FoundationDB 7.3.77 system keys (fdbclient/SystemData.cpp).
+var (
+	// DDModeKey is dataDistributionModeKey: a BinaryWriter int (4 bytes, little
+	// endian); absent means 1 (on).
+	DDModeKey = []byte("\xff/dataDistributionMode")
+	// MoveKeysLockOwnerKey and MoveKeysLockWriteKey hold BinaryWriter UIDs.
+	MoveKeysLockOwnerKey = []byte("\xff/moveKeysLock/Owner")
+	MoveKeysLockWriteKey = []byte("\xff/moveKeysLock/Write")
+	// KeyServersPrefix is keyServersKeys.begin.
+	KeyServersPrefix = []byte("\xff/keyServers/")
+	// DDModeLock is dataDistributionModeLock = UID(6345, 3425), serialized as
+	// two little-endian uint64 (UID::serialize_unversioned).
+	DDModeLock = uidBytes(6345, 3425)
+)
+
+func uidBytes(a, b uint64) []byte {
+	out := make([]byte, 16)
+	binary.LittleEndian.PutUint64(out, a)
+	binary.LittleEndian.PutUint64(out[8:], b)
+	return out
+}
 
 // storeSpec describes one owned store.
 type storeSpec struct {
@@ -171,6 +204,16 @@ func ParseFixtureReceipt(data []byte, store string) (FixtureReceipt, error) {
 	return only, nil
 }
 
+func validSQLPrefix(p []byte) error {
+	if len(p) == 0 || p[0] == 0xff {
+		return errors.New("store prefix is empty or in the system keyspace")
+	}
+	if bytes.HasPrefix(p, benchfetchPrefix) || bytes.HasPrefix(benchfetchPrefix, p) {
+		return errors.New("SQL store prefix overlaps the benchfetch stores")
+	}
+	return nil
+}
+
 // ResolvePrefix returns the owned store's key prefix, cross-checked against
 // the fixture receipt. Unknown stores and any mismatch are refused.
 func ResolvePrefix(store string, r FixtureReceipt) ([]byte, error) {
@@ -196,11 +239,8 @@ func ResolvePrefix(store string, r FixtureReceipt) ([]byte, error) {
 		if err != nil {
 			return nil, fmt.Errorf("store_prefix_hex: %w", err)
 		}
-		if len(p) == 0 || p[0] == 0xff {
-			return nil, errors.New("store prefix is empty or in the system keyspace")
-		}
-		if bytes.HasPrefix(p, benchfetchPrefix) || bytes.HasPrefix(benchfetchPrefix, p) {
-			return nil, errors.New("SQL store prefix overlaps the benchfetch stores")
+		if err := validSQLPrefix(p); err != nil {
+			return nil, err
 		}
 		prefix = p
 	} else {
@@ -215,14 +255,64 @@ func ResolvePrefix(store string, r FixtureReceipt) ([]byte, error) {
 	return prefix, nil
 }
 
-// ControlPrefix returns a scratch control store's fixed tuple prefix. Control
-// stores have no benchmark fixture receipt until control-write emits one.
-func ControlPrefix(store string) ([]byte, error) {
+// OwnedStore is an owned store with its validated prefix. Its fields are
+// unexported: outside this package it can only be obtained from OpenStore or
+// OpenControlStore, and every operation re-validates it (check).
+type OwnedStore struct {
+	name   string
+	prefix []byte
+}
+
+// OpenStore resolves a store's prefix from its fixture receipt.
+func OpenStore(store string, r FixtureReceipt) (OwnedStore, error) {
+	p, err := ResolvePrefix(store, r)
+	if err != nil {
+		return OwnedStore{}, err
+	}
+	s := OwnedStore{name: store, prefix: p}
+	return s, s.check(false, false)
+}
+
+// OpenControlStore returns a scratch control store with its fixed tuple
+// prefix. Control stores have no benchmark fixture receipt until
+// control-write emits one.
+func OpenControlStore(store string) (OwnedStore, error) {
 	spec, ok := stores[store]
 	if !ok || !spec.control {
-		return nil, fmt.Errorf("store %q is not a scratch control store", store)
+		return OwnedStore{}, fmt.Errorf("store %q is not a scratch control store", store)
 	}
-	return spec.tuple.Pack(), nil
+	return OwnedStore{name: store, prefix: spec.tuple.Pack()}, nil
+}
+
+// Name returns the store name.
+func (s OwnedStore) Name() string { return s.name }
+
+// Prefix returns a copy of the store prefix.
+func (s OwnedStore) Prefix() []byte { return append([]byte(nil), s.prefix...) }
+
+// check is the central prefix validation every exported operation runs: the
+// store must be owned, its prefix must be exactly the store's tuple prefix
+// (or, for SQL, a valid non-overlapping user prefix), and the operation must
+// be allowed on it (ballast: benchmark stores; control: scratch stores).
+func (s OwnedStore) check(ballast, control bool) error {
+	spec, ok := stores[s.name]
+	if !ok {
+		return fmt.Errorf("store %q is not an owned store", s.name)
+	}
+	if spec.tuple != nil {
+		if !bytes.Equal(s.prefix, spec.tuple.Pack()) {
+			return fmt.Errorf("prefix %x is not %s's owned prefix", s.prefix, s.name)
+		}
+	} else if err := validSQLPrefix(s.prefix); err != nil {
+		return err
+	}
+	if ballast && !spec.ballast {
+		return fmt.Errorf("store %s does not take ballast", s.name)
+	}
+	if control && !spec.control {
+		return fmt.Errorf("store %s is not a scratch control store", s.name)
+	}
+	return nil
 }
 
 // concat returns a fresh a||b (never aliasing either argument).
@@ -259,6 +349,31 @@ func DDMode(value []byte, present bool) (int32, error) {
 	return int32(binary.LittleEndian.Uint32(value)), nil
 }
 
+// ClusterIdentity names the cluster a document was taken on.
+type ClusterIdentity struct {
+	ConnectionStringID string `json:"connection_string_id"`
+	ClusterFileSHA256  string `json:"cluster_file_sha256"`
+}
+
+// ParseClusterIdentity derives the identity from cluster file bytes: the
+// SHA-256 of the file and the description:id of its connection string.
+func ParseClusterIdentity(data []byte) (ClusterIdentity, error) {
+	sum := sha256.Sum256(data)
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		at := strings.Index(line, "@")
+		colon := strings.Index(line, ":")
+		if at <= 0 || colon <= 0 || colon > at {
+			return ClusterIdentity{}, fmt.Errorf("malformed connection string %q", line)
+		}
+		return ClusterIdentity{ConnectionStringID: line[:at], ClusterFileSHA256: hex.EncodeToString(sum[:])}, nil
+	}
+	return ClusterIdentity{}, errors.New("cluster file has no connection string")
+}
+
 // DDModeRead is one observation of the data-distribution mode.
 type DDModeRead struct {
 	ReadVersion int64 `json:"read_version"`
@@ -276,46 +391,77 @@ type ProbeKey struct {
 
 // AddressBasis records how the addresses were obtained.
 type AddressBasis struct {
-	Method                       string `json:"method"`
-	LocatedAfterReadVersion      int64  `json:"located_after_read_version"`
-	LocatedBeforeReadVersion     int64  `json:"located_before_read_version"`
-	BoundariesRecheckedIdentical bool   `json:"boundaries_rechecked_identical"`
+	Kind        string `json:"kind"`
+	ReadVersion int64  `json:"read_version"`
+	Method      string `json:"method"`
 }
 
-// DDModes records the data-distribution mode around the probe.
+// Recheck records the second snapshot.
+type Recheck struct {
+	ReadVersion         int64 `json:"read_version"`
+	BoundariesIdentical bool  `json:"boundaries_identical"`
+}
+
+// DDModes records the data-distribution mode at V1 and V2.
 type DDModes struct {
 	RequiredOff bool       `json:"required_off"`
 	AtV1        DDModeRead `json:"at_v1"`
 	AtV2        DDModeRead `json:"at_v2"`
 }
 
-// ProbeDoc is the fdb-bench-placement-probe/v2 document.
+// MoveKeysLock records the moveKeysLock owner and write token at V1 and V2.
+type MoveKeysLock struct {
+	OwnerHexAtV1        string `json:"owner_hex_at_v1"`
+	OwnerHexAtV2        string `json:"owner_hex_at_v2"`
+	OwnerIsDDModeLock   bool   `json:"owner_is_dd_mode_lock"`
+	WriteTokenHexAtV1   string `json:"write_token_hex_at_v1"`
+	WriteTokenHexAtV2   string `json:"write_token_hex_at_v2"`
+	WriteTokenUnchanged bool   `json:"write_token_unchanged"`
+}
+
+// KeyServers records the raw \xff/keyServers entries covering the store range:
+// from the last entry <= keyServers+prefix to keyServers+strinc(prefix).
+type KeyServers struct {
+	BeginHex    string `json:"begin_hex"`
+	EndHex      string `json:"end_hex"`
+	Entries     int    `json:"entries"`
+	SHA256AtV1  string `json:"sha256_at_v1"`
+	SHA256AtV2  string `json:"sha256_at_v2"`
+	Unchanged   bool   `json:"unchanged"`
+	Description string `json:"description"`
+}
+
+// ProbeDoc is the fdb-bench-placement-probe/v3 document.
 type ProbeDoc struct {
-	Format                string       `json:"format"`
-	Tool                  string       `json:"tool"`
-	Store                 string       `json:"store"`
-	StorePrefixHex        string       `json:"store_prefix_hex"`
-	FixtureReceiptSHA256  string       `json:"fixture_receipt_sha256"`
-	ReadVersion           int64        `json:"read_version"`
-	BoundariesReadVersion int64        `json:"boundaries_read_version"`
-	BoundaryRangeHex      [2]string    `json:"boundary_range_hex"`
-	BoundariesComplete    bool         `json:"boundaries_complete"`
-	BoundariesHex         []string     `json:"boundaries_hex"`
-	ScannedSubspacesHex   [2]string    `json:"scanned_subspaces_hex"`
-	KeysComplete          bool         `json:"keys_complete"`
-	Keys                  []ProbeKey   `json:"keys"`
-	AddressesBasis        AddressBasis `json:"addresses_basis"`
-	DDMode                DDModes      `json:"dd_mode"`
+	Format                string          `json:"format"`
+	Tool                  string          `json:"tool"`
+	Store                 string          `json:"store"`
+	StorePrefixHex        string          `json:"store_prefix_hex"`
+	FixtureReceiptSHA256  string          `json:"fixture_receipt_sha256"`
+	Cluster               ClusterIdentity `json:"cluster"`
+	ReadVersion           int64           `json:"read_version"`
+	BoundariesReadVersion int64           `json:"boundaries_read_version"`
+	BoundaryRangeHex      [2]string       `json:"boundary_range_hex"`
+	BoundariesComplete    bool            `json:"boundaries_complete"`
+	BoundariesHex         []string        `json:"boundaries_hex"`
+	ScannedSubspacesHex   [2]string       `json:"scanned_subspaces_hex"`
+	KeysComplete          bool            `json:"keys_complete"`
+	Keys                  []ProbeKey      `json:"keys"`
+	AddressesBasis        AddressBasis    `json:"addresses_basis"`
+	Recheck               Recheck         `json:"recheck"`
+	DDMode                DDModes         `json:"dd_mode"`
+	MoveKeysLock          MoveKeysLock    `json:"move_keys_lock"`
+	KeyServers            KeyServers      `json:"key_servers"`
 }
 
 // ProbeInput selects the store to probe.
 type ProbeInput struct {
-	Store         string
-	Prefix        []byte
+	Store         OwnedStore
 	FixtureSHA256 string
-	// AllowDDOn permits a diagnostic probe while data distribution is on; the
-	// document records it. Placement receipts used for labels require off.
-	AllowDDOn bool
+	Cluster       ClusterIdentity
+	// Diagnostic permits a location-cache address source and data
+	// distribution on; such documents always fail placement_receipt integrity.
+	Diagnostic bool
 }
 
 // keyID decodes the primary-key ID: element 1 of a record key (1, id, ...),
@@ -337,123 +483,106 @@ func keyID(kind string, prefix, key []byte) *int64 {
 	return &v
 }
 
+// snapshot is everything read in one transaction at one read version.
+type snapshot struct {
+	version              int64
+	dd                   DDModeRead
+	owner, write         []byte
+	ownerSet, writeSet   bool
+	keyServers           []KV
+	records, index       [][]byte
+	recordAddr, indexAdr [][]string
+}
+
+func takeSnapshot(c Cluster, version int64, prefix, end []byte, withData bool) (*snapshot, error) {
+	t, err := c.At(version)
+	if err != nil {
+		return nil, err
+	}
+	s := &snapshot{version: version}
+	v, present, err := t.Get(DDModeKey)
+	if err != nil {
+		return nil, fmt.Errorf("read data-distribution mode: %w", err)
+	}
+	mode, err := DDMode(v, present)
+	if err != nil {
+		return nil, err
+	}
+	s.dd = DDModeRead{ReadVersion: version, Mode: mode, KeyPresent: present}
+	if s.owner, s.ownerSet, err = t.Get(MoveKeysLockOwnerKey); err != nil {
+		return nil, fmt.Errorf("read moveKeysLock owner: %w", err)
+	}
+	if s.write, s.writeSet, err = t.Get(MoveKeysLockWriteKey); err != nil {
+		return nil, fmt.Errorf("read moveKeysLock write token: %w", err)
+	}
+	if s.keyServers, err = t.Range(concat(KeyServersPrefix, prefix), concat(KeyServersPrefix, end), true); err != nil {
+		return nil, fmt.Errorf("read keyServers: %w", err)
+	}
+	if !withData {
+		return s, nil
+	}
+	record, index := Subspaces(prefix)
+	for _, sub := range []struct {
+		begin []byte
+		keys  *[][]byte
+	}{{record, &s.records}, {index, &s.index}} {
+		subEnd, err := strinc(sub.begin)
+		if err != nil {
+			return nil, err
+		}
+		kvs, err := t.Range(sub.begin, subEnd, false)
+		if err != nil {
+			return nil, fmt.Errorf("scan data subspace: %w", err)
+		}
+		for _, kv := range kvs {
+			*sub.keys = append(*sub.keys, kv.Key)
+		}
+	}
+	all := append(append([][]byte(nil), s.records...), s.index...)
+	addrs, err := t.Addresses(all)
+	if err != nil {
+		return nil, fmt.Errorf("addresses at V1: %w", err)
+	}
+	if len(addrs) != len(all) {
+		return nil, fmt.Errorf("backend returned %d address lists for %d keys", len(addrs), len(all))
+	}
+	s.recordAddr, s.indexAdr = addrs[:len(s.records)], addrs[len(s.records):]
+	return s, nil
+}
+
+// boundaries returns the keyServers entry keys inside [prefix, end), stripped
+// of the keyServers prefix (LocalityGetBoundaryKeys semantics).
+func (s *snapshot) boundaries(prefix []byte) [][]byte {
+	begin := concat(KeyServersPrefix, prefix)
+	var out [][]byte
+	for _, kv := range s.keyServers {
+		if bytes.Compare(kv.Key, begin) >= 0 {
+			out = append(out, kv.Key[len(KeyServersPrefix):])
+		}
+	}
+	return out
+}
+
+// keyServersDigest hashes the raw entries with length framing.
+func keyServersDigest(kvs []KV) string {
+	h := sha256.New()
+	var n [4]byte
+	for _, kv := range kvs {
+		for _, part := range [][]byte{kv.Key, kv.Value} {
+			binary.BigEndian.PutUint32(n[:], uint32(len(part)))
+			h.Write(n[:])
+			h.Write(part)
+		}
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
 func hexAll(keys [][]byte) []string {
 	out := make([]string, len(keys))
 	for i, k := range keys {
 		out[i] = hex.EncodeToString(k)
 	}
 	return out
-}
-
-func readDDMode(c Cluster, version int64) (DDModeRead, error) {
-	v, present, err := c.Get(DDModeKey, version, true)
-	if err != nil {
-		return DDModeRead{}, fmt.Errorf("read data-distribution mode: %w", err)
-	}
-	mode, err := DDMode(v, present)
-	if err != nil {
-		return DDModeRead{}, err
-	}
-	return DDModeRead{ReadVersion: version, Mode: mode, KeyPresent: present}, nil
-}
-
-// Probe builds the placement probe document. It never judges placement; the
-// receipt does. It fails (and emits nothing) when the boundaries change
-// between V1 and V2 or, unless AllowDDOn, data distribution is not off.
-func Probe(c Cluster, in ProbeInput) (*ProbeDoc, error) {
-	end, err := strinc(in.Prefix)
-	if err != nil {
-		return nil, err
-	}
-	record, index := Subspaces(in.Prefix)
-	recordEnd, err := strinc(record)
-	if err != nil {
-		return nil, err
-	}
-	indexEnd, err := strinc(index)
-	if err != nil {
-		return nil, err
-	}
-	v1, err := c.ReadVersion()
-	if err != nil {
-		return nil, fmt.Errorf("read version V1: %w", err)
-	}
-	if v1 <= 0 {
-		return nil, fmt.Errorf("read version V1 %d is not positive", v1)
-	}
-	dd1, err := readDDMode(c, v1)
-	if err != nil {
-		return nil, err
-	}
-	if !in.AllowDDOn && dd1.Mode != 0 {
-		return nil, fmt.Errorf("data distribution mode is %d at V1, must be 0 (off)", dd1.Mode)
-	}
-	b1, err := c.BoundaryKeys(in.Prefix, end, v1)
-	if err != nil {
-		return nil, fmt.Errorf("boundaries at V1: %w", err)
-	}
-	doc := &ProbeDoc{
-		Format:                ProbeFormat,
-		Tool:                  Tool,
-		Store:                 in.Store,
-		StorePrefixHex:        hex.EncodeToString(in.Prefix),
-		FixtureReceiptSHA256:  in.FixtureSHA256,
-		ReadVersion:           v1,
-		BoundariesReadVersion: v1,
-		BoundaryRangeHex:      [2]string{hex.EncodeToString(in.Prefix), hex.EncodeToString(end)},
-		BoundariesComplete:    true, // unlimited boundary read
-		BoundariesHex:         hexAll(b1),
-		ScannedSubspacesHex:   [2]string{hex.EncodeToString(record), hex.EncodeToString(index)},
-		KeysComplete:          true, // unlimited key scans at V1
-		Keys:                  []ProbeKey{},
-	}
-	for _, sub := range []struct {
-		kind       string
-		begin, end []byte
-	}{{"record", record, recordEnd}, {"index", index, indexEnd}} {
-		keys, err := c.Keys(sub.begin, sub.end, v1)
-		if err != nil {
-			return nil, fmt.Errorf("scan %s subspace at V1: %w", sub.kind, err)
-		}
-		for _, k := range keys {
-			addrs, err := c.Addresses(k)
-			if err != nil {
-				return nil, fmt.Errorf("addresses for %x: %w", k, err)
-			}
-			addrs = append([]string(nil), addrs...)
-			sort.Strings(addrs)
-			doc.Keys = append(doc.Keys, ProbeKey{
-				Kind: sub.kind, ID: keyID(sub.kind, in.Prefix, k), KeyHex: hex.EncodeToString(k), Addresses: addrs,
-			})
-		}
-	}
-	v2, err := c.ReadVersion()
-	if err != nil {
-		return nil, fmt.Errorf("read version V2: %w", err)
-	}
-	if v2 < v1 {
-		return nil, fmt.Errorf("read version V2 %d precedes V1 %d", v2, v1)
-	}
-	dd2, err := readDDMode(c, v2)
-	if err != nil {
-		return nil, err
-	}
-	if !in.AllowDDOn && dd2.Mode != 0 {
-		return nil, fmt.Errorf("data distribution mode is %d at V2, must be 0 (off)", dd2.Mode)
-	}
-	b2, err := c.BoundaryKeys(in.Prefix, end, v2)
-	if err != nil {
-		return nil, fmt.Errorf("boundaries at V2: %w", err)
-	}
-	if !sameKeys(b1, b2) {
-		return nil, errors.New("shard boundaries changed between V1 and V2; placement is moving, no probe emitted")
-	}
-	doc.AddressesBasis = AddressBasis{
-		Method: AddressMethod, LocatedAfterReadVersion: v1, LocatedBeforeReadVersion: v2,
-		BoundariesRecheckedIdentical: true,
-	}
-	doc.DDMode = DDModes{RequiredOff: !in.AllowDDOn, AtV1: dd1, AtV2: dd2}
-	return doc, nil
 }
 
 func sameKeys(a, b [][]byte) bool {
@@ -466,4 +595,117 @@ func sameKeys(a, b [][]byte) bool {
 		}
 	}
 	return true
+}
+
+// Probe builds the placement probe document from one snapshot at V1 and a
+// recheck snapshot at V2 >= V1. It never judges placement; the receipt does.
+// It emits nothing when the recheck differs (write token, keyServers bytes,
+// boundaries), when data distribution is not off with the mode lock as owner,
+// or when the backend's addresses are not transactional (unless Diagnostic).
+func Probe(c Cluster, in ProbeInput) (*ProbeDoc, error) {
+	if err := in.Store.check(false, false); err != nil {
+		return nil, err
+	}
+	basis := c.AddressBasis()
+	if basis != AddressTransactional && !in.Diagnostic {
+		return nil, fmt.Errorf("address basis %q is not transactional; this backend is diagnostic only", basis)
+	}
+	prefix := in.Store.prefix
+	end, err := strinc(prefix)
+	if err != nil {
+		return nil, err
+	}
+	v1, err := c.ReadVersion()
+	if err != nil {
+		return nil, fmt.Errorf("read version V1: %w", err)
+	}
+	if v1 <= 0 {
+		return nil, fmt.Errorf("read version V1 %d is not positive", v1)
+	}
+	s1, err := takeSnapshot(c, v1, prefix, end, true)
+	if err != nil {
+		return nil, err
+	}
+	v2, err := c.ReadVersion()
+	if err != nil {
+		return nil, fmt.Errorf("read version V2: %w", err)
+	}
+	if v2 < v1 {
+		return nil, fmt.Errorf("read version V2 %d precedes V1 %d", v2, v1)
+	}
+	s2, err := takeSnapshot(c, v2, prefix, end, false)
+	if err != nil {
+		return nil, err
+	}
+	if !in.Diagnostic {
+		for _, s := range []*snapshot{s1, s2} {
+			if s.dd.Mode != 0 || !s.dd.KeyPresent {
+				return nil, fmt.Errorf("data distribution mode is %d (key present %t) at %d, must be 0", s.dd.Mode, s.dd.KeyPresent, s.version)
+			}
+			if !s.ownerSet || !bytes.Equal(s.owner, DDModeLock) {
+				return nil, fmt.Errorf("moveKeysLock owner at %d is %x, not the data-distribution-mode lock", s.version, s.owner)
+			}
+		}
+	}
+	if !s1.writeSet || !s2.writeSet || !bytes.Equal(s1.write, s2.write) {
+		return nil, errors.New("moveKeysLock write token missing or changed between V1 and V2; no probe emitted")
+	}
+	d1, d2 := keyServersDigest(s1.keyServers), keyServersDigest(s2.keyServers)
+	if d1 != d2 {
+		return nil, errors.New("keyServers entries changed between V1 and V2; no probe emitted")
+	}
+	b1, b2 := s1.boundaries(prefix), s2.boundaries(prefix)
+	if !sameKeys(b1, b2) {
+		return nil, errors.New("shard boundaries changed between V1 and V2; no probe emitted")
+	}
+	record, index := Subspaces(prefix)
+	doc := &ProbeDoc{
+		Format:                ProbeFormat,
+		Tool:                  Tool,
+		Store:                 in.Store.name,
+		StorePrefixHex:        hex.EncodeToString(prefix),
+		FixtureReceiptSHA256:  in.FixtureSHA256,
+		Cluster:               in.Cluster,
+		ReadVersion:           v1,
+		BoundariesReadVersion: v1,
+		BoundaryRangeHex:      [2]string{hex.EncodeToString(prefix), hex.EncodeToString(end)},
+		BoundariesComplete:    true, // every keyServers entry of the range, no limit
+		BoundariesHex:         hexAll(b1),
+		ScannedSubspacesHex:   [2]string{hex.EncodeToString(record), hex.EncodeToString(index)},
+		KeysComplete:          true, // unlimited scans of both subspaces at V1
+		Keys:                  []ProbeKey{},
+		AddressesBasis: AddressBasis{
+			Kind: basis, ReadVersion: v1,
+			Method: "LocalityGetAddressesForKey in the V1 snapshot transaction (" + basis + ")",
+		},
+		Recheck: Recheck{ReadVersion: v2, BoundariesIdentical: true},
+		DDMode:  DDModes{RequiredOff: !in.Diagnostic, AtV1: s1.dd, AtV2: s2.dd},
+		MoveKeysLock: MoveKeysLock{
+			OwnerHexAtV1: hex.EncodeToString(s1.owner), OwnerHexAtV2: hex.EncodeToString(s2.owner),
+			OwnerIsDDModeLock: bytes.Equal(s1.owner, DDModeLock) && bytes.Equal(s2.owner, DDModeLock),
+			WriteTokenHexAtV1: hex.EncodeToString(s1.write), WriteTokenHexAtV2: hex.EncodeToString(s2.write),
+			WriteTokenUnchanged: true,
+		},
+		KeyServers: KeyServers{
+			BeginHex: hex.EncodeToString(concat(KeyServersPrefix, prefix)),
+			EndHex:   hex.EncodeToString(concat(KeyServersPrefix, end)),
+			Entries:  len(s1.keyServers), SHA256AtV1: d1, SHA256AtV2: d2, Unchanged: true,
+			Description: "raw entries from the last keyServers key <= begin up to end; sha256 over " +
+				"(uint32 BE length, bytes) of each key and value",
+		},
+	}
+	for _, part := range []struct {
+		kind  string
+		keys  [][]byte
+		addrs [][]string
+	}{{"record", s1.records, s1.recordAddr}, {"index", s1.index, s1.indexAdr}} {
+		for i, k := range part.keys {
+			addrs := append([]string(nil), part.addrs[i]...)
+			sort.Strings(addrs)
+			doc.Keys = append(doc.Keys, ProbeKey{
+				Kind: part.kind, ID: keyID(part.kind, prefix, k), KeyHex: hex.EncodeToString(k), Addresses: addrs,
+			})
+		}
+	}
+	return doc, nil
 }

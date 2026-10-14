@@ -13,8 +13,10 @@ Input (fdb-bench-reconcile-input/v1); relative paths resolve against its directo
   {
     "format": "fdb-bench-reconcile-input/v1",
     "phase": "M2rl",
-    "layout": "cluster-ssd/layout.json",          fdb_cluster.py render output
-    "placement_required": true,                    M2 phases
+    "layout": "cluster-ssd/layout.json",          fdb_cluster.py render output, exactly
+    "placement_required": true,                    M2 phases (requires "frozen")
+    "expected_dd_state": "frozen" | "on",          data distribution during the phase:
+                                                   frozen for testing.B/M2, on for client/M1
     "client": {"host": "client",
                "receipts": ["client/before.json", "client/after.json"]},
                                                    node_sampler.py receipt --kind before|after
@@ -29,10 +31,31 @@ Input (fdb-bench-reconcile-input/v1); relative paths resolve against its directo
                                                    started_utc, ended_utc); either or both
       "status_before": "...", "status_after": "...",   fdbcli status json
       "roles_before": "...", "roles_after": "...",     fdb_cluster.py check-roles receipts
-      "placement_compares": ["..."]                    placement_receipt.py compare output
+      "placement_compares": ["..."],                   placement_receipt.py compare output
+      "runner_verdict": {"omitted": bool, "adverse": [str], "source": "<runner record>",
+                         "source_sha256": "<hex>"}     REQUIRED: R1/R2's own verdict
     }]
   }
 Run times are client CLOCK_REALTIME as ISO-8601 UTC with an explicit zero offset.
+
+Scope of a node's samples: any unparsable or malformed sample line or field on a
+node (bad JSON, wrong sequence, missing stamp, read error, malformed /proc/stat or
+/proc/vmstat text, missing FDB CPU or oom_kill), a missing or unsealed samples.jsonl,
+or a missing receipt makes EVERY case of the phase unverifiable. Interval findings
+stay local to the run windows they touch: a gap > 2 s, a CLOCK_REALTIME step,
+invalid counter deltas, steal, OOM kills and a vanished MainPID.
+
+Refused (exit 2, nothing written): an input that does not name the generated layout
+(fdb_cluster.LAYOUT: node1..node3, every process with its port, class and CPUs), a
+telemetry directory for exactly those nodes, nonempty expected_cases, and an
+expected_dd_state. Unverifiable: a node's unit receipt that does not cover exactly
+the layout's fdb-bench-PORT.service units (missing or extra), no counted sample
+interval, a missing required status field, or a runner_verdict that is absent,
+has omitted null, or whose source no longer hashes to source_sha256. Contaminated:
+any cluster_gate.status_verdict finding on the case's status before or after (the
+runners' own gate, with the phase's DD state), data movement before the case or,
+with DD frozen, after it, and a runner verdict that omitted the case or lists any
+adverse finding.
 
 Clock alignment (protocol environment_policy.server_telemetry_reconciliation): per
 (case, node) u = max over the client's phase receipts of (|off| + root_dispersion +
@@ -41,6 +64,7 @@ each run window [s, e] widens to [s - u, e + u], and every node sample interval
 [realtime_i, realtime_after_(i+1)] that touches it counts.
 """
 import argparse
+import copy
 import datetime as dt
 from decimal import Decimal, ROUND_CEILING
 import hashlib
@@ -49,6 +73,8 @@ import os
 from pathlib import Path
 import sys
 
+import cluster_gate as cg
+import fdb_cluster
 import mn_common as mc
 import node_sampler as ns
 
@@ -64,6 +90,8 @@ MAX_CLOCK_STEP_NS = 1_000_000    # |delta realtime - delta monotonic| per interv
 CPU_FIELDS = 8
 MAY_DECREASE = {3, 4}
 STEAL = 7
+DD_STATES = {'frozen': 'disabled', 'on': 'enabled'}   # input name -> cluster_gate name
+PROCESS_KEYS = ('node', 'port', 'process_class', 'cpus', 'address', 'required_roles', 'allowed_roles')
 
 
 class Refused(Exception):
@@ -160,6 +188,10 @@ def unit_state(receipt, expected):
     except ValueError as exc:
         return {}, ['unparsable systemctl show: ' + str(exc)], []
     bad, contam = [], []
+    names = units.get('names')
+    if not isinstance(names, list) or set(names) != set(expected) or set(props) != set(expected):
+        bad.append(f'unit receipt covers {sorted(names) if isinstance(names, list) else names} and shows '
+                   f'{sorted(props)}, not exactly the layout units {sorted(expected)}')
     for name in sorted(expected):
         p = props.get(name)
         if p is None or p.get('LoadState') != 'loaded':
@@ -183,8 +215,10 @@ class Node:
     def __init__(self, name, procs, inputs, rel, phase):
         self.name = name
         self.fdb_cpus = sorted({c for p in procs for c in p['cpus']})
-        self.units = {f'fdb-bench-{p["port"]}.service' for p in procs}
+        self.units = {unit_name(p['port']) for p in procs}
         self.unverifiable, self.contaminated, self.samples = [], [], []
+        if not self.fdb_cpus or not self.units:
+            self.unverifiable.append(f'{name}: no FDB CPUs or units to check')
         self.bound, self.bound_reasons, self.intervals = None, [], []
         self.receipts = {}
         for kind in ('start', 'stop'):
@@ -261,7 +295,9 @@ class Node:
                 if not isinstance(s.get('procs'), dict):
                     raise ValueError('procs missing')
             except (KeyError, TypeError, ValueError) as exc:
+                # Sealed scope: a malformed sample discredits the node's whole record for the phase.
                 s['bad'] = f'sample seq {n} unparsable: {exc}'
+                self.unverifiable.append(f'{self.name} {s["bad"]}')
             self.samples.append(s)
         if not self.samples:
             self.unverifiable.append(f'{self.name} samples: none')
@@ -281,8 +317,7 @@ class Node:
             if abs((b['realtime_ns'] - a['realtime_ns']) - dmono) > MAX_CLOCK_STEP_NS:
                 iv['unverifiable'].append('CLOCK_REALTIME stepped against CLOCK_MONOTONIC')
             if a['bad'] or b['bad']:
-                iv['unverifiable'].append(a['bad'] or b['bad'])
-                continue
+                continue  # already node-wide unverifiable (_load_samples)
             worst = None
             for c in self.fdb_cpus:
                 ca, cb = a['cpu'][f'cpu{c}'][:CPU_FIELDS], b['cpu'][f'cpu{c}'][:CPU_FIELDS]
@@ -312,6 +347,8 @@ class Node:
         if self.samples[0]['realtime_ns'] > ws or self.samples[-1]['realtime_after_ns'] < we:
             reasons.append('samples do not cover the widened window')
         counted = [iv for iv in self.intervals if iv['start_ns'] <= we and iv['end_ns'] >= ws]
+        if not counted:
+            reasons.append('no sample interval counted')
         return counted, reasons
 
 
@@ -322,7 +359,7 @@ def _addr(a):
 
 
 def status_facts(status):
-    """-> dict(roles, generation, recovery, available); raises ValueError for a missing field."""
+    """-> dict(roles, generation); raises ValueError for a missing field."""
     cluster = status.get('cluster') if isinstance(status, dict) else None
     if not isinstance(cluster, dict) or not isinstance(cluster.get('processes'), dict) or not cluster['processes']:
         raise ValueError('no cluster.processes')
@@ -332,29 +369,104 @@ def status_facts(status):
             raise ValueError('process without address or roles')
         roles[_addr(p['address'])] = [p.get('class_type'), sorted([str(r.get('role')), str(r.get('id'))] for r in p['roles'])]
     gen = cluster.get('generation')
-    rec = (cluster.get('recovery_state') or {}).get('name')
-    if not isinstance(gen, int) or not isinstance(rec, str):
-        raise ValueError('cluster.generation or cluster.recovery_state.name missing')
+    if not isinstance(gen, int) or isinstance(gen, bool):
+        raise ValueError('cluster.generation missing')
     available = cluster.get('database_available')
     if available is None:
         available = ((status.get('client') or {}).get('database_status') or {}).get('available')
     if not isinstance(available, bool):
         raise ValueError('database availability missing')
-    return dict(roles=roles, generation=gen, recovery=rec, available=available)
+    return dict(roles=roles, generation=gen)
 
 
-def case_receipts(case, inputs, placement_required):
+_MISSING = object()
+
+
+def _get(value, path):
+    for key in path.split('.'):
+        if not isinstance(value, dict) or key not in value:
+            return _MISSING
+        value = value[key]
+    return value
+
+
+def status_judgement(status, layout, dd):
+    """The runners' gate (cluster_gate.status_verdict) on one status json.
+
+    -> (missing fields, findings, movement). A missing field is unverifiable; it is
+    filled with a passing value in a copy so that every other field is still judged."""
+    fill = {'cluster.recovery_state.name': 'fully_recovered',
+            'cluster.qos.worst_durability_lag_storage_server.seconds': 0,
+            'cluster.qos.worst_queue_bytes_log_server': 0,
+            'cluster.configuration.storage_engine': layout['engine']}
+    # status_verdict accepts moving_data absent only with DD frozen.
+    if not (dd == 'disabled' and _get(status, 'cluster.data.moving_data') is _MISSING):
+        fill.update({'cluster.data.moving_data.in_flight_bytes': 0, 'cluster.data.moving_data.in_queue_bytes': 0})
+    missing = [path for path in fill if _get(status, path) is _MISSING]
+    status = copy.deepcopy(status)
+    for path in missing:
+        node, *_, leaf = [status] + path.split('.')
+        for key in path.split('.')[:-1]:
+            if not isinstance(node.get(key), dict):
+                node[key] = {}
+            node = node[key]
+        node[leaf] = fill[path]
+    errors, movement, _ = cg.status_verdict(status, layout, layout['engine'], dd)
+    return missing, errors, movement
+
+
+def runner_judgement(case, inputs):
+    """R1/R2's own verdict on the case. -> (unverifiable, contaminated)."""
+    rv = case.get('runner_verdict')
+    if not isinstance(rv, dict):
+        return ['runner verdict missing'], []
     bad, contam = [], []
+    omitted, adverse, src = rv.get('omitted'), rv.get('adverse'), rv.get('source')
+    if not isinstance(adverse, list) or not all(isinstance(a, str) for a in adverse):
+        bad.append('runner verdict adverse is not a list of strings')
+        adverse = []
+    if not isinstance(omitted, bool):
+        bad.append(f'runner record missing or without a verdict for the case ({src})')
+    if not isinstance(src, str) or not src:
+        bad.append('runner verdict source missing')
+    else:
+        try:
+            digest = sha256(inputs.path(src))
+            inputs.hashes[src] = digest
+            if digest != rv.get('source_sha256'):
+                bad.append(f'runner record {src} differs from source_sha256')
+        except OSError as exc:
+            bad.append(f'runner record {src} unreadable ({type(exc).__name__})')
+    if omitted is True or adverse:
+        contam.append('runner omitted/adverse: ' + ('; '.join(adverse) or 'omitted'))
+    return bad, contam
+
+
+def case_receipts(case, inputs, placement_required, layout, dd):
+    """-> (unverifiable, contaminated, notes) from the case's status, roles, placement and runner receipts."""
+    bad, contam, notes = [], [], []
     facts = {}
     for when in ('before', 'after'):
         status, err = inputs.json(case.get(f'status_{when}'), f'status json {when}')
         if err:
             bad.append(err)
-        else:
-            try:
-                facts[when] = status_facts(status)
-            except ValueError as exc:
-                bad.append(f'status json {when}: {exc}')
+            continue
+        try:
+            facts[when] = status_facts(status)
+            missing, errors, movement = status_judgement(status, layout, dd)
+        except ValueError as exc:
+            bad.append(f'status json {when}: {exc}')
+            continue
+        except (AttributeError, KeyError, TypeError) as exc:
+            bad.append(f'status json {when}: malformed ({type(exc).__name__})')
+            continue
+        bad += [f'status json {when}: {path} missing' for path in missing]
+        contam += [f'status verdict {when}: {e}' for e in errors]
+        # The runners refuse to arm with movement; with DD frozen, any movement is a placement risk.
+        if movement and (when == 'before' or dd == 'disabled'):
+            contam.append(f'data movement {when} case: ' + ', '.join(movement))
+        elif movement:
+            notes.append(f'data movement after case (DD on): ' + ', '.join(movement))
         roles, err = inputs.json(case.get(f'roles_{when}'), f'check-roles {when}')
         if err:
             bad.append(err)
@@ -362,11 +474,6 @@ def case_receipts(case, inputs, placement_required):
             bad.append(f'check-roles {when}: no passed verdict')
         elif not roles['passed']:
             contam.append(f'check-roles {when} failed')
-    for when, f in facts.items():
-        if f['recovery'] != 'fully_recovered':
-            contam.append(f'recovery: state {f["recovery"]} {when}')
-        if not f['available']:
-            contam.append(f'database unavailable {when}')
     if len(facts) == 2:
         a, b = facts['before'], facts['after']
         if a['generation'] != b['generation']:
@@ -386,12 +493,16 @@ def case_receipts(case, inputs, placement_required):
                 bad.append(f'placement compare {rel}: no equal verdict')
             elif not value['equal']:
                 contam.append(f'placement changed ({rel})')
-    return bad, contam
+    rbad, rcontam = runner_judgement(case, inputs)
+    return bad + rbad, contam + rcontam, notes
 
 
 def case_runs(case, inputs):
     """-> (runs [(run_id, start_ns, end_ns, start_text, end_text)], unverifiable reasons)."""
     raw, bad = [], []
+    for key in ('runs', 'run_results'):
+        if not isinstance(case.get(key, []), list):
+            return [], [f'{key} is not a list']
     for r in case.get('runs') or []:
         raw.append((r.get('run_id') if isinstance(r, dict) else None,
                     r.get('start_utc') if isinstance(r, dict) else None,
@@ -431,6 +542,10 @@ def load_manifest(path):
         raise Refused('phase missing')
     if not isinstance(m.get('placement_required'), bool):
         raise Refused('placement_required must be true or false')
+    if m.get('expected_dd_state') not in DD_STATES:
+        raise Refused('expected_dd_state must be frozen or on')
+    if m['placement_required'] and m['expected_dd_state'] != 'frozen':
+        raise Refused('placement_required needs expected_dd_state frozen')
     expected = m.get('expected_cases')
     if not isinstance(expected, list) or not expected or not all(isinstance(c, str) for c in expected) \
             or len(set(expected)) != len(expected):
@@ -444,9 +559,36 @@ def load_manifest(path):
     client = m.get('client')
     if not isinstance(client, dict) or not isinstance(client.get('receipts'), list):
         raise Refused('client.receipts must be a list')
-    if not isinstance(m.get('nodes'), dict):
+    if not isinstance(m.get('nodes'), dict) or not all(isinstance(v, str) and v for v in m['nodes'].values()):
         raise Refused('nodes must map node name to telemetry dir')
     return m
+
+
+def unit_name(port):
+    """The systemd unit fdb_cluster.py renders for a process (fdb-bench-PORT.service)."""
+    return f'fdb-bench-{port}.service'
+
+
+def validate_layout(layout):
+    """The fdb_cluster.py render output, exactly: -> {node: [process, ...]}; Refused otherwise."""
+    if not isinstance(layout, dict) or not isinstance(layout.get('processes'), list):
+        raise Refused('layout without processes')
+    if layout.get('engine') not in fdb_cluster.ENGINES or not isinstance(layout.get('redundancy_mode'), str) or \
+            not isinstance(layout.get('coordinators'), list) or len(layout['coordinators']) != 3:
+        raise Refused('layout lacks engine, redundancy mode or three coordinators')
+    by_node = {}
+    for p in layout['processes']:
+        if not isinstance(p, dict) or any(k not in p for k in PROCESS_KEYS) or type(p['port']) is not int or \
+                not isinstance(p['cpus'], list) or not p['cpus'] or not all(type(c) is int for c in p['cpus']):
+            raise Refused('layout process without node, port, class, CPUs, address or roles')
+        by_node.setdefault(p['node'], []).append(p)
+    got = {n: sorted((p['port'], p['process_class'], tuple(p['cpus'])) for p in procs) for n, procs in by_node.items()}
+    want = {n: sorted(fdb_cluster.LAYOUT[n]) for n in fdb_cluster.NODES}
+    if got != want:
+        raise Refused('layout is not the generated fdb_cluster.py layout (nodes, ports, classes, CPUs)')
+    if layout.get('storage_servers') != sum(p['process_class'] == 'storage' for p in layout['processes']):
+        raise Refused('layout storage_servers disagrees with its processes')
+    return by_node
 
 
 def reconcile(manifest_path):
@@ -454,11 +596,10 @@ def reconcile(manifest_path):
     inputs = Inputs(Path(manifest_path).parent)
     inputs.hashes[str(manifest_path)] = sha256(manifest_path)
     layout, err = inputs.json(m.get('layout'), 'layout')
-    if err or not isinstance(layout, dict) or not isinstance(layout.get('processes'), list):
-        raise Refused(err or 'layout without processes')
-    by_node = {}
-    for p in layout['processes']:
-        by_node.setdefault(p['node'], []).append(p)
+    if err:
+        raise Refused(err)
+    by_node = validate_layout(layout)
+    dd = DD_STATES[m['expected_dd_state']]
     if set(m['nodes']) != set(by_node):
         raise Refused(f'nodes {sorted(m["nodes"])} differ from layout nodes {sorted(by_node)}')
     phase = m['phase']
@@ -498,9 +639,10 @@ def reconcile(manifest_path):
             continue
         runs, bad = case_runs(case, inputs)
         out['unverifiable_reasons'] += bad
-        bad, contam = case_receipts(case, inputs, m['placement_required'])
+        bad, contam, notes = case_receipts(case, inputs, m['placement_required'], layout, dd)
         out['unverifiable_reasons'] += bad
         out['contaminated_reasons'] += contam
+        out['notes'] = notes
         out['unverifiable_reasons'] += [f'clock bound undefined: client {r}' for r in client_reasons]
         for name, node in nodes.items():
             out['unverifiable_reasons'] += [f'clock bound undefined: {name} {r}' for r in node.bound_reasons]
@@ -514,6 +656,7 @@ def reconcile(manifest_path):
             for name, node in nodes.items():
                 if name not in u_ns:
                     r['nodes'][name] = dict(u_s=None)
+                    out['unverifiable_reasons'].append(f'{name} run {run_id}: no clock bound')
                     continue
                 u, u_n = u_ns[name]
                 counted, reasons = node.window(start - u_n, end + u_n)

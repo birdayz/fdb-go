@@ -46,7 +46,10 @@ def status_from_layout(layout):
     return dict(client=dict(coordinators=dict(coordinators=[dict(address=a) for a in layout['coordinators']]),
                             database_status=dict(available=True, healthy=True)),
                 cluster=dict(database_available=True, generation=7, recovery_state=dict(name='fully_recovered'),
-                             processes=procs,
+                             processes=procs, data_distribution_disabled=True,
+                             qos=dict(worst_durability_lag_storage_server=dict(seconds=0.2),
+                                      worst_queue_bytes_log_server=1000),
+                             data=dict(moving_data=dict(in_flight_bytes=0, in_queue_bytes=0)),
                              configuration=dict(redundancy_mode='double', storage_engine=layout['engine'],
                                                 commit_proxies=1, grv_proxies=1, resolvers=1, logs=2)))
 
@@ -88,7 +91,9 @@ class Phase:
         self.status = {c: {'before': copy.deepcopy(base), 'after': copy.deepcopy(base)} for c in self.cases}
         self.roles_override = {}      # (case, when) -> receipt dict
         self.placement_required = True
+        self.dd = 'frozen'
         self.compare = {c: dict(equal=True, differences=[]) for c in self.cases}
+        self.runner = {c: dict(omitted=False, adverse=[]) for c in self.cases}  # case -> runner_verdict fields
         self.manifest_edit = None
         self.after_sampling = None    # callback(phase) to corrupt sampler output
 
@@ -132,9 +137,12 @@ class Phase:
                 entry[f'roles_{when}'] = f'cases/{case}/roles-{when}.json'
             mc.dump_json(d / 'compare.json', self.compare[case])
             entry['placement_compares'] = [f'cases/{case}/compare.json']
+            (d / 'runner.json').write_text(json.dumps({case: 'synthetic runner record'}))
+            entry['runner_verdict'] = dict(source=str(d / 'runner.json'), source_sha256=ns.sha256_file(d / 'runner.json'),
+                                           **self.runner[case])
             cases.append(entry)
         manifest = dict(format=rt.INPUT_FORMAT, phase=PHASE, layout='layout.json',
-                        placement_required=self.placement_required,
+                        placement_required=self.placement_required, expected_dd_state=self.dd,
                         client=dict(host='client', receipts=receipts),
                         nodes={n: f'telemetry/{n}' for n in self.hosts}, expected_cases=self.expected, cases=cases)
         if self.after_sampling:
@@ -367,18 +375,29 @@ class SampleDataTest(Base):
         self.p.hosts['node3'].stop_at = 40
         self.assertVerdicts({'A': 'clean', 'B': 'unverifiable'}, 'node3 run B-0: samples do not cover')
 
+    # Sealed scope: one malformed sample anywhere on a node makes every case unverifiable,
+    # even when it lies outside every run window (second 40 is inside B only, 27 in none).
     def test_unparsable_proc_stat(self):
         self.p.hosts['node1'].stat_override[15] = 'cpu 1 2 3\n'
-        self.assertVerdicts({'A': 'unverifiable', 'B': 'clean'}, 'sample seq 15 unparsable')
+        self.assertVerdicts(ALL_UNVERIFIABLE, 'node1 sample seq 15 unparsable')
+
+    def test_malformed_proc_stat_cpu_line_anywhere(self):
+        h = self.p.hosts['node2']
+        h.stat_override[40] = stat_with(h, 40, 5, lambda f: f[:3] + ['x'] + f[4:])
+        self.assertVerdicts(ALL_UNVERIFIABLE, 'node2 sample seq 40 unparsable: bad cpu counters')
+
+    def test_malformed_vmstat_line_anywhere(self):
+        self.p.hosts['node3'].vm_override[27] = 'nr_free_pages 1000\noom_kill 0\npgmajfault three\n'
+        self.assertVerdicts(ALL_UNVERIFIABLE, 'node3 sample seq 27 unparsable: bad vmstat line')
 
     def test_missing_oom_kill(self):
         self.p.hosts['node1'].vm_override[40] = 'nr_free_pages 1\n'
-        self.assertVerdicts({'A': 'clean', 'B': 'unverifiable'}, 'vmstat lacks oom_kill')
+        self.assertVerdicts(ALL_UNVERIFIABLE, 'vmstat lacks oom_kill')
 
     def test_missing_fdb_cpu(self):
         h = self.p.hosts['node2']
         h.stat_override[17] = stat_with(h, 17, 9, lambda f: None)
-        self.assertVerdicts({'A': 'unverifiable', 'B': 'clean'}, 'cpu9 missing')
+        self.assertVerdicts(ALL_UNVERIFIABLE, 'cpu9 missing')
 
     def test_missing_housekeeping_cpu_is_not_required(self):
         h = self.p.hosts['node2']
@@ -404,7 +423,7 @@ class SampleDataTest(Base):
         self.p.after_sampling = lambda p: rewrite_samples(
             p, 'node1', lambda ls: [json.dumps({**json.loads(l), 'error': 'PermissionError()'}) if i == 40 else l
                                     for i, l in enumerate(ls)])
-        self.assertVerdicts({'A': 'clean', 'B': 'unverifiable'}, 'PermissionError')
+        self.assertVerdicts(ALL_UNVERIFIABLE, 'PermissionError')
 
 
 class ContaminationTest(Base):
@@ -484,11 +503,12 @@ class ContaminationTest(Base):
 
     def test_recovery_state(self):
         self.mutate_after('A', lambda s: s['cluster']['recovery_state'].update(name='accepting_commits'))
-        self.assertVerdicts({'A': 'contaminated', 'B': 'clean'}, 'recovery: state accepting_commits after')
+        self.assertVerdicts({'A': 'contaminated', 'B': 'clean'},
+                            "status verdict after: recovery_state 'accepting_commits', not fully_recovered")
 
     def test_database_unavailable(self):
         self.mutate_after('A', lambda s: s['cluster'].update(database_available=False))
-        self.assertVerdicts({'A': 'contaminated', 'B': 'clean'}, 'database unavailable after')
+        self.assertVerdicts({'A': 'contaminated', 'B': 'clean'}, 'status verdict after: check-roles: database not available')
 
     def test_placement_changed(self):
         self.p.compare['B'] = dict(equal=False, differences=['1 keys changed servers'])
@@ -497,9 +517,9 @@ class ContaminationTest(Base):
     def test_contamination_wins_over_unverifiable(self):
         self.p.hosts['node2'].cpu_events[(15, 6)] = (40, 50, 10)
         self.p.hosts['node1'].stat_override[12] = 'garbage\n'
-        self.assertVerdicts({'A': 'contaminated', 'B': 'clean'})
+        self.assertVerdicts({'A': 'contaminated', 'B': 'unverifiable'})
         self.assertTrue(self.case('A')['unverifiable_reasons'])
-        self.assertEqual(self.report['phase_summary']['omitted_cases'], {'A': 'contaminated'})
+        self.assertEqual(self.report['phase_summary']['omitted_cases'], {'A': 'contaminated', 'B': 'unverifiable'})
 
 
 class CaseReceiptTest(Base):
@@ -518,7 +538,7 @@ class CaseReceiptTest(Base):
 
     def test_status_without_generation(self):
         del self.p.status['A']['before']['cluster']['generation']
-        self.assertVerdicts({'A': 'unverifiable', 'B': 'clean'}, 'generation or cluster.recovery_state.name missing')
+        self.assertVerdicts({'A': 'unverifiable', 'B': 'clean'}, 'status json before: cluster.generation missing')
 
     def test_roles_receipt_without_verdict(self):
         self.p.roles_override[('B', 'before')] = dict(errors=[])
@@ -544,6 +564,11 @@ class CaseReceiptTest(Base):
     def test_run_window_naive(self):
         self.edit_case('A', lambda c: c['runs'][0].update(start_utc=c['runs'][0]['start_utc'].replace('+00:00', '')))
         self.assertVerdicts({'A': 'unverifiable', 'B': 'clean'}, 'unusable window')
+
+    def test_run_window_null(self):
+        # build_reconcile_input.py writes this for a sealed run that left no result
+        self.edit_case('A', lambda c: c['runs'].append(dict(run_id='A-9', start_utc=None, end_utc=None)))
+        self.assertVerdicts({'A': 'unverifiable', 'B': 'clean'}, 'run A-9: unusable window')
 
     def test_run_ends_before_start(self):
         self.p.cases['A'] = [(14.0, 10.0)]
@@ -592,6 +617,191 @@ class RefusalTest(Base):
 
     def test_layout_missing(self):
         self.refused(lambda m: m.update(layout='gone.json'))
+
+
+class FailClosedTest(Base):
+    """No empty or partial collection may make a check vacuous."""
+
+    def refused(self, edit=None, layout=None):
+        def edit_layout(p):
+            lay = json.loads((p.tmp / 'layout.json').read_text())
+            layout(lay)
+            (p.tmp / 'layout.json').write_text(json.dumps(lay))
+        if layout:
+            self.p.after_sampling = edit_layout
+        self.p.manifest_edit = edit
+        rc, report = self.p.reconcile()
+        self.assertEqual(rc, 2)
+        self.assertIsNone(report)
+
+    def test_empty_layout_and_no_nodes_refused(self):
+        self.refused(lambda m: m.update(nodes={}), lambda lay: lay.update(processes=[], storage_servers=0))
+
+    def test_layout_missing_a_node_refused(self):
+        def drop(lay):
+            lay['processes'] = [p for p in lay['processes'] if p['node'] != 'node3']
+            lay['storage_servers'] = 6
+        self.refused(lambda m: m['nodes'].pop('node3'), drop)
+
+    def test_layout_process_without_cpus_refused(self):
+        self.refused(layout=lambda lay: lay['processes'][3].update(cpus=[]))
+
+    def test_layout_process_moved_cpus_refused(self):
+        self.refused(layout=lambda lay: lay['processes'][3].update(cpus=[0, 1]))
+
+    def test_layout_extra_process_refused(self):
+        self.refused(layout=lambda lay: lay['processes'].append(dict(lay['processes'][-1], port=4599)))
+
+    def test_layout_without_engine_refused(self):
+        self.refused(layout=lambda lay: lay.pop('engine'))
+
+    def test_node_dir_not_a_path_refused(self):
+        self.refused(lambda m: m['nodes'].update(node2=''))
+
+    def test_empty_expected_cases_refused(self):
+        self.refused(lambda m: m.update(expected_cases=[], cases=[]))
+
+    def test_dd_state_required(self):
+        self.refused(lambda m: m.pop('expected_dd_state'))
+
+    def test_dd_state_vocabulary(self):
+        self.refused(lambda m: m.update(expected_dd_state='enabled', placement_required=False))
+
+    def test_placement_needs_frozen_dd(self):
+        self.refused(lambda m: m.update(expected_dd_state='on'))
+
+    def test_unit_receipt_with_extra_unit(self):
+        self.p.hosts['node2'].units['fdb-bench-4599.service'] = dict(pid=99, starttime=1, NRestarts=0,
+                                                                      ActiveState='active', SubState='running', enter=1)
+        self.assertVerdicts(ALL_UNVERIFIABLE, 'not exactly the layout units')
+
+    def test_unit_receipt_missing_a_unit(self):
+        def drop(p):
+            rewrite_receipt(p, 'node1', 'stop', lambda r: r['units']['names'].remove('fdb-bench-4503.service'))
+        self.p.after_sampling = drop
+        self.assertVerdicts(ALL_UNVERIFIABLE, 'not exactly the layout units')
+
+    def test_runs_not_a_list(self):
+        self.p.manifest_edit = lambda m: m['cases'][0].update(runs='A-0')
+        self.assertVerdicts({'A': 'unverifiable', 'B': 'clean'}, 'runs is not a list')
+
+    def test_no_client_receipts(self):
+        self.p.manifest_edit = lambda m: m['client'].update(receipts=[])
+        self.assertVerdicts(ALL_UNVERIFIABLE, 'no chrony receipt')
+
+    def test_undefined_bound_without_reason_still_unverifiable(self):
+        with mock.patch.object(rt, 'host_bound', lambda receipts: (None, [])):
+            self.assertVerdicts(ALL_UNVERIFIABLE, 'no clock bound')
+
+    def test_node_without_cpus_or_units(self):
+        self.p.materialize()
+        node = rt.Node('node1', [], rt.Inputs(self.tmp), 'telemetry/node1', PHASE)
+        self.assertIn('node1: no FDB CPUs or units to check', node.unverifiable)
+
+    def test_window_without_counted_interval(self):
+        self.p.materialize()
+        procs = [p for p in self.p.layout['processes'] if p['node'] == 'node1']
+        node = rt.Node('node1', procs, rt.Inputs(self.tmp), 'telemetry/node1', PHASE)
+        node.intervals = []
+        counted, reasons = node.window(T0_NS + 10 * 10**9, T0_NS + 11 * 10**9)
+        self.assertEqual((counted, reasons), ([], ['no sample interval counted']))
+
+
+class StatusVerdictTest(Base):
+    """Each case's status json is re-judged by the runners' cluster_gate.status_verdict."""
+
+    def after(self, case, fn):
+        fn(self.p.status[case]['after'])
+
+    def test_qos_lag_after_case_with_roles_unchanged(self):
+        self.after('A', lambda s: s['cluster']['qos']['worst_durability_lag_storage_server'].update(seconds=4.5))
+        self.assertVerdicts({'A': 'contaminated', 'B': 'clean'}, 'status verdict after: storage durability lag 4.5')
+
+    def test_log_queue_before_case(self):
+        self.p.status['B']['before']['cluster']['qos']['worst_queue_bytes_log_server'] = 200 * 1000 * 1000
+        self.assertVerdicts({'A': 'clean', 'B': 'contaminated'}, 'status verdict before: log queue')
+
+    def test_dd_enabled_in_frozen_phase(self):
+        self.after('B', lambda s: s['cluster'].pop('data_distribution_disabled'))
+        self.assertVerdicts({'A': 'clean', 'B': 'contaminated'}, 'data distribution is enabled')
+
+    def test_movement_with_dd_frozen(self):
+        self.after('A', lambda s: s['cluster']['data']['moving_data'].update(in_queue_bytes=5))
+        self.assertVerdicts({'A': 'contaminated', 'B': 'clean'}, 'data movement after case: moving_data.in_queue_bytes=5')
+
+    def dd_on(self):
+        self.p.dd, self.p.placement_required = 'on', False
+        for case in self.p.status.values():
+            for st in case.values():
+                st['cluster'].pop('data_distribution_disabled')
+
+    def test_dd_on_phase_clean(self):
+        self.dd_on()
+        self.assertVerdicts(CLEAN)
+
+    def test_dd_frozen_in_dd_on_phase(self):
+        self.dd_on()
+        self.p.status['A']['before']['cluster']['data_distribution_disabled'] = True
+        self.assertVerdicts({'A': 'contaminated', 'B': 'clean'}, 'data distribution is disabled')
+
+    def test_movement_after_case_with_dd_on_is_recorded_only(self):
+        self.dd_on()
+        self.after('A', lambda s: s['cluster']['data']['moving_data'].update(in_flight_bytes=7))
+        self.assertVerdicts(CLEAN)
+        self.assertEqual(self.case('A')['notes'], ['data movement after case (DD on): moving_data.in_flight_bytes=7'])
+
+    def test_movement_before_case_with_dd_on(self):
+        self.dd_on()
+        self.p.status['B']['before']['cluster']['data']['moving_data']['in_flight_bytes'] = 7
+        self.assertVerdicts({'A': 'clean', 'B': 'contaminated'}, 'data movement before case')
+
+    def test_missing_qos_field_is_unverifiable(self):
+        self.after('A', lambda s: s['cluster']['qos'].pop('worst_queue_bytes_log_server'))
+        self.assertVerdicts({'A': 'unverifiable', 'B': 'clean'},
+                            'status json after: cluster.qos.worst_queue_bytes_log_server missing')
+
+    def test_missing_moving_data_with_dd_on_is_unverifiable(self):
+        self.dd_on()
+        self.after('B', lambda s: s['cluster'].pop('data'))
+        self.assertVerdicts({'A': 'clean', 'B': 'unverifiable'}, 'cluster.data.moving_data.in_flight_bytes missing')
+
+    def test_missing_moving_data_with_dd_frozen_is_accepted(self):
+        self.after('B', lambda s: s['cluster'].pop('data'))
+        self.assertVerdicts(CLEAN)
+
+
+class RunnerVerdictTest(Base):
+    def test_runner_omitted(self):
+        self.p.runner['A'] = dict(omitted=True, adverse=['ABORTED: workload failure'])
+        self.assertVerdicts({'A': 'contaminated', 'B': 'clean'}, 'runner omitted/adverse: ABORTED: workload failure')
+
+    def test_runner_omitted_without_reason(self):
+        self.p.runner['A'] = dict(omitted=True, adverse=[])
+        self.assertVerdicts({'A': 'contaminated', 'B': 'clean'}, 'runner omitted/adverse: omitted')
+
+    def test_runner_adverse_not_omitted(self):
+        self.p.runner['B'] = dict(omitted=False, adverse=['complete.json missing'])
+        self.assertVerdicts({'A': 'clean', 'B': 'contaminated'}, 'runner omitted/adverse: complete.json missing')
+
+    def test_missing_runner_verdict(self):
+        self.p.manifest_edit = lambda m: m['cases'][1].pop('runner_verdict')
+        self.assertVerdicts({'A': 'clean', 'B': 'unverifiable'}, 'runner verdict missing')
+
+    def test_runner_record_missing(self):
+        self.p.runner['A'] = dict(omitted=None, adverse=[])
+        self.assertVerdicts({'A': 'unverifiable', 'B': 'clean'}, 'runner record missing or without a verdict')
+
+    def test_runner_record_changed(self):
+        self.p.after_sampling = lambda p: (p.tmp / 'cases/A/runner.json').write_text('{}')
+        self.assertVerdicts({'A': 'unverifiable', 'B': 'clean'}, 'differs from source_sha256')
+
+    def test_runner_record_gone(self):
+        self.p.after_sampling = lambda p: (p.tmp / 'cases/B/runner.json').unlink()
+        self.assertVerdicts({'A': 'clean', 'B': 'unverifiable'}, 'unreadable (FileNotFoundError)')
+
+    def test_runner_adverse_malformed(self):
+        self.p.runner['A'] = dict(omitted=False, adverse='bad')
+        self.assertVerdicts({'A': 'unverifiable', 'B': 'clean'}, 'adverse is not a list of strings')
 
 
 class FormulaTest(unittest.TestCase):

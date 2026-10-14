@@ -13,45 +13,32 @@ var ErrDDMode = errors.New("data-distribution mode forbids this operation")
 
 // BallastReceipt is the H6 receipt for every write, clear and verification.
 type BallastReceipt struct {
-	Format            string    `json:"format"`
-	Tool              string    `json:"tool"`
-	Action            string    `json:"action"`
-	Store             string    `json:"store"`
-	StorePrefixHex    string    `json:"store_prefix_hex"`
-	RangeHex          [2]string `json:"range_hex"`
-	DDModeRequired    string    `json:"dd_mode_required"`
-	Defect            string    `json:"defect,omitempty"`
-	KeysWritten       int       `json:"keys_written,omitempty"`
-	ValueBytes        int       `json:"value_bytes,omitempty"`
-	TotalBytes        int64     `json:"total_bytes,omitempty"`
-	Transactions      int       `json:"transactions,omitempty"`
-	CommittedVersions []int64   `json:"committed_versions,omitempty"`
-	ReadVersion       int64     `json:"read_version,omitempty"`
-	KeysFound         *int      `json:"keys_found,omitempty"`
-	Empty             *bool     `json:"empty,omitempty"`
+	Format            string          `json:"format"`
+	Tool              string          `json:"tool"`
+	Action            string          `json:"action"`
+	Store             string          `json:"store"`
+	StorePrefixHex    string          `json:"store_prefix_hex"`
+	Cluster           ClusterIdentity `json:"cluster"`
+	RangeHex          [2]string       `json:"range_hex"`
+	DDModeRequired    string          `json:"dd_mode_required"`
+	Defect            string          `json:"defect,omitempty"`
+	KeysWritten       int             `json:"keys_written,omitempty"`
+	ValueBytes        int             `json:"value_bytes,omitempty"`
+	TotalBytes        int64           `json:"total_bytes,omitempty"`
+	Transactions      int             `json:"transactions,omitempty"`
+	CommittedVersions []int64         `json:"committed_versions,omitempty"`
+	ReadVersion       int64           `json:"read_version,omitempty"`
+	KeysFound         *int            `json:"keys_found,omitempty"`
+	Empty             *bool           `json:"empty,omitempty"`
 }
 
-func newReceipt(action, store string, prefix, begin, end []byte, dd string) *BallastReceipt {
+func newReceipt(action string, s OwnedStore, begin, end []byte, dd string) *BallastReceipt {
 	return &BallastReceipt{
-		Format: ReceiptFormat, Tool: Tool, Action: action, Store: store,
-		StorePrefixHex: hex.EncodeToString(prefix),
+		Format: ReceiptFormat, Tool: Tool, Action: action, Store: s.name,
+		StorePrefixHex: hex.EncodeToString(s.prefix),
 		RangeHex:       [2]string{hex.EncodeToString(begin), hex.EncodeToString(end)},
 		DDModeRequired: dd,
 	}
-}
-
-func requireStore(store string, ballast, control bool) error {
-	spec, ok := stores[store]
-	if !ok {
-		return fmt.Errorf("store %q is not an owned store", store)
-	}
-	if ballast && !spec.ballast {
-		return fmt.Errorf("store %s does not take ballast", store)
-	}
-	if control && !spec.control {
-		return fmt.Errorf("store %s is not a scratch control store", store)
-	}
-	return nil
 }
 
 // BallastKey is ballast entry i: prefix+(1, 1000000+i).
@@ -95,28 +82,32 @@ func countKeys(c Cluster, begin, end []byte) (int64, int, error) {
 	if err != nil {
 		return 0, 0, err
 	}
-	keys, err := c.Keys(begin, end, v)
+	t, err := c.At(v)
 	if err != nil {
 		return 0, 0, err
 	}
-	return v, len(keys), nil
+	kvs, err := t.Range(begin, end, false)
+	if err != nil {
+		return 0, 0, err
+	}
+	return v, len(kvs), nil
 }
 
 // WriteBallast writes ceil(totalBytes / 100000) ballast values into the
-// ballast range of an owned store, only while data distribution is on and only
-// into an empty ballast range.
-func WriteBallast(c Cluster, store string, prefix []byte, totalBytes int64) (*BallastReceipt, error) {
-	if err := requireStore(store, true, false); err != nil {
+// ballast range of an owned benchmark store, only while data distribution is
+// on and only into an empty ballast range.
+func WriteBallast(c Cluster, s OwnedStore, totalBytes int64) (*BallastReceipt, error) {
+	if err := s.check(true, false); err != nil {
 		return nil, err
 	}
 	if totalBytes <= 0 {
 		return nil, errors.New("ballast size must be positive")
 	}
-	begin, end, err := BallastRange(prefix)
+	begin, end, err := BallastRange(s.prefix)
 	if err != nil {
 		return nil, err
 	}
-	r := newReceipt("ballast-write", store, prefix, begin, end, "on")
+	r := newReceipt("ballast-write", s, begin, end, "on")
 	_, found, err := countKeys(c, begin, end)
 	if err != nil {
 		return nil, err
@@ -128,7 +119,7 @@ func WriteBallast(c Cluster, store string, prefix []byte, totalBytes int64) (*Ba
 	for start := 0; start < n; start += BallastKeysPerTransaction {
 		var writes []Mutation
 		for i := start; i < n && i < start+BallastKeysPerTransaction; i++ {
-			writes = append(writes, Mutation{Op: OpSet, Key: BallastKey(prefix, i), Value: BallastValue(i)})
+			writes = append(writes, Mutation{Op: OpSet, Key: BallastKey(s.prefix, i), Value: BallastValue(i)})
 		}
 		v, err := c.Commit(ddGuard("on"), writes)
 		if err != nil {
@@ -145,15 +136,15 @@ func WriteBallast(c Cluster, store string, prefix []byte, totalBytes int64) (*Ba
 
 // ClearBallast clears exactly the ballast range, only while data distribution
 // is off (mode key present and 0, read in the clearing transaction).
-func ClearBallast(c Cluster, store string, prefix []byte) (*BallastReceipt, error) {
-	if err := requireStore(store, true, false); err != nil {
+func ClearBallast(c Cluster, s OwnedStore) (*BallastReceipt, error) {
+	if err := s.check(true, false); err != nil {
 		return nil, err
 	}
-	begin, end, err := BallastRange(prefix)
+	begin, end, err := BallastRange(s.prefix)
 	if err != nil {
 		return nil, err
 	}
-	r := newReceipt("ballast-clear", store, prefix, begin, end, "off")
+	r := newReceipt("ballast-clear", s, begin, end, "off")
 	v, err := c.Commit(ddGuard("off"), []Mutation{{Op: OpClearRange, Key: begin, End: end}})
 	if err != nil {
 		return nil, err
@@ -163,8 +154,8 @@ func ClearBallast(c Cluster, store string, prefix []byte) (*BallastReceipt, erro
 	return r, nil
 }
 
-func verifyEmpty(c Cluster, action, store string, prefix, begin, end []byte) (*BallastReceipt, error) {
-	r := newReceipt(action, store, prefix, begin, end, "any")
+func verifyEmpty(c Cluster, action string, s OwnedStore, begin, end []byte) (*BallastReceipt, error) {
+	r := newReceipt(action, s, begin, end, "any")
 	v, found, err := countKeys(c, begin, end)
 	if err != nil {
 		return nil, err
@@ -179,39 +170,39 @@ func verifyEmpty(c Cluster, action, store string, prefix, begin, end []byte) (*B
 
 // VerifyBallastEmpty reads the whole ballast range at a fresh read version.
 // It returns the receipt even when the range is not empty (with an error).
-func VerifyBallastEmpty(c Cluster, store string, prefix []byte) (*BallastReceipt, error) {
-	if err := requireStore(store, true, false); err != nil {
+func VerifyBallastEmpty(c Cluster, s OwnedStore) (*BallastReceipt, error) {
+	if err := s.check(true, false); err != nil {
 		return nil, err
 	}
-	begin, end, err := BallastRange(prefix)
+	begin, end, err := BallastRange(s.prefix)
 	if err != nil {
 		return nil, err
 	}
-	return verifyEmpty(c, "ballast-verify-empty", store, prefix, begin, end)
+	return verifyEmpty(c, "ballast-verify-empty", s, begin, end)
 }
 
 // ControlKeys returns the canonical fixture keys of a control store:
 // index prefix+(2,"price_idx",i,i) and records prefix+(1,i,0) (small) or
 // prefix+(1,i,1), prefix+(1,i,2) (split).
-func ControlKeys(store string, prefix []byte, rows int) ([]Mutation, int, error) {
-	if err := requireStore(store, false, true); err != nil {
+func ControlKeys(s OwnedStore, rows int) ([]Mutation, int, error) {
+	if err := s.check(false, true); err != nil {
 		return nil, 0, err
 	}
 	suffixes := []int64{0}
-	if stores[store].payload == "control-split" {
+	if stores[s.name].payload == "control-split" {
 		suffixes = []int64{1, 2}
 	}
 	var writes []Mutation
 	for i := 0; i < rows; i++ {
 		id := int64(i)
-		for _, s := range suffixes {
+		for _, sfx := range suffixes {
 			writes = append(writes, Mutation{
-				Op: OpSet, Key: concat(prefix, tuple.Tuple{int64(RecordKey), id, s}.Pack()),
-				Value: []byte(fmt.Sprintf("control-%d-%d", i, s)),
+				Op: OpSet, Key: concat(s.prefix, tuple.Tuple{int64(RecordKey), id, sfx}.Pack()),
+				Value: []byte(fmt.Sprintf("control-%d-%d", i, sfx)),
 			})
 		}
 		writes = append(writes, Mutation{
-			Op: OpSet, Key: concat(prefix, tuple.Tuple{int64(IndexKey), IndexName, id, id}.Pack()), Value: []byte{},
+			Op: OpSet, Key: concat(s.prefix, tuple.Tuple{int64(IndexKey), IndexName, id, id}.Pack()), Value: []byte{},
 		})
 	}
 	return writes, len(suffixes), nil
@@ -219,26 +210,26 @@ func ControlKeys(store string, prefix []byte, rows int) ([]Mutation, int, error)
 
 // WriteControlFixture writes a canonical fixture into an empty scratch control
 // store and returns its fixture receipt for the probe.
-func WriteControlFixture(c Cluster, store string, prefix []byte, rows int) (*BallastReceipt, FixtureReceipt, error) {
+func WriteControlFixture(c Cluster, s OwnedStore, rows int) (*BallastReceipt, FixtureReceipt, error) {
 	if rows <= 0 {
 		return nil, FixtureReceipt{}, errors.New("rows must be positive")
 	}
-	writes, chunks, err := ControlKeys(store, prefix, rows)
+	writes, chunks, err := ControlKeys(s, rows)
 	if err != nil {
 		return nil, FixtureReceipt{}, err
 	}
-	end, err := strinc(prefix)
+	end, err := strinc(s.prefix)
 	if err != nil {
 		return nil, FixtureReceipt{}, err
 	}
-	_, found, err := countKeys(c, prefix, end)
+	_, found, err := countKeys(c, s.prefix, end)
 	if err != nil {
 		return nil, FixtureReceipt{}, err
 	}
 	if found != 0 {
-		return nil, FixtureReceipt{}, fmt.Errorf("control store %s already holds %d keys; control-clear it first", store, found)
+		return nil, FixtureReceipt{}, fmt.Errorf("control store %s already holds %d keys; control-clear it first", s.name, found)
 	}
-	r := newReceipt("control-write", store, prefix, prefix, end, "any")
+	r := newReceipt("control-write", s, s.prefix, end, "any")
 	const batch = 500
 	for start := 0; start < len(writes); start += batch {
 		stop := min(start+batch, len(writes))
@@ -250,10 +241,10 @@ func WriteControlFixture(c Cluster, store string, prefix []byte, rows int) (*Bal
 		r.Transactions++
 		r.KeysWritten += stop - start
 	}
-	prefixBytes, rowsCopy, chunksCopy := len(prefix), rows, chunks
+	prefixBytes, rowsCopy, chunksCopy := len(s.prefix), rows, chunks
 	fx := FixtureReceipt{
-		Phase: "fixture", Payload: stores[store].payload, PrefixBytes: &prefixBytes, Rows: &rowsCopy,
-		Chunks: &chunksCopy, StorePrefixHex: hex.EncodeToString(prefix), Source: Tool + " control-write",
+		Phase: "fixture", Payload: stores[s.name].payload, PrefixBytes: &prefixBytes, Rows: &rowsCopy,
+		Chunks: &chunksCopy, StorePrefixHex: hex.EncodeToString(s.prefix), Source: Tool + " control-write",
 	}
 	return r, fx, nil
 }
@@ -272,18 +263,18 @@ var controlDefects = map[string]struct {
 }
 
 // MutateControl applies one defect to the split control store.
-func MutateControl(c Cluster, store string, prefix []byte, defect string) (*BallastReceipt, error) {
-	if err := requireStore(store, false, true); err != nil {
+func MutateControl(c Cluster, s OwnedStore, defect string) (*BallastReceipt, error) {
+	if err := s.check(false, true); err != nil {
 		return nil, err
 	}
-	if stores[store].payload != "control-split" {
+	if stores[s.name].payload != "control-split" {
 		return nil, errors.New("mutation controls run on benchfetch/control-split")
 	}
 	d, ok := controlDefects[defect]
 	if !ok {
 		return nil, fmt.Errorf("unknown defect %q (delete-chunk, stray-suffix, version-key)", defect)
 	}
-	key := concat(prefix, tuple.Tuple{int64(RecordKey), int64(ControlMutationID), d.suffix}.Pack())
+	key := concat(s.prefix, tuple.Tuple{int64(RecordKey), int64(ControlMutationID), d.suffix}.Pack())
 	guard := func(read Reader) error {
 		_, present, err := read(key)
 		if err != nil {
@@ -302,25 +293,25 @@ func MutateControl(c Cluster, store string, prefix []byte, defect string) (*Ball
 	if err != nil {
 		return nil, err
 	}
-	r := newReceipt("control-mutate", store, prefix, key, key, "any")
+	r := newReceipt("control-mutate", s, key, key, "any")
 	r.Defect, r.CommittedVersions, r.Transactions = defect, []int64{v}, 1
 	return r, nil
 }
 
 // ClearControl clears a whole scratch control store and verifies it is empty.
-func ClearControl(c Cluster, store string, prefix []byte) (*BallastReceipt, error) {
-	if err := requireStore(store, false, true); err != nil {
+func ClearControl(c Cluster, s OwnedStore) (*BallastReceipt, error) {
+	if err := s.check(false, true); err != nil {
 		return nil, err
 	}
-	end, err := strinc(prefix)
+	end, err := strinc(s.prefix)
 	if err != nil {
 		return nil, err
 	}
-	v, err := c.Commit(nil, []Mutation{{Op: OpClearRange, Key: prefix, End: end}})
+	v, err := c.Commit(nil, []Mutation{{Op: OpClearRange, Key: s.prefix, End: end}})
 	if err != nil {
 		return nil, err
 	}
-	r, err := verifyEmpty(c, "control-clear", store, prefix, prefix, end)
+	r, err := verifyEmpty(c, "control-clear", s, s.prefix, end)
 	if r != nil {
 		r.CommittedVersions, r.Transactions = []int64{v}, 1
 	}

@@ -1,9 +1,13 @@
 {
-  "format": "fdb-bench-placement-probe/v2",
-  "tool": "placementprobe/v1",
+  "format": "fdb-bench-placement-probe/v3",
+  "tool": "placementprobe/v2",
   "store": "benchfetch/split",
   "store_prefix_hex": "0262656e63686665746368000273706c697400",
   "fixture_receipt_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "cluster": {
+    "connection_string_id": "fdbbenchvpc:mn20261014",
+    "cluster_file_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  },
   "read_version": 1001,
   "boundaries_read_version": 1001,
   "boundary_range_hex": [
@@ -563,10 +567,13 @@
     }
   ],
   "addresses_basis": {
-    "method": "LocalityGetAddressesForKey: client location cache of a fresh process, NOT versioned; bracketed by identical boundaries at read versions V1 and V2",
-    "located_after_read_version": 1001,
-    "located_before_read_version": 1002,
-    "boundaries_rechecked_identical": true
+    "kind": "transactional",
+    "read_version": 1001,
+    "method": "LocalityGetAddressesForKey in the V1 snapshot transaction (transactional)"
+  },
+  "recheck": {
+    "read_version": 1002,
+    "boundaries_identical": true
   },
   "dd_mode": {
     "required_off": true,
@@ -580,5 +587,22 @@
       "mode": 0,
       "key_present": true
     }
+  },
+  "move_keys_lock": {
+    "owner_hex_at_v1": "c918000000000000610d000000000000",
+    "owner_hex_at_v2": "c918000000000000610d000000000000",
+    "owner_is_dd_mode_lock": true,
+    "write_token_hex_at_v1": "000102030405060708090a0b0c0d0e0f",
+    "write_token_hex_at_v2": "000102030405060708090a0b0c0d0e0f",
+    "write_token_unchanged": true
+  },
+  "key_servers": {
+    "begin_hex": "ff2f6b6579536572766572732f0262656e63686665746368000273706c697400",
+    "end_hex": "ff2f6b6579536572766572732f0262656e63686665746368000273706c697401",
+    "entries": 3,
+    "sha256_at_v1": "25a4cd79d1fbbeb88fdb72fe224ea5107d749573333f874065f39025428e8465",
+    "sha256_at_v2": "25a4cd79d1fbbeb88fdb72fe224ea5107d749573333f874065f39025428e8465",
+    "unchanged": true,
+    "description": "raw entries from the last keyServers key <= begin up to end; sha256 over (uint32 BE length, bytes) of each key and value"
   }
 }
