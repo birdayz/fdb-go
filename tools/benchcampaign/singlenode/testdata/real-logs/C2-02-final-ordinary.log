@@ -1,0 +1,16 @@
+goos: linux
+goarch: amd64
+cpu: AMD EPYC-Milan Processor
+BenchmarkPlanSkip
+    planskip_bench_test.go:107: FDB_BENCH_AUDIT {"case":"BenchmarkPlanSkip","phase":"fixture","prefix_bytes":22,"rows":1000}
+BenchmarkPlanSkip/cell=rows10/dir=forward/method=SCAN_AND_FETCH
+    planskip_bench_test.go:282: FDB_BENCH_AUDIT {"case":"BenchmarkPlanSkip/cell=rows10/dir=forward/method=SCAN_AND_FETCH","checksum":1446935650,"index_scans":11,"limit":0,"method":"SCAN_AND_FETCH","payload":"small","phase":"before","prefix_bytes":22,"record_loads":10,"remote_entries":0,"remote_openings":0,"reverse":false,"rows":10,"skip":3}
+    planskip_bench_test.go:282: FDB_BENCH_AUDIT {"case":"BenchmarkPlanSkip/cell=rows10/dir=forward/method=SCAN_AND_FETCH","checksum":1446935650,"index_scans":11,"limit":0,"method":"SCAN_AND_FETCH","payload":"small","phase":"after","prefix_bytes":22,"record_loads":10,"remote_entries":0,"remote_openings":0,"reverse":false,"rows":10,"skip":3}
+BenchmarkPlanSkip/cell=rows10/dir=forward/method=SCAN_AND_FETCH-8         	       1	   9040934 ns/op	        22.00 prefix-B	        10.00 rows/op	  196944 B/op	    1240 allocs/op
+    planskip_bench_test.go:282: FDB_BENCH_AUDIT {"case":"BenchmarkPlanSkip/cell=rows10/dir=forward/method=SCAN_AND_FETCH","checksum":1446935650,"index_scans":11,"limit":0,"method":"SCAN_AND_FETCH","payload":"small","phase":"before","prefix_bytes":22,"record_loads":10,"remote_entries":0,"remote_openings":0,"reverse":false,"rows":10,"skip":3}
+    planskip_bench_test.go:282: FDB_BENCH_AUDIT {"case":"BenchmarkPlanSkip/cell=rows10/dir=forward/method=SCAN_AND_FETCH","checksum":1446935650,"index_scans":11,"limit":0,"method":"SCAN_AND_FETCH","payload":"small","phase":"after","prefix_bytes":22,"record_loads":10,"remote_entries":0,"remote_openings":0,"reverse":false,"rows":10,"skip":3}
+BenchmarkPlanSkip/cell=rows10/dir=forward/method=SCAN_AND_FETCH-8         	       1	   5985685 ns/op	        22.00 prefix-B	        10.00 rows/op	  193032 B/op	    1204 allocs/op
+    planskip_bench_test.go:282: FDB_BENCH_AUDIT {"case":"BenchmarkPlanSkip/cell=rows10/dir=forward/method=SCAN_AND_FETCH","checksum":1446935650,"index_scans":11,"limit":0,"method":"SCAN_AND_FETCH","payload":"small","phase":"before","prefix_bytes":22,"record_loads":10,"remote_entries":0,"remote_openings":0,"reverse":false,"rows":10,"skip":3}
+    planskip_bench_test.go:282: FDB_BENCH_AUDIT {"case":"BenchmarkPlanSkip/cell=rows10/dir=forward/method=SCAN_AND_FETCH","checksum":1446935650,"index_scans":11,"limit":0,"method":"SCAN_AND_FETCH","payload":"small","phase":"after","prefix_bytes":22,"record_loads":10,"remote_entries":0,"remote_openings":0,"reverse":false,"rows":10,"skip":3}
+BenchmarkPlanSkip/cell=rows10/dir=forward/method=SCAN_AND_FETCH-8         	       1	   9295693 ns/op	        22.00 prefix-B	        10.00 rows/op	  192936 B/op	    1205 allocs/op
+PASS

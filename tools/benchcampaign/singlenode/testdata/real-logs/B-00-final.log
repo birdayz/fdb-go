@@ -1,0 +1,14 @@
+goos: linux
+goarch: amd64
+cpu: AMD EPYC-Milan Processor
+BenchmarkSaveRecord
+    benchmark_test.go:253: FDB_BENCH_AUDIT {"case":"BenchmarkSaveRecord","first_id":0,"count":1,"present":true,"n":1,"prefix_bytes":21}
+    benchmark_test.go:253: FDB_BENCH_AUDIT {"case":"BenchmarkSaveRecord","first_id":0,"count":1000,"present":true,"n":1000,"prefix_bytes":21}
+BenchmarkSaveRecord-8   	    1000	   2436252 ns/op	   18336 B/op	     232 allocs/op
+    benchmark_test.go:253: FDB_BENCH_AUDIT {"case":"BenchmarkSaveRecord","first_id":0,"count":1,"present":true,"n":1,"prefix_bytes":21}
+    benchmark_test.go:253: FDB_BENCH_AUDIT {"case":"BenchmarkSaveRecord","first_id":0,"count":1000,"present":true,"n":1000,"prefix_bytes":21}
+BenchmarkSaveRecord-8   	    1000	   2422015 ns/op	   18228 B/op	     231 allocs/op
+    benchmark_test.go:253: FDB_BENCH_AUDIT {"case":"BenchmarkSaveRecord","first_id":0,"count":1,"present":true,"n":1,"prefix_bytes":21}
+    benchmark_test.go:253: FDB_BENCH_AUDIT {"case":"BenchmarkSaveRecord","first_id":0,"count":1000,"present":true,"n":1000,"prefix_bytes":21}
+BenchmarkSaveRecord-8   	    1000	   2552136 ns/op	   18144 B/op	     231 allocs/op
+PASS

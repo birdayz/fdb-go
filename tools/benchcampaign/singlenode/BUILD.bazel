@@ -1,0 +1,38 @@
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+
+# Hermetic unit tests for the single-node campaign tooling: temp fixtures and
+# testdata/ only; no FDB, SSH, network, VM or /srv access.
+sh_test(
+    name = "singlenode_test",
+    srcs = ["test.sh"],
+    data = glob(["testdata/**"]) + [
+        "bench_analyze.py",
+        "bench_runner.py",
+        "build_client_vm.sh",
+        "build_harness_vm.sh",
+        "client_campaign.py",
+        "collect_runtime.py",
+        "network_mode.py",
+        "render_dashboard.py",
+        "run_client_phase.py",
+        "run_generic_memory_first.py",
+        "seal_client_plans.py",
+        "seal_design.py",
+        "seal_generic_plans.py",
+        "setup_vm.sh",
+        "smoke_client_vm.sh",
+        "smoke_parser_all.py",
+        "smoke_vm.sh",
+        "start_fdb_vm.sh",
+        "test_bench_runner.py",
+        "test_render_dashboard.py",
+        "test_seal_client_plans.py",
+        "test_seal_design.py",
+        "test_watch_client.py",
+        "watch_client.py",
+        "//tools/clientbench/scripts:analyze.py",
+        "//tools/clientbench/scripts:matrix_plan.py",
+        "//tools/clientbench/scripts:r3_plan.py",
+        "//tools/clientbench/scripts:run.py",
+    ],
+)

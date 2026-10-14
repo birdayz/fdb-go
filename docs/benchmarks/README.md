@@ -2,6 +2,13 @@
 
 Raw output behind the tables in the top-level README.
 
+## Dedicated-host campaigns
+
+- [2026-10-14: client latency on a dedicated 16-vCPU host](2026-10-14-hcloud-client/README.md)
+  — pure-Go vs CGo vs the pre-allocation-work client, 11 workloads, counterbalanced,
+  594,000 measured transactions. Harness: [campaign-harness.md](campaign-harness.md);
+  campaign tooling: [`tools/benchcampaign`](../../tools/benchcampaign/README.md).
+
 ## Change-specific comparisons
 
 - [2026-10-12: record-load range-read parity](2026-10-12-record-load-parity/README.md)

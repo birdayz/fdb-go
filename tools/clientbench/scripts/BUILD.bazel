@@ -1,5 +1,16 @@
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
+# The campaign tooling under tools/benchcampaign tests against these scripts.
+exports_files(
+    [
+        "analyze.py",
+        "matrix_plan.py",
+        "r3_plan.py",
+        "run.py",
+    ],
+    visibility = ["//tools/benchcampaign:__subpackages__"],
+)
+
 sh_test(
     name = "campaign_test",
     srcs = ["test.sh"],

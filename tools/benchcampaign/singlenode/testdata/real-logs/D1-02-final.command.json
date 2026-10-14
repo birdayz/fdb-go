@@ -1,0 +1,1 @@
+["ip", "netns", "exec", "fdb-bench-client", "taskset", "-c", "8-15", "/srv/fdb-bench/bin/sql-final", "-test.run=^$", "-test.bench=^BenchmarkFDB_TimestampInsert$", "-test.count=3", "-test.benchmem", "-test.v", "-test.benchtime=1000x"]

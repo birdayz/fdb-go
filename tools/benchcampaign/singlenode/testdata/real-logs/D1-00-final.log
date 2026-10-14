@@ -1,0 +1,11 @@
+goos: linux
+goarch: amd64
+cpu: AMD EPYC-Milan Processor
+BenchmarkFDB_PlanCacheHit
+    common_bench_test.go:199: FDB_BENCH_AUDIT {"case":"BenchmarkFDB_PlanCacheHit","checksum":135047074,"prefix_bytes":6,"query":"SELECT item_id, name, price FROM Item WHERE item_id = 1","rows":1}
+BenchmarkFDB_PlanCacheHit-8   	       1	   1188999 ns/op	         6.000 prefix-B	   47136 B/op	     662 allocs/op
+    common_bench_test.go:199: FDB_BENCH_AUDIT {"case":"BenchmarkFDB_PlanCacheHit","checksum":135047074,"prefix_bytes":6,"query":"SELECT item_id, name, price FROM Item WHERE item_id = 1","rows":1}
+BenchmarkFDB_PlanCacheHit-8   	       1	   1190699 ns/op	         6.000 prefix-B	   46528 B/op	     655 allocs/op
+    common_bench_test.go:199: FDB_BENCH_AUDIT {"case":"BenchmarkFDB_PlanCacheHit","checksum":135047074,"prefix_bytes":6,"query":"SELECT item_id, name, price FROM Item WHERE item_id = 1","rows":1}
+BenchmarkFDB_PlanCacheHit-8   	       1	   1025610 ns/op	         6.000 prefix-B	   47472 B/op	     657 allocs/op
+PASS

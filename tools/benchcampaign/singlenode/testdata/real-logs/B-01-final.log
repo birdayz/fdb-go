@@ -1,0 +1,8 @@
+goos: linux
+goarch: amd64
+cpu: AMD EPYC-Milan Processor
+BenchmarkLoadRecord
+BenchmarkLoadRecord-8   	       1	   1176919 ns/op	  120408 B/op	     645 allocs/op
+BenchmarkLoadRecord-8   	       1	   1164879 ns/op	   15424 B/op	     180 allocs/op
+BenchmarkLoadRecord-8   	       1	    936770 ns/op	   20928 B/op	     193 allocs/op
+PASS

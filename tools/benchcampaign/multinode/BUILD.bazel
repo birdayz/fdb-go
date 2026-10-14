@@ -1,0 +1,21 @@
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+
+# Standard-library unit tests for the multi-node campaign tooling. They use
+# temporary fixtures and fake command runners only: no hcloud, ssh or FDB.
+sh_test(
+    name = "multinode_test",
+    srcs = ["test.sh"],
+    data = [
+        "fdb_cluster.py",
+        "mn_common.py",
+        "placement_receipt.py",
+        "provision.py",
+        "render_cloud_init.py",
+        "seal_multinode.py",
+        "teardown_guard.py",
+        "test_multinode.py",
+        "//tools/clientbench/scripts:matrix_plan.py",
+        "//tools/clientbench/scripts:r3_plan.py",
+        "//tools/clientbench/scripts:run.py",
+    ],
+)

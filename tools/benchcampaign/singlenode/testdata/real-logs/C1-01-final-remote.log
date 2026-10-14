@@ -1,0 +1,17 @@
+goos: linux
+goarch: amd64
+cpu: AMD EPYC-Milan Processor
+BenchmarkIndexFetch
+BenchmarkIndexFetch/payload=split
+    matrix_bench_test.go:61: FDB_BENCH_AUDIT {"case":"BenchmarkIndexFetch/payload=split","chunks":2,"payload":"split","payload_bytes":100000,"phase":"fixture","prefix_bytes":19,"rows":1000,"split":true}
+BenchmarkIndexFetch/payload=split/cell=limit1/dir=forward/method=USE_REMOTE_FETCH
+    matrix_bench_test.go:143: FDB_BENCH_AUDIT {"case":"BenchmarkIndexFetch/payload=split/cell=limit1/dir=forward/method=USE_REMOTE_FETCH","checksum":899788790,"chunks":2,"index_scans":0,"limit":1,"method":"USE_REMOTE_FETCH","payload":"split","payload_bytes":100000,"phase":"before","prefix_bytes":19,"record_loads":0,"remote_entries":2,"remote_openings":1,"reverse":false,"rows":1,"skip":0}
+    matrix_bench_test.go:143: FDB_BENCH_AUDIT {"case":"BenchmarkIndexFetch/payload=split/cell=limit1/dir=forward/method=USE_REMOTE_FETCH","checksum":899788790,"chunks":2,"index_scans":0,"limit":1,"method":"USE_REMOTE_FETCH","payload":"split","payload_bytes":100000,"phase":"after","prefix_bytes":19,"record_loads":0,"remote_entries":2,"remote_openings":1,"reverse":false,"rows":1,"skip":0}
+BenchmarkIndexFetch/payload=split/cell=limit1/dir=forward/method=USE_REMOTE_FETCH-8         	       1	   2378288 ns/op	        19.00 prefix-B	         1.000 rows/op	  338312 B/op	     255 allocs/op
+    matrix_bench_test.go:143: FDB_BENCH_AUDIT {"case":"BenchmarkIndexFetch/payload=split/cell=limit1/dir=forward/method=USE_REMOTE_FETCH","checksum":899788790,"chunks":2,"index_scans":0,"limit":1,"method":"USE_REMOTE_FETCH","payload":"split","payload_bytes":100000,"phase":"before","prefix_bytes":19,"record_loads":0,"remote_entries":2,"remote_openings":1,"reverse":false,"rows":1,"skip":0}
+    matrix_bench_test.go:143: FDB_BENCH_AUDIT {"case":"BenchmarkIndexFetch/payload=split/cell=limit1/dir=forward/method=USE_REMOTE_FETCH","checksum":899788790,"chunks":2,"index_scans":0,"limit":1,"method":"USE_REMOTE_FETCH","payload":"split","payload_bytes":100000,"phase":"after","prefix_bytes":19,"record_loads":0,"remote_entries":2,"remote_openings":1,"reverse":false,"rows":1,"skip":0}
+BenchmarkIndexFetch/payload=split/cell=limit1/dir=forward/method=USE_REMOTE_FETCH-8         	       1	   4122656 ns/op	        19.00 prefix-B	         1.000 rows/op	  342168 B/op	     248 allocs/op
+    matrix_bench_test.go:143: FDB_BENCH_AUDIT {"case":"BenchmarkIndexFetch/payload=split/cell=limit1/dir=forward/method=USE_REMOTE_FETCH","checksum":899788790,"chunks":2,"index_scans":0,"limit":1,"method":"USE_REMOTE_FETCH","payload":"split","payload_bytes":100000,"phase":"before","prefix_bytes":19,"record_loads":0,"remote_entries":2,"remote_openings":1,"reverse":false,"rows":1,"skip":0}
+    matrix_bench_test.go:143: FDB_BENCH_AUDIT {"case":"BenchmarkIndexFetch/payload=split/cell=limit1/dir=forward/method=USE_REMOTE_FETCH","checksum":899788790,"chunks":2,"index_scans":0,"limit":1,"method":"USE_REMOTE_FETCH","payload":"split","payload_bytes":100000,"phase":"after","prefix_bytes":19,"record_loads":0,"remote_entries":2,"remote_openings":1,"reverse":false,"rows":1,"skip":0}
+BenchmarkIndexFetch/payload=split/cell=limit1/dir=forward/method=USE_REMOTE_FETCH-8         	       1	   2498529 ns/op	        19.00 prefix-B	         1.000 rows/op	  347224 B/op	     259 allocs/op
+PASS
