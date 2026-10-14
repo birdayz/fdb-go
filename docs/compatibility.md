@@ -87,7 +87,7 @@ MIN/MAX_EVER_LONG, MIN/MAX_EVER_TUPLE, MAX_EVER_VERSION and BITMAP_VALUE
 entries) apply a positive `ExecuteProperties.Skip` as Java's `KeyValueCursorBase`
 does: after the continuation replaces the resumed bound, the begin selector
 (forward) or end selector (reverse) moves by the skip. The returned-row limit is
-not widened, and the cursor neither returns skipped entries nor charges them to
+not widened by Skip, and the cursor neither returns skipped entries nor charges them to
 scanned-record or byte limits. A caller that keeps Skip on a resumed page skips
 again, as in Java.
 
