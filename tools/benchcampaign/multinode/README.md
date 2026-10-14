@@ -20,8 +20,8 @@ inside a Git work tree.
 | `teardown_guard.py` | Deletes servers, firewalls, SSH keys, networks that carry the campaign label **and** whose name is the prefix or `prefix-*`, by ID, in dependency order, then lists again and fails on survivors. Labelled resources outside the prefix or matching `--protect-name`/`--protect-id` are reported and refused. | Reports only. `--deadline` waits, then acts; with `--execute` it is the hard lifetime guard. |
 | `render_cloud_init.py` | `keys`: ed25519 host keys per host via `ssh-keygen`. `render`: cloud-config per host installing that key as the only host key (password login off, apt timers off) plus a `known_hosts` keyed by `HostKeyAlias`. | Refuses a private key passed as the controller public key, open key permissions, existing outputs, repo paths. |
 | `fdb_cluster.py` | `render`: cluster file (three coordinators), `configure new double <engine> ...`, systemd units pinning each process to one SMT sibling pair with `Restart=no`, an fdbmonitor-format record, nftables (VPC + controller only), `install-units.sh`. `check-roles`: status json against the layout. | Writes only to a new output directory. |
-| `placement_receipt.py` | `receipt`: from status json and a placement probe document, verifies replicas, storage roles, shard consistency, Record Layer key derivation, and per cell the fraction of rows whose index entry and record chunks are on disjoint storage servers (and machines). `compare`: placement unchanged. | Read-only on its inputs; exit 1 on a failed check. |
-| `seal_multinode.py` | `orders`/`check-orders`: frozen arm orders from the protocol seeds, with the same derivation `run.py` uses. `client-plans`: per (phase, workload) plans through the frozen `matrix_plan.make_plan` and `run.make_schedule`, checked against `orders.json`. `testingb-plans`: per-phase job lists with the exact sub-benchmark regex. | Leaves `new_harness_*` workloads/cells unsealed unless `--allow-new-harness` names them. |
+| `placement_receipt.py` | `receipt`: from status json, the benchmark's own fixture receipt and a placement probe (v2), proves integrity first: a positive read version shared by boundaries and addresses, complete boundaries over `[prefix, strinc(prefix))`, unique physical keys, and for Record Layer stores the exact canonical key set (unsplit suffix 0, split suffixes 1 and 2, no version keys, no strays), exactly 2 replicas, storage roles only, one server set per shard. Then, per cell, the fraction of rows whose index entry and record chunks are on disjoint storage **processes**. With double replication on three machines, machine-level disjointness is structurally 0 and is descriptive only. `compare`: placement unchanged. `controls`: on a real probe, the original must pass and each injected defect must fail. | Read-only on its inputs; exit 1 on a failed check. |
+| `seal_multinode.py` | `orders`/`check-orders`: frozen arm orders from the protocol seeds, with the same derivation `run.py` uses. `client-plans`: per (phase, workload) plans through the frozen `matrix_plan.make_plan` and `run.make_schedule`, checked against `orders.json`. `testingb-plans`: per-phase job lists with the exact sub-benchmark regex and each case's placement label fixed from `--placement-receipt STORE=PATH`. It refuses receipts with integrity errors or for another store/layout/record format. | Leaves `new_harness_*` workloads/cells unsealed unless `--allow-new-harness` names them. |
 
 ## Caveats carried from the frozen harness
 
@@ -39,12 +39,14 @@ inside a Git work tree.
 
 These need separate review before the campaign uses them:
 
-- The placement probe that writes `fdb-bench-placement-probe/v1`
+- The placement probe that writes `fdb-bench-placement-probe/v2`, qualified by on-cluster
+  original and mutation controls
   (`LocalityGetBoundaryKeys`, `LocalityGetAddressesForKey`).
 - The ballast writer for the placement gate.
 - The multi-node client adapter and testing.B runner (derived from the
   single-node `client_campaign.py`/`bench_runner.py`).
-- The per-node telemetry sampler.
+- The per-node telemetry sampler and the server-telemetry reconciliation audit
+  (whole-case omission; missing data omits).
 - New harness workloads and cells (`range1000`, `mixed80_20`, `rows100`, a
   persistent SQL fixture). Those need their own reviewed harness commit and a
   rebuild.
@@ -54,5 +56,5 @@ These need separate review before the campaign uses them:
 `just test` runs `//tools/benchcampaign/multinode:multinode_test`
 (stdlib `unittest`, temporary fixtures, fake runners). When run directly from a
 checkout (`python3 -B tools/benchcampaign/multinode/test_multinode.py`), the
-tests also seal plans through the real frozen `tools/clientbench/scripts`. Under
-Bazel those scripts are not runfiles, so that test is skipped.
+tests also seal plans through the real frozen `tools/clientbench/scripts`; the
+Bazel target declares those scripts as data, so the test runs there too.

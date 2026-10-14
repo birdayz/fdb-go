@@ -378,6 +378,18 @@ class CloudInitTest(Temp):
         with self.assertRaises(mc.GuardError):
             rci.render(keys, pub, ['Bad Host'], self.tmp / 'o3')
 
+    def test_generate_keys_refuses_a_symlinked_host_dir(self):
+        checkout = self.tmp / 'checkout'
+        (checkout / '.git').mkdir(parents=True)
+        keys = self.tmp / 'keys'
+        keys.mkdir()
+        (keys / 'h1').symlink_to(checkout)
+        calls = []
+        with self.assertRaisesRegex(mc.GuardError, 'symlink'):
+            rci.generate_keys(keys, ['h1'], runner=lambda argv: calls.append(argv) or (0, '', ''))
+        self.assertEqual(calls, [])
+        self.assertEqual(sorted(p.name for p in checkout.iterdir()), ['.git'])
+
     @unittest.skipUnless(shutil.which('ssh-keygen'), 'ssh-keygen not installed')
     def test_generate_real_throwaway_keys(self):
         keys = rci.generate_keys(self.tmp / 'keys', ['h1', 'h2'])
@@ -466,6 +478,22 @@ class ClusterTest(Temp):
                 self.render(*extra)
             shutil.rmtree(self.tmp / 'out', ignore_errors=True)
 
+    def test_outputs_refuse_git_worktree(self):
+        repo = self.tmp / 'repo'
+        (repo / '.git').mkdir(parents=True)
+        args = fdb_cluster.parse_args(['render', *sum([['--node-ip', ip] for ip in NODES], []), '--client-ip', '10.88.0.10',
+                                       '--controller-cidr', CTL, '--description', 'fdbbenchvpc', '--cluster-id', 'mn20261014',
+                                       '--output-dir', str(repo / 'out')])
+        with self.assertRaises(mc.GuardError):
+            fdb_cluster.render(args)
+        with self.assertRaises(mc.GuardError):
+            mc.dump_json(repo / 'receipt.json', {})
+        p = self.tmp / 'protocol.json'
+        p.write_text(json.dumps(mini_protocol()))
+        with self.assertRaises(mc.GuardError), contextlib.redirect_stdout(io.StringIO()):
+            seal.main(['orders', '--protocol', str(p), '--output', str(repo / 'orders.json')])
+        self.assertEqual(sorted(x.name for x in repo.iterdir()), ['.git'])
+
     def test_check_roles(self):
         layout = self.render()
         self.assertTrue(fdb_cluster.check_roles(layout, status_from_layout(layout))['passed'])
@@ -510,21 +538,35 @@ def storage_status():
                      roles=[dict(role='log')])}))
 
 
-def probe(prefix_items=('benchfetch', 'small'), rows=20, index_servers='AB', record_servers='CD', chunks=1,
+PREFIX_SMALL = pr.pack(['benchfetch', 'small'])
+
+
+def probe(prefix_items=('benchfetch', 'small'), rows=20, index_servers='AB', record_servers='CD', record_format='unsplit',
           boundary_after_records=True, override=None):
+    """A canonical, passing probe: every fixture key once, complete boundaries."""
     prefix = pr.pack(list(prefix_items))
     keys = []
     for i in range(rows):
         keys.append(dict(kind='index', id=i, key_hex=(prefix + pr.pack([2, 'price_idx', i, i])).hex(),
                          addresses=[SERVERS[s] for s in index_servers]))
-        for c in range(chunks):
-            suffix = [] if chunks == 1 else [c + 1]
+        for suffix in pr.RECORD_SUFFIXES[record_format]:
             servers = (override or {}).get(i, record_servers)
-            keys.append(dict(kind='record', id=i, key_hex=(prefix + pr.pack([1, i, *suffix])).hex(),
+            keys.append(dict(kind='record', id=i, key_hex=(prefix + pr.pack([1, i, suffix])).hex(),
                              addresses=[SERVERS[s] for s in servers]))
     boundaries = [(prefix + pr.pack([1, 1000000])).hex()] if boundary_after_records else []
     return dict(format=pr.PROBE_FORMAT, store='benchfetch/small', store_prefix_hex=prefix.hex(), read_version=7,
-                boundaries_hex=boundaries, keys=keys)
+                boundaries_read_version=7, boundary_range_hex=[prefix.hex(), pr.strinc(prefix).hex()],
+                boundaries_complete=True, boundaries_hex=boundaries, keys=keys)
+
+
+def fixture(prefix=PREFIX_SMALL, rows=20, chunks=1, **extra):
+    return dict(phase='fixture', prefix_bytes=len(prefix), rows=rows, chunks=chunks, **extra)
+
+
+def add_record(p, i, suffix, servers='CD', prefix=PREFIX_SMALL):
+    p['keys'].append(dict(kind='record', id=i, key_hex=(prefix + pr.pack([1, i, *suffix])).hex(),
+                          addresses=[SERVERS[s] for s in servers]))
+    return p
 
 
 class PlacementTest(Temp):
@@ -539,88 +581,206 @@ class PlacementTest(Temp):
         self.assertEqual(pr.pack([b'a\x00b', None]), b'\x01a\x00\xffb\x00\x00')
         self.assertLess(pr.pack([1, 999]), pr.pack([1, 1000000]))
         self.assertLess(pr.pack([1, 1000000]), pr.pack([2]))  # ballast sorts between records and index
+        self.assertEqual(pr.strinc(b'ab\xff\xff'), b'ac')
         with self.assertRaises(pr.InputError):
             pr.pack([1.5])
 
-    def receipt(self, p, **kw):
+    def receipt(self, p, record_format='unsplit', **kw):
         cells = {'rows10': (0, 10), 'rows20': (0, 20)}
         kw.setdefault('layout', 'recordlayer')
         kw.setdefault('rows', 20)
-        return pr.build_receipt(storage_status(), p, cells, **kw)
+        kw.setdefault('expect_prefix', PREFIX_SMALL)
+        kw.setdefault('fixture', fixture(chunks=len(pr.RECORD_SUFFIXES[record_format])))
+        return pr.build_receipt(storage_status(), p, cells, record_format=record_format, **kw)
+
+    def assertRejected(self, r, text):
+        self.assertFalse(r['passed'])
+        self.assertTrue(any(text in e for e in r['errors']), r['errors'])
+        self.assertTrue(all(not c['passed'] for c in r['cells'].values()))
 
     def test_disjoint_placement_passes(self):
-        r = self.receipt(probe(), chunks=1, expect_prefix=pr.pack(['benchfetch', 'small']))
+        r = self.receipt(probe())
         self.assertTrue(r['passed'], r['errors'])
         self.assertEqual(r['cells']['rows20']['server_disjoint_rows'], 20)
         self.assertEqual(r['cells']['rows20']['machine_disjoint_fraction'], 0.0)  # A,B vs C,D share node1
         self.assertEqual((r['index_shards'], r['record_shards']), (1, 1))
+        self.assertIn('storage process', r['disjointness_unit'])
 
     def test_split_records_and_machine_level(self):
-        r = self.receipt(probe(index_servers='BE', record_servers='CD', chunks=2), chunks=2)
+        r = self.receipt(probe(index_servers='BE', record_servers='CD', record_format='split'), record_format='split')
         self.assertTrue(r['passed'], r['errors'])
         self.assertEqual(r['cells']['rows20']['machine_disjoint_rows'], 20)  # node2 vs node3,node1
-        r = self.receipt(probe(index_servers='AB', record_servers='CE'), chunks=1)
-        self.assertTrue(r['passed'], r['errors'])  # server-disjoint suffices for a pass
+        r = self.receipt(probe(index_servers='AB', record_servers='CE'))
+        self.assertTrue(r['passed'], r['errors'])  # server (process) disjoint suffices for a pass
         self.assertEqual(r['cells']['rows20']['machine_disjoint_rows'], 0)  # both touch node2
 
     def test_partial_overlap_reports_fraction(self):
         p = probe(override={i: 'AC' for i in range(5)}, boundary_after_records=False)
-        p['boundaries_hex'] = [(pr.pack(['benchfetch', 'small']) + pr.pack([1, 5])).hex(),
-                               (pr.pack(['benchfetch', 'small']) + pr.pack([1, 1000000])).hex()]
-        r = self.receipt(p, chunks=1, min_fraction=0.7)
+        p['boundaries_hex'] = [(PREFIX_SMALL + pr.pack([1, 5])).hex(), (PREFIX_SMALL + pr.pack([1, 1000000])).hex()]
+        r = self.receipt(p, min_fraction=0.7)
         self.assertEqual(r['cells']['rows20']['server_disjoint_rows'], 15)
         self.assertTrue(r['cells']['rows20']['passed'])
         self.assertFalse(r['cells']['rows10']['passed'])  # 5/10 < 0.7
         self.assertFalse(r['passed'])
 
-    def test_integrity_errors(self):
+    def test_physical_key_defects_are_each_rejected(self):
+        split = lambda: probe(record_format='split')  # noqa: E731
+        dup = probe()
+        dup['keys'].append(dict(dup['keys'][1]))
+        dup_split = split()
+        dup_split['keys'].append(dict(dup_split['keys'][2]))
+        omitted = split()
+        second = (PREFIX_SMALL + pr.pack([1, 7, 2])).hex()
+        omitted['keys'] = [k for k in omitted['keys'] if k['key_hex'] != second]
         cases = [
-            (probe(boundary_after_records=False), 'hold both'),
-            (probe(index_servers='A'), 'replicas'),
-            (probe(chunks=2), 'expected 1'),
+            ('duplicate key (unsplit)', dup, 'unsplit', 'more than once'),
+            ('duplicate key (split)', dup_split, 'split', 'more than once'),
+            ('omitted second chunk', omitted, 'split', 'missing'),
+            ('stray suffix 3 (split)', add_record(split(), 7, [3]), 'split', 'non-canonical'),
+            ('stray suffix 1 (unsplit)', add_record(probe(), 7, [1]), 'unsplit', 'non-canonical'),
+            ('version key -1', add_record(split(), 7, [-1]), 'split', 'non-canonical'),
+            ('split chunk in an unsplit store', add_record(probe(), 7, [2]), 'unsplit', 'non-canonical'),
+            ('foreign ID', add_record(probe(), 20, [0]), 'unsplit', 'non-canonical'),
         ]
-        bad_addr = probe()
-        bad_addr['keys'][0]['addresses'] = ['10.88.0.12:4501', SERVERS['B']]
-        cases.append((bad_addr, 'not a storage server'))
-        inconsistent = probe(override={4: 'CE'})
-        cases.append((inconsistent, 'different server sets'))
-        wrong_key = probe()
-        wrong_key['keys'][0]['key_hex'] = (pr.pack(['benchfetch', 'small']) + pr.pack([2, 'price_idx', 0, 1])).hex()
-        cases.append((wrong_key, 'index key missing'))
+        legacy = probe()
+        for k in legacy['keys']:  # suffix-less legacy layout is not the canonical new-store layout
+            if k['kind'] == 'record':
+                k['key_hex'] = (PREFIX_SMALL + pr.pack([1, k['id']])).hex()
+        cases.append(('suffix-less record keys', legacy, 'unsplit', 'missing'))
+        wrong_kind = probe()
+        wrong_kind['keys'][0]['kind'] = 'record'
+        cases.append(('index key labelled record', wrong_kind, 'unsplit', 'wrong kind'))
+        wrong_index = probe()
+        wrong_index['keys'][0]['key_hex'] = (PREFIX_SMALL + pr.pack([2, 'price_idx', 0, 1])).hex()
+        cases.append(('index key for another primary key', wrong_index, 'unsplit', 'missing'))
+        for name, p, fmt, text in cases:
+            with self.subTest(name):
+                self.assertRejected(self.receipt(p, record_format=fmt), text)
+
+    def test_probe_integrity_is_required(self):
+        def edit(**fields):
+            p = probe()
+            for k, v in fields.items():
+                if v is None:
+                    p.pop(k)
+                else:
+                    p[k] = v
+            return p
+        cases = [
+            (edit(read_version=0, boundaries_read_version=0), 'read_version'),
+            (edit(read_version=None), 'read_version'),
+            (edit(read_version=True, boundaries_read_version=True), 'read_version'),
+            (edit(read_version='7', boundaries_read_version='7'), 'read_version'),
+            (edit(boundaries_read_version=8), 'boundaries were not read'),
+            (edit(boundaries_complete=False), 'truncated'),
+            (edit(boundaries_complete=None), 'truncated'),
+            (edit(boundary_range_hex=[PREFIX_SMALL.hex(), (PREFIX_SMALL + b'\x15\x02').hex()]), 'boundary_range_hex'),
+            (edit(boundaries_hex=[(PREFIX_SMALL + pr.pack([1, 1000000])).hex()] * 2), 'strictly increasing'),
+            (edit(boundaries_hex=[(PREFIX_SMALL + pr.pack([1, 1000000])).hex(), pr.strinc(PREFIX_SMALL).hex()]),
+             'outside the store range'),
+            (probe(boundary_after_records=False), 'hold both'),
+        ]
         for p, text in cases:
             with self.subTest(text=text):
-                r = self.receipt(p, chunks=1)
-                self.assertFalse(r['passed'])
-                self.assertTrue(any(text in e for e in r['errors']), r['errors'])
-        r = self.receipt(probe(), chunks=1, expect_prefix=pr.pack(['benchfetch', 'split']))
-        self.assertTrue(any('expected' in e for e in r['errors']))
+                self.assertRejected(self.receipt(p), text)
+        with self.assertRaises(pr.InputError):
+            self.receipt(edit(boundaries_hex=None))
 
-    def test_missing_ids_fail_cell(self):
-        r = pr.build_receipt(storage_status(), probe(rows=5), {'rows10': (0, 10)}, layout='opaque')
+    def test_fixture_receipt_must_match(self):
+        cases = [
+            (None, 'missing owned fixture receipt'),
+            (fixture(prefix=b'x'), 'prefix_bytes'),
+            (fixture(rows=1000), 'rows'),
+            (fixture(chunks=2), 'contradict'),
+            (fixture(store_prefix_hex='00'), 'store_prefix_hex differs'),
+        ]
+        for fx, text in cases:
+            with self.subTest(text=text):
+                self.assertRejected(self.receipt(probe(), fixture=fx), text)
+        self.assertTrue(self.receipt(probe(), fixture=fixture(store_prefix_hex=PREFIX_SMALL.hex()))['passed'])
+        r = pr.build_receipt(storage_status(), probe(), {'rows20': (0, 20)}, layout='opaque', rows=20, fixture=fixture())
+        self.assertRejected(r, 'opaque layout needs')
+        with self.assertRaises(pr.InputError):
+            pr.build_receipt(storage_status(), probe(), {'rows20': (0, 20)}, layout='recordlayer', rows=20,
+                             fixture=fixture(), expect_prefix=PREFIX_SMALL)
+        with self.assertRaises(pr.InputError):
+            pr.build_receipt(storage_status(), probe(), {'rows20': (0, 20)}, layout='recordlayer', rows=20,
+                             fixture=fixture(), record_format='unsplit')
+        for cells in [{}, {'empty': (5, 5)}, {'backwards': (9, 3)}]:
+            with self.subTest(cells=cells), self.assertRaises(pr.InputError):
+                pr.build_receipt(storage_status(), probe(), cells, layout='opaque', rows=20,
+                                 fixture=fixture(store_prefix_hex=PREFIX_SMALL.hex()))
+
+    def test_cluster_integrity_errors(self):
+        bad_addr = probe()
+        bad_addr['keys'][0]['addresses'] = ['10.88.0.12:4501', SERVERS['B']]
+        cases = [(probe(index_servers='A'), 'replicas'), (bad_addr, 'not a storage server'),
+                 (probe(override={4: 'CE'}), 'different server sets')]
+        for p, text in cases:
+            with self.subTest(text=text):
+                self.assertRejected(self.receipt(p), text)
+        self.assertRejected(self.receipt(probe(), expect_prefix=pr.pack(['benchfetch', 'split'])), 'expected')
+
+    def test_opaque_layout(self):
+        fx = fixture(store_prefix_hex=PREFIX_SMALL.hex())
+        r = pr.build_receipt(storage_status(), probe(), {'rows20': (0, 20)}, layout='opaque', rows=20, fixture=fx,
+                             records_per_id=1)
+        self.assertTrue(r['passed'], r['errors'])
+        r = pr.build_receipt(storage_status(), probe(rows=5), {'rows10': (0, 10)}, layout='opaque', rows=5, fixture=dict(fx, rows=5))
         self.assertEqual(r['cells']['rows10']['missing_ids'], 5)
         self.assertFalse(r['passed'])
+        r = pr.build_receipt(storage_status(), add_record(probe(), 3, [1]), {'rows20': (0, 20)}, layout='opaque',
+                             rows=20, fixture=fx, records_per_id=1)
+        self.assertRejected(r, 'exactly 1 record keys')
 
-    def test_compare_and_cli(self):
-        status, p1 = self.tmp / 'status.json', self.tmp / 'p1.json'
+    def test_mutation_controls(self):
+        for fmt in ['unsplit', 'split']:
+            with self.subTest(fmt=fmt):
+                kw = dict(layout='recordlayer', rows=20, record_format=fmt, expect_prefix=PREFIX_SMALL,
+                          fixture=fixture(chunks=len(pr.RECORD_SUFFIXES[fmt])))
+                report = pr.run_controls(storage_status(), probe(record_format=fmt), {'rows20': (0, 20)}, **kw)
+                self.assertTrue(report['original_passed'], report['original_errors'])
+                self.assertEqual(set(report['mutations']), {'duplicate-key', 'zero-read-version', 'truncated-boundaries',
+                                                            'foreign-address', 'omitted-chunk', 'stray-suffix', 'version-key'})
+                self.assertTrue(report['ok'], report['mutations'])
+                bad = pr.run_controls(storage_status(), probe(record_format=fmt, boundary_after_records=False),
+                                      {'rows20': (0, 20)}, **kw)
+                self.assertFalse(bad['ok'])  # a failing original can never certify controls
+        report = pr.run_controls(storage_status(), probe(), {'rows20': (0, 20)}, layout='opaque', rows=20,
+                                 fixture=fixture(store_prefix_hex=PREFIX_SMALL.hex()), records_per_id=1)
+        self.assertTrue(report['ok'], report)
+        self.assertIn('omitted-record', report['mutations'])
+
+    def test_compare_controls_and_cli(self):
+        status, p1, fx = self.tmp / 'status.json', self.tmp / 'p1.json', self.tmp / 'fixture.json'
         status.write_text(json.dumps(storage_status()))
         p1.write_text(json.dumps(probe(rows=1000)))
-        common = ['receipt', '--status', str(status), '--preset', 'benchfetch', '--layout', 'recordlayer',
-                  '--chunks', '1', '--expect-prefix-tuple', 'benchfetch,small']
+        fx.write_text(json.dumps(fixture(rows=1000)))
+        common = ['--status', str(status), '--fixture-receipt', str(fx), '--preset', 'benchfetch', '--layout',
+                  'recordlayer', '--record-format', 'unsplit', '--expect-prefix-tuple', 'benchfetch,small']
         with contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(pr.main(common + ['--probe', str(p1), '--output', str(self.tmp / 'r1.json')]), 0)
-            self.assertEqual(pr.main(common + ['--probe', str(p1), '--output', str(self.tmp / 'r2.json')]), 0)
+            self.assertEqual(pr.main(['receipt', *common, '--probe', str(p1), '--output', str(self.tmp / 'r1.json')]), 0)
+            self.assertEqual(pr.main(['receipt', *common, '--probe', str(p1), '--output', str(self.tmp / 'r2.json')]), 0)
             self.assertEqual(pr.main(['compare', str(self.tmp / 'r1.json'), str(self.tmp / 'r2.json')]), 0)
             moved = probe(rows=1000, record_servers='CE')
             (self.tmp / 'p3.json').write_text(json.dumps(moved))
-            self.assertEqual(pr.main(common + ['--probe', str(self.tmp / 'p3.json'), '--output', str(self.tmp / 'r3.json')]), 0)
+            self.assertEqual(pr.main(['receipt', *common, '--probe', str(self.tmp / 'p3.json'), '--output', str(self.tmp / 'r3.json')]), 0)
             self.assertEqual(pr.main(['compare', str(self.tmp / 'r1.json'), str(self.tmp / 'r3.json')]), 1)
+            self.assertEqual(pr.main(['controls', *common, '--probe', str(p1), '--output', str(self.tmp / 'c1.json')]), 0)
+            dup = probe(rows=1000)
+            dup['keys'].append(dict(dup['keys'][1]))
+            (self.tmp / 'p4.json').write_text(json.dumps(dup))
+            self.assertEqual(pr.main(['receipt', *common, '--probe', str(self.tmp / 'p4.json'), '--output', str(self.tmp / 'r4.json')]), 1)
+            self.assertEqual(pr.main(['compare', str(self.tmp / 'r1.json'), str(self.tmp / 'r4.json')]), 1)
         r1 = json.loads((self.tmp / 'r1.json').read_text())
         self.assertEqual(set(r1['cells']), set(pr.PRESETS['benchfetch']))
         self.assertEqual(r1['cells']['rows100']['rows'], 100)
         self.assertEqual(r1['inputs']['probe_sha256'], pr.sha(p1))
+        self.assertEqual(r1['inputs']['fixture_receipt_sha256'], pr.sha(fx))
+        self.assertTrue(json.loads((self.tmp / 'c1.json').read_text())['ok'])
         (self.tmp / 'bad.json').write_text(json.dumps(dict(format='other')))
         with contextlib.redirect_stderr(io.StringIO()):
-            self.assertEqual(pr.main(common + ['--probe', str(self.tmp / 'bad.json'), '--output', str(self.tmp / 'r4.json')]), 2)
+            self.assertEqual(pr.main(['receipt', *common, '--probe', str(self.tmp / 'bad.json'), '--output', str(self.tmp / 'r5.json')]), 2)
 
 
 def mini_protocol():
@@ -694,14 +854,34 @@ class SealTest(Temp):
             (self.tmp / name).write_text(name)
         return p, o
 
+    def write_receipt(self, store, prefix_items, record_format, layout='recordlayer', override=None, extra_boundaries=()):
+        prefix = pr.pack(list(prefix_items))
+        p = probe(prefix_items=prefix_items, rows=1000, record_format=record_format or 'unsplit', override=override)
+        p['store'] = store
+        p['boundaries_hex'] = sorted([(prefix + pr.pack([1, b])).hex() for b in extra_boundaries] + p['boundaries_hex'])
+        fx = fixture(prefix=prefix, rows=1000, chunks=len(pr.RECORD_SUFFIXES[record_format or 'unsplit']),
+                     **({'store_prefix_hex': prefix.hex()} if layout == 'opaque' else {}))
+        r = pr.build_receipt(storage_status(), p, pr.PRESETS['sql' if layout == 'opaque' else 'benchfetch'], layout=layout,
+                             rows=1000, record_format=record_format, fixture=fx,
+                             expect_prefix=prefix if layout == 'recordlayer' else None)
+        path = self.tmp / f'receipt-{store.replace("/", "-")}.json'
+        path.write_text(json.dumps(r))
+        return path
+
     def test_testingb_plans_leave_new_harness_unsealed(self):
         p, o = self.fixture_files()
+        small = self.write_receipt('benchfetch/small', ('benchfetch', 'small'), 'unsplit',
+                                   override={i: 'AC' for i in range(100, 110)}, extra_boundaries=(100, 110))
+        split = self.write_receipt('benchfetch/split', ('benchfetch', 'split'), 'split')
+        sql = self.write_receipt('sql/IDX_A', ('sqlstore',), None, layout='opaque')
         common = ['testingb-plans', '--protocol', str(p), '--orders', str(o), '--cluster-file', str(self.tmp / 'cluster'),
-                  '--binary', f'fetch={self.tmp / "fetch"}', '--binary', f'sqlfetch={self.tmp / "sqlfetch"}']
+                  '--binary', f'fetch={self.tmp / "fetch"}', '--binary', f'sqlfetch={self.tmp / "sqlfetch"}',
+                  '--placement-receipt', f'benchfetch/small={small}', '--placement-receipt', f'benchfetch/split={split}']
         with contextlib.redirect_stdout(io.StringIO()):
             seal.main(common + ['--output-dir', str(self.tmp / 'tb1')])
         manifest = json.loads((self.tmp / 'tb1' / 'manifest.json').read_text())
         self.assertEqual([x['phase'] for x in manifest['phases']], ['M2rl'])
+        self.assertIn(str(small.resolve()), manifest['pinned_files'])
         unsealed = {(u['phase'], u['case']) for u in manifest['unsealed']}
         self.assertIn(('M2rl', 'small-rows100-forward'), unsealed)
         self.assertEqual({c for ph, c in unsealed if ph == 'M2sql'}, {'sql-rows10', 'sql-rows100', 'sql-rows1000'})
@@ -719,15 +899,41 @@ class SealTest(Temp):
                 arms = [j['arm'] for j in sorted((j for j in plan['jobs'] if j['case'] == case['key'] and j['block'] == b),
                                                  key=lambda j: j['position'])]
                 self.assertEqual(arms, orders[b])
-        limit = [c for c in plan['cases'] if c['key'] == 'split-limit1-reverse'][0]
-        self.assertEqual((limit['placement_cell'], limit['chunks']), ('limit1-reverse', 2))
+        by_key = {c['key']: c for c in plan['cases']}
+        self.assertEqual((by_key['split-limit1-reverse']['placement_cell'], by_key['split-limit1-reverse']['record_format']),
+                         ('limit1-reverse', 'split'))
         self.assertTrue(set(c['placement_cell'] for c in plan['cases']) <= set(pr.PRESETS['benchfetch']))
+        # Labels are fixed from the receipts before timing: rows10 of the small store is colocated.
+        self.assertEqual(by_key['small-rows10-forward']['placement_label'], 'partially colocated (f = 0.0000)')
+        self.assertEqual(by_key['small-rows1000-forward']['placement_label'], 'partially colocated (f = 0.9900)')
+        self.assertEqual(by_key['small-limit1-forward']['placement_label'], 'cross-server')
+        self.assertEqual(by_key['split-rows1000-reverse']['placement_label'], 'cross-server')
+        self.assertEqual(by_key['split-rows10-forward']['placement_receipt_sha256'], seal.sha256(split))
         with contextlib.redirect_stdout(io.StringIO()):
             seal.main(common + ['--output-dir', str(self.tmp / 'tb2'), '--allow-new-harness', 'rows100',
-                                '--allow-new-harness', 'M2sql'])
+                                '--allow-new-harness', 'M2sql', '--placement-receipt', f'sql/IDX_A={sql}'])
         manifest = json.loads((self.tmp / 'tb2' / 'manifest.json').read_text())
         self.assertEqual({x['phase']: x['cases'] for x in manifest['phases']}, {'M2rl': 16, 'M2sql': 3})
         self.assertEqual(manifest['unsealed'], [])
+
+    def test_testingb_seal_refuses_unproven_placement(self):
+        p, o = self.fixture_files()
+        small = self.write_receipt('benchfetch/small', ('benchfetch', 'small'), 'unsplit')
+        split = self.write_receipt('benchfetch/split', ('benchfetch', 'split'), 'split')
+        base = ['testingb-plans', '--protocol', str(p), '--orders', str(o), '--cluster-file', str(self.tmp / 'cluster'),
+                '--binary', f'fetch={self.tmp / "fetch"}']
+        broken = json.loads(split.read_text())
+        broken['errors'], broken['error_count'] = ['1 canonical fixture key(s) missing'], 1
+        (self.tmp / 'broken.json').write_text(json.dumps(broken))
+        cases = [
+            ([f'benchfetch/small={small}'], 'no placement receipt'),
+            ([f'benchfetch/small={small}', f'benchfetch/split={self.tmp / "broken.json"}'], 'proves nothing'),
+            ([f'benchfetch/small={split}', f'benchfetch/split={split}'], 'store'),
+        ]
+        for i, (receipts, text) in enumerate(cases):
+            with self.subTest(text=text), self.assertRaisesRegex(ValueError, text):
+                seal.main(base + sum([['--placement-receipt', r] for r in receipts], []) +
+                          ['--output-dir', str(self.tmp / f'bad{i}')])
 
     def stub_scripts(self):
         """A stand-in for the frozen scripts, with the same interfaces."""

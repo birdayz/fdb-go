@@ -224,6 +224,7 @@ for u in {units}; do printf '%s %s\\n' "$u" "$(systemctl show -p MainPID --value
 
 def render(args):
     out = Path(args.output_dir)
+    mc.require_outside_repo(out, 'cluster output dir')
     out.mkdir(parents=True, exist_ok=False)
     layout = build_layout(args.node_ip, args.client_ip, args.vpc_cidr, args.description, args.cluster_id,
                           args.engine, args.root, args.fdbserver, args.loggroup, args.knob)

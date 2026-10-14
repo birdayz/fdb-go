@@ -89,6 +89,7 @@ def write_private(path, text, exclusive=True):
 
 
 def dump_json(path, value, exclusive=True):
+    require_outside_repo(path, 'output')
     with open(path, 'x' if exclusive else 'w') as stream:
         json.dump(value, stream, indent=2, sort_keys=True, allow_nan=False)
         stream.write('\n')

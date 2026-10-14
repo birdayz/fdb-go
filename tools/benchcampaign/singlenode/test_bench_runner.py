@@ -5,6 +5,7 @@ results/smoke-parser-all directory to also validate a complete real diagnostic
 population (69 logs); unset, that one test is skipped.
 """
 import copy
+import csv
 import json
 import os
 from pathlib import Path
@@ -264,7 +265,7 @@ class RunnerTests(unittest.TestCase):
     def test_cluster_clear_guard(self):
         plan = self.plan()
         with mock.patch.dict(os.environ, FDB_BENCH_SERVER_ADDR='192.0.2.1:4500'):
-            with mock.patch.object(Path, 'read_text', return_value='owned:key@8.8.8.8:4500'):
+            with mock.patch.object(Path, 'read_text', return_value='owned:key@198.51.100.7:4500'):
                 with self.assertRaisesRegex(r.EnvironmentFailure, 'private owned'):
                     r.cluster_guard(plan)
             # A matching coordinator passes the address gate and reaches the engine gate.
@@ -384,6 +385,71 @@ class AnalysisTests(unittest.TestCase):
             (inp/'metrics.csv').write_text((inp/'metrics.csv').read_text().replace('100.0', '101.0'))
             with self.assertRaises(ValueError):
                 a.analyze(inp, Path(folder)/'bad-report')
+
+    def test_run_metrics_csv_round_trips_through_analyze(self):
+        # run() itself writes metrics.csv: every sample must carry its job's case
+        # key, so bench_analyze reproduces the population from the raw logs.
+        # (A loop variable once shadowed the case key and wrote a CPU field name.)
+        fixture = RunnerTests()
+        plan = fixture.plan()
+        plan['cases'] = plan['cases'][:1]
+        plan['jobs'] = [j for j in plan['jobs'] if j['case']['key'] == plan['cases'][0]['key']]
+        plan['expected_sha256'][plan['paths']['analyzer']] = r.sha(a.__file__)
+        plan['bootstrap_resamples'] = 100
+        jobs = {tuple(j['command']): j for j in plan['jobs']}
+
+        class Helper:
+            def quiescence(self, plan):
+                return {'passed': True}
+
+            def snapshot(self, dest):
+                dest.mkdir()
+                (dest/'proc_vmstat').write_text('oom_kill 0\n')
+
+            def telemetry(self, pid):
+                return {'pid': pid}
+
+            def descendants(self, pid):
+                return {pid}
+
+            def stop_process_group(self, process):
+                pass
+
+        class Process:
+            pid, returncode = 4242, 0
+
+            def __init__(self, argv, stdout, stderr, env, start_new_session):
+                time_file, command = argv[argv.index('-o')+1], tuple(argv[argv.index('--')+1:])
+                stdout.write(fixture.output(jobs[command]))
+                Path(time_file).write_text('User time (seconds): 1.25\nSystem time (seconds): 0.50\n')
+
+            def wait(self, timeout=None):
+                return 0
+
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            for name, source in (('source_receipt', None), ('protocol', D/'protocol.json'), ('orders', D/'orders.json')):
+                path = folder/(name+'.json')
+                path.write_text(source.read_text() if source else '{}')
+                plan['paths'][name] = str(path)
+            plan_path = folder/'plan.json'
+            r.dump(plan_path, plan)
+            Path(str(plan_path)+'.sha256').write_text(r.sha(plan_path)+'\n')
+            output = folder/'B'
+            with mock.patch.object(r, 'make_plan', return_value=plan), \
+                    mock.patch.object(r, 'verify_pins', return_value=plan['expected_sha256']), \
+                    mock.patch.object(r, 'validate_source_receipt'), mock.patch.object(r, 'BINARIES', []), \
+                    mock.patch.object(r, 'cluster_guard'), mock.patch.object(r, 'ensure_idle'), \
+                    mock.patch.object(r, 'health'), mock.patch.object(r, 'telemetry_guard'), \
+                    mock.patch.object(r, 'controlled_command', return_value='Committed (1)'), \
+                    mock.patch.object(r, 'load_helper', return_value=Helper()), \
+                    mock.patch.object(r.subprocess, 'Popen', Process), mock.patch.object(r.time, 'sleep'):
+                self.assertEqual(r.run(plan_path, output, '2999-01-01T00:00:00Z'), 0)
+            with open(output/'metrics.csv') as stream:
+                cases = {row['case'] for row in csv.DictReader(stream)}
+            self.assertEqual(cases, {plan['cases'][0]['key']})
+            report = a.analyze(output, folder/'report')
+            self.assertEqual(report['raw_samples'], 54)
 
     def test_physical_prefix_confound_is_reported_not_hidden(self):
         p, rows = self.samples()

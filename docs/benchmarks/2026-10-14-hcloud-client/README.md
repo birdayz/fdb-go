@@ -3,7 +3,8 @@
 Pure-Go client at the final tree against its predecessor and against Apple's
 Go binding over `libfdb_c` 7.3.77. One closed-loop worker, 11 workloads,
 counterbalanced. This is **phase A** of the hcloud rebench campaign; the Record
-Layer and SQL phases (B, C1, D1, C2, D2) are reported separately when complete.
+Layer results are in [phase B](../2026-10-14-hcloud-recordlayer/README.md), and
+the remote-fetch and SQL phases are reported separately when complete.
 
 ## Arms
 
@@ -144,10 +145,11 @@ What the data shows:
     and cancellation. Pure-Go took 9.7 µs mean, CGo 49.4 µs.
   - `grv` (0.515): one round trip to the GRV proxy, 217 µs vs 423 µs.
   - Point reads (0.613–0.651): one GRV plus one storage read.
-- **The gap shrinks as server work grows.** Commits (`set100`, `batchset50`,
-  `batchset50x1000`: 0.897–0.931) spend most of their ~2–3 ms in the commit
-  pipeline and the SSD engine's log; the client-side difference is a small
-  share of that time.
+- **The absolute saving is about the same everywhere a round trip occurs, so
+  the ratio shrinks as transactions get longer.** CGo's mean minus pure-Go's
+  was 0.17–0.25 ms on every workload except `ryw` (`grv` 0.21 ms, `set100`
+  0.22 ms, `batchset50x1000` 0.25 ms). Commits take 1.9–3.0 ms in total, so
+  the same saving gives ratios of 0.897–0.931 there.
 - **Process CPU through shutdown (E−A) favored pure-Go** on `grv` (0.659),
   `read1000` (0.775), `get1000` (0.858), the commits (0.863–0.887) and `ryw`
   (0.228). For `get100`, `get10000`, `range10` and `range100` the intervals

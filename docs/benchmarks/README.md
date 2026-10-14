@@ -8,6 +8,9 @@ Raw output behind the tables in the top-level README.
   — pure-Go vs CGo vs the pre-allocation-work client, 11 workloads, counterbalanced,
   594,000 measured transactions. Harness: [campaign-harness.md](campaign-harness.md);
   campaign tooling: [`tools/benchcampaign`](../../tools/benchcampaign/README.md).
+- [2026-10-14: Record Layer on a dedicated 16-vCPU host](2026-10-14-hcloud-recordlayer/README.md)
+  — legacy vs read-parity vs allocation-work trees, eight benchmarks, separating the
+  parity change's cost from the allocation work.
 
 ## Change-specific comparisons
 

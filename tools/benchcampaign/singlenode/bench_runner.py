@@ -584,11 +584,12 @@ def run(plan_path, output, lifetime_deadline):
                 active = None
                 time_text = (folder/'process-time.txt').read_text()
                 cpu = {}
-                for field, key in [('User time (seconds)', 'process_user_cpu_seconds'), ('System time (seconds)', 'process_system_cpu_seconds')]:
+                # `metric`, not `key`: `key` is this job's case key, written to every sample below.
+                for field, metric in [('User time (seconds)', 'process_user_cpu_seconds'), ('System time (seconds)', 'process_system_cpu_seconds')]:
                     match = re.search(re.escape(field)+r':\s*(\S+)', time_text)
                     if not match:
                         raise EnvironmentFailure('missing GNU time lifetime CPU receipt')
-                    cpu[key] = number(float(match.group(1)))
+                    cpu[metric] = number(float(match.group(1)))
                 result.update(cpu)
                 result.update(returncode=rc, process_wall_ns=time.monotonic_ns()-started,
                               cpu_scope='GNU time user/system CPU includes fixtures/calibration/audits/shutdown; NOT CPU/op')

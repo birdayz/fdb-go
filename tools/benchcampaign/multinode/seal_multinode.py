@@ -16,8 +16,12 @@ client-plans    M1 phases: one clientbench plan per (phase, workload) through th
                 protocol's per-workload cap must lie in (waits, 900].
 testingb-plans  M2 phases: one job list per phase (cell-major, then block,
                 then frozen position), testing.B argv with the pinned binary,
-                exact sub-benchmark regex, -test.count/-test.benchtime, and the
-                placement preset/cell each case must satisfy.
+                exact sub-benchmark regex, -test.count/-test.benchtime, and each
+                case's placement label fixed from its store's placement receipt
+                (--placement-receipt STORE=PATH): 'cross-server' at server-disjoint
+                fraction 1.0, else 'partially colocated (f = ...)'. A receipt with
+                any integrity error, or for another store/layout/record format,
+                refuses the seal.
 
 Workloads/cells a phase lists under new_harness_* do not exist in the frozen
 harness; they are left out (and listed as unsealed in the manifest) unless
@@ -178,6 +182,7 @@ def seal_client(args):
     matrix_plan, run = load_frozen(args.scripts_dir)
     pinned = pins([args.protocol, args.orders, args.harness_archive, *args.pin], args.pin_glob)
     out = Path(args.output_dir)
+    mc.require_outside_repo(out, 'sealed plan dir')
     out.mkdir(parents=True, exist_ok=False)
     manifest = dict(campaign=protocol['campaign'], protocol_sha256=sha256(args.protocol),
                     orders_sha256=sha256(args.orders), generator_sha256=sha256(__file__),
@@ -221,17 +226,20 @@ def testingb_cells(phase):
             cases.append(dict(key=f'{payload}-{cell}-{direction}', cell=cell, payload=payload, dir=direction,
                               stem=f'BenchmarkIndexFetch/payload={payload}/cell={cell}/dir={direction}',
                               store=f'benchfetch/{payload}', placement_preset='benchfetch',
-                              placement_cell=placement, chunks=1 if payload == 'small' else 2))
+                              placement_cell=placement, layout='recordlayer',
+                              record_format='unsplit' if payload == 'small' else 'split'))
     elif kind == 'planskip':
         for cell, direction in itertools.product(phase['cells'], phase['dirs']):
             cases.append(dict(key=f'skip3-{cell}-{direction}', cell=cell, payload='small', dir=direction,
                               stem=f'BenchmarkPlanSkip/cell={cell}/dir={direction}', store='benchfetch/planskip',
-                              placement_preset='planskip', placement_cell=f'skip3-{cell}', chunks=1))
+                              placement_preset='planskip', placement_cell=f'skip3-{cell}',
+                              layout='recordlayer', record_format='unsplit'))
     elif kind == 'sqlfetch':
         for cell in phase['cells']:
             cases.append(dict(key=f'sql-{cell}', cell=cell, payload='sql', dir='forward',
                               stem=f'BenchmarkSQLIndexFetch/query={cell}', store='sql/IDX_A',
-                              placement_preset='sql', placement_cell=cell, chunks=None))
+                              placement_preset='sql', placement_cell=cell,
+                              layout='opaque', record_format=None))
     else:
         raise ValueError('unknown binary kind ' + kind)
     return cases
@@ -242,7 +250,34 @@ def bench_regex(name):
     return '/'.join('^' + re.escape(part) + '$' for part in name.split('/'))
 
 
-def testingb_plan(protocol, phase, frozen, binary, cluster_file, allowed):
+RECEIPT_FORMAT = 'fdb-bench-placement-receipt/v2'
+
+
+def placement_label(case, receipts):
+    """The case's fixed placement label from its store's receipt, decided before timing.
+
+    A receipt with any integrity error proves nothing and is refused; a receipt
+    whose cell fraction is below 1.0 still seals, but only under the
+    'partially colocated' label (protocol placement.acceptance).
+    """
+    path = receipts.get(case['store'])
+    if path is None:
+        raise ValueError(f'no placement receipt for store {case["store"]}')
+    r = json.loads(Path(path).read_text())
+    if r.get('format') != RECEIPT_FORMAT or r.get('error_count') != 0 or r.get('errors'):
+        raise ValueError(f'placement receipt {path} has integrity errors or a wrong format; it proves nothing')
+    for field in ('store', 'layout', 'record_format'):
+        if r.get(field) != case[field]:
+            raise ValueError(f'placement receipt {path} {field} {r.get(field)!r} != case {case[field]!r}')
+    cell = (r.get('cells') or {}).get(case['placement_cell'])
+    if cell is None or cell.get('missing_ids'):
+        raise ValueError(f'placement receipt {path} lacks complete cell {case["placement_cell"]}')
+    f = cell['server_disjoint_fraction']
+    return dict(placement_label='cross-server' if f == 1.0 else f'partially colocated (f = {f:.4f})',
+                placement_fraction=f, placement_receipt=str(path), placement_receipt_sha256=sha256(path))
+
+
+def testingb_plan(protocol, phase, frozen, binary, cluster_file, allowed, receipts=None):
     client = protocol['runtime']['client_vm']
     if set(phase['arms']) - set(TESTINGB_ARMS):
         raise ValueError(f'{phase["id"]}: unknown testing.B arms')
@@ -254,6 +289,8 @@ def testingb_plan(protocol, phase, frozen, binary, cluster_file, allowed):
         if needs_new and not ({case['cell'], case['key'], phase['id']} & allowed):
             unsealed.append(dict(phase=phase['id'], case=case['key'], reason='requires reviewed new harness commit'))
         else:
+            if phase['placement_required']:
+                case.update(placement_label(case, receipts or {}))
             cases.append(case)
     jobs = []
     for ci, case in enumerate(cases):
@@ -280,8 +317,10 @@ def seal_testingb(args):
     if orders != make_orders(protocol):
         raise ValueError('orders.json differs from the protocol seeds; reseal orders first')
     out = Path(args.output_dir)
+    mc.require_outside_repo(out, 'sealed plan dir')
     out.mkdir(parents=True, exist_ok=False)
-    pinned = pins([args.protocol, args.orders, args.cluster_file, *args.binaries.values(), *args.pin], args.pin_glob)
+    pinned = pins([args.protocol, args.orders, args.cluster_file, *args.binaries.values(),
+                   *args.placement_receipts.values(), *args.pin], args.pin_glob)
     manifest = dict(campaign=protocol['campaign'], generator_sha256=sha256(__file__),
                     pinned_files={str(p): sha256(p) for p in pinned}, phases=[], unsealed=[])
     for phase in protocol['phases']:
@@ -291,7 +330,8 @@ def seal_testingb(args):
             continue
         binary = str(Path(args.binaries[phase['binary_kind']]).resolve())
         plan, unsealed = testingb_plan(protocol, phase, orders[phase['frozen_order_key']]['orders'], binary,
-                                       str(Path(args.cluster_file).resolve()), set(args.allow_new_harness))
+                                       str(Path(args.cluster_file).resolve()), set(args.allow_new_harness),
+                                       args.placement_receipts)
         plan['expected_sha256'] = {binary: sha256(binary), str(Path(args.cluster_file).resolve()): sha256(args.cluster_file)}
         manifest['unsealed'] += unsealed
         if not plan['jobs']:
@@ -341,6 +381,9 @@ def main(argv=None):
             p.add_argument('--server-binary', required=True)
             p.add_argument('--harness-archive', required=True)
             p.add_argument('--results-dir', required=True)
+        else:
+            p.add_argument('--placement-receipt', action='append', default=[],
+                           help='STORE=PATH placement_receipt.py receipt per M2 store (benchfetch/small, ...)')
     args = ap.parse_args(argv)
     if args.command == 'orders':
         orders = make_orders(json.loads(Path(args.protocol).read_text()))
@@ -352,6 +395,7 @@ def main(argv=None):
         print('orders match protocol seeds' if same else 'ORDERS DIFFER from protocol seeds')
         return 0 if same else 1
     args.binaries = parse_binaries(args.binary)
+    args.placement_receipts = parse_binaries(getattr(args, 'placement_receipt', []))
     manifest = seal_client(args) if args.command == 'client-plans' else seal_testingb(args)
     print(json.dumps(dict(sealed=len(manifest.get('campaigns', manifest.get('phases', []))),
                           unsealed=len(manifest['unsealed'])), sort_keys=True))

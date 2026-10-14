@@ -1,32 +1,51 @@
 #!/usr/bin/env python3
 """Prove (or refute) that index entries and their records live on different storage servers.
 
-Inputs (both produced outside timing, at one read version where possible):
-  --status  `fdbcli --exec 'status json'`: address -> process class, machine
-            locality and roles; only processes holding a `storage` role count.
-  --probe   a placement probe document (fdb-bench-placement-probe/v1), written by
-            the placement probe tool (a NEW, separately reviewed harness tool that
-            calls LocalityGetBoundaryKeys over the store prefix and
-            LocalityGetAddressesForKey for every fixture key):
-              {"format": "fdb-bench-placement-probe/v1", "store": "benchfetch/small",
-               "store_prefix_hex": "...", "read_version": 123,
-               "boundaries_hex": ["..."],
-               "keys": [{"kind": "index"|"record", "id": 0, "key_hex": "...",
-                         "addresses": ["10.88.0.12:4502", "10.88.0.13:4503"]}]}
+Inputs (all produced outside timing):
+  --status   `fdbcli --exec 'status json'`: address -> process class, machine
+             locality, roles; only processes holding a `storage` role count.
+  --fixture-receipt  the benchmark's own untimed fixture receipt for the store
+             (the FDB_BENCH_AUDIT fixture JSON, or the H4 SQL prefix receipt):
+             {"prefix_bytes": N, "rows": 1000, "chunks": 1|2,
+              "store_prefix_hex": "..." (required for --layout opaque)}.
+             It ties the probed prefix to the store the benchmark actually owns.
+  --probe    a placement probe document written by the placement probe tool (H5,
+             a NEW separately reviewed harness tool using LocalityGetBoundaryKeys
+             and LocalityGetAddressesForKey):
+               {"format": "fdb-bench-placement-probe/v2", "store": "benchfetch/small",
+                "store_prefix_hex": "...", "read_version": 123,
+                "boundaries_read_version": 123,
+                "boundary_range_hex": [prefix, strinc(prefix)],
+                "boundaries_complete": true,
+                "boundaries_hex": ["..."],            # strictly increasing, inside the range
+                "keys": [{"kind": "index"|"record", "id": 0, "key_hex": "...",
+                          "addresses": ["10.88.0.12:4502", "10.88.0.13:4503"]}]}
 
-receipt: checks integrity (every address is a storage server, replica count,
-every key under the store prefix, keys in one shard report one address set,
-Record Layer key derivation when --layout recordlayer) and, per cell (the set
-of IDs whose index entries the cell scans), the fraction of rows whose index
-entry's servers are disjoint from all of that row's record-chunk servers, at
-storage-server level and at machine level. A cell passes when the
-server-level fraction is >= --min-disjoint-fraction (default 1.0).
-compare:  two receipts describe the same placement (boundaries and per-key
-          server sets); use before and after every timed case.
-Exit status: 0 pass/equal, 1 fail/different, 2 unusable input.
+receipt: integrity first, then per-cell placement.
+  * positive integer read_version, equal boundaries_read_version;
+  * complete boundaries over exactly [prefix, strinc(prefix)), strictly increasing;
+  * every physical key appears once;
+  * --layout recordlayer: the probe's key set equals the canonical fixture key set
+    exactly: index key prefix+(2, index, id, id), record keys prefix+(1, id, s) for
+    the canonical suffix set: unsplit {0}, split {1, 2}; no version (-1) keys,
+    no stray suffix, no omitted chunk, no other IDs;
+  * every address a storage role in status json, exactly --replicas per key, one
+    server set per shard, no shard holding both index entries and records.
+  Per cell (the IDs whose index entries the cell scans): rows whose index-entry
+  servers and record-chunk servers are disjoint. "Server" means the storage
+  process (address): with double replication on three machines every two-machine
+  team meets every other, so machine-level disjointness is structurally 0 and is
+  reported only as a descriptive figure. A cell passes when its server-disjoint
+  fraction is >= --min-disjoint-fraction (default 1.0) and integrity holds.
+compare:  two receipts describe the same placement (boundaries and per-key server sets).
+controls: mutation controls on a real probe: the original must pass and each
+          mutation (duplicate key, omitted chunk, stray suffix, version key,
+          truncated boundaries, zero read version, foreign address) must fail.
+Exit status: 0 pass/equal/controls ok, 1 fail/different, 2 unusable input.
 """
 import argparse
 import bisect
+import copy
 import hashlib
 import json
 from pathlib import Path
@@ -34,9 +53,12 @@ import sys
 
 import mn_common as mc
 
-PROBE_FORMAT = 'fdb-bench-placement-probe/v1'
-RECEIPT_FORMAT = 'fdb-bench-placement-receipt/v1'
+PROBE_FORMAT = 'fdb-bench-placement-probe/v2'
+RECEIPT_FORMAT = 'fdb-bench-placement-receipt/v2'
 RECORD_KEY, INDEX_KEY = 1, 2
+# Canonical record-key suffixes of a new store (format >= SAVE_UNSPLIT_WITH_SUFFIX,
+# no store record versions): Java SplitHelper UNSPLIT_RECORD 0, START_SPLIT_RECORD 1.
+RECORD_SUFFIXES = {'unsplit': (0,), 'split': (1, 2)}
 
 # Cells: name -> [lo, hi) of IDs whose index entries the cell's index scan reads.
 # rows100 cells do not exist in the frozen harness; they are the proposed
@@ -86,6 +108,14 @@ def pack(items):
     return out
 
 
+def strinc(key):
+    """First key after every key with this prefix (FDB strinc)."""
+    stripped = key.rstrip(b'\xff')
+    if not stripped:
+        raise InputError('prefix of only 0xff bytes has no strinc')
+    return stripped[:-1] + bytes([stripped[-1] + 1])
+
+
 # --- inputs ----------------------------------------------------------------
 
 def _addr(a):
@@ -106,46 +136,107 @@ def storage_map(status):
 
 
 def load_probe(probe):
+    """Parse without judging: returns prefix, raw boundaries (as given), keys (as given)."""
     if probe.get('format') != PROBE_FORMAT:
         raise InputError('probe format must be ' + PROBE_FORMAT)
     try:
         prefix = bytes.fromhex(probe['store_prefix_hex'])
-        boundaries = sorted({bytes.fromhex(b) for b in probe.get('boundaries_hex') or []})
-        keys = [dict(kind=k['kind'], id=int(k['id']), key=bytes.fromhex(k['key_hex']),
+        boundaries = [bytes.fromhex(b) for b in probe['boundaries_hex']]
+        brange = [bytes.fromhex(b) for b in probe['boundary_range_hex']]
+        keys = [dict(kind=k['kind'], id=k['id'], key=bytes.fromhex(k['key_hex']),
                      addresses=sorted({_addr(a) for a in k['addresses']})) for k in probe['keys']]
-    except (KeyError, TypeError, ValueError) as exc:
+    except (KeyError, TypeError, ValueError, AttributeError) as exc:
         raise InputError(f'malformed probe: {exc}') from exc
     if not prefix or not keys:
         raise InputError('probe needs a store prefix and keys')
-    return prefix, boundaries, keys
+    return prefix, boundaries, brange, keys
 
 
-def parse_cells(preset, cell_args):
-    cells = dict(PRESETS[preset]) if preset else {}
-    for c in cell_args:
-        name, _, span = c.partition('=')
-        lo, _, hi = span.partition(':')
-        cells[name] = (int(lo), int(hi))
-    for name, (lo, hi) in cells.items():
-        if not name or lo >= hi or lo < 0:
-            raise InputError(f'bad cell {name}=[{lo},{hi})')
-    return cells
+def _positive_int(v):
+    return isinstance(v, int) and not isinstance(v, bool) and v > 0
+
+
+def probe_integrity(probe, prefix, boundaries, brange, errors):
+    rv = probe.get('read_version')
+    if not _positive_int(rv):
+        errors.append(f'read_version {rv!r} is not a positive integer')
+    if probe.get('boundaries_read_version') != rv:
+        errors.append('boundaries were not read at the probe read version')
+    if probe.get('boundaries_complete') is not True:
+        errors.append('boundaries_complete is not true: the boundary list may be truncated')
+    if brange != [prefix, strinc(prefix)]:
+        errors.append('boundary_range_hex is not exactly [prefix, strinc(prefix))')
+    if any(a >= b for a, b in zip(boundaries, boundaries[1:])):
+        errors.append('boundaries are not strictly increasing')
+    if any(not (prefix <= b < strinc(prefix)) for b in boundaries):
+        errors.append('a boundary lies outside the store range')
+
+
+def fixture_integrity(fixture, prefix, layout, rows, record_format, errors):
+    if not isinstance(fixture, dict):
+        errors.append('missing owned fixture receipt')
+        return
+    if fixture.get('prefix_bytes') != len(prefix):
+        errors.append(f'fixture receipt prefix_bytes {fixture.get("prefix_bytes")!r} != probe prefix length {len(prefix)}')
+    if 'store_prefix_hex' in fixture and fixture['store_prefix_hex'] != prefix.hex():
+        errors.append('fixture receipt store_prefix_hex differs from the probe prefix')
+    if layout == 'opaque' and 'store_prefix_hex' not in fixture:
+        errors.append('opaque layout needs the fixture receipt store_prefix_hex')
+    if fixture.get('rows') != rows:
+        errors.append(f'fixture receipt rows {fixture.get("rows")!r} != {rows}')
+    if record_format and fixture.get('chunks') not in (None, len(RECORD_SUFFIXES[record_format])):
+        errors.append(f'fixture receipt chunks {fixture.get("chunks")!r} contradict record format {record_format}')
+
+
+def canonical_keys(prefix, rows, index_name, record_format):
+    """{key: (kind, id)} for the exact fixture."""
+    out = {}
+    for i in range(rows):
+        out[prefix + pack([INDEX_KEY, index_name, i, i])] = ('index', i)
+        for s in RECORD_SUFFIXES[record_format]:
+            out[prefix + pack([RECORD_KEY, i, s])] = ('record', i)
+    return out
+
+
+def _sample(items, n=3):
+    items = sorted(items)
+    return ', '.join(x.hex() if isinstance(x, bytes) else str(x) for x in items[:n]) + (' ...' if len(items) > n else '')
 
 
 # --- receipt ---------------------------------------------------------------
 
-def build_receipt(status, probe, cells, layout='opaque', index_name='price_idx', rows=1000, chunks=None,
-                  expect_prefix=None, replicas=2, min_fraction=1.0):
+def build_receipt(status, probe, cells, layout='opaque', index_name='price_idx', rows=1000, record_format=None,
+                  expect_prefix=None, fixture=None, replicas=2, min_fraction=1.0, records_per_id=None):
+    if not cells:
+        raise InputError('no cells: a receipt must certify at least one cell')
+    for name, (lo, hi) in cells.items():
+        if not (isinstance(lo, int) and isinstance(hi, int) and 0 <= lo < hi):
+            raise InputError(f'cell {name} has an empty or invalid ID range [{lo}, {hi})')
     servers = storage_map(status)
-    prefix, boundaries, keys = load_probe(probe)
+    prefix, boundaries, brange, keys = load_probe(probe)
     errors = []
+    probe_integrity(probe, prefix, boundaries, brange, errors)
+    if layout == 'recordlayer':
+        if record_format not in RECORD_SUFFIXES:
+            raise InputError('recordlayer layout needs record_format unsplit or split')
+        if expect_prefix is None:
+            raise InputError('recordlayer layout needs the expected store prefix')
+    fixture_integrity(fixture, prefix, layout, rows, record_format, errors)
     if expect_prefix is not None and prefix != expect_prefix:
         errors.append(f'store prefix {prefix.hex()} != expected {expect_prefix.hex()}')
+    seen = {}
+    for k in keys:
+        seen[k['key']] = seen.get(k['key'], 0) + 1
+    dups = [k for k, n in seen.items() if n > 1]
+    if dups:
+        errors.append(f'{len(dups)} physical key(s) listed more than once: {_sample(dups)}')
     rec_prefix, idx_prefix = prefix + pack([RECORD_KEY]), prefix + pack([INDEX_KEY])
     for k in keys:
         if k['kind'] not in ('index', 'record'):
-            errors.append(f'unknown key kind {k["kind"]}')
+            errors.append(f'unknown key kind {k["kind"]!r}')
             continue
+        if not isinstance(k['id'], int) or isinstance(k['id'], bool):
+            errors.append(f'non-integer id {k["id"]!r}')
         if not k['key'].startswith(idx_prefix if k['kind'] == 'index' else rec_prefix):
             errors.append(f'{k["kind"]} key {k["key"].hex()} outside its store subspace')
         if len(k['addresses']) != replicas:
@@ -153,34 +244,43 @@ def build_receipt(status, probe, cells, layout='opaque', index_name='price_idx',
         for a in k['addresses']:
             if a not in servers:
                 errors.append(f'{a} serves {k["key"].hex()} but is not a storage server in status json')
-    # One shard (boundary interval) must report one server set.
-    by_shard = {}
-    for k in keys:
-        by_shard.setdefault(bisect.bisect_right(boundaries, k['key']), set()).add(tuple(k['addresses']))
-    for shard, sets in sorted(by_shard.items()):
-        if len(sets) > 1:
-            errors.append(f'shard {shard} reports {len(sets)} different server sets; probe not at one version')
-    index = {}
-    records = {}
+    if layout == 'recordlayer':
+        canon = canonical_keys(prefix, rows, index_name, record_format)
+        got = {k['key']: (k['kind'], k['id']) for k in keys}
+        missing = set(canon) - set(got)
+        extra = set(got) - set(canon)
+        mislabelled = [key for key in set(canon) & set(got) if canon[key] != got[key]]
+        if missing:
+            errors.append(f'{len(missing)} canonical fixture key(s) missing (e.g. omitted chunk): {_sample(missing)}')
+        if extra:
+            errors.append(f'{len(extra)} non-canonical key(s) (stray suffix, version key or foreign ID): {_sample(extra)}')
+        if mislabelled:
+            errors.append(f'{len(mislabelled)} key(s) with the wrong kind or id: {_sample(mislabelled)}')
+    index, records = {}, {}
     for k in keys:
         if k['kind'] == 'index':
-            if k['id'] in index:
-                errors.append(f'duplicate index key for id {k["id"]}')
-            index[k['id']] = k
+            index.setdefault(k['id'], []).append(k)
         elif k['kind'] == 'record':
             records.setdefault(k['id'], []).append(k)
-    if layout == 'recordlayer':
-        for i in range(rows):
-            want = idx_prefix + pack([index_name, i, i])
-            if i not in index or index[i]['key'] != want:
-                errors.append(f'id {i}: index key missing or not {want.hex()}')
-            rk = records.get(i, [])
-            if not rk or any(not r['key'].startswith(rec_prefix + pack([i])) for r in rk):
-                errors.append(f'id {i}: record keys missing or outside the record range of its primary key')
-            if chunks is not None and len(rk) != chunks:
-                errors.append(f'id {i}: {len(rk)} record keys, expected {chunks}')
-    index_shards = {bisect.bisect_right(boundaries, k['key']) for k in index.values()}
-    record_shards = {bisect.bisect_right(boundaries, r['key']) for rs in records.values() for r in rs}
+    multi_index = [i for i, v in index.items() if len(v) != 1]
+    if multi_index:
+        errors.append(f'{len(multi_index)} id(s) with more than one index entry')
+    if records_per_id is not None:
+        wrong = [i for i, v in records.items() if len(v) != records_per_id]
+        if wrong:
+            errors.append(f'{len(wrong)} id(s) without exactly {records_per_id} record keys')
+
+    def shard(key):
+        return bisect.bisect_right(boundaries, key)
+
+    by_shard = {}
+    for k in keys:
+        by_shard.setdefault(shard(k['key']), set()).add(tuple(k['addresses']))
+    for s, sets in sorted(by_shard.items()):
+        if len(sets) > 1:
+            errors.append(f'shard {s} reports {len(sets)} different server sets; probe not at one version')
+    index_shards = {shard(k['key']) for v in index.values() for k in v}
+    record_shards = {shard(r['key']) for v in records.values() for r in v}
     if index_shards & record_shards:
         errors.append(f'{len(index_shards & record_shards)} shard(s) hold both index entries and records')
 
@@ -190,13 +290,11 @@ def build_receipt(status, probe, cells, layout='opaque', index_name='price_idx',
     cell_out = {}
     for name, (lo, hi) in sorted(cells.items()):
         ids = list(range(lo, hi))
-        missing = [i for i in ids if i not in index or i not in records]
+        present = [i for i in ids if len(index.get(i, [])) == 1 and records.get(i)]
         s_dis = m_dis = 0
         idx_srv, rec_srv = set(), set()
-        for i in ids:
-            if i in missing:
-                continue
-            ia = set(index[i]['addresses'])
+        for i in present:
+            ia = set(index[i][0]['addresses'])
             ra = {a for r in records[i] for a in r['addresses']}
             idx_srv |= ia
             rec_srv |= ra
@@ -204,17 +302,18 @@ def build_receipt(status, probe, cells, layout='opaque', index_name='price_idx',
             m_dis += not (machines(ia) & machines(ra))
         n = len(ids)
         frac = s_dis / n
-        cell_out[name] = dict(ids=[lo, hi], rows=n, missing_ids=len(missing), server_disjoint_rows=s_dis,
+        cell_out[name] = dict(ids=[lo, hi], rows=n, missing_ids=n - len(present), server_disjoint_rows=s_dis,
                               server_disjoint_fraction=frac, machine_disjoint_rows=m_dis,
                               machine_disjoint_fraction=m_dis / n, index_servers=sorted(idx_srv),
                               record_servers=sorted(rec_srv),
-                              index_shards=len({bisect.bisect_right(boundaries, index[i]['key']) for i in ids if i in index}),
-                              record_shards=len({bisect.bisect_right(boundaries, r['key']) for i in ids if i in records for r in records[i]}),
-                              passed=not missing and frac >= min_fraction)
+                              index_shards=len({shard(index[i][0]['key']) for i in present}),
+                              record_shards=len({shard(r['key']) for i in present for r in records[i]}),
+                              passed=not errors and len(present) == n and frac >= min_fraction)
     passed = not errors and all(c['passed'] for c in cell_out.values())
     return dict(format=RECEIPT_FORMAT, passed=passed, errors=errors[:200], error_count=len(errors),
                 store=probe.get('store'), store_prefix_hex=prefix.hex(), read_version=probe.get('read_version'),
-                layout=layout, replicas=replicas, min_disjoint_fraction=min_fraction,
+                layout=layout, record_format=record_format, replicas=replicas, min_disjoint_fraction=min_fraction,
+                disjointness_unit='storage process (address); machine level is descriptive only',
                 storage_servers=servers, boundaries_hex=[b.hex() for b in boundaries],
                 index_shards=len(index_shards), record_shards=len(record_shards), cells=cell_out,
                 placement={k['key'].hex(): k['addresses'] for k in keys})
@@ -225,6 +324,8 @@ def compare(a, b):
     for field in ('format', 'store_prefix_hex', 'boundaries_hex'):
         if a.get(field) != b.get(field):
             diffs.append(field + ' differs')
+    if not (a.get('passed') and b.get('passed')):
+        diffs.append('a compared receipt did not pass')
     pa, pb = a.get('placement') or {}, b.get('placement') or {}
     if set(pa) != set(pb):
         diffs.append(f'key sets differ ({len(set(pa) ^ set(pb))} keys)')
@@ -234,6 +335,47 @@ def compare(a, b):
     return dict(equal=not diffs, differences=diffs)
 
 
+# --- mutation controls -------------------------------------------------------
+
+def mutations(probe, layout, record_format):
+    """Named copies of a real probe, each with one defect the receipt must reject."""
+    keys = probe['keys']
+    records = [k for k in keys if k['kind'] == 'record']
+    first = records[0]
+    prefix = bytes.fromhex(probe['store_prefix_hex'])
+    out = {}
+
+    def variant(name, fn):
+        p = copy.deepcopy(probe)
+        fn(p)
+        out[name] = p
+
+    variant('duplicate-key', lambda p: p['keys'].append(copy.deepcopy(first)))
+    variant('zero-read-version', lambda p: p.update(read_version=0, boundaries_read_version=0))
+    variant('truncated-boundaries', lambda p: p.update(boundaries_complete=False))
+    variant('foreign-address', lambda p: p['keys'][0].update(addresses=['192.0.2.1:4500'] + p['keys'][0]['addresses'][1:]))
+    if layout == 'recordlayer':
+        last_suffix = RECORD_SUFFIXES[record_format][-1]
+        omitted = prefix + pack([RECORD_KEY, first['id'], last_suffix])
+        variant('omitted-chunk', lambda p: p.update(keys=[k for k in p['keys'] if k['key_hex'] != omitted.hex()]))
+        for name, suffix in [('stray-suffix', last_suffix + 1), ('version-key', -1)]:
+            stray = dict(copy.deepcopy(first), key_hex=(prefix + pack([RECORD_KEY, first['id'], suffix])).hex())
+            variant(name, lambda p, s=stray: p['keys'].append(s))
+    else:
+        variant('omitted-record', lambda p: p.update(keys=[k for k in p['keys'] if k != first]))
+    return out
+
+
+def run_controls(status, probe, cells, **kw):
+    original = build_receipt(status, probe, cells, **kw)
+    report = dict(original_passed=original['passed'], original_errors=original['errors'], mutations={})
+    for name, mutated in mutations(probe, kw.get('layout', 'opaque'), kw.get('record_format')).items():
+        r = build_receipt(status, mutated, cells, **kw)
+        report['mutations'][name] = dict(rejected=not r['passed'], errors=r['errors'][:3])
+    report['ok'] = original['passed'] and all(m['rejected'] for m in report['mutations'].values())
+    return report
+
+
 def sha(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
@@ -241,19 +383,22 @@ def sha(path):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest='command', required=True)
-    r = sub.add_parser('receipt')
-    r.add_argument('--status', required=True)
-    r.add_argument('--probe', required=True)
-    r.add_argument('--preset', choices=sorted(PRESETS))
-    r.add_argument('--cell', action='append', default=[], help='NAME=LO:HI (IDs [LO,HI)); repeat')
-    r.add_argument('--layout', choices=['recordlayer', 'opaque'], default='opaque')
-    r.add_argument('--index-name', default='price_idx')
-    r.add_argument('--rows', type=int, default=1000)
-    r.add_argument('--chunks', type=int, help='record key-values per record (1 small, 2 split)')
-    r.add_argument('--expect-prefix-tuple', help='comma-separated strings, e.g. benchfetch,small')
-    r.add_argument('--replicas', type=int, default=2)
-    r.add_argument('--min-disjoint-fraction', type=float, default=1.0)
-    r.add_argument('--output', required=True, help='receipt path (exclusive create)')
+    for name in ('receipt', 'controls'):
+        r = sub.add_parser(name)
+        r.add_argument('--status', required=True)
+        r.add_argument('--probe', required=True)
+        r.add_argument('--fixture-receipt', required=True, help="the benchmark's own fixture/prefix receipt (JSON)")
+        r.add_argument('--preset', choices=sorted(PRESETS))
+        r.add_argument('--cell', action='append', default=[], help='NAME=LO:HI (IDs [LO,HI)); repeat')
+        r.add_argument('--layout', choices=['recordlayer', 'opaque'], default='opaque')
+        r.add_argument('--record-format', choices=sorted(RECORD_SUFFIXES), help='recordlayer: unsplit {0} or split {1,2}')
+        r.add_argument('--records-per-id', type=int, help='opaque: exact record keys per ID')
+        r.add_argument('--index-name', default='price_idx')
+        r.add_argument('--rows', type=int, default=1000)
+        r.add_argument('--expect-prefix-tuple', help='comma-separated strings, e.g. benchfetch,small')
+        r.add_argument('--replicas', type=int, default=2)
+        r.add_argument('--min-disjoint-fraction', type=float, default=1.0)
+        r.add_argument('--output', required=True, help='receipt/report path (exclusive create)')
     c = sub.add_parser('compare')
     c.add_argument('before')
     c.add_argument('after')
@@ -264,20 +409,44 @@ def main(argv=None):
             print(json.dumps(result, sort_keys=True))
             return 0 if result['equal'] else 1
         cells = parse_cells(args.preset, args.cell)
-        expect = pack(args.expect_prefix_tuple.split(',')) if args.expect_prefix_tuple else None
-        receipt = build_receipt(json.loads(Path(args.status).read_text()), json.loads(Path(args.probe).read_text()),
-                                cells, args.layout, args.index_name, args.rows, args.chunks, expect,
-                                args.replicas, args.min_disjoint_fraction)
-        receipt['inputs'] = dict(status_sha256=sha(args.status), probe_sha256=sha(args.probe))
+        kw = dict(layout=args.layout, index_name=args.index_name, rows=args.rows, record_format=args.record_format,
+                  expect_prefix=pack(args.expect_prefix_tuple.split(',')) if args.expect_prefix_tuple else None,
+                  fixture=json.loads(Path(args.fixture_receipt).read_text()), replicas=args.replicas,
+                  min_fraction=args.min_disjoint_fraction, records_per_id=args.records_per_id)
+        status, probe = json.loads(Path(args.status).read_text()), json.loads(Path(args.probe).read_text())
+        inputs = dict(status_sha256=sha(args.status), probe_sha256=sha(args.probe),
+                      fixture_receipt_sha256=sha(args.fixture_receipt))
+        if args.command == 'controls':
+            report = dict(run_controls(status, probe, cells, **kw), inputs=inputs)
+            mc.dump_json(args.output, report)
+            print(json.dumps({'ok': report['ok'], 'original_passed': report['original_passed'],
+                              'rejected': {k: v['rejected'] for k, v in report['mutations'].items()}}, sort_keys=True))
+            return 0 if report['ok'] else 1
+        receipt = build_receipt(status, probe, cells, **kw)
+        receipt['inputs'] = inputs
         mc.dump_json(args.output, receipt)
         print(json.dumps({k: receipt[k] for k in ('passed', 'error_count', 'index_shards', 'record_shards')}, sort_keys=True))
         for name, cell in receipt['cells'].items():
             print(f'{name}: server-disjoint {cell["server_disjoint_rows"]}/{cell["rows"]}, '
-                  f'machine-disjoint {cell["machine_disjoint_rows"]}/{cell["rows"]}, passed={cell["passed"]}')
+                  f'machine-disjoint {cell["machine_disjoint_rows"]}/{cell["rows"]} (descriptive), passed={cell["passed"]}')
         return 0 if receipt['passed'] else 1
     except (InputError, ValueError, KeyError, OSError) as exc:
         print('UNUSABLE: ' + str(exc), file=sys.stderr)
         return 2
+
+
+def parse_cells(preset, cell_args):
+    cells = dict(PRESETS[preset]) if preset else {}
+    for c in cell_args:
+        name, _, span = c.partition('=')
+        lo, _, hi = span.partition(':')
+        cells[name] = (int(lo), int(hi))
+    if not cells:
+        raise InputError('no cells: pass --preset or --cell')
+    for name, (lo, hi) in cells.items():
+        if not name or lo >= hi or lo < 0:
+            raise InputError(f'bad cell {name}=[{lo},{hi})')
+    return cells
 
 
 if __name__ == '__main__':

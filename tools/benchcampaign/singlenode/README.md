@@ -7,7 +7,11 @@ plan before timing, never retry, keep all adverse data and refuse any run whose
 pinned inputs change. They were used for a real 16-vCPU campaign. The port
 replaces that campaign's addresses, keys, paths and constants with the flags and
 environment variables below. Apart from that parameterization, the logic is
-unchanged.
+unchanged except for one bug fix: in `bench_runner.py`, the loop that parses
+GNU time CPU fields reused the variable holding the job's case key, so every
+row in `metrics.csv` was labelled `process_system_cpu_seconds` instead of its
+case. The loop now uses its own variable, and
+`test_run_metrics_csv_round_trips_through_analyze` pins the fix.
 
 The benchmark binaries and their audit receipts are described in
 [`docs/benchmarks/campaign-harness.md`](../../../docs/benchmarks/campaign-harness.md).

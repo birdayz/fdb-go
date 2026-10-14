@@ -53,8 +53,14 @@ def generate_keys(host_key_dir, hosts, ssh_keygen='ssh-keygen', runner=mc.defaul
     mc.require_outside_repo(host_key_dir, 'host key dir')
     root = mc.private_dir(host_key_dir)
     for host in map(check_host, hosts):
+        # A symlinked host directory could redirect the private key into a
+        # checkout; refuse it and recheck where each key would actually land.
+        if (root / host).is_symlink():
+            raise mc.GuardError(f'{root / host} is a symlink; host key directories must be real directories')
+        mc.require_outside_repo(root / host, 'host key dir')
         d = mc.private_dir(root / host)
         key = d / 'ssh_host_ed25519_key'
+        mc.require_outside_repo(key, 'host key')
         if key.exists():
             raise mc.GuardError(f'{key} exists; host keys are generated once per campaign')
         rc, _, err = runner([ssh_keygen, '-q', '-t', 'ed25519', '-N', '', '-C', f'root@{host}', '-f', str(key)])

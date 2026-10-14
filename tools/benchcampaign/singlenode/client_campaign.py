@@ -368,7 +368,7 @@ class AdapterTests(unittest.TestCase):
         with mock.patch.dict(os.environ, FDB_BENCH_SERVER_ADDR='192.0.2.1:4500'):
             with mock.patch.object(Path, 'read_text', side_effect=['private:key@192.0.2.1:4500', 'ssd']):
                 cluster_scope_guard(Path(generic.CLUSTER))
-            for texts in [['private:key@8.8.8.8:4500'], ['private:key@192.0.2.1:4500', 'memory'],
+            for texts in [['private:key@198.51.100.7:4500'], ['private:key@192.0.2.1:4500', 'memory'],
                           ['private:key@192.0.2.1:45000']]:
                 with mock.patch.object(Path, 'read_text', side_effect=texts), self.assertRaises(generic.EnvironmentFailure):
                     cluster_scope_guard(Path(generic.CLUSTER))
