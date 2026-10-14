@@ -240,7 +240,7 @@ var _ = Describe("Narrowed-range continuation conformance", func() {
 					if j.exhausted {
 						break
 					}
-					Expect(step).To(BeNumerically("<", wantRows))
+					Expect(step).To(BeNumerically("<=", wantRows))
 					// Carry Java's token on even steps and Go's on odd ones.
 					cont = j.cont
 					if step%2 == 1 {
@@ -250,14 +250,14 @@ var _ = Describe("Narrowed-range continuation conformance", func() {
 				Expect(seen).To(Equal(full.keys), "reverse=%v", reverse)
 			}
 		},
-		// Page sizes never divide the row count: at an exact boundary Java reports
-		// RETURN_LIMIT_REACHED with a token where Go's lookahead reports exhaustion
-		// (TODO.md, "row-limit lookahead").
 		Entry("VALUE index, equality on the leading column", "Order$qty_price", "BY_VALUE", "allOf11", 6, 4),
+		Entry("VALUE index, exact page boundary", "Order$qty_price", "BY_VALUE", "allOf11", 6, 3),
 		Entry("VALUE index, betweenInclusive under one leading value", "Order$qty_price", "BY_VALUE", "between11", 3, 2),
 		Entry("VALUE index, PREFIX_STRING", "Customer$name", "BY_VALUE", "prefixAb", 5, 3),
 		Entry("COUNT index, grouped lookup", "Order$cnt_qty_price", "BY_GROUP", "allOf11", 6, 4),
+		Entry("COUNT index, exact page boundary", "Order$cnt_qty_price", "BY_GROUP", "allOf11", 6, 3),
 		Entry("BITMAP_VALUE index, grouped lookup", "Order$bm_qty", "BY_GROUP", "allOf11", 4, 3),
+		Entry("BITMAP_VALUE index, exact page boundary", "Order$bm_qty", "BY_GROUP", "allOf11", 4, 2),
 		Entry("record scan over a primary-key range", "", "", "pk5to9", 5, 2),
 		Entry("record scan, PREFIX_STRING over string primary keys", "", "", "pkPrefixAb", 5, 2),
 	)

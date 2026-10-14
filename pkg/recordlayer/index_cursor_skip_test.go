@@ -115,20 +115,15 @@ func expectSkipRows(t *testing.T, got skipPage, want []skipRow) {
 	}
 }
 
-func expectSkipTerminal(t *testing.T, got skipPage, rows int, reason NoNextReason, chargesTerminalAttempt bool) {
+func expectSkipTerminal(t *testing.T, got skipPage, rows int, reason NoNextReason) {
 	t.Helper()
 	if got.reason != reason || got.end != (reason == SourceExhausted) {
 		t.Fatalf("terminal reason/end = %v/%v want %v", got.reason, got.end, reason)
 	}
-	// Ordinary indexCursor charges each returned row plus the terminal attempt;
-	// countKVCursor and bitmapKVCursor charge each returned entry. Neither
-	// charges rows the selector skipped.
-	wantScanned := rows
-	if chargesTerminalAttempt {
-		wantScanned = rows + 1
-	}
-	if got.scanned != wantScanned {
-		t.Fatalf("scanned records=%d want %d", got.scanned, wantScanned)
+	// CursorLimitManager charges each returned row plus the terminal attempt;
+	// rows the selector skipped never reach the cursor.
+	if got.scanned != rows+1 {
+		t.Fatalf("scanned records=%d want %d", got.scanned, rows+1)
 	}
 }
 
@@ -257,13 +252,6 @@ func TestFDB_IndexCursorSkipSelectorOffsets(t *testing.T) {
 			t.Run(fmt.Sprintf("%s/reverse=%v", indexName, reverse), func(t *testing.T) {
 				t.Parallel()
 				byGroup := indexName != "price" && indexName != "version"
-				chargesTerminal := !byGroup
-				nativeLimit := func(limit int) int {
-					if byGroup && limit > 0 {
-						return limit + 1
-					}
-					return limit
-				}
 				request := func(skip, limit int) skipScanRequest {
 					return skipScanRequest{index: indexName, reverse: reverse, skip: skip, limit: limit, mode: StreamingModeIterator}
 				}
@@ -288,7 +276,7 @@ func TestFDB_IndexCursorSkipSelectorOffsets(t *testing.T) {
 						page := scan(t, request(skip, 0))
 						want := skipWindow(base.rows, skip, 0)
 						expectSkipRows(t, page, want)
-						expectSkipTerminal(t, page, len(want), SourceExhausted, chargesTerminal)
+						expectSkipTerminal(t, page, len(want), SourceExhausted)
 						if page.scannedBytes != skipBytes(want) {
 							t.Fatalf("scanned bytes=%d want %d", page.scannedBytes, skipBytes(want))
 						}
@@ -305,21 +293,17 @@ func TestFDB_IndexCursorSkipSelectorOffsets(t *testing.T) {
 							page := scan(t, request(skip, limit))
 							want := skipWindow(base.rows, skip, limit)
 							expectSkipRows(t, page, want)
-							hitLimit := skip+limit <= count
-							if byGroup {
-								hitLimit = skip+limit < count
-							}
-							if hitLimit {
-								expectSkipTerminal(t, page, len(want), ReturnLimitReached, chargesTerminal)
+							if skip+limit <= count {
+								expectSkipTerminal(t, page, len(want), ReturnLimitReached)
 								if !bytes.Equal(page.continuation, want[len(want)-1].continuation) {
 									t.Fatalf("limit continuation=%x want last row %x", page.continuation, want[len(want)-1].continuation)
 								}
 							} else {
-								expectSkipTerminal(t, page, len(want), SourceExhausted, chargesTerminal)
+								expectSkipTerminal(t, page, len(want), SourceExhausted)
 							}
 							// The skip is not added to the native row limit.
-							if read := onlySkipRead(t, page); read.options.Limit != nativeLimit(limit) {
-								t.Fatalf("native limit=%d want %d", read.options.Limit, nativeLimit(limit))
+							if read := onlySkipRead(t, page); read.options.Limit != limit {
+								t.Fatalf("native limit=%d want %d", read.options.Limit, limit)
 							}
 						})
 					}
@@ -332,7 +316,7 @@ func TestFDB_IndexCursorSkipSelectorOffsets(t *testing.T) {
 						page := scan(t, req)
 						want := skipWindow(base.rows, position+1+2, 0)
 						expectSkipRows(t, page, want)
-						expectSkipTerminal(t, page, len(want), SourceExhausted, chargesTerminal)
+						expectSkipTerminal(t, page, len(want), SourceExhausted)
 						read := onlySkipRead(t, page)
 						if !reverse && read.begin.Offset != 3 || reverse && read.end.Offset != -1 {
 							t.Fatalf("resumed selector offsets begin=%d end=%d", read.begin.Offset, read.end.Offset)
@@ -345,9 +329,6 @@ func TestFDB_IndexCursorSkipSelectorOffsets(t *testing.T) {
 						page := scan(t, req)
 						pages = append(pages, page.rows)
 						req.continuation = page.continuation
-						if byGroup && page.end && len(page.rows) > 0 {
-							req.continuation = page.rows[len(page.rows)-1].continuation
-						}
 					}
 					for i, want := range [][]skipRow{skipWindow(base.rows, 1, 2), skipWindow(base.rows, 4, 2), nil} {
 						expectSkipRows(t, skipPage{rows: pages[i]}, want)
@@ -361,7 +342,7 @@ func TestFDB_IndexCursorSkipSelectorOffsets(t *testing.T) {
 						page := scan(t, req)
 						want := skipWindow(base.rows, 2, scanLimit)
 						expectSkipRows(t, page, want)
-						expectSkipTerminal(t, page, len(want), ScanLimitReached, chargesTerminal)
+						expectSkipTerminal(t, page, len(want), ScanLimitReached)
 					})
 				}
 
@@ -371,7 +352,7 @@ func TestFDB_IndexCursorSkipSelectorOffsets(t *testing.T) {
 					page := scan(t, req)
 					want := skipWindow(base.rows, 2, 1)
 					expectSkipRows(t, page, want)
-					expectSkipTerminal(t, page, 1, ByteLimitReached, chargesTerminal)
+					expectSkipTerminal(t, page, 1, ByteLimitReached)
 					if page.scannedBytes != want[0].bytes {
 						t.Fatalf("scanned bytes=%d want %d", page.scannedBytes, want[0].bytes)
 					}
@@ -388,8 +369,8 @@ func TestFDB_IndexCursorSkipSelectorOffsets(t *testing.T) {
 							if mode == StreamingModeWantAll && limit > 0 {
 								want = fdb.StreamingModeExact // Java calcStreamingMode.
 							}
-							if read := onlySkipRead(t, page); read.options.Mode != want || read.options.Limit != nativeLimit(limit) {
-								t.Fatalf("native mode/limit=%v/%d want %v/%d", read.options.Mode, read.options.Limit, want, nativeLimit(limit))
+							if read := onlySkipRead(t, page); read.options.Mode != want || read.options.Limit != limit {
+								t.Fatalf("native mode/limit=%v/%d want %v/%d", read.options.Mode, read.options.Limit, want, limit)
 							}
 						})
 					}
@@ -451,7 +432,7 @@ func TestFDB_IndexCursorSkipSelectorOffsets(t *testing.T) {
 					t.Run(fmt.Sprintf("bound/skip=%d", bound.skip), func(t *testing.T) {
 						page := scan(t, request(bound.skip, 0))
 						expectSkipRows(t, page, nil)
-						expectSkipTerminal(t, page, 0, SourceExhausted, chargesTerminal)
+						expectSkipTerminal(t, page, 0, SourceExhausted)
 						read := onlySkipRead(t, page)
 						begin, end := baseRead.begin, baseRead.end
 						if reverse {

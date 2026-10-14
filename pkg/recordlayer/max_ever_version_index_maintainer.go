@@ -125,7 +125,7 @@ func (m *maxEverVersionIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
 // Returns IndexEntry where Key = grouping tuple and Value = tuple-decoded grouped columns.
 // Uses the tuple value cursor (same as MAX_EVER_TUPLE).
 func (m *maxEverVersionIndexMaintainer) Scan(scanRange TupleRange, continuation []byte, scanProperties ScanProperties) RecordCursor[*IndexEntry] {
-	return newTupleValueIndexCursor(m.index, m.indexSubspace, m.tx, scanRange, continuation, scanProperties)
+	return newTupleValueIndexCursor(m.index, m.indexSubspace, m.tx, scanRange, continuation, scanProperties).withContext(m.recordContext)
 }
 
 // versionEntry holds a grouping key and the packed value bytes for a MAX_EVER_VERSION entry.

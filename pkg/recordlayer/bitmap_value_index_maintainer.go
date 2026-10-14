@@ -326,7 +326,11 @@ func (m *bitmapValueIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *
 // For BITMAP_VALUE, the standard Scan returns raw bitmap entries via bitmapKVCursor.
 // Matches Java's BitmapValueIndexMaintainer.scan().
 func (m *bitmapValueIndexMaintainer) Scan(scanRange TupleRange, continuation []byte, scanProperties ScanProperties) RecordCursor[*IndexEntry] {
-	return newBitmapKVCursor(m.index, m.indexSubspace, m.tx, scanRange, continuation, scanProperties, m.entrySize)
+	cursor := newBitmapKVCursor(m.index, m.indexSubspace, m.tx, scanRange, continuation, scanProperties, m.entrySize)
+	if store, ok := m.store.(*FDBRecordStore); ok {
+		cursor.withContext(store.context)
+	}
+	return cursor
 }
 
 // ScanByGroup is the primary scan method for BITMAP_VALUE indexes.
@@ -503,14 +507,26 @@ type bitmapKVCursor struct {
 
 	iterator     rangeIterator
 	closed       bool
-	recordsRead  int // also this cursor's own free-initial-pass gate (Java's usedInitialPass)
+	recordsRead  int
+	initialPass  bool
+	clock        *ScanLimiterState
 	bounds       kvScanBounds
 	prefixLength int
 	lastCont     []byte
+	lastNoNext   RecordCursorResult[*IndexEntry]
+	hasNoNext    bool
 
 	// scanState is the (possibly shared) scanned-records/scanned-bytes/time
 	// counter set — see ScanLimiterState's doc comment. Never nil.
 	scanState *ScanLimiterState
+}
+
+func (c *bitmapKVCursor) withContext(rc *FDBRecordContext) *bitmapKVCursor {
+	if rc != nil && c.scanProps.ExecuteProperties.TimeLimit > 0 {
+		c.clock = NewScanLimiterStateIn(rc.Env())
+		c.clock.AnchorAt(rc.createTime)
+	}
+	return c
 }
 
 func newBitmapKVCursor(
@@ -542,22 +558,7 @@ func (c *bitmapKVCursor) initIterator() error {
 	if err != nil {
 		return err
 	}
-
-	options := fdb.RangeOptions{
-		Mode:    c.scanProps.CursorStreamingMode.ToFDB(),
-		Reverse: c.scanProps.IsReverse(),
-	}
-
-	if c.scanProps.ExecuteProperties.ReturnedRowLimit > 0 {
-		limit := c.scanProps.ExecuteProperties.ReturnedRowLimit - c.recordsRead
-		if limit <= 0 {
-			limit = 1
-		}
-		options.Limit = saturatingAdd(limit, 1)
-		if c.scanProps.CursorStreamingMode == StreamingModeWantAll {
-			options.Mode = fdb.StreamingModeExact
-		}
-	}
+	options := indexRangeOptions(c.scanProps)
 	r := indexSkipRange(rng, c.scanProps.ExecuteProperties.Skip, options.Reverse)
 
 	var rangeResult fdb.RangeResult
@@ -572,6 +573,19 @@ func (c *bitmapKVCursor) initIterator() error {
 }
 
 func (c *bitmapKVCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexEntry], error) {
+	if c.hasNoNext && !c.closed {
+		return c.lastNoNext, nil
+	}
+	result, err := c.advance(ctx)
+	if err == nil && !result.HasNext() {
+		// Java replays the first terminal result on subsequent calls.
+		c.lastNoNext = result
+		c.hasNoNext = true
+	}
+	return result, err
+}
+
+func (c *bitmapKVCursor) advance(ctx context.Context) (RecordCursorResult[*IndexEntry], error) {
 	if c.closed {
 		return RecordCursorResult[*IndexEntry]{}, fmt.Errorf("cursor is closed")
 	}
@@ -589,14 +603,20 @@ func (c *bitmapKVCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexE
 
 	executeProps := c.scanProps.GetExecuteProperties()
 
-	// Check row limit FIRST so a MAX_ROWS/LIMIT-bounded scan stops cleanly with
-	// ReturnLimitReached before the scan-record backstop can fire (RFC-106a:
-	// match index_scan ordering).
+	clock := c.clock
+	if clock == nil {
+		clock = c.scanState
+	}
+	if allowed, reason := tryIndexRecordScan(c.scanState, clock, executeProps, &c.initialPass); !allowed {
+		return noNextOrFail[*IndexEntry](executeProps, reason, c.limitContinuation())
+	}
+
+	// Java reports the passed-down row limit even if it exactly exhausted the source.
 	if executeProps.ReturnedRowLimit > 0 && c.recordsRead >= executeProps.ReturnedRowLimit {
 		if c.iterator.Advance() {
 			return NewResultNoNext[*IndexEntry](
 				ReturnLimitReached,
-				&BytesContinuation{bytes: c.lastCont},
+				c.limitContinuation(),
 			), nil
 		}
 		// Advance() returns false on exhaustion OR error — check Get() for the stored
@@ -606,34 +626,9 @@ func (c *bitmapKVCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexE
 			return RecordCursorResult[*IndexEntry]{}, fmt.Errorf("bitmap index scan at row-limit boundary: %w", err)
 		}
 		return NewResultNoNext[*IndexEntry](
-			SourceExhausted,
-			&EndContinuation{},
+			ReturnLimitReached,
+			c.limitContinuation(),
 		), nil
-	}
-
-	// Check scanned-records limit (RFC-106a parity with the other leaf cursors —
-	// index_scan/record_key honor ScannedRecordsLimit; bitmap omitted it). Threshold
-	// is the (possibly shared) scanState so every leg of an IN-join/IN-union charges
-	// the same aggregate budget instead of resetting per leg. The free pass
-	// (c.recordsRead>0) is bypassed under FailOnScanLimitReached, matching Java's
-	// CursorLimitManager.java:135-136.
-	if executeProps.ScannedRecordsLimit > 0 &&
-		(c.recordsRead > 0 || executeProps.FailOnScanLimitReached) &&
-		c.scanState.RecordsScanned() >= executeProps.ScannedRecordsLimit {
-		return noNextOrFail[*IndexEntry](executeProps, ScanLimitReached, c.limitContinuation())
-	}
-
-	// Check time limit, measured against the shared scanState's anchor rather than
-	// this cursor's own construction time. Free pass unconditional (Java never suppresses it);
-	// noNextOrFail because Java throws on ANY halted limit under FailOnScanLimitReached
-	// (CursorLimitManager.java:141-144).
-	if executeProps.TimeLimit > 0 && c.recordsRead > 0 && c.scanState.Elapsed() >= executeProps.TimeLimit {
-		return noNextOrFail[*IndexEntry](executeProps, TimeLimitReached, c.limitContinuation())
-	}
-
-	// Check byte limit.
-	if executeProps.ScannedBytesLimit > 0 && c.recordsRead > 0 && c.scanState.BytesScanned() >= executeProps.ScannedBytesLimit {
-		return noNextOrFail[*IndexEntry](executeProps, ByteLimitReached, c.limitContinuation())
 	}
 
 	if !c.iterator.Advance() {
@@ -663,7 +658,6 @@ func (c *bitmapKVCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexE
 	}
 
 	c.scanState.AddBytesScanned(int64(len(kv.Key) + len(kv.Value)))
-	c.scanState.AddRecordScanned()
 	c.recordsRead++
 
 	cont, err := c.makeContinuation(kv.Key)
