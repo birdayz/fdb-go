@@ -383,7 +383,7 @@ func (lc *locationCache) locateRangeWith(ctx context.Context, begin, end []byte,
 		}
 		// The reply parser drops shards without storage servers. A reply with a hole
 		// would make callers skip its keys, so it is asked for again instead.
-		if results := contiguousLocations(entries, begin, end, reverse); results != nil {
+		if results := contiguousLocations(entries, begin, end, limit, reverse); results != nil {
 			return results, nil
 		}
 		if err := sleepCtx(ctx, wrongShardRetryDelay); err != nil {
@@ -393,8 +393,9 @@ func (lc *locationCache) locateRangeWith(ctx context.Context, begin, end []byte,
 }
 
 // contiguousLocations converts a proxy reply covering the range from the scan origin
-// without a gap, or returns nil.
-func contiguousLocations(entries []locationEntry, begin, end []byte, reverse bool) []LocationResult {
+// without a gap, or returns nil. The proxy stops only at limit or at the range edge
+// (CommitProxyServer.actor.cpp:2713-2741), so a shorter reply ending earlier lost a shard.
+func contiguousLocations(entries []locationEntry, begin, end []byte, limit int, reverse bool) []LocationResult {
 	results := make([]LocationResult, 0, len(entries))
 	for i, e := range entries {
 		switch {
@@ -418,6 +419,10 @@ func contiguousLocations(entries []locationEntry, begin, end []byte, reverse boo
 		results = append(results, LocationResult{Servers: e.servers, ShardBegin: e.begin, ShardEnd: e.end})
 	}
 	if len(results) == 0 {
+		return nil
+	}
+	if last := results[len(results)-1]; len(results) < limit &&
+		((!reverse && last.ShardEnd != nil && bytes.Compare(last.ShardEnd, end) < 0) || (reverse && bytes.Compare(last.ShardBegin, begin) > 0)) {
 		return nil
 	}
 	return results

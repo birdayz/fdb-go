@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/binary"
+	"math"
 	"reflect"
 	"testing"
 
@@ -373,28 +374,35 @@ func TestContiguousLocations_RejectsReplyHoles(t *testing.T) {
 		}
 		return e
 	}
+	const all = math.MaxInt32
 	for _, tc := range []struct {
 		name       string
 		entries    []locationEntry
 		begin, end string
+		limit      int
 		reverse    bool
 		want       []string
 	}{
-		{"forward_whole", []locationEntry{entry("a", "c"), entry("c", "e"), entry("e", "")}, "b", "f", false, []string{"a", "c", "e"}},
-		{"forward_limited", []locationEntry{entry("a", "c"), entry("c", "e")}, "b", "f", false, []string{"a", "c"}},
-		{"forward_hole", []locationEntry{entry("a", "c"), entry("e", "g")}, "b", "f", false, nil},
-		{"forward_origin_missing", []locationEntry{entry("c", "e")}, "b", "f", false, nil},
-		{"forward_origin_ends_at_begin", []locationEntry{entry("a", "b"), entry("b", "g")}, "b", "f", false, nil},
-		{"forward_origin_at_begin", []locationEntry{entry("b", "g")}, "b", "f", false, []string{"b"}},
-		{"reverse_whole", []locationEntry{entry("e", "g"), entry("c", "e"), entry("a", "c")}, "b", "f", true, []string{"e", "c", "a"}},
-		{"reverse_hole", []locationEntry{entry("e", "g"), entry("a", "c")}, "b", "f", true, nil},
-		{"reverse_origin_missing", []locationEntry{entry("a", "c")}, "b", "f", true, nil},
-		{"reverse_origin_ends_at_end", []locationEntry{entry("c", "f")}, "b", "f", true, []string{"c"}},
-		{"reverse_origin_begins_at_end", []locationEntry{entry("f", "g")}, "b", "f", true, nil},
-		{"reverse_origin_open_ended", []locationEntry{entry("c", "")}, "b", "f", true, []string{"c"}},
-		{"empty_reply", nil, "b", "f", false, nil},
+		{"forward_whole", []locationEntry{entry("a", "c"), entry("c", "e"), entry("e", "")}, "b", "f", all, false, []string{"a", "c", "e"}},
+		{"forward_limited", []locationEntry{entry("a", "c"), entry("c", "e")}, "b", "f", 2, false, []string{"a", "c"}},
+		{"forward_tail_dropped", []locationEntry{entry("a", "c"), entry("c", "e")}, "b", "f", all, false, nil},
+		{"forward_tail_reaches_end", []locationEntry{entry("a", "c"), entry("c", "f")}, "b", "f", all, false, []string{"a", "c"}},
+		{"forward_hole", []locationEntry{entry("a", "c"), entry("e", "g")}, "b", "f", all, false, nil},
+		{"forward_origin_missing", []locationEntry{entry("c", "e")}, "b", "f", all, false, nil},
+		{"forward_origin_ends_at_begin", []locationEntry{entry("a", "b"), entry("b", "g")}, "b", "f", all, false, nil},
+		{"forward_origin_at_begin", []locationEntry{entry("b", "g")}, "b", "f", all, false, []string{"b"}},
+		{"reverse_whole", []locationEntry{entry("e", "g"), entry("c", "e"), entry("a", "c")}, "b", "f", all, true, []string{"e", "c", "a"}},
+		{"reverse_limited", []locationEntry{entry("e", "g"), entry("c", "e")}, "b", "f", 2, true, []string{"e", "c"}},
+		{"reverse_tail_dropped", []locationEntry{entry("e", "g"), entry("c", "e")}, "b", "f", all, true, nil},
+		{"reverse_tail_reaches_begin", []locationEntry{entry("e", "g"), entry("b", "e")}, "b", "f", all, true, []string{"e", "b"}},
+		{"reverse_hole", []locationEntry{entry("e", "g"), entry("a", "c")}, "b", "f", all, true, nil},
+		{"reverse_origin_missing", []locationEntry{entry("a", "c")}, "b", "f", all, true, nil},
+		{"reverse_origin_ends_at_end", []locationEntry{entry("a", "f")}, "b", "f", all, true, []string{"a"}},
+		{"reverse_origin_begins_at_end", []locationEntry{entry("f", "g")}, "b", "f", all, true, nil},
+		{"reverse_origin_open_ended", []locationEntry{entry("a", "")}, "b", "f", all, true, []string{"a"}},
+		{"empty_reply", nil, "b", "f", all, false, nil},
 	} {
-		got := contiguousLocations(tc.entries, []byte(tc.begin), []byte(tc.end), tc.reverse)
+		got := contiguousLocations(tc.entries, []byte(tc.begin), []byte(tc.end), tc.limit, tc.reverse)
 		if gotBegins := cachedShardBegins(got); (tc.want == nil) != (got == nil) || (tc.want != nil && !reflect.DeepEqual(gotBegins, tc.want)) {
 			t.Errorf("%s: got %q, want %q", tc.name, gotBegins, tc.want)
 		}
@@ -407,16 +415,17 @@ func TestLocateRangeWith_AsksAgainAfterReplyHole(t *testing.T) {
 	replies := [][]locationEntry{
 		{{begin: []byte("c"), end: []byte("e"), servers: servers}},                                                           // origin dropped
 		{{begin: []byte("a"), end: []byte("c"), servers: servers}, {begin: []byte("e"), end: []byte("g"), servers: servers}}, // hole
+		{{begin: []byte("a"), end: []byte("c"), servers: servers}},                                                           // tail dropped
 		{{begin: []byte("a"), end: []byte("c"), servers: servers}, {begin: []byte("c"), end: []byte("g"), servers: servers}},
 	}
 	lc := &locationCache{}
 	calls := 0
-	got, err := lc.locateRangeWith(context.Background(), []byte("b"), []byte("f"), 2, false, NoTenantID, func() ([]locationEntry, error) {
+	got, err := lc.locateRangeWith(context.Background(), []byte("b"), []byte("f"), math.MaxInt32, false, NoTenantID, func() ([]locationEntry, error) {
 		calls++
 		return replies[calls-1], nil
 	})
-	if err != nil || calls != 3 || !reflect.DeepEqual(cachedShardBegins(got), []string{"a", "c"}) {
-		t.Fatalf("got %q after %d requests, err %v; want [a c] after 3", cachedShardBegins(got), calls, err)
+	if err != nil || calls != 4 || !reflect.DeepEqual(cachedShardBegins(got), []string{"a", "c"}) {
+		t.Fatalf("got %q after %d requests, err %v; want [a c] after 4", cachedShardBegins(got), calls, err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
