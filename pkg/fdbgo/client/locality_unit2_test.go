@@ -361,3 +361,34 @@ func TestCachedLocations_FinalShardWithNilEnd(t *testing.T) {
 		}
 	}
 }
+
+func TestContiguousLocations_StopsAtReplyHole(t *testing.T) {
+	t.Parallel()
+	servers := []ServerInfo{{Address: "s"}}
+	entry := func(begin, end string) locationEntry {
+		e := locationEntry{begin: []byte(begin), servers: servers}
+		if end != "" {
+			e.end = []byte(end)
+		}
+		return e
+	}
+	for _, tc := range []struct {
+		name       string
+		entries    []locationEntry
+		begin, end string
+		reverse    bool
+		want       []string
+	}{
+		{"forward_whole", []locationEntry{entry("a", "c"), entry("c", "e"), entry("e", "")}, "b", "f", false, []string{"a", "c", "e"}},
+		{"forward_hole", []locationEntry{entry("a", "c"), entry("e", "g")}, "b", "f", false, []string{"a"}},
+		{"forward_origin_missing", []locationEntry{entry("c", "e")}, "b", "f", false, nil},
+		{"reverse_whole", []locationEntry{entry("e", "g"), entry("c", "e"), entry("a", "c")}, "b", "f", true, []string{"e", "c", "a"}},
+		{"reverse_hole", []locationEntry{entry("e", "g"), entry("a", "c")}, "b", "f", true, []string{"e"}},
+		{"reverse_origin_missing", []locationEntry{entry("a", "c")}, "b", "f", true, nil},
+	} {
+		got := contiguousLocations(tc.entries, []byte(tc.begin), []byte(tc.end), tc.reverse)
+		if gotBegins := cachedShardBegins(got); (tc.want == nil) != (got == nil) || (tc.want != nil && !reflect.DeepEqual(gotBegins, tc.want)) {
+			t.Errorf("%s: got %q, want %q", tc.name, gotBegins, tc.want)
+		}
+	}
+}

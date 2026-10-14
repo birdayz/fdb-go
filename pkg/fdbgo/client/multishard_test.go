@@ -423,14 +423,11 @@ func testMultiShard_GetRange(t *testing.T, ctx context.Context, env *multiShardE
 	t.Logf("forward scan: 100 keys across %d shards", env.numShards)
 }
 
-// GetRangeReverse: full reverse scan across all shards.
 // C++ getKeyRangeLocations asks a proxy once for the `limit` shards nearest the
 // scan origin when its cache cannot supply them (NativeAPI.actor.cpp:3244-3262,
 // 3194-3221); for reverse the proxy walks back from end (CommitProxyServer.actor.cpp:2725-2741).
+// One location request is sent, or two when the first reply times out.
 func testMultiShard_LocateRangeLimit(t *testing.T, ctx context.Context, env *multiShardEnv) {
-	if env.numShards < 3 {
-		t.Fatalf("a limit of 2 needs at least 3 shards, have %d", env.numShards)
-	}
 	db := env.db.db
 	begin, end := []byte(env.prefix), append([]byte(env.prefix), 0xFF)
 	var sends atomic.Int32
@@ -444,6 +441,22 @@ func testMultiShard_LocateRangeLimit(t *testing.T, ctx context.Context, env *mul
 		}
 		return out
 	}
+	if shards, err := db.locCache.locateRange(db, ctx, begin, end, 100, false, NoTenantID, types.SpanContext{}); err != nil || len(shards) < 3 {
+		t.Fatalf("a limit of 2 needs at least 3 shards, have %d: %v", len(shards), err)
+	}
+	t.Run("limit=0", func(t *testing.T) {
+		db.locCache.invalidateRange(begin, end, NoTenantID)
+		sends.Store(0)
+		locateCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		all, err := db.locCache.locateRange(db, locateCtx, begin, end, 0, false, NoTenantID, types.SpanContext{})
+		cancel()
+		if n := sends.Load(); err != nil || n < 1 || n > 2 {
+			t.Fatalf("cold locateRange of every shard sent %d location requests: %v", n, err)
+		}
+		if len(all) < 3 || bytes.Compare(all[0].ShardBegin, begin) > 0 || (all[len(all)-1].ShardEnd != nil && bytes.Compare(all[len(all)-1].ShardEnd, end) < 0) {
+			t.Fatalf("cold locateRange of every shard returned %q", bounds(all))
+		}
+	})
 	for _, reverse := range []bool{false, true} {
 		t.Run(fmt.Sprintf("reverse=%v", reverse), func(t *testing.T) {
 			db.locCache.invalidateRange(begin, end, NoTenantID)
@@ -452,10 +465,10 @@ func testMultiShard_LocateRangeLimit(t *testing.T, ctx context.Context, env *mul
 			locs, err := db.locCache.locateRange(db, locateCtx, begin, end, 2, reverse, NoTenantID, types.SpanContext{})
 			cancel()
 			if err != nil {
-				t.Fatalf("reverse=%v: cold locateRange after %d location requests: %v", reverse, sends.Load(), err)
+				t.Fatalf("cold locateRange after %d location requests: %v", sends.Load(), err)
 			}
-			if n := sends.Load(); n != 1 || len(locs) != 2 {
-				t.Fatalf("reverse=%v: cold locateRange sent %d location requests for %d shards, want 1 for 2", reverse, n, len(locs))
+			if n := sends.Load(); n < 1 || n > 2 || len(locs) != 2 {
+				t.Fatalf("cold locateRange sent %d location requests for %d shards, want 1 for 2", n, len(locs))
 			}
 			first, second := locs[0], locs[1]
 			if !reverse && (bytes.Compare(first.ShardBegin, begin) > 0 || bytes.Compare(first.ShardEnd, begin) <= 0 || !bytes.Equal(second.ShardBegin, first.ShardEnd)) {
@@ -467,12 +480,13 @@ func testMultiShard_LocateRangeLimit(t *testing.T, ctx context.Context, env *mul
 			sends.Store(0)
 			cached, err := db.locCache.locateRange(db, ctx, begin, end, 2, reverse, NoTenantID, types.SpanContext{})
 			if err != nil || sends.Load() != 0 || !reflect.DeepEqual(bounds(cached), bounds(locs)) {
-				t.Fatalf("reverse=%v: cached locateRange sent %d requests, shards %q want %q, err %v", reverse, sends.Load(), bounds(cached), bounds(locs), err)
+				t.Fatalf("cached locateRange sent %d requests, shards %q want %q, err %v", sends.Load(), bounds(cached), bounds(locs), err)
 			}
 		})
 	}
 }
 
+// GetRangeReverse: full reverse scan across all shards.
 func testMultiShard_GetRangeReverse(t *testing.T, ctx context.Context, env *multiShardEnv) {
 	g := gomega.NewWithT(t)
 
