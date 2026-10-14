@@ -245,7 +245,7 @@ func (store *FDBRecordStore) scanIndexRemoteFetch(index *Index, scanType IndexSc
 	if err != nil {
 		return nil, err
 	}
-	rows := &mappedIndexRows{rows: reader.GetMappedRange(rng, mapper.Pack(), indexRangeOptions(props)).Iterator()}
+	rows := &mappedIndexRows{rows: reader.GetMappedRange(rng, mapper.Pack(), kvRangeOptions(props)).Iterator()}
 	entries.iterator = rows
 	var raw RecordCursor[FDBIndexedRawRecord] = &indexPrefetchCursor{entries: entries, rows: rows}
 	loader := &remoteIndexRecordLoader{store: store, scanState: props.ExecuteProperties.ScanState, orphan: orphan}
