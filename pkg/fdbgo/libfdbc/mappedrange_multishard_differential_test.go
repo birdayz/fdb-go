@@ -205,6 +205,7 @@ func mdShardSetup(t *testing.T, ctx context.Context) mdShardEnv {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { goDB.Close() })
+	primeMappedSnapshotClient(t, ctx, goDB)
 	// Current keyServers checks must not ratchet the query client's minimum
 	// acceptable version past an active, explicitly pinned reader.
 	metadataDB, err := fdbclient.OpenDatabase(ctx, clusterFile, fdbclient.WithAPIVersion(730))
