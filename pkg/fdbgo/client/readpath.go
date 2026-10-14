@@ -648,11 +648,15 @@ type rangeScanOps[T any] struct {
 	// sizeBytes is the element's contribution to the WithRangeByteCeiling
 	// accounting. Called only when that opt-in ceiling is armed.
 	sizeBytes func(*T) int64
+	// limitBytes is C++ GetRangeLimits::decrement's charge against a byte target
+	// (NativeAPI.actor.cpp:2811-2853): the primary row's key and value plus 8.
+	limitBytes func(*T) int
 }
 
 var plainRangeScanOps = rangeScanOps[KeyValue]{
-	key:       func(kv *KeyValue) []byte { return kv.Key },
-	sizeBytes: func(kv *KeyValue) int64 { return int64(len(kv.Key) + len(kv.Value)) },
+	key:        func(kv *KeyValue) []byte { return kv.Key },
+	sizeBytes:  func(kv *KeyValue) int64 { return int64(len(kv.Key) + len(kv.Value)) },
+	limitBytes: func(kv *KeyValue) int { return 8 + len(kv.Key) + len(kv.Value) },
 }
 
 func (tx *Transaction) getRangeImpl(ctx context.Context, begin, end []byte, limit int, byteTarget int, reverse bool) ([]KeyValue, bool, error) {
@@ -663,11 +667,11 @@ func (tx *Transaction) getRangeImpl(ctx context.Context, begin, end []byte, limi
 
 func rangeScanImpl[T any](tx *Transaction, ctx context.Context, begin, end []byte, limit int, byteTarget int, reverse bool, ops rangeScanOps[T]) ([]T, bool, error) {
 	tx.hadRead.Store(true) // a read was issued (RFC-059 poison signal)
-	// getRangeShardLimit is locations fetched per locateRange RPC. NOT C++ GET_RANGE_SHARD_LIMIT
-	// (=2, ClientKnobs.cpp:101) — a deliberate Go perf deviation: pre-fetch up to 100 shard locations
-	// per RPC (fewer, larger locate calls) vs C++ getExactRange's batch-of-2. Correctness-neutral: both
-	// loop until the range is exhausted and return identical KVs; only the locate-RPC count differs.
-	const getRangeShardLimit = 100
+	// C++ getExactRange locates GET_RANGE_SHARD_LIMIT (=2, ClientKnobs.cpp:101) shards at a time
+	// (NativeAPI.actor.cpp:4272-4278) and the soft byte limit below depends on those pairs. Go
+	// fetches more per locate RPC, always a whole number of pairs so pair origins coincide.
+	const cppGetRangeShardLimit = 2
+	const getRangeShardLimit = 50 * cppGetRangeShardLimit
 	const maxRelocateRetries = 5 // Bound retry loop; C++ relies on transaction timeout (default 5s)
 
 	var allKVs []T
@@ -678,6 +682,7 @@ func rangeScanImpl[T any](tx *Transaction, ctx context.Context, begin, end []byt
 	}
 	curBegin := begin
 	curEnd := end
+	bytesLeft := byteTarget // C++ limits.bytes after decrement
 	relocateRetries := 0
 	timeoutRetries := 0
 
@@ -687,9 +692,11 @@ func rangeScanImpl[T any](tx *Transaction, ctx context.Context, begin, end []byt
 	//	if (limits.hasSatisfiedMinRows() && output.size() > 0) { output.more = true; return output; }
 	//
 	// hasSatisfiedMinRows() is hasByteLimit() && minRows == 0 (:2875), and minRows starts at 1
-	// (FDBTypes.h GetRangeLimits ctor), so ANY non-empty reply satisfies it. A byte-targeted
-	// range call is therefore exactly ONE server reply, and the batch boundary is wherever the
-	// SERVER truncated against the target this call put on the request.
+	// (FDBTypes.h GetRangeLimits ctor), so ANY non-empty reply satisfies it. C++ checks it after
+	// re-querying a shard or moving to a location pair's second shard, but relocates after the
+	// second without checking (:4392-4407). A call whose first rows come from a pair's second
+	// shard therefore also reads the next pair's first; getRange reaches that through its
+	// fallback from an empty first reply (:4828-4836). Each request carries the bytes left.
 	//
 	// This is the half that makes the request's byte target OBSERVABLE. Without it the loop
 	// absorbs a truncated reply and re-queries until the ROW budget fills, which is why
@@ -743,15 +750,16 @@ func rangeScanImpl[T any](tx *Transaction, ctx context.Context, begin, end []byt
 			// rows. C++ reaches its soft-byte-limit return after ++shard for exactly this
 			// case, so the call ends here rather than spanning shards — which is the point
 			// of the soft limit: "This can prevent problems where the desired range spans
-			// many shards and would be too slow to fetch entirely."
-			if softByteStop() {
+			// many shards and would be too slow to fetch entirely." A pair's first shard is
+			// fetched without the check.
+			if shard%cppGetRangeShardLimit != 0 && softByteStop() {
 				return allKVs, true, nil
 			}
 
 			// Inner loop: re-query same shard while more=true (C++ stays on same
 			// shard index, mutates locations[shard].range in-place).
 			for remaining > 0 {
-				kvs, more, err := ops.send(ctx, shardBegin, shardEnd, remaining, byteTarget, reverse, loc.Servers)
+				kvs, more, err := ops.send(ctx, shardBegin, shardEnd, remaining, bytesLeft, reverse, loc.Servers)
 				if err != nil {
 					// Reply timeout (a slow-but-alive server): the location is
 					// fine — re-send the SAME shard (no relocate), matching
@@ -822,7 +830,14 @@ func rangeScanImpl[T any](tx *Transaction, ctx context.Context, begin, end []byt
 					}
 				}
 
-				if remaining <= 0 {
+				if byteTarget != ByteLimitUnlimited {
+					for i := range kvs {
+						bytesLeft -= ops.limitBytes(&kvs[i])
+					}
+					bytesLeft = max(0, bytesLeft)
+				}
+				// C++ limits.isReached(): rows == 0 || (bytes == 0 && minRows == 0).
+				if remaining <= 0 || (bytesLeft == 0 && len(allKVs) > 0) {
 					// Limit reached. C++ getExactRange sets
 					// output.more = (data.size() == limit) — always true when
 					// the limit is met, regardless of the current shard's more

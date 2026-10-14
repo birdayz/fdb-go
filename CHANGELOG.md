@@ -291,6 +291,7 @@ Each is described in full under Compatibility or Changed below.
 
 ### Fixed
 - Range-read shard lookups ask a commit proxy once for the shards a read needs, as libfdb_c does, instead of filling the cache for the whole range first; a reverse read over more uncached shards than one lookup returns no longer repeats the same location request until its deadline, and `GetLocations` with a limit of 0 returns every shard.
+- Byte-limited range and mapped-range reads that start in a shard with nothing left to read return the same batch as libfdb_c: rows from the two shards after it, the second read with the bytes the first left. Plain range reads with read-your-writes enabled cap their first storage request at 80000 bytes, as libfdb_c does.
 - Pipelined index record scans return a head that completes during mapping issuance before another source pull can fail, matching Java's post-insertion readiness ordering. A still-pending head retains source-error-first behavior (#915).
 - Record-store load, save and delete timers count missing records and failed completions, including nested loads in saves, deletes and dry runs; erroring orphan index fetches increment the bad-index-entry counter, as Java does.
 - The published test report counts individual test cases again: CI downloads remote-cached test logs, every shard is counted, and a missing log fails the report instead of counting one test per target.

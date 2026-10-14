@@ -763,7 +763,7 @@ func (r *rywRangeRead) run(
 
 	if view == nil {
 		// No local mutations, and the snapshot cache did not answer at issue.
-		kvs, more, err := serverGetRange(ctx, begin, end, limit, byteTarget, reverse)
+		kvs, more, err := serverGetRange(ctx, begin, end, limit, rywFirstRequestBytes(byteTarget), reverse)
 		if err != nil {
 			return nil, false, err
 		}
@@ -896,7 +896,7 @@ func (c *rywCache) getSnapshotRange(
 	if known {
 		return rows, more, err
 	}
-	rows, more, err = serverGetRange(ctx, begin, end, limit, byteTarget, reverse)
+	rows, more, err = serverGetRange(ctx, begin, end, limit, rywFirstRequestBytes(byteTarget), reverse)
 	if err == nil {
 		c.cacheServerResult(begin, end, rows, more, reverse)
 		cut, remainingBytes := applyRangeByteLimit(rows, byteTarget)
@@ -1002,6 +1002,13 @@ func (c *rywCache) mergeBatchInSpan(s *rywWriteSpan, serverKVs []KeyValue, range
 	c.swapWriteSpanLocked(s)
 	defer c.swapWriteSpanLocked(s)
 	return c.mergeBatchLocked(serverKVs, rangeBegin, rangeEnd, boundary, reverse)
+}
+
+// rywFirstRequestBytes is C++ setRequestLimits' byte limit for the first storage read of a
+// RYW range call (requestCount 0): never above REPLY_BYTE_LIMIT, while the rows returned are
+// still cut against the caller's own target (ReadYourWrites.actor.cpp:569-590, 748-753).
+func rywFirstRequestBytes(byteTarget int) int {
+	return min(byteTarget, replyByteLimit)
 }
 
 // applyRangeByteLimit includes the row that exhausts the budget, guaranteeing

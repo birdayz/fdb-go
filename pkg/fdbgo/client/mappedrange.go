@@ -209,6 +209,9 @@ func buildGetMappedKeyValuesRequest(mapper []byte) func(begin, end []byte, versi
 // secondary key from the mapped side would not even be in that keyspace.
 var mappedRangeScanOps = rangeScanOps[MappedKeyValue]{
 	key: func(m *MappedKeyValue) []byte { return m.Key },
+	// MappedKeyValueRef inherits KeyValueRef::expectedSize (FDBTypes.h:920-922),
+	// so a byte target is charged for the primary row only.
+	limitBytes: func(m *MappedKeyValue) int { return 8 + len(m.Key) + len(m.Value) },
 	sizeBytes: func(m *MappedKeyValue) int64 {
 		// The ceiling bounds what the CLIENT materializes, so it must count the
 		// secondary payload too — that is the bulk of a mapped reply, and
