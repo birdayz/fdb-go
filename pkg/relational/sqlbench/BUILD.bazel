@@ -1,7 +1,8 @@
 load("@rules_go//go:def.bzl", "go_test")
 
-# SQL benchmarks with identical source in every compared tree. The binary has
-# no tests; run its benchmarks explicitly, e.g.
+# SQL benchmarks with identical source in every compared tree. Its only test
+# checks that TestMain registered the FRL domain; run the benchmarks
+# explicitly, e.g.
 #   FDB_BENCH_CLUSTER_FILE=/etc/foundationdb/fdb.cluster sqlbench_test \
 #     -test.run='^$' -test.bench='^BenchmarkFDB_' -test.benchmem
 go_test(

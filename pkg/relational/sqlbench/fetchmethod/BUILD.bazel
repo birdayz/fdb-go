@@ -1,7 +1,8 @@
 load("@rules_go//go:def.bzl", "go_test")
 
-# SQL INDEX_FETCH_METHOD benchmarks (RFC-258 #923 trees only). The binary has
-# no tests; run its benchmarks explicitly.
+# SQL INDEX_FETCH_METHOD benchmarks (RFC-258 #923 trees only). Its only test
+# checks that TestMain registered the FRL domain; run the benchmarks
+# explicitly.
 go_test(
     name = "fetchmethod_test",
     srcs = [
