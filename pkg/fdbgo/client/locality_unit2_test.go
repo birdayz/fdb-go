@@ -1,7 +1,10 @@
 package client
 
 import (
+	"context"
 	"encoding/binary"
+	"math"
+	"reflect"
 	"testing"
 
 	"fdb.dev/pkg/fdbgo/transport"
@@ -249,19 +252,28 @@ func TestBuildGetKeyServerLocationsRangeRequest_Reverse(t *testing.T) {
 }
 
 // ============================================================================
-// collectOverlapping — overlap query under tenant isolation.
+// cachedLocationsLocked — getCachedLocations' walk from the scan origin.
 // ============================================================================
 
-func TestCollectOverlapping_NoEntriesReturnsNil(t *testing.T) {
+func cachedShardBegins(results []LocationResult) []string {
+	out := make([]string, len(results))
+	for i, r := range results {
+		out[i] = string(r.ShardBegin)
+	}
+	return out
+}
+
+func TestCachedLocations_EmptyCacheMisses(t *testing.T) {
 	t.Parallel()
 	lc := &locationCache{}
-	got := lc.collectOverlapping(0, []byte("a"), []byte("z"))
-	if got != nil {
-		t.Errorf("got %v, want nil", got)
+	for _, reverse := range []bool{false, true} {
+		if got, ok := lc.cachedLocationsLocked(0, []byte("a"), []byte("z"), 0, reverse); ok || got != nil {
+			t.Errorf("reverse=%v: got %v, %v; want a miss", reverse, got, ok)
+		}
 	}
 }
 
-func TestCollectOverlapping_OnlyMatchingTenant(t *testing.T) {
+func TestCachedLocations_OnlyMatchingTenant(t *testing.T) {
 	t.Parallel()
 	lc := &locationCache{}
 	// Cache invariant: entries sorted by (tenantId, begin). Tenant 2's entry
@@ -272,44 +284,158 @@ func TestCollectOverlapping_OnlyMatchingTenant(t *testing.T) {
 		{tenantId: 1, begin: []byte("e"), end: []byte("g")},
 		{tenantId: 2, begin: []byte("a"), end: []byte("z")}, // different tenant — must be excluded
 	}
-	got := lc.collectOverlapping(1, []byte("b"), []byte("f"))
-	if len(got) != 3 {
-		t.Fatalf("got %d entries, want 3 (a-c, c-e, e-g for tenant 1)", len(got))
-	}
-	// Sanity: each result must come from tenant 1, NOT the tenant-2 a-z shard.
-	for i, r := range got {
-		if string(r.ShardEnd) == "z" {
-			t.Errorf("entry[%d] is the tenant-2 shard; cross-tenant leak", i)
+	for _, tc := range []struct {
+		reverse bool
+		want    []string
+	}{{false, []string{"a", "c", "e"}}, {true, []string{"e", "c", "a"}}} {
+		got, ok := lc.cachedLocationsLocked(1, []byte("b"), []byte("f"), 0, tc.reverse)
+		if !ok || !reflect.DeepEqual(cachedShardBegins(got), tc.want) {
+			t.Errorf("reverse=%v: got %q, %v; want %q", tc.reverse, cachedShardBegins(got), ok, tc.want)
 		}
 	}
 }
 
-func TestCollectOverlapping_StopsAfterRange(t *testing.T) {
+func TestCachedLocations_StopsAtLimitOrRangeEdge(t *testing.T) {
 	t.Parallel()
 	lc := &locationCache{}
 	lc.entries = []locationEntry{
 		{tenantId: 1, begin: []byte("a"), end: []byte("c")},
 		{tenantId: 1, begin: []byte("c"), end: []byte("e")},
 		{tenantId: 1, begin: []byte("e"), end: []byte("g")},
-		{tenantId: 1, begin: []byte("g"), end: []byte("z")}, // past range
+		{tenantId: 1, begin: []byte("g"), end: []byte("z")},
 	}
-	got := lc.collectOverlapping(1, []byte("b"), []byte("d"))
-	if len(got) != 2 {
-		t.Fatalf("got %d entries, want 2 (a-c, c-e)", len(got))
+	for _, tc := range []struct {
+		begin, end string
+		limit      int
+		reverse    bool
+		want       []string
+	}{
+		{"b", "d", 0, false, []string{"a", "c"}},
+		{"b", "z", 2, false, []string{"a", "c"}},
+		{"b", "d", 0, true, []string{"c", "a"}},
+		{"b", "z", 2, true, []string{"g", "e"}},
+		{"c", "e", 0, true, []string{"c"}},
+	} {
+		got, ok := lc.cachedLocationsLocked(1, []byte(tc.begin), []byte(tc.end), tc.limit, tc.reverse)
+		if !ok || !reflect.DeepEqual(cachedShardBegins(got), tc.want) {
+			t.Errorf("[%s,%s) limit=%d reverse=%v: got %q, %v; want %q", tc.begin, tc.end, tc.limit, tc.reverse, cachedShardBegins(got), ok, tc.want)
+		}
 	}
 }
 
-func TestCollectOverlapping_FinalShardWithNilEnd(t *testing.T) {
+func TestCachedLocations_MissesAtGapBeforeLimit(t *testing.T) {
+	t.Parallel()
+	lc := &locationCache{}
+	lc.entries = []locationEntry{
+		{tenantId: 1, begin: []byte("a"), end: []byte("c")},
+		{tenantId: 1, begin: []byte("e"), end: []byte("g")}, // [c, e) is not cached
+	}
+	for _, tc := range []struct {
+		begin, end string
+		limit      int
+		reverse    bool
+		want       []string // nil: a miss
+	}{
+		{"b", "f", 0, false, nil},
+		{"b", "f", 0, true, nil},
+		{"b", "f", 1, false, []string{"a"}},
+		{"b", "f", 1, true, []string{"e"}},
+		{"b", "c", 0, false, []string{"a"}},
+		{"f", "g", 0, true, []string{"e"}},
+	} {
+		got, ok := lc.cachedLocationsLocked(1, []byte(tc.begin), []byte(tc.end), tc.limit, tc.reverse)
+		if ok != (tc.want != nil) || (ok && !reflect.DeepEqual(cachedShardBegins(got), tc.want)) {
+			t.Errorf("[%s,%s) limit=%d reverse=%v: got %q, %v; want %q", tc.begin, tc.end, tc.limit, tc.reverse, cachedShardBegins(got), ok, tc.want)
+		}
+	}
+}
+
+func TestCachedLocations_FinalShardWithNilEnd(t *testing.T) {
 	t.Parallel()
 	lc := &locationCache{}
 	lc.entries = []locationEntry{
 		{tenantId: 1, begin: []byte("a"), end: nil}, // tail shard
 	}
-	got := lc.collectOverlapping(1, []byte("b"), []byte("z"))
-	if len(got) != 1 {
-		t.Fatalf("got %d entries, want 1 (open-ended tail shard)", len(got))
+	for _, reverse := range []bool{false, true} {
+		got, ok := lc.cachedLocationsLocked(1, []byte("b"), []byte("z"), 0, reverse)
+		if !ok || len(got) != 1 || got[0].ShardEnd != nil {
+			t.Errorf("reverse=%v: got %v, %v; want the open-ended tail shard", reverse, got, ok)
+		}
 	}
-	if got[0].ShardEnd != nil {
-		t.Errorf("ShardEnd: got %v, want nil", got[0].ShardEnd)
+}
+
+func TestContiguousLocations_RejectsReplyHoles(t *testing.T) {
+	t.Parallel()
+	servers := []ServerInfo{{Address: "s"}}
+	entry := func(begin, end string) locationEntry {
+		e := locationEntry{begin: []byte(begin), servers: servers}
+		if end != "" {
+			e.end = []byte(end)
+		}
+		return e
+	}
+	const all = math.MaxInt32
+	for _, tc := range []struct {
+		name       string
+		entries    []locationEntry
+		begin, end string
+		limit      int
+		reverse    bool
+		want       []string
+	}{
+		{"forward_whole", []locationEntry{entry("a", "c"), entry("c", "e"), entry("e", "")}, "b", "f", all, false, []string{"a", "c", "e"}},
+		{"forward_limited", []locationEntry{entry("a", "c"), entry("c", "e")}, "b", "f", 2, false, []string{"a", "c"}},
+		{"forward_tail_dropped", []locationEntry{entry("a", "c"), entry("c", "e")}, "b", "f", all, false, nil},
+		{"forward_tail_reaches_end", []locationEntry{entry("a", "c"), entry("c", "f")}, "b", "f", all, false, []string{"a", "c"}},
+		{"forward_hole", []locationEntry{entry("a", "c"), entry("e", "g")}, "b", "f", all, false, nil},
+		{"forward_origin_missing", []locationEntry{entry("c", "e")}, "b", "f", all, false, nil},
+		{"forward_origin_ends_at_begin", []locationEntry{entry("a", "b"), entry("b", "g")}, "b", "f", all, false, nil},
+		{"forward_origin_at_begin", []locationEntry{entry("b", "g")}, "b", "f", all, false, []string{"b"}},
+		{"reverse_whole", []locationEntry{entry("e", "g"), entry("c", "e"), entry("a", "c")}, "b", "f", all, true, []string{"e", "c", "a"}},
+		{"reverse_limited", []locationEntry{entry("e", "g"), entry("c", "e")}, "b", "f", 2, true, []string{"e", "c"}},
+		{"reverse_tail_dropped", []locationEntry{entry("e", "g"), entry("c", "e")}, "b", "f", all, true, nil},
+		{"reverse_tail_reaches_begin", []locationEntry{entry("e", "g"), entry("b", "e")}, "b", "f", all, true, []string{"e", "b"}},
+		{"reverse_hole", []locationEntry{entry("e", "g"), entry("a", "c")}, "b", "f", all, true, nil},
+		{"reverse_origin_missing", []locationEntry{entry("a", "c")}, "b", "f", all, true, nil},
+		{"reverse_origin_ends_at_end", []locationEntry{entry("a", "f")}, "b", "f", all, true, []string{"a"}},
+		{"reverse_origin_begins_at_end", []locationEntry{entry("f", "g")}, "b", "f", all, true, nil},
+		{"reverse_origin_open_ended", []locationEntry{entry("a", "")}, "b", "f", all, true, []string{"a"}},
+		{"empty_reply", nil, "b", "f", all, false, nil},
+	} {
+		got := contiguousLocations(tc.entries, []byte(tc.begin), []byte(tc.end), tc.limit, tc.reverse)
+		if gotBegins := cachedShardBegins(got); (tc.want == nil) != (got == nil) || (tc.want != nil && !reflect.DeepEqual(gotBegins, tc.want)) {
+			t.Errorf("%s: got %q, want %q", tc.name, gotBegins, tc.want)
+		}
+	}
+}
+
+func TestLocateRangeWith_AsksAgainAfterReplyHole(t *testing.T) {
+	t.Parallel()
+	servers := []ServerInfo{{Address: "s"}}
+	replies := [][]locationEntry{
+		{{begin: []byte("c"), end: []byte("e"), servers: servers}},                                                           // origin dropped
+		{{begin: []byte("a"), end: []byte("c"), servers: servers}, {begin: []byte("e"), end: []byte("g"), servers: servers}}, // hole
+		{{begin: []byte("a"), end: []byte("c"), servers: servers}},                                                           // tail dropped
+		{{begin: []byte("a"), end: []byte("c"), servers: servers}, {begin: []byte("c"), end: []byte("g"), servers: servers}},
+	}
+	lc := &locationCache{}
+	calls := 0
+	got, err := lc.locateRangeWith(context.Background(), []byte("b"), []byte("f"), math.MaxInt32, false, NoTenantID, func() ([]locationEntry, error) {
+		calls++
+		return replies[calls-1], nil
+	})
+	if err != nil || calls != 4 || !reflect.DeepEqual(cachedShardBegins(got), []string{"a", "c"}) {
+		t.Fatalf("got %q after %d requests, err %v; want [a c] after 4", cachedShardBegins(got), calls, err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	calls = 0
+	got, err = lc.locateRangeWith(ctx, []byte("x"), []byte("z"), 2, false, NoTenantID, func() ([]locationEntry, error) {
+		calls++
+		cancel()
+		return replies[0], nil
+	})
+	if err == nil || got != nil || calls != 1 {
+		t.Fatalf("canceled locate returned %q after %d requests, err %v; want an error", cachedShardBegins(got), calls, err)
 	}
 }

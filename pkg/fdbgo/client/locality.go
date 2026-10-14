@@ -342,10 +342,12 @@ func (lc *locationCache) evictIfNeeded() {
 	})
 }
 
-// locateRange returns all cached location entries overlapping [begin, end).
-// On cache miss for any sub-range, queries a commit proxy for the missing range.
-// C++ getKeyRangeLocations equivalent. The reverse parameter is forwarded to the
-// commit proxy so it returns shards in the right order for the scan direction.
+// locateRange returns up to limit shards overlapping [begin, end) in scan order: nearest
+// begin first, or nearest end first when reverse; limit <= 0 asks for all of them, as C++
+// callers pass TOO_MANY. As C++ getKeyRangeLocations (NativeAPI.actor.cpp:3244-3262), it
+// answers from the cache only when the cache holds those shards contiguously from the scan
+// origin (getCachedLocations :1963-1999), and otherwise asks a commit proxy for them
+// (:3194-3221).
 func (lc *locationCache) locateRange(db *database, ctx context.Context, begin, end []byte, limit int, reverse bool, tenantId int64, span types.SpanContext) ([]LocationResult, error) {
 	// System key space (\xff\xff prefix) is handled like locate().
 	if len(begin) >= 2 && begin[0] == 0xff && begin[1] == 0xff {
@@ -354,62 +356,106 @@ func (lc *locationCache) locateRange(db *database, ctx context.Context, begin, e
 	if len(end) >= 2 && end[0] == 0xff && end[1] == 0xff {
 		end = []byte{0xff, 0x00} // just past \xff
 	}
+	if bytes.Compare(begin, end) >= 0 {
+		return nil, nil
+	}
+	if limit <= 0 || limit > math.MaxInt32 {
+		limit = math.MaxInt32
+	}
+	return lc.locateRangeWith(ctx, begin, end, limit, reverse, tenantId, func() ([]locationEntry, error) {
+		return lc.refreshRange(db, ctx, begin, end, limit, reverse, tenantId, span)
+	})
+}
 
-	curBegin := begin
+// locateRangeWith is locateRange after argument normalisation, with the proxy request
+// supplied by the caller.
+func (lc *locationCache) locateRangeWith(ctx context.Context, begin, end []byte, limit int, reverse bool, tenantId int64, refresh func() ([]locationEntry, error)) ([]LocationResult, error) {
 	for {
-		var results []LocationResult
-
-		// Binary search for overlapping entries. O(log N + K).
 		lc.mu.RLock()
-		results = lc.collectOverlapping(tenantId, curBegin, end)
+		results, ok := lc.cachedLocationsLocked(tenantId, begin, end, limit, reverse)
 		lc.mu.RUnlock()
-
-		// Results are already sorted (entries are sorted, we scan forward).
-
-		// Check for gaps in [curBegin, end).
-		gapBegin := curBegin
-		hasGap := false
-		for _, r := range results {
-			if bytes.Compare(r.ShardBegin, gapBegin) > 0 {
-				// There's a gap: [gapBegin, r.ShardBegin) is uncached.
-				hasGap = true
-				break
-			}
-			if r.ShardEnd == nil {
-				gapBegin = end // shard covers to infinity, no more gaps
-				break
-			} else if bytes.Compare(r.ShardEnd, gapBegin) > 0 {
-				gapBegin = r.ShardEnd
-			}
-		}
-		if !hasGap && bytes.Compare(gapBegin, end) < 0 {
-			// Gap at the tail: [gapBegin, end) is uncached.
-			hasGap = true
-		}
-
-		if !hasGap {
-			// Return in scan order: C++ getKeyRangeLocations returns shards
-			// end→begin for reverse scans so locations[0] is nearest end.
-			// Our cache always sorts ascending, so reverse first, then clamp.
-			// Reversing before limit ensures we keep the shards nearest the
-			// scan start (nearest end for reverse, nearest begin for forward).
-			if reverse {
-				for i, j := 0, len(results)-1; i < j; i, j = i+1, j-1 {
-					results[i], results[j] = results[j], results[i]
-				}
-			}
-			if limit > 0 && len(results) > limit {
-				results = results[:limit]
-			}
+		if ok {
 			return results, nil
 		}
-
-		// Cache miss — refresh the missing sub-range.
-		_, err := lc.refreshRange(db, ctx, gapBegin, end, limit, reverse, tenantId, span)
+		entries, err := refresh()
 		if err != nil {
 			return nil, err
 		}
-		// Loop back to re-scan cache with the new entries.
+		// The reply parser drops shards without storage servers. A reply with a hole
+		// would make callers skip its keys, so it is asked for again instead.
+		if results := contiguousLocations(entries, begin, end, limit, reverse); results != nil {
+			return results, nil
+		}
+		if err := sleepCtx(ctx, wrongShardRetryDelay); err != nil {
+			return nil, err
+		}
+	}
+}
+
+// contiguousLocations converts a proxy reply covering the range from the scan origin
+// without a gap, or returns nil. The proxy stops only at limit or at the range edge
+// (CommitProxyServer.actor.cpp:2713-2741), so a shorter reply ending earlier lost a shard.
+func contiguousLocations(entries []locationEntry, begin, end []byte, limit int, reverse bool) []LocationResult {
+	results := make([]LocationResult, 0, len(entries))
+	for i, e := range entries {
+		switch {
+		case i == 0 && !reverse:
+			if bytes.Compare(e.begin, begin) > 0 || (e.end != nil && bytes.Compare(e.end, begin) <= 0) {
+				return nil
+			}
+		case i == 0:
+			if bytes.Compare(e.begin, end) >= 0 || (e.end != nil && bytes.Compare(e.end, end) < 0) {
+				return nil
+			}
+		case !reverse:
+			if !bytes.Equal(e.begin, entries[i-1].end) {
+				return nil
+			}
+		default:
+			if !bytes.Equal(e.end, entries[i-1].begin) {
+				return nil
+			}
+		}
+		results = append(results, LocationResult{Servers: e.servers, ShardBegin: e.begin, ShardEnd: e.end})
+	}
+	if len(results) == 0 {
+		return nil
+	}
+	if last := results[len(results)-1]; len(results) < limit &&
+		((!reverse && last.ShardEnd != nil && bytes.Compare(last.ShardEnd, end) < 0) || (reverse && bytes.Compare(last.ShardBegin, begin) > 0)) {
+		return nil
+	}
+	return results
+}
+
+// cachedLocationsLocked walks the cache from the scan origin like getCachedLocations,
+// reporting a miss at the first uncached key. Caller must hold at least lc.mu.RLock().
+func (lc *locationCache) cachedLocationsLocked(tenantId int64, begin, end []byte, limit int, reverse bool) ([]LocationResult, bool) {
+	var results []LocationResult
+	key := begin
+	if reverse {
+		key = end
+	}
+	for {
+		loc, ok := lc.lookupLocked(tenantId, key, reverse)
+		if !ok {
+			return nil, false
+		}
+		results = append(results, loc)
+		if len(results) == limit {
+			return results, true
+		}
+		if reverse {
+			if bytes.Compare(loc.ShardBegin, begin) <= 0 {
+				return results, true
+			}
+			key = loc.ShardBegin
+		} else {
+			if loc.ShardEnd == nil || bytes.Compare(loc.ShardEnd, end) >= 0 {
+				return results, true
+			}
+			key = loc.ShardEnd
+		}
 	}
 }
 
@@ -436,47 +482,6 @@ func stripTenantPrefix(entries []locationEntry, tenantId int64) {
 			entries[i].end = entries[i].end[8:]
 		}
 	}
-}
-
-// collectOverlapping returns all entries overlapping [begin, end) for the given
-// tenant, in sorted order. Caller must hold at least lc.mu.RLock(). O(log N + K).
-func (lc *locationCache) collectOverlapping(tenantId int64, begin, end []byte) []LocationResult {
-	if len(lc.entries) == 0 {
-		return nil
-	}
-
-	// Find starting position: first entry with (tenantId, begin) >= (tenantId, begin).
-	// Back up one to catch entry whose begin < begin but end > begin.
-	startIdx := lc.searchIndex(tenantId, begin)
-	if startIdx > 0 {
-		prev := &lc.entries[startIdx-1]
-		if prev.tenantId == tenantId {
-			startIdx--
-		}
-	}
-
-	var results []LocationResult
-	for i := startIdx; i < len(lc.entries); i++ {
-		e := &lc.entries[i]
-		if e.tenantId != tenantId {
-			if e.tenantId > tenantId {
-				break
-			}
-			continue
-		}
-		if bytes.Compare(e.begin, end) >= 0 {
-			break // past the range
-		}
-		// entry.begin < end. Check entry.end > begin.
-		if e.end == nil || bytes.Compare(e.end, begin) > 0 {
-			results = append(results, LocationResult{
-				Servers:    e.servers,
-				ShardBegin: e.begin,
-				ShardEnd:   e.end,
-			})
-		}
-	}
-	return results
 }
 
 // queryLocations is the shared load-balance loop for location queries.
