@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"encoding/binary"
 	"reflect"
 	"testing"
@@ -362,7 +363,7 @@ func TestCachedLocations_FinalShardWithNilEnd(t *testing.T) {
 	}
 }
 
-func TestContiguousLocations_StopsAtReplyHole(t *testing.T) {
+func TestContiguousLocations_RejectsReplyHoles(t *testing.T) {
 	t.Parallel()
 	servers := []ServerInfo{{Address: "s"}}
 	entry := func(begin, end string) locationEntry {
@@ -380,15 +381,52 @@ func TestContiguousLocations_StopsAtReplyHole(t *testing.T) {
 		want       []string
 	}{
 		{"forward_whole", []locationEntry{entry("a", "c"), entry("c", "e"), entry("e", "")}, "b", "f", false, []string{"a", "c", "e"}},
-		{"forward_hole", []locationEntry{entry("a", "c"), entry("e", "g")}, "b", "f", false, []string{"a"}},
+		{"forward_limited", []locationEntry{entry("a", "c"), entry("c", "e")}, "b", "f", false, []string{"a", "c"}},
+		{"forward_hole", []locationEntry{entry("a", "c"), entry("e", "g")}, "b", "f", false, nil},
 		{"forward_origin_missing", []locationEntry{entry("c", "e")}, "b", "f", false, nil},
+		{"forward_origin_ends_at_begin", []locationEntry{entry("a", "b"), entry("b", "g")}, "b", "f", false, nil},
+		{"forward_origin_at_begin", []locationEntry{entry("b", "g")}, "b", "f", false, []string{"b"}},
 		{"reverse_whole", []locationEntry{entry("e", "g"), entry("c", "e"), entry("a", "c")}, "b", "f", true, []string{"e", "c", "a"}},
-		{"reverse_hole", []locationEntry{entry("e", "g"), entry("a", "c")}, "b", "f", true, []string{"e"}},
+		{"reverse_hole", []locationEntry{entry("e", "g"), entry("a", "c")}, "b", "f", true, nil},
 		{"reverse_origin_missing", []locationEntry{entry("a", "c")}, "b", "f", true, nil},
+		{"reverse_origin_ends_at_end", []locationEntry{entry("c", "f")}, "b", "f", true, []string{"c"}},
+		{"reverse_origin_begins_at_end", []locationEntry{entry("f", "g")}, "b", "f", true, nil},
+		{"reverse_origin_open_ended", []locationEntry{entry("c", "")}, "b", "f", true, []string{"c"}},
+		{"empty_reply", nil, "b", "f", false, nil},
 	} {
 		got := contiguousLocations(tc.entries, []byte(tc.begin), []byte(tc.end), tc.reverse)
 		if gotBegins := cachedShardBegins(got); (tc.want == nil) != (got == nil) || (tc.want != nil && !reflect.DeepEqual(gotBegins, tc.want)) {
 			t.Errorf("%s: got %q, want %q", tc.name, gotBegins, tc.want)
 		}
+	}
+}
+
+func TestLocateRangeWith_AsksAgainAfterReplyHole(t *testing.T) {
+	t.Parallel()
+	servers := []ServerInfo{{Address: "s"}}
+	replies := [][]locationEntry{
+		{{begin: []byte("c"), end: []byte("e"), servers: servers}},                                                           // origin dropped
+		{{begin: []byte("a"), end: []byte("c"), servers: servers}, {begin: []byte("e"), end: []byte("g"), servers: servers}}, // hole
+		{{begin: []byte("a"), end: []byte("c"), servers: servers}, {begin: []byte("c"), end: []byte("g"), servers: servers}},
+	}
+	lc := &locationCache{}
+	calls := 0
+	got, err := lc.locateRangeWith(context.Background(), []byte("b"), []byte("f"), 2, false, NoTenantID, func() ([]locationEntry, error) {
+		calls++
+		return replies[calls-1], nil
+	})
+	if err != nil || calls != 3 || !reflect.DeepEqual(cachedShardBegins(got), []string{"a", "c"}) {
+		t.Fatalf("got %q after %d requests, err %v; want [a c] after 3", cachedShardBegins(got), calls, err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	calls = 0
+	got, err = lc.locateRangeWith(ctx, []byte("x"), []byte("z"), 2, false, NoTenantID, func() ([]locationEntry, error) {
+		calls++
+		cancel()
+		return replies[0], nil
+	})
+	if err == nil || got != nil || calls != 1 {
+		t.Fatalf("canceled locate returned %q after %d requests, err %v; want an error", cachedShardBegins(got), calls, err)
 	}
 }

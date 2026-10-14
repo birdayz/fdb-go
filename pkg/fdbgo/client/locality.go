@@ -359,9 +359,17 @@ func (lc *locationCache) locateRange(db *database, ctx context.Context, begin, e
 	if bytes.Compare(begin, end) >= 0 {
 		return nil, nil
 	}
-	if limit <= 0 {
+	if limit <= 0 || limit > math.MaxInt32 {
 		limit = math.MaxInt32
 	}
+	return lc.locateRangeWith(ctx, begin, end, limit, reverse, tenantId, func() ([]locationEntry, error) {
+		return lc.refreshRange(db, ctx, begin, end, limit, reverse, tenantId, span)
+	})
+}
+
+// locateRangeWith is locateRange after argument normalisation, with the proxy request
+// supplied by the caller.
+func (lc *locationCache) locateRangeWith(ctx context.Context, begin, end []byte, limit int, reverse bool, tenantId int64, refresh func() ([]locationEntry, error)) ([]LocationResult, error) {
 	for {
 		lc.mu.RLock()
 		results, ok := lc.cachedLocationsLocked(tenantId, begin, end, limit, reverse)
@@ -369,13 +377,13 @@ func (lc *locationCache) locateRange(db *database, ctx context.Context, begin, e
 		if ok {
 			return results, nil
 		}
-		entries, err := lc.refreshRange(db, ctx, begin, end, limit, reverse, tenantId, span)
+		entries, err := refresh()
 		if err != nil {
 			return nil, err
 		}
-		// The reply parser drops shards without storage servers; a list with a hole
-		// would make callers skip its keys, so only the run from the origin is used.
-		if results := contiguousLocations(entries, begin, end, reverse); len(results) > 0 {
+		// The reply parser drops shards without storage servers. A reply with a hole
+		// would make callers skip its keys, so it is asked for again instead.
+		if results := contiguousLocations(entries, begin, end, reverse); results != nil {
 			return results, nil
 		}
 		if err := sleepCtx(ctx, wrongShardRetryDelay); err != nil {
@@ -384,10 +392,10 @@ func (lc *locationCache) locateRange(db *database, ctx context.Context, begin, e
 	}
 }
 
-// contiguousLocations returns the leading entries of a proxy reply that cover the range
-// without a gap from the scan origin.
+// contiguousLocations converts a proxy reply covering the range from the scan origin
+// without a gap, or returns nil.
 func contiguousLocations(entries []locationEntry, begin, end []byte, reverse bool) []LocationResult {
-	var results []LocationResult
+	results := make([]LocationResult, 0, len(entries))
 	for i, e := range entries {
 		switch {
 		case i == 0 && !reverse:
@@ -400,14 +408,17 @@ func contiguousLocations(entries []locationEntry, begin, end []byte, reverse boo
 			}
 		case !reverse:
 			if !bytes.Equal(e.begin, entries[i-1].end) {
-				return results
+				return nil
 			}
 		default:
 			if !bytes.Equal(e.end, entries[i-1].begin) {
-				return results
+				return nil
 			}
 		}
 		results = append(results, LocationResult{Servers: e.servers, ShardBegin: e.begin, ShardEnd: e.end})
+	}
+	if len(results) == 0 {
+		return nil
 	}
 	return results
 }
