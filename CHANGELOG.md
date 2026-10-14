@@ -19,6 +19,14 @@ project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (
 
 ### Breaking changes
 Each is described in full under Compatibility or Changed below.
+- **Pure-Go client retry observers:** retry log handlers receive the caller's context;
+  transaction cancellation is reported via `fdb_error_code`, not `context.Cause`.
+  This changes OnError/public-operation observers: retained contexts and their children
+  are no longer canceled by operation cleanup or transaction reset/timeout. Caller
+  values, deadline, `Err` and `Cause` are unchanged. Native-fence logs retain their
+  existing worker completion/Reset lifetime. `fdb_error_code` remains the actual retry
+  input; no cancellation events are synthesized, and nonretryable 1025/1031 do not
+  imply that every cancellation is logged.
 - **SQL storage:** the relational key space is Java's `RelationalKeyspaceProvider` layout; SQL data
   written by v0.1.0 is not migrated (`docs/upgrade.md`). A database path is `/DOMAIN/DATABASE`, and
   its domain must be registered once per process (`sqldriver.RegisterDomainIfNotExists`).

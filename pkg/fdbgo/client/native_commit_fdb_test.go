@@ -81,6 +81,56 @@ func abandonNativeCommit(t *testing.T, ctx context.Context, fence bool) (*commit
 	return g, native, weak.Make(tx)
 }
 
+type nativeCallerOwnerKey struct{}
+
+func abandonNativeCommitWithCallerValue(t *testing.T, parent context.Context, fence bool) (*commitReplyGate, *nativeCommit, weak.Pointer[Transaction]) {
+	t.Helper()
+	g, _, tx, _ := newGatedCommit(t, parent, fence)
+	// Only the descendant values Tx. The live ancestor must not retain it
+	// through a library-added cancellation callback or native logger field.
+	caller := context.WithValue(parent, nativeCallerOwnerKey{}, tx)
+	done := startGatedCommit(tx, caller)
+	waitCommitLifetimeGate(t, parent, g.reached, "native reply withheld after GRV")
+	native := currentNativeCommit(t, tx)
+	tx.Cancel()
+	awaitCommitLifetimeCode(t, parent, done, 1025, "public waiter ends before dropping caller and owner")
+	select {
+	case <-native.finished:
+		t.Fatal("Cancel finished native work instead of only retiring the public wait")
+	default:
+	}
+	return g, native, weak.Make(tx)
+}
+
+func TestNativeCommit_DroppedCallerValuesDoNotRetainOwner(t *testing.T) {
+	t.Parallel()
+	for _, fence := range []bool{false, true} {
+		t.Run(map[bool]string{false: "commit", true: "fence"}[fence], func(t *testing.T) {
+			t.Parallel()
+			parent, cancel := context.WithTimeout(context.Background(), commitLifetimeTimeout)
+			defer cancel()
+			g, native, owner := abandonNativeCommitWithCallerValue(t, parent, fence)
+			for {
+				runtime.GC()
+				if owner.Value() == nil {
+					break
+				}
+				select {
+				case <-parent.Done():
+					t.Fatal("native actor retained the dropped Tx-valued caller")
+				case <-time.After(time.Millisecond):
+				}
+			}
+			waitCommitLifetimeGate(t, parent, native.finished, "cleanup retires native work while its reply stays withheld")
+			if parent.Err() != nil {
+				t.Fatal("collection depended on live ancestor cancellation")
+			}
+			releaseCommitGate(t, g)
+			runtime.KeepAlive(parent)
+		})
+	}
+}
+
 func TestNativeCommit_AbandonedOwnerDoesNotLeak(t *testing.T) {
 	t.Parallel()
 	for _, mode := range []string{"commit", "fence"} {

@@ -817,12 +817,9 @@ func (tx *Transaction) Get(ctx context.Context, key []byte) ([]byte, error) {
 // Returns (nil, pending, nil) for server requests (call pending.Resolve() to get value).
 // Returns (nil, nil, err) for errors during send.
 func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte, pending *PendingGet, err error) {
-	parentOp := tx.readOperation(ctx)
-	ctx, opCancel := tx.opContext(ctx)
+	ctx, opCancel, owned := tx.opContextWithLease(ctx, false)
 	op := tx.readOperation(ctx)
-	if op != parentOp {
-		defer op.lease.release() // only this invocation's send-phase lease
-	}
+	defer owned.release() // only this invocation's send-phase lease
 	defer func() {
 		if pending == nil {
 			opCancel()
@@ -1669,13 +1666,19 @@ func (tx *Transaction) validateMutation(m Mutation, maxWrite []byte) error {
 // This preserves Go's auto-reuse extension; C++ RYW API >=410 does not reset
 // after commit (ReadYourWrites.actor.cpp:1383-1387,1405-1410).
 func (tx *Transaction) Commit(ctx context.Context) error {
-	ctx, release := tx.opContext(ctx)
+	ctx, release, owned := tx.opContextWithLease(ctx, false)
 	defer release()
+	if owned == nil && tx.readOperation(ctx).lease.isActive() {
+		if err := tx.commitEntryError(ctx); err != nil {
+			return err
+		}
+		return &wire.FDBError{Code: ErrClientInvalidOperation}
+	}
 	completion, err := tx.admitCommit(ctx)
 	if err != nil {
 		return err
 	}
-	return tx.commitAdmitted(ctx, completion)
+	return tx.commitAdmitted(ctx, completion, owned)
 }
 
 func (tx *Transaction) commitEntryError(ctx context.Context) error {
@@ -1698,12 +1701,15 @@ func (tx *Transaction) commitEntryError(ctx context.Context) error {
 	return tx.checkTimeout(ctx)
 }
 
-func (tx *Transaction) commitAdmitted(parent context.Context, completion *versionstampCompletion) (rerr error) {
-	ctx, release := tx.opContext(parent)
-	defer release()
+// commitAdmitted receives execution ownership from Commit or the pending
+// resolver. Nested read helpers borrow metadata, never this release authority.
+func (tx *Transaction) commitAdmitted(ctx context.Context, completion *versionstampCompletion, owned *executionLease) (rerr error) {
 	op := tx.readOperation(ctx)
 	if err := tx.commitEntryError(ctx); err != nil {
 		return err
+	}
+	if owned == nil && op.lease.isActive() {
+		return &wire.FDBError{Code: ErrClientInvalidOperation}
 	}
 	nativeStarted := false
 	defer func() {
@@ -1834,8 +1840,8 @@ func (tx *Transaction) commitAdmitted(parent context.Context, completion *versio
 		// no-commit txn — C++ setupWatches' ternary falls back to getReadVersion). Fire BEFORE
 		// postCommitReset clears the read version.
 		completion.finishNoWrite()
-		op.lease.release()
-		tx.publishCommit(op.inc, op.lease, commitOutcome{version: -1})
+		owned.release()
+		tx.publishCommit(op.inc, owned, commitOutcome{version: -1})
 		return nil
 	}
 
@@ -1894,14 +1900,14 @@ func (tx *Transaction) commitAdmitted(parent context.Context, completion *versio
 	}
 	if tx.isDummy {
 		// The dummy is a child of the native actor, not a new detached caller.
-		op.lease.release()
+		owned.release()
 		result, err := input.commit(ctx)
 		input.release()
 		if err != nil {
 			return err
 		}
 		input.publishSuccess(commitStart, commitTok, result)
-		tx.publishCommit(op.inc, op.lease, result)
+		tx.publishCommit(op.inc, owned, result)
 		return nil
 	}
 	tx.captureNativeReadState(input)
@@ -1910,7 +1916,7 @@ func (tx *Transaction) commitAdmitted(parent context.Context, completion *versio
 		return err
 	}
 	input = nil // native now owns the operand borrow
-	op.lease.release()
+	owned.release()
 	<-native.done
 	runtime.KeepAlive(tx)
 	if native.panicked != nil {
@@ -2254,17 +2260,80 @@ func (tx *Transaction) backoffSleepBounded(parent context.Context, delay time.Du
 	return tx.mapReadError(ctx, backoffSleep(ctx, delay))
 }
 
+// borrowedOnErrorVerdict preserves OnError's verdict ordering for an internal
+// borrower, but cannot publish timeout/abort failure into its owner's state.
+func (tx *Transaction) borrowedOnErrorVerdict(caller context.Context, op *readOperation, err error) error {
+	cause := tx.readIncarnationCause(op.inc)
+	if cause != nil {
+		var terminal *wire.FDBError
+		if !errors.As(cause, &terminal) || terminal.Code != ErrTransactionTimedOut {
+			return cause
+		}
+	}
+	var fdbErr *wire.FDBError
+	if !errors.As(err, &fdbErr) {
+		return err
+	}
+	if cause != nil || tx.timeoutNs.Load() > 0 && time.Now().After(tx.deadlineTime()) {
+		if callerErr := caller.Err(); callerErr != nil {
+			return callerErr
+		}
+		if cause != nil {
+			return cause
+		}
+		return &wire.FDBError{Code: ErrTransactionTimedOut}
+	}
+	if fdbErr.Code == ErrTransactionTimedOut || tx.hasRetryLimit && tx.retryCount >= tx.retryLimit || !onErrorRetryable(fdbErr.Code) {
+		return err
+	}
+	if callerErr := caller.Err(); callerErr != nil {
+		return callerErr
+	}
+	return &wire.FDBError{Code: ErrClientInvalidOperation}
+}
+
 // OnError handles a transaction error. Returns nil if the error is retryable
 // (the transaction has been reset for retry). Returns the error if non-retryable
-// or ctx.Err() if ctx fires during the backoff sleep.
+// or ctx.Err() if ctx fires during the backoff sleep. Retry log handlers receive
+// the original caller context, not this operation's cancellation context.
 func (tx *Transaction) OnError(ctx context.Context, err error) (rerr error) {
 	callerCtx := ctx
-	ctx, release := tx.opContext(ctx)
+	ctx, release, owned := tx.opContextWithLease(ctx, false)
 	defer release()
 	op := tx.readOperation(ctx)
+	if owned == nil && op.lease.isActive() {
+		// Public callers never receive an operation token. An internal
+		// borrower cannot invoke observers or retire its owner's state.
+		return tx.borrowedOnErrorVerdict(callerCtx, op, err)
+	}
+	defer func() { owned.release() }()
 	retryReset := func(conflicts []KeyRange) error {
-		op.lease.release()
-		return tx.resetExpected(false, op.inc, op.lease, conflicts)
+		owned.release()
+		return tx.resetExpected(false, op.inc, owned, conflicts)
+	}
+	logRetry := func(code int) error {
+		db, count := tx.db, tx.retryCount
+		if db == nil {
+			return nil
+		}
+		// Enabled and Handle are synchronous user code. Suspend execution,
+		// not the operation, so same-transaction reentry can drain the owner.
+		owned.release()
+		db.countRetryAndLog(callerCtx, code, count)
+		next := &readOperation{Context: ctx, readAdmission: op.readAdmission}
+		owned = tx.enterReadStateInto(ctx, op.inc, false, false, &next.leaseStorage)
+		next.lease = owned
+		if owned != nil {
+			ctx, op = next, next
+		}
+		if callerErr := callerCtx.Err(); callerErr != nil {
+			return callerErr
+		}
+		if owned == nil || tx.readIncarnationCause(op.inc) != nil {
+			// Turnover publishes the old cause before refusing reacquisition.
+			return tx.mapReadError(ctx, context.Canceled)
+		}
+		return nil
 	}
 	// A TERMINAL OnError — any non-nil return, i.e. the txn is aborting, not retrying — must release
 	// any in-flight watch slots. A watch registered in Transact whose txn then fails non-retryably
@@ -2278,10 +2347,7 @@ func (tx *Transaction) OnError(ctx context.Context, err error) (rerr error) {
 			if tx.beforeOnErrorWatchCleanup != nil {
 				tx.beforeOnErrorWatchCleanup()
 			}
-			tx.readErrMu.Lock()
-			owned := op.lease != nil && op.lease.active
-			tx.readErrMu.Unlock()
-			if !owned {
+			if !owned.isActive() {
 				// Conditional turnover can reject a timeout after releasing
 				// the operation's token. Reclaim cleanup authority only on the
 				// same incarnation; a successor's watches are never ours.
@@ -2378,8 +2444,8 @@ func (tx *Transaction) OnError(ctx context.Context, err error) (rerr error) {
 			delay = tx.maxRetryDelay
 		}
 		tx.retryCount++
-		if tx.db != nil {
-			tx.db.countRetryAndLog(ctx, fdbErr.Code, tx.retryCount)
+		if cerr := logRetry(fdbErr.Code); cerr != nil {
+			return cerr
 		}
 		if cerr := tx.backoffSleepBounded(ctx, delay); cerr != nil {
 			tx.state.Store(int32(txStateErrored))
@@ -2394,8 +2460,8 @@ func (tx *Transaction) OnError(ctx context.Context, err error) (rerr error) {
 		// hot_shard and range_locked use the same 30s cap to avoid
 		// hammering the hot shard with aggressive retries.
 		tx.retryCount++
-		if tx.db != nil {
-			tx.db.countRetryAndLog(ctx, fdbErr.Code, tx.retryCount)
+		if cerr := logRetry(fdbErr.Code); cerr != nil {
+			return cerr
 		}
 		if cerr := tx.backoffSleepBounded(ctx, tx.nextBackoff(fdbErr.Code)); cerr != nil {
 			tx.state.Store(int32(txStateErrored))
@@ -2421,8 +2487,8 @@ func (tx *Transaction) OnError(ctx context.Context, err error) (rerr error) {
 		}
 		tx.conflictMu.Unlock()
 		tx.retryCount++
-		if tx.db != nil {
-			tx.db.countRetryAndLog(ctx, fdbErr.Code, tx.retryCount)
+		if cerr := logRetry(fdbErr.Code); cerr != nil {
+			return cerr
 		}
 		if cerr := tx.backoffSleepBounded(ctx, tx.nextBackoff(fdbErr.Code)); cerr != nil {
 			tx.state.Store(int32(txStateErrored))
@@ -2438,8 +2504,8 @@ func (tx *Transaction) OnError(ctx context.Context, err error) (rerr error) {
 		// retryable code added to onErrorRetryable is handled here by default.
 		// C++ fdb_error_predicate(FDB_ERROR_PREDICATE_RETRYABLE_NOT_COMMITTED, code).
 		tx.retryCount++
-		if tx.db != nil {
-			tx.db.countRetryAndLog(ctx, fdbErr.Code, tx.retryCount)
+		if cerr := logRetry(fdbErr.Code); cerr != nil {
+			return cerr
 		}
 		if cerr := tx.backoffSleepBounded(ctx, tx.nextBackoff(fdbErr.Code)); cerr != nil {
 			tx.state.Store(int32(txStateErrored))

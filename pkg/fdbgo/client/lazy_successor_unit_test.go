@@ -86,7 +86,7 @@ func TestLazySuccessorFirstSetterAndOldContext(t *testing.T) {
 	defer release()
 	op := tx.readOperation(stale)
 	tx.readErrMu.Lock()
-	active := op.lease != nil && op.lease.active
+	active := op.lease != nil && op.lease.active.Load()
 	users := tx.readLife.users
 	tx.readErrMu.Unlock()
 	if op.inc != old.inc || active || users != 0 {
@@ -224,19 +224,24 @@ func TestLazySuccessorPublication(t *testing.T) {
 	}
 }
 
-// Not parallel: use an admitted Commit context for each fresh transaction, so
-// asynchronous AfterFunc goroutine-cache growth cannot enter this allocation pin.
+// Not parallel: hand an admitted token to the private Commit continuation for
+// each fresh transaction. Include producer admission and turnover, but exclude
+// asynchronous AfterFunc goroutine-cache growth from this allocation pin.
 func TestUnusedSuccessorAvoidsFourAllocations(t *testing.T) {
 	measure := func(materialize bool) float64 {
 		return testing.AllocsPerRun(100, func() {
 			tx := &Transaction{}
 			tx.SetReadVersion(123)
-			op := &readOperation{Context: tx.readLife.ctx, tx: tx, inc: tx.readLife, parent: context.Background()}
+			op := &readOperation{Context: tx.readLife.ctx, readAdmission: readAdmission{tx: tx, inc: tx.readLife, parent: context.Background()}}
 			op.lease = tx.enterReadStateInto(op, op.inc, false, false, &op.leaseStorage)
 			if op.lease == nil {
 				t.Fatal("failed to admit Commit")
 			}
-			if err := tx.Commit(op); err != nil {
+			completion, err := tx.admitCommit(op)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := tx.commitAdmitted(op, completion, op.lease); err != nil {
 				t.Fatal(err)
 			}
 			if materialize {

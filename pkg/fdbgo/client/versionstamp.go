@@ -143,7 +143,7 @@ func (p *PendingVersionstamp) Resolve() ([]byte, error) {
 // denotes an already-selected value/error; otherwise Resolve waits for this
 // incarnation's native versionstamp outcome or its captured retirement signal.
 func (tx *Transaction) GetVersionstampPending(parent context.Context) ([]byte, *PendingVersionstamp, error) {
-	ctx, cleanup := tx.opContext(parent)
+	ctx, cleanup, owned := tx.opContextWithLease(parent, false)
 	op := tx.readOperation(ctx)
 	if err := tx.readEntryError(ctx); err != nil {
 		cleanup()
@@ -172,7 +172,7 @@ func (tx *Transaction) GetVersionstampPending(parent context.Context) ([]byte, *
 		}
 	}
 	tx.readErrMu.Unlock()
-	op.lease.release()
+	owned.release()
 	pending := &PendingVersionstamp{ctx: ctx, cleanup: cleanup, completion: completion, done: done}
 	if ready {
 		value, err := pending.Resolve()
@@ -197,7 +197,9 @@ func (p *PendingCommit) Resolve() error {
 	p.once.Do(func() {
 		defer p.cleanup()
 		if p.err == nil {
-			p.err = p.tx.commitAdmitted(p.ctx, p.completion)
+			ctx, release, owned := p.tx.opContextWithLease(p.ctx, false)
+			defer release()
+			p.err = p.tx.commitAdmitted(ctx, p.completion, owned)
 		}
 	})
 	return p.err
@@ -206,9 +208,9 @@ func (p *PendingCommit) Resolve() error {
 // PrepareCommit binds the producer before the facade starts asynchronous work.
 // The synchronous Commit path uses the same admission without a future goroutine.
 func (tx *Transaction) PrepareCommit(parent context.Context) *PendingCommit {
-	ctx, cleanup := tx.opContext(parent)
+	ctx, cleanup, owned := tx.opContextWithLease(parent, false)
 	completion, err := tx.admitCommit(ctx)
-	tx.readOperation(ctx).lease.release()
+	owned.release()
 	return &PendingCommit{tx: tx, ctx: ctx, cleanup: cleanup, completion: completion, err: err}
 }
 

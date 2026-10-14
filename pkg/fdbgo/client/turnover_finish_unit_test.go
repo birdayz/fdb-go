@@ -5,19 +5,24 @@ import (
 	"testing"
 )
 
-// Use a valid admitted context so asynchronous AfterFunc goroutine-cache growth
-// cannot enter the count. The public Commit still performs the entire turnover.
+// Hand an admitted token to the private Commit continuation so asynchronous
+// AfterFunc goroutine-cache growth cannot enter the count. Include producer
+// admission and the entire turnover, not just the publication helper.
 func TestReadOnlyCommitFinishAllocations(t *testing.T) {
 	allocs := testing.AllocsPerRun(100, func() {
 		tx := &Transaction{}
 		tx.SetReadVersion(123)
 		old := tx.readLife
-		op := &readOperation{Context: old.ctx, tx: tx, inc: old, parent: context.Background()}
+		op := &readOperation{Context: old.ctx, readAdmission: readAdmission{tx: tx, inc: old, parent: context.Background()}}
 		op.lease = tx.enterReadStateInto(op, old, false, false, &op.leaseStorage)
 		if op.lease == nil {
 			t.Fatal("failed to admit Commit")
 		}
-		if err := tx.Commit(op); err != nil {
+		completion, err := tx.admitCommit(op)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := tx.commitAdmitted(op, completion, op.lease); err != nil {
 			t.Fatal(err)
 		}
 		if !tx.hasCommitted || tx.committedVersion != -1 || tx.readLife != nil || tx.readReady != nil || tx.readGen != old.gen+1 {
