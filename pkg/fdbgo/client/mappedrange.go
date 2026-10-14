@@ -209,6 +209,9 @@ func buildGetMappedKeyValuesRequest(mapper []byte) func(begin, end []byte, versi
 // secondary key from the mapped side would not even be in that keyspace.
 var mappedRangeScanOps = rangeScanOps[MappedKeyValue]{
 	key: func(m *MappedKeyValue) []byte { return m.Key },
+	// MappedKeyValueRef inherits KeyValueRef::expectedSize (FDBTypes.h:920-922),
+	// so a byte target is charged for the primary row only.
+	limitBytes: func(m *MappedKeyValue) int { return 8 + len(m.Key) + len(m.Value) },
 	sizeBytes: func(m *MappedKeyValue) int64 {
 		// The ceiling bounds what the CLIENT materializes, so it must count the
 		// secondary payload too — that is the bulk of a mapped reply, and
@@ -248,7 +251,9 @@ func (tx *Transaction) sendGetMappedRange(mapper []byte) func(ctx context.Contex
 func (tx *Transaction) getMappedRangeImpl(ctx context.Context, begin, end []byte, mapper []byte, limit, byteTarget int, reverse bool) ([]MappedKeyValue, bool, error) {
 	ops := mappedRangeScanOps
 	ops.send = tx.sendGetMappedRange(mapper)
-	return rangeScanImpl(tx, ctx, begin, end, limit, byteTarget, reverse, ops)
+	// A mapped read keeps no RYW cache, so readThrough has no reader (ReadYourWrites.actor.cpp:1146-1161).
+	rows, more, _, err := rangeScanImpl(tx, ctx, begin, end, limit, byteTarget, reverse, ops)
+	return rows, more, err
 }
 
 // FDB error codes specific to getMappedRange. Source of truth:

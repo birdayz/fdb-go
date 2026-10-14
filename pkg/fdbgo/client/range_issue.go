@@ -165,12 +165,12 @@ func (r *rangeRead) run(clone bool) (kvs []KeyValue, more bool, err error) {
 
 func (r *rangeRead) read(clone bool) ([]KeyValue, bool, error) {
 	tx, ctx := r.tx, r.ctx
-	server := tx.getRange
+	var server rangeServerFunc = tx.getRangeReadThrough
 	if hook := r.afterReply; hook != nil {
-		server = func(ctx context.Context, begin, end []byte, limit, byteTarget int, reverse bool) ([]KeyValue, bool, error) {
-			kvs, more, err := tx.getRange(ctx, begin, end, limit, byteTarget, reverse)
+		server = func(ctx context.Context, begin, end []byte, limit, byteTarget int, reverse bool) ([]KeyValue, bool, []byte, error) {
+			kvs, more, readThrough, err := tx.getRangeReadThrough(ctx, begin, end, limit, byteTarget, reverse)
 			hook()
-			return kvs, more, err
+			return kvs, more, readThrough, err
 		}
 	}
 	var kvs []KeyValue
@@ -178,7 +178,7 @@ func (r *rangeRead) read(clone bool) ([]KeyValue, bool, error) {
 	var err error
 	switch {
 	case r.path == rangePathRYWDisabled:
-		kvs, more, err = server(ctx, r.begin, r.end, r.limit, r.byteTarget, r.reverse)
+		kvs, more, _, err = server(ctx, r.begin, r.end, r.limit, r.byteTarget, r.reverse)
 		clone = false // fresh from the reply, owned by nobody else
 	case r.path == rangePathSnapshotNoRYW && r.local:
 		kvs, more, err = r.kvs, r.more, r.err

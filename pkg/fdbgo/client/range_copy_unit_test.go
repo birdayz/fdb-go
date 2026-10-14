@@ -57,7 +57,8 @@ func TestRangeReplyAccumulationAllocations(t *testing.T) {
 		check(ops.send(ctx, begin, end, 2, ByteLimitUnlimited, false, locations[0].Servers))
 	})
 	scan := testing.AllocsPerRun(samples, func() {
-		check(rangeScanImpl(tx, ctx, begin, end, 2, ByteLimitUnlimited, false, ops))
+		rows, more, _, err := rangeScanImpl(tx, ctx, begin, end, 2, ByteLimitUnlimited, false, ops)
+		check(rows, more, err)
 	})
 	t.Logf("range reply allocations: scan=%.0f locate+parse=%.0f extra=%.0f sends=%d", scan, control, scan-control, sends)
 	if sends != 2*(samples+1) || control == 0 || !tx.hadRead.Load() {
@@ -174,7 +175,7 @@ func testRangeReplyOwnership[T any](t *testing.T, ops rangeScanOps[T], row func(
 					}
 					return []T{row(nextKey)}, false, nil
 				}
-				got, more, err := rangeScanImpl(tx, ctx, []byte("a"), []byte("z"), limit, target, reverse, localOps)
+				got, more, _, err := rangeScanImpl(tx, ctx, []byte("a"), []byte("z"), limit, target, reverse, localOps)
 				switch outcome {
 				case "error":
 					if !errors.Is(err, wantErr) || got != nil || more || calls != 2 {
@@ -231,7 +232,7 @@ func testRangeReplyOwnership[T any](t *testing.T, ops rangeScanOps[T], row func(
 				}
 				return []T{row(key)}, false, nil
 			}
-			got, more, err := rangeScanImpl(tx, context.Background(), []byte("a"), []byte("z"), 0, ByteLimitUnlimited, reverse, localOps)
+			got, more, _, err := rangeScanImpl(tx, context.Background(), []byte("a"), []byte("z"), 0, ByteLimitUnlimited, reverse, localOps)
 			if err != nil || more || len(got) != 1 || calls != 2 || string(ops.key(&got[0])) != key {
 				t.Fatalf("empty first shard = %v/%t/%v, calls=%d", got, more, err, calls)
 			}
@@ -252,7 +253,7 @@ func testRangeReplyOwnership[T any](t *testing.T, ops rangeScanOps[T], row func(
 				calls++
 				return empty, false, nil
 			}
-			got, more, err := rangeScanImpl(tx, context.Background(), []byte("a"), []byte("z"), 0, ByteLimitUnlimited, false, localOps)
+			got, more, _, err := rangeScanImpl(tx, context.Background(), []byte("a"), []byte("z"), 0, ByteLimitUnlimited, false, localOps)
 			if err != nil || more || got != nil || calls != 1 {
 				t.Fatalf("empty reply = %#v/%t/%v, calls=%d", got, more, err, calls)
 			}
@@ -324,4 +325,98 @@ func TestForwardCacheRetainsIndependentDescriptors(t *testing.T) {
 			}
 		}
 	}
+}
+
+type scanReply struct {
+	rows []string
+	more bool
+	err  error
+}
+
+// scanWith runs rangeScanImpl over cached shards with scripted storage replies,
+// recording each request's bounds and byte budget.
+func scanWith(t *testing.T, shards [][2]string, begin, end string, byteTarget int, reverse bool, replies []scanReply) ([]KeyValue, bool, []byte, []string) {
+	t.Helper()
+	tx := rangeCopyTransaction()
+	t.Cleanup(tx.Cancel)
+	tx.db.locCache.entries = nil
+	for _, s := range shards {
+		tx.db.locCache.insertSorted([]locationEntry{{begin: []byte(s[0]), end: []byte(s[1])}})
+	}
+	var requests []string
+	ops := plainRangeScanOps
+	ops.send = func(_ context.Context, b, e []byte, _ int, gotBytes int, _ bool, _ []ServerInfo) ([]KeyValue, bool, error) {
+		requests = append(requests, fmt.Sprintf("%s..%s/%d", b, e, gotBytes))
+		if len(requests) > len(replies) {
+			t.Fatalf("unexpected request %s", requests[len(requests)-1])
+		}
+		r := replies[len(requests)-1]
+		var kvs []KeyValue
+		for _, k := range r.rows {
+			kvs = append(kvs, KeyValue{Key: []byte(k), Value: []byte("0123456789")})
+		}
+		return kvs, r.more, r.err
+	}
+	kvs, more, readThrough, err := rangeScanImpl(tx, context.Background(), []byte(begin), []byte(end), 0, byteTarget, reverse, ops)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return kvs, more, readThrough, requests
+}
+
+// C++ getRange reports readThrough only when its own first reply's rows end a shard
+// the range continues past (NativeAPI.actor.cpp:4762, 4795-4799).
+func TestRangeScanReadThrough(t *testing.T) {
+	t.Parallel()
+	two := [][2]string{{"a", "m"}, {"m", "z"}}
+	for _, tc := range []struct {
+		name        string
+		begin, end  string
+		byteTarget  int
+		reverse     bool
+		replies     []scanReply
+		readThrough string
+		requests    int
+	}{
+		{"forward", "a", "z", 1000, false, []scanReply{{rows: []string{"b"}}}, "m", 1},
+		{"reverse", "a", "z", 1000, true, []scanReply{{rows: []string{"y"}}}, "m", 1},
+		{"after_reply_timeout", "a", "z", 1000, false, []scanReply{{err: errReplyTimeout}, {rows: []string{"b"}}}, "m", 2},
+		{"cut_short", "a", "z", 1000, false, []scanReply{{rows: []string{"b"}, more: true}}, "", 1},
+		{"empty_first_shard", "a", "z", 1000, false, []scanReply{{}, {rows: []string{"n"}}}, "", 2},
+		{"range_ends_in_shard", "a", "k", 1000, false, []scanReply{{rows: []string{"b"}}}, "", 1},
+		{"no_byte_target", "a", "z", ByteLimitUnlimited, false, []scanReply{{rows: []string{"b"}}, {rows: []string{"n"}}}, "", 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, _, readThrough, requests := scanWith(t, two, tc.begin, tc.end, tc.byteTarget, tc.reverse, tc.replies)
+			if string(readThrough) != tc.readThrough || (tc.readThrough == "") != (readThrough == nil) || len(requests) != tc.requests {
+				t.Fatalf("readThrough %q after %q, want %q after %d requests", readThrough, requests, tc.readThrough, tc.requests)
+			}
+		})
+	}
+}
+
+// The next pair's first shard is read with the bytes the earlier rows left, and a
+// budget used up returns before any request with no bytes (NativeAPI.actor.cpp:4359-4362).
+func TestRangeScanPairBudget(t *testing.T) {
+	t.Parallel()
+	three := [][2]string{{"a", "g"}, {"g", "m"}, {"m", "z"}}
+	const row = 8 + 1 + 10 // C++ GetRangeLimits charge: 8 + key + value
+	t.Run("remaining_budget", func(t *testing.T) {
+		t.Parallel()
+		kvs, more, _, requests := scanWith(t, three, "a", "z", 100, false, []scanReply{{}, {rows: []string{"h"}}, {rows: []string{"n"}}})
+		want := []string{"a..g/100", "g..m/100", fmt.Sprintf("m..z/%d", 100-row)}
+		if !reflect.DeepEqual(requests, want) || len(kvs) != 2 || more {
+			t.Fatalf("requests %q rows %d more %v, want %q, 2 rows, more=false", requests, len(kvs), more, want)
+		}
+	})
+	t.Run("reverse_budget_used_up", func(t *testing.T) {
+		t.Parallel()
+		// The second reply ends on its shard's begin, so the reverse more fix would
+		// otherwise move on to the next pair with nothing left to send.
+		kvs, more, _, requests := scanWith(t, three, "a", "z", 2*row, true, []scanReply{{}, {rows: []string{"l", "g"}, more: true}})
+		if len(requests) != 2 || len(kvs) != 2 || !more {
+			t.Fatalf("requests %q rows %d more %v, want 2 requests, 2 rows, more=true", requests, len(kvs), more)
+		}
+	})
 }

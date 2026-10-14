@@ -39,6 +39,7 @@ go_library(
         "mappedrange_cref.go",
         "options.go",
         "range_cref.go",
+        "transaction_timeout.go",
     ],
     cgo = True,
     cdeps = [":fdb_c"],

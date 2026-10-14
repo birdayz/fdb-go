@@ -358,6 +358,19 @@ func (tr CTxnHandle) GetReadVersion() (int64, error) {
 	return int64(version), nil
 }
 
+// SetReadVersion pins raw controls to the same snapshot as the tested read.
+func (tr CTxnHandle) SetReadVersion(version int64) {
+	C.fdb_transaction_set_read_version(tr.ptr, C.int64_t(version))
+}
+
+// DisableReadYourWrites exercises mapped-read preflight precedence through C.
+func (tr CTxnHandle) DisableReadYourWrites() error {
+	if !tr.Valid() {
+		return &CFDBError{Code: 2015, Msg: "transaction is closed"}
+	}
+	return cErr(C.fdb_transaction_set_option(tr.ptr, C.FDB_TR_OPTION_READ_YOUR_WRITES_DISABLE, nil, 0))
+}
+
 // Set issues fdb_transaction_set, so a test can seed a cluster through the same
 // client it reads back with.
 func (tr CTxnHandle) Set(key, value []byte) {

@@ -13,6 +13,7 @@ import (
 
 	"github.com/onsi/gomega"
 
+	"fdb.dev/pkg/fdbgo/transport"
 	"fdb.dev/pkg/fdbgo/wire/types"
 	tcfdb "fdb.dev/pkg/testcontainers/foundationdb"
 )
@@ -194,6 +195,9 @@ func TestMultiShard(t *testing.T) {
 	})
 	t.Run("LocateRangeLimit", func(t *testing.T) {
 		testMultiShard_LocateRangeLimit(t, ctx, env)
+	})
+	t.Run("ReadThroughAfterRelocation", func(t *testing.T) {
+		testMultiShard_ReadThroughAfterRelocation(t, ctx, env)
 	})
 	t.Run("GetKey", func(t *testing.T) {
 		testMultiShard_GetKey(t, ctx, env)
@@ -481,6 +485,89 @@ func testMultiShard_LocateRangeLimit(t *testing.T, ctx context.Context, env *mul
 			cached, err := db.locCache.locateRange(db, ctx, begin, end, 2, reverse, NoTenantID, types.SpanContext{})
 			if err != nil || sends.Load() != 0 || !reflect.DeepEqual(bounds(cached), bounds(locs)) {
 				t.Fatalf("cached locateRange sent %d requests, shards %q want %q, err %v", sends.Load(), bounds(cached), bounds(locs), err)
+			}
+		})
+	}
+}
+
+// C++ getRange's own loop reports readThrough (NativeAPI.actor.cpp:4795-4799). Its
+// wrong_shard_server fallback to getExactRange does not (:4864-4870); a connection lost
+// under the request is retried by loadBalance without that fallback (LoadBalance.actor.h:344-377).
+func testMultiShard_ReadThroughAfterRelocation(t *testing.T, ctx context.Context, env *multiShardEnv) {
+	connStr, err := env.container.ClusterFile(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cf, err := ParseClusterString(connStr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sd := newSimDialer()
+	db := newTestDatabase(t, ctx, cf, sd.dial)
+	t.Cleanup(func() { db.Close() })
+	db.SetHedgeEnabled(false) // one storage request per attempt, so the fault lands on it
+	prefixBegin, end := []byte(env.prefix), append([]byte(env.prefix), 0xFF)
+	shards, err := db.db.locCache.locateRange(db.db, ctx, prefixBegin, end, 100, false, NoTenantID, types.SpanContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A shard whose rows one 80000-byte reply returns whole, with more of the range after it.
+	var shard *LocationResult
+	for i := range shards {
+		s := &shards[i]
+		if s.ShardEnd == nil || bytes.Compare(s.ShardEnd, end) >= 0 {
+			break
+		}
+		keys := 0
+		for k := 0; k < 100; k++ {
+			key := []byte(fmt.Sprintf("%s%04d", env.prefix, k))
+			if bytes.Compare(key, s.ShardBegin) >= 0 && bytes.Compare(key, s.ShardEnd) < 0 {
+				keys++
+			}
+		}
+		if keys >= 1 && keys <= 7 {
+			shard = s
+			break
+		}
+	}
+	if shard == nil {
+		t.Fatalf("no shard of 1-7 keys followed by more of the range among %d shards", len(shards))
+	}
+	begin := shard.ShardBegin
+	if bytes.Compare(begin, prefixBegin) < 0 {
+		begin = prefixBegin
+	}
+	for _, s := range shard.Servers {
+		sd.armAddr(s.Address)
+	}
+	for _, tc := range []struct {
+		fault       string
+		readThrough []byte
+	}{{"none", shard.ShardEnd}, {"wrong_shard", nil}, {"severed", shard.ShardEnd}} {
+		t.Run(tc.fault, func(t *testing.T) {
+			tx := db.CreateTransaction()
+			defer tx.Cancel()
+			// Roles share processes, so the read version is taken before the fault is armed.
+			if _, err := tx.GetReadVersion(ctx); err != nil {
+				t.Fatal(err)
+			}
+			var faulted atomic.Bool
+			sd.setIntercept(func(_ int, _ transport.UID, body []byte) ([]byte, bool) {
+				if tc.fault == "none" || faulted.Swap(true) {
+					return body, false
+				}
+				if tc.fault == "wrong_shard" {
+					return inlineErrorReply(1001, injectPenalty), false
+				}
+				return severConn, true
+			})
+			defer sd.setIntercept(nil)
+			kvs, more, readThrough, err := tx.getRangeReadThrough(ctx, begin, end, 0, 80000, false)
+			if err != nil || len(kvs) == 0 || !more || (tc.fault != "none" && !faulted.Load()) {
+				t.Fatalf("read: %d rows, more=%v, faulted=%v: %v", len(kvs), more, faulted.Load(), err)
+			}
+			if !bytes.Equal(readThrough, tc.readThrough) || (readThrough == nil) != (tc.readThrough == nil) {
+				t.Fatalf("readThrough %q, want %q", readThrough, tc.readThrough)
 			}
 		})
 	}
