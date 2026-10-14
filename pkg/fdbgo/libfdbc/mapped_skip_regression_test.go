@@ -279,6 +279,9 @@ func TestLibFDBC_MappedSkipEqualContinuation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer seed.Close()
+	if err := seed.SetTimeout(10000); err != nil {
+		t.Fatal(err)
+	}
 	for i, key := range keys {
 		seed.Set(key, value)
 		seed.Set(tuple.Tuple{prefix, "REC", i, 0}.Pack(), []byte("secondary"))
