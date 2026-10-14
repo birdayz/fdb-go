@@ -1,11 +1,9 @@
-# 2026-10-14: client latency on a dedicated 16-vCPU host (phase A)
+# Phase A: client latency
 
 Pure-Go client at the final tree against its predecessor and against Apple's
 Go binding over `libfdb_c` 7.3.77. One closed-loop worker, 11 workloads,
-counterbalanced. This is **phase A** of the hcloud rebench campaign; the Record
-Layer results are in [phase B](../2026-10-14-hcloud-recordlayer/README.md), the
-remote-fetch results in [phase C1](../2026-10-14-hcloud-remotefetch/README.md),
-and the remaining phases are reported separately when complete.
+counterbalanced. Part of the [hcloud-rebench-20261014](README.md) campaign,
+which lists the other phases.
 
 ## Arms
 

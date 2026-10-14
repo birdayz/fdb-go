@@ -7,7 +7,9 @@ cloud network. Benchmarks themselves are the frozen harness
 `pkg/relational/sqlbench/fetchmethod`); see
 `docs/benchmarks/campaign-harness.md`. The protocol, frozen orders, provisioning
 plan and every receipt live in a campaign directory **outside** this
-repository.
+repository. Results are written up in
+`docs/benchmarks/<campaign id>/`, for this campaign
+`docs/benchmarks/hcloud-multinode-vpc-20261014/`.
 
 Nothing here holds a credential, an address of an existing machine or a label
 value. Every script takes keys, IPs, labels, names, output directories and

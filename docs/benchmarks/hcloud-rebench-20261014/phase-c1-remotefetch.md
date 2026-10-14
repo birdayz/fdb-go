@@ -1,4 +1,6 @@
-# 2026-10-14: remote fetch vs ordinary index fetch on a dedicated 16-vCPU host (phase C1)
+# Phase C1: remote fetch vs ordinary index fetch
+
+Part of the [hcloud-rebench-20261014](README.md) campaign.
 
 `BenchmarkIndexFetch` in two trees and two fetch methods, counterbalanced.
 `USE_REMOTE_FETCH` asks the storage server to resolve each index entry to its
@@ -23,8 +25,8 @@ Both trees ran byte-identical benchmark source
 ## Environment and design
 
 - Host, CPU groups and network path as in
-  [phase A](../2026-10-14-hcloud-client/README.md) and
-  [phase B](../2026-10-14-hcloud-recordlayer/README.md): Hetzner `ccx43`, one
+  [phase A](phase-a-client.md) and
+  [phase B](phase-b-recordlayer.md): Hetzner `ccx43`, one
   `fdbserver` 7.3.77 process on CPUs 2–7 with the `memory` engine and single
   redundancy, the benchmark process on CPUs 8–15 in a network namespace
   reaching the server over a veth pair.
@@ -174,6 +176,6 @@ Hypotheses, not tested here:
   (0.947 vs 0.855).
 - Case labels in the aggregate CSV were reconstructed from the pinned plan and
   the unchanged per-run logs, for the same runner bug described in
-  [phase B](../2026-10-14-hcloud-recordlayer/README.md#limits); 576 labels were
+  [phase B](phase-b-recordlayer.md#limits); 576 labels were
   restored in a separate working copy and no measurement was repeated or
   changed.

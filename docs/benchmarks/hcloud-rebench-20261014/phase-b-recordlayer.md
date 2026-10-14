@@ -1,4 +1,6 @@
-# 2026-10-14: Record Layer on a dedicated 16-vCPU host (phase B)
+# Phase B: Record Layer
+
+Part of the [hcloud-rebench-20261014](README.md) campaign.
 
 Eight `pkg/recordlayer` benchmarks in three trees, counterbalanced. This
 separates two changes: the read-path parity work (record loads switched to
@@ -22,7 +24,7 @@ production code. `final/before` is the allocation work plus later changes;
 ## Environment and design
 
 - The host and CPU groups are those of the
-  [phase A client run](../2026-10-14-hcloud-client/README.md): Hetzner `ccx43`,
+  [phase A client run](phase-a-client.md): Hetzner `ccx43`,
   `fdbserver` on CPUs 2–7, the benchmark process on 8–15 in a network namespace
   reaching the server over a veth pair. Here the single `fdbserver` 7.3.77
   process used the `memory` engine, single redundancy.

@@ -4,16 +4,13 @@ Raw output behind the tables in the top-level README.
 
 ## Dedicated-host campaigns
 
-- [2026-10-14: client latency on a dedicated 16-vCPU host](2026-10-14-hcloud-client/README.md)
-  — pure-Go vs CGo vs the pre-allocation-work client, 11 workloads, counterbalanced,
-  594,000 measured transactions. Harness: [campaign-harness.md](campaign-harness.md);
-  campaign tooling: [`tools/benchcampaign`](../../tools/benchcampaign/README.md).
-- [2026-10-14: Record Layer on a dedicated 16-vCPU host](2026-10-14-hcloud-recordlayer/README.md)
-  — legacy vs read-parity vs allocation-work trees, eight benchmarks, separating the
-  parity change's cost from the allocation work.
-- [2026-10-14: remote fetch vs ordinary index fetch on a dedicated 16-vCPU host](2026-10-14-hcloud-remotefetch/README.md)
-  — `USE_REMOTE_FETCH` vs `SCAN_AND_FETCH` in the first remote-fetch tree and the final
-  tree, six cases, including a retained negative result for 1,000 split records.
+Each campaign's reports live in a folder named after the campaign.
+
+- [hcloud-rebench-20261014](hcloud-rebench-20261014/README.md): one dedicated
+  16-vCPU host; client (pure-Go vs CGo), Record Layer, remote fetch and SQL
+  phases, each counterbalanced across the trees of the RFC-258 work. Harness:
+  [campaign-harness.md](campaign-harness.md); campaign tooling:
+  [`tools/benchcampaign`](../../tools/benchcampaign/README.md).
 
 ## Change-specific comparisons
 

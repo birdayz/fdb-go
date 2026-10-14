@@ -9,9 +9,9 @@ dedicated cloud machines. The benchmark sources themselves live elsewhere:
 | Directory | Use |
 |---|---|
 | [`singlenode/`](singlenode/README.md) | One dedicated host: `fdbserver` and clients on disjoint CPU groups, the client in a network namespace. Protocol sealing, the client campaign adapter, the testing.B phase runner and analyzer, runtime/source receipts, and controller-side drivers. |
-| [`multinode/`](multinode/README.md) | A private cloud network: one client machine and three FoundationDB server machines. Provisioning, teardown guard, cluster layout, shard-placement receipts and plan sealing. |
+| [`multinode/`](multinode/README.md) | A private cloud network: one client machine and three FoundationDB server machines. Provisioning, teardown guard, cluster layout, plan sealing, the placement probe and ballast tool, shard-placement receipts, the client adapter and testing.B runner, the per-node sampler and telemetry reconciliation. |
 
-Results and insights are written up under `docs/benchmarks/`.
+Results and insights are written up under `docs/benchmarks/<campaign id>/`, one folder per campaign with a README index and one report per phase: [`hcloud-rebench-20261014`](../../docs/benchmarks/hcloud-rebench-20261014/README.md) for the single-node campaign, and `docs/benchmarks/hcloud-multinode-vpc-20261014/` for the multi-node one.
 
 ## Secrets stay out of the repository
 
