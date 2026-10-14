@@ -68,6 +68,19 @@ setting. It implements Java's default range path; Java's optional GETS path
 also protects the entire record range, but differs on some malformed layouts.
 Neither read strategy changes the persisted record or version bytes.
 
+### Ordinary index scan Skip
+
+Ordinary index cursors (VALUE, VERSION, RANK, leaderboard and PERMUTED_MIN/MAX
+entries) apply a positive `ExecuteProperties.Skip` as Java's `KeyValueCursorBase`
+does: after the continuation replaces the resumed bound, the begin selector
+(forward) or end selector (reverse) moves by the skip. The returned-row limit is
+not widened, and skipped entries are not charged to scanned-record or byte
+limits. A caller that keeps Skip on a resumed page skips again, as in Java.
+Java adds the skip with `int` arithmetic, so a forward skip of
+`Integer.MAX_VALUE` wraps to a negative offset and reads keys before the index.
+Go skips that many entries instead, resolving offsets beyond the native 32-bit
+range in steps. COUNT/atomic and BITMAP_VALUE cursors do not yet apply Skip.
+
 ### Vector defaults are layer-specific
 
 `DefaultHNSWConfig` is a low-level HNSW configuration, not a general promise about

@@ -1125,6 +1125,21 @@ ordinary residual. Pinned by `TestFDB_ExistsInOn` and
 `select_subsumption_existential_compensation_test.go`. Booked in TODO.md section 9 for the
 upstream report.
 
+### Ordinary index Skip at `Integer.MAX_VALUE`: no selector wrap
+
+**Java** `KeyValueCursorBase.Builder.prepare` (`KeyValueCursorBase.java:345-352`)
+computes `begin.add(skip)`, and fdb-java's `KeySelector.add` is `int` addition
+(`KeySelector.java:144-146`). A forward skip of `Integer.MAX_VALUE` gives
+`firstGreaterOrEqual(low)` an offset of `Integer.MIN_VALUE`, which resolves before
+the index subspace, so the scan reads keys outside the index.
+
+**Go** (`indexSkipRange`, `index_cursor_limits.go`) skips that many entries. An
+offset outside the native int32 range is resolved in steps with `GetKey`, and a
+step that leaves the scan range yields an empty scan. Reverse skips up to
+`Integer.MAX_VALUE` fit an `int` and match Java. Pinned by
+`TestFDB_IndexCursorSkipSelectorOffsets` and the Java conformance case
+"treats forward Skip=MaxInt32 as a real skip where Java's begin offset wraps".
+
 ## Plan Architecture: Go collapses Java class hierarchies
 
 | Java | Go | Planning status |

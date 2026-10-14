@@ -691,14 +691,15 @@ func (c *indexCursor) initIterator() error {
 	}
 	options := indexRangeOptions(c.scanProps)
 
-	var rangeResult fdb.RangeResult
+	var rt fdb.ReadTransaction = c.tx
 	if c.scanProps.ExecuteProperties.IsolationLevel == SnapshotIsolation {
-		rangeResult = c.tx.Snapshot().GetRange(rng, options)
-	} else {
-		rangeResult = c.tx.GetRange(rng, options)
+		rt = c.tx.Snapshot()
 	}
-
-	c.iterator = rangeResult.Iterator()
+	r, err := indexSkipRange(rt, rng, c.scanProps.ExecuteProperties.Skip, options.Reverse)
+	if err != nil {
+		return err
+	}
+	c.iterator = rt.GetRange(r, options).Iterator()
 	return nil
 }
 
