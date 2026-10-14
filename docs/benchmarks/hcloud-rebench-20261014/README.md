@@ -75,7 +75,8 @@ Headline results:
 - **D2:** through SQL on a non-covering index, remote fetch takes 0.885 of the
   ordinary path's time for 10 rows and 0.536 for 1,000 rows. Three ordinary
   processes got a one-byte-shorter store prefix; the report discloses this
-  confound and shows it does not change the time results.
+  confound, and prefix-matched block estimates are similar (a post-hoc,
+  descriptive check).
 
 ## Shared limits
 

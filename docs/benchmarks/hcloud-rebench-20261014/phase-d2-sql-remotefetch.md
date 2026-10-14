@@ -159,7 +159,9 @@ Measured:
   scan or record load for `final-remote`, and an index scan with record loads
   for `final-ordinary`; every measured operation returned exactly the
   expected rows.
-- **The prefix confound does not move the time ratios measurably here.** The
+- **Prefix-matched blocks give similar time ratios (post-hoc, descriptive).** This
+  shows the estimates are robust to dropping those blocks, not that the
+  confound has no effect, which cannot be separated by design. The
   blocks whose ordinary process had a 5-byte prefix have time ratios inside
   the range of the prefix-matched blocks (`rows10` block 5: 0.891 against
   0.862–0.906; `rows1000` blocks 3 and 6: 0.539 and 0.538 against
