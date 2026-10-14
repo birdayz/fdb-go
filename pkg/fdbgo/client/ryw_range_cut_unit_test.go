@@ -298,3 +298,41 @@ func TestRYWWriteOverlayRequestBytesClampedAndDoubled(t *testing.T) {
 		})
 	}
 }
+
+func TestRYWCacheHitsDoNotScaleStorageRequestBytes(t *testing.T) {
+	t.Parallel()
+	for _, cached := range []int{0, 257, 514} {
+		for _, reverse := range []bool{false, true} {
+			t.Run(fmt.Sprintf("cached=%d/reverse=%v", cached, reverse), func(t *testing.T) {
+				t.Parallel()
+				begin, end := []byte("a"), []byte("z")
+				cacheBegin, cacheEnd := []byte("a"), []byte("b")
+				if reverse {
+					cacheBegin, cacheEnd = []byte("y"), []byte("z")
+				}
+				rows := make([]KeyValue, cached)
+				for i := range rows {
+					rows[i] = KeyValue{Key: []byte(fmt.Sprintf("%s%04d", cacheBegin, i)), Value: []byte("cleared")}
+				}
+				var c rywCache
+				c.serverCache.insert(cacheBegin, cacheEnd, rows)
+				c.clearRange(cacheBegin, cacheEnd)
+				var requestedBytes []int
+				server := func(_ context.Context, _, _ []byte, _ int, byteTarget int, _ bool) ([]KeyValue, bool, []byte, error) {
+					requestedBytes = append(requestedBytes, byteTarget)
+					return nil, false, nil, nil
+				}
+				r := &rywRangeRead{}
+				c.issueRangeInto(r, begin, end, 100, 30000, reverse, false)
+				got, more, err := r.run(context.Background(), server)
+				if err != nil || len(got) != 0 || more {
+					t.Fatalf("range returned %v, more=%v, err=%v", got, more, err)
+				}
+				// C++ counts storage requests, not cached batches of cleared rows.
+				if len(requestedBytes) != 1 || requestedBytes[0] != 30000 {
+					t.Fatalf("first storage request after cached clears sent %v, want [30000]", requestedBytes)
+				}
+			})
+		}
+	}
+}

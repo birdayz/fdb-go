@@ -802,6 +802,10 @@ func (r *rywRangeRead) run(ctx context.Context, serverGetRange rangeServerFunc) 
 	curBegin := begin
 	curEnd := end
 	requestCount := 0
+	countedGetRange := func(ctx context.Context, begin, end []byte, limit, byteTarget int, reverse bool) ([]KeyValue, bool, []byte, error) {
+		requestCount++
+		return serverGetRange(ctx, begin, end, limit, byteTarget, reverse)
+	}
 
 	for remaining > 0 && bytes.Compare(curBegin, curEnd) < 0 {
 		// Fetch from server with headroom to compensate for clears.
@@ -814,8 +818,7 @@ func (r *rywRangeRead) run(ctx context.Context, serverGetRange rangeServerFunc) 
 			}
 		}
 
-		serverKVs, serverMore, err := c.fetchOrCached(ctx, curBegin, curEnd, fetchLimit, rywRequestBytes(remainingBytes, requestCount), reverse, serverGetRange)
-		requestCount++
+		serverKVs, serverMore, err := c.fetchOrCached(ctx, curBegin, curEnd, fetchLimit, rywRequestBytes(remainingBytes, requestCount), reverse, countedGetRange)
 		if err != nil {
 			return nil, false, err
 		}
