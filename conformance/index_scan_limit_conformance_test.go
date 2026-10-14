@@ -36,6 +36,7 @@ type scanLimitRequest struct {
 	FailOnScanLimit                 bool   `json:"failOnScanLimit"`
 	Continuation                    string `json:"continuation"`
 	HoldRecordLoadsUntilSourceError bool   `json:"holdRecordLoadsUntilSourceError"`
+	SelectorsOnly                   bool   `json:"selectorsOnly"`
 }
 
 type scanLimitRangeOptions struct {
@@ -611,32 +612,39 @@ var _ = Describe("Ordinary index cursor Java limit conformance", func() {
 			}
 		})
 	})
-	// fdb-java KeySelector.add is int arithmetic (KeySelector.java:144-146), so
-	// Java's forward Skip=MaxInt32 wraps the begin offset to MinInt32 and reads
-	// from before the index. Go skips that many rows (docs/compatibility.md).
-	It("treats forward Skip=MaxInt32 as a real skip where Java's begin offset wraps", func() {
+	// fdb-java KeySelector.add is int arithmetic (KeySelector.java:144-146), so Java
+	// passes a forward Skip=MaxInt32 begin offset of MinInt32 to getRange; Go
+	// saturates it at MaxInt32 (docs/compatibility.md). Java's forward selectors are
+	// built without the read: that offset is never sent to the shared cluster.
+	It("saturates a Skip=MaxInt32 begin offset where Java's offset wraps", func() {
 		forEachScan(func(req scanLimitRequest) {
 			req.Skip = math.MaxInt32
 			if req.Reverse {
-				// 1-MaxInt32 fits an int: the reverse end selector agrees.
+				// 1-MaxInt32 fits an int: Go sends Java's end selector.
 				page := compare(req)
 				Expect(page.Rows).To(BeEmpty())
 				Expect(page.Reason).To(Equal("SOURCE_EXHAUSTED"))
+				Expect(page.Selectors[0].EndOffset).To(Equal(math.MinInt32 + 2))
 				return
 			}
+			probe := req
+			probe.SelectorsOnly = true
 			var oracle scanLimitPage
 			Expect(java.InvokeAs(ctx, "scanIndexScanLimits", map[string]any{
-				"clusterFile": env.ClusterFile, "tenantName": env.TenantName, "subspace": BytesToIntArray(ks.Bytes()), "request": req,
+				"clusterFile": env.ClusterFile, "tenantName": env.TenantName, "subspace": BytesToIntArray(ks.Bytes()), "request": probe,
 			}, &oracle)).To(Succeed())
+			Expect(oracle.Rows).To(BeEmpty())
 			Expect(oracle.Selectors).To(HaveLen(1))
 			Expect(oracle.Selectors[0].BeginOffset).To(Equal(math.MinInt32))
-			Expect(oracle.ExceptionClass != "" || len(oracle.Rows) > 0).To(BeTrue(),
-				"Java's wrapped begin must not look like an empty exhaustion: %+v", oracle)
 			page := scanGo(req)
 			Expect(page.ExceptionClass).To(BeEmpty())
 			Expect(page.Rows).To(BeEmpty())
 			Expect(page.Reason).To(Equal("SOURCE_EXHAUSTED"))
 			Expect(page.ScannedRecords).To(Equal(1))
+			Expect(page.RangeOptions).To(Equal(oracle.RangeOptions))
+			want := oracle.Selectors[0]
+			want.BeginOffset = math.MaxInt32
+			Expect(page.Selectors).To(Equal([]scanLimitSelectors{want}))
 		})
 	})
 	It("accepts only the three held schedules and rejects unsafe requests before opening a Java gate", func() {

@@ -1125,20 +1125,56 @@ ordinary residual. Pinned by `TestFDB_ExistsInOn` and
 `select_subsumption_existential_compensation_test.go`. Booked in TODO.md section 9 for the
 upstream report.
 
-### Ordinary index Skip at `Integer.MAX_VALUE`: no selector wrap
+## Index scan Skip (`ExecuteProperties.Skip`)
 
-**Java** `KeyValueCursorBase.Builder.prepare` (`KeyValueCursorBase.java:345-352`)
-computes `begin.add(skip)`, and fdb-java's `KeySelector.add` is `int` addition
-(`KeySelector.java:144-146`). A forward skip of `Integer.MAX_VALUE` gives
-`firstGreaterOrEqual(low)` an offset of `Integer.MIN_VALUE`, which resolves before
-the index subspace, so the scan reads keys outside the index.
+Ordinary index cursors apply Skip as Java's selector offsets (`KeyValueCursorBase.java:345-352`);
+`docs/compatibility.md` describes the shared behavior. The differences:
 
-**Go** (`indexSkipRange`, `index_cursor_limits.go`) skips that many entries. An
-offset outside the native int32 range is resolved in steps with `GetKey`, and a
-step that leaves the scan range yields an empty scan. Reverse skips up to
-`Integer.MAX_VALUE` fit an `int` and match Java. Pinned by
-`TestFDB_IndexCursorSkipSelectorOffsets` and the Java conformance case
-"treats forward Skip=MaxInt32 as a real skip where Java's begin offset wraps".
+### Forward `Integer.MAX_VALUE`: saturated, not wrapped
+
+**Java** computes `begin.add(skip)`, and fdb-java's `KeySelector.add` is `int` addition
+(`KeySelector.java:144-146`). A forward skip of `Integer.MAX_VALUE` passes
+`firstGreaterOrEqual(low)` with offset `Integer.MIN_VALUE` to `getRange`.
+
+**Go** (`indexSkipRange`, `index_cursor_limits.go`) saturates the begin offset at `MaxInt32`
+(skipping `MaxInt32-1` entries) instead of wrapping; Go-only skips above `MaxInt32` saturate the
+same way, forward and reverse. A reverse skip of `Integer.MAX_VALUE` keeps Java's exact end offset
+`1-MaxInt32`. Saturation differs from an exact skip only when more than 2^31-2 entries follow the
+bound, which one transaction cannot resolve. Pinned by `TestFDB_IndexCursorSkipSelectorOffsets`
+(bound subtests) and the conformance case "saturates a Skip=MaxInt32 begin offset where Java's
+offset wraps", which builds Java's selectors without issuing the read.
+
+### Pure-Go selector resolution is not bounded by the scan range
+
+`libfdb_c` resolves a skipped selector inside the range read: RYW reads the extra rows from
+`firstGreaterOrEqual` of the selector key and stops at the other bound
+(`ReadYourWrites.actor.cpp:725-760`), and the read conflict covers the requested range
+(`:246-282`). The pure-Go facade resolves a non-trivial selector first with a `GetKey` that is not
+bounded by the range (`pkg/fdbgo/fdb/range_result.go:413-470`, `pkg/fdbgo/client/ryw_getkey.go`).
+When Skip overshoots the remaining entries, Go reads keys beyond the far bound until the selector
+resolves and, in a serializable transaction, adds them to the read-conflict range. A very large
+Skip over a large keyspace can fail before resolving (the resolver stops after 2^28 keys,
+`ryw_getkey.go:567`, or the transaction ages out). The rows returned are the same. Tracked in
+TODO.md for `pkg/fdbgo`.
+
+### COUNT/atomic, MIN/MAX_EVER and BITMAP_VALUE scans ignore Skip
+
+Java scans these through the same `KeyValueCursor` (`AtomicMutationIndexMaintainer.java:114-121`,
+`BitmapValueIndexMaintainer.java:148`, both via `StandardIndexMaintainer.java:128-135`), so a
+direct BY_GROUP scan with Skip skips entries. Go's `countKVCursor` (COUNT/SUM and, through
+`newTupleValueIndexCursor`, MIN/MAX_EVER_TUPLE and MAX_EVER_VERSION,
+`max_ever_version_index_maintainer.go:127-129`) and `bitmapKVCursor` ignore it. The query executor
+clears Skip before these scans. Tracked in TODO.md.
+
+### The query executor skips above the index cursor
+
+Java's index plans pass Skip to the index cursor: `RecordQueryIndexPlan.java:328/333/342` hand
+`executeProperties.asScanProperties(reverse)` to `scanIndex`, and the covering and fetch plans pass
+the same properties through (`RecordQueryCoveringIndexPlan.java:115`,
+`RecordQueryFetchFromPartialRecordPlan.java:130`). Go's executor clears Skip for the leaf
+(`scan_range_set_cursor.go:169`) and skips above it (`executor.go:505`, `:553`), so it charges the
+skipped entries to the scanned-record and byte limits and loads their records before discarding
+them. Pre-existing; tracked in TODO.md.
 
 ## Plan Architecture: Go collapses Java class hierarchies
 

@@ -72,6 +72,7 @@ class IndexScanLimitSteps extends ConformanceBase {
         public long timeLimit;
         public boolean failOnScanLimit;
         public boolean holdRecordLoadsUntilSourceError;
+        public boolean selectorsOnly;
         public String continuation;
     }
 
@@ -143,6 +144,18 @@ class IndexScanLimitSteps extends ConformanceBase {
                         .toArray(CompletableFuture[]::new);
             }
             CompletableFuture.allOf(settled).join();
+        }
+    }
+
+    /** Runs KeyValueCursorBase.Builder.prepare without issuing the getRange that build() starts. */
+    private static final class SelectorProbe extends KeyValueCursor.Builder {
+        SelectorProbe(Subspace subspace) {
+            super(subspace);
+        }
+
+        SelectorProbe prepared() {
+            prepare();
+            return this;
         }
     }
 
@@ -597,20 +610,22 @@ class IndexScanLimitSteps extends ConformanceBase {
         Index index = store.getRecordMetaData().getIndex(request.indexName);
         byte[] continuation = request.continuation == null || request.continuation.isEmpty()
                 ? null : Base64.getDecoder().decode(request.continuation);
-        KeyValueCursor.Builder leafBuilder = KeyValueCursor.Builder.newBuilder(store.indexSubspace(index))
-                .setContext(context).setRange(TupleRange.ALL).setContinuation(continuation).setScanProperties(scanProperties);
-        List<Map<String, Object>> rangeOptions;
-        List<Map<String, Object>> selectors;
-        try (KeyValueCursor leaf = leafBuilder.build()) {
-            // Native Java and Go streaming enum values differ by one.
-            rangeOptions = List.of(Map.of("mode", leafBuilder.getStreamingMode().code() + 1,
-                    "limit", leafBuilder.getLimit(), "reverse", request.reverse));
-            // The getRange selectors after continuation and skip (KeyValueCursorBase.java:327-352).
-            KeySelector begin = leafBuilder.getBegin();
-            KeySelector end = leafBuilder.getEnd();
-            selectors = List.of(Map.of("beginKey", bytes(begin.getKey()), "beginOrEqual", begin.orEqual(),
-                    "beginOffset", begin.getOffset(), "endKey", bytes(end.getKey()), "endOrEqual", end.orEqual(),
-                    "endOffset", end.getOffset()));
+        SelectorProbe leafBuilder = new SelectorProbe(store.indexSubspace(index));
+        leafBuilder.setContext(context).setRange(TupleRange.ALL).setContinuation(continuation).setScanProperties(scanProperties);
+        leafBuilder.prepared();
+        // Native Java and Go streaming enum values differ by one.
+        List<Map<String, Object>> rangeOptions = List.of(Map.of("mode", leafBuilder.getStreamingMode().code() + 1,
+                "limit", leafBuilder.getLimit(), "reverse", request.reverse));
+        // The getRange selectors after continuation and skip (KeyValueCursorBase.java:327-352).
+        KeySelector begin = leafBuilder.getBegin();
+        KeySelector end = leafBuilder.getEnd();
+        List<Map<String, Object>> selectors = List.of(Map.of("beginKey", bytes(begin.getKey()),
+                "beginOrEqual", begin.orEqual(), "beginOffset", begin.getOffset(), "endKey", bytes(end.getKey()),
+                "endOrEqual", end.orEqual(), "endOffset", end.getOffset()));
+        if (request.selectorsOnly) {
+            // Java's forward Skip=Integer.MAX_VALUE begin offset wraps to MIN_VALUE: report it, never read it.
+            proofRequire(hold == null, "selectors-only requests never hold record loads");
+            return Map.of("rangeOptions", rangeOptions, "selectors", selectors);
         }
         if (hold != null) {
             proofRequire(store.getPipelineSize(PipelineOperation.INDEX_TO_RECORD) > 1,

@@ -690,16 +690,16 @@ func (c *indexCursor) initIterator() error {
 		return err
 	}
 	options := indexRangeOptions(c.scanProps)
+	r := indexSkipRange(rng, c.scanProps.ExecuteProperties.Skip, options.Reverse)
 
-	var rt fdb.ReadTransaction = c.tx
+	var rangeResult fdb.RangeResult
 	if c.scanProps.ExecuteProperties.IsolationLevel == SnapshotIsolation {
-		rt = c.tx.Snapshot()
+		rangeResult = c.tx.Snapshot().GetRange(r, options)
+	} else {
+		rangeResult = c.tx.GetRange(r, options)
 	}
-	r, err := indexSkipRange(rt, rng, c.scanProps.ExecuteProperties.Skip, options.Reverse)
-	if err != nil {
-		return err
-	}
-	c.iterator = rt.GetRange(r, options).Iterator()
+
+	c.iterator = rangeResult.Iterator()
 	return nil
 }
 

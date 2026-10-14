@@ -1,7 +1,6 @@
 package recordlayer
 
 import (
-	"bytes"
 	"math"
 
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -30,46 +29,20 @@ func indexRangeOptions(props ScanProperties) fdb.RangeOptions {
 
 // indexSkipRange applies a positive Skip as Java's selector offsets after the
 // continuation (KeyValueCursorBase.java:345-352): begin FGE(low)+skip forward,
-// end FGE(high)-skip reverse. The skipped rows are never read by the cursor.
-func indexSkipRange(rt fdb.ReadTransaction, rng fdb.KeyRange, skip int, reverse bool) (fdb.Range, error) {
+// end FGE(high)-skip reverse. Selector resolution reads the skipped keys; the
+// cursor never returns them. Java's int KeySelector.add wraps a forward skip of
+// MaxInt32 to MinInt32; Go saturates the begin offset at MaxInt32 instead.
+func indexSkipRange(rng fdb.KeyRange, skip int, reverse bool) fdb.Range {
 	if skip <= 0 {
-		return rng, nil
+		return rng
 	}
-	begin, end := rng.Begin.FDBKey(), rng.End.FDBKey()
+	begin, end := fdb.FirstGreaterOrEqual(rng.Begin), fdb.FirstGreaterOrEqual(rng.End)
 	if reverse {
-		sel, err := shiftSelector(rt, end, -int64(skip), func(k fdb.Key) bool { return bytes.Compare(k, begin) <= 0 })
-		return fdb.SelectorRange{Begin: fdb.FirstGreaterOrEqual(begin), End: sel}, err
+		end.Offset = 1 - min(skip, math.MaxInt32)
+	} else {
+		begin.Offset = 1 + min(skip, math.MaxInt32-1)
 	}
-	sel, err := shiftSelector(rt, begin, int64(skip), func(k fdb.Key) bool { return bytes.Compare(k, end) >= 0 })
-	return fdb.SelectorRange{Begin: sel, End: fdb.FirstGreaterOrEqual(end)}, err
-}
-
-// shiftSelector is FGE(key) moved delta keys. Java's int KeySelector.add wraps a
-// forward MaxInt32 skip negative; Go resolves offsets beyond the native int32
-// in steps instead, stopping once a step leaves the range (empty).
-func shiftSelector(rt fdb.ReadTransaction, key fdb.Key, delta int64, outside func(fdb.Key) bool) (fdb.KeySelector, error) {
-	sel := fdb.FirstGreaterOrEqual(key)
-	for {
-		offset := int64(sel.Offset)
-		if delta >= math.MinInt32-offset && delta <= math.MaxInt32-offset {
-			sel.Offset = int(offset + delta)
-			return sel, nil
-		}
-		step := math.MaxInt32 - offset
-		if delta < 0 {
-			step = math.MinInt32 - offset
-		}
-		sel.Offset = int(offset + step)
-		delta -= step
-		resolved, err := rt.GetKey(sel).Get()
-		if err != nil {
-			return fdb.KeySelector{}, err
-		}
-		if outside(resolved) {
-			return fdb.FirstGreaterOrEqual(resolved), nil
-		}
-		sel = fdb.LastLessOrEqual(resolved)
-	}
+	return fdb.SelectorRange{Begin: begin, End: end}
 }
 
 // CursorLimitManager charges attempts, including exhaustion and rejected scans.

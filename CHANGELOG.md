@@ -88,7 +88,7 @@ Each is described in full under Compatibility or Changed below.
 
 ### Changed
 - Ordinary index scans follow Java's row-limit tokens, scan-attempt counters and transaction-anchored time limits.
-- Ordinary index scans apply `ExecuteProperties.Skip` as Java's selector offsets (it was ignored); a forward `MaxInt32` skip does not wrap as in Java.
+- Ordinary index scans apply `ExecuteProperties.Skip` as Java's selector offsets (it was ignored); a forward `MaxInt32` skip saturates instead of wrapping as in Java.
 - Issued record loads charge scan bytes when the raw read completes, including loads discarded by a failed index cursor. `ScanLimiterState.WaitForIssuedRecordLoadCharges` waits for those existing charges without issuing or materializing another record.
 - Record Layer `USE_REMOTE_FETCH`, `USE_REMOTE_FETCH_WITH_FALLBACK` and SQL `INDEX_FETCH_METHOD` remain unsupported pending RFC-258; raw mapped-range facade support does not enable them.
 - Update Go dependencies for archive containment, bounded group parsing, CEL JSON field privacy, and OpenTelemetry diagnostic privacy; these SDK updates do not patch the host Docker daemon.

@@ -389,25 +389,28 @@ func TestFDB_IndexCursorSkipSelectorOffsets(t *testing.T) {
 					})
 				}
 
-				for _, skip := range []int{math.MaxInt32 - 1, math.MaxInt32, math.MaxInt32 + 5, math.MaxInt} {
-					t.Run(fmt.Sprintf("bound/skip=%d", skip), func(t *testing.T) {
-						page := scan(t, request(skip, 0))
+				// Offsets saturate at the native int32 range instead of wrapping: Java's
+				// forward MaxInt32 wraps to MinInt32, and Go-only skips above MaxInt32
+				// keep the MaxInt32 offsets.
+				for _, bound := range []struct{ skip, forward, reverse int }{
+					{math.MaxInt32 - 1, math.MaxInt32, math.MinInt32 + 3},
+					{math.MaxInt32, math.MaxInt32, math.MinInt32 + 2},
+					{math.MaxInt32 + 5, math.MaxInt32, math.MinInt32 + 2},
+					{math.MaxInt, math.MaxInt32, math.MinInt32 + 2},
+				} {
+					t.Run(fmt.Sprintf("bound/skip=%d", bound.skip), func(t *testing.T) {
+						page := scan(t, request(bound.skip, 0))
 						expectSkipRows(t, page, nil)
 						expectSkipTerminal(t, page, 0, SourceExhausted)
-						// No int32 wrap: the read never moves back before low (forward)
-						// or forward past high (reverse).
 						read := onlySkipRead(t, page)
-						for _, selector := range []fdb.KeySelector{read.begin, read.end} {
-							if selector.Offset < math.MinInt32 || selector.Offset > math.MaxInt32 {
-								t.Fatalf("selector offset %d is outside the native int32 range", selector.Offset)
-							}
+						begin, end := baseRead.begin, baseRead.end
+						if reverse {
+							end.Offset = bound.reverse
+						} else {
+							begin.Offset = bound.forward
 						}
-						if !reverse && (read.begin.Offset < 0 || bytes.Compare(read.begin.Key.FDBKey(), baseRead.begin.Key.FDBKey()) < 0) {
-							t.Fatalf("forward begin %x/%d anchors before low %x", read.begin.Key.FDBKey(), read.begin.Offset, baseRead.begin.Key.FDBKey())
-						}
-						if reverse && (read.end.Offset > 1 || bytes.Compare(read.end.Key.FDBKey(), baseRead.end.Key.FDBKey()) > 0) {
-							t.Fatalf("reverse end %x/%d anchors after high %x", read.end.Key.FDBKey(), read.end.Offset, baseRead.end.Key.FDBKey())
-						}
+						expectSkipSelector(t, read.begin, begin)
+						expectSkipSelector(t, read.end, end)
 					})
 				}
 			})

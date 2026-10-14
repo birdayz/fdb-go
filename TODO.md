@@ -1509,6 +1509,17 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   allocation (GC is ~39% of planner CPU); split 2, vector indexes out of
   `pkg/recordlayer` behind a maintainer registry (58 -> ~38 test targets per
   vector change); a Bazel cache shared by both CI runners.
+- [ ] `pkg/fdbgo`: bound GetRange selector resolution by the range end. The facade
+  resolves a non-trivial selector with an unbounded `GetKey` first
+  (`pkg/fdbgo/fdb/range_result.go:413-470`, `pkg/fdbgo/client/ryw_getkey.go`), so an
+  overshooting index-scan Skip reads, and in serializable mode conflicts on, keys past the
+  range. libfdb_c resolves within the read (ReadYourWrites.actor.cpp:725-760) and conflicts
+  on the requested range (:246-282). Client team.
+- [ ] Executor: pass Skip to the index cursor as Java's plans do
+  (RecordQueryIndexPlan.java:328/333/342, RecordQueryCoveringIndexPlan.java:115,
+  RecordQueryFetchFromPartialRecordPlan.java:130). Go clears it for the leaf
+  (`scan_range_set_cursor.go:169`) and skips above (`executor.go:505`, `:553`), charging
+  skipped entries to scanned records/bytes and loading their records. DIVERGENCES.md.
 
 ## Test lanes and test-speed work (committed with the temporal change)
 
@@ -1553,6 +1564,11 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   with a lastKey token; its next page is empty and exhausted. Rows agree; the page count,
   stop reason and token differ. `conformance/index_continuation_range_conformance_test.go`
   picks page sizes that avoid the boundary until this is ported.
+  The count/bitmap cursors, including the MIN/MAX_EVER_TUPLE and MAX_EVER_VERSION
+  tuple-value cursor (`count_index_maintainer.go:67`, `max_ever_version_index_maintainer.go:127-129`),
+  also ignore `ExecuteProperties.Skip`. Java applies it through the same `KeyValueCursor`
+  selector offsets (AtomicMutationIndexMaintainer.java:114-121, BitmapValueIndexMaintainer.java:148,
+  via StandardIndexMaintainer.java:128-135); reuse `indexSkipRange` (index_cursor_limits.go).
 
 ## Issued-record load byte accounting
 
@@ -1562,17 +1578,3 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   are compared after already-issued loads quiesce, not at Java's racy
   failure-instant snapshot. Real-FDB gated Java and Go regressions pin this
   without additional reads or tolerance.
-
-## ExecuteProperties.Skip in key-value index cursors
-
-- [x] Ordinary index cursors (VALUE, VERSION, RANK, leaderboard, PERMUTED_MIN/MAX)
-  apply Skip as Java's selector offsets after the continuation
-  (KeyValueCursorBase.java:345-352), without widening the row limit or charging
-  skipped rows. `TestFDB_IndexCursorSkipSelectorOffsets` and
-  `conformance/index_scan_limit_conformance_test.go` pin it; forward `MaxInt32`
-  is a documented no-wrap difference (DIVERGENCES.md).
-- [ ] COUNT/atomic (`countKVCursor`) and BITMAP_VALUE (`bitmapKVCursor`) cursors
-  ignore Skip. Java scans both through the same `KeyValueCursor`
-  (AtomicMutationIndexMaintainer.java:114-121, BitmapValueIndexMaintainer.java:148
-  via StandardIndexMaintainer.java:128-135), so a direct BY_GROUP scan with Skip
-  skips entries in Java. The query executor clears Skip before these scans.

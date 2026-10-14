@@ -74,12 +74,22 @@ Ordinary index cursors (VALUE, VERSION, RANK, leaderboard and PERMUTED_MIN/MAX
 entries) apply a positive `ExecuteProperties.Skip` as Java's `KeyValueCursorBase`
 does: after the continuation replaces the resumed bound, the begin selector
 (forward) or end selector (reverse) moves by the skip. The returned-row limit is
-not widened, and skipped entries are not charged to scanned-record or byte
-limits. A caller that keeps Skip on a resumed page skips again, as in Java.
+not widened, and the cursor neither returns skipped entries nor charges them to
+scanned-record or byte limits. A caller that keeps Skip on a resumed page skips
+again, as in Java.
+
 Java adds the skip with `int` arithmetic, so a forward skip of
-`Integer.MAX_VALUE` wraps to a negative offset and reads keys before the index.
-Go skips that many entries instead, resolving offsets beyond the native 32-bit
-range in steps. COUNT/atomic and BITMAP_VALUE cursors do not yet apply Skip.
+`Integer.MAX_VALUE` passes offset `Integer.MIN_VALUE` to `getRange`. Go
+saturates the offset at the int32 maximum instead; this differs from an exact
+skip only beyond 2^31-2 entries, which one transaction cannot resolve.
+
+The pure-Go client resolves the skipped selector with a `GetKey` that is not
+bounded by the scan range. When Skip overshoots the remaining entries, Go reads
+keys beyond the range until the selector resolves and, in a serializable
+transaction, adds them to the read-conflict range; `libfdb_c` bounds both by the
+range. COUNT/atomic, MIN/MAX_EVER and BITMAP_VALUE cursors do not apply Skip yet,
+and the query executor applies Skip above the index cursor instead of in it. See
+DIVERGENCES.md.
 
 ### Vector defaults are layer-specific
 
