@@ -111,7 +111,7 @@ class IndexRemoteFetchSteps extends ConformanceBase {
         return builder.build();
     }
 
-    private static FDBRecordStore open(FDBRecordContext context, byte[] subspace, String shape) {
+    static FDBRecordStore open(FDBRecordContext context, byte[] subspace, String shape) {
         return FDBRecordStore.newBuilder().setContext(context).setSubspace(new Subspace(subspace))
                 .setMetaDataProvider(metadata(shape)).setUserVersionChecker(ALWAYS_READABLE_CHECKER)
                 .setFormatVersion(format(shape)).createOrOpen();
@@ -140,7 +140,7 @@ class IndexRemoteFetchSteps extends ConformanceBase {
         }
     }
 
-    private static void localWrite(FDBRecordStore store, String shape, int id) {
+    static void localWrite(FDBRecordStore store, String shape, int id) {
         RecordLayerDemo.Order previous;
         try {
             previous = RecordLayerDemo.Order.parseFrom(store.loadRecord(primaryKey(shape, id)).getRecord().toByteString());

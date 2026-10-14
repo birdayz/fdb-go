@@ -916,7 +916,7 @@ These affect runtime behavior and wire compatibility, NOT plan selection.
 
 | Gap | Category | Blocked on |
 |---|---|---|
-| Plan proto serialization: no Go code builds or reads `PRecordQueryPlan` | Wire format | Plan serialization infrastructure |
+| Plan proto serialization: no Go code builds or reads `PRecordQueryPlan`, so the index plan's fetch method is not serialized either (its schema, `PRecordQueryIndexPlan.index_fetch_method` and `PlannerConfiguration.indexFetchMethod`, is pinned by `TestIndexFetchMethodWireNumbers`) | Wire format | Plan serialization infrastructure |
 | Value proto serialization is partial: `SerializationContext.ValueToProto`/`ValueFromProto` (`cascades/values/plan_serialization.go`, used for macro-function metadata) cover 18 of the 60 typed `PValue` variants in `record_query_plan.proto` (61 in the oneof; `PTautologicalValue` also via `additional_values`); the rest return "unsupported" | Wire format | Porting the remaining `PValue` variants |
 | Comparison subclass types: `OpaqueEqualityComparison`, `MultiColumnComparison`, `InvertedFunctionComparison` | Index-specific | Niche index types not in core planner |
 
@@ -4394,7 +4394,8 @@ An FDB code Go does not map reaches the caller with no SQLSTATE: the FDB error i
 
 The Record Layer supports `IndexFetchMethod.USE_REMOTE_FETCH` and
 `USE_REMOTE_FETCH_WITH_FALLBACK` with Java's records, continuations, limits,
-orphan behavior and fallback. Two differences remain:
+orphan behavior and fallback, and the planner stamps the SQL option
+`INDEX_FETCH_METHOD` on index plans as Java does. Three differences remain:
 
 - **Skip.** Java applies a positive `ExecuteProperties` skip to the mapped read as
   a key-selector offset. Go never sends a mapped read with a selector offset,
@@ -4407,9 +4408,12 @@ orphan behavior and fallback. Two differences remain:
 - **libfdb_c backend.** It has no mapped reads, so remote fetch there is
   unsupported: `USE_REMOTE_FETCH` fails and `USE_REMOTE_FETCH_WITH_FALLBACK` falls
   back, where Java fetches remotely.
+- **SQL default.** Go honors `INDEX_FETCH_METHOD` only when it is set; unset,
+  plans use SCAN_AND_FETCH. Java's `OptionsUtils.getIndexFetchMethod` defaults to
+  USE_REMOTE_FETCH_WITH_FALLBACK. Go adopts that default after RFC-258's
+  allocation work (PR4) has been measured; until then the default differs.
 
-The SQL `INDEX_FETCH_METHOD` option is parsed but not yet honored; RFC-258's
-planner work adds it. See [compatibility boundaries](docs/compatibility.md#mapped-range-backend-capability).
+See [compatibility boundaries](docs/compatibility.md#mapped-range-backend-capability).
 
 ### Raw mapped-range Skip
 
@@ -4429,4 +4433,5 @@ that returns rows before the requested begin. Originally empty or inverted bound
 remain empty, and an exhausted positive Skip preserves the original primary
 conflicts. Snapshot and CGo facade transactions do not expose this capability.
 It is distinct from ordinary index cursor Skip; Record Layer remote-fetch scans
-continue routing positive Skip to SCAN_AND_FETCH.
+continue routing positive Skip to SCAN_AND_FETCH, and index plans keep it above
+their remote-fetch leaves.

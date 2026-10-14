@@ -481,9 +481,9 @@ func TestUnsafePrimaryKeySuffixCannotOverwriteCoveredIndexColumn(t *testing.T) {
 	if _, pushable := candidate.PushValueThroughFetch(orderID, sourceAlias, targetAlias); !pushable {
 		t.Fatal("index root ORDER_ID should remain directly coverable")
 	}
-	fetch, ok := candidate.ToScanPlan(nil, false).(*plans.RecordQueryFetchFromPartialRecordPlan)
+	fetch, ok := candidate.ToScanPlan(cascades.EmptyPlanContext(), nil, false).(*plans.RecordQueryFetchFromPartialRecordPlan)
 	if !ok {
-		t.Fatalf("scan plan = %T, want fetch over index", candidate.ToScanPlan(nil, false))
+		t.Fatalf("scan plan = %T, want fetch over index", candidate.ToScanPlan(cascades.EmptyPlanContext(), nil, false))
 	}
 	indexPlan, ok := fetch.GetInner().(*plans.RecordQueryIndexPlan)
 	if !ok {

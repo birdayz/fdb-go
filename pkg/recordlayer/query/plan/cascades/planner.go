@@ -1068,7 +1068,7 @@ func (p *Planner) consumeDataAccessPartitions(ref *expressions.Reference) {
 	if !p.shouldConsumeMatches(ref, candidates, requestedOrderings) {
 		return
 	}
-	realizations := make(accessRealizations)
+	realizations := newAccessRealizations(p.ctx)
 	p.consumeMatchPartitions(ref, candidates, requestedOrderings, realizations)
 	p.pushCrossCandidateIntersection(ref, candidates, requestedOrderings, realizations)
 }
@@ -1251,7 +1251,7 @@ func requestedOrderingSetsEqual(a, b []*properties.RequestedOrdering) bool {
 // into data-access expressions and routes every result by safety:
 // physical plans and SAFE logical compensations go through
 // yieldUnknown; UNSAFE logical compensations go to InsertFinal.
-func (p *Planner) consumeMatchPartitions(ref *expressions.Reference, candidates []MatchCandidate, requestedOrderings []*properties.RequestedOrdering, realizations accessRealizations) {
+func (p *Planner) consumeMatchPartitions(ref *expressions.Reference, candidates []MatchCandidate, requestedOrderings []*properties.RequestedOrdering, realizations *accessRealizations) {
 	for _, candidate := range candidates {
 		matches := completeMatchesForCandidate(ref, candidate)
 		if len(matches) == 0 {
@@ -1306,7 +1306,7 @@ func (p *Planner) consumeMatchPartitions(ref *expressions.Reference, candidates 
 // full-scan match is filtered out. shouldConsumeIntersection prevents
 // re-creation at an unchanged match/ordering input while still allowing
 // incrementally discovered or adjusted matches to unlock larger intersections.
-func (p *Planner) pushCrossCandidateIntersection(ref *expressions.Reference, candidates []MatchCandidate, requestedOrderings []*properties.RequestedOrdering, realizations accessRealizations) {
+func (p *Planner) pushCrossCandidateIntersection(ref *expressions.Reference, candidates []MatchCandidate, requestedOrderings []*properties.RequestedOrdering, realizations *accessRealizations) {
 	if len(candidates) < 2 {
 		return
 	}
@@ -1338,7 +1338,7 @@ func (p *Planner) pushExpressionIntersection(
 	ref *expressions.Reference,
 	allMatches []PartialMatch,
 	requestedOrderings []*properties.RequestedOrdering,
-	realizations accessRealizations,
+	realizations *accessRealizations,
 ) {
 	// Only include matches with non-empty bound parameter prefix
 	// (i.e., matches that actually restrict the scan). Zero-coverage

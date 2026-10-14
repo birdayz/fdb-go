@@ -322,6 +322,7 @@ func (c *WindowedIndexScanMatchCandidate) ComputeBoundParameterPrefixMap(
 //
 // Ports Java's WindowedIndexScanMatchCandidate.toEquivalentPlan().
 func (c *WindowedIndexScanMatchCandidate) ToScanPlan(
+	_ PlanContext,
 	prefixMap map[values.CorrelationIdentifier]*predicates.ComparisonRange,
 	reverse bool,
 ) plans.RecordQueryPlan {
@@ -344,6 +345,8 @@ func (c *WindowedIndexScanMatchCandidate) ToScanPlan(
 	if err != nil {
 		return nil
 	}
+	// A BY_RANK scan keeps SCAN_AND_FETCH whatever the configuration says:
+	// Java's RecordQueryIndexPlan constructor downgrades it (:248-251).
 	indexPlan = stampIndexMetadata(c, indexPlan)
 
 	// Wrap in a FetchFromPartialRecordPlan with the index's translate

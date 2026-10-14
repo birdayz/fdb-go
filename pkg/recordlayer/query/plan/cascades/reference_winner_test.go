@@ -275,7 +275,7 @@ func TestSortElimination_ViaChildOrderedMember(t *testing.T) {
 	scanRef = sortRef.Winner().GetQuantifiers()[0].GetRangesOver()
 
 	emptyPrefix := map[values.CorrelationIdentifier]*predicates.ComparisonRange{}
-	scanPlan := cand.ToScanPlan(emptyPrefix, false)
+	scanPlan := cand.ToScanPlan(EmptyPlanContext(), emptyPrefix, false)
 	idxPlan := extractIndexPlan(scanPlan)
 	if idxPlan == nil {
 		t.Fatal("could not extract index plan from candidate")
@@ -330,7 +330,7 @@ func TestSortElimination_CounterflowNullsNotElidedAtExtraction(t *testing.T) {
 	scanRef = sortRef.Winner().GetQuantifiers()[0].GetRangesOver()
 
 	emptyPrefix := map[values.CorrelationIdentifier]*predicates.ComparisonRange{}
-	scanPlan := cand.ToScanPlan(emptyPrefix, false)
+	scanPlan := cand.ToScanPlan(EmptyPlanContext(), emptyPrefix, false)
 	idxPlan := extractIndexPlan(scanPlan)
 	if idxPlan == nil {
 		t.Fatal("could not extract index plan from candidate")
@@ -360,7 +360,7 @@ func TestSortElimination_PinsOrderedSpineThroughWrapper(t *testing.T) {
 	rowType := referenceWinnerRowType("Order", "STATUS")
 	cand := referenceWinnerStatusCandidate(rowType)
 	emptyPrefix := map[values.CorrelationIdentifier]*predicates.ComparisonRange{}
-	idxPlan := extractIndexPlan(cand.ToScanPlan(emptyPrefix, false))
+	idxPlan := extractIndexPlan(cand.ToScanPlan(EmptyPlanContext(), emptyPrefix, false))
 	if idxPlan == nil {
 		t.Fatal("could not extract index plan from candidate")
 	}

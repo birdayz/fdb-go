@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=405 queries=3126 dml=179 non_query=129 plan_errors=322 unexpected_errors=4
+# files=407 queries=3146 dml=183 non_query=129 plan_errors=322 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -9582,6 +9582,138 @@ shape:       RecordQueryFlatMapPlan
 shape:         RecordQueryScanPlan
 shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryScanPlan
+=== index_fetch_fallback.yaml#0
+sql:   SELECT * FROM t WHERE a = 10
+plan:  IndexScan(IDX_A, [=])
+shape: RecordQueryIndexPlan
+=== index_fetch_fallback.yaml#1
+sql:   SELECT id, c FROM t WHERE a >= 20 ORDER BY a DESC
+plan:  Map(Map(IndexScan(IDX_A, [<>]) REVERSE, {ID: _current.ID#0, C: _current.C#3, _2: _current.A#1}), {ID: _current.ID#0, C: _current.C#1})
+shape: RecordQueryMapPlan
+shape:   RecordQueryMapPlan
+shape:     RecordQueryIndexPlan
+=== index_fetch_fallback.yaml#2
+sql:   SELECT id, c FROM t WHERE a IN (10, 30)
+plan:  InJoin(Map(IndexScan(IDX_A, [=]), {ID: _current.ID#0, C: _current.C#3}), binding)
+shape: RecordQueryInJoinPlan
+shape:   RecordQueryMapPlan
+shape:     RecordQueryIndexPlan
+=== index_fetch_fallback.yaml#3
+sql:   SELECT * FROM pair WHERE label = 'x'
+plan:  IndexScan(IDX_LABEL, [=])
+shape: RecordQueryIndexPlan
+=== index_fetch_fallback.yaml#4
+sql:   SELECT a, b FROM t WHERE a = 20
+plan:  Map(IndexScan(IDX_AB, [=, *] COVERING), {A: _current.A#1, B: _current.B#2})
+shape: RecordQueryMapPlan
+shape:   RecordQueryCoveringIndexPlan
+=== index_fetch_fallback.yaml#5
+sql:   SELECT t_id, SUM(v) FROM u GROUP BY t_id
+plan:  Map(AggregateIndex(SUM, SUM_V, [T_ID], U), {T_ID: _current.T_ID#0, _1: _current.SUM(V)#1})
+shape: RecordQueryMapPlan
+shape:   RecordQueryAggregateIndexPlan
+=== index_fetch_fallback.yaml#6
+sql:   SELECT t.c, u.v FROM t, u WHERE t.a = 10 AND u.t_id = t.id
+plan:  FlatMap(outer=IndexScan(IDX_A, [=]), inner=IndexScan(IDX_T, [=]))
+shape: RecordQueryFlatMapPlan
+shape:   RecordQueryIndexPlan
+shape:   RecordQueryIndexPlan
+=== index_fetch_fallback.yaml#7
+sql:   SELECT id FROM t WHERE EXISTS (SELECT id FROM u WHERE u.t_id = t.id)
+plan:  FlatMap(outer=IndexScan(IDX_A, [*]), inner=PredicatesFilter(FirstOrDefault(IndexScan(IDX_T, [=])), [1 preds]))
+shape: RecordQueryFlatMapPlan
+shape:   RecordQueryIndexPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryFirstOrDefaultPlan
+shape:       RecordQueryIndexPlan
+=== index_fetch_fallback.yaml#8
+sql:   UPDATE t SET c = 'ten' WHERE a = 10
+plan:  Update(T, [1 transforms], Fetch(UnorderedPrimaryKeyDistinct(IndexScan(IDX_A, [=] COVERING))))
+shape: RecordQueryUpdatePlan
+shape:   RecordQueryFetchFromPartialRecordPlan
+shape:     RecordQueryUnorderedPrimaryKeyDistinctPlan
+shape:       RecordQueryCoveringIndexPlan
+=== index_fetch_fallback.yaml#9
+sql:   SELECT id, c FROM t WHERE a = 10
+plan:  Map(IndexScan(IDX_A, [=]), {ID: _current.ID#0, C: _current.C#3})
+shape: RecordQueryMapPlan
+shape:   RecordQueryIndexPlan
+=== index_fetch_fallback.yaml#10
+sql:   DELETE FROM t WHERE a = 20
+plan:  Delete(T, IndexScan(IDX_A, [=]))
+shape: RecordQueryDeletePlan
+shape:   RecordQueryIndexPlan
+=== index_fetch_fallback.yaml#11
+sql:   SELECT id FROM t WHERE a >= 0
+plan:  Map(IndexScan(IDX_A, [<>] COVERING), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryCoveringIndexPlan
+=== index_fetch_remote.yaml#0
+sql:   SELECT * FROM t WHERE a = 10
+plan:  IndexScan(IDX_A, [=])
+shape: RecordQueryIndexPlan
+=== index_fetch_remote.yaml#1
+sql:   SELECT id, c FROM t WHERE a >= 20 ORDER BY a DESC
+plan:  Map(Map(IndexScan(IDX_A, [<>]) REVERSE, {ID: _current.ID#0, C: _current.C#3, _2: _current.A#1}), {ID: _current.ID#0, C: _current.C#1})
+shape: RecordQueryMapPlan
+shape:   RecordQueryMapPlan
+shape:     RecordQueryIndexPlan
+=== index_fetch_remote.yaml#2
+sql:   SELECT id, c FROM t WHERE a IN (10, 30)
+plan:  InJoin(Map(IndexScan(IDX_A, [=]), {ID: _current.ID#0, C: _current.C#3}), binding)
+shape: RecordQueryInJoinPlan
+shape:   RecordQueryMapPlan
+shape:     RecordQueryIndexPlan
+=== index_fetch_remote.yaml#3
+sql:   SELECT * FROM pair WHERE label = 'x'
+plan:  IndexScan(IDX_LABEL, [=])
+shape: RecordQueryIndexPlan
+=== index_fetch_remote.yaml#4
+sql:   SELECT a, b FROM t WHERE a = 20
+plan:  Map(IndexScan(IDX_AB, [=, *] COVERING), {A: _current.A#1, B: _current.B#2})
+shape: RecordQueryMapPlan
+shape:   RecordQueryCoveringIndexPlan
+=== index_fetch_remote.yaml#5
+sql:   SELECT t_id, SUM(v) FROM u GROUP BY t_id
+plan:  Map(AggregateIndex(SUM, SUM_V, [T_ID], U), {T_ID: _current.T_ID#0, _1: _current.SUM(V)#1})
+shape: RecordQueryMapPlan
+shape:   RecordQueryAggregateIndexPlan
+=== index_fetch_remote.yaml#6
+sql:   SELECT t.c, u.v FROM t, u WHERE t.a = 10 AND u.t_id = t.id
+plan:  FlatMap(outer=IndexScan(IDX_A, [=]), inner=IndexScan(IDX_T, [=]))
+shape: RecordQueryFlatMapPlan
+shape:   RecordQueryIndexPlan
+shape:   RecordQueryIndexPlan
+=== index_fetch_remote.yaml#7
+sql:   SELECT id FROM t WHERE EXISTS (SELECT id FROM u WHERE u.t_id = t.id)
+plan:  FlatMap(outer=IndexScan(IDX_A, [*]), inner=PredicatesFilter(FirstOrDefault(IndexScan(IDX_T, [=])), [1 preds]))
+shape: RecordQueryFlatMapPlan
+shape:   RecordQueryIndexPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryFirstOrDefaultPlan
+shape:       RecordQueryIndexPlan
+=== index_fetch_remote.yaml#8
+sql:   UPDATE t SET c = 'ten' WHERE a = 10
+plan:  Update(T, [1 transforms], Fetch(UnorderedPrimaryKeyDistinct(IndexScan(IDX_A, [=] COVERING))))
+shape: RecordQueryUpdatePlan
+shape:   RecordQueryFetchFromPartialRecordPlan
+shape:     RecordQueryUnorderedPrimaryKeyDistinctPlan
+shape:       RecordQueryCoveringIndexPlan
+=== index_fetch_remote.yaml#9
+sql:   SELECT id, c FROM t WHERE a = 10
+plan:  Map(IndexScan(IDX_A, [=]), {ID: _current.ID#0, C: _current.C#3})
+shape: RecordQueryMapPlan
+shape:   RecordQueryIndexPlan
+=== index_fetch_remote.yaml#10
+sql:   DELETE FROM t WHERE a = 20
+plan:  Delete(T, IndexScan(IDX_A, [=]))
+shape: RecordQueryDeletePlan
+shape:   RecordQueryIndexPlan
+=== index_fetch_remote.yaml#11
+sql:   SELECT id FROM t WHERE a >= 0
+plan:  Map(IndexScan(IDX_A, [<>] COVERING), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryCoveringIndexPlan
 === index_range_and_or.yaml#0
 sql:   SELECT * FROM t1 WHERE col1 = 20 ORDER BY id
 plan:  IndexScan(I1, [=])

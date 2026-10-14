@@ -128,7 +128,7 @@ func (r *AggregateDataAccessRule) OnMatch(call *ExpressionRuleCall) {
 			continue
 		}
 		for _, reverse := range []bool{false, true} {
-			scanPlan := aggCand.ToScanPlan(partition.scanPrefix, reverse)
+			scanPlan := aggCand.ToScanPlan(call.Context, partition.scanPrefix, reverse)
 			idxPlan := extractIndexPlan(scanPlan)
 			if idxPlan == nil {
 				break
@@ -993,7 +993,7 @@ func tryMultiAggregateIntersection(
 			if !candidateBindingRangesEligible(mc, prefix) {
 				return nil
 			}
-			sp := mc.ToScanPlan(prefix, reverse)
+			sp := mc.ToScanPlan(call.Context, prefix, reverse)
 			idxPlan := extractIndexPlan(sp)
 			if idxPlan == nil {
 				return nil

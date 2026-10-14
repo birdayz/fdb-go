@@ -71,32 +71,17 @@ const (
 	OptPlanCachePrimaryTimeToLiveMillis   OptionName = "PLAN_CACHE_PRIMARY_TIME_TO_LIVE_MILLIS"
 	OptPlanCacheSecondaryTimeToLiveMillis OptionName = "PLAN_CACHE_SECONDARY_TIME_TO_LIVE_MILLIS"
 	OptPlanCacheTertiaryTimeToLiveMillis  OptionName = "PLAN_CACHE_TERTIARY_TIME_TO_LIVE_MILLIS"
-	// OptIndexFetchMethod selects FDB's remote-fetch index scan in Java
-	// (Options.IndexFetchMethod → OptionsUtils.getIndexFetchMethod →
-	// RecordQueryPlannerConfiguration.setIndexFetchMethod, which every
-	// MatchCandidate stamps onto the RecordQueryIndexPlan it builds).
+	// OptIndexFetchMethod selects how an index scan fetches the records behind
+	// its entries: SCAN_AND_FETCH, USE_REMOTE_FETCH (the storage server returns
+	// each entry's record with it, through a mapped read) or
+	// USE_REMOTE_FETCH_WITH_FALLBACK. As in Java (OptionsUtils
+	// .getIndexFetchMethod → RecordQueryPlannerConfiguration.setIndexFetchMethod)
+	// every BY_VALUE index plan carries it, and it is part of the plan-cache key.
 	//
-	// It is currently NOT HONORED in Go, and the option is accepted rather than
-	// rejected only to keep Java-written option sets loadable. Remote fetch is
-	// an FDB client capability — Java drives it through
-	// Transaction.getMappedRange (IndexPrefetchRangeKeyValueCursor) — and
-	// neither FDB client Go uses exposes getMappedRange, nor does Go's
-	// index-scan plan have a fetch-method field to carry the choice. Wiring it
-	// is a record-layer + client feature, not option plumbing; the gap is
-	// tracked in TODO.md.
-	//
-	// The severity is narrower than "not honored" suggests, and the distinction
-	// matters:
-	//
-	//   - SCAN_AND_FETCH asks for exactly what Go always does, so it is
-	//     honored in effect.
-	//   - USE_REMOTE_FETCH_WITH_FALLBACK — Java's DEFAULT, and therefore what
-	//     almost every caller gets — permits falling back to scan-and-fetch,
-	//     which is what Go does. Go's behaviour is within the contract, so the
-	//     default path is CORRECT, not merely tolerated.
-	//   - USE_REMOTE_FETCH is the one sharp edge: it demands remote fetch with
-	//     no fallback, and Go silently scan-and-fetches instead. Same rows,
-	//     different round-trip profile than the caller asked for.
+	// Go honors it only when it is set: unset, plans use SCAN_AND_FETCH, where
+	// Java's default is USE_REMOTE_FETCH_WITH_FALLBACK (DIVERGENCES.md). The
+	// libfdb_c backend has no mapped reads, so there USE_REMOTE_FETCH fails and
+	// WITH_FALLBACK scans and fetches (docs/compatibility.md).
 	OptIndexFetchMethod        OptionName = "INDEX_FETCH_METHOD"
 	OptDisabledPlannerRules    OptionName = "DISABLED_PLANNER_RULES"
 	OptDisablePlannerRewriting OptionName = "DISABLE_PLANNER_REWRITING"
@@ -282,14 +267,9 @@ var nullValue = &nullSentinel{}
 // against Java. Keep in sync with Java's Options static initializer.
 //
 // OptIndexFetchMethod keeps Java's USE_REMOTE_FETCH_WITH_FALLBACK default so
-// the default option set stays byte-identical to Java's, but nothing in Go
-// reads it — see the option's own doc above. The behaviour that default names
-// is Java's fallback-to-scan-and-fetch, which is also what Go does
-// unconditionally, so the inert default is the honest one; a Go-local
-// SCAN_AND_FETCH override would diverge the wire-visible default map for no
-// behavioural gain. (The previous note here blamed "Phase 9 (gRPC server)";
-// that was wrong — remote fetch is an FDB client feature, unrelated to the
-// gRPC frontend.)
+// the default option set stays byte-identical to Java's. The planner reads the
+// option only when it is set (Options.IsSet), so the default plans with
+// SCAN_AND_FETCH; see the option's doc.
 var defaultOptionValues = map[OptionName]any{
 	OptMaxRows:                            math.MaxInt32,
 	OptIndexFetchMethod:                   IndexFetchUseRemoteFetchWithFallback,
@@ -360,6 +340,17 @@ func (o *Options) Get(name OptionName) any {
 		return o.parent.Get(name)
 	}
 	return defaultOptionValues[name]
+}
+
+// IsSet reports whether name was set on o or a parent, explicitly nil
+// included, rather than reading back its default.
+func (o *Options) IsSet(name OptionName) bool {
+	for p := o; p != nil; p = p.parent {
+		if _, ok := p.values[name]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // With returns a new Options with name=value applied on top of o.

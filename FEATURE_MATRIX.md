@@ -23,7 +23,7 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**405 scenarios · 3434 query/assertion cases** across 18 feature areas — 3014 supported, 101 unsupported-feature pins, 319 error-path pins.
+**407 scenarios · 3458 query/assertion cases** across 18 feature areas — 3038 supported, 101 unsupported-feature pins, 319 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
@@ -39,13 +39,13 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Column resolution & aliasing | 7 | 59 | 30 | 0 | 29 |
 | NULL handling | 6 | 44 | 41 | 3 | 0 |
 | NULL handling & boolean logic | 2 | 48 | 48 | 0 | 0 |
-| Index usage | 20 | 226 | 223 | 0 | 3 |
+| Index usage | 22 | 250 | 247 | 0 | 3 |
 | Types | 13 | 148 | 127 | 4 | 17 |
 | Keys & primary keys | 5 | 133 | 128 | 0 | 5 |
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
 | Other | 48 | 488 | 421 | 9 | 58 |
-| **Total** | **405** | **3434** | **3014** | **101** | **319** |
+| **Total** | **407** | **3458** | **3038** | **101** | **319** |
 
 ## Aggregates & GROUP BY
 
@@ -429,6 +429,8 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `escaped_column_index` | 8 | 8 | 0 | 0 | AN ESCAPED COLUMN PLANS AS ITS UNESCAPED TWIN DOES. |
 | `escaped_table_secondary_index` | 4 | 4 | 0 | 0 | A TABLE WHOSE NAME ESCAPES COULD NOT BE GIVEN A SECONDARY INDEX AT ALL. |
 | `fanout_index_child_binding_prefix` | 3 | 3 | 0 | 0 | A fan-out index whose exploded element follows a scalar column: the element's |
+| `index_fetch_fallback` | 12 | 12 | 0 | 0 | RFC-258: INDEX_FETCH_METHOD = |
+| `index_fetch_remote` | 12 | 12 | 0 | 0 | RFC-258: INDEX_FETCH_METHOD = USE_REMOTE_FETCH. |
 | `index_range_and_or` | 10 | 10 | 0 | 0 | Port of Java standard-tests.yamsql — AND/OR range predicates with index. |
 | `index_range_predicates_java` | 10 | 10 | 0 | 0 | Index scan with range predicates |
 | `index_scan_direction` | 8 | 8 | 0 | 0 | Index scan direction tests |

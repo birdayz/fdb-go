@@ -311,7 +311,7 @@ func TestAggregatePredicatePartition_ScanReceivesOnlyTheTruncatedRun(t *testing.
 	if !ok {
 		t.Fatal("partition declined")
 	}
-	idx := extractIndexPlan(f.cand.ToScanPlan(p.scanPrefix, false))
+	idx := extractIndexPlan(f.cand.ToScanPlan(EmptyPlanContext(), p.scanPrefix, false))
 	if idx == nil {
 		t.Fatal("no scan plan")
 	}
@@ -340,7 +340,7 @@ func TestAggregatePredicatePartition_ApplyResidualsRewritesOntoTheAggregateRow(t
 	if len(p.residuals) != 1 {
 		t.Fatalf("partition residuals=%d, want 1", len(p.residuals))
 	}
-	scan := extractIndexPlan(f.cand.ToScanPlan(p.scanPrefix, false))
+	scan := extractIndexPlan(f.cand.ToScanPlan(EmptyPlanContext(), p.scanPrefix, false))
 	agg, err := plans.NewRecordQueryAggregateIndexPlan(scan, "Orders", aggregateDataRowType("Orders"), "COUNT")
 	if err != nil {
 		t.Fatal(err)
@@ -399,7 +399,7 @@ func TestAggregatePredicatePartition_OuterCorrelationIsCarriedNotRewritten(t *te
 	if !ok || len(p.residuals) != 1 {
 		t.Fatalf("partition ok=%v residuals=%d, want a single residual", ok, len(p.residuals))
 	}
-	scan := extractIndexPlan(f.cand.ToScanPlan(p.scanPrefix, false))
+	scan := extractIndexPlan(f.cand.ToScanPlan(EmptyPlanContext(), p.scanPrefix, false))
 	agg, err := plans.NewRecordQueryAggregateIndexPlan(scan, "Orders", aggregateDataRowType("Orders"), "COUNT")
 	if err != nil {
 		t.Fatal(err)
@@ -442,7 +442,7 @@ func TestAggregatePredicatePartition_WrappedLeafKeepsItsWrapper(t *testing.T) {
 	if !ok || len(p.residuals) != 1 || len(p.scanPrefix) != 0 {
 		t.Fatalf("partition ok=%v residuals=%d bound=%d, want one residual and no bound", ok, len(p.residuals), len(p.scanPrefix))
 	}
-	scan := extractIndexPlan(f.cand.ToScanPlan(p.scanPrefix, false))
+	scan := extractIndexPlan(f.cand.ToScanPlan(EmptyPlanContext(), p.scanPrefix, false))
 	agg, err := plans.NewRecordQueryAggregateIndexPlan(scan, "Orders", aggregateDataRowType("Orders"), "COUNT")
 	if err != nil {
 		t.Fatal(err)

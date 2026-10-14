@@ -69,6 +69,7 @@ func (adjustMatchCandidate) ComputeBoundParameterPrefixMap(
 }
 
 func (adjustMatchCandidate) ToScanPlan(
+	PlanContext,
 	map[values.CorrelationIdentifier]*predicates.ComparisonRange,
 	bool,
 ) plans.RecordQueryPlan {

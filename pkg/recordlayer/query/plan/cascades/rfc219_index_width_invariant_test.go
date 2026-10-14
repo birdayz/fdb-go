@@ -153,7 +153,7 @@ func TestRFC219_IndexPlanWidthInvariant(t *testing.T) {
 					[]string{"ID"},
 				)
 				prefixMap := rfc219BindAll(t, cand.GetSargableAliases())
-				return cand.GetColumnNames(), rfc219IndexPlanIn(t, cand.ToScanPlan(prefixMap, false))
+				return cand.GetColumnNames(), rfc219IndexPlanIn(t, cand.ToScanPlan(EmptyPlanContext(), prefixMap, false))
 			},
 		},
 		{
@@ -187,7 +187,7 @@ func TestRFC219_IndexPlanWidthInvariant(t *testing.T) {
 					[]string{"ID"},
 				)
 				prefixMap := rfc219BindAll(t, cand.GetSargableAliases())
-				return cand.GetColumnNames(), rfc219IndexPlanIn(t, cand.ToScanPlan(prefixMap, false))
+				return cand.GetColumnNames(), rfc219IndexPlanIn(t, cand.ToScanPlan(EmptyPlanContext(), prefixMap, false))
 			},
 		},
 		{
@@ -213,7 +213,7 @@ func TestRFC219_IndexPlanWidthInvariant(t *testing.T) {
 					len(groupCols)+3,
 				)
 				prefixMap := rfc219BindAll(t, cand.GetSargableAliases())
-				return cand.GetColumnNames(), rfc219IndexPlanIn(t, cand.ToScanPlan(prefixMap, false))
+				return cand.GetColumnNames(), rfc219IndexPlanIn(t, cand.ToScanPlan(EmptyPlanContext(), prefixMap, false))
 			},
 		},
 		{

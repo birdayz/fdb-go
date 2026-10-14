@@ -575,7 +575,7 @@ func buildStatusActiveIndexScan(t *testing.T, cand MatchCandidate) expressions.R
 	if len(prefix) == 0 {
 		t.Fatal("candidate produced empty prefix for STATUS equality")
 	}
-	idxPlan := cand.ToScanPlan(prefix, false)
+	idxPlan := cand.ToScanPlan(EmptyPlanContext(), prefix, false)
 	if fetchPlan, ok := idxPlan.(*plans.RecordQueryFetchFromPartialRecordPlan); ok {
 		innerIdx, ok := fetchPlan.GetInner().(*plans.RecordQueryIndexPlan)
 		if !ok {

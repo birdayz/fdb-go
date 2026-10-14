@@ -43,7 +43,7 @@ Go already has the pieces below the Record Layer:
 | Cursor over `getMappedRange` with the same limit/continuation machinery as the key-value cursor | `IndexPrefetchRangeKeyValueCursor.java` |
 | Index entry from the primary row; record rebuilt from the secondary range rows: split records, inline version, legacy unsplit format, empty range means orphan | `StandardIndexMaintainer.unpackRemoteFetchRecord`, :193; `FDBRecordStore.reconstructSingleRecord`, :1646–1683 |
 | Records built with `mapPipelined(..., 1)`, byte scan limiter applied, orphan handling, SKIP filters nulls | `FDBRecordStore.indexEntriesToIndexRecords`, :1561–1585 |
-| Planner: non-BY_VALUE scans downgrade to SCAN_AND_FETCH at plan time; API version below 710 downgrades at execution; plan serializes the fetch method | `RecordQueryIndexPlan`, :244–290, :749 |
+| Planner: non-BY_VALUE scans downgrade to SCAN_AND_FETCH at plan time; API version below 710 downgrades at execution; plan serializes the fetch method (Go has no plan serialization, see Amendments) | `RecordQueryIndexPlan`, :244–290, :749 |
 | SQL option INDEX_FETCH_METHOD feeds the planner configuration | relational `OptionsUtils.getIndexFetchMethod`, `PlannerConfiguration.java:176` |
 | Java's own tests: RemoteFetchTest, RemoteFetchIndexScanTest, RemoteFetchMultiColumnKeyTest, RemoteFetchSplitRecordsTest, RemoteFetchWithoutSplitRecordsTest, RemoteFetchOldVersionTest | `fdb-record-layer-core/src/test/java/.../provider/foundationdb/` |
 
@@ -81,8 +81,8 @@ in `reconstructSingleRecord`).
    code; orphan behavior and `BAD_INDEX_ENTRY` as in #898;
    SCAN_REMOTE_FETCH_ENTRY timer event.
 4. **Planner and SQL.** The fetch method on the index plan, with Java's plan-time
-   and execution-time downgrades and plan serialization; honor
-   `INDEX_FETCH_METHOD` and remove the "not honored" note.
+   and execution-time downgrades; honor `INDEX_FETCH_METHOD` and remove the
+   "not honored" note. Plan serialization: see Amendments.
 5. **Allocation design.** The reply is bulk, so cost should be per batch, not
    per row:
    - decode a reply in one pass into a slice of value structs reused across the
@@ -111,8 +111,9 @@ in `reconstructSingleRecord`).
 - **Fallback:** forced failures before and after the first result, unsupported
   maintainer, snapshot scans, read-your-writes conflicts, and the libfdb_c
   backend; each must continue exactly where Java's would.
-- **SQL:** a yamsql scenario with `INDEX_FETCH_METHOD` set, asserting the plan
-  carries the method (EXPLAIN) and the rows match.
+- **SQL:** a yamsql scenario with `INDEX_FETCH_METHOD` set whose rows match;
+  the typed plan carries the method and store counters show the mapped read
+  ran (see Amendments).
 
 ### PR breakdown
 
@@ -121,6 +122,21 @@ in `reconstructSingleRecord`).
    conformance.
 3. Planner, plan serialization and the SQL option, yamsql scenario.
 4. Allocation work on the remote-fetch path, with measurements.
+
+### Amendments (PR3)
+
+- **Plan serialization.** Go builds and reads no `PRecordQueryPlan` at all
+  (DIVERGENCES.md, "Plan proto serialization"), so nothing carries the method
+  on the wire yet. PR3 pins the schema it will use: `PRecordQueryIndexPlan`
+  tag 4 `index_fetch_method` (`PIndexFetchMethod`, numbered 1..3) and
+  `PlannerConfiguration` tag 10 `indexFetchMethod` (numbered 0..2). The two
+  enums are numbered differently, so a codec maps `indexfetch.Method` by name.
+- **EXPLAIN.** Java's EXPLAIN never renders the method (`ExplainPlanVisitor`),
+  and neither does Go's. Tests assert the typed plan and Java's
+  `REMOTE_FETCH` / `SCAN_REMOTE_FETCH_ENTRY` counters instead.
+- **Default.** Go honors `INDEX_FETCH_METHOD` only when it is set; unset, plans
+  use SCAN_AND_FETCH. Java's default, USE_REMOTE_FETCH_WITH_FALLBACK, follows
+  PR4's measurements in its own PR (DIVERGENCES.md, "Index remote fetch").
 
 ## Part 2: later candidates (not approved)
 

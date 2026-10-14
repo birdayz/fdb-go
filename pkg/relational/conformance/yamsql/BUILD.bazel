@@ -59,6 +59,7 @@ go_test(
         "load_strict_test.go",
         "mod_float_zero_test.go",
         "plan_cache_binding_shapes_fdb_test.go",
+        "runner_connection_options_test.go",
         "runner_report_test.go",
         "runner_test.go",
         "scalar_signed_zero_test.go",

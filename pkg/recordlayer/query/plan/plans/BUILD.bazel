@@ -69,6 +69,7 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/fdbgo/fdb/tuple",
+        "//pkg/recordlayer/indexfetch",
         "//pkg/recordlayer/protoname",
         "//pkg/recordlayer/query/plan/cascades/expressions",
         "//pkg/recordlayer/query/plan/cascades/predicates",
@@ -106,6 +107,7 @@ go_test(
         "in_join_test.go",
         "in_memory_sort_relink_test.go",
         "in_union_cost_test.go",
+        "index_fetch_method_test.go",
         "index_scan_carrier_test.go",
         "index_scan_ordering_test.go",
         "injoin_cardinality_cost_test.go",
@@ -285,10 +287,12 @@ go_test(
         "plan_finalize.go",
         "plan_finalize_test.go",
         "quantifier_view.go",
+        "index_fetch_method_test.go",
     ],
     deps = [
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/internal/querycensus",
+        "//pkg/recordlayer/indexfetch",
         "//pkg/recordlayer/query/plan/cascades/expressions",
         "//pkg/recordlayer/query/plan/cascades/predicates",
         "//pkg/recordlayer/query/plan/cascades/properties",

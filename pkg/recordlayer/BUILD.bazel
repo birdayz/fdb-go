@@ -98,6 +98,7 @@ go_library(
         "record_key_cursor.go",
         "record_version.go",
         "record_wire_map_order.go",
+        "remote_fetch_api_version.go",
         "rename_fields_visitor.go",
         "retry_predicate.go",
         "row_number_window_predicate.go",

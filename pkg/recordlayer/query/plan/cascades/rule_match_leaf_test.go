@@ -41,6 +41,7 @@ func (c *testMatchCandidate) ComputeBoundParameterPrefixMap(
 }
 
 func (c *testMatchCandidate) ToScanPlan(
+	_ PlanContext,
 	_ map[values.CorrelationIdentifier]*predicates.ComparisonRange, _ bool,
 ) plans.RecordQueryPlan {
 	return nil

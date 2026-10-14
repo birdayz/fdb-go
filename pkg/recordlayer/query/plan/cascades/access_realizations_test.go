@@ -73,7 +73,7 @@ func accessRealizationFixture(t *testing.T, duplicates, residual bool) (*SingleM
 func TestAccessRealizationsMatchDirectionAndScope(t *testing.T) {
 	t.Parallel()
 	access, memoizer := accessRealizationFixture(t, false, true)
-	realizations := make(accessRealizations)
+	realizations := newAccessRealizations(EmptyPlanContext())
 	forward := realizations.realize(access)
 	if forward.expression == nil || forward.scan == nil {
 		t.Fatal("missing forward scan")
@@ -97,7 +97,7 @@ func TestAccessRealizationsMatchDirectionAndScope(t *testing.T) {
 	if other := realizations.realize(otherAccess); other == forward || other.expression == forward.expression {
 		t.Fatal("independent match was interned into another access")
 	}
-	if independent := make(accessRealizations).realize(access); independent.expression == forward.expression {
+	if independent := newAccessRealizations(EmptyPlanContext()).realize(access); independent.expression == forward.expression {
 		t.Fatal("physical access escaped its consumption-local scope")
 	}
 	compensated := realizations.single(memoizer, access)
@@ -108,8 +108,8 @@ func TestAccessRealizationsMatchDirectionAndScope(t *testing.T) {
 	if repeated := realizations.single(memoizer, access); repeated != compensated || len(memoizer.memo.References()) != groups {
 		t.Fatal("singleton bookkeeping reapplied compensation and registered another subtree")
 	}
-	if len(realizations) != 3 {
-		t.Fatalf("realizations=%d, want forward, reverse and independent match", len(realizations))
+	if len(realizations.byAccess) != 3 {
+		t.Fatalf("realizations=%d, want forward, reverse and independent match", len(realizations.byAccess))
 	}
 }
 
@@ -135,7 +135,7 @@ func TestAccessRealizationsDistinctAndCompensation(t *testing.T) {
 			t.Run(map[bool]string{false: "plain", true: "fanout"}[duplicates]+"/"+map[bool]string{false: "exact", true: "residual"}[residual], func(t *testing.T) {
 				t.Parallel()
 				access, memoizer := accessRealizationFixture(t, duplicates, residual)
-				realizations := make(accessRealizations)
+				realizations := newAccessRealizations(EmptyPlanContext())
 				scan := realizations.realize(access).expression
 				distinct := realizations.distinctPlan(access)
 				if distinct == nil || realizations.distinctPlan(access) != distinct {
@@ -159,7 +159,7 @@ func TestAccessRealizationsDistinctAndCompensation(t *testing.T) {
 				}
 				impossible := NewSingleMatchedAccess(access.GetPartialMatch(), ImpossibleCompensation,
 					access.GetCandidateTopAlias(), false, access.GetTopToTopTranslationMap(), nil)
-				failed := make(accessRealizations)
+				failed := newAccessRealizations(EmptyPlanContext())
 				for i := range 2 {
 					if failed.single(memoizer, impossible) != nil {
 						t.Fatalf("impossible compensation exposed its uncompensated scan on call %d", i+1)

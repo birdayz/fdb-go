@@ -604,6 +604,7 @@ go_test(
         "//gen",
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/internal/querycensus",
+        "//pkg/recordlayer/indexfetch",
         "//pkg/recordlayer/protoname",
         "//pkg/recordlayer/query/plan/cascades/internal/fnv64",
         "//pkg/recordlayer/query/plan/cascades/internal/fuzzfloor",

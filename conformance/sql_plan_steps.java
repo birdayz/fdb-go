@@ -2486,4 +2486,137 @@ class SqlPlanSteps {
         marker.addProperty("__unsupported__", v.getClass().getName());
         return marker;
     }
+
+    /**
+     * RFC-258: each statement's physical plan and result under every INDEX_FETCH_METHOD, on one connection.
+     * {@code scans} lists the plan's index scans as "kind index method", sorted: a bare RecordQueryIndexPlan
+     * ("scan"), a covering plan's inner ("covering") or an aggregate index's inner ("aggregate"). A DML statement
+     * reports its update count and is rolled back, so every statement runs over the setup's data.
+     */
+    @ConformanceStep("indexFetchSqlPlans")
+    public JsonObject indexFetchSqlPlans(String clusterFile, String schemaTemplate, java.util.List<String> setupSqls,
+                                         java.util.List<String> statements) throws Exception {
+        return runWithEphemeralSchema(clusterFile, schemaTemplate, conn -> {
+            try (Statement st = conn.createStatement()) {
+                for (String setup : setupSqls) {
+                    withFdbRetry(() -> st.executeUpdate(setup));
+                }
+            }
+            final RelationalConnection rconn = conn.unwrap(RelationalConnection.class);
+            final JsonArray results = new JsonArray();
+            for (Options.IndexFetchMethod method : Options.IndexFetchMethod.values()) {
+                rconn.setOption(Options.Name.INDEX_FETCH_METHOD, method);
+                for (String sql : statements) {
+                    final JsonObject out = new JsonObject();
+                    out.addProperty("method", method.name());
+                    out.addProperty("sql", sql);
+                    try {
+                        final com.apple.foundationdb.record.query.plan.plans.RecordQueryPlan plan =
+                                com.apple.foundationdb.relational.recordlayer.RelationalPlanConformanceAccess.plan(rconn, sql);
+                        out.addProperty("explain",
+                                com.apple.foundationdb.record.query.plan.cascades.explain.ExplainPlanVisitor.toStringForExternalExplain(plan));
+                        final JsonArray scans = new JsonArray();
+                        for (String scan : indexScans(plan)) {
+                            scans.add(scan);
+                        }
+                        out.add("scans", scans);
+                    } catch (Exception e) {
+                        recordThrowable(out, "plan", e);
+                    }
+                    try {
+                        if (sql.trim().toUpperCase(java.util.Locale.ROOT).startsWith("SELECT")) {
+                            try (Statement st = conn.createStatement();
+                                 RelationalResultSet rs = st.executeQuery(sql).unwrap(RelationalResultSet.class)) {
+                                out.add("rows", resultSetToJson(rs).get("rows"));
+                            }
+                        } else {
+                            conn.setAutoCommit(false);
+                            try (Statement st = conn.createStatement()) {
+                                out.addProperty("updateCount", st.executeUpdate(sql));
+                            } finally {
+                                conn.rollback();
+                                conn.setAutoCommit(true);
+                            }
+                        }
+                    } catch (SQLException | RuntimeException e) {
+                        recordThrowable(out, "execute", e);
+                    }
+                    results.add(out);
+                }
+            }
+            final JsonObject out = new JsonObject();
+            out.add("results", results);
+            return out;
+        });
+    }
+
+    /**
+     * RFC-258 fallback probe at the SQL layer: in one transaction, {@code writeSql} writes a record the following
+     * query's index scan reaches past its first mapped batch, so a remote fetch fails after returning rows (Java's
+     * RemoteFetchTest.failAfterRecordsReturnedTest). The query runs with INDEX_FETCH_METHOD {@code method} and
+     * MAX_ROWS {@code maxRows} (0: none); the transaction is rolled back.
+     */
+    @ConformanceStep("indexFetchSqlFallback")
+    public JsonObject indexFetchSqlFallback(String clusterFile, String schemaTemplate, java.util.List<String> setupSqls,
+                                            String writeSql, String querySql, String method, int maxRows) throws Exception {
+        return runWithEphemeralSchema(clusterFile, schemaTemplate, conn -> {
+            try (Statement st = conn.createStatement()) {
+                for (String setup : setupSqls) {
+                    withFdbRetry(() -> st.executeUpdate(setup));
+                }
+            }
+            final RelationalConnection rconn = conn.unwrap(RelationalConnection.class);
+            rconn.setOption(Options.Name.INDEX_FETCH_METHOD, Options.IndexFetchMethod.valueOf(method));
+            final JsonObject out = new JsonObject();
+            conn.setAutoCommit(false);
+            try {
+                try (Statement st = conn.createStatement()) {
+                    st.executeUpdate(writeSql);
+                }
+                try (Statement st = conn.createStatement()) {
+                    if (maxRows > 0) {
+                        st.setMaxRows(maxRows);
+                    }
+                    try (RelationalResultSet rs = st.executeQuery(querySql).unwrap(RelationalResultSet.class)) {
+                        out.add("rows", resultSetToJson(rs).get("rows"));
+                    }
+                }
+            } catch (SQLException | RuntimeException e) {
+                recordThrowable(out, "query", e);
+            } finally {
+                conn.rollback();
+                conn.setAutoCommit(true);
+            }
+            return out;
+        });
+    }
+
+    static java.util.List<String> indexScans(com.apple.foundationdb.record.query.plan.plans.RecordQueryPlan plan) {
+        final java.util.List<String> out = new java.util.ArrayList<>();
+        collectIndexScans(plan, out);
+        Collections.sort(out);
+        return out;
+    }
+
+    private static void collectIndexScans(com.apple.foundationdb.record.query.plan.plans.RecordQueryPlan plan,
+                                          java.util.List<String> out) {
+        if (plan instanceof com.apple.foundationdb.record.query.plan.plans.RecordQueryIndexPlan) {
+            out.add(indexScan("scan", (com.apple.foundationdb.record.query.plan.plans.RecordQueryIndexPlan) plan));
+        } else if (plan instanceof com.apple.foundationdb.record.query.plan.plans.RecordQueryCoveringIndexPlan) {
+            final Object inner = ((com.apple.foundationdb.record.query.plan.plans.RecordQueryCoveringIndexPlan) plan).getIndexPlan();
+            out.add(inner instanceof com.apple.foundationdb.record.query.plan.plans.RecordQueryIndexPlan
+                    ? indexScan("covering", (com.apple.foundationdb.record.query.plan.plans.RecordQueryIndexPlan) inner)
+                    : "covering " + inner.getClass().getSimpleName());
+        } else if (plan instanceof com.apple.foundationdb.record.query.plan.plans.RecordQueryAggregateIndexPlan) {
+            out.add(indexScan("aggregate",
+                    ((com.apple.foundationdb.record.query.plan.plans.RecordQueryAggregateIndexPlan) plan).getIndexPlan()));
+        }
+        for (com.apple.foundationdb.record.query.plan.plans.RecordQueryPlan child : plan.getChildren()) {
+            collectIndexScans(child, out);
+        }
+    }
+
+    private static String indexScan(String kind, com.apple.foundationdb.record.query.plan.plans.RecordQueryIndexPlan plan) {
+        return kind + " " + plan.getIndexName() + " " + plan.getIndexFetchMethod().name();
+    }
 }

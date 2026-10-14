@@ -401,6 +401,7 @@ func (c *PrimaryScanMatchCandidate) ComputeBoundParameterPrefixMap(
 // other type, so a filter on top would be pure overhead (and, worse for
 // costing, an unearned selectivity discount; see TypeFilterCost).
 func (c *PrimaryScanMatchCandidate) ToScanPlan(
+	_ PlanContext,
 	prefixMap map[values.CorrelationIdentifier]*predicates.ComparisonRange,
 	reverse bool,
 ) plans.RecordQueryPlan {

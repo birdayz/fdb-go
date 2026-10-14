@@ -15,6 +15,7 @@ type selectSemanticFixedPlanCandidate struct {
 }
 
 func (c *selectSemanticFixedPlanCandidate) ToScanPlan(
+	_ PlanContext,
 	_ map[values.CorrelationIdentifier]*predicates.ComparisonRange,
 	_ bool,
 ) plans.RecordQueryPlan {
@@ -842,7 +843,7 @@ func TestMatchIntermediateSelectSemantic_ExistentialToForEachMarksDistinctRepair
 	access := NewSingleMatchedAccess(parents[0],
 		parents[0].(*PartialMatchImpl).CompensateCompleteMatch(nil, candidateTop),
 		candidateTop, false, topToTop, nil)
-	dataAccess := make(accessRealizations).single(compensationTestMemoizer(), access)
+	dataAccess := newAccessRealizations(EmptyPlanContext()).single(compensationTestMemoizer(), access)
 	unique, ok := dataAccess.(*expressions.LogicalUniqueExpression)
 	if !ok {
 		t.Fatalf("compensated data access = %T, want LogicalUniqueExpression", dataAccess)

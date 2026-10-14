@@ -11,6 +11,7 @@ package cascades
 import (
 	"sort"
 
+	"fdb.dev/pkg/recordlayer/indexfetch"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
@@ -112,6 +113,11 @@ type PlannerConfiguration struct {
 	// non-default today (same as the sibling knobs), so this changes no reachable
 	// plan — it models the mechanism for parity.
 	IndexScanPreference IndexScanPreference
+
+	// IndexFetchMethod is Java's RecordQueryPlannerConfiguration
+	// .getIndexFetchMethod: the method a value index scan's records are fetched
+	// with. The zero value is SCAN_AND_FETCH, Java's core default.
+	IndexFetchMethod indexfetch.Method
 
 	// VectorIndexEnginePreference is Java's
 	// RecordQueryPlannerConfiguration.vectorIndexEnginePreference: "" (no
@@ -340,8 +346,11 @@ type MatchCandidate interface {
 
 	// ToScanPlan converts a successful match into a physical index
 	// scan plan. Called with the prefix map from
-	// ComputeBoundParameterPrefixMap + reverse flag.
+	// ComputeBoundParameterPrefixMap + reverse flag. Java's
+	// MatchCandidate.toEquivalentPlan takes the PlanContext for the planner
+	// configuration the plan is stamped from (its index fetch method).
 	ToScanPlan(
+		ctx PlanContext,
 		prefixMap map[values.CorrelationIdentifier]*predicates.ComparisonRange,
 		reverse bool,
 	) plans.RecordQueryPlan

@@ -29,14 +29,14 @@ import (
 // loops.
 func WithPrimaryKeyIntersector(memoizer Memoizer, ctx PlanContext) IntersectorFunc {
 	return func(accesses []Vectored[*SingleMatchedAccess], requestedOrderings []*properties.RequestedOrdering) *IntersectionResult {
-		return withPrimaryKeyIntersector(memoizer, ctx)(accesses, requestedOrderings, make(accessRealizations))
+		return withPrimaryKeyIntersector(memoizer, ctx)(accesses, requestedOrderings, newAccessRealizations(ctx))
 	}
 }
 
 type realizingIntersectorFunc func(
 	accesses []Vectored[*SingleMatchedAccess],
 	requestedOrderings []*properties.RequestedOrdering,
-	realizations accessRealizations,
+	realizations *accessRealizations,
 ) *IntersectionResult
 
 // Planner consumption shares its private batch across standalone and intersected accesses.
@@ -44,7 +44,7 @@ func withPrimaryKeyIntersector(memoizer Memoizer, ctx PlanContext) realizingInte
 	return func(
 		accesses []Vectored[*SingleMatchedAccess],
 		requestedOrderings []*properties.RequestedOrdering,
-		realizations accessRealizations,
+		realizations *accessRealizations,
 	) *IntersectionResult {
 		if len(accesses) < 2 {
 			return NoViableIntersection()
@@ -66,7 +66,7 @@ func withPrimaryKeyIntersector(memoizer Memoizer, ctx PlanContext) realizingInte
 		}
 
 		if realizations == nil {
-			realizations = make(accessRealizations)
+			realizations = newAccessRealizations(ctx)
 		}
 		intersectionInfos := initializeSingletonIntersectionInfos(memoizer, accesses, ctx, realizations)
 		var intersectionInfoOrder []intersectionInfoKey
@@ -242,7 +242,7 @@ func initializeSingletonIntersectionInfos(
 	memoizer Memoizer,
 	accesses []Vectored[*SingleMatchedAccess],
 	ctx PlanContext,
-	realizations accessRealizations,
+	realizations *accessRealizations,
 ) map[intersectionInfoKey]*IntersectionInfo {
 	infos := make(map[intersectionInfoKey]*IntersectionInfo, len(accesses))
 	for _, vectored := range accesses {
@@ -580,7 +580,7 @@ func createPrimaryKeyIntersection(
 	partition []Vectored[*SingleMatchedAccess],
 	requestedOrderings []*properties.RequestedOrdering,
 	ctx PlanContext,
-	realizations accessRealizations,
+	realizations *accessRealizations,
 ) primaryKeyIntersectionBuild {
 	accesses := make([]*SingleMatchedAccess, 0, len(partition))
 	scans := make([]plans.RecordQueryPlan, 0, len(partition))
@@ -1583,7 +1583,7 @@ func bakedIntersectionKeys(pkValues []values.Value, legs []plans.RecordQueryPlan
 	return baked
 }
 
-func createScanForAccess(access *SingleMatchedAccess) plans.RecordQueryPlan {
+func createScanForAccess(ctx PlanContext, access *SingleMatchedAccess) plans.RecordQueryPlan {
 	pm := access.GetPartialMatch()
 	candidate := pm.GetMatchCandidate()
 	matchInfo := pm.GetMatchInfo()
@@ -1593,7 +1593,7 @@ func createScanForAccess(access *SingleMatchedAccess) plans.RecordQueryPlan {
 		return nil
 	}
 	prefix := candidate.ComputeBoundParameterPrefixMap(bindings)
-	scan := candidate.ToScanPlan(prefix, access.IsReverseScanOrder())
+	scan := candidate.ToScanPlan(ctx, prefix, access.IsReverseScanOrder())
 	vc, isValue := candidate.(*ValueIndexScanMatchCandidate)
 	if !isValue || vc.predicateProto == nil {
 		return scan

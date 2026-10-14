@@ -73,6 +73,7 @@ class ConformanceServer {
         new IndexScanLimitSteps(),
         new IndexRemoteFetchSteps(),
         new RecordScanLimitSteps(),
+        new IndexFetchPlanSteps(),
         new BitmapValueIndexSteps(),
         new TextIndexSteps(),
         new TimeWindowLeaderboardSteps(),

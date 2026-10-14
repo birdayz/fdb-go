@@ -316,12 +316,13 @@ func TestComputeMatchedOrderingParts_NoSuffixForFanOut(t *testing.T) {
 		t.Fatalf("fan-out index must expose neither TAGS nor a PK suffix: got %d parts", len(parts))
 	}
 	fetch, ok := cand.ToScanPlan(
+		EmptyPlanContext(),
 		map[values.CorrelationIdentifier]*predicates.ComparisonRange{
 			alias: equalityRange(t, "x"),
 		}, false,
 	).(*plans.RecordQueryFetchFromPartialRecordPlan)
 	if !ok {
-		t.Fatalf("fan-out scan = %T, want fetch over index", cand.ToScanPlan(nil, false))
+		t.Fatalf("fan-out scan = %T, want fetch over index", cand.ToScanPlan(EmptyPlanContext(), nil, false))
 	}
 	indexPlan, ok := fetch.GetInner().(*plans.RecordQueryIndexPlan)
 	if !ok {

@@ -300,6 +300,7 @@ func (c *VectorIndexScanMatchCandidate) bindingRangesEligible(
 // query vector + k + ef_search). Ports Java's
 // VectorIndexScanMatchCandidate.toEquivalentPlan / toVectorIndexScanComparisons.
 func (c *VectorIndexScanMatchCandidate) ToScanPlan(
+	_ PlanContext,
 	prefixMap map[values.CorrelationIdentifier]*predicates.ComparisonRange,
 	_ bool,
 ) plans.RecordQueryPlan {

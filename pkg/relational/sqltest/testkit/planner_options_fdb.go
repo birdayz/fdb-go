@@ -1,18 +1,13 @@
 package testkit
 
 // FDB integration tests for the planner options Java's relational
-// PlannerConfiguration reads and Go can act on: DISABLED_PLANNER_RULES,
-// DISABLE_PLANNER_REWRITING and PLAN_RIGHT_DEEP. They were defined on the Go
-// option enum but nothing in the planner read them, so a user who set one got
-// the full default rule set and no diagnostic. These tests drive each option
-// through the whole stack — connection options → generator → Cascades planner →
-// EXPLAIN and rows against a live store — because that is precisely the layer
-// that used to drop them.
-//
-// Java reads a fourth, INDEX_FETCH_METHOD, which Go cannot honor (no
-// remote-fetch implementation at any layer); it is untested here on purpose and
-// tracked as its own TODO item rather than given a test that would assert
-// nothing.
+// PlannerConfiguration reads: DISABLED_PLANNER_RULES, DISABLE_PLANNER_REWRITING,
+// PLAN_RIGHT_DEEP and INDEX_FETCH_METHOD. They were defined on the Go option
+// enum but nothing in the planner read them, so a user who set one got the full
+// default rule set and no diagnostic. These tests drive each option through the
+// whole stack — connection options → generator → Cascades planner → EXPLAIN,
+// rows and store counters against a live store — because that is precisely the
+// layer that used to drop them.
 
 import (
 	"context"

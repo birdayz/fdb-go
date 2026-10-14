@@ -406,13 +406,13 @@ func containsAll(super, sub map[values.CorrelationIdentifier]struct{}) bool {
 // Ports Java's AbstractDataAccessRule.createScansForMatches.
 func CreateScansForMatches(
 	accesses []Vectored[*SingleMatchedAccess],
-	_ PlanContext,
+	ctx PlanContext,
 ) map[PartialMatch]plans.RecordQueryPlan {
 	result := make(map[PartialMatch]plans.RecordQueryPlan, len(accesses))
 	for _, v := range accesses {
 		access := v.Value
 		pm := access.GetPartialMatch()
-		plan := createScanForAccess(access)
+		plan := createScanForAccess(ctx, access)
 		result[pm] = plan
 	}
 	return result
@@ -441,7 +441,7 @@ func DataAccessForMatchPartition(
 	ctx PlanContext,
 	intersector IntersectorFunc,
 ) []expressions.RelationalExpression {
-	return dataAccessForMatchPartition(memoizer, requestedOrderings, partialMatches, ctx, intersector, make(accessRealizations))
+	return dataAccessForMatchPartition(memoizer, requestedOrderings, partialMatches, ctx, intersector, newAccessRealizations(ctx))
 }
 
 func dataAccessForMatchPartition(
@@ -450,7 +450,7 @@ func dataAccessForMatchPartition(
 	partialMatches []PartialMatch,
 	ctx PlanContext,
 	intersector IntersectorFunc,
-	realizations accessRealizations,
+	realizations *accessRealizations,
 ) []expressions.RelationalExpression {
 	if len(partialMatches) == 0 {
 		return nil

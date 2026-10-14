@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"fdb.dev/pkg/recordlayer/indexfetch"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
@@ -49,6 +50,10 @@ type RecordQueryIndexPlan struct {
 	flowedType      values.Type
 	reverse         bool
 	strictlySorted  bool
+	// indexFetchMethod is how the scan obtains the records behind its entries.
+	// It is plan identity but not execution identity: Java's continuation
+	// planHash leaves it out, so a continuation resumes under any method.
+	indexFetchMethod indexfetch.Method
 	// distinctProofIndexName names the secondary UNIQUE index whose uniqueness
 	// licensed eliding a DISTINCT above this scan (distinct_proof_stamp.go).
 	distinctProofIndexName string
@@ -490,6 +495,19 @@ func (p *RecordQueryIndexPlan) IsReverse() bool { return p.reverse }
 // unique index satisfies the full key set.
 func (p *RecordQueryIndexPlan) IsStrictlySorted() bool { return p.strictlySorted }
 
+// GetIndexFetchMethod returns how the scan obtains its records.
+func (p *RecordQueryIndexPlan) GetIndexFetchMethod() indexfetch.Method { return p.indexFetchMethod }
+
+// WithIndexFetchMethod returns a copy that obtains its records with method.
+// Only BY_VALUE scans are stamped: Java's RecordQueryIndexPlan constructor
+// (:248-251) downgrades every other scan type to SCAN_AND_FETCH, the zero value
+// the aggregate (BY_GROUP) and windowed (BY_RANK) candidates keep.
+func (p *RecordQueryIndexPlan) WithIndexFetchMethod(method indexfetch.Method) *RecordQueryIndexPlan {
+	cp := *p
+	cp.indexFetchMethod = method
+	return &cp
+}
+
 // WithStrictlySorted returns a shallow copy with strictlySorted=true.
 func (p *RecordQueryIndexPlan) WithStrictlySorted() *RecordQueryIndexPlan {
 	cp := *p
@@ -507,7 +525,8 @@ func (p *RecordQueryIndexPlan) GetChildren() []RecordQueryPlan { return nil }
 // ranges (shape AND comparands — two different-comparand scans must stay in
 // distinct References, else the memo materializes the wrong-comparand scan,
 // mirroring Java's full scanParameters equality), the reverse / strictlySorted
-// flags, the record-type set, and the flowed type (equals-only). Coveringness is
+// flags, the index fetch method (Java's equalsWithoutChildren compares it), the
+// record-type set, and the flowed type (equals-only). Coveringness is
 // NOT folded here and cannot be: it is a distinct plan type wrapping this one,
 // whose own structuralKey folds this key as a sub-key. The
 // stable per-instance resultValue is excluded (RFC-184 W2). The same key drives
@@ -522,6 +541,7 @@ func (p *RecordQueryIndexPlan) structuralKey() *structuralKey {
 		Int(p.physicalGroupingPrefixCount).
 		Bool(p.reverse).
 		Bool(p.strictlySorted).
+		Int(int(p.indexFetchMethod)).
 		Strs(p.recordTypes).
 		Type(p.flowedType).
 		Str(p.distinctProofIndexName).

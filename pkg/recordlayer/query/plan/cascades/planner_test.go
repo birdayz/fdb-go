@@ -816,7 +816,7 @@ func TestDataAccessConsumesOnlyCompleteMatches(t *testing.T) {
 			p := NewPlanner(nil, ctx)
 			p.memo = NewMemo(ref)
 			orderings := []*properties.RequestedOrdering{properties.PreserveOrdering()}
-			p.consumeMatchPartitions(ref, []MatchCandidate{candidate}, orderings, make(accessRealizations))
+			p.consumeMatchPartitions(ref, []MatchCandidate{candidate}, orderings, newAccessRealizations(EmptyPlanContext()))
 			if got := len(ref.AllMembers()) - 1; got != want {
 				t.Errorf("realized %d compensated alternatives, want %d (only candidate-root matches)", got, want)
 			}

@@ -65,9 +65,9 @@ func TestAggregateCandidateStopsAtPhysicalGroupingBoundary(t *testing.T) {
 		t.Fatal("permuted suffix grouping column crossed the physical SARG boundary")
 	}
 
-	indexPlan, ok := candidate.ToScanPlan(prefix, false).(*plans.RecordQueryIndexPlan)
+	indexPlan, ok := candidate.ToScanPlan(EmptyPlanContext(), prefix, false).(*plans.RecordQueryIndexPlan)
 	if !ok {
-		t.Fatalf("scan plan type = %T, want *RecordQueryIndexPlan", candidate.ToScanPlan(prefix, false))
+		t.Fatalf("scan plan type = %T, want *RecordQueryIndexPlan", candidate.ToScanPlan(EmptyPlanContext(), prefix, false))
 	}
 	if got := len(indexPlan.GetScanComparisons()); got != 2 {
 		t.Fatalf("scan comparison count = %d, want 2", got)

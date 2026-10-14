@@ -79,9 +79,20 @@ func Run(ctx context.Context, s *Scenario, cfg RunConfig) (*Result, error) {
 	}
 	defer teardown(ctx, cfg.DB, cfg.DBPath, schema, cfg.TemplateName)
 
+	var runner statementRunner = cfg.DB
+	if len(s.ConnectionOptions) > 0 {
+		conn, err := connectionWithOptions(ctx, cfg.DB, s)
+		if err != nil {
+			r.SetupError = err
+			return r, nil
+		}
+		defer conn.Close()
+		runner = conn
+	}
+
 	for i, t := range s.Tests {
 		r.TestsRun++
-		msg := runTest(ctx, cfg.DB, &t)
+		msg := runTest(ctx, runner, &t)
 		r.outcomes = append(r.outcomes, msg == "")
 		if msg == "" {
 			r.TestsPass++
@@ -129,7 +140,43 @@ func teardown(ctx context.Context, db *sql.DB, dbPath, schema, tmpl string) {
 	_, _ = db.ExecContext(ctx, fmt.Sprintf("DROP SCHEMA TEMPLATE IF EXISTS %s", tmpl))
 }
 
-func runTest(ctx context.Context, db *sql.DB, t *Test) string {
+// connectionWithOptions pins the connection the tests run on and sets the
+// scenario's connection options on it; they last until the pool resets it.
+func connectionWithOptions(ctx context.Context, db *sql.DB, s *Scenario) (*sql.Conn, error) {
+	options, err := s.connectionOptions()
+	if err != nil {
+		return nil, err
+	}
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	err = conn.Raw(func(dc any) error {
+		ec, ok := dc.(*embedded.EmbeddedConnection)
+		if !ok {
+			return fmt.Errorf("driver conn is %T, want *embedded.EmbeddedConnection", dc)
+		}
+		for name, value := range options {
+			if err := ec.SetOption(name, value); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return conn, nil
+}
+
+// statementRunner is the pool, or the connection pinned for connection options.
+type statementRunner interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+func runTest(ctx context.Context, db statementRunner, t *Test) string {
 	args, err := decodeScalars(t.Args)
 	if err != nil {
 		return fmt.Sprintf("args: %v", err)
@@ -207,7 +254,7 @@ func runTest(ctx context.Context, db *sql.DB, t *Test) string {
 	return ""
 }
 
-func checkPlanAssertions(ctx context.Context, db *sql.DB, query, contains, notContains string, args ...any) string {
+func checkPlanAssertions(ctx context.Context, db statementRunner, query, contains, notContains string, args ...any) string {
 	rows, err := db.QueryContext(ctx, "EXPLAIN "+query, args...)
 	if err != nil {
 		return fmt.Sprintf("EXPLAIN error: %v", err)
@@ -230,7 +277,7 @@ func checkPlanAssertions(ctx context.Context, db *sql.DB, query, contains, notCo
 	return ""
 }
 
-func runErrorTest(ctx context.Context, db *sql.DB, t *Test, args ...any) string {
+func runErrorTest(ctx context.Context, db statementRunner, t *Test, args ...any) string {
 	var err error
 	if IsQuery(t.Query) {
 		rows, qerr := db.QueryContext(ctx, t.Query, args...)

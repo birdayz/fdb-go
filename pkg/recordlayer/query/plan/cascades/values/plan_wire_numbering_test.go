@@ -1,9 +1,12 @@
 package values
 
 import (
+	"bytes"
 	"testing"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/indexfetch"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
@@ -51,9 +54,46 @@ func TestPlanSchemaTags(t *testing.T) {
 		{(&gen.PRecordQueryExplodePlan{}).ProtoReflect().Descriptor(), 3, "zero_based_ordinality"},
 		{(&gen.PRecordQueryAggregateIndexPlan{}).ProtoReflect().Descriptor(), 7, "result_type"},
 		{(&gen.PlannerConfiguration{}).ProtoReflect().Descriptor(), 15, "vectorIndexEnginePreference"},
+		{(&gen.PRecordQueryIndexPlan{}).ProtoReflect().Descriptor(), 4, "index_fetch_method"},
+		{(&gen.PlannerConfiguration{}).ProtoReflect().Descriptor(), 10, "indexFetchMethod"},
 	} {
 		if fd := c.md.Fields().ByNumber(c.tag); fd == nil || fd.Name() != c.name {
 			t.Errorf("%s tag %d = %v, want %s", c.md.FullName(), c.tag, fd, c.name)
+		}
+	}
+}
+
+// The index fetch method has two wire enums numbered differently: the plan's
+// PIndexFetchMethod is 1..3 (record_query_plan.proto) and the planner
+// configuration's IndexFetchMethod is 0..2 (record_planner_config.proto). Java
+// always writes both fields, SCAN_AND_FETCH included. Go serializes neither
+// yet (DIVERGENCES.md), so a codec must map indexfetch.Method by name, never
+// cast it.
+func TestIndexFetchMethodWireNumbers(t *testing.T) {
+	t.Parallel()
+	methods := []indexfetch.Method{indexfetch.ScanAndFetch, indexfetch.UseRemoteFetch, indexfetch.UseRemoteFetchWithFallback}
+	if got := len(gen.PIndexFetchMethod_name); got != len(methods) {
+		t.Fatalf("PIndexFetchMethod has %d values, indexfetch.Method %d", got, len(methods))
+	}
+	if got := len(gen.PlannerConfiguration_IndexFetchMethod_name); got != len(methods) {
+		t.Fatalf("PlannerConfiguration.IndexFetchMethod has %d values, indexfetch.Method %d", got, len(methods))
+	}
+	for i, m := range methods {
+		plan := gen.PIndexFetchMethod(gen.PIndexFetchMethod_value[m.String()])
+		if int(plan) != i+1 {
+			t.Errorf("PIndexFetchMethod %s = %d, want %d", m, plan, i+1)
+		}
+		config := gen.PlannerConfiguration_IndexFetchMethod(gen.PlannerConfiguration_IndexFetchMethod_value[m.String()])
+		if int(config) != i || config.String() != m.String() {
+			t.Errorf("PlannerConfiguration.IndexFetchMethod %s = %d (%s), want %d", m, config, config, i)
+		}
+		encoded, err := proto.Marshal(&gen.PRecordQueryIndexPlan{IndexFetchMethod: plan.Enum()})
+		if err != nil || !bytes.Equal(encoded, []byte{0x20, byte(i + 1)}) {
+			t.Errorf("PRecordQueryIndexPlan{%s} = % x (%v), want 20 %02x", m, encoded, err, i+1)
+		}
+		encoded, err = proto.Marshal(&gen.PlannerConfiguration{IndexFetchMethod: config.Enum()})
+		if err != nil || !bytes.Equal(encoded, []byte{0x50, byte(i)}) {
+			t.Errorf("PlannerConfiguration{%s} = % x (%v), want 50 %02x", m, encoded, err, i)
 		}
 	}
 }
