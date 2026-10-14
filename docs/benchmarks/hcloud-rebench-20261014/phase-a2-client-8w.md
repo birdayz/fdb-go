@@ -24,6 +24,12 @@ dedicated 16-vCPU host (`ssd-2` engine). This is **phase A2** of
   (1,296,000 measured transactions across the phase).
 - All 54 scheduled runs completed with zero errors and passed all pre-arm and
   during-arm quiescence, CPU-steal, OOM, server-health, and pin checks.
+- **Metric scopes (same as [Phase A](phase-a-client.md)):** Shutdown process
+  CPU (E−A) is user+system CPU from after binary identity hashing to after
+  measurement, finalizer drain, database close, and native network stop,
+  divided by measured transactions; it includes startup, fixture, warmup, and
+  validation. Go bytes and mallocs per transaction measure the Go heap only and
+  exclude the unobserved native `libfdb_c` heap.
 - **Within-phase interpretation:** A2 ran on a fresh `ssd-2` cluster after the
   memory-engine phases; its cluster status reported `tenant_mode: disabled`,
   whereas phase A's initial SSD cluster reported `optional_experimental`
@@ -40,7 +46,7 @@ paired-block bootstrap interval (20,000 resamples, seed 391706).
 
 | Workload | Mean latency | p99 latency | Shutdown process CPU (E−A) per tx |
 |---|---:|---:|---:|
-| get100 | 0.991 [0.928, 1.084] | 1.015 [0.938, 1.097] | 1.639 [1.603, 1.676] |
+| get100 | 0.991 [0.928, 1.084] | 1.015 [0.938, 1.097] | 1.638 [1.603, 1.676] |
 | range100 | 0.663 [0.440, 0.858] | 0.881 [0.696, 1.033] | 1.359 [1.138, 1.559] |
 | batchset50 | 0.817 [0.768, 0.851] | 0.914 [0.816, 0.985] | 1.150 [1.112, 1.188] |
 
@@ -50,7 +56,7 @@ Ratio final/before.
 
 | Workload | Mean latency | p99 latency | Shutdown process CPU (E−A) per tx | Go bytes/tx | Go mallocs/tx |
 |---|---:|---:|---:|---:|---:|
-| get100 | 1.007 [0.997, 1.018] | 1.028 [0.960, 1.091] | 0.972 [0.959, 0.986] | 0.929 [0.929, 0.929] | 0.872 [0.872, 0.872] |
+| get100 | 1.007 [0.997, 1.018] | 1.028 [0.960, 1.090] | 0.972 [0.959, 0.986] | 0.929 [0.929, 0.929] | 0.872 [0.872, 0.872] |
 | range100 | 1.069 [0.948, 1.206] | 0.901 [0.829, 0.982] | 1.041 [0.926, 1.171] | 0.824 [0.824, 0.825] | 0.796 [0.796, 0.797] |
 | batchset50 | 0.995 [0.950, 1.022] | 0.995 [0.941, 1.045] | 0.991 [0.971, 1.010] | 0.993 [0.993, 0.994] | 0.973 [0.973, 0.973] |
 
@@ -75,7 +81,9 @@ Medians of six run-level statistics per arm.
 - **Latency at 8 workers:**
   - On `range100`, pure-Go had lower mean latency than CGo (0.663 [0.440, 0.858], 615.6 µs vs 808.5 µs), while the p99 interval included 1 (0.881 [0.696, 1.033]).
   - On `batchset50`, pure-Go had lower mean latency (0.817 [0.768, 0.851], 4080.2 µs vs 4904.5 µs) and lower p99 latency (0.914 [0.816, 0.985]).
-  - On `get100`, pure-Go and CGo had indistinguishable latency (mean 0.991 [0.928, 1.084], p99 1.015 [0.938, 1.097]).
-- **Process CPU at 8 workers:** unlike at 1 worker, **shutdown process CPU (E−A) per transaction was higher for pure-Go than for CGo on all three workloads at 8 workers**: 1.639 [1.603, 1.676] on `get100`, 1.359 [1.138, 1.559] on `range100`, and 1.150 [1.112, 1.188] on `batchset50`.
+  - On `get100`, the nominal latency intervals include 1 (mean 0.991 [0.928,
+    1.084], p99 1.015 [0.938, 1.097]); no clear difference is resolved in this
+    bounded sample, and this design does not test equivalence.
+- **Process CPU at 8 workers:** unlike at 1 worker, **shutdown process CPU (E−A) per transaction was higher for pure-Go than for CGo on all three workloads at 8 workers**: 1.638 [1.603, 1.676] on `get100`, 1.359 [1.138, 1.559] on `range100`, and 1.150 [1.112, 1.188] on `batchset50`.
   - *Untested hypothesis:* `libfdb_c` multiplexes all 8 Go workers onto its single C++ network thread (`GOMAXPROCS=8` on the Go side vs one native network thread), whereas the pure-Go client runs concurrent goroutines, serialization, and Go GC across up to 8 OS threads. Without CPU profiles, the exact split between Go runtime scheduling, GC, and socket I/O is unmeasured.
 - **Final vs before pure-Go:** Go bytes and mallocs per transaction fell by the same proportions as in phase A (`get100` −7.1% B/tx, −12.8% mallocs/tx; `range100` −17.6% B/tx, −20.4% mallocs/tx; `batchset50` −0.7% B/tx, −2.7% mallocs/tx), with `get100` shutdown CPU 0.972 [0.959, 0.986] and `range100` p99 0.901 [0.829, 0.982].

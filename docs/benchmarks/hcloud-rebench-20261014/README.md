@@ -79,9 +79,10 @@ Headline results:
   descriptive check).
 - **A2:** at 8 closed-loop workers, pure-Go is faster than CGo on `range100`
   mean latency (0.663 [0.440, 0.858]) and `batchset50` mean/p99 latency (0.817
-  [0.768, 0.851] / 0.914 [0.816, 0.985]), and indistinguishable on `get100`
-  latency (0.991 [0.928, 1.084]), while using more shutdown process CPU (E−A)
-  per transaction across all three workloads (1.150–1.639).
+  [0.768, 0.851] / 0.914 [0.816, 0.985]); on `get100` latency the nominal
+  interval includes 1 (0.991 [0.928, 1.084], no clear difference resolved in
+  this bounded sample), while pure-Go uses more shutdown process CPU (E−A)
+  per transaction across all three workloads (1.150–1.638).
 - **C3:** under 0.5 ms nominal synthetic veth RTT (250 µs each way, p50 0.597
   ms), remote fetch takes 0.224 [0.222, 0.226] of the ordinary path's time on
   1,000 small records (24.0 ms vs 108.0 ms), while 1,000 two-chunk split

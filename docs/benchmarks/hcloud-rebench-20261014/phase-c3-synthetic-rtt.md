@@ -58,16 +58,18 @@ per arm).
 
 - **Small unsplit records (`small-all-1000`):** under 0.5 ms added client-server
   RTT, `USE_REMOTE_FETCH` took **0.224 [0.222, 0.226]** of `SCAN_AND_FETCH`'s
-  time (24.0 ms vs 108.0 ms, a 4.5× speedup), compared with 0.341 in phase C1
-  at zero added delay. `SCAN_AND_FETCH` pays the added veth RTT on its batched
-  pipelined primary-key `GetRange` round trips from the client, whereas
-  `USE_REMOTE_FETCH` performs a single `getMappedRange` round trip from the
-  client.
+  time (24.0 ms vs 108.0 ms, a 4.5× speedup). As a descriptive comparison
+  across separate phases (not a controlled causal RTT delta), phase C1's ratio
+  at zero added delay was 0.341. `SCAN_AND_FETCH` issues client-driven
+  primary-key lookups after scanning the index, whereas `USE_REMOTE_FETCH`
+  opens one logical mapped scan (`remote_openings = 1`) and materializes the
+  primary records on the server side (wire RPC batch counts are not directly
+  instrumented).
 - **Two-chunk split records (`split-all-1000`, retained negative result):**
   even with 0.5 ms added client-server RTT, `USE_REMOTE_FETCH` remained
   **5.3% slower** than `SCAN_AND_FETCH` on this single-server setup (**1.053
-  [1.008, 1.101]**, 276.9 ms vs 266.4 ms; 4 of 6 block ratios above 1),
-  narrowed from 1.150 in phase C1 at zero added delay.
+  [1.008, 1.101]**, 276.9 ms vs 266.4 ms; 4 of 6 block ratios above 1;
+  descriptively 1.150 in phase C1 at zero added delay).
 - **Why this is not a multi-host result:** in this single-process cluster, the
   storage server holding the index entry and the storage server holding the
   primary record are the **same `fdbserver` process**, so `getMappedRange`'s
