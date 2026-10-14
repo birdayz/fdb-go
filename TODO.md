@@ -1560,7 +1560,7 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   `RETURN_LIMIT_REACHED` with a last-key token at exact exhaustion, and charge
   the terminal attempt. `conformance/index_scan_limit_conformance_test.go` and
   `conformance/index_continuation_range_conformance_test.go` compare every
-  boundary with Java, including empty final-page resumes.
+  index boundary with Java, including empty final-page resumes.
 - [x] Record scans (key_value_cursor.go) follow Java's scanTypedRecords: per
   key-value scan charges (inline versions included in record sizes), limits that
   finish the crossing record, and `RETURN_LIMIT_REACHED` at an exact row limit.
