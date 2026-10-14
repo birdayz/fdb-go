@@ -159,8 +159,8 @@ Hypotheses, not tested here:
   work may cost more than the client-side pipelined loads it replaces. The
   allocation ratios show the client does less work; server CPU was not
   profiled.
-- The benefit measured here excludes network latency: client and server share
-  a host and talk over a veth pair. Remote fetch saves client round trips, so
+- The benefit measured here excludes inter-host and physical-network latency:
+  client and server share a host and talk over a veth pair. Remote fetch saves client round trips, so
   its effect over a real network is likely different. The multi-node campaign
   (`tools/benchcampaign/multinode`) is designed to measure that.
 

@@ -194,8 +194,8 @@ Hypotheses, not tested here:
   determine it; that all three short prefixes fell on `final-ordinary`
   processes may be chance. Neither the mechanism nor the arm pattern was
   investigated.
-- All of this excludes network latency: client and server share a host over a
-  veth pair. Remote fetch saves client round trips, so its effect over a real
+- All of this excludes inter-host and physical-network latency: client and
+  server share a host over a veth pair. Remote fetch saves client round trips, so its effect over a real
   network is likely different; the multi-node campaign
   (`tools/benchcampaign/multinode`) is designed to measure that.
 

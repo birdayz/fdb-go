@@ -66,8 +66,8 @@ Headline results:
   (0.34 for 1,000 small records) and 15% slower for 1,000 split records, a
   retained negative result.
 - **D1:** only `FDB_PlanCacheHit` was analyzed; the phase stopped early on a
-  false correctness failure in the runner (since fixed). Time is unchanged
-  (final/before 1.002 [0.984, 1.021]); `allocs/op` fell 5.1%.
+  false correctness failure in the runner (since fixed). No measurable time
+  change (final/before 1.002 [0.984, 1.021]); `allocs/op` fell 5.1%.
 - **C2:** remote fetch is faster on the reverse scan of 1,000 small records
   (0.337) and with executor Skip 3 (0.455 over the whole index, 0.783 for ten
   rows), and 15% slower on the reverse scan of 1,000 split records (1.146),

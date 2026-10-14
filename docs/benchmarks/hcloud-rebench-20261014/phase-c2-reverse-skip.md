@@ -123,7 +123,7 @@ Measured:
   0.506–0.692 and `allocs/op` ratios 0.403–0.791.
 - **A positive Skip does not remove the remote-fetch advantage at these
   sizes.** The audits confirm that remote fetch reads the skipped entries in
-  its one mapped read while the ordinary path never loads them, and remote
+  its one remote-fetch opening while the ordinary path never loads them, and remote
   fetch is still faster in both Skip cases.
 - **The reverse cases match C1's forward results in direction and size.** In
   the final tree, C1 measured 0.341 [0.321, 0.356] for forward `small-all-1000`
@@ -146,8 +146,8 @@ Hypotheses, not tested here:
   reverse cases. The difference between 0.455 (Skip, forward, executor) and
   0.337 (reverse, store-level) is not attributed to either factor: the cases
   differ in benchmark, direction, Skip and returned rows.
-- Client and server share a host and talk over a veth pair, so no network
-  latency is included. Remote fetch saves client round trips, so its effect
+- Client and server share a host and talk over a veth pair, so no
+  inter-host or physical-network latency is included. Remote fetch saves client round trips, so its effect
   over a real network is likely different. The multi-node campaign
   (`tools/benchcampaign/multinode`) is designed to measure that.
 
