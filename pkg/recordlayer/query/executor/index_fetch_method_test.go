@@ -161,7 +161,7 @@ func TestIntegration_IndexFetchMethod_RemoteFetchRuns(t *testing.T) {
 						}
 						return
 					}
-					// One mapped read, and one entry event per result including the exhausted one.
+					// One remote-fetch scan opening; entry events include the exhausted result.
 					if remoteFetches != 1 || remoteEntries != int64(len(want)+1) || indexScans != 0 {
 						t.Fatalf("%v: remote fetches %d, entries %d, index scans %d; want 1, %d, 0",
 							method, remoteFetches, remoteEntries, indexScans, len(want)+1)
@@ -295,10 +295,10 @@ func TestIntegration_IndexFetchMethod_ImmediateFailures(t *testing.T) {
 			if page.err != nil || !slices.Equal(page.ids, idRange(0, 4)) {
 				t.Fatalf("SNAPSHOT %v: rows %v err %v", method, page.ids, page.err)
 			}
-			// Java counts the refused mapped read, then falls back to the index scan.
+			// Java counts the refused remote-fetch attempt (no mapped read is sent), then falls back to the index scan.
 			if method == indexfetch.UseRemoteFetchWithFallback &&
 				(timer.GetCount(recordlayer.CountRemoteFetch) != 1 || timer.GetCount(recordlayer.EventScanIndex) == 0) {
-				t.Fatalf("SNAPSHOT WITH_FALLBACK: %d mapped reads, %d index scans; want 1 and the fallback scan",
+				t.Fatalf("SNAPSHOT WITH_FALLBACK: %d remote-fetch attempts, %d index scans; want 1 and the fallback scan",
 					timer.GetCount(recordlayer.CountRemoteFetch), timer.GetCount(recordlayer.EventScanIndex))
 			}
 		})

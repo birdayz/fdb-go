@@ -79,9 +79,16 @@ func indexFetchConn(t *testing.T, db *sql.DB, options map[api.OptionName]any) *s
 // TestFDB_PlannerOptions_IndexFetchMethodRunsRemoteFetch drives
 // INDEX_FETCH_METHOD end to end: each value returns SCAN_AND_FETCH's rows,
 // paged through continuations as well as in one page, and Java's counters
-// (RemoteFetchTestBase.assertCounters) show which path ran — the mapped read
-// for both remote methods, the index scan for SCAN_AND_FETCH and for an unset
-// option, whose Go default is SCAN_AND_FETCH (DIVERGENCES.md).
+// (RemoteFetchTestBase.assertCounters) show which path ran — remote-fetch
+// openings for both remote methods, the index scan for SCAN_AND_FETCH and for
+// an unset option, whose Go default is SCAN_AND_FETCH (DIVERGENCES.md).
+//
+// Completed record loads (EventLoadRecord) separate the two paths' results:
+// SCAN_AND_FETCH loads each of the 40 records, while the remote methods return
+// the same 40 rows from mapped results with no ordinary record load. That is
+// strict mapped-result execution on the real backend, not a count of wire RPCs.
+// Each connection resolves its schema and plan before the timer is reset,
+// because catalog reads are record loads too.
 func TestFDB_PlannerOptions_IndexFetchMethodRunsRemoteFetch(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -92,13 +99,14 @@ func TestFDB_PlannerOptions_IndexFetchMethodRunsRemoteFetch(t *testing.T) {
 	for i := range want {
 		want[i] = int64(i)
 	}
-	unset := indexFetchConn(t, db, nil)
-	if plan := testkit.ExplainConn(t, ctx, unset, q); !strings.Contains(plan, "IndexScan(IDX_A") || strings.Contains(plan, "COVERING") {
-		t.Fatalf("plan %s must fetch through IDX_A for the counters to mean anything", plan)
-	}
-	type counts struct{ remoteFetches, remoteEntries, indexScans int64 }
+	type counts struct{ remoteFetches, remoteEntries, indexScans, recordLoads int64 }
 	run := func(conn *sql.Conn) counts {
 		t.Helper()
+		// Warm this connection's schema and plan resolution, whose catalog
+		// reads would otherwise count as record loads below.
+		if plan := testkit.ExplainConn(t, ctx, conn, q); !strings.Contains(plan, "IndexScan(IDX_A") || strings.Contains(plan, "COVERING") {
+			t.Fatalf("plan %s must fetch through IDX_A for the counters to mean anything", plan)
+		}
 		timer.Reset()
 		if got := testkit.ScanInt64Rows(t, ctx, conn, q); !slices.Equal(got, want) {
 			t.Fatalf("rows %v, want %v", got, want)
@@ -107,10 +115,11 @@ func TestFDB_PlannerOptions_IndexFetchMethodRunsRemoteFetch(t *testing.T) {
 			timer.GetCount(recordlayer.CountRemoteFetch),
 			timer.GetCount(recordlayer.EventScanRemoteFetchEntry),
 			timer.GetCount(recordlayer.EventScanIndex),
+			timer.GetCount(recordlayer.EventLoadRecord),
 		}
 	}
-	if got := run(unset); got.remoteFetches != 0 || got.remoteEntries != 0 || got.indexScans == 0 {
-		t.Fatalf("unset option: %+v, want an index scan and no remote fetch", got)
+	if got := run(indexFetchConn(t, db, nil)); got.remoteFetches != 0 || got.remoteEntries != 0 || got.indexScans == 0 || got.recordLoads < rows {
+		t.Fatalf("unset option: %+v, want an index scan, >= %d record loads and no remote fetch", got, rows)
 	}
 	for _, method := range []api.IndexFetchMethod{api.IndexFetchScanAndFetch, api.IndexFetchUseRemoteFetch, api.IndexFetchUseRemoteFetchWithFallback} {
 		for _, pageRows := range []int{0, 7} {
@@ -121,8 +130,8 @@ func TestFDB_PlannerOptions_IndexFetchMethodRunsRemoteFetch(t *testing.T) {
 			}
 			got := run(indexFetchConn(t, db, options))
 			if method == api.IndexFetchScanAndFetch {
-				if got.remoteFetches != 0 || got.remoteEntries != 0 || got.indexScans == 0 {
-					t.Fatalf("%v page %d: %+v, want an index scan and no remote fetch", method, pageRows, got)
+				if got.remoteFetches != 0 || got.remoteEntries != 0 || got.indexScans == 0 || got.recordLoads < rows {
+					t.Fatalf("%v page %d: %+v, want an index scan, >= %d record loads and no remote fetch", method, pageRows, got, rows)
 				}
 				continue
 			}
@@ -130,8 +139,8 @@ func TestFDB_PlannerOptions_IndexFetchMethodRunsRemoteFetch(t *testing.T) {
 			if pageRows > 0 {
 				minFetches = rows / int64(pageRows)
 			}
-			if got.remoteFetches < minFetches || got.remoteEntries < rows || got.indexScans != 0 {
-				t.Fatalf("%v page %d: %+v, want >= %d mapped reads, >= %d remote entries and no index scan",
+			if got.remoteFetches < minFetches || got.remoteEntries < rows || got.indexScans != 0 || got.recordLoads != 0 {
+				t.Fatalf("%v page %d: %+v, want >= %d remote-fetch openings, >= %d remote entries, no index scan and no record load",
 					method, pageRows, got, minFetches, rows)
 			}
 		}
@@ -145,7 +154,7 @@ func TestFDB_PlannerOptions_IndexFetchMethodRunsRemoteFetch(t *testing.T) {
 		t.Fatal(err)
 	}
 	if n, err := res.RowsAffected(); err != nil || n != 1 || timer.GetCount(recordlayer.CountRemoteFetch) == 0 {
-		t.Fatalf("DELETE under USE_REMOTE_FETCH: %d rows (%v), %d mapped reads", n, err, timer.GetCount(recordlayer.CountRemoteFetch))
+		t.Fatalf("DELETE under USE_REMOTE_FETCH: %d rows (%v), %d remote-fetch openings", n, err, timer.GetCount(recordlayer.CountRemoteFetch))
 	}
 }
 
