@@ -1520,6 +1520,8 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   RecordQueryFetchFromPartialRecordPlan.java:130). Go clears it for the leaf
   (`scan_range_set_cursor.go:169`) and skips above (`executor.go:505`, `:553`), charging
   skipped entries to scanned records/bytes and loading their records. DIVERGENCES.md.
+  Push-down is correct only for a single range: a Go index plan can bind several ranges
+  (`scan_range_set_cursor.go`), and pushing Skip into each leaf would skip once per range.
 
 ## Test lanes and test-speed work (committed with the temporal change)
 

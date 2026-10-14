@@ -80,8 +80,9 @@ again, as in Java.
 
 Java adds the skip with `int` arithmetic, so a forward skip of
 `Integer.MAX_VALUE` passes offset `Integer.MIN_VALUE` to `getRange`. Go
-saturates the offset at the int32 maximum instead; this differs from an exact
-skip only beyond 2^31-2 entries, which one transaction cannot resolve.
+saturates the skip at `MaxInt32-1` in both directions instead; this differs from
+an exact skip only beyond 2^31-2 entries, which in practice one transaction
+cannot resolve.
 
 The pure-Go client resolves the skipped selector with a `GetKey` that is not
 bounded by the scan range. When Skip overshoots the remaining entries, Go reads

@@ -389,14 +389,13 @@ func TestFDB_IndexCursorSkipSelectorOffsets(t *testing.T) {
 					})
 				}
 
-				// Offsets saturate at the native int32 range instead of wrapping: Java's
-				// forward MaxInt32 wraps to MinInt32, and Go-only skips above MaxInt32
-				// keep the MaxInt32 offsets.
+				// The skip saturates at MaxInt32-1 in both directions instead of wrapping
+				// (Java's forward MaxInt32 wraps to MinInt32).
 				for _, bound := range []struct{ skip, forward, reverse int }{
 					{math.MaxInt32 - 1, math.MaxInt32, math.MinInt32 + 3},
-					{math.MaxInt32, math.MaxInt32, math.MinInt32 + 2},
-					{math.MaxInt32 + 5, math.MaxInt32, math.MinInt32 + 2},
-					{math.MaxInt, math.MaxInt32, math.MinInt32 + 2},
+					{math.MaxInt32, math.MaxInt32, math.MinInt32 + 3},
+					{math.MaxInt32 + 5, math.MaxInt32, math.MinInt32 + 3},
+					{math.MaxInt, math.MaxInt32, math.MinInt32 + 3},
 				} {
 					t.Run(fmt.Sprintf("bound/skip=%d", bound.skip), func(t *testing.T) {
 						page := scan(t, request(bound.skip, 0))

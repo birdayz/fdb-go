@@ -1136,13 +1136,16 @@ Ordinary index cursors apply Skip as Java's selector offsets (`KeyValueCursorBas
 (`KeySelector.java:144-146`). A forward skip of `Integer.MAX_VALUE` passes
 `firstGreaterOrEqual(low)` with offset `Integer.MIN_VALUE` to `getRange`.
 
-**Go** (`indexSkipRange`, `index_cursor_limits.go`) saturates the begin offset at `MaxInt32`
-(skipping `MaxInt32-1` entries) instead of wrapping; Go-only skips above `MaxInt32` saturate the
-same way, forward and reverse. A reverse skip of `Integer.MAX_VALUE` keeps Java's exact end offset
-`1-MaxInt32`. Saturation differs from an exact skip only when more than 2^31-2 entries follow the
-bound, which one transaction cannot resolve. Pinned by `TestFDB_IndexCursorSkipSelectorOffsets`
-(bound subtests) and the conformance case "saturates a Skip=MaxInt32 begin offset where Java's
-offset wraps", which builds Java's selectors without issuing the read.
+**Go** (`indexSkipRange`, `index_cursor_limits.go`) saturates the skip at `MaxInt32-1` in both
+directions instead: begin offset `MaxInt32` forward, end offset `2-MaxInt32` reverse. Java's reverse
+end offset for `Integer.MAX_VALUE`, `1-MaxInt32`, is a request shape the 7.3.77 storage server does
+not support when a transaction disables read-your-writes (`storageserver.actor.cpp:4421-4439`).
+Go-only skips above `MaxInt32` saturate the same way. Saturation differs from an exact skip only when
+more than 2^31-2 entries follow the bound, which in practice one transaction cannot resolve. Pinned by
+`TestFDB_IndexCursorSkipSelectorOffsets` (bound subtests) and the conformance case "saturates
+Skip=MaxInt32 selector offsets where Java's differ", which builds Java's selectors without issuing
+the read. PR #917's raw mapped-range `MappedRangeSkipReader` treats a forward `MaxInt32` as an exact
+skip instead; reconcile the two before RFC-258 wires mapped Skip into index scans.
 
 ### Pure-Go selector resolution is not bounded by the scan range
 

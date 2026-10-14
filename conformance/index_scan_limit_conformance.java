@@ -623,7 +623,7 @@ class IndexScanLimitSteps extends ConformanceBase {
                 "beginOrEqual", begin.orEqual(), "beginOffset", begin.getOffset(), "endKey", bytes(end.getKey()),
                 "endOrEqual", end.orEqual(), "endOffset", end.getOffset()));
         if (request.selectorsOnly) {
-            // Java's forward Skip=Integer.MAX_VALUE begin offset wraps to MIN_VALUE: report it, never read it.
+            // Reports Skip=Integer.MAX_VALUE selectors without sending their offsets to the cluster.
             proofRequire(hold == null, "selectors-only requests never hold record loads");
             return Map.of("rangeOptions", rangeOptions, "selectors", selectors);
         }

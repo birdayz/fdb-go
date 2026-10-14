@@ -612,21 +612,14 @@ var _ = Describe("Ordinary index cursor Java limit conformance", func() {
 			}
 		})
 	})
-	// fdb-java KeySelector.add is int arithmetic (KeySelector.java:144-146), so Java
-	// passes a forward Skip=MaxInt32 begin offset of MinInt32 to getRange; Go
-	// saturates it at MaxInt32 (docs/compatibility.md). Java's forward selectors are
-	// built without the read: that offset is never sent to the shared cluster.
-	It("saturates a Skip=MaxInt32 begin offset where Java's offset wraps", func() {
+	// fdb-java KeySelector.add is int arithmetic (KeySelector.java:144-146): for
+	// Skip=MaxInt32 Java passes a forward begin offset of MinInt32 and a reverse end
+	// offset of 1-MaxInt32 to getRange. Go saturates the skip at MaxInt32-1
+	// (docs/compatibility.md). Java's selectors are built without the read, so
+	// neither offset is sent to the shared cluster.
+	It("saturates Skip=MaxInt32 selector offsets where Java's differ", func() {
 		forEachScan(func(req scanLimitRequest) {
 			req.Skip = math.MaxInt32
-			if req.Reverse {
-				// 1-MaxInt32 fits an int: Go sends Java's end selector.
-				page := compare(req)
-				Expect(page.Rows).To(BeEmpty())
-				Expect(page.Reason).To(Equal("SOURCE_EXHAUSTED"))
-				Expect(page.Selectors[0].EndOffset).To(Equal(math.MinInt32 + 2))
-				return
-			}
 			probe := req
 			probe.SelectorsOnly = true
 			var oracle scanLimitPage
@@ -635,7 +628,6 @@ var _ = Describe("Ordinary index cursor Java limit conformance", func() {
 			}, &oracle)).To(Succeed())
 			Expect(oracle.Rows).To(BeEmpty())
 			Expect(oracle.Selectors).To(HaveLen(1))
-			Expect(oracle.Selectors[0].BeginOffset).To(Equal(math.MinInt32))
 			page := scanGo(req)
 			Expect(page.ExceptionClass).To(BeEmpty())
 			Expect(page.Rows).To(BeEmpty())
@@ -643,7 +635,13 @@ var _ = Describe("Ordinary index cursor Java limit conformance", func() {
 			Expect(page.ScannedRecords).To(Equal(1))
 			Expect(page.RangeOptions).To(Equal(oracle.RangeOptions))
 			want := oracle.Selectors[0]
-			want.BeginOffset = math.MaxInt32
+			if req.Reverse {
+				Expect(want.EndOffset).To(Equal(1 - math.MaxInt32))
+				want.EndOffset = 2 - math.MaxInt32
+			} else {
+				Expect(want.BeginOffset).To(Equal(math.MinInt32))
+				want.BeginOffset = math.MaxInt32
+			}
 			Expect(page.Selectors).To(Equal([]scanLimitSelectors{want}))
 		})
 	})
