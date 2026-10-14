@@ -59,3 +59,92 @@ func TestMappedRangeConflictMustUnmodified(t *testing.T) {
 		})
 	}
 }
+
+func TestMappedRangeConflictBatchOrder(t *testing.T) {
+	t.Parallel()
+	for _, failAt := range []string{"none", "primary", "secondary"} {
+		t.Run(failAt, func(t *testing.T) {
+			t.Parallel()
+			tx := &Transaction{}
+			rows := []MappedKeyValue{
+				{Key: []byte("b"), Kind: MappedResultGetValue, GetValue: MappedGetValue{Key: []byte("j")}}, // point miss still conflicts
+				{Key: []byte("c"), Kind: MappedResultGetRange, GetRange: MappedGetRange{
+					Begin: KeySelector{Key: []byte("m"), Offset: 1}, End: KeySelector{Key: []byte("q"), Offset: 1},
+					Rows: []KeyValue{{Key: []byte("o")}}, More: true,
+				}},
+				{Key: []byte("d"), Kind: MappedResultGetValue, GetValue: MappedGetValue{Key: []byte("z"), Present: true}},
+			}
+			want := [][2]string{{"a", "e"}, {"j", "j\x00"}, {"m", "o\x00"}, {"z", "z\x00"}}
+			switch failAt {
+			case "primary":
+				tx.ryw.set([]byte("c"), nil)
+				want = [][2]string{{"a", "c"}}
+			case "secondary":
+				tx.ryw.set([]byte("n"), nil)
+				want = [][2]string{{"a", "e"}, {"j", "j\x00"}, {"m", "n"}}
+			}
+			err := tx.addMappedRangeConflicts([]byte("a"), []byte("e"), false, false, rows)
+			if failAt == "none" {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else if native, ok := err.(*wire.FDBError); !ok || native.Code != 2039 {
+				t.Fatalf("error = %v, want 2039", err)
+			}
+			if len(tx.readConflicts) != len(want) {
+				t.Fatalf("conflicts = %v, want %v", tx.readConflicts, want)
+			}
+			// Conflict storage must own keys even after the source batch is gone.
+			for i := range rows {
+				if len(rows[i].GetValue.Key) != 0 {
+					rows[i].GetValue.Key[0] = 'x'
+				}
+				if len(rows[i].GetRange.Begin.Key) != 0 {
+					rows[i].GetRange.Begin.Key[0] = 'x'
+				}
+				if len(rows[i].GetRange.End.Key) != 0 {
+					rows[i].GetRange.End.Key[0] = 'x'
+				}
+				for j := range rows[i].GetRange.Rows {
+					rows[i].GetRange.Rows[j].Key[0] = 'x'
+				}
+			}
+			for i, r := range tx.readConflicts {
+				if string(r.Begin) != want[i][0] || string(r.End) != want[i][1] {
+					t.Fatalf("conflict %d = [%q,%q), want %v", i, r.Begin, r.End, want[i])
+				}
+			}
+		})
+	}
+}
+
+// This isolated Bazel target has no concurrent workers: parallel tests wait
+// until this sequential allocation counter finishes. Buffer growth is warmed.
+func TestMappedRangeConflictBatchAllocations(t *testing.T) {
+	const count = 256
+	rows := make([]MappedKeyValue, count)
+	for i := range rows {
+		rows[i] = MappedKeyValue{
+			Key: []byte{0x10, byte(i)}, Kind: MappedResultGetRange,
+			GetRange: MappedGetRange{Begin: KeySelector{Key: []byte{0x30, byte(i)}}, End: KeySelector{Key: []byte{0x31, byte(i)}}},
+		}
+	}
+	tx := &Transaction{readConflicts: make([]KeyRange, 0, count+1), conflictBuf: make([]byte, 0, 8192)}
+	begin, end := []byte{0x00}, []byte{0x20}
+	allocations := testing.AllocsPerRun(100, func() {
+		clear(tx.readConflicts)
+		tx.readConflicts, tx.conflictBuf = tx.readConflicts[:0], tx.conflictBuf[:0]
+		if err := tx.addMappedRangeConflicts(begin, end, false, false, rows); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if len(tx.readConflicts) != count+1 || !bytes.Equal(tx.readConflicts[0].Begin, begin) || !bytes.Equal(tx.readConflicts[0].End, end) {
+		t.Fatal("allocation sample did not insert every primary/secondary conflict")
+	}
+	// The current helper clones one endpoint per range. Collecting those ranges
+	// in a temporary growing slice would add batch allocations beyond these.
+	if allocations != count+1 {
+		t.Fatalf("mapped conflict allocations = %g, want %d endpoint copies only", allocations, count+1)
+	}
+	t.Logf("mapped conflict allocations: rows=%d allocs=%.0f endpoint copies only", count, allocations)
+}

@@ -195,7 +195,8 @@ var _ = Describe("Index remote fetch", func() {
 	// Ports RemoteFetchIndexScanTest's simple, reverse and complex index cases,
 	// RemoteFetchSplitRecordsTest, RemoteFetchWithoutSplitRecordsTest,
 	// RemoteFetchMultiColumnKeyTest and RemoteFetchOldVersionTest's layouts.
-	DescribeTable("returns SCAN_AND_FETCH's records, versions and sizes for every layout",
+	DescribeTable(
+		"returns SCAN_AND_FETCH's records, versions and sizes for every layout",
 		func(l layout, indexes ...string) {
 			ks := specSubspace()
 			seed(ks, l, 12, func(id int) *demopb.Order {
@@ -532,6 +533,40 @@ var _ = Describe("Index remote fetch", func() {
 			Expect(mapper.Pack()).To(Equal(append(want, "{...}").Pack()), index)
 		}
 		Expect(store.GetCommonPrimaryKeyLength(store.GetRecordMetaData().GetIndex("price"))).To(Equal(2))
+	})
+
+	It("reports deserialization errors before failed legacy versions", func() {
+		store := open(specSubspace(), layout{format: 5, split: true})
+		pk := tuple.Tuple{int64(1)}
+		store.context.Transaction().Set(store.versionKey(pk), []byte{1})
+		data, err := proto.Marshal(&demopb.UnionDescriptor{XOrder: order(1)})
+		Expect(err).NotTo(HaveOccurred())
+		raw := FDBIndexedRawRecord{
+			IndexEntry: &IndexEntry{Index: store.GetRecordMetaData().GetIndex("price"), Key: tuple.Tuple{int64(999), int64(1)}},
+			RawRecord: fdb.MappedKeyValue{Kind: fdb.MappedResultGetRange, GetRange: client.MappedGetRange{Rows: []client.KeyValue{{
+				Key: store.recordsSubspace.Pack(appendToTuple(pk, unsplitRecord)), Value: []byte{0xff},
+			}}}},
+		}
+		var load remoteRecordLoad
+		state := NewScanLimiterState()
+		load.start(store, raw, state)
+		Expect(load.IsReady()).To(BeTrue(), "deserialization must not wait for the issued version")
+		for range 2 {
+			record, err := load.Get()
+			Expect(record).To(BeNil())
+			var deserialization *RecordDeserializationError
+			Expect(errors.As(err, &deserialization)).To(BeTrue(), "%v", err)
+		}
+		Expect(state.BytesScanned()).To(Equal(int64(len(raw.RawRecord.GetRange.Rows[0].Key) + 1)))
+		// A valid message exposes the malformed version read, proving the
+		// version source is failing rather than merely absent.
+		raw.RawRecord.GetRange.Rows[0].Value = data
+		load.start(store, raw, nil)
+		Expect(load.oldVersion).NotTo(BeNil())
+		record, err := load.Get()
+		Expect(record).To(BeNil())
+		Expect(err).To(MatchError(ContainSubstring("load record version for")))
+		Expect(load.oldVersion).To(BeNil())
 	})
 
 	It("rebuilds records from secondary rows like Java's unsplitter", func() {

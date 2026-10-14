@@ -18,24 +18,32 @@ import (
 // nil when the server found no record rows: the orphan behavior belongs to the
 // scan. Matches Java's FDBRecordStore.buildSingleRecord.
 func (store *FDBRecordStore) BuildSingleRecord(raw *FDBIndexedRawRecord) (*FDBIndexedRecord, error) {
-	return store.buildSingleRecord(raw, nil).Get()
+	var load remoteRecordLoad
+	load.start(store, *raw, nil)
+	return load.Get()
 }
 
-// buildSingleRecord is buildSingleRecordInternal. Only a legacy-format version
-// read can remain pending; its error surfaces after deserialization succeeds,
-// as Java chains it in deserializeRecord.
-func (store *FDBRecordStore) buildSingleRecord(raw *FDBIndexedRawRecord, scanState *ScanLimiterState) PendingRead[*FDBIndexedRecord] {
+// Only a legacy-format version read can remain pending; its error surfaces
+// after deserialization succeeds, as Java chains it in deserializeRecord.
+type remoteRecordLoad struct {
+	record     *FDBIndexedRecord
+	oldVersion PendingRead[*FDBRecordVersion]
+	err        error
+}
+
+func (load *remoteRecordLoad) start(store *FDBRecordStore, raw FDBIndexedRawRecord, scanState *ScanLimiterState) {
+	*load = remoteRecordLoad{}
 	if len(raw.RawRecord.GetRange.Rows) == 0 {
-		return NewPendingRead(func() (*FDBIndexedRecord, error) { return nil, nil }, nil)
+		return
 	}
 	var sizes sizeInfo
 	primaryKey, value, version, err := store.reconstructSingleRecord(raw.RawRecord, &sizes)
 	if err != nil {
-		return NewPendingRead(func() (*FDBIndexedRecord, error) { return nil, err }, nil)
+		load.err = err
+		return
 	}
-	var oldVersion PendingRead[*FDBRecordVersion]
 	if store.useOldVersionFormat() && version == nil {
-		oldVersion = store.loadRecordVersionAsync(raw.IndexEntry.PrimaryKey(), false)
+		load.oldVersion = store.loadRecordVersionAsync(raw.IndexEntry.PrimaryKey(), false)
 	}
 	if scanState != nil {
 		// The index entry's own bytes were charged by the index cursor.
@@ -43,24 +51,49 @@ func (store *FDBRecordStore) buildSingleRecord(raw *FDBIndexedRawRecord, scanSta
 	}
 	recordType, message, wire, err := store.deserializeAndDiscover(value)
 	if err != nil {
-		err = &RecordDeserializationError{PrimaryKey: primaryKey, Cause: err}
-		return NewPendingRead(func() (*FDBIndexedRecord, error) { return nil, err }, nil)
+		load.err = &RecordDeserializationError{PrimaryKey: primaryKey, Cause: err}
+		load.oldVersion = nil
+		return
 	}
-	record := &FDBIndexedRecord{IndexEntry: raw.IndexEntry, Record: &FDBStoredRecord[proto.Message]{
+	load.record = &FDBIndexedRecord{IndexEntry: raw.IndexEntry, Record: &FDBStoredRecord[proto.Message]{
 		PrimaryKey: primaryKey, RecordType: recordType, Record: message, wire: wire, Store: store,
 		Version: version, KeyCount: sizes.KeyCount, KeySize: sizes.KeySize, ValueSize: sizes.ValueSize, Split: sizes.IsSplit,
 	}}
-	if oldVersion == nil {
-		return NewPendingRead(func() (*FDBIndexedRecord, error) { return record, nil }, nil)
-	}
-	return NewPendingRead(func() (*FDBIndexedRecord, error) {
-		version, err := oldVersion.Get()
+}
+
+func (load *remoteRecordLoad) Get() (*FDBIndexedRecord, error) {
+	if load.oldVersion != nil {
+		version, err := load.oldVersion.Get()
+		load.oldVersion = nil
 		if err != nil {
-			return nil, fmt.Errorf("load record version for %v: %w", primaryKey, err)
+			load.err = fmt.Errorf("load record version for %v: %w", load.record.Record.PrimaryKey, err)
+			load.record = nil
+		} else {
+			load.record.Record.Version = version
 		}
-		record.Record.Version = version
-		return record, nil
-	}, oldVersion.IsReady)
+	}
+	return load.record, load.err
+}
+
+func (load *remoteRecordLoad) IsReady() bool {
+	return load.oldVersion == nil || load.oldVersion.IsReady()
+}
+
+// MapPipelined's size-one queue resolves its only load before issuing another.
+// Reuse that pending state, never the records or index entries it returns.
+type remoteIndexRecordLoader struct {
+	store     *FDBRecordStore
+	scanState *ScanLimiterState
+	orphan    IndexOrphanBehavior
+	pending   remoteRecordLoad
+}
+
+func (loader *remoteIndexRecordLoader) load(raw FDBIndexedRawRecord) PendingRead[*FDBIndexedRecord] {
+	loader.pending.start(loader.store, raw, loader.scanState)
+	if loader.pending.record == nil && loader.pending.err == nil {
+		loader.pending.record, loader.pending.err = loader.store.handleOrphanEntry(raw.IndexEntry, raw.IndexEntry.PrimaryKey(), loader.orphan, true)
+	}
+	return &loader.pending
 }
 
 // reconstructSingleRecord is FDBRecordStore.reconstructSingleRecord: the first
@@ -71,7 +104,10 @@ func (store *FDBRecordStore) buildSingleRecord(raw *FDBIndexedRawRecord, scanSta
 func (store *FDBRecordStore) reconstructSingleRecord(raw fdb.MappedKeyValue, sizes *sizeInfo) (tuple.Tuple, []byte, *FDBRecordVersion, error) {
 	rows := raw.GetRange.Rows
 	first := rows[0]
-	key, err := store.recordsSubspace.Unpack(fdb.Key(first.Key))
+	if !store.recordsSubspace.Contains(fdb.Key(first.Key)) {
+		return nil, nil, nil, &RecordCoreArgumentError{Message: "unable to unpack key: key is not in subspace"}
+	}
+	key, err := tuplefast.SubspaceUnpack(first.Key, len(store.recordsSubspace.Bytes()))
 	if err != nil {
 		return nil, nil, nil, &RecordCoreArgumentError{Message: fmt.Sprintf("unable to unpack key: %v", err)}
 	}
@@ -146,15 +182,23 @@ func (store *FDBRecordStore) reconstructSingleRecord(raw fdb.MappedKeyValue, siz
 		return nil, nil, nil, &FoundSplitWithoutStartError{NextIndex: recordVersionSuffix, KeyTuple: primaryKey}
 	}
 	if !store.useOldVersionFormat() {
-		// Java's unsplitter reports a version this transaction saved as incomplete.
-		versionKey := store.recordsSubspace.Pack(appendToTuple(primaryKey, recordVersionSuffix))
-		if local, found := store.context.GetLocalVersion(versionKey); found {
-			if version, err = IncompleteVersion(local); err != nil {
-				return nil, nil, nil, err
+		// Avoid repacking a version key on the read-only unsplit fast path.
+		// Lookup and packing share the lock, so a cached local version is never lost.
+		store.context.versionMu.Lock()
+		if len(store.context.localVersionCache) != 0 {
+			versionKey := store.recordsSubspace.Pack(appendToTuple(primaryKey, recordVersionSuffix))
+			if local, found := store.context.localVersionCache[string(versionKey)]; found {
+				version, err = IncompleteVersion(local)
+				if err == nil {
+					sizes.KeyCount++
+					sizes.KeySize += len(versionKey)
+					sizes.ValueSize += VersionBytes + 1
+				}
 			}
-			sizes.KeyCount++
-			sizes.KeySize += len(versionKey)
-			sizes.ValueSize += VersionBytes + 1
+		}
+		store.context.versionMu.Unlock()
+		if err != nil {
+			return nil, nil, nil, err
 		}
 	}
 	sizes.VersionedInline = version != nil
