@@ -1,3 +1,5 @@
 #!/usr/bin/env bash
 set -euo pipefail
-exec python3 -B "${TEST_SRCDIR}/${TEST_WORKSPACE}/tools/clientbench/scripts/test_campaign.py"
+scripts="${TEST_SRCDIR}/${TEST_WORKSPACE}/tools/clientbench/scripts"
+python3 -B "$scripts/test_campaign.py"
+exec python3 -B "$scripts/test_matrix_plan.py"

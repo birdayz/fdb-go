@@ -1,0 +1,23 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+# Store-level index-fetch benchmarks (ScanIndexRecordsWithFetchMethod). The
+# test binary has no tests; `bazelisk test` only compiles and runs it empty.
+# Run the benchmarks from the built binary, e.g.
+#   FDB_BENCH_CLUSTER_FILE=/etc/foundationdb/fdb.cluster benchfetch_test \
+#     -test.run='^$' -test.bench='^BenchmarkIndexFetch/' -test.benchmem
+go_test(
+    name = "benchfetch_test",
+    srcs = [
+        "fixture_test.go",
+        "matrix_bench_test.go",
+    ],
+    deps = [
+        "//gen/demopb",
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+        "//pkg/recordlayer",
+        "//pkg/testutil/benchcluster",
+        "@org_golang_google_protobuf//proto",
+    ],
+)

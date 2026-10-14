@@ -1,0 +1,19 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+# SQL INDEX_FETCH_METHOD benchmarks (RFC-258 #923 trees only). The binary has
+# no tests; run its benchmarks explicitly.
+go_test(
+    name = "fetchmethod_test",
+    srcs = ["fetchmethod_bench_test.go"],
+    deps = [
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/internal/fdbclient",
+        "//pkg/recordlayer",
+        "//pkg/relational/api",
+        "//pkg/relational/core/embedded",
+        "//pkg/relational/core/keyspace",
+        "//pkg/relational/sqldriver",
+        "//pkg/testutil/benchcluster",
+    ],
+)
