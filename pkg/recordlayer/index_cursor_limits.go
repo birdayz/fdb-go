@@ -1,6 +1,10 @@
 package recordlayer
 
-import "fdb.dev/pkg/fdbgo/fdb"
+import (
+	"math"
+
+	"fdb.dev/pkg/fdbgo/fdb"
+)
 
 func (c *indexCursor) withContext(rc *FDBRecordContext) *indexCursor {
 	if rc != nil && c.scanProps.ExecuteProperties.TimeLimit > 0 {
@@ -21,6 +25,25 @@ func indexRangeOptions(props ScanProperties) fdb.RangeOptions {
 		options.Mode = fdb.StreamingModeExact
 	}
 	return options
+}
+
+// indexSkipRange applies a positive Skip as Java's selector offsets after the
+// continuation (KeyValueCursorBase.java:345-352): begin FGE(low)+skip forward,
+// end FGE(high)-skip reverse. Selector resolution reads the skipped keys; the
+// cursor never returns them. Go saturates the skip at MaxInt32-1 in both
+// directions: Java's int KeySelector.add wraps a forward MaxInt32 to MinInt32, and
+// a reverse offset below MinInt32+3 is a request shape the server does not support.
+func indexSkipRange(rng fdb.KeyRange, skip int, reverse bool) fdb.Range {
+	if skip <= 0 {
+		return rng
+	}
+	begin, end := fdb.FirstGreaterOrEqual(rng.Begin), fdb.FirstGreaterOrEqual(rng.End)
+	if reverse {
+		end.Offset = 1 - min(skip, math.MaxInt32-1)
+	} else {
+		begin.Offset = 1 + min(skip, math.MaxInt32-1)
+	}
+	return fdb.SelectorRange{Begin: begin, End: end}
 }
 
 // CursorLimitManager charges attempts, including exhaustion and rejected scans.

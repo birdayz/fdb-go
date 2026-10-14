@@ -66,11 +66,13 @@ class IndexScanLimitSteps extends ConformanceBase {
         public boolean records;
         public boolean reverse;
         public int rowLimit;
+        public int skip;
         public int scannedLimit;
         public long byteLimit;
         public long timeLimit;
         public boolean failOnScanLimit;
         public boolean holdRecordLoadsUntilSourceError;
+        public boolean selectorsOnly;
         public String continuation;
     }
 
@@ -142,6 +144,18 @@ class IndexScanLimitSteps extends ConformanceBase {
                         .toArray(CompletableFuture[]::new);
             }
             CompletableFuture.allOf(settled).join();
+        }
+    }
+
+    /** Runs KeyValueCursorBase.Builder.prepare without issuing the getRange that build() starts. */
+    private static final class SelectorProbe extends KeyValueCursor.Builder {
+        SelectorProbe(Subspace subspace) {
+            super(subspace);
+        }
+
+        SelectorProbe prepared() {
+            prepare();
+            return this;
         }
     }
 
@@ -585,7 +599,7 @@ class IndexScanLimitSteps extends ConformanceBase {
             }
         }
         ExecuteProperties.Builder builder = ExecuteProperties.newBuilder().setReturnedRowLimit(request.rowLimit)
-                .setDefaultCursorStreamingMode(CursorStreamingMode.valueOf(request.streaming))
+                .setSkip(request.skip).setDefaultCursorStreamingMode(CursorStreamingMode.valueOf(request.streaming))
                 .setFailOnScanLimitReached(request.failOnScanLimit);
         if (request.scannedLimit > 0) builder.setScannedRecordsLimit(request.scannedLimit);
         if (request.byteLimit > 0) builder.setScannedBytesLimit(request.byteLimit);
@@ -596,13 +610,22 @@ class IndexScanLimitSteps extends ConformanceBase {
         Index index = store.getRecordMetaData().getIndex(request.indexName);
         byte[] continuation = request.continuation == null || request.continuation.isEmpty()
                 ? null : Base64.getDecoder().decode(request.continuation);
-        KeyValueCursor.Builder leafBuilder = KeyValueCursor.Builder.newBuilder(store.indexSubspace(index))
-                .setContext(context).setRange(TupleRange.ALL).setContinuation(continuation).setScanProperties(scanProperties);
-        List<Map<String, Object>> rangeOptions;
-        try (KeyValueCursor leaf = leafBuilder.build()) {
-            // Native Java and Go streaming enum values differ by one.
-            rangeOptions = List.of(Map.of("mode", leafBuilder.getStreamingMode().code() + 1,
-                    "limit", leafBuilder.getLimit(), "reverse", request.reverse));
+        SelectorProbe leafBuilder = new SelectorProbe(store.indexSubspace(index));
+        leafBuilder.setContext(context).setRange(TupleRange.ALL).setContinuation(continuation).setScanProperties(scanProperties);
+        leafBuilder.prepared();
+        // Native Java and Go streaming enum values differ by one.
+        List<Map<String, Object>> rangeOptions = List.of(Map.of("mode", leafBuilder.getStreamingMode().code() + 1,
+                "limit", leafBuilder.getLimit(), "reverse", request.reverse));
+        // The getRange selectors after continuation and skip (KeyValueCursorBase.java:327-352).
+        KeySelector begin = leafBuilder.getBegin();
+        KeySelector end = leafBuilder.getEnd();
+        List<Map<String, Object>> selectors = List.of(Map.of("beginKey", bytes(begin.getKey()),
+                "beginOrEqual", begin.orEqual(), "beginOffset", begin.getOffset(), "endKey", bytes(end.getKey()),
+                "endOrEqual", end.orEqual(), "endOffset", end.getOffset()));
+        if (request.selectorsOnly) {
+            // Reports Skip=Integer.MAX_VALUE selectors without sending their offsets to the cluster.
+            proofRequire(hold == null, "selectors-only requests never hold record loads");
+            return Map.of("rangeOptions", rangeOptions, "selectors", selectors);
         }
         if (hold != null) {
             proofRequire(store.getPipelineSize(PipelineOperation.INDEX_TO_RECORD) > 1,
@@ -623,6 +646,7 @@ class IndexScanLimitSteps extends ConformanceBase {
         result.put("rows", rows);
         result.put("repeats", repeats);
         result.put("rangeOptions", rangeOptions);
+        result.put("selectors", selectors);
         result.put("reason", "");
         result.put("continuation", "");
         result.put("end", false);

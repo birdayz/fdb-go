@@ -1509,6 +1509,19 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   allocation (GC is ~39% of planner CPU); split 2, vector indexes out of
   `pkg/recordlayer` behind a maintainer registry (58 -> ~38 test targets per
   vector change); a Bazel cache shared by both CI runners.
+- [ ] `pkg/fdbgo`: bound GetRange selector resolution by the range end. The facade
+  resolves a non-trivial selector with an unbounded `GetKey` first
+  (`pkg/fdbgo/fdb/range_result.go:413-470`, `pkg/fdbgo/client/ryw_getkey.go`), so an
+  overshooting index-scan Skip reads, and in serializable mode conflicts on, keys past the
+  range. libfdb_c resolves within the read (ReadYourWrites.actor.cpp:725-760) and conflicts
+  on the requested range (:246-282). Client team.
+- [ ] Executor: pass Skip to the index cursor as Java's plans do
+  (RecordQueryIndexPlan.java:328/333/342, RecordQueryCoveringIndexPlan.java:115,
+  RecordQueryFetchFromPartialRecordPlan.java:130). Go clears it for the leaf
+  (`scan_range_set_cursor.go:169`) and skips above (`executor.go:505`, `:553`), charging
+  skipped entries to scanned records/bytes and loading their records. DIVERGENCES.md.
+  Push-down is correct only for a single range: a Go index plan can bind several ranges
+  (`scan_range_set_cursor.go`), and pushing Skip into each leaf would skip once per range.
 
 ## Test lanes and test-speed work (committed with the temporal change)
 
@@ -1553,6 +1566,11 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   with a lastKey token; its next page is empty and exhausted. Rows agree; the page count,
   stop reason and token differ. `conformance/index_continuation_range_conformance_test.go`
   picks page sizes that avoid the boundary until this is ported.
+  The count/bitmap cursors, including the MIN/MAX_EVER_TUPLE and MAX_EVER_VERSION
+  tuple-value cursor (`count_index_maintainer.go:67`, `max_ever_version_index_maintainer.go:127-129`),
+  also ignore `ExecuteProperties.Skip`. Java applies it through the same `KeyValueCursor`
+  selector offsets (AtomicMutationIndexMaintainer.java:114-121, BitmapValueIndexMaintainer.java:148,
+  via StandardIndexMaintainer.java:128-135); reuse `indexSkipRange` (index_cursor_limits.go).
 
 ## Issued-record load byte accounting
 

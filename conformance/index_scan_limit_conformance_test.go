@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -28,18 +29,30 @@ type scanLimitRequest struct {
 	Records                         bool   `json:"records"`
 	Reverse                         bool   `json:"reverse"`
 	RowLimit                        int    `json:"rowLimit"`
+	Skip                            int    `json:"skip"`
 	ScannedLimit                    int    `json:"scannedLimit"`
 	ByteLimit                       int64  `json:"byteLimit"`
 	TimeLimit                       int64  `json:"timeLimit"`
 	FailOnScanLimit                 bool   `json:"failOnScanLimit"`
 	Continuation                    string `json:"continuation"`
 	HoldRecordLoadsUntilSourceError bool   `json:"holdRecordLoadsUntilSourceError"`
+	SelectorsOnly                   bool   `json:"selectorsOnly"`
 }
 
 type scanLimitRangeOptions struct {
 	Mode    int  `json:"mode"`
 	Limit   int  `json:"limit"`
 	Reverse bool `json:"reverse"`
+}
+
+// scanLimitSelectors is the getRange selector pair after continuation and skip.
+type scanLimitSelectors struct {
+	BeginKey     string `json:"beginKey"`
+	BeginOrEqual bool   `json:"beginOrEqual"`
+	BeginOffset  int    `json:"beginOffset"`
+	EndKey       string `json:"endKey"`
+	EndOrEqual   bool   `json:"endOrEqual"`
+	EndOffset    int    `json:"endOffset"`
 }
 
 type scanLimitRow struct {
@@ -64,6 +77,7 @@ type scanLimitPage struct {
 	Rows           []scanLimitRow          `json:"rows"`
 	Repeats        []scanLimitTerminal     `json:"repeats"`
 	RangeOptions   []scanLimitRangeOptions `json:"rangeOptions"`
+	Selectors      []scanLimitSelectors    `json:"selectors"`
 	ExceptionClass string                  `json:"exceptionClass"`
 }
 
@@ -73,13 +87,19 @@ type scanLimitTransaction struct {
 	fdb.WritableTransaction
 	indexPrefix []byte
 	calls       []scanLimitRangeOptions
+	selectors   []scanLimitSelectors
 	recordGate  *scanLimitRecordGate
 }
 
 func (t *scanLimitTransaction) observe(r fdb.Range, options fdb.RangeOptions) {
-	begin, _ := r.FDBRangeKeySelectors()
-	if len(t.indexPrefix) > 0 && bytes.HasPrefix(begin.FDBKeySelector().Key.FDBKey(), t.indexPrefix) {
+	b, e := r.FDBRangeKeySelectors()
+	begin, end := b.FDBKeySelector(), e.FDBKeySelector()
+	if len(t.indexPrefix) > 0 && bytes.HasPrefix(begin.Key.FDBKey(), t.indexPrefix) {
 		t.calls = append(t.calls, scanLimitRangeOptions{int(options.Mode), options.Limit, options.Reverse})
+		t.selectors = append(t.selectors, scanLimitSelectors{
+			BeginKey: scanLimitBytes(begin.Key.FDBKey()), BeginOrEqual: begin.OrEqual, BeginOffset: begin.Offset,
+			EndKey: scanLimitBytes(end.Key.FDBKey()), EndOrEqual: end.OrEqual, EndOffset: end.Offset,
+		})
 	}
 }
 
@@ -320,7 +340,10 @@ var _ = Describe("Ordinary index cursor Java limit conformance", func() {
 		transaction, err := env.RecordDB.CreateTransaction()
 		Expect(err).NotTo(HaveOccurred())
 		defer transaction.Cancel()
-		logged := &scanLimitTransaction{WritableTransaction: transaction, calls: make([]scanLimitRangeOptions, 0)}
+		logged := &scanLimitTransaction{
+			WritableTransaction: transaction, calls: make([]scanLimitRangeOptions, 0),
+			selectors: make([]scanLimitSelectors, 0),
+		}
 		rtx := env.RecordDB.NewRecordContext(logged)
 		store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetSubspace(ks).
 			SetMetaDataProvider(scanLimitMetadata()).SetFormatVersion(14).CreateOrOpen()
@@ -333,13 +356,15 @@ var _ = Describe("Ordinary index cursor Java limit conformance", func() {
 		}
 		execution := recordlayer.DefaultExecuteProperties()
 		execution.ReturnedRowLimit, execution.ScannedRecordsLimit = req.RowLimit, req.ScannedLimit
+		execution.Skip = req.Skip
 		execution.ScannedBytesLimit = req.ByteLimit
 		execution.TimeLimit = time.Duration(req.TimeLimit) * time.Millisecond
 		execution.FailOnScanLimitReached = req.FailOnScanLimit
-		streaming := recordlayer.StreamingModeIterator
-		if req.Streaming == "WANT_ALL" {
-			streaming = recordlayer.StreamingModeWantAll
-		}
+		streaming, known := map[string]recordlayer.CursorStreamingMode{
+			"ITERATOR": recordlayer.StreamingModeIterator, "WANT_ALL": recordlayer.StreamingModeWantAll,
+			"SMALL": recordlayer.StreamingModeSmall, "MEDIUM": recordlayer.StreamingModeMedium, "LARGE": recordlayer.StreamingModeLarge,
+		}[req.Streaming]
+		Expect(known).To(BeTrue(), "streaming mode %q", req.Streaming)
 		properties := recordlayer.NewScanProperties(execution).WithStreamingMode(streaming).WithReverse(req.Reverse)
 		continuation, err := base64.StdEncoding.DecodeString(req.Continuation)
 		Expect(err).NotTo(HaveOccurred())
@@ -388,7 +413,7 @@ var _ = Describe("Ordinary index cursor Java limit conformance", func() {
 			Expect(gate.issued.Load()).To(Equal(gate.issuedAtError), "quiescence must not issue another record range")
 			Expect(gate.nativeRows.Load()).To(Equal(gate.issued.Load()), "each held read must consume a positive real native row after release")
 		}
-		page.RangeOptions = logged.calls
+		page.RangeOptions, page.Selectors = logged.calls, logged.selectors
 		return page
 	}
 	compare := func(req scanLimitRequest) scanLimitPage {
@@ -396,8 +421,9 @@ var _ = Describe("Ordinary index cursor Java limit conformance", func() {
 		Expect(java.InvokeAs(ctx, "scanIndexScanLimits", map[string]any{
 			"clusterFile": env.ClusterFile, "tenantName": env.TenantName, "subspace": BytesToIntArray(ks.Bytes()), "request": req,
 		}, &oracle)).To(Succeed())
-		Expect(scanGo(req)).To(Equal(oracle), "index=%s records=%v reverse=%v row=%d scan=%d byte=%d time=%d fail=%v",
-			req.IndexName, req.Records, req.Reverse, req.RowLimit, req.ScannedLimit, req.ByteLimit, req.TimeLimit, req.FailOnScanLimit)
+		Expect(scanGo(req)).To(Equal(oracle), "index=%s records=%v reverse=%v row=%d skip=%d scan=%d byte=%d time=%d fail=%v mode=%s",
+			req.IndexName, req.Records, req.Reverse, req.RowLimit, req.Skip, req.ScannedLimit, req.ByteLimit, req.TimeLimit,
+			req.FailOnScanLimit, req.Streaming)
 		for _, repeat := range oracle.Repeats {
 			Expect(repeat).To(Equal(oracle.scanLimitTerminal), "terminal reads must not charge more attempts/bytes or change the continuation")
 		}
@@ -499,6 +525,124 @@ var _ = Describe("Ordinary index cursor Java limit conformance", func() {
 			req.ScannedLimit = 1
 			page = compare(req)
 			Expect(page.Reason).To(Equal("SCAN_LIMIT_REACHED"))
+		})
+	})
+	// KeyValueCursorBase.Builder.prepare (KeyValueCursorBase.java:327-356) applies
+	// the continuation first, then adds Skip to the begin (forward) or end
+	// (reverse) selector. The native row limit is not widened by the skip.
+	It("applies Skip as selector offsets to exhausted, row-limited and resumed pages", func() {
+		forEachScan(func(req scanLimitRequest) {
+			baseline := compare(req)
+			Expect(baseline.Rows).To(HaveLen(count))
+			for _, skip := range []int{1, 3, count, count + 1, math.MaxInt32 - 1} {
+				req.Skip = skip
+				page := compare(req)
+				Expect(page.Rows).To(Equal(baseline.Rows[min(skip, count):]))
+				Expect(page.Reason).To(Equal("SOURCE_EXHAUSTED"))
+				Expect(page.ScannedRecords).To(Equal(len(page.Rows) + 1))
+				Expect(page.Selectors).To(HaveLen(1))
+				if req.Reverse {
+					Expect(page.Selectors[0].EndOffset).To(Equal(1 - skip))
+				} else {
+					Expect(page.Selectors[0].BeginOffset).To(Equal(1 + skip))
+				}
+			}
+			for _, skip := range []int{1, 3} {
+				req.Skip = skip
+				for _, limit := range []int{1, count - skip, count - skip + 1} {
+					req.RowLimit = limit
+					page := compare(req)
+					Expect(page.Rows).To(Equal(baseline.Rows[skip:min(skip+limit, count)]))
+					Expect(page.RangeOptions[0].Limit).To(Equal(limit))
+					if skip+limit <= count {
+						Expect(page.Reason).To(Equal("RETURN_LIMIT_REACHED"))
+					} else {
+						Expect(page.Reason).To(Equal("SOURCE_EXHAUSTED"))
+					}
+				}
+			}
+			// A resumed page re-applies the caller's Skip after its continuation.
+			req.Skip, req.RowLimit = 2, 0
+			for position, row := range baseline.Rows {
+				req.Continuation = row.Continuation
+				Expect(compare(req).Rows).To(Equal(baseline.Rows[min(position+3, count):]))
+			}
+			req.Skip, req.RowLimit, req.Continuation = 1, 2, ""
+			first := compare(req)
+			Expect(first.Rows).To(Equal(baseline.Rows[1:3]))
+			req.Continuation = first.Continuation
+			second := compare(req)
+			Expect(second.Rows).To(Equal(baseline.Rows[4:6]))
+			req.Continuation = second.Continuation
+			Expect(compare(req).Rows).To(BeEmpty())
+		})
+	})
+	It("does not charge skipped rows to scanned-record or byte limits", func() {
+		forEachScan(func(req scanLimitRequest) {
+			baseline := compare(req)
+			req.Skip = 2
+			for _, limit := range []int{1, 3} {
+				req.ScannedLimit = limit
+				page := compare(req)
+				Expect(page.Rows).To(Equal(baseline.Rows[2 : 2+limit]))
+				Expect(page.Reason).To(Equal("SCAN_LIMIT_REACHED"))
+				Expect(page.ScannedRecords).To(Equal(limit + 1))
+			}
+			req.ScannedLimit, req.ByteLimit = 0, 1
+			page := compare(req)
+			Expect(page.Rows).To(Equal(baseline.Rows[2:3]))
+			Expect(page.Reason).To(Equal("BYTE_LIMIT_REACHED"))
+			Expect(page.ScannedRecords).To(Equal(2))
+		})
+	})
+	It("keeps Java calcStreamingMode and the unadjusted native limit under Skip", func() {
+		forEachScan(func(req scanLimitRequest) {
+			req.Skip = 2
+			for _, mode := range []string{"ITERATOR", "WANT_ALL", "SMALL", "MEDIUM", "LARGE"} {
+				req.Streaming = mode
+				for _, limit := range []int{0, 2} {
+					req.RowLimit = limit
+					page := compare(req)
+					Expect(page.RangeOptions).To(HaveLen(1))
+					Expect(page.RangeOptions[0].Limit).To(Equal(limit))
+					if mode == "WANT_ALL" && limit > 0 {
+						Expect(page.RangeOptions[0].Mode).To(Equal(int(fdb.StreamingModeExact)))
+					}
+				}
+			}
+		})
+	})
+	// fdb-java KeySelector.add is int arithmetic (KeySelector.java:144-146): for
+	// Skip=MaxInt32 Java passes a forward begin offset of MinInt32 and a reverse end
+	// offset of 1-MaxInt32 to getRange. Go saturates the skip at MaxInt32-1
+	// (docs/compatibility.md). Java's selectors are built without the read, so
+	// neither offset is sent to the shared cluster.
+	It("saturates Skip=MaxInt32 selector offsets where Java's differ", func() {
+		forEachScan(func(req scanLimitRequest) {
+			req.Skip = math.MaxInt32
+			probe := req
+			probe.SelectorsOnly = true
+			var oracle scanLimitPage
+			Expect(java.InvokeAs(ctx, "scanIndexScanLimits", map[string]any{
+				"clusterFile": env.ClusterFile, "tenantName": env.TenantName, "subspace": BytesToIntArray(ks.Bytes()), "request": probe,
+			}, &oracle)).To(Succeed())
+			Expect(oracle.Rows).To(BeEmpty())
+			Expect(oracle.Selectors).To(HaveLen(1))
+			page := scanGo(req)
+			Expect(page.ExceptionClass).To(BeEmpty())
+			Expect(page.Rows).To(BeEmpty())
+			Expect(page.Reason).To(Equal("SOURCE_EXHAUSTED"))
+			Expect(page.ScannedRecords).To(Equal(1))
+			Expect(page.RangeOptions).To(Equal(oracle.RangeOptions))
+			want := oracle.Selectors[0]
+			if req.Reverse {
+				Expect(want.EndOffset).To(Equal(1 - math.MaxInt32))
+				want.EndOffset = 2 - math.MaxInt32
+			} else {
+				Expect(want.BeginOffset).To(Equal(math.MinInt32))
+				want.BeginOffset = math.MaxInt32
+			}
+			Expect(page.Selectors).To(Equal([]scanLimitSelectors{want}))
 		})
 	})
 	It("accepts only the three held schedules and rejects unsafe requests before opening a Java gate", func() {
