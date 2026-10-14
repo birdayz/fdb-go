@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"fmt"
+	"math"
 	"testing"
 )
 
@@ -221,6 +222,28 @@ func TestRYWRangeReadStartsPastReadThrough(t *testing.T) {
 					t.Fatalf("storage requests %q, want the second to be %s", requests, wantRequest)
 				}
 			})
+		}
+	}
+}
+
+func TestRYWRequestBytesDoesNotOverflow(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		bytes, requests, want int
+	}{
+		{-1, 20, -1},
+		{0, 20, 0},
+		{1, 0, 1},
+		{1, 2, 4},
+		{30000, 1, 60000},
+		{30000, 2, 80000},
+		{1, 20, 80000},
+		{80000, 1000, 80000},
+		{math.MaxInt, 1, 80000},
+		{math.MaxInt, 20, 80000},
+	} {
+		if got := rywRequestBytes(tc.bytes, tc.requests); got != tc.want {
+			t.Errorf("bytes=%d requests=%d: got %d, want %d", tc.bytes, tc.requests, got, tc.want)
 		}
 	}
 }

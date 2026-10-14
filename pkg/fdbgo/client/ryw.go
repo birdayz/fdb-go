@@ -1012,7 +1012,7 @@ func rywRequestBytes(byteTarget, requestCount int) int {
 	if byteTarget <= 0 {
 		return byteTarget
 	}
-	return int(min(int64(byteTarget)<<min(requestCount, 20), int64(replyByteLimit)))
+	return int(min(int64(min(byteTarget, replyByteLimit))<<min(requestCount, 20), int64(replyByteLimit)))
 }
 
 // rywFirstRequestBytes is C++ setRequestLimits' byte limit for the first storage read of a
