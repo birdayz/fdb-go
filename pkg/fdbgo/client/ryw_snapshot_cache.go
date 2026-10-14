@@ -342,6 +342,39 @@ func (sc *snapshotCache) getKey(key []byte) ([]byte, bool) {
 	return nil, true // key is in known range but doesn't exist at server
 }
 
+// skipKnownEmpty narrows [begin, end) past the known ranges holding no key at its scan
+// origin: begin moves up forward, end moves down in reverse.
+func (sc *snapshotCache) skipKnownEmpty(begin, end []byte, reverse bool) ([]byte, []byte) {
+	es := sc.entries
+	for bytes.Compare(begin, end) < 0 {
+		if reverse {
+			// The entry holding the keys just below end.
+			j := sort.Search(len(es), func(i int) bool { return bytes.Compare(es[i].begin, end) >= 0 }) - 1
+			if j < 0 || bytes.Compare(es[j].end, end) < 0 {
+				break
+			}
+			e := &es[j]
+			k := sort.Search(len(e.kvs), func(k int) bool { return bytes.Compare(e.kvs[k].Key, end) >= 0 })
+			if k > 0 && bytes.Compare(e.kvs[k-1].Key, begin) >= 0 {
+				break
+			}
+			end = e.begin
+			continue
+		}
+		i := sort.Search(len(es), func(i int) bool { return bytes.Compare(es[i].end, begin) > 0 })
+		if i == len(es) || bytes.Compare(es[i].begin, begin) > 0 {
+			break
+		}
+		e := &es[i]
+		k := sort.Search(len(e.kvs), func(k int) bool { return bytes.Compare(e.kvs[k].Key, begin) >= 0 })
+		if k < len(e.kvs) && bytes.Compare(e.kvs[k].Key, end) < 0 {
+			break
+		}
+		begin = e.end
+	}
+	return begin, end
+}
+
 // knownPast reports whether the cache knows the position adjacent to key in scan
 // direction: keyAfter(key) forward, the keys just below key in reverse.
 func (sc *snapshotCache) knownPast(key []byte, reverse bool) bool {

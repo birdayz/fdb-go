@@ -735,12 +735,13 @@ func (r *rywRangeRead) conflictRanges(begin, end []byte) [][2][]byte {
 	return c.conflictRangesLocked(begin, end)
 }
 
+// rangeServerFunc is the storage range read under the RYW layer. readThrough, when set, is
+// where the read finished its last shard (NativeAPI.actor.cpp:4795-4799).
+type rangeServerFunc func(ctx context.Context, begin, end []byte, limit, byteTarget int, reverse bool) ([]KeyValue, bool, []byte, error)
+
 // run fetches what local state did not answer and merges it, re-fetching past locally cleared
 // rows rather than truncating, as the C++ RYWIterator does (ReadYourWrites.actor.cpp:685-686).
-func (r *rywRangeRead) run(
-	ctx context.Context,
-	serverGetRange func(ctx context.Context, begin, end []byte, limit int, byteTarget int, reverse bool) ([]KeyValue, bool, error),
-) ([]KeyValue, bool, error) {
+func (r *rywRangeRead) run(ctx context.Context, serverGetRange rangeServerFunc) ([]KeyValue, bool, error) {
 	if r.known {
 		return r.rows, r.more, r.err
 	}
@@ -763,11 +764,10 @@ func (r *rywRangeRead) run(
 
 	if view == nil {
 		// No local mutations, and the snapshot cache did not answer at issue.
-		kvs, more, err := serverGetRange(ctx, begin, end, limit, rywFirstRequestBytes(byteTarget), reverse)
+		kvs, more, err := c.fetchServer(ctx, begin, end, limit, rywFirstRequestBytes(byteTarget), reverse, serverGetRange)
 		if err != nil {
 			return nil, false, err
 		}
-		c.cacheServerResult(begin, end, kvs, more, reverse)
 		cut, remainingBytes := applyRangeByteLimit(kvs, byteTarget)
 		bytesReached := byteTarget > 0 && remainingBytes <= 0
 		if byteTarget > 0 && more && !bytesReached && c.replyEdgeKnown(begin, end, kvs, reverse) {
@@ -890,15 +890,14 @@ func (c *rywCache) getSnapshotRange(
 	begin, end []byte,
 	limit, byteTarget int,
 	reverse bool,
-	serverGetRange func(context.Context, []byte, []byte, int, int, bool) ([]KeyValue, bool, error),
+	serverGetRange rangeServerFunc,
 ) ([]KeyValue, bool, error) {
 	rows, more, known, err := c.localRange(begin, end, limit, byteTarget, reverse, false)
 	if known {
 		return rows, more, err
 	}
-	rows, more, err = serverGetRange(ctx, begin, end, limit, rywFirstRequestBytes(byteTarget), reverse)
+	rows, more, err = c.fetchServer(ctx, begin, end, limit, rywFirstRequestBytes(byteTarget), reverse, serverGetRange)
 	if err == nil {
-		c.cacheServerResult(begin, end, rows, more, reverse)
 		cut, remainingBytes := applyRangeByteLimit(rows, byteTarget)
 		bytesReached := byteTarget > 0 && remainingBytes <= 0
 		if byteTarget > 0 && more && !bytesReached && c.replyEdgeKnown(begin, end, rows, reverse) {
@@ -1100,7 +1099,7 @@ func (c *rywCache) fetchOrCached(
 	limit int,
 	byteTarget int,
 	reverse bool,
-	serverGetRange func(ctx context.Context, begin, end []byte, limit int, byteTarget int, reverse bool) ([]KeyValue, bool, error),
+	serverGetRange rangeServerFunc,
 ) ([]KeyValue, bool, error) {
 	c.mu.Lock()
 	cachedKVs, fullyKnown := c.serverCache.getRangeKVsLimited(begin, end, cacheWalkBudget(limit), reverse)
@@ -1111,12 +1110,24 @@ func (c *rywCache) fetchOrCached(
 		more := computeMore(cachedKVs, limit)
 		return kvs, more, nil
 	}
+	return c.fetchServer(ctx, begin, end, limit, byteTarget, reverse, serverGetRange)
+}
 
-	kvs, more, err := serverGetRange(ctx, begin, end, limit, byteTarget, reverse)
+// fetchServer reads storage past any range the snapshot cache knows is empty at the scan
+// origin, where C++'s RYW iterator starts its storage read (ReadYourWrites.actor.cpp:487-508,
+// 760-764), and caches the reply up to its readThrough.
+func (c *rywCache) fetchServer(ctx context.Context, begin, end []byte, limit, byteTarget int, reverse bool, serverGetRange rangeServerFunc) ([]KeyValue, bool, error) {
+	c.mu.Lock()
+	begin, end = c.serverCache.skipKnownEmpty(begin, end, reverse)
+	c.mu.Unlock()
+	if bytes.Compare(begin, end) >= 0 {
+		return nil, false, nil
+	}
+	kvs, more, readThrough, err := serverGetRange(ctx, begin, end, limit, byteTarget, reverse)
 	if err != nil {
 		return nil, false, err
 	}
-	c.cacheServerResult(begin, end, kvs, more, reverse)
+	c.cacheServerReply(begin, end, kvs, more, reverse, readThrough)
 	return kvs, more, nil
 }
 
@@ -1138,6 +1149,12 @@ func (c *rywCache) fetchOrCached(
 // :787, which would index kvs[len(kvs)-1] on an empty slice. It bounds the
 // inner re-query loop; it is not what establishes the invariant relied on here.
 func (c *rywCache) cacheServerResult(fetchBegin, fetchEnd []byte, serverKVs []KeyValue, serverMore bool, reverse bool) {
+	c.cacheServerReply(fetchBegin, fetchEnd, serverKVs, serverMore, reverse, nil)
+}
+
+// cacheServerReply is cacheServerResult knowing also through readThrough, as C++
+// getKnownKeyRange extends a reply's known range (ReadYourWrites.actor.cpp:496-499).
+func (c *rywCache) cacheServerReply(fetchBegin, fetchEnd []byte, serverKVs []KeyValue, serverMore bool, reverse bool, readThrough []byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -1151,6 +1168,9 @@ func (c *rywCache) cacheServerResult(fetchBegin, fetchEnd []byte, serverKVs []Ke
 			// Known range is [lastKey, fetchEnd).
 			cacheBegin = serverKVs[len(serverKVs)-1].Key
 		}
+		if readThrough != nil && bytes.Compare(readThrough, cacheBegin) < 0 {
+			cacheBegin = readThrough
+		}
 		// Store in forward order.
 		cacheKVs = make([]KeyValue, len(serverKVs))
 		for i, kv := range serverKVs {
@@ -1161,6 +1181,9 @@ func (c *rywCache) cacheServerResult(fetchBegin, fetchEnd []byte, serverKVs []Ke
 			// Forward scan: known range is [fetchBegin, keyAfter(lastKey)).
 			lastKey := serverKVs[len(serverKVs)-1].Key
 			cacheEnd = append(append([]byte(nil), lastKey...), 0)
+		}
+		if readThrough != nil && bytes.Compare(readThrough, cacheEnd) > 0 {
+			cacheEnd = readThrough
 		}
 		// insert retains its own descriptors; reply bytes remain immutable internally.
 		cacheKVs = serverKVs

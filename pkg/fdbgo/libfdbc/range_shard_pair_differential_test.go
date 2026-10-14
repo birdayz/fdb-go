@@ -307,8 +307,126 @@ func TestLibFDBC_RangeShardPairSoftLimit(t *testing.T) {
 			}
 		}
 	}
+	// One transaction drains the range batch by batch, as libfdb_c's iterator does. A RYW
+	// read records where a fast-path batch finished its shard (readThrough,
+	// NativeAPI.actor.cpp:4795-4799) and the next batch starts there instead of in the
+	// emptied tail (ReadYourWrites.actor.cpp:487-508, 760-764); mapped and RYW-disabled
+	// reads keep no such cache.
+	drainCrossings := map[string]int{}
+	for _, path := range []struct {
+		name                          string
+		snapshot, rywDisabled, mapped bool
+	}{{"plain", false, false, false}, {"plain_snapshot", true, false, false}, {"plain_ryw_disabled", false, true, false}, {"mapped", false, false, true}} {
+		for _, reverse := range []bool{false, true} {
+			for _, target := range targets {
+				t.Run(fmt.Sprintf("drain/%s/reverse=%v/mode=%d/iteration=%d", path.name, reverse, target.cMode, target.iteration), func(t *testing.T) {
+					ct := rspCreateTransaction(t, env.cdb)
+					defer ct.Close()
+					gt := env.goDB.CreateTransaction()
+					defer gt.Cancel()
+					if path.rywDisabled {
+						if err := ct.DisableReadYourWrites(); err != nil {
+							t.Fatal(err)
+						}
+						gt.SetReadYourWritesDisable()
+					}
+					version, err := ct.GetReadVersion()
+					if err != nil {
+						t.Fatal(err)
+					}
+					gt.SetReadVersion(version)
+					b, e, seen := begin, end, 0
+					for batch, iteration := 1, target.iteration; ; batch, iteration = batch+1, iteration+1 {
+						if batch > f.n+1 {
+							t.Fatal("drain did not terminate")
+						}
+						if target.cMode != libfdbc.CStreamingModeIterator {
+							iteration = target.iteration
+						}
+						byteTarget, err := gofdb.ModeTargetBytes(target.goMode, iteration)
+						if err != nil {
+							t.Fatal(err)
+						}
+						var cKeys, gKeys [][]byte
+						var cMore, gMore bool
+						if path.mapped {
+							cRows, more, err := libfdbc.CGetMappedRangeBatch(ct, b, e, mapper, 0, 0, target.cMode, iteration, reverse, false)
+							if err != nil {
+								t.Fatalf("batch %d: C: %v", batch, err)
+							}
+							gRows, gm, err := gt.GetMappedRangeWithByteTarget(ctx, b, e, mapper, 0, byteTarget, reverse)
+							if err != nil {
+								t.Fatalf("batch %d: Go: %v", batch, err)
+							}
+							for i := range cRows {
+								cKeys = append(cKeys, cRows[i].Key)
+							}
+							for i := range gRows {
+								gKeys = append(gKeys, gRows[i].Key)
+							}
+							if len(cRows) == len(gRows) {
+								for i := range cRows {
+									mdCompareRangeRow(t, cRows[i], gRows[i])
+								}
+							}
+							cMore, gMore = more, gm
+						} else {
+							cRows, more, err := libfdbc.CGetRangeBatch(ct, b, e, 0, 0, target.cMode, iteration, reverse, path.snapshot)
+							if err != nil {
+								t.Fatalf("batch %d: C: %v", batch, err)
+							}
+							read := gt.GetRangeWithByteTarget
+							if path.snapshot {
+								read = gt.Snapshot().GetRangeWithByteTarget
+							}
+							gRows, gm, err := read(ctx, b, e, 0, byteTarget, reverse)
+							if err != nil {
+								t.Fatalf("batch %d: Go: %v", batch, err)
+							}
+							for i := range cRows {
+								cKeys = append(cKeys, cRows[i].Key)
+							}
+							for i := range gRows {
+								gKeys = append(gKeys, gRows[i].Key)
+								if i < len(cRows) && !bytes.Equal(cRows[i].Value, gRows[i].Value) {
+									t.Fatalf("batch %d: value %d differs", batch, i)
+								}
+							}
+							cMore, gMore = more, gm
+						}
+						cIndices := rowIndices(len(cKeys), func(i int) []byte { return cKeys[i] })
+						gIndices := rowIndices(len(gKeys), func(i int) []byte { return gKeys[i] })
+						if cMore != gMore || !reflect.DeepEqual(cIndices, gIndices) {
+							t.Fatalf("batch %d: C more=%v rows=%v; Go more=%v rows=%v", batch, cMore, cIndices, gMore, gIndices)
+						}
+						seen += len(cKeys)
+						if len(cKeys) == 0 || !cMore {
+							break
+						}
+						if shardOf(cKeys[0]) != shardOf(cKeys[len(cKeys)-1]) {
+							drainCrossings[path.name]++
+						}
+						last := cKeys[len(cKeys)-1]
+						if reverse {
+							e = bytes.Clone(last)
+						} else {
+							b = append(bytes.Clone(last), 0)
+						}
+					}
+					if seen != f.n {
+						t.Fatalf("drain returned %d rows, want %d", seen, f.n)
+					}
+				})
+			}
+		}
+	}
+	for _, kind := range []string{"plain_ryw_disabled", "mapped"} {
+		if drainCrossings[kind] == 0 {
+			t.Errorf("no %s drain batch spanned two shards: %v", kind, drainCrossings)
+		}
+	}
 	if !reflect.DeepEqual(rspBoundaries(t, env.backend, f), env.boundaries) {
 		t.Fatal("physical boundaries moved during the comparison")
 	}
-	t.Logf("%d interior boundaries; reads spanning two shards: %v", len(env.boundaries), crossings)
+	t.Logf("%d interior boundaries; reads spanning two shards: %v; drain batches spanning two shards: %v", len(env.boundaries), crossings, drainCrossings)
 }

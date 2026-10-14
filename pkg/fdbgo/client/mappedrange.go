@@ -251,7 +251,9 @@ func (tx *Transaction) sendGetMappedRange(mapper []byte) func(ctx context.Contex
 func (tx *Transaction) getMappedRangeImpl(ctx context.Context, begin, end []byte, mapper []byte, limit, byteTarget int, reverse bool) ([]MappedKeyValue, bool, error) {
 	ops := mappedRangeScanOps
 	ops.send = tx.sendGetMappedRange(mapper)
-	return rangeScanImpl(tx, ctx, begin, end, limit, byteTarget, reverse, ops)
+	// A mapped read keeps no RYW cache, so readThrough has no reader (ReadYourWrites.actor.cpp:1146-1161).
+	rows, more, _, err := rangeScanImpl(tx, ctx, begin, end, limit, byteTarget, reverse, ops)
+	return rows, more, err
 }
 
 // FDB error codes specific to getMappedRange. Source of truth:

@@ -102,9 +102,9 @@ func TestRYWNoWritesByteCutMatchesRewalk(t *testing.T) {
 				var snap rywCache
 				prepare(&snap)
 				got, more, err = snap.getSnapshotRange(context.Background(), begin, end, tc.limit, tc.byteTarget, reverse,
-					func(context.Context, []byte, []byte, int, int, bool) ([]KeyValue, bool, error) {
+					withoutReadThrough(func(context.Context, []byte, []byte, int, int, bool) ([]KeyValue, bool, error) {
 						return append([]KeyValue(nil), reply...), tc.more, nil
-					})
+					}))
 				if (err == nil) != (wantErr == nil) || more != wantMore || !sameKVs(got, want) {
 					t.Fatalf("BYTE_CUT_SNAPSHOT: range = %s, more=%t, %v; re-walk = %s, more=%t, %v", formatKVs(got), more, err, formatKVs(want), wantMore, wantErr)
 				}
@@ -117,7 +117,10 @@ func TestRYWNoWritesByteCutMatchesRewalk(t *testing.T) {
 // storage reply copy: storage stopping short of the target is the common case.
 func TestRYWNoWritesBytePageAllocsIndependentOfRows(t *testing.T) {
 	type read func(*rywCache, context.Context, []byte, []byte, int, int, bool, func(context.Context, []byte, []byte, int, int, bool) ([]KeyValue, bool, error)) ([]KeyValue, bool, error)
-	for name, read := range map[string]read{"getRange": (*rywCache).getRange, "getSnapshotRange": (*rywCache).getSnapshotRange} {
+	snapshot := func(c *rywCache, ctx context.Context, begin, end []byte, limit, byteTarget int, reverse bool, serve func(context.Context, []byte, []byte, int, int, bool) ([]KeyValue, bool, error)) ([]KeyValue, bool, error) {
+		return c.getSnapshotRange(ctx, begin, end, limit, byteTarget, reverse, withoutReadThrough(serve))
+	}
+	for name, read := range map[string]read{"getRange": (*rywCache).getRange, "getSnapshotRange": snapshot} {
 		measure := func(n int) float64 {
 			reply := cutRows(n)
 			var c rywCache
@@ -135,6 +138,89 @@ func TestRYWNoWritesBytePageAllocsIndependentOfRows(t *testing.T) {
 		small, large := measure(10), measure(1000)
 		if large > small+2 {
 			t.Fatalf("NOWRITES_BYTE_ALLOCS %s: %v allocs for a 1000-row page vs %v for 10 rows; the cut must not re-walk row by row", name, large, small)
+		}
+	}
+}
+
+func TestSnapshotCacheSkipKnownEmpty(t *testing.T) {
+	t.Parallel()
+	var sc snapshotCache
+	kv := func(k string) KeyValue { return KeyValue{Key: []byte(k), Value: []byte("v")} }
+	sc.insert([]byte("a"), []byte("c"), []KeyValue{kv("b")})
+	sc.insert([]byte("c"), []byte("e"), nil)
+	sc.insert([]byte("e"), []byte("g"), nil)
+	sc.insert([]byte("h"), []byte("k"), []KeyValue{kv("i")})
+	sc.insert([]byte("k"), []byte("m"), nil)
+	for _, tc := range []struct {
+		begin, end string
+		reverse    bool
+		want       [2]string
+	}{
+		{"b\x00", "z", false, [2]string{"g", "z"}}, // past b, across adjacent empty ranges, up to the gap
+		{"a", "z", false, [2]string{"a", "z"}},     // a known row at the origin
+		{"g", "z", false, [2]string{"g", "z"}},     // origin not known
+		{"d", "f", false, [2]string{"g", "f"}},     // whole range known empty
+		{"c", "h\x00", false, [2]string{"g", "h\x00"}},
+		{"a", "m", true, [2]string{"a", "k"}}, // down from m to the row at i
+		{"a", "i", true, [2]string{"a", "h"}}, // [h,k) holds nothing below i; nothing ends at h
+		{"a", "z", true, [2]string{"a", "z"}}, // keys just below z are not known
+		{"d", "f", true, [2]string{"d", "c"}}, // whole range known empty
+	} {
+		b, e := sc.skipKnownEmpty([]byte(tc.begin), []byte(tc.end), tc.reverse)
+		if got := [2]string{string(b), string(e)}; got != tc.want {
+			t.Errorf("[%q,%q) reverse=%v: got %q, want %q", tc.begin, tc.end, tc.reverse, got, tc.want)
+		}
+	}
+}
+
+// A RYW range read caches through a reply's readThrough and starts its next storage
+// read there (ReadYourWrites.actor.cpp:496-499, 760-764), also with local writes.
+func TestRYWRangeReadStartsPastReadThrough(t *testing.T) {
+	t.Parallel()
+	for _, path := range []string{"fast", "snapshot", "writes"} {
+		for _, reverse := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/reverse=%v", path, reverse), func(t *testing.T) {
+				t.Parallel()
+				var c rywCache
+				first, readThrough, nextBegin, nextEnd, wantRequest := "b", "m", "b\x00", "z", "m..z"
+				if reverse {
+					first, nextBegin, nextEnd, wantRequest = "y", "a", "y", "a..m"
+				}
+				var requests []string
+				server := func(_ context.Context, b, e []byte, _ int, _ int, _ bool) ([]KeyValue, bool, []byte, error) {
+					requests = append(requests, string(b)+".."+string(e))
+					if len(requests) == 1 {
+						return []KeyValue{{Key: []byte(first), Value: []byte("v")}}, true, []byte(readThrough), nil
+					}
+					return nil, false, nil, nil
+				}
+				read := func(begin, end string) {
+					var err error
+					if path == "snapshot" {
+						_, _, err = c.getSnapshotRange(context.Background(), []byte(begin), []byte(end), 0, 1000, reverse, server)
+					} else {
+						r := &rywRangeRead{}
+						c.issueRangeInto(r, []byte(begin), []byte(end), 0, 1000, reverse, false)
+						_, _, err = r.run(context.Background(), server)
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				read("a", "z")
+				if path == "writes" {
+					// A write past readThrough; one inside the known range would end the page.
+					write := "q"
+					if reverse {
+						write = "c"
+					}
+					c.set([]byte(write), []byte("local"))
+				}
+				read(nextBegin, nextEnd)
+				if len(requests) != 2 || requests[1] != wantRequest {
+					t.Fatalf("storage requests %q, want the second to be %s", requests, wantRequest)
+				}
+			})
 		}
 	}
 }
