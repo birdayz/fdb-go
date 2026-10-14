@@ -505,6 +505,9 @@ var _ = Describe("Index fetch method planner and SQL Java conformance (RFC-258)"
 					QueryThrew    bool    `json:"query_threw"`
 					QuerySQLState string  `json:"query_sqlState"`
 					QueryMessage  string  `json:"query_message"`
+					RemoteIDs     []int64 `json:"remote_ids"`
+					RemoteThrew   bool    `json:"remote_threw"`
+					RemoteFDBCode int     `json:"remote_fdbCode"`
 				}
 				Expect(java.InvokeAs(ctx, "indexFetchSqlFallback", map[string]any{
 					"clusterFile": env.ClusterFile, "schemaTemplate": schema, "setupSqls": setup,
@@ -521,12 +524,23 @@ var _ = Describe("Index fetch method planner and SQL Java conformance (RFC-258)"
 				Expect(err).NotTo(HaveOccurred())
 				rows, queryErr := indexFetchQueryRows(ctx, tx, query)
 				Expect(tx.Rollback()).To(Succeed())
+				// Java's USE_REMOTE_FETCH prefix before 2039 follows the schema's
+				// directory-allocated key length, so it is observed, not pinned.
+				arm := fmt.Sprintf("%s MAX_ROWS %d", method, maxRows)
+				fail := func(format string, args ...any) {
+					mismatches = append(mismatches, arm+": "+fmt.Sprintf(format, args...))
+				}
+				prefix := len(oracle.RemoteIDs)
+				if !oracle.RemoteThrew || oracle.RemoteFDBCode != 2039 || prefix == 0 || prefix > 100 ||
+					!slices.Equal(oracle.RemoteIDs, indexFetchIDRange(prefix)) {
+					fail("Java USE_REMOTE_FETCH threw %v (FDB %d) after %d rows %v..; want 2039 after ids 0..P-1, 0 < P <= 100",
+						oracle.RemoteThrew, oracle.RemoteFDBCode, prefix, indexFetchHead(oracle.RemoteIDs))
+					continue
+				}
 				if method == api.IndexFetchUseRemoteFetchWithFallback && maxRows == 150 {
-					// Java restarts fallback with the full limit after 86 rows;
-					// Go's SQL pagination caps the whole result at MAX_ROWS.
-					Expect(queryErr).NotTo(HaveOccurred())
-					Expect(oracle.QueryThrew).To(BeFalse(), oracle.QueryMessage)
-					want := make([][]any, 236)
+					// Java restarts fallback with the full limit after the remote
+					// prefix; Go's SQL pagination caps the whole result at MAX_ROWS.
+					want := make([][]any, prefix+150)
 					for id := range want {
 						c := "r"
 						if id == 100 {
@@ -534,22 +548,33 @@ var _ = Describe("Index fetch method planner and SQL Java conformance (RFC-258)"
 						}
 						want[id] = []any{int64(id), int64(id), c}
 					}
-					Expect(rows).To(HaveLen(150))
-					Expect(oracle.Rows).To(HaveLen(236))
-					Expect(indexFetchRows(rows)).To(Equal(indexFetchRows(want[:150])))
-					Expect(indexFetchRows(oracle.Rows)).To(Equal(indexFetchRows(want)))
+					if queryErr != nil || len(rows) != 150 || !slices.Equal(indexFetchRows(rows), indexFetchRows(want[:150])) {
+						fail("Go %d rows err %v; want rows 0..149 with id 100 written", len(rows), queryErr)
+					}
+					if oracle.QueryThrew || len(oracle.Rows) != prefix+150 || !slices.Equal(indexFetchRows(oracle.Rows), indexFetchRows(want)) {
+						fail("Java %d rows err %v %s; want rows 0..%d (remote prefix %d + 150) with id 100 written",
+							len(oracle.Rows), oracle.QueryThrew, oracle.QueryMessage, prefix+149, prefix)
+					}
 					continue
 				}
 				if (queryErr != nil) != oracle.QueryThrew || len(rows) != len(oracle.Rows) ||
 					!slices.Equal(indexFetchRows(rows), indexFetchRows(oracle.Rows)) {
-					mismatches = append(mismatches, fmt.Sprintf("%s MAX_ROWS %d: Go %d rows err %v; Java %d rows err %v %s %s",
-						method, maxRows, len(rows), queryErr, len(oracle.Rows), oracle.QueryThrew, oracle.QuerySQLState, oracle.QueryMessage))
+					fail("Go %d rows err %v; Java %d rows err %v %s %s",
+						len(rows), queryErr, len(oracle.Rows), oracle.QueryThrew, oracle.QuerySQLState, oracle.QueryMessage)
 				}
 			}
 		}
 		Expect(mismatches).To(BeEmpty(), strings.Join(mismatches, "\n"))
 	})
 })
+
+func indexFetchIDRange(n int) []int64 {
+	ids := make([]int64, n)
+	for i := range ids {
+		ids[i] = int64(i)
+	}
+	return ids
+}
 
 func indexFetchHead(ids []int64) []int64 {
 	if len(ids) > 5 {

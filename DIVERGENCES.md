@@ -4427,17 +4427,18 @@ orphan behavior and fallback, and the planner stamps the SQL option
   at MAX_ROWS. Java's plan-level `fallBackContinueFrom` (like the store's
   `remoteFetchFallbackFrom`) restarts the fallback cursor with the full
   returned-row limit instead of deducting already returned rows.
-  For 500 rows, a local write at ID 100, and MAX_ROWS 150, Java returns 236
-  rows (86 before the mapped batch fails, then 150 after fallback); Go returns
-  the first 150. Both observe the local write. The SQL fallback conformance
-  probe pins the exact rows in both engines rather than treating them as equal.
+  For 500 rows, a local write at ID 100, and MAX_ROWS 150, Java returns the
+  rows before the mapped batch fails, then 150 after fallback; Go returns the
+  first 150. Both observe the local write. The prefix depends on the schema's
+  directory-allocated key length, so the conformance probe observes it with
+  USE_REMOTE_FETCH in the same schema and pins the exact rows of both engines.
 - **libfdb_c backend.** It has no mapped reads, so remote fetch there is
   unsupported: `USE_REMOTE_FETCH` fails and `USE_REMOTE_FETCH_WITH_FALLBACK` falls
   back, where Java fetches remotely.
 - **SQL default.** Go honors `INDEX_FETCH_METHOD` only when it is set; unset,
   plans use SCAN_AND_FETCH. Java's `OptionsUtils.getIndexFetchMethod` defaults to
-  USE_REMOTE_FETCH_WITH_FALLBACK. Go adopts that default after RFC-258's
-  allocation work (PR4) has been measured; until then the default differs.
+  USE_REMOTE_FETCH_WITH_FALLBACK. PR4's allocation work has landed, but Go keeps
+  SCAN_AND_FETCH until end-to-end timing shows the remote default is no slower.
 
 See [compatibility boundaries](docs/compatibility.md#mapped-range-backend-capability).
 

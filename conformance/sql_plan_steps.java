@@ -2566,9 +2566,39 @@ class SqlPlanSteps {
                 }
             }
             final RelationalConnection rconn = conn.unwrap(RelationalConnection.class);
-            rconn.setOption(Options.Name.INDEX_FETCH_METHOD, Options.IndexFetchMethod.valueOf(method));
             final JsonObject out = new JsonObject();
             conn.setAutoCommit(false);
+            // USE_REMOTE_FETCH in this schema: the rows before the mapped read fails,
+            // whose count follows the schema's directory-allocated key length.
+            rconn.setOption(Options.Name.INDEX_FETCH_METHOD, Options.IndexFetchMethod.USE_REMOTE_FETCH);
+            final JsonArray remoteIds = new JsonArray();
+            try {
+                try (Statement st = conn.createStatement()) {
+                    st.executeUpdate(writeSql);
+                }
+                try (Statement st = conn.createStatement()) {
+                    if (maxRows > 0) {
+                        st.setMaxRows(maxRows);
+                    }
+                    try (RelationalResultSet rs = st.executeQuery(querySql).unwrap(RelationalResultSet.class)) {
+                        while (rs.next()) {
+                            remoteIds.add(rs.getLong(1));
+                        }
+                    }
+                }
+            } catch (SQLException | RuntimeException e) {
+                recordThrowable(out, "remote", e);
+                for (Throwable c = e; c != null; c = c.getCause() == c ? null : c.getCause()) {
+                    if (c instanceof FDBException) {
+                        out.addProperty("remote_fdbCode", ((FDBException) c).getCode());
+                        break;
+                    }
+                }
+            } finally {
+                conn.rollback();
+            }
+            out.add("remote_ids", remoteIds);
+            rconn.setOption(Options.Name.INDEX_FETCH_METHOD, Options.IndexFetchMethod.valueOf(method));
             try {
                 try (Statement st = conn.createStatement()) {
                     st.executeUpdate(writeSql);

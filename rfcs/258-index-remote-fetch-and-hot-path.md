@@ -136,8 +136,9 @@ in `reconstructSingleRecord`).
   and neither does Go's. Tests assert the typed plan and Java's
   `REMOTE_FETCH` / `SCAN_REMOTE_FETCH_ENTRY` counters instead.
 - **Default.** Go honors `INDEX_FETCH_METHOD` only when it is set; unset, plans
-  use SCAN_AND_FETCH. Java's default, USE_REMOTE_FETCH_WITH_FALLBACK, follows
-  PR4's measurements in its own PR (DIVERGENCES.md, "Index remote fetch").
+  use SCAN_AND_FETCH. Adopting Java's default, USE_REMOTE_FETCH_WITH_FALLBACK,
+  needs end-to-end timing evidence beyond PR4's allocation measurements, in its
+  own PR (DIVERGENCES.md, "Index remote fetch").
 
 ## Part 2: later candidates (not approved)
 
