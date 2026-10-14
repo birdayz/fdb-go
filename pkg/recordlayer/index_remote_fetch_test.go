@@ -29,16 +29,16 @@ func TestRemoteFetchAPIVersionCheck(t *testing.T) {
 	}
 }
 
-func TestIndexGetEntryPrimaryKeyPositions(t *testing.T) {
+func TestIndexEntryPrimaryKeyPositions(t *testing.T) {
 	t.Parallel()
 	plain := NewIndex("plain", Concat(Field("a"), Field("b")))
-	if got := plain.GetEntryPrimaryKeyPositions(2); fmt.Sprint(got) != "[2 3]" {
+	if got := plain.EntryPrimaryKeyPositions(2); fmt.Sprint(got) != "[2 3]" {
 		t.Fatalf("no overlap: %v", got)
 	}
 	overlap := NewIndex("overlap", Concat(Field("a"), Field("b"), Field("c")))
 	overlap.primaryKeyComponentPositions = []int{-1, 1, -1}
 	// The overlap mapping's length wins over the requested length.
-	if got := overlap.GetEntryPrimaryKeyPositions(1); fmt.Sprint(got) != "[3 1 4]" {
+	if got := overlap.EntryPrimaryKeyPositions(1); fmt.Sprint(got) != "[3 1 4]" {
 		t.Fatalf("overlap: %v", got)
 	}
 }
@@ -92,6 +92,7 @@ var _ = Describe("Index remote fetch", func() {
 			NewIndex("pk_first", Concat(Field("price"), Field("quantity"))),
 			NewIndex("pk_second", Concat(Field("price"), Field("order_id"))),
 			NewVersionIndex("version", Concat(Field("price"), VersionKey())),
+			NewRankIndex("rank", GroupBy(Field("price"))),
 			bitmap,
 		} {
 			builder.AddIndex("Order", index)
@@ -169,6 +170,7 @@ var _ = Describe("Index remote fetch", func() {
 			}
 			page.Rows = append(page.Rows, row)
 		}
+		state.WaitForIssuedRecordLoadCharges()
 		page.Scanned, page.Bytes = state.RecordsScanned(), state.BytesScanned()
 		page.RemoteEntries, page.BadEntries = timer.GetCount(EventScanRemoteFetchEntry), timer.GetCount(CountBadIndexEntry)
 		return page
@@ -392,6 +394,8 @@ var _ = Describe("Index remote fetch", func() {
 			}},
 			// a client without mapped reads, like the libfdb_c backend
 			"no mapped reads": {index: "price", pkLength: 1, props: ForwardScan(), noMapped: true, remote: as(&unsupportedIndex)},
+			// RANK's maintainer embeds the standard one but keeps Java's unsupported default.
+			"rank index": {index: "rank", pkLength: 1, props: ForwardScan(), remote: as(&unsupportedIndex)},
 		}
 		for name, a := range arms {
 			for _, method := range methods {
@@ -438,7 +442,7 @@ var _ = Describe("Index remote fetch", func() {
 				Expect(page.Err).NotTo(HaveOccurred())
 				Expect(page.Rows).To(Equal(want.Rows))
 				Expect(page.Continuation).To(Equal(want.Continuation))
-				Expect(page.RemoteEntries).To(BeZero(), "a skipped scan sends no mapped read")
+				Expect(page.RemoteEntries).To(BeZero(), "a skipped scan is not timed as remote fetch")
 			}
 		}
 		var unsupportedOperation *UnsupportedOperationError
@@ -447,8 +451,10 @@ var _ = Describe("Index remote fetch", func() {
 		page := scan(open(ks, current), IndexFetchUseRemoteFetch, "price", 1, snapshot, nil, IndexOrphanError)
 		Expect(errors.As(page.Err, &unsupportedOperation)).To(BeTrue(), "%v", page.Err)
 		var unsupportedIndex *UnsupportedRemoteFetchIndexError
-		page = scan(open(ks, current), IndexFetchUseRemoteFetch, "bitmap", 1, props, nil, IndexOrphanError)
-		Expect(errors.As(page.Err, &unsupportedIndex)).To(BeTrue(), "%v", page.Err)
+		for _, index := range []string{"bitmap", "rank"} {
+			page = scan(open(ks, current), IndexFetchUseRemoteFetch, index, 1, props, nil, IndexOrphanError)
+			Expect(errors.As(page.Err, &unsupportedIndex)).To(BeTrue(), "%s: %v", index, page.Err)
+		}
 		store := open(ks, current)
 		store.context.tx = remoteFetchNoMappedReads{store.context.tx}
 		page = scan(store, IndexFetchUseRemoteFetch, "price", 1, props, nil, IndexOrphanError)
@@ -525,9 +531,8 @@ var _ = Describe("Index remote fetch", func() {
 			return &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(1), VectorData: bytes.Repeat([]byte{1}, 150_017)}
 		})
 		store := open(ks, current)
-		loaded, err := store.LoadRecord(tuple.Tuple{int64(1)})
+		stored, err := store.LoadRecord(tuple.Tuple{int64(1)})
 		Expect(err).NotTo(HaveOccurred())
-		stored := []*FDBStoredRecord[proto.Message]{loaded}
 		rows, err := store.context.Transaction().GetRange(store.recordsSubspace, fdb.RangeOptions{}).GetSliceWithError()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(rows).To(HaveLen(3), "version and two chunks")
@@ -544,10 +549,10 @@ var _ = Describe("Index remote fetch", func() {
 		other := fdb.KeyValue{Key: store.recordsSubspace.Pack(tuple.Tuple{int64(2), int64(0)}), Value: []byte("next record")}
 		built, err := store.BuildSingleRecord(raw(rows[0], rows[1], rows[2], other))
 		Expect(err).NotTo(HaveOccurred())
-		Expect(proto.Equal(built.Record.Record, stored[0].Record)).To(BeTrue(), "stops at the next primary key")
-		Expect(built.Record.Version).To(Equal(stored[0].Version))
+		Expect(proto.Equal(built.Record.Record, stored.Record)).To(BeTrue(), "stops at the next primary key")
+		Expect(built.Record.Version).To(Equal(stored.Version))
 		Expect([]int{built.Record.KeyCount, built.Record.KeySize, built.Record.ValueSize}).
-			To(Equal([]int{stored[0].KeyCount, stored[0].KeySize, stored[0].ValueSize}))
+			To(Equal([]int{stored.KeyCount, stored.KeySize, stored.ValueSize}))
 		Expect(built.Record.Split).To(BeTrue())
 
 		empty, err := store.BuildSingleRecord(raw())
@@ -562,6 +567,9 @@ var _ = Describe("Index remote fetch", func() {
 		Expect(errors.As(err, &withoutStart)).To(BeTrue(), "second chunk first: %v", err)
 		_, err = store.BuildSingleRecord(raw(rows[0], rows[2]))
 		Expect(errors.As(err, &withoutStart)).To(BeTrue(), "version then second chunk: %v", err)
+		var deserialization *RecordDeserializationError
+		_, err = store.BuildSingleRecord(raw(rows[0], fdb.KeyValue{Key: store.recordsSubspace.Pack(tuple.Tuple{int64(1), int64(0)})}))
+		Expect(errors.As(err, &deserialization)).To(BeTrue(), "version then an empty data row: %v", err)
 		var recordCore *RecordCoreError
 		_, err = store.BuildSingleRecord(raw(rows[1], fdb.KeyValue{Key: store.recordsSubspace.Pack(tuple.Tuple{int64(1), int64(3)})}))
 		Expect(errors.As(err, &recordCore)).To(BeTrue(), "%v", err)

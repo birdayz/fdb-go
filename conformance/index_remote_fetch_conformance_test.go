@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"fdb.dev/gen/demopb"
@@ -75,6 +76,23 @@ type indexRemotePage struct {
 
 func indexRemoteBytes(value []byte) string { return base64.StdEncoding.EncodeToString(value) }
 
+var remoteFetchJava struct {
+	once    sync.Once
+	invoker *JavaInvoker
+	err     error
+}
+
+// remoteFetchJavaInvoker is a server whose record layer runs at API version 7.1,
+// which Java's remote fetch requires; the shared server keeps Java's 6.3 default.
+func remoteFetchJavaInvoker() *JavaInvoker {
+	remoteFetchJava.once.Do(func() {
+		flags := append(append([]string{}, reusedServerJVMFlags...), "-Dconformance.fdbApiVersion=710")
+		remoteFetchJava.invoker, remoteFetchJava.err = startJavaServer(flags...)
+	})
+	Expect(remoteFetchJava.err).NotTo(HaveOccurred())
+	return remoteFetchJava.invoker
+}
+
 func indexRemoteSplit(shape string) bool {
 	return shape == "basic" || shape == "compound" || shape == "split" || shape == "many"
 }
@@ -123,6 +141,7 @@ func indexRemoteMetadata(shape string) *recordlayer.RecordMetaData {
 		recordlayer.NewIndex("pk_first", recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity"))),
 		recordlayer.NewIndex("pk_second", recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("order_id"))),
 		recordlayer.NewVersionIndex("version", recordlayer.Concat(recordlayer.Field("price"), recordlayer.VersionKey())),
+		recordlayer.NewRankIndex("rank", recordlayer.GroupBy(recordlayer.Field("price"))),
 		bitmap,
 	} {
 		builder.AddIndex("Order", index.SetSubspaceKey(index.Name))
@@ -237,7 +256,9 @@ var _ = Describe("Index remote fetch Record Layer Java conformance (RFC-258)", f
 		}
 	}
 	seed := func(shape string, count int, orphan bool) {
-		ks = env.Keyspace.Sub("remote", shape)
+		// The tenant isolates the spec. The storage server parses the mapper with
+		// a tuple decoder that has no nested tuples, so the prefix has none.
+		ks = subspace.FromBytes(tuple.Tuple{"remote", shape}.Pack())
 		var written int
 		Expect(java.InvokeAs(ctx, "seedIndexRemoteFetch", map[string]any{
 			"clusterFile": env.ClusterFile, "tenantName": env.TenantName, "subspace": BytesToIntArray(ks.Bytes()),
@@ -338,6 +359,8 @@ var _ = Describe("Index remote fetch Record Layer Java conformance (RFC-258)", f
 			}
 			page.Rows = append(page.Rows, row)
 		}
+		// Record loads issued ahead by SCAN_AND_FETCH's pipeline charge bytes when they complete.
+		execution.ScanState.WaitForIssuedRecordLoadCharges()
 		page.ScannedRecords, page.ScannedBytes = execution.ScanState.RecordsScanned(), execution.ScanState.BytesScanned()
 		page.RemoteEntries = store.Context().Timer().GetCount(recordlayer.EventScanRemoteFetchEntry)
 		page.BadEntries = store.Context().Timer().GetCount(recordlayer.CountBadIndexEntry)
@@ -347,18 +370,24 @@ var _ = Describe("Index remote fetch Record Layer Java conformance (RFC-258)", f
 		var oracle indexRemotePage
 		Expect(java.InvokeAs(ctx, "scanIndexRemoteFetch", params(req), &oracle)).To(Succeed())
 		actual := scanGo(req)
-		Expect(actual).To(Equal(oracle), "%+v", req)
+		// Scalars first, then row by row, so a mismatch is readable.
+		summary := func(page indexRemotePage) indexRemotePage {
+			page.Rows = nil
+			return page
+		}
+		Expect(summary(actual)).To(Equal(summary(oracle)), "%+v", req)
+		Expect(actual.Rows).To(HaveLen(len(oracle.Rows)), "%+v", req)
+		for i := range oracle.Rows {
+			Expect(actual.Rows[i]).To(Equal(oracle.Rows[i]), "row %d of %+v", i, req)
+		}
 		return oracle
 	}
 	mapper := func(req indexRemoteRequest) {
 		var oracle struct {
-			Mapper                   string `json:"mapper"`
-			IndexSubspace            string `json:"indexSubspace"`
-			RecordsSubspace          string `json:"recordsSubspace"`
-			ContinuationPrefixLength int    `json:"continuationPrefixLength"`
-			Begin                    string `json:"begin"`
-			End                      string `json:"end"`
-			CommonPKLength           int    `json:"commonPKLength"`
+			Mapper          string `json:"mapper"`
+			IndexSubspace   string `json:"indexSubspace"`
+			RecordsSubspace string `json:"recordsSubspace"`
+			CommonPKLength  int    `json:"commonPKLength"`
 		}
 		Expect(java.InvokeAs(ctx, "indexRemoteFetchMapper", params(req), &oracle)).To(Succeed())
 		store, transaction := openGo(req.Shape)
@@ -370,15 +399,6 @@ var _ = Describe("Index remote fetch Record Layer Java conformance (RFC-258)", f
 		Expect(indexRemoteBytes(store.IndexSubspace(index).Bytes())).To(Equal(oracle.IndexSubspace))
 		Expect(indexRemoteBytes(store.RecordsSubspace().Bytes())).To(Equal(oracle.RecordsSubspace))
 		Expect(store.GetCommonPrimaryKeyLength(index)).To(Equal(oracle.CommonPKLength))
-		bounds := indexRemoteRange(req.Range).ToFDBRange(store.IndexSubspace(index))
-		begin, end := []byte(bounds.Begin.FDBKey()), []byte(bounds.End.FDBKey())
-		Expect(indexRemoteBytes(begin)).To(Equal(oracle.Begin))
-		Expect(indexRemoteBytes(end)).To(Equal(oracle.End))
-		common := len(store.IndexSubspace(index).Bytes())
-		for common < len(begin) && common < len(end) && begin[common] == end[common] {
-			common++
-		}
-		Expect(common).To(Equal(oracle.ContinuationPrefixLength))
 	}
 
 	BeforeEach(func() {
@@ -386,7 +406,7 @@ var _ = Describe("Index remote fetch Record Layer Java conformance (RFC-258)", f
 		var err error
 		env, err = SetupTenantEnvironment(ctx, sharedContainer, "index_remote_"+uuid.NewString())
 		Expect(err).NotTo(HaveOccurred())
-		java = NewJavaInvoker()
+		java = remoteFetchJavaInvoker()
 	})
 	AfterEach(func() {
 		if env != nil {
@@ -514,7 +534,7 @@ var _ = Describe("Index remote fetch Record Layer Java conformance (RFC-258)", f
 	It("matches immediate failures and their fallback", func() {
 		seed("basic", 12, false)
 		for _, method := range methods {
-			for _, arm := range []string{"snapshot", "zero_pk", "negative_pk", "oversized_pk", "unsupported_bitmap", "wrong_scan_type", "primary_ryw", "secondary_ryw"} {
+			for _, arm := range []string{"snapshot", "zero_pk", "negative_pk", "oversized_pk", "unsupported_bitmap", "unsupported_rank", "wrong_scan_type", "primary_ryw", "secondary_ryw"} {
 				req := request("basic", "price")
 				req.Method = method
 				switch arm {
@@ -528,6 +548,8 @@ var _ = Describe("Index remote fetch Record Layer Java conformance (RFC-258)", f
 					req.CommonPKLength = 86
 				case "unsupported_bitmap":
 					req.IndexName = "bitmap"
+				case "unsupported_rank":
+					req.IndexName = "rank"
 				case "wrong_scan_type":
 					req.ScanType = "BY_GROUP"
 				case "primary_ryw":

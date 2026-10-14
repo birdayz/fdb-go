@@ -288,17 +288,8 @@ func (store *FDBRecordStore) ScanIndex(
 			err: &IndexNotReadableError{IndexName: index.Name, CurrentState: state},
 		}
 	}
-	// BITMAP_VALUE indexes must be scanned with BY_GROUP via ScanIndexByType.
-	if index.Type == IndexTypeBitmapValue {
-		return &errorCursor[*IndexEntry]{
-			err: fmt.Errorf("BITMAP_VALUE index %q must be scanned with BY_GROUP scan type", index.Name),
-		}
-	}
-	// TEXT indexes must be scanned with BY_TEXT_TOKEN via ScanIndexByType.
-	if index.Type == IndexTypeText {
-		return &errorCursor[*IndexEntry]{
-			err: fmt.Errorf("TEXT index %q must be scanned with BY_TEXT_TOKEN scan type", index.Name),
-		}
+	if err := scanTypeOnlyError(index); err != nil {
+		return &errorCursor[*IndexEntry]{err: err}
 	}
 	// VECTOR indexes must be scanned with BY_DISTANCE via ScanVectorIndex.
 	// Matches Java's VectorIndexMaintainer.scan(IndexScanType, TupleRange, ...) which
@@ -426,16 +417,24 @@ func (store *FDBRecordStore) scanIndexByType(
 		}
 		return vm.ScanByDistance(scanRange, continuation, scanProperties)
 	default:
-		// Java's bitmap and text maintainers reject every other scan type
-		// (BitmapValueIndexMaintainer.scan, TextIndexMaintainer.scan).
-		switch maintainer.(type) {
-		case *bitmapValueIndexMaintainer:
-			return &errorCursor[*IndexEntry]{err: &RecordCoreError{Message: "Can only scan bitmap index by group.", IndexName: index.Name}}
-		case *textIndexMaintainer:
-			return &errorCursor[*IndexEntry]{err: &RecordCoreError{Message: "Can only scan text index by text token.", IndexName: index.Name}}
+		if err := scanTypeOnlyError(index); err != nil {
+			return &errorCursor[*IndexEntry]{err: err}
 		}
 		return maintainer.Scan(scanRange, continuation, scanProperties)
 	}
+}
+
+// scanTypeOnlyError is the RecordCoreException Java's bitmap and text
+// maintainers throw for any scan type but their own (BitmapValueIndexMaintainer
+// .scan, TextIndexMaintainer.scan).
+func scanTypeOnlyError(index *Index) error {
+	switch canonicalIndexType(index.Type) {
+	case IndexTypeBitmapValue:
+		return &RecordCoreError{Message: "Can only scan bitmap index by group.", IndexName: index.Name}
+	case IndexTypeText:
+		return &RecordCoreError{Message: "Can only scan text index by text token.", IndexName: index.Name}
+	}
+	return nil
 }
 
 // ScanTimeWindowLeaderboard scans a TIME_WINDOW_LEADERBOARD index within a specific
@@ -756,9 +755,8 @@ func (store *FDBRecordStore) ScanIndexRecords(
 	return MapPipelined(indexCursor, loader.load, DefaultPipelineSize)
 }
 
-// indexRecordLoader loads the record of each index entry. An orphan entry (the
-// record no longer exists) raises a RecordCoreStorageError, matching Java's
-// IndexOrphanBehavior.ERROR default.
+// indexRecordLoader loads the record of each index entry, applying its
+// IndexOrphanBehavior to an entry whose record no longer exists.
 type indexRecordLoader struct {
 	store     *FDBRecordStore
 	scanState *ScanLimiterState
@@ -795,13 +793,8 @@ func (c *indexRecordLoader) finish(entry *IndexEntry, pk tuple.Tuple, rec *FDBSt
 		return nil, fmt.Errorf("load record for index entry %v: %w", pk, err)
 	}
 	if rec == nil {
-		// Orphan index entry — the record is gone but its index entry is not.
-		// Java's scanIndexRecords defaults to IndexOrphanBehavior.ERROR
-		// (FDBRecordStoreBase.fetchIndexRecords → loadIndexEntryRecord), and the
-		// index-from-index rebuild (IndexingByIndex) relies on that default, so an
-		// orphan aborts the scan rather than silently dropping the row. (The index
-		// scrubber, which repairs orphans, has its own SKIP/RETURN path in
-		// index_validation.go and does not come through here.)
+		// ScanIndexRecords keeps Java's ERROR default, which the index-from-index
+		// rebuild (IndexingByIndex) relies on to abort rather than drop the row.
 		return c.store.handleOrphanEntry(entry, pk, c.orphan, false)
 	}
 

@@ -805,10 +805,10 @@ func (idx *Index) PrimaryKeyComponentPositions() []int {
 	return idx.primaryKeyComponentPositions
 }
 
-// GetEntryPrimaryKeyPositions returns the position of each primary-key component
+// EntryPrimaryKeyPositions returns the position of each primary-key component
 // in an entry's key. Matches Java's Index.getEntryPrimaryKeyPositions: with an
 // overlap mapping, its length wins over primaryKeyLength.
-func (idx *Index) GetEntryPrimaryKeyPositions(primaryKeyLength int) []int {
+func (idx *Index) EntryPrimaryKeyPositions(primaryKeyLength int) []int {
 	after := idx.RootExpression.ColumnSize()
 	if idx.primaryKeyComponentPositions == nil {
 		positions := make([]int, primaryKeyLength)

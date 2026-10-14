@@ -92,6 +92,7 @@ Each is described in full under Compatibility or Changed below.
 - Ordinary index scans apply `ExecuteProperties.Skip` as Java's selector offsets (it was ignored); a skip saturates at `MaxInt32-1` instead of wrapping as Java's forward `MaxInt32` does.
 - Issued record loads charge scan bytes when the raw read completes, including loads discarded by a failed index cursor. `ScanLimiterState.WaitForIssuedRecordLoadCharges` waits for those existing charges without issuing or materializing another record.
 - SQL `INDEX_FETCH_METHOD` remains unsupported pending RFC-258's planner work.
+- `ScanIndex` and `ScanIndexByType` reject any other scan type on BITMAP_VALUE and TEXT indexes with Java's `RecordCoreException` messages (`ScanIndexByType` used to scan them), and report unsupported scan types as `*RecordCoreError`.
 - Update Go dependencies for archive containment, bounded group parsing, CEL JSON field privacy, and OpenTelemetry diagnostic privacy; these SDK updates do not patch the host Docker daemon.
 - `EndpointTypeContinuation` is internal; scan callers supply the original range endpoints and pass the continuation separately.
 - Commit has no synthetic reply timeout: transaction Cancel/timeout end the public wait while native GRV/commit/fence work remains owned by the transaction; Reset, owner collection, and database close drop that work.

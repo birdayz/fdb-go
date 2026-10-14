@@ -794,8 +794,9 @@ var _ = Describe("TEXT index", func() {
 
 			// Using ScanIndex (not ScanIndexByType) on a TEXT index should error.
 			_, scanErr := AsList(ctx, store.ScanIndex(idx, TupleRangeAll, nil, ForwardScan()))
-			Expect(scanErr).To(HaveOccurred())
-			Expect(scanErr.Error()).To(ContainSubstring("BY_TEXT_TOKEN"))
+			var recordCore *RecordCoreError
+			Expect(errors.As(scanErr, &recordCore)).To(BeTrue(), "%v", scanErr)
+			Expect(recordCore.Message).To(Equal("Can only scan text index by text token."))
 
 			return nil, nil
 		})

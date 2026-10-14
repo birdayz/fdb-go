@@ -19,18 +19,19 @@ import com.apple.foundationdb.record.metadata.Index;
 import com.apple.foundationdb.record.metadata.IndexOptions;
 import com.apple.foundationdb.record.metadata.IndexTypes;
 import com.apple.foundationdb.record.metadata.Key;
+import com.apple.foundationdb.record.metadata.expressions.GroupingKeyExpression;
 import com.apple.foundationdb.record.provider.foundationdb.FDBIndexedRecord;
 import com.apple.foundationdb.record.provider.foundationdb.FDBRecordContext;
 import com.apple.foundationdb.record.provider.foundationdb.FDBRecordStore;
 import com.apple.foundationdb.record.provider.foundationdb.FDBStoreTimer;
 import com.apple.foundationdb.record.provider.foundationdb.FDBStoredRecord;
 import com.apple.foundationdb.record.provider.foundationdb.IndexOrphanBehavior;
-import com.apple.foundationdb.record.provider.foundationdb.IndexPrefetchRangeKeyValueCursor;
 import com.apple.foundationdb.record.provider.foundationdb.IndexScanRange;
 import com.apple.foundationdb.record.provider.foundationdb.indexes.StandardIndexMaintainer;
 import com.apple.foundationdb.subspace.Subspace;
 import com.apple.foundationdb.tuple.Tuple;
 import com.google.protobuf.ByteString;
+import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.Message;
 
 import java.lang.reflect.Method;
@@ -96,6 +97,7 @@ class IndexRemoteFetchSteps extends ConformanceBase {
                 new Index("pk_first", Key.Expressions.concat(Key.Expressions.field("price"), Key.Expressions.field("quantity"))),
                 new Index("pk_second", Key.Expressions.concat(Key.Expressions.field("price"), Key.Expressions.field("order_id"))),
                 new Index("version", Key.Expressions.concat(Key.Expressions.field("price"), Key.Expressions.version()), IndexTypes.VERSION),
+                new Index("rank", new GroupingKeyExpression(Key.Expressions.field("price"), 1), IndexTypes.RANK),
                 new Index("bitmap", Key.Expressions.concatenateFields("price", "quantity", "order_id").group(1),
                         IndexTypes.BITMAP_VALUE, Map.of(IndexOptions.BITMAP_VALUE_ENTRY_SIZE_OPTION, "16")));
         for (Index index : indexes) {
@@ -109,6 +111,13 @@ class IndexRemoteFetchSteps extends ConformanceBase {
         return FDBRecordStore.newBuilder().setContext(context).setSubspace(new Subspace(subspace))
                 .setMetaDataProvider(metadata(shape)).setUserVersionChecker(ALWAYS_READABLE_CHECKER)
                 .setFormatVersion(format(shape)).createOrOpen();
+    }
+
+    // Record loads issued ahead by SCAN_AND_FETCH's pipeline charge bytes when they complete.
+    private static IndexScanLimitSteps.TrackingStore openTracking(FDBRecordContext context, byte[] subspace, String shape) {
+        return (IndexScanLimitSteps.TrackingStore) new IndexScanLimitSteps.TrackingBuilder().setContext(context)
+                .setSubspace(new Subspace(subspace)).setMetaDataProvider(metadata(shape))
+                .setUserVersionChecker(ALWAYS_READABLE_CHECKER).setFormatVersion(format(shape)).createOrOpen();
     }
 
     private static Tuple primaryKey(String shape, int id) {
@@ -128,7 +137,12 @@ class IndexRemoteFetchSteps extends ConformanceBase {
     }
 
     private static void localWrite(FDBRecordStore store, String shape, int id) {
-        RecordLayerDemo.Order previous = (RecordLayerDemo.Order) store.loadRecord(primaryKey(shape, id)).getRecord();
+        RecordLayerDemo.Order previous;
+        try {
+            previous = RecordLayerDemo.Order.parseFrom(store.loadRecord(primaryKey(shape, id)).getRecord().toByteString());
+        } catch (InvalidProtocolBufferException error) {
+            throw new IllegalStateException(error);
+        }
         store.saveRecord(previous.toBuilder().clearTags().addTags("local-write").build());
     }
 
@@ -175,17 +189,10 @@ class IndexRemoteFetchSteps extends ConformanceBase {
             Method createMapper = StandardIndexMaintainer.class.getDeclaredMethod("createRemoteFetchMapper", int.class);
             createMapper.setAccessible(true);
             Tuple mapper = (Tuple) createMapper.invoke(maintainer, request.commonPKLength);
-            IndexPrefetchRangeKeyValueCursor.Builder builder = IndexPrefetchRangeKeyValueCursor.Builder
-                    .newBuilder(store.indexSubspace(index), mapper.pack()).setContext(context)
-                    .setRange(range(request.range)).setScanProperties(ScanProperties.FORWARD_SCAN);
-            try (IndexPrefetchRangeKeyValueCursor cursor = builder.build()) {
-                return Map.of("mapper", bytes(mapper.pack()),
-                        "indexSubspace", bytes(store.indexSubspace(index).pack()),
-                        "recordsSubspace", bytes(store.recordsSubspace().pack()),
-                        "continuationPrefixLength", builder.getPrefixLength(),
-                        "begin", bytes(builder.getBegin().getKey()), "end", bytes(builder.getEnd().getKey()),
-                        "commonPKLength", store.getCommonPrimaryKeyLength(index));
-            }
+            return Map.of("mapper", bytes(mapper.pack()),
+                    "indexSubspace", bytes(store.indexSubspace(index).pack()),
+                    "recordsSubspace", bytes(store.recordsSubspace().pack()),
+                    "commonPKLength", store.getCommonPrimaryKeyLength(index));
         }
     }
 
@@ -219,7 +226,7 @@ class IndexRemoteFetchSteps extends ConformanceBase {
         try (Tenant tenant = createDatabase(clusterFile).database().openTenant(tenantName.getBytes(StandardCharsets.UTF_8));
              Transaction transaction = tenant.createTransaction();
              FDBRecordContext context = createContextFromTransaction(createDatabase(clusterFile), transaction)) {
-            FDBRecordStore store = open(context, subspace, request.shape);
+            IndexScanLimitSteps.TrackingStore store = openTracking(context, subspace, request.shape);
             if (request.localWriteID >= 0) {
                 localWrite(store, request.shape, request.localWriteID);
             }
@@ -239,6 +246,7 @@ class IndexRemoteFetchSteps extends ConformanceBase {
                 Thread.sleep(request.timeLimit + 25);
             }
             ExecuteProperties properties = execution.build();
+            store.trackedState = properties.getState();
             context.getTimer().reset();
             Map<String, Object> result = new HashMap<>();
             List<Map<String, Object>> rows = new ArrayList<>();
@@ -276,6 +284,7 @@ class IndexRemoteFetchSteps extends ConformanceBase {
                     }
                 }
             }
+            store.quiesceIssued();
             result.put("scannedRecords", properties.getState().getRecordsScanned());
             result.put("scannedBytes", properties.getState().getBytesScanned());
             result.put("remoteEntries", context.getTimer().getCount(FDBStoreTimer.Events.SCAN_REMOTE_FETCH_ENTRY));

@@ -100,16 +100,16 @@ class IndexScanLimitSteps extends ConformanceBase {
                 .setMetaDataProvider(metadata()).setUserVersionChecker(ALWAYS_READABLE_CHECKER).setFormatVersion(14).createOrOpen();
     }
 
-    private static final class TrackingBuilder extends FDBRecordStore.Builder {
+    static final class TrackingBuilder extends FDBRecordStore.Builder {
         @Override
         public FDBRecordStore build() {
             return new TrackingStore(this);
         }
     }
 
-    private static final class TrackingStore extends FDBRecordStore {
+    static final class TrackingStore extends FDBRecordStore {
         private final List<CompletableFuture<FDBStoredRecord<Message>>> issued = new ArrayList<>();
-        private volatile ExecuteState trackedState;
+        volatile ExecuteState trackedState;
 
         TrackingStore(FDBRecordStore.Builder builder) {
             super(builder.getContext(), builder.getSubspaceProvider(), builder.getFormatVersionEnum(),

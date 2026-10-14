@@ -26,11 +26,12 @@ type FDBIndexedRawRecord struct {
 }
 
 // RemoteFetchIndexMaintainer is the optional form of Java's
-// IndexMaintainer.scanRemoteFetch. A maintainer without it has Java's default,
-// which throws UnsupportedRemoteFetchIndexException. An error return is an
-// exception Java throws while building the cursor.
+// IndexMaintainer.scanRemoteFetch. The maintainer checks the scan and supplies
+// the mapper, as StandardIndexMaintainer.scanRemoteFetchByValue does before it
+// builds its cursor; the store issues the mapped read. A maintainer without it
+// has Java's default, which throws UnsupportedRemoteFetchIndexException.
 type RemoteFetchIndexMaintainer interface {
-	ScanRemoteFetch(scanType IndexScanType, scanRange TupleRange, continuation []byte, props ScanProperties, commonPrimaryKeyLength int) (RecordCursor[*FDBIndexedRawRecord], error)
+	RemoteFetchMapper(scanType IndexScanType, commonPrimaryKeyLength int) (tuple.Tuple, error)
 }
 
 var (
@@ -45,52 +46,36 @@ func unsupportedRemoteFetchIndex(index *Index) error {
 	}
 }
 
-// ScanRemoteFetch is Java's ValueIndexMaintainer.scanRemoteFetch. Go shares one
-// maintainer type between VALUE and the types built on it, which inherit Java's
-// unsupported default.
-func (m *StandardIndexMaintainer) ScanRemoteFetch(scanType IndexScanType, scanRange TupleRange, continuation []byte, props ScanProperties, commonPrimaryKeyLength int) (RecordCursor[*FDBIndexedRawRecord], error) {
+// RemoteFetchMapper is Java's ValueIndexMaintainer.scanRemoteFetch. Go shares
+// one maintainer type between VALUE and the types built on it, which keep
+// Java's unsupported default.
+func (m *StandardIndexMaintainer) RemoteFetchMapper(scanType IndexScanType, commonPrimaryKeyLength int) (tuple.Tuple, error) {
 	store, ok := m.store.(*FDBRecordStore)
 	if !ok || canonicalIndexType(m.index.Type) != IndexTypeValue {
 		return nil, unsupportedRemoteFetchIndex(m.index)
 	}
-	return scanRemoteFetchByValue(store, m.index, m.indexSubspace, scanType, scanRange, continuation, props, commonPrimaryKeyLength)
+	return remoteFetchMapperByValue(m.index, m.indexSubspace, store.RecordsSubspace(), scanType, commonPrimaryKeyLength)
 }
 
-// ScanRemoteFetch is Java's VersionIndexMaintainer.scanRemoteFetch.
-func (m *versionIndexMaintainer) ScanRemoteFetch(scanType IndexScanType, scanRange TupleRange, continuation []byte, props ScanProperties, commonPrimaryKeyLength int) (RecordCursor[*FDBIndexedRawRecord], error) {
+// RemoteFetchMapper is Java's VersionIndexMaintainer.scanRemoteFetch.
+func (m *versionIndexMaintainer) RemoteFetchMapper(scanType IndexScanType, commonPrimaryKeyLength int) (tuple.Tuple, error) {
 	store, ok := m.store.(*FDBRecordStore)
 	if !ok {
 		return nil, unsupportedRemoteFetchIndex(m.index)
 	}
-	return scanRemoteFetchByValue(store, m.index, m.indexSubspace, scanType, scanRange, continuation, props, commonPrimaryKeyLength)
+	return remoteFetchMapperByValue(m.index, m.indexSubspace, store.RecordsSubspace(), scanType, commonPrimaryKeyLength)
 }
 
-// scanRemoteFetchByValue is StandardIndexMaintainer.scanRemoteFetchByValue.
-// Like Java's IndexPrefetchRangeKeyValueCursor.Builder.build, it issues the
-// mapped read before returning.
-func scanRemoteFetchByValue(store *FDBRecordStore, index *Index, indexSubspace subspace.Subspace, scanType IndexScanType, scanRange TupleRange, continuation []byte, props ScanProperties, commonPrimaryKeyLength int) (RecordCursor[*FDBIndexedRawRecord], error) {
+// remoteFetchMapperByValue is the checks and mapper of
+// StandardIndexMaintainer.scanRemoteFetchByValue.
+func remoteFetchMapperByValue(index *Index, indexSubspace, recordsSubspace subspace.Subspace, scanType IndexScanType, commonPrimaryKeyLength int) (tuple.Tuple, error) {
 	if commonPrimaryKeyLength <= 0 {
 		return nil, &RecordCoreArgumentError{Message: "scanRemoteFetch requires a positive commonPrimaryKeyLength"}
 	}
 	if scanType != IndexScanByValue {
 		return nil, &RecordCoreArgumentError{Message: "scanRemoteFetch can only be used with VALUE index scan type and Range Scan"}
 	}
-	mapper, err := createRemoteFetchMapper(index, indexSubspace, store.RecordsSubspace(), commonPrimaryKeyLength)
-	if err != nil {
-		return nil, err
-	}
-	entries := newIndexCursor(index, indexSubspace, store.context.Transaction(), scanRange, continuation, props).withContext(store.context)
-	rng, err := entries.bounds.keyRange(continuation, props.IsReverse())
-	if err != nil {
-		return nil, err
-	}
-	reader, err := remoteFetchReader(store.context.Transaction(), index, props)
-	if err != nil {
-		return nil, err
-	}
-	rows := &mappedIndexRows{rows: reader.GetMappedRange(rng, mapper.Pack(), indexRangeOptions(props)).Iterator()}
-	entries.iterator = rows
-	return &indexPrefetchCursor{entries: entries, rows: rows}, nil
+	return createRemoteFetchMapper(index, indexSubspace, recordsSubspace, commonPrimaryKeyLength)
 }
 
 // remoteFetchReader returns the transaction's mapped read. Java fails a
@@ -98,7 +83,7 @@ func scanRemoteFetchByValue(store *FDBRecordStore, index *Index, indexSubspace s
 // mapped reads (the libfdb_c backend) reports Java's unsupported remote fetch.
 func remoteFetchReader(tx fdb.WritableTransaction, index *Index, props ScanProperties) (fdb.MappedRangeReader, error) {
 	if props.ExecuteProperties.IsolationLevel.IsSnapshot() {
-		return nil, &UnsupportedOperationError{Message: "getMappedRange is only supported with serializable isolation"}
+		return nil, &UnsupportedOperationError{Message: "getMappedRange is only supported in serializable"}
 	}
 	reader, ok := tx.(fdb.MappedRangeReader)
 	if !ok {
@@ -122,7 +107,7 @@ func createRemoteFetchMapper(index *Index, indexSubspace, recordsSubspace subspa
 	if err != nil {
 		return nil, err
 	}
-	for _, position := range index.GetEntryPrimaryKeyPositions(commonPrimaryKeyLength) {
+	for _, position := range index.EntryPrimaryKeyPositions(commonPrimaryKeyLength) {
 		mapper = append(mapper, fmt.Sprintf("{K[%d]}", position+len(prefix)))
 	}
 	return append(mapper, "{...}"), nil
@@ -136,7 +121,9 @@ func (store *FDBRecordStore) CreateRemoteFetchMapper(index *Index, commonPrimary
 
 // mappedIndexRows feeds a mapped read's primary rows to the ordinary index
 // cursor, so limits, continuations and index entries are shared with
-// SCAN_AND_FETCH, as Java's cursors share KeyValueCursorBase.
+// SCAN_AND_FETCH, as Java's cursors share KeyValueCursorBase. current is valid
+// because the index cursor calls Get once for each entry it returns, and
+// indexPrefetchCursor reads it before advancing again.
 type mappedIndexRows struct {
 	rows    fdb.MappedRangeIterator
 	current fdb.MappedKeyValue
@@ -227,24 +214,36 @@ func (store *FDBRecordStore) scanIndexRemoteFetch(index *Index, scanType IndexSc
 	if !ok {
 		return nil, unsupportedRemoteFetchIndex(index)
 	}
+	mapper, err := remote.RemoteFetchMapper(scanType, commonPrimaryKeyLength)
+	if err != nil {
+		return nil, err
+	}
 	if props.ExecuteProperties.ScanState == nil {
 		props.ExecuteProperties.ScanState = NewScanLimiterState()
+	}
+	// Like Java's IndexPrefetchRangeKeyValueCursor.Builder.build: resolve the
+	// continuation, then start the mapped read before returning.
+	tx := store.context.Transaction()
+	entries := newIndexCursor(index, store.IndexSubspace(index), tx, scanRange, continuation, props).withContext(store.context)
+	rng, err := entries.bounds.keyRange(continuation, props.IsReverse())
+	if err != nil {
+		return nil, err
+	}
+	reader, err := remoteFetchReader(tx, index, props)
+	if err != nil {
+		return nil, err
 	}
 	if props.ExecuteProperties.Skip > 0 {
 		// A skip would be sent as a selector offset on the mapped read, a request
 		// shape the server does not support for every range. Having checked
 		// everything remote fetch requires, scan the index and load the records.
-		if _, err := remoteFetchReader(store.context.Transaction(), index, props); err != nil {
-			return nil, err
-		}
 		return store.scanIndexRecordsByType(index, scanType, scanRange, continuation, orphan, props), nil
 	}
-	entries, err := remote.ScanRemoteFetch(scanType, scanRange, continuation, props, commonPrimaryKeyLength)
-	if err != nil {
-		return nil, err
-	}
+	rows := &mappedIndexRows{rows: reader.GetMappedRange(rng, mapper.Pack(), indexRangeOptions(props)).Iterator()}
+	entries.iterator = rows
+	var raw RecordCursor[*FDBIndexedRawRecord] = &indexPrefetchCursor{entries: entries, rows: rows}
 	scanState := props.ExecuteProperties.ScanState
-	cursor := MapPipelined(entries, func(raw *FDBIndexedRawRecord) PendingRead[*FDBIndexedRecord] {
+	cursor := MapPipelined(raw, func(raw *FDBIndexedRawRecord) PendingRead[*FDBIndexedRecord] {
 		return MapPendingRead(store.buildSingleRecord(raw, scanState), func(record *FDBIndexedRecord, err error) (*FDBIndexedRecord, error) {
 			if err != nil || record != nil {
 				return record, err

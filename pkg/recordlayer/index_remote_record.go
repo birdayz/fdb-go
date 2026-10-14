@@ -66,7 +66,8 @@ func (store *FDBRecordStore) buildSingleRecord(raw *FDBIndexedRawRecord, scanSta
 // reconstructSingleRecord is FDBRecordStore.reconstructSingleRecord: the first
 // record of the secondary rows, unsplit as SplitHelper.KeyValueUnsplitter does
 // in the forward direction (the rows are forward whatever the scan direction).
-// The caller handles a result without rows.
+// The caller handles a result without rows. Like Java, it ignores GetRange.More:
+// a record's own rows stay far below the server's secondary row limit.
 func (store *FDBRecordStore) reconstructSingleRecord(raw fdb.MappedKeyValue, sizes *sizeInfo) (tuple.Tuple, []byte, *FDBRecordVersion, error) {
 	rows := raw.GetRange.Rows
 	first := rows[0]
@@ -122,9 +123,11 @@ func (store *FDBRecordStore) reconstructSingleRecord(raw fdb.MappedKeyValue, siz
 			sizes.KeySize += len(row.Key)
 			sizes.ValueSize += len(row.Value)
 			switch {
-			case index == recordVersionSuffix && (next == unsplitRecord || next == startSplitRecord):
+			case index == recordVersionSuffix && next == unsplitRecord:
+				value = row.Value
+			case index == recordVersionSuffix && next == startSplitRecord:
 				value = bytes.Clone(row.Value)
-				sizes.IsSplit = next == startSplitRecord
+				sizes.IsSplit = true
 			case next == index+1:
 				value = append(value, row.Value...)
 			case index == recordVersionSuffix:
@@ -138,7 +141,8 @@ func (store *FDBRecordStore) reconstructSingleRecord(raw fdb.MappedKeyValue, siz
 			}
 		}
 	}
-	if value == nil && version != nil {
+	if index == recordVersionSuffix {
+		// A version row with no data row, however empty the data would be.
 		return nil, nil, nil, &FoundSplitWithoutStartError{NextIndex: recordVersionSuffix, KeyTuple: primaryKey}
 	}
 	if !store.useOldVersionFormat() {

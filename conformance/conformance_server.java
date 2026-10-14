@@ -1,5 +1,7 @@
 package com.birdayz.conformance;
 
+import com.apple.foundationdb.record.provider.foundationdb.APIVersion;
+import com.apple.foundationdb.record.provider.foundationdb.FDBDatabaseFactory;
 import com.google.gson.Gson;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
@@ -116,6 +118,13 @@ class ConformanceServer {
 
     public static void main(String[] args) throws IOException {
         startParentDeathWatchdog();
+
+        // The record layer's API version is fixed once per JVM, before the first
+        // database opens. Remote fetch requires 7.1; the default is 6.3.
+        String apiVersion = System.getProperty("conformance.fdbApiVersion");
+        if (apiVersion != null) {
+            FDBDatabaseFactory.instance().setAPIVersion(APIVersion.fromVersionNumber(Integer.parseInt(apiVersion)));
+        }
 
         // Bind to random available port
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);

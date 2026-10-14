@@ -4362,9 +4362,10 @@ orphan behavior and fallback. Two differences remain:
   a key-selector offset. Go never sends a mapped read with a selector offset,
   because the server does not support that request shape for every range. After
   remote fetch's own checks, Go runs a skipped remote-fetch scan as SCAN_AND_FETCH,
-  so the scan records `scan_index` rather than `scan_remote_fetch_entry`. Java's
-  fallback after a failed remote page re-applies the original skip from the last
-  returned row; Go's skipped scans never reach that fallback.
+  which applies the same skip to its ordinary range read, so the scan records
+  `scan_index` rather than `scan_remote_fetch_entry`. WITH_FALLBACK still wraps it:
+  a failure re-runs the ordinary scan from the last returned row with the original
+  skip, as Java's fallback does after a failed remote page.
 - **libfdb_c backend.** It has no mapped reads, so remote fetch there is
   unsupported: `USE_REMOTE_FETCH` fails and `USE_REMOTE_FETCH_WITH_FALLBACK` falls
   back, where Java fetches remotely.
