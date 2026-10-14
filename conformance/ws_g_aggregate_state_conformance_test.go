@@ -145,12 +145,13 @@ type wsgJavaPartial struct {
 // resumes a continuation carrying the target's states. Every prefix of the
 // group is taken, from the all-NULL first row on.
 var _ = Describe("WSGAggregateStateConformance", func() {
-	It("writes and resumes the target's aggregate partial state", func() {
+	DescribeTable("writes and resumes the target's aggregate partial state", func(format int32, expectedPrefixes []int64) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
 		java := NewJavaInvoker()
 
-		b := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
+		b := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto).
+			SetSplitLongRecords(false).SetStoreRecordVersions(false)
 		b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 		b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 		b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -159,7 +160,7 @@ var _ = Describe("WSGAggregateStateConformance", func() {
 		db := recordlayer.NewFDBDatabase(sharedDB)
 		ss := subspace.FromBytes([]byte("wsg_agg_" + uuid.NewString()))
 		open := func(rtx *recordlayer.FDBRecordContext) (*recordlayer.FDBRecordStore, error) {
-			return recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+			return recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).SetFormatVersion(format).CreateOrOpen()
 		}
 		_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			store, err := open(rtx)
@@ -263,8 +264,13 @@ var _ = Describe("WSGAggregateStateConformance", func() {
 			Expect(run(fromJava, 0).row).To(Equal(full.row), "rows %d: Go resumed the target's states", n)
 			Expect(run(paused.cont, 0).row).To(Equal(full.row), "rows %d: Go resumed its own continuation", n)
 		}
-		Expect(seen).To(Equal([]int64{1, 2, 3, 4, 5}))
-	})
+		Expect(seen).To(Equal(expectedPrefixes))
+	},
+		// The unsplitter returns the KV that trips its scan limit; the bare
+		// cursor checks before reading. Keep the all-NULL first prefix covered.
+		Entry("suffixed records", int32(14), []int64{2, 3, 4, 5, 6}),
+		Entry("suffixless records", int32(4), []int64{1, 2, 3, 4, 5}),
+	)
 })
 
 // wsgPlan is StreamingAgg(Scan(TypedRecord)) grouped by (val_string, val_bool,
