@@ -22,9 +22,7 @@ import (
 )
 
 // RFC-258: Record Layer index scans with each IndexFetchMethod against Java on
-// one cluster. The case list is Java's RemoteFetch* tests. ExecuteProperties
-// skip is not covered here: Go routes a skipped remote-fetch scan to the
-// ordinary scan, whose skip handling is covered on its own.
+// one cluster. The case list is Java's RemoteFetch* tests.
 
 type indexRemoteRequest struct {
 	Shape               string `json:"shape"`
@@ -40,6 +38,7 @@ type indexRemoteRequest struct {
 	ByteLimit           int64  `json:"byteLimit"`
 	TimeLimit           int64  `json:"timeLimit"`
 	Reverse             bool   `json:"reverse"`
+	Skip                int    `json:"skip"`
 	Snapshot            bool   `json:"snapshot"`
 	FailOnScanLimit     bool   `json:"failOnScanLimit"`
 	Continuation        string `json:"continuation"`
@@ -300,7 +299,7 @@ var _ = Describe("Index remote fetch Record Layer Java conformance (RFC-258)", f
 		execution := recordlayer.DefaultExecuteProperties()
 		execution.ReturnedRowLimit, execution.ScannedRecordsLimit = req.RowLimit, req.ScannedLimit
 		execution.ScannedBytesLimit = req.ByteLimit
-		execution.FailOnScanLimitReached = req.FailOnScanLimit
+		execution.FailOnScanLimitReached, execution.Skip = req.FailOnScanLimit, req.Skip
 		if req.Snapshot {
 			execution.IsolationLevel = recordlayer.IsolationLevelSnapshot
 		}
@@ -368,13 +367,28 @@ var _ = Describe("Index remote fetch Record Layer Java conformance (RFC-258)", f
 		page.RemoteFetches = store.Context().Timer().GetCount(recordlayer.CountRemoteFetch)
 		return page
 	}
-	compare := func(req indexRemoteRequest) indexRemotePage {
+	// compareAgainst compares Go's scan of req with Java's scan of javaReq.
+	var compareAgainst func(req, javaReq indexRemoteRequest) indexRemotePage
+	compare := func(req indexRemoteRequest) indexRemotePage { return compareAgainst(req, req) }
+	compareAgainst = func(req, javaReq indexRemoteRequest) indexRemotePage {
 		var oracle indexRemotePage
-		Expect(java.InvokeAs(ctx, "scanIndexRemoteFetch", params(req), &oracle)).To(Succeed())
+		Expect(java.InvokeAs(ctx, "scanIndexRemoteFetch", params(javaReq), &oracle)).To(Succeed())
 		actual := scanGo(req)
+		if req.Skip > 0 && req.Method != "SCAN_AND_FETCH" {
+			// Go runs a skipped remote-fetch scan as SCAN_AND_FETCH.
+			Expect(actual.RemoteEntries).To(BeZero(), "%+v", req)
+			Expect(actual.RemoteFetches).To(BeZero(), "%+v", req)
+			oracle.RemoteEntries, oracle.RemoteFetches = 0, 0
+		}
 		// Scalars first, then row by row, so a mismatch is readable.
 		summary := func(page indexRemotePage) indexRemotePage {
 			page.Rows = nil
+			if page.ExceptionClass != "" && req.Method != "USE_REMOTE_FETCH" {
+				// SCAN_AND_FETCH's pipeline keeps pulling entries until its failing
+				// head's load completes (MapPipelinedCursor.java:136-164), so what a
+				// failed page scanned depends on timing in either engine.
+				page.ScannedRecords, page.ScannedBytes = 0, 0
+			}
 			return page
 		}
 		Expect(summary(actual)).To(Equal(summary(oracle)), "%+v", req)
@@ -597,6 +611,47 @@ var _ = Describe("Index remote fetch Record Layer Java conformance (RFC-258)", f
 					}
 					Expect(row.PrimaryKey).To(Equal(indexRemoteBytes(tuple.Tuple{int64(id)}.Pack())))
 				}
+			}
+		}
+	})
+
+	It("matches skipped scans, which Go runs as SCAN_AND_FETCH after remote fetch's checks", func() {
+		seed("basic", 12, false)
+		for _, reverse := range []bool{false, true} {
+			full := request("basic", "price")
+			full.Reverse, full.Method = reverse, "SCAN_AND_FETCH"
+			all := compare(full)
+			Expect(all.Rows).To(HaveLen(12))
+			for _, start := range []int{0, 4} {
+				for _, skip := range []int{1, 3, 7, 8, 12, 15} {
+					for _, method := range methods {
+						req := full
+						req.Method, req.Skip = method, skip
+						if start > 0 {
+							req.Continuation = all.Rows[start-1].Continuation
+						}
+						javaReq := req
+						if method != "SCAN_AND_FETCH" && skip >= len(all.Rows)-start {
+							// Java sends the skip as an offset on the mapped read; one past the
+							// end of the range is a request shape the server does not support.
+							javaReq.Method = "SCAN_AND_FETCH"
+						}
+						page := compareAgainst(req, javaReq)
+						Expect(page.ExceptionClass).To(BeEmpty())
+						Expect(page.Rows).To(Equal(all.Rows[min(start+skip, len(all.Rows)):]))
+					}
+				}
+			}
+			// The checks remote fetch makes still apply to a skipped scan.
+			for _, arm := range []string{"snapshot", "rank"} {
+				req := full
+				req.Method, req.Skip = "USE_REMOTE_FETCH", 2
+				if arm == "snapshot" {
+					req.Snapshot = true
+				} else {
+					req.IndexName = "rank"
+				}
+				Expect(compare(req).ExceptionClass).NotTo(BeEmpty(), arm)
 			}
 		}
 	})

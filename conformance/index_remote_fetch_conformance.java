@@ -62,6 +62,7 @@ class IndexRemoteFetchSteps extends ConformanceBase {
         public long byteLimit;
         public long timeLimit;
         public boolean reverse;
+        public int skip;
         public boolean snapshot;
         public boolean failOnScanLimit;
         public String continuation;
@@ -246,7 +247,7 @@ class IndexRemoteFetchSteps extends ConformanceBase {
             ExecuteProperties.Builder execution = ExecuteProperties.newBuilder().setReturnedRowLimit(request.rowLimit)
                     .setDefaultCursorStreamingMode(CursorStreamingMode.valueOf(request.streaming))
                     .setIsolationLevel(request.snapshot ? IsolationLevel.SNAPSHOT : IsolationLevel.SERIALIZABLE)
-                    .setFailOnScanLimitReached(request.failOnScanLimit);
+                    .setFailOnScanLimitReached(request.failOnScanLimit).setSkip(request.skip);
             if (request.scannedLimit > 0) execution.setScannedRecordsLimit(request.scannedLimit);
             if (request.byteLimit > 0) execution.setScannedBytesLimit(request.byteLimit);
             if (request.timeLimit > 0) {
