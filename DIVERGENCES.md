@@ -3096,6 +3096,51 @@ the runner's own commit in `ensureActive` with the same class (FDBRecordContext.
 its first commit whatever the outcome, and a second commit is refused with that class. Pinned by
 `record_context_active_fdb_test.go`.
 
+## Range-read retry bounds: deliberate libfdb_c divergence
+
+**Decision: keep Go's bounded storage-range retries.** This is an intentional
+availability/error-behavior difference from FoundationDB C++ **7.3.77**, not a
+claim of equivalent retry semantics. References to Go below are at `d5c031525`.
+
+Go's shared plain/mapped storage scanner, `rangeScanImpl`, keeps two counters
+for each invocation (`pkg/fdbgo/client/readpath.go:664-682`):
+
+- The relocation counter increments for `wrong_shard_server`,
+  `all_alternatives_failed`, or a maybe-delivered connection failure. With
+  `maxRelocateRetries = 5`, the sixth qualifying failure returns **1007
+  `transaction_too_old`**, before another relocation; the first five invalidate
+  the shard's cached location and retry (`readpath.go:671`, `:773-800`).
+- The reply-timeout counter allows **10 re-sends** of the same shard request.
+  `maxReadTimeoutRetries = 10` and the pre-incremented `> 10` check mean that
+  **the eleventh reply timeout** returns synthesized **1007**, not the tenth
+  (`readpath.go:33-40`, `:755-771`). The internal `errReplyTimeout` comes from
+  the RPC reply timer, not a caller cancellation (`pkg/fdbgo/client/rpc.go:53-71`).
+
+These caps apply if no caller deadline/cancellation or configured transaction
+timeout ends the read first. They do not prove the server rejected an aged read
+version: Go can synthesize 1007 solely because its retry budget ran out. A
+transaction retry can then obtain a fresh read version; the caps are per scanner
+invocation, not a total application-level retry limit.
+
+C++'s `getRange` invalidates locations and retries `all_alternatives_failed`, or
+enters the exact-range fallback on `wrong_shard_server`, without this attempt cap
+(`fdbclient/NativeAPI.actor.cpp:4858-4873`). The fallback's relocation loop also
+has no such cap (`:4271-4281`, `:4420-4433`). `loadBalance` retries alternatives
+with backoff rather than imposing Go's terminal per-read reply-timeout count
+(`fdbrpc/include/fdbrpc/LoadBalance.actor.h:344-377`, `:570-591`, `:664-728`).
+
+C++'s transaction timeout defaults to **0 (disabled)**
+(`fdbclient/ReadYourWrites.actor.cpp:2078-2082`, `:1576-1578`), so absent a
+configured timeout its retry loops can continue indefinitely while failures
+persist; a storage error such as an aged-read 1007 can still end the read.
+Setting `TIMEOUT` arms the transaction timebomb, which reports **1031
+`transaction_timed_out`** (`ReadYourWrites.actor.cpp:2570-2573`, `:1567-1573`;
+`flow/include/flow/error_definitions.h:43`, `:58`).
+`fdbclient/ClientKnobs.cpp:62` sets the wrong-shard retry delay to 0.01 seconds;
+`:94` sets a timebomb polling interval, **not** a default transaction timeout.
+The Go comment at `readpath.go:671` mentioning a C++ "default 5s" is not the
+C++ transaction-timeout default and must not be read as one.
+
 ## An auto-continuing cursor also retries a transaction timeout
 
 `AutoContinuingCursor` retries what Java's `FDBExceptions.isRetriable` retries (a
