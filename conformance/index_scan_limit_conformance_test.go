@@ -246,8 +246,19 @@ func scanLimitMetadata() *recordlayer.RecordMetaData {
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
 	builder.SetStoreRecordVersions(true)
+	bitmap := recordlayer.NewBitmapValueIndex("bitmap",
+		recordlayer.GroupBy(recordlayer.Field("order_id"), recordlayer.Field("price"))).SetSubspaceKey("bitmap")
+	bitmap.Options[recordlayer.IndexOptionBitmapValueEntrySize] = "4"
 	builder.AddIndex("Order", recordlayer.NewIndex("price", recordlayer.Field("price")).SetSubspaceKey("price"))
 	builder.AddIndex("Order", recordlayer.NewVersionIndex("version", recordlayer.VersionKey()).SetSubspaceKey("version"))
+	builder.AddIndex("Order", recordlayer.NewCountIndex("count", recordlayer.GroupAll(recordlayer.Field("price"))).SetSubspaceKey("count"))
+	builder.AddIndex("Order", recordlayer.NewMinEverTupleIndex("min_ever_tuple",
+		recordlayer.GroupBy(recordlayer.Field("order_id"), recordlayer.Field("price"))).SetSubspaceKey("min_ever_tuple"))
+	builder.AddIndex("Order", recordlayer.NewMaxEverTupleIndex("max_ever_tuple",
+		recordlayer.GroupBy(recordlayer.Field("order_id"), recordlayer.Field("price"))).SetSubspaceKey("max_ever_tuple"))
+	builder.AddIndex("Order", recordlayer.NewMaxEverVersionIndex("max_ever_version",
+		recordlayer.GroupBy(recordlayer.VersionKey(), recordlayer.Field("price"))).SetSubspaceKey("max_ever_version"))
+	builder.AddIndex("Order", bitmap)
 	metadata, err := builder.Build()
 	Expect(err).NotTo(HaveOccurred())
 	return metadata
@@ -371,10 +382,15 @@ var _ = Describe("Ordinary index cursor Java limit conformance", func() {
 		if req.Continuation == "" {
 			continuation = nil
 		}
+		byGroup := index.Type != recordlayer.IndexTypeValue && index.Type != recordlayer.IndexTypeVersion
 		entryRow := func(entry *recordlayer.IndexEntry) scanLimitRow {
+			primaryKey := ""
+			if !byGroup {
+				primaryKey = scanLimitBytes(entry.PrimaryKey().Pack())
+			}
 			return scanLimitRow{
 				IndexKey: scanLimitBytes(entry.Key.Pack()), IndexValue: scanLimitBytes(entry.Value.Pack()),
-				PrimaryKey: scanLimitBytes(entry.PrimaryKey().Pack()),
+				PrimaryKey: primaryKey,
 			}
 		}
 		var page scanLimitPage
@@ -403,6 +419,8 @@ var _ = Describe("Ordinary index cursor Java limit conformance", func() {
 				}
 				return row
 			})
+		} else if byGroup {
+			page = scanLimitDrain(ctx, store.ScanIndexByType(index, recordlayer.IndexScanByGroup, recordlayer.TupleRangeAll, continuation, properties), execution.ScanState, entryRow)
 		} else {
 			page = scanLimitDrain(ctx, store.ScanIndex(index, recordlayer.TupleRangeAll, continuation, properties), execution.ScanState, entryRow)
 		}
@@ -435,6 +453,13 @@ var _ = Describe("Ordinary index cursor Java limit conformance", func() {
 				for _, reverse := range []bool{false, true} {
 					check(scanLimitRequest{IndexName: index, Records: records, Reverse: reverse, Streaming: "ITERATOR"})
 				}
+			}
+		}
+	}
+	forEachGroupScan := func(check func(scanLimitRequest)) {
+		for _, index := range []string{"count", "min_ever_tuple", "max_ever_tuple", "max_ever_version", "bitmap"} {
+			for _, reverse := range []bool{false, true} {
+				check(scanLimitRequest{IndexName: index, Reverse: reverse, Streaming: "ITERATOR"})
 			}
 		}
 	}
@@ -643,6 +668,79 @@ var _ = Describe("Ordinary index cursor Java limit conformance", func() {
 				want.BeginOffset = math.MaxInt32
 			}
 			Expect(page.Selectors).To(Equal([]scanLimitSelectors{want}))
+		})
+	})
+	It("applies Skip as selector offsets on COUNT, MIN/MAX_EVER_TUPLE, MAX_EVER_VERSION and BITMAP_VALUE cursors", func() {
+		compareGroup := func(req scanLimitRequest) scanLimitPage {
+			var oracle scanLimitPage
+			Expect(java.InvokeAs(ctx, "scanIndexScanLimits", map[string]any{
+				"clusterFile": env.ClusterFile, "tenantName": env.TenantName, "subspace": BytesToIntArray(ks.Bytes()), "request": req,
+			}, &oracle)).To(Succeed())
+			got := scanGo(req)
+			Expect(got.ExceptionClass).To(Equal(oracle.ExceptionClass))
+			Expect(got.Rows).To(Equal(oracle.Rows), "index=%s reverse=%v row=%d skip=%d cont=%s",
+				req.IndexName, req.Reverse, req.RowLimit, req.Skip, req.Continuation)
+			Expect(got.Reason).To(Equal(oracle.Reason))
+			Expect(got.Continuation).To(Equal(oracle.Continuation))
+			Expect(got.End).To(Equal(oracle.End))
+			Expect(got.ScannedBytes).To(Equal(oracle.ScannedBytes))
+			Expect(got.Selectors).To(Equal(oracle.Selectors))
+			return oracle
+		}
+		forEachGroupScan(func(req scanLimitRequest) {
+			baseline := compareGroup(req)
+			Expect(baseline.Rows).To(HaveLen(count))
+			for _, skip := range []int{1, 3, count, count + 1, math.MaxInt32 - 1} {
+				req.Skip = skip
+				page := compareGroup(req)
+				Expect(page.Rows).To(Equal(baseline.Rows[min(skip, count):]))
+				Expect(page.Reason).To(Equal("SOURCE_EXHAUSTED"))
+				Expect(page.Selectors).To(HaveLen(1))
+				if req.Reverse {
+					Expect(page.Selectors[0].EndOffset).To(Equal(1 - skip))
+				} else {
+					Expect(page.Selectors[0].BeginOffset).To(Equal(1 + skip))
+				}
+			}
+			// A resumed page re-applies the caller's Skip after its continuation.
+			req.Skip, req.RowLimit = 2, 0
+			for position, row := range baseline.Rows {
+				req.Continuation = row.Continuation
+				Expect(compareGroup(req).Rows).To(Equal(baseline.Rows[min(position+3, count):]))
+			}
+			req.Skip, req.RowLimit, req.Continuation = 1, 2, ""
+			first := compareGroup(req)
+			Expect(first.Rows).To(Equal(baseline.Rows[1:3]))
+			req.Continuation = first.Continuation
+			second := scanGo(req)
+			Expect(second.Rows).To(Equal(baseline.Rows[4:6]))
+			req.Continuation = second.Rows[len(second.Rows)-1].Continuation
+			Expect(compareGroup(req).Rows).To(BeEmpty())
+
+			// Saturates Skip=MaxInt32 and 1<<32 selector offsets where Java's MaxInt32 wraps.
+			probe := scanLimitRequest{IndexName: req.IndexName, Reverse: req.Reverse, Streaming: "ITERATOR", Skip: math.MaxInt32, SelectorsOnly: true}
+			var oracle scanLimitPage
+			Expect(java.InvokeAs(ctx, "scanIndexScanLimits", map[string]any{
+				"clusterFile": env.ClusterFile, "tenantName": env.TenantName, "subspace": BytesToIntArray(ks.Bytes()), "request": probe,
+			}, &oracle)).To(Succeed())
+			Expect(oracle.Selectors).To(HaveLen(1))
+			want := oracle.Selectors[0]
+			if req.Reverse {
+				Expect(want.EndOffset).To(Equal(1 - math.MaxInt32))
+				want.EndOffset = 2 - math.MaxInt32
+			} else {
+				Expect(want.BeginOffset).To(Equal(math.MinInt32))
+				want.BeginOffset = math.MaxInt32
+			}
+			for _, hugeSkip := range []int{math.MaxInt32, 1 << 32} {
+				hugeReq := scanLimitRequest{IndexName: req.IndexName, Reverse: req.Reverse, Streaming: "ITERATOR", Skip: hugeSkip}
+				page := scanGo(hugeReq)
+				Expect(page.ExceptionClass).To(BeEmpty())
+				Expect(page.Rows).To(BeEmpty())
+				Expect(page.Reason).To(Equal("SOURCE_EXHAUSTED"))
+				Expect(page.RangeOptions).To(Equal(oracle.RangeOptions))
+				Expect(page.Selectors).To(Equal([]scanLimitSelectors{want}))
+			}
 		})
 	})
 	It("accepts only the three held schedules and rejects unsafe requests before opening a Java gate", func() {

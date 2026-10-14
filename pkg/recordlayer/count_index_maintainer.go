@@ -104,7 +104,11 @@ func (c *countKVCursor) initIterator() error {
 			limit = 1
 		}
 		options.Limit = saturatingAdd(limit, 1)
+		if c.scanProps.CursorStreamingMode == StreamingModeWantAll {
+			options.Mode = fdb.StreamingModeExact
+		}
 	}
+	r := indexSkipRange(rng, c.scanProps.ExecuteProperties.Skip, options.Reverse)
 
 	// Honor the requested isolation level, exactly as Java's KeyValueCursorBase does:
 	// transaction = context.readTransaction(scanProperties.getExecuteProperties()
@@ -125,9 +129,9 @@ func (c *countKVCursor) initIterator() error {
 	// That probe wants the conflict; this read must not have one. Do not unify them.
 	var rangeResult fdb.RangeResult
 	if c.scanProps.ExecuteProperties.IsolationLevel == SnapshotIsolation {
-		rangeResult = c.tx.Snapshot().GetRange(rng, options)
+		rangeResult = c.tx.Snapshot().GetRange(r, options)
 	} else {
-		rangeResult = c.tx.GetRange(rng, options)
+		rangeResult = c.tx.GetRange(r, options)
 	}
 	c.iterator = rangeResult.Iterator()
 	return nil

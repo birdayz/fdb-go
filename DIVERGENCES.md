@@ -1127,7 +1127,9 @@ upstream report.
 
 ## Index scan Skip (`ExecuteProperties.Skip`)
 
-Ordinary index cursors apply Skip as Java's selector offsets (`KeyValueCursorBase.java:345-352`);
+Index cursors (ordinary VALUE, VERSION, RANK, leaderboard and PERMUTED_MIN/MAX
+plus COUNT/atomic, MIN/MAX_EVER_TUPLE, MAX_EVER_VERSION and BITMAP_VALUE) apply
+Skip as Java's selector offsets (`KeyValueCursorBase.java:345-352`);
 `docs/compatibility.md` describes the shared behavior. The differences:
 
 ### Forward `Integer.MAX_VALUE`: saturated, not wrapped
@@ -1159,15 +1161,6 @@ resolves and, in a serializable transaction, adds them to the read-conflict rang
 Skip over a large keyspace can fail before resolving (the resolver stops after 2^28 keys,
 `ryw_getkey.go:567`, or the transaction ages out). The rows returned are the same. Tracked in
 TODO.md for `pkg/fdbgo`.
-
-### COUNT/atomic, MIN/MAX_EVER and BITMAP_VALUE scans ignore Skip
-
-Java scans these through the same `KeyValueCursor` (`AtomicMutationIndexMaintainer.java:114-121`,
-`BitmapValueIndexMaintainer.java:148`, both via `StandardIndexMaintainer.java:128-135`), so a
-direct BY_GROUP scan with Skip skips entries. Go's `countKVCursor` (COUNT/SUM and, through
-`newTupleValueIndexCursor`, MIN/MAX_EVER_TUPLE and MAX_EVER_VERSION,
-`max_ever_version_index_maintainer.go:127-129`) and `bitmapKVCursor` ignore it. The query executor
-clears Skip before these scans. Tracked in TODO.md.
 
 ### The query executor skips above the index cursor
 

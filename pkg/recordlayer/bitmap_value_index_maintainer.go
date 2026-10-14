@@ -554,13 +554,17 @@ func (c *bitmapKVCursor) initIterator() error {
 			limit = 1
 		}
 		options.Limit = saturatingAdd(limit, 1)
+		if c.scanProps.CursorStreamingMode == StreamingModeWantAll {
+			options.Mode = fdb.StreamingModeExact
+		}
 	}
+	r := indexSkipRange(rng, c.scanProps.ExecuteProperties.Skip, options.Reverse)
 
 	var rangeResult fdb.RangeResult
 	if c.scanProps.ExecuteProperties.IsolationLevel == SnapshotIsolation {
-		rangeResult = c.tx.Snapshot().GetRange(rng, options)
+		rangeResult = c.tx.Snapshot().GetRange(r, options)
 	} else {
-		rangeResult = c.tx.GetRange(rng, options)
+		rangeResult = c.tx.GetRange(r, options)
 	}
 
 	c.iterator = rangeResult.Iterator()
