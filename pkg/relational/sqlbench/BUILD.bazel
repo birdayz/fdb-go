@@ -6,7 +6,10 @@ load("@rules_go//go:def.bzl", "go_test")
 #     -test.run='^$' -test.bench='^BenchmarkFDB_' -test.benchmem
 go_test(
     name = "sqlbench_test",
-    srcs = ["common_bench_test.go"],
+    srcs = [
+        "common_bench_test.go",
+        "domain_fdb_test.go",
+    ],
     deps = [
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",

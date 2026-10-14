@@ -24,11 +24,16 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/core/keyspace"
-	_ "fdb.dev/pkg/relational/sqldriver"
+	"fdb.dev/pkg/relational/sqldriver"
 	"fdb.dev/pkg/testutil/benchcluster"
 )
 
-func TestMain(m *testing.M) { os.Exit(benchcluster.Main(m)) }
+func TestMain(m *testing.M) {
+	// A database path is /DOMAIN/DATABASE under a registered domain; the SQL
+	// suites' testkit registers FRL the same way.
+	sqldriver.RegisterDomainIfNotExists("FRL")
+	os.Exit(benchcluster.Main(m))
+}
 
 // benchSeq gives each benchmark body a fresh database; Go runs a body more
 // than once to size b.N.

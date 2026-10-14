@@ -32,7 +32,12 @@ import (
 	"fdb.dev/pkg/testutil/benchcluster"
 )
 
-func TestMain(m *testing.M) { os.Exit(benchcluster.Main(m)) }
+func TestMain(m *testing.M) {
+	// A database path is /DOMAIN/DATABASE under a registered domain; the SQL
+	// suites' testkit registers FRL the same way.
+	sqldriver.RegisterDomainIfNotExists("FRL")
+	os.Exit(benchcluster.Main(m))
+}
 
 const (
 	rowCount = 1000

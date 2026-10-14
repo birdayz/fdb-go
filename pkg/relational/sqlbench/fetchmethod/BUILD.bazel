@@ -4,7 +4,10 @@ load("@rules_go//go:def.bzl", "go_test")
 # no tests; run its benchmarks explicitly.
 go_test(
     name = "fetchmethod_test",
-    srcs = ["fetchmethod_bench_test.go"],
+    srcs = [
+        "domain_fdb_test.go",
+        "fetchmethod_bench_test.go",
+    ],
     deps = [
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",

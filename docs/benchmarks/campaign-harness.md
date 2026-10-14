@@ -12,7 +12,7 @@ Copy each set byte-for-byte into every tree it lists, then build there.
 
 | Set | Paths | Trees |
 |---|---|---|
-| common | `pkg/testutil/benchcluster/` (whole directory), `pkg/recordlayer/benchmark_test.go`, `pkg/relational/sqlbench/BUILD.bazel`, `pkg/relational/sqlbench/common_bench_test.go` | 9a, 3824, PR2, final |
+| common | `pkg/testutil/benchcluster/` (whole directory), `pkg/recordlayer/benchmark_test.go`, `pkg/relational/sqlbench/BUILD.bazel`, `pkg/relational/sqlbench/common_bench_test.go`, `pkg/relational/sqlbench/domain_fdb_test.go` | 9a, 3824, PR2, final |
 | remote | `pkg/recordlayer/benchfetch/BUILD.bazel`, `fixture_test.go`, `matrix_bench_test.go` | PR2, final |
 | final-only | `pkg/recordlayer/benchfetch/planskip/`, `pkg/relational/sqlbench/fetchmethod/` | final |
 | client scripts | `tools/clientbench/scripts/` (run on the host from the final tree) | host |
@@ -43,7 +43,12 @@ before any timing; a compile failure is a harness defect, not a skipped cell.
 | D method | `//pkg/relational/sqlbench/fetchmethod:fetchmethod_test` | `BenchmarkSQLIndexFetch/query={rows10,rows1000}/method=…` |
 | A (client) | `//tools/clientbench/cmd/clientbench:clientbench_{go,cgo}` | `scripts/matrix_plan.py`, then `scripts/run.py` and `scripts/analyze.py` |
 
-None of the new targets has tests; `bazelisk test` builds them and runs them
+The SQL targets' `TestMain` registers the `FRL` database domain, as the SQL
+test suites' testkit does; without it every `CREATE DATABASE /FRL/...` fails
+with INVALID_PATH. Each SQL target has one real-FDB test,
+`TestFDB_BenchmarkDatabasePathIsValid`, that creates and drops an `/FRL`
+database through the driver and fails if that registration is missing. The
+other new targets have no tests; `bazelisk test` builds them and runs them
 empty. Run benchmarks from the built binary with `-test.run='^$'`.
 
 ## What the harness checks
