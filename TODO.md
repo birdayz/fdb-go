@@ -1515,13 +1515,6 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   overshooting index-scan Skip reads, and in serializable mode conflicts on, keys past the
   range. libfdb_c resolves within the read (ReadYourWrites.actor.cpp:725-760) and conflicts
   on the requested range (:246-282). Client team.
-- [ ] Executor: pass Skip to the index cursor as Java's plans do
-  (RecordQueryIndexPlan.java:328/333/342, RecordQueryCoveringIndexPlan.java:115,
-  RecordQueryFetchFromPartialRecordPlan.java:130). Go clears it for the leaf
-  (`scan_range_set_cursor.go:169`) and skips above (`executor.go:505`, `:553`), charging
-  skipped entries to scanned records/bytes and loading their records. DIVERGENCES.md.
-  Push-down is correct only for a single range: a Go index plan can bind several ranges
-  (`scan_range_set_cursor.go`), and pushing Skip into each leaf would skip once per range.
 
 ## Test lanes and test-speed work (committed with the temporal change)
 

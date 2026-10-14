@@ -172,6 +172,50 @@ func TestIntegration_IndexFetchMethod_RemoteFetchRuns(t *testing.T) {
 	}
 }
 
+// TestIntegration_IndexFetchMethod_PositiveSkip pins where a plan's Skip goes
+// on a single-range scan. SCAN_AND_FETCH passes it to the index cursor, so
+// skipped entries' records are never loaded. The remote methods keep it above
+// their leaves: a leaf with Skip would run as SCAN_AND_FETCH (ScanIndexRemoteFetch),
+// so the scan maps every entry and loads no record.
+func TestIntegration_IndexFetchMethod_PositiveSkip(t *testing.T) {
+	t.Parallel()
+	store := setupStore(t)
+	seedPricedOrders(t, store, 20)
+	const skip = 3
+	for _, reverse := range []bool{false, true} {
+		want := idRange(skip, 19)
+		if reverse {
+			want = idRange(19-skip, 0)
+		}
+		for _, method := range indexFetchMethods {
+			inUncommittedStore(t, store, func(s *recordlayer.FDBRecordStore, timer *recordlayer.StoreTimer) {
+				props := recordlayer.DefaultExecuteProperties()
+				props.Skip = skip
+				page := executeFetch(t, s, priceScan(method, reverse), nil, props)
+				if page.err != nil || !slices.Equal(page.ids, want) {
+					t.Fatalf("%v reverse=%v: rows %v err %v, want %v", method, reverse, page.ids, page.err, want)
+				}
+				remoteFetches := timer.GetCount(recordlayer.CountRemoteFetch)
+				remoteEntries := timer.GetCount(recordlayer.EventScanRemoteFetchEntry)
+				indexScans := timer.GetCount(recordlayer.EventScanIndex)
+				loads := timer.GetCount(recordlayer.EventLoadRecord)
+				if method == indexfetch.ScanAndFetch {
+					if remoteFetches != 0 || remoteEntries != 0 || indexScans == 0 || loads != int64(len(want)) {
+						t.Fatalf("SCAN_AND_FETCH reverse=%v: remote fetches %d, entries %d, index scans %d, record loads %d; want 0, 0, >0, %d",
+							reverse, remoteFetches, remoteEntries, indexScans, loads, len(want))
+					}
+					return
+				}
+				// Every entry, the skipped ones and the exhausted result included.
+				if remoteFetches != 1 || remoteEntries != int64(len(want)+skip+1) || indexScans != 0 || loads != 0 {
+					t.Fatalf("%v reverse=%v: remote fetches %d, entries %d, index scans %d, record loads %d; want 1, %d, 0, 0",
+						method, reverse, remoteFetches, remoteEntries, indexScans, loads, len(want)+skip+1)
+				}
+			})
+		}
+	}
+}
+
 // TestIntegration_IndexFetchMethod_ContinuationsResumeAcrossMethods is
 // RemoteFetchTest.indexPrefetchWithMixedContinuationTest (:210): Java's
 // continuation planHash leaves the method out (RecordQueryIndexPlan.java

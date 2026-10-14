@@ -425,21 +425,32 @@ func openIndexEntryCursor(
 	evalCtx *EvaluationContext,
 	continuation []byte,
 	props recordlayer.ExecuteProperties,
-) (recordlayer.RecordCursor[*recordlayer.IndexEntry], error) {
+) (recordlayer.RecordCursor[*recordlayer.IndexEntry], int, error) {
 	scan, err := bindIndexScan(p, fingerprintSalt, compatibleFingerprintSalts, store, evalCtx, props)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	maintainer, err := store.GetIndexMaintainer(scan.index)
 	if err != nil {
-		return nil, fmt.Errorf("executor: getting index maintainer for %q: %w", p.GetIndexName(), err)
+		return nil, 0, fmt.Errorf("executor: getting index maintainer for %q: %w", p.GetIndexName(), err)
 	}
-	return openIndexScanRanges(scan, continuation,
+	pushSkip := props.Skip > 0 && indexScanCanPushSkip(scan.index.Type, scan.rangeSet)
+	outerSkip := props.Skip
+	if pushSkip {
+		outerSkip = 0
+	}
+	cursor, err := openIndexScanRanges(scan, continuation,
 		func(
 			scanRange recordlayer.TupleRange,
 			innerContinuation []byte,
 			childProperties recordlayer.ScanProperties,
 		) (recordlayer.RecordCursor[*recordlayer.IndexEntry], error) {
+			if pushSkip {
+				// One unfiltered range is Java's index cursor shape: skip before
+				// charging or fetching, without widening the returned-row budget.
+				childProperties.ExecuteProperties.Skip = props.Skip
+				childProperties.ExecuteProperties.ReturnedRowLimit = props.ReturnedRowLimit
+			}
 			// Instrumented here because this path never touches FDBRecordStore.ScanIndex:
 			// the per-range factory needs the maintainer directly, so the store method
 			// that would otherwise count the scan is bypassed entirely.
@@ -447,6 +458,29 @@ func openIndexEntryCursor(
 				maintainer.Scan(scanRange, innerContinuation, childProperties)), nil
 		},
 		func(e *recordlayer.IndexEntry) *recordlayer.IndexEntry { return e })
+	return cursor, outerSkip, err
+}
+
+// indexScanCanPushSkip recognizes a single ordinary KV scan with no residual
+// key filter. Other cursor families and combined ranges retain logical skipping.
+// Remote-fetch leaves never take Skip: ScanIndexRemoteFetch would run a skipped
+// scan as SCAN_AND_FETCH, so remoteFetchIndexRecords keeps one outer Skip.
+func indexScanCanPushSkip(indexType string, spec scanRangeSetSpec) bool {
+	switch indexType {
+	case recordlayer.IndexTypeValue, recordlayer.IndexTypeVersion, recordlayer.IndexTypeRank,
+		recordlayer.IndexTypeTimeWindowLeaderboard, recordlayer.IndexTypePermutedMin, recordlayer.IndexTypePermutedMax:
+	default:
+		return false
+	}
+	if spec.empty || spec.keyFilter != nil {
+		return false
+	}
+	for _, count := range spec.alternativeCounts {
+		if count != 1 {
+			return false
+		}
+	}
+	return true
 }
 
 // boundIndexScan is an index scan's metadata, readability gate and range set,
@@ -538,12 +572,12 @@ func executeIndexScan(
 		props.ScanState = recordlayer.NewScanLimiterState()
 	}
 	scanAndFetch := func(continuation []byte) (recordlayer.RecordCursor[QueryResult], error) {
-		indexCursor, err := openIndexEntryCursor(p, fingerprintSalt, salts, store, evalCtx, continuation, props)
+		indexCursor, outerSkip, err := openIndexEntryCursor(p, fingerprintSalt, salts, store, evalCtx, continuation, props)
 		if err != nil {
 			return nil, err
 		}
 		return applySkipLimit(newIndexFetchCursor(indexCursor, store, props.ScanState),
-			props.Skip, props.ReturnedRowLimit), nil
+			outerSkip, props.ReturnedRowLimit), nil
 	}
 	switch effectiveIndexFetchMethod(p.GetIndexFetchMethod(), store.Context().APIVersion()) {
 	case indexfetch.ScanAndFetch:
@@ -646,7 +680,7 @@ func executeCoveringIndexScan(
 	if err != nil {
 		return nil, fmt.Errorf("executor: building legacy scan execution identity for %q: %w", p.GetIndexName(), err)
 	}
-	indexCursor, err := openIndexEntryCursor(
+	indexCursor, outerSkip, err := openIndexEntryCursor(
 		p.GetIndexPlan(), fingerprintSalt, []string{legacyFingerprintSalt},
 		store, evalCtx, continuation, props)
 	if err != nil {
@@ -673,7 +707,7 @@ func executeCoveringIndexScan(
 		inner:  indexCursor,
 		reader: reader,
 		binder: entryBinder{outer: evalCtx},
-	}, props.Skip, props.ReturnedRowLimit), nil
+	}, outerSkip, props.ReturnedRowLimit), nil
 }
 
 // vectorEfSearch is the efSearch a scan runs with. A VECTOR index runs Java's

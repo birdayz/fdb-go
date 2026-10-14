@@ -428,8 +428,8 @@ var _ = Describe("Index fetch method planner and SQL Java conformance (RFC-258)"
 						if oracle.IDs == nil {
 							oracle.IDs = []int64{}
 						}
-						// A plan clears skip on its range leaves and applies it above
-						// the range set. Java offsets its mapped read before batching.
+						// A remote-fetch plan clears skip on its range leaves and applies
+						// it above the range set. Java offsets its mapped read before batching.
 						// Pin both boundary positions and the second skip on fallback.
 						if write && req.Skip == 3 && method != "SCAN_AND_FETCH" {
 							goRemoteRows, javaRemoteRows, entries := 76, 79, int64(80)

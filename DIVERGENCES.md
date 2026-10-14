@@ -1162,15 +1162,24 @@ Skip over a large keyspace can fail before resolving (the resolver stops after 2
 `ryw_getkey.go:567`, or the transaction ages out). The rows returned are the same. Tracked in
 TODO.md for `pkg/fdbgo`.
 
-### The query executor skips above the index cursor
+### Single-range query index scans pass Skip to the index cursor (RESOLVED)
 
 Java's index plans pass Skip to the index cursor: `RecordQueryIndexPlan.java:328/333/342` hand
 `executeProperties.asScanProperties(reverse)` to `scanIndex`, and the covering and fetch plans pass
 the same properties through (`RecordQueryCoveringIndexPlan.java:115`,
-`RecordQueryFetchFromPartialRecordPlan.java:130`). Go's executor clears Skip for the leaf
-(`scan_range_set_cursor.go:169`) and skips above it (`executor.go:505`, `:553`), so it charges the
-skipped entries to the scanned-record and byte limits and loads their records before discarding
-them. Pre-existing; tracked in TODO.md.
+`RecordQueryFetchFromPartialRecordPlan.java:130`). Go now does the same when an ordinary index
+scan binds one physical range with no residual key filter. Skipped entries are not charged to
+scanned-record or byte limits, and fetching plans do not load their records.
+
+Go's multi-range `ScanRangeSet` and residual key-filter shapes have no equivalent single Java
+index cursor. They keep one outer Skip over the combined, admitted entries rather than skipping
+once per physical range or skipping entries the filter would reject. The outer returned-row limit
+remains; other index types keep the executor's outer Skip.
+
+Remote-fetch leaves are the exception: a USE_REMOTE_FETCH or WITH_FALLBACK plan keeps one outer
+Skip above its mapped reads, because a leaf with Skip would run as SCAN_AND_FETCH (see "Index
+remote fetch"). Its fallback scan passes Skip to the index cursor like any ordinary plan. Pinned
+by the executor's real-FDB index-skip and index-fetch-method regressions.
 
 ## Plan Architecture: Go collapses Java class hierarchies
 
@@ -4406,11 +4415,13 @@ orphan behavior and fallback, and the planner stamps the SQL option
   `scan_index` rather than `scan_remote_fetch_entry`. WITH_FALLBACK still wraps it:
   a failure re-runs the ordinary scan from the last returned row with the original
   skip, as Java's fallback does after a failed remote page.
-- **Skip and row limit of an index plan.** `executeIndexScan` applies skip and
-  row limit above the scan's range set. Its leaves clear skip and increase the
-  read limit to include skipped entries; they do not reach the store-level
-  `Skip > 0` ordinary-scan path above. Java's `RecordQueryIndexPlan` instead
-  passes skip into the mapped read as a selector offset, before batching.
+- **Skip and row limit of an index plan.** A remote-fetch index plan applies
+  skip and row limit above the scan's range set. Its remote-fetch leaves clear
+  skip and increase the read limit to include skipped entries; they do not reach
+  the store-level `Skip > 0` ordinary-scan path above; a SCAN_AND_FETCH plan
+  and the fallback scan pass skip to a single-range index cursor. Java's
+  `RecordQueryIndexPlan` instead passes skip into the mapped read as a selector
+  offset, before batching.
   This changes the mapped batch's failure boundary, not just counters: with
   500 Order records, a local write at ID 100 (399 in reverse), and skip 3,
   USE_REMOTE_FETCH returns 76 rows in Go versus 79 in Java forward, or 72
