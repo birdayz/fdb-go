@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"math"
 	"testing"
 	"time"
 
@@ -283,6 +284,8 @@ func TestFDB_RecordScanJavaSizesAndLimits(t *testing.T) {
 		}{
 			{DefaultExecuteProperties(), 6},
 			{limits(func(e *ExecuteProperties) { e.Skip = 1 }), 5},
+			{limits(func(e *ExecuteProperties) { e.Skip = math.MaxInt32 }), 0},
+			{limits(func(e *ExecuteProperties) { e.Skip = 1 << 32 }), 0},
 			{limits(func(e *ExecuteProperties) {
 				e.ReturnedRowLimit, e.ScannedRecordsLimit, e.TimeLimit = 1, 1, time.Nanosecond
 			}), 6},
@@ -336,6 +339,15 @@ func TestFDB_RecordScanJavaSizesAndLimits(t *testing.T) {
 		page = scanRecordPage(store, limited, false, nil)
 		if page.err != nil || len(page.rows) != 3 || page.last.GetNoNextReason() != ReturnLimitReached || limited.ScanState.RecordsScanned() != 4 {
 			t.Fatalf("row limit rows=%v reason=%v attempts=%d err=%v", page.pks(), page.last.GetNoNextReason(), limited.ScanState.RecordsScanned(), page.err)
+		}
+		for _, hugeSkip := range []int{math.MaxInt32, 1 << 32} {
+			for _, reverse := range []bool{false, true} {
+				huge := limits(func(e *ExecuteProperties) { e.Skip = hugeSkip })
+				page = scanRecordPage(store, huge, reverse, nil)
+				if page.err != nil || len(page.rows) != 0 || page.last.GetNoNextReason() != SourceExhausted {
+					t.Fatalf("huge skip=%d reverse=%v rows=%v reason=%v err=%v", hugeSkip, reverse, page.pks(), page.last.GetNoNextReason(), page.err)
+				}
+			}
 		}
 	})
 }

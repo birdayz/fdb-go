@@ -590,17 +590,7 @@ func (c *keyValueCursor) initIterator() error {
 	inner := c.scanProperties
 	inner.ExecuteProperties.ReturnedRowLimit = c.innerLimit
 	options := kvRangeOptions(inner)
-	var r fdb.Range = rng
-	if c.selectorSkip > 0 {
-		// KeyValueCursorBase skips by moving the begin (or reverse end) selector.
-		begin, end := fdb.FirstGreaterOrEqual(rng.Begin), fdb.FirstGreaterOrEqual(rng.End)
-		if c.reverse {
-			end.Offset -= c.selectorSkip
-		} else {
-			begin.Offset += c.selectorSkip
-		}
-		r = fdb.SelectorRange{Begin: begin, End: end}
-	}
+	r := indexSkipRange(rng, c.selectorSkip, c.reverse)
 	tx := c.store.context.Transaction()
 	var rangeResult fdb.RangeResult
 	if c.scanProperties.ExecuteProperties.IsolationLevel == SnapshotIsolation {
