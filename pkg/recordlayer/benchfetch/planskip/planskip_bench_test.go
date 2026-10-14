@@ -225,10 +225,10 @@ func benchPlan(b *testing.B, f *fixture, c cell, reverse bool, method indexfetch
 	props := recordlayer.DefaultExecuteProperties()
 	props.Skip = skip
 
-	run := func(timer *recordlayer.StoreTimer, rows []executor.QueryResult) ([]executor.QueryResult, error) {
+	run := func(timer *recordlayer.StoreTimer, rows []executor.QueryResult) ([]executor.QueryResult, recordlayer.NoNextReason, error) {
 		tx, err := f.db.CreateWritableTransaction()
 		if err != nil {
-			return rows, err
+			return rows, 0, err
 		}
 		rc := f.db.NewRecordContext(tx)
 		defer rc.Cancel()
@@ -237,30 +237,27 @@ func benchPlan(b *testing.B, f *fixture, c cell, reverse bool, method indexfetch
 		}
 		store, err := recordlayer.NewStoreBuilder().SetContext(rc).SetSubspace(f.ss).SetMetaDataProvider(f.md).Open()
 		if err != nil {
-			return rows, err
+			return rows, 0, err
 		}
 		cursor, err := executor.ExecutePlan(ctx, plan, store, executor.EmptyEvaluationContext(), nil, props)
 		if err != nil {
-			return rows, err
+			return rows, 0, err
 		}
 		defer cursor.Close()
 		for {
 			next, err := cursor.OnNext(ctx)
 			if err != nil {
-				return rows, err
+				return rows, 0, err
 			}
 			if !next.HasNext() {
-				if reason := next.GetNoNextReason(); reason != recordlayer.SourceExhausted {
-					return rows, fmt.Errorf("plan stopped with %v", reason)
-				}
-				return rows, nil
+				return rows, next.GetNoNextReason(), nil
 			}
 			rows = append(rows, next.GetValue())
 		}
 	}
-	verify := func(rows []executor.QueryResult) error {
-		if len(rows) != len(wantIDs) {
-			return fmt.Errorf("%d rows, want %d", len(rows), len(wantIDs))
+	verify := func(rows []executor.QueryResult, reason recordlayer.NoNextReason) error {
+		if len(rows) != len(wantIDs) || reason != recordlayer.SourceExhausted {
+			return fmt.Errorf("%d rows ending %v, want %d ending %v", len(rows), reason, len(wantIDs), recordlayer.SourceExhausted)
 		}
 		for i, row := range rows {
 			if err := checkOrder(wantIDs[i], row.Record); err != nil {
@@ -271,9 +268,9 @@ func benchPlan(b *testing.B, f *fixture, c cell, reverse bool, method indexfetch
 	}
 	audit := func(phase string) {
 		timer := recordlayer.NewStoreTimer()
-		rows, err := run(timer, nil)
+		rows, reason, err := run(timer, nil)
 		if err == nil {
-			err = verify(rows)
+			err = verify(rows, reason)
 		}
 		if err != nil {
 			b.Fatalf("%s audit: %v", phase, err)
@@ -308,11 +305,12 @@ func benchPlan(b *testing.B, f *fixture, c cell, reverse bool, method indexfetch
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
+		var reason recordlayer.NoNextReason
 		var err error
-		rows, err = run(nil, rows[:0])
+		rows, reason, err = run(nil, rows[:0])
 		b.StopTimer()
 		if err == nil {
-			err = verify(rows)
+			err = verify(rows, reason)
 		}
 		if err != nil {
 			b.Fatalf("operation %d: %v", i, err)

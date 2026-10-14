@@ -18,6 +18,10 @@ import uuid
 
 from r3_plan import cpus, digest
 
+COOLDOWN_SECONDS = 2
+QUIESCENCE_SECONDS = 1
+CAMPAIGN_CAP_SECONDS = 180
+
 
 def parse_arm(value):
     """NAME=BINARY@REVISION; the CGo arm is named cgo."""
@@ -62,12 +66,20 @@ def make_plan(args):
                                               here / 'run.py', here / 'analyze.py', here / 'r3_plan.py',
                                               here / 'matrix_plan.py', *args.pin]}
     width = max(3, *(len(n) for n in names))
+    if len({n.ljust(width, '_') for n in names}) != len(names):
+        raise ValueError('arm names must stay distinct when padded to equal length')
+    # run.py waits cooldown + quiescence before every run, inside its 180-second
+    # campaign cap; a plan whose waits alone exceed the cap can never finish.
+    waits = args.blocks * len(arms) * len(args.workload) * (COOLDOWN_SECONDS + QUIESCENCE_SECONDS)
+    if waits >= CAMPAIGN_CAP_SECONDS:
+        raise ValueError(f'{args.blocks} blocks x {len(arms)} arms x {len(args.workload)} workloads need '
+                         f'{waits}s of cooldown and quiescence alone; the campaign cap is {CAMPAIGN_CAP_SECONDS}s')
     go_revisions = {revision for name, _, revision in arms if name != 'cgo'}
     plan = dict(campaign='mx-' + args.campaign_id, source_commit=sorted(go_revisions)[0],
                 harness_id=args.harness_id, seed=args.seed, blocks=args.blocks,
-                cooldown_seconds=2, quiescence_seconds=1, max_busy_fraction=.15,
+                cooldown_seconds=COOLDOWN_SECONDS, quiescence_seconds=QUIESCENCE_SECONDS, max_busy_fraction=.15,
                 max_steal_fraction=.01, telemetry_seconds=1, cpu_sets=groups,
-                timeout_seconds=180, campaign_wall_cap_seconds=180,
+                timeout_seconds=CAMPAIGN_CAP_SECONDS, campaign_wall_cap_seconds=CAMPAIGN_CAP_SECONDS,
                 environment=dict(GOMAXPROCS=str(args.gomaxprocs), GOGC='100', GOMEMLIMIT='off', GODEBUG='',
                                  LC_ALL='C', TZ='UTC'),
                 workloads=[dict(name=w, iterations=args.iterations, warmup=args.warmup, workers=1)

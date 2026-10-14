@@ -18,6 +18,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -35,7 +36,6 @@ func TestMain(m *testing.M) { os.Exit(benchcluster.Main(m)) }
 
 const (
 	rowCount = 1000
-	dbPath   = "/FRL/BENCH_FETCH_METHOD"
 	schema   = "S"
 	// auditKey is the registered, timed backend's cluster_file key.
 	auditKey = "bench-fetch-method-audit"
@@ -47,71 +47,102 @@ type fixture struct {
 	prefix            int
 }
 
+// fixtureSeq names each benchmark body's database: Go runs a body more than
+// once (b.N sizing, -test.count), and every run gets fresh plan caches.
+var fixtureSeq atomic.Int64
+
 var (
-	fixtureOnce sync.Once
-	shared      *fixture
+	auditOnce sync.Once
+	auditDB   *recordlayer.FDBDatabase
+	auditErr  error
 )
 
 // loadFixture creates T (id, a = id, c = 'v<id>') with index IDX_A on a and
-// rowCount rows, once per process.
+// rowCount rows in a database of its own, dropping one an earlier process left
+// under the same name first and dropping it again when the benchmark ends.
 func loadFixture(b *testing.B) *fixture {
 	b.Helper()
+	ctx := context.Background()
 	clusterFile := benchcluster.ClusterFile(b)
-	fixtureOnce.Do(func() {
-		ctx := context.Background()
-		setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s", dbPath, clusterFile))
+	seq := fixtureSeq.Add(1)
+	dbPath := fmt.Sprintf("/FRL/BENCH_FETCH_METHOD_%d", seq)
+	tmpl := fmt.Sprintf("bench_fetch_method_tmpl_%d", seq)
+	drop := func() error {
+		catalog, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///__SYS?cluster_file=%s&schema=CATALOG", clusterFile))
 		if err != nil {
-			b.Fatalf("sql.Open: %v", err)
+			return err
 		}
-		defer setup.Close()
-		for _, stmt := range []string{
-			"CREATE DATABASE " + dbPath,
-			"CREATE SCHEMA TEMPLATE bench_fetch_method_tmpl " +
-				"CREATE TABLE T (id BIGINT, a BIGINT, c STRING, PRIMARY KEY (id)) CREATE INDEX idx_a ON T(a)",
-			"CREATE SCHEMA " + dbPath + "/" + schema + " WITH TEMPLATE bench_fetch_method_tmpl",
-		} {
-			if _, err := setup.ExecContext(ctx, stmt); err != nil {
-				b.Fatalf("%s: %v", stmt, err)
+		defer catalog.Close()
+		for _, stmt := range []string{"DROP DATABASE IF EXISTS " + dbPath, "DROP SCHEMA TEMPLATE IF EXISTS " + tmpl} {
+			if _, err := catalog.ExecContext(ctx, stmt); err != nil {
+				return fmt.Errorf("%s: %w", stmt, err)
 			}
 		}
-		f := &fixture{}
-		f.measured, err = sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", dbPath, clusterFile, schema))
-		if err != nil {
-			b.Fatalf("sql.Open: %v", err)
-		}
-		for first := 0; first < rowCount; first += 100 {
-			var values []string
-			for id := first; id < first+100; id++ {
-				values = append(values, fmt.Sprintf("(%d, %d, 'v%d')", id, id, id))
-			}
-			if _, err := f.measured.ExecContext(ctx, "INSERT INTO T VALUES "+strings.Join(values, ", ")); err != nil {
-				b.Fatalf("seed rows from %d: %v", first, err)
-			}
-		}
-		backend, err := fdbclient.Open(clusterFile)
-		if err != nil {
-			b.Fatalf("open audit backend: %v", err)
-		}
-		recordDB := recordlayer.NewFDBDatabaseWithBackend(backend)
-		sqldriver.RegisterBackend(auditKey, recordDB)
-		f.timer = sqldriver.EnableStoreTimer(auditKey)
-		f.audited, err = sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", dbPath, auditKey, schema))
-		if err != nil {
-			b.Fatalf("sql.Open audit: %v", err)
-		}
-		fdb.MustAPIVersion(730)
-		ss, err := keyspace.New(subspace.Sub()).LookupSchemaSubspace(ctx, recordDB, dbPath, schema)
-		if err != nil {
-			b.Fatalf("resolve store prefix: %v", err)
-		}
-		f.prefix = len(ss.Bytes())
-		auditLog(b, map[string]any{"phase": "fixture", "rows": rowCount, "prefix_bytes": f.prefix})
-		shared = f
-	})
-	if shared == nil {
-		b.Fatal("fixture initialization failed")
+		return nil
 	}
-	return shared
+	if err := drop(); err != nil {
+		b.Fatal(err)
+	}
+	// Registered first, so it runs after the pools close.
+	b.Cleanup(func() {
+		if err := drop(); err != nil {
+			b.Errorf("drop benchmark schema: %v", err)
+		}
+	})
+	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s", dbPath, clusterFile))
+	if err != nil {
+		b.Fatalf("sql.Open: %v", err)
+	}
+	defer setup.Close()
+	for _, stmt := range []string{
+		"CREATE DATABASE " + dbPath,
+		"CREATE SCHEMA TEMPLATE " + tmpl +
+			" CREATE TABLE T (id BIGINT, a BIGINT, c STRING, PRIMARY KEY (id)) CREATE INDEX idx_a ON T(a)",
+		"CREATE SCHEMA " + dbPath + "/" + schema + " WITH TEMPLATE " + tmpl,
+	} {
+		if _, err := setup.ExecContext(ctx, stmt); err != nil {
+			b.Fatalf("%s: %v", stmt, err)
+		}
+	}
+	f := &fixture{}
+	f.measured, err = sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", dbPath, clusterFile, schema))
+	if err != nil {
+		b.Fatalf("sql.Open: %v", err)
+	}
+	b.Cleanup(func() { f.measured.Close() })
+	for first := 0; first < rowCount; first += 100 {
+		var values []string
+		for id := first; id < first+100; id++ {
+			values = append(values, fmt.Sprintf("(%d, %d, 'v%d')", id, id, id))
+		}
+		if _, err := f.measured.ExecContext(ctx, "INSERT INTO T VALUES "+strings.Join(values, ", ")); err != nil {
+			b.Fatalf("seed rows from %d: %v", first, err)
+		}
+	}
+	auditOnce.Do(func() {
+		var backend fdb.BackendDatabase
+		backend, auditErr = fdbclient.Open(clusterFile)
+		if auditErr == nil {
+			auditDB = recordlayer.NewFDBDatabaseWithBackend(backend)
+			sqldriver.RegisterBackend(auditKey, auditDB)
+		}
+	})
+	if auditErr != nil {
+		b.Fatalf("open audit backend: %v", auditErr)
+	}
+	f.timer = sqldriver.EnableStoreTimer(auditKey)
+	f.audited, err = sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", dbPath, auditKey, schema))
+	if err != nil {
+		b.Fatalf("sql.Open audit: %v", err)
+	}
+	b.Cleanup(func() { f.audited.Close() })
+	ss, err := keyspace.New(subspace.Sub()).LookupSchemaSubspace(ctx, auditDB, dbPath, schema)
+	if err != nil {
+		b.Fatalf("resolve store prefix: %v", err)
+	}
+	f.prefix = len(ss.Bytes())
+	auditLog(b, map[string]any{"phase": "fixture", "rows": rowCount, "prefix_bytes": f.prefix})
+	return f
 }
 
 // auditLog logs one machine-readable, untimed receipt: FDB_BENCH_AUDIT and a

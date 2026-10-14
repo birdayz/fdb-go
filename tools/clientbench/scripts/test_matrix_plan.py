@@ -21,7 +21,7 @@ class MatrixPlanTest(unittest.TestCase):
         self.args = argparse.Namespace(
             arm=[f'g9a={self.root / "before"}@{"a" * 40}', f'g267={self.root / "after"}@{"b" * 40}',
                  f'cgo={self.root / "cgo"}@{"b" * 40}'],
-            workload=['read1000', 'range100'], iterations=500, warmup=50, blocks=12,
+            workload=['read1000'], iterations=500, warmup=50, blocks=12,
             cluster_file=self.root / 'cluster', native_library=self.root / 'native', server_binary=self.root / 'server',
             harness_id=r3_plan.digest(self.root / 'harness'), pin=[self.root / 'harness'], campaign_id='c' * 29,
             seed=641001, gomaxprocs=8, housekeeping_cpus='0,8', server_cpus='1-3,9-11', client_cpus='4-7,12-15')
@@ -29,7 +29,7 @@ class MatrixPlanTest(unittest.TestCase):
     def test_three_arm_plan_is_counterbalanced(self):
         plan = matrix_plan.make_plan(self.args)
         schedule = run.make_schedule(plan, self.root / 'out')
-        self.assertEqual(len(schedule), 12 * 2 * 3)
+        self.assertEqual(len(schedule), 12 * 1 * 3)
         self.assertEqual(schedule, run.make_schedule(plan, self.root / 'out'))
         for workload in self.args.workload:
             orders = collections.Counter(
@@ -61,6 +61,10 @@ class MatrixPlanTest(unittest.TestCase):
             'duplicate_workload': dict(workload=['read1000', 'read1000']),
             'wrong_harness': dict(harness_id='0' * 64),
             'no_iterations': dict(iterations=0),
+            'padded_names_collide': dict(arm=[f'go={self.root / "before"}@{"a" * 40}',
+                                              f'go_={self.root / "after"}@{"b" * 40}', self.args.arm[2]]),
+            'waits_exceed_cap': dict(blocks=24),
+            'two_workloads_exceed_cap': dict(workload=['read1000', 'range100']),
         }
         for name, change in cases.items():
             args = copy.copy(self.args)

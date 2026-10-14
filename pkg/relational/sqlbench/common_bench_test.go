@@ -11,6 +11,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/crc32"
 	"os"
@@ -63,11 +64,38 @@ func schemaPrefixBytes(b *testing.B, ctx context.Context, dbPath, schema string)
 }
 
 // createSchema creates database dbPath with schema STORE of a new template
-// holding ddl, and opens a pool on it.
+// holding ddl, and opens a pool on it. A database or template left by an
+// earlier process under the same name is dropped first, and both are dropped
+// again when the benchmark ends; all of it is outside the timer.
 func createSchema(b *testing.B, ctx context.Context, dbPath, tmpl, ddl string) *sql.DB {
 	b.Helper()
 	clusterFile := benchcluster.ClusterFile(b)
-	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s", strings.ToUpper(dbPath), clusterFile))
+	setupDSN := fmt.Sprintf("fdbsql://%s?cluster_file=%s", strings.ToUpper(dbPath), clusterFile)
+	// Drops go through the system catalog, not a connection to the database.
+	catalogDSN := fmt.Sprintf("fdbsql:///__SYS?cluster_file=%s&schema=CATALOG", clusterFile)
+	drop := func() error {
+		catalog, err := sql.Open("fdbsql", catalogDSN)
+		if err != nil {
+			return err
+		}
+		defer catalog.Close()
+		for _, stmt := range []string{"DROP DATABASE IF EXISTS " + dbPath, "DROP SCHEMA TEMPLATE IF EXISTS " + tmpl} {
+			if _, err := catalog.ExecContext(ctx, stmt); err != nil {
+				return fmt.Errorf("%s: %w", stmt, err)
+			}
+		}
+		return nil
+	}
+	if err := drop(); err != nil {
+		b.Fatal(err)
+	}
+	// Registered before the pool's Close, so it runs after it.
+	b.Cleanup(func() {
+		if err := drop(); err != nil {
+			b.Errorf("drop benchmark schema: %v", err)
+		}
+	})
+	setup, err := sql.Open("fdbsql", setupDSN)
 	if err != nil {
 		b.Fatalf("sql.Open: %v", err)
 	}
@@ -257,16 +285,27 @@ func BenchmarkFDB_TimestampInsert(b *testing.B) {
 		b.StartTimer()
 	}
 	b.StopTimer()
-	var count int64
-	if err := conn.QueryRowContext(ctx, "SELECT COUNT(*) FROM Events").Scan(&count); err != nil || count != int64(b.N) {
-		b.Fatalf("after %d inserts: COUNT(*) = %d, %v", b.N, count, err)
+	// Exactly IDs 1..b.N, each with its label.
+	rows, err := conn.QueryContext(ctx, "SELECT id, label FROM Events")
+	if err != nil {
+		b.Fatalf("read back inserts: %v", err)
 	}
-	// Every insert reported one row; the count and both end IDs confirm them.
-	for _, id := range []int64{1, int64(b.N)} {
-		var got int64
-		if err := conn.QueryRowContext(ctx, fmt.Sprintf("SELECT id FROM Events WHERE id = %d", id)).Scan(&got); err != nil || got != id {
-			b.Fatalf("after %d inserts: id %d: got %d, %v", b.N, id, got, err)
+	seen := make([]bool, b.N+1)
+	count := 0
+	for rows.Next() {
+		var id int64
+		var label string
+		if err := rows.Scan(&id, &label); err != nil {
+			b.Fatalf("read back inserts: %v", err)
 		}
+		if id < 1 || id > int64(b.N) || seen[id] || label != fmt.Sprintf("evt_%d", id) {
+			b.Fatalf("after %d inserts: unexpected row id %d label %q", b.N, id, label)
+		}
+		seen[id] = true
+		count++
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil || count != b.N {
+		b.Fatalf("after %d inserts: read back %d rows, %v", b.N, count, err)
 	}
 	audit(b, map[string]any{"rows": count, "first_id": 1, "last_id": b.N, "prefix_bytes": prefix})
 	b.ReportMetric(float64(prefix), "prefix-B")

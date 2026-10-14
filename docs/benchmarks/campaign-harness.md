@@ -53,6 +53,11 @@ empty. Run benchmarks from the built binary with `-test.run='^$'`.
   for `b.N` saves, Orders `0..b.N-1` and not `b.N`; for deletes, the deleted IDs
   are gone and the other 100 remain.
 - SQL read benchmarks warm and measure one pinned connection, not the pool.
+- SQL benchmarks name their database per body run, drop a database or
+  template of the same name through the system catalog first (an earlier
+  process may have left it on a reused cluster), and drop both when the
+  benchmark ends. Clearing the cluster between arm processes still keeps the
+  directory-layer allocations, and so `prefix-B`, from drifting.
 - Fixtures are seeded once per process after clearing their own subspace
   (C1, C2) or into a fresh database (SQL), then read back: C1 checks every
   record's fields, a CRC-32 of its payload and its key-value count (1 small,
@@ -90,7 +95,11 @@ Counters are logical: `remote_fetch` counts remote-fetch openings, not RPCs;
 `matrix_plan.py` freezes a 2–6 arm plan with explicit CPU groups, per-arm
 declared revisions, one shared option set and equal-length prefixes; blocks
 must be a multiple of `factorial(arms)` (6 for three arms). `run.py` enforces
-the 180-second campaign cap, so size iterations and blocks per workload to fit.
+the 180-second campaign cap and waits 3 seconds (cooldown and quiescence)
+before every run, so `matrix_plan.py` rejects plans whose waits alone reach the
+cap: three arms fit 6, 12 or 18 blocks of one workload (12 blocks leave 72
+seconds for 36 runs), and four or more arms (24 blocks minimum) cannot fit.
+Size iterations per workload accordingly.
 `analyze.py` reports geometric means of paired block ratios with **nominal 95%**
 percentile block-bootstrap intervals (20,000 resamples by default) plus
 moving-block and order sensitivity diagnostics. The 99% intervals in
