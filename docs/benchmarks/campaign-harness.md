@@ -46,46 +46,77 @@ before any timing; a compile failure is a harness defect, not a skipped cell.
 None of the new targets has tests; `bazelisk test` builds them and runs them
 empty. Run benchmarks from the built binary with `-test.run='^$'`.
 
-## What the harness checks, outside the benchmark timer
+## What the harness checks
 
-- Write benchmarks (`benchmark_test.go` saves and delete, SQL
-  `TimestampInsert`) check afterwards that exactly the IDs they wrote exist:
-  for `b.N` saves, Orders `0..b.N-1` and not `b.N`; for deletes, the deleted IDs
-  are gone and the other 100 remain.
-- SQL read benchmarks warm and measure one pinned connection, not the pool.
+### Classic Record Layer benchmarks (`benchmark_test.go`, matrix B)
+
+Their timed loops are unchanged, including the checks some already make while
+timed (for example `BenchmarkScanIndexRecords` checks every row's primary key
+inside the loop). Those checks are byte-identical in every compared tree, so
+they are part of the measured operation, equally in each arm. The overlay adds
+only untimed work:
+
+- `benchSubspace` clears the benchmark's subspace before the body's timer
+  starts, on every body run.
+- After the loop, with the timer stopped, each write benchmark checks that
+  exactly the IDs it wrote exist: for `b.N` saves, Orders `0..b.N-1` and not
+  `b.N` (`SaveRecordBatch`: `0..10*b.N-1`); for `DeleteRecord`, the deleted IDs
+  are gone and the other 100 remain. Each such check logs one receipt (two for
+  `DeleteRecord`). Read benchmarks log none.
+
+### New benchmarks (C1, C2, SQL common and method)
+
+Nothing but the operation itself is timed:
+
+- Fixtures are seeded and read back before any timer: C1 checks every
+  record's fields, a CRC-32 of its payload and its key-value count (1 small,
+  2 split: just over the 100,000-byte split threshold); C2 checks every
+  record; SQL seeds a database it created (see below).
+- Every measured operation's result is verified under `b.StopTimer`, without
+  a receipt per operation: C1 and C2 check exact IDs and order, fields,
+  payload checksum and terminal reason (`ReturnLimitReached` for `limit1`,
+  otherwise `SourceExhausted`); SQL reads check exact rows; `TimestampInsert`
+  checks each insert affected one row.
+- C1, C2 and the SQL method benchmark run an instrumented operation (its own
+  StoreTimer; measured operations have none) before and after the measured
+  loop and assert the path: remote fetch has `remote_fetch` > 0, no
+  `scan_index` and no `load_record`; SCAN_AND_FETCH has no remote fetch and an
+  index scan. C2 also asserts the Skip placement: one remote-fetch opening
+  whose entries include the skipped ones, or exactly one completed load per
+  returned row for SCAN_AND_FETCH. The SQL method benchmark checks `EXPLAIN`
+  (IDX_A, not covering) on its measured and audited connections, warms the
+  audited connection before resetting its timer (catalog reads are record
+  loads), and measures on a pinned connection without a timer.
+- The SQL common reads warm and measure one pinned connection, not the pool.
+  `TimestampInsert` reads back every row after the loop: exactly IDs
+  `1..b.N`, each with its label.
 - SQL benchmarks name their database per body run, drop a database or
   template of the same name through the system catalog first (an earlier
   process may have left it on a reused cluster), and drop both when the
   benchmark ends. Clearing the cluster between arm processes still keeps the
   directory-layer allocations, and so `prefix-B`, from drifting.
-- Fixtures are seeded once per process after clearing their own subspace
-  (C1, C2) or into a fresh database (SQL), then read back: C1 checks every
-  record's fields, a CRC-32 of its payload and its key-value count (1 small,
-  2 split: just over the 100,000-byte split threshold).
-- Every measured operation's rows are verified under `b.StopTimer`: exact IDs
-  and order, fields, payload checksum, and the terminal reason
-  (`ReturnLimitReached` for `limit1`, otherwise `SourceExhausted`).
-- Before and after each measured loop, an instrumented run (its own
-  StoreTimer; the measured runs have none) asserts the path: remote fetch has
-  `remote_fetch` > 0, no `scan_index` and no `load_record`; SCAN_AND_FETCH has
-  no remote fetch and an index scan. C2 also asserts the Skip placement: one
-  mapped read whose entries include the skipped ones for remote, and exactly
-  one completed load per returned row for SCAN_AND_FETCH. The SQL method
-  benchmark checks `EXPLAIN` (IDX_A, not covering) on the measured and audited
-  connections, warms the audited connection before resetting its timer
-  (catalog reads are record loads), and measures on a connection with no timer.
 - `prefix-B` reports the store prefix length: fixed for the Record Layer
   subspaces, resolved through the relational keyspace for SQL, where the
   directory layer allocates it.
 
-Each check above logs one receipt line, `FDB_BENCH_AUDIT ` followed by a JSON
-object with the benchmark name in `case`. The new benchmarks' audits carry
-`phase` (`fixture`, `before`, `after`), `method`, `payload`, `payload_bytes`,
-`chunks`, `reverse`, `skip`, `limit`, `rows`, `remote_openings`,
-`remote_entries`, `index_scans`, `record_loads`, `checksum` (CRC-32 of the
-returned rows in order) and `prefix_bytes`; SQL ones carry `query`, `rows`,
-`checksum` and `prefix_bytes`; write checks carry `first_id`, `count`,
-`present` and `n`. Measured operations collect no counters.
+### Receipts
+
+A receipt is one log line, `FDB_BENCH_AUDIT ` followed by a JSON object whose
+`case` is the benchmark name. They are written only at these points, all
+untimed:
+
+| Benchmarks | When | Fields besides `case` |
+|---|---|---|
+| classic write benchmarks | after the loop | `first_id`, `count`, `present`, `n`, `prefix_bytes` |
+| C1 | per payload fixture | `phase` = `fixture`, `payload`, `payload_bytes`, `chunks`, `rows`, `split`, `prefix_bytes` |
+| C1 | before and after each cell's loop | `phase`, `method`, `payload`, `payload_bytes`, `chunks`, `reverse`, `skip`, `limit`, `rows`, `remote_openings`, `remote_entries`, `index_scans`, `record_loads`, `checksum`, `prefix_bytes` |
+| C2 | fixture; before and after each cell's loop | fixture: `phase`, `rows`, `prefix_bytes`; cells: `phase`, `method`, `payload` (`small`), `reverse`, `skip` (3), `limit` (0), `rows`, `remote_openings`, `remote_entries`, `index_scans`, `record_loads`, `checksum`, `prefix_bytes` |
+| SQL `PlanCacheHit`, `IndexScanRange` | after warm-up, before the timer starts | `query`, `rows`, `checksum`, `prefix_bytes` |
+| SQL `TimestampInsert` | after the loop and read-back | `rows`, `first_id`, `last_id`, `prefix_bytes` |
+| SQL method | fixture; before and after each cell's loop | fixture: `phase`, `rows`, `prefix_bytes`; cells: `phase`, `method`, `query`, `rows`, `remote_openings`, `remote_entries`, `index_scans`, `record_loads`, `checksum`, `prefix_bytes` |
+
+`checksum` is the CRC-32 of the returned rows in order. Measured operations
+collect no counters.
 
 Counters are logical: `remote_fetch` counts remote-fetch openings, not RPCs;
 `load_record` counts completed loads. No RPC observer exists.

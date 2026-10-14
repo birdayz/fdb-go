@@ -59,6 +59,7 @@ class MatrixPlanTest(unittest.TestCase):
             'unsafe_name': dict(arm=['../x' + self.args.arm[0][3:], *self.args.arm[1:]]),
             'overlapping_cpus': dict(client_cpus='3-7'),
             'duplicate_workload': dict(workload=['read1000', 'read1000']),
+            'padded_workloads_collide': dict(workload=['read1000', 'read1000_'], blocks=6),
             'wrong_harness': dict(harness_id='0' * 64),
             'no_iterations': dict(iterations=0),
             'padded_names_collide': dict(arm=[f'go={self.root / "before"}@{"a" * 40}',

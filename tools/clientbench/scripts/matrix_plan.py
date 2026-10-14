@@ -47,6 +47,9 @@ def make_plan(args):
         raise ValueError(f'blocks must be a positive multiple of {math.factorial(len(arms))}')
     if not args.workload or len(set(args.workload)) != len(args.workload):
         raise ValueError('one or more distinct workloads required')
+    # The prefix pads workload names to 16 characters with underscores.
+    if len({w.ljust(16, '_') for w in args.workload}) != len(args.workload):
+        raise ValueError('workload names must stay distinct when padded to 16 characters')
     if args.iterations <= 0 or args.warmup < 0:
         raise ValueError('positive iterations and nonnegative warmup required')
     if not re.fullmatch(r'[0-9a-f]{64}', args.harness_id):
