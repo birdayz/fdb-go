@@ -71,6 +71,17 @@ class WatchClientTest(unittest.TestCase):
         (self.case / 'adapter.json').write_text(json.dumps(adapter))
         self.assertIsNone(self.gate(state))  # Run folders still in transport.
 
+    def test_network_mode_json_delay_verification(self):
+        import network_mode as nm
+        q = [{'kind': 'netem', 'root': True, 'options': {'limit': 100000, 'delay': {'delay': 0.000249984, 'jitter': 0, 'correlation': 0}, 'ecn': False, 'gap': 0}}]
+        self.assertEqual(nm.netem_problems(q), [])
+        self.assertTrue(nm.netem_problems([{'kind': 'netem', 'root': True, 'options': {'limit': 100000, 'delay': {'delay': 0.0003}}}]))
+        self.assertTrue(nm.netem_problems([{'kind': 'netem', 'root': True, 'options': {'limit': 999, 'delay': {'delay': 0.00025}}}]))
+        self.assertTrue(nm.netem_problems([{'kind': 'netem', 'root': True, 'options': {'limit': 100000}}]))
+        self.assertEqual(nm.baseline_problems([{'kind': 'noqueue', 'root': True}]), [])
+        self.assertTrue(nm.baseline_problems(q))
+
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -52,8 +52,8 @@ production code. The campaign tooling is in
 | D1 | SQL: before vs final, with legacy as anchor | [phase-d1-sql.md](phase-d1-sql.md) |
 | C2 | Remote fetch on reverse scans and executor Skip paths, final | [phase-c2-reverse-skip.md](phase-c2-reverse-skip.md) |
 | D2 | SQL remote fetch on a non-covering index, final | [phase-d2-sql-remotefetch.md](phase-d2-sql-remotefetch.md) |
-| A2 | Client closed-loop concurrency scaling | in progress |
-| C3 | Sensitivity to synthetic network latency (not a multi-host result) | in progress |
+| A2 | Client closed-loop concurrency scaling (8 workers) | [phase-a2-client-8w.md](phase-a2-client-8w.md) |
+| C3 | Sensitivity to synthetic network latency (not a multi-host result) | [phase-c3-synthetic-rtt.md](phase-c3-synthetic-rtt.md) |
 
 Headline results:
 
@@ -77,6 +77,16 @@ Headline results:
   processes got a one-byte-shorter store prefix; the report discloses this
   confound, and prefix-matched block estimates are similar (a post-hoc,
   descriptive check).
+- **A2:** at 8 closed-loop workers, pure-Go is faster than CGo on `range100`
+  mean latency (0.663 [0.440, 0.858]) and `batchset50` mean/p99 latency (0.817
+  [0.768, 0.851] / 0.914 [0.816, 0.985]), and indistinguishable on `get100`
+  latency (0.991 [0.928, 1.084]), while using more shutdown process CPU (E−A)
+  per transaction across all three workloads (1.150–1.639).
+- **C3:** under 0.5 ms nominal synthetic veth RTT (250 µs each way, p50 0.597
+  ms), remote fetch takes 0.224 [0.222, 0.226] of the ordinary path's time on
+  1,000 small records (24.0 ms vs 108.0 ms), while 1,000 two-chunk split
+  records remain 5.3% slower with remote fetch (1.053 [1.008, 1.101]),
+  retained as a negative result.
 
 ## Shared limits
 
