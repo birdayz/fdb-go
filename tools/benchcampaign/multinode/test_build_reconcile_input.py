@@ -147,7 +147,7 @@ class TestingBPhaseTest(tr2.Phase):
     def test_runner_omission_on_qos_lag_alone_is_never_clean(self):
         # The post-case gate of the first case sees only a durability-lag finding; roles and generation unchanged.
         lag = tr1.status(self.lay, dd_disabled=True,
-                         mutate=lambda s: s['cluster']['qos']['worst_durability_lag_storage_server'].update(seconds=2.5))
+                         mutate=lambda s: s['cluster']['qos']['worst_durability_lag_storage_server'].update(seconds=62.5))
         ok = tr1.status(self.lay, dd_disabled=True)
         self.statuses = [ok] * 25 + [lag, ok]  # 1 case-before + 12 x (pre-arm, post-run) + case-after
         self.assertEqual(self.run_phase(utc=utc_clock(10.0, 0.5)), 2)

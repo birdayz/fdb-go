@@ -47,7 +47,7 @@ LAYOUT = {
 COORDINATOR_PORT = 4500
 # Roles a process of this class must hold (required) and may hold (allowed).
 CLASS_ROLES = {
-    'stateless': ({'cluster_controller', 'master'}, {'cluster_controller', 'master', 'data_distributor', 'ratekeeper', 'coordinator'}),
+    'stateless': ({'cluster_controller', 'master'}, {'cluster_controller', 'master', 'data_distributor', 'ratekeeper', 'consistency_scan', 'coordinator'}),
     'commit_proxy': ({'commit_proxy'}, {'commit_proxy'}),
     'grv_proxy': ({'grv_proxy'}, {'grv_proxy'}),
     'resolution': ({'resolver'}, {'resolver'}),

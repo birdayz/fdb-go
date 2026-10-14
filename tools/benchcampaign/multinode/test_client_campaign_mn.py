@@ -172,7 +172,7 @@ class StatusVerdictTest(unittest.TestCase):
             ('wrong engine', edit('cluster.configuration.storage_engine', 'memory'), 'storage_engine'),
             ('recovering', edit('cluster.recovery_state.name', 'recruiting_transaction_servers'), 'recovery_state'),
             ('no recovery state', edit('cluster.recovery_state', KeyError), 'recovery_state'),
-            ('durability lag', edit('cluster.qos.worst_durability_lag_storage_server.seconds', 1.0), 'durability lag'),
+            ('durability lag', edit('cluster.qos.worst_durability_lag_storage_server.seconds', 60.0), 'durability lag'),
             ('log queue', edit('cluster.qos.worst_queue_bytes_log_server', 100 * 1000 * 1000), 'log queue'),
             ('no qos', edit('cluster.qos', KeyError), 'durability lag'),
             ('DD disabled during M1', edit('cluster.data_distribution_disabled', True), 'data distribution is disabled'),

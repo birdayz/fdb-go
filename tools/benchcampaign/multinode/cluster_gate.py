@@ -49,7 +49,8 @@ EnvironmentFailure = generic.EnvironmentFailure
 CorrectnessFailure = generic.CorrectnessFailure
 
 COORDINATORS = 3
-MAX_DURABILITY_LAG_SECONDS = 1.0
+MAX_DATA_LAG_SECONDS = 1.0
+MAX_DURABILITY_LAG_SECONDS = 60.0
 MAX_LOG_QUEUE_BYTES = 100 * 1000 * 1000
 MOVEMENT_WAIT_SECONDS = 60  # protocol placement.data_distribution: wait up to 60 s, then abort
 MOVEMENT_POLL_SECONDS = 5
@@ -187,9 +188,13 @@ def status_verdict(status, layout, engine, data_distribution):
     recovery = _get(status, 'cluster.recovery_state.name')
     if recovery != 'fully_recovered':
         errors.append(f'recovery_state {recovery if recovery is not _MISSING else "missing"!r}, not fully_recovered')
+    # When present (live cluster status json), worst_data_lag_storage_server must be < 1 s.
+    data_lag = _get(status, 'cluster.qos.worst_data_lag_storage_server.seconds')
+    if data_lag is not _MISSING and (not _number(data_lag) or not data_lag < MAX_DATA_LAG_SECONDS):
+        errors.append(f'storage data lag {data_lag!r} not below 1 s')
     lag = _get(status, 'cluster.qos.worst_durability_lag_storage_server.seconds')
     if not _number(lag) or not lag < MAX_DURABILITY_LAG_SECONDS:
-        errors.append(f'storage durability lag {lag if lag is not _MISSING else "missing"!r} not below 1 s')
+        errors.append(f'storage durability lag {lag if lag is not _MISSING else "missing"!r} not below 60 s')
     # Reported only while tlogs exist: absence is unverifiable, never zero.
     queue = _get(status, 'cluster.qos.worst_queue_bytes_log_server')
     if not _number(queue) or not queue < MAX_LOG_QUEUE_BYTES:

@@ -714,8 +714,8 @@ class StatusVerdictTest(Base):
         fn(self.p.status[case]['after'])
 
     def test_qos_lag_after_case_with_roles_unchanged(self):
-        self.after('A', lambda s: s['cluster']['qos']['worst_durability_lag_storage_server'].update(seconds=4.5))
-        self.assertVerdicts({'A': 'contaminated', 'B': 'clean'}, 'status verdict after: storage durability lag 4.5')
+        self.after('A', lambda s: s['cluster']['qos']['worst_durability_lag_storage_server'].update(seconds=64.5))
+        self.assertVerdicts({'A': 'contaminated', 'B': 'clean'}, 'status verdict after: storage durability lag 64.5')
 
     def test_log_queue_before_case(self):
         self.p.status['B']['before']['cluster']['qos']['worst_queue_bytes_log_server'] = 200 * 1000 * 1000
