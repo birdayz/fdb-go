@@ -801,6 +801,7 @@ func (r *rywRangeRead) run(ctx context.Context, serverGetRange rangeServerFunc) 
 	}
 	curBegin := begin
 	curEnd := end
+	requestCount := 0
 
 	for remaining > 0 && bytes.Compare(curBegin, curEnd) < 0 {
 		// Fetch from server with headroom to compensate for clears.
@@ -813,7 +814,8 @@ func (r *rywRangeRead) run(ctx context.Context, serverGetRange rangeServerFunc) 
 			}
 		}
 
-		serverKVs, serverMore, err := c.fetchOrCached(ctx, curBegin, curEnd, fetchLimit, remainingBytes, reverse, serverGetRange)
+		serverKVs, serverMore, err := c.fetchOrCached(ctx, curBegin, curEnd, fetchLimit, rywRequestBytes(remainingBytes, requestCount), reverse, serverGetRange)
+		requestCount++
 		if err != nil {
 			return nil, false, err
 		}
@@ -1003,11 +1005,21 @@ func (c *rywCache) mergeBatchInSpan(s *rywWriteSpan, serverKVs []KeyValue, range
 	return c.mergeBatchLocked(serverKVs, rangeBegin, rangeEnd, boundary, reverse)
 }
 
+// rywRequestBytes is C++ setRequestLimits' byte limit for a storage read of a
+// RYW range call: min(byteTarget << min(requestCount, 20), REPLY_BYTE_LIMIT)
+// (ReadYourWrites.actor.cpp:569-590, 748-753).
+func rywRequestBytes(byteTarget, requestCount int) int {
+	if byteTarget <= 0 {
+		return byteTarget
+	}
+	return int(min(int64(byteTarget)<<min(requestCount, 20), int64(replyByteLimit)))
+}
+
 // rywFirstRequestBytes is C++ setRequestLimits' byte limit for the first storage read of a
 // RYW range call (requestCount 0): never above REPLY_BYTE_LIMIT, while the rows returned are
 // still cut against the caller's own target (ReadYourWrites.actor.cpp:569-590, 748-753).
 func rywFirstRequestBytes(byteTarget int) int {
-	return min(byteTarget, replyByteLimit)
+	return rywRequestBytes(byteTarget, 0)
 }
 
 // applyRangeByteLimit includes the row that exhausts the budget, guaranteeing

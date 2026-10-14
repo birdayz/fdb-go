@@ -224,3 +224,54 @@ func TestRYWRangeReadStartsPastReadThrough(t *testing.T) {
 		}
 	}
 }
+
+// The write-overlay RYW path also applies C++ setRequestLimits (ReadYourWrites.actor.cpp:587-588,
+// 748-753): each storage request's byte limit is min(byteTarget << min(requestCount, 20), REPLY_BYTE_LIMIT).
+func TestRYWWriteOverlayRequestBytesClampedAndDoubled(t *testing.T) {
+	t.Parallel()
+	for _, reverse := range []bool{false, true} {
+		t.Run(fmt.Sprintf("reverse=%v", reverse), func(t *testing.T) {
+			t.Parallel()
+			var c rywCache
+			c.set([]byte("m"), []byte("local"))
+			c.clearRange([]byte("b"), []byte("d"))
+			var gotBytes []int
+			server := func(_ context.Context, _, _ []byte, _ int, byteTarget int, _ bool) ([]KeyValue, bool, []byte, error) {
+				gotBytes = append(gotBytes, byteTarget)
+				return nil, false, nil, nil
+			}
+			r := &rywRangeRead{}
+			c.issueRangeInto(r, []byte("a"), []byte("z"), 0, 120000, reverse, false)
+			if _, _, err := r.run(context.Background(), server); err != nil {
+				t.Fatal(err)
+			}
+			if len(gotBytes) != 1 || gotBytes[0] != replyByteLimit {
+				t.Fatalf("120000-byte target sent %v, want [%d]", gotBytes, replyByteLimit)
+			}
+
+			var c2 rywCache
+			c2.clearRange([]byte("b"), []byte("e"))
+			gotBytes = nil
+			server2 := func(_ context.Context, _, _ []byte, _ int, byteTarget int, _ bool) ([]KeyValue, bool, []byte, error) {
+				gotBytes = append(gotBytes, byteTarget)
+				switch len(gotBytes) {
+				case 1:
+					return []KeyValue{{Key: []byte("c"), Value: []byte("cleared")}}, true, nil, nil
+				case 2:
+					return []KeyValue{{Key: []byte("d"), Value: []byte("cleared")}}, true, nil, nil
+				default:
+					return nil, false, nil, nil
+				}
+			}
+			r2 := &rywRangeRead{}
+			c2.issueRangeInto(r2, []byte("a"), []byte("z"), 0, 30000, reverse, false)
+			if _, _, err := r2.run(context.Background(), server2); err != nil {
+				t.Fatal(err)
+			}
+			want := []int{30000, 60000, replyByteLimit}
+			if fmt.Sprint(gotBytes) != fmt.Sprint(want) {
+				t.Fatalf("30000-byte target across cleared spans sent %v, want %v", gotBytes, want)
+			}
+		})
+	}
+}
