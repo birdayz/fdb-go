@@ -17,6 +17,7 @@ token or any other credential; --ssh-public-key is checked to be a public key.
 Both directories must lie outside any Git work tree.
 """
 import argparse
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -60,9 +61,12 @@ def generate_keys(host_key_dir, hosts, ssh_keygen='ssh-keygen', runner=mc.defaul
         mc.require_outside_repo(root / host, 'host key dir')
         d = mc.private_dir(root / host)
         key = d / 'ssh_host_ed25519_key'
-        mc.require_outside_repo(key, 'host key')
-        if key.exists():
-            raise mc.GuardError(f'{key} exists; host keys are generated once per campaign')
+        # ssh-keygen writes both files and follows symlinks: a preexisting (even
+        # dangling) key or .pub link could redirect output into a checkout.
+        for dest in (key, d / 'ssh_host_ed25519_key.pub'):
+            if os.path.lexists(dest):
+                raise mc.GuardError(f'{dest} exists (or is a symlink); host keys are generated once per campaign')
+            mc.require_outside_repo(dest.resolve(), 'host key')
         rc, _, err = runner([ssh_keygen, '-q', '-t', 'ed25519', '-N', '', '-C', f'root@{host}', '-f', str(key)])
         if rc:
             raise mc.GuardError('ssh-keygen failed: ' + err.strip())

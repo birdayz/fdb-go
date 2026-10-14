@@ -41,6 +41,7 @@ import re
 import sys
 
 import mn_common as mc
+import placement_receipt as pr
 
 CLIENT_ARMS = {  # protocol arm -> (plan arm name, binary key, production revision key)
     'before-Go': ('before', 'before', 'before_allocation_work_after_read_parity'),
@@ -256,25 +257,36 @@ RECEIPT_FORMAT = 'fdb-bench-placement-receipt/v2'
 def placement_label(case, receipts):
     """The case's fixed placement label from its store's receipt, decided before timing.
 
-    A receipt with any integrity error proves nothing and is refused; a receipt
-    whose cell fraction is below 1.0 still seals, but only under the
-    'partially colocated' label (protocol placement.acceptance).
+    A receipt without integrity proves nothing and is refused. A receipt with
+    integrity but a cell below 1.0 still seals, under 'partially colocated (f)'
+    (protocol placement.acceptance). The receipt's cell must be exactly the
+    preset cell the benchmark scans: same preset, same [lo, hi) bounds, complete
+    population; a same-named cell with other bounds is refused.
     """
     path = receipts.get(case['store'])
     if path is None:
         raise ValueError(f'no placement receipt for store {case["store"]}')
     r = json.loads(Path(path).read_text())
-    if r.get('format') != RECEIPT_FORMAT or r.get('error_count') != 0 or r.get('errors'):
-        raise ValueError(f'placement receipt {path} has integrity errors or a wrong format; it proves nothing')
-    for field in ('store', 'layout', 'record_format'):
-        if r.get(field) != case[field]:
-            raise ValueError(f'placement receipt {path} {field} {r.get(field)!r} != case {case[field]!r}')
+    if r.get('format') != RECEIPT_FORMAT or r.get('integrity_ok') is not True or r.get('error_count') != 0 or r.get('errors'):
+        raise ValueError(f'placement receipt {path} lacks integrity or has a wrong format; it proves nothing')
+    for field, want in (('store', case['store']), ('layout', case['layout']), ('record_format', case['record_format']),
+                        ('preset', case['placement_preset'])):
+        if r.get(field) != want:
+            raise ValueError(f'placement receipt {path} {field} {r.get(field)!r} != case {want!r}')
+    lo, hi = pr.PRESETS[case['placement_preset']][case['placement_cell']]
     cell = (r.get('cells') or {}).get(case['placement_cell'])
-    if cell is None or cell.get('missing_ids'):
-        raise ValueError(f'placement receipt {path} lacks complete cell {case["placement_cell"]}')
+    if cell is None:
+        raise ValueError(f'placement receipt {path} lacks cell {case["placement_cell"]}')
+    if cell.get('ids') != [lo, hi] or cell.get('rows') != hi - lo:
+        raise ValueError(f'placement receipt {path} cell {case["placement_cell"]} bounds {cell.get("ids")} / rows '
+                         f'{cell.get("rows")} differ from the scanned preset bounds [{lo}, {hi})')
+    if cell.get('missing_ids') != 0:
+        raise ValueError(f'placement receipt {path} cell {case["placement_cell"]} is incomplete')
     f = cell['server_disjoint_fraction']
-    return dict(placement_label='cross-server' if f == 1.0 else f'partially colocated (f = {f:.4f})',
-                placement_fraction=f, placement_receipt=str(path), placement_receipt_sha256=sha256(path))
+    if not (isinstance(f, (int, float)) and 0 <= f <= 1 and cell.get('server_disjoint_rows') == round(f * (hi - lo))):
+        raise ValueError(f'placement receipt {path} cell {case["placement_cell"]} has an inconsistent fraction')
+    return dict(placement_label=pr.label(f), placement_fraction=f, placement_receipt=str(path),
+                placement_receipt_sha256=sha256(path))
 
 
 def testingb_plan(protocol, phase, frozen, binary, cluster_file, allowed, receipts=None):

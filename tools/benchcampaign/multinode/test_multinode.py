@@ -390,6 +390,25 @@ class CloudInitTest(Temp):
         self.assertEqual(calls, [])
         self.assertEqual(sorted(p.name for p in checkout.iterdir()), ['.git'])
 
+    def test_generate_keys_refuses_a_symlinked_pub_into_a_repo(self):
+        checkout = self.tmp / 'checkout'
+        (checkout / '.git').mkdir(parents=True)
+        target = checkout / 'leaked.pub'
+        keys = self.tmp / 'keys'
+        (keys / 'h1').mkdir(parents=True)
+        (keys / 'h1' / 'ssh_host_ed25519_key.pub').symlink_to(target)  # dangling: points into the checkout
+        calls = []
+
+        def runner(argv):
+            calls.append(argv)
+            Path(argv[-1] + '.pub').write_text('ssh-ed25519 AAAA leaked\n')  # what ssh-keygen would do
+            return 0, '', ''
+        with self.assertRaises(mc.GuardError):
+            rci.generate_keys(keys, ['h1'], runner=runner)
+        self.assertEqual(calls, [])
+        self.assertFalse(target.exists())
+        self.assertEqual(sorted(p.name for p in checkout.iterdir()), ['.git'])
+
     @unittest.skipUnless(shutil.which('ssh-keygen'), 'ssh-keygen not installed')
     def test_generate_real_throwaway_keys(self):
         keys = rci.generate_keys(self.tmp / 'keys', ['h1', 'h2'])
@@ -556,7 +575,8 @@ def probe(prefix_items=('benchfetch', 'small'), rows=20, index_servers='AB', rec
     boundaries = [(prefix + pr.pack([1, 1000000])).hex()] if boundary_after_records else []
     return dict(format=pr.PROBE_FORMAT, store='benchfetch/small', store_prefix_hex=prefix.hex(), read_version=7,
                 boundaries_read_version=7, boundary_range_hex=[prefix.hex(), pr.strinc(prefix).hex()],
-                boundaries_complete=True, boundaries_hex=boundaries, keys=keys)
+                boundaries_complete=True, boundaries_hex=boundaries, keys=keys, keys_complete=True,
+                scanned_subspaces_hex=[(prefix + pr.pack([1])).hex(), (prefix + pr.pack([2])).hex()])
 
 
 def fixture(prefix=PREFIX_SMALL, rows=20, chunks=1, **extra):
@@ -678,7 +698,7 @@ class PlacementTest(Temp):
             (edit(boundaries_hex=[(PREFIX_SMALL + pr.pack([1, 1000000])).hex()] * 2), 'strictly increasing'),
             (edit(boundaries_hex=[(PREFIX_SMALL + pr.pack([1, 1000000])).hex(), pr.strinc(PREFIX_SMALL).hex()]),
              'outside the store range'),
-            (probe(boundary_after_records=False), 'hold both'),
+            (probe(boundary_after_records=False), 'different server sets'),
         ]
         for p, text in cases:
             with self.subTest(text=text):
@@ -733,15 +753,88 @@ class PlacementTest(Temp):
                              rows=20, fixture=fx, records_per_id=1)
         self.assertRejected(r, 'exactly 1 record keys')
 
+    def test_shared_shard_is_descriptive_not_an_integrity_error(self):
+        # Index entries and records legitimately in one shard: same servers, fraction 0.
+        r = self.receipt(probe(index_servers='AB', record_servers='AB', boundary_after_records=False))
+        self.assertTrue(r['integrity_ok'], r['errors'])
+        self.assertEqual(r['shared_shards'], 1)
+        self.assertFalse(r['passed'])
+        self.assertEqual(r['cells']['rows20']['server_disjoint_fraction'], 0.0)
+        self.assertEqual(r['cells']['rows20']['label'], 'partially colocated (f = 0.0000)')
+
+    def partial_probe(self):
+        p = probe(override={i: 'AC' for i in range(5)}, boundary_after_records=False)
+        p['boundaries_hex'] = [(PREFIX_SMALL + pr.pack([1, 5])).hex(), (PREFIX_SMALL + pr.pack([1, 1000000])).hex()]
+        return p
+
+    def test_partial_receipt_is_usable_for_compare_and_controls(self):
+        a, b = self.receipt(self.partial_probe()), self.receipt(self.partial_probe())
+        self.assertTrue(a['integrity_ok'], a['errors'])
+        self.assertFalse(a['passed'])
+        self.assertEqual(a['cells']['rows20']['label'], 'partially colocated (f = 0.7500)')
+        self.assertTrue(pr.compare(a, b)['equal'], pr.compare(a, b))
+        moved = self.partial_probe()
+        for k in moved['keys']:
+            if k['kind'] == 'record' and k['id'] >= 5:
+                k['addresses'] = [SERVERS['C'], SERVERS['E']]
+        self.assertFalse(pr.compare(a, self.receipt(moved))['equal'])
+        corrupt = self.receipt(add_record(self.partial_probe(), 7, [1]))
+        self.assertFalse(corrupt['integrity_ok'])
+        self.assertIn('without integrity', ' '.join(pr.compare(a, corrupt)['differences']))
+        kw = dict(layout='recordlayer', rows=20, record_format='unsplit', expect_prefix=PREFIX_SMALL, fixture=fixture())
+        report = pr.run_controls(storage_status(), self.partial_probe(), {'rows20': (0, 20)}, **kw)
+        self.assertTrue(report['original_integrity_ok'])
+        self.assertTrue(report['ok'], report['mutations'])
+        self.assertTrue(all(m['rejected'] for m in report['mutations'].values()))
+        status, probe_file, fx = self.tmp / 's.json', self.tmp / 'partial.json', self.tmp / 'fx.json'
+        status.write_text(json.dumps(storage_status()))
+        probe_file.write_text(json.dumps(self.partial_probe()))
+        fx.write_text(json.dumps(fixture()))
+        common = ['--status', str(status), '--probe', str(probe_file), '--fixture-receipt', str(fx), '--cell', 'rows20=0:20',
+                  '--rows', '20', '--layout', 'recordlayer', '--record-format', 'unsplit', '--expect-prefix-tuple', 'benchfetch,small']
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(pr.main(['receipt', *common, '--output', str(self.tmp / 'pr.json')]), 3)  # integral, partial
+            self.assertEqual(pr.main(['controls', *common, '--output', str(self.tmp / 'pc.json')]), 0)
+            self.assertEqual(pr.main(['compare', str(self.tmp / 'pr.json'), str(self.tmp / 'pr.json')]), 0)
+
+    def test_probe_scope_is_the_two_data_subspaces(self):
+        cases = []
+        p = probe()
+        p.pop('scanned_subspaces_hex')
+        cases.append((p, 'scanned_subspaces'))
+        p = probe()
+        p['scanned_subspaces_hex'] = [(PREFIX_SMALL + pr.pack([1])).hex()]
+        cases.append((p, 'scanned_subspaces'))
+        cases.append((dict(probe(), keys_complete=False), 'keys_complete'))
+        header = probe()
+        header['keys'].append(dict(kind='record', id=0, key_hex=(PREFIX_SMALL + pr.pack([0])).hex(),
+                                   addresses=[SERVERS['C'], SERVERS['D']]))
+        cases.append((header, 'outside'))
+        cases.append((add_record(probe(), 1000000, [0]), 'non-canonical'))  # leftover ballast
+        for p, text in cases:
+            with self.subTest(text=text):
+                r = self.receipt(p)
+                self.assertFalse(r['integrity_ok'])
+                self.assertRejected(r, text)
+
+    def test_opaque_requires_matching_id_populations(self):
+        fx = fixture(store_prefix_hex=PREFIX_SMALL.hex())
+        p = probe()
+        p['keys'] = [k for k in p['keys'] if not (k['kind'] == 'index' and k['id'] == 3)]
+        r = pr.build_receipt(storage_status(), p, {'rows20': (0, 20)}, layout='opaque', rows=20, fixture=fx)
+        self.assertFalse(r['integrity_ok'])
+        self.assertTrue(any('ID population' in e for e in r['errors']), r['errors'])
+
     def test_mutation_controls(self):
         for fmt in ['unsplit', 'split']:
             with self.subTest(fmt=fmt):
                 kw = dict(layout='recordlayer', rows=20, record_format=fmt, expect_prefix=PREFIX_SMALL,
                           fixture=fixture(chunks=len(pr.RECORD_SUFFIXES[fmt])))
                 report = pr.run_controls(storage_status(), probe(record_format=fmt), {'rows20': (0, 20)}, **kw)
-                self.assertTrue(report['original_passed'], report['original_errors'])
+                self.assertTrue(report['original_integrity_ok'], report['original_errors'])
                 self.assertEqual(set(report['mutations']), {'duplicate-key', 'zero-read-version', 'truncated-boundaries',
-                                                            'foreign-address', 'omitted-chunk', 'stray-suffix', 'version-key'})
+                                                            'incomplete-key-scan', 'foreign-address', 'omitted-chunk',
+                                                            'stray-suffix', 'version-key'})
                 self.assertTrue(report['ok'], report['mutations'])
                 bad = pr.run_controls(storage_status(), probe(record_format=fmt, boundary_after_records=False),
                                       {'rows20': (0, 20)}, **kw)
@@ -861,9 +954,10 @@ class SealTest(Temp):
         p['boundaries_hex'] = sorted([(prefix + pr.pack([1, b])).hex() for b in extra_boundaries] + p['boundaries_hex'])
         fx = fixture(prefix=prefix, rows=1000, chunks=len(pr.RECORD_SUFFIXES[record_format or 'unsplit']),
                      **({'store_prefix_hex': prefix.hex()} if layout == 'opaque' else {}))
-        r = pr.build_receipt(storage_status(), p, pr.PRESETS['sql' if layout == 'opaque' else 'benchfetch'], layout=layout,
+        preset = 'sql' if layout == 'opaque' else 'benchfetch'
+        r = pr.build_receipt(storage_status(), p, pr.PRESETS[preset], layout=layout,
                              rows=1000, record_format=record_format, fixture=fx,
-                             expect_prefix=prefix if layout == 'recordlayer' else None)
+                             expect_prefix=prefix if layout == 'recordlayer' else None, preset=preset)
         path = self.tmp / f'receipt-{store.replace("/", "-")}.json'
         path.write_text(json.dumps(r))
         return path
@@ -915,6 +1009,34 @@ class SealTest(Temp):
         manifest = json.loads((self.tmp / 'tb2' / 'manifest.json').read_text())
         self.assertEqual({x['phase']: x['cases'] for x in manifest['phases']}, {'M2rl': 16, 'M2sql': 3})
         self.assertEqual(manifest['unsealed'], [])
+
+    def test_seal_requires_preset_cell_bounds(self):
+        p, o = self.fixture_files()
+        prefix = pr.pack(['benchfetch', 'small'])
+        colocated = {i: 'AB' for i in range(100, 110)}  # rows10 really scans 100..109: colocated
+
+        def receipt(cells, name):
+            pb = probe(rows=1000, override=colocated)
+            pb['boundaries_hex'] = sorted([(prefix + pr.pack([1, b])).hex() for b in (100, 110)] + pb['boundaries_hex'])
+            r = pr.build_receipt(storage_status(), pb, cells, layout='recordlayer', rows=1000, record_format='unsplit',
+                                 fixture=fixture(rows=1000), expect_prefix=prefix, preset='benchfetch')
+            path = self.tmp / name
+            path.write_text(json.dumps(r))
+            return path
+        custom = receipt(dict(pr.PRESETS['benchfetch'], rows10=(0, 10)), 'custom.json')  # same name, wrong bounds
+        honest = receipt(pr.PRESETS['benchfetch'], 'honest.json')
+        split = self.write_receipt('benchfetch/split', ('benchfetch', 'split'), 'split')
+        base = ['testingb-plans', '--protocol', str(p), '--orders', str(o), '--cluster-file', str(self.tmp / 'cluster'),
+                '--binary', f'fetch={self.tmp / "fetch"}', '--binary', f'sqlfetch={self.tmp / "sqlfetch"}',
+                '--placement-receipt', f'benchfetch/split={split}']
+        with self.assertRaisesRegex(ValueError, 'bounds'):
+            seal.main(base + ['--placement-receipt', f'benchfetch/small={custom}', '--output-dir', str(self.tmp / 'c')])
+        with contextlib.redirect_stdout(io.StringIO()):
+            seal.main(base + ['--placement-receipt', f'benchfetch/small={honest}', '--output-dir', str(self.tmp / 'h')])
+        plan = json.loads((self.tmp / 'h' / 'M2rl.plan.json').read_text())
+        labels = {c['key']: c['placement_label'] for c in plan['cases']}
+        self.assertEqual(labels['small-rows10-forward'], 'partially colocated (f = 0.0000)')
+        self.assertEqual(labels['small-limit1-forward'], 'cross-server')
 
     def test_testingb_seal_refuses_unproven_placement(self):
         p, o = self.fixture_files()
