@@ -62,6 +62,7 @@ type remoteFetchPage struct {
 	Scanned       int
 	Bytes         int64
 	RemoteEntries int64
+	RemoteFetches int64
 	BadEntries    int64
 }
 
@@ -173,6 +174,7 @@ var _ = Describe("Index remote fetch", func() {
 		state.WaitForIssuedRecordLoadCharges()
 		page.Scanned, page.Bytes = state.RecordsScanned(), state.BytesScanned()
 		page.RemoteEntries, page.BadEntries = timer.GetCount(EventScanRemoteFetchEntry), timer.GetCount(CountBadIndexEntry)
+		page.RemoteFetches = timer.GetCount(CountRemoteFetch)
 		return page
 	}
 	ids := func(page remoteFetchPage) []int64 {
@@ -218,11 +220,13 @@ var _ = Describe("Index remote fetch", func() {
 						if method == IndexFetchScanAndFetch {
 							baseline = page
 							Expect(page.RemoteEntries).To(BeZero())
+							Expect(page.RemoteFetches).To(BeZero())
 							continue
 						}
 						Expect(page.Rows).To(Equal(baseline.Rows), "%s %s reverse=%t", index, method, reverse)
 						Expect(page.Bytes).To(Equal(baseline.Bytes))
 						Expect(page.RemoteEntries).To(Equal(int64(13)), "one per result, including the exhausted one")
+						Expect(page.RemoteFetches).To(Equal(int64(1)), "one mapped read for the whole scan")
 					}
 					split := 0
 					for _, row := range baseline.Rows {
@@ -375,6 +379,7 @@ var _ = Describe("Index remote fetch", func() {
 			props    ScanProperties
 			noMapped bool
 			remote   func(error) bool
+			fetches  int64 // mapped reads requested before the failure
 		}
 		as := func(target any) func(error) bool { return func(err error) bool { return errors.As(err, target) } }
 		var argument *RecordCoreArgumentError
@@ -383,17 +388,17 @@ var _ = Describe("Index remote fetch", func() {
 		var recordCore *RecordCoreError
 		arms := map[string]arm{
 			// testScanFailsImmediately
-			"snapshot": {index: "price", pkLength: 1, props: NewScanProperties(DefaultExecuteProperties().WithIsolationLevel(IsolationLevelSnapshot)), remote: as(&unsupportedOperation)},
+			"snapshot": {index: "price", pkLength: 1, props: NewScanProperties(DefaultExecuteProperties().WithIsolationLevel(IsolationLevelSnapshot)), remote: as(&unsupportedOperation), fetches: 1},
 			// testInvalidIntegerPkLength
 			"zero primary key length":     {index: "price", pkLength: 0, props: ForwardScan(), remote: as(&argument)},
 			"negative primary key length": {index: "price", pkLength: -1, props: ForwardScan(), remote: as(&argument)},
 			// testTooLargeIntegerPkLength: the server rejects the mapper.
-			"oversized primary key length": {index: "price", pkLength: 86, props: ForwardScan(), remote: func(err error) bool {
+			"oversized primary key length": {index: "price", pkLength: 86, props: ForwardScan(), fetches: 1, remote: func(err error) bool {
 				var native fdb.Error
 				return errors.As(err, &native)
 			}},
 			// a client without mapped reads, like the libfdb_c backend
-			"no mapped reads": {index: "price", pkLength: 1, props: ForwardScan(), noMapped: true, remote: as(&unsupportedIndex)},
+			"no mapped reads": {index: "price", pkLength: 1, props: ForwardScan(), noMapped: true, remote: as(&unsupportedIndex), fetches: 1},
 			// RANK's maintainer embeds the standard one but keeps Java's unsupported default.
 			"rank index": {index: "rank", pkLength: 1, props: ForwardScan(), remote: as(&unsupportedIndex)},
 		}
@@ -404,6 +409,9 @@ var _ = Describe("Index remote fetch", func() {
 					store.context.tx = remoteFetchNoMappedReads{store.context.tx}
 				}
 				page := scan(store, method, a.index, a.pkLength, a.props, nil, IndexOrphanError)
+				if method != IndexFetchScanAndFetch {
+					Expect(page.RemoteFetches).To(Equal(a.fetches), "%s %s", name, method)
+				}
 				if method == IndexFetchUseRemoteFetch {
 					Expect(a.remote(page.Err)).To(BeTrue(), "%s: %v", name, page.Err)
 					continue
@@ -443,6 +451,7 @@ var _ = Describe("Index remote fetch", func() {
 				Expect(page.Rows).To(Equal(want.Rows))
 				Expect(page.Continuation).To(Equal(want.Continuation))
 				Expect(page.RemoteEntries).To(BeZero(), "a skipped scan is not timed as remote fetch")
+				Expect(page.RemoteFetches).To(BeZero(), "a skipped scan requests no mapped read")
 			}
 		}
 		var unsupportedOperation *UnsupportedOperationError

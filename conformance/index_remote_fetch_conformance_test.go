@@ -71,6 +71,7 @@ type indexRemotePage struct {
 	ScannedRecords int              `json:"scannedRecords"`
 	ScannedBytes   int64            `json:"scannedBytes"`
 	RemoteEntries  int64            `json:"remoteEntries"`
+	RemoteFetches  int64            `json:"remoteFetches"`
 	BadEntries     int64            `json:"badEntries"`
 }
 
@@ -364,6 +365,7 @@ var _ = Describe("Index remote fetch Record Layer Java conformance (RFC-258)", f
 		page.ScannedRecords, page.ScannedBytes = execution.ScanState.RecordsScanned(), execution.ScanState.BytesScanned()
 		page.RemoteEntries = store.Context().Timer().GetCount(recordlayer.EventScanRemoteFetchEntry)
 		page.BadEntries = store.Context().Timer().GetCount(recordlayer.CountBadIndexEntry)
+		page.RemoteFetches = store.Context().Timer().GetCount(recordlayer.CountRemoteFetch)
 		return page
 	}
 	compare := func(req indexRemoteRequest) indexRemotePage {

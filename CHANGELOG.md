@@ -81,7 +81,7 @@ Each is described in full under Compatibility or Changed below.
 
 ### Added
 - Pure-Go `fdb.MappedRangeReader` capability with byte-driven batch iteration for exact primary ranges; the libfdb_c backend does not expose it.
-- Record Layer remote-fetch index scans: `ScanIndexRecordsWithFetchMethod` with `USE_REMOTE_FETCH` and `USE_REMOTE_FETCH_WITH_FALLBACK`, `ScanIndexRemoteFetch` and `BuildSingleRecord`, as in Java.
+- Record Layer remote-fetch index scans: `ScanIndexRecordsWithFetchMethod` with `USE_REMOTE_FETCH` and `USE_REMOTE_FETCH_WITH_FALLBACK`, `ScanIndexRemoteFetch` and `BuildSingleRecord`, with Java's `scan_remote_fetch_entry` event and `remote_fetch` count.
 - The SQL driver DSN sets `max_rows`, `execution_scanned_rows_limit`, `execution_scanned_bytes_limit`,
   `execution_time_limit`, `max_statement_memory_bytes`, `transaction_timeout`, and the planner knobs
   `plan_right_deep`, `disable_planner_rewriting` and `disabled_planner_rules`. The transaction timeout

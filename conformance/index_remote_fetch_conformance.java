@@ -20,13 +20,16 @@ import com.apple.foundationdb.record.metadata.IndexOptions;
 import com.apple.foundationdb.record.metadata.IndexTypes;
 import com.apple.foundationdb.record.metadata.Key;
 import com.apple.foundationdb.record.metadata.expressions.GroupingKeyExpression;
+import com.apple.foundationdb.record.provider.foundationdb.FDBDatabase;
 import com.apple.foundationdb.record.provider.foundationdb.FDBIndexedRecord;
 import com.apple.foundationdb.record.provider.foundationdb.FDBRecordContext;
+import com.apple.foundationdb.record.provider.foundationdb.FDBRecordContextConfig;
 import com.apple.foundationdb.record.provider.foundationdb.FDBRecordStore;
 import com.apple.foundationdb.record.provider.foundationdb.FDBStoreTimer;
 import com.apple.foundationdb.record.provider.foundationdb.FDBStoredRecord;
 import com.apple.foundationdb.record.provider.foundationdb.IndexOrphanBehavior;
 import com.apple.foundationdb.record.provider.foundationdb.IndexScanRange;
+import com.apple.foundationdb.record.provider.foundationdb.InstrumentedTransaction;
 import com.apple.foundationdb.record.provider.foundationdb.indexes.StandardIndexMaintainer;
 import com.apple.foundationdb.subspace.Subspace;
 import com.apple.foundationdb.tuple.Tuple;
@@ -223,9 +226,14 @@ class IndexRemoteFetchSteps extends ConformanceBase {
 
     @ConformanceStep("scanIndexRemoteFetch")
     public Map<String, Object> scan(String clusterFile, String tenantName, byte[] subspace, Request request) throws InterruptedException {
-        try (Tenant tenant = createDatabase(clusterFile).database().openTenant(tenantName.getBytes(StandardCharsets.UTF_8));
+        FDBDatabase database = createDatabase(clusterFile);
+        FDBStoreTimer timer = new FDBStoreTimer();
+        try (Tenant tenant = database.database().openTenant(tenantName.getBytes(StandardCharsets.UTF_8));
              Transaction transaction = tenant.createTransaction();
-             FDBRecordContext context = createContextFromTransaction(createDatabase(clusterFile), transaction)) {
+             // As FDBDatabase.createTransaction does when a timer is set: counts REMOTE_FETCH.
+             FDBRecordContext context = createContextFromTransaction(database,
+                     new InstrumentedTransaction(timer, null, database, null, transaction, false),
+                     FDBRecordContextConfig.newBuilder().setTimer(timer).build())) {
             IndexScanLimitSteps.TrackingStore store = openTracking(context, subspace, request.shape);
             if (request.localWriteID >= 0) {
                 localWrite(store, request.shape, request.localWriteID);
@@ -289,6 +297,7 @@ class IndexRemoteFetchSteps extends ConformanceBase {
             result.put("scannedBytes", properties.getState().getBytesScanned());
             result.put("remoteEntries", context.getTimer().getCount(FDBStoreTimer.Events.SCAN_REMOTE_FETCH_ENTRY));
             result.put("badEntries", context.getTimer().getCount(FDBStoreTimer.Counts.BAD_INDEX_ENTRY));
+            result.put("remoteFetches", context.getTimer().getCount(FDBStoreTimer.Counts.REMOTE_FETCH));
             return result;
         }
     }

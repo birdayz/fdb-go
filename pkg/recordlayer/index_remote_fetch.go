@@ -229,15 +229,21 @@ func (store *FDBRecordStore) scanIndexRemoteFetch(index *Index, scanType IndexSc
 	if err != nil {
 		return nil, err
 	}
-	reader, err := remoteFetchReader(tx, index, props)
-	if err != nil {
-		return nil, err
-	}
 	if props.ExecuteProperties.Skip > 0 {
 		// A skip would be sent as a selector offset on the mapped read, a request
 		// shape the server does not support for every range. Having checked
 		// everything remote fetch requires, scan the index and load the records.
+		if _, err := remoteFetchReader(tx, index, props); err != nil {
+			return nil, err
+		}
 		return store.scanIndexRecordsByType(index, scanType, scanRange, continuation, orphan, props), nil
+	}
+	// Java's InstrumentedReadTransaction counts the call before a snapshot
+	// transaction refuses it.
+	store.context.Timer().Increment(CountRemoteFetch)
+	reader, err := remoteFetchReader(tx, index, props)
+	if err != nil {
+		return nil, err
 	}
 	rows := &mappedIndexRows{rows: reader.GetMappedRange(rng, mapper.Pack(), indexRangeOptions(props)).Iterator()}
 	entries.iterator = rows
