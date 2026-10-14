@@ -370,16 +370,23 @@ class CampaignTest(unittest.TestCase):
         self.assertEqual(usage['steal_fraction'], .1)
         with self.assertRaises(ValueError):
             run.cpu_usage([0] * 8)
-        code = 'import subprocess,sys; p=subprocess.Popen([sys.executable,"-c","import time; time.sleep(30)"]); print(p.pid,flush=True)'
+        # The grandchild ignores SIGTERM, so only the final group SIGKILL can end it.
+        grandchild = 'import os,signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); print(os.getpid(),flush=True); time.sleep(30)'
+        code = f'import subprocess,sys; subprocess.Popen([sys.executable,"-c",{grandchild!r}])'
         process = subprocess.Popen([sys.executable, '-c', code], start_new_session=True, stdout=subprocess.PIPE, text=True)
         try:
             child = int(process.stdout.readline())
             process.wait(timeout=5)
+            self.assertFalse(Path(f'/proc/{child}/stat').read_text().rpartition(') ')[2].startswith('Z'))
             run.stop_process_group(process)
             deadline = time.monotonic() + 5
             while time.monotonic() < deadline:
-                status = Path(f'/proc/{child}/stat')
-                if not status.exists() or status.read_text().split(') ', 1)[1].startswith('Z'):
+                # Reaping removes /proc/<pid> at any instant: ENOENT on open, ESRCH on read.
+                try:
+                    state = Path(f'/proc/{child}/stat').read_text().rpartition(') ')[2]
+                except (FileNotFoundError, ProcessLookupError):
+                    break
+                if state.startswith('Z'):
                     break
                 time.sleep(.01)
             else:
