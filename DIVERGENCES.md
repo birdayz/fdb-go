@@ -4395,7 +4395,7 @@ An FDB code Go does not map reaches the caller with no SQLSTATE: the FDB error i
 The Record Layer supports `IndexFetchMethod.USE_REMOTE_FETCH` and
 `USE_REMOTE_FETCH_WITH_FALLBACK` with Java's records, continuations, limits,
 orphan behavior and fallback, and the planner stamps the SQL option
-`INDEX_FETCH_METHOD` on index plans as Java does. Four differences remain:
+`INDEX_FETCH_METHOD` on index plans as Java does. The following differences remain:
 
 - **Skip in `ScanIndexRecordsWithFetchMethod`.** Java applies a positive
   `ExecuteProperties` skip to the mapped read as a key-selector offset. Go never
@@ -4406,16 +4406,31 @@ orphan behavior and fallback, and the planner stamps the SQL option
   `scan_index` rather than `scan_remote_fetch_entry`. WITH_FALLBACK still wraps it:
   a failure re-runs the ordinary scan from the last returned row with the original
   skip, as Java's fallback does after a failed remote page.
-- **Skip and row limit of an index plan.** The executor applies a plan's skip and
-  row limit above the scan's range set, for every fetch method, where Java's
-  `RecordQueryIndexPlan` passes them into the scan. Rows, order, continuations
-  and the fallback, which applies both again from its resume point as Java's
-  `fallBackContinueFrom` does, are Java's. The counters differ: a skipped plan
-  reads and fetches the skipped entries, remotely too, and counts them in
-  `scan_remote_fetch_entry`, and a row-limited plan records one fewer
-  `scan_remote_fetch_entry` because the limit stops before the scan's final
-  result. The SQL layer never gives an index plan a skip; OFFSET belongs to the
-  limit operator above it.
+- **Skip and row limit of an index plan.** `executeIndexScan` applies skip and
+  row limit above the scan's range set. Its leaves clear skip and increase the
+  read limit to include skipped entries; they do not reach the store-level
+  `Skip > 0` ordinary-scan path above. Java's `RecordQueryIndexPlan` instead
+  passes skip into the mapped read as a selector offset, before batching.
+  This changes the mapped batch's failure boundary, not just counters: with
+  500 Order records, a local write at ID 100 (399 in reverse), and skip 3,
+  USE_REMOTE_FETCH returns 76 rows in Go versus 79 in Java forward, or 72
+  versus 75 reverse, before FDB error 2039. WITH_FALLBACK reapplies the same
+  skip and row limit at the last returned row, as Java's `fallBackContinueFrom`
+  does. With row limit 150, Go therefore returns 226 / 222 rows and Java
+  229 / 225 (forward / reverse). Without a row limit both return 494 rows,
+  but omit different three-row spans at the fallback boundary. A row-limited
+  plan also records one fewer `scan_remote_fetch_entry` because its outer
+  limit stops before the scan's terminal result. These exact rows, errors and
+  remote counters are pinned by `index_fetch_method_conformance_test.go`.
+  SQL never gives an index plan a skip; OFFSET belongs to its limit operator.
+- **SQL MAX_ROWS after fallback.** Go's SQL pagination caps the entire result
+  at MAX_ROWS. Java's plan-level `fallBackContinueFrom` (like the store's
+  `remoteFetchFallbackFrom`) restarts the fallback cursor with the full
+  returned-row limit instead of deducting already returned rows.
+  For 500 rows, a local write at ID 100, and MAX_ROWS 150, Java returns 236
+  rows (86 before the mapped batch fails, then 150 after fallback); Go returns
+  the first 150. Both observe the local write. The SQL fallback conformance
+  probe pins the exact rows in both engines rather than treating them as equal.
 - **libfdb_c backend.** It has no mapped reads, so remote fetch there is
   unsupported: `USE_REMOTE_FETCH` fails and `USE_REMOTE_FETCH_WITH_FALLBACK` falls
   back, where Java fetches remotely.
