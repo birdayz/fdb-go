@@ -58,6 +58,7 @@ func (load *remoteRecordLoad) start(store *FDBRecordStore, raw FDBIndexedRawReco
 	load.record = &FDBIndexedRecord{IndexEntry: raw.IndexEntry, Record: &FDBStoredRecord[proto.Message]{
 		PrimaryKey: primaryKey, RecordType: recordType, Record: message, wire: wire, Store: store,
 		Version: version, KeyCount: sizes.KeyCount, KeySize: sizes.KeySize, ValueSize: sizes.ValueSize, Split: sizes.IsSplit,
+		VersionedInline: sizes.VersionedInline,
 	}}
 }
 

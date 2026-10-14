@@ -3,6 +3,7 @@
 import contextlib
 import io
 from pathlib import Path
+import re
 import tempfile
 import unittest
 
@@ -40,6 +41,23 @@ class SiteCheckTest(unittest.TestCase):
             check(self.root)
 
     def test_valid_site(self):
+        self.run_check()
+
+    def test_changelog_measurement_link(self):
+        repo = Path(__file__).resolve().parent.parent
+        report = "docs/benchmarks/rfc-258-pr4-allocations.md"
+        links = re.findall(r"\[RFC-258 PR4 measurements\]\(([^)]+)\)",
+                           (repo / "CHANGELOG.md").read_text())
+        self.assertEqual(links, [f"https://github.com/birdayz/fdb-go/blob/master/{report}"])
+        self.assertTrue((repo / report).is_file())
+        changelog = self.root / "changelog/index.html"
+        changelog.parent.mkdir()
+        changelog.write_text(f'<a href="{links[0]}">Measurements</a>')
+        self.run_check()
+        changelog.write_text(f'<a href="{report}">Measurements</a>')
+        with self.assertRaisesRegex(SystemExit, r"/changelog/: missing local page/file"):
+            self.run_check()
+        changelog.write_text(f'<a href="{links[0]}">Measurements</a>')
         self.run_check()
 
     def test_rejects_broken_output(self):

@@ -1772,7 +1772,8 @@ var _ = Describe("CursorCombinators", func() {
 				}
 			}
 
-			// Scanned records limit of 3 — scan 3, stop with ScanLimitReached
+			// Scanned records limit of 3: Java's unsplitter finishes the record whose
+			// key-value crosses the limit, so a fourth record precedes ScanLimitReached.
 			scan := ForwardScan()
 			scan.ExecuteProperties.ScannedRecordsLimit = 3
 			cursor := store.ScanRecords(nil, scan)
@@ -1788,7 +1789,7 @@ var _ = Describe("CursorCombinators", func() {
 				}
 				records = append(records, result.GetValue())
 			}
-			Expect(records).To(HaveLen(3))
+			Expect(records).To(HaveLen(4))
 			Expect(lastResult.GetNoNextReason()).To(Equal(ScanLimitReached))
 			Expect(lastResult.HasStoppedBeforeEnd()).To(BeTrue())
 

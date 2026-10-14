@@ -12,9 +12,9 @@ import (
 	"fdb.dev/pkg/relational/core/embedded"
 )
 
-// ARRAY_AGG partial state across repeated resource-limit resumes: one scanned
-// row per page, so every element is decoded and re-encoded through the
-// continuation once per later row of its group, structured elements included,
+// ARRAY_AGG partial state across repeated resource-limit resumes: a page break
+// after every row or two, so every element is decoded and re-encoded through the
+// continuation for later rows of its group, structured elements included,
 // and a group that has seen only ignored NULLs stays a present empty array.
 func TestFDB_ArrayAggRepeatedResume(t *testing.T) {
 	t.Parallel()

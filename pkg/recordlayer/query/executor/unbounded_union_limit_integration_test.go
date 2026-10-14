@@ -186,7 +186,9 @@ func TestIntegration_LimitParentSkipResume(t *testing.T) {
 					if page == 0 {
 						props.Skip = 2
 						if tc.partialSkip {
-							props.ScannedRecordsLimit = 2 // semantic offset + one request-skipped row
+							// Semantic offset + one request-skipped row: the scan finishes the
+							// record whose key-value crosses the limit.
+							props.ScannedRecordsLimit = 1
 						}
 					} else if page == 1 && tc.partialSkip {
 						// Request skip is per execution, as in Java. One of the two
@@ -343,21 +345,28 @@ func TestIntegration_StrictFirstOrDefaultRequest(t *testing.T) {
 				t.Parallel()
 				ctx := context.Background()
 				store := setupStore(t)
-				insertOrders(t, store, &demopb.Order{OrderId: proto.Int64(1)}, &demopb.Order{OrderId: proto.Int64(2)})
+				insertOrders(t, store, &demopb.Order{OrderId: proto.Int64(1)}, &demopb.Order{OrderId: proto.Int64(3)})
+				// A budget of one finishes the record whose key-value crosses it. Customer 2
+				// is that record after the held Order 1; with mixed types Customer 0 is it
+				// before any matching row.
+				customers := []int64{2}
 				if probe.mixedTypes {
-					// A raw scan budget of two would count Customer 0, then only
-					// Order 1, and hide the second matching scalar row (Order 2).
-					_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
-						s, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).SetSubspace(testSubspace(t)).Open()
-						if err != nil {
+					customers = []int64{-1, 0, 2}
+				}
+				_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+					s, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).SetSubspace(testSubspace(t)).Open()
+					if err != nil {
+						return nil, err
+					}
+					for _, id := range customers {
+						if _, err := s.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(id)}); err != nil {
 							return nil, err
 						}
-						_, err = s.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(0)})
-						return nil, err
-					})
-					if err != nil {
-						t.Fatal(err)
 					}
+					return nil, nil
+				})
+				if err != nil {
+					t.Fatal(err)
 				}
 				scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
 				var plan plans.RecordQueryPlan = mustExecutorConstruct(plans.NewRecordQueryFirstOrDefaultPlanStrict(scan, values.NewNullValue(scan.GetResultType())))
@@ -367,7 +376,8 @@ func TestIntegration_StrictFirstOrDefaultRequest(t *testing.T) {
 				} else if kind == "projection" {
 					plan = mustExecutorConstruct(newProjectionMapOverForTest([]values.Value{constant}, plan))
 				}
-				_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				reachedStop := false
+				_, err = testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 					s, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).SetSubspace(testSubspace(t)).Open()
 					if err != nil {
 						return nil, err
@@ -396,6 +406,7 @@ func TestIntegration_StrictFirstOrDefaultRequest(t *testing.T) {
 					} else if err != nil || mode != fodResumeStart || len(token) != 1 || token[0] != fodTagRestart {
 						t.Fatalf("truncated cardinality proof must restart with held first row: mode=%v err=%v", mode, err)
 					}
+					reachedStop = true
 					resumed, err := ExecutePlan(ctx, plan, s, EmptyEvaluationContext(), token,
 						recordlayer.DefaultExecuteProperties().WithReturnedRowLimit(1).WithScannedRecordsLimit(3))
 					if resumed != nil {
@@ -406,6 +417,9 @@ func TestIntegration_StrictFirstOrDefaultRequest(t *testing.T) {
 				var cardinality *api.Error
 				if !errors.As(err, &cardinality) || cardinality.Code != api.ErrCodeCardinalityViolation {
 					t.Fatalf("bounded request must not suppress real two-row scalar: %v, want 21000", err)
+				}
+				if outOfBand && !reachedStop {
+					t.Fatal("the out-of-band probe ended before its scan-limit stop")
 				}
 			})
 		}

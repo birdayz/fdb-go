@@ -476,16 +476,18 @@ func (store *FDBRecordStore) DryRunSaveRecord(
 		// A tuple-packed Versionstamp: VersionBytes (12) and its type code, the
 		// incomplete version's 4-byte offset excluded as Java excludes it.
 		sizes.ValueSize += VersionBytes + 1
+		sizes.VersionedInline = true
 	}
 
 	return &FDBStoredRecord[proto.Message]{
-		PrimaryKey: primaryKey,
-		Record:     record,
-		RecordType: recordType,
-		KeyCount:   sizes.KeyCount,
-		KeySize:    sizes.KeySize,
-		ValueSize:  sizes.ValueSize,
-		Split:      sizes.IsSplit,
+		PrimaryKey:      primaryKey,
+		Record:          record,
+		RecordType:      recordType,
+		KeyCount:        sizes.KeyCount,
+		KeySize:         sizes.KeySize,
+		ValueSize:       sizes.ValueSize,
+		Split:           sizes.IsSplit,
+		VersionedInline: sizes.VersionedInline,
 	}, nil
 }
 

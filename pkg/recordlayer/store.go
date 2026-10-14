@@ -482,16 +482,17 @@ func (l *recordLoad) loadRawRecord() (*FDBStoredRecord[proto.Message], error) {
 	}
 
 	stored := &FDBStoredRecord[proto.Message]{
-		PrimaryKey: primaryKey,
-		RecordType: recordType,
-		Record:     protoMessage,
-		wire:       wire,
-		Store:      store,
-		KeyCount:   sizeInfo.KeyCount,
-		ValueSize:  sizeInfo.ValueSize,
-		KeySize:    sizeInfo.KeySize,
-		Split:      sizeInfo.IsSplit,
-		Version:    version,
+		PrimaryKey:      primaryKey,
+		RecordType:      recordType,
+		Record:          protoMessage,
+		wire:            wire,
+		Store:           store,
+		KeyCount:        sizeInfo.KeyCount,
+		ValueSize:       sizeInfo.ValueSize,
+		KeySize:         sizeInfo.KeySize,
+		Split:           sizeInfo.IsSplit,
+		VersionedInline: sizeInfo.VersionedInline,
+		Version:         version,
 	}
 
 	return stored, nil
@@ -992,13 +993,14 @@ func (store *FDBRecordStore) saveRecordInternal(
 		RecordType: recordType,
 		Record:     record,
 		// Its map entries are indexed in the order it was written in.
-		wire:      newRecordWire(recordType, unionInner(data, recordType.unionFieldNumber)),
-		Version:   savedVersion,
-		Store:     store,
-		KeyCount:  newsizeInfo.KeyCount,
-		ValueSize: newsizeInfo.ValueSize,
-		KeySize:   newsizeInfo.KeySize,
-		Split:     newsizeInfo.IsSplit,
+		wire:            newRecordWire(recordType, unionInner(data, recordType.unionFieldNumber)),
+		Version:         savedVersion,
+		Store:           store,
+		KeyCount:        newsizeInfo.KeyCount,
+		ValueSize:       newsizeInfo.ValueSize,
+		KeySize:         newsizeInfo.KeySize,
+		Split:           newsizeInfo.IsSplit,
+		VersionedInline: newsizeInfo.VersionedInline,
 	}
 
 	// Update secondary indexes
@@ -1760,34 +1762,57 @@ func (store *FDBRecordStore) ScanRecordsInRange(
 	continuation []byte,
 	scanProperties ScanProperties,
 ) RecordCursor[*FDBStoredRecord[proto.Message]] {
+	cursor := store.newKeyValueCursor(low, high, lowEndpoint, highEndpoint, continuation, scanProperties)
+	return instrumentCursor(store.context.Timer(), EventScanRecords, cursor)
+}
+
+func (store *FDBRecordStore) newKeyValueCursor(
+	low, high tuple.Tuple,
+	lowEndpoint, highEndpoint EndpointType,
+	continuation []byte,
+	scanProperties ScanProperties,
+) *keyValueCursor {
 	recordsSubspace := store.recordsSubspace
 	bounds := newKVScanBounds(recordsSubspace, low, high, lowEndpoint, highEndpoint)
+	props := scanProperties.ExecuteProperties
+	split := store.metaData.IsSplitLongRecords()
 
-	return instrumentCursor(store.context.Timer(), EventScanRecords, &keyValueCursor{
-		store:               store,
-		low:                 low,
-		high:                high,
-		lowEndpoint:         lowEndpoint,
-		highEndpoint:        highEndpoint,
-		continuation:        continuation,
-		scanProperties:      scanProperties,
-		keyPrefixLength:     len(recordsSubspace.Bytes()),
-		bounds:              bounds,
-		prefixLength:        bounds.prefixLength,
-		scanState:           resolveScanLimiterState(scanProperties.ExecuteProperties),
-		recordsSubspace:     recordsSubspace,
-		storeRecordVersions: store.metaData.IsStoreRecordVersions(),
+	cursor := &keyValueCursor{
+		store:           store,
+		continuation:    continuation,
+		scanProperties:  scanProperties,
+		reverse:         scanProperties.IsReverse(),
+		keyPrefixLength: len(recordsSubspace.Bytes()),
+		bounds:          bounds,
+		prefixLength:    bounds.prefixLength,
+		scanState:       resolveScanLimiterState(props),
 		// Bare-key layout applies ONLY when the store does not split long records;
 		// a split-capable store always suffixes its keys even at format < 5. Matches
 		// Java's scan logic, which gates the bare-key path on !isSplitLongRecords().
-		omitUnsplitRecordSuffix: store.omitUnsplitRecordSuffix() && !store.metaData.IsSplitLongRecords(),
+		omitUnsplitRecordSuffix: store.omitUnsplitRecordSuffix() && !split,
 		useOldVersionFormat:     store.useOldVersionFormat(),
-	})
+	}
+	cursor.clock = transactionClock(store.context, props, cursor.scanState)
+	if cursor.omitUnsplitRecordSuffix {
+		cursor.selectorSkip = max(props.Skip, 0)
+	}
+	if limit := props.ReturnedRowLimit; limit > 0 && !split {
+		if cursor.omitUnsplitRecordSuffix {
+			cursor.innerLimit = limit
+		} else {
+			// Java doubles the unsplit inner limit in case records carry versions.
+			cursor.innerLimit = saturatingAdd(limit, max(props.Skip, 0))
+			cursor.innerLimit = saturatingAdd(cursor.innerLimit, cursor.innerLimit)
+		}
+	}
+	return cursor
 }
 
-// CountRecords counts records in a range by scanning the records subspace.
-// Unlike GetRecordCount() which uses atomic counters, this actually scans records.
-// Matches Java's FDBRecordStore.countRecords().
+// CountRecords is Java's FDBRecordStore.countRecords: skip moves the range's
+// selector and row and time limits are cleared. An unsplit store counts its
+// key-values, inline versions included, without charging the scan limits; a
+// split store counts the unsplitter's records, which charge them. A count cut
+// short by a scan limit also returns ScanLimitReachedError (RFC-106a).
 func (store *FDBRecordStore) CountRecords(
 	ctx context.Context,
 	low, high tuple.Tuple,
@@ -1795,8 +1820,35 @@ func (store *FDBRecordStore) CountRecords(
 	continuation []byte,
 	scanProperties ScanProperties,
 ) (int, error) {
-	cursor := store.ScanRecordsInRange(low, high, lowEndpoint, highEndpoint, continuation, scanProperties)
-	return GetCount(ctx, cursor)
+	scanProperties.ExecuteProperties = scanProperties.ExecuteProperties.ClearRowAndTimeLimits()
+	cursor := store.newKeyValueCursor(low, high, lowEndpoint, highEndpoint, continuation, scanProperties)
+	cursor.selectorSkip = max(scanProperties.ExecuteProperties.Skip, 0)
+	if err := cursor.initIterator(); err != nil {
+		return 0, err
+	}
+	split := store.metaData.IsSplitLongRecords()
+	count := 0
+	for {
+		if err := ctx.Err(); err != nil {
+			return count, err
+		}
+		if !split {
+			_, ok, err := cursor.nextKV()
+			if err != nil || !ok {
+				return count, err
+			}
+			count++
+			continue
+		}
+		ok, reason, cont, err := cursor.unsplit(ctx)
+		if err != nil {
+			return count, err
+		}
+		if !ok {
+			return count, errIfDrainTruncated(NewResultNoNext[*FDBStoredRecord[proto.Message]](reason, cont))
+		}
+		count++
+	}
 }
 
 // FDBStoredRecord represents a record that has been stored in or loaded from FDB
@@ -1826,6 +1878,9 @@ type FDBStoredRecord[M proto.Message] struct {
 
 	// Whether the record is split across multiple keys
 	Split bool
+
+	// VersionedInline reports a version stored with the record and counted in its sizes.
+	VersionedInline bool
 
 	// wire is the stored bytes the record was decoded from, for a type that
 	// reaches a map field (record_wire_map_order.go); nil otherwise.

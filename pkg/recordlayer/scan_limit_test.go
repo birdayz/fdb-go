@@ -116,9 +116,8 @@ var _ = Describe("ByteScanLimit", func() {
 				Expect(err).NotTo(HaveOccurred())
 			}
 
-			// 1 byte limit — byte check is pre-read with free initial pass
-			// (matching Java's CursorLimitManager), so the first record is always returned.
-			// The limit fires on the second call.
+			// 1 byte limit: the first key-value has the free initial pass; the second
+			// trips the limit, but Java's unsplitter still finishes its record.
 			scanProps := ScanProperties{
 				ExecuteProperties: ExecuteProperties{
 					IsolationLevel:    SerializableIsolation,
@@ -127,13 +126,13 @@ var _ = Describe("ByteScanLimit", func() {
 			}
 			cursor := store.ScanRecords(nil, scanProps)
 
-			// First call: free initial pass — returns a record
-			result, err := cursor.OnNext(rtx.ctx)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(result.HasNext()).To(BeTrue())
+			for range 2 {
+				result, err := cursor.OnNext(rtx.ctx)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.HasNext()).To(BeTrue())
+			}
 
-			// Second call: byte limit exceeded — stops
-			result, err = cursor.OnNext(rtx.ctx)
+			result, err := cursor.OnNext(rtx.ctx)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.HasNext()).To(BeFalse())
 			Expect(result.GetNoNextReason()).To(Equal(ByteLimitReached))
@@ -360,10 +359,10 @@ var _ = Describe("ScannedRecordsLimit_BoundaryTests", func() {
 				count++
 			}
 
-			// Should get all 3 records, then ScanLimitReached
-			// (limit checked before read, so after reading 3, limit hits)
+			// The third key-value is still within the limit, and the unsplitter
+			// charges no attempt for reaching the end of the range.
 			Expect(count).To(Equal(3))
-			Expect(lastResult.GetNoNextReason()).To(Equal(ScanLimitReached))
+			Expect(lastResult.GetNoNextReason()).To(Equal(SourceExhausted))
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -391,11 +390,14 @@ var _ = Describe("ScannedRecordsLimit_BoundaryTests", func() {
 			}
 			cursor := store.ScanRecords(nil, scanProps)
 
-			result, err := cursor.OnNext(rtx.ctx)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(result.HasNext()).To(BeTrue())
+			// The second key-value crosses the limit; Java finishes its record.
+			for range 2 {
+				result, err := cursor.OnNext(rtx.ctx)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.HasNext()).To(BeTrue())
+			}
 
-			result, err = cursor.OnNext(rtx.ctx)
+			result, err := cursor.OnNext(rtx.ctx)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.HasNext()).To(BeFalse())
 			Expect(result.GetNoNextReason()).To(Equal(ScanLimitReached))

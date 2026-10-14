@@ -86,7 +86,9 @@ import (
 const pageRetryRows = 12
 
 // pageRetryScanLimit is the per-page scanned-rows budget that forces the pages.
-const pageRetryScanLimit = 2
+// A page returns one row more than the budget: the scan finishes the record
+// whose key-value crosses it, as Java's KeyValueUnsplitter does.
+const pageRetryScanLimit = 1
 
 // retryOnceBackend is a SimFDB that fails ONE transaction retryably AFTER its
 // closure has run to completion, then lets the retry through.
@@ -758,8 +760,8 @@ func TestPageRetry_ExplicitTransactionPagesBypassTheRetryLoop(t *testing.T) {
 		t.Fatalf("auto-commit paged SELECT returned %d rows, want %d", got, pageRetryRows)
 	}
 	autoCommitTxns := backend.seen.Load()
-	// pageRetryRows/pageRetryScanLimit pages, each its own transaction.
-	if wantPages := int64(pageRetryRows / pageRetryScanLimit); autoCommitTxns < wantPages {
+	// pageRetryRows/(pageRetryScanLimit+1) pages, each its own transaction.
+	if wantPages := int64(pageRetryRows / (pageRetryScanLimit + 1)); autoCommitTxns < wantPages {
 		t.Fatalf("auto-commit paged SELECT made %d transactions through the retrying route, "+
 			"want at least %d (one per page). The counter is not observing the page loop, so "+
 			"the in-transaction comparison below would be vacuous", autoCommitTxns, wantPages)

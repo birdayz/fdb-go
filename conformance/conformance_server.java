@@ -72,6 +72,7 @@ class ConformanceServer {
         new RecordLoadChargeProbeSteps(),
         new IndexScanLimitSteps(),
         new IndexRemoteFetchSteps(),
+        new RecordScanLimitSteps(),
         new BitmapValueIndexSteps(),
         new TextIndexSteps(),
         new TimeWindowLeaderboardSteps(),

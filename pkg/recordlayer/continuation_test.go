@@ -290,7 +290,8 @@ var _ = Describe("ContinuationToken", func() {
 		ks := specSubspace()
 		populate20Orders(ctx, metaData, ks)
 
-		// Set limit to exactly the total count -- continuation should indicate end
+		// A limit of exactly the total count: Java's limitRowsTo stops without reading
+		// ahead, so the page ends RETURN_LIMIT_REACHED and the next page is empty.
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).Open()
@@ -303,23 +304,32 @@ var _ = Describe("ContinuationToken", func() {
 				CursorStreamingMode: StreamingModeIterator,
 			}
 
-			cursor := store.ScanRecords(nil, props)
-			defer func() { _ = cursor.Close() }()
-
+			var token []byte
 			count := 0
-			for {
-				result, err := cursor.OnNext(ctx)
-				Expect(err).NotTo(HaveOccurred())
-				if !result.HasNext() {
-					// When source is exhausted, continuation should be end
-					Expect(result.GetNoNextReason()).To(Equal(SourceExhausted))
-					cont := result.GetContinuation()
-					if cont != nil {
-						Expect(cont.IsEnd()).To(BeTrue())
+			for _, page := range []int{20, 0} {
+				cursor := store.ScanRecords(token, props)
+				rows := 0
+				for {
+					result, err := cursor.OnNext(ctx)
+					Expect(err).NotTo(HaveOccurred())
+					if !result.HasNext() {
+						cont := result.GetContinuation()
+						if page > 0 {
+							Expect(result.GetNoNextReason()).To(Equal(ReturnLimitReached))
+							Expect(cont.IsEnd()).To(BeFalse())
+							token, err = cont.ToBytes()
+							Expect(err).NotTo(HaveOccurred())
+						} else {
+							Expect(result.GetNoNextReason()).To(Equal(SourceExhausted))
+							Expect(cont.IsEnd()).To(BeTrue())
+						}
+						break
 					}
-					break
+					rows++
 				}
-				count++
+				Expect(cursor.Close()).To(Succeed())
+				Expect(rows).To(Equal(page))
+				count += rows
 			}
 
 			Expect(count).To(Equal(20))

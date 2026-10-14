@@ -15,9 +15,11 @@ import (
 type fakeRangeIterator struct {
 	advancesLeft int
 	getErr       error
+	advances     int
 }
 
 func (f *fakeRangeIterator) Advance() bool {
+	f.advances++
 	if f.advancesLeft > 0 {
 		f.advancesLeft--
 		return true
@@ -32,47 +34,60 @@ func (f *fakeRangeIterator) Get() (fdb.KeyValue, error) {
 	return fdb.KeyValue{}, nil
 }
 
-// TestKeyValueCursor_RowLimitBoundarySurfacesIteratorError pins that a transient FDB
-// iterator error (transaction_too_old 1007, timeout) landing exactly on the
-// ReturnedRowLimit boundary is SURFACED, not silently collapsed into SourceExhausted.
-// Pre-fix, hasMoreKVs returned `iterator.Advance()` without checking Get()'s stored
-// error, so OnNext read the error as end-of-data and ended the scan — silently losing
-// every remaining row. (This dimension — an error at the limit probe — had no coverage,
-// neither here nor for nextKV's twin check.)
-func TestKeyValueCursor_RowLimitBoundarySurfacesIteratorError(t *testing.T) {
+// A transient iterator error (transaction_too_old 1007) must surface, never be
+// read as end-of-data, which would silently end the scan.
+func TestKeyValueCursor_IteratorErrorSurfaces(t *testing.T) {
 	t.Parallel()
 	injErr := errors.New("injected transaction_too_old (1007)")
-	c := &keyValueCursor{
-		iterator:       &fakeRangeIterator{advancesLeft: 0, getErr: injErr},
-		recordsRead:    1, // already returned the requested row → next OnNext probes for more
-		scanProperties: ScanProperties{ExecuteProperties: ExecuteProperties{ReturnedRowLimit: 1}},
-	}
-
+	c := &keyValueCursor{iterator: &fakeRangeIterator{getErr: injErr}}
 	_, err := c.OnNext(context.Background())
-	if err == nil {
-		t.Fatal("a transient iterator error at the row-limit boundary must surface, not be collapsed to SourceExhausted (silent row loss)")
-	}
 	if !errors.Is(err, injErr) {
 		t.Fatalf("want the iterator error propagated, got %v", err)
 	}
 }
 
-// TestKeyValueCursor_RowLimitBoundaryReportsMoreWhenAvailable guards the happy path:
-// when the iterator genuinely has more rows at the boundary, OnNext reports
-// ReturnLimitReached (not SourceExhausted) and no error.
-func TestKeyValueCursor_RowLimitBoundaryReportsMoreWhenAvailable(t *testing.T) {
+// Java's RowLimitedCursor stops at the limit without reading ahead, so the
+// iterator is untouched and the token is the last returned record's.
+func TestKeyValueCursor_RowLimitDoesNotReadAhead(t *testing.T) {
 	t.Parallel()
+	iterator := &fakeRangeIterator{advancesLeft: 1}
+	last := &keyValueContinuation{suffix: []byte{0x01}}
 	c := &keyValueCursor{
-		iterator:       &fakeRangeIterator{advancesLeft: 1}, // one more KV available
-		recordsRead:    1,
-		continuation:   []byte{0x01}, // last-returned key suffix (ReturnLimitReached needs a non-end continuation)
+		iterator:       iterator,
+		returned:       1,
+		lastCont:       last,
 		scanProperties: ScanProperties{ExecuteProperties: ExecuteProperties{ReturnedRowLimit: 1}},
 	}
-	res, err := c.OnNext(context.Background())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	for range 2 {
+		res, err := c.OnNext(context.Background())
+		if err != nil || res.GetNoNextReason() != ReturnLimitReached || res.GetContinuation() != last {
+			t.Fatalf("got reason=%v continuation=%v err=%v, want ReturnLimitReached with the last record's token", res.GetNoNextReason(), res.GetContinuation(), err)
+		}
 	}
-	if res.GetNoNextReason() != ReturnLimitReached {
-		t.Fatalf("want ReturnLimitReached, got %v", res.GetNoNextReason())
+	if iterator.advances != 0 {
+		t.Fatalf("row limit read ahead %d times", iterator.advances)
+	}
+}
+
+// A stop token that cannot be built must fail the scan: a substitute start or
+// end token would resume from the beginning or silently truncate.
+func TestKeyValueCursor_StopTokenErrorSurfaces(t *testing.T) {
+	t.Parallel()
+	unsplitter := &keyValueCursor{
+		iterator: &fakeRangeIterator{}, halted: true, haltReason: ScanLimitReached,
+		contKey: fdb.Key{0x01}, prefixLength: 5,
+	}
+	if res, err := unsplitter.OnNext(context.Background()); err == nil {
+		t.Fatalf("unsplitter stop with an unbuildable token returned %v", res.GetContinuation())
+	}
+	state := NewScanLimiterState()
+	state.AddRecordScanned()
+	bare := &keyValueCursor{
+		iterator: &fakeRangeIterator{}, omitUnsplitRecordSuffix: true, initialPass: true,
+		lastKey: fdb.Key{0x01}, prefixLength: 5, scanState: state, clock: state,
+		scanProperties: ScanProperties{ExecuteProperties: ExecuteProperties{ScannedRecordsLimit: 1}},
+	}
+	if res, err := bare.OnNext(context.Background()); err == nil {
+		t.Fatalf("bare stop with an unbuildable token returned %v", res.GetContinuation())
 	}
 }

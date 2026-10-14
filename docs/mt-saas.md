@@ -580,9 +580,10 @@ One `ExecutionStats` is emitted per statement execution, carrying `SQL`, `PlanHa
 `ExecutionDuration`, `RowsReturned`, `RowsAffected`, `RecordsScanned`, `BytesScanned`, `Pages`,
 `Retries`, `SlowQuery` and `Err`. This is what per-tenant cost attribution needs: `RecordsScanned`
 and `BytesScanned` report scan-limiter charges, not the number of rows the tenant received.
-`RecordsScanned` includes ordinary index cursors' EOF and rejected attempts, so it is not a
-physical storage-read count. A filtered `LIMIT 1` can scan a million index entries to return
-one row, and pipelined index fetch can also charge the terminal EOF attempt.
+`RecordsScanned` includes ordinary index cursors' EOF and rejected attempts, and a record scan
+charges each key-value (an inline version included), so it is not a row count. A filtered
+`LIMIT 1` can scan a million index entries to return one row, and pipelined index fetch can
+also charge the terminal EOF attempt.
 
 ```go
 type tenantExecLogger struct{ tenantID string }

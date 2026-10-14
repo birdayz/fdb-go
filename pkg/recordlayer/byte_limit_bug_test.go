@@ -10,18 +10,10 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// BUG #1: ByteScanLimit off-by-one — keyValueCursor uses > instead of >= to
-// compare bytesScanned against ScannedBytesLimit. When bytesScanned equals
-// the limit exactly, Go allows one extra record read. Java's
-// ByteScanLimiter.hasBytesRemaining() uses `bytesRemaining > 0` which stops
-// at exactly 0 remaining (i.e., bytesScanned >= limit).
-//
-// File: key_value_cursor.go, line 147
-// File: index_scan.go, line 365 (same bug in indexCursor)
-//
-// This test creates records where we can precisely control the byte size,
-// sets the ScannedBytesLimit to exactly the size of the first record,
-// and verifies that only one record is returned (not two).
+// ByteScanLimit boundary: Java's ByteScanLimiter.hasBytesRemaining() is
+// `bytesRemaining > 0`, so the limit halts once bytesScanned >= limit. With the
+// limit at exactly one record's bytes, the second key-value halts and the
+// unsplitter finishes its record: two records, where a `>` check gives three.
 var _ = Describe("BUG1_ByteScanLimit_OffByOne", func() {
 	var metaData *RecordMetaData
 
@@ -62,9 +54,9 @@ var _ = Describe("BUG1_ByteScanLimit_OffByOne", func() {
 			_ = cursor.Close()
 
 			// Now scan with ScannedBytesLimit = exactly one record's byte size.
-			// Java: after reading 1 record, bytesRemaining = 0, hasBytesRemaining() = false → stop.
-			// Go (buggy): after reading 1 record, bytesScanned = recordBytes,
-			//   check is `recordBytes > recordBytes` = false → reads one MORE record.
+			// Java: after reading 1 record, bytesRemaining = 0, so the second
+			// key-value's hasBytesRemaining() halts; the unsplitter still finishes
+			// that record. A `>` check would halt only at the third.
 			scanProps := ScanProperties{
 				ExecuteProperties: ExecuteProperties{
 					IsolationLevel:    SerializableIsolation,
@@ -85,14 +77,8 @@ var _ = Describe("BUG1_ByteScanLimit_OffByOne", func() {
 				count++
 			}
 
-			// BUG: Go returns 2 records instead of 1.
-			// Java would return exactly 1 record (free initial pass),
-			// then stop because hasBytesRemaining() returns false.
-			//
-			// If the bug is fixed (> changed to >=), this assertion passes.
-			// If the bug is present, count will be 2.
-			Expect(count).To(Equal(1),
-				"bytesScanned == ScannedBytesLimit should stop the cursor (off-by-one: > vs >=)")
+			Expect(count).To(Equal(2),
+				"bytesScanned == ScannedBytesLimit halts at the second key-value, which finishes its record")
 			Expect(lastResult.GetNoNextReason()).To(Equal(ByteLimitReached))
 			return nil, nil
 		})

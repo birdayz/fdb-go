@@ -7,15 +7,14 @@
 package recordlayer
 
 import (
+	"bytes"
 	"context"
 	"fmt"
-	"math"
 
 	"fdb.dev/pkg/recordlayer/internal/tuplefast"
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb"
-	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
 )
@@ -76,778 +75,529 @@ func unwrapContinuation(rawBytes []byte) []byte {
 	return msg.InnerContinuation
 }
 
-// rangeIterator is the minimal FDB range-scan iterator the cursor depends on.
+// rangeIterator is the minimal FDB range-scan iterator the cursors depend on.
 // *fdb.RangeIterator satisfies it; the interface exists so tests can inject a fake
-// that returns an error at a chosen position (the row-limit boundary), which a
-// concrete *fdb.RangeIterator can't be made to do deterministically.
+// that returns an error at a chosen position, which a concrete *fdb.RangeIterator
+// can't be made to do deterministically.
 type rangeIterator interface {
 	Advance() bool
 	Get() (fdb.KeyValue, error)
 }
 
-// keyValueCursor implements RecordCursor for scanning key-value pairs from FDB.
-// Handles both unsplit records (single KV at suffix 0) and split records
-// (multiple KVs at suffixes 1, 2, 3, ...), acting as both the raw KV scanner
-// and Java's KeyValueUnsplitter.
+// packedRecordVersionSuffix is the tuple encoding of SplitHelper.RECORD_VERSION.
+var packedRecordVersionSuffix = tuple.Tuple{recordVersionSuffix}.Pack()
+
+// keyValueCursor is FDBRecordStore.scanTypedRecords. A suffixed store runs
+// KeyValueUnsplitter over an unlimited KeyValueCursor, then skip and limitRowsTo;
+// a legacy suffix-less unsplit store maps a KeyValueCursor with the scan's
+// properties one key-value per record.
 type keyValueCursor struct {
 	store          *FDBRecordStore
-	low            tuple.Tuple
-	high           tuple.Tuple
-	lowEndpoint    EndpointType
-	highEndpoint   EndpointType
-	continuation   []byte
+	continuation   []byte // the caller's resume point, read once by initIterator
 	scanProperties ScanProperties
+	reverse        bool
 
-	// Internal state
-	iterator       rangeIterator
-	closed         bool
-	recordsRead    int // Records returned to the caller
-	recordsScanned int // Records scanned by THIS cursor (including skipped ones) — the
-	// local "free initial pass" gate (Java's per-cursor CursorLimitManager.usedInitialPass);
-	// always allows this cursor's own first scan even if scanState is already past its budget.
+	iterator        rangeIterator
+	closed          bool
 	keyPrefixLength int // records subspace length: where a key's primary-key tuple starts
 	bounds          kvScanBounds
 	prefixLength    int // continuation prefix length (Java's calculatePrefixLength)
 
-	// scanState is the (possibly shared) scanned-records/scanned-bytes/time
-	// counter set that ScannedRecordsLimit/ScannedBytesLimit/TimeLimit are
-	// checked against — see ScanLimiterState's doc comment. Never nil
-	// (resolveScanLimiterState falls back to a private instance).
+	// scanState holds the (possibly shared) scanned-records/bytes counters; clock
+	// anchors the time limit at the transaction's creation, as TimeScanLimiter does.
 	scanState *ScanLimiterState
+	clock     *ScanLimiterState
 
-	// Cached subspace to avoid recomputing store.subspace.Sub(RecordKey) per record.
-	recordsSubspace subspace.Subspace
-
-	// Whether the metadata has record versioning enabled. Cached to avoid
-	// per-record method calls and to skip version key lookups entirely when false.
-	storeRecordVersions bool
-
-	// omitUnsplitRecordSuffix is true for legacy stores whose unsplit records are
-	// written at the bare primary key with no suffix. Only meaningful when the
-	// metadata does NOT split long records. When set, each KV is a complete record.
 	omitUnsplitRecordSuffix bool
+	useOldVersionFormat     bool
 
-	// useOldVersionFormat is true for legacy stores whose record versions live in
-	// the separate RecordVersionKey(8) subspace rather than inline at pk+-1. When
-	// set, the scan does not look for inline version keys; the version (if any) is
-	// loaded with a separate read per record, matching Java's scanTypedRecords.
-	useOldVersionFormat bool
+	// CursorLimitManager: halted is the outcome of the latest tryRecordScan.
+	initialPass bool
+	halted      bool
+	haltReason  NoNextReason
 
-	// Buffered KV pair for split record handling.
-	// When collecting split chunks, we may read the first KV of the next record.
-	// That KV is buffered here for the next OnNext() call.
-	bufferedKV *fdb.KeyValue
+	// SkipCursor and RowLimitedCursor over the unsplitter.
+	skipped  int
+	returned int
+	lastCont RecordCursorContinuation
 
-	// pendingVersion holds a version captured from a recordVersionSuffix key
-	// that hasn't been attached to a record yet. In forward scans, the version
-	// key (suffix -1) appears before the record data (suffix 0 or 1+), so we
-	// store it here until the record is read.
-	pendingVersion   *FDBRecordVersion
-	pendingVersionPK tuple.Tuple // PK of the record this pending version belongs to
+	// The first terminal result, replayed by later calls.
+	terminal    RecordCursorResult[*FDBStoredRecord[proto.Message]]
+	hasTerminal bool
+
+	// Inner KeyValueCursor: innerLimit is the row limit passed down to the range
+	// read, selectorSkip the skip it applies by offsetting the range's selector.
+	innerLimit   int
+	selectorSkip int
+	valuesSeen   int
+	lastKey      fdb.Key
+	innerDone    bool
+
+	// KeyValueUnsplitter. contKey is the key of the last appended key-value, or
+	// with contEnd the inner cursor's end continuation.
+	pending        fdb.KeyValue
+	hasPending     bool
+	contKey        fdb.Key
+	contEnd        bool
+	innerReason    NoNextReason
+	hasInnerReason bool
+	nextPrefix     []byte
+	nextIndex      int64
+	nextVersion    *FDBRecordVersion
+	haveData       bool
+	parts          [][]byte
+	sizes          sizeInfo
+	versionKey     []byte
 }
 
-// OnNext returns the next record or indicates why iteration stopped
+// OnNext returns the next record or indicates why iteration stopped.
 func (c *keyValueCursor) OnNext(ctx context.Context) (RecordCursorResult[*FDBStoredRecord[proto.Message]], error) {
 	if c.closed {
 		return RecordCursorResult[*FDBStoredRecord[proto.Message]]{}, fmt.Errorf("cursor is closed")
 	}
-
-	// Initialize iterator on first call
+	if c.hasTerminal {
+		return c.terminal, nil
+	}
 	if c.iterator == nil {
 		if err := c.initIterator(); err != nil {
 			return RecordCursorResult[*FDBStoredRecord[proto.Message]]{}, err
 		}
 	}
-
-	executeProps := c.scanProperties.GetExecuteProperties()
-
-	// When we've returned the requested number of records, check if more exist
-	// to distinguish ReturnLimitReached from SourceExhausted.
-	if executeProps.ReturnedRowLimit > 0 && c.recordsRead >= executeProps.ReturnedRowLimit {
-		more, err := c.hasMoreKVs()
-		if err != nil {
-			// A transient error here must surface (and be retried) — not be silently
-			// collapsed into SourceExhausted, which would truncate the scan.
-			return RecordCursorResult[*FDBStoredRecord[proto.Message]]{}, err
-		}
-		if more {
-			return NewResultNoNext[*FDBStoredRecord[proto.Message]](
-				ReturnLimitReached,
-				&BytesContinuation{bytes: c.continuation},
-			), nil
-		}
-		return NewResultNoNext[*FDBStoredRecord[proto.Message]](
-			SourceExhausted,
-			&EndContinuation{},
-		), nil
+	var result RecordCursorResult[*FDBStoredRecord[proto.Message]]
+	var err error
+	if c.omitUnsplitRecordSuffix {
+		result, err = c.nextBareRecord(ctx)
+	} else {
+		result, err = c.nextRecord(ctx)
 	}
-
-	// Check time limit BEFORE reading next record (matching Java's CursorLimitManager.tryRecordScan).
-	// Allow at least one record before enforcing (free initial pass — Java's timeScanLimiter branch
-	// never suppresses usedInitialPass, even in fail mode: CursorLimitManager.java:138 has no
-	// `|| failOnScanLimitReached` term). c.scanState.Elapsed() is measured against the
-	// (possibly shared) execution-wide anchor, not this cursor's own construction time — so a
-	// many-leg IN-join/IN-union actually trips this once the AGGREGATE time across every leg crosses
-	// the limit, matching Java's TimeScanLimiter anchored to FDBRecordContext.getTransactionCreateTime()
-	// (CursorLimitManager.java:93). noNextOrFail (not a raw NewResultNoNext) because Java throws on
-	// ANY halted limit under failOnScanLimitReached, not just the scanned-records one
-	// (CursorLimitManager.java:141-144: the throw is in tryRecordScan's shared tail, after all three
-	// halted* flags are computed).
-	if executeProps.TimeLimit > 0 && c.recordsScanned > 0 && c.scanState.Elapsed() >= executeProps.TimeLimit {
-		return noNextOrFail[*FDBStoredRecord[proto.Message]](executeProps, TimeLimitReached, c.limitContinuation())
+	if err == nil && !result.HasNext() {
+		c.terminal, c.hasTerminal = result, true
 	}
-
-	// Check scanned records limit BEFORE reading next record.
-	// Continuation points to the last RETURNED record, so resumption starts after it.
-	// Matches Java's CursorLimitManager.tryRecordScan() which checks limits pre-read.
-	// c.recordsScanned>0 is this cursor's own free-initial-pass gate (Java's per-cursor
-	// usedInitialPass); the threshold itself is the shared scanState so every leg of an
-	// IN-join/IN-union charges the same aggregate budget instead of resetting per leg.
-	// The gate is ALSO bypassed when FailOnScanLimitReached is set: Java's record-scan branch is
-	// `!recordScanLimiter.tryRecordScan() && (usedInitialPass || failOnScanLimitReached)`
-	// (CursorLimitManager.java:135-136) — fail mode does NOT grant a free pass, so a fresh cursor's
-	// very first record still throws if the shared budget is already spent. (Byte and time keep the
-	// free pass unconditionally — Java never adds `|| failOnScanLimitReached` to those two branches,
-	// :137-138 — which is why only THIS check gets the extra disjunct.)
-	if executeProps.ScannedRecordsLimit > 0 &&
-		(c.recordsScanned > 0 || executeProps.FailOnScanLimitReached) &&
-		c.scanState.RecordsScanned() >= executeProps.ScannedRecordsLimit {
-		return noNextOrFail[*FDBStoredRecord[proto.Message]](executeProps, ScanLimitReached, c.limitContinuation())
-	}
-
-	// Check byte limit BEFORE reading next record (matching Java's CursorLimitManager.tryRecordScan).
-	// Java's tryRecordScan() calls byteScanLimiter.hasBytesRemaining() before the read.
-	// Allow at least one record (free initial pass — usedInitialPass in Java).
-	if executeProps.ScannedBytesLimit > 0 && c.recordsScanned > 0 && c.scanState.BytesScanned() >= executeProps.ScannedBytesLimit {
-		return noNextOrFail[*FDBStoredRecord[proto.Message]](executeProps, ByteLimitReached, c.limitContinuation())
-	}
-
-	// Read the next complete record (handles unsplit, split, and version-skip)
-	record, lastKey, err := c.readNextRecord(ctx)
-	if err != nil {
-		return RecordCursorResult[*FDBStoredRecord[proto.Message]]{}, err
-	}
-	if record == nil {
-		return NewResultNoNext[*FDBStoredRecord[proto.Message]](
-			SourceExhausted,
-			&EndContinuation{},
-		), nil
-	}
-
-	c.recordsScanned++
-	c.scanState.AddRecordScanned()
-
-	// Accumulate bytes scanned — checked pre-read on next call
-	c.scanState.AddBytesScanned(int64(record.KeySize + record.ValueSize))
-
-	// Handle skip — count the record as scanned but don't return it
-	if executeProps.Skip > 0 && c.recordsScanned <= executeProps.Skip {
-		// Update continuation so we can resume after skipped records
-		c.continuation, err = c.makeKeyContinuation(lastKey)
-		if err != nil {
-			return RecordCursorResult[*FDBStoredRecord[proto.Message]]{}, err
-		}
-		return c.OnNext(ctx) // Recurse to get next record
-	}
-
-	c.recordsRead++
-
-	// Create continuation token from the LAST key of this record.
-	// For unsplit records, this is the key at suffix 0.
-	// For split records, this is the last chunk's key (e.g., suffix 3).
-	// This ensures resuming starts after the complete record.
-	continuationBytes, err := c.makeKeyContinuation(lastKey)
-	if err != nil {
-		return RecordCursorResult[*FDBStoredRecord[proto.Message]]{}, err
-	}
-	c.continuation = continuationBytes
-
-	return NewResultWithValue(
-		record,
-		&BytesContinuation{bytes: continuationBytes},
-	), nil
+	return result, err
 }
 
-// readNextRecord reads the next complete record from the iterator.
-// Handles unsplit records (suffix 0), split records (suffixes 1, 2, ...),
-// and skips version keys (suffix -1).
-// Returns (nil, nil, nil) when the iterator is exhausted.
-func (c *keyValueCursor) readNextRecord(ctx context.Context) (*FDBStoredRecord[proto.Message], fdb.Key, error) {
-	// Legacy bare-key layout: every KV is a complete record with no suffix.
-	if c.omitUnsplitRecordSuffix {
-		return c.readNextBareRecord(ctx)
+// nextRecord is unsplitter.skip(skip).limitRowsTo(limit). The row limit stops
+// without reading further, so an exactly exhausted page still ends with
+// RETURN_LIMIT_REACHED and its last record's continuation.
+func (c *keyValueCursor) nextRecord(ctx context.Context) (RecordCursorResult[*FDBStoredRecord[proto.Message]], error) {
+	props := c.scanProperties.ExecuteProperties
+	if props.ReturnedRowLimit > 0 && c.returned >= props.ReturnedRowLimit {
+		return NewResultNoNext[*FDBStoredRecord[proto.Message]](ReturnLimitReached, c.lastCont), nil
 	}
-
-	recordsSubspace := c.recordsSubspace
-
-	prefixLen := c.keyPrefixLength
-
 	for {
-		if err := ctx.Err(); err != nil {
-			return nil, nil, err
-		}
-		// Get the next KV pair (from buffer or iterator)
-		kv, ok, err := c.nextKV()
+		ok, reason, cont, err := c.unsplit(ctx)
 		if err != nil {
-			return nil, nil, err
+			return RecordCursorResult[*FDBStoredRecord[proto.Message]]{}, err
 		}
 		if !ok {
-			return nil, nil, nil // exhausted
+			return NewResultNoNext[*FDBStoredRecord[proto.Message]](reason, cont), nil
 		}
-
-		// A record key is always prefix + PK-tuple + suffix, i.e. strictly longer than
-		// the records-subspace prefix. A key at or under the prefix is a stray or
-		// malformed key (corruption, a foreign client, or a scan range whose begin
-		// included the bare prefix) — return a typed error rather than slice-panicking
-		// on kv.Key[prefixLen:] (key shorter than the prefix) or index-panicking inside
-		// splitKeySuffix on the empty suffix. The other splitKeySuffix callers
-		// (peekVersionKey, the chunk-reassembly loop) already guard this length; this is
-		// the primary record-scan path's matching guard.
-		if len(kv.Key) <= prefixLen {
-			return nil, nil, fmt.Errorf("record cursor: key length %d <= subspace prefix length %d (malformed or out-of-range key under the records subspace)", len(kv.Key), prefixLen)
-		}
-
-		// Fast path: extract suffix via zero-alloc tuple scan.
-		// Only call full tuple.Unpack for the PK when building the returned record.
-		tupleBytes := kv.Key[prefixLen:]
-		suffix, pkEnd, splitErr := tuplefast.SplitKeySuffix(tupleBytes)
-		if splitErr != nil {
-			return nil, nil, fmt.Errorf("failed to parse key suffix: %w", splitErr)
-		}
-
-		switch {
-		case suffix == recordVersionSuffix:
-			// Capture version data for the next record.
-			// Only decode PK when versioning is enabled (we need it for pendingVersionPK).
-			if c.storeRecordVersions {
-				if ver, verErr := unpackVersion(kv.Value); verErr == nil {
-					pk, pkErr := tuplefast.Unpack(tupleBytes[:pkEnd])
-					if pkErr != nil {
-						return nil, nil, fmt.Errorf("failed to unpack version primary key: %w", pkErr)
-					}
-					c.pendingVersion = ver
-					c.pendingVersionPK = pk
-				}
-			}
-			continue
-
-		case suffix == unsplitRecord:
-			// Unsplit record — decode PK only now that we need it
-			primaryKey, pkErr := tuplefast.Unpack(tupleBytes[:pkEnd])
-			if pkErr != nil {
-				return nil, nil, fmt.Errorf("failed to unpack primary key: %w", pkErr)
-			}
-			recordType, protoMessage, wire, deserErr := c.store.deserializeAndDiscover(kv.Value)
-			if deserErr != nil {
-				return nil, nil, &RecordDeserializationError{PrimaryKey: primaryKey, Cause: deserErr}
-			}
-			// Attach version if versioning is enabled. In the modern layout this uses
-			// the inline version (pendingVersion / peek-ahead / local cache); in the
-			// legacy layout resolveVersion does a separate read from subspace 8.
-			version, verErr := c.resolveVersion(recordsSubspace, primaryKey, true)
-			if verErr != nil {
-				return nil, nil, verErr
-			}
-			return &FDBStoredRecord[proto.Message]{
-				PrimaryKey: primaryKey,
-				RecordType: recordType,
-				Record:     protoMessage,
-				wire:       wire,
-				Version:    version,
-				Store:      c.store,
-				KeyCount:   1,
-				ValueSize:  len(kv.Value),
-				KeySize:    len(kv.Key),
-				Split:      false,
-			}, kv.Key, nil
-
-		case suffix >= startSplitRecord:
-			// Split record — need full PK for chunk collection
-			primaryKey, pkErr := tuplefast.Unpack(tupleBytes[:pkEnd])
-			if pkErr != nil {
-				return nil, nil, fmt.Errorf("failed to unpack primary key: %w", pkErr)
-			}
-			return c.readSplitRecord(ctx, recordsSubspace, primaryKey, kv, suffix)
-
-		default:
-			// Unknown suffix — skip
+		if c.skipped < props.Skip {
+			c.skipped++
 			continue
 		}
+		record, err := c.storedRecord(c.nextPrefix, c.assemble(), c.nextVersion, c.sizes)
+		if err != nil {
+			return RecordCursorResult[*FDBStoredRecord[proto.Message]]{}, err
+		}
+		cont, err = c.makeContinuation(c.contKey)
+		if err != nil {
+			return RecordCursorResult[*FDBStoredRecord[proto.Message]]{}, err
+		}
+		c.returned++
+		c.lastCont = cont
+		return NewResultWithValue(record, cont), nil
 	}
 }
 
-// takePendingVersion returns and clears the pending version if it belongs to
-// the given primary key. In forward scans, the version key (suffix -1) appears
-// before the record data, so pendingVersion is set before the record is read.
-// In reverse scans for split records, readSplitRecord captures the version
-// while collecting chunks.
-//
-// The PK check prevents version leakage across continuation boundaries in
-// reverse scans: when resuming, the stale version key from the previous
-// record falls within the scan range and gets captured. Without the PK check,
-// it would be incorrectly attached to the next record.
-func (c *keyValueCursor) takePendingVersion(currentPK tuple.Tuple) *FDBRecordVersion {
-	if c.pendingVersion != nil {
-		if sameTuple(c.pendingVersionPK, currentPK) {
-			ver := c.pendingVersion
-			c.pendingVersion = nil
-			c.pendingVersionPK = nil
-			return ver
+// unsplit is KeyValueUnsplitter.onNext. On ok, the record is left in
+// nextPrefix/parts/nextVersion/sizes until the next call.
+func (c *keyValueCursor) unsplit(ctx context.Context) (bool, NoNextReason, RecordCursorContinuation, error) {
+	c.nextPrefix, c.nextVersion, c.haveData = nil, nil, false
+	if c.halted {
+		if c.hasInnerReason && c.innerReason == SourceExhausted {
+			return false, SourceExhausted, &EndContinuation{}, nil
 		}
-		// Version belongs to a different record (reverse scan continuation
-		// boundary). Discard it.
-		c.pendingVersion = nil
-		c.pendingVersionPK = nil
+		cont, err := c.unsplitContinuation()
+		return false, c.haltReason, cont, err
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			return false, 0, nil, err
+		}
+		if c.hasPending {
+			kv := c.pending
+			c.pending, c.hasPending = fdb.KeyValue{}, false
+			complete, err := c.append(kv)
+			if err != nil {
+				return false, 0, nil, err
+			}
+			if complete {
+				break
+			}
+		}
+		kv, ok, err := c.nextKV()
+		if err != nil {
+			return false, 0, nil, err
+		}
+		if !ok {
+			if c.reverse && c.haveData && c.nextIndex != startSplitRecord && c.nextIndex != unsplitRecord && c.nextIndex != recordVersionSuffix {
+				return false, 0, nil, &FoundSplitWithoutStartError{NextIndex: c.nextIndex, Reverse: true, KeyTuple: c.nextPrimaryKey()}
+			}
+			c.innerReason, c.hasInnerReason = SourceExhausted, true
+			if c.innerLimit > 0 && c.valuesSeen >= c.innerLimit {
+				c.innerReason = ReturnLimitReached
+			}
+			if !c.haveData {
+				c.contKey, c.contEnd = c.lastKey, c.innerReason == SourceExhausted
+			}
+			break
+		}
+		c.hasInnerReason = false
+		if err := c.tryRecordScan(); err != nil {
+			return false, 0, nil, err
+		}
+		complete, err := c.append(kv)
+		if err != nil {
+			return false, 0, nil, err
+		}
+		if complete {
+			break
+		}
+	}
+	if c.nextVersion != nil && !c.haveData {
+		return false, 0, nil, &FoundSplitWithoutStartError{NextIndex: recordVersionSuffix, Reverse: c.reverse, KeyTuple: c.nextPrimaryKey()}
+	}
+	if !c.haveData {
+		// Every key-value read in this call started a record, so the limits
+		// cannot have halted: the stop reason is the inner cursor's.
+		cont, err := c.unsplitContinuation()
+		return false, c.innerReason, cont, err
+	}
+	if !c.useOldVersionFormat {
+		// A version saved in this transaction is still a pending versionstamp.
+		c.versionKey = append(append(c.versionKey[:0], c.nextPrefix...), packedRecordVersionSuffix...)
+		if local, ok := c.store.context.GetLocalVersion(c.versionKey); ok {
+			version, err := IncompleteVersion(local)
+			if err != nil {
+				return false, 0, nil, err
+			}
+			c.nextVersion = version
+			c.sizes.KeyCount++
+			c.sizes.KeySize += len(c.versionKey)
+			c.sizes.ValueSize += VersionBytes + 1
+		}
+	}
+	c.sizes.VersionedInline = c.nextVersion != nil
+	return true, 0, nil, nil
+}
+
+// tryRecordScan charges one scanned key-value; Java throws on a halt in fail mode.
+func (c *keyValueCursor) tryRecordScan() error {
+	props := c.scanProperties.ExecuteProperties
+	allowed, reason := tryScanLimits(c.scanState, c.clock, props, &c.initialPass)
+	c.halted, c.haltReason = !allowed, reason
+	if !allowed && props.FailOnScanLimitReached {
+		return &ScanLimitReachedError{Reason: reason}
 	}
 	return nil
 }
 
-// peekVersionKey peeks at the next KV to check if it's a version key for the
-// same primary key. Used in reverse scans where the version key (suffix -1)
-// appears after the record data. If found, returns the version and consumes the
-// KV. Otherwise, buffers the peeked KV for the next call.
-func (c *keyValueCursor) peekVersionKey(recordsSubspace subspace.Subspace, primaryKey tuple.Tuple) (*FDBRecordVersion, error) {
-	kv, ok, err := c.nextKV()
-	if err != nil {
-		return nil, fmt.Errorf("peek version key: %w", err)
+// append is KeyValueUnsplitter.append: it charges the key-value's bytes, a
+// lookahead again when it is consumed, and reports whether the record is complete.
+func (c *keyValueCursor) append(kv fdb.KeyValue) (bool, error) {
+	c.scanState.AddBytesScanned(int64(len(kv.Key) + len(kv.Value)))
+	if c.nextPrefix == nil {
+		c.contKey, c.contEnd = kv.Key, false
+		return c.appendFirst(kv)
 	}
-	if !ok {
-		return nil, nil
+	if bytes.HasPrefix(kv.Key, c.nextPrefix) {
+		c.contKey, c.contEnd = kv.Key, false
+		return c.appendNext(kv)
 	}
+	if c.reverse && c.nextIndex != unsplitRecord && c.nextIndex != startSplitRecord && c.nextIndex != recordVersionSuffix {
+		return false, &FoundSplitWithoutStartError{NextIndex: c.nextIndex, Reverse: true, KeyTuple: c.nextPrimaryKey()}
+	}
+	c.pending, c.hasPending = kv, true
+	return true, nil
+}
+
+func (c *keyValueCursor) appendFirst(kv fdb.KeyValue) (bool, error) {
+	// A key at or under the records prefix is stray or malformed; never slice past it.
 	if len(kv.Key) <= c.keyPrefixLength {
-		c.bufferedKV = &kv
-		return nil, nil
+		return false, fmt.Errorf("record cursor: key length %d <= subspace prefix length %d (malformed or out-of-range key under the records subspace)", len(kv.Key), c.keyPrefixLength)
 	}
-	tupleBytes := kv.Key[c.keyPrefixLength:]
-	suffix, pkEnd, err := tuplefast.SplitKeySuffix(tupleBytes)
+	suffix, pkEnd, err := tuplefast.SplitKeySuffix(kv.Key[c.keyPrefixLength:])
 	if err != nil {
-		c.bufferedKV = &kv
-		return nil, nil
+		return false, fmt.Errorf("failed to parse key suffix: %w", err)
 	}
-	if suffix == recordVersionSuffix {
-		kvPK, pkErr := tuplefast.Unpack(tupleBytes[:pkEnd])
-		if pkErr != nil {
-			c.bufferedKV = &kv
-			return nil, nil
-		}
-		if sameTuple(kvPK, primaryKey) {
-			ver, verErr := unpackVersion(kv.Value)
-			if verErr != nil {
-				return nil, nil
-			}
-			return ver, nil
-		}
-	}
-	c.bufferedKV = &kv
-	return nil, nil
-}
-
-// localVersionFallback checks the local version cache for records saved in the
-// current transaction whose version key hasn't been committed yet (it's a pending
-// SET_VERSIONSTAMPED_VALUE mutation). Returns an incomplete version if found.
-// Matches Java's SplitHelper.KeyValueUnsplitter which checks context.getLocalVersion()
-// after assembling each record.
-func (c *keyValueCursor) localVersionFallback(primaryKey tuple.Tuple) *FDBRecordVersion {
-	versionKey := c.store.versionKey(primaryKey)
-	localVer, ok := c.store.context.GetLocalVersion(versionKey)
-	if !ok {
-		return nil
-	}
-	ver, err := IncompleteVersion(localVer)
-	if err != nil {
-		return nil
-	}
-	return ver
-}
-
-// isSnapshot reports whether this scan reads at snapshot isolation (no read conflicts).
-func (c *keyValueCursor) isSnapshot() bool {
-	return c.scanProperties.ExecuteProperties.IsolationLevel == SnapshotIsolation
-}
-
-// resolveVersion returns the version for the record with the given primary key, or nil.
-//
-// Legacy layout (useOldVersionFormat): the version lives in the separate
-// RecordVersionKey(8) subspace, so it is fetched with a per-record read via
-// LoadRecordVersion (which also consults the local version cache and applies the
-// skip-I/O optimization). Matches Java's scanTypedRecords, which calls
-// loadRecordVersionAsync per record when useOldVersionFormat().
-//
-// Modern layout: the version was captured inline while scanning (pendingVersion);
-// for reverse scans of unsplit records it may follow the data key, so allowPeek
-// enables a one-KV look-ahead. The local version cache covers same-transaction saves
-// whose inline SET_VERSIONSTAMPED_VALUE has not been committed yet.
-func (c *keyValueCursor) resolveVersion(recordsSubspace subspace.Subspace, primaryKey tuple.Tuple, allowPeek bool) (*FDBRecordVersion, error) {
-	if !c.storeRecordVersions {
-		return nil, nil
-	}
-	if c.useOldVersionFormat {
-		return c.store.LoadRecordVersion(primaryKey, c.isSnapshot())
-	}
-	version := c.takePendingVersion(primaryKey)
-	if version == nil && allowPeek {
-		v, err := c.peekVersionKey(recordsSubspace, primaryKey)
+	end := c.keyPrefixLength + pkEnd
+	c.nextPrefix = kv.Key[:end:end]
+	c.nextIndex = suffix
+	c.sizes.KeyCount, c.sizes.KeySize, c.sizes.ValueSize = 1, len(kv.Key), len(kv.Value)
+	c.parts = append(c.parts[:0], kv.Value)
+	c.haveData = true
+	switch {
+	case suffix == unsplitRecord:
+		c.sizes.IsSplit = false
+		return !c.reverse, nil
+	case !c.reverse && suffix == recordVersionSuffix:
+		version, err := c.inlineVersion(kv.Value)
 		if err != nil {
-			return nil, err
+			return false, err
 		}
-		version = v
+		c.sizes.VersionedInline = true
+		c.nextVersion = version
+		c.parts = c.parts[:0]
+		c.haveData = false
+		return false, nil
+	case (c.reverse && suffix != recordVersionSuffix) || suffix == startSplitRecord:
+		c.sizes.IsSplit = true
+		return false, nil
+	default:
+		return false, &FoundSplitWithoutStartError{NextIndex: suffix, Reverse: c.reverse, KeyTuple: c.nextPrimaryKey()}
 	}
-	if version == nil {
-		version = c.localVersionFallback(primaryKey)
-	}
-	return version, nil
 }
 
-// readNextBareRecord reads the next record from a legacy store that omits the unsplit
-// record suffix: every KV under the records subspace is a complete record stored at the
-// bare primary key (no trailing suffix), and versions (if any) live in the separate
-// RecordVersionKey(8) subspace. Matches Java's scanTypedRecords omitUnsplitRecordSuffix
-// branch (each KV mapped directly to an FDBRawRecord with a null inline version).
-func (c *keyValueCursor) readNextBareRecord(ctx context.Context) (*FDBStoredRecord[proto.Message], fdb.Key, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, nil, err
+func (c *keyValueCursor) appendNext(kv fdb.KeyValue) (bool, error) {
+	// Java reads the first element after the record's prefix.
+	rest := kv.Key[len(c.nextPrefix):]
+	n := tuplefast.Skip(rest)
+	if n <= 0 || n > len(rest) {
+		return false, fmt.Errorf("failed to parse key suffix of %x", kv.Key)
 	}
-	kv, ok, err := c.nextKV()
+	index, _, err := tuplefast.SplitKeySuffix(rest[:n])
 	if err != nil {
-		return nil, nil, err
+		return false, fmt.Errorf("failed to parse key suffix: %w", err)
 	}
-	if !ok {
-		return nil, nil, nil // exhausted
+	c.sizes.KeyCount++
+	c.sizes.KeySize += len(kv.Key)
+	c.sizes.ValueSize += len(kv.Value)
+	switch {
+	case !c.reverse && c.nextIndex == recordVersionSuffix && (index == unsplitRecord || index == startSplitRecord):
+		c.parts = append(c.parts[:0], kv.Value)
+		c.haveData = true
+		c.nextIndex = index
+		c.sizes.IsSplit = index == startSplitRecord
+		return index == unsplitRecord, nil
+	case !c.reverse && index == c.nextIndex+1:
+		c.parts = append(c.parts, kv.Value)
+		c.nextIndex = index
+		return false, nil
+	case c.reverse && index == recordVersionSuffix && (c.nextIndex == startSplitRecord || c.nextIndex == unsplitRecord):
+		version, err := c.inlineVersion(kv.Value)
+		if err != nil {
+			return false, err
+		}
+		c.nextVersion = version
+		c.nextIndex = index
+		return true, nil
+	case c.reverse && index == c.nextIndex-1 && index != recordVersionSuffix:
+		c.parts = append(c.parts, kv.Value)
+		c.nextIndex = index
+		return false, nil
 	}
-	if len(kv.Key) <= c.keyPrefixLength {
-		return nil, nil, fmt.Errorf("record cursor: key length %d <= subspace prefix length %d (malformed or out-of-range key under the records subspace)", len(kv.Key), c.keyPrefixLength)
+	expected := c.nextIndex + 1
+	if c.reverse {
+		expected = c.nextIndex - 1
 	}
-	// The whole tuple after the prefix is the primary key — there is no suffix.
-	primaryKey, pkErr := tuplefast.Unpack(kv.Key[c.keyPrefixLength:])
-	if pkErr != nil {
-		return nil, nil, fmt.Errorf("failed to unpack legacy primary key: %w", pkErr)
+	if (c.reverse && expected == startSplitRecord) || (!c.reverse && c.nextIndex == recordVersionSuffix) {
+		return false, &FoundSplitWithoutStartError{NextIndex: index, Reverse: c.reverse, KeyTuple: c.nextPrimaryKey()}
 	}
-	recordType, protoMessage, wire, deserErr := c.store.deserializeAndDiscover(kv.Value)
-	if deserErr != nil {
-		return nil, nil, &RecordDeserializationError{PrimaryKey: primaryKey, Cause: deserErr}
-	}
-	version, verErr := c.resolveVersion(c.recordsSubspace, primaryKey, false)
-	if verErr != nil {
-		return nil, nil, verErr
-	}
-	return &FDBStoredRecord[proto.Message]{
-		PrimaryKey: primaryKey,
-		RecordType: recordType,
-		Record:     protoMessage,
-		wire:       wire,
-		Version:    version,
-		Store:      c.store,
-		KeyCount:   1,
-		ValueSize:  len(kv.Value),
-		KeySize:    len(kv.Key),
-		Split:      false,
-	}, kv.Key, nil
+	return false, &FoundSplitOutOfOrderError{Expected: expected, Found: index, KeyTuple: c.nextPrimaryKey()}
 }
 
-// splitChunk holds a split record chunk with its suffix index for proper ordering.
-type splitChunk struct {
-	suffix int64
-	key    fdb.Key
-	value  []byte
+func (c *keyValueCursor) inlineVersion(value []byte) (*FDBRecordVersion, error) {
+	if c.useOldVersionFormat {
+		return nil, &RecordCoreError{Message: fmt.Sprintf("Found record version when old format specified (key_tuple=%v)", c.nextPrimaryKey())}
+	}
+	return unpackVersion(value)
 }
 
-// readSplitRecord collects all split chunks for a primary key and reassembles the record.
-// firstKV is the first chunk already read (with suffix >= startSplitRecord).
-// Handles both forward and reverse scans — chunks are sorted by suffix before reassembly.
-// Returns the reassembled record and the last key (in scan order) for continuation.
-func (c *keyValueCursor) readSplitRecord(
-	ctx context.Context,
-	recordsSubspace subspace.Subspace,
-	primaryKey tuple.Tuple,
-	firstKV fdb.KeyValue,
-	firstSuffix int64,
-) (*FDBStoredRecord[proto.Message], fdb.Key, error) {
-	chunks := []splitChunk{{suffix: firstSuffix, key: firstKV.Key, value: firstKV.Value}}
-	lastKey := firstKV.Key
-	totalKeySize := len(firstKV.Key)
-	totalValueSize := len(firstKV.Value)
-
-	// Collect remaining chunks for this primary key
-	for {
-		if err := ctx.Err(); err != nil {
-			return nil, nil, err
-		}
-		kv, ok, kvErr := c.nextKV()
-		if kvErr != nil {
-			return nil, nil, kvErr
-		}
-		if !ok {
-			break // Iterator exhausted
-		}
-
-		if len(kv.Key) <= c.keyPrefixLength {
-			c.bufferedKV = &kv
-			break
-		}
-		chunkTuple := kv.Key[c.keyPrefixLength:]
-		suffix, chunkPKEnd, splitErr := tuplefast.SplitKeySuffix(chunkTuple)
-		if splitErr != nil {
-			c.bufferedKV = &kv
-			break
-		}
-
-		// Check if this KV belongs to the same primary key by comparing
-		// the raw PK bytes (avoids full tuple decode for non-matching keys).
-		kvPrimaryKey, pkErr := tuplefast.Unpack(chunkTuple[:chunkPKEnd])
-		if pkErr != nil {
-			c.bufferedKV = &kv
-			break
-		}
-		if !sameTuple(primaryKey, kvPrimaryKey) {
-			c.bufferedKV = &kv
-			break
-		}
-
-		// Capture version key within this primary key (for reverse scans,
-		// version at suffix -1 appears after split chunks)
-		if suffix == recordVersionSuffix {
-			if ver, verErr := unpackVersion(kv.Value); verErr == nil {
-				c.pendingVersion = ver
-				c.pendingVersionPK = primaryKey
-			}
-			continue
-		}
-
-		// Skip unsplit key (suffix 0) if encountered — shouldn't happen but be safe
-		if suffix == unsplitRecord {
-			c.bufferedKV = &kv
-			break
-		}
-
-		chunks = append(chunks, splitChunk{suffix: suffix, key: kv.Key, value: kv.Value})
-		lastKey = kv.Key
-		totalKeySize += len(kv.Key)
-		totalValueSize += len(kv.Value)
+// nextPrimaryKey decodes the current record's primary key for error context.
+func (c *keyValueCursor) nextPrimaryKey() tuple.Tuple {
+	if len(c.nextPrefix) < c.keyPrefixLength {
+		return nil
 	}
-
-	// Sort chunks by suffix for correct reassembly (needed for reverse scans
-	// where FDB returns chunks in descending suffix order)
-	sortSplitChunks(chunks)
-
-	// Validate sequential indices. The two ways this can break are DIFFERENT
-	// damage and Java reports them as different exceptions
-	// (SplitHelper.java:824-835, selecting on whether a start-or-later segment
-	// has already been seen):
-	//
-	//   i == 0 mismatch — the lowest segment present is not the start, so the
-	//   record is TRUNCATED at the front. FoundSplitWithoutStartException.
-	//
-	//   i > 0 mismatch — the start is present and the sequence breaks later, so
-	//   the pieces are there but mis-sequenced. FoundSplitOutOfOrderException.
-	//
-	// Go raised one untyped error for both, which made a truncated record and a
-	// scrambled one indistinguishable to callers and in logs — on a data
-	// corruption path, where telling them apart is most of the diagnosis.
-	for i, chunk := range chunks {
-		expected := startSplitRecord + int64(i)
-		if chunk.suffix == expected {
-			continue
-		}
-		if i == 0 {
-			return nil, nil, &FoundSplitWithoutStartError{
-				NextIndex: chunk.suffix,
-				Reverse:   c.scanProperties.IsReverse(),
-				KeyTuple:  primaryKey,
-			}
-		}
-		return nil, nil, &FoundSplitOutOfOrderError{
-			Expected: expected,
-			Found:    chunk.suffix,
-			KeyTuple: primaryKey,
-		}
-	}
-
-	// Reassemble the record
-	totalLen := 0
-	for _, chunk := range chunks {
-		totalLen += len(chunk.value)
-	}
-	data := make([]byte, 0, totalLen)
-	for _, chunk := range chunks {
-		data = append(data, chunk.value...)
-	}
-
-	recordType, protoMessage, wire, err := c.store.deserializeAndDiscover(data)
-	if err != nil {
-		return nil, nil, &RecordDeserializationError{PrimaryKey: primaryKey, Cause: err}
-	}
-
-	// Attach version captured during chunk collection (forward or reverse scan). In
-	// the legacy layout resolveVersion does a separate read from subspace 8 instead.
-	version, verErr := c.resolveVersion(recordsSubspace, primaryKey, false)
-	if verErr != nil {
-		return nil, nil, verErr
-	}
-
-	return &FDBStoredRecord[proto.Message]{
-		PrimaryKey: primaryKey,
-		RecordType: recordType,
-		Record:     protoMessage,
-		wire:       wire,
-		Version:    version,
-		Store:      c.store,
-		KeyCount:   len(chunks),
-		ValueSize:  totalValueSize,
-		KeySize:    totalKeySize,
-		Split:      true,
-	}, lastKey, nil
+	pk, _ := tuplefast.Unpack(c.nextPrefix[c.keyPrefixLength:])
+	return pk
 }
 
-// sortSplitChunks sorts chunks by suffix in ascending order (insertion sort — chunks are few).
-func sortSplitChunks(chunks []splitChunk) {
-	for i := 1; i < len(chunks); i++ {
-		key := chunks[i]
-		j := i - 1
-		for j >= 0 && chunks[j].suffix > key.suffix {
-			chunks[j+1] = chunks[j]
-			j--
-		}
-		chunks[j+1] = key
+// assemble joins the record's values in suffix order; reverse scans read them last first.
+func (c *keyValueCursor) assemble() []byte {
+	if len(c.parts) == 1 {
+		return c.parts[0]
 	}
+	total := 0
+	for _, part := range c.parts {
+		total += len(part)
+	}
+	data := make([]byte, 0, total)
+	if c.reverse {
+		for i := len(c.parts) - 1; i >= 0; i-- {
+			data = append(data, c.parts[i]...)
+		}
+		return data
+	}
+	for _, part := range c.parts {
+		data = append(data, part...)
+	}
+	return data
 }
 
-// nextKV returns the next KV pair from the buffer or iterator.
-// Returns (kv, true, nil) on success, (zero, false, nil) when exhausted,
-// or (zero, false, err) on FDB error.
-func (c *keyValueCursor) nextKV() (fdb.KeyValue, bool, error) {
-	// Return buffered KV if available
-	if c.bufferedKV != nil {
-		kv := *c.bufferedKV
-		c.bufferedKV = nil
-		return kv, true, nil
+// unsplitContinuation is the unsplitter's current continuation.
+func (c *keyValueCursor) unsplitContinuation() (RecordCursorContinuation, error) {
+	if c.contEnd {
+		return &EndContinuation{}, nil
 	}
-
-	// Advance iterator
-	if !c.iterator.Advance() {
-		// Advance returns false on exhaustion OR error. Check Get() for
-		// the stored error — this surfaces transaction_too_old (1007)
-		// instead of silently treating timeout as end-of-data.
-		if _, err := c.iterator.Get(); err != nil {
-			return fdb.KeyValue{}, false, fmt.Errorf("key-value cursor: iterator advance: %w", err)
-		}
-		return fdb.KeyValue{}, false, nil
-	}
-
-	kv, err := c.iterator.Get()
-	if err != nil {
-		return fdb.KeyValue{}, false, fmt.Errorf("key-value cursor: iterator get: %w", err)
-	}
-	return kv, true, nil
-}
-
-// makeKeyContinuation creates a proto-wrapped continuation from an FDB key.
-func (c *keyValueCursor) makeKeyContinuation(key fdb.Key) ([]byte, error) {
-	suffix, err := keySuffix(key, c.prefixLength)
+	cont, err := c.makeContinuation(c.contKey)
 	if err != nil {
 		return nil, err
-	}
-	cont, err := wrapContinuation(suffix)
-	if err != nil {
-		return nil, fmt.Errorf("failed to wrap continuation: %w", err)
 	}
 	return cont, nil
 }
 
-// hasMoreKVs reports whether more KV pairs are available (from the buffer or the
-// iterator), used to distinguish ReturnLimitReached from SourceExhausted. It
-// surfaces any FDB error encountered probing the iterator (transaction_too_old,
-// timeout) rather than treating it as "no more" — swallowing it would silently end
-// the scan at the row-limit boundary and lose the remaining rows.
-func (c *keyValueCursor) hasMoreKVs() (bool, error) {
-	if c.bufferedKV != nil {
-		return true, nil
+// nextBareRecord is KeyValueCursorBase.onNext mapped to a record, for stores
+// whose unsplit records sit at the bare primary key. Skip and the row limit are
+// applied by the range read itself, so skipped keys are neither read nor charged.
+func (c *keyValueCursor) nextBareRecord(ctx context.Context) (RecordCursorResult[*FDBStoredRecord[proto.Message]], error) {
+	if err := ctx.Err(); err != nil {
+		return RecordCursorResult[*FDBStoredRecord[proto.Message]]{}, err
 	}
-	if c.iterator.Advance() {
-		return true, nil
+	if err := c.tryRecordScan(); err != nil {
+		return RecordCursorResult[*FDBStoredRecord[proto.Message]]{}, err
 	}
-	// Advance returns false on exhaustion OR error. Check Get() for the stored
-	// error (transaction_too_old 1007, timeout) — otherwise a transient error
-	// landing exactly on the row-limit boundary is silently read as end-of-data,
-	// permanently ending the scan with SourceExhausted and LOSING the remaining
-	// rows. Mirrors nextKV's post-Advance error check.
-	if _, err := c.iterator.Get(); err != nil {
-		return false, fmt.Errorf("key-value cursor: iterator advance at row-limit boundary: %w", err)
+	if c.halted {
+		cont, err := c.lastKeyContinuation()
+		if err != nil {
+			return RecordCursorResult[*FDBStoredRecord[proto.Message]]{}, err
+		}
+		return NewResultNoNext[*FDBStoredRecord[proto.Message]](c.haltReason, cont), nil
 	}
-	return false, nil
+	kv, ok, err := c.nextKV()
+	if err != nil {
+		return RecordCursorResult[*FDBStoredRecord[proto.Message]]{}, err
+	}
+	if !ok {
+		if c.innerLimit > 0 && c.valuesSeen >= c.innerLimit {
+			cont, err := c.lastKeyContinuation()
+			if err != nil {
+				return RecordCursorResult[*FDBStoredRecord[proto.Message]]{}, err
+			}
+			return NewResultNoNext[*FDBStoredRecord[proto.Message]](ReturnLimitReached, cont), nil
+		}
+		return NewResultNoNext[*FDBStoredRecord[proto.Message]](SourceExhausted, &EndContinuation{}), nil
+	}
+	c.scanState.AddBytesScanned(int64(len(kv.Key) + len(kv.Value)))
+	if len(kv.Key) <= c.keyPrefixLength {
+		return RecordCursorResult[*FDBStoredRecord[proto.Message]]{}, fmt.Errorf("record cursor: key length %d <= subspace prefix length %d (malformed or out-of-range key under the records subspace)", len(kv.Key), c.keyPrefixLength)
+	}
+	record, err := c.storedRecord(kv.Key, kv.Value, nil, sizeInfo{KeyCount: 1, KeySize: len(kv.Key), ValueSize: len(kv.Value)})
+	if err != nil {
+		return RecordCursorResult[*FDBStoredRecord[proto.Message]]{}, err
+	}
+	cont, err := c.makeContinuation(kv.Key)
+	if err != nil {
+		return RecordCursorResult[*FDBStoredRecord[proto.Message]]{}, err
+	}
+	return NewResultWithValue(record, cont), nil
 }
 
-// limitContinuation returns the appropriate continuation when a limit is hit.
-// If we have a continuation (from a previously scanned record), use it.
-// Otherwise, use StartContinuation (no position information available but NOT end of iteration).
-func (c *keyValueCursor) limitContinuation() RecordCursorContinuation {
-	if c.continuation != nil {
-		return &BytesContinuation{bytes: c.continuation}
+// lastKeyContinuation is KeyValueCursorBase's continuation: the last key read,
+// or end before any key, as Java's Continuation(null).
+func (c *keyValueCursor) lastKeyContinuation() (RecordCursorContinuation, error) {
+	if c.lastKey == nil {
+		return &EndContinuation{}, nil
 	}
-	return &StartContinuation{}
+	cont, err := c.makeContinuation(c.lastKey)
+	if err != nil {
+		return nil, err
+	}
+	return cont, nil
 }
 
-// sameTuple compares two tuples for equality.
-func sameTuple(a, b tuple.Tuple) bool {
-	if len(a) != len(b) {
-		return false
+// storedRecord is deserializeRecord. prefix is the records-subspace key up to the
+// primary key; old-format versions take a separate read.
+func (c *keyValueCursor) storedRecord(prefix, value []byte, version *FDBRecordVersion, sizes sizeInfo) (*FDBStoredRecord[proto.Message], error) {
+	primaryKey, err := tuplefast.Unpack(prefix[c.keyPrefixLength:])
+	if err != nil {
+		return nil, fmt.Errorf("failed to unpack primary key: %w", err)
 	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
+	recordType, protoMessage, wire, err := c.store.deserializeAndDiscover(value)
+	if err != nil {
+		return nil, &RecordDeserializationError{PrimaryKey: primaryKey, Cause: err}
+	}
+	if c.useOldVersionFormat {
+		version, err = c.store.LoadRecordVersion(primaryKey, c.scanProperties.ExecuteProperties.IsolationLevel.IsSnapshot())
+		if err != nil {
+			return nil, err
 		}
 	}
-	return true
+	return &FDBStoredRecord[proto.Message]{
+		PrimaryKey:      primaryKey,
+		RecordType:      recordType,
+		Record:          protoMessage,
+		wire:            wire,
+		Version:         version,
+		Store:           c.store,
+		KeyCount:        sizes.KeyCount,
+		KeySize:         sizes.KeySize,
+		ValueSize:       sizes.ValueSize,
+		Split:           sizes.IsSplit,
+		VersionedInline: sizes.VersionedInline,
+	}, nil
 }
 
-// initIterator sets up the FDB range iterator
+// nextKV is the inner KeyValueCursor's read; it charges nothing itself.
+func (c *keyValueCursor) nextKV() (fdb.KeyValue, bool, error) {
+	if c.innerDone {
+		return fdb.KeyValue{}, false, nil
+	}
+	if !c.iterator.Advance() {
+		// Advance returns false on exhaustion OR error; Get surfaces the error
+		// (transaction_too_old 1007) instead of treating it as end-of-data.
+		if _, err := c.iterator.Get(); err != nil {
+			return fdb.KeyValue{}, false, fmt.Errorf("key-value cursor: iterator advance: %w", err)
+		}
+		c.innerDone = true
+		return fdb.KeyValue{}, false, nil
+	}
+	kv, err := c.iterator.Get()
+	if err != nil {
+		return fdb.KeyValue{}, false, fmt.Errorf("key-value cursor: iterator get: %w", err)
+	}
+	c.valuesSeen++
+	c.lastKey = kv.Key
+	return kv, true, nil
+}
+
+// makeContinuation aliases key without copying: RangeIterator never reuses
+// returned key bytes, so the lazily marshaled suffix stays valid.
+func (c *keyValueCursor) makeContinuation(key fdb.Key) (*keyValueContinuation, error) {
+	suffix, err := keySuffix(key, c.prefixLength)
+	if err != nil {
+		return nil, err
+	}
+	return &keyValueContinuation{suffix: suffix}, nil
+}
+
+// initIterator issues the inner KeyValueCursor's range read.
 func (c *keyValueCursor) initIterator() error {
-	rng, err := c.bounds.keyRange(c.continuation, c.scanProperties.IsReverse())
+	rng, err := c.bounds.keyRange(c.continuation, c.reverse)
 	if err != nil {
 		return err
 	}
-
-	// Get range options
-	options := fdb.RangeOptions{
-		Mode:    c.scanProperties.CursorStreamingMode.ToFDB(),
-		Reverse: c.scanProperties.IsReverse(),
-	}
-
-	// Apply FDB-level row limit only for unsplit stores.
-	// When splitLongRecords is enabled, a single record may span multiple KVs,
-	// so the FDB row limit doesn't map cleanly to record limits.
-	// Record-level limits are enforced in OnNext() instead.
-	// Skip is added to the FDB limit so we have enough KVs to skip AND return.
-	if c.scanProperties.ExecuteProperties.ReturnedRowLimit > 0 && !c.store.metaData.IsSplitLongRecords() {
-		skip := c.scanProperties.ExecuteProperties.Skip
-		limit := saturatingAdd(c.scanProperties.ExecuteProperties.ReturnedRowLimit, skip) - c.recordsRead
-		if limit <= 0 {
-			limit = 1
-		}
-		recordLimit := saturatingAdd(limit, 1)
-		// When versioning is enabled AND versions are inline, each record has 2 KV
-		// pairs (version at suffix -1, data at suffix 0). Double the FDB limit to
-		// account for the version KVs. Matches Java's FDBRecordStore scanRecords which
-		// uses 2 * returnedRowLimit. Legacy stores keep versions in a separate subspace
-		// (or omit the suffix entirely → 1 KV per record), so no doubling is needed.
-		if c.storeRecordVersions && !c.useOldVersionFormat {
-			if recordLimit > math.MaxInt/2 {
-				recordLimit = math.MaxInt
-			} else {
-				recordLimit *= 2
-			}
-		}
-		options.Limit = recordLimit
-	}
-
-	// Create iterator
+	inner := c.scanProperties
+	inner.ExecuteProperties.ReturnedRowLimit = c.innerLimit
+	options := kvRangeOptions(inner)
+	r := indexSkipRange(rng, c.selectorSkip, c.reverse)
 	tx := c.store.context.Transaction()
 	var rangeResult fdb.RangeResult
 	if c.scanProperties.ExecuteProperties.IsolationLevel == SnapshotIsolation {
-		rangeResult = tx.Snapshot().GetRange(rng, options)
+		rangeResult = tx.Snapshot().GetRange(r, options)
 	} else {
-		rangeResult = tx.GetRange(rng, options)
+		rangeResult = tx.GetRange(r, options)
 	}
-
 	c.iterator = rangeResult.Iterator()
 	return nil
 }

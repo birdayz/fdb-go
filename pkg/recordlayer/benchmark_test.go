@@ -328,9 +328,27 @@ func BenchmarkLoadRecordBuild(b *testing.B) {
 // BenchmarkScanRecords measures scanning 100 records with a forward scan,
 // including cursor iteration and deserialization.
 func BenchmarkScanRecords(b *testing.B) {
+	benchScanRecords(b, benchMetaData(b))
+}
+
+// BenchmarkScanRecordsSplitVersioned scans the SQL default layout: split long
+// records with inline versions, two key-values per record.
+func BenchmarkScanRecordsSplitVersioned(b *testing.B) {
+	builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto).
+		SetSplitLongRecords(true).SetStoreRecordVersions(true)
+	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+	md, err := builder.Build()
+	if err != nil {
+		b.Fatalf("failed to build metadata: %v", err)
+	}
+	benchScanRecords(b, md)
+}
+
+func benchScanRecords(b *testing.B, md *RecordMetaData) {
 	ensureBenchDB(b)
 
-	md := benchMetaData(b)
 	ss := benchSubspace(b)
 	ctx := context.Background()
 

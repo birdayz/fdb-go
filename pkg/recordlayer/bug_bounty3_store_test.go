@@ -189,29 +189,9 @@ var _ = Describe("BugBounty3Store", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	// =========================================================================
-	// BUG #2: hasMoreKVs consumes iterator position, causing ReturnLimitReached
-	// when only a version key remains (no more actual records)
-	//
-	// Severity: incorrect behavior ($100)
-	// Location: key_value_cursor.go:523-528
-	//
-	// Description: hasMoreKVs() calls c.iterator.Advance() to check if more
-	// KVs exist. If Advance() returns true, the iterator position advances
-	// but the result is never consumed (no Get() call). The next nextKV()
-	// call will Advance() again, skipping the KV that hasMoreKVs checked.
-	//
-	// When the only remaining KV after the limit is a version key (suffix -1
-	// for the next record), hasMoreKVs() returns true (there IS a KV), so
-	// the cursor reports ReturnLimitReached. But the remaining KV is just
-	// version metadata -- there's no actual record. The consumer does an
-	// unnecessary round-trip to resume and gets 0 records.
-	//
-	// Impact: Applications using cursor pagination with versioning make
-	// unnecessary extra FDB transactions to discover they're at the end.
-	// Not data loss, but incorrect cursor behavior that wastes resources.
-	// =========================================================================
-	It("BUG2: hasMoreKVs reports ReturnLimitReached when only version metadata KV remains", func() {
+	// An exact row limit over versioned records: Java's limitRowsTo returns
+	// RETURN_LIMIT_REACHED with the last record's token without reading ahead.
+	It("exact row limit over versioned records reports ReturnLimitReached", func() {
 		ks := specSubspace()
 
 		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
@@ -238,31 +218,6 @@ var _ = Describe("BugBounty3Store", func() {
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
-
-		// Forward scan with limit=2 (exactly matching the number of records).
-		// After reading 2 records, hasMoreKVs() checks if there's more.
-		// With versioning, each record has 2 KVs (version + data). After
-		// reading both records (4 KVs consumed), the FDB range may have
-		// version KVs for a non-existent next record... actually no, there
-		// are exactly 4 KVs total (2 records * 2 KVs each).
-		//
-		// But the FDB limit calculation doubles the limit for versioning:
-		// recordLimit = (2 + 1) * 2 = 6. So FDB returns up to 6 KVs.
-		// We have 4 KVs. hasMoreKVs() calls Advance(), which returns false
-		// (iterator exhausted). So it correctly reports SourceExhausted.
-		//
-		// The actual problematic case: forward scan with limit=1, 2 records.
-		// After reading record 1 (consuming version+data KVs), hasMoreKVs()
-		// calls Advance(), which finds record 2's version key (suffix -1).
-		// Returns true → ReturnLimitReached. On resume, the version key was
-		// consumed by Advance() and is lost. The new cursor starts after
-		// record 1's data key. It sees record 2's version key first...
-		// actually no, the continuation handles this correctly.
-
-		// The real issue is simpler: Advance() consumes the iterator
-		// position. If after the Advance, the cursor is called again
-		// (which shouldn't happen after limit-reached, but could happen
-		// with certain cursor combinators), the consumed KV is lost.
 
 		// Let's test the scenario where the number of KVs is exactly right.
 		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
@@ -293,17 +248,8 @@ var _ = Describe("BugBounty3Store", func() {
 
 			Expect(records).To(HaveLen(2))
 
-			// With exactly 2 records and limit=2, the correct stop reason
-			// is SourceExhausted (no more records). But hasMoreKVs may
-			// incorrectly report ReturnLimitReached if there are trailing
-			// KVs (e.g., from the FDB limit overshoot).
-			//
-			// Due to the FDB limit calculation: limit = 2, skip = 0,
-			// recordLimit = 2 + 1 = 3. With versioning: 3 * 2 = 6.
-			// FDB returns up to 6 KVs. We have 4 (2 version + 2 data).
-			// After consuming 4, iterator returns false. SourceExhausted. Correct.
-			Expect(stopReason).To(Equal(SourceExhausted),
-				"with exactly 2 records and limit=2, stop reason should be SourceExhausted")
+			Expect(stopReason).To(Equal(ReturnLimitReached),
+				"with exactly 2 records and limit=2, Java stops at the limit without reading ahead")
 
 			return nil, nil
 		})
