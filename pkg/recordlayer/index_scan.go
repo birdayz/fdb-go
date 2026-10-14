@@ -375,14 +375,14 @@ func (store *FDBRecordStore) scanIndexByType(
 			return rm.ScanByRankInTimeWindow(AllTimeLeaderboardType, 0, scanRange, continuation, scanProperties)
 		default:
 			return &errorCursor[*IndexEntry]{
-				err: fmt.Errorf("index %q (type %s) does not support BY_RANK scan", index.Name, index.Type),
+				err: &RecordCoreError{Message: fmt.Sprintf("index %q (type %s) does not support BY_RANK scan", index.Name, index.Type), IndexName: index.Name},
 			}
 		}
 	case IndexScanByTextToken:
 		tm, ok := maintainer.(*textIndexMaintainer)
 		if !ok {
 			return &errorCursor[*IndexEntry]{
-				err: fmt.Errorf("index %q (type %s) does not support BY_TEXT_TOKEN scan", index.Name, index.Type),
+				err: &RecordCoreError{Message: fmt.Sprintf("index %q (type %s) does not support BY_TEXT_TOKEN scan", index.Name, index.Type), IndexName: index.Name},
 			}
 		}
 		return tm.Scan(scanRange, continuation, scanProperties)
@@ -397,7 +397,7 @@ func (store *FDBRecordStore) scanIndexByType(
 			return m.Scan(scanRange, continuation, scanProperties)
 		default:
 			return &errorCursor[*IndexEntry]{
-				err: fmt.Errorf("index %q (type %s) does not support BY_GROUP scan", index.Name, index.Type),
+				err: &RecordCoreError{Message: fmt.Sprintf("index %q (type %s) does not support BY_GROUP scan", index.Name, index.Type), IndexName: index.Name},
 			}
 		}
 	case IndexScanByDistance:
@@ -406,7 +406,7 @@ func (store *FDBRecordStore) scanIndexByType(
 		vm, ok := IndexMaintainerAs[ByDistanceScanner](maintainer)
 		if !ok {
 			return &errorCursor[*IndexEntry]{
-				err: fmt.Errorf("index %q (type %s) does not support BY_DISTANCE scan", index.Name, index.Type),
+				err: &RecordCoreError{Message: fmt.Sprintf("index %q (type %s) does not support BY_DISTANCE scan", index.Name, index.Type), IndexName: index.Name},
 			}
 		}
 		return vm.ScanByDistance(scanRange, continuation, scanProperties)
@@ -421,11 +421,19 @@ func (store *FDBRecordStore) scanIndexByType(
 		vm, ok := IndexMaintainerAs[ByDistanceScanner](maintainer)
 		if !ok {
 			return &errorCursor[*IndexEntry]{
-				err: fmt.Errorf("index %q (type %s) does not support BY_DISTANCE scan", index.Name, index.Type),
+				err: &RecordCoreError{Message: fmt.Sprintf("index %q (type %s) does not support BY_DISTANCE scan", index.Name, index.Type), IndexName: index.Name},
 			}
 		}
 		return vm.ScanByDistance(scanRange, continuation, scanProperties)
 	default:
+		// Java's bitmap and text maintainers reject every other scan type
+		// (BitmapValueIndexMaintainer.scan, TextIndexMaintainer.scan).
+		switch maintainer.(type) {
+		case *bitmapValueIndexMaintainer:
+			return &errorCursor[*IndexEntry]{err: &RecordCoreError{Message: "Can only scan bitmap index by group.", IndexName: index.Name}}
+		case *textIndexMaintainer:
+			return &errorCursor[*IndexEntry]{err: &RecordCoreError{Message: "Can only scan text index by text token.", IndexName: index.Name}}
+		}
 		return maintainer.Scan(scanRange, continuation, scanProperties)
 	}
 }
@@ -754,6 +762,7 @@ func (store *FDBRecordStore) ScanIndexRecords(
 type indexRecordLoader struct {
 	store     *FDBRecordStore
 	scanState *ScanLimiterState
+	orphan    IndexOrphanBehavior
 }
 
 func (c *indexRecordLoader) load(entry *IndexEntry) PendingRead[*FDBIndexedRecord] {
@@ -782,10 +791,6 @@ func (l *indexRecordLoad) Get() (*FDBIndexedRecord, error) {
 func (l *indexRecordLoad) IsReady() bool { return l.pending == nil || l.pending.IsReady() }
 
 func (c *indexRecordLoader) finish(entry *IndexEntry, pk tuple.Tuple, rec *FDBStoredRecord[proto.Message], err error) (*FDBIndexedRecord, error) {
-	indexName := ""
-	if entry.Index != nil {
-		indexName = entry.Index.Name
-	}
 	if err != nil {
 		return nil, fmt.Errorf("load record for index entry %v: %w", pk, err)
 	}
@@ -794,17 +799,10 @@ func (c *indexRecordLoader) finish(entry *IndexEntry, pk tuple.Tuple, rec *FDBSt
 		// Java's scanIndexRecords defaults to IndexOrphanBehavior.ERROR
 		// (FDBRecordStoreBase.fetchIndexRecords → loadIndexEntryRecord), and the
 		// index-from-index rebuild (IndexingByIndex) relies on that default, so an
-		// orphan aborts the scan rather than silently dropping the row. Raise the
-		// same typed error Java throws. (The index scrubber, which repairs
-		// orphans, has its own SKIP/RETURN path in index_validation.go and does
-		// not come through here.)
-		c.store.context.Timer().Increment(CountBadIndexEntry)
-		return nil, &RecordCoreStorageError{
-			Message:    "record not found from index entry",
-			IndexName:  indexName,
-			PrimaryKey: pk,
-			IndexKey:   entry.Key,
-		}
+		// orphan aborts the scan rather than silently dropping the row. (The index
+		// scrubber, which repairs orphans, has its own SKIP/RETURN path in
+		// index_validation.go and does not come through here.)
+		return c.store.handleOrphanEntry(entry, pk, c.orphan, false)
 	}
 
 	return &FDBIndexedRecord{

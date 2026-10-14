@@ -69,6 +69,7 @@ class ConformanceServer {
         new MappedRangeSteps(),
         new RecordLoadChargeProbeSteps(),
         new IndexScanLimitSteps(),
+        new IndexRemoteFetchSteps(),
         new BitmapValueIndexSteps(),
         new TextIndexSteps(),
         new TimeWindowLeaderboardSteps(),

@@ -113,6 +113,9 @@ var (
 	// EventRetryDelay is Java's Events.RETRY_DELAY: the backoff between a
 	// transaction runner's attempts (FDBDatabaseRunnerImpl.RunRetriable.handle).
 	EventRetryDelay = Event{"retry_delay", "Retry Delay", KindTimed}
+	// EventScanRemoteFetchEntry is Java's Events.SCAN_REMOTE_FETCH_ENTRY, timing
+	// each result of a remote-fetch index scan.
+	EventScanRemoteFetchEntry = Event{"scan_remote_fetch_entry", "Remote Fetch Index Entry", KindTimed}
 )
 
 // Standard count events — matching Java's FDBStoreTimer.Counts. The KindSize

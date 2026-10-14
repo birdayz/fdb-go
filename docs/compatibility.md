@@ -48,10 +48,16 @@ for exact primary ranges, with forward or reverse primary scans and forward
 secondary ranges. Snapshot transactions do not expose it. The `libfdbc` backend
 does not expose mapped reads: Apple's Go binding has no mapped-range API, and
 this repository's raw C mapped-range decoder is a test-only, non-ABI oracle.
-Go does not yet support Record Layer `IndexFetchMethod.USE_REMOTE_FETCH` or
-`USE_REMOTE_FETCH_WITH_FALLBACK`, and the SQL `INDEX_FETCH_METHOD` option is not
-honored. The raw mapped-range capability alone does not enable either feature.
-RFC-258 tracks their implementation; index scans currently use SCAN_AND_FETCH.
+The Record Layer's `ScanIndexRecordsWithFetchMethod` supports
+`IndexFetchMethod.USE_REMOTE_FETCH` and `USE_REMOTE_FETCH_WITH_FALLBACK` on the
+pure-Go backend. On the `libfdbc` backend remote fetch reports Java's
+`UnsupportedRemoteFetchIndexException`, so `USE_REMOTE_FETCH` fails and
+`USE_REMOTE_FETCH_WITH_FALLBACK` scans the index and loads each record. A
+remote-fetch scan with a positive `ExecuteProperties.Skip` checks remote fetch's
+preconditions and then runs as SCAN_AND_FETCH: a skip would be a selector offset
+on the mapped read, a request shape the server does not support for every range.
+Java sends that offset. The SQL `INDEX_FETCH_METHOD` option is not yet honored;
+RFC-258 tracks the planner and SQL integration.
 
 ### Single-record reads and conflicts
 
