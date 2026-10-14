@@ -34,17 +34,21 @@
 //     owner and leaves the write token unchanged; a healthy frozen cluster may
 //     therefore show any owner, and an owner-only change is caught solely by
 //     the owner-identity check;
-//   - every DD transaction that changes the shard map (startMoveKeys,
-//     finishMoveKeys, startMoveShards, finishMoveShards, removeStorageServer,
-//     removeKeysFromFailedServer, cleanUpDataMove*) calls checkMoveKeysLock in
-//     that transaction, which writes a new token (and, when it takes the lock
-//     from the previous owner, the owner too).
+//   - the relocation paths startMoveKeys, finishMoveKeys, startMoveShards,
+//     finishMoveShards, removeStorageServer, removeKeysFromFailedServer and
+//     cleanUpDataMove{Background,Core} call checkMoveKeysLock in their
+//     transaction, which writes a new token (and, when it takes the lock from
+//     the previous owner, the owner too). Not every keyServers write is guarded:
+//     cleanUpSingleShardDataMove (MoveKeys.actor.cpp:630-703) writes it without
+//     checkMoveKeysLock, though only with SHARD_ENCODE_LOCATION_METADATA, which
+//     is off by default.
 //
 // The probe requires the mode key present and 0 at V1 and V2, the owner present
 // and identical at V1 and V2 (any value, recorded), the write token present and
 // identical, and the raw keyServers bytes identical, and emits nothing
-// otherwise: a toggle writes a new token, a DD restart writes a new owner, and
-// any relocation commits a new token together with new keyServers bytes.
+// otherwise: a toggle writes a new token, a DD restart writes a new owner, a
+// guarded relocation commits a new token, and any shard-map write, guarded or
+// not, changes the raw keyServers bytes.
 //
 // The ballast tool writes only into [prefix+(1,1000000), strinc(prefix+(1,)))
 // and only while data distribution is on; it clears only that range and only

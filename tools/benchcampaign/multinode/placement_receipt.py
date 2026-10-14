@@ -264,10 +264,15 @@ def provenance_errors(probe, prefix, fixture_sha256, expect_cluster):
     intervening relocation (7.3.77 source): setDDMode / DataDistributionImpl write
     mode, owner and a NEW token on every toggle; takeMoveKeysLock (run by every
     DD (re)start before it reads the mode) writes ONLY a new random owner, the
-    token unchanged, so the owner-identity check is what catches it; every DD
-    transaction that changes the shard map calls checkMoveKeysLock in that
-    transaction, which writes a NEW token. So no toggle, DD restart or shard-map
-    commit can fall between V1 and V2 without changing a compared value."""
+    token unchanged, so the owner-identity check is what catches it; the
+    relocation paths (startMoveKeys, finishMoveKeys, startMoveShards,
+    finishMoveShards, removeStorageServer, removeKeysFromFailedServer,
+    cleanUpDataMove*) call checkMoveKeysLock in their transaction, which writes a
+    NEW token. cleanUpSingleShardDataMove writes keyServers without that check
+    (only with SHARD_ENCODE_LOCATION_METADATA, off by default); the raw
+    keyServers comparison catches it and any other shard-map write. So no toggle,
+    DD restart or shard-map commit can fall between V1 and V2 without changing a
+    compared value."""
     errors = []
     rv = probe.get('read_version')
     basis = probe.get('addresses_basis') or {}
