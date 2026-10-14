@@ -434,12 +434,17 @@ func primaryConflictRange(begin, end []byte, reverse, more bool, rows []MappedKe
 }
 
 // addMappedRangeConflicts implements C++ addConflictRangeAndMustUnmodified.
+// Insert each range before checking the next: a later 2039 must retain the
+// earlier conflicts and the failing range's unmodified prefix.
 func (tx *Transaction) addMappedRangeConflicts(begin, end []byte, reverse, more bool, rows []MappedKeyValue) error {
 	// Primary range first, exactly as C++ does — and NARROWED, see
 	// primaryConflictRange. The narrowing is not an optimization: the same range
 	// feeds the mustUnmodified check, where recording a superset would raise
 	// get_mapped_range_reads_your_writes on a write C++ lets through.
-	ranges := [][2][]byte{primaryConflictRange(begin, end, reverse, more, rows)}
+	primary := primaryConflictRange(begin, end, reverse, more, rows)
+	if err := tx.addMappedRangeConflictMustUnmodified(primary[0], primary[1]); err != nil {
+		return err
+	}
 	for i := range rows {
 		switch rows[i].Kind {
 		case MappedResultGetValue:
@@ -448,7 +453,9 @@ func (tx *Transaction) addMappedRangeConflicts(begin, end []byte, reverse, more 
 			// singleKeyRange. The point lookup gets a conflict range whether or
 			// not the key EXISTED: a miss is a real observation, and a later
 			// insert at that key must conflict.
-			ranges = append(ranges, [2][]byte{k, keyAfterBytes(k)})
+			if err := tx.addMappedRangeConflictMustUnmodified(k, keyAfterBytes(k)); err != nil {
+				return err
+			}
 		case MappedResultGetRange:
 			gr := &rows[i].GetRange
 			// Secondary reads are forward and may be truncated by server knobs.
@@ -460,20 +467,9 @@ func (tx *Transaction) addMappedRangeConflicts(begin, end []byte, reverse, more 
 			if n := len(gr.Rows); n > 0 && bytes.Compare(rangeEnd, gr.Rows[n-1].Key) <= 0 {
 				rangeEnd = keyAfterBytes(gr.Rows[n-1].Key)
 			}
-			ranges = append(ranges, [2][]byte{gr.Begin.Key, rangeEnd})
-		}
-	}
-	// C++ interleaves the check and the insert: updateConflictMap<true>
-	// (ReadYourWrites.actor.cpp:335-351) walks ONE range's write-map segments,
-	// throwing on the first modified one and inserting the rest as it goes, and
-	// addConflictRangeAndMustUnmodified calls it once per range. So a throw on
-	// range N leaves ranges 0..N-1 recorded. Checking every range up front and
-	// inserting only on success would look tidier and would diverge: a caller
-	// that catches 2039 and commits anyway would ship a transaction missing the
-	// conflict ranges C++ had already banked.
-	for _, r := range ranges {
-		if err := tx.addMappedRangeConflictMustUnmodified(r[0], r[1]); err != nil {
-			return err
+			if err := tx.addMappedRangeConflictMustUnmodified(gr.Begin.Key, rangeEnd); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

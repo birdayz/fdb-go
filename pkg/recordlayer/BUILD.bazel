@@ -276,6 +276,8 @@ go_test(
         "index_predicate_test.go",
         "index_queued_dispatch_test.go",
         "index_registration_matrix_test.go",
+        "index_remote_alloc_test.go",
+        "index_remote_benchmark_test.go",
         "index_remote_fetch_test.go",
         "index_scan_lazy_continuation_test.go",
         "index_scan_test.go",

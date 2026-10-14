@@ -147,15 +147,15 @@ type indexPrefetchCursor struct {
 	rows    *mappedIndexRows
 }
 
-func (c *indexPrefetchCursor) OnNext(ctx context.Context) (RecordCursorResult[*FDBIndexedRawRecord], error) {
+func (c *indexPrefetchCursor) OnNext(ctx context.Context) (RecordCursorResult[FDBIndexedRawRecord], error) {
 	result, err := c.entries.OnNext(ctx)
 	if err != nil {
-		return RecordCursorResult[*FDBIndexedRawRecord]{}, err
+		return RecordCursorResult[FDBIndexedRawRecord]{}, err
 	}
 	if !result.HasNext() {
-		return NewResultNoNext[*FDBIndexedRawRecord](result.GetNoNextReason(), result.GetContinuation()), nil
+		return NewResultNoNext[FDBIndexedRawRecord](result.GetNoNextReason(), result.GetContinuation()), nil
 	}
-	raw := &FDBIndexedRawRecord{IndexEntry: result.GetValue(), RawRecord: c.rows.current}
+	raw := FDBIndexedRawRecord{IndexEntry: result.GetValue(), RawRecord: c.rows.current}
 	return NewResultWithValue(raw, result.GetContinuation()), nil
 }
 
@@ -247,16 +247,9 @@ func (store *FDBRecordStore) scanIndexRemoteFetch(index *Index, scanType IndexSc
 	}
 	rows := &mappedIndexRows{rows: reader.GetMappedRange(rng, mapper.Pack(), indexRangeOptions(props)).Iterator()}
 	entries.iterator = rows
-	var raw RecordCursor[*FDBIndexedRawRecord] = &indexPrefetchCursor{entries: entries, rows: rows}
-	scanState := props.ExecuteProperties.ScanState
-	cursor := MapPipelined(raw, func(raw *FDBIndexedRawRecord) PendingRead[*FDBIndexedRecord] {
-		return MapPendingRead(store.buildSingleRecord(raw, scanState), func(record *FDBIndexedRecord, err error) (*FDBIndexedRecord, error) {
-			if err != nil || record != nil {
-				return record, err
-			}
-			return store.handleOrphanEntry(raw.IndexEntry, raw.IndexEntry.PrimaryKey(), orphan, true)
-		})
-	}, 1)
+	var raw RecordCursor[FDBIndexedRawRecord] = &indexPrefetchCursor{entries: entries, rows: rows}
+	loader := &remoteIndexRecordLoader{store: store, scanState: props.ExecuteProperties.ScanState, orphan: orphan}
+	cursor := MapPipelined(raw, loader.load, 1)
 	if orphan == IndexOrphanSkip {
 		cursor = FilterCursor(cursor, func(record *FDBIndexedRecord) bool { return record != nil })
 	}

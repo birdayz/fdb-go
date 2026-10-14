@@ -88,6 +88,7 @@ Each is described in full under Compatibility or Changed below.
   and tags now apply to every statement transaction, autocommit and read-only ones included.
 
 ### Changed
+- Remote-fetch index scans avoid per-row raw/pending wrappers and read-only local-version key repacking. A fixed 1,000-row benchmark reduces remote-fetch median allocations from 35,988 to 21,915 per scan (39.10%) and bytes from 3,381,658 to 2,640,724 (21.91%); returned records and entries remain independently owned. See [RFC-258 PR4 measurements](docs/benchmarks/rfc-258-pr4-allocations.md) for scope and reproduction; unquiet timings are informational only.
 - Ordinary index scans follow Java's row-limit tokens, scan-attempt counters and transaction-anchored time limits.
 - Ordinary index scans apply `ExecuteProperties.Skip` as Java's selector offsets (it was ignored); a skip saturates at `MaxInt32-1` instead of wrapping as Java's forward `MaxInt32` does.
 - Issued record loads charge scan bytes when the raw read completes, including loads discarded by a failed index cursor. `ScanLimiterState.WaitForIssuedRecordLoadCharges` waits for those existing charges without issuing or materializing another record.
