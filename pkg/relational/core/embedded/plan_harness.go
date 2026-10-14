@@ -47,6 +47,13 @@ func PlanPhysicalForTest(sql, schemaDDL string, stats properties.StatisticsProvi
 	return plan, err
 }
 
+// PlanPhysicalForTestWithOptions is PlanPhysicalForTest planned under a
+// connection's options, through the same plannerOptionsFrom funnel.
+func PlanPhysicalForTestWithOptions(sql, schemaDDL string, stats properties.StatisticsProvider, opts *api.Options) (plans.RecordQueryPlan, error) {
+	plan, _, err := planPhysicalForTest(sql, schemaDDL, stats, false, nil, plannerOptionsFrom(opts))
+	return plan, err
+}
+
 // PlanPhysicalForTestTraced is PlanPhysicalForTest with the planner's work
 // attributed to trace, which then holds the run's per-rule cost and memo census.
 func PlanPhysicalForTestTraced(sql, schemaDDL string, stats properties.StatisticsProvider, trace *cascades.PlannerTrace) (plans.RecordQueryPlan, error) {
@@ -175,7 +182,13 @@ func bindHarnessParameters(root antlr.Tree, params []driver.NamedValue) (func(),
 // sql passed here MUST be a single DELETE or UPDATE statement; anything else is
 // a caller error (ErrCodeUnsupportedQuery).
 func PlanPhysicalDMLForTest(sql, schemaDDL string, stats properties.StatisticsProvider) (plans.RecordQueryPlan, error) {
-	return planPhysicalDMLForTest(sql, schemaDDL, nil, stats, nil)
+	return planPhysicalDMLForTest(sql, schemaDDL, nil, stats, nil, plannerOptionsFrom(nil))
+}
+
+// PlanPhysicalDMLForTestWithOptions is PlanPhysicalDMLForTest planned under a
+// connection's options.
+func PlanPhysicalDMLForTestWithOptions(sql, schemaDDL string, stats properties.StatisticsProvider, opts *api.Options) (plans.RecordQueryPlan, error) {
+	return planPhysicalDMLForTest(sql, schemaDDL, nil, stats, nil, plannerOptionsFrom(opts))
 }
 
 // PlanPhysicalDMLForTestWithReachability is PlanPhysicalDMLForTest with
@@ -186,7 +199,7 @@ func PlanPhysicalDMLForTestWithReachability(
 	stats properties.StatisticsProvider,
 	reach *cascades.ReachabilityCollector,
 ) (plans.RecordQueryPlan, error) {
-	return planPhysicalDMLForTest(sql, schemaDDL, nil, stats, reach)
+	return planPhysicalDMLForTest(sql, schemaDDL, nil, stats, reach, plannerOptionsFrom(nil))
 }
 
 // PlanPhysicalDMLForTestWithArgs is PlanPhysicalDMLForTestWithReachability
@@ -197,7 +210,7 @@ func PlanPhysicalDMLForTestWithArgs(
 	stats properties.StatisticsProvider,
 	reach *cascades.ReachabilityCollector,
 ) (plans.RecordQueryPlan, error) {
-	return planPhysicalDMLForTest(sql, schemaDDL, args, stats, reach)
+	return planPhysicalDMLForTest(sql, schemaDDL, args, stats, reach, plannerOptionsFrom(nil))
 }
 
 // planPhysicalForTest is PlanPhysicalForTest plus the optional RFC-224
@@ -438,8 +451,8 @@ func planReferenceToPhysical(
 	popts plannerOptions,
 ) (plans.RecordQueryPlan, *cascades.ExtractionVerificationReport, error) {
 	// The no-FDB harness has no connection, so its callers resolve api.Options
-	// themselves — plannerOptionsFrom(nil), the Java defaults, for every entry
-	// point but PlanQueryForTestWithDisabledRules. It still goes through
+	// themselves: plannerOptionsFrom(nil), a connection's defaults, unless the
+	// entry point takes options. It still goes through
 	// newCascadesPlanner so the harness and the production paths cannot diverge
 	// in how a planner is built.
 	planner := newCascadesPlanner(md, harnessPlannerOptions(popts), planningRules, stats)
@@ -504,12 +517,13 @@ func planPhysicalDMLForTest(
 	args []driver.NamedValue,
 	stats properties.StatisticsProvider,
 	reach *cascades.ReachabilityCollector,
+	popts plannerOptions,
 ) (plans.RecordQueryPlan, error) {
 	tmpl, err := buildSchemaTemplateFromDDL(schemaDDL)
 	if err != nil {
 		return nil, fmt.Errorf("schema DDL: %w", err)
 	}
-	return planPhysicalDMLWithMetadata(sql, tmpl.Underlying(), args, stats, reach)
+	return planPhysicalDMLWithMetadata(sql, tmpl.Underlying(), args, stats, reach, popts)
 }
 
 // PlanPhysicalDMLWithMetadata is PlanPhysicalDMLForTest against PRE-BUILT
@@ -523,7 +537,7 @@ func PlanPhysicalDMLWithMetadata(
 	md *recordlayer.RecordMetaData,
 	stats properties.StatisticsProvider,
 ) (plans.RecordQueryPlan, error) {
-	return planPhysicalDMLWithMetadata(sql, md, nil, stats, nil)
+	return planPhysicalDMLWithMetadata(sql, md, nil, stats, nil, plannerOptionsFrom(nil))
 }
 
 func planPhysicalDMLWithMetadata(
@@ -532,6 +546,7 @@ func planPhysicalDMLWithMetadata(
 	args []driver.NamedValue,
 	stats properties.StatisticsProvider,
 	reach *cascades.ReachabilityCollector,
+	popts plannerOptions,
 ) (plans.RecordQueryPlan, error) {
 	root, err := parser.Parse(sql)
 	if err != nil {
@@ -658,7 +673,7 @@ func planPhysicalDMLWithMetadata(
 	}
 
 	planningRules := append(cascades.BatchAExpressionRules(), cascades.DMLImplementationRules()...)
-	physPlan, _, err := planReferenceToPhysical(ref, md, stats, planningRules, false, reach, plannerOptionsFrom(nil))
+	physPlan, _, err := planReferenceToPhysical(ref, md, stats, planningRules, false, reach, popts)
 	return physPlan, err
 }
 

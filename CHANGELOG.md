@@ -95,7 +95,8 @@ Each is described in full under Compatibility or Changed below.
 - Ordinary index scans follow Java's row-limit tokens, scan-attempt counters and transaction-anchored time limits.
 - Ordinary, COUNT/SUM, MIN/MAX_EVER_TUPLE, MAX_EVER_VERSION and BITMAP_VALUE index scans apply `ExecuteProperties.Skip` as Java's selector offsets (it was ignored); a skip saturates at `MaxInt32-1` instead of wrapping as Java's forward `MaxInt32` does.
 - Issued record loads charge scan bytes when the raw read completes, including loads discarded by a failed index cursor. `ScanLimiterState.WaitForIssuedRecordLoadCharges` waits for those existing charges without issuing or materializing another record.
-- SQL `INDEX_FETCH_METHOD` remains unsupported pending RFC-258's planner work.
+- SQL `INDEX_FETCH_METHOD`, when set, is stamped on every BY_VALUE index plan and selects remote fetch, as in Java; unset, Go keeps SCAN_AND_FETCH where Java defaults to USE_REMOTE_FETCH_WITH_FALLBACK.
+- `cascades.MatchCandidate.ToScanPlan` takes the `PlanContext`, as Java's `toEquivalentPlan` does; new `api.Options.IsSet`, `FDBRecordContext.APIVersion` and `recordlayer.SupportsRemoteFetch`.
 - `ScanIndex` and `ScanIndexByType` reject any other scan type on BITMAP_VALUE and TEXT indexes with Java's `RecordCoreException` messages (`ScanIndexByType` used to scan them), and report unsupported scan types as `*RecordCoreError`.
 - Update Go dependencies for archive containment, bounded group parsing, CEL JSON field privacy, and OpenTelemetry diagnostic privacy; these SDK updates do not patch the host Docker daemon.
 - `EndpointTypeContinuation` is internal; scan callers supply the original range endpoints and pass the continuation separately.

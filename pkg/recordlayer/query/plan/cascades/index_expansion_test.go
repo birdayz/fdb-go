@@ -255,7 +255,7 @@ func TestValueIndexScanMatchCandidate_UnknownMetadataFailsClosed(t *testing.T) {
 	if traversal := unknown.GetTraversal(); traversal != nil {
 		t.Fatal("candidate with neither duplicate signal nor root AST produced a traversal")
 	}
-	if plan := unknown.ToScanPlan(nil, false); plan != nil {
+	if plan := unknown.ToScanPlan(EmptyPlanContext(), nil, false); plan != nil {
 		t.Fatalf("unknown candidate produced a direct scan plan: %T", plan)
 	}
 	if parts := unknown.ComputeMatchedOrderingParts(
@@ -298,7 +298,7 @@ func TestValueIndexScanMatchCandidate_UnknownMetadataFailsClosed(t *testing.T) {
 		false,
 		[]string{"ID"},
 	)
-	if knownScalar.GetTraversal() == nil || knownScalar.ToScanPlan(nil, false) == nil {
+	if knownScalar.GetTraversal() == nil || knownScalar.ToScanPlan(EmptyPlanContext(), nil, false) == nil {
 		t.Fatal("explicit known-scalar twin failed to plan")
 	}
 }
@@ -455,7 +455,7 @@ func TestExpandValueIndex_InconsistentFlatRootFailsClosed(t *testing.T) {
 			if traversal := candidate.GetTraversal(); traversal != nil {
 				t.Fatal("inconsistent/unsupported flat key metadata produced a traversal")
 			}
-			if scan := candidate.ToScanPlan(nil, false); scan != nil {
+			if scan := candidate.ToScanPlan(EmptyPlanContext(), nil, false); scan != nil {
 				t.Fatalf("inconsistent/unsupported flat key metadata produced %T", scan)
 			}
 		})
@@ -1090,11 +1090,11 @@ func TestExpandValueIndex_LongArithmeticKey(t *testing.T) {
 	}
 
 	longSize := candidate(key("bitmap_bucket_offset", "ID", &gen.Value{LongValue: proto.Int64(10000)}), "bitmap_bucket_offset")
-	if longSize.GetTraversal() != nil || longSize.ToScanPlan(nil, false) != nil {
+	if longSize.GetTraversal() != nil || longSize.ToScanPlan(EmptyPlanContext(), nil, false) != nil {
 		t.Fatal("a long_value entry size has no bitmap lane; the index must not be a candidate")
 	}
 	double := candidate(key("add", "D", &gen.Value{IntValue: proto.Int32(1)}), "add")
-	if double.GetTraversal() != nil || double.ToScanPlan(nil, false) != nil {
+	if double.GetTraversal() != nil || double.ToScanPlan(EmptyPlanContext(), nil, false) != nil {
 		t.Fatal("an arithmetic key over a DOUBLE argument must not be a candidate")
 	}
 }

@@ -24,12 +24,12 @@ type realizedAccess struct {
 	distinctReady  bool
 }
 
-func (r accessRealizations) realize(access *SingleMatchedAccess) *realizedAccess {
+func (r accessRealizations) realize(ctx PlanContext, access *SingleMatchedAccess) *realizedAccess {
 	key := accessRealizationKey{access.GetPartialMatch(), access.IsReverseScanOrder()}
 	if realized, ok := r[key]; ok {
 		return realized
 	}
-	realized := &realizedAccess{scan: createScanForAccess(access)}
+	realized := &realizedAccess{scan: createScanForAccess(ctx, access)}
 	r[key] = realized
 	if realized.scan != nil {
 		expr, err := wrapAccessScan(access, realized.scan)
@@ -40,8 +40,8 @@ func (r accessRealizations) realize(access *SingleMatchedAccess) *realizedAccess
 	return realized
 }
 
-func (r accessRealizations) single(memoizer Memoizer, access *SingleMatchedAccess) expressions.RelationalExpression {
-	realized := r.realize(access)
+func (r accessRealizations) single(ctx PlanContext, memoizer Memoizer, access *SingleMatchedAccess) expressions.RelationalExpression {
+	realized := r.realize(ctx, access)
 	if realized.singleComputed {
 		return realized.compensated
 	}
@@ -69,8 +69,8 @@ func (r accessRealizations) single(memoizer Memoizer, access *SingleMatchedAcces
 	return expr
 }
 
-func (r accessRealizations) distinctPlan(access *SingleMatchedAccess) expressions.RelationalExpression {
-	realized := r.realize(access)
+func (r accessRealizations) distinctPlan(ctx PlanContext, access *SingleMatchedAccess) expressions.RelationalExpression {
+	realized := r.realize(ctx, access)
 	if realized.distinctReady {
 		return realized.distinct
 	}

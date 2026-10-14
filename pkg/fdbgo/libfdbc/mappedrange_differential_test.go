@@ -1587,6 +1587,7 @@ func TestLibFDBC_MappedRangeSkipLiteralOffsets(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { goDB.Close() })
+	primeMappedSnapshotClient(t, ctx, goDB)
 	facade := gofdb.WrapDatabase(goDB)
 	f := mdSeedStreaming(t, cdb, 24)
 	// A constant mapper lets Java's wrapped-offset witness start at the database
@@ -1756,6 +1757,7 @@ func TestLibFDBC_MappedRangeSelectorReplyMore(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { goDB.Close() })
+	primeMappedSnapshotClient(t, ctx, goDB)
 	facade := gofdb.WrapDatabase(goDB)
 	f := mdSeedStreaming(t, cdb, 2)
 	seed, err := mdCreateTransaction(t, cdb)
@@ -1912,6 +1914,7 @@ func TestLibFDBC_MappedRangeSkipMaxEmptyEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { goDB.Close() })
+	primeMappedSnapshotClient(t, ctx, goDB)
 	facade := gofdb.WrapDatabase(goDB)
 	f := mdSeedStreaming(t, cdb, 2)
 	begin, end := f.indexEntryKey(1), []byte{}

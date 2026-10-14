@@ -151,7 +151,7 @@ func TestValueIndexScanMatchCandidate_ToScanPlan(t *testing.T) {
 	prefix := map[values.CorrelationIdentifier]*predicates.ComparisonRange{
 		a1: eqRes.Range,
 	}
-	plan := c.ToScanPlan(prefix, false)
+	plan := c.ToScanPlan(EmptyPlanContext(), prefix, false)
 	fetchPlan, ok := plan.(*plans.RecordQueryFetchFromPartialRecordPlan)
 	if !ok {
 		t.Fatalf("expected *RecordQueryFetchFromPartialRecordPlan, got %T", plan)
@@ -386,7 +386,7 @@ func TestValueIndexScanMatchCandidate_FanOutElementIsNotCoveredAsArray(t *testin
 		t.Fatalf("exact fan-out element binding was not retained in scan prefix: %v", prefix)
 	}
 
-	fetch, ok := fanOutCandidate.ToScanPlan(prefix, false).(*plans.RecordQueryFetchFromPartialRecordPlan)
+	fetch, ok := fanOutCandidate.ToScanPlan(EmptyPlanContext(), prefix, false).(*plans.RecordQueryFetchFromPartialRecordPlan)
 	if !ok {
 		t.Fatalf("fan-out scan = %T, want Fetch(IndexScan)", fetch)
 	}
@@ -565,6 +565,7 @@ func TestValueIndexScanMatchCandidate_FunctionKeyCoversItsFieldsAndOrdersByTheFu
 	}
 
 	scan := candidate.ToScanPlan(
+		EmptyPlanContext(),
 		map[values.CorrelationIdentifier]*predicates.ComparisonRange{},
 		false,
 	)

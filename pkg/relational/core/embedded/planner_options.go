@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/indexfetch"
 	cascades "fdb.dev/pkg/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/relational/api"
@@ -31,14 +32,10 @@ import (
 // rather than here, because it comes from the STORE rather than from the
 // connection's options.
 //
-// Of the FOUR option names, three are handled here — DISABLED_PLANNER_RULES,
-// DISABLE_PLANNER_REWRITING and PLAN_RIGHT_DEEP. The fourth,
-// INDEX_FETCH_METHOD (via OptionsUtils.getIndexFetchMethod), selects FDB's
-// remote-fetch index scan, which Go has no implementation of at any layer:
-// neither FDB client Go uses exposes getMappedRange, and Go's index-scan plan
-// has no fetch-method field to carry it. api.OptIndexFetchMethod is therefore
-// accepted and NOT honored; that gap is tracked in TODO.md rather than papered
-// over with a config field nothing reads.
+// It handles the four option names Java's PlannerConfiguration reads —
+// DISABLED_PLANNER_RULES, DISABLE_PLANNER_REWRITING, PLAN_RIGHT_DEEP and
+// INDEX_FETCH_METHOD (via OptionsUtils.getIndexFetchMethod) — plus Go's own
+// planner options.
 //
 // plannerOptionsFrom is the only place that reads the option names, and
 // newCascadesPlanner is the only place that turns the result into a planner.
@@ -62,10 +59,10 @@ type plannerOptions struct {
 	// re-combine. Names use Java's simple-class-name spelling.
 	disabledRules map[string]struct{}
 
-	// config is the Cascades PlannerConfiguration these options imply. Only
-	// ShouldJoinRightDeep is option-driven today; the rest are the Java
-	// defaults, exactly as Java's buildRecordQueryPlannerConfiguration leaves
-	// everything it does not set at RecordQueryPlannerConfiguration's default.
+	// config is the Cascades PlannerConfiguration these options imply. What the
+	// options do not set keeps the Java default, exactly as Java's
+	// buildRecordQueryPlannerConfiguration leaves everything it does not set at
+	// RecordQueryPlannerConfiguration's default.
 	config cascades.PlannerConfiguration
 
 	// Java's three Cascades budgets, 0 = unbounded. They only decide whether
@@ -90,12 +87,12 @@ type plannerOptions struct {
 // plannerOptionsFrom resolves the connection's api.Options into the planner's
 // view of them. Ports the option-reading half of Java's
 // `PlannerConfiguration.of` + `buildRecordQueryPlannerConfiguration`
-// (fdb-relational-core .../query/PlannerConfiguration.java) — the three of its
-// four option names Go can act on; see the plannerOptions doc for the fourth,
-// INDEX_FETCH_METHOD, which Go has no implementation for.
+// (fdb-relational-core .../query/PlannerConfiguration.java).
 //
 // A nil/empty Options yields the Java defaults (no disabled rules, rewriting
-// on, right-deep off), so the no-options path plans exactly as before.
+// on, right-deep off), except that an unset INDEX_FETCH_METHOD plans
+// SCAN_AND_FETCH where Java's falls back to USE_REMOTE_FETCH_WITH_FALLBACK
+// (DIVERGENCES.md).
 //
 // Unrecognized rule names are carried through rather than rejected: Java's
 // setDisabledTransformationRuleNames copies the strings verbatim and never
@@ -141,6 +138,16 @@ func plannerOptionsFrom(o *api.Options) plannerOptions {
 	}
 
 	po.config.ShouldJoinRightDeep = optBool(o, api.OptPlanRightDeep, false)
+	if o.IsSet(api.OptIndexFetchMethod) {
+		// OptionsUtils.getIndexFetchMethod's mapping; an explicit nil keeps the
+		// default.
+		switch o.Get(api.OptIndexFetchMethod) {
+		case api.IndexFetchUseRemoteFetch:
+			po.config.IndexFetchMethod = indexfetch.UseRemoteFetch
+		case api.IndexFetchUseRemoteFetchWithFallback:
+			po.config.IndexFetchMethod = indexfetch.UseRemoteFetchWithFallback
+		}
+	}
 	switch o.Get(api.OptVectorIndexEnginePreference) {
 	case api.VectorIndexPreferHNSW:
 		po.config.VectorIndexEnginePreference = "HNSW"
@@ -201,6 +208,7 @@ func (p plannerOptions) cacheKeyPart() string {
 	if len(p.disabledRules) == 0 && !p.config.ShouldJoinRightDeep &&
 		!p.config.SingleReadVersion && !p.useCollectedStatistics &&
 		p.config.VectorIndexEnginePreference == "" &&
+		p.config.IndexFetchMethod == indexfetch.ScanAndFetch &&
 		!readable.IndexStatesEstablished() {
 		return ""
 	}
@@ -224,6 +232,14 @@ func (p plannerOptions) cacheKeyPart() string {
 		b.WriteString("vh")
 	case "GUARDIANN":
 		b.WriteString("vg")
+	}
+	// Java's QueryCacheKey keys on the whole configuration, the fetch method
+	// included: each index plan carries it.
+	switch p.config.IndexFetchMethod {
+	case indexfetch.UseRemoteFetch:
+		b.WriteString("fr")
+	case indexfetch.UseRemoteFetchWithFallback:
+		b.WriteString("fw")
 	}
 	for _, n := range names {
 		b.WriteString(strconv.Itoa(len(n)))

@@ -1334,6 +1334,7 @@ func (c *ValueIndexScanMatchCandidate) ComputeBoundParameterPrefixMap(
 // index scan is wrapped in a Fetch that carries the translation
 // function.
 func (c *ValueIndexScanMatchCandidate) ToScanPlan(
+	ctx PlanContext,
 	prefixMap map[values.CorrelationIdentifier]*predicates.ComparisonRange,
 	reverse bool,
 ) plans.RecordQueryPlan {
@@ -1358,7 +1359,10 @@ func (c *ValueIndexScanMatchCandidate) ToScanPlan(
 	if err != nil {
 		return nil
 	}
-	indexPlan = stampIndexMetadata(c, indexPlan)
+	// ValueIndexScanMatchCandidate.java:241,268: both the bare and the covering
+	// inner BY_VALUE scan carry the configured method.
+	indexPlan = stampIndexMetadata(c, indexPlan).
+		WithIndexFetchMethod(ctx.GetPlannerConfiguration().IndexFetchMethod)
 
 	// ValueIndexScanMatchCandidate.toEquivalentPlan: a fetch over an entry read
 	// into the logical record, or the bare index plan when it cannot be.

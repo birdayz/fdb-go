@@ -167,6 +167,7 @@ func (c *dataAccessTestCandidate) ComputeBoundParameterPrefixMap(
 }
 
 func (c *dataAccessTestCandidate) ToScanPlan(
+	_ PlanContext,
 	_ map[values.CorrelationIdentifier]*predicates.ComparisonRange,
 	_ bool,
 ) plans.RecordQueryPlan {

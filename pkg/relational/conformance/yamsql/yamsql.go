@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"fdb.dev/pkg/relational/api"
 	"gopkg.in/yaml.v3"
 )
 
@@ -36,6 +37,10 @@ type Scenario struct {
 	// Setup is a list of statements executed after schema creation,
 	// before any test query. Typically INSERT seeds.
 	Setup []string `yaml:"setup"`
+	// ConnectionOptions are set on the connection every test runs on, Java's
+	// test-block `connection_options`: option name to value, a string read
+	// through the option's string form (an enum such as INDEX_FETCH_METHOD).
+	ConnectionOptions map[string]any `yaml:"connection_options,omitempty"`
 	// Tests are the scenario's assertions.
 	Tests []Test `yaml:"tests"`
 }
@@ -160,6 +165,9 @@ func (s *Scenario) validate() error {
 	if s.SchemaTemplate == "" {
 		return fmt.Errorf("schema_template is required")
 	}
+	if _, err := s.connectionOptions(); err != nil {
+		return err
+	}
 	for i := range s.Tests {
 		t := &s.Tests[i]
 		switch {
@@ -229,4 +237,28 @@ func (s *Scenario) validate() error {
 		}
 	}
 	return nil
+}
+
+// connectionOptions resolves ConnectionOptions as Java's
+// TestBlock.parseConnectionOptions does: a string through the option's string
+// form, any other value as YAML decoded it, each checked against the option's
+// contract.
+func (s *Scenario) connectionOptions() (map[api.OptionName]any, error) {
+	out := make(map[api.OptionName]any, len(s.ConnectionOptions))
+	for key, raw := range s.ConnectionOptions {
+		name := api.OptionName(key)
+		value := raw
+		if str, ok := raw.(string); ok {
+			parsed, err := api.OptionFromString(name, str)
+			if err != nil {
+				return nil, fmt.Errorf("connection_options %s: %w", key, err)
+			}
+			value = parsed
+		}
+		if err := api.ValidateOption(name, value); err != nil {
+			return nil, fmt.Errorf("connection_options %s: %w", key, err)
+		}
+		out[name] = value
+	}
+	return out, nil
 }

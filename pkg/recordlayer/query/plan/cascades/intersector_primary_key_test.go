@@ -897,7 +897,7 @@ func TestCreateScanForAccess(t *testing.T) {
 		nil,
 	)
 
-	plan := createScanForAccess(access)
+	plan := createScanForAccess(EmptyPlanContext(), access)
 	if plan == nil {
 		t.Fatal("expected non-nil plan from createScanForAccess")
 	}
@@ -920,7 +920,7 @@ func TestCreateScanForAccess_NilPlan(t *testing.T) {
 		nil,
 	)
 
-	plan := createScanForAccess(access)
+	plan := createScanForAccess(EmptyPlanContext(), access)
 	if plan != nil {
 		t.Fatal("expected nil plan when candidate returns nil")
 	}

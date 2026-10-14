@@ -189,7 +189,7 @@ func TestAggregateCandidateToScanPlanIsARawFetchingIndexPlan(t *testing.T) {
 		1,
 	)
 
-	plan := agg.ToScanPlan(nil, false)
+	plan := agg.ToScanPlan(EmptyPlanContext(), nil, false)
 	if plan == nil {
 		t.Fatal("ToScanPlan returned nil")
 	}

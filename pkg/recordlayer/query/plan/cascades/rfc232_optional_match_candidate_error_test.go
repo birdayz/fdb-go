@@ -15,7 +15,7 @@ func TestSpecializedMatchCandidatesDeclineUnresolvedFlowedType(t *testing.T) {
 			values.CorrelationIdentifier{}, values.CorrelationIdentifier{}, nil, nil,
 			values.UnknownType, false, nil,
 		)
-		if plan := candidate.ToScanPlan(nil, false); plan != nil {
+		if plan := candidate.ToScanPlan(EmptyPlanContext(), nil, false); plan != nil {
 			t.Fatalf("ToScanPlan() = %T, want declined candidate", plan)
 		}
 	})
@@ -25,7 +25,7 @@ func TestSpecializedMatchCandidatesDeclineUnresolvedFlowedType(t *testing.T) {
 			"vector_idx", []string{"T"}, []string{"embedding"}, 0,
 			values.DistanceEuclidean, values.UnknownType, false, nil,
 		)
-		if plan := candidate.ToScanPlan(nil, false); plan != nil {
+		if plan := candidate.ToScanPlan(EmptyPlanContext(), nil, false); plan != nil {
 			t.Fatalf("ToScanPlan() = %T, want declined candidate", plan)
 		}
 	})

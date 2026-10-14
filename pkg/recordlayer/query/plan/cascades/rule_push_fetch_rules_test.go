@@ -519,9 +519,9 @@ func TestPushFilterThroughFetch_BridgesOnlyExactFetchOutputCarrier(t *testing.T)
 
 	rowType := fetchOrdinalRowType()
 	candidate := fetchOrdinalCandidate(rowType)
-	fetch, ok := candidate.ToScanPlan(nil, false).(*plans.RecordQueryFetchFromPartialRecordPlan)
+	fetch, ok := candidate.ToScanPlan(EmptyPlanContext(), nil, false).(*plans.RecordQueryFetchFromPartialRecordPlan)
 	if !ok || fetch == nil {
-		t.Fatalf("candidate scan = %T, want FetchFromPartialRecord", candidate.ToScanPlan(nil, false))
+		t.Fatalf("candidate scan = %T, want FetchFromPartialRecord", candidate.ToScanPlan(EmptyPlanContext(), nil, false))
 	}
 	fetchLayout, err := fetch.ProvidedOutputLayout()
 	if err != nil {
@@ -1195,9 +1195,9 @@ func TestPushIntersectionThroughFetch_BridgesOnlyAdmittedComparisonCarrier(t *te
 			false,
 			[]string{"ID"},
 		)
-		fetch, ok := candidate.ToScanPlan(nil, false).(*plans.RecordQueryFetchFromPartialRecordPlan)
+		fetch, ok := candidate.ToScanPlan(EmptyPlanContext(), nil, false).(*plans.RecordQueryFetchFromPartialRecordPlan)
 		if !ok || fetch == nil {
-			t.Fatalf("candidate scan = %T, want FetchFromPartialRecord", candidate.ToScanPlan(nil, false))
+			t.Fatalf("candidate scan = %T, want FetchFromPartialRecord", candidate.ToScanPlan(EmptyPlanContext(), nil, false))
 		}
 		return expressions.ForEachQuantifier(expressions.FinalOf(fetch))
 	}

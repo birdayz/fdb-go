@@ -1,0 +1,83 @@
+# index_fetch_remote.yaml — RFC-258: index plans under INDEX_FETCH_METHOD USE_REMOTE_FETCH.
+# The rows of fetching, covering, aggregate, join, EXISTS and DML plans with
+# the method that has no fallback. EXPLAIN does not render the method; the
+# store counters that show the mapped read ran are in sqltest/plan/options.
+name: index_fetch_remote
+schema_template: |
+  CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, c STRING, PRIMARY KEY (id))
+  CREATE INDEX idx_a ON t(a)
+  CREATE INDEX idx_ab ON t(a, b)
+  CREATE TABLE pair (g BIGINT, n BIGINT, label STRING, PRIMARY KEY (g, n))
+  CREATE INDEX idx_label ON pair(label)
+  CREATE TABLE u (id BIGINT, t_id BIGINT, v BIGINT, PRIMARY KEY (id))
+  CREATE INDEX idx_t ON u(t_id)
+  CREATE INDEX sum_v AS SELECT SUM(v) FROM u GROUP BY t_id
+connection_options:
+  INDEX_FETCH_METHOD: USE_REMOTE_FETCH
+setup:
+  - INSERT INTO t VALUES (1, 10, 1, 'one'), (2, 20, 2, 'two'), (3, 10, 3, 'three'), (4, 30, 4, 'four'), (5, 20, 5, 'five')
+  - INSERT INTO pair VALUES (1, 1, 'x'), (1, 2, 'y'), (2, 1, 'x'), (2, 2, 'z')
+  - INSERT INTO u VALUES (1, 1, 5), (2, 1, 6), (3, 2, 7), (4, 4, 8)
+tests:
+  - query: SELECT * FROM t WHERE a = 10
+    plan_contains: IndexScan(IDX_A
+    plan_not_contains: COVERING
+    rows:
+      - [1, 10, 1, "one"]
+      - [3, 10, 3, "three"]
+  - query: SELECT id, c FROM t WHERE a >= 20 ORDER BY a DESC
+    plan_contains: IndexScan(IDX_A
+    plan_not_contains: COVERING
+    rows:
+      - [4, "four"]
+      - [5, "five"]
+      - [2, "two"]
+  - query: SELECT id, c FROM t WHERE a IN (10, 30)
+    unordered: true
+    rows:
+      - [1, "one"]
+      - [3, "three"]
+      - [4, "four"]
+  # A two-column primary key: the mapper reads both key columns off the entry.
+  - query: SELECT * FROM pair WHERE label = 'x'
+    plan_contains: IndexScan(IDX_LABEL
+    plan_not_contains: COVERING
+    rows:
+      - [1, 1, "x"]
+      - [2, 1, "x"]
+  # Covering and aggregate scans read entries only; the method does not reach them.
+  - query: SELECT a, b FROM t WHERE a = 20
+    plan_contains: COVERING
+    rows:
+      - [20, 2]
+      - [20, 5]
+  - query: SELECT t_id, SUM(v) FROM u GROUP BY t_id
+    plan_contains: AggregateIndex
+    rows:
+      - [1, 11]
+      - [2, 7]
+      - [4, 8]
+  - query: SELECT t.c, u.v FROM t, u WHERE t.a = 10 AND u.t_id = t.id
+    unordered: true
+    rows:
+      - ["one", 5]
+      - ["one", 6]
+  - query: SELECT id FROM t WHERE EXISTS (SELECT id FROM u WHERE u.t_id = t.id)
+    unordered: true
+    rows:
+      - [1]
+      - [2]
+      - [4]
+  - query: UPDATE t SET c = 'ten' WHERE a = 10
+    rowcount: 2
+  - query: SELECT id, c FROM t WHERE a = 10
+    rows:
+      - [1, "ten"]
+      - [3, "ten"]
+  - query: DELETE FROM t WHERE a = 20
+    rowcount: 2
+  - query: SELECT id FROM t WHERE a >= 0
+    rows:
+      - [1]
+      - [3]
+      - [4]

@@ -258,7 +258,7 @@ func initializeSingletonIntersectionInfos(
 		}
 
 		compensation := access.GetCompensation()
-		expr := realizations.single(memoizer, access)
+		expr := realizations.single(ctx, memoizer, access)
 		if expr == nil {
 			infos[intersectionInfoKeyForPartition(partition)] = IntersectionInfoOfImpossibleAccess(ordering, compensation)
 			continue
@@ -593,7 +593,7 @@ func createPrimaryKeyIntersection(
 		}
 		seenCandidates[name] = struct{}{}
 
-		scan := realizations.realize(access).scan
+		scan := realizations.realize(ctx, access).scan
 		if scan == nil {
 			return primaryKeyIntersectionBuild{}
 		}
@@ -724,7 +724,7 @@ func createPrimaryKeyIntersection(
 
 	childQs := make([]expressions.Quantifier, 0, len(partition))
 	for _, access := range accesses {
-		expr := realizations.distinctPlan(access)
+		expr := realizations.distinctPlan(ctx, access)
 		if expr == nil {
 			return primaryKeyIntersectionBuild{}
 		}
@@ -1583,7 +1583,7 @@ func bakedIntersectionKeys(pkValues []values.Value, legs []plans.RecordQueryPlan
 	return baked
 }
 
-func createScanForAccess(access *SingleMatchedAccess) plans.RecordQueryPlan {
+func createScanForAccess(ctx PlanContext, access *SingleMatchedAccess) plans.RecordQueryPlan {
 	pm := access.GetPartialMatch()
 	candidate := pm.GetMatchCandidate()
 	matchInfo := pm.GetMatchInfo()
@@ -1593,7 +1593,7 @@ func createScanForAccess(access *SingleMatchedAccess) plans.RecordQueryPlan {
 		return nil
 	}
 	prefix := candidate.ComputeBoundParameterPrefixMap(bindings)
-	scan := candidate.ToScanPlan(prefix, access.IsReverseScanOrder())
+	scan := candidate.ToScanPlan(ctx, prefix, access.IsReverseScanOrder())
 	vc, isValue := candidate.(*ValueIndexScanMatchCandidate)
 	if !isValue || vc.predicateProto == nil {
 		return scan

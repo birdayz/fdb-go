@@ -117,6 +117,7 @@ func rspSetup(t *testing.T, ctx context.Context) rspEnv {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { goDB.Close() })
+	primeMappedSnapshotClient(t, ctx, goDB)
 	env := rspEnv{f: mdFixture{prefix: []byte(t.Name()), n: 100}, cdb: cdb, backend: backend, goDB: goDB}
 	for batch := 0; batch < 10; batch++ {
 		tr := rspCreateTransaction(t, cdb)

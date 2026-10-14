@@ -235,6 +235,18 @@ func TestLibFDBC_MappedSkipResolvesBeforeMappedRead(t *testing.T) {
 	}
 }
 
+// Establish the query client's cluster floor before pinning a C snapshot.
+func primeMappedSnapshotClient(t *testing.T, ctx context.Context, db *fdbclient.Database) int64 {
+	t.Helper()
+	tr := db.CreateTransaction()
+	defer tr.Cancel()
+	version, err := tr.GetReadVersion(ctx)
+	if err != nil || version <= 0 {
+		t.Fatalf("prime query client read version: version=%d err=%v", version, err)
+	}
+	return version
+}
+
 // A full primary prefetch can report More at the final key. An unlimited-byte
 // read must finish successfully when its next continuation has equal bounds.
 func TestLibFDBC_MappedSkipEqualContinuation(t *testing.T) {
@@ -268,6 +280,7 @@ func TestLibFDBC_MappedSkipEqualContinuation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
+	floor := primeMappedSnapshotClient(t, ctx, db)
 	facade := gofdb.WrapDatabase(db)
 	prefix := t.Name()
 	keys := [][]byte{tuple.Tuple{prefix, "IDX", 0}.Pack(), tuple.Tuple{prefix, "IDX", 1}.Pack()}
@@ -308,6 +321,32 @@ func TestLibFDBC_MappedSkipEqualContinuation(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			// Advance the cluster after the shared snapshot without touching mapped keys.
+			advance, err := cdb.CreateTransaction()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer advance.Close()
+			if err := advance.SetTimeout(10000); err != nil {
+				t.Fatal(err)
+			}
+			advance.Set(tuple.Tuple{prefix, "VERSION", reverse}.Pack(), []byte("advance"))
+			if err := advance.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			probe, err := cdb.CreateTransaction()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer probe.Close()
+			if err := probe.SetTimeout(10000); err != nil {
+				t.Fatal(err)
+			}
+			current, err := probe.GetReadVersion()
+			if err != nil || version < floor || current <= version {
+				t.Fatalf("snapshot order: primed=%d shared=%d current=%d err=%v", floor, version, current, err)
+			}
+			t.Logf("snapshot order: primed=%d shared=%d current=%d", floor, version, current)
 			index, resolvedBegin, resolvedEnd := 1, keys[1], end
 			if reverse {
 				index, resolvedBegin, resolvedEnd = 0, begin, keys[1]

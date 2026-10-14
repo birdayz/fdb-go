@@ -11,6 +11,8 @@ package yamsql
 import (
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/api"
 )
 
 const strictTestHeader = `name: strict
@@ -130,4 +132,40 @@ func TestLoad_TimeExactRowRejected(t *testing.T) {
     exact_rows:
       - [{kind: time, value: "2024-01-01T00:00:00Z"}]
 `, "time is a parameter kind")
+}
+
+// TestLoad_ConnectionOptions pins the scenario's connection_options: Java's
+// TestBlock.parseConnectionOptions reads a string through the option's string
+// form, so an enum is spelled by name, and an option or value its contract
+// refuses is a load error rather than a scenario run with the default.
+func TestLoad_ConnectionOptions(t *testing.T) {
+	t.Parallel()
+	const tests = `tests:
+  - query: SELECT id FROM t
+`
+	header := strings.TrimSuffix(strictTestHeader, "tests:\n")
+	path := writeTempYaml(t, header+"connection_options:\n  INDEX_FETCH_METHOD: USE_REMOTE_FETCH\n  PLAN_RIGHT_DEEP: true\n"+tests)
+	s, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	options, err := s.connectionOptions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if options[api.OptIndexFetchMethod] != api.IndexFetchUseRemoteFetch || options[api.OptPlanRightDeep] != true || len(options) != 2 {
+		t.Fatalf("connection options = %v", options)
+	}
+	for body, want := range map[string]string{
+		"connection_options:\n  INDEX_FETCH_METHOD: REMOTE\n":    "No enum constant IndexFetchMethod.REMOTE",
+		"connection_options:\n  NOT_AN_OPTION: true\n":           "Unknown option NOT_AN_OPTION",
+		"connection_options:\n  PLAN_RIGHT_DEEP: 3\n":            "PLAN_RIGHT_DEEP should be of type bool",
+		"connection_options:\n  INDEX_FETCH_METHOD: [a, b]\n":    "INDEX_FETCH_METHOD should be of type api.IndexFetchMethod",
+		"connection_option:\n  INDEX_FETCH_METHOD: USE_REMOTE\n": "field connection_option not found",
+	} {
+		_, err := Load(writeTempYaml(t, header+body+tests))
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%q: load error %v, want one containing %q", body, err, want)
+		}
+	}
 }

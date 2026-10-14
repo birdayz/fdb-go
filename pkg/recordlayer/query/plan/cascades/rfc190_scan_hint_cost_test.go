@@ -55,6 +55,7 @@ func TestScanPlanExpressionHintCost_StampedPartialPKPrefixNotPointProbe(t *testi
 
 	eqTenant := pkGateEq(t, int64(7))
 	partialPlan := candidate.ToScanPlan(
+		EmptyPlanContext(),
 		map[values.CorrelationIdentifier]*predicates.ComparisonRange{
 			tenantAlias: eqTenant,
 		},
@@ -84,6 +85,7 @@ func TestScanPlanExpressionHintCost_StampedPartialPKPrefixNotPointProbe(t *testi
 	}
 
 	fullPlan := candidate.ToScanPlan(
+		EmptyPlanContext(),
 		map[values.CorrelationIdentifier]*predicates.ComparisonRange{
 			tenantAlias: eqTenant,
 			orderAlias:  pkGateEq(t, int64(9)),

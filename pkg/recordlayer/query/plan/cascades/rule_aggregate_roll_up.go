@@ -109,7 +109,7 @@ func yieldAggregateGroupingSubsumption(
 	if !candidateBindingRangesEligible(cand, partition.scanPrefix) {
 		return false
 	}
-	idxPlan := extractIndexPlan(cand.ToScanPlan(partition.scanPrefix, false))
+	idxPlan := extractIndexPlan(cand.ToScanPlan(call.Context, partition.scanPrefix, false))
 	if idxPlan == nil {
 		return false
 	}

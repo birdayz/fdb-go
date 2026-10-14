@@ -36,6 +36,7 @@ import (
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/indexfetch"
 	"fdb.dev/pkg/recordlayer/indexpredicate"
 	"fdb.dev/pkg/recordlayer/protoname"
 	"fdb.dev/pkg/recordlayer/protoscope"
@@ -425,36 +426,15 @@ func openIndexEntryCursor(
 	continuation []byte,
 	props recordlayer.ExecuteProperties,
 ) (recordlayer.RecordCursor[*recordlayer.IndexEntry], error) {
-	idx := store.GetMetaData().GetIndex(p.GetIndexName())
-	if idx == nil {
-		return nil, fmt.Errorf("executor: index %q not found in metadata", p.GetIndexName())
-	}
-	if err := requireReadableQueryIndexWithProof(store, idx, p.GetMatchedIndexPredicate()); err != nil {
+	scan, err := bindIndexScan(p, fingerprintSalt, compatibleFingerprintSalts, store, evalCtx, props)
+	if err != nil {
 		return nil, err
 	}
-	maintainer, err := store.GetIndexMaintainer(idx)
+	maintainer, err := store.GetIndexMaintainer(scan.index)
 	if err != nil {
 		return nil, fmt.Errorf("executor: getting index maintainer for %q: %w", p.GetIndexName(), err)
 	}
-
-	rangeSet, err := bindScanComparisonsToRangeSetWithNaNBlocks(
-		p.GetScanComparisons(),
-		p.GetKeyComponentTypes(),
-		scanBindContext(evalCtx),
-		p.IsReverse(),
-		fingerprintSalt,
-		compatibleFingerprintSalts...,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("executor: building scan ranges for %q: %w", p.GetIndexName(), err)
-	}
-
-	scanProps := recordlayer.NewScanProperties(props).WithReverse(p.IsReverse())
-
-	indexCursor, err := newScanRangeSetCursor(
-		rangeSet,
-		continuation,
-		scanProps,
+	return openIndexScanRanges(scan, continuation,
 		func(
 			scanRange recordlayer.TupleRange,
 			innerContinuation []byte,
@@ -466,18 +446,73 @@ func openIndexEntryCursor(
 			return recordlayer.InstrumentIndexScanCursor(store.Context().Timer(),
 				maintainer.Scan(scanRange, innerContinuation, childProperties)), nil
 		},
+		func(e *recordlayer.IndexEntry) *recordlayer.IndexEntry { return e })
+}
+
+// boundIndexScan is an index scan's metadata, readability gate and range set,
+// which every fetch method and the covering scan share.
+type boundIndexScan struct {
+	plan      *plans.RecordQueryIndexPlan
+	index     *recordlayer.Index
+	rangeSet  scanRangeSetSpec
+	scanProps recordlayer.ScanProperties
+}
+
+func bindIndexScan(
+	p *plans.RecordQueryIndexPlan,
+	fingerprintSalt string,
+	compatibleFingerprintSalts []string,
+	store *recordlayer.FDBRecordStore,
+	evalCtx *EvaluationContext,
+	props recordlayer.ExecuteProperties,
+) (boundIndexScan, error) {
+	idx := store.GetMetaData().GetIndex(p.GetIndexName())
+	if idx == nil {
+		return boundIndexScan{}, fmt.Errorf("executor: index %q not found in metadata", p.GetIndexName())
+	}
+	if err := requireReadableQueryIndexWithProof(store, idx, p.GetMatchedIndexPredicate()); err != nil {
+		return boundIndexScan{}, err
+	}
+	rangeSet, err := bindScanComparisonsToRangeSetWithNaNBlocks(
+		p.GetScanComparisons(),
+		p.GetKeyComponentTypes(),
+		scanBindContext(evalCtx),
+		p.IsReverse(),
+		fingerprintSalt,
+		compatibleFingerprintSalts...,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("executor: opening scan ranges for %q: %w", p.GetIndexName(), err)
+		return boundIndexScan{}, fmt.Errorf("executor: building scan ranges for %q: %w", p.GetIndexName(), err)
+	}
+	return boundIndexScan{
+		plan:      p,
+		index:     idx,
+		rangeSet:  rangeSet,
+		scanProps: recordlayer.NewScanProperties(props).WithReverse(p.IsReverse()),
+	}, nil
+}
+
+// openIndexScanRanges opens one cursor over the scan's physical ranges, each
+// leaf opened by open, admitting only results whose index entry passes the
+// range set's key filter.
+func openIndexScanRanges[T any](
+	scan boundIndexScan,
+	continuation []byte,
+	open scanRangeLeafFactory[T],
+	entry func(T) *recordlayer.IndexEntry,
+) (recordlayer.RecordCursor[T], error) {
+	cursor, err := newScanRangeSetCursor(scan.rangeSet, continuation, scan.scanProps, open)
+	if err != nil {
+		return nil, fmt.Errorf("executor: opening scan ranges for %q: %w", scan.plan.GetIndexName(), err)
 	}
 	// An index entry's key begins with the indexed values, aligned with the
 	// scan comparisons.
-	return filterScanKeys(rangeSet, indexCursor,
-		func(e *recordlayer.IndexEntry) tuple.Tuple { return e.Key }, 0), nil
+	return filterScanKeys(scan.rangeSet, cursor, func(v T) tuple.Tuple { return entry(v).Key }, 0), nil
 }
 
 // executeIndexScan runs a NON-covering index scan: every entry is resolved to
-// its base record by primary key. Coveringness is no longer a flag consulted
+// its base record by primary key, with the plan's index fetch method. Mirrors
+// Java's RecordQueryIndexPlan.executePlan. Coveringness is not a flag consulted
 // here — it is RecordQueryCoveringIndexPlan, a distinct plan type with its own
 // executor, exactly as in Java.
 func executeIndexScan(
@@ -497,13 +532,97 @@ func executeIndexScan(
 	if err != nil {
 		return nil, fmt.Errorf("executor: building legacy scan execution identity for %q: %w", p.GetIndexName(), err)
 	}
-	indexCursor, err := openIndexEntryCursor(
-		p, fingerprintSalt, []string{legacyFingerprintSalt}, store, evalCtx, continuation, props)
+	salts := []string{legacyFingerprintSalt}
+	if props.ScanState == nil {
+		// A remote scan and its fallback charge one budget, as Java's share ExecuteState.
+		props.ScanState = recordlayer.NewScanLimiterState()
+	}
+	scanAndFetch := func(continuation []byte) (recordlayer.RecordCursor[QueryResult], error) {
+		indexCursor, err := openIndexEntryCursor(p, fingerprintSalt, salts, store, evalCtx, continuation, props)
+		if err != nil {
+			return nil, err
+		}
+		return applySkipLimit(newIndexFetchCursor(indexCursor, store, props.ScanState),
+			props.Skip, props.ReturnedRowLimit), nil
+	}
+	switch effectiveIndexFetchMethod(p.GetIndexFetchMethod(), store.Context().APIVersion()) {
+	case indexfetch.ScanAndFetch:
+		return scanAndFetch(continuation)
+	case indexfetch.UseRemoteFetch:
+		return remoteFetchIndexRecords(p, fingerprintSalt, salts, store, evalCtx, continuation, props)
+	case indexfetch.UseRemoteFetchWithFallback:
+		// Opening fails only where scanning and fetching would too (binding,
+		// readability, the continuation); remote fetch's own failures, Java's
+		// construction-time ones included, come from the leaves into Fallback.
+		remote, err := remoteFetchIndexRecords(p, fingerprintSalt, salts, store, evalCtx, continuation, props)
+		if err != nil {
+			return nil, err
+		}
+		// Java's fallBackContinueFrom: resume after the last row returned, with
+		// the same skip and row limit, so both apply again from there.
+		return recordlayer.Fallback(remote, func(last *recordlayer.RecordCursorResult[QueryResult]) recordlayer.RecordCursor[QueryResult] {
+			resume := continuation
+			if last != nil {
+				var err error
+				if resume, err = last.GetContinuation().ToBytes(); err != nil {
+					return recordlayer.NewErrorCursor[QueryResult](err)
+				}
+			}
+			cursor, err := scanAndFetch(resume)
+			if err != nil {
+				return recordlayer.NewErrorCursor[QueryResult](err)
+			}
+			return cursor
+		}), nil
+	default:
+		return nil, &recordlayer.RecordCoreError{Message: "Unknown useIndexPrefetch option", IndexName: p.GetIndexName()}
+	}
+}
+
+// effectiveIndexFetchMethod is the method a plan runs with: below API version
+// 7.1 Java's RecordQueryIndexPlan.executePlan (:259-271) scans and fetches
+// instead, checked at execution because the version can change after planning.
+func effectiveIndexFetchMethod(method indexfetch.Method, apiVersion int) indexfetch.Method {
+	if method != indexfetch.ScanAndFetch && !recordlayer.SupportsRemoteFetch(apiVersion) {
+		return indexfetch.ScanAndFetch
+	}
+	return method
+}
+
+// remoteFetchIndexRecords is Java's RecordQueryIndexPlan.executeUsingRemoteFetch
+// over each of the scan's physical ranges: the storage server returns every
+// entry's record, and an orphan entry fails the scan (IndexOrphanBehavior.ERROR).
+func remoteFetchIndexRecords(
+	p *plans.RecordQueryIndexPlan,
+	fingerprintSalt string,
+	compatibleFingerprintSalts []string,
+	store *recordlayer.FDBRecordStore,
+	evalCtx *EvaluationContext,
+	continuation []byte,
+	props recordlayer.ExecuteProperties,
+) (recordlayer.RecordCursor[QueryResult], error) {
+	scan, err := bindIndexScan(p, fingerprintSalt, compatibleFingerprintSalts, store, evalCtx, props)
 	if err != nil {
 		return nil, err
 	}
-	return applySkipLimit(newIndexFetchCursor(indexCursor, store, props.ScanState),
-		props.Skip, props.ReturnedRowLimit), nil
+	commonPrimaryKeyLength := store.GetCommonPrimaryKeyLength(scan.index)
+	records, err := openIndexScanRanges(scan, continuation,
+		func(
+			scanRange recordlayer.TupleRange,
+			innerContinuation []byte,
+			childProperties recordlayer.ScanProperties,
+		) (recordlayer.RecordCursor[*recordlayer.FDBIndexedRecord], error) {
+			return store.ScanIndexRemoteFetch(scan.index, recordlayer.IndexScanByValue, scanRange,
+				commonPrimaryKeyLength, innerContinuation, childProperties, recordlayer.IndexOrphanError), nil
+		},
+		func(r *recordlayer.FDBIndexedRecord) *recordlayer.IndexEntry { return r.IndexEntry })
+	if err != nil {
+		return nil, err
+	}
+	rows := recordlayer.MapCursor(records, func(r *recordlayer.FDBIndexedRecord) QueryResult {
+		return FromStoredRecord(r.Record)
+	})
+	return applySkipLimit(rows, props.Skip, props.ReturnedRowLimit), nil
 }
 
 // executeCoveringIndexScan runs a covering index scan: the row is rebuilt from

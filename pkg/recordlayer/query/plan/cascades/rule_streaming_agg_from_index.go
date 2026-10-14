@@ -125,7 +125,7 @@ func (r *StreamingAggFromIndexRule) OnMatch(call *ExpressionRuleCall) {
 		emptyPrefix := map[values.CorrelationIdentifier]*predicates.ComparisonRange{}
 		// Forward-only: reverse ordering is handled by ImplementSortRule
 		// when ORDER BY DESC is present above the GroupBy.
-		scanPlan := cand.ToScanPlan(emptyPrefix, false)
+		scanPlan := cand.ToScanPlan(call.Context, emptyPrefix, false)
 		idxPlan := extractIndexPlan(scanPlan)
 		if idxPlan == nil || idxPlan.GetEntryReader() == nil {
 			continue

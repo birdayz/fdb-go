@@ -5,6 +5,7 @@ go_test(
     size = "large",
     timeout = "eternal",
     srcs = [
+        "index_fetch_method_fdb_test.go",
         "main_test.go",
         "planner_options_fdb_test.go",
     ],
@@ -13,8 +14,12 @@ go_test(
         "test-full",
     ],
     deps = [
+        "//pkg/fdbgo/fdb",
+        "//pkg/internal/fdbclient",
+        "//pkg/recordlayer",
         "//pkg/relational/api",
         "//pkg/relational/core/embedded",
+        "//pkg/relational/sqldriver",
         "//pkg/relational/sqltest/testkit",
     ],
 )

@@ -150,6 +150,7 @@ func (c transitivityMatchCandidate) ComputeBoundParameterPrefixMap(
 }
 
 func (c transitivityMatchCandidate) ToScanPlan(
+	_ PlanContext,
 	_ map[values.CorrelationIdentifier]*predicates.ComparisonRange, _ bool,
 ) plans.RecordQueryPlan {
 	return nil

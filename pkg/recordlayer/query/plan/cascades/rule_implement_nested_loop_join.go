@@ -3903,7 +3903,10 @@ func (r *ImplementNestedLoopJoinRule) tryExistsFlatMap(
 				call.Fail(indexErr)
 				return true
 			}
-			correlatedIndexScan := stampIndexMetadata(cand, indexPlan)
+			// A BY_VALUE fetching scan, so it carries the connection's method as
+			// the candidates' scans do.
+			correlatedIndexScan := stampIndexMetadata(cand, indexPlan).
+				WithIndexFetchMethod(call.Context.GetPlannerConfiguration().IndexFetchMethod)
 
 			requiresExactOuter := exactOuterAuthority || outerLayoutDependent || retainedWindow ||
 				outerCorrelation != outerSourceCorrelation
