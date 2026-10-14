@@ -378,8 +378,12 @@ class CampaignTest(unittest.TestCase):
             run.stop_process_group(process)
             deadline = time.monotonic() + 5
             while time.monotonic() < deadline:
-                status = Path(f'/proc/{child}/stat')
-                if not status.exists() or status.read_text().split(') ', 1)[1].startswith('Z'):
+                # The child can be reaped between any check and the read.
+                try:
+                    state = Path(f'/proc/{child}/stat').read_text().split(') ', 1)[1]
+                except FileNotFoundError:
+                    break
+                if state.startswith('Z'):
                     break
                 time.sleep(.01)
             else:
