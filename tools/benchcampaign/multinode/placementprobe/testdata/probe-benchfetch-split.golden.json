@@ -591,7 +591,7 @@
   "move_keys_lock": {
     "owner_hex_at_v1": "c918000000000000610d000000000000",
     "owner_hex_at_v2": "c918000000000000610d000000000000",
-    "owner_is_dd_mode_lock": true,
+    "owner_unchanged": true,
     "write_token_hex_at_v1": "000102030405060708090a0b0c0d0e0f",
     "write_token_hex_at_v2": "000102030405060708090a0b0c0d0e0f",
     "write_token_unchanged": true

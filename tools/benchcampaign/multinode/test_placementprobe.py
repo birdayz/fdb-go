@@ -92,7 +92,7 @@ def synthetic(store):
         dd_mode=dict(required_off=True, at_v1=dict(read_version=V1, mode=0, key_present=True),
                      at_v2=dict(read_version=V2, mode=0, key_present=True)),
         move_keys_lock=dict(owner_hex_at_v1=pr.DD_MODE_LOCK_HEX, owner_hex_at_v2=pr.DD_MODE_LOCK_HEX,
-                            owner_is_dd_mode_lock=True, write_token_hex_at_v1=WRITE_TOKEN_HEX,
+                            owner_unchanged=True, write_token_hex_at_v1=WRITE_TOKEN_HEX,
                             write_token_hex_at_v2=WRITE_TOKEN_HEX, write_token_unchanged=True),
         key_servers=dict(begin_hex=(pr.KEY_SERVERS_PREFIX + prefix).hex(), end_hex=(pr.KEY_SERVERS_PREFIX + end).hex(),
                          entries=len(entries), sha256_at_v1=digest.hexdigest(), sha256_at_v2=digest.hexdigest(),
@@ -134,6 +134,39 @@ class GoldenTest(unittest.TestCase):
                 report = pr.run_controls(status(), probe, cells, **kw)
                 self.assertTrue(report['ok'], report)
                 self.assertTrue(report['provenance_mutations'])
+
+    def test_lock_owner_may_be_any_stable_value(self):
+        """DataDistributor::init takes the lock (random owner, token untouched) before it sees mode 0."""
+        store, (prefix_items, fmt) = 'benchfetch/small', STORES['benchfetch/small']
+        prefix = pr.pack(list(prefix_items))
+        kw = dict(layout='recordlayer', rows=ROWS, record_format=fmt, expect_prefix=prefix,
+                  fixture=dict(phase='fixture', prefix_bytes=len(prefix), rows=ROWS, chunks=1),
+                  fixture_sha256=FIXTURE_SHA256, expect_cluster=CLUSTER)
+        cells = {'rows20': (0, 20)}
+
+        def receipt(**lock):
+            probe = synthetic(store)
+            probe['move_keys_lock'].update(lock)
+            return pr.build_receipt(status(), probe, cells, **kw)
+        stable = receipt(owner_hex_at_v1='9e' * 16, owner_hex_at_v2='9e' * 16)
+        self.assertTrue(stable['integrity_ok'], stable['errors'])
+        self.assertEqual(pr.sealed_errors(stable, CLUSTER), [])
+        self.assertEqual(stable['move_keys_owner_hex'], '9e' * 16)
+        for name, lock in [('owner changed', dict(owner_hex_at_v1='9e' * 16, owner_hex_at_v2='07' * 16)),
+                           ('owner missing', dict(owner_hex_at_v1='', owner_hex_at_v2='')),
+                           ('token changed', dict(write_token_hex_at_v2='ff' * 16))]:
+            with self.subTest(name):
+                r = receipt(**lock)
+                self.assertFalse(r['integrity_ok'])
+                self.assertTrue(pr.sealed_errors(r, CLUSTER))
+        report = pr.run_controls(status(), synthetic(store), cells, **kw)
+        self.assertTrue(report['ok'], report)
+        self.assertTrue(report['positive_controls']['stable-random-owner']['accepted'])
+        self.assertTrue(report['provenance_mutations']['lock-owner-taken']['rejected'])  # owner-only change
+        self.assertTrue(report['provenance_mutations']['lock-token-changed']['rejected'])
+        sealed, fresh = stable, receipt(owner_hex_at_v1='07' * 16, owner_hex_at_v2='07' * 16)
+        self.assertTrue(fresh['integrity_ok'])
+        self.assertIn('move_keys_owner_hex differs', pr.compare(sealed, fresh)['differences'])
 
     def test_probe_ids_and_scope(self):
         probe = synthetic('benchfetch/split')

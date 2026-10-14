@@ -24,16 +24,27 @@
 // "location-cache (diagnostic)", the probe refuses it without --diagnostic,
 // and placement_receipt.py fails such a document's integrity.
 //
-// Data distribution off is established by the moveKeysLock, not by boundary
-// identity: `datadistribution off` (ManagementAPI setDDMode, SpecialKeySpace
-// DataDistributionImpl::commit) writes mode 0, sets the lock owner to
-// dataDistributionModeLock and writes a fresh random write token, and every
-// lock acquisition or touch by a data mover writes a new token
-// (MoveKeys.actor.cpp checkMoveKeysLock). The probe requires mode 0 and that
-// owner at V1, then re-reads mode, owner, write token and the raw keyServers
-// entries at a later read version V2 >= V1 and emits nothing unless all are
-// unchanged: a toggle or relocation inside the bracket changes the token
-// and/or the keyServers bytes even when boundary keys stay identical.
+// Stability over [V1, V2] is established by the moveKeysLock and the raw shard
+// map, not by boundary identity (FoundationDB 7.3.77):
+//   - `datadistribution off|on` (ManagementAPI setDDMode; SpecialKeySpace
+//     DataDistributionImpl::commit) writes the mode, the lock owner
+//     (dataDistributionModeLock) AND a fresh random write token;
+//   - takeMoveKeysLock (MoveKeys.actor.cpp), which DataDistributor::init runs
+//     on every DD (re)start BEFORE it reads the mode, writes ONLY a random
+//     owner and leaves the write token unchanged; a healthy frozen cluster may
+//     therefore show any owner, and an owner-only change is caught solely by
+//     the owner-identity check;
+//   - every DD transaction that changes the shard map (startMoveKeys,
+//     finishMoveKeys, startMoveShards, finishMoveShards, removeStorageServer,
+//     removeKeysFromFailedServer, cleanUpDataMove*) calls checkMoveKeysLock in
+//     that transaction, which writes a new token (and, when it takes the lock
+//     from the previous owner, the owner too).
+//
+// The probe requires the mode key present and 0 at V1 and V2, the owner present
+// and identical at V1 and V2 (any value, recorded), the write token present and
+// identical, and the raw keyServers bytes identical, and emits nothing
+// otherwise: a toggle writes a new token, a DD restart writes a new owner, and
+// any relocation commits a new token together with new keyServers bytes.
 //
 // The ballast tool writes only into [prefix+(1,1000000), strinc(prefix+(1,)))
 // and only while data distribution is on; it clears only that range and only
@@ -98,7 +109,8 @@ var (
 	// KeyServersPrefix is keyServersKeys.begin.
 	KeyServersPrefix = []byte("\xff/keyServers/")
 	// DDModeLock is dataDistributionModeLock = UID(6345, 3425), serialized as
-	// two little-endian uint64 (UID::serialize_unversioned).
+	// two little-endian uint64 (UID::serialize_unversioned): the owner setDDMode
+	// writes. Informational only: a DD restart replaces it with a random owner.
 	DDModeLock = uidBytes(6345, 3425)
 )
 
@@ -413,7 +425,7 @@ type DDModes struct {
 type MoveKeysLock struct {
 	OwnerHexAtV1        string `json:"owner_hex_at_v1"`
 	OwnerHexAtV2        string `json:"owner_hex_at_v2"`
-	OwnerIsDDModeLock   bool   `json:"owner_is_dd_mode_lock"`
+	OwnerUnchanged      bool   `json:"owner_unchanged"`
 	WriteTokenHexAtV1   string `json:"write_token_hex_at_v1"`
 	WriteTokenHexAtV2   string `json:"write_token_hex_at_v2"`
 	WriteTokenUnchanged bool   `json:"write_token_unchanged"`
@@ -599,9 +611,10 @@ func sameKeys(a, b [][]byte) bool {
 
 // Probe builds the placement probe document from one snapshot at V1 and a
 // recheck snapshot at V2 >= V1. It never judges placement; the receipt does.
-// It emits nothing when the recheck differs (write token, keyServers bytes,
-// boundaries), when data distribution is not off with the mode lock as owner,
-// or when the backend's addresses are not transactional (unless Diagnostic).
+// It emits nothing when the recheck differs (lock owner, write token,
+// keyServers bytes, boundaries), when data distribution is not off at V1 and
+// V2, or when the backend's addresses are not transactional (unless
+// Diagnostic).
 func Probe(c Cluster, in ProbeInput) (*ProbeDoc, error) {
 	if err := in.Store.check(false, false); err != nil {
 		return nil, err
@@ -642,10 +655,10 @@ func Probe(c Cluster, in ProbeInput) (*ProbeDoc, error) {
 			if s.dd.Mode != 0 || !s.dd.KeyPresent {
 				return nil, fmt.Errorf("data distribution mode is %d (key present %t) at %d, must be 0", s.dd.Mode, s.dd.KeyPresent, s.version)
 			}
-			if !s.ownerSet || !bytes.Equal(s.owner, DDModeLock) {
-				return nil, fmt.Errorf("moveKeysLock owner at %d is %x, not the data-distribution-mode lock", s.version, s.owner)
-			}
 		}
+	}
+	if !s1.ownerSet || !s2.ownerSet || !bytes.Equal(s1.owner, s2.owner) {
+		return nil, errors.New("moveKeysLock owner missing or changed between V1 and V2 (a data distributor took the lock); no probe emitted")
 	}
 	if !s1.writeSet || !s2.writeSet || !bytes.Equal(s1.write, s2.write) {
 		return nil, errors.New("moveKeysLock write token missing or changed between V1 and V2; no probe emitted")
@@ -682,7 +695,7 @@ func Probe(c Cluster, in ProbeInput) (*ProbeDoc, error) {
 		DDMode:  DDModes{RequiredOff: !in.Diagnostic, AtV1: s1.dd, AtV2: s2.dd},
 		MoveKeysLock: MoveKeysLock{
 			OwnerHexAtV1: hex.EncodeToString(s1.owner), OwnerHexAtV2: hex.EncodeToString(s2.owner),
-			OwnerIsDDModeLock: bytes.Equal(s1.owner, DDModeLock) && bytes.Equal(s2.owner, DDModeLock),
+			OwnerUnchanged:    true,
 			WriteTokenHexAtV1: hex.EncodeToString(s1.write), WriteTokenHexAtV2: hex.EncodeToString(s2.write),
 			WriteTokenUnchanged: true,
 		},

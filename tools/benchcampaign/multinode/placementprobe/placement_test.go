@@ -260,23 +260,21 @@ func TestProbeListsOnlyTheTwoDataSubspaces(t *testing.T) {
 	}
 }
 
-func TestProbeRequiresDDOffWithTheModeLock(t *testing.T) {
+func TestProbeRequiresDDOffAndAStableLock(t *testing.T) {
 	s := owned(t, "benchfetch/small")
 	cases := map[string]func(map[string][]byte){
 		"mode key absent (on)": func(d map[string][]byte) { delete(d, string(DDModeKey)) },
 		"mode 1":               func(d map[string][]byte) { d[string(DDModeKey)] = ddValue(1) },
 		"mode 2":               func(d map[string][]byte) { d[string(DDModeKey)] = ddValue(2) },
-		"owner is a data distributor": func(d map[string][]byte) {
-			d[string(MoveKeysLockOwnerKey)] = uidBytes(7, 7)
-		},
-		"owner absent": func(d map[string][]byte) { delete(d, string(MoveKeysLockOwnerKey)) },
+		"owner absent":         func(d map[string][]byte) { delete(d, string(MoveKeysLockOwnerKey)) },
+		"write token absent":   func(d map[string][]byte) { delete(d, string(MoveKeysLockWriteKey)) },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
 			f := synthetic(s.prefix, []int64{0})
 			mutate(f.data)
 			if _, err := Probe(f, input(s)); err == nil {
-				t.Fatal("probe emitted without DD off and the mode lock")
+				t.Fatal("probe emitted without DD off and a present lock")
 			}
 		})
 	}
@@ -290,6 +288,24 @@ func TestProbeRequiresDDOffWithTheModeLock(t *testing.T) {
 	}
 	if doc.DDMode.RequiredOff || doc.DDMode.AtV1.Mode != 1 || doc.DDMode.AtV1.KeyPresent {
 		t.Fatalf("diagnostic probe must record DD on: %+v", doc.DDMode)
+	}
+}
+
+// DataDistributor::init takes the moveKeysLock (a random owner, token
+// untouched) before it sees mode 0 and waits: a healthy frozen cluster may show
+// any owner. A stable owner is accepted and recorded.
+func TestProbeAcceptsAStableRandomOwnerAfterDDInit(t *testing.T) {
+	s := owned(t, "benchfetch/small")
+	f := synthetic(s.prefix, []int64{0})
+	random := uidBytes(0x9e3779b97f4a7c15, 0x632be59bd9b4e019)
+	f.data[string(MoveKeysLockOwnerKey)] = random
+	doc, err := Probe(f, input(s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock := doc.MoveKeysLock
+	if lock.OwnerHexAtV1 != hex.EncodeToString(random) || lock.OwnerHexAtV2 != lock.OwnerHexAtV1 || !lock.OwnerUnchanged {
+		t.Fatalf("owner not recorded as stable: %+v", lock)
 	}
 }
 
@@ -311,7 +327,10 @@ func TestProbeRefusesChangesInsideTheBracket(t *testing.T) {
 		"toggle and relocate, identical boundaries": {func(d map[string][]byte) { newToken(d); relocate(d) }, "write token"},
 		"relocation alone":                          {relocate, "keyServers"},
 		"token alone":                               {newToken, "write token"},
-		"new boundary":                              {newBoundary, "keyServers"},
+		"DD restart takes the lock (owner only)": {func(d map[string][]byte) {
+			d[string(MoveKeysLockOwnerKey)] = uidBytes(42, 42)
+		}, "owner"},
+		"new boundary": {newBoundary, "keyServers"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := synthetic(s.prefix, []int64{0})

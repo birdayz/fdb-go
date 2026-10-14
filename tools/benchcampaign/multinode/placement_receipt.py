@@ -29,8 +29,8 @@ Inputs (all produced outside timing):
                 "addresses_basis": {"kind": "transactional", "read_version": V1},
                 "recheck": {"read_version": V2, "boundaries_identical": true},
                 "dd_mode": {"required_off": true, "at_v1": {...mode 0...}, "at_v2": {...}},
-                "move_keys_lock": {owner hex at V1/V2 = dataDistributionModeLock, write token hex
-                                   at V1/V2, unchanged},
+                "move_keys_lock": {owner hex at V1/V2 (any value, identical), write token hex
+                                   at V1/V2 (identical)},
                 "key_servers": {"begin_hex", "end_hex", "entries", "sha256_at_v1", "sha256_at_v2",
                                 "unchanged"}}
 
@@ -60,8 +60,9 @@ receipt: two separate verdicts.
     server set per shard; the owned fixture receipt matches;
   * provenance: addresses_basis transactional at V1 (location-cache/diagnostic
     documents FAIL integrity); recheck V2 >= V1 with identical boundaries; DD
-    required off, mode 0 with the key present at V1 and V2; moveKeysLock owner the
-    data-distribution-mode lock at V1 and V2 and the write token unchanged;
+    required off, mode 0 with the key present at V1 and V2; moveKeysLock owner
+    present and identical at V1 and V2 (any value: a DD restart under mode 0
+    leaves a random owner) and the write token present and identical;
     keyServers digest unchanged; the probe's fixture_receipt_sha256 equals the
     --fixture-receipt file's; its cluster identity equals --cluster-file's.
   The receipt preserves the provenance (`provenance`, `cluster`,
@@ -78,7 +79,7 @@ receipt: two separate verdicts.
   every two-machine team meets every other, so machine-level disjointness is
   structurally 0 and is reported only as a descriptive figure.
 compare:  both receipts integrity_ok and the same store, prefix, boundaries, cluster,
-          keyServers digest, moveKeysLock write token and per-key server sets
+          keyServers digest, moveKeysLock owner and write token and per-key server sets
           (partial placements compare fine; any DD toggle since the other receipt
           changes the write token).
 controls: mutation controls on a real probe: the original must be integrity_ok
@@ -107,7 +108,9 @@ import mn_common as mc
 PROBE_FORMAT = 'fdb-bench-placement-probe/v3'
 RECEIPT_FORMAT = 'fdb-bench-placement-receipt/v3'
 ADDRESS_TRANSACTIONAL = 'transactional'
-# dataDistributionModeLock = UID(6345, 3425) as two little-endian uint64 (7.3.77 SystemData.cpp).
+# dataDistributionModeLock = UID(6345, 3425) as two little-endian uint64 (7.3.77 SystemData.cpp): the
+# owner setDDMode writes. Informational: DataDistributor::init's takeMoveKeysLock replaces it with a
+# random owner on every DD (re)start, so integrity requires a STABLE owner, not this value.
 DD_MODE_LOCK_HEX = 'c918000000000000610d000000000000'
 KEY_SERVERS_PREFIX = b'\xff/keyServers/'
 PROVENANCE_FIELDS = ('fixture_receipt_sha256', 'cluster', 'addresses_basis', 'recheck', 'dd_mode', 'move_keys_lock',
@@ -253,9 +256,18 @@ def _hex(v, nbytes):
 
 def provenance_errors(probe, prefix, fixture_sha256, expect_cluster):
     """Integrity of how the probe was taken: transactional addresses at V1, DD off
-    with the data-distribution-mode lock as moveKeysLock owner at V1 and V2, an
-    unchanged write token and keyServers digest, the owned fixture receipt and the
-    pinned cluster. Any failure means the document proves nothing."""
+    (mode 0, key present) at V1 and V2, a present and unchanged moveKeysLock owner
+    (any UID) and write token, an unchanged keyServers digest, the owned fixture
+    receipt and the pinned cluster. Any failure means the document proves nothing.
+
+    Why owner + token + mode + keyServers identity over [V1, V2] rules out an
+    intervening relocation (7.3.77 source): setDDMode / DataDistributionImpl write
+    mode, owner and a NEW token on every toggle; takeMoveKeysLock (run by every
+    DD (re)start before it reads the mode) writes ONLY a new random owner, the
+    token unchanged, so the owner-identity check is what catches it; every DD
+    transaction that changes the shard map calls checkMoveKeysLock in that
+    transaction, which writes a NEW token. So no toggle, DD restart or shard-map
+    commit can fall between V1 and V2 without changing a compared value."""
     errors = []
     rv = probe.get('read_version')
     basis = probe.get('addresses_basis') or {}
@@ -278,9 +290,9 @@ def provenance_errors(probe, prefix, fixture_sha256, expect_cluster):
         if m.get('mode') != 0 or m.get('key_present') is not True or m.get('read_version') != version:
             errors.append(f'data distribution not off (mode 0, key present) {which}')
     lock = probe.get('move_keys_lock') or {}
-    if (lock.get('owner_hex_at_v1') != DD_MODE_LOCK_HEX or lock.get('owner_hex_at_v2') != DD_MODE_LOCK_HEX or
-            lock.get('owner_is_dd_mode_lock') is not True):
-        errors.append('moveKeysLock owner is not the data-distribution-mode lock at V1 and V2')
+    o1, o2 = lock.get('owner_hex_at_v1'), lock.get('owner_hex_at_v2')
+    if not (_hex(o1, 16) and o1 == o2) or lock.get('owner_unchanged') is not True:
+        errors.append('moveKeysLock owner missing or changed between V1 and V2 (a data distributor took the lock)')
     w1, w2 = lock.get('write_token_hex_at_v1'), lock.get('write_token_hex_at_v2')
     if not (_hex(w1, 16) and w1 == w2) or lock.get('write_token_unchanged') is not True:
         errors.append('moveKeysLock write token missing or changed between V1 and V2')
@@ -305,7 +317,7 @@ def provenance_errors(probe, prefix, fixture_sha256, expect_cluster):
 
 
 def synthetic_provenance(prefix, read_version=7, recheck_read_version=8, fixture_sha256='a' * 64, cluster=None,
-                         key_servers_sha256='b' * 64, write_token_hex='00' * 16):
+                         key_servers_sha256='b' * 64, write_token_hex='00' * 16, owner_hex=DD_MODE_LOCK_HEX):
     """Valid provenance fields for SYNTHETIC test probes (never produced on a cluster)."""
     return dict(
         fixture_receipt_sha256=fixture_sha256,
@@ -314,7 +326,7 @@ def synthetic_provenance(prefix, read_version=7, recheck_read_version=8, fixture
         recheck=dict(read_version=recheck_read_version, boundaries_identical=True),
         dd_mode=dict(required_off=True, at_v1=dict(read_version=read_version, mode=0, key_present=True),
                      at_v2=dict(read_version=recheck_read_version, mode=0, key_present=True)),
-        move_keys_lock=dict(owner_hex_at_v1=DD_MODE_LOCK_HEX, owner_hex_at_v2=DD_MODE_LOCK_HEX, owner_is_dd_mode_lock=True,
+        move_keys_lock=dict(owner_hex_at_v1=owner_hex, owner_hex_at_v2=owner_hex, owner_unchanged=True,
                             write_token_hex_at_v1=write_token_hex, write_token_hex_at_v2=write_token_hex,
                             write_token_unchanged=True),
         key_servers=dict(begin_hex=(KEY_SERVERS_PREFIX + prefix).hex(), end_hex=(KEY_SERVERS_PREFIX + strinc(prefix)).hex(),
@@ -475,6 +487,7 @@ def build_receipt(status, probe, cells, layout='opaque', index_name='price_idx',
                 cluster=probe.get('cluster'), addresses_basis=(probe.get('addresses_basis') or {}).get('kind'),
                 key_servers_sha256=(probe.get('key_servers') or {}).get('sha256_at_v1'),
                 move_keys_write_token_hex=(probe.get('move_keys_lock') or {}).get('write_token_hex_at_v1'),
+                move_keys_owner_hex=(probe.get('move_keys_lock') or {}).get('owner_hex_at_v1'),
                 store=probe.get('store'), store_prefix_hex=prefix.hex(), read_version=probe.get('read_version'),
                 layout=layout, record_format=record_format, replicas=replicas, min_disjoint_fraction=min_fraction,
                 disjointness_unit='storage process (address); machine level is descriptive only',
@@ -486,7 +499,7 @@ def build_receipt(status, probe, cells, layout='opaque', index_name='price_idx',
 def compare(a, b):
     diffs = []
     for field in ('format', 'store', 'store_prefix_hex', 'boundaries_hex', 'cluster', 'key_servers_sha256',
-                  'move_keys_write_token_hex'):
+                  'move_keys_write_token_hex', 'move_keys_owner_hex'):
         if a.get(field) != b.get(field):
             diffs.append(field + ' differs')
     if not (a.get('integrity_ok') is True and b.get('integrity_ok') is True):
@@ -558,7 +571,10 @@ def provenance_mutations(probe):
     variant('dd-key-absent-at-v1', set_path('dd_mode', 'at_v1', 'key_present', value=False))
     variant('recheck-before-v1', set_path('recheck', 'read_version', value=(rv or 0) - 1))
     variant('boundaries-not-rechecked', set_path('recheck', 'boundaries_identical', value=False))
+    # Owner-only change V1 -> V2 (takeMoveKeysLock: token unchanged) must be rejected.
     variant('lock-owner-taken', set_path('move_keys_lock', 'owner_hex_at_v2', value='07' * 16))
+    variant('lock-owner-missing', set_path('move_keys_lock', 'owner_hex_at_v1', value=None))
+    variant('lock-owner-not-rechecked', set_path('move_keys_lock', 'owner_unchanged', value=False))
     variant('lock-token-changed', set_path('move_keys_lock', 'write_token_hex_at_v2', value='ff' * 16))
     variant('key-servers-changed', set_path('key_servers', 'sha256_at_v2', value='e' * 64))
     variant('fixture-sha-mismatch', set_path('fixture_receipt_sha256', value='d' * 64))
@@ -568,20 +584,33 @@ def provenance_mutations(probe):
     return out
 
 
+def positive_controls(probe):
+    """Variants that must KEEP integrity: a stable random moveKeysLock owner (what
+    DataDistributor::init's takeMoveKeysLock leaves under mode 0) is not a defect."""
+    p = copy.deepcopy(probe)
+    lock = p.setdefault('move_keys_lock', {})
+    lock.update(owner_hex_at_v1='9e3779b97f4a7c15632be59bd9b4e019', owner_hex_at_v2='9e3779b97f4a7c15632be59bd9b4e019')
+    return {'stable-random-owner': p}
+
+
 def run_controls(status, probe, cells, **kw):
     """Original judged by integrity only (a partial placement qualifies); every
     key mutation and every provenance mutation must fail integrity."""
     kw = dict(kw, min_fraction=0.0)
     original = build_receipt(status, probe, cells, **kw)
     report = dict(original_integrity_ok=original['integrity_ok'], original_errors=original['errors'], mutations={},
-                  provenance_mutations={})
+                  provenance_mutations={}, positive_controls={})
     for group, variants in (('mutations', mutations(probe, kw.get('layout', 'opaque'), kw.get('record_format'))),
                             ('provenance_mutations', provenance_mutations(probe))):
         for name, mutated in variants.items():
             r = build_receipt(status, mutated, cells, **kw)
             report[group][name] = dict(rejected=not r['integrity_ok'], errors=r['errors'][:3])
+    for name, accepted in positive_controls(probe).items():
+        r = build_receipt(status, accepted, cells, **kw)
+        report['positive_controls'][name] = dict(accepted=r['integrity_ok'], errors=r['errors'][:3])
     report['ok'] = original['integrity_ok'] and all(
-        m['rejected'] for group in ('mutations', 'provenance_mutations') for m in report[group].values())
+        m['rejected'] for group in ('mutations', 'provenance_mutations') for m in report[group].values()) and all(
+        c['accepted'] for c in report['positive_controls'].values())
     return report
 
 
@@ -608,7 +637,8 @@ def sealed_errors(receipt, expect_cluster):
         errors.append('receipt lacks a fixture receipt sha256')
     for field, value in (('cluster', prov.get('cluster')), ('addresses_basis', ADDRESS_TRANSACTIONAL),
                          ('key_servers_sha256', prov['key_servers'].get('sha256_at_v1')),
-                         ('move_keys_write_token_hex', prov['move_keys_lock'].get('write_token_hex_at_v1'))):
+                         ('move_keys_write_token_hex', prov['move_keys_lock'].get('write_token_hex_at_v1')),
+                         ('move_keys_owner_hex', prov['move_keys_lock'].get('owner_hex_at_v1'))):
         if receipt.get(field) != value:
             errors.append(f'receipt {field} disagrees with its provenance')
     return errors

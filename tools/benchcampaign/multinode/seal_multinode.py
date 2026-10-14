@@ -303,8 +303,8 @@ def placement_label(case, receipts, cluster_identity):
     """The case's fixed placement label from its store's receipt, decided before timing.
 
     A receipt is refused unless placement_receipt.sealed_errors is empty for the
-    sealed cluster: integrity, transactional addresses, DD off with the mode lock,
-    unchanged write token and keyServers digest, a fixture receipt hash, and the
+    sealed cluster: integrity, transactional addresses, DD off, an unchanged
+    moveKeysLock owner and write token and keyServers digest, a fixture receipt hash, and the
     cluster identity of the pinned cluster file (refused on mismatch). A receipt
     with integrity but a cell below 1.0 still seals, under 'partially colocated
     (f)' (protocol placement.acceptance). The receipt's cell must be exactly the
