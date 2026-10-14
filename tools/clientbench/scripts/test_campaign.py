@@ -53,7 +53,7 @@ class CampaignTest(unittest.TestCase):
         p['blocks'] = 3
         bad_plans.append(p)
         p = copy.deepcopy(self.plan)
-        p['campaign_wall_cap_seconds'] = 181
+        p['campaign_wall_cap_seconds'] = 901
         bad_plans.append(p)
         p = copy.deepcopy(self.plan)
         p['arms'][1]['name'] = 'native'

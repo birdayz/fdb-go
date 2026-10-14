@@ -132,11 +132,14 @@ Counters are logical: `remote_fetch` counts remote-fetch openings, not RPCs;
 `matrix_plan.py` freezes a 2–6 arm plan with explicit CPU groups, per-arm
 declared revisions, one shared option set and equal-length prefixes; blocks
 must be a multiple of `factorial(arms)` (6 for three arms). `run.py` enforces
-the 180-second campaign cap and waits 3 seconds (cooldown and quiescence)
-before every run, so `matrix_plan.py` rejects plans whose waits alone reach the
-cap: three arms fit 6, 12 or 18 blocks of one workload (12 blocks leave 72
-seconds for 36 runs), and four or more arms (24 blocks minimum) cannot fit.
-Size iterations per workload accordingly.
+the plan's campaign wall cap and waits 3 seconds (cooldown and quiescence)
+before every run. The cap defaults to 180 seconds; `--campaign-wall-cap-seconds`
+raises it up to `run.py`'s 900-second maximum, and `--timeout-seconds` (default
+180, at most the cap) bounds each process. `matrix_plan.py` rejects plans whose
+waits alone reach the cap: with the default cap, three arms fit 6, 12 or 18
+blocks of one workload (12 blocks leave 72 seconds for 36 runs), and four or
+more arms (24 blocks minimum) need a raised cap. Size iterations per workload
+accordingly.
 `analyze.py` reports geometric means of paired block ratios with **nominal 95%**
 percentile block-bootstrap intervals (20,000 resamples by default) plus
 moving-block and order sensitivity diagnostics. The 99% intervals in

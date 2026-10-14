@@ -23,6 +23,9 @@ import subprocess
 import sys
 import time
 
+# A plan may raise its campaign wall cap (default 180 seconds) up to this bound.
+MAX_CAMPAIGN_WALL_CAP_SECONDS = 900
+
 
 def utc():
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -345,8 +348,8 @@ def make_schedule(plan, out):
         value = plan.get(key, 180) if key == 'campaign_wall_cap_seconds' else plan[key]
         if not math.isfinite(value) or value <= 0:
             raise ValueError('positive finite duration required: ' + key)
-    if plan.get('campaign_wall_cap_seconds', 180) > 180:
-        raise ValueError('campaign wall cap must not exceed 180 seconds')
+    if plan.get('campaign_wall_cap_seconds', 180) > MAX_CAMPAIGN_WALL_CAP_SECONDS:
+        raise ValueError(f'campaign wall cap must not exceed {MAX_CAMPAIGN_WALL_CAP_SECONDS} seconds')
     if not math.isfinite(plan['cooldown_seconds']) or plan['cooldown_seconds'] < 0:
         raise ValueError('nonnegative finite cooldown required')
     rng = random.Random(plan["seed"])

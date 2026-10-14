@@ -6,8 +6,9 @@ revision; the CGo arm is the native control. Arms share every option and the
 CPU affinity; only the binary, its declared revision and the key prefix differ,
 and arm names are padded so every prefix has the same length. Blocks must be a
 multiple of factorial(arms), so run.py runs every arm order equally often.
-The R3 settings (seed, durations, quiescence limits, environment, 180-second
-campaign cap) are kept; workload iterations and blocks are explicit.
+The R3 settings (seed, durations, quiescence limits, environment) are kept;
+the campaign wall cap defaults to R3's 180 seconds and may be raised to run.py's
+900-second maximum; workload iterations and blocks are explicit.
 """
 import argparse
 import json
@@ -20,7 +21,10 @@ from r3_plan import cpus, digest
 
 COOLDOWN_SECONDS = 2
 QUIESCENCE_SECONDS = 1
+# Defaults; --campaign-wall-cap-seconds may raise the cap to run.py's maximum.
 CAMPAIGN_CAP_SECONDS = 180
+PROCESS_TIMEOUT_SECONDS = 180
+MAX_CAMPAIGN_CAP_SECONDS = 900
 
 
 def parse_arm(value):
@@ -71,18 +75,24 @@ def make_plan(args):
     width = max(3, *(len(n) for n in names))
     if len({n.ljust(width, '_') for n in names}) != len(names):
         raise ValueError('arm names must stay distinct when padded to equal length')
-    # run.py waits cooldown + quiescence before every run, inside its 180-second
-    # campaign cap; a plan whose waits alone exceed the cap can never finish.
+    cap = getattr(args, 'campaign_wall_cap_seconds', CAMPAIGN_CAP_SECONDS)
+    timeout = getattr(args, 'timeout_seconds', PROCESS_TIMEOUT_SECONDS)
+    if not 0 < cap <= MAX_CAMPAIGN_CAP_SECONDS:
+        raise ValueError(f'campaign wall cap must be 1..{MAX_CAMPAIGN_CAP_SECONDS} seconds')
+    if not 0 < timeout <= cap:
+        raise ValueError('per-process timeout must be positive and at most the campaign wall cap')
+    # run.py waits cooldown + quiescence before every run, inside the campaign
+    # wall cap; a plan whose waits alone reach the cap can never finish.
     waits = args.blocks * len(arms) * len(args.workload) * (COOLDOWN_SECONDS + QUIESCENCE_SECONDS)
-    if waits >= CAMPAIGN_CAP_SECONDS:
+    if waits >= cap:
         raise ValueError(f'{args.blocks} blocks x {len(arms)} arms x {len(args.workload)} workloads need '
-                         f'{waits}s of cooldown and quiescence alone; the campaign cap is {CAMPAIGN_CAP_SECONDS}s')
+                         f'{waits}s of cooldown and quiescence alone; the campaign cap is {cap}s')
     go_revisions = {revision for name, _, revision in arms if name != 'cgo'}
     plan = dict(campaign='mx-' + args.campaign_id, source_commit=sorted(go_revisions)[0],
                 harness_id=args.harness_id, seed=args.seed, blocks=args.blocks,
                 cooldown_seconds=COOLDOWN_SECONDS, quiescence_seconds=QUIESCENCE_SECONDS, max_busy_fraction=.15,
                 max_steal_fraction=.01, telemetry_seconds=1, cpu_sets=groups,
-                timeout_seconds=CAMPAIGN_CAP_SECONDS, campaign_wall_cap_seconds=CAMPAIGN_CAP_SECONDS,
+                timeout_seconds=timeout, campaign_wall_cap_seconds=cap,
                 environment=dict(GOMAXPROCS=str(args.gomaxprocs), GOGC='100', GOMEMLIMIT='off', GODEBUG='',
                                  LC_ALL='C', TZ='UTC'),
                 workloads=[dict(name=w, iterations=args.iterations, warmup=args.warmup, workers=1)
@@ -120,6 +130,10 @@ def main():
     ap.add_argument('--campaign-id', default=uuid.uuid4().hex[:29])
     ap.add_argument('--seed', type=int, default=641001)
     ap.add_argument('--gomaxprocs', type=int, default=8)
+    ap.add_argument('--campaign-wall-cap-seconds', type=int, default=CAMPAIGN_CAP_SECONDS,
+                    help=f'whole-campaign wall cap, at most {MAX_CAMPAIGN_CAP_SECONDS}')
+    ap.add_argument('--timeout-seconds', type=int, default=PROCESS_TIMEOUT_SECONDS,
+                    help='per-process timeout, at most the campaign wall cap')
     ap.add_argument('--housekeeping-cpus', required=True)
     ap.add_argument('--server-cpus', required=True)
     ap.add_argument('--client-cpus', required=True)

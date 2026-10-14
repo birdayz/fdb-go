@@ -24,7 +24,8 @@ class MatrixPlanTest(unittest.TestCase):
             workload=['read1000'], iterations=500, warmup=50, blocks=12,
             cluster_file=self.root / 'cluster', native_library=self.root / 'native', server_binary=self.root / 'server',
             harness_id=r3_plan.digest(self.root / 'harness'), pin=[self.root / 'harness'], campaign_id='c' * 29,
-            seed=641001, gomaxprocs=8, housekeeping_cpus='0,8', server_cpus='1-3,9-11', client_cpus='4-7,12-15')
+            seed=641001, gomaxprocs=8, housekeeping_cpus='0,8', server_cpus='1-3,9-11', client_cpus='4-7,12-15',
+            campaign_wall_cap_seconds=180, timeout_seconds=180)
 
     def test_three_arm_plan_is_counterbalanced(self):
         plan = matrix_plan.make_plan(self.args)
@@ -66,6 +67,9 @@ class MatrixPlanTest(unittest.TestCase):
                                               f'go_={self.root / "after"}@{"b" * 40}', self.args.arm[2]]),
             'waits_exceed_cap': dict(blocks=24),
             'two_workloads_exceed_cap': dict(workload=['read1000', 'range100']),
+            'cap_above_run_maximum': dict(campaign_wall_cap_seconds=901),
+            'timeout_above_cap': dict(campaign_wall_cap_seconds=120, timeout_seconds=121),
+            'waits_exceed_raised_cap': dict(blocks=36, campaign_wall_cap_seconds=300),
         }
         for name, change in cases.items():
             args = copy.copy(self.args)
@@ -73,6 +77,19 @@ class MatrixPlanTest(unittest.TestCase):
                 setattr(args, key, value)
             with self.subTest(name), self.assertRaises(ValueError):
                 matrix_plan.make_plan(args)
+
+    def test_raised_campaign_cap(self):
+        args = copy.copy(self.args)
+        args.workload = ['read1000', 'range100']
+        args.campaign_wall_cap_seconds = 360
+        plan = matrix_plan.make_plan(args)
+        self.assertEqual((plan['campaign_wall_cap_seconds'], plan['timeout_seconds']), (360, 180))
+        self.assertEqual(len(run.make_schedule(plan, self.root / 'out')), 12 * 2 * 3)
+        args.campaign_wall_cap_seconds = 900
+        self.assertEqual(matrix_plan.make_plan(args)['campaign_wall_cap_seconds'], 900)
+        plan['campaign_wall_cap_seconds'] = 901
+        with self.assertRaises(ValueError):
+            run.make_schedule(plan, self.root / 'out')
 
     def test_run_rejects_edited_arm_options(self):
         plan = matrix_plan.make_plan(self.args)
