@@ -306,13 +306,14 @@ func (store *FDBRecordStore) SaveRecordBatch(
 			RecordType: p.recordType,
 			Record:     p.record,
 			// Its map entries are indexed in the order it was written in.
-			wire:      newRecordWire(p.recordType, unionInner(data, p.recordType.unionFieldNumber)),
-			Version:   savedVersion,
-			Store:     store,
-			KeyCount:  newsizeInfo.KeyCount,
-			KeySize:   newsizeInfo.KeySize,
-			ValueSize: newsizeInfo.ValueSize,
-			Split:     newsizeInfo.IsSplit,
+			wire:            newRecordWire(p.recordType, unionInner(data, p.recordType.unionFieldNumber)),
+			Version:         savedVersion,
+			Store:           store,
+			KeyCount:        newsizeInfo.KeyCount,
+			KeySize:         newsizeInfo.KeySize,
+			ValueSize:       newsizeInfo.ValueSize,
+			Split:           newsizeInfo.IsSplit,
+			VersionedInline: newsizeInfo.VersionedInline,
 		}
 		if !oldRecordExists {
 			if countFDBKey != nil {

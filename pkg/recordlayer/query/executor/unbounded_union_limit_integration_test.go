@@ -186,7 +186,9 @@ func TestIntegration_LimitParentSkipResume(t *testing.T) {
 					if page == 0 {
 						props.Skip = 2
 						if tc.partialSkip {
-							props.ScannedRecordsLimit = 2 // semantic offset + one request-skipped row
+							// Semantic offset + one request-skipped row: the scan finishes the
+							// record whose key-value crosses the limit.
+							props.ScannedRecordsLimit = 1
 						}
 					} else if page == 1 && tc.partialSkip {
 						// Request skip is per execution, as in Java. One of the two
@@ -345,15 +347,19 @@ func TestIntegration_StrictFirstOrDefaultRequest(t *testing.T) {
 				store := setupStore(t)
 				insertOrders(t, store, &demopb.Order{OrderId: proto.Int64(1)}, &demopb.Order{OrderId: proto.Int64(2)})
 				if probe.mixedTypes {
-					// A raw scan budget of two would count Customer 0, then only
-					// Order 1, and hide the second matching scalar row (Order 2).
+					// A budget of one stops on Customer 0, the record that crosses it,
+					// before the first matching row; a raw budget would hide Order 2.
 					_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 						s, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).SetSubspace(testSubspace(t)).Open()
 						if err != nil {
 							return nil, err
 						}
-						_, err = s.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(0)})
-						return nil, err
+						for _, id := range []int64{-1, 0} {
+							if _, err := s.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(id)}); err != nil {
+								return nil, err
+							}
+						}
+						return nil, nil
 					})
 					if err != nil {
 						t.Fatal(err)

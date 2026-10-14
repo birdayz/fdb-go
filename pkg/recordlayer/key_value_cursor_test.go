@@ -499,9 +499,8 @@ var _ = Describe("KeyValueCursor", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 
-		It("row limit equals record count reports SourceExhausted", func() {
-			// When limit == count, the cursor reads all records, then checks
-			// iterator.Advance() which returns false -> SourceExhausted.
+		It("row limit equals record count reports ReturnLimitReached", func() {
+			// Java's limitRowsTo stops at the limit without reading ahead.
 			ks := specSubspace()
 			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, stErr := NewStoreBuilder().
@@ -520,14 +519,16 @@ var _ = Describe("KeyValueCursor", func() {
 				_ = cursor.Close()
 
 				Expect(ids).To(Equal([]int64{1, 2, 3}))
-				Expect(last.GetNoNextReason()).To(Equal(SourceExhausted))
+				Expect(last.GetNoNextReason()).To(Equal(ReturnLimitReached))
+				Expect(last.GetContinuation().IsEnd()).To(BeFalse())
 				return nil, nil
 			})
 			Expect(err).NotTo(HaveOccurred())
 		})
 
 		It("row limit + scanned records limit active simultaneously", func() {
-			// Row limit = 5, scan limit = 3. Scan limit is tighter, so it fires first.
+			// Row limit = 5, scan limit = 3. Scan limit is tighter: the fourth
+			// key-value crosses it and Java finishes that record.
 			ks := specSubspace()
 			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, stErr := NewStoreBuilder().
@@ -546,7 +547,7 @@ var _ = Describe("KeyValueCursor", func() {
 				ids, last := drainOrderIDs(cursor)
 				_ = cursor.Close()
 
-				Expect(ids).To(HaveLen(3))
+				Expect(ids).To(HaveLen(4))
 				Expect(last.GetNoNextReason()).To(Equal(ScanLimitReached))
 				return nil, nil
 			})
@@ -554,7 +555,8 @@ var _ = Describe("KeyValueCursor", func() {
 		})
 
 		It("row limit + byte limit active simultaneously", func() {
-			// Row limit = 100 (won't fire), byte limit = 1 (fires after 1 record).
+			// Row limit = 100 (won't fire), byte limit = 1 (crossed by the second
+			// key-value, whose record Java still finishes).
 			ks := specSubspace()
 			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, stErr := NewStoreBuilder().
@@ -566,21 +568,21 @@ var _ = Describe("KeyValueCursor", func() {
 					ExecuteProperties: ExecuteProperties{
 						IsolationLevel:    SerializableIsolation,
 						ReturnedRowLimit:  100,
-						ScannedBytesLimit: 1, // fires after first record (free initial pass)
+						ScannedBytesLimit: 1,
 					},
 				}
 				cursor := store.ScanRecords(nil, props)
 				ids, last := drainOrderIDs(cursor)
 				_ = cursor.Close()
 
-				Expect(ids).To(HaveLen(1)) // free initial pass
+				Expect(ids).To(HaveLen(2))
 				Expect(last.GetNoNextReason()).To(Equal(ByteLimitReached))
 				return nil, nil
 			})
 			Expect(err).NotTo(HaveOccurred())
 		})
 
-		It("scan limit of 1 returns exactly one record", func() {
+		It("scan limit of 1 finishes the record that crosses it", func() {
 			ks := specSubspace()
 			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, stErr := NewStoreBuilder().
@@ -598,8 +600,7 @@ var _ = Describe("KeyValueCursor", func() {
 				ids, last := drainOrderIDs(cursor)
 				_ = cursor.Close()
 
-				Expect(ids).To(HaveLen(1))
-				Expect(ids[0]).To(Equal(int64(1)))
+				Expect(ids).To(Equal([]int64{1, 2}))
 				Expect(last.GetNoNextReason()).To(Equal(ScanLimitReached))
 				return nil, nil
 			})
@@ -1067,14 +1068,14 @@ var _ = Describe("KeyValueCursor", func() {
 				props := ScanProperties{
 					ExecuteProperties: ExecuteProperties{
 						IsolationLevel:    SerializableIsolation,
-						ScannedBytesLimit: 1, // fires after first record
+						ScannedBytesLimit: 1, // crossed by the second key-value, whose record finishes
 					},
 				}
 				cursor := store.ScanRecords(nil, props)
 				ids, last := drainOrderIDs(cursor)
 				_ = cursor.Close()
 
-				Expect(ids).To(HaveLen(1)) // free initial pass
+				Expect(ids).To(HaveLen(2))
 				Expect(last.GetNoNextReason()).To(Equal(ByteLimitReached))
 				Expect(last.GetNoNextReason().IsOutOfBand()).To(BeTrue())
 				Expect(last.HasStoppedBeforeEnd()).To(BeTrue())
@@ -1105,7 +1106,7 @@ var _ = Describe("KeyValueCursor", func() {
 				ids, last := drainOrderIDs(cursor)
 				_ = cursor.Close()
 
-				Expect(ids).To(HaveLen(4))
+				Expect(ids).To(HaveLen(5)) // the fifth key-value crosses the limit; its record finishes
 				Expect(last.GetNoNextReason()).To(Equal(ScanLimitReached))
 				Expect(last.GetNoNextReason().IsOutOfBand()).To(BeTrue())
 				Expect(last.HasStoppedBeforeEnd()).To(BeTrue())
@@ -1290,7 +1291,7 @@ var _ = Describe("KeyValueCursor", func() {
 				Expect(stErr).NotTo(HaveOccurred())
 				saveOrders(store, 10)
 
-				// First batch: scan limit 3 from [2, 8] -> get 2, 3, 4
+				// First batch: scan limit 3 from [2, 8] -> 2, 3, 4, and 5 whose key-value crosses it
 				props1 := ScanProperties{
 					ExecuteProperties: ExecuteProperties{
 						IsolationLevel:      SerializableIsolation,
@@ -1305,7 +1306,7 @@ var _ = Describe("KeyValueCursor", func() {
 				ids1, last1 := drainOrderIDs(cursor1)
 				_ = cursor1.Close()
 
-				Expect(ids1).To(Equal([]int64{2, 3, 4}))
+				Expect(ids1).To(Equal([]int64{2, 3, 4, 5}))
 				Expect(last1.GetNoNextReason()).To(Equal(ScanLimitReached))
 
 				contBytes, contErr := last1.GetContinuation().ToBytes()
@@ -1321,7 +1322,7 @@ var _ = Describe("KeyValueCursor", func() {
 				ids2, last2 := drainOrderIDs(cursor2)
 				_ = cursor2.Close()
 
-				Expect(ids2).To(Equal([]int64{5, 6, 7, 8}))
+				Expect(ids2).To(Equal([]int64{6, 7, 8}))
 				Expect(last2.GetNoNextReason()).To(Equal(SourceExhausted))
 				return nil, nil
 			})

@@ -4452,7 +4452,7 @@ func TestIntegration_ArrayAggStraddle(t *testing.T) {
 				[]expressions.AggregateSpec{{
 					Function: expressions.AggArrayAgg, Operand: integrationField(t, scan, 0), Limit: values.ArrayAggNoLimit,
 				}}))
-			props := recordlayer.DefaultExecuteProperties().WithScannedRecordsLimit(2)
+			props := recordlayer.DefaultExecuteProperties().WithScannedRecordsLimit(1) // two records a page: the scan finishes the crossing record
 			cursor, err := ExecutePlan(ctx, plan, s, EmptyEvaluationContext(), continuation, props)
 			if err != nil {
 				return nil, err

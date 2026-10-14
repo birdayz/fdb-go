@@ -121,16 +121,17 @@ func (ts *TypedFDBRecordStore[T]) typed(stored *FDBStoredRecord[proto.Message]) 
 // withRecord is stored holding record.
 func withRecord[T proto.Message](stored *FDBStoredRecord[proto.Message], record T) *FDBStoredRecord[T] {
 	return &FDBStoredRecord[T]{
-		PrimaryKey: stored.PrimaryKey,
-		RecordType: stored.RecordType,
-		Record:     record,
-		wire:       stored.wire,
-		Version:    stored.Version,
-		Store:      stored.Store,
-		KeyCount:   stored.KeyCount,
-		KeySize:    stored.KeySize,
-		ValueSize:  stored.ValueSize,
-		Split:      stored.Split,
+		PrimaryKey:      stored.PrimaryKey,
+		RecordType:      stored.RecordType,
+		Record:          record,
+		wire:            stored.wire,
+		Version:         stored.Version,
+		Store:           stored.Store,
+		KeyCount:        stored.KeyCount,
+		KeySize:         stored.KeySize,
+		ValueSize:       stored.ValueSize,
+		Split:           stored.Split,
+		VersionedInline: stored.VersionedInline,
 	}
 }
 

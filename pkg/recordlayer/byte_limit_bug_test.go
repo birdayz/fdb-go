@@ -62,9 +62,9 @@ var _ = Describe("BUG1_ByteScanLimit_OffByOne", func() {
 			_ = cursor.Close()
 
 			// Now scan with ScannedBytesLimit = exactly one record's byte size.
-			// Java: after reading 1 record, bytesRemaining = 0, hasBytesRemaining() = false → stop.
-			// Go (buggy): after reading 1 record, bytesScanned = recordBytes,
-			//   check is `recordBytes > recordBytes` = false → reads one MORE record.
+			// Java: after reading 1 record, bytesRemaining = 0, so the second
+			// key-value's hasBytesRemaining() halts; the unsplitter still finishes
+			// that record. A `>` check would halt only at the third.
 			scanProps := ScanProperties{
 				ExecuteProperties: ExecuteProperties{
 					IsolationLevel:    SerializableIsolation,
@@ -85,13 +85,7 @@ var _ = Describe("BUG1_ByteScanLimit_OffByOne", func() {
 				count++
 			}
 
-			// BUG: Go returns 2 records instead of 1.
-			// Java would return exactly 1 record (free initial pass),
-			// then stop because hasBytesRemaining() returns false.
-			//
-			// If the bug is fixed (> changed to >=), this assertion passes.
-			// If the bug is present, count will be 2.
-			Expect(count).To(Equal(1),
+			Expect(count).To(Equal(2),
 				"bytesScanned == ScannedBytesLimit should stop the cursor (off-by-one: > vs >=)")
 			Expect(lastResult.GetNoNextReason()).To(Equal(ByteLimitReached))
 			return nil, nil

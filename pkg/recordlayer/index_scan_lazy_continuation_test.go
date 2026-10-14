@@ -269,7 +269,11 @@ func TestKeyContinuationEmptySuffixMatchesJava(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	kvc, err := (&keyValueCursor{prefixLength: pl}).makeKeyContinuation(key)
+	kc, err = (&keyValueCursor{prefixLength: pl}).makeContinuation(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kvc, err := kc.ToBytes()
 	if err != nil {
 		t.Fatal(err)
 	}

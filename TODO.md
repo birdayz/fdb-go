@@ -1559,7 +1559,12 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   report `RETURN_LIMIT_REACHED` with a last-key token at exact exhaustion, and
   charge the terminal attempt. `conformance/index_scan_limit_conformance_test.go`
   compares every boundary with Java, including empty final-page resumes.
-- [ ] Remaining key-value cursors (count/bitmap, key_value_cursor.go) peek one
+- [x] Record scans (key_value_cursor.go) follow Java's scanTypedRecords: per
+  key-value scan charges (inline versions included in record sizes), limits that
+  finish the crossing record, and `RETURN_LIMIT_REACHED` at an exact row limit.
+  CountRecords follows Java's countRecords (key-values for unsplit stores).
+  `conformance/record_scan_limit_conformance_test.go` compares every layout.
+- [ ] Remaining key-value cursors (count/bitmap) peek one
   row past `ReturnedRowLimit` and report `SourceExhausted` with an end continuation when the
   page ends exactly at the range end. Java's `KeyValueCursorBase` (KeyValueCursorBase.java:
   113-115) passes the limit down without a lookahead and reports `RETURN_LIMIT_REACHED`

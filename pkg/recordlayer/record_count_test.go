@@ -654,6 +654,8 @@ var _ = Describe("RecordCounting", func() {
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+		// Java's countRecords charges scan limits only through a split store's unsplitter.
+		builder.SetSplitLongRecords(true)
 		metaData, buildErr := builder.Build()
 		Expect(buildErr).NotTo(HaveOccurred())
 
