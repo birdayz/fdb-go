@@ -29,6 +29,7 @@ import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletionException;
 
 /** FDBRecordStore.scanRecords sizes, stop points and scan accounting for each record layout. */
 class RecordScanLimitSteps extends ConformanceBase {
@@ -165,6 +166,15 @@ class RecordScanLimitSteps extends ConformanceBase {
         return terminal;
     }
 
+    // The Record Layer exception under the future's CompletionException wrapper.
+    private static String thrown(Throwable error) {
+        Throwable thrown = error;
+        while (thrown instanceof CompletionException && thrown.getCause() != null) {
+            thrown = thrown.getCause();
+        }
+        return thrown.getClass().getSimpleName();
+    }
+
     private static Map<String, Object> page(FDBRecordContext context, byte[] subspace, Request request, String continuation) {
         FDBRecordStore store = open(context, subspace, request.layout, false);
         if (request.localSave) {
@@ -210,9 +220,7 @@ class RecordScanLimitSteps extends ConformanceBase {
                 break;
             }
         } catch (RuntimeException error) {
-            Throwable root = error;
-            while (root.getCause() != null) root = root.getCause();
-            page.put("exceptionClass", root.getClass().getSimpleName());
+            page.put("exceptionClass", thrown(error));
         }
         page.put("scannedRecords", properties.getState().getRecordsScanned());
         page.put("scannedBytes", properties.getState().getBytesScanned());
@@ -253,9 +261,7 @@ class RecordScanLimitSteps extends ConformanceBase {
             result.put("count", store.countRecords(null, null, EndpointType.TREE_START, EndpointType.TREE_END, null,
                     new ScanProperties(properties, request.reverse)).join());
         } catch (RuntimeException error) {
-            Throwable root = error;
-            while (root.getCause() != null) root = root.getCause();
-            result.put("exceptionClass", root.getClass().getSimpleName());
+            result.put("exceptionClass", thrown(error));
         }
         result.put("scannedRecords", properties.getState().getRecordsScanned());
         result.put("scannedBytes", properties.getState().getBytesScanned());

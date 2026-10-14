@@ -279,10 +279,10 @@ func TestFDB_DistinctProof_TransitionAfterPlanningIsInvisibleInOneTransaction(t 
 // in-transaction one, where the correct outcome is that the statement finishes
 // with every value exactly once.
 //
-// The one-row page limit is what makes this a claim about PAGES: a leaf cursor
-// gets one free record per page (key_value_cursor.go's per-cursor initial pass)
-// while the record budget itself is transaction-scoped, so with the limit at 1
-// every page yields exactly one row and three rows cannot come from one page. The
+// The one-row page limit is what makes this a claim about PAGES: a record scan
+// gets one free key-value per page (the per-cursor initial pass) and finishes the
+// record whose key-value crosses the transaction-scoped budget, so with the limit
+// at 1 a page yields at most two rows and three rows cannot come from one page. The
 // sibling test named above is the sentinel for that fact — if the limit ever
 // stopped forcing page boundaries it goes red, rather than this one going quietly
 // vacuous.

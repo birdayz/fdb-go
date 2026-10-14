@@ -117,6 +117,26 @@ func recordScanOrder(id int64, split bool) *demopb.Order {
 	return &demopb.Order{OrderId: proto.Int64(id), Price: proto.Int32(int32(100 - id)), VectorData: bytes.Repeat([]byte{byte(id)}, size)}
 }
 
+// recordScanExceptionClass is the simple name of the Java exception each Go error ports.
+func recordScanExceptionClass(err error) string {
+	var limit *recordlayer.ScanLimitReachedError
+	var withoutStart *recordlayer.FoundSplitWithoutStartError
+	var outOfOrder *recordlayer.FoundSplitOutOfOrderError
+	var core *recordlayer.RecordCoreError
+	var deserialization *recordlayer.RecordDeserializationError
+	switch {
+	case errors.As(err, &limit):
+		return "ScanLimitReachedException"
+	case errors.As(err, &withoutStart):
+		return "FoundSplitWithoutStartException"
+	case errors.As(err, &deserialization):
+		return "RecordDeserializationException"
+	case errors.As(err, &outOfOrder), errors.As(err, &core):
+		return "RecordCoreException"
+	}
+	return fmt.Sprintf("%T", err)
+}
+
 func recordScanDrain(ctx context.Context, cursor recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]], state *recordlayer.ScanLimiterState) recordScanPage {
 	defer func() { Expect(cursor.Close()).To(Succeed()) }()
 	page := recordScanPage{Rows: make([]recordScanRow, 0), Repeats: make([]recordScanTerminal, 0)}
@@ -131,12 +151,7 @@ func recordScanDrain(ctx context.Context, cursor recordlayer.RecordCursor[*recor
 	for {
 		next, err := cursor.OnNext(ctx)
 		if err != nil {
-			var limit *recordlayer.ScanLimitReachedError
-			if errors.As(err, &limit) {
-				page.ExceptionClass = "ScanLimitReachedException"
-			} else {
-				page.ExceptionClass = fmt.Sprintf("%T", err)
-			}
+			page.ExceptionClass = recordScanExceptionClass(err)
 			break
 		}
 		if !next.HasNext() {
@@ -255,11 +270,8 @@ var _ = Describe("Record scan Java limit conformance", func() {
 		count, err := store.CountRecords(ctx, nil, nil, recordlayer.EndpointTypeTreeStart, recordlayer.EndpointTypeTreeEnd, nil,
 			recordlayer.NewScanProperties(execution).WithReverse(req.Reverse))
 		result := recordCountResult{Count: count, ScannedRecords: execution.ScanState.RecordsScanned(), ScannedBytes: execution.ScanState.BytesScanned()}
-		var limit *recordlayer.ScanLimitReachedError
-		if errors.As(err, &limit) {
-			result.ExceptionClass = "ScanLimitReachedException"
-		} else if err != nil {
-			result.ExceptionClass = fmt.Sprintf("%T", err)
+		if err != nil {
+			result.ExceptionClass = recordScanExceptionClass(err)
 		}
 		return result
 	}

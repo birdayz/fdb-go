@@ -135,16 +135,16 @@ func TestExecutionStats_RetryIsCountedAndCharged(t *testing.T) {
 	// that charges the first page and then stops — reports the correct number by
 	// accident.
 	//
-	// The count is fixture math, not an observation: pageRetryScanLimit records
-	// per page over pageRetryRows records is six data pages, and the sixth is
-	// stopped BY the budget at exactly the budget, so it cannot know the cursor
-	// is exhausted and hands back a continuation. The seventh page resumes,
-	// finds nothing, and reports exhaustion. One page per budget, plus the page
-	// that discovers the end.
-	const wantPages = pageRetryRows/pageRetryScanLimit + 1
+	// The count is fixture math, not an observation: a page returns
+	// pageRetryScanLimit+1 records (the scan finishes the record that crosses the
+	// budget), so pageRetryRows records are six data pages, and the sixth is
+	// stopped BY the budget on the last record, so it cannot know the cursor is
+	// exhausted and hands back a continuation. The seventh page resumes, finds
+	// nothing, and reports exhaustion.
+	const wantPages = pageRetryRows/(pageRetryScanLimit+1) + 1
 	if base.Pages != wantPages {
 		t.Fatalf("baseline Pages = %d, want %d (%d rows at %d per page, plus the page that finds the end)",
-			base.Pages, wantPages, pageRetryRows, pageRetryScanLimit)
+			base.Pages, wantPages, pageRetryRows, pageRetryScanLimit+1)
 	}
 
 	sawRetry := false

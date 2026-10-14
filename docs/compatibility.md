@@ -74,6 +74,12 @@ setting. It implements Java's default range path; Java's optional GETS path
 also protects the entire record range, but differs on some malformed layouts.
 Neither read strategy changes the persisted record or version bytes.
 
+Record scans of stores whose versions use the old separate format read each
+version in its own request. Under a time limit or a failing scan limit, Go
+returns every record completed before the stop. Java's record pipeline may drop
+or pre-empt records whose version read is still pending
+(MapPipelinedCursor.java:157-175), so Java can return fewer rows there.
+
 ### Ordinary index scan Skip
 
 Ordinary index cursors (VALUE, VERSION, RANK, leaderboard and PERMUTED_MIN/MAX
