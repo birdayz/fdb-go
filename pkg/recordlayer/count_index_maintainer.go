@@ -47,10 +47,7 @@ type countKVCursor struct {
 }
 
 func (c *countKVCursor) withContext(rc *FDBRecordContext) *countKVCursor {
-	if rc != nil && c.scanProps.ExecuteProperties.TimeLimit > 0 {
-		c.clock = NewScanLimiterStateIn(rc.Env())
-		c.clock.AnchorAt(rc.createTime)
-	}
+	c.clock = transactionClock(rc, c.scanProps.ExecuteProperties, c.clock)
 	return c
 }
 
@@ -103,7 +100,7 @@ func (c *countKVCursor) initIterator() error {
 	if err != nil {
 		return err
 	}
-	options := indexRangeOptions(c.scanProps)
+	options := kvRangeOptions(c.scanProps)
 	r := indexSkipRange(rng, c.scanProps.ExecuteProperties.Skip, options.Reverse)
 
 	// Honor the requested isolation level, exactly as Java's KeyValueCursorBase does:
@@ -168,7 +165,7 @@ func (c *countKVCursor) advance(ctx context.Context) (RecordCursorResult[*IndexE
 	if clock == nil {
 		clock = c.scanState
 	}
-	if allowed, reason := tryIndexRecordScan(c.scanState, clock, executeProps, &c.initialPass); !allowed {
+	if allowed, reason := tryScanLimits(c.scanState, clock, executeProps, &c.initialPass); !allowed {
 		return noNextOrFail[*IndexEntry](executeProps, reason, c.limitContinuation())
 	}
 

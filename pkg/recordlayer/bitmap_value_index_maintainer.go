@@ -522,10 +522,7 @@ type bitmapKVCursor struct {
 }
 
 func (c *bitmapKVCursor) withContext(rc *FDBRecordContext) *bitmapKVCursor {
-	if rc != nil && c.scanProps.ExecuteProperties.TimeLimit > 0 {
-		c.clock = NewScanLimiterStateIn(rc.Env())
-		c.clock.AnchorAt(rc.createTime)
-	}
+	c.clock = transactionClock(rc, c.scanProps.ExecuteProperties, c.clock)
 	return c
 }
 
@@ -558,7 +555,7 @@ func (c *bitmapKVCursor) initIterator() error {
 	if err != nil {
 		return err
 	}
-	options := indexRangeOptions(c.scanProps)
+	options := kvRangeOptions(c.scanProps)
 	r := indexSkipRange(rng, c.scanProps.ExecuteProperties.Skip, options.Reverse)
 
 	var rangeResult fdb.RangeResult
@@ -607,7 +604,7 @@ func (c *bitmapKVCursor) advance(ctx context.Context) (RecordCursorResult[*Index
 	if clock == nil {
 		clock = c.scanState
 	}
-	if allowed, reason := tryIndexRecordScan(c.scanState, clock, executeProps, &c.initialPass); !allowed {
+	if allowed, reason := tryScanLimits(c.scanState, clock, executeProps, &c.initialPass); !allowed {
 		return noNextOrFail[*IndexEntry](executeProps, reason, c.limitContinuation())
 	}
 

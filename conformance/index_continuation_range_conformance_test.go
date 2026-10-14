@@ -258,8 +258,8 @@ var _ = Describe("Narrowed-range continuation conformance", func() {
 		Entry("COUNT index, exact page boundary", "Order$cnt_qty_price", "BY_GROUP", "allOf11", 6, 3),
 		Entry("BITMAP_VALUE index, grouped lookup", "Order$bm_qty", "BY_GROUP", "allOf11", 4, 3),
 		Entry("BITMAP_VALUE index, exact page boundary", "Order$bm_qty", "BY_GROUP", "allOf11", 4, 2),
-		// Record scans still use non-dividing page sizes here: their exact row-limit
-		// boundary is fixed separately in PR #921, not by the index-cursor changes.
+		// Record-scan exact row-limit boundaries are covered separately in
+		// record_scan_limit_conformance_test.go.
 		Entry("record scan over a primary-key range", "", "", "pk5to9", 5, 2),
 		Entry("record scan, PREFIX_STRING over string primary keys", "", "", "pkPrefixAb", 5, 2),
 	)
