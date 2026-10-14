@@ -27,8 +27,10 @@ import com.apple.foundationdb.record.ScanLimitReachedException;
 import com.apple.foundationdb.record.cursors.MapPipelinedCursor;
 import com.apple.foundationdb.record.TupleRange;
 import com.apple.foundationdb.record.metadata.Index;
+import com.apple.foundationdb.record.metadata.IndexOptions;
 import com.apple.foundationdb.record.metadata.IndexTypes;
 import com.apple.foundationdb.record.metadata.Key;
+import com.apple.foundationdb.record.metadata.expressions.GroupingKeyExpression;
 import com.apple.foundationdb.record.provider.foundationdb.FDBDatabase;
 import com.apple.foundationdb.record.provider.foundationdb.FDBIndexedRecord;
 import com.apple.foundationdb.record.provider.foundationdb.FDBRecordContext;
@@ -88,10 +90,34 @@ class IndexScanLimitSteps extends ConformanceBase {
         builder.setStoreRecordVersions(true);
         Index price = new Index("price", Key.Expressions.field("price"));
         Index version = new Index("version", Key.Expressions.version(), IndexTypes.VERSION);
+        Index count = new Index("count", new GroupingKeyExpression(Key.Expressions.field("price"), 0), IndexTypes.COUNT);
+        Index minEverTuple = new Index("min_ever_tuple",
+                new GroupingKeyExpression(Key.Expressions.concatenateFields("price", "order_id"), 1),
+                IndexTypes.MIN_EVER_TUPLE);
+        Index maxEverTuple = new Index("max_ever_tuple",
+                new GroupingKeyExpression(Key.Expressions.concatenateFields("price", "order_id"), 1),
+                IndexTypes.MAX_EVER_TUPLE);
+        Index maxEverVersion = new Index("max_ever_version",
+                new GroupingKeyExpression(Key.Expressions.concat(Key.Expressions.field("price"), Key.Expressions.version()), 1),
+                IndexTypes.MAX_EVER_VERSION);
+        Index bitmap = new Index("bitmap",
+                new GroupingKeyExpression(Key.Expressions.concatenateFields("price", "order_id"), 1),
+                IndexTypes.BITMAP_VALUE,
+                Map.of(IndexOptions.BITMAP_VALUE_ENTRY_SIZE_OPTION, "4"));
         price.setSubspaceKey("price");
         version.setSubspaceKey("version");
+        count.setSubspaceKey("count");
+        minEverTuple.setSubspaceKey("min_ever_tuple");
+        maxEverTuple.setSubspaceKey("max_ever_tuple");
+        maxEverVersion.setSubspaceKey("max_ever_version");
+        bitmap.setSubspaceKey("bitmap");
         builder.addIndex("Order", price);
         builder.addIndex("Order", version);
+        builder.addIndex("Order", count);
+        builder.addIndex("Order", minEverTuple);
+        builder.addIndex("Order", maxEverTuple);
+        builder.addIndex("Order", maxEverVersion);
+        builder.addIndex("Order", bitmap);
         return builder.build();
     }
 
@@ -199,8 +225,11 @@ class IndexScanLimitSteps extends ConformanceBase {
         } else {
             entry = (IndexEntry) value;
         }
+        String type = entry.getIndex().getType();
+        String primaryKey = type.equals(IndexTypes.VALUE) || type.equals(IndexTypes.VERSION)
+                ? bytes(entry.getPrimaryKey().pack()) : "";
         return Map.of("indexKey", bytes(entry.getKey().pack()), "indexValue", bytes(entry.getValue().pack()),
-                "primaryKey", bytes(entry.getPrimaryKey().pack()), "data", data, "version", version,
+                "primaryKey", primaryKey, "data", data, "version", version,
                 "continuation", bytes(next.getContinuation().toBytes()));
     }
 
@@ -636,10 +665,12 @@ class IndexScanLimitSteps extends ConformanceBase {
             hold.recordPrefix = store.recordsSubspace().pack();
             hold.enabled = true;
         }
+        IndexScanType scanType = index.getType().equals(IndexTypes.VALUE) || index.getType().equals(IndexTypes.VERSION)
+                ? IndexScanType.BY_VALUE : IndexScanType.BY_GROUP;
         RecordCursor<?> cursor = request.records
-                ? store.scanIndexRecords(index, IndexScanType.BY_VALUE, TupleRange.ALL, continuation,
+                ? store.scanIndexRecords(index, scanType, TupleRange.ALL, continuation,
                         IndexOrphanBehavior.ERROR, scanProperties)
-                : store.scanIndex(index, IndexScanType.BY_VALUE, TupleRange.ALL, continuation, scanProperties);
+                : store.scanIndex(index, scanType, TupleRange.ALL, continuation, scanProperties);
         Map<String, Object> result = new HashMap<>();
         List<Map<String, Object>> rows = new ArrayList<>();
         List<Map<String, Object>> repeats = new ArrayList<>();

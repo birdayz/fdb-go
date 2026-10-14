@@ -383,7 +383,7 @@ func (store *FDBRecordStore) scanIndexByType(
 			return m.ScanByGroup(scanRange, continuation, scanProperties)
 		case *bitmapValueIndexMaintainer:
 			return m.ScanByGroup(scanRange, continuation, scanProperties)
-		case *atomicMutationIndexMaintainer:
+		case *atomicMutationIndexMaintainer, *maxEverVersionIndexMaintainer:
 			// BY_GROUP is the only scan type Java's AtomicMutationIndexMaintainer.scan accepts.
 			return m.Scan(scanRange, continuation, scanProperties)
 		default:

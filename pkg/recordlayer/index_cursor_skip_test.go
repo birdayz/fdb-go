@@ -58,6 +58,7 @@ type skipScanRequest struct {
 	index        string
 	reverse      bool
 	records      bool
+	byGroup      bool
 	snapshot     bool
 	skip, limit  int
 	scanLimit    int
@@ -68,8 +69,8 @@ type skipScanRequest struct {
 }
 
 type skipRow struct {
-	key, continuation []byte
-	bytes             int64
+	key, value, continuation []byte
+	bytes                    int64
 }
 
 type skipPage struct {
@@ -104,21 +105,30 @@ func expectSkipRows(t *testing.T, got skipPage, want []skipRow) {
 		t.Fatalf("rows=%d want %d (reason=%v)", len(got.rows), len(want), got.reason)
 	}
 	for i := range want {
-		if !bytes.Equal(got.rows[i].key, want[i].key) || !bytes.Equal(got.rows[i].continuation, want[i].continuation) {
-			t.Fatalf("row %d key/continuation = %x/%x want %x/%x", i, got.rows[i].key, got.rows[i].continuation, want[i].key, want[i].continuation)
+		if !bytes.Equal(got.rows[i].key, want[i].key) ||
+			!bytes.Equal(got.rows[i].value, want[i].value) ||
+			!bytes.Equal(got.rows[i].continuation, want[i].continuation) {
+			t.Fatalf("row %d key/value/continuation = %x/%x/%x want %x/%x/%x",
+				i, got.rows[i].key, got.rows[i].value, got.rows[i].continuation,
+				want[i].key, want[i].value, want[i].continuation)
 		}
 	}
 }
 
-func expectSkipTerminal(t *testing.T, got skipPage, rows int, reason NoNextReason) {
+func expectSkipTerminal(t *testing.T, got skipPage, rows int, reason NoNextReason, chargesTerminalAttempt bool) {
 	t.Helper()
 	if got.reason != reason || got.end != (reason == SourceExhausted) {
 		t.Fatalf("terminal reason/end = %v/%v want %v", got.reason, got.end, reason)
 	}
-	// CursorLimitManager charges each returned row plus the terminal attempt;
-	// rows the selector skipped never reach the cursor.
-	if got.scanned != rows+1 {
-		t.Fatalf("scanned records=%d want %d", got.scanned, rows+1)
+	// Ordinary indexCursor charges each returned row plus the terminal attempt;
+	// countKVCursor and bitmapKVCursor charge each returned entry. Neither
+	// charges rows the selector skipped.
+	wantScanned := rows
+	if chargesTerminalAttempt {
+		wantScanned = rows + 1
+	}
+	if got.scanned != wantScanned {
+		t.Fatalf("scanned records=%d want %d", got.scanned, wantScanned)
 	}
 }
 
@@ -152,6 +162,13 @@ func TestFDB_IndexCursorSkipSelectorOffsets(t *testing.T) {
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 	builder.AddIndex("Order", NewIndex("price", Field("price")))
 	builder.AddIndex("Order", NewVersionIndex("version", VersionKey()))
+	builder.AddIndex("Order", NewCountIndex("count", GroupAll(Field("price"))))
+	builder.AddIndex("Order", NewMinEverTupleIndex("min_ever_tuple", GroupBy(Field("order_id"), Field("price"))))
+	builder.AddIndex("Order", NewMaxEverTupleIndex("max_ever_tuple", GroupBy(Field("order_id"), Field("price"))))
+	builder.AddIndex("Order", NewMaxEverVersionIndex("max_ever_version", GroupBy(VersionKey(), Field("price"))))
+	bitmap := NewBitmapValueIndex("bitmap", GroupBy(Field("order_id"), Field("price")))
+	bitmap.Options[IndexOptionBitmapValueEntrySize] = "4"
+	builder.AddIndex("Order", bitmap)
 	metadata, err := builder.Build()
 	if err != nil {
 		t.Fatal(err)
@@ -198,10 +215,13 @@ func TestFDB_IndexCursorSkipSelectorOffsets(t *testing.T) {
 		execute.ScanState = state
 		props := NewScanProperties(execute).WithReverse(req.reverse).WithStreamingMode(req.mode)
 		var cursor RecordCursor[*IndexEntry]
-		if req.records {
+		switch {
+		case req.records:
 			cursor = MapCursor(store.ScanIndexRecords(req.index, TupleRangeAll, req.continuation, props),
 				func(record *FDBIndexedRecord) *IndexEntry { return record.IndexEntry })
-		} else {
+		case req.byGroup || index.Type == IndexTypeBitmapValue:
+			cursor = store.ScanIndexByType(index, IndexScanByGroup, TupleRangeAll, req.continuation, props)
+		default:
 			cursor = store.ScanIndex(index, TupleRangeAll, req.continuation, props)
 		}
 		defer func() { _ = cursor.Close() }()
@@ -220,16 +240,30 @@ func TestFDB_IndexCursorSkipSelectorOffsets(t *testing.T) {
 				page.reason, page.end, page.continuation = result.GetNoNextReason(), result.GetContinuation().IsEnd(), continuation
 				break
 			}
-			page.rows = append(page.rows, skipRow{key: result.GetValue().Key.Pack(), continuation: continuation, bytes: state.BytesScanned() - before})
+			entry := result.GetValue()
+			page.rows = append(page.rows, skipRow{
+				key:          entry.Key.Pack(),
+				value:        entry.Value.Pack(),
+				continuation: continuation,
+				bytes:        state.BytesScanned() - before,
+			})
 		}
 		page.scanned, page.scannedBytes, page.reads = state.RecordsScanned(), state.BytesScanned(), observer.reads
 		return page
 	}
 
-	for _, indexName := range []string{"price", "version"} {
+	for _, indexName := range []string{"price", "version", "count", "min_ever_tuple", "max_ever_tuple", "max_ever_version", "bitmap"} {
 		for _, reverse := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/reverse=%v", indexName, reverse), func(t *testing.T) {
 				t.Parallel()
+				byGroup := indexName != "price" && indexName != "version"
+				chargesTerminal := !byGroup
+				nativeLimit := func(limit int) int {
+					if byGroup && limit > 0 {
+						return limit + 1
+					}
+					return limit
+				}
 				request := func(skip, limit int) skipScanRequest {
 					return skipScanRequest{index: indexName, reverse: reverse, skip: skip, limit: limit, mode: StreamingModeIterator}
 				}
@@ -254,7 +288,7 @@ func TestFDB_IndexCursorSkipSelectorOffsets(t *testing.T) {
 						page := scan(t, request(skip, 0))
 						want := skipWindow(base.rows, skip, 0)
 						expectSkipRows(t, page, want)
-						expectSkipTerminal(t, page, len(want), SourceExhausted)
+						expectSkipTerminal(t, page, len(want), SourceExhausted, chargesTerminal)
 						if page.scannedBytes != skipBytes(want) {
 							t.Fatalf("scanned bytes=%d want %d", page.scannedBytes, skipBytes(want))
 						}
@@ -271,17 +305,21 @@ func TestFDB_IndexCursorSkipSelectorOffsets(t *testing.T) {
 							page := scan(t, request(skip, limit))
 							want := skipWindow(base.rows, skip, limit)
 							expectSkipRows(t, page, want)
-							if skip+limit <= count {
-								expectSkipTerminal(t, page, len(want), ReturnLimitReached)
+							hitLimit := skip+limit <= count
+							if byGroup {
+								hitLimit = skip+limit < count
+							}
+							if hitLimit {
+								expectSkipTerminal(t, page, len(want), ReturnLimitReached, chargesTerminal)
 								if !bytes.Equal(page.continuation, want[len(want)-1].continuation) {
 									t.Fatalf("limit continuation=%x want last row %x", page.continuation, want[len(want)-1].continuation)
 								}
 							} else {
-								expectSkipTerminal(t, page, len(want), SourceExhausted)
+								expectSkipTerminal(t, page, len(want), SourceExhausted, chargesTerminal)
 							}
 							// The skip is not added to the native row limit.
-							if read := onlySkipRead(t, page); read.options.Limit != limit {
-								t.Fatalf("native limit=%d want %d", read.options.Limit, limit)
+							if read := onlySkipRead(t, page); read.options.Limit != nativeLimit(limit) {
+								t.Fatalf("native limit=%d want %d", read.options.Limit, nativeLimit(limit))
 							}
 						})
 					}
@@ -294,7 +332,7 @@ func TestFDB_IndexCursorSkipSelectorOffsets(t *testing.T) {
 						page := scan(t, req)
 						want := skipWindow(base.rows, position+1+2, 0)
 						expectSkipRows(t, page, want)
-						expectSkipTerminal(t, page, len(want), SourceExhausted)
+						expectSkipTerminal(t, page, len(want), SourceExhausted, chargesTerminal)
 						read := onlySkipRead(t, page)
 						if !reverse && read.begin.Offset != 3 || reverse && read.end.Offset != -1 {
 							t.Fatalf("resumed selector offsets begin=%d end=%d", read.begin.Offset, read.end.Offset)
@@ -307,6 +345,9 @@ func TestFDB_IndexCursorSkipSelectorOffsets(t *testing.T) {
 						page := scan(t, req)
 						pages = append(pages, page.rows)
 						req.continuation = page.continuation
+						if byGroup && page.end && len(page.rows) > 0 {
+							req.continuation = page.rows[len(page.rows)-1].continuation
+						}
 					}
 					for i, want := range [][]skipRow{skipWindow(base.rows, 1, 2), skipWindow(base.rows, 4, 2), nil} {
 						expectSkipRows(t, skipPage{rows: pages[i]}, want)
@@ -320,7 +361,7 @@ func TestFDB_IndexCursorSkipSelectorOffsets(t *testing.T) {
 						page := scan(t, req)
 						want := skipWindow(base.rows, 2, scanLimit)
 						expectSkipRows(t, page, want)
-						expectSkipTerminal(t, page, len(want), ScanLimitReached)
+						expectSkipTerminal(t, page, len(want), ScanLimitReached, chargesTerminal)
 					})
 				}
 
@@ -330,7 +371,7 @@ func TestFDB_IndexCursorSkipSelectorOffsets(t *testing.T) {
 					page := scan(t, req)
 					want := skipWindow(base.rows, 2, 1)
 					expectSkipRows(t, page, want)
-					expectSkipTerminal(t, page, 1, ByteLimitReached)
+					expectSkipTerminal(t, page, 1, ByteLimitReached, chargesTerminal)
 					if page.scannedBytes != want[0].bytes {
 						t.Fatalf("scanned bytes=%d want %d", page.scannedBytes, want[0].bytes)
 					}
@@ -347,8 +388,8 @@ func TestFDB_IndexCursorSkipSelectorOffsets(t *testing.T) {
 							if mode == StreamingModeWantAll && limit > 0 {
 								want = fdb.StreamingModeExact // Java calcStreamingMode.
 							}
-							if read := onlySkipRead(t, page); read.options.Mode != want || read.options.Limit != limit {
-								t.Fatalf("native mode/limit=%v/%d want %v/%d", read.options.Mode, read.options.Limit, want, limit)
+							if read := onlySkipRead(t, page); read.options.Mode != want || read.options.Limit != nativeLimit(limit) {
+								t.Fatalf("native mode/limit=%v/%d want %v/%d", read.options.Mode, read.options.Limit, want, nativeLimit(limit))
 							}
 						})
 					}
@@ -364,14 +405,23 @@ func TestFDB_IndexCursorSkipSelectorOffsets(t *testing.T) {
 					}
 				})
 
-				t.Run("records", func(t *testing.T) {
-					req := request(2, 2)
-					req.records = true
-					page := scan(t, req)
-					expectSkipRows(t, page, skipWindow(base.rows, 2, 2))
-				})
+				if !byGroup {
+					t.Run("records", func(t *testing.T) {
+						req := request(2, 2)
+						req.records = true
+						page := scan(t, req)
+						expectSkipRows(t, page, skipWindow(base.rows, 2, 2))
+					})
+				} else if indexName != "bitmap" {
+					t.Run("by_group", func(t *testing.T) {
+						req := request(2, 2)
+						req.byGroup = true
+						page := scan(t, req)
+						expectSkipRows(t, page, skipWindow(base.rows, 2, 2))
+					})
+				}
 
-				if indexName == "price" {
+				if indexName != "version" && indexName != "max_ever_version" {
 					t.Run("local_write", func(t *testing.T) {
 						// Selector resolution sees the transaction's own uncommitted entry.
 						req := request(1, 0)
@@ -395,12 +445,13 @@ func TestFDB_IndexCursorSkipSelectorOffsets(t *testing.T) {
 					{math.MaxInt32 - 1, math.MaxInt32, math.MinInt32 + 3},
 					{math.MaxInt32, math.MaxInt32, math.MinInt32 + 3},
 					{math.MaxInt32 + 5, math.MaxInt32, math.MinInt32 + 3},
+					{1 << 32, math.MaxInt32, math.MinInt32 + 3},
 					{math.MaxInt, math.MaxInt32, math.MinInt32 + 3},
 				} {
 					t.Run(fmt.Sprintf("bound/skip=%d", bound.skip), func(t *testing.T) {
 						page := scan(t, request(bound.skip, 0))
 						expectSkipRows(t, page, nil)
-						expectSkipTerminal(t, page, 0, SourceExhausted)
+						expectSkipTerminal(t, page, 0, SourceExhausted, chargesTerminal)
 						read := onlySkipRead(t, page)
 						begin, end := baseRead.begin, baseRead.end
 						if reverse {

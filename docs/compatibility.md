@@ -91,13 +91,14 @@ returns every record completed before the stop. Java's record pipeline may drop
 or pre-empt records whose version read is still pending
 (MapPipelinedCursor.java:157-175), so Java can return fewer rows there.
 
-### Ordinary index scan Skip
+### Index scan Skip
 
-Ordinary index cursors (VALUE, VERSION, RANK, leaderboard and PERMUTED_MIN/MAX
+Index cursors (VALUE, VERSION, RANK, leaderboard, PERMUTED_MIN/MAX, COUNT/SUM,
+MIN/MAX_EVER_LONG, MIN/MAX_EVER_TUPLE, MAX_EVER_VERSION and BITMAP_VALUE
 entries) apply a positive `ExecuteProperties.Skip` as Java's `KeyValueCursorBase`
 does: after the continuation replaces the resumed bound, the begin selector
 (forward) or end selector (reverse) moves by the skip. The returned-row limit is
-not widened, and the cursor neither returns skipped entries nor charges them to
+not widened by Skip, and the cursor neither returns skipped entries nor charges them to
 scanned-record or byte limits. A caller that keeps Skip on a resumed page skips
 again, as in Java.
 
@@ -111,9 +112,8 @@ The pure-Go client resolves the skipped selector with a `GetKey` that is not
 bounded by the scan range. When Skip overshoots the remaining entries, Go reads
 keys beyond the range until the selector resolves and, in a serializable
 transaction, adds them to the read-conflict range; `libfdb_c` bounds both by the
-range. COUNT/atomic, MIN/MAX_EVER and BITMAP_VALUE cursors do not apply Skip yet,
-and the query executor applies Skip above the index cursor instead of in it. See
-DIVERGENCES.md.
+range. The query executor applies Skip above the index cursor instead of in it.
+See DIVERGENCES.md.
 
 ### Vector defaults are layer-specific
 

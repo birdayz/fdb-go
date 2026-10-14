@@ -1571,11 +1571,6 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   with a lastKey token; its next page is empty and exhausted. Rows agree; the page count,
   stop reason and token differ. `conformance/index_continuation_range_conformance_test.go`
   picks page sizes that avoid the boundary until this is ported.
-  The count/bitmap cursors, including the MIN/MAX_EVER_TUPLE and MAX_EVER_VERSION
-  tuple-value cursor (`count_index_maintainer.go:67`, `max_ever_version_index_maintainer.go:127-129`),
-  also ignore `ExecuteProperties.Skip`. Java applies it through the same `KeyValueCursor`
-  selector offsets (AtomicMutationIndexMaintainer.java:114-121, BitmapValueIndexMaintainer.java:148,
-  via StandardIndexMaintainer.java:128-135); reuse `indexSkipRange` (index_cursor_limits.go).
 
 ## Issued-record load byte accounting
 
