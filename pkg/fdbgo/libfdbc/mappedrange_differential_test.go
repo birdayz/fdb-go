@@ -53,6 +53,29 @@ import (
 // (fdbserver/workloads/GetMappedRange.actor.cpp:88-95).
 // ---------------------------------------------------------------------------
 
+// Raw C futures do not observe Go contexts; bound every transaction natively.
+func mdCreateTransaction(t *testing.T, db *libfdbc.CDatabase) (libfdbc.CTxnHandle, error) {
+	t.Helper()
+	tr, err := db.CreateTransaction()
+	if err != nil {
+		return tr, err
+	}
+	timeout := 10 * time.Second
+	if deadline, ok := t.Deadline(); ok {
+		timeout = min(timeout, time.Until(deadline))
+	}
+	milliseconds := timeout.Milliseconds()
+	if milliseconds <= 0 {
+		tr.Close()
+		return libfdbc.CTxnHandle{}, context.DeadlineExceeded
+	}
+	if err := tr.SetTimeout(milliseconds); err != nil {
+		tr.Close()
+		return libfdbc.CTxnHandle{}, fmt.Errorf("set mapped C transaction timeout: %w", err)
+	}
+	return tr, nil
+}
+
 func mdPack(parts ...[]byte) []byte {
 	out := make([]byte, 0, 32)
 	for _, p := range parts {
@@ -113,7 +136,7 @@ func (f mdFixture) getRangeMapper() []byte {
 // not written by the client whose decode is being checked.
 func (f mdFixture) seedThroughC(t *testing.T, cdb *libfdbc.CDatabase, split int) {
 	t.Helper()
-	tr, err := cdb.CreateTransaction()
+	tr, err := mdCreateTransaction(t, cdb)
 	if err != nil {
 		t.Fatalf("libfdb_c create transaction: %v", err)
 	}
@@ -304,7 +327,7 @@ func TestLibFDBC_GetMappedRangeDifferential(t *testing.T) {
 
 func cMappedRead(t *testing.T, cdb *libfdbc.CDatabase, begin, end, mapper []byte, limit int, reverse bool) ([]libfdbc.CMappedRow, bool) {
 	t.Helper()
-	tr, err := cdb.CreateTransaction()
+	tr, err := mdCreateTransaction(t, cdb)
 	if err != nil {
 		t.Fatalf("libfdb_c create transaction: %v", err)
 	}
@@ -329,7 +352,7 @@ func goMappedRead(t *testing.T, ctx context.Context, db *fdbclient.Database, beg
 
 func cMappedReadErrCode(t *testing.T, cdb *libfdbc.CDatabase, begin, end, mapper []byte) int {
 	t.Helper()
-	tr, err := cdb.CreateTransaction()
+	tr, err := mdCreateTransaction(t, cdb)
 	if err != nil {
 		t.Fatalf("libfdb_c create transaction: %v", err)
 	}
@@ -368,7 +391,7 @@ type mdBatch struct {
 func mdSeedStreaming(t *testing.T, cdb *libfdbc.CDatabase, n int) mdFixture {
 	t.Helper()
 	f := mdFixture{prefix: []byte(t.Name()), n: n}
-	tr, err := cdb.CreateTransaction()
+	tr, err := mdCreateTransaction(t, cdb)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -539,7 +562,7 @@ func TestLibFDBC_MappedRangeFacadeBatchDivision(t *testing.T) {
 		for _, limit := range limits {
 			for _, reverse := range []bool{false, true} {
 				t.Run(fmt.Sprintf("%s/limit=%d/reverse=%v", mode.name, limit, reverse), func(t *testing.T) {
-					ct, err := cdb.CreateTransaction()
+					ct, err := mdCreateTransaction(t, cdb)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -641,7 +664,7 @@ func TestLibFDBC_MappedRangeByteTarget(t *testing.T) {
 	for _, target := range []int{256, 4096, 0, -1, -2} {
 		for _, reverse := range []bool{false, true} {
 			t.Run(fmt.Sprintf("target=%d/reverse=%v", target, reverse), func(t *testing.T) {
-				ct, err := cdb.CreateTransaction()
+				ct, err := mdCreateTransaction(t, cdb)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -706,7 +729,7 @@ func TestLibFDBC_MappedRangeFacadeReadConflicts(t *testing.T) {
 	for _, limit := range []int{0, 5} {
 		for _, reverse := range []bool{false, true} {
 			t.Run(fmt.Sprintf("limit=%d/reverse=%v", limit, reverse), func(t *testing.T) {
-				ct, err := cdb.CreateTransaction()
+				ct, err := mdCreateTransaction(t, cdb)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -876,7 +899,7 @@ func TestLibFDBC_MappedRangeTruncatedSecondaryConflicts(t *testing.T) {
 		return mdPack(f.prefix, []byte("REC"), []byte("pk-00000000"), []byte(fmt.Sprintf("s-%08d", i)))
 	}
 	secondaryValue := func(i int) []byte { return []byte(fmt.Sprintf("value-%08d", i)) }
-	seed, err := cdb.CreateTransaction()
+	seed, err := mdCreateTransaction(t, cdb)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -909,7 +932,7 @@ func TestLibFDBC_MappedRangeTruncatedSecondaryConflicts(t *testing.T) {
 				}
 				return row
 			}
-			oracle, err := cdb.CreateTransaction()
+			oracle, err := mdCreateTransaction(t, cdb)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -976,7 +999,7 @@ func TestLibFDBC_MappedRangeTruncatedSecondaryConflicts(t *testing.T) {
 			}
 			for _, pendingTail := range []bool{false, true} {
 				t.Run(fmt.Sprintf("unread_tail_local_write=%v", pendingTail), func(t *testing.T) {
-					ct, err := cdb.CreateTransaction()
+					ct, err := mdCreateTransaction(t, cdb)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -1032,7 +1055,7 @@ func TestLibFDBC_MappedRangeTruncatedSecondaryConflicts(t *testing.T) {
 				{"existing_unread_tail", secondaryKey(secondaryCount - 1), 0},
 			} {
 				t.Run(probe.name, func(t *testing.T) {
-					ct, err := cdb.CreateTransaction()
+					ct, err := mdCreateTransaction(t, cdb)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -1138,7 +1161,7 @@ func TestLibFDBC_MappedRangeRYWErrorConflictPrefix(t *testing.T) {
 							probe = f.splitRecordKey(0, 0)
 						}
 					}
-					ct, err := cdb.CreateTransaction()
+					ct, err := mdCreateTransaction(t, cdb)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -1152,7 +1175,7 @@ func TestLibFDBC_MappedRangeRYWErrorConflictPrefix(t *testing.T) {
 					if cCode(t, ce) != 2039 || goCode(t, ge) != 2039 {
 						t.Fatalf("mapped read: C=%v Go=%v, want both 2039", ce, ge)
 					}
-					writer, err := cdb.CreateTransaction()
+					writer, err := mdCreateTransaction(t, cdb)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -1255,7 +1278,7 @@ func TestLibFDBC_MappedRangeSkip(t *testing.T) {
 			for _, limit := range mode.limits {
 				for _, reverse := range []bool{false, true} {
 					t.Run(fmt.Sprintf("division/%s/skip=%d/limit=%d/reverse=%v", mode.name, skip, limit, reverse), func(t *testing.T) {
-						ct, err := cdb.CreateTransaction()
+						ct, err := mdCreateTransaction(t, cdb)
 						if err != nil {
 							t.Fatal(err)
 						}
@@ -1324,7 +1347,7 @@ func TestLibFDBC_MappedRangeSkip(t *testing.T) {
 	for _, skip := range []int32{1, 7, int32(f.n), int32(f.n + 3), 2147483646, 2147483647} {
 		for _, reverse := range []bool{false, true} {
 			t.Run(fmt.Sprintf("conflicts/skip=%d/reverse=%v", skip, reverse), func(t *testing.T) {
-				ct, err := cdb.CreateTransaction()
+				ct, err := mdCreateTransaction(t, cdb)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -1453,7 +1476,7 @@ func TestLibFDBC_MappedRangeSkip(t *testing.T) {
 				{name: "disabled_before_primary_ryw", disabled: true, primaryWrite: true},
 			} {
 				t.Run(fmt.Sprintf("preflight/skip=%d/reverse=%v/%s", skip, reverse, tc.name), func(t *testing.T) {
-					ct, err := cdb.CreateTransaction()
+					ct, err := mdCreateTransaction(t, cdb)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -1476,11 +1499,6 @@ func TestLibFDBC_MappedRangeSkip(t *testing.T) {
 					if tc.secondaryWrite {
 						pendingKey = f.splitRecordKey(index, 0)
 					}
-					if pendingKey != nil {
-						ct.Set(pendingKey, []byte("pending"))
-						gt.Set(pendingKey, []byte("pending"))
-						ft.Set(gofdb.Key(pendingKey), []byte("pending"))
-					}
 					if tc.disabled {
 						if err := ct.DisableReadYourWrites(); err != nil {
 							t.Fatal(err)
@@ -1490,15 +1508,23 @@ func TestLibFDBC_MappedRangeSkip(t *testing.T) {
 							t.Fatal(err)
 						}
 					}
+					if pendingKey != nil {
+						ct.Set(pendingKey, []byte("pending"))
+						gt.Set(pendingKey, []byte("pending"))
+						ft.Set(gofdb.Key(pendingKey), []byte("pending"))
+					}
 					mapper := f.getRangeMapper()
 					if tc.badMapper {
 						mapper = []byte("\xff invalid tuple")
 					}
+					// Reverse Skip=n leaves [prefixBegin, firstPrimary): no rows,
+					// but ordered byte bounds still reach server mapper parsing.
+					rawSupported := skip < int32(f.n) || (reverse && skip == int32(f.n))
 					want := 0
 					if tc.primaryWrite {
 						want = 2039
 					}
-					if tc.badMapper && skip < int32(f.n) {
+					if tc.badMapper && rawSupported {
 						want = 2043
 					}
 					if tc.disabled {
@@ -1507,7 +1533,7 @@ func TestLibFDBC_MappedRangeSkip(t *testing.T) {
 					var cRows []libfdbc.CMappedRow
 					var cMore bool
 					var cErr error
-					if skip < int32(f.n) {
+					if rawSupported {
 						cRows, cMore, cErr = libfdbc.CGetMappedRangeBatchWithSkip(ct, begin, end, mapper, 5, 0, libfdbc.CStreamingModeExact, 1, skip, reverse, false)
 					} else {
 						cBegin, cEnd := mdCExhaustedSkipBounds(t, ct, f, skip)
@@ -1517,7 +1543,7 @@ func TestLibFDBC_MappedRangeSkip(t *testing.T) {
 					fRows, fErr := mdSkipFacadeResult(t, ft, f, mapper, gofdb.RangeOptions{Limit: 5, Mode: gofdb.StreamingModeExact, Reverse: reverse}, skip).GetSliceWithError()
 					cCode, gCode, fCode := mdMappedErrorCode(t, cErr), mdMappedErrorCode(t, gErr), mdMappedErrorCode(t, fErr)
 					cWant := want
-					if skip >= int32(f.n) {
+					if !rawSupported {
 						// Exact empty bounds are only a row oracle: they bypass
 						// original-anchor primary RYW and disabled-RYW checks.
 						cWant = 0
@@ -1581,7 +1607,7 @@ func TestLibFDBC_MappedRangeSkipLiteralOffsets(t *testing.T) {
 	} {
 		for _, reverse := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/reverse=%v", tc.name, reverse), func(t *testing.T) {
-				literal, err := cdb.CreateTransaction()
+				literal, err := mdCreateTransaction(t, cdb)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -1590,7 +1616,7 @@ func TestLibFDBC_MappedRangeSkipLiteralOffsets(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				wrapped, err := cdb.CreateTransaction()
+				wrapped, err := mdCreateTransaction(t, cdb)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -1732,7 +1758,7 @@ func TestLibFDBC_MappedRangeSelectorReplyMore(t *testing.T) {
 	t.Cleanup(func() { goDB.Close() })
 	facade := gofdb.WrapDatabase(goDB)
 	f := mdSeedStreaming(t, cdb, 2)
-	seed, err := cdb.CreateTransaction()
+	seed, err := mdCreateTransaction(t, cdb)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1754,7 +1780,7 @@ func TestLibFDBC_MappedRangeSelectorReplyMore(t *testing.T) {
 	}
 	for _, limit := range []int{0, 1000} {
 		t.Run(fmt.Sprintf("limit=%d", limit), func(t *testing.T) {
-			ct, err := cdb.CreateTransaction()
+			ct, err := mdCreateTransaction(t, cdb)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1782,8 +1808,10 @@ func TestLibFDBC_MappedRangeSelectorReplyMore(t *testing.T) {
 			}
 			mdCompareRangeRow(t, cRows[0], gRows[0])
 			wantBounds := []libfdbc.CKeyValue{
-				{Key: begin, Value: []byte("1")}, {Key: end, Value: []byte("0")},
-				{Key: cRows[0].RangeBeginKey, Value: []byte("1")}, {Key: cRows[0].RangeEndKey, Value: []byte("0")},
+				{Key: begin, Value: []byte("1")},
+				{Key: end, Value: []byte("0")},
+				{Key: cRows[0].RangeBeginKey, Value: []byte("1")},
+				{Key: cRows[0].RangeEndKey, Value: []byte("0")},
 			}
 			sort.Slice(wantBounds, func(i, j int) bool { return bytes.Compare(wantBounds[i].Key, wantBounds[j].Key) < 0 })
 			firstBounds, err := libfdbc.CReadConflictRangeBoundaries(ct)
@@ -1890,7 +1918,7 @@ func TestLibFDBC_MappedRangeSkipMaxEmptyEnd(t *testing.T) {
 	inside := f.indexEntryKey(0)
 	for _, pending := range []bool{false, true} {
 		t.Run(fmt.Sprintf("pending_primary=%v", pending), func(t *testing.T) {
-			ct, err := cdb.CreateTransaction()
+			ct, err := mdCreateTransaction(t, cdb)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1899,7 +1927,7 @@ func TestLibFDBC_MappedRangeSkipMaxEmptyEnd(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			literal, err := cdb.CreateTransaction()
+			literal, err := mdCreateTransaction(t, cdb)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -2003,7 +2031,7 @@ func TestLibFDBC_MappedRangeDeferredErrorPrecedence(t *testing.T) {
 					t.Parallel()
 					ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 					defer cancel()
-					ct, err := cdb.CreateTransaction()
+					ct, err := mdCreateTransaction(t, cdb)
 					if err != nil {
 						t.Fatal(err)
 					}

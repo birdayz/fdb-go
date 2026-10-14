@@ -34,17 +34,38 @@ type mdShardEnv struct {
 func mdShardReadBoundaries(t *testing.T, backend gofdb.BackendDatabase, f mdFixture, version int64) [][]byte {
 	t.Helper()
 	begin, end := f.indexRange()
-	keys, err := backend.LocalityGetBoundaryKeys(gofdb.KeyRange{Begin: gofdb.Key(begin), End: gofdb.Key(end)}, 0, version)
+	tr, err := backend.CreateWritableTransaction()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Cancel()
+	for _, err := range []error{tr.Options().SetTimeout(10000), tr.Options().SetReadSystemKeys(), tr.Options().SetLockAware()} {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if version != 0 {
+		tr.SetReadVersion(version)
+	}
+	prefix := []byte("\xff/keyServers/")
+	rows, err := tr.Snapshot().GetRange(gofdb.KeyRange{
+		Begin: gofdb.Key(append(bytes.Clone(prefix), begin...)),
+		End:   gofdb.Key(append(bytes.Clone(prefix), end...)),
+	}, gofdb.RangeOptions{Mode: gofdb.StreamingModeWantAll}).GetSliceWithError()
 	if err != nil {
 		t.Fatalf("read physical keyServers boundaries: %v", err)
 	}
 	var boundaries [][]byte
-	for _, key := range keys {
+	for _, row := range rows {
+		if !bytes.HasPrefix(row.Key, prefix) {
+			t.Fatalf("keyServers reply escaped its prefix: %x", row.Key)
+		}
+		key := row.Key[len(prefix):]
 		if bytes.Compare(key, begin) <= 0 || bytes.Compare(key, end) >= 0 {
 			continue
 		}
 		if len(boundaries) > 0 && bytes.Compare(boundaries[len(boundaries)-1], key) >= 0 {
-			t.Fatalf("keyServers boundaries are not strictly ordered: %x", keys)
+			t.Fatalf("keyServers boundaries are not strictly ordered: %x", rows)
 		}
 		boundaries = append(boundaries, bytes.Clone(key))
 	}
@@ -100,7 +121,8 @@ func TestMappedSkipShardBoundaryPopulationGuard(t *testing.T) {
 		indices []int
 		want    int
 	}{
-		{"empty", nil, -1}, {"two", []int{20, 80}, -1},
+		{"empty", nil, -1},
+		{"two", []int{20, 80}, -1},
 		{"no_left_population", []int{0, 50, 80}, -1},
 		{"no_right_population", []int{20, 50, 100}, -1},
 		{"too_close", []int{20, 21, 22}, -1},
@@ -165,7 +187,7 @@ func mdShardSetup(t *testing.T, ctx context.Context) mdShardEnv {
 		t.Fatal(err)
 	}
 	clusterFile := t.TempDir() + "/fdb.cluster"
-	if err := os.WriteFile(clusterFile, []byte(content), 0600); err != nil {
+	if err := os.WriteFile(clusterFile, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cdb, err := libfdbc.COpenDatabase(clusterFile)
@@ -194,7 +216,7 @@ func mdShardSetup(t *testing.T, ctx context.Context) mdShardEnv {
 	// The INDEX, not just its secondary records, holds 1MB. The key-only mapper
 	// does not parse these non-tuple primary values (storage server :4911-4940).
 	for batch := 0; batch < 10; batch++ {
-		tr, err := cdb.CreateTransaction()
+		tr, err := mdCreateTransaction(t, cdb)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -279,6 +301,102 @@ func mdShardAssertFrozen(t *testing.T, env mdShardEnv) {
 	}
 }
 
+// The raw C mapped API may resolve an offset beyond its client-clipped shard
+// end. Resolve through ordinary reads and use bounded, plain mapped requests.
+func mdShardPrimaryRows(t *testing.T, tr libfdbc.CTxnHandle, f mdFixture, begin, end []byte, snapshot bool) []libfdbc.CKeyValue {
+	t.Helper()
+	var rows []libfdbc.CKeyValue
+	for iteration := 1; iteration <= f.n+1; iteration++ {
+		batch, more, err := libfdbc.CGetRangeBatch(tr, begin, end, 0, 80000, libfdbc.CStreamingModeWantAll, iteration, false, snapshot)
+		if err != nil {
+			t.Fatalf("ordinary C primary batch %d: %v", iteration, err)
+		}
+		rows = append(rows, batch...)
+		if len(rows) > f.n {
+			t.Fatal("ordinary C primary scan repeated rows")
+		}
+		if !more {
+			return rows
+		}
+		if len(batch) == 0 {
+			t.Fatal("ordinary C primary scan made no progress")
+		}
+		begin = append(bytes.Clone(batch[len(batch)-1].Key), 0)
+	}
+	t.Fatal("ordinary C primary scan did not terminate")
+	return nil
+}
+
+func mdShardDrainC(t *testing.T, tr libfdbc.CTxnHandle, f mdFixture, limit, mode int, skip int32, reverse bool) ([]libfdbc.CMappedRow, []mdBatch) {
+	t.Helper()
+	begin, end := f.indexRange()
+	primary := mdShardPrimaryRows(t, tr, f, begin, end, true)
+	if len(primary) != f.n || skip <= 0 || int(skip) >= len(primary) {
+		t.Fatalf("cross-shard C resolution population=%d fixture=%d skip=%d", len(primary), f.n, skip)
+	}
+	for i, row := range primary {
+		if !bytes.Equal(row.Key, f.indexEntryKey(i)) {
+			t.Fatalf("ordinary C primary %d differs from seeded key", i)
+		}
+	}
+	skippedBegin, skippedEnd := begin, primary[int(skip)].Key
+	if reverse {
+		skippedBegin, skippedEnd = primary[len(primary)-int(skip)].Key, end
+		end = skippedBegin
+	} else {
+		begin = skippedEnd
+	}
+	// Ordinary non-snapshot reads retain the skipped PRIMARY interval without
+	// fetching or conflicting any skipped secondary. The C conflict map is checked below.
+	if skipped := mdShardPrimaryRows(t, tr, f, skippedBegin, skippedEnd, false); len(skipped) != int(skip) {
+		t.Fatalf("ordinary C skipped-primary population=%d want=%d", len(skipped), skip)
+	}
+	remaining := gofdb.EffectiveRowLimit(limit)
+	var rows []libfdbc.CMappedRow
+	var batches []mdBatch
+	for iteration := 1; iteration <= f.n+1; iteration++ {
+		requested := remaining
+		var batch []libfdbc.CMappedRow
+		more := false
+		for calls := 0; calls <= f.n; calls++ {
+			target := 0
+			if mode == libfdbc.CStreamingModeExact {
+				// NativeAPI:4850's unlimited-byte FGT continuation can cross the
+				// clipped shard end. Absorb bounded calls with public FGE bounds instead.
+				target = 80000
+			}
+			part, partMore, err := libfdbc.CGetMappedRangeBatch(tr, begin, end, f.getRangeMapper(), requested-len(batch), target, mode, iteration, reverse, false)
+			if err != nil {
+				t.Fatalf("plain C mapped batch %d call %d: %v", iteration, calls+1, err)
+			}
+			batch = append(batch, part...)
+			more = partMore
+			if len(part) > 0 {
+				last := part[len(part)-1].Key
+				if reverse {
+					end = bytes.Clone(last)
+				} else {
+					begin = append(bytes.Clone(last), 0)
+				}
+			}
+			if mode != libfdbc.CStreamingModeExact || len(batch) >= requested || !more || len(part) == 0 {
+				break
+			}
+			if calls == f.n {
+				t.Fatal("bounded C exact page did not terminate")
+			}
+		}
+		batches = append(batches, mdBatch{iteration, requested, len(batch), more})
+		rows = append(rows, batch...)
+		remaining -= len(batch)
+		if !more || len(batch) == 0 || remaining <= 0 {
+			return rows, batches
+		}
+	}
+	t.Fatal("plain C mapped iteration did not terminate")
+	return nil, nil
+}
+
 func mdShardDrainGo(t *testing.T, ctx context.Context, tr *fdbclient.Transaction, f mdFixture, limit int, mode gofdb.StreamingMode, skip int32, reverse bool) ([]gofdb.MappedKeyValue, []mdBatch) {
 	t.Helper()
 	begin, end := f.indexRange()
@@ -346,7 +464,7 @@ func mdShardConflictMembership(t *testing.T, ctx context.Context, env mdShardEnv
 	if reverse {
 		limit = first - env.indices[env.middle-1] + 2
 	}
-	ct, err := env.cdb.CreateTransaction()
+	ct, err := mdCreateTransaction(t, env.cdb)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -355,7 +473,7 @@ func mdShardConflictMembership(t *testing.T, ctx context.Context, env mdShardEnv
 		t.Fatal(err)
 	}
 	mdShardAssertFrozen(t, env)
-	cRows, _ := mdDrainCWithSkip(t, ct, f, limit, libfdbc.CStreamingModeExact, skip, reverse)
+	cRows, _ := mdShardDrainC(t, ct, f, limit, libfdbc.CStreamingModeExact, skip, reverse)
 	if len(cRows) != limit || limit < 2 {
 		t.Fatalf("bounded conflict page has %d rows, want %d>=2", len(cRows), limit)
 	}
@@ -414,7 +532,7 @@ func mdShardConflictMembership(t *testing.T, ctx context.Context, env mdShardEnv
 		}
 		// Fresh C versions per probe, never the old oracle/setup version. Keep
 		// fresh metadata GRVs off the query client's version floor entirely.
-		versionReader, err := env.cdb.CreateTransaction()
+		versionReader, err := mdCreateTransaction(t, env.cdb)
 		if err != nil {
 			reader.Cancel()
 			t.Fatal(err)
@@ -502,7 +620,7 @@ func TestLibFDBC_MappedRangeSkipAcrossShards(t *testing.T) {
 			}
 			for _, limit := range limits {
 				t.Run(fmt.Sprintf("data/%s/reverse=%v/skip=%d/limit=%d", mode.name, reverse, skip, limit), func(t *testing.T) {
-					ct, err := env.cdb.CreateTransaction()
+					ct, err := mdCreateTransaction(t, env.cdb)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -512,7 +630,7 @@ func TestLibFDBC_MappedRangeSkipAcrossShards(t *testing.T) {
 						t.Fatal(err)
 					}
 					mdShardAssertFrozen(t, env)
-					cRows, cBatches := mdDrainCWithSkip(t, ct, f, limit, mode.cMode, skip, reverse)
+					cRows, cBatches := mdShardDrainC(t, ct, f, limit, mode.cMode, skip, reverse)
 					gt := env.goDB.CreateTransaction()
 					defer gt.Cancel()
 					gt.SetReadVersion(version)
@@ -619,7 +737,7 @@ func TestLibFDBC_MappedRangeSkipAcrossShards(t *testing.T) {
 		})
 		for _, primary := range []bool{false, true} {
 			t.Run(fmt.Sprintf("own_write/reverse=%v/primary=%v", reverse, primary), func(t *testing.T) {
-				ct, err := env.cdb.CreateTransaction()
+				ct, err := mdCreateTransaction(t, env.cdb)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -646,7 +764,21 @@ func TestLibFDBC_MappedRangeSkipAcrossShards(t *testing.T) {
 				gt.Set(key, []byte("pending"))
 				ft.Set(gofdb.Key(key), []byte("pending"))
 				begin, end := f.indexRange()
-				cRows, cMore, cErr := libfdbc.CGetMappedRangeBatchWithSkip(ct, begin, end, f.getRangeMapper(), 7, 0, libfdbc.CStreamingModeExact, 1, skip, reverse, false)
+				var cRows []libfdbc.CMappedRow
+				var cMore bool
+				var cErr error
+				if primary {
+					// A plain read of the original first primary independently proves
+					// that the pending skipped-primary write is not mapped-readable.
+					cRows, cMore, cErr = libfdbc.CGetMappedRangeBatch(ct, begin, end, f.getRangeMapper(), 1, 256, libfdbc.CStreamingModeSmall, 1, reverse, false)
+				} else {
+					var batches []mdBatch
+					cRows, batches = mdShardDrainC(t, ct, f, 7, libfdbc.CStreamingModeExact, skip, reverse)
+					if len(batches) != 1 {
+						t.Fatalf("exact C control returned %d pages", len(batches))
+					}
+					cMore = batches[0].more
+				}
 				gRows, gMore, gErr := gt.GetMappedRangeWithByteTargetAndSkip(ctx, begin, end, f.getRangeMapper(), 7, fdbclient.ByteLimitUnlimited, skip, reverse)
 				fRows, fErr := mdSkipFacadeResult(t, ft, f, f.getRangeMapper(), gofdb.RangeOptions{Limit: 7, Mode: gofdb.StreamingModeExact, Reverse: reverse}, skip).GetSliceWithError()
 				want := 0
@@ -701,7 +833,7 @@ func mdShardReverseSkipFallbackAtBegin(t *testing.T, ctx context.Context, env md
 		t.Fatalf("fallback fixture misses SMALL prefetch window: primary=%d charge=%d", primaryBytes, primaryBytes+8)
 	}
 	mdShardAssertFrozen(t, env)
-	seed, err := env.cdb.CreateTransaction()
+	seed, err := mdCreateTransaction(t, env.cdb)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -712,7 +844,7 @@ func mdShardReverseSkipFallbackAtBegin(t *testing.T, ctx context.Context, env md
 	}
 	seed.Close()
 	mdShardAssertFrozen(t, env)
-	ct, err := env.cdb.CreateTransaction()
+	ct, err := mdCreateTransaction(t, env.cdb)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -726,6 +858,9 @@ func mdShardReverseSkipFallbackAtBegin(t *testing.T, ctx context.Context, env md
 		t.Fatal(err)
 	}
 	defer native.Cancel()
+	if err := native.Options().SetTimeout(10000); err != nil {
+		t.Fatal(err)
+	}
 	native.SetReadVersion(version)
 	primary, err := native.Snapshot().GetRange(gofdb.KeyRange{Begin: gofdb.Key(begin), End: gofdb.Key(end)}, gofdb.RangeOptions{Mode: gofdb.StreamingModeWantAll}).GetSliceWithError()
 	if err != nil || len(primary) != int(skip)+1 {
@@ -744,18 +879,11 @@ func mdShardReverseSkipFallbackAtBegin(t *testing.T, ctx context.Context, env md
 	if err != nil || !bytes.Equal(resolved, resolvedEnd) {
 		t.Fatalf("ordinary C selector resolved=%x want=%x err=%v", resolved, resolvedEnd, err)
 	}
-	// Plain selectors in the resolved shard retain More, independently proving
-	// that the raw cross-shard request below needs the exact fallback correction.
+	// Plain selectors in the resolved shard retain storage More. NativeAPI's
+	// exact fallback clears it when the final key equals begin (:4366-4368).
 	witness, witnessMore, err := libfdbc.CGetMappedRangeBatch(ct, begin, resolvedEnd, f.getRangeMapper(), 2, 256, libfdbc.CStreamingModeSmall, 1, true, false)
 	if err != nil || len(witness) != 1 || !witnessMore || !bytes.Equal(witness[0].Key, begin) || !bytes.Equal(witness[0].Value, value) {
 		t.Fatalf("same-shard direct More witness: C rows=%d more=%v err=%v", len(witness), witnessMore, err)
-	}
-	cRows, cMore, err := libfdbc.CGetMappedRangeBatchWithSkip(ct, begin, end, f.getRangeMapper(), 2, 256, libfdbc.CStreamingModeSmall, 1, skip, true, false)
-	if err != nil || len(cRows) != 1 || cMore || !bytes.Equal(cRows[0].Key, begin) || !bytes.Equal(cRows[0].Value, value) {
-		t.Fatalf("cross-shard exact fallback: C rows=%d more=%v err=%v", len(cRows), cMore, err)
-	}
-	if !reflect.DeepEqual(cRows, witness) {
-		t.Fatal("fallback changed the primary/secondary row rather than only More")
 	}
 	mdShardAssertFrozen(t, env)
 	gt := env.goDB.CreateTransaction()
@@ -763,9 +891,9 @@ func mdShardReverseSkipFallbackAtBegin(t *testing.T, ctx context.Context, env md
 	gt.SetReadVersion(version)
 	gRows, gMore, err := gt.GetMappedRangeWithByteTargetAndSkip(ctx, begin, end, f.getRangeMapper(), 2, 256, skip, true)
 	if err != nil || len(gRows) != 1 || gMore {
-		t.Fatalf("cross-shard exact fallback: Go rows=%d more=%v err=%v; C=%d/%v", len(gRows), gMore, err, len(cRows), cMore)
+		t.Fatalf("cross-shard exact fallback: Go rows=%d more=%v err=%v; plain C witness=%d/%v", len(gRows), gMore, err, len(witness), witnessMore)
 	}
-	mdCompareRangeRow(t, cRows[0], gRows[0])
+	mdCompareRangeRow(t, witness[0], gRows[0])
 	ft, err := env.facade.CreateTransaction()
 	if err != nil {
 		t.Fatal(err)
@@ -791,7 +919,7 @@ func mdShardReverseSkipFallbackAtBegin(t *testing.T, ctx context.Context, env md
 		if err != nil || seen != 0 {
 			t.Fatalf("fallback facade row %d: %v", seen, err)
 		}
-		mdCompareRangeRow(t, cRows[0], row)
+		mdCompareRangeRow(t, witness[0], row)
 		seen++
 	}
 	if _, err := it.Get(); err != nil {
@@ -801,5 +929,5 @@ func mdShardReverseSkipFallbackAtBegin(t *testing.T, ctx context.Context, env md
 		t.Fatalf("fallback facade must finish in one fetch: rows=%d batches=%+v", seen, batches)
 	}
 	mdShardAssertFrozen(t, env)
-	t.Logf("reverse Skip=%d crossed %x; ordinary C population=%d; primary+8=%d<256; direct native More=true, fallback C/Go More=false", skip, boundary, len(primary), primaryBytes+8)
+	t.Logf("reverse Skip=%d crossed %x; ordinary C population=%d; primary+8=%d<256; plain C storage More=true, Go exact fallback More=false", skip, boundary, len(primary), primaryBytes+8)
 }
