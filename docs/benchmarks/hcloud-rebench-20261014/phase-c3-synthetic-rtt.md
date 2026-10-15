@@ -6,7 +6,7 @@ private veth pair (0.5 ms nominal added RTT). This is **phase C3** of
 [hcloud-rebench-20261014](README.md) — a sensitivity check on the same host,
 not a multi-host or physical-network benchmark.
 
-## Environment and Network Verification
+## Environment and network verification
 
 - Same 16-vCPU `ccx43` host and `memory` storage engine as phase C1, configured
   fresh after phase A2.
@@ -54,7 +54,7 @@ per arm).
 | split-all-1000 | final-ordinary | 266,416,081 (266.4 ms) | 256.2–301.1 ms | 457,249,481 | 77,262 | 19 |
 | split-all-1000 | final-remote | 276,869,638 (276.9 ms) | 258.4–324.3 ms | 316,338,172 | 31,401 | 19 |
 
-## Interpretation and Limits
+## Interpretation and limits
 
 - **Small unsplit records (`small-all-1000`):** under 0.5 ms added client-server
   RTT, `USE_REMOTE_FETCH` took **0.224 [0.222, 0.226]** of `SCAN_AND_FETCH`'s

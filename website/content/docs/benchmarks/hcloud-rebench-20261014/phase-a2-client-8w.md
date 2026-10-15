@@ -1,5 +1,5 @@
 ---
-title: "Phase A2: Client (8 Workers)"
+title: "Phase A2: Client (8 workers)"
 description: "Pure-Go client vs CGo and vs pre-allocation pure-Go at 8 concurrent closed-loop workers."
 weight: 2
 ---
@@ -17,7 +17,7 @@ dedicated 16-vCPU host (`ssd-2` engine). This is **phase A2** of
 | before pure-Go | `pkg/fdbgo` before the allocation work (after read-path parity) | `3824f14654edae8431b0085de8ebf83f5a460a08` |
 | CGo | Apple's Go binding over `libfdb_c` 7.3.77, built from the final tree | `267a41434…`, native library 7.3.77 |
 
-## Design and Scope
+## Design and scope
 
 - Per workload (`get100`, `range100`, `batchset50`): 6 balanced blocks, each
   running all three arms once in a preregistered order (seed 641601; every arm
@@ -44,9 +44,9 @@ dedicated 16-vCPU host (`ssd-2` engine). This is **phase A2** of
 ## Results
 
 <figure class="bench-figure">
-<figcaption><strong>Figure A2.1: Single-Node 8-Worker Client Ratios (log₂ scale, 95% block-bootstrap CI)</strong> — 6 paired blocks × 24,000 tx/run (144,000 tx/arm/workload). Below 1.0× favors Final Pure-Go.</figcaption>
+<figcaption><strong>Figure A2.1: Client ratios at 8 workers (log₂ scale, 95% block-bootstrap CI)</strong> — 6 paired blocks × 24,000 tx/run (144,000 tx/arm/workload). Below 1.0× favors Final Pure-Go.</figcaption>
 <div class="bench-summary"><ul class="bench-summary-list"><li><strong>Latency (final/CGo at 8w):</strong> Mean latency is lower for pure-Go on range100 (0.663× [0.440, 0.858]) and batchset50 (0.817× [0.768, 0.851]) and unresolved on get100 (0.991× [0.928, 1.084]). p99 is lower on batchset50 (0.914× [0.816, 0.985]) and unresolved on range100 (0.881× [0.696, 1.033]) and get100 (1.015× [0.938, 1.097]).</li><li><strong>Shutdown CPU (E−A, final/CGo at 8w):</strong> Higher for pure-Go on all 3 workloads: batchset50 1.150× [1.112, 1.188], range100 1.359× [1.138, 1.559], and get100 1.638× [1.603, 1.676].</li><li><strong>Allocations (final/before at 8w):</strong> Go mallocs/tx drop on all 3 workloads (range100 0.796×, get100 0.872×, batchset50 0.973×).</li></ul></div>
-<svg class="bench-svg" viewBox="0 0 1320 402" role="img" aria-label="Figure A2.1: Single-Node 8-Worker Client Ratios (log₂ scale, 95% block-bootstrap CI)">
+<svg class="bench-svg" viewBox="0 0 1320 402" role="img" aria-label="Figure A2.1: Client ratios at 8 workers (log₂ scale, 95% block-bootstrap CI)">
 <line class="grid-line" x1="165.0" y1="36" x2="165.0" y2="376"/>
 <text class="axis-text" x="165.0" y="30" text-anchor="middle">0.4×</text>
 <text class="axis-text" x="165.0" y="391" text-anchor="middle">0.4×</text>
@@ -65,10 +65,10 @@ dedicated 16-vCPU host (`ssd-2` engine). This is **phase A2** of
 <line class="grid-line" x1="1125.0" y1="36" x2="1125.0" y2="376"/>
 <text class="axis-text" x="1125.0" y="30" text-anchor="middle">1.7×</text>
 <text class="axis-text" x="1125.0" y="391" text-anchor="middle">1.7×</text>
-<text class="axis-text" x="764.9" y="17" text-anchor="end">← Final Pure-Go lower</text>
+<text class="axis-text" x="764.9" y="17" text-anchor="end">← Final pure-Go lower</text>
 <text class="axis-text" x="780.9" y="17" text-anchor="start">Denominator lower →</text>
 <line class="section-divider" x1="8" y1="48" x2="1312" y2="48"/>
-<text class="section-title" x="10" y="63">Mean Latency Ratio (8w): Final Pure-Go / CGo</text>
+<text class="section-title" x="10" y="63">Mean latency (8 workers): final pure-Go / CGo</text>
 <text class="row-label" x="153" y="81.0" text-anchor="end">get100</text>
 <g class="ci-neutral"><title>get100: 0.991× [0.928, 1.084]</title><line x1="723.4" y1="77.0" x2="826.5" y2="77.0" stroke-width="2.2"/><line x1="723.4" y1="73.0" x2="723.4" y2="81.0" stroke-width="1.8"/><line x1="826.5" y1="73.0" x2="826.5" y2="81.0" stroke-width="1.8"/><circle cx="766.9" cy="77.0" r="3.8"/></g>
 <text class="val-text" x="1137" y="81.0">0.991× [0.928, 1.084]</text>
@@ -79,7 +79,7 @@ dedicated 16-vCPU host (`ssd-2` engine). This is **phase A2** of
 <g class="ci-win"><title>batchset50: 0.817× [0.768, 0.851]</title><line x1="597.8" y1="117.0" x2="665.9" y2="117.0" stroke-width="2.2"/><line x1="597.8" y1="113.0" x2="597.8" y2="121.0" stroke-width="1.8"/><line x1="665.9" y1="113.0" x2="665.9" y2="121.0" stroke-width="1.8"/><circle cx="638.8" cy="117.0" r="3.8"/></g>
 <text class="val-text" x="1137" y="121.0">0.817× [0.768, 0.851]</text>
 <line class="section-divider" x1="8" y1="130" x2="1312" y2="130"/>
-<text class="section-title" x="10" y="145">p99 Latency Ratio (8w): Final Pure-Go / CGo</text>
+<text class="section-title" x="10" y="145">p99 latency (8 workers): final pure-Go / CGo</text>
 <text class="row-label" x="153" y="163.0" text-anchor="end">get100</text>
 <g class="ci-neutral"><title>get100: 1.015× [0.938, 1.097]</title><line x1="730.5" y1="159.0" x2="834.4" y2="159.0" stroke-width="2.2"/><line x1="730.5" y1="155.0" x2="730.5" y2="163.0" stroke-width="1.8"/><line x1="834.4" y1="155.0" x2="834.4" y2="163.0" stroke-width="1.8"/><circle cx="782.8" cy="159.0" r="3.8"/></g>
 <text class="val-text" x="1137" y="163.0">1.015× [0.938, 1.097]</text>
@@ -90,7 +90,7 @@ dedicated 16-vCPU host (`ssd-2` engine). This is **phase A2** of
 <g class="ci-win"><title>batchset50: 0.914× [0.816, 0.985]</title><line x1="638.0" y1="199.0" x2="762.9" y2="199.0" stroke-width="2.2"/><line x1="638.0" y1="195.0" x2="638.0" y2="203.0" stroke-width="1.8"/><line x1="762.9" y1="195.0" x2="762.9" y2="203.0" stroke-width="1.8"/><circle cx="713.3" cy="199.0" r="3.8"/></g>
 <text class="val-text" x="1137" y="203.0">0.914× [0.816, 0.985]</text>
 <line class="section-divider" x1="8" y1="212" x2="1312" y2="212"/>
-<text class="section-title" x="10" y="227">Shutdown Process CPU (E−A) Ratio (8w): Final Pure-Go / CGo</text>
+<text class="section-title" x="10" y="227">Shutdown process CPU (E−A, 8 workers): final pure-Go / CGo</text>
 <text class="row-label" x="153" y="245.0" text-anchor="end">get100</text>
 <g class="ci-reg"><title>get100: 1.638× [1.603, 1.676]</title><line x1="1086.0" y1="241.0" x2="1115.6" y2="241.0" stroke-width="2.2"/><line x1="1086.0" y1="237.0" x2="1086.0" y2="245.0" stroke-width="1.8"/><line x1="1115.6" y1="237.0" x2="1115.6" y2="245.0" stroke-width="1.8"/><circle cx="1100.4" cy="241.0" r="3.8"/></g>
 <text class="val-text" x="1137" y="245.0">1.638× [1.603, 1.676]</text>
@@ -101,7 +101,7 @@ dedicated 16-vCPU host (`ssd-2` engine). This is **phase A2** of
 <g class="ci-reg"><title>batchset50: 1.150× [1.112, 1.188]</title><line x1="843.4" y1="281.0" x2="887.2" y2="281.0" stroke-width="2.2"/><line x1="843.4" y1="277.0" x2="843.4" y2="285.0" stroke-width="1.8"/><line x1="887.2" y1="277.0" x2="887.2" y2="285.0" stroke-width="1.8"/><circle cx="865.7" cy="281.0" r="3.8"/></g>
 <text class="val-text" x="1137" y="285.0">1.150× [1.112, 1.188]</text>
 <line class="section-divider" x1="8" y1="294" x2="1312" y2="294"/>
-<text class="section-title" x="10" y="309">Go Mallocs/tx Ratio (8w): Final / Before Pure-Go</text>
+<text class="section-title" x="10" y="309">Go mallocs/tx (8 workers): final / before</text>
 <text class="row-label" x="153" y="327.0" text-anchor="end">get100</text>
 <g class="ci-win"><title>get100: 0.872× [0.872, 0.872]</title><line x1="682.1" y1="323.0" x2="682.1" y2="323.0" stroke-width="2.2"/><line x1="682.1" y1="319.0" x2="682.1" y2="327.0" stroke-width="1.8"/><line x1="682.1" y1="319.0" x2="682.1" y2="327.0" stroke-width="1.8"/><circle cx="682.1" cy="323.0" r="3.8"/></g>
 <text class="val-text" x="1137" y="327.0">0.872× [0.872, 0.872]</text>

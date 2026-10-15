@@ -20,28 +20,28 @@ DST_ROOT = REPO / 'website/content/docs/benchmarks'
 CAMPAIGNS = [
     (
         'hcloud-multinode-vpc-20261014',
-        '4-Node VPC Campaign (2026-10-14)',
+        '4-node VPC campaign (2026-10-14)',
         'Preregistered 4-host VPC benchmark campaign (1 client VM + 3 FDB 7.3.77 server VMs, double ssd-2, 9 storage servers): pure-Go vs CGo at 1, 8, 32, and 64 workers and cross-server USE_REMOTE_FETCH vs SCAN_AND_FETCH.',
         1,
         [
-            ('phase-m1-client.md', 'Phase M1: Client (1, 8, 32, 64 Workers)', 'Pure-Go vs CGo client latency and process CPU across 1, 8, 32, and 64 closed-loop workers over a real VPC to a 3-node double ssd-2 cluster.', 1),
-            ('phase-m2-remotefetch.md', 'Phase M2: Remote Fetch (3-Node VPC)', 'Record Layer USE_REMOTE_FETCH vs SCAN_AND_FETCH across 9 storage servers on a 3-node VPC cluster with verified shard placement.', 2),
+            ('phase-m1-client.md', 'Phase M1: Client (1, 8, 32, 64 workers)', 'Pure-Go vs CGo client latency and process CPU across 1, 8, 32, and 64 closed-loop workers over a real VPC to a 3-node double ssd-2 cluster.', 1),
+            ('phase-m2-remotefetch.md', 'Phase M2: Remote fetch (3-node cluster)', 'Record Layer USE_REMOTE_FETCH vs SCAN_AND_FETCH across 9 storage servers on a 3-node VPC cluster with verified shard placement.', 2),
         ],
     ),
     (
         'hcloud-rebench-20261014',
-        'Single-Node 16-vCPU Campaign (2026-10-14)',
+        'Single-node 16-vCPU campaign (2026-10-14)',
         'Preregistered 8-phase benchmark campaign on a dedicated 16-vCPU host comparing the pure-Go client, Record Layer, mapped remote fetch, and SQL across the RFC-258 trees.',
         2,
         [
-            ('phase-a-client.md', 'Phase A: Client (1 Worker)', 'Pure-Go client vs CGo (libfdb_c 7.3.77) and vs pre-allocation pure-Go across 11 workloads at 1 closed-loop worker.', 1),
-            ('phase-a2-client-8w.md', 'Phase A2: Client (8 Workers)', 'Pure-Go client vs CGo and vs pre-allocation pure-Go at 8 concurrent closed-loop workers.', 2),
+            ('phase-a-client.md', 'Phase A: Client (1 worker)', 'Pure-Go client vs CGo (libfdb_c 7.3.77) and vs pre-allocation pure-Go across 11 workloads at 1 closed-loop worker.', 1),
+            ('phase-a2-client-8w.md', 'Phase A2: Client (8 workers)', 'Pure-Go client vs CGo and vs pre-allocation pure-Go at 8 concurrent closed-loop workers.', 2),
             ('phase-b-recordlayer.md', 'Phase B: Record Layer', 'Record Layer benchmarks across legacy, before-allocation, and final trees.', 3),
-            ('phase-c1-remotefetch.md', 'Phase C1: Remote Fetch (Forward)', 'Forward USE_REMOTE_FETCH vs SCAN_AND_FETCH across pr2 and final trees on small and two-chunk split records.', 4),
-            ('phase-c2-reverse-skip.md', 'Phase C2: Remote Fetch (Reverse & Skip)', 'Reverse scans and executor Skip 3 paths with USE_REMOTE_FETCH vs SCAN_AND_FETCH.', 5),
-            ('phase-c3-synthetic-rtt.md', 'Phase C3: Remote Fetch (0.5 ms Synthetic RTT)', 'Sensitivity of USE_REMOTE_FETCH vs SCAN_AND_FETCH to 0.5 ms nominal synthetic veth RTT.', 6),
-            ('phase-d1-sql.md', 'Phase D1: SQL Common', 'SQL plan-cache point select across legacy, before, and final trees.', 7),
-            ('phase-d2-sql-remotefetch.md', 'Phase D2: SQL Remote Fetch', 'SQL non-covering index scan with USE_REMOTE_FETCH vs SCAN_AND_FETCH.', 8),
+            ('phase-c1-remotefetch.md', 'Phase C1: Remote fetch (forward)', 'Forward USE_REMOTE_FETCH vs SCAN_AND_FETCH across pr2 and final trees on small and two-chunk split records.', 4),
+            ('phase-c2-reverse-skip.md', 'Phase C2: Remote fetch (reverse and Skip)', 'Reverse scans and executor Skip 3 paths with USE_REMOTE_FETCH vs SCAN_AND_FETCH.', 5),
+            ('phase-c3-synthetic-rtt.md', 'Phase C3: Remote fetch (0.5 ms synthetic RTT)', 'Sensitivity of USE_REMOTE_FETCH vs SCAN_AND_FETCH to 0.5 ms nominal synthetic veth RTT.', 6),
+            ('phase-d1-sql.md', 'Phase D1: SQL plan-cache point select', 'SQL plan-cache point select across legacy, before, and final trees.', 7),
+            ('phase-d2-sql-remotefetch.md', 'Phase D2: SQL remote fetch', 'SQL non-covering index scan with USE_REMOTE_FETCH vs SCAN_AND_FETCH.', 8),
         ],
     ),
 ]
@@ -318,7 +318,7 @@ def build_page_charts(cid: str, fname: str, raw_md: str) -> str:
             cpu_groups.append((label, cg))
 
         # Also extract M1w1 and M1w64 absolute values for grouped bar chart
-        abs_rows = extract_md_table(raw_md, '## Absolute Values')
+        abs_rows = extract_md_table(raw_md, '## Absolute values')
         by_key = {(r[0], r[1], r[2]): r for r in abs_rows if len(r) >= 7}
         abs_items = []
         for ph, w in [
@@ -331,28 +331,28 @@ def build_page_charts(cid: str, fname: str, raw_md: str) -> str:
                 abs_items.append((f'{ph} {w}', float(go_r[4]), float(go_r[6]), float(cgo_r[4]), float(cgo_r[6])))
 
         c1 = render_forest_svg(
-            'Figure M1.1: Mean Latency Ratio — Final Pure-Go / CGo (log₂ scale, 95% block-bootstrap CI)',
+            'Figure M1.1: Mean latency ratio, final pure-Go / CGo (log₂ scale, 95% block-bootstrap CI)',
             '6 paired blocks per workload, 20,000 resamples (seed 492817). Below 1.0× means Pure-Go is faster.',
             mean_groups, [0.35, 0.5, 0.7, 1.0, 1.4, 2.0], 'Pure-Go faster', 'CGo faster',
             summary='\n'.join([
-                'Wins (18/22 clean cells, 95% CI < 1.000): 0.554×–0.980× across M1w1 (7/7: 0.579×–0.954×), M1w8 (4/5: get100 0.888×, get1000 0.942×, range100 0.868×, set100 0.980×), M1w32 (3/5: get100 0.770×, get1000 0.715×, set100 0.938×), and M1w64 (4/5: get100 0.676×, get1000 0.632×, range100 0.554×, set100 0.887×).',
+                'Pure-Go faster (18/22 clean cells, 95% CI < 1.000): 0.554×–0.980× across M1w1 (7/7: 0.579×–0.954×), M1w8 (4/5: get100 0.888×, get1000 0.942×, range100 0.868×, set100 0.980×), M1w32 (3/5: get100 0.770×, get1000 0.715×, set100 0.938×), and M1w64 (4/5: get100 0.676×, get1000 0.632×, range100 0.554×, set100 0.887×).',
                 'Unresolved (3/22, 95% CI spans 1.000): M1w8 grv 0.996× [0.949, 1.038], M1w32 range100 0.869× [0.753, 1.148], M1w64 grv 1.029× [0.990, 1.069].',
-                'Regressions (1/22, 95% CI > 1.000): M1w32 grv 1.041× [1.007, 1.081].',
+                'CGo faster (1/22, 95% CI > 1.000): M1w32 grv 1.041× [1.007, 1.081].',
                 'Omitted (6/28 planned cells): at 8, 32, and 64 workers, batchset50 exceeded the 100 MB server tLog queue gate (113.7 MB, 193.4 MB, 141.9 MB; R4 contaminated), and the phase driver stopped before batchset50x1000 (R4 unverifiable).',
             ]),
         )
         c2 = render_forest_svg(
-            'Figure M1.2: Tail (p99) Latency Ratio — Final Pure-Go / CGo (log₂ scale, 95% block-bootstrap CI)',
+            'Figure M1.2: p99 latency ratio, final pure-Go / CGo (log₂ scale, 95% block-bootstrap CI)',
             'Run-level p99 transaction latency resampled over paired blocks. Below 1.0× means Pure-Go has lower p99.',
             p99_groups, [0.25, 0.35, 0.5, 0.7, 1.0, 1.4, 2.0], 'Pure-Go lower p99', 'CGo lower p99',
             summary='\n'.join([
-                'Wins (17/22 clean cells, 95% CI < 1.000): 0.385×–0.957× (lowest on M1w64 get1000 at 0.385× [0.336, 0.438], run-level medians 4544.4 µs pure-Go vs 11686.4 µs CGo).',
+                'Pure-Go lower p99 (17/22 clean cells, 95% CI < 1.000): 0.385×–0.957× (lowest on M1w64 get1000 at 0.385× [0.336, 0.438], run-level medians 4544.4 µs pure-Go vs 11686.4 µs CGo).',
                 'Unresolved (4/22, 95% CI spans 1.000): M1w1 get100 0.865× [0.734, 1.037], M1w8 grv 1.101× [0.869, 1.457], M1w32 grv 0.871× [0.754, 1.017], M1w64 grv 0.960× [0.757, 1.190].',
-                'Regressions (1/22, 95% CI > 1.000): M1w32 range100 paired-block ratio 1.247× [1.048, 1.644] (run-level medians 6618.7 µs pure-Go vs 5977.7 µs CGo).',
+                'CGo lower p99 (1/22, 95% CI > 1.000): M1w32 range100 paired-block ratio 1.247× [1.048, 1.644] (run-level medians 6618.7 µs pure-Go vs 5977.7 µs CGo).',
             ]),
         )
         c3 = render_forest_svg(
-            'Figure M1.3: Shutdown Process CPU (E−A) Ratio — Final Pure-Go / CGo (log₂ scale, 95% CI)',
+            'Figure M1.3: Shutdown process CPU (E−A) ratio, final pure-Go / CGo (log₂ scale, 95% CI)',
             'User+system process CPU through finalizer drain and network stop per transaction. Below 1.0× means Pure-Go uses less CPU.',
             cpu_groups, [0.5, 0.7, 1.0, 1.4, 2.0, 2.5], 'Pure-Go less CPU', 'CGo less CPU',
             summary='\n'.join([
@@ -361,7 +361,7 @@ def build_page_charts(cid: str, fname: str, raw_md: str) -> str:
             ]),
         )
         c4 = render_grouped_bars_svg(
-            'Figure M1.4: Absolute Mean & p99 Latency at 1 Worker (M1w1) and 64 Workers (M1w64)',
+            'Figure M1.4: Absolute mean and p99 latency at 1 worker (M1w1) and 64 workers (M1w64)',
             'Medians of 6 run-level statistics in µs/transaction (solid bar = mean, whisker = p99).',
             abs_items, 'µs', 12000.0, [0, 2000, 4000, 6000, 8000, 10000, 12000],
             summary='\n'.join([
@@ -383,27 +383,27 @@ def build_page_charts(cid: str, fname: str, raw_md: str) -> str:
             ('M2skip: BenchmarkPlanSkip (3-node double ssd-2)', [(f"{r[0]} [{short_place(r[1])}]", r[2]) for r in sk_rows]),
         ]
         al_groups = [
-            ('M2rl: Client Go allocs/op Ratio', [(r[0], r[4]) for r in rl_rows]),
-            ('M2skip: Client Go allocs/op Ratio', [(r[0], r[4]) for r in sk_rows]),
+            ('M2rl: client Go allocs/op', [(r[0], r[4]) for r in rl_rows]),
+            ('M2skip: client Go allocs/op', [(r[0], r[4]) for r in sk_rows]),
         ]
         c1 = render_forest_svg(
-            'Figure M2.1: Mean Time (ns/op) Ratio — USE_REMOTE_FETCH / SCAN_AND_FETCH (log₂ scale, 95% CI)',
+            'Figure M2.1: Mean time (ns/op) ratio, USE_REMOTE_FETCH / SCAN_AND_FETCH (log₂ scale, 95% CI)',
             '3-node VPC double ssd-2 cluster (9 storage servers). Below 1.0× means USE_REMOTE_FETCH is faster.',
-            ns_groups, [0.15, 0.25, 0.5, 0.7, 1.0, 1.4, 2.0, 2.5], 'Remote fetch faster', 'SCAN_AND_FETCH faster',
+            ns_groups, [0.15, 0.25, 0.5, 0.7, 1.0, 1.4, 2.0, 2.5], 'USE_REMOTE_FETCH faster', 'SCAN_AND_FETCH faster',
             summary='\n'.join([
-                'Wins (4/16 cases, 95% CI < 1.000): M2skip skip3-rows10-reverse 0.158× [0.155, 0.160] (4.87 ms vs 31.13 ms), M2rl split-rows10-reverse 0.854× [0.823, 0.886] (5.77 ms vs 6.81 ms, f = 0.0000), M2rl split-rows10-forward 0.873× [0.829, 0.920] (6.00 ms vs 6.83 ms, f = 0.0000), and M2rl small-limit1-forward 0.979× [0.964, 0.995] (2.62 ms vs 2.69 ms).',
+                'USE_REMOTE_FETCH faster (4/16 cases, 95% CI < 1.000): M2skip skip3-rows10-reverse 0.158× [0.155, 0.160] (4.87 ms vs 31.13 ms), M2rl split-rows10-reverse 0.854× [0.823, 0.886] (5.77 ms vs 6.81 ms, f = 0.0000), M2rl split-rows10-forward 0.873× [0.829, 0.920] (6.00 ms vs 6.83 ms, f = 0.0000), and M2rl small-limit1-forward 0.979× [0.964, 0.995] (2.62 ms vs 2.69 ms).',
                 'Unresolved (2/16, 95% CI spans 1.000): M2rl small-limit1-reverse 0.985× [0.969, 1.003] and M2skip skip3-rows10-forward 1.155× [0.991, 1.345].',
-                'Regressions (10/16 — 8/12 in M2rl, 2/4 in M2skip, 95% CI > 1.000): small-rows10 (1.031× fwd, 1.026× rev), split-limit1 (1.110× fwd, 1.114× rev), and all six 1,000-row scans: small-rows1000 (1.226× fwd 117.08 vs 95.10 ms, 1.255× rev 118.95 vs 96.39 ms), skip3-rows1000 (1.360× fwd 138.19 vs 98.67 ms, 1.324× rev 133.24 vs 101.06 ms), and 2-chunk split-rows1000 [f = 0.6960] (2.326× fwd 742.51 vs 316.38 ms, 2.300× rev 768.95 vs 327.62 ms).',
+                'SCAN_AND_FETCH faster (10/16 cases: 8/12 in M2rl, 2/4 in M2skip, 95% CI > 1.000): small-rows10 (1.031× fwd, 1.026× rev), split-limit1 (1.110× fwd, 1.114× rev), and all six 1,000-row scans: small-rows1000 (1.226× fwd 117.08 vs 95.10 ms, 1.255× rev 118.95 vs 96.39 ms), skip3-rows1000 (1.360× fwd 138.19 vs 98.67 ms, 1.324× rev 133.24 vs 101.06 ms), and 2-chunk split-rows1000 [f = 0.6960] (2.326× fwd 742.51 vs 316.38 ms, 2.300× rev 768.95 vs 327.62 ms).',
             ]),
         )
         c2 = render_forest_svg(
-            'Figure M2.2: Client Go Allocations (allocs/op) Ratio — USE_REMOTE_FETCH / SCAN_AND_FETCH',
+            'Figure M2.2: Client Go allocations (allocs/op) ratio, USE_REMOTE_FETCH / SCAN_AND_FETCH (log₂ scale, 95% CI)',
             'Below 1.0× means USE_REMOTE_FETCH allocates fewer Go heap objects on the client.',
-            al_groups, [0.35, 0.5, 0.7, 1.0, 1.2], 'Remote fetch fewer allocs', 'SCAN_AND_FETCH fewer allocs',
+            al_groups, [0.35, 0.5, 0.7, 1.0, 1.2], 'USE_REMOTE_FETCH fewer allocs', 'SCAN_AND_FETCH fewer allocs',
             summary='\n'.join([
-                'Wins (14/16 cases, 95% CI < 1.000): Client Go allocs/op drop across all 12 multi-row cases (0.398×–0.790×) and both split-limit1 cases (0.942× fwd 248 vs 263, 0.952× rev 250 vs 263).',
-                'Regressions (2/16, 95% CI > 1.000): small-limit1-forward 1.040× [1.038, 1.041] (231 vs 222, +9 allocs/op) and small-limit1-reverse 1.049× [1.047, 1.052] (234 vs 223, +11 allocs/op).',
-                'Note: Lower client allocations on the six 1,000-row cases (0.398×–0.529×) did not prevent their 1.226×–2.326× ns/op regressions in Figure M2.1.',
+                'USE_REMOTE_FETCH fewer allocations (14/16 cases, 95% CI < 1.000): Client Go allocs/op drop across all 12 multi-row cases (0.398×–0.790×) and both split-limit1 cases (0.942× fwd 248 vs 263, 0.952× rev 250 vs 263).',
+                'SCAN_AND_FETCH fewer allocations (2/16 cases, 95% CI > 1.000): small-limit1-forward 1.040× [1.038, 1.041] (231 vs 222, +9 allocs/op) and small-limit1-reverse 1.049× [1.047, 1.052] (234 vs 223, +11 allocs/op).',
+                'Wall time: The six 1,000-row cases allocate fewer objects (0.398×–0.529×) and still take 1.226×–2.326× as long (Figure M2.1).',
             ]),
         )
         for c in (c1, c2):
@@ -414,16 +414,16 @@ def build_page_charts(cid: str, fname: str, raw_md: str) -> str:
         cgo_rows = extract_md_table(raw_md, '### Final pure-Go vs CGo')
         bef_rows = extract_md_table(raw_md, '### Final vs before pure-Go')
         groups = [
-            ('Mean Latency Ratio: Final Pure-Go / CGo', [(r[0], r[1]) for r in cgo_rows]),
-            ('p99 Latency Ratio: Final Pure-Go / CGo', [(r[0], r[2]) for r in cgo_rows]),
-            ('Shutdown Process CPU (E−A) Ratio: Final Pure-Go / CGo', [(r[0], r[3]) for r in cgo_rows]),
+            ('Mean latency: final pure-Go / CGo', [(r[0], r[1]) for r in cgo_rows]),
+            ('p99 latency: final pure-Go / CGo', [(r[0], r[2]) for r in cgo_rows]),
+            ('Shutdown process CPU (E−A): final pure-Go / CGo', [(r[0], r[3]) for r in cgo_rows]),
         ]
         alloc_groups = [
-            ('Go Bytes/tx Ratio: Final / Before Pure-Go', [(r[0], r[4]) for r in bef_rows]),
-            ('Go Mallocs/tx Ratio: Final / Before Pure-Go', [(r[0], r[5]) for r in bef_rows]),
+            ('Go bytes/tx: final / before', [(r[0], r[4]) for r in bef_rows]),
+            ('Go mallocs/tx: final / before', [(r[0], r[5]) for r in bef_rows]),
         ]
         c1 = render_forest_svg(
-            'Figure A.1: Single-Node 1-Worker Client Ratios — Final Pure-Go / CGo (log₂ scale, 95% CI)',
+            'Figure A.1: Client ratios at 1 worker, final pure-Go / CGo (log₂ scale, 95% CI)',
             '6 paired blocks × 3,000 tx/run (18,000 tx/arm/workload). Below 1.0× means Pure-Go is faster / lower CPU.',
             groups, [0.15, 0.25, 0.5, 0.7, 1.0, 1.4], 'Pure-Go faster / lower CPU', 'CGo faster / lower CPU',
             summary='\n'.join([
@@ -433,7 +433,7 @@ def build_page_charts(cid: str, fname: str, raw_md: str) -> str:
             ]),
         )
         c2 = render_forest_svg(
-            'Figure A.2: Allocation Reductions — Final / Before Pure-Go (3824f146 → 267a4143)',
+            'Figure A.2: Allocation ratios, final (267a4143) / before (3824f146) pure-Go (log₂ scale, 95% CI)',
             'Go heap bytes and mallocs per transaction (6 paired blocks). Below 1.0× means fewer allocations in Final.',
             alloc_groups, [0.7, 0.8, 0.9, 1.0, 1.1], 'Final allocates less', 'Before allocates less',
             summary='\n'.join([
@@ -449,15 +449,15 @@ def build_page_charts(cid: str, fname: str, raw_md: str) -> str:
         cgo_rows = extract_md_table(raw_md, '### Final pure-Go vs CGo (8 workers)')
         bef_rows = extract_md_table(raw_md, '### Final vs before pure-Go (8 workers)')
         groups = [
-            ('Mean Latency Ratio (8w): Final Pure-Go / CGo', [(r[0], r[1]) for r in cgo_rows]),
-            ('p99 Latency Ratio (8w): Final Pure-Go / CGo', [(r[0], r[2]) for r in cgo_rows]),
-            ('Shutdown Process CPU (E−A) Ratio (8w): Final Pure-Go / CGo', [(r[0], r[3]) for r in cgo_rows]),
-            ('Go Mallocs/tx Ratio (8w): Final / Before Pure-Go', [(r[0], r[5]) for r in bef_rows]),
+            ('Mean latency (8 workers): final pure-Go / CGo', [(r[0], r[1]) for r in cgo_rows]),
+            ('p99 latency (8 workers): final pure-Go / CGo', [(r[0], r[2]) for r in cgo_rows]),
+            ('Shutdown process CPU (E−A, 8 workers): final pure-Go / CGo', [(r[0], r[3]) for r in cgo_rows]),
+            ('Go mallocs/tx (8 workers): final / before', [(r[0], r[5]) for r in bef_rows]),
         ]
         res = render_forest_svg(
-            'Figure A2.1: Single-Node 8-Worker Client Ratios (log₂ scale, 95% block-bootstrap CI)',
+            'Figure A2.1: Client ratios at 8 workers (log₂ scale, 95% block-bootstrap CI)',
             '6 paired blocks × 24,000 tx/run (144,000 tx/arm/workload). Below 1.0× favors Final Pure-Go.',
-            groups, [0.4, 0.6, 0.8, 1.0, 1.3, 1.7], 'Final Pure-Go lower', 'Denominator lower',
+            groups, [0.4, 0.6, 0.8, 1.0, 1.3, 1.7], 'Final pure-Go lower', 'Denominator lower',
             summary='\n'.join([
                 'Latency (final/CGo at 8w): Mean latency is lower for pure-Go on range100 (0.663× [0.440, 0.858]) and batchset50 (0.817× [0.768, 0.851]) and unresolved on get100 (0.991× [0.928, 1.084]). p99 is lower on batchset50 (0.914× [0.816, 0.985]) and unresolved on range100 (0.881× [0.696, 1.033]) and get100 (1.015× [0.938, 1.097]).',
                 'Shutdown CPU (E−A, final/CGo at 8w): Higher for pure-Go on all 3 workloads: batchset50 1.150× [1.112, 1.188], range100 1.359× [1.138, 1.559], and get100 1.638× [1.603, 1.676].',
@@ -472,13 +472,13 @@ def build_page_charts(cid: str, fname: str, raw_md: str) -> str:
         if not rows:
             rows = extract_md_table(raw_md, '## Results')
         groups = [
-            ('Mean Time (ns/op): Final / Before', [(r[0], r[1]) for r in rows if len(r) >= 4]),
-            ('Go Bytes (B/op): Final / Before', [(r[0], r[2]) for r in rows if len(r) >= 4]),
-            ('Go Allocations (allocs/op): Final / Before', [(r[0], r[3]) for r in rows if len(r) >= 4]),
+            ('Mean time (ns/op): final / before', [(r[0], r[1]) for r in rows if len(r) >= 4]),
+            ('Go bytes (B/op): final / before', [(r[0], r[2]) for r in rows if len(r) >= 4]),
+            ('Go allocations (allocs/op): final / before', [(r[0], r[3]) for r in rows if len(r) >= 4]),
         ]
         if any(g[1] for g in groups):
             res = render_forest_svg(
-                'Figure B.1: Record Layer Allocation Optimization Ratios — Final / Before (log₂ scale, 95% CI)',
+                'Figure B.1: Record Layer ratios, final / before (log₂ scale, 95% CI)',
                 '6 paired blocks × 3 repeats on memory engine. Below 1.0× means Final is faster or allocates less.',
                 groups, [0.6, 0.7, 0.8, 0.9, 1.0, 1.1], 'Final lower', 'Before lower',
                 summary='\n'.join([
@@ -494,17 +494,17 @@ def build_page_charts(cid: str, fname: str, raw_md: str) -> str:
         rows = extract_md_table(raw_md, '### Remote fetch vs ordinary fetch, final tree')
         if rows:
             groups = [
-                ('Mean Time (ns/op): final-remote / final-ordinary', [(r[0], r[1]) for r in rows]),
-                ('Go Bytes (B/op): final-remote / final-ordinary', [(r[0], r[2]) for r in rows]),
-                ('Go Allocations (allocs/op): final-remote / final-ordinary', [(r[0], r[3]) for r in rows]),
+                ('Mean time (ns/op): final-remote / final-ordinary', [(r[0], r[1]) for r in rows]),
+                ('Go bytes (B/op): final-remote / final-ordinary', [(r[0], r[2]) for r in rows]),
+                ('Go allocations (allocs/op): final-remote / final-ordinary', [(r[0], r[3]) for r in rows]),
             ]
             res = render_forest_svg(
-                'Figure C1.1: Forward Remote Fetch vs Ordinary Scan — Final Tree (log₂ scale, 95% CI)',
+                'Figure C1.1: Forward scans, USE_REMOTE_FETCH / SCAN_AND_FETCH on the final tree (log₂ scale, 95% CI)',
                 '8 Williams-square blocks × 3 repeats on single-node memory engine. Below 1.0× favors USE_REMOTE_FETCH.',
                 groups, [0.3, 0.5, 0.7, 1.0, 1.3], 'USE_REMOTE_FETCH lower', 'SCAN_AND_FETCH lower',
                 summary='\n'.join([
-                    'Wins (5/6 cases on ns/op, 95% CI < 1.000): small-all-1000 0.341× [0.321, 0.356] (15.3 ms vs 44.0 ms), split-limit-1-broad 0.707× [0.685, 0.735], small-exact-10 0.733× [0.724, 0.743], small-limit-1-broad 0.838× [0.795, 0.900], and split-exact-10 0.872× [0.843, 0.904].',
-                    'Regressions (1/6 on ns/op, 95% CI > 1.000): 2-chunk split-all-1000 is 1.150× [1.129, 1.181] slower (188 ms vs 163 ms).',
+                    'USE_REMOTE_FETCH faster (5/6 cases, 95% CI < 1.000): small-all-1000 0.341× [0.321, 0.356] (15.3 ms vs 44.0 ms), split-limit-1-broad 0.707× [0.685, 0.735], small-exact-10 0.733× [0.724, 0.743], small-limit-1-broad 0.838× [0.795, 0.900], and split-exact-10 0.872× [0.843, 0.904].',
+                    'SCAN_AND_FETCH faster (1/6 cases, 95% CI > 1.000): 2-chunk split-all-1000 at 1.150× [1.129, 1.181] (188 ms vs 163 ms).',
                     'Allocations: B/op drops on all 6 cases (0.512×–0.960×); allocs/op drops on 5 of 6 (0.404×–0.942×) and increases on small-limit-1-broad (1.046× [1.046, 1.046], 229 vs 219).',
                 ]),
             )
@@ -516,28 +516,28 @@ def build_page_charts(cid: str, fname: str, raw_md: str) -> str:
         valid = [r for r in rows if len(r) >= 4 and parse_ci(r[1])]
         if valid and fname != 'phase-d1-sql.md':
             groups = [
-                ('Mean Time (ns/op): USE_REMOTE_FETCH / SCAN_AND_FETCH', [(r[0], r[1]) for r in valid]),
-                ('Go Bytes (B/op): USE_REMOTE_FETCH / SCAN_AND_FETCH', [(r[0], r[2]) for r in valid]),
-                ('Go Allocations (allocs/op): USE_REMOTE_FETCH / SCAN_AND_FETCH', [(r[0], r[3]) for r in valid]),
+                ('Mean time (ns/op): USE_REMOTE_FETCH / SCAN_AND_FETCH', [(r[0], r[1]) for r in valid]),
+                ('Go bytes (B/op): USE_REMOTE_FETCH / SCAN_AND_FETCH', [(r[0], r[2]) for r in valid]),
+                ('Go allocations (allocs/op): USE_REMOTE_FETCH / SCAN_AND_FETCH', [(r[0], r[3]) for r in valid]),
             ]
             summaries = {
                 'phase-c2-reverse-skip.md': '\n'.join([
-                    'Wins (3/4 cases on ns/op, 95% CI < 1.000): reverse-small-1000 0.337× [0.331, 0.343] (15.6 ms vs 46.5 ms), executor-skip3-small-1000 0.455× [0.445, 0.465] (21.4 ms vs 47.5 ms), and executor-skip3-small-10 0.783× [0.764, 0.800] (1.46 ms vs 1.87 ms).',
-                    'Regressions (1/4 on ns/op, 95% CI > 1.000): reverse-split-1000 is 1.146× [1.130, 1.161] slower (188 ms vs 165 ms).',
+                    'USE_REMOTE_FETCH faster (3/4 cases, 95% CI < 1.000): reverse-small-1000 0.337× [0.331, 0.343] (15.6 ms vs 46.5 ms), executor-skip3-small-1000 0.455× [0.445, 0.465] (21.4 ms vs 47.5 ms), and executor-skip3-small-10 0.783× [0.764, 0.800] (1.46 ms vs 1.87 ms).',
+                    'SCAN_AND_FETCH faster (1/4 cases, 95% CI > 1.000): reverse-split-1000 at 1.146× [1.130, 1.161] (188 ms vs 165 ms).',
                     'Allocations: Client B/op (0.506×–0.692×) and allocs/op (0.403×–0.791×) drop across all 4 cases.',
                 ]),
                 'phase-c3-synthetic-rtt.md': '\n'.join([
-                    'Wins (1/2 cases, 0.5 ms nominal added client↔server RTT): small-all-1000 ns/op is 0.224× [0.222, 0.226] (24.0 ms vs 108.0 ms), with B/op 0.524× and allocs/op 0.439×.',
-                    'Regressions (1/2 cases): 2-chunk split-all-1000 ns/op is 1.053× [1.008, 1.101] slower (276.9 ms vs 266.4 ms) despite B/op 0.692× and allocs/op 0.406×.',
+                    'USE_REMOTE_FETCH faster (1/2 cases, 0.5 ms nominal added client↔server RTT): small-all-1000 ns/op is 0.224× [0.222, 0.226] (24.0 ms vs 108.0 ms), with B/op 0.524× and allocs/op 0.439×.',
+                    'SCAN_AND_FETCH faster (1/2 cases): 2-chunk split-all-1000 ns/op is 1.053× [1.008, 1.101] (276.9 ms vs 266.4 ms) despite B/op 0.692× and allocs/op 0.406×.',
                     'Scope: Single-fdbserver memory setup where index and primary records reside in one process; only client↔server traffic crosses the delayed veth link.',
                 ]),
                 'phase-d2-sql-remotefetch.md': '\n'.join([
-                    'Wins (2/2 SQL cases on single-node memory): rows10 ns/op is 0.885× [0.873, 0.896] (2.22 ms vs 2.50 ms) and rows1000 ns/op is 0.536× [0.532, 0.538] (24.9 ms vs 46.5 ms), with lower client B/op (0.843×, 0.657×) and allocs/op (0.850×, 0.614×).',
+                    'USE_REMOTE_FETCH faster (2/2 SQL cases, single-node memory engine): rows10 ns/op is 0.885× [0.873, 0.896] (2.22 ms vs 2.50 ms) and rows1000 ns/op is 0.536× [0.532, 0.538] (24.9 ms vs 46.5 ms), with lower client B/op (0.843×, 0.657×) and allocs/op (0.850×, 0.614×).',
                     'Confound flag: Both cases flagged a 5-vs-6-byte store-prefix length difference in 1 of 6 rows10 blocks and 2 of 6 rows1000 blocks (a post-hoc descriptive check on equal-prefix blocks gives 0.884 and 0.534).',
                 ]),
             }
             res = render_forest_svg(
-                f'Figure {fname.split("-")[1].upper()}.1: Remote Fetch vs Ordinary Scan Ratios (log₂ scale, 95% CI)',
+                f'Figure {fname.split("-")[1].upper()}.1: USE_REMOTE_FETCH / SCAN_AND_FETCH ratios (log₂ scale, 95% CI)',
                 '6 paired blocks × 3 repeats on single-node memory engine. Below 1.0× favors USE_REMOTE_FETCH.',
                 groups, [0.2, 0.35, 0.5, 0.7, 1.0, 1.3], 'USE_REMOTE_FETCH lower', 'SCAN_AND_FETCH lower',
                 summary=summaries.get(fname, ''),
@@ -549,11 +549,11 @@ def build_page_charts(cid: str, fname: str, raw_md: str) -> str:
             r_leg = extract_md_table(raw_md, '### Final vs legacy')
             if r_bef and r_leg:
                 groups = [
-                    ('Final / Before (PlanCacheHit)', [('ns/op', r_bef[0][1]), ('B/op', r_bef[0][2]), ('allocs/op', r_bef[0][3])]),
-                    ('Final / Legacy (PlanCacheHit)', [('ns/op', r_leg[0][1]), ('B/op', r_leg[0][2]), ('allocs/op', r_leg[0][3])]),
+                    ('PlanCacheHit: final / before', [('ns/op', r_bef[0][1]), ('B/op', r_bef[0][2]), ('allocs/op', r_bef[0][3])]),
+                    ('PlanCacheHit: final / legacy', [('ns/op', r_leg[0][1]), ('B/op', r_leg[0][2]), ('allocs/op', r_leg[0][3])]),
                 ]
                 res = render_forest_svg(
-                    'Figure D1.1: SQL FDB_PlanCacheHit Ratios (log₂ scale, 95% CI)',
+                    'Figure D1.1: SQL PlanCacheHit ratios (log₂ scale, 95% CI)',
                     '6 paired blocks × 3 repeats (54 samples). Below 1.0× favors Final.',
                     groups, [0.9, 0.95, 1.0, 1.05, 1.1], 'Final lower', 'Denominator lower',
                     summary='\n'.join([

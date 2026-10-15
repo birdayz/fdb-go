@@ -1,5 +1,5 @@
 ---
-title: "Phase C3: Remote Fetch (0.5 ms Synthetic RTT)"
+title: "Phase C3: Remote fetch (0.5 ms synthetic RTT)"
 description: "Sensitivity of USE_REMOTE_FETCH vs SCAN_AND_FETCH to 0.5 ms nominal synthetic veth RTT."
 weight: 6
 ---
@@ -10,7 +10,7 @@ private veth pair (0.5 ms nominal added RTT). This is **phase C3** of
 [hcloud-rebench-20261014](../) — a sensitivity check on the same host,
 not a multi-host or physical-network benchmark.
 
-## Environment and Network Verification
+## Environment and network verification
 
 - Same 16-vCPU `ccx43` host and `memory` storage engine as phase C1, configured
   fresh after phase A2.
@@ -37,9 +37,9 @@ not a multi-host or physical-network benchmark.
 ## Results
 
 <figure class="bench-figure">
-<figcaption><strong>Figure C3.1: Remote Fetch vs Ordinary Scan Ratios (log₂ scale, 95% CI)</strong> — 6 paired blocks × 3 repeats on single-node memory engine. Below 1.0× favors USE_REMOTE_FETCH.</figcaption>
-<div class="bench-summary"><ul class="bench-summary-list"><li><strong>Wins (1/2 cases, 0.5 ms nominal added client↔server RTT):</strong> small-all-1000 ns/op is 0.224× [0.222, 0.226] (24.0 ms vs 108.0 ms), with B/op 0.524× and allocs/op 0.439×.</li><li><strong>Regressions (1/2 cases):</strong> 2-chunk split-all-1000 ns/op is 1.053× [1.008, 1.101] slower (276.9 ms vs 266.4 ms) despite B/op 0.692× and allocs/op 0.406×.</li><li><strong>Scope:</strong> Single-fdbserver memory setup where index and primary records reside in one process; only client↔server traffic crosses the delayed veth link.</li></ul></div>
-<svg class="bench-svg" viewBox="0 0 1320 260" role="img" aria-label="Figure C3.1: Remote Fetch vs Ordinary Scan Ratios (log₂ scale, 95% CI)">
+<figcaption><strong>Figure C3.1: USE_REMOTE_FETCH / SCAN_AND_FETCH ratios (log₂ scale, 95% CI)</strong> — 6 paired blocks × 3 repeats on single-node memory engine. Below 1.0× favors USE_REMOTE_FETCH.</figcaption>
+<div class="bench-summary"><ul class="bench-summary-list"><li><strong>USE_REMOTE_FETCH faster (1/2 cases, 0.5 ms nominal added client↔server RTT):</strong> small-all-1000 ns/op is 0.224× [0.222, 0.226] (24.0 ms vs 108.0 ms), with B/op 0.524× and allocs/op 0.439×.</li><li><strong>SCAN_AND_FETCH faster (1/2 cases):</strong> 2-chunk split-all-1000 ns/op is 1.053× [1.008, 1.101] (276.9 ms vs 266.4 ms) despite B/op 0.692× and allocs/op 0.406×.</li><li><strong>Scope:</strong> Single-fdbserver memory setup where index and primary records reside in one process; only client↔server traffic crosses the delayed veth link.</li></ul></div>
+<svg class="bench-svg" viewBox="0 0 1320 260" role="img" aria-label="Figure C3.1: USE_REMOTE_FETCH / SCAN_AND_FETCH ratios (log₂ scale, 95% CI)">
 <line class="grid-line" x1="165.0" y1="36" x2="165.0" y2="234"/>
 <text class="axis-text" x="165.0" y="30" text-anchor="middle">0.2×</text>
 <text class="axis-text" x="165.0" y="249" text-anchor="middle">0.2×</text>
@@ -61,7 +61,7 @@ not a multi-host or physical-network benchmark.
 <text class="axis-text" x="982.4" y="17" text-anchor="end">← USE_REMOTE_FETCH lower</text>
 <text class="axis-text" x="998.4" y="17" text-anchor="start">SCAN_AND_FETCH lower →</text>
 <line class="section-divider" x1="8" y1="48" x2="1312" y2="48"/>
-<text class="section-title" x="10" y="63">Mean Time (ns/op): USE_REMOTE_FETCH / SCAN_AND_FETCH</text>
+<text class="section-title" x="10" y="63">Mean time (ns/op): USE_REMOTE_FETCH / SCAN_AND_FETCH</text>
 <text class="row-label" x="153" y="81.0" text-anchor="end">small-all-1000</text>
 <g class="ci-win"><title>small-all-1000: 0.224× [0.222, 0.226]</title><line x1="218.5" y1="77.0" x2="227.7" y2="77.0" stroke-width="2.2"/><line x1="218.5" y1="73.0" x2="218.5" y2="81.0" stroke-width="1.8"/><line x1="227.7" y1="73.0" x2="227.7" y2="81.0" stroke-width="1.8"/><circle cx="223.1" cy="77.0" r="3.8"/></g>
 <text class="val-text" x="1137" y="81.0">0.224× [0.222, 0.226]</text>
@@ -69,7 +69,7 @@ not a multi-host or physical-network benchmark.
 <g class="ci-reg"><title>split-all-1000: 1.053× [1.008, 1.101]</title><line x1="994.5" y1="97.0" x2="1039.8" y2="97.0" stroke-width="2.2"/><line x1="994.5" y1="93.0" x2="994.5" y2="101.0" stroke-width="1.8"/><line x1="1039.8" y1="93.0" x2="1039.8" y2="101.0" stroke-width="1.8"/><circle cx="1016.9" cy="97.0" r="3.8"/></g>
 <text class="val-text" x="1137" y="101.0">1.053× [1.008, 1.101]</text>
 <line class="section-divider" x1="8" y1="110" x2="1312" y2="110"/>
-<text class="section-title" x="10" y="125">Go Bytes (B/op): USE_REMOTE_FETCH / SCAN_AND_FETCH</text>
+<text class="section-title" x="10" y="125">Go bytes (B/op): USE_REMOTE_FETCH / SCAN_AND_FETCH</text>
 <text class="row-label" x="153" y="143.0" text-anchor="end">small-all-1000</text>
 <g class="ci-win"><title>small-all-1000: 0.524× [0.523, 0.524]</title><line x1="658.0" y1="139.0" x2="659.0" y2="139.0" stroke-width="2.2"/><line x1="658.0" y1="135.0" x2="658.0" y2="143.0" stroke-width="1.8"/><line x1="659.0" y1="135.0" x2="659.0" y2="143.0" stroke-width="1.8"/><circle cx="659.0" cy="139.0" r="3.8"/></g>
 <text class="val-text" x="1137" y="143.0">0.524× [0.523, 0.524]</text>
@@ -77,7 +77,7 @@ not a multi-host or physical-network benchmark.
 <g class="ci-win"><title>split-all-1000: 0.692× [0.692, 0.692]</title><line x1="801.6" y1="159.0" x2="801.6" y2="159.0" stroke-width="2.2"/><line x1="801.6" y1="155.0" x2="801.6" y2="163.0" stroke-width="1.8"/><line x1="801.6" y1="155.0" x2="801.6" y2="163.0" stroke-width="1.8"/><circle cx="801.6" cy="159.0" r="3.8"/></g>
 <text class="val-text" x="1137" y="163.0">0.692× [0.692, 0.692]</text>
 <line class="section-divider" x1="8" y1="172" x2="1312" y2="172"/>
-<text class="section-title" x="10" y="187">Go Allocations (allocs/op): USE_REMOTE_FETCH / SCAN_AND_FETCH</text>
+<text class="section-title" x="10" y="187">Go allocations (allocs/op): USE_REMOTE_FETCH / SCAN_AND_FETCH</text>
 <text class="row-label" x="153" y="205.0" text-anchor="end">small-all-1000</text>
 <g class="ci-win"><title>small-all-1000: 0.439× [0.439, 0.439]</title><line x1="568.2" y1="201.0" x2="568.2" y2="201.0" stroke-width="2.2"/><line x1="568.2" y1="197.0" x2="568.2" y2="205.0" stroke-width="1.8"/><line x1="568.2" y1="197.0" x2="568.2" y2="205.0" stroke-width="1.8"/><circle cx="568.2" cy="201.0" r="3.8"/></g>
 <text class="val-text" x="1137" y="205.0">0.439× [0.439, 0.439]</text>
@@ -110,7 +110,7 @@ per arm).
 | split-all-1000 | final-ordinary | 266,416,081 (266.4 ms) | 256.2–301.1 ms | 457,249,481 | 77,262 | 19 |
 | split-all-1000 | final-remote | 276,869,638 (276.9 ms) | 258.4–324.3 ms | 316,338,172 | 31,401 | 19 |
 
-## Interpretation and Limits
+## Interpretation and limits
 
 - **Small unsplit records (`small-all-1000`):** under 0.5 ms added client-server
   RTT, `USE_REMOTE_FETCH` took **0.224 [0.222, 0.226]** of `SCAN_AND_FETCH`'s

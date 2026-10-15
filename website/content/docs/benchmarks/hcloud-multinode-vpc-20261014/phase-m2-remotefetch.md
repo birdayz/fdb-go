@@ -1,5 +1,5 @@
 ---
-title: "Phase M2: Remote Fetch (3-Node VPC)"
+title: "Phase M2: Remote fetch (3-node cluster)"
 description: "Record Layer USE_REMOTE_FETCH vs SCAN_AND_FETCH across 9 storage servers on a 3-node VPC cluster with verified shard placement."
 weight: 2
 ---
@@ -11,7 +11,7 @@ FoundationDB 7.3.77 server VMs (`double` redundancy, `ssd-2`
 storage engine, 9 storage servers). This is **phase M2 (`M2rl` and `M2skip`)**
 of [hcloud-multinode-vpc-20261014](../).
 
-## Shard Placement and Qualification (Gate P0)
+## Shard placement and qualification (Gate P0)
 
 - Before any M2 timing, `placementprobe_cgo` (H5, reading `\xff/dataDistributionMode`,
   `\xff/moveKeysLock/Owner`, `\xff/moveKeysLock/Write`, `\xff/keyServers/`, and
@@ -56,9 +56,9 @@ of [hcloud-multinode-vpc-20261014](../).
 ## Results
 
 <figure class="bench-figure">
-<figcaption><strong>Figure M2.1: Mean Time (ns/op) Ratio — USE_REMOTE_FETCH / SCAN_AND_FETCH (log₂ scale, 95% CI)</strong> — 3-node VPC double ssd-2 cluster (9 storage servers). Below 1.0× means USE_REMOTE_FETCH is faster.</figcaption>
-<div class="bench-summary"><ul class="bench-summary-list"><li><strong>Wins (4/16 cases, 95% CI &lt; 1.000):</strong> M2skip skip3-rows10-reverse 0.158× [0.155, 0.160] (4.87 ms vs 31.13 ms), M2rl split-rows10-reverse 0.854× [0.823, 0.886] (5.77 ms vs 6.81 ms, f = 0.0000), M2rl split-rows10-forward 0.873× [0.829, 0.920] (6.00 ms vs 6.83 ms, f = 0.0000), and M2rl small-limit1-forward 0.979× [0.964, 0.995] (2.62 ms vs 2.69 ms).</li><li><strong>Unresolved (2/16, 95% CI spans 1.000):</strong> M2rl small-limit1-reverse 0.985× [0.969, 1.003] and M2skip skip3-rows10-forward 1.155× [0.991, 1.345].</li><li><strong>Regressions (10/16 — 8/12 in M2rl, 2/4 in M2skip, 95% CI &gt; 1.000):</strong> small-rows10 (1.031× fwd, 1.026× rev), split-limit1 (1.110× fwd, 1.114× rev), and all six 1,000-row scans: small-rows1000 (1.226× fwd 117.08 vs 95.10 ms, 1.255× rev 118.95 vs 96.39 ms), skip3-rows1000 (1.360× fwd 138.19 vs 98.67 ms, 1.324× rev 133.24 vs 101.06 ms), and 2-chunk split-rows1000 [f = 0.6960] (2.326× fwd 742.51 vs 316.38 ms, 2.300× rev 768.95 vs 327.62 ms).</li></ul></div>
-<svg class="bench-svg" viewBox="0 0 1454 438" role="img" aria-label="Figure M2.1: Mean Time (ns/op) Ratio — USE_REMOTE_FETCH / SCAN_AND_FETCH (log₂ scale, 95% CI)">
+<figcaption><strong>Figure M2.1: Mean time (ns/op) ratio, USE_REMOTE_FETCH / SCAN_AND_FETCH (log₂ scale, 95% CI)</strong> — 3-node VPC double ssd-2 cluster (9 storage servers). Below 1.0× means USE_REMOTE_FETCH is faster.</figcaption>
+<div class="bench-summary"><ul class="bench-summary-list"><li><strong>USE_REMOTE_FETCH faster (4/16 cases, 95% CI &lt; 1.000):</strong> M2skip skip3-rows10-reverse 0.158× [0.155, 0.160] (4.87 ms vs 31.13 ms), M2rl split-rows10-reverse 0.854× [0.823, 0.886] (5.77 ms vs 6.81 ms, f = 0.0000), M2rl split-rows10-forward 0.873× [0.829, 0.920] (6.00 ms vs 6.83 ms, f = 0.0000), and M2rl small-limit1-forward 0.979× [0.964, 0.995] (2.62 ms vs 2.69 ms).</li><li><strong>Unresolved (2/16, 95% CI spans 1.000):</strong> M2rl small-limit1-reverse 0.985× [0.969, 1.003] and M2skip skip3-rows10-forward 1.155× [0.991, 1.345].</li><li><strong>SCAN_AND_FETCH faster (10/16 cases: 8/12 in M2rl, 2/4 in M2skip, 95% CI &gt; 1.000):</strong> small-rows10 (1.031× fwd, 1.026× rev), split-limit1 (1.110× fwd, 1.114× rev), and all six 1,000-row scans: small-rows1000 (1.226× fwd 117.08 vs 95.10 ms, 1.255× rev 118.95 vs 96.39 ms), skip3-rows1000 (1.360× fwd 138.19 vs 98.67 ms, 1.324× rev 133.24 vs 101.06 ms), and 2-chunk split-rows1000 [f = 0.6960] (2.326× fwd 742.51 vs 316.38 ms, 2.300× rev 768.95 vs 327.62 ms).</li></ul></div>
+<svg class="bench-svg" viewBox="0 0 1454 438" role="img" aria-label="Figure M2.1: Mean time (ns/op) ratio, USE_REMOTE_FETCH / SCAN_AND_FETCH (log₂ scale, 95% CI)">
 <line class="grid-line" x1="299.0" y1="36" x2="299.0" y2="412"/>
 <text class="axis-text" x="299.0" y="30" text-anchor="middle">0.15×</text>
 <text class="axis-text" x="299.0" y="427" text-anchor="middle">0.15×</text>
@@ -83,7 +83,7 @@ of [hcloud-multinode-vpc-20261014](../).
 <line class="grid-line" x1="1259.0" y1="36" x2="1259.0" y2="412"/>
 <text class="axis-text" x="1259.0" y="30" text-anchor="middle">2.5×</text>
 <text class="axis-text" x="1259.0" y="427" text-anchor="middle">2.5×</text>
-<text class="axis-text" x="938.3" y="17" text-anchor="end">← Remote fetch faster</text>
+<text class="axis-text" x="938.3" y="17" text-anchor="end">← USE_REMOTE_FETCH faster</text>
 <text class="axis-text" x="954.3" y="17" text-anchor="start">SCAN_AND_FETCH faster →</text>
 <line class="section-divider" x1="8" y1="48" x2="1446" y2="48"/>
 <text class="section-title" x="10" y="63">M2rl: BenchmarkIndexFetch (3-node double ssd-2)</text>
@@ -142,9 +142,9 @@ of [hcloud-multinode-vpc-20261014](../).
 </figure>
 
 <figure class="bench-figure">
-<figcaption><strong>Figure M2.2: Client Go Allocations (allocs/op) Ratio — USE_REMOTE_FETCH / SCAN_AND_FETCH</strong> — Below 1.0× means USE_REMOTE_FETCH allocates fewer Go heap objects on the client.</figcaption>
-<div class="bench-summary"><ul class="bench-summary-list"><li><strong>Wins (14/16 cases, 95% CI &lt; 1.000):</strong> Client Go allocs/op drop across all 12 multi-row cases (0.398×–0.790×) and both split-limit1 cases (0.942× fwd 248 vs 263, 0.952× rev 250 vs 263).</li><li><strong>Regressions (2/16, 95% CI &gt; 1.000):</strong> small-limit1-forward 1.040× [1.038, 1.041] (231 vs 222, +9 allocs/op) and small-limit1-reverse 1.049× [1.047, 1.052] (234 vs 223, +11 allocs/op).</li><li><strong>Note:</strong> Lower client allocations on the six 1,000-row cases (0.398×–0.529×) did not prevent their 1.226×–2.326× ns/op regressions in Figure M2.1.</li></ul></div>
-<svg class="bench-svg" viewBox="0 0 1352 438" role="img" aria-label="Figure M2.2: Client Go Allocations (allocs/op) Ratio — USE_REMOTE_FETCH / SCAN_AND_FETCH">
+<figcaption><strong>Figure M2.2: Client Go allocations (allocs/op) ratio, USE_REMOTE_FETCH / SCAN_AND_FETCH (log₂ scale, 95% CI)</strong> — Below 1.0× means USE_REMOTE_FETCH allocates fewer Go heap objects on the client.</figcaption>
+<div class="bench-summary"><ul class="bench-summary-list"><li><strong>USE_REMOTE_FETCH fewer allocations (14/16 cases, 95% CI &lt; 1.000):</strong> Client Go allocs/op drop across all 12 multi-row cases (0.398×–0.790×) and both split-limit1 cases (0.942× fwd 248 vs 263, 0.952× rev 250 vs 263).</li><li><strong>SCAN_AND_FETCH fewer allocations (2/16 cases, 95% CI &gt; 1.000):</strong> small-limit1-forward 1.040× [1.038, 1.041] (231 vs 222, +9 allocs/op) and small-limit1-reverse 1.049× [1.047, 1.052] (234 vs 223, +11 allocs/op).</li><li><strong>Wall time:</strong> The six 1,000-row cases allocate fewer objects (0.398×–0.529×) and still take 1.226×–2.326× as long (Figure M2.1).</li></ul></div>
+<svg class="bench-svg" viewBox="0 0 1352 438" role="img" aria-label="Figure M2.2: Client Go allocations (allocs/op) ratio, USE_REMOTE_FETCH / SCAN_AND_FETCH (log₂ scale, 95% CI)">
 <line class="grid-line" x1="197.0" y1="36" x2="197.0" y2="412"/>
 <text class="axis-text" x="197.0" y="30" text-anchor="middle">0.35×</text>
 <text class="axis-text" x="197.0" y="427" text-anchor="middle">0.35×</text>
@@ -160,10 +160,10 @@ of [hcloud-multinode-vpc-20261014](../).
 <line class="grid-line" x1="1157.0" y1="36" x2="1157.0" y2="412"/>
 <text class="axis-text" x="1157.0" y="30" text-anchor="middle">1.2×</text>
 <text class="axis-text" x="1157.0" y="427" text-anchor="middle">1.2×</text>
-<text class="axis-text" x="1006.9" y="17" text-anchor="end">← Remote fetch fewer allocs</text>
+<text class="axis-text" x="1006.9" y="17" text-anchor="end">← USE_REMOTE_FETCH fewer allocs</text>
 <text class="axis-text" x="1022.9" y="17" text-anchor="start">SCAN_AND_FETCH fewer allocs →</text>
 <line class="section-divider" x1="8" y1="48" x2="1344" y2="48"/>
-<text class="section-title" x="10" y="63">M2rl: Client Go allocs/op Ratio</text>
+<text class="section-title" x="10" y="63">M2rl: client Go allocs/op</text>
 <text class="row-label" x="185" y="81.0" text-anchor="end">small-limit1-forward</text>
 <g class="ci-reg"><title>small-limit1-forward: 1.040× [1.038, 1.041]</title><line x1="1044.0" y1="77.0" x2="1046.3" y2="77.0" stroke-width="2.2"/><line x1="1044.0" y1="73.0" x2="1044.0" y2="81.0" stroke-width="1.8"/><line x1="1046.3" y1="73.0" x2="1046.3" y2="81.0" stroke-width="1.8"/><circle cx="1045.5" cy="77.0" r="3.8"/></g>
 <text class="val-text" x="1169" y="81.0">1.040× [1.038, 1.041]</text>
@@ -201,7 +201,7 @@ of [hcloud-multinode-vpc-20261014](../).
 <g class="ci-win"><title>split-rows1000-reverse: 0.398× [0.398, 0.398]</title><line x1="297.1" y1="297.0" x2="297.1" y2="297.0" stroke-width="2.2"/><line x1="297.1" y1="293.0" x2="297.1" y2="301.0" stroke-width="1.8"/><line x1="297.1" y1="293.0" x2="297.1" y2="301.0" stroke-width="1.8"/><circle cx="297.1" cy="297.0" r="3.8"/></g>
 <text class="val-text" x="1169" y="301.0">0.398× [0.398, 0.398]</text>
 <line class="section-divider" x1="8" y1="310" x2="1344" y2="310"/>
-<text class="section-title" x="10" y="325">M2skip: Client Go allocs/op Ratio</text>
+<text class="section-title" x="10" y="325">M2skip: client Go allocs/op</text>
 <text class="row-label" x="185" y="343.0" text-anchor="end">skip3-rows10-forward</text>
 <g class="ci-win"><title>skip3-rows10-forward: 0.790× [0.790, 0.790]</title><line x1="831.3" y1="339.0" x2="831.3" y2="339.0" stroke-width="2.2"/><line x1="831.3" y1="335.0" x2="831.3" y2="343.0" stroke-width="1.8"/><line x1="831.3" y1="335.0" x2="831.3" y2="343.0" stroke-width="1.8"/><circle cx="831.3" cy="339.0" r="3.8"/></g>
 <text class="val-text" x="1169" y="343.0">0.790× [0.790, 0.790]</text>

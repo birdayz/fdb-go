@@ -13,7 +13,7 @@ dedicated 16-vCPU host (`ssd-2` engine). This is **phase A2** of
 | before pure-Go | `pkg/fdbgo` before the allocation work (after read-path parity) | `3824f14654edae8431b0085de8ebf83f5a460a08` |
 | CGo | Apple's Go binding over `libfdb_c` 7.3.77, built from the final tree | `267a41434…`, native library 7.3.77 |
 
-## Design and Scope
+## Design and scope
 
 - Per workload (`get100`, `range100`, `batchset50`): 6 balanced blocks, each
   running all three arms once in a preregistered order (seed 641601; every arm

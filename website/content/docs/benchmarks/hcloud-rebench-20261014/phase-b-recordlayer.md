@@ -56,9 +56,9 @@ production code. `final/before` is the allocation work plus later changes;
 ## Results
 
 <figure class="bench-figure">
-<figcaption><strong>Figure B.1: Record Layer Allocation Optimization Ratios — Final / Before (log₂ scale, 95% CI)</strong> — 6 paired blocks × 3 repeats on memory engine. Below 1.0× means Final is faster or allocates less.</figcaption>
+<figcaption><strong>Figure B.1: Record Layer ratios, final / before (log₂ scale, 95% CI)</strong> — 6 paired blocks × 3 repeats on memory engine. Below 1.0× means Final is faster or allocates less.</figcaption>
 <div class="bench-summary"><ul class="bench-summary-list"><li><strong>Allocations (final/before):</strong> allocs/op drops on all 8 benchmarks (0.627×–0.888×, led by ScanIndexRecords/pipelined 0.627× and ScanIndexRecords/serial 0.651×); B/op drops on 7 of 8 (0.749×–0.910×) and is unresolved on 3-chunk SaveSplitRecord (0.998× [0.993, 1.004]).</li><li><strong>Mean time (ns/op, final/before):</strong> Lower on 3 of 8 benchmarks (ScanIndexRecords/pipelined 0.972× [0.952, 0.995], ScanRecordsSplitVersioned 0.976× [0.957, 0.996], LoadRecord 0.978× [0.958, 0.994]) and unresolved on the other 5 (0.966×–1.015×).</li><li><strong>Against pre-#888 legacy (see table below):</strong> ScanIndexRecords/serial is 1.477× (48% slower) and LoadRecord is 1.138× (14% slower) while ScanIndexRecords/pipelined takes 0.647× of legacy time (35% faster).</li></ul></div>
-<svg class="bench-svg" viewBox="0 0 1383 620" role="img" aria-label="Figure B.1: Record Layer Allocation Optimization Ratios — Final / Before (log₂ scale, 95% CI)">
+<svg class="bench-svg" viewBox="0 0 1383 620" role="img" aria-label="Figure B.1: Record Layer ratios, final / before (log₂ scale, 95% CI)">
 <line class="grid-line" x1="228.0" y1="36" x2="228.0" y2="594"/>
 <text class="axis-text" x="228.0" y="30" text-anchor="middle">0.6×</text>
 <text class="axis-text" x="228.0" y="609" text-anchor="middle">0.6×</text>
@@ -80,7 +80,7 @@ production code. `final/before` is the allocation work plus later changes;
 <text class="axis-text" x="1029.0" y="17" text-anchor="end">← Final lower</text>
 <text class="axis-text" x="1045.0" y="17" text-anchor="start">Before lower →</text>
 <line class="section-divider" x1="8" y1="48" x2="1375" y2="48"/>
-<text class="section-title" x="10" y="63">Mean Time (ns/op): Final / Before</text>
+<text class="section-title" x="10" y="63">Mean time (ns/op): final / before</text>
 <text class="row-label" x="216" y="81.0" text-anchor="end">SaveRecord</text>
 <g class="ci-neutral"><title>SaveRecord: 0.981× [0.954, 1.015]</title><line x1="962.5" y1="77.0" x2="1060.6" y2="77.0" stroke-width="2.2"/><line x1="962.5" y1="73.0" x2="962.5" y2="81.0" stroke-width="1.8"/><line x1="1060.6" y1="73.0" x2="1060.6" y2="81.0" stroke-width="1.8"/><circle cx="1006.7" cy="77.0" r="3.8"/></g>
 <text class="val-text" x="1200" y="81.0">0.981× [0.954, 1.015]</text>
@@ -106,7 +106,7 @@ production code. `final/before` is the allocation work plus later changes;
 <g class="ci-win"><title>ScanIndexRecords/pipelined: 0.972× [0.952, 0.995]</title><line x1="959.1" y1="217.0" x2="1029.1" y2="217.0" stroke-width="2.2"/><line x1="959.1" y1="213.0" x2="959.1" y2="221.0" stroke-width="1.8"/><line x1="1029.1" y1="213.0" x2="1029.1" y2="221.0" stroke-width="1.8"/><circle cx="992.1" cy="217.0" r="3.8"/></g>
 <text class="val-text" x="1200" y="221.0">0.972× [0.952, 0.995]</text>
 <line class="section-divider" x1="8" y1="230" x2="1375" y2="230"/>
-<text class="section-title" x="10" y="245">Go Bytes (B/op): Final / Before</text>
+<text class="section-title" x="10" y="245">Go bytes (B/op): final / before</text>
 <text class="row-label" x="216" y="263.0" text-anchor="end">SaveRecord</text>
 <g class="ci-win"><title>SaveRecord: 0.902× [0.900, 0.904]</title><line x1="870.2" y1="259.0" x2="877.2" y2="259.0" stroke-width="2.2"/><line x1="870.2" y1="255.0" x2="870.2" y2="263.0" stroke-width="1.8"/><line x1="877.2" y1="255.0" x2="877.2" y2="263.0" stroke-width="1.8"/><circle cx="873.7" cy="259.0" r="3.8"/></g>
 <text class="val-text" x="1200" y="263.0">0.902× [0.900, 0.904]</text>
@@ -132,7 +132,7 @@ production code. `final/before` is the allocation work plus later changes;
 <g class="ci-win"><title>ScanIndexRecords/pipelined: 0.749× [0.749, 0.749]</title><line x1="579.3" y1="399.0" x2="579.3" y2="399.0" stroke-width="2.2"/><line x1="579.3" y1="395.0" x2="579.3" y2="403.0" stroke-width="1.8"/><line x1="579.3" y1="395.0" x2="579.3" y2="403.0" stroke-width="1.8"/><circle cx="579.3" cy="399.0" r="3.8"/></g>
 <text class="val-text" x="1200" y="403.0">0.749× [0.749, 0.749]</text>
 <line class="section-divider" x1="8" y1="412" x2="1375" y2="412"/>
-<text class="section-title" x="10" y="427">Go Allocations (allocs/op): Final / Before</text>
+<text class="section-title" x="10" y="427">Go allocations (allocs/op): final / before</text>
 <text class="row-label" x="216" y="445.0" text-anchor="end">SaveRecord</text>
 <g class="ci-win"><title>SaveRecord: 0.859× [0.857, 0.861]</title><line x1="792.6" y1="441.0" x2="800.0" y2="441.0" stroke-width="2.2"/><line x1="792.6" y1="437.0" x2="792.6" y2="445.0" stroke-width="1.8"/><line x1="800.0" y1="437.0" x2="800.0" y2="445.0" stroke-width="1.8"/><circle cx="796.3" cy="441.0" r="3.8"/></g>
 <text class="val-text" x="1200" y="445.0">0.859× [0.857, 0.861]</text>

@@ -1,25 +1,25 @@
 ---
 title: Docs
-description: "Build fdb-go from source, choose a FoundationDB API, and review the project's readiness and compatibility boundaries."
+description: "Build fdb-go from source, compare its three FoundationDB APIs, and review readiness and compatibility boundaries."
 next: getting-started
 weight: 1
 ---
 
-fdb-go provides three APIs over FoundationDB: a native Go key-value client, a
+fdb-go provides three APIs over FoundationDB: a pure-Go key-value client, a
 Record Layer for protobuf records and indexes, and an embedded `database/sql`
-engine. You can use the client without either higher layer.
+engine. The client works without either higher layer.
 
 {{< cards >}}
   {{< card link="getting-started" title="Getting started" icon="play" subtitle="Build from source and run a disposable local example." >}}
   {{< card link="benchmarks" title="Benchmarks" icon="chart-bar" subtitle="Preregistered single-node and 4-node VPC benchmark campaigns." >}}
-  {{< card link="maturity" title="Status & compatibility" icon="shield-check" subtitle="Version targets, evidence, and boundaries to evaluate." >}}
+  {{< card link="maturity" title="Status & compatibility" icon="shield-check" subtitle="Readiness, version targets, test coverage, and Java interoperability." >}}
   {{< card link="https://github.com/birdayz/fdb-go/blob/master/docs/operations.md" title="Operator guide" icon="book-open" subtitle="Transactions, index builds, backups, and observability." >}}
   {{< card link="https://github.com/birdayz/fdb-go/tree/master/example" title="Source examples" icon="code" subtitle="Complete programs for the Record Layer and SQL APIs." >}}
 {{< /cards >}}
 
-## Choose an API
+## APIs
 
-| If you need… | Start here |
+| Use case | Package |
 |---|---|
 | FoundationDB key-value transactions from Go, without cgo | [`pkg/fdbgo/fdb`](https://github.com/birdayz/fdb-go/tree/master/pkg/fdbgo/fdb) |
 | Protobuf records, secondary indexes, and cursor-based scans | [`pkg/recordlayer`](https://github.com/birdayz/fdb-go/tree/master/pkg/recordlayer) |

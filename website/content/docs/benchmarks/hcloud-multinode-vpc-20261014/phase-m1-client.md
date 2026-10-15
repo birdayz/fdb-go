@@ -1,5 +1,5 @@
 ---
-title: "Phase M1: Client (1, 8, 32, 64 Workers)"
+title: "Phase M1: Client (1, 8, 32, 64 workers)"
 description: "Pure-Go vs CGo client latency and process CPU across 1, 8, 32, and 64 closed-loop workers over a real VPC to a 3-node double ssd-2 cluster."
 weight: 1
 ---
@@ -12,7 +12,7 @@ closed-loop concurrency phases (`M1w1` = 1 worker, `M1w8` = 8 workers, `M1w32` =
 processes, 9 storage servers). This is **phase M1** of
 [hcloud-multinode-vpc-20261014](../).
 
-## Design and Scope
+## Design and scope
 
 - After `M2skip` completed, data distribution was re-enabled (`datadistribution
   on`), the cluster settled to `moving_data.in_flight_bytes == 0` and
@@ -60,9 +60,9 @@ processes, 9 storage servers). This is **phase M1** of
 ## Results: Final pure-Go / CGo
 
 <figure class="bench-figure">
-<figcaption><strong>Figure M1.1: Mean Latency Ratio — Final Pure-Go / CGo (log₂ scale, 95% block-bootstrap CI)</strong> — 6 paired blocks per workload, 20,000 resamples (seed 492817). Below 1.0× means Pure-Go is faster.</figcaption>
-<div class="bench-summary"><ul class="bench-summary-list"><li><strong>Wins (18/22 clean cells, 95% CI &lt; 1.000):</strong> 0.554×–0.980× across M1w1 (7/7: 0.579×–0.954×), M1w8 (4/5: get100 0.888×, get1000 0.942×, range100 0.868×, set100 0.980×), M1w32 (3/5: get100 0.770×, get1000 0.715×, set100 0.938×), and M1w64 (4/5: get100 0.676×, get1000 0.632×, range100 0.554×, set100 0.887×).</li><li><strong>Unresolved (3/22, 95% CI spans 1.000):</strong> M1w8 grv 0.996× [0.949, 1.038], M1w32 range100 0.869× [0.753, 1.148], M1w64 grv 1.029× [0.990, 1.069].</li><li><strong>Regressions (1/22, 95% CI &gt; 1.000):</strong> M1w32 grv 1.041× [1.007, 1.081].</li><li><strong>Omitted (6/28 planned cells):</strong> at 8, 32, and 64 workers, batchset50 exceeded the 100 MB server tLog queue gate (113.7 MB, 193.4 MB, 141.9 MB; R4 contaminated), and the phase driver stopped before batchset50x1000 (R4 unverifiable).</li></ul></div>
-<svg class="bench-svg" viewBox="0 0 1320 722" role="img" aria-label="Figure M1.1: Mean Latency Ratio — Final Pure-Go / CGo (log₂ scale, 95% block-bootstrap CI)">
+<figcaption><strong>Figure M1.1: Mean latency ratio, final pure-Go / CGo (log₂ scale, 95% block-bootstrap CI)</strong> — 6 paired blocks per workload, 20,000 resamples (seed 492817). Below 1.0× means Pure-Go is faster.</figcaption>
+<div class="bench-summary"><ul class="bench-summary-list"><li><strong>Pure-Go faster (18/22 clean cells, 95% CI &lt; 1.000):</strong> 0.554×–0.980× across M1w1 (7/7: 0.579×–0.954×), M1w8 (4/5: get100 0.888×, get1000 0.942×, range100 0.868×, set100 0.980×), M1w32 (3/5: get100 0.770×, get1000 0.715×, set100 0.938×), and M1w64 (4/5: get100 0.676×, get1000 0.632×, range100 0.554×, set100 0.887×).</li><li><strong>Unresolved (3/22, 95% CI spans 1.000):</strong> M1w8 grv 0.996× [0.949, 1.038], M1w32 range100 0.869× [0.753, 1.148], M1w64 grv 1.029× [0.990, 1.069].</li><li><strong>CGo faster (1/22, 95% CI &gt; 1.000):</strong> M1w32 grv 1.041× [1.007, 1.081].</li><li><strong>Omitted (6/28 planned cells):</strong> at 8, 32, and 64 workers, batchset50 exceeded the 100 MB server tLog queue gate (113.7 MB, 193.4 MB, 141.9 MB; R4 contaminated), and the phase driver stopped before batchset50x1000 (R4 unverifiable).</li></ul></div>
+<svg class="bench-svg" viewBox="0 0 1320 722" role="img" aria-label="Figure M1.1: Mean latency ratio, final pure-Go / CGo (log₂ scale, 95% block-bootstrap CI)">
 <line class="grid-line" x1="165.0" y1="36" x2="165.0" y2="696"/>
 <text class="axis-text" x="165.0" y="30" text-anchor="middle">0.35×</text>
 <text class="axis-text" x="165.0" y="711" text-anchor="middle">0.35×</text>
@@ -174,9 +174,9 @@ processes, 9 storage servers). This is **phase M1** of
 </figure>
 
 <figure class="bench-figure">
-<figcaption><strong>Figure M1.2: Tail (p99) Latency Ratio — Final Pure-Go / CGo (log₂ scale, 95% block-bootstrap CI)</strong> — Run-level p99 transaction latency resampled over paired blocks. Below 1.0× means Pure-Go has lower p99.</figcaption>
-<div class="bench-summary"><ul class="bench-summary-list"><li><strong>Wins (17/22 clean cells, 95% CI &lt; 1.000):</strong> 0.385×–0.957× (lowest on M1w64 get1000 at 0.385× [0.336, 0.438], run-level medians 4544.4 µs pure-Go vs 11686.4 µs CGo).</li><li><strong>Unresolved (4/22, 95% CI spans 1.000):</strong> M1w1 get100 0.865× [0.734, 1.037], M1w8 grv 1.101× [0.869, 1.457], M1w32 grv 0.871× [0.754, 1.017], M1w64 grv 0.960× [0.757, 1.190].</li><li><strong>Regressions (1/22, 95% CI &gt; 1.000):</strong> M1w32 range100 paired-block ratio 1.247× [1.048, 1.644] (run-level medians 6618.7 µs pure-Go vs 5977.7 µs CGo).</li></ul></div>
-<svg class="bench-svg" viewBox="0 0 1320 722" role="img" aria-label="Figure M1.2: Tail (p99) Latency Ratio — Final Pure-Go / CGo (log₂ scale, 95% block-bootstrap CI)">
+<figcaption><strong>Figure M1.2: p99 latency ratio, final pure-Go / CGo (log₂ scale, 95% block-bootstrap CI)</strong> — Run-level p99 transaction latency resampled over paired blocks. Below 1.0× means Pure-Go has lower p99.</figcaption>
+<div class="bench-summary"><ul class="bench-summary-list"><li><strong>Pure-Go lower p99 (17/22 clean cells, 95% CI &lt; 1.000):</strong> 0.385×–0.957× (lowest on M1w64 get1000 at 0.385× [0.336, 0.438], run-level medians 4544.4 µs pure-Go vs 11686.4 µs CGo).</li><li><strong>Unresolved (4/22, 95% CI spans 1.000):</strong> M1w1 get100 0.865× [0.734, 1.037], M1w8 grv 1.101× [0.869, 1.457], M1w32 grv 0.871× [0.754, 1.017], M1w64 grv 0.960× [0.757, 1.190].</li><li><strong>CGo lower p99 (1/22, 95% CI &gt; 1.000):</strong> M1w32 range100 paired-block ratio 1.247× [1.048, 1.644] (run-level medians 6618.7 µs pure-Go vs 5977.7 µs CGo).</li></ul></div>
+<svg class="bench-svg" viewBox="0 0 1320 722" role="img" aria-label="Figure M1.2: p99 latency ratio, final pure-Go / CGo (log₂ scale, 95% block-bootstrap CI)">
 <line class="grid-line" x1="165.0" y1="36" x2="165.0" y2="696"/>
 <text class="axis-text" x="165.0" y="30" text-anchor="middle">0.25×</text>
 <text class="axis-text" x="165.0" y="711" text-anchor="middle">0.25×</text>
@@ -291,9 +291,9 @@ processes, 9 storage servers). This is **phase M1** of
 </figure>
 
 <figure class="bench-figure">
-<figcaption><strong>Figure M1.3: Shutdown Process CPU (E−A) Ratio — Final Pure-Go / CGo (log₂ scale, 95% CI)</strong> — User+system process CPU through finalizer drain and network stop per transaction. Below 1.0× means Pure-Go uses less CPU.</figcaption>
+<figcaption><strong>Figure M1.3: Shutdown process CPU (E−A) ratio, final pure-Go / CGo (log₂ scale, 95% CI)</strong> — User+system process CPU through finalizer drain and network stop per transaction. Below 1.0× means Pure-Go uses less CPU.</figcaption>
 <div class="bench-summary"><ul class="bench-summary-list"><li><strong>1 worker (M1w1, 7/7 clean):</strong> Pure-Go uses less E−A process CPU on all 7 workloads (0.570×–0.748×, 260.4–1290.8 µs/tx vs 451.0–1737.1 µs/tx).</li><li><strong>8, 32, and 64 workers (15 clean cells):</strong> Pure-Go uses less E−A CPU on grv at all three worker levels (0.904× at 8w, 0.765× at 32w, 0.736× at 64w), is unresolved on M1w64 range100 (1.069× [0.923, 1.180]), and uses more E−A CPU in 11 of 12 non-grv cells (1.291×–2.162×; highest on set100 at 2.142× in M1w8, 2.162× in M1w32, and 1.981× in M1w64).</li></ul></div>
-<svg class="bench-svg" viewBox="0 0 1320 722" role="img" aria-label="Figure M1.3: Shutdown Process CPU (E−A) Ratio — Final Pure-Go / CGo (log₂ scale, 95% CI)">
+<svg class="bench-svg" viewBox="0 0 1320 722" role="img" aria-label="Figure M1.3: Shutdown process CPU (E−A) ratio, final pure-Go / CGo (log₂ scale, 95% CI)">
 <line class="grid-line" x1="165.0" y1="36" x2="165.0" y2="696"/>
 <text class="axis-text" x="165.0" y="30" text-anchor="middle">0.5×</text>
 <text class="axis-text" x="165.0" y="711" text-anchor="middle">0.5×</text>
@@ -405,9 +405,9 @@ processes, 9 storage servers). This is **phase M1** of
 </figure>
 
 <figure class="bench-figure">
-<figcaption><strong>Figure M1.4: Absolute Mean &amp; p99 Latency at 1 Worker (M1w1) and 64 Workers (M1w64)</strong> — Medians of 6 run-level statistics in µs/transaction (solid bar = mean, whisker = p99).</figcaption>
+<figcaption><strong>Figure M1.4: Absolute mean and p99 latency at 1 worker (M1w1) and 64 workers (M1w64)</strong> — Medians of 6 run-level statistics in µs/transaction (solid bar = mean, whisker = p99).</figcaption>
 <div class="bench-summary"><ul class="bench-summary-list"><li><strong>M1w1 (1 worker, 7 workloads):</strong> Pure-Go medians are 967.1–6241.4 µs mean (1477.4–9383.0 µs p99) vs CGo 1673.5–6577.5 µs mean (3133.0–10055.1 µs p99).</li><li><strong>M1w64 (64 workers, 5 clean workloads):</strong> Pure-Go medians are 2017.9–5918.8 µs mean (4237.9–9591.9 µs p99) vs CGo 1931.8–6659.4 µs mean (4015.5–11686.4 µs p99). Worker levels ran in separate phases; cross-worker comparisons are descriptive only.</li></ul></div>
-<svg class="bench-svg" viewBox="0 0 1347 392" role="img" aria-label="Figure M1.4: Absolute Mean &amp; p99 Latency at 1 Worker (M1w1) and 64 Workers (M1w64)">
+<svg class="bench-svg" viewBox="0 0 1347 392" role="img" aria-label="Figure M1.4: Absolute mean and p99 latency at 1 worker (M1w1) and 64 workers (M1w64)">
 <line class="grid-line" x1="182.0" y1="22" x2="182.0" y2="368"/>
 <text class="axis-text" x="182.0" y="383" text-anchor="middle">0 µs</text>
 <line class="grid-line" x1="342.0" y1="22" x2="342.0" y2="368"/>
@@ -527,7 +527,7 @@ pure-Go is faster or uses less CPU.
 | batchset50 | N/A (R4 `contaminated`: log queue 141.9 MB > 100 MB gate) | — | — | — |
 | batchset50x1000 | N/A (R4 `unverifiable`: unexecuted after `batchset50` abort) | — | — | — |
 
-## Absolute Values
+## Absolute values
 
 Medians of six run-level statistics per arm.
 

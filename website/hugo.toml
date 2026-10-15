@@ -57,7 +57,7 @@ hasCJKLanguage = false
       icon = "github"
 
 [params]
-  description = "A native Go FoundationDB client, a Record Layer, and an embedded SQL engine. No cgo required. Explore the APIs, examples, and compatibility boundaries."
+  description = "A pure-Go FoundationDB client, a Go port of the Record Layer, and an embedded SQL engine. The client does not require cgo."
   # Default og:image / twitter:image (2400x1260; render static/og.svg to og.png).
   images = ["/og.png"]
 
