@@ -129,15 +129,9 @@ func TestGRVBatcherSeparatesFullFlags(t *testing.T) {
 	batcher.batchTime = time.Hour
 	batcher.inFlight++ // keep ordinary admission queued behind a held RPC
 	batcher.mu.Unlock()
-	// Also release on a setup failure, so no hour-long callback retains db.
+	// Also release on a setup failure, so no hour-long window retains a waiter.
 	defer batcher.finishBatch()
-	defer func() {
-		batcher.mu.Lock()
-		if batcher.timer != nil {
-			batcher.timer.Reset(0)
-		}
-		batcher.mu.Unlock()
-	}()
+	defer batcher.expireWindowNow()
 
 	const normalTag, riskyTag = "flags-normal", "flags-risky"
 	callers := []*grvFlagsAdmissionContext{
@@ -163,14 +157,8 @@ func TestGRVBatcherSeparatesFullFlags(t *testing.T) {
 		}
 	}
 
-	batcher.mu.Lock()
-	timer := batcher.timer
-	if timer != nil {
-		timer.Reset(0)
-	}
-	batcher.mu.Unlock()
-	if timer == nil {
-		t.Fatal("ordinary GRV did not arm the held root batch timer")
+	if !batcher.expireWindowNow() {
+		t.Fatal("ordinary GRV did not open the held root batch window")
 	}
 	for range callers {
 		select {
@@ -269,4 +257,17 @@ func TestCommitPathGRVIsCausalReadRisky(t *testing.T) {
 			}
 		}
 	}
+}
+
+// expireWindowNow moves an open window's deadline to now and fires its timer,
+// reporting whether a window was open.
+func (b *grvBatcher) expireWindowNow() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if !b.windowArmed {
+		return false
+	}
+	b.windowDeadline = b.clock()
+	b.window.arm(0)
+	return true
 }

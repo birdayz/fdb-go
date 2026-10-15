@@ -696,11 +696,22 @@ type grvBatcher struct {
 	pending    []grvRequest
 	inFlight   int
 	batchTime  time.Duration
-	timer      *time.Timer
-	timerSeq   uint64 // rejects callbacks from an already dispatched batch
 	priority   uint32 // fixed priority bits for this batcher
 	extraFlags uint32 // immutable option bits; variants never share a queue
 	variants   map[uint32]*grvBatcher
+
+	// The batch window (RFC-259, grv_window.go). window is nil until the
+	// first window opens; newWindow (nil: newWindowLocked) and now (nil:
+	// time.Now) are test seams. overlapped and pendingIdle feed the serial
+	// fast path: overlapped records evidence that GRVs overlap, pendingIdle
+	// that the pending batch's first request found nothing in flight.
+	window         batchWindow
+	windowArmed    bool
+	windowDeadline time.Time
+	overlapped     bool
+	pendingIdle    bool
+	newWindow      func(*database) batchWindow
+	now            func() time.Time
 
 	refreshOnce sync.Once
 	// refresherStarted is a deterministic test seam (RFC-104): true once the
@@ -840,15 +851,11 @@ func (b *grvBatcher) getReadVersion(db *database, ctx context.Context, flags uin
 	req := grvRequest{reply: make(chan grvResult, 1), spanContext: span, tags: tags}
 
 	b = b.forFlags(flags)
-	switch batch := b.admit(req, func(seq uint64) {
-		if batch := b.timerBatch(seq); batch != nil {
-			b.flush(db, batch)
-		}
-	}); len(batch) {
+	switch batch := b.admit(db, req); len(batch) {
 	case 0:
 	case 1:
-		// An idle batcher detached only this request: a goroutine would just hand
-		// the reply back, so run the RPC here, bounded by this caller's ctx too.
+		// The serial fast path detached only this request: a goroutine would just
+		// hand the reply back, so run the RPC here, bounded by this caller's ctx too.
 		// Accepted divergence: C++ runs every batch to its reply (NativeAPI.actor.cpp
 		// :7266-7287, :7382), so a cancelled lone caller here also skips tag throttles,
 		// the minAcceptable floor and one batch-window sample.
@@ -892,38 +899,71 @@ func (b *grvBatcher) forFlags(flags uint32) *grvBatcher {
 	return child
 }
 
-func (b *grvBatcher) admit(req grvRequest, onTimer func(uint64)) []grvRequest {
+// admit queues req. It returns the batch to send now: the serial fast path's
+// lone request or a full batch. Otherwise req waits for the batch window, which
+// the first request of a batch opens, as readVersionBatcher does
+// (NativeAPI.actor.cpp:7351-7356).
+func (b *grvBatcher) admit(db *database, req grvRequest) []grvRequest {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.inFlight > 0 {
+		b.overlapped = true
+	}
 	b.pending = append(b.pending, req)
-	// Unlike Flow, dispatch idle requests immediately to avoid coarse Go timers.
-	// Each RPC still follows its members' read calls (api-c.rst:613).
-	if len(b.pending) == grvMaxBatchSize || len(b.pending) == 1 && b.inFlight == 0 {
+	if len(b.pending) == grvMaxBatchSize {
 		return b.detachLocked()
 	}
-	if len(b.pending) == 1 {
-		seq := b.timerSeq
-		b.timer = time.AfterFunc(b.batchTime, func() { onTimer(seq) })
+	if len(b.pending) > 1 {
+		return nil // the window is already open
 	}
+	b.pendingIdle = b.inFlight == 0
+	// Serial fast path (accepted divergence, RFC-259): skip the window while
+	// the evidence says GRVs come one at a time: nothing is in flight, and no
+	// batch since the last window batch of one has overlapped another. C++
+	// waits for every first request.
+	if b.inFlight == 0 && !b.overlapped {
+		return b.detachLocked()
+	}
+	deadline := b.clock().Add(b.batchTime)
+	if b.window == nil {
+		if b.newWindow != nil {
+			b.window = b.newWindow(db)
+		} else {
+			b.window = b.newWindowLocked(db)
+		}
+	}
+	// Arm what is left of the window: creating the timer may have taken time.
+	if b.window == nil || !b.window.arm(max(deadline.Sub(b.clock()), 0)) {
+		return b.detachLocked() // no timer (Close has begun): send now
+	}
+	b.windowArmed = true
+	b.windowDeadline = deadline
 	return nil
 }
 
+// detachLocked takes the pending batch and closes its window. A batch of one
+// whose request found nothing in flight is evidence of serial use, unless a
+// request arrives during its flight (admit); anything else is evidence of
+// overlap.
 func (b *grvBatcher) detachLocked() []grvRequest {
 	batch := b.pending
 	b.pending = nil
 	b.inFlight++
-	b.timerSeq++
-	if b.timer != nil {
-		b.timer.Stop()
-		b.timer = nil
+	b.overlapped = len(batch) > 1 || !b.pendingIdle
+	if b.windowArmed {
+		b.windowArmed = false
+		b.window.stop()
 	}
 	return batch
 }
 
-func (b *grvBatcher) timerBatch(seq uint64) []grvRequest {
+// expiredBatch detaches the pending batch if its window is due. A timer can
+// fire for a window that a full batch already closed, or before a newer
+// window's deadline; both detach nothing.
+func (b *grvBatcher) expiredBatch() []grvRequest {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if seq != b.timerSeq || len(b.pending) == 0 {
+	if !b.windowArmed || b.clock().Before(b.windowDeadline) {
 		return nil
 	}
 	return b.detachLocked()
@@ -933,6 +973,13 @@ func (b *grvBatcher) finishBatch() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.inFlight--
+}
+
+func (b *grvBatcher) clock() time.Time {
+	if b.now != nil {
+		return b.now()
+	}
+	return time.Now()
 }
 
 func (b *grvBatcher) observeLatency(elapsed time.Duration) {
@@ -1061,7 +1108,8 @@ func (b *grvBatcher) logFlushPanic(r any) {
 	if now-last < int64(panicLogInterval) || !b.lastPanicLog.CompareAndSwap(last, now) {
 		return
 	}
-	diag.Recovered("fdbgo: recovered panic in client goroutine",
+	diag.Recovered(
+		"fdbgo: recovered panic in client goroutine",
 		"goroutine", "grvFlush",
 		"err", fmt.Sprintf("%v", r),
 		"stack", string(debug.Stack()),
