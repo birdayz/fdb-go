@@ -1521,6 +1521,17 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   read version (NativeAPI.actor.cpp:5707-5753). Found by the multi-node placement probe
   review; the probe does not rely on the Go path. Client team; held while feature work is
   paused.
+- [ ] `pkg/fdbgo`: reduce concurrent multi-worker process CPU (`E−A`) via write-path and
+  read-reply buffer pooling / arena-style decoding and batched transport write-loop wakeups.
+  In `hcloud-multinode-vpc-20261014` (`docs/benchmarks/hcloud-multinode-vpc-20261014/phase-m1-client.md`)
+  and `hcloud-rebench-20261014` (`phase-a2-client-8w.md`), pure-Go beats CGo (`libfdb_c` 7.3.77)
+  on latency up to 64 workers, and uses less `E−A` CPU at 1 worker (`0.570–0.748×`) and on
+  multi-worker `grv` (`0.736–0.904×`), but uses `1.291–2.162×` `E−A` CPU on 8–64 worker reads
+  and commits (`set100` allocates ~10.2 KB / ~100 Go mallocs per tx; `range100` allocates ~50 KB /
+  ~73 mallocs per tx, driving concurrent Go GC cycles and per-RPC socket write-loop wakeups on
+  shared connections). Profile CPU/allocations under 8–64 workers, pool or arena-decode wire
+  frames (`pkg/fdbgo/wire/`, `pkg/fdbgo/client/readpath.go`, `commitpath.go`), and coalesce
+  concurrent frame writes in `pkg/fdbgo/transport/conn.go`.
 
 ## Test lanes and test-speed work (committed with the temporal change)
 
