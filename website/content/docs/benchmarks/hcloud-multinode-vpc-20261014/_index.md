@@ -21,23 +21,23 @@ run was executed once in a counterbalanced block order, 1 Hz server telemetry
 was collected on all three server hosts and reconciled with conservative clock
 bounds (`R4`), and all adverse or omitted cases are retained and reported.
 Intervals below use the protocol's preregistered bootstrap seed `492817`
-(20,000 resamples); initial exploratory runs with seed `391706` are retained in
-`analysis-seed391706/`.
+(20,000 resamples; initial exploratory runs with seed `391706` are retained in
+the campaign archive).
 
 ## Topology and Environment
 
 - **Four Hetzner `ccx43` hosts** in `fsn1`: 16 dedicated vCPUs (AMD EPYC Milan,
   8 cores × 2 SMT threads, one NUMA node, `2k,2k+1` sibling pairs verified on
   all four hosts) and 64 GiB RAM per machine.
-- **Isolated private VPC (`10.88.0.0/24`)** with host-level `nftables` firewall
+- **Isolated `/24` private VPC** with host-level `nftables` firewall
   rules and Hetzner Cloud Firewall rules. Unloaded 100-packet client-to-node
   VPC ping medians (`p50` / `p99`): node1 `0.374 / 0.971 ms`, node2 `0.412 /
   1.400 ms`, node3 `0.328 / 1.390 ms` (0% packet loss).
-- **Client host (`10.88.0.10`):** runs **zero `fdbserver` processes**.
+- **Client host:** runs **zero `fdbserver` processes**.
   Housekeeping/runner pinned to CPUs `0–1`, idle sentinel CPUs `2–7`, benchmark
   client pinned to CPUs `8–15` (`GOMAXPROCS=8`, `GOGC=100`, `GOMEMLIMIT=off`,
   Go 1.26.9).
-- **Three FoundationDB 7.3.77 server hosts (`10.88.0.11–13`):** 17 `fdbserver`
+- **Three FoundationDB 7.3.77 server hosts:** 17 `fdbserver`
   processes total, each pinned to its own disjoint SMT sibling pair (`CPUs 0–1`
   reserved for housekeeping and the 1 Hz `node_sampler.py`), configured as
   `double` redundancy `ssd-2` with `commit_proxies=1`, `grv_proxies=1`,
@@ -76,16 +76,16 @@ Intervals below use the protocol's preregistered bootstrap seed `492817`
       (117.1 ms vs 95.1 ms) and **1.255 [1.217, 1.293]** reverse (119.0 ms vs
       96.4 ms), despite cutting client Go allocations by 57% (`allocs/op`
       0.431).
-    - `split-rows1000` (`partially colocated (f = 0.6960)`): **2.326 [2.253,
-      2.396]** forward (742.5 ms vs 316.4 ms) and **2.300 [2.206, 2.383]**
+    - `split-rows1000` (`partially colocated (f = 0.6960)`): **2.326 [2.254,
+      2.397]** forward (742.5 ms vs 316.4 ms) and **2.300 [2.206, 2.384]**
       reverse (769.0 ms vs 327.6 ms).
-    - `skip3-rows1000` (100% `cross-server`): **1.360 [1.297, 1.415]** forward
+    - `skip3-rows1000` (100% `cross-server`): **1.360 [1.295, 1.414]** forward
       and **1.324 [1.250, 1.407]** reverse.
   - On small result sets, `USE_REMOTE_FETCH` was faster or comparable in
     specific shapes:
-    - `skip3-rows10-reverse` (`cross-server`): **0.158 [0.156, 0.160]** (4.87
+    - `skip3-rows10-reverse` (`cross-server`): **0.158 [0.155, 0.160]** (4.87
       ms vs 31.13 ms, a 6.4× speedup).
-    - `split-rows10` (`partially colocated (f = 0.0000)`): **0.873 [0.830,
+    - `split-rows10` (`partially colocated (f = 0.0000)`): **0.873 [0.829,
       0.920]** forward and **0.854 [0.823, 0.886]** reverse.
     - `small-limit1` (`cross-server`): **0.979 [0.964, 0.995]** forward and
       **0.985 [0.969, 1.003]** reverse.
@@ -94,8 +94,8 @@ Intervals below use the protocol's preregistered bootstrap seed `492817`
       **1.110 [1.087, 1.131]** forward and **1.114 [1.095, 1.138]** reverse.
   - All 16 cases across `M2rl` (432 samples) and `M2skip` (144 samples) passed
     before/after placement stability checks and reconciled **100% clean** in
-    R4. Keeping `SCAN_AND_FETCH` as the default is strongly supported by these
-    multi-node results.
+    R4. These results support retaining `SCAN_AND_FETCH` as the default for the
+    measured workloads and conditions.
 - **M1 (`final pure-Go` vs `CGo` over a real VPC to a 3-node `double` `ssd-2`
   cluster):**
   - **At 1 worker (`M1w1`, 7/7 clean):** pure-Go beat CGo on mean latency, p99

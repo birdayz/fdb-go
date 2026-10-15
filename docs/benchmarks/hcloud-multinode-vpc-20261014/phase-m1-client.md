@@ -3,7 +3,7 @@
 Final pure-Go client (`pkg/fdbgo`, `267a41434a81723b07e7150869d702636a1b91a9`)
 against Apple's Go binding over `libfdb_c` 7.3.77 (`CGo`) across four
 closed-loop concurrency phases (`M1w1` = 1 worker, `M1w8` = 8 workers, `M1w32` =
-32 workers, `M1w64` = 64 workers) over a private VPC (`10.88.0.0/24`) against a
+32 workers, `M1w64` = 64 workers) over an isolated `/24` private VPC against a
 3-node `double`-redundancy `ssd-2` FoundationDB 7.3.77 cluster (17 server
 processes, 9 storage servers). This is **phase M1** of
 [hcloud-multinode-vpc-20261014](README.md).
@@ -57,7 +57,7 @@ processes, 9 storage servers). This is **phase M1** of
 
 Geometric mean of six paired block ratios, with nominal 95% block-bootstrap
 intervals (20,000 resamples, preregistered seed 492817; initial exploratory
-analysis with seed 391706 is retained in `analysis-seed391706/`). Below 1 means
+analysis with seed 391706 is retained in the campaign archive). Below 1 means
 pure-Go is faster or uses less CPU.
 
 ### `M1w1` (1 worker, 18,000 tx/arm per workload — 7/7 clean)

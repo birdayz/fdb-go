@@ -96,8 +96,8 @@ Headline results:
 ## Shared limits
 
 - One host, one `fdbserver` process, single redundancy: no replication and no
-  network hop between machines. The multi-node campaign is designed for that;
-  its reports will go to `docs/benchmarks/hcloud-multinode-vpc-20261014/`.
+  network hop between machines. The 4-node VPC campaign is reported in
+  [`hcloud-multinode-vpc-20261014`](/docs/benchmarks/hcloud-multinode-vpc-20261014/).
 - A runner bug wrote a CPU field name instead of the case key into the
   testing.B phases' aggregate CSV. Case labels were restored from the pinned
   plans and unchanged per-run logs, without repeating or changing any

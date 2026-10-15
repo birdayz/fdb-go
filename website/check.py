@@ -33,20 +33,36 @@ def require(condition, message):
         raise SystemExit(message)
 
 
+SECTION_PAGES = [
+    "/",
+    "/docs/",
+    "/docs/benchmarks/",
+    "/docs/benchmarks/hcloud-rebench-20261014/",
+    "/docs/benchmarks/hcloud-multinode-vpc-20261014/",
+]
+ARTICLE_PAGES = [
+    "/docs/getting-started/",
+    "/docs/maturity/",
+    "/docs/benchmarks/hcloud-multinode-vpc-20261014/phase-m1-client/",
+    "/docs/benchmarks/hcloud-multinode-vpc-20261014/phase-m2-remotefetch/",
+    "/docs/benchmarks/hcloud-rebench-20261014/phase-a-client/",
+    "/docs/benchmarks/hcloud-rebench-20261014/phase-a2-client-8w/",
+    "/docs/benchmarks/hcloud-rebench-20261014/phase-b-recordlayer/",
+    "/docs/benchmarks/hcloud-rebench-20261014/phase-c1-remotefetch/",
+    "/docs/benchmarks/hcloud-rebench-20261014/phase-c2-reverse-skip/",
+    "/docs/benchmarks/hcloud-rebench-20261014/phase-c3-synthetic-rtt/",
+    "/docs/benchmarks/hcloud-rebench-20261014/phase-d1-sql/",
+    "/docs/benchmarks/hcloud-rebench-20261014/phase-d2-sql-remotefetch/",
+]
+PUBLIC_PAGES = SECTION_PAGES + ARTICLE_PAGES
+
+
 def check(root):
     pages = {
         "/" + str(path.relative_to(root)).removesuffix("index.html"): Page(path.read_text())
         for path in root.rglob("index.html")
     }
-    public_pages = [
-        "/",
-        "/docs/",
-        "/docs/getting-started/",
-        "/docs/benchmarks/",
-        "/docs/benchmarks/hcloud-rebench-20261014/",
-        "/docs/benchmarks/hcloud-multinode-vpc-20261014/",
-        "/docs/maturity/",
-    ]
+    public_pages = PUBLIC_PAGES
     require(all(path in pages for path in public_pages), "Missing public pages: build the site first")
     checked = 0
     for path, page in pages.items():
@@ -71,7 +87,7 @@ def check(root):
             require(value, f"{path}: missing {name}")
             require(not re.search(r"2[–—-]4[x×]|faster reads|byte.identical|wire.compatible", value, re.I),
                     f"{path}: unsupported performance/blanket compatibility claim in {name}")
-        expected_type = "article" if path in ["/docs/getting-started/", "/docs/maturity/"] else "website"
+        expected_type = "website" if path in SECTION_PAGES else "article"
         require((page.meta.get("og:type") or "").strip() == expected_type, f"{path}: wrong og:type")
         require(page.meta.get("twitter:card") == "summary_large_image", f"{path}: wrong twitter:card")
         for name in ["og:image", "twitter:image"]:

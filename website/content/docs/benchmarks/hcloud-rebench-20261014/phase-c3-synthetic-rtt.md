@@ -18,9 +18,9 @@ not a multi-host or physical-network benchmark.
   egress) and `fdb-bench-peer` (client-to-server egress): `limit 100000 delay
   250us` (kernel JSON `0.000249984` s per direction; 0% loss, 0 jitter, 0
   reordering).
-- Pre-phase 100-packet unloaded ping from the client namespace to `172.31.99.1`:
-  **p50 0.597 ms, p99 0.628 ms** (min 0.534 ms, max 0.629 ms), 0% packet loss,
-  0 qdisc drops before and after.
+- Pre-phase 100-packet unloaded ping from the client namespace to the host
+  veth endpoint: **p50 0.597 ms, p99 0.628 ms** (min 0.534 ms, max 0.629 ms),
+  0% packet loss, 0 qdisc drops before and after.
 - Post-phase restoration: both root qdiscs deleted (`noqueue` verified), 0
   drops during the phase, and a 100-packet zero-delay ping confirmed restoration
   at **p50 0.039 ms, p99 0.043 ms**.

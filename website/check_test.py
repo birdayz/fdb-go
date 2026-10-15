@@ -7,7 +7,7 @@ import re
 import tempfile
 import unittest
 
-from check import check
+from check import PUBLIC_PAGES, SECTION_PAGES, check
 
 
 class SiteCheckTest(unittest.TestCase):
@@ -15,16 +15,8 @@ class SiteCheckTest(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
-        for path in [
-            "/",
-            "/docs/",
-            "/docs/getting-started/",
-            "/docs/benchmarks/",
-            "/docs/benchmarks/hcloud-rebench-20261014/",
-            "/docs/benchmarks/hcloud-multinode-vpc-20261014/",
-            "/docs/maturity/",
-        ]:
-            kind = "article" if path in ["/docs/getting-started/", "/docs/maturity/"] else "website"
+        for path in PUBLIC_PAGES:
+            kind = "website" if path in SECTION_PAGES else "article"
             page = self.root / path.lstrip("/") / "index.html"
             page.parent.mkdir(parents=True, exist_ok=True)
             page.write_text(f'''<!doctype html><html><head>
@@ -111,7 +103,15 @@ class SiteCheckTest(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, "Missing public pages"):
             self.run_check()
 
-    def test_rejects_empty_site(self):
+    def test_benchmark_sync_in_sync_and_clean(self):
+        import subprocess
+        import sys
+        repo = Path(__file__).resolve().parent.parent
+        script = repo / "scripts/sync-website-benchmarks.py"
+        if script.is_file():
+            subprocess.run([sys.executable, "-B", str(script), "--check"], check=True)
+
+    def test_empty_site(self):
         for page in self.root.rglob("index.html"):
             page.unlink()
         with self.assertRaisesRegex(SystemExit, "Missing public pages"):

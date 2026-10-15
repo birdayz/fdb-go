@@ -6,8 +6,8 @@ weight: 2
 
 `USE_REMOTE_FETCH` (`getMappedRange`) against `SCAN_AND_FETCH` on the final
 tree (`267a41434a81723b07e7150869d702636a1b91a9`) across a **4-host VPC
-topology**: one dedicated client VM (`10.88.0.10`) and three dedicated
-FoundationDB 7.3.77 server VMs (`10.88.0.11–13`, `double` redundancy, `ssd-2`
+topology**: one dedicated client VM and three dedicated
+FoundationDB 7.3.77 server VMs (`double` redundancy, `ssd-2`
 storage engine, 9 storage servers). This is **phase M2 (`M2rl` and `M2skip`)**
 of [hcloud-multinode-vpc-20261014](../).
 
@@ -60,7 +60,7 @@ of [hcloud-multinode-vpc-20261014](../).
 Geometric mean of six paired block ratios (median of 3 repeats per process,
 `3s` benchtime), with nominal 95% block-bootstrap intervals (20,000 resamples,
 preregistered seed 492817; initial exploratory analysis with seed 391706 is
-retained in `analysis-seed391706/`). Below 1 means `USE_REMOTE_FETCH` is faster
+retained in the campaign archive). Below 1 means `USE_REMOTE_FETCH` is faster
 or allocates less.
 
 | Case | Sealed placement label | Mean ns/op | Go B/op | Go allocs/op |
@@ -136,7 +136,7 @@ Medians of the six block medians per arm.
     `ssd-2`, that path may bottleneck compared with direct client-pipelined
     fetches.
 - **Where `USE_REMOTE_FETCH` won:**
-  - `skip3-rows10-reverse` (`0.158 [0.156, 0.160]`, 4.87 ms vs 31.13 ms):
+  - `skip3-rows10-reverse` (`0.158 [0.155, 0.160]`, 4.87 ms vs 31.13 ms):
     dramatically faster with remote fetch.
   - `split-rows10` (`0.873` forward, `0.854` reverse, where the 10 target
     records happened to be colocated on the same storage team as the index
@@ -144,8 +144,7 @@ Medians of the six block medians per arm.
   - Client-side Go heap allocations (`B/op` and `allocs/op`) were lower with
     `USE_REMOTE_FETCH` on every multi-row case (`B/op` `0.527–0.759`,
     `allocs/op` `0.398–0.790`).
-- **Implication for defaults:** these multi-node VPC measurements confirm that
-  `USE_REMOTE_FETCH` is not a universal win and can regress large scans
-  substantially (`1.23–2.33×` on 1,000 rows), so keeping `SCAN_AND_FETCH` as the
-  default and exposing `USE_REMOTE_FETCH` as an explicit opt-in remains the
-  right design.
+- **Implication for defaults:** these multi-node VPC measurements show that
+  `USE_REMOTE_FETCH` is not a universal win and regressed 1,000-row scans in
+  the measured configurations (`1.226–2.326×`), supporting retaining
+  `SCAN_AND_FETCH` as the default for the measured workloads and conditions.

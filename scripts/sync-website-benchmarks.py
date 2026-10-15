@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """Sync docs/benchmarks/{hcloud-rebench-20261014,hcloud-multinode-vpc-20261014}
 into website/content/docs/benchmarks/ with Hugo front matter and clean links.
+Pass --check to verify the generated files match the committed tree and contain
+no private IPv4 literals or local scratch paths.
 """
+import argparse
 from pathlib import Path
 import re
+import sys
 
 REPO = Path(__file__).resolve().parent.parent
 SRC_ROOT = REPO / 'docs/benchmarks'
@@ -64,20 +68,42 @@ def transform_body(text: str, is_index: bool) -> str:
     return body
 
 
+FORBIDDEN_RE = re.compile(r'\b(?:10\.88\.0\.\d+|172\.31\.99\.\d+|167\.233\.\d+\.\d+|91\.98\.\d+\.\d+|2\.28\.\d+\.\d+)\b|analysis-seed391706|/home/birdy|/srv/fdb-bench')
+
+
 def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument('--check', action='store_true', help='verify generated files match on-disk files without writing')
+    args = ap.parse_args()
+
+    expected = {}
     for cid, title, desc, weight, children in CAMPAIGNS:
         src_dir = SRC_ROOT / cid
         dst_dir = DST_ROOT / cid
-        dst_dir.mkdir(parents=True, exist_ok=True)
 
         readme_body = transform_body((src_dir / 'README.md').read_text(), is_index=True)
         index_md = f'---\ntitle: "{title}"\ndescription: "{desc}"\nweight: {weight}\n---\n\n{readme_body}'
-        (dst_dir / '_index.md').write_text(index_md)
+        expected[dst_dir / '_index.md'] = index_md
 
         for fname, ctitle, cdesc, cweight in children:
             cbody = transform_body((src_dir / fname).read_text(), is_index=False)
             page_md = f'---\ntitle: "{ctitle}"\ndescription: "{cdesc}"\nweight: {cweight}\n---\n\n{cbody}'
-            (dst_dir / fname).write_text(page_md)
+            expected[dst_dir / fname] = page_md
+
+    for path, content in expected.items():
+        m = FORBIDDEN_RE.search(content)
+        if m:
+            raise SystemExit(f'{path}: forbidden literal {m.group(0)!r} in website benchmark content')
+
+    if args.check:
+        for path, content in expected.items():
+            if not path.is_file() or path.read_text() != content:
+                raise SystemExit(f'{path}: out of sync with docs/benchmarks/; run python3 scripts/sync-website-benchmarks.py')
+        return
+
+    for path, content in expected.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
 
 
 if __name__ == '__main__':
