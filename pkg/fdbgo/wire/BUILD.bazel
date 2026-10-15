@@ -20,6 +20,7 @@ go_test(
         "reader_bug_test.go",
         "reader_fuzz_test.go",
         "vtable_test.go",
+        "writer_vtable_offset_test.go",
     ],
     embed = [":wire"],
 )

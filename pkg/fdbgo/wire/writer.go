@@ -3,6 +3,7 @@ package wire
 import (
 	"encoding/binary"
 	"fmt"
+	"slices"
 )
 
 // MessageTemplate pre-computes everything that is static per message type.
@@ -17,9 +18,16 @@ type MessageTemplate struct {
 	// Pre-packed vtable bytes — copied directly into the output buffer.
 	packedVTables []byte
 
-	// Pre-computed vtable byte offsets. Key = vtable content hash.
-	// O(1) lookup instead of linear scan.
-	vtOffsets map[vtableKey]int
+	// Pre-computed vtable byte offsets in closure order, each with a copy of
+	// its vtable taken at construction. A message's closure holds a handful of
+	// vtables, so comparing contents in a scan is cheaper than building a map
+	// key per lookup, and matches by the same construction-time contents.
+	vtOffsets []vtableOffset
+}
+
+type vtableOffset struct {
+	vt     VTable
+	offset int
 }
 
 // NewMessageTemplate pre-computes a MessageTemplate from a vtable closure.
@@ -37,10 +45,9 @@ func NewMessageTemplate(fileID uint32, msgVTable VTable, maxFieldAlign int, clos
 	}
 	packed := set.pack()
 
-	// Build O(1) offset lookup using full vtable content as key.
-	offsets := make(map[vtableKey]int, len(set.entries))
-	for _, e := range set.entries {
-		offsets[makeVTableKey(e.vt)] = e.offset
+	offsets := make([]vtableOffset, len(set.entries))
+	for i, e := range set.entries {
+		offsets[i] = vtableOffset{vt: slices.Clone(e.vt), offset: e.offset}
 	}
 
 	return &MessageTemplate{
@@ -64,11 +71,13 @@ func makeVTableKey(vt VTable) vtableKey {
 	return vtableKey(b)
 }
 
-// vtableOffset returns the byte offset of vt within the pre-packed vtable data.
+// vtableOffset returns the byte offset of vt within the pre-packed vtable data,
+// matching vt's contents against the closure as it was at construction.
 func (t *MessageTemplate) vtableOffset(vt VTable) int {
-	key := makeVTableKey(vt)
-	if off, ok := t.vtOffsets[key]; ok {
-		return off
+	for i := range t.vtOffsets {
+		if slices.Equal(t.vtOffsets[i].vt, vt) {
+			return t.vtOffsets[i].offset
+		}
 	}
 	panic(fmt.Sprintf("vtable %v not in template closure", vt))
 }
