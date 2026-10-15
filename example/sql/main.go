@@ -2,11 +2,11 @@
 // database/sql interface. It creates a schema, inserts rows, and runs a few
 // queries — the same surface a production app uses.
 //
-// Run it against a local FoundationDB:
+// It drops and recreates /FRL/QUICKSTART, so it requires FDB_CLUSTER_FILE to
+// name a disposable cluster and refuses to fall back to FDB's default file:
 //
-//	FDB_CLUSTER_FILE=/path/to/fdb.cluster go run ./example/sql
-//
-// See README.md for disposable-cluster setup with frl fdb up.
+//	export FDB_CLUSTER_FILE="$(./frl fdb up)"
+//	go run ./example/sql
 //
 // To use Apple's C client instead of the pure-Go one, rebuild with the tag:
 //
@@ -18,6 +18,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -30,8 +31,6 @@ import (
 )
 
 func main() {
-	// The cluster file comes from FDB_CLUSTER_FILE (or FDB's default location
-	// when empty).
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	if err := run(ctx, os.Getenv("FDB_CLUSTER_FILE"), os.Stdout); err != nil {
@@ -39,7 +38,14 @@ func main() {
 	}
 }
 
+// errNoClusterFile is returned instead of falling back to FDB's default cluster
+// file, which may point at a cluster whose data this example would drop.
+var errNoClusterFile = errors.New("FDB_CLUSTER_FILE is not set; set it to a disposable cluster, for example the path printed by ./frl fdb up")
+
 func run(ctx context.Context, clusterFile string, out io.Writer) error {
+	if clusterFile == "" {
+		return errNoClusterFile
+	}
 	// Domains must be registered by the application, as in Java.
 	sqldriver.RegisterDomainIfNotExists("FRL")
 	const dbPath = "/FRL/QUICKSTART"
@@ -130,13 +136,11 @@ func run(ctx context.Context, clusterFile string, out io.Writer) error {
 	return nil
 }
 
-// dsn builds an fdbsql DSN. An empty clusterFile uses FDB's default file; an
-// empty schema omits the default-schema binding (used for the setup handle).
+// dsn builds an fdbsql DSN. An empty schema omits the default-schema binding
+// (used for the setup handle).
 func dsn(dbPath, clusterFile, schema string) string {
 	params := url.Values{}
-	if clusterFile != "" {
-		params.Set("cluster_file", clusterFile)
-	}
+	params.Set("cluster_file", clusterFile)
 	if schema != "" {
 		params.Set("schema", strings.ToUpper(schema))
 	}

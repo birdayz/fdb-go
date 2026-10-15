@@ -1,9 +1,12 @@
 // Command example saves and loads a typed record in a disposable FoundationDB.
-// Run with FDB_CLUSTER_FILE set, as described in README.md.
+// It overwrites order 1001, so it requires FDB_CLUSTER_FILE to name a
+// disposable cluster and refuses to fall back to FDB's default file. See
+// README.md for setup with ./frl fdb up.
 package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -26,7 +29,14 @@ func main() {
 	}
 }
 
+// errNoClusterFile is returned instead of falling back to FDB's default cluster
+// file, which may point at a cluster whose data this example would overwrite.
+var errNoClusterFile = errors.New("FDB_CLUSTER_FILE is not set; set it to a disposable cluster, for example the path printed by ./frl fdb up")
+
 func run(ctx context.Context, clusterFile string, out io.Writer) error {
+	if clusterFile == "" {
+		return errNoClusterFile
+	}
 	if err := fdb.APIVersion(730); err != nil {
 		return err
 	}

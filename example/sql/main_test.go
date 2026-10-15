@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net/url"
 	"path/filepath"
 	"strings"
@@ -63,6 +64,17 @@ func TestQuickstartDSN(t *testing.T) {
 	}
 	if u.Path != "/FRL/QUICKSTART" || u.Query().Get("cluster_file") != clusterFile || u.Query().Get("schema") != "APP" {
 		t.Fatalf("DSN lost case or escaped path: %s", u)
+	}
+}
+
+func TestQuickstartRequiresClusterFile(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	if err := run(context.Background(), "", &out); !errors.Is(err, errNoClusterFile) {
+		t.Fatalf("run error = %v; want errNoClusterFile", err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("refused run printed output: %s", out.String())
 	}
 }
 

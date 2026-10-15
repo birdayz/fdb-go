@@ -21,15 +21,14 @@ cd fdb-go
 ## Run the SQL example
 
 ```sh
-go build -o frl ./cmd/frl &&
-FDB_CLUSTER_FILE="$(./frl fdb up)" && export FDB_CLUSTER_FILE &&
+go build -o frl ./cmd/frl
+export FDB_CLUSTER_FILE="$(./frl fdb up)"
 go run ./example/sql
 ```
 
 `frl fdb up` starts a single-node FoundationDB cluster in Docker and prints its
-cluster-file path. The commands are chained so that nothing runs if the cluster
-fails to start: the example deletes and recreates `/FRL/QUICKSTART`, and an empty
-`FDB_CLUSTER_FILE` would point it at FoundationDB's default cluster file instead.
+cluster-file path. The examples delete and recreate their data, so they refuse to
+run unless `FDB_CLUSTER_FILE` is set.
 
 Source: [`example/sql`](https://github.com/birdayz/fdb-go/tree/master/example/sql).
 
