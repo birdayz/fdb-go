@@ -109,10 +109,14 @@ Medians of the six block medians per arm.
 
 ## Interpretation
 
-- **Why multi-node VPC differed from single-node memory:**
-  - On the 3-node `ssd-2` cluster with `cross-server` shard placement, every
-    1,000-row scan (`small-rows1000`, `split-rows1000`, `skip3-rows1000`) was
-    **23% to 133% slower** with `USE_REMOTE_FETCH` than with `SCAN_AND_FETCH`.
+- **1,000-row scans on the 3-node `double` `ssd-2` cluster:**
+  - On this 3-node `ssd-2` cluster with `cross-server` shard placement (which
+    differs from the single-node campaign simultaneously in host topology,
+    network, `ssd-2` vs `memory` storage engine, `double` vs `single`
+    redundancy, and storage-server count, so differences between the two
+    campaigns cannot be attributed to one factor alone), every 1,000-row scan
+    (`small-rows1000`, `split-rows1000`, `skip3-rows1000`) was **23% to 133%
+    slower** with `USE_REMOTE_FETCH` than with `SCAN_AND_FETCH`.
   - *Untested hypothesis:* in `SCAN_AND_FETCH`, the client pipelines
     `GetRange` point-range reads directly to the storage servers holding the
     primary records (with client-side load balancing across the two `double`

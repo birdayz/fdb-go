@@ -60,9 +60,11 @@ bounds (`R4`), and all adverse or omitted cases are retained and reported.
 
 - **M2 (`USE_REMOTE_FETCH` vs `SCAN_AND_FETCH` on a 3-node `double` `ssd-2`
   cluster):**
-  - Unlike on the single-node memory cluster, **1,000-row scans on the 3-node
-    `ssd-2` cluster were slower with `USE_REMOTE_FETCH` than with pipelined
-    `SCAN_AND_FETCH`**:
+  - On this 3-node `double`-redundancy `ssd-2` cluster (which differs from the
+    single-node campaign simultaneously in host topology, network, `ssd-2` vs
+    `memory` storage engine, `double` vs `single` redundancy, and storage-server
+    count), **1,000-row scans were slower with `USE_REMOTE_FETCH` than with
+    pipelined `SCAN_AND_FETCH`**:
     - `small-rows1000` (100% `cross-server`): **1.226 [1.175, 1.280]** forward
       (117.1 ms vs 95.1 ms) and **1.255 [1.217, 1.293]** reverse (119.0 ms vs
       96.4 ms), despite cutting client Go allocations by 57% (`allocs/op`
@@ -95,15 +97,15 @@ bounds (`R4`), and all adverse or omitted cases are retained and reported.
     `range100` **0.633**, `set100` **0.886**, `batchset50` **0.921**, and
     `batchset50x1000` **0.954** (`E−A` CPU ratios **0.570–0.748**).
   - **At 8, 32, and 64 workers (`M1w8`, `M1w32`, `M1w64`, 5/7 clean per
-    phase):**
+    phase; within-phase arm contrasts only, as worker levels ran in a fixed
+    phase sequence with different transaction counts):**
     - On point reads (`get100`, `get1000`), range reads (`range100`), and
       single-key commits (`set100`), **pure-Go remained faster than CGo on mean
-      latency at every worker level**, with the point-read advantage widening
-      at 32 and 64 workers (`get100` **0.888** at 8w, **0.770** at 32w,
-      **0.676** at 64w; `get1000` **0.942** at 8w, **0.715** at 32w, **0.632**
-      at 64w, with 64w `get1000` p99 **0.385 [0.336, 0.438]**; `range100`
-      **0.868** at 8w, **0.869** at 32w, **0.554 [0.389, 0.673]** at 64w;
-      `set100` **0.980** at 8w, **0.938** at 32w, **0.887** at 64w).
+      latency within every worker level** (`get100` **0.888** at 8w, **0.770**
+      at 32w, **0.676** at 64w; `get1000` **0.942** at 8w, **0.715** at 32w,
+      **0.632** at 64w, with 64w `get1000` p99 **0.385 [0.336, 0.438]**;
+      `range100` **0.868** at 8w, **0.869** at 32w, **0.554 [0.389, 0.673]** at
+      64w; `set100` **0.980** at 8w, **0.938** at 32w, **0.887** at 64w).
     - On `grv` under concurrency, pure-Go and CGo had similar mean latency (8w
       **0.996 [0.949, 1.038]**, 32w **1.041 [1.007, 1.081]**, 64w **1.029
       [0.990, 1.069]**), while pure-Go used **less** shutdown process CPU
