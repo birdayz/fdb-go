@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -38,6 +39,17 @@ func TestRecordQuickstartRunsTwice(t *testing.T) {
 		if got, want := out.String(), "order 1001: price=25\n"; got != want {
 			t.Fatalf("run %d output = %q; want %q", i+1, got, want)
 		}
+	}
+}
+
+func TestRecordQuickstartRequiresClusterFile(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	if err := run(context.Background(), "", &out); !errors.Is(err, errNoClusterFile) {
+		t.Fatalf("run error = %v; want errNoClusterFile", err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("refused run printed output: %s", out.String())
 	}
 }
 

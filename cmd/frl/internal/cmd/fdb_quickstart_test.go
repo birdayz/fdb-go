@@ -47,7 +47,8 @@ func TestFDBQuickstartShell(t *testing.T) {
 
 					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 					defer cancel()
-					// No errexit: pasted commands must stop themselves before touching another cluster.
+					// No errexit: pasted lines keep running after a failure, so a failed
+					// build or startup must still never run an example against oldCluster.
 					command := exec.CommandContext(ctx, "sh", "-c", block)
 					command.Dir = dir
 					command.Env = append(os.Environ(),
@@ -55,12 +56,33 @@ func TestFDBQuickstartShell(t *testing.T) {
 						"FDB_CLUSTER_FILE="+oldCluster,
 						"QUICKSTART_LOG="+logPath,
 						"QUICKSTART_CLUSTER="+newCluster,
+						"QUICKSTART_BUILT="+filepath.Join(dir, "built"),
 						fmt.Sprintf("QUICKSTART_BUILD_STATUS=%d", scenario.buildStatus),
 						fmt.Sprintf("QUICKSTART_UP_STATUS=%d", scenario.upStatus),
 						fmt.Sprintf("QUICKSTART_SQL_STATUS=%d", scenario.sqlStatus),
 					)
 					output, err := command.CombinedOutput()
-					wantStatus := scenario.buildStatus + scenario.upStatus + scenario.sqlStatus
+
+					wantCalls := "go|build -o frl ./cmd/frl|" + oldCluster + "\n"
+					cluster := "" // a failed `./frl fdb up` exports an empty FDB_CLUSTER_FILE
+					if scenario.buildStatus == 0 {
+						wantCalls += "frl|fdb up|" + oldCluster + "\n"
+						if scenario.upStatus == 0 {
+							cluster = newCluster
+						}
+					}
+					wantStatus := 0
+					for _, example := range doc.examples {
+						wantCalls += "go|run " + example + "|" + cluster + "\n"
+						switch {
+						case cluster == "":
+							wantStatus = 1 // the example refuses to run (errNoClusterFile)
+						case example == "./example/sql":
+							wantStatus = scenario.sqlStatus
+						default:
+							wantStatus = 0
+						}
+					}
 					if wantStatus == 0 {
 						if err != nil {
 							t.Errorf("quickstart failed: %v\n%s", err, output)
@@ -72,18 +94,6 @@ func TestFDBQuickstartShell(t *testing.T) {
 						}
 					}
 
-					wantCalls := "go|build -o frl ./cmd/frl|" + oldCluster + "\n"
-					if scenario.buildStatus == 0 {
-						wantCalls += "frl|fdb up|" + oldCluster + "\n"
-						if scenario.upStatus == 0 {
-							for _, example := range doc.examples {
-								wantCalls += "go|run " + example + "|" + newCluster + "\n"
-								if scenario.sqlStatus != 0 {
-									break
-								}
-							}
-						}
-					}
 					calls, readErr := os.ReadFile(logPath)
 					if readErr != nil {
 						t.Fatal(readErr)
@@ -163,13 +173,10 @@ func fdbQuickstartBlock(t *testing.T, doc string) string {
 	if len(blocks) != 1 {
 		t.Fatalf("%s: found %d quickstart shell blocks, want 1", doc, len(blocks))
 	}
-	// zsh without INTERACTIVE_COMMENTS runs pasted `#` lines as commands; keep one && chain.
-	lines := strings.Split(blocks[0], "\n")
-	for i, line := range lines {
-		last := i == len(lines)-1
-		if strings.TrimSpace(line) == "" || strings.HasPrefix(strings.TrimSpace(line), "#") ||
-			strings.HasSuffix(line, "&&") == last {
-			t.Fatalf("%s: quickstart line %d %q: want a non-comment command, chained with && except the last", doc, i+1, line)
+	// zsh without INTERACTIVE_COMMENTS runs pasted `#` lines as commands.
+	for i, line := range strings.Split(blocks[0], "\n") {
+		if trimmed := strings.TrimSpace(line); trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			t.Fatalf("%s: quickstart line %d %q: want a command, not a blank or comment line", doc, i+1, line)
 		}
 	}
 	return blocks[0]

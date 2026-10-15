@@ -16,9 +16,9 @@ Or run the examples from a clone. This starts a disposable cluster in Docker
 (`./frl fdb down` removes it):
 
 ```sh
-go build -o frl ./cmd/frl &&
-FDB_CLUSTER_FILE="$(./frl fdb up)" && export FDB_CLUSTER_FILE &&
-go run ./example/sql &&
+go build -o frl ./cmd/frl
+export FDB_CLUSTER_FILE="$(./frl fdb up)"
+go run ./example/sql
 go run ./example
 ```
 
