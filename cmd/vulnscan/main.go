@@ -77,7 +77,7 @@ const govulncheckVersion = "v1.6.0"
 // vulnerability-free.
 var scanPatterns = []string{"./pkg/..."}
 
-var excludeSubstrings = []string{"/testcontainers", "/relational/sqltest/"}
+var excludeSubstrings = []string{"/testcontainers", "/testutil/benchcluster", "/relational/sqltest/"}
 
 func excluded(pkg string) bool {
 	for _, s := range excludeSubstrings {

@@ -330,3 +330,26 @@ func TestNotConsultedAndCleanDoNotShareAMessage(t *testing.T) {
 			"never anything a reader could mistake for a vulnerability finding or a clean run", err)
 	}
 }
+
+func TestExcludedTestInfraPackages(t *testing.T) {
+	t.Parallel()
+
+	for _, pkg := range []string{
+		"fdb.dev/pkg/testcontainers/foundationdb",
+		"fdb.dev/pkg/testutil/benchcluster",
+		"fdb.dev/pkg/relational/sqltest/testkit",
+	} {
+		if !excluded(pkg) {
+			t.Errorf("excluded(%q) = false, want true", pkg)
+		}
+	}
+	for _, pkg := range []string{
+		"fdb.dev/pkg/fdbgo/fdb",
+		"fdb.dev/pkg/recordlayer",
+		"fdb.dev/pkg/relational/sqldriver",
+	} {
+		if excluded(pkg) {
+			t.Errorf("excluded(%q) = true, want false", pkg)
+		}
+	}
+}
