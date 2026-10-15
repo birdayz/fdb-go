@@ -79,6 +79,8 @@ class SiteCheckTest(unittest.TestCase):
              'name="twitter:image" content="/missing.png"', "wrong twitter:image"),
             ('content="fdb.dev git https://github.com/birdayz/fdb-go"',
              'content="fdb.dev git https://example.com/wrong"', "vanity-import"),
+            ('<body><h1 id="overview">',
+             '<body><nav class="hextra-toc"></nav><h1 id="overview">', "right-side navigation"),
         ]
         page = self.root / "index.html"
         original = page.read_text()

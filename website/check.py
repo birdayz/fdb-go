@@ -12,6 +12,7 @@ class Page(HTMLParser):
         super().__init__()
         self.links = []
         self.ids = set()
+        self.classes = set()
         self.meta = {}
         self.canonical = None
         self.feed(text)
@@ -20,6 +21,8 @@ class Page(HTMLParser):
         attrs = dict(attrs)
         if attrs.get("id"):
             self.ids.add(attrs["id"])
+        if attrs.get("class"):
+            self.classes.update(attrs["class"].split())
         if tag == "a" and attrs.get("href"):
             self.links.append(attrs["href"])
         if tag == "meta":
@@ -66,6 +69,7 @@ def check(root):
     require(all(path in pages for path in public_pages), "Missing public pages: build the site first")
     checked = 0
     for path, page in pages.items():
+        require("hextra-toc" not in page.classes, f"{path}: unexpected right-side navigation (.hextra-toc)")
         for href in page.links:
             dest = urlparse(urljoin("https://fdb.dev" + path, href))
             if dest.netloc != "fdb.dev":

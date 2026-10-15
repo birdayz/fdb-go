@@ -57,418 +57,418 @@ processes, 9 storage servers). This is **phase M1** of
     measured negative). No partial ratios are computed for those two cases at
     8, 32, or 64 workers.
 
-## Results
+## Results: Final pure-Go / CGo
 
 <figure class="bench-figure">
 <figcaption><strong>Figure M1.1: Mean Latency Ratio — Final Pure-Go / CGo (log₂ scale, 95% block-bootstrap CI)</strong> — 6 paired blocks per workload, 20,000 resamples (seed 492817). Below 1.0× means Pure-Go is faster.</figcaption>
-<svg class="bench-svg" viewBox="0 0 890 846" role="img" aria-label="Figure M1.1: Mean Latency Ratio — Final Pure-Go / CGo (log₂ scale, 95% block-bootstrap CI)">
-<line class="grid-line" x1="230.0" y1="28" x2="230.0" y2="816"/>
-<text class="axis-text" x="230.0" y="22" text-anchor="middle">0.35×</text>
-<text class="axis-text" x="230.0" y="831" text-anchor="middle">0.35×</text>
-<line class="grid-line" x1="328.2" y1="28" x2="328.2" y2="816"/>
-<text class="axis-text" x="328.2" y="22" text-anchor="middle">0.5×</text>
-<text class="axis-text" x="328.2" y="831" text-anchor="middle">0.5×</text>
-<line class="grid-line" x1="420.9" y1="28" x2="420.9" y2="816"/>
-<text class="axis-text" x="420.9" y="22" text-anchor="middle">0.7×</text>
-<text class="axis-text" x="420.9" y="831" text-anchor="middle">0.7×</text>
-<line class="parity-line" x1="519.1" y1="28" x2="519.1" y2="816"/>
-<text class="axis-text" x="519.1" y="22" text-anchor="middle">1.0×</text>
-<text class="axis-text" x="519.1" y="831" text-anchor="middle">1.0×</text>
-<line class="grid-line" x1="611.8" y1="28" x2="611.8" y2="816"/>
-<text class="axis-text" x="611.8" y="22" text-anchor="middle">1.4×</text>
-<text class="axis-text" x="611.8" y="831" text-anchor="middle">1.4×</text>
-<line class="grid-line" x1="710.0" y1="28" x2="710.0" y2="816"/>
-<text class="axis-text" x="710.0" y="22" text-anchor="middle">2.0×</text>
-<text class="axis-text" x="710.0" y="831" text-anchor="middle">2.0×</text>
-<text class="axis-text" x="511.1" y="9" text-anchor="end">← Pure-Go faster</text>
-<text class="axis-text" x="527.1" y="9" text-anchor="start">CGo faster →</text>
-<line class="section-divider" x1="8" y1="40" x2="882" y2="40"/>
-<text class="section-title" x="10" y="55">M1w1 (1 worker — 7/7 clean)</text>
-<text class="row-label" x="218" y="79.2" text-anchor="end">grv</text>
-<g class="ci-win"><title>grv: 0.579× [0.568, 0.591]</title><line x1="363.3" y1="75.2" x2="374.3" y2="75.2" stroke-width="2.2"/><line x1="363.3" y1="71.2" x2="363.3" y2="79.2" stroke-width="1.8"/><line x1="374.3" y1="71.2" x2="374.3" y2="79.2" stroke-width="1.8"/><circle cx="368.6" cy="75.2" r="3.8"/></g>
-<text class="val-text" x="722" y="79.2">0.579× [0.568, 0.591]</text>
-<text class="row-label" x="218" y="103.2" text-anchor="end">get100</text>
-<g class="ci-win"><title>get100: 0.702× [0.690, 0.712]</title><line x1="416.9" y1="99.2" x2="425.6" y2="99.2" stroke-width="2.2"/><line x1="416.9" y1="95.2" x2="416.9" y2="103.2" stroke-width="1.8"/><line x1="425.6" y1="95.2" x2="425.6" y2="103.2" stroke-width="1.8"/><circle cx="421.7" cy="99.2" r="3.8"/></g>
-<text class="val-text" x="722" y="103.2">0.702× [0.690, 0.712]</text>
-<text class="row-label" x="218" y="127.2" text-anchor="end">get1000</text>
-<g class="ci-win"><title>get1000: 0.673× [0.656, 0.691]</title><line x1="403.0" y1="123.2" x2="417.3" y2="123.2" stroke-width="2.2"/><line x1="403.0" y1="119.2" x2="403.0" y2="127.2" stroke-width="1.8"/><line x1="417.3" y1="119.2" x2="417.3" y2="127.2" stroke-width="1.8"/><circle cx="410.1" cy="123.2" r="3.8"/></g>
-<text class="val-text" x="722" y="127.2">0.673× [0.656, 0.691]</text>
-<text class="row-label" x="218" y="151.2" text-anchor="end">range100</text>
-<g class="ci-win"><title>range100: 0.633× [0.579, 0.672]</title><line x1="368.6" y1="147.2" x2="409.6" y2="147.2" stroke-width="2.2"/><line x1="368.6" y1="143.2" x2="368.6" y2="151.2" stroke-width="1.8"/><line x1="409.6" y1="143.2" x2="409.6" y2="151.2" stroke-width="1.8"/><circle cx="393.2" cy="147.2" r="3.8"/></g>
-<text class="val-text" x="722" y="151.2">0.633× [0.579, 0.672]</text>
-<text class="row-label" x="218" y="175.2" text-anchor="end">set100</text>
-<g class="ci-win"><title>set100: 0.886× [0.878, 0.894]</title><line x1="483.3" y1="171.2" x2="488.3" y2="171.2" stroke-width="2.2"/><line x1="483.3" y1="167.2" x2="483.3" y2="175.2" stroke-width="1.8"/><line x1="488.3" y1="167.2" x2="488.3" y2="175.2" stroke-width="1.8"/><circle cx="485.8" cy="171.2" r="3.8"/></g>
-<text class="val-text" x="722" y="175.2">0.886× [0.878, 0.894]</text>
-<text class="row-label" x="218" y="199.2" text-anchor="end">batchset50</text>
-<g class="ci-win"><title>batchset50: 0.920× [0.914, 0.926]</title><line x1="494.3" y1="195.2" x2="497.9" y2="195.2" stroke-width="2.2"/><line x1="494.3" y1="191.2" x2="494.3" y2="199.2" stroke-width="1.8"/><line x1="497.9" y1="191.2" x2="497.9" y2="199.2" stroke-width="1.8"/><circle cx="496.2" cy="195.2" r="3.8"/></g>
-<text class="val-text" x="722" y="199.2">0.920× [0.914, 0.926]</text>
-<text class="row-label" x="218" y="223.2" text-anchor="end">batchset50x1000</text>
-<g class="ci-win"><title>batchset50x1000: 0.954× [0.949, 0.958]</title><line x1="504.7" y1="219.2" x2="507.3" y2="219.2" stroke-width="2.2"/><line x1="504.7" y1="215.2" x2="504.7" y2="223.2" stroke-width="1.8"/><line x1="507.3" y1="215.2" x2="507.3" y2="223.2" stroke-width="1.8"/><circle cx="506.1" cy="219.2" r="3.8"/></g>
-<text class="val-text" x="722" y="223.2">0.954× [0.949, 0.958]</text>
-<line class="section-divider" x1="8" y1="234" x2="882" y2="234"/>
-<text class="section-title" x="10" y="249">M1w8 (8 workers — 5/7 clean)</text>
-<text class="row-label" x="218" y="273.2" text-anchor="end">grv</text>
-<g class="ci-neutral"><title>grv: 0.996× [0.949, 1.038]</title><line x1="504.7" y1="269.2" x2="529.4" y2="269.2" stroke-width="2.2"/><line x1="504.7" y1="265.2" x2="504.7" y2="273.2" stroke-width="1.8"/><line x1="529.4" y1="265.2" x2="529.4" y2="273.2" stroke-width="1.8"/><circle cx="518.0" cy="269.2" r="3.8"/></g>
-<text class="val-text" x="722" y="273.2">0.996× [0.949, 1.038]</text>
-<text class="row-label" x="218" y="297.2" text-anchor="end">get100</text>
-<g class="ci-win"><title>get100: 0.888× [0.866, 0.907]</title><line x1="479.5" y1="293.2" x2="492.2" y2="293.2" stroke-width="2.2"/><line x1="479.5" y1="289.2" x2="479.5" y2="297.2" stroke-width="1.8"/><line x1="492.2" y1="289.2" x2="492.2" y2="297.2" stroke-width="1.8"/><circle cx="486.4" cy="293.2" r="3.8"/></g>
-<text class="val-text" x="722" y="297.2">0.888× [0.866, 0.907]</text>
-<text class="row-label" x="218" y="321.2" text-anchor="end">get1000</text>
-<g class="ci-win"><title>get1000: 0.942× [0.921, 0.961]</title><line x1="496.4" y1="317.2" x2="508.2" y2="317.2" stroke-width="2.2"/><line x1="496.4" y1="313.2" x2="496.4" y2="321.2" stroke-width="1.8"/><line x1="508.2" y1="313.2" x2="508.2" y2="321.2" stroke-width="1.8"/><circle cx="502.7" cy="317.2" r="3.8"/></g>
-<text class="val-text" x="722" y="321.2">0.942× [0.921, 0.961]</text>
-<text class="row-label" x="218" y="345.2" text-anchor="end">range100</text>
-<g class="ci-win"><title>range100: 0.868× [0.846, 0.891]</title><line x1="473.1" y1="341.2" x2="487.3" y2="341.2" stroke-width="2.2"/><line x1="473.1" y1="337.2" x2="473.1" y2="345.2" stroke-width="1.8"/><line x1="487.3" y1="337.2" x2="487.3" y2="345.2" stroke-width="1.8"/><circle cx="480.1" cy="341.2" r="3.8"/></g>
-<text class="val-text" x="722" y="345.2">0.868× [0.846, 0.891]</text>
-<text class="row-label" x="218" y="369.2" text-anchor="end">set100</text>
-<g class="ci-win"><title>set100: 0.980× [0.966, 0.993]</title><line x1="509.6" y1="365.2" x2="517.2" y2="365.2" stroke-width="2.2"/><line x1="509.6" y1="361.2" x2="509.6" y2="369.2" stroke-width="1.8"/><line x1="517.2" y1="361.2" x2="517.2" y2="369.2" stroke-width="1.8"/><circle cx="513.5" cy="365.2" r="3.8"/></g>
-<text class="val-text" x="722" y="369.2">0.980× [0.966, 0.993]</text>
-<text class="row-label" x="218" y="393.2" text-anchor="end">batchset50</text>
-<text class="axis-text" x="240" y="393.2">N/A (omitted)</text>
-<text class="row-label" x="218" y="417.2" text-anchor="end">batchset50x1000</text>
-<text class="axis-text" x="240" y="417.2">N/A (omitted)</text>
-<line class="section-divider" x1="8" y1="428" x2="882" y2="428"/>
-<text class="section-title" x="10" y="443">M1w32 (32 workers — 5/7 clean)</text>
-<text class="row-label" x="218" y="467.2" text-anchor="end">grv</text>
-<g class="ci-reg"><title>grv: 1.041× [1.007, 1.081]</title><line x1="521.0" y1="463.2" x2="540.6" y2="463.2" stroke-width="2.2"/><line x1="521.0" y1="459.2" x2="521.0" y2="467.2" stroke-width="1.8"/><line x1="540.6" y1="459.2" x2="540.6" y2="467.2" stroke-width="1.8"/><circle cx="530.2" cy="463.2" r="3.8"/></g>
-<text class="val-text" x="722" y="467.2">1.041× [1.007, 1.081]</text>
-<text class="row-label" x="218" y="491.2" text-anchor="end">get100</text>
-<g class="ci-win"><title>get100: 0.770× [0.750, 0.793]</title><line x1="439.9" y1="487.2" x2="455.2" y2="487.2" stroke-width="2.2"/><line x1="439.9" y1="483.2" x2="439.9" y2="491.2" stroke-width="1.8"/><line x1="455.2" y1="483.2" x2="455.2" y2="491.2" stroke-width="1.8"/><circle cx="447.1" cy="487.2" r="3.8"/></g>
-<text class="val-text" x="722" y="491.2">0.770× [0.750, 0.793]</text>
-<text class="row-label" x="218" y="515.2" text-anchor="end">get1000</text>
-<g class="ci-win"><title>get1000: 0.715× [0.688, 0.747]</title><line x1="416.1" y1="511.2" x2="438.8" y2="511.2" stroke-width="2.2"/><line x1="416.1" y1="507.2" x2="416.1" y2="515.2" stroke-width="1.8"/><line x1="438.8" y1="507.2" x2="438.8" y2="515.2" stroke-width="1.8"/><circle cx="426.7" cy="511.2" r="3.8"/></g>
-<text class="val-text" x="722" y="515.2">0.715× [0.688, 0.747]</text>
-<text class="row-label" x="218" y="539.2" text-anchor="end">range100</text>
-<g class="ci-neutral"><title>range100: 0.869× [0.753, 1.148]</title><line x1="441.0" y1="535.2" x2="557.1" y2="535.2" stroke-width="2.2"/><line x1="441.0" y1="531.2" x2="441.0" y2="539.2" stroke-width="1.8"/><line x1="557.1" y1="531.2" x2="557.1" y2="539.2" stroke-width="1.8"/><circle cx="480.4" cy="535.2" r="3.8"/></g>
-<text class="val-text" x="722" y="539.2">0.869× [0.753, 1.148]</text>
-<text class="row-label" x="218" y="563.2" text-anchor="end">set100</text>
-<g class="ci-win"><title>set100: 0.938× [0.931, 0.946]</title><line x1="499.4" y1="559.2" x2="503.8" y2="559.2" stroke-width="2.2"/><line x1="499.4" y1="555.2" x2="499.4" y2="563.2" stroke-width="1.8"/><line x1="503.8" y1="555.2" x2="503.8" y2="563.2" stroke-width="1.8"/><circle cx="501.5" cy="559.2" r="3.8"/></g>
-<text class="val-text" x="722" y="563.2">0.938× [0.931, 0.946]</text>
-<text class="row-label" x="218" y="587.2" text-anchor="end">batchset50</text>
-<text class="axis-text" x="240" y="587.2">N/A (omitted)</text>
-<text class="row-label" x="218" y="611.2" text-anchor="end">batchset50x1000</text>
-<text class="axis-text" x="240" y="611.2">N/A (omitted)</text>
-<line class="section-divider" x1="8" y1="622" x2="882" y2="622"/>
-<text class="section-title" x="10" y="637">M1w64 (64 workers — 5/7 clean)</text>
-<text class="row-label" x="218" y="661.2" text-anchor="end">grv</text>
-<g class="ci-neutral"><title>grv: 1.029× [0.990, 1.069]</title><line x1="516.3" y1="657.2" x2="537.5" y2="657.2" stroke-width="2.2"/><line x1="516.3" y1="653.2" x2="516.3" y2="661.2" stroke-width="1.8"/><line x1="537.5" y1="653.2" x2="537.5" y2="661.2" stroke-width="1.8"/><circle cx="527.0" cy="657.2" r="3.8"/></g>
-<text class="val-text" x="722" y="661.2">1.029× [0.990, 1.069]</text>
-<text class="row-label" x="218" y="685.2" text-anchor="end">get100</text>
-<g class="ci-win"><title>get100: 0.676× [0.644, 0.710]</title><line x1="397.9" y1="681.2" x2="424.8" y2="681.2" stroke-width="2.2"/><line x1="397.9" y1="677.2" x2="397.9" y2="685.2" stroke-width="1.8"/><line x1="424.8" y1="677.2" x2="424.8" y2="685.2" stroke-width="1.8"/><circle cx="411.3" cy="681.2" r="3.8"/></g>
-<text class="val-text" x="722" y="685.2">0.676× [0.644, 0.710]</text>
-<text class="row-label" x="218" y="709.2" text-anchor="end">get1000</text>
-<g class="ci-win"><title>get1000: 0.632× [0.601, 0.669]</title><line x1="378.9" y1="705.2" x2="408.4" y2="705.2" stroke-width="2.2"/><line x1="378.9" y1="701.2" x2="378.9" y2="709.2" stroke-width="1.8"/><line x1="408.4" y1="701.2" x2="408.4" y2="709.2" stroke-width="1.8"/><circle cx="392.7" cy="705.2" r="3.8"/></g>
-<text class="val-text" x="722" y="709.2">0.632× [0.601, 0.669]</text>
-<text class="row-label" x="218" y="733.2" text-anchor="end">range100</text>
-<g class="ci-win"><title>range100: 0.554× [0.389, 0.673]</title><line x1="259.1" y1="729.2" x2="410.1" y2="729.2" stroke-width="2.2"/><line x1="259.1" y1="725.2" x2="259.1" y2="733.2" stroke-width="1.8"/><line x1="410.1" y1="725.2" x2="410.1" y2="733.2" stroke-width="1.8"/><circle cx="356.5" cy="729.2" r="3.8"/></g>
-<text class="val-text" x="722" y="733.2">0.554× [0.389, 0.673]</text>
-<text class="row-label" x="218" y="757.2" text-anchor="end">set100</text>
-<g class="ci-win"><title>set100: 0.887× [0.869, 0.897]</title><line x1="480.4" y1="753.2" x2="489.2" y2="753.2" stroke-width="2.2"/><line x1="480.4" y1="749.2" x2="480.4" y2="757.2" stroke-width="1.8"/><line x1="489.2" y1="749.2" x2="489.2" y2="757.2" stroke-width="1.8"/><circle cx="486.1" cy="753.2" r="3.8"/></g>
-<text class="val-text" x="722" y="757.2">0.887× [0.869, 0.897]</text>
-<text class="row-label" x="218" y="781.2" text-anchor="end">batchset50</text>
-<text class="axis-text" x="240" y="781.2">N/A (omitted)</text>
-<text class="row-label" x="218" y="805.2" text-anchor="end">batchset50x1000</text>
-<text class="axis-text" x="240" y="805.2">N/A (omitted)</text>
+<svg class="bench-svg" viewBox="0 0 1320 722" role="img" aria-label="Figure M1.1: Mean Latency Ratio — Final Pure-Go / CGo (log₂ scale, 95% block-bootstrap CI)">
+<line class="grid-line" x1="165.0" y1="36" x2="165.0" y2="696"/>
+<text class="axis-text" x="165.0" y="30" text-anchor="middle">0.35×</text>
+<text class="axis-text" x="165.0" y="711" text-anchor="middle">0.35×</text>
+<line class="grid-line" x1="361.5" y1="36" x2="361.5" y2="696"/>
+<text class="axis-text" x="361.5" y="30" text-anchor="middle">0.5×</text>
+<text class="axis-text" x="361.5" y="711" text-anchor="middle">0.5×</text>
+<line class="grid-line" x1="546.8" y1="36" x2="546.8" y2="696"/>
+<text class="axis-text" x="546.8" y="30" text-anchor="middle">0.7×</text>
+<text class="axis-text" x="546.8" y="711" text-anchor="middle">0.7×</text>
+<line class="parity-line" x1="743.2" y1="36" x2="743.2" y2="696"/>
+<text class="axis-text" x="743.2" y="30" text-anchor="middle">1.0×</text>
+<text class="axis-text" x="743.2" y="711" text-anchor="middle">1.0×</text>
+<line class="grid-line" x1="928.5" y1="36" x2="928.5" y2="696"/>
+<text class="axis-text" x="928.5" y="30" text-anchor="middle">1.4×</text>
+<text class="axis-text" x="928.5" y="711" text-anchor="middle">1.4×</text>
+<line class="grid-line" x1="1125.0" y1="36" x2="1125.0" y2="696"/>
+<text class="axis-text" x="1125.0" y="30" text-anchor="middle">2.0×</text>
+<text class="axis-text" x="1125.0" y="711" text-anchor="middle">2.0×</text>
+<text class="axis-text" x="735.2" y="17" text-anchor="end">← Pure-Go faster</text>
+<text class="axis-text" x="751.2" y="17" text-anchor="start">CGo faster →</text>
+<line class="section-divider" x1="8" y1="48" x2="1312" y2="48"/>
+<text class="section-title" x="10" y="63">M1w1 (1 worker — 7/7 clean)</text>
+<text class="row-label" x="153" y="81.0" text-anchor="end">grv</text>
+<g class="ci-win"><title>grv: 0.579× [0.568, 0.591]</title><line x1="431.7" y1="77.0" x2="453.5" y2="77.0" stroke-width="2.2"/><line x1="431.7" y1="73.0" x2="431.7" y2="81.0" stroke-width="1.8"/><line x1="453.5" y1="73.0" x2="453.5" y2="81.0" stroke-width="1.8"/><circle cx="442.2" cy="77.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="81.0">0.579× [0.568, 0.591]</text>
+<text class="row-label" x="153" y="101.0" text-anchor="end">get100</text>
+<g class="ci-win"><title>get100: 0.702× [0.690, 0.712]</title><line x1="538.8" y1="97.0" x2="556.1" y2="97.0" stroke-width="2.2"/><line x1="538.8" y1="93.0" x2="538.8" y2="101.0" stroke-width="1.8"/><line x1="556.1" y1="93.0" x2="556.1" y2="101.0" stroke-width="1.8"/><circle cx="548.3" cy="97.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="101.0">0.702× [0.690, 0.712]</text>
+<text class="row-label" x="153" y="121.0" text-anchor="end">get1000</text>
+<g class="ci-win"><title>get1000: 0.673× [0.656, 0.691]</title><line x1="511.0" y1="117.0" x2="539.6" y2="117.0" stroke-width="2.2"/><line x1="511.0" y1="113.0" x2="511.0" y2="121.0" stroke-width="1.8"/><line x1="539.6" y1="113.0" x2="539.6" y2="121.0" stroke-width="1.8"/><circle cx="525.1" cy="117.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="121.0">0.673× [0.656, 0.691]</text>
+<text class="row-label" x="153" y="141.0" text-anchor="end">range100</text>
+<g class="ci-win"><title>range100: 0.633× [0.579, 0.672]</title><line x1="442.2" y1="137.0" x2="524.3" y2="137.0" stroke-width="2.2"/><line x1="442.2" y1="133.0" x2="442.2" y2="141.0" stroke-width="1.8"/><line x1="524.3" y1="133.0" x2="524.3" y2="141.0" stroke-width="1.8"/><circle cx="491.4" cy="137.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="141.0">0.633× [0.579, 0.672]</text>
+<text class="row-label" x="153" y="161.0" text-anchor="end">set100</text>
+<g class="ci-win"><title>set100: 0.886× [0.878, 0.894]</title><line x1="671.6" y1="157.0" x2="681.5" y2="157.0" stroke-width="2.2"/><line x1="671.6" y1="153.0" x2="671.6" y2="161.0" stroke-width="1.8"/><line x1="681.5" y1="153.0" x2="681.5" y2="161.0" stroke-width="1.8"/><circle cx="676.6" cy="157.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="161.0">0.886× [0.878, 0.894]</text>
+<text class="row-label" x="153" y="181.0" text-anchor="end">batchset50</text>
+<g class="ci-win"><title>batchset50: 0.920× [0.914, 0.926]</title><line x1="693.7" y1="177.0" x2="700.9" y2="177.0" stroke-width="2.2"/><line x1="693.7" y1="173.0" x2="693.7" y2="181.0" stroke-width="1.8"/><line x1="700.9" y1="173.0" x2="700.9" y2="181.0" stroke-width="1.8"/><circle cx="697.3" cy="177.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="181.0">0.920× [0.914, 0.926]</text>
+<text class="row-label" x="153" y="201.0" text-anchor="end">batchset50x1000</text>
+<g class="ci-win"><title>batchset50x1000: 0.954× [0.949, 0.958]</title><line x1="714.4" y1="197.0" x2="719.6" y2="197.0" stroke-width="2.2"/><line x1="714.4" y1="193.0" x2="714.4" y2="201.0" stroke-width="1.8"/><line x1="719.6" y1="193.0" x2="719.6" y2="201.0" stroke-width="1.8"/><circle cx="717.3" cy="197.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="201.0">0.954× [0.949, 0.958]</text>
+<line class="section-divider" x1="8" y1="210" x2="1312" y2="210"/>
+<text class="section-title" x="10" y="225">M1w8 (8 workers — 5/7 clean)</text>
+<text class="row-label" x="153" y="243.0" text-anchor="end">grv</text>
+<g class="ci-neutral"><title>grv: 0.996× [0.949, 1.038]</title><line x1="714.4" y1="239.0" x2="763.8" y2="239.0" stroke-width="2.2"/><line x1="714.4" y1="235.0" x2="714.4" y2="243.0" stroke-width="1.8"/><line x1="763.8" y1="235.0" x2="763.8" y2="243.0" stroke-width="1.8"/><circle cx="741.0" cy="239.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="243.0">0.996× [0.949, 1.038]</text>
+<text class="row-label" x="153" y="263.0" text-anchor="end">get100</text>
+<g class="ci-win"><title>get100: 0.888× [0.866, 0.907]</title><line x1="664.0" y1="259.0" x2="689.5" y2="259.0" stroke-width="2.2"/><line x1="664.0" y1="255.0" x2="664.0" y2="263.0" stroke-width="1.8"/><line x1="689.5" y1="255.0" x2="689.5" y2="263.0" stroke-width="1.8"/><circle cx="677.8" cy="259.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="263.0">0.888× [0.866, 0.907]</text>
+<text class="row-label" x="153" y="283.0" text-anchor="end">get1000</text>
+<g class="ci-win"><title>get1000: 0.942× [0.921, 0.961]</title><line x1="697.9" y1="279.0" x2="721.3" y2="279.0" stroke-width="2.2"/><line x1="697.9" y1="275.0" x2="697.9" y2="283.0" stroke-width="1.8"/><line x1="721.3" y1="275.0" x2="721.3" y2="283.0" stroke-width="1.8"/><circle cx="710.3" cy="279.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="283.0">0.942× [0.921, 0.961]</text>
+<text class="row-label" x="153" y="303.0" text-anchor="end">range100</text>
+<g class="ci-win"><title>range100: 0.868× [0.846, 0.891]</title><line x1="651.1" y1="299.0" x2="679.7" y2="299.0" stroke-width="2.2"/><line x1="651.1" y1="295.0" x2="651.1" y2="303.0" stroke-width="1.8"/><line x1="679.7" y1="295.0" x2="679.7" y2="303.0" stroke-width="1.8"/><circle cx="665.3" cy="299.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="303.0">0.868× [0.846, 0.891]</text>
+<text class="row-label" x="153" y="323.0" text-anchor="end">set100</text>
+<g class="ci-win"><title>set100: 0.980× [0.966, 0.993]</title><line x1="724.2" y1="319.0" x2="739.4" y2="319.0" stroke-width="2.2"/><line x1="724.2" y1="315.0" x2="724.2" y2="323.0" stroke-width="1.8"/><line x1="739.4" y1="315.0" x2="739.4" y2="323.0" stroke-width="1.8"/><circle cx="732.1" cy="319.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="323.0">0.980× [0.966, 0.993]</text>
+<text class="row-label" x="153" y="343.0" text-anchor="end">batchset50</text>
+<text class="axis-text" x="175" y="343.0">N/A (omitted)</text>
+<text class="row-label" x="153" y="363.0" text-anchor="end">batchset50x1000</text>
+<text class="axis-text" x="175" y="363.0">N/A (omitted)</text>
+<line class="section-divider" x1="8" y1="372" x2="1312" y2="372"/>
+<text class="section-title" x="10" y="387">M1w32 (32 workers — 5/7 clean)</text>
+<text class="row-label" x="153" y="405.0" text-anchor="end">grv</text>
+<g class="ci-reg"><title>grv: 1.041× [1.007, 1.081]</title><line x1="747.1" y1="401.0" x2="786.1" y2="401.0" stroke-width="2.2"/><line x1="747.1" y1="397.0" x2="747.1" y2="405.0" stroke-width="1.8"/><line x1="786.1" y1="397.0" x2="786.1" y2="405.0" stroke-width="1.8"/><circle cx="765.4" cy="401.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="405.0">1.041× [1.007, 1.081]</text>
+<text class="row-label" x="153" y="425.0" text-anchor="end">get100</text>
+<g class="ci-win"><title>get100: 0.770× [0.750, 0.793]</title><line x1="584.8" y1="421.0" x2="615.5" y2="421.0" stroke-width="2.2"/><line x1="584.8" y1="417.0" x2="584.8" y2="425.0" stroke-width="1.8"/><line x1="615.5" y1="417.0" x2="615.5" y2="425.0" stroke-width="1.8"/><circle cx="599.3" cy="421.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="425.0">0.770× [0.750, 0.793]</text>
+<text class="row-label" x="153" y="445.0" text-anchor="end">get1000</text>
+<g class="ci-win"><title>get1000: 0.715× [0.688, 0.747]</title><line x1="537.3" y1="441.0" x2="582.6" y2="441.0" stroke-width="2.2"/><line x1="537.3" y1="437.0" x2="537.3" y2="445.0" stroke-width="1.8"/><line x1="582.6" y1="437.0" x2="582.6" y2="445.0" stroke-width="1.8"/><circle cx="558.5" cy="441.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="445.0">0.715× [0.688, 0.747]</text>
+<text class="row-label" x="153" y="465.0" text-anchor="end">range100</text>
+<g class="ci-neutral"><title>range100: 0.869× [0.753, 1.148]</title><line x1="587.0" y1="461.0" x2="819.2" y2="461.0" stroke-width="2.2"/><line x1="587.0" y1="457.0" x2="587.0" y2="465.0" stroke-width="1.8"/><line x1="819.2" y1="457.0" x2="819.2" y2="465.0" stroke-width="1.8"/><circle cx="665.9" cy="461.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="465.0">0.869× [0.753, 1.148]</text>
+<text class="row-label" x="153" y="485.0" text-anchor="end">set100</text>
+<g class="ci-win"><title>set100: 0.938× [0.931, 0.946]</title><line x1="703.8" y1="481.0" x2="712.6" y2="481.0" stroke-width="2.2"/><line x1="703.8" y1="477.0" x2="703.8" y2="485.0" stroke-width="1.8"/><line x1="712.6" y1="477.0" x2="712.6" y2="485.0" stroke-width="1.8"/><circle cx="708.0" cy="481.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="485.0">0.938× [0.931, 0.946]</text>
+<text class="row-label" x="153" y="505.0" text-anchor="end">batchset50</text>
+<text class="axis-text" x="175" y="505.0">N/A (omitted)</text>
+<text class="row-label" x="153" y="525.0" text-anchor="end">batchset50x1000</text>
+<text class="axis-text" x="175" y="525.0">N/A (omitted)</text>
+<line class="section-divider" x1="8" y1="534" x2="1312" y2="534"/>
+<text class="section-title" x="10" y="549">M1w64 (64 workers — 5/7 clean)</text>
+<text class="row-label" x="153" y="567.0" text-anchor="end">grv</text>
+<g class="ci-neutral"><title>grv: 1.029× [0.990, 1.069]</title><line x1="737.7" y1="563.0" x2="780.0" y2="563.0" stroke-width="2.2"/><line x1="737.7" y1="559.0" x2="737.7" y2="567.0" stroke-width="1.8"/><line x1="780.0" y1="559.0" x2="780.0" y2="567.0" stroke-width="1.8"/><circle cx="759.0" cy="563.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="567.0">1.029× [0.990, 1.069]</text>
+<text class="row-label" x="153" y="587.0" text-anchor="end">get100</text>
+<g class="ci-win"><title>get100: 0.676× [0.644, 0.710]</title><line x1="500.8" y1="583.0" x2="554.6" y2="583.0" stroke-width="2.2"/><line x1="500.8" y1="579.0" x2="500.8" y2="587.0" stroke-width="1.8"/><line x1="554.6" y1="579.0" x2="554.6" y2="587.0" stroke-width="1.8"/><circle cx="527.6" cy="583.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="587.0">0.676× [0.644, 0.710]</text>
+<text class="row-label" x="153" y="607.0" text-anchor="end">get1000</text>
+<g class="ci-win"><title>get1000: 0.632× [0.601, 0.669]</title><line x1="462.8" y1="603.0" x2="521.8" y2="603.0" stroke-width="2.2"/><line x1="462.8" y1="599.0" x2="462.8" y2="607.0" stroke-width="1.8"/><line x1="521.8" y1="599.0" x2="521.8" y2="607.0" stroke-width="1.8"/><circle cx="490.5" cy="603.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="607.0">0.632× [0.601, 0.669]</text>
+<text class="row-label" x="153" y="627.0" text-anchor="end">range100</text>
+<g class="ci-win"><title>range100: 0.554× [0.389, 0.673]</title><line x1="223.2" y1="623.0" x2="525.1" y2="623.0" stroke-width="2.2"/><line x1="223.2" y1="619.0" x2="223.2" y2="627.0" stroke-width="1.8"/><line x1="525.1" y1="619.0" x2="525.1" y2="627.0" stroke-width="1.8"/><circle cx="417.9" cy="623.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="627.0">0.554× [0.389, 0.673]</text>
+<text class="row-label" x="153" y="647.0" text-anchor="end">set100</text>
+<g class="ci-win"><title>set100: 0.887× [0.869, 0.897]</title><line x1="665.9" y1="643.0" x2="683.4" y2="643.0" stroke-width="2.2"/><line x1="665.9" y1="639.0" x2="665.9" y2="647.0" stroke-width="1.8"/><line x1="683.4" y1="639.0" x2="683.4" y2="647.0" stroke-width="1.8"/><circle cx="677.2" cy="643.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="647.0">0.887× [0.869, 0.897]</text>
+<text class="row-label" x="153" y="667.0" text-anchor="end">batchset50</text>
+<text class="axis-text" x="175" y="667.0">N/A (omitted)</text>
+<text class="row-label" x="153" y="687.0" text-anchor="end">batchset50x1000</text>
+<text class="axis-text" x="175" y="687.0">N/A (omitted)</text>
 </svg>
 <div class="bench-legend"><span><i class="bench-swatch" style="background:#0d9488"></i> 95% CI entirely &lt; 1.000 (faster / lower)</span><span><i class="bench-swatch" style="background:#64748b"></i> 95% CI overlaps 1.000 (unresolved)</span><span><i class="bench-swatch" style="background:#d97706"></i> 95% CI entirely &gt; 1.000 (slower / higher)</span></div>
 </figure>
 
 <figure class="bench-figure">
 <figcaption><strong>Figure M1.2: Tail (p99) Latency Ratio — Final Pure-Go / CGo (log₂ scale, 95% block-bootstrap CI)</strong> — Run-level p99 transaction latency resampled over paired blocks. Below 1.0× means Pure-Go has lower p99.</figcaption>
-<svg class="bench-svg" viewBox="0 0 890 846" role="img" aria-label="Figure M1.2: Tail (p99) Latency Ratio — Final Pure-Go / CGo (log₂ scale, 95% block-bootstrap CI)">
-<line class="grid-line" x1="230.0" y1="28" x2="230.0" y2="816"/>
-<text class="axis-text" x="230.0" y="22" text-anchor="middle">0.25×</text>
-<text class="axis-text" x="230.0" y="831" text-anchor="middle">0.25×</text>
-<line class="grid-line" x1="307.7" y1="28" x2="307.7" y2="816"/>
-<text class="axis-text" x="307.7" y="22" text-anchor="middle">0.35×</text>
-<text class="axis-text" x="307.7" y="831" text-anchor="middle">0.35×</text>
-<line class="grid-line" x1="390.0" y1="28" x2="390.0" y2="816"/>
-<text class="axis-text" x="390.0" y="22" text-anchor="middle">0.5×</text>
-<text class="axis-text" x="390.0" y="831" text-anchor="middle">0.5×</text>
-<line class="grid-line" x1="467.7" y1="28" x2="467.7" y2="816"/>
-<text class="axis-text" x="467.7" y="22" text-anchor="middle">0.7×</text>
-<text class="axis-text" x="467.7" y="831" text-anchor="middle">0.7×</text>
-<line class="parity-line" x1="550.0" y1="28" x2="550.0" y2="816"/>
-<text class="axis-text" x="550.0" y="22" text-anchor="middle">1.0×</text>
-<text class="axis-text" x="550.0" y="831" text-anchor="middle">1.0×</text>
-<line class="grid-line" x1="627.7" y1="28" x2="627.7" y2="816"/>
-<text class="axis-text" x="627.7" y="22" text-anchor="middle">1.4×</text>
-<text class="axis-text" x="627.7" y="831" text-anchor="middle">1.4×</text>
-<line class="grid-line" x1="710.0" y1="28" x2="710.0" y2="816"/>
-<text class="axis-text" x="710.0" y="22" text-anchor="middle">2.0×</text>
-<text class="axis-text" x="710.0" y="831" text-anchor="middle">2.0×</text>
-<text class="axis-text" x="542.0" y="9" text-anchor="end">← Pure-Go lower p99</text>
-<text class="axis-text" x="558.0" y="9" text-anchor="start">CGo lower p99 →</text>
-<line class="section-divider" x1="8" y1="40" x2="882" y2="40"/>
-<text class="section-title" x="10" y="55">M1w1 (1 worker — 7/7 clean)</text>
-<text class="row-label" x="218" y="79.2" text-anchor="end">grv</text>
-<g class="ci-win"><title>grv: 0.498× [0.408, 0.601]</title><line x1="343.1" y1="75.2" x2="432.5" y2="75.2" stroke-width="2.2"/><line x1="343.1" y1="71.2" x2="343.1" y2="79.2" stroke-width="1.8"/><line x1="432.5" y1="71.2" x2="432.5" y2="79.2" stroke-width="1.8"/><circle cx="389.1" cy="75.2" r="3.8"/></g>
-<text class="val-text" x="722" y="79.2">0.498× [0.408, 0.601]</text>
-<text class="row-label" x="218" y="103.2" text-anchor="end">get100</text>
-<g class="ci-neutral"><title>get100: 0.865× [0.734, 1.037]</title><line x1="478.6" y1="99.2" x2="558.4" y2="99.2" stroke-width="2.2"/><line x1="478.6" y1="95.2" x2="478.6" y2="103.2" stroke-width="1.8"/><line x1="558.4" y1="95.2" x2="558.4" y2="103.2" stroke-width="1.8"/><circle cx="516.5" cy="99.2" r="3.8"/></g>
-<text class="val-text" x="722" y="103.2">0.865× [0.734, 1.037]</text>
-<text class="row-label" x="218" y="127.2" text-anchor="end">get1000</text>
-<g class="ci-win"><title>get1000: 0.705× [0.654, 0.779]</title><line x1="452.0" y1="123.2" x2="492.4" y2="123.2" stroke-width="2.2"/><line x1="452.0" y1="119.2" x2="452.0" y2="127.2" stroke-width="1.8"/><line x1="492.4" y1="119.2" x2="492.4" y2="127.2" stroke-width="1.8"/><circle cx="469.3" cy="123.2" r="3.8"/></g>
-<text class="val-text" x="722" y="127.2">0.705× [0.654, 0.779]</text>
-<text class="row-label" x="218" y="151.2" text-anchor="end">range100</text>
-<g class="ci-win"><title>range100: 0.715× [0.595, 0.861]</title><line x1="430.2" y1="147.2" x2="515.5" y2="147.2" stroke-width="2.2"/><line x1="430.2" y1="143.2" x2="430.2" y2="151.2" stroke-width="1.8"/><line x1="515.5" y1="143.2" x2="515.5" y2="151.2" stroke-width="1.8"/><circle cx="472.6" cy="147.2" r="3.8"/></g>
-<text class="val-text" x="722" y="151.2">0.715× [0.595, 0.861]</text>
-<text class="row-label" x="218" y="175.2" text-anchor="end">set100</text>
-<g class="ci-win"><title>set100: 0.794× [0.756, 0.837]</title><line x1="485.4" y1="171.2" x2="508.9" y2="171.2" stroke-width="2.2"/><line x1="485.4" y1="167.2" x2="485.4" y2="175.2" stroke-width="1.8"/><line x1="508.9" y1="167.2" x2="508.9" y2="175.2" stroke-width="1.8"/><circle cx="496.8" cy="171.2" r="3.8"/></g>
-<text class="val-text" x="722" y="175.2">0.794× [0.756, 0.837]</text>
-<text class="row-label" x="218" y="199.2" text-anchor="end">batchset50</text>
-<g class="ci-win"><title>batchset50: 0.913× [0.857, 0.975]</title><line x1="514.4" y1="195.2" x2="544.2" y2="195.2" stroke-width="2.2"/><line x1="514.4" y1="191.2" x2="514.4" y2="199.2" stroke-width="1.8"/><line x1="544.2" y1="191.2" x2="544.2" y2="199.2" stroke-width="1.8"/><circle cx="529.0" cy="195.2" r="3.8"/></g>
-<text class="val-text" x="722" y="199.2">0.913× [0.857, 0.975]</text>
-<text class="row-label" x="218" y="223.2" text-anchor="end">batchset50x1000</text>
-<g class="ci-win"><title>batchset50x1000: 0.957× [0.924, 0.990]</title><line x1="531.8" y1="219.2" x2="547.7" y2="219.2" stroke-width="2.2"/><line x1="531.8" y1="215.2" x2="531.8" y2="223.2" stroke-width="1.8"/><line x1="547.7" y1="215.2" x2="547.7" y2="223.2" stroke-width="1.8"/><circle cx="539.9" cy="219.2" r="3.8"/></g>
-<text class="val-text" x="722" y="223.2">0.957× [0.924, 0.990]</text>
-<line class="section-divider" x1="8" y1="234" x2="882" y2="234"/>
-<text class="section-title" x="10" y="249">M1w8 (8 workers — 5/7 clean)</text>
-<text class="row-label" x="218" y="273.2" text-anchor="end">grv</text>
-<g class="ci-neutral"><title>grv: 1.101× [0.869, 1.457]</title><line x1="517.6" y1="269.2" x2="636.9" y2="269.2" stroke-width="2.2"/><line x1="517.6" y1="265.2" x2="517.6" y2="273.2" stroke-width="1.8"/><line x1="636.9" y1="265.2" x2="636.9" y2="273.2" stroke-width="1.8"/><circle cx="572.2" cy="269.2" r="3.8"/></g>
-<text class="val-text" x="722" y="273.2">1.101× [0.869, 1.457]</text>
-<text class="row-label" x="218" y="297.2" text-anchor="end">get100</text>
-<g class="ci-win"><title>get100: 0.815× [0.741, 0.882]</title><line x1="480.8" y1="293.2" x2="521.0" y2="293.2" stroke-width="2.2"/><line x1="480.8" y1="289.2" x2="480.8" y2="297.2" stroke-width="1.8"/><line x1="521.0" y1="289.2" x2="521.0" y2="297.2" stroke-width="1.8"/><circle cx="502.8" cy="293.2" r="3.8"/></g>
-<text class="val-text" x="722" y="297.2">0.815× [0.741, 0.882]</text>
-<text class="row-label" x="218" y="321.2" text-anchor="end">get1000</text>
-<g class="ci-win"><title>get1000: 0.931× [0.859, 0.993]</title><line x1="514.9" y1="317.2" x2="548.4" y2="317.2" stroke-width="2.2"/><line x1="514.9" y1="313.2" x2="514.9" y2="321.2" stroke-width="1.8"/><line x1="548.4" y1="313.2" x2="548.4" y2="321.2" stroke-width="1.8"/><circle cx="533.5" cy="317.2" r="3.8"/></g>
-<text class="val-text" x="722" y="321.2">0.931× [0.859, 0.993]</text>
-<text class="row-label" x="218" y="345.2" text-anchor="end">range100</text>
-<g class="ci-win"><title>range100: 0.925× [0.861, 0.987]</title><line x1="515.5" y1="341.2" x2="547.0" y2="341.2" stroke-width="2.2"/><line x1="515.5" y1="337.2" x2="515.5" y2="345.2" stroke-width="1.8"/><line x1="547.0" y1="337.2" x2="547.0" y2="345.2" stroke-width="1.8"/><circle cx="532.0" cy="341.2" r="3.8"/></g>
-<text class="val-text" x="722" y="345.2">0.925× [0.861, 0.987]</text>
-<text class="row-label" x="218" y="369.2" text-anchor="end">set100</text>
-<g class="ci-win"><title>set100: 0.916× [0.860, 0.976]</title><line x1="515.2" y1="365.2" x2="544.4" y2="365.2" stroke-width="2.2"/><line x1="515.2" y1="361.2" x2="515.2" y2="369.2" stroke-width="1.8"/><line x1="544.4" y1="361.2" x2="544.4" y2="369.2" stroke-width="1.8"/><circle cx="529.7" cy="365.2" r="3.8"/></g>
-<text class="val-text" x="722" y="369.2">0.916× [0.860, 0.976]</text>
-<text class="row-label" x="218" y="393.2" text-anchor="end">batchset50</text>
-<text class="axis-text" x="240" y="393.2">N/A (omitted)</text>
-<text class="row-label" x="218" y="417.2" text-anchor="end">batchset50x1000</text>
-<text class="axis-text" x="240" y="417.2">N/A (omitted)</text>
-<line class="section-divider" x1="8" y1="428" x2="882" y2="428"/>
-<text class="section-title" x="10" y="443">M1w32 (32 workers — 5/7 clean)</text>
-<text class="row-label" x="218" y="467.2" text-anchor="end">grv</text>
-<g class="ci-neutral"><title>grv: 0.871× [0.754, 1.017]</title><line x1="484.8" y1="463.2" x2="553.9" y2="463.2" stroke-width="2.2"/><line x1="484.8" y1="459.2" x2="484.8" y2="467.2" stroke-width="1.8"/><line x1="553.9" y1="459.2" x2="553.9" y2="467.2" stroke-width="1.8"/><circle cx="518.1" cy="463.2" r="3.8"/></g>
-<text class="val-text" x="722" y="467.2">0.871× [0.754, 1.017]</text>
-<text class="row-label" x="218" y="491.2" text-anchor="end">get100</text>
-<g class="ci-win"><title>get100: 0.815× [0.679, 0.944]</title><line x1="460.6" y1="487.2" x2="536.7" y2="487.2" stroke-width="2.2"/><line x1="460.6" y1="483.2" x2="460.6" y2="491.2" stroke-width="1.8"/><line x1="536.7" y1="483.2" x2="536.7" y2="491.2" stroke-width="1.8"/><circle cx="502.8" cy="487.2" r="3.8"/></g>
-<text class="val-text" x="722" y="491.2">0.815× [0.679, 0.944]</text>
-<text class="row-label" x="218" y="515.2" text-anchor="end">get1000</text>
-<g class="ci-win"><title>get1000: 0.481× [0.423, 0.551]</title><line x1="351.4" y1="511.2" x2="412.4" y2="511.2" stroke-width="2.2"/><line x1="351.4" y1="507.2" x2="351.4" y2="515.2" stroke-width="1.8"/><line x1="412.4" y1="507.2" x2="412.4" y2="515.2" stroke-width="1.8"/><circle cx="381.1" cy="511.2" r="3.8"/></g>
-<text class="val-text" x="722" y="515.2">0.481× [0.423, 0.551]</text>
-<text class="row-label" x="218" y="539.2" text-anchor="end">range100</text>
-<g class="ci-reg"><title>range100: 1.247× [1.048, 1.644]</title><line x1="560.8" y1="535.2" x2="664.8" y2="535.2" stroke-width="2.2"/><line x1="560.8" y1="531.2" x2="560.8" y2="539.2" stroke-width="1.8"/><line x1="664.8" y1="531.2" x2="664.8" y2="539.2" stroke-width="1.8"/><circle cx="601.0" cy="535.2" r="3.8"/></g>
-<text class="val-text" x="722" y="539.2">1.247× [1.048, 1.644]</text>
-<text class="row-label" x="218" y="563.2" text-anchor="end">set100</text>
-<g class="ci-win"><title>set100: 0.904× [0.856, 0.948]</title><line x1="514.1" y1="559.2" x2="537.7" y2="559.2" stroke-width="2.2"/><line x1="514.1" y1="555.2" x2="514.1" y2="563.2" stroke-width="1.8"/><line x1="537.7" y1="555.2" x2="537.7" y2="563.2" stroke-width="1.8"/><circle cx="526.7" cy="559.2" r="3.8"/></g>
-<text class="val-text" x="722" y="563.2">0.904× [0.856, 0.948]</text>
-<text class="row-label" x="218" y="587.2" text-anchor="end">batchset50</text>
-<text class="axis-text" x="240" y="587.2">N/A (omitted)</text>
-<text class="row-label" x="218" y="611.2" text-anchor="end">batchset50x1000</text>
-<text class="axis-text" x="240" y="611.2">N/A (omitted)</text>
-<line class="section-divider" x1="8" y1="622" x2="882" y2="622"/>
-<text class="section-title" x="10" y="637">M1w64 (64 workers — 5/7 clean)</text>
-<text class="row-label" x="218" y="661.2" text-anchor="end">grv</text>
-<g class="ci-neutral"><title>grv: 0.960× [0.757, 1.190]</title><line x1="485.7" y1="657.2" x2="590.2" y2="657.2" stroke-width="2.2"/><line x1="485.7" y1="653.2" x2="485.7" y2="661.2" stroke-width="1.8"/><line x1="590.2" y1="653.2" x2="590.2" y2="661.2" stroke-width="1.8"/><circle cx="540.6" cy="657.2" r="3.8"/></g>
-<text class="val-text" x="722" y="661.2">0.960× [0.757, 1.190]</text>
-<text class="row-label" x="218" y="685.2" text-anchor="end">get100</text>
-<g class="ci-win"><title>get100: 0.679× [0.601, 0.776]</title><line x1="432.5" y1="681.2" x2="491.5" y2="681.2" stroke-width="2.2"/><line x1="432.5" y1="677.2" x2="432.5" y2="685.2" stroke-width="1.8"/><line x1="491.5" y1="677.2" x2="491.5" y2="685.2" stroke-width="1.8"/><circle cx="460.6" cy="681.2" r="3.8"/></g>
-<text class="val-text" x="722" y="685.2">0.679× [0.601, 0.776]</text>
-<text class="row-label" x="218" y="709.2" text-anchor="end">get1000</text>
-<g class="ci-win"><title>get1000: 0.385× [0.336, 0.438]</title><line x1="298.2" y1="705.2" x2="359.4" y2="705.2" stroke-width="2.2"/><line x1="298.2" y1="701.2" x2="298.2" y2="709.2" stroke-width="1.8"/><line x1="359.4" y1="701.2" x2="359.4" y2="709.2" stroke-width="1.8"/><circle cx="329.7" cy="705.2" r="3.8"/></g>
-<text class="val-text" x="722" y="709.2">0.385× [0.336, 0.438]</text>
-<text class="row-label" x="218" y="733.2" text-anchor="end">range100</text>
-<g class="ci-win"><title>range100: 0.732× [0.506, 0.912]</title><line x1="392.8" y1="729.2" x2="528.7" y2="729.2" stroke-width="2.2"/><line x1="392.8" y1="725.2" x2="392.8" y2="733.2" stroke-width="1.8"/><line x1="528.7" y1="725.2" x2="528.7" y2="733.2" stroke-width="1.8"/><circle cx="478.0" cy="729.2" r="3.8"/></g>
-<text class="val-text" x="722" y="733.2">0.732× [0.506, 0.912]</text>
-<text class="row-label" x="218" y="757.2" text-anchor="end">set100</text>
-<g class="ci-win"><title>set100: 0.872× [0.815, 0.927]</title><line x1="502.8" y1="753.2" x2="532.5" y2="753.2" stroke-width="2.2"/><line x1="502.8" y1="749.2" x2="502.8" y2="757.2" stroke-width="1.8"/><line x1="532.5" y1="749.2" x2="532.5" y2="757.2" stroke-width="1.8"/><circle cx="518.4" cy="753.2" r="3.8"/></g>
-<text class="val-text" x="722" y="757.2">0.872× [0.815, 0.927]</text>
-<text class="row-label" x="218" y="781.2" text-anchor="end">batchset50</text>
-<text class="axis-text" x="240" y="781.2">N/A (omitted)</text>
-<text class="row-label" x="218" y="805.2" text-anchor="end">batchset50x1000</text>
-<text class="axis-text" x="240" y="805.2">N/A (omitted)</text>
+<svg class="bench-svg" viewBox="0 0 1320 722" role="img" aria-label="Figure M1.2: Tail (p99) Latency Ratio — Final Pure-Go / CGo (log₂ scale, 95% block-bootstrap CI)">
+<line class="grid-line" x1="165.0" y1="36" x2="165.0" y2="696"/>
+<text class="axis-text" x="165.0" y="30" text-anchor="middle">0.25×</text>
+<text class="axis-text" x="165.0" y="711" text-anchor="middle">0.25×</text>
+<line class="grid-line" x1="320.3" y1="36" x2="320.3" y2="696"/>
+<text class="axis-text" x="320.3" y="30" text-anchor="middle">0.35×</text>
+<text class="axis-text" x="320.3" y="711" text-anchor="middle">0.35×</text>
+<line class="grid-line" x1="485.0" y1="36" x2="485.0" y2="696"/>
+<text class="axis-text" x="485.0" y="30" text-anchor="middle">0.5×</text>
+<text class="axis-text" x="485.0" y="711" text-anchor="middle">0.5×</text>
+<line class="grid-line" x1="640.3" y1="36" x2="640.3" y2="696"/>
+<text class="axis-text" x="640.3" y="30" text-anchor="middle">0.7×</text>
+<text class="axis-text" x="640.3" y="711" text-anchor="middle">0.7×</text>
+<line class="parity-line" x1="805.0" y1="36" x2="805.0" y2="696"/>
+<text class="axis-text" x="805.0" y="30" text-anchor="middle">1.0×</text>
+<text class="axis-text" x="805.0" y="711" text-anchor="middle">1.0×</text>
+<line class="grid-line" x1="960.3" y1="36" x2="960.3" y2="696"/>
+<text class="axis-text" x="960.3" y="30" text-anchor="middle">1.4×</text>
+<text class="axis-text" x="960.3" y="711" text-anchor="middle">1.4×</text>
+<line class="grid-line" x1="1125.0" y1="36" x2="1125.0" y2="696"/>
+<text class="axis-text" x="1125.0" y="30" text-anchor="middle">2.0×</text>
+<text class="axis-text" x="1125.0" y="711" text-anchor="middle">2.0×</text>
+<text class="axis-text" x="797.0" y="17" text-anchor="end">← Pure-Go lower p99</text>
+<text class="axis-text" x="813.0" y="17" text-anchor="start">CGo lower p99 →</text>
+<line class="section-divider" x1="8" y1="48" x2="1312" y2="48"/>
+<text class="section-title" x="10" y="63">M1w1 (1 worker — 7/7 clean)</text>
+<text class="row-label" x="153" y="81.0" text-anchor="end">grv</text>
+<g class="ci-win"><title>grv: 0.498× [0.408, 0.601]</title><line x1="391.1" y1="77.0" x2="569.9" y2="77.0" stroke-width="2.2"/><line x1="391.1" y1="73.0" x2="391.1" y2="81.0" stroke-width="1.8"/><line x1="569.9" y1="73.0" x2="569.9" y2="81.0" stroke-width="1.8"/><circle cx="483.1" cy="77.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="81.0">0.498× [0.408, 0.601]</text>
+<text class="row-label" x="153" y="101.0" text-anchor="end">get100</text>
+<g class="ci-neutral"><title>get100: 0.865× [0.734, 1.037]</title><line x1="662.2" y1="97.0" x2="821.8" y2="97.0" stroke-width="2.2"/><line x1="662.2" y1="93.0" x2="662.2" y2="101.0" stroke-width="1.8"/><line x1="821.8" y1="93.0" x2="821.8" y2="101.0" stroke-width="1.8"/><circle cx="738.0" cy="97.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="101.0">0.865× [0.734, 1.037]</text>
+<text class="row-label" x="153" y="121.0" text-anchor="end">get1000</text>
+<g class="ci-win"><title>get1000: 0.705× [0.654, 0.779]</title><line x1="609.0" y1="117.0" x2="689.7" y2="117.0" stroke-width="2.2"/><line x1="609.0" y1="113.0" x2="609.0" y2="121.0" stroke-width="1.8"/><line x1="689.7" y1="113.0" x2="689.7" y2="121.0" stroke-width="1.8"/><circle cx="643.6" cy="117.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="121.0">0.705× [0.654, 0.779]</text>
+<text class="row-label" x="153" y="141.0" text-anchor="end">range100</text>
+<g class="ci-win"><title>range100: 0.715× [0.595, 0.861]</title><line x1="565.3" y1="137.0" x2="735.9" y2="137.0" stroke-width="2.2"/><line x1="565.3" y1="133.0" x2="565.3" y2="141.0" stroke-width="1.8"/><line x1="735.9" y1="133.0" x2="735.9" y2="141.0" stroke-width="1.8"/><circle cx="650.1" cy="137.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="141.0">0.715× [0.595, 0.861]</text>
+<text class="row-label" x="153" y="161.0" text-anchor="end">set100</text>
+<g class="ci-win"><title>set100: 0.794× [0.756, 0.837]</title><line x1="675.9" y1="157.0" x2="722.9" y2="157.0" stroke-width="2.2"/><line x1="675.9" y1="153.0" x2="675.9" y2="161.0" stroke-width="1.8"/><line x1="722.9" y1="153.0" x2="722.9" y2="161.0" stroke-width="1.8"/><circle cx="698.5" cy="157.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="161.0">0.794× [0.756, 0.837]</text>
+<text class="row-label" x="153" y="181.0" text-anchor="end">batchset50</text>
+<g class="ci-win"><title>batchset50: 0.913× [0.857, 0.975]</title><line x1="733.8" y1="177.0" x2="793.3" y2="177.0" stroke-width="2.2"/><line x1="733.8" y1="173.0" x2="733.8" y2="181.0" stroke-width="1.8"/><line x1="793.3" y1="173.0" x2="793.3" y2="181.0" stroke-width="1.8"/><circle cx="763.0" cy="177.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="181.0">0.913× [0.857, 0.975]</text>
+<text class="row-label" x="153" y="201.0" text-anchor="end">batchset50x1000</text>
+<g class="ci-win"><title>batchset50x1000: 0.957× [0.924, 0.990]</title><line x1="768.5" y1="197.0" x2="800.4" y2="197.0" stroke-width="2.2"/><line x1="768.5" y1="193.0" x2="768.5" y2="201.0" stroke-width="1.8"/><line x1="800.4" y1="193.0" x2="800.4" y2="201.0" stroke-width="1.8"/><circle cx="784.7" cy="197.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="201.0">0.957× [0.924, 0.990]</text>
+<line class="section-divider" x1="8" y1="210" x2="1312" y2="210"/>
+<text class="section-title" x="10" y="225">M1w8 (8 workers — 5/7 clean)</text>
+<text class="row-label" x="153" y="243.0" text-anchor="end">grv</text>
+<g class="ci-neutral"><title>grv: 1.101× [0.869, 1.457]</title><line x1="740.2" y1="239.0" x2="978.8" y2="239.0" stroke-width="2.2"/><line x1="740.2" y1="235.0" x2="740.2" y2="243.0" stroke-width="1.8"/><line x1="978.8" y1="235.0" x2="978.8" y2="243.0" stroke-width="1.8"/><circle cx="849.4" cy="239.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="243.0">1.101× [0.869, 1.457]</text>
+<text class="row-label" x="153" y="263.0" text-anchor="end">get100</text>
+<g class="ci-win"><title>get100: 0.815× [0.741, 0.882]</title><line x1="666.6" y1="259.0" x2="747.0" y2="259.0" stroke-width="2.2"/><line x1="666.6" y1="255.0" x2="666.6" y2="263.0" stroke-width="1.8"/><line x1="747.0" y1="255.0" x2="747.0" y2="263.0" stroke-width="1.8"/><circle cx="710.6" cy="259.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="263.0">0.815× [0.741, 0.882]</text>
+<text class="row-label" x="153" y="283.0" text-anchor="end">get1000</text>
+<g class="ci-win"><title>get1000: 0.931× [0.859, 0.993]</title><line x1="734.8" y1="279.0" x2="801.8" y2="279.0" stroke-width="2.2"/><line x1="734.8" y1="275.0" x2="734.8" y2="283.0" stroke-width="1.8"/><line x1="801.8" y1="275.0" x2="801.8" y2="283.0" stroke-width="1.8"/><circle cx="772.0" cy="279.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="283.0">0.931× [0.859, 0.993]</text>
+<text class="row-label" x="153" y="303.0" text-anchor="end">range100</text>
+<g class="ci-win"><title>range100: 0.925× [0.861, 0.987]</title><line x1="735.9" y1="299.0" x2="799.0" y2="299.0" stroke-width="2.2"/><line x1="735.9" y1="295.0" x2="735.9" y2="303.0" stroke-width="1.8"/><line x1="799.0" y1="295.0" x2="799.0" y2="303.0" stroke-width="1.8"/><circle cx="769.0" cy="299.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="303.0">0.925× [0.861, 0.987]</text>
+<text class="row-label" x="153" y="323.0" text-anchor="end">set100</text>
+<g class="ci-win"><title>set100: 0.916× [0.860, 0.976]</title><line x1="735.4" y1="319.0" x2="793.8" y2="319.0" stroke-width="2.2"/><line x1="735.4" y1="315.0" x2="735.4" y2="323.0" stroke-width="1.8"/><line x1="793.8" y1="315.0" x2="793.8" y2="323.0" stroke-width="1.8"/><circle cx="764.5" cy="319.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="323.0">0.916× [0.860, 0.976]</text>
+<text class="row-label" x="153" y="343.0" text-anchor="end">batchset50</text>
+<text class="axis-text" x="175" y="343.0">N/A (omitted)</text>
+<text class="row-label" x="153" y="363.0" text-anchor="end">batchset50x1000</text>
+<text class="axis-text" x="175" y="363.0">N/A (omitted)</text>
+<line class="section-divider" x1="8" y1="372" x2="1312" y2="372"/>
+<text class="section-title" x="10" y="387">M1w32 (32 workers — 5/7 clean)</text>
+<text class="row-label" x="153" y="405.0" text-anchor="end">grv</text>
+<g class="ci-neutral"><title>grv: 0.871× [0.754, 1.017]</title><line x1="674.6" y1="401.0" x2="812.8" y2="401.0" stroke-width="2.2"/><line x1="674.6" y1="397.0" x2="674.6" y2="405.0" stroke-width="1.8"/><line x1="812.8" y1="397.0" x2="812.8" y2="405.0" stroke-width="1.8"/><circle cx="741.2" cy="401.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="405.0">0.871× [0.754, 1.017]</text>
+<text class="row-label" x="153" y="425.0" text-anchor="end">get100</text>
+<g class="ci-win"><title>get100: 0.815× [0.679, 0.944]</title><line x1="626.3" y1="421.0" x2="778.4" y2="421.0" stroke-width="2.2"/><line x1="626.3" y1="417.0" x2="626.3" y2="425.0" stroke-width="1.8"/><line x1="778.4" y1="417.0" x2="778.4" y2="425.0" stroke-width="1.8"/><circle cx="710.6" cy="421.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="425.0">0.815× [0.679, 0.944]</text>
+<text class="row-label" x="153" y="445.0" text-anchor="end">get1000</text>
+<g class="ci-win"><title>get1000: 0.481× [0.423, 0.551]</title><line x1="407.8" y1="441.0" x2="529.8" y2="441.0" stroke-width="2.2"/><line x1="407.8" y1="437.0" x2="407.8" y2="445.0" stroke-width="1.8"/><line x1="529.8" y1="437.0" x2="529.8" y2="445.0" stroke-width="1.8"/><circle cx="467.1" cy="441.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="445.0">0.481× [0.423, 0.551]</text>
+<text class="row-label" x="153" y="465.0" text-anchor="end">range100</text>
+<g class="ci-reg"><title>range100: 1.247× [1.048, 1.644]</title><line x1="826.6" y1="461.0" x2="1034.5" y2="461.0" stroke-width="2.2"/><line x1="826.6" y1="457.0" x2="826.6" y2="465.0" stroke-width="1.8"/><line x1="1034.5" y1="457.0" x2="1034.5" y2="465.0" stroke-width="1.8"/><circle cx="906.9" cy="461.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="465.0">1.247× [1.048, 1.644]</text>
+<text class="row-label" x="153" y="485.0" text-anchor="end">set100</text>
+<g class="ci-win"><title>set100: 0.904× [0.856, 0.948]</title><line x1="733.2" y1="481.0" x2="780.3" y2="481.0" stroke-width="2.2"/><line x1="733.2" y1="477.0" x2="733.2" y2="485.0" stroke-width="1.8"/><line x1="780.3" y1="477.0" x2="780.3" y2="485.0" stroke-width="1.8"/><circle cx="758.4" cy="481.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="485.0">0.904× [0.856, 0.948]</text>
+<text class="row-label" x="153" y="505.0" text-anchor="end">batchset50</text>
+<text class="axis-text" x="175" y="505.0">N/A (omitted)</text>
+<text class="row-label" x="153" y="525.0" text-anchor="end">batchset50x1000</text>
+<text class="axis-text" x="175" y="525.0">N/A (omitted)</text>
+<line class="section-divider" x1="8" y1="534" x2="1312" y2="534"/>
+<text class="section-title" x="10" y="549">M1w64 (64 workers — 5/7 clean)</text>
+<text class="row-label" x="153" y="567.0" text-anchor="end">grv</text>
+<g class="ci-neutral"><title>grv: 0.960× [0.757, 1.190]</title><line x1="676.5" y1="563.0" x2="885.3" y2="563.0" stroke-width="2.2"/><line x1="676.5" y1="559.0" x2="676.5" y2="567.0" stroke-width="1.8"/><line x1="885.3" y1="559.0" x2="885.3" y2="567.0" stroke-width="1.8"/><circle cx="786.2" cy="563.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="567.0">0.960× [0.757, 1.190]</text>
+<text class="row-label" x="153" y="587.0" text-anchor="end">get100</text>
+<g class="ci-win"><title>get100: 0.679× [0.601, 0.776]</title><line x1="569.9" y1="583.0" x2="687.9" y2="583.0" stroke-width="2.2"/><line x1="569.9" y1="579.0" x2="569.9" y2="587.0" stroke-width="1.8"/><line x1="687.9" y1="579.0" x2="687.9" y2="587.0" stroke-width="1.8"/><circle cx="626.3" cy="583.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="587.0">0.679× [0.601, 0.776]</text>
+<text class="row-label" x="153" y="607.0" text-anchor="end">get1000</text>
+<g class="ci-win"><title>get1000: 0.385× [0.336, 0.438]</title><line x1="301.5" y1="603.0" x2="423.9" y2="603.0" stroke-width="2.2"/><line x1="301.5" y1="599.0" x2="301.5" y2="607.0" stroke-width="1.8"/><line x1="423.9" y1="599.0" x2="423.9" y2="607.0" stroke-width="1.8"/><circle cx="364.3" cy="603.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="607.0">0.385× [0.336, 0.438]</text>
+<text class="row-label" x="153" y="627.0" text-anchor="end">range100</text>
+<g class="ci-win"><title>range100: 0.732× [0.506, 0.912]</title><line x1="490.5" y1="623.0" x2="762.5" y2="623.0" stroke-width="2.2"/><line x1="490.5" y1="619.0" x2="490.5" y2="627.0" stroke-width="1.8"/><line x1="762.5" y1="619.0" x2="762.5" y2="627.0" stroke-width="1.8"/><circle cx="661.0" cy="623.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="627.0">0.732× [0.506, 0.912]</text>
+<text class="row-label" x="153" y="647.0" text-anchor="end">set100</text>
+<g class="ci-win"><title>set100: 0.872× [0.815, 0.927]</title><line x1="710.6" y1="643.0" x2="770.0" y2="643.0" stroke-width="2.2"/><line x1="710.6" y1="639.0" x2="710.6" y2="647.0" stroke-width="1.8"/><line x1="770.0" y1="639.0" x2="770.0" y2="647.0" stroke-width="1.8"/><circle cx="741.8" cy="643.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="647.0">0.872× [0.815, 0.927]</text>
+<text class="row-label" x="153" y="667.0" text-anchor="end">batchset50</text>
+<text class="axis-text" x="175" y="667.0">N/A (omitted)</text>
+<text class="row-label" x="153" y="687.0" text-anchor="end">batchset50x1000</text>
+<text class="axis-text" x="175" y="687.0">N/A (omitted)</text>
 </svg>
 <div class="bench-legend"><span><i class="bench-swatch" style="background:#0d9488"></i> 95% CI entirely &lt; 1.000 (faster / lower)</span><span><i class="bench-swatch" style="background:#64748b"></i> 95% CI overlaps 1.000 (unresolved)</span><span><i class="bench-swatch" style="background:#d97706"></i> 95% CI entirely &gt; 1.000 (slower / higher)</span></div>
 </figure>
 
 <figure class="bench-figure">
 <figcaption><strong>Figure M1.3: Shutdown Process CPU (E−A) Ratio — Final Pure-Go / CGo (log₂ scale, 95% CI)</strong> — User+system process CPU through finalizer drain and network stop per transaction. Below 1.0× means Pure-Go uses less CPU.</figcaption>
-<svg class="bench-svg" viewBox="0 0 890 846" role="img" aria-label="Figure M1.3: Shutdown Process CPU (E−A) Ratio — Final Pure-Go / CGo (log₂ scale, 95% CI)">
-<line class="grid-line" x1="230.0" y1="28" x2="230.0" y2="816"/>
-<text class="axis-text" x="230.0" y="22" text-anchor="middle">0.5×</text>
-<text class="axis-text" x="230.0" y="831" text-anchor="middle">0.5×</text>
-<line class="grid-line" x1="330.3" y1="28" x2="330.3" y2="816"/>
-<text class="axis-text" x="330.3" y="22" text-anchor="middle">0.7×</text>
-<text class="axis-text" x="330.3" y="831" text-anchor="middle">0.7×</text>
-<line class="parity-line" x1="436.7" y1="28" x2="436.7" y2="816"/>
-<text class="axis-text" x="436.7" y="22" text-anchor="middle">1.0×</text>
-<text class="axis-text" x="436.7" y="831" text-anchor="middle">1.0×</text>
-<line class="grid-line" x1="537.1" y1="28" x2="537.1" y2="816"/>
-<text class="axis-text" x="537.1" y="22" text-anchor="middle">1.4×</text>
-<text class="axis-text" x="537.1" y="831" text-anchor="middle">1.4×</text>
-<line class="grid-line" x1="643.4" y1="28" x2="643.4" y2="816"/>
-<text class="axis-text" x="643.4" y="22" text-anchor="middle">2.0×</text>
-<text class="axis-text" x="643.4" y="831" text-anchor="middle">2.0×</text>
-<line class="grid-line" x1="710.0" y1="28" x2="710.0" y2="816"/>
-<text class="axis-text" x="710.0" y="22" text-anchor="middle">2.5×</text>
-<text class="axis-text" x="710.0" y="831" text-anchor="middle">2.5×</text>
-<text class="axis-text" x="428.7" y="9" text-anchor="end">← Pure-Go less CPU</text>
-<text class="axis-text" x="444.7" y="9" text-anchor="start">CGo less CPU →</text>
-<line class="section-divider" x1="8" y1="40" x2="882" y2="40"/>
-<text class="section-title" x="10" y="55">M1w1 (1 worker — 7/7 clean)</text>
-<text class="row-label" x="218" y="79.2" text-anchor="end">grv</text>
-<g class="ci-win"><title>grv: 0.570× [0.551, 0.588]</title><line x1="259.0" y1="75.2" x2="278.4" y2="75.2" stroke-width="2.2"/><line x1="259.0" y1="71.2" x2="259.0" y2="79.2" stroke-width="1.8"/><line x1="278.4" y1="71.2" x2="278.4" y2="79.2" stroke-width="1.8"/><circle cx="269.1" cy="75.2" r="3.8"/></g>
-<text class="val-text" x="722" y="79.2">0.570× [0.551, 0.588]</text>
-<text class="row-label" x="218" y="103.2" text-anchor="end">get100</text>
-<g class="ci-win"><title>get100: 0.660× [0.648, 0.671]</title><line x1="307.3" y1="99.2" x2="317.7" y2="99.2" stroke-width="2.2"/><line x1="307.3" y1="95.2" x2="307.3" y2="103.2" stroke-width="1.8"/><line x1="317.7" y1="95.2" x2="317.7" y2="103.2" stroke-width="1.8"/><circle cx="312.8" cy="99.2" r="3.8"/></g>
-<text class="val-text" x="722" y="103.2">0.660× [0.648, 0.671]</text>
-<text class="row-label" x="218" y="127.2" text-anchor="end">get1000</text>
-<g class="ci-win"><title>get1000: 0.629× [0.603, 0.653]</title><line x1="285.9" y1="123.2" x2="309.6" y2="123.2" stroke-width="2.2"/><line x1="285.9" y1="119.2" x2="285.9" y2="127.2" stroke-width="1.8"/><line x1="309.6" y1="119.2" x2="309.6" y2="127.2" stroke-width="1.8"/><circle cx="298.5" cy="123.2" r="3.8"/></g>
-<text class="val-text" x="722" y="127.2">0.629× [0.603, 0.653]</text>
-<text class="row-label" x="218" y="151.2" text-anchor="end">range100</text>
-<g class="ci-win"><title>range100: 0.747× [0.731, 0.761]</title><line x1="343.3" y1="147.2" x2="355.3" y2="147.2" stroke-width="2.2"/><line x1="343.3" y1="143.2" x2="343.3" y2="151.2" stroke-width="1.8"/><line x1="355.3" y1="143.2" x2="355.3" y2="151.2" stroke-width="1.8"/><circle cx="349.7" cy="147.2" r="3.8"/></g>
-<text class="val-text" x="722" y="151.2">0.747× [0.731, 0.761]</text>
-<text class="row-label" x="218" y="175.2" text-anchor="end">set100</text>
-<g class="ci-win"><title>set100: 0.688× [0.677, 0.700]</title><line x1="320.4" y1="171.2" x2="330.3" y2="171.2" stroke-width="2.2"/><line x1="320.4" y1="167.2" x2="320.4" y2="175.2" stroke-width="1.8"/><line x1="330.3" y1="167.2" x2="330.3" y2="175.2" stroke-width="1.8"/><circle cx="325.2" cy="171.2" r="3.8"/></g>
-<text class="val-text" x="722" y="175.2">0.688× [0.677, 0.700]</text>
-<text class="row-label" x="218" y="199.2" text-anchor="end">batchset50</text>
-<g class="ci-win"><title>batchset50: 0.667× [0.659, 0.673]</title><line x1="312.3" y1="195.2" x2="318.6" y2="195.2" stroke-width="2.2"/><line x1="312.3" y1="191.2" x2="312.3" y2="199.2" stroke-width="1.8"/><line x1="318.6" y1="191.2" x2="318.6" y2="199.2" stroke-width="1.8"/><circle cx="315.9" cy="195.2" r="3.8"/></g>
-<text class="val-text" x="722" y="199.2">0.667× [0.659, 0.673]</text>
-<text class="row-label" x="218" y="223.2" text-anchor="end">batchset50x1000</text>
-<g class="ci-win"><title>batchset50x1000: 0.748× [0.729, 0.770]</title><line x1="342.5" y1="219.2" x2="358.8" y2="219.2" stroke-width="2.2"/><line x1="342.5" y1="215.2" x2="342.5" y2="223.2" stroke-width="1.8"/><line x1="358.8" y1="215.2" x2="358.8" y2="223.2" stroke-width="1.8"/><circle cx="350.1" cy="219.2" r="3.8"/></g>
-<text class="val-text" x="722" y="223.2">0.748× [0.729, 0.770]</text>
-<line class="section-divider" x1="8" y1="234" x2="882" y2="234"/>
-<text class="section-title" x="10" y="249">M1w8 (8 workers — 5/7 clean)</text>
-<text class="row-label" x="218" y="273.2" text-anchor="end">grv</text>
-<g class="ci-win"><title>grv: 0.904× [0.878, 0.931]</title><line x1="397.9" y1="269.2" x2="415.4" y2="269.2" stroke-width="2.2"/><line x1="397.9" y1="265.2" x2="397.9" y2="273.2" stroke-width="1.8"/><line x1="415.4" y1="265.2" x2="415.4" y2="273.2" stroke-width="1.8"/><circle cx="406.6" cy="269.2" r="3.8"/></g>
-<text class="val-text" x="722" y="273.2">0.904× [0.878, 0.931]</text>
-<text class="row-label" x="218" y="297.2" text-anchor="end">get100</text>
-<g class="ci-reg"><title>get100: 1.291× [1.264, 1.331]</title><line x1="506.6" y1="293.2" x2="522.0" y2="293.2" stroke-width="2.2"/><line x1="506.6" y1="289.2" x2="506.6" y2="297.2" stroke-width="1.8"/><line x1="522.0" y1="289.2" x2="522.0" y2="297.2" stroke-width="1.8"/><circle cx="512.9" cy="293.2" r="3.8"/></g>
-<text class="val-text" x="722" y="297.2">1.291× [1.264, 1.331]</text>
-<text class="row-label" x="218" y="321.2" text-anchor="end">get1000</text>
-<g class="ci-reg"><title>get1000: 1.362× [1.342, 1.382]</title><line x1="524.5" y1="317.2" x2="533.2" y2="317.2" stroke-width="2.2"/><line x1="524.5" y1="313.2" x2="524.5" y2="321.2" stroke-width="1.8"/><line x1="533.2" y1="313.2" x2="533.2" y2="321.2" stroke-width="1.8"/><circle cx="528.9" cy="317.2" r="3.8"/></g>
-<text class="val-text" x="722" y="321.2">1.362× [1.342, 1.382]</text>
-<text class="row-label" x="218" y="345.2" text-anchor="end">range100</text>
-<g class="ci-reg"><title>range100: 1.544× [1.476, 1.651]</title><line x1="552.8" y1="341.2" x2="586.3" y2="341.2" stroke-width="2.2"/><line x1="552.8" y1="337.2" x2="552.8" y2="345.2" stroke-width="1.8"/><line x1="586.3" y1="337.2" x2="586.3" y2="345.2" stroke-width="1.8"/><circle cx="566.3" cy="341.2" r="3.8"/></g>
-<text class="val-text" x="722" y="345.2">1.544× [1.476, 1.651]</text>
-<text class="row-label" x="218" y="369.2" text-anchor="end">set100</text>
-<g class="ci-reg"><title>set100: 2.142× [2.123, 2.160]</title><line x1="661.2" y1="365.2" x2="666.4" y2="365.2" stroke-width="2.2"/><line x1="661.2" y1="361.2" x2="661.2" y2="369.2" stroke-width="1.8"/><line x1="666.4" y1="361.2" x2="666.4" y2="369.2" stroke-width="1.8"/><circle cx="663.9" cy="365.2" r="3.8"/></g>
-<text class="val-text" x="722" y="369.2">2.142× [2.123, 2.160]</text>
-<text class="row-label" x="218" y="393.2" text-anchor="end">batchset50</text>
-<text class="axis-text" x="240" y="393.2">N/A (omitted)</text>
-<text class="row-label" x="218" y="417.2" text-anchor="end">batchset50x1000</text>
-<text class="axis-text" x="240" y="417.2">N/A (omitted)</text>
-<line class="section-divider" x1="8" y1="428" x2="882" y2="428"/>
-<text class="section-title" x="10" y="443">M1w32 (32 workers — 5/7 clean)</text>
-<text class="row-label" x="218" y="467.2" text-anchor="end">grv</text>
-<g class="ci-win"><title>grv: 0.765× [0.745, 0.779]</title><line x1="348.9" y1="463.2" x2="362.2" y2="463.2" stroke-width="2.2"/><line x1="348.9" y1="459.2" x2="348.9" y2="467.2" stroke-width="1.8"/><line x1="362.2" y1="459.2" x2="362.2" y2="467.2" stroke-width="1.8"/><circle cx="356.8" cy="463.2" r="3.8"/></g>
-<text class="val-text" x="722" y="467.2">0.765× [0.745, 0.779]</text>
-<text class="row-label" x="218" y="491.2" text-anchor="end">get100</text>
-<g class="ci-reg"><title>get100: 1.368× [1.334, 1.411]</title><line x1="522.7" y1="487.2" x2="539.4" y2="487.2" stroke-width="2.2"/><line x1="522.7" y1="483.2" x2="522.7" y2="491.2" stroke-width="1.8"/><line x1="539.4" y1="483.2" x2="539.4" y2="491.2" stroke-width="1.8"/><circle cx="530.2" cy="487.2" r="3.8"/></g>
-<text class="val-text" x="722" y="491.2">1.368× [1.334, 1.411]</text>
-<text class="row-label" x="218" y="515.2" text-anchor="end">get1000</text>
-<g class="ci-reg"><title>get1000: 1.537× [1.494, 1.575]</title><line x1="556.5" y1="511.2" x2="572.2" y2="511.2" stroke-width="2.2"/><line x1="556.5" y1="507.2" x2="556.5" y2="515.2" stroke-width="1.8"/><line x1="572.2" y1="507.2" x2="572.2" y2="515.2" stroke-width="1.8"/><circle cx="564.9" cy="511.2" r="3.8"/></g>
-<text class="val-text" x="722" y="515.2">1.537× [1.494, 1.575]</text>
-<text class="row-label" x="218" y="539.2" text-anchor="end">range100</text>
-<g class="ci-reg"><title>range100: 1.723× [1.616, 1.921]</title><line x1="579.9" y1="535.2" x2="631.4" y2="535.2" stroke-width="2.2"/><line x1="579.9" y1="531.2" x2="579.9" y2="539.2" stroke-width="1.8"/><line x1="631.4" y1="531.2" x2="631.4" y2="539.2" stroke-width="1.8"/><circle cx="599.0" cy="535.2" r="3.8"/></g>
-<text class="val-text" x="722" y="539.2">1.723× [1.616, 1.921]</text>
-<text class="row-label" x="218" y="563.2" text-anchor="end">set100</text>
-<g class="ci-reg"><title>set100: 2.162× [2.108, 2.216]</title><line x1="659.1" y1="559.2" x2="674.0" y2="559.2" stroke-width="2.2"/><line x1="659.1" y1="555.2" x2="659.1" y2="563.2" stroke-width="1.8"/><line x1="674.0" y1="555.2" x2="674.0" y2="563.2" stroke-width="1.8"/><circle cx="666.7" cy="559.2" r="3.8"/></g>
-<text class="val-text" x="722" y="563.2">2.162× [2.108, 2.216]</text>
-<text class="row-label" x="218" y="587.2" text-anchor="end">batchset50</text>
-<text class="axis-text" x="240" y="587.2">N/A (omitted)</text>
-<text class="row-label" x="218" y="611.2" text-anchor="end">batchset50x1000</text>
-<text class="axis-text" x="240" y="611.2">N/A (omitted)</text>
-<line class="section-divider" x1="8" y1="622" x2="882" y2="622"/>
-<text class="section-title" x="10" y="637">M1w64 (64 workers — 5/7 clean)</text>
-<text class="row-label" x="218" y="661.2" text-anchor="end">grv</text>
-<g class="ci-win"><title>grv: 0.736× [0.721, 0.752]</title><line x1="339.2" y1="657.2" x2="351.7" y2="657.2" stroke-width="2.2"/><line x1="339.2" y1="653.2" x2="339.2" y2="661.2" stroke-width="1.8"/><line x1="351.7" y1="653.2" x2="351.7" y2="661.2" stroke-width="1.8"/><circle cx="345.3" cy="657.2" r="3.8"/></g>
-<text class="val-text" x="722" y="661.2">0.736× [0.721, 0.752]</text>
-<text class="row-label" x="218" y="685.2" text-anchor="end">get100</text>
-<g class="ci-reg"><title>get100: 1.429× [1.385, 1.478]</title><line x1="533.9" y1="681.2" x2="553.2" y2="681.2" stroke-width="2.2"/><line x1="533.9" y1="677.2" x2="533.9" y2="685.2" stroke-width="1.8"/><line x1="553.2" y1="677.2" x2="553.2" y2="685.2" stroke-width="1.8"/><circle cx="543.2" cy="681.2" r="3.8"/></g>
-<text class="val-text" x="722" y="685.2">1.429× [1.385, 1.478]</text>
-<text class="row-label" x="218" y="709.2" text-anchor="end">get1000</text>
-<g class="ci-reg"><title>get1000: 1.608× [1.509, 1.705]</title><line x1="559.4" y1="705.2" x2="595.9" y2="705.2" stroke-width="2.2"/><line x1="559.4" y1="701.2" x2="559.4" y2="709.2" stroke-width="1.8"/><line x1="595.9" y1="701.2" x2="595.9" y2="709.2" stroke-width="1.8"/><circle cx="578.4" cy="705.2" r="3.8"/></g>
-<text class="val-text" x="722" y="709.2">1.608× [1.509, 1.705]</text>
-<text class="row-label" x="218" y="733.2" text-anchor="end">range100</text>
-<g class="ci-neutral"><title>range100: 1.069× [0.923, 1.180]</title><line x1="412.8" y1="729.2" x2="486.1" y2="729.2" stroke-width="2.2"/><line x1="412.8" y1="725.2" x2="412.8" y2="733.2" stroke-width="1.8"/><line x1="486.1" y1="725.2" x2="486.1" y2="733.2" stroke-width="1.8"/><circle cx="456.6" cy="729.2" r="3.8"/></g>
-<text class="val-text" x="722" y="733.2">1.069× [0.923, 1.180]</text>
-<text class="row-label" x="218" y="757.2" text-anchor="end">set100</text>
-<g class="ci-reg"><title>set100: 1.981× [1.935, 2.021]</title><line x1="633.6" y1="753.2" x2="646.6" y2="753.2" stroke-width="2.2"/><line x1="633.6" y1="749.2" x2="633.6" y2="757.2" stroke-width="1.8"/><line x1="646.6" y1="749.2" x2="646.6" y2="757.2" stroke-width="1.8"/><circle cx="640.6" cy="753.2" r="3.8"/></g>
-<text class="val-text" x="722" y="757.2">1.981× [1.935, 2.021]</text>
-<text class="row-label" x="218" y="781.2" text-anchor="end">batchset50</text>
-<text class="axis-text" x="240" y="781.2">N/A (omitted)</text>
-<text class="row-label" x="218" y="805.2" text-anchor="end">batchset50x1000</text>
-<text class="axis-text" x="240" y="805.2">N/A (omitted)</text>
+<svg class="bench-svg" viewBox="0 0 1320 722" role="img" aria-label="Figure M1.3: Shutdown Process CPU (E−A) Ratio — Final Pure-Go / CGo (log₂ scale, 95% CI)">
+<line class="grid-line" x1="165.0" y1="36" x2="165.0" y2="696"/>
+<text class="axis-text" x="165.0" y="30" text-anchor="middle">0.5×</text>
+<text class="axis-text" x="165.0" y="711" text-anchor="middle">0.5×</text>
+<line class="grid-line" x1="365.7" y1="36" x2="365.7" y2="696"/>
+<text class="axis-text" x="365.7" y="30" text-anchor="middle">0.7×</text>
+<text class="axis-text" x="365.7" y="711" text-anchor="middle">0.7×</text>
+<line class="parity-line" x1="578.4" y1="36" x2="578.4" y2="696"/>
+<text class="axis-text" x="578.4" y="30" text-anchor="middle">1.0×</text>
+<text class="axis-text" x="578.4" y="711" text-anchor="middle">1.0×</text>
+<line class="grid-line" x1="779.1" y1="36" x2="779.1" y2="696"/>
+<text class="axis-text" x="779.1" y="30" text-anchor="middle">1.4×</text>
+<text class="axis-text" x="779.1" y="711" text-anchor="middle">1.4×</text>
+<line class="grid-line" x1="991.9" y1="36" x2="991.9" y2="696"/>
+<text class="axis-text" x="991.9" y="30" text-anchor="middle">2.0×</text>
+<text class="axis-text" x="991.9" y="711" text-anchor="middle">2.0×</text>
+<line class="grid-line" x1="1125.0" y1="36" x2="1125.0" y2="696"/>
+<text class="axis-text" x="1125.0" y="30" text-anchor="middle">2.5×</text>
+<text class="axis-text" x="1125.0" y="711" text-anchor="middle">2.5×</text>
+<text class="axis-text" x="570.4" y="17" text-anchor="end">← Pure-Go less CPU</text>
+<text class="axis-text" x="586.4" y="17" text-anchor="start">CGo less CPU →</text>
+<line class="section-divider" x1="8" y1="48" x2="1312" y2="48"/>
+<text class="section-title" x="10" y="63">M1w1 (1 worker — 7/7 clean)</text>
+<text class="row-label" x="153" y="81.0" text-anchor="end">grv</text>
+<g class="ci-win"><title>grv: 0.570× [0.551, 0.588]</title><line x1="222.9" y1="77.0" x2="261.7" y2="77.0" stroke-width="2.2"/><line x1="222.9" y1="73.0" x2="222.9" y2="81.0" stroke-width="1.8"/><line x1="261.7" y1="73.0" x2="261.7" y2="81.0" stroke-width="1.8"/><circle cx="243.2" cy="77.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="81.0">0.570× [0.551, 0.588]</text>
+<text class="row-label" x="153" y="101.0" text-anchor="end">get100</text>
+<g class="ci-win"><title>get100: 0.660× [0.648, 0.671]</title><line x1="319.7" y1="97.0" x2="340.5" y2="97.0" stroke-width="2.2"/><line x1="319.7" y1="93.0" x2="319.7" y2="101.0" stroke-width="1.8"/><line x1="340.5" y1="93.0" x2="340.5" y2="101.0" stroke-width="1.8"/><circle cx="330.6" cy="97.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="101.0">0.660× [0.648, 0.671]</text>
+<text class="row-label" x="153" y="121.0" text-anchor="end">get1000</text>
+<g class="ci-win"><title>get1000: 0.629× [0.603, 0.653]</title><line x1="276.7" y1="117.0" x2="324.2" y2="117.0" stroke-width="2.2"/><line x1="276.7" y1="113.0" x2="276.7" y2="121.0" stroke-width="1.8"/><line x1="324.2" y1="113.0" x2="324.2" y2="121.0" stroke-width="1.8"/><circle cx="301.9" cy="117.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="121.0">0.629× [0.603, 0.653]</text>
+<text class="row-label" x="153" y="141.0" text-anchor="end">range100</text>
+<g class="ci-win"><title>range100: 0.747× [0.731, 0.761]</title><line x1="391.5" y1="137.0" x2="415.5" y2="137.0" stroke-width="2.2"/><line x1="391.5" y1="133.0" x2="391.5" y2="141.0" stroke-width="1.8"/><line x1="415.5" y1="133.0" x2="415.5" y2="141.0" stroke-width="1.8"/><circle cx="404.5" cy="137.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="141.0">0.747× [0.731, 0.761]</text>
+<text class="row-label" x="153" y="161.0" text-anchor="end">set100</text>
+<g class="ci-win"><title>set100: 0.688× [0.677, 0.700]</title><line x1="345.8" y1="157.0" x2="365.7" y2="157.0" stroke-width="2.2"/><line x1="345.8" y1="153.0" x2="345.8" y2="161.0" stroke-width="1.8"/><line x1="365.7" y1="153.0" x2="365.7" y2="161.0" stroke-width="1.8"/><circle cx="355.4" cy="157.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="161.0">0.688× [0.677, 0.700]</text>
+<text class="row-label" x="153" y="181.0" text-anchor="end">batchset50</text>
+<g class="ci-win"><title>batchset50: 0.667× [0.659, 0.673]</title><line x1="329.7" y1="177.0" x2="342.2" y2="177.0" stroke-width="2.2"/><line x1="329.7" y1="173.0" x2="329.7" y2="181.0" stroke-width="1.8"/><line x1="342.2" y1="173.0" x2="342.2" y2="181.0" stroke-width="1.8"/><circle cx="336.9" cy="177.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="181.0">0.667× [0.659, 0.673]</text>
+<text class="row-label" x="153" y="201.0" text-anchor="end">batchset50x1000</text>
+<g class="ci-win"><title>batchset50x1000: 0.748× [0.729, 0.770]</title><line x1="389.9" y1="197.0" x2="422.6" y2="197.0" stroke-width="2.2"/><line x1="389.9" y1="193.0" x2="389.9" y2="201.0" stroke-width="1.8"/><line x1="422.6" y1="193.0" x2="422.6" y2="201.0" stroke-width="1.8"/><circle cx="405.3" cy="197.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="201.0">0.748× [0.729, 0.770]</text>
+<line class="section-divider" x1="8" y1="210" x2="1312" y2="210"/>
+<text class="section-title" x="10" y="225">M1w8 (8 workers — 5/7 clean)</text>
+<text class="row-label" x="153" y="243.0" text-anchor="end">grv</text>
+<g class="ci-win"><title>grv: 0.904× [0.878, 0.931]</title><line x1="500.8" y1="239.0" x2="535.8" y2="239.0" stroke-width="2.2"/><line x1="500.8" y1="235.0" x2="500.8" y2="243.0" stroke-width="1.8"/><line x1="535.8" y1="235.0" x2="535.8" y2="243.0" stroke-width="1.8"/><circle cx="518.2" cy="239.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="243.0">0.904× [0.878, 0.931]</text>
+<text class="row-label" x="153" y="263.0" text-anchor="end">get100</text>
+<g class="ci-reg"><title>get100: 1.291× [1.264, 1.331]</title><line x1="718.2" y1="259.0" x2="749.0" y2="259.0" stroke-width="2.2"/><line x1="718.2" y1="255.0" x2="718.2" y2="263.0" stroke-width="1.8"/><line x1="749.0" y1="255.0" x2="749.0" y2="263.0" stroke-width="1.8"/><circle cx="730.8" cy="259.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="263.0">1.291× [1.264, 1.331]</text>
+<text class="row-label" x="153" y="283.0" text-anchor="end">get1000</text>
+<g class="ci-reg"><title>get1000: 1.362× [1.342, 1.382]</title><line x1="753.9" y1="279.0" x2="771.4" y2="279.0" stroke-width="2.2"/><line x1="753.9" y1="275.0" x2="753.9" y2="283.0" stroke-width="1.8"/><line x1="771.4" y1="275.0" x2="771.4" y2="283.0" stroke-width="1.8"/><circle cx="762.7" cy="279.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="283.0">1.362× [1.342, 1.382]</text>
+<text class="row-label" x="153" y="303.0" text-anchor="end">range100</text>
+<g class="ci-reg"><title>range100: 1.544× [1.476, 1.651]</title><line x1="810.7" y1="299.0" x2="877.5" y2="299.0" stroke-width="2.2"/><line x1="810.7" y1="295.0" x2="810.7" y2="303.0" stroke-width="1.8"/><line x1="877.5" y1="295.0" x2="877.5" y2="303.0" stroke-width="1.8"/><circle cx="837.5" cy="299.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="303.0">1.544× [1.476, 1.651]</text>
+<text class="row-label" x="153" y="323.0" text-anchor="end">set100</text>
+<g class="ci-reg"><title>set100: 2.142× [2.123, 2.160]</title><line x1="1027.5" y1="319.0" x2="1037.8" y2="319.0" stroke-width="2.2"/><line x1="1027.5" y1="315.0" x2="1027.5" y2="323.0" stroke-width="1.8"/><line x1="1037.8" y1="315.0" x2="1037.8" y2="323.0" stroke-width="1.8"/><circle cx="1032.8" cy="319.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="323.0">2.142× [2.123, 2.160]</text>
+<text class="row-label" x="153" y="343.0" text-anchor="end">batchset50</text>
+<text class="axis-text" x="175" y="343.0">N/A (omitted)</text>
+<text class="row-label" x="153" y="363.0" text-anchor="end">batchset50x1000</text>
+<text class="axis-text" x="175" y="363.0">N/A (omitted)</text>
+<line class="section-divider" x1="8" y1="372" x2="1312" y2="372"/>
+<text class="section-title" x="10" y="387">M1w32 (32 workers — 5/7 clean)</text>
+<text class="row-label" x="153" y="405.0" text-anchor="end">grv</text>
+<g class="ci-win"><title>grv: 0.765× [0.745, 0.779]</title><line x1="402.9" y1="401.0" x2="429.5" y2="401.0" stroke-width="2.2"/><line x1="402.9" y1="397.0" x2="402.9" y2="405.0" stroke-width="1.8"/><line x1="429.5" y1="397.0" x2="429.5" y2="405.0" stroke-width="1.8"/><circle cx="418.7" cy="401.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="405.0">0.765× [0.745, 0.779]</text>
+<text class="row-label" x="153" y="425.0" text-anchor="end">get100</text>
+<g class="ci-reg"><title>get100: 1.368× [1.334, 1.411]</title><line x1="750.3" y1="421.0" x2="783.8" y2="421.0" stroke-width="2.2"/><line x1="750.3" y1="417.0" x2="750.3" y2="425.0" stroke-width="1.8"/><line x1="783.8" y1="417.0" x2="783.8" y2="425.0" stroke-width="1.8"/><circle cx="765.4" cy="421.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="425.0">1.368× [1.334, 1.411]</text>
+<text class="row-label" x="153" y="445.0" text-anchor="end">get1000</text>
+<g class="ci-reg"><title>get1000: 1.537× [1.494, 1.575]</title><line x1="817.9" y1="441.0" x2="849.4" y2="441.0" stroke-width="2.2"/><line x1="817.9" y1="437.0" x2="817.9" y2="445.0" stroke-width="1.8"/><line x1="849.4" y1="437.0" x2="849.4" y2="445.0" stroke-width="1.8"/><circle cx="834.8" cy="441.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="445.0">1.537× [1.494, 1.575]</text>
+<text class="row-label" x="153" y="465.0" text-anchor="end">range100</text>
+<g class="ci-reg"><title>range100: 1.723× [1.616, 1.921]</title><line x1="864.7" y1="461.0" x2="967.9" y2="461.0" stroke-width="2.2"/><line x1="864.7" y1="457.0" x2="864.7" y2="465.0" stroke-width="1.8"/><line x1="967.9" y1="457.0" x2="967.9" y2="465.0" stroke-width="1.8"/><circle cx="903.0" cy="461.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="465.0">1.723× [1.616, 1.921]</text>
+<text class="row-label" x="153" y="485.0" text-anchor="end">set100</text>
+<g class="ci-reg"><title>set100: 2.162× [2.108, 2.216]</title><line x1="1023.3" y1="481.0" x2="1053.1" y2="481.0" stroke-width="2.2"/><line x1="1023.3" y1="477.0" x2="1023.3" y2="485.0" stroke-width="1.8"/><line x1="1053.1" y1="477.0" x2="1053.1" y2="485.0" stroke-width="1.8"/><circle cx="1038.4" cy="481.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="485.0">2.162× [2.108, 2.216]</text>
+<text class="row-label" x="153" y="505.0" text-anchor="end">batchset50</text>
+<text class="axis-text" x="175" y="505.0">N/A (omitted)</text>
+<text class="row-label" x="153" y="525.0" text-anchor="end">batchset50x1000</text>
+<text class="axis-text" x="175" y="525.0">N/A (omitted)</text>
+<line class="section-divider" x1="8" y1="534" x2="1312" y2="534"/>
+<text class="section-title" x="10" y="549">M1w64 (64 workers — 5/7 clean)</text>
+<text class="row-label" x="153" y="567.0" text-anchor="end">grv</text>
+<g class="ci-win"><title>grv: 0.736× [0.721, 0.752]</title><line x1="383.3" y1="563.0" x2="408.4" y2="563.0" stroke-width="2.2"/><line x1="383.3" y1="559.0" x2="383.3" y2="567.0" stroke-width="1.8"/><line x1="408.4" y1="559.0" x2="408.4" y2="567.0" stroke-width="1.8"/><circle cx="395.6" cy="563.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="567.0">0.736× [0.721, 0.752]</text>
+<text class="row-label" x="153" y="587.0" text-anchor="end">get100</text>
+<g class="ci-reg"><title>get100: 1.429× [1.385, 1.478]</title><line x1="772.7" y1="583.0" x2="811.5" y2="583.0" stroke-width="2.2"/><line x1="772.7" y1="579.0" x2="772.7" y2="587.0" stroke-width="1.8"/><line x1="811.5" y1="579.0" x2="811.5" y2="587.0" stroke-width="1.8"/><circle cx="791.4" cy="583.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="587.0">1.429× [1.385, 1.478]</text>
+<text class="row-label" x="153" y="607.0" text-anchor="end">get1000</text>
+<g class="ci-reg"><title>get1000: 1.608× [1.509, 1.705]</title><line x1="823.9" y1="603.0" x2="896.7" y2="603.0" stroke-width="2.2"/><line x1="823.9" y1="599.0" x2="823.9" y2="607.0" stroke-width="1.8"/><line x1="896.7" y1="599.0" x2="896.7" y2="607.0" stroke-width="1.8"/><circle cx="861.8" cy="603.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="607.0">1.608× [1.509, 1.705]</text>
+<text class="row-label" x="153" y="627.0" text-anchor="end">range100</text>
+<g class="ci-neutral"><title>range100: 1.069× [0.923, 1.180]</title><line x1="530.7" y1="623.0" x2="677.2" y2="623.0" stroke-width="2.2"/><line x1="530.7" y1="619.0" x2="530.7" y2="627.0" stroke-width="1.8"/><line x1="677.2" y1="619.0" x2="677.2" y2="627.0" stroke-width="1.8"/><circle cx="618.2" cy="623.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="627.0">1.069× [0.923, 1.180]</text>
+<text class="row-label" x="153" y="647.0" text-anchor="end">set100</text>
+<g class="ci-reg"><title>set100: 1.981× [1.935, 2.021]</title><line x1="972.2" y1="643.0" x2="998.1" y2="643.0" stroke-width="2.2"/><line x1="972.2" y1="639.0" x2="972.2" y2="647.0" stroke-width="1.8"/><line x1="998.1" y1="639.0" x2="998.1" y2="647.0" stroke-width="1.8"/><circle cx="986.2" cy="643.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="647.0">1.981× [1.935, 2.021]</text>
+<text class="row-label" x="153" y="667.0" text-anchor="end">batchset50</text>
+<text class="axis-text" x="175" y="667.0">N/A (omitted)</text>
+<text class="row-label" x="153" y="687.0" text-anchor="end">batchset50x1000</text>
+<text class="axis-text" x="175" y="687.0">N/A (omitted)</text>
 </svg>
 <div class="bench-legend"><span><i class="bench-swatch" style="background:#0d9488"></i> 95% CI entirely &lt; 1.000 (faster / lower)</span><span><i class="bench-swatch" style="background:#64748b"></i> 95% CI overlaps 1.000 (unresolved)</span><span><i class="bench-swatch" style="background:#d97706"></i> 95% CI entirely &gt; 1.000 (slower / higher)</span></div>
 </figure>
 
 <figure class="bench-figure">
 <figcaption><strong>Figure M1.4: Absolute Mean &amp; p99 Latency at 1 Worker (M1w1) and 64 Workers (M1w64)</strong> — Medians of 6 run-level statistics in µs/transaction (solid bar = mean, whisker = p99).</figcaption>
-<svg class="bench-svg" viewBox="0 0 860 468" role="img" aria-label="Figure M1.4: Absolute Mean &amp; p99 Latency at 1 Worker (M1w1) and 64 Workers (M1w64)">
-<line class="grid-line" x1="195.0" y1="24" x2="195.0" y2="442"/>
-<text class="axis-text" x="195.0" y="457" text-anchor="middle">0 µs</text>
-<line class="grid-line" x1="275.0" y1="24" x2="275.0" y2="442"/>
-<text class="axis-text" x="275.0" y="457" text-anchor="middle">2000 µs</text>
-<line class="grid-line" x1="355.0" y1="24" x2="355.0" y2="442"/>
-<text class="axis-text" x="355.0" y="457" text-anchor="middle">4000 µs</text>
-<line class="grid-line" x1="435.0" y1="24" x2="435.0" y2="442"/>
-<text class="axis-text" x="435.0" y="457" text-anchor="middle">6000 µs</text>
-<line class="grid-line" x1="515.0" y1="24" x2="515.0" y2="442"/>
-<text class="axis-text" x="515.0" y="457" text-anchor="middle">8000 µs</text>
-<line class="grid-line" x1="595.0" y1="24" x2="595.0" y2="442"/>
-<text class="axis-text" x="595.0" y="457" text-anchor="middle">10000 µs</text>
-<line class="grid-line" x1="675.0" y1="24" x2="675.0" y2="442"/>
-<text class="axis-text" x="675.0" y="457" text-anchor="middle">12000 µs</text>
-<text class="row-label" x="183" y="48.0" text-anchor="end">M1w1 grv</text>
-<g class="ci-win"><title>M1w1 grv Pure-Go: mean 967.1 µs, p99 1477.4 µs</title><rect class="bar-go" x="195" y="34" width="38.7" height="10" rx="2"/><line x1="233.7" y1="39" x2="254.1" y2="39" stroke-width="1.6"/><line x1="254.1" y1="35" x2="254.1" y2="43" stroke-width="1.8"/></g>
-<g class="ci-reg"><title>M1w1 grv CGo: mean 1673.5 µs, p99 3133.0 µs</title><rect class="bar-cgo" x="195" y="46" width="66.9" height="10" rx="2"/><line x1="261.9" y1="51" x2="320.3" y2="51" stroke-width="1.6"/><line x1="320.3" y1="47" x2="320.3" y2="55" stroke-width="1.8"/></g>
-<text class="val-text" x="685" y="43.0">Go 967 / p99 1477 µs</text><text class="axis-text" x="685" y="55.0">CGo 1674 / p99 3133 µs</text>
-<text class="row-label" x="183" y="82.0" text-anchor="end">M1w1 get100</text>
-<g class="ci-win"><title>M1w1 get100 Pure-Go: mean 1557.2 µs, p99 3588.2 µs</title><rect class="bar-go" x="195" y="68" width="62.3" height="10" rx="2"/><line x1="257.3" y1="73" x2="338.5" y2="73" stroke-width="1.6"/><line x1="338.5" y1="69" x2="338.5" y2="77" stroke-width="1.8"/></g>
-<g class="ci-reg"><title>M1w1 get100 CGo: mean 2210.4 µs, p99 3967.9 µs</title><rect class="bar-cgo" x="195" y="80" width="88.4" height="10" rx="2"/><line x1="283.4" y1="85" x2="353.7" y2="85" stroke-width="1.6"/><line x1="353.7" y1="81" x2="353.7" y2="89" stroke-width="1.8"/></g>
-<text class="val-text" x="685" y="77.0">Go 1557 / p99 3588 µs</text><text class="axis-text" x="685" y="89.0">CGo 2210 / p99 3968 µs</text>
-<text class="row-label" x="183" y="116.0" text-anchor="end">M1w1 get1000</text>
-<g class="ci-win"><title>M1w1 get1000 Pure-Go: mean 1494.3 µs, p99 2642.5 µs</title><rect class="bar-go" x="195" y="102" width="59.8" height="10" rx="2"/><line x1="254.8" y1="107" x2="300.7" y2="107" stroke-width="1.6"/><line x1="300.7" y1="103" x2="300.7" y2="111" stroke-width="1.8"/></g>
-<g class="ci-reg"><title>M1w1 get1000 CGo: mean 2223.1 µs, p99 3861.8 µs</title><rect class="bar-cgo" x="195" y="114" width="88.9" height="10" rx="2"/><line x1="283.9" y1="119" x2="349.5" y2="119" stroke-width="1.6"/><line x1="349.5" y1="115" x2="349.5" y2="123" stroke-width="1.8"/></g>
-<text class="val-text" x="685" y="111.0">Go 1494 / p99 2642 µs</text><text class="axis-text" x="685" y="123.0">CGo 2223 / p99 3862 µs</text>
-<text class="row-label" x="183" y="150.0" text-anchor="end">M1w1 range100</text>
-<g class="ci-win"><title>M1w1 range100 Pure-Go: mean 1580.8 µs, p99 3000.0 µs</title><rect class="bar-go" x="195" y="136" width="63.2" height="10" rx="2"/><line x1="258.2" y1="141" x2="315.0" y2="141" stroke-width="1.6"/><line x1="315.0" y1="137" x2="315.0" y2="145" stroke-width="1.8"/></g>
-<g class="ci-reg"><title>M1w1 range100 CGo: mean 2408.4 µs, p99 4244.1 µs</title><rect class="bar-cgo" x="195" y="148" width="96.3" height="10" rx="2"/><line x1="291.3" y1="153" x2="364.8" y2="153" stroke-width="1.6"/><line x1="364.8" y1="149" x2="364.8" y2="157" stroke-width="1.8"/></g>
-<text class="val-text" x="685" y="145.0">Go 1581 / p99 3000 µs</text><text class="axis-text" x="685" y="157.0">CGo 2408 / p99 4244 µs</text>
-<text class="row-label" x="183" y="184.0" text-anchor="end">M1w1 set100</text>
-<g class="ci-win"><title>M1w1 set100 Pure-Go: mean 4234.5 µs, p99 6418.8 µs</title><rect class="bar-go" x="195" y="170" width="169.4" height="10" rx="2"/><line x1="364.4" y1="175" x2="451.8" y2="175" stroke-width="1.6"/><line x1="451.8" y1="171" x2="451.8" y2="179" stroke-width="1.8"/></g>
-<g class="ci-reg"><title>M1w1 set100 CGo: mean 4786.2 µs, p99 7991.7 µs</title><rect class="bar-cgo" x="195" y="182" width="191.4" height="10" rx="2"/><line x1="386.4" y1="187" x2="514.7" y2="187" stroke-width="1.6"/><line x1="514.7" y1="183" x2="514.7" y2="191" stroke-width="1.8"/></g>
-<text class="val-text" x="685" y="179.0">Go 4234 / p99 6419 µs</text><text class="axis-text" x="685" y="191.0">CGo 4786 / p99 7992 µs</text>
-<text class="row-label" x="183" y="218.0" text-anchor="end">M1w1 batchset50</text>
-<g class="ci-win"><title>M1w1 batchset50 Pure-Go: mean 5039.9 µs, p99 7509.2 µs</title><rect class="bar-go" x="195" y="204" width="201.6" height="10" rx="2"/><line x1="396.6" y1="209" x2="495.4" y2="209" stroke-width="1.6"/><line x1="495.4" y1="205" x2="495.4" y2="213" stroke-width="1.8"/></g>
-<g class="ci-reg"><title>M1w1 batchset50 CGo: mean 5481.1 µs, p99 8253.0 µs</title><rect class="bar-cgo" x="195" y="216" width="219.2" height="10" rx="2"/><line x1="414.2" y1="221" x2="525.1" y2="221" stroke-width="1.6"/><line x1="525.1" y1="217" x2="525.1" y2="225" stroke-width="1.8"/></g>
-<text class="val-text" x="685" y="213.0">Go 5040 / p99 7509 µs</text><text class="axis-text" x="685" y="225.0">CGo 5481 / p99 8253 µs</text>
-<text class="row-label" x="183" y="252.0" text-anchor="end">M1w1 batchset50x1000</text>
-<g class="ci-win"><title>M1w1 batchset50x1000 Pure-Go: mean 6241.4 µs, p99 9383.0 µs</title><rect class="bar-go" x="195" y="238" width="249.7" height="10" rx="2"/><line x1="444.7" y1="243" x2="570.3" y2="243" stroke-width="1.6"/><line x1="570.3" y1="239" x2="570.3" y2="247" stroke-width="1.8"/></g>
-<g class="ci-reg"><title>M1w1 batchset50x1000 CGo: mean 6577.5 µs, p99 10055.1 µs</title><rect class="bar-cgo" x="195" y="250" width="263.1" height="10" rx="2"/><line x1="458.1" y1="255" x2="597.2" y2="255" stroke-width="1.6"/><line x1="597.2" y1="251" x2="597.2" y2="259" stroke-width="1.8"/></g>
-<text class="val-text" x="685" y="247.0">Go 6241 / p99 9383 µs</text><text class="axis-text" x="685" y="259.0">CGo 6578 / p99 10055 µs</text>
-<text class="row-label" x="183" y="286.0" text-anchor="end">M1w64 grv</text>
-<g class="ci-win"><title>M1w64 grv Pure-Go: mean 2017.9 µs, p99 4237.9 µs</title><rect class="bar-go" x="195" y="272" width="80.7" height="10" rx="2"/><line x1="275.7" y1="277" x2="364.5" y2="277" stroke-width="1.6"/><line x1="364.5" y1="273" x2="364.5" y2="281" stroke-width="1.8"/></g>
-<g class="ci-reg"><title>M1w64 grv CGo: mean 1931.8 µs, p99 4015.5 µs</title><rect class="bar-cgo" x="195" y="284" width="77.3" height="10" rx="2"/><line x1="272.3" y1="289" x2="355.6" y2="289" stroke-width="1.6"/><line x1="355.6" y1="285" x2="355.6" y2="293" stroke-width="1.8"/></g>
-<text class="val-text" x="685" y="281.0">Go 2018 / p99 4238 µs</text><text class="axis-text" x="685" y="293.0">CGo 1932 / p99 4016 µs</text>
-<text class="row-label" x="183" y="320.0" text-anchor="end">M1w64 get100</text>
-<g class="ci-win"><title>M1w64 get100 Pure-Go: mean 2229.2 µs, p99 4538.2 µs</title><rect class="bar-go" x="195" y="306" width="89.2" height="10" rx="2"/><line x1="284.2" y1="311" x2="376.5" y2="311" stroke-width="1.6"/><line x1="376.5" y1="307" x2="376.5" y2="315" stroke-width="1.8"/></g>
-<g class="ci-reg"><title>M1w64 get100 CGo: mean 3271.6 µs, p99 6740.7 µs</title><rect class="bar-cgo" x="195" y="318" width="130.9" height="10" rx="2"/><line x1="325.9" y1="323" x2="464.6" y2="323" stroke-width="1.6"/><line x1="464.6" y1="319" x2="464.6" y2="327" stroke-width="1.8"/></g>
-<text class="val-text" x="685" y="315.0">Go 2229 / p99 4538 µs</text><text class="axis-text" x="685" y="327.0">CGo 3272 / p99 6741 µs</text>
-<text class="row-label" x="183" y="354.0" text-anchor="end">M1w64 get1000</text>
-<g class="ci-win"><title>M1w64 get1000 Pure-Go: mean 2409.9 µs, p99 4544.4 µs</title><rect class="bar-go" x="195" y="340" width="96.4" height="10" rx="2"/><line x1="291.4" y1="345" x2="376.8" y2="345" stroke-width="1.6"/><line x1="376.8" y1="341" x2="376.8" y2="349" stroke-width="1.8"/></g>
-<g class="ci-reg"><title>M1w64 get1000 CGo: mean 3758.9 µs, p99 11686.4 µs</title><rect class="bar-cgo" x="195" y="352" width="150.4" height="10" rx="2"/><line x1="345.4" y1="357" x2="662.5" y2="357" stroke-width="1.6"/><line x1="662.5" y1="353" x2="662.5" y2="361" stroke-width="1.8"/></g>
-<text class="val-text" x="685" y="349.0">Go 2410 / p99 4544 µs</text><text class="axis-text" x="685" y="361.0">CGo 3759 / p99 11686 µs</text>
-<text class="row-label" x="183" y="388.0" text-anchor="end">M1w64 range100</text>
-<g class="ci-win"><title>M1w64 range100 Pure-Go: mean 3033.1 µs, p99 7695.6 µs</title><rect class="bar-go" x="195" y="374" width="121.3" height="10" rx="2"/><line x1="316.3" y1="379" x2="502.8" y2="379" stroke-width="1.6"/><line x1="502.8" y1="375" x2="502.8" y2="383" stroke-width="1.8"/></g>
-<g class="ci-reg"><title>M1w64 range100 CGo: mean 4659.5 µs, p99 8704.0 µs</title><rect class="bar-cgo" x="195" y="386" width="186.4" height="10" rx="2"/><line x1="381.4" y1="391" x2="543.2" y2="391" stroke-width="1.6"/><line x1="543.2" y1="387" x2="543.2" y2="395" stroke-width="1.8"/></g>
-<text class="val-text" x="685" y="383.0">Go 3033 / p99 7696 µs</text><text class="axis-text" x="685" y="395.0">CGo 4660 / p99 8704 µs</text>
-<text class="row-label" x="183" y="422.0" text-anchor="end">M1w64 set100</text>
-<g class="ci-win"><title>M1w64 set100 Pure-Go: mean 5918.8 µs, p99 9591.9 µs</title><rect class="bar-go" x="195" y="408" width="236.8" height="10" rx="2"/><line x1="431.8" y1="413" x2="578.7" y2="413" stroke-width="1.6"/><line x1="578.7" y1="409" x2="578.7" y2="417" stroke-width="1.8"/></g>
-<g class="ci-reg"><title>M1w64 set100 CGo: mean 6659.4 µs, p99 10868.1 µs</title><rect class="bar-cgo" x="195" y="420" width="266.4" height="10" rx="2"/><line x1="461.4" y1="425" x2="629.7" y2="425" stroke-width="1.6"/><line x1="629.7" y1="421" x2="629.7" y2="429" stroke-width="1.8"/></g>
-<text class="val-text" x="685" y="417.0">Go 5919 / p99 9592 µs</text><text class="axis-text" x="685" y="429.0">CGo 6659 / p99 10868 µs</text>
+<svg class="bench-svg" viewBox="0 0 1347 392" role="img" aria-label="Figure M1.4: Absolute Mean &amp; p99 Latency at 1 Worker (M1w1) and 64 Workers (M1w64)">
+<line class="grid-line" x1="182.0" y1="22" x2="182.0" y2="368"/>
+<text class="axis-text" x="182.0" y="383" text-anchor="middle">0 µs</text>
+<line class="grid-line" x1="342.0" y1="22" x2="342.0" y2="368"/>
+<text class="axis-text" x="342.0" y="383" text-anchor="middle">2000 µs</text>
+<line class="grid-line" x1="502.0" y1="22" x2="502.0" y2="368"/>
+<text class="axis-text" x="502.0" y="383" text-anchor="middle">4000 µs</text>
+<line class="grid-line" x1="662.0" y1="22" x2="662.0" y2="368"/>
+<text class="axis-text" x="662.0" y="383" text-anchor="middle">6000 µs</text>
+<line class="grid-line" x1="822.0" y1="22" x2="822.0" y2="368"/>
+<text class="axis-text" x="822.0" y="383" text-anchor="middle">8000 µs</text>
+<line class="grid-line" x1="982.0" y1="22" x2="982.0" y2="368"/>
+<text class="axis-text" x="982.0" y="383" text-anchor="middle">10000 µs</text>
+<line class="grid-line" x1="1142.0" y1="22" x2="1142.0" y2="368"/>
+<text class="axis-text" x="1142.0" y="383" text-anchor="middle">12000 µs</text>
+<text class="row-label" x="170" y="46.0" text-anchor="end">M1w1 grv</text>
+<g class="ci-win"><title>M1w1 grv Pure-Go: mean 967.1 µs, p99 1477.4 µs</title><rect class="bar-go" x="182" y="32" width="77.4" height="10" rx="2"/><line x1="259.4" y1="37" x2="300.2" y2="37" stroke-width="1.6"/><line x1="300.2" y1="33" x2="300.2" y2="41" stroke-width="1.8"/></g>
+<g class="ci-reg"><title>M1w1 grv CGo: mean 1673.5 µs, p99 3133.0 µs</title><rect class="bar-cgo" x="182" y="44" width="133.9" height="10" rx="2"/><line x1="315.9" y1="49" x2="432.6" y2="49" stroke-width="1.6"/><line x1="432.6" y1="45" x2="432.6" y2="53" stroke-width="1.8"/></g>
+<text class="val-text" x="1152" y="41.0">Go 967 / p99 1477 µs</text><text class="axis-text" x="1152" y="53.0">CGo 1674 / p99 3133 µs</text>
+<text class="row-label" x="170" y="74.0" text-anchor="end">M1w1 get100</text>
+<g class="ci-win"><title>M1w1 get100 Pure-Go: mean 1557.2 µs, p99 3588.2 µs</title><rect class="bar-go" x="182" y="60" width="124.6" height="10" rx="2"/><line x1="306.6" y1="65" x2="469.1" y2="65" stroke-width="1.6"/><line x1="469.1" y1="61" x2="469.1" y2="69" stroke-width="1.8"/></g>
+<g class="ci-reg"><title>M1w1 get100 CGo: mean 2210.4 µs, p99 3967.9 µs</title><rect class="bar-cgo" x="182" y="72" width="176.8" height="10" rx="2"/><line x1="358.8" y1="77" x2="499.4" y2="77" stroke-width="1.6"/><line x1="499.4" y1="73" x2="499.4" y2="81" stroke-width="1.8"/></g>
+<text class="val-text" x="1152" y="69.0">Go 1557 / p99 3588 µs</text><text class="axis-text" x="1152" y="81.0">CGo 2210 / p99 3968 µs</text>
+<text class="row-label" x="170" y="102.0" text-anchor="end">M1w1 get1000</text>
+<g class="ci-win"><title>M1w1 get1000 Pure-Go: mean 1494.3 µs, p99 2642.5 µs</title><rect class="bar-go" x="182" y="88" width="119.5" height="10" rx="2"/><line x1="301.5" y1="93" x2="393.4" y2="93" stroke-width="1.6"/><line x1="393.4" y1="89" x2="393.4" y2="97" stroke-width="1.8"/></g>
+<g class="ci-reg"><title>M1w1 get1000 CGo: mean 2223.1 µs, p99 3861.8 µs</title><rect class="bar-cgo" x="182" y="100" width="177.8" height="10" rx="2"/><line x1="359.8" y1="105" x2="490.9" y2="105" stroke-width="1.6"/><line x1="490.9" y1="101" x2="490.9" y2="109" stroke-width="1.8"/></g>
+<text class="val-text" x="1152" y="97.0">Go 1494 / p99 2642 µs</text><text class="axis-text" x="1152" y="109.0">CGo 2223 / p99 3862 µs</text>
+<text class="row-label" x="170" y="130.0" text-anchor="end">M1w1 range100</text>
+<g class="ci-win"><title>M1w1 range100 Pure-Go: mean 1580.8 µs, p99 3000.0 µs</title><rect class="bar-go" x="182" y="116" width="126.5" height="10" rx="2"/><line x1="308.5" y1="121" x2="422.0" y2="121" stroke-width="1.6"/><line x1="422.0" y1="117" x2="422.0" y2="125" stroke-width="1.8"/></g>
+<g class="ci-reg"><title>M1w1 range100 CGo: mean 2408.4 µs, p99 4244.1 µs</title><rect class="bar-cgo" x="182" y="128" width="192.7" height="10" rx="2"/><line x1="374.7" y1="133" x2="521.5" y2="133" stroke-width="1.6"/><line x1="521.5" y1="129" x2="521.5" y2="137" stroke-width="1.8"/></g>
+<text class="val-text" x="1152" y="125.0">Go 1581 / p99 3000 µs</text><text class="axis-text" x="1152" y="137.0">CGo 2408 / p99 4244 µs</text>
+<text class="row-label" x="170" y="158.0" text-anchor="end">M1w1 set100</text>
+<g class="ci-win"><title>M1w1 set100 Pure-Go: mean 4234.5 µs, p99 6418.8 µs</title><rect class="bar-go" x="182" y="144" width="338.8" height="10" rx="2"/><line x1="520.8" y1="149" x2="695.5" y2="149" stroke-width="1.6"/><line x1="695.5" y1="145" x2="695.5" y2="153" stroke-width="1.8"/></g>
+<g class="ci-reg"><title>M1w1 set100 CGo: mean 4786.2 µs, p99 7991.7 µs</title><rect class="bar-cgo" x="182" y="156" width="382.9" height="10" rx="2"/><line x1="564.9" y1="161" x2="821.3" y2="161" stroke-width="1.6"/><line x1="821.3" y1="157" x2="821.3" y2="165" stroke-width="1.8"/></g>
+<text class="val-text" x="1152" y="153.0">Go 4234 / p99 6419 µs</text><text class="axis-text" x="1152" y="165.0">CGo 4786 / p99 7992 µs</text>
+<text class="row-label" x="170" y="186.0" text-anchor="end">M1w1 batchset50</text>
+<g class="ci-win"><title>M1w1 batchset50 Pure-Go: mean 5039.9 µs, p99 7509.2 µs</title><rect class="bar-go" x="182" y="172" width="403.2" height="10" rx="2"/><line x1="585.2" y1="177" x2="782.7" y2="177" stroke-width="1.6"/><line x1="782.7" y1="173" x2="782.7" y2="181" stroke-width="1.8"/></g>
+<g class="ci-reg"><title>M1w1 batchset50 CGo: mean 5481.1 µs, p99 8253.0 µs</title><rect class="bar-cgo" x="182" y="184" width="438.5" height="10" rx="2"/><line x1="620.5" y1="189" x2="842.2" y2="189" stroke-width="1.6"/><line x1="842.2" y1="185" x2="842.2" y2="193" stroke-width="1.8"/></g>
+<text class="val-text" x="1152" y="181.0">Go 5040 / p99 7509 µs</text><text class="axis-text" x="1152" y="193.0">CGo 5481 / p99 8253 µs</text>
+<text class="row-label" x="170" y="214.0" text-anchor="end">M1w1 batchset50x1000</text>
+<g class="ci-win"><title>M1w1 batchset50x1000 Pure-Go: mean 6241.4 µs, p99 9383.0 µs</title><rect class="bar-go" x="182" y="200" width="499.3" height="10" rx="2"/><line x1="681.3" y1="205" x2="932.6" y2="205" stroke-width="1.6"/><line x1="932.6" y1="201" x2="932.6" y2="209" stroke-width="1.8"/></g>
+<g class="ci-reg"><title>M1w1 batchset50x1000 CGo: mean 6577.5 µs, p99 10055.1 µs</title><rect class="bar-cgo" x="182" y="212" width="526.2" height="10" rx="2"/><line x1="708.2" y1="217" x2="986.4" y2="217" stroke-width="1.6"/><line x1="986.4" y1="213" x2="986.4" y2="221" stroke-width="1.8"/></g>
+<text class="val-text" x="1152" y="209.0">Go 6241 / p99 9383 µs</text><text class="axis-text" x="1152" y="221.0">CGo 6578 / p99 10055 µs</text>
+<text class="row-label" x="170" y="242.0" text-anchor="end">M1w64 grv</text>
+<g class="ci-win"><title>M1w64 grv Pure-Go: mean 2017.9 µs, p99 4237.9 µs</title><rect class="bar-go" x="182" y="228" width="161.4" height="10" rx="2"/><line x1="343.4" y1="233" x2="521.0" y2="233" stroke-width="1.6"/><line x1="521.0" y1="229" x2="521.0" y2="237" stroke-width="1.8"/></g>
+<g class="ci-reg"><title>M1w64 grv CGo: mean 1931.8 µs, p99 4015.5 µs</title><rect class="bar-cgo" x="182" y="240" width="154.5" height="10" rx="2"/><line x1="336.5" y1="245" x2="503.2" y2="245" stroke-width="1.6"/><line x1="503.2" y1="241" x2="503.2" y2="249" stroke-width="1.8"/></g>
+<text class="val-text" x="1152" y="237.0">Go 2018 / p99 4238 µs</text><text class="axis-text" x="1152" y="249.0">CGo 1932 / p99 4016 µs</text>
+<text class="row-label" x="170" y="270.0" text-anchor="end">M1w64 get100</text>
+<g class="ci-win"><title>M1w64 get100 Pure-Go: mean 2229.2 µs, p99 4538.2 µs</title><rect class="bar-go" x="182" y="256" width="178.3" height="10" rx="2"/><line x1="360.3" y1="261" x2="545.1" y2="261" stroke-width="1.6"/><line x1="545.1" y1="257" x2="545.1" y2="265" stroke-width="1.8"/></g>
+<g class="ci-reg"><title>M1w64 get100 CGo: mean 3271.6 µs, p99 6740.7 µs</title><rect class="bar-cgo" x="182" y="268" width="261.7" height="10" rx="2"/><line x1="443.7" y1="273" x2="721.3" y2="273" stroke-width="1.6"/><line x1="721.3" y1="269" x2="721.3" y2="277" stroke-width="1.8"/></g>
+<text class="val-text" x="1152" y="265.0">Go 2229 / p99 4538 µs</text><text class="axis-text" x="1152" y="277.0">CGo 3272 / p99 6741 µs</text>
+<text class="row-label" x="170" y="298.0" text-anchor="end">M1w64 get1000</text>
+<g class="ci-win"><title>M1w64 get1000 Pure-Go: mean 2409.9 µs, p99 4544.4 µs</title><rect class="bar-go" x="182" y="284" width="192.8" height="10" rx="2"/><line x1="374.8" y1="289" x2="545.6" y2="289" stroke-width="1.6"/><line x1="545.6" y1="285" x2="545.6" y2="293" stroke-width="1.8"/></g>
+<g class="ci-reg"><title>M1w64 get1000 CGo: mean 3758.9 µs, p99 11686.4 µs</title><rect class="bar-cgo" x="182" y="296" width="300.7" height="10" rx="2"/><line x1="482.7" y1="301" x2="1116.9" y2="301" stroke-width="1.6"/><line x1="1116.9" y1="297" x2="1116.9" y2="305" stroke-width="1.8"/></g>
+<text class="val-text" x="1152" y="293.0">Go 2410 / p99 4544 µs</text><text class="axis-text" x="1152" y="305.0">CGo 3759 / p99 11686 µs</text>
+<text class="row-label" x="170" y="326.0" text-anchor="end">M1w64 range100</text>
+<g class="ci-win"><title>M1w64 range100 Pure-Go: mean 3033.1 µs, p99 7695.6 µs</title><rect class="bar-go" x="182" y="312" width="242.6" height="10" rx="2"/><line x1="424.6" y1="317" x2="797.6" y2="317" stroke-width="1.6"/><line x1="797.6" y1="313" x2="797.6" y2="321" stroke-width="1.8"/></g>
+<g class="ci-reg"><title>M1w64 range100 CGo: mean 4659.5 µs, p99 8704.0 µs</title><rect class="bar-cgo" x="182" y="324" width="372.8" height="10" rx="2"/><line x1="554.8" y1="329" x2="878.3" y2="329" stroke-width="1.6"/><line x1="878.3" y1="325" x2="878.3" y2="333" stroke-width="1.8"/></g>
+<text class="val-text" x="1152" y="321.0">Go 3033 / p99 7696 µs</text><text class="axis-text" x="1152" y="333.0">CGo 4660 / p99 8704 µs</text>
+<text class="row-label" x="170" y="354.0" text-anchor="end">M1w64 set100</text>
+<g class="ci-win"><title>M1w64 set100 Pure-Go: mean 5918.8 µs, p99 9591.9 µs</title><rect class="bar-go" x="182" y="340" width="473.5" height="10" rx="2"/><line x1="655.5" y1="345" x2="949.4" y2="345" stroke-width="1.6"/><line x1="949.4" y1="341" x2="949.4" y2="349" stroke-width="1.8"/></g>
+<g class="ci-reg"><title>M1w64 set100 CGo: mean 6659.4 µs, p99 10868.1 µs</title><rect class="bar-cgo" x="182" y="352" width="532.8" height="10" rx="2"/><line x1="714.8" y1="357" x2="1051.4" y2="357" stroke-width="1.6"/><line x1="1051.4" y1="353" x2="1051.4" y2="361" stroke-width="1.8"/></g>
+<text class="val-text" x="1152" y="349.0">Go 5919 / p99 9592 µs</text><text class="axis-text" x="1152" y="361.0">CGo 6659 / p99 10868 µs</text>
 </svg>
 <div class="bench-legend"><span><i class="bench-swatch" style="background:#0d9488"></i> Solid bar = Pure-Go mean latency; whisker = Pure-Go p99</span><span><i class="bench-swatch" style="background:#d97706"></i> Solid bar = CGo (libfdb_c 7.3.77) mean latency; whisker = CGo p99</span></div>
-</figure>: Final pure-Go / CGo
+</figure>
 
 Geometric mean of six paired block ratios, with nominal 95% block-bootstrap
 intervals (20,000 resamples, preregistered seed 492817; initial exploratory
