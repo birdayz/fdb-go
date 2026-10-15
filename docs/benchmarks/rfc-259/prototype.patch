@@ -1,0 +1,535 @@
+diff --git a/pkg/fdbgo/client/BUILD.bazel b/pkg/fdbgo/client/BUILD.bazel
+index 5c472b157..b71bc153e 100644
+--- a/pkg/fdbgo/client/BUILD.bazel
++++ b/pkg/fdbgo/client/BUILD.bazel
+@@ -4,6 +4,7 @@ go_library(
+     name = "client",
+     srcs = [
+         "clientmetrics.go",
++        "exptrace.go",
+         "clusterfile.go",
+         "clusterfile_default_unix.go",
+         "clusterfile_default_windows.go",
+diff --git a/pkg/fdbgo/client/commitpath.go b/pkg/fdbgo/client/commitpath.go
+index 0a9dadcaf..134c4f509 100644
+--- a/pkg/fdbgo/client/commitpath.go
++++ b/pkg/fdbgo/client/commitpath.go
+@@ -107,6 +107,7 @@ func (input *commitInput) commitNative(ctx context.Context) (result commitOutcom
+ 	}
+ 	// Native owner drop cancels only this wait; queued bytes own their storage
+ 	// independently and may still reach the server after the actor is gone.
++	expTrace('C', 1)
+ 	_, sendErr := conn.SendFrameContext(ctx, proxy.Token, body)
+ 	marshalBufPool.Put(poolBuf)
+ 	if sendErr != nil {
+@@ -120,6 +121,7 @@ func (input *commitInput) commitNative(ctx context.Context) (result commitOutcom
+ 
+ 	// Wait for reply or proxy-change (commit_unknown_result either way).
+ 	resp, err := waitReplyOrProxiesChanged(replyCh, ctx, proxiesChanged)
++	expTrace('c', 1)
+ 	if err != nil {
+ 		replyHandle.Cancel()
+ 		return result, input.unknownResult(ctx)
+diff --git a/pkg/fdbgo/client/database.go b/pkg/fdbgo/client/database.go
+index ac91a2cfe..bdb0d92c2 100644
+--- a/pkg/fdbgo/client/database.go
++++ b/pkg/fdbgo/client/database.go
+@@ -1163,6 +1163,7 @@ func (db *database) registerBackgroundGoroutine() bool {
+ // Close shuts down the database connection. Idempotent.
+ // Cancels background goroutines, waits for them to exit, closes all connections.
+ func (d *Database) Close() error {
++	expTraceDump()
+ 	d.db.closeOnce.Do(func() {
+ 		// Set closed BEFORE cancel()/Wait() so a concurrent GRV-cache opt-in can't start the background
+ 		// refresher (register a new wg slot) after we've begun waiting. The refresher launch checks
+diff --git a/pkg/fdbgo/client/exptrace.go b/pkg/fdbgo/client/exptrace.go
+new file mode 100644
+index 000000000..d25f9032e
+--- /dev/null
++++ b/pkg/fdbgo/client/exptrace.go
+@@ -0,0 +1,67 @@
++package client
++
++// EXPERIMENT ONLY (not for commit): FDBGO_EXP_TRACE=<path> records GRV and
++// commit send/reply instants and dumps them on Database.Close.
++
++import (
++	"fmt"
++	"os"
++	"sync"
++	"sync/atomic"
++	"time"
++
++	"fdb.dev/pkg/fdbgo/transport"
++)
++
++func init() {
++	if expTracePath != "" {
++		transport.ExpTrace = expTrace
++	}
++	if os.Getenv("FDBGO_EXP_BUSYWRITE") == "1" {
++		transport.ExpBusyFn = func() bool { return expOutstanding.Load() > 1 }
++	}
++}
++
++type expEvent struct {
++	t    int64
++	kind byte
++	n    int32
++}
++
++var (
++	expTracePath  = os.Getenv("FDBGO_EXP_TRACE")
++	expTraceMu    sync.Mutex
++	expTraceStart = time.Now()
++	expTraceBuf   []expEvent
++)
++
++func expTrace(kind byte, n int) {
++	if expTracePath == "" {
++		return
++	}
++	t := time.Since(expTraceStart).Nanoseconds()
++	expTraceMu.Lock()
++	if len(expTraceBuf) < 4_000_000 {
++		expTraceBuf = append(expTraceBuf, expEvent{t, kind, int32(n)})
++	}
++	expTraceMu.Unlock()
++}
++
++func expTraceDump() {
++	if expTracePath == "" {
++		return
++	}
++	expTraceMu.Lock()
++	defer expTraceMu.Unlock()
++	f, err := os.Create(expTracePath)
++	if err != nil {
++		return
++	}
++	defer f.Close()
++	for _, e := range expTraceBuf {
++		fmt.Fprintf(f, "%d %c %d\n", e.t, e.kind, e.n)
++	}
++}
++
++// expOutstanding counts callers blocked on a reply (EXPERIMENT).
++var expOutstanding atomic.Int64
+diff --git a/pkg/fdbgo/client/grv.go b/pkg/fdbgo/client/grv.go
+index e6f0aca16..ffebc8adb 100644
+--- a/pkg/fdbgo/client/grv.go
++++ b/pkg/fdbgo/client/grv.go
+@@ -4,6 +4,7 @@ import (
+ 	"context"
+ 	"fmt"
+ 	"math"
++	"os"
+ 	"runtime/debug"
+ 	"sort"
+ 	"sync"
+@@ -692,15 +693,17 @@ func grvBatcherIndex(flags uint32) int {
+ //
+ // Methods receive *database as argument — no stored back-pointer.
+ type grvBatcher struct {
+-	mu         sync.Mutex
+-	pending    []grvRequest
+-	inFlight   int
+-	batchTime  time.Duration
+-	timer      *time.Timer
+-	timerSeq   uint64 // rejects callbacks from an already dispatched batch
+-	priority   uint32 // fixed priority bits for this batcher
+-	extraFlags uint32 // immutable option bits; variants never share a queue
+-	variants   map[uint32]*grvBatcher
++	mu           sync.Mutex
++	pending      []grvRequest
++	inFlight     int
++	batchTime    time.Duration
++	timer        *time.Timer
++	timerSeq     uint64    // rejects callbacks from an already dispatched batch
++	lastDispatch time.Time // EXPERIMENT
++	expLastBatch int       // EXPERIMENT
++	priority     uint32    // fixed priority bits for this batcher
++	extraFlags   uint32    // immutable option bits; variants never share a queue
++	variants     map[uint32]*grvBatcher
+ 
+ 	refreshOnce sync.Once
+ 	// refresherStarted is a deterministic test seam (RFC-104): true once the
+@@ -717,7 +720,8 @@ type grvBatcher struct {
+ }
+ 
+ type grvRequest struct {
+-	reply chan grvResult
++	reply   chan grvResult
++	expBusy bool
+ 	// spanContext is the requesting transaction's span. flush() folds the batch's
+ 	// span contexts into the readVersionBatcher span (batchGRVSpanContext) to stamp
+ 	// the GetReadVersionRequest — 1:1 with C++ addLink (NativeAPI.actor.cpp:7345).
+@@ -839,7 +843,11 @@ func (b *grvBatcher) getReadVersion(db *database, ctx context.Context, flags uin
+ 	// Slow path: batch request to proxy.
+ 	req := grvRequest{reply: make(chan grvResult, 1), spanContext: span, tags: tags}
+ 
++	expTrace('A', 1)
+ 	b = b.forFlags(flags)
++	req.expBusy = expOutstanding.Load() > 0
++	expOutstanding.Add(1)
++	defer expOutstanding.Add(-1)
+ 	switch batch := b.admit(req, func(seq uint64) {
+ 		if batch := b.timerBatch(seq); batch != nil {
+ 			b.flush(db, batch)
+@@ -898,18 +906,47 @@ func (b *grvBatcher) admit(req grvRequest, onTimer func(uint64)) []grvRequest {
+ 	b.pending = append(b.pending, req)
+ 	// Unlike Flow, dispatch idle requests immediately to avoid coarse Go timers.
+ 	// Each RPC still follows its members' read calls (api-c.rst:613).
+-	if len(b.pending) == grvMaxBatchSize || len(b.pending) == 1 && b.inFlight == 0 {
++	if len(b.pending) == grvMaxBatchSize {
+ 		return b.detachLocked()
+ 	}
++	if len(b.pending) == 1 && b.inFlight == 0 {
++		switch expGRVMode {
++		case "cpp": // always wait the batch window, as readVersionBatcher does
++		case "busy":
++			if !req.expBusy {
++				return b.detachLocked()
++			}
++		case "serial":
++			if !req.expBusy && b.expLastBatch <= 1 {
++				return b.detachLocked()
++			}
++		case "adaptive":
++			if time.Since(b.lastDispatch) >= b.batchTime {
++				return b.detachLocked()
++			}
++		default:
++			return b.detachLocked()
++		}
++	}
+ 	if len(b.pending) == 1 {
+ 		seq := b.timerSeq
+-		b.timer = time.AfterFunc(b.batchTime, func() { onTimer(seq) })
++		if transport.ExpPrecise {
++			bt := b.batchTime
++			go func() {
++				transport.ExpPreciseSleep(bt)
++				onTimer(seq)
++			}()
++		} else {
++			b.timer = time.AfterFunc(b.batchTime, func() { onTimer(seq) })
++		}
+ 	}
+ 	return nil
+ }
+ 
+ func (b *grvBatcher) detachLocked() []grvRequest {
++	b.lastDispatch = time.Now()
+ 	batch := b.pending
++	b.expLastBatch = len(batch)
+ 	b.pending = nil
+ 	b.inFlight++
+ 	b.timerSeq++
+@@ -990,8 +1027,10 @@ func (b *grvBatcher) flushWithin(db *database, ctx context.Context, batch []grvR
+ 	// by a reply it was meant to retire.
+ 	tok := db.grvCache.token()
+ 	requestTime := time.Now()
++	expTrace('G', len(batch))
+ 	version, locked, rkDefault, rkBatch, tagThrottleInfoEntries, _, attemptEpoch, err := b.sendGRVRequest(db, ctx, flags, uint32(len(batch)), batchGRVSpanContext(spans), aggregateBatchTags(batch))
+ 	elapsed := time.Since(requestTime)
++	expTrace('g', len(batch))
+ 
+ 	if err == nil {
+ 		// Unconditional, even when locked: C++ updates the shared cache
+@@ -1061,7 +1100,8 @@ func (b *grvBatcher) logFlushPanic(r any) {
+ 	if now-last < int64(panicLogInterval) || !b.lastPanicLog.CompareAndSwap(last, now) {
+ 		return
+ 	}
+-	diag.Recovered("fdbgo: recovered panic in client goroutine",
++	diag.Recovered(
++		"fdbgo: recovered panic in client goroutine",
+ 		"goroutine", "grvFlush",
+ 		"err", fmt.Sprintf("%v", r),
+ 		"stack", string(debug.Stack()),
+@@ -1735,3 +1775,6 @@ func (c *grvCache) token() cacheToken {
+ // accessor validates against it, so an entry minted by a previous cluster is
+ // inert rather than merely stale.
+ func (c *grvCache) epochNow() int64 { return fenceEpoch(c.fences.Load()) }
++
++// EXPERIMENT ONLY (not for commit): FDBGO_EXP_GRV=cpp|adaptive.
++var expGRVMode = os.Getenv("FDBGO_EXP_GRV")
+diff --git a/pkg/fdbgo/client/hedge.go b/pkg/fdbgo/client/hedge.go
+index 4c93bc62f..aa0de33c0 100644
+--- a/pkg/fdbgo/client/hedge.go
++++ b/pkg/fdbgo/client/hedge.go
+@@ -58,6 +58,8 @@ func sendFrameWithHedge(
+ 	secondary sendFunc, // may be nil if only 1 server
+ 	timeout time.Duration,
+ ) hedgeResult {
++	expOutstanding.Add(1)
++	defer expOutstanding.Add(-1)
+ 	// Send to primary immediately.
+ 	pResult := primary()
+ 	if pResult.err != nil {
+diff --git a/pkg/fdbgo/client/rpc.go b/pkg/fdbgo/client/rpc.go
+index b41ac24ad..ca6ddfe8e 100644
+--- a/pkg/fdbgo/client/rpc.go
++++ b/pkg/fdbgo/client/rpc.go
+@@ -51,6 +51,8 @@ func putTimer(t *time.Timer) {
+ // waitReply waits for an RPC response with timeout, avoiding context.WithTimeout allocation.
+ // Returns (response, nil) on success, or (zero, error) on timeout/cancellation.
+ func waitReply(replyCh <-chan transport.Response, ctx context.Context, timeout time.Duration) (transport.Response, error) {
++	expOutstanding.Add(1)
++	defer expOutstanding.Add(-1)
+ 	timer := getTimer(timeout)
+ 	select {
+ 	case resp := <-replyCh:
+@@ -74,6 +76,8 @@ func waitReply(replyCh <-chan transport.Response, ctx context.Context, timeout t
+ 
+ // C++ tryCommit has no reply timer (NativeAPI.actor.cpp:6646–6651).
+ func waitReplyOrProxiesChanged(replyCh <-chan transport.Response, ctx context.Context, proxiesChanged <-chan struct{}) (transport.Response, error) {
++	expOutstanding.Add(1)
++	defer expOutstanding.Add(-1)
+ 	select {
+ 	case resp := <-replyCh:
+ 		return resp, nil
+diff --git a/pkg/fdbgo/transport/BUILD.bazel b/pkg/fdbgo/transport/BUILD.bazel
+index 754295d05..5951f56f4 100644
+--- a/pkg/fdbgo/transport/BUILD.bazel
++++ b/pkg/fdbgo/transport/BUILD.bazel
+@@ -20,6 +20,7 @@ go_library(
+         "//pkg/fdbgo/wire",
+         "//pkg/fdbgo/wire/types",
+         "@com_github_zeebo_xxh3//:xxh3",
++        "@org_golang_x_sys//unix",
+     ],
+ )
+ 
+diff --git a/pkg/fdbgo/transport/conn.go b/pkg/fdbgo/transport/conn.go
+index 5ed60d81f..06d4015ab 100644
+--- a/pkg/fdbgo/transport/conn.go
++++ b/pkg/fdbgo/transport/conn.go
+@@ -13,6 +13,7 @@ import (
+ 	mathrand "math/rand/v2"
+ 	"net"
+ 	"os"
++	"runtime"
+ 	"runtime/debug"
+ 	"sync"
+ 	"sync/atomic"
+@@ -193,12 +194,13 @@ type Conn struct {
+ 	queued  atomic.Int64
+ 	// raw is set for plaintext TCP only: a direct write needs a non-blocking
+ 	// socket write, so a full socket never holds its caller past its ctx.
+-	raw       *rawWriter
+-	tail      []byte        // unwritten end of a direct write, under writeMu
+-	tailFrame []byte        // the whole frame tail ends, pooled once written
+-	tailBuf   *[]byte       // tailFrame's pool handle
+-	tailKick  chan struct{} // wakes writeLoop to finish tail
+-	tails     atomic.Int64  // partial direct writes, so tests can tell a tail occurred
++	raw            *rawWriter
++	expLastWriteNs atomic.Int64  // EXPERIMENT
++	tail           []byte        // unwritten end of a direct write, under writeMu
++	tailFrame      []byte        // the whole frame tail ends, pooled once written
++	tailBuf        *[]byte       // tailFrame's pool handle
++	tailKick       chan struct{} // wakes writeLoop to finish tail
++	tails          atomic.Int64  // partial direct writes, so tests can tell a tail occurred
+ 
+ 	// Debug tracing (set before first use).
+ 	debugFrames bool
+@@ -691,6 +693,31 @@ func (c *Conn) writeLoop() {
+ 		if req.owned != nil {
+ 			owned = append(owned, req.owned)
+ 		}
++		if first && expCoalesceMax > 0 {
++			wait := expCoalesceMax - (time.Since(expEpoch) - time.Duration(c.expLastWriteNs.Load()))
++			if wait < expCoalesceMin {
++				wait = expCoalesceMin
++			}
++			if ExpPrecise {
++				ExpPreciseSleep(wait)
++			} else {
++				time.Sleep(wait)
++			}
++		}
++		if first {
++			for i := 0; i < expYield; i++ {
++				runtime.Gosched()
++			}
++			if expYield < 0 {
++				for i := 0; i < -expYield; i++ {
++					n := c.queued.Load()
++					runtime.Gosched()
++					if c.queued.Load() == n {
++						break
++					}
++				}
++			}
++		}
+ 		c.writeMu.Lock()
+ 		var batched int64
+ 		var writeErr error
+@@ -740,6 +767,7 @@ func (c *Conn) writeLoop() {
+ 		if writeErr == nil {
+ 			writeErr = c.wbuf.Flush()
+ 		}
++		c.expLastWriteNs.Store(int64(time.Since(expEpoch)))
+ 		if writeErr != nil {
+ 			// Fail under writeMu so no direct write can follow a torn frame.
+ 			writeErr = codedConnClosed(writeErr)
+@@ -970,6 +998,9 @@ func (c *Conn) readLoop() {
+ 			delete(c.pending, token)
+ 		}
+ 		c.pendingMu.Unlock()
++		if ExpTrace != nil && ok {
++			ExpTrace('r', in.Buffered())
++		}
+ 		// Unknown tokens are silently dropped (e.g., late responses after timeout).
+ 	}
+ }
+diff --git a/pkg/fdbgo/transport/direct_write.go b/pkg/fdbgo/transport/direct_write.go
+index 86c5e3a67..721b5889b 100644
+--- a/pkg/fdbgo/transport/direct_write.go
++++ b/pkg/fdbgo/transport/direct_write.go
+@@ -1,5 +1,14 @@
+ package transport
+ 
++import (
++	"fmt"
++	"os"
++	"syscall"
++	"time"
++
++	"golang.org/x/sys/unix"
++)
++
+ // enqueue hands req to writeLoop, counting it first so that no direct write
+ // can overtake it. done (nil: none) abandons the enqueue as c.ctx does.
+ func (c *Conn) enqueue(req writeReq, done <-chan struct{}) bool {
+@@ -29,7 +38,24 @@ func (c *Conn) tryEnqueue(req writeReq) bool {
+ // tryWriteDirect writes the frame on the caller's goroutine when writeLoop is idle,
+ // saving two handoffs; it never blocks, and writeLoop finishes what a full socket refuses.
+ func (c *Conn) tryWriteDirect(token UID, body []byte) (bool, error) {
+-	if c.raw == nil || c.queued.Load() != 0 || !c.writeMu.TryLock() {
++	if expNoDirect || c.raw == nil || c.queued.Load() != 0 {
++		return false, nil
++	}
++	if ExpBusyFn != nil && ExpBusyFn() {
++		return false, nil
++	}
++	if expQuiet > 0 && time.Since(expEpoch)-time.Duration(c.expLastWriteNs.Load()) < expQuiet {
++		return false, nil
++	}
++	if expDirectMaxPending >= 0 {
++		c.pendingMu.RLock()
++		n := len(c.pending)
++		c.pendingMu.RUnlock()
++		if n > expDirectMaxPending {
++			return false, nil
++		}
++	}
++	if !c.writeMu.TryLock() {
+ 		return false, nil
+ 	}
+ 	defer c.writeMu.Unlock()
+@@ -48,6 +74,7 @@ func (c *Conn) tryWriteDirect(token UID, body []byte) (bool, error) {
+ 		c.failConnection(err)
+ 		return true, err
+ 	}
++	c.expLastWriteNs.Store(int64(time.Since(expEpoch)))
+ 	if n == len(frame) {
+ 		putFrame(bufp, frame)
+ 		return true, nil
+@@ -62,3 +89,96 @@ func (c *Conn) tryWriteDirect(token UID, body []byte) (bool, error) {
+ 	}
+ 	return true, nil
+ }
++
++// EXPERIMENT ONLY (not for commit): FDBGO_EXP_NODIRECT=1 disables direct writes;
++// FDBGO_EXP_COALESCE_US=<min>,<max> adds connectionWriter's coalescing delay.
++var (
++	expNoDirect                    = os.Getenv("FDBGO_EXP_NODIRECT") == "1"
++	expCoalesceMin, expCoalesceMax = parseExpCoalesce(os.Getenv("FDBGO_EXP_COALESCE_US"))
++	expYield                       = parseExpInt(os.Getenv("FDBGO_EXP_YIELD"))
++	expDirectMaxPending            = parseExpIntDef(os.Getenv("FDBGO_EXP_DIRECT_MAXPENDING"), -1)
++	expQuiet                       = time.Duration(parseExpInt(os.Getenv("FDBGO_EXP_QUIET_US"))) * time.Microsecond
++	expEpoch                       = time.Now()
++	expPreciseMode                 = os.Getenv("FDBGO_EXP_PRECISE")
++	ExpPrecise                     = expPreciseMode == "1" || expPreciseMode == "2"
++)
++
++func parseExpIntDef(s string, def int) int {
++	n := def
++	_, _ = fmt.Sscanf(s, "%d", &n)
++	return n
++}
++
++var expTFDPool = make(chan *expTFD, 64)
++
++type expTFD struct {
++	f  *os.File
++	fd int
++}
++
++func getTFD() *expTFD {
++	select {
++	case t := <-expTFDPool:
++		return t
++	default:
++	}
++	fd, err := unix.TimerfdCreate(unix.CLOCK_MONOTONIC, unix.TFD_NONBLOCK|unix.TFD_CLOEXEC)
++	if err != nil {
++		panic(err)
++	}
++	return &expTFD{os.NewFile(uintptr(fd), "timerfd"), fd}
++}
++
++// ExpPreciseSleep sleeps precisely (EXPERIMENT): timerfd via the netpoller when
++// FDBGO_EXP_PRECISE=2, else nanosleep with 1ns timer slack.
++func ExpPreciseSleep(d time.Duration) {
++	if expPreciseMode == "2" {
++		t0 := time.Now()
++		t := getTFD()
++		if d <= 0 {
++			d = 1 // a zero it_value disarms the timer
++		}
++		its := unix.ItimerSpec{Value: unix.NsecToTimespec(int64(d))}
++		if err := unix.TimerfdSettime(t.fd, 0, &its, nil); err != nil {
++			panic(err)
++		}
++		var b [8]byte
++		_, _ = t.f.Read(b[:])
++		select {
++		case expTFDPool <- t:
++		default:
++			_ = t.f.Close()
++		}
++		if ExpTrace != nil {
++			ExpTrace('s', int(time.Since(t0)/time.Microsecond))
++		}
++		return
++	}
++	_, _, _ = syscall.RawSyscall6(syscall.SYS_PRCTL, 29 /* PR_SET_TIMERSLACK */, 1, 0, 0, 0, 0)
++	t0 := time.Now()
++	ts := syscall.NsecToTimespec(int64(d))
++	_ = syscall.Nanosleep(&ts, nil)
++	if ExpTrace != nil {
++		ExpTrace('s', int(time.Since(t0)/time.Microsecond))
++	}
++}
++
++// ExpBusyFn reports a concurrently busy client (EXPERIMENT).
++var ExpBusyFn func() bool
++
++// ExpTrace is an experiment-only event hook.
++var ExpTrace func(kind byte, n int)
++
++func parseExpInt(s string) int {
++	var n int
++	_, _ = fmt.Sscanf(s, "%d", &n)
++	return n
++}
++
++func parseExpCoalesce(s string) (time.Duration, time.Duration) {
++	var lo, hi int
++	if _, err := fmt.Sscanf(s, "%d,%d", &lo, &hi); err != nil {
++		return 0, 0
++	}
++	return time.Duration(lo) * time.Microsecond, time.Duration(hi) * time.Microsecond
++}

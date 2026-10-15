@@ -10,68 +10,161 @@ func batchRequest() grvRequest {
 	return grvRequest{reply: make(chan grvResult, 1)}
 }
 
-func ignoreBatchTimer(uint64) {}
+// fakeWindow records arms and stops; tests drive expiry through expireWindow.
+type fakeWindow struct {
+	arms  []time.Duration
+	stops int
+}
 
-func TestGRVBatchIdleDispatch(t *testing.T) {
+func (w *fakeWindow) arm(d time.Duration) bool { w.arms = append(w.arms, d); return true }
+func (w *fakeWindow) stop()                    { w.stops++ }
+
+type fakeClock struct{ t time.Time }
+
+func (c *fakeClock) now() time.Time          { return c.t }
+func (c *fakeClock) advance(d time.Duration) { c.t = c.t.Add(d) }
+
+// testBatcher is a batcher on a fake window and clock: no timer ever fires.
+func testBatcher(inFlight int, batchTime time.Duration) (*grvBatcher, *fakeWindow, *fakeClock) {
+	w, c := &fakeWindow{}, &fakeClock{t: time.Unix(1000, 0)}
+	b := &grvBatcher{priority: grvPriorityDefault, inFlight: inFlight, batchTime: batchTime, window: w, now: c.now}
+	return b, w, c
+}
+
+// expireWindow moves the clock to the open window's deadline and expires it.
+func expireWindow(b *grvBatcher, c *fakeClock) []grvRequest {
+	b.mu.Lock()
+	if c.t.Before(b.windowDeadline) {
+		c.t = b.windowDeadline
+	}
+	b.mu.Unlock()
+	return b.expiredBatch()
+}
+
+func windowArmed(b *grvBatcher) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.windowArmed
+}
+
+func TestGRVBatchFreshBatcherSendsAtOnce(t *testing.T) {
 	t.Parallel()
 	for _, window := range []time.Duration{0, 50 * time.Microsecond, 5 * time.Millisecond} {
-		t.Run(window.String(), func(t *testing.T) {
-			t.Parallel()
-			b := &grvBatcher{priority: grvPriorityDefault, batchTime: window}
-			t.Cleanup(func() {
-				b.mu.Lock()
-				defer b.mu.Unlock()
-				if b.timer != nil {
-					b.timer.Stop()
-				}
-			})
-			req := batchRequest()
-			batch := b.admit(req, ignoreBatchTimer)
-			if len(batch) != 1 || batch[0].reply != req.reply || b.timer != nil || len(b.pending) != 0 || b.inFlight != 1 {
-				t.Fatalf("idle GRV waited for a batching timer: dispatched=%d timer=%v pending=%d", len(batch), b.timer != nil, len(b.pending))
-			}
-		})
+		b, w, _ := testBatcher(0, window)
+		req := batchRequest()
+		batch := b.admit(nil, req)
+		if len(batch) != 1 || batch[0].reply != req.reply || len(w.arms) != 0 || len(b.pending) != 0 || b.inFlight != 1 {
+			t.Fatalf("window %v: fresh GRV waited: dispatched=%d arms=%v pending=%d", window, len(batch), w.arms, len(b.pending))
+		}
 	}
 }
 
-func TestGRVBatchCompletionPreservesQueuedTimer(t *testing.T) {
+func TestGRVBatchSerialRequestsKeepTheFastPath(t *testing.T) {
 	t.Parallel()
-	b := &grvBatcher{priority: grvPriorityDefault, batchTime: time.Hour}
+	b, w, _ := testBatcher(0, time.Hour)
+	for i := range 5 {
+		if got := b.admit(nil, batchRequest()); len(got) != 1 {
+			t.Fatalf("serial request %d waited for a window", i)
+		}
+		b.finishBatch() // the clock does not move: only lastFast qualifies
+	}
+	if len(w.arms) != 0 {
+		t.Fatalf("serial requests armed windows: %v", w.arms)
+	}
+}
+
+// A request that arrives while a GRV is in flight opens a window, and so does
+// the next first request after that batch, until the batcher has been idle
+// for a whole window.
+func TestGRVBatchOverlapReturnsToWindows(t *testing.T) {
+	t.Parallel()
+	b, w, c := testBatcher(0, time.Millisecond)
 	first, second, third := batchRequest(), batchRequest(), batchRequest()
-	batch := b.admit(first, ignoreBatchTimer)
-	if len(batch) != 1 || batch[0].reply != first.reply {
-		t.Fatal("first idle request did not detach")
+	if got := b.admit(nil, first); len(got) != 1 {
+		t.Fatal("first request did not take the fast path")
 	}
-	if b.admit(second, ignoreBatchTimer) != nil || len(b.pending) != 1 {
-		t.Fatal("later request did not get its own queue")
-	}
-	timer, seq := b.timer, b.timerSeq
-	b.finishBatch()
-	if b.inFlight != 0 || len(b.pending) != 1 || b.timer != timer || b.timerSeq != seq {
-		t.Fatal("completion changed an already queued batch")
-	}
-	if b.admit(third, ignoreBatchTimer) != nil || b.timer != timer || b.timerSeq != seq {
-		t.Fatal("a new arrival bypassed an existing queue's timer")
-	}
-	queued := b.timerBatch(seq)
-	if len(queued) != 2 || queued[0].reply != second.reply || queued[1].reply != third.reply || b.inFlight != 1 {
-		t.Fatal("timer did not dispatch the separate pending population")
+	if b.admit(nil, second) != nil || len(w.arms) != 1 || w.arms[0] != time.Millisecond {
+		t.Fatalf("request behind an in-flight GRV did not open a window: arms=%v", w.arms)
 	}
 	b.finishBatch()
-	if b.inFlight != 0 {
-		t.Fatal("completed batches were not retired")
+	if b.inFlight != 0 || len(b.pending) != 1 || !windowArmed(b) {
+		t.Fatal("completion changed an already open window")
 	}
-	if got := b.admit(batchRequest(), ignoreBatchTimer); len(got) != 1 {
-		t.Fatal("completed work left the batcher busy")
+	if b.admit(nil, third) != nil || len(w.arms) != 1 {
+		t.Fatal("a later arrival bypassed or re-armed the open window")
+	}
+	c.advance(time.Microsecond)
+	if got := b.expiredBatch(); got != nil {
+		t.Fatal("window detached before its deadline")
+	}
+	queued := expireWindow(b, c)
+	if len(queued) != 2 || queued[0].reply != second.reply || queued[1].reply != third.reply || b.inFlight != 1 || w.stops != 1 {
+		t.Fatalf("window expiry returned %d requests, stops=%d", len(queued), w.stops)
+	}
+	if b.expiredBatch() != nil {
+		t.Fatal("the same window detached twice")
 	}
 	b.finishBatch()
+	if b.admit(nil, batchRequest()) != nil || len(w.arms) != 2 {
+		t.Fatal("first request right after a window batch skipped the window")
+	}
+	expireWindow(b, c)
+	b.finishBatch()
+	c.advance(time.Millisecond)
+	if got := b.admit(nil, batchRequest()); len(got) != 1 {
+		t.Fatal("a batcher idle for a whole window did not return to the fast path")
+	}
+}
+
+// Two callers whose GRVs overlap converge on one GRV per round; with the old
+// idle rule each round sent two singleton batches.
+func TestGRVBatchStaggeredPairShareOneGRV(t *testing.T) {
+	t.Parallel()
+	b, _, c := testBatcher(0, 100*time.Microsecond)
+	a, bReq := batchRequest(), batchRequest()
+	if got := b.admit(nil, a); len(got) != 1 {
+		t.Fatal("A did not take the fast path")
+	}
+	if b.admit(nil, bReq) != nil {
+		t.Fatal("B, arriving while A is in flight, did not wait")
+	}
+	if got := expireWindow(b, c); len(got) != 1 {
+		t.Fatal("B's window did not send B")
+	}
+	b.finishBatch() // A's reply
+	// A's next request arrives while B's GRV is in flight, and B's next one
+	// right after B's reply: inside A's window.
+	if b.admit(nil, batchRequest()) != nil {
+		t.Fatal("A's next request skipped the window while B was in flight")
+	}
+	b.finishBatch() // B's reply
+	if b.admit(nil, batchRequest()) != nil {
+		t.Fatal("B's next request did not join A's window")
+	}
+	if got := expireWindow(b, c); len(got) != 2 {
+		t.Fatalf("the callers' requests went in a batch of %d, want 2", len(got))
+	}
+	b.finishBatch()
+	// From then on both callers return together and keep sharing one GRV.
+	for round := range 3 {
+		c.advance(10 * time.Microsecond) // less than a window of idleness
+		for caller := range 2 {
+			if b.admit(nil, batchRequest()) != nil {
+				t.Fatalf("round %d: caller %d skipped the window right after a shared batch", round, caller)
+			}
+		}
+		if got := expireWindow(b, c); len(got) != 2 {
+			t.Fatalf("round %d sent a batch of %d, want 2", round, len(got))
+		}
+		b.finishBatch()
+	}
 }
 
 func TestGRVBatchPanicRetiresBeforeError(t *testing.T) {
 	t.Parallel()
-	b := &grvBatcher{priority: grvPriorityDefault}
+	b, _, _ := testBatcher(0, 0)
 	req := batchRequest()
-	batch := b.admit(req, ignoreBatchTimer)
+	batch := b.admit(nil, req)
 	b.flush(nil, batch) // panic before dispatch, through the real flush backstop
 	select {
 	case result := <-req.reply:
@@ -84,70 +177,68 @@ func TestGRVBatchPanicRetiresBeforeError(t *testing.T) {
 	if b.inFlight != 0 {
 		t.Fatalf("panic left inFlight=%d, want 0", b.inFlight)
 	}
-	if got := b.admit(batchRequest(), ignoreBatchTimer); len(got) != 1 {
-		t.Fatal("panic prevented the next idle dispatch")
+	if got := b.admit(nil, batchRequest()); len(got) != 1 {
+		t.Fatal("panic prevented the next serial dispatch")
 	}
 	b.finishBatch()
 }
 
-func TestGRVBatchSizeAndTimerGeneration(t *testing.T) {
+func TestGRVBatchFullBatchClosesItsWindow(t *testing.T) {
 	t.Parallel()
-	b := &grvBatcher{priority: grvPriorityDefault, inFlight: 1, batchTime: time.Hour}
-	requests := make([]grvRequest, 1000)
+	b, w, c := testBatcher(1, time.Hour)
+	requests := make([]grvRequest, grvMaxBatchSize)
 	var batch []grvRequest
 	for i := range requests {
 		requests[i] = batchRequest()
-		batch = b.admit(requests[i], ignoreBatchTimer)
-		if i < 999 && batch != nil {
-			t.Fatalf("request %d dispatched before the 1000-request cap", i+1)
+		batch = b.admit(nil, requests[i])
+		if i < grvMaxBatchSize-1 && batch != nil {
+			t.Fatalf("request %d dispatched before the %d-request cap", i+1, grvMaxBatchSize)
 		}
 	}
-	if len(batch) != 1000 || b.timer != nil || len(b.pending) != 0 {
-		t.Fatalf("full batch=%d timer=%v pending=%d", len(batch), b.timer != nil, len(b.pending))
+	if len(batch) != grvMaxBatchSize || windowArmed(b) || w.stops != 1 || len(b.pending) != 0 {
+		t.Fatalf("full batch=%d armed=%v stops=%d pending=%d", len(batch), windowArmed(b), w.stops, len(b.pending))
 	}
 	for i := range requests {
 		if batch[i].reply != requests[i].reply {
 			t.Fatalf("request %d lost or reordered", i)
 		}
 	}
-	stale := b.timerSeq - 1
+	stale := b.windowDeadline
+	if b.expiredBatch() != nil {
+		t.Fatal("expiry of a closed window detached something")
+	}
 	next := batchRequest()
-	if b.admit(next, ignoreBatchTimer) != nil {
-		t.Fatal("a lone queued request bypassed the adaptive window")
+	c.advance(time.Minute)
+	if b.admit(nil, next) != nil {
+		t.Fatal("a request behind in-flight GRVs bypassed the window")
 	}
-	if got := b.timerBatch(stale); got != nil || len(b.pending) != 1 {
-		t.Fatal("stopped timer callback consumed a newer queue")
+	c.t = stale // the closed window's timer firing late detaches nothing early
+	if got := b.expiredBatch(); got != nil {
+		t.Fatal("a superseded expiry consumed a newer window")
 	}
-	seq := b.timerSeq
-	if got := b.timerBatch(seq); len(got) != 1 || got[0].reply != next.reply {
-		t.Fatalf("current timer returned %v, want the next request", got)
-	}
-	if b.timerBatch(seq) != nil {
-		t.Fatal("timer dispatched the same batch twice")
+	if got := expireWindow(b, c); len(got) != 1 || got[0].reply != next.reply {
+		t.Fatalf("current window returned %v, want the next request", got)
 	}
 }
 
-func TestGRVBatchBusyZeroWindowUsesTimer(t *testing.T) {
+func TestGRVBatchZeroWindowDetachesOnExpiryNotAdmission(t *testing.T) {
 	t.Parallel()
-	b := &grvBatcher{priority: grvPriorityDefault, inFlight: 1}
-	fired := make(chan uint64, 1)
+	b, w, c := testBatcher(1, 0)
 	req := batchRequest()
-	if b.admit(req, func(seq uint64) { fired <- seq }) != nil {
-		t.Fatal("zero-window admission bypassed the batching callback")
+	if b.admit(nil, req) != nil {
+		t.Fatal("zero-window admission sent at once")
 	}
-	select {
-	case seq := <-fired:
-		if got := b.timerBatch(seq); len(got) != 1 || got[0].reply != req.reply {
-			t.Fatalf("zero-window callback returned %v", got)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("zero-window timer never fired")
+	if len(w.arms) != 1 || w.arms[0] != 0 {
+		t.Fatalf("arms=%v, want one zero window", w.arms)
+	}
+	if got := expireWindow(b, c); len(got) != 1 || got[0].reply != req.reply {
+		t.Fatalf("zero-window expiry returned %v", got)
 	}
 }
 
 func TestGRVBatchAdaptiveWindowNoFloor(t *testing.T) {
 	t.Parallel()
-	b := &grvBatcher{priority: grvPriorityDefault}
+	b, _, c := testBatcher(0, 0)
 	b.observeLatency(200 * time.Microsecond)
 	if b.batchTime != 10*time.Microsecond {
 		t.Fatalf("initial EWMA=%v, want 10us", b.batchTime)
@@ -164,17 +255,17 @@ func TestGRVBatchAdaptiveWindowNoFloor(t *testing.T) {
 	}
 	b.batchTime = time.Hour
 	b.inFlight = 1
-	b.admit(batchRequest(), ignoreBatchTimer)
+	b.admit(nil, batchRequest())
 	b.observeLatency(200 * time.Microsecond)
-	if len(b.pending) != 1 || b.timer == nil {
+	if len(b.pending) != 1 || !windowArmed(b) {
 		t.Fatal("a reply flushed pending requests instead of only updating the EWMA")
 	}
-	b.timerBatch(b.timerSeq)
+	expireWindow(b, c)
 }
 
 func TestGRVBatchersSeparateFullFlags(t *testing.T) {
 	t.Parallel()
-	root := &grvBatcher{priority: grvPriorityDefault, inFlight: 1, batchTime: time.Hour}
+	root, _, rootClock := testBatcher(1, time.Hour)
 	if root.forFlags(0x08000000) != root || root.variants != nil {
 		t.Fatal("default requests must retain the priority root without a variants map")
 	}
@@ -183,7 +274,7 @@ func TestGRVBatchersSeparateFullFlags(t *testing.T) {
 	if risky == root || other == root || risky == other || root.forFlags(0x08000001) != risky {
 		t.Fatal("distinct option flags share a batcher, or identical flags do not")
 	}
-	if risky.priority != 0x08000000 || risky.extraFlags != 1 || risky.batchTime != 0 {
+	if risky.priority != 0x08000000 || risky.extraFlags != 1 || risky.batchTime != 0 || risky.window != nil {
 		t.Fatalf("risky batcher inherited root options/window: priority=%x flags=%x window=%v", risky.priority, risky.extraFlags, risky.batchTime)
 	}
 	var wg sync.WaitGroup
@@ -195,23 +286,26 @@ func TestGRVBatchersSeparateFullFlags(t *testing.T) {
 		})
 	}
 	wg.Wait()
-	root.admit(batchRequest(), ignoreBatchTimer)
-	if got := risky.admit(batchRequest(), ignoreBatchTimer); len(got) != 1 {
+	riskyClock := &fakeClock{t: rootClock.t}
+	risky.window, risky.now = &fakeWindow{}, riskyClock.now
+	other.window = &fakeWindow{}
+	root.admit(nil, batchRequest())
+	if got := risky.admit(nil, batchRequest()); len(got) != 1 {
 		t.Fatal("ordinary in-flight work prevented an idle risky dispatch")
 	}
 	risky.batchTime = time.Hour
-	for range 999 {
-		if risky.admit(batchRequest(), ignoreBatchTimer) != nil {
+	for range grvMaxBatchSize - 1 {
+		if risky.admit(nil, batchRequest()) != nil {
 			t.Fatal("risky queue inherited the ordinary request")
 		}
 	}
-	if got := risky.admit(batchRequest(), ignoreBatchTimer); len(got) != 1000 {
-		t.Fatalf("risky full batch=%d, want 1000", len(got))
+	if got := risky.admit(nil, batchRequest()); len(got) != grvMaxBatchSize {
+		t.Fatalf("risky full batch=%d, want %d", len(got), grvMaxBatchSize)
 	}
-	if len(root.pending) != 1 || root.timer == nil || other.timer != nil {
+	if len(root.pending) != 1 || !windowArmed(root) || windowArmed(other) {
 		t.Fatal("dispatch crossed full-flags queue boundaries")
 	}
-	root.timerBatch(root.timerSeq)
+	expireWindow(root, rootClock)
 	oldRoot := root.batchTime
 	risky.observeLatency(200 * time.Microsecond)
 	if root.batchTime != oldRoot || other.batchTime != 0 {

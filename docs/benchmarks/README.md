@@ -21,6 +21,8 @@ Each campaign's reports live in a folder named after the campaign.
 
 - [2026-10-12: record-load range-read parity](2026-10-12-record-load-parity/README.md)
   — before/after latency and allocations, including the cost of Java-compatible reads.
+- [RFC-259 prototype](rfc-259/README.md): server CPU per transaction with GRV batch
+  windows and write coalescing, against libfdb_c, at 1–32 workers.
 
 ## 2026-10-12, master 9a9a448
 

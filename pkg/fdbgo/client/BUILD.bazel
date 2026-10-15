@@ -16,6 +16,7 @@ go_library(
         "endpoint.go",
         "failure_monitor.go",
         "grv.go",
+        "grv_window.go",
         "hedge.go",
         "inband_reply_error.go",
         "loadbalance.go",
@@ -52,6 +53,7 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/fdbgo/internal/diag",
+        "//pkg/fdbgo/internal/hrtimer",
         "//pkg/fdbgo/internal/rangecheck",
         "//pkg/fdbgo/transport",
         "//pkg/fdbgo/wire",
