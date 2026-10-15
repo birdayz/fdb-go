@@ -1,5 +1,5 @@
 ---
-title: "Phase D1: SQL Common"
+title: "Phase D1: SQL plan-cache point select"
 description: "SQL plan-cache point select across legacy, before, and final trees."
 weight: 7
 ---
@@ -66,9 +66,9 @@ production code. `final/before` is the allocation work plus later changes;
 ## Results
 
 <figure class="bench-figure">
-<figcaption><strong>Figure D1.1: SQL FDB_PlanCacheHit Ratios (log₂ scale, 95% CI)</strong> — 6 paired blocks × 3 repeats (54 samples). Below 1.0× favors Final.</figcaption>
+<figcaption><strong>Figure D1.1: SQL PlanCacheHit ratios (log₂ scale, 95% CI)</strong> — 6 paired blocks × 3 repeats (54 samples). Below 1.0× favors Final.</figcaption>
 <div class="bench-summary"><ul class="bench-summary-list"><li><strong>Scope:</strong> Only 1 of 3 planned SQL cases (PlanCacheHit, 18 processes / 54 samples) completed; IndexScanRange stopped after block 0 on a false runner check and TimestampInsert was not run.</li><li><strong>Results (PlanCacheHit):</strong> Final reduces allocs/op to 0.949× [0.949, 0.949] (687 → 652) and B/op to 0.966× (48,245.5 → 46,615 B vs before; 48,249.5 → 46,615 B vs legacy). ns/op is unresolved in both comparisons (1.002× [0.984, 1.021] vs before, 0.999× [0.981, 1.018] vs legacy; medians 1.153 ms vs 1.144 ms and 1.148 ms).</li></ul></div>
-<svg class="bench-svg" viewBox="0 0 1320 238" role="img" aria-label="Figure D1.1: SQL FDB_PlanCacheHit Ratios (log₂ scale, 95% CI)">
+<svg class="bench-svg" viewBox="0 0 1320 238" role="img" aria-label="Figure D1.1: SQL PlanCacheHit ratios (log₂ scale, 95% CI)">
 <line class="grid-line" x1="165.0" y1="36" x2="165.0" y2="212"/>
 <text class="axis-text" x="165.0" y="30" text-anchor="middle">0.9×</text>
 <text class="axis-text" x="165.0" y="227" text-anchor="middle">0.9×</text>
@@ -87,7 +87,7 @@ production code. `final/before` is the allocation work plus later changes;
 <text class="axis-text" x="661.0" y="17" text-anchor="end">← Final lower</text>
 <text class="axis-text" x="677.0" y="17" text-anchor="start">Denominator lower →</text>
 <line class="section-divider" x1="8" y1="48" x2="1312" y2="48"/>
-<text class="section-title" x="10" y="63">Final / Before (PlanCacheHit)</text>
+<text class="section-title" x="10" y="63">PlanCacheHit: final / before</text>
 <text class="row-label" x="153" y="81.0" text-anchor="end">ns/op</text>
 <g class="ci-neutral"><title>ns/op: 1.002× [0.984, 1.021]</title><line x1="591.9" y1="77.0" x2="768.5" y2="77.0" stroke-width="2.2"/><line x1="591.9" y1="73.0" x2="591.9" y2="81.0" stroke-width="1.8"/><line x1="768.5" y1="73.0" x2="768.5" y2="81.0" stroke-width="1.8"/><circle cx="678.6" cy="77.0" r="3.8"/></g>
 <text class="val-text" x="1137" y="81.0">1.002× [0.984, 1.021]</text>
@@ -98,7 +98,7 @@ production code. `final/before` is the allocation work plus later changes;
 <g class="ci-win"><title>allocs/op: 0.949× [0.949, 0.949]</title><line x1="418.6" y1="117.0" x2="418.6" y2="117.0" stroke-width="2.2"/><line x1="418.6" y1="113.0" x2="418.6" y2="121.0" stroke-width="1.8"/><line x1="418.6" y1="113.0" x2="418.6" y2="121.0" stroke-width="1.8"/><circle cx="418.6" cy="117.0" r="3.8"/></g>
 <text class="val-text" x="1137" y="121.0">0.949× [0.949, 0.949]</text>
 <line class="section-divider" x1="8" y1="130" x2="1312" y2="130"/>
-<text class="section-title" x="10" y="145">Final / Legacy (PlanCacheHit)</text>
+<text class="section-title" x="10" y="145">PlanCacheHit: final / legacy</text>
 <text class="row-label" x="153" y="163.0" text-anchor="end">ns/op</text>
 <g class="ci-neutral"><title>ns/op: 0.999× [0.981, 1.018]</title><line x1="577.3" y1="159.0" x2="754.4" y2="159.0" stroke-width="2.2"/><line x1="577.3" y1="155.0" x2="577.3" y2="163.0" stroke-width="1.8"/><line x1="754.4" y1="155.0" x2="754.4" y2="163.0" stroke-width="1.8"/><circle cx="664.3" cy="159.0" r="3.8"/></g>
 <text class="val-text" x="1137" y="163.0">0.999× [0.981, 1.018]</text>

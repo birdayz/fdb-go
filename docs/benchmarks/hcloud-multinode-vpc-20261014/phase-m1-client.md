@@ -8,7 +8,7 @@ closed-loop concurrency phases (`M1w1` = 1 worker, `M1w8` = 8 workers, `M1w32` =
 processes, 9 storage servers). This is **phase M1** of
 [hcloud-multinode-vpc-20261014](README.md).
 
-## Design and Scope
+## Design and scope
 
 - After `M2skip` completed, data distribution was re-enabled (`datadistribution
   on`), the cluster settled to `moving_data.in_flight_bytes == 0` and
@@ -108,7 +108,7 @@ pure-Go is faster or uses less CPU.
 | batchset50 | N/A (R4 `contaminated`: log queue 141.9 MB > 100 MB gate) | — | — | — |
 | batchset50x1000 | N/A (R4 `unverifiable`: unexecuted after `batchset50` abort) | — | — | — |
 
-## Absolute Values
+## Absolute values
 
 Medians of six run-level statistics per arm.
 

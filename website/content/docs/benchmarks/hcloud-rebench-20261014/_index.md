@@ -1,5 +1,5 @@
 ---
-title: "Single-Node 16-vCPU Campaign (2026-10-14)"
+title: "Single-node 16-vCPU campaign (2026-10-14)"
 description: "Preregistered 8-phase benchmark campaign on a dedicated 16-vCPU host comparing the pure-Go client, Record Layer, mapped remote fetch, and SQL across the RFC-258 trees."
 weight: 2
 ---

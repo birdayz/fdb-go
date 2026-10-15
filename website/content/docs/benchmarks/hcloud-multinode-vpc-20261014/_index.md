@@ -1,5 +1,5 @@
 ---
-title: "4-Node VPC Campaign (2026-10-14)"
+title: "4-node VPC campaign (2026-10-14)"
 description: "Preregistered 4-host VPC benchmark campaign (1 client VM + 3 FDB 7.3.77 server VMs, double ssd-2, 9 storage servers): pure-Go vs CGo at 1, 8, 32, and 64 workers and cross-server USE_REMOTE_FETCH vs SCAN_AND_FETCH."
 weight: 1
 ---
@@ -24,7 +24,7 @@ Intervals below use the protocol's preregistered bootstrap seed `492817`
 (20,000 resamples; initial exploratory runs with seed `391706` are retained in
 the campaign archive).
 
-## Topology and Environment
+## Topology and environment
 
 - **Four Hetzner `ccx43` hosts** in `fsn1`: 16 dedicated vCPUs (AMD EPYC Milan,
   8 cores × 2 SMT threads, one NUMA node, `2k,2k+1` sibling pairs verified on
@@ -63,7 +63,7 @@ the campaign archive).
 | M2 (`M2rl`, `M2skip`) | Multi-node VPC `USE_REMOTE_FETCH` vs `SCAN_AND_FETCH` across 9 storage servers (`double` `ssd-2`) | [phase-m2-remotefetch.md](phase-m2-remotefetch/) |
 | M1 (`M1w1`, `M1w8`, `M1w32`, `M1w64`) | Multi-node VPC pure-Go vs CGo (`libfdb_c` 7.3.77) at 1, 8, 32, and 64 workers | [phase-m1-client.md](phase-m1-client/) |
 
-## Headline Findings
+## Headline findings
 
 - **M2 (`USE_REMOTE_FETCH` vs `SCAN_AND_FETCH` on a 3-node `double` `ssd-2`
   cluster):**

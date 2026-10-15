@@ -4,8 +4,8 @@ description: "Build fdb-go from source and run its SQL and record-store examples
 weight: 1
 ---
 
-Use a source checkout for this walkthrough. The website describes the development
-tree; the older v0.1.0 release does not match these APIs and storage behavior.
+This guide uses a source checkout. The older v0.1.0 release does not match the
+APIs and storage behavior documented here.
 
 ## Prerequisites
 
@@ -13,8 +13,8 @@ tree; the older v0.1.0 release does not match these APIs and storage behavior.
 - Docker running locally, for the disposable single-node FoundationDB cluster.
 - A shell that supports the commands below, such as Bash or Zsh.
 
-The default backend is pure Go: you do not need cgo or a local `libfdb_c`
-installation. You do need a running FoundationDB server.
+The default backend is pure Go and does not require cgo or a local `libfdb_c`
+installation. It does require a running FoundationDB server.
 
 ## Check out the source
 
@@ -24,7 +24,7 @@ cd fdb-go
 git rev-parse HEAD
 ```
 
-Record that commit hash with your results. For repeatable evaluation, check out
+Record the commit hash with any results. For repeatable evaluation, check out
 a specific reviewed commit rather than following a moving branch.
 
 ## Run the SQL example
@@ -45,7 +45,7 @@ contains the complete setup, parameterized writes, queries, and error handling.
 The [repository quickstart](https://github.com/birdayz/fdb-go#getting-started)
 is the corresponding source-level guide.
 
-## Try the Record Layer
+## Run the Record Layer example
 
 With the same disposable cluster running:
 
@@ -59,7 +59,7 @@ its demo order with ID 1001; use only the disposable cluster from this walkthrou
 
 ## Clean up
 
-When finished, remove the local cluster:
+To remove the local cluster:
 
 ```sh
 ./frl fdb down
@@ -69,7 +69,7 @@ This is a local development setup, not a production deployment recipe. If startu
 fails, check Docker availability and the CLI's error output; do not substitute a
 container-internal address into a host-side cluster file.
 
-## Use the client on its own
+## Standalone client
 
 For key-value transactions without the Record Layer or SQL engine, import
 `fdb.dev/pkg/fdbgo/fdb`. See the [client connection example](https://github.com/birdayz/fdb-go#fdb-client)
@@ -77,7 +77,7 @@ and [client API notes](https://github.com/birdayz/fdb-go/blob/master/pkg/fdbgo/R
 Transaction callbacks can be retried; avoid external side effects inside them and
 return read errors to the transaction wrapper.
 
-## Before using existing data
+## Existing data
 
 Read [status and compatibility](/docs/maturity/), the
 [compatibility boundaries](https://github.com/birdayz/fdb-go/blob/master/docs/compatibility.md),

@@ -1,5 +1,5 @@
 ---
-title: "Phase C2: Remote Fetch (Reverse & Skip)"
+title: "Phase C2: Remote fetch (reverse and Skip)"
 description: "Reverse scans and executor Skip 3 paths with USE_REMOTE_FETCH vs SCAN_AND_FETCH."
 weight: 5
 ---
@@ -69,9 +69,9 @@ Harness `d94b4c61377d173b7c6884fde426a227dab0f0bb`; see
 ## Results
 
 <figure class="bench-figure">
-<figcaption><strong>Figure C2.1: Remote Fetch vs Ordinary Scan Ratios (log₂ scale, 95% CI)</strong> — 6 paired blocks × 3 repeats on single-node memory engine. Below 1.0× favors USE_REMOTE_FETCH.</figcaption>
-<div class="bench-summary"><ul class="bench-summary-list"><li><strong>Wins (3/4 cases on ns/op, 95% CI &lt; 1.000):</strong> reverse-small-1000 0.337× [0.331, 0.343] (15.6 ms vs 46.5 ms), executor-skip3-small-1000 0.455× [0.445, 0.465] (21.4 ms vs 47.5 ms), and executor-skip3-small-10 0.783× [0.764, 0.800] (1.46 ms vs 1.87 ms).</li><li><strong>Regressions (1/4 on ns/op, 95% CI &gt; 1.000):</strong> reverse-split-1000 is 1.146× [1.130, 1.161] slower (188 ms vs 165 ms).</li><li><strong>Allocations:</strong> Client B/op (0.506×–0.692×) and allocs/op (0.403×–0.791×) drop across all 4 cases.</li></ul></div>
-<svg class="bench-svg" viewBox="0 0 1376 380" role="img" aria-label="Figure C2.1: Remote Fetch vs Ordinary Scan Ratios (log₂ scale, 95% CI)">
+<figcaption><strong>Figure C2.1: USE_REMOTE_FETCH / SCAN_AND_FETCH ratios (log₂ scale, 95% CI)</strong> — 6 paired blocks × 3 repeats on single-node memory engine. Below 1.0× favors USE_REMOTE_FETCH.</figcaption>
+<div class="bench-summary"><ul class="bench-summary-list"><li><strong>USE_REMOTE_FETCH faster (3/4 cases, 95% CI &lt; 1.000):</strong> reverse-small-1000 0.337× [0.331, 0.343] (15.6 ms vs 46.5 ms), executor-skip3-small-1000 0.455× [0.445, 0.465] (21.4 ms vs 47.5 ms), and executor-skip3-small-10 0.783× [0.764, 0.800] (1.46 ms vs 1.87 ms).</li><li><strong>SCAN_AND_FETCH faster (1/4 cases, 95% CI &gt; 1.000):</strong> reverse-split-1000 at 1.146× [1.130, 1.161] (188 ms vs 165 ms).</li><li><strong>Allocations:</strong> Client B/op (0.506×–0.692×) and allocs/op (0.403×–0.791×) drop across all 4 cases.</li></ul></div>
+<svg class="bench-svg" viewBox="0 0 1376 380" role="img" aria-label="Figure C2.1: USE_REMOTE_FETCH / SCAN_AND_FETCH ratios (log₂ scale, 95% CI)">
 <line class="grid-line" x1="221.0" y1="36" x2="221.0" y2="354"/>
 <text class="axis-text" x="221.0" y="30" text-anchor="middle">0.2×</text>
 <text class="axis-text" x="221.0" y="369" text-anchor="middle">0.2×</text>
@@ -93,7 +93,7 @@ Harness `d94b4c61377d173b7c6884fde426a227dab0f0bb`; see
 <text class="axis-text" x="1038.4" y="17" text-anchor="end">← USE_REMOTE_FETCH lower</text>
 <text class="axis-text" x="1054.4" y="17" text-anchor="start">SCAN_AND_FETCH lower →</text>
 <line class="section-divider" x1="8" y1="48" x2="1368" y2="48"/>
-<text class="section-title" x="10" y="63">Mean Time (ns/op): USE_REMOTE_FETCH / SCAN_AND_FETCH</text>
+<text class="section-title" x="10" y="63">Mean time (ns/op): USE_REMOTE_FETCH / SCAN_AND_FETCH</text>
 <text class="row-label" x="209" y="81.0" text-anchor="end">reverse-small-1000</text>
 <g class="ci-win"><title>reverse-small-1000: 0.337× [0.331, 0.343]</title><line x1="479.4" y1="77.0" x2="497.7" y2="77.0" stroke-width="2.2"/><line x1="479.4" y1="73.0" x2="479.4" y2="81.0" stroke-width="1.8"/><line x1="497.7" y1="73.0" x2="497.7" y2="81.0" stroke-width="1.8"/><circle cx="488.6" cy="77.0" r="3.8"/></g>
 <text class="val-text" x="1193" y="81.0">0.337× [0.331, 0.343]</text>
@@ -107,7 +107,7 @@ Harness `d94b4c61377d173b7c6884fde426a227dab0f0bb`; see
 <g class="ci-win"><title>executor-skip3-small-1000: 0.455× [0.445, 0.465]</title><line x1="631.2" y1="137.0" x2="653.7" y2="137.0" stroke-width="2.2"/><line x1="631.2" y1="133.0" x2="631.2" y2="141.0" stroke-width="1.8"/><line x1="653.7" y1="133.0" x2="653.7" y2="141.0" stroke-width="1.8"/><circle cx="642.6" cy="137.0" r="3.8"/></g>
 <text class="val-text" x="1193" y="141.0">0.455× [0.445, 0.465]</text>
 <line class="section-divider" x1="8" y1="150" x2="1368" y2="150"/>
-<text class="section-title" x="10" y="165">Go Bytes (B/op): USE_REMOTE_FETCH / SCAN_AND_FETCH</text>
+<text class="section-title" x="10" y="165">Go bytes (B/op): USE_REMOTE_FETCH / SCAN_AND_FETCH</text>
 <text class="row-label" x="209" y="183.0" text-anchor="end">reverse-small-1000</text>
 <g class="ci-win"><title>reverse-small-1000: 0.506× [0.505, 0.506]</title><line x1="696.0" y1="179.0" x2="697.1" y2="179.0" stroke-width="2.2"/><line x1="696.0" y1="175.0" x2="696.0" y2="183.0" stroke-width="1.8"/><line x1="697.1" y1="175.0" x2="697.1" y2="183.0" stroke-width="1.8"/><circle cx="697.1" cy="179.0" r="3.8"/></g>
 <text class="val-text" x="1193" y="183.0">0.506× [0.505, 0.506]</text>
@@ -121,7 +121,7 @@ Harness `d94b4c61377d173b7c6884fde426a227dab0f0bb`; see
 <g class="ci-win"><title>executor-skip3-small-1000: 0.580× [0.580, 0.580]</title><line x1="767.1" y1="239.0" x2="767.1" y2="239.0" stroke-width="2.2"/><line x1="767.1" y1="235.0" x2="767.1" y2="243.0" stroke-width="1.8"/><line x1="767.1" y1="235.0" x2="767.1" y2="243.0" stroke-width="1.8"/><circle cx="767.1" cy="239.0" r="3.8"/></g>
 <text class="val-text" x="1193" y="243.0">0.580× [0.580, 0.580]</text>
 <line class="section-divider" x1="8" y1="252" x2="1368" y2="252"/>
-<text class="section-title" x="10" y="267">Go Allocations (allocs/op): USE_REMOTE_FETCH / SCAN_AND_FETCH</text>
+<text class="section-title" x="10" y="267">Go allocations (allocs/op): USE_REMOTE_FETCH / SCAN_AND_FETCH</text>
 <text class="row-label" x="209" y="285.0" text-anchor="end">reverse-small-1000</text>
 <g class="ci-win"><title>reverse-small-1000: 0.436× [0.436, 0.436]</title><line x1="620.7" y1="281.0" x2="620.7" y2="281.0" stroke-width="2.2"/><line x1="620.7" y1="277.0" x2="620.7" y2="285.0" stroke-width="1.8"/><line x1="620.7" y1="277.0" x2="620.7" y2="285.0" stroke-width="1.8"/><circle cx="620.7" cy="281.0" r="3.8"/></g>
 <text class="val-text" x="1193" y="285.0">0.436× [0.436, 0.436]</text>

@@ -1,5 +1,5 @@
 ---
-title: "Phase D2: SQL Remote Fetch"
+title: "Phase D2: SQL remote fetch"
 description: "SQL non-covering index scan with USE_REMOTE_FETCH vs SCAN_AND_FETCH."
 weight: 8
 ---
@@ -75,9 +75,9 @@ have the SQL fetch-method option, so this phase has no older-tree arm. Harness
 ## Results
 
 <figure class="bench-figure">
-<figcaption><strong>Figure D2.1: Remote Fetch vs Ordinary Scan Ratios (log₂ scale, 95% CI)</strong> — 6 paired blocks × 3 repeats on single-node memory engine. Below 1.0× favors USE_REMOTE_FETCH.</figcaption>
-<div class="bench-summary"><ul class="bench-summary-list"><li><strong>Wins (2/2 SQL cases on single-node memory):</strong> rows10 ns/op is 0.885× [0.873, 0.896] (2.22 ms vs 2.50 ms) and rows1000 ns/op is 0.536× [0.532, 0.538] (24.9 ms vs 46.5 ms), with lower client B/op (0.843×, 0.657×) and allocs/op (0.850×, 0.614×).</li><li><strong>Confound flag:</strong> Both cases flagged a 5-vs-6-byte store-prefix length difference in 1 of 6 rows10 blocks and 2 of 6 rows1000 blocks (a post-hoc descriptive check on equal-prefix blocks gives 0.884 and 0.534).</li></ul></div>
-<svg class="bench-svg" viewBox="0 0 1320 260" role="img" aria-label="Figure D2.1: Remote Fetch vs Ordinary Scan Ratios (log₂ scale, 95% CI)">
+<figcaption><strong>Figure D2.1: USE_REMOTE_FETCH / SCAN_AND_FETCH ratios (log₂ scale, 95% CI)</strong> — 6 paired blocks × 3 repeats on single-node memory engine. Below 1.0× favors USE_REMOTE_FETCH.</figcaption>
+<div class="bench-summary"><ul class="bench-summary-list"><li><strong>USE_REMOTE_FETCH faster (2/2 SQL cases, single-node memory engine):</strong> rows10 ns/op is 0.885× [0.873, 0.896] (2.22 ms vs 2.50 ms) and rows1000 ns/op is 0.536× [0.532, 0.538] (24.9 ms vs 46.5 ms), with lower client B/op (0.843×, 0.657×) and allocs/op (0.850×, 0.614×).</li><li><strong>Confound flag:</strong> Both cases flagged a 5-vs-6-byte store-prefix length difference in 1 of 6 rows10 blocks and 2 of 6 rows1000 blocks (a post-hoc descriptive check on equal-prefix blocks gives 0.884 and 0.534).</li></ul></div>
+<svg class="bench-svg" viewBox="0 0 1320 260" role="img" aria-label="Figure D2.1: USE_REMOTE_FETCH / SCAN_AND_FETCH ratios (log₂ scale, 95% CI)">
 <line class="grid-line" x1="165.0" y1="36" x2="165.0" y2="234"/>
 <text class="axis-text" x="165.0" y="30" text-anchor="middle">0.2×</text>
 <text class="axis-text" x="165.0" y="249" text-anchor="middle">0.2×</text>
@@ -99,7 +99,7 @@ have the SQL fetch-method option, so this phase has no older-tree arm. Harness
 <text class="axis-text" x="982.4" y="17" text-anchor="end">← USE_REMOTE_FETCH lower</text>
 <text class="axis-text" x="998.4" y="17" text-anchor="start">SCAN_AND_FETCH lower →</text>
 <line class="section-divider" x1="8" y1="48" x2="1312" y2="48"/>
-<text class="section-title" x="10" y="63">Mean Time (ns/op): USE_REMOTE_FETCH / SCAN_AND_FETCH</text>
+<text class="section-title" x="10" y="63">Mean time (ns/op): USE_REMOTE_FETCH / SCAN_AND_FETCH</text>
 <text class="row-label" x="153" y="81.0" text-anchor="end">rows10</text>
 <g class="ci-win"><title>rows10: 0.885× [0.873, 0.896]</title><line x1="920.8" y1="77.0" x2="934.1" y2="77.0" stroke-width="2.2"/><line x1="920.8" y1="73.0" x2="920.8" y2="81.0" stroke-width="1.8"/><line x1="934.1" y1="73.0" x2="934.1" y2="81.0" stroke-width="1.8"/><circle cx="927.8" cy="77.0" r="3.8"/></g>
 <text class="val-text" x="1137" y="81.0">0.885× [0.873, 0.896]</text>
@@ -107,7 +107,7 @@ have the SQL fetch-method option, so this phase has no older-tree arm. Harness
 <g class="ci-win"><title>rows1000: 0.536× [0.532, 0.538]</title><line x1="666.8" y1="97.0" x2="672.5" y2="97.0" stroke-width="2.2"/><line x1="666.8" y1="93.0" x2="666.8" y2="101.0" stroke-width="1.8"/><line x1="672.5" y1="93.0" x2="672.5" y2="101.0" stroke-width="1.8"/><circle cx="670.6" cy="97.0" r="3.8"/></g>
 <text class="val-text" x="1137" y="101.0">0.536× [0.532, 0.538]</text>
 <line class="section-divider" x1="8" y1="110" x2="1312" y2="110"/>
-<text class="section-title" x="10" y="125">Go Bytes (B/op): USE_REMOTE_FETCH / SCAN_AND_FETCH</text>
+<text class="section-title" x="10" y="125">Go bytes (B/op): USE_REMOTE_FETCH / SCAN_AND_FETCH</text>
 <text class="row-label" x="153" y="143.0" text-anchor="end">rows10</text>
 <g class="ci-win"><title>rows10: 0.843× [0.842, 0.843]</title><line x1="902.2" y1="139.0" x2="902.8" y2="139.0" stroke-width="2.2"/><line x1="902.2" y1="135.0" x2="902.2" y2="143.0" stroke-width="1.8"/><line x1="902.8" y1="135.0" x2="902.8" y2="143.0" stroke-width="1.8"/><circle cx="902.8" cy="139.0" r="3.8"/></g>
 <text class="val-text" x="1137" y="143.0">0.843× [0.842, 0.843]</text>
@@ -115,7 +115,7 @@ have the SQL fetch-method option, so this phase has no older-tree arm. Harness
 <g class="ci-win"><title>rows1000: 0.657× [0.656, 0.657]</title><line x1="774.2" y1="159.0" x2="775.0" y2="159.0" stroke-width="2.2"/><line x1="774.2" y1="155.0" x2="774.2" y2="163.0" stroke-width="1.8"/><line x1="775.0" y1="155.0" x2="775.0" y2="163.0" stroke-width="1.8"/><circle cx="775.0" cy="159.0" r="3.8"/></g>
 <text class="val-text" x="1137" y="163.0">0.657× [0.656, 0.657]</text>
 <line class="section-divider" x1="8" y1="172" x2="1312" y2="172"/>
-<text class="section-title" x="10" y="187">Go Allocations (allocs/op): USE_REMOTE_FETCH / SCAN_AND_FETCH</text>
+<text class="section-title" x="10" y="187">Go allocations (allocs/op): USE_REMOTE_FETCH / SCAN_AND_FETCH</text>
 <text class="row-label" x="153" y="205.0" text-anchor="end">rows10</text>
 <g class="ci-win"><title>rows10: 0.850× [0.850, 0.850]</title><line x1="907.1" y1="201.0" x2="907.1" y2="201.0" stroke-width="2.2"/><line x1="907.1" y1="197.0" x2="907.1" y2="205.0" stroke-width="1.8"/><line x1="907.1" y1="197.0" x2="907.1" y2="205.0" stroke-width="1.8"/><circle cx="907.1" cy="201.0" r="3.8"/></g>
 <text class="val-text" x="1137" y="205.0">0.850× [0.850, 0.850]</text>

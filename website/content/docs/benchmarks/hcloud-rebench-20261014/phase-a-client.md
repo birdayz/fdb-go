@@ -1,5 +1,5 @@
 ---
-title: "Phase A: Client (1 Worker)"
+title: "Phase A: Client (1 worker)"
 description: "Pure-Go client vs CGo (libfdb_c 7.3.77) and vs pre-allocation pure-Go across 11 workloads at 1 closed-loop worker."
 weight: 1
 ---
@@ -61,9 +61,9 @@ Executables: `//tools/clientbench/cmd/clientbench:clientbench_go` (per tree) and
 ## Results
 
 <figure class="bench-figure">
-<figcaption><strong>Figure A.1: Single-Node 1-Worker Client Ratios — Final Pure-Go / CGo (log₂ scale, 95% CI)</strong> — 6 paired blocks × 3,000 tx/run (18,000 tx/arm/workload). Below 1.0× means Pure-Go is faster / lower CPU.</figcaption>
+<figcaption><strong>Figure A.1: Client ratios at 1 worker, final pure-Go / CGo (log₂ scale, 95% CI)</strong> — 6 paired blocks × 3,000 tx/run (18,000 tx/arm/workload). Below 1.0× means Pure-Go is faster / lower CPU.</figcaption>
 <div class="bench-summary"><ul class="bench-summary-list"><li><strong>Mean latency (final/CGo):</strong> Pure-Go is faster with 95% CI &lt; 1.000 on 10 of 11 workloads (0.189× on client-only ryw, 0.515× on grv, 0.613×–0.931× on reads/commits); range100 (0.846× [0.713, 1.024]) is unresolved.</li><li><strong>p99 latency (final/CGo):</strong> Lower on 8 of 11 workloads (0.245×–0.942×); range100 (0.861× [0.755, 1.008]), set100 (0.939× [0.845, 1.020]), and batchset50 (0.989× [0.913, 1.126]) are unresolved.</li><li><strong>Shutdown CPU (E−A, final/CGo):</strong> Lower on 7 of 11 workloads (0.228×–0.887×); get100 (0.948× [0.817, 1.118]), get10000 (0.959× [0.884, 1.046]), range10 (0.969× [0.834, 1.122]), and range100 (1.101× [0.968, 1.269]) are unresolved.</li></ul></div>
-<svg class="bench-svg" viewBox="0 0 1320 800" role="img" aria-label="Figure A.1: Single-Node 1-Worker Client Ratios — Final Pure-Go / CGo (log₂ scale, 95% CI)">
+<svg class="bench-svg" viewBox="0 0 1320 800" role="img" aria-label="Figure A.1: Client ratios at 1 worker, final pure-Go / CGo (log₂ scale, 95% CI)">
 <line class="grid-line" x1="165.0" y1="36" x2="165.0" y2="774"/>
 <text class="axis-text" x="165.0" y="30" text-anchor="middle">0.15×</text>
 <text class="axis-text" x="165.0" y="789" text-anchor="middle">0.15×</text>
@@ -85,7 +85,7 @@ Executables: `//tools/clientbench/cmd/clientbench:clientbench_go` (per tree) and
 <text class="axis-text" x="972.4" y="17" text-anchor="end">← Pure-Go faster / lower CPU</text>
 <text class="axis-text" x="988.4" y="17" text-anchor="start">CGo faster / lower CPU →</text>
 <line class="section-divider" x1="8" y1="48" x2="1312" y2="48"/>
-<text class="section-title" x="10" y="63">Mean Latency Ratio: Final Pure-Go / CGo</text>
+<text class="section-title" x="10" y="63">Mean latency: final pure-Go / CGo</text>
 <text class="row-label" x="153" y="81.0" text-anchor="end">grv</text>
 <g class="ci-win"><title>grv: 0.515× [0.484, 0.545]</title><line x1="668.5" y1="77.0" x2="719.5" y2="77.0" stroke-width="2.2"/><line x1="668.5" y1="73.0" x2="668.5" y2="81.0" stroke-width="1.8"/><line x1="719.5" y1="73.0" x2="719.5" y2="81.0" stroke-width="1.8"/><circle cx="695.2" cy="77.0" r="3.8"/></g>
 <text class="val-text" x="1137" y="81.0">0.515× [0.484, 0.545]</text>
@@ -120,7 +120,7 @@ Executables: `//tools/clientbench/cmd/clientbench:clientbench_go` (per tree) and
 <g class="ci-win"><title>batchset50x1000: 0.918× [0.898, 0.937]</title><line x1="934.1" y1="277.0" x2="952.4" y2="277.0" stroke-width="2.2"/><line x1="934.1" y1="273.0" x2="934.1" y2="281.0" stroke-width="1.8"/><line x1="952.4" y1="273.0" x2="952.4" y2="281.0" stroke-width="1.8"/><circle cx="943.6" cy="277.0" r="3.8"/></g>
 <text class="val-text" x="1137" y="281.0">0.918× [0.898, 0.937]</text>
 <line class="section-divider" x1="8" y1="290" x2="1312" y2="290"/>
-<text class="section-title" x="10" y="305">p99 Latency Ratio: Final Pure-Go / CGo</text>
+<text class="section-title" x="10" y="305">p99 latency: final pure-Go / CGo</text>
 <text class="row-label" x="153" y="323.0" text-anchor="end">grv</text>
 <g class="ci-win"><title>grv: 0.592× [0.566, 0.625]</title><line x1="735.8" y1="319.0" x2="778.4" y2="319.0" stroke-width="2.2"/><line x1="735.8" y1="315.0" x2="735.8" y2="323.0" stroke-width="1.8"/><line x1="778.4" y1="315.0" x2="778.4" y2="323.0" stroke-width="1.8"/><circle cx="755.1" cy="319.0" r="3.8"/></g>
 <text class="val-text" x="1137" y="323.0">0.592× [0.566, 0.625]</text>
@@ -155,7 +155,7 @@ Executables: `//tools/clientbench/cmd/clientbench:clientbench_go` (per tree) and
 <g class="ci-win"><title>batchset50x1000: 0.942× [0.909, 0.979]</title><line x1="939.4" y1="519.0" x2="971.3" y2="519.0" stroke-width="2.2"/><line x1="939.4" y1="515.0" x2="939.4" y2="523.0" stroke-width="1.8"/><line x1="971.3" y1="515.0" x2="971.3" y2="523.0" stroke-width="1.8"/><circle cx="954.7" cy="519.0" r="3.8"/></g>
 <text class="val-text" x="1137" y="523.0">0.942× [0.909, 0.979]</text>
 <line class="section-divider" x1="8" y1="532" x2="1312" y2="532"/>
-<text class="section-title" x="10" y="547">Shutdown Process CPU (E−A) Ratio: Final Pure-Go / CGo</text>
+<text class="section-title" x="10" y="547">Shutdown process CPU (E−A): final pure-Go / CGo</text>
 <text class="row-label" x="153" y="565.0" text-anchor="end">grv</text>
 <g class="ci-win"><title>grv: 0.659× [0.621, 0.692]</title><line x1="775.6" y1="561.0" x2="822.1" y2="561.0" stroke-width="2.2"/><line x1="775.6" y1="557.0" x2="775.6" y2="565.0" stroke-width="1.8"/><line x1="822.1" y1="557.0" x2="822.1" y2="565.0" stroke-width="1.8"/><circle cx="801.1" cy="561.0" r="3.8"/></g>
 <text class="val-text" x="1137" y="565.0">0.659× [0.621, 0.692]</text>
@@ -194,9 +194,9 @@ Executables: `//tools/clientbench/cmd/clientbench:clientbench_go` (per tree) and
 </figure>
 
 <figure class="bench-figure">
-<figcaption><strong>Figure A.2: Allocation Reductions — Final / Before Pure-Go (3824f146 → 267a4143)</strong> — Go heap bytes and mallocs per transaction (6 paired blocks). Below 1.0× means fewer allocations in Final.</figcaption>
+<figcaption><strong>Figure A.2: Allocation ratios, final (267a4143) / before (3824f146) pure-Go (log₂ scale, 95% CI)</strong> — Go heap bytes and mallocs per transaction (6 paired blocks). Below 1.0× means fewer allocations in Final.</figcaption>
 <div class="bench-summary"><ul class="bench-summary-list"><li><strong>Allocations (final/before):</strong> Go mallocs/tx drop across all 11 workloads (0.797×–0.973×, largest on range10 0.797× and range100 0.798×) and Go bytes/tx drop across all 11 (0.824×–0.998×, largest on range100 0.824× and range10 0.844×).</li><li><strong>Latency &amp; CPU (final/before):</strong> All 11 mean-latency 95% CIs span 1.000 (0.984×–1.042×, unresolved); only range100 resolves lower p99 (0.951× [0.916, 0.998]) and lower E−A CPU (0.952× [0.937, 0.971]).</li></ul></div>
-<svg class="bench-svg" viewBox="0 0 1320 558" role="img" aria-label="Figure A.2: Allocation Reductions — Final / Before Pure-Go (3824f146 → 267a4143)">
+<svg class="bench-svg" viewBox="0 0 1320 558" role="img" aria-label="Figure A.2: Allocation ratios, final (267a4143) / before (3824f146) pure-Go (log₂ scale, 95% CI)">
 <line class="grid-line" x1="165.0" y1="36" x2="165.0" y2="532"/>
 <text class="axis-text" x="165.0" y="30" text-anchor="middle">0.7×</text>
 <text class="axis-text" x="165.0" y="547" text-anchor="middle">0.7×</text>
@@ -215,7 +215,7 @@ Executables: `//tools/clientbench/cmd/clientbench:clientbench_go` (per tree) and
 <text class="axis-text" x="914.6" y="17" text-anchor="end">← Final allocates less</text>
 <text class="axis-text" x="930.6" y="17" text-anchor="start">Before allocates less →</text>
 <line class="section-divider" x1="8" y1="48" x2="1312" y2="48"/>
-<text class="section-title" x="10" y="63">Go Bytes/tx Ratio: Final / Before Pure-Go</text>
+<text class="section-title" x="10" y="63">Go bytes/tx: final / before</text>
 <text class="row-label" x="153" y="81.0" text-anchor="end">grv</text>
 <g class="ci-win"><title>grv: 0.993× [0.992, 0.994]</title><line x1="905.5" y1="77.0" x2="909.8" y2="77.0" stroke-width="2.2"/><line x1="905.5" y1="73.0" x2="905.5" y2="81.0" stroke-width="1.8"/><line x1="909.8" y1="73.0" x2="909.8" y2="81.0" stroke-width="1.8"/><circle cx="907.6" cy="77.0" r="3.8"/></g>
 <text class="val-text" x="1137" y="81.0">0.993× [0.992, 0.994]</text>
@@ -250,7 +250,7 @@ Executables: `//tools/clientbench/cmd/clientbench:clientbench_go` (per tree) and
 <g class="ci-win"><title>batchset50x1000: 0.998× [0.998, 0.998]</title><line x1="918.3" y1="277.0" x2="918.3" y2="277.0" stroke-width="2.2"/><line x1="918.3" y1="273.0" x2="918.3" y2="281.0" stroke-width="1.8"/><line x1="918.3" y1="273.0" x2="918.3" y2="281.0" stroke-width="1.8"/><circle cx="918.3" cy="277.0" r="3.8"/></g>
 <text class="val-text" x="1137" y="281.0">0.998× [0.998, 0.998]</text>
 <line class="section-divider" x1="8" y1="290" x2="1312" y2="290"/>
-<text class="section-title" x="10" y="305">Go Mallocs/tx Ratio: Final / Before Pure-Go</text>
+<text class="section-title" x="10" y="305">Go mallocs/tx: final / before</text>
 <text class="row-label" x="153" y="323.0" text-anchor="end">grv</text>
 <g class="ci-win"><title>grv: 0.950× [0.950, 0.950]</title><line x1="813.6" y1="319.0" x2="813.6" y2="319.0" stroke-width="2.2"/><line x1="813.6" y1="315.0" x2="813.6" y2="323.0" stroke-width="1.8"/><line x1="813.6" y1="315.0" x2="813.6" y2="323.0" stroke-width="1.8"/><circle cx="813.6" cy="319.0" r="3.8"/></g>
 <text class="val-text" x="1137" y="323.0">0.950× [0.950, 0.950]</text>

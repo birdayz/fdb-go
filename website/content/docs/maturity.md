@@ -9,7 +9,7 @@ schemas, queries, recovery requirements, and load. The repository's
 [`STATUS.md`](https://github.com/birdayz/fdb-go/blob/master/STATUS.md) is the current
 readiness statement; this page is an overview, not a release certification.
 
-## What each layer needs to establish
+## Evaluation scope
 
 | Layer | Evaluate |
 |---|---|
@@ -20,7 +20,7 @@ readiness statement; this page is an overview, not a release certification.
 These docs describe the v0.2.0 candidate and development tree, not a published tag. Pinning
 a version does not by itself establish readiness.
 
-## Interoperability has boundaries
+## Java interoperability
 
 Sharing record-store data with Java is a central project goal. It is not a
 promise that every index type, query, or continuation works across engines.
@@ -35,9 +35,9 @@ Read the [upgrade guide](https://github.com/birdayz/fdb-go/blob/master/docs/upgr
 before opening an existing store. Older Go SQL storage is not automatically
 migrated. Rehearse backup, migration, and rollback before allowing new writers.
 
-## What the tests establish
+## Test coverage
 
-Tests use several external references:
+Three suites compare against external references:
 
 - [Client differentials](https://github.com/birdayz/fdb-go/tree/master/pkg/fdbgo/bench)
   compare pure Go with `libfdb_c` against the same FoundationDB cluster.
@@ -73,7 +73,7 @@ and review the preregistered single-node and 4-node VPC campaign measurements in
 The pure-Go client is not a multi-version client. FDB 8.0 compatibility is not
 established by this tree; consult the upgrade guide before changing the server.
 
-## Project and reporting
+## Project and issue reporting
 
 This is an unofficial, independent open-source project, not affiliated with,
 sponsored by, or endorsed by Apple Inc. or the FoundationDB project. Upstream

@@ -4,21 +4,20 @@ description: "Preregistered FoundationDB benchmark campaigns on dedicated single
 weight: 3
 ---
 
-These two dedicated-host campaigns were run under **sealed pre-timing
-protocols** with counterbalanced block schedules, pinned binary and runtime
-SHA-256 digests, 1 Hz host and process telemetry (with cluster health and role
-checks around runs and cases), and nominal 95% paired-block bootstrap intervals
-(`20,000` resamples). Negative results and contaminated or unexecuted cases are
-retained and reported alongside positive results. (Older sequential or
-change-specific measurements remain in the repository under
-[`docs/benchmarks/`](https://github.com/birdayz/fdb-go/blob/master/docs/benchmarks/README.md).)
+Both campaigns ran on dedicated hosts under **protocols sealed before timing**:
+counterbalanced block schedules, pinned binary and runtime SHA-256 digests, 1 Hz
+host and process telemetry with cluster health and role checks, and nominal 95%
+paired-block bootstrap intervals (`20,000` resamples). Negative results and
+contaminated or unexecuted cases are reported alongside positive results. Older
+sequential and change-specific measurements are in
+[`docs/benchmarks/`](https://github.com/birdayz/fdb-go/blob/master/docs/benchmarks/README.md).
 
 {{< cards >}}
-  {{< card link="hcloud-multinode-vpc-20261014" title="4-Node VPC Campaign (hcloud-multinode-vpc-20261014)" icon="server" subtitle="1 dedicated client VM + 3 FDB 7.3.77 server VMs (double ssd-2, 9 storage servers) over an isolated VPC: pure-Go vs CGo at 1–64 workers and USE_REMOTE_FETCH vs SCAN_AND_FETCH under sealed shard placement." >}}
-  {{< card link="hcloud-rebench-20261014" title="Single-Node 16-vCPU Campaign (hcloud-rebench-20261014)" icon="chip" subtitle="8 phases on a dedicated 16-vCPU host: client (1w & 8w), Record Layer, mapped remote fetch (forward, reverse, Skip, synthetic 0.5 ms RTT), and SQL." >}}
+  {{< card link="hcloud-multinode-vpc-20261014" title="4-node VPC campaign (hcloud-multinode-vpc-20261014)" icon="server" subtitle="1 dedicated client VM + 3 FDB 7.3.77 server VMs (double ssd-2, 9 storage servers) over an isolated VPC: pure-Go vs CGo at 1–64 workers and USE_REMOTE_FETCH vs SCAN_AND_FETCH under sealed shard placement." >}}
+  {{< card link="hcloud-rebench-20261014" title="Single-node 16-vCPU campaign (hcloud-rebench-20261014)" icon="chip" subtitle="8 phases on a dedicated 16-vCPU host: client (1w & 8w), Record Layer, mapped remote fetch (forward, reverse, Skip, synthetic 0.5 ms RTT), and SQL." >}}
 {{< /cards >}}
 
-## Reading the Ratios
+## Reading the ratios
 
 - Every ratio is **`numerator / denominator`** (geometric mean of within-block
   ratios across 6 or 8 counterbalanced blocks); **below `1.000` means the
@@ -27,16 +26,16 @@ change-specific measurements remain in the repository under
   for the **nominal 95% paired-block bootstrap intervals** (`[low, high]`) and
   absolute medians.
 
-## Campaign Overview
+## Campaigns
 
 | Campaign | Topology & Storage | Phases & Comparisons (`numerator / denominator`) |
 |---|---|---|
 | **[hcloud-multinode-vpc-20261014](hcloud-multinode-vpc-20261014/)** | **4 × `ccx43`** (16 vCPU / 64 GiB each) on an isolated `/24` VPC (`0.33–0.41 ms` p50 ping); 1 client host + 3 FDB 7.3.77 server hosts (`double` `ssd-2`, 17 processes, 9 storage servers) | • **[Phase M1](hcloud-multinode-vpc-20261014/phase-m1-client/):** `final pure-Go / CGo` at `1, 8, 32, 64` workers<br>• **[Phase M2](hcloud-multinode-vpc-20261014/phase-m2-remotefetch/):** `USE_REMOTE_FETCH / SCAN_AND_FETCH` (`M2rl`, `M2skip`) with transactional CGo shard-placement receipts (`small` and `planskip` 100% process-disjoint `cross-server`; `split` `limit1` `cross-server`, `rows10` `f = 0.0000`, `rows1000` `f = 0.6960`) |
 | **[hcloud-rebench-20261014](hcloud-rebench-20261014/)** | **1 × `ccx43`** (16 vCPU / 64 GiB), private veth pair (`0.039 ms` p50 ping); 1 FDB 7.3.77 server (`single` `ssd-2` for client, `memory` for Record Layer / SQL) | • **[Phase A](hcloud-rebench-20261014/phase-a-client/) & [Phase A2](hcloud-rebench-20261014/phase-a2-client-8w/):** `final pure-Go / CGo` and `final / before` at `1w` (11 workloads) and `8w` (3 workloads)<br>• **[Phase B](hcloud-rebench-20261014/phase-b-recordlayer/) & [Phase D1](hcloud-rebench-20261014/phase-d1-sql/):** Record Layer & SQL `final / before` and `final / legacy`<br>• **[Phase C1](hcloud-rebench-20261014/phase-c1-remotefetch/), [C2](hcloud-rebench-20261014/phase-c2-reverse-skip/), [C3](hcloud-rebench-20261014/phase-c3-synthetic-rtt/), [D2](hcloud-rebench-20261014/phase-d2-sql-remotefetch/):** `USE_REMOTE_FETCH / SCAN_AND_FETCH` |
 
-## Key Takeaways (Facts First)
+## Results
 
-### 1. Pure-Go Client vs CGo (`libfdb_c` 7.3.77)
+### Pure-Go client vs CGo (`libfdb_c` 7.3.77)
 
 - **1 worker (`M1w1` 4-node VPC and `Phase A` single-node):**
   - On the 4-node VPC (`M1w1`, 7/7 clean), pure-Go had lower mean latency
@@ -45,7 +44,7 @@ change-specific measurements remain in the repository under
     `0.570–0.748×`) on every workload.
   - On single-node (`Phase A`, 11/11 clean), pure-Go took `0.515–0.931×` of CGo
     mean latency on round-trip workloads (`range100` interval `0.846 [0.713,
-    1.024]` overlaps 1) and `0.189×` on in-memory `ryw`.
+    1.024]` overlaps 1) and `0.189×` on client-only `ryw`.
 - **8, 32, and 64 workers (`M1w8`, `M1w32`, `M1w64` 4-node VPC and `Phase A2`
   single-node):**
   - **Mean latency wins:** on the 4-node VPC, pure-Go had lower mean latency
@@ -72,15 +71,15 @@ change-specific measurements remain in the repository under
     `contaminated` and the driver conservatively stopped each phase before
     `batchset50x1000` (retained as unexecuted / `unverifiable`).
 
-### 2. Record Layer & SQL `USE_REMOTE_FETCH` vs `SCAN_AND_FETCH`
+### Record Layer and SQL: `USE_REMOTE_FETCH` vs `SCAN_AND_FETCH`
 
 - **4-node VPC (`M2rl`, `M2skip` on 3-node `double` `ssd-2`):**
   - **Retained negative result on 1,000-row scans:** every 1,000-row scan was
     **23% to 133% slower** with `USE_REMOTE_FETCH` than with pipelined
     `SCAN_AND_FETCH` (`small-rows1000` `1.226×` forward / `1.255×` reverse;
     `split-rows1000` `2.326×` forward / `2.300×` reverse; `skip3-rows1000`
-    `1.360×` forward / `1.324×` reverse), despite `40–60%` fewer client Go
-    allocations.
+    `1.360×` forward / `1.324×` reverse), despite `47–60%` fewer client Go
+    heap allocations per operation.
   - **Small-scan wins:** `USE_REMOTE_FETCH` was faster on
     `skip3-rows10-reverse` (`0.158 [0.155, 0.160]`, 4.87 ms vs 31.13 ms),
     `split-rows10` (`0.873×` forward, `0.854×` reverse, where `f = 0.0000`),
@@ -95,7 +94,7 @@ change-specific measurements remain in the repository under
     but **5.3% to 15.0% slower** on 1,000 two-chunk split records (`1.150×`
     forward, `1.146×` reverse, `1.053×` at +0.5 ms RTT).
 
-### 3. Allocation Optimizations (`final` vs `before` Pure-Go)
+### Allocation work (`final` vs `before`)
 
 - Across single-node `Phase A`, `Phase A2`, `Phase B`, and `Phase D1`, the
   RFC-258 allocation work reduced Go heap allocations per operation by
@@ -111,7 +110,7 @@ change-specific measurements remain in the repository under
   `A2`; every mean-latency interval overlapped `1.000` (which does not establish
   equivalence).
 
-## Reproducibility & Artifact Scope
+## Reproducibility and artifacts
 
 - All benchmark harnesses, plan sealers, 1 Hz node telemetry samplers (`R3`),
   clock-bounded multi-host telemetry reconcilers (`R4`), and transactional

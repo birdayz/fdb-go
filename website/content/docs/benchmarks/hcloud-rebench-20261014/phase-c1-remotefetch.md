@@ -1,5 +1,5 @@
 ---
-title: "Phase C1: Remote Fetch (Forward)"
+title: "Phase C1: Remote fetch (forward)"
 description: "Forward USE_REMOTE_FETCH vs SCAN_AND_FETCH across pr2 and final trees on small and two-chunk split records."
 weight: 4
 ---
@@ -57,9 +57,9 @@ Both trees ran byte-identical benchmark source
 ## Results
 
 <figure class="bench-figure">
-<figcaption><strong>Figure C1.1: Forward Remote Fetch vs Ordinary Scan — Final Tree (log₂ scale, 95% CI)</strong> — 8 Williams-square blocks × 3 repeats on single-node memory engine. Below 1.0× favors USE_REMOTE_FETCH.</figcaption>
-<div class="bench-summary"><ul class="bench-summary-list"><li><strong>Wins (5/6 cases on ns/op, 95% CI &lt; 1.000):</strong> small-all-1000 0.341× [0.321, 0.356] (15.3 ms vs 44.0 ms), split-limit-1-broad 0.707× [0.685, 0.735], small-exact-10 0.733× [0.724, 0.743], small-limit-1-broad 0.838× [0.795, 0.900], and split-exact-10 0.872× [0.843, 0.904].</li><li><strong>Regressions (1/6 on ns/op, 95% CI &gt; 1.000):</strong> 2-chunk split-all-1000 is 1.150× [1.129, 1.181] slower (188 ms vs 163 ms).</li><li><strong>Allocations:</strong> B/op drops on all 6 cases (0.512×–0.960×); allocs/op drops on 5 of 6 (0.404×–0.942×) and increases on small-limit-1-broad (1.046× [1.046, 1.046], 229 vs 219).</li></ul></div>
-<svg class="bench-svg" viewBox="0 0 1329 500" role="img" aria-label="Figure C1.1: Forward Remote Fetch vs Ordinary Scan — Final Tree (log₂ scale, 95% CI)">
+<figcaption><strong>Figure C1.1: Forward scans, USE_REMOTE_FETCH / SCAN_AND_FETCH on the final tree (log₂ scale, 95% CI)</strong> — 8 Williams-square blocks × 3 repeats on single-node memory engine. Below 1.0× favors USE_REMOTE_FETCH.</figcaption>
+<div class="bench-summary"><ul class="bench-summary-list"><li><strong>USE_REMOTE_FETCH faster (5/6 cases, 95% CI &lt; 1.000):</strong> small-all-1000 0.341× [0.321, 0.356] (15.3 ms vs 44.0 ms), split-limit-1-broad 0.707× [0.685, 0.735], small-exact-10 0.733× [0.724, 0.743], small-limit-1-broad 0.838× [0.795, 0.900], and split-exact-10 0.872× [0.843, 0.904].</li><li><strong>SCAN_AND_FETCH faster (1/6 cases, 95% CI &gt; 1.000):</strong> 2-chunk split-all-1000 at 1.150× [1.129, 1.181] (188 ms vs 163 ms).</li><li><strong>Allocations:</strong> B/op drops on all 6 cases (0.512×–0.960×); allocs/op drops on 5 of 6 (0.404×–0.942×) and increases on small-limit-1-broad (1.046× [1.046, 1.046], 229 vs 219).</li></ul></div>
+<svg class="bench-svg" viewBox="0 0 1329 500" role="img" aria-label="Figure C1.1: Forward scans, USE_REMOTE_FETCH / SCAN_AND_FETCH on the final tree (log₂ scale, 95% CI)">
 <line class="grid-line" x1="174.0" y1="36" x2="174.0" y2="474"/>
 <text class="axis-text" x="174.0" y="30" text-anchor="middle">0.3×</text>
 <text class="axis-text" x="174.0" y="489" text-anchor="middle">0.3×</text>
@@ -78,7 +78,7 @@ Both trees ran byte-identical benchmark source
 <text class="axis-text" x="954.2" y="17" text-anchor="end">← USE_REMOTE_FETCH lower</text>
 <text class="axis-text" x="970.2" y="17" text-anchor="start">SCAN_AND_FETCH lower →</text>
 <line class="section-divider" x1="8" y1="48" x2="1321" y2="48"/>
-<text class="section-title" x="10" y="63">Mean Time (ns/op): final-remote / final-ordinary</text>
+<text class="section-title" x="10" y="63">Mean time (ns/op): final-remote / final-ordinary</text>
 <text class="row-label" x="162" y="81.0" text-anchor="end">small-limit-1-broad</text>
 <g class="ci-win"><title>small-limit-1-broad: 0.838× [0.795, 0.900]</title><line x1="812.0" y1="77.0" x2="893.3" y2="77.0" stroke-width="2.2"/><line x1="812.0" y1="73.0" x2="812.0" y2="81.0" stroke-width="1.8"/><line x1="893.3" y1="73.0" x2="893.3" y2="81.0" stroke-width="1.8"/><circle cx="846.5" cy="77.0" r="3.8"/></g>
 <text class="val-text" x="1146" y="81.0">0.838× [0.795, 0.900]</text>
@@ -98,7 +98,7 @@ Both trees ran byte-identical benchmark source
 <g class="ci-reg"><title>split-all-1000: 1.150× [1.129, 1.181]</title><line x1="1041.7" y1="177.0" x2="1071.1" y2="177.0" stroke-width="2.2"/><line x1="1041.7" y1="173.0" x2="1041.7" y2="181.0" stroke-width="1.8"/><line x1="1071.1" y1="173.0" x2="1071.1" y2="181.0" stroke-width="1.8"/><circle cx="1053.7" cy="177.0" r="3.8"/></g>
 <text class="val-text" x="1146" y="181.0">1.150× [1.129, 1.181]</text>
 <line class="section-divider" x1="8" y1="190" x2="1321" y2="190"/>
-<text class="section-title" x="10" y="205">Go Bytes (B/op): final-remote / final-ordinary</text>
+<text class="section-title" x="10" y="205">Go bytes (B/op): final-remote / final-ordinary</text>
 <text class="row-label" x="162" y="223.0" text-anchor="end">small-limit-1-broad</text>
 <g class="ci-win"><title>small-limit-1-broad: 0.960× [0.960, 0.961]</title><line x1="935.5" y1="219.0" x2="936.2" y2="219.0" stroke-width="2.2"/><line x1="935.5" y1="215.0" x2="935.5" y2="223.0" stroke-width="1.8"/><line x1="936.2" y1="215.0" x2="936.2" y2="223.0" stroke-width="1.8"/><circle cx="935.5" cy="219.0" r="3.8"/></g>
 <text class="val-text" x="1146" y="223.0">0.960× [0.960, 0.961]</text>
@@ -118,7 +118,7 @@ Both trees ran byte-identical benchmark source
 <g class="ci-win"><title>split-all-1000: 0.692× [0.692, 0.692]</title><line x1="721.2" y1="319.0" x2="721.2" y2="319.0" stroke-width="2.2"/><line x1="721.2" y1="315.0" x2="721.2" y2="323.0" stroke-width="1.8"/><line x1="721.2" y1="315.0" x2="721.2" y2="323.0" stroke-width="1.8"/><circle cx="721.2" cy="319.0" r="3.8"/></g>
 <text class="val-text" x="1146" y="323.0">0.692× [0.692, 0.692]</text>
 <line class="section-divider" x1="8" y1="332" x2="1321" y2="332"/>
-<text class="section-title" x="10" y="347">Go Allocations (allocs/op): final-remote / final-ordinary</text>
+<text class="section-title" x="10" y="347">Go allocations (allocs/op): final-remote / final-ordinary</text>
 <text class="row-label" x="162" y="365.0" text-anchor="end">small-limit-1-broad</text>
 <g class="ci-reg"><title>small-limit-1-broad: 1.046× [1.046, 1.046]</title><line x1="991.7" y1="361.0" x2="991.7" y2="361.0" stroke-width="2.2"/><line x1="991.7" y1="357.0" x2="991.7" y2="365.0" stroke-width="1.8"/><line x1="991.7" y1="357.0" x2="991.7" y2="365.0" stroke-width="1.8"/><circle cx="991.7" cy="361.0" r="3.8"/></g>
 <text class="val-text" x="1146" y="365.0">1.046× [1.046, 1.046]</text>

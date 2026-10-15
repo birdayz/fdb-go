@@ -7,7 +7,7 @@ FoundationDB 7.3.77 server VMs (`double` redundancy, `ssd-2`
 storage engine, 9 storage servers). This is **phase M2 (`M2rl` and `M2skip`)**
 of [hcloud-multinode-vpc-20261014](README.md).
 
-## Shard Placement and Qualification (Gate P0)
+## Shard placement and qualification (Gate P0)
 
 - Before any M2 timing, `placementprobe_cgo` (H5, reading `\xff/dataDistributionMode`,
   `\xff/moveKeysLock/Owner`, `\xff/moveKeysLock/Write`, `\xff/keyServers/`, and
