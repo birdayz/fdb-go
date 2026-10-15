@@ -1,0 +1,22 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+# SQL benchmarks with identical source in every compared tree. Its only test
+# checks that TestMain registered the FRL domain; run the benchmarks
+# explicitly, e.g.
+#   FDB_BENCH_CLUSTER_FILE=/etc/foundationdb/fdb.cluster sqlbench_test \
+#     -test.run='^$' -test.bench='^BenchmarkFDB_' -test.benchmem
+go_test(
+    name = "sqlbench_test",
+    srcs = [
+        "common_bench_test.go",
+        "domain_fdb_test.go",
+    ],
+    deps = [
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/recordlayer",
+        "//pkg/relational/core/keyspace",
+        "//pkg/relational/sqldriver",
+        "//pkg/testutil/benchcluster",
+    ],
+)

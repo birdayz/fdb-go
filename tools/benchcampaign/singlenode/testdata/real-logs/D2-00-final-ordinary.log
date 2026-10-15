@@ -1,0 +1,16 @@
+goos: linux
+goarch: amd64
+cpu: AMD EPYC-Milan Processor
+BenchmarkSQLIndexFetch
+    fetchmethod_bench_test.go:216: FDB_BENCH_AUDIT {"case":"BenchmarkSQLIndexFetch","phase":"fixture","prefix_bytes":6,"rows":1000}
+BenchmarkSQLIndexFetch/query=rows10/method=SCAN_AND_FETCH
+    fetchmethod_bench_test.go:290: FDB_BENCH_AUDIT {"case":"BenchmarkSQLIndexFetch/query=rows10/method=SCAN_AND_FETCH","checksum":1912770824,"index_scans":11,"method":"SCAN_AND_FETCH","phase":"before","prefix_bytes":6,"query":"SELECT id, c FROM T WHERE a \u003e= 100 AND a \u003c 110 AND c IS NOT NULL","record_loads":10,"remote_entries":0,"remote_openings":0,"rows":10}
+    fetchmethod_bench_test.go:290: FDB_BENCH_AUDIT {"case":"BenchmarkSQLIndexFetch/query=rows10/method=SCAN_AND_FETCH","checksum":1912770824,"index_scans":11,"method":"SCAN_AND_FETCH","phase":"after","prefix_bytes":6,"query":"SELECT id, c FROM T WHERE a \u003e= 100 AND a \u003c 110 AND c IS NOT NULL","record_loads":10,"remote_entries":0,"remote_openings":0,"rows":10}
+BenchmarkSQLIndexFetch/query=rows10/method=SCAN_AND_FETCH-8         	       1	   2633248 ns/op	         6.000 prefix-B	        10.00 rows/op	  142176 B/op	    1782 allocs/op
+    fetchmethod_bench_test.go:290: FDB_BENCH_AUDIT {"case":"BenchmarkSQLIndexFetch/query=rows10/method=SCAN_AND_FETCH","checksum":1912770824,"index_scans":11,"method":"SCAN_AND_FETCH","phase":"before","prefix_bytes":6,"query":"SELECT id, c FROM T WHERE a \u003e= 100 AND a \u003c 110 AND c IS NOT NULL","record_loads":10,"remote_entries":0,"remote_openings":0,"rows":10}
+    fetchmethod_bench_test.go:290: FDB_BENCH_AUDIT {"case":"BenchmarkSQLIndexFetch/query=rows10/method=SCAN_AND_FETCH","checksum":1912770824,"index_scans":11,"method":"SCAN_AND_FETCH","phase":"after","prefix_bytes":6,"query":"SELECT id, c FROM T WHERE a \u003e= 100 AND a \u003c 110 AND c IS NOT NULL","record_loads":10,"remote_entries":0,"remote_openings":0,"rows":10}
+BenchmarkSQLIndexFetch/query=rows10/method=SCAN_AND_FETCH-8         	       1	   2772119 ns/op	         6.000 prefix-B	        10.00 rows/op	  133768 B/op	    1759 allocs/op
+    fetchmethod_bench_test.go:290: FDB_BENCH_AUDIT {"case":"BenchmarkSQLIndexFetch/query=rows10/method=SCAN_AND_FETCH","checksum":1912770824,"index_scans":11,"method":"SCAN_AND_FETCH","phase":"before","prefix_bytes":6,"query":"SELECT id, c FROM T WHERE a \u003e= 100 AND a \u003c 110 AND c IS NOT NULL","record_loads":10,"remote_entries":0,"remote_openings":0,"rows":10}
+    fetchmethod_bench_test.go:290: FDB_BENCH_AUDIT {"case":"BenchmarkSQLIndexFetch/query=rows10/method=SCAN_AND_FETCH","checksum":1912770824,"index_scans":11,"method":"SCAN_AND_FETCH","phase":"after","prefix_bytes":6,"query":"SELECT id, c FROM T WHERE a \u003e= 100 AND a \u003c 110 AND c IS NOT NULL","record_loads":10,"remote_entries":0,"remote_openings":0,"rows":10}
+BenchmarkSQLIndexFetch/query=rows10/method=SCAN_AND_FETCH-8         	       1	   2594848 ns/op	         6.000 prefix-B	        10.00 rows/op	  145048 B/op	    1798 allocs/op
+PASS

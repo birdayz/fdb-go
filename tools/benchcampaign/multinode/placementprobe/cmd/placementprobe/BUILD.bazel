@@ -1,0 +1,53 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_test")
+
+# gazelle:ignore
+# Each executable contains exactly one backend (as tools/clientbench/cmd/clientbench).
+# placementprobe_cgo is the production probe: libfdb_c's getAddressesForKey is
+# transactional at the snapshot read version. placementprobe_go answers addresses
+# from the pure-Go client's location cache: its probes need --diagnostic and never
+# pass placement_receipt integrity; its ballast/control operations are exact.
+go_binary(
+    name = "placementprobe_cgo",
+    srcs = [
+        "backend_cgo.go",
+        "main.go",
+    ],
+    cgo = True,
+    clinkopts = ["-lfdb_c"],
+    gotags = ["libfdbc"],
+    pure = "off",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//tools/benchcampaign/multinode/placementprobe",
+        "@com_github_apple_foundationdb_bindings_go//src/fdb",
+    ],
+)
+
+go_binary(
+    name = "placementprobe_go",
+    srcs = [
+        "backend_go.go",
+        "main.go",
+    ],
+    pure = "on",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/fdbgo/fdb",
+        "//tools/benchcampaign/multinode/placementprobe",
+    ],
+)
+
+# Refusal paths of the CLI with the pure-Go backend; no FoundationDB needed.
+go_test(
+    name = "placementprobe_cmd_test",
+    srcs = [
+        "backend_go.go",
+        "main.go",
+        "main_test.go",
+    ],
+    pure = "on",
+    deps = [
+        "//pkg/fdbgo/fdb",
+        "//tools/benchcampaign/multinode/placementprobe",
+    ],
+)

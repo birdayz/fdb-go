@@ -2,6 +2,21 @@
 
 Raw output behind the tables in the top-level README.
 
+## Dedicated-host campaigns
+
+Each campaign's reports live in a folder named after the campaign.
+
+- [hcloud-rebench-20261014](hcloud-rebench-20261014/README.md): one dedicated
+  16-vCPU host; client (pure-Go vs CGo), Record Layer, remote fetch and SQL
+  phases, each counterbalanced across the trees of the RFC-258 work. Harness:
+  [campaign-harness.md](campaign-harness.md); campaign tooling:
+  [`tools/benchcampaign`](../../tools/benchcampaign/README.md).
+- [hcloud-multinode-vpc-20261014](hcloud-multinode-vpc-20261014/README.md):
+  four dedicated 16-vCPU hosts on an isolated private VPC (1 client host + 3
+  FoundationDB server hosts, `double` redundancy, `ssd-2`, 9 storage servers);
+  multi-node `USE_REMOTE_FETCH` vs `SCAN_AND_FETCH` (`M2rl`, `M2skip`) and
+  pure-Go vs CGo concurrency scaling at 1, 8, 32, and 64 workers (`M1`).
+
 ## Change-specific comparisons
 
 - [2026-10-12: record-load range-read parity](2026-10-12-record-load-parity/README.md)

@@ -1,0 +1,197 @@
+{
+  "version": 1,
+  "status": "test fixture: sanitized copy of a version-1 single-node design, before seal_design.py",
+  "campaign": "hcloud-rebench-20261014",
+  "production_revisions": {
+    "legacy_published": "9a9a448670a748e4ea721772ba96d70ccc4210a0",
+    "before_allocation_work_after_read_parity": "3824f14654edae8431b0085de8ebf83f5a460a08",
+    "original_remote_fetch": "5052212f520d1f888429d0bbcc749b657e27f39e",
+    "final": "267a41434a81723b07e7150869d702636a1b91a9"
+  },
+  "baseline_interpretation": "Report legacy-to-final and post-parity-to-final separately: correctness work changed the required read work before allocation optimization. Client production/dependency inputs are unchanged between legacy and post-parity, verified by Git diff; the client binary retains its actual post-parity source identity.",
+  "runtime": {
+    "go": "1.26.9",
+    "bazel": "9.0.1",
+    "bazelisk": "1.29.0",
+    "foundationdb": "7.3.77",
+    "api": 730,
+    "GOMAXPROCS": 8,
+    "GOGC": 100,
+    "GOMEMLIMIT": "off",
+    "GODEBUG": "",
+    "TZ": "UTC",
+    "LC_ALL": "C",
+    "guest_topology": "AMD EPYC Milan; eight exported cores, two SMT threads per core; one NUMA node",
+    "housekeeping_cpus": "0-1",
+    "server_cpus": "2-7",
+    "client_cpus": "8-15",
+    "affinity_evidence": "lscpu and thread_siblings_list verify complete disjoint sibling groups; guest affinity is not a claim of physical host isolation",
+    "cluster": "one dedicated FDB process; single redundancy; SSD engine for client; memory engine for Record Layer and SQL; no other workload during timing",
+    "network": "private host/client veth; client network namespace has no default route; server binds only 192.0.2.1:4500; baseline has no artificial delay"
+  },
+  "sample_policy": {
+    "seed": 641001,
+    "client_three_arm_blocks": 6,
+    "client_iterations_per_worker": 3000,
+    "client_warmup_per_worker": 200,
+    "testing_b_three_arm_blocks": 6,
+    "testing_b_samples_per_arm_per_block": 3,
+    "testing_b_benchtime_seconds": 3,
+    "two_arm_blocks": 6,
+    "four_arm_remote_blocks": 8,
+    "four_arm_orders": "two randomized complete Williams-square repetitions, preregistered before timing",
+    "cooldown_seconds": 2,
+    "quiescence_seconds": 1,
+    "max_steal_fraction": 0.01,
+    "unit_of_resampling": "whole balanced block, keeping within-process repeats clustered",
+    "uncertainty": "nominal 95% paired block-bootstrap intervals and raw per-run results; client p99 comes from per-transaction samples, testing.B means are not p99",
+    "exclusions": "No post-hoc outlier removal; warmup is predefined and separate; all adverse/aborted runs retained. No repeated campaigns to obtain favorable results. Any environmental failure is diagnosed and a new protocol/campaign version identifies the restart.",
+    "performance_decision": "No automatic default flip or fixed minimum improvement policy. Report uncertainty, order effects and regressions; no aggregate speedup fabricated across workloads."
+  },
+  "phases": [
+    {
+      "id": "A",
+      "question": "Client cumulative before/final with native control",
+      "arms": [
+        "before-Go",
+        "final-Go",
+        "CGo-7.3.77"
+      ],
+      "workloads": [
+        "grv",
+        "get100",
+        "get1000",
+        "get10000",
+        "read1000",
+        "range10",
+        "range100",
+        "set100",
+        "ryw",
+        "batchset50",
+        "batchset50x1000"
+      ],
+      "workers": 1,
+      "wall_cap_seconds": 2700
+    },
+    {
+      "id": "B",
+      "question": "Record Layer published baseline, parity cost and optimized final",
+      "arms": [
+        "legacy",
+        "before",
+        "final"
+      ],
+      "workloads": [
+        "SaveRecord",
+        "LoadRecord",
+        "SaveRecordWithIndex",
+        "ScanIndexRecords/serial",
+        "ScanIndexRecords/pipelined",
+        "ScanRecords",
+        "ScanRecordsSplitVersioned",
+        "SaveSplitRecord"
+      ],
+      "wall_cap_seconds": 3600
+    },
+    {
+      "id": "C1",
+      "question": "Initial and final remote fetch against ordinary controls",
+      "arms": [
+        "pr2-ordinary",
+        "pr2-remote",
+        "final-ordinary",
+        "final-remote"
+      ],
+      "cells": {
+        "range": [
+          "limit-1-broad",
+          "exact-10",
+          "all-1000"
+        ],
+        "record": [
+          "small-unsplit",
+          "two-chunk-split"
+        ]
+      },
+      "reverse": false,
+      "skip": 0,
+      "wall_cap_seconds": 4200
+    },
+    {
+      "id": "D1",
+      "question": "SQL before/final including parity anchor",
+      "arms": [
+        "legacy",
+        "before",
+        "final"
+      ],
+      "workloads": [
+        "FDB_PlanCacheHit",
+        "FDB_IndexScanRange",
+        "FDB_TimestampInsert"
+      ],
+      "wall_cap_seconds": 1800
+    },
+    {
+      "id": "C2",
+      "question": "Current reverse and executor positive-Skip paths",
+      "arms": [
+        "final-ordinary",
+        "final-remote"
+      ],
+      "cells": [
+        "reverse-small-1000",
+        "reverse-split-1000",
+        "executor-skip3-small-10",
+        "executor-skip3-small-1000"
+      ],
+      "wall_cap_seconds": 1500
+    },
+    {
+      "id": "D2",
+      "question": "Actual noncovering SQL remote fetch, warmed pinned connections",
+      "arms": [
+        "final-ordinary",
+        "final-remote"
+      ],
+      "rows": [
+        10,
+        1000
+      ],
+      "wall_cap_seconds": 1200
+    },
+    {
+      "id": "A2",
+      "question": "Client closed-loop concurrency scaling",
+      "arms": [
+        "before-Go",
+        "final-Go",
+        "CGo-7.3.77"
+      ],
+      "workloads": [
+        "get100",
+        "range100",
+        "batchset50"
+      ],
+      "workers": 8,
+      "wall_cap_seconds": 1200
+    },
+    {
+      "id": "C3",
+      "question": "Synthetic network latency sensitivity, not a real multi-host result",
+      "arms": [
+        "final-ordinary",
+        "final-remote"
+      ],
+      "rows": 1000,
+      "records": [
+        "small-unsplit",
+        "two-chunk-split"
+      ],
+      "netem_one_way_ms": 0.25,
+      "nominal_rtt_ms": 0.5,
+      "verify_actual_rtt": true,
+      "wall_cap_seconds": 1200
+    }
+  ]
+}

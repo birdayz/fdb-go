@@ -1,0 +1,35 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+# Placement probe (H5) and ballast/control writer (H6) for the multi-node
+# campaign. Unit tests use an in-memory fake cluster; no live FoundationDB.
+go_library(
+    name = "placementprobe",
+    srcs = [
+        "ballast.go",
+        "cluster.go",
+        "output.go",
+        "placement.go",
+    ],
+    importpath = "fdb.dev/tools/benchcampaign/multinode/placementprobe",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/tuple",
+    ],
+)
+
+go_test(
+    name = "placementprobe_test",
+    srcs = ["placement_test.go"],
+    data = glob(["testdata/**"]),
+    embed = [":placementprobe"],
+    deps = ["//pkg/fdbgo/fdb/tuple"],
+)
+
+# The probe goldens, shared with //tools/benchcampaign/multinode's Python
+# compatibility test (test_placementprobe.py).
+filegroup(
+    name = "goldens",
+    srcs = glob(["testdata/*.golden.json"]),
+    visibility = ["//tools/benchcampaign/multinode:__pkg__"],
+)

@@ -7,12 +7,14 @@ on:
     branches: ["master"]
     paths:
       - "website/**"
+      - "docs/benchmarks/**"
       - "CHANGELOG.md"
       - ".github/workflows/website.yml"
       # A new/removed nested Go module changes which vanity-import stubs the site must
       # serve, so it has to trigger a redeploy even when nothing under website/ changed.
       - "**/go.mod"
       - "scripts/gen-vanity-modules.sh"
+      - "scripts/sync-website-benchmarks.py"
   # The site carries master's test report (fdb.dev/reports/latest.html, the README badge),
   # so each finished master CI run redeploys it.
   workflow_run:
@@ -58,6 +60,8 @@ jobs:
             printf -- '---\ntitle: Changelog\ntoc: true\n---\n\n'
             cat CHANGELOG.md
           } > website/content/changelog.md
+      - name: Sync benchmark campaign pages (single source of truth)
+        run: python3 scripts/sync-website-benchmarks.py
       - name: Derive vanity-import module roots (single source of truth)
         # Via `bash`, not as an executable — core.fileMode=false in this repo means a
         # chmod +x silently never reaches the index. See the same note in ci.yml.

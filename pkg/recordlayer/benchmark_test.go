@@ -28,6 +28,17 @@ func ensureBenchDB(b *testing.B) {
 		if sharedDB != nil {
 			return
 		}
+		// FDB_BENCH_CLUSTER_FILE names an existing benchmark cluster; no
+		// container is started. Unset, the benchmarks behave as before.
+		if external := os.Getenv("FDB_BENCH_CLUSTER_FILE"); external != "" {
+			fdb.MustAPIVersion(730)
+			dbConn, err := fdb.OpenDatabase(external)
+			if err != nil {
+				b.Fatalf("failed to open FDB_BENCH_CLUSTER_FILE %q: %v", external, err)
+			}
+			sharedDB = NewFDBDatabase(dbConn)
+			return
+		}
 		// Container startup is BOUNDED. An unbounded context here blocks
 		// forever when Docker is slow — a pull, a busy host, an
 		// oversubscribed daemon — and a benchmark that hangs reports
@@ -68,8 +79,63 @@ func ensureBenchDB(b *testing.B) {
 // benchSubspace returns a unique subspace for the given benchmark, ensuring
 // isolation across concurrent benchmarks. Uses b.Name() as the key prefix.
 // This is separate from specSubspace() which relies on Ginkgo's CurrentSpecReport.
+//
+// The subspace is cleared on every call, outside any timer: Go runs a benchmark
+// body more than once to size b.N, and each run must start from an empty store,
+// so write benchmarks always insert fresh records. Call after ensureBenchDB.
 func benchSubspace(b *testing.B) subspace.Subspace {
-	return subspace.FromBytes(tuple.Tuple{b.Name()}.Pack())
+	b.Helper()
+	ss := subspace.FromBytes(tuple.Tuple{b.Name()}.Pack())
+	if _, err := sharedDB.Run(context.Background(), func(rtx *FDBRecordContext) (any, error) {
+		rtx.Transaction().ClearRange(ss)
+		return nil, nil
+	}); err != nil {
+		b.Fatalf("clear benchmark subspace: %v", err)
+	}
+	return ss
+}
+
+// verifyOrders checks, outside the timer, that Orders first..first+count-1
+// exist (present) or do not, and that Order first+count does not exist when
+// present, so a write benchmark wrote exactly the IDs it claims. It logs one
+// FDB_BENCH_AUDIT line.
+func verifyOrders(b *testing.B, md *RecordMetaData, ss subspace.Subspace, first, count int64, present bool) {
+	b.Helper()
+	b.StopTimer()
+	ctx := context.Background()
+	end := first + count
+	if present {
+		end++ // the next ID must be absent
+	}
+	const batch = 20
+	for lo := first; lo < end; lo += batch {
+		if _, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
+			if err != nil {
+				return nil, err
+			}
+			for id := lo; id < min(end, lo+batch); id++ {
+				record, err := store.LoadRecord(tuple.Tuple{id})
+				if err != nil {
+					return nil, err
+				}
+				want := present && id < first+count
+				if (record != nil) != want {
+					return nil, fmt.Errorf("order %d exists=%v, want %v", id, record != nil, want)
+				}
+				if record != nil {
+					if order, ok := record.Record.(*demopb.Order); !ok || order.GetOrderId() != id {
+						return nil, fmt.Errorf("order %d: got %v", id, record.Record)
+					}
+				}
+			}
+			return nil, nil
+		}); err != nil {
+			b.Fatalf("verify orders: %v", err)
+		}
+	}
+	b.Logf("FDB_BENCH_AUDIT {\"case\":%q,\"first_id\":%d,\"count\":%d,\"present\":%v,\"n\":%d,\"prefix_bytes\":%d}",
+		b.Name(), first, count, present, b.N, len(ss.Bytes()))
 }
 
 // benchMetaData builds metadata with Order/Customer/TypedRecord primary keys.
@@ -184,6 +250,7 @@ func BenchmarkSaveRecord(b *testing.B) {
 			b.Fatalf("iteration %d: %v", i, err)
 		}
 	}
+	verifyOrders(b, md, ss, 0, int64(b.N), true)
 }
 
 // BenchmarkSaveRecordBuild measures SaveRecord with Build() instead of Open().
@@ -228,6 +295,7 @@ func BenchmarkSaveRecordBuild(b *testing.B) {
 			b.Fatalf("iteration %d: %v", i, err)
 		}
 	}
+	verifyOrders(b, md, ss, 0, int64(b.N), true)
 }
 
 // BenchmarkLoadRecord measures the cost of loading a previously saved Order by
@@ -450,6 +518,7 @@ func BenchmarkSaveRecordWithIndex(b *testing.B) {
 			b.Fatalf("iteration %d: %v", i, err)
 		}
 	}
+	verifyOrders(b, md, ss, 0, int64(b.N), true)
 }
 
 // BenchmarkScanIndex measures scanning all entries from a VALUE index.
@@ -647,6 +716,7 @@ func BenchmarkSaveRecordWithMultipleIndexes(b *testing.B) {
 			b.Fatalf("iteration %d: %v", i, err)
 		}
 	}
+	verifyOrders(b, md, ss, 0, int64(b.N), true)
 }
 
 // BenchmarkGetRecordCount measures reading the atomic record count.
@@ -753,6 +823,7 @@ func BenchmarkSaveLargeRecord(b *testing.B) {
 			b.Fatalf("iteration %d: %v", i, err)
 		}
 	}
+	verifyOrders(b, md, ss, 0, int64(b.N), true)
 }
 
 // BenchmarkSaveSplitRecord measures saving a ~250KB record that triggers the
@@ -804,6 +875,7 @@ func BenchmarkSaveSplitRecord(b *testing.B) {
 			b.Fatalf("split-save %d: %v", i, err)
 		}
 	}
+	verifyOrders(b, md, ss, 0, int64(b.N), true)
 }
 
 // BenchmarkStoreOpen measures the cost of opening an existing store in a new
@@ -923,6 +995,8 @@ func BenchmarkDeleteRecord(b *testing.B) {
 			b.Fatalf("delete %d: %v", i, err)
 		}
 	}
+	verifyOrders(b, md, ss, 0, int64(b.N), false)
+	verifyOrders(b, md, ss, int64(b.N), 100, true)
 }
 
 // BenchmarkSaveRecordWithCountAndIndex measures saving with both record counting
@@ -968,6 +1042,7 @@ func BenchmarkSaveRecordWithCountAndIndex(b *testing.B) {
 			b.Fatalf("save %d: %v", i, err)
 		}
 	}
+	verifyOrders(b, md, ss, 0, int64(b.N), true)
 }
 
 // BenchmarkSaveRecordBatch measures saving 10 records in a single transaction.
@@ -1009,6 +1084,7 @@ func BenchmarkSaveRecordBatch(b *testing.B) {
 			b.Fatalf("batch %d: %v", i, err)
 		}
 	}
+	verifyOrders(b, md, ss, 0, 10*int64(b.N), true)
 }
 
 // BenchmarkScanWithContinuation measures paged scanning with continuation tokens.

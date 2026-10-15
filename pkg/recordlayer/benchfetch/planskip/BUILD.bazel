@@ -1,0 +1,22 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+# Plan-level Skip benchmarks under each index fetch method (RFC-258 #923/#929
+# trees only). The binary has no tests; run its benchmarks explicitly.
+go_test(
+    name = "planskip_test",
+    srcs = ["planskip_bench_test.go"],
+    deps = [
+        "//gen/demopb",
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+        "//pkg/recordlayer",
+        "//pkg/recordlayer/indexfetch",
+        "//pkg/recordlayer/query/executor",
+        "//pkg/recordlayer/query/plan/cascades/predicates",
+        "//pkg/recordlayer/query/plan/cascades/values",
+        "//pkg/recordlayer/query/plan/plans",
+        "//pkg/testutil/benchcluster",
+        "@org_golang_google_protobuf//proto",
+    ],
+)

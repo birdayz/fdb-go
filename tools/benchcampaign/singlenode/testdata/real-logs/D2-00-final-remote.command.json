@@ -1,0 +1,1 @@
+["ip", "netns", "exec", "fdb-bench-client", "taskset", "-c", "8-15", "/srv/fdb-bench/bin/sqlfetch-final", "-test.run=^$", "-test.bench=^BenchmarkSQLIndexFetch$/^query=rows10$/^method=USE_REMOTE_FETCH$", "-test.count=3", "-test.benchmem", "-test.v", "-test.benchtime=1x"]

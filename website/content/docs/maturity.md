@@ -57,9 +57,9 @@ every extended fuzz, race, or recovery configuration has run. No fresh full-suit
 or production-workload result is asserted by this page.
 
 Earlier Go-vs-libfdb_c speedup and write-parity claims were withdrawn. See the
-[benchmark correction and methodology](https://github.com/birdayz/fdb-go/blob/master/pkg/fdbgo/bench/PERFORMANCE.md);
-the README's separate [R17 experiment](https://github.com/birdayz/fdb-go/blob/master/README.md#performance-vs-libfdb_c)
-measures a frozen historical patchset, not current master or the release cut.
+[benchmark correction and methodology](https://github.com/birdayz/fdb-go/blob/master/pkg/fdbgo/bench/PERFORMANCE.md),
+and review the preregistered single-node and 4-node VPC campaign measurements in
+[Benchmarks](/docs/benchmarks/).
 
 ## Version targets
 

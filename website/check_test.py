@@ -7,7 +7,7 @@ import re
 import tempfile
 import unittest
 
-from check import check
+from check import PUBLIC_PAGES, SECTION_PAGES, check
 
 
 class SiteCheckTest(unittest.TestCase):
@@ -15,8 +15,8 @@ class SiteCheckTest(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
-        for path in ["/", "/docs/", "/docs/getting-started/", "/docs/maturity/"]:
-            kind = "website" if path in ["/", "/docs/"] else "article"
+        for path in PUBLIC_PAGES:
+            kind = "website" if path in SECTION_PAGES else "article"
             page = self.root / path.lstrip("/") / "index.html"
             page.parent.mkdir(parents=True, exist_ok=True)
             page.write_text(f'''<!doctype html><html><head>
@@ -103,7 +103,22 @@ class SiteCheckTest(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, "Missing public pages"):
             self.run_check()
 
-    def test_rejects_empty_site(self):
+    def test_benchmark_sync_in_sync_and_clean(self):
+        import importlib.util
+        import subprocess
+        import sys
+        repo = Path(__file__).resolve().parent.parent
+        script = repo / "scripts/sync-website-benchmarks.py"
+        if script.is_file():
+            subprocess.run([sys.executable, "-B", str(script), "--check"], check=True)
+            spec = importlib.util.spec_from_file_location("sync_wb", script)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            for bad in ["10.88.0.10", "172.31.99.1", "192.168.1.5", "/home/birdy/x", "/srv/fdb-bench/x"]:
+                with self.assertRaises(SystemExit):
+                    mod.check_text(Path("fixture.md"), f"host {bad} here")
+
+    def test_empty_site(self):
         for page in self.root.rglob("index.html"):
             page.unlink()
         with self.assertRaisesRegex(SystemExit, "Missing public pages"):

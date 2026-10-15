@@ -1515,6 +1515,12 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   overshooting index-scan Skip reads, and in serializable mode conflicts on, keys past the
   range. libfdb_c resolves within the read (ReadYourWrites.actor.cpp:725-760) and conflicts
   on the requested range (:246-282). Client team.
+- [ ] `pkg/fdbgo`: make `GetAddressesForKey` transactional. Go answers from the location
+  cache (`pkg/fdbgo/client/transaction.go:2698`); libfdb_c 7.3.77 starts the transaction and
+  reads `\xff/serverTag`, the key's `\xff/keyServers` entry and the server interfaces at the
+  read version (NativeAPI.actor.cpp:5707-5753). Found by the multi-node placement probe
+  review; the probe does not rely on the Go path. Client team; held while feature work is
+  paused.
 
 ## Test lanes and test-speed work (committed with the temporal change)
 

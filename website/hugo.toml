@@ -28,13 +28,17 @@ hasCJKLanguage = false
     pageRef = "/docs"
     weight = 1
   [[menu.main]]
+    name = "Benchmarks"
+    url = "/docs/benchmarks/"
+    weight = 2
+  [[menu.main]]
     name = "Status"
     url = "/docs/maturity/"
-    weight = 2
+    weight = 3
   [[menu.main]]
     name = "Changelog"
     pageRef = "/changelog"
-    weight = 3
+    weight = 4
   [[menu.main]]
     name = "Appearance"
     weight = 7

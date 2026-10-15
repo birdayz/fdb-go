@@ -1,0 +1,14 @@
+goos: linux
+goarch: amd64
+cpu: AMD EPYC-Milan Processor
+BenchmarkFDB_TimestampInsert
+    common_bench_test.go:315: FDB_BENCH_AUDIT {"case":"BenchmarkFDB_TimestampInsert","first_id":1,"last_id":1,"prefix_bytes":6,"rows":1}
+    common_bench_test.go:315: FDB_BENCH_AUDIT {"case":"BenchmarkFDB_TimestampInsert","first_id":1,"last_id":1000,"prefix_bytes":6,"rows":1000}
+BenchmarkFDB_TimestampInsert-8   	    1000	   5622494 ns/op	         6.000 prefix-B	  200092 B/op	    3208 allocs/op
+    common_bench_test.go:315: FDB_BENCH_AUDIT {"case":"BenchmarkFDB_TimestampInsert","first_id":1,"last_id":1,"prefix_bytes":6,"rows":1}
+    common_bench_test.go:315: FDB_BENCH_AUDIT {"case":"BenchmarkFDB_TimestampInsert","first_id":1,"last_id":1000,"prefix_bytes":6,"rows":1000}
+BenchmarkFDB_TimestampInsert-8   	    1000	   5601389 ns/op	         6.000 prefix-B	  199284 B/op	    3203 allocs/op
+    common_bench_test.go:315: FDB_BENCH_AUDIT {"case":"BenchmarkFDB_TimestampInsert","first_id":1,"last_id":1,"prefix_bytes":6,"rows":1}
+    common_bench_test.go:315: FDB_BENCH_AUDIT {"case":"BenchmarkFDB_TimestampInsert","first_id":1,"last_id":1000,"prefix_bytes":6,"rows":1000}
+BenchmarkFDB_TimestampInsert-8   	    1000	   5608970 ns/op	         6.000 prefix-B	  199204 B/op	    3203 allocs/op
+PASS
