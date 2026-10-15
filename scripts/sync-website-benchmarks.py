@@ -64,12 +64,22 @@ def ci_class(pt: float, lo: float, hi: float) -> str:
     return 'ci-neutral'
 
 
+def format_tick(t: float) -> str:
+    if abs(t - 1.0) < 1e-6:
+        return '1.0×'
+    s = f'{t:.2f}'.rstrip('0').rstrip('.')
+    if '.' not in s:
+        s += '.0'
+    return s + '×'
+
+
 def render_forest_svg(title: str, subtitle: str, groups: list, ticks: list, left_label: str, right_label: str) -> str:
     """Render a log2-scaled forest plot SVG with exact 95% CI whiskers and right-aligned numeric column."""
-    W = 860
-    pad_l = 215
-    pad_r = 165
-    plot_w = W - pad_l - pad_r
+    max_label_chars = max((len(lbl) for _, rows in groups for lbl, _ in rows), default=20)
+    pad_l = max(230, int(max_label_chars * 8.2) + 28)
+    pad_r = 180
+    plot_w = 480
+    W = pad_l + plot_w + pad_r
     row_h = 24
     sec_h = 26
     pad_t = 36
@@ -79,12 +89,17 @@ def render_forest_svg(title: str, subtitle: str, groups: list, ticks: list, left
     total_secs = sum(1 for gtitle, _ in groups if gtitle)
     H = pad_t + total_rows * row_h + total_secs * sec_h + pad_b
 
-    lmin = math.log2(min(ticks))
-    lmax = math.log2(max(ticks))
+    tmin, tmax = min(ticks), max(ticks)
+    lmin = math.log2(tmin)
+    lmax = math.log2(tmax)
+    tick_labels = [format_tick(t) for t in ticks]
+    if len(set(tick_labels)) != len(tick_labels):
+        raise ValueError(f'{title}: duplicate formatted axis tick labels {tick_labels} for {ticks}')
 
     def x_of(val: float) -> float:
-        v = max(min(ticks), min(max(ticks), val))
-        return pad_l + ((math.log2(v) - lmin) / (lmax - lmin)) * plot_w
+        if not (tmin <= val <= tmax):
+            raise ValueError(f'{title}: value {val} falls outside axis tick bounds [{tmin}, {tmax}]')
+        return pad_l + ((math.log2(val) - lmin) / (lmax - lmin)) * plot_w
 
     out = [
         '<figure class="bench-figure">',
@@ -95,12 +110,11 @@ def render_forest_svg(title: str, subtitle: str, groups: list, ticks: list, left
     # Grid lines and top/bottom axis labels
     y_top = pad_t - 8
     y_bot = H - pad_b + 4
-    for t in ticks:
+    for t, lbl in zip(ticks, tick_labels):
         x = x_of(t)
         is_one = abs(t - 1.0) < 1e-6
         cls = 'parity-line' if is_one else 'grid-line'
         out.append(f'<line class="{cls}" x1="{x:.1f}" y1="{y_top}" x2="{x:.1f}" y2="{y_bot}"/>')
-        lbl = '1.0×' if is_one else (f'{t:.2f}×' if t < 1.0 else f'{t:.1f}×')
         out.append(f'<text class="axis-text" x="{x:.1f}" y="{y_top - 6}" text-anchor="middle">{lbl}</text>')
         out.append(f'<text class="axis-text" x="{x:.1f}" y="{y_bot + 15}" text-anchor="middle">{lbl}</text>')
 
@@ -152,17 +166,20 @@ def render_forest_svg(title: str, subtitle: str, groups: list, ticks: list, left
 
 def render_grouped_bars_svg(title: str, subtitle: str, items: list, unit: str, max_val: float, ticks: list) -> str:
     """Render horizontal grouped bars (e.g. Pure-Go vs CGo absolute latency with p50 bar + p99 whisker)."""
-    W = 860
-    pad_l = 185
-    pad_r = 165
-    plot_w = W - pad_l - pad_r
+    max_label_chars = max((len(lbl) for lbl, *_ in items), default=16)
+    pad_l = max(195, int(max_label_chars * 8.2) + 28)
+    pad_r = 185
+    plot_w = 480
+    W = pad_l + plot_w + pad_r
     row_h = 34
     pad_t = 30
     pad_b = 30
     H = pad_t + len(items) * row_h + pad_b
 
     def x_of(v: float) -> float:
-        return pad_l + (min(max_val, max(0.0, v)) / max_val) * plot_w
+        if not (0.0 <= v <= max_val):
+            raise ValueError(f'{title}: value {v} falls outside [0, {max_val}]')
+        return pad_l + (v / max_val) * plot_w
 
     out = [
         '<figure class="bench-figure">',
@@ -264,7 +281,7 @@ def build_page_charts(cid: str, fname: str, raw_md: str) -> str:
         by_key = {(r[0], r[1], r[2]): r for r in abs_rows if len(r) >= 7}
         abs_items = []
         for ph, w in [
-            ('M1w1', 'grv'), ('M1w1', 'get100'), ('M1w1', 'get1000'), ('M1w1', 'range100'), ('M1w1', 'set100'), ('M1w1', 'batchset50'),
+            ('M1w1', 'grv'), ('M1w1', 'get100'), ('M1w1', 'get1000'), ('M1w1', 'range100'), ('M1w1', 'set100'), ('M1w1', 'batchset50'), ('M1w1', 'batchset50x1000'),
             ('M1w64', 'grv'), ('M1w64', 'get100'), ('M1w64', 'get1000'), ('M1w64', 'range100'), ('M1w64', 'set100'),
         ]:
             go_r = by_key.get((ph, w, 'final pure-Go'))
@@ -297,9 +314,11 @@ def build_page_charts(cid: str, fname: str, raw_md: str) -> str:
     if cid == 'hcloud-multinode-vpc-20261014' and fname == 'phase-m2-remotefetch.md':
         rl_rows = extract_md_table(raw_md, '### `M2rl`')
         sk_rows = extract_md_table(raw_md, '### `M2skip`')
+        def short_place(p: str) -> str:
+            return 'cross-srv' if p == 'cross-server' else p.replace('partially colocated ', '').strip('()')
         ns_groups = [
-            ('M2rl: BenchmarkIndexFetch (3-node double ssd-2)', [(f"{r[0]} [{r[1]}]", r[2]) for r in rl_rows]),
-            ('M2skip: BenchmarkPlanSkip (3-node double ssd-2)', [(f"{r[0]} [{r[1]}]", r[2]) for r in sk_rows]),
+            ('M2rl: BenchmarkIndexFetch (3-node double ssd-2)', [(f"{r[0]} [{short_place(r[1])}]", r[2]) for r in rl_rows]),
+            ('M2skip: BenchmarkPlanSkip (3-node double ssd-2)', [(f"{r[0]} [{short_place(r[1])}]", r[2]) for r in sk_rows]),
         ]
         al_groups = [
             ('M2rl: Client Go allocs/op Ratio', [(r[0], r[4]) for r in rl_rows]),

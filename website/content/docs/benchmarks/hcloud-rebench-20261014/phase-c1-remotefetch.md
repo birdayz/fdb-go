@@ -58,84 +58,84 @@ Both trees ran byte-identical benchmark source
 
 <figure class="bench-figure">
 <figcaption><strong>Figure C1.1: Forward Remote Fetch vs Ordinary Scan — Final Tree (log₂ scale, 95% CI)</strong> — 8 Williams-square blocks × 3 repeats on single-node memory engine. Below 1.0× favors USE_REMOTE_FETCH.</figcaption>
-<svg class="bench-svg" viewBox="0 0 860 580" role="img" aria-label="Figure C1.1: Forward Remote Fetch vs Ordinary Scan — Final Tree (log₂ scale, 95% CI)">
-<line class="grid-line" x1="215.0" y1="28" x2="215.0" y2="550"/>
-<text class="axis-text" x="215.0" y="22" text-anchor="middle">0.30×</text>
-<text class="axis-text" x="215.0" y="565" text-anchor="middle">0.30×</text>
-<line class="grid-line" x1="382.2" y1="28" x2="382.2" y2="550"/>
-<text class="axis-text" x="382.2" y="22" text-anchor="middle">0.50×</text>
-<text class="axis-text" x="382.2" y="565" text-anchor="middle">0.50×</text>
-<line class="grid-line" x1="492.4" y1="28" x2="492.4" y2="550"/>
-<text class="axis-text" x="492.4" y="22" text-anchor="middle">0.70×</text>
-<text class="axis-text" x="492.4" y="565" text-anchor="middle">0.70×</text>
-<line class="parity-line" x1="609.1" y1="28" x2="609.1" y2="550"/>
-<text class="axis-text" x="609.1" y="22" text-anchor="middle">1.0×</text>
-<text class="axis-text" x="609.1" y="565" text-anchor="middle">1.0×</text>
-<line class="grid-line" x1="695.0" y1="28" x2="695.0" y2="550"/>
-<text class="axis-text" x="695.0" y="22" text-anchor="middle">1.3×</text>
-<text class="axis-text" x="695.0" y="565" text-anchor="middle">1.3×</text>
-<text class="axis-text" x="601.1" y="9" text-anchor="end">← USE_REMOTE_FETCH lower</text>
-<text class="axis-text" x="617.1" y="9" text-anchor="start">SCAN_AND_FETCH lower →</text>
-<line class="section-divider" x1="8" y1="40" x2="852" y2="40"/>
+<svg class="bench-svg" viewBox="0 0 890 580" role="img" aria-label="Figure C1.1: Forward Remote Fetch vs Ordinary Scan — Final Tree (log₂ scale, 95% CI)">
+<line class="grid-line" x1="230.0" y1="28" x2="230.0" y2="550"/>
+<text class="axis-text" x="230.0" y="22" text-anchor="middle">0.3×</text>
+<text class="axis-text" x="230.0" y="565" text-anchor="middle">0.3×</text>
+<line class="grid-line" x1="397.2" y1="28" x2="397.2" y2="550"/>
+<text class="axis-text" x="397.2" y="22" text-anchor="middle">0.5×</text>
+<text class="axis-text" x="397.2" y="565" text-anchor="middle">0.5×</text>
+<line class="grid-line" x1="507.4" y1="28" x2="507.4" y2="550"/>
+<text class="axis-text" x="507.4" y="22" text-anchor="middle">0.7×</text>
+<text class="axis-text" x="507.4" y="565" text-anchor="middle">0.7×</text>
+<line class="parity-line" x1="624.1" y1="28" x2="624.1" y2="550"/>
+<text class="axis-text" x="624.1" y="22" text-anchor="middle">1.0×</text>
+<text class="axis-text" x="624.1" y="565" text-anchor="middle">1.0×</text>
+<line class="grid-line" x1="710.0" y1="28" x2="710.0" y2="550"/>
+<text class="axis-text" x="710.0" y="22" text-anchor="middle">1.3×</text>
+<text class="axis-text" x="710.0" y="565" text-anchor="middle">1.3×</text>
+<text class="axis-text" x="616.1" y="9" text-anchor="end">← USE_REMOTE_FETCH lower</text>
+<text class="axis-text" x="632.1" y="9" text-anchor="start">SCAN_AND_FETCH lower →</text>
+<line class="section-divider" x1="8" y1="40" x2="882" y2="40"/>
 <text class="section-title" x="10" y="55">Mean Time (ns/op): final-remote / final-ordinary</text>
-<text class="row-label" x="203" y="79.2" text-anchor="end">small-limit-1-broad</text>
-<g class="ci-win"><title>small-limit-1-broad: 0.838× [0.795, 0.900]</title><line x1="534.0" y1="75.2" x2="574.6" y2="75.2" stroke-width="2.2"/><line x1="534.0" y1="71.2" x2="534.0" y2="79.2" stroke-width="1.8"/><line x1="574.6" y1="71.2" x2="574.6" y2="79.2" stroke-width="1.8"/><circle cx="551.3" cy="75.2" r="3.8"/></g>
-<text class="val-text" x="707" y="79.2">0.838× [0.795, 0.900]</text>
-<text class="row-label" x="203" y="103.2" text-anchor="end">split-limit-1-broad</text>
-<g class="ci-win"><title>split-limit-1-broad: 0.707× [0.685, 0.735]</title><line x1="485.3" y1="99.2" x2="508.3" y2="99.2" stroke-width="2.2"/><line x1="485.3" y1="95.2" x2="485.3" y2="103.2" stroke-width="1.8"/><line x1="508.3" y1="95.2" x2="508.3" y2="103.2" stroke-width="1.8"/><circle cx="495.6" cy="99.2" r="3.8"/></g>
-<text class="val-text" x="707" y="103.2">0.707× [0.685, 0.735]</text>
-<text class="row-label" x="203" y="127.2" text-anchor="end">small-exact-10</text>
-<g class="ci-win"><title>small-exact-10: 0.733× [0.724, 0.743]</title><line x1="503.4" y1="123.2" x2="511.9" y2="123.2" stroke-width="2.2"/><line x1="503.4" y1="119.2" x2="503.4" y2="127.2" stroke-width="1.8"/><line x1="511.9" y1="119.2" x2="511.9" y2="127.2" stroke-width="1.8"/><circle cx="507.4" cy="123.2" r="3.8"/></g>
-<text class="val-text" x="707" y="127.2">0.733× [0.724, 0.743]</text>
-<text class="row-label" x="203" y="151.2" text-anchor="end">split-exact-10</text>
-<g class="ci-win"><title>split-exact-10: 0.872× [0.843, 0.904]</title><line x1="553.2" y1="147.2" x2="576.1" y2="147.2" stroke-width="2.2"/><line x1="553.2" y1="143.2" x2="553.2" y2="151.2" stroke-width="1.8"/><line x1="576.1" y1="143.2" x2="576.1" y2="151.2" stroke-width="1.8"/><circle cx="564.3" cy="147.2" r="3.8"/></g>
-<text class="val-text" x="707" y="151.2">0.872× [0.843, 0.904]</text>
-<text class="row-label" x="203" y="175.2" text-anchor="end">small-all-1000</text>
-<g class="ci-win"><title>small-all-1000: 0.341× [0.321, 0.356]</title><line x1="237.1" y1="171.2" x2="271.0" y2="171.2" stroke-width="2.2"/><line x1="237.1" y1="167.2" x2="237.1" y2="175.2" stroke-width="1.8"/><line x1="271.0" y1="167.2" x2="271.0" y2="175.2" stroke-width="1.8"/><circle cx="256.9" cy="171.2" r="3.8"/></g>
-<text class="val-text" x="707" y="175.2">0.341× [0.321, 0.356]</text>
-<text class="row-label" x="203" y="199.2" text-anchor="end">split-all-1000</text>
-<g class="ci-reg"><title>split-all-1000: 1.150× [1.129, 1.181]</title><line x1="648.8" y1="195.2" x2="663.6" y2="195.2" stroke-width="2.2"/><line x1="648.8" y1="191.2" x2="648.8" y2="199.2" stroke-width="1.8"/><line x1="663.6" y1="191.2" x2="663.6" y2="199.2" stroke-width="1.8"/><circle cx="654.9" cy="195.2" r="3.8"/></g>
-<text class="val-text" x="707" y="199.2">1.150× [1.129, 1.181]</text>
-<line class="section-divider" x1="8" y1="210" x2="852" y2="210"/>
+<text class="row-label" x="218" y="79.2" text-anchor="end">small-limit-1-broad</text>
+<g class="ci-win"><title>small-limit-1-broad: 0.838× [0.795, 0.900]</title><line x1="549.0" y1="75.2" x2="589.6" y2="75.2" stroke-width="2.2"/><line x1="549.0" y1="71.2" x2="549.0" y2="79.2" stroke-width="1.8"/><line x1="589.6" y1="71.2" x2="589.6" y2="79.2" stroke-width="1.8"/><circle cx="566.3" cy="75.2" r="3.8"/></g>
+<text class="val-text" x="722" y="79.2">0.838× [0.795, 0.900]</text>
+<text class="row-label" x="218" y="103.2" text-anchor="end">split-limit-1-broad</text>
+<g class="ci-win"><title>split-limit-1-broad: 0.707× [0.685, 0.735]</title><line x1="500.3" y1="99.2" x2="523.3" y2="99.2" stroke-width="2.2"/><line x1="500.3" y1="95.2" x2="500.3" y2="103.2" stroke-width="1.8"/><line x1="523.3" y1="95.2" x2="523.3" y2="103.2" stroke-width="1.8"/><circle cx="510.6" cy="99.2" r="3.8"/></g>
+<text class="val-text" x="722" y="103.2">0.707× [0.685, 0.735]</text>
+<text class="row-label" x="218" y="127.2" text-anchor="end">small-exact-10</text>
+<g class="ci-win"><title>small-exact-10: 0.733× [0.724, 0.743]</title><line x1="518.4" y1="123.2" x2="526.9" y2="123.2" stroke-width="2.2"/><line x1="518.4" y1="119.2" x2="518.4" y2="127.2" stroke-width="1.8"/><line x1="526.9" y1="119.2" x2="526.9" y2="127.2" stroke-width="1.8"/><circle cx="522.4" cy="123.2" r="3.8"/></g>
+<text class="val-text" x="722" y="127.2">0.733× [0.724, 0.743]</text>
+<text class="row-label" x="218" y="151.2" text-anchor="end">split-exact-10</text>
+<g class="ci-win"><title>split-exact-10: 0.872× [0.843, 0.904]</title><line x1="568.2" y1="147.2" x2="591.1" y2="147.2" stroke-width="2.2"/><line x1="568.2" y1="143.2" x2="568.2" y2="151.2" stroke-width="1.8"/><line x1="591.1" y1="143.2" x2="591.1" y2="151.2" stroke-width="1.8"/><circle cx="579.3" cy="147.2" r="3.8"/></g>
+<text class="val-text" x="722" y="151.2">0.872× [0.843, 0.904]</text>
+<text class="row-label" x="218" y="175.2" text-anchor="end">small-all-1000</text>
+<g class="ci-win"><title>small-all-1000: 0.341× [0.321, 0.356]</title><line x1="252.1" y1="171.2" x2="286.0" y2="171.2" stroke-width="2.2"/><line x1="252.1" y1="167.2" x2="252.1" y2="175.2" stroke-width="1.8"/><line x1="286.0" y1="167.2" x2="286.0" y2="175.2" stroke-width="1.8"/><circle cx="271.9" cy="171.2" r="3.8"/></g>
+<text class="val-text" x="722" y="175.2">0.341× [0.321, 0.356]</text>
+<text class="row-label" x="218" y="199.2" text-anchor="end">split-all-1000</text>
+<g class="ci-reg"><title>split-all-1000: 1.150× [1.129, 1.181]</title><line x1="663.8" y1="195.2" x2="678.6" y2="195.2" stroke-width="2.2"/><line x1="663.8" y1="191.2" x2="663.8" y2="199.2" stroke-width="1.8"/><line x1="678.6" y1="191.2" x2="678.6" y2="199.2" stroke-width="1.8"/><circle cx="669.9" cy="195.2" r="3.8"/></g>
+<text class="val-text" x="722" y="199.2">1.150× [1.129, 1.181]</text>
+<line class="section-divider" x1="8" y1="210" x2="882" y2="210"/>
 <text class="section-title" x="10" y="225">Go Bytes (B/op): final-remote / final-ordinary</text>
-<text class="row-label" x="203" y="249.2" text-anchor="end">small-limit-1-broad</text>
-<g class="ci-win"><title>small-limit-1-broad: 0.960× [0.960, 0.961]</title><line x1="595.8" y1="245.2" x2="596.1" y2="245.2" stroke-width="2.2"/><line x1="595.8" y1="241.2" x2="595.8" y2="249.2" stroke-width="1.8"/><line x1="596.1" y1="241.2" x2="596.1" y2="249.2" stroke-width="1.8"/><circle cx="595.8" cy="245.2" r="3.8"/></g>
-<text class="val-text" x="707" y="249.2">0.960× [0.960, 0.961]</text>
-<text class="row-label" x="203" y="273.2" text-anchor="end">split-limit-1-broad</text>
-<g class="ci-win"><title>split-limit-1-broad: 0.715× [0.715, 0.715]</title><line x1="499.3" y1="269.2" x2="499.3" y2="269.2" stroke-width="2.2"/><line x1="499.3" y1="265.2" x2="499.3" y2="273.2" stroke-width="1.8"/><line x1="499.3" y1="265.2" x2="499.3" y2="273.2" stroke-width="1.8"/><circle cx="499.3" cy="269.2" r="3.8"/></g>
-<text class="val-text" x="707" y="273.2">0.715× [0.715, 0.715]</text>
-<text class="row-label" x="203" y="297.2" text-anchor="end">small-exact-10</text>
-<g class="ci-win"><title>small-exact-10: 0.751× [0.750, 0.751]</title><line x1="514.9" y1="293.2" x2="515.4" y2="293.2" stroke-width="2.2"/><line x1="514.9" y1="289.2" x2="514.9" y2="297.2" stroke-width="1.8"/><line x1="515.4" y1="289.2" x2="515.4" y2="297.2" stroke-width="1.8"/><circle cx="515.4" cy="293.2" r="3.8"/></g>
-<text class="val-text" x="707" y="297.2">0.751× [0.750, 0.751]</text>
-<text class="row-label" x="203" y="321.2" text-anchor="end">split-exact-10</text>
-<g class="ci-win"><title>split-exact-10: 0.695× [0.695, 0.695]</title><line x1="490.0" y1="317.2" x2="490.0" y2="317.2" stroke-width="2.2"/><line x1="490.0" y1="313.2" x2="490.0" y2="321.2" stroke-width="1.8"/><line x1="490.0" y1="313.2" x2="490.0" y2="321.2" stroke-width="1.8"/><circle cx="490.0" cy="317.2" r="3.8"/></g>
-<text class="val-text" x="707" y="321.2">0.695× [0.695, 0.695]</text>
-<text class="row-label" x="203" y="345.2" text-anchor="end">small-all-1000</text>
-<g class="ci-win"><title>small-all-1000: 0.512× [0.512, 0.512]</title><line x1="390.0" y1="341.2" x2="390.0" y2="341.2" stroke-width="2.2"/><line x1="390.0" y1="337.2" x2="390.0" y2="345.2" stroke-width="1.8"/><line x1="390.0" y1="337.2" x2="390.0" y2="345.2" stroke-width="1.8"/><circle cx="390.0" cy="341.2" r="3.8"/></g>
-<text class="val-text" x="707" y="345.2">0.512× [0.512, 0.512]</text>
-<text class="row-label" x="203" y="369.2" text-anchor="end">split-all-1000</text>
-<g class="ci-win"><title>split-all-1000: 0.692× [0.692, 0.692]</title><line x1="488.6" y1="365.2" x2="488.6" y2="365.2" stroke-width="2.2"/><line x1="488.6" y1="361.2" x2="488.6" y2="369.2" stroke-width="1.8"/><line x1="488.6" y1="361.2" x2="488.6" y2="369.2" stroke-width="1.8"/><circle cx="488.6" cy="365.2" r="3.8"/></g>
-<text class="val-text" x="707" y="369.2">0.692× [0.692, 0.692]</text>
-<line class="section-divider" x1="8" y1="380" x2="852" y2="380"/>
+<text class="row-label" x="218" y="249.2" text-anchor="end">small-limit-1-broad</text>
+<g class="ci-win"><title>small-limit-1-broad: 0.960× [0.960, 0.961]</title><line x1="610.8" y1="245.2" x2="611.1" y2="245.2" stroke-width="2.2"/><line x1="610.8" y1="241.2" x2="610.8" y2="249.2" stroke-width="1.8"/><line x1="611.1" y1="241.2" x2="611.1" y2="249.2" stroke-width="1.8"/><circle cx="610.8" cy="245.2" r="3.8"/></g>
+<text class="val-text" x="722" y="249.2">0.960× [0.960, 0.961]</text>
+<text class="row-label" x="218" y="273.2" text-anchor="end">split-limit-1-broad</text>
+<g class="ci-win"><title>split-limit-1-broad: 0.715× [0.715, 0.715]</title><line x1="514.3" y1="269.2" x2="514.3" y2="269.2" stroke-width="2.2"/><line x1="514.3" y1="265.2" x2="514.3" y2="273.2" stroke-width="1.8"/><line x1="514.3" y1="265.2" x2="514.3" y2="273.2" stroke-width="1.8"/><circle cx="514.3" cy="269.2" r="3.8"/></g>
+<text class="val-text" x="722" y="273.2">0.715× [0.715, 0.715]</text>
+<text class="row-label" x="218" y="297.2" text-anchor="end">small-exact-10</text>
+<g class="ci-win"><title>small-exact-10: 0.751× [0.750, 0.751]</title><line x1="529.9" y1="293.2" x2="530.4" y2="293.2" stroke-width="2.2"/><line x1="529.9" y1="289.2" x2="529.9" y2="297.2" stroke-width="1.8"/><line x1="530.4" y1="289.2" x2="530.4" y2="297.2" stroke-width="1.8"/><circle cx="530.4" cy="293.2" r="3.8"/></g>
+<text class="val-text" x="722" y="297.2">0.751× [0.750, 0.751]</text>
+<text class="row-label" x="218" y="321.2" text-anchor="end">split-exact-10</text>
+<g class="ci-win"><title>split-exact-10: 0.695× [0.695, 0.695]</title><line x1="505.0" y1="317.2" x2="505.0" y2="317.2" stroke-width="2.2"/><line x1="505.0" y1="313.2" x2="505.0" y2="321.2" stroke-width="1.8"/><line x1="505.0" y1="313.2" x2="505.0" y2="321.2" stroke-width="1.8"/><circle cx="505.0" cy="317.2" r="3.8"/></g>
+<text class="val-text" x="722" y="321.2">0.695× [0.695, 0.695]</text>
+<text class="row-label" x="218" y="345.2" text-anchor="end">small-all-1000</text>
+<g class="ci-win"><title>small-all-1000: 0.512× [0.512, 0.512]</title><line x1="405.0" y1="341.2" x2="405.0" y2="341.2" stroke-width="2.2"/><line x1="405.0" y1="337.2" x2="405.0" y2="345.2" stroke-width="1.8"/><line x1="405.0" y1="337.2" x2="405.0" y2="345.2" stroke-width="1.8"/><circle cx="405.0" cy="341.2" r="3.8"/></g>
+<text class="val-text" x="722" y="345.2">0.512× [0.512, 0.512]</text>
+<text class="row-label" x="218" y="369.2" text-anchor="end">split-all-1000</text>
+<g class="ci-win"><title>split-all-1000: 0.692× [0.692, 0.692]</title><line x1="503.6" y1="365.2" x2="503.6" y2="365.2" stroke-width="2.2"/><line x1="503.6" y1="361.2" x2="503.6" y2="369.2" stroke-width="1.8"/><line x1="503.6" y1="361.2" x2="503.6" y2="369.2" stroke-width="1.8"/><circle cx="503.6" cy="365.2" r="3.8"/></g>
+<text class="val-text" x="722" y="369.2">0.692× [0.692, 0.692]</text>
+<line class="section-divider" x1="8" y1="380" x2="882" y2="380"/>
 <text class="section-title" x="10" y="395">Go Allocations (allocs/op): final-remote / final-ordinary</text>
-<text class="row-label" x="203" y="419.2" text-anchor="end">small-limit-1-broad</text>
-<g class="ci-reg"><title>small-limit-1-broad: 1.046× [1.046, 1.046]</title><line x1="623.8" y1="415.2" x2="623.8" y2="415.2" stroke-width="2.2"/><line x1="623.8" y1="411.2" x2="623.8" y2="419.2" stroke-width="1.8"/><line x1="623.8" y1="411.2" x2="623.8" y2="419.2" stroke-width="1.8"/><circle cx="623.8" cy="415.2" r="3.8"/></g>
-<text class="val-text" x="707" y="419.2">1.046× [1.046, 1.046]</text>
-<text class="row-label" x="203" y="443.2" text-anchor="end">split-limit-1-broad</text>
-<g class="ci-win"><title>split-limit-1-broad: 0.942× [0.940, 0.944]</title><line x1="588.9" y1="439.2" x2="590.3" y2="439.2" stroke-width="2.2"/><line x1="588.9" y1="435.2" x2="588.9" y2="443.2" stroke-width="1.8"/><line x1="590.3" y1="435.2" x2="590.3" y2="443.2" stroke-width="1.8"/><circle cx="589.6" cy="439.2" r="3.8"/></g>
-<text class="val-text" x="707" y="443.2">0.942× [0.940, 0.944]</text>
-<text class="row-label" x="203" y="467.2" text-anchor="end">small-exact-10</text>
-<g class="ci-win"><title>small-exact-10: 0.600× [0.600, 0.600]</title><line x1="441.9" y1="463.2" x2="441.9" y2="463.2" stroke-width="2.2"/><line x1="441.9" y1="459.2" x2="441.9" y2="467.2" stroke-width="1.8"/><line x1="441.9" y1="459.2" x2="441.9" y2="467.2" stroke-width="1.8"/><circle cx="441.9" cy="463.2" r="3.8"/></g>
-<text class="val-text" x="707" y="467.2">0.600× [0.600, 0.600]</text>
-<text class="row-label" x="203" y="491.2" text-anchor="end">split-exact-10</text>
-<g class="ci-win"><title>split-exact-10: 0.515× [0.514, 0.516]</title><line x1="391.3" y1="487.2" x2="392.5" y2="487.2" stroke-width="2.2"/><line x1="391.3" y1="483.2" x2="391.3" y2="491.2" stroke-width="1.8"/><line x1="392.5" y1="483.2" x2="392.5" y2="491.2" stroke-width="1.8"/><circle cx="391.9" cy="487.2" r="3.8"/></g>
-<text class="val-text" x="707" y="491.2">0.515× [0.514, 0.516]</text>
-<text class="row-label" x="203" y="515.2" text-anchor="end">small-all-1000</text>
-<g class="ci-win"><title>small-all-1000: 0.436× [0.436, 0.436]</title><line x1="337.4" y1="511.2" x2="337.4" y2="511.2" stroke-width="2.2"/><line x1="337.4" y1="507.2" x2="337.4" y2="515.2" stroke-width="1.8"/><line x1="337.4" y1="507.2" x2="337.4" y2="515.2" stroke-width="1.8"/><circle cx="337.4" cy="511.2" r="3.8"/></g>
-<text class="val-text" x="707" y="515.2">0.436× [0.436, 0.436]</text>
-<text class="row-label" x="203" y="539.2" text-anchor="end">split-all-1000</text>
-<g class="ci-win"><title>split-all-1000: 0.404× [0.404, 0.404]</title><line x1="312.4" y1="535.2" x2="312.4" y2="535.2" stroke-width="2.2"/><line x1="312.4" y1="531.2" x2="312.4" y2="539.2" stroke-width="1.8"/><line x1="312.4" y1="531.2" x2="312.4" y2="539.2" stroke-width="1.8"/><circle cx="312.4" cy="535.2" r="3.8"/></g>
-<text class="val-text" x="707" y="539.2">0.404× [0.404, 0.404]</text>
+<text class="row-label" x="218" y="419.2" text-anchor="end">small-limit-1-broad</text>
+<g class="ci-reg"><title>small-limit-1-broad: 1.046× [1.046, 1.046]</title><line x1="638.8" y1="415.2" x2="638.8" y2="415.2" stroke-width="2.2"/><line x1="638.8" y1="411.2" x2="638.8" y2="419.2" stroke-width="1.8"/><line x1="638.8" y1="411.2" x2="638.8" y2="419.2" stroke-width="1.8"/><circle cx="638.8" cy="415.2" r="3.8"/></g>
+<text class="val-text" x="722" y="419.2">1.046× [1.046, 1.046]</text>
+<text class="row-label" x="218" y="443.2" text-anchor="end">split-limit-1-broad</text>
+<g class="ci-win"><title>split-limit-1-broad: 0.942× [0.940, 0.944]</title><line x1="603.9" y1="439.2" x2="605.3" y2="439.2" stroke-width="2.2"/><line x1="603.9" y1="435.2" x2="603.9" y2="443.2" stroke-width="1.8"/><line x1="605.3" y1="435.2" x2="605.3" y2="443.2" stroke-width="1.8"/><circle cx="604.6" cy="439.2" r="3.8"/></g>
+<text class="val-text" x="722" y="443.2">0.942× [0.940, 0.944]</text>
+<text class="row-label" x="218" y="467.2" text-anchor="end">small-exact-10</text>
+<g class="ci-win"><title>small-exact-10: 0.600× [0.600, 0.600]</title><line x1="456.9" y1="463.2" x2="456.9" y2="463.2" stroke-width="2.2"/><line x1="456.9" y1="459.2" x2="456.9" y2="467.2" stroke-width="1.8"/><line x1="456.9" y1="459.2" x2="456.9" y2="467.2" stroke-width="1.8"/><circle cx="456.9" cy="463.2" r="3.8"/></g>
+<text class="val-text" x="722" y="467.2">0.600× [0.600, 0.600]</text>
+<text class="row-label" x="218" y="491.2" text-anchor="end">split-exact-10</text>
+<g class="ci-win"><title>split-exact-10: 0.515× [0.514, 0.516]</title><line x1="406.3" y1="487.2" x2="407.5" y2="487.2" stroke-width="2.2"/><line x1="406.3" y1="483.2" x2="406.3" y2="491.2" stroke-width="1.8"/><line x1="407.5" y1="483.2" x2="407.5" y2="491.2" stroke-width="1.8"/><circle cx="406.9" cy="487.2" r="3.8"/></g>
+<text class="val-text" x="722" y="491.2">0.515× [0.514, 0.516]</text>
+<text class="row-label" x="218" y="515.2" text-anchor="end">small-all-1000</text>
+<g class="ci-win"><title>small-all-1000: 0.436× [0.436, 0.436]</title><line x1="352.4" y1="511.2" x2="352.4" y2="511.2" stroke-width="2.2"/><line x1="352.4" y1="507.2" x2="352.4" y2="515.2" stroke-width="1.8"/><line x1="352.4" y1="507.2" x2="352.4" y2="515.2" stroke-width="1.8"/><circle cx="352.4" cy="511.2" r="3.8"/></g>
+<text class="val-text" x="722" y="515.2">0.436× [0.436, 0.436]</text>
+<text class="row-label" x="218" y="539.2" text-anchor="end">split-all-1000</text>
+<g class="ci-win"><title>split-all-1000: 0.404× [0.404, 0.404]</title><line x1="327.4" y1="535.2" x2="327.4" y2="535.2" stroke-width="2.2"/><line x1="327.4" y1="531.2" x2="327.4" y2="539.2" stroke-width="1.8"/><line x1="327.4" y1="531.2" x2="327.4" y2="539.2" stroke-width="1.8"/><circle cx="327.4" cy="535.2" r="3.8"/></g>
+<text class="val-text" x="722" y="539.2">0.404× [0.404, 0.404]</text>
 </svg>
 <div class="bench-legend"><span><i class="bench-swatch" style="background:#0d9488"></i> 95% CI entirely &lt; 1.000 (faster / lower)</span><span><i class="bench-swatch" style="background:#64748b"></i> 95% CI overlaps 1.000 (unresolved)</span><span><i class="bench-swatch" style="background:#d97706"></i> 95% CI entirely &gt; 1.000 (slower / higher)</span></div>
 </figure>

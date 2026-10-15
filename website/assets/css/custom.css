@@ -165,7 +165,7 @@
 .bench-svg {
   display: block;
   width: 100%;
-  min-width: 640px;
+  min-width: 820px;
   height: auto;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
 }

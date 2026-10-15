@@ -76,51 +76,51 @@ have the SQL fetch-method option, so this phase has no older-tree arm. Harness
 
 <figure class="bench-figure">
 <figcaption><strong>Figure D2.1: Remote Fetch vs Ordinary Scan Ratios (log₂ scale, 95% CI)</strong> — 6 paired blocks × 3 repeats on single-node memory engine. Below 1.0× favors USE_REMOTE_FETCH.</figcaption>
-<svg class="bench-svg" viewBox="0 0 860 292" role="img" aria-label="Figure D2.1: Remote Fetch vs Ordinary Scan Ratios (log₂ scale, 95% CI)">
-<line class="grid-line" x1="215.0" y1="28" x2="215.0" y2="262"/>
-<text class="axis-text" x="215.0" y="22" text-anchor="middle">0.20×</text>
-<text class="axis-text" x="215.0" y="277" text-anchor="middle">0.20×</text>
-<line class="grid-line" x1="358.5" y1="28" x2="358.5" y2="262"/>
-<text class="axis-text" x="358.5" y="22" text-anchor="middle">0.35×</text>
-<text class="axis-text" x="358.5" y="277" text-anchor="middle">0.35×</text>
-<line class="grid-line" x1="450.0" y1="28" x2="450.0" y2="262"/>
-<text class="axis-text" x="450.0" y="22" text-anchor="middle">0.50×</text>
-<text class="axis-text" x="450.0" y="277" text-anchor="middle">0.50×</text>
-<line class="grid-line" x1="536.3" y1="28" x2="536.3" y2="262"/>
-<text class="axis-text" x="536.3" y="22" text-anchor="middle">0.70×</text>
-<text class="axis-text" x="536.3" y="277" text-anchor="middle">0.70×</text>
-<line class="parity-line" x1="627.7" y1="28" x2="627.7" y2="262"/>
-<text class="axis-text" x="627.7" y="22" text-anchor="middle">1.0×</text>
-<text class="axis-text" x="627.7" y="277" text-anchor="middle">1.0×</text>
-<line class="grid-line" x1="695.0" y1="28" x2="695.0" y2="262"/>
-<text class="axis-text" x="695.0" y="22" text-anchor="middle">1.3×</text>
-<text class="axis-text" x="695.0" y="277" text-anchor="middle">1.3×</text>
-<text class="axis-text" x="619.7" y="9" text-anchor="end">← USE_REMOTE_FETCH lower</text>
-<text class="axis-text" x="635.7" y="9" text-anchor="start">SCAN_AND_FETCH lower →</text>
-<line class="section-divider" x1="8" y1="40" x2="852" y2="40"/>
+<svg class="bench-svg" viewBox="0 0 890 292" role="img" aria-label="Figure D2.1: Remote Fetch vs Ordinary Scan Ratios (log₂ scale, 95% CI)">
+<line class="grid-line" x1="230.0" y1="28" x2="230.0" y2="262"/>
+<text class="axis-text" x="230.0" y="22" text-anchor="middle">0.2×</text>
+<text class="axis-text" x="230.0" y="277" text-anchor="middle">0.2×</text>
+<line class="grid-line" x1="373.5" y1="28" x2="373.5" y2="262"/>
+<text class="axis-text" x="373.5" y="22" text-anchor="middle">0.35×</text>
+<text class="axis-text" x="373.5" y="277" text-anchor="middle">0.35×</text>
+<line class="grid-line" x1="465.0" y1="28" x2="465.0" y2="262"/>
+<text class="axis-text" x="465.0" y="22" text-anchor="middle">0.5×</text>
+<text class="axis-text" x="465.0" y="277" text-anchor="middle">0.5×</text>
+<line class="grid-line" x1="551.3" y1="28" x2="551.3" y2="262"/>
+<text class="axis-text" x="551.3" y="22" text-anchor="middle">0.7×</text>
+<text class="axis-text" x="551.3" y="277" text-anchor="middle">0.7×</text>
+<line class="parity-line" x1="642.7" y1="28" x2="642.7" y2="262"/>
+<text class="axis-text" x="642.7" y="22" text-anchor="middle">1.0×</text>
+<text class="axis-text" x="642.7" y="277" text-anchor="middle">1.0×</text>
+<line class="grid-line" x1="710.0" y1="28" x2="710.0" y2="262"/>
+<text class="axis-text" x="710.0" y="22" text-anchor="middle">1.3×</text>
+<text class="axis-text" x="710.0" y="277" text-anchor="middle">1.3×</text>
+<text class="axis-text" x="634.7" y="9" text-anchor="end">← USE_REMOTE_FETCH lower</text>
+<text class="axis-text" x="650.7" y="9" text-anchor="start">SCAN_AND_FETCH lower →</text>
+<line class="section-divider" x1="8" y1="40" x2="882" y2="40"/>
 <text class="section-title" x="10" y="55">Mean Time (ns/op): USE_REMOTE_FETCH / SCAN_AND_FETCH</text>
-<text class="row-label" x="203" y="79.2" text-anchor="end">rows10</text>
-<g class="ci-win"><title>rows10: 0.885× [0.873, 0.896]</title><line x1="592.9" y1="75.2" x2="599.6" y2="75.2" stroke-width="2.2"/><line x1="592.9" y1="71.2" x2="592.9" y2="79.2" stroke-width="1.8"/><line x1="599.6" y1="71.2" x2="599.6" y2="79.2" stroke-width="1.8"/><circle cx="596.4" cy="75.2" r="3.8"/></g>
-<text class="val-text" x="707" y="79.2">0.885× [0.873, 0.896]</text>
-<text class="row-label" x="203" y="103.2" text-anchor="end">rows1000</text>
-<g class="ci-win"><title>rows1000: 0.536× [0.532, 0.538]</title><line x1="465.9" y1="99.2" x2="468.8" y2="99.2" stroke-width="2.2"/><line x1="465.9" y1="95.2" x2="465.9" y2="103.2" stroke-width="1.8"/><line x1="468.8" y1="95.2" x2="468.8" y2="103.2" stroke-width="1.8"/><circle cx="467.8" cy="99.2" r="3.8"/></g>
-<text class="val-text" x="707" y="103.2">0.536× [0.532, 0.538]</text>
-<line class="section-divider" x1="8" y1="114" x2="852" y2="114"/>
+<text class="row-label" x="218" y="79.2" text-anchor="end">rows10</text>
+<g class="ci-win"><title>rows10: 0.885× [0.873, 0.896]</title><line x1="607.9" y1="75.2" x2="614.6" y2="75.2" stroke-width="2.2"/><line x1="607.9" y1="71.2" x2="607.9" y2="79.2" stroke-width="1.8"/><line x1="614.6" y1="71.2" x2="614.6" y2="79.2" stroke-width="1.8"/><circle cx="611.4" cy="75.2" r="3.8"/></g>
+<text class="val-text" x="722" y="79.2">0.885× [0.873, 0.896]</text>
+<text class="row-label" x="218" y="103.2" text-anchor="end">rows1000</text>
+<g class="ci-win"><title>rows1000: 0.536× [0.532, 0.538]</title><line x1="480.9" y1="99.2" x2="483.8" y2="99.2" stroke-width="2.2"/><line x1="480.9" y1="95.2" x2="480.9" y2="103.2" stroke-width="1.8"/><line x1="483.8" y1="95.2" x2="483.8" y2="103.2" stroke-width="1.8"/><circle cx="482.8" cy="99.2" r="3.8"/></g>
+<text class="val-text" x="722" y="103.2">0.536× [0.532, 0.538]</text>
+<line class="section-divider" x1="8" y1="114" x2="882" y2="114"/>
 <text class="section-title" x="10" y="129">Go Bytes (B/op): USE_REMOTE_FETCH / SCAN_AND_FETCH</text>
-<text class="row-label" x="203" y="153.2" text-anchor="end">rows10</text>
-<g class="ci-win"><title>rows10: 0.843× [0.842, 0.843]</title><line x1="583.6" y1="149.2" x2="583.9" y2="149.2" stroke-width="2.2"/><line x1="583.6" y1="145.2" x2="583.6" y2="153.2" stroke-width="1.8"/><line x1="583.9" y1="145.2" x2="583.9" y2="153.2" stroke-width="1.8"/><circle cx="583.9" cy="149.2" r="3.8"/></g>
-<text class="val-text" x="707" y="153.2">0.843× [0.842, 0.843]</text>
-<text class="row-label" x="203" y="177.2" text-anchor="end">rows1000</text>
-<g class="ci-win"><title>rows1000: 0.657× [0.656, 0.657]</title><line x1="519.6" y1="173.2" x2="520.0" y2="173.2" stroke-width="2.2"/><line x1="519.6" y1="169.2" x2="519.6" y2="177.2" stroke-width="1.8"/><line x1="520.0" y1="169.2" x2="520.0" y2="177.2" stroke-width="1.8"/><circle cx="520.0" cy="173.2" r="3.8"/></g>
-<text class="val-text" x="707" y="177.2">0.657× [0.656, 0.657]</text>
-<line class="section-divider" x1="8" y1="188" x2="852" y2="188"/>
+<text class="row-label" x="218" y="153.2" text-anchor="end">rows10</text>
+<g class="ci-win"><title>rows10: 0.843× [0.842, 0.843]</title><line x1="598.6" y1="149.2" x2="598.9" y2="149.2" stroke-width="2.2"/><line x1="598.6" y1="145.2" x2="598.6" y2="153.2" stroke-width="1.8"/><line x1="598.9" y1="145.2" x2="598.9" y2="153.2" stroke-width="1.8"/><circle cx="598.9" cy="149.2" r="3.8"/></g>
+<text class="val-text" x="722" y="153.2">0.843× [0.842, 0.843]</text>
+<text class="row-label" x="218" y="177.2" text-anchor="end">rows1000</text>
+<g class="ci-win"><title>rows1000: 0.657× [0.656, 0.657]</title><line x1="534.6" y1="173.2" x2="535.0" y2="173.2" stroke-width="2.2"/><line x1="534.6" y1="169.2" x2="534.6" y2="177.2" stroke-width="1.8"/><line x1="535.0" y1="169.2" x2="535.0" y2="177.2" stroke-width="1.8"/><circle cx="535.0" cy="173.2" r="3.8"/></g>
+<text class="val-text" x="722" y="177.2">0.657× [0.656, 0.657]</text>
+<line class="section-divider" x1="8" y1="188" x2="882" y2="188"/>
 <text class="section-title" x="10" y="203">Go Allocations (allocs/op): USE_REMOTE_FETCH / SCAN_AND_FETCH</text>
-<text class="row-label" x="203" y="227.2" text-anchor="end">rows10</text>
-<g class="ci-win"><title>rows10: 0.850× [0.850, 0.850]</title><line x1="586.0" y1="223.2" x2="586.0" y2="223.2" stroke-width="2.2"/><line x1="586.0" y1="219.2" x2="586.0" y2="227.2" stroke-width="1.8"/><line x1="586.0" y1="219.2" x2="586.0" y2="227.2" stroke-width="1.8"/><circle cx="586.0" cy="223.2" r="3.8"/></g>
-<text class="val-text" x="707" y="227.2">0.850× [0.850, 0.850]</text>
-<text class="row-label" x="203" y="251.2" text-anchor="end">rows1000</text>
-<g class="ci-win"><title>rows1000: 0.614× [0.614, 0.614]</title><line x1="502.6" y1="247.2" x2="502.6" y2="247.2" stroke-width="2.2"/><line x1="502.6" y1="243.2" x2="502.6" y2="251.2" stroke-width="1.8"/><line x1="502.6" y1="243.2" x2="502.6" y2="251.2" stroke-width="1.8"/><circle cx="502.6" cy="247.2" r="3.8"/></g>
-<text class="val-text" x="707" y="251.2">0.614× [0.614, 0.614]</text>
+<text class="row-label" x="218" y="227.2" text-anchor="end">rows10</text>
+<g class="ci-win"><title>rows10: 0.850× [0.850, 0.850]</title><line x1="601.0" y1="223.2" x2="601.0" y2="223.2" stroke-width="2.2"/><line x1="601.0" y1="219.2" x2="601.0" y2="227.2" stroke-width="1.8"/><line x1="601.0" y1="219.2" x2="601.0" y2="227.2" stroke-width="1.8"/><circle cx="601.0" cy="223.2" r="3.8"/></g>
+<text class="val-text" x="722" y="227.2">0.850× [0.850, 0.850]</text>
+<text class="row-label" x="218" y="251.2" text-anchor="end">rows1000</text>
+<g class="ci-win"><title>rows1000: 0.614× [0.614, 0.614]</title><line x1="517.6" y1="247.2" x2="517.6" y2="247.2" stroke-width="2.2"/><line x1="517.6" y1="243.2" x2="517.6" y2="251.2" stroke-width="1.8"/><line x1="517.6" y1="243.2" x2="517.6" y2="251.2" stroke-width="1.8"/><circle cx="517.6" cy="247.2" r="3.8"/></g>
+<text class="val-text" x="722" y="251.2">0.614× [0.614, 0.614]</text>
 </svg>
 <div class="bench-legend"><span><i class="bench-swatch" style="background:#0d9488"></i> 95% CI entirely &lt; 1.000 (faster / lower)</span><span><i class="bench-swatch" style="background:#64748b"></i> 95% CI overlaps 1.000 (unresolved)</span><span><i class="bench-swatch" style="background:#d97706"></i> 95% CI entirely &gt; 1.000 (slower / higher)</span></div>
 </figure>

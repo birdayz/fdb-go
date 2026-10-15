@@ -57,161 +57,161 @@ of [hcloud-multinode-vpc-20261014](../).
 
 <figure class="bench-figure">
 <figcaption><strong>Figure M2.1: Mean Time (ns/op) Ratio — USE_REMOTE_FETCH / SCAN_AND_FETCH (log₂ scale, 95% CI)</strong> — 3-node VPC double ssd-2 cluster (9 storage servers). Below 1.0× means USE_REMOTE_FETCH is faster.</figcaption>
-<svg class="bench-svg" viewBox="0 0 860 506" role="img" aria-label="Figure M2.1: Mean Time (ns/op) Ratio — USE_REMOTE_FETCH / SCAN_AND_FETCH (log₂ scale, 95% CI)">
-<line class="grid-line" x1="215.0" y1="28" x2="215.0" y2="476"/>
-<text class="axis-text" x="215.0" y="22" text-anchor="middle">0.15×</text>
-<text class="axis-text" x="215.0" y="491" text-anchor="middle">0.15×</text>
-<line class="grid-line" x1="302.2" y1="28" x2="302.2" y2="476"/>
-<text class="axis-text" x="302.2" y="22" text-anchor="middle">0.25×</text>
-<text class="axis-text" x="302.2" y="491" text-anchor="middle">0.25×</text>
-<line class="grid-line" x1="420.4" y1="28" x2="420.4" y2="476"/>
-<text class="axis-text" x="420.4" y="22" text-anchor="middle">0.50×</text>
-<text class="axis-text" x="420.4" y="491" text-anchor="middle">0.50×</text>
-<line class="grid-line" x1="477.8" y1="28" x2="477.8" y2="476"/>
-<text class="axis-text" x="477.8" y="22" text-anchor="middle">0.70×</text>
-<text class="axis-text" x="477.8" y="491" text-anchor="middle">0.70×</text>
-<line class="parity-line" x1="538.7" y1="28" x2="538.7" y2="476"/>
-<text class="axis-text" x="538.7" y="22" text-anchor="middle">1.0×</text>
-<text class="axis-text" x="538.7" y="491" text-anchor="middle">1.0×</text>
-<line class="grid-line" x1="596.1" y1="28" x2="596.1" y2="476"/>
-<text class="axis-text" x="596.1" y="22" text-anchor="middle">1.4×</text>
-<text class="axis-text" x="596.1" y="491" text-anchor="middle">1.4×</text>
-<line class="grid-line" x1="656.9" y1="28" x2="656.9" y2="476"/>
-<text class="axis-text" x="656.9" y="22" text-anchor="middle">2.0×</text>
-<text class="axis-text" x="656.9" y="491" text-anchor="middle">2.0×</text>
-<line class="grid-line" x1="695.0" y1="28" x2="695.0" y2="476"/>
-<text class="axis-text" x="695.0" y="22" text-anchor="middle">2.5×</text>
-<text class="axis-text" x="695.0" y="491" text-anchor="middle">2.5×</text>
-<text class="axis-text" x="530.7" y="9" text-anchor="end">← Remote fetch faster</text>
-<text class="axis-text" x="546.7" y="9" text-anchor="start">SCAN_AND_FETCH faster →</text>
-<line class="section-divider" x1="8" y1="40" x2="852" y2="40"/>
+<svg class="bench-svg" viewBox="0 0 975 506" role="img" aria-label="Figure M2.1: Mean Time (ns/op) Ratio — USE_REMOTE_FETCH / SCAN_AND_FETCH (log₂ scale, 95% CI)">
+<line class="grid-line" x1="315.0" y1="28" x2="315.0" y2="476"/>
+<text class="axis-text" x="315.0" y="22" text-anchor="middle">0.15×</text>
+<text class="axis-text" x="315.0" y="491" text-anchor="middle">0.15×</text>
+<line class="grid-line" x1="402.2" y1="28" x2="402.2" y2="476"/>
+<text class="axis-text" x="402.2" y="22" text-anchor="middle">0.25×</text>
+<text class="axis-text" x="402.2" y="491" text-anchor="middle">0.25×</text>
+<line class="grid-line" x1="520.4" y1="28" x2="520.4" y2="476"/>
+<text class="axis-text" x="520.4" y="22" text-anchor="middle">0.5×</text>
+<text class="axis-text" x="520.4" y="491" text-anchor="middle">0.5×</text>
+<line class="grid-line" x1="577.8" y1="28" x2="577.8" y2="476"/>
+<text class="axis-text" x="577.8" y="22" text-anchor="middle">0.7×</text>
+<text class="axis-text" x="577.8" y="491" text-anchor="middle">0.7×</text>
+<line class="parity-line" x1="638.7" y1="28" x2="638.7" y2="476"/>
+<text class="axis-text" x="638.7" y="22" text-anchor="middle">1.0×</text>
+<text class="axis-text" x="638.7" y="491" text-anchor="middle">1.0×</text>
+<line class="grid-line" x1="696.1" y1="28" x2="696.1" y2="476"/>
+<text class="axis-text" x="696.1" y="22" text-anchor="middle">1.4×</text>
+<text class="axis-text" x="696.1" y="491" text-anchor="middle">1.4×</text>
+<line class="grid-line" x1="756.9" y1="28" x2="756.9" y2="476"/>
+<text class="axis-text" x="756.9" y="22" text-anchor="middle">2.0×</text>
+<text class="axis-text" x="756.9" y="491" text-anchor="middle">2.0×</text>
+<line class="grid-line" x1="795.0" y1="28" x2="795.0" y2="476"/>
+<text class="axis-text" x="795.0" y="22" text-anchor="middle">2.5×</text>
+<text class="axis-text" x="795.0" y="491" text-anchor="middle">2.5×</text>
+<text class="axis-text" x="630.7" y="9" text-anchor="end">← Remote fetch faster</text>
+<text class="axis-text" x="646.7" y="9" text-anchor="start">SCAN_AND_FETCH faster →</text>
+<line class="section-divider" x1="8" y1="40" x2="967" y2="40"/>
 <text class="section-title" x="10" y="55">M2rl: BenchmarkIndexFetch (3-node double ssd-2)</text>
-<text class="row-label" x="203" y="79.2" text-anchor="end">small-limit1-forward [cross-server]</text>
-<g class="ci-win"><title>small-limit1-forward [cross-server]: 0.979× [0.964, 0.995]</title><line x1="532.4" y1="75.2" x2="537.8" y2="75.2" stroke-width="2.2"/><line x1="532.4" y1="71.2" x2="532.4" y2="79.2" stroke-width="1.8"/><line x1="537.8" y1="71.2" x2="537.8" y2="79.2" stroke-width="1.8"/><circle cx="535.0" cy="75.2" r="3.8"/></g>
-<text class="val-text" x="707" y="79.2">0.979× [0.964, 0.995]</text>
-<text class="row-label" x="203" y="103.2" text-anchor="end">small-limit1-reverse [cross-server]</text>
-<g class="ci-neutral"><title>small-limit1-reverse [cross-server]: 0.985× [0.969, 1.003]</title><line x1="533.3" y1="99.2" x2="539.2" y2="99.2" stroke-width="2.2"/><line x1="533.3" y1="95.2" x2="533.3" y2="103.2" stroke-width="1.8"/><line x1="539.2" y1="95.2" x2="539.2" y2="103.2" stroke-width="1.8"/><circle cx="536.1" cy="99.2" r="3.8"/></g>
-<text class="val-text" x="707" y="103.2">0.985× [0.969, 1.003]</text>
-<text class="row-label" x="203" y="127.2" text-anchor="end">small-rows10-forward [cross-server]</text>
-<g class="ci-reg"><title>small-rows10-forward [cross-server]: 1.031× [1.018, 1.042]</title><line x1="541.7" y1="123.2" x2="545.7" y2="123.2" stroke-width="2.2"/><line x1="541.7" y1="119.2" x2="541.7" y2="127.2" stroke-width="1.8"/><line x1="545.7" y1="119.2" x2="545.7" y2="127.2" stroke-width="1.8"/><circle cx="543.9" cy="123.2" r="3.8"/></g>
-<text class="val-text" x="707" y="127.2">1.031× [1.018, 1.042]</text>
-<text class="row-label" x="203" y="151.2" text-anchor="end">small-rows10-reverse [cross-server]</text>
-<g class="ci-reg"><title>small-rows10-reverse [cross-server]: 1.026× [1.013, 1.039]</title><line x1="540.9" y1="147.2" x2="545.2" y2="147.2" stroke-width="2.2"/><line x1="540.9" y1="143.2" x2="540.9" y2="151.2" stroke-width="1.8"/><line x1="545.2" y1="143.2" x2="545.2" y2="151.2" stroke-width="1.8"/><circle cx="543.0" cy="147.2" r="3.8"/></g>
-<text class="val-text" x="707" y="151.2">1.026× [1.013, 1.039]</text>
-<text class="row-label" x="203" y="175.2" text-anchor="end">small-rows1000-forward [cross-server]</text>
-<g class="ci-reg"><title>small-rows1000-forward [cross-server]: 1.226× [1.175, 1.280]</title><line x1="566.2" y1="171.2" x2="580.8" y2="171.2" stroke-width="2.2"/><line x1="566.2" y1="167.2" x2="566.2" y2="175.2" stroke-width="1.8"/><line x1="580.8" y1="167.2" x2="580.8" y2="175.2" stroke-width="1.8"/><circle cx="573.4" cy="171.2" r="3.8"/></g>
-<text class="val-text" x="707" y="175.2">1.226× [1.175, 1.280]</text>
-<text class="row-label" x="203" y="199.2" text-anchor="end">small-rows1000-reverse [cross-server]</text>
-<g class="ci-reg"><title>small-rows1000-reverse [cross-server]: 1.255× [1.217, 1.293]</title><line x1="572.2" y1="195.2" x2="582.5" y2="195.2" stroke-width="2.2"/><line x1="572.2" y1="191.2" x2="572.2" y2="199.2" stroke-width="1.8"/><line x1="582.5" y1="191.2" x2="582.5" y2="199.2" stroke-width="1.8"/><circle cx="577.4" cy="195.2" r="3.8"/></g>
-<text class="val-text" x="707" y="199.2">1.255× [1.217, 1.293]</text>
-<text class="row-label" x="203" y="223.2" text-anchor="end">split-limit1-forward [cross-server]</text>
-<g class="ci-reg"><title>split-limit1-forward [cross-server]: 1.110× [1.087, 1.131]</title><line x1="552.9" y1="219.2" x2="559.7" y2="219.2" stroke-width="2.2"/><line x1="552.9" y1="215.2" x2="552.9" y2="223.2" stroke-width="1.8"/><line x1="559.7" y1="215.2" x2="559.7" y2="223.2" stroke-width="1.8"/><circle cx="556.5" cy="219.2" r="3.8"/></g>
-<text class="val-text" x="707" y="223.2">1.110× [1.087, 1.131]</text>
-<text class="row-label" x="203" y="247.2" text-anchor="end">split-limit1-reverse [cross-server]</text>
-<g class="ci-reg"><title>split-limit1-reverse [cross-server]: 1.114× [1.095, 1.138]</title><line x1="554.2" y1="243.2" x2="560.7" y2="243.2" stroke-width="2.2"/><line x1="554.2" y1="239.2" x2="554.2" y2="247.2" stroke-width="1.8"/><line x1="560.7" y1="239.2" x2="560.7" y2="247.2" stroke-width="1.8"/><circle cx="557.1" cy="243.2" r="3.8"/></g>
-<text class="val-text" x="707" y="247.2">1.114× [1.095, 1.138]</text>
-<text class="row-label" x="203" y="271.2" text-anchor="end">split-rows10-forward [partially colocated (f = 0.0000)]</text>
-<g class="ci-win"><title>split-rows10-forward [partially colocated (f = 0.0000)]: 0.873× [0.829, 0.920]</title><line x1="506.7" y1="267.2" x2="524.4" y2="267.2" stroke-width="2.2"/><line x1="506.7" y1="263.2" x2="506.7" y2="271.2" stroke-width="1.8"/><line x1="524.4" y1="263.2" x2="524.4" y2="271.2" stroke-width="1.8"/><circle cx="515.5" cy="267.2" r="3.8"/></g>
-<text class="val-text" x="707" y="271.2">0.873× [0.829, 0.920]</text>
-<text class="row-label" x="203" y="295.2" text-anchor="end">split-rows10-reverse [partially colocated (f = 0.0000)]</text>
-<g class="ci-win"><title>split-rows10-reverse [partially colocated (f = 0.0000)]: 0.854× [0.823, 0.886]</title><line x1="505.4" y1="291.2" x2="518.0" y2="291.2" stroke-width="2.2"/><line x1="505.4" y1="287.2" x2="505.4" y2="295.2" stroke-width="1.8"/><line x1="518.0" y1="287.2" x2="518.0" y2="295.2" stroke-width="1.8"/><circle cx="511.7" cy="291.2" r="3.8"/></g>
-<text class="val-text" x="707" y="295.2">0.854× [0.823, 0.886]</text>
-<text class="row-label" x="203" y="319.2" text-anchor="end">split-rows1000-forward [partially colocated (f = 0.6960)]</text>
-<g class="ci-reg"><title>split-rows1000-forward [partially colocated (f = 0.6960)]: 2.326× [2.254, 2.397]</title><line x1="677.3" y1="315.2" x2="687.8" y2="315.2" stroke-width="2.2"/><line x1="677.3" y1="311.2" x2="677.3" y2="319.2" stroke-width="1.8"/><line x1="687.8" y1="311.2" x2="687.8" y2="319.2" stroke-width="1.8"/><circle cx="682.7" cy="315.2" r="3.8"/></g>
-<text class="val-text" x="707" y="319.2">2.326× [2.254, 2.397]</text>
-<text class="row-label" x="203" y="343.2" text-anchor="end">split-rows1000-reverse [partially colocated (f = 0.6960)]</text>
-<g class="ci-reg"><title>split-rows1000-reverse [partially colocated (f = 0.6960)]: 2.300× [2.206, 2.384]</title><line x1="673.7" y1="339.2" x2="686.9" y2="339.2" stroke-width="2.2"/><line x1="673.7" y1="335.2" x2="673.7" y2="343.2" stroke-width="1.8"/><line x1="686.9" y1="335.2" x2="686.9" y2="343.2" stroke-width="1.8"/><circle cx="680.8" cy="339.2" r="3.8"/></g>
-<text class="val-text" x="707" y="343.2">2.300× [2.206, 2.384]</text>
-<line class="section-divider" x1="8" y1="354" x2="852" y2="354"/>
+<text class="row-label" x="303" y="79.2" text-anchor="end">small-limit1-forward [cross-srv]</text>
+<g class="ci-win"><title>small-limit1-forward [cross-srv]: 0.979× [0.964, 0.995]</title><line x1="632.4" y1="75.2" x2="637.8" y2="75.2" stroke-width="2.2"/><line x1="632.4" y1="71.2" x2="632.4" y2="79.2" stroke-width="1.8"/><line x1="637.8" y1="71.2" x2="637.8" y2="79.2" stroke-width="1.8"/><circle cx="635.0" cy="75.2" r="3.8"/></g>
+<text class="val-text" x="807" y="79.2">0.979× [0.964, 0.995]</text>
+<text class="row-label" x="303" y="103.2" text-anchor="end">small-limit1-reverse [cross-srv]</text>
+<g class="ci-neutral"><title>small-limit1-reverse [cross-srv]: 0.985× [0.969, 1.003]</title><line x1="633.3" y1="99.2" x2="639.2" y2="99.2" stroke-width="2.2"/><line x1="633.3" y1="95.2" x2="633.3" y2="103.2" stroke-width="1.8"/><line x1="639.2" y1="95.2" x2="639.2" y2="103.2" stroke-width="1.8"/><circle cx="636.1" cy="99.2" r="3.8"/></g>
+<text class="val-text" x="807" y="103.2">0.985× [0.969, 1.003]</text>
+<text class="row-label" x="303" y="127.2" text-anchor="end">small-rows10-forward [cross-srv]</text>
+<g class="ci-reg"><title>small-rows10-forward [cross-srv]: 1.031× [1.018, 1.042]</title><line x1="641.7" y1="123.2" x2="645.7" y2="123.2" stroke-width="2.2"/><line x1="641.7" y1="119.2" x2="641.7" y2="127.2" stroke-width="1.8"/><line x1="645.7" y1="119.2" x2="645.7" y2="127.2" stroke-width="1.8"/><circle cx="643.9" cy="123.2" r="3.8"/></g>
+<text class="val-text" x="807" y="127.2">1.031× [1.018, 1.042]</text>
+<text class="row-label" x="303" y="151.2" text-anchor="end">small-rows10-reverse [cross-srv]</text>
+<g class="ci-reg"><title>small-rows10-reverse [cross-srv]: 1.026× [1.013, 1.039]</title><line x1="640.9" y1="147.2" x2="645.2" y2="147.2" stroke-width="2.2"/><line x1="640.9" y1="143.2" x2="640.9" y2="151.2" stroke-width="1.8"/><line x1="645.2" y1="143.2" x2="645.2" y2="151.2" stroke-width="1.8"/><circle cx="643.0" cy="147.2" r="3.8"/></g>
+<text class="val-text" x="807" y="151.2">1.026× [1.013, 1.039]</text>
+<text class="row-label" x="303" y="175.2" text-anchor="end">small-rows1000-forward [cross-srv]</text>
+<g class="ci-reg"><title>small-rows1000-forward [cross-srv]: 1.226× [1.175, 1.280]</title><line x1="666.2" y1="171.2" x2="680.8" y2="171.2" stroke-width="2.2"/><line x1="666.2" y1="167.2" x2="666.2" y2="175.2" stroke-width="1.8"/><line x1="680.8" y1="167.2" x2="680.8" y2="175.2" stroke-width="1.8"/><circle cx="673.4" cy="171.2" r="3.8"/></g>
+<text class="val-text" x="807" y="175.2">1.226× [1.175, 1.280]</text>
+<text class="row-label" x="303" y="199.2" text-anchor="end">small-rows1000-reverse [cross-srv]</text>
+<g class="ci-reg"><title>small-rows1000-reverse [cross-srv]: 1.255× [1.217, 1.293]</title><line x1="672.2" y1="195.2" x2="682.5" y2="195.2" stroke-width="2.2"/><line x1="672.2" y1="191.2" x2="672.2" y2="199.2" stroke-width="1.8"/><line x1="682.5" y1="191.2" x2="682.5" y2="199.2" stroke-width="1.8"/><circle cx="677.4" cy="195.2" r="3.8"/></g>
+<text class="val-text" x="807" y="199.2">1.255× [1.217, 1.293]</text>
+<text class="row-label" x="303" y="223.2" text-anchor="end">split-limit1-forward [cross-srv]</text>
+<g class="ci-reg"><title>split-limit1-forward [cross-srv]: 1.110× [1.087, 1.131]</title><line x1="652.9" y1="219.2" x2="659.7" y2="219.2" stroke-width="2.2"/><line x1="652.9" y1="215.2" x2="652.9" y2="223.2" stroke-width="1.8"/><line x1="659.7" y1="215.2" x2="659.7" y2="223.2" stroke-width="1.8"/><circle cx="656.5" cy="219.2" r="3.8"/></g>
+<text class="val-text" x="807" y="223.2">1.110× [1.087, 1.131]</text>
+<text class="row-label" x="303" y="247.2" text-anchor="end">split-limit1-reverse [cross-srv]</text>
+<g class="ci-reg"><title>split-limit1-reverse [cross-srv]: 1.114× [1.095, 1.138]</title><line x1="654.2" y1="243.2" x2="660.7" y2="243.2" stroke-width="2.2"/><line x1="654.2" y1="239.2" x2="654.2" y2="247.2" stroke-width="1.8"/><line x1="660.7" y1="239.2" x2="660.7" y2="247.2" stroke-width="1.8"/><circle cx="657.1" cy="243.2" r="3.8"/></g>
+<text class="val-text" x="807" y="247.2">1.114× [1.095, 1.138]</text>
+<text class="row-label" x="303" y="271.2" text-anchor="end">split-rows10-forward [f = 0.0000]</text>
+<g class="ci-win"><title>split-rows10-forward [f = 0.0000]: 0.873× [0.829, 0.920]</title><line x1="606.7" y1="267.2" x2="624.4" y2="267.2" stroke-width="2.2"/><line x1="606.7" y1="263.2" x2="606.7" y2="271.2" stroke-width="1.8"/><line x1="624.4" y1="263.2" x2="624.4" y2="271.2" stroke-width="1.8"/><circle cx="615.5" cy="267.2" r="3.8"/></g>
+<text class="val-text" x="807" y="271.2">0.873× [0.829, 0.920]</text>
+<text class="row-label" x="303" y="295.2" text-anchor="end">split-rows10-reverse [f = 0.0000]</text>
+<g class="ci-win"><title>split-rows10-reverse [f = 0.0000]: 0.854× [0.823, 0.886]</title><line x1="605.4" y1="291.2" x2="618.0" y2="291.2" stroke-width="2.2"/><line x1="605.4" y1="287.2" x2="605.4" y2="295.2" stroke-width="1.8"/><line x1="618.0" y1="287.2" x2="618.0" y2="295.2" stroke-width="1.8"/><circle cx="611.7" cy="291.2" r="3.8"/></g>
+<text class="val-text" x="807" y="295.2">0.854× [0.823, 0.886]</text>
+<text class="row-label" x="303" y="319.2" text-anchor="end">split-rows1000-forward [f = 0.6960]</text>
+<g class="ci-reg"><title>split-rows1000-forward [f = 0.6960]: 2.326× [2.254, 2.397]</title><line x1="777.3" y1="315.2" x2="787.8" y2="315.2" stroke-width="2.2"/><line x1="777.3" y1="311.2" x2="777.3" y2="319.2" stroke-width="1.8"/><line x1="787.8" y1="311.2" x2="787.8" y2="319.2" stroke-width="1.8"/><circle cx="782.7" cy="315.2" r="3.8"/></g>
+<text class="val-text" x="807" y="319.2">2.326× [2.254, 2.397]</text>
+<text class="row-label" x="303" y="343.2" text-anchor="end">split-rows1000-reverse [f = 0.6960]</text>
+<g class="ci-reg"><title>split-rows1000-reverse [f = 0.6960]: 2.300× [2.206, 2.384]</title><line x1="773.7" y1="339.2" x2="786.9" y2="339.2" stroke-width="2.2"/><line x1="773.7" y1="335.2" x2="773.7" y2="343.2" stroke-width="1.8"/><line x1="786.9" y1="335.2" x2="786.9" y2="343.2" stroke-width="1.8"/><circle cx="780.8" cy="339.2" r="3.8"/></g>
+<text class="val-text" x="807" y="343.2">2.300× [2.206, 2.384]</text>
+<line class="section-divider" x1="8" y1="354" x2="967" y2="354"/>
 <text class="section-title" x="10" y="369">M2skip: BenchmarkPlanSkip (3-node double ssd-2)</text>
-<text class="row-label" x="203" y="393.2" text-anchor="end">skip3-rows10-forward [cross-server]</text>
-<g class="ci-neutral"><title>skip3-rows10-forward [cross-server]: 1.155× [0.991, 1.345]</title><line x1="537.1" y1="389.2" x2="589.2" y2="389.2" stroke-width="2.2"/><line x1="537.1" y1="385.2" x2="537.1" y2="393.2" stroke-width="1.8"/><line x1="589.2" y1="385.2" x2="589.2" y2="393.2" stroke-width="1.8"/><circle cx="563.3" cy="389.2" r="3.8"/></g>
-<text class="val-text" x="707" y="393.2">1.155× [0.991, 1.345]</text>
-<text class="row-label" x="203" y="417.2" text-anchor="end">skip3-rows10-reverse [cross-server]</text>
-<g class="ci-win"><title>skip3-rows10-reverse [cross-server]: 0.158× [0.155, 0.160]</title><line x1="220.6" y1="413.2" x2="226.0" y2="413.2" stroke-width="2.2"/><line x1="220.6" y1="409.2" x2="220.6" y2="417.2" stroke-width="1.8"/><line x1="226.0" y1="409.2" x2="226.0" y2="417.2" stroke-width="1.8"/><circle cx="223.9" cy="413.2" r="3.8"/></g>
-<text class="val-text" x="707" y="417.2">0.158× [0.155, 0.160]</text>
-<text class="row-label" x="203" y="441.2" text-anchor="end">skip3-rows1000-forward [cross-server]</text>
-<g class="ci-reg"><title>skip3-rows1000-forward [cross-server]: 1.360× [1.295, 1.414]</title><line x1="582.8" y1="437.2" x2="597.8" y2="437.2" stroke-width="2.2"/><line x1="582.8" y1="433.2" x2="582.8" y2="441.2" stroke-width="1.8"/><line x1="597.8" y1="433.2" x2="597.8" y2="441.2" stroke-width="1.8"/><circle cx="591.1" cy="437.2" r="3.8"/></g>
-<text class="val-text" x="707" y="441.2">1.360× [1.295, 1.414]</text>
-<text class="row-label" x="203" y="465.2" text-anchor="end">skip3-rows1000-reverse [cross-server]</text>
-<g class="ci-reg"><title>skip3-rows1000-reverse [cross-server]: 1.324× [1.250, 1.407]</title><line x1="576.7" y1="461.2" x2="596.9" y2="461.2" stroke-width="2.2"/><line x1="576.7" y1="457.2" x2="576.7" y2="465.2" stroke-width="1.8"/><line x1="596.9" y1="457.2" x2="596.9" y2="465.2" stroke-width="1.8"/><circle cx="586.6" cy="461.2" r="3.8"/></g>
-<text class="val-text" x="707" y="465.2">1.324× [1.250, 1.407]</text>
+<text class="row-label" x="303" y="393.2" text-anchor="end">skip3-rows10-forward [cross-srv]</text>
+<g class="ci-neutral"><title>skip3-rows10-forward [cross-srv]: 1.155× [0.991, 1.345]</title><line x1="637.1" y1="389.2" x2="689.2" y2="389.2" stroke-width="2.2"/><line x1="637.1" y1="385.2" x2="637.1" y2="393.2" stroke-width="1.8"/><line x1="689.2" y1="385.2" x2="689.2" y2="393.2" stroke-width="1.8"/><circle cx="663.3" cy="389.2" r="3.8"/></g>
+<text class="val-text" x="807" y="393.2">1.155× [0.991, 1.345]</text>
+<text class="row-label" x="303" y="417.2" text-anchor="end">skip3-rows10-reverse [cross-srv]</text>
+<g class="ci-win"><title>skip3-rows10-reverse [cross-srv]: 0.158× [0.155, 0.160]</title><line x1="320.6" y1="413.2" x2="326.0" y2="413.2" stroke-width="2.2"/><line x1="320.6" y1="409.2" x2="320.6" y2="417.2" stroke-width="1.8"/><line x1="326.0" y1="409.2" x2="326.0" y2="417.2" stroke-width="1.8"/><circle cx="323.9" cy="413.2" r="3.8"/></g>
+<text class="val-text" x="807" y="417.2">0.158× [0.155, 0.160]</text>
+<text class="row-label" x="303" y="441.2" text-anchor="end">skip3-rows1000-forward [cross-srv]</text>
+<g class="ci-reg"><title>skip3-rows1000-forward [cross-srv]: 1.360× [1.295, 1.414]</title><line x1="682.8" y1="437.2" x2="697.8" y2="437.2" stroke-width="2.2"/><line x1="682.8" y1="433.2" x2="682.8" y2="441.2" stroke-width="1.8"/><line x1="697.8" y1="433.2" x2="697.8" y2="441.2" stroke-width="1.8"/><circle cx="691.1" cy="437.2" r="3.8"/></g>
+<text class="val-text" x="807" y="441.2">1.360× [1.295, 1.414]</text>
+<text class="row-label" x="303" y="465.2" text-anchor="end">skip3-rows1000-reverse [cross-srv]</text>
+<g class="ci-reg"><title>skip3-rows1000-reverse [cross-srv]: 1.324× [1.250, 1.407]</title><line x1="676.7" y1="461.2" x2="696.9" y2="461.2" stroke-width="2.2"/><line x1="676.7" y1="457.2" x2="676.7" y2="465.2" stroke-width="1.8"/><line x1="696.9" y1="457.2" x2="696.9" y2="465.2" stroke-width="1.8"/><circle cx="686.6" cy="461.2" r="3.8"/></g>
+<text class="val-text" x="807" y="465.2">1.324× [1.250, 1.407]</text>
 </svg>
 <div class="bench-legend"><span><i class="bench-swatch" style="background:#0d9488"></i> 95% CI entirely &lt; 1.000 (faster / lower)</span><span><i class="bench-swatch" style="background:#64748b"></i> 95% CI overlaps 1.000 (unresolved)</span><span><i class="bench-swatch" style="background:#d97706"></i> 95% CI entirely &gt; 1.000 (slower / higher)</span></div>
 </figure>
 
 <figure class="bench-figure">
 <figcaption><strong>Figure M2.2: Client Go Allocations (allocs/op) Ratio — USE_REMOTE_FETCH / SCAN_AND_FETCH</strong> — Below 1.0× means USE_REMOTE_FETCH allocates fewer Go heap objects on the client.</figcaption>
-<svg class="bench-svg" viewBox="0 0 860 506" role="img" aria-label="Figure M2.2: Client Go Allocations (allocs/op) Ratio — USE_REMOTE_FETCH / SCAN_AND_FETCH">
-<line class="grid-line" x1="215.0" y1="28" x2="215.0" y2="476"/>
-<text class="axis-text" x="215.0" y="22" text-anchor="middle">0.35×</text>
-<text class="axis-text" x="215.0" y="491" text-anchor="middle">0.35×</text>
-<line class="grid-line" x1="353.9" y1="28" x2="353.9" y2="476"/>
-<text class="axis-text" x="353.9" y="22" text-anchor="middle">0.50×</text>
-<text class="axis-text" x="353.9" y="491" text-anchor="middle">0.50×</text>
-<line class="grid-line" x1="485.0" y1="28" x2="485.0" y2="476"/>
-<text class="axis-text" x="485.0" y="22" text-anchor="middle">0.70×</text>
-<text class="axis-text" x="485.0" y="491" text-anchor="middle">0.70×</text>
-<line class="parity-line" x1="624.0" y1="28" x2="624.0" y2="476"/>
-<text class="axis-text" x="624.0" y="22" text-anchor="middle">1.0×</text>
-<text class="axis-text" x="624.0" y="491" text-anchor="middle">1.0×</text>
-<line class="grid-line" x1="695.0" y1="28" x2="695.0" y2="476"/>
-<text class="axis-text" x="695.0" y="22" text-anchor="middle">1.2×</text>
-<text class="axis-text" x="695.0" y="491" text-anchor="middle">1.2×</text>
-<text class="axis-text" x="616.0" y="9" text-anchor="end">← Remote fetch fewer allocs</text>
-<text class="axis-text" x="632.0" y="9" text-anchor="start">SCAN_AND_FETCH fewer allocs →</text>
-<line class="section-divider" x1="8" y1="40" x2="852" y2="40"/>
+<svg class="bench-svg" viewBox="0 0 890 506" role="img" aria-label="Figure M2.2: Client Go Allocations (allocs/op) Ratio — USE_REMOTE_FETCH / SCAN_AND_FETCH">
+<line class="grid-line" x1="230.0" y1="28" x2="230.0" y2="476"/>
+<text class="axis-text" x="230.0" y="22" text-anchor="middle">0.35×</text>
+<text class="axis-text" x="230.0" y="491" text-anchor="middle">0.35×</text>
+<line class="grid-line" x1="368.9" y1="28" x2="368.9" y2="476"/>
+<text class="axis-text" x="368.9" y="22" text-anchor="middle">0.5×</text>
+<text class="axis-text" x="368.9" y="491" text-anchor="middle">0.5×</text>
+<line class="grid-line" x1="500.0" y1="28" x2="500.0" y2="476"/>
+<text class="axis-text" x="500.0" y="22" text-anchor="middle">0.7×</text>
+<text class="axis-text" x="500.0" y="491" text-anchor="middle">0.7×</text>
+<line class="parity-line" x1="639.0" y1="28" x2="639.0" y2="476"/>
+<text class="axis-text" x="639.0" y="22" text-anchor="middle">1.0×</text>
+<text class="axis-text" x="639.0" y="491" text-anchor="middle">1.0×</text>
+<line class="grid-line" x1="710.0" y1="28" x2="710.0" y2="476"/>
+<text class="axis-text" x="710.0" y="22" text-anchor="middle">1.2×</text>
+<text class="axis-text" x="710.0" y="491" text-anchor="middle">1.2×</text>
+<text class="axis-text" x="631.0" y="9" text-anchor="end">← Remote fetch fewer allocs</text>
+<text class="axis-text" x="647.0" y="9" text-anchor="start">SCAN_AND_FETCH fewer allocs →</text>
+<line class="section-divider" x1="8" y1="40" x2="882" y2="40"/>
 <text class="section-title" x="10" y="55">M2rl: Client Go allocs/op Ratio</text>
-<text class="row-label" x="203" y="79.2" text-anchor="end">small-limit1-forward</text>
-<g class="ci-reg"><title>small-limit1-forward: 1.040× [1.038, 1.041]</title><line x1="638.5" y1="75.2" x2="639.6" y2="75.2" stroke-width="2.2"/><line x1="638.5" y1="71.2" x2="638.5" y2="79.2" stroke-width="1.8"/><line x1="639.6" y1="71.2" x2="639.6" y2="79.2" stroke-width="1.8"/><circle cx="639.3" cy="75.2" r="3.8"/></g>
-<text class="val-text" x="707" y="79.2">1.040× [1.038, 1.041]</text>
-<text class="row-label" x="203" y="103.2" text-anchor="end">small-limit1-reverse</text>
-<g class="ci-reg"><title>small-limit1-reverse: 1.049× [1.047, 1.052]</title><line x1="641.9" y1="99.2" x2="643.7" y2="99.2" stroke-width="2.2"/><line x1="641.9" y1="95.2" x2="641.9" y2="103.2" stroke-width="1.8"/><line x1="643.7" y1="95.2" x2="643.7" y2="103.2" stroke-width="1.8"/><circle cx="642.6" cy="99.2" r="3.8"/></g>
-<text class="val-text" x="707" y="103.2">1.049× [1.047, 1.052]</text>
-<text class="row-label" x="203" y="127.2" text-anchor="end">small-rows10-forward</text>
-<g class="ci-win"><title>small-rows10-forward: 0.596× [0.596, 0.597]</title><line x1="422.4" y1="123.2" x2="423.0" y2="123.2" stroke-width="2.2"/><line x1="422.4" y1="119.2" x2="422.4" y2="127.2" stroke-width="1.8"/><line x1="423.0" y1="119.2" x2="423.0" y2="127.2" stroke-width="1.8"/><circle cx="422.4" cy="123.2" r="3.8"/></g>
-<text class="val-text" x="707" y="127.2">0.596× [0.596, 0.597]</text>
-<text class="row-label" x="203" y="151.2" text-anchor="end">small-rows10-reverse</text>
-<g class="ci-win"><title>small-rows10-reverse: 0.595× [0.595, 0.595]</title><line x1="421.7" y1="147.2" x2="421.7" y2="147.2" stroke-width="2.2"/><line x1="421.7" y1="143.2" x2="421.7" y2="151.2" stroke-width="1.8"/><line x1="421.7" y1="143.2" x2="421.7" y2="151.2" stroke-width="1.8"/><circle cx="421.7" cy="147.2" r="3.8"/></g>
-<text class="val-text" x="707" y="151.2">0.595× [0.595, 0.595]</text>
-<text class="row-label" x="203" y="175.2" text-anchor="end">small-rows1000-forward</text>
-<g class="ci-win"><title>small-rows1000-forward: 0.431× [0.431, 0.431]</title><line x1="296.1" y1="171.2" x2="296.1" y2="171.2" stroke-width="2.2"/><line x1="296.1" y1="167.2" x2="296.1" y2="175.2" stroke-width="1.8"/><line x1="296.1" y1="167.2" x2="296.1" y2="175.2" stroke-width="1.8"/><circle cx="296.1" cy="171.2" r="3.8"/></g>
-<text class="val-text" x="707" y="175.2">0.431× [0.431, 0.431]</text>
-<text class="row-label" x="203" y="199.2" text-anchor="end">small-rows1000-reverse</text>
-<g class="ci-win"><title>small-rows1000-reverse: 0.430× [0.430, 0.430]</title><line x1="295.2" y1="195.2" x2="295.2" y2="195.2" stroke-width="2.2"/><line x1="295.2" y1="191.2" x2="295.2" y2="199.2" stroke-width="1.8"/><line x1="295.2" y1="191.2" x2="295.2" y2="199.2" stroke-width="1.8"/><circle cx="295.2" cy="195.2" r="3.8"/></g>
-<text class="val-text" x="707" y="199.2">0.430× [0.430, 0.430]</text>
-<text class="row-label" x="203" y="223.2" text-anchor="end">split-limit1-forward</text>
-<g class="ci-win"><title>split-limit1-forward: 0.942× [0.940, 0.943]</title><line x1="599.9" y1="219.2" x2="601.1" y2="219.2" stroke-width="2.2"/><line x1="599.9" y1="215.2" x2="599.9" y2="223.2" stroke-width="1.8"/><line x1="601.1" y1="215.2" x2="601.1" y2="223.2" stroke-width="1.8"/><circle cx="600.7" cy="219.2" r="3.8"/></g>
-<text class="val-text" x="707" y="223.2">0.942× [0.940, 0.943]</text>
-<text class="row-label" x="203" y="247.2" text-anchor="end">split-limit1-reverse</text>
-<g class="ci-win"><title>split-limit1-reverse: 0.952× [0.951, 0.953]</title><line x1="604.4" y1="243.2" x2="605.2" y2="243.2" stroke-width="2.2"/><line x1="604.4" y1="239.2" x2="604.4" y2="247.2" stroke-width="1.8"/><line x1="605.2" y1="239.2" x2="605.2" y2="247.2" stroke-width="1.8"/><circle cx="604.8" cy="243.2" r="3.8"/></g>
-<text class="val-text" x="707" y="247.2">0.952× [0.951, 0.953]</text>
-<text class="row-label" x="203" y="271.2" text-anchor="end">split-rows10-forward</text>
-<g class="ci-win"><title>split-rows10-forward: 0.505× [0.504, 0.505]</title><line x1="357.1" y1="267.2" x2="357.8" y2="267.2" stroke-width="2.2"/><line x1="357.1" y1="263.2" x2="357.1" y2="271.2" stroke-width="1.8"/><line x1="357.8" y1="263.2" x2="357.8" y2="271.2" stroke-width="1.8"/><circle cx="357.8" cy="267.2" r="3.8"/></g>
-<text class="val-text" x="707" y="271.2">0.505× [0.504, 0.505]</text>
-<text class="row-label" x="203" y="295.2" text-anchor="end">split-rows10-reverse</text>
-<g class="ci-win"><title>split-rows10-reverse: 0.504× [0.504, 0.505]</title><line x1="357.1" y1="291.2" x2="357.8" y2="291.2" stroke-width="2.2"/><line x1="357.1" y1="287.2" x2="357.1" y2="295.2" stroke-width="1.8"/><line x1="357.8" y1="287.2" x2="357.8" y2="295.2" stroke-width="1.8"/><circle cx="357.1" cy="291.2" r="3.8"/></g>
-<text class="val-text" x="707" y="295.2">0.504× [0.504, 0.505]</text>
-<text class="row-label" x="203" y="319.2" text-anchor="end">split-rows1000-forward</text>
-<g class="ci-win"><title>split-rows1000-forward: 0.399× [0.399, 0.399]</title><line x1="266.0" y1="315.2" x2="266.0" y2="315.2" stroke-width="2.2"/><line x1="266.0" y1="311.2" x2="266.0" y2="319.2" stroke-width="1.8"/><line x1="266.0" y1="311.2" x2="266.0" y2="319.2" stroke-width="1.8"/><circle cx="266.0" cy="315.2" r="3.8"/></g>
-<text class="val-text" x="707" y="319.2">0.399× [0.399, 0.399]</text>
-<text class="row-label" x="203" y="343.2" text-anchor="end">split-rows1000-reverse</text>
-<g class="ci-win"><title>split-rows1000-reverse: 0.398× [0.398, 0.398]</title><line x1="265.1" y1="339.2" x2="265.1" y2="339.2" stroke-width="2.2"/><line x1="265.1" y1="335.2" x2="265.1" y2="343.2" stroke-width="1.8"/><line x1="265.1" y1="335.2" x2="265.1" y2="343.2" stroke-width="1.8"/><circle cx="265.1" cy="339.2" r="3.8"/></g>
-<text class="val-text" x="707" y="343.2">0.398× [0.398, 0.398]</text>
-<line class="section-divider" x1="8" y1="354" x2="852" y2="354"/>
+<text class="row-label" x="218" y="79.2" text-anchor="end">small-limit1-forward</text>
+<g class="ci-reg"><title>small-limit1-forward: 1.040× [1.038, 1.041]</title><line x1="653.5" y1="75.2" x2="654.6" y2="75.2" stroke-width="2.2"/><line x1="653.5" y1="71.2" x2="653.5" y2="79.2" stroke-width="1.8"/><line x1="654.6" y1="71.2" x2="654.6" y2="79.2" stroke-width="1.8"/><circle cx="654.3" cy="75.2" r="3.8"/></g>
+<text class="val-text" x="722" y="79.2">1.040× [1.038, 1.041]</text>
+<text class="row-label" x="218" y="103.2" text-anchor="end">small-limit1-reverse</text>
+<g class="ci-reg"><title>small-limit1-reverse: 1.049× [1.047, 1.052]</title><line x1="656.9" y1="99.2" x2="658.7" y2="99.2" stroke-width="2.2"/><line x1="656.9" y1="95.2" x2="656.9" y2="103.2" stroke-width="1.8"/><line x1="658.7" y1="95.2" x2="658.7" y2="103.2" stroke-width="1.8"/><circle cx="657.6" cy="99.2" r="3.8"/></g>
+<text class="val-text" x="722" y="103.2">1.049× [1.047, 1.052]</text>
+<text class="row-label" x="218" y="127.2" text-anchor="end">small-rows10-forward</text>
+<g class="ci-win"><title>small-rows10-forward: 0.596× [0.596, 0.597]</title><line x1="437.4" y1="123.2" x2="438.0" y2="123.2" stroke-width="2.2"/><line x1="437.4" y1="119.2" x2="437.4" y2="127.2" stroke-width="1.8"/><line x1="438.0" y1="119.2" x2="438.0" y2="127.2" stroke-width="1.8"/><circle cx="437.4" cy="123.2" r="3.8"/></g>
+<text class="val-text" x="722" y="127.2">0.596× [0.596, 0.597]</text>
+<text class="row-label" x="218" y="151.2" text-anchor="end">small-rows10-reverse</text>
+<g class="ci-win"><title>small-rows10-reverse: 0.595× [0.595, 0.595]</title><line x1="436.7" y1="147.2" x2="436.7" y2="147.2" stroke-width="2.2"/><line x1="436.7" y1="143.2" x2="436.7" y2="151.2" stroke-width="1.8"/><line x1="436.7" y1="143.2" x2="436.7" y2="151.2" stroke-width="1.8"/><circle cx="436.7" cy="147.2" r="3.8"/></g>
+<text class="val-text" x="722" y="151.2">0.595× [0.595, 0.595]</text>
+<text class="row-label" x="218" y="175.2" text-anchor="end">small-rows1000-forward</text>
+<g class="ci-win"><title>small-rows1000-forward: 0.431× [0.431, 0.431]</title><line x1="311.1" y1="171.2" x2="311.1" y2="171.2" stroke-width="2.2"/><line x1="311.1" y1="167.2" x2="311.1" y2="175.2" stroke-width="1.8"/><line x1="311.1" y1="167.2" x2="311.1" y2="175.2" stroke-width="1.8"/><circle cx="311.1" cy="171.2" r="3.8"/></g>
+<text class="val-text" x="722" y="175.2">0.431× [0.431, 0.431]</text>
+<text class="row-label" x="218" y="199.2" text-anchor="end">small-rows1000-reverse</text>
+<g class="ci-win"><title>small-rows1000-reverse: 0.430× [0.430, 0.430]</title><line x1="310.2" y1="195.2" x2="310.2" y2="195.2" stroke-width="2.2"/><line x1="310.2" y1="191.2" x2="310.2" y2="199.2" stroke-width="1.8"/><line x1="310.2" y1="191.2" x2="310.2" y2="199.2" stroke-width="1.8"/><circle cx="310.2" cy="195.2" r="3.8"/></g>
+<text class="val-text" x="722" y="199.2">0.430× [0.430, 0.430]</text>
+<text class="row-label" x="218" y="223.2" text-anchor="end">split-limit1-forward</text>
+<g class="ci-win"><title>split-limit1-forward: 0.942× [0.940, 0.943]</title><line x1="614.9" y1="219.2" x2="616.1" y2="219.2" stroke-width="2.2"/><line x1="614.9" y1="215.2" x2="614.9" y2="223.2" stroke-width="1.8"/><line x1="616.1" y1="215.2" x2="616.1" y2="223.2" stroke-width="1.8"/><circle cx="615.7" cy="219.2" r="3.8"/></g>
+<text class="val-text" x="722" y="223.2">0.942× [0.940, 0.943]</text>
+<text class="row-label" x="218" y="247.2" text-anchor="end">split-limit1-reverse</text>
+<g class="ci-win"><title>split-limit1-reverse: 0.952× [0.951, 0.953]</title><line x1="619.4" y1="243.2" x2="620.2" y2="243.2" stroke-width="2.2"/><line x1="619.4" y1="239.2" x2="619.4" y2="247.2" stroke-width="1.8"/><line x1="620.2" y1="239.2" x2="620.2" y2="247.2" stroke-width="1.8"/><circle cx="619.8" cy="243.2" r="3.8"/></g>
+<text class="val-text" x="722" y="247.2">0.952× [0.951, 0.953]</text>
+<text class="row-label" x="218" y="271.2" text-anchor="end">split-rows10-forward</text>
+<g class="ci-win"><title>split-rows10-forward: 0.505× [0.504, 0.505]</title><line x1="372.1" y1="267.2" x2="372.8" y2="267.2" stroke-width="2.2"/><line x1="372.1" y1="263.2" x2="372.1" y2="271.2" stroke-width="1.8"/><line x1="372.8" y1="263.2" x2="372.8" y2="271.2" stroke-width="1.8"/><circle cx="372.8" cy="267.2" r="3.8"/></g>
+<text class="val-text" x="722" y="271.2">0.505× [0.504, 0.505]</text>
+<text class="row-label" x="218" y="295.2" text-anchor="end">split-rows10-reverse</text>
+<g class="ci-win"><title>split-rows10-reverse: 0.504× [0.504, 0.505]</title><line x1="372.1" y1="291.2" x2="372.8" y2="291.2" stroke-width="2.2"/><line x1="372.1" y1="287.2" x2="372.1" y2="295.2" stroke-width="1.8"/><line x1="372.8" y1="287.2" x2="372.8" y2="295.2" stroke-width="1.8"/><circle cx="372.1" cy="291.2" r="3.8"/></g>
+<text class="val-text" x="722" y="295.2">0.504× [0.504, 0.505]</text>
+<text class="row-label" x="218" y="319.2" text-anchor="end">split-rows1000-forward</text>
+<g class="ci-win"><title>split-rows1000-forward: 0.399× [0.399, 0.399]</title><line x1="281.0" y1="315.2" x2="281.0" y2="315.2" stroke-width="2.2"/><line x1="281.0" y1="311.2" x2="281.0" y2="319.2" stroke-width="1.8"/><line x1="281.0" y1="311.2" x2="281.0" y2="319.2" stroke-width="1.8"/><circle cx="281.0" cy="315.2" r="3.8"/></g>
+<text class="val-text" x="722" y="319.2">0.399× [0.399, 0.399]</text>
+<text class="row-label" x="218" y="343.2" text-anchor="end">split-rows1000-reverse</text>
+<g class="ci-win"><title>split-rows1000-reverse: 0.398× [0.398, 0.398]</title><line x1="280.1" y1="339.2" x2="280.1" y2="339.2" stroke-width="2.2"/><line x1="280.1" y1="335.2" x2="280.1" y2="343.2" stroke-width="1.8"/><line x1="280.1" y1="335.2" x2="280.1" y2="343.2" stroke-width="1.8"/><circle cx="280.1" cy="339.2" r="3.8"/></g>
+<text class="val-text" x="722" y="343.2">0.398× [0.398, 0.398]</text>
+<line class="section-divider" x1="8" y1="354" x2="882" y2="354"/>
 <text class="section-title" x="10" y="369">M2skip: Client Go allocs/op Ratio</text>
-<text class="row-label" x="203" y="393.2" text-anchor="end">skip3-rows10-forward</text>
-<g class="ci-win"><title>skip3-rows10-forward: 0.790× [0.790, 0.790]</title><line x1="532.1" y1="389.2" x2="532.1" y2="389.2" stroke-width="2.2"/><line x1="532.1" y1="385.2" x2="532.1" y2="393.2" stroke-width="1.8"/><line x1="532.1" y1="385.2" x2="532.1" y2="393.2" stroke-width="1.8"/><circle cx="532.1" cy="389.2" r="3.8"/></g>
-<text class="val-text" x="707" y="393.2">0.790× [0.790, 0.790]</text>
-<text class="row-label" x="203" y="417.2" text-anchor="end">skip3-rows10-reverse</text>
-<g class="ci-win"><title>skip3-rows10-reverse: 0.709× [0.709, 0.709]</title><line x1="490.0" y1="413.2" x2="490.0" y2="413.2" stroke-width="2.2"/><line x1="490.0" y1="409.2" x2="490.0" y2="417.2" stroke-width="1.8"/><line x1="490.0" y1="409.2" x2="490.0" y2="417.2" stroke-width="1.8"/><circle cx="490.0" cy="413.2" r="3.8"/></g>
-<text class="val-text" x="707" y="417.2">0.709× [0.709, 0.709]</text>
-<text class="row-label" x="203" y="441.2" text-anchor="end">skip3-rows1000-forward</text>
-<g class="ci-win"><title>skip3-rows1000-forward: 0.529× [0.529, 0.529]</title><line x1="375.9" y1="437.2" x2="375.9" y2="437.2" stroke-width="2.2"/><line x1="375.9" y1="433.2" x2="375.9" y2="441.2" stroke-width="1.8"/><line x1="375.9" y1="433.2" x2="375.9" y2="441.2" stroke-width="1.8"/><circle cx="375.9" cy="437.2" r="3.8"/></g>
-<text class="val-text" x="707" y="441.2">0.529× [0.529, 0.529]</text>
-<text class="row-label" x="203" y="465.2" text-anchor="end">skip3-rows1000-reverse</text>
-<g class="ci-win"><title>skip3-rows1000-reverse: 0.527× [0.527, 0.527]</title><line x1="374.4" y1="461.2" x2="374.4" y2="461.2" stroke-width="2.2"/><line x1="374.4" y1="457.2" x2="374.4" y2="465.2" stroke-width="1.8"/><line x1="374.4" y1="457.2" x2="374.4" y2="465.2" stroke-width="1.8"/><circle cx="374.4" cy="461.2" r="3.8"/></g>
-<text class="val-text" x="707" y="465.2">0.527× [0.527, 0.527]</text>
+<text class="row-label" x="218" y="393.2" text-anchor="end">skip3-rows10-forward</text>
+<g class="ci-win"><title>skip3-rows10-forward: 0.790× [0.790, 0.790]</title><line x1="547.1" y1="389.2" x2="547.1" y2="389.2" stroke-width="2.2"/><line x1="547.1" y1="385.2" x2="547.1" y2="393.2" stroke-width="1.8"/><line x1="547.1" y1="385.2" x2="547.1" y2="393.2" stroke-width="1.8"/><circle cx="547.1" cy="389.2" r="3.8"/></g>
+<text class="val-text" x="722" y="393.2">0.790× [0.790, 0.790]</text>
+<text class="row-label" x="218" y="417.2" text-anchor="end">skip3-rows10-reverse</text>
+<g class="ci-win"><title>skip3-rows10-reverse: 0.709× [0.709, 0.709]</title><line x1="505.0" y1="413.2" x2="505.0" y2="413.2" stroke-width="2.2"/><line x1="505.0" y1="409.2" x2="505.0" y2="417.2" stroke-width="1.8"/><line x1="505.0" y1="409.2" x2="505.0" y2="417.2" stroke-width="1.8"/><circle cx="505.0" cy="413.2" r="3.8"/></g>
+<text class="val-text" x="722" y="417.2">0.709× [0.709, 0.709]</text>
+<text class="row-label" x="218" y="441.2" text-anchor="end">skip3-rows1000-forward</text>
+<g class="ci-win"><title>skip3-rows1000-forward: 0.529× [0.529, 0.529]</title><line x1="390.9" y1="437.2" x2="390.9" y2="437.2" stroke-width="2.2"/><line x1="390.9" y1="433.2" x2="390.9" y2="441.2" stroke-width="1.8"/><line x1="390.9" y1="433.2" x2="390.9" y2="441.2" stroke-width="1.8"/><circle cx="390.9" cy="437.2" r="3.8"/></g>
+<text class="val-text" x="722" y="441.2">0.529× [0.529, 0.529]</text>
+<text class="row-label" x="218" y="465.2" text-anchor="end">skip3-rows1000-reverse</text>
+<g class="ci-win"><title>skip3-rows1000-reverse: 0.527× [0.527, 0.527]</title><line x1="389.4" y1="461.2" x2="389.4" y2="461.2" stroke-width="2.2"/><line x1="389.4" y1="457.2" x2="389.4" y2="465.2" stroke-width="1.8"/><line x1="389.4" y1="457.2" x2="389.4" y2="465.2" stroke-width="1.8"/><circle cx="389.4" cy="461.2" r="3.8"/></g>
+<text class="val-text" x="722" y="465.2">0.527× [0.527, 0.527]</text>
 </svg>
 <div class="bench-legend"><span><i class="bench-swatch" style="background:#0d9488"></i> 95% CI entirely &lt; 1.000 (faster / lower)</span><span><i class="bench-swatch" style="background:#64748b"></i> 95% CI overlaps 1.000 (unresolved)</span><span><i class="bench-swatch" style="background:#d97706"></i> 95% CI entirely &gt; 1.000 (slower / higher)</span></div>
 </figure>
