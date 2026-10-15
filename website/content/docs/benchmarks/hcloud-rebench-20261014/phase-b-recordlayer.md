@@ -57,6 +57,7 @@ production code. `final/before` is the allocation work plus later changes;
 
 <figure class="bench-figure">
 <figcaption><strong>Figure B.1: Record Layer Allocation Optimization Ratios — Final / Before (log₂ scale, 95% CI)</strong> — 6 paired blocks × 3 repeats on memory engine. Below 1.0× means Final is faster or allocates less.</figcaption>
+<div class="bench-summary"><ul class="bench-summary-list"><li><strong>Allocations (final/before):</strong> allocs/op drops on all 8 benchmarks (0.627×–0.888×, led by ScanIndexRecords/pipelined 0.627× and ScanIndexRecords/serial 0.651×); B/op drops on 7 of 8 (0.749×–0.910×) and is unresolved on 3-chunk SaveSplitRecord (0.998× [0.993, 1.004]).</li><li><strong>Mean time (ns/op, final/before):</strong> Lower on 3 of 8 benchmarks (ScanIndexRecords/pipelined 0.972× [0.952, 0.995], ScanRecordsSplitVersioned 0.976× [0.957, 0.996], LoadRecord 0.978× [0.958, 0.994]) and unresolved on the other 5 (0.966×–1.015×).</li><li><strong>Against pre-#888 legacy (see table below):</strong> ScanIndexRecords/serial is 1.477× (48% slower) and LoadRecord is 1.138× (14% slower) while ScanIndexRecords/pipelined takes 0.647× of legacy time (35% faster).</li></ul></div>
 <svg class="bench-svg" viewBox="0 0 1383 620" role="img" aria-label="Figure B.1: Record Layer Allocation Optimization Ratios — Final / Before (log₂ scale, 95% CI)">
 <line class="grid-line" x1="228.0" y1="36" x2="228.0" y2="594"/>
 <text class="axis-text" x="228.0" y="30" text-anchor="middle">0.6×</text>

@@ -58,6 +58,7 @@ Both trees ran byte-identical benchmark source
 
 <figure class="bench-figure">
 <figcaption><strong>Figure C1.1: Forward Remote Fetch vs Ordinary Scan — Final Tree (log₂ scale, 95% CI)</strong> — 8 Williams-square blocks × 3 repeats on single-node memory engine. Below 1.0× favors USE_REMOTE_FETCH.</figcaption>
+<div class="bench-summary"><ul class="bench-summary-list"><li><strong>Wins (5/6 cases on ns/op, 95% CI &lt; 1.000):</strong> small-all-1000 0.341× [0.321, 0.356] (15.3 ms vs 44.0 ms), split-limit-1-broad 0.707× [0.685, 0.735], small-exact-10 0.733× [0.724, 0.743], small-limit-1-broad 0.838× [0.795, 0.900], and split-exact-10 0.872× [0.843, 0.904].</li><li><strong>Regressions (1/6 on ns/op, 95% CI &gt; 1.000):</strong> 2-chunk split-all-1000 is 1.150× [1.129, 1.181] slower (188 ms vs 163 ms).</li><li><strong>Allocations:</strong> B/op drops on all 6 cases (0.512×–0.960×); allocs/op drops on 5 of 6 (0.404×–0.942×) and increases on small-limit-1-broad (1.046× [1.046, 1.046], 229 vs 219).</li></ul></div>
 <svg class="bench-svg" viewBox="0 0 1329 500" role="img" aria-label="Figure C1.1: Forward Remote Fetch vs Ordinary Scan — Final Tree (log₂ scale, 95% CI)">
 <line class="grid-line" x1="174.0" y1="36" x2="174.0" y2="474"/>
 <text class="axis-text" x="174.0" y="30" text-anchor="middle">0.3×</text>

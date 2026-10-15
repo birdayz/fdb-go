@@ -57,6 +57,7 @@ of [hcloud-multinode-vpc-20261014](../).
 
 <figure class="bench-figure">
 <figcaption><strong>Figure M2.1: Mean Time (ns/op) Ratio — USE_REMOTE_FETCH / SCAN_AND_FETCH (log₂ scale, 95% CI)</strong> — 3-node VPC double ssd-2 cluster (9 storage servers). Below 1.0× means USE_REMOTE_FETCH is faster.</figcaption>
+<div class="bench-summary"><ul class="bench-summary-list"><li><strong>Wins (4/16 cases, 95% CI &lt; 1.000):</strong> M2skip skip3-rows10-reverse 0.158× [0.155, 0.160] (4.87 ms vs 31.13 ms), M2rl split-rows10-reverse 0.854× [0.823, 0.886] (5.77 ms vs 6.81 ms, f = 0.0000), M2rl split-rows10-forward 0.873× [0.829, 0.920] (6.00 ms vs 6.83 ms, f = 0.0000), and M2rl small-limit1-forward 0.979× [0.964, 0.995] (2.62 ms vs 2.69 ms).</li><li><strong>Unresolved (2/16, 95% CI spans 1.000):</strong> M2rl small-limit1-reverse 0.985× [0.969, 1.003] and M2skip skip3-rows10-forward 1.155× [0.991, 1.345].</li><li><strong>Regressions (10/16 — 8/12 in M2rl, 2/4 in M2skip, 95% CI &gt; 1.000):</strong> small-rows10 (1.031× fwd, 1.026× rev), split-limit1 (1.110× fwd, 1.114× rev), and all six 1,000-row scans: small-rows1000 (1.226× fwd 117.08 vs 95.10 ms, 1.255× rev 118.95 vs 96.39 ms), skip3-rows1000 (1.360× fwd 138.19 vs 98.67 ms, 1.324× rev 133.24 vs 101.06 ms), and 2-chunk split-rows1000 [f = 0.6960] (2.326× fwd 742.51 vs 316.38 ms, 2.300× rev 768.95 vs 327.62 ms).</li></ul></div>
 <svg class="bench-svg" viewBox="0 0 1454 438" role="img" aria-label="Figure M2.1: Mean Time (ns/op) Ratio — USE_REMOTE_FETCH / SCAN_AND_FETCH (log₂ scale, 95% CI)">
 <line class="grid-line" x1="299.0" y1="36" x2="299.0" y2="412"/>
 <text class="axis-text" x="299.0" y="30" text-anchor="middle">0.15×</text>
@@ -142,6 +143,7 @@ of [hcloud-multinode-vpc-20261014](../).
 
 <figure class="bench-figure">
 <figcaption><strong>Figure M2.2: Client Go Allocations (allocs/op) Ratio — USE_REMOTE_FETCH / SCAN_AND_FETCH</strong> — Below 1.0× means USE_REMOTE_FETCH allocates fewer Go heap objects on the client.</figcaption>
+<div class="bench-summary"><ul class="bench-summary-list"><li><strong>Wins (14/16 cases, 95% CI &lt; 1.000):</strong> Client Go allocs/op drop across all 12 multi-row cases (0.398×–0.790×) and both split-limit1 cases (0.942× fwd 248 vs 263, 0.952× rev 250 vs 263).</li><li><strong>Regressions (2/16, 95% CI &gt; 1.000):</strong> small-limit1-forward 1.040× [1.038, 1.041] (231 vs 222, +9 allocs/op) and small-limit1-reverse 1.049× [1.047, 1.052] (234 vs 223, +11 allocs/op).</li><li><strong>Note:</strong> Lower client allocations on the six 1,000-row cases (0.398×–0.529×) did not prevent their 1.226×–2.326× ns/op regressions in Figure M2.1.</li></ul></div>
 <svg class="bench-svg" viewBox="0 0 1352 438" role="img" aria-label="Figure M2.2: Client Go Allocations (allocs/op) Ratio — USE_REMOTE_FETCH / SCAN_AND_FETCH">
 <line class="grid-line" x1="197.0" y1="36" x2="197.0" y2="412"/>
 <text class="axis-text" x="197.0" y="30" text-anchor="middle">0.35×</text>

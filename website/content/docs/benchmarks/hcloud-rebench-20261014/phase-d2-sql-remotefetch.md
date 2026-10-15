@@ -76,6 +76,7 @@ have the SQL fetch-method option, so this phase has no older-tree arm. Harness
 
 <figure class="bench-figure">
 <figcaption><strong>Figure D2.1: Remote Fetch vs Ordinary Scan Ratios (log₂ scale, 95% CI)</strong> — 6 paired blocks × 3 repeats on single-node memory engine. Below 1.0× favors USE_REMOTE_FETCH.</figcaption>
+<div class="bench-summary"><ul class="bench-summary-list"><li><strong>Wins (2/2 SQL cases on single-node memory):</strong> rows10 ns/op is 0.885× [0.873, 0.896] (2.22 ms vs 2.50 ms) and rows1000 ns/op is 0.536× [0.532, 0.538] (24.9 ms vs 46.5 ms), with lower client B/op (0.843×, 0.657×) and allocs/op (0.850×, 0.614×).</li><li><strong>Confound flag:</strong> Both cases flagged a 5-vs-6-byte store-prefix length difference in 1 of 6 rows10 blocks and 2 of 6 rows1000 blocks (a post-hoc descriptive check on equal-prefix blocks gives 0.884 and 0.534).</li></ul></div>
 <svg class="bench-svg" viewBox="0 0 1320 260" role="img" aria-label="Figure D2.1: Remote Fetch vs Ordinary Scan Ratios (log₂ scale, 95% CI)">
 <line class="grid-line" x1="165.0" y1="36" x2="165.0" y2="234"/>
 <text class="axis-text" x="165.0" y="30" text-anchor="middle">0.2×</text>

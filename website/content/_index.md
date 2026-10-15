@@ -14,8 +14,8 @@ toc: false
     <div class="launch-actions">
       <a class="launch-button" href="/docs/getting-started/">Read the quickstart <span aria-hidden="true">→</span></a>
       <a class="launch-source" href="https://github.com/birdayz/fdb-go">Browse source <span aria-hidden="true">↗</span></a>
+      <code class="launch-install">go get fdb.dev/pkg/fdbgo/fdb@latest</code>
     </div>
-    <a class="hero-mobile-status" href="/docs/maturity/">Pre-1.0 · Status &amp; compatibility →</a>
   </div>
   <figure class="launch-stack">
     <figcaption>Inside your Go application</figcaption>
@@ -68,10 +68,10 @@ toc: false
     <p>Prefer structured records or SQL? The repository includes complete examples for both, with setup and error handling.</p>
     <div class="example-links"><a href="https://github.com/birdayz/fdb-go/blob/master/example/getting_started.go">Record example <span aria-hidden="true">↗</span></a><a href="https://github.com/birdayz/fdb-go/tree/master/example/sql">SQL example <span aria-hidden="true">↗</span></a></div>
   </div>
-  <div class="launch-code">
-    <div class="code-caption"><span>Transaction excerpt</span><span>Go</span></div>
+  <div class="launch-code-grid">
+    <div class="launch-code">
+      <div class="code-caption"><span>Key-value transaction</span><span>fdb.dev/pkg/fdbgo/fdb</span></div>
 {{< highlight go >}}
-// With an open fdb.Database:
 value, err := db.Transact(
     func(tx fdb.WritableTransaction) (any, error) {
         tx.Set(fdb.Key("greeting"), []byte("hello"))
@@ -83,7 +83,23 @@ if err != nil {
 }
 fmt.Println(string(value.([]byte)))
 {{< /highlight >}}
-    <p class="code-footnote">Import <code>fdb.dev/pkg/fdbgo/fdb</code>. <a href="https://github.com/birdayz/fdb-go#fdb-client">Full connection setup →</a></p>
+      <p class="code-footnote"><a href="https://github.com/birdayz/fdb-go#fdb-client">Client connection setup →</a></p>
+    </div>
+    <div class="launch-code">
+      <div class="code-caption"><span>Embedded SQL over Record Layer</span><span>fdb.dev/pkg/relational/sqldriver</span></div>
+{{< highlight go >}}
+rows, err := sqlDB.QueryContext(ctx,
+    `SELECT id, email FROM users
+     WHERE status = ? ORDER BY id LIMIT 10`,
+    "active",
+)
+if err != nil {
+    return err
+}
+defer rows.Close()
+{{< /highlight >}}
+      <p class="code-footnote"><a href="https://github.com/birdayz/fdb-go/tree/master/example/sql">Complete SQL &amp; Record Layer examples →</a></p>
+    </div>
   </div>
 </section>
 
@@ -94,7 +110,7 @@ fmt.Println(string(value.([]byte)))
     <article><h3>Shared record-store data</h3><p>Conformance tests exercise Go and Java reads and writes. The Java reference is Record Layer 4.14.2.0.</p><a href="https://github.com/birdayz/fdb-go/tree/master/conformance">Read the Java conformance suite <span aria-hidden="true">↗</span></a></article>
     <article><h3>SQL results and plans</h3><p>Cross-engine scenarios and regression tests check query behavior against the Java relational layer.</p><a href="https://github.com/birdayz/fdb-go/tree/master/pkg/relational/conformance">Read the SQL scenarios <span aria-hidden="true">↗</span></a></article>
   </div>
-  <div class="launch-boundary"><strong>Before mixing Go and Java writers</strong><p>Review the supported formats and exceptions: collation, TEXT behavior, vector layouts, and SQL continuation tokens need particular care. Existing Go SQL storage may require an explicit migration.</p><a href="https://github.com/birdayz/fdb-go/blob/master/docs/compatibility.md">Compatibility boundaries →</a><a href="https://github.com/birdayz/fdb-go/blob/master/docs/upgrade.md">Upgrade guidance →</a></div>
+  <div class="launch-boundary"><div><strong>Before mixing Go and Java writers</strong><p>Review the supported formats and exceptions: collation, TEXT behavior, vector layouts, and SQL continuation tokens need particular care. Existing Go SQL storage may require an explicit migration.</p></div><div class="boundary-links"><a href="https://github.com/birdayz/fdb-go/blob/master/docs/compatibility.md">Compatibility boundaries →</a><a href="https://github.com/birdayz/fdb-go/blob/master/docs/upgrade.md">Upgrade guidance →</a></div></div>
   <p class="performance-note">Earlier Go-vs-libfdb_c speedup and write-parity claims have been withdrawn, and no general speedup is claimed outside the specific measured campaign configurations. <a href="/docs/benchmarks/">Read the benchmark campaigns →</a> · <a href="https://github.com/birdayz/fdb-go/blob/master/pkg/fdbgo/bench/PERFORMANCE.md">Correction &amp; methodology →</a></p>
 </section>
 

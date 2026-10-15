@@ -70,6 +70,7 @@ Harness `d94b4c61377d173b7c6884fde426a227dab0f0bb`; see
 
 <figure class="bench-figure">
 <figcaption><strong>Figure C2.1: Remote Fetch vs Ordinary Scan Ratios (log₂ scale, 95% CI)</strong> — 6 paired blocks × 3 repeats on single-node memory engine. Below 1.0× favors USE_REMOTE_FETCH.</figcaption>
+<div class="bench-summary"><ul class="bench-summary-list"><li><strong>Wins (3/4 cases on ns/op, 95% CI &lt; 1.000):</strong> reverse-small-1000 0.337× [0.331, 0.343] (15.6 ms vs 46.5 ms), executor-skip3-small-1000 0.455× [0.445, 0.465] (21.4 ms vs 47.5 ms), and executor-skip3-small-10 0.783× [0.764, 0.800] (1.46 ms vs 1.87 ms).</li><li><strong>Regressions (1/4 on ns/op, 95% CI &gt; 1.000):</strong> reverse-split-1000 is 1.146× [1.130, 1.161] slower (188 ms vs 165 ms).</li><li><strong>Allocations:</strong> Client B/op (0.506×–0.692×) and allocs/op (0.403×–0.791×) drop across all 4 cases.</li></ul></div>
 <svg class="bench-svg" viewBox="0 0 1376 380" role="img" aria-label="Figure C2.1: Remote Fetch vs Ordinary Scan Ratios (log₂ scale, 95% CI)">
 <line class="grid-line" x1="221.0" y1="36" x2="221.0" y2="354"/>
 <text class="axis-text" x="221.0" y="30" text-anchor="middle">0.2×</text>

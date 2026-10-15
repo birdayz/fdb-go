@@ -45,6 +45,7 @@ dedicated 16-vCPU host (`ssd-2` engine). This is **phase A2** of
 
 <figure class="bench-figure">
 <figcaption><strong>Figure A2.1: Single-Node 8-Worker Client Ratios (log₂ scale, 95% block-bootstrap CI)</strong> — 6 paired blocks × 24,000 tx/run (144,000 tx/arm/workload). Below 1.0× favors Final Pure-Go.</figcaption>
+<div class="bench-summary"><ul class="bench-summary-list"><li><strong>Latency (final/CGo at 8w):</strong> Mean latency is lower for pure-Go on range100 (0.663× [0.440, 0.858]) and batchset50 (0.817× [0.768, 0.851]) and unresolved on get100 (0.991× [0.928, 1.084]). p99 is lower on batchset50 (0.914× [0.816, 0.985]) and unresolved on range100 (0.881× [0.696, 1.033]) and get100 (1.015× [0.938, 1.097]).</li><li><strong>Shutdown CPU (E−A, final/CGo at 8w):</strong> Higher for pure-Go on all 3 workloads: batchset50 1.150× [1.112, 1.188], range100 1.359× [1.138, 1.559], and get100 1.638× [1.603, 1.676].</li><li><strong>Allocations (final/before at 8w):</strong> Go mallocs/tx drop on all 3 workloads (range100 0.796×, get100 0.872×, batchset50 0.973×).</li></ul></div>
 <svg class="bench-svg" viewBox="0 0 1320 402" role="img" aria-label="Figure A2.1: Single-Node 8-Worker Client Ratios (log₂ scale, 95% block-bootstrap CI)">
 <line class="grid-line" x1="165.0" y1="36" x2="165.0" y2="376"/>
 <text class="axis-text" x="165.0" y="30" text-anchor="middle">0.4×</text>

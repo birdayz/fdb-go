@@ -38,6 +38,7 @@ not a multi-host or physical-network benchmark.
 
 <figure class="bench-figure">
 <figcaption><strong>Figure C3.1: Remote Fetch vs Ordinary Scan Ratios (log₂ scale, 95% CI)</strong> — 6 paired blocks × 3 repeats on single-node memory engine. Below 1.0× favors USE_REMOTE_FETCH.</figcaption>
+<div class="bench-summary"><ul class="bench-summary-list"><li><strong>Wins (1/2 cases, 0.5 ms nominal added client↔server RTT):</strong> small-all-1000 ns/op is 0.224× [0.222, 0.226] (24.0 ms vs 108.0 ms), with B/op 0.524× and allocs/op 0.439×.</li><li><strong>Regressions (1/2 cases):</strong> 2-chunk split-all-1000 ns/op is 1.053× [1.008, 1.101] slower (276.9 ms vs 266.4 ms) despite B/op 0.692× and allocs/op 0.406×.</li><li><strong>Scope:</strong> Single-fdbserver memory setup where index and primary records reside in one process; only client↔server traffic crosses the delayed veth link.</li></ul></div>
 <svg class="bench-svg" viewBox="0 0 1320 260" role="img" aria-label="Figure C3.1: Remote Fetch vs Ordinary Scan Ratios (log₂ scale, 95% CI)">
 <line class="grid-line" x1="165.0" y1="36" x2="165.0" y2="234"/>
 <text class="axis-text" x="165.0" y="30" text-anchor="middle">0.2×</text>
