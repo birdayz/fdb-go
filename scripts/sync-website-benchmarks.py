@@ -68,7 +68,16 @@ def transform_body(text: str, is_index: bool) -> str:
     return body
 
 
-FORBIDDEN_RE = re.compile(r'\b(?:10\.88\.0\.\d+|172\.31\.99\.\d+|167\.233\.\d+\.\d+|91\.98\.\d+\.\d+|2\.28\.\d+\.\d+)\b|analysis-seed391706|/home/birdy|/srv/fdb-bench')
+FORBIDDEN_RE = re.compile(
+    r'\b(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|167\.233\.\d+\.\d+|91\.98\.\d+\.\d+|2\.28\.\d+\.\d+)\b'
+    r'|analysis-seed391706|/home/birdy|/srv/fdb-bench'
+)
+
+
+def check_text(path: Path, content: str):
+    m = FORBIDDEN_RE.search(content)
+    if m:
+        raise SystemExit(f'{path}: forbidden literal {m.group(0)!r} in website benchmark content')
 
 
 def main():
@@ -90,10 +99,11 @@ def main():
             page_md = f'---\ntitle: "{ctitle}"\ndescription: "{cdesc}"\nweight: {cweight}\n---\n\n{cbody}'
             expected[dst_dir / fname] = page_md
 
+    landing = DST_ROOT / '_index.md'
+    if landing.is_file():
+        check_text(landing, landing.read_text())
     for path, content in expected.items():
-        m = FORBIDDEN_RE.search(content)
-        if m:
-            raise SystemExit(f'{path}: forbidden literal {m.group(0)!r} in website benchmark content')
+        check_text(path, content)
 
     if args.check:
         for path, content in expected.items():

@@ -100,8 +100,16 @@ change-specific measurements remain in the repository under
 - Across single-node `Phase A`, `Phase A2`, `Phase B`, and `Phase D1`, the
   RFC-258 allocation work reduced Go heap allocations per operation by
   **`3–20%`** in the client and **`11–37%`** in the Record Layer (`5.1%` in SQL
-  `PlanCacheHit`), while keeping latency within `4%` of `1.000` across all
-  cases.
+  `PlanCacheHit`).
+- In Record Layer `Phase B`, `ns/op` point estimates ranged from `0.966×` to
+  `1.015×` (`LoadRecord` `0.978 [0.958, 0.994]`, `ScanRecordsSplitVersioned`
+  `0.976 [0.957, 0.996]`, `ScanIndexRecords/pipelined` `0.972 [0.952, 0.995]`,
+  with the remaining five intervals overlapping `1.000`). In client `Phase A`
+  (1w) and `Phase A2` (8w), mean-latency point estimates ranged from `0.984×` to
+  `1.042×` (`read1000` `1.042 [0.998, 1.087]`) in `A` and from `0.995×` to
+  `1.069×` (`range100` `1.069 [0.948, 1.206]`, p99 `0.901 [0.829, 0.982]`) in
+  `A2`; every mean-latency interval overlapped `1.000` (which does not establish
+  equivalence).
 
 ## Reproducibility & Artifact Scope
 
@@ -117,6 +125,7 @@ change-specific measurements remain in the repository under
 - The multi-gigabyte raw per-transaction CSVs, 1 Hz `/proc` telemetry streams,
   and full `status json` / probe archives are retained off-repository in the
   campaign archives (`hcloud-rebench-20261014` and
-  `hcloud-multinode-vpc-20261014`) with SHA-256 manifests; every summary ratio,
-  confidence interval, and absolute median in these pages is generated directly
-  from those archived `report.json`, `summary.json`, and `absolute.csv` outputs.
+  `hcloud-multinode-vpc-20261014`, not currently published for download) with
+  SHA-256 manifests; every summary ratio, confidence interval, and absolute
+  median in these pages is generated directly from those archived `report.json`,
+  `summary.json`, and `absolute.csv` outputs.

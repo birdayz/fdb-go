@@ -104,12 +104,19 @@ class SiteCheckTest(unittest.TestCase):
             self.run_check()
 
     def test_benchmark_sync_in_sync_and_clean(self):
+        import importlib.util
         import subprocess
         import sys
         repo = Path(__file__).resolve().parent.parent
         script = repo / "scripts/sync-website-benchmarks.py"
         if script.is_file():
             subprocess.run([sys.executable, "-B", str(script), "--check"], check=True)
+            spec = importlib.util.spec_from_file_location("sync_wb", script)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            for bad in ["10.88.0.10", "172.31.99.1", "192.168.1.5", "/home/birdy/x", "/srv/fdb-bench/x"]:
+                with self.assertRaises(SystemExit):
+                    mod.check_text(Path("fixture.md"), f"host {bad} here")
 
     def test_empty_site(self):
         for page in self.root.rglob("index.html"):
