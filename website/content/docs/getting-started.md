@@ -1,45 +1,43 @@
 ---
 title: Getting started
-description: "Build fdb-go from source and run the SQL and Record Layer examples against a local FoundationDB cluster."
+description: "Install frl, start a local FoundationDB, and run the SQL and Record Layer examples."
 weight: 1
 ---
 
-## Prerequisites
+You need Go ([version](https://github.com/birdayz/fdb-go/blob/master/go.mod)) and
+Docker. cgo and `libfdb_c` are not needed.
 
-- Go, at the version in [`go.mod`](https://github.com/birdayz/fdb-go/blob/master/go.mod)
-- Docker, for the local FoundationDB cluster
-
-cgo and `libfdb_c` are not needed.
-
-## Get the source
+## Install frl
 
 ```sh
-git clone https://github.com/birdayz/fdb-go.git
-cd fdb-go
+curl -fsSL https://fdb.dev/install.sh | sh
 ```
 
-## Run the SQL example
+`frl` is the project's CLI, a single static binary. The script installs it without
+sudo. With Go instead: `go install fdb.dev/cmd/frl@latest`.
+
+## Start FoundationDB
 
 ```sh
-go build -o frl ./cmd/frl
-export FDB_CLUSTER_FILE="$(./frl fdb up)"
-go run ./example/sql
+frl fdb up
 ```
 
-`frl fdb up` starts a single-node FoundationDB cluster in Docker and prints its
-cluster-file path. The examples delete and recreate their data, so they refuse to
-run unless `FDB_CLUSTER_FILE` is set.
+Starts a single-node FoundationDB in Docker and writes its cluster file to
+`~/.frl/frl-fdb.cluster`. If it fails, check that Docker is running.
 
-Source: [`example/sql`](https://github.com/birdayz/fdb-go/tree/master/example/sql).
-
-## Run the Record Layer example
+## Run the examples
 
 ```sh
-go run ./example
+git clone https://github.com/birdayz/fdb-go.git && cd fdb-go
+FDB_CLUSTER_FILE=~/.frl/frl-fdb.cluster go run ./example/sql
+FDB_CLUSTER_FILE=~/.frl/frl-fdb.cluster go run ./example
 ```
 
-It saves and loads a demo order (ID 1001) on the same local cluster. Source:
-[`example/getting_started.go`](https://github.com/birdayz/fdb-go/blob/master/example/getting_started.go).
+The [SQL example](https://github.com/birdayz/fdb-go/tree/master/example/sql)
+creates a schema, inserts rows, and queries them. The
+[Record Layer example](https://github.com/birdayz/fdb-go/blob/master/example/getting_started.go)
+saves and loads a record. Both recreate their data on every run, so they refuse
+to run without `FDB_CLUSTER_FILE`.
 
 ## Use the client directly
 
@@ -49,13 +47,11 @@ and [API notes](https://github.com/birdayz/fdb-go/blob/master/pkg/fdbgo/README.m
 Transaction functions can run more than once, so keep external side effects out
 of them.
 
-## Stop the cluster
+## Stop FoundationDB
 
 ```sh
-./frl fdb down
+frl fdb down
 ```
-
-If `frl fdb up` fails, check that Docker is running.
 
 ## Next
 
