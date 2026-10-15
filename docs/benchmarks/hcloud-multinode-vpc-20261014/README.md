@@ -1,0 +1,120 @@
+# hcloud-multinode-vpc-20261014
+
+A preregistered multi-node benchmark campaign across **four dedicated 16-vCPU
+cloud hosts on an isolated private VPC**, measuring:
+
+1. **M2 (`M2rl` and `M2skip`):** Record Layer `USE_REMOTE_FETCH`
+   (`getMappedRange`) against `SCAN_AND_FETCH` when the client and three
+   FoundationDB server machines communicate over a real VPC and index shards and
+   record shards are placed across 9 storage servers.
+2. **M1 (`M1w1`, `M1w8`, `M1w32`, `M1w64`):** the final pure-Go client
+   (`pkg/fdbgo`) against Apple's Go binding over `libfdb_c` 7.3.77 at 1, 8, 32,
+   and 64 closed-loop workers against a 3-node `double`-redundancy `ssd-2`
+   cluster.
+
+Every phase's plan and shard-placement labels were sealed before timing, every
+run was executed once in a counterbalanced block order, 1 Hz server telemetry
+was collected on all three server hosts and reconciled with conservative clock
+bounds (`R4`), and all adverse or omitted cases are retained and reported.
+
+## Topology and Environment
+
+- **Four Hetzner `ccx43` hosts** in `fsn1`: 16 dedicated vCPUs (AMD EPYC Milan,
+  8 cores × 2 SMT threads, one NUMA node, `2k,2k+1` sibling pairs verified on
+  all four hosts) and 64 GiB RAM per machine.
+- **Isolated private VPC (`10.88.0.0/24`)** with host-level `nftables` firewall
+  rules and Hetzner Cloud Firewall rules. Unloaded 100-packet client-to-node
+  VPC ping medians (`p50` / `p99`): node1 `0.374 / 0.971 ms`, node2 `0.412 /
+  1.400 ms`, node3 `0.328 / 1.390 ms` (0% packet loss).
+- **Client host (`10.88.0.10`):** runs **zero `fdbserver` processes**.
+  Housekeeping/runner pinned to CPUs `0–1`, idle sentinel CPUs `2–7`, benchmark
+  client pinned to CPUs `8–15` (`GOMAXPROCS=8`, `GOGC=100`, `GOMEMLIMIT=off`,
+  Go 1.26.9).
+- **Three FoundationDB 7.3.77 server hosts (`10.88.0.11–13`):** 17 `fdbserver`
+  processes total, each pinned to its own disjoint SMT sibling pair (`CPUs 0–1`
+  reserved for housekeeping and the 1 Hz `node_sampler.py`), configured as
+  `double` redundancy `ssd-2` with `commit_proxies=1`, `grv_proxies=1`,
+  `resolvers=1`, `logs=2`, and **9 storage servers** (3 per node):
+  - `node1`: `4500` stateless (`cluster_controller`, `master`,
+    `data_distributor`, `ratekeeper`, `consistency_scan`, `coordinator`) on
+    CPUs `2–3`, `4501` `commit_proxy` on `4–5`, `4502` `grv_proxy` on `6–7`,
+    `4503` `resolution` on `8–9`, `4504–4506` `storage` on `10–11`, `12–13`,
+    `14–15`.
+  - `node2` and `node3`: `4500` `coordinator` on `2–3`, `4501` `transaction`
+    (tLog) on `4–5`, `4502–4504` `storage` on `6–7`, `8–9`, `10–11`.
+- **Tree and binaries:** final tree `267a41434a81723b07e7150869d702636a1b91a9`
+  with the frozen benchmark harness `d94b4c61377d173b7c6884fde426a227dab0f0bb`
+  ([campaign-harness.md](../campaign-harness.md)), reusing the exact compiled
+  binaries verified in [`hcloud-rebench-20261014`](../hcloud-rebench-20261014/README.md)
+  (`reuse_only` scope). The campaign tooling is in
+  [`tools/benchcampaign/multinode`](../../../tools/benchcampaign/multinode/README.md).
+
+## Phases
+
+| Phase | Question | Report |
+|---|---|---|
+| M2 (`M2rl`, `M2skip`) | Multi-node VPC `USE_REMOTE_FETCH` vs `SCAN_AND_FETCH` across 9 storage servers (`double` `ssd-2`) | [phase-m2-remotefetch.md](phase-m2-remotefetch.md) |
+| M1 (`M1w1`, `M1w8`, `M1w32`, `M1w64`) | Multi-node VPC pure-Go vs CGo (`libfdb_c` 7.3.77) at 1, 8, 32, and 64 workers | [phase-m1-client.md](phase-m1-client.md) |
+
+## Headline Findings
+
+- **M2 (`USE_REMOTE_FETCH` vs `SCAN_AND_FETCH` on a 3-node `double` `ssd-2`
+  cluster):**
+  - Unlike on the single-node memory cluster, **1,000-row scans on the 3-node
+    `ssd-2` cluster were slower with `USE_REMOTE_FETCH` than with pipelined
+    `SCAN_AND_FETCH`**:
+    - `small-rows1000` (100% `cross-server`): **1.226 [1.175, 1.280]** forward
+      (117.1 ms vs 95.1 ms) and **1.255 [1.217, 1.293]** reverse (119.0 ms vs
+      96.4 ms), despite cutting client Go allocations by 57% (`allocs/op`
+      0.431).
+    - `split-rows1000` (`partially colocated (f = 0.6960)`): **2.326 [2.253,
+      2.396]** forward (742.5 ms vs 316.4 ms) and **2.300 [2.206, 2.383]**
+      reverse (769.0 ms vs 327.6 ms).
+    - `skip3-rows1000` (100% `cross-server`): **1.360 [1.297, 1.415]** forward
+      and **1.324 [1.250, 1.407]** reverse.
+  - On small result sets, `USE_REMOTE_FETCH` was faster or comparable in
+    specific shapes:
+    - `skip3-rows10-reverse` (`cross-server`): **0.158 [0.156, 0.160]** (4.87
+      ms vs 31.13 ms, a 6.4× speedup).
+    - `split-rows10` (`partially colocated (f = 0.0000)`): **0.873 [0.830,
+      0.920]** forward and **0.854 [0.823, 0.886]** reverse.
+    - `small-limit1` (`cross-server`): **0.979 [0.964, 0.995]** forward and
+      **0.985 [0.969, 1.003]** reverse.
+    - `small-rows10` (`cross-server`): **1.031 [1.019, 1.042]** forward and
+      **1.026 [1.013, 1.039]** reverse; `split-limit1` (`cross-server`):
+      **1.110 [1.088, 1.131]** forward and **1.114 [1.095, 1.138]** reverse.
+  - All 16 cases across `M2rl` (432 samples) and `M2skip` (144 samples) passed
+    before/after placement stability checks and reconciled **100% clean** in
+    R4. Keeping `SCAN_AND_FETCH` as the default is strongly supported by these
+    multi-node results.
+- **M1 (`final pure-Go` vs `CGo` over a real VPC to a 3-node `double` `ssd-2`
+  cluster):**
+  - **At 1 worker (`M1w1`, 7/7 clean):** pure-Go beat CGo on mean latency, p99
+    latency (6 of 7 intervals below 1), and shutdown process CPU (`E−A`) across
+    every workload: `grv` **0.579**, `get100` **0.702**, `get1000` **0.673**,
+    `range100` **0.633**, `set100` **0.886**, `batchset50` **0.921**, and
+    `batchset50x1000` **0.954** (`E−A` CPU ratios **0.570–0.748**).
+  - **At 8, 32, and 64 workers (`M1w8`, `M1w32`, `M1w64`, 5/7 clean per
+    phase):**
+    - On point reads (`get100`, `get1000`), range reads (`range100`), and
+      single-key commits (`set100`), **pure-Go remained faster than CGo on mean
+      latency at every worker level**, with the point-read advantage widening
+      at 32 and 64 workers (`get100` **0.888** at 8w, **0.770** at 32w,
+      **0.676** at 64w; `get1000` **0.942** at 8w, **0.715** at 32w, **0.632**
+      at 64w, with 64w `get1000` p99 **0.385 [0.336, 0.438]**; `range100`
+      **0.868** at 8w, **0.869** at 32w, **0.554 [0.389, 0.673]** at 64w;
+      `set100` **0.980** at 8w, **0.938** at 32w, **0.887** at 64w).
+    - On `grv` under concurrency, pure-Go and CGo had similar mean latency (8w
+      **0.996 [0.949, 1.038]**, 32w **1.041 [1.007, 1.081]**, 64w **1.029
+      [0.990, 1.069]**), while pure-Go used **less** shutdown process CPU
+      (`E−A`) per transaction than CGo at every worker level (**0.904** at 8w,
+      **0.765** at 32w, **0.736** at 64w).
+    - On `get100`, `get1000`, `range100`, and `set100` at 8, 32, and 64
+      workers, pure-Go used more shutdown process CPU (`E−A`) per transaction
+      than CGo (`1.29–2.16×` across those cases, except 64w `range100` at
+      `1.069 [0.920, 1.180]`).
+    - At 8, 32, and 64 workers, `batchset50` (50 writes per commit across 8–64
+      concurrent workers) pushed the FDB tLog queue past the preregistered 100
+      MB `adapter-status-after` ceiling (`113.7 MB`, `193.4 MB`, `141.9 MB`),
+      so `R1` and `R4` omitted `batchset50` (`contaminated`) and left the
+      subsequent `batchset50x1000` unexecuted (`unverifiable`) per protocol.
