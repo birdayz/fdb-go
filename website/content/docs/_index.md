@@ -11,6 +11,7 @@ engine. You can use the client without either higher layer.
 
 {{< cards >}}
   {{< card link="getting-started" title="Getting started" icon="play" subtitle="Build from source and run a disposable local example." >}}
+  {{< card link="benchmarks" title="Benchmarks" icon="chart-bar" subtitle="Preregistered single-node and 4-node VPC benchmark campaigns." >}}
   {{< card link="maturity" title="Status & compatibility" icon="shield-check" subtitle="Version targets, evidence, and boundaries to evaluate." >}}
   {{< card link="https://github.com/birdayz/fdb-go/blob/master/docs/operations.md" title="Operator guide" icon="book-open" subtitle="Transactions, index builds, backups, and observability." >}}
   {{< card link="https://github.com/birdayz/fdb-go/tree/master/example" title="Source examples" icon="code" subtitle="Complete programs for the Record Layer and SQL APIs." >}}

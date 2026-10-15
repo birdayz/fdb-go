@@ -12,10 +12,13 @@ cloud hosts on an isolated private VPC**, measuring:
    and 64 closed-loop workers against a 3-node `double`-redundancy `ssd-2`
    cluster.
 
-Every phase's plan and shard-placement labels were sealed before timing, every
+every phase's plan and shard-placement labels were sealed before timing, every
 run was executed once in a counterbalanced block order, 1 Hz server telemetry
 was collected on all three server hosts and reconciled with conservative clock
 bounds (`R4`), and all adverse or omitted cases are retained and reported.
+Intervals below use the protocol's preregistered bootstrap seed `492817`
+(20,000 resamples); initial exploratory runs with seed `391706` are retained in
+`analysis-seed391706/`.
 
 ## Topology and Environment
 
@@ -82,9 +85,9 @@ bounds (`R4`), and all adverse or omitted cases are retained and reported.
       0.920]** forward and **0.854 [0.823, 0.886]** reverse.
     - `small-limit1` (`cross-server`): **0.979 [0.964, 0.995]** forward and
       **0.985 [0.969, 1.003]** reverse.
-    - `small-rows10` (`cross-server`): **1.031 [1.019, 1.042]** forward and
+    - `small-rows10` (`cross-server`): **1.031 [1.018, 1.042]** forward and
       **1.026 [1.013, 1.039]** reverse; `split-limit1` (`cross-server`):
-      **1.110 [1.088, 1.131]** forward and **1.114 [1.095, 1.138]** reverse.
+      **1.110 [1.087, 1.131]** forward and **1.114 [1.095, 1.138]** reverse.
   - All 16 cases across `M2rl` (432 samples) and `M2skip` (144 samples) passed
     before/after placement stability checks and reconciled **100% clean** in
     R4. Keeping `SCAN_AND_FETCH` as the default is strongly supported by these
@@ -92,31 +95,40 @@ bounds (`R4`), and all adverse or omitted cases are retained and reported.
 - **M1 (`final pure-Go` vs `CGo` over a real VPC to a 3-node `double` `ssd-2`
   cluster):**
   - **At 1 worker (`M1w1`, 7/7 clean):** pure-Go beat CGo on mean latency, p99
-    latency (6 of 7 intervals below 1), and shutdown process CPU (`E−A`) across
-    every workload: `grv` **0.579**, `get100` **0.702**, `get1000` **0.673**,
-    `range100` **0.633**, `set100` **0.886**, `batchset50` **0.921**, and
-    `batchset50x1000` **0.954** (`E−A` CPU ratios **0.570–0.748**).
+    latency (6 of 7 intervals below 1; `get100` p99 interval `0.865 [0.734,
+    1.037]` includes 1), and shutdown process CPU (`E−A`) across every workload:
+    `grv` **0.579**, `get100` **0.702**, `get1000` **0.673**, `range100`
+    **0.633**, `set100` **0.886**, `batchset50` **0.920**, and `batchset50x1000`
+    **0.954** (`E−A` CPU ratios **0.570–0.748**; `batchset50` `0.667`).
   - **At 8, 32, and 64 workers (`M1w8`, `M1w32`, `M1w64`, 5/7 clean per
     phase; within-phase arm contrasts only, as worker levels ran in a fixed
     phase sequence with different transaction counts):**
-    - On point reads (`get100`, `get1000`), range reads (`range100`), and
-      single-key commits (`set100`), **pure-Go remained faster than CGo on mean
-      latency within every worker level** (`get100` **0.888** at 8w, **0.770**
-      at 32w, **0.676** at 64w; `get1000` **0.942** at 8w, **0.715** at 32w,
-      **0.632** at 64w, with 64w `get1000` p99 **0.385 [0.336, 0.438]**;
-      `range100` **0.868** at 8w, **0.869** at 32w, **0.554 [0.389, 0.673]** at
-      64w; `set100` **0.980** at 8w, **0.938** at 32w, **0.887** at 64w).
-    - On `grv` under concurrency, pure-Go and CGo had similar mean latency (8w
-      **0.996 [0.949, 1.038]**, 32w **1.041 [1.007, 1.081]**, 64w **1.029
-      [0.990, 1.069]**), while pure-Go used **less** shutdown process CPU
-      (`E−A`) per transaction than CGo at every worker level (**0.904** at 8w,
-      **0.765** at 32w, **0.736** at 64w).
+    - On point reads (`get100`, `get1000`) and single-key commits (`set100`),
+      pure-Go had lower mean latency than CGo with nominal 95% intervals below
+      1 at all three worker levels (`get100` **0.888 [0.866, 0.907]** at 8w,
+      **0.770 [0.750, 0.793]** at 32w, **0.676 [0.644, 0.710]** at 64w;
+      `get1000` **0.942 [0.921, 0.961]** at 8w, **0.715 [0.688, 0.747]** at
+      32w, **0.632 [0.601, 0.669]** at 64w, with 64w `get1000` p99 **0.385
+      [0.336, 0.438]**; `set100` **0.980 [0.966, 0.993]** at 8w, **0.938
+      [0.931, 0.946]** at 32w, **0.887 [0.869, 0.897]** at 64w).
+    - On `range100`, pure-Go was faster at 8w (mean **0.868 [0.846, 0.891]**,
+      p99 **0.925 [0.861, 0.987]**) and 64w (mean **0.554 [0.389, 0.673]**, p99
+      **0.732 [0.506, 0.912]**), whereas at 32w the mean interval included 1
+      (**0.869 [0.753, 1.148]**) and p99 was slower for pure-Go (**1.247
+      [1.048, 1.644]**).
+    - On `grv` under concurrency, pure-Go and CGo had unresolved mean latency
+      differences at 8w (**0.996 [0.949, 1.038]**) and 64w (**1.029 [0.990,
+      1.069]**) and a 4.1% higher mean for pure-Go at 32w (**1.041 [1.007,
+      1.081]**), while pure-Go used **less** shutdown process CPU (`E−A`) per
+      transaction than CGo at every worker level (**0.904** at 8w, **0.765** at
+      32w, **0.736** at 64w).
     - On `get100`, `get1000`, `range100`, and `set100` at 8, 32, and 64
       workers, pure-Go used more shutdown process CPU (`E−A`) per transaction
-      than CGo (`1.29–2.16×` across those cases, except 64w `range100` at
-      `1.069 [0.920, 1.180]`).
+      than CGo (`1.291–2.162×` across those cases, except 64w `range100` where
+      the interval included 1 at `1.069 [0.923, 1.180]`).
     - At 8, 32, and 64 workers, `batchset50` (50 writes per commit across 8–64
       concurrent workers) pushed the FDB tLog queue past the preregistered 100
       MB `adapter-status-after` ceiling (`113.7 MB`, `193.4 MB`, `141.9 MB`),
-      so `R1` and `R4` omitted `batchset50` (`contaminated`) and left the
-      subsequent `batchset50x1000` unexecuted (`unverifiable`) per protocol.
+      so `R1` and `R4` omitted `batchset50` (`contaminated`), and the phase
+      driver conservatively stopped the phase before `batchset50x1000` (retained
+      as unexecuted / R4 `unverifiable`, rather than a measured negative).

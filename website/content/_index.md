@@ -95,7 +95,7 @@ fmt.Println(string(value.([]byte)))
     <article><h3>SQL results and plans</h3><p>Cross-engine scenarios and regression tests check query behavior against the Java relational layer.</p><a href="https://github.com/birdayz/fdb-go/tree/master/pkg/relational/conformance">Read the SQL scenarios <span aria-hidden="true">↗</span></a></article>
   </div>
   <div class="launch-boundary"><strong>Before mixing Go and Java writers</strong><p>Review the supported formats and exceptions: collation, TEXT behavior, vector layouts, and SQL continuation tokens need particular care. Existing Go SQL storage may require an explicit migration.</p><a href="https://github.com/birdayz/fdb-go/blob/master/docs/compatibility.md">Compatibility boundaries →</a><a href="https://github.com/birdayz/fdb-go/blob/master/docs/upgrade.md">Upgrade guidance →</a></div>
-  <p class="performance-note">Earlier Go-vs-libfdb_c speedup and write-parity claims have been withdrawn. No current speed comparison is claimed. <a href="https://github.com/birdayz/fdb-go/blob/master/pkg/fdbgo/bench/PERFORMANCE.md">Correction &amp; benchmark methodology →</a></p>
+  <p class="performance-note">Benchmark campaigns are published with sealed protocols, counterbalanced block schedules, nominal 95% block-bootstrap intervals, and retained negative and adverse cases. <a href="/docs/benchmarks/">Read the benchmark campaigns →</a></p>
 </section>
 
 <section class="launch-section launch-next" aria-labelledby="next-heading">

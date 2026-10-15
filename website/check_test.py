@@ -15,8 +15,16 @@ class SiteCheckTest(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
-        for path in ["/", "/docs/", "/docs/getting-started/", "/docs/maturity/"]:
-            kind = "website" if path in ["/", "/docs/"] else "article"
+        for path in [
+            "/",
+            "/docs/",
+            "/docs/getting-started/",
+            "/docs/benchmarks/",
+            "/docs/benchmarks/hcloud-rebench-20261014/",
+            "/docs/benchmarks/hcloud-multinode-vpc-20261014/",
+            "/docs/maturity/",
+        ]:
+            kind = "article" if path in ["/docs/getting-started/", "/docs/maturity/"] else "website"
             page = self.root / path.lstrip("/") / "index.html"
             page.parent.mkdir(parents=True, exist_ok=True)
             page.write_text(f'''<!doctype html><html><head>

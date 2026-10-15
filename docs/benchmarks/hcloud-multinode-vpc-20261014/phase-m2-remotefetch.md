@@ -55,30 +55,32 @@ of [hcloud-multinode-vpc-20261014](README.md).
 
 Geometric mean of six paired block ratios (median of 3 repeats per process,
 `3s` benchtime), with nominal 95% block-bootstrap intervals (20,000 resamples,
-seed 391706). Below 1 means `USE_REMOTE_FETCH` is faster or allocates less.
+preregistered seed 492817; initial exploratory analysis with seed 391706 is
+retained in `analysis-seed391706/`). Below 1 means `USE_REMOTE_FETCH` is faster
+or allocates less.
 
 | Case | Sealed placement label | Mean ns/op | Go B/op | Go allocs/op |
 |---|---|---:|---:|---:|
-| small-limit1-forward | cross-server | 0.979 [0.964, 0.995] | 0.957 [0.956, 0.959] | 1.040 [1.038, 1.040] |
+| small-limit1-forward | cross-server | 0.979 [0.964, 0.995] | 0.957 [0.956, 0.958] | 1.040 [1.038, 1.041] |
 | small-limit1-reverse | cross-server | 0.985 [0.969, 1.003] | 0.958 [0.957, 0.959] | 1.049 [1.047, 1.052] |
-| small-rows10-forward | cross-server | **1.031 [1.019, 1.042]** | 0.759 [0.759, 0.760] | 0.596 [0.596, 0.597] |
+| small-rows10-forward | cross-server | **1.031 [1.018, 1.042]** | 0.759 [0.759, 0.760] | 0.596 [0.596, 0.597] |
 | small-rows10-reverse | cross-server | **1.026 [1.013, 1.039]** | 0.755 [0.755, 0.756] | 0.595 [0.595, 0.595] |
 | small-rows1000-forward | cross-server | **1.226 [1.175, 1.280]** | 0.532 [0.531, 0.534] | 0.431 [0.431, 0.431] |
-| small-rows1000-reverse | cross-server | **1.255 [1.217, 1.293]** | 0.527 [0.526, 0.528] | 0.430 [0.430, 0.431] |
-| split-limit1-forward | cross-server | **1.110 [1.088, 1.131]** | 0.715 [0.715, 0.716] | 0.942 [0.940, 0.943] |
+| small-rows1000-reverse | cross-server | **1.255 [1.217, 1.293]** | 0.527 [0.526, 0.528] | 0.430 [0.430, 0.430] |
+| split-limit1-forward | cross-server | **1.110 [1.087, 1.131]** | 0.715 [0.715, 0.716] | 0.942 [0.940, 0.943] |
 | split-limit1-reverse | cross-server | **1.114 [1.095, 1.138]** | 0.715 [0.715, 0.715] | 0.952 [0.951, 0.953] |
-| split-rows10-forward | partially colocated (f = 0.0000) | 0.873 [0.830, 0.920] | 0.695 [0.695, 0.695] | 0.505 [0.504, 0.506] |
+| split-rows10-forward | partially colocated (f = 0.0000) | 0.873 [0.829, 0.920] | 0.695 [0.695, 0.695] | 0.505 [0.504, 0.505] |
 | split-rows10-reverse | partially colocated (f = 0.0000) | 0.854 [0.823, 0.886] | 0.695 [0.695, 0.695] | 0.504 [0.504, 0.505] |
-| split-rows1000-forward | partially colocated (f = 0.6960) | **2.326 [2.253, 2.396]** | 0.692 [0.692, 0.692] | 0.399 [0.399, 0.399] |
-| split-rows1000-reverse | partially colocated (f = 0.6960) | **2.300 [2.206, 2.383]** | 0.693 [0.692, 0.693] | 0.398 [0.398, 0.398] |
+| split-rows1000-forward | partially colocated (f = 0.6960) | **2.326 [2.254, 2.397]** | 0.692 [0.692, 0.692] | 0.399 [0.399, 0.399] |
+| split-rows1000-reverse | partially colocated (f = 0.6960) | **2.300 [2.206, 2.384]** | 0.693 [0.692, 0.693] | 0.398 [0.398, 0.398] |
 
 ### `M2skip`: `BenchmarkPlanSkip` (`final-remote / final-ordinary`)
 
 | Case | Sealed placement label | Mean ns/op | Go B/op | Go allocs/op |
 |---|---|---:|---:|---:|
 | skip3-rows10-forward | cross-server | 1.155 [0.991, 1.345] | 0.689 [0.688, 0.689] | 0.790 [0.790, 0.790] |
-| skip3-rows10-reverse | cross-server | **0.158 [0.156, 0.160]** | 0.590 [0.589, 0.590] | 0.709 [0.709, 0.709] |
-| skip3-rows1000-forward | cross-server | **1.360 [1.297, 1.415]** | 0.599 [0.598, 0.600] | 0.529 [0.529, 0.529] |
+| skip3-rows10-reverse | cross-server | **0.158 [0.155, 0.160]** | 0.590 [0.589, 0.590] | 0.709 [0.709, 0.709] |
+| skip3-rows1000-forward | cross-server | **1.360 [1.295, 1.414]** | 0.599 [0.598, 0.600] | 0.529 [0.529, 0.529] |
 | skip3-rows1000-reverse | cross-server | **1.324 [1.250, 1.407]** | 0.594 [0.593, 0.595] | 0.527 [0.527, 0.527] |
 
 All `rows/op` and `prefix-B` ratios in both `M2rl` and `M2skip` were **1.000
@@ -110,22 +112,25 @@ Medians of the six block medians per arm.
 ## Interpretation
 
 - **1,000-row scans on the 3-node `double` `ssd-2` cluster:**
-  - On this 3-node `ssd-2` cluster with `cross-server` shard placement (which
-    differs from the single-node campaign simultaneously in host topology,
-    network, `ssd-2` vs `memory` storage engine, `double` vs `single`
-    redundancy, and storage-server count, so differences between the two
-    campaigns cannot be attributed to one factor alone), every 1,000-row scan
-    (`small-rows1000`, `split-rows1000`, `skip3-rows1000`) was **23% to 133%
-    slower** with `USE_REMOTE_FETCH` than with `SCAN_AND_FETCH`.
+  - On this 3-node `ssd-2` cluster (which differs from the single-node campaign
+    simultaneously in host topology, network, `ssd-2` vs `memory` storage
+    engine, `double` vs `single` redundancy, and storage-server count, so
+    differences between the two campaigns are descriptive and cannot be
+    attributed to one factor alone), every 1,000-row scan — both the
+    `cross-server` cases (`small-rows1000`, `skip3-rows1000`) and the
+    `partially colocated (f = 0.6960)` case (`split-rows1000`) — was **23% to
+    133% slower** with `USE_REMOTE_FETCH` than with `SCAN_AND_FETCH`.
   - *Untested hypothesis:* in `SCAN_AND_FETCH`, the client pipelines
     `GetRange` point-range reads directly to the storage servers holding the
     primary records (with client-side load balancing across the two `double`
     replicas). In `USE_REMOTE_FETCH`, the storage server holding the index
-    shard must issue secondary-to-primary lookups across the VPC to other
-    storage servers on `ssd-2` and serialize the combined `MappedKeyValue`
-    batches back through the index storage server, which on 1,000-row and
-    100 MB split-record scans becomes a bottleneck compared with direct
-    client-pipelined fetches.
+    shard issues secondary-to-primary lookups to the storage processes holding
+    the primary records (which for process-disjoint teams may be on another
+    process on the same host or across the VPC, as per-lookup routing was not
+    traced) and serializes the combined `MappedKeyValue` batches back through
+    the index storage server; on 1,000-row and 100 MB split-record scans on
+    `ssd-2`, that path may bottleneck compared with direct client-pipelined
+    fetches.
 - **Where `USE_REMOTE_FETCH` won:**
   - `skip3-rows10-reverse` (`0.158 [0.156, 0.160]`, 4.87 ms vs 31.13 ms):
     dramatically faster with remote fetch.
