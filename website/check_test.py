@@ -117,6 +117,21 @@ class SiteCheckTest(unittest.TestCase):
             for bad in ["10.88.0.10", "172.31.99.1", "192.168.1.5", "/home/birdy/x", "/srv/fdb-bench/x"]:
                 with self.assertRaises(SystemExit):
                     mod.check_text(Path("fixture.md"), f"host {bad} here")
+            self.assertEqual(mod.format_tick(1.05), "1.05×")
+            self.assertEqual(mod.format_tick(1.10), "1.1×")
+            self.assertEqual(mod.format_tick(1.0), "1.0×")
+            with self.assertRaisesRegex(ValueError, "falls outside axis tick bounds"):
+                mod.render_forest_svg(
+                    "Out of bounds test", "sub",
+                    [("G", [("case1", "1.000 [0.800, 1.500]")])],
+                    [0.9, 1.0, 1.1], "L", "R"
+                )
+            with self.assertRaisesRegex(ValueError, "falls outside"):
+                mod.render_grouped_bars_svg(
+                    "Bar out of bounds", "sub",
+                    [("case1", 100.0, 500.0, 100.0, 2500.0)],
+                    "µs", 2000.0, [0, 1000, 2000]
+                )
 
     def test_empty_site(self):
         for page in self.root.rglob("index.html"):
