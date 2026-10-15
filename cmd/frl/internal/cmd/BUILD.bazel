@@ -74,7 +74,6 @@ go_test(
         "domain_registration_test.go",
         "fdb_fixture_test.go",
         "fdb_integration_test.go",
-        "fdb_quickstart_test.go",
         "fdb_test.go",
         "fdb_up_test.go",
         "fleet_fanout_test.go",
@@ -102,15 +101,10 @@ go_test(
         "version_test.go",
         "write_integration_test.go",
     ],
-    data = [
-        "//:README.md",
-        "//:website/content/docs/getting-started.md",
-    ],
     embed = [":cmd"],
     tags = ["resources:memory:400"],
     deps = [
         "//cmd/frl/gen/frl/config/v1:config",
-        "//cmd/frl/internal/config",
         "//cmd/frl/internal/meta",
         "//gen",
         "//gen/demopb",

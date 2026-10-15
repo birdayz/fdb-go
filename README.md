@@ -12,15 +12,22 @@ engine for Go, without cgo. Requires a FoundationDB 7.3 cluster.
 go get fdb.dev@master
 ```
 
-Or run the examples from a clone, against a disposable cluster in Docker
-(`frl fdb down` removes it):
+Or run the examples from a clone, against a disposable cluster in Docker.
+Install the `frl` CLI:
 
 ```sh
 curl -fsSL https://fdb.dev/install.sh | sh
-frl fdb up
-FDB_CLUSTER_FILE=~/.frl/frl-fdb.cluster go run ./example/sql
-FDB_CLUSTER_FILE=~/.frl/frl-fdb.cluster go run ./example
 ```
+
+Then:
+
+```sh
+export FDB_CLUSTER_FILE=$(frl fdb up)
+go run ./example/sql
+go run ./example
+```
+
+`frl fdb down` removes the cluster.
 
 Pre-1.0; expect API changes. [Status and known gaps](STATUS.md). Independent project,
 not affiliated with Apple or the FoundationDB project.

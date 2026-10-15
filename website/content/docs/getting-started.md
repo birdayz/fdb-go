@@ -16,22 +16,22 @@ curl -fsSL https://fdb.dev/install.sh | sh
 `frl` is the project's CLI, a single static binary. The script installs it without
 sudo. With Go instead: `go install fdb.dev/cmd/frl@latest`.
 
-## Start FoundationDB
+## Get the source
 
 ```sh
-frl fdb up
+git clone https://github.com/birdayz/fdb-go.git && cd fdb-go
 ```
-
-Starts a single-node FoundationDB in Docker and writes its cluster file to
-`~/.frl/frl-fdb.cluster`. If it fails, check that Docker is running.
 
 ## Run the examples
 
 ```sh
-git clone https://github.com/birdayz/fdb-go.git && cd fdb-go
-FDB_CLUSTER_FILE=~/.frl/frl-fdb.cluster go run ./example/sql
-FDB_CLUSTER_FILE=~/.frl/frl-fdb.cluster go run ./example
+export FDB_CLUSTER_FILE=$(frl fdb up)
+go run ./example/sql
+go run ./example
 ```
+
+`frl fdb up` starts a single-node FoundationDB in Docker and prints the path of
+its cluster file. If it fails, check that Docker is running.
 
 The [SQL example](https://github.com/birdayz/fdb-go/tree/master/example/sql)
 creates a schema, inserts rows, and queries them. The
