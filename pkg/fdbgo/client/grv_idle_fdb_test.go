@@ -16,7 +16,7 @@ func TestGRVIdleFlushRetiresBeforeReplyFanout(t *testing.T) {
 	first, second := make(chan grvResult), make(chan grvResult)
 	b.mu.Lock()
 	b.pending = []grvRequest{{reply: first}, {reply: second}}
-	batch := b.detachLocked(false)
+	batch := b.detachLocked()
 	inFlight := b.inFlight
 	b.mu.Unlock()
 	if inFlight != 1 {

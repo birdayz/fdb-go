@@ -53,8 +53,9 @@ come from the server's own trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`,
     0.064 vs 0.031, run-loop iterations 1.26 vs 0.50. `get100`: GRV requests 0.100 vs 0.072.
     Each GRV request costs a master round trip and each commit batch a full
     resolver/log/storage cycle, so smaller batches mean more server work per transaction.
-  - Known divergences: `grvBatcher.admit` (`pkg/fdbgo/client/grv.go`) sends a request at
-    once when no GRV is in flight, where libfdb_c always waits its adaptive window
+  - Known divergences: `grvBatcher.admit` (`pkg/fdbgo/client/grv.go`) sent a request at
+    once when no GRV was in flight (RFC-259 Part A narrows this to serial use), where
+    libfdb_c always waits its adaptive window
     (`readVersionBatcher`, NativeAPI.actor.cpp:7307-7405). Go writes each frame on the
     sender's goroutine (`tryWriteDirect`); libfdb_c writes everything queued for a peer
     after a 10–20 µs delay (`connectionWriter`, FlowTransport.actor.cpp:704-739;
@@ -63,19 +64,21 @@ come from the server's own trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`,
     up to about 1 ms, so always waiting the GRV window through `time.AfterFunc` made
     1-worker `get100` 9× slower (131 → 1,212 µs). A timerfd in the netpoller is precise.
   - [RFC-259](rfcs/259-request-batching-parity.md): GRV window on a precise timer, with a
-    fast path for a client that issues GRVs one at a time (Part A); `connectionWriter`
-    coalescing without a `writeLoop` handoff (Part B, needs its own design review).
-    Prototype at 8 workers: `grv` server cycles 39.3k → 25.9k (libfdb_c 32.2k); `get100`
-    89.0k → 64.7k with both parts (libfdb_c 62.2k); 1-worker latency unchanged
-    ([docs/benchmarks/rfc-259](docs/benchmarks/rfc-259/README.md)).
+    fast path for a client that issues GRVs one at a time (Part A, implemented);
+    `connectionWriter` coalescing without a `writeLoop` handoff (Part B, needs its own
+    design review). Part A, local server cycles per transaction against libfdb_c: `grv`
+    at 2–8 workers 86.3k/44.6k/24.2k vs 86.7k/49.9k/31.3k (today 156.9k/75.7k/38.6k);
+    `get100` at 2/4 workers below libfdb_c, at 8 workers 78.1k vs 65.2k (today 90.1k);
+    1-worker latency within 5% ([docs/benchmarks/rfc-259](docs/benchmarks/rfc-259/README.md)).
   - `set100` convoys: workers in a closed loop move in convoys, and Go splits a convoy into
     two groups that stay apart, so the proxy sees two commit batches per round. The GRV
     window removes the timer trigger (with `GOGC=off`, commit batches per transaction match
     libfdb_c in 5 of 5 runs); GC cycles inside a round are the other trigger, so this also
     depends on the client CPU item's allocation work.
-  - Still open after both parts: `get100` at 32 workers (1.3×; libfdb_c's network thread
-    is saturated at 45k tx/s against Go's 75k and batches more than its knobs alone
-    would) and at 2 workers (1.3–1.4×).
+  - Still open: `get100` at 8 workers (1.2× with Part A; Part B's prototype closed it) and
+    at 32 workers (1.6× with Part A, 1.3× with Part B's prototype; libfdb_c's network
+    thread is saturated at 45k tx/s against Go's 75k and batches more than its knobs
+    alone would); `set100` convoys (below).
   - Done when server cycles per transaction are within 10% of libfdb_c for `get100`,
     `set100`, `range100` and `grv` at 8–64 workers, locally and on a multi-node rerun,
     without raising 1-worker mean latency by more than 5%.

@@ -86,10 +86,27 @@ one proposed below. Median server cycles per transaction, 3 runs each:
 - The write-coalescing prototype handed every frame to `writeLoop` and raised client CPU
   by about 7 µs per transaction at 8 workers. Part B avoids that handoff.
 
+The Part A implementation (same method, same session for each row; per-run results in
+the benchmark folder), median server cycles per transaction:
+
+| Workload | Workers | Go today | Part A | libfdb_c |
+| --- | ---: | ---: | ---: | ---: |
+| `grv` | 2 | 156.9k | 86.3k | 86.7k |
+| `grv` | 4 | 75.7k | 44.6k | 49.9k |
+| `grv` | 8 | 38.6k | 24.2k | 31.3k |
+| `grv` | 32 | 11.5k | 10.8k | 8.6k |
+| `get100` | 2 | 255.5k | 185.4k | 201.1k |
+| `get100` | 4 | 139.0k | 114.0k | 125.8k |
+| `get100` | 8 | 90.1k | 78.1k | 65.2k |
+| `get100` | 32 | 39.6k | 39.7k | 25.3k |
+
+Mean latency is lower than today at 2–32 workers and within 5% of today at 1 worker
+(`get100` 127–133 µs, `grv` 68–77 µs across two sessions).
+
 At 32 workers libfdb_c's single network thread is saturated (`get100`: 45k tx/s against
 Go's 75k) and batches more than its knobs alone would. This RFC targets parity in
-mechanism, not in that side effect; `get100` at 32 workers stays about 1.3× after both
-parts, and at 2 workers neither part closes the gap.
+mechanism, not in that side effect: `get100` at 32 workers stays 1.3–1.6×. With Part A
+alone, `get100` at 8 workers is 1.2×; Part B's prototype closed that gap.
 
 ## Part A: GRV batch window on a precise timer (proposed for implementation)
 
@@ -113,8 +130,9 @@ func (t *Timer) Close() error         // closes the fd and wakes a blocked Wait
 - `Wait` can return for an expiry that a later `Reset` or `Stop` superseded. The owner
   must recheck its own state after every `Wait`. That is the only contract; `hrtimer` does
   not track generations.
-- Errors are returned, never retried inside the package. A `Reset` failure leaves the
-  timer disarmed.
+- Errors are returned, never retried inside the package. A failed `Reset` or `Stop`
+  leaves the timer unchanged; the batcher then sends the batch at once, and a stale
+  expiry later detaches nothing.
 - Precision is that of a timerfd wake-up plus scheduling of the parked goroutine; there is
   no upper-bound guarantee, and no test asserts one.
 - Not chosen: `nanosleep` blocks the M in a syscall (holding its P until `sysmon`
@@ -124,32 +142,37 @@ func (t *Timer) Close() error         // closes the fd and wakes a blocked Wait
 
 ### A2. `grvBatcher`
 
-State added under `b.mu`: `windowArmed`, `windowDeadline`, `lastFast` (the previous batch
-was sent on the serial fast path), `idleSince` (when `inFlight` last dropped to 0), and a
-`window` (the timer behind an interface, so tests drive expiry explicitly) and `now`
-(clock, injectable).
+State added under `b.mu`: `windowArmed`, `windowDeadline`, `overlapped` (evidence that
+GRVs overlap), `pendingIdle` (the pending batch's first request found nothing in flight),
+and test seams: `window`/`newWindow` (the timer behind an interface, so tests drive expiry
+explicitly) and `now` (clock).
 
-- **Admission.** On the first pending request:
-  - **Serial fast path:** if `inFlight == 0` and (`lastFast` or
-    `now - idleSince >= batchTime`), detach and send at once (the existing `case 1` path,
-    bounded by the caller's context). A fresh batcher qualifies.
-  - Otherwise open the window: `windowDeadline = now + batchTime`, arm the timer for
-    `batchTime`, both under `b.mu` at admission. A window of 0 still goes through expiry,
-    so requests that arrive before the worker runs join it, as with Flow's `delay(0)`.
+- **Admission.** Any request admitted while a GRV is in flight sets `overlapped`. On the
+  first pending request:
+  - **Serial fast path:** if `inFlight == 0` and not `overlapped`, detach and send at once
+    (the existing `case 1` path, bounded by the caller's context). A fresh batcher
+    qualifies.
+  - Otherwise open the window: take `windowDeadline = now + batchTime` first, create the
+    timer if needed, then arm it for the time left until the deadline, all under `b.mu`.
+    A window of 0 still goes through expiry, so requests that arrive before the worker
+    runs join it, as with Flow's `delay(0)`.
 - **Detach** (window expiry, `MAX_BATCH_SIZE` or fast path) clears `windowArmed` and stops
-  the timer. `lastFast` records whether this batch took the fast path.
+  the timer. It sets `overlapped` unless the batch held one request whose admission found
+  nothing in flight; a request arriving during that batch's flight sets it again. Idle
+  time is not evidence of serial use.
 - **Expiry.** Each batcher owns one `hrtimer.Timer` and one worker goroutine, started on
   its first window through `db.registerBackgroundGoroutine` (so no `wg.Add` races Close).
   The worker loops on `Wait`; after each return it takes `b.mu` and detaches only if a
   window is armed and `now >= windowDeadline`, then sends the batch on a new goroutine, as
   `time.AfterFunc` did. Superseded and early wake-ups do nothing.
-- **Close.** `context.AfterFunc(db.ctx, timer.Close)` wakes the worker, which detaches any
-  pending requests, sends them (the RPC fails on the closed database, so every waiter gets
-  an error), and exits. Any other `Wait` error ends the worker the same way. On exit the
-  worker clears `b.window`, so the next window creates a new timer, or, once Close has
-  begun and registration fails, skips the window and sends the batch at once.
+- **Close.** `context.AfterFunc(db.ctx, timer.Close)` wakes the worker, which retires the
+  window: it detaches any pending requests, sends them (the RPC fails on the closed
+  database, so every waiter gets an error), clears `b.window` and exits. Any other `Wait`
+  error ends the worker the same way and unregisters its Close hook. The next window then
+  creates a new timer, or, once Close has begun, none: the batch is sent at once.
 - **Fallback.** If `hrtimer.New` fails, or off Linux, the window uses `time.AfterFunc` as
-  today, with the same deadline check in its callback.
+  today, with the same deadline check in its callback, and the same Close hook retiring
+  the window.
 - A batch of one sent by window expiry runs under the database context, as today's
   timer-flushed batches do and as libfdb_c runs every batch to its reply
   (NativeAPI.actor.cpp:7384-7387); a caller that cancels returns at once. Only the fast
@@ -159,27 +182,36 @@ was sent on the serial fast path), `idleSince` (when `inFlight` last dropped to 
   aggregation stay as they are.
 
 **Accepted divergence: the serial fast path.** libfdb_c waits for every first request. Go
-skips the window only when the previous batch also skipped it, or when no GRV has been in
-flight for a full window. That keeps a client that issues one GRV at a time from paying
-half a GRV round trip per transaction, while any overlap sends the batcher back to
-windows: a request that arrives while another GRV is in flight always waits, and so does
-the next first request after it. The rule is a heuristic over recent history; it cannot
-know whether another request is about to arrive.
+skips the window only while the evidence says GRVs come one at a time: the batcher is
+fresh, or the last batch held one request that found nothing in flight and nothing
+arrived during its flight. That keeps a client that issues one GRV at a time from paying
+half a GRV round trip per transaction. What it gives up: libfdb_c merges a request into
+the window opened by an apparently serial predecessor; Go has already sent that
+predecessor, so the first overlapping request waits a window alone, and Go merges only
+from the next batch on. After any overlap, every first request waits until a window
+batch of one completes with no overlap. The rule cannot know whether another request is
+about to arrive.
 
 ### Executable spec
 
 Unit tests on `grvBatcher` with a fake window and clock (no wall-clock assertions):
 - a fresh batcher sends the first request at once; repeated serial requests keep doing so;
-- a request that arrives while a GRV is in flight opens a window, and the next first
-  request after that batch also waits, until the batcher has been idle for `batchTime`;
+- a request that arrives while a GRV is in flight opens a window; every first request
+  after that waits, whatever the idle time, until a window batch of one completes with no
+  overlap, which restores the fast path;
 - two staggered requesters (the second always arriving while the first is in flight)
   converge to one GRV per round instead of alternating singletons;
+- rounds separated by idle gaps longer than the window, with the second requester
+  arriving inside the first one's window, send one GRV per round from round 2 on;
+- the window ends at the deadline taken on admission even when creating its timer takes
+  time (the timer is armed for what is left);
 - `MAX_BATCH_SIZE` detaches at once and stops the armed window; an expiry after that, or
   before the deadline, detaches nothing;
 - a zero window detaches on expiry, not on admission;
-- Close with requests pending in a window delivers an error to each waiter and the worker
-  exits; a window opened after Close has begun sends at once;
-- with the real timerfd window, an expiry detaches and sends the batch.
+- for both the timerfd window (Linux-only test file) and the `time.AfterFunc` fallback:
+  an expiry detaches and sends the batch; Close with requests pending in a window
+  delivers an error to each waiter; a window opened after Close has begun sends at once;
+  the timerfd worker exits on Close.
 
 Existing tests that set `b.timer` or `batchTime = time.Hour`
 (`grv_batch_unit_test.go`, `grv_batch_flags_test.go`) move to the fake window; the

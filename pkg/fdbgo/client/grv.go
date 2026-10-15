@@ -701,13 +701,16 @@ type grvBatcher struct {
 	variants   map[uint32]*grvBatcher
 
 	// The batch window (RFC-259, grv_window.go). window is nil until the
-	// first window opens; tests install a fake. lastFast and idleSince feed
-	// the serial fast path. now is the clock; nil means time.Now.
+	// first window opens; newWindow (nil: newWindowLocked) and now (nil:
+	// time.Now) are test seams. overlapped and pendingIdle feed the serial
+	// fast path: overlapped records evidence that GRVs overlap, pendingIdle
+	// that the pending batch's first request found nothing in flight.
 	window         batchWindow
 	windowArmed    bool
 	windowDeadline time.Time
-	lastFast       bool
-	idleSince      time.Time
+	overlapped     bool
+	pendingIdle    bool
+	newWindow      func(*database) batchWindow
 	now            func() time.Time
 
 	refreshOnce sync.Once
@@ -903,39 +906,50 @@ func (b *grvBatcher) forFlags(flags uint32) *grvBatcher {
 func (b *grvBatcher) admit(db *database, req grvRequest) []grvRequest {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.inFlight > 0 {
+		b.overlapped = true
+	}
 	b.pending = append(b.pending, req)
 	if len(b.pending) == grvMaxBatchSize {
-		return b.detachLocked(false)
+		return b.detachLocked()
 	}
 	if len(b.pending) > 1 {
 		return nil // the window is already open
 	}
-	now := b.clock()
+	b.pendingIdle = b.inFlight == 0
 	// Serial fast path (accepted divergence, RFC-259): skip the window while
-	// GRVs come one at a time, that is, when nothing is in flight and either
-	// the previous batch also skipped it or no GRV has been in flight for a
-	// whole window. C++ waits for every first request.
-	if b.inFlight == 0 && (b.lastFast || now.Sub(b.idleSince) >= b.batchTime) {
-		return b.detachLocked(true)
+	// the evidence says GRVs come one at a time: nothing is in flight, and no
+	// batch since the last window batch of one has overlapped another. C++
+	// waits for every first request.
+	if b.inFlight == 0 && !b.overlapped {
+		return b.detachLocked()
 	}
+	deadline := b.clock().Add(b.batchTime)
 	if b.window == nil {
-		b.window = b.newWindowLocked(db)
+		if b.newWindow != nil {
+			b.window = b.newWindow(db)
+		} else {
+			b.window = b.newWindowLocked(db)
+		}
 	}
-	if b.window == nil || !b.window.arm(b.batchTime) {
-		return b.detachLocked(false) // no timer (Close has begun): send now
+	// Arm what is left of the window: creating the timer may have taken time.
+	if b.window == nil || !b.window.arm(max(deadline.Sub(b.clock()), 0)) {
+		return b.detachLocked() // no timer (Close has begun): send now
 	}
 	b.windowArmed = true
-	b.windowDeadline = now.Add(b.batchTime)
+	b.windowDeadline = deadline
 	return nil
 }
 
-// detachLocked takes the pending batch and closes its window. fast records
-// whether the batch took the serial fast path.
-func (b *grvBatcher) detachLocked(fast bool) []grvRequest {
+// detachLocked takes the pending batch and closes its window. A batch of one
+// whose request found nothing in flight is evidence of serial use, unless a
+// request arrives during its flight (admit); anything else is evidence of
+// overlap.
+func (b *grvBatcher) detachLocked() []grvRequest {
 	batch := b.pending
 	b.pending = nil
 	b.inFlight++
-	b.lastFast = fast
+	b.overlapped = len(batch) > 1 || !b.pendingIdle
 	if b.windowArmed {
 		b.windowArmed = false
 		b.window.stop()
@@ -952,16 +966,13 @@ func (b *grvBatcher) expiredBatch() []grvRequest {
 	if !b.windowArmed || b.clock().Before(b.windowDeadline) {
 		return nil
 	}
-	return b.detachLocked(false)
+	return b.detachLocked()
 }
 
 func (b *grvBatcher) finishBatch() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.inFlight--
-	if b.inFlight == 0 {
-		b.idleSince = b.clock()
-	}
 }
 
 func (b *grvBatcher) clock() time.Time {

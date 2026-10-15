@@ -1,8 +1,8 @@
 # RFC-259 prototype measurements
 
 Server CPU per transaction for the batching prototype behind
-[RFC-259](../../../rfcs/259-request-batching-parity.md), against the Go client at
-base commit `36685ebfa` and libfdb_c 7.3.77. One local server, so the numbers show the
+[RFC-259](../../../rfcs/259-request-batching-parity.md) and for the Part A
+implementation, against the Go client at base commit `36685ebfa` and libfdb_c 7.3.77. One local server, so the numbers show the
 mechanism; the 3-node gap that motivates the RFC is in TODO.md §0.
 
 ## Setup
@@ -75,6 +75,36 @@ Median server cycles per transaction, with mean latency in µs in parentheses.
 | 4 | 151.0k (223) | 124.8k (200) | 91.0k (251) | 125.2k (249) |
 | 8 | 89.0k (264) | 87.6k (243) | 64.7k (268) | 62.2k (293) |
 | 32 | 42.9k (425) | 39.2k (403) | 33.4k (430) | 25.3k (716) |
+
+## Part A implementation
+
+The same method and run lengths on the Part A implementation (this branch), against
+`go-today` and libfdb_c measured in the same session; per-run results in
+[results-part-a.jsonl](results-part-a.jsonl). Median server cycles per transaction, with
+mean latency in µs in parentheses. 1-worker server cycles vary by ±15% between sessions,
+since each transaction there carries the server's fixed background work; a repeat of the
+1-worker rows gave `get100` 286k/284k (today) against 289k/319k (Part A), and `grv`
+169k/134k against 176k/175k, with mean latency within 5% of today in every pair.
+
+`grv`:
+
+| Workers | Go today | Part A | libfdb_c |
+| ---: | ---: | ---: | ---: |
+| 1 | 140.7k (70) | 154.5k (73) | 191.8k (144) |
+| 2 | 156.9k (134) | 86.3k (126) | 86.7k (146) |
+| 4 | 75.7k (142) | 44.6k (126) | 49.9k (146) |
+| 8 | 38.6k (141) | 24.2k (127) | 31.3k (163) |
+| 32 | 11.5k (183) | 10.8k (151) | 8.6k (292) |
+
+`get100`:
+
+| Workers | Go today | Part A | libfdb_c |
+| ---: | ---: | ---: | ---: |
+| 1 | 282.3k (127) | 289.9k (133) | 288.8k (217) |
+| 2 | 255.5k (187) | 185.4k (182) | 201.1k (236) |
+| 4 | 139.0k (213) | 114.0k (193) | 125.8k (251) |
+| 8 | 90.1k (256) | 78.1k (229) | 65.2k (298) |
+| 32 | 39.6k (423) | 39.7k (403) | 25.3k (706) |
 
 ## Not reproduced here
 

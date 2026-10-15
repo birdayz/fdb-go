@@ -66,16 +66,16 @@ func TestGRVBatchSerialRequestsKeepTheFastPath(t *testing.T) {
 		if got := b.admit(nil, batchRequest()); len(got) != 1 {
 			t.Fatalf("serial request %d waited for a window", i)
 		}
-		b.finishBatch() // the clock does not move: only lastFast qualifies
+		b.finishBatch()
 	}
 	if len(w.arms) != 0 {
 		t.Fatalf("serial requests armed windows: %v", w.arms)
 	}
 }
 
-// A request that arrives while a GRV is in flight opens a window, and so does
-// the next first request after that batch, until the batcher has been idle
-// for a whole window.
+// A request that arrives while a GRV is in flight opens a window, and every
+// first request after that waits too, until a window batch of one that found
+// nothing in flight completes with no other request arriving.
 func TestGRVBatchOverlapReturnsToWindows(t *testing.T) {
 	t.Parallel()
 	b, w, c := testBatcher(0, time.Millisecond)
@@ -105,14 +105,21 @@ func TestGRVBatchOverlapReturnsToWindows(t *testing.T) {
 		t.Fatal("the same window detached twice")
 	}
 	b.finishBatch()
+	c.advance(time.Hour) // idle time alone is no evidence of serial use
 	if b.admit(nil, batchRequest()) != nil || len(w.arms) != 2 {
-		t.Fatal("first request right after a window batch skipped the window")
+		t.Fatal("first request after an overlapping batch skipped the window")
 	}
-	expireWindow(b, c)
+	if got := expireWindow(b, c); len(got) != 1 {
+		t.Fatalf("lone window batch held %d requests", len(got))
+	}
 	b.finishBatch()
-	c.advance(time.Millisecond)
 	if got := b.admit(nil, batchRequest()); len(got) != 1 {
-		t.Fatal("a batcher idle for a whole window did not return to the fast path")
+		t.Fatal("a lone window batch with no overlap did not restore the fast path")
+	}
+	b.finishBatch()
+	b.admit(nil, batchRequest())                                // fast path again
+	if b.admit(nil, batchRequest()) != nil || !windowArmed(b) { // arrives during its flight
+		t.Fatal("a request during a fast-path flight did not wait")
 	}
 }
 
@@ -121,11 +128,10 @@ func TestGRVBatchOverlapReturnsToWindows(t *testing.T) {
 func TestGRVBatchStaggeredPairShareOneGRV(t *testing.T) {
 	t.Parallel()
 	b, _, c := testBatcher(0, 100*time.Microsecond)
-	a, bReq := batchRequest(), batchRequest()
-	if got := b.admit(nil, a); len(got) != 1 {
+	if got := b.admit(nil, batchRequest()); len(got) != 1 {
 		t.Fatal("A did not take the fast path")
 	}
-	if b.admit(nil, bReq) != nil {
+	if b.admit(nil, batchRequest()) != nil {
 		t.Fatal("B, arriving while A is in flight, did not wait")
 	}
 	if got := expireWindow(b, c); len(got) != 1 {
@@ -147,7 +153,7 @@ func TestGRVBatchStaggeredPairShareOneGRV(t *testing.T) {
 	b.finishBatch()
 	// From then on both callers return together and keep sharing one GRV.
 	for round := range 3 {
-		c.advance(10 * time.Microsecond) // less than a window of idleness
+		c.advance(10 * time.Microsecond)
 		for caller := range 2 {
 			if b.admit(nil, batchRequest()) != nil {
 				t.Fatalf("round %d: caller %d skipped the window right after a shared batch", round, caller)
@@ -157,6 +163,64 @@ func TestGRVBatchStaggeredPairShareOneGRV(t *testing.T) {
 			t.Fatalf("round %d sent a batch of %d, want 2", round, len(got))
 		}
 		b.finishBatch()
+	}
+}
+
+// Rounds separated by an idle gap longer than the window, with the second
+// caller arriving a little after the first: from round 2 on, one GRV per
+// round. A rule that trusts idle time sends the first caller alone each round.
+func TestGRVBatchIdleGapsDoNotSplitRounds(t *testing.T) {
+	t.Parallel()
+	const window = 50 * time.Microsecond
+	b, _, c := testBatcher(0, window)
+	if got := b.admit(nil, batchRequest()); len(got) != 1 {
+		t.Fatal("round 1: A did not take the fast path")
+	}
+	c.advance(20 * time.Microsecond)
+	if b.admit(nil, batchRequest()) != nil {
+		t.Fatal("round 1: B, arriving during A's flight, did not wait")
+	}
+	b.finishBatch()
+	if got := expireWindow(b, c); len(got) != 1 {
+		t.Fatalf("round 1: B's window sent %d", len(got))
+	}
+	b.finishBatch()
+	for round := 2; round <= 5; round++ {
+		c.advance(130 * time.Microsecond) // idle for more than a window
+		if b.admit(nil, batchRequest()) != nil {
+			t.Fatalf("round %d: A went alone after an idle gap", round)
+		}
+		c.advance(20 * time.Microsecond) // B arrives inside A's window
+		if b.admit(nil, batchRequest()) != nil {
+			t.Fatalf("round %d: B did not join A's window", round)
+		}
+		if got := expireWindow(b, c); len(got) != 2 {
+			t.Fatalf("round %d sent a batch of %d, want 2", round, len(got))
+		}
+		b.finishBatch()
+	}
+}
+
+// The window ends at the deadline taken on admission, even when creating its
+// timer takes time.
+func TestGRVBatchWindowArmsTheRemainingTime(t *testing.T) {
+	t.Parallel()
+	c := &fakeClock{t: time.Unix(1000, 0)}
+	w := &fakeWindow{}
+	b := &grvBatcher{priority: grvPriorityDefault, inFlight: 1, batchTime: time.Millisecond, now: c.now}
+	b.newWindow = func(*database) batchWindow {
+		c.advance(300 * time.Microsecond)
+		return w
+	}
+	start := c.t
+	if b.admit(nil, batchRequest()) != nil {
+		t.Fatal("request behind an in-flight GRV was sent at once")
+	}
+	if len(w.arms) != 1 || w.arms[0] != 700*time.Microsecond {
+		t.Fatalf("arms=%v, want the 700µs left of the window", w.arms)
+	}
+	if !b.windowDeadline.Equal(start.Add(time.Millisecond)) {
+		t.Fatalf("deadline %v, want admission plus the window", b.windowDeadline.Sub(start))
 	}
 }
 
