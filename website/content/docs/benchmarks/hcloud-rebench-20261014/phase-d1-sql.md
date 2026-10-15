@@ -66,9 +66,9 @@ production code. `final/before` is the allocation work plus later changes;
 ## Results
 
 <figure class="bench-figure">
-<figcaption><strong>Figure D1.1: SQL PlanCacheHit ratios (log₂ scale, 95% CI)</strong> — 6 paired blocks × 3 repeats (54 samples). Below 1.0× favors Final.</figcaption>
-<div class="bench-summary"><ul class="bench-summary-list"><li><strong>Scope:</strong> Only 1 of 3 planned SQL cases (PlanCacheHit, 18 processes / 54 samples) completed; IndexScanRange stopped after block 0 on a false runner check and TimestampInsert was not run.</li><li><strong>Results (PlanCacheHit):</strong> Final reduces allocs/op to 0.949× [0.949, 0.949] (687 → 652) and B/op to 0.966× (48,245.5 → 46,615 B vs before; 48,249.5 → 46,615 B vs legacy). ns/op is unresolved in both comparisons (1.002× [0.984, 1.021] vs before, 0.999× [0.981, 1.018] vs legacy; medians 1.153 ms vs 1.144 ms and 1.148 ms).</li></ul></div>
-<svg class="bench-svg" viewBox="0 0 1320 238" role="img" aria-label="Figure D1.1: SQL PlanCacheHit ratios (log₂ scale, 95% CI)">
+<figcaption><strong>Figure D1.1: SQL PlanCacheHit, final vs before and legacy</strong><span>Below 1.0× favors the final tree.</span></figcaption>
+<p class="bench-summary">Only PlanCacheHit has results; the run stopped before the other two SQL cases finished. The final tree allocates 5% fewer objects; time shows no measurable change.</p>
+<svg class="bench-svg" viewBox="0 0 1320 238" role="img" aria-label="Figure D1.1: SQL PlanCacheHit, final vs before and legacy">
 <line class="grid-line" x1="165.0" y1="36" x2="165.0" y2="212"/>
 <text class="axis-text" x="165.0" y="30" text-anchor="middle">0.9×</text>
 <text class="axis-text" x="165.0" y="227" text-anchor="middle">0.9×</text>
@@ -109,7 +109,7 @@ production code. `final/before` is the allocation work plus later changes;
 <g class="ci-win"><title>allocs/op: 0.949× [0.949, 0.949]</title><line x1="418.6" y1="199.0" x2="418.6" y2="199.0" stroke-width="2.2"/><line x1="418.6" y1="195.0" x2="418.6" y2="203.0" stroke-width="1.8"/><line x1="418.6" y1="195.0" x2="418.6" y2="203.0" stroke-width="1.8"/><circle cx="418.6" cy="199.0" r="3.8"/></g>
 <text class="val-text" x="1137" y="203.0">0.949× [0.949, 0.949]</text>
 </svg>
-<div class="bench-legend"><span><i class="bench-swatch" style="background:#0d9488"></i> 95% CI entirely &lt; 1.000 (faster / lower)</span><span><i class="bench-swatch" style="background:#64748b"></i> 95% CI overlaps 1.000 (unresolved)</span><span><i class="bench-swatch" style="background:#d97706"></i> 95% CI entirely &gt; 1.000 (slower / higher)</span></div>
+<div class="bench-legend"><span><i class="bench-swatch" style="background:#0d9488"></i> 95% CI below 1.0×</span><span><i class="bench-swatch" style="background:#64748b"></i> 95% CI includes 1.0× (inconclusive)</span><span><i class="bench-swatch" style="background:#d97706"></i> 95% CI above 1.0×</span></div>
 </figure>
 
 ### Final vs before: the allocation work

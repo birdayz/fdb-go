@@ -56,9 +56,9 @@ production code. `final/before` is the allocation work plus later changes;
 ## Results
 
 <figure class="bench-figure">
-<figcaption><strong>Figure B.1: Record Layer ratios, final / before (log₂ scale, 95% CI)</strong> — 6 paired blocks × 3 repeats on memory engine. Below 1.0× means Final is faster or allocates less.</figcaption>
-<div class="bench-summary"><ul class="bench-summary-list"><li><strong>Allocations (final/before):</strong> allocs/op drops on all 8 benchmarks (0.627×–0.888×, led by ScanIndexRecords/pipelined 0.627× and ScanIndexRecords/serial 0.651×); B/op drops on 7 of 8 (0.749×–0.910×) and is unresolved on 3-chunk SaveSplitRecord (0.998× [0.993, 1.004]).</li><li><strong>Mean time (ns/op, final/before):</strong> Lower on 3 of 8 benchmarks (ScanIndexRecords/pipelined 0.972× [0.952, 0.995], ScanRecordsSplitVersioned 0.976× [0.957, 0.996], LoadRecord 0.978× [0.958, 0.994]) and unresolved on the other 5 (0.966×–1.015×).</li><li><strong>Against pre-#888 legacy (see table below):</strong> ScanIndexRecords/serial is 1.477× (48% slower) and LoadRecord is 1.138× (14% slower) while ScanIndexRecords/pipelined takes 0.647× of legacy time (35% faster).</li></ul></div>
-<svg class="bench-svg" viewBox="0 0 1383 620" role="img" aria-label="Figure B.1: Record Layer ratios, final / before (log₂ scale, 95% CI)">
+<figcaption><strong>Figure B.1: Record Layer, final / before</strong><span>Below 1.0× favors the final tree. Single in-memory server.</span></figcaption>
+<p class="bench-summary">Allocations per operation dropped on all 8 benchmarks, down to 0.627×. Time improved by 2–3% on 3 benchmarks and is inconclusive on the rest.</p>
+<svg class="bench-svg" viewBox="0 0 1383 620" role="img" aria-label="Figure B.1: Record Layer, final / before">
 <line class="grid-line" x1="228.0" y1="36" x2="228.0" y2="594"/>
 <text class="axis-text" x="228.0" y="30" text-anchor="middle">0.6×</text>
 <text class="axis-text" x="228.0" y="609" text-anchor="middle">0.6×</text>
@@ -158,7 +158,7 @@ production code. `final/before` is the allocation work plus later changes;
 <g class="ci-win"><title>ScanIndexRecords/pipelined: 0.627× [0.626, 0.627]</title><line x1="295.2" y1="581.0" x2="297.7" y2="581.0" stroke-width="2.2"/><line x1="295.2" y1="577.0" x2="295.2" y2="585.0" stroke-width="1.8"/><line x1="297.7" y1="577.0" x2="297.7" y2="585.0" stroke-width="1.8"/><circle cx="297.7" cy="581.0" r="3.8"/></g>
 <text class="val-text" x="1200" y="585.0">0.627× [0.626, 0.627]</text>
 </svg>
-<div class="bench-legend"><span><i class="bench-swatch" style="background:#0d9488"></i> 95% CI entirely &lt; 1.000 (faster / lower)</span><span><i class="bench-swatch" style="background:#64748b"></i> 95% CI overlaps 1.000 (unresolved)</span><span><i class="bench-swatch" style="background:#d97706"></i> 95% CI entirely &gt; 1.000 (slower / higher)</span></div>
+<div class="bench-legend"><span><i class="bench-swatch" style="background:#0d9488"></i> 95% CI below 1.0×</span><span><i class="bench-swatch" style="background:#64748b"></i> 95% CI includes 1.0× (inconclusive)</span><span><i class="bench-swatch" style="background:#d97706"></i> 95% CI above 1.0×</span></div>
 </figure>
 
 ### Final vs before: the allocation work

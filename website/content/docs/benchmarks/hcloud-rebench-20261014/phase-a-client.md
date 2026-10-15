@@ -61,9 +61,9 @@ Executables: `//tools/clientbench/cmd/clientbench:clientbench_go` (per tree) and
 ## Results
 
 <figure class="bench-figure">
-<figcaption><strong>Figure A.1: Client ratios at 1 worker, final pure-Go / CGo (log₂ scale, 95% CI)</strong> — 6 paired blocks × 3,000 tx/run (18,000 tx/arm/workload). Below 1.0× means Pure-Go is faster / lower CPU.</figcaption>
-<div class="bench-summary"><ul class="bench-summary-list"><li><strong>Mean latency (final/CGo):</strong> Pure-Go is faster with 95% CI &lt; 1.000 on 10 of 11 workloads (0.189× on client-only ryw, 0.515× on grv, 0.613×–0.931× on reads/commits); range100 (0.846× [0.713, 1.024]) is unresolved.</li><li><strong>p99 latency (final/CGo):</strong> Lower on 8 of 11 workloads (0.245×–0.942×); range100 (0.861× [0.755, 1.008]), set100 (0.939× [0.845, 1.020]), and batchset50 (0.989× [0.913, 1.126]) are unresolved.</li><li><strong>Shutdown CPU (E−A, final/CGo):</strong> Lower on 7 of 11 workloads (0.228×–0.887×); get100 (0.948× [0.817, 1.118]), get10000 (0.959× [0.884, 1.046]), range10 (0.969× [0.834, 1.122]), and range100 (1.101× [0.968, 1.269]) are unresolved.</li></ul></div>
-<svg class="bench-svg" viewBox="0 0 1320 800" role="img" aria-label="Figure A.1: Client ratios at 1 worker, final pure-Go / CGo (log₂ scale, 95% CI)">
+<figcaption><strong>Figure A.1: Client at 1 worker, pure-Go / CGo</strong><span>Below 1.0× favors pure-Go. Single host.</span></figcaption>
+<p class="bench-summary">Pure-Go has lower mean latency on 10 of 11 workloads, lower p99 on 8, and lower CPU on 7. The rest are inconclusive; none favors CGo.</p>
+<svg class="bench-svg" viewBox="0 0 1320 800" role="img" aria-label="Figure A.1: Client at 1 worker, pure-Go / CGo">
 <line class="grid-line" x1="165.0" y1="36" x2="165.0" y2="774"/>
 <text class="axis-text" x="165.0" y="30" text-anchor="middle">0.15×</text>
 <text class="axis-text" x="165.0" y="789" text-anchor="middle">0.15×</text>
@@ -190,13 +190,13 @@ Executables: `//tools/clientbench/cmd/clientbench:clientbench_go` (per tree) and
 <g class="ci-win"><title>batchset50x1000: 0.887× [0.864, 0.922]</title><line x1="917.6" y1="761.0" x2="945.5" y2="761.0" stroke-width="2.2"/><line x1="917.6" y1="757.0" x2="917.6" y2="765.0" stroke-width="1.8"/><line x1="945.5" y1="757.0" x2="945.5" y2="765.0" stroke-width="1.8"/><circle cx="928.8" cy="761.0" r="3.8"/></g>
 <text class="val-text" x="1137" y="765.0">0.887× [0.864, 0.922]</text>
 </svg>
-<div class="bench-legend"><span><i class="bench-swatch" style="background:#0d9488"></i> 95% CI entirely &lt; 1.000 (faster / lower)</span><span><i class="bench-swatch" style="background:#64748b"></i> 95% CI overlaps 1.000 (unresolved)</span><span><i class="bench-swatch" style="background:#d97706"></i> 95% CI entirely &gt; 1.000 (slower / higher)</span></div>
+<div class="bench-legend"><span><i class="bench-swatch" style="background:#0d9488"></i> 95% CI below 1.0×</span><span><i class="bench-swatch" style="background:#64748b"></i> 95% CI includes 1.0× (inconclusive)</span><span><i class="bench-swatch" style="background:#d97706"></i> 95% CI above 1.0×</span></div>
 </figure>
 
 <figure class="bench-figure">
-<figcaption><strong>Figure A.2: Allocation ratios, final (267a4143) / before (3824f146) pure-Go (log₂ scale, 95% CI)</strong> — Go heap bytes and mallocs per transaction (6 paired blocks). Below 1.0× means fewer allocations in Final.</figcaption>
-<div class="bench-summary"><ul class="bench-summary-list"><li><strong>Allocations (final/before):</strong> Go mallocs/tx drop across all 11 workloads (0.797×–0.973×, largest on range10 0.797× and range100 0.798×) and Go bytes/tx drop across all 11 (0.824×–0.998×, largest on range100 0.824× and range10 0.844×).</li><li><strong>Latency &amp; CPU (final/before):</strong> All 11 mean-latency 95% CIs span 1.000 (0.984×–1.042×, unresolved); only range100 resolves lower p99 (0.951× [0.916, 0.998]) and lower E−A CPU (0.952× [0.937, 0.971]).</li></ul></div>
-<svg class="bench-svg" viewBox="0 0 1320 558" role="img" aria-label="Figure A.2: Allocation ratios, final (267a4143) / before (3824f146) pure-Go (log₂ scale, 95% CI)">
+<figcaption><strong>Figure A.2: Allocations, final / before</strong><span>Below 1.0× means the final tree allocates less.</span></figcaption>
+<p class="bench-summary">The allocation work reduced mallocs per transaction on all 11 workloads, down to 0.797×. Mean latency did not change measurably.</p>
+<svg class="bench-svg" viewBox="0 0 1320 558" role="img" aria-label="Figure A.2: Allocations, final / before">
 <line class="grid-line" x1="165.0" y1="36" x2="165.0" y2="532"/>
 <text class="axis-text" x="165.0" y="30" text-anchor="middle">0.7×</text>
 <text class="axis-text" x="165.0" y="547" text-anchor="middle">0.7×</text>
@@ -285,7 +285,7 @@ Executables: `//tools/clientbench/cmd/clientbench:clientbench_go` (per tree) and
 <g class="ci-win"><title>batchset50x1000: 0.973× [0.973, 0.973]</title><line x1="864.4" y1="519.0" x2="864.4" y2="519.0" stroke-width="2.2"/><line x1="864.4" y1="515.0" x2="864.4" y2="523.0" stroke-width="1.8"/><line x1="864.4" y1="515.0" x2="864.4" y2="523.0" stroke-width="1.8"/><circle cx="864.4" cy="519.0" r="3.8"/></g>
 <text class="val-text" x="1137" y="523.0">0.973× [0.973, 0.973]</text>
 </svg>
-<div class="bench-legend"><span><i class="bench-swatch" style="background:#0d9488"></i> 95% CI entirely &lt; 1.000 (faster / lower)</span><span><i class="bench-swatch" style="background:#64748b"></i> 95% CI overlaps 1.000 (unresolved)</span><span><i class="bench-swatch" style="background:#d97706"></i> 95% CI entirely &gt; 1.000 (slower / higher)</span></div>
+<div class="bench-legend"><span><i class="bench-swatch" style="background:#0d9488"></i> 95% CI below 1.0×</span><span><i class="bench-swatch" style="background:#64748b"></i> 95% CI includes 1.0× (inconclusive)</span><span><i class="bench-swatch" style="background:#d97706"></i> 95% CI above 1.0×</span></div>
 </figure>
 
 ### Final pure-Go vs CGo

@@ -75,9 +75,9 @@ have the SQL fetch-method option, so this phase has no older-tree arm. Harness
 ## Results
 
 <figure class="bench-figure">
-<figcaption><strong>Figure D2.1: USE_REMOTE_FETCH / SCAN_AND_FETCH ratios (log₂ scale, 95% CI)</strong> — 6 paired blocks × 3 repeats on single-node memory engine. Below 1.0× favors USE_REMOTE_FETCH.</figcaption>
-<div class="bench-summary"><ul class="bench-summary-list"><li><strong>USE_REMOTE_FETCH faster (2/2 SQL cases, single-node memory engine):</strong> rows10 ns/op is 0.885× [0.873, 0.896] (2.22 ms vs 2.50 ms) and rows1000 ns/op is 0.536× [0.532, 0.538] (24.9 ms vs 46.5 ms), with lower client B/op (0.843×, 0.657×) and allocs/op (0.850×, 0.614×).</li><li><strong>Confound flag:</strong> Both cases flagged a 5-vs-6-byte store-prefix length difference in 1 of 6 rows10 blocks and 2 of 6 rows1000 blocks (a post-hoc descriptive check on equal-prefix blocks gives 0.884 and 0.534).</li></ul></div>
-<svg class="bench-svg" viewBox="0 0 1320 260" role="img" aria-label="Figure D2.1: USE_REMOTE_FETCH / SCAN_AND_FETCH ratios (log₂ scale, 95% CI)">
+<figcaption><strong>Figure D2.1: SQL index scans, USE_REMOTE_FETCH / SCAN_AND_FETCH</strong><span>Below 1.0× favors USE_REMOTE_FETCH. Single in-memory server.</span></figcaption>
+<p class="bench-summary">Through SQL, USE_REMOTE_FETCH is faster for 10 rows (0.885×) and 1,000 rows (0.536×). A few runs had a different store-prefix length; blocks without the difference give similar ratios.</p>
+<svg class="bench-svg" viewBox="0 0 1320 260" role="img" aria-label="Figure D2.1: SQL index scans, USE_REMOTE_FETCH / SCAN_AND_FETCH">
 <line class="grid-line" x1="165.0" y1="36" x2="165.0" y2="234"/>
 <text class="axis-text" x="165.0" y="30" text-anchor="middle">0.2×</text>
 <text class="axis-text" x="165.0" y="249" text-anchor="middle">0.2×</text>
@@ -123,7 +123,7 @@ have the SQL fetch-method option, so this phase has no older-tree arm. Harness
 <g class="ci-win"><title>rows1000: 0.614× [0.614, 0.614]</title><line x1="740.3" y1="221.0" x2="740.3" y2="221.0" stroke-width="2.2"/><line x1="740.3" y1="217.0" x2="740.3" y2="225.0" stroke-width="1.8"/><line x1="740.3" y1="217.0" x2="740.3" y2="225.0" stroke-width="1.8"/><circle cx="740.3" cy="221.0" r="3.8"/></g>
 <text class="val-text" x="1137" y="225.0">0.614× [0.614, 0.614]</text>
 </svg>
-<div class="bench-legend"><span><i class="bench-swatch" style="background:#0d9488"></i> 95% CI entirely &lt; 1.000 (faster / lower)</span><span><i class="bench-swatch" style="background:#64748b"></i> 95% CI overlaps 1.000 (unresolved)</span><span><i class="bench-swatch" style="background:#d97706"></i> 95% CI entirely &gt; 1.000 (slower / higher)</span></div>
+<div class="bench-legend"><span><i class="bench-swatch" style="background:#0d9488"></i> 95% CI below 1.0×</span><span><i class="bench-swatch" style="background:#64748b"></i> 95% CI includes 1.0× (inconclusive)</span><span><i class="bench-swatch" style="background:#d97706"></i> 95% CI above 1.0×</span></div>
 </figure>
 
 Ratios final-remote / final-ordinary with nominal 95% intervals. Below 1 means

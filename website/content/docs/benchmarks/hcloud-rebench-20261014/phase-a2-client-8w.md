@@ -44,9 +44,9 @@ dedicated 16-vCPU host (`ssd-2` engine). This is **phase A2** of
 ## Results
 
 <figure class="bench-figure">
-<figcaption><strong>Figure A2.1: Client ratios at 8 workers (log₂ scale, 95% block-bootstrap CI)</strong> — 6 paired blocks × 24,000 tx/run (144,000 tx/arm/workload). Below 1.0× favors Final Pure-Go.</figcaption>
-<div class="bench-summary"><ul class="bench-summary-list"><li><strong>Latency (final/CGo at 8w):</strong> Mean latency is lower for pure-Go on range100 (0.663× [0.440, 0.858]) and batchset50 (0.817× [0.768, 0.851]) and unresolved on get100 (0.991× [0.928, 1.084]). p99 is lower on batchset50 (0.914× [0.816, 0.985]) and unresolved on range100 (0.881× [0.696, 1.033]) and get100 (1.015× [0.938, 1.097]).</li><li><strong>Shutdown CPU (E−A, final/CGo at 8w):</strong> Higher for pure-Go on all 3 workloads: batchset50 1.150× [1.112, 1.188], range100 1.359× [1.138, 1.559], and get100 1.638× [1.603, 1.676].</li><li><strong>Allocations (final/before at 8w):</strong> Go mallocs/tx drop on all 3 workloads (range100 0.796×, get100 0.872×, batchset50 0.973×).</li></ul></div>
-<svg class="bench-svg" viewBox="0 0 1320 402" role="img" aria-label="Figure A2.1: Client ratios at 8 workers (log₂ scale, 95% block-bootstrap CI)">
+<figcaption><strong>Figure A2.1: Client at 8 workers</strong><span>Below 1.0× favors final pure-Go. Single host.</span></figcaption>
+<p class="bench-summary">Pure-Go has lower mean latency on range100 and batchset50; get100 is inconclusive. It uses more CPU than CGo on all three workloads, up to 1.638×.</p>
+<svg class="bench-svg" viewBox="0 0 1320 402" role="img" aria-label="Figure A2.1: Client at 8 workers">
 <line class="grid-line" x1="165.0" y1="36" x2="165.0" y2="376"/>
 <text class="axis-text" x="165.0" y="30" text-anchor="middle">0.4×</text>
 <text class="axis-text" x="165.0" y="391" text-anchor="middle">0.4×</text>
@@ -112,7 +112,7 @@ dedicated 16-vCPU host (`ssd-2` engine). This is **phase A2** of
 <g class="ci-win"><title>batchset50: 0.973× [0.973, 0.973]</title><line x1="754.8" y1="363.0" x2="754.8" y2="363.0" stroke-width="2.2"/><line x1="754.8" y1="359.0" x2="754.8" y2="367.0" stroke-width="1.8"/><line x1="754.8" y1="359.0" x2="754.8" y2="367.0" stroke-width="1.8"/><circle cx="754.8" cy="363.0" r="3.8"/></g>
 <text class="val-text" x="1137" y="367.0">0.973× [0.973, 0.973]</text>
 </svg>
-<div class="bench-legend"><span><i class="bench-swatch" style="background:#0d9488"></i> 95% CI entirely &lt; 1.000 (faster / lower)</span><span><i class="bench-swatch" style="background:#64748b"></i> 95% CI overlaps 1.000 (unresolved)</span><span><i class="bench-swatch" style="background:#d97706"></i> 95% CI entirely &gt; 1.000 (slower / higher)</span></div>
+<div class="bench-legend"><span><i class="bench-swatch" style="background:#0d9488"></i> 95% CI below 1.0×</span><span><i class="bench-swatch" style="background:#64748b"></i> 95% CI includes 1.0× (inconclusive)</span><span><i class="bench-swatch" style="background:#d97706"></i> 95% CI above 1.0×</span></div>
 </figure>
 
 ### Final pure-Go vs CGo (8 workers)

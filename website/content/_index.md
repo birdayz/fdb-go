@@ -32,7 +32,7 @@ toc: false
 
 <aside class="launch-status" aria-label="Project status">
   <span class="status-label">Pre-1.0</span>
-  <p>Not declared production-ready. Evaluate a pinned commit against the target workload.</p>
+  <p>Not yet declared production-ready.</p>
   <a href="/docs/maturity/">Status &amp; compatibility <span aria-hidden="true">→</span></a>
 </aside>
 
@@ -110,7 +110,7 @@ defer rows.Close()
 </section>
 
 <section class="launch-section launch-next" aria-labelledby="next-heading">
-  <div><h2 id="next-heading">Evaluation</h2><p>This site documents the v0.2.0 candidate on the development branch. Record the commit under evaluation.</p><a class="launch-button" href="/docs/getting-started/">Build and run locally <span aria-hidden="true">→</span></a></div>
+  <div><h2 id="next-heading">Resources</h2><p>The docs cover the development branch (v0.2.0 candidate).</p><a class="launch-button" href="/docs/getting-started/">Build and run locally <span aria-hidden="true">→</span></a></div>
   <div class="launch-reading"><a href="https://github.com/birdayz/fdb-go/blob/master/STATUS.md"><span>Project status</span><span>Readiness and test-lane scope ↗</span></a><a href="https://github.com/birdayz/fdb-go/blob/master/docs/operations.md"><span>Operator guide</span><span>Transactions, index builds, backups, observability ↗</span></a><a href="https://github.com/birdayz/fdb-go/issues"><span>Issues</span><span>Bug reports and open work ↗</span></a></div>
 </section>
 

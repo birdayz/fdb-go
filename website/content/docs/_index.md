@@ -10,7 +10,7 @@ Record Layer for protobuf records and indexes, and an embedded `database/sql`
 engine. The client works without either higher layer.
 
 {{< cards >}}
-  {{< card link="getting-started" title="Getting started" icon="play" subtitle="Build from source and run a disposable local example." >}}
+  {{< card link="getting-started" title="Getting started" icon="play" subtitle="Build from source and run the examples locally." >}}
   {{< card link="benchmarks" title="Benchmarks" icon="chart-bar" subtitle="Preregistered single-node and 4-node VPC benchmark campaigns." >}}
   {{< card link="maturity" title="Status & compatibility" icon="shield-check" subtitle="Readiness, version targets, test coverage, and Java interoperability." >}}
   {{< card link="https://github.com/birdayz/fdb-go/blob/master/docs/operations.md" title="Operator guide" icon="book-open" subtitle="Transactions, index builds, backups, and observability." >}}
@@ -30,4 +30,4 @@ application; this project is not a PostgreSQL wire-protocol server.
 
 **Pre-1.0; not declared production-ready.** These docs describe the development
 tree, not the older v0.1.0 release. Read [status and compatibility](maturity/)
-before evaluating an existing store or mixing Go and Java writers.
+before using an existing store or mixing Go and Java writers.

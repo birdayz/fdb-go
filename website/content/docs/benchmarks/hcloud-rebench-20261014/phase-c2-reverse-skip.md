@@ -69,9 +69,9 @@ Harness `d94b4c61377d173b7c6884fde426a227dab0f0bb`; see
 ## Results
 
 <figure class="bench-figure">
-<figcaption><strong>Figure C2.1: USE_REMOTE_FETCH / SCAN_AND_FETCH ratios (log₂ scale, 95% CI)</strong> — 6 paired blocks × 3 repeats on single-node memory engine. Below 1.0× favors USE_REMOTE_FETCH.</figcaption>
-<div class="bench-summary"><ul class="bench-summary-list"><li><strong>USE_REMOTE_FETCH faster (3/4 cases, 95% CI &lt; 1.000):</strong> reverse-small-1000 0.337× [0.331, 0.343] (15.6 ms vs 46.5 ms), executor-skip3-small-1000 0.455× [0.445, 0.465] (21.4 ms vs 47.5 ms), and executor-skip3-small-10 0.783× [0.764, 0.800] (1.46 ms vs 1.87 ms).</li><li><strong>SCAN_AND_FETCH faster (1/4 cases, 95% CI &gt; 1.000):</strong> reverse-split-1000 at 1.146× [1.130, 1.161] (188 ms vs 165 ms).</li><li><strong>Allocations:</strong> Client B/op (0.506×–0.692×) and allocs/op (0.403×–0.791×) drop across all 4 cases.</li></ul></div>
-<svg class="bench-svg" viewBox="0 0 1376 380" role="img" aria-label="Figure C2.1: USE_REMOTE_FETCH / SCAN_AND_FETCH ratios (log₂ scale, 95% CI)">
+<figcaption><strong>Figure C2.1: Reverse and Skip scans, USE_REMOTE_FETCH / SCAN_AND_FETCH</strong><span>Below 1.0× favors USE_REMOTE_FETCH. Single in-memory server.</span></figcaption>
+<p class="bench-summary">USE_REMOTE_FETCH is faster in 3 of 4 cases, down to 0.337×, and slower on reverse-split-1000 (1.146×).</p>
+<svg class="bench-svg" viewBox="0 0 1376 380" role="img" aria-label="Figure C2.1: Reverse and Skip scans, USE_REMOTE_FETCH / SCAN_AND_FETCH">
 <line class="grid-line" x1="221.0" y1="36" x2="221.0" y2="354"/>
 <text class="axis-text" x="221.0" y="30" text-anchor="middle">0.2×</text>
 <text class="axis-text" x="221.0" y="369" text-anchor="middle">0.2×</text>
@@ -135,7 +135,7 @@ Harness `d94b4c61377d173b7c6884fde426a227dab0f0bb`; see
 <g class="ci-win"><title>executor-skip3-small-1000: 0.534× [0.534, 0.534]</title><line x1="724.7" y1="341.0" x2="724.7" y2="341.0" stroke-width="2.2"/><line x1="724.7" y1="337.0" x2="724.7" y2="345.0" stroke-width="1.8"/><line x1="724.7" y1="337.0" x2="724.7" y2="345.0" stroke-width="1.8"/><circle cx="724.7" cy="341.0" r="3.8"/></g>
 <text class="val-text" x="1193" y="345.0">0.534× [0.534, 0.534]</text>
 </svg>
-<div class="bench-legend"><span><i class="bench-swatch" style="background:#0d9488"></i> 95% CI entirely &lt; 1.000 (faster / lower)</span><span><i class="bench-swatch" style="background:#64748b"></i> 95% CI overlaps 1.000 (unresolved)</span><span><i class="bench-swatch" style="background:#d97706"></i> 95% CI entirely &gt; 1.000 (slower / higher)</span></div>
+<div class="bench-legend"><span><i class="bench-swatch" style="background:#0d9488"></i> 95% CI below 1.0×</span><span><i class="bench-swatch" style="background:#64748b"></i> 95% CI includes 1.0× (inconclusive)</span><span><i class="bench-swatch" style="background:#d97706"></i> 95% CI above 1.0×</span></div>
 </figure>
 
 Ratios final-remote / final-ordinary with nominal 95% intervals. Below 1 means

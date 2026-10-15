@@ -57,9 +57,9 @@ Both trees ran byte-identical benchmark source
 ## Results
 
 <figure class="bench-figure">
-<figcaption><strong>Figure C1.1: Forward scans, USE_REMOTE_FETCH / SCAN_AND_FETCH on the final tree (log₂ scale, 95% CI)</strong> — 8 Williams-square blocks × 3 repeats on single-node memory engine. Below 1.0× favors USE_REMOTE_FETCH.</figcaption>
-<div class="bench-summary"><ul class="bench-summary-list"><li><strong>USE_REMOTE_FETCH faster (5/6 cases, 95% CI &lt; 1.000):</strong> small-all-1000 0.341× [0.321, 0.356] (15.3 ms vs 44.0 ms), split-limit-1-broad 0.707× [0.685, 0.735], small-exact-10 0.733× [0.724, 0.743], small-limit-1-broad 0.838× [0.795, 0.900], and split-exact-10 0.872× [0.843, 0.904].</li><li><strong>SCAN_AND_FETCH faster (1/6 cases, 95% CI &gt; 1.000):</strong> 2-chunk split-all-1000 at 1.150× [1.129, 1.181] (188 ms vs 163 ms).</li><li><strong>Allocations:</strong> B/op drops on all 6 cases (0.512×–0.960×); allocs/op drops on 5 of 6 (0.404×–0.942×) and increases on small-limit-1-broad (1.046× [1.046, 1.046], 229 vs 219).</li></ul></div>
-<svg class="bench-svg" viewBox="0 0 1329 500" role="img" aria-label="Figure C1.1: Forward scans, USE_REMOTE_FETCH / SCAN_AND_FETCH on the final tree (log₂ scale, 95% CI)">
+<figcaption><strong>Figure C1.1: Forward scans, USE_REMOTE_FETCH / SCAN_AND_FETCH</strong><span>Below 1.0× favors USE_REMOTE_FETCH. Single in-memory server.</span></figcaption>
+<p class="bench-summary">USE_REMOTE_FETCH is faster in 5 of 6 cases, down to 0.341×, and slower on split-all-1000 (1.150×).</p>
+<svg class="bench-svg" viewBox="0 0 1329 500" role="img" aria-label="Figure C1.1: Forward scans, USE_REMOTE_FETCH / SCAN_AND_FETCH">
 <line class="grid-line" x1="174.0" y1="36" x2="174.0" y2="474"/>
 <text class="axis-text" x="174.0" y="30" text-anchor="middle">0.3×</text>
 <text class="axis-text" x="174.0" y="489" text-anchor="middle">0.3×</text>
@@ -138,7 +138,7 @@ Both trees ran byte-identical benchmark source
 <g class="ci-win"><title>split-all-1000: 0.404× [0.404, 0.404]</title><line x1="368.9" y1="461.0" x2="368.9" y2="461.0" stroke-width="2.2"/><line x1="368.9" y1="457.0" x2="368.9" y2="465.0" stroke-width="1.8"/><line x1="368.9" y1="457.0" x2="368.9" y2="465.0" stroke-width="1.8"/><circle cx="368.9" cy="461.0" r="3.8"/></g>
 <text class="val-text" x="1146" y="465.0">0.404× [0.404, 0.404]</text>
 </svg>
-<div class="bench-legend"><span><i class="bench-swatch" style="background:#0d9488"></i> 95% CI entirely &lt; 1.000 (faster / lower)</span><span><i class="bench-swatch" style="background:#64748b"></i> 95% CI overlaps 1.000 (unresolved)</span><span><i class="bench-swatch" style="background:#d97706"></i> 95% CI entirely &gt; 1.000 (slower / higher)</span></div>
+<div class="bench-legend"><span><i class="bench-swatch" style="background:#0d9488"></i> 95% CI below 1.0×</span><span><i class="bench-swatch" style="background:#64748b"></i> 95% CI includes 1.0× (inconclusive)</span><span><i class="bench-swatch" style="background:#d97706"></i> 95% CI above 1.0×</span></div>
 </figure>
 
 Ratios with nominal 95% intervals. Below 1 means the numerator arm is faster or
