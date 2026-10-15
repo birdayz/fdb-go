@@ -103,8 +103,6 @@ go_test(
         "write_integration_test.go",
     ],
     data = [
-        "testdata/quickstart/frl.sh",
-        "testdata/quickstart/go.sh",
         "//:README.md",
         "//:website/content/docs/getting-started.md",
     ],

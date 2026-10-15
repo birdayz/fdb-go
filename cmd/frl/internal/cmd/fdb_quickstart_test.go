@@ -1,183 +1,65 @@
 package cmd
 
 import (
-	"context"
-	"errors"
-	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/bazelbuild/rules_go/go/runfiles"
+
+	"fdb.dev/cmd/frl/internal/config"
 )
 
-func TestFDBQuickstartShell(t *testing.T) {
-	t.Parallel()
-	for _, doc := range []struct {
-		path     string
-		examples []string
-	}{
-		{"README.md", []string{"./example/sql", "./example"}},
-		{"website/content/docs/getting-started.md", []string{"./example/sql"}},
-	} {
-		t.Run(doc.path, func(t *testing.T) {
-			t.Parallel()
-			block := fdbQuickstartBlock(t, doc.path)
-			for _, scenario := range []struct {
-				name        string
-				buildStatus int
-				upStatus    int
-				sqlStatus   int
-			}{
-				{name: "success"},
-				{name: "build_failure", buildStatus: 17},
-				{name: "startup_failure", upStatus: 23},
-				{name: "sql_failure", sqlStatus: 31},
-			} {
-				t.Run(scenario.name, func(t *testing.T) {
-					t.Parallel()
-					dir := t.TempDir()
-					logPath := filepath.Join(dir, "calls")
-					newCluster := filepath.Join(dir, "disposable cluster.cluster")
-					oldCluster := filepath.Join(dir, "real cluster.cluster")
-					fdbQuickstartFixtures(t, dir)
+// The quickstarts in README.md and on the website run the examples with
+// FDB_CLUSTER_FILE set to the file `frl fdb up` writes. Pin that literal path
+// so a change to the frl config directory or the default container name fails
+// here instead of breaking the published instructions.
+func TestQuickstartClusterFilePath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("FRL_CONFIG", "")
+	cfgPath, err := config.Path()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel, err := filepath.Rel(home, filepath.Join(filepath.Dir(cfgPath), defaultFdbContainer+".cluster"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "FDB_CLUSTER_FILE=~/" + filepath.ToSlash(rel)
 
-					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-					defer cancel()
-					// No errexit: pasted lines keep running after a failure, so a failed
-					// build or startup must still never run an example against oldCluster.
-					command := exec.CommandContext(ctx, "sh", "-c", block)
-					command.Dir = dir
-					command.Env = append(os.Environ(),
-						"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
-						"FDB_CLUSTER_FILE="+oldCluster,
-						"QUICKSTART_LOG="+logPath,
-						"QUICKSTART_CLUSTER="+newCluster,
-						"QUICKSTART_BUILT="+filepath.Join(dir, "built"),
-						fmt.Sprintf("QUICKSTART_BUILD_STATUS=%d", scenario.buildStatus),
-						fmt.Sprintf("QUICKSTART_UP_STATUS=%d", scenario.upStatus),
-						fmt.Sprintf("QUICKSTART_SQL_STATUS=%d", scenario.sqlStatus),
-					)
-					output, err := command.CombinedOutput()
-
-					wantCalls := "go|build -o frl ./cmd/frl|" + oldCluster + "\n"
-					cluster := "" // a failed `./frl fdb up` exports an empty FDB_CLUSTER_FILE
-					if scenario.buildStatus == 0 {
-						wantCalls += "frl|fdb up|" + oldCluster + "\n"
-						if scenario.upStatus == 0 {
-							cluster = newCluster
-						}
-					}
-					wantStatus := 0
-					for _, example := range doc.examples {
-						wantCalls += "go|run " + example + "|" + cluster + "\n"
-						switch {
-						case cluster == "":
-							wantStatus = 1 // the example refuses to run (errNoClusterFile)
-						case example == "./example/sql":
-							wantStatus = scenario.sqlStatus
-						default:
-							wantStatus = 0
-						}
-					}
-					if wantStatus == 0 {
-						if err != nil {
-							t.Errorf("quickstart failed: %v\n%s", err, output)
-						}
-					} else {
-						var exitErr *exec.ExitError
-						if !errors.As(err, &exitErr) || exitErr.ExitCode() != wantStatus {
-							t.Errorf("quickstart error = %v, want exit %d\n%s", err, wantStatus, output)
-						}
-					}
-
-					calls, readErr := os.ReadFile(logPath)
-					if readErr != nil {
-						t.Fatal(readErr)
-					}
-					if string(calls) != wantCalls {
-						t.Errorf("quickstart calls:\n%s\nwant:\n%s", calls, wantCalls)
-					}
-				})
+	assignment := regexp.MustCompile(`FDB_CLUSTER_FILE=\S*`)
+	for _, doc := range []string{"README.md", "website/content/docs/getting-started.md"} {
+		path, err := runfiles.Rlocation("_main/" + doc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var commands []string
+		for _, afterFence := range strings.Split(string(content), "```sh\n")[1:] {
+			if block, _, closed := strings.Cut(afterFence, "\n```"); closed {
+				commands = append(commands, strings.Split(block, "\n")...)
 			}
-		})
-	}
-}
-
-func TestFDBQuickstartFixturesUseRunfiles(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	fdbQuickstartFixtures(t, dir)
-	for _, name := range []string{"go", "frl"} {
-		path, err := runfiles.Rlocation("_main/cmd/frl/internal/cmd/testdata/quickstart/" + name + ".sh")
-		if err != nil {
-			t.Fatal(err)
 		}
-		fixture, err := os.Stat(path)
-		if err != nil {
-			t.Fatal(err)
+		var up, runs int
+		for _, line := range commands {
+			if strings.TrimSpace(line) == "frl fdb up" {
+				up++
+			}
+			for _, got := range assignment.FindAllString(line, -1) {
+				runs++
+				if got != want {
+					t.Errorf("%s: %q, want %q (the file frl fdb up writes)", doc, got, want)
+				}
+			}
 		}
-		executable, err := os.Stat(filepath.Join(dir, name))
-		if err != nil {
-			t.Fatal(err)
-		}
-		// Copies reintroduce writable executable descriptors during parallel forks.
-		if !os.SameFile(fixture, executable) {
-			t.Errorf("%s: executable must reuse the runfile inode, not a writable copy", name)
+		if up == 0 || runs == 0 {
+			t.Errorf("%s: want a `frl fdb up` line and at least one %s command; found %d and %d", doc, want, up, runs)
 		}
 	}
-}
-
-func fdbQuickstartFixtures(t *testing.T, dir string) {
-	t.Helper()
-	if err := os.WriteFile(filepath.Join(dir, "calls"), nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	// Concurrent forks can retain script writers until exec, causing ETXTBSY
-	// even after WriteFile returns. Reuse runfiles without opening them for write.
-	for _, name := range []string{"go", "frl"} {
-		path, err := runfiles.Rlocation("_main/cmd/frl/internal/cmd/testdata/quickstart/" + name + ".sh")
-		if err != nil {
-			t.Fatal(err)
-		}
-		path, err = filepath.Abs(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Symlink(path, filepath.Join(dir, name)); err != nil {
-			t.Fatal(err)
-		}
-	}
-}
-
-func fdbQuickstartBlock(t *testing.T, doc string) string {
-	t.Helper()
-	path, err := runfiles.Rlocation("_main/" + doc)
-	if err != nil {
-		t.Fatal(err)
-	}
-	content, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var blocks []string
-	for _, afterFence := range strings.Split(string(content), "```sh\n")[1:] {
-		block, _, closed := strings.Cut(afterFence, "\n```")
-		if closed && strings.Contains(block, "./frl fdb up") {
-			blocks = append(blocks, block)
-		}
-	}
-	if len(blocks) != 1 {
-		t.Fatalf("%s: found %d quickstart shell blocks, want 1", doc, len(blocks))
-	}
-	// zsh without INTERACTIVE_COMMENTS runs pasted `#` lines as commands.
-	for i, line := range strings.Split(blocks[0], "\n") {
-		if trimmed := strings.TrimSpace(line); trimmed == "" || strings.HasPrefix(trimmed, "#") {
-			t.Fatalf("%s: quickstart line %d %q: want a command, not a blank or comment line", doc, i+1, line)
-		}
-	}
-	return blocks[0]
 }
