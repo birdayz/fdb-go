@@ -229,8 +229,6 @@ def extract_md_table(text: str, heading_substr: str) -> list:
             table_lines.append(s)
         elif in_table:
             break
-        elif s.startswith('#'):
-            break
     if len(table_lines) < 3:
         return []
     rows = []
@@ -375,15 +373,12 @@ def build_page_charts(cid: str, fname: str, raw_md: str) -> str:
             )
 
     if cid == 'hcloud-rebench-20261014' and fname == 'phase-c1-remotefetch.md':
-        rows = extract_md_table(raw_md, '### Remote fetch vs ordinary index fetch')
-        if not rows:
-            rows = extract_md_table(raw_md, '## Results')
-        fin_rows = [r for r in rows if len(r) >= 5 and 'final' in r[1]]
-        if fin_rows:
+        rows = extract_md_table(raw_md, '### Remote fetch vs ordinary fetch, final tree')
+        if rows:
             groups = [
-                ('Mean Time (ns/op): final-remote / final-ordinary', [(r[0], r[2]) for r in fin_rows]),
-                ('Go Bytes (B/op): final-remote / final-ordinary', [(r[0], r[3]) for r in fin_rows]),
-                ('Go Allocations (allocs/op): final-remote / final-ordinary', [(r[0], r[4]) for r in fin_rows]),
+                ('Mean Time (ns/op): final-remote / final-ordinary', [(r[0], r[1]) for r in rows]),
+                ('Go Bytes (B/op): final-remote / final-ordinary', [(r[0], r[2]) for r in rows]),
+                ('Go Allocations (allocs/op): final-remote / final-ordinary', [(r[0], r[3]) for r in rows]),
             ]
             return render_forest_svg(
                 'Figure C1.1: Forward Remote Fetch vs Ordinary Scan — Final Tree (log₂ scale, 95% CI)',
@@ -391,10 +386,10 @@ def build_page_charts(cid: str, fname: str, raw_md: str) -> str:
                 groups, [0.3, 0.5, 0.7, 1.0, 1.3], 'USE_REMOTE_FETCH lower', 'SCAN_AND_FETCH lower'
             )
 
-    if cid == 'hcloud-rebench-20261014' and fname in ('phase-c2-reverse-skip.md', 'phase-c3-synthetic-rtt.md', 'phase-d2-sql-remotefetch.md'):
+    if cid == 'hcloud-rebench-20261014' and fname in ('phase-c2-reverse-skip.md', 'phase-c3-synthetic-rtt.md', 'phase-d1-sql.md', 'phase-d2-sql-remotefetch.md'):
         rows = extract_md_table(raw_md, '## Results')
         valid = [r for r in rows if len(r) >= 4 and parse_ci(r[1])]
-        if valid:
+        if valid and fname != 'phase-d1-sql.md':
             groups = [
                 ('Mean Time (ns/op): USE_REMOTE_FETCH / SCAN_AND_FETCH', [(r[0], r[1]) for r in valid]),
                 ('Go Bytes (B/op): USE_REMOTE_FETCH / SCAN_AND_FETCH', [(r[0], r[2]) for r in valid]),
@@ -405,6 +400,19 @@ def build_page_charts(cid: str, fname: str, raw_md: str) -> str:
                 '6 paired blocks × 3 repeats on single-node memory engine. Below 1.0× favors USE_REMOTE_FETCH.',
                 groups, [0.2, 0.35, 0.5, 0.7, 1.0, 1.3], 'USE_REMOTE_FETCH lower', 'SCAN_AND_FETCH lower'
             )
+        elif fname == 'phase-d1-sql.md':
+            r_bef = extract_md_table(raw_md, '### Final vs before')
+            r_leg = extract_md_table(raw_md, '### Final vs legacy')
+            if r_bef and r_leg:
+                groups = [
+                    ('Final / Before (PlanCacheHit)', [('ns/op', r_bef[0][1]), ('B/op', r_bef[0][2]), ('allocs/op', r_bef[0][3])]),
+                    ('Final / Legacy (PlanCacheHit)', [('ns/op', r_leg[0][1]), ('B/op', r_leg[0][2]), ('allocs/op', r_leg[0][3])]),
+                ]
+                return render_forest_svg(
+                    'Figure D1.1: SQL FDB_PlanCacheHit Ratios (log₂ scale, 95% CI)',
+                    '6 paired blocks × 3 repeats (54 samples). Below 1.0× favors Final.',
+                    groups, [0.9, 0.95, 1.0, 1.05, 1.1], 'Final lower', 'Denominator lower'
+                )
 
     return ''
 
