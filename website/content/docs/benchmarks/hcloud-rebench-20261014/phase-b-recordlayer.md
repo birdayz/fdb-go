@@ -57,6 +57,7 @@ production code. `final/before` is the allocation work plus later changes;
 
 <figure class="bench-figure">
 <figcaption><strong>Figure B.1: Record Layer Allocation Optimization Ratios — Final / Before (log₂ scale, 95% CI)</strong> — 6 paired blocks × 3 repeats on memory engine. Below 1.0× means Final is faster or allocates less.</figcaption>
+<p class="bench-summary"><strong>Summary:</strong> Across all 8 Record Layer benchmarks, final (267a4143) reduces allocs/op by 11.2–37.3% (0.627×–0.888×, led by ScanIndexRecords/pipelined 0.627× and /serial 0.651×) and B/op by 9.0–25.1% on 7 of 8 cases (0.749×–0.910×; SaveSplitRecord is 0.998× because its ~1.6 MB payload dominates). Mean ns/op improves by 2.2–2.8% with 95% CI below 1.0× on 3 of 8 cases (ScanIndexRecords/pipelined 0.972×, ScanRecordsSplitVersioned 0.976×, LoadRecord 0.978×) and overlaps 1.0× on the other 5 (0.966×–1.015×).</p>
 <svg class="bench-svg" viewBox="0 0 1383 620" role="img" aria-label="Figure B.1: Record Layer Allocation Optimization Ratios — Final / Before (log₂ scale, 95% CI)">
 <line class="grid-line" x1="228.0" y1="36" x2="228.0" y2="594"/>
 <text class="axis-text" x="228.0" y="30" text-anchor="middle">0.6×</text>

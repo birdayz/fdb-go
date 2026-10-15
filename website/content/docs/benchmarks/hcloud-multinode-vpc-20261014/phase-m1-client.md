@@ -61,6 +61,7 @@ processes, 9 storage servers). This is **phase M1** of
 
 <figure class="bench-figure">
 <figcaption><strong>Figure M1.1: Mean Latency Ratio — Final Pure-Go / CGo (log₂ scale, 95% block-bootstrap CI)</strong> — 6 paired blocks per workload, 20,000 resamples (seed 492817). Below 1.0× means Pure-Go is faster.</figcaption>
+<p class="bench-summary"><strong>Summary:</strong> Pure-Go beats CGo on mean latency in 18 of 22 clean cells across 1, 8, 32, and 64 workers (0.554×–0.980×), led by read workloads (get100 0.676×–0.888×, get1000 0.632×–0.942×, range100 0.554×–0.868×) because pure-Go skips CGo boundary crossings and libfdb_c network-thread hops. Three cells are statistically tied (95% CI spans 1.0×: M1w8 grv 0.996×, M1w64 grv 1.029×, M1w32 range100 0.869× [0.753, 1.148]), and one cell regresses: M1w32 grv is 4.1% slower in pure-Go (1.041× [1.007, 1.081]). Multi-worker batchset50/batchset50x1000 are omitted because 50-write bursts overflowed the 100 MB server transaction-log queue gate (113.7–193.4 MB).</p>
 <svg class="bench-svg" viewBox="0 0 1320 722" role="img" aria-label="Figure M1.1: Mean Latency Ratio — Final Pure-Go / CGo (log₂ scale, 95% block-bootstrap CI)">
 <line class="grid-line" x1="165.0" y1="36" x2="165.0" y2="696"/>
 <text class="axis-text" x="165.0" y="30" text-anchor="middle">0.35×</text>
@@ -174,6 +175,7 @@ processes, 9 storage servers). This is **phase M1** of
 
 <figure class="bench-figure">
 <figcaption><strong>Figure M1.2: Tail (p99) Latency Ratio — Final Pure-Go / CGo (log₂ scale, 95% block-bootstrap CI)</strong> — Run-level p99 transaction latency resampled over paired blocks. Below 1.0× means Pure-Go has lower p99.</figcaption>
+<p class="bench-summary"><strong>Summary:</strong> Pure-Go has lower p99 tail latency in 17 of 22 clean cells (0.385×–0.957×), cutting get1000 p99 by 2.6× at 64 workers (0.385×, 4.54 ms vs 11.69 ms). Four cells are unresolved (M1w1 get100 and grv at 8, 32, 64 workers). One cell regresses: M1w32 range100 p99 is 24.7% higher in pure-Go (1.247× [1.048, 1.644], 6.62 ms vs 5.98 ms) due to Go allocator/GC pressure from 49.5 KB/tx of range-reply decoding across 32 concurrent workers.</p>
 <svg class="bench-svg" viewBox="0 0 1320 722" role="img" aria-label="Figure M1.2: Tail (p99) Latency Ratio — Final Pure-Go / CGo (log₂ scale, 95% block-bootstrap CI)">
 <line class="grid-line" x1="165.0" y1="36" x2="165.0" y2="696"/>
 <text class="axis-text" x="165.0" y="30" text-anchor="middle">0.25×</text>
@@ -290,6 +292,7 @@ processes, 9 storage servers). This is **phase M1** of
 
 <figure class="bench-figure">
 <figcaption><strong>Figure M1.3: Shutdown Process CPU (E−A) Ratio — Final Pure-Go / CGo (log₂ scale, 95% CI)</strong> — User+system process CPU through finalizer drain and network stop per transaction. Below 1.0× means Pure-Go uses less CPU.</figcaption>
+<p class="bench-summary"><strong>Summary:</strong> At 1 worker (M1w1), pure-Go uses 25–43% less process CPU than CGo across all 7 workloads (0.570×–0.748×). At 8, 32, and 64 workers, that reverses on every data-carrying workload: pure-Go burns 29–116% more CPU than CGo on get100, get1000, range100, and set100 (1.291×–2.162×; M1w64 range100 1.069× [0.923, 1.180] is tied), while only grv stays lower (0.570×–0.904×). Cause: pure-Go allocates 6.3–49.5 KB and 67–101 Go heap objects per transaction plus per-RPC transport wakeups, whereas libfdb_c reuses native arena memory on a single network thread.</p>
 <svg class="bench-svg" viewBox="0 0 1320 722" role="img" aria-label="Figure M1.3: Shutdown Process CPU (E−A) Ratio — Final Pure-Go / CGo (log₂ scale, 95% CI)">
 <line class="grid-line" x1="165.0" y1="36" x2="165.0" y2="696"/>
 <text class="axis-text" x="165.0" y="30" text-anchor="middle">0.5×</text>
@@ -403,6 +406,7 @@ processes, 9 storage servers). This is **phase M1** of
 
 <figure class="bench-figure">
 <figcaption><strong>Figure M1.4: Absolute Mean &amp; p99 Latency at 1 Worker (M1w1) and 64 Workers (M1w64)</strong> — Medians of 6 run-level statistics in µs/transaction (solid bar = mean, whisker = p99).</figcaption>
+<p class="bench-summary"><strong>Summary:</strong> Across the VPC network, 1-worker transaction latencies sit at 0.97–6.24 ms mean (1.48–9.38 ms p99) for pure-Go vs 1.67–6.58 ms mean (3.13–10.06 ms p99) for CGo. Scaling from 1 to 64 workers pushes CGo get1000 p99 from 3.86 ms to 11.69 ms (3.0×), whereas pure-Go get1000 p99 rises from 2.64 ms to 4.54 ms (1.7×).</p>
 <svg class="bench-svg" viewBox="0 0 1347 392" role="img" aria-label="Figure M1.4: Absolute Mean &amp; p99 Latency at 1 Worker (M1w1) and 64 Workers (M1w64)">
 <line class="grid-line" x1="182.0" y1="22" x2="182.0" y2="368"/>
 <text class="axis-text" x="182.0" y="383" text-anchor="middle">0 µs</text>

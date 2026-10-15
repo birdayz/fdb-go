@@ -58,6 +58,7 @@ Both trees ran byte-identical benchmark source
 
 <figure class="bench-figure">
 <figcaption><strong>Figure C1.1: Forward Remote Fetch vs Ordinary Scan — Final Tree (log₂ scale, 95% CI)</strong> — 8 Williams-square blocks × 3 repeats on single-node memory engine. Below 1.0× favors USE_REMOTE_FETCH.</figcaption>
+<p class="bench-summary"><strong>Summary:</strong> On a single fdbserver (memory engine, index and records co-located in one process), forward USE_REMOTE_FETCH is faster on 5 of 6 cases (0.341×–0.872×, led by small-all-1000 at 2.9× faster: 44.0 → 15.3 ms), cutting B/op on all 6 (0.512×–0.960×) and allocs/op on 5 of 6 (0.404×–0.942×; small-limit-1-broad is 1.046×, +10 allocs/op). It loses on split-all-1000: 15.0% slower (1.150× [1.129, 1.181], 163 → 188 ms). On the 3-node ssd-2 cluster (Phase M2), small-rows1000 also flips to 1.226× slower and split-rows1000 widens to 2.326× slower.</p>
 <svg class="bench-svg" viewBox="0 0 1329 500" role="img" aria-label="Figure C1.1: Forward Remote Fetch vs Ordinary Scan — Final Tree (log₂ scale, 95% CI)">
 <line class="grid-line" x1="174.0" y1="36" x2="174.0" y2="474"/>
 <text class="axis-text" x="174.0" y="30" text-anchor="middle">0.3×</text>

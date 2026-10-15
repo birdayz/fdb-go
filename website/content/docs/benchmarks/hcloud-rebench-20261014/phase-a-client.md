@@ -62,6 +62,7 @@ Executables: `//tools/clientbench/cmd/clientbench:clientbench_go` (per tree) and
 
 <figure class="bench-figure">
 <figcaption><strong>Figure A.1: Single-Node 1-Worker Client Ratios — Final Pure-Go / CGo (log₂ scale, 95% CI)</strong> — 6 paired blocks × 3,000 tx/run (18,000 tx/arm/workload). Below 1.0× means Pure-Go is faster / lower CPU.</figcaption>
+<p class="bench-summary"><strong>Summary:</strong> At 1 worker on a single host (veth + single ssd-2), pure-Go beats CGo on mean latency with 95% CI below 1.0× on 10 of 11 workloads (0.189× on in-memory ryw, 0.515× on grv, 0.613×–0.931× on reads/writes; range100 0.846× [0.713, 1.024] overlaps 1.0×). p99 latency is lower on 8 of 11 workloads (range100, set100, and batchset50 overlap 1.0×), and shutdown process CPU (E−A) is lower on 7 of 11 workloads (get100, get10000, range10, and range100 1.101× [0.968, 1.269] overlap 1.0×).</p>
 <svg class="bench-svg" viewBox="0 0 1320 800" role="img" aria-label="Figure A.1: Single-Node 1-Worker Client Ratios — Final Pure-Go / CGo (log₂ scale, 95% CI)">
 <line class="grid-line" x1="165.0" y1="36" x2="165.0" y2="774"/>
 <text class="axis-text" x="165.0" y="30" text-anchor="middle">0.15×</text>
@@ -194,6 +195,7 @@ Executables: `//tools/clientbench/cmd/clientbench:clientbench_go` (per tree) and
 
 <figure class="bench-figure">
 <figcaption><strong>Figure A.2: Allocation Reductions — Final / Before Pure-Go (3824f146 → 267a4143)</strong> — Go heap bytes and mallocs per transaction (6 paired blocks). Below 1.0× means fewer allocations in Final.</figcaption>
+<p class="bench-summary"><strong>Summary:</strong> Commits 3824f146 → 267a4143 cut Go mallocs/tx by 2.7–20.3% across all 11 workloads (0.797×–0.973×) and bytes/tx by up to 17.6% (range100 0.824×, range10 0.844×). Mean latency 95% CIs span 1.0× on all 11 workloads (0.984×–1.042×), and only range100 shows a resolved p99 (0.951× [0.916, 0.998]) and E−A CPU (0.952× [0.937, 0.971]) reduction at 1 worker.</p>
 <svg class="bench-svg" viewBox="0 0 1320 558" role="img" aria-label="Figure A.2: Allocation Reductions — Final / Before Pure-Go (3824f146 → 267a4143)">
 <line class="grid-line" x1="165.0" y1="36" x2="165.0" y2="532"/>
 <text class="axis-text" x="165.0" y="30" text-anchor="middle">0.7×</text>

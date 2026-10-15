@@ -38,6 +38,7 @@ not a multi-host or physical-network benchmark.
 
 <figure class="bench-figure">
 <figcaption><strong>Figure C3.1: Remote Fetch vs Ordinary Scan Ratios (log₂ scale, 95% CI)</strong> — 6 paired blocks × 3 repeats on single-node memory engine. Below 1.0× favors USE_REMOTE_FETCH.</figcaption>
+<p class="bench-summary"><strong>Summary:</strong> With 0.5 ms synthetic client↔server RTT (tc netem) against a single fdbserver, small-all-1000 is 4.5× faster with USE_REMOTE_FETCH (0.224× [0.222, 0.226], 108.0 → 24.0 ms), while split-all-1000 remains 5.3% slower (1.053× [1.008, 1.101], 266.4 → 276.9 ms). Because index and record shards live inside the same fdbserver process here, server-internal getMappedRange reads bypass the delayed link; on the 3-node VPC cluster (Phase M2), both 1,000-row scans are slower with remote fetch (1.226× and 2.326×).</p>
 <svg class="bench-svg" viewBox="0 0 1320 260" role="img" aria-label="Figure C3.1: Remote Fetch vs Ordinary Scan Ratios (log₂ scale, 95% CI)">
 <line class="grid-line" x1="165.0" y1="36" x2="165.0" y2="234"/>
 <text class="axis-text" x="165.0" y="30" text-anchor="middle">0.2×</text>

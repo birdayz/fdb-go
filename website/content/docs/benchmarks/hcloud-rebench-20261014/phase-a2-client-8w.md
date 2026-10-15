@@ -45,6 +45,7 @@ dedicated 16-vCPU host (`ssd-2` engine). This is **phase A2** of
 
 <figure class="bench-figure">
 <figcaption><strong>Figure A2.1: Single-Node 8-Worker Client Ratios (log₂ scale, 95% block-bootstrap CI)</strong> — 6 paired blocks × 24,000 tx/run (144,000 tx/arm/workload). Below 1.0× favors Final Pure-Go.</figcaption>
+<p class="bench-summary"><strong>Summary:</strong> At 8 workers on single-node SSD, pure-Go beats CGo on mean latency for range100 (0.663× [0.440, 0.858]) and batchset50 (0.817× [0.768, 0.851]), while get100 overlaps 1.0× (0.991× [0.928, 1.084]). On p99, batchset50 is lower (0.914× [0.816, 0.985]) while range100 (0.881× [0.696, 1.033]) and get100 (1.015× [0.938, 1.097]) overlap 1.0×. Shutdown process CPU (E−A) reverses at 8 workers: pure-Go uses 15–64% more CPU than CGo on all 3 workloads (batchset50 1.150×, range100 1.359×, get100 1.638×). Versus before (3824f146), final cuts mallocs/tx by 2.7–20.4% (0.796×–0.973×).</p>
 <svg class="bench-svg" viewBox="0 0 1320 402" role="img" aria-label="Figure A2.1: Single-Node 8-Worker Client Ratios (log₂ scale, 95% block-bootstrap CI)">
 <line class="grid-line" x1="165.0" y1="36" x2="165.0" y2="376"/>
 <text class="axis-text" x="165.0" y="30" text-anchor="middle">0.4×</text>

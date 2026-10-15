@@ -76,6 +76,7 @@ have the SQL fetch-method option, so this phase has no older-tree arm. Harness
 
 <figure class="bench-figure">
 <figcaption><strong>Figure D2.1: Remote Fetch vs Ordinary Scan Ratios (log₂ scale, 95% CI)</strong> — 6 paired blocks × 3 repeats on single-node memory engine. Below 1.0× favors USE_REMOTE_FETCH.</figcaption>
+<p class="bench-summary"><strong>Summary:</strong> Through SQL on single-node memory, USE_REMOTE_FETCH is 11.5% faster on rows10 (0.885× [0.873, 0.896], 2.50 → 2.22 ms) and 46.4% faster on rows1000 (0.536× [0.532, 0.538], 46.5 → 24.9 ms), cutting client B/op (0.843×, 0.657×) and allocs/op (0.850×, 0.614×). Both cases flagged a 5-vs-6-byte store-prefix confound in 1–2 of 6 blocks (equal-prefix blocks give the same 0.884× and 0.534× ratios), and single-node unsplit-record gains do not carry over to 3-node ssd-2 1,000-row scans (Phase M2).</p>
 <svg class="bench-svg" viewBox="0 0 1320 260" role="img" aria-label="Figure D2.1: Remote Fetch vs Ordinary Scan Ratios (log₂ scale, 95% CI)">
 <line class="grid-line" x1="165.0" y1="36" x2="165.0" y2="234"/>
 <text class="axis-text" x="165.0" y="30" text-anchor="middle">0.2×</text>

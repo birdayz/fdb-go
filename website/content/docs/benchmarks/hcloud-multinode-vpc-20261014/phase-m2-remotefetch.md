@@ -57,6 +57,7 @@ of [hcloud-multinode-vpc-20261014](../).
 
 <figure class="bench-figure">
 <figcaption><strong>Figure M2.1: Mean Time (ns/op) Ratio — USE_REMOTE_FETCH / SCAN_AND_FETCH (log₂ scale, 95% CI)</strong> — 3-node VPC double ssd-2 cluster (9 storage servers). Below 1.0× means USE_REMOTE_FETCH is faster.</figcaption>
+<p class="bench-summary"><strong>Summary:</strong> USE_REMOTE_FETCH (getMappedRange) is slower than SCAN_AND_FETCH on 9 of 12 M2rl cases and 2 of 4 M2skip cases on the 3-node ssd-2 cluster. It wins big on skip3-rows10-reverse (0.158×, 6.3× faster: 1.70 ms vs 10.74 ms) where ordinary scan pays sequential client key-selector round-trips, and wins modestly on split-rows10 (0.854×–0.873×) and small-limit1-forward (0.979×). It loses on every 1,000-row scan: 1.226×–1.255× on small-rows1000, 1.324×–1.360× on skip3-rows1000, and 2.300×–2.326× slower (14.1 ms vs 6.1 ms) on split-rows1000 [f = 0.6960], where the index storage server fans out secondary GetKeyValues RPCs across 7 record shards for 3-chunk split records.</p>
 <svg class="bench-svg" viewBox="0 0 1454 438" role="img" aria-label="Figure M2.1: Mean Time (ns/op) Ratio — USE_REMOTE_FETCH / SCAN_AND_FETCH (log₂ scale, 95% CI)">
 <line class="grid-line" x1="299.0" y1="36" x2="299.0" y2="412"/>
 <text class="axis-text" x="299.0" y="30" text-anchor="middle">0.15×</text>
@@ -142,6 +143,7 @@ of [hcloud-multinode-vpc-20261014](../).
 
 <figure class="bench-figure">
 <figcaption><strong>Figure M2.2: Client Go Allocations (allocs/op) Ratio — USE_REMOTE_FETCH / SCAN_AND_FETCH</strong> — Below 1.0× means USE_REMOTE_FETCH allocates fewer Go heap objects on the client.</figcaption>
+<p class="bench-summary"><strong>Summary:</strong> Client Go heap allocations drop by 21–60% (0.398×–0.790×) on all 14 multi-row cases and by 5–6% (0.942×–0.952×) on split-limit1 because one getMappedRange RPC replaces per-record client fetch RPCs; only small-limit1 allocates 4–5% more (1.040×–1.049×, +1 alloc/op). Cutting client allocations does not prevent the 1.23×–2.33× wall-time regressions on 1,000-row scans when storage-server fan-out dominates latency.</p>
 <svg class="bench-svg" viewBox="0 0 1352 438" role="img" aria-label="Figure M2.2: Client Go Allocations (allocs/op) Ratio — USE_REMOTE_FETCH / SCAN_AND_FETCH">
 <line class="grid-line" x1="197.0" y1="36" x2="197.0" y2="412"/>
 <text class="axis-text" x="197.0" y="30" text-anchor="middle">0.35×</text>
