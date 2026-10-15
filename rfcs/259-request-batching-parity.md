@@ -1,6 +1,6 @@
 # RFC-259: Request batching parity with libfdb_c
 
-**Status:** Draft (revision 2; Part A implemented on this branch for review)
+**Status:** Part A accepted and implemented. Part B proposed; needs its own design review.
 **Item:** TODO.md §0, "Server CPU per transaction" (top priority).
 **Spec:** FoundationDB 7.3.77 (`libfdb_c`, `fdbrpc`, `flow`).
 
@@ -189,8 +189,9 @@ half a GRV round trip per transaction. What it gives up: libfdb_c merges a reque
 the window opened by an apparently serial predecessor; Go has already sent that
 predecessor, so the first overlapping request waits a window alone, and Go merges only
 from the next batch on. After any overlap, every first request waits until a window
-batch of one completes with no overlap. The rule cannot know whether another request is
-about to arrive.
+batch of one completes with no overlap, so a client coming out of load pays one extra
+window, once; that is intended. The rule cannot know whether another request is about to
+arrive.
 
 ### Executable spec
 

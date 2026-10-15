@@ -78,7 +78,9 @@ Median server cycles per transaction, with mean latency in µs in parentheses.
 
 ## Part A implementation
 
-The same method and run lengths on the Part A implementation (this branch), against
+The same method and run lengths on the Part A implementation, built from the
+`pkg/fdbgo` tree of the commit that adds `results-part-a.jsonl`
+(`git log -- docs/benchmarks/rfc-259/results-part-a.jsonl`), against
 `go-today` and libfdb_c measured in the same session; per-run results in
 [results-part-a.jsonl](results-part-a.jsonl). Median server cycles per transaction, with
 mean latency in µs in parentheses. 1-worker server cycles vary by ±15% between sessions,
