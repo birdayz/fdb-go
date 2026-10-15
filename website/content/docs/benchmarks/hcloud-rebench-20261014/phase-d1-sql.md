@@ -67,46 +67,46 @@ production code. `final/before` is the allocation work plus later changes;
 
 <figure class="bench-figure">
 <figcaption><strong>Figure D1.1: SQL FDB_PlanCacheHit Ratios (log₂ scale, 95% CI)</strong> — 6 paired blocks × 3 repeats (54 samples). Below 1.0× favors Final.</figcaption>
-<svg class="bench-svg" viewBox="0 0 890 266" role="img" aria-label="Figure D1.1: SQL FDB_PlanCacheHit Ratios (log₂ scale, 95% CI)">
-<line class="grid-line" x1="230.0" y1="28" x2="230.0" y2="236"/>
-<text class="axis-text" x="230.0" y="22" text-anchor="middle">0.9×</text>
-<text class="axis-text" x="230.0" y="251" text-anchor="middle">0.9×</text>
-<line class="grid-line" x1="359.3" y1="28" x2="359.3" y2="236"/>
-<text class="axis-text" x="359.3" y="22" text-anchor="middle">0.95×</text>
-<text class="axis-text" x="359.3" y="251" text-anchor="middle">0.95×</text>
-<line class="parity-line" x1="482.0" y1="28" x2="482.0" y2="236"/>
-<text class="axis-text" x="482.0" y="22" text-anchor="middle">1.0×</text>
-<text class="axis-text" x="482.0" y="251" text-anchor="middle">1.0×</text>
-<line class="grid-line" x1="598.7" y1="28" x2="598.7" y2="236"/>
-<text class="axis-text" x="598.7" y="22" text-anchor="middle">1.05×</text>
-<text class="axis-text" x="598.7" y="251" text-anchor="middle">1.05×</text>
-<line class="grid-line" x1="710.0" y1="28" x2="710.0" y2="236"/>
-<text class="axis-text" x="710.0" y="22" text-anchor="middle">1.1×</text>
-<text class="axis-text" x="710.0" y="251" text-anchor="middle">1.1×</text>
-<text class="axis-text" x="474.0" y="9" text-anchor="end">← Final lower</text>
-<text class="axis-text" x="490.0" y="9" text-anchor="start">Denominator lower →</text>
-<line class="section-divider" x1="8" y1="40" x2="882" y2="40"/>
-<text class="section-title" x="10" y="55">Final / Before (PlanCacheHit)</text>
-<text class="row-label" x="218" y="79.2" text-anchor="end">ns/op</text>
-<g class="ci-neutral"><title>ns/op: 1.002× [0.984, 1.021]</title><line x1="443.4" y1="75.2" x2="531.7" y2="75.2" stroke-width="2.2"/><line x1="443.4" y1="71.2" x2="443.4" y2="79.2" stroke-width="1.8"/><line x1="531.7" y1="71.2" x2="531.7" y2="79.2" stroke-width="1.8"/><circle cx="486.8" cy="75.2" r="3.8"/></g>
-<text class="val-text" x="722" y="79.2">1.002× [0.984, 1.021]</text>
-<text class="row-label" x="218" y="103.2" text-anchor="end">B/op</text>
-<g class="ci-win"><title>B/op: 0.966× [0.966, 0.967]</title><line x1="399.3" y1="99.2" x2="401.8" y2="99.2" stroke-width="2.2"/><line x1="399.3" y1="95.2" x2="399.3" y2="103.2" stroke-width="1.8"/><line x1="401.8" y1="95.2" x2="401.8" y2="103.2" stroke-width="1.8"/><circle cx="399.3" cy="99.2" r="3.8"/></g>
-<text class="val-text" x="722" y="103.2">0.966× [0.966, 0.967]</text>
-<text class="row-label" x="218" y="127.2" text-anchor="end">allocs/op</text>
-<g class="ci-win"><title>allocs/op: 0.949× [0.949, 0.949]</title><line x1="356.8" y1="123.2" x2="356.8" y2="123.2" stroke-width="2.2"/><line x1="356.8" y1="119.2" x2="356.8" y2="127.2" stroke-width="1.8"/><line x1="356.8" y1="119.2" x2="356.8" y2="127.2" stroke-width="1.8"/><circle cx="356.8" cy="123.2" r="3.8"/></g>
-<text class="val-text" x="722" y="127.2">0.949× [0.949, 0.949]</text>
-<line class="section-divider" x1="8" y1="138" x2="882" y2="138"/>
-<text class="section-title" x="10" y="153">Final / Legacy (PlanCacheHit)</text>
-<text class="row-label" x="218" y="177.2" text-anchor="end">ns/op</text>
-<g class="ci-neutral"><title>ns/op: 0.999× [0.981, 1.018]</title><line x1="436.1" y1="173.2" x2="524.7" y2="173.2" stroke-width="2.2"/><line x1="436.1" y1="169.2" x2="436.1" y2="177.2" stroke-width="1.8"/><line x1="524.7" y1="169.2" x2="524.7" y2="177.2" stroke-width="1.8"/><circle cx="479.6" cy="173.2" r="3.8"/></g>
-<text class="val-text" x="722" y="177.2">0.999× [0.981, 1.018]</text>
-<text class="row-label" x="218" y="201.2" text-anchor="end">B/op</text>
-<g class="ci-win"><title>B/op: 0.966× [0.966, 0.966]</title><line x1="399.3" y1="197.2" x2="399.3" y2="197.2" stroke-width="2.2"/><line x1="399.3" y1="193.2" x2="399.3" y2="201.2" stroke-width="1.8"/><line x1="399.3" y1="193.2" x2="399.3" y2="201.2" stroke-width="1.8"/><circle cx="399.3" cy="197.2" r="3.8"/></g>
-<text class="val-text" x="722" y="201.2">0.966× [0.966, 0.966]</text>
-<text class="row-label" x="218" y="225.2" text-anchor="end">allocs/op</text>
-<g class="ci-win"><title>allocs/op: 0.949× [0.949, 0.949]</title><line x1="356.8" y1="221.2" x2="356.8" y2="221.2" stroke-width="2.2"/><line x1="356.8" y1="217.2" x2="356.8" y2="225.2" stroke-width="1.8"/><line x1="356.8" y1="217.2" x2="356.8" y2="225.2" stroke-width="1.8"/><circle cx="356.8" cy="221.2" r="3.8"/></g>
-<text class="val-text" x="722" y="225.2">0.949× [0.949, 0.949]</text>
+<svg class="bench-svg" viewBox="0 0 1320 238" role="img" aria-label="Figure D1.1: SQL FDB_PlanCacheHit Ratios (log₂ scale, 95% CI)">
+<line class="grid-line" x1="165.0" y1="36" x2="165.0" y2="212"/>
+<text class="axis-text" x="165.0" y="30" text-anchor="middle">0.9×</text>
+<text class="axis-text" x="165.0" y="227" text-anchor="middle">0.9×</text>
+<line class="grid-line" x1="423.7" y1="36" x2="423.7" y2="212"/>
+<text class="axis-text" x="423.7" y="30" text-anchor="middle">0.95×</text>
+<text class="axis-text" x="423.7" y="227" text-anchor="middle">0.95×</text>
+<line class="parity-line" x1="669.0" y1="36" x2="669.0" y2="212"/>
+<text class="axis-text" x="669.0" y="30" text-anchor="middle">1.0×</text>
+<text class="axis-text" x="669.0" y="227" text-anchor="middle">1.0×</text>
+<line class="grid-line" x1="902.5" y1="36" x2="902.5" y2="212"/>
+<text class="axis-text" x="902.5" y="30" text-anchor="middle">1.05×</text>
+<text class="axis-text" x="902.5" y="227" text-anchor="middle">1.05×</text>
+<line class="grid-line" x1="1125.0" y1="36" x2="1125.0" y2="212"/>
+<text class="axis-text" x="1125.0" y="30" text-anchor="middle">1.1×</text>
+<text class="axis-text" x="1125.0" y="227" text-anchor="middle">1.1×</text>
+<text class="axis-text" x="661.0" y="17" text-anchor="end">← Final lower</text>
+<text class="axis-text" x="677.0" y="17" text-anchor="start">Denominator lower →</text>
+<line class="section-divider" x1="8" y1="48" x2="1312" y2="48"/>
+<text class="section-title" x="10" y="63">Final / Before (PlanCacheHit)</text>
+<text class="row-label" x="153" y="81.0" text-anchor="end">ns/op</text>
+<g class="ci-neutral"><title>ns/op: 1.002× [0.984, 1.021]</title><line x1="591.9" y1="77.0" x2="768.5" y2="77.0" stroke-width="2.2"/><line x1="591.9" y1="73.0" x2="591.9" y2="81.0" stroke-width="1.8"/><line x1="768.5" y1="73.0" x2="768.5" y2="81.0" stroke-width="1.8"/><circle cx="678.6" cy="77.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="81.0">1.002× [0.984, 1.021]</text>
+<text class="row-label" x="153" y="101.0" text-anchor="end">B/op</text>
+<g class="ci-win"><title>B/op: 0.966× [0.966, 0.967]</title><line x1="503.6" y1="97.0" x2="508.5" y2="97.0" stroke-width="2.2"/><line x1="503.6" y1="93.0" x2="503.6" y2="101.0" stroke-width="1.8"/><line x1="508.5" y1="93.0" x2="508.5" y2="101.0" stroke-width="1.8"/><circle cx="503.6" cy="97.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="101.0">0.966× [0.966, 0.967]</text>
+<text class="row-label" x="153" y="121.0" text-anchor="end">allocs/op</text>
+<g class="ci-win"><title>allocs/op: 0.949× [0.949, 0.949]</title><line x1="418.6" y1="117.0" x2="418.6" y2="117.0" stroke-width="2.2"/><line x1="418.6" y1="113.0" x2="418.6" y2="121.0" stroke-width="1.8"/><line x1="418.6" y1="113.0" x2="418.6" y2="121.0" stroke-width="1.8"/><circle cx="418.6" cy="117.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="121.0">0.949× [0.949, 0.949]</text>
+<line class="section-divider" x1="8" y1="130" x2="1312" y2="130"/>
+<text class="section-title" x="10" y="145">Final / Legacy (PlanCacheHit)</text>
+<text class="row-label" x="153" y="163.0" text-anchor="end">ns/op</text>
+<g class="ci-neutral"><title>ns/op: 0.999× [0.981, 1.018]</title><line x1="577.3" y1="159.0" x2="754.4" y2="159.0" stroke-width="2.2"/><line x1="577.3" y1="155.0" x2="577.3" y2="163.0" stroke-width="1.8"/><line x1="754.4" y1="155.0" x2="754.4" y2="163.0" stroke-width="1.8"/><circle cx="664.3" cy="159.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="163.0">0.999× [0.981, 1.018]</text>
+<text class="row-label" x="153" y="183.0" text-anchor="end">B/op</text>
+<g class="ci-win"><title>B/op: 0.966× [0.966, 0.966]</title><line x1="503.6" y1="179.0" x2="503.6" y2="179.0" stroke-width="2.2"/><line x1="503.6" y1="175.0" x2="503.6" y2="183.0" stroke-width="1.8"/><line x1="503.6" y1="175.0" x2="503.6" y2="183.0" stroke-width="1.8"/><circle cx="503.6" cy="179.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="183.0">0.966× [0.966, 0.966]</text>
+<text class="row-label" x="153" y="203.0" text-anchor="end">allocs/op</text>
+<g class="ci-win"><title>allocs/op: 0.949× [0.949, 0.949]</title><line x1="418.6" y1="199.0" x2="418.6" y2="199.0" stroke-width="2.2"/><line x1="418.6" y1="195.0" x2="418.6" y2="203.0" stroke-width="1.8"/><line x1="418.6" y1="195.0" x2="418.6" y2="203.0" stroke-width="1.8"/><circle cx="418.6" cy="199.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="203.0">0.949× [0.949, 0.949]</text>
 </svg>
 <div class="bench-legend"><span><i class="bench-swatch" style="background:#0d9488"></i> 95% CI entirely &lt; 1.000 (faster / lower)</span><span><i class="bench-swatch" style="background:#64748b"></i> 95% CI overlaps 1.000 (unresolved)</span><span><i class="bench-swatch" style="background:#d97706"></i> 95% CI entirely &gt; 1.000 (slower / higher)</span></div>
 </figure>

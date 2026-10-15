@@ -76,14 +76,14 @@ def format_tick(t: float) -> str:
 def render_forest_svg(title: str, subtitle: str, groups: list, ticks: list, left_label: str, right_label: str) -> str:
     """Render a log2-scaled forest plot SVG with exact 95% CI whiskers and right-aligned numeric column."""
     max_label_chars = max((len(lbl) for _, rows in groups for lbl, _ in rows), default=20)
-    pad_l = max(230, int(max_label_chars * 8.2) + 28)
-    pad_r = 180
-    plot_w = 480
+    pad_l = max(165, int(max_label_chars * 7.8) + 26)
+    pad_r = 195
+    plot_w = 960
     W = pad_l + plot_w + pad_r
-    row_h = 24
-    sec_h = 26
-    pad_t = 36
-    pad_b = 34
+    row_h = 20
+    sec_h = 22
+    pad_t = 44
+    pad_b = 30
 
     total_rows = sum(len(rows) for _, rows in groups)
     total_secs = sum(1 for gtitle, _ in groups if gtitle)
@@ -167,13 +167,13 @@ def render_forest_svg(title: str, subtitle: str, groups: list, ticks: list, left
 def render_grouped_bars_svg(title: str, subtitle: str, items: list, unit: str, max_val: float, ticks: list) -> str:
     """Render horizontal grouped bars (e.g. Pure-Go vs CGo absolute latency with p50 bar + p99 whisker)."""
     max_label_chars = max((len(lbl) for lbl, *_ in items), default=16)
-    pad_l = max(195, int(max_label_chars * 8.2) + 28)
-    pad_r = 185
-    plot_w = 480
+    pad_l = max(165, int(max_label_chars * 7.8) + 26)
+    pad_r = 205
+    plot_w = 960
     W = pad_l + plot_w + pad_r
-    row_h = 34
-    pad_t = 30
-    pad_b = 30
+    row_h = 28
+    pad_t = 28
+    pad_b = 28
     H = pad_t + len(items) * row_h + pad_b
 
     def x_of(v: float) -> float:
@@ -449,9 +449,13 @@ def transform_body(text: str, is_index: bool, cid: str = '', fname: str = '') ->
     if not is_index and cid and fname:
         charts_svg = build_page_charts(cid, fname, text)
         if charts_svg:
-            target = '## Results'
-            if target in body:
-                body = body.replace(target, target + '\n\n' + charts_svg, 1)
+            body = re.sub(
+                r'^(## Results[^\n]*)$',
+                lambda m: m.group(1) + '\n\n' + charts_svg,
+                body,
+                count=1,
+                flags=re.M,
+            )
 
     # Rewrite relative repo links that escape docs/benchmarks/<campaign>/ to GitHub URLs.
     body = body.replace('(../campaign-harness.md)', '(https://github.com/birdayz/fdb-go/blob/master/docs/benchmarks/campaign-harness.md)')

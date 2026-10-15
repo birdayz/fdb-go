@@ -38,51 +38,51 @@ not a multi-host or physical-network benchmark.
 
 <figure class="bench-figure">
 <figcaption><strong>Figure C3.1: Remote Fetch vs Ordinary Scan Ratios (log₂ scale, 95% CI)</strong> — 6 paired blocks × 3 repeats on single-node memory engine. Below 1.0× favors USE_REMOTE_FETCH.</figcaption>
-<svg class="bench-svg" viewBox="0 0 890 292" role="img" aria-label="Figure C3.1: Remote Fetch vs Ordinary Scan Ratios (log₂ scale, 95% CI)">
-<line class="grid-line" x1="230.0" y1="28" x2="230.0" y2="262"/>
-<text class="axis-text" x="230.0" y="22" text-anchor="middle">0.2×</text>
-<text class="axis-text" x="230.0" y="277" text-anchor="middle">0.2×</text>
-<line class="grid-line" x1="373.5" y1="28" x2="373.5" y2="262"/>
-<text class="axis-text" x="373.5" y="22" text-anchor="middle">0.35×</text>
-<text class="axis-text" x="373.5" y="277" text-anchor="middle">0.35×</text>
-<line class="grid-line" x1="465.0" y1="28" x2="465.0" y2="262"/>
-<text class="axis-text" x="465.0" y="22" text-anchor="middle">0.5×</text>
-<text class="axis-text" x="465.0" y="277" text-anchor="middle">0.5×</text>
-<line class="grid-line" x1="551.3" y1="28" x2="551.3" y2="262"/>
-<text class="axis-text" x="551.3" y="22" text-anchor="middle">0.7×</text>
-<text class="axis-text" x="551.3" y="277" text-anchor="middle">0.7×</text>
-<line class="parity-line" x1="642.7" y1="28" x2="642.7" y2="262"/>
-<text class="axis-text" x="642.7" y="22" text-anchor="middle">1.0×</text>
-<text class="axis-text" x="642.7" y="277" text-anchor="middle">1.0×</text>
-<line class="grid-line" x1="710.0" y1="28" x2="710.0" y2="262"/>
-<text class="axis-text" x="710.0" y="22" text-anchor="middle">1.3×</text>
-<text class="axis-text" x="710.0" y="277" text-anchor="middle">1.3×</text>
-<text class="axis-text" x="634.7" y="9" text-anchor="end">← USE_REMOTE_FETCH lower</text>
-<text class="axis-text" x="650.7" y="9" text-anchor="start">SCAN_AND_FETCH lower →</text>
-<line class="section-divider" x1="8" y1="40" x2="882" y2="40"/>
-<text class="section-title" x="10" y="55">Mean Time (ns/op): USE_REMOTE_FETCH / SCAN_AND_FETCH</text>
-<text class="row-label" x="218" y="79.2" text-anchor="end">small-all-1000</text>
-<g class="ci-win"><title>small-all-1000: 0.224× [0.222, 0.226]</title><line x1="256.8" y1="75.2" x2="261.3" y2="75.2" stroke-width="2.2"/><line x1="256.8" y1="71.2" x2="256.8" y2="79.2" stroke-width="1.8"/><line x1="261.3" y1="71.2" x2="261.3" y2="79.2" stroke-width="1.8"/><circle cx="259.1" cy="75.2" r="3.8"/></g>
-<text class="val-text" x="722" y="79.2">0.224× [0.222, 0.226]</text>
-<text class="row-label" x="218" y="103.2" text-anchor="end">split-all-1000</text>
-<g class="ci-reg"><title>split-all-1000: 1.053× [1.008, 1.101]</title><line x1="644.8" y1="99.2" x2="667.4" y2="99.2" stroke-width="2.2"/><line x1="644.8" y1="95.2" x2="644.8" y2="103.2" stroke-width="1.8"/><line x1="667.4" y1="95.2" x2="667.4" y2="103.2" stroke-width="1.8"/><circle cx="656.0" cy="99.2" r="3.8"/></g>
-<text class="val-text" x="722" y="103.2">1.053× [1.008, 1.101]</text>
-<line class="section-divider" x1="8" y1="114" x2="882" y2="114"/>
-<text class="section-title" x="10" y="129">Go Bytes (B/op): USE_REMOTE_FETCH / SCAN_AND_FETCH</text>
-<text class="row-label" x="218" y="153.2" text-anchor="end">small-all-1000</text>
-<g class="ci-win"><title>small-all-1000: 0.524× [0.523, 0.524]</title><line x1="476.5" y1="149.2" x2="477.0" y2="149.2" stroke-width="2.2"/><line x1="476.5" y1="145.2" x2="476.5" y2="153.2" stroke-width="1.8"/><line x1="477.0" y1="145.2" x2="477.0" y2="153.2" stroke-width="1.8"/><circle cx="477.0" cy="149.2" r="3.8"/></g>
-<text class="val-text" x="722" y="153.2">0.524× [0.523, 0.524]</text>
-<text class="row-label" x="218" y="177.2" text-anchor="end">split-all-1000</text>
-<g class="ci-win"><title>split-all-1000: 0.692× [0.692, 0.692]</title><line x1="548.3" y1="173.2" x2="548.3" y2="173.2" stroke-width="2.2"/><line x1="548.3" y1="169.2" x2="548.3" y2="177.2" stroke-width="1.8"/><line x1="548.3" y1="169.2" x2="548.3" y2="177.2" stroke-width="1.8"/><circle cx="548.3" cy="173.2" r="3.8"/></g>
-<text class="val-text" x="722" y="177.2">0.692× [0.692, 0.692]</text>
-<line class="section-divider" x1="8" y1="188" x2="882" y2="188"/>
-<text class="section-title" x="10" y="203">Go Allocations (allocs/op): USE_REMOTE_FETCH / SCAN_AND_FETCH</text>
-<text class="row-label" x="218" y="227.2" text-anchor="end">small-all-1000</text>
-<g class="ci-win"><title>small-all-1000: 0.439× [0.439, 0.439]</title><line x1="431.6" y1="223.2" x2="431.6" y2="223.2" stroke-width="2.2"/><line x1="431.6" y1="219.2" x2="431.6" y2="227.2" stroke-width="1.8"/><line x1="431.6" y1="219.2" x2="431.6" y2="227.2" stroke-width="1.8"/><circle cx="431.6" cy="223.2" r="3.8"/></g>
-<text class="val-text" x="722" y="227.2">0.439× [0.439, 0.439]</text>
-<text class="row-label" x="218" y="251.2" text-anchor="end">split-all-1000</text>
-<g class="ci-win"><title>split-all-1000: 0.406× [0.406, 0.407]</title><line x1="411.6" y1="247.2" x2="412.2" y2="247.2" stroke-width="2.2"/><line x1="411.6" y1="243.2" x2="411.6" y2="251.2" stroke-width="1.8"/><line x1="412.2" y1="243.2" x2="412.2" y2="251.2" stroke-width="1.8"/><circle cx="411.6" cy="247.2" r="3.8"/></g>
-<text class="val-text" x="722" y="251.2">0.406× [0.406, 0.407]</text>
+<svg class="bench-svg" viewBox="0 0 1320 260" role="img" aria-label="Figure C3.1: Remote Fetch vs Ordinary Scan Ratios (log₂ scale, 95% CI)">
+<line class="grid-line" x1="165.0" y1="36" x2="165.0" y2="234"/>
+<text class="axis-text" x="165.0" y="30" text-anchor="middle">0.2×</text>
+<text class="axis-text" x="165.0" y="249" text-anchor="middle">0.2×</text>
+<line class="grid-line" x1="452.0" y1="36" x2="452.0" y2="234"/>
+<text class="axis-text" x="452.0" y="30" text-anchor="middle">0.35×</text>
+<text class="axis-text" x="452.0" y="249" text-anchor="middle">0.35×</text>
+<line class="grid-line" x1="634.9" y1="36" x2="634.9" y2="234"/>
+<text class="axis-text" x="634.9" y="30" text-anchor="middle">0.5×</text>
+<text class="axis-text" x="634.9" y="249" text-anchor="middle">0.5×</text>
+<line class="grid-line" x1="807.5" y1="36" x2="807.5" y2="234"/>
+<text class="axis-text" x="807.5" y="30" text-anchor="middle">0.7×</text>
+<text class="axis-text" x="807.5" y="249" text-anchor="middle">0.7×</text>
+<line class="parity-line" x1="990.4" y1="36" x2="990.4" y2="234"/>
+<text class="axis-text" x="990.4" y="30" text-anchor="middle">1.0×</text>
+<text class="axis-text" x="990.4" y="249" text-anchor="middle">1.0×</text>
+<line class="grid-line" x1="1125.0" y1="36" x2="1125.0" y2="234"/>
+<text class="axis-text" x="1125.0" y="30" text-anchor="middle">1.3×</text>
+<text class="axis-text" x="1125.0" y="249" text-anchor="middle">1.3×</text>
+<text class="axis-text" x="982.4" y="17" text-anchor="end">← USE_REMOTE_FETCH lower</text>
+<text class="axis-text" x="998.4" y="17" text-anchor="start">SCAN_AND_FETCH lower →</text>
+<line class="section-divider" x1="8" y1="48" x2="1312" y2="48"/>
+<text class="section-title" x="10" y="63">Mean Time (ns/op): USE_REMOTE_FETCH / SCAN_AND_FETCH</text>
+<text class="row-label" x="153" y="81.0" text-anchor="end">small-all-1000</text>
+<g class="ci-win"><title>small-all-1000: 0.224× [0.222, 0.226]</title><line x1="218.5" y1="77.0" x2="227.7" y2="77.0" stroke-width="2.2"/><line x1="218.5" y1="73.0" x2="218.5" y2="81.0" stroke-width="1.8"/><line x1="227.7" y1="73.0" x2="227.7" y2="81.0" stroke-width="1.8"/><circle cx="223.1" cy="77.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="81.0">0.224× [0.222, 0.226]</text>
+<text class="row-label" x="153" y="101.0" text-anchor="end">split-all-1000</text>
+<g class="ci-reg"><title>split-all-1000: 1.053× [1.008, 1.101]</title><line x1="994.5" y1="97.0" x2="1039.8" y2="97.0" stroke-width="2.2"/><line x1="994.5" y1="93.0" x2="994.5" y2="101.0" stroke-width="1.8"/><line x1="1039.8" y1="93.0" x2="1039.8" y2="101.0" stroke-width="1.8"/><circle cx="1016.9" cy="97.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="101.0">1.053× [1.008, 1.101]</text>
+<line class="section-divider" x1="8" y1="110" x2="1312" y2="110"/>
+<text class="section-title" x="10" y="125">Go Bytes (B/op): USE_REMOTE_FETCH / SCAN_AND_FETCH</text>
+<text class="row-label" x="153" y="143.0" text-anchor="end">small-all-1000</text>
+<g class="ci-win"><title>small-all-1000: 0.524× [0.523, 0.524]</title><line x1="658.0" y1="139.0" x2="659.0" y2="139.0" stroke-width="2.2"/><line x1="658.0" y1="135.0" x2="658.0" y2="143.0" stroke-width="1.8"/><line x1="659.0" y1="135.0" x2="659.0" y2="143.0" stroke-width="1.8"/><circle cx="659.0" cy="139.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="143.0">0.524× [0.523, 0.524]</text>
+<text class="row-label" x="153" y="163.0" text-anchor="end">split-all-1000</text>
+<g class="ci-win"><title>split-all-1000: 0.692× [0.692, 0.692]</title><line x1="801.6" y1="159.0" x2="801.6" y2="159.0" stroke-width="2.2"/><line x1="801.6" y1="155.0" x2="801.6" y2="163.0" stroke-width="1.8"/><line x1="801.6" y1="155.0" x2="801.6" y2="163.0" stroke-width="1.8"/><circle cx="801.6" cy="159.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="163.0">0.692× [0.692, 0.692]</text>
+<line class="section-divider" x1="8" y1="172" x2="1312" y2="172"/>
+<text class="section-title" x="10" y="187">Go Allocations (allocs/op): USE_REMOTE_FETCH / SCAN_AND_FETCH</text>
+<text class="row-label" x="153" y="205.0" text-anchor="end">small-all-1000</text>
+<g class="ci-win"><title>small-all-1000: 0.439× [0.439, 0.439]</title><line x1="568.2" y1="201.0" x2="568.2" y2="201.0" stroke-width="2.2"/><line x1="568.2" y1="197.0" x2="568.2" y2="205.0" stroke-width="1.8"/><line x1="568.2" y1="197.0" x2="568.2" y2="205.0" stroke-width="1.8"/><circle cx="568.2" cy="201.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="205.0">0.439× [0.439, 0.439]</text>
+<text class="row-label" x="153" y="225.0" text-anchor="end">split-all-1000</text>
+<g class="ci-win"><title>split-all-1000: 0.406× [0.406, 0.407]</title><line x1="528.1" y1="221.0" x2="529.4" y2="221.0" stroke-width="2.2"/><line x1="528.1" y1="217.0" x2="528.1" y2="225.0" stroke-width="1.8"/><line x1="529.4" y1="217.0" x2="529.4" y2="225.0" stroke-width="1.8"/><circle cx="528.1" cy="221.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="225.0">0.406× [0.406, 0.407]</text>
 </svg>
 <div class="bench-legend"><span><i class="bench-swatch" style="background:#0d9488"></i> 95% CI entirely &lt; 1.000 (faster / lower)</span><span><i class="bench-swatch" style="background:#64748b"></i> 95% CI overlaps 1.000 (unresolved)</span><span><i class="bench-swatch" style="background:#d97706"></i> 95% CI entirely &gt; 1.000 (slower / higher)</span></div>
 </figure>

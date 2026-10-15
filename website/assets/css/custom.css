@@ -6,6 +6,10 @@
   --launch-panel: #f5f7f6;
   --launch-accent: #176550;
   --launch-accent-bg: #e9f3ef;
+  --hextra-max-page-width: 100%;
+  --hextra-max-content-width: 100%;
+  --hextra-max-navbar-width: 100%;
+  --hextra-max-footer-width: 100%;
 }
 .dark {
   --launch-text: #e7edeb;
@@ -15,11 +19,30 @@
   --launch-accent: #98d9ba;
   --launch-accent-bg: #1a2c23;
 }
-.hextra-nav-container nav { max-width: 75rem; }
+.hextra-max-page-width,
+.hextra-max-content-width,
+.hextra-max-navbar-width,
+.hextra-max-footer-width,
+.hextra-nav-container nav {
+  max-width: 100%;
+}
+.hextra-toc {
+  display: none !important;
+}
+.content table:not(.hextra-code-block table) {
+  display: table;
+  width: 100%;
+}
+@media (max-width: 960px) {
+  .content table:not(.hextra-code-block table) {
+    display: block;
+  }
+}
 .launch-home {
-  width: min(100% - 3rem, 70rem);
+  width: calc(100% - 4rem);
+  max-width: 100%;
   margin: 0 auto;
-  padding: 5rem 0 2rem;
+  padding: 4rem 0 2rem;
   color: var(--launch-text);
   font-size: 1rem;
   line-height: 1.65;
@@ -36,8 +59,8 @@
 .launch-home h3 { font-size: 1.15rem; font-weight: 600; letter-spacing: -0.02em; line-height: 1.35; }
 .launch-eyebrow { color: var(--launch-muted); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; }
 .launch-hero { display: grid; grid-template-columns: minmax(0, 1.12fr) minmax(0, 1fr); gap: 5rem; align-items: center; }
-.launch-intro .launch-lead { font-size: 1.35rem; line-height: 1.5; max-width: 31rem; }
-.launch-intro .launch-detail { max-width: 29rem; color: var(--launch-muted); margin-top: 1rem; }
+.launch-intro .launch-lead { font-size: 1.35rem; line-height: 1.5; max-width: 44rem; }
+.launch-intro .launch-detail { max-width: 42rem; color: var(--launch-muted); margin-top: 1rem; }
 .launch-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 1.4rem; margin-top: 2rem; }
 .launch-button { display: inline-flex; align-items: center; justify-content: center; gap: 1rem; padding: 0.75rem 1.1rem; border: 1px solid var(--launch-accent); border-radius: 5px; background: var(--launch-accent); color: #fff; font-weight: 600; font-size: 0.92rem; line-height: 1.5; }
 .dark .launch-button { color: #10261c; }
@@ -62,8 +85,8 @@
 .launch-status p { flex: 1; color: var(--launch-muted); }
 .launch-status a { color: var(--launch-accent); white-space: nowrap; }
 .launch-section { padding: 4.5rem 0; border-bottom: 1px solid var(--launch-border); }
-.section-heading { max-width: 45rem; margin-bottom: 2rem; }
-.section-heading > p:last-child:not(.launch-eyebrow) { color: var(--launch-muted); max-width: 41rem; }
+.section-heading { max-width: 64rem; margin-bottom: 2rem; }
+.section-heading > p:last-child:not(.launch-eyebrow) { color: var(--launch-muted); max-width: 60rem; }
 .launch-api-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 2rem; }
 .api-card { display: flex; flex-direction: column; }
 .api-number { display: block; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 0.67rem; letter-spacing: 0.06em; color: var(--launch-muted); margin-bottom: 0.85rem; }
@@ -86,7 +109,7 @@
 .evidence-grid h3 { font-size: 1rem; margin-bottom: 0.7rem; }
 .evidence-grid p { color: var(--launch-muted); font-size: 0.89rem; }
 .evidence-grid a { display: inline-block; color: var(--launch-accent); font-size: 0.82rem; margin-top: 1rem; }
-.launch-boundary { border-left: 2px solid var(--launch-accent); padding-left: 1.1rem; margin-top: 2.6rem; max-width: 52rem; font-size: 0.88rem; }
+.launch-boundary { border-left: 2px solid var(--launch-accent); padding-left: 1.1rem; margin-top: 2.6rem; max-width: 72rem; font-size: 0.88rem; }
 .launch-boundary strong { font-weight: 550; }
 .launch-boundary p { color: var(--launch-muted); margin: 0.45rem 0; }
 .launch-boundary a { display: inline-block; color: var(--launch-accent); margin-right: 1.25rem; margin-top: 0.4rem; }
@@ -152,10 +175,11 @@
   overflow-x: auto;
 }
 .bench-figure figcaption {
-  font-size: 0.78rem;
+  font-size: 0.8rem;
   color: var(--launch-muted);
   margin-bottom: 0.75rem;
   line-height: 1.5;
+  text-align: left;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
 }
 .bench-figure figcaption strong {

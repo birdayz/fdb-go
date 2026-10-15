@@ -64,6 +64,7 @@ hasCJKLanguage = false
   [params.navbar]
     displayTitle = true
     displayLogo = false
+    width = "full"
 
   [params.theme]
     default = "system"
@@ -73,6 +74,7 @@ hasCJKLanguage = false
     enable = true
     displayCopyright = true
     displayPoweredBy = false
+    width = "full"
 
   [params.editURL]
     enable = false
@@ -85,4 +87,4 @@ hasCJKLanguage = false
       tokenize = "forward"
 
   [params.page]
-    width = "normal"
+    width = "full"

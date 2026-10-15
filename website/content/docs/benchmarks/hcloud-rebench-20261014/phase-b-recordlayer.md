@@ -57,105 +57,105 @@ production code. `final/before` is the allocation work plus later changes;
 
 <figure class="bench-figure">
 <figcaption><strong>Figure B.1: Record Layer Allocation Optimization Ratios — Final / Before (log₂ scale, 95% CI)</strong> — 6 paired blocks × 3 repeats on memory engine. Below 1.0× means Final is faster or allocates less.</figcaption>
-<svg class="bench-svg" viewBox="0 0 901 724" role="img" aria-label="Figure B.1: Record Layer Allocation Optimization Ratios — Final / Before (log₂ scale, 95% CI)">
-<line class="grid-line" x1="241.0" y1="28" x2="241.0" y2="694"/>
-<text class="axis-text" x="241.0" y="22" text-anchor="middle">0.6×</text>
-<text class="axis-text" x="241.0" y="709" text-anchor="middle">0.6×</text>
-<line class="grid-line" x1="363.1" y1="28" x2="363.1" y2="694"/>
-<text class="axis-text" x="363.1" y="22" text-anchor="middle">0.7×</text>
-<text class="axis-text" x="363.1" y="709" text-anchor="middle">0.7×</text>
-<line class="grid-line" x1="468.8" y1="28" x2="468.8" y2="694"/>
-<text class="axis-text" x="468.8" y="22" text-anchor="middle">0.8×</text>
-<text class="axis-text" x="468.8" y="709" text-anchor="middle">0.8×</text>
-<line class="grid-line" x1="562.1" y1="28" x2="562.1" y2="694"/>
-<text class="axis-text" x="562.1" y="22" text-anchor="middle">0.9×</text>
-<text class="axis-text" x="562.1" y="709" text-anchor="middle">0.9×</text>
-<line class="parity-line" x1="645.5" y1="28" x2="645.5" y2="694"/>
-<text class="axis-text" x="645.5" y="22" text-anchor="middle">1.0×</text>
-<text class="axis-text" x="645.5" y="709" text-anchor="middle">1.0×</text>
-<line class="grid-line" x1="721.0" y1="28" x2="721.0" y2="694"/>
-<text class="axis-text" x="721.0" y="22" text-anchor="middle">1.1×</text>
-<text class="axis-text" x="721.0" y="709" text-anchor="middle">1.1×</text>
-<text class="axis-text" x="637.5" y="9" text-anchor="end">← Final lower</text>
-<text class="axis-text" x="653.5" y="9" text-anchor="start">Before lower →</text>
-<line class="section-divider" x1="8" y1="40" x2="893" y2="40"/>
-<text class="section-title" x="10" y="55">Mean Time (ns/op): Final / Before</text>
-<text class="row-label" x="229" y="79.2" text-anchor="end">SaveRecord</text>
-<g class="ci-neutral"><title>SaveRecord: 0.981× [0.954, 1.015]</title><line x1="608.2" y1="75.2" x2="657.3" y2="75.2" stroke-width="2.2"/><line x1="608.2" y1="71.2" x2="608.2" y2="79.2" stroke-width="1.8"/><line x1="657.3" y1="71.2" x2="657.3" y2="79.2" stroke-width="1.8"/><circle cx="630.3" cy="75.2" r="3.8"/></g>
-<text class="val-text" x="733" y="79.2">0.981× [0.954, 1.015]</text>
-<text class="row-label" x="229" y="103.2" text-anchor="end">SaveRecordWithIndex</text>
-<g class="ci-neutral"><title>SaveRecordWithIndex: 0.998× [0.965, 1.040]</title><line x1="617.3" y1="99.2" x2="676.6" y2="99.2" stroke-width="2.2"/><line x1="617.3" y1="95.2" x2="617.3" y2="103.2" stroke-width="1.8"/><line x1="676.6" y1="95.2" x2="676.6" y2="103.2" stroke-width="1.8"/><circle cx="643.9" cy="99.2" r="3.8"/></g>
-<text class="val-text" x="733" y="103.2">0.998× [0.965, 1.040]</text>
-<text class="row-label" x="229" y="127.2" text-anchor="end">SaveSplitRecord</text>
-<g class="ci-neutral"><title>SaveSplitRecord: 0.966× [0.907, 1.031]</title><line x1="568.2" y1="123.2" x2="669.7" y2="123.2" stroke-width="2.2"/><line x1="568.2" y1="119.2" x2="568.2" y2="127.2" stroke-width="1.8"/><line x1="669.7" y1="119.2" x2="669.7" y2="127.2" stroke-width="1.8"/><circle cx="618.1" cy="123.2" r="3.8"/></g>
-<text class="val-text" x="733" y="127.2">0.966× [0.907, 1.031]</text>
-<text class="row-label" x="229" y="151.2" text-anchor="end">LoadRecord</text>
-<g class="ci-win"><title>LoadRecord: 0.978× [0.958, 0.994]</title><line x1="611.5" y1="147.2" x2="640.8" y2="147.2" stroke-width="2.2"/><line x1="611.5" y1="143.2" x2="611.5" y2="151.2" stroke-width="1.8"/><line x1="640.8" y1="143.2" x2="640.8" y2="151.2" stroke-width="1.8"/><circle cx="627.9" cy="147.2" r="3.8"/></g>
-<text class="val-text" x="733" y="151.2">0.978× [0.958, 0.994]</text>
-<text class="row-label" x="229" y="175.2" text-anchor="end">ScanRecords</text>
-<g class="ci-neutral"><title>ScanRecords: 0.978× [0.948, 1.005]</title><line x1="603.2" y1="171.2" x2="649.5" y2="171.2" stroke-width="2.2"/><line x1="603.2" y1="167.2" x2="603.2" y2="175.2" stroke-width="1.8"/><line x1="649.5" y1="167.2" x2="649.5" y2="175.2" stroke-width="1.8"/><circle cx="627.9" cy="171.2" r="3.8"/></g>
-<text class="val-text" x="733" y="175.2">0.978× [0.948, 1.005]</text>
-<text class="row-label" x="229" y="199.2" text-anchor="end">ScanRecordsSplitVersioned</text>
-<g class="ci-win"><title>ScanRecordsSplitVersioned: 0.976× [0.957, 0.996]</title><line x1="610.7" y1="195.2" x2="642.3" y2="195.2" stroke-width="2.2"/><line x1="610.7" y1="191.2" x2="610.7" y2="199.2" stroke-width="1.8"/><line x1="642.3" y1="191.2" x2="642.3" y2="199.2" stroke-width="1.8"/><circle cx="626.3" cy="195.2" r="3.8"/></g>
-<text class="val-text" x="733" y="199.2">0.976× [0.957, 0.996]</text>
-<text class="row-label" x="229" y="223.2" text-anchor="end">ScanIndexRecords/serial</text>
-<g class="ci-neutral"><title>ScanIndexRecords/serial: 1.015× [0.987, 1.052]</title><line x1="635.2" y1="219.2" x2="685.7" y2="219.2" stroke-width="2.2"/><line x1="635.2" y1="215.2" x2="635.2" y2="223.2" stroke-width="1.8"/><line x1="685.7" y1="215.2" x2="685.7" y2="223.2" stroke-width="1.8"/><circle cx="657.3" cy="219.2" r="3.8"/></g>
-<text class="val-text" x="733" y="223.2">1.015× [0.987, 1.052]</text>
-<text class="row-label" x="229" y="247.2" text-anchor="end">ScanIndexRecords/pipelined</text>
-<g class="ci-win"><title>ScanIndexRecords/pipelined: 0.972× [0.952, 0.995]</title><line x1="606.6" y1="243.2" x2="641.6" y2="243.2" stroke-width="2.2"/><line x1="606.6" y1="239.2" x2="606.6" y2="247.2" stroke-width="1.8"/><line x1="641.6" y1="239.2" x2="641.6" y2="247.2" stroke-width="1.8"/><circle cx="623.0" cy="243.2" r="3.8"/></g>
-<text class="val-text" x="733" y="247.2">0.972× [0.952, 0.995]</text>
-<line class="section-divider" x1="8" y1="258" x2="893" y2="258"/>
-<text class="section-title" x="10" y="273">Go Bytes (B/op): Final / Before</text>
-<text class="row-label" x="229" y="297.2" text-anchor="end">SaveRecord</text>
-<g class="ci-win"><title>SaveRecord: 0.902× [0.900, 0.904]</title><line x1="562.1" y1="293.2" x2="565.6" y2="293.2" stroke-width="2.2"/><line x1="562.1" y1="289.2" x2="562.1" y2="297.2" stroke-width="1.8"/><line x1="565.6" y1="289.2" x2="565.6" y2="297.2" stroke-width="1.8"/><circle cx="563.8" cy="293.2" r="3.8"/></g>
-<text class="val-text" x="733" y="297.2">0.902× [0.900, 0.904]</text>
-<text class="row-label" x="229" y="321.2" text-anchor="end">SaveRecordWithIndex</text>
-<g class="ci-win"><title>SaveRecordWithIndex: 0.910× [0.908, 0.912]</title><line x1="569.1" y1="317.2" x2="572.6" y2="317.2" stroke-width="2.2"/><line x1="569.1" y1="313.2" x2="569.1" y2="321.2" stroke-width="1.8"/><line x1="572.6" y1="313.2" x2="572.6" y2="321.2" stroke-width="1.8"/><circle cx="570.8" cy="317.2" r="3.8"/></g>
-<text class="val-text" x="733" y="321.2">0.910× [0.908, 0.912]</text>
-<text class="row-label" x="229" y="345.2" text-anchor="end">SaveSplitRecord</text>
-<g class="ci-neutral"><title>SaveSplitRecord: 0.998× [0.993, 1.004]</title><line x1="640.0" y1="341.2" x2="648.7" y2="341.2" stroke-width="2.2"/><line x1="640.0" y1="337.2" x2="640.0" y2="345.2" stroke-width="1.8"/><line x1="648.7" y1="337.2" x2="648.7" y2="345.2" stroke-width="1.8"/><circle cx="643.9" cy="341.2" r="3.8"/></g>
-<text class="val-text" x="733" y="345.2">0.998× [0.993, 1.004]</text>
-<text class="row-label" x="229" y="369.2" text-anchor="end">LoadRecord</text>
-<g class="ci-win"><title>LoadRecord: 0.855× [0.854, 0.856]</title><line x1="520.5" y1="365.2" x2="522.4" y2="365.2" stroke-width="2.2"/><line x1="520.5" y1="361.2" x2="520.5" y2="369.2" stroke-width="1.8"/><line x1="522.4" y1="361.2" x2="522.4" y2="369.2" stroke-width="1.8"/><circle cx="521.5" cy="365.2" r="3.8"/></g>
-<text class="val-text" x="733" y="369.2">0.855× [0.854, 0.856]</text>
-<text class="row-label" x="229" y="393.2" text-anchor="end">ScanRecords</text>
-<g class="ci-win"><title>ScanRecords: 0.859× [0.859, 0.860]</title><line x1="525.2" y1="389.2" x2="526.1" y2="389.2" stroke-width="2.2"/><line x1="525.2" y1="385.2" x2="525.2" y2="393.2" stroke-width="1.8"/><line x1="526.1" y1="385.2" x2="526.1" y2="393.2" stroke-width="1.8"/><circle cx="525.2" cy="389.2" r="3.8"/></g>
-<text class="val-text" x="733" y="393.2">0.859× [0.859, 0.860]</text>
-<text class="row-label" x="229" y="417.2" text-anchor="end">ScanRecordsSplitVersioned</text>
-<g class="ci-win"><title>ScanRecordsSplitVersioned: 0.812× [0.812, 0.812]</title><line x1="480.6" y1="413.2" x2="480.6" y2="413.2" stroke-width="2.2"/><line x1="480.6" y1="409.2" x2="480.6" y2="417.2" stroke-width="1.8"/><line x1="480.6" y1="409.2" x2="480.6" y2="417.2" stroke-width="1.8"/><circle cx="480.6" cy="413.2" r="3.8"/></g>
-<text class="val-text" x="733" y="417.2">0.812× [0.812, 0.812]</text>
-<text class="row-label" x="229" y="441.2" text-anchor="end">ScanIndexRecords/serial</text>
-<g class="ci-win"><title>ScanIndexRecords/serial: 0.757× [0.757, 0.758]</title><line x1="425.1" y1="437.2" x2="426.1" y2="437.2" stroke-width="2.2"/><line x1="425.1" y1="433.2" x2="425.1" y2="441.2" stroke-width="1.8"/><line x1="426.1" y1="433.2" x2="426.1" y2="441.2" stroke-width="1.8"/><circle cx="425.1" cy="437.2" r="3.8"/></g>
-<text class="val-text" x="733" y="441.2">0.757× [0.757, 0.758]</text>
-<text class="row-label" x="229" y="465.2" text-anchor="end">ScanIndexRecords/pipelined</text>
-<g class="ci-win"><title>ScanIndexRecords/pipelined: 0.749× [0.749, 0.749]</title><line x1="416.7" y1="461.2" x2="416.7" y2="461.2" stroke-width="2.2"/><line x1="416.7" y1="457.2" x2="416.7" y2="465.2" stroke-width="1.8"/><line x1="416.7" y1="457.2" x2="416.7" y2="465.2" stroke-width="1.8"/><circle cx="416.7" cy="461.2" r="3.8"/></g>
-<text class="val-text" x="733" y="465.2">0.749× [0.749, 0.749]</text>
-<line class="section-divider" x1="8" y1="476" x2="893" y2="476"/>
-<text class="section-title" x="10" y="491">Go Allocations (allocs/op): Final / Before</text>
-<text class="row-label" x="229" y="515.2" text-anchor="end">SaveRecord</text>
-<g class="ci-win"><title>SaveRecord: 0.859× [0.857, 0.861]</title><line x1="523.3" y1="511.2" x2="527.0" y2="511.2" stroke-width="2.2"/><line x1="523.3" y1="507.2" x2="523.3" y2="515.2" stroke-width="1.8"/><line x1="527.0" y1="507.2" x2="527.0" y2="515.2" stroke-width="1.8"/><circle cx="525.2" cy="511.2" r="3.8"/></g>
-<text class="val-text" x="733" y="515.2">0.859× [0.857, 0.861]</text>
-<text class="row-label" x="229" y="539.2" text-anchor="end">SaveRecordWithIndex</text>
-<g class="ci-win"><title>SaveRecordWithIndex: 0.866× [0.866, 0.867]</title><line x1="531.6" y1="535.2" x2="532.5" y2="535.2" stroke-width="2.2"/><line x1="531.6" y1="531.2" x2="531.6" y2="539.2" stroke-width="1.8"/><line x1="532.5" y1="531.2" x2="532.5" y2="539.2" stroke-width="1.8"/><circle cx="531.6" cy="535.2" r="3.8"/></g>
-<text class="val-text" x="733" y="539.2">0.866× [0.866, 0.867]</text>
-<text class="row-label" x="229" y="563.2" text-anchor="end">SaveSplitRecord</text>
-<g class="ci-win"><title>SaveSplitRecord: 0.888× [0.887, 0.889]</title><line x1="550.6" y1="559.2" x2="552.4" y2="559.2" stroke-width="2.2"/><line x1="550.6" y1="555.2" x2="550.6" y2="563.2" stroke-width="1.8"/><line x1="552.4" y1="555.2" x2="552.4" y2="563.2" stroke-width="1.8"/><circle cx="551.5" cy="559.2" r="3.8"/></g>
-<text class="val-text" x="733" y="563.2">0.888× [0.887, 0.889]</text>
-<text class="row-label" x="229" y="587.2" text-anchor="end">LoadRecord</text>
-<g class="ci-win"><title>LoadRecord: 0.793× [0.793, 0.793]</title><line x1="461.9" y1="583.2" x2="461.9" y2="583.2" stroke-width="2.2"/><line x1="461.9" y1="579.2" x2="461.9" y2="587.2" stroke-width="1.8"/><line x1="461.9" y1="579.2" x2="461.9" y2="587.2" stroke-width="1.8"/><circle cx="461.9" cy="583.2" r="3.8"/></g>
-<text class="val-text" x="733" y="587.2">0.793× [0.793, 0.793]</text>
-<text class="row-label" x="229" y="611.2" text-anchor="end">ScanRecords</text>
-<g class="ci-win"><title>ScanRecords: 0.828× [0.828, 0.828]</title><line x1="496.1" y1="607.2" x2="496.1" y2="607.2" stroke-width="2.2"/><line x1="496.1" y1="603.2" x2="496.1" y2="611.2" stroke-width="1.8"/><line x1="496.1" y1="603.2" x2="496.1" y2="611.2" stroke-width="1.8"/><circle cx="496.1" cy="607.2" r="3.8"/></g>
-<text class="val-text" x="733" y="611.2">0.828× [0.828, 0.828]</text>
-<text class="row-label" x="229" y="635.2" text-anchor="end">ScanRecordsSplitVersioned</text>
-<g class="ci-win"><title>ScanRecordsSplitVersioned: 0.816× [0.816, 0.816]</title><line x1="484.5" y1="631.2" x2="484.5" y2="631.2" stroke-width="2.2"/><line x1="484.5" y1="627.2" x2="484.5" y2="635.2" stroke-width="1.8"/><line x1="484.5" y1="627.2" x2="484.5" y2="635.2" stroke-width="1.8"/><circle cx="484.5" cy="631.2" r="3.8"/></g>
-<text class="val-text" x="733" y="635.2">0.816× [0.816, 0.816]</text>
-<text class="row-label" x="229" y="659.2" text-anchor="end">ScanIndexRecords/serial</text>
-<g class="ci-win"><title>ScanIndexRecords/serial: 0.651× [0.651, 0.651]</title><line x1="305.6" y1="655.2" x2="305.6" y2="655.2" stroke-width="2.2"/><line x1="305.6" y1="651.2" x2="305.6" y2="659.2" stroke-width="1.8"/><line x1="305.6" y1="651.2" x2="305.6" y2="659.2" stroke-width="1.8"/><circle cx="305.6" cy="655.2" r="3.8"/></g>
-<text class="val-text" x="733" y="659.2">0.651× [0.651, 0.651]</text>
-<text class="row-label" x="229" y="683.2" text-anchor="end">ScanIndexRecords/pipelined</text>
-<g class="ci-win"><title>ScanIndexRecords/pipelined: 0.627× [0.626, 0.627]</title><line x1="274.6" y1="679.2" x2="275.9" y2="679.2" stroke-width="2.2"/><line x1="274.6" y1="675.2" x2="274.6" y2="683.2" stroke-width="1.8"/><line x1="275.9" y1="675.2" x2="275.9" y2="683.2" stroke-width="1.8"/><circle cx="275.9" cy="679.2" r="3.8"/></g>
-<text class="val-text" x="733" y="683.2">0.627× [0.626, 0.627]</text>
+<svg class="bench-svg" viewBox="0 0 1383 620" role="img" aria-label="Figure B.1: Record Layer Allocation Optimization Ratios — Final / Before (log₂ scale, 95% CI)">
+<line class="grid-line" x1="228.0" y1="36" x2="228.0" y2="594"/>
+<text class="axis-text" x="228.0" y="30" text-anchor="middle">0.6×</text>
+<text class="axis-text" x="228.0" y="609" text-anchor="middle">0.6×</text>
+<line class="grid-line" x1="472.1" y1="36" x2="472.1" y2="594"/>
+<text class="axis-text" x="472.1" y="30" text-anchor="middle">0.7×</text>
+<text class="axis-text" x="472.1" y="609" text-anchor="middle">0.7×</text>
+<line class="grid-line" x1="683.6" y1="36" x2="683.6" y2="594"/>
+<text class="axis-text" x="683.6" y="30" text-anchor="middle">0.8×</text>
+<text class="axis-text" x="683.6" y="609" text-anchor="middle">0.8×</text>
+<line class="grid-line" x1="870.2" y1="36" x2="870.2" y2="594"/>
+<text class="axis-text" x="870.2" y="30" text-anchor="middle">0.9×</text>
+<text class="axis-text" x="870.2" y="609" text-anchor="middle">0.9×</text>
+<line class="parity-line" x1="1037.0" y1="36" x2="1037.0" y2="594"/>
+<text class="axis-text" x="1037.0" y="30" text-anchor="middle">1.0×</text>
+<text class="axis-text" x="1037.0" y="609" text-anchor="middle">1.0×</text>
+<line class="grid-line" x1="1188.0" y1="36" x2="1188.0" y2="594"/>
+<text class="axis-text" x="1188.0" y="30" text-anchor="middle">1.1×</text>
+<text class="axis-text" x="1188.0" y="609" text-anchor="middle">1.1×</text>
+<text class="axis-text" x="1029.0" y="17" text-anchor="end">← Final lower</text>
+<text class="axis-text" x="1045.0" y="17" text-anchor="start">Before lower →</text>
+<line class="section-divider" x1="8" y1="48" x2="1375" y2="48"/>
+<text class="section-title" x="10" y="63">Mean Time (ns/op): Final / Before</text>
+<text class="row-label" x="216" y="81.0" text-anchor="end">SaveRecord</text>
+<g class="ci-neutral"><title>SaveRecord: 0.981× [0.954, 1.015]</title><line x1="962.5" y1="77.0" x2="1060.6" y2="77.0" stroke-width="2.2"/><line x1="962.5" y1="73.0" x2="962.5" y2="81.0" stroke-width="1.8"/><line x1="1060.6" y1="73.0" x2="1060.6" y2="81.0" stroke-width="1.8"/><circle cx="1006.7" cy="77.0" r="3.8"/></g>
+<text class="val-text" x="1200" y="81.0">0.981× [0.954, 1.015]</text>
+<text class="row-label" x="216" y="101.0" text-anchor="end">SaveRecordWithIndex</text>
+<g class="ci-neutral"><title>SaveRecordWithIndex: 0.998× [0.965, 1.040]</title><line x1="980.6" y1="97.0" x2="1099.2" y2="97.0" stroke-width="2.2"/><line x1="980.6" y1="93.0" x2="980.6" y2="101.0" stroke-width="1.8"/><line x1="1099.2" y1="93.0" x2="1099.2" y2="101.0" stroke-width="1.8"/><circle cx="1033.9" cy="97.0" r="3.8"/></g>
+<text class="val-text" x="1200" y="101.0">0.998× [0.965, 1.040]</text>
+<text class="row-label" x="216" y="121.0" text-anchor="end">SaveSplitRecord</text>
+<g class="ci-neutral"><title>SaveSplitRecord: 0.966× [0.907, 1.031]</title><line x1="882.4" y1="117.0" x2="1085.4" y2="117.0" stroke-width="2.2"/><line x1="882.4" y1="113.0" x2="882.4" y2="121.0" stroke-width="1.8"/><line x1="1085.4" y1="113.0" x2="1085.4" y2="121.0" stroke-width="1.8"/><circle cx="982.3" cy="117.0" r="3.8"/></g>
+<text class="val-text" x="1200" y="121.0">0.966× [0.907, 1.031]</text>
+<text class="row-label" x="216" y="141.0" text-anchor="end">LoadRecord</text>
+<g class="ci-win"><title>LoadRecord: 0.978× [0.958, 0.994]</title><line x1="969.1" y1="137.0" x2="1027.5" y2="137.0" stroke-width="2.2"/><line x1="969.1" y1="133.0" x2="969.1" y2="141.0" stroke-width="1.8"/><line x1="1027.5" y1="133.0" x2="1027.5" y2="141.0" stroke-width="1.8"/><circle cx="1001.8" cy="137.0" r="3.8"/></g>
+<text class="val-text" x="1200" y="141.0">0.978× [0.958, 0.994]</text>
+<text class="row-label" x="216" y="161.0" text-anchor="end">ScanRecords</text>
+<g class="ci-neutral"><title>ScanRecords: 0.978× [0.948, 1.005]</title><line x1="952.5" y1="157.0" x2="1044.9" y2="157.0" stroke-width="2.2"/><line x1="952.5" y1="153.0" x2="952.5" y2="161.0" stroke-width="1.8"/><line x1="1044.9" y1="153.0" x2="1044.9" y2="161.0" stroke-width="1.8"/><circle cx="1001.8" cy="157.0" r="3.8"/></g>
+<text class="val-text" x="1200" y="161.0">0.978× [0.948, 1.005]</text>
+<text class="row-label" x="216" y="181.0" text-anchor="end">ScanRecordsSplitVersioned</text>
+<g class="ci-win"><title>ScanRecordsSplitVersioned: 0.976× [0.957, 0.996]</title><line x1="967.4" y1="177.0" x2="1030.7" y2="177.0" stroke-width="2.2"/><line x1="967.4" y1="173.0" x2="967.4" y2="181.0" stroke-width="1.8"/><line x1="1030.7" y1="173.0" x2="1030.7" y2="181.0" stroke-width="1.8"/><circle cx="998.6" cy="177.0" r="3.8"/></g>
+<text class="val-text" x="1200" y="181.0">0.976× [0.957, 0.996]</text>
+<text class="row-label" x="216" y="201.0" text-anchor="end">ScanIndexRecords/serial</text>
+<g class="ci-neutral"><title>ScanIndexRecords/serial: 1.015× [0.987, 1.052]</title><line x1="1016.3" y1="197.0" x2="1117.3" y2="197.0" stroke-width="2.2"/><line x1="1016.3" y1="193.0" x2="1016.3" y2="201.0" stroke-width="1.8"/><line x1="1117.3" y1="193.0" x2="1117.3" y2="201.0" stroke-width="1.8"/><circle cx="1060.6" cy="197.0" r="3.8"/></g>
+<text class="val-text" x="1200" y="201.0">1.015× [0.987, 1.052]</text>
+<text class="row-label" x="216" y="221.0" text-anchor="end">ScanIndexRecords/pipelined</text>
+<g class="ci-win"><title>ScanIndexRecords/pipelined: 0.972× [0.952, 0.995]</title><line x1="959.1" y1="217.0" x2="1029.1" y2="217.0" stroke-width="2.2"/><line x1="959.1" y1="213.0" x2="959.1" y2="221.0" stroke-width="1.8"/><line x1="1029.1" y1="213.0" x2="1029.1" y2="221.0" stroke-width="1.8"/><circle cx="992.1" cy="217.0" r="3.8"/></g>
+<text class="val-text" x="1200" y="221.0">0.972× [0.952, 0.995]</text>
+<line class="section-divider" x1="8" y1="230" x2="1375" y2="230"/>
+<text class="section-title" x="10" y="245">Go Bytes (B/op): Final / Before</text>
+<text class="row-label" x="216" y="263.0" text-anchor="end">SaveRecord</text>
+<g class="ci-win"><title>SaveRecord: 0.902× [0.900, 0.904]</title><line x1="870.2" y1="259.0" x2="877.2" y2="259.0" stroke-width="2.2"/><line x1="870.2" y1="255.0" x2="870.2" y2="263.0" stroke-width="1.8"/><line x1="877.2" y1="255.0" x2="877.2" y2="263.0" stroke-width="1.8"/><circle cx="873.7" cy="259.0" r="3.8"/></g>
+<text class="val-text" x="1200" y="263.0">0.902× [0.900, 0.904]</text>
+<text class="row-label" x="216" y="283.0" text-anchor="end">SaveRecordWithIndex</text>
+<g class="ci-win"><title>SaveRecordWithIndex: 0.910× [0.908, 0.912]</title><line x1="884.2" y1="279.0" x2="891.2" y2="279.0" stroke-width="2.2"/><line x1="884.2" y1="275.0" x2="884.2" y2="283.0" stroke-width="1.8"/><line x1="891.2" y1="275.0" x2="891.2" y2="283.0" stroke-width="1.8"/><circle cx="887.7" cy="279.0" r="3.8"/></g>
+<text class="val-text" x="1200" y="283.0">0.910× [0.908, 0.912]</text>
+<text class="row-label" x="216" y="303.0" text-anchor="end">SaveSplitRecord</text>
+<g class="ci-neutral"><title>SaveSplitRecord: 0.998× [0.993, 1.004]</title><line x1="1025.9" y1="299.0" x2="1043.4" y2="299.0" stroke-width="2.2"/><line x1="1025.9" y1="295.0" x2="1025.9" y2="303.0" stroke-width="1.8"/><line x1="1043.4" y1="295.0" x2="1043.4" y2="303.0" stroke-width="1.8"/><circle cx="1033.9" cy="299.0" r="3.8"/></g>
+<text class="val-text" x="1200" y="303.0">0.998× [0.993, 1.004]</text>
+<text class="row-label" x="216" y="323.0" text-anchor="end">LoadRecord</text>
+<g class="ci-win"><title>LoadRecord: 0.855× [0.854, 0.856]</title><line x1="787.1" y1="319.0" x2="790.8" y2="319.0" stroke-width="2.2"/><line x1="787.1" y1="315.0" x2="787.1" y2="323.0" stroke-width="1.8"/><line x1="790.8" y1="315.0" x2="790.8" y2="323.0" stroke-width="1.8"/><circle cx="788.9" cy="319.0" r="3.8"/></g>
+<text class="val-text" x="1200" y="323.0">0.855× [0.854, 0.856]</text>
+<text class="row-label" x="216" y="343.0" text-anchor="end">ScanRecords</text>
+<g class="ci-win"><title>ScanRecords: 0.859× [0.859, 0.860]</title><line x1="796.3" y1="339.0" x2="798.2" y2="339.0" stroke-width="2.2"/><line x1="796.3" y1="335.0" x2="796.3" y2="343.0" stroke-width="1.8"/><line x1="798.2" y1="335.0" x2="798.2" y2="343.0" stroke-width="1.8"/><circle cx="796.3" cy="339.0" r="3.8"/></g>
+<text class="val-text" x="1200" y="343.0">0.859× [0.859, 0.860]</text>
+<text class="row-label" x="216" y="363.0" text-anchor="end">ScanRecordsSplitVersioned</text>
+<g class="ci-win"><title>ScanRecordsSplitVersioned: 0.812× [0.812, 0.812]</title><line x1="707.2" y1="359.0" x2="707.2" y2="359.0" stroke-width="2.2"/><line x1="707.2" y1="355.0" x2="707.2" y2="363.0" stroke-width="1.8"/><line x1="707.2" y1="355.0" x2="707.2" y2="363.0" stroke-width="1.8"/><circle cx="707.2" cy="359.0" r="3.8"/></g>
+<text class="val-text" x="1200" y="363.0">0.812× [0.812, 0.812]</text>
+<text class="row-label" x="216" y="383.0" text-anchor="end">ScanIndexRecords/serial</text>
+<g class="ci-win"><title>ScanIndexRecords/serial: 0.757× [0.757, 0.758]</title><line x1="596.1" y1="379.0" x2="598.2" y2="379.0" stroke-width="2.2"/><line x1="596.1" y1="375.0" x2="596.1" y2="383.0" stroke-width="1.8"/><line x1="598.2" y1="375.0" x2="598.2" y2="383.0" stroke-width="1.8"/><circle cx="596.1" cy="379.0" r="3.8"/></g>
+<text class="val-text" x="1200" y="383.0">0.757× [0.757, 0.758]</text>
+<text class="row-label" x="216" y="403.0" text-anchor="end">ScanIndexRecords/pipelined</text>
+<g class="ci-win"><title>ScanIndexRecords/pipelined: 0.749× [0.749, 0.749]</title><line x1="579.3" y1="399.0" x2="579.3" y2="399.0" stroke-width="2.2"/><line x1="579.3" y1="395.0" x2="579.3" y2="403.0" stroke-width="1.8"/><line x1="579.3" y1="395.0" x2="579.3" y2="403.0" stroke-width="1.8"/><circle cx="579.3" cy="399.0" r="3.8"/></g>
+<text class="val-text" x="1200" y="403.0">0.749× [0.749, 0.749]</text>
+<line class="section-divider" x1="8" y1="412" x2="1375" y2="412"/>
+<text class="section-title" x="10" y="427">Go Allocations (allocs/op): Final / Before</text>
+<text class="row-label" x="216" y="445.0" text-anchor="end">SaveRecord</text>
+<g class="ci-win"><title>SaveRecord: 0.859× [0.857, 0.861]</title><line x1="792.6" y1="441.0" x2="800.0" y2="441.0" stroke-width="2.2"/><line x1="792.6" y1="437.0" x2="792.6" y2="445.0" stroke-width="1.8"/><line x1="800.0" y1="437.0" x2="800.0" y2="445.0" stroke-width="1.8"/><circle cx="796.3" cy="441.0" r="3.8"/></g>
+<text class="val-text" x="1200" y="445.0">0.859× [0.857, 0.861]</text>
+<text class="row-label" x="216" y="465.0" text-anchor="end">SaveRecordWithIndex</text>
+<g class="ci-win"><title>SaveRecordWithIndex: 0.866× [0.866, 0.867]</title><line x1="809.2" y1="461.0" x2="811.0" y2="461.0" stroke-width="2.2"/><line x1="809.2" y1="457.0" x2="809.2" y2="465.0" stroke-width="1.8"/><line x1="811.0" y1="457.0" x2="811.0" y2="465.0" stroke-width="1.8"/><circle cx="809.2" cy="461.0" r="3.8"/></g>
+<text class="val-text" x="1200" y="465.0">0.866× [0.866, 0.867]</text>
+<text class="row-label" x="216" y="485.0" text-anchor="end">SaveSplitRecord</text>
+<g class="ci-win"><title>SaveSplitRecord: 0.888× [0.887, 0.889]</title><line x1="847.1" y1="481.0" x2="850.7" y2="481.0" stroke-width="2.2"/><line x1="847.1" y1="477.0" x2="847.1" y2="485.0" stroke-width="1.8"/><line x1="850.7" y1="477.0" x2="850.7" y2="485.0" stroke-width="1.8"/><circle cx="848.9" cy="481.0" r="3.8"/></g>
+<text class="val-text" x="1200" y="485.0">0.888× [0.887, 0.889]</text>
+<text class="row-label" x="216" y="505.0" text-anchor="end">LoadRecord</text>
+<g class="ci-win"><title>LoadRecord: 0.793× [0.793, 0.793]</title><line x1="669.7" y1="501.0" x2="669.7" y2="501.0" stroke-width="2.2"/><line x1="669.7" y1="497.0" x2="669.7" y2="505.0" stroke-width="1.8"/><line x1="669.7" y1="497.0" x2="669.7" y2="505.0" stroke-width="1.8"/><circle cx="669.7" cy="501.0" r="3.8"/></g>
+<text class="val-text" x="1200" y="505.0">0.793× [0.793, 0.793]</text>
+<text class="row-label" x="216" y="525.0" text-anchor="end">ScanRecords</text>
+<g class="ci-win"><title>ScanRecords: 0.828× [0.828, 0.828]</title><line x1="738.1" y1="521.0" x2="738.1" y2="521.0" stroke-width="2.2"/><line x1="738.1" y1="517.0" x2="738.1" y2="525.0" stroke-width="1.8"/><line x1="738.1" y1="517.0" x2="738.1" y2="525.0" stroke-width="1.8"/><circle cx="738.1" cy="521.0" r="3.8"/></g>
+<text class="val-text" x="1200" y="525.0">0.828× [0.828, 0.828]</text>
+<text class="row-label" x="216" y="545.0" text-anchor="end">ScanRecordsSplitVersioned</text>
+<g class="ci-win"><title>ScanRecordsSplitVersioned: 0.816× [0.816, 0.816]</title><line x1="715.0" y1="541.0" x2="715.0" y2="541.0" stroke-width="2.2"/><line x1="715.0" y1="537.0" x2="715.0" y2="545.0" stroke-width="1.8"/><line x1="715.0" y1="537.0" x2="715.0" y2="545.0" stroke-width="1.8"/><circle cx="715.0" cy="541.0" r="3.8"/></g>
+<text class="val-text" x="1200" y="545.0">0.816× [0.816, 0.816]</text>
+<text class="row-label" x="216" y="565.0" text-anchor="end">ScanIndexRecords/serial</text>
+<g class="ci-win"><title>ScanIndexRecords/serial: 0.651× [0.651, 0.651]</title><line x1="357.2" y1="561.0" x2="357.2" y2="561.0" stroke-width="2.2"/><line x1="357.2" y1="557.0" x2="357.2" y2="565.0" stroke-width="1.8"/><line x1="357.2" y1="557.0" x2="357.2" y2="565.0" stroke-width="1.8"/><circle cx="357.2" cy="561.0" r="3.8"/></g>
+<text class="val-text" x="1200" y="565.0">0.651× [0.651, 0.651]</text>
+<text class="row-label" x="216" y="585.0" text-anchor="end">ScanIndexRecords/pipelined</text>
+<g class="ci-win"><title>ScanIndexRecords/pipelined: 0.627× [0.626, 0.627]</title><line x1="295.2" y1="581.0" x2="297.7" y2="581.0" stroke-width="2.2"/><line x1="295.2" y1="577.0" x2="295.2" y2="585.0" stroke-width="1.8"/><line x1="297.7" y1="577.0" x2="297.7" y2="585.0" stroke-width="1.8"/><circle cx="297.7" cy="581.0" r="3.8"/></g>
+<text class="val-text" x="1200" y="585.0">0.627× [0.626, 0.627]</text>
 </svg>
 <div class="bench-legend"><span><i class="bench-swatch" style="background:#0d9488"></i> 95% CI entirely &lt; 1.000 (faster / lower)</span><span><i class="bench-swatch" style="background:#64748b"></i> 95% CI overlaps 1.000 (unresolved)</span><span><i class="bench-swatch" style="background:#d97706"></i> 95% CI entirely &gt; 1.000 (slower / higher)</span></div>
 </figure>
