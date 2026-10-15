@@ -5,8 +5,8 @@
 // It drops and recreates /FRL/QUICKSTART, so it requires FDB_CLUSTER_FILE to
 // name a disposable cluster and refuses to fall back to FDB's default file:
 //
-//	frl fdb up
-//	FDB_CLUSTER_FILE=~/.frl/frl-fdb.cluster go run ./example/sql
+//	export FDB_CLUSTER_FILE=$(frl fdb up)
+//	go run ./example/sql
 //
 // To use Apple's C client instead of the pure-Go one, rebuild with the tag:
 //
@@ -40,7 +40,7 @@ func main() {
 
 // errNoClusterFile is returned instead of falling back to FDB's default cluster
 // file, which may point at a cluster whose data this example would drop.
-var errNoClusterFile = errors.New("FDB_CLUSTER_FILE is not set; run frl fdb up and set it to ~/.frl/frl-fdb.cluster")
+var errNoClusterFile = errors.New("FDB_CLUSTER_FILE is not set; run: export FDB_CLUSTER_FILE=$(frl fdb up)")
 
 func run(ctx context.Context, clusterFile string, out io.Writer) error {
 	if clusterFile == "" {

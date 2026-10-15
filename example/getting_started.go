@@ -31,7 +31,7 @@ func main() {
 
 // errNoClusterFile is returned instead of falling back to FDB's default cluster
 // file, which may point at a cluster whose data this example would overwrite.
-var errNoClusterFile = errors.New("FDB_CLUSTER_FILE is not set; run frl fdb up and set it to ~/.frl/frl-fdb.cluster")
+var errNoClusterFile = errors.New("FDB_CLUSTER_FILE is not set; run: export FDB_CLUSTER_FILE=$(frl fdb up)")
 
 func run(ctx context.Context, clusterFile string, out io.Writer) error {
 	if clusterFile == "" {

@@ -2,10 +2,8 @@ load("@gazelle//:def.bzl", "gazelle")
 load("@rules_go//go:def.bzl", "nogo")
 
 exports_files([
-    "README.md",
     "buf.yaml",
     "justfile",
-    "website/content/docs/getting-started.md",
 ])
 
 # The workflow definitions, staged as data for //infra:infra_test's
