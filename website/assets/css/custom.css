@@ -193,43 +193,27 @@
   overflow-x: auto;
 }
 .bench-figure figcaption {
-  font-size: 0.8rem;
-  color: var(--launch-muted);
-  margin-bottom: 0.75rem;
-  line-height: 1.5;
+  margin-bottom: 0.6rem;
+  line-height: 1.45;
   text-align: left;
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
 }
 .bench-figure figcaption strong {
+  display: block;
   color: var(--launch-text);
+  font-size: 1rem;
   font-weight: 600;
 }
+.bench-figure figcaption span {
+  display: block;
+  color: var(--launch-muted);
+  font-size: 0.85rem;
+}
 .bench-summary {
-  margin: 0 0 0.95rem !important;
-  padding: 0.6rem 0.9rem;
-  border-left: 3px solid var(--launch-accent);
-  background: rgba(127, 140, 140, 0.08);
+  margin: 0 0 1rem !important;
+  max-width: 90ch;
   color: var(--launch-text);
-  font-size: 0.84rem;
-  line-height: 1.5;
-}
-.bench-summary-list {
-  list-style: none !important;
-  margin: 0 !important;
-  padding: 0 !important;
-  display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
-}
-.bench-summary-list li {
-  margin: 0 !important;
-  padding: 0 !important;
-}
-.bench-summary strong {
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 0.77rem;
-  letter-spacing: 0.02em;
-  margin-right: 0.25rem;
+  font-size: 0.95rem;
+  line-height: 1.6;
 }
 .bench-svg {
   display: block;

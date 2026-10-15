@@ -56,9 +56,9 @@ of [hcloud-multinode-vpc-20261014](../).
 ## Results
 
 <figure class="bench-figure">
-<figcaption><strong>Figure M2.1: Mean time (ns/op) ratio, USE_REMOTE_FETCH / SCAN_AND_FETCH (log₂ scale, 95% CI)</strong> — 3-node VPC double ssd-2 cluster (9 storage servers). Below 1.0× means USE_REMOTE_FETCH is faster.</figcaption>
-<div class="bench-summary"><ul class="bench-summary-list"><li><strong>USE_REMOTE_FETCH faster (4/16 cases, 95% CI &lt; 1.000):</strong> M2skip skip3-rows10-reverse 0.158× [0.155, 0.160] (4.87 ms vs 31.13 ms), M2rl split-rows10-reverse 0.854× [0.823, 0.886] (5.77 ms vs 6.81 ms, f = 0.0000), M2rl split-rows10-forward 0.873× [0.829, 0.920] (6.00 ms vs 6.83 ms, f = 0.0000), and M2rl small-limit1-forward 0.979× [0.964, 0.995] (2.62 ms vs 2.69 ms).</li><li><strong>Unresolved (2/16, 95% CI spans 1.000):</strong> M2rl small-limit1-reverse 0.985× [0.969, 1.003] and M2skip skip3-rows10-forward 1.155× [0.991, 1.345].</li><li><strong>SCAN_AND_FETCH faster (10/16 cases: 8/12 in M2rl, 2/4 in M2skip, 95% CI &gt; 1.000):</strong> small-rows10 (1.031× fwd, 1.026× rev), split-limit1 (1.110× fwd, 1.114× rev), and all six 1,000-row scans: small-rows1000 (1.226× fwd 117.08 vs 95.10 ms, 1.255× rev 118.95 vs 96.39 ms), skip3-rows1000 (1.360× fwd 138.19 vs 98.67 ms, 1.324× rev 133.24 vs 101.06 ms), and 2-chunk split-rows1000 [f = 0.6960] (2.326× fwd 742.51 vs 316.38 ms, 2.300× rev 768.95 vs 327.62 ms).</li></ul></div>
-<svg class="bench-svg" viewBox="0 0 1454 438" role="img" aria-label="Figure M2.1: Mean time (ns/op) ratio, USE_REMOTE_FETCH / SCAN_AND_FETCH (log₂ scale, 95% CI)">
+<figcaption><strong>Figure M2.1: Time per operation, USE_REMOTE_FETCH / SCAN_AND_FETCH</strong><span>Below 1.0× means USE_REMOTE_FETCH is faster. 3-node cluster, 9 storage servers.</span></figcaption>
+<p class="bench-summary">SCAN_AND_FETCH is faster in 10 of 16 cases, including all six 1,000-row scans (up to 2.326×). USE_REMOTE_FETCH is faster in 4, most clearly skip3-rows10-reverse (0.158×). Two are inconclusive.</p>
+<svg class="bench-svg" viewBox="0 0 1454 438" role="img" aria-label="Figure M2.1: Time per operation, USE_REMOTE_FETCH / SCAN_AND_FETCH">
 <line class="grid-line" x1="299.0" y1="36" x2="299.0" y2="412"/>
 <text class="axis-text" x="299.0" y="30" text-anchor="middle">0.15×</text>
 <text class="axis-text" x="299.0" y="427" text-anchor="middle">0.15×</text>
@@ -138,13 +138,13 @@ of [hcloud-multinode-vpc-20261014](../).
 <g class="ci-reg"><title>skip3-rows1000-reverse [cross-srv]: 1.324× [1.250, 1.407]</title><line x1="1022.5" y1="399.0" x2="1062.9" y2="399.0" stroke-width="2.2"/><line x1="1022.5" y1="395.0" x2="1022.5" y2="403.0" stroke-width="1.8"/><line x1="1062.9" y1="395.0" x2="1062.9" y2="403.0" stroke-width="1.8"/><circle cx="1042.1" cy="399.0" r="3.8"/></g>
 <text class="val-text" x="1271" y="403.0">1.324× [1.250, 1.407]</text>
 </svg>
-<div class="bench-legend"><span><i class="bench-swatch" style="background:#0d9488"></i> 95% CI entirely &lt; 1.000 (faster / lower)</span><span><i class="bench-swatch" style="background:#64748b"></i> 95% CI overlaps 1.000 (unresolved)</span><span><i class="bench-swatch" style="background:#d97706"></i> 95% CI entirely &gt; 1.000 (slower / higher)</span></div>
+<div class="bench-legend"><span><i class="bench-swatch" style="background:#0d9488"></i> 95% CI below 1.0×</span><span><i class="bench-swatch" style="background:#64748b"></i> 95% CI includes 1.0× (inconclusive)</span><span><i class="bench-swatch" style="background:#d97706"></i> 95% CI above 1.0×</span></div>
 </figure>
 
 <figure class="bench-figure">
-<figcaption><strong>Figure M2.2: Client Go allocations (allocs/op) ratio, USE_REMOTE_FETCH / SCAN_AND_FETCH (log₂ scale, 95% CI)</strong> — Below 1.0× means USE_REMOTE_FETCH allocates fewer Go heap objects on the client.</figcaption>
-<div class="bench-summary"><ul class="bench-summary-list"><li><strong>USE_REMOTE_FETCH fewer allocations (14/16 cases, 95% CI &lt; 1.000):</strong> Client Go allocs/op drop across all 12 multi-row cases (0.398×–0.790×) and both split-limit1 cases (0.942× fwd 248 vs 263, 0.952× rev 250 vs 263).</li><li><strong>SCAN_AND_FETCH fewer allocations (2/16 cases, 95% CI &gt; 1.000):</strong> small-limit1-forward 1.040× [1.038, 1.041] (231 vs 222, +9 allocs/op) and small-limit1-reverse 1.049× [1.047, 1.052] (234 vs 223, +11 allocs/op).</li><li><strong>Wall time:</strong> The six 1,000-row cases allocate fewer objects (0.398×–0.529×) and still take 1.226×–2.326× as long (Figure M2.1).</li></ul></div>
-<svg class="bench-svg" viewBox="0 0 1352 438" role="img" aria-label="Figure M2.2: Client Go allocations (allocs/op) ratio, USE_REMOTE_FETCH / SCAN_AND_FETCH (log₂ scale, 95% CI)">
+<figcaption><strong>Figure M2.2: Client allocations per operation, USE_REMOTE_FETCH / SCAN_AND_FETCH</strong><span>Below 1.0× means USE_REMOTE_FETCH allocates fewer Go objects.</span></figcaption>
+<p class="bench-summary">USE_REMOTE_FETCH allocates less in 14 of 16 cases, down to 0.398×. That did not make the 1,000-row scans faster (Figure M2.1).</p>
+<svg class="bench-svg" viewBox="0 0 1352 438" role="img" aria-label="Figure M2.2: Client allocations per operation, USE_REMOTE_FETCH / SCAN_AND_FETCH">
 <line class="grid-line" x1="197.0" y1="36" x2="197.0" y2="412"/>
 <text class="axis-text" x="197.0" y="30" text-anchor="middle">0.35×</text>
 <text class="axis-text" x="197.0" y="427" text-anchor="middle">0.35×</text>
@@ -215,7 +215,7 @@ of [hcloud-multinode-vpc-20261014](../).
 <g class="ci-win"><title>skip3-rows1000-reverse: 0.527× [0.527, 0.527]</title><line x1="515.9" y1="399.0" x2="515.9" y2="399.0" stroke-width="2.2"/><line x1="515.9" y1="395.0" x2="515.9" y2="403.0" stroke-width="1.8"/><line x1="515.9" y1="395.0" x2="515.9" y2="403.0" stroke-width="1.8"/><circle cx="515.9" cy="399.0" r="3.8"/></g>
 <text class="val-text" x="1169" y="403.0">0.527× [0.527, 0.527]</text>
 </svg>
-<div class="bench-legend"><span><i class="bench-swatch" style="background:#0d9488"></i> 95% CI entirely &lt; 1.000 (faster / lower)</span><span><i class="bench-swatch" style="background:#64748b"></i> 95% CI overlaps 1.000 (unresolved)</span><span><i class="bench-swatch" style="background:#d97706"></i> 95% CI entirely &gt; 1.000 (slower / higher)</span></div>
+<div class="bench-legend"><span><i class="bench-swatch" style="background:#0d9488"></i> 95% CI below 1.0×</span><span><i class="bench-swatch" style="background:#64748b"></i> 95% CI includes 1.0× (inconclusive)</span><span><i class="bench-swatch" style="background:#d97706"></i> 95% CI above 1.0×</span></div>
 </figure>
 
 ### `M2rl`: `BenchmarkIndexFetch` (`final-remote / final-ordinary`)

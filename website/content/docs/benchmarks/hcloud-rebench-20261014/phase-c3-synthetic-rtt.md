@@ -37,9 +37,9 @@ not a multi-host or physical-network benchmark.
 ## Results
 
 <figure class="bench-figure">
-<figcaption><strong>Figure C3.1: USE_REMOTE_FETCH / SCAN_AND_FETCH ratios (log₂ scale, 95% CI)</strong> — 6 paired blocks × 3 repeats on single-node memory engine. Below 1.0× favors USE_REMOTE_FETCH.</figcaption>
-<div class="bench-summary"><ul class="bench-summary-list"><li><strong>USE_REMOTE_FETCH faster (1/2 cases, 0.5 ms nominal added client↔server RTT):</strong> small-all-1000 ns/op is 0.224× [0.222, 0.226] (24.0 ms vs 108.0 ms), with B/op 0.524× and allocs/op 0.439×.</li><li><strong>SCAN_AND_FETCH faster (1/2 cases):</strong> 2-chunk split-all-1000 ns/op is 1.053× [1.008, 1.101] (276.9 ms vs 266.4 ms) despite B/op 0.692× and allocs/op 0.406×.</li><li><strong>Scope:</strong> Single-fdbserver memory setup where index and primary records reside in one process; only client↔server traffic crosses the delayed veth link.</li></ul></div>
-<svg class="bench-svg" viewBox="0 0 1320 260" role="img" aria-label="Figure C3.1: USE_REMOTE_FETCH / SCAN_AND_FETCH ratios (log₂ scale, 95% CI)">
+<figcaption><strong>Figure C3.1: Scans with 0.5 ms added RTT, USE_REMOTE_FETCH / SCAN_AND_FETCH</strong><span>Below 1.0× favors USE_REMOTE_FETCH. Single in-memory server.</span></figcaption>
+<p class="bench-summary">With 0.5 ms added between client and server, USE_REMOTE_FETCH is 0.224× on small-all-1000 and still slower on split-all-1000 (1.053×). The index and records share one server here, so the delay applies only to client traffic.</p>
+<svg class="bench-svg" viewBox="0 0 1320 260" role="img" aria-label="Figure C3.1: Scans with 0.5 ms added RTT, USE_REMOTE_FETCH / SCAN_AND_FETCH">
 <line class="grid-line" x1="165.0" y1="36" x2="165.0" y2="234"/>
 <text class="axis-text" x="165.0" y="30" text-anchor="middle">0.2×</text>
 <text class="axis-text" x="165.0" y="249" text-anchor="middle">0.2×</text>
@@ -85,7 +85,7 @@ not a multi-host or physical-network benchmark.
 <g class="ci-win"><title>split-all-1000: 0.406× [0.406, 0.407]</title><line x1="528.1" y1="221.0" x2="529.4" y2="221.0" stroke-width="2.2"/><line x1="528.1" y1="217.0" x2="528.1" y2="225.0" stroke-width="1.8"/><line x1="529.4" y1="217.0" x2="529.4" y2="225.0" stroke-width="1.8"/><circle cx="528.1" cy="221.0" r="3.8"/></g>
 <text class="val-text" x="1137" y="225.0">0.406× [0.406, 0.407]</text>
 </svg>
-<div class="bench-legend"><span><i class="bench-swatch" style="background:#0d9488"></i> 95% CI entirely &lt; 1.000 (faster / lower)</span><span><i class="bench-swatch" style="background:#64748b"></i> 95% CI overlaps 1.000 (unresolved)</span><span><i class="bench-swatch" style="background:#d97706"></i> 95% CI entirely &gt; 1.000 (slower / higher)</span></div>
+<div class="bench-legend"><span><i class="bench-swatch" style="background:#0d9488"></i> 95% CI below 1.0×</span><span><i class="bench-swatch" style="background:#64748b"></i> 95% CI includes 1.0× (inconclusive)</span><span><i class="bench-swatch" style="background:#d97706"></i> 95% CI above 1.0×</span></div>
 </figure>
 
 ### Final remote / final ordinary (0.5 ms nominal added RTT)
