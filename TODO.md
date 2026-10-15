@@ -27,6 +27,68 @@ git show 13d5a3d1e:rfcs/257-java-upgrade-audit/ws-e-design.md
 Verify remaining audit claims against current Go and Java before changing code.
 Never mark a whole workstream complete because one of its subitems passed.
 
+## 0. `pkg/fdbgo` CPU under concurrency — TOP PRIORITY
+
+Set as the top priority by the owner on 2026-10-15, ahead of the active workstream.
+Server CPU comes first: every client of the cluster pays for it. Some of the gap may be
+configuration (options, flags, request shape); the rest is parity with libfdb_c 7.3.77.
+
+Method (reproducible on one host): `fdbserver` 7.3.77 run natively, `single memory`,
+pinned to CPUs disjoint from the client; `tools/clientbench` at 32 workers, `GOMAXPROCS=8`.
+Server cost is `perf stat -p <fdbserver>` (task-clock, cycles, instructions, syscalls),
+taken as the difference between a short and a long run so setup cancels. Server work counts
+come from the server's own trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`,
+`ResolverMetrics`, `MasterMetrics`, `NetworkMetrics`), as deltas around a run.
+
+- [ ] **Server CPU per transaction.** At 8–64 workers the Go client makes the servers do
+  1.5–2.4× the CPU per transaction of libfdb_c; at 1 worker it is even.
+  - 3-node cluster (`hcloud-multinode-vpc-20261014` phase M1, server node CPU per
+    transaction, Go / CGo, median of 6 runs each) at 8 / 32 / 64 workers: `get100` 2.09 /
+    2.04 / 1.85, `set100` 2.39 / 2.08 / 1.51, `grv` 1.73 / 1.34 / 1.14, `range100` 1.74 /
+    1.29 / 1.09. At 1 worker: 0.88–0.99 (`grv` 1.25).
+  - Local, 32 workers, server cycles per transaction: `get100` 39.8k vs 25.9k, `set100`
+    226k vs 114k, at the same clock rate. Both clients request identical work: reads,
+    writes, commits and bytes per transaction match.
+  - Server counters per transaction, `set100`: GRV requests 0.206 vs 0.060, commit batches
+    0.064 vs 0.031, run-loop iterations 1.26 vs 0.50. `get100`: GRV requests 0.100 vs 0.072.
+    Each GRV request costs a master round trip and each commit batch a full
+    resolver/log/storage cycle, so smaller batches mean more server work per transaction.
+  - Known divergences: `grvBatcher.admit` (`pkg/fdbgo/client/grv.go`) sends a request at
+    once when no GRV is in flight, where libfdb_c always waits its adaptive window
+    (`readVersionBatcher`, NativeAPI.actor.cpp:7307-7405). Go writes each frame on the
+    sender's goroutine (`tryWriteDirect`); libfdb_c writes everything queued for a peer
+    after a 10–20 µs delay (`connectionWriter`, FlowTransport.actor.cpp:704-739;
+    `MIN/MAX_COALESCE_DELAY`, flow/Knobs.cpp:211-212).
+  - Tried, not committed: always waiting the GRV window, as libfdb_c does, cuts GRV
+    requests by a third, leaves commit batches unchanged, and makes 1-worker `get100` 9×
+    slower (131 → 1,212 µs): Go rounds sub-millisecond timers up to about 1 ms when the
+    process is idle. Skipping the wait only when the previous batch left more than one
+    window ago keeps 1-worker latency but barely reduces server work. A 10–20 µs write
+    delay through `time.Sleep` hits the same timer rounding.
+  - Next: compare request flags, priorities, options and encoded request sizes with
+    libfdb_c, then design GRV and commit batching that does not depend on sub-millisecond
+    Go timers. Client team: RFC, FDB C++ and Torvalds review, libfdb_c differential.
+  - Done when server cycles per transaction are within 10% of libfdb_c for `get100`,
+    `set100`, `range100` and `grv` at 8–64 workers, locally and on a multi-node rerun,
+    without raising 1-worker mean latency by more than 5%.
+- [ ] **Client CPU per transaction.** At 8–64 workers pure-Go uses 1.29–2.16× libfdb_c's
+  process CPU on reads and commits (`docs/benchmarks/hcloud-multinode-vpc-20261014/phase-m1-client.md`,
+  `hcloud-rebench-20261014/phase-a2-client-8w.md`), while it uses less at 1 worker
+  (0.570–0.748×) and on multi-worker `grv` (0.736–0.904×).
+  - Local, 32 workers, client CPU per transaction: `get100` 33.5 vs 32.0 µs, `range100`
+    86.1 vs 60.3 µs, `set100` 67.2 vs 31.3 µs. The extra is user CPU; Go makes fewer
+    syscalls per transaction than libfdb_c (2.4 vs 4.1 on `get100`).
+  - Profile hot spots (32 workers): each encoded wire field does a string-keyed map lookup
+    (`MessageTemplate.vtableOffset`, 5% of `set100` CPU); committing a transaction with no
+    writes is not free (`commitAdmitted`/`publishCommit`, 13% of `get100` CPU; libfdb_c
+    returns at once); every commit's goroutine grows its stack from scratch
+    (`copystack`/`newstack`, 5.5% of `set100`); GC and allocation take about 30%, from
+    ~100 allocations per `set100` transaction, ~67 per `get100` and ~72 (38 KB) per
+    `range100`.
+  - Next: remove the map lookup, the no-write commit work and the per-commit stack growth,
+    then cut allocations on the read and commit paths (`pkg/fdbgo/wire/`,
+    `pkg/fdbgo/client/readpath.go`, `commitpath.go`).
+
 ## 1. WS-E — scalar/SQL semantics and statement execution — ACTIVE
 
 - [x] Invalid UTF-8 rejection on SQL, nested bindings and record writes; copied
@@ -1521,18 +1583,6 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   read version (NativeAPI.actor.cpp:5707-5753). Found by the multi-node placement probe
   review; the probe does not rely on the Go path. Client team; held while feature work is
   paused.
-- [ ] `pkg/fdbgo`: reduce concurrent multi-worker process CPU (`E−A`) via write-path and
-  read-reply buffer pooling / arena-style decoding and batched transport write-loop wakeups.
-  In `hcloud-multinode-vpc-20261014` (`docs/benchmarks/hcloud-multinode-vpc-20261014/phase-m1-client.md`)
-  and `hcloud-rebench-20261014` (`phase-a2-client-8w.md`), pure-Go beats CGo (`libfdb_c` 7.3.77)
-  on latency up to 64 workers, and uses less `E−A` CPU at 1 worker (`0.570–0.748×`) and on
-  multi-worker `grv` (`0.736–0.904×`), but uses `1.291–2.162×` `E−A` CPU on 8–64 worker reads
-  and commits (`set100` allocates ~10.2 KB / ~100 Go mallocs per tx; `range100` allocates ~50 KB /
-  ~73 mallocs per tx, driving concurrent Go GC cycles and per-RPC socket write-loop wakeups on
-  shared connections). Profile CPU/allocations under 8–64 workers, pool or arena-decode wire
-  frames (`pkg/fdbgo/wire/`, `pkg/fdbgo/client/readpath.go`, `commitpath.go`), and coalesce
-  concurrent frame writes in `pkg/fdbgo/transport/conn.go`.
-
 ## Test lanes and test-speed work (committed with the temporal change)
 
 - [x] Fast/full lanes (`just test` / `just test-full`, `infra/test_lanes_test.go`,
