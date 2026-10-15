@@ -67,7 +67,7 @@ production code. `final/before` is the allocation work plus later changes;
 
 <figure class="bench-figure">
 <figcaption><strong>Figure D1.1: SQL FDB_PlanCacheHit Ratios (log₂ scale, 95% CI)</strong> — 6 paired blocks × 3 repeats (54 samples). Below 1.0× favors Final.</figcaption>
-<p class="bench-summary"><strong>Summary:</strong> Only 1 of 3 planned SQL cases (PlanCacheHit) completed before a runner harness bug aborted IndexScanRange and TimestampInsert. On PlanCacheHit, final cuts allocs/op by 5.1% (0.949×, 687 → 652) and B/op by 3.4% (0.966×, 48,246 → 46,615 B) against both before and legacy, while ns/op is unchanged (1.002× [0.984, 1.021] vs before, 0.999× [0.981, 1.018] vs legacy, ~1.15 ms).</p>
+<div class="bench-summary"><ul class="bench-summary-list"><li><strong>Scope:</strong> Only 1 of 3 planned SQL cases (PlanCacheHit, 18 processes / 54 samples) completed; IndexScanRange stopped after block 0 on a false runner check and TimestampInsert was not run.</li><li><strong>Results (PlanCacheHit):</strong> Final reduces allocs/op to 0.949× [0.949, 0.949] (687 → 652) and B/op to 0.966× (48,245.5 → 46,615 B) against before and legacy. ns/op is unresolved in both comparisons (1.002× [0.984, 1.021] vs before, 0.999× [0.981, 1.018] vs legacy; medians 1.153 ms vs 1.144 ms and 1.148 ms).</li></ul></div>
 <svg class="bench-svg" viewBox="0 0 1320 238" role="img" aria-label="Figure D1.1: SQL FDB_PlanCacheHit Ratios (log₂ scale, 95% CI)">
 <line class="grid-line" x1="165.0" y1="36" x2="165.0" y2="212"/>
 <text class="axis-text" x="165.0" y="30" text-anchor="middle">0.9×</text>

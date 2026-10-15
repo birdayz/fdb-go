@@ -134,6 +134,8 @@ class SiteCheckTest(unittest.TestCase):
                     [("case1", 100.0, 500.0, 100.0, 2500.0)],
                     "µs", 2000.0, [0, 1000, 2000]
                 )
+            with self.assertRaisesRegex(ValueError, "not found in canonical markdown"):
+                mod.verify_summary_numbers("test", "Wins: 0.999×", "table has 0.500 only")
 
     def test_empty_site(self):
         for page in self.root.rglob("index.html"):
