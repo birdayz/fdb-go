@@ -74,14 +74,25 @@ def format_tick(t: float) -> str:
 
 
 def verify_summary_numbers(title: str, svg_or_summary: str, raw_md: str):
-    """Fail if any decimal number in summary (other than 1.0/1.000 parity) does not appear in raw_md."""
+    """Fail if any decimal number token in summary (other than 1.0/1.000 parity) is absent from raw_md."""
     m = re.search(r'<div class="bench-summary">(.*?)</div>', svg_or_summary, flags=re.S)
     summary = m.group(1) if m else svg_or_summary
+    md_decimals = set(re.findall(r'\b\d+\.\d+\b', raw_md)) | {'1.0', '1.000'}
     for tok in re.findall(r'\b\d+\.\d+\b', summary):
-        if tok in ('1.0', '1.000'):
-            continue
-        if tok not in raw_md:
-            raise ValueError(f'{title}: summary number {tok!r} not found in canonical markdown')
+        if tok not in md_decimals:
+            raise ValueError(f'{title}: summary number {tok!r} not found as token in canonical markdown')
+
+
+def split_label_colon(line: str):
+    depth = 0
+    for i, ch in enumerate(line):
+        if ch == '(':
+            depth += 1
+        elif ch == ')' and depth > 0:
+            depth -= 1
+        elif ch == ':' and depth == 0:
+            return line[:i], line[i + 1:]
+    return None
 
 
 def render_summary_html(summary: str) -> str:
@@ -90,8 +101,9 @@ def render_summary_html(summary: str) -> str:
     parts = [p.strip() for p in summary.split('\n') if p.strip()]
     items = []
     for p in parts:
-        if ':' in p:
-            head, tail = p.split(':', 1)
+        sp = split_label_colon(p)
+        if sp is not None:
+            head, tail = sp
             items.append(f'<li><strong>{html.escape(head.strip())}:</strong> {html.escape(tail.strip())}</li>')
         else:
             items.append(f'<li>{html.escape(p)}</li>')
@@ -381,7 +393,7 @@ def build_page_charts(cid: str, fname: str, raw_md: str) -> str:
             summary='\n'.join([
                 'Wins (4/16 cases, 95% CI < 1.000): M2skip skip3-rows10-reverse 0.158× [0.155, 0.160] (4.87 ms vs 31.13 ms), M2rl split-rows10-reverse 0.854× [0.823, 0.886] (5.77 ms vs 6.81 ms, f = 0.0000), M2rl split-rows10-forward 0.873× [0.829, 0.920] (6.00 ms vs 6.83 ms, f = 0.0000), and M2rl small-limit1-forward 0.979× [0.964, 0.995] (2.62 ms vs 2.69 ms).',
                 'Unresolved (2/16, 95% CI spans 1.000): M2rl small-limit1-reverse 0.985× [0.969, 1.003] and M2skip skip3-rows10-forward 1.155× [0.991, 1.345].',
-                'Regressions (10/16: 8/12 in M2rl and 2/4 in M2skip, 95% CI > 1.000): small-rows10 (1.031× fwd, 1.026× rev), split-limit1 (1.110× fwd, 1.114× rev), and all six 1,000-row scans: small-rows1000 (1.226× fwd 117.08 vs 95.10 ms, 1.255× rev 118.95 vs 96.39 ms), skip3-rows1000 (1.360× fwd 138.19 vs 98.67 ms, 1.324× rev 133.24 vs 101.06 ms), and 2-chunk split-rows1000 [f = 0.6960] (2.326× fwd 742.51 vs 316.38 ms, 2.300× rev 768.95 vs 327.62 ms).',
+                'Regressions (10/16 — 8/12 in M2rl, 2/4 in M2skip, 95% CI > 1.000): small-rows10 (1.031× fwd, 1.026× rev), split-limit1 (1.110× fwd, 1.114× rev), and all six 1,000-row scans: small-rows1000 (1.226× fwd 117.08 vs 95.10 ms, 1.255× rev 118.95 vs 96.39 ms), skip3-rows1000 (1.360× fwd 138.19 vs 98.67 ms, 1.324× rev 133.24 vs 101.06 ms), and 2-chunk split-rows1000 [f = 0.6960] (2.326× fwd 742.51 vs 316.38 ms, 2.300× rev 768.95 vs 327.62 ms).',
             ]),
         )
         c2 = render_forest_svg(
@@ -415,7 +427,7 @@ def build_page_charts(cid: str, fname: str, raw_md: str) -> str:
             '6 paired blocks × 3,000 tx/run (18,000 tx/arm/workload). Below 1.0× means Pure-Go is faster / lower CPU.',
             groups, [0.15, 0.25, 0.5, 0.7, 1.0, 1.4], 'Pure-Go faster / lower CPU', 'CGo faster / lower CPU',
             summary='\n'.join([
-                'Mean latency (final/CGo): Pure-Go is faster with 95% CI < 1.000 on 10 of 11 workloads (0.189× on in-memory ryw, 0.515× on grv, 0.613×–0.931× on reads/commits); range100 (0.846× [0.713, 1.024]) is unresolved.',
+                'Mean latency (final/CGo): Pure-Go is faster with 95% CI < 1.000 on 10 of 11 workloads (0.189× on client-only ryw, 0.515× on grv, 0.613×–0.931× on reads/commits); range100 (0.846× [0.713, 1.024]) is unresolved.',
                 'p99 latency (final/CGo): Lower on 8 of 11 workloads (0.245×–0.942×); range100 (0.861× [0.755, 1.008]), set100 (0.939× [0.845, 1.020]), and batchset50 (0.989× [0.913, 1.126]) are unresolved.',
                 'Shutdown CPU (E−A, final/CGo): Lower on 7 of 11 workloads (0.228×–0.887×); get100 (0.948× [0.817, 1.118]), get10000 (0.959× [0.884, 1.046]), range10 (0.969× [0.834, 1.122]), and range100 (1.101× [0.968, 1.269]) are unresolved.',
             ]),
@@ -472,7 +484,7 @@ def build_page_charts(cid: str, fname: str, raw_md: str) -> str:
                 summary='\n'.join([
                     'Allocations (final/before): allocs/op drops on all 8 benchmarks (0.627×–0.888×, led by ScanIndexRecords/pipelined 0.627× and ScanIndexRecords/serial 0.651×); B/op drops on 7 of 8 (0.749×–0.910×) and is unresolved on 3-chunk SaveSplitRecord (0.998× [0.993, 1.004]).',
                     'Mean time (ns/op, final/before): Lower on 3 of 8 benchmarks (ScanIndexRecords/pipelined 0.972× [0.952, 0.995], ScanRecordsSplitVersioned 0.976× [0.957, 0.996], LoadRecord 0.978× [0.958, 0.994]) and unresolved on the other 5 (0.966×–1.015×).',
-                    'Against pre-#888 legacy (see table below): ScanIndexRecords/serial is 1.477× and LoadRecord 1.138× slower while ScanIndexRecords/pipelined is 0.647× faster.',
+                    'Against pre-#888 legacy (see table below): ScanIndexRecords/serial is 1.477× (48% slower) and LoadRecord is 1.138× (14% slower) while ScanIndexRecords/pipelined takes 0.647× of legacy time (35% faster).',
                 ]),
             )
             verify_summary_numbers(fname, res, raw_md)
@@ -546,7 +558,7 @@ def build_page_charts(cid: str, fname: str, raw_md: str) -> str:
                     groups, [0.9, 0.95, 1.0, 1.05, 1.1], 'Final lower', 'Denominator lower',
                     summary='\n'.join([
                         'Scope: Only 1 of 3 planned SQL cases (PlanCacheHit, 18 processes / 54 samples) completed; IndexScanRange stopped after block 0 on a false runner check and TimestampInsert was not run.',
-                        'Results (PlanCacheHit): Final reduces allocs/op to 0.949× [0.949, 0.949] (687 → 652) and B/op to 0.966× (48,245.5 → 46,615 B) against before and legacy. ns/op is unresolved in both comparisons (1.002× [0.984, 1.021] vs before, 0.999× [0.981, 1.018] vs legacy; medians 1.153 ms vs 1.144 ms and 1.148 ms).',
+                        'Results (PlanCacheHit): Final reduces allocs/op to 0.949× [0.949, 0.949] (687 → 652) and B/op to 0.966× (48,245.5 → 46,615 B vs before; 48,249.5 → 46,615 B vs legacy). ns/op is unresolved in both comparisons (1.002× [0.984, 1.021] vs before, 0.999× [0.981, 1.018] vs legacy; medians 1.153 ms vs 1.144 ms and 1.148 ms).',
                     ]),
                 )
                 verify_summary_numbers(fname, res, raw_md)

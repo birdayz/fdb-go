@@ -90,7 +90,7 @@ fmt.Println(string(value.([]byte)))
 {{< highlight go >}}
 rows, err := sqlDB.QueryContext(ctx,
     `SELECT id, email FROM users
-     WHERE status = $1 ORDER BY id LIMIT 10`,
+     WHERE status = ? ORDER BY id LIMIT 10`,
     "active",
 )
 if err != nil {

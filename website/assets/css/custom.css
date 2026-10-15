@@ -37,11 +37,6 @@
 .hextra-toc {
   display: none !important;
 }
-.content > p,
-.content > ul,
-.content > ol {
-  max-width: 96ch;
-}
 .content code {
   overflow-wrap: anywhere;
 }
@@ -55,7 +50,7 @@
   }
 }
 .launch-home {
-  width: min(100% - 3rem, 96rem);
+  width: min(100% - 3rem, 109rem);
   margin: 0 auto;
   padding: 3.5rem 0 2.5rem;
   color: var(--launch-text);
@@ -219,7 +214,6 @@
   color: var(--launch-text);
   font-size: 0.84rem;
   line-height: 1.5;
-  max-width: 112ch;
 }
 .bench-summary-list {
   list-style: none !important;
