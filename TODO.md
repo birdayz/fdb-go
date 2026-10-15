@@ -59,15 +59,22 @@ come from the server's own trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`,
     sender's goroutine (`tryWriteDirect`); libfdb_c writes everything queued for a peer
     after a 10–20 µs delay (`connectionWriter`, FlowTransport.actor.cpp:704-739;
     `MIN/MAX_COALESCE_DELAY`, flow/Knobs.cpp:211-212).
-  - Tried, not committed: always waiting the GRV window, as libfdb_c does, cuts GRV
-    requests by a third, leaves commit batches unchanged, and makes 1-worker `get100` 9×
-    slower (131 → 1,212 µs): Go rounds sub-millisecond timers up to about 1 ms when the
-    process is idle. Skipping the wait only when the previous batch left more than one
-    window ago keeps 1-worker latency but barely reduces server work. A 10–20 µs write
-    delay through `time.Sleep` hits the same timer rounding.
-  - Next: compare request flags, priorities, options and encoded request sizes with
-    libfdb_c, then design GRV and commit batching that does not depend on sub-millisecond
-    Go timers. Client team: RFC, FDB C++ and Torvalds review, libfdb_c differential.
+  - Go timers are the obstacle: when the process is idle, Go rounds sub-millisecond timers
+    up to about 1 ms, so always waiting the GRV window through `time.AfterFunc` made
+    1-worker `get100` 9× slower (131 → 1,212 µs). A timerfd in the netpoller is precise.
+  - [RFC-259](rfcs/259-request-batching-parity.md): GRV window on a precise timer, with a
+    fast path for a client that issues GRVs one at a time (Part A); `connectionWriter`
+    coalescing without a `writeLoop` handoff (Part B, needs its own design review).
+    Prototype at 8 workers: `grv` server cycles 40.8k → 24.8k (libfdb_c 33.3k); `get100`
+    96.5k → 71.6k with both parts (libfdb_c 67.3k); 1-worker latency unchanged.
+  - `set100` convoys: workers in a closed loop move in convoys, and Go splits a convoy into
+    two groups that stay apart, so the proxy sees two commit batches per round. The GRV
+    window removes the timer trigger (with `GOGC=off`, commit batches per transaction match
+    libfdb_c in 5 of 5 runs); GC cycles inside a round are the other trigger, so this also
+    depends on the client CPU item's allocation work.
+  - At 32 workers libfdb_c's network thread is saturated (44k tx/s against Go's 73k) and
+    batches more than its knobs alone would; `get100` server cycles stay 1.4× after both
+    parts.
   - Done when server cycles per transaction are within 10% of libfdb_c for `get100`,
     `set100`, `range100` and `grv` at 8–64 workers, locally and on a multi-node rerun,
     without raising 1-worker mean latency by more than 5%.
