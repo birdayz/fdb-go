@@ -51,7 +51,9 @@ type readOperation struct {
 	// joined marks an operation whose parent can never be cancelled
 	// (Done() == nil, as with context.Background): the incarnation's
 	// cancellation is the operation's, so it needs no derived context.
-	// Context is then the parent itself.
+	// Context is then the parent itself. Releasing such an operation cancels
+	// nothing: a context derived from it ends with its own cancel or with the
+	// incarnation, not with the operation.
 	joined bool
 }
 

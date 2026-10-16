@@ -191,22 +191,36 @@ func TestReadOperationUncancellableParentFollowsIncarnation(t *testing.T) {
 	}
 }
 
-// Releasing an operation under an uncancellable parent returns its lease.
+// Releasing an operation under an uncancellable parent returns its lease and
+// cancels nothing: the operation's context and a context derived from it end
+// only with the incarnation.
 func TestReadOperationUncancellableParentReleasesLease(t *testing.T) {
 	t.Parallel()
 	tx := &Transaction{}
-	defer tx.Cancel()
 	ctx, release, counted := tx.opContextFor(context.Background(), true)
 	op := tx.readOperation(ctx)
 	if !counted || !op.lease.isActive() {
 		t.Fatal("operation was not admitted")
 	}
+	child, stopChild := context.WithCancel(ctx)
+	defer stopChild()
 	release()
 	tx.readErrMu.Lock()
 	users, issued := op.inc.users, op.inc.issuedReads
 	tx.readErrMu.Unlock()
 	if users != 0 || issued != 0 || op.lease.isActive() {
 		t.Fatalf("release kept the lease: users=%d issued=%d", users, issued)
+	}
+	if ctx.Err() != nil || child.Err() != nil {
+		t.Fatalf("release cancelled the operation (%v) or its child (%v)", ctx.Err(), child.Err())
+	}
+	tx.Cancel()
+	for what, done := range map[string]<-chan struct{}{"operation": ctx.Done(), "child": child.Done()} {
+		select {
+		case <-done:
+		case <-time.After(time.Minute):
+			t.Fatalf("%s did not end with the incarnation", what)
+		}
 	}
 }
 
