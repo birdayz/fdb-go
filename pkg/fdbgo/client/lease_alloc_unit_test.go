@@ -290,6 +290,8 @@ func TestIncarnationNativeCommitStorage(t *testing.T) {
 	check("stale removal", c)
 	inc.removeNativeLocked(c)
 	check("all removed")
+}
+
 // An abandoned transaction with a TIMEOUT is not kept alive by its timebomb:
 // libfdb_c's timebomb dies with its transaction.
 func TestAbandonedTransactionTimebombDoesNotRetainIt(t *testing.T) {
