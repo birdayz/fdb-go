@@ -86,6 +86,17 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
     one convoy (427k and 450k cycles, 6.6–6.7 ms, as libfdb_c) and 3 split (666k–898k,
     8.6–10.3 ms). Lever: less allocation and CPU between a commit reply and the next
     commit, tracked under client CPU.
+  - [GRV observation candidate](docs/benchmarks/rfc-259/grv-observation-20261016.md),
+    measured against `f377e16d9` on the local three-process cluster: moving adaptive
+    sampling after reply publication/yields reduced median server cycles by 16.9% for
+    `get100/8`, 3.0% for `get100/32`, and 11.2%/14.3%/7.9% for `grv` at 8/32/64.
+    All four 1-worker arithmetic mean latencies changed by less than 1%. An apparent
+    five-sample `set100/8` regression did not reproduce in 20 alternating pairs
+    (paired cycle ratio 0.887, 95% bootstrap interval 0.757–1.047); writes remain noisy.
+    This is not a completed goal: `get100` at 32/64 still costs 1.45×/1.34× libfdb_c,
+    `range100` at 8/32/64 costs 1.30×/1.15×/1.16×, and `set100` at 32/64 costs
+    1.78×/1.31×. Candidate not merged; no multi-node rerun. Raw data retain all
+    299 configurations, including the original write regression and its confirmation.
   - Done when server cycles per transaction are within 10% of libfdb_c for `get100`,
     `set100`, `range100` and `grv` at 8–64 workers, locally and on a multi-node rerun,
     without raising 1-worker mean latency by more than 5%.

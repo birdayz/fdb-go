@@ -5,6 +5,11 @@ Server CPU per transaction for the batching prototype behind
 implementation, against the Go client at base commit `36685ebfa` and libfdb_c 7.3.77. One local server, so the numbers show the
 mechanism; the 3-node gap that motivates the RFC is in TODO.md §0.
 
+The later [GRV observation campaign](grv-observation-20261016.md) uses a three-process
+cluster and baseline `f377e16d9`. It includes all four workloads at 1/8/32/64 workers
+and a 20-pair write confirmation; its absolute costs are not comparable to the
+one-process measurements below.
+
 ## Setup
 
 - AMD Ryzen 9 3900X (24 threads), Linux 7.2, one host.

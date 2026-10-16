@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"runtime"
 	"runtime/debug"
 	"sort"
 	"sync"
@@ -699,6 +700,7 @@ type grvBatcher struct {
 	priority   uint32 // fixed priority bits for this batcher
 	extraFlags uint32 // immutable option bits; variants never share a queue
 	variants   map[uint32]*grvBatcher
+	yield      func() // nil: runtime.Gosched; test seam for broadcast cadence
 
 	// The batch window (RFC-259, grv_window.go). window is nil until the
 	// first window opens; newWindow (nil: newWindowLocked) and now (nil:
@@ -875,8 +877,9 @@ func (b *grvBatcher) getReadVersion(db *database, ctx context.Context, flags uin
 }
 
 const (
-	grvMaxBatchSize = 1000
-	grvBatchTimeout = 5 * time.Millisecond
+	grvMaxBatchSize       = 1000
+	grvBroadcastBatchSize = 20 // ClientKnobs.cpp BROADCAST_BATCH_SIZE
+	grvBatchTimeout       = 5 * time.Millisecond
 )
 
 // NativeAPI.actor.cpp indexes versionBatcher by full flags, not just priority:
@@ -1008,7 +1011,8 @@ func (b *grvBatcher) flushWithin(db *database, ctx context.Context, batch []grvR
 	// callback (not a standing loop) — there is nothing to re-arm, and the next
 	// queued request arms a fresh timer; the log is rate-limited, the metric
 	// counts every occurrence.
-	defer b.recoverFlush(db, batch)
+	published := 0
+	defer b.recoverFlush(db, batch, &published)
 	retired := false
 	retire := func() {
 		if !retired {
@@ -1037,6 +1041,10 @@ func (b *grvBatcher) flushWithin(db *database, ctx context.Context, batch []grvR
 	// by a reply it was meant to retire.
 	tok := db.grvCache.token()
 	requestTime := time.Now()
+	sampleStart := requestTime
+	if b.now != nil {
+		sampleStart = b.clock()
+	}
 	version, locked, rkDefault, rkBatch, tagThrottleInfoEntries, _, attemptEpoch, err := b.sendGRVRequest(db, ctx, flags, uint32(len(batch)), batchGRVSpanContext(spans), aggregateBatchTags(batch))
 	elapsed := time.Since(requestTime)
 
@@ -1066,25 +1074,46 @@ func (b *grvBatcher) flushWithin(db *database, ctx context.Context, batch []grvR
 		// batch-window queueing. Go's is the cleaner RPC-latency SLI. Cache hits
 		// never reach here (they return before the flush — C++ parity, as above).
 		db.metrics.observeGRVLatency(elapsed)
-		b.observeLatency(elapsed)
 	}
 
 	retire() // a waiter can start its next transaction as soon as it receives
 	result := grvResult{version: version, locked: locked, instant: requestTime, err: err}
-	for _, req := range batch {
+	b.publishReply(batch, result, sampleStart, &published)
+}
+
+func (b *grvBatcher) yieldReady() {
+	if b.yield != nil {
+		b.yield()
+	} else {
+		runtime.Gosched()
+	}
+}
+
+func (b *grvBatcher) publishReply(batch []grvRequest, result grvResult, started time.Time, published *int) {
+	for i, req := range batch {
 		req.reply <- result
+		*published = i + 1
+		if (i+1)%grvBroadcastBatchSize == 0 {
+			b.yieldReady()
+		}
+	}
+	if result.err == nil {
+		// C++ times the last broadcast promise, then yields once before sampling
+		// (NativeAPI.actor.cpp:7380–7387; genericactors.actor.h timeReply).
+		b.yieldReady()
+		b.observeLatency(b.clock().Sub(started))
 	}
 }
 
 // recoverFlush is flush's deferred RFC-110 backstop. On a recovered panic it
-// FAILS THE BATCH — delivers an error to every popped waiter so none hangs —
-// counts it, and rate-limited-logs. The batch reply channels are
-// cap-1 and unsent on the panic path (the panic precedes the normal delivery
-// loop), so the sends never block even for a waiter that already took its
-// ctx.Done() branch. On the normal path recover() is nil → no-op. flushes are
-// independent one-shots (not a standing loop), so this is fail-the-batch at
+// fails the unpublished suffix of the batch, counts the panic and logs it.
+// Already-completed waiters keep their results. The batch reply channels are
+// cap-1; the publication frontier excludes waiters already sent a result, so
+// recovery cannot overwrite success or block on a second send. A waiter that
+// already took its ctx.Done() branch still has room. On the normal path
+// recover() is nil → no-op. Flushes are independent one-shots (not a standing loop), so this is fail-the-batch at
 // request rate, not backoff-bounded.
-func (b *grvBatcher) recoverFlush(db *database, batch []grvRequest) {
+func (b *grvBatcher) recoverFlush(db *database, batch []grvRequest, published *int) {
 	r := recover()
 	if r == nil {
 		return
@@ -1094,8 +1123,9 @@ func (b *grvBatcher) recoverFlush(db *database, batch []grvRequest) {
 	}
 	b.logFlushPanic(r)
 	result := grvResult{err: fmt.Errorf("fdbgo: panic in GRV flush: %v", r)}
-	for _, req := range batch {
+	for _, req := range batch[*published:] {
 		req.reply <- result
+		*published += 1
 	}
 }
 

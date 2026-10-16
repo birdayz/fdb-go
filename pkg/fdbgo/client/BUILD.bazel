@@ -156,12 +156,14 @@ go_test(
 
 # gazelle:exclude grv_batch_unit_test.go
 # gazelle:exclude grv_inline_unit_test.go
+# gazelle:exclude grv_publish_unit_test.go
 # gazelle:exclude grv_window_linux_unit_test.go
 go_test(
     name = "grv_batch_unit_test",
     srcs = [
         "grv_batch_unit_test.go",
         "grv_inline_unit_test.go",
+        "grv_publish_unit_test.go",
         "grv_window_linux_unit_test.go",
     ],
     embed = [":client"],
@@ -311,6 +313,7 @@ go_test(
         "grv_fences_test.go",
         "grv_idle_fdb_test.go",
         "grv_invalidate_generation_test.go",
+        "grv_latency_order_fdb_test.go",
         "grv_panic_test.go",
         "grv_reply_wait_test.go",
         "grv_seam_test.go",
