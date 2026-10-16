@@ -55,33 +55,37 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
     window on a precise timer, as libfdb_c's `readVersionBatcher` does
     (NativeAPI.actor.cpp:7307-7405); Go timers round sub-millisecond waits up to about
     1 ms when the process is idle, which is why Go had skipped the wait.
-  - Local three-process cluster after Part A, server cycles per transaction Go / libfdb_c
-    (3 runs each): `grv` 1.0 at 2–32 workers; `get100` at most 1.0 at 1–4 workers, 1.25×
-    at 8, 1.54× at 32; `range100` 1.43× at 8, 1.26× at 32; `set100` 2.0× at 8, 1.87× at 32.
-  - `get100`, 8 workers: GRV requests and storage queries per transaction are equal;
+  - Local three-process cluster at master `066920ebb` (#943–#948), server cycles per
+    transaction Go / libfdb_c, median of 5 runs: `grv` 0.90 at 8 workers, 0.98 at 32;
+    `get100` 0.99 at 1, 1.12 at 8, 1.49 at 32; `range100` 1.29 at 8, 1.17 at 32;
+    `set100` 0.97 at 1, 1.50 at 8, 1.30 at 32.
+  - #948 fixed a leak that inflated every concurrent result: a transaction's TIMEOUT
+    timer held the transaction until its deadline, so with clientbench's 30 s timeout
+    every finished transaction stayed live (845 MB after 5 s of `get100` at 32 workers)
+    and GC cycles grew long enough to split commit convoys.
+  - `get100`, 8 workers (before #948): GRV requests and storage queries per transaction are equal;
     the servers process 19% more network events (more, smaller packets). libfdb_c's
     `connectionWriter` waits 9–22 µs and then writes everything queued for a peer
     (FlowTransport.actor.cpp:704-739); Go writes each frame on its sender. RFC-259 Part B
     prototypes on the three-process cluster cut `get100` at 32 workers by 10–16% but
     saved nothing at 8 workers and cost latency, so Part B is not worth its complexity yet.
-  - `range100`, 8 workers: Go sends 1.9× libfdb_c's GRV requests (0.346 vs 0.184 per
+  - `range100`, 8 workers (before #948): Go sends 1.9× libfdb_c's GRV requests (0.346 vs 0.184 per
     transaction). Both use a window of half the smoothed GRV latency, about 57 µs for Go.
     libfdb_c measures that latency on its network thread, which here is busy deserializing
     range replies, so its window is longer and its batches bigger (5.4 against 2.9
     transactions per request) at 32% more transaction latency (545 vs 413 µs). Matching it
     would mean waiting longer, a latency trade-off rather than a parity fix.
-  - `set100` is the largest gap: at 8 workers 0.236 commit batches per transaction against
-    0.126 (one per round of 8), and 11 vs 6.5 ms mean latency. Workers in a closed loop
-    commit in convoys, and the proxy batches a convoy's commits if they arrive within
-    0.5 ms of the first (`COMMIT_TRANSACTION_BATCH_INTERVAL_FROM_IDLE`,
-    CommitProxyServer.actor.cpp:430-436). Go GC cycles split a convoy: in traced runs every
-    split began at a GC cycle that started as the convoy's commit replies arrived, and the
-    late goroutines lost 0.5–1 ms (stop-the-world, mark assists, and runnable goroutines
-    waiting while Ps run GC mark workers). Once split, the two groups alternate on the
-    transaction log and stay apart. With `GOGC=off`, Go matches libfdb_c (single-process
-    server, 8 workers, 4 of 4 runs: 6.4 ms and 1,245 tx/s against 6.5 ms and 1,238 tx/s).
-    Lever: less allocation and CPU on the path from a commit reply to the next commit,
-    tracked under client CPU.
+  - `set100` is the largest gap. Workers in a closed loop commit in convoys, and the proxy
+    batches a convoy's commits if they arrive within 0.5 ms of the first
+    (`COMMIT_TRANSACTION_BATCH_INTERVAL_FROM_IDLE`, CommitProxyServer.actor.cpp:430-436).
+    Go GC cycles split a convoy: in traced runs every split began at a GC cycle that
+    started as the convoy's commit replies arrived, and the late goroutines lost 0.5–1 ms
+    (stop-the-world, mark assists, and runnable goroutines waiting while Ps run GC mark
+    workers). Once split, the two groups alternate on the transaction log and stay apart.
+    With `GOGC=off`, Go matches libfdb_c. At 8 workers after #948, 2 of 5 runs stay in
+    one convoy (427k and 450k cycles, 6.6–6.7 ms, as libfdb_c) and 3 split (666k–898k,
+    8.6–10.3 ms). Lever: less allocation and CPU between a commit reply and the next
+    commit, tracked under client CPU.
   - Done when server cycles per transaction are within 10% of libfdb_c for `get100`,
     `set100`, `range100` and `grv` at 8–64 workers, locally and on a multi-node rerun,
     without raising 1-worker mean latency by more than 5%.
@@ -89,22 +93,21 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   process CPU on reads and commits (`docs/benchmarks/hcloud-multinode-vpc-20261014/phase-m1-client.md`,
   `hcloud-rebench-20261014/phase-a2-client-8w.md`), while it uses less at 1 worker
   (0.570–0.748×) and on multi-worker `grv` (0.736–0.904×).
-  - Local, 32 workers, client CPU per transaction: `get100` 33.5 vs 32.0 µs, `range100`
-    86.1 vs 60.3 µs, `set100` 67.2 vs 31.3 µs. The extra is user CPU; Go makes fewer
-    syscalls per transaction than libfdb_c (2.4 vs 4.1 on `get100`).
-  - Done: each encoded table no longer does a string-keyed map lookup for its vtable
-    (#944, about 5% of `set100` CPU); an operation whose caller cannot cancel no longer
-    derives its own context (#945, 8 → 2 allocations per operation; client CPU per
-    transaction −8% `get100`, −5% `range100`, −9% `set100` at 32 workers).
-  - Remaining hot spots: committing a transaction with no writes is not free
-    (`commitAdmitted`/`publishCommit`, 13% of `get100` CPU; libfdb_c returns at once);
-    every commit starts a goroutine (`startNativeCommit`: 11 allocations, a weak pointer
-    and a cleanup per commit, and stack growth); a blind write's commit copies the whole
-    `Transaction` to fetch its read version (`captureNativeReadState`, 870 bytes); each
-    transaction's first `Set` builds its `rywCache` map (1.4 KB per `set100`); each
-    incarnation creates its own cancellable context. About 89 allocations and 9.6 KB per
-    `set100` transaction, 52 and 5 KB per `get100`, 57 and 37 KB per `range100`.
-  - Allocation also drives `set100` server CPU (convoy splits at GC cycles, above).
+  - Local three-process cluster at `066920ebb`, client CPU per transaction Go / libfdb_c
+    (median of 5): `get100` 0.91 at 8 workers, 1.00 at 32; `grv` 0.74 at 8, 0.64 at 32;
+    `range100` 1.07 at 8, 1.02 at 32; `set100` 1.23 at 8, 1.32 at 32.
+  - Done: vtable offsets without a map lookup (#944); no derived context for an operation
+    whose caller cannot cancel (#945, 8 → 2 allocations per operation); a blind write's
+    native GRV without derived contexts and the first native commit inline (#947, 89 →
+    67 allocations per `set100` transaction); the TIMEOUT timer no longer retains
+    finished transactions (#948).
+  - Remaining hot spots on `set100` (67 allocations, 7.8 KB per transaction): each
+    transaction's first `Set` builds its `rywCache` map (about 6 allocations); every
+    commit starts a goroutine (`startNativeCommit`: a weak pointer, a cleanup, two
+    channels, a context); the blind write's commit copies the whole `Transaction` to fetch
+    its read version (`captureNativeReadState`, 870 bytes); each incarnation creates its own
+    cancellable context, and turnover after every commit, including one with no writes,
+    builds the next incarnation (libfdb_c does not reset after commit at API ≥ 410).
 
 ## 1. WS-E — scalar/SQL semantics and statement execution — ACTIVE
 
