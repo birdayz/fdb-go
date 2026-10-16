@@ -78,14 +78,15 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   - `set100` is the largest gap. Workers in a closed loop commit in convoys, and the proxy
     batches a convoy's commits if they arrive within 0.5 ms of the first
     (`COMMIT_TRANSACTION_BATCH_INTERVAL_FROM_IDLE`, CommitProxyServer.actor.cpp:430-436).
-    Go GC cycles split a convoy: in traced runs every split began at a GC cycle that
+    Earlier traced runs linked convoy splits to GC: every observed split began at a cycle that
     started as the convoy's commit replies arrived, and the late goroutines lost 0.5–1 ms
     (stop-the-world, mark assists, and runnable goroutines waiting while Ps run GC mark
     workers). Once split, the two groups alternate on the transaction log and stay apart.
-    With `GOGC=off`, Go matches libfdb_c. At 8 workers after #948, 2 of 5 runs stay in
-    one convoy (427k and 450k cycles, 6.6–6.7 ms, as libfdb_c) and 3 split (666k–898k,
-    8.6–10.3 ms). Lever: less allocation and CPU between a commit reply and the next
-    commit, tracked under client CPU.
+    Earlier `GOGC=off` runs matched libfdb_c; the current-code confirmation below
+    finds a partial, not complete, effect at 32 workers. At 8 workers after #948,
+    2 of 5 runs stay in one convoy (427k and 450k cycles, 6.6–6.7 ms, as libfdb_c)
+    and 3 split (666k–898k, 8.6–10.3 ms). Lever: less allocation and CPU between a
+    commit reply and the next commit, tracked under client CPU.
   - [GRV observation candidate](docs/benchmarks/rfc-259/grv-observation-20261016.md),
     measured against `f377e16d9` on the local three-process cluster: moving adaptive
     sampling after reply publication/yields reduced median server cycles by 16.9% for
@@ -97,6 +98,22 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
     `range100` at 8/32/64 costs 1.30×/1.15×/1.16×, and `set100` at 32/64 costs
     1.78×/1.31×. Candidate not merged; no multi-node rerun. Raw data retain all
     299 configurations, including the original write regression and its confirmation.
+  - [Follow-up screens](docs/benchmarks/rfc-259/followup-screens-20261016.md): skipping
+    unused timed successors reliably saves four allocations, but did not materially
+    reduce server cycles at 32/64 workers. Native completion yields had an encouraging
+    8-worker sample, not a clear 32-worker win. A never-exposed-header reserve was
+    active in a profile positive control but also gave no 32-worker benefit
+    (prefetch/base 1.017, interval 0.978–1.055). None of these scratch changes is promoted.
+    The follow-up report retains all 305 configurations, beyond the main 299.
+    A fresh clean-candidate GC comparison at 32 workers gave an off/default paired
+    cycle ratio of 0.738 (95% bootstrap interval 0.642–0.852), but even GC-off did not
+    consistently match CGo; GC-off is diagnostic only, never a production proposal.
+  - Fresh current-code tracing found a 32-reply wave followed by GC initiated in
+    `CreateTransaction`, then persistent 10+22 client publication clusters. No captured
+    GC start was in FrameReader; the older AfterFunc initiator predates #947. Investigate
+    the GRV-publication-to-commit-send delay, including mark assists and runnable waits,
+    rather than inferring causality from heap counts or repeating the rejected reserve.
+    Do not recycle exposed public transactions or borrowed read data.
   - Done when server cycles per transaction are within 10% of libfdb_c for `get100`,
     `set100`, `range100` and `grv` at 8–64 workers, locally and on a multi-node rerun,
     without raising 1-worker mean latency by more than 5%.

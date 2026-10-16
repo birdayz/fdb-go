@@ -8,7 +8,9 @@ mechanism; the 3-node gap that motivates the RFC is in TODO.md §0.
 The later [GRV observation campaign](grv-observation-20261016.md) uses a three-process
 cluster and baseline `f377e16d9`. It includes all four workloads at 1/8/32/64 workers
 and a 20-pair write confirmation; its absolute costs are not comparable to the
-one-process measurements below.
+one-process measurements below. The [scratch follow-up screens](followup-screens-20261016.md)
+retain 305 further configurations for allocation, native completion yields and GC
+diagnostics; none of the experimental behavior is included in the production candidate.
 
 ## Setup
 
