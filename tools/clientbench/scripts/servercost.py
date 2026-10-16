@@ -8,7 +8,8 @@ transaction: setup, connection and validation work cancel out. Client CPU,
 latency and throughput come from the long run's summary.
 
 The server must already be running, on CPUs disjoint from --client-cpus, and
-`perf stat` must be allowed to attach to it (kernel.perf_event_paranoid <= 1
+`perf stat` must be allowed to attach to it (all processes of a multi-process
+cluster are counted together; pass their PIDs with --server-pid) (kernel.perf_event_paranoid <= 1
 for a process of the same user). One JSON object per repetition is appended to
 --out; the median of each metric is printed.
 
@@ -46,7 +47,7 @@ def run_once(args, pid, iterations, outdir):
     for kv in args.env:
         k, _, v = kv.partition("=")
         env[k] = v
-    cmd = ["perf", "stat", "-x,", "-p", str(pid), "-e", ",".join(EVENTS), "--",
+    cmd = ["perf", "stat", "-x,", "-p", pid, "-e", ",".join(EVENTS), "--",
            "env", "-i", *[f"{k}={v}" for k, v in env.items()],
            "taskset", "-c", args.client_cpus, args.binary,
            "-cluster-file", args.cluster_file, "-workload", args.workload, "-workers", str(args.workers),
@@ -92,7 +93,7 @@ def main():
     ap.add_argument("--reps", type=int, default=3)
     ap.add_argument("--label", required=True)
     ap.add_argument("--out", required=True, help="JSON lines file to append to")
-    ap.add_argument("--server-pid", type=int)
+    ap.add_argument("--server-pid", help="PID, or comma-separated PIDs, of the server processes")
     ap.add_argument("--server-name", default="fdbserver")
     ap.add_argument("--client-cpus", default="0-7")
     ap.add_argument("--gomaxprocs", type=int, default=8)
@@ -102,7 +103,7 @@ def main():
     args = ap.parse_args()
     if args.long <= args.short:
         sys.exit("--long must exceed --short")
-    pid = args.server_pid or server_pid(args.server_name)
+    pid = args.server_pid or str(server_pid(args.server_name))
     tx = (args.long - args.short) * 21 / 20  # warmup is iterations/20
     rows = []
     for rep in range(args.reps):
