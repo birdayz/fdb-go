@@ -334,3 +334,83 @@ func TestLiveTransactionTimebombFires(t *testing.T) {
 	}
 	runtime.KeepAlive(tx)
 }
+
+// armedTimebomb returns tx's armed timebomb and the incarnation it is armed for.
+func armedTimebomb(t *testing.T, tx *Transaction) (*timebomb, *readIncarnation) {
+	t.Helper()
+	tx.readErrMu.Lock()
+	defer tx.readErrMu.Unlock()
+	if !tx.timebombArmed || tx.timebomb == nil || tx.timebombInc == nil || tx.timebombInc != tx.readLife {
+		t.Fatal("no timebomb armed for the current incarnation")
+	}
+	return tx.timebomb, tx.timebombInc
+}
+
+// A callback of a timebomb that was replaced, or disarmed, fires nothing; the
+// replacement's callback fires its incarnation. Callbacks are invoked directly,
+// so no timer races the assertions.
+func TestTimebombCallbackIdentity(t *testing.T) {
+	t.Parallel()
+	tx := &Transaction{}
+	defer tx.Cancel()
+	tx.SetTimeout(time.Hour.Milliseconds())
+	old, inc := armedTimebomb(t, tx)
+
+	// The old timer's expiry is in flight: Stop reports false, so re-arming
+	// must build a new timebomb rather than reuse the old one.
+	old.timer.Stop()
+	tx.SetTimeout(2 * time.Hour.Milliseconds())
+	replacement, armedFor := armedTimebomb(t, tx)
+	if replacement == old || armedFor != inc {
+		t.Fatal("re-arming after a lost Stop reused the timebomb whose expiry is in flight")
+	}
+	tx.fireTimebomb(old)
+	if inc.ctx.Err() != nil {
+		t.Fatal("the replaced timebomb's callback fired the incarnation")
+	}
+
+	// A disarmed timebomb's callback fires nothing either.
+	tx.readErrMu.Lock()
+	tx.stopTimebombLocked(inc)
+	tx.readErrMu.Unlock()
+	tx.fireTimebomb(replacement)
+	if inc.ctx.Err() != nil {
+		t.Fatal("a disarmed timebomb's callback fired the incarnation")
+	}
+
+	// Re-armed after a successful Stop, the same timebomb is reused and fires.
+	tx.SetTimeout(3 * time.Hour.Milliseconds())
+	reused, _ := armedTimebomb(t, tx)
+	if reused != replacement {
+		t.Fatal("re-arming after a successful Stop built a new timebomb")
+	}
+	reused.timer.Stop()
+	tx.fireTimebomb(reused)
+	if code, ok := fdbErrorCode(context.Cause(inc.ctx)); !ok || code != ErrTransactionTimedOut {
+		t.Fatalf("armed timebomb fired %v, want transaction_timed_out", context.Cause(inc.ctx))
+	}
+}
+
+// A callback admitted before a re-arm carries the old generation, which the
+// incarnation no longer has, so it fires nothing.
+func TestTimebombAdmittedCallbackLosesToRearm(t *testing.T) {
+	t.Parallel()
+	tx := &Transaction{}
+	defer tx.Cancel()
+	tx.SetTimeout(time.Hour.Milliseconds())
+	_, inc := armedTimebomb(t, tx)
+	tx.readErrMu.Lock()
+	staleGen := tx.timebombGen
+	tx.readErrMu.Unlock()
+	tx.SetTimeout(2 * time.Hour.Milliseconds()) // re-arm: a new generation
+	tx.fireReadTimeout(inc, staleGen)           // what an admitted old callback runs
+	if inc.ctx.Err() != nil {
+		t.Fatal("an admitted callback from before the re-arm fired the incarnation")
+	}
+	b, _ := armedTimebomb(t, tx)
+	b.timer.Stop()
+	tx.fireTimebomb(b)
+	if code, ok := fdbErrorCode(context.Cause(inc.ctx)); !ok || code != ErrTransactionTimedOut {
+		t.Fatalf("re-armed timebomb fired %v, want transaction_timed_out", context.Cause(inc.ctx))
+	}
+}

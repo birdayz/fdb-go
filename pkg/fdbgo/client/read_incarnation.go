@@ -205,7 +205,10 @@ func (tx *Transaction) armReadTimeoutLocked(inc *readIncarnation) {
 // timebomb is one TIMEOUT timer of a transaction. Its callback identifies the
 // timebomb it belongs to, so an expiry already in flight when the timer is
 // replaced cannot fire the replacement's incarnation.
-type timebomb struct{ timer *time.Timer }
+type timebomb struct {
+	timer   *time.Timer
+	cleanup runtime.Cleanup // stops timer once the transaction is unreachable
+}
 
 // armTimebombLocked points the transaction's timebomb at inc. libfdb_c's
 // timebomb dies with its transaction; here the timer holds the transaction only
@@ -228,7 +231,7 @@ func (tx *Transaction) armTimebombLocked(inc *readIncarnation, gen uint64, delay
 			t.fireTimebomb(b)
 		}
 	})
-	runtime.AddCleanup(tx, func(t *time.Timer) { t.Stop() }, b.timer)
+	b.cleanup = runtime.AddCleanup(tx, func(t *time.Timer) { t.Stop() }, b.timer)
 	tx.timebomb = b
 	return b.timer
 }
@@ -239,6 +242,9 @@ func (tx *Transaction) disarmTimebombLocked() {
 	tx.timebombArmed = false
 	tx.timebombInc = nil
 	if !tx.timebomb.timer.Stop() {
+		// Retire it: its in-flight callback finds another timebomb, and its
+		// cleanup registration no longer has a timer to stop.
+		tx.timebomb.cleanup.Stop()
 		tx.timebomb = nil
 	}
 }

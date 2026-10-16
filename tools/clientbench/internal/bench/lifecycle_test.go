@@ -40,6 +40,44 @@ func TestFinalizerDrainFollowsDependencyChain(t *testing.T) {
 	t.Logf("CLIENTBENCH_FINALIZER_CHAIN completed=5 rounds=%d", report.Rounds)
 }
 
+type cleanupNode struct {
+	pad [1024]byte
+}
+
+// unreachableCleanupChain registers count cleanups whose arguments hold the
+// next node, so each node becomes unreachable only after its predecessor's
+// cleanup has run: one more GC cycle per link.
+//
+//go:noinline
+func unreachableCleanupChain(count int, executed *atomic.Int64) {
+	var next *cleanupNode
+	for range count {
+		node := &cleanupNode{}
+		runtime.AddCleanup(node, func(held *cleanupNode) {
+			executed.Add(1)
+			runtime.KeepAlive(held)
+		}, next)
+		next = node
+	}
+	runtime.KeepAlive(next)
+}
+
+// Not parallel: the other drain tests assert that no cleanups are queued.
+func TestFinalizerDrainWaitsForCleanupChain(t *testing.T) {
+	var executed atomic.Int64
+	unreachableCleanupChain(5, &executed)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	report, err := drainFinalizers(ctx, 16)
+	if err != nil || !report.Complete || report.Rounds < 2 || executed.Load() != 5 {
+		t.Fatalf("cleanup chain not fully drained: executed=%d report=%+v err=%v", executed.Load(), report, err)
+	}
+	if report.After.CleanupsExecuted != report.After.CleanupsQueued || report.After.CleanupsQueued < report.Before.CleanupsQueued+5 {
+		t.Fatalf("invalid cleanup fixpoint counters: %+v", report)
+	}
+	t.Logf("CLIENTBENCH_CLEANUP_CHAIN completed=5 rounds=%d", report.Rounds)
+}
+
 func TestFinalizerDrainFailsClosed(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
