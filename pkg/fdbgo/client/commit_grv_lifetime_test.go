@@ -10,100 +10,119 @@ import (
 	"weak"
 )
 
+// Each mode runs with a caller context that can be cancelled and with one that
+// cannot (context.Background, the context-free API), whose native GRV runs in an
+// incarnation that is the native context itself.
 func TestCommitGRV_TransactionAndCallerLifetimes(t *testing.T) {
 	t.Parallel()
 	for _, mode := range []string{"cancel", "timeout", "caller", "reset", "db-close", "cancel-reset", "cancel-db-close"} {
-		t.Run(mode, func(t *testing.T) {
-			t.Parallel()
-			ctx, cancel := context.WithTimeout(context.Background(), commitLifetimeTimeout)
-			defer cancel()
-			db, gate, _ := newGRVReplyGateDB(t, ctx)
-			tx := db.CreateTransaction()
-			state := tx.readVersionState
-			key := []byte(t.Name())
-			tx.Set(key, []byte("native-grv"))
-			caller, stopCaller := context.WithCancel(ctx)
-			defer stopCaller()
-			gate.arm(1, false)
-			done := startGatedCommit(tx, caller)
-			waitCommitLifetimeGate(t, ctx, gate.heldCh, "native commit GRV reply withheld")
-			native := currentNativeCommit(t, tx)
-			want := ErrTransactionCancelled
-			switch mode {
-			case "cancel", "cancel-reset", "cancel-db-close":
-				tx.Cancel()
-			case "timeout":
-				tx.SetTimeout(1)
-				want = ErrTransactionTimedOut
-			case "caller":
-				stopCaller()
-			case "reset":
-				tx.Reset()
-			case "db-close":
-				if err := db.Close(); err != nil {
-					t.Fatal(err)
-				}
+		for _, background := range []bool{false, true} {
+			if background && mode == "caller" {
+				continue // a Background caller cannot be cancelled
 			}
-			err := awaitGatedCommit(t, ctx, done)
-			if mode == "caller" || mode == "db-close" {
-				if !errors.Is(err, context.Canceled) {
-					t.Fatalf("%s during native GRV = %v", mode, err)
-				}
-			} else {
-				requireCommitLifetimeCode(t, err, want, "public wait during native GRV")
+			name := mode
+			if background {
+				name += "/background"
 			}
-			if mode == "cancel-reset" || mode == "cancel-db-close" {
-				select {
-				case <-native.finished:
-					t.Fatal("Cancel destroyed native GRV before owner retirement")
-				default:
-				}
-				if mode == "cancel-reset" {
-					tx.Reset()
-				} else if err := db.Close(); err != nil {
-					t.Fatal(err)
-				}
-			}
-			retained := mode == "cancel" || mode == "timeout"
-			if retained {
-				select {
-				case <-native.finished:
-					t.Fatal("transaction interruption destroyed native commit while its GRV was pending")
-				default:
-				}
-				gate.release()
-				waitCommitLifetimeGate(t, ctx, native.finished, "retained native GRV and commit")
-			} else {
-				waitCommitLifetimeGate(t, ctx, native.finished, "native GRV aborted before its reply")
-				gate.release()
-			}
-			state.readVersionMu.Lock()
-			published := state.hasReadVersion && state.readVersion > 0
-			state.readVersionMu.Unlock()
-			if published != retained {
-				t.Fatalf("old shared GRV state published = %v, retained = %v", published, retained)
-			}
-			if requests, held, err := gate.counts(); requests != 1 || held != 1 || err != nil {
-				t.Fatalf("native GRV requests/held/error = %d/%d/%v, want 1/1/nil", requests, held, err)
-			}
-			verify := openTestDB(t, ctx)
-			got := readCommitLifetimeValue(t, ctx, verify, key)
-			if retained && string(got) != "native-grv" {
-				t.Fatalf("retained native commit missing: %q", got)
-			}
-			if !retained && got != nil {
-				t.Fatalf("dropped native GRV sent a commit: %q", got)
-			}
-			if retained {
-				if _, err := tx.Get(ctx, key); err == nil {
-					t.Fatal("late native GRV completion revived interrupted public handle")
-				} else {
-					requireCommitLifetimeCode(t, err, want, "read after retained native completion")
-				}
-			}
-			runtime.KeepAlive(tx)
-		})
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				testCommitGRVLifetime(t, mode, background)
+			})
+		}
 	}
+}
+
+func testCommitGRVLifetime(t *testing.T, mode string, background bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), commitLifetimeTimeout)
+	defer cancel()
+	db, gate, _ := newGRVReplyGateDB(t, ctx)
+	tx := db.CreateTransaction()
+	state := tx.readVersionState
+	key := []byte(t.Name())
+	tx.Set(key, []byte("native-grv"))
+	caller, stopCaller := context.WithCancel(ctx)
+	defer stopCaller()
+	if background {
+		caller = context.Background()
+	}
+	gate.arm(1, false)
+	done := startGatedCommit(tx, caller)
+	waitCommitLifetimeGate(t, ctx, gate.heldCh, "native commit GRV reply withheld")
+	native := currentNativeCommit(t, tx)
+	want := ErrTransactionCancelled
+	switch mode {
+	case "cancel", "cancel-reset", "cancel-db-close":
+		tx.Cancel()
+	case "timeout":
+		tx.SetTimeout(1)
+		want = ErrTransactionTimedOut
+	case "caller":
+		stopCaller()
+	case "reset":
+		tx.Reset()
+	case "db-close":
+		if err := db.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	err := awaitGatedCommit(t, ctx, done)
+	if mode == "caller" || mode == "db-close" {
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("%s during native GRV = %v", mode, err)
+		}
+	} else {
+		requireCommitLifetimeCode(t, err, want, "public wait during native GRV")
+	}
+	if mode == "cancel-reset" || mode == "cancel-db-close" {
+		select {
+		case <-native.finished:
+			t.Fatal("Cancel destroyed native GRV before owner retirement")
+		default:
+		}
+		if mode == "cancel-reset" {
+			tx.Reset()
+		} else if err := db.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	retained := mode == "cancel" || mode == "timeout"
+	if retained {
+		select {
+		case <-native.finished:
+			t.Fatal("transaction interruption destroyed native commit while its GRV was pending")
+		default:
+		}
+		gate.release()
+		waitCommitLifetimeGate(t, ctx, native.finished, "retained native GRV and commit")
+	} else {
+		waitCommitLifetimeGate(t, ctx, native.finished, "native GRV aborted before its reply")
+		gate.release()
+	}
+	state.readVersionMu.Lock()
+	published := state.hasReadVersion && state.readVersion > 0
+	state.readVersionMu.Unlock()
+	if published != retained {
+		t.Fatalf("old shared GRV state published = %v, retained = %v", published, retained)
+	}
+	if requests, held, err := gate.counts(); requests != 1 || held != 1 || err != nil {
+		t.Fatalf("native GRV requests/held/error = %d/%d/%v, want 1/1/nil", requests, held, err)
+	}
+	verify := openTestDB(t, ctx)
+	got := readCommitLifetimeValue(t, ctx, verify, key)
+	if retained && string(got) != "native-grv" {
+		t.Fatalf("retained native commit missing: %q", got)
+	}
+	if !retained && got != nil {
+		t.Fatalf("dropped native GRV sent a commit: %q", got)
+	}
+	if retained {
+		if _, err := tx.Get(ctx, key); err == nil {
+			t.Fatal("late native GRV completion revived interrupted public handle")
+		} else {
+			requireCommitLifetimeCode(t, err, want, "read after retained native completion")
+		}
+	}
+	runtime.KeepAlive(tx)
 }
 
 func TestCommitGRV_LatencyExcludesReadVersionWait(t *testing.T) {

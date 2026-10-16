@@ -52,12 +52,10 @@ func TestNativeCommit_PublicWaitersInterruptDuringRetainedGRV(t *testing.T) {
 					defer stopCapture()
 					for {
 						tx.readErrMu.Lock()
-						count := len(tx.readLife.nativeCommits)
+						all := nativeCommitsOf(tx.readLife)
+						count := len(all)
 						if count == 2 {
-							natives = natives[:0]
-							for actor := range tx.readLife.nativeCommits {
-								natives = append(natives, actor)
-							}
+							natives = append(natives[:0], all...)
 						}
 						tx.readErrMu.Unlock()
 						if count == 2 {
