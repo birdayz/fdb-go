@@ -33,52 +33,55 @@ Set as the top priority by the owner on 2026-10-15, ahead of the active workstre
 Server CPU comes first: every client of the cluster pays for it. Some of the gap may be
 configuration (options, flags, request shape); the rest is parity with libfdb_c 7.3.77.
 
-Method (reproducible on one host): `fdbserver` 7.3.77 run natively, `single memory`,
-pinned to CPUs disjoint from the client; `tools/clientbench` at 32 workers, `GOMAXPROCS=8`.
-Server cost is `perf stat -p <fdbserver>` (task-clock, cycles, instructions, syscalls),
-taken as the difference between a short and a long run so setup cancels. Server work counts
-come from the server's own trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`,
-`ResolverMetrics`, `MasterMetrics`, `NetworkMetrics`), as deltas around a run.
+Method (reproducible on one host): `fdbserver` 7.3.77 run natively as three processes, one
+each of class `stateless`, `transaction` and `storage`, `configure new single memory`, each
+pinned to its own core, disjoint from the client's; `tools/clientbench` with
+`GOMAXPROCS=8` on 8 other cores. A single-process server gives every role one shared
+connection, which overstates what write coalescing saves. Server cost per transaction is
+`tools/clientbench/scripts/servercost.py`: `perf stat -p <all fdbserver PIDs>` cycles,
+as the difference between a short and a long run. Server work counts come from the
+servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
+`NetworkMetrics`), as deltas around a run with idle time on both sides.
 
 - [ ] **Server CPU per transaction.** At 8–64 workers the Go client makes the servers do
   1.5–2.4× the CPU per transaction of libfdb_c; at 1 worker it is even.
   - 3-node cluster (`hcloud-multinode-vpc-20261014` phase M1, server node CPU per
     transaction, Go / CGo, median of 6 runs each) at 8 / 32 / 64 workers: `get100` 2.09 /
     2.04 / 1.85, `set100` 2.39 / 2.08 / 1.51, `grv` 1.73 / 1.34 / 1.14, `range100` 1.74 /
-    1.29 / 1.09. At 1 worker: 0.88–0.99 (`grv` 1.25).
-  - Local, 32 workers, server cycles per transaction: `get100` 39.8k vs 25.9k, `set100`
-    226k vs 114k, at the same clock rate. Both clients request identical work: reads,
-    writes, commits and bytes per transaction match.
-  - Server counters per transaction, `set100`: GRV requests 0.206 vs 0.060, commit batches
-    0.064 vs 0.031, run-loop iterations 1.26 vs 0.50. `get100`: GRV requests 0.100 vs 0.072.
-    Each GRV request costs a master round trip and each commit batch a full
-    resolver/log/storage cycle, so smaller batches mean more server work per transaction.
-  - Known divergences: `grvBatcher.admit` (`pkg/fdbgo/client/grv.go`) sent a request at
-    once when no GRV was in flight (RFC-259 Part A narrows this to serial use), where
-    libfdb_c always waits its adaptive window
-    (`readVersionBatcher`, NativeAPI.actor.cpp:7307-7405). Go writes each frame on the
-    sender's goroutine (`tryWriteDirect`); libfdb_c writes everything queued for a peer
-    after a 10–20 µs delay (`connectionWriter`, FlowTransport.actor.cpp:704-739;
-    `MIN/MAX_COALESCE_DELAY`, flow/Knobs.cpp:211-212).
-  - Go timers are the obstacle: when the process is idle, Go rounds sub-millisecond timers
-    up to about 1 ms, so always waiting the GRV window through `time.AfterFunc` made
-    1-worker `get100` 9× slower (131 → 1,212 µs). A timerfd in the netpoller is precise.
-  - [RFC-259](rfcs/259-request-batching-parity.md): GRV window on a precise timer, with a
-    fast path for a client that issues GRVs one at a time (Part A, implemented);
-    `connectionWriter` coalescing without a `writeLoop` handoff (Part B, needs its own
-    design review). Part A, local server cycles per transaction against libfdb_c: `grv`
-    at 2–8 workers 86.3k/44.6k/24.2k vs 86.7k/49.9k/31.3k (today 156.9k/75.7k/38.6k);
-    `get100` at 2/4 workers below libfdb_c, at 8 workers 78.1k vs 65.2k (today 90.1k);
-    1-worker latency within 5% ([docs/benchmarks/rfc-259](docs/benchmarks/rfc-259/README.md)).
-  - `set100` convoys: workers in a closed loop move in convoys, and Go splits a convoy into
-    two groups that stay apart, so the proxy sees two commit batches per round. The GRV
-    window removes the timer trigger (with `GOGC=off`, commit batches per transaction match
-    libfdb_c in 5 of 5 runs); GC cycles inside a round are the other trigger, so this also
-    depends on the client CPU item's allocation work.
-  - Still open: `get100` at 8 workers (1.2× with Part A; Part B's prototype closed it) and
-    at 32 workers (1.6× with Part A, 1.3× with Part B's prototype; libfdb_c's network
-    thread is saturated at 45k tx/s against Go's 75k and batches more than its knobs
-    alone would); `set100` convoys (below).
+    1.29 / 1.09. At 1 worker: 0.88–0.99 (`grv` 1.25). Measured before RFC-259 Part A.
+  - Both clients request identical work: reads, writes, commits and bytes per transaction
+    match. The difference is how many GRV requests, commit batches and packets carry it.
+  - [RFC-259](rfcs/259-request-batching-parity.md) Part A (#943) waits the GRV batch
+    window on a precise timer, as libfdb_c's `readVersionBatcher` does
+    (NativeAPI.actor.cpp:7307-7405); Go timers round sub-millisecond waits up to about
+    1 ms when the process is idle, which is why Go had skipped the wait.
+  - Local three-process cluster after Part A, server cycles per transaction Go / libfdb_c
+    (3 runs each): `grv` 1.0 at 2–32 workers; `get100` at most 1.0 at 1–4 workers, 1.25×
+    at 8, 1.54× at 32; `range100` 1.43× at 8, 1.26× at 32; `set100` 2.0× at 8, 1.87× at 32.
+  - `get100`, 8 workers: GRV requests and storage queries per transaction are equal;
+    the servers process 19% more network events (more, smaller packets). libfdb_c's
+    `connectionWriter` waits 9–22 µs and then writes everything queued for a peer
+    (FlowTransport.actor.cpp:704-739); Go writes each frame on its sender. RFC-259 Part B
+    prototypes on the three-process cluster cut `get100` at 32 workers by 10–16% but
+    saved nothing at 8 workers and cost latency, so Part B is not worth its complexity yet.
+  - `range100`, 8 workers: Go sends 1.9× libfdb_c's GRV requests (0.346 vs 0.184 per
+    transaction). Both use a window of half the smoothed GRV latency, about 57 µs for Go.
+    libfdb_c measures that latency on its network thread, which here is busy deserializing
+    range replies, so its window is longer and its batches bigger (5.4 against 2.9
+    transactions per request) at 32% more transaction latency (545 vs 413 µs). Matching it
+    would mean waiting longer, a latency trade-off rather than a parity fix.
+  - `set100` is the largest gap: at 8 workers 0.236 commit batches per transaction against
+    0.126 (one per round of 8), and 11 vs 6.5 ms mean latency. Workers in a closed loop
+    commit in convoys, and the proxy batches a convoy's commits if they arrive within
+    0.5 ms of the first (`COMMIT_TRANSACTION_BATCH_INTERVAL_FROM_IDLE`,
+    CommitProxyServer.actor.cpp:430-436). Go GC cycles split a convoy: in traced runs every
+    split began at a GC cycle that started as the convoy's commit replies arrived, and the
+    late goroutines lost 0.5–1 ms (stop-the-world, mark assists, and runnable goroutines
+    waiting while Ps run GC mark workers). Once split, the two groups alternate on the
+    transaction log and stay apart. With `GOGC=off`, Go matches libfdb_c (single-process
+    server, 8 workers, 4 of 4 runs: 6.4 ms and 1,245 tx/s against 6.5 ms and 1,238 tx/s).
+    Lever: less allocation and CPU on the path from a commit reply to the next commit,
+    tracked under client CPU.
   - Done when server cycles per transaction are within 10% of libfdb_c for `get100`,
     `set100`, `range100` and `grv` at 8–64 workers, locally and on a multi-node rerun,
     without raising 1-worker mean latency by more than 5%.
@@ -89,16 +92,19 @@ come from the server's own trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`,
   - Local, 32 workers, client CPU per transaction: `get100` 33.5 vs 32.0 µs, `range100`
     86.1 vs 60.3 µs, `set100` 67.2 vs 31.3 µs. The extra is user CPU; Go makes fewer
     syscalls per transaction than libfdb_c (2.4 vs 4.1 on `get100`).
-  - Profile hot spots (32 workers): each encoded wire field does a string-keyed map lookup
-    (`MessageTemplate.vtableOffset`, 5% of `set100` CPU); committing a transaction with no
-    writes is not free (`commitAdmitted`/`publishCommit`, 13% of `get100` CPU; libfdb_c
-    returns at once); every commit's goroutine grows its stack from scratch
-    (`copystack`/`newstack`, 5.5% of `set100`); GC and allocation take about 30%, from
-    ~100 allocations per `set100` transaction, ~67 per `get100` and ~72 (38 KB) per
-    `range100`.
-  - Next: remove the map lookup, the no-write commit work and the per-commit stack growth,
-    then cut allocations on the read and commit paths (`pkg/fdbgo/wire/`,
-    `pkg/fdbgo/client/readpath.go`, `commitpath.go`).
+  - Done: each encoded table no longer does a string-keyed map lookup for its vtable
+    (#944, about 5% of `set100` CPU); an operation whose caller cannot cancel no longer
+    derives its own context (#945, 8 → 2 allocations per operation; client CPU per
+    transaction −8% `get100`, −5% `range100`, −9% `set100` at 32 workers).
+  - Remaining hot spots: committing a transaction with no writes is not free
+    (`commitAdmitted`/`publishCommit`, 13% of `get100` CPU; libfdb_c returns at once);
+    every commit starts a goroutine (`startNativeCommit`: 11 allocations, a weak pointer
+    and a cleanup per commit, and stack growth); a blind write's commit copies the whole
+    `Transaction` to fetch its read version (`captureNativeReadState`, 870 bytes); each
+    transaction's first `Set` builds its `rywCache` map (1.4 KB per `set100`); each
+    incarnation creates its own cancellable context. About 89 allocations and 9.6 KB per
+    `set100` transaction, 52 and 5 KB per `get100`, 57 and 37 KB per `range100`.
+  - Allocation also drives `set100` server CPU (convoy splits at GC cycles, above).
 
 ## 1. WS-E — scalar/SQL semantics and statement execution — ACTIVE
 
