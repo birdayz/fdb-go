@@ -125,12 +125,14 @@ func TestLeaseDrainNotificationPublishesInactiveSingleWinner(t *testing.T) {
 func TestExecutionLeaseAndOperationLayout(t *testing.T) {
 	pointer := unsafe.Sizeof((*Transaction)(nil))
 	wantLease := 2*pointer + 8
-	wantOperation := 8*pointer + wantLease
+	// Eight words plus the lease, and one word for the joined flag (96 bytes on
+	// 64-bit, the same allocation size class as without it).
+	wantOperation := 9*pointer + wantLease
 	if got := unsafe.Sizeof(executionLease{}); got != wantLease {
 		t.Fatalf("executionLease size=%d, want %d (24 on 64-bit)", got, wantLease)
 	}
 	if got := unsafe.Sizeof(readOperation{}); got != wantOperation {
-		t.Fatalf("readOperation size=%d, want %d (88 on 64-bit)", got, wantOperation)
+		t.Fatalf("readOperation size=%d, want %d (96 on 64-bit)", got, wantOperation)
 	}
 }
 
