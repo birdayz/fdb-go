@@ -48,13 +48,39 @@ type readOperation struct {
 	readAdmission
 	lease        *executionLease
 	leaseStorage executionLease
+	// joined marks an operation whose parent can never be cancelled
+	// (Done() == nil, as with context.Background): the incarnation's
+	// cancellation is the operation's, so it needs no derived context.
+	// Context is then the parent itself.
+	joined bool
+}
+
+func (op *readOperation) Done() <-chan struct{} {
+	if op.joined {
+		return op.inc.ctx.Done()
+	}
+	return op.Context.Done()
+}
+
+func (op *readOperation) Err() error {
+	if op.joined {
+		return op.inc.ctx.Err()
+	}
+	return op.Context.Err()
 }
 
 func (op *readOperation) Value(key any) any {
 	if k, ok := key.(readContextKey); ok && k.tx == op.tx {
 		return op
 	}
-	return op.Context.Value(key)
+	v := op.Context.Value(key)
+	if v == nil && op.joined {
+		// The incarnation holds no caller values; it answers only the context
+		// package's own lookup, so context.Cause and contexts derived from the
+		// operation follow the incarnation.
+		return op.inc.ctx.Value(key)
+	}
+	return v
 }
 
 func (tx *Transaction) readIncarnationLocked() *readIncarnation {
@@ -201,11 +227,26 @@ func (tx *Transaction) opContextWithLease(parent context.Context, issued bool) (
 	}
 	tx.readErrMu.Lock()
 	inc := tx.readIncarnationLocked()
+	cause := inc.cause
 	tx.readErrMu.Unlock()
+	if parent.Done() == nil {
+		// Nothing but the incarnation can end this operation, so it uses the
+		// incarnation's cancellation directly instead of deriving a context
+		// that merges the two.
+		if cause != nil {
+			inc.cancel(cause)
+		}
+		op := &readOperation{Context: parent, readAdmission: readAdmission{tx: tx, inc: inc, parent: parent}, joined: true}
+		op.lease = tx.enterReadStateInto(op, inc, true, issued, &op.leaseStorage)
+		if op.lease != nil {
+			op.entryErr = tx.deferredErr.Load()
+		}
+		return op, op.lease.release, op.lease
+	}
 	ctx, cancel := context.WithCancelCause(parent)
 	stop := context.AfterFunc(inc.ctx, func() { cancel(context.Cause(inc.ctx)) })
 	tx.readErrMu.Lock()
-	cause := inc.cause
+	cause = inc.cause
 	tx.readErrMu.Unlock()
 	if cause != nil {
 		inc.cancel(cause)

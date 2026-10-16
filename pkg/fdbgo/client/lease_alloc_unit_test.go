@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"fdb.dev/pkg/fdbgo/wire"
 )
 
 type operationValueKey struct{}
@@ -13,11 +15,18 @@ type operationValueKey struct{}
 func TestReadOperationContextAllocations(t *testing.T) {
 	cancellable, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	for name, parent := range map[string]context.Context{
-		"background":  context.Background(),
-		"value":       context.WithValue(context.Background(), operationValueKey{}, "caller"),
-		"cancellable": cancellable,
+	// An uncancellable parent needs no derived context: the operation and its
+	// release are all it allocates.
+	for _, tc := range []struct {
+		name   string
+		parent context.Context
+		max    float64
+	}{
+		{"background", context.Background(), 2},
+		{"value", context.WithValue(context.Background(), operationValueKey{}, "caller"), 2},
+		{"cancellable", cancellable, 8},
 	} {
+		name, parent := tc.name, tc.parent
 		t.Run(name, func(t *testing.T) {
 			tx := &Transaction{}
 			defer tx.Cancel()
@@ -26,8 +35,8 @@ func TestReadOperationContextAllocations(t *testing.T) {
 				_ = ctx.Done()
 				release()
 			})
-			if n > 8 {
-				t.Fatalf("READ_OPERATION_ALLOC: %v allocations per operation, want <= 8", n)
+			if n > tc.max {
+				t.Fatalf("READ_OPERATION_ALLOC: %v allocations per operation, want <= %v", n, tc.max)
 			}
 			t.Logf("READ_OPERATION_ALLOC: %s = %v", name, n)
 		})
@@ -130,6 +139,74 @@ func TestReadOperationContextPreservesParent(t *testing.T) {
 	}
 	if context.Cause(waiting) != cause {
 		t.Fatalf("derived child cause=%v, want caller cause", context.Cause(waiting))
+	}
+}
+
+// An operation whose parent can never be cancelled takes its cancellation
+// from the incarnation directly: Done, Err and Cause follow the incarnation,
+// contexts derived from the operation see it end, and caller values survive.
+func TestReadOperationUncancellableParentFollowsIncarnation(t *testing.T) {
+	t.Parallel()
+	for name, parent := range map[string]context.Context{
+		"background": context.Background(),
+		"value":      context.WithValue(context.Background(), operationValueKey{}, "caller"),
+		"without":    context.WithoutCancel(context.WithValue(context.Background(), operationValueKey{}, "caller")),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			tx := &Transaction{}
+			ctx, release := tx.opContext(parent)
+			defer release()
+			op := tx.readOperation(ctx)
+			if op == nil || ctx.Done() == nil || ctx.Done() != op.inc.ctx.Done() || ctx.Err() != nil {
+				t.Fatal("operation under an uncancellable parent derived its own context instead of using its incarnation's")
+			}
+			if got, want := ctx.Value(operationValueKey{}), parent.Value(operationValueKey{}); got != want {
+				t.Fatalf("operation value = %v, want the parent's %v", got, want)
+			}
+			if _, ok := ctx.Deadline(); ok {
+				t.Fatal("operation reported a deadline its parent does not have")
+			}
+			child, stopChild := context.WithCancel(ctx)
+			defer stopChild()
+			after := make(chan struct{})
+			stopAfter := context.AfterFunc(ctx, func() { close(after) })
+			defer stopAfter()
+			tx.Cancel()
+			for what, done := range map[string]<-chan struct{}{"operation": ctx.Done(), "child": child.Done(), "AfterFunc": after} {
+				select {
+				case <-done:
+				case <-time.After(time.Minute):
+					t.Fatalf("%s did not observe the incarnation's end", what)
+				}
+			}
+			var fdbErr *wire.FDBError
+			if !errors.Is(ctx.Err(), context.Canceled) || !errors.As(context.Cause(ctx), &fdbErr) || fdbErr.Code != ErrTransactionCancelled {
+				t.Fatalf("operation interruption = (%v, %v), want the transaction's cancellation", ctx.Err(), context.Cause(ctx))
+			}
+			if !errors.As(context.Cause(child), &fdbErr) || fdbErr.Code != ErrTransactionCancelled {
+				t.Fatalf("derived child cause = %v, want the transaction's cancellation", context.Cause(child))
+			}
+		})
+	}
+}
+
+// Releasing an operation under an uncancellable parent returns its lease.
+func TestReadOperationUncancellableParentReleasesLease(t *testing.T) {
+	t.Parallel()
+	tx := &Transaction{}
+	defer tx.Cancel()
+	ctx, release, counted := tx.opContextFor(context.Background(), true)
+	op := tx.readOperation(ctx)
+	if !counted || !op.lease.isActive() {
+		t.Fatal("operation was not admitted")
+	}
+	release()
+	tx.readErrMu.Lock()
+	users, issued := op.inc.users, op.inc.issuedReads
+	tx.readErrMu.Unlock()
+	if users != 0 || issued != 0 || op.lease.isActive() {
+		t.Fatalf("release kept the lease: users=%d issued=%d", users, issued)
 	}
 }
 

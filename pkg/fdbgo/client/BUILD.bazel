@@ -151,6 +151,7 @@ go_test(
         "turnover_ready_unit_test.go",
     ],
     embed = [":client"],
+    deps = ["//pkg/fdbgo/wire"],
 )
 
 # gazelle:exclude grv_batch_unit_test.go
