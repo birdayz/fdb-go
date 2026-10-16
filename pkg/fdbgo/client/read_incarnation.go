@@ -28,7 +28,28 @@ type readIncarnation struct {
 	// Keep latest inline; overflow strongly retains displaced, unready producers.
 	versionstamp  *versionstampCompletion
 	versionstamps map[*versionstampCompletion]struct{}
+	// Keep the usual single native commit inline; further ones overflow.
+	nativeCommit  *nativeCommit
 	nativeCommits map[*nativeCommit]struct{}
+}
+
+func (inc *readIncarnation) addNativeLocked(n *nativeCommit) {
+	if inc.nativeCommit == nil {
+		inc.nativeCommit = n
+		return
+	}
+	if inc.nativeCommits == nil {
+		inc.nativeCommits = make(map[*nativeCommit]struct{})
+	}
+	inc.nativeCommits[n] = struct{}{}
+}
+
+func (inc *readIncarnation) removeNativeLocked(n *nativeCommit) {
+	if inc.nativeCommit == n {
+		inc.nativeCommit = nil
+		return
+	}
+	delete(inc.nativeCommits, n)
 }
 
 type readContextKey struct{ tx *Transaction }
@@ -108,6 +129,9 @@ func recordReadCauseLocked(inc *readIncarnation, cause error) {
 		}
 		for completion := range inc.versionstamps {
 			completion.selectLocked(commitOutcome{}, cause, true)
+		}
+		if inc.nativeCommit != nil {
+			inc.nativeCommit.selectResult(cause, false, nil)
 		}
 		for native := range inc.nativeCommits {
 			native.selectResult(cause, false, nil)

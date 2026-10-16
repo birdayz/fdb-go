@@ -74,11 +74,23 @@ func currentNativeCommit(t *testing.T, tx *Transaction) *nativeCommit {
 	t.Helper()
 	tx.readErrMu.Lock()
 	defer tx.readErrMu.Unlock()
-	for native := range tx.readLife.nativeCommits {
+	for _, native := range nativeCommitsOf(tx.readLife) {
 		return native
 	}
 	t.Fatal("no native commit at the dispatch gate")
 	return nil
+}
+
+// nativeCommitsOf lists an incarnation's native commits; the caller holds readErrMu.
+func nativeCommitsOf(inc *readIncarnation) []*nativeCommit {
+	var all []*nativeCommit
+	if inc.nativeCommit != nil {
+		all = append(all, inc.nativeCommit)
+	}
+	for native := range inc.nativeCommits {
+		all = append(all, native)
+	}
+	return all
 }
 
 func readCommitLifetimeValue(t *testing.T, ctx context.Context, db *Database, key []byte) []byte {

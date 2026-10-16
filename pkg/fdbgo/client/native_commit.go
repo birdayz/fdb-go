@@ -12,7 +12,7 @@ import (
 // destruction (NativeAPI.actor.cpp:6172, 6942–6945).
 type nativeCommit struct {
 	ctx        context.Context
-	cancel     context.CancelFunc
+	cancel     context.CancelCauseFunc
 	completion weak.Pointer[versionstampCompletion]
 	cleanup    runtime.Cleanup
 	finished   chan struct{}
@@ -46,7 +46,7 @@ func (n *nativeCommit) deliver() {
 	}
 }
 
-func (n *nativeCommit) stop() { n.cancel() }
+func (n *nativeCommit) stop() { n.cancel(nil) }
 
 // Start under the execution lease, before Reset can retire this admission.
 func (tx *Transaction) startNativeCommit(caller context.Context, inc *readIncarnation, completion *versionstampCompletion, input *commitInput, tok cacheToken) (*nativeCommit, error) {
@@ -59,15 +59,12 @@ func (tx *Transaction) startNativeCommit(caller context.Context, inc *readIncarn
 		return nil, context.Canceled
 	}
 	// An opContext contains a strong tx reference even through WithoutCancel.
-	ctx, cancel := context.WithCancel(input.db.ctx)
+	ctx, cancel := context.WithCancelCause(input.db.ctx)
 	n := &nativeCommit{
 		ctx: ctx, cancel: cancel, completion: weak.Make(completion),
 		finished: make(chan struct{}), done: make(chan struct{}),
 	}
-	if inc.nativeCommits == nil {
-		inc.nativeCommits = make(map[*nativeCommit]struct{})
-	}
-	inc.nativeCommits[n] = struct{}{}
+	inc.addNativeLocked(n)
 	n.cleanup = runtime.AddCleanup(tx, (*nativeCommit).stop, n)
 	input.versionstamp = nil // the worker must not root completion.tx
 	go n.run(caller, input, tok)
@@ -82,14 +79,28 @@ func (n *nativeCommit) call(caller context.Context, input *commitInput) (result 
 	}()
 	if input.readState != nil {
 		// Caller cancellation applies through GRV only; native owner drop applies throughout.
-		ctx, cancel := context.WithCancel(caller)
-		stop := context.AfterFunc(n.ctx, cancel)
-		if n.ctx.Err() != nil {
-			cancel()
+		var ctx context.Context
+		cancel, stop := func() {}, func() bool { return false }
+		if caller.Done() == nil {
+			// Only owner drop can end this GRV, so it runs in an incarnation
+			// that is the native context itself: the read state is private
+			// to this goroutine, and nothing else fails or resets it.
+			input.readState.readLife = &readIncarnation{ctx: n.ctx, cancel: n.cancel}
+			ctx = context.Background()
+		} else {
+			var c context.CancelFunc
+			ctx, c = context.WithCancel(caller)
+			cancel, stop = c, context.AfterFunc(n.ctx, c)
+			if n.ctx.Err() != nil {
+				cancel()
+			}
 		}
 		input.readVersion, err = input.readState.readVersionForOperation(ctx, grvFlagCausalReadRisky)
 		if err == nil {
 			err = ctx.Err()
+		}
+		if err == nil {
+			err = n.ctx.Err()
 		}
 		stop()
 		cancel()
@@ -111,7 +122,7 @@ func (n *nativeCommit) run(caller context.Context, input *commitInput, tok cache
 	defer input.db.wg.Done()
 	defer close(n.finished)
 	defer n.cleanup.Stop()
-	defer n.cancel()
+	defer n.stop()
 	defer input.release()
 	result, err, panicked := n.call(caller, input)
 	input.release()
@@ -128,7 +139,7 @@ func (n *nativeCommit) run(caller context.Context, input *commitInput, tok cache
 			completion.finishNativeLocked(result, err)
 		}
 		n.selectResult(err, true, panicked)
-		delete(completion.inc.nativeCommits, n)
+		completion.inc.removeNativeLocked(n)
 		tx.readErrMu.Unlock()
 	} else {
 		n.selectResult(err, true, panicked)
