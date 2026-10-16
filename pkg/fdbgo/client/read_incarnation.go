@@ -3,7 +3,9 @@ package client
 import (
 	"context"
 	"errors"
+	"runtime"
 	"time"
+	"weak"
 
 	"fdb.dev/pkg/fdbgo/wire"
 )
@@ -16,7 +18,7 @@ type readIncarnation struct {
 	cancel   context.CancelCauseFunc
 	gen      uint64
 	cause    error
-	timer    *time.Timer
+	timer    *time.Timer // the transaction's timebomb while armed for this incarnation
 	timerGen uint64
 	users    int
 	drained  chan struct{}
@@ -143,12 +145,9 @@ func (tx *Transaction) failCapturedIncarnation(inc *readIncarnation, cause error
 	tx.readErrMu.Lock()
 	recordReadCauseLocked(inc, cause)
 	pending := tx.detachPendingLocked(inc)
-	cause, timer := inc.cause, inc.timer
-	inc.timer = nil
+	cause = inc.cause
+	tx.stopTimebombLocked(inc)
 	tx.readErrMu.Unlock()
-	if timer != nil {
-		timer.Stop()
-	}
 	if tx.beforeReadFailureDelivery != nil {
 		tx.beforeReadFailureDelivery(cause)
 	}
@@ -173,8 +172,7 @@ func (tx *Transaction) configureReadTimeout() {
 		return
 	}
 	inc := tx.readIncarnationLocked()
-	old := inc.timer
-	inc.timer = nil
+	tx.stopTimebombLocked(inc)
 	tx.armReadTimeoutLocked(inc)
 	cause := inc.cause
 	var pending []*PendingGet
@@ -182,9 +180,6 @@ func (tx *Transaction) configureReadTimeout() {
 		pending = tx.detachPendingLocked(inc)
 	}
 	tx.readErrMu.Unlock()
-	if old != nil {
-		old.Stop()
-	}
 	if cause != nil {
 		inc.cancel(cause)
 		retirePending(pending, false)
@@ -202,9 +197,82 @@ func (tx *Transaction) armReadTimeoutLocked(inc *readIncarnation) {
 		if delay <= 0 {
 			recordReadCauseLocked(inc, &wire.FDBError{Code: ErrTransactionTimedOut})
 		} else {
-			inc.timer = time.AfterFunc(delay, func() { tx.fireReadTimeout(inc, gen) })
+			inc.timer = tx.armTimebombLocked(inc, gen, delay)
 		}
 	}
+}
+
+// timebomb is one TIMEOUT timer of a transaction. Its callback identifies the
+// timebomb it belongs to, so an expiry already in flight when the timer is
+// replaced cannot fire the replacement's incarnation.
+type timebomb struct {
+	timer   *time.Timer
+	cleanup runtime.Cleanup // stops timer once the transaction is unreachable
+}
+
+// armTimebombLocked points the transaction's timebomb at inc. libfdb_c's
+// timebomb dies with its transaction; here the timer holds the transaction only
+// weakly, and a cleanup stops it once the transaction is unreachable, so an
+// abandoned transaction is not kept alive until its deadline. A stopped timer
+// is re-armed; one whose expiry is in flight is replaced.
+func (tx *Transaction) armTimebombLocked(inc *readIncarnation, gen uint64, delay time.Duration) *time.Timer {
+	if tx.timebombArmed {
+		tx.disarmTimebombLocked()
+	}
+	tx.timebombInc, tx.timebombGen, tx.timebombArmed = inc, gen, true
+	if b := tx.timebomb; b != nil {
+		b.timer.Reset(delay)
+		return b.timer
+	}
+	b := &timebomb{}
+	self := weak.Make(tx)
+	b.timer = time.AfterFunc(delay, func() {
+		if t := self.Value(); t != nil {
+			t.fireTimebomb(b)
+		}
+	})
+	b.cleanup = runtime.AddCleanup(tx, func(t *time.Timer) { t.Stop() }, b.timer)
+	tx.timebomb = b
+	return b.timer
+}
+
+// disarmTimebombLocked stops the armed timebomb. If its expiry is already in
+// flight, the callback finds it disarmed, and the next arm builds a new one.
+func (tx *Transaction) disarmTimebombLocked() {
+	tx.timebombArmed = false
+	tx.timebombInc = nil
+	if !tx.timebomb.timer.Stop() {
+		// Retire it: its in-flight callback finds another timebomb, and its
+		// cleanup registration no longer has a timer to stop.
+		tx.timebomb.cleanup.Stop()
+		tx.timebomb = nil
+	}
+}
+
+// stopTimebombLocked disarms the timebomb if it is armed for inc.
+func (tx *Transaction) stopTimebombLocked(inc *readIncarnation) {
+	if inc.timer == nil {
+		return
+	}
+	inc.timer = nil
+	if tx.timebombArmed && tx.timebombInc == inc {
+		tx.disarmTimebombLocked()
+	}
+}
+
+// fireTimebomb fires the incarnation b was armed for, if b is still the armed
+// timebomb.
+func (tx *Transaction) fireTimebomb(b *timebomb) {
+	tx.readErrMu.Lock()
+	if tx.timebomb != b || !tx.timebombArmed {
+		tx.readErrMu.Unlock()
+		return
+	}
+	tx.timebombArmed = false
+	inc, gen := tx.timebombInc, tx.timebombGen
+	tx.timebombInc = nil
+	tx.readErrMu.Unlock()
+	tx.fireReadTimeout(inc, gen)
 }
 
 func (tx *Transaction) fireReadTimeout(inc *readIncarnation, gen uint64) {

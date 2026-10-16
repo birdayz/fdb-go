@@ -215,8 +215,8 @@ func (tx *Transaction) turnoverLocked(old *readIncarnation) turnoverToken {
 	tx.readGen++
 	tx.readErr = nil
 	recordReadCauseLocked(old, &wire.FDBError{Code: ErrTransactionCancelled})
-	cause, timer := old.cause, old.timer
-	old.timer = nil
+	cause := old.cause
+	tx.stopTimebombLocked(old)
 	first, native := old.nativeCommit, old.nativeCommits
 	old.nativeCommit, old.nativeCommits = nil, nil
 	var drained <-chan struct{}
@@ -225,9 +225,6 @@ func (tx *Transaction) turnoverLocked(old *readIncarnation) turnoverToken {
 		drained = old.drained
 	}
 	tx.readErrMu.Unlock()
-	if timer != nil {
-		timer.Stop()
-	}
 	if first != nil {
 		first.stop()
 	}

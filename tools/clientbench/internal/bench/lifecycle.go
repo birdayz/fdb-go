@@ -65,7 +65,7 @@ func drainFinalizers(ctx context.Context, maxRounds int) (report FinalizerDrain,
 	if err != nil {
 		return report, err
 	}
-	var previous uint64
+	var previous, previousCleanups uint64
 	stable := false
 	for report.Rounds < maxRounds {
 		if err := ctx.Err(); err != nil {
@@ -101,16 +101,15 @@ func drainFinalizers(ctx context.Context, maxRounds int) (report FinalizerDrain,
 				stable = false
 				break
 			}
-			if report.After.CleanupsQueued != report.Before.CleanupsQueued {
-				return report, fmt.Errorf("unexpected runtime cleanups queued during drain: %+v", report)
-			}
 			if report.After.FinalizersExecuted == report.After.FinalizersQueued && report.After.CleanupsExecuted == report.After.CleanupsQueued {
-				// Future finalizers can release transactions for the NEXT GC cycle.
-				if stable && report.After.FinalizersQueued == previous {
+				// Finalizers and cleanups can release objects for the NEXT GC
+				// cycle (the Go client stops an unreachable transaction's
+				// timeout timer from a cleanup), so both must be stable.
+				if stable && report.After.FinalizersQueued == previous && report.After.CleanupsQueued == previousCleanups {
 					report.Complete = true
 					return report, nil
 				}
-				previous, stable = report.After.FinalizersQueued, true
+				previous, previousCleanups, stable = report.After.FinalizersQueued, report.After.CleanupsQueued, true
 				break
 			}
 			select {

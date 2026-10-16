@@ -122,7 +122,6 @@ func TestBothBackendsAgainstFDB(t *testing.T) {
 				for _, drain := range []bench.FinalizerDrain{life.MeasurementDrain, life.ShutdownDrain} {
 					if !drain.Complete || drain.Rounds < 2 || drain.WallNS <= 0 ||
 						drain.After.FinalizersExecuted != drain.After.FinalizersQueued ||
-						drain.After.CleanupsQueued != drain.Before.CleanupsQueued ||
 						drain.After.CleanupsExecuted != drain.After.CleanupsQueued {
 						t.Fatalf("incomplete finalizer fixpoint: %+v", drain)
 					}

@@ -459,8 +459,15 @@ type Transaction struct {
 	resetMu   sync.Mutex
 	readReady chan struct{}
 	readErrMu sync.Mutex
-	readLife  *readIncarnation
-	readErr   error
+	// timebomb is the transaction's TIMEOUT timer, reused across incarnations;
+	// while timebombArmed it is armed for timebombInc at timebombGen (all under
+	// readErrMu).
+	timebomb      *timebomb
+	timebombArmed bool
+	timebombInc   *readIncarnation
+	timebombGen   uint64
+	readLife      *readIncarnation
+	readErr       error
 	// readGen is the read-tracking incarnation, bumped on every reset. C++
 	// swaps the reading AndFuture on resetRyow (:2715): a read issued under an
 	// old incarnation that fails AFTER a reset must not poison the new one.
