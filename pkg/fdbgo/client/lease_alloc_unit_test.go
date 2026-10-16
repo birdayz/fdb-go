@@ -3,8 +3,10 @@ package client
 import (
 	"context"
 	"errors"
+	"runtime"
 	"testing"
 	"time"
+	"weak"
 
 	"fdb.dev/pkg/fdbgo/wire"
 )
@@ -288,4 +290,47 @@ func TestIncarnationNativeCommitStorage(t *testing.T) {
 	check("stale removal", c)
 	inc.removeNativeLocked(c)
 	check("all removed")
+// An abandoned transaction with a TIMEOUT is not kept alive by its timebomb:
+// libfdb_c's timebomb dies with its transaction.
+func TestAbandonedTransactionTimebombDoesNotRetainIt(t *testing.T) {
+	t.Parallel()
+	abandon := func() weak.Pointer[Transaction] {
+		tx := &Transaction{}
+		tx.SetTimeout(time.Hour.Milliseconds())
+		tx.readErrMu.Lock()
+		armed := tx.readLife != nil && tx.readLife.timer != nil
+		tx.readErrMu.Unlock()
+		if !armed {
+			t.Fatal("SetTimeout did not arm the timebomb")
+		}
+		return weak.Make(tx)
+	}
+	w := abandon()
+	for i := 0; i < 10 && w.Value() != nil; i++ {
+		runtime.GC()
+	}
+	if w.Value() != nil {
+		t.Fatal("TIMEBOMB_RETAINS: an armed timebomb kept an abandoned transaction alive")
+	}
+}
+
+// The timebomb of a live transaction still fires, after re-arming for a new
+// deadline, with transaction_timed_out.
+func TestLiveTransactionTimebombFires(t *testing.T) {
+	t.Parallel()
+	tx := &Transaction{}
+	tx.SetTimeout(time.Hour.Milliseconds())
+	tx.SetTimeout(1) // re-arm the same timer for a 1 ms deadline
+	tx.readErrMu.Lock()
+	inc := tx.readLife
+	tx.readErrMu.Unlock()
+	select {
+	case <-inc.ctx.Done():
+	case <-time.After(time.Minute):
+		t.Fatal("the re-armed timebomb never fired")
+	}
+	if code, ok := fdbErrorCode(context.Cause(inc.ctx)); !ok || code != ErrTransactionTimedOut {
+		t.Fatalf("timebomb cause = %v, want transaction_timed_out", context.Cause(inc.ctx))
+	}
+	runtime.KeepAlive(tx)
 }
