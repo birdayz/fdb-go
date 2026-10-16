@@ -43,6 +43,7 @@ go_test(
         "column_conform_test.go",
         "domain_registration_test.go",
         "go_runner_test.go",
+        "httpclient_test.go",
         "in_list_dedup_regression_test.go",
         "join_projection_coltype_regression_test.go",
         "ordinal_plan_stability_test.go",

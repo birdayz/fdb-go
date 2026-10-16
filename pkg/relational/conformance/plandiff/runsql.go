@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"time"
 )
 
 // Column is one column's metadata in a RowSet: its name and JDBC type-name
@@ -121,7 +120,7 @@ func NewJavaRunnerHTTP(baseURL, clusterFileContent string) Runner {
 	return javaRunner{
 		baseURL:     baseURL,
 		clusterFile: clusterFileContent,
-		httpClient:  &http.Client{Timeout: 120 * time.Second},
+		httpClient:  newJavaHTTPClient(),
 	}
 }
 

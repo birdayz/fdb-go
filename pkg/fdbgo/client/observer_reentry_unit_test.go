@@ -28,7 +28,16 @@ func TestOnErrorObserverReentry(t *testing.T) {
 						defer cancel(nil)
 						tx := &Transaction{}
 						tx.backoffJitter = func() float64 { return 0 }
-						defer tx.Cancel()
+						defer func() {
+							tx.Cancel()
+							// Runtime cleanups run outside this bubble, where even
+							// stopping an already-stopped bubble timer is forbidden.
+							tx.readErrMu.Lock()
+							if tx.timebomb != nil {
+								tx.timebomb.cleanup.Stop()
+							}
+							tx.readErrMu.Unlock()
+						}()
 						initial := tx.enterState()
 						inc := initial.inc
 						initial.release()
