@@ -11,7 +11,16 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 )
+
+// The Java server may retire idle sockets between specs. Open a fresh connection
+// rather than retrying an /invoke request that may have mutated state.
+func newJavaHTTPClient() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DisableKeepAlives = true
+	return &http.Client{Transport: transport, Timeout: 120 * time.Second}
+}
 
 // JavaError carries a Java conformance-server error with structured
 // fields so cross-engine harnesses can match on SQLSTATE without
