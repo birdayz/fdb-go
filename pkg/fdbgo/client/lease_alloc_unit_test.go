@@ -240,3 +240,52 @@ func TestStateLeaseDoesNotAllocate(t *testing.T) {
 		}
 	}
 }
+
+// The incarnation keeps one native commit inline and the rest in a map; each
+// transition keeps every live commit reachable exactly once.
+func TestIncarnationNativeCommitStorage(t *testing.T) {
+	t.Parallel()
+	inc := &readIncarnation{}
+	a, b, c := &nativeCommit{}, &nativeCommit{}, &nativeCommit{}
+	live := func() map[*nativeCommit]int {
+		got := map[*nativeCommit]int{}
+		if inc.nativeCommit != nil {
+			got[inc.nativeCommit]++
+		}
+		for n := range inc.nativeCommits {
+			got[n]++
+		}
+		return got
+	}
+	check := func(step string, want ...*nativeCommit) {
+		t.Helper()
+		got := live()
+		if len(got) != len(want) {
+			t.Fatalf("%s: %d live commits, want %d", step, len(got), len(want))
+		}
+		for _, n := range want {
+			if got[n] != 1 {
+				t.Fatalf("%s: a live commit is reachable %d times, want once", step, got[n])
+			}
+		}
+	}
+	inc.addNativeLocked(a)
+	if inc.nativeCommit != a || inc.nativeCommits != nil {
+		t.Fatal("the first native commit did not go inline")
+	}
+	inc.addNativeLocked(b)
+	check("second added", a, b)
+	inc.removeNativeLocked(a)
+	check("inline removed while overflow remains", b)
+	inc.addNativeLocked(c)
+	if inc.nativeCommit != c {
+		t.Fatal("a freed inline slot was not reused")
+	}
+	check("inline reused", b, c)
+	inc.removeNativeLocked(b)
+	check("overflow removed", c)
+	inc.removeNativeLocked(a) // already gone: no effect
+	check("stale removal", c)
+	inc.removeNativeLocked(c)
+	check("all removed")
+}
