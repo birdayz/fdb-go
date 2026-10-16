@@ -417,13 +417,19 @@ func coalesceWriteConflicts(in []KeyRange) []KeyRange {
 	if len(in) <= 1 {
 		return in
 	}
-	rs := make([]KeyRange, len(in))
-	copy(rs, in)
-	sort.Slice(rs, func(i, j int) bool {
-		if cmp := bytes.Compare(rs[i].Begin, rs[j].Begin); cmp != 0 {
-			return cmp < 0
+	return coalesceOwnedWriteConflicts(slices.Clone(in))
+}
+
+// The caller owns rs; sorting and merging may overwrite its range headers.
+func coalesceOwnedWriteConflicts(rs []KeyRange) []KeyRange {
+	if len(rs) <= 1 {
+		return rs
+	}
+	slices.SortFunc(rs, func(a, b KeyRange) int {
+		if cmp := bytes.Compare(a.Begin, b.Begin); cmp != 0 {
+			return cmp
 		}
-		return bytes.Compare(rs[i].End, rs[j].End) < 0
+		return bytes.Compare(a.End, b.End)
 	})
 	out := rs[:1]
 	for _, r := range rs[1:] {
@@ -467,8 +473,10 @@ func finalizeShipConflicts(rawConflicts []KeyRange, sc KeyRange, scAdded, coales
 	base := rawConflicts
 	if scAdded {
 		base = append(append(make([]KeyRange, 0, len(rawConflicts)+1), rawConflicts...), sc)
-	}
-	if coalesced {
+		if coalesced {
+			return coalesceOwnedWriteConflicts(base)
+		}
+	} else if coalesced {
 		return coalesceWriteConflicts(base)
 	}
 	return base
