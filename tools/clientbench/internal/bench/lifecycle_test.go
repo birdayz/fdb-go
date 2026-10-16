@@ -72,7 +72,9 @@ func TestFinalizerDrainWaitsForCleanupChain(t *testing.T) {
 	if err != nil || !report.Complete || report.Rounds < 2 || executed.Load() != 5 {
 		t.Fatalf("cleanup chain not fully drained: executed=%d report=%+v err=%v", executed.Load(), report, err)
 	}
-	if report.After.CleanupsExecuted != report.After.CleanupsQueued || report.After.CleanupsQueued < report.Before.CleanupsQueued+5 {
+	// An automatic GC may queue some of the chain before the drain's first
+	// snapshot, so the chain's own count, not the snapshot delta, proves it ran.
+	if report.After.CleanupsExecuted != report.After.CleanupsQueued {
 		t.Fatalf("invalid cleanup fixpoint counters: %+v", report)
 	}
 	t.Logf("CLIENTBENCH_CLEANUP_CHAIN completed=5 rounds=%d", report.Rounds)
