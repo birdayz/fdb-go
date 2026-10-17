@@ -75,26 +75,27 @@ class TraceTest(unittest.TestCase):
         return [self.event(t, k, **v) for k, v in names.items()]
 
     def test_deltas_are_summed_per_server(self):
-        series = self.series({"a": self.full(10, 1) + self.full(30, 3), "b": self.full(12, 10) + self.full(31, 20)})
-        deltas = wirediff.trace_deltas(series, start=20, end=40)
+        series = self.series({"a": self.full(10, 1) + self.full(42, 3), "b": self.full(12, 10) + self.full(41, 20)})
+        deltas = wirediff.trace_deltas(series, start=20, end=40, cutoff=50)
         # a: 3 - 1 = 2 (x1 for the first counter); b: 20 - 10 = 10. Never b - a.
         self.assertEqual(deltas["GrvProxyMetrics.TxnRequestIn"], 12)
 
     def test_counter_without_both_sides_fails(self):
         cases = {
-            "after start only": {"a": self.full(30, 3)},
+            "after start only": {"a": self.full(42, 3)},
             "stale, before start only": {"a": self.full(5, 1) + self.full(10, 2)},
-            "one server stale": {"a": self.full(10, 1) + self.full(30, 3), "b": self.full(12, 10)},
-            "sample only after end": {"a": self.full(10, 1) + self.full(50, 3)},
+            "logging stopped during the run": {"a": self.full(10, 1) + self.full(30, 3)},
+            "one server stale": {"a": self.full(10, 1) + self.full(42, 3), "b": self.full(12, 10)},
+            "sample only after the cutoff": {"a": self.full(10, 1) + self.full(60, 3)},
         }
         for name, servers in cases.items():
             with self.subTest(name), self.assertRaisesRegex(ValueError, "both sides"):
-                wirediff.trace_deltas(self.series(servers), start=20, end=40)
+                wirediff.trace_deltas(self.series(servers), start=20, end=40, cutoff=50)
 
     def test_counter_no_server_reported_fails(self):
-        series = self.series({"a": [self.event(10, "GrvProxyMetrics", TxnRequestIn=1), self.event(30, "GrvProxyMetrics", TxnRequestIn=2)]})
+        series = self.series({"a": [self.event(10, "GrvProxyMetrics", TxnRequestIn=1), self.event(42, "GrvProxyMetrics", TxnRequestIn=2)]})
         with self.assertRaisesRegex(ValueError, "no trace totals"):
-            wirediff.trace_deltas(series, start=20, end=40)
+            wirediff.trace_deltas(series, start=20, end=40, cutoff=50)
 
 
 class TraceFilesTest(unittest.TestCase):

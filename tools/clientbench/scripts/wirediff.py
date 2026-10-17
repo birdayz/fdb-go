@@ -210,14 +210,15 @@ def trace_totals(servers):
     return series
 
 
-def trace_deltas(series, start, end):
-    """Each counter's increase from start to end, summed over servers. Every series
-    needs a sample at or before start and a later one after start, at or before
-    end: stale or one-sided coverage is an error, as is a counter no server reported."""
+def trace_deltas(series, start, end, cutoff):
+    """Each counter's increase over the run [start, end], summed over servers. Every
+    series needs a sample at or before start and one at or after end, taken by
+    cutoff: stale, truncated or one-sided coverage is an error, as is a counter no
+    server reported."""
     deltas = {}
     for (server, name), values in series.items():
-        first, last = at(values, start), at(values, end)
-        if first is None or last is None or last[0] <= start:
+        first, last = at(values, start), at(values, cutoff)
+        if first is None or last is None or last[0] < end:
             raise ValueError(f"server {server}: {name} has no samples on both sides of the run")
         deltas[name] = deltas.get(name, 0.0) + last[1] - first[1]
     missing = [f"{k}.{n}" for k, names in COUNTERS.items() for n in names if f"{k}.{n}" not in deltas]
@@ -290,7 +291,7 @@ def main():
         row[f"client_bytes_to_{port}"] = (b[1] - a[1]) / tx
         row[f"client_conns_to_{port}"] = b[2]
     measured = long["summary"]["completed"] * 21 / 20
-    for name, delta in trace_deltas(series, long["start"], long["end"] + TRACE_INTERVAL - 0.5).items():
+    for name, delta in trace_deltas(series, long["start"], long["end"], long["end"] + TRACE_INTERVAL - 0.5).items():
         row[f"trace.{name}"] = delta / measured
     row["tx_per_s"] = long["summary"]["completed"] / (long["summary"]["measured_wall_ns"] / 1e9)
     row["mean_latency_us"] = long["mean_latency_us"]
