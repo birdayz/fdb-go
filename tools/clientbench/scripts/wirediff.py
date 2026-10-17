@@ -152,11 +152,13 @@ def run_once(args, iterations, outdir, servers, tids):
     store, stop, errors = {}, threading.Event(), []
     sampler = threading.Thread(target=sample_segments, args=(stop, {s["port"] for s in servers}, store, errors))
     sampler.start()
-    start = time.time()
-    p = subprocess.run(cmd, capture_output=True, text=True)
-    end = time.time()
-    stop.set()
-    sampler.join()
+    try:
+        start = time.time()
+        p = subprocess.run(cmd, capture_output=True, text=True)
+        end = time.time()
+    finally:
+        stop.set()
+        sampler.join()
     if errors:
         raise errors[0]
     if p.returncode != 0:
@@ -203,14 +205,29 @@ def server_trace_files(paths, port):
     return [p for p in paths if pattern.match(os.path.basename(p))]
 
 
+# Counters every server of a role reports, whatever else it hosts.
+ROLE_COUNTERS = {"storage": "StorageMetrics"}
+
+
 def trace_totals(servers):
     """(time, total) series of each counter, per server, from its two newest trace files."""
     series = {}
     for s in servers:
         paths = server_trace_files(glob.glob(os.path.join(s["logs"], "*.xml")), s["port"])
+        if not paths:
+            raise ValueError(f"server {s['pid']} ({s['role']}): no trace files in its log directory")
         for path in sorted(paths, key=os.path.getmtime)[-2:]:
             trace_series(s["pid"], open(path, errors="replace"), series)
+    check_role_coverage(servers, series)
     return series
+
+
+def check_role_coverage(servers, series):
+    """Every server must report the counters of its role, so none is left out of a total."""
+    for s in servers:
+        kind = ROLE_COUNTERS.get(s["role"])
+        if kind and not any(server == s["pid"] and name.startswith(kind + ".") for server, _, name in series):
+            raise ValueError(f"server {s['pid']} ({s['role']}): no {kind} in its trace files")
 
 
 def trace_deltas(series, start, end, cutoff):

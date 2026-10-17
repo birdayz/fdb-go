@@ -127,6 +127,17 @@ class TraceFilesTest(unittest.TestCase):
         self.assertEqual(wirediff.server_trace_files(paths, 4500), [paths[2]])
 
 
+class RoleCoverageTest(unittest.TestCase):
+    def test_every_storage_server_reports_storage_metrics(self):
+        servers = [{"pid": "1", "role": "storage"}, {"pid": "2", "role": "storage"}, {"pid": "3", "role": "stateless"}]
+        series = {}
+        wirediff.trace_series("1", ['<Event Time="1" Type="StorageMetrics" ID="a" QueryQueue="1 0 5" />'], series)
+        with self.assertRaisesRegex(ValueError, "server 2 .storage.: no StorageMetrics"):
+            wirediff.check_role_coverage(servers, series)
+        wirediff.trace_series("2", ['<Event Time="1" Type="StorageMetrics" ID="b" QueryQueue="1 0 7" />'], series)
+        wirediff.check_role_coverage(servers, series)  # a stateless server owes no storage counters
+
+
 class SocketCountersTest(unittest.TestCase):
     def test_clientbench_sockets_only(self):
         lines = [
