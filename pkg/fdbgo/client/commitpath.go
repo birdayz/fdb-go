@@ -107,7 +107,7 @@ func (input *commitInput) commitNative(ctx context.Context) (result commitOutcom
 	}
 	// Native owner drop cancels only this wait; queued bytes own their storage
 	// independently and may still reach the server after the actor is gone.
-	_, sendErr := conn.SendFrameContext(ctx, proxy.Token, body)
+	_, sendErr := conn.SendFrameEagerContext(ctx, proxy.Token, body)
 	marshalBufPool.Put(poolBuf)
 	if sendErr != nil {
 		replyHandle.Cancel()

@@ -87,7 +87,7 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
     2 of 5 runs stay in one convoy (427k and 450k cycles, 6.6–6.7 ms, as libfdb_c)
     and 3 split (666k–898k, 8.6–10.3 ms). Lever: less allocation and CPU between a
     commit reply and the next commit, tracked under client CPU.
-  - [GRV observation candidate](docs/benchmarks/rfc-259/grv-observation-20261016.md),
+  - [GRV observation change](docs/benchmarks/rfc-259/grv-observation-20261016.md),
     measured against `f377e16d9` on the local three-process cluster: moving adaptive
     sampling after reply publication/yields reduced median server cycles by 16.9% for
     `get100/8`, 3.0% for `get100/32`, and 11.2%/14.3%/7.9% for `grv` at 8/32/64.
@@ -96,7 +96,7 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
     (paired cycle ratio 0.887, 95% bootstrap interval 0.757–1.047); writes remain noisy.
     This is not a completed goal: `get100` at 32/64 still costs 1.45×/1.34× libfdb_c,
     `range100` at 8/32/64 costs 1.30×/1.15×/1.16×, and `set100` at 32/64 costs
-    1.78×/1.31×. Candidate not merged; no multi-node rerun. Raw data retain all
+    1.78×/1.31×. Merged in #952; no multi-node rerun. Raw data retain all
     299 configurations, including the original write regression and its confirmation.
   - [Follow-up screens](docs/benchmarks/rfc-259/followup-screens-20261016.md): skipping
     unused timed successors reliably saves four allocations, but did not materially
@@ -110,10 +110,15 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
     consistently match CGo; GC-off is diagnostic only, never a production proposal.
   - Fresh current-code tracing found a 32-reply wave followed by GC initiated in
     `CreateTransaction`, then persistent 10+22 client publication clusters. No captured
-    GC start was in FrameReader; the older AfterFunc initiator predates #947. Investigate
-    the GRV-publication-to-commit-send delay, including mark assists and runnable waits,
-    rather than inferring causality from heap counts or repeating the rejected reserve.
-    Do not recycle exposed public transactions or borrowed read data.
+    GC start was in FrameReader; the older AfterFunc initiator predates #947. Further
+    attribution found separate nine- and 15-request GRV batches already detached before
+    their callbacks. The 15-request flush goroutine waited 285.6 µs runnable before
+    first execution, then incurred a 63.1 µs assist. This is one onset, not an aggregate
+    causal estimate. Investigate timer-expired GRV dispatch placement while preserving
+    overlapping RPCs, single timer-reader ownership, and Close's registration barrier;
+    a failed successor registration must drain both detached and newly pending work.
+    Do not arbitrarily widen batch windows, repeat the rejected reserve, or recycle
+    exposed public transactions or borrowed read data.
   - Done when server cycles per transaction are within 10% of libfdb_c for `get100`,
     `set100`, `range100` and `grv` at 8–64 workers, locally and on a multi-node rerun,
     without raising 1-worker mean latency by more than 5%.
@@ -136,6 +141,14 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
     its read version (`captureNativeReadState`, 870 bytes); each incarnation creates its own
     cancellable context, and turnover after every commit, including one with no writes,
     builds the next incarnation (libfdb_c does not reset after commit at API ≥ 410).
+  - [Commit dispatch without a write acknowledgment](docs/benchmarks/rfc-259/commit-send-noack-20261017.md),
+    measured against `57ddc9a77`: 154 completed write configurations, with 10/20/10/30
+    alternating Go pairs at 1/8/32/64 workers. Client CPU paired ratios are 0.927
+    (95% interval 0.877–0.965) at 32 workers and 0.930 (0.918–0.942) at 64; no material
+    server-cost improvement is established. One-worker arithmetic mean latency falls
+    3.0%. The initial 64-worker mean-latency increase of 10.0% is retained; 20 follow-up
+    pairs give −0.5%, and all 30 pairs give +4.1%, with no strict parallel-latency
+    equivalence claim. Candidate is not merged. Client and server parity remain open.
 
 ## 1. WS-E — scalar/SQL semantics and statement execution — ACTIVE
 

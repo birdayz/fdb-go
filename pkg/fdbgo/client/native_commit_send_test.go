@@ -21,16 +21,25 @@ import (
 // Unlike an address-only gate, this parks only a decoded commit request, not
 // an earlier PING or GRV. The reply gate is the sole reader of the raw socket.
 type nativeCommitWriteGate struct {
-	mu      sync.Mutex
-	fence   bool
-	armed   bool
-	parked  chan struct{}
-	release chan struct{}
-	once    sync.Once
-	replies *commitReplyGate
-	addr    string
-	request types.CommitTransactionRequest
-	err     error
+	mu           sync.Mutex
+	fence        bool
+	armed        bool
+	parked       chan struct{}
+	release      chan struct{}
+	once         sync.Once
+	replies      *commitReplyGate
+	addr         string
+	request      types.CommitTransactionRequest
+	err          error
+	forward      bool // forward to FDB before parking the socket write's return
+	writeErr     error
+	partial      bool
+	failedBytes  int
+	failedLength int
+	targetStart  int
+	targetEnd    int
+	commits      int
+	fences       int
 }
 
 func (g *nativeCommitWriteGate) releaseIt() { g.once.Do(func() { close(g.release) }) }
@@ -59,12 +68,16 @@ type nativeCommitWriteConn struct {
 }
 
 func (c *nativeCommitWriteConn) Write(p []byte) (int, error) {
+	forwarded := false
+	var written int
+	var writeErr error
 	incoming := p
 	if c.hello > 0 {
 		n := min(c.hello, len(incoming))
 		c.hello -= n
 		incoming = incoming[n:]
 	}
+	frameStart := len(p) - len(incoming) - len(c.pending)
 	c.pending = append(c.pending, incoming...)
 	for len(c.pending) >= 4 {
 		length := int(binary.LittleEndian.Uint32(c.pending)) + 12
@@ -78,6 +91,8 @@ func (c *nativeCommitWriteConn) Write(p []byte) (int, error) {
 		if err != nil {
 			return 0, err
 		}
+		start, end := frameStart, frameStart+length
+		frameStart = end
 		c.pending = c.pending[length:]
 		// CommitProxyInterface.h: CommitTransactionRequest::file_identifier.
 		if len(body) < 8 || binary.LittleEndian.Uint32(body[4:8]) != 93948 {
@@ -88,14 +103,24 @@ func (c *nativeCommitWriteConn) Write(p []byte) (int, error) {
 		g := c.gate
 		g.mu.Lock()
 		isFence := len(request.Transaction.Mutations) == 0 && len(request.Transaction.WriteConflictRanges) > 0
+		if isFence {
+			g.fences++
+		} else {
+			g.commits++
+		}
 		hold := g.armed && (err != nil || isFence == g.fence)
 		if hold {
 			g.armed, g.addr, g.request, g.err = false, c.addr, request, err
+			g.targetStart, g.targetEnd = start, end
 		}
 		g.mu.Unlock()
 		if hold {
 			c.blocked.Store(true)
 			before := bytes.Clone(p)
+			if g.forward {
+				written, writeErr = c.Conn.Write(p)
+				forwarded = true
+			}
 			close(g.parked)
 			<-g.release
 			if !bytes.Equal(p, before) {
@@ -104,7 +129,35 @@ func (c *nativeCommitWriteConn) Write(p []byte) (int, error) {
 				g.mu.Unlock()
 				return 0, io.ErrUnexpectedEOF
 			}
+			if g.forward {
+				if writeErr == nil {
+					writeErr = g.writeErr
+				}
+				if g.writeErr != nil {
+					g.mu.Lock()
+					g.failedBytes, g.failedLength = written, len(p)
+					g.mu.Unlock()
+				}
+				continue
+			}
+			if g.writeErr != nil {
+				if g.partial {
+					cut := max(start, 0)
+					cut += (end - cut) / 2
+					written, writeErr = c.Conn.Write(p[:cut])
+				}
+				g.mu.Lock()
+				g.failedBytes, g.failedLength = written, len(p)
+				g.mu.Unlock()
+				if writeErr != nil {
+					return written, writeErr
+				}
+				return written, g.writeErr
+			}
 		}
+	}
+	if forwarded {
+		return written, writeErr
 	}
 	return c.Conn.Write(p)
 }
@@ -119,7 +172,12 @@ func (c *nativeCommitWriteConn) Close() error {
 func newNativeCommitWrite(t *testing.T, ctx context.Context, fence bool) (*nativeCommitWriteGate, *Database, *Transaction, []byte, []byte, <-chan error) {
 	t.Helper()
 	g := &nativeCommitWriteGate{fence: fence, parked: make(chan struct{}), release: make(chan struct{})}
-	if fence {
+	return startNativeCommitWrite(t, ctx, g)
+}
+
+func startNativeCommitWrite(t *testing.T, ctx context.Context, g *nativeCommitWriteGate) (*nativeCommitWriteGate, *Database, *Transaction, []byte, []byte, <-chan error) {
+	t.Helper()
+	if g.fence {
 		g.replies = &commitReplyGate{severFirst: true, reached: make(chan struct{})}
 	}
 	db := newTestDatabase(t, ctx, sharedClusterFile, g.dial)
@@ -153,7 +211,7 @@ func newNativeCommitWrite(t *testing.T, ctx context.Context, fence bool) (*nativ
 	if gateErr != nil {
 		t.Fatal(gateErr)
 	}
-	if fence {
+	if g.fence {
 		if len(request.Transaction.Mutations) != 0 || len(request.Transaction.ReadConflictRanges) == 0 || len(request.Transaction.WriteConflictRanges) == 0 {
 			t.Fatalf("parked request is not the dummy fence: %+v", request.Transaction)
 		}
@@ -183,6 +241,176 @@ func abandonNativeCommitWrite(t *testing.T, ctx context.Context, fence bool) (*n
 	default:
 	}
 	return g, db, native, weak.Make(tx), key, value
+}
+
+func TestNativeCommit_ReplyBeforeWriteAcknowledgment(t *testing.T) {
+	t.Parallel()
+	for _, phase := range []string{"commit", "fence"} {
+		for _, fail := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/write-error-%t", phase, fail), func(t *testing.T) {
+				t.Parallel()
+				ctx, cancel := context.WithTimeout(context.Background(), commitLifetimeTimeout)
+				defer cancel()
+				g := &nativeCommitWriteGate{
+					fence: phase == "fence", forward: true,
+					parked: make(chan struct{}), release: make(chan struct{}),
+				}
+				if fail {
+					g.writeErr = io.ErrUnexpectedEOF
+				}
+				g, db, tx, key, value, done := startNativeCommitWrite(t, ctx, g)
+				if g.replies != nil {
+					releaseCommitGate(t, g.replies)
+				}
+				waitCtx, stop := context.WithTimeout(ctx, 10*time.Second)
+				defer stop()
+				if g.fence {
+					awaitCommitLifetimeCode(t, waitCtx, done, 1021, "uncertainty fence reply before write acknowledgment")
+				} else {
+					awaitCommitLifetimeResult(t, waitCtx, done, "commit reply before write acknowledgment")
+				}
+				select {
+				case <-g.release:
+					t.Fatal("socket write returned before the real reply completed the native actor")
+				default:
+				}
+				g.mu.Lock()
+				commits, fences := g.commits, g.fences
+				g.mu.Unlock()
+				wantFences := 0
+				if g.fence {
+					wantFences = 1
+				}
+				if commits != 1 || fences != wantFences {
+					t.Fatalf("sent %d original commits and %d fences, want 1 and %d", commits, fences, wantFences)
+				}
+				verify := openTestDB(t, ctx)
+				if got := readCommitLifetimeValue(t, ctx, verify, key); !bytes.Equal(got, value) {
+					t.Fatalf("real FDB committed value = %q, want %q", got, value)
+				}
+				g.mu.Lock()
+				addr := g.addr
+				g.mu.Unlock()
+				conn, err := db.db.getOrDial(ctx, addr)
+				if err != nil {
+					t.Fatal(err)
+				}
+				g.releaseIt()
+				if fail {
+					waitCommitLifetimeGate(t, ctx, conn.Done(), "late socket failure after a completed native result")
+				}
+				if err := db.Close(); err != nil {
+					t.Fatal(err)
+				}
+				g.mu.Lock()
+				gateErr, written, length := g.err, g.failedBytes, g.failedLength
+				commits, fences = g.commits, g.fences
+				g.mu.Unlock()
+				if gateErr != nil {
+					t.Fatal(gateErr)
+				}
+				if commits != 1 || fences != wantFences {
+					t.Fatalf("late failure resent work: %d original commits and %d fences", commits, fences)
+				}
+				if fail && (length == 0 || written != length) {
+					t.Fatalf("late write failure did not follow a full real write: %d/%d", written, length)
+				}
+				runtime.KeepAlive(tx)
+			})
+		}
+	}
+}
+
+func TestNativeCommit_QueuedWriteFailureFences(t *testing.T) {
+	t.Parallel()
+	for _, phase := range []string{"commit", "fence"} {
+		for _, partial := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/partial-%t", phase, partial), func(t *testing.T) {
+				t.Parallel()
+				ctx, cancel := context.WithTimeout(context.Background(), commitLifetimeTimeout)
+				defer cancel()
+				g := &nativeCommitWriteGate{
+					fence: phase == "fence", partial: partial, writeErr: io.ErrUnexpectedEOF,
+					parked: make(chan struct{}), release: make(chan struct{}),
+				}
+				g, db, tx, key, value, done := startNativeCommitWrite(t, ctx, g)
+				if g.replies != nil {
+					releaseCommitGate(t, g.replies)
+				}
+				g.releaseIt()
+				awaitCommitLifetimeCode(t, ctx, done, 1021, "queued socket failure after uncertainty fence")
+				g.mu.Lock()
+				commits, fences, written, length := g.commits, g.fences, g.failedBytes, g.failedLength
+				start, end := g.targetStart, g.targetEnd
+				g.mu.Unlock()
+				wantFences := 1
+				if g.fence {
+					wantFences = 2 // the failed fence must itself be retried
+				}
+				if commits != 1 || fences != wantFences {
+					t.Fatalf("sent %d original commits and %d fences, want 1 and %d", commits, fences, wantFences)
+				}
+				if length == 0 || end <= start || written >= end || (!partial && written != 0) || (partial && written <= start) {
+					t.Fatalf("fault wrote %d/%d bytes with target frame [%d,%d), partial=%t", written, length, start, end, partial)
+				}
+				verify := openTestDB(t, ctx)
+				got := readCommitLifetimeValue(t, ctx, verify, key)
+				if g.fence {
+					if !bytes.Equal(got, value) {
+						t.Fatalf("lost original reply must preserve its committed value: %q", got)
+					}
+				} else if got != nil {
+					t.Fatalf("incomplete original frame unexpectedly committed: %q", got)
+				}
+				if err := db.Close(); err != nil {
+					t.Fatal(err)
+				}
+				runtime.KeepAlive(tx)
+			})
+		}
+	}
+}
+
+func TestNativeCommit_QueuedProxyChangeFences(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), commitLifetimeTimeout)
+	defer cancel()
+	g := &nativeCommitWriteGate{
+		parked: make(chan struct{}), release: make(chan struct{}),
+		replies: &commitReplyGate{reached: make(chan struct{})},
+	}
+	g, db, tx, key, value, done := startNativeCommitWrite(t, ctx, g)
+	pause := installOneShotCommitPause(t, db)
+	defer pause.unblock()
+	before := db.Metrics()
+	db.db.proxiesChangedMu.Lock()
+	close(db.db.proxiesChanged)
+	db.db.proxiesChanged = make(chan struct{})
+	db.db.proxiesChangedMu.Unlock()
+	g.releaseIt()
+	waitCommitLifetimeGate(t, ctx, pause.reached, "uncertainty fence selected while the original reply is withheld")
+	pause.unblock()
+	releaseCommitGate(t, g.replies)
+	awaitCommitLifetimeCode(t, ctx, done, 1021, "proxy change while original bytes were queued")
+	g.mu.Lock()
+	commits, fences := g.commits, g.fences
+	g.mu.Unlock()
+	// The queued original can conflict with the first fence. C++ retries that
+	// fence via onError, never the original (NativeAPI.actor.cpp:6334–6343).
+	after := db.Metrics()
+	conflicts := after.TransactionsNotCommitted - before.TransactionsNotCommitted
+	retries := after.TransactionRetries - before.TransactionRetries
+	if commits != 1 || fences < 1 || int64(fences) != 1+conflicts || retries != conflicts {
+		t.Fatalf("sent %d original commits and %d fences, with %d conflict retries and %d total retries", commits, fences, conflicts, retries)
+	}
+	if got := after.TransactionsCommitCompleted - before.TransactionsCommitCompleted; got != 1 {
+		t.Fatalf("successful fence completions = %d, want 1", got)
+	}
+	verify := openTestDB(t, ctx)
+	if got := readCommitLifetimeValue(t, ctx, verify, key); got != nil && !bytes.Equal(got, value) {
+		t.Fatalf("uncertain commit corrupted its operand: %q", got)
+	}
+	runtime.KeepAlive(tx)
 }
 
 func TestNativeCommit_WriteBackpressureOwnerRetirement(t *testing.T) {
