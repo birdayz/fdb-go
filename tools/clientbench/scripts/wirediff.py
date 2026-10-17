@@ -181,16 +181,19 @@ def run_once(args, iterations, outdir, servers, tids):
 
 
 def trace_series(server, lines, series):
-    """Adds server's (time, total) series of each counter from trace-log lines."""
+    """Adds server's (time, total) series of each counter from trace-log lines,
+    one per role instance (the event ID): a process can host several, each with
+    its own totals."""
     for line in lines:
         for kind, names in COUNTERS.items():
             if f'Type="{kind}"' not in line:
                 continue
             t = float(re.search(r' Time="([\d.]+)"', line).group(1))
+            instance = re.search(r' ID="([^"]*)"', line).group(1)
             for name in names:
                 m = re.search(rf' {name}="\S+ \S+ ([\d.e+]+)"', line)
                 if m:
-                    series.setdefault((server, f"{kind}.{name}"), []).append((t, float(m.group(1))))
+                    series.setdefault((server, instance, f"{kind}.{name}"), []).append((t, float(m.group(1))))
 
 
 def server_trace_files(paths, port):
@@ -216,10 +219,10 @@ def trace_deltas(series, start, end, cutoff):
     cutoff: stale, truncated or one-sided coverage is an error, as is a counter no
     server reported."""
     deltas = {}
-    for (server, name), values in series.items():
+    for (server, instance, name), values in series.items():
         first, last = at(values, start), at(values, cutoff)
         if first is None or last is None or last[0] < end:
-            raise ValueError(f"server {server}: {name} has no samples on both sides of the run")
+            raise ValueError(f"server {server} {instance}: {name} has no samples on both sides of the run")
         deltas[name] = deltas.get(name, 0.0) + last[1] - first[1]
     missing = [f"{k}.{n}" for k, names in COUNTERS.items() for n in names if f"{k}.{n}" not in deltas]
     if missing:
@@ -231,6 +234,11 @@ def at(series, t):
     """The last (time, total) sample at or before t."""
     before = [sample for sample in sorted(series) if sample[0] <= t]
     return before[-1] if before else None
+
+
+def operations(summary):
+    """Operations a run completed, warmup included: what its counters cover."""
+    return summary["completed"] + summary["warmup_completed"]
 
 
 def differences(short, long, tx):
@@ -281,7 +289,9 @@ def main():
         series = trace_totals(servers)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
-    tx = (args.long - args.short) * 21 / 20  # warmup is iterations/20
+    tx = operations(long["summary"]) - operations(short["summary"])
+    if tx <= 0:
+        sys.exit("the long run completed no more operations than the short run")
     row = {"label": args.label, "workload": args.workload, "workers": args.workers, "short": args.short,
            "long": args.long, "gogc": args.gogc, "env": args.env, "client_arg": args.client_arg}
     row.update(differences(short, long, tx))
@@ -290,7 +300,7 @@ def main():
         row[f"client_segs_to_{port}"] = (b[0] - a[0]) / tx
         row[f"client_bytes_to_{port}"] = (b[1] - a[1]) / tx
         row[f"client_conns_to_{port}"] = b[2]
-    measured = long["summary"]["completed"] * 21 / 20
+    measured = operations(long["summary"])
     for name, delta in trace_deltas(series, long["start"], long["end"], long["end"] + TRACE_INTERVAL - 0.5).items():
         row[f"trace.{name}"] = delta / measured
     row["tx_per_s"] = long["summary"]["completed"] / (long["summary"]["measured_wall_ns"] / 1e9)

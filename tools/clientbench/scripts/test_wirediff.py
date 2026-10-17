@@ -43,6 +43,12 @@ class ParsePerfTest(unittest.TestCase):
             wirediff.parse_perf(idle, {11: "storage"}, ["storage"])
 
 
+class OperationsTest(unittest.TestCase):
+    def test_counts_completed_operations_with_warmup(self):
+        self.assertEqual(wirediff.operations({"completed": 15000, "warmup_completed": 750}), 15750)
+        self.assertEqual(wirediff.operations({"completed": 999, "warmup_completed": 0}), 999)
+
+
 class DifferencesTest(unittest.TestCase):
     def run_counts(self, cycles, events=None, ports=(4721,)):
         events = events or {"cycles": cycles, "write": 0}
@@ -60,9 +66,9 @@ class DifferencesTest(unittest.TestCase):
 
 
 class TraceTest(unittest.TestCase):
-    def event(self, t, kind, **totals):
+    def event(self, t, kind, instance="0", **totals):
         fields = " ".join(f'{k}="1 0.5 {v}"' for k, v in totals.items())
-        return f'<Event Time="{t}" Type="{kind}" {fields} />'
+        return f'<Event Time="{t}" Type="{kind}" ID="{instance}" {fields} />'
 
     def series(self, servers):
         out = {}
@@ -91,6 +97,16 @@ class TraceTest(unittest.TestCase):
         for name, servers in cases.items():
             with self.subTest(name), self.assertRaisesRegex(ValueError, "both sides"):
                 wirediff.trace_deltas(self.series(servers), start=20, end=40, cutoff=50)
+
+    def test_instances_of_one_process_are_separate_series(self):
+        storage = lambda t, instance, q: self.event(t, "StorageMetrics", instance, QueryQueue=q, GetValueQueries=0, GetRangeQueries=0)
+        lines = self.full(10, 1) + self.full(42, 3)
+        lines += [storage(10, "s1", 100), storage(10, "s2", 5000), storage(42, "s1", 130), storage(42, "s2", 5040)]
+        deltas = wirediff.trace_deltas(self.series({"a": lines}), start=20, end=40, cutoff=50)
+        self.assertEqual(deltas["StorageMetrics.QueryQueue"], 2 + 30 + 40)  # never s2 - s1
+        replaced = self.full(10, 1) + self.full(42, 3) + [storage(10, "old", 100), storage(42, "new", 7)]
+        with self.assertRaisesRegex(ValueError, "both sides"):
+            wirediff.trace_deltas(self.series({"a": replaced}), start=20, end=40, cutoff=50)
 
     def test_counter_no_server_reported_fails(self):
         series = self.series({"a": [self.event(10, "GrvProxyMetrics", TxnRequestIn=1), self.event(42, "GrvProxyMetrics", TxnRequestIn=2)]})
