@@ -182,11 +182,16 @@ def run_once(args, iterations, outdir, servers, tids):
             "mean_latency_us": statistics.fmean(latency) / 1e3}
 
 
-def trace_series(server, lines, series):
+def trace_series(server, lines, series, ended=None):
     """Adds server's (time, total) series of each counter from trace-log lines,
     one per role instance (the event ID): a process can host several, each with
-    its own totals."""
+    its own totals. Records in ended when a role instance ended (a Role event
+    with Transition="End", worker.actor.cpp:1771)."""
     for line in lines:
+        if ended is not None and 'Type="Role"' in line and 'Transition="End"' in line:
+            t = float(re.search(r' Time="([\d.]+)"', line).group(1))
+            ended[(server, re.search(r' ID="([^"]*)"', line).group(1))] = t
+            continue
         for kind, names in COUNTERS.items():
             if f'Type="{kind}"' not in line:
                 continue
@@ -199,10 +204,20 @@ def trace_series(server, lines, series):
 
 
 def server_trace_files(paths, port):
-    """The server's own files among paths: trace.<address>.<port>.<start>.<id>.<n>.<m>.xml,
-    so servers sharing a log directory never read each other's events."""
-    pattern = re.compile(rf"^trace\..+\.{port}\.\d+\.[^.]+\.\d+\.\d+\.xml$")
-    return [p for p in paths if pattern.match(os.path.basename(p))]
+    """The running server's own files among paths, oldest first. Files are named
+    trace.<address>.<port>.<start>.<id>.<n>.<m>.xml: the port keeps servers sharing a
+    log directory apart, and the newest <start>.<id> keeps out an earlier process on
+    the same port, whose roles end without an End event when it is killed."""
+    pattern = re.compile(rf"^trace\..+\.{port}\.(\d+)\.([^.]+)\.(\d+)\.(\d+)\.xml$")
+    files = []
+    for p in paths:
+        m = pattern.match(os.path.basename(p))
+        if m:
+            files.append(((int(m.group(1)), m.group(2)), (int(m.group(3)), int(m.group(4))), p))
+    if not files:
+        return []
+    process = max(f[0] for f in files)
+    return [p for ident, _, p in sorted(f for f in files if f[0] == process)]
 
 
 # Counters every server of a role reports, whatever else it hosts.
@@ -210,16 +225,17 @@ ROLE_COUNTERS = {"storage": "StorageMetrics"}
 
 
 def trace_totals(servers):
-    """(time, total) series of each counter, per server, from its two newest trace files."""
-    series = {}
+    """Each server's counter series and ended role instances, from the running
+    process's two newest trace files."""
+    series, ended = {}, {}
     for s in servers:
         paths = server_trace_files(glob.glob(os.path.join(s["logs"], "*.xml")), s["port"])
         if not paths:
             raise ValueError(f"server {s['pid']} ({s['role']}): no trace files in its log directory")
-        for path in sorted(paths, key=os.path.getmtime)[-2:]:
-            trace_series(s["pid"], open(path, errors="replace"), series)
+        for path in paths[-2:]:
+            trace_series(s["pid"], open(path, errors="replace"), series, ended)
     check_role_coverage(servers, series)
-    return series
+    return series, ended
 
 
 def check_role_coverage(servers, series):
@@ -234,26 +250,22 @@ def check_role_coverage(servers, series):
             raise ValueError(f"server {s['pid']} ({s['role']}): no {', '.join(missing)} in its trace files")
 
 
-def trace_deltas(series, start, end, cutoff):
+def trace_deltas(series, start, end, cutoff, ended=None):
     """Each counter's increase over the run [start, end], summed over servers.
 
     A role instance (event ID) counts if it has a sample at or before start and one
-    at or after end, taken by cutoff. One that ended before the run, as a role
-    replaced by an earlier recovery does, is ignored. Any other instance overlaps
-    the run only in part and is an error, as is a server with no instance covering
-    the run for a counter it reports, or a counter no server reported."""
-    deltas, covered, reported = {}, set(), set()
+    at or after end, taken by cutoff. One whose Role End event (in ended) came at or
+    before start contributed nothing and is ignored. Any other instance without that
+    coverage is an error, as is a counter no server reported."""
+    ended = ended or {}
+    deltas = {}
     for (server, instance, name), values in series.items():
-        reported.add((server, name))
-        if max(values)[0] <= start:
-            continue  # this instance ended before the run
+        if ended.get((server, instance), float("inf")) <= start:
+            continue  # this role instance ended before the run
         first, last = at(values, start), at(values, cutoff)
         if first is None or last is None or last[0] < end:
             raise ValueError(f"server {server} {instance}: {name} has no samples on both sides of the run")
         deltas[name] = deltas.get(name, 0.0) + last[1] - first[1]
-        covered.add((server, name))
-    for server, name in sorted(reported - covered):
-        raise ValueError(f"server {server}: {name} has no samples on both sides of the run")
     missing = [f"{k}.{n}" for k, names in COUNTERS.items() for n in names if f"{k}.{n}" not in deltas]
     if missing:
         raise ValueError(f"no trace totals around the run for {', '.join(missing)}")
@@ -316,7 +328,7 @@ def main():
         time.sleep(TRACE_INTERVAL)  # keep the short run out of the long run's trace interval
         long = run_once(args, args.long, os.path.join(tmp, "long"), servers, tids)
         time.sleep(TRACE_INTERVAL)
-        series = trace_totals(servers)
+        series, ended = trace_totals(servers)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     tx = operations(long["summary"]) - operations(short["summary"])
@@ -331,7 +343,7 @@ def main():
         row[f"client_bytes_to_{port}"] = (b[1] - a[1]) / tx
         row[f"client_conns_to_{port}"] = b[2]
     measured = operations(long["summary"])
-    for name, delta in trace_deltas(series, long["start"], long["end"], long["end"] + TRACE_INTERVAL - 0.5).items():
+    for name, delta in trace_deltas(series, long["start"], long["end"], long["end"] + TRACE_INTERVAL - 0.5, ended).items():
         row[f"trace.{name}"] = delta / measured
     row["tx_per_s"] = long["summary"]["completed"] / (long["summary"]["measured_wall_ns"] / 1e9)
     row["mean_latency_us"] = long["mean_latency_us"]

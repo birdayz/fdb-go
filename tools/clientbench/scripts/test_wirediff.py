@@ -108,15 +108,24 @@ class TraceTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "both sides"):
             wirediff.trace_deltas(self.series({"a": replaced}), start=20, end=40, cutoff=50)
 
-    def test_instance_replaced_before_the_run_is_ignored(self):
+    def test_instance_that_ended_before_the_run_is_ignored(self):
         grv = lambda t, instance, n: self.event(t, "GrvProxyMetrics", instance, TxnRequestIn=n, TxnStartIn=n, TxnStartBatch=n)
-        lines = self.full(10, 1) + self.full(42, 3)  # instance "0" covers the run
-        lines += [grv(2, "old", 900), grv(8, "old", 950)]  # recruited and replaced before the run
-        deltas = wirediff.trace_deltas(self.series({"a": lines}), start=20, end=40, cutoff=50)
-        self.assertEqual(deltas["GrvProxyMetrics.TxnRequestIn"], 2)  # only the live instance
-        recruited = self.full(10, 1) + self.full(42, 3) + [grv(25, "new", 0), grv(42, "new", 7)]
-        with self.assertRaisesRegex(ValueError, "both sides"):  # recruited during the run
-            wirediff.trace_deltas(self.series({"a": recruited}), start=20, end=40, cutoff=50)
+        end = lambda t, instance: f'<Event Time="{t}" Type="Role" ID="{instance}" Transition="End" As="GrvProxyServer" />'
+        old = self.full(10, 1) + self.full(42, 3) + [grv(2, "old", 900), grv(8, "old", 950)]
+
+        def deltas(lines):
+            series, ended = {}, {}
+            wirediff.trace_series("a", lines, series, ended)
+            return wirediff.trace_deltas(series, start=20, end=40, cutoff=50, ended=ended)
+
+        self.assertEqual(deltas(old + [end(9, "old")])["GrvProxyMetrics.TxnRequestIn"], 2)  # only the live instance
+        for name, lines in {
+            "no End event": old,  # stopped reporting: not evidence that it ended
+            "ended during the run": old + [end(30, "old")],
+            "recruited during the run": self.full(10, 1) + self.full(42, 3) + [grv(25, "new", 0), grv(42, "new", 7)],
+        }.items():
+            with self.subTest(name), self.assertRaisesRegex(ValueError, "both sides"):
+                deltas(lines)
 
     def test_counter_no_server_reported_fails(self):
         series = self.series({"a": [self.event(10, "GrvProxyMetrics", TxnRequestIn=1), self.event(42, "GrvProxyMetrics", TxnRequestIn=2)]})
@@ -135,6 +144,12 @@ class TraceFilesTest(unittest.TestCase):
         self.assertEqual(wirediff.server_trace_files(paths, 4721), [paths[0]])
         self.assertEqual(wirediff.server_trace_files(paths, 4722), [paths[1]])
         self.assertEqual(wirediff.server_trace_files(paths, 4500), [paths[2]])
+
+    def test_only_the_running_process(self):
+        old = "/logs/trace.127.0.0.1.4721.1792148326.xG2qLf.1.72.xml"
+        new = ["/logs/trace.127.0.0.1.4721.1792228581.nH0iqe.1.10.xml",
+               "/logs/trace.127.0.0.1.4721.1792228581.nH0iqe.1.9.xml"]
+        self.assertEqual(wirediff.server_trace_files([new[0], old, new[1]], 4721), [new[1], new[0]])
 
 
 class RoleCoverageTest(unittest.TestCase):
