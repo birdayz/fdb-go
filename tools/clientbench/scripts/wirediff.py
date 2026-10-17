@@ -77,9 +77,10 @@ EXPECTED = [event_name(e) for e in EVENTS]
 
 def parse_perf(lines, tids=None, roles=("client",)):
     """perf stat -x, output: per role when per-thread, else one total. Every role
-    must report every event; a missing or unsupported one is an error, not a zero.
-    perf reports <not counted> for a thread that did not run, which is zero."""
-    out = {}
+    must have a numeric count of every event: a missing, unsupported or uncounted
+    one is an error, not a zero. Per thread, <not counted> marks a thread that did
+    not run and adds nothing, provided another thread of the role was counted."""
+    out, counted = {}, set()
     for line in lines:
         f = line.strip().split(",")
         if tids is None:
@@ -91,14 +92,16 @@ def parse_perf(lines, tids=None, roles=("client",)):
             if len(f) < 4 or "-" not in f[0] or not f[3]:
                 continue
             role, count, event = tids.get(int(f[0].rsplit("-", 1)[1]), "unknown"), f[1], f[3]
-        if count == "<not counted>":
-            count = "0"  # the thread did not run while counted
-        elif not count.replace(".", "").isdigit():
+        event = event_name(event)
+        out.setdefault(role, {}).setdefault(event, 0.0)
+        if count == "<not counted>" and tids is not None:
+            continue
+        if not count.replace(".", "").isdigit():
             raise ValueError(f"{role}: {event} {count}")
-        out.setdefault(role, {}).setdefault(event_name(event), 0.0)
-        out[role][event_name(event)] += float(count)
+        out[role][event] += float(count)
+        counted.add((role, event))
     for role in roles:
-        missing = [e for e in EXPECTED if e not in out.get(role, {})]
+        missing = [e for e in EXPECTED if (role, e) not in counted]
         if missing:
             raise ValueError(f"{role}: no count for {', '.join(missing)}")
     return out
@@ -208,13 +211,15 @@ def trace_totals(servers):
 
 
 def trace_deltas(series, start, end):
-    """Each counter's increase from start to end, summed over servers. A counter no
-    server reported on both sides is an error."""
+    """Each counter's increase from start to end, summed over servers. Every series
+    needs a sample at or before start and a later one after start, at or before
+    end: stale or one-sided coverage is an error, as is a counter no server reported."""
     deltas = {}
-    for (_, name), values in series.items():
-        v0, v1 = at(values, start), at(values, end)
-        if v0 is not None and v1 is not None:
-            deltas[name] = deltas.get(name, 0.0) + v1 - v0
+    for (server, name), values in series.items():
+        first, last = at(values, start), at(values, end)
+        if first is None or last is None or last[0] <= start:
+            raise ValueError(f"server {server}: {name} has no samples on both sides of the run")
+        deltas[name] = deltas.get(name, 0.0) + last[1] - first[1]
     missing = [f"{k}.{n}" for k, names in COUNTERS.items() for n in names if f"{k}.{n}" not in deltas]
     if missing:
         raise ValueError(f"no trace totals around the run for {', '.join(missing)}")
@@ -222,7 +227,8 @@ def trace_deltas(series, start, end):
 
 
 def at(series, t):
-    before = [v for ts, v in sorted(series) if ts <= t]
+    """The last (time, total) sample at or before t."""
+    before = [sample for sample in sorted(series) if sample[0] <= t]
     return before[-1] if before else None
 
 

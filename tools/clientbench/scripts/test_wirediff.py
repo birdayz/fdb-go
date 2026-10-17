@@ -33,6 +33,15 @@ class ParsePerfTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "storage: no count"):
             wirediff.parse_perf(perf_lines("fdbserver-21,", {}), {21: "stateless"}, ["stateless", "storage"])
 
+    def test_uncounted_total_or_role_fails(self):
+        lines = perf_lines("", {})
+        lines[0] = "<not counted>,,cycles,"
+        with self.assertRaisesRegex(ValueError, "not counted"):
+            wirediff.parse_perf(lines)  # a total is never an idle thread
+        idle = [f"fdbserver-11,<not counted>,,{e}," for e in wirediff.EVENTS]
+        with self.assertRaisesRegex(ValueError, "storage: no count for cycles"):
+            wirediff.parse_perf(idle, {11: "storage"}, ["storage"])
+
 
 class DifferencesTest(unittest.TestCase):
     def run_counts(self, cycles, events=None, ports=(4721,)):
@@ -72,7 +81,18 @@ class TraceTest(unittest.TestCase):
         self.assertEqual(deltas["GrvProxyMetrics.TxnRequestIn"], 12)
 
     def test_counter_without_both_sides_fails(self):
-        series = self.series({"a": self.full(30, 3)})
+        cases = {
+            "after start only": {"a": self.full(30, 3)},
+            "stale, before start only": {"a": self.full(5, 1) + self.full(10, 2)},
+            "one server stale": {"a": self.full(10, 1) + self.full(30, 3), "b": self.full(12, 10)},
+            "sample only after end": {"a": self.full(10, 1) + self.full(50, 3)},
+        }
+        for name, servers in cases.items():
+            with self.subTest(name), self.assertRaisesRegex(ValueError, "both sides"):
+                wirediff.trace_deltas(self.series(servers), start=20, end=40)
+
+    def test_counter_no_server_reported_fails(self):
+        series = self.series({"a": [self.event(10, "GrvProxyMetrics", TxnRequestIn=1), self.event(30, "GrvProxyMetrics", TxnRequestIn=2)]})
         with self.assertRaisesRegex(ValueError, "no trace totals"):
             wirediff.trace_deltas(series, start=20, end=40)
 
