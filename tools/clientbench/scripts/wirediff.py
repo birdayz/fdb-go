@@ -68,42 +68,66 @@ def server_roles(pids):
     return servers, tids
 
 
-def parse_perf(path, tids=None):
-    """perf stat -x, output: per role when per-thread, else one total."""
+def event_name(event):
+    return event.split(":")[-1].replace("sys_enter_", "")
+
+
+EXPECTED = [event_name(e) for e in EVENTS]
+
+
+def parse_perf(lines, tids=None, roles=("client",)):
+    """perf stat -x, output: per role when per-thread, else one total. Every role
+    must report every event; a missing or unsupported one is an error, not a zero.
+    perf reports <not counted> for a thread that did not run, which is zero."""
     out = {}
-    for line in open(path):
+    for line in lines:
         f = line.strip().split(",")
         if tids is None:
-            if len(f) > 2 and f[0].replace(".", "").isdigit():
-                role, count, event = "client", f[0], f[2]
-            else:
+            if len(f) < 3 or not f[2]:
                 continue
+            role, count, event = "client", f[0], f[2]
         else:
             # --per-thread: comm-tid,count,unit,event,...
-            if len(f) < 4 or not f[1].replace(".", "").isdigit() or "-" not in f[0]:
+            if len(f) < 4 or "-" not in f[0] or not f[3]:
                 continue
             role, count, event = tids.get(int(f[0].rsplit("-", 1)[1]), "unknown"), f[1], f[3]
-        event = event.split(":")[-1].replace("sys_enter_", "")
-        out.setdefault(role, {}).setdefault(event, 0.0)
-        out[role][event] += float(count)
+        if count == "<not counted>":
+            count = "0"  # the thread did not run while counted
+        elif not count.replace(".", "").isdigit():
+            raise ValueError(f"{role}: {event} {count}")
+        out.setdefault(role, {}).setdefault(event_name(event), 0.0)
+        out[role][event_name(event)] += float(count)
+    for role in roles:
+        missing = [e for e in EXPECTED if e not in out.get(role, {})]
+        if missing:
+            raise ValueError(f"{role}: no count for {', '.join(missing)}")
     return out
 
 
-def sample_segments(stop, ports, store):
-    """Last seen segs_out/bytes_sent of each clientbench socket to a server port."""
+def socket_counters(lines, ports, store):
+    """Records segs_out/bytes_sent of each clientbench socket to a server port from
+    `ss -tinpH` output, where each socket's counters follow on the next line."""
     addr = re.compile(r"\s*\d+\s+\d+\s+\S+:(\d+)\s+\S+:(\d+)")
-    while not stop.is_set():
-        lines = subprocess.run(["ss", "-tinpH", "state", "established"],
-                               capture_output=True, text=True).stdout.splitlines()
-        for line, info in zip(lines, lines[1:]):
-            m = addr.match(line)
-            if not m or int(m.group(2)) not in ports or "clientbench" not in line:
-                continue
-            segs = re.search(r"segs_out:(\d+)", info)
-            sent = re.search(r"bytes_sent:(\d+)", info)
-            if segs:
-                store[(m.group(1), int(m.group(2)))] = (int(segs.group(1)), int(sent.group(1)) if sent else 0)
-        time.sleep(0.1)
+    for line, info in zip(lines, lines[1:]):
+        m = addr.match(line)
+        if not m or int(m.group(2)) not in ports or "clientbench" not in line:
+            continue
+        segs = re.search(r"segs_out:(\d+)", info)
+        sent = re.search(r"bytes_sent:(\d+)", info)
+        if not segs or not sent:
+            raise ValueError(f"ss reported no segs_out/bytes_sent for {line.strip()}")
+        store[(m.group(1), int(m.group(2)))] = (int(segs.group(1)), int(sent.group(1)))
+
+
+def sample_segments(stop, ports, store, errors):
+    """Last seen counters of each clientbench socket, sampled every 100 ms."""
+    try:
+        while not stop.is_set():
+            p = subprocess.run(["ss", "-tinpH", "state", "established"], capture_output=True, text=True, check=True)
+            socket_counters(p.stdout.splitlines(), ports, store)
+            time.sleep(0.1)
+    except Exception as e:  # reported by the run, which must not pass with partial samples
+        errors.append(e)
 
 
 def run_once(args, iterations, outdir, servers, tids):
@@ -122,14 +146,16 @@ def run_once(args, iterations, outdir, servers, tids):
            "-cluster-file", args.cluster_file, "-workload", args.workload, "-workers", str(args.workers),
            "-iterations", str(iterations), "-warmup", str(iterations // 20), "-allow-writes", "-output", outdir,
            *args.client_arg]
-    store, stop = {}, threading.Event()
-    sampler = threading.Thread(target=sample_segments, args=(stop, {s["port"] for s in servers}, store))
+    store, stop, errors = {}, threading.Event(), []
+    sampler = threading.Thread(target=sample_segments, args=(stop, {s["port"] for s in servers}, store, errors))
     sampler.start()
     start = time.time()
     p = subprocess.run(cmd, capture_output=True, text=True)
     end = time.time()
     stop.set()
     sampler.join()
+    if errors:
+        raise errors[0]
     if p.returncode != 0:
         sys.exit(f"run failed (exit {p.returncode}):\n{p.stdout[-2000:]}\n{p.stderr[-2000:]}")
     summary = json.load(open(os.path.join(outdir, "summary.json")))
@@ -137,8 +163,10 @@ def run_once(args, iterations, outdir, servers, tids):
         sys.exit(f"clientbench reported failure: {summary.get('failure')}")
     with open(os.path.join(outdir, "samples.csv")) as f:
         latency = [int(r["latency_ns"]) for r in csv.DictReader(f)]
-    counts = parse_perf(srv, tids)
-    counts.update(parse_perf(cli))
+    counts = parse_perf(open(srv), tids, sorted({s["role"] for s in servers}))
+    counts.update(parse_perf(open(cli)))
+    if not store:
+        raise ValueError("ss sampled no clientbench socket to a server")
     segments = {}
     for (_, port), (segs, sent) in store.items():
         total = segments.setdefault(port, [0, 0, 0])
@@ -149,26 +177,71 @@ def run_once(args, iterations, outdir, servers, tids):
             "mean_latency_us": statistics.fmean(latency) / 1e3}
 
 
+def trace_series(server, lines, series):
+    """Adds server's (time, total) series of each counter from trace-log lines."""
+    for line in lines:
+        for kind, names in COUNTERS.items():
+            if f'Type="{kind}"' not in line:
+                continue
+            t = float(re.search(r' Time="([\d.]+)"', line).group(1))
+            for name in names:
+                m = re.search(rf' {name}="\S+ \S+ ([\d.e+]+)"', line)
+                if m:
+                    series.setdefault((server, f"{kind}.{name}"), []).append((t, float(m.group(1))))
+
+
+def server_trace_files(paths, port):
+    """The server's own files among paths: trace.<address>.<port>.<start>.<id>.<n>.<m>.xml,
+    so servers sharing a log directory never read each other's events."""
+    pattern = re.compile(rf"^trace\..+\.{port}\.\d+\.[^.]+\.\d+\.\d+\.xml$")
+    return [p for p in paths if pattern.match(os.path.basename(p))]
+
+
 def trace_totals(servers):
     """(time, total) series of each counter, per server, from its two newest trace files."""
     series = {}
     for s in servers:
-        for path in sorted(glob.glob(os.path.join(s["logs"], "*.xml")), key=os.path.getmtime)[-2:]:
-            for line in open(path, errors="replace"):
-                for kind, names in COUNTERS.items():
-                    if f'Type="{kind}"' not in line:
-                        continue
-                    t = float(re.search(r' Time="([\d.]+)"', line).group(1))
-                    for name in names:
-                        m = re.search(rf' {name}="\S+ \S+ ([\d.e+]+)"', line)
-                        if m:
-                            series.setdefault((s["pid"], f"{kind}.{name}"), []).append((t, float(m.group(1))))
+        paths = server_trace_files(glob.glob(os.path.join(s["logs"], "*.xml")), s["port"])
+        for path in sorted(paths, key=os.path.getmtime)[-2:]:
+            trace_series(s["pid"], open(path, errors="replace"), series)
     return series
+
+
+def trace_deltas(series, start, end):
+    """Each counter's increase from start to end, summed over servers. A counter no
+    server reported on both sides is an error."""
+    deltas = {}
+    for (_, name), values in series.items():
+        v0, v1 = at(values, start), at(values, end)
+        if v0 is not None and v1 is not None:
+            deltas[name] = deltas.get(name, 0.0) + v1 - v0
+    missing = [f"{k}.{n}" for k, names in COUNTERS.items() for n in names if f"{k}.{n}" not in deltas]
+    if missing:
+        raise ValueError(f"no trace totals around the run for {', '.join(missing)}")
+    return deltas
 
 
 def at(series, t):
     before = [v for ts, v in sorted(series) if ts <= t]
     return before[-1] if before else None
+
+
+def differences(short, long, tx):
+    """(long - short) / tx of every count; both runs must have the same roles,
+    events and server ports, so nothing absent is read as zero."""
+    for what in ("counts", "segments"):
+        if set(short[what]) != set(long[what]):
+            raise ValueError(f"{what} differ between runs: {sorted(set(short[what]) ^ set(long[what]))}")
+    row = {}
+    for role in sorted(long["counts"]):
+        a, b = short["counts"][role], long["counts"][role]
+        if set(a) != set(b):
+            raise ValueError(f"{role}: events differ between runs: {sorted(set(a) ^ set(b))}")
+        for event in sorted(b):
+            d = (b[event] - a[event]) / tx
+            if abs(d) > 1e-4 or event == "cycles":
+                row[f"{role}.{event}"] = d
+    return row
 
 
 def main():
@@ -204,24 +277,14 @@ def main():
     tx = (args.long - args.short) * 21 / 20  # warmup is iterations/20
     row = {"label": args.label, "workload": args.workload, "workers": args.workers, "short": args.short,
            "long": args.long, "gogc": args.gogc, "env": args.env, "client_arg": args.client_arg}
-    for role in sorted(set(short["counts"]) | set(long["counts"])):
-        a, b = short["counts"].get(role, {}), long["counts"].get(role, {})
-        for event in sorted(set(a) | set(b)):
-            d = (b.get(event, 0) - a.get(event, 0)) / tx
-            if abs(d) > 1e-4 or event == "cycles":
-                row[f"{role}.{event}"] = d
-    for port in sorted(set(short["segments"]) | set(long["segments"])):
-        a, b = short["segments"].get(port, [0, 0, 0]), long["segments"].get(port, [0, 0, 0])
+    row.update(differences(short, long, tx))
+    for port in sorted(long["segments"]):
+        a, b = short["segments"][port], long["segments"][port]
         row[f"client_segs_to_{port}"] = (b[0] - a[0]) / tx
         row[f"client_bytes_to_{port}"] = (b[1] - a[1]) / tx
         row[f"client_conns_to_{port}"] = b[2]
     measured = long["summary"]["completed"] * 21 / 20
-    deltas = {}
-    for (_, name), values in series.items():
-        v0, v1 = at(values, long["start"]), at(values, long["end"] + TRACE_INTERVAL - 0.5)
-        if v0 is not None and v1 is not None:
-            deltas[name] = deltas.get(name, 0.0) + v1 - v0
-    for name, delta in deltas.items():
+    for name, delta in trace_deltas(series, long["start"], long["end"] + TRACE_INTERVAL - 0.5).items():
         row[f"trace.{name}"] = delta / measured
     row["tx_per_s"] = long["summary"]["completed"] / (long["summary"]["measured_wall_ns"] / 1e9)
     row["mean_latency_us"] = long["mean_latency_us"]
