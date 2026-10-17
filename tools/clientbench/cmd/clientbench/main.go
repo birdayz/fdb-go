@@ -40,6 +40,7 @@ func run() error {
 	flag.Int64Var(&cfg.TimeoutMS, "transaction-timeout-ms", 30000, "database transaction timeout")
 	flag.Int64Var(&cfg.RetryLimit, "retry-limit", 10, "database transaction retry limit")
 	flag.StringVar(&cfg.Profile, "profile", "none", "none|cpu|heap|mutex|block|trace; profiling runs are separate")
+	flag.StringVar(&cfg.CoalesceDelay, "coalesce-delay", "", "Go client connection write delay \"min,max\" (e.g. 0,0 or 10us,20us); empty keeps the default")
 	flag.Parse()
 	if flag.NArg() != 0 {
 		return fmt.Errorf("unexpected positional arguments: %v", flag.Args())

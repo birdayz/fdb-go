@@ -17,6 +17,7 @@ go_library(
     importpath = "fdb.dev/pkg/fdbgo/transport",
     visibility = ["//visibility:public"],
     deps = [
+        "//pkg/fdbgo/internal/hrtimer",
         "//pkg/fdbgo/wire",
         "//pkg/fdbgo/wire/types",
         "@com_github_zeebo_xxh3//:xxh3",
@@ -26,6 +27,8 @@ go_library(
 go_test(
     name = "transport_test",
     srcs = [
+        "conn_coalesce_linux_test.go",
+        "conn_coalesce_test.go",
         "conn_direct_write_test.go",
         "conn_handshake_timeout_test.go",
         "conn_lifecycle_test.go",

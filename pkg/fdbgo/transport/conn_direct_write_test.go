@@ -185,7 +185,8 @@ func TestDirectWriteFailureFailsConnection(t *testing.T) {
 
 // dialStalledPeer dials a peer that completes the handshake and then reads
 // nothing until release is closed; frames it later reads arrive on frames.
-func dialStalledPeer(t *testing.T) (c *Conn, release chan struct{}, frames <-chan []byte) {
+// The connection writes at once unless opts set a write delay.
+func dialStalledPeer(t *testing.T, opts ...DialOption) (c *Conn, release chan struct{}, frames <-chan []byte) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -227,7 +228,8 @@ func dialStalledPeer(t *testing.T) (c *Conn, release chan struct{}, frames <-cha
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	c, err = dialWith(ctx, ln.Addr().String(), nil, nil, withMonitorCadence(time.Hour, time.Hour))
+	base := []DialOption{withMonitorCadence(time.Hour, time.Hour), WithCoalesceDelay(0, 0)}
+	c, err = dialWith(ctx, ln.Addr().String(), nil, nil, append(base, opts...)...)
 	if err != nil {
 		t.Fatal(err)
 	}

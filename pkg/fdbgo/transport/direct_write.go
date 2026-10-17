@@ -28,8 +28,9 @@ func (c *Conn) tryEnqueue(req writeReq) bool {
 
 // tryWriteDirect writes the frame on the caller's goroutine when writeLoop is idle,
 // saving two handoffs; it never blocks, and writeLoop finishes what a full socket refuses.
+// A coalescing connection never writes directly: every frame waits in writeLoop.
 func (c *Conn) tryWriteDirect(token UID, body []byte) (bool, error) {
-	if c.raw == nil || c.queued.Load() != 0 || !c.writeMu.TryLock() {
+	if c.raw == nil || c.coalesce != nil || c.queued.Load() != 0 || !c.writeMu.TryLock() {
 		return false, nil
 	}
 	defer c.writeMu.Unlock()

@@ -21,5 +21,7 @@ sh_test(
         "run.py",
         "test_campaign.py",
         "test_matrix_plan.py",
+        "test_wirediff.py",
+        "wirediff.py",
     ],
 )
