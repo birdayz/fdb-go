@@ -229,6 +229,7 @@ type database struct {
 	// a lagging coordinator cannot reinstall older info. Set before the monitor starts.
 	bootstrapCoordinator string
 	dialFn               transport.DialFunc // nil = net.DialTimeout
+	dialOpts             []transport.DialOption
 	// tlsConfig is the single source of truth for transport security: non-nil =>
 	// every connection (coordinators, proxies, storage) is dialed over TLS with
 	// this *tls.Config; nil => plaintext. Set at open from WithTLSConfig (which
@@ -600,7 +601,7 @@ func (db *database) dialAndPool(addr string, call *dialCall) {
 
 	dialCtx, cancel := context.WithTimeout(db.ctx, DefaultRPCTimeout)
 	defer cancel() // RFC-110: release the dial timer even if transport.Dial panics
-	c, dialErr := transport.Dial(dialCtx, addr, db.tlsConfig, db.dialFn)
+	c, dialErr := transport.Dial(dialCtx, addr, db.tlsConfig, db.dialFn, db.dialOpts...)
 
 	func() {
 		db.connMu.Lock()
@@ -905,6 +906,7 @@ func OpenDatabaseFromConfig(ctx context.Context, cf *ClusterFile, opts ...Option
 	db := &database{
 		connRecord:        newConnRecord(cf, o.clusterFilePath, logger),
 		dialFn:            o.dialFn,
+		dialOpts:          o.dialOpts,
 		tlsConfig:         tlsConfig,
 		logger:            logger,
 		rangeByteCeiling:  o.rangeByteCeiling,

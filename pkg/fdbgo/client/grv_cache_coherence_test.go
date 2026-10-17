@@ -103,6 +103,18 @@ func TestGRVCache_PairIsNeverTorn(t *testing.T) {
 		}(int64(w))
 	}
 	pub.Wait()
+	// The publishers can finish before a reader is first scheduled; the last
+	// published pair stays cached, so keep reading until a reader has a sample.
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		mu.Lock()
+		n := observed
+		mu.Unlock()
+		if n > 0 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
 	close(done)
 	stop.Wait()
 

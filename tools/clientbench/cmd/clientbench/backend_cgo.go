@@ -10,6 +10,7 @@ package main
 import "C"
 
 import (
+	"errors"
 	"sync"
 
 	"fdb.dev/tools/clientbench/internal/bench"
@@ -30,6 +31,9 @@ type (
 func openBackend(cfg bench.Config) (bench.LifecycleDatabase, map[string]any, error) {
 	if err := fdb.APIVersion(730); err != nil {
 		return nil, nil, err
+	}
+	if cfg.CoalesceDelay != "" {
+		return nil, nil, errors.New("coalesce-delay applies to the Go client only")
 	}
 	db, err := fdb.OpenDatabase(cfg.ClusterFile)
 	if err != nil {

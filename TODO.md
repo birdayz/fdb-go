@@ -69,6 +69,7 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
     (FlowTransport.actor.cpp:704-739); Go writes each frame on its sender. RFC-259 Part B
     prototypes on the three-process cluster cut `get100` at 32 workers by 10–16% but
     saved nothing at 8 workers and cost latency, so Part B is not worth its complexity yet.
+    Superseded: the write delay below, measured on current master, closes the read gap.
   - `range100`, 8 workers (before #948): Go sends 1.9× libfdb_c's GRV requests (0.346 vs 0.184 per
     transaction). Both use a window of half the smoothed GRV latency, about 57 µs for Go.
     libfdb_c measures that latency on its network thread, which here is busy deserializing
@@ -119,6 +120,31 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
     a failed successor registration must drain both detached and newly pending work.
     Do not arbitrarily widen batch windows, repeat the rejected reserve, or recycle
     exposed public transactions or borrowed read data.
+  - [ ] **Read gap.** A wire comparison of both clients on current master (48 runs,
+    [write-coalesce report](docs/benchmarks/rfc-259/write-coalesce-20261017.md)) found
+    the same storage queries and commits per transaction but 1.5–4.3× libfdb_c's TCP
+    segments: Go writes
+    each frame at once, libfdb_c waits 10–20 µs and writes everything queued for the
+    connection (FlowTransport.actor.cpp:704-739). `WithCoalesceDelay` (default libfdb_c's
+    knobs) ports that wait. Server cycles / libfdb_c with the delay: `get100` 0.59 at 8
+    workers, 0.88 at 32 (1.34 without); `grv` 0.76 at 8; 1-worker 0.93–0.99. The wait
+    raises 1-worker `get100` latency 26% (221 → 279 µs; libfdb_c 404 µs), beyond the
+    5% bound below; `WithCoalesceDelay(0, 0)` restores immediate writes.
+    Remaining: `range100` at 32 workers is 1.10 (1.17 without) with 1.4× libfdb_c's
+    segments; check `range100` at 8 and 64, `get100` at 64, and the multi-node rerun.
+  - [ ] **Write gap.** `set100` at 8 and 32 workers still costs the servers 1.6–1.8×
+    libfdb_c (medians) with or without the write delay. Runs are bimodal for both
+    clients: a closed-loop round reaches the commit proxy as one batch (0.126 commit
+    batches per transaction at 8 workers, 0.032 at 32) or splits (about 0.2 and 0.06,
+    roughly twice the server cycles). Unsplit runs cost the same for both clients. Go
+    split in 28 of 30 runs at 8 and 32 workers, libfdb_c in 5 of 18. Commits per
+    transaction are equal, but the commit proxy forms 1.8–1.9× the commit batches (0.061 vs 0.032 per transaction at
+    32 workers: about 16 commits per batch against 31), and the transaction role, which
+    pays per batch, costs about 2×. At 8 workers Go already sends 1.9× the GRV requests
+    (0.28 vs 0.15 per transaction), so a closed-loop round splits before its commits do.
+    Go's write latency is also worse: 10–11 ms against 6.7–6.9 ms. Next: trace when each
+    client sends its GRVs and commits within a round and compare with readVersionBatcher
+    and the commit path in NativeAPI.actor.cpp, as for the read gap.
   - Done when server cycles per transaction are within 10% of libfdb_c for `get100`,
     `set100`, `range100` and `grv` at 8–64 workers, locally and on a multi-node rerun,
     without raising 1-worker mean latency by more than 5%.
