@@ -231,16 +231,25 @@ def check_role_coverage(servers, series):
 
 
 def trace_deltas(series, start, end, cutoff):
-    """Each counter's increase over the run [start, end], summed over servers. Every
-    series needs a sample at or before start and one at or after end, taken by
-    cutoff: stale, truncated or one-sided coverage is an error, as is a counter no
-    server reported."""
-    deltas = {}
+    """Each counter's increase over the run [start, end], summed over servers.
+
+    A role instance (event ID) counts if it has a sample at or before start and one
+    at or after end, taken by cutoff. One that ended before the run, as a role
+    replaced by an earlier recovery does, is ignored. Any other instance overlaps
+    the run only in part and is an error, as is a server with no instance covering
+    the run for a counter it reports, or a counter no server reported."""
+    deltas, covered, reported = {}, set(), set()
     for (server, instance, name), values in series.items():
+        reported.add((server, name))
+        if max(values)[0] <= start:
+            continue  # this instance ended before the run
         first, last = at(values, start), at(values, cutoff)
         if first is None or last is None or last[0] < end:
             raise ValueError(f"server {server} {instance}: {name} has no samples on both sides of the run")
         deltas[name] = deltas.get(name, 0.0) + last[1] - first[1]
+        covered.add((server, name))
+    for server, name in sorted(reported - covered):
+        raise ValueError(f"server {server}: {name} has no samples on both sides of the run")
     missing = [f"{k}.{n}" for k, names in COUNTERS.items() for n in names if f"{k}.{n}" not in deltas]
     if missing:
         raise ValueError(f"no trace totals around the run for {', '.join(missing)}")

@@ -108,6 +108,16 @@ class TraceTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "both sides"):
             wirediff.trace_deltas(self.series({"a": replaced}), start=20, end=40, cutoff=50)
 
+    def test_instance_replaced_before_the_run_is_ignored(self):
+        grv = lambda t, instance, n: self.event(t, "GrvProxyMetrics", instance, TxnRequestIn=n, TxnStartIn=n, TxnStartBatch=n)
+        lines = self.full(10, 1) + self.full(42, 3)  # instance "0" covers the run
+        lines += [grv(2, "old", 900), grv(8, "old", 950)]  # recruited and replaced before the run
+        deltas = wirediff.trace_deltas(self.series({"a": lines}), start=20, end=40, cutoff=50)
+        self.assertEqual(deltas["GrvProxyMetrics.TxnRequestIn"], 2)  # only the live instance
+        recruited = self.full(10, 1) + self.full(42, 3) + [grv(25, "new", 0), grv(42, "new", 7)]
+        with self.assertRaisesRegex(ValueError, "both sides"):  # recruited during the run
+            wirediff.trace_deltas(self.series({"a": recruited}), start=20, end=40, cutoff=50)
+
     def test_counter_no_server_reported_fails(self):
         series = self.series({"a": [self.event(10, "GrvProxyMetrics", TxnRequestIn=1), self.event(42, "GrvProxyMetrics", TxnRequestIn=2)]})
         with self.assertRaisesRegex(ValueError, "no trace totals"):
