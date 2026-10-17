@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"fdb.dev/pkg/fdbgo/internal/hrtimer"
 	"fdb.dev/pkg/fdbgo/wire"
 	"fdb.dev/pkg/fdbgo/wire/types"
 )
@@ -198,7 +199,14 @@ type Conn struct {
 	tailFrame []byte        // the whole frame tail ends, pooled once written
 	tailBuf   *[]byte       // tailFrame's pool handle
 	tailKick  chan struct{} // wakes writeLoop to finish tail
-	tails     atomic.Int64  // partial direct writes, so tests can tell a tail occurred
+
+	// minCoalesce/maxCoalesce are connectionWriter's write delay bounds; coalesce
+	// is its timer, nil when the delay is disabled or unsupported, in which case
+	// an idle connection writes a frame on its sender's goroutine.
+	minCoalesce, maxCoalesce time.Duration
+	coalesce                 *hrtimer.Timer
+	lastWrite                time.Time    // when wbuf last wrote to the socket; writeLoop only
+	tails                    atomic.Int64 // partial direct writes, so tests can tell a tail occurred
 
 	// Debug tracing (set before first use).
 	debugFrames bool
@@ -237,8 +245,8 @@ type DialFunc func(ctx context.Context, network, addr string) (net.Conn, error)
 // VerifyPeerCertificate, cipher/version policy); nil means plaintext. There is no
 // separate "use TLS" bool to disagree with it, so a connection can never be
 // silently downgraded. dialFn overrides the dialer (nil → net.Dialer).
-func Dial(ctx context.Context, addr string, tlsConfig *tls.Config, dialFn DialFunc) (*Conn, error) {
-	return dialWith(ctx, addr, dialFn, tlsConfig)
+func Dial(ctx context.Context, addr string, tlsConfig *tls.Config, dialFn DialFunc, opts ...DialOption) (*Conn, error) {
+	return dialWith(ctx, addr, dialFn, tlsConfig, opts...)
 }
 
 // ErrConnClosed is the identity sentinel for a connection teardown. Every error
@@ -314,13 +322,31 @@ func codedConnClosed(err error) error {
 	return &ConnClosedError{cause: err}
 }
 
-// connOption tweaks a Conn before its loop goroutines start. Test-only knobs
-// (e.g. monitor cadence) ride this so the public Dial signature stays clean.
-type connOption func(*Conn)
+// DialOption configures a Conn before its loop goroutines start.
+type DialOption func(*Conn)
+
+// MIN_COALESCE_DELAY and MAX_COALESCE_DELAY (flow/Knobs.cpp:211-212).
+const (
+	DefaultMinCoalesceDelay = 10 * time.Microsecond
+	DefaultMaxCoalesceDelay = 20 * time.Microsecond
+)
+
+// WithCoalesceDelay sets how long the connection waits before writing a batch,
+// so frames sent meanwhile share it: max(min, max - time since the last write),
+// jittered by 0.9-1.1, as libfdb_c's connectionWriter does
+// (FlowTransport.actor.cpp:704-710). The defaults are libfdb_c's knobs. Zero for
+// both writes a frame at once when nothing is queued ahead of it. The wait needs
+// a sub-millisecond timer: off Linux, or if the timer cannot be created, frames
+// are written at once.
+func WithCoalesceDelay(minDelay, maxDelay time.Duration) DialOption {
+	return func(c *Conn) {
+		c.minCoalesce, c.maxCoalesce = max(minDelay, 0), max(maxDelay, 0)
+	}
+}
 
 // withMonitorCadence overrides the connection-monitor loop interval and timeout.
 // Test-only: lets the monitor-death path fire in tens of ms instead of ~3.5s.
-func withMonitorCadence(loop, timeout time.Duration) connOption {
+func withMonitorCadence(loop, timeout time.Duration) DialOption {
 	return func(c *Conn) {
 		c.monitorLoopInterval = loop
 		c.monitorTimeout = timeout
@@ -332,8 +358,8 @@ func withMonitorCadence(loop, timeout time.Duration) connOption {
 // generous ceiling so a stalled peer can't wedge the dial forever.
 const defaultHandshakeTimeout = 10 * time.Second
 
-// dialWith is the implementation behind Dial, plus test-only connOptions.
-func dialWith(ctx context.Context, addr string, dialFn DialFunc, tlsConfig *tls.Config, opts ...connOption) (*Conn, error) {
+// dialWith is the implementation behind Dial.
+func dialWith(ctx context.Context, addr string, dialFn DialFunc, tlsConfig *tls.Config, opts ...DialOption) (*Conn, error) {
 	if dialFn == nil {
 		var d net.Dialer
 		dialFn = d.DialContext
@@ -436,8 +462,7 @@ func dialWith(ctx context.Context, addr string, dialFn DialFunc, tlsConfig *tls.
 	connCtx, cancel := context.WithCancel(context.Background())
 	c := &Conn{
 		conn:    netConn,
-		useTLS:  tlsConfig != nil, // drives frame-checksum omission; not a TLS switch
-		wbuf:    bufio.NewWriterSize(netConn, 64*1024),
+		useTLS:  tlsConfig != nil,         // drives frame-checksum omission; not a TLS switch
 		writeCh: make(chan writeReq, 256), // buffered for concurrent senders
 		pending: make(map[UID]pendingEntry, 16),
 		ctx:     connCtx,
@@ -450,7 +475,10 @@ func dialWith(ctx context.Context, addr string, dialFn DialFunc, tlsConfig *tls.
 		monitorLoopInterval: 1 * time.Second,
 		monitorTimeout:      2 * time.Second,
 		tailKick:            make(chan struct{}, 1),
+		minCoalesce:         DefaultMinCoalesceDelay,
+		maxCoalesce:         DefaultMaxCoalesceDelay,
 	}
+	c.wbuf = bufio.NewWriterSize(stampedWriter{c}, 64*1024)
 	if tlsConfig == nil {
 		c.raw = newRawWriter(netConn)
 	}
@@ -498,6 +526,12 @@ func dialWith(ctx context.Context, addr string, dialFn DialFunc, tlsConfig *tls.
 	// Clear the deadline so the long-lived I/O loops run without one
 	// (connectionMonitor + TCP keepalive handle liveness from here).
 	_ = netConn.SetDeadline(time.Time{})
+
+	if c.minCoalesce > 0 || c.maxCoalesce > 0 {
+		if t, err := hrtimer.New(); err == nil {
+			c.coalesce = t // closed by failConnection and writeLoop
+		}
+	}
 
 	// Start read, write, and connection monitor loops.
 	c.loopWG.Add(3)
@@ -656,23 +690,59 @@ func (c *Conn) Flush() error {
 	}
 }
 
+// coalesceWait is connectionWriter's
+// delayJittered(max(MIN_COALESCE_DELAY, MAX_COALESCE_DELAY - sinceWrite))
+// (FlowTransport.actor.cpp:708-710; DELAY_JITTER_OFFSET/RANGE 0.9/0.2,
+// flow/Knobs.cpp:54-55). failConnection closes the timer, which ends the wait.
+func (c *Conn) coalesceWait(sinceWrite time.Duration) {
+	if c.coalesce == nil {
+		return
+	}
+	if c.coalesce.Reset(coalesceDelay(c.minCoalesce, c.maxCoalesce, sinceWrite, mathrand.Float64())) == nil {
+		_ = c.coalesce.Wait()
+	}
+}
+
+// stampedWriter is wbuf's socket: connectionWriter stamps lastWriteTime just
+// before each connection write (FlowTransport.actor.cpp:716-718), including a
+// batch that spills the buffer.
+type stampedWriter struct{ c *Conn }
+
+func (w stampedWriter) Write(p []byte) (int, error) {
+	w.c.lastWrite = time.Now()
+	return w.c.conn.Write(p)
+}
+
+// CoalesceDelay reports the connection's write delay bounds and whether it waits.
+func (c *Conn) CoalesceDelay() (minDelay, maxDelay time.Duration, waits bool) {
+	return c.minCoalesce, c.maxCoalesce, c.coalesce != nil
+}
+
+// coalesceDelay is the jittered wait for a uniform jitter in [0, 1).
+func coalesceDelay(minDelay, maxDelay, sinceWrite time.Duration, jitter float64) time.Duration {
+	d := max(minDelay, maxDelay-sinceWrite)
+	return time.Duration(float64(d) * (0.9 + 0.2*jitter))
+}
+
 // writeLoop is the dedicated write goroutine. It reads frames from writeCh,
-// writes them to the buffered writer, and flushes. Natural batching: after
-// processing the first frame, it drains all other queued frames before
-// flushing — so N concurrent SendFrame/SendFrameDeferred calls result in
-// one flush (one write() syscall).
-//
-// This matches C++ FlowTransport's connectionWriter actor which yields to
-// let senders enqueue, then flushes everything at once. It holds writeMu from
-// its first write to the flush, so direct writers never interleave a batch.
+// writes them to the buffered writer, and flushes. After the first frame it
+// waits the coalescing delay, then drains all other queued frames before
+// flushing — so N concurrent SendFrame/SendFrameDeferred calls share one
+// flush, as connectionWriter writes everything unsent after its delay
+// (FlowTransport.actor.cpp:704-732). It holds writeMu
+// from its first write to the flush, so direct writers never interleave a batch.
 func (c *Conn) writeLoop() {
 	defer c.loopWG.Done()
+	if c.coalesce != nil {
+		defer c.coalesce.Close()
+	}
 	var owned []*writeCompletion
 	defer func() { c.finishOwnedWrites(owned) }()
 	defer c.recoverLoop("writeLoop")
 
 	// Collect errCh channels that need notification after flush.
 	var errChans []chan<- error
+	c.lastWrite = time.Now() // connectionWriter's initial lastWriteTime
 
 	for {
 		// Wait for first frame, or for the tail of a direct write.
@@ -690,6 +760,10 @@ func (c *Conn) writeLoop() {
 		// even if encoding or the socket writer fails.
 		if req.owned != nil {
 			owned = append(owned, req.owned)
+		}
+		c.coalesceWait(time.Since(c.lastWrite))
+		if c.ctx.Err() != nil {
+			return // torn down while waiting: write nothing
 		}
 		c.writeMu.Lock()
 		var batched int64
@@ -736,7 +810,7 @@ func (c *Conn) writeLoop() {
 			}
 		}
 
-		// Flush all accumulated frames in one syscall.
+		// Flush all accumulated frames.
 		if writeErr == nil {
 			writeErr = c.wbuf.Flush()
 		}
@@ -832,6 +906,11 @@ func (c *Conn) Close() error {
 func (c *Conn) failConnection(err error) {
 	c.closeOnce.Do(func() {
 		c.cancel()
+		if c.coalesce != nil {
+			// Wakes a writeLoop waiting to write, as cancelling connectionWriter
+			// cancels its delay (FlowTransport.actor.cpp:882-883).
+			_ = c.coalesce.Close()
+		}
 		_ = c.conn.Close()
 		// Code the fan-out: whatever raw cause killed the connection (EOF,
 		// ECONNRESET, a recovered loop panic), every in-flight reply observes a

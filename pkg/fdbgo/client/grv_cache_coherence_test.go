@@ -25,6 +25,7 @@ package client
 
 import (
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -65,7 +66,9 @@ func TestGRVCache_PairIsNeverTorn(t *testing.T) {
 
 	var mu sync.Mutex
 	var torn []string
-	observed := 0
+	observed, during := 0, 0 // during: hits while a publisher was still running
+	var publishing atomic.Int32
+	publishing.Store(writers)
 
 	for r := 0; r < readerRoutines; r++ {
 		stop.Add(1)
@@ -83,6 +86,9 @@ func TestGRVCache_PairIsNeverTorn(t *testing.T) {
 				}
 				mu.Lock()
 				observed++
+				if publishing.Load() > 0 {
+					during++
+				}
 				if want := coherenceTimeFor(v); !at.Equal(want) {
 					torn = append(torn, formatTorn(v, at, want))
 				}
@@ -96,9 +102,26 @@ func TestGRVCache_PairIsNeverTorn(t *testing.T) {
 		pub.Add(1)
 		go func(base int64) {
 			defer pub.Done()
+			defer publishing.Add(-1)
+			seen := 0
 			for i := int64(1); i <= versionsEach; i++ {
 				v := base*versionsEach + i
 				c.updateFromGRV(c.token(), coherenceTimeFor(v), v)
+				// Publishers can outrun readers that are not yet scheduled. Every
+				// 100 versions, let a reader sample while this one is still running.
+				if i%100 == 0 {
+					deadline := time.Now().Add(30 * time.Second)
+					for {
+						mu.Lock()
+						n := during
+						mu.Unlock()
+						if n > seen || time.Now().After(deadline) {
+							seen = n
+							break
+						}
+						time.Sleep(time.Microsecond)
+					}
+				}
 			}
 		}(int64(w))
 	}
@@ -109,6 +132,10 @@ func TestGRVCache_PairIsNeverTorn(t *testing.T) {
 	if observed == 0 {
 		t.Fatal("readers never observed a cache hit: the run proves nothing about " +
 			"coherence. Check the freshness seam above")
+	}
+	if during == 0 {
+		t.Fatal("no cache hit overlapped publication: the run proves nothing about " +
+			"concurrent coherence")
 	}
 	if len(torn) > 0 {
 		shown := torn

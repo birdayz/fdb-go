@@ -32,6 +32,9 @@ type Config struct {
 	TimeoutMS      int64  `json:"transaction_timeout_ms"`
 	RetryLimit     int64  `json:"retry_limit"`
 	Profile        string `json:"profile"`
+	// CoalesceDelay is the Go client's connection write delay, "min,max" as Go
+	// durations; empty keeps the client default.
+	CoalesceDelay string `json:"coalesce_delay,omitempty"`
 }
 
 func (c Config) Validate() error {

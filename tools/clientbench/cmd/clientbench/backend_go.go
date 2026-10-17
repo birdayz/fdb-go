@@ -4,6 +4,8 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"time"
 
 	"fdb.dev/pkg/fdbgo/client"
@@ -26,7 +28,17 @@ func openBackend(cfg bench.Config) (bench.LifecycleDatabase, map[string]any, err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	raw, err := client.OpenDatabase(ctx, cfg.ClusterFile, client.WithAPIVersion(730))
+	opts := []client.Option{client.WithAPIVersion(730)}
+	if cfg.CoalesceDelay != "" {
+		lo, hi, ok := strings.Cut(cfg.CoalesceDelay, ",")
+		minDelay, err1 := time.ParseDuration(lo)
+		maxDelay, err2 := time.ParseDuration(hi)
+		if !ok || err1 != nil || err2 != nil {
+			return nil, nil, fmt.Errorf("coalesce-delay %q: want min,max durations", cfg.CoalesceDelay)
+		}
+		opts = append(opts, client.WithCoalesceDelay(minDelay, maxDelay))
+	}
+	raw, err := client.OpenDatabase(ctx, cfg.ClusterFile, opts...)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -39,7 +51,7 @@ func openBackend(cfg bench.Config) (bench.LifecycleDatabase, map[string]any, err
 		db.Close()
 		return nil, nil, err
 	}
-	return &backend{db: db, raw: raw}, map[string]any{"backend": "go", "api_version": 730, "native_library": false}, nil
+	return &backend{db: db, raw: raw}, map[string]any{"backend": "go", "api_version": 730, "native_library": false, "coalesce_delay": cfg.CoalesceDelay}, nil
 }
 
 func (b *backend) Close()         { b.db.Close() }

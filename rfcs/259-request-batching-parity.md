@@ -1,6 +1,7 @@
 # RFC-259: Request batching parity with libfdb_c
 
-**Status:** Part A accepted and implemented. Part B proposed; needs its own design review.
+**Status:** Part A accepted and implemented. Part B implemented without its idle fast path,
+as `WithCoalesceDelay` ([measurements](../docs/benchmarks/rfc-259/write-coalesce-20261017.md)).
 **Item:** TODO.md §0, "Server CPU per transaction" (top priority).
 **Spec:** FoundationDB 7.3.77 (`libfdb_c`, `fdbrpc`, `flow`).
 
@@ -245,6 +246,14 @@ do in libfdb_c.
 
 Part B needs its own design review before implementation: it changes the ownership rules
 in `transport/conn.go` (`writeMu`, queued counts, tails, cancellation of a queued frame).
+
+**As implemented** (2026-10-17): `writeLoop` waits the jittered delay on a per-connection
+`hrtimer` before each batch and stamps the last write before every socket write. A
+waiting connection never writes on the sender's goroutine, so queue ownership is
+unchanged. There is no idle fast path: every batch waits, including after an idle
+period, as in libfdb_c. `WithCoalesceDelay(min, max)` sets the bounds (default 10/20 µs);
+`0, 0` restores immediate direct writes. Off Linux, without a precise timer, frames are
+written at once.
 
 ## Not in scope
 

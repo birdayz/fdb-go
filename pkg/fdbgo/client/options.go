@@ -3,6 +3,7 @@ package client
 import (
 	"crypto/tls"
 	"log/slog"
+	"time"
 
 	oteltrace "go.opentelemetry.io/otel/trace"
 
@@ -26,6 +27,7 @@ type openOptions struct {
 	tracingSampleRate float64          // distributed-trace sample rate (RFC-115 §4); 0.0 = unsampled (default, matches C++ TRACING_SAMPLE_RATE)
 	tracer            oteltrace.Tracer // OpenTelemetry export backend (RFC-115 §4 Layer 2); nil → noop (no telemetry)
 	apiVersion        int              // selected FDB API version (RFC-149); required — OpenDatabase rejects an unset version
+	dialOpts          []transport.DialOption
 }
 
 func applyOptions(opts []Option) openOptions {
@@ -130,6 +132,21 @@ const (
 // at >=510.
 func WithAPIVersion(v int) Option {
 	return func(o *openOptions) { o.apiVersion = v }
+}
+
+// WithCoalesceDelay sets how long each connection waits before writing a batch, so
+// requests sent meanwhile share it: max(minDelay, maxDelay - time since the last
+// write), jittered by 0.9-1.1. The default is libfdb_c's MIN_COALESCE_DELAY and
+// MAX_COALESCE_DELAY, 10 and 20 µs (transport.DefaultMinCoalesceDelay and
+// DefaultMaxCoalesceDelay). The last setting wins. Fewer, larger writes cost the
+// servers less per request;
+// the wait adds to each request's latency. Zero for both writes a request at
+// once when its connection has nothing queued. The wait needs a sub-millisecond
+// timer: off Linux, or if the timer cannot be created, requests are written at once.
+func WithCoalesceDelay(minDelay, maxDelay time.Duration) Option {
+	return func(o *openOptions) {
+		o.dialOpts = append(o.dialOpts, transport.WithCoalesceDelay(minDelay, maxDelay))
+	}
 }
 
 // WithLogger sets the per-handle logger for the client's operational events
