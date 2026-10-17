@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"fdb.dev/pkg/fdbgo/wire"
+	"fdb.dev/pkg/fdbgo/wire/types"
 )
 
 // The retained native commit shares the GRV, not the public resetPromise or
@@ -28,17 +29,57 @@ type pendingReadVersion struct {
 	err     error
 }
 
+// readVersionRequest contains no public transaction or incarnation references.
+// Native commits retain this snapshot and the shared GRV future after admission.
+type readVersionRequest struct {
+	db           *database
+	span         types.SpanContext
+	tags         []string
+	flags        uint32
+	useGrvCache  bool
+	skipGrvCache bool
+	lockAware    bool
+}
+
+func (tx *Transaction) readVersionRequest() readVersionRequest {
+	return readVersionRequest{
+		db: tx.db, span: tx.currentSpan(), tags: tx.tags, flags: tx.grvFlags(),
+		useGrvCache: tx.useGrvCache, skipGrvCache: tx.skipGrvCache,
+		lockAware: tx.lockAware || tx.readLockAware,
+	}
+}
+
+type nativeReadState struct {
+	*readVersionState
+	request readVersionRequest
+}
+
+func (state *nativeReadState) readVersionForCommit(ctx context.Context) (int64, error) {
+	rv, userSet, err := state.cachedOrFetchReadVersion(ctx, state.request, grvFlagCausalReadRisky, nil)
+	if err == nil && userSet {
+		err = state.request.validateExplicitVersion(ctx, rv)
+	}
+	return rv, err
+}
+
 func (tx *Transaction) cachedOrFetchReadVersion(ctx context.Context, extraFlags uint32) (int64, bool, error) {
-	state := tx.readVersionState
+	return tx.readVersionState.cachedOrFetchReadVersion(ctx, tx.readVersionRequest(), extraFlags, tx)
+}
+
+// owner supplies only public admission-error mapping and span initialization.
+// Detached native work passes nil and observes its own context instead.
+func (state *readVersionState) cachedOrFetchReadVersion(ctx context.Context, request readVersionRequest, extraFlags uint32, owner *Transaction) (int64, bool, error) {
 	for {
 		state.readVersionMu.Lock()
-		if err := tx.readEntryError(ctx); err != nil {
+		if err := readVersionEntryError(ctx, owner); err != nil {
 			state.readVersionMu.Unlock()
 			return 0, false, err
 		}
 		if state.metricStart.IsZero() {
 			state.metricStart = time.Now()
-			tx.ensureTxSpan()
+			if owner != nil {
+				owner.ensureTxSpan()
+			}
 		}
 		if state.hasReadVersion {
 			rv, userSet := state.readVersion, state.userSetReadVersion
@@ -49,9 +90,9 @@ func (tx *Transaction) cachedOrFetchReadVersion(ctx context.Context, extraFlags 
 			state.readVersionMu.Unlock()
 			select {
 			case <-ctx.Done():
-				return 0, false, tx.mapReadError(ctx, ctx.Err())
+				return 0, false, mapReadVersionError(ctx, owner, ctx.Err())
 			case <-pending.done:
-				if err := tx.readEntryError(ctx); err != nil {
+				if err := readVersionEntryError(ctx, owner); err != nil {
 					return 0, false, err
 				}
 				if pending.err == nil {
@@ -64,15 +105,29 @@ func (tx *Transaction) cachedOrFetchReadVersion(ctx context.Context, extraFlags 
 		pending := &pendingReadVersion{done: make(chan struct{})}
 		state.pendingReadVersion = pending
 		state.readVersionMu.Unlock()
-		rv, err := tx.fetchReadVersion(ctx, extraFlags, state, pending)
+		rv, err := request.fetchReadVersion(ctx, extraFlags, state, pending)
 		if err != nil {
-			return 0, false, tx.mapReadError(ctx, err)
+			return 0, false, mapReadVersionError(ctx, owner, err)
 		}
 		return rv, false, nil
 	}
 }
 
-func (tx *Transaction) fetchReadVersion(ctx context.Context, extraFlags uint32, state *readVersionState, pending *pendingReadVersion) (rv int64, err error) {
+func readVersionEntryError(ctx context.Context, owner *Transaction) error {
+	if owner != nil {
+		return owner.readEntryError(ctx)
+	}
+	return ctx.Err()
+}
+
+func mapReadVersionError(ctx context.Context, owner *Transaction, err error) error {
+	if owner != nil {
+		return owner.mapReadError(ctx, err)
+	}
+	return err
+}
+
+func (request readVersionRequest) fetchReadVersion(ctx context.Context, extraFlags uint32, state *readVersionState, pending *pendingReadVersion) (rv int64, err error) {
 	var rvAt time.Time
 	err = context.Canceled // a panic must also release waiters without publishing a version
 	defer func() {
@@ -89,14 +144,26 @@ func (tx *Transaction) fetchReadVersion(ctx context.Context, extraFlags uint32, 
 		close(pending.done)
 		state.readVersionMu.Unlock()
 	}()
-	flags := tx.grvFlags() | extraFlags
+	flags := request.flags | extraFlags
 	var locked bool
-	rv, locked, rvAt, err = tx.db.grvBatchers[grvBatcherIndex(flags)].getReadVersion(tx.db, ctx, flags, tx.currentSpan(), tx.tags, tx.useGrvCache, tx.skipGrvCache)
-	if err == nil && locked && !(tx.lockAware || tx.readLockAware) {
+	rv, locked, rvAt, err = request.db.grvBatchers[grvBatcherIndex(flags)].getReadVersion(request.db, ctx, flags, request.span, request.tags, request.useGrvCache, request.skipGrvCache)
+	if err == nil && locked && !request.lockAware {
 		// C++ extractReadVersion rejects a locked database before adopting its version.
 		err = &wire.FDBError{Code: ErrDatabaseLocked}
 	}
 	return rv, err
+}
+
+func (request readVersionRequest) validateExplicitVersion(ctx context.Context, rv int64) error {
+	if request.db == nil {
+		return nil
+	}
+	// A previous cluster's floor reads as unset and must be bootstrapped again.
+	if request.db.minAcceptable() == 0 {
+		flags := request.flags
+		_, _, _, _ = request.db.grvBatchers[grvBatcherIndex(flags)].getReadVersion(request.db, ctx, flags, request.span, request.tags, request.useGrvCache, request.skipGrvCache)
+	}
+	return request.db.validateVersion(rv)
 }
 
 // Turnover has drained public state users and cancelled retained native work.

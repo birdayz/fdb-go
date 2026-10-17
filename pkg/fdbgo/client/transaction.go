@@ -769,17 +769,8 @@ func (tx *Transaction) readVersionForOperation(parentCtx context.Context, extraF
 	if err != nil {
 		return 0, err
 	}
-	if tx.db != nil && userSet {
-		// Read through the stamp: a floor established under a PREVIOUS cluster
-		// reads as unset, which re-arms this bootstrap so the floor is re-derived
-		// from the cluster now being served. That is the repair a straggler's
-		// write used to suppress, and the reason the floor carries its epoch.
-		if tx.db.minAcceptable() == 0 {
-			// Bootstrap: fetch a version to establish the baseline.
-			flags := tx.grvFlags()
-			_, _, _, _ = tx.db.grvBatchers[grvBatcherIndex(flags)].getReadVersion(tx.db, ctx, flags, tx.currentSpan(), tx.tags, tx.useGrvCache, tx.skipGrvCache)
-		}
-		if err := tx.db.validateVersion(rv); err != nil {
+	if userSet {
+		if err := tx.readVersionRequest().validateExplicitVersion(ctx, rv); err != nil {
 			return 0, err
 		}
 	}

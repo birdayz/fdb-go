@@ -10,6 +10,87 @@ import (
 	"time"
 )
 
+type nativeGRVWaitContext struct {
+	context.Context
+	waiting chan struct{}
+	once    sync.Once
+}
+
+// The native shared-future path first evaluates Done in its pending-reply select.
+func (c *nativeGRVWaitContext) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.waiting) })
+	return c.Context.Done()
+}
+
+func TestNativeReadStateRetriesCancelledPublicProducer(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), commitLifetimeTimeout)
+	defer cancel()
+	db, gate, addrs := newGRVReplyGateDB(t, ctx)
+	tx := db.CreateTransaction()
+	defer tx.Cancel()
+	lease := tx.enterState()
+	input := tx.captureCommit(nil, nil)
+	defer input.release()
+	tx.captureNativeReadState(input)
+	lease.release()
+	state := input.readState
+	failures := db.db.metrics.Snapshot().ClientConnectionFailures
+
+	gate.arm(1, false)
+	producerCtx, stopProducer := context.WithCancel(ctx)
+	defer stopProducer()
+	producer := make(chan error, 1)
+	go func() {
+		_, err := tx.GetReadVersion(producerCtx)
+		producer <- err
+	}()
+	waitCommitLifetimeGate(t, ctx, gate.heldCh, "public producer GRV reply withheld")
+	state.readVersionMu.Lock()
+	pending := state.pendingReadVersion
+	state.readVersionMu.Unlock()
+	if pending == nil {
+		t.Fatal("public GRV has no pending completion for the native waiter")
+	}
+	waitCtx := &nativeGRVWaitContext{Context: ctx, waiting: make(chan struct{})}
+	native := make(chan grvResult, 1)
+	go func() {
+		version, err := state.readVersionForCommit(waitCtx)
+		native <- grvResult{version: version, err: err}
+	}()
+	waitCommitLifetimeGate(t, ctx, waitCtx.waiting, "native waiter joined the public GRV")
+	stopProducer()
+	select {
+	case err := <-producer:
+		if err != context.Canceled {
+			t.Fatalf("cancelled public producer returned %v, want context.Canceled", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("public GRV did not observe caller cancellation")
+	}
+	waitCommitLifetimeGate(t, ctx, pending.done, "cancelled producer retired its shared completion")
+	if pending.err != context.Canceled {
+		t.Fatalf("retired producer error = %v, want context.Canceled", pending.err)
+	}
+	var result grvResult
+	select {
+	case result = <-native:
+		if result.err != nil || result.version <= 0 {
+			t.Fatalf("live native waiter adopted producer cancellation: %d/%v", result.version, result.err)
+		}
+	case <-ctx.Done():
+		t.Fatal("live native waiter did not retry the cancelled producer")
+	}
+	gate.release()
+	if rv, err := tx.GetReadVersion(ctx); err != nil || rv != result.version {
+		t.Fatalf("public cached version after native retry = %d/%v, want %d/nil", rv, err, result.version)
+	}
+	if requests, held, err := gate.counts(); err != nil || requests != 2 || held != 1 {
+		t.Fatalf("GRV requests=%d held=%d err=%v, want 2/1/nil", requests, held, err)
+	}
+	assertGRVProxiesHealthy(t, db, addrs, failures)
+}
+
 func TestNativeCommit_PublicWaitersInterruptDuringRetainedGRV(t *testing.T) {
 	t.Parallel()
 	for _, operation := range []string{"read-version", "read", "second-commit"} {

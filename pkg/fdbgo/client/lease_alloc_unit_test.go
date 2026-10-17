@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"errors"
+	"reflect"
 	"runtime"
 	"testing"
 	"time"
@@ -12,6 +13,41 @@ import (
 )
 
 type operationValueKey struct{}
+
+// Not parallel: AllocsPerRun counts process-wide allocations.
+func TestNativeReadStateCaptureAllocations(t *testing.T) {
+	tx := &Transaction{}
+	defer tx.Cancel()
+	tx.SetReadVersion(321)
+	var input commitInput
+	allocs := testing.AllocsPerRun(100, func() {
+		tx.captureNativeReadState(&input)
+	})
+	if allocs != 1 {
+		t.Fatalf("native read-state capture allocations = %v, want 1", allocs)
+	}
+	if input.readState.readVersionState != tx.readVersionState || input.readState.readVersion != 321 {
+		t.Fatal("native read-state capture did not share the existing GRV future")
+	}
+	if size := reflect.TypeOf(input.readState).Elem().Size(); size > 128 {
+		t.Fatalf("native read-state capture size = %d bytes, want <= 128", size)
+	}
+}
+
+// Not parallel: AllocsPerRun counts process-wide allocations.
+func TestNativeReadStateReadyAllocations(t *testing.T) {
+	state := &nativeReadState{readVersionState: &readVersionState{
+		hasReadVersion: true, readVersion: 321,
+	}}
+	allocs := testing.AllocsPerRun(100, func() {
+		if rv, err := state.readVersionForCommit(context.Background()); err != nil || rv != 321 {
+			t.Fatalf("ready native GRV = %d/%v, want 321/nil", rv, err)
+		}
+	})
+	if allocs != 0 {
+		t.Fatalf("ready native GRV allocations = %v, want 0", allocs)
+	}
+}
 
 // Not parallel: AllocsPerRun counts process-wide allocations.
 func TestReadOperationContextAllocations(t *testing.T) {

@@ -8,6 +8,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/fdbgo/wire/types"
 )
 
 func scribbleCallerBuf(b []byte) {
@@ -66,6 +68,9 @@ func TestOwnedMutationSnapshotSurvivesArenaReuse(t *testing.T) {
 func TestNativeCommitCapturesReadStateOptions(t *testing.T) {
 	t.Parallel()
 	tx := &Transaction{}
+	defer tx.Cancel()
+	span := types.SpanContext{TraceID: [16]byte{1, 2, 3}, SpanID: 456}
+	tx.spanContext.Store(&span)
 	tx.SetPriority(PriorityBatch)
 	tx.SetUseGrvCache()
 	tx.SetSkipGrvCache()
@@ -80,7 +85,7 @@ func TestNativeCommitCapturesReadStateOptions(t *testing.T) {
 	tx.captureNativeReadState(input)
 	lease.release()
 	captured := input.readState
-	if captured == tx || captured.readVersionState != tx.readVersionState {
+	if captured.readVersionState != tx.readVersionState {
 		t.Fatal("native GRV must share only the read-version future, not the public transaction")
 	}
 	tx.Reset()
@@ -91,11 +96,41 @@ func TestNativeCommitCapturesReadStateOptions(t *testing.T) {
 	if err := tx.SetTag("successor-tag"); err != nil {
 		t.Fatal(err)
 	}
-	if captured.priority != PriorityBatch || !captured.useGrvCache || !captured.skipGrvCache || !captured.causalReadRisky || !captured.readLockAware || captured.lockAware || len(captured.tags) != 1 || captured.tags[0] != "captured-tag" {
-		t.Fatalf("native GRV options changed with successor: %+v", &captured.txOptions)
+	request := captured.request
+	// CommitProxyInterface.h:303,308: PRIORITY_BATCH and FLAG_CAUSAL_READ_RISKY.
+	if request.flags != (1<<24)|1 || !request.useGrvCache || !request.skipGrvCache || !request.lockAware || len(request.tags) != 1 || request.tags[0] != "captured-tag" || request.span != span || input.span != span {
+		t.Fatalf("native GRV options changed with successor: %+v", request)
 	}
 	if captured.readVersionState == tx.readVersionState {
 		t.Fatal("native captured read future followed Reset into successor")
+	}
+}
+
+func TestNativeReadStateCapturesGRVLockAwareness(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"none", "read", "commit"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			tx := &Transaction{}
+			defer tx.Cancel()
+			switch mode {
+			case "read":
+				tx.SetReadLockAware()
+			case "commit":
+				tx.SetLockAware()
+			}
+			lease := tx.enterState()
+			input := tx.captureCommit(nil, nil)
+			defer input.release()
+			tx.captureNativeReadState(input)
+			lease.release()
+			if got, want := input.readState.request.lockAware, mode != "none"; got != want {
+				t.Fatalf("GRV lock-awareness = %t, want %t", got, want)
+			}
+			if got, want := input.lockAware, mode == "commit"; got != want {
+				t.Fatalf("commit lock-awareness = %t, want %t", got, want)
+			}
+		})
 	}
 }
 

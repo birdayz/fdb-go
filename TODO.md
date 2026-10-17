@@ -119,8 +119,21 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
     causal estimate. Investigate timer-expired GRV dispatch placement while preserving
     overlapping RPCs, single timer-reader ownership, and Close's registration barrier;
     a failed successor registration must drain both detached and newly pending work.
-    Do not arbitrarily widen batch windows, repeat the rejected reserve, or recycle
-    exposed public transactions or borrowed read data.
+    A [timer-worker handoff screen](docs/benchmarks/rfc-259/grv-dispatch-screen-20261017.md)
+    against `590aa97e3` did not improve `set100/32`: 10 paired runs gave server-cycle
+    ratio 1.016 (95% interval 0.992–1.038) and client-CPU ratio 0.987 (0.970–1.004).
+    It is not promoted. Separate traces confirm the inline path was active but still
+    find timer/successor scheduling delays and pre-send GC-coordination stalls. Fresh
+    baseline flushers at another onset start promptly, then stall in span/request
+    construction assists; their long sync waits are inside `gcMarkDone`, not pool
+    contention. Investigate the broader pre-GRV-send frontier, not another handoff.
+    A [GRV no-ack screen](docs/benchmarks/rfc-259/grv-send-noack-screen-20261017.md)
+    also found no benefit: 66 configurations, ten pairs each at `get100/32`, `grv/32`
+    and `set100/32`. Client-CPU ratios were 1.006, 1.011 and 1.007; every client/server
+    interval crossed 1. The prototype was removed. Do not extend this unqualified
+    change to the shared read helper, which would also move timeout/hedge timing.
+    Do not arbitrarily widen batch windows, repeat rejected handoff/reserve screens,
+    or recycle exposed public transactions or borrowed read data.
   - [ ] **Read gap.** A wire comparison of both clients on current master (48 runs,
     [write-coalesce report](docs/benchmarks/rfc-259/write-coalesce-20261017.md)) found
     the same storage queries and commits per transaction but 1.5–4.3× libfdb_c's TCP
