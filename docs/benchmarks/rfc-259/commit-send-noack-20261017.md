@@ -100,8 +100,9 @@ their interval does not establish a client-CPU win or server-cost equivalence.
 Allocation counts barely change, as expected for removal of a synchronization
 handoff rather than the queued-body copy.
 
-Bootstrap: reset Python `random.Random(20261017)` for each cell and metric. Draw
-10,000 paired replicates, each using `n` calls to `rng.randrange(n)` for that cell's
+Bootstrap: order pairs by numeric block ID within each worker cell, then reset
+Python `random.Random(20261017)` for each cell and metric. Draw 10,000 paired
+replicates, each using `n` calls to `rng.randrange(n)` for that cell's
 `n` pairs; compute the geometric-mean ratio, sort, and take indices 249 and 9749.
 Intervals are nominal and do not adjust for multiple comparisons.
 

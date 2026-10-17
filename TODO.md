@@ -148,7 +148,7 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
     server-cost improvement is established. One-worker arithmetic mean latency falls
     3.0%. The initial 64-worker mean-latency increase of 10.0% is retained; 20 follow-up
     pairs give −0.5%, and all 30 pairs give +4.1%, with no strict parallel-latency
-    equivalence claim. Candidate is not merged. Client and server parity remain open.
+    equivalence claim. These are local-only results; client and server parity remain open.
 
 ## 1. WS-E — scalar/SQL semantics and statement execution — ACTIVE
 
