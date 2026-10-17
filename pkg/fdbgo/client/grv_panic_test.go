@@ -28,7 +28,8 @@ func TestGRVFlush_RecoverFailsBatch(t *testing.T) {
 	}
 
 	func() {
-		defer b.recoverFlush(&db, batch)
+		published := 0
+		defer b.recoverFlush(&db, batch, &published)
 		// Same closure-scoped-lock pattern as flush's regions: a panic must unwind
 		// b.mu via the deferred unlock before recoverFlush runs.
 		func() {
@@ -72,7 +73,8 @@ func TestGRVFlush_NoPanicNoDeliver(t *testing.T) {
 	batch := []grvRequest{{reply: make(chan grvResult, 1)}}
 
 	func() {
-		defer b.recoverFlush(&db, batch)
+		published := 0
+		defer b.recoverFlush(&db, batch, &published)
 		// no panic
 	}()
 
