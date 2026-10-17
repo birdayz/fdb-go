@@ -140,11 +140,15 @@ class TraceFilesTest(unittest.TestCase):
 class RoleCoverageTest(unittest.TestCase):
     def test_every_storage_server_reports_storage_metrics(self):
         servers = [{"pid": "1", "role": "storage"}, {"pid": "2", "role": "storage"}, {"pid": "3", "role": "stateless"}]
+        complete = ' QueryQueue="1 0 5" GetValueQueries="1 0 5" GetRangeQueries="1 0 5" />'
         series = {}
-        wirediff.trace_series("1", ['<Event Time="1" Type="StorageMetrics" ID="a" QueryQueue="1 0 5" />'], series)
-        with self.assertRaisesRegex(ValueError, "server 2 .storage.: no StorageMetrics"):
+        wirediff.trace_series("1", ['<Event Time="1" Type="StorageMetrics" ID="a"' + complete], series)
+        with self.assertRaisesRegex(ValueError, "server 2 .storage.: no StorageMetrics.QueryQueue"):
             wirediff.check_role_coverage(servers, series)
         wirediff.trace_series("2", ['<Event Time="1" Type="StorageMetrics" ID="b" QueryQueue="1 0 7" />'], series)
+        with self.assertRaisesRegex(ValueError, "server 2 .storage.: no StorageMetrics.GetValueQueries"):
+            wirediff.check_role_coverage(servers, series)  # one counter is not the role's counters
+        wirediff.trace_series("2", ['<Event Time="2" Type="StorageMetrics" ID="b"' + complete], series)
         wirediff.check_role_coverage(servers, series)  # a stateless server owes no storage counters
 
 

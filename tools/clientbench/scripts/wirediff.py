@@ -223,11 +223,15 @@ def trace_totals(servers):
 
 
 def check_role_coverage(servers, series):
-    """Every server must report the counters of its role, so none is left out of a total."""
+    """Every server must report every counter of its role, so none is left out of a total."""
     for s in servers:
         kind = ROLE_COUNTERS.get(s["role"])
-        if kind and not any(server == s["pid"] and name.startswith(kind + ".") for server, _, name in series):
-            raise ValueError(f"server {s['pid']} ({s['role']}): no {kind} in its trace files")
+        if not kind:
+            continue
+        have = {name for server, _, name in series if server == s["pid"]}
+        missing = [f"{kind}.{n}" for n in COUNTERS[kind] if f"{kind}.{n}" not in have]
+        if missing:
+            raise ValueError(f"server {s['pid']} ({s['role']}): no {', '.join(missing)} in its trace files")
 
 
 def trace_deltas(series, start, end, cutoff):
