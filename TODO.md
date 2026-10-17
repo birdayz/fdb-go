@@ -132,17 +132,21 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
     5% bound below; `WithCoalesceDelay(0, 0)` restores immediate writes.
     Remaining: `range100` at 32 workers is 1.10 (1.17 without) with 1.4× libfdb_c's
     segments; check `range100` at 8 and 64, `get100` at 64, and the multi-node rerun.
-  - [ ] **Write gap.** `set100` at 8 and 32 workers still costs the servers 1.6–1.8×
-    libfdb_c (medians) with or without the write delay. Runs are bimodal for both
-    clients: a closed-loop round reaches the commit proxy as one batch (0.126 commit
-    batches per transaction at 8 workers, 0.032 at 32) or splits (about 0.2 and 0.06,
-    roughly twice the server cycles). Unsplit runs cost the same for both clients. Go
+  - [ ] **Write gap.** `set100` at 8 and 32 workers costs the servers 1.6–1.8×
+    libfdb_c (medians) with or without the write delay whenever libfdb_c's runs stay
+    unsplit; in the final campaign libfdb_c split at 32 workers and the ratio there was
+    1.17–1.20. Runs are bimodal for both clients: about one commit batch per worker
+    count of transactions (0.126 per transaction at 8 workers, 0.032 at 32) or about
+    0.2 and 0.06, at roughly twice the server cycles. That suggests a closed-loop round
+    reaches the commit proxy whole or split; it is inferred from run averages, not yet
+    traced per round. Runs near one batch per round cost the same for both clients. Go
     split in 28 of 30 runs at 8 and 32 workers, libfdb_c in 5 of 18. Commits per
     transaction are equal, but the commit proxy forms 1.8–1.9× the commit batches (0.061 vs 0.032 per transaction at
     32 workers: about 16 commits per batch against 31), and the transaction role, which
     pays per batch, costs about 2×. At 8 workers Go already sends 1.9× the GRV requests
     (0.28 vs 0.15 per transaction), so a closed-loop round splits before its commits do.
-    Go's write latency is also worse: 10–11 ms against 6.7–6.9 ms. Next: trace when each
+    Go's write latency is also worse: 10–11 ms against 6.5–6.9 ms when libfdb_c stays
+    unsplit (10.0 ms when it splits at 32 workers). Next: trace when each
     client sends its GRVs and commits within a round and compare with readVersionBatcher
     and the commit path in NativeAPI.actor.cpp, as for the read gap.
   - Done when server cycles per transaction are within 10% of libfdb_c for `get100`,

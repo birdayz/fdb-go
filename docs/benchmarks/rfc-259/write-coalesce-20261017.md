@@ -86,8 +86,10 @@ establish the read effect, not the size of small differences.
   requests also fall (0.081 → 0.057 per transaction), so not all of the gain is fewer
   socket writes. `range100` at 32 workers improves only from 1.17 to 1.10, still with
   1.4× libfdb_c's segments.
-- **Writes are bimodal, for both clients.** A closed-loop round either reaches the commit
-  proxy as one batch or splits. Unsplit runs form about 0.126 commit batches per
+- **Writes are bimodal, for both clients.** Commit batches per transaction cluster at
+  about one per round of workers or about twice that, which suggests a closed-loop round
+  reaches the commit proxy whole or split (inferred from run averages, not traced per
+  round). Unsplit runs form about 0.126 commit batches per
   transaction at 8 workers and 0.032 at 32, and cost about 370–420k and 110–125k server
   cycles per transaction, whichever client sent them (Go's unsplit 8-worker run in the
   master comparison: 366k cycles, 0.126 batches). Split runs form about 0.2 and 0.06 and
