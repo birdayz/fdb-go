@@ -223,7 +223,11 @@ func dialStalledPeer(t *testing.T, opts ...DialOption) (c *Conn, release chan st
 				close(out)
 				return
 			}
-			out <- append([]byte(fmt.Sprint(token.First, ":")), body...)
+			select {
+			case out <- append([]byte(fmt.Sprint(token.First, ":")), body...):
+			case <-stop: // a test that stopped reading must not strand the peer
+				return
+			}
 		}
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
