@@ -4,10 +4,19 @@
 32 workers costs more on every metric, and `range100` at 32–64 workers costs the
 servers more. To see why, [`wirecapture.sh`](../../../tools/clientbench/scripts/wirecapture.sh)
 records one clientbench run's loopback traffic with tcpdump, and
-[`wiretrace`](../../../tools/clientbench/cmd/wiretrace) decodes it. The decoder
-reassembles each client connection, splits it into FDB frames and classifies GRV, commit
-and storage range requests by file identifier. It matches each reply by reply token and
-groups commits into server batches by the version their replies carry.
+[`wiretrace`](../../../tools/clientbench/cmd/wiretrace) decodes it.
+
+- **Decoding.** The decoder reassembles each connection whose SYN was captured, checks
+  frame checksums and splits the stream into FDB frames. It classifies GRV, commit and
+  storage range requests by file identifier and matches each reply by reply token.
+- **Commit batches.** Successful commits are grouped into server batches by the version
+  their replies carry. A commit proxy gives every transaction of a batch the same version.
+  GRV and storage replies carry observed read versions, which separate batches can share,
+  so they are not grouped.
+- **Completeness.** The script fails if tcpdump drops packets. The decoder refuses a
+  capture with a stream hole or a frame cut off at the end.
+- **Scope.** Every connection to a server port opened during the capture counts as a
+  client connection; no other connections appeared in these runs.
 
 ## Setup
 
@@ -18,9 +27,9 @@ Go `0d8fe4d5…56e2`, CGo with libfdb_c 7.3.77 `24729ecd…7a65`.
 
 ## All workloads, closed loop
 
-[96 configurations](results-broad-closed-loop.jsonl), three blocks with alternating
-order, `servercost.py --no-syscall-count`. Medians of the per-block Go ÷ libfdb_c ratios,
-with their range:
+[96 runs](results-broad-closed-loop.jsonl): 16 configurations, each run for both clients
+in three blocks with alternating order, `servercost.py --no-syscall-count`. Medians of
+the three per-block Go ÷ libfdb_c ratios, with their range:
 
 | Workload | Workers | Client CPU | Server cycles | Throughput | Mean latency |
 | --- | ---: | --- | --- | --- | --- |
@@ -45,55 +54,68 @@ Go uses less client CPU on reads and GRVs, and its throughput reaches 1.3–2.1�
 at 32–64 workers, where libfdb_c serializes every request through one network thread.
 The wide `set100` ranges are the bimodal closed-loop write regime described below.
 
-## `set100`: GC pauses split closed-loop rounds
+## `set100`: commit batches split after GC pauses
 
-[15 captures](results-wire-capture.jsonl), each of 600 rounds plus 10% warmup. In a
-closed loop every worker waits for its commit, so a round of commits reaches the commit
-proxy together and forms one batch. `-round` classifies each commit batch, in order, as
-holding a whole round or not:
+[15 captures](results-wire-capture.jsonl): 11 of `set100`, 600 measured transactions per
+worker after 10% warmup, and 4 of `range100`. Go's runs recorded `GODEBUG=gctrace=1` and
+their start time.
 
-| Client, 32 workers | First split (batch index) | Batches holding a whole round | Commit latency p50 |
-| --- | --- | --- | --- |
-| Go, `GOGC=100` | 8, 16, 82 | 26, 177, 81 | 10.2–15.9 ms |
-| Go, `GOGC=off` | none, 317, 328 | 660, 316, 327 | 6.4–10.3 ms |
-| libfdb_c | none, 51, 386 | 660, 650, 385 | 6.4–7.1 ms |
+In these closed loops, successful commits mostly form batches of exactly the worker
+count, one commit per worker. The tool counts such a batch as "whole"; that is a
+grouping by size, not proof of which workers' commits it held. "First split" is the
+first batch, counted from the start of the capture including warmup, that follows a
+whole one and is not whole.
 
-- **Splits persist.** Once a round splits, the two halves stay half a commit cycle apart,
-  for both clients. libfdb_c's run with first split 51 re-merged for most of the run;
-  Go's runs with GC on spent 85–98% of their batches split.
-- **Go splits early because it collects garbage.** With the collector off, Go behaves
-  like libfdb_c: one run never split and two held about 320 rounds. With it on, the
-  first split comes within the first rounds, where the first collections fall. A pause
-  delays some workers' commits past the proxy's batch.
-- **At 8 workers** neither client split.
-- **Paced writes are not affected.** Paced load has no lockstep rounds to split, and the
-  servers' cost per write is at parity there
-  ([paced-load report](paced-load-20261018.md)).
+| Client, 32 workers | First split (batch index) | Whole batches | Split batches | Commit latency p50 |
+| --- | --- | --- | --- | --- |
+| Go, `GOGC=100` | 37, 36, 35 | 147, 71, 34 | 1,028, 1,180, 1,257 | 10.3–15.5 ms |
+| Go, `GOGC=off` | none, none, none | 660, 660, 660 | 1, 1, 1 | 6.4 ms |
+| libfdb_c | 381, none, 390 | 380, 600, 470 | 561, 121, 382 | 6.5–7.9 ms |
 
-Allocation cuts lower the collection rate but do not prevent a split. The
-[commit allocation report](commit-alloc-20261018.md) found no change in when the first
-split happens.
+- **Once split, runs stay mostly split.** Go's GC-on runs spent 87–97% of their batches
+  split. Two re-merged for a stretch (111 and 36 whole batches) before splitting for
+  the rest of the run; the third never re-merged. libfdb_c's third run re-merged for
+  its last 81 batches. One libfdb_c run split during warmup, then stayed whole for 600
+  batches.
+- **Every Go first split followed a GC start by 2.6–3.2 ms**, with one GC inside the
+  preceding round ([`gcalign.py`](../../../tools/clientbench/scripts/gcalign.py); the
+  data rows carry the GC start times and the first 80 batches). GCs started every
+  232–348 ms (medians), so a window that short holds a GC start before only about 1% of
+  batches. Two earlier GCs, during whole batches, did not split a round. gctrace reports
+  whole milliseconds.
+- **With the collector off**, all three Go runs stayed whole throughout. Their four
+  collections are at startup and phase boundaries.
+- **At 8 workers** neither client split during the measured rounds.
+
+This is a strong time association, consistent with a pause delaying some workers'
+commits past a commit proxy batch. The proxy closes batches on timers, size and its
+adaptive interval (CommitProxyServer.actor.cpp:429–453, 2524–2532), so the mechanism is
+an interpretation, not a measurement. Paced load has no lockstep to split, and the
+servers' cost per write is at parity there ([paced-load report](paced-load-20261018.md)).
+The [commit allocation report](commit-alloc-20261018.md) found no change in the first
+split from fewer collections.
 
 ## `range100`: smaller GRV batches from a faster client
 
-Captures of both clients at 32 workers (four of the rows above) show identical storage
-traffic: one range read per transaction with the same parameters (`limit=101`, 80,000
-bytes), the same 4,104-byte reply and no further pages. The difference is GRV
-batching:
+At 32 workers, both clients send one range read per transaction with the same
+parameters (`limit=101`, 80,000 bytes, selector offsets 1). They get 4,104-byte replies
+with no further pages. The captures do not compare selector keys or returned rows. GRV
+batching differs:
 
-| Client | GRV requests per transaction | Transactions per request | GRV reply latency p50 at the wire | Gap between requests p50 |
-| --- | --- | --- | --- | --- |
-| Go | 0.115–0.120 | 8.3–8.7 | 93–98 µs | 174–196 µs |
-| libfdb_c | 0.084–0.086 | 11.6–11.9 | 93–98 µs | 361–375 µs |
+| Client | GRV requests per transaction | Transactions per request | GRV reply latency p50 at the wire |
+| --- | --- | --- | --- |
+| Go | 0.119–0.122 | 8.2–8.4 | 93–94 µs |
+| libfdb_c | 0.081–0.082 | 12.2–12.3 | 93–94 µs |
 
-Both clients run `readVersionBatcher`'s adaptive window, half the measured reply latency
-smoothed (NativeAPI.actor.cpp). The wire latencies are equal, so the difference is
-consistent with libfdb_c measuring latency inside its network thread, including the
-thread's queueing, and therefore waiting longer. Neither window was measured directly.
-Go sends about 40% more GRV requests, which costs the GRV proxy more and comes with
-lower latency.
-
-At matched offered load the extra cost is small. [Four pairs](results-range-paced.jsonl)
-of `range100` at 5,000 operations per second (64 workers, both arms on schedule) give
-server cycles 1.030 (1.023–1.041), client CPU 1.012 and mean latency 0.860 (354 against
-411 µs).
+- **Same algorithm, different measured latency.** Both clients run `readVersionBatcher`'s
+  adaptive window: half the measured reply latency, smoothed, capped by `GRV_BATCH_TIMEOUT`
+  (NativeAPI.actor.cpp:7363–7365). The wire latencies are equal, so the difference is
+  consistent with libfdb_c measuring a longer latency inside its network thread, for
+  example reply broadcast and scheduling (NativeAPI.actor.cpp:7380–7387), and so waiting
+  longer. Neither window was measured directly.
+- **The result.** Go sends 47–49% more GRV requests, which costs the GRV proxy more,
+  and its range reads complete faster (226 µs against 312 µs at the wire).
+- **At matched offered load the extra cost is small.** [Four pairs](results-range-paced.jsonl)
+  of `range100` at 5,000 operations per second, 64 workers, both arms on schedule:
+  server cycles 1.030, client CPU 1.012 and mean latency 0.860 (354 against 411 µs).
+  Medians of the per-pair ratios; the server-cycle ratios range 1.023–1.041.

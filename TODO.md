@@ -147,18 +147,20 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
     `WithCoalesceDelay(0, 0)` restores immediate writes.
     A [closed-loop sweep](docs/benchmarks/rfc-259/wire-capture-20261018.md) of all four
     workloads at 1/8/32/64 workers on `e5209b8c6`: server cycles ≤ 1.03× libfdb_c
-    everywhere except `range100` at 32–64 (1.12–1.15×) and `set100` at 32 (1.30×), with
-    Go throughput 1.3–2.1× at 32–64 workers on reads and GRVs and 1-worker latency
-    0.66–0.98×. `range100`'s storage traffic is identical; Go sends ~40% more GRV
-    requests (smaller adaptive batches, equal wire latency), and at matched paced load
-    (5,000/s) costs 1.03×. Remaining: the multi-node rerun.
+    everywhere except `range100` at 32–64 (1.12–1.15×, outside the criterion) and
+    `set100` at 32 (1.30×, see the write gap), with Go throughput 1.3–2.1× at 32–64
+    workers on reads and GRVs and 1-worker latency 0.66–0.98×. `range100`'s range
+    requests and reply sizes match; Go sends 47–49% more GRV requests (smaller adaptive
+    batches at equal wire latency) and at matched paced load (5,000/s) costs 1.03×.
+    Still open: closed-loop `range100` at 32–64 workers and the multi-node rerun.
   - [ ] **Write gap.** Closed-loop `set100` keeps a gap (cycles-only rerun: 1.33×
     libfdb_c at 8 workers, 1.53× at 32). Wire captures
     ([report](docs/benchmarks/rfc-259/wire-capture-20261018.md)) show the cause: in a
-    closed loop each round of commits forms one proxy batch until a pause splits it, and
-    the split persists for both clients. Go splits within the first rounds when GC runs
-    and behaves like libfdb_c with `GOGC=off` (one of three runs never split, against one
-    of three for libfdb_c). Allocation cuts did not move the first split. At matched scheduled offered load
+    closed loop commits mostly form batches of the worker count until a batch splits,
+    after which runs stay mostly split, for both clients. Every Go first split followed
+    a GC start by 2.6–3.2 ms (GCs every 232–348 ms); with `GOGC=off` all three Go runs
+    stayed whole, against one of three libfdb_c runs. Allocation cuts did not move the
+    first split. At matched scheduled offered load
     ([paced-load report](docs/benchmarks/rfc-259/paced-load-20261018.md), 64 workers,
     `clientbench -rate`, timerfd pacing) write server cost is similar at the three tested
     rates (0.99–1.00× at 1,000–4,000 operations per second, five pairs each). The closed-loop gap therefore
