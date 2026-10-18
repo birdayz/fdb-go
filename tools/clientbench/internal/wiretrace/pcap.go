@@ -30,6 +30,7 @@ type Segment struct {
 	Flow    Flow
 	Seq     uint32
 	SYN     bool
+	FIN     bool
 	Payload []byte
 }
 
@@ -139,6 +140,7 @@ func parsePacket(link uint32, b []byte) (Segment, bool, error) {
 	seg.Flow.Dst.Port = binary.BigEndian.Uint16(t[2:4])
 	seg.Seq = binary.BigEndian.Uint32(t[4:8])
 	seg.SYN = t[13]&0x02 != 0
+	seg.FIN = t[13]&0x01 != 0
 	seg.Payload = t[off:]
 	return seg, true, nil
 }
@@ -171,6 +173,16 @@ type stream struct {
 	next    uint32
 	pending map[uint32]Segment
 	broken  bool
+	// fin is set once a FIN was captured; end is the sequence number it
+	// carries, one past the last data byte.
+	fin bool
+	end uint32
+}
+
+// hole reports whether bytes the stream sent were never captured: data is
+// buffered behind a gap, or the captured FIN lies beyond the delivered data.
+func (s *stream) hole() bool {
+	return !s.broken && (len(s.pending) > 0 || (s.fin && s.end != s.next))
 }
 
 // NewReassembler calls emit with each flow's data in stream order.
@@ -189,7 +201,7 @@ func (r *Reassembler) Add(seg Segment) error {
 		if s == nil || s.isn != seg.Seq {
 			// A new connection, possibly reusing the 4-tuple. A retransmitted
 			// SYN (same initial sequence number) keeps the stream as it is.
-			if s != nil && len(s.pending) > 0 && !s.broken {
+			if s != nil && s.hole() {
 				r.Gaps++
 			}
 			r.conns++
@@ -201,7 +213,13 @@ func (r *Reassembler) Add(seg Segment) error {
 			return nil
 		}
 	}
-	if s == nil || s.broken || len(seg.Payload) == 0 {
+	if s == nil || s.broken {
+		return nil
+	}
+	if seg.FIN {
+		s.fin, s.end = true, seg.Seq+uint32(len(seg.Payload))
+	}
+	if len(seg.Payload) == 0 {
 		return nil
 	}
 	// A shorter retransmission at the same sequence number must not displace
@@ -226,11 +244,11 @@ func (r *Reassembler) Add(seg Segment) error {
 	return nil
 }
 
-// Finish counts the streams still holding data behind a hole at the end of the
-// capture.
+// Finish counts the streams with a hole at the end of the capture: data still
+// buffered behind a gap, or a FIN beyond the delivered data.
 func (r *Reassembler) Finish() {
 	for _, s := range r.streams {
-		if !s.broken && len(s.pending) > 0 {
+		if s.hole() {
 			s.broken = true
 			r.Gaps++
 		}

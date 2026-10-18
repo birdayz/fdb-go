@@ -79,8 +79,8 @@ func run(pcap, ports, events string, round int, allowIncomplete bool) error {
 		return err
 	}
 	if !s.Complete && !allowIncomplete {
-		return fmt.Errorf("incomplete capture (%d stream gaps, %d cut-off streams %v, %d undecodable messages); counts are not a measurement",
-			done.Gaps, len(done.Partial), done.Partial, s.Undecodable)
+		return fmt.Errorf("incomplete capture (%d requests, %d stream gaps, %d cut-off streams %v, %d undecodable messages); counts are not a measurement",
+			done.Requests, done.Gaps, len(done.Partial), done.Partial, s.Undecodable)
 	}
 	return nil
 }

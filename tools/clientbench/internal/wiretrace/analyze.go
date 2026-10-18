@@ -312,7 +312,14 @@ func (t *Trace) CommitRounds(size int) Rounds {
 	for v := range batches {
 		versions = append(versions, v)
 	}
-	sort.Slice(versions, func(i, j int) bool { return batches[versions[i]] < batches[versions[j]] })
+	// Batches whose first requests were read from one segment share a time;
+	// the commit version orders them.
+	sort.Slice(versions, func(i, j int) bool {
+		if a, b := batches[versions[i]], batches[versions[j]]; a != b {
+			return a < b
+		}
+		return versions[i] < versions[j]
+	})
 	rs := Rounds{Size: size, FirstSplit: -1, Runs: []int{0}}
 	seenWhole := false
 	for i, v := range versions {
@@ -358,12 +365,17 @@ func (t *Trace) WriteEvents(w io.Writer) error {
 
 // Completeness reports what a capture could not decode.
 type Completeness struct {
-	Gaps    int      // streams with a hole: a segment was never captured
-	Partial []string // streams that ended inside a connect packet or frame
+	Gaps     int      // streams with a hole: a segment was never captured
+	Partial  []string // streams that ended inside a connect packet or frame
+	Requests int      // client requests decoded
 }
 
-// Complete reports whether every stream was decoded to its end.
-func (c Completeness) Complete() bool { return c.Gaps == 0 && len(c.Partial) == 0 }
+// Complete reports whether every stream was decoded to its end and held at
+// least one request: a capture with none (wrong ports, no traffic) measures
+// nothing.
+func (c Completeness) Complete() bool {
+	return c.Gaps == 0 && len(c.Partial) == 0 && c.Requests > 0
+}
 
 // Decode reads a pcap capture and follows client traffic to serverPorts.
 func Decode(r io.Reader, serverPorts []uint16) (*Trace, Completeness, error) {
@@ -398,7 +410,7 @@ func Decode(r io.Reader, serverPorts []uint16) (*Trace, Completeness, error) {
 		return nil, Completeness{}, err
 	}
 	re.Finish()
-	done := Completeness{Gaps: re.Gaps}
+	done := Completeness{Gaps: re.Gaps, Requests: len(t.Requests)}
 	for _, p := range parsers {
 		if err := p.Finish(); err != nil {
 			done.Partial = append(done.Partial, err.Error())

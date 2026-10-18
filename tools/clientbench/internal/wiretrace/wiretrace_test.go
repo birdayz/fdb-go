@@ -64,15 +64,25 @@ func newCapture() *capture {
 }
 
 func (c *capture) packet(ts int64, f Flow, seq uint32, syn bool, payload []byte) {
+	var flags byte
+	if syn {
+		flags = 0x02
+	}
+	c.segment(ts, f, seq, flags, payload)
+}
+
+// fin captures a FIN segment.
+func (c *capture) fin(ts int64, f Flow, seq uint32, payload []byte) {
+	c.segment(ts, f, seq, 0x01, payload)
+}
+
+func (c *capture) segment(ts int64, f Flow, seq uint32, flags byte, payload []byte) {
 	tcp := make([]byte, 20+len(payload))
 	binary.BigEndian.PutUint16(tcp[0:], f.Src.Port)
 	binary.BigEndian.PutUint16(tcp[2:], f.Dst.Port)
 	binary.BigEndian.PutUint32(tcp[4:], seq)
 	tcp[12] = 5 << 4
-	tcp[13] = 0x10 // ACK
-	if syn {
-		tcp[13] |= 0x02
-	}
+	tcp[13] = 0x10 | flags // ACK
 	copy(tcp[20:], payload)
 	ip := make([]byte, 20+len(tcp))
 	ip[0] = 0x45
@@ -266,6 +276,46 @@ func TestDecodeReportsIncompleteStreams(t *testing.T) {
 	}
 }
 
+// A FIN beyond the delivered data means the last segments were never
+// captured, even when the delivered data ends at a frame boundary.
+func TestDecodeReportsMissingTail(t *testing.T) {
+	t.Parallel()
+	frames := grvFrames(t, 2)
+	data := append(connectPacket(), frames[0]...)
+	for _, tc := range []struct {
+		name    string
+		finSeq  uint32
+		payload []byte
+		gaps    int
+	}{
+		{"missing tail", uint32(len(data) + len(frames[1])), nil, 1},
+		{"clean close", uint32(len(data)), nil, 0},
+		{"data with FIN", uint32(len(data)), frames[1], 0},
+	} {
+		c := newStreamCapture(50017, 100)
+		c.packet(10, c.up, c.seq, false, data)
+		c.fin(20, c.up, c.seq+tc.finSeq, tc.payload)
+		c.fin(30, c.up, c.seq+tc.finSeq, tc.payload) // retransmitted FIN
+		_, done, err := Decode(&c.Buffer, []uint16{4721})
+		if err != nil || done.Gaps != tc.gaps || done.Complete() != (tc.gaps == 0) {
+			t.Fatalf("WIRETRACE_TAIL_HOLE %s: Decode = %v, %+v", tc.name, err, done)
+		}
+	}
+}
+
+// A capture without a decoded request is not a measurement.
+func TestDecodeRejectsEmptyCaptures(t *testing.T) {
+	t.Parallel()
+	if _, done, err := Decode(&newCapture().Buffer, []uint16{4721}); err != nil || done.Complete() {
+		t.Fatalf("WIRETRACE_EMPTY_COMPLETE header only: Decode = %v, %+v", err, done)
+	}
+	c := newStreamCapture(50018, 100)
+	c.packet(10, c.up, c.seq, false, append(connectPacket(), grvFrames(t, 1)[0]...))
+	if _, done, err := Decode(&c.Buffer, []uint16{4722}); err != nil || done.Complete() {
+		t.Fatalf("WIRETRACE_EMPTY_COMPLETE wrong port: Decode = %v, %+v", err, done)
+	}
+}
+
 // Frames that become readable together carry the capture index of the segment
 // that made them readable; a retransmission overlapping delivered data adds no
 // frame.
@@ -424,6 +474,23 @@ func TestCommitRounds(t *testing.T) {
 	r := tr.CommitRounds(4)
 	if r.Whole != 3 || r.Split != 5 || r.FirstSplit != 3 || fmt.Sprint(r.Runs) != "[0 1 2 4 1]" {
 		t.Fatalf("rounds = %+v", r)
+	}
+}
+
+// Batches whose first requests share a capture time are ordered by version,
+// so the classification does not depend on map order.
+func TestCommitRoundsTiedTimes(t *testing.T) {
+	t.Parallel()
+	tr := NewTrace(nil)
+	for v, size := range []int{2, 1, 2} { // whole, split, whole: all sent at once
+		for range size {
+			tr.Requests = append(tr.Requests, &Request{Kind: KindCommit, SentNS: 5, ReplyNS: 100, Version: int64(v + 1)})
+		}
+	}
+	for range 64 {
+		if r := tr.CommitRounds(2); r.FirstSplit != 1 || fmt.Sprint(r.Runs) != "[1 1 1]" {
+			t.Fatalf("WIRETRACE_TIE_ORDER: rounds = %+v", r)
+		}
 	}
 }
 
