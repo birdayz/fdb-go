@@ -1,0 +1,27 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "wiretrace",
+    srcs = [
+        "analyze.go",
+        "frames.go",
+        "pcap.go",
+    ],
+    importpath = "fdb.dev/tools/clientbench/internal/wiretrace",
+    visibility = ["//tools/clientbench:__subpackages__"],
+    deps = [
+        "//pkg/fdbgo/wire",
+        "//pkg/fdbgo/wire/types",
+    ],
+)
+
+go_test(
+    name = "wiretrace_test",
+    srcs = ["wiretrace_test.go"],
+    data = ["//pkg/fdbgo/wire/types:testdata.json"],
+    embed = [":wiretrace"],
+    deps = [
+        "//pkg/fdbgo/wire",
+        "//pkg/fdbgo/wire/types",
+    ],
+)

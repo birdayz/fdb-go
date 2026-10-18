@@ -1,0 +1,15 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+
+go_library(
+    name = "wiretrace_lib",
+    srcs = ["main.go"],
+    importpath = "fdb.dev/tools/clientbench/cmd/wiretrace",
+    visibility = ["//visibility:private"],
+    deps = ["//tools/clientbench/internal/wiretrace"],
+)
+
+go_binary(
+    name = "wiretrace",
+    embed = [":wiretrace_lib"],
+    visibility = ["//visibility:public"],
+)

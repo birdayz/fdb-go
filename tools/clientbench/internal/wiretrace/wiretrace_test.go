@@ -1,0 +1,232 @@
+package wiretrace
+
+import (
+	"bytes"
+	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"os"
+	"strings"
+	"testing"
+
+	"fdb.dev/pkg/fdbgo/wire"
+	"fdb.dev/pkg/fdbgo/wire/types"
+)
+
+// vector is a C++-encoded message from //pkg/fdbgo/wire/types:testdata.json.
+type vector struct {
+	Name       string `json:"name"`
+	Hex        string `json:"hex"`
+	ReplyToken string `json:"reply_token"`
+}
+
+func loadVectors(t *testing.T) map[string]vector {
+	t.Helper()
+	data, err := os.ReadFile("../../../../pkg/fdbgo/wire/types/testdata.json")
+	if err != nil {
+		t.Fatalf("testdata.json (bazel data dependency): %v", err)
+	}
+	var list []vector
+	if err := json.Unmarshal(data, &list); err != nil {
+		t.Fatal(err)
+	}
+	m := map[string]vector{}
+	for _, v := range list {
+		m[v.Name] = v
+	}
+	return m
+}
+
+func unhex(t *testing.T, s string) []byte {
+	t.Helper()
+	b, err := hex.DecodeString(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// capture builds a classic nanosecond pcap of Ethernet/IPv4/TCP packets.
+type capture struct{ bytes.Buffer }
+
+func newCapture() *capture {
+	c := &capture{}
+	var h [24]byte
+	binary.LittleEndian.PutUint32(h[0:], pcapMagicNano)
+	binary.LittleEndian.PutUint16(h[4:], 2)
+	binary.LittleEndian.PutUint16(h[6:], 4)
+	binary.LittleEndian.PutUint32(h[16:], 262144)
+	binary.LittleEndian.PutUint32(h[20:], linkEthernet)
+	c.Write(h[:])
+	return c
+}
+
+func (c *capture) packet(ts int64, f Flow, seq uint32, syn bool, payload []byte) {
+	tcp := make([]byte, 20+len(payload))
+	binary.BigEndian.PutUint16(tcp[0:], f.Src.Port)
+	binary.BigEndian.PutUint16(tcp[2:], f.Dst.Port)
+	binary.BigEndian.PutUint32(tcp[4:], seq)
+	tcp[12] = 5 << 4
+	tcp[13] = 0x10 // ACK
+	if syn {
+		tcp[13] |= 0x02
+	}
+	copy(tcp[20:], payload)
+	ip := make([]byte, 20+len(tcp))
+	ip[0] = 0x45
+	binary.BigEndian.PutUint16(ip[2:], uint16(len(ip)))
+	ip[9] = 6
+	copy(ip[12:], f.Src.IP[:])
+	copy(ip[16:], f.Dst.IP[:])
+	copy(ip[20:], tcp)
+	frame := append(make([]byte, 12), 0x08, 0x00)
+	frame = append(frame, ip...)
+	var rec [16]byte
+	binary.LittleEndian.PutUint32(rec[0:], uint32(ts/1e9))
+	binary.LittleEndian.PutUint32(rec[4:], uint32(ts%1e9))
+	binary.LittleEndian.PutUint32(rec[8:], uint32(len(frame)))
+	binary.LittleEndian.PutUint32(rec[12:], uint32(len(frame)))
+	c.Write(rec[:])
+	c.Write(frame)
+}
+
+// connectPacket is a ConnectPacket's length-prefixed shape (44 bytes).
+func connectPacket() []byte {
+	b := make([]byte, 44)
+	binary.LittleEndian.PutUint32(b, 40)
+	return b
+}
+
+// fdbFrame is a plaintext FDB packet: length, checksum, token, body.
+func fdbFrame(token, body []byte) []byte {
+	b := make([]byte, 12, 12+16+len(body))
+	binary.LittleEndian.PutUint32(b, uint32(16+len(body)))
+	return append(append(b, token...), body...)
+}
+
+func TestDecodeMatchesRequestsWithReplies(t *testing.T) {
+	t.Parallel()
+	v := loadVectors(t)
+	grvReq, commitReq := v["GetReadVersionRequest_causal_risky"], v["CommitTransactionRequest_single_set"]
+	other := v["GetKeyServerLocationsRequest_basic"]
+	grvTok, commitTok := unhex(t, grvReq.ReplyToken), unhex(t, commitReq.ReplyToken)
+	proxyTok := bytes.Repeat([]byte{7}, 16)
+
+	lo := [4]byte{127, 0, 0, 1}
+	client, server := Endpoint{lo, 50000}, Endpoint{lo, 4721}
+	up, down := Flow{client, server}, Flow{server, client}
+	c := newCapture()
+	c.packet(10, up, 100, true, nil)
+	c.packet(20, down, 900, true, nil)
+	seq := uint32(101)
+	first := append(connectPacket(), fdbFrame(proxyTok, unhex(t, grvReq.Hex))...)
+	c.packet(1000, up, seq, false, first)
+	seq += uint32(len(first))
+	commit := fdbFrame(proxyTok, unhex(t, commitReq.Hex))
+	half := len(commit) / 2
+	c.packet(2500, up, seq+uint32(half), false, commit[half:]) // captured out of order
+	c.packet(3000, up, seq, false, commit[:half])
+	c.packet(3500, up, seq, false, commit[:half]) // retransmission
+	seq += uint32(len(commit))
+	c.packet(3600, up, seq, false, fdbFrame(proxyTok, unhex(t, other.Hex))) // not followed
+
+	reply := append(connectPacket(), fdbFrame(grvTok, unhex(t, v["GetReadVersionReply_locked"].Hex))...)
+	c.packet(4000, down, 901, false, reply)
+	c.packet(5000, down, 901+uint32(len(reply)), false, fdbFrame(commitTok, unhex(t, v["CommitID_committed"].Hex)))
+	// A connection whose SYN preceded the capture is ignored.
+	c.packet(6000, Flow{Endpoint{lo, 50001}, server}, 7, false, fdbFrame(proxyTok, unhex(t, grvReq.Hex)))
+
+	trace, gaps, err := Decode(&c.Buffer, []uint16{4721})
+	if err != nil || gaps != 0 {
+		t.Fatalf("Decode = %v, %d gaps", err, gaps)
+	}
+	if len(trace.Requests) != 2 {
+		t.Fatalf("%d requests, want the GRV and the commit", len(trace.Requests))
+	}
+	r, err := wire.NewReader(unhex(t, grvReq.Hex))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want types.GetReadVersionRequest
+	want.UnmarshalFromReader(r)
+	grv, cm := trace.Requests[0], trace.Requests[1]
+	if grv.Kind != KindGRV || grv.SentNS != 1000 || grv.ReplyNS != 4000 || grv.Version != 0x123456789a || grv.TxnCount != want.TransactionCount {
+		t.Fatalf("GRV = %+v", grv)
+	}
+	// The commit is complete only once its first half arrives.
+	if cm.Kind != KindCommit || cm.SentNS != 3000 || cm.ReplyNS != 5000 || cm.Version != 0x0abcdef012 {
+		t.Fatalf("commit = %+v", cm)
+	}
+	s := trace.Summarize()
+	g, k := s.Kinds[KindGRV], s.Kinds[KindCommit]
+	if s.Undecodable != 0 || s.Flows != 1 || g.Replied != 1 || g.ServerBatches != 1 || k.Replied != 1 || k.ServerBatches != 1 || k.ClientSegments != 1 {
+		t.Fatalf("summary = %+v", s)
+	}
+	if k.LatencyNS[0] != 2000 {
+		t.Fatalf("commit latency %d ns, want 2000", k.LatencyNS[0])
+	}
+	var events strings.Builder
+	if err := trace.WriteEvents(&events); err != nil {
+		t.Fatal(err)
+	}
+	if lines := strings.Count(events.String(), "\n"); lines != 3 {
+		t.Fatalf("%d event lines, want a header and two requests:\n%s", lines, events.String())
+	}
+}
+
+// Requests answered with one version form one server batch.
+func TestSummarizeGroupsBatchesByVersion(t *testing.T) {
+	t.Parallel()
+	tr := NewTrace(nil)
+	flow := Flow{Endpoint{Port: 1}, Endpoint{Port: 2}}
+	for i, ver := range []int64{10, 10, 10, 20} {
+		tr.Requests = append(tr.Requests, &Request{Kind: KindCommit, Flow: flow, SentNS: int64(100 * i), Segment: i / 2, ReplyNS: 1000, Version: ver, TxnCount: 1})
+	}
+	tr.Requests = append(tr.Requests, &Request{Kind: KindCommit, Flow: flow, Segment: 9, TxnCount: 1}) // unanswered
+	k := tr.Summarize().Kinds[KindCommit]
+	if k.Requests != 5 || k.Replied != 4 || k.ServerBatches != 2 || k.BatchSizes[3] != 1 || k.BatchSizes[1] != 1 || k.ClientSegments != 3 {
+		t.Fatalf("summary = %+v", k)
+	}
+	if k.ArrivalSpreadNS[2] != 200 {
+		t.Fatalf("largest arrival spread %d ns, want 200", k.ArrivalSpreadNS[2])
+	}
+}
+
+// Batches in order of their first request: whole rounds, then a split that
+// persists, as a closed loop shows once a round splits.
+func TestCommitRounds(t *testing.T) {
+	t.Parallel()
+	tr := NewTrace(nil)
+	sent := int64(0)
+	for v, size := range []int{1, 4, 4, 3, 1, 3, 1, 4} { // setup commit, 2 whole, 2 split rounds, 1 whole
+		for range size {
+			sent++
+			tr.Requests = append(tr.Requests, &Request{Kind: KindCommit, SentNS: sent, ReplyNS: sent + 100, Version: int64(v + 1)})
+		}
+	}
+	r := tr.CommitRounds(4)
+	if r.Whole != 3 || r.Split != 5 || r.FirstSplit != 3 || fmt.Sprint(r.Runs) != "[0 1 2 4 1]" {
+		t.Fatalf("rounds = %+v", r)
+	}
+}
+
+func TestReadPcapRejectsTruncatedPackets(t *testing.T) {
+	t.Parallel()
+	c := newCapture()
+	c.packet(1, Flow{Endpoint{Port: 1}, Endpoint{Port: 2}}, 1, true, nil)
+	b := c.Bytes()
+	binary.LittleEndian.PutUint32(b[24+8:], 10) // captured length below the original
+	if err := ReadPcap(bytes.NewReader(b[:24+16+10]), func(Segment) error { return nil }); err == nil || !strings.Contains(err.Error(), "-s 0") {
+		t.Fatalf("ReadPcap = %v, want a truncation error", err)
+	}
+}
+
+func TestFrameParserRejectsCorruptLength(t *testing.T) {
+	t.Parallel()
+	p := NewFrameParser(Flow{}, func(Frame) error { return nil })
+	bad := append(connectPacket(), make([]byte, 12)...) // a frame claiming 0 payload bytes
+	if err := p.Add(Chunk{Data: bad}); err == nil {
+		t.Fatal("a frame shorter than its token was accepted")
+	}
+}
