@@ -59,6 +59,8 @@ func dryRunSaveWithSplitSizeInfo(recordSubspace subspace.Subspace, primaryKey tu
 // Incomplete primary keys require a context so chunk mutations can be buffered
 // until commit and canceled by context clears. A nil context supports complete
 // keys only. The store layer still manages inline record versions separately.
+// The previous record is cleared based on oldsizeInfo, as the record store does
+// (clearBasedOnPreviousSizeInfo=true, FDBRecordStore.java:665).
 // Matches Java's SplitHelper.saveWithSplit() (data portion only).
 func saveWithSplit(
 	recordContext *FDBRecordContext,
@@ -68,6 +70,29 @@ func saveWithSplit(
 	serialized []byte,
 	splitLongRecords bool,
 	omitUnsplitRecordSuffix bool,
+	oldsizeInfo *sizeInfo,
+	sizes *sizeInfo,
+) error {
+	return saveSplit(recordContext, tx, recordSubspace, primaryKey, serialized, splitLongRecords, omitUnsplitRecordSuffix, true, oldsizeInfo, sizes)
+}
+
+// saveWithSplitClearingKey is Java's five-argument saveWithSplit, used by the
+// metadata store and the pending-writes queue: split long values, keep the
+// unsplit suffix, and clear the key's whole range rather than what a previous
+// value's size says (clearBasedOnPreviousSizeInfo=false, SplitHelper.java:371-372).
+func saveWithSplitClearingKey(recordContext *FDBRecordContext, tx fdb.WritableTransaction, sub subspace.Subspace, key tuple.Tuple, serialized []byte, sizes *sizeInfo) error {
+	return saveSplit(recordContext, tx, sub, key, serialized, true, false, false, nil, sizes)
+}
+
+func saveSplit(
+	recordContext *FDBRecordContext,
+	tx fdb.WritableTransaction,
+	recordSubspace subspace.Subspace,
+	primaryKey tuple.Tuple,
+	serialized []byte,
+	splitLongRecords bool,
+	omitUnsplitRecordSuffix bool,
+	clearBySize bool,
 	oldsizeInfo *sizeInfo,
 	sizes *sizeInfo,
 ) error {
@@ -93,7 +118,7 @@ func saveWithSplit(
 
 		// Clear previous record data
 		if !hasVersionInKey {
-			clearPreviousRecord(recordContext, tx, recordSubspace, primaryKey, oldsizeInfo)
+			clearPreviousRecord(recordContext, tx, recordSubspace, primaryKey, clearBySize, oldsizeInfo)
 		}
 
 		if sizes != nil {
@@ -153,7 +178,7 @@ func saveWithSplit(
 
 	// Clear previous record data
 	if !hasVersionInKey {
-		clearPreviousRecord(recordContext, tx, recordSubspace, primaryKey, oldsizeInfo)
+		clearPreviousRecord(recordContext, tx, recordSubspace, primaryKey, clearBySize, oldsizeInfo)
 	}
 
 	// Unsplit: single KV pair at suffix 0. Keep the complete-key path's
@@ -198,15 +223,18 @@ func writeSplitValue(recordContext *FDBRecordContext, tx fdb.WritableTransaction
 	return packed, nil
 }
 
-// clearPreviousRecord clears the old record's KV pairs before saving a new version.
-// If oldsizeInfo indicates the previous record was split, clears the split range.
-// Otherwise, clears just the unsplit key.
+// clearPreviousRecord clears the old record's KV pairs before saving a new version,
+// as Java's clearPreviousSplitRecord does. clearBySize clears based on oldsizeInfo:
+// nothing without a previous record, its whole key range if it was split or
+// versioned inline, otherwise just the unsplit key (clearRecordKeys). Otherwise
+// the key's whole range is cleared.
 // Matches Java's SplitHelper behavior with clearBasedOnPrevioussizeInfo.
 func clearPreviousRecord(
 	recordContext *FDBRecordContext,
 	tx fdb.WritableTransaction,
 	recordSubspace subspace.Subspace,
 	primaryKey tuple.Tuple,
+	clearBySize bool,
 	oldsizeInfo *sizeInfo,
 ) {
 	// A later save without a version must not commit a previous save's
@@ -217,25 +245,48 @@ func clearPreviousRecord(
 			recordContext.RemoveVersionMutation(versionKey)
 		}
 	}
-	if oldsizeInfo == nil {
-		// No previous record — nothing to clear
-		return
+	switch {
+	case !clearBySize:
+		clearRecordKeyRange(tx, recordSubspace, primaryKey)
+	case oldsizeInfo != nil:
+		clearRecordKeys(tx, recordSubspace, primaryKey, oldsizeInfo)
 	}
-	clearRecordKeys(tx, recordSubspace, primaryKey, oldsizeInfo)
 }
 
 // clearRecordKeys clears a previous record's keys as Java's
-// clearPreviousSplitRecord does with clearBasedOnPreviousSizeInfo
-// (SplitHelper.java:353-372): one range clear when the record was split or
-// carried an inline version, otherwise only the unsplit key. A single range
-// clear keeps a concurrent read in the same transaction from seeing the version
-// key without the record.
+// clearPreviousSplitRecord does with clearBasedOnPreviousSizeInfo and its default
+// UNROLL_SINGLE_RECORD_DELETES (on in 4.14.2.0, FDBRecordStoreProperties.java:
+// 44-45): a write conflict range over the whole record, then one point clear per
+// key the record occupied, its inline version first (SplitHelper.java:355-364,
+// 702-715). Clearing the version first means a concurrent load in the same
+// transaction can see the record without its version, never the version without
+// the record; Go formerly cleared the record key first.
 func clearRecordKeys(tx fdb.WritableTransaction, recordSubspace subspace.Subspace, primaryKey tuple.Tuple, old *sizeInfo) {
-	if old.IsSplit || old.VersionedInline {
-		clearRecordKeyRange(tx, recordSubspace, primaryKey)
-		return
+	if len(primaryKey) == 0 {
+		return // as clearRecordKeyRange: never address the whole records subspace
 	}
-	tx.Clear(recordSubspace.Pack(appendToTuple(primaryKey, unsplitRecord)))
+	begin, end := recordSubspace.Sub(primaryKey...).FDBRangeKeys()
+	// Fails only for an inverted range, which a tuple subspace never produces.
+	_ = tx.AddWriteConflictRange(fdb.KeyRange{Begin: begin, End: end})
+	for _, offset := range recordOffsets(old) {
+		tx.Clear(recordSubspace.Pack(appendToTuple(primaryKey, offset)))
+	}
+}
+
+// recordOffsets is Java's SplitHelper.offsets: the key suffixes a record of
+// these sizes occupies, the inline version first.
+func recordOffsets(old *sizeInfo) []int64 {
+	offsets := make([]int64, 0, max(old.KeyCount, 1))
+	if old.VersionedInline {
+		offsets = append(offsets, recordVersionSuffix)
+	}
+	if !old.IsSplit {
+		return append(offsets, unsplitRecord)
+	}
+	for current := int64(startSplitRecord); len(offsets) < old.KeyCount; current++ {
+		offsets = append(offsets, current)
+	}
+	return offsets
 }
 
 // loadWithSplit loads the entire record range, as Java's SingleKeyUnsplitter

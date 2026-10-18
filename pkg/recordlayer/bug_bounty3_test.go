@@ -285,6 +285,7 @@ var _ = Describe("Bug Bounty Round 3", func() {
 				store.context.Transaction(),
 				recordsSubspace,
 				tuple.Tuple{}, // empty primary key
+				true,
 				oldsizeInfo,
 			)
 

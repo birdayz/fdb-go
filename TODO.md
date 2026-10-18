@@ -193,6 +193,11 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
     (`clientbench -rate`), locally and on a multi-node rerun,
     with 1-worker mean latency no worse than libfdb_c's (owner decision, 2026-10-17;
     previously within 5% of the Go client's own).
+- [ ] **Record save: clear before an ordinary overwrite.** Go clears the unsplit key
+  before an ordinary suffixed overwrite where Java skips the clear (`!splitLongRecords`,
+  previous record known and not versioned inline, SplitHelper.java:152), leaving a
+  clear-before-set window to concurrent loads in the same transaction and an extra
+  mutation. Previous-record clears otherwise follow Java's default unrolled delete (#957).
 - [ ] **Transaction options during in-flight operations.** Option setters (`SetLockAware`,
   `SetReadLockAware`, GRV cache, tags, priority) write plain `Transaction` fields under a
   shared state lease, while in-flight operations read them: GRV completion reads lock

@@ -94,11 +94,8 @@ func (s *FDBMetaDataStore) SaveRecordMetaData(tx fdb.WritableTransaction, metaDa
 		return fmt.Errorf("marshal metadata: %w", err)
 	}
 
-	// Load existing metadata to validate the evolution and archive it as
-	// history. Capture sizeInfo to clear stale split chunks when
-	// overwriting.
-	var existingSize sizeInfo
-	existing, err := loadWithSplit(tx, s.subspace, currentKey, true, false, &existingSize)
+	// Load existing metadata to validate the evolution and archive it as history.
+	existing, err := loadWithSplit(tx, s.subspace, currentKey, true, false, nil)
 	if err != nil {
 		return fmt.Errorf("load existing metadata: %w", err)
 	}
@@ -124,14 +121,14 @@ func (s *FDBMetaDataStore) SaveRecordMetaData(tx fdb.WritableTransaction, metaDa
 			return err
 		}
 		historyKey := tuple.Tuple{"H", int64(oldVersion)}
-		if err := saveWithSplit(nil, tx, s.subspace, historyKey, existing, true, false, nil, &sizeInfo{}); err != nil {
+		if err := saveWithSplitClearingKey(nil, tx, s.subspace, historyKey, existing, &sizeInfo{}); err != nil {
 			return fmt.Errorf("archive metadata v%d: %w", oldVersion, err)
 		}
 	}
 
-	// Save current with split support (matching Java).
-	// Pass existingSize so clearPreviousRecord removes stale split chunks.
-	if err := saveWithSplit(nil, tx, s.subspace, currentKey, serialized, true, false, &existingSize, &sizeInfo{}); err != nil {
+	// Save current with split support, clearing the key's whole range first, as
+	// Java's FDBMetaDataStore does (five-argument saveWithSplit).
+	if err := saveWithSplitClearingKey(nil, tx, s.subspace, currentKey, serialized, &sizeInfo{}); err != nil {
 		return fmt.Errorf("save metadata: %w", err)
 	}
 	return nil
