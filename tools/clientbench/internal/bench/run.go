@@ -122,6 +122,9 @@ func PoissonSchedule(n int, rate float64, seed, stream uint64) ([]int64, error) 
 	return out, nil
 }
 
+// paceWaitHook, if set by a test, runs as a worker starts a scheduled wait.
+var paceWaitHook func(worker int)
+
 // runPhase gives operation i to worker i % workers. With a schedule, each worker
 // starts its next operation at its scheduled offset, or at once if it is late.
 func runPhase(count, workers int, schedule []int64, operation func(index, worker int) (int, error), collectStats bool) Phase {
@@ -169,8 +172,13 @@ func runPhase(count, workers int, schedule []int64, operation func(index, worker
 				scheduled := int64(-1)
 				if schedule != nil {
 					scheduled = schedule[i]
-					if wait := time.Until(epoch.Add(time.Duration(scheduled))); wait > 0 && !pacers[worker].wait(wait) {
-						return
+					if wait := time.Until(epoch.Add(time.Duration(scheduled))); wait > 0 {
+						if paceWaitHook != nil {
+							paceWaitHook(worker)
+						}
+						if !pacers[worker].wait(wait) {
+							return
+						}
 					}
 					if aborted.Load() {
 						return
@@ -374,7 +382,7 @@ func Run(cfg Config, db LifecycleDatabase, metadata map[string]any, afterIdentit
 	}
 	var runErr error
 	var warm, measured Phase
-	var paced []int64
+	var paced, warmSchedule []int64
 	var countersBefore, countersAfter, countersDelta ClientCounters
 	stage := "seed"
 	if err := d.Seed(db); err != nil {
@@ -384,14 +392,15 @@ func Run(cfg Config, db LifecycleDatabase, metadata map[string]any, afterIdentit
 		runErr = err
 	}
 	if runErr == nil {
+		stage = "schedule"
+		var err, err2 error
+		warmSchedule, err = schedule(cfg, cfg.Warmup, warmupStream)
+		paced, err2 = schedule(cfg, cfg.Iterations, measureStream)
+		runErr = errors.Join(err, err2)
+	}
+	if runErr == nil {
 		stage = "warmup"
-		warmSchedule, err := schedule(cfg, cfg.Warmup, warmupStream)
-		measureSchedule, err2 := schedule(cfg, cfg.Iterations, measureStream)
-		if err = errors.Join(err, err2); err != nil {
-			return err
-		}
 		warm = runPhase(cfg.Warmup, cfg.Workers, warmSchedule, func(i, w int) (int, error) { return d.Operation(db, cfg.Workload, w, d.Warmup[i]) }, false)
-		paced = measureSchedule
 		if warm.Errors > 0 || warm.Completed != cfg.Warmup {
 			runErr = fmt.Errorf("warmup incomplete: completed=%d errors=%d", warm.Completed, warm.Errors)
 		}

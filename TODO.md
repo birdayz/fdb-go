@@ -162,9 +162,11 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
     and the commit path in NativeAPI.actor.cpp, as for the read gap.
   - Paced reads: `get100` costs the servers 0.94× libfdb_c at 10,000 operations per
     second and 1.04× at 30,000, with lower Go latency (327–340 µs against 424–554 µs).
-    A first campaign paced with `time.Sleep` showed 1.18–1.36×; the CGo arm's millisecond
-    wake-ups bunched its arrivals. At 30,000/s libfdb_c's arrivals still bunch (9% of starts
-    over 1 ms late); measure matched arrival patterns before claiming more than parity.
+    A first campaign paced with `time.Sleep` showed 1.18–1.36×, consistent with the CGo
+    arm's millisecond wake-ups bunching its arrivals (not isolated). In both rows the CGo
+    arm's starts still depart from the schedule (10,000/s: 1.4% over 1 ms late; 30,000/s:
+    9.3%), so this is similar cost under the same scheduled load, not equal actual
+    arrivals. More workers than rate × p99 latency, or a shared dispatcher, would match them.
   - [ ] **Client CPU on paced writes.** `set100` uses 1.51–1.53× libfdb_c's client CPU at
     1,000–4,000 operations per second (reads 1.03–1.04×); see "Client CPU per transaction".
   - Done when server cycles per transaction are within 10% of libfdb_c for `get100`,

@@ -252,23 +252,39 @@ func TestPacedRateValidation(t *testing.T) {
 	}
 }
 
-// A failure ends a paced phase at once: waiting workers wake, and nothing
-// scheduled later runs.
+// A failure ends a paced phase at once: workers already waiting for later
+// starts wake, and nothing scheduled later runs. Not parallel: it sets
+// paceWaitHook, which parallel tests never see because they run afterwards.
 func TestPacedPhaseStopsOnFailure(t *testing.T) {
-	t.Parallel()
 	failure := errors.New("terminal failure")
 	sched := []int64{0, int64(time.Hour), int64(2 * time.Hour)}
+	parked := make(chan int, 2)
+	paceWaitHook = func(worker int) { parked <- worker }
+	defer func() { paceWaitHook = nil }()
 	var calls atomic.Int32
-	began := time.Now()
-	p := runPhase(3, 3, sched, func(i, w int) (int, error) {
-		calls.Add(1)
-		if i == 0 {
-			return 1, failure
-		}
-		return 1, nil
-	}, false)
-	if waited := time.Since(began); waited > 10*time.Second {
-		t.Fatalf("PACED_ABORT_WAITED: the phase ran %v after its failure", waited)
+	done := make(chan Phase, 1)
+	go func() {
+		done <- runPhase(3, 3, sched, func(i, w int) (int, error) {
+			calls.Add(1)
+			if i == 0 {
+				// Fail only once both later workers are waiting for their starts.
+				for range 2 {
+					select {
+					case <-parked:
+					case <-time.After(30 * time.Second):
+						t.Error("PACED_ABORT_PRECONDITION: later workers never started waiting")
+					}
+				}
+				return 1, failure
+			}
+			return 1, nil
+		}, false)
+	}()
+	var p Phase
+	select {
+	case p = <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("PACED_ABORT_WAITED: waiting workers did not wake on the failure")
 	}
 	if calls.Load() != 1 || p.Completed != 1 || p.Errors != 1 || p.Samples[1].Attempted || p.Samples[2].Attempted {
 		t.Fatalf("PACED_ABORT_RAN: %d calls after a failure, phase %+v", calls.Load(), p)

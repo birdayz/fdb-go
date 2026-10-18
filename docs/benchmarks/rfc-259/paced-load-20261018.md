@@ -59,11 +59,15 @@ schedule itself):
 - **Server cost is at parity** in these rows: 0.94–1.04× libfdb_c, with absolute
   differences of −15k to +6k cycles per operation.
 - **Writes** match on server cost and latency at the three tested rates.
-- **Reads** cost the same or less at 10,000/s and 4% more at 30,000/s, with lower Go
-  latency in both. At 30,000/s and at `set100` 4,000/s the arrivals no longer follow
-  the schedule: workers whose previous operation ran long start late, more so for
-  libfdb_c (late fraction 9.3% for `get100`, gap CV 16.9). Bunched arrivals batch
-  better, so those rows compare different arrival patterns, not only the clients.
+- **Reads** cost 6% less at 10,000/s and 4% more at 30,000/s, with lower Go latency in
+  both.
+- **Only `set100` at 1,000/s and 2,000/s kept both arms on schedule.** In both `get100`
+  rows the CGo arm's starts departed from it (10,000/s: p99 lag 27.9 ms against Go's
+  24.9 µs, 1.43% of starts over 1 ms late, gap CV 2.83 against 1.00; 30,000/s: 9.3% late,
+  gap CV 16.9), and at `set100` 4,000/s both arms did. A worker starts late when its
+  previous operation or scheduling delays it; these summaries do not separate the two.
+  GRV batching and transport coalescing depend on arrival timing, so these rows compare
+  similar costs under the same scheduled load, not under equal actual arrivals.
 - **Client CPU** is 1.51–1.53× libfdb_c on writes and 1.03–1.04× on reads.
 
 ## Superseded first campaign
@@ -71,9 +75,10 @@ schedule itself):
 The first paced campaign ([50 configurations](results-paced-load-sleep.jsonl), binaries
 `58fbcde8…b59b` and `10a986cb…0ca0`) paced with `time.Sleep` and recorded no pacing
 fidelity. It gave `set100` 0.95–1.01× and `get100` 1.18× at 10,000/s and 1.36× at
-30,000/s. With precise pacing the `get100` rows are 0.94× and 1.04×: the earlier read gap
-is attributable, at least in part, to the CGo arm's `time.Sleep` wake-ups bunching its
-arrivals onto millisecond ticks. Use the results above.
+30,000/s. With precise pacing the `get100` rows are 0.94× and 1.04×. That change is
+consistent with the CGo arm's `time.Sleep` wake-ups bunching its arrivals onto
+millisecond ticks, but the first campaign recorded no pacing fidelity and used different
+schedules, so it does not isolate the cause. Use the results above.
 
 ## The closed loop
 
