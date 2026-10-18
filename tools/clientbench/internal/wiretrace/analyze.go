@@ -17,6 +17,7 @@ type Kind string
 const (
 	KindGRV    Kind = "grv"
 	KindCommit Kind = "commit"
+	KindRange  Kind = "range" // storage GetKeyValues
 )
 
 // Request is a GRV or commit request and, once seen, its reply.
@@ -30,6 +31,10 @@ type Request struct {
 	ReplyNS    int64 // 0: no reply captured
 	Version    int64 // read or commit version from the reply
 	ErrorCode  int   // nonzero: the reply was an error
+	// Range requests only: the request's parameters and the reply's shape.
+	Params     string // limit, byte limit, selector offsets and read options
+	ReplyBytes int    // length of the reply's packed rows
+	More       bool
 }
 
 // Trace follows the requests on client connections, which are the flows to
@@ -102,6 +107,20 @@ func (t *Trace) addRequest(f Frame) {
 		var m types.CommitTransactionRequest
 		m.UnmarshalFromReader(r)
 		req.Kind, req.TxnCount, req.ReplyToken = KindCommit, 1, m.Reply.Token
+	case types.GetKeyValuesRequestFileID:
+		r, err := wire.NewReader(f.Body)
+		if err != nil {
+			t.Undecodable++
+			return
+		}
+		var m types.GetKeyValuesRequest
+		m.UnmarshalFromReader(r)
+		req.Kind, req.ReplyToken = KindRange, m.Reply.Token
+		req.Params = fmt.Sprintf("limit=%d bytes=%d begin=%t/%d end=%t/%d", m.Limit, m.LimitBytes,
+			m.Begin.OrEqual, m.Begin.Offset, m.End.OrEqual, m.End.Offset)
+		if m.HasOptions {
+			req.Params += fmt.Sprintf(" type=%d cache=%t lockaware=%t", m.Options.Type, m.Options.CacheResult, m.Options.LockAware)
+		}
 	default:
 		return
 	}
@@ -130,6 +149,13 @@ func (t *Trace) addReply(req *Request, f Frame) {
 		var m types.CommitID
 		m.UnmarshalFromReader(&r)
 		req.Version = m.Version
+	case KindRange:
+		var m types.GetKeyValuesReply
+		m.UnmarshalFromReader(&r)
+		req.Version, req.ReplyBytes, req.More = m.Version, len(m.Data), m.More
+		if m.HasError {
+			req.ErrorCode = int(m.Error.ErrorCode)
+		}
 	}
 }
 
@@ -152,6 +178,11 @@ type KindSummary struct {
 	ArrivalSpreadNS [3]int64 `json:"arrival_spread_ns"`
 	// LatencyNS is the time from request to reply at the capture point.
 	LatencyNS [3]int64 `json:"latency_ns"`
+	// Params counts range requests by their parameters; More counts replies
+	// that reported more rows; ReplyBytes is their total packed size.
+	Params     map[string]int `json:"params,omitempty"`
+	More       int            `json:"more,omitempty"`
+	ReplyBytes int            `json:"reply_bytes,omitempty"`
 }
 
 // Summary describes a capture.
@@ -167,8 +198,11 @@ type Summary struct {
 func (t *Trace) Summarize() Summary {
 	s := Summary{Kinds: map[Kind]KindSummary{}, Undecodable: t.Undecodable}
 	flows := map[Flow]bool{}
-	for _, kind := range []Kind{KindGRV, KindCommit} {
+	for _, kind := range []Kind{KindGRV, KindCommit, KindRange} {
 		ks := KindSummary{BatchSizes: map[int]int{}}
+		if kind == KindRange {
+			ks.Params = map[string]int{}
+		}
 		type segKey struct {
 			flow Flow
 			seg  int
@@ -182,6 +216,13 @@ func (t *Trace) Summarize() Summary {
 			}
 			flows[r.Flow] = true
 			ks.Requests++
+			if kind == KindRange {
+				ks.Params[r.Params]++
+				ks.ReplyBytes += r.ReplyBytes
+				if r.More {
+					ks.More++
+				}
+			}
 			ks.Transactions += int(r.TxnCount)
 			segs[segKey{r.Flow, r.Segment}] = true
 			switch {
@@ -196,6 +237,10 @@ func (t *Trace) Summarize() Summary {
 			}
 		}
 		ks.ClientSegments = len(segs)
+		if kind == KindRange {
+			// Storage replies carry the read version, not a batch: report no batches.
+			batches = nil
+		}
 		ks.ServerBatches = len(batches)
 		var spread []int64
 		for _, b := range batches {
@@ -280,11 +325,11 @@ func quantiles(v []int64) [3]int64 {
 
 // WriteEvents writes one CSV line per request, in capture order.
 func (t *Trace) WriteEvents(w io.Writer) error {
-	if _, err := fmt.Fprintln(w, "kind,client,segment,sent_ns,reply_ns,version,txn_count,error"); err != nil {
+	if _, err := fmt.Fprintln(w, "kind,client,segment,sent_ns,reply_ns,version,txn_count,error,reply_bytes,more,params"); err != nil {
 		return err
 	}
 	for _, r := range t.Requests {
-		if _, err := fmt.Fprintf(w, "%s,%s,%d,%d,%d,%d,%d,%d\n", r.Kind, r.Flow.Src, r.Segment, r.SentNS, r.ReplyNS, r.Version, r.TxnCount, r.ErrorCode); err != nil {
+		if _, err := fmt.Fprintf(w, "%s,%s,%d,%d,%d,%d,%d,%d,%d,%t,%s\n", r.Kind, r.Flow.Src, r.Segment, r.SentNS, r.ReplyNS, r.Version, r.TxnCount, r.ErrorCode, r.ReplyBytes, r.More, r.Params); err != nil {
 			return err
 		}
 	}

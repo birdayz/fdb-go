@@ -175,6 +175,37 @@ func TestDecodeMatchesRequestsWithReplies(t *testing.T) {
 	}
 }
 
+// A storage range read is matched with its reply: the request's parameters and
+// the reply's size and More flag are recorded.
+func TestDecodeRangeReads(t *testing.T) {
+	t.Parallel()
+	v := loadVectors(t)
+	req, reply := v["GetKeyValuesRequest_basic"], v["GetKeyValuesReply_two_rows"]
+	lo := [4]byte{127, 0, 0, 1}
+	up := Flow{Endpoint{lo, 50002}, Endpoint{lo, 4723}}
+	down := Flow{up.Dst, up.Src}
+	c := newCapture()
+	c.packet(10, up, 100, true, nil)
+	c.packet(20, down, 900, true, nil)
+	c.packet(1000, up, 101, false, append(connectPacket(), fdbFrame(bytes.Repeat([]byte{9}, 16), unhex(t, req.Hex))...))
+	c.packet(2000, down, 901, false, append(connectPacket(), fdbFrame(unhex(t, req.ReplyToken), unhex(t, reply.Hex))...))
+	trace, _, err := Decode(&c.Buffer, []uint16{4723})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(trace.Requests) != 1 {
+		t.Fatalf("%d requests, want the range read", len(trace.Requests))
+	}
+	r := trace.Requests[0]
+	if r.Kind != KindRange || r.ReplyNS != 2000 || !r.More || r.ReplyBytes == 0 || !strings.HasPrefix(r.Params, "limit=") {
+		t.Fatalf("range read = %+v", r)
+	}
+	k := trace.Summarize().Kinds[KindRange]
+	if k.Requests != 1 || k.More != 1 || len(k.Params) != 1 || k.ServerBatches != 0 {
+		t.Fatalf("range summary = %+v", k)
+	}
+}
+
 // Requests answered with one version form one server batch.
 func TestSummarizeGroupsBatchesByVersion(t *testing.T) {
 	t.Parallel()
