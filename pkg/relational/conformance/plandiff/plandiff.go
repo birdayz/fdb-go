@@ -34,7 +34,6 @@ import (
 	"net/http"
 	"sort"
 	"strings"
-	"time"
 
 	"fdb.dev/pkg/relational/core/embedded"
 	"fdb.dev/pkg/relational/core/query"
@@ -456,7 +455,7 @@ func NewJavaEngineHTTP(baseURL, clusterFileContent string) Engine {
 		// the JVM also contends for CPU. 30s flaked when the race
 		// build's first `planSql` calls (cold per-call schema
 		// template + database + schema setup) exceeded the budget.
-		httpClient: &http.Client{Timeout: 120 * time.Second},
+		httpClient: newJavaHTTPClient(),
 	}
 }
 
