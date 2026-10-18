@@ -31,7 +31,10 @@ intervals on their logarithms; medians per operation.
 | `set100`, 2,000/s, 64 workers | 0.881 (0.692–1.120); 108.9 → 103.8 µs | 0.884; 72.6 → 64.6 | 0.812 | 0.877 (0.669–1.150) |
 
 - Closed-loop client CPU falls 6.5%, with 12% fewer allocations and 17% fewer GC cycles.
-- The paced row points the same way but its intervals are wide.
+- The paced row's wide intervals come from block 3, where the branch arm ran disturbed:
+  58.3 µs client CPU, 1,938 operations/s and 64.6% of starts over 1 ms late (master in
+  that block: 7.5%). Without that block the paced row is client CPU 0.966
+  (0.929–1.006), server cycles 0.971 (0.887–1.063), allocations 0.889, GC cycles 0.805.
 - Server cycles show no established change.
 
 ## Closed-loop round splits

@@ -322,6 +322,7 @@ go_test(
         "grv_idle_fdb_test.go",
         "grv_invalidate_generation_test.go",
         "grv_latency_order_fdb_test.go",
+        "grv_lockaware_reply_test.go",
         "grv_panic_test.go",
         "grv_reply_wait_test.go",
         "grv_seam_test.go",

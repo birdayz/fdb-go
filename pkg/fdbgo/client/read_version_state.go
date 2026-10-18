@@ -105,7 +105,7 @@ func (state *readVersionState) cachedOrFetchReadVersion(ctx context.Context, req
 		pending := &pendingReadVersion{done: make(chan struct{})}
 		state.pendingReadVersion = pending
 		state.readVersionMu.Unlock()
-		rv, err := request.fetchReadVersion(ctx, extraFlags, state, pending)
+		rv, err := request.fetchReadVersion(ctx, extraFlags, state, pending, owner)
 		if err != nil {
 			return 0, false, mapReadVersionError(ctx, owner, err)
 		}
@@ -127,7 +127,10 @@ func mapReadVersionError(ctx context.Context, owner *Transaction, err error) err
 	return err
 }
 
-func (request readVersionRequest) fetchReadVersion(ctx context.Context, extraFlags uint32, state *readVersionState, pending *pendingReadVersion) (rv int64, err error) {
+// owner, when set, supplies lock awareness at reply time: C++ extractReadVersion
+// checks the transaction's options after the reply arrives
+// (NativeAPI.actor.cpp:7405, 7425-7426). Detached native work uses its snapshot.
+func (request readVersionRequest) fetchReadVersion(ctx context.Context, extraFlags uint32, state *readVersionState, pending *pendingReadVersion, owner *Transaction) (rv int64, err error) {
 	var rvAt time.Time
 	err = context.Canceled // a panic must also release waiters without publishing a version
 	defer func() {
@@ -147,7 +150,11 @@ func (request readVersionRequest) fetchReadVersion(ctx context.Context, extraFla
 	flags := request.flags | extraFlags
 	var locked bool
 	rv, locked, rvAt, err = request.db.grvBatchers[grvBatcherIndex(flags)].getReadVersion(request.db, ctx, flags, request.span, request.tags, request.useGrvCache, request.skipGrvCache)
-	if err == nil && locked && !request.lockAware {
+	lockAware := request.lockAware
+	if owner != nil {
+		lockAware = owner.lockAware || owner.readLockAware
+	}
+	if err == nil && locked && !lockAware {
 		// C++ extractReadVersion rejects a locked database before adopting its version.
 		err = &wire.FDBError{Code: ErrDatabaseLocked}
 	}

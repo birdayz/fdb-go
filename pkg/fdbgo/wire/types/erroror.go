@@ -315,6 +315,19 @@ func MarshalErrorOrValueGetKeyValuesReply(reply *GetKeyValuesReply) []byte {
 	return marshalErrorOrValue(errorOrGetKeyValuesReplyTemplate, GetKeyValuesReplyFileID, reply.precomputeSize, reply.writeToBuffer)
 }
 
+var errorOrGetReadVersionReplyClosure = append(append([]wire.VTable{}, GetReadVersionReplyVTableClosure...), errorOrVTable)
+
+var errorOrGetReadVersionReplyTemplate = wire.NewMessageTemplate(
+	GetReadVersionReplyFileID, errorOrVTable, 8, errorOrGetReadVersionReplyClosure,
+)
+
+// MarshalErrorOrValueGetReadVersionReply wraps a GetReadVersionReply in the
+// ErrorOr<...>(tag=2) success envelope a GRV proxy sends. Fault injection uses it
+// to re-emit a reply decoded off the wire with one field changed (e.g. Locked).
+func MarshalErrorOrValueGetReadVersionReply(reply *GetReadVersionReply) []byte {
+	return marshalErrorOrValue(errorOrGetReadVersionReplyTemplate, GetReadVersionReplyFileID, reply.precomputeSize, reply.writeToBuffer)
+}
+
 // MarshalFDB serializes ErrorOrError using two-pass PrecomputeSize/WriteToBuffer.
 // Union root: footer points directly to ErrorOr object (no FakeRoot).
 func (m *ErrorOrError) MarshalFDB() []byte {
