@@ -150,12 +150,12 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
     everywhere except `range100` at 32–64 (1.12–1.15×, outside the criterion) and
     `set100` at 32 (1.30×, see the write gap), with Go throughput 1.3–2.1× at 32–64
     workers on reads and GRVs and 1-worker latency 0.66–0.98×. `range100`'s range
-    requests and reply sizes match; Go sends 47–49% more GRV requests (smaller adaptive
+    requests and reply sizes match; Go sends 46–48% more GRV requests (smaller adaptive
     batches at equal wire latency) and at matched paced load (5,000/s) costs 1.03×.
     Still open: closed-loop `range100` at 32–64 workers and the multi-node rerun.
   - [ ] **Write gap.** Closed-loop `set100` keeps a gap (cycles-only rerun: 1.33×
     libfdb_c at 8 workers, 1.53× at 32). Wire captures
-    ([report](docs/benchmarks/rfc-259/wire-capture-20261018.md)) show the cause: in a
+    ([report](docs/benchmarks/rfc-259/wire-capture-20261018.md)) associate it with GC: in a
     closed loop commits mostly form batches of the worker count until a batch splits,
     after which runs stay mostly split, for both clients. Every Go first split followed
     a GC start by 2.6–3.2 ms (GCs every 232–348 ms); with `GOGC=off` all three Go runs

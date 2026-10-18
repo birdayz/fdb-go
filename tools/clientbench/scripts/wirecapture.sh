@@ -36,6 +36,9 @@ if [[ ! -s $out/capture.pcap ]]; then
   exit 1
 fi
 sleep 1
+# Wall clock just before the client starts, to place its gctrace times
+# (relative to process start) on the capture's clock; see gcalign.py.
+date +%s%N >"$out/start_ns"
 "$@" >"$out/clientbench.log" 2>&1
 sleep 1
 docker stop -t 5 "$name" >/dev/null

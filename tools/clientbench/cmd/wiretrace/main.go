@@ -67,7 +67,8 @@ func run(pcap, ports, events string, round int, allowIncomplete bool) error {
 		}
 	}
 	s := trace.Summarize()
-	s.Gaps, s.Partial, s.Complete = done.Gaps, len(done.Partial), done.Complete()
+	// A message that did not decode is as missing as one never captured.
+	s.Gaps, s.Partial, s.Complete = done.Gaps, len(done.Partial), done.Complete() && s.Undecodable == 0
 	if round > 0 {
 		r := trace.CommitRounds(round)
 		s.Rounds = &r
@@ -78,8 +79,8 @@ func run(pcap, ports, events string, round int, allowIncomplete bool) error {
 		return err
 	}
 	if !s.Complete && !allowIncomplete {
-		return fmt.Errorf("incomplete capture (%d stream gaps, %d cut-off streams: %v); counts are not a measurement",
-			done.Gaps, len(done.Partial), done.Partial)
+		return fmt.Errorf("incomplete capture (%d stream gaps, %d cut-off streams %v, %d undecodable messages); counts are not a measurement",
+			done.Gaps, len(done.Partial), done.Partial, s.Undecodable)
 	}
 	return nil
 }

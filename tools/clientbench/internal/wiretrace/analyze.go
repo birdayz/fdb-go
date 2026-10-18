@@ -345,11 +345,11 @@ func quantiles(v []int64) [3]int64 {
 
 // WriteEvents writes one CSV line per request, in capture order.
 func (t *Trace) WriteEvents(w io.Writer) error {
-	if _, err := fmt.Fprintln(w, "kind,client,segment,sent_ns,reply_ns,version,txn_count,error,reply_bytes,more,params"); err != nil {
+	if _, err := fmt.Fprintln(w, "kind,client,segment,sent_ns,reply_ns,version,txn_count,error,malformed,reply_bytes,more,params"); err != nil {
 		return err
 	}
 	for _, r := range t.Requests {
-		if _, err := fmt.Fprintf(w, "%s,%s,%d,%d,%d,%d,%d,%d,%d,%t,%s\n", r.Kind, r.Flow.Src, r.Segment, r.SentNS, r.ReplyNS, r.Version, r.TxnCount, r.ErrorCode, r.ReplyBytes, r.More, r.Params); err != nil {
+		if _, err := fmt.Fprintf(w, "%s,%s,%d,%d,%d,%d,%d,%d,%t,%d,%t,%s\n", r.Kind, r.Flow.Src, r.Segment, r.SentNS, r.ReplyNS, r.Version, r.TxnCount, r.ErrorCode, r.Malformed, r.ReplyBytes, r.More, r.Params); err != nil {
 			return err
 		}
 	}
@@ -386,7 +386,15 @@ func Decode(r io.Reader, serverPorts []uint16) (*Trace, Completeness, error) {
 		}
 		return nil
 	})
-	if err := ReadPcap(r, re.Add); err != nil {
+	// Only connections to the server ports are FDB traffic; anything else in the
+	// capture is skipped before reassembly.
+	filter := func(seg Segment) error {
+		if !t.serverPorts[seg.Flow.Src.Port] && !t.serverPorts[seg.Flow.Dst.Port] {
+			return nil
+		}
+		return re.Add(seg)
+	}
+	if err := ReadPcap(r, filter); err != nil {
 		return nil, Completeness{}, err
 	}
 	re.Finish()

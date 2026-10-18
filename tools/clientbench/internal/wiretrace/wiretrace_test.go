@@ -312,6 +312,23 @@ func TestDecodeShorterRetransmission(t *testing.T) {
 	}
 }
 
+// A connection that is not to a server port is not FDB traffic and must not
+// break decoding.
+func TestDecodeSkipsOtherConnections(t *testing.T) {
+	t.Parallel()
+	frames := grvFrames(t, 1)
+	c := newStreamCapture(50015, 100)
+	c.packet(10, c.up, c.seq, false, append(connectPacket(), frames[0]...))
+	lo := [4]byte{127, 0, 0, 1}
+	other := Flow{Endpoint{lo, 50016}, Endpoint{lo, 8080}}
+	c.packet(20, other, 500, true, nil)
+	c.packet(30, other, 501, false, []byte("GET / HTTP/1.1\r\n\r\n"))
+	trace, done, err := Decode(&c.Buffer, []uint16{4721})
+	if err != nil || !done.Complete() || len(trace.Requests) != 1 {
+		t.Fatalf("WIRETRACE_OTHER_TRAFFIC: Decode = %v, %+v, %d requests", err, done, len(trace.Requests))
+	}
+}
+
 // A retransmitted SYN keeps the connection; a new SYN on the same 4-tuple
 // starts a new one, whose ConnectPacket is not mistaken for a frame.
 func TestDecodeConnectionGenerations(t *testing.T) {
@@ -361,6 +378,15 @@ func TestDecodeFailedCommitReplies(t *testing.T) {
 		k := trace.Summarize().Kinds[KindCommit]
 		if k.ServerBatches != 0 || k.Errors+k.Malformed != 1 || trace.CommitRounds(1).Whole != 0 {
 			t.Fatalf("WIRETRACE_FAILED_COMMIT_COUNTED: %s reply summarized as %+v", tc.name, k)
+		}
+		// The events file marks the failure, so later tools can exclude it too.
+		var events strings.Builder
+		if err := trace.WriteEvents(&events); err != nil {
+			t.Fatal(err)
+		}
+		row := strings.Split(strings.Split(events.String(), "\n")[1], ",")
+		if failed := row[7] != "0" || row[8] == "true"; !failed {
+			t.Fatalf("WIRETRACE_EVENT_UNMARKED: %s reply exported as %v", tc.name, row)
 		}
 	}
 }

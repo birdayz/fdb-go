@@ -82,7 +82,8 @@ whole one and is not whole.
   data rows carry the GC start times and the first 80 batches). GCs started every
   232–348 ms (medians), so a window that short holds a GC start before only about 1% of
   batches. Two earlier GCs, during whole batches, did not split a round. gctrace reports
-  whole milliseconds.
+  whole milliseconds, and GC times are placed on the capture's clock from a timestamp
+  taken just before the client was exec'd, an offset that was not calibrated.
 - **With the collector off**, all three Go runs stayed whole throughout. Their four
   collections are at startup and phase boundaries.
 - **At 8 workers** neither client split during the measured rounds.
@@ -113,7 +114,7 @@ batching differs:
   consistent with libfdb_c measuring a longer latency inside its network thread, for
   example reply broadcast and scheduling (NativeAPI.actor.cpp:7380–7387), and so waiting
   longer. Neither window was measured directly.
-- **The result.** Go sends 47–49% more GRV requests, which costs the GRV proxy more,
+- **The result.** Go sends 46–48% more GRV requests, which costs the GRV proxy more,
   and its range reads complete faster (226 µs against 312 µs at the wire).
 - **At matched offered load the extra cost is small.** [Four pairs](results-range-paced.jsonl)
   of `range100` at 5,000 operations per second, 64 workers, both arms on schedule:
