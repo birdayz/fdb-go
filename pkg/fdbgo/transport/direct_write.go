@@ -53,7 +53,13 @@ func (c *Conn) tryWriteDirect(token UID, body []byte) (bool, error) {
 		putFrame(bufp, frame)
 		return true, nil
 	}
-	// writeLoop writes the rest before any later frame, then pools the buffer.
+	c.leaveTail(bufp, frame, n)
+	return true, nil
+}
+
+// leaveTail has writeLoop write frame[n:] before any later frame, then pool
+// bufp. Call under writeMu.
+func (c *Conn) leaveTail(bufp *[]byte, frame []byte, n int) {
 	c.tail, c.tailFrame, c.tailBuf = frame[n:], frame, bufp
 	c.queued.Add(1)
 	c.tails.Add(1)
@@ -61,5 +67,4 @@ func (c *Conn) tryWriteDirect(token UID, body []byte) (bool, error) {
 	case c.tailKick <- struct{}{}:
 	default:
 	}
-	return true, nil
 }
