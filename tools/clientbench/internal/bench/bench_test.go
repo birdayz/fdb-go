@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -258,10 +259,25 @@ func TestPacedRateValidation(t *testing.T) {
 func TestPacedPhaseStopsOnFailure(t *testing.T) {
 	failure := errors.New("terminal failure")
 	sched := []int64{0, int64(time.Hour), int64(2 * time.Hour)}
-	parked := make(chan int, 2)
-	paceWaitHook = func(worker int) { parked <- worker }
+	// The test keeps every parked pacer so a timeout can close them itself and
+	// join the phase before the hook is restored.
+	var mu sync.Mutex
+	var parkedPacers []*pacer
+	closing := false
+	parked := make(chan struct{}, 2)
+	release := make(chan struct{})
+	paceWaitHook = func(_ int, pc *pacer) {
+		mu.Lock()
+		parkedPacers = append(parkedPacers, pc)
+		if closing {
+			pc.close()
+		}
+		mu.Unlock()
+		parked <- struct{}{}
+	}
 	defer func() { paceWaitHook = nil }()
 	var calls atomic.Int32
+	var preconditionMissed atomic.Bool
 	done := make(chan Phase, 1)
 	go func() {
 		done <- runPhase(3, 3, sched, func(i, w int) (int, error) {
@@ -271,8 +287,9 @@ func TestPacedPhaseStopsOnFailure(t *testing.T) {
 				for range 2 {
 					select {
 					case <-parked:
-					case <-time.After(30 * time.Second):
-						t.Error("PACED_ABORT_PRECONDITION: later workers never started waiting")
+					case <-release:
+						preconditionMissed.Store(true)
+						return 1, failure
 					}
 				}
 				return 1, failure
@@ -284,7 +301,15 @@ func TestPacedPhaseStopsOnFailure(t *testing.T) {
 	select {
 	case p = <-done:
 	case <-time.After(30 * time.Second):
-		t.Fatal("PACED_ABORT_WAITED: waiting workers did not wake on the failure")
+		close(release)
+		mu.Lock()
+		closing = true
+		for _, pc := range parkedPacers {
+			pc.close()
+		}
+		mu.Unlock()
+		<-done
+		t.Fatalf("PACED_ABORT_WAITED: waiting workers did not wake on the failure (precondition missed: %v)", preconditionMissed.Load())
 	}
 	if calls.Load() != 1 || p.Completed != 1 || p.Errors != 1 || p.Samples[1].Attempted || p.Samples[2].Attempted {
 		t.Fatalf("PACED_ABORT_RAN: %d calls after a failure, phase %+v", calls.Load(), p)

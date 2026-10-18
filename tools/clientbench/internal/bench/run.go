@@ -122,8 +122,8 @@ func PoissonSchedule(n int, rate float64, seed, stream uint64) ([]int64, error) 
 	return out, nil
 }
 
-// paceWaitHook, if set by a test, runs as a worker starts a scheduled wait.
-var paceWaitHook func(worker int)
+// paceWaitHook, if set by a test, runs as a worker starts a scheduled wait on pc.
+var paceWaitHook func(worker int, pc *pacer)
 
 // runPhase gives operation i to worker i % workers. With a schedule, each worker
 // starts its next operation at its scheduled offset, or at once if it is late.
@@ -174,7 +174,7 @@ func runPhase(count, workers int, schedule []int64, operation func(index, worker
 					scheduled = schedule[i]
 					if wait := time.Until(epoch.Add(time.Duration(scheduled))); wait > 0 {
 						if paceWaitHook != nil {
-							paceWaitHook(worker)
+							paceWaitHook(worker, pacers[worker])
 						}
 						if !pacers[worker].wait(wait) {
 							return

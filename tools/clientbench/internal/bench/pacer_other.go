@@ -2,10 +2,16 @@
 
 package bench
 
-import "time"
+import (
+	"sync"
+	"time"
+)
 
 // pacer falls back to the runtime's timers, which may wake up to a millisecond late.
-type pacer struct{ closed chan struct{} }
+type pacer struct {
+	closed chan struct{}
+	once   sync.Once
+}
 
 func newPacer() (*pacer, error) { return &pacer{closed: make(chan struct{})}, nil }
 
@@ -20,10 +26,4 @@ func (p *pacer) wait(d time.Duration) bool {
 	}
 }
 
-func (p *pacer) close() {
-	select {
-	case <-p.closed:
-	default:
-		close(p.closed)
-	}
-}
+func (p *pacer) close() { p.once.Do(func() { close(p.closed) }) }
