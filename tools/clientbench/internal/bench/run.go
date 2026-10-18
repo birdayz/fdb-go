@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -35,6 +36,11 @@ type Config struct {
 	// CoalesceDelay is the Go client's connection write delay, "min,max" as Go
 	// durations; empty keeps the client default.
 	CoalesceDelay string `json:"coalesce_delay,omitempty"`
+	// Rate > 0 paces the run: operations start at Poisson arrival times averaging
+	// Rate per second, drawn from Seed, so every run with the same seed starts the
+	// same operations at the same offsets. Rate 0 is a closed loop.
+	Rate float64 `json:"rate,omitempty"`
+	Seed uint64  `json:"seed"`
 }
 
 func (c Config) Validate() error {
@@ -49,6 +55,9 @@ func (c Config) Validate() error {
 	}
 	if c.Iterations <= 0 || c.Iterations > 10000000 || c.Warmup < 0 || c.Warmup > 10000000 || c.Workers <= 0 || c.Workers > 1024 {
 		return errors.New("invalid iterations (1..10000000), warmup (0..10000000), or workers (1..1024)")
+	}
+	if c.Rate < 0 || c.Rate > 1e6 {
+		return errors.New("rate must be 0 (closed loop) or at most 1e6 operations per second")
 	}
 	if c.TimeoutMS <= 0 || c.RetryLimit < 0 {
 		return errors.New("positive transaction timeout and nonnegative retry limit required")
@@ -69,9 +78,11 @@ func (c Config) Validate() error {
 type Sample struct {
 	Index, Worker            int
 	StartOffsetNS, LatencyNS int64
-	Attempts                 int
-	Err                      error
-	Attempted                bool
+	// ScheduledOffsetNS is the paced start time; -1 in a closed loop.
+	ScheduledOffsetNS int64
+	Attempts          int
+	Err               error
+	Attempted         bool
 }
 
 type Phase struct {
@@ -85,10 +96,25 @@ type Phase struct {
 // RunPhase excludes generation, goroutine creation, CSV formatting and stats
 // collection. Latencies include retries, full materialization and exact checks.
 func RunPhase(count, workers int, operation func(index, worker int) (int, error)) Phase {
-	return runPhase(count, workers, operation, false)
+	return runPhase(count, workers, nil, operation, false)
 }
 
-func runPhase(count, workers int, operation func(index, worker int) (int, error), collectStats bool) Phase {
+// PoissonSchedule returns n start offsets with exponential gaps averaging 1/rate
+// seconds, from seed: evenly spread on average, pseudo-random in detail.
+func PoissonSchedule(n int, rate float64, seed uint64) []int64 {
+	rng := rand.New(rand.NewPCG(seed, 0x636c69656e7462)) // "clientb"
+	out := make([]int64, n)
+	var t float64
+	for i := range out {
+		t += rng.ExpFloat64() / rate
+		out[i] = int64(t * 1e9)
+	}
+	return out
+}
+
+// runPhase gives operation i to worker i % workers. With a schedule, each worker
+// starts its next operation at its scheduled offset, or at once if it is late.
+func runPhase(count, workers int, schedule []int64, operation func(index, worker int) (int, error), collectStats bool) Phase {
 	p := Phase{Samples: make([]Sample, count)}
 	var ready, done sync.WaitGroup
 	var aborted atomic.Bool
@@ -105,10 +131,17 @@ func runPhase(count, workers int, operation func(index, worker int) (int, error)
 				if aborted.Load() {
 					return
 				}
+				scheduled := int64(-1)
+				if schedule != nil {
+					scheduled = schedule[i]
+					if wait := time.Until(epoch.Add(time.Duration(scheduled))); wait > 0 {
+						time.Sleep(wait)
+					}
+				}
 				begin := time.Now()
 				attempts, err := operation(i, worker)
 				elapsed := time.Since(begin).Nanoseconds()
-				p.Samples[i] = Sample{Index: i, Worker: worker, StartOffsetNS: begin.Sub(epoch).Nanoseconds(), LatencyNS: elapsed, Attempts: attempts, Err: err, Attempted: true}
+				p.Samples[i] = Sample{Index: i, Worker: worker, StartOffsetNS: begin.Sub(epoch).Nanoseconds(), LatencyNS: elapsed, ScheduledOffsetNS: scheduled, Attempts: attempts, Err: err, Attempted: true}
 				if err != nil {
 					aborted.Store(true)
 					return
@@ -151,7 +184,7 @@ func WriteSamples(path, phase string, samples []Sample) error {
 		return err
 	}
 	w := csv.NewWriter(f)
-	err = w.Write([]string{"phase", "index", "worker", "start_offset_ns", "latency_ns", "attempts", "error", "check_status"})
+	err = w.Write([]string{"phase", "index", "worker", "start_offset_ns", "latency_ns", "attempts", "error", "check_status", "scheduled_offset_ns"})
 	for _, s := range samples {
 		if err != nil || !s.Attempted {
 			continue
@@ -160,7 +193,7 @@ func WriteSamples(path, phase string, samples []Sample) error {
 		if s.Err != nil {
 			message, status = s.Err.Error(), "error"
 		}
-		err = w.Write([]string{phase, strconv.Itoa(s.Index), strconv.Itoa(s.Worker), strconv.FormatInt(s.StartOffsetNS, 10), strconv.FormatInt(s.LatencyNS, 10), strconv.Itoa(s.Attempts), message, status})
+		err = w.Write([]string{phase, strconv.Itoa(s.Index), strconv.Itoa(s.Worker), strconv.FormatInt(s.StartOffsetNS, 10), strconv.FormatInt(s.LatencyNS, 10), strconv.Itoa(s.Attempts), message, status, strconv.FormatInt(s.ScheduledOffsetNS, 10)})
 	}
 	w.Flush()
 	return errors.Join(err, w.Error(), f.Close())
@@ -206,6 +239,23 @@ func ReadStats(after bool) (Stats, error) {
 	return Stats{m.TotalAlloc, m.Mallocs, m.NumGC, m.PauseTotalNs, u.Utime.Sec*1000000 + u.Utime.Usec, u.Stime.Sec*1000000 + u.Stime.Usec, u.Maxrss}, nil
 }
 
+// schedule is the phase's paced start offsets, nil in a closed loop; phase keeps
+// the warmup and measured schedules distinct for one seed.
+func schedule(cfg Config, n int, phase uint64) []int64 {
+	if cfg.Rate == 0 {
+		return nil
+	}
+	return PoissonSchedule(n, cfg.Rate, cfg.Seed*2+phase)
+}
+
+func timing(cfg Config) string {
+	scope := "completion latency including transaction retries, result materialization, exact byte checks; no serialization or generation"
+	if cfg.Rate == 0 {
+		return "closed-loop " + scope
+	}
+	return fmt.Sprintf("paced: Poisson starts at %g/s from seed %d, operation i on worker i %% workers, a late worker starts at once; latency_ns from the actual start; %s", cfg.Rate, cfg.Seed, scope)
+}
+
 func Run(cfg Config, db LifecycleDatabase, metadata map[string]any, afterIdentity Stats) error {
 	if err := cfg.Validate(); err != nil {
 		return err
@@ -214,7 +264,7 @@ func Run(cfg Config, db LifecycleDatabase, metadata map[string]any, afterIdentit
 		return err
 	}
 	// O_EXCL manifests prevent mixing samples from separate invocations.
-	if err := WriteJSON(filepath.Join(cfg.Output, "manifest.json"), map[string]any{"config": cfg, "backend": metadata, "pid": os.Getpid(), "go_version": runtime.Version(), "gomaxprocs": runtime.GOMAXPROCS(0), "started_utc": time.Now().UTC(), "timing": "closed-loop completion latency including transaction retries, result materialization, exact byte checks; no serialization or generation", "attempts_scope": "transaction callback entries only; internal RPC retries unobserved", "memory_scope": "Go allocation counters exclude native libfdb_c heap; RSS high-water includes setup and is process lifetime, not interval peak", "environment": map[string]string{"GOMAXPROCS": os.Getenv("GOMAXPROCS"), "GOGC": os.Getenv("GOGC"), "GOMEMLIMIT": os.Getenv("GOMEMLIMIT"), "GODEBUG": os.Getenv("GODEBUG")}}); err != nil {
+	if err := WriteJSON(filepath.Join(cfg.Output, "manifest.json"), map[string]any{"config": cfg, "backend": metadata, "pid": os.Getpid(), "go_version": runtime.Version(), "gomaxprocs": runtime.GOMAXPROCS(0), "started_utc": time.Now().UTC(), "timing": timing(cfg), "attempts_scope": "transaction callback entries only; internal RPC retries unobserved", "memory_scope": "Go allocation counters exclude native libfdb_c heap; RSS high-water includes setup and is process lifetime, not interval peak", "environment": map[string]string{"GOMAXPROCS": os.Getenv("GOMAXPROCS"), "GOGC": os.Getenv("GOGC"), "GOMEMLIMIT": os.Getenv("GOMEMLIMIT"), "GODEBUG": os.Getenv("GODEBUG")}}); err != nil {
 		return err
 	}
 	d := Prepare(cfg.Prefix, cfg.Workers, cfg.Warmup, cfg.Iterations)
@@ -233,7 +283,7 @@ func Run(cfg Config, db LifecycleDatabase, metadata map[string]any, afterIdentit
 	}
 	if runErr == nil {
 		stage = "warmup"
-		warm = RunPhase(cfg.Warmup, cfg.Workers, func(i, w int) (int, error) { return d.Operation(db, cfg.Workload, w, d.Warmup[i]) })
+		warm = runPhase(cfg.Warmup, cfg.Workers, schedule(cfg, cfg.Warmup, 1), func(i, w int) (int, error) { return d.Operation(db, cfg.Workload, w, d.Warmup[i]) }, false)
 		if warm.Errors > 0 || warm.Completed != cfg.Warmup {
 			runErr = fmt.Errorf("warmup incomplete: completed=%d errors=%d", warm.Completed, warm.Errors)
 		}
@@ -245,7 +295,7 @@ func Run(cfg Config, db LifecycleDatabase, metadata map[string]any, afterIdentit
 			runErr = err
 		} else {
 			countersBefore = db.Counters()
-			measured = runPhase(cfg.Iterations, cfg.Workers, func(i, w int) (int, error) { return d.Operation(db, cfg.Workload, w, d.Measure[i]) }, true)
+			measured = runPhase(cfg.Iterations, cfg.Workers, schedule(cfg, cfg.Iterations, 0), func(i, w int) (int, error) { return d.Operation(db, cfg.Workload, w, d.Measure[i]) }, true)
 			countersAfter = db.Counters()
 			countersDelta, err = CounterDelta(countersBefore, countersAfter)
 			runErr = errors.Join(measured.StatsError, err)

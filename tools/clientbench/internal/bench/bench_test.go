@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"encoding/csv"
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -153,6 +155,60 @@ func TestConfigGuards(t *testing.T) {
 		mutate(&cfg)
 		if cfg.Validate() == nil {
 			t.Fatal("invalid config accepted")
+		}
+	}
+}
+
+func TestPoissonScheduleIsSeededAndEven(t *testing.T) {
+	t.Parallel()
+	a, b := PoissonSchedule(100000, 2000, 7), PoissonSchedule(100000, 2000, 7)
+	if !slices.Equal(a, b) {
+		t.Fatal("one seed gave two schedules")
+	}
+	if slices.Equal(a[:100], PoissonSchedule(100, 2000, 8)) {
+		t.Fatal("two seeds gave one schedule")
+	}
+	prev := int64(0)
+	for i, at := range a {
+		if at <= prev && i > 0 {
+			t.Fatalf("start %d at %d ns is not after %d ns", i, at, prev)
+		}
+		prev = at
+	}
+	// 100,000 exponential gaps: the mean is within 1% of 1/rate with overwhelming probability.
+	if mean := float64(a[len(a)-1]) / float64(len(a)) / 1e9; math.Abs(mean*2000-1) > 0.01 {
+		t.Fatalf("mean gap %v s, want 1/2000", mean)
+	}
+	cfg := Config{Rate: 2000, Seed: 7}
+	if slices.Equal(schedule(cfg, 100, 0), schedule(cfg, 100, 1)) {
+		t.Fatal("warmup and measured phases share a schedule")
+	}
+	if schedule(Config{}, 100, 0) != nil {
+		t.Fatal("a closed loop has a schedule")
+	}
+}
+
+func TestPacedPhaseStartsOnSchedule(t *testing.T) {
+	t.Parallel()
+	sched := PoissonSchedule(40, 1000, 3)
+	p := runPhase(40, 4, sched, func(i, w int) (int, error) {
+		if w != i%4 {
+			t.Errorf("worker %d for index %d", w, i)
+		}
+		return 1, nil
+	}, false)
+	if p.Completed != 40 || p.WallNS < sched[39] {
+		t.Fatalf("paced phase %+v ended before its last start %d ns", p, sched[39])
+	}
+	for i, s := range p.Samples {
+		if s.ScheduledOffsetNS != sched[i] || s.StartOffsetNS < s.ScheduledOffsetNS {
+			t.Fatalf("sample %d started at %d ns, scheduled %d ns (recorded %d)", i, s.StartOffsetNS, sched[i], s.ScheduledOffsetNS)
+		}
+	}
+	closed := RunPhase(4, 2, func(i, w int) (int, error) { return 1, nil })
+	for _, s := range closed.Samples {
+		if s.ScheduledOffsetNS != -1 {
+			t.Fatalf("closed-loop sample has a schedule: %+v", s)
 		}
 	}
 }
