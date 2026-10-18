@@ -16,10 +16,12 @@ sh_test(
     srcs = ["test.sh"],
     data = [
         "analyze.py",
+        "gcalign.py",
         "matrix_plan.py",
         "r3_plan.py",
         "run.py",
         "test_campaign.py",
+        "test_gcalign.py",
         "test_matrix_plan.py",
         "test_wirediff.py",
         "wirediff.py",
