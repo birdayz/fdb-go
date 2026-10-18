@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"fdb.dev/pkg/fdbgo/wire"
+	"fdb.dev/pkg/fdbgo/wire/types"
 )
 
 // The retained native commit shares the GRV, not the public resetPromise or
@@ -28,17 +29,61 @@ type pendingReadVersion struct {
 	err     error
 }
 
+// readVersionRequest contains no public transaction or incarnation references.
+// Native commits retain this snapshot and the shared GRV future after admission.
+type readVersionRequest struct {
+	db           *database
+	span         types.SpanContext
+	tags         []string
+	flags        uint32
+	useGrvCache  bool
+	skipGrvCache bool
+	lockAware    bool
+}
+
+// readVersionRequest samples the options a GRV fetch sends. Lock awareness is
+// not among them: a public GRV reads it when a locked reply arrives, and only a
+// detached native commit captures it (captureNativeReadState).
+func (tx *Transaction) readVersionRequest() readVersionRequest {
+	return readVersionRequest{
+		db: tx.db, span: tx.currentSpan(), tags: tx.tags, flags: tx.grvFlags(),
+		useGrvCache: tx.useGrvCache, skipGrvCache: tx.skipGrvCache,
+	}
+}
+
+type nativeReadState struct {
+	*readVersionState
+	request readVersionRequest
+}
+
+func (state *nativeReadState) readVersionForCommit(ctx context.Context) (int64, error) {
+	rv, userSet, err := state.cachedOrFetchReadVersion(ctx, &state.request, grvFlagCausalReadRisky, nil)
+	if err == nil && userSet {
+		err = validateExplicitVersion(ctx, state.request.db, rv, func() readVersionRequest { return state.request })
+	}
+	return rv, err
+}
+
 func (tx *Transaction) cachedOrFetchReadVersion(ctx context.Context, extraFlags uint32) (int64, bool, error) {
-	state := tx.readVersionState
+	return tx.readVersionState.cachedOrFetchReadVersion(ctx, nil, extraFlags, tx)
+}
+
+// owner supplies public admission-error mapping, span initialization and, when
+// request is nil, the request options, read only once a fetch starts. Detached
+// native work passes its captured request and a nil owner, and observes its own
+// context instead.
+func (state *readVersionState) cachedOrFetchReadVersion(ctx context.Context, request *readVersionRequest, extraFlags uint32, owner *Transaction) (int64, bool, error) {
 	for {
 		state.readVersionMu.Lock()
-		if err := tx.readEntryError(ctx); err != nil {
+		if err := readVersionEntryError(ctx, owner); err != nil {
 			state.readVersionMu.Unlock()
 			return 0, false, err
 		}
 		if state.metricStart.IsZero() {
 			state.metricStart = time.Now()
-			tx.ensureTxSpan()
+			if owner != nil {
+				owner.ensureTxSpan()
+			}
 		}
 		if state.hasReadVersion {
 			rv, userSet := state.readVersion, state.userSetReadVersion
@@ -49,9 +94,9 @@ func (tx *Transaction) cachedOrFetchReadVersion(ctx context.Context, extraFlags 
 			state.readVersionMu.Unlock()
 			select {
 			case <-ctx.Done():
-				return 0, false, tx.mapReadError(ctx, ctx.Err())
+				return 0, false, mapReadVersionError(ctx, owner, ctx.Err())
 			case <-pending.done:
-				if err := tx.readEntryError(ctx); err != nil {
+				if err := readVersionEntryError(ctx, owner); err != nil {
 					return 0, false, err
 				}
 				if pending.err == nil {
@@ -64,15 +109,38 @@ func (tx *Transaction) cachedOrFetchReadVersion(ctx context.Context, extraFlags 
 		pending := &pendingReadVersion{done: make(chan struct{})}
 		state.pendingReadVersion = pending
 		state.readVersionMu.Unlock()
-		rv, err := tx.fetchReadVersion(ctx, extraFlags, state, pending)
+		var fetch readVersionRequest
+		if request != nil {
+			fetch = *request
+		} else {
+			fetch = owner.readVersionRequest()
+		}
+		rv, err := fetch.fetchReadVersion(ctx, extraFlags, state, pending, owner)
 		if err != nil {
-			return 0, false, tx.mapReadError(ctx, err)
+			return 0, false, mapReadVersionError(ctx, owner, err)
 		}
 		return rv, false, nil
 	}
 }
 
-func (tx *Transaction) fetchReadVersion(ctx context.Context, extraFlags uint32, state *readVersionState, pending *pendingReadVersion) (rv int64, err error) {
+func readVersionEntryError(ctx context.Context, owner *Transaction) error {
+	if owner != nil {
+		return owner.readEntryError(ctx)
+	}
+	return ctx.Err()
+}
+
+func mapReadVersionError(ctx context.Context, owner *Transaction, err error) error {
+	if owner != nil {
+		return owner.mapReadError(ctx, err)
+	}
+	return err
+}
+
+// owner, when set, supplies lock awareness at reply time: C++ extractReadVersion
+// checks the transaction's options after the reply arrives
+// (NativeAPI.actor.cpp:7405, 7425-7426). Detached native work uses its snapshot.
+func (request readVersionRequest) fetchReadVersion(ctx context.Context, extraFlags uint32, state *readVersionState, pending *pendingReadVersion, owner *Transaction) (rv int64, err error) {
 	var rvAt time.Time
 	err = context.Canceled // a panic must also release waiters without publishing a version
 	defer func() {
@@ -89,14 +157,39 @@ func (tx *Transaction) fetchReadVersion(ctx context.Context, extraFlags uint32, 
 		close(pending.done)
 		state.readVersionMu.Unlock()
 	}()
-	flags := tx.grvFlags() | extraFlags
+	flags := request.flags | extraFlags
 	var locked bool
-	rv, locked, rvAt, err = tx.db.grvBatchers[grvBatcherIndex(flags)].getReadVersion(tx.db, ctx, flags, tx.currentSpan(), tx.tags, tx.useGrvCache, tx.skipGrvCache)
-	if err == nil && locked && !(tx.lockAware || tx.readLockAware) {
+	rv, locked, rvAt, err = request.db.grvBatchers[grvBatcherIndex(flags)].getReadVersion(request.db, ctx, flags, request.span, request.tags, request.useGrvCache, request.skipGrvCache)
+	if err == nil && locked && !request.lockAwareAtReply(owner) {
 		// C++ extractReadVersion rejects a locked database before adopting its version.
 		err = &wire.FDBError{Code: ErrDatabaseLocked}
 	}
 	return rv, err
+}
+
+// lockAwareAtReply reads a public owner's options only for a locked reply, the
+// one case that needs them, as before the snapshot existed. Those option fields
+// are written without synchronization against in-flight operations; see TODO.md
+// ("Transaction options during in-flight operations").
+func (request readVersionRequest) lockAwareAtReply(owner *Transaction) bool {
+	if owner != nil {
+		return owner.lockAware || owner.readLockAware
+	}
+	return request.lockAware
+}
+
+// validateExplicitVersion checks a user-set read version against the database's
+// floor. The request options are read only when a bootstrap GRV is needed.
+func validateExplicitVersion(ctx context.Context, db *database, rv int64, request func() readVersionRequest) error {
+	if db == nil {
+		return nil
+	}
+	// A previous cluster's floor reads as unset and must be bootstrapped again.
+	if db.minAcceptable() == 0 {
+		r := request()
+		_, _, _, _ = db.grvBatchers[grvBatcherIndex(r.flags)].getReadVersion(db, ctx, r.flags, r.span, r.tags, r.useGrvCache, r.skipGrvCache)
+	}
+	return db.validateVersion(rv)
 }
 
 // Turnover has drained public state users and cancelled retained native work.

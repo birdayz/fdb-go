@@ -17,7 +17,7 @@ type commitInput struct {
 	readConflicts  []KeyRange
 	writeConflicts []KeyRange
 	readVersion    int64
-	readState      *Transaction // native GRV owner, sharing only readVersionState
+	readState      *nativeReadState // shared GRV future and captured request options
 	tenantID       int64
 	lockAware      bool
 	isDummy        bool
@@ -105,18 +105,10 @@ func (tx *Transaction) captureNativeReadState(input *commitInput) {
 		tx.ensureTxSpan()
 	}
 	tx.readVersionMu.Unlock()
-	native := &Transaction{
-		db: tx.db, readVersionState: tx.readVersionState,
-		txOptions: txOptions{
-			priority: tx.priority, causalReadRisky: tx.causalReadRisky,
-			lockAware: tx.lockAware, readLockAware: tx.readLockAware,
-			useGrvCache: tx.useGrvCache, skipGrvCache: tx.skipGrvCache,
-			tags: input.tags,
-		},
-	}
-	span := input.span
-	native.spanContext.Store(&span)
-	input.readState = native
+	request := tx.readVersionRequest()
+	request.span, request.tags = input.span, input.tags
+	request.lockAware = tx.lockAware || tx.readLockAware
+	input.readState = &nativeReadState{readVersionState: tx.readVersionState, request: request}
 }
 
 // Native success updates database-wide observations even if resetPromise already

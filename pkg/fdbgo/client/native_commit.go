@@ -82,11 +82,7 @@ func (n *nativeCommit) call(caller context.Context, input *commitInput) (result 
 		var ctx context.Context
 		cancel, stop := func() {}, func() bool { return false }
 		if caller.Done() == nil {
-			// Only owner drop can end this GRV, so it runs in an incarnation
-			// that is the native context itself: the read state is private
-			// to this goroutine, and nothing else fails or resets it.
-			input.readState.readLife = &readIncarnation{ctx: n.ctx, cancel: n.cancel}
-			ctx = context.Background()
+			ctx = n.ctx
 		} else {
 			var c context.CancelFunc
 			ctx, c = context.WithCancel(caller)
@@ -95,7 +91,7 @@ func (n *nativeCommit) call(caller context.Context, input *commitInput) (result 
 				cancel()
 			}
 		}
-		input.readVersion, err = input.readState.readVersionForOperation(ctx, grvFlagCausalReadRisky)
+		input.readVersion, err = input.readState.readVersionForCommit(ctx)
 		if err == nil {
 			err = ctx.Err()
 		}
