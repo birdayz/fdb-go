@@ -43,6 +43,13 @@ class AlignTest(unittest.TestCase):
         self.assertEqual(out["first_split"]["gcs_during_whole_batches"], 1)
         self.assertEqual(out["gc_start_ms"], [5.0, 15.0, 27.0])
 
+    def test_tied_batches_ordered_by_version(self):
+        # Same first-request time, encountered in reverse version order.
+        rows = [commit(10, 2), commit(10, 1), commit(10, 1), commit(10, 3), commit(10, 3)]
+        out = self.run_dir(rows, gcs=[])
+        self.assertEqual([b[1] for b in out["batches"]], [2, 1, 2])
+        self.assertEqual(out["first_split"]["index"], 1)
+
     def test_events_without_malformed_column_fail(self):
         d = tempfile.mkdtemp()
         for name, text in (("start_ns", str(START)), ("clientbench.log", ""),

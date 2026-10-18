@@ -303,6 +303,31 @@ func TestDecodeReportsMissingTail(t *testing.T) {
 	}
 }
 
+// A reply readable before its request (the request's first segment captured
+// late) is still matched once the request decodes.
+func TestDecodeMatchesEarlyReply(t *testing.T) {
+	t.Parallel()
+	v := loadVectors(t)
+	req := v["CommitTransactionRequest_single_set"]
+	lo := [4]byte{127, 0, 0, 1}
+	client, server := Endpoint{lo, 50019}, Endpoint{lo, 4721}
+	up, down := Flow{client, server}, Flow{server, client}
+	c := newCapture()
+	c.packet(1, up, 100, true, nil)
+	c.packet(2, down, 900, true, nil)
+	data := append(connectPacket(), fdbFrame(bytes.Repeat([]byte{7}, 16), unhex(t, req.Hex))...)
+	c.packet(10, up, 101+20, false, data[20:]) // behind a gap
+	c.packet(20, down, 901, false, append(connectPacket(), fdbFrame(unhex(t, req.ReplyToken), unhex(t, v["CommitID_committed"].Hex))...))
+	c.packet(30, up, 101, false, data[:20]) // fills the gap
+	trace, done, err := Decode(&c.Buffer, []uint16{4721})
+	if err != nil || !done.Complete() || len(trace.Requests) != 1 {
+		t.Fatalf("Decode = %v, %+v, %d requests", err, done, len(trace.Requests))
+	}
+	if r := trace.Requests[0]; r.ReplyNS != 20 || r.Version != 0x0abcdef012 {
+		t.Fatalf("WIRETRACE_EARLY_REPLY_LOST: request = %+v", r)
+	}
+}
+
 // A capture without a decoded request is not a measurement.
 func TestDecodeRejectsEmptyCaptures(t *testing.T) {
 	t.Parallel()

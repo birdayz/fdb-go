@@ -43,7 +43,10 @@ type Request struct {
 type Trace struct {
 	serverPorts map[uint16]bool
 	pending     map[[16]byte]*Request
-	Requests    []*Request
+	// early holds replies decoded before their request: the reply's stream
+	// was readable while part of the request was still behind a gap.
+	early    map[[16]byte]Frame
+	Requests []*Request
 	// Undecodable counts request frames with a followed file identifier that
 	// did not decode, and replies that did not decode.
 	Undecodable int
@@ -51,7 +54,7 @@ type Trace struct {
 
 // NewTrace follows client connections to the given server ports.
 func NewTrace(serverPorts []uint16) *Trace {
-	t := &Trace{serverPorts: map[uint16]bool{}, pending: map[[16]byte]*Request{}}
+	t := &Trace{serverPorts: map[uint16]bool{}, pending: map[[16]byte]*Request{}, early: map[[16]byte]Frame{}}
 	for _, p := range serverPorts {
 		t.serverPorts[p] = true
 	}
@@ -80,7 +83,9 @@ func (t *Trace) Add(f Frame) {
 	if req, ok := t.pending[f.Token]; ok {
 		delete(t.pending, f.Token)
 		t.addReply(req, f)
+		return
 	}
+	t.early[f.Token] = f
 }
 
 func (t *Trace) addRequest(f Frame) {
@@ -126,6 +131,11 @@ func (t *Trace) addRequest(f Frame) {
 		return
 	}
 	t.Requests = append(t.Requests, req)
+	if reply, ok := t.early[req.ReplyToken]; ok {
+		delete(t.early, req.ReplyToken)
+		t.addReply(req, reply)
+		return
+	}
 	t.pending[req.ReplyToken] = req
 }
 

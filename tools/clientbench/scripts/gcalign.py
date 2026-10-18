@@ -40,7 +40,8 @@ def analyze(d, round_size):
         # required, so an older events file fails instead of counting failures).
         if e["kind"] == "commit" and int(e["reply_ns"]) > 0 and e["error"] == "0" and e["malformed"] == "false":
             batches[int(e["version"])].append(int(e["sent_ns"]))
-    ordered = sorted(batches.values(), key=min)
+    # Same order as wiretrace's CommitRounds: first request time, then version.
+    ordered = [batches[v] for v in sorted(batches, key=lambda v: (min(batches[v]), v))]
     ms = lambda t: round((t - start) / 1e6, 3)
     out = {
         "gc_start_ms": [ms(g) for g in gcs],
