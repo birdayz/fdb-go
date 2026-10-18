@@ -275,19 +275,18 @@ var _ = Describe("Bug Bounty Round 3", func() {
 				return nil, err
 			}
 
-			// Directly call clearPreviousRecord with an empty PK and a split old record.
-			// This simulates what would happen if SaveRecord were called with
-			// a record whose PK evaluates to an empty tuple.
+			// Directly call clearPreviousRecord's whole-key range clear with an
+			// empty PK. This simulates what would happen if SaveRecord were called
+			// with a record whose PK evaluates to an empty tuple.
 			recordsSubspace := store.subspace.Sub(RecordKey)
-			oldsizeInfo := &sizeInfo{IsSplit: true} // takes the range-clear path
-			clearPreviousRecord(
+			Expect(clearPreviousRecord(
 				store.context,
 				store.context.Transaction(),
 				recordsSubspace,
 				tuple.Tuple{}, // empty primary key
-				true,
-				oldsizeInfo,
-			)
+				false,         // whole-key range clear
+				nil,
+			)).To(Succeed())
 
 			// FIX: clearRecordKeyRange is now a no-op for empty PK, so records survive
 			for i := int64(1); i <= 5; i++ {

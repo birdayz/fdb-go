@@ -79,7 +79,7 @@ func saveWithSplit(
 // saveWithSplitClearingKey is Java's five-argument saveWithSplit, used by the
 // metadata store and the pending-writes queue: split long values, keep the
 // unsplit suffix, and clear the key's whole range rather than what a previous
-// value's size says (clearBasedOnPreviousSizeInfo=false, SplitHelper.java:371-372).
+// value's size says (clearBasedOnPreviousSizeInfo=false, SplitHelper.java:374-375).
 func saveWithSplitClearingKey(recordContext *FDBRecordContext, tx fdb.WritableTransaction, sub subspace.Subspace, key tuple.Tuple, serialized []byte, sizes *sizeInfo) error {
 	return saveSplit(recordContext, tx, sub, key, serialized, true, false, false, nil, sizes)
 }
@@ -118,7 +118,9 @@ func saveSplit(
 
 		// Clear previous record data
 		if !hasVersionInKey {
-			clearPreviousRecord(recordContext, tx, recordSubspace, primaryKey, clearBySize, oldsizeInfo)
+			if err := clearPreviousRecord(recordContext, tx, recordSubspace, primaryKey, clearBySize, oldsizeInfo); err != nil {
+				return err
+			}
 		}
 
 		if sizes != nil {
@@ -176,9 +178,13 @@ func saveSplit(
 		return nil
 	}
 
-	// Clear previous record data
-	if !hasVersionInKey {
-		clearPreviousRecord(recordContext, tx, recordSubspace, primaryKey, clearBySize, oldsizeInfo)
+	// Clear the previous record unless the new value overwrites its only key:
+	// Java skips the clear for a known, unsplit, unversioned previous record when
+	// long records are not split (SplitHelper.java:152).
+	if !hasVersionInKey && (splitLongRecords || oldsizeInfo == nil || oldsizeInfo.VersionedInline) {
+		if err := clearPreviousRecord(recordContext, tx, recordSubspace, primaryKey, clearBySize, oldsizeInfo); err != nil {
+			return err
+		}
 	}
 
 	// Unsplit: single KV pair at suffix 0. Keep the complete-key path's
@@ -224,11 +230,11 @@ func writeSplitValue(recordContext *FDBRecordContext, tx fdb.WritableTransaction
 }
 
 // clearPreviousRecord clears the old record's KV pairs before saving a new version,
-// as Java's clearPreviousSplitRecord does. clearBySize clears based on oldsizeInfo:
-// nothing without a previous record, its whole key range if it was split or
-// versioned inline, otherwise just the unsplit key (clearRecordKeys). Otherwise
-// the key's whole range is cleared.
-// Matches Java's SplitHelper behavior with clearBasedOnPrevioussizeInfo.
+// as Java's clearPreviousSplitRecord does. With clearBySize (Java's
+// clearBasedOnPreviousSizeInfo) it clears nothing without a previous record and
+// otherwise the keys oldsizeInfo says the record occupied, under a record-wide
+// write conflict range (clearRecordKeys). Without it, the key's whole range is
+// cleared.
 func clearPreviousRecord(
 	recordContext *FDBRecordContext,
 	tx fdb.WritableTransaction,
@@ -236,21 +242,25 @@ func clearPreviousRecord(
 	primaryKey tuple.Tuple,
 	clearBySize bool,
 	oldsizeInfo *sizeInfo,
-) {
-	// A later save without a version must not commit a previous save's
-	// deferred version mutation. Java leaves the local-version cache intact.
+) error {
+	switch {
+	case !clearBySize:
+		clearRecordKeyRange(tx, recordSubspace, primaryKey)
+	case oldsizeInfo != nil:
+		if err := clearRecordKeys(tx, recordSubspace, primaryKey, oldsizeInfo); err != nil {
+			return err
+		}
+	}
+	// A later save without a version must not commit a previous save's deferred
+	// version mutation; as in Java, only once the clear succeeded
+	// (SplitHelper.java:377-378). Java leaves the local-version cache intact.
 	if recordContext != nil {
 		versionKey := recordSubspace.Pack(appendToTuple(primaryKey, recordVersionSuffix))
 		if _, ok := recordContext.GetLocalVersion(versionKey); ok {
 			recordContext.RemoveVersionMutation(versionKey)
 		}
 	}
-	switch {
-	case !clearBySize:
-		clearRecordKeyRange(tx, recordSubspace, primaryKey)
-	case oldsizeInfo != nil:
-		clearRecordKeys(tx, recordSubspace, primaryKey, oldsizeInfo)
-	}
+	return nil
 }
 
 // clearRecordKeys clears a previous record's keys as Java's
@@ -261,16 +271,22 @@ func clearPreviousRecord(
 // 702-715). Clearing the version first means a concurrent load in the same
 // transaction can see the record without its version, never the version without
 // the record; Go formerly cleared the record key first.
-func clearRecordKeys(tx fdb.WritableTransaction, recordSubspace subspace.Subspace, primaryKey tuple.Tuple, old *sizeInfo) {
+//
+// A failure to add the conflict range (e.g. key_outside_legal_range) is returned
+// before any key is cleared, as Java's addWriteConflictRange throws first
+// (SplitHelper.java:360).
+func clearRecordKeys(tx fdb.WritableTransaction, recordSubspace subspace.Subspace, primaryKey tuple.Tuple, old *sizeInfo) error {
 	if len(primaryKey) == 0 {
-		return // as clearRecordKeyRange: never address the whole records subspace
+		return nil // as clearRecordKeyRange: never address the whole records subspace
 	}
 	begin, end := recordSubspace.Sub(primaryKey...).FDBRangeKeys()
-	// Fails only for an inverted range, which a tuple subspace never produces.
-	_ = tx.AddWriteConflictRange(fdb.KeyRange{Begin: begin, End: end})
+	if err := tx.AddWriteConflictRange(fdb.KeyRange{Begin: begin, End: end}); err != nil {
+		return err
+	}
 	for _, offset := range recordOffsets(old) {
 		tx.Clear(recordSubspace.Pack(appendToTuple(primaryKey, offset)))
 	}
+	return nil
 }
 
 // recordOffsets is Java's SplitHelper.offsets: the key suffixes a record of
@@ -539,24 +555,26 @@ func deleteSplit(
 	splitLongRecords bool,
 	omitUnsplitRecordSuffix bool,
 	oldsizeInfo *sizeInfo,
-) bool {
+) (bool, error) {
 	if len(primaryKey) == 0 {
-		return false
+		return false, nil
 	}
 
 	if oldsizeInfo == nil {
-		return false
+		return false, nil
 	}
 
 	if !splitLongRecords && omitUnsplitRecordSuffix {
 		// Legacy unsplit layout: clear the bare key. Matches Java's deleteSplit
 		// `context.ensureActive().clear(subspace.pack(key))`.
 		tx.Clear(recordSubspace.Pack(primaryKey))
-		return true
+		return true, nil
 	}
 
-	clearRecordKeys(tx, recordSubspace, primaryKey, oldsizeInfo)
-	return true
+	if err := clearRecordKeys(tx, recordSubspace, primaryKey, oldsizeInfo); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // recordExistsWithSplit checks if a record exists, handling both split and unsplit formats.
