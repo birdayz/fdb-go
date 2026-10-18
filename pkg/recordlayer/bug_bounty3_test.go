@@ -266,8 +266,8 @@ var _ = Describe("Bug Bounty Round 3", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 
-		// Now demonstrate the data loss: clearPreviousRecord with empty PK
-		// and splitLongRecords=true clears the entire records subspace.
+		// Now demonstrate the data loss: clearPreviousRecord's range clear with an
+		// empty PK would clear the entire records subspace.
 		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
@@ -275,20 +275,18 @@ var _ = Describe("Bug Bounty Round 3", func() {
 				return nil, err
 			}
 
-			// Directly call clearPreviousRecord with empty PK and split=true.
-			// This simulates what would happen if SaveRecord were called with
-			// a record whose PK evaluates to an empty tuple.
+			// Directly call clearPreviousRecord's whole-key range clear with an
+			// empty PK. This simulates what would happen if SaveRecord were called
+			// with a record whose PK evaluates to an empty tuple.
 			recordsSubspace := store.subspace.Sub(RecordKey)
-			oldsizeInfo := &sizeInfo{} // Zero-value, IsSplit=false
-			// Condition: oldsizeInfo.IsSplit || splitLongRecords = false || true = true
-			clearPreviousRecord(
+			Expect(clearPreviousRecord(
 				store.context,
 				store.context.Transaction(),
 				recordsSubspace,
 				tuple.Tuple{}, // empty primary key
-				true,          // splitLongRecords
-				oldsizeInfo,
-			)
+				false,         // whole-key range clear
+				nil,
+			)).To(Succeed())
 
 			// FIX: clearRecordKeyRange is now a no-op for empty PK, so records survive
 			for i := int64(1); i <= 5; i++ {

@@ -101,7 +101,7 @@ func (q *PendingWritesQueue[T]) Enqueue(rc *FDBRecordContext, payload T, incarna
 		return err
 	}
 	key := tuple.Tuple{int64(incarnation), stamp}
-	if err := saveWithSplit(rc, rc.Transaction(), q.entries, key, envelope, true, false, nil, nil); err != nil {
+	if err := saveWithSplitClearingKey(rc, rc.Transaction(), q.entries, key, envelope, nil); err != nil {
 		return err
 	}
 	q.changeSize(rc, 1)

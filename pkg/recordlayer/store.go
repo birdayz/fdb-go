@@ -585,7 +585,9 @@ func (store *FDBRecordStore) deleteRecord(primaryKey tuple.Tuple, typed *typedRe
 	}
 
 	// Delete all KV pairs for this record
-	deleteSplit(store.context.Transaction(), recordsSubspace, primaryKey, splitEnabled, store.omitUnsplitRecordSuffix(), &oldsizeInfo)
+	if _, err := deleteSplit(store.context.Transaction(), recordsSubspace, primaryKey, splitEnabled, store.omitUnsplitRecordSuffix(), &oldsizeInfo); err != nil {
+		return false, err
+	}
 
 	// Clean up the record version. Matches Java's deleteTypedRecord.
 	if store.metaData.IsStoreRecordVersions() || (oldRecordVersion != nil && !oldRecordVersion.IsComplete()) {

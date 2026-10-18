@@ -597,11 +597,161 @@ var _ = Describe("SplitHelper", func() {
 	// deleteSplit
 	// ───────────────────────────────────────────────────────────────────
 
+	// A previous record is cleared as Java's default unrolled delete does: a
+	// whole-record write conflict range, then point clears, the inline version
+	// first (SplitHelper.java:355-364, 702-715). Go formerly cleared the record
+	// key before its version, so a concurrent load in the same transaction could
+	// see the version without the record and fail with FoundSplitWithoutStartError
+	// (the chaos TestIntraTransactionRace failure).
+	Describe("previous record clears", func() {
+		for _, path := range []string{"deleteSplit", "clearPreviousRecord"} {
+			It(path+" clears the version first, under one record-wide conflict range", func() {
+				rs := recordSub()
+				pk := tuple.Tuple{int64(210)}
+				_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
+					tx.Set(fdb.Key(rs.Pack(appendToTuple(pk, unsplitRecord))), []byte("record"))
+					tx.Set(fdb.Key(rs.Pack(appendToTuple(pk, recordVersionSuffix))), versionValue())
+					rec := &clearRecorder{WritableTransaction: tx}
+					// A load between the two clears sees the record without its
+					// version, which is a valid record.
+					var midErr error
+					rec.onFirstClear = func() { _, midErr = loadWithSplit(tx, rs, pk, false, false, nil) }
+					old := &sizeInfo{KeyCount: 2, VersionedInline: true}
+					if path == "deleteSplit" {
+						Expect(deleteSplit(rec, rs, pk, false, false, old)).To(BeTrue())
+					} else {
+						Expect(clearPreviousRecord(nil, rec, rs, pk, true, old)).To(Succeed())
+					}
+					Expect(midErr).NotTo(HaveOccurred(), "SPLIT_VERSION_ORPHANED: a load between the clears failed")
+					Expect(rec.ranges).To(BeZero())
+					begin, end := rs.Sub(pk...).FDBRangeKeys()
+					Expect(rec.conflicts).To(Equal([]fdb.KeyRange{{Begin: begin, End: end}}))
+					Expect(rec.cleared).To(Equal([]fdb.Key{
+						fdb.Key(rs.Pack(appendToTuple(pk, recordVersionSuffix))),
+						fdb.Key(rs.Pack(appendToTuple(pk, unsplitRecord))),
+					}))
+					for _, suffix := range []int64{unsplitRecord, recordVersionSuffix} {
+						val, err := tx.Get(fdb.Key(rs.Pack(appendToTuple(pk, suffix)))).Get()
+						Expect(err).NotTo(HaveOccurred())
+						Expect(val).To(BeNil())
+					}
+					return nil, nil
+				})
+				Expect(err).NotTo(HaveOccurred())
+			})
+		}
+
+		It("clears every chunk of a split record, as its key count says", func() {
+			rs := recordSub()
+			pk := tuple.Tuple{int64(212)}
+			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
+				rec := &clearRecorder{WritableTransaction: tx}
+				Expect(deleteSplit(rec, rs, pk, true, false, &sizeInfo{KeyCount: 4, IsSplit: true, VersionedInline: true})).To(BeTrue())
+				var want []fdb.Key
+				for _, suffix := range []int64{recordVersionSuffix, startSplitRecord, startSplitRecord + 1, startSplitRecord + 2} {
+					want = append(want, fdb.Key(rs.Pack(appendToTuple(pk, suffix))))
+				}
+				Expect(rec.cleared).To(Equal(want))
+				Expect(rec.conflicts).To(HaveLen(1))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		// Java's addWriteConflictRange throws before any clear (SplitHelper.java:360).
+		It("returns a conflict range failure without clearing", func() {
+			rs := recordSub()
+			pk := tuple.Tuple{int64(214)}
+			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
+				failure := errors.New("key_outside_legal_range")
+				rec := &clearRecorder{WritableTransaction: tx, conflictErr: failure}
+				old := &sizeInfo{KeyCount: 2, VersionedInline: true}
+				Expect(clearPreviousRecord(nil, rec, rs, pk, true, old)).To(MatchError(failure))
+				deleted, delErr := deleteSplit(rec, rs, pk, false, false, old)
+				Expect(delErr).To(MatchError(failure))
+				Expect(deleted).To(BeFalse())
+				Expect(rec.cleared).To(BeEmpty(), "SPLIT_CLEARED_WITHOUT_CONFLICT")
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		// Java skips the clear when the new value overwrites the only key of a
+		// known, unsplit, unversioned record (SplitHelper.java:152).
+		It("an ordinary unsplit overwrite neither clears nor adds a conflict range", func() {
+			rs := recordSub()
+			pk := tuple.Tuple{int64(215)}
+			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
+				tx.Set(fdb.Key(rs.Pack(appendToTuple(pk, unsplitRecord))), []byte("old"))
+				rec := &clearRecorder{WritableTransaction: tx}
+				Expect(saveWithSplit(nil, rec, rs, pk, []byte("new"), false, false, &sizeInfo{KeyCount: 1}, nil)).To(Succeed())
+				Expect(rec.cleared).To(BeEmpty(), "SPLIT_OVERWRITE_CLEARED")
+				Expect(rec.conflicts).To(BeEmpty())
+				val, err := tx.Get(fdb.Key(rs.Pack(appendToTuple(pk, unsplitRecord)))).Get()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(val).To(Equal([]byte("new")))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		// An empty primary key would address the whole records subspace.
+		It("clears nothing for an empty primary key", func() {
+			rs := recordSub()
+			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
+				rec := &clearRecorder{WritableTransaction: tx}
+				Expect(clearPreviousRecord(nil, rec, rs, tuple.Tuple{}, true, &sizeInfo{KeyCount: 3, IsSplit: true, VersionedInline: true})).To(Succeed())
+				Expect(rec.cleared).To(BeEmpty())
+				Expect(rec.conflicts).To(BeEmpty())
+				Expect(rec.ranges).To(BeZero())
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		// The metadata store and pending-writes queue clear the key's whole range
+		// (Java's five-argument saveWithSplit, SplitHelper.java:371-372).
+		It("a whole-key clear range-clears even an unsplit previous value", func() {
+			rs := recordSub()
+			pk := tuple.Tuple{int64(213)}
+			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
+				tx.Set(fdb.Key(rs.Pack(appendToTuple(pk, unsplitRecord))), []byte("value"))
+				tx.Set(fdb.Key(rs.Pack(appendToTuple(pk, startSplitRecord+5))), []byte("stray"))
+				rec := &clearRecorder{WritableTransaction: tx}
+				Expect(clearPreviousRecord(nil, rec, rs, pk, false, nil)).To(Succeed())
+				Expect(rec.ranges).To(Equal(1))
+				Expect(rec.cleared).To(BeEmpty())
+				val, err := tx.Get(fdb.Key(rs.Pack(appendToTuple(pk, startSplitRecord+5)))).Get()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(val).To(BeNil())
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		// The state Go's former clear order exposed: the record's key cleared,
+		// its inline version still present. A load then fails exactly as the
+		// chaos test did.
+		It("a version key without its record fails to load", func() {
+			rs := recordSub()
+			pk := tuple.Tuple{int64(211)}
+			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
+				tx.Set(fdb.Key(rs.Pack(appendToTuple(pk, recordVersionSuffix))), versionValue())
+				_, err := loadWithSplit(tx, rs, pk, false, false, nil)
+				var split *FoundSplitWithoutStartError
+				Expect(errors.As(err, &split)).To(BeTrue(), "load = %v", err)
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
 	Describe("deleteSplit", func() {
 		It("returns false for empty primary key", func() {
 			rs := recordSub()
 			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
-				result := deleteSplit(tx, rs, tuple.Tuple{}, true, false, &sizeInfo{})
+				result, delErr := deleteSplit(tx, rs, tuple.Tuple{}, true, false, &sizeInfo{})
+				Expect(delErr).NotTo(HaveOccurred())
 				Expect(result).To(BeFalse())
 				return nil, nil
 			})
@@ -612,7 +762,8 @@ var _ = Describe("SplitHelper", func() {
 			rs := recordSub()
 			pk := tuple.Tuple{int64(200)}
 			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
-				result := deleteSplit(tx, rs, pk, true, false, nil)
+				result, delErr := deleteSplit(tx, rs, pk, true, false, nil)
+				Expect(delErr).NotTo(HaveOccurred())
 				Expect(result).To(BeFalse())
 				return nil, nil
 			})
@@ -631,7 +782,8 @@ var _ = Describe("SplitHelper", func() {
 
 				// Delete with IsSplit=false, splitLongRecords=false
 				oldSI := &sizeInfo{KeyCount: 1, IsSplit: false}
-				result := deleteSplit(tx, rs, pk, false, false, oldSI)
+				result, delErr := deleteSplit(tx, rs, pk, false, false, oldSI)
+				Expect(delErr).NotTo(HaveOccurred())
 				Expect(result).To(BeTrue())
 
 				// Verify gone
@@ -656,7 +808,8 @@ var _ = Describe("SplitHelper", func() {
 				}
 
 				oldSI := &sizeInfo{KeyCount: 3, IsSplit: true}
-				result := deleteSplit(tx, rs, pk, true, false, oldSI)
+				result, delErr := deleteSplit(tx, rs, pk, true, false, oldSI)
+				Expect(delErr).NotTo(HaveOccurred())
 				Expect(result).To(BeTrue())
 
 				// All chunks should be gone
@@ -688,7 +841,8 @@ var _ = Describe("SplitHelper", func() {
 					VersionedInline: true,
 				}
 				// splitLongRecords=false so it takes the unsplit path
-				result := deleteSplit(tx, rs, pk, false, false, oldSI)
+				result, delErr := deleteSplit(tx, rs, pk, false, false, oldSI)
+				Expect(delErr).NotTo(HaveOccurred())
 				Expect(result).To(BeTrue())
 
 				// Both keys cleared
@@ -720,7 +874,8 @@ var _ = Describe("SplitHelper", func() {
 					IsSplit:         false,
 					VersionedInline: false,
 				}
-				result := deleteSplit(tx, rs, pk, false, false, oldSI)
+				result, delErr := deleteSplit(tx, rs, pk, false, false, oldSI)
+				Expect(delErr).NotTo(HaveOccurred())
 				Expect(result).To(BeTrue())
 
 				// Record gone
@@ -840,7 +995,7 @@ var _ = Describe("SplitHelper", func() {
 				key := rs.Pack(appendToTuple(pk, unsplitRecord))
 				tx.Set(fdb.Key(key), []byte("keep-me"))
 
-				clearPreviousRecord(nil, tx, rs, pk, true, nil)
+				Expect(clearPreviousRecord(nil, tx, rs, pk, true, nil)).To(Succeed())
 
 				val, err := tx.Get(fdb.Key(key)).Get()
 				Expect(err).NotTo(HaveOccurred())
@@ -851,7 +1006,7 @@ var _ = Describe("SplitHelper", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 
-		It("range-clears when oldsizeInfo.IsSplit is true", func() {
+		It("clears every key of a split record", func() {
 			rs := recordSub()
 			pk := tuple.Tuple{int64(401)}
 
@@ -862,8 +1017,8 @@ var _ = Describe("SplitHelper", func() {
 				tx.Set(fdb.Key(rs.Pack(appendToTuple(pk, startSplitRecord+1))), []byte("c2"))
 				tx.Set(fdb.Key(rs.Pack(appendToTuple(pk, startSplitRecord+2))), []byte("c3"))
 
-				oldSI := &sizeInfo{IsSplit: true}
-				clearPreviousRecord(nil, tx, rs, pk, true, oldSI)
+				oldSI := &sizeInfo{KeyCount: 4, IsSplit: true, VersionedInline: true}
+				Expect(clearPreviousRecord(nil, tx, rs, pk, true, oldSI)).To(Succeed())
 
 				// All keys should be gone
 				for _, suffix := range []int64{recordVersionSuffix, startSplitRecord, startSplitRecord + 1, startSplitRecord + 2} {
@@ -877,7 +1032,7 @@ var _ = Describe("SplitHelper", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 
-		It("range-clears when splitLongRecords is true even if oldsizeInfo.IsSplit is false", func() {
+		It("clears only the unsplit key of an unsplit, unversioned record, as Java does", func() {
 			rs := recordSub()
 			pk := tuple.Tuple{int64(402)}
 
@@ -885,9 +1040,10 @@ var _ = Describe("SplitHelper", func() {
 				tx.Set(fdb.Key(rs.Pack(appendToTuple(pk, unsplitRecord))), []byte("data"))
 				tx.Set(fdb.Key(rs.Pack(appendToTuple(pk, recordVersionSuffix))), []byte("ver"))
 
-				// splitLongRecords=true triggers range clear even with IsSplit=false
-				oldSI := &sizeInfo{IsSplit: false}
-				clearPreviousRecord(nil, tx, rs, pk, true, oldSI)
+				// Java clears only UNSPLIT_RECORD when the previous record was
+				// neither split nor versioned inline (SplitHelper.java:367-370),
+				// whatever split_long_records says.
+				Expect(clearPreviousRecord(nil, tx, rs, pk, true, &sizeInfo{IsSplit: false})).To(Succeed())
 
 				val, err := tx.Get(fdb.Key(rs.Pack(appendToTuple(pk, unsplitRecord)))).Get()
 				Expect(err).NotTo(HaveOccurred())
@@ -895,7 +1051,7 @@ var _ = Describe("SplitHelper", func() {
 
 				val, err = tx.Get(fdb.Key(rs.Pack(appendToTuple(pk, recordVersionSuffix)))).Get()
 				Expect(err).NotTo(HaveOccurred())
-				Expect(val).To(BeNil())
+				Expect(val).To(Equal([]byte("ver")))
 
 				return nil, nil
 			})
@@ -914,7 +1070,7 @@ var _ = Describe("SplitHelper", func() {
 
 				// splitLongRecords=false, IsSplit=false, VersionedInline=false
 				oldSI := &sizeInfo{IsSplit: false, VersionedInline: false}
-				clearPreviousRecord(nil, tx, rs, pk, false, oldSI)
+				Expect(clearPreviousRecord(nil, tx, rs, pk, true, oldSI)).To(Succeed())
 
 				// Unsplit key cleared
 				val, err := tx.Get(fdb.Key(unsplitKey)).Get()
@@ -942,7 +1098,7 @@ var _ = Describe("SplitHelper", func() {
 				tx.Set(fdb.Key(versionKey), []byte("version"))
 
 				oldSI := &sizeInfo{IsSplit: false, VersionedInline: true}
-				clearPreviousRecord(nil, tx, rs, pk, false, oldSI)
+				Expect(clearPreviousRecord(nil, tx, rs, pk, true, oldSI)).To(Succeed())
 
 				// Both cleared
 				val, err := tx.Get(fdb.Key(unsplitKey)).Get()
@@ -1115,3 +1271,49 @@ var _ = Describe("SplitHelper", func() {
 		})
 	})
 })
+
+// versionValue is a stored inline record version (a packed complete versionstamp).
+func versionValue() []byte {
+	return tuple.Tuple{tuple.Versionstamp{TransactionVersion: [10]byte{0, 0, 0, 0, 0, 0, 0, 1, 0, 0}, UserVersion: 1}}.Pack()
+}
+
+// clearRecorder records the clears and write conflict ranges made through it.
+type clearRecorder struct {
+	fdb.WritableTransaction
+	cleared      []fdb.Key
+	conflicts    []fdb.KeyRange
+	ranges       int
+	onFirstClear func()
+	conflictErr  error // returned by AddWriteConflictRange instead of adding it
+}
+
+func (r *clearRecorder) clearKey(key fdb.Key) {
+	r.cleared = append(r.cleared, key)
+	if len(r.cleared) == 1 && r.onFirstClear != nil {
+		r.onFirstClear()
+	}
+}
+
+func (r *clearRecorder) Clear(key fdb.KeyConvertible) {
+	r.WritableTransaction.Clear(key)
+	r.clearKey(key.FDBKey())
+}
+
+func (r *clearRecorder) ClearBytes(key []byte) {
+	r.WritableTransaction.ClearBytes(key)
+	r.clearKey(fdb.Key(key))
+}
+
+func (r *clearRecorder) ClearRange(er fdb.ExactRange) {
+	r.ranges++
+	r.WritableTransaction.ClearRange(er)
+}
+
+func (r *clearRecorder) AddWriteConflictRange(er fdb.ExactRange) error {
+	if r.conflictErr != nil {
+		return r.conflictErr
+	}
+	begin, end := er.FDBRangeKeys()
+	r.conflicts = append(r.conflicts, fdb.KeyRange{Begin: begin.FDBKey(), End: end.FDBKey()})
+	return r.WritableTransaction.AddWriteConflictRange(er)
+}
