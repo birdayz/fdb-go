@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 )
@@ -28,7 +29,7 @@ func turnHanded(c *Conn) int {
 // expireCoalesceWait.
 func dialTurn(t *testing.T) (*Conn, <-chan []byte) {
 	t.Helper()
-	c, release, frames := dialStalledPeer(t, WithCoalesceDelay(time.Hour, time.Hour), withTurnDelayLimit(time.Hour))
+	c, release, frames := dialStalledPeer(t, WithCoalesceDelay(time.Hour, time.Hour), withTurnDelayLimit(2*time.Hour))
 	close(release)
 	return c, frames
 }
@@ -197,9 +198,147 @@ func TestWriterTurnTailOnFullSocket(t *testing.T) {
 	}
 }
 
+// A flush marker handed to a turn that leaves a tail waits for the tail: Flush
+// promises that every earlier byte is written.
+func TestWriterTurnFlushWaitsForTheTail(t *testing.T) {
+	t.Parallel()
+	c, release, frames := dialStalledPeer(t, WithCoalesceDelay(time.Hour, time.Hour), withTurnDelayLimit(2*time.Hour))
+	big := bytes.Repeat([]byte{'b'}, 32<<20) // beyond loopback's autotuned socket buffers
+	sent := make(chan error, 1)
+	go func() {
+		_, err := c.SendFrameContext(context.Background(), UID{First: 1}, big)
+		sent <- err
+	}()
+	waitFor(t, func() bool { return turnWaiting(c) }, "the sender taking the writer's turn")
+	flushed := make(chan error, 1)
+	go func() { flushed <- c.FlushContext(context.Background()) }()
+	waitFor(t, func() bool { return turnHanded(c) == 1 }, "writeLoop handing the flush marker to the turn")
+	expireCoalesceWait(t, c, func() bool { return c.tails.Load() == 1 }, "the turn leaving a tail")
+	if err := within(t, sent, "the turn's sender"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-flushed:
+		t.Fatalf("TURN_FLUSH_BEFORE_TAIL: Flush returned %v with the tail unwritten", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	// The returned marker may start a batch of its own, which waits the delay.
+	expireCoalesceWait(t, c, func() bool { return len(flushed) == 1 }, "Flush after the tail")
+	if err := <-flushed; err != nil {
+		t.Fatal(err)
+	}
+	if got := within(t, frames, "the frame"); !bytes.Equal(got, append([]byte("1:"), big...)) {
+		t.Fatalf("frame arrived as %d bytes", len(got))
+	}
+	if q := c.queued.Load(); q != 0 {
+		t.Fatalf("%d frames still counted", q)
+	}
+}
+
+// A flush marker returned behind a turn's tail fails when the connection fails
+// before the tail is written, instead of having reported success.
+func TestWriterTurnFlushFailsWithTheTail(t *testing.T) {
+	t.Parallel()
+	c, _, _ := dialStalledPeer(t, WithCoalesceDelay(time.Hour, time.Hour), withTurnDelayLimit(2*time.Hour))
+	big := bytes.Repeat([]byte{'b'}, 32<<20)
+	sent := make(chan error, 1)
+	go func() {
+		_, err := c.SendFrameContext(context.Background(), UID{First: 1}, big)
+		sent <- err
+	}()
+	waitFor(t, func() bool { return turnWaiting(c) }, "the sender taking the writer's turn")
+	flushed := make(chan error, 1)
+	go func() { flushed <- c.FlushContext(context.Background()) }()
+	waitFor(t, func() bool { return turnHanded(c) == 1 }, "writeLoop handing the flush marker to the turn")
+	expireCoalesceWait(t, c, func() bool { return c.tails.Load() == 1 }, "the turn leaving a tail")
+	if err := within(t, sent, "the turn's sender"); err != nil {
+		t.Fatal(err)
+	}
+	_ = c.Close()
+	if err := within(t, flushed, "Flush after Close"); err == nil {
+		t.Fatal("TURN_FLUSH_BEFORE_TAIL: Flush reported success for bytes that were never written")
+	}
+}
+
+// A turn ends its collection when its wait ends while other senders keep
+// queueing. writeLoop hands over only what was queued when it woke, which
+// bounds each handoff by construction; this test checks liveness and does not
+// reliably fail without that bound.
+func TestWriterTurnEndsUnderContinuousProducers(t *testing.T) {
+	t.Parallel()
+	c, _ := dialTurn(t)
+	sent := sendAsync(c, 1)
+	waitFor(t, func() bool { return turnWaiting(c) }, "the sender taking the writer's turn")
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				if c.SendFrameDeferred(UID{First: 2}, frameBody(2)) != nil {
+					return
+				}
+			}
+		}()
+	}
+	defer func() {
+		close(stop)
+		_ = c.Close()
+		wg.Wait()
+	}()
+	waitFor(t, func() bool { return turnHanded(c) > 1000 }, "producers filling the turn")
+	expireCoalesceWait(t, c, func() bool { return len(sent) == 1 }, "the turn writing under continuous producers")
+	if err := <-sent; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A sender's wait is bounded by both delay bounds, jitter included.
+func TestWriterTurnDelayBound(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		minDelay, maxDelay time.Duration
+		takes              bool
+	}{
+		{DefaultMinCoalesceDelay, DefaultMaxCoalesceDelay, true},
+		{900 * time.Microsecond, 900 * time.Microsecond, true}, // 990 µs with jitter
+		{time.Millisecond, time.Millisecond, false},            // 1.1 ms with jitter
+		{time.Hour, 0, false},                                  // min above max
+		{0, time.Hour, false},
+	} {
+		got := longestCoalesceWait(tc.minDelay, tc.maxDelay) <= maxTurnDelay
+		if got != tc.takes {
+			t.Errorf("TURN_BOUND: delay (%v, %v) takes a turn = %v, want %v", tc.minDelay, tc.maxDelay, got, tc.takes)
+		}
+	}
+	c, release, _ := dialStalledPeer(t, WithCoalesceDelay(time.Hour, 0))
+	close(release)
+	sent := make(chan error, 1)
+	go func() {
+		_, err := c.SendFrameContext(context.Background(), UID{First: 1}, frameBody(1))
+		sent <- err
+	}()
+	waitFor(t, func() bool { return c.queued.Load() == 1 && len(c.writeCh) == 0 }, "writeLoop taking the frame")
+	if c.turns.Load() != 0 {
+		t.Fatal("TURN_UNBOUNDED: a sender took the turn for an hour-long minimum delay")
+	}
+	_ = c.Close()
+	if err := within(t, sent, "the sender after Close"); !errors.Is(err, ErrConnClosed) {
+		t.Fatalf("sender = %v, want the connection teardown", err)
+	}
+}
+
 // Only senders that wait for the write take the turn, and only for a delay
-// within maxTurnDelay. An eager frame stays queued so the frames its caller
-// sends next can join its batch.
+// within maxTurnDelay. A frame whose sender does not wait (eager or deferred)
+// stays queued, as libfdb_c's sender never waits for connectionWriter, so the
+// frames its caller sends next can join its batch.
 func TestWriterTurnTakers(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -208,21 +347,21 @@ func TestWriterTurnTakers(t *testing.T) {
 	if _, err := c.SendFrameContext(ctx, UID{First: 1}, frameBody(1)); err != nil {
 		t.Fatal(err)
 	}
-	if enqueued, err := c.SendFrameAloneContext(ctx, UID{First: 2}, frameBody(2)); !enqueued || err != nil {
-		t.Fatalf("alone send = (%v, %v)", enqueued, err)
-	}
-	if err := c.SendFrame(UID{First: 3}, frameBody(3)); err != nil {
+	if err := c.SendFrame(UID{First: 2}, frameBody(2)); err != nil {
 		t.Fatal(err)
 	}
-	if n := c.turns.Load(); n != 3 {
-		t.Fatalf("TURN_NOT_TAKEN: %d turns for three waiting senders on an idle connection, want 3", n)
+	if n := c.turns.Load(); n != 2 {
+		t.Fatalf("TURN_NOT_TAKEN: %d turns for two waiting senders on an idle connection, want 2", n)
 	}
-	if enqueued, err := c.SendFrameEagerContext(ctx, UID{First: 4}, frameBody(4)); !enqueued || err != nil {
+	if enqueued, err := c.SendFrameEagerContext(ctx, UID{First: 3}, frameBody(3)); !enqueued || err != nil {
 		t.Fatalf("eager send = (%v, %v)", enqueued, err)
 	}
+	if enqueued, err := c.SendFrameDeferredContext(ctx, UID{First: 4}, frameBody(4)); !enqueued || err != nil {
+		t.Fatalf("deferred send = (%v, %v)", enqueued, err)
+	}
 	expectFrames(t, frames, 1, 2, 3, 4)
-	if n := c.turns.Load(); n != 3 {
-		t.Fatalf("TURN_EAGER: an eager send took the turn (%d turns)", n)
+	if n := c.turns.Load(); n != 2 {
+		t.Fatalf("TURN_NOT_WAITING: a send that does not wait took the turn (%d turns)", n)
 	}
 
 	long, longRelease, _ := dialStalledPeer(t, WithCoalesceDelay(time.Hour, time.Hour))

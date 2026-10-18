@@ -105,44 +105,23 @@ func (c *Conn) writeContext(ctx context.Context, token UID, body []byte, flush b
 // does not wait for its acknowledgment. The boolean reports enqueue, not wire
 // delivery. FlushContext may subsequently wait for the batch.
 func (c *Conn) SendFrameDeferredContext(ctx context.Context, token UID, body []byte) (bool, error) {
-	return c.sendWithoutAck(ctx, token, body, sendDeferred)
+	return c.sendWithoutAck(ctx, token, body, false)
 }
 
 // SendFrameEagerContext is SendFrameDeferredContext for a frame nothing is about
 // to join: an idle writer lets the caller write it at once. (true, err) means the
 // direct write failed: maybe delivered, and the connection is failed.
 func (c *Conn) SendFrameEagerContext(ctx context.Context, token UID, body []byte) (bool, error) {
-	return c.sendWithoutAck(ctx, token, body, sendEager)
+	return c.sendWithoutAck(ctx, token, body, true)
 }
 
-// SendFrameAloneContext is SendFrameEagerContext for a frame whose caller sends
-// nothing more before awaiting the reply. On an idle connection that waits
-// before writing, the caller takes the writer's turn (takeTurn) and returns once
-// the batch is written; that wait, at most maxTurnDelay, does not observe ctx.
-func (c *Conn) SendFrameAloneContext(ctx context.Context, token UID, body []byte) (bool, error) {
-	return c.sendWithoutAck(ctx, token, body, sendAlone)
-}
-
-type sendMode uint8
-
-const (
-	sendDeferred sendMode = iota // always queue
-	sendEager                    // write directly when the writer is idle
-	sendAlone                    // sendEager, or take the writer's turn
-)
-
-func (c *Conn) sendWithoutAck(ctx context.Context, token UID, body []byte, mode sendMode) (bool, error) {
+func (c *Conn) sendWithoutAck(ctx context.Context, token UID, body []byte, eager bool) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
 	LogSend(token, body)
-	if mode != sendDeferred {
+	if eager {
 		if direct, err := c.tryWriteDirect(token, body); direct {
-			return true, err
-		}
-	}
-	if mode == sendAlone {
-		if took, err := c.takeTurn(token, body); took {
 			return true, err
 		}
 	}

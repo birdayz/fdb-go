@@ -325,15 +325,13 @@ func checkWritersInterleave(t *testing.T, opts ...DialOption) {
 			for seq := range perSender {
 				token, body := UID{First: uint64(w)}, []byte(fmt.Sprint(w, "/", seq))
 				var err error
-				switch seq % 5 {
+				switch seq % 4 {
 				case 0:
 					err = c.SendFrame(token, body)
 				case 1:
 					_, err = c.SendFrameContext(ctx, token, body)
 				case 2:
 					_, err = c.SendFrameEagerContext(ctx, token, body)
-				case 3:
-					_, err = c.SendFrameAloneContext(ctx, token, body)
 				default:
 					err = c.SendFrameDeferred(token, body)
 				}
