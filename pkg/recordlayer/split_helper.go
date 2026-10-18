@@ -93,7 +93,7 @@ func saveWithSplit(
 
 		// Clear previous record data
 		if !hasVersionInKey {
-			clearPreviousRecord(recordContext, tx, recordSubspace, primaryKey, splitLongRecords, oldsizeInfo)
+			clearPreviousRecord(recordContext, tx, recordSubspace, primaryKey, oldsizeInfo)
 		}
 
 		if sizes != nil {
@@ -153,7 +153,7 @@ func saveWithSplit(
 
 	// Clear previous record data
 	if !hasVersionInKey {
-		clearPreviousRecord(recordContext, tx, recordSubspace, primaryKey, splitLongRecords, oldsizeInfo)
+		clearPreviousRecord(recordContext, tx, recordSubspace, primaryKey, oldsizeInfo)
 	}
 
 	// Unsplit: single KV pair at suffix 0. Keep the complete-key path's
@@ -207,7 +207,6 @@ func clearPreviousRecord(
 	tx fdb.WritableTransaction,
 	recordSubspace subspace.Subspace,
 	primaryKey tuple.Tuple,
-	splitLongRecords bool,
 	oldsizeInfo *sizeInfo,
 ) {
 	// A later save without a version must not commit a previous save's
@@ -222,22 +221,21 @@ func clearPreviousRecord(
 		// No previous record — nothing to clear
 		return
 	}
+	clearRecordKeys(tx, recordSubspace, primaryKey, oldsizeInfo)
+}
 
-	if oldsizeInfo.IsSplit || splitLongRecords {
-		// Clear the entire primary key range (covers all suffixes: -1, 0, 1, 2, ...)
-		// This is safe because the range only covers this primary key's data.
+// clearRecordKeys clears a previous record's keys as Java's
+// clearPreviousSplitRecord does with clearBasedOnPreviousSizeInfo
+// (SplitHelper.java:353-372): one range clear when the record was split or
+// carried an inline version, otherwise only the unsplit key. A single range
+// clear keeps a concurrent read in the same transaction from seeing the version
+// key without the record.
+func clearRecordKeys(tx fdb.WritableTransaction, recordSubspace subspace.Subspace, primaryKey tuple.Tuple, old *sizeInfo) {
+	if old.IsSplit || old.VersionedInline {
 		clearRecordKeyRange(tx, recordSubspace, primaryKey)
-	} else {
-		// Only unsplit key exists — clear just that
-		keyTuple := appendToTuple(primaryKey, unsplitRecord)
-		tx.Clear(recordSubspace.Pack(keyTuple))
-
-		// Also clear version key if it was stored inline
-		if oldsizeInfo.VersionedInline {
-			versionKeyTuple := appendToTuple(primaryKey, recordVersionSuffix)
-			tx.Clear(recordSubspace.Pack(versionKeyTuple))
-		}
+		return
 	}
+	tx.Clear(recordSubspace.Pack(appendToTuple(primaryKey, unsplitRecord)))
 }
 
 // loadWithSplit loads the entire record range, as Java's SingleKeyUnsplitter
@@ -506,21 +504,7 @@ func deleteSplit(
 		return true
 	}
 
-	if oldsizeInfo.IsSplit || splitLongRecords {
-		// Clear the entire primary key range
-		clearRecordKeyRange(tx, recordSubspace, primaryKey)
-	} else {
-		// Clear unsplit key only
-		keyTuple := appendToTuple(primaryKey, unsplitRecord)
-		tx.Clear(recordSubspace.Pack(keyTuple))
-
-		// Clear inline version if present
-		if oldsizeInfo.VersionedInline {
-			versionKeyTuple := appendToTuple(primaryKey, recordVersionSuffix)
-			tx.Clear(recordSubspace.Pack(versionKeyTuple))
-		}
-	}
-
+	clearRecordKeys(tx, recordSubspace, primaryKey, oldsizeInfo)
 	return true
 }
 

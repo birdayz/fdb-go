@@ -597,6 +597,57 @@ var _ = Describe("SplitHelper", func() {
 	// deleteSplit
 	// ───────────────────────────────────────────────────────────────────
 
+	// An inline-versioned record is cleared with one range clear, as Java's
+	// clearPreviousSplitRecord does (SplitHelper.java:366-367). Two point clears
+	// let a concurrent load in the same transaction see the version key without
+	// the record and fail with FoundSplitWithoutStartError (the chaos
+	// TestIntraTransactionRace failure).
+	Describe("inline-versioned record clears", func() {
+		for _, path := range []string{"deleteSplit", "clearPreviousRecord"} {
+			It(path+" issues one range clear and no point clear", func() {
+				rs := recordSub()
+				pk := tuple.Tuple{int64(210)}
+				_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
+					tx.Set(fdb.Key(rs.Pack(appendToTuple(pk, unsplitRecord))), []byte("record"))
+					tx.Set(fdb.Key(rs.Pack(appendToTuple(pk, recordVersionSuffix))), []byte("version"))
+					rec := &clearRecorder{WritableTransaction: tx}
+					old := &sizeInfo{KeyCount: 1, VersionedInline: true}
+					if path == "deleteSplit" {
+						Expect(deleteSplit(rec, rs, pk, false, false, old)).To(BeTrue())
+					} else {
+						clearPreviousRecord(nil, rec, rs, pk, old)
+					}
+					Expect(rec.points).To(BeZero(), "SPLIT_POINT_CLEARS: version and record cleared separately")
+					Expect(rec.ranges).To(Equal(1))
+					for _, suffix := range []int64{unsplitRecord, recordVersionSuffix} {
+						val, err := tx.Get(fdb.Key(rs.Pack(appendToTuple(pk, suffix)))).Get()
+						Expect(err).NotTo(HaveOccurred())
+						Expect(val).To(BeNil())
+					}
+					return nil, nil
+				})
+				Expect(err).NotTo(HaveOccurred())
+			})
+		}
+
+		// The state two point clears expose: the record's key cleared, its
+		// inline version still present. A load then fails exactly as the chaos
+		// test did.
+		It("a version key without its record fails to load", func() {
+			rs := recordSub()
+			pk := tuple.Tuple{int64(211)}
+			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
+				version := tuple.Tuple{tuple.Versionstamp{TransactionVersion: [10]byte{0, 0, 0, 0, 0, 0, 0, 1, 0, 0}, UserVersion: 1}}.Pack()
+				tx.Set(fdb.Key(rs.Pack(appendToTuple(pk, recordVersionSuffix))), version)
+				_, err := loadWithSplit(tx, rs, pk, false, false, nil)
+				var split *FoundSplitWithoutStartError
+				Expect(errors.As(err, &split)).To(BeTrue(), "load = %v", err)
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
 	Describe("deleteSplit", func() {
 		It("returns false for empty primary key", func() {
 			rs := recordSub()
@@ -840,7 +891,7 @@ var _ = Describe("SplitHelper", func() {
 				key := rs.Pack(appendToTuple(pk, unsplitRecord))
 				tx.Set(fdb.Key(key), []byte("keep-me"))
 
-				clearPreviousRecord(nil, tx, rs, pk, true, nil)
+				clearPreviousRecord(nil, tx, rs, pk, nil)
 
 				val, err := tx.Get(fdb.Key(key)).Get()
 				Expect(err).NotTo(HaveOccurred())
@@ -863,7 +914,7 @@ var _ = Describe("SplitHelper", func() {
 				tx.Set(fdb.Key(rs.Pack(appendToTuple(pk, startSplitRecord+2))), []byte("c3"))
 
 				oldSI := &sizeInfo{IsSplit: true}
-				clearPreviousRecord(nil, tx, rs, pk, true, oldSI)
+				clearPreviousRecord(nil, tx, rs, pk, oldSI)
 
 				// All keys should be gone
 				for _, suffix := range []int64{recordVersionSuffix, startSplitRecord, startSplitRecord + 1, startSplitRecord + 2} {
@@ -877,7 +928,7 @@ var _ = Describe("SplitHelper", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 
-		It("range-clears when splitLongRecords is true even if oldsizeInfo.IsSplit is false", func() {
+		It("clears only the unsplit key of an unsplit, unversioned record, as Java does", func() {
 			rs := recordSub()
 			pk := tuple.Tuple{int64(402)}
 
@@ -885,9 +936,10 @@ var _ = Describe("SplitHelper", func() {
 				tx.Set(fdb.Key(rs.Pack(appendToTuple(pk, unsplitRecord))), []byte("data"))
 				tx.Set(fdb.Key(rs.Pack(appendToTuple(pk, recordVersionSuffix))), []byte("ver"))
 
-				// splitLongRecords=true triggers range clear even with IsSplit=false
-				oldSI := &sizeInfo{IsSplit: false}
-				clearPreviousRecord(nil, tx, rs, pk, true, oldSI)
+				// Java clears only UNSPLIT_RECORD when the previous record was
+				// neither split nor versioned inline (SplitHelper.java:367-370),
+				// whatever split_long_records says.
+				clearPreviousRecord(nil, tx, rs, pk, &sizeInfo{IsSplit: false})
 
 				val, err := tx.Get(fdb.Key(rs.Pack(appendToTuple(pk, unsplitRecord)))).Get()
 				Expect(err).NotTo(HaveOccurred())
@@ -895,7 +947,7 @@ var _ = Describe("SplitHelper", func() {
 
 				val, err = tx.Get(fdb.Key(rs.Pack(appendToTuple(pk, recordVersionSuffix)))).Get()
 				Expect(err).NotTo(HaveOccurred())
-				Expect(val).To(BeNil())
+				Expect(val).To(Equal([]byte("ver")))
 
 				return nil, nil
 			})
@@ -914,7 +966,7 @@ var _ = Describe("SplitHelper", func() {
 
 				// splitLongRecords=false, IsSplit=false, VersionedInline=false
 				oldSI := &sizeInfo{IsSplit: false, VersionedInline: false}
-				clearPreviousRecord(nil, tx, rs, pk, false, oldSI)
+				clearPreviousRecord(nil, tx, rs, pk, oldSI)
 
 				// Unsplit key cleared
 				val, err := tx.Get(fdb.Key(unsplitKey)).Get()
@@ -942,7 +994,7 @@ var _ = Describe("SplitHelper", func() {
 				tx.Set(fdb.Key(versionKey), []byte("version"))
 
 				oldSI := &sizeInfo{IsSplit: false, VersionedInline: true}
-				clearPreviousRecord(nil, tx, rs, pk, false, oldSI)
+				clearPreviousRecord(nil, tx, rs, pk, oldSI)
 
 				// Both cleared
 				val, err := tx.Get(fdb.Key(unsplitKey)).Get()
@@ -1115,3 +1167,24 @@ var _ = Describe("SplitHelper", func() {
 		})
 	})
 })
+
+// clearRecorder counts the clears made through it.
+type clearRecorder struct {
+	fdb.WritableTransaction
+	points, ranges int
+}
+
+func (r *clearRecorder) Clear(key fdb.KeyConvertible) {
+	r.points++
+	r.WritableTransaction.Clear(key)
+}
+
+func (r *clearRecorder) ClearBytes(key []byte) {
+	r.points++
+	r.WritableTransaction.ClearBytes(key)
+}
+
+func (r *clearRecorder) ClearRange(er fdb.ExactRange) {
+	r.ranges++
+	r.WritableTransaction.ClearRange(er)
+}
