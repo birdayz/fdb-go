@@ -133,9 +133,17 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
     DECISION (2026-10-17): the wait is on by default, as in libfdb_c;
     `WithCoalesceDelay(0, 0)` restores immediate writes.
     Remaining: `range100` at 32 workers is 1.10 (1.17 without) with 1.4× libfdb_c's
-    segments; check `range100` at 8 and 64, `get100` at 64, and the multi-node rerun.
-  - [ ] **Write gap.** `set100` at 8 and 32 workers costs the servers 1.6–1.8×
-    libfdb_c (medians) with or without the write delay whenever libfdb_c's runs stay
+    segments; check `range100` at 1, 8 and 64 workers, `get100` at 64, and the multi-node
+    rerun. Against the latency criterion below, 1-worker `set100` is effectively tied
+    (6.46 vs 6.50 ms, three runs) and 1-worker `range100` is unmeasured with the delay.
+  - [ ] **Write gap.** Closed-loop `set100` keeps a gap (cycles-only rerun: 1.33×
+    libfdb_c at 8 workers, 1.53× at 32). At matched scheduled offered load
+    ([paced-load report](docs/benchmarks/rfc-259/paced-load-20261018.md), 64 workers,
+    `clientbench -rate`, timerfd pacing) write server cost is similar at the three tested
+    rates (0.99–1.00× at 1,000–4,000 operations per second, five pairs each). The closed-loop gap therefore
+    depends on how often lockstep rounds stay together; split rates also moved with run
+    shape and instrumentation in a small screen. Earlier record:
+    `set100` at 8 and 32 workers costs the servers 1.6–1.8× libfdb_c (medians) with or without the write delay whenever libfdb_c's runs stay
     unsplit; in the final campaign libfdb_c split at 32 workers and the ratio there was
     1.17–1.20. Runs are bimodal for both clients: about one commit batch per worker
     count of transactions (0.126 per transaction at 8 workers, 0.032 at 32) or about
@@ -152,8 +160,18 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
     unsplit (10.0 ms when it splits at 32 workers). Next: trace when each
     client sends its GRVs and commits within a round and compare with readVersionBatcher
     and the commit path in NativeAPI.actor.cpp, as for the read gap.
+  - Paced reads: `get100` costs the servers 0.94× libfdb_c at 10,000 operations per
+    second and 1.04× at 30,000, with lower Go latency (327–340 µs against 424–554 µs).
+    A first campaign paced with `time.Sleep` showed 1.18–1.36×, consistent with the CGo
+    arm's millisecond wake-ups bunching its arrivals (not isolated). In both rows the CGo
+    arm's starts still depart from the schedule (10,000/s: 1.4% over 1 ms late; 30,000/s:
+    9.3%), so this is similar cost under the same scheduled load, not equal actual
+    arrivals. More workers than rate × p99 latency, or a shared dispatcher, would match them.
+  - [ ] **Client CPU on paced writes.** `set100` uses 1.51–1.53× libfdb_c's client CPU at
+    1,000–4,000 operations per second (reads 1.03–1.04×); see "Client CPU per transaction".
   - Done when server cycles per transaction are within 10% of libfdb_c for `get100`,
-    `set100`, `range100` and `grv` at 8–64 workers, locally and on a multi-node rerun,
+    `set100`, `range100` and `grv` at 8–64 workers, also under matched paced load
+    (`clientbench -rate`), locally and on a multi-node rerun,
     with 1-worker mean latency no worse than libfdb_c's (owner decision, 2026-10-17;
     previously within 5% of the Go client's own).
 - [ ] **Client CPU per transaction.** At 8–64 workers pure-Go uses 1.29–2.16× libfdb_c's
