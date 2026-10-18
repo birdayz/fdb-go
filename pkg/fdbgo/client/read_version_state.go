@@ -150,15 +150,22 @@ func (request readVersionRequest) fetchReadVersion(ctx context.Context, extraFla
 	flags := request.flags | extraFlags
 	var locked bool
 	rv, locked, rvAt, err = request.db.grvBatchers[grvBatcherIndex(flags)].getReadVersion(request.db, ctx, flags, request.span, request.tags, request.useGrvCache, request.skipGrvCache)
-	lockAware := request.lockAware
-	if owner != nil {
-		lockAware = owner.lockAware || owner.readLockAware
-	}
-	if err == nil && locked && !lockAware {
+	if err == nil && locked && !request.lockAwareAtReply(owner) {
 		// C++ extractReadVersion rejects a locked database before adopting its version.
 		err = &wire.FDBError{Code: ErrDatabaseLocked}
 	}
 	return rv, err
+}
+
+// lockAwareAtReply reads a public owner's options only for a locked reply, the
+// one case that needs them, as before the snapshot existed. Those option fields
+// are written without synchronization against in-flight operations; see TODO.md
+// ("Transaction options during in-flight operations").
+func (request readVersionRequest) lockAwareAtReply(owner *Transaction) bool {
+	if owner != nil {
+		return owner.lockAware || owner.readLockAware
+	}
+	return request.lockAware
 }
 
 func (request readVersionRequest) validateExplicitVersion(ctx context.Context, rv int64) error {

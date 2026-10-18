@@ -193,6 +193,13 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
     (`clientbench -rate`), locally and on a multi-node rerun,
     with 1-worker mean latency no worse than libfdb_c's (owner decision, 2026-10-17;
     previously within 5% of the Go client's own).
+- [ ] **Transaction options during in-flight operations.** Option setters (`SetLockAware`,
+  `SetReadLockAware`, GRV cache, tags, priority) write plain `Transaction` fields under a
+  shared state lease, while in-flight operations read them: GRV completion reads lock
+  awareness for a locked reply (C++ checks the live option there, NativeAPI.actor.cpp:
+  7405, 7425-7426) and read builders read it per request. C++ runs both on the network
+  thread. Give the options one synchronization (atomics or a mutex) and add a test that
+  overlaps a setter with GRV completion and reads under -race.
 - [ ] **Client CPU per transaction.** At 8–64 workers pure-Go uses 1.29–2.16× libfdb_c's
   process CPU on reads and commits (`docs/benchmarks/hcloud-multinode-vpc-20261014/phase-m1-client.md`,
   `hcloud-rebench-20261014/phase-a2-client-8w.md`), while it uses less at 1 worker
