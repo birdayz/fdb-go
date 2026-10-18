@@ -145,12 +145,20 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
     raises 1-worker `get100` latency 26% (221 → 279 µs; libfdb_c 404 µs). OWNER
     DECISION (2026-10-17): the wait is on by default, as in libfdb_c;
     `WithCoalesceDelay(0, 0)` restores immediate writes.
-    Remaining: `range100` at 32 workers is 1.10 (1.17 without) with 1.4× libfdb_c's
-    segments; check `range100` at 1, 8 and 64 workers, `get100` at 64, and the multi-node
-    rerun. Against the latency criterion below, 1-worker `set100` is effectively tied
-    (6.46 vs 6.50 ms, three runs) and 1-worker `range100` is unmeasured with the delay.
+    A [closed-loop sweep](docs/benchmarks/rfc-259/wire-capture-20261018.md) of all four
+    workloads at 1/8/32/64 workers on `e5209b8c6`: server cycles ≤ 1.03× libfdb_c
+    everywhere except `range100` at 32–64 (1.12–1.15×) and `set100` at 32 (1.30×), with
+    Go throughput 1.3–2.1× at 32–64 workers on reads and GRVs and 1-worker latency
+    0.66–0.98×. `range100`'s storage traffic is identical; Go sends ~40% more GRV
+    requests (smaller adaptive batches, equal wire latency), and at matched paced load
+    (5,000/s) costs 1.03×. Remaining: the multi-node rerun.
   - [ ] **Write gap.** Closed-loop `set100` keeps a gap (cycles-only rerun: 1.33×
-    libfdb_c at 8 workers, 1.53× at 32). At matched scheduled offered load
+    libfdb_c at 8 workers, 1.53× at 32). Wire captures
+    ([report](docs/benchmarks/rfc-259/wire-capture-20261018.md)) show the cause: in a
+    closed loop each round of commits forms one proxy batch until a pause splits it, and
+    the split persists for both clients. Go splits within the first rounds when GC runs
+    and behaves like libfdb_c with `GOGC=off` (one of three runs never split, against one
+    of three for libfdb_c). Allocation cuts did not move the first split. At matched scheduled offered load
     ([paced-load report](docs/benchmarks/rfc-259/paced-load-20261018.md), 64 workers,
     `clientbench -rate`, timerfd pacing) write server cost is similar at the three tested
     rates (0.99–1.00× at 1,000–4,000 operations per second, five pairs each). The closed-loop gap therefore
