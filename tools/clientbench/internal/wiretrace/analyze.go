@@ -202,6 +202,10 @@ type KindSummary struct {
 	ArrivalSpreadNS [3]int64 `json:"arrival_spread_ns"`
 	// LatencyNS is the time from request to reply at the capture point.
 	LatencyNS [3]int64 `json:"latency_ns"`
+	// ReorderedReplies counts successful replies that became readable before
+	// their request did: their timing is not a latency and is left out of
+	// LatencyNS.
+	ReorderedReplies int `json:"reordered_replies,omitempty"`
 	// Params counts range requests by their parameters; More counts replies
 	// that reported more rows; ReplyBytes is their total packed size.
 	Params     map[string]int `json:"params,omitempty"`
@@ -264,7 +268,11 @@ func (t *Trace) Summarize() Summary {
 			default:
 				ks.Replied++
 				batches[r.Version] = append(batches[r.Version], r)
-				latency = append(latency, r.ReplyNS-r.SentNS)
+				if r.ReplyNS < r.SentNS {
+					ks.ReorderedReplies++
+				} else {
+					latency = append(latency, r.ReplyNS-r.SentNS)
+				}
 			}
 		}
 		ks.ClientSegments = len(segs)

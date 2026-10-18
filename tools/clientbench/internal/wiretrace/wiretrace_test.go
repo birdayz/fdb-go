@@ -326,6 +326,11 @@ func TestDecodeMatchesEarlyReply(t *testing.T) {
 	if r := trace.Requests[0]; r.ReplyNS != 20 || r.Version != 0x0abcdef012 {
 		t.Fatalf("WIRETRACE_EARLY_REPLY_LOST: request = %+v", r)
 	}
+	// Matched and counted, but its reply precedes its readable request, so it
+	// is not a latency sample.
+	if k := trace.Summarize().Kinds[KindCommit]; k.Replied != 1 || k.ServerBatches != 1 || k.ReorderedReplies != 1 || k.LatencyNS != [3]int64{} {
+		t.Fatalf("WIRETRACE_EARLY_REPLY_LATENCY: summary = %+v", k)
+	}
 }
 
 // A capture without a decoded request is not a measurement.
