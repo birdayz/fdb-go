@@ -7,10 +7,11 @@ import "time"
 // whose longest wait exceeds it leaves every batch to writeLoop.
 const maxTurnDelay = time.Millisecond
 
-// longestCoalesceWait is the most coalesceDelay can return: the larger bound,
-// jittered up by 10%.
-func longestCoalesceWait(minDelay, maxDelay time.Duration) time.Duration {
-	return time.Duration(float64(max(minDelay, maxDelay)) * 1.1)
+// turnWaitWithin reports whether the most coalesceDelay can return, the larger
+// bound jittered up by 10%, is within limit. It compares in float64, so a
+// bound near the largest Duration cannot wrap around.
+func turnWaitWithin(minDelay, maxDelay, limit time.Duration) bool {
+	return float64(max(minDelay, maxDelay))*1.1 <= float64(limit)
 }
 
 // takeTurn is connectionWriter's turn taken on the sender's goroutine. When the
@@ -33,15 +34,15 @@ func longestCoalesceWait(minDelay, maxDelay time.Duration) time.Duration {
 // writes (TLS, or not TCP) leaves every batch to writeLoop.
 //
 // A flush marker handed to the turn promises that every earlier byte is
-// written, so if the socket refused part of the batch the marker goes back to
-// writeLoop, which writes the rest before acknowledging it.
+// written, so if the socket refused part of the batch the marker stays with
+// the tail: writeLoop acknowledges it with the batch that writes the tail.
 //
 // takeTurn reports false, having done nothing, when the connection is busy or
 // cannot take turns. Otherwise it returns once the batch is written or handed
 // to writeLoop, or the connection fails.
 func (c *Conn) takeTurn(token UID, body []byte) (bool, error) {
 	if c.raw == nil || c.coalesce == nil || c.queued.Load() != 0 ||
-		longestCoalesceWait(c.minCoalesce, c.maxCoalesce) > c.turnDelayLimit {
+		!turnWaitWithin(c.minCoalesce, c.maxCoalesce, c.turnDelayLimit) {
 		return false, nil
 	}
 	c.turnMu.Lock()
@@ -75,15 +76,17 @@ func (c *Conn) takeTurn(token UID, body []byte) (bool, error) {
 		writeErr = c.writeTurn(token, body, batch)
 		if writeErr == nil && c.tail != nil {
 			batch, markers = splitFlushMarkers(batch)
+			markers = c.leaveTailMarkers(markers)
 		}
 	}
-	c.queued.Add(-int64(1 + len(batch))) // returned markers stay counted
+	c.queued.Add(-int64(1 + len(batch))) // markers left with the tail stay counted
 	c.writeMu.Unlock()
 	for _, req := range batch {
 		completeWrite(req, writeErr)
 	}
-	for _, req := range markers {
-		c.returnMarker(req)
+	for _, req := range markers { // writeLoop has exited: nothing will write the tail
+		c.queued.Add(-1)
+		completeWrite(req, errConnClosed)
 	}
 	return true, writeErr
 }
@@ -109,21 +112,41 @@ func splitFlushMarkers(batch []writeReq) (frames, markers []writeReq) {
 	return frames, markers
 }
 
-// returnMarker queues a flush marker behind a turn's unwritten tail. writeLoop
-// writes a pending tail before any frame, so it acknowledges the marker only
-// once every earlier byte is written; a torn-down connection fails it.
-func (c *Conn) returnMarker(req writeReq) {
-	c.writeAdmission.RLock()
-	defer c.writeAdmission.RUnlock()
-	if !c.writeClosed {
-		select {
-		case c.writeCh <- req:
-			return
-		case <-c.ctx.Done():
-		}
+// leaveTailMarkers hands flush markers to writeLoop with the pending tail,
+// without blocking. It returns them instead if writeLoop has exited. Call
+// under writeMu, right after leaveTail.
+func (c *Conn) leaveTailMarkers(markers []writeReq) []writeReq {
+	c.turnMu.Lock()
+	defer c.turnMu.Unlock()
+	if c.writerExited {
+		return markers
 	}
-	c.queued.Add(-1)
-	completeWrite(req, errConnClosed)
+	c.tailMarkers = append(c.tailMarkers, markers...)
+	return nil
+}
+
+// takeTailMarkers takes the flush markers waiting for the tail writeLoop is
+// writing. Call under writeMu.
+func (c *Conn) takeTailMarkers() []writeReq {
+	c.turnMu.Lock()
+	defer c.turnMu.Unlock()
+	markers := c.tailMarkers
+	c.tailMarkers = nil
+	return markers
+}
+
+// failTailMarkers fails the flush markers still waiting for a tail when
+// writeLoop exits, and makes later turns fail theirs.
+func (c *Conn) failTailMarkers() {
+	c.turnMu.Lock()
+	markers := c.tailMarkers
+	c.tailMarkers = nil
+	c.writerExited = true
+	c.turnMu.Unlock()
+	for _, req := range markers {
+		c.queued.Add(-1)
+		completeWrite(req, errConnClosed)
+	}
 }
 
 // writeTurn makes the turn's one non-blocking write. Call under writeMu.

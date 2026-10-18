@@ -81,6 +81,9 @@ are medians of the per-block ratios, with their range.
   alternating blocks of paced `set100` ([36 configurations](results-writer-turn-commit.jsonl),
   with master): median client CPU 111.9 against 116.7 µs at 1,000/s and 102.8 against
   103.3 µs at 2,000/s, paired ratios 0.955 and 0.988 with neither interval excluding 1.
+  One row, `turn5eager-2000-b4` (39.3 µs, 1,833 operations/s), is an outlier, probably a
+  disturbed run; it alone widens the 2,000/s interval to 0.754–1.772 (about 0.94–1.02
+  without it) and leaves the medians unchanged.
   Both arms there are this change's tree, with and without the commit's turn. An
   earlier build with the commit's turn (`4fb975432`, before the review fixes) put
   closed `set100` at 32 workers at 1.030× master (1.008–1.052) in an 8-pair screen

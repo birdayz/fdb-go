@@ -213,6 +213,8 @@ type Conn struct {
 	turnMu         sync.Mutex
 	turnCollecting bool          // a turn is waiting out the delay; under turnMu
 	turnFrames     []writeReq    // frames writeLoop handed to that turn; under turnMu
+	tailMarkers    []writeReq    // flush markers acknowledged with the pending tail; under turnMu
+	writerExited   bool          // writeLoop has failed tailMarkers and exited; under turnMu
 	turnDelayLimit time.Duration // the longest delay a sender waits out itself
 	turns          atomic.Int64  // turns taken, so tests can tell a sender wrote its batch
 
@@ -752,6 +754,7 @@ func (c *Conn) writeLoop() {
 	}
 	var owned []*writeCompletion
 	defer func() { c.finishOwnedWrites(owned) }()
+	defer c.failTailMarkers()
 	defer c.recoverLoop("writeLoop")
 
 	// Collect errCh channels that need notification after flush.
@@ -795,6 +798,16 @@ func (c *Conn) writeLoop() {
 			putFrame(c.tailBuf, c.tailFrame) // wbuf has copied or written it
 			c.tail, c.tailFrame, c.tailBuf = nil, nil, nil
 			batched++
+			// Flush markers a turn left behind the tail complete with this batch.
+			for _, m := range c.takeTailMarkers() {
+				batched++
+				if m.owned != nil {
+					owned = append(owned, m.owned)
+				}
+				if m.errCh != nil {
+					errChans = append(errChans, m.errCh)
+				}
+			}
 		}
 		// Process first frame.
 		if first {

@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sync"
 	"testing"
 	"time"
@@ -217,19 +218,47 @@ func TestWriterTurnFlushWaitsForTheTail(t *testing.T) {
 	if err := within(t, sent, "the turn's sender"); err != nil {
 		t.Fatal(err)
 	}
+	// The marker stays with the tail rather than re-entering writeCh, which can
+	// be full while writeLoop is stuck writing the tail: fill it and check that
+	// Flush still waits for the tail.
+	c.turnMu.Lock()
+	left := len(c.tailMarkers)
+	c.turnMu.Unlock()
+	if left != 1 {
+		t.Fatalf("TURN_MARKER_REQUEUED: %d markers left with the tail, want 1", left)
+	}
+	for i := range cap(c.writeCh) {
+		if err := c.SendFrameDeferred(UID{First: uint64(100 + i)}, []byte("q")); err != nil {
+			t.Fatal(err)
+		}
+	}
 	select {
 	case err := <-flushed:
 		t.Fatalf("TURN_FLUSH_BEFORE_TAIL: Flush returned %v with the tail unwritten", err)
 	case <-time.After(50 * time.Millisecond):
 	}
 	close(release)
-	// The returned marker may start a batch of its own, which waits the delay.
-	expireCoalesceWait(t, c, func() bool { return len(flushed) == 1 }, "Flush after the tail")
+	read := make(chan error, 1)
+	go func() {
+		if got := <-frames; !bytes.Equal(got, append([]byte("1:"), big...)) {
+			read <- fmt.Errorf("first frame arrived as %d bytes", len(got))
+			return
+		}
+		for i := range cap(c.writeCh) {
+			if got, want := string(<-frames), fmt.Sprint(100+i, ":q"); got != want {
+				read <- fmt.Errorf("peer read %q, want %q", got, want)
+				return
+			}
+		}
+		read <- nil
+	}()
+	// Batches after the tail wait the hour-long delay; end each one.
+	expireCoalesceWait(t, c, func() bool { return len(flushed) == 1 && len(read) == 1 }, "Flush and every frame after the tail")
 	if err := <-flushed; err != nil {
 		t.Fatal(err)
 	}
-	if got := within(t, frames, "the frame"); !bytes.Equal(got, append([]byte("1:"), big...)) {
-		t.Fatalf("frame arrived as %d bytes", len(got))
+	if err := <-read; err != nil {
+		t.Fatal(err)
 	}
 	if q := c.queued.Load(); q != 0 {
 		t.Fatalf("%d frames still counted", q)
@@ -312,8 +341,10 @@ func TestWriterTurnDelayBound(t *testing.T) {
 		{time.Millisecond, time.Millisecond, false},            // 1.1 ms with jitter
 		{time.Hour, 0, false},                                  // min above max
 		{0, time.Hour, false},
+		{time.Duration(math.MaxInt64), 0, false}, // 1.1× does not wrap negative
+		{0, time.Duration(math.MaxInt64), false},
 	} {
-		got := longestCoalesceWait(tc.minDelay, tc.maxDelay) <= maxTurnDelay
+		got := turnWaitWithin(tc.minDelay, tc.maxDelay, maxTurnDelay)
 		if got != tc.takes {
 			t.Errorf("TURN_BOUND: delay (%v, %v) takes a turn = %v, want %v", tc.minDelay, tc.maxDelay, got, tc.takes)
 		}
