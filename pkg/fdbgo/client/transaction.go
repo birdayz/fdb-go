@@ -770,7 +770,7 @@ func (tx *Transaction) readVersionForOperation(parentCtx context.Context, extraF
 		return 0, err
 	}
 	if userSet {
-		if err := tx.readVersionRequest().validateExplicitVersion(ctx, rv); err != nil {
+		if err := validateExplicitVersion(ctx, tx.db, rv, tx.readVersionRequest); err != nil {
 			return 0, err
 		}
 	}

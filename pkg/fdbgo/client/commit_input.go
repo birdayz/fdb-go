@@ -107,6 +107,7 @@ func (tx *Transaction) captureNativeReadState(input *commitInput) {
 	tx.readVersionMu.Unlock()
 	request := tx.readVersionRequest()
 	request.span, request.tags = input.span, input.tags
+	request.lockAware = tx.lockAware || tx.readLockAware
 	input.readState = &nativeReadState{readVersionState: tx.readVersionState, request: request}
 }
 

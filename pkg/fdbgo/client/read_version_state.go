@@ -41,11 +41,13 @@ type readVersionRequest struct {
 	lockAware    bool
 }
 
+// readVersionRequest samples the options a GRV fetch sends. Lock awareness is
+// not among them: a public GRV reads it when a locked reply arrives, and only a
+// detached native commit captures it (captureNativeReadState).
 func (tx *Transaction) readVersionRequest() readVersionRequest {
 	return readVersionRequest{
 		db: tx.db, span: tx.currentSpan(), tags: tx.tags, flags: tx.grvFlags(),
 		useGrvCache: tx.useGrvCache, skipGrvCache: tx.skipGrvCache,
-		lockAware: tx.lockAware || tx.readLockAware,
 	}
 }
 
@@ -55,20 +57,22 @@ type nativeReadState struct {
 }
 
 func (state *nativeReadState) readVersionForCommit(ctx context.Context) (int64, error) {
-	rv, userSet, err := state.cachedOrFetchReadVersion(ctx, state.request, grvFlagCausalReadRisky, nil)
+	rv, userSet, err := state.cachedOrFetchReadVersion(ctx, &state.request, grvFlagCausalReadRisky, nil)
 	if err == nil && userSet {
-		err = state.request.validateExplicitVersion(ctx, rv)
+		err = validateExplicitVersion(ctx, state.request.db, rv, func() readVersionRequest { return state.request })
 	}
 	return rv, err
 }
 
 func (tx *Transaction) cachedOrFetchReadVersion(ctx context.Context, extraFlags uint32) (int64, bool, error) {
-	return tx.readVersionState.cachedOrFetchReadVersion(ctx, tx.readVersionRequest(), extraFlags, tx)
+	return tx.readVersionState.cachedOrFetchReadVersion(ctx, nil, extraFlags, tx)
 }
 
-// owner supplies only public admission-error mapping and span initialization.
-// Detached native work passes nil and observes its own context instead.
-func (state *readVersionState) cachedOrFetchReadVersion(ctx context.Context, request readVersionRequest, extraFlags uint32, owner *Transaction) (int64, bool, error) {
+// owner supplies public admission-error mapping, span initialization and, when
+// request is nil, the request options, read only once a fetch starts. Detached
+// native work passes its captured request and a nil owner, and observes its own
+// context instead.
+func (state *readVersionState) cachedOrFetchReadVersion(ctx context.Context, request *readVersionRequest, extraFlags uint32, owner *Transaction) (int64, bool, error) {
 	for {
 		state.readVersionMu.Lock()
 		if err := readVersionEntryError(ctx, owner); err != nil {
@@ -105,7 +109,13 @@ func (state *readVersionState) cachedOrFetchReadVersion(ctx context.Context, req
 		pending := &pendingReadVersion{done: make(chan struct{})}
 		state.pendingReadVersion = pending
 		state.readVersionMu.Unlock()
-		rv, err := request.fetchReadVersion(ctx, extraFlags, state, pending, owner)
+		var fetch readVersionRequest
+		if request != nil {
+			fetch = *request
+		} else {
+			fetch = owner.readVersionRequest()
+		}
+		rv, err := fetch.fetchReadVersion(ctx, extraFlags, state, pending, owner)
 		if err != nil {
 			return 0, false, mapReadVersionError(ctx, owner, err)
 		}
@@ -168,16 +178,18 @@ func (request readVersionRequest) lockAwareAtReply(owner *Transaction) bool {
 	return request.lockAware
 }
 
-func (request readVersionRequest) validateExplicitVersion(ctx context.Context, rv int64) error {
-	if request.db == nil {
+// validateExplicitVersion checks a user-set read version against the database's
+// floor. The request options are read only when a bootstrap GRV is needed.
+func validateExplicitVersion(ctx context.Context, db *database, rv int64, request func() readVersionRequest) error {
+	if db == nil {
 		return nil
 	}
 	// A previous cluster's floor reads as unset and must be bootstrapped again.
-	if request.db.minAcceptable() == 0 {
-		flags := request.flags
-		_, _, _, _ = request.db.grvBatchers[grvBatcherIndex(flags)].getReadVersion(request.db, ctx, flags, request.span, request.tags, request.useGrvCache, request.skipGrvCache)
+	if db.minAcceptable() == 0 {
+		r := request()
+		_, _, _, _ = db.grvBatchers[grvBatcherIndex(r.flags)].getReadVersion(db, ctx, r.flags, r.span, r.tags, r.useGrvCache, r.skipGrvCache)
 	}
-	return request.db.validateVersion(rv)
+	return db.validateVersion(rv)
 }
 
 // Turnover has drained public state users and cancelled retained native work.
