@@ -208,10 +208,13 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   - Remaining hot spots on `set100` (67 allocations, 7.8 KB per transaction): each
     transaction's first `Set` builds its `rywCache` map (about 6 allocations); every
     commit starts a goroutine (`startNativeCommit`: a weak pointer, a cleanup, two
-    channels, a context); the blind write's commit copies the whole `Transaction` to fetch
-    its read version (`captureNativeReadState`, 870 bytes); each incarnation creates its own
+    channels, a context); each incarnation creates its own
     cancellable context, and turnover after every commit, including one with no writes,
     builds the next incarnation (libfdb_c does not reset after commit at API ≥ 410).
+  - [Commit allocations](docs/benchmarks/rfc-259/commit-alloc-20261018.md): the
+    commit's owned conflict vector and compact GRV state together cut `set100`
+    allocations 12% and closed-loop client CPU 6.5% (0.935, 0.902–0.971); neither
+    moved client CPU measurably alone.
   - [Commit dispatch without a write acknowledgment](docs/benchmarks/rfc-259/commit-send-noack-20261017.md),
     measured against `57ddc9a77`: 154 completed write configurations, with 10/20/10/30
     alternating Go pairs at 1/8/32/64 workers. Client CPU paired ratios are 0.927
