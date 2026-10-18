@@ -69,6 +69,9 @@ func (c *Conn) writeContext(ctx context.Context, token UID, body []byte, flush b
 		if direct, err := c.tryWriteDirect(token, body); direct {
 			return true, err
 		}
+		if took, err := c.takeTurn(token, body); took {
+			return true, err
+		}
 	}
 	completion := newWriteCompletion()
 	defer completion.release() // caller reference, including abandonment

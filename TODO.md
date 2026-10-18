@@ -167,8 +167,14 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
     arm's starts still depart from the schedule (10,000/s: 1.4% over 1 ms late; 30,000/s:
     9.3%), so this is similar cost under the same scheduled load, not equal actual
     arrivals. More workers than rate × p99 latency, or a shared dispatcher, would match them.
-  - [ ] **Client CPU on paced writes.** `set100` uses 1.51–1.53× libfdb_c's client CPU at
-    1,000–4,000 operations per second (reads 1.03–1.04×); see "Client CPU per transaction".
+  - [ ] **Client CPU on paced writes.** `set100` used 1.51–1.53× libfdb_c's client CPU at
+    1,000–4,000 operations per second (reads 1.03–1.04×). A waiting sender now takes the
+    connection writer's turn ([writer-turn report](docs/benchmarks/rfc-259/writer-turn-20261018.md)):
+    paced `set100` 1.32–1.34× libfdb_c (0.89–0.90× master), paced `get100` 0.98×,
+    closed `get100` at 8 workers 0.76×; closed `set100` at 32 workers 1.00× master
+    (95% interval 0.954–1.045). Commits keep their non-waiting send. With the delay off
+    a paced write costs 86.6 µs (libfdb_c 81–91 µs); the cause of the remaining gap is
+    not yet measured. See "Client CPU per transaction".
   - Done when server cycles per transaction are within 10% of libfdb_c for `get100`,
     `set100`, `range100` and `grv` at 8–64 workers, also under matched paced load
     (`clientbench -rate`), locally and on a multi-node rerun,

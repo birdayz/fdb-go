@@ -205,8 +205,18 @@ type Conn struct {
 	// an idle connection writes a frame on its sender's goroutine.
 	minCoalesce, maxCoalesce time.Duration
 	coalesce                 *hrtimer.Timer
-	lastWrite                time.Time    // when wbuf last wrote to the socket; writeLoop only
+	lastWrite                time.Time    // when wbuf last wrote to the socket; under writeMu
 	tails                    atomic.Int64 // partial direct writes, so tests can tell a tail occurred
+
+	// A sender may take the writer's turn (writer_turn.go). turnMu orders it
+	// taking writeMu and starting to collect against writeLoop handing it frames.
+	turnMu         sync.Mutex
+	turnCollecting bool          // a turn is waiting out the delay; under turnMu
+	turnFrames     []writeReq    // frames writeLoop handed to that turn; under turnMu
+	tailMarkers    []writeReq    // flush markers acknowledged with the pending tail; under turnMu
+	writerExited   bool          // writeLoop has failed tailMarkers and exited; under turnMu
+	turnDelayLimit time.Duration // the longest delay a sender waits out itself
+	turns          atomic.Int64  // turns taken, so tests can tell a sender wrote its batch
 
 	// Debug tracing (set before first use).
 	debugFrames bool
@@ -477,6 +487,7 @@ func dialWith(ctx context.Context, addr string, dialFn DialFunc, tlsConfig *tls.
 		tailKick:            make(chan struct{}, 1),
 		minCoalesce:         DefaultMinCoalesceDelay,
 		maxCoalesce:         DefaultMaxCoalesceDelay,
+		turnDelayLimit:      maxTurnDelay,
 	}
 	c.wbuf = bufio.NewWriterSize(stampedWriter{c}, 64*1024)
 	if tlsConfig == nil {
@@ -532,6 +543,8 @@ func dialWith(ctx context.Context, addr string, dialFn DialFunc, tlsConfig *tls.
 			c.coalesce = t // closed by failConnection and writeLoop
 		}
 	}
+
+	c.lastWrite = time.Now() // connectionWriter's initial lastWriteTime
 
 	// Start read, write, and connection monitor loops.
 	c.loopWG.Add(3)
@@ -636,6 +649,9 @@ func (c *Conn) SendFrame(destToken UID, body []byte) error {
 	if direct, err := c.tryWriteDirect(destToken, body); direct {
 		return err
 	}
+	if took, err := c.takeTurn(destToken, body); took {
+		return err
+	}
 	errCh := errChanPool.Get().(chan error)
 	if !c.enqueue(writeReq{token: destToken, body: body, errCh: errCh}, nil) {
 		errChanPool.Put(errCh)
@@ -729,8 +745,8 @@ func coalesceDelay(minDelay, maxDelay, sinceWrite time.Duration, jitter float64)
 // waits the coalescing delay, then drains all other queued frames before
 // flushing — so N concurrent SendFrame/SendFrameDeferred calls share one
 // flush, as connectionWriter writes everything unsent after its delay
-// (FlowTransport.actor.cpp:704-732). It holds writeMu
-// from its first write to the flush, so direct writers never interleave a batch.
+// (FlowTransport.actor.cpp:704-732). It holds writeMu from before the delay
+// to the flush, so neither a direct writer nor a sender's turn interleaves a batch.
 func (c *Conn) writeLoop() {
 	defer c.loopWG.Done()
 	if c.coalesce != nil {
@@ -738,11 +754,11 @@ func (c *Conn) writeLoop() {
 	}
 	var owned []*writeCompletion
 	defer func() { c.finishOwnedWrites(owned) }()
+	defer c.failTailMarkers()
 	defer c.recoverLoop("writeLoop")
 
 	// Collect errCh channels that need notification after flush.
 	var errChans []chan<- error
-	c.lastWrite = time.Now() // connectionWriter's initial lastWriteTime
 
 	for {
 		// Wait for first frame, or for the tail of a direct write.
@@ -756,16 +772,24 @@ func (c *Conn) writeLoop() {
 			return
 		}
 
+		if !c.lockForBatch(req, first) {
+			continue // a sender's turn writes the frame
+		}
 		// Capture ownership before encoding: recovery must finish this request
 		// even if encoding or the socket writer fails.
 		if req.owned != nil {
 			owned = append(owned, req.owned)
 		}
-		c.coalesceWait(time.Since(c.lastWrite))
+		if first && c.tail == nil {
+			// The rest of a partial write goes on without a new delay, as
+			// connectionWriter keeps writing until nothing is unsent
+			// (FlowTransport.actor.cpp:714-731).
+			c.coalesceWait(time.Since(c.lastWrite))
+		}
 		if c.ctx.Err() != nil {
+			c.writeMu.Unlock()
 			return // torn down while waiting: write nothing
 		}
-		c.writeMu.Lock()
 		var batched int64
 		var writeErr error
 		// A direct write's unwritten end precedes every frame queued after it.
@@ -774,6 +798,16 @@ func (c *Conn) writeLoop() {
 			putFrame(c.tailBuf, c.tailFrame) // wbuf has copied or written it
 			c.tail, c.tailFrame, c.tailBuf = nil, nil, nil
 			batched++
+			// Flush markers a turn left behind the tail complete with this batch.
+			for _, m := range c.takeTailMarkers() {
+				batched++
+				if m.owned != nil {
+					owned = append(owned, m.owned)
+				}
+				if m.errCh != nil {
+					errChans = append(errChans, m.errCh)
+				}
+			}
 		}
 		// Process first frame.
 		if first {

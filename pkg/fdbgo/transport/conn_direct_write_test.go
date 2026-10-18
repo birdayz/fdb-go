@@ -223,7 +223,11 @@ func dialStalledPeer(t *testing.T, opts ...DialOption) (c *Conn, release chan st
 				close(out)
 				return
 			}
-			out <- append([]byte(fmt.Sprint(token.First, ":")), body...)
+			select {
+			case out <- append([]byte(fmt.Sprint(token.First, ":")), body...):
+			case <-stop: // a test that stopped reading must not strand the peer
+				return
+			}
 		}
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -287,7 +291,14 @@ func TestDirectWriteTailOnFullSocket(t *testing.T) {
 // each sender's frames in its own order. Run under -race.
 func TestDirectAndQueuedWritersInterleaveSafely(t *testing.T) {
 	t.Parallel()
-	c, release, frames := dialStalledPeer(t)
+	checkWritersInterleave(t)
+}
+
+// checkWritersInterleave runs concurrent senders of every kind over one socket
+// and checks that each frame arrives whole and each sender's frames in order.
+func checkWritersInterleave(t *testing.T, opts ...DialOption) {
+	t.Helper()
+	c, release, frames := dialStalledPeer(t, opts...)
 	close(release)
 	const senders, perSender = 8, 50
 	got := make(chan error, 1)
@@ -318,11 +329,13 @@ func TestDirectAndQueuedWritersInterleaveSafely(t *testing.T) {
 			for seq := range perSender {
 				token, body := UID{First: uint64(w)}, []byte(fmt.Sprint(w, "/", seq))
 				var err error
-				switch seq % 3 {
+				switch seq % 4 {
 				case 0:
 					err = c.SendFrame(token, body)
 				case 1:
 					_, err = c.SendFrameContext(ctx, token, body)
+				case 2:
+					_, err = c.SendFrameEagerContext(ctx, token, body)
 				default:
 					err = c.SendFrameDeferred(token, body)
 				}
