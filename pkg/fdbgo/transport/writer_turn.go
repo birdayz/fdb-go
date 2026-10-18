@@ -113,6 +113,17 @@ func (c *Conn) lockForBatch(req writeReq, first bool) bool {
 	c.turnMu.Lock()
 	if first && c.turnCollecting {
 		c.turnFrames = append(c.turnFrames, req)
+		// Hand over every frame already queued too, in one wakeup. writeLoop
+		// is writeCh's only reader, so queue order holds.
+	drain:
+		for {
+			select {
+			case next := <-c.writeCh:
+				c.turnFrames = append(c.turnFrames, next)
+			default:
+				break drain
+			}
+		}
 		c.turnMu.Unlock()
 		return false
 	}
