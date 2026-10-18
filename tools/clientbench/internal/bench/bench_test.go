@@ -8,7 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestPreparedDataset(t *testing.T) {
@@ -159,14 +161,26 @@ func TestConfigGuards(t *testing.T) {
 	}
 }
 
+func mustSchedule(t *testing.T, cfg Config, n int, stream uint64) []int64 {
+	t.Helper()
+	s, err := schedule(cfg, n, stream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
 func TestPoissonScheduleIsSeededAndEven(t *testing.T) {
 	t.Parallel()
-	a, b := PoissonSchedule(100000, 2000, 7), PoissonSchedule(100000, 2000, 7)
+	cfg := Config{Rate: 2000, Seed: 7}
+	a, b := mustSchedule(t, cfg, 100000, measureStream), mustSchedule(t, cfg, 100000, measureStream)
 	if !slices.Equal(a, b) {
 		t.Fatal("one seed gave two schedules")
 	}
-	if slices.Equal(a[:100], PoissonSchedule(100, 2000, 8)) {
-		t.Fatal("two seeds gave one schedule")
+	for _, seed := range []uint64{8, 7 ^ 1<<63} {
+		if slices.Equal(a[:100], mustSchedule(t, Config{Rate: 2000, Seed: seed}, 100, measureStream)) {
+			t.Fatalf("seeds 7 and %d gave one schedule", seed)
+		}
 	}
 	prev := int64(0)
 	for i, at := range a {
@@ -179,18 +193,91 @@ func TestPoissonScheduleIsSeededAndEven(t *testing.T) {
 	if mean := float64(a[len(a)-1]) / float64(len(a)) / 1e9; math.Abs(mean*2000-1) > 0.01 {
 		t.Fatalf("mean gap %v s, want 1/2000", mean)
 	}
-	cfg := Config{Rate: 2000, Seed: 7}
-	if slices.Equal(schedule(cfg, 100, 0), schedule(cfg, 100, 1)) {
+	if slices.Equal(mustSchedule(t, cfg, 100, measureStream), mustSchedule(t, cfg, 100, warmupStream)) {
 		t.Fatal("warmup and measured phases share a schedule")
 	}
-	if schedule(Config{}, 100, 0) != nil {
+	if mustSchedule(t, Config{}, 100, measureStream) != nil {
 		t.Fatal("a closed loop has a schedule")
+	}
+}
+
+func TestPacingSummary(t *testing.T) {
+	t.Parallel()
+	us := int64(time.Microsecond)
+	var samples []Sample
+	for i := range 100 {
+		lag := int64(10) * us
+		if i >= 95 {
+			lag = 2000 * us // five starts 2 ms late
+		}
+		samples = append(samples, Sample{Attempted: true, ScheduledOffsetNS: int64(i) * 1000 * us, StartOffsetNS: int64(i)*1000*us + lag})
+	}
+	p := pacing(samples)
+	if p == nil || p.Samples != 100 || p.LagP50NS != 10*us || p.LagMaxNS != 2000*us || p.LateOver1ms != 0.05 || p.LateOver100us != 0.05 {
+		t.Fatalf("pacing summary %+v", p)
+	}
+	if p.GapCVScheduled != 0 || p.GapCVActual <= 0 {
+		t.Fatalf("evenly scheduled starts: CV scheduled %v, actual %v", p.GapCVScheduled, p.GapCVActual)
+	}
+	if pacing([]Sample{{Attempted: true, ScheduledOffsetNS: -1}}) != nil {
+		t.Fatal("a closed loop has a pacing summary")
+	}
+}
+
+func TestPacedRateValidation(t *testing.T) {
+	t.Parallel()
+	base := Config{ClusterFile: "c", Output: "o", AllowWrites: true, Prefix: "clientbench/v1/", Iterations: 1, Workers: 1, TimeoutMS: 1, Workload: "get100", Profile: "none"}
+	for _, rate := range []float64{math.NaN(), math.Inf(1), -1, 2e6} {
+		cfg := base
+		cfg.Rate = rate
+		if cfg.Validate() == nil {
+			t.Errorf("rate %v accepted", rate)
+		}
+	}
+	for _, rate := range []float64{0, 1e-12, 1e6} {
+		cfg := base
+		cfg.Rate = rate
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("rate %v rejected: %v", rate, err)
+		}
+	}
+	// A tiny rate passes validation but would start beyond any representable offset.
+	if _, err := PoissonSchedule(10, 1e-12, 1, measureStream); err == nil {
+		t.Fatal("a schedule past the representable horizon was accepted")
+	}
+	for _, rate := range []float64{0, math.NaN(), math.Inf(1)} {
+		if _, err := PoissonSchedule(1, rate, 1, measureStream); err == nil {
+			t.Errorf("schedule rate %v accepted", rate)
+		}
+	}
+}
+
+// A failure ends a paced phase at once: waiting workers wake, and nothing
+// scheduled later runs.
+func TestPacedPhaseStopsOnFailure(t *testing.T) {
+	t.Parallel()
+	failure := errors.New("terminal failure")
+	sched := []int64{0, int64(time.Hour), int64(2 * time.Hour)}
+	var calls atomic.Int32
+	began := time.Now()
+	p := runPhase(3, 3, sched, func(i, w int) (int, error) {
+		calls.Add(1)
+		if i == 0 {
+			return 1, failure
+		}
+		return 1, nil
+	}, false)
+	if waited := time.Since(began); waited > 10*time.Second {
+		t.Fatalf("PACED_ABORT_WAITED: the phase ran %v after its failure", waited)
+	}
+	if calls.Load() != 1 || p.Completed != 1 || p.Errors != 1 || p.Samples[1].Attempted || p.Samples[2].Attempted {
+		t.Fatalf("PACED_ABORT_RAN: %d calls after a failure, phase %+v", calls.Load(), p)
 	}
 }
 
 func TestPacedPhaseStartsOnSchedule(t *testing.T) {
 	t.Parallel()
-	sched := PoissonSchedule(40, 1000, 3)
+	sched := mustSchedule(t, Config{Rate: 1000, Seed: 3}, 40, measureStream)
 	p := runPhase(40, 4, sched, func(i, w int) (int, error) {
 		if w != i%4 {
 			t.Errorf("worker %d for index %d", w, i)

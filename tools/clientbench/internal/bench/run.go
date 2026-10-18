@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -56,8 +58,8 @@ func (c Config) Validate() error {
 	if c.Iterations <= 0 || c.Iterations > 10000000 || c.Warmup < 0 || c.Warmup > 10000000 || c.Workers <= 0 || c.Workers > 1024 {
 		return errors.New("invalid iterations (1..10000000), warmup (0..10000000), or workers (1..1024)")
 	}
-	if c.Rate < 0 || c.Rate > 1e6 {
-		return errors.New("rate must be 0 (closed loop) or at most 1e6 operations per second")
+	if math.IsNaN(c.Rate) || c.Rate < 0 || c.Rate > 1e6 {
+		return errors.New("rate must be 0 (closed loop) or a positive number of operations per second up to 1e6")
 	}
 	if c.TimeoutMS <= 0 || c.RetryLimit < 0 {
 		return errors.New("positive transaction timeout and nonnegative retry limit required")
@@ -99,17 +101,25 @@ func RunPhase(count, workers int, operation func(index, worker int) (int, error)
 	return runPhase(count, workers, nil, operation, false)
 }
 
-// PoissonSchedule returns n start offsets with exponential gaps averaging 1/rate
-// seconds, from seed: evenly spread on average, pseudo-random in detail.
-func PoissonSchedule(n int, rate float64, seed uint64) []int64 {
-	rng := rand.New(rand.NewPCG(seed, 0x636c69656e7462)) // "clientb"
+// PoissonSchedule returns n start offsets in nanoseconds with exponential gaps
+// averaging 1/rate seconds, from seed and stream: evenly spread on average,
+// pseudo-random in detail. Streams give one seed independent schedules.
+func PoissonSchedule(n int, rate float64, seed, stream uint64) ([]int64, error) {
+	if math.IsNaN(rate) || math.IsInf(rate, 0) || rate <= 0 {
+		return nil, fmt.Errorf("schedule rate %v: want a positive finite rate", rate)
+	}
+	rng := rand.New(rand.NewPCG(seed, stream))
 	out := make([]int64, n)
 	var t float64
 	for i := range out {
 		t += rng.ExpFloat64() / rate
-		out[i] = int64(t * 1e9)
+		ns := t * 1e9
+		if ns >= math.MaxInt64 {
+			return nil, fmt.Errorf("schedule rate %v: operation %d starts beyond %v", rate, i, time.Duration(math.MaxInt64))
+		}
+		out[i] = int64(ns)
 	}
-	return out
+	return out, nil
 }
 
 // runPhase gives operation i to worker i % workers. With a schedule, each worker
@@ -118,6 +128,31 @@ func runPhase(count, workers int, schedule []int64, operation func(index, worker
 	p := Phase{Samples: make([]Sample, count)}
 	var ready, done sync.WaitGroup
 	var aborted atomic.Bool
+	// One pacer per worker; closing them on the first failure wakes scheduled waits.
+	pacers := make([]*pacer, 0, workers)
+	if schedule != nil {
+		for range workers {
+			pc, err := newPacer()
+			if err != nil {
+				for _, q := range pacers {
+					q.close()
+				}
+				p.StatsError = err
+				return p
+			}
+			pacers = append(pacers, pc)
+		}
+	}
+	var stopOnce sync.Once
+	stop := func() {
+		aborted.Store(true)
+		stopOnce.Do(func() {
+			for _, pc := range pacers {
+				pc.close()
+			}
+		})
+	}
+	defer stop()
 	start := make(chan struct{})
 	var epoch time.Time
 	for worker := 0; worker < workers; worker++ {
@@ -134,8 +169,11 @@ func runPhase(count, workers int, schedule []int64, operation func(index, worker
 				scheduled := int64(-1)
 				if schedule != nil {
 					scheduled = schedule[i]
-					if wait := time.Until(epoch.Add(time.Duration(scheduled))); wait > 0 {
-						time.Sleep(wait)
+					if wait := time.Until(epoch.Add(time.Duration(scheduled))); wait > 0 && !pacers[worker].wait(wait) {
+						return
+					}
+					if aborted.Load() {
+						return
 					}
 				}
 				begin := time.Now()
@@ -143,7 +181,7 @@ func runPhase(count, workers int, schedule []int64, operation func(index, worker
 				elapsed := time.Since(begin).Nanoseconds()
 				p.Samples[i] = Sample{Index: i, Worker: worker, StartOffsetNS: begin.Sub(epoch).Nanoseconds(), LatencyNS: elapsed, ScheduledOffsetNS: scheduled, Attempts: attempts, Err: err, Attempted: true}
 				if err != nil {
-					aborted.Store(true)
+					stop()
 					return
 				}
 			}
@@ -153,7 +191,7 @@ func runPhase(count, workers int, schedule []int64, operation func(index, worker
 	if collectStats {
 		p.Before, p.StatsError = ReadStats(false)
 		if p.StatsError != nil {
-			aborted.Store(true)
+			stop()
 		}
 	}
 	epoch = time.Now()
@@ -239,13 +277,76 @@ func ReadStats(after bool) (Stats, error) {
 	return Stats{m.TotalAlloc, m.Mallocs, m.NumGC, m.PauseTotalNs, u.Utime.Sec*1000000 + u.Utime.Usec, u.Stime.Sec*1000000 + u.Stime.Usec, u.Maxrss}, nil
 }
 
-// schedule is the phase's paced start offsets, nil in a closed loop; phase keeps
-// the warmup and measured schedules distinct for one seed.
-func schedule(cfg Config, n int, phase uint64) []int64 {
+// Schedule streams: the warmup and measured phases of one seed are independent.
+const (
+	measureStream uint64 = 0x636c69656e746d // "clientm"
+	warmupStream  uint64 = 0x636c69656e7477 // "clientw"
+)
+
+// schedule is the phase's paced start offsets, nil in a closed loop.
+func schedule(cfg Config, n int, stream uint64) ([]int64, error) {
 	if cfg.Rate == 0 {
+		return nil, nil
+	}
+	return PoissonSchedule(n, cfg.Rate, cfg.Seed, stream)
+}
+
+// Pacing reports how closely a paced phase's actual starts followed its
+// schedule: start lag (actual - scheduled start) and the coefficient of variation
+// of the gaps between consecutive starts, actual and scheduled (about 1 for
+// Poisson arrivals; bunched starts raise it, regularized starts lower it).
+type Pacing struct {
+	LagP50NS, LagP99NS, LagMaxNS int64
+	LateOver100us, LateOver1ms   float64
+	GapCVActual, GapCVScheduled  float64
+	Samples                      int
+}
+
+func pacing(samples []Sample) *Pacing {
+	var lags, starts, scheduled []int64
+	for _, s := range samples {
+		if s.Attempted && s.ScheduledOffsetNS >= 0 {
+			lags = append(lags, s.StartOffsetNS-s.ScheduledOffsetNS)
+			starts = append(starts, s.StartOffsetNS)
+			scheduled = append(scheduled, s.ScheduledOffsetNS)
+		}
+	}
+	if len(lags) < 2 {
 		return nil
 	}
-	return PoissonSchedule(n, cfg.Rate, cfg.Seed*2+phase)
+	slices.Sort(lags)
+	slices.Sort(starts)
+	slices.Sort(scheduled)
+	late := func(limit int64) float64 {
+		n := 0
+		for _, l := range lags {
+			if l > limit {
+				n++
+			}
+		}
+		return float64(n) / float64(len(lags))
+	}
+	return &Pacing{
+		LagP50NS: lags[len(lags)/2], LagP99NS: lags[len(lags)*99/100], LagMaxNS: lags[len(lags)-1],
+		LateOver100us: late(int64(100 * time.Microsecond)), LateOver1ms: late(int64(time.Millisecond)),
+		GapCVActual: gapCV(starts), GapCVScheduled: gapCV(scheduled), Samples: len(lags),
+	}
+}
+
+// gapCV is the coefficient of variation of the gaps between sorted offsets.
+func gapCV(offsets []int64) float64 {
+	n := float64(len(offsets) - 1)
+	var sum, sq float64
+	for i := 1; i < len(offsets); i++ {
+		g := float64(offsets[i] - offsets[i-1])
+		sum += g
+		sq += g * g
+	}
+	mean := sum / n
+	if mean == 0 {
+		return 0
+	}
+	return math.Sqrt(max(sq/n-mean*mean, 0)) / mean
 }
 
 func timing(cfg Config) string {
@@ -273,6 +374,7 @@ func Run(cfg Config, db LifecycleDatabase, metadata map[string]any, afterIdentit
 	}
 	var runErr error
 	var warm, measured Phase
+	var paced []int64
 	var countersBefore, countersAfter, countersDelta ClientCounters
 	stage := "seed"
 	if err := d.Seed(db); err != nil {
@@ -283,7 +385,13 @@ func Run(cfg Config, db LifecycleDatabase, metadata map[string]any, afterIdentit
 	}
 	if runErr == nil {
 		stage = "warmup"
-		warm = runPhase(cfg.Warmup, cfg.Workers, schedule(cfg, cfg.Warmup, 1), func(i, w int) (int, error) { return d.Operation(db, cfg.Workload, w, d.Warmup[i]) }, false)
+		warmSchedule, err := schedule(cfg, cfg.Warmup, warmupStream)
+		measureSchedule, err2 := schedule(cfg, cfg.Iterations, measureStream)
+		if err = errors.Join(err, err2); err != nil {
+			return err
+		}
+		warm = runPhase(cfg.Warmup, cfg.Workers, warmSchedule, func(i, w int) (int, error) { return d.Operation(db, cfg.Workload, w, d.Warmup[i]) }, false)
+		paced = measureSchedule
 		if warm.Errors > 0 || warm.Completed != cfg.Warmup {
 			runErr = fmt.Errorf("warmup incomplete: completed=%d errors=%d", warm.Completed, warm.Errors)
 		}
@@ -295,7 +403,7 @@ func Run(cfg Config, db LifecycleDatabase, metadata map[string]any, afterIdentit
 			runErr = err
 		} else {
 			countersBefore = db.Counters()
-			measured = runPhase(cfg.Iterations, cfg.Workers, schedule(cfg, cfg.Iterations, 0), func(i, w int) (int, error) { return d.Operation(db, cfg.Workload, w, d.Measure[i]) }, true)
+			measured = runPhase(cfg.Iterations, cfg.Workers, paced, func(i, w int) (int, error) { return d.Operation(db, cfg.Workload, w, d.Measure[i]) }, true)
 			countersAfter = db.Counters()
 			countersDelta, err = CounterDelta(countersBefore, countersAfter)
 			runErr = errors.Join(measured.StatsError, err)
@@ -349,6 +457,6 @@ func Run(cfg Config, db LifecycleDatabase, metadata map[string]any, afterIdentit
 	if runErr != nil {
 		failure = runErr.Error()
 	}
-	summary := map[string]any{"config": cfg, "backend": metadata, "requested": cfg.Iterations, "completed": measured.Completed, "totalcompleted": measured.Completed, "errors": measured.Errors, "retries": measured.Retries, "warmup_requested": cfg.Warmup, "warmup_completed": warm.Completed, "warmup_errors": warm.Errors, "warmup_retries": warm.Retries, "measured_wall_ns": measured.WallNS, "warmup_wall_ns": warm.WallNS, "stats_after_identity": afterIdentity, "stats_before": measured.Before, "stats_after": measured.After, "lifecycle": lifecycle, "client_counters_before": countersBefore, "client_counters_after": countersAfter, "client_counters_delta": countersDelta, "persisted_validation": postValidation, "failure_stage": stage, "failure": failure, "success": runErr == nil && writeErr == nil, "profile": cfg.Profile}
+	summary := map[string]any{"config": cfg, "backend": metadata, "requested": cfg.Iterations, "completed": measured.Completed, "totalcompleted": measured.Completed, "errors": measured.Errors, "retries": measured.Retries, "warmup_requested": cfg.Warmup, "warmup_completed": warm.Completed, "warmup_errors": warm.Errors, "warmup_retries": warm.Retries, "measured_wall_ns": measured.WallNS, "warmup_wall_ns": warm.WallNS, "stats_after_identity": afterIdentity, "stats_before": measured.Before, "stats_after": measured.After, "lifecycle": lifecycle, "client_counters_before": countersBefore, "client_counters_after": countersAfter, "client_counters_delta": countersDelta, "persisted_validation": postValidation, "failure_stage": stage, "failure": failure, "success": runErr == nil && writeErr == nil, "profile": cfg.Profile, "pacing": pacing(measured.Samples)}
 	return errors.Join(runErr, writeErr, WriteJSON(filepath.Join(cfg.Output, "summary.json"), summary))
 }

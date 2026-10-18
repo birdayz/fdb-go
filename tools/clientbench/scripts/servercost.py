@@ -97,6 +97,7 @@ def client_metrics(outdir):
         "tx_per_s": n / (s["measured_wall_ns"] / 1e9),
         "mean_latency_us": statistics.fmean(lat) / 1e3,
         "p99_latency_us": lat[int(len(lat) * 0.99)] / 1e3,
+        "pacing": s.get("pacing"),  # paced runs: start lag and gap variation; None in a closed loop
     }
 
 
