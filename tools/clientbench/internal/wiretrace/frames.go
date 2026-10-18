@@ -3,14 +3,16 @@ package wiretrace
 import (
 	"encoding/binary"
 	"fmt"
+
+	"github.com/zeebo/xxh3"
 )
 
 // Frame is one FDB packet: the destination endpoint token and its body.
 type Frame struct {
-	TimeNS int64 // capture time of the segment carrying the frame's last byte
+	TimeNS int64 // capture time of the segment that made the frame's last byte readable
 	Flow   Flow
-	// Segment numbers the chunks of a flow, so frames carried by one TCP
-	// segment share it.
+	// Segment is that segment's capture index, so frames completed by one
+	// captured segment share it.
 	Segment int
 	Token   [16]byte
 	Body    []byte
@@ -30,7 +32,6 @@ type FrameParser struct {
 	flow      Flow
 	buf       []byte
 	connected bool
-	segments  int
 	emit      func(Frame) error
 }
 
@@ -41,7 +42,6 @@ func NewFrameParser(flow Flow, emit func(Frame) error) *FrameParser {
 
 // Add takes the flow's next chunk.
 func (p *FrameParser) Add(c Chunk) error {
-	p.segments++
 	p.buf = append(p.buf, c.Data...)
 	for {
 		if !p.connected {
@@ -71,12 +71,28 @@ func (p *FrameParser) Add(c Chunk) error {
 			return nil
 		}
 		payload := p.buf[hdr : hdr+n]
-		f := Frame{TimeNS: c.TimeNS, Flow: p.flow, Segment: p.segments}
+		// The checksum is XXH3-64 of the payload (FlowTransport.actor.cpp:1256-1273).
+		if sum := binary.LittleEndian.Uint64(p.buf[frameLenWidth:hdr]); sum != xxh3.Hash(payload) {
+			return fmt.Errorf("%v: frame checksum mismatch", p.flow)
+		}
+		f := Frame{TimeNS: c.TimeNS, Flow: p.flow, Segment: c.Packet}
 		copy(f.Token[:], payload[:frameTokenWidth])
 		f.Body = append([]byte(nil), payload[frameTokenWidth:]...)
 		p.buf = p.buf[hdr+n:]
 		if err := p.emit(f); err != nil {
 			return err
 		}
+	}
+}
+
+// Finish reports a ConnectPacket or frame cut off by the end of the stream.
+func (p *FrameParser) Finish() error {
+	switch {
+	case len(p.buf) == 0:
+		return nil
+	case !p.connected:
+		return fmt.Errorf("%v: stream ended inside its connect packet (%d bytes)", p.flow, len(p.buf))
+	default:
+		return fmt.Errorf("%v: stream ended inside a frame (%d bytes)", p.flow, len(p.buf))
 	}
 }

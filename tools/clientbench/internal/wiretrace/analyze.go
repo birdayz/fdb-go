@@ -31,6 +31,7 @@ type Request struct {
 	ReplyNS    int64 // 0: no reply captured
 	Version    int64 // read or commit version from the reply
 	ErrorCode  int   // nonzero: the reply was an error
+	Malformed  bool  // the reply arrived but did not decode
 	// Range requests only: the request's parameters and the reply's shape.
 	Params     string // limit, byte limit, selector offsets and read options
 	ReplyBytes int    // length of the reply's packed rows
@@ -128,6 +129,9 @@ func (t *Trace) addRequest(f Frame) {
 	t.pending[req.ReplyToken] = req
 }
 
+// errNotCommitted is not_committed, which a commit reply of version -1 means.
+const errNotCommitted = 1020
+
 func (t *Trace) addReply(req *Request, f Frame) {
 	req.ReplyNS = f.TimeNS
 	var r wire.Reader
@@ -137,6 +141,7 @@ func (t *Trace) addReply(req *Request, f Frame) {
 			req.ErrorCode = fe.Code
 			return
 		}
+		req.Malformed = true
 		t.Undecodable++
 		return
 	}
@@ -149,6 +154,11 @@ func (t *Trace) addReply(req *Request, f Frame) {
 		var m types.CommitID
 		m.UnmarshalFromReader(&r)
 		req.Version = m.Version
+		if m.Version == -1 {
+			// An in-band conflict: CommitID{invalidVersion}, which the client maps
+			// to not_committed (CommitProxyServer.actor.cpp:2448-2464).
+			req.ErrorCode = errNotCommitted
+		}
 	case KindRange:
 		var m types.GetKeyValuesReply
 		m.UnmarshalFromReader(&r)
@@ -168,12 +178,16 @@ type KindSummary struct {
 	// ClientSegments is the number of client TCP segments that completed a
 	// request: requests written together share one.
 	ClientSegments int `json:"client_segments"`
-	// ServerBatches is the number of distinct reply versions: the proxy gives
-	// every request of one batch the same version.
+	// Malformed counts replies that arrived but did not decode.
+	Malformed int `json:"malformed"`
+	// Commits only. ServerBatches is the number of distinct commit versions:
+	// a commit proxy gives every transaction of one batch the same version.
+	// (GRV and storage replies carry observed read versions, which separate
+	// batches can share, so they are not grouped.)
 	ServerBatches int `json:"server_batches"`
-	// BatchSizes counts server batches by the number of requests in them.
+	// BatchSizes counts commit batches by the number of commits in them.
 	BatchSizes map[int]int `json:"batch_sizes"`
-	// ArrivalSpreadNS is the time from a batch's first request to its last,
+	// ArrivalSpreadNS is the time from a batch's first commit to its last,
 	// at the capture point; the median, 90th percentile and maximum.
 	ArrivalSpreadNS [3]int64 `json:"arrival_spread_ns"`
 	// LatencyNS is the time from request to reply at the capture point.
@@ -191,7 +205,12 @@ type Summary struct {
 	Kinds       map[Kind]KindSummary `json:"kinds"`
 	Undecodable int                  `json:"undecodable"`
 	Gaps        int                  `json:"stream_gaps"`
-	Rounds      *Rounds              `json:"rounds,omitempty"`
+	// Partial counts streams that ended inside a connect packet or frame.
+	Partial int `json:"partial_streams"`
+	// Complete is false when any stream had a gap or ended inside a frame:
+	// some requests or replies are missing, so the counts are not a measurement.
+	Complete bool    `json:"complete"`
+	Rounds   *Rounds `json:"rounds,omitempty"`
 }
 
 // Summarize groups the replied requests of each kind into server batches.
@@ -227,6 +246,8 @@ func (t *Trace) Summarize() Summary {
 			segs[segKey{r.Flow, r.Segment}] = true
 			switch {
 			case r.ReplyNS == 0:
+			case r.Malformed:
+				ks.Malformed++
 			case r.ErrorCode != 0:
 				ks.Replied++
 				ks.Errors++
@@ -237,9 +258,8 @@ func (t *Trace) Summarize() Summary {
 			}
 		}
 		ks.ClientSegments = len(segs)
-		if kind == KindRange {
-			// Storage replies carry the read version, not a batch: report no batches.
-			batches = nil
+		if kind != KindCommit {
+			batches = nil // read versions do not identify batches
 		}
 		ks.ServerBatches = len(batches)
 		var spread []int64
@@ -280,7 +300,7 @@ func (t *Trace) CommitRounds(size int) Rounds {
 	batches := map[int64]int64{} // version -> first request time
 	count := map[int64]int{}
 	for _, r := range t.Requests {
-		if r.Kind != KindCommit || r.ReplyNS == 0 || r.ErrorCode != 0 {
+		if r.Kind != KindCommit || r.ReplyNS == 0 || r.ErrorCode != 0 || r.Malformed {
 			continue
 		}
 		if first, ok := batches[r.Version]; !ok || r.SentNS < first {
@@ -336,16 +356,30 @@ func (t *Trace) WriteEvents(w io.Writer) error {
 	return nil
 }
 
+// Completeness reports what a capture could not decode.
+type Completeness struct {
+	Gaps    int      // streams with a hole: a segment was never captured
+	Partial []string // streams that ended inside a connect packet or frame
+}
+
+// Complete reports whether every stream was decoded to its end.
+func (c Completeness) Complete() bool { return c.Gaps == 0 && len(c.Partial) == 0 }
+
 // Decode reads a pcap capture and follows client traffic to serverPorts.
-func Decode(r io.Reader, serverPorts []uint16) (*Trace, int, error) {
+func Decode(r io.Reader, serverPorts []uint16) (*Trace, Completeness, error) {
 	t := NewTrace(serverPorts)
-	parsers := map[Flow]*FrameParser{}
+	type connKey struct {
+		flow Flow
+		conn int
+	}
+	parsers := map[connKey]*FrameParser{}
 	var parseErr error
 	re := NewReassembler(func(flow Flow, c Chunk) error {
-		p := parsers[flow]
+		key := connKey{flow, c.Conn}
+		p := parsers[key]
 		if p == nil {
 			p = NewFrameParser(flow, func(f Frame) error { t.Add(f); return nil })
-			parsers[flow] = p
+			parsers[key] = p
 		}
 		if err := p.Add(c); err != nil && parseErr == nil {
 			parseErr = err
@@ -353,7 +387,15 @@ func Decode(r io.Reader, serverPorts []uint16) (*Trace, int, error) {
 		return nil
 	})
 	if err := ReadPcap(r, re.Add); err != nil {
-		return nil, 0, err
+		return nil, Completeness{}, err
 	}
-	return t, re.Gaps, parseErr
+	re.Finish()
+	done := Completeness{Gaps: re.Gaps}
+	for _, p := range parsers {
+		if err := p.Finish(); err != nil {
+			done.Partial = append(done.Partial, err.Error())
+		}
+	}
+	sort.Strings(done.Partial)
+	return t, done, parseErr
 }

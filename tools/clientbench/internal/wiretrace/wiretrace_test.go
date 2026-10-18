@@ -12,6 +12,7 @@ import (
 
 	"fdb.dev/pkg/fdbgo/wire"
 	"fdb.dev/pkg/fdbgo/wire/types"
+	"github.com/zeebo/xxh3"
 )
 
 // vector is a C++-encoded message from //pkg/fdbgo/wire/types:testdata.json.
@@ -98,11 +99,13 @@ func connectPacket() []byte {
 	return b
 }
 
-// fdbFrame is a plaintext FDB packet: length, checksum, token, body.
+// fdbFrame is a plaintext FDB packet: length, XXH3-64 checksum, token, body.
 func fdbFrame(token, body []byte) []byte {
 	b := make([]byte, 12, 12+16+len(body))
+	b = append(append(b, token...), body...)
 	binary.LittleEndian.PutUint32(b, uint32(16+len(body)))
-	return append(append(b, token...), body...)
+	binary.LittleEndian.PutUint64(b[4:], xxh3.Hash(b[12:]))
+	return b
 }
 
 func TestDecodeMatchesRequestsWithReplies(t *testing.T) {
@@ -137,9 +140,9 @@ func TestDecodeMatchesRequestsWithReplies(t *testing.T) {
 	// A connection whose SYN preceded the capture is ignored.
 	c.packet(6000, Flow{Endpoint{lo, 50001}, server}, 7, false, fdbFrame(proxyTok, unhex(t, grvReq.Hex)))
 
-	trace, gaps, err := Decode(&c.Buffer, []uint16{4721})
-	if err != nil || gaps != 0 {
-		t.Fatalf("Decode = %v, %d gaps", err, gaps)
+	trace, done, err := Decode(&c.Buffer, []uint16{4721})
+	if err != nil || !done.Complete() {
+		t.Fatalf("Decode = %v, %+v", err, done)
 	}
 	if len(trace.Requests) != 2 {
 		t.Fatalf("%d requests, want the GRV and the commit", len(trace.Requests))
@@ -160,7 +163,7 @@ func TestDecodeMatchesRequestsWithReplies(t *testing.T) {
 	}
 	s := trace.Summarize()
 	g, k := s.Kinds[KindGRV], s.Kinds[KindCommit]
-	if s.Undecodable != 0 || s.Flows != 1 || g.Replied != 1 || g.ServerBatches != 1 || k.Replied != 1 || k.ServerBatches != 1 || k.ClientSegments != 1 {
+	if s.Undecodable != 0 || s.Flows != 1 || g.Replied != 1 || g.ServerBatches != 0 || k.Replied != 1 || k.ServerBatches != 1 || k.ClientSegments != 1 {
 		t.Fatalf("summary = %+v", s)
 	}
 	if k.LatencyNS[0] != 2000 {
@@ -189,7 +192,10 @@ func TestDecodeRangeReads(t *testing.T) {
 	c.packet(20, down, 900, true, nil)
 	c.packet(1000, up, 101, false, append(connectPacket(), fdbFrame(bytes.Repeat([]byte{9}, 16), unhex(t, req.Hex))...))
 	c.packet(2000, down, 901, false, append(connectPacket(), fdbFrame(unhex(t, req.ReplyToken), unhex(t, reply.Hex))...))
-	trace, _, err := Decode(&c.Buffer, []uint16{4723})
+	trace, done, err := Decode(&c.Buffer, []uint16{4723})
+	if err == nil && !done.Complete() {
+		t.Fatalf("incomplete: %+v", done)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,6 +209,159 @@ func TestDecodeRangeReads(t *testing.T) {
 	k := trace.Summarize().Kinds[KindRange]
 	if k.Requests != 1 || k.More != 1 || len(k.Params) != 1 || k.ServerBatches != 0 {
 		t.Fatalf("range summary = %+v", k)
+	}
+}
+
+// streamCapture builds one client connection to port 4721 whose client data,
+// after the ConnectPacket, is the given frames in the given segments.
+type streamCapture struct {
+	*capture
+	up  Flow
+	seq uint32
+}
+
+func newStreamCapture(clientPort uint16, isn uint32) *streamCapture {
+	lo := [4]byte{127, 0, 0, 1}
+	c := &streamCapture{capture: newCapture(), up: Flow{Endpoint{lo, clientPort}, Endpoint{lo, 4721}}, seq: isn + 1}
+	c.packet(1, c.up, isn, true, nil)
+	return c
+}
+
+func grvFrames(t *testing.T, n int) [][]byte {
+	t.Helper()
+	v := loadVectors(t)
+	var frames [][]byte
+	for i := range n {
+		body := unhex(t, v["GetReadVersionRequest_causal_risky"].Hex)
+		r, err := wire.NewReader(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var m types.GetReadVersionRequest
+		m.UnmarshalFromReader(r)
+		m.Reply.Token[0] = byte(i + 1) // distinct reply tokens
+		frames = append(frames, fdbFrame(bytes.Repeat([]byte{7}, 16), m.MarshalFDB()))
+	}
+	return frames
+}
+
+// A missing segment that is never retransmitted, and a frame cut off by the end
+// of the stream, make the capture incomplete.
+func TestDecodeReportsIncompleteStreams(t *testing.T) {
+	t.Parallel()
+	frames := grvFrames(t, 2)
+	data := append(connectPacket(), frames[0]...)
+
+	hole := newStreamCapture(50010, 100)
+	hole.packet(10, hole.up, hole.seq, false, data)
+	hole.packet(20, hole.up, hole.seq+uint32(len(data))+5, false, frames[1]) // 5 bytes never captured
+	if _, done, err := Decode(&hole.Buffer, []uint16{4721}); err != nil || done.Gaps != 1 || done.Complete() {
+		t.Fatalf("WIRETRACE_HOLE_UNREPORTED: Decode = %v, %+v", err, done)
+	}
+
+	cut := newStreamCapture(50011, 100)
+	cut.packet(10, cut.up, cut.seq, false, append(data, frames[1][:20]...))
+	if _, done, err := Decode(&cut.Buffer, []uint16{4721}); err != nil || len(done.Partial) != 1 || done.Complete() {
+		t.Fatalf("WIRETRACE_PARTIAL_UNREPORTED: Decode = %v, %+v", err, done)
+	}
+}
+
+// Frames that become readable together carry the capture index of the segment
+// that made them readable; a retransmission overlapping delivered data adds no
+// frame.
+func TestDecodeSegmentIdentity(t *testing.T) {
+	t.Parallel()
+	frames := grvFrames(t, 3)
+	c := newStreamCapture(50012, 100)
+	first := append(connectPacket(), frames[0]...)
+	c.packet(10, c.up, c.seq, false, first[:30]) // packet 2
+	gap := c.seq + 30
+	rest := append(first[30:], frames[1]...)
+	c.packet(20, c.up, gap+uint32(len(first)-30), false, frames[1]) // packet 3: arrives before the gap fills
+	c.packet(30, c.up, gap, false, rest)                            // packet 4: fills the gap, completes both
+	end := gap + uint32(len(rest))
+	c.packet(40, c.up, end-10, false, append(rest[len(rest)-10:], frames[2]...)) // packet 5: overlaps 10 delivered bytes
+	trace, done, err := Decode(&c.Buffer, []uint16{4721})
+	if err != nil || !done.Complete() {
+		t.Fatalf("Decode = %v, %+v", err, done)
+	}
+	if len(trace.Requests) != 3 {
+		t.Fatalf("%d requests, want 3", len(trace.Requests))
+	}
+	if a, b, d := trace.Requests[0].Segment, trace.Requests[1].Segment, trace.Requests[2].Segment; a != 4 || b != 4 || d != 5 {
+		t.Fatalf("WIRETRACE_SEGMENT_IDENTITY: segments %d, %d, %d, want 4, 4, 5", a, b, d)
+	}
+	if k := trace.Summarize().Kinds[KindGRV]; k.ClientSegments != 2 {
+		t.Fatalf("%d client segments, want 2", k.ClientSegments)
+	}
+}
+
+// A shorter retransmission of buffered data keeps the longer copy, so the
+// stream still reassembles when the gap before it fills.
+func TestDecodeShorterRetransmission(t *testing.T) {
+	t.Parallel()
+	frames := grvFrames(t, 1)
+	c := newStreamCapture(50014, 100)
+	data := append(connectPacket(), frames[0]...)
+	c.packet(10, c.up, c.seq+10, false, data[10:])   // buffered behind a gap
+	c.packet(20, c.up, c.seq+10, false, data[10:20]) // shorter retransmission
+	c.packet(30, c.up, c.seq, false, data[:10])      // fills the gap
+	trace, done, err := Decode(&c.Buffer, []uint16{4721})
+	if err != nil || !done.Complete() || len(trace.Requests) != 1 {
+		t.Fatalf("WIRETRACE_RETRANSMIT_LOSS: Decode = %v, %+v, %d requests", err, done, len(trace.Requests))
+	}
+}
+
+// A retransmitted SYN keeps the connection; a new SYN on the same 4-tuple
+// starts a new one, whose ConnectPacket is not mistaken for a frame.
+func TestDecodeConnectionGenerations(t *testing.T) {
+	t.Parallel()
+	frames := grvFrames(t, 2)
+	c := newStreamCapture(50013, 100)
+	first := append(connectPacket(), frames[0]...)
+	c.packet(10, c.up, c.seq, false, first[:20])
+	c.packet(15, c.up, 100, true, nil) // retransmitted SYN
+	c.packet(20, c.up, c.seq+20, false, first[20:])
+	c.packet(30, c.up, 5000, true, nil) // new connection, same 4-tuple
+	c.packet(40, c.up, 5001, false, append(connectPacket(), frames[1]...))
+	trace, done, err := Decode(&c.Buffer, []uint16{4721})
+	if err != nil || !done.Complete() {
+		t.Fatalf("WIRETRACE_CONN_GENERATION: Decode = %v, %+v", err, done)
+	}
+	if len(trace.Requests) != 2 {
+		t.Fatalf("%d requests, want one per connection", len(trace.Requests))
+	}
+}
+
+// A commit reply of version -1 is an in-band conflict and a reply that does not
+// decode is malformed; neither counts as a successful commit or forms a batch.
+func TestDecodeFailedCommitReplies(t *testing.T) {
+	t.Parallel()
+	v := loadVectors(t)
+	commitReq := v["CommitTransactionRequest_single_set"]
+	lo := [4]byte{127, 0, 0, 1}
+	for _, tc := range []struct {
+		name  string
+		reply []byte
+	}{
+		{"conflict", unhex(t, v["CommitID_conflict"].Hex)},
+		{"malformed", []byte{1, 2, 3}},
+	} {
+		up := Flow{Endpoint{lo, 50020}, Endpoint{lo, 4721}}
+		down := Flow{up.Dst, up.Src}
+		c := newCapture()
+		c.packet(1, up, 100, true, nil)
+		c.packet(2, down, 900, true, nil)
+		c.packet(10, up, 101, false, append(connectPacket(), fdbFrame(bytes.Repeat([]byte{7}, 16), unhex(t, commitReq.Hex))...))
+		c.packet(20, down, 901, false, append(connectPacket(), fdbFrame(unhex(t, commitReq.ReplyToken), tc.reply)...))
+		trace, done, err := Decode(&c.Buffer, []uint16{4721})
+		if err != nil || !done.Complete() {
+			t.Fatalf("%s: Decode = %v, %+v", tc.name, err, done)
+		}
+		k := trace.Summarize().Kinds[KindCommit]
+		if k.ServerBatches != 0 || k.Errors+k.Malformed != 1 || trace.CommitRounds(1).Whole != 0 {
+			t.Fatalf("WIRETRACE_FAILED_COMMIT_COUNTED: %s reply summarized as %+v", tc.name, k)
+		}
 	}
 }
 
@@ -250,6 +409,16 @@ func TestReadPcapRejectsTruncatedPackets(t *testing.T) {
 	binary.LittleEndian.PutUint32(b[24+8:], 10) // captured length below the original
 	if err := ReadPcap(bytes.NewReader(b[:24+16+10]), func(Segment) error { return nil }); err == nil || !strings.Contains(err.Error(), "-s 0") {
 		t.Fatalf("ReadPcap = %v, want a truncation error", err)
+	}
+}
+
+func TestFrameParserRejectsBadChecksum(t *testing.T) {
+	t.Parallel()
+	frame := fdbFrame(make([]byte, 16), []byte("body"))
+	frame[len(frame)-1] ^= 1
+	p := NewFrameParser(Flow{}, func(Frame) error { return nil })
+	if err := p.Add(Chunk{Data: append(connectPacket(), frame...)}); err == nil {
+		t.Fatal("WIRETRACE_CHECKSUM: a frame with a wrong checksum was accepted")
 	}
 }
 

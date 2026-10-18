@@ -25,6 +25,7 @@ type Flow struct{ Src, Dst Endpoint }
 
 // Segment is one captured TCP segment.
 type Segment struct {
+	Index   int // capture order, from 1
 	TimeNS  int64
 	Flow    Flow
 	Seq     uint32
@@ -65,6 +66,7 @@ func ReadPcap(r io.Reader, fn func(Segment) error) error {
 	link := order.Uint32(hdr[20:24])
 	var rec [16]byte
 	buf := make([]byte, 0, 65536)
+	index := 0
 	for {
 		if _, err := io.ReadFull(r, rec[:]); err != nil {
 			if errors.Is(err, io.EOF) {
@@ -92,7 +94,8 @@ func ReadPcap(r io.Reader, fn func(Segment) error) error {
 		if !ok {
 			continue
 		}
-		seg.TimeNS = ts
+		index++
+		seg.Index, seg.TimeNS = index, ts
 		seg.Payload = append([]byte(nil), seg.Payload...) // buf is reused
 		if err := fn(seg); err != nil {
 			return err
@@ -140,8 +143,12 @@ func parsePacket(link uint32, b []byte) (Segment, bool, error) {
 	return seg, true, nil
 }
 
-// Chunk is in-order stream data and the capture time of the segment carrying it.
+// Chunk is in-order stream data. Packet and TimeNS identify the captured segment
+// that made it readable: the one carrying it, or the one that filled the gap
+// before it.
 type Chunk struct {
+	Conn   int // connection generation: a new SYN on a reused 4-tuple starts a new one
+	Packet int
 	TimeNS int64
 	Data   []byte
 }
@@ -151,12 +158,16 @@ type Chunk struct {
 // its first byte.
 type Reassembler struct {
 	streams map[Flow]*stream
+	conns   int
 	emit    func(Flow, Chunk) error
-	// Gaps counts flows abandoned because a segment never arrived.
+	// Gaps counts streams with data that never became readable: a segment was
+	// missing, so a hole remained when the capture ended or was too long.
 	Gaps int
 }
 
 type stream struct {
+	conn    int
+	isn     uint32
 	next    uint32
 	pending map[uint32]Segment
 	broken  bool
@@ -175,8 +186,16 @@ const maxPending = 4096
 func (r *Reassembler) Add(seg Segment) error {
 	s := r.streams[seg.Flow]
 	if seg.SYN {
-		s = &stream{next: seg.Seq + 1, pending: map[uint32]Segment{}}
-		r.streams[seg.Flow] = s
+		if s == nil || s.isn != seg.Seq {
+			// A new connection, possibly reusing the 4-tuple. A retransmitted
+			// SYN (same initial sequence number) keeps the stream as it is.
+			if s != nil && len(s.pending) > 0 && !s.broken {
+				r.Gaps++
+			}
+			r.conns++
+			s = &stream{conn: r.conns, isn: seg.Seq, next: seg.Seq + 1, pending: map[uint32]Segment{}}
+			r.streams[seg.Flow] = s
+		}
 		seg.Seq++ // SYN consumes one sequence number
 		if len(seg.Payload) == 0 {
 			return nil
@@ -185,14 +204,18 @@ func (r *Reassembler) Add(seg Segment) error {
 	if s == nil || s.broken || len(seg.Payload) == 0 {
 		return nil
 	}
-	s.pending[seg.Seq] = seg
+	// A shorter retransmission at the same sequence number must not displace
+	// bytes already captured.
+	if old, ok := s.pending[seg.Seq]; !ok || len(seg.Payload) > len(old.Payload) {
+		s.pending[seg.Seq] = seg
+	}
 	for {
 		next, ok := s.take()
 		if !ok {
 			break
 		}
 		// Buffered data becomes readable only now, when the stream is contiguous.
-		if err := r.emit(seg.Flow, Chunk{TimeNS: seg.TimeNS, Data: next.Payload}); err != nil {
+		if err := r.emit(seg.Flow, Chunk{Conn: s.conn, Packet: seg.Index, TimeNS: seg.TimeNS, Data: next.Payload}); err != nil {
 			return err
 		}
 	}
@@ -201,6 +224,17 @@ func (r *Reassembler) Add(seg Segment) error {
 		r.Gaps++
 	}
 	return nil
+}
+
+// Finish counts the streams still holding data behind a hole at the end of the
+// capture.
+func (r *Reassembler) Finish() {
+	for _, s := range r.streams {
+		if !s.broken && len(s.pending) > 0 {
+			s.broken = true
+			r.Gaps++
+		}
+	}
 }
 
 // take returns the pending data that continues the stream, trimming any part

@@ -12,6 +12,7 @@ go_library(
     deps = [
         "//pkg/fdbgo/wire",
         "//pkg/fdbgo/wire/types",
+        "@com_github_zeebo_xxh3//:xxh3",
     ],
 )
 
@@ -23,5 +24,6 @@ go_test(
     deps = [
         "//pkg/fdbgo/wire",
         "//pkg/fdbgo/wire/types",
+        "@com_github_zeebo_xxh3//:xxh3",
     ],
 )

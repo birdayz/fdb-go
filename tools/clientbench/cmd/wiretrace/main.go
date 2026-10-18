@@ -21,14 +21,15 @@ func main() {
 	ports := flag.String("server-ports", "", "comma-separated fdbserver ports")
 	events := flag.String("events", "", "write one CSV line per request to this file")
 	round := flag.Int("round", 0, "closed-loop round size (workers): report whole and split commit batches")
+	allowIncomplete := flag.Bool("allow-incomplete", false, "summarize a capture with stream gaps or cut-off frames instead of failing")
 	flag.Parse()
-	if err := run(*pcap, *ports, *events, *round); err != nil {
+	if err := run(*pcap, *ports, *events, *round, *allowIncomplete); err != nil {
 		fmt.Fprintln(os.Stderr, "wiretrace:", err)
 		os.Exit(1)
 	}
 }
 
-func run(pcap, ports, events string, round int) error {
+func run(pcap, ports, events string, round int, allowIncomplete bool) error {
 	if pcap == "" || ports == "" {
 		return fmt.Errorf("-pcap and -server-ports are required")
 	}
@@ -45,7 +46,7 @@ func run(pcap, ports, events string, round int) error {
 		return err
 	}
 	defer f.Close()
-	trace, gaps, err := wiretrace.Decode(bufio.NewReaderSize(f, 1<<20), serverPorts)
+	trace, done, err := wiretrace.Decode(bufio.NewReaderSize(f, 1<<20), serverPorts)
 	if err != nil {
 		return err
 	}
@@ -66,12 +67,19 @@ func run(pcap, ports, events string, round int) error {
 		}
 	}
 	s := trace.Summarize()
-	s.Gaps = gaps
+	s.Gaps, s.Partial, s.Complete = done.Gaps, len(done.Partial), done.Complete()
 	if round > 0 {
 		r := trace.CommitRounds(round)
 		s.Rounds = &r
 	}
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
-	return enc.Encode(s)
+	if err := enc.Encode(s); err != nil {
+		return err
+	}
+	if !s.Complete && !allowIncomplete {
+		return fmt.Errorf("incomplete capture (%d stream gaps, %d cut-off streams: %v); counts are not a measurement",
+			done.Gaps, len(done.Partial), done.Partial)
+	}
+	return nil
 }
