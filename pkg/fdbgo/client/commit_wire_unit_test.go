@@ -109,3 +109,64 @@ func TestCommitClearSplitByOperations(t *testing.T) {
 		}
 	}
 }
+
+// The compact form applies exactly when the end is the begin plus \x00: empty
+// and binary keys included, near misses excluded.
+func TestIsSingleKeyClear(t *testing.T) {
+	for _, tc := range []struct {
+		begin, end string
+		want       bool
+	}{
+		{"", "\x00", true},
+		{"\xff\x00", "\xff\x00\x00", true},
+		{"k", "k\x00", true},
+		{"k", "k\x01", false},
+		{"k", "k\x00\x00", false},
+		{"k", "l", false},
+		{"k\x00", "k", false},
+	} {
+		m := types.MutationRef{MutType: uint8(MutClearRange), Param1: []byte(tc.begin), Param2: []byte(tc.end)}
+		if got := isSingleKeyClear(&m); got != tc.want {
+			t.Errorf("WIRE_SINGLE_CLEAR_PREDICATE (%q, %q) = %v, want %v", tc.begin, tc.end, got, tc.want)
+		}
+	}
+	set := types.MutationRef{MutType: uint8(MutSetValue), Param1: []byte("k"), Param2: []byte("k\x00")}
+	if isSingleKeyClear(&set) {
+		t.Error("a set is not a clear")
+	}
+}
+
+// Every kind of operation key splits a clear, including an absent value (a
+// matched CompareAndClear), adjacent keys and the empty key; the RYW-disabled
+// path ships its op-log as is.
+func TestCommitClearSplitEdges(t *testing.T) {
+	m := func(typ MutationType, k, v string) Mutation {
+		return Mutation{Type: typ, Key: []byte(k), Value: []byte(v)}
+	}
+	check := func(name string, got, want []Mutation) {
+		t.Helper()
+		if len(got) != len(want) {
+			t.Fatalf("WIRE_CLEAR_SPLIT %s: %q, want %q", name, got, want)
+		}
+		for i := range got {
+			if got[i].Type != want[i].Type || !bytes.Equal(got[i].Key, want[i].Key) || !bytes.Equal(got[i].Value, want[i].Value) {
+				t.Fatalf("WIRE_CLEAR_SPLIT %s: %q, want %q", name, got, want)
+			}
+		}
+	}
+	check("absent value",
+		coalesceCommitMutations([]Mutation{m(MutClearRange, "a", "z"), m(MutSetValue, "m", "v"), m(MutCompareAndClear, "m", "v")}),
+		[]Mutation{m(MutClearRange, "a", "m"), m(MutClearRange, "m\x00", "z"), m(MutClearRange, "m", "m\x00")})
+	check("adjacent keys",
+		coalesceCommitMutations([]Mutation{m(MutClearRange, "a", "z"), m(MutSetValue, "m", "1"), m(MutSetValue, "m\x00", "2")}),
+		[]Mutation{m(MutClearRange, "a", "m"), m(MutClearRange, "m\x00\x00", "z"), m(MutSetValue, "m", "1"), m(MutSetValue, "m\x00", "2")})
+	check("empty key",
+		coalesceCommitMutations([]Mutation{m(MutClearRange, "", "b"), m(MutSetValue, "", "1")}),
+		[]Mutation{m(MutClearRange, "\x00", "b"), m(MutSetValue, "", "1")})
+	raw := []Mutation{m(MutClearRange, "a", "z"), m(MutSetValue, "m", "1")}
+	ship, _, coalesced := coalesceCommitVectors(raw, nil, true)
+	if coalesced {
+		t.Fatal("an RYW-disabled transaction was coalesced")
+	}
+	check("ryw disabled", ship, raw)
+}

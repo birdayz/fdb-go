@@ -356,9 +356,10 @@ var (
 // Pool for conflict range slices. Avoids per-commit alloc.
 var crSlicePool = sync.Pool{New: func() any { s := make([]types.KeyRangeRef, 0, 8); return &s }}
 
-// Pool for the scratch mutation slice used by the tenant-prefix path. The
-// no-tenant path reuses the captured mutations' backing array via the zero-copy
-// cast and needs no scratch; only the tenant path must copy.
+// Pool for the scratch mutation slice, used when the request's mutations differ
+// from the captured ones (a tenant prefix, a single-key clear's compact form).
+// Otherwise the request reuses the captured mutations' backing array via the
+// zero-copy cast.
 var mutSlicePool = sync.Pool{New: func() any { s := make([]types.MutationRef, 0, 8); return &s }}
 
 // clearAndReturn zeroes a pooled slice and returns it to pool. The clear is
@@ -408,7 +409,7 @@ func buildCommitInputRequest(input *commitInput, replyToken transport.UID) (body
 	// C++ applyTenantPrefix: when a tenant is set, prepend 8-byte big-endian tenant ID
 	// to all mutation keys, read/write conflict range keys. Skip metadataVersionKey.
 	//
-	// mutScratch is borrowed only on the tenant path. The zero-copy cast above
+	// mutScratch is borrowed here, or below for a single-key clear. The zero-copy cast above
 	// aliases input.muts' backing array, so prefixing m.Param1/Param2 in place
 	// would corrupt the persistent buffer and double-prefix on any rebuild
 	// (e.g. a re-Commit without an intervening reset). C++ avoids this by

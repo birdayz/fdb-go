@@ -3,6 +3,8 @@ package wiregolden_test
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"testing"
@@ -42,14 +44,15 @@ func TestGoClientMatchesGolden(t *testing.T) {
 	}
 
 	var log bytes.Buffer
-	transport.SetWireLog(&log) // before the first connection
+	stop := transport.CaptureWireLog(&log) // before the first connection
+	defer stop()
 	db, err := fdb.OpenDatabase(clusterFile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	runErr := wgscenarios.Run(db)
-	db.Close() // waits for the transport loops, so the log is complete
-	transport.SetWireLog(nil)
+	runErr := runBounded(2*time.Minute, func() error { return wgscenarios.Run(db) }, db.Close)
+	db.Close()
+	stop() // nothing writes to log after this
 	if runErr != nil {
 		t.Fatal(runErr)
 	}
@@ -67,6 +70,24 @@ func TestGoClientMatchesGolden(t *testing.T) {
 	}
 }
 
+// runBounded runs fn, and fails after limit, calling abort to unblock it and
+// waiting for it to return: a scenario blocked on an unavailable cluster must
+// not hold the test until Bazel's timeout.
+func runBounded(limit time.Duration, fn func() error, abort func()) error {
+	done := make(chan error, 1)
+	go func() { done <- fn() }()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(limit):
+		abort()
+		if err := <-done; err != nil {
+			return fmt.Errorf("scenarios did not finish within %v: %w", limit, err)
+		}
+		return fmt.Errorf("scenarios did not finish within %v", limit)
+	}
+}
+
 // go-divergences.diff is exactly how go.golden differs from libfdbc.golden.
 func checkDivergences(t *testing.T) {
 	t.Helper()
@@ -75,7 +96,7 @@ func checkDivergences(t *testing.T) {
 		t.Fatal(err)
 	}
 	out, err := exec.Command("diff", "-u", "--label", "golden", "--label", "go", "libfdbc.golden", "go.golden").Output()
-	if code := exitCode(err); code > 1 {
+	if !diffCompleted(err) {
 		t.Fatalf("diff: %v", err)
 	}
 	if !bytes.Equal(out, want) {
@@ -83,14 +104,15 @@ func checkDivergences(t *testing.T) {
 	}
 }
 
-func exitCode(err error) int {
+// diffCompleted reports whether diff exited normally with 0 (same) or 1
+// (different). Anything else, a signal included (ExitCode -1), means its
+// output may be partial.
+func diffCompleted(err error) bool {
 	if err == nil {
-		return 0
+		return true
 	}
-	if e, ok := err.(*exec.ExitError); ok {
-		return e.ExitCode()
-	}
-	return 2
+	var e *exec.ExitError
+	return errors.As(err, &e) && e.Exited() && e.ExitCode() == 1
 }
 
 func unifiedDiff(t *testing.T, want, got string) string {
@@ -102,4 +124,32 @@ func unifiedDiff(t *testing.T, want, got string) string {
 	}
 	out, _ := exec.Command("diff", "-u", w, g).Output()
 	return string(out)
+}
+
+// A run that blocks past the limit is aborted and reported, not waited for.
+func TestRunBoundedAborts(t *testing.T) {
+	unblock := make(chan struct{})
+	err := runBounded(10*time.Millisecond, func() error { <-unblock; return nil }, func() { close(unblock) })
+	if err == nil {
+		t.Fatal("WIREGOLDEN_BOUNDED: a blocked run was not reported")
+	}
+	if err := runBounded(time.Minute, func() error { return nil }, func() { t.Fatal("aborted a finished run") }); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Only a normal exit with 0 or 1 counts as a completed diff.
+func TestDiffCompleted(t *testing.T) {
+	run := func(script string) error { return exec.Command("sh", "-c", script).Run() }
+	for _, tc := range []struct {
+		script string
+		want   bool
+	}{{"exit 0", true}, {"exit 1", true}, {"exit 2", false}, {"kill -KILL $$", false}} {
+		if got := diffCompleted(run(tc.script)); got != tc.want {
+			t.Errorf("WIREGOLDEN_DIFF_EXIT %q: %v, want %v", tc.script, got, tc.want)
+		}
+	}
+	if diffCompleted(errors.New("not started")) {
+		t.Error("a diff that did not run completed")
+	}
 }

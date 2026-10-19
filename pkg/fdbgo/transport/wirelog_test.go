@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/onsi/gomega"
@@ -90,4 +91,34 @@ func TestWireLogTextTruncation(t *testing.T) {
 	g.Expect(output).To(gomega.ContainSubstring(strings.Repeat("aa", 64)))
 	// But NOT 65 bytes worth (would mean truncation didn't work)
 	g.Expect(output).NotTo(gomega.ContainSubstring(strings.Repeat("aa", 65)))
+}
+
+// After stop returns, a capture receives nothing more, even from frames
+// logged concurrently with stop (run under -race).
+func TestCaptureWireLogStop(t *testing.T) {
+	var buf bytes.Buffer
+	stop := CaptureWireLog(&buf)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for range 1000 {
+				LogSend(UID{First: 1}, []byte("body"))
+				LogRecv(UID{First: 2}, []byte("reply"))
+			}
+		}()
+	}
+	close(start)
+	stop()
+	n := buf.Len() // safe to read: nothing writes to buf after stop
+	wg.Wait()
+	if buf.Len() != n {
+		t.Fatalf("WIRELOG_AFTER_STOP: %d bytes written after stop", buf.Len()-n)
+	}
+	if globalWireLog.Load() != nil {
+		t.Fatal("stop left the capture installed")
+	}
 }

@@ -324,7 +324,7 @@ func TestDecodeWireLog(t *testing.T) {
 	if tr := transcript(t, c.Requests, []string{"one"}); tr != "== one\nGetValueRequest {Key='<p>a' Version=V1 SsLatestCommitVersions=''}\n" {
 		t.Fatalf("transcript %q", tr)
 	}
-	for _, bad := range [][]byte{log[:10], log[:len(log)-1]} {
+	for _, bad := range [][]byte{log[:10], log[:len(log)-1], wireLogEntry('X', getBody("p/a"))} {
 		if _, err := DecodeWireLog(bad); err == nil {
 			t.Fatalf("WIREGOLDEN_WIRELOG: a truncated log of %d bytes decoded", len(bad))
 		}

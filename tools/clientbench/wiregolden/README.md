@@ -7,9 +7,14 @@
 
 - **Fast lane** ([`golden_test.go`](golden_test.go), `just test`): runs the
   scenarios on the Go client against a test container, records its requests
-  in process from the transport's send path (`transport.SetWireLog`), and
+  in process from the transport's send path (`transport.CaptureWireLog`), and
   fails unless they equal `go.golden` and `go-divergences.diff` is the diff of
-  the two goldens. A client change that alters the Go requests fails here.
+  the two goldens. A client change that alters the Go requests fails here. It
+  is a bounded integration test, not a hermetic one: like the other
+  testcontainers tests it needs Docker, and it uses the host's `diff`. The
+  goldens come from the lab cluster; the location lookups fall in setup on
+  both clusters, so a different shard layout would show as an extra request
+  in a scenario, failing the test rather than passing it silently.
 - **Lab** ([`scripts/wiregolden.sh`](../scripts/wiregolden.sh)): captures both
   clients with tcpdump, renders both transcripts
   ([`cmd/wiregolden`](../cmd/wiregolden), normalization in

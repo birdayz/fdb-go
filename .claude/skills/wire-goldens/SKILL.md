@@ -25,7 +25,7 @@ the covered scenarios.
 |---|---|
 | `tools/clientbench/internal/wgscenarios` | the scenarios |
 | `tools/clientbench/cmd/wgscen` | runs them on one client per binary (`wgscen_go`, `wgscen_cgo` with the `libfdbc` tag over `pkg/fdbgo/libfdbc`); `-list` prints their names |
-| `tools/clientbench/wiregolden/golden_test.go` | the fast-lane check: the Go client's requests, recorded in process (`transport.SetWireLog`), must equal `go.golden` |
+| `tools/clientbench/wiregolden/golden_test.go` | the fast-lane check: the Go client's requests, recorded in process (`transport.CaptureWireLog`), must equal `go.golden` |
 | `tools/clientbench/internal/wiregolden` | pcap → decoded requests (the request types in its `requests` map, via `pkg/fdbgo/wire/types`) → normalized transcript, with boundary checks |
 | `tools/clientbench/cmd/wiregolden` | the transcript CLI (`-expect` takes the `-list` output) |
 | `tools/clientbench/scripts/wiregolden.sh` | build, capture both clients (`wirecapture.sh`, tcpdump in docker), render, compare |

@@ -148,7 +148,7 @@ func Decode(r io.Reader, serverPorts []uint16) (*Capture, error) {
 }
 
 // DecodeWireLog decodes the sends of a binary wire log
-// (transport.SetWireLog): the client's requests, in the order it sent them.
+// (transport.CaptureWireLog): the client's requests, in the order it sent them.
 func DecodeWireLog(log []byte) (*Capture, error) {
 	c := &Capture{Other: map[uint32]int{}}
 	for len(log) > 0 {
@@ -159,8 +159,12 @@ func DecodeWireLog(log []byte) (*Capture, error) {
 		if len(log) < 29+n {
 			return nil, fmt.Errorf("wire log: truncated entry body")
 		}
-		if dir == 'S' {
+		switch dir {
+		case 'S':
 			c.addBody(int64(binary.LittleEndian.Uint64(log[1:9])), log[29:29+n])
+		case 'R':
+		default:
+			return nil, fmt.Errorf("wire log: direction %q", dir)
 		}
 		log = log[29+n:]
 	}
