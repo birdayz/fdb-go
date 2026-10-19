@@ -101,3 +101,11 @@ go_test(
         "@com_github_onsi_gomega//:gomega",
     ],
 )
+
+# gazelle:exclude range_result_alloc_unit_test.go
+go_test(
+    name = "range_result_alloc_unit_test",
+    srcs = ["range_result_alloc_unit_test.go"],
+    embed = [":fdb"],
+    deps = ["//pkg/fdbgo/client"],
+)

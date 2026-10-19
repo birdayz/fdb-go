@@ -407,6 +407,9 @@ type Transaction struct {
 	// (nil while unsampled — the C++ NoopTracer effect); lock order is
 	// readVersionMu → traceMu, never the reverse.
 	spanContext atomic.Pointer[types.SpanContext]
+	// initialSpan is CreateTransaction's span, written before tx is published
+	// and never again; later spans are fresh pointees.
+	initialSpan types.SpanContext
 	traceMu     sync.Mutex
 	txSpan      oteltrace.Span
 	traceCtx    context.Context
@@ -820,7 +823,7 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 	defer owned.release() // only this invocation's send-phase lease
 	defer func() {
 		if pending == nil {
-			opCancel()
+			opCancel.release()
 		}
 	}()
 	if err := tx.checkReadState(ctx); err != nil {
@@ -914,7 +917,7 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 			continue
 		}
 		timer := getTimer(tx.pipelineReplyTimeout()) // capped by SetTimeout (RFC-112)
-		p := &PendingGet{key: bytes.Clone(key), tx: tx, addr: server.Address, tenantID: tx.tenantId, replyCh: replyCh, replyHandle: replyHandle, conn: conn, ctx: ctx, cancel: opCancel, timer: timer, sentAt: sentAt, gen: op.inc.gen}
+		p := &PendingGet{key: bytes.Clone(key), tx: tx, addr: server.Address, tenantID: tx.tenantId, replyCh: replyCh, replyHandle: replyHandle, conn: conn, ctx: ctx, cancel: opCancel.afterLease(), timer: timer, sentAt: sentAt, gen: op.inc.gen}
 		if tx.afterPendingSend != nil {
 			tx.afterPendingSend(p)
 		}
@@ -1665,7 +1668,7 @@ func (tx *Transaction) validateMutation(m Mutation, maxWrite []byte) error {
 // after commit (ReadYourWrites.actor.cpp:1383-1387,1405-1410).
 func (tx *Transaction) Commit(ctx context.Context) error {
 	ctx, release, owned := tx.opContextWithLease(ctx, false)
-	defer release()
+	defer release.release()
 	if owned == nil && tx.readOperation(ctx).lease.isActive() {
 		if err := tx.commitEntryError(ctx); err != nil {
 			return err
@@ -2304,7 +2307,7 @@ func (tx *Transaction) borrowedOnErrorVerdict(caller context.Context, op *readOp
 func (tx *Transaction) OnError(ctx context.Context, err error) (rerr error) {
 	callerCtx := ctx
 	ctx, release, owned := tx.opContextWithLease(ctx, false)
-	defer release()
+	defer release.release()
 	op := tx.readOperation(ctx)
 	if owned == nil && op.lease.isActive() {
 		// Public callers never receive an operation token. An internal

@@ -43,7 +43,7 @@ func TestLeaseActiveObservationDoesNotAcquireAccountingLock(t *testing.T) {
 			tx := &Transaction{}
 			defer tx.Cancel()
 			ctx, cleanup, owned := tx.opContextWithLease(context.Background(), false)
-			defer cleanup()
+			defer cleanup.release()
 			if mode == "released" {
 				owned.release()
 			}
@@ -57,7 +57,7 @@ func TestLeaseActiveObservationDoesNotAcquireAccountingLock(t *testing.T) {
 					return !owned.isActive()
 				default:
 					borrowed, releaseBorrowed, authority := tx.opContextWithLease(ctx, true)
-					releaseBorrowed()
+					releaseBorrowed.release()
 					return borrowed == ctx && authority == nil && tx.readOperation(borrowed).lease == owned
 				}
 			})
@@ -70,7 +70,7 @@ func TestLeaseDrainNotificationPublishesInactiveSingleWinner(t *testing.T) {
 	tx := &Transaction{}
 	defer tx.Cancel()
 	ctx, cleanup, owned := tx.opContextWithLease(context.Background(), true)
-	defer cleanup()
+	defer cleanup.release()
 	inc := tx.readOperation(ctx).inc
 	// Register the same zero-users and zero-issued notifications used by
 	// turnover/Commit. The actual release path must publish and close them.
@@ -141,7 +141,7 @@ func TestAdmissionOwnedBorrowedFreshAndEffectiveLegacy(t *testing.T) {
 	tx := &Transaction{}
 	defer tx.Cancel()
 	ctx, cleanup, owned := tx.opContextWithLease(context.Background(), false)
-	defer cleanup()
+	defer cleanup.release()
 	op := tx.readOperation(ctx)
 	if owned == nil || op.lease != owned {
 		t.Fatal("root did not receive its authoritative token")
@@ -152,13 +152,13 @@ func TestAdmissionOwnedBorrowedFreshAndEffectiveLegacy(t *testing.T) {
 	if borrowed != legacy || borrower != nil || tx.readOperation(borrowed) != op {
 		t.Fatal("nested call changed effective legacy context or acquired release authority")
 	}
-	releaseBorrowed()
+	releaseBorrowed.release()
 	if !owned.isActive() {
 		t.Fatal("borrower's cleanup released the owner")
 	}
 	owned.release()
 	fresh, releaseFresh, next := tx.opContextWithLease(legacy, true)
-	defer releaseFresh()
+	defer releaseFresh.release()
 	freshOp := tx.readOperation(fresh)
 	if next == nil || next == owned || freshOp == op || freshOp.readAdmission != op.readAdmission {
 		t.Fatal("reacquisition changed captured admission or reused released storage")
@@ -167,13 +167,13 @@ func TestAdmissionOwnedBorrowedFreshAndEffectiveLegacy(t *testing.T) {
 	if fresh.Err() != context.Canceled || ctx.Err() != nil || tx.readIncarnationCause(op.inc) != nil || op.parent.Err() != nil {
 		t.Fatal("effective legacy signal was flattened into original caller/incarnation")
 	}
-	cleanup()
-	cleanup() // old whole-operation cleanup must never release a later token
+	cleanup.release()
+	cleanup.release() // old whole-operation cleanup must never release a later token
 	if !next.isActive() || owned.isActive() {
 		t.Fatal("old cleanup affected the fresh token")
 	}
-	releaseFresh()
-	releaseFresh()
+	releaseFresh.release()
+	releaseFresh.release()
 	tx.readErrMu.Lock()
 	users, issued := op.inc.users, op.inc.issuedReads
 	tx.readErrMu.Unlock()
@@ -182,7 +182,7 @@ func TestAdmissionOwnedBorrowedFreshAndEffectiveLegacy(t *testing.T) {
 	}
 	tx.Reset()
 	_, releaseStale, stale := tx.opContextWithLease(ctx, false)
-	defer releaseStale()
+	defer releaseStale.release()
 	if stale != nil {
 		t.Fatal("retired admission acquired successor authority")
 	}
@@ -193,7 +193,7 @@ func TestBorrowedRangeOwnsOnlyItsIssuedRegistration(t *testing.T) {
 	tx := &Transaction{db: &database{}}
 	defer tx.Cancel()
 	ctx, cleanup, owned := tx.opContextWithLease(context.Background(), false)
-	defer cleanup()
+	defer cleanup.release()
 	op := tx.readOperation(ctx)
 	r := tx.issueRange(ctx, []byte("a"), []byte("z"), 0, 0, false, false)
 	if r.finished || r.local || r.inc != op.inc {
@@ -227,10 +227,10 @@ func TestAdmissionFreshTokenPreservesEntryAndCompletionOrder(t *testing.T) {
 	entry := &wire.FDBError{Code: 2006}
 	tx.deferredErr.Store(entry)
 	ctx, cleanup, owned := tx.opContextWithLease(caller, false)
-	defer cleanup()
+	defer cleanup.release()
 	owned.release()
 	next, releaseNext, fresh := tx.opContextWithLease(ctx, false)
-	defer releaseNext()
+	defer releaseNext.release()
 	if fresh == nil || fresh == owned {
 		t.Fatal("no fresh resolver authority")
 	}
@@ -293,7 +293,7 @@ func TestPreparedResolveCannotStealBorrowedOwner(t *testing.T) {
 	tx := &Transaction{}
 	defer tx.Cancel()
 	ctx, cleanup, owned := tx.opContextWithLease(context.Background(), false)
-	defer cleanup()
+	defer cleanup.release()
 	pending := tx.PrepareCommit(ctx)
 	requireScopeCode(t, pending.Resolve(), 2000)
 	if !owned.isActive() || pending.completion.ready || tx.readIncarnationCause(owned.inc) != nil {
@@ -334,7 +334,7 @@ func TestCommitOwnedAndPreparedTokenHandoff(t *testing.T) {
 			tx := &Transaction{}
 			defer tx.Cancel()
 			ctx, cleanup, owned := tx.opContextWithLease(context.Background(), false)
-			defer cleanup()
+			defer cleanup.release()
 			op := tx.readOperation(ctx)
 			var err error
 			if mode == "owned" {
@@ -363,7 +363,7 @@ func TestCommitOwnedAndPreparedTokenHandoff(t *testing.T) {
 			} else if err != nil {
 				t.Errorf("commit handoff: %v", err)
 			}
-			cleanup()
+			cleanup.release()
 			owned.release()
 			tx.readErrMu.Lock()
 			users, issued, generation := op.inc.users, op.inc.issuedReads, tx.readGen
