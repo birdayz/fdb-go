@@ -376,3 +376,75 @@ func TestGRVBatchersSeparateFullFlags(t *testing.T) {
 		t.Fatal("reply latency crossed full-flags batcher boundaries")
 	}
 }
+
+// A batch's storage is reused only after its flush has published to every
+// waiter: while batch A is still publishing, later batches C and B reuse each
+// other's storage, never A's, and A's waiter descriptors stay intact.
+func TestGRVBatchReuseOverlapsPublication(t *testing.T) {
+	t.Parallel()
+	b, _, c := testBatcher(1, time.Millisecond) // a request in flight: every batch opens a window
+	batchOf := func(reqs ...grvRequest) []grvRequest {
+		for _, req := range reqs {
+			if b.admit(nil, req) != nil {
+				t.Fatal("windowed request was sent at once")
+			}
+		}
+		return expireWindow(b, c)
+	}
+	recv := func(ch chan grvResult, who string) grvResult {
+		t.Helper()
+		select {
+		case result := <-ch:
+			return result
+		case <-time.After(10 * time.Second):
+			t.Fatalf("%s received no reply", who)
+			return grvResult{}
+		}
+	}
+	spare := func() []grvRequest {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		return b.spare
+	}
+	// Without a database each flush panics before dispatch and its backstop
+	// publishes an error to every waiter; unbuffered replies hold A there.
+	a1, a2 := grvRequest{reply: make(chan grvResult)}, grvRequest{reply: make(chan grvResult)}
+	batchA := batchOf(a1, a2)
+	publishedA := make(chan struct{})
+	go func() { defer close(publishedA); b.flush(nil, batchA) }()
+	if result := recv(a1.reply, "first waiter of A"); result.err == nil {
+		t.Fatal("first waiter of A received no error")
+	}
+
+	batchC := batchOf(batchRequest(), batchRequest())
+	b.flush(nil, batchC)
+	if got := spare(); cap(got) == 0 || &got[:1][0] != &batchC[0] {
+		t.Fatal("C's storage was not kept after its flush")
+	}
+	b1, b2 := batchRequest(), batchRequest()
+	batchB := batchOf(b1, b2)
+	if &batchB[0] != &batchC[0] || &batchB[0] == &batchA[0] || spare() != nil {
+		t.Fatal("B did not take C's storage, or took A's while A was publishing")
+	}
+	if batchA[0].reply != a1.reply || batchA[1].reply != a2.reply {
+		t.Fatal("a later batch overwrote A while it was publishing")
+	}
+
+	if result := recv(a2.reply, "second waiter of A"); result.err == nil {
+		t.Fatal("second waiter of A received no error")
+	}
+	<-publishedA
+	if got := spare(); cap(got) == 0 || &got[:1][0] != &batchA[0] || batchA[0].reply != nil || batchA[1].reply != nil {
+		t.Fatal("A's storage was not kept, cleared, once it had published")
+	}
+	b.flush(nil, batchB)
+	if recv(b1.reply, "B").err == nil || recv(b2.reply, "B").err == nil {
+		t.Fatal("B's waiters received no error")
+	}
+	if got := spare(); &got[:1][0] != &batchA[0] || batchB[0].reply != nil {
+		t.Fatal("B replaced the kept spare or kept its waiters")
+	}
+	if b.inFlight != 1 {
+		t.Fatalf("inFlight = %d, want the initial 1", b.inFlight)
+	}
+}
