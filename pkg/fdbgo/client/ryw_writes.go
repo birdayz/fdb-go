@@ -53,21 +53,18 @@ type rywWrites struct {
 
 	// nodes are the C++ WriteMap's nodes: the write-side segment boundaries (D1b).
 	nodes rywNodes
-	// hasNodes is false for a private span copy (captureWriteSpanLocked), which keeps
-	// the legacy boundary sources until phase 3 deletes the old range loop (D2).
-	hasNodes bool
 
 	// pins counts the reads holding this version.
 	pins int
 }
 
-func newRYWWrites() *rywWrites { return &rywWrites{hasNodes: true} }
+func newRYWWrites() *rywWrites { return &rywWrites{} }
 
 // liveLocked is the live version, created on first use in the cache itself (no
 // allocation). Caller holds c.mu.
 func (c *rywCache) liveLocked() *rywWrites {
 	if c.w == nil {
-		c.base = rywWrites{hasNodes: true}
+		c.base = rywWrites{}
 		c.w = &c.base
 	}
 	return c.w
@@ -81,10 +78,19 @@ func (c *rywCache) resetWritesLocked() {
 		return // liveLocked starts the cache's own version
 	}
 	if c.w.pins == 0 {
-		*c.w = rywWrites{hasNodes: true}
-		return
+		*c.w = rywWrites{}
+	} else {
+		c.w = newRYWWrites()
 	}
-	c.w = newRYWWrites()
+	c.dropObsoleteBaseLocked()
+}
+
+// withLock runs fn holding c.mu, released even if fn panics: a recovered panic
+// must not leave the cache locked for the read's complete() or a later write.
+func (c *rywCache) withLock(fn func()) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	fn()
 }
 
 // pinWritesLocked pins the live version for a read that will outlive the
@@ -107,6 +113,23 @@ func (c *rywCache) unpinWritesLocked(w *rywWrites) {
 	if c.onPin != nil {
 		c.onPin(w, false)
 	}
+	c.dropObsoleteBaseLocked()
+}
+
+// dropObsoleteBaseLocked empties the cache's embedded first version once it is
+// neither live nor pinned, so its snapshot is not kept for the transaction's
+// life (a heap version is collected instead). C++ releases a WriteMap version
+// with its last iterator, and reset drops the map (RYW:2704-2706).
+func (c *rywCache) dropObsoleteBaseLocked() {
+	if c.w != &c.base && c.base.pins == 0 && !c.base.empty() {
+		c.base = rywWrites{}
+	}
+}
+
+// empty reports a version holding nothing (a zero rywWrites).
+func (w *rywWrites) empty() bool {
+	return w.writes == nil && w.sortedKeys == nil && w.cleared == nil && w.unreadableRanges == nil &&
+		w.unreadableKeys == nil && w.nodes.sorted == nil && w.nodes.log == nil
 }
 
 // mutableWritesLocked is the live version, cloned first if a read pins it. Every
@@ -135,7 +158,6 @@ func (w *rywWrites) clone() *rywWrites {
 		unreadableKeys:   slices.Clone(w.unreadableKeys),
 		bypassUnreadable: w.bypassUnreadable,
 		nodes:            w.nodes.clone(),
-		hasNodes:         w.hasNodes,
 	}
 	for k, e := range n.writes {
 		if e.hasAtomics {

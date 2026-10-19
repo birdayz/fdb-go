@@ -110,6 +110,14 @@ func (h *ReplyHandle) KeepReadyOrCancel() bool {
 	return false
 }
 
+// NotifyWait marks suspension only when the response is not already published.
+// The caller owns the handle and has not received from its channel yet.
+func (h *ReplyHandle) NotifyWait(ctx context.Context) {
+	if len(h.ch) == 0 {
+		NotifySuspend(ctx)
+	}
+}
+
 // Release returns the handle to the pool. Call EITHER after a successful receive
 // (no Cancel) OR after Cancel. On the success path h.ch is still set and is
 // pooled here: response publication and token deletion share pendingMu, in that
@@ -649,7 +657,7 @@ func (c *Conn) SendFrame(destToken UID, body []byte) error {
 	if direct, err := c.tryWriteDirect(destToken, body); direct {
 		return err
 	}
-	if took, err := c.takeTurn(destToken, body); took {
+	if took, err := c.takeTurn(context.Background(), destToken, body); took {
 		return err
 	}
 	errCh := errChanPool.Get().(chan error)

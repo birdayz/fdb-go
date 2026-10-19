@@ -20,9 +20,8 @@ import (
 // against NativeAPI getRange (NativeAPI.actor.cpp:4596-4893), with the shard
 // map the client used read back from its location cache. Replies are held or
 // rewritten by the simulated transport (simDialer). Subtests share one
-// recorder and dialer, so they run in sequence. Data distribution can move a
-// shard under a case, so a case is retried; a deterministic failure fails
-// every attempt.
+// recorder and dialer, so they run in sequence. Assertions fail immediately:
+// topology churn is not a reason to retry an arbitrary semantic failure.
 func TestNativeGetRange(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
@@ -51,18 +50,44 @@ func TestNativeGetRange(t *testing.T) {
 		{"fallback/trivial-bounds", ne.fallbackTrivialBounds},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			for attempt := 1; ; attempt++ {
-				err := c.run(t)
-				if err == nil {
-					return
-				}
-				if attempt == 3 {
-					t.Fatal(err)
-				}
-				t.Logf("attempt %d: %v", attempt, err)
-				ne.db.db.locCache.invalidateRange([]byte{}, allKeysEnd, NoTenantID)
+			if err := c.run(t); err != nil {
+				t.Fatal(err)
 			}
 		})
+	}
+}
+
+// Exercise the resolver's own goroutine backstop through a real location send,
+// not a panic in the parent range worker after a storage reply.
+func TestNativeResolveKeyLocationPanic(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	db, _ := newSimTestDB(t, ctx)
+	tx := db.CreateTransaction()
+	defer tx.Cancel()
+	rv, err := tx.GetReadVersion(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hook := func() { panic("resolver afterLocationSend") }
+	db.db.afterLocationSend.Store(&hook)
+	defer db.db.afterLocationSend.Store(nil)
+	done := make(chan error, 1)
+	go func() {
+		_, err := tx.nativeGetRangeFallback(ctx, KeySelector{Key: []byte("rfc262/resolver-panic"), Offset: 2}, firstGreaterOrEqual(allKeysEnd), newRangeLimits(1, -1), rv, false)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if code, _ := fdbErrorCode(err); code != ErrInternalError {
+			t.Fatalf("resolver panic = %v, want internal_error (4100)", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("resolver panic stranded fallback")
+	}
+	if n := db.db.resolveKeyPanics.consecutive.Load(); n != 1 {
+		t.Fatalf("resolver backstop caught %d panics, want exactly one", n)
 	}
 }
 

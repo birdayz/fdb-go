@@ -28,7 +28,7 @@ func (sn Snapshot) Get(key KeyConvertible) FutureByteSlice {
 func (sn Snapshot) GetKey(sel Selectable) FutureKey {
 	inner, ctx := sn.s.tx.inner, sn.s.tx.ctx
 	ks := sel.FDBKeySelector()
-	key := bytes.Clone(ks.Key.FDBKey())
+	key := ks.Key.FDBKey() // StartGetKey takes its own copy
 	// OrEqual values match the wire convention. Pass directly. Issued in the call,
 	// like fdb_transaction_get_key: a later write is not visible to it.
 	p := inner.Snapshot().StartGetKey(ctx, client.KeySelector{Key: key, OrEqual: ks.OrEqual, Offset: int32(ks.Offset)})

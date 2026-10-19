@@ -69,7 +69,7 @@ func (c *Conn) writeContext(ctx context.Context, token UID, body []byte, flush b
 		if direct, err := c.tryWriteDirect(token, body); direct {
 			return true, err
 		}
-		if took, err := c.takeTurn(token, body); took {
+		if took, err := c.takeTurn(ctx, token, body); took {
 			return true, err
 		}
 	}
@@ -81,6 +81,12 @@ func (c *Conn) writeContext(ctx context.Context, token UID, body []byte, flush b
 		completion.release() // ownership never transferred to the writer
 		return false, err
 	}
+	select {
+	case err := <-completion.done:
+		return true, err // an already-acknowledged flush does not suspend
+	default:
+	}
+	NotifySuspend(ctx) // queued in order; the sender now waits for the flush
 	select {
 	case err := <-completion.done:
 		return true, err
@@ -136,6 +142,10 @@ func (c *Conn) enqueueOwned(ctx context.Context, request writeReq) (bool, error)
 	if c.writeClosed || c.ctx.Err() != nil {
 		return false, errConnClosed
 	}
+	if c.tryEnqueue(request) {
+		return true, nil
+	}
+	NotifySuspend(ctx) // a full queue: the sender waits before its frame is queued
 	if c.enqueue(request, ctx.Done()) {
 		return true, nil
 	}

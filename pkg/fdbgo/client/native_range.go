@@ -4,9 +4,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"sync"
-	"sync/atomic"
 
+	"fdb.dev/pkg/fdbgo/transport"
 	"fdb.dev/pkg/fdbgo/wire"
 )
 
@@ -272,7 +271,7 @@ func (tx *Transaction) nativeGetRangeFallback(ctx context.Context, begin, end Ke
 	// resolveKey(begin) runs to its first wait before resolveKey(end) is
 	// created (:4465-4466); parked marks that wait.
 	fb, parked := tx.startResolveKey(rctx, begin, readVersion)
-	<-parked
+	<-parked // closed on begin's first wait, or when its goroutine ends
 	fe, _ := tx.startResolveKey(rctx, end, readVersion)
 	defer func() { // an abandoned resolution ends with the call
 		cancel()
@@ -337,11 +336,30 @@ func (tx *Transaction) startResolveKey(ctx context.Context, sel KeySelector, rv 
 	fut = &keyFuture{done: make(chan struct{})}
 	pctx, park := withParkSignal(ctx)
 	go func() {
-		defer park.fire()
-		fut.key, _, fut.err = tx.getKeyImpl(pctx, rv, sel.Key, sel.OrEqual, sel.Offset)
-		close(fut.done)
+		// A client goroutine boundary (panicbackstop.go): every exit publishes the
+		// result and closes done and parked, so the fallback's wait and cleanup
+		// cannot be stranded; a panic fails the resolution with internal_error.
+		defer park.Fire()
+		defer close(fut.done)
+		if tx.resolveKeyBackstop().run(func() {
+			if fn := tx.resolveKeyFn; fn != nil {
+				fut.key, fut.err = fn(pctx, sel, rv)
+				return
+			}
+			fut.key, _, fut.err = tx.getKeyImpl(pctx, rv, sel.Key, sel.OrEqual, sel.Offset)
+		}) {
+			fut.key, fut.err = nil, &wire.FDBError{Code: ErrInternalError}
+		}
 	}()
-	return fut, park.ch
+	return fut, park.Done()
+}
+
+// resolveKeyBackstop recovers a panic in a fallback's resolveKey goroutine.
+func (tx *Transaction) resolveKeyBackstop() *panicBackstop {
+	if tx.db == nil {
+		return &panicBackstop{name: "resolveKey"}
+	}
+	return &tx.db.resolveKeyPanics
 }
 
 // getRangeFinishedConflict is the read conflict range getRangeFinished sends
@@ -380,41 +398,16 @@ func getRangeFinishedConflict(begin, end KeySelector, r *nativeRangeResult, reve
 	return [2][]byte{rangeBegin, rangeEnd}
 }
 
-// The park seam. Flow runs resolveKey(begin) until its first wait before it
-// creates resolveKey(end) (:4465-4466); a goroutine has no such point, so the
-// goroutine resolving begin carries a parkSignal in its context and the read
-// path fires it where the goroutine would wait: after a request frame is
-// written (sendReadFrame: a location lookup or GetKeyRequest) and on a delay
-// (sleepCtx). parkWatchers counts unfired signals, so with none live the seam
-// is one atomic load.
-var parkWatchers atomic.Int32
-
-type parkSignalKey struct{}
-
-type parkSignal struct {
-	once sync.Once
-	ch   chan struct{}
-}
-
-func withParkSignal(ctx context.Context) (context.Context, *parkSignal) {
-	p := &parkSignal{ch: make(chan struct{})}
-	parkWatchers.Add(1)
-	return context.WithValue(ctx, parkSignalKey{}, p), p
-}
-
-func (p *parkSignal) fire() {
-	p.once.Do(func() {
-		parkWatchers.Add(-1)
-		close(p.ch)
-	})
+// The park seam. Flow runs resolveKey(begin) until its first wait that is not
+// ready before it creates resolveKey(end) (:4465-4466); a goroutine has no such
+// point, so the goroutine resolving begin carries a transport.SuspendSignal and
+// every wait on its path fires it before blocking (transport/suspend.go): the
+// dial wait (getOrDialConn), a full write queue, the flush acknowledgment, the
+// writer turn, the reply wait (sendReadFrame), location backoff and delays
+// (sleepCtx). On a ready path the frame is queued, in order, before the signal.
+func withParkSignal(ctx context.Context) (context.Context, *transport.SuspendSignal) {
+	return transport.WithSuspendSignal(ctx)
 }
 
 // notifyParked fires ctx's park signal, if it carries one.
-func notifyParked(ctx context.Context) {
-	if parkWatchers.Load() == 0 {
-		return
-	}
-	if p, ok := ctx.Value(parkSignalKey{}).(*parkSignal); ok {
-		p.fire()
-	}
-}
+func notifyParked(ctx context.Context) { transport.NotifySuspend(ctx) }

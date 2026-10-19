@@ -384,7 +384,9 @@ type database struct {
 	afterLocationSend atomic.Pointer[func()]
 	// rangeReadPanics is the RFC-110 backstop shared by this database's range reads.
 	rangeReadPanics panicBackstop
-	maxWatches      atomic.Int64
+	// resolveKeyPanics is the getRange fallback resolveKey goroutines' backstop.
+	resolveKeyPanics panicBackstop
+	maxWatches       atomic.Int64
 
 	// Lifecycle.
 	ctx       context.Context
@@ -557,6 +559,11 @@ func (db *database) getOrDialConn(ctx context.Context, addr string) (conn *trans
 
 	// Every caller — owner included — waits the same way: a caller's ctx cancels
 	// only its own wait, never the shared dial.
+	select {
+	case <-call.done: // a dial that already finished is not a wait
+	default:
+		notifyParked(ctx) // the caller waits for the dial (and its handshake)
+	}
 	select {
 	case <-call.done:
 		if call.err != nil {
@@ -933,6 +940,7 @@ func OpenDatabaseFromConfig(ctx context.Context, cf *ClusterFile, opts ...Option
 	}
 
 	db.rangeReadPanics.name, db.rangeReadPanics.db = "rangeRead", db
+	db.resolveKeyPanics.name, db.resolveKeyPanics.db = "resolveKey", db
 	db.hedgeEnabled.Store(true)                       // default: hedge on (matches C++)
 	db.maxWatches.Store(defaultMaxOutstandingWatches) // C++ DEFAULT_MAX_OUTSTANDING_WATCHES (10000)
 

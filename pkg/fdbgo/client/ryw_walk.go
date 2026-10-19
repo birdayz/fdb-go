@@ -246,15 +246,16 @@ func (w *rywWalk) resumeLoopKey(resolved []byte, err error) {
 // resumeStorageLocked continues after a storage read: insert the reply into the
 // snapshot cache (U9) and re-resolve both selectors (U10), then the loop.
 func (w *rywWalk) resumeStorageLocked(r nativeRangeResult, err error) {
-	if err != nil {
-		w.fail(err)
-		return
-	}
 	if w.gen != w.c.gen {
 		// The transaction was reset while the read waited: C++ kills the read through
-		// resetPromise (RYW:358-364), so its reply never reaches the new cache. The
-		// read fails with its incarnation's cause (mapReadError).
+		// resetPromise, which wins over whatever the storage read returns
+		// (readWithConflictRangeRYW's choose, RYW:378-395), so its reply never reaches
+		// the new cache. The read fails with its incarnation's cause (mapReadError).
 		w.fail(context.Canceled)
+		return
+	}
+	if err != nil {
+		w.fail(err)
 		return
 	}
 	var b, e []byte
@@ -285,14 +286,10 @@ func (w *rywWalk) run(ctx context.Context, native nativeRangeFunc) error {
 		switch w.pc {
 		case pcAwaitStorage:
 			res, err := native(ctx, w.req.begin, w.req.end, w.req.limits, w.reverse) // U8 / U8'
-			c.mu.Lock()
-			w.resumeStorageLocked(res, err)
-			c.mu.Unlock()
+			c.withLock(func() { w.resumeStorageLocked(res, err) })
 		case pcAwaitPreKey:
 			err := w.sub.run(ctx, native)
-			c.mu.Lock()
-			w.resumePreKeyLocked(w.sub.keyResult(), err)
-			c.mu.Unlock()
+			c.withLock(func() { w.resumePreKeyLocked(w.sub.keyResult(), err) })
 		case pcAwaitLoopKey:
 			err := w.sub.run(ctx, native)
 			w.resumeLoopKey(w.sub.keyResult(), err)

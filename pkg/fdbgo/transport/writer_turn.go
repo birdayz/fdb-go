@@ -1,6 +1,9 @@
 package transport
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // maxTurnDelay bounds the wait a sender makes on its own goroutine, jitter
 // included. The wait does not observe the sender's context, so a connection
@@ -40,7 +43,7 @@ func turnWaitWithin(minDelay, maxDelay, limit time.Duration) bool {
 // takeTurn reports false, having done nothing, when the connection is busy or
 // cannot take turns. Otherwise it returns once the batch is written or handed
 // to writeLoop, or the connection fails.
-func (c *Conn) takeTurn(token UID, body []byte) (bool, error) {
+func (c *Conn) takeTurn(ctx context.Context, token UID, body []byte) (bool, error) {
 	if c.raw == nil || c.coalesce == nil || c.queued.Load() != 0 ||
 		!turnWaitWithin(c.minCoalesce, c.maxCoalesce, c.turnDelayLimit) {
 		return false, nil
@@ -62,6 +65,7 @@ func (c *Conn) takeTurn(token UID, body []byte) (bool, error) {
 	c.turnCollecting = true
 	c.turnMu.Unlock()
 
+	NotifySuspend(ctx) // the frame holds its turn; the sender waits out the coalescing delay
 	c.coalesceWait(time.Since(c.lastWrite))
 
 	c.turnMu.Lock()

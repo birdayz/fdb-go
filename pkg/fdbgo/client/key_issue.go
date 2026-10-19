@@ -52,25 +52,38 @@ func (tx *Transaction) issueKey(parent context.Context, sel KeySelector, snapsho
 		r.disabled = true
 	} else {
 		c := &tx.ryw
-		c.mu.Lock()
-		var view *rywWrites
-		if !snapshot || tx.snapshotRYWDisableCount <= 0 {
-			view = c.liveLocked() // RYWIterator (A2.3); nil: SnapshotCache::iterator (A2.2)
-		}
-		r.walk = c.newGetKeyWalkLocked(view, sel, tx.maxReadKey())
-		r.walk.startLocked()
-		switch {
-		case r.walk.done():
-			r.local = true
-			if r.walk.err == nil && !snapshot && !isSpecialKey(sel.Key) {
-				if b, e := getKeyConflictSpan(sel, r.walk.keyResult()); bytes.Compare(b, e) < 0 {
-					r.localConflicts = view.conflictRanges(b, e)
+		var panicked bool
+		c.withLock(func() {
+			// The walk runs to its first wait here, on the caller's goroutine: a panic
+			// fails the read (RFC-110) and leaves nothing locked, pinned or leased.
+			panicked = tx.rangeReadBackstop().run(func() {
+				var view *rywWrites
+				if !snapshot || tx.snapshotRYWDisableCount <= 0 {
+					view = c.liveLocked() // RYWIterator (A2.3); nil: SnapshotCache::iterator (A2.2)
 				}
+				r.walk = c.newGetKeyWalkLocked(view, sel, tx.maxReadKey())
+				r.walk.onRequest = tx.walkOnRequest
+				r.walk.startLocked()
+				switch {
+				case r.walk.done():
+					r.local = true
+					if r.walk.err == nil && !snapshot {
+						if b, e := getKeyConflictSpan(sel, r.walk.keyResult()); bytes.Compare(b, e) < 0 {
+							r.localConflicts = view.conflictRanges(b, e)
+						}
+					}
+				case view != nil:
+					r.view = c.pinWritesLocked()
+				}
+			})
+			if panicked && r.view != nil {
+				c.unpinWritesLocked(r.view)
+				r.view = nil
 			}
-		case view != nil:
-			r.view = c.pinWritesLocked()
+		})
+		if panicked {
+			return r.finish(nil, tx.trackReadOperation(ctx, &wire.FDBError{Code: ErrInternalError}))
 		}
-		c.mu.Unlock()
 	}
 	if !counted && !r.local {
 		r.inc = tx.enterIssuedRead(ctx) // a borrowed operation's lease does not count
@@ -106,7 +119,7 @@ func (r *keyRead) read() ([]byte, error) {
 		if err != nil {
 			return nil, tx.trackReadOperation(ctx, err)
 		}
-		if !r.snapshot && !isSpecialKey(sel.Key) {
+		if !r.snapshot { // getKeyAndConflictRange (NAPI:5761-5787)
 			tx.addGetKeyConflictRange(sel.Key, sel.OrEqual, sel.Offset, resolved)
 		}
 		// readThrough(GetKeyReq) clamps the returned key to getMaxReadKey (RYW:182-183);
@@ -129,6 +142,11 @@ func (r *keyRead) read() ([]byte, error) {
 			if r.afterReply != nil {
 				r.afterReply()
 			}
+			// resetPromise wins while the read is suspended (RYW:378-395). Reset
+			// retires this incarnation before waiting for our lease or resetting c.gen.
+			if op := tx.readOperation(ctx); op != nil && tx.readIncarnationCause(op.inc) != nil {
+				return nativeRangeResult{}, context.Canceled
+			}
 			return res, err
 		}
 		if err := r.walk.run(ctx, native); err != nil {
@@ -138,15 +156,13 @@ func (r *keyRead) read() ([]byte, error) {
 		return nil, tx.trackReadOperation(ctx, r.walk.err)
 	}
 	key := bytes.Clone(r.walk.keyResult())
-	if !r.snapshot && !isSpecialKey(sel.Key) {
+	if !r.snapshot { // RYW getKey adds its conflict for every key (RYW:1695-1709, 230-243)
 		if r.local {
 			tx.addReadConflicts(r.localConflicts)
 		} else if b, e := getKeyConflictSpan(sel, key); bytes.Compare(b, e) < 0 {
 			// Filtered through the read's own version (RYW:388, 322-351).
-			c := &tx.ryw
-			c.mu.Lock()
-			ranges := r.view.conflictRanges(b, e)
-			c.mu.Unlock()
+			var ranges [][2][]byte
+			tx.ryw.withLock(func() { ranges = r.view.conflictRanges(b, e) })
 			tx.addReadConflicts(ranges)
 		}
 	}
@@ -158,33 +174,32 @@ func (r *keyRead) read() ([]byte, error) {
 func (r *keyRead) complete() {
 	if r.view != nil {
 		c := &r.tx.ryw
-		c.mu.Lock()
-		c.unpinWritesLocked(r.view)
+		c.withLock(func() { c.unpinWritesLocked(r.view) })
 		r.view = nil
-		c.mu.Unlock()
 	}
 	r.tx.leaveIssuedRead(r.inc)
 	r.release()
 }
 
-// getKeyConflictSpan is addConflictRange(GetKeyReq) (RYW:230-243): the span between
-// the caller's selector and the resolved key.
+// getKeyConflictSpan is addConflictRange(GetKeyReq) (RYW:230-243), and NativeAPI
+// getKeyAndConflictRange's span (NAPI:5767-5770): between the caller's selector
+// and the resolved key, with C++ keyAfter, which leaves \xff\xff unchanged.
 func getKeyConflictSpan(sel KeySelector, resolved []byte) (begin, end []byte) {
 	if sel.Offset <= 0 {
 		begin = resolved
 		if sel.OrEqual {
-			end = keyAfterBytes(sel.Key)
+			end = keyAfterSelectorKey(sel.Key)
 		} else {
 			end = sel.Key
 		}
 		return begin, end
 	}
 	if sel.OrEqual {
-		begin = keyAfterBytes(sel.Key)
+		begin = keyAfterSelectorKey(sel.Key)
 	} else {
 		begin = sel.Key
 	}
-	return begin, keyAfterBytes(resolved)
+	return begin, keyAfterSelectorKey(resolved)
 }
 
 // PendingKey is a started getKey, like the future fdb_transaction_get_key returns.
@@ -228,6 +243,9 @@ func (s *Snapshot) StartGetKey(ctx context.Context, sel KeySelector) *PendingKey
 }
 
 func (tx *Transaction) startKey(ctx context.Context, sel KeySelector, snapshot bool) *PendingKey {
+	// The read outlives the call, so it owns its selector: C++ copies the
+	// KeySelector before dispatch (ThreadSafeTransaction.cpp:436-442).
+	sel.Key = bytes.Clone(sel.Key)
 	r := tx.issueKey(ctx, sel, snapshot)
 	if r.finished || r.local {
 		p := &PendingKey{done: closedDone}

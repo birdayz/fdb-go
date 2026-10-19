@@ -498,6 +498,7 @@ func (lc *locationCache) queryLocations(db *database, ctx context.Context, tenan
 				backoff = loadBalanceStartBackoff
 			}
 			timer := time.NewTimer(backoff)
+			notifyParked(ctx) // a delay is a wait
 			select {
 			case <-timer.C:
 				backoff = time.Duration(math.Min(float64(backoff)*loadBalanceBackoffRate, float64(loadBalanceMaxBackoff)))
@@ -517,6 +518,7 @@ func (lc *locationCache) queryLocations(db *database, ctx context.Context, tenan
 
 		if backoff > 0 {
 			timer := time.NewTimer(backoff)
+			notifyParked(ctx) // a delay is a wait
 			select {
 			case <-timer.C:
 			case <-db.waitProxiesChanged():

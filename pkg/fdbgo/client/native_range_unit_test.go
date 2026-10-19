@@ -384,45 +384,33 @@ func TestStartResolveKeyTrivial(t *testing.T) {
 }
 
 // The park seam fires the signal its context carries, once, and only that one.
-// Not parallel: parkWatchers is process-wide.
 func TestParkSignal(t *testing.T) {
-	if n := parkWatchers.Load(); n != 0 {
-		t.Fatalf("parkWatchers = %d before the test", n)
-	}
+	t.Parallel()
 	notifyParked(context.Background()) // no signal: a no-op
 
 	ctx, p := withParkSignal(context.Background())
 	other, q := withParkSignal(context.Background())
-	if n := parkWatchers.Load(); n != 2 {
-		t.Fatalf("parkWatchers = %d, want 2", n)
-	}
 	derived, cancel := context.WithCancel(ctx)
 	defer cancel()
 	notifyParked(derived)
 	select {
-	case <-p.ch:
+	case <-p.Done():
 	default:
 		t.Fatal("signal in a derived context did not fire")
 	}
 	select {
-	case <-q.ch:
+	case <-q.Done():
 		t.Fatal("another context's signal fired")
 	default:
 	}
-	notifyParked(derived) // a second fire must not close twice
-	if n := parkWatchers.Load(); n != 1 {
-		t.Fatalf("parkWatchers = %d after one fire, want 1", n)
-	}
+	notifyParked(derived)                      // a second fire must not close twice
 	if err := sleepCtx(other, 0); err != nil { // a delay parks too
 		t.Fatal(err)
 	}
 	select {
-	case <-q.ch:
+	case <-q.Done():
 	default:
 		t.Fatal("sleepCtx did not fire the signal")
 	}
-	q.fire()
-	if n := parkWatchers.Load(); n != 0 {
-		t.Fatalf("parkWatchers = %d, want 0", n)
-	}
+	q.Fire()
 }

@@ -193,7 +193,9 @@ func (c *rywCache) setWith(key, value []byte, addConflict bool) {
 	// unreadable entry the Set is pushed and :141 keeps the flag).
 	prev, exists := w.writes[string(key)]
 	k := string(key) // one copy serves the map, the sorted index and the nodes
-	w.nodes.mutate(stringBytes(k), addConflict, false)
+	if nodeKey(key) {
+		w.nodes.mutate(stringBytes(k), addConflict, false)
+	}
 	w.writes[k] = rywEntry{value: copied, unreadable: prev.unreadable}
 	if !exists {
 		w.insertSortedKey(k)
@@ -211,7 +213,9 @@ func (c *rywCache) clearWith(key []byte, addConflict bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	w := c.mutableWritesLocked()
-	w.nodes.clear(bytes.Clone(key), keyAfterBytes(key), addConflict)
+	if b, e, ok := nodeRange(key, keyAfterBytes(key)); ok {
+		w.nodes.clear(b, e, addConflict)
+	}
 	// Remove from writes.
 	if e, existed := w.writes[string(key)]; existed {
 		delete(w.writes, string(key))
@@ -240,7 +244,9 @@ func (c *rywCache) clearRangeWith(begin, end []byte, addConflict bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	w := c.mutableWritesLocked()
-	w.nodes.clear(bytes.Clone(begin), bytes.Clone(end), addConflict)
+	if b, e, ok := nodeRange(begin, end); ok {
+		w.nodes.clear(b, e, addConflict)
+	}
 	// Search the sorted index rather than scanning unaffected map entries.
 	if len(w.writes) > 0 {
 		w.ensureSorted()
@@ -486,7 +492,9 @@ func (c *rywCache) atomicWith(op MutationType, key, param []byte, addConflict bo
 		w.writes = make(map[string]rywEntry)
 	}
 	k := string(key)
-	w.nodes.mutate(stringBytes(k), addConflict, isUnresolvedVersionstamp(op)) // WriteMap.cpp:87-158
+	if nodeKey(key) {
+		w.nodes.mutate(stringBytes(k), addConflict, isUnresolvedVersionstamp(op)) // WriteMap.cpp:87-158
+	}
 	entry, exists := w.writes[k]
 	// Versionstamped mutations can NEVER be folded into a plain entry: the 10-byte
 	// stamp is assigned at commit, so the resolved key/value is unknown client-side.
@@ -1869,8 +1877,28 @@ func (c *rywCache) addUnreadableRange(begin, end []byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	w := c.mutableWritesLocked()
-	w.nodes.addUnmodifiedAndUnreadableRange(bytes.Clone(begin), bytes.Clone(end)) // RYW:2272
+	if b, e, ok := nodeRange(begin, end); ok {
+		w.nodes.addUnmodifiedAndUnreadableRange(b, e) // RYW:2272
+	}
 	w.addUnreadableRange(begin, end)
+}
+
+// nodeKey reports a key inside the keyspace the write map's nodes cover. C++
+// rejects every write and conflict range past getMaxWriteKey before it reaches
+// the write map (RYW:2353, 2466-2468); Go buffers an illegal Set or Clear until
+// commit, so the nodes skip what lies at or past the \xff\xff sentinel.
+func nodeKey(key []byte) bool { return bytes.Compare(key, allKeysEnd) < 0 }
+
+// nodeRange is [begin, end) clipped to the nodes' keyspace, copied for the nodes
+// (which keep their keys); ok is false when nothing remains.
+func nodeRange(begin, end []byte) (b, e []byte, ok bool) {
+	if bytes.Compare(end, allKeysEnd) > 0 {
+		end = allKeysEnd
+	}
+	if bytes.Compare(begin, end) >= 0 {
+		return nil, nil, false
+	}
+	return bytes.Clone(begin), bytes.Clone(end), true
 }
 
 // addConflictRange is RYW addWriteConflictRange with RYW enabled: conflict-only
@@ -1879,7 +1907,9 @@ func (c *rywCache) addUnreadableRange(begin, end []byte) {
 func (c *rywCache) addConflictRange(begin, end []byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.mutableWritesLocked().nodes.addConflictRange(bytes.Clone(begin), bytes.Clone(end))
+	if b, e, ok := nodeRange(begin, end); ok {
+		c.mutableWritesLocked().nodes.addConflictRange(b, e)
+	}
 }
 
 // setBypassUnreadable mirrors FDB_TR_OPTION_BYPASS_UNREADABLE.

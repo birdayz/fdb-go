@@ -325,6 +325,12 @@ type txOptions struct {
 	// nativeRange, when set, replaces nativeGetRange under the RYW walk (a test seam
 	// for hermetic walk and pin-lifecycle tests).
 	nativeRange nativeRangeFunc
+	// walkOnRequest, when set, sees each storage request a getKey walk builds (a
+	// test seam).
+	walkOnRequest func(walkRequest)
+	// resolveKeyFn, when set, replaces getKeyImpl in a getRange fallback's
+	// resolveKey goroutine (a test seam).
+	resolveKeyFn func(ctx context.Context, sel KeySelector, rv int64) ([]byte, error)
 	// beforeIssuedReadWait observes Commit about to wait for n issued reads.
 	beforeIssuedReadWait func(n int)
 	// afterReadVersion observes a completed GRV before its caller returns.
@@ -998,22 +1004,7 @@ func (tx *Transaction) GetKey(ctx context.Context, selectorKey []byte, orEqual b
 // from a naive !hasAtomics filter on the lossy pre-fold state — not possible now). Matches
 // libfdb_c exactly instead of over-conflicting on the no-DB-read segments.
 func (tx *Transaction) addGetKeyConflictRange(selKey []byte, orEqual bool, offset int32, resolved []byte) {
-	var begin, end []byte
-	if offset <= 0 {
-		begin = resolved
-		if orEqual {
-			end = keyAfterBytes(selKey)
-		} else {
-			end = selKey
-		}
-	} else {
-		if orEqual {
-			begin = keyAfterBytes(selKey)
-		} else {
-			begin = selKey
-		}
-		end = keyAfterBytes(resolved)
-	}
+	begin, end := getKeyConflictSpan(KeySelector{Key: selKey, OrEqual: orEqual, Offset: offset}, resolved)
 	if bytes.Compare(begin, end) >= 0 {
 		return
 	}
@@ -3258,10 +3249,31 @@ func (tx *Transaction) stateAddWriteConflictRange(begin, end []byte) error {
 	return nil
 }
 
+// The C binding defers errors raised by RYW addWriteConflictRange on the
+// network thread (ThreadSafeTransaction.cpp:659-663), before touching WriteMap.
 func (tx *Transaction) stateAddWriteConflictKey(key []byte) {
-	tx.addWriteConflictForKey(key)
-	if !tx.rywDisabled {
-		tx.ryw.addConflictRange(key, keyAfterBytes(key)) // RYW:2493-2499
+	if tx.deferredErr.Load() != nil {
+		return // doOnMainThreadVoid skips work after the first deferred error
+	}
+	if err := tx.stateAddWriteConflictRange(key, keyAfterBytes(key)); err != nil {
+		var poison *wire.FDBError
+		if !errors.As(err, &poison) {
+			return
+		}
+		// Illegal mutations are buffered until commit in Go. Preserve their
+		// earlier verdict, as for invalid Atomic (RYW:2344-2348).
+		tx.conflictMu.Lock()
+		defer tx.conflictMu.Unlock()
+		for _, m := range tx.mutations {
+			if earlier := tx.validateMutation(m, tx.maxWriteKey()); earlier != nil {
+				var fe *wire.FDBError
+				if errors.As(earlier, &fe) {
+					poison = fe
+				}
+				break
+			}
+		}
+		tx.deferredErr.CompareAndSwap(nil, poison)
 	}
 }
 

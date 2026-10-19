@@ -285,10 +285,12 @@ go_test(
 )
 
 # gazelle:exclude ryw_pin_lifecycle_test.go
+# gazelle:exclude ryw_review_regression_test.go
 go_test(
     name = "ryw_pin_unit_test",
     srcs = [
         "ryw_pin_lifecycle_test.go",
+        "ryw_review_regression_test.go",
         "ryw_walk_helper_test.go",
     ],
     embed = [":client"],
@@ -327,9 +329,13 @@ go_test(
 )
 
 # gazelle:exclude native_range_unit_test.go
+# gazelle:exclude native_range_suspend_test.go
 go_test(
     name = "native_range_unit_test",
-    srcs = ["native_range_unit_test.go"],
+    srcs = [
+        "native_range_suspend_test.go",
+        "native_range_unit_test.go",
+    ],
     embed = [":client"],
 )
 
