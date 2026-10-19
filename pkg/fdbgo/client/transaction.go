@@ -1892,7 +1892,8 @@ func (tx *Transaction) commitAdmitted(ctx context.Context, completion *versionst
 	if tx.db != nil {
 		commitTok = tx.db.grvCache.token()
 	}
-	input := tx.captureCommitVectors(shipMuts, coalesced, shipConflicts, shipReads, true)
+	// With the self-conflicting range added, finalizeShipConflicts built a new vector.
+	input := tx.captureCommitVectors(shipMuts, coalesced, shipConflicts, scAdded, shipReads, true)
 	defer func() {
 		if input != nil {
 			input.release()

@@ -38,13 +38,13 @@ type commitOutcome struct {
 // captureCommit runs under the caller's execution lease. Operands stay in the
 // borrowed slab or in heap buffers nothing rewrites; vectors, which a retry refills, are copied.
 func (tx *Transaction) captureCommit(muts []Mutation, writeConflicts []KeyRange) *commitInput {
-	return tx.captureCommitVectors(muts, false, writeConflicts, nil, false)
+	return tx.captureCommitVectors(muts, false, writeConflicts, false, nil, false)
 }
 
-// captureCommitVectors takes muts as is when the caller owns that vector. With
-// readsFrozen, reads is the commit's own read-conflict vector, shipped as is;
-// otherwise the transaction's read conflicts are copied.
-func (tx *Transaction) captureCommitVectors(muts []Mutation, mutsOwned bool, writeConflicts, reads []KeyRange, readsFrozen bool) *commitInput {
+// captureCommitVectors takes muts, and writeConflicts, as is when the caller
+// owns that vector. With readsFrozen, reads is the commit's own read-conflict
+// vector, shipped as is; otherwise the transaction's read conflicts are copied.
+func (tx *Transaction) captureCommitVectors(muts []Mutation, mutsOwned bool, writeConflicts []KeyRange, conflictsOwned bool, reads []KeyRange, readsFrozen bool) *commitInput {
 	tx.conflictMu.Lock()
 	defer tx.conflictMu.Unlock()
 	if !readsFrozen {
@@ -53,11 +53,14 @@ func (tx *Transaction) captureCommitVectors(muts []Mutation, mutsOwned bool, wri
 	if !mutsOwned {
 		muts = slices.Clone(muts)
 	}
+	if !conflictsOwned {
+		writeConflicts = slices.Clone(writeConflicts)
+	}
 	input := &commitInput{
 		db: tx.db, tenantID: tx.tenantId, lockAware: tx.lockAware, isDummy: tx.isDummy,
 		span: tx.currentSpan(), tags: append([]string(nil), tx.tags...),
 		muts: muts, readConflicts: reads,
-		writeConflicts: slices.Clone(writeConflicts),
+		writeConflicts: writeConflicts,
 	}
 	tx.readVersionMu.Lock()
 	input.readVersion, input.metricStart = tx.readVersion, tx.metricStart

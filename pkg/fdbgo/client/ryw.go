@@ -235,9 +235,10 @@ func (c *rywCache) set(key, value []byte) {
 	// gates the stack-replacing SetValue fast path on !it.is_unreadable(); on an
 	// unreadable entry the Set is pushed and :141 keeps the flag).
 	prev, exists := c.writes[string(key)]
-	c.writes[string(key)] = rywEntry{value: copied, unreadable: prev.unreadable}
+	k := string(key) // one copy serves the map and the sorted index
+	c.writes[k] = rywEntry{value: copied, unreadable: prev.unreadable}
 	if !exists {
-		c.insertSortedKeyLocked(string(key))
+		c.insertSortedKeyLocked(k)
 	}
 	// A Set after ClearRange wins — no need to remove from cleared, because
 	// get() checks writes before cleared.
