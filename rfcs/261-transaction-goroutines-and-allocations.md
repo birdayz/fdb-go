@@ -1,6 +1,7 @@
 # RFC-261: Fewer goroutines and allocations per transaction
 
-**Status:** Draft (for a go/no-go decision)
+**Status:** Part B accepted for B2 and individually justified B4 sites; B1 and B3 each need
+their own design review; Part A deferred (review 2026-10-19, see "Review outcome").
 **Item:** TODO.md §0, "Client CPU on paced writes" and "Client CPU per transaction";
 supersedes the deferred [RFC-260](260-inline-native-commit.md).
 **Spec:** FoundationDB 7.3.77 (`fdbclient/NativeAPI.actor.cpp`, `fdbclient/ReadYourWrites.actor.cpp`).
@@ -129,3 +130,35 @@ changes.
 2. Is A1's leave/resume protocol faithful, including the serial path, caller cancellation
    and the fence?
 3. Should Part B go first, given that allocation cuts have not moved CPU alone before?
+
+## Review outcome
+
+Both reviewers (C++ client, code quality) recommended **B only**, at `0c07d0a84`.
+
+- **Part A is deferred.** Leave/resume is directionally faithful (the GRV producer and
+  future are kept, the no-proxy wait and fence continue, nothing is resent), but the
+  ownership protocol is incomplete:
+  - the native-stop state must exist from admission and transfer atomically, so Reset
+    before, during or after a handoff stops the work and nothing revives it
+    (`NativeAPI.actor.cpp:6172`); incarnation cancellation alone cannot tell "keep native
+    work" from "destroy it";
+  - a synchronous dial, and the fence's dummy transaction with its retries and backoff,
+    cannot surrender their stacks; each needs a real resumable mechanism and an owner;
+  - leaving a shared GRV wait must not take over someone else's producer: serial
+    batches, member replies and pending-version publication need explicit owners;
+  - send admission must keep the enqueued/not-enqueued boundary.
+
+  The tests must cover the boundary races: Reset during registration and transfer,
+  leaving while a reply arrives, caller cancellation during a GRV transfer, panics, DB
+  Close, and exactly-once release.
+- **B order.** B2 first, then each B4 site on its own measured evidence. Allocation-only
+  wins are reported as such.
+- **B1** needs its own design: C++'s `timebomb` uses `creationTime + timeout`, rechecks
+  the time and schedules with a 100 µs margin (`ReadYourWrites.actor.cpp:1567-1578`).
+  Timeout replacement and disabling, the sticky first cause, Reset isolation, the weak
+  owner lifetime and shutdown must hold, and stale heap entries must never affect a
+  successor (`:2691-2703, 2735-2754`). Heap contention and retention are measured, not
+  only allocations.
+- **B3** must create an already-cancelled context when cancellation came first, with
+  that race and Reset pinned.
+- **Pooling** (B4) needs proof that no late producer publishes into a reused object.
