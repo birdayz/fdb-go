@@ -116,6 +116,10 @@ func (r *keyRead) read() ([]byte, error) {
 	tx, ctx, sel := r.tx, r.ctx, r.sel
 	if r.disabled {
 		resolved, err := tx.getKey(ctx, sel.Key, sel.OrEqual, sel.Offset)
+		// The read-through route also races resetPromise (RYW:353-364).
+		if op := tx.readOperation(ctx); op != nil && tx.readIncarnationCause(op.inc) != nil {
+			return nil, tx.trackReadOperation(ctx, context.Canceled)
+		}
 		if err != nil {
 			return nil, tx.trackReadOperation(ctx, err)
 		}

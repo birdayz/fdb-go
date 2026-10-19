@@ -7,12 +7,29 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unsafe"
 )
 
 // Expected node lists below are derived by hand from WriteMap.cpp (FDB 7.3.77);
 // each case's comment walks the cited lines. Dump lines are `"key" flags` with
 // flags from o (operation) c (following cleared) f (following conflict)
 // i (is_conflict) u (following unreadable) v (is_unreadable), "-" for none.
+
+func TestRYWNodeLogStorageCost(t *testing.T) {
+	t.Parallel()
+	entryBytes := unsafe.Sizeof(rywNodeOp{})
+	if want := 8 * unsafe.Sizeof(uintptr(0)); entryBytes != want {
+		t.Fatalf("node log entry = %d bytes, want %d", entryBytes, want)
+	}
+	var n rywNodes
+	for i := 0; i < 10000; i++ {
+		n.mutate([]byte(fmt.Sprintf("k%05d", i)), true, false)
+	}
+	if n.sorted != nil || len(n.log) != 10000 {
+		t.Fatalf("write-only nodes: built=%t log length=%d", n.sorted != nil, len(n.log))
+	}
+	t.Logf("node log: entry=%d B length=%d capacity=%d live-records=%d B reserved=%d B (excludes keys and stores)", entryBytes, len(n.log), cap(n.log), uintptr(len(n.log))*entryBytes, uintptr(cap(n.log))*entryBytes)
+}
 
 func nodeMut(k string, addConflict, versionstamp bool) rywNodeOp {
 	return rywNodeOp{kind: rywNodeOpMutate, begin: []byte(k), addConflict: addConflict, versionstamp: versionstamp}

@@ -328,8 +328,8 @@ type txOptions struct {
 	// walkOnRequest, when set, sees each storage request a getKey walk builds (a
 	// test seam).
 	walkOnRequest func(walkRequest)
-	// resolveKeyFn, when set, replaces getKeyImpl in a getRange fallback's
-	// resolveKey goroutine (a test seam).
+	// resolveKeyFn, when set, replaces NativeAPI getKeyImpl (a test seam for
+	// read-through GetKey and the range fallback's resolver goroutines).
 	resolveKeyFn func(ctx context.Context, sel KeySelector, rv int64) ([]byte, error)
 	// beforeIssuedReadWait observes Commit about to wait for n issued reads.
 	beforeIssuedReadWait func(n int)

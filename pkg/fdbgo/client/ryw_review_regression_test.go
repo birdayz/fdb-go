@@ -184,6 +184,91 @@ func TestRYWResetBeatsLateStorageError(t *testing.T) {
 	})
 }
 
+func TestGetKeyReadThroughResetBeatsLateOutcome(t *testing.T) {
+	t.Parallel()
+	for _, snapshot := range []bool{false, true} {
+		for _, success := range []bool{false, true} {
+			t.Run(fmt.Sprintf("snapshot=%t/success=%t", snapshot, success), func(t *testing.T) {
+				t.Parallel()
+				tx := &Transaction{txOptions: txOptions{rywDisabled: true}}
+				tx.SetReadVersion(1)
+				started, cancelled, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+				tx.resolveKeyFn = func(ctx context.Context, _ KeySelector, _ int64) ([]byte, error) {
+					close(started)
+					<-ctx.Done()
+					close(cancelled)
+					<-release
+					if success {
+						return []byte("c"), nil
+					}
+					return nil, &wire.FDBError{Code: ErrWrongShardServer}
+				}
+				var p *PendingKey
+				if snapshot {
+					p = tx.Snapshot().StartGetKey(context.Background(), fgtSel("a"))
+				} else {
+					p = tx.StartGetKey(context.Background(), fgtSel("a"))
+				}
+				<-started
+				resetDone := make(chan struct{})
+				go func() { tx.Reset(); close(resetDone) }()
+				<-cancelled
+				close(release)
+				joined(t, "read-through reset and late outcome", func() {
+					_, err := p.Get()
+					if code, _ := fdbErrorCode(err); code != ErrTransactionCancelled {
+						t.Errorf("late outcome error = %v, want transaction_cancelled", err)
+					}
+					<-resetDone
+				})
+				if len(tx.readConflicts) != 0 {
+					t.Fatal("retired read-through outcome added conflicts")
+				}
+			})
+		}
+	}
+}
+
+func TestGetKeyCompletedOutcomeSurvivesReset(t *testing.T) {
+	t.Parallel()
+	for _, disabled := range []bool{false, true} {
+		for _, success := range []bool{false, true} {
+			t.Run(fmt.Sprintf("disabled=%t/success=%t", disabled, success), func(t *testing.T) {
+				t.Parallel()
+				tx := &Transaction{txOptions: txOptions{rywDisabled: disabled}}
+				tx.SetReadVersion(1)
+				failure := &wire.FDBError{Code: ErrWrongShardServer}
+				tx.resolveKeyFn = func(context.Context, KeySelector, int64) ([]byte, error) {
+					if success {
+						return []byte("c"), nil
+					}
+					return nil, failure
+				}
+				m := newMemStorage("a", "c")
+				tx.nativeRange = func(ctx context.Context, b, e KeySelector, l rangeLimits, rev bool) (nativeRangeResult, error) {
+					if !success {
+						return nativeRangeResult{}, failure
+					}
+					return m.native(ctx, b, e, l, rev)
+				}
+				p := tx.StartGetKey(context.Background(), fgtSel("a"))
+				before, errBefore := p.Get()
+				tx.Reset()
+				after, errAfter := p.Get()
+				if !bytes.Equal(before, after) || errBefore != errAfter {
+					t.Fatalf("completed outcome changed across Reset: (%q,%v) -> (%q,%v)", before, errBefore, after, errAfter)
+				}
+				if success && (string(after) != "c" || errAfter != nil) {
+					t.Fatalf("completed success = %q, %v", after, errAfter)
+				}
+				if !success && errAfter != failure {
+					t.Fatalf("completed protocol error = %v, want %v", errAfter, failure)
+				}
+			})
+		}
+	}
+}
+
 func TestAddWriteConflictKeyLegalRange(t *testing.T) {
 	t.Parallel()
 	for _, mode := range []string{"user", "read-system", "access-system"} {

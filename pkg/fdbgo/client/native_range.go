@@ -342,10 +342,6 @@ func (tx *Transaction) startResolveKey(ctx context.Context, sel KeySelector, rv 
 		defer park.Fire()
 		defer close(fut.done)
 		if tx.resolveKeyBackstop().run(func() {
-			if fn := tx.resolveKeyFn; fn != nil {
-				fut.key, fut.err = fn(pctx, sel, rv)
-				return
-			}
 			fut.key, _, fut.err = tx.getKeyImpl(pctx, rv, sel.Key, sel.OrEqual, sel.Offset)
 		}) {
 			fut.key, fut.err = nil, &wire.FDBError{Code: ErrInternalError}

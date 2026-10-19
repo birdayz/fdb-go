@@ -153,6 +153,10 @@ func (tx *Transaction) getKeyForRange(parentCtx context.Context, selectorKey []b
 // getKeyImpl sends every request at readVersion, the version its operation captured.
 func (tx *Transaction) getKeyImpl(ctx context.Context, readVersion int64, selectorKey []byte, orEqual bool, offset int32) ([]byte, bool, error) {
 	tx.hadRead.Store(true) // a read was issued — the rywDisabled GetKey choke (RFC-059)
+	if fn := tx.resolveKeyFn; fn != nil {
+		key, err := fn(ctx, KeySelector{Key: selectorKey, OrEqual: orEqual, Offset: offset}, readVersion)
+		return key, false, err
+	}
 	// Three independent budgets, because getKey's loop iterates for two
 	// unrelated reasons: successful partial selector resolutions
 	// (PROGRESS — a deep selector legitimately crosses many shards) and error
