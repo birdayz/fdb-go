@@ -162,6 +162,8 @@ func (tx *Transaction) getKeyImpl(ctx context.Context, readVersion int64, select
 	//     NON-retryable terminal error (retrying re-hits the same cap).
 	timeoutRetries, shardRetries, progressSteps := 0, 0, 0
 	needsRangeFallback := false
+	var tags readTagSample
+	redraw := true
 	for {
 		// C++ short-circuits: if key == allKeysEnd → offset > 0 → return allKeysEnd
 		// if key == "" && offset <= 0 → return "" (empty key)
@@ -189,7 +191,11 @@ func (tx *Transaction) getKeyImpl(ctx context.Context, readVersion int64, select
 			return nil, false, fmt.Errorf("no storage servers for key")
 		}
 
-		replyKey, replyOrEqual, replyOffset, err := tx.sendGetKey(ctx, readVersion, selectorKey, orEqual, offset, loc.Servers)
+		if redraw {
+			tags = tx.sampleReadTags() // GetKeyRequest per loop iteration (NativeAPI.actor.cpp:3806)
+		}
+		replyKey, replyOrEqual, replyOffset, err := tx.sendGetKey(ctx, readVersion, selectorKey, orEqual, offset, loc.Servers, tags)
+		redraw = err == nil || readTagRetry(err)
 		if err != nil {
 			// Reply timeout (slow-but-alive server): re-send, bounded, then a
 			// RETRYABLE transaction_too_old — same contract as getValue/
@@ -266,7 +272,7 @@ func keyResolutionNeedsRangeFallback(key []byte, orEqual bool, offset int32, loc
 // Returns (key, orEqual, offset, error). The caller must check offset==0 && orEqual
 // to determine if the selector is fully resolved. Matches C++ getKey() which uses
 // the reply's KeySelector to drive the resolution loop.
-func (tx *Transaction) sendGetKey(ctx context.Context, readVersion int64, selectorKey []byte, orEqual bool, offset int32, servers []ServerInfo) ([]byte, bool, int32, error) {
+func (tx *Transaction) sendGetKey(ctx context.Context, readVersion int64, selectorKey []byte, orEqual bool, offset int32, servers []ServerInfo, tags readTagSample) ([]byte, bool, int32, error) {
 	servers, ok := tx.db.failMon.liveServers(servers, EndpointGetKey)
 	if !ok {
 		return nil, false, 0, tx.db.allAlternativesFailed(ctx)
@@ -290,25 +296,7 @@ func (tx *Transaction) sendGetKey(ctx context.Context, readVersion int64, select
 			}
 			gkToken := getAdjustedEndpoint(server.Token, EndpointGetKey)
 			replyToken, replyCh, replyHandle := conn.PrepareReplyTo(gkToken)
-			req := types.GetKeyRequest{
-				Sel: types.KeySelectorRef{
-					Key:     selectorKey,
-					OrEqual: orEqual,
-					Offset:  offset,
-				},
-				Version:                readVersion,
-				Reply:                  types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
-				TenantInfo:             types.TenantInfo{TenantId: tenantId},
-				SpanContext:            span,
-				SsLatestCommitVersions: emptyVersionVector,
-			}
-			if lockAware {
-				req.HasOptions = true
-				req.Options = lockAwareReadOptions()
-			}
-			bufp := getKeyBufPool.Get().(*[]byte)
-			reqData := req.MarshalFDBPooled(*bufp)
-			*bufp = reqData
+			reqData, bufp := buildGetKeyRequest(selectorKey, orEqual, offset, readVersion, lockAware, tenantId, span, tags, replyToken)
 
 			delta := tx.db.queueModel.startRequest(server.Address)
 			start := time.Now()
@@ -366,6 +354,30 @@ func (tx *Transaction) sendGetKey(ctx context.Context, readVersion int64, select
 	return key, replyOrEqual, replyOffset, err
 }
 
+func buildGetKeyRequest(selectorKey []byte, orEqual bool, offset int32, version int64, lockAware bool, tenantId int64, span types.SpanContext, tags readTagSample, replyToken transport.UID) ([]byte, *[]byte) {
+	req := types.GetKeyRequest{
+		Sel: types.KeySelectorRef{
+			Key:     selectorKey,
+			OrEqual: orEqual,
+			Offset:  offset,
+		},
+		Version:                version,
+		Reply:                  types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
+		TenantInfo:             types.TenantInfo{TenantId: tenantId},
+		SpanContext:            span,
+		SsLatestCommitVersions: emptyVersionVector,
+	}
+	tags.apply(&req.HasTags, &req.Tags)
+	if lockAware {
+		req.HasOptions = true
+		req.Options = lockAwareReadOptions()
+	}
+	bufp := getKeyBufPool.Get().(*[]byte)
+	reqData := req.MarshalFDBPooled(*bufp)
+	*bufp = reqData
+	return reqData, bufp
+}
+
 // parseGetKeyReply parses the ErrorOr<GetKeyReply> response.
 // Returns the full KeySelector fields (key, orEqual, offset) plus penalty.
 // C++ GetKeyReply contains a KeySelector (key + orEqual + offset), not just a key.
@@ -407,6 +419,12 @@ func parseGetKeyReply(data []byte) (key []byte, orEqual bool, offset int32, pena
 // version ages to transaction_too_old). Other FDB errors (transaction_too_old,
 // etc.) are returned to the caller for handling by the Transact retry loop.
 func (tx *Transaction) getValue(parentCtx context.Context, key []byte) ([]byte, error) {
+	return tx.getValueSampled(parentCtx, key, nil)
+}
+
+// getValueSampled is getValue whose first request carries an earlier draw:
+// a pipelined read continued after a failure loadBalance retries itself.
+func (tx *Transaction) getValueSampled(parentCtx context.Context, key []byte, carried *readTagSample) ([]byte, error) {
 	ctx, cancel := tx.opContext(parentCtx)
 	defer cancel()
 	if err := tx.ensureReadVersion(ctx); err != nil {
@@ -416,7 +434,7 @@ func (tx *Transaction) getValue(parentCtx context.Context, key []byte) ([]byte, 
 		defer sp.End()
 	}
 	start := time.Now()
-	v, err := tx.getValueImpl(ctx, key)
+	v, err := tx.getValueImpl(ctx, key, carried)
 	if err == nil && tx.db != nil {
 		// RFC-114: GetValue read latency (C++ readLatencies, NativeAPI.actor.cpp:3698),
 		// sampled on the successful reply only. Divergence (documented in RFC-114):
@@ -429,9 +447,14 @@ func (tx *Transaction) getValue(parentCtx context.Context, key []byte) ([]byte, 
 	return v, tx.mapReadError(ctx, err)
 }
 
-func (tx *Transaction) getValueImpl(ctx context.Context, key []byte) ([]byte, error) {
+func (tx *Transaction) getValueImpl(ctx context.Context, key []byte, carried *readTagSample) ([]byte, error) {
 	tx.hadRead.Store(true) // a read was issued (RFC-059 poison signal)
 	timeoutRetries := 0
+	var tags readTagSample
+	redraw := carried == nil
+	if carried != nil {
+		tags = *carried
+	}
 	for attempts := 0; attempts < MaxWrongShardRetries; attempts++ {
 		loc, err := tx.db.locCache.locate(tx.db, ctx, key, tx.tenantId, tx.currentSpan(), false)
 		if err != nil {
@@ -441,10 +464,14 @@ func (tx *Transaction) getValueImpl(ctx context.Context, key []byte) ([]byte, er
 			return nil, fmt.Errorf("no storage servers for key")
 		}
 
-		val, err := tx.sendGetValue(ctx, key, loc.Servers)
+		if redraw {
+			tags = tx.sampleReadTags() // GetValueRequest per loop iteration (NativeAPI.actor.cpp:3681)
+		}
+		val, err := tx.sendGetValue(ctx, key, loc.Servers, tags)
 		if err == nil {
 			return val, nil
 		}
+		redraw = readTagRetry(err)
 		// Reply timeout: the location is fine, the server was slow. Re-send
 		// (no invalidate, no attempt-count charge) up to a bounded cap, then
 		// surface a RETRYABLE transaction_too_old so the Transact loop retries
@@ -483,7 +510,7 @@ func (tx *Transaction) getValueImpl(ctx context.Context, key []byte) ([]byte, er
 	return nil, &wire.FDBError{Code: ErrTransactionTooOld}
 }
 
-func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []ServerInfo) ([]byte, error) {
+func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []ServerInfo, tags readTagSample) ([]byte, error) {
 	servers, ok := tx.db.failMon.liveServers(servers, EndpointGetValue)
 	if !ok {
 		return nil, tx.db.allAlternativesFailed(ctx)
@@ -513,7 +540,7 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 				return inFlightRPC{err: err, addr: server.Address}
 			}
 			replyToken, replyCh, replyHandle := conn.PrepareReplyTo(server.Token)
-			body, poolBuf := buildGetValueRequest(key, readVersion, lockAware, tenantId, span, replyToken, server.Token)
+			body, poolBuf := buildGetValueRequest(key, readVersion, lockAware, tenantId, span, tags, replyToken, server.Token)
 
 			delta := tx.db.queueModel.startRequest(server.Address)
 			start := time.Now()
@@ -565,7 +592,7 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 	if result.err != nil {
 		// Hedge failed — fall back to remaining servers sequentially (see resolveFallback).
 		return resolveFallback(ctx, result.err, servers, bestIdx, secondIdx, func(server ServerInfo) ([]byte, error) {
-			return tx.sendGetValueToServer(ctx, key, server, readVersion, lockAware, tenantId)
+			return tx.sendGetValueToServer(ctx, key, server, readVersion, lockAware, tenantId, tags)
 		})
 	}
 
@@ -577,7 +604,7 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 
 // sendGetValueToServer sends a getValue RPC to a single specific server.
 // Used as fallback after hedge fails.
-func (tx *Transaction) sendGetValueToServer(ctx context.Context, key []byte, server ServerInfo, readVersion int64, lockAware bool, tenantId int64) ([]byte, error) {
+func (tx *Transaction) sendGetValueToServer(ctx context.Context, key []byte, server ServerInfo, readVersion int64, lockAware bool, tenantId int64, tags readTagSample) ([]byte, error) {
 	conn, err := tx.db.getOrDial(ctx, server.Address)
 	if err != nil {
 		tx.db.handleDialError(ctx, server.Address)
@@ -585,7 +612,7 @@ func (tx *Transaction) sendGetValueToServer(ctx context.Context, key []byte, ser
 	}
 	replyToken, replyCh, replyHandle := conn.PrepareReplyTo(server.Token)
 	defer replyHandle.Release()
-	body, poolBuf := buildGetValueRequest(key, readVersion, lockAware, tenantId, childSpanContext(tx.currentSpan()), replyToken, server.Token)
+	body, poolBuf := buildGetValueRequest(key, readVersion, lockAware, tenantId, childSpanContext(tx.currentSpan()), tags, replyToken, server.Token)
 
 	delta := tx.db.queueModel.startRequest(server.Address)
 	start := time.Now()
@@ -672,7 +699,7 @@ func (e *RangeMaterializationLimitError) Error() string {
 type rangeScanOps[T any] struct {
 	// send issues one shard-local request at the scan's limits and read version
 	// and parses its reply.
-	send func(ctx context.Context, begin, end []byte, limits rangeLimits, readVersion int64, reverse bool, servers []ServerInfo) ([]T, bool, error)
+	send func(ctx context.Context, begin, end []byte, limits rangeLimits, readVersion int64, reverse bool, servers []ServerInfo, tags readTagSample) ([]T, bool, error)
 	// key returns the PRIMARY key of an element. For a mapped row this is the
 	// primary (index) row's key, never a secondary key: it drives shard
 	// re-query bounds, which are bounds in the primary range only.
@@ -720,6 +747,8 @@ func rangeScanImpl[T any](tx *Transaction, ctx context.Context, begin, end []byt
 	// 4795-4799). A byte-targeted call then stops; wrong_shard_server falls back (:4864-4870).
 	firstReply := true
 	var readThrough []byte
+	var tags readTagSample
+	redraw := true
 
 	// SOFT BYTE LIMIT — C++ getExactRange:4415:
 	//
@@ -797,7 +826,11 @@ func rangeScanImpl[T any](tx *Transaction, ctx context.Context, begin, end []byt
 			// Inner loop: re-query same shard while more=true (C++ stays on same
 			// shard index, mutates locations[shard].range in-place).
 			for !limits.isReached() {
-				kvs, more, err := ops.send(ctx, shardBegin, shardEnd, limits, readVersion, reverse, loc.Servers)
+				if redraw {
+					tags = tx.sampleReadTags() // a request per send (NativeAPI.actor.cpp:4303, 4684)
+				}
+				kvs, more, err := ops.send(ctx, shardBegin, shardEnd, limits, readVersion, reverse, loc.Servers, tags)
+				redraw = err == nil || readTagRetry(err)
 				if err != nil {
 					// Reply timeout (a slow-but-alive server): the location is
 					// fine — re-send the SAME shard (no relocate), matching
@@ -957,8 +990,8 @@ func rangeScanImpl[T any](tx *Transaction, ctx context.Context, begin, end []byt
 	return allKVs, limits.rows == 0, readThrough, nil
 }
 
-func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limits rangeLimits, readVersion int64, reverse bool, servers []ServerInfo) ([]KeyValue, bool, error) {
-	return sendRangeRPC(tx, ctx, firstGreaterOrEqual(begin), firstGreaterOrEqual(end), limits, readVersion, reverse, servers, rangeRPCOps[KeyValue]{
+func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limits rangeLimits, readVersion int64, reverse bool, servers []ServerInfo, tags readTagSample) ([]KeyValue, bool, error) {
+	return sendRangeRPC(tx, ctx, firstGreaterOrEqual(begin), firstGreaterOrEqual(end), limits, readVersion, reverse, servers, tags, rangeRPCOps[KeyValue]{
 		endpoint: EndpointGetKeyValues,
 		build:    buildGetKeyValuesRequest,
 		putBuf:   func(bufp *[]byte) { getKeyValuesBufPool.Put(bufp) },
@@ -976,7 +1009,7 @@ func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limi
 // and not the other.
 type rangeRPCOps[T any] struct {
 	endpoint int
-	build    func(begin, end KeySelector, version int64, limit int32, limitBytes int32, lockAware bool, tenantId int64, span types.SpanContext, replyToken transport.UID, serverToken transport.UID) ([]byte, *[]byte)
+	build    func(begin, end KeySelector, version int64, limit int32, limitBytes int32, lockAware bool, tenantId int64, span types.SpanContext, tags readTagSample, replyToken transport.UID, serverToken transport.UID) ([]byte, *[]byte)
 	putBuf   func(*[]byte)
 	parse    func([]byte) ([]T, bool, float64, error)
 }
@@ -987,7 +1020,7 @@ type rangeRPCOps[T any] struct {
 // one — and it is the value the STORAGE SERVER truncates against, which is what actually
 // divides a scan into batches. The request is sent at readVersion, the version the read's
 // operation captured (NativeAPI.actor.cpp:4617-4618).
-func sendRangeRPC[T any](tx *Transaction, ctx context.Context, begin, end KeySelector, limits rangeLimits, readVersion int64, reverse bool, servers []ServerInfo, ops rangeRPCOps[T]) ([]T, bool, error) {
+func sendRangeRPC[T any](tx *Transaction, ctx context.Context, begin, end KeySelector, limits rangeLimits, readVersion int64, reverse bool, servers []ServerInfo, tags readTagSample, ops rangeRPCOps[T]) ([]T, bool, error) {
 	// C++ transformRangeLimits, called from BOTH range loops (getExactRange:4299, getRange:4681).
 	wireLimit, wireLimitBytes := transformRangeLimits(limits, reverse)
 	servers, ok := tx.db.failMon.liveServers(servers, ops.endpoint)
@@ -1014,7 +1047,7 @@ func sendRangeRPC[T any](tx *Transaction, ctx context.Context, begin, end KeySel
 			}
 			gkvToken := getAdjustedEndpoint(server.Token, ops.endpoint)
 			replyToken, replyCh, replyHandle := conn.PrepareReplyTo(gkvToken)
-			body, poolBuf := ops.build(begin, end, readVersion, wireLimit, wireLimitBytes, lockAware, tenantId, span, replyToken, server.Token)
+			body, poolBuf := ops.build(begin, end, readVersion, wireLimit, wireLimitBytes, lockAware, tenantId, span, tags, replyToken, server.Token)
 
 			delta := tx.db.queueModel.startRequest(server.Address)
 			start := time.Now()
@@ -1205,7 +1238,7 @@ func isServerTimeout(err error) bool {
 	return isReplyTimeout(err) || errors.Is(err, context.DeadlineExceeded)
 }
 
-func buildGetKeyValuesRequest(begin, end KeySelector, version int64, limit int32, limitBytes int32, lockAware bool, tenantId int64, span types.SpanContext, replyToken transport.UID, _ transport.UID) ([]byte, *[]byte) {
+func buildGetKeyValuesRequest(begin, end KeySelector, version int64, limit int32, limitBytes int32, lockAware bool, tenantId int64, span types.SpanContext, tags readTagSample, replyToken transport.UID, _ transport.UID) ([]byte, *[]byte) {
 	req := types.GetKeyValuesRequest{
 		Begin:                  begin.ref(),
 		End:                    end.ref(),
@@ -1217,6 +1250,7 @@ func buildGetKeyValuesRequest(begin, end KeySelector, version int64, limit int32
 		SpanContext:            span, // RFC-115 §4
 		SsLatestCommitVersions: emptyVersionVector,
 	}
+	tags.apply(&req.HasTags, &req.Tags)
 	if lockAware {
 		req.HasOptions = true
 		req.Options = lockAwareReadOptions()
@@ -1267,7 +1301,7 @@ var emptyVersionVector = func() []byte {
 	return b
 }()
 
-func buildGetValueRequest(key []byte, version int64, lockAware bool, tenantId int64, span types.SpanContext, replyToken transport.UID, _ transport.UID) ([]byte, *[]byte) {
+func buildGetValueRequest(key []byte, version int64, lockAware bool, tenantId int64, span types.SpanContext, tags readTagSample, replyToken transport.UID, _ transport.UID) ([]byte, *[]byte) {
 	req := types.GetValueRequest{
 		Key:                    key,
 		Version:                version,
@@ -1276,6 +1310,7 @@ func buildGetValueRequest(key []byte, version int64, lockAware bool, tenantId in
 		SpanContext:            span, // RFC-115 §4
 		SsLatestCommitVersions: emptyVersionVector,
 	}
+	tags.apply(&req.HasTags, &req.Tags)
 	if lockAware {
 		req.HasOptions = true
 		req.Options = lockAwareReadOptions()
@@ -1327,7 +1362,8 @@ func (tx *Transaction) Watch(ctx context.Context, key []byte) error {
 	if err != nil {
 		return err
 	}
-	return tx.WatchPoll(watchCtx, watchCancel, key, value, readVersion, span)
+	// Nothing commits before this poll: it carries the tags captured at setup.
+	return tx.watchPoll(watchCtx, watchCancel, key, value, readVersion, span, tx.watchSetupTags(watchCtx))
 }
 
 // WatchSetup performs the SYNCHRONOUS part of a watch: pin the read version, add
@@ -1484,7 +1520,16 @@ func (tx *Transaction) watchSetupErr(err error) error {
 // (also captured by WatchSetup — NOT re-read from the possibly-reset transaction).
 // Retries on wrong_shard_server with cache invalidation. Intended to run in the
 // watch future's goroutine.
+//
+// Its requests carry the read tags as of the commit that activated the watch
+// (setupWatches, NativeAPI.actor.cpp:6418-6432), or those captured at setup
+// when no commit activated it.
 func (tx *Transaction) WatchPoll(watchCtx context.Context, watchCancel context.CancelFunc, key, value []byte, readVersion int64, span types.SpanContext) error {
+	return tx.watchPoll(watchCtx, watchCancel, key, value, readVersion, span, tx.watchCommitTags(watchCtx))
+}
+
+// watchPoll sends tags, the watch's parameters->tags, never the live transaction's.
+func (tx *Transaction) watchPoll(watchCtx context.Context, watchCancel context.CancelFunc, key, value []byte, readVersion int64, span types.SpanContext, tags []byte) error {
 	tenantID := tx.watchTenant(watchCtx)
 	// watchCtx is captured SYNCHRONOUSLY by WatchSetup and passed in (NOT fetched here via
 	// newWatchCtx): this runs in the async watch future, so a lazy fetch would race
@@ -1533,7 +1578,8 @@ func (tx *Transaction) WatchPoll(watchCtx context.Context, watchCancel context.C
 			return fmt.Errorf("no storage servers for key")
 		}
 
-		watchErr := tx.sendWatch(watchCtx, key, value, readVersion, watchSpan, loc.Servers)
+		// A WatchValueRequest per iteration (NativeAPI.actor.cpp:3970).
+		watchErr := tx.sendWatch(watchCtx, key, value, readVersion, watchSpan, loc.Servers, tx.db.sampleTagSet(tags))
 		if watchErr == nil {
 			return nil
 		}
@@ -1595,7 +1641,7 @@ func isWatchErrorCode(err error, code int) bool {
 // buildWatchValueRequest constructs a WatchValueRequest. `span` is the watchValue
 // CHILD span (derived once in WatchPoll, reused across the wrong-shard retry loop) —
 // stamped verbatim, matching C++ WatchValueRequest(span.context,…) (NativeAPI.actor.cpp:3965).
-func buildWatchValueRequest(key, value []byte, readVersion int64, tenantId int64, span types.SpanContext, replyToken transport.UID) []byte {
+func buildWatchValueRequest(key, value []byte, readVersion int64, tenantId int64, span types.SpanContext, tags readTagSample, replyToken transport.UID) []byte {
 	req := types.WatchValueRequest{
 		Key:         key,
 		Version:     readVersion,
@@ -1603,6 +1649,7 @@ func buildWatchValueRequest(key, value []byte, readVersion int64, tenantId int64
 		TenantInfo:  types.TenantInfo{TenantId: tenantId},
 		SpanContext: span,
 	}
+	tags.apply(&req.HasTags, &req.Tags)
 	if value != nil {
 		req.HasValue = true
 		req.Value = value
@@ -1610,7 +1657,7 @@ func buildWatchValueRequest(key, value []byte, readVersion int64, tenantId int64
 	return req.MarshalFDB()
 }
 
-func (tx *Transaction) sendWatch(ctx context.Context, key, value []byte, readVersion int64, span types.SpanContext, servers []ServerInfo) error {
+func (tx *Transaction) sendWatch(ctx context.Context, key, value []byte, readVersion int64, span types.SpanContext, servers []ServerInfo, tags readTagSample) error {
 	servers, ok := tx.db.failMon.liveServers(servers, EndpointWatchValue)
 	if !ok {
 		return tx.db.allAlternativesFailed(ctx)
@@ -1631,7 +1678,7 @@ func (tx *Transaction) sendWatch(ctx context.Context, key, value []byte, readVer
 		}
 		watchToken := getAdjustedEndpoint(server.Token, EndpointWatchValue)
 		replyToken, replyCh, replyHandle := conn.PrepareReplyTo(watchToken)
-		reqData := buildWatchValueRequest(key, value, readVersion, tenantId, span, replyToken)
+		reqData := buildWatchValueRequest(key, value, readVersion, tenantId, span, tags, replyToken)
 
 		delta := tx.db.queueModel.startRequest(server.Address)
 		start := time.Now()

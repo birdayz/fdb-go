@@ -270,6 +270,7 @@ type (
 	watchParametersKey struct{}
 	watchParameters    struct {
 		tenantID   int64
+		readTags   []byte // the encoded read tags at setup (NativeAPI.actor.cpp:5700)
 		activation *watchActivation
 	}
 )
@@ -285,6 +286,32 @@ func (tx *Transaction) WatchActivationFor(ctx context.Context) *watchActivation 
 		return parameters.activation
 	}
 	return tx.WatchActivation()
+}
+
+// watchSetupTags returns the read tags captured when the watch was set up.
+func (tx *Transaction) watchSetupTags(ctx context.Context) []byte {
+	if parameters, ok := ctx.Value(watchParametersKey{}).(watchParameters); ok {
+		return parameters.readTags
+	}
+	// Direct WatchPoll/sendWatch callers did not capture setup parameters.
+	lease := tx.enterState()
+	defer lease.release()
+	return encodeTagSet(tx.readTags)
+}
+
+// watchCommitTags returns the read tags as of the commit that activated the
+// watch, else those captured at setup.
+func (tx *Transaction) watchCommitTags(ctx context.Context) []byte {
+	if parameters, ok := ctx.Value(watchParametersKey{}).(watchParameters); ok && parameters.activation != nil {
+		select {
+		case <-parameters.activation.done:
+			if !parameters.activation.abandoned {
+				return parameters.activation.readTags
+			}
+		default:
+		}
+	}
+	return tx.watchSetupTags(ctx)
 }
 
 func (tx *Transaction) watchTenant(ctx context.Context) int64 {

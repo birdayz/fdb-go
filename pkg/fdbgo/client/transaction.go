@@ -290,15 +290,8 @@ type txOptions struct {
 
 	// readTags: the AUTO_THROTTLE_TAG subset of tags. C++ keeps this as a
 	// separate TagSet (trState->options.readTags) because only auto-throttle
-	// tags ride along on per-storage-server read requests.
-	//
-	// Go tracks the set but does NOT yet stamp it onto read requests: C++ gates
-	// that on sampleReadTags() (NativeAPI.actor.cpp), a per-request sampling
-	// decision that has no Go counterpart yet. The consequence is that an
-	// auto-throttle tag currently reaches the ratekeeper only through the GRV
-	// occurrence counts and the commit tagSet — the same carriage a plain TAG
-	// gets — so read-side attribution for such a tag is missing, not merely
-	// unsampled. Everything else about the option is honored.
+	// tags ride along on per-storage-server read requests, on those that
+	// sampleReadTags selects (read_tags.go).
 	readTags []string
 
 	// spanParent, set by SetSpanParent (FDBTransactionOptions::SPAN_PARENT), links the
@@ -898,6 +891,8 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 	if !ok {
 		servers = loc.Servers
 	}
+	// One GetValueRequest for every server tried (NativeAPI.actor.cpp:3681).
+	tags := tx.sampleReadTags()
 	// Send request without waiting for response.
 	for _, server := range servers {
 		conn, dialErr := tx.db.getOrDial(ctx, server.Address)
@@ -906,7 +901,7 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 			continue
 		}
 		replyToken, replyCh, replyHandle := conn.PrepareReplyTo(server.Token)
-		body, poolBuf := buildGetValueRequest(key, readVersion, tx.lockAware || tx.readLockAware, tx.tenantId, childSpanContext(tx.currentSpan()), replyToken, server.Token)
+		body, poolBuf := buildGetValueRequest(key, readVersion, tx.lockAware || tx.readLockAware, tx.tenantId, childSpanContext(tx.currentSpan()), tags, replyToken, server.Token)
 		// RFC-114: stamp sentAt BEFORE sending. The frame may be written, and its reply
 		// delivered (stamping resp.RecvAt), before the send returns — RecvAt−sentAt
 		// would go negative and be silently dropped by the sketch.
@@ -930,7 +925,7 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 			continue
 		}
 		timer := getTimer(tx.pipelineReplyTimeout()) // capped by SetTimeout (RFC-112)
-		p := &PendingGet{key: bytes.Clone(key), tx: tx, addr: server.Address, tenantID: tx.tenantId, replyCh: replyCh, replyHandle: replyHandle, conn: conn, ctx: ctx, cancel: opCancel.afterLease(), timer: timer, sentAt: sentAt, gen: op.inc.gen}
+		p := &PendingGet{key: bytes.Clone(key), tx: tx, addr: server.Address, tenantID: tx.tenantId, replyCh: replyCh, replyHandle: replyHandle, conn: conn, ctx: ctx, cancel: opCancel.afterLease(), timer: timer, sentAt: sentAt, gen: op.inc.gen, tags: tags}
 		if tx.afterPendingSend != nil {
 			tx.afterPendingSend(p)
 		}
@@ -979,7 +974,8 @@ type PendingGet struct {
 	timer         *time.Timer
 	sentAt        time.Time // RFC-114: send time, for the pipelined read-latency sample
 	flushed       bool
-	gen           uint64 // read incarnation at issue (see Transaction.readGen)
+	gen           uint64        // read incarnation at issue (see Transaction.readGen)
+	tags          readTagSample // the request's draw, kept by a fallback loadBalance would retry itself
 
 	// Resolve is idempotent: the first caller (the future's .Get(), or
 	// Commit's drain — whichever runs first) does the work; later callers get
@@ -2111,6 +2107,7 @@ type watchActivation struct {
 	done      chan struct{}
 	version   int64
 	abandoned bool
+	readTags  []byte // the encoded read tags at the commit, which setupWatches sends (NativeAPI.actor.cpp:6429)
 }
 
 func (tx *Transaction) stateWatchActivation() *watchActivation {
@@ -2140,6 +2137,9 @@ func (tx *Transaction) fireWatchActivation(version int64, abandoned bool) {
 	}
 	prev.version = version
 	prev.abandoned = abandoned
+	if !abandoned {
+		prev.readTags = encodeTagSet(tx.readTags)
+	}
 	close(prev.done)
 }
 
@@ -2185,6 +2185,7 @@ func (tx *Transaction) ReleaseWatch() {
 func (tx *Transaction) newWatchCtx(parent context.Context) (context.Context, context.CancelFunc) {
 	parent = context.WithValue(parent, watchParametersKey{}, watchParameters{
 		tenantID:   tx.tenantId,
+		readTags:   encodeTagSet(tx.readTags),
 		activation: tx.stateWatchActivation(),
 	})
 	ctx, cancel := context.WithCancel(parent)

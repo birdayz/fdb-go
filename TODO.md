@@ -238,13 +238,24 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
     (`pkg/fdbgo/client/locality.go`); C++ passes the transaction's version into the
     location lookup of the tenant metrics path (`NativeAPI.actor.cpp:3197-3198,
     7825-7834`).
-  - [ ] Read tag sampling: about 1% of libfdb_c read requests carry the read tag set,
-    even an empty one (`sampleReadTags`, `NativeAPI.actor.cpp:2080-2083`); Go sends none.
-    C++ draws once per native request (`:3681,3806,3970,4303,4684`) and `loadBalance`
-    reuses it across alternatives and hedges (`LoadBalance.actor.h:446,662,689`); a
-    watch captures its tags at registration (`:5697-5703`). Port that, with tests for
-    all five read request types, hedges and alternatives, and a reset after a watch is
-    set. The goldens leave these fields out of the read requests.
+  - [x] Read tag sampling: about 1% of libfdb_c read requests carry the read tag set,
+    even an empty one (`sampleReadTags`, `NativeAPI.actor.cpp:2080-2083`). C++ draws once
+    per native request (`:3681,3806,3970,4303,4684`) and `loadBalance` reuses it across
+    alternatives and hedges (`LoadBalance.actor.h:446,662,689`). A watch's first request
+    uses the read tags as of the commit (`setupWatches`, `:6418-6432`); the set captured at
+    registration (`:5697-5703`) only reaches `restartWatch`. Go draws in each read loop
+    iteration, keeps the draw across reply-timeout, maybe-delivered and dead-endpoint
+    retries (including a pipelined get's fallback read), and draws again after
+    wrong_shard_server or all_alternatives_failed. The async watch sends the commit-time
+    set, the synchronous Go-only `Watch` the setup capture. Pinned by
+    `read_tags_unit_test`, `TestReadTagSamplingRequestKinds` (storage_plumbing_fdb_test)
+    and `TestReadTagSamplingOneDrawPerRequest` (client_test). The goldens leave these
+    fields out of the read requests.
+  - [ ] `Reset` or `OnError` after a commit cancels that commit's watches: Go's
+    `cancelWatches` cancels every registered watch context, while C++ `setupWatches`
+    empties `watches` once the commit hands them off (`NativeAPI.actor.cpp:6435`), so
+    `Transaction::reset`'s `cancelWatches` (`:6173`) no longer reaches them. Observed:
+    WatchSetup, commit, WatchPoll, then `Reset` ends the poll with context canceled.
   - [ ] The sample rate can be overridden through the cluster's global configuration
     (`transactionTagSampleRate`); Go has no global configuration (libfdb_c refreshes it at
     startup with `GlobalConfigRefreshRequest`).

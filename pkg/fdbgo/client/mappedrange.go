@@ -179,8 +179,8 @@ var getMappedKeyValuesBufPool = sync.Pool{
 	New: func() any { b := make([]byte, 0, 512); return &b },
 }
 
-func buildGetMappedKeyValuesRequest(mapper []byte) func(begin, end KeySelector, version int64, limit int32, limitBytes int32, lockAware bool, tenantId int64, span types.SpanContext, replyToken transport.UID, _ transport.UID) ([]byte, *[]byte) {
-	return func(begin, end KeySelector, version int64, limit int32, limitBytes int32, lockAware bool, tenantId int64, span types.SpanContext, replyToken transport.UID, _ transport.UID) ([]byte, *[]byte) {
+func buildGetMappedKeyValuesRequest(mapper []byte) func(begin, end KeySelector, version int64, limit int32, limitBytes int32, lockAware bool, tenantId int64, span types.SpanContext, tags readTagSample, replyToken transport.UID, _ transport.UID) ([]byte, *[]byte) {
+	return func(begin, end KeySelector, version int64, limit int32, limitBytes int32, lockAware bool, tenantId int64, span types.SpanContext, tags readTagSample, replyToken transport.UID, _ transport.UID) ([]byte, *[]byte) {
 		req := types.GetMappedKeyValuesRequest{
 			Begin:                  begin.ref(),
 			End:                    end.ref(),
@@ -193,6 +193,7 @@ func buildGetMappedKeyValuesRequest(mapper []byte) func(begin, end KeySelector, 
 			SpanContext:            span,
 			SsLatestCommitVersions: emptyVersionVector,
 		}
+		tags.apply(&req.HasTags, &req.Tags)
 		if lockAware {
 			req.HasOptions = true
 			req.Options = lockAwareReadOptions()
@@ -231,9 +232,9 @@ var mappedRangeScanOps = rangeScanOps[MappedKeyValue]{
 	},
 }
 
-func (tx *Transaction) sendGetMappedRange(mapper []byte) func(ctx context.Context, begin, end []byte, limits rangeLimits, readVersion int64, reverse bool, servers []ServerInfo) ([]MappedKeyValue, bool, error) {
-	return func(ctx context.Context, begin, end []byte, limits rangeLimits, readVersion int64, reverse bool, servers []ServerInfo) ([]MappedKeyValue, bool, error) {
-		return sendRangeRPC(tx, ctx, firstGreaterOrEqual(begin), firstGreaterOrEqual(end), limits, readVersion, reverse, servers, rangeRPCOps[MappedKeyValue]{
+func (tx *Transaction) sendGetMappedRange(mapper []byte) func(ctx context.Context, begin, end []byte, limits rangeLimits, readVersion int64, reverse bool, servers []ServerInfo, tags readTagSample) ([]MappedKeyValue, bool, error) {
+	return func(ctx context.Context, begin, end []byte, limits rangeLimits, readVersion int64, reverse bool, servers []ServerInfo, tags readTagSample) ([]MappedKeyValue, bool, error) {
+		return sendRangeRPC(tx, ctx, firstGreaterOrEqual(begin), firstGreaterOrEqual(end), limits, readVersion, reverse, servers, tags, rangeRPCOps[MappedKeyValue]{
 			// getMappedKeyValues is adjusted endpoint 14, NOT 3. The field is
 			// DECLARED immediately after getKeyValues (StorageServerInterface.h:103)
 			// but is assigned getAdjustedEndpoint(14) (:184-185) — it was appended
