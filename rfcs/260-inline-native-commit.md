@@ -30,9 +30,11 @@ Throughput and latency are unchanged (paced mean 839 → 832 µs). futex calls f
 to 9.5 per paced transaction (medians). Paced client CPU goes from 1.32× to 1.15× libfdb_c.
 
 Provenance: `clientbench` built with Bazel from master `e5209b8c6` (client code identical
-to `13580f1b7`) and from that tree with the mutant patch (the `go n.run(...)` in
-`startNativeCommit` replaced by a call the caller makes after `owned.release()`); the
-binaries' SHA-256 prefixes are in the data. Each run is `-iterations`/`-warmup`
+to `13580f1b7`) and from that tree with the mutant patch
+([`inline-mutant.patch`](../docs/benchmarks/rfc-260/inline-mutant.patch): the `go n.run(...)` in
+`startNativeCommit` replaced by a call the caller makes after `owned.release()`;
+[`inline-turn-mutant.patch`](../docs/benchmarks/rfc-260/inline-turn-mutant.patch) adds the
+writer's turn to the eager send); the binaries' SHA-256 prefixes are in the data. Each run is `-iterations`/`-warmup`
 20000/2000 (8 workers), 40000/4000 (32) and 24000/4000 (paced, `-rate 2000 -seed 1`),
 `GOMAXPROCS=8`, client on CPUs 0–7, under `perf stat` (task-clock, context switches,
 futex, epoll_pwait and read syscalls), per transaction including warmup.
