@@ -42,6 +42,18 @@ func (tx *Transaction) getEstimatedRangeSizeBytesImpl(ctx context.Context, begin
 	if err := tx.checkTimeout(ctx); err != nil {
 		return 0, err
 	}
+	// C++ passes the transaction state, and so starts the transaction and reads
+	// at its version, only for a tenant (ReadYourWrites.actor.cpp:1860-1863;
+	// NativeAPI.actor.cpp:7820-7824); otherwise it asks for the latest version
+	// and sends no GRV.
+	minVersion := LatestVersion
+	if tx.tenantId >= 0 {
+		v, err := tx.readVersionForOperation(ctx, 0)
+		if err != nil {
+			return 0, err
+		}
+		minVersion = v
+	}
 	// C++ uses std::numeric_limits<int>::max() — get ALL locations at once.
 	const shardLimit = math.MaxInt32
 
@@ -67,7 +79,7 @@ func (tx *Transaction) getEstimatedRangeSizeBytesImpl(ctx context.Context, begin
 				continue // empty range for this shard
 			}
 
-			b, err := tx.sendWaitMetrics(ctx, shardBegin, shardEnd, loc.Servers)
+			b, err := tx.sendWaitMetrics(ctx, shardBegin, shardEnd, minVersion, loc.Servers)
 			if err != nil {
 				if isWrongShardServer(err) || isAllAlternativesFailed(err) || isMaybeDelivered(err) {
 					tx.db.locCache.invalidateRange(begin, end, tx.tenantId)
@@ -106,18 +118,7 @@ func isFutureVersion(err error) bool {
 // the bytes field from the StorageMetrics reply. Uses min.bytes=0, max.bytes=-1
 // (reversed range) to get an immediate response instead of waiting for a
 // threshold change.
-func (tx *Transaction) sendWaitMetrics(ctx context.Context, begin, end []byte, servers []ServerInfo) (int64, error) {
-	// Without a tenant, C++ passes no transaction state and asks for the latest
-	// version (getEstimatedRangeSizeBytes, ReadYourWrites.actor.cpp:1860-1863;
-	// NativeAPI.actor.cpp:7824). A tenant read uses the read version, captured
-	// under readVersionMu (RFC-175 E1): a concurrent Commit/Reset writes it
-	// under the mutex.
-	minVersion := LatestVersion
-	if tx.tenantId >= 0 {
-		tx.readVersionMu.Lock()
-		minVersion = tx.readVersion
-		tx.readVersionMu.Unlock()
-	}
+func (tx *Transaction) sendWaitMetrics(ctx context.Context, begin, end []byte, minVersion int64, servers []ServerInfo) (int64, error) {
 	for _, server := range servers {
 		conn, err := tx.db.getOrDial(ctx, server.Address)
 		if err != nil {

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"math/rand/v2"
 	"sync"
 	"time"
 
@@ -305,7 +304,6 @@ func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqu
 				SpanContext:            span,
 				SsLatestCommitVersions: emptyVersionVector,
 			}
-			req.HasTags, req.Tags = sampleReadTags(tx.readTags)
 			if lockAware {
 				req.HasOptions = true
 				req.Options = lockAwareReadOptions()
@@ -517,7 +515,7 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 				return inFlightRPC{err: err, addr: server.Address}
 			}
 			replyToken, replyCh, replyHandle := conn.PrepareReplyTo(server.Token)
-			body, poolBuf := buildGetValueRequest(key, readVersion, lockAware, tenantId, span, tx.readTags, replyToken, server.Token)
+			body, poolBuf := buildGetValueRequest(key, readVersion, lockAware, tenantId, span, replyToken, server.Token)
 
 			delta := tx.db.queueModel.startRequest(server.Address)
 			start := time.Now()
@@ -589,7 +587,7 @@ func (tx *Transaction) sendGetValueToServer(ctx context.Context, key []byte, ser
 	}
 	replyToken, replyCh, replyHandle := conn.PrepareReplyTo(server.Token)
 	defer replyHandle.Release()
-	body, poolBuf := buildGetValueRequest(key, readVersion, lockAware, tenantId, childSpanContext(tx.currentSpan()), tx.readTags, replyToken, server.Token)
+	body, poolBuf := buildGetValueRequest(key, readVersion, lockAware, tenantId, childSpanContext(tx.currentSpan()), replyToken, server.Token)
 
 	delta := tx.db.queueModel.startRequest(server.Address)
 	start := time.Now()
@@ -980,7 +978,7 @@ func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limi
 // and not the other.
 type rangeRPCOps[T any] struct {
 	endpoint int
-	build    func(begin, end []byte, version int64, limit int32, limitBytes int32, lockAware bool, tenantId int64, span types.SpanContext, readTags []string, replyToken transport.UID, serverToken transport.UID) ([]byte, *[]byte)
+	build    func(begin, end []byte, version int64, limit int32, limitBytes int32, lockAware bool, tenantId int64, span types.SpanContext, replyToken transport.UID, serverToken transport.UID) ([]byte, *[]byte)
 	putBuf   func(*[]byte)
 	parse    func([]byte) ([]T, bool, float64, error)
 }
@@ -1034,7 +1032,7 @@ func sendRangeRPC[T any](tx *Transaction, ctx context.Context, begin, end []byte
 			}
 			gkvToken := getAdjustedEndpoint(server.Token, ops.endpoint)
 			replyToken, replyCh, replyHandle := conn.PrepareReplyTo(gkvToken)
-			body, poolBuf := ops.build(begin, end, readVersion, wireLimit, wireLimitBytes, lockAware, tenantId, span, tx.readTags, replyToken, server.Token)
+			body, poolBuf := ops.build(begin, end, readVersion, wireLimit, wireLimitBytes, lockAware, tenantId, span, replyToken, server.Token)
 
 			delta := tx.db.queueModel.startRequest(server.Address)
 			start := time.Now()
@@ -1225,7 +1223,7 @@ func isServerTimeout(err error) bool {
 	return isReplyTimeout(err) || errors.Is(err, context.DeadlineExceeded)
 }
 
-func buildGetKeyValuesRequest(begin, end []byte, version int64, limit int32, limitBytes int32, lockAware bool, tenantId int64, span types.SpanContext, readTags []string, replyToken transport.UID, _ transport.UID) ([]byte, *[]byte) {
+func buildGetKeyValuesRequest(begin, end []byte, version int64, limit int32, limitBytes int32, lockAware bool, tenantId int64, span types.SpanContext, replyToken transport.UID, _ transport.UID) ([]byte, *[]byte) {
 	req := types.GetKeyValuesRequest{
 		Begin:                  types.KeySelectorRef{Key: begin, OrEqual: false, Offset: 1}, // firstGreaterOrEqual(begin)
 		End:                    types.KeySelectorRef{Key: end, OrEqual: false, Offset: 1},   // firstGreaterOrEqual(end)
@@ -1237,7 +1235,6 @@ func buildGetKeyValuesRequest(begin, end []byte, version int64, limit int32, lim
 		SpanContext:            span, // RFC-115 §4
 		SsLatestCommitVersions: emptyVersionVector,
 	}
-	req.HasTags, req.Tags = sampleReadTags(readTags)
 	if lockAware {
 		req.HasOptions = true
 		req.Options = lockAwareReadOptions()
@@ -1288,23 +1285,7 @@ var emptyVersionVector = func() []byte {
 	return b
 }()
 
-// readTagSampleRate is CLIENT_KNOBS->READ_TAG_SAMPLE_RATE (ClientKnobs.cpp:294).
-// C++ lets the cluster's global configuration override it
-// (transactionTagSampleRate, NativeAPI.actor.cpp:2081); Go has no global
-// configuration yet. A variable so tests can force sampling on or off.
-var readTagSampleRate = 0.01
-
-// sampleReadTags is C++ sampleReadTags (NativeAPI.actor.cpp:2080-2083), drawn
-// for every read request built: a sampled request carries the transaction's
-// read tags, an empty set included (Optional<TagSet> present).
-func sampleReadTags(readTags []string) (bool, []byte) {
-	if readTagSampleRate > 0 && rand.Float64() <= readTagSampleRate {
-		return true, encodeTagSet(readTags)
-	}
-	return false, nil
-}
-
-func buildGetValueRequest(key []byte, version int64, lockAware bool, tenantId int64, span types.SpanContext, readTags []string, replyToken transport.UID, _ transport.UID) ([]byte, *[]byte) {
+func buildGetValueRequest(key []byte, version int64, lockAware bool, tenantId int64, span types.SpanContext, replyToken transport.UID, _ transport.UID) ([]byte, *[]byte) {
 	req := types.GetValueRequest{
 		Key:                    key,
 		Version:                version,
@@ -1313,7 +1294,6 @@ func buildGetValueRequest(key []byte, version int64, lockAware bool, tenantId in
 		SpanContext:            span, // RFC-115 §4
 		SsLatestCommitVersions: emptyVersionVector,
 	}
-	req.HasTags, req.Tags = sampleReadTags(readTags)
 	if lockAware {
 		req.HasOptions = true
 		req.Options = lockAwareReadOptions()
@@ -1633,7 +1613,7 @@ func isWatchErrorCode(err error, code int) bool {
 // buildWatchValueRequest constructs a WatchValueRequest. `span` is the watchValue
 // CHILD span (derived once in WatchPoll, reused across the wrong-shard retry loop) —
 // stamped verbatim, matching C++ WatchValueRequest(span.context,…) (NativeAPI.actor.cpp:3965).
-func buildWatchValueRequest(key, value []byte, readVersion int64, tenantId int64, span types.SpanContext, readTags []string, replyToken transport.UID) []byte {
+func buildWatchValueRequest(key, value []byte, readVersion int64, tenantId int64, span types.SpanContext, replyToken transport.UID) []byte {
 	req := types.WatchValueRequest{
 		Key:         key,
 		Version:     readVersion,
@@ -1641,7 +1621,6 @@ func buildWatchValueRequest(key, value []byte, readVersion int64, tenantId int64
 		TenantInfo:  types.TenantInfo{TenantId: tenantId},
 		SpanContext: span,
 	}
-	req.HasTags, req.Tags = sampleReadTags(readTags)
 	if value != nil {
 		req.HasValue = true
 		req.Value = value
@@ -1670,7 +1649,7 @@ func (tx *Transaction) sendWatch(ctx context.Context, key, value []byte, readVer
 		}
 		watchToken := getAdjustedEndpoint(server.Token, EndpointWatchValue)
 		replyToken, replyCh, replyHandle := conn.PrepareReplyTo(watchToken)
-		reqData := buildWatchValueRequest(key, value, readVersion, tenantId, span, tx.readTags, replyToken)
+		reqData := buildWatchValueRequest(key, value, readVersion, tenantId, span, replyToken)
 
 		delta := tx.db.queueModel.startRequest(server.Address)
 		start := time.Now()

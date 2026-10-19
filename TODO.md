@@ -218,7 +218,7 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
     read past a pending write to the end of the unknown stretch); Go reads 256 rows (or
     10000) and stops at the pending key. Port the request sizing: `requestCount`,
     `clearLimit`, `skipUncached`/`skipUncachedBack`, `countUncached`, `additionalRows`
-    (`ReadYourWrites.actor.cpp:505-575, 680-800, 897-1010`). Was: a key selector with
+    (`ReadYourWrites.actor.cpp:505-590, 592-800, 897-1053`). Was: a key selector with
     offset 2 is resolved by a storage range read of limit 2 in libfdb_c and of limit 256
     in Go. C++ resolves it through
     `getRangeValue` with `GetRangeLimits(1)` (`ReadYourWrites.actor.cpp:140-160`); the
@@ -232,9 +232,15 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
     ships its `CoalescedKeyRefRangeMap` ranges, sorted and merged (`ReadYourWrites.h:237`,
     `KeyRangeMap.h:304-350`).
   - [x] `estimated_range_size`: without a tenant the `WaitMetricsRequest` asks for
-    `latestVersion` (`NativeAPI.actor.cpp:7824`).
-  - [x] Read tag sampling: about 1% of libfdb_c read requests carry the read tag set
-    (`sampleReadTags`, `NativeAPI.actor.cpp:2080-2083`); Go now samples at the knob default.
+    `latestVersion` (`NativeAPI.actor.cpp:7824`); with one it reads at the transaction's
+    read version (`ReadYourWrites.actor.cpp:1860-1863`, `NativeAPI.actor.cpp:7820-7843`).
+  - [ ] Read tag sampling: about 1% of libfdb_c read requests carry the read tag set,
+    even an empty one (`sampleReadTags`, `NativeAPI.actor.cpp:2080-2083`); Go sends none.
+    C++ draws once per native request (`:3681,3806,3970,4303,4684`) and `loadBalance`
+    reuses it across alternatives and hedges (`LoadBalance.actor.h:446,662,689`); a
+    watch captures its tags at registration (`:5697-5703`). Port that, with tests for
+    all five read request types, hedges and alternatives, and a reset after a watch is
+    set. The goldens leave these fields out of the read requests.
   - [ ] The sample rate can be overridden through the cluster's global configuration
     (`transactionTagSampleRate`); Go has no global configuration (libfdb_c refreshes it at
     startup with `GlobalConfigRefreshRequest`).

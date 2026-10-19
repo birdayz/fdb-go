@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -155,6 +156,29 @@ func TestTransactionSizeLimit_Commit(t *testing.T) {
 	}
 	if fdbErr.Code != 2101 {
 		t.Errorf("error code: got %d, want 2101 (transaction_too_large)", fdbErr.Code)
+	}
+}
+
+// The size limit counts the read conflicts the commit ships, the coalesced
+// union (ReadYourWrites.actor.cpp:1394-1399; NativeAPI.actor.cpp:6818,6835),
+// not every range added: 100 identical ranges count once.
+func TestTransactionSizeLimit_CoalescedReadConflicts(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	key := []byte(fmt.Sprintf("sizelimit_rc_%d", time.Now().UnixNano()))
+
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.SetSizeLimit(1000)
+		for i := 0; i < 100; i++ {
+			tx.AddReadConflictKey(append(key, 'r'))
+		}
+		tx.Set(append(key, 'w'), []byte("v"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("commit with 100 duplicate read conflicts under a 1000-byte limit: %v", err)
 	}
 }
 

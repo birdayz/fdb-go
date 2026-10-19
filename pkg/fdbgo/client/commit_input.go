@@ -38,22 +38,25 @@ type commitOutcome struct {
 // captureCommit runs under the caller's execution lease. Operands stay in the
 // borrowed slab or in heap buffers nothing rewrites; vectors, which a retry refills, are copied.
 func (tx *Transaction) captureCommit(muts []Mutation, writeConflicts []KeyRange) *commitInput {
-	return tx.captureCommitVectors(muts, false, writeConflicts, false)
+	return tx.captureCommitVectors(muts, false, writeConflicts, nil, false)
 }
 
-// captureCommitVectors takes muts as is when the caller owns that vector.
-// selfConflict says the last read conflict range is the self-conflicting one,
-// which C++ adds to the native transaction after the RYW read conflicts.
-func (tx *Transaction) captureCommitVectors(muts []Mutation, mutsOwned bool, writeConflicts []KeyRange, selfConflict bool) *commitInput {
+// captureCommitVectors takes muts as is when the caller owns that vector. With
+// readsFrozen, reads is the commit's own read-conflict vector, shipped as is;
+// otherwise the transaction's read conflicts are copied.
+func (tx *Transaction) captureCommitVectors(muts []Mutation, mutsOwned bool, writeConflicts, reads []KeyRange, readsFrozen bool) *commitInput {
 	tx.conflictMu.Lock()
 	defer tx.conflictMu.Unlock()
+	if !readsFrozen {
+		reads = slices.Clone(tx.readConflicts)
+	}
 	if !mutsOwned {
 		muts = slices.Clone(muts)
 	}
 	input := &commitInput{
 		db: tx.db, tenantID: tx.tenantId, lockAware: tx.lockAware, isDummy: tx.isDummy,
 		span: tx.currentSpan(), tags: append([]string(nil), tx.tags...),
-		muts: muts, readConflicts: shipReadConflicts(tx.readConflicts, tx.rywDisabled, selfConflict),
+		muts: muts, readConflicts: reads,
 		writeConflicts: slices.Clone(writeConflicts),
 	}
 	tx.readVersionMu.Lock()
@@ -144,23 +147,19 @@ func (tx *Transaction) commitDummyTransaction(ctx context.Context) error {
 	return input.commitDummyTransaction(ctx)
 }
 
-// shipReadConflicts copies the read conflict ranges a commit ships. With RYW,
-// C++ keeps them in a CoalescedKeyRefRangeMap<bool> (ReadYourWrites.h:237)
-// whose inserts merge with equal neighbours (KeyRangeMap.h:304-350); every
-// insert is true, so it ships the sorted union of the read ranges, overlapping
-// and adjacent ones merged (ReadYourWrites.actor.cpp:318-350, 1394-1399). The
-// self-conflicting range is added to the native transaction afterwards, so it
-// stays last. Without RYW the native transaction ships them as added.
-func shipReadConflicts(reads []KeyRange, rywDisabled, selfConflict bool) []KeyRange {
+// shipReadConflicts returns a new vector of the read conflict ranges a commit
+// ships. With RYW, C++ keeps them in a CoalescedKeyRefRangeMap<bool>
+// (ReadYourWrites.h:237) whose inserts merge with equal neighbours
+// (KeyRangeMap.h:304-350); every insert is true, so it ships the sorted union
+// of the read ranges, overlapping and adjacent ones merged
+// (ReadYourWrites.actor.cpp:318-350, 1394-1399). Without RYW the native
+// transaction ships them as added.
+func shipReadConflicts(reads []KeyRange, rywDisabled bool) []KeyRange {
 	out := slices.Clone(reads)
-	if rywDisabled || len(out) == 0 {
+	if rywDisabled {
 		return out
 	}
-	body, tail := out, []KeyRange(nil)
-	if selfConflict {
-		body, tail = slices.Clone(out[:len(out)-1]), out[len(out)-1:]
-	}
-	return append(readConflictMap(body), tail...)
+	return readConflictMap(out)
 }
 
 // readConflictMap is the read-conflict map's ranges: the sorted union of

@@ -58,8 +58,9 @@ the requests became readable at the capture point: the message type and its
 non-zero fields.
 
 - Left out: reply tokens, spans and debug IDs, and the read tags of the read
-  request types (`HasTags`, `Tags`): both clients attach them to a random 1% of
-  reads. GRV and commit tags are compared.
+  request types (`HasTags`, `Tags`): libfdb_c attaches them to a random 1% of
+  reads (the Go client does not yet; see TODO.md). GRV and commit tags are
+  compared.
 - Versions (`Version`, `ReadSnapshot`, `MinKnownCommittedVersion`,
   `MaxVersion`) are `V1`, `V2`, … in order of appearance within the scenario;
   0, `invalidVersion` (-1), `latestVersion` (-2) and the maximum keep their
@@ -89,7 +90,7 @@ its own normalization first.
 It is a TODO.md item. Fixed: `clear_range_then_set` (a clear split around the
 operations inside it), `clear_key` (the compact single-key clear encoding),
 `add_then_get` (read conflict ranges sorted and merged), `estimated_range_size`
-(`latestVersion` in the metrics request), and read tag sampling.
+(`latestVersion` in the metrics request).
 Fixing a divergence changes the goldens, which are then regenerated with
 `-update`.
 

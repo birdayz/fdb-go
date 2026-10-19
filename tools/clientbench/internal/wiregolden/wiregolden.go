@@ -52,10 +52,10 @@ var dropped = map[string]bool{
 	"Reply": true, "SpanContext": true, "DebugID": true, "HasDebugID": true, "Arena": true,
 }
 
-// sampledTags are the read request types whose tags are sampled at random on
-// both clients (C++ sampleReadTags, NativeAPI.actor.cpp:2080-2083: about 1% of
-// requests carry the read tag set, even an empty one), so their HasTags and
-// Tags are left out. The GRV and commit tag fields are compared.
+// sampledTags are the read request types whose tags libfdb_c samples at random
+// (sampleReadTags, NativeAPI.actor.cpp:2080-2083: about 1% of requests carry
+// the read tag set, even an empty one), so their HasTags and Tags are left out.
+// The GRV and commit tag fields are compared.
 var sampledTags = map[string]bool{
 	"GetValueRequest": true, "GetKeyRequest": true, "GetKeyValuesRequest": true,
 	"GetMappedKeyValuesRequest": true, "WatchValueRequest": true,

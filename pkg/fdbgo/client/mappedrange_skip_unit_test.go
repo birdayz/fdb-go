@@ -131,7 +131,7 @@ func TestMappedSkipRejectsUnsupportedMappedDispatch(t *testing.T) {
 
 func TestMappedRequestUsesOnlyPlainSelectors(t *testing.T) {
 	t.Parallel()
-	data, buf := buildGetMappedKeyValuesRequest([]byte("mapper"))([]byte("b"), []byte("e"), 123, -5, 512, false, -1, types.SpanContext{}, nil, transport.UID{}, transport.UID{})
+	data, buf := buildGetMappedKeyValuesRequest([]byte("mapper"))([]byte("b"), []byte("e"), 123, -5, 512, false, -1, types.SpanContext{}, transport.UID{}, transport.UID{})
 	defer getMappedKeyValuesBufPool.Put(buf)
 	var req types.GetMappedKeyValuesRequest
 	if err := req.UnmarshalFDB(data); err != nil {
