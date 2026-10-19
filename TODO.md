@@ -250,6 +250,11 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
     startup with `GlobalConfigRefreshRequest`).
   - [x] `clear_key`: libfdb_c serializes a single-key clear `[k, k\x00)` as `(k\x00, '')`
     (`MutationRef::serialize`, `CommitTransaction.h:318-334`); Go sends `(k, k\x00)`.
+  - [ ] Mapped range continuation selector: inside one native call a forward mapped read
+    continues at `FGE(keyAfter(last))` (`pkg/fdbgo/client/mappedrange_selectors.go:179`);
+    NativeAPI `getRange` sends `firstGreaterThan(last)` (`NativeAPI.actor.cpp:4850`). Same
+    rows, different `Begin` bytes. RFC-262 D4 leaves mapped reads on their sender; port the
+    selector-capable sender for them and add a mapped multi-request golden scenario.
 - [ ] **Transaction options during in-flight operations.** Option setters (`SetLockAware`,
   `SetReadLockAware`, GRV cache, tags, priority) write plain `Transaction` fields under a
   shared state lease, while in-flight operations read them: GRV completion reads lock
