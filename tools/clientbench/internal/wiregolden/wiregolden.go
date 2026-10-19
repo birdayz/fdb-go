@@ -52,6 +52,15 @@ var dropped = map[string]bool{
 	"Reply": true, "SpanContext": true, "DebugID": true, "HasDebugID": true, "Arena": true,
 }
 
+// sampledTags are the read request types whose tags are sampled at random on
+// both clients (C++ sampleReadTags, NativeAPI.actor.cpp:2080-2083: about 1% of
+// requests carry the read tag set, even an empty one), so their HasTags and
+// Tags are left out. The GRV and commit tag fields are compared.
+var sampledTags = map[string]bool{
+	"GetValueRequest": true, "GetKeyRequest": true, "GetKeyValuesRequest": true,
+	"GetMappedKeyValuesRequest": true, "WatchValueRequest": true,
+}
+
 // versionFields hold versions, which are numbered per scenario.
 var versionFields = map[string]bool{
 	"Version": true, "ReadSnapshot": true, "MinKnownCommittedVersion": true, "MaxVersion": true,
@@ -243,6 +252,7 @@ func Transcript(reqs []Request, keyPrefix string, want []string) (string, error)
 			return "", fmt.Errorf("scenario %s: undecoded request %s", got[len(got)-1], r.Kind)
 		default:
 			counts[got[len(got)-1]]++
+			n.skipTags = sampledTags[r.Kind]
 			fmt.Fprintf(&out, "%s %s\n", r.Kind, n.value("", reflect.ValueOf(r.Msg)))
 		}
 	}
@@ -261,6 +271,7 @@ func Transcript(reqs []Request, keyPrefix string, want []string) (string, error)
 }
 
 type normalizer struct {
+	skipTags bool // the request's read tags are sampled; see sampledTags
 	versions map[int64]string
 	random   map[string]string
 	prefix   string
@@ -345,7 +356,8 @@ func (n *normalizer) value(field string, v reflect.Value) string {
 		clear := t == reflect.TypeFor[types.MutationRef]() && v.FieldByName("MutType").Uint() == clearRange
 		for i := 0; i < v.NumField(); i++ {
 			f := t.Field(i)
-			if !f.IsExported() || dropped[f.Name] || v.Field(i).IsZero() {
+			if !f.IsExported() || dropped[f.Name] || v.Field(i).IsZero() ||
+				(n.skipTags && (f.Name == "HasTags" || f.Name == "Tags")) {
 				continue
 			}
 			name := f.Name

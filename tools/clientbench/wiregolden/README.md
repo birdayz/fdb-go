@@ -57,7 +57,9 @@ One section per scenario (`== name`), one line per client request in the order
 the requests became readable at the capture point: the message type and its
 non-zero fields.
 
-- Left out: reply tokens, spans and debug IDs.
+- Left out: reply tokens, spans and debug IDs, and the read tags of the read
+  request types (`HasTags`, `Tags`): both clients attach them to a random 1% of
+  reads. GRV and commit tags are compared.
 - Versions (`Version`, `ReadSnapshot`, `MinKnownCommittedVersion`,
   `MaxVersion`) are `V1`, `V2`, … in order of appearance within the scenario;
   0, `invalidVersion` (-1), `latestVersion` (-2) and the maximum keep their
@@ -80,12 +82,14 @@ its own normalization first.
 
 ## Known divergences (`go-divergences.diff`)
 
-| Scenario | libfdb_c | Go |
+| Scenarios | libfdb_c | Go |
 |---|---|---|
-| `getkey_offset` | the storage range read has limit 2 | limit 256 |
+| `getkey_*`, `set_then_range` | storage reads sized by `getRangeValue` (limits 1, 2, -1, -3; 80000 rows) | 256 (or 10000) rows |
 
 It is a TODO.md item. Fixed: `clear_range_then_set` (a clear split around the
-operations inside it) and `clear_key` (the compact single-key clear encoding).
+operations inside it), `clear_key` (the compact single-key clear encoding),
+`add_then_get` (read conflict ranges sorted and merged), `estimated_range_size`
+(`latestVersion` in the metrics request), and read tag sampling.
 Fixing a divergence changes the goldens, which are then regenerated with
 `-update`.
 

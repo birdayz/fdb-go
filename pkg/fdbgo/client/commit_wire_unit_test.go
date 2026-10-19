@@ -170,3 +170,74 @@ func TestCommitClearSplitEdges(t *testing.T) {
 	}
 	check("ryw disabled", ship, raw)
 }
+
+// The shipped read conflicts are the CoalescedKeyRefRangeMap's ranges
+// (KeyRangeMap.h:304-350): the sorted union, overlapping and adjacent ranges
+// merged, empty ranges dropped.
+func TestReadConflictMap(t *testing.T) {
+	r := func(b, e string) KeyRange { return KeyRange{Begin: []byte(b), End: []byte(e)} }
+	for _, tc := range []struct {
+		name     string
+		in, want []KeyRange
+	}{
+		{"unsorted disjoint", []KeyRange{r("c", "d"), r("a", "b")}, []KeyRange{r("a", "b"), r("c", "d")}},
+		{"adjacent merged", []KeyRange{r("b", "c"), r("a", "b")}, []KeyRange{r("a", "c")}},
+		{"duplicate", []KeyRange{r("a", "a\x00"), r("a", "a\x00")}, []KeyRange{r("a", "a\x00")}},
+		{"overlap", []KeyRange{r("a", "c"), r("b", "d")}, []KeyRange{r("a", "d")}},
+		{"contained", []KeyRange{r("a", "d"), r("b", "c")}, []KeyRange{r("a", "d")}},
+		{"containing", []KeyRange{r("b", "c"), r("a", "d")}, []KeyRange{r("a", "d")}},
+		{"empty key and empty range", []KeyRange{r("", "a"), r("q", "q"), r("", "b")}, []KeyRange{r("", "b")}},
+	} {
+		got := readConflictMap(tc.in)
+		if len(got) != len(tc.want) {
+			t.Fatalf("WIRE_READ_CONFLICTS %s: %q, want %q", tc.name, got, tc.want)
+		}
+		for i := range got {
+			if !bytes.Equal(got[i].Begin, tc.want[i].Begin) || !bytes.Equal(got[i].End, tc.want[i].End) {
+				t.Fatalf("WIRE_READ_CONFLICTS %s: %q, want %q", tc.name, got, tc.want)
+			}
+		}
+	}
+	reads := []KeyRange{r("c", "d"), r("a", "b"), r("\xff/SC/x", "\xff/SC/x\x00")}
+	got := shipReadConflicts(reads, false, true)
+	if len(got) != 3 || string(got[0].Begin) != "a" || string(got[2].Begin) != "\xff/SC/x" {
+		t.Fatalf("WIRE_READ_CONFLICTS self-conflict: %q, want the RYW ranges sorted, then the self-conflicting one", got)
+	}
+	if got := shipReadConflicts(reads, true, true); string(got[0].Begin) != "c" {
+		t.Fatalf("WIRE_READ_CONFLICTS ryw disabled: %q, want the ranges as added", got)
+	}
+}
+
+// A sampled read request carries the transaction's read tags, an empty set
+// included (C++ sampleReadTags, NativeAPI.actor.cpp:2080-2083); an unsampled
+// one carries none.
+func TestReadTagSampling(t *testing.T) {
+	defer func(r float64) { readTagSampleRate = r }(readTagSampleRate)
+	decode := func(body []byte) types.GetValueRequest {
+		r, err := wire.NewReader(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var m types.GetValueRequest
+		m.UnmarshalFromReader(r)
+		return m
+	}
+	for _, tc := range []struct {
+		rate    float64
+		tags    []string
+		has     bool
+		encoded string
+	}{
+		{1, nil, true, ""},
+		{1, []string{"ab"}, true, "\x02ab"},
+		{0, []string{"ab"}, false, ""},
+	} {
+		readTagSampleRate = tc.rate
+		body, buf := buildGetValueRequest([]byte("k"), 1, false, NoTenantID, types.SpanContext{}, tc.tags, transport.UID{}, transport.UID{})
+		m := decode(body)
+		getValueBufPool.Put(buf)
+		if m.HasTags != tc.has || string(m.Tags) != tc.encoded {
+			t.Fatalf("WIRE_READ_TAGS rate %v tags %q: has %v tags %q, want %v %q", tc.rate, tc.tags, m.HasTags, m.Tags, tc.has, tc.encoded)
+		}
+	}
+}

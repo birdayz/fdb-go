@@ -179,8 +179,8 @@ var getMappedKeyValuesBufPool = sync.Pool{
 	New: func() any { b := make([]byte, 0, 512); return &b },
 }
 
-func buildGetMappedKeyValuesRequest(mapper []byte) func(begin, end []byte, version int64, limit int32, limitBytes int32, lockAware bool, tenantId int64, span types.SpanContext, replyToken transport.UID, _ transport.UID) ([]byte, *[]byte) {
-	return func(begin, end []byte, version int64, limit int32, limitBytes int32, lockAware bool, tenantId int64, span types.SpanContext, replyToken transport.UID, _ transport.UID) ([]byte, *[]byte) {
+func buildGetMappedKeyValuesRequest(mapper []byte) func(begin, end []byte, version int64, limit int32, limitBytes int32, lockAware bool, tenantId int64, span types.SpanContext, readTags []string, replyToken transport.UID, _ transport.UID) ([]byte, *[]byte) {
+	return func(begin, end []byte, version int64, limit int32, limitBytes int32, lockAware bool, tenantId int64, span types.SpanContext, readTags []string, replyToken transport.UID, _ transport.UID) ([]byte, *[]byte) {
 		req := types.GetMappedKeyValuesRequest{
 			Begin:                  types.KeySelectorRef{Key: begin, OrEqual: false, Offset: 1}, // firstGreaterOrEqual(begin)
 			End:                    types.KeySelectorRef{Key: end, OrEqual: false, Offset: 1},   // firstGreaterOrEqual(end)
@@ -193,6 +193,7 @@ func buildGetMappedKeyValuesRequest(mapper []byte) func(begin, end []byte, versi
 			SpanContext:            span,
 			SsLatestCommitVersions: emptyVersionVector,
 		}
+		req.HasTags, req.Tags = sampleReadTags(readTags)
 		if lockAware {
 			req.HasOptions = true
 			req.Options = lockAwareReadOptions()

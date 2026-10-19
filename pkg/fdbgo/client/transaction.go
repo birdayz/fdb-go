@@ -890,7 +890,7 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 			continue
 		}
 		replyToken, replyCh, replyHandle := conn.PrepareReplyTo(server.Token)
-		body, poolBuf := buildGetValueRequest(key, readVersion, tx.lockAware || tx.readLockAware, tx.tenantId, childSpanContext(tx.currentSpan()), replyToken, server.Token)
+		body, poolBuf := buildGetValueRequest(key, readVersion, tx.lockAware || tx.readLockAware, tx.tenantId, childSpanContext(tx.currentSpan()), tx.readTags, replyToken, server.Token)
 		// RFC-114: stamp sentAt BEFORE sending. The frame may be written, and its reply
 		// delivered (stamping resp.RecvAt), before the send returns — RecvAt−sentAt
 		// would go negative and be silently dropped by the sketch.
@@ -1886,7 +1886,7 @@ func (tx *Transaction) commitAdmitted(ctx context.Context, completion *versionst
 	if tx.db != nil {
 		commitTok = tx.db.grvCache.token()
 	}
-	input := tx.captureCommitVectors(shipMuts, coalesced, shipConflicts)
+	input := tx.captureCommitVectors(shipMuts, coalesced, shipConflicts, scAdded)
 	defer func() {
 		if input != nil {
 			input.release()

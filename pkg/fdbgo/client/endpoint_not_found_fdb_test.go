@@ -47,7 +47,7 @@ func TestEndpointNotFound_RealServer(t *testing.T) {
 
 	token, reply, handle := conn.PrepareReplyTo(bogus)
 	defer handle.Release()
-	body, pooled := buildGetValueRequest(key, rv, false, NoTenantID, types.SpanContext{}, token, bogus)
+	body, pooled := buildGetValueRequest(key, rv, false, NoTenantID, types.SpanContext{}, nil, token, bogus)
 	start := time.Now()
 	if err := conn.SendFrame(bogus, body); err != nil {
 		t.Fatalf("send: %v", err)

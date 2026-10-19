@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"slices"
 	"time"
@@ -37,11 +38,13 @@ type commitOutcome struct {
 // captureCommit runs under the caller's execution lease. Operands stay in the
 // borrowed slab or in heap buffers nothing rewrites; vectors, which a retry refills, are copied.
 func (tx *Transaction) captureCommit(muts []Mutation, writeConflicts []KeyRange) *commitInput {
-	return tx.captureCommitVectors(muts, false, writeConflicts)
+	return tx.captureCommitVectors(muts, false, writeConflicts, false)
 }
 
 // captureCommitVectors takes muts as is when the caller owns that vector.
-func (tx *Transaction) captureCommitVectors(muts []Mutation, mutsOwned bool, writeConflicts []KeyRange) *commitInput {
+// selfConflict says the last read conflict range is the self-conflicting one,
+// which C++ adds to the native transaction after the RYW read conflicts.
+func (tx *Transaction) captureCommitVectors(muts []Mutation, mutsOwned bool, writeConflicts []KeyRange, selfConflict bool) *commitInput {
 	tx.conflictMu.Lock()
 	defer tx.conflictMu.Unlock()
 	if !mutsOwned {
@@ -50,7 +53,7 @@ func (tx *Transaction) captureCommitVectors(muts []Mutation, mutsOwned bool, wri
 	input := &commitInput{
 		db: tx.db, tenantID: tx.tenantId, lockAware: tx.lockAware, isDummy: tx.isDummy,
 		span: tx.currentSpan(), tags: append([]string(nil), tx.tags...),
-		muts: muts, readConflicts: slices.Clone(tx.readConflicts),
+		muts: muts, readConflicts: shipReadConflicts(tx.readConflicts, tx.rywDisabled, selfConflict),
 		writeConflicts: slices.Clone(writeConflicts),
 	}
 	tx.readVersionMu.Lock()
@@ -139,4 +142,30 @@ func (tx *Transaction) commitDummyTransaction(ctx context.Context) error {
 	defer input.release()
 	lease.release()
 	return input.commitDummyTransaction(ctx)
+}
+
+// shipReadConflicts copies the read conflict ranges a commit ships. With RYW,
+// C++ keeps them in a CoalescedKeyRefRangeMap<bool> (ReadYourWrites.h:237)
+// whose inserts merge with equal neighbours (KeyRangeMap.h:304-350); every
+// insert is true, so it ships the sorted union of the read ranges, overlapping
+// and adjacent ones merged (ReadYourWrites.actor.cpp:318-350, 1394-1399). The
+// self-conflicting range is added to the native transaction afterwards, so it
+// stays last. Without RYW the native transaction ships them as added.
+func shipReadConflicts(reads []KeyRange, rywDisabled, selfConflict bool) []KeyRange {
+	out := slices.Clone(reads)
+	if rywDisabled || len(out) == 0 {
+		return out
+	}
+	body, tail := out, []KeyRange(nil)
+	if selfConflict {
+		body, tail = slices.Clone(out[:len(out)-1]), out[len(out)-1:]
+	}
+	return append(readConflictMap(body), tail...)
+}
+
+// readConflictMap is the read-conflict map's ranges: the sorted union of
+// ranges, empty ones dropped (an empty insert does nothing). It reorders ranges.
+func readConflictMap(ranges []KeyRange) []KeyRange {
+	ranges = slices.DeleteFunc(ranges, func(r KeyRange) bool { return bytes.Compare(r.Begin, r.End) >= 0 })
+	return coalesceOwnedWriteConflicts(ranges)
 }

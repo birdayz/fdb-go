@@ -212,8 +212,15 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   libfdb_c's in three [wire-golden](tools/clientbench/wiregolden/README.md) scenarios
   (`go-divergences.diff`); fixing one regenerates the goldens. The fast lane checks the
   Go client against `go.golden` (`tools/clientbench/wiregolden/golden_test.go`).
-  - [ ] `getkey_offset`: a key selector with offset 2 is resolved by a storage range read
-    of limit 2 in libfdb_c and of limit 256 in Go. C++ resolves it through
+  - [ ] `getkey_*`, `set_then_range` (RYW storage reads): libfdb_c sizes each storage read
+    of a key selector or an RYW range read in `getRangeValue`/`getRangeValueBack`
+    (limits 1, 2, -1, -3 in the scenarios; 80000 rows for an iterator-mode RYW read; a
+    read past a pending write to the end of the unknown stretch); Go reads 256 rows (or
+    10000) and stops at the pending key. Port the request sizing: `requestCount`,
+    `clearLimit`, `skipUncached`/`skipUncachedBack`, `countUncached`, `additionalRows`
+    (`ReadYourWrites.actor.cpp:505-575, 680-800, 897-1010`). Was: a key selector with
+    offset 2 is resolved by a storage range read of limit 2 in libfdb_c and of limit 256
+    in Go. C++ resolves it through
     `getRangeValue` with `GetRangeLimits(1)` (`ReadYourWrites.actor.cpp:140-160`); the
     offset beyond the first row becomes `additionalRows` (`:731-749`), which
     `setRequestLimits` adds to the one-row limit (`:569-575`).
@@ -221,6 +228,16 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
     as `writeRangeToNativeTransaction` emits one clear per cleared stretch of the write map
     (`ReadYourWrites.actor.cpp:2001-2018`); Go sends the whole clear. The stored data is the
     same, but the mutation stream (and so mutation logs) differs.
+  - [x] `add_then_get`: Go shipped duplicate read conflict ranges in read order; C++
+    ships its `CoalescedKeyRefRangeMap` ranges, sorted and merged (`ReadYourWrites.h:237`,
+    `KeyRangeMap.h:304-350`).
+  - [x] `estimated_range_size`: without a tenant the `WaitMetricsRequest` asks for
+    `latestVersion` (`NativeAPI.actor.cpp:7824`).
+  - [x] Read tag sampling: about 1% of libfdb_c read requests carry the read tag set
+    (`sampleReadTags`, `NativeAPI.actor.cpp:2080-2083`); Go now samples at the knob default.
+  - [ ] The sample rate can be overridden through the cluster's global configuration
+    (`transactionTagSampleRate`); Go has no global configuration (libfdb_c refreshes it at
+    startup with `GlobalConfigRefreshRequest`).
   - [x] `clear_key`: libfdb_c serializes a single-key clear `[k, k\x00)` as `(k\x00, '')`
     (`MutationRef::serialize`, `CommitTransaction.h:318-334`); Go sends `(k, k\x00)`.
 - [ ] **Transaction options during in-flight operations.** Option setters (`SetLockAware`,

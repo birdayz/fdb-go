@@ -107,11 +107,17 @@ func isFutureVersion(err error) bool {
 // (reversed range) to get an immediate response instead of waiting for a
 // threshold change.
 func (tx *Transaction) sendWaitMetrics(ctx context.Context, begin, end []byte, servers []ServerInfo) (int64, error) {
-	// Capture under readVersionMu (RFC-175 E1): a concurrent Commit/Reset writes
-	// readVersion under the mutex. Same capture convention as the read path (readpath.go).
-	tx.readVersionMu.Lock()
-	minVersion := tx.readVersion
-	tx.readVersionMu.Unlock()
+	// Without a tenant, C++ passes no transaction state and asks for the latest
+	// version (getEstimatedRangeSizeBytes, ReadYourWrites.actor.cpp:1860-1863;
+	// NativeAPI.actor.cpp:7824). A tenant read uses the read version, captured
+	// under readVersionMu (RFC-175 E1): a concurrent Commit/Reset writes it
+	// under the mutex.
+	minVersion := LatestVersion
+	if tx.tenantId >= 0 {
+		tx.readVersionMu.Lock()
+		minVersion = tx.readVersion
+		tx.readVersionMu.Unlock()
+	}
 	for _, server := range servers {
 		conn, err := tx.db.getOrDial(ctx, server.Address)
 		if err != nil {
