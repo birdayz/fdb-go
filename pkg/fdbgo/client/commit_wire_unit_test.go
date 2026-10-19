@@ -54,3 +54,58 @@ func TestCommitSingleKeyClearEncoding(t *testing.T) {
 		}
 	}
 }
+
+// A cleared range with operations inside is shipped as the clears between
+// them, then the operations, as writeRangeToNativeTransaction does
+// (ReadYourWrites.actor.cpp:2001-2018).
+func TestCommitClearSplitByOperations(t *testing.T) {
+	m := func(typ MutationType, k, v string) Mutation {
+		return Mutation{Type: typ, Key: []byte(k), Value: []byte(v)}
+	}
+	for _, tc := range []struct {
+		name string
+		ops  []Mutation
+		want []Mutation
+	}{
+		{
+			"set inside",
+			[]Mutation{m(MutClearRange, "m", "n"), m(MutSetValue, "m1", "5")},
+			[]Mutation{m(MutClearRange, "m", "m1"), m(MutClearRange, "m1\x00", "n"), m(MutSetValue, "m1", "5")},
+		},
+		{
+			"set at begin",
+			[]Mutation{m(MutClearRange, "m", "n"), m(MutSetValue, "m", "5")},
+			[]Mutation{m(MutClearRange, "m\x00", "n"), m(MutSetValue, "m", "5")},
+		},
+		{
+			"set at last key",
+			[]Mutation{m(MutClearRange, "m", "m\x00\x00"), m(MutSetValue, "m\x00", "5")},
+			[]Mutation{m(MutClearRange, "m", "m\x00"), m(MutSetValue, "m\x00", "5")},
+		},
+		{
+			"two operations",
+			[]Mutation{m(MutClearRange, "a", "z"), m(MutSetValue, "c", "1"), m(MutAddValue, "q", "\x01")},
+			[]Mutation{m(MutClearRange, "a", "c"), m(MutClearRange, "c\x00", "q"), m(MutClearRange, "q\x00", "z"), m(MutSetValue, "c", "1"), m(MutSetValue, "q", "\x01")}, // an add on a cleared key folds to a set
+		},
+		{
+			"set outside",
+			[]Mutation{m(MutClearRange, "m", "n"), m(MutSetValue, "x", "1")},
+			[]Mutation{m(MutClearRange, "m", "n"), m(MutSetValue, "x", "1")},
+		},
+		{
+			"clear over set",
+			[]Mutation{m(MutSetValue, "m1", "5"), m(MutClearRange, "m", "n")},
+			[]Mutation{m(MutClearRange, "m", "n")},
+		},
+	} {
+		got := coalesceCommitMutations(tc.ops)
+		if len(got) != len(tc.want) {
+			t.Fatalf("WIRE_CLEAR_SPLIT %s: %q, want %q", tc.name, got, tc.want)
+		}
+		for i := range got {
+			if got[i].Type != tc.want[i].Type || !bytes.Equal(got[i].Key, tc.want[i].Key) || !bytes.Equal(got[i].Value, tc.want[i].Value) {
+				t.Fatalf("WIRE_CLEAR_SPLIT %s: %q, want %q", tc.name, got, tc.want)
+			}
+		}
+	}
+}

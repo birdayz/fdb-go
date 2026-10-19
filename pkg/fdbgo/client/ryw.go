@@ -308,12 +308,26 @@ func (c *rywCache) materializeCommit() []Mutation {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	out := make([]Mutation, 0, len(c.cleared)+len(c.writes))
+	c.ensureSortedLocked()
 	// Pass 1 — clears (c.cleared is kept sorted + non-overlapping by addClearedRangeLocked).
+	// A key with an operation is not a cleared segment of the C++ write map, so
+	// it ends the cleared stretch: the clear resumes after it
+	// (writeRangeToNativeTransaction, ReadYourWrites.actor.cpp:2001-2018).
 	for _, r := range c.cleared {
-		out = append(out, Mutation{Type: MutClearRange, Key: r.begin, Value: r.end})
+		begin := r.begin
+		i, _ := slices.BinarySearch(c.sortedKeys, string(r.begin))
+		for ; i < len(c.sortedKeys) && c.sortedKeys[i] < string(r.end); i++ {
+			key := c.sortedKeys[i]
+			if string(begin) < key {
+				out = append(out, Mutation{Type: MutClearRange, Key: begin, Value: []byte(key)})
+			}
+			begin = keyAfterBytes([]byte(key))
+		}
+		if bytes.Compare(begin, r.end) < 0 {
+			out = append(out, Mutation{Type: MutClearRange, Key: begin, Value: r.end})
+		}
 	}
 	// Pass 2 — per-key operations in sorted key order.
-	c.ensureSortedLocked()
 	for _, k := range c.sortedKeys {
 		e := c.writes[k]
 		key := []byte(k)
