@@ -41,11 +41,11 @@ func TestRYWSortedIndexRetainedAcrossMutations(t *testing.T) {
 			var c rywCache
 			c.set([]byte("b"), []byte("v"))
 			c.set([]byte("d"), []byte("v"))
-			c.ensureSortedLocked()
+			c.liveLocked().ensureSorted()
 			tc.mutate(&c)
 			// Check before any read can rebuild an invalidated index.
-			if c.sortedKeys == nil || !slices.Equal(c.sortedKeys, tc.want) {
-				t.Fatalf("retained index = %#v, want %#v", c.sortedKeys, tc.want)
+			if c.liveLocked().sortedKeys == nil || !slices.Equal(c.liveLocked().sortedKeys, tc.want) {
+				t.Fatalf("retained index = %#v, want %#v", c.liveLocked().sortedKeys, tc.want)
 			}
 		})
 	}
@@ -56,7 +56,7 @@ func TestRYWSortedIndexTracksWrites(t *testing.T) {
 	rng := rand.New(rand.NewPCG(1, 2))
 	key := func() []byte { return []byte(fmt.Sprintf("k%03d", rng.IntN(200))) }
 	var c rywCache
-	c.ensureSortedLocked()
+	c.liveLocked().ensureSorted()
 	for step := 0; step < 5000; step++ {
 		switch rng.IntN(5) {
 		case 0, 1:
@@ -72,16 +72,16 @@ func TestRYWSortedIndexTracksWrites(t *testing.T) {
 		default:
 			c.atomic(MutAddValue, key(), []byte{1, 0, 0, 0, 0, 0, 0, 0})
 		}
-		if c.sortedKeys == nil {
+		if c.liveLocked().sortedKeys == nil {
 			t.Fatalf("step %d: mutation discarded the sorted index", step)
 		}
-		want := make([]string, 0, len(c.writes))
-		for k := range c.writes {
+		want := make([]string, 0, len(c.liveLocked().writes))
+		for k := range c.liveLocked().writes {
 			want = append(want, k)
 		}
 		slices.Sort(want)
-		if !slices.Equal(c.sortedKeys, want) {
-			t.Fatalf("step %d: sorted index %v, write keys %v", step, c.sortedKeys, want)
+		if !slices.Equal(c.liveLocked().sortedKeys, want) {
+			t.Fatalf("step %d: sorted index %v, write keys %v", step, c.liveLocked().sortedKeys, want)
 		}
 	}
 }
@@ -92,20 +92,20 @@ func TestRYWSortedIndexLazyAfterReset(t *testing.T) {
 	for range 2 {
 		c.set([]byte("b"), []byte("v"))
 		c.atomic(MutAddValue, []byte("a"), []byte{1})
-		if c.sortedKeys != nil {
+		if c.liveLocked().sortedKeys != nil {
 			t.Fatal("write-only transaction built a sorted index")
 		}
-		c.ensureSortedLocked()
-		if !slices.Equal(c.sortedKeys, []string{"a", "b"}) {
-			t.Fatalf("initial index = %v", c.sortedKeys)
+		c.liveLocked().ensureSorted()
+		if !slices.Equal(c.liveLocked().sortedKeys, []string{"a", "b"}) {
+			t.Fatalf("initial index = %v", c.liveLocked().sortedKeys)
 		}
 		c.clearRange([]byte("a"), []byte("z"))
 		c.set([]byte("c"), []byte("v"))
-		if !slices.Equal(c.sortedKeys, []string{"c"}) {
-			t.Fatalf("index after clearing all and inserting = %v", c.sortedKeys)
+		if !slices.Equal(c.liveLocked().sortedKeys, []string{"c"}) {
+			t.Fatalf("index after clearing all and inserting = %v", c.liveLocked().sortedKeys)
 		}
 		c.reset()
-		if c.sortedKeys != nil {
+		if c.liveLocked().sortedKeys != nil {
 			t.Fatal("reset retained the old sorted index")
 		}
 	}

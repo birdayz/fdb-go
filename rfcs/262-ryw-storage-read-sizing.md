@@ -115,7 +115,7 @@ removed by exactly five mutators plus the constructor's sentinels (WriteMap.h:12
 | `mutate` (WriteMap.cpp:87-158) | `set` (RYW:2353), `atomicOp` (RYW:2295) | inserts or replaces an operation node, copying the surrounding range's flags |
 | `clear` (WriteMap.cpp:160-203) | `clear(range)` (RYW:2402), `clear(key)` as `[k, keyAfter(k))` (RYW:2435), when the write adds a conflict | removes interior nodes; inserts begin/end nodes unless the neighbour is already a cleared conflict range, so coalescing depends on order and on conflict flags |
 | `clearNoConflict` (WriteMap.cpp:527-596) | the same calls with `NEXT_WRITE_NO_WRITE_CONFLICT_RANGE` | as `clear`, plus a node at every conflict/non-conflict toggle inside the cleared range |
-| `addConflictRange` (WriteMap.cpp:244-302) | `addWriteConflictRange` with RYW enabled (RYW:2493-2499) | inserts empty-stack nodes at both ends and flags interior nodes; no operation |
+| `addConflictRange` (WriteMap.cpp:244-302) | `addWriteConflictRange` with RYW enabled (RYW:2493-2499) | inserts nodes at both ends and flags interior nodes; no operation. A begin node on an operation keeps its stack (:258), and an end node can land at `keyAfter` of an operation node (:282-286), so the node list changes even where the boundaries do not |
 | `addUnmodifiedAndUnreadableRange` (WriteMap.cpp:205-242) | `SetVersionstampedKey` (RYW:2264-2272) | the SVK candidate range: removes interior nodes, inserts unreadable begin/end nodes |
 
 No read mutates the write map. Consequences the Go write map does not reproduce today:
@@ -648,9 +648,10 @@ Call sites. The `addConflict` argument is C++'s `addWriteConflict`
 Lazy build. Write-only transactions must not pay O(n) per out-of-order write
 (`sortedKeys` is lazy for the same reason, `ryw.go:28-29, 45-46`). Until the first walk needs
 nodes, mutators append a `rywNodeOp` to `log`. The first walk replays the log in order; a run
-of consecutive `mutate` ops on keys not yet present is merged in one sorted pass, which is
-exact because `mutate` only copies the flags of the range containing the key and no
-`mutate` changes another node's flags. After the build, mutators apply directly, at the
+of consecutive `mutate` ops is merged in one sorted pass, which is exact because `mutate`
+only copies the flags of the range containing the key and no `mutate` changes another
+node's flags; repeated keys and keys already present combine order-independently (the first
+op copies the range flags, later ones only OR in `addConflict` and `versionstamp`). After the build, mutators apply directly, at the
 same O(n) slice cost `sortedKeys` already has.
 
 Roles. Nodes are authoritative for write-side *boundaries*; the stores stay authoritative
@@ -1329,7 +1330,9 @@ representation of pending node ops does not affect it) fingerprints a version.
    version is unchanged, and passing `c.w` or a pinned version to `mergeBatchLocked` fails.
 4. Reset while a walk awaits storage, then the reply arrives: nothing is inserted into the
    new cache, the read fails with the incarnation's cause, the old version's pin is released
-   once.
+   once. `Transaction.Reset` cancels the read's incarnation and waits for the read, so the
+   `gen` check is reached only when the cache resets between a request and its reply; the
+   test drives that directly, and `Transaction.Reset` separately.
 5. Context cancellation while a nested getKey awaits storage (S1 case 7 shape): the read
    fails, the parent's pin is released once, the sub walk never pinned.
 6. Stress: goroutines issue `StartGetRange`/`StartGetKey`, call or skip `Get`, cancel

@@ -1,6 +1,10 @@
 package fdb
 
-import "bytes"
+import (
+	"bytes"
+
+	"fdb.dev/pkg/fdbgo/client"
+)
 
 type snapshot struct {
 	tx *transaction
@@ -25,9 +29,11 @@ func (sn Snapshot) GetKey(sel Selectable) FutureKey {
 	inner, ctx := sn.s.tx.inner, sn.s.tx.ctx
 	ks := sel.FDBKeySelector()
 	key := bytes.Clone(ks.Key.FDBKey())
-	// OrEqual values match the wire convention. Pass directly.
+	// OrEqual values match the wire convention. Pass directly. Issued in the call,
+	// like fdb_transaction_get_key: a later write is not visible to it.
+	p := inner.Snapshot().StartGetKey(ctx, client.KeySelector{Key: key, OrEqual: ks.OrEqual, Offset: int32(ks.Offset)})
 	return newFutureKey(func() (Key, error) {
-		k, err := inner.Snapshot().GetKey(ctx, key, ks.OrEqual, int32(ks.Offset))
+		k, err := p.Get()
 		return Key(k), convertError(err)
 	})
 }

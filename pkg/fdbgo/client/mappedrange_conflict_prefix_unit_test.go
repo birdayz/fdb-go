@@ -24,7 +24,7 @@ func TestMappedRangeConflictMustUnmodified(t *testing.T) {
 		{"write_at_begin", "b", "e", "b", func(c *rywCache) { set(c, "b") }, true},
 		{"set", "b", "e", "c", func(c *rywCache) { set(c, "c") }, true},
 		{"absent_operation", "b", "e", "c", func(c *rywCache) {
-			c.writes = map[string]rywEntry{"c": {absent: true, dependent: true}}
+			c.liveLocked().writes = map[string]rywEntry{"c": {absent: true, dependent: true}}
 		}, true},
 		{"clear", "b", "e", "c", func(c *rywCache) { clear(c, "c", "d") }, true},
 		{"overlapping_clear", "b", "e", "b", func(c *rywCache) { clear(c, "a", "c") }, true},

@@ -2,36 +2,11 @@ package client
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"math/rand"
 	"sort"
 	"testing"
 )
-
-// mockStorage is a sorted key→value map standing in for the server at the read
-// version. rangeFn returns the keys in [begin, end) (never truncated — more=false).
-type mockStorage struct {
-	keys map[string][]byte
-	// calls counts server reads so tests can assert "resolved purely from cache".
-	calls int
-}
-
-func (m *mockStorage) rangeFn(_ context.Context, begin, end []byte, _ int, _ int, _ bool) ([]KeyValue, bool, error) {
-	m.calls++
-	var ks []string
-	for k := range m.keys {
-		if k >= string(begin) && k < string(end) {
-			ks = append(ks, k)
-		}
-	}
-	sort.Strings(ks)
-	out := make([]KeyValue, len(ks))
-	for i, k := range ks {
-		out[i] = KeyValue{Key: []byte(k), Value: m.keys[k]}
-	}
-	return out, false, nil
-}
 
 // Selector constructors (FDB semantics).
 func fgt(k string) (string, bool, int32) { return k, true, 1 }  // firstGreaterThan
@@ -59,10 +34,10 @@ func TestGetKeyRYW_FullyCached(t *testing.T) {
 		c.serverCache.insert([]byte(lo), []byte(hi), kvs)
 		return c
 	}
-	noServer := func(_ context.Context, _, _ []byte, _ int, _ int, _ bool) ([]KeyValue, bool, error) {
+	noServer := &memStorage{reply: func(int, walkRequest) (nativeRangeResult, error) {
 		t.Fatalf("server read must not happen — resolution should be fully cached")
-		return nil, false, nil
-	}
+		return nativeRangeResult{}, nil
+	}}
 
 	cases := []struct {
 		name    string
@@ -131,12 +106,12 @@ func TestGetKeyRYW_FullyCached(t *testing.T) {
 			t.Parallel()
 			c := newCache(tc.seed, tc.lo, tc.hi)
 			tc.pending(c)
-			got, err := c.getKeyRYW(context.Background(), []byte(tc.k), tc.orEqual, tc.offset, maxKey, true, noServer)
+			got, err := testGetKey(c, KeySelector{Key: []byte(tc.k), OrEqual: tc.orEqual, Offset: tc.offset}, maxKey, true, noServer)
 			if err != nil {
-				t.Fatalf("getKeyRYW: %v", err)
+				t.Fatalf("getKey: %v", err)
 			}
 			if string(got) != tc.want {
-				t.Fatalf("getKeyRYW(%q,oe=%v,off=%d): got %q, want %q", tc.k, tc.orEqual, tc.offset, got, tc.want)
+				t.Fatalf("getKey(%q,oe=%v,off=%d): got %q, want %q", tc.k, tc.orEqual, tc.offset, got, tc.want)
 			}
 		})
 	}
@@ -152,12 +127,12 @@ func TestGetKeyRYW_ServerRemerge(t *testing.T) {
 	// must read the server for the unknown tail to confirm nothing precedes b.
 	c := &rywCache{}
 	c.set([]byte("b"), []byte("x"))
-	srv := &mockStorage{keys: map[string][]byte{"a": []byte("x"), "c": []byte("x")}}
+	srv := newMemStorage("a", "c")
 
 	k, oe, off := fgt("a")
-	got, err := c.getKeyRYW(context.Background(), []byte(k), oe, off, maxKey, true, srv.rangeFn)
+	got, err := testGetKey(c, KeySelector{Key: []byte(k), OrEqual: oe, Offset: off}, maxKey, true, srv)
 	if err != nil {
-		t.Fatalf("getKeyRYW: %v", err)
+		t.Fatalf("getKey: %v", err)
 	}
 	if string(got) != "b" {
 		t.Fatalf("fgt(a) over storage{a,c}+Set(b): got %q, want b", got)
@@ -166,11 +141,11 @@ func TestGetKeyRYW_ServerRemerge(t *testing.T) {
 	// firstGreaterThan(c) over storage{a,c}+Set(b): nothing > c → readThroughEnd → maxKey.
 	c2 := &rywCache{}
 	c2.set([]byte("b"), []byte("x"))
-	srv2 := &mockStorage{keys: map[string][]byte{"a": []byte("x"), "c": []byte("x")}}
+	srv2 := newMemStorage("a", "c")
 	k, oe, off = fgt("c")
-	got, err = c2.getKeyRYW(context.Background(), []byte(k), oe, off, maxKey, true, srv2.rangeFn)
+	got, err = testGetKey(c2, KeySelector{Key: []byte(k), OrEqual: oe, Offset: off}, maxKey, true, srv2)
 	if err != nil {
-		t.Fatalf("getKeyRYW: %v", err)
+		t.Fatalf("getKey: %v", err)
 	}
 	if string(got) != string(maxKey) {
 		t.Fatalf("fgt(c) past last key: got %q, want maxKey %q", got, maxKey)
@@ -178,11 +153,11 @@ func TestGetKeyRYW_ServerRemerge(t *testing.T) {
 
 	// lastLessThan(b) over storage{a,c} (no pending): → a.
 	c3 := &rywCache{}
-	srv3 := &mockStorage{keys: map[string][]byte{"a": []byte("x"), "c": []byte("x")}}
+	srv3 := newMemStorage("a", "c")
 	k, oe, off = llt("b")
-	got, err = c3.getKeyRYW(context.Background(), []byte(k), oe, off, maxKey, true, srv3.rangeFn)
+	got, err = testGetKey(c3, KeySelector{Key: []byte(k), OrEqual: oe, Offset: off}, maxKey, true, srv3)
 	if err != nil {
-		t.Fatalf("getKeyRYW: %v", err)
+		t.Fatalf("getKey: %v", err)
 	}
 	if string(got) != "a" {
 		t.Fatalf("llt(b) over storage{a,c}: got %q, want a", got)
@@ -200,14 +175,14 @@ func TestGetKeyRYW_SnapshotBypassesWrites(t *testing.T) {
 	})
 	c.set([]byte("b"), []byte("x")) // pending — must be ignored when includeWrites=false
 
-	noServer := func(_ context.Context, _, _ []byte, _ int, _ int, _ bool) ([]KeyValue, bool, error) {
+	noServer := &memStorage{reply: func(int, walkRequest) (nativeRangeResult, error) {
 		t.Fatalf("server read must not happen")
-		return nil, false, nil
-	}
+		return nativeRangeResult{}, nil
+	}}
 	// firstGreaterThan(a): includeWrites=false → ignores pending Set(b) → c.
-	got, err := c.getKeyRYW(context.Background(), []byte("a"), true, 1, maxKey, false, noServer)
+	got, err := testGetKey(c, KeySelector{Key: []byte("a"), OrEqual: true, Offset: 1}, maxKey, false, noServer)
 	if err != nil {
-		t.Fatalf("getKeyRYW: %v", err)
+		t.Fatalf("getKey: %v", err)
 	}
 	if string(got) != "c" {
 		t.Fatalf("snapshot fgt(a) ignoring pending Set(b): got %q, want c", got)
@@ -215,16 +190,14 @@ func TestGetKeyRYW_SnapshotBypassesWrites(t *testing.T) {
 }
 
 // BenchmarkGetKeyRYW_CacheSize is RFC-057 Step 0 — the go/no-go gate for the lazy
-// iterator. It measures whether getKeyRYW's per-call cost grows with the snapshot-cache
+// iterator. It measures whether getKey's per-call cost grows with the snapshot-cache
 // size (the predicted O(cacheKeys) materialization in buildSegmentsLocked). A fully
 // populated cache makes resolution cache-only (no server read), so this isolates the
 // segment-build cost. If ns/op grows materially with N, the lazy iterator is warranted;
 // if flat/negligible, the materializer is adequate and the refactor is dropped.
 func BenchmarkGetKeyRYW_CacheSize(b *testing.B) {
 	maxKey := []byte("\xff")
-	noServer := func(_ context.Context, _, _ []byte, _ int, _ int, _ bool) ([]KeyValue, bool, error) {
-		return nil, false, nil
-	}
+	noServer := &memStorage{}
 	for _, n := range []int{1, 100, 1000, 10000, 100000} {
 		b.Run(fmt.Sprintf("N=%d", n), func(b *testing.B) {
 			c := &rywCache{}
@@ -240,7 +213,7 @@ func BenchmarkGetKeyRYW_CacheSize(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				_, err := c.getKeyRYW(context.Background(), mid, false, 1, maxKey, true, noServer)
+				_, err := testGetKey(c, firstGreaterOrEqual(mid), maxKey, true, noServer)
 				if err != nil {
 					b.Fatal(err)
 				}
@@ -271,13 +244,13 @@ func (c *rywCache) buildSegmentsLocked(hi []byte, includeWrites bool) []rywSegme
 	add(allKeysBegin)
 	add(hi)
 	if includeWrites {
-		c.ensureSortedLocked()
-		for _, k := range c.sortedKeys {
+		c.liveLocked().ensureSorted()
+		for _, k := range c.liveLocked().sortedKeys {
 			kb := []byte(k)
 			add(kb)
 			add(keyAfterBytes(kb))
 		}
-		for _, r := range c.cleared {
+		for _, r := range c.liveLocked().cleared {
 			add(r.begin)
 			add(r.end)
 		}
@@ -302,7 +275,7 @@ func (c *rywCache) buildSegmentsLocked(hi []byte, includeWrites bool) []rywSegme
 	}
 	segs := make([]rywSegment, 0, len(uniq))
 	for i := 0; i+1 < len(uniq); i++ {
-		segs = append(segs, rywSegment{begin: uniq[i], end: uniq[i+1], typ: c.segTypeAtLocked(uniq[i], includeWrites)})
+		segs = append(segs, rywSegment{begin: uniq[i], end: uniq[i+1], typ: c.segTypeAtLocked(c.viewLocked(includeWrites), uniq[i])})
 	}
 	return segs
 }
@@ -310,7 +283,7 @@ func (c *rywCache) buildSegmentsLocked(hi []byte, includeWrites bool) []rywSegme
 // walkCursor collects the full segment sequence the lazy cursor yields walking forward
 // from allKeysBegin via seek+next, then verifies prev() reverses it.
 func walkCursorForward(c *rywCache, hi []byte, includeWrites bool) []rywSegment {
-	cur := c.newSegCursor(hi, includeWrites)
+	cur := c.newSegCursor(hi, c.viewLocked(includeWrites))
 	var got []rywSegment
 	for cur.seek(allKeysBegin); cur.valid(); cur.next() {
 		got = append(got, rywSegment{begin: append([]byte(nil), cur.begin...), end: append([]byte(nil), cur.end...), typ: cur.typ})
@@ -404,7 +377,7 @@ func TestRYWSegCursor_EquivalentToMaterializer(t *testing.T) {
 			// Per-probe seek: cursor.seek(probe) must equal the materialized segment containing probe.
 			for _, a := range alpha {
 				probe := []byte(a)
-				cur := c.newSegCursor(hi, includeWrites)
+				cur := c.newSegCursor(hi, c.viewLocked(includeWrites))
 				cur.seek(probe)
 				idx := segIdxOracle(want, probe)
 				if idx < 0 {
@@ -420,7 +393,7 @@ func TestRYWSegCursor_EquivalentToMaterializer(t *testing.T) {
 			}
 			// Backward walk: from the last segment, prev() must reverse the sequence.
 			if len(want) > 0 {
-				cur := c.newSegCursor(hi, includeWrites)
+				cur := c.newSegCursor(hi, c.viewLocked(includeWrites))
 				cur.seek(want[len(want)-1].begin)
 				var rev []rywSegment
 				for cur.valid() {

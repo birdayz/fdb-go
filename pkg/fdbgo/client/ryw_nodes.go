@@ -33,6 +33,17 @@ type rywNode struct {
 type rywNodes struct {
 	sorted []rywNode   // by key; nil until the first build, then holds the sentinels
 	log    []rywNodeOp // structural ops not yet applied (only while sorted == nil)
+	// first holds the log's first op, so a transaction's first write allocates
+	// no log. clone copies the log out of it.
+	first [1]rywNodeOp
+}
+
+// logOp appends a structural op to the lazy log.
+func (n *rywNodes) logOp(op rywNodeOp) {
+	if n.log == nil {
+		n.log = n.first[:0]
+	}
+	n.log = append(n.log, op)
 }
 
 type rywNodeOpKind uint8
@@ -79,7 +90,7 @@ func equalsKeyAfter(key, compareKey []byte) bool {
 // versionstamp is operation == SetVersionstampedValue || SetVersionstampedKey.
 func (n *rywNodes) mutate(key []byte, addConflict, versionstamp bool) {
 	if n.sorted == nil {
-		n.log = append(n.log, rywNodeOp{kind: rywNodeOpMutate, begin: key, addConflict: addConflict, versionstamp: versionstamp})
+		n.logOp(rywNodeOp{kind: rywNodeOpMutate, begin: key, addConflict: addConflict, versionstamp: versionstamp})
 		return
 	}
 	n.applyMutate(key, addConflict, versionstamp)
@@ -93,7 +104,7 @@ func (n *rywNodes) clear(begin, end []byte, addConflict bool) {
 		return
 	}
 	if n.sorted == nil {
-		n.log = append(n.log, rywNodeOp{kind: rywNodeOpClear, begin: begin, end: end, addConflict: addConflict})
+		n.logOp(rywNodeOp{kind: rywNodeOpClear, begin: begin, end: end, addConflict: addConflict})
 		return
 	}
 	n.applyClear(begin, end, addConflict)
@@ -106,7 +117,7 @@ func (n *rywNodes) addConflictRange(begin, end []byte) {
 		return
 	}
 	if n.sorted == nil {
-		n.log = append(n.log, rywNodeOp{kind: rywNodeOpConflict, begin: begin, end: end})
+		n.logOp(rywNodeOp{kind: rywNodeOpConflict, begin: begin, end: end})
 		return
 	}
 	n.applyConflictRange(begin, end)
@@ -120,7 +131,7 @@ func (n *rywNodes) addUnmodifiedAndUnreadableRange(begin, end []byte) {
 		return
 	}
 	if n.sorted == nil {
-		n.log = append(n.log, rywNodeOp{kind: rywNodeOpUnreadable, begin: begin, end: end})
+		n.logOp(rywNodeOp{kind: rywNodeOpUnreadable, begin: begin, end: end})
 		return
 	}
 	n.applyUnreadableRange(begin, end)

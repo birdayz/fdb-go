@@ -322,6 +322,9 @@ type txOptions struct {
 	// afterRangeReply parks an issued range read after a storage reply, before
 	// it merges the reply or records its conflict.
 	afterRangeReply func()
+	// nativeRange, when set, replaces nativeGetRange under the RYW walk (a test seam
+	// for hermetic walk and pin-lifecycle tests).
+	nativeRange nativeRangeFunc
 	// beforeIssuedReadWait observes Commit about to wait for n issued reads.
 	beforeIssuedReadWait func(n int)
 	// afterReadVersion observes a completed GRV before its caller returns.
@@ -611,26 +614,7 @@ func (s *Snapshot) Get(ctx context.Context, key []byte) ([]byte, error) {
 // enabled unless net-disabled via SetSnapshotRYWDisable). When net-disabled
 // (snapshotRYWDisableCount > 0) the write map is bypassed (snapshot cache only).
 func (s *Snapshot) GetKey(ctx context.Context, selectorKey []byte, orEqual bool, offset int32) ([]byte, error) {
-	ctx, cancel := s.tx.opContext(ctx)
-	defer cancel()
-	if err := s.tx.checkReadState(ctx); err != nil {
-		return nil, s.tx.trackReadOperation(ctx, err)
-	}
-	// Eager validation — NOT tracked (C++ returns before a read future
-	// exists), matching Transaction.GetKey.
-	if bytes.Compare(selectorKey, s.tx.maxReadKey()) > 0 {
-		return nil, &wire.FDBError{Code: 2004}
-	}
-	s.tx.hadRead.Store(true)
-	if s.tx.rywDisabled {
-		k, err := s.tx.getKey(ctx, selectorKey, orEqual, offset)
-		if bytes.Compare(k, s.tx.maxReadKey()) > 0 {
-			k = s.tx.maxReadKey()
-		}
-		return k, s.tx.trackReadOperation(ctx, err)
-	}
-	k, err := s.tx.ryw.getKeyRYW(ctx, selectorKey, orEqual, offset, s.tx.maxReadKey(), s.tx.snapshotRYWDisableCount <= 0, s.tx.getRange)
-	return k, s.tx.trackReadOperation(ctx, err)
+	return s.tx.issueKey(ctx, KeySelector{Key: selectorKey, OrEqual: orEqual, Offset: offset}, true).run()
 }
 
 // GetRange reads a range without adding a read conflict range.
@@ -857,8 +841,9 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 
 	if !tx.rywDisabled {
 		tx.ryw.mu.Lock()
-		value, known, readErr := tx.ryw.localPointLocked(key)
-		entry := tx.ryw.writes[string(key)]
+		w := tx.ryw.liveLocked()
+		value, known, readErr := tx.ryw.localPointLocked(w, key)
+		entry := w.writes[string(key)]
 		tx.ryw.mu.Unlock()
 		if known {
 			return bytes.Clone(value), nil, tx.trackReadOperation(ctx, readErr)
@@ -994,51 +979,11 @@ type PendingGet struct {
 	settled     atomic.Pointer[chan struct{}]
 }
 
-// GetKey resolves a key selector to the actual key in the database.
+// GetKey resolves a key selector to the actual key in the database: C++ RYW getKey
+// (ReadYourWrites.actor.cpp:1695-1709), which walks the pending writes and the
+// snapshot cache and reads storage only for what they do not answer (RFC-262 D6).
 func (tx *Transaction) GetKey(ctx context.Context, selectorKey []byte, orEqual bool, offset int32) ([]byte, error) {
-	ctx, cancel := tx.opContext(ctx)
-	defer cancel()
-	if err := tx.checkReadState(ctx); err != nil {
-		return nil, tx.trackReadOperation(ctx, err)
-	}
-	// C++ RYW::getKey: if (key.getKey() > getMaxReadKey()) → key_outside_legal_range
-	// Eager validation — NOT tracked (C++ returns it before the read future exists).
-	if bytes.Compare(selectorKey, tx.maxReadKey()) > 0 {
-		return nil, &wire.FDBError{Code: 2004}
-	}
-	tx.hadRead.Store(true)
-	// Resolve the selector. When RYW is enabled, resolve against the MERGED view
-	// (pending writes + snapshot cache) — matching C++ resolveKeySelectorFromCache
-	// (RFC-056). When RYW is disabled, the whole RYW layer is bypassed → storage only.
-	var resolved []byte
-	var err error
-	if tx.rywDisabled {
-		resolved, err = tx.getKey(ctx, selectorKey, orEqual, offset)
-	} else {
-		resolved, err = tx.ryw.getKeyRYW(ctx, selectorKey, orEqual, offset, tx.maxReadKey(), true, tx.getRange)
-	}
-	if err != nil {
-		return nil, tx.trackReadOperation(ctx, err)
-	}
-	// Read-conflict range: getKey conflicts over the RANGE between the selector base
-	// and the resolved key (C++ addConflictRange(GetKeyReq), ReadYourWrites.actor.cpp:230),
-	// NOT a single key — a concurrent write anywhere in that span must conflict.
-	if !isSpecialKey(selectorKey) {
-		tx.addGetKeyConflictRange(selectorKey, orEqual, offset, resolved)
-	}
-	// rywDisabled clamp: the RYW-enabled path resolves through getKeyRYW (hi=maxReadKey,
-	// already clamped via readThroughEnd). The disabled path bypasses the RYW layer and
-	// resolves against storage, which can return a system key (> maxReadKey) for a selector
-	// that walks off the end of the user keyspace. C++ readThrough(GetKeyReq) clamps the
-	// RETURNED key to getMaxReadKey (ReadYourWrites.actor.cpp:182-183 — "Filter out results
-	// in the system keys if they are not accessible", since NativeAPI doesn't clip). The
-	// conflict range above stays on the UNCLAMPED resolved key, matching NativeAPI
-	// getKeyAndConflictRange (NativeAPI.actor.cpp:5767), which conflicts on the real resolved
-	// key before readThrough clamps the return value.
-	if tx.rywDisabled && bytes.Compare(resolved, tx.maxReadKey()) > 0 {
-		resolved = tx.maxReadKey()
-	}
-	return resolved, nil
+	return tx.issueKey(ctx, KeySelector{Key: selectorKey, OrEqual: orEqual, Offset: offset}, false).run()
 }
 
 // addGetKeyConflictRange adds the read-conflict range(s) for a getKey, spanning the
@@ -1073,7 +1018,7 @@ func (tx *Transaction) addGetKeyConflictRange(selKey []byte, orEqual bool, offse
 		return
 	}
 	// When RYW is disabled, GetKey resolved against STORAGE only (Transaction.GetKey uses
-	// tx.getKey, not getKeyRYW) — the local write-map did NOT satisfy the read, so every
+	// tx.getKey, not the RYW walk) — the local write-map did NOT satisfy the read, so every
 	// segment in the span was a real DB read. Filtering through the (bypassed) write-map
 	// would subtract a local Set/Clear segment and MISS a conflict from a concurrent insert
 	// into that gap. Add the full span, matching C++ (RYW-disabled reads go through
@@ -1084,7 +1029,7 @@ func (tx *Transaction) addGetKeyConflictRange(selKey []byte, orEqual bool, offse
 		return
 	}
 	tx.ryw.mu.Lock()
-	ranges := tx.ryw.conflictRangesLocked(begin, end)
+	ranges := tx.ryw.liveLocked().conflictRanges(begin, end)
 	tx.ryw.mu.Unlock()
 	tx.addReadConflicts(ranges) // atomic append of the filtered sub-ranges
 }
@@ -1121,7 +1066,7 @@ func (tx *Transaction) readConflictForKeyRYW(key []byte) bool {
 	// txn (e.g. a 10K-record bulk save, each save doing a split-marker Get) O(n²·log n).
 	tx.ryw.mu.Lock()
 	defer tx.ryw.mu.Unlock()
-	return tx.ryw.conflictForKeyLocked(key)
+	return tx.ryw.liveLocked().conflictForKey(key)
 }
 
 // normalizeByteTarget applies the C API's boundary normalization for a per-fetch byte target,
@@ -1337,10 +1282,10 @@ func (tx *Transaction) stateSet(key, value []byte) {
 	// not just a spurious one). Hold conflictMu across both appends.
 	tx.conflictMu.Lock()
 	tx.mutations = append(tx.mutations, tx.ownMutationLocked(MutSetValue, key, value))
-	tx.addWriteConflictForKeyLocked(key)
+	addConflict := tx.addWriteConflictForKeyLocked(key)
 	tx.conflictMu.Unlock()
 	if !tx.rywDisabled {
-		tx.ryw.set(key, value)
+		tx.ryw.setWith(key, value, addConflict)
 	}
 }
 
@@ -1375,10 +1320,10 @@ func (tx *Transaction) stateClear(key []byte) {
 	tx.conflictMu.Lock()
 	tx.mutations = append(tx.mutations, tx.ownMutationLocked(MutClearRange, key, end))
 	tx.singleKeyClearCount++ // C++ charges this mutation sizeof(KeyRangeRef), not MutationRef (RYW:2431)
-	tx.addWriteConflictLocked(key, end)
+	addConflict := tx.addWriteConflictLocked(key, end)
 	tx.conflictMu.Unlock()
 	if !tx.rywDisabled {
-		tx.ryw.clear(key)
+		tx.ryw.clearWith(key, addConflict)
 	}
 }
 
@@ -1404,10 +1349,10 @@ func (tx *Transaction) stateClearRange(begin, end []byte) error {
 	}
 	tx.conflictMu.Lock()
 	tx.mutations = append(tx.mutations, tx.ownMutationLocked(MutClearRange, begin, end))
-	tx.addWriteConflictLocked(begin, end)
+	addConflict := tx.addWriteConflictLocked(begin, end)
 	tx.conflictMu.Unlock()
 	if !tx.rywDisabled {
-		tx.ryw.clearRange(begin, end)
+		tx.ryw.clearRangeWith(begin, end, addConflict)
 	}
 	return nil
 }
@@ -1532,10 +1477,11 @@ func (tx *Transaction) stateAtomic(op MutationType, key, operand []byte) {
 	// AddConflictRange::False for SetVersionstampedKey (ReadYourWrites.actor.cpp:2268)
 	// while STILL consuming the NEXT_WRITE_NO_WRITE_CONFLICT_RANGE flag (getAndReset
 	// at :2220). Match both: consume the flag, skip the range.
+	addConflict := false
 	if op == MutSetVersionstampedKey {
 		tx.nextWriteNoConflict = false
 	} else {
-		tx.addWriteConflictForKeyLocked(key)
+		addConflict = tx.addWriteConflictForKeyLocked(key)
 	}
 	tx.conflictMu.Unlock()
 	if !tx.rywDisabled {
@@ -1545,10 +1491,10 @@ func (tx *Transaction) stateAtomic(op MutationType, key, operand []byte) {
 			// [key@minStamp, key@\xff…) becomes unreadable, and the pending entry is stored at the
 			// min-bound-transformed key (mutKey) — the SAME key committed above, matching C++.
 			tx.ryw.addUnreadableRange(svkUnreadBegin, svkUnreadEnd)
-			tx.ryw.atomic(op, mutKey, operand)
+			tx.ryw.atomicWith(op, mutKey, operand, false)
 			return
 		}
-		tx.ryw.atomic(op, key, operand)
+		tx.ryw.atomicWith(op, key, operand, addConflict)
 	}
 }
 
@@ -2898,13 +2844,13 @@ func (tx *Transaction) addWriteConflictForKey(key []byte) {
 // nextWriteNoConflict is read AND cleared here on the Set/Clear/Atomic path, so
 // two concurrent writes would race on it without the lock. writeConflictsDisabled
 // short-circuits WITHOUT touching nextWriteNoConflict — exact prior semantics.
-func (tx *Transaction) addWriteConflictForKeyLocked(key []byte) {
+func (tx *Transaction) addWriteConflictForKeyLocked(key []byte) bool {
 	if tx.writeConflictsDisabled {
-		return
+		return false
 	}
 	if tx.nextWriteNoConflict {
 		tx.nextWriteNoConflict = false
-		return
+		return false
 	}
 	n := len(key)
 	buf := tx.conflictBufAlloc(n + n + 1)
@@ -2912,6 +2858,7 @@ func (tx *Transaction) addWriteConflictForKeyLocked(key []byte) {
 	copy(buf[n:], key)
 	buf[2*n] = 0 // explicit zero — pooled buffer may have stale data
 	tx.writeConflicts = append(tx.writeConflicts, KeyRange{Begin: buf[:n:n], End: buf[n : n+n+1]})
+	return true
 }
 
 // addWriteConflict adds a write conflict range [begin, end). Takes conflictMu
@@ -2925,19 +2872,22 @@ func (tx *Transaction) addWriteConflict(begin, end []byte) {
 
 // addWriteConflictLocked appends a write conflict range [begin, end). Caller
 // MUST hold conflictMu.
-func (tx *Transaction) addWriteConflictLocked(begin, end []byte) {
+// It reports whether it recorded the range: C++'s addWriteConflict argument to
+// the write map (RFC-262 D1b).
+func (tx *Transaction) addWriteConflictLocked(begin, end []byte) bool {
 	if tx.writeConflictsDisabled {
-		return
+		return false
 	}
 	if tx.nextWriteNoConflict {
 		tx.nextWriteNoConflict = false
-		return
+		return false
 	}
 	buf := tx.conflictBufAlloc(len(begin) + len(end))
 	nb := len(begin)
 	copy(buf, begin)
 	copy(buf[nb:], end)
 	tx.writeConflicts = append(tx.writeConflicts, KeyRange{Begin: buf[:nb:nb], End: buf[nb:]})
+	return true
 }
 
 // selfConflictPrefix is C++ makeSelfConflicting's key prefix "\xFF/SC/" (NativeAPI.actor.cpp:5953).
@@ -3267,7 +3217,7 @@ func (tx *Transaction) stateAddReadConflictRange(begin, end []byte) error {
 		return nil
 	}
 	tx.ryw.mu.Lock()
-	ranges := tx.ryw.conflictRangesLocked(begin, end)
+	ranges := tx.ryw.liveLocked().conflictRanges(begin, end)
 	tx.ryw.mu.Unlock()
 	tx.addReadConflicts(ranges) // atomic append: a concurrent Commit sees all sub-ranges or none
 	return nil
@@ -3302,11 +3252,17 @@ func (tx *Transaction) stateAddWriteConflictRange(begin, end []byte) error {
 		return nil // C++ r.empty() → returns without recording a conflict range
 	}
 	tx.addWriteConflict(begin, end)
+	if !tx.rywDisabled {
+		tx.ryw.addConflictRange(begin, end) // RYW:2493-2499
+	}
 	return nil
 }
 
 func (tx *Transaction) stateAddWriteConflictKey(key []byte) {
 	tx.addWriteConflictForKey(key)
+	if !tx.rywDisabled {
+		tx.ryw.addConflictRange(key, keyAfterBytes(key)) // RYW:2493-2499
+	}
 }
 
 // postCommitReset clears mutation buffers and conflict ranges after a

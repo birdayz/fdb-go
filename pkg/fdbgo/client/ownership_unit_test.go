@@ -225,7 +225,7 @@ func TestMutationInputsOwnedByTransaction(t *testing.T) {
 					return
 				}
 				tx.ryw.mu.Lock()
-				got, known, err := tx.ryw.localPointLocked(c.want.Key)
+				got, known, err := tx.ryw.localPointLocked(tx.ryw.liveLocked(), c.want.Key)
 				tx.ryw.mu.Unlock()
 				switch {
 				case err != nil || !known:

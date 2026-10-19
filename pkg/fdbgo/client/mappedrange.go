@@ -497,15 +497,16 @@ func (tx *Transaction) addMappedRangeConflictMustUnmodified(begin, end []byte) e
 	}
 	c := &tx.ryw
 	c.mu.Lock()
-	c.ensureSortedLocked()
+	w := c.liveLocked()
+	w.ensureSorted()
 	prefixEnd := end
-	if i := sort.SearchStrings(c.sortedKeys, string(begin)); i < len(c.sortedKeys) && c.sortedKeys[i] < string(end) {
-		prefixEnd = []byte(c.sortedKeys[i])
+	if i := sort.SearchStrings(w.sortedKeys, string(begin)); i < len(w.sortedKeys) && w.sortedKeys[i] < string(end) {
+		prefixEnd = []byte(w.sortedKeys[i])
 	}
-	if i := sort.Search(len(c.cleared), func(i int) bool {
-		return bytes.Compare(c.cleared[i].end, begin) > 0
-	}); i < len(c.cleared) && bytes.Compare(c.cleared[i].begin, prefixEnd) < 0 {
-		prefixEnd = c.cleared[i].begin
+	if i := sort.Search(len(w.cleared), func(i int) bool {
+		return bytes.Compare(w.cleared[i].end, begin) > 0
+	}); i < len(w.cleared) && bytes.Compare(w.cleared[i].begin, prefixEnd) < 0 {
+		prefixEnd = w.cleared[i].begin
 		if bytes.Compare(prefixEnd, begin) < 0 {
 			prefixEnd = begin
 		}

@@ -11,7 +11,7 @@ import (
 // reply, then walk the snapshot cache as the merged RYW iterator would.
 func rewalkNoWritesPage(c *rywCache, begin, end []byte, limit, byteTarget int, reverse bool, kvs []KeyValue, more bool) ([]KeyValue, bool, error) {
 	c.cacheServerResult(begin, end, kvs, more, reverse)
-	if rows, rowsMore, known, err := c.localRange(begin, end, limit, byteTarget, reverse, false); known {
+	if rows, rowsMore, known, err := c.localRange(nil, begin, end, limit, byteTarget, reverse); known {
 		return rows, rowsMore, err
 	}
 	kvs, remaining := applyRangeByteLimit(kvs, byteTarget)

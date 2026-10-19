@@ -212,7 +212,12 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   libfdb_c's in three [wire-golden](tools/clientbench/wiregolden/README.md) scenarios
   (`go-divergences.diff`); fixing one regenerates the goldens. The fast lane checks the
   Go client against `go.golden` (`tools/clientbench/wiregolden/golden_test.go`).
-  - [ ] `getkey_*`, `set_then_range` (RYW storage reads): libfdb_c sizes each storage read
+  - [x] `getkey_*` (RFC-262 phase 2): getKey runs the ported walk; the six sections
+    equal libfdb_c's. New phase-2 sections (`getkey_across_clears`,
+    `getkey_across_write_conflict_ranges`, `getkey_enclosed_write_conflict_ranges`,
+    `getkey_adjacent_clears{,_reversed,_no_conflict}`, `snapshot_ryw_disabled_getkey`)
+    are pending a lab libfdb_c capture (`scripts/wiregolden.sh -update`).
+  - [ ] `set_then_range` (RFC-262 phase 3; RYW storage reads): libfdb_c sizes each storage read
     of a key selector or an RYW range read in `getRangeValue`/`getRangeValueBack`
     (limits 1, 2, -1, -3 in the scenarios; 80000 rows for an iterator-mode RYW read; a
     read past a pending write to the end of the unknown stretch); Go reads 256 rows (or

@@ -70,7 +70,7 @@ func (tx *Transaction) issueRange(parent context.Context, begin, end []byte, lim
 		r.path = rangePathRYWDisabled
 	case snapshot && tx.snapshotRYWDisableCount > 0:
 		r.path = rangePathSnapshotNoRYW
-		r.kvs, r.more, r.local, r.err = tx.ryw.localRange(begin, end, limit, byteTarget, reverse, false)
+		r.kvs, r.more, r.local, r.err = tx.ryw.localRange(nil, begin, end, limit, byteTarget, reverse)
 	default:
 		r.path = rangePathRYW
 		r.ryw = &r.rywRead

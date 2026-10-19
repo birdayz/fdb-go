@@ -45,11 +45,11 @@ func TestRYW_UnreadableCapScanNotQuadratic(t *testing.T) {
 		key := []byte(fmt.Sprintf("bulk/%08d", i))
 		c.set(key, []byte("v"))
 		c.mu.Lock()
-		if cap_ := c.unreadableScanCapLocked(begin, end, false); cap_ != nil {
+		if cap_ := c.liveLocked().unreadableScanCap(begin, end, false); cap_ != nil {
 			c.mu.Unlock()
 			t.Fatalf("cap over a window with no unreadable state = %q, want nil", cap_)
 		}
-		if cap_ := c.unreadableScanCapLocked(begin, end, true); cap_ != nil {
+		if cap_ := c.liveLocked().unreadableScanCap(begin, end, true); cap_ != nil {
 			c.mu.Unlock()
 			t.Fatalf("reverse cap over a window with no unreadable state = %q, want nil", cap_)
 		}
@@ -76,11 +76,11 @@ func TestRYW_UnreadableKeysIndex(t *testing.T) {
 
 	b, e := all()
 	c.mu.Lock()
-	if got := c.unreadableScanCapLocked(b, e, false); string(got) != "k1" {
+	if got := c.liveLocked().unreadableScanCap(b, e, false); string(got) != "k1" {
 		c.mu.Unlock()
 		t.Fatalf("forward cap = %q, want k1", got)
 	}
-	if got := c.unreadableScanCapLocked(b, e, true); string(got) != "k2\x00" {
+	if got := c.liveLocked().unreadableScanCap(b, e, true); string(got) != "k2\x00" {
 		c.mu.Unlock()
 		t.Fatalf("reverse cap = %q, want k2\\x00", got)
 	}
@@ -88,7 +88,7 @@ func TestRYW_UnreadableKeysIndex(t *testing.T) {
 
 	c.clear([]byte("k1"))
 	c.mu.Lock()
-	if got := c.unreadableScanCapLocked(b, e, false); string(got) != "k2" {
+	if got := c.liveLocked().unreadableScanCap(b, e, false); string(got) != "k2" {
 		c.mu.Unlock()
 		t.Fatalf("forward cap after clear(k1) = %q, want k2", got)
 	}
@@ -96,13 +96,13 @@ func TestRYW_UnreadableKeysIndex(t *testing.T) {
 
 	c.clearRange([]byte("k"), []byte("k\xff"))
 	c.mu.Lock()
-	if got := c.unreadableScanCapLocked(b, e, false); got != nil {
+	if got := c.liveLocked().unreadableScanCap(b, e, false); got != nil {
 		c.mu.Unlock()
 		t.Fatalf("cap after clearRange = %q, want nil", got)
 	}
-	if len(c.unreadableKeys) != 0 {
+	if len(c.liveLocked().unreadableKeys) != 0 {
 		c.mu.Unlock()
-		t.Fatalf("unreadableKeys after clearRange = %q, want empty", c.unreadableKeys)
+		t.Fatalf("unreadableKeys after clearRange = %q, want empty", c.liveLocked().unreadableKeys)
 	}
 	c.mu.Unlock()
 }
