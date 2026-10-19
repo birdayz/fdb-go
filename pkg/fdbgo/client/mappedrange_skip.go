@@ -12,7 +12,7 @@ func (tx *Transaction) GetMappedRangeWithByteTargetAndSkip(ctx context.Context, 
 	return tx.getMappedRangeWithByteTargetAndSkip(ctx, begin, end, mapper, limit, byteTarget, skip, reverse)
 }
 
-func (tx *Transaction) getMappedRangeWithResolvedSkip(ctx context.Context, begin, end, mapper []byte, limits mappedRangeLimits, skip int32, reverse bool) (mappedRangeResult, error) {
+func (tx *Transaction) getMappedRangeWithResolvedSkip(ctx context.Context, begin, end, mapper []byte, limits mappedRangeLimits, skip int32, readVersion int64, reverse bool) (mappedRangeResult, error) {
 	if bytes.Compare(begin, end) >= 0 {
 		return mappedRangeResult{}, nil
 	}
@@ -41,9 +41,9 @@ func (tx *Transaction) getMappedRangeWithResolvedSkip(ctx context.Context, begin
 	}
 	// Mapped storage requests must not contain offsets that can invert the range.
 	if exact {
-		return tx.getMappedRangeSelectorExact(ctx, begin, end, mapper, limits, reverse)
+		return tx.getMappedRangeSelectorExact(ctx, begin, end, mapper, limits, readVersion, reverse)
 	}
-	return tx.getMappedRangeSelectors(ctx, mappedSelectorFGE(begin), mappedSelectorFGE(end), mapper, limits, reverse)
+	return tx.getMappedRangeSelectors(ctx, mappedSelectorFGE(begin), mappedSelectorFGE(end), mapper, limits, readVersion, reverse)
 }
 
 func mappedSkipResolutionStep(remaining int64) (offset int32, rest int64) {

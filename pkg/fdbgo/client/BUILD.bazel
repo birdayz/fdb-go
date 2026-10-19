@@ -19,6 +19,7 @@ go_library(
         "grv_window.go",
         "hedge.go",
         "inband_reply_error.go",
+        "key_selector.go",
         "loadbalance.go",
         "locality.go",
         "mappedrange.go",
@@ -31,6 +32,7 @@ go_library(
         "panicbackstop.go",
         "pending_get.go",
         "range_issue.go",
+        "range_limits.go",
         "read_incarnation.go",
         "read_send.go",
         "read_version_state.go",
@@ -257,6 +259,34 @@ go_test(
     embed = [":client"],
     deps = [
         "//pkg/fdbgo/wire",
+        "//pkg/testcontainers/foundationdb",
+    ],
+)
+
+# gazelle:exclude range_limits_unit_test.go
+go_test(
+    name = "range_limits_unit_test",
+    srcs = ["range_limits_unit_test.go"],
+    embed = [":client"],
+    deps = [
+        "//pkg/fdbgo/transport",
+        "//pkg/fdbgo/wire/types",
+    ],
+)
+
+# gazelle:exclude storage_plumbing_fdb_test.go
+go_test(
+    name = "storage_plumbing_fdb_test",
+    srcs = [
+        "storage_plumbing_fdb_test.go",
+        "testmain_test.go",
+        "wire_recorder_test.go",
+    ],
+    embed = [":client"],
+    deps = [
+        "//pkg/fdbgo/transport",
+        "//pkg/fdbgo/wire",
+        "//pkg/fdbgo/wire/types",
         "//pkg/testcontainers/foundationdb",
     ],
 )

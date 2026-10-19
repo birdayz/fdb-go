@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"net"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -115,11 +114,6 @@ func TestRequestTranscriptGate(t *testing.T) {
 	})
 }
 
-func plainDial(ctx context.Context, network, addr string) (net.Conn, error) {
-	var d net.Dialer
-	return d.DialContext(ctx, network, addr)
-}
-
 // readPath is one implementation of the gated entry points.
 type readPath struct {
 	name          string
@@ -201,24 +195,27 @@ var currentReadPath = readPath{
 		return fmt.Sprintf("key=%q fallback=%t err=%v", k, fallback, err), err
 	},
 	mappedScan: func(ctx context.Context, tx *Transaction, b, e, mapper []byte, limit, byteTarget int, reverse bool) (string, error) {
-		if err := tx.ensureReadVersion(ctx); err != nil {
+		rv, err := tx.operationReadVersion(ctx)
+		if err != nil {
 			return "", err
 		}
-		rows, more, err := tx.getMappedRangeImpl(ctx, b, e, mapper, limit, byteTarget, reverse)
+		rows, more, err := tx.getMappedRangeImpl(ctx, b, e, mapper, limit, byteTarget, rv, reverse)
 		return renderMapped(rows, more, err), err
 	},
 	mappedSelect: func(ctx context.Context, tx *Transaction, b, e, mapper []byte, limits mappedRangeLimits, reverse bool) (string, error) {
-		if err := tx.ensureReadVersion(ctx); err != nil {
+		rv, err := tx.operationReadVersion(ctx)
+		if err != nil {
 			return "", err
 		}
-		res, err := tx.getMappedRangeSelectors(ctx, mappedSelectorFGE(b), mappedSelectorFGE(e), mapper, limits, reverse)
+		res, err := tx.getMappedRangeSelectors(ctx, mappedSelectorFGE(b), mappedSelectorFGE(e), mapper, limits, rv, reverse)
 		return renderMapped(res.rows, res.more, err), err
 	},
 	mappedExactly: func(ctx context.Context, tx *Transaction, b, e, mapper []byte, limits mappedRangeLimits, reverse bool) (string, error) {
-		if err := tx.ensureReadVersion(ctx); err != nil {
+		rv, err := tx.operationReadVersion(ctx)
+		if err != nil {
 			return "", err
 		}
-		res, err := tx.getMappedRangeSelectorExact(ctx, b, e, mapper, limits, reverse)
+		res, err := tx.getMappedRangeSelectorExact(ctx, b, e, mapper, limits, rv, reverse)
 		return renderMapped(res.rows, res.more, err), err
 	},
 }

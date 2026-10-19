@@ -1,0 +1,153 @@
+package client
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"testing"
+	"time"
+)
+
+func openRecordedDB(t *testing.T, ctx context.Context) (*Database, *sendRecorder) {
+	t.Helper()
+	rec := &sendRecorder{}
+	db, err := OpenDatabaseFromConfig(ctx, sharedClusterFile, WithDialFunc(rec.wrap(plainDial)), WithAPIVersion(730))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return db, rec
+}
+
+func seedPlumbingKeys(t *testing.T, ctx context.Context, db *Database, prefix string, keys ...string) {
+	t.Helper()
+	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		for _, k := range keys {
+			tx.Set([]byte(prefix+k), []byte(strings.Repeat("v", 100)))
+		}
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+}
+
+// Every storage request a read sends carries the version its operation
+// captured, not a later read of the transaction's version (C++ getRange and
+// getKey take trState->readVersion() once, NativeAPI.actor.cpp:4617-4618).
+// Each entry point is handed a version older than the transaction's own, so a
+// sender that re-read the transaction would send the newer one.
+func TestStorageRequestsCarryOperationVersion(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	db, rec := openRecordedDB(t, ctx)
+	prefix := t.Name() + "/"
+	seedPlumbingKeys(t, ctx, db, prefix, "a", "b", "c")
+	begin, end := []byte(prefix), []byte(prefix+"\xff")
+
+	tx := db.CreateTransaction()
+	defer tx.Cancel()
+	own, err := tx.GetReadVersion(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	older := own - 1
+	mapper := []byte("\x01m\x00")
+
+	rec.start()
+	if _, _, _, err := tx.getRangeImpl(ctx, begin, end, newRangeLimits(0, ByteLimitUnlimited), older, false); err != nil {
+		t.Fatalf("getRangeImpl: %v", err)
+	}
+	if _, _, err := tx.getKeyImpl(ctx, older, []byte(prefix+"a"), false, 2); err != nil {
+		t.Fatalf("getKeyImpl: %v", err)
+	}
+	// The data is not tuple-shaped, so storage may reject the mapper; the
+	// request is what is under test.
+	_, _, _ = tx.getMappedRangeImpl(ctx, begin, end, mapper, 0, ByteLimitUnlimited, older, false)
+	_, _ = tx.getMappedRangeSelectors(ctx, firstGreaterOrEqual(begin), firstGreaterOrEqual(end), mapper, newMappedRangeLimits(0, ByteLimitUnlimited), older, false)
+	reqs := rec.stop()
+
+	kinds := map[string]int{}
+	for _, r := range reqs {
+		kind, _, _ := strings.Cut(r, " ")
+		if kind == "GetKeyServerLocations" {
+			continue
+		}
+		kinds[kind]++
+		if !strings.Contains(r, fmt.Sprintf(" Version:%d ", older)) {
+			t.Errorf("request not at the operation's version %d (transaction's is %d):\n%s", older, own, r)
+		}
+	}
+	if kinds["GetKeyValues"] != 1 || kinds["GetKey"] != 1 || kinds["GetMappedKeyValues"] != 2 {
+		t.Fatalf("storage requests %v, want 1 GetKeyValues, 1 GetKey, 2 GetMappedKeyValues:\n%s", kinds, strings.Join(reqs, "\n"))
+	}
+}
+
+// A byte-limited exact range that has not returned minRows rows keeps reading
+// instead of stopping at the first non-empty reply, and its next request asks
+// storage for exactly the rows still missing, without a byte limit
+// (NativeAPI.actor.cpp:4415, 4236-4239). RYW requests carry minRows > 1
+// (setRequestLimits); this pins the exact-range path they fall back to.
+func TestExactRangeMinRowsOnStorage(t *testing.T) {
+	t.Parallel()
+	for _, reverse := range []bool{false, true} {
+		t.Run(fmt.Sprintf("reverse=%t", reverse), func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			db, rec := openRecordedDB(t, ctx)
+			prefix := t.Name() + "/"
+			seedPlumbingKeys(t, ctx, db, prefix, "a", "b", "c", "d", "e")
+			begin, end := []byte(prefix), []byte(prefix+"\xff")
+
+			tx := db.CreateTransaction()
+			defer tx.Cancel()
+			rv, err := tx.GetReadVersion(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Warm the location cache so only storage requests are recorded.
+			if _, err := tx.db.locCache.locateRange(tx.db, ctx, begin, end, 100, reverse, tx.tenantId, tx.currentSpan()); err != nil {
+				t.Fatal(err)
+			}
+			rec.start()
+			kvs, more, _, err := tx.getRangeImpl(ctx, begin, end, rangeLimits{rows: -1, minRows: 3, bytes: 1}, rv, reverse)
+			reqs := rec.stop()
+			if err != nil {
+				t.Fatal(err)
+			}
+			first, second := prefix+"a", prefix+"a\x00"
+			wantLimit := int32(2)
+			if reverse {
+				first, second = prefix+"e", prefix+"e"
+				wantLimit = -2
+			}
+			if len(kvs) != 3 || !more || string(kvs[0].Key) != first {
+				t.Fatalf("got %d rows (first %q), more=%t; want 3 rows from %q and more", len(kvs), kvs[0].Key, more, first)
+			}
+			if len(reqs) != 2 {
+				t.Fatalf("got %d requests, want 2:\n%s", len(reqs), strings.Join(reqs, "\n"))
+			}
+			if !strings.Contains(reqs[0], " LimitBytes:1 ") || !strings.Contains(reqs[0], fmt.Sprintf(" Limit:%d ", 80000*(1-2*boolInt(reverse)))) {
+				t.Errorf("first request is not the caller's byte limit under the row ceiling:\n%s", reqs[0])
+			}
+			if !strings.Contains(reqs[1], fmt.Sprintf(" Limit:%d LimitBytes:80000 ", wantLimit)) {
+				t.Errorf("second request does not ask for the %d missing rows without a byte limit:\n%s", wantLimit, reqs[1])
+			}
+			field := fmt.Sprintf("Begin:{Key:%v OrEqual:false Offset:1}", []byte(second))
+			if reverse {
+				field = fmt.Sprintf("End:{Key:%v OrEqual:false Offset:1}", []byte(second))
+			}
+			if !strings.Contains(reqs[1], field) {
+				t.Errorf("second request does not continue after the first reply (%s):\n%s", field, reqs[1])
+			}
+		})
+	}
+}
+
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}

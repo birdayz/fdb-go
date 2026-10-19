@@ -179,11 +179,11 @@ var getMappedKeyValuesBufPool = sync.Pool{
 	New: func() any { b := make([]byte, 0, 512); return &b },
 }
 
-func buildGetMappedKeyValuesRequest(mapper []byte) func(begin, end []byte, version int64, limit int32, limitBytes int32, lockAware bool, tenantId int64, span types.SpanContext, replyToken transport.UID, _ transport.UID) ([]byte, *[]byte) {
-	return func(begin, end []byte, version int64, limit int32, limitBytes int32, lockAware bool, tenantId int64, span types.SpanContext, replyToken transport.UID, _ transport.UID) ([]byte, *[]byte) {
+func buildGetMappedKeyValuesRequest(mapper []byte) func(begin, end KeySelector, version int64, limit int32, limitBytes int32, lockAware bool, tenantId int64, span types.SpanContext, replyToken transport.UID, _ transport.UID) ([]byte, *[]byte) {
+	return func(begin, end KeySelector, version int64, limit int32, limitBytes int32, lockAware bool, tenantId int64, span types.SpanContext, replyToken transport.UID, _ transport.UID) ([]byte, *[]byte) {
 		req := types.GetMappedKeyValuesRequest{
-			Begin:                  types.KeySelectorRef{Key: begin, OrEqual: false, Offset: 1}, // firstGreaterOrEqual(begin)
-			End:                    types.KeySelectorRef{Key: end, OrEqual: false, Offset: 1},   // firstGreaterOrEqual(end)
+			Begin:                  begin.ref(),
+			End:                    end.ref(),
 			Mapper:                 mapper,
 			Version:                version,
 			Limit:                  limit,
@@ -231,9 +231,9 @@ var mappedRangeScanOps = rangeScanOps[MappedKeyValue]{
 	},
 }
 
-func (tx *Transaction) sendGetMappedRange(mapper []byte) func(ctx context.Context, begin, end []byte, limit int, byteTarget int, reverse bool, servers []ServerInfo) ([]MappedKeyValue, bool, error) {
-	return func(ctx context.Context, begin, end []byte, limit int, byteTarget int, reverse bool, servers []ServerInfo) ([]MappedKeyValue, bool, error) {
-		return sendRangeRPC(tx, ctx, begin, end, limit, byteTarget, reverse, servers, rangeRPCOps[MappedKeyValue]{
+func (tx *Transaction) sendGetMappedRange(mapper []byte) func(ctx context.Context, begin, end []byte, limits rangeLimits, readVersion int64, reverse bool, servers []ServerInfo) ([]MappedKeyValue, bool, error) {
+	return func(ctx context.Context, begin, end []byte, limits rangeLimits, readVersion int64, reverse bool, servers []ServerInfo) ([]MappedKeyValue, bool, error) {
+		return sendRangeRPC(tx, ctx, firstGreaterOrEqual(begin), firstGreaterOrEqual(end), limits, readVersion, reverse, servers, rangeRPCOps[MappedKeyValue]{
 			// getMappedKeyValues is adjusted endpoint 14, NOT 3. The field is
 			// DECLARED immediately after getKeyValues (StorageServerInterface.h:103)
 			// but is assigned getAdjustedEndpoint(14) (:184-185) — it was appended
@@ -248,11 +248,11 @@ func (tx *Transaction) sendGetMappedRange(mapper []byte) func(ctx context.Contex
 	}
 }
 
-func (tx *Transaction) getMappedRangeImpl(ctx context.Context, begin, end []byte, mapper []byte, limit, byteTarget int, reverse bool) ([]MappedKeyValue, bool, error) {
+func (tx *Transaction) getMappedRangeImpl(ctx context.Context, begin, end []byte, mapper []byte, limit, byteTarget int, readVersion int64, reverse bool) ([]MappedKeyValue, bool, error) {
 	ops := mappedRangeScanOps
 	ops.send = tx.sendGetMappedRange(mapper)
 	// A mapped read keeps no RYW cache, so readThrough has no reader (ReadYourWrites.actor.cpp:1146-1161).
-	rows, more, _, err := rangeScanImpl(tx, ctx, begin, end, limit, byteTarget, reverse, ops)
+	rows, more, _, err := rangeScanImpl(tx, ctx, begin, end, newRangeLimits(limit, byteTarget), readVersion, reverse, ops)
 	return rows, more, err
 }
 
@@ -333,7 +333,8 @@ func (tx *Transaction) getMappedRangeWithByteTargetAndSkip(ctx context.Context, 
 	if isSpecialKey(begin) && isSpecialKey(end) {
 		return nil, false, &wire.FDBError{Code: ErrClientInvalidOperation}
 	}
-	if err := tx.ensureReadVersion(ctx); err != nil {
+	readVersion, err := tx.operationReadVersion(ctx)
+	if err != nil {
 		return nil, false, tx.trackReadOperation(ctx, err)
 	}
 	// C++ :1801 — key_outside_legal_range.
@@ -345,7 +346,7 @@ func (tx *Transaction) getMappedRangeWithByteTargetAndSkip(ctx context.Context, 
 	if limit < -1 {
 		return nil, false, &wire.FDBError{Code: ErrRangeLimitsInvalid}
 	}
-	byteTarget, err := normalizeByteTarget(byteTarget)
+	byteTarget, err = normalizeByteTarget(byteTarget)
 	if err != nil {
 		return nil, false, err
 	}
@@ -367,7 +368,7 @@ func (tx *Transaction) getMappedRangeWithByteTargetAndSkip(ctx context.Context, 
 	}
 
 	if skip > 0 {
-		result, err := tx.getMappedRangeWithResolvedSkip(ctx, begin, end, mapper, newMappedRangeLimits(limit, byteTarget), skip, reverse)
+		result, err := tx.getMappedRangeWithResolvedSkip(ctx, begin, end, mapper, newMappedRangeLimits(limit, byteTarget), skip, readVersion, reverse)
 		if err != nil {
 			return nil, false, tx.trackReadOperation(ctx, err)
 		}
@@ -378,7 +379,7 @@ func (tx *Transaction) getMappedRangeWithByteTargetAndSkip(ctx context.Context, 
 		return result.rows, result.more, nil
 	}
 
-	rows, more, err := tx.getMappedRangeImpl(ctx, begin, end, mapper, limit, byteTarget, reverse)
+	rows, more, err := tx.getMappedRangeImpl(ctx, begin, end, mapper, limit, byteTarget, readVersion, reverse)
 	if err != nil {
 		return nil, false, tx.trackReadOperation(ctx, err)
 	}

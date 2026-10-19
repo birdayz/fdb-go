@@ -22,6 +22,11 @@ type sendRecorder struct {
 	reqs []string
 }
 
+func plainDial(ctx context.Context, network, addr string) (net.Conn, error) {
+	var d net.Dialer
+	return d.DialContext(ctx, network, addr)
+}
+
 // wrap returns a DialFunc whose connections report every frame they send.
 func (r *sendRecorder) wrap(dial transport.DialFunc) transport.DialFunc {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
