@@ -234,15 +234,17 @@ func TestFDB_RecordLoadConflicts(t *testing.T) {
 						if layout.legacy {
 							actualKey = root.Sub(RecordKey).Pack(primaryKey)
 						}
-						// The seed retries retryable errors such as commit_unknown_result, so it
-						// is idempotent (CreateOrOpen, then the same save) and asserts after commit.
+						// The seed retries retryable errors such as commit_unknown_result. Each
+						// attempt clears the subtest's keyspace and creates the store, so an
+						// attempt that did commit cannot leave state behind; checks run after commit.
 						var (
 							layoutOK bool
 							saved    *FDBStoredRecord[proto.Message]
 							present  bool
 						)
 						if _, err := db.Run(ctx, func(seed *FDBRecordContext) (any, error) {
-							seedStore, err := storeBuilder(seed).CreateOrOpen()
+							seed.Transaction().ClearRange(root)
+							seedStore, err := storeBuilder(seed).Create()
 							if err != nil {
 								return nil, err
 							}
@@ -306,7 +308,7 @@ func TestFDB_RecordLoadConflicts(t *testing.T) {
 							t.Fatalf("concurrent writer commit: %v", err)
 						}
 						// Force even load-only and dry-run transactions to commit their
-						// conflict ranges. Neither transaction is retried.
+						// conflict ranges. The reader transaction is not retried.
 						reader.Transaction().Set(root.Sub("commit-sentinel").Pack(nil), []byte("read completed"))
 						err = reader.Commit()
 						if wantConflict {
