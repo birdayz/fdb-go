@@ -26,8 +26,16 @@ handling); data in
 | closed loop, 32 workers | 36.3 µs | 34.0 µs (0.937) | 33.1 µs |
 | paced 2,000/s, 64 workers | 162.2 µs | 141.6 µs (0.873) | 122.9 µs |
 
-Throughput and latency are unchanged (paced mean 839 → 832 µs). futex calls fall from 10.2
-to 8.1 per paced transaction. Paced client CPU goes from 1.32× to 1.15× libfdb_c.
+Throughput and latency are unchanged (paced mean 839 → 832 µs). futex calls fall from 11.8
+to 9.5 per paced transaction (medians). Paced client CPU goes from 1.32× to 1.15× libfdb_c.
+
+Provenance: `clientbench` built with Bazel from master `e5209b8c6` (client code identical
+to `13580f1b7`) and from that tree with the mutant patch (the `go n.run(...)` in
+`startNativeCommit` replaced by a call the caller makes after `owned.release()`); the
+binaries' SHA-256 prefixes are in the data. Each run is `-iterations`/`-warmup`
+20000/2000 (8 workers), 40000/4000 (32) and 24000/4000 (paced, `-rate 2000 -seed 1`),
+`GOMAXPROCS=8`, client on CPUs 0–7, under `perf stat` (task-clock, context switches,
+futex, epoll_pwait and read syscalls), per transaction including warmup.
 
 ## C++ semantics that must hold
 
@@ -67,7 +75,8 @@ and the unknown-result fence on a goroutine, and send inline. Both reviewers rej
 A faithful version needs every wait the commit makes, the commit GRV included, to be
 detachable without cancelling or replaying anything:
 
-- **GRV.** The commit usually produces its own read version: in the paced runs about 0.8
+- **GRV.** The commit usually produces its own read version: in one Go execution trace of
+  the inline mutant (paced, not retained) about 0.8
   GRV waits per transaction happen inside the commit, 0.55 of them on the batcher's
   serial path, which runs the RPC on the requester (`flushWithin`, `sendGRVRequest` with
   its proxy, dial, send, reply and backoff waits). Handing off before a GRV that is not
@@ -94,16 +103,24 @@ detachable without cancelling or replaying anything:
 
 ## Other measurements
 
-The same campaign attributed the paced gap and ruled out cheaper changes:
+Exploratory runs on the original cluster (log on disk), paced `set100` at 2,000/s with 64
+workers unless noted, in
+[`results-exploratory.jsonl`](../docs/benchmarks/rfc-260/results-exploratory.jsonl) (84
+runs; some labels were reused, so only the last run under a label is retained, and the
+busy-spin campaign's own baseline is lost). These are measured contributors, not a full
+cost attribution:
 
-- The write delay (`coalesceWait`, a `timerfd` read through the netpoller) is most of the
-  remaining gap: with `-coalesce-delay 0,0` a paced write costs 118 µs against libfdb_c's
-  113 µs on the original cluster (master 147 µs). libfdb_c waits out the same 10-20 µs on
-  its network thread (`Net2.actor.cpp:2101-2124`), without a cross-thread wake-up.
-- Spinning instead of the timer: with `runtime.Gosched` 164 µs (worse), a plain spin
-  143 µs against 147 µs (the spin itself costs the delay).
-- The commit taking the writer's turn: −2% paced alone, but +8% client CPU at 8
-  closed-loop workers when combined with the inline mutant.
+- The write delay (`coalesceWait`, a `timerfd` read through the netpoller): with
+  `-coalesce-delay 0,0` a paced write costs 117–119 µs against libfdb_c's 111–114 µs
+  (master median 147 µs). libfdb_c's timers are serviced by its network thread's reactor
+  (`Net2.actor.cpp:1550-1564` takes the sleep from the task queue, `:2111-2119` waits on the
+  ASIO timer), so they need no cross-thread wake-up; Go's `timerfd` wait parks one
+  goroutine and wakes it through the netpoller.
+- Spinning instead of the timer: with `runtime.Gosched` 163–164 µs (worse), a plain spin
+  143 µs (the spin itself costs the delay).
+- The commit taking the writer's turn: 143.6 µs paced alone; combined with the inline
+  mutant it is 0.845× master paced but 1.08× at 8 closed-loop workers on the tmpfs cluster
+  (main data, `inline-turn-mutant`).
 - Parking before the first read of the timer or the socket deadlocks: `RawConn.Read`
   resets the poll descriptor (`prepareRead`), discarding a readiness edge recorded since
   the last read.

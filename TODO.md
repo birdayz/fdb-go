@@ -198,8 +198,8 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
     (95% interval 0.954–1.045). Commits keep their non-waiting send. With the delay off
     a paced write costs 86.6 µs (libfdb_c 81–91 µs). See "Client CPU per transaction".
   - [RFC-260](rfcs/260-inline-native-commit.md) (deferred): on a tmpfs cluster, paced
-    `set100` costs 1.32× libfdb_c. The write delay's `timerfd` wait and the per-commit
-    goroutine's scheduler wake-ups make up the gap. Running the commit on the caller cut
+    `set100` costs 1.32× libfdb_c. Measured contributors: the write delay's `timerfd` wait
+    and the per-commit goroutine's scheduler wake-ups. Running the commit on the caller cut
     client CPU to 0.873× master paced and 0.937× at 32 closed-loop workers (a mutant
     without abandonment handling). A faithful version needs a resumable GRV fetch and
     send; the requirements are in the RFC.
