@@ -1,6 +1,6 @@
 # RFC-262: Port RYW getRangeValue, the storage-read loop under read-your-writes
 
-**Status:** Draft (revision 3)
+**Status:** Accepted (revision 3; FDB C++ maintainer and Torvalds ACK at 7dc5bfc83)
 **Item:** TODO.md, "Wire divergences found by the wire goldens": `getkey_*`, `set_then_range`.
 **Spec:** FoundationDB 7.3.77. `fdbclient/ReadYourWrites.actor.cpp` (RYW below),
 `fdbclient/NativeAPI.actor.cpp` (NAPI), `fdbclient/include/fdbclient/FDBTypes.h`,
@@ -1038,11 +1038,12 @@ Exactly one object owns a pin: the read (`rangeRead`, `range_issue.go:14-31`, or
   `leaveIssuedRead` (commit barrier); then the context release. A commit therefore never
   waits on a pin, and it never builds its request before the read's conflict exists.
 - **Abandoned futures.** `startRange` (`:307-326`) and `StartGetKey` start the background
-  goroutine at issue, and it runs the read to completion whether or not `Get` is called;
-  the facade's `Future.Cancel` completes the future without stopping the operation
-  (`fdb/future.go:49-53`). A pin therefore lasts as long as the read itself, which is bounded
-  by its context, the transaction timeout and the read path's retry caps
-  (`readpath.go:812-833`). It never outlives the read.
+  goroutine at issue, and the read progresses whether or not `Get` is called; the facade's
+  `Future.Cancel` completes the future without stopping the operation
+  (`fdb/future.go:49-53`). Starting the goroutine does not guarantee the read finishes: with
+  a background context and no transaction timeout it can wait indefinitely. The pin follows
+  the operation's lifetime and is released when the operation completes, fails or is
+  cancelled; it never outlives the read.
 - **Cancellation and errors**, including during a nested getKey: the native call or `sub.run`
   returns the error, the walk ends, `run` returns, `complete` releases. A sub walk has
   nothing to release.
@@ -1308,6 +1309,12 @@ representation of pending node ops does not affect it) fingerprints a version.
 7. Panics: an `afterRangeReply` hook that panics; the read fails through the backstop and
    the pin is released once.
 8. Every mutator clones a pinned version (D1's enumeration test).
+9. Concurrent and repeated `Get` on one issued read (several goroutines, then again after
+   completion): the operation runs once, every caller gets the same result, and the pin is
+   released once.
+
+Lifecycle tests run with explicit deadlines and join every worker before checking pins;
+deterministic cases come first, and the stress case supplements them.
 
 Validation per phase: `just test` (fast lane, including the wire-golden test, S1, S2's
 hermetic parts and S4); `just test-full` at the phase boundary for the multishard,
