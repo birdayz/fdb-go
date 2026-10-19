@@ -28,6 +28,7 @@ go_library(
         "mappedrange_skip.go",
         "metrics.go",
         "native_commit.go",
+        "native_range.go",
         "options.go",
         "panicbackstop.go",
         "pending_get.go",
@@ -297,6 +298,13 @@ go_test(
     embed = [":client"],
 )
 
+# gazelle:exclude native_range_unit_test.go
+go_test(
+    name = "native_range_unit_test",
+    srcs = ["native_range_unit_test.go"],
+    embed = [":client"],
+)
+
 # gazelle:exclude wire_recorder_unit_test.go
 go_test(
     name = "wire_recorder_unit_test",
@@ -429,6 +437,7 @@ go_test(
         "native_commit_fdb_test.go",
         "native_commit_send_test.go",
         "native_commit_waiters_test.go",
+        "native_range_test.go",
         "nil_shard_end_test.go",
         "option_fences_test.go",
         "panicbackstop_test.go",

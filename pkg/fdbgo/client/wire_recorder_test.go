@@ -49,6 +49,8 @@ type sendRecorder struct {
 // recording is what one start..stop window saw.
 type recording struct {
 	requests []string
+	// msgs are the decoded requests, parallel to requests.
+	msgs     []any
 	problems []string
 	excluded int
 	// storageReplies are the reply tokens of the storage requests sent, so a
@@ -161,7 +163,7 @@ func (r *sendRecorder) frame(token transport.UID, body []byte) {
 		r.rec.excluded++
 		return
 	}
-	req, kind, reply, err := decodeRecordedRequest(body, r.rec.versionName)
+	req, kind, reply, msg, err := decodeRecordedRequest(bytes.Clone(body), r.rec.versionName)
 	if err != nil {
 		r.rec.problems = append(r.rec.problems, fmt.Sprintf("%v (token %x, %d bytes)", err, token, len(body)))
 		return
@@ -170,6 +172,14 @@ func (r *sendRecorder) frame(token transport.UID, body []byte) {
 		r.rec.storageReplies[reply] = true
 	}
 	r.rec.requests = append(r.rec.requests, req)
+	r.rec.msgs = append(r.rec.msgs, msg)
+}
+
+// messages returns the decoded requests recorded so far in this window.
+func (r *sendRecorder) messages() []any {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]any(nil), r.rec.msgs...)
 }
 
 func (r *sendRecorder) problem(p string) {
@@ -251,26 +261,26 @@ func (c *recordingConn) observe(b []byte) {
 // decodeRecordedRequest renders a request of an expected kind with its reply
 // token, span and debug IDs left out (they identify a run, not a request) and
 // versions named; the body length is kept, so a field encoded differently
-// still shows. It returns the request kind and its reply token. The body must
-// re-encode to itself: the generated decoder reads an out-of-bounds field as
-// absent instead of failing, so without that check a malformed field of a
-// known kind would compare as a missing one.
-func decodeRecordedRequest(body []byte, versionName func(int64) string) (_, _ string, _ transport.UID, err error) {
+// still shows. It returns the request kind, its reply token and the decoded
+// request. The body must re-encode to itself: the generated decoder reads an
+// out-of-bounds field as absent instead of failing, so without that check a
+// malformed field of a known kind would compare as a missing one.
+func decodeRecordedRequest(body []byte, versionName func(int64) string) (_, _ string, _ transport.UID, _ any, err error) {
 	off := 0
 	if len(body) >= 16 && body[7] == 0x0F && body[6] == 0xDB {
 		off = 8 // protocol version prefix
 	}
 	if len(body) < off+8 {
-		return "", "", transport.UID{}, fmt.Errorf("undecodable frame: no file identifier")
+		return "", "", transport.UID{}, nil, fmt.Errorf("undecodable frame: no file identifier")
 	}
 	id := binary.LittleEndian.Uint32(body[off+4 : off+8])
 	mk := recordedKinds[id]
 	if mk == nil {
-		return "", "", transport.UID{}, fmt.Errorf("unexpected request kind: file identifier %d", id)
+		return "", "", transport.UID{}, nil, fmt.Errorf("unexpected request kind: file identifier %d", id)
 	}
 	r, err := wire.NewReader(body)
 	if err != nil {
-		return "", "", transport.UID{}, fmt.Errorf("undecodable frame: %w", err)
+		return "", "", transport.UID{}, nil, fmt.Errorf("undecodable frame: %w", err)
 	}
 	m := mk()
 	func() {
@@ -282,10 +292,10 @@ func decodeRecordedRequest(body []byte, versionName func(int64) string) (_, _ st
 		m.(interface{ UnmarshalFromReader(*wire.Reader) }).UnmarshalFromReader(r)
 	}()
 	if err != nil {
-		return "", "", transport.UID{}, err
+		return "", "", transport.UID{}, nil, err
 	}
 	if again := m.(interface{ MarshalFDB() []byte }).MarshalFDB(); !bytes.Equal(again, body[off:]) {
-		return "", "", transport.UID{}, fmt.Errorf("undecodable frame: %T does not re-encode to the bytes sent (%d bytes, re-encoded %d)", m, len(body)-off, len(again))
+		return "", "", transport.UID{}, nil, fmt.Errorf("undecodable frame: %T does not re-encode to the bytes sent (%d bytes, re-encoded %d)", m, len(body)-off, len(again))
 	}
 	v := reflect.ValueOf(m).Elem()
 	kind := v.Type().Name()
@@ -308,7 +318,7 @@ func decodeRecordedRequest(body []byte, versionName func(int64) string) (_, _ st
 			fields = append(fields, fmt.Sprintf("%s=%+v", name, f.Interface()))
 		}
 	}
-	return fmt.Sprintf("%s len=%d %v", kind, len(body), fields), kind, reply, nil
+	return fmt.Sprintf("%s len=%d %v", kind, len(body), fields), kind, reply, m, nil
 }
 
 // recorderFrame is a non-TLS frame as the client writes it: length, an

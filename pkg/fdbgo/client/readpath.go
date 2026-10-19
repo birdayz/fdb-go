@@ -46,6 +46,10 @@ const (
 	// transient one. C++ has no such cap (it relies on the transaction
 	// timeout); this is the bounded-client analog.
 	maxSelectorResolutionSteps = 1000
+	// maxRelocateRetries bounds a range read's relocations after wrong_shard_server,
+	// all_alternatives_failed or a maybe-delivered teardown; C++ relies on the
+	// transaction timeout (default 5s).
+	maxRelocateRetries = 5
 )
 
 // readTypeNormal is C++ ReadType::NORMAL (FDBTypes.h:1732, enum value 3) — the read-priority rank
@@ -93,6 +97,7 @@ func (tx *Transaction) pipelineReplyTimeout() time.Duration {
 // sleepCtx sleeps for the given duration but returns early if ctx is cancelled.
 // Returns ctx.Err() if the context was cancelled, nil otherwise.
 func sleepCtx(ctx context.Context, d time.Duration) error {
+	notifyParked(ctx) // a delay is a wait (native_range.go)
 	timer := time.NewTimer(d)
 	select {
 	case <-timer.C:
@@ -706,7 +711,6 @@ func rangeScanImpl[T any](tx *Transaction, ctx context.Context, begin, end []byt
 	// fetches more per locate RPC, always a whole number of pairs so pair origins coincide.
 	const cppGetRangeShardLimit = 2
 	const getRangeShardLimit = 50 * cppGetRangeShardLimit
-	const maxRelocateRetries = 5 // Bound retry loop; C++ relies on transaction timeout (default 5s)
 
 	var allKVs []T
 	var materializedBytes int64 // RFC-115 §2: bound total materialized bytes vs WithRangeByteCeiling
@@ -958,12 +962,15 @@ func rangeScanImpl[T any](tx *Transaction, ctx context.Context, begin, end []byt
 }
 
 func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limits rangeLimits, readVersion int64, reverse bool, servers []ServerInfo) ([]KeyValue, bool, error) {
-	return sendRangeRPC(tx, ctx, firstGreaterOrEqual(begin), firstGreaterOrEqual(end), limits, readVersion, reverse, servers, rangeRPCOps[KeyValue]{
-		endpoint: EndpointGetKeyValues,
-		build:    buildGetKeyValuesRequest,
-		putBuf:   func(bufp *[]byte) { getKeyValuesBufPool.Put(bufp) },
-		parse:    parseGetKeyValuesReply,
-	})
+	return sendRangeRPC(tx, ctx, firstGreaterOrEqual(begin), firstGreaterOrEqual(end), limits, readVersion, reverse, servers, plainRangeRPCOps)
+}
+
+// plainRangeRPCOps sends a GetKeyValuesRequest.
+var plainRangeRPCOps = rangeRPCOps[KeyValue]{
+	endpoint: EndpointGetKeyValues,
+	build:    buildGetKeyValuesRequest,
+	putBuf:   func(bufp *[]byte) { getKeyValuesBufPool.Put(bufp) },
+	parse:    parseGetKeyValuesReply,
 }
 
 // rangeRPCOps is the per-request-kind half of the shard-local range RPC: which

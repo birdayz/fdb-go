@@ -21,6 +21,9 @@ func sendReadFrame(ctx context.Context, conn *transport.Conn, token transport.UI
 		}
 		return ctx.Err()
 	}
+	if err == nil {
+		notifyParked(ctx) // the caller now waits for the reply (native_range.go)
+	}
 	return err
 }
 
