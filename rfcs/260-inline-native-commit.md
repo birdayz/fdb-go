@@ -1,6 +1,7 @@
 # RFC-260: Run the native commit on the committing goroutine
 
-**Status:** Draft
+**Status:** Deferred. The plan below was reviewed and rejected (2026-10-19); the requirements
+for a faithful version are recorded under "Requirements". Not implemented.
 **Item:** TODO.md §0, "Client CPU on paced writes" and "Client CPU per transaction".
 **Spec:** FoundationDB 7.3.77 (`fdbclient/ReadYourWrites.actor.cpp`, `fdbclient/NativeAPI.actor.cpp`).
 
@@ -14,8 +15,10 @@ commit: `newproc` wakes an idle P although the caller is about to block and run 
 goroutine itself, and the goroutine's `close(done)` wakes another before it exits.
 
 Measured on a three-process local cluster with its data on tmpfs (stable 1 ms commits),
-`set100`, `GOMAXPROCS=8`, client CPU per transaction, median of five runs. A measurement
-mutant that runs the same code synchronously on the caller (no abandonment handling):
+`set100`, `GOMAXPROCS=8`, client CPU per transaction, median of five runs (libfdb_c: three).
+A measurement mutant that runs the same code synchronously on the caller (no abandonment
+handling); data in
+[`results-inline-commit.jsonl`](../docs/benchmarks/rfc-260/results-inline-commit.jsonl):
 
 | | master | inline | libfdb_c |
 |---|---|---|---|
@@ -39,49 +42,68 @@ to 8.1 per paced transaction. Paced client CPU goes from 1.32× to 1.15× libfdb
 So the public wait must still end as soon as the result is selected (`selectResult(cause,
 false)`), and the work must still continue after that, until `stop()`.
 
-## Design
+## Rejected plan
 
-The caller runs the native commit itself. At each wait that can outlast the public result,
-it also watches the public-wait-ended signal (`native.done`, closed by
-`selectResult(cause, false)`). When that fires, or before a wait that inline execution
-does not handle, the caller hands the remaining work to a goroutine at the same stage and
-returns to `<-native.done` as today. On the common path no goroutine is created.
+The caller would run the commit and, when the public wait ended early, hand the remaining
+stages to a goroutine: restart the commit from the GRV or from proxy selection, take dials
+and the unknown-result fence on a goroutine, and send inline. Both reviewers rejected it:
 
-The commit becomes a small stage machine (`commitAttempt`) with one code path for both
-executions; the goroutine runs the remaining stages with no abandonment signal, exactly as
-the current goroutine does. Stages, and what inline execution does at each:
+- Restarting the commit GRV on abandonment sends a second GRV. C++ keeps the `committing`
+  actor and with it the commit's start future (`NativeAPI.actor.cpp:6578,6592-6598,
+  6942-6945`); `startTransaction` reuses an existing read-version future (`:3598-3610`).
+  A second GRV adds traffic and can change the read snapshot, and
+  `commit_grv_lifetime_test.go` requires one GRV for Cancel and timeout.
+- Restarting proxy selection after a no-proxy wait could find a proxy and send the
+  original commit. Today the captured proxy-change wait resolves through the
+  unknown-result fence, as C++ races `onProxiesChanged` and fences (`:6646-6649,
+  6730-6750, 6773`).
+- An inline send blocked on a full write queue would hold the public caller after
+  `native.done` closed. Today the goroutine absorbs that wait.
+- `startNativeCommit` holds `readErrMu`, and its caller holds the execution lease, so
+  inline stages must start only after both are released.
 
-| Stage | Blocking wait | Inline |
-|---|---|---|
-| Commit GRV | read-version fetch or a pending fetch | Uses a context the public-wait-ended signal cancels. If that cancellation alone ends the wait, a goroutine restarts the commit from this stage with today's contexts. Nothing has been sent; a cancelled GRV producer already lets other waiters fetch again. |
-| No proxy known | proxy-set change or context | Selects on the signal too; a goroutine restarts from proxy selection. |
-| Connection | dial | A pooled connection is taken inline; a dial is handed to a goroutine before it starts. |
-| Send | queue backpressure only (256 frames) | Inline, unobserved, as the send is today. |
-| Reply | reply, proxy change or context | Selects on the signal too; a goroutine takes over the same reply channel. |
-| Unknown result, dummy fence | GRV and a commit | Always on a goroutine. |
+## Requirements
 
-`registerBackgroundGoroutine`, the owner cleanup, the weak completion pointer and
-`finished` keep their meaning: the registration covers the commit wherever it runs, and the
-goroutine that takes over inherits it. A panic is recovered where it happens and re-raised
-by the caller, as now.
+A faithful version needs every wait the commit makes, the commit GRV included, to be
+detachable without cancelling or replaying anything:
 
-## Executable spec
+- **GRV.** The commit usually produces its own read version: in the paced runs about 0.8
+  GRV waits per transaction happen inside the commit, 0.55 of them on the batcher's
+  serial path, which runs the RPC on the requester (`flushWithin`, `sendGRVRequest` with
+  its proxy, dial, send, reply and backoff waits). Handing off before a GRV that is not
+  yet available would hand off almost every commit. The GRV fetch has to become
+  resumable: a waiter that leaves keeps the producer, its request and its future.
+- **Send.** A non-blocking enqueue with a fallback, or a detachable admission wait, with
+  an explicit enqueued/not-enqueued boundary: never enqueue twice, never abandon an owned
+  buffer.
+- **No proxy.** Resume the captured proxy-change wait and its fence; never select anew.
+- **Ownership.** One executor at a time; a handoff transfers the attempt once (proxy,
+  epoch, proxy-change channel, reply registration, send state, fence outcome) without
+  finishing it. One terminal path releases the operands, reply handle and buffers, stops
+  the cleanup and context, closes `finished` and calls `db.wg.Done`. No closure retains
+  the public transaction. Public-result selection keeps its first-selection rule; a
+  panic after public cancellation must not overwrite the result.
+- **Tests.** The existing lifetime tests unchanged, plus deterministic cases for: GRV
+  producer and shared-waiter handoff (one request, original version adopted), caller
+  cancellation versus Cancel/timeout and Reset; a full send queue with a stalled peer
+  (public return first, then exactly one commit; Reset and Close while blocked);
+  no-proxy handoff then a topology change (fence, no new send); reply/handoff races and
+  pending dials; every unknown-result entry; Reset, owner collection, Close and panics
+  around a handoff with exactly-once release; and zero handoffs on a cached GRV with a
+  pooled connection.
 
-- Existing native-commit lifetime tests pass unchanged (`commit_grv_lifetime_test.go`,
-  `native_commit_*_test.go`): a commit outlives Cancel and timeout, and Reset or owner
-  destruction stops it.
-- New, deterministic: for each handoff stage (commit GRV, no proxy, dial, reply, fence),
-  the public wait ends on Cancel or timeout while the commit is blocked there, and the
-  commit still completes afterwards (its versionstamp or committed version is published,
-  or, for Reset, the commit stops). Stages are held with the existing fault dialers and
-  seams.
-- New: on the success path no goroutine is started (a counter of handoffs stays zero).
-- Revert-proof: removing the handoff at the reply stage makes the reply-stage test hang
-  (bounded by its context) or fail.
-- Race lane on the client package.
+## Other measurements
 
-## Wire-compatibility impact
+The same campaign attributed the paced gap and ruled out cheaper changes:
 
-None: the same frames are sent in the same order. A GRV producer cancelled by abandonment
-can make the handed-off commit fetch its read version again; that is one extra GRV request,
-only when the public wait ended during the commit GRV.
+- The write delay (`coalesceWait`, a `timerfd` read through the netpoller) is most of the
+  remaining gap: with `-coalesce-delay 0,0` a paced write costs 118 µs against libfdb_c's
+  113 µs on the original cluster (master 147 µs). libfdb_c waits out the same 10-20 µs on
+  its network thread (`Net2.actor.cpp:2101-2124`), without a cross-thread wake-up.
+- Spinning instead of the timer: with `runtime.Gosched` 164 µs (worse), a plain spin
+  143 µs against 147 µs (the spin itself costs the delay).
+- The commit taking the writer's turn: −2% paced alone, but +8% client CPU at 8
+  closed-loop workers when combined with the inline mutant.
+- Parking before the first read of the timer or the socket deadlocks: `RawConn.Read`
+  resets the poll descriptor (`prepareRead`), discarding a readiness edge recorded since
+  the last read.
