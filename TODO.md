@@ -234,6 +234,10 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   - [x] `estimated_range_size`: without a tenant the `WaitMetricsRequest` asks for
     `latestVersion` (`NativeAPI.actor.cpp:7824`); with one it reads at the transaction's
     read version (`ReadYourWrites.actor.cpp:1860-1863`, `NativeAPI.actor.cpp:7820-7843`).
+  - [ ] Tenant location requests ask for `MinTenantVersion: latestVersion`
+    (`pkg/fdbgo/client/locality.go`); C++ passes the transaction's version into the
+    location lookup of the tenant metrics path (`NativeAPI.actor.cpp:3197-3198,
+    7825-7834`).
   - [ ] Read tag sampling: about 1% of libfdb_c read requests carry the read tag set,
     even an empty one (`sampleReadTags`, `NativeAPI.actor.cpp:2080-2083`); Go sends none.
     C++ draws once per native request (`:3681,3806,3970,4303,4684`) and `loadBalance`

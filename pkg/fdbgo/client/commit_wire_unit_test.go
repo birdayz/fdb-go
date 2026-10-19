@@ -256,6 +256,7 @@ func TestSelfConflictShipReads_FrozenReads(t *testing.T) {
 	// Another read after the self-conflicting range is created.
 	tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: []byte("c"), End: []byte("c\x00")})
 	input := tx.captureCommitVectors(nil, true, writeSnap, reads, true)
+	defer input.release()
 	got := input.readConflicts
 	if len(got) != 2 || string(got[0].Begin) != "b" || string(got[0].End) != "b\x00" ||
 		!bytes.HasPrefix(sc.Begin, selfConflictPrefix) ||

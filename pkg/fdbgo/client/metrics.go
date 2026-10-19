@@ -106,10 +106,6 @@ func isFutureVersion(err error) bool {
 	return ok && code == ErrFutureVersion
 }
 
-// sendWaitMetrics sends a WaitMetricsRequest to a storage server and returns
-// the bytes field from the StorageMetrics reply. Uses min.bytes=0, max.bytes=-1
-// (reversed range) to get an immediate response instead of waiting for a
-// threshold change.
 // metricsMinVersion is the version a WaitMetricsRequest asks for. C++ passes
 // the transaction state, and so starts the transaction and reads at its
 // version, only for a tenant (ReadYourWrites.actor.cpp:1860-1863;
@@ -122,6 +118,10 @@ func (tx *Transaction) metricsMinVersion(ctx context.Context) (int64, error) {
 	return tx.readVersionForOperation(ctx, 0)
 }
 
+// sendWaitMetrics sends a WaitMetricsRequest to a storage server and returns
+// the bytes field from the StorageMetrics reply. Uses min.bytes=0, max.bytes=-1
+// (reversed range) to get an immediate response instead of waiting for a
+// threshold change.
 func (tx *Transaction) sendWaitMetrics(ctx context.Context, begin, end []byte, minVersion int64, servers []ServerInfo) (int64, error) {
 	for _, server := range servers {
 		conn, err := tx.db.getOrDial(ctx, server.Address)
