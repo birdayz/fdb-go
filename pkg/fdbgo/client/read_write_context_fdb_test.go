@@ -104,7 +104,7 @@ func TestReadWriteContext_RealFDBBackpressure(t *testing.T) {
 			}
 			request := func() ([]byte, <-chan transport.Response, *transport.ReplyHandle) {
 				token, reply, handle := conn.PrepareReply()
-				body, pooled := buildGetValueRequest(key, rv, false, NoTenantID, types.SpanContext{}, token, server.Token)
+				body, pooled := buildGetValueRequest(key, rv, false, NoTenantID, types.SpanContext{}, readTagSample{}, token, server.Token)
 				owned := bytes.Clone(body)
 				getValueBufPool.Put(pooled)
 				return owned, reply, handle

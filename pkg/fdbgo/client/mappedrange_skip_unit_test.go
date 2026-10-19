@@ -121,7 +121,7 @@ func TestMappedSkipRejectsUnsupportedMappedDispatch(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			// A nil transaction proves no RPC/location lookup can precede rejection.
 			var tx *Transaction
-			rows, more, err := tx.sendGetMappedSelectors(context.Background(), tc.begin, tc.end, nil, newMappedRangeLimits(1, -1), 0, false, nil)
+			rows, more, err := tx.sendGetMappedSelectors(context.Background(), tc.begin, tc.end, nil, newMappedRangeLimits(1, -1), 0, false, nil, readTagSample{})
 			if !mappedSkipHasError(err, ErrInternalError) || len(rows) != 0 || more {
 				t.Fatalf("unsupported mapped request was not rejected: rows=%v more=%v err=%v", rows, more, err)
 			}
@@ -131,7 +131,7 @@ func TestMappedSkipRejectsUnsupportedMappedDispatch(t *testing.T) {
 
 func TestMappedRequestUsesOnlyPlainSelectors(t *testing.T) {
 	t.Parallel()
-	data, buf := buildGetMappedKeyValuesRequest([]byte("mapper"))(firstGreaterOrEqual([]byte("b")), firstGreaterOrEqual([]byte("e")), 123, -5, 512, false, -1, types.SpanContext{}, transport.UID{}, transport.UID{})
+	data, buf := buildGetMappedKeyValuesRequest([]byte("mapper"))(firstGreaterOrEqual([]byte("b")), firstGreaterOrEqual([]byte("e")), 123, -5, 512, false, -1, types.SpanContext{}, readTagSample{}, transport.UID{}, transport.UID{})
 	defer getMappedKeyValuesBufPool.Put(buf)
 	var req types.GetMappedKeyValuesRequest
 	if err := req.UnmarshalFDB(data); err != nil {

@@ -27,6 +27,7 @@ type openOptions struct {
 	tracingSampleRate float64          // distributed-trace sample rate (RFC-115 §4); 0.0 = unsampled (default, matches C++ TRACING_SAMPLE_RATE)
 	tracer            oteltrace.Tracer // OpenTelemetry export backend (RFC-115 §4 Layer 2); nil → noop (no telemetry)
 	apiVersion        int              // selected FDB API version (RFC-149); required — OpenDatabase rejects an unset version
+	readTagSampling   *readTagSampling // test override of READ_TAG_SAMPLE_RATE; nil = the knob
 	dialOpts          []transport.DialOption
 }
 

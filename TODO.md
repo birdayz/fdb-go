@@ -238,13 +238,24 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
     (`pkg/fdbgo/client/locality.go`); C++ passes the transaction's version into the
     location lookup of the tenant metrics path (`NativeAPI.actor.cpp:3197-3198,
     7825-7834`).
-  - [ ] Read tag sampling: about 1% of libfdb_c read requests carry the read tag set,
-    even an empty one (`sampleReadTags`, `NativeAPI.actor.cpp:2080-2083`); Go sends none.
-    C++ draws once per native request (`:3681,3806,3970,4303,4684`) and `loadBalance`
-    reuses it across alternatives and hedges (`LoadBalance.actor.h:446,662,689`); a
-    watch captures its tags at registration (`:5697-5703`). Port that, with tests for
-    all five read request types, hedges and alternatives, and a reset after a watch is
-    set. The goldens leave these fields out of the read requests.
+  - [x] Read tag sampling: about 1% of libfdb_c read requests carry the read tag set,
+    even an empty one (`sampleReadTags`, `NativeAPI.actor.cpp:2080-2083`). C++ draws once
+    per native request (`:3681,3806,3970,4303,4684`) and `loadBalance` reuses it across
+    alternatives and hedges (`LoadBalance.actor.h:446,662,689`). A watch's first request
+    uses the read tags as of the commit (`setupWatches`, `:6418-6432`); the set captured at
+    registration (`:5697-5703`) only reaches `restartWatch`. Go draws in each read loop
+    iteration, keeps the draw across reply-timeout, maybe-delivered and dead-endpoint
+    retries (including a pipelined get's fallback read), and draws again after
+    wrong_shard_server or all_alternatives_failed. The async watch sends the commit-time
+    set, the synchronous Go-only `Watch` the setup capture. Pinned by
+    `read_tags_unit_test`, `TestReadTagSamplingRequestKinds` (storage_plumbing_fdb_test)
+    and `TestReadTagSamplingOneDrawPerRequest` (client_test). The goldens leave these
+    fields out of the read requests.
+  - [ ] `Reset` or `OnError` after a commit cancels that commit's watches: Go's
+    `cancelWatches` cancels every registered watch context, while C++ `setupWatches`
+    empties `watches` once the commit hands them off (`NativeAPI.actor.cpp:6435`), so
+    `Transaction::reset`'s `cancelWatches` (`:6173`) no longer reaches them. Observed:
+    WatchSetup, commit, WatchPoll, then `Reset` ends the poll with context canceled.
   - [ ] The sample rate can be overridden through the cluster's global configuration
     (`transactionTagSampleRate`); Go has no global configuration (libfdb_c refreshes it at
     startup with `GlobalConfigRefreshRequest`).
@@ -256,12 +267,13 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
     rows, different `Begin` bytes. RFC-262 D4 leaves mapped reads on their sender; port the
     selector-capable sender for them and add a mapped multi-request golden scenario.
 - [ ] **Transaction options during in-flight operations.** Option setters (`SetLockAware`,
-  `SetReadLockAware`, GRV cache, tags, priority) write plain `Transaction` fields under a
-  shared state lease, while in-flight operations read them: GRV completion reads lock
-  awareness for a locked reply (C++ checks the live option there, NativeAPI.actor.cpp:
-  7405, 7425-7426) and read builders read it per request. C++ runs both on the network
-  thread. Give the options one synchronization (atomics or a mutex) and add a test that
-  overlaps a setter with GRV completion and reads under -race.
+  `SetReadLockAware`, GRV cache, tags, priority, `SetAutoThrottleTag`) write plain
+  `Transaction` fields under a shared state lease, while in-flight operations read them:
+  GRV completion reads lock awareness for a locked reply (C++ checks the live option there,
+  NativeAPI.actor.cpp:7405, 7425-7426), read builders read it per request, and a read's
+  tag sample encodes `tx.readTags` (read_tags.go), on its own goroutine for a range read.
+  C++ runs these on the network thread. Give the options one synchronization (atomics or a
+  mutex) and add a test that overlaps a setter with GRV completion and reads under -race.
 - [ ] **Client CPU per transaction.** At 8–64 workers pure-Go uses 1.29–2.16× libfdb_c's
   process CPU on reads and commits (`docs/benchmarks/hcloud-multinode-vpc-20261014/phase-m1-client.md`,
   `hcloud-rebench-20261014/phase-a2-client-8w.md`), while it uses less at 1 worker

@@ -205,10 +205,10 @@ func (p *PendingGet) completeLocked(value []byte, err error) {
 }
 
 // full re-sends the read; with an abort it runs on its own goroutine so the
-// wait can be handed off.
-func (p *PendingGet) full(ctx context.Context, abort <-chan struct{}) ([]byte, error) {
+// wait can be handed off. keepTags continues this request's read tag draw.
+func (p *PendingGet) full(ctx context.Context, abort <-chan struct{}, keepTags bool) ([]byte, error) {
 	if abort == nil {
-		return p.resolveFull(ctx)
+		return p.resolveFull(ctx, keepTags)
 	}
 	type result struct {
 		val []byte
@@ -216,7 +216,7 @@ func (p *PendingGet) full(ctx context.Context, abort <-chan struct{}) ([]byte, e
 	}
 	res := make(chan result, 1)
 	go func() {
-		v, e := recoverRead(p, func() ([]byte, error) { return p.resolveFull(ctx) })
+		v, e := recoverRead(p, func() ([]byte, error) { return p.resolveFull(ctx, keepTags) })
 		res <- result{v, e}
 	}()
 	select {
@@ -242,7 +242,7 @@ func (p *PendingGet) resolve(ctx context.Context, abort <-chan struct{}) ([]byte
 				p.tx.db.handleConnError(p.addr)
 			}
 			p.releaseWireLocked()
-			return p.full(ctx, abort)
+			return p.full(ctx, abort, true)
 		}
 	}
 	select {
@@ -251,7 +251,7 @@ func (p *PendingGet) resolve(ctx context.Context, abort <-chan struct{}) ([]byte
 		return p.resolveReply(ctx, response, abort)
 	case <-p.timer.C:
 		p.releaseWireLocked()
-		return p.full(ctx, abort)
+		return p.full(ctx, abort, true)
 	case <-abort:
 		return nil, &handoff{finish: func() ([]byte, error) { return p.resolve(ctx, nil) }}
 	case <-ctx.Done():
@@ -293,15 +293,22 @@ func (p *PendingGet) resolveReply(ctx context.Context, response transport.Respon
 		p.tx.db.locCache.invalidate(p.key, p.tenantID, false)
 	}
 	p.releaseWireLocked()
-	return p.full(ctx, abort)
+	// A transport failure is retried inside loadBalance with the same request;
+	// wrong_shard_server or all_alternatives_failed rebuilds it.
+	return p.full(ctx, abort, response.Err != nil)
 }
 
-func (p *PendingGet) resolveFull(ctx context.Context) ([]byte, error) {
+func (p *PendingGet) resolveFull(ctx context.Context, keepTags bool) ([]byte, error) {
 	if err := p.tx.readEntryError(ctx); err != nil {
 		return nil, err
 	}
-	if p.tx.rywDisabled {
-		return p.tx.getValue(ctx, p.key)
+	get := p.tx.getValue
+	if keepTags {
+		tags := p.tags
+		get = func(ctx context.Context, key []byte) ([]byte, error) { return p.tx.getValueSampled(ctx, key, &tags) }
 	}
-	return p.tx.ryw.getSnapshot(ctx, p.key, p.tx.getValue)
+	if p.tx.rywDisabled {
+		return get(ctx, p.key)
+	}
+	return p.tx.ryw.getSnapshot(ctx, p.key, get)
 }
