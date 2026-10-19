@@ -459,6 +459,23 @@ func buildCommitInputRequest(input *commitInput, replyToken transport.UID) (body
 		}
 	}
 
+	// MutationRef::serialize sends a ClearRange of exactly one key, [k, k\x00), as
+	// (k\x00, empty), and the commit proxy expands it again
+	// (CommitTransaction.h:318-334, 362). The rewrite happens after the tenant
+	// prefix, as in C++, and on the scratch copy: the zero-copy cast aliases
+	// the captured mutations.
+	for i := range mutations {
+		if !isSingleKeyClear(&mutations[i]) {
+			continue
+		}
+		if mutScratch == nil {
+			mutScratch = mutSlicePool.Get().(*[]types.MutationRef)
+			mutations = append((*mutScratch)[:0], mutations...)
+		}
+		m := &mutations[i]
+		m.Param1, m.Param2 = m.Param2, nil
+	}
+
 	// C++ CommitTransactionRequest flags (CommitProxyInterface.h):
 	//   FLAG_IS_LOCK_AWARE = 0x1 — allows system key writes through resolver
 	//   FLAG_FIRST_IN_BATCH = 0x2
@@ -510,6 +527,12 @@ func buildCommitInputRequest(input *commitInput, replyToken transport.UID) (body
 	clearAndReturn(&crSlicePool, writeCRSlice)
 
 	return result, bufp
+}
+
+// isSingleKeyClear reports a ClearRange [k, k\x00): C++ equalsKeyAfter(param1, param2).
+func isSingleKeyClear(m *types.MutationRef) bool {
+	return m.MutType == uint8(MutClearRange) && len(m.Param2) == len(m.Param1)+1 &&
+		m.Param2[len(m.Param1)] == 0 && bytes.Equal(m.Param2[:len(m.Param1)], m.Param1)
 }
 
 // parseCommitReply preserves the transaction-local decoder entry for callers
