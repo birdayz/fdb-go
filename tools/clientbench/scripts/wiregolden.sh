@@ -6,8 +6,8 @@
 # Usage: wiregolden.sh [-update] OUTDIR CLUSTER_FILE PORTS
 #   PORTS: the cluster's fdbserver ports, comma-separated. Use an idle cluster:
 #   the transcript holds every request to those ports.
-#   -update rewrites the golden from this libfdb_c run and the known Go
-#   divergences from this Go run.
+#   -update runs libfdb_c twice, requires identical transcripts, and rewrites
+#   the golden from them and the known Go divergences from the Go run.
 #
 # Fails when libfdb_c's transcript differs from the golden (a scenario that is
 # not deterministic, or a changed libfdb_c), or when the Go client's
@@ -17,13 +17,16 @@
 set -euo pipefail
 update=0
 [[ ${1:-} == -update ]] && { update=1; shift; }
-out=$1 cluster=$2 ports=$3
+(($# == 3)) || { echo "usage: wiregolden.sh [-update] OUTDIR CLUSTER_FILE PORTS" >&2; exit 2; }
+mkdir -p "$1"
+out=$(cd "$1" && pwd)
+cluster=$(cd "$(dirname "$2")" && pwd)/$(basename "$2")
+ports=$3
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../../.." && pwd)
 data=$here/../wiregolden
 lib=${LIBFDB_C_DIR:-$HOME/.local/share/foundationdb/7.3.77/lib}
-mkdir -p "$out"
-out=$(cd "$out" && pwd)
+[[ -f $cluster ]] || { echo "wiregolden: no cluster file $cluster" >&2; exit 2; }
 cd "$root"
 bin() {
   bazelisk build "$1" >/dev/null 2>&1 || bazelisk build "$1"
@@ -32,27 +35,43 @@ bin() {
 for t in //tools/clientbench/cmd/wgscen:wgscen_go //tools/clientbench/cmd/wgscen:wgscen_cgo //tools/clientbench/cmd/wiregolden; do
   install -m755 "$(bin "$t")" "$out/$(basename "${t##*:}")"
 done
-for c in cgo go; do
-  rm -rf "$out/$c"
-  LD_LIBRARY_PATH=$lib WIRETRACE=true "$here/wirecapture.sh" "$out/$c" "$ports" -- \
-    "$out/wgscen_$c" -cluster-file "$cluster" >/dev/null
-  "$out/wiregolden" -pcap "$out/$c/capture.pcap" -server-ports "$ports" >"$out/$c.transcript"
-done
+"$out/wgscen_go" -list >"$out/scenarios.txt"
+# diffu A B LABEL_A LABEL_B > OUT: 0 equal, 1 different; anything else is a failure.
+diffu() {
+  local rc=0
+  diff -u --label "$3" --label "$4" "$1" "$2" || rc=$?
+  ((rc <= 1)) || { echo "wiregolden: diff failed ($rc)" >&2; exit 2; }
+  return $rc
+}
+run() { # client name
+  rm -rf "$out/$2"
+  LD_LIBRARY_PATH=$lib WIRETRACE=true "$here/wirecapture.sh" "$out/$2" "$ports" -- \
+    "$out/wgscen_$1" -cluster-file "$cluster" >/dev/null
+  "$out/wiregolden" -pcap "$out/$2/capture.pcap" -server-ports "$ports" -expect "$out/scenarios.txt" >"$out/$2.transcript"
+}
+run cgo cgo
+run go go
 if ((update)); then
+  run cgo cgo-rerun
+  if ! diffu "$out/cgo.transcript" "$out/cgo-rerun.transcript" libfdb_c libfdb_c-rerun >"$out/cgo-rerun.diff"; then
+    cat "$out/cgo-rerun.diff" >&2
+    echo "wiregolden: libfdb_c is not deterministic across runs; golden not updated" >&2
+    exit 1
+  fi
   cp "$out/cgo.transcript" "$data/libfdbc.golden"
 fi
-diff -u --label golden --label go "$data/libfdbc.golden" "$out/go.transcript" >"$out/go.diff" || true
+diffu "$data/libfdbc.golden" "$out/go.transcript" golden go >"$out/go.diff" || true
 if ((update)); then
   cp "$out/go.diff" "$data/go-divergences.diff"
   echo "wiregolden: golden and known Go divergences updated"
   exit 0
 fi
 status=0
-if ! diff -u --label golden --label libfdb_c "$data/libfdbc.golden" "$out/cgo.transcript"; then
+if ! diffu "$data/libfdbc.golden" "$out/cgo.transcript" golden libfdb_c; then
   echo "wiregolden: libfdb_c differs from the golden" >&2
   status=1
 fi
-if ! diff -u --label known --label now "$data/go-divergences.diff" "$out/go.diff"; then
+if ! diffu "$data/go-divergences.diff" "$out/go.diff" known now; then
   echo "wiregolden: the Go client's divergences changed (see $out/go.diff)" >&2
   status=1
 fi

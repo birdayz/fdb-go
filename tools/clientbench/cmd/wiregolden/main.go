@@ -1,6 +1,7 @@
 // Command wiregolden prints the normalized request transcript of a capture
-// (see internal/wiregolden). It fails on an incomplete capture or one without
-// a scenario.
+// (see internal/wiregolden). It fails on an incomplete capture, or unless the
+// capture holds exactly the scenarios listed in -expect (one name per line,
+// wgscen -list), closed by the ~end marker.
 package main
 
 import (
@@ -18,16 +19,25 @@ func main() {
 	pcap := flag.String("pcap", "", "capture file")
 	ports := flag.String("server-ports", "", "comma-separated fdbserver ports")
 	prefix := flag.String("prefix", "\x02wg/d/", "scenario key prefix, written <p>")
+	expect := flag.String("expect", "", "file listing the scenario names in order")
 	flag.Parse()
-	if err := run(*pcap, *ports, *prefix); err != nil {
+	if err := run(*pcap, *ports, *prefix, *expect); err != nil {
 		fmt.Fprintln(os.Stderr, "wiregolden:", err)
 		os.Exit(1)
 	}
 }
 
-func run(pcap, ports, prefix string) error {
-	if pcap == "" || ports == "" {
-		return fmt.Errorf("-pcap and -server-ports are required")
+func run(pcap, ports, prefix, expect string) error {
+	if pcap == "" || ports == "" || expect == "" {
+		return fmt.Errorf("-pcap, -server-ports and -expect are required")
+	}
+	list, err := os.ReadFile(expect)
+	if err != nil {
+		return err
+	}
+	want := strings.Fields(string(list))
+	if len(want) == 0 {
+		return fmt.Errorf("%s lists no scenario", expect)
 	}
 	var serverPorts []uint16
 	for _, p := range strings.Split(ports, ",") {
@@ -49,9 +59,9 @@ func run(pcap, ports, prefix string) error {
 	if !c.Complete {
 		return fmt.Errorf("incomplete capture (%d undecodable requests)", c.Undecodable)
 	}
-	t := wiregolden.Transcript(c.Requests, prefix)
-	if !strings.HasPrefix(t, "== ") {
-		return fmt.Errorf("no scenario marker in the capture")
+	t, err := wiregolden.Transcript(c.Requests, prefix, want)
+	if err != nil {
+		return err
 	}
 	if len(c.Other) > 0 {
 		fmt.Fprintf(os.Stderr, "wiregolden: client frames not in the transcript, by file identifier: %v\n", c.Other)

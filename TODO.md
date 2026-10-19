@@ -213,7 +213,9 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   (`go-divergences.diff`); fixing one regenerates that file.
   - [ ] `getkey_offset`: a key selector with offset 2 is resolved by a storage range read
     of limit 2 in libfdb_c and of limit 256 in Go. C++ resolves it through
-    `getRangeValue` with `GetRangeLimits(1)` (`ReadYourWrites.actor.cpp:140-160`).
+    `getRangeValue` with `GetRangeLimits(1)` (`ReadYourWrites.actor.cpp:140-160`); the
+    offset beyond the first row becomes `additionalRows` (`:731-749`), which
+    `setRequestLimits` adds to the one-row limit (`:569-575`).
   - [ ] `clear_range_then_set`: libfdb_c sends a clear split around a later set in it,
     as `writeRangeToNativeTransaction` emits one clear per cleared stretch of the write map
     (`ReadYourWrites.actor.cpp:2001-2018`); Go sends the whole clear. The stored data is the

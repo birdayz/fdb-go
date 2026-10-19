@@ -16,5 +16,8 @@ go_test(
     name = "wiregolden_test",
     srcs = ["wiregolden_test.go"],
     embed = [":wiregolden"],
-    deps = ["//pkg/fdbgo/wire/types"],
+    deps = [
+        "//pkg/fdbgo/wire/types",
+        "@com_github_zeebo_xxh3//:xxh3",
+    ],
 )

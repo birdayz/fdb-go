@@ -3,12 +3,14 @@
 // deterministic scenario can be compared line by line.
 //
 // A scenario starts with a read of MarkerPrefix+name, so the transcript splits
-// by scenario the same way for both clients. Within a scenario, requests are in
-// the order they became readable at the capture point; what differs between
-// runs is normalized away: reply tokens, span and debug IDs, idempotency IDs,
-// versions (numbered V1, V2, ... in order of appearance within the scenario),
-// the 16 random bytes of a self-conflicting range key, and the scenario's key
-// prefix (written <p>).
+// by scenario the same way for both clients; a marker named "~end" closes the
+// last one. Within a scenario, requests are in the order they became readable
+// at the capture point. What differs between runs is normalized, keeping
+// equality: versions become V1, V2, ... and random byte strings (the 16 bytes
+// of a self-conflicting key, idempotency IDs) become R1, R2, ... in order of
+// appearance within the scenario. Reply tokens, span and debug IDs are left
+// out. In key fields, the scenario's key prefix is written <p>; values are
+// literal.
 package wiregolden
 
 import (
@@ -16,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 
@@ -46,12 +49,28 @@ var requests = map[uint32]func() message{
 
 // dropped are fields whose values identify a run, not the request.
 var dropped = map[string]bool{
-	"Reply": true, "SpanContext": true, "DebugID": true, "HasDebugID": true,
-	"Arena": true, "IdempotencyId": true,
+	"Reply": true, "SpanContext": true, "DebugID": true, "HasDebugID": true, "Arena": true,
 }
 
 // versionFields hold versions, which are numbered per scenario.
-var versionFields = map[string]bool{"Version": true, "ReadSnapshot": true, "MinKnownCommittedVersion": true}
+var versionFields = map[string]bool{
+	"Version": true, "ReadSnapshot": true, "MinKnownCommittedVersion": true, "MaxVersion": true,
+}
+
+// keyFields hold keys, where the scenario prefix and self-conflicting keys are
+// normalized. A ClearRange mutation's Param2 is a key too (see value).
+var keyFields = map[string]bool{"Key": true, "Begin": true, "End": true, "Param1": true}
+
+// randomFields hold random identities, normalized as a whole.
+var randomFields = map[string]bool{"IdempotencyId": true}
+
+// Version sentinels, flow/FDBTypes.h:575-576 (invalidVersion, latestVersion).
+const (
+	invalidVersion = -1
+	latestVersion  = -2
+)
+
+const clearRange = 1 // MutationRef::ClearRange
 
 const selfConflictPrefix = "\xff/SC/"
 
@@ -119,7 +138,7 @@ func Decode(r io.Reader, serverPorts []uint16) (*Capture, error) {
 			partial++
 		}
 	}
-	c.Complete = re.Gaps == 0 && partial == 0 && c.Undecodable == 0 && parseErr == nil
+	c.Complete = re.Gaps == 0 && partial == 0 && c.Undecodable == 0 && parseErr == nil && len(c.Requests) > 0
 	sort.SliceStable(c.Requests, func(i, j int) bool {
 		a, b := c.Requests[i], c.Requests[j]
 		return a.TimeNS < b.TimeNS || (a.TimeNS == b.TimeNS && a.Seq < b.Seq)
@@ -130,6 +149,7 @@ func Decode(r io.Reader, serverPorts []uint16) (*Capture, error) {
 func (c *Capture) add(f wiretrace.Frame) {
 	id, ok := fileID(f.Body)
 	if !ok {
+		c.Undecodable++
 		return
 	}
 	mk := requests[id]
@@ -162,40 +182,66 @@ func fileID(body []byte) (uint32, bool) {
 }
 
 // Transcript renders the requests of each scenario. Requests before the first
-// marker (setup) and after a marker named "~end" are left out.
-func Transcript(reqs []Request, keyPrefix string) string {
+// marker (setup) and after the ~end marker are left out. It fails unless the
+// markers are exactly want followed by ~end, on a scenario without a request,
+// and on a request inside a
+// scenario that the transcript does not decode (its fields would not be
+// compared).
+func Transcript(reqs []Request, keyPrefix string, want []string) (string, error) {
 	var out strings.Builder
 	var n *normalizer
+	var got []string
+	counts := map[string]int{}
+	ended := false
 	for _, r := range reqs {
 		if gv, ok := r.Msg.(*types.GetValueRequest); ok && strings.HasPrefix(string(gv.Key), MarkerPrefix) {
+			if ended {
+				return "", fmt.Errorf("marker %q after ~end", gv.Key)
+			}
 			name := strings.TrimPrefix(string(gv.Key), MarkerPrefix)
 			n = nil
-			if name != "~end" {
-				fmt.Fprintf(&out, "== %s\n", name)
-				n = &normalizer{versions: map[int64]string{}, prefix: keyPrefix}
+			if name == "~end" {
+				ended = true
+				continue
 			}
+			got = append(got, name)
+			fmt.Fprintf(&out, "== %s\n", name)
+			n = &normalizer{versions: map[int64]string{}, random: map[string]string{}, prefix: keyPrefix}
 			continue
 		}
 		switch {
 		case n == nil:
 		case r.Msg == nil:
-			fmt.Fprintf(&out, "%s\n", r.Kind)
+			return "", fmt.Errorf("scenario %s: undecoded request %s", got[len(got)-1], r.Kind)
 		default:
+			counts[got[len(got)-1]]++
 			fmt.Fprintf(&out, "%s %s\n", r.Kind, n.value("", reflect.ValueOf(r.Msg)))
 		}
 	}
-	return out.String()
+	if !ended {
+		return "", fmt.Errorf("no ~end marker: the run did not finish")
+	}
+	if !slices.Equal(got, want) {
+		return "", fmt.Errorf("scenarios %v, want %v", got, want)
+	}
+	for _, name := range got {
+		if counts[name] == 0 {
+			return "", fmt.Errorf("scenario %s sent no request", name)
+		}
+	}
+	return out.String(), nil
 }
 
 type normalizer struct {
 	versions map[int64]string
+	random   map[string]string
 	prefix   string
 }
 
-// version names a version by its order of appearance; 0, -1 (invalid) and
-// the largest version (latest) keep their meaning.
+// version names a version by its order of appearance; 0, the sentinels and the
+// largest version keep their values.
 func (n *normalizer) version(v int64) string {
-	if v == 0 || v == -1 || v == 1<<63-1 {
+	if v == 0 || v == invalidVersion || v == latestVersion || v == 1<<63-1 {
 		return fmt.Sprint(v)
 	}
 	s, ok := n.versions[v]
@@ -206,13 +252,33 @@ func (n *normalizer) version(v int64) string {
 	return s
 }
 
-func (n *normalizer) bytes(b []byte) string {
-	s := string(b)
-	if strings.HasPrefix(s, selfConflictPrefix) && len(s) >= len(selfConflictPrefix)+16 {
-		return "'" + escape(selfConflictPrefix) + "<random>" + escape(s[len(selfConflictPrefix)+16:]) + "'"
+// randomID names a random byte string by its order of appearance, so equal
+// strings keep the same name wherever they occur.
+func (n *normalizer) randomID(b string) string {
+	if b == "" {
+		return "''"
 	}
-	if n.prefix != "" && strings.HasPrefix(s, n.prefix) {
-		return "'<p>" + escape(s[len(n.prefix):]) + "'"
+	s, ok := n.random[b]
+	if !ok {
+		s = fmt.Sprintf("R%d", len(n.random)+1)
+		n.random[b] = s
+	}
+	return fmt.Sprintf("<%s:%d>", s, len(b))
+}
+
+func (n *normalizer) bytes(b []byte, kind string) string {
+	s := string(b)
+	switch kind {
+	case "random":
+		return n.randomID(s)
+	case "key":
+		if strings.HasPrefix(s, selfConflictPrefix) && len(s) >= len(selfConflictPrefix)+16 {
+			r := s[len(selfConflictPrefix) : len(selfConflictPrefix)+16]
+			return "'" + escape(selfConflictPrefix) + n.randomID(r) + escape(s[len(selfConflictPrefix)+16:]) + "'"
+		}
+		if n.prefix != "" && strings.HasPrefix(s, n.prefix) {
+			return "'<p>" + escape(s[len(n.prefix):]) + "'"
+		}
 	}
 	return "'" + escape(s) + "'"
 }
@@ -229,6 +295,16 @@ func escape(s string) string {
 	return out.String()
 }
 
+func fieldKind(field string) string {
+	switch {
+	case keyFields[field]:
+		return "key"
+	case randomFields[field]:
+		return "random"
+	}
+	return ""
+}
+
 // value renders a field; zero fields are left out of structs.
 func (n *normalizer) value(field string, v reflect.Value) string {
 	switch v.Kind() {
@@ -237,17 +313,22 @@ func (n *normalizer) value(field string, v reflect.Value) string {
 	case reflect.Struct:
 		var parts []string
 		t := v.Type()
+		clear := t == reflect.TypeFor[types.MutationRef]() && v.FieldByName("MutType").Uint() == clearRange
 		for i := 0; i < v.NumField(); i++ {
 			f := t.Field(i)
 			if !f.IsExported() || dropped[f.Name] || v.Field(i).IsZero() {
 				continue
 			}
-			parts = append(parts, f.Name+"="+n.value(f.Name, v.Field(i)))
+			name := f.Name
+			if clear && name == "Param2" {
+				name = "End" // a ClearRange's Param2 is its end key
+			}
+			parts = append(parts, f.Name+"="+n.value(name, v.Field(i)))
 		}
 		return "{" + strings.Join(parts, " ") + "}"
 	case reflect.Slice:
 		if v.Type().Elem().Kind() == reflect.Uint8 {
-			return n.bytes(v.Bytes())
+			return n.bytes(v.Bytes(), fieldKind(field))
 		}
 		parts := make([]string, v.Len())
 		for i := range parts {
@@ -258,7 +339,7 @@ func (n *normalizer) value(field string, v reflect.Value) string {
 		if v.Type().Elem().Kind() == reflect.Uint8 {
 			b := make([]byte, v.Len())
 			reflect.Copy(reflect.ValueOf(b), v)
-			return n.bytes(b)
+			return n.bytes(b, fieldKind(field))
 		}
 	case reflect.Int64:
 		if versionFields[field] {

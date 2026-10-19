@@ -1,7 +1,9 @@
 // Command wgscen runs deterministic single-threaded scenarios on the client
 // compiled in (pure Go, or libfdb_c with the libfdbc tag) for wire goldens
-// (scripts/wiregolden.sh). Each scenario runs in its own transaction after a
-// marker read of \x02wg/marker/<name>, which splits the capture by scenario.
+// (scripts/wiregolden.sh). Each scenario is one transaction. Before it, a
+// marker transaction reads \x02wg/marker/<name> at the last known committed
+// version (SetReadVersion), so the marker sends one GetValueRequest and no GRV,
+// and the capture splits by scenario. A final ~end marker closes the last one.
 // Add a scenario by appending to scenarios; regenerate the golden from libfdb_c.
 package main
 
@@ -92,7 +94,14 @@ var scenarios = []scenario{
 
 func main() {
 	cluster := flag.String("cluster-file", "", "cluster file")
+	list := flag.Bool("list", false, "print the scenario names and exit")
 	flag.Parse()
+	if *list {
+		for _, s := range scenarios {
+			fmt.Println(s.name)
+		}
+		return
+	}
 	if err := fdb.APIVersion(730); err != nil {
 		fail(err)
 	}
@@ -101,31 +110,61 @@ func main() {
 		fail(err)
 	}
 	defer db.Close()
-	// Seed and warm the location cache.
-	if _, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
+	// Setup, not compared: seed the keys and warm the location cache.
+	last, err := commit(db, func(tr fdb.WritableTransaction) error {
 		tr.ClearRange(fdb.KeyRange{Begin: k(""), End: k("\xff")})
 		for _, s := range []string{"a", "b", "c", "d", "e", "m0", "m5"} {
 			tr.Set(k(s), []byte("seed-"+s))
 		}
-		return nil, nil
-	}); err != nil {
+		return nil
+	})
+	if err != nil {
 		fail(err)
 	}
 	for _, s := range scenarios {
-		if _, err := db.ReadTransact(func(tr fdb.ReadTransaction) (any, error) {
-			return tr.Get(fdb.Key("\x02wg/marker/" + s.name)).Get()
-		}); err != nil {
+		if err := mark(db, s.name, last); err != nil {
 			fail(err)
 		}
-		if _, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) { return nil, s.run(tr) }); err != nil {
+		v, err := commit(db, s.run)
+		if err != nil {
 			fail(fmt.Errorf("%s: %w", s.name, err))
 		}
+		last = max(last, v)
 	}
-	if _, err := db.ReadTransact(func(tr fdb.ReadTransaction) (any, error) {
-		return tr.Get(fdb.Key("\x02wg/marker/~end")).Get()
-	}); err != nil {
+	if err := mark(db, "~end", last); err != nil {
 		fail(err)
 	}
 }
+
+// commit runs fn in one transaction, without a retry loop, and returns its
+// committed version (-1 for a transaction that wrote nothing).
+func commit(db fdb.BackendDatabase, fn func(fdb.WritableTransaction) error) (int64, error) {
+	tr, err := db.CreateWritableTransaction()
+	if err != nil {
+		return 0, err
+	}
+	if err := fn(tr); err != nil {
+		tr.Cancel()
+		return 0, err
+	}
+	if err := tr.Commit().Get(); err != nil {
+		return 0, err
+	}
+	return tr.GetCommittedVersion()
+}
+
+// mark reads the scenario's marker key at version, which needs no GRV.
+func mark(db fdb.BackendDatabase, name string, version int64) error {
+	tr, err := db.CreateWritableTransaction()
+	if err != nil {
+		return err
+	}
+	defer tr.Cancel()
+	tr.SetReadVersion(version)
+	_, err = tr.Get(fdb.Key(markerPrefix + name)).Get()
+	return err
+}
+
+const markerPrefix = "\x02wg/marker/"
 
 func fail(err error) { fmt.Fprintln(os.Stderr, err); os.Exit(1) }
