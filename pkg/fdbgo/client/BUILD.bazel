@@ -377,6 +377,8 @@ go_test(
         "readversion_instant_test.go",
         "readversion_race_test.go",
         "reply_ground_truth_test.go",
+        "request_transcript_legacy_test.go",
+        "request_transcript_test.go",
         "reset_option_lifecycle_test.go",
         "reset_watch_deadlock_test.go",
         "resolve_fallback_test.go",
@@ -426,6 +428,7 @@ go_test(
         "watch_ctx_fault_test.go",
         "watch_limit_test.go",
         "watch_validation_test.go",
+        "wire_recorder_test.go",
     ],
     args = [
         "-test.parallel=4",
