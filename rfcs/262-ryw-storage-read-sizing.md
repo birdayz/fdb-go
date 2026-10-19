@@ -1,6 +1,6 @@
 # RFC-262: Port RYW getRangeValue, the storage-read loop under read-your-writes
 
-**Status:** Draft (revision 2)
+**Status:** Draft (revision 3)
 **Item:** TODO.md, "Wire divergences found by the wire goldens": `getkey_*`, `set_then_range`.
 **Spec:** FoundationDB 7.3.77. `fdbclient/ReadYourWrites.actor.cpp` (RYW below),
 `fdbclient/NativeAPI.actor.cpp` (NAPI), `fdbclient/include/fdbclient/FDBTypes.h`,
@@ -8,10 +8,13 @@
 `bindings/c/fdb_c.cpp`. Line numbers are from the checkout at
 `~/.local/share/fdb-perf/fdbsrc`. Go line numbers are from commit b73752b7b.
 
-Revision 1 proposed extracting a request-sizing function and keeping the Go loops. Both
-reviewers rejected it, and they were right: the Go loops are not ports of
-`getRangeValue`, so no sizing function can be dropped into them. This revision replaces
-them. The review-resolution index at the end maps every review point to a section.
+Revision 1 proposed extracting a request-sizing function and keeping the Go loops; the
+Go loops are not ports of `getRangeValue`, so revision 2 replaced them. Revision 3 keeps
+revision 2's algorithm (A3-A9) and traces (T1-T5) and fixes its design: the write map's
+structural boundaries (A1, D1b), an independently safe migration and a defined pin owner
+(D1, D11, Phases), NativeAPI's `startTransaction`, `resolveKey` and snapshot flag (A10,
+D4), resumption by suspension point (D5), and mapped reads left where they are (D4). The
+review-resolution index at the end maps every review point of both rounds to a section.
 
 ## Problem
 
@@ -49,10 +52,11 @@ All three pass byte keys to a byte-key storage path (`rangeServerFunc`, `ryw.go:
 `getKeyRYW`'s callback, `ryw_getkey.go:559`) whose request builder hard-codes
 `firstGreaterOrEqual` selectors (`readpath.go:1228-1229`) and has no `minRows`
 (`readpath.go:996-1007`). C++ hands NativeAPI full selectors and full
-`GetRangeLimits`. A faithful port therefore needs four things the Go code does not
+`GetRangeLimits`. A faithful port therefore needs five things the Go code does not
 have: the walk itself, a selector-capable NativeAPI `getRange`, a write-map version
-that outlives the issuing call, and an iterator over the same segment universe C++
-uses. This RFC designs all four and deletes the three loops.
+that outlives the issuing call, the write map's structural boundaries, and an iterator
+over the same segment universe C++ uses. This RFC designs all five and deletes the three
+loops.
 
 ## The C++ algorithm
 
@@ -96,6 +100,43 @@ keys with virtual trailing zeros (SnapshotCache.h:31-121); `isKeyAfter` tests
 A `WriteMap::iterator` is a version of the map: "This iterator also represents a
 snapshot (will be unaffected by future writes)" (WriteMap.h:158-160). The snapshot
 cache is not versioned; every read sees inserts made by every other read.
+
+**Write-map structure.** The write-side segment boundaries are the write map's *nodes*,
+not the set of written keys. A node (`WriteMapEntry`, WriteMap.h:69-95) is a key, an
+operation stack, and five flags: `following_keys_cleared`, `following_keys_conflict`,
+`is_conflict`, `following_keys_unreadable`, `is_unreadable`. A node with a non-empty stack
+gives the segment `[k, keyAfter(k))` and then a range segment `[keyAfter(k), next)` unless
+the next node is `keyAfter(k)`; a node with an empty stack gives `[k, next)` (iterator
+`++`/`--`/`skip`, WriteMap.cpp:312-347; `beginKey`, WriteMap.h:176). Nodes are created and
+removed by exactly five mutators plus the constructor's sentinels (WriteMap.h:129-134):
+
+| Mutator | Called from | Structural effect |
+|---|---|---|
+| `mutate` (WriteMap.cpp:87-158) | `set` (RYW:2353), `atomicOp` (RYW:2295) | inserts or replaces an operation node, copying the surrounding range's flags |
+| `clear` (WriteMap.cpp:160-203) | `clear(range)` (RYW:2402), `clear(key)` as `[k, keyAfter(k))` (RYW:2435), when the write adds a conflict | removes interior nodes; inserts begin/end nodes unless the neighbour is already a cleared conflict range, so coalescing depends on order and on conflict flags |
+| `clearNoConflict` (WriteMap.cpp:527-596) | the same calls with `NEXT_WRITE_NO_WRITE_CONFLICT_RANGE` | as `clear`, plus a node at every conflict/non-conflict toggle inside the cleared range |
+| `addConflictRange` (WriteMap.cpp:244-302) | `addWriteConflictRange` with RYW enabled (RYW:2493-2499) | inserts empty-stack nodes at both ends and flags interior nodes; no operation |
+| `addUnmodifiedAndUnreadableRange` (WriteMap.cpp:205-242) | `SetVersionstampedKey` (RYW:2264-2272) | the SVK candidate range: removes interior nodes, inserts unreadable begin/end nodes |
+
+No read mutates the write map. Consequences the Go write map does not reproduce today:
+
+- `addWriteConflictRange(m, n)` splits an UNKNOWN segment (or a cached KV run) at `m` and
+  `n`. Whether it adds a node depends on the conflict flags already there: no begin node
+  inside an existing conflict range (WriteMap.cpp:253-264), no end node if the segment at
+  `n` is already conflicted (:278-288), and every write that adds a conflict sets those
+  flags. Adding a boundary at every conflict-range edge would therefore also be wrong.
+- `clear` coalesces by order and by flags: `clear(e)` then `clear(keyAfter(e))` leaves a
+  node at `keyAfter(e)` (two one-key EMPTY segments), while the opposite order removes it
+  (`end_coalesce_clear`, :180-191), unless the second clear adds no conflict
+  (`clearNoConflict`, :560-566).
+
+The walk observes these in three places. Each segment costs one iteration of
+`skipUncached`'s traversal budget (A4), so conflict nodes in unknown space move where
+request 1 ends (T6). An empty run split so that its first segment is a single key adds one
+to the count `skipUncached` returns at the barrier, because `b` is not advanced across
+empties (RYW:525-532) (T7). A conflict node inside a cached run ends `skipContiguous`'s
+batch. Splits deeper inside an empty run are not observable, but D1b reproduces them
+anyway, since it is a port, not an approximation.
 
 `skipContiguous(key)` (RYWIterator.cpp:128-133; SnapshotCache.h:276-282) advances a KV
 segment that comes from the cache over an unmodified write range to the last cached
@@ -238,7 +279,13 @@ State (:599-608): `it` (the caller's iterator), `itEnd` (a copy), `result`,
   `read(GetKeyReq(end))` on the same iterator (a full getKey, A9, with its own state and
   its own `requestCount = 0`). Set `readToBegin` if it returned `""`, `readThroughEnd` if
   it returned `maxKey`. If `begin.key >= resolved && !begin.isBackward()`: empty, flags
-  false; else if `resolved == ""`: empty with flags. Re-resolve both selectors.
+  false; else if `resolved == ""`: empty with flags. Re-resolve both selectors, then
+  enter the loop.
+
+The three awaits resume differently. After P3's getKey, C++ re-resolves both selectors
+(:634-637) and enters the loop. After U8's storage read it inserts and re-resolves
+(U9-U10) and continues the loop. After L3's getKey it sets `end` and breaks straight to
+the epilogue (:667-676): no re-resolution, no loop guard runs again.
 
 **Loop.** Each pass runs the first matching step.
 - L1 (:653-655) `result` empty and `actualBeginOffset >= actualEndOffset && begin.key >= end.key`:
@@ -426,12 +473,25 @@ keyAfter(result))`.
   inside one call carries `orEqual = true` on the wire.
 - `wrong_shard_server` falls back; `all_alternatives_failed` invalidates, delays and retries
   (:4858-4885).
-- `getRangeFallback` (:4457-4500) resolves both selectors with NativeAPI `getKey` (both
-  started before either is awaited), returns empty if `b >= e`, reads
+- Before any location lookup, `getRange` awaits `trState->startTransaction()` (the GRV)
+  and calls `validateVersion(readVersion())` (:4617-4618; `DatabaseContext::validateVersion`,
+  NAPI:511-524: version 0 is `client_invalid_operation`, a switchable cluster rejects a
+  version below `minAcceptableReadVersion` with `transaction_too_old`). Every request of
+  the call carries that one read version. The checks in `getRangeInternal` come first, so
+  an empty or inverted request acquires no read version; a RYW read that never reaches
+  `tr.getRange` acquires none either.
+- `getRangeFallback` (:4457-4500) resolves both selectors with `resolveKey` (:4447-4455):
+  a FGE selector resolves to its key and a FGT selector to `keyAfter(key)` with no
+  request; anything else calls NativeAPI `getKey`. `fb` and `fe` are both created before
+  either is awaited (:4465-4468), so both `GetKeyRequest`s are in flight together, begin's
+  first when its location is cached. Then it returns empty if `b >= e`, reads
   `getExactRange([b, e), limits)` and sets `readToBegin` when `b == ""` (and `!more` for
   reverse), `readThroughEnd` when `e == \xff\xff` (and `!more` for forward).
-- With `snapshot = false` (only the RYW-disabled path), `getRangeFinished` computes the
-  conflict range from the selectors and result (:4534-4590).
+- With `snapshot = false` (only the RYW-disabled path), `getRangeInternal` registers a
+  conflict promise (:5841-5844) and `getRangeFinished` fills it from the selectors and
+  result (:4558-4590). With `snapshot = true` it adds none. The RYW-disabled backward
+  pre-read `tr.getKey(read.end, snapshot)` (RYW:191-199) likewise adds a getKey conflict
+  only when `snapshot` is false (NAPI:5778-5787, 5761-5776).
 
 `minRows` matters here: a reply cut by its byte limit before `minRows` rows leaves
 `bytes == 0, minRows > 0`, which is neither reached nor satisfied, so the next request
@@ -469,6 +529,8 @@ uses the `bytes == 0` branch: `limit = ±minRows`, `limitBytes = 80000`.
 | `getKnownKeyRange` with `more`, `readThrough`, flags (A8) | `cacheServerReply` (`ryw.go:1196-1232`) from byte bounds | wrong for selector requests; getKey's callback drops `readThrough` (`ryw_getkey.go:559`) |
 | A3 exact | fused resolver that also skips to the landing (`ryw_getkey.go:465-503`), clips at `hi = maxReadKey` and special-cases off-end (`:396-417`) | the walk needs A3's transformed selector and flags, and C++'s segment universe |
 | Write-map version from issue | `captureWriteSpanLocked(begin, end)` (`ryw.go:970-992`) | covers only `[begin, end)`; the walk reaches beyond (end resolution skips empties past `end`; selector offsets walk anywhere) |
+| Write-side boundaries are WriteMap nodes (A1) | boundaries from write keys, merged cleared ranges and SVK ranges (`ryw_getkey.go:290-320`; cleared ranges coalesce on overlap or adjacency, `ryw.go:1642-1683`); `AddWriteConflictRange` only appends to `tx.writeConflicts` (`transaction.go:3264-3289`) | misses conflict nodes and order-dependent clear nodes, so traversal budgets and single-key tests differ |
+| `tr.getRange` captures one read version after `startTransaction` (NAPI:4617-4618) | each send re-reads `tx.readVersion` (`readpath.go:1019-1021`, `:279-281`) | a request's version is not the operation's |
 | Unreadable throws at L7 / K | `unreadableScanCapLocked` reach heuristics (`ryw.go:718`, `:785-787`, `:810`, `:885`, `:910`) | approximates the throw point |
 | `minRows` continuation, FGT continuation (A10) | `rangeScanImpl` is `getExactRange`-shaped (`readpath.go:700-960`) | no `minRows`; continues with `FGE(keyAfter(last))` |
 
@@ -478,11 +540,11 @@ which differ from A6.
 
 ## Design
 
-### D1. A versioned write map (replaces span capture)
+### D1. A versioned write map
 
 The write-map fields of `rywCache` (`ryw.go:24-54`: `writes`, `sortedKeys`, `cleared`,
-`unreadableRanges`, `unreadableKeys`, `bypassUnreadable`) move into a struct reached by
-pointer:
+`unreadableRanges`, `unreadableKeys`, `bypassUnreadable`) and the node index of D1b move
+into a struct reached by pointer, `c.w`:
 
 ```go
 // rywWrites is one version of the write map. A pinned version is immutable:
@@ -494,52 +556,136 @@ type rywWrites struct {
 	unreadableRanges []rywRange
 	unreadableKeys   []string
 	bypassUnreadable bool
-	pins             int // reads holding this version; guarded by rywCache.mu
+	nodes            rywNodes // D1b
+	pins             int      // reads holding this version; guarded by rywCache.mu
 }
 
-func (c *rywCache) pinWritesLocked() *rywWrites      // c.w.pins++; return c.w
-func (c *rywCache) unpinWrites(w *rywWrites)          // locks; w.pins--
-func (c *rywCache) mutableWritesLocked() *rywWrites  // if c.w.pins > 0 { c.w = c.w.clone() }; return c.w
+func (c *rywCache) pinWritesLocked() *rywWrites     // c.w.pins++; return c.w
+func (c *rywCache) unpinWritesLocked(w *rywWrites)   // w.pins--; panics below zero
+func (c *rywCache) mutableWritesLocked() *rywWrites // if c.w.pins > 0 { c.w = c.w.clone() }; return c.w
 ```
 
-Every function that assigns a write-map field calls `mutableWritesLocked` first: `set`,
-`clear`, `clearRange`, `atomic`, `addClearedRangeLocked`, `addUnreadableRangeLocked`,
-the unreadable-key index updates and `setBypassUnreadable` (the assignment sites are
-`ryw.go:238, 252, 266, 284-291, 535, 547, 570, 1633-1683, 2078, 2226, 2236, 2252`).
-`reset` (`:171-185`) installs a fresh `rywWrites`. `clone` copies the map (entries by
-value, atomic stacks re-sliced as `captureWriteSpanLocked` does today, `ryw.go:983-985`,
-because `coalesceOverAtomics` rewrites `stack[top]` in place, `:1752-1753`), and the four
-slices. Key, value and parameter bytes are shared; they are never written after insertion
-(the slab `allocBytes` only appends, `ryw.go:142-155`; range bounds are replaced, not
-edited, `:1661-1683`). `ensureSortedLocked` may build `sortedKeys` on a pinned version;
-it is derived data and runs under `c.mu`.
+Rules:
 
-`mergeBatchLocked` writes resolved atomics into the map (`ryw.go:1397, 1410`); it is
-deleted (D9), and after that no read mutates a write-map version, as in C++.
+- **One live version, no swaps.** `c.w` is always the live version. Nothing installs another
+  version in `c.w`, even temporarily: `swapWriteSpanLocked` (`ryw.go:1006-1013`) and its
+  callers `localRangeInSpan`, `mergeBatchInSpan` and `conflictRanges` (`:750-760`,
+  `:1017-1033`) are replaced in phase 2 by helpers that take the version as a parameter
+  (`localRangeLocked(w, …)`, `mergeBatchLocked(w, …)`, `conflictRangesLocked(w, …)`). So
+  `mutableWritesLocked` can only ever clone or mutate the live version.
+- **Every mutation clones first if pinned.** Every function that assigns a write-map field
+  calls `mutableWritesLocked` first: `set`, `clear`, `clearRange`, `atomic`,
+  `addClearedRangeLocked`, `addUnreadableRangeLocked`, the unreadable-key index updates,
+  `setBypassUnreadable` and D1b's `addConflictRange` (the current assignment sites are
+  `ryw.go:238, 252, 266, 284-291, 535, 547, 570, 1633-1683, 2078, 2226, 2236, 2252`). A unit
+  test enumerates the mutators and checks each one clones a pinned version.
+- **No read mutates the live or a pinned version.** The only read-side writer today is
+  `mergeBatchLocked`, which stores resolved atomics (`ryw.go:1397, 1410`). Until phase 3
+  deletes it, it runs only on the private span copy the old range loop already makes
+  (`captureWriteSpanLocked`, `ryw.go:970-992`, which returns a fresh unpinned `*rywWrites`
+  that is never `c.w`); it asserts `w != c.w && w.pins == 0`, and the test build turns a
+  violation into a failure. `ensureSortedLocked` and D1b's lazy node build may fill derived
+  indexes on a pinned version under `c.mu`; they do not change what the version means.
+- **Clone.** `clone` copies the map (entries by value, atomic stacks re-sliced as
+  `captureWriteSpanLocked` does, `ryw.go:983-985`, because `coalesceOverAtomics` rewrites
+  `stack[top]` in place, `:1752-1753`), the slices, and the node index. Key, value and
+  parameter bytes are shared; they are never written after insertion (the slab
+  `allocBytes` only appends, `ryw.go:142-155`; range bounds are replaced, not edited,
+  `:1661-1683`).
+- `reset` (`:171-185`) installs a fresh version and increments `c.gen` (D5).
 
-Cost: a synchronous read pins and unpins within one call, so a writer clones only when it
-runs while another goroutine's read is in flight, or between `StartGetRange` /
-`StartGetKey` and their completion. That clone is O(writes). The current design copies
-the writes in `[begin, end)` on every fetching read that has any. Phase 1 adds a
-benchmark for the bad case (alternating `StartGetRange` and `Set` with 10k pending writes)
-and reports it against the merge-base; if it regresses the record-layer benchmarks, a
-persistent map (C++'s PTree) is the follow-up, not a different semantics.
+Cost: a synchronous read pins and unpins within one call, so a writer clones only while
+another read is in flight. That clone is O(writes). The current design copies the writes in
+`[begin, end)` on every fetching read that has any. Phase 2 adds a benchmark for the bad
+case (alternating `StartGetRange` and `Set` with 10k pending writes) and reports it against
+the merge-base; a persistent map (C++'s PTree) is the remedy if it regresses the
+record-layer benchmarks.
 
-### D2. The cursor over a view and C++'s universe
+### D1b. The write map's nodes
+
+`rywWrites.nodes` ports `WriteMap`'s node set without operation stacks:
+
+```go
+type rywNode struct {
+	key []byte
+	op  bool // the C++ stack is non-empty
+	followingCleared, followingConflict, isConflict, followingUnreadable, isUnreadable bool
+}
+type rywNodes struct {
+	sorted []rywNode       // by key; holds the sentinels "", \xff\xff, \xff\xff\0 (WriteMap.h:129-134)
+	log    []rywNodeOp     // structural ops not yet applied (lazy build, below)
+}
+
+// Ports of the five mutators' effect on nodes and flags.
+func (n *rywNodes) mutate(key []byte, addConflict, versionstamp bool)  // WriteMap.cpp:87-158
+func (n *rywNodes) clear(begin, end []byte, addConflict bool)          // :160-203, or :527-596 when !addConflict
+func (n *rywNodes) addConflictRange(begin, end []byte)                 // :244-302
+func (n *rywNodes) addUnmodifiedAndUnreadableRange(begin, end []byte)  // :205-242
+```
+
+A `nodeIter` ports `WriteMap::iterator` over `sorted` (`skip`, `++`, `--`, `beginKey`,
+`endKey`, `keyAtBegin`, `is_cleared_range`, `is_conflict_range`, `is_unreadable`,
+`is_operation`; WriteMap.cpp:305-347, WriteMap.h:150-200), and the mutator ports are written
+against it line for line, including `insert_begin`, `insert_end`, `end_coalesce_clear` and
+`clearNoConflict`'s toggle nodes. They are the only writers of `sorted`.
+
+Call sites. The `addConflict` argument is C++'s `addWriteConflict`
+(`!options.getAndResetWriteConflictDisabled()`, RYW:2220, 2328, 2358, 2407):
+
+- `stateSet` / `stateClear` / `stateClearRange` (`transaction.go:1324-1327, 1362-1365,
+  1391-1394`) and the atomic path (`:1531-1535`): `addWriteConflictForKeyLocked` and
+  `addWriteConflictLocked` (`:2884-2924`) return whether they recorded a conflict, and that
+  value goes to `tx.ryw.set/clear/clearRange/atomic`. The Go-only `writeConflictsDisabled`
+  (`:261-265`) therefore reads as `false`, like `NEXT_WRITE_NO_WRITE_CONFLICT_RANGE`.
+  `SetVersionstampedKey` passes `false` and calls `addUnmodifiedAndUnreadableRange` first, as
+  RYW:2264-2272 does.
+- `stateAddWriteConflictRange` (`:3264-3289`), after its clamps and when RYW is enabled,
+  calls the new `tx.ryw.addConflictRange(begin, end)`, a mutator under D1's rules. With
+  RYW disabled it does not, as RYW:2493-2496. It keeps appending to `tx.writeConflicts`,
+  which is how Go ships write conflicts.
+- Bounds are the same clamped bounds the stores receive (`getMaxClearKeySize`, RYW:2389-2399).
+
+Lazy build. Write-only transactions must not pay O(n) per out-of-order write
+(`sortedKeys` is lazy for the same reason, `ryw.go:28-29, 45-46`). Until the first walk needs
+nodes, mutators append a `rywNodeOp` to `log`. The first walk replays the log in order; a run
+of consecutive `mutate` ops on keys not yet present is merged in one sorted pass, which is
+exact because `mutate` only copies the flags of the range containing the key and no
+`mutate` changes another node's flags. After the build, mutators apply directly, at the
+same O(n) slice cost `sortedKeys` already has.
+
+Roles. Nodes are authoritative for write-side *boundaries*; the stores stay authoritative
+for values, atomic stacks and segment *types* (`segTypeAtLocked`, `ryw_getkey.go:74-133`),
+which RFC-058 already matches to C++. A property test replays random sequences of all
+mutators, with and without conflicts and with RYW-disabled interleavings, and checks at
+every node-derived segment that `op` agrees with a `writes` entry, `followingCleared` with
+`isClearedLocked`, and the unreadable flags with the unreadable checks. The one exception is
+RFC-098's deliberate divergence: Go keeps pending writes inside an SVK range where C++
+removes their nodes. Such keys are inside an unreadable segment, which every walk treats as
+a barrier or an error at its edge (A4, A6 L7), so boundaries inside it are never observed;
+the test excludes them by that argument, and S1 case 4 checks the edge.
+
+### D2. The cursor over a version and C++'s universe
 
 `rywSegCursor` (`ryw_getkey.go:146-192`) and its helpers (`segTypeAtLocked` `:74-133`,
 `boundCandidatesLocked` `:280-339`, `mergedBoundsLocked`, `prevBoundaryLocked`,
 `isClearedLocked`, `isUnreadableLocked`, `segmentValueLocked` `ryw.go:1120-1130`,
 `conflictRangesLocked` `:1528`) take `w *rywWrites` instead of `includeWrites bool` and the
-live fields. `w == nil` is `SnapshotCache::iterator` (A2.2). `swapWriteSpanLocked` goes.
+live fields. `w == nil` is `SnapshotCache::iterator` (A2.2).
+
+Write-side boundary candidates come from `w.nodes` (each node's key, and `keyAfter(key)` for
+an operation node unless the next node is that key), replacing the write-key, cleared and
+SVK sources of `boundCandidatesLocked` (`ryw_getkey.go:290-320`). The window argument
+there carries over: nodes are one sorted list of boundaries. A private span copy (D1) has no
+node index; until phase 3 deletes the old range loop, a cursor over such a copy keeps the
+current sources, so the old loop's requests do not change before phase 3.
 
 The walk's cursor uses `hi = \xff\xff` regardless of `maxReadKey`, so its segments are
-C++'s: there is no boundary at `\xff` unless something is cached or written there, and
+C++'s: no boundary at `\xff` unless something is cached or written there, and
 `getkey_after_set`'s last segment is `[b1\0, \xff\xff)`. Seeking a key `>= \xff\xff` lands
-on a sentinel segment `[\xff\xff, \xff\xff\0)` of type `segEmpty` (A1). `prev()` from the
-sentinel goes to the last real segment. `next()` on the sentinel is unreachable (A6 stops
-at L4/L6 first); it returns `internal_error` (4100) instead of looping. The snapshot cache
-accepts entries ending at `\xff\xff` (A8 inserts them for `readThroughEnd`).
+on the sentinel `[\xff\xff, \xff\xff\0)`, typed `segEmpty` (A1). `prev()` from the sentinel goes
+to the last real segment. `next()` on the sentinel is unreachable (A6 stops at L4/L6
+first); it returns `internal_error` (4100) instead of looping. The snapshot cache accepts
+entries ending at `\xff\xff` (A8 inserts them for `readThroughEnd`).
 
 New cursor operations, each a port:
 
@@ -548,10 +694,8 @@ New cursor operations, each a port:
 | `cur.same(o)` | `it == itEnd`: both valid, equal `begin` (one lock hold, one partition) |
 | `cur.known()`, `cur.isKV()` (`segKV` or `segPhantom`), `cur.empty()`, `cur.unreadable()` | `!is_unknown_range()`, `is_kv()`, `is_empty_range()`, `is_unreadable()` |
 | `cur.kv() (KeyValue, bool)` | `kv()`; false for a phantom |
-| `cur.skipContiguous(bound []byte) []KeyValue` | RYWIterator.cpp:128-133: when the segment is a cache KV under an unmodified write range, land on the last value of the same cache entry `< min(bound, next write boundary)`; return the run |
+| `cur.skipContiguous(bound []byte) []KeyValue` | RYWIterator.cpp:128-133: on a cache KV under an unmodified write segment, land on the last value of the same cache entry `< min(bound, the write segment's end node)`; return the run |
 | `cur.skipContiguousBack(bound []byte) []KeyValue` | RYWIterator.cpp:135-140: first value `>= max(bound, keyAfter(write segment begin))` |
-
-`segPhantom` and `segUnreadable` keep their current meaning (`ryw_getkey.go:53-66`).
 
 ### D3. Limits, selectors, native results
 
@@ -571,69 +715,102 @@ func (l *rangeLimits) decrement(kv KeyValue)     // NAPI:2823-2829
 func setRequestLimits(l *rangeLimits, additionalRows int64, offset int32, requestCount int)
 ```
 
-`mappedRangeLimits` (`mappedrange_selectors.go:17-59`) becomes `rangeLimits`. The existing
-`KeySelector` (`mappedrange.go:107-111`) gains `removeOrEqual`, `isFGE`, `isBackward`,
-`isDefinitelyGreater/Less` and `keyAfter` with the `\xff\xff` rule. Selector offsets use
-`int32` arithmetic that wraps as C++'s `int` does in practice (`2 - read_begin.offset`,
-`read_end.offset += n`, `read_begin.offset -= n`); `additionalRows += 1 - end.offset` and
-`begin.offset - 1` are computed in `int32` and widened, as C++ does.
+The existing `KeySelector` (`mappedrange.go:107-111`) gains `removeOrEqual`, `isFGE`,
+`isFGT`, `isBackward`, `isDefinitelyGreater/Less` and `keyAfter` with the `\xff\xff` rule.
+Selector offsets use `int32` arithmetic that wraps as C++'s `int` does in practice
+(`2 - read_begin.offset`, `read_end.offset += n`, `read_begin.offset -= n`);
+`additionalRows += 1 - end.offset` and `begin.offset - 1` are computed in `int32` and
+widened, as C++ does. `mappedRangeLimits` (`mappedrange_selectors.go:17-59`) is left alone
+(D4).
 
 ```go
 type nativeRangeResult struct {
-	kvs                         []KeyValue // scan order
+	kvs                               []KeyValue // scan order
 	more, readToBegin, readThroughEnd bool
-	readThrough                 []byte     // nil when absent
+	readThrough                       []byte     // nil when absent
+	conflict                          *[2][]byte // set only when snapshot == false (A10)
 }
 type nativeRangeFunc func(ctx context.Context, begin, end KeySelector, limits rangeLimits, reverse bool) (nativeRangeResult, error)
 ```
 
 ### D4. Selector-capable storage dispatch: `nativeGetRange`
 
-`getMappedRangeSelectors` (`mappedrange_selectors.go:113-182`) is already a port of NAPI
-`getRange` for FGE selectors. It becomes generic and complete:
-
 ```go
-func nativeGetRange[T any](tx *Transaction, ctx context.Context, begin, end KeySelector,
-	limits rangeLimits, reverse bool, ops rangeScanOps[T]) (nativeRangeResultOf[T], error)
 func (tx *Transaction) nativeGetRange(ctx context.Context, begin, end KeySelector,
-	limits rangeLimits, reverse bool) (nativeRangeResult, error) // plain KVs, snapshot
+	limits rangeLimits, snapshot, reverse bool) (nativeRangeResult, error)
 ```
 
-It implements A10 exactly: `getRangeInternal`'s checks, the `readToBegin` prologue, the
-per-shard request selectors, `transformRangeLimits` including the `bytes == 0` branch,
-`decrement`, `finished`, `readThrough`, the first-reply shortcut, the FGT/FGE continuation,
-the empty-reply fallback and the error arms (wrong shard falls back, all-alternatives and
-maybe-delivered retry, reply timeout re-sends, as the mapped port does today). It counts
-`getRangeRequests` once per call (`readpath.go:634`).
+It ports A10 for plain key-values, in this order:
 
-Wire changes needed under it:
+1. `getRangeInternal`'s checks (NAPI:5810-5834): `isReached()` → empty; `!isValid()` → 2012;
+   `removeOrEqual` both; inverted → empty. No read version is taken for these.
+2. **Read version.** `rv, err := tx.readVersionForOperation(ctx, 0)`
+   (`transaction.go:759-777`), once. It is Go's `startTransaction` (GRV if none yet) plus
+   `validateVersion` (`validateExplicitVersion`, `read_version_state.go:183`, for a
+   user-set version; C++'s check at NAPI:511-524). `rv` is threaded to every request of
+   the call, including the fallback's getKeys and exact range, instead of each send
+   re-reading `tx.readVersion` (`readpath.go:1019-1021, 279-281`). The walk never calls it,
+   so a read answered locally takes no read version, as in C++, where such a read never
+   reaches `tr.getRange`.
+3. The loop of A10 (NAPI:4623-4893): the `readToBegin` prologue, location lookup, per-shard
+   request selectors, `transformRangeLimits` with the `bytes == 0` branch, `decrement`,
+   `finished`, `readThrough`, the first-reply shortcut, the FGT forward / FGE reverse
+   continuation, and the error arms (wrong shard falls back; all-alternatives and
+   maybe-delivered invalidate and retry; reply timeout re-sends). It counts
+   `getRangeRequests` once per call (`readpath.go:634`).
+4. **Fallback** (NAPI:4457-4500) through a `resolveKey` port (NAPI:4447-4455):
+
+   ```go
+   // startResolveKey: FGE → its key, FGT → keyAfter(key), both ready with no request;
+   // otherwise a goroutine runs getKeyImpl at version rv. parked closes when that
+   // goroutine first blocks on the network (location lookup or GetKeyRequest), or finishes.
+   func (tx *Transaction) startResolveKey(ctx context.Context, sel KeySelector, rv int64) (fut *keyFuture, parked <-chan struct{})
+   ```
+
+   The fallback starts `begin`'s resolution, waits for its `parked`, starts `end`'s, then
+   awaits begin and end. That is the flow order: `resolveKey(begin)` runs until its first
+   `wait` before `resolveKey(end)` is created (NAPI:4465-4466), and both are outstanding
+   before either is awaited (:4468-4469). Then `b >= e` → empty, else the exact range
+   (`rangeScanImpl`) on `[b, e)` with the original limits, and the `readToBegin` /
+   `readThroughEnd` rules.
+5. **Snapshot.** With `snapshot == false` (only the RYW-disabled route, D10) it fills
+   `conflict` by porting `getRangeFinished` (NAPI:4558-4590); with `true` it computes none.
+   RYW routes always pass `true` (A2.3, RYW:759, 1063).
+
+Shared plumbing changes, all byte-identical for existing callers (phase 1):
 - `rangeRPCOps.build` and `buildGetKeyValuesRequest` (`readpath.go:1226-1246`) take
-  `KeySelector`s; byte-key callers pass `FGE(key)`, so their bytes are unchanged.
-- `sendRangeRPC` (`readpath.go:991-1007`) takes `rangeLimits` and calls a
-  `transformRangeLimits(l, reverse) (limit, limitBytes int32)` port. For `minRows = 1` and
-  `bytes != 0` it computes what the current code computes.
-- `rangeScanImpl` (`readpath.go:700-960`), which is `getExactRange`, takes `rangeLimits`.
+  `KeySelector`s; byte-key callers pass `FGE(key)`.
+- `sendRangeRPC` (`readpath.go:991-1007`) takes `rangeLimits` and the read version and
+  calls a `transformRangeLimits(l, reverse) (limit, limitBytes int32)` port. Existing callers
+  pass `minRows = 1` and `bytes != 0`, where it computes what the current code computes.
+- `rangeScanImpl` (`readpath.go:700-960`), NAPI `getExactRange`, takes `rangeLimits`:
   `remaining` and `bytesLeft` become `limits.rows` and `limits.bytes` with `decrement`, and
-  `softByteStop` becomes `limits.hasSatisfiedMinRows() && len(out) > 0`, which is NAPI
-  getExactRange's own condition and equals today's for `minRows = 1`. The fallback needs
-  this because RYW requests carry `minRows > 1`.
-- The fallback resolves selectors with `tx.getKeyImpl` (`readpath.go:148-252`), begin then
-  end.
+  `softByteStop` becomes `limits.hasSatisfiedMinRows() && len(out) > 0`, getExactRange's
+  own condition, equal to today's for `minRows = 1`. The fallback needs it because RYW
+  requests carry `minRows > 1`.
+- `sendGetKey` and `getKeyImpl` (`readpath.go:148-372`) take the read version.
 
-The mapped path keeps its FGE guard (`mappedrange_selectors.go:82-84`) inside its `send`
-op; mapped reads go through the same loop and their requests do not change.
+**Mapped reads stay on their current implementation.** `getMappedRangeSelectors`,
+`getMappedRangeSelectorExact`, `sendGetMappedSelectors` and `mappedRangeLimits`
+(`mappedrange_selectors.go:17-290`) are not moved onto `nativeGetRange`. They reach
+`sendRangeRPC` through the new signature with FGE selectors and
+`rangeLimits{rows, 1, bytes}` built from `mappedRangeLimits.requestLimits()`, so their
+requests are byte-identical (phase 1 gate). Their forward continuation is
+`FGE(keyAfter(last))` (`mappedrange_selectors.go:179`) where NativeAPI sends
+`firstGreaterThan(last)` (NAPI:4850); that divergence predates this RFC and is recorded in
+TODO.md for a follow-up that ports the mapped sender and changes those bytes on purpose.
 
 ### D5. The walk: `rywWalk`
 
 A new file `ryw_walk.go` holds A3-A9 as Go code with the C++ line in a comment at each
-step. Because the walk must release `c.mu` across storage I/O and must compute its first
-request at issue, it is a state machine whose suspension points are exactly C++'s `wait`s.
+step. Because the walk releases `c.mu` across storage I/O and computes its first request at
+issue, it is a state machine whose suspension points are exactly C++'s `wait`s.
 
 ```go
 type rywWalk struct {
 	c        *rywCache
-	view     *rywWrites // pinned version; nil = cache only (A2.2)
-	gen      uint64     // c.gen at issue; see "Reset" below
+	view     *rywWrites // the owner's pinned version, or nil = cache only (A2.2); borrowed
+	gen      uint64     // c.gen at issue
 	maxKey   []byte
 	reverse  bool
 	getKey   bool       // this walk is read(GetKeyReq) (A9)
@@ -654,18 +831,29 @@ type rywWalk struct {
 type walkRequest struct{ begin, end KeySelector; limits rangeLimits }
 
 func (c *rywCache) newRangeWalkLocked(view *rywWrites, begin, end KeySelector, limits rangeLimits, reverse bool, maxKey []byte) *rywWalk
-func (c *rywCache) newGetKeyWalkLocked(view *rywWrites, sel KeySelector, maxKey []byte) *rywWalk // A9; applies offset++ for offset <= 0
-func (w *rywWalk) stepLocked()                         // runs A6/A7 to the next await or the end
+func (c *rywCache) newGetKeyWalkLocked(view *rywWrites, sel KeySelector, maxKey []byte) *rywWalk // A9; offset++ for offset <= 0
+
+func (w *rywWalk) startLocked()                        // P1-P3, then the loop
+func (w *rywWalk) resumeStorageLocked(r nativeRangeResult, err error)
+func (w *rywWalk) resumePreKeyLocked(key []byte, err error)
+func (w *rywWalk) resumeLoopKey(key []byte, err error)
 func (w *rywWalk) run(ctx context.Context, native nativeRangeFunc) error
 func (w *rywWalk) rangeResult() rywRangeResult         // A6/A7 epilogue
 func (w *rywWalk) keyResult() []byte                   // A9 result mapping
 type rywRangeResult struct{ kvs []KeyValue; more, readToBegin, readThroughEnd bool }
 ```
 
-`stepLocked` builds its cursors (`it`, `itEnd`) fresh on entry by re-resolving `begin` and
-`end`, which is what C++ does after every await (P3, U10, U10'). Between awaits the cursors
-live in `stepLocked`'s frame; no cursor survives a lock release. When `stepLocked` reaches
-a nested getKey (P3, L3, L3'), it creates `sub` and calls `sub.stepLocked()` in the same
+Resumption follows the suspension point (A6, after P3):
+
+| Await | Resume |
+|---|---|
+| P3 / P3' prologue getKey | set the flags, run the early returns (RYW:623-632, 927-936), re-resolve both selectors into new cursors (:634-637, 938-940), run the loop |
+| U8 / U8' storage read | if `w.gen != c.gen` fail with the read incarnation's cause; else insert (U9/U9'), re-resolve both selectors (U10/U10'), continue the loop |
+| L3 / L3' loop getKey | set the flags and `end = FGE(resolved)` (forward, RYW:671-675) or `begin = FGE(resolved)` (backward, :975-979), then the epilogue. No re-resolution and no loop guard runs again. |
+
+Cursors exist only inside one critical section: the loop gets them from the re-resolution
+that precedes it, and none survives a lock release. When the loop or prologue reaches a
+nested getKey, it creates `sub` on the same `view` and calls `sub.startLocked()` in the same
 critical section, as the nested C++ actor runs to its own first `wait`.
 
 `run` drives the awaits without holding `c.mu`:
@@ -675,34 +863,36 @@ for w.pc != pcDone {
 	switch w.pc {
 	case pcAwaitStorage:
 		res, err := native(ctx, w.req.begin, w.req.end, w.req.limits, w.reverse) // U8 / U8'
-		c.mu.Lock(); w.onReplyLocked(res, err); w.stepLocked(); c.mu.Unlock()   // U9-U10
-	case pcAwaitPreKey, pcAwaitLoopKey:
+		c.mu.Lock(); w.resumeStorageLocked(res, err); c.mu.Unlock()
+	case pcAwaitPreKey:
 		err := w.sub.run(ctx, native)
-		c.mu.Lock(); w.onKeyLocked(w.sub.keyResult(), err); w.stepLocked(); c.mu.Unlock()
+		c.mu.Lock(); w.resumePreKeyLocked(w.sub.keyResult(), err); c.mu.Unlock()
+	case pcAwaitLoopKey:
+		err := w.sub.run(ctx, native)
+		w.resumeLoopKey(w.sub.keyResult(), err) // epilogue only; touches no shared state
 	}
 }
 ```
 
-**`requestCount`** lives in the walk and is incremented once per storage request, in
-`stepLocked` when it builds `req` (U7/U7'), together with `additionalRows = 0`, before the
-await. Rows consumed from the cache, segments skipped, nested getKeys (which count their
-own requests), NativeAPI continuation requests inside one `native` call, and transport
-retries do not increment it. `countedGetRange` (`ryw.go:829-832`) is deleted.
+**`requestCount`** lives in the walk and is incremented once per storage request, when the
+loop builds `req` (U7/U7'), together with `additionalRows = 0`, before the await. Rows
+consumed from the cache, segments skipped, nested getKeys (which count their own),
+NativeAPI continuation requests inside one `native` call, and transport retries do not
+change it. `countedGetRange` (`ryw.go:829-832`) is deleted.
 
-**Cache insertion** (`onReplyLocked`): `knownKeyRange(res, req.begin, req.end)` or
+**Cache insertion** (`resumeStorageLocked`): `knownKeyRange(res, req.begin, req.end)` or
 `knownKeyRangeBack` (A8) as `rywBoundary` pairs (`ryw_getkey.go:196-231` already models
 `ExtStringRef`), materialized, then `c.serverCache.insert(b, e, ascending(res.kvs))`. The
 Go insert (`ryw_snapshot_cache.go:81-153`) is already `SnapshotCache::insert`, including
 its empty-range early return (`:82-84`); it must accept `\xff\xff` as an end.
 
-**Unreadable**: `stepLocked` returns `accessed_unreadable` (1036) at L7/K when `it` is
+**Unreadable**: the loop returns `accessed_unreadable` (1036) at L7/K when `it` is
 `segUnreadable` and nowhere else. `skipUncached*`, `countUncached*` and A3 treat it as a
 barrier without error. This replaces `unreadableScanCapLocked` on the range path.
 
-**Reset**: C++ kills in-flight reads through `resetPromise` (RYW:358-364). `rywCache.reset`
-increments `c.gen`; `onReplyLocked` drops the reply and fails the walk with the read
-incarnation's cause when `w.gen != c.gen`, so a stale reply is never inserted into the new
-transaction's cache. Today `cacheServerReply` has this race.
+**Reset**: C++ kills in-flight reads through `resetPromise` (RYW:358-364). The `gen` check
+keeps a reply from a reset transaction out of the new transaction's cache; today
+`cacheServerReply` has this race.
 
 ### D6. getKey
 
@@ -716,40 +906,42 @@ func (s *Snapshot) StartGetKey(ctx context.Context, sel KeySelector) *PendingKey
 
 Issue does the entry checks (2004 on `key > maxReadKey`, not tracked, as today), picks the
 route (A2: `rywDisabled` → `tx.getKey` + clamp, unchanged; snapshot with
-`snapshotRYWDisableCount > 0` → walk with `view = nil`; else walk with a pinned view),
-creates the walk and calls `stepLocked`, and registers in the commit barrier through
+`snapshotRYWDisableCount > 0` → walk with `view = nil`; else walk over `c.w`), runs
+`startLocked`, pins per D11, and registers in the commit barrier through
 `opContextFor(parent, true)` as `issueRange` does (`range_issue.go:44, 80-82`; C++
-`reading.add`, RYW:1706). Run drives the walk with `tx.nativeGetRange`, maps the result
-(A9), adds the conflict through the pinned view for a non-snapshot read
-(`addGetKeyConflictRange`, `transaction.go:1039-1074`, now given the view), and unpins.
-The synchronous `GetKey` is `StartGetKey(...).Get()`. The facade's `Transaction.GetKey`
-(`fdb/transaction.go:88-98`) calls `StartGetKey` in the call and only waits in the future,
-so a `Set` after `tr.GetKey(sel)` is not visible to it.
+`reading.add`, RYW:1706). Run drives the walk with `tx.nativeGetRange(…, snapshot = true, …)`,
+maps the result (A9), adds the conflict through the issue version for a non-snapshot read
+(`addGetKeyConflictRange`, `transaction.go:1039-1074`, now given the version), and
+completes per D11. `PendingKey` mirrors `PendingRange` (`range_issue.go:258-329`): a
+background goroutine started at issue, a CAS claim, a closed done channel. The synchronous
+`GetKey` is `StartGetKey(...).Get()`. The facade's `Transaction.GetKey`
+(`fdb/transaction.go:88-98`) calls `StartGetKey` in the call and waits in the future, so a
+`Set` after `tr.GetKey(sel)` is not visible to it.
 
 ### D7. Range reads
 
-`rywRangeRead` (`ryw.go:678-691`) becomes `{c, view (pinned or nil), walk, snapshot}`.
-`issueRangeInto` builds `begin = FGE(begin)`, `end = FGE(end)`,
-`limits = newRangeLimits(limit, byteTarget)` and calls `stepLocked`. If the walk finished,
-the read is local (`r.local`, `range_issue.go:78`) and its conflict is computed in the
-same critical section with `c.w` (no pin); otherwise the view is pinned. `run` drives the
-walk with `tx.nativeGetRange` and returns `rangeResult()`.
+`rywRangeRead` (`ryw.go:678-691`) becomes `{c, view, walk, snapshot}`. `issueRangeInto`
+builds `begin = FGE(begin)`, `end = FGE(end)`, `limits = newRangeLimits(limit, byteTarget)`,
+creates the walk over `c.w` (or `nil` for the snapshot-cache route) and runs `startLocked`.
+If the walk finished, the read is local (`r.local`, `range_issue.go:78`) and its conflict is
+computed in the same critical section; otherwise D11 pins. `run` drives the walk with
+`tx.nativeGetRange(…, snapshot = true, …)` and returns `rangeResult()`.
 
-Routing (`range_issue.go:68-79`) keeps its three arms. `rangePathSnapshotNoRYW` now
-creates a walk with `view = nil` instead of calling `localRange` and `getSnapshotRange`.
+Routing (`range_issue.go:68-79`) keeps its three arms. `rangePathSnapshotNoRYW` creates a
+walk with `view = nil` instead of calling `localRange` and `getSnapshotRange`.
 `rangePathRYWDisabled` keeps `getRangeReadThrough` until phase 4 (D10).
 
 Conflicts (`range_issue.go:206-223`): `rangeConflictExtent` (`transaction.go:1151`) is
 A2.3's `addConflictRange` for FGE selectors, where `readToBegin` and `readThroughEnd` are
 always false (A3 sets them only for offsets other than 1, and the nested getKeys that set
-them need a non-FGE bound). It stays, filtered through the pinned view instead of
+them need a non-FGE bound). It stays, filtered through the issue version instead of
 `r.ryw.conflictRanges` / `localConflicts`. Phase 4 replaces it with the general port.
 
 **Result assembly, as a contract.** What the range path returns is defined by A6/A7, not
 by a merge:
 
 - Rows come only from walk steps K/K'. A pending write is emitted when the walk reaches
-  its segment, so the writes visible are exactly the pinned view's. Storage data enters
+  its segment, so the writes visible are exactly the issue version's. Storage data enters
   only through the snapshot cache, so it is never mixed with writes in a batch, and
   nothing is emitted past the first UNKNOWN segment the walk stops at. This subsumes the
   old knowledge boundary (`ryw.go:860-866`).
@@ -763,7 +955,7 @@ including the `replyEdgeKnown` re-walk and `limitStop`), the slow loop (`:820-91
 `fetchLimit` heuristic `:837-843`, `fetchOrCached`, the `localRangeInSpan` early return
 `:849-853`, the merge boundary `:860-866`, the take/byte cut `:867-879`, the
 `!serverMore` exit `:881-890`, the soft byte stop `:892-894`, the zero-row guard and
-`keyAfter` advance `:897-907`), the three unreadable reach checks (`:785-787`, `:810-812`,
+`keyAfter` advance `:897-907`), the unreadable reach checks (`:785-787`, `:810-812`,
 `:885-887`, `:910-913`), `cachedRangeLocked`'s issue-time answer (`:726-746`), and
 `getSnapshotRange`'s fetch and re-walk (`:917-940`). In `getKeyRYW`, the resolve/read loop
 (`ryw_getkey.go:567-638`), its backward window (`:601-614`), forward window (`:615-625`) and
@@ -771,30 +963,31 @@ empty-window exit (`:626-634`).
 
 ### D8. What stays the same
 
-Point reads (`get`, `getSnapshot`), mapped ranges' RYW handling, `materializeCommit`, the
-conflict filter `conflictRangesLocked` (now over a view), the snapshot cache structure,
-the facade's `GetSliceWithError` and iterator continuation for byte-key ranges
+Point reads (`get`, `getSnapshot`), mapped ranges (D4), `materializeCommit`, the conflict
+filter `conflictRangesLocked` (now over a version), the snapshot cache structure, the
+facade's `GetSliceWithError` and iterator continuation for byte-key ranges
 (`fdb/range_result.go:166-201, 271-371`), and the RFC-098 divergence that keeps pending
 writes inside SVK ranges.
 
 ### D9. Deletions
 
-When the phase that removes the last caller lands (with `rg` output in the PR showing no
-caller remains): `getKeyRYW`, `keySelResult`, Go's `resolveKeySelectorFromCache`,
-`errGetKeyRYWLoop` (`ryw_getkey.go:369-640`); `rywRangeRead.run`'s body,
-`cachedRangeLocked`, `getSnapshotRange`, `replyEdgeKnown`, `rywWriteSpan`,
-`captureWriteSpanLocked`, `overlappingRanges`, `swapWriteSpanLocked`, `localRangeInSpan`,
+In phase 3, with `rg` output in the PR showing no caller remains: `getKeyRYW`,
+`keySelResult`, Go's `resolveKeySelectorFromCache`, `errGetKeyRYWLoop`
+(`ryw_getkey.go:369-640`, phase 2); `rywRangeRead.run`'s body, `cachedRangeLocked`,
+`getSnapshotRange`, `replyEdgeKnown`, `rywWriteSpan`, `captureWriteSpanLocked`,
+`overlappingRanges`, `swapWriteSpanLocked` (already gone in phase 2), `localRangeInSpan`,
 `mergeBatchInSpan`, `rywRequestBytes`, `rywFirstRequestBytes`, `applyRangeByteLimit`,
 `localRange`, `localRangeLocked`, `fetchOrCached`, `fetchServer`, `cacheServerResult`,
 `cacheServerReply`, `applyLimitAndDirection`, `computeMore`, `cacheWalkBudget`,
 `limitReached`, `mergeBatch`, `mergeBatchLocked` (`ryw.go:726-1475` except
-`segmentValueLocked`), `unreadableScanCapLocked` (`:2187`), and
-`snapshotCache.getRangeKVsLimited`, `skipKnownEmpty`, `knownPast` if nothing else calls
-them. Tests that exercise only these helpers go with them; tests that encode a request
-sequence C++ does not send are rewritten to the C++-derived trace (for example the second
-half of `TestRYWWriteOverlayRequestBytesClampedAndDoubled`,
+`segmentValueLocked`), `unreadableScanCapLocked` (`:2187`), the cursor's legacy boundary
+sources (D2), and `snapshotCache.getRangeKVsLimited`, `skipKnownEmpty`, `knownPast` if
+nothing else calls them. Tests that exercise only these helpers go with them; tests that
+encode a request sequence C++ does not send are rewritten to the C++-derived trace (for
+example the second half of `TestRYWWriteOverlayRequestBytesClampedAndDoubled`,
 `ryw_range_cut_unit_test.go:253-300`: under `clearRange(b, e)` C++ sends `[a, b)` then
-`[e, z)` with 30000 then 60000 bytes, A4's multi-key barrier, not three requests over `[a, z)`).
+`[e, z)` with 30000 then 60000 bytes, A4's multi-key barrier, not three requests over
+`[a, z)`).
 
 ### D10. Selector ranges, RYW-disabled routing, facade limits (phase 4)
 
@@ -808,19 +1001,56 @@ getKey conflicts instead of one range conflict, and never reaches P3, L3, U3's
   in RYW:1736-1764 order: cancel/deferred error, 2004 on either key `> maxReadKey`, empty on
   `isReached()`, 2012 on `!isValid()`, `removeOrEqual`, empty when inverted.
 - RYW and snapshot-cache routes: the walk with both selectors as given.
-- RYW-disabled route: A2.1's `readThrough`, calling `nativeGetRange` with `snapshot = false`,
-  which then ports `getRangeFinished`'s conflict (NAPI:4558-4590); the backward
-  `end.offset > 1` getKey; the forward `maxReadKey` clip. This retires
-  `getRangeReadThrough` for range reads.
+- RYW-disabled route: A2.1's `readThrough` (RYW:186-213) with the **caller's snapshot
+  flag**. A backward read with `end.offset > 1` first resolves `end` with NativeAPI getKey
+  under the same flag; a non-snapshot pre-read adds its getKey conflict
+  (`getKeyAndConflictRange`, NAPI:5761-5787), a snapshot one adds none. Then
+  `nativeGetRange(…, snapshot, …)`, which adds the `getRangeFinished` conflict only when
+  `snapshot` is false (NAPI:4558-4590, 5841-5844); then the forward `maxReadKey` clip
+  (RYW:203-211). This retires `getRangeReadThrough` for range reads.
 - Conflicts on the RYW route: `addConflictRange(GetRangeReq<false/true>)` (RYW:245-320)
-  with the walk's `readToBegin`/`readThroughEnd`, filtered through the pinned view.
+  with the walk's `readToBegin`/`readThroughEnd`, filtered through the issue version.
 - Facade: pass selectors through; drop `resolveRange`/`resolveSelector`; keep
   `rangecheck.Check` on the raw keys (`fdb/range_result.go:81-88`). Unlimited rows go to the
   client as 0 (→ -1), not `MaxInt32` (`fdb/range_result.go:137-142`): A5 manufactures rows
   only when `!hasRowLimit()`, so `MaxInt32` would send 80000 where C++ sends
-  `max(1 + additionalRows, offset)`. The facade keeps its own `MaxInt32` arithmetic for
+  `max(1 + additionalRows, offset)` (T5). The facade keeps its own `MaxInt32` arithmetic for
   `remaining`. Continuations keep the other bound's original selector:
   `FirstGreaterThan(last)` as begin forward, `FirstGreaterOrEqual(last)` as end reverse.
+
+### D11. Pin ownership
+
+Exactly one object owns a pin: the read (`rangeRead`, `range_issue.go:14-31`, or the new
+`keyRead` behind `PendingKey`). Everything else borrows.
+
+- **Acquire.** In issue, under `c.mu`, after `startLocked`: if the walk is not done,
+  `r.view = c.pinWritesLocked()`; the walk already references the same `c.w`, and no
+  mutation can intervene because the lock is held from walk creation to pin. A read that
+  finished at issue, a `finished` read (`range_issue.go:144-148`), the snapshot-cache route
+  and the RYW-disabled route never pin.
+- **Borrow.** The walk and every nested `sub` walk hold the pointer without pinning; their
+  lifetime is inside the owner's `run`.
+- **Release.** Once, in the owner's `complete()` (`range_issue.go:226-229`), which `run`
+  defers (`:156`) outside the panic backstop (`:159-161`) and which runs exactly once because
+  `run` does: `PendingRange`/`PendingKey` claim it by CAS (`:279-282`, `:321-323`) and the
+  synchronous API calls `run` once. Order inside `complete`: the read's conflicts were added
+  in `read` (`:198-200`); then `c.unpinWritesLocked(r.view)`, `r.view = nil`; then
+  `leaveIssuedRead` (commit barrier); then the context release. A commit therefore never
+  waits on a pin, and it never builds its request before the read's conflict exists.
+- **Abandoned futures.** `startRange` (`:307-326`) and `StartGetKey` start the background
+  goroutine at issue, and it runs the read to completion whether or not `Get` is called;
+  the facade's `Future.Cancel` completes the future without stopping the operation
+  (`fdb/future.go:49-53`). A pin therefore lasts as long as the read itself, which is bounded
+  by its context, the transaction timeout and the read path's retry caps
+  (`readpath.go:812-833`). It never outlives the read.
+- **Cancellation and errors**, including during a nested getKey: the native call or `sub.run`
+  returns the error, the walk ends, `run` returns, `complete` releases. A sub walk has
+  nothing to release.
+- **Reset.** `reset` replaces `c.w` and increments `c.gen`. The owner releases the version
+  it pinned (its stored pointer), which is no longer live; the old version is garbage once
+  its pins reach zero. A late reply is dropped by the `gen` check (D5).
+- **Writers.** `mutableWritesLocked` reads `c.w.pins` under `c.mu`; `unpinWritesLocked` runs
+  under `c.mu`; they are serialized.
 
 ## Phases
 
@@ -828,33 +1058,38 @@ Each phase is independently mergeable. "Golden-safe" means `go.golden` changes o
 sections that thereby equal `libfdbc.golden`, and `libfdbc.golden`'s existing sections are
 byte-identical (checked by `diff` of the old sections, recorded in the PR).
 
-1. **Infrastructure, no wire change.** D1 (versioned write map; `rywRangeRead` pins instead
-   of capturing a span; `swapWriteSpanLocked` becomes a pointer swap), D2 (cursor over a
-   view, `\xff\xff` universe, sentinel, skipContiguous), D3, D4 (generic `nativeGetRange`;
-   mapped reads move onto it; selector builder; `transformRangeLimits`; `rangeScanImpl` on
-   `rangeLimits`). Gate: `go.golden` unchanged; mapped, multishard and RYW suites green;
-   the D1 benchmark reported.
-2. **Walk + getKey.** D5, D6. Deletes `getKeyRYW` and Go's resolver. Closes the six
-   `getkey_*` divergences; `go-divergences.diff` keeps only `set_then_range`.
+1. **Storage plumbing, no wire change.** D3's `rangeLimits` and selector helpers; D4's shared
+   plumbing (selector builder, `transformRangeLimits`, `rangeScanImpl` on `rangeLimits`,
+   the operation's read version threaded through `sendRangeRPC`, `sendGetKey` and
+   `getKeyImpl`). Nothing reads through a new path yet. Gate: S2's request-transcript gate
+   (plain, mapped, fallback, multishard) and the existing suites named there; `go.golden`
+   unchanged.
+2. **Versioned write map, nodes, walk, getKey.** D1, D1b, D2, D5, D6, D11, and
+   `nativeGetRange` with `resolveKey` (D4). The old range loop keeps its private span copies
+   (now passed as parameters, D1) and the legacy cursor boundaries (D2), so its requests do
+   not change. Deletes `getKeyRYW`, Go's resolver and `swapWriteSpanLocked`. Closes the six
+   `getkey_*` divergences; `go-divergences.diff` keeps only `set_then_range`. Reports the D1
+   benchmark and the D1b build benchmark.
 3. **Range reads.** D7, D9. Closes `set_then_range`; `go-divergences.diff` is empty.
-4. **Selector ranges.** D10, with new lab scenarios (Executable spec, S3).
+4. **Selector ranges and RYW-disabled routing.** D10, with new lab scenarios (S3).
 
 ## Executable spec
 
 ### S1. Deterministic walk traces (hermetic, fast lane)
 
 `ryw_walk_trace_test.go` drives the walk with a scripted `nativeRangeFunc`. Each case
-fixes: the snapshot cache, the pinned write map, the caller's selectors and limits, and
-the reply to each request. It asserts, per request in order, `read_begin` and `read_end`
-(key, orEqual, offset) and `requestLimit` (`rows`, `minRows`, `bytes`), and the wire
-`(limit, limitBytes)` from `transformRangeLimits`; then the rows, `more`, `readToBegin`,
-`readThroughEnd`, the cache entries after each insert, and, for non-snapshot reads, the
-filtered conflict ranges. Expected values are derived by hand from the cited C++ lines
-and the derivation is a comment in the case. A case reachable through the public API also
-has a wire-golden twin (S3), which checks the derivation against libfdb_c.
+fixes: the snapshot cache, the issue version of the write map (built through the public
+mutators, so nodes come from D1b), the caller's selectors and limits, and the reply to each
+request. It asserts, per request in order, `read_begin` and `read_end` (key, orEqual,
+offset) and `requestLimit` (`rows`, `minRows`, `bytes`), and the wire `(limit, limitBytes)`
+from `transformRangeLimits`; then the rows, `more`, `readToBegin`, `readThroughEnd`, the
+cache entries after each insert, and, for non-snapshot reads, the filtered conflict ranges.
+Expected values are derived by hand from the cited C++ lines and the derivation is a comment
+in the case. A case reachable through the public API also has a wire-golden twin (S3), which
+checks the derivation against libfdb_c.
 
 Example derivations (keys unprefixed; unless a case says otherwise, storage is
-`{a, b, c, d, e}` and the mode is EXACT, so bytes are -1):
+`{a, b, c, d, e}`, the mode is EXACT, so bytes are -1, and writes add conflicts):
 
 - **T1, first request crosses writes and clears, counts none.** Writes `clear(b)`,
   `clear(c)`, `set(c1)`; `[a, z)` rows 2. Request 1: `skipUncached` crosses
@@ -890,6 +1125,36 @@ Example derivations (keys unprefixed; unless a case says otherwise, storage is
   rows `max(max(1, -1) + 1, 1) = 2`, minRows 2 → wire `limit 2, limitBytes 80000`. With
   caller rows `MaxInt32` instead of unlimited, request 2 sends `limit 80000`: the D10
   reason.
+- **T6, conflict-only nodes exhaust the traversal budget.** No pending mutations;
+  `AddWriteConflictRange([c_i, c_i\0))` for `i = 00..59`; `[a, z)` rows 5. The write map has
+  empty-stack nodes at every `c_i` and `c_i\0` (A1), so the cache-empty space splits into
+  `seg0 = ["", c00)`, `seg(2i+1) = [c_i, c_i\0)`, `seg(2i+2) = [c_i\0, c_(i+1))`, all UNKNOWN.
+  `skipUncached` with `clearLimit + 100 = 100` runs its body 100 times, from `seg0` to
+  `seg100 = [c49\0, c50)`, then stops; `seg100` is unknown, so `ucEnd = seg100 != itEnd` and
+  request 1 is `[FGE(a), FGE(c50))`, rows 5. Without the nodes it would be `[FGE(a), FGE(z))`.
+- **T6b, conflict flags decide whether a range adds nodes.** As T6 with 100 ranges
+  `i = 00..99`, after first adding `AddWriteConflictRange(c00, c50)`. The enclosed ranges
+  `i < 50` add no node: their begin is inside a conflict range (WriteMap.cpp:253) and the
+  segment at their end is conflicted (:278). `c50` keeps a node (the big range's end node,
+  now flagged). Segments: `seg0 = ["", c00)`, `seg1 = [c00, c50)`, then for `i >= 50`
+  `[c_i, c_i\0)` and `[c_i\0, c_(i+1))`, so `seg100 = [c99, c99\0)` and `itEnd = [c99\0, \xff\xff)`.
+  The budget runs out on `seg100`: request 1 is `[FGE(a), FGE(c99\0))`. A boundary at every
+  conflict-range edge would give `[FGE(a), FGE(c50))`; no conflict nodes would give
+  `[FGE(a), FGE(z))`.
+- **T7, clear order decides the counted clears.** Storage `{a, b, d, f}`; writes
+  `clearRange(c, c5)`, then `clear(e)`, then `clear(e\0)`; `[a, z)` rows 5. The second
+  single clear finds `[e\0, …)` unmodified, so it keeps a node at `e\0`
+  (WriteMap.cpp:168-196): `[e, e\0)` and `[e\0, e\0\0)` are separate EMPTY segments.
+  Request 1 stops at the `[c, c5)` barrier: `[FGE(a), FGE(c))`, rows 5. Reply `a, b`, !more;
+  the walk emits both and stops at `[c5, e)` U. Request 2 (`clearLimit = 2`): `skipUncached`
+  counts `[e, e\0)` as a single empty, then finds `[e\0, e\0\0)` extends the run past one key,
+  backs up to `[c5, e)` and returns 1. `read_end = FGE(e)`, `additionalRows = 1`:
+  `[FGE(c5), FGE(e))`, rows `max(3 + 1, 1) = 4`, minRows 2. With the two single clears in
+  the opposite order, `end_coalesce_clear` (:180-191) removes the node, the run is the one
+  segment `[e, e\0\0)`, the count is 0, and request 2 has rows 3, minRows 1. With the opposite
+  order and `NEXT_WRITE_NO_WRITE_CONFLICT_RANGE` on the second clear, `clearNoConflict`'s
+  `end_coalesce_clear` requires equal conflict flags (:565-566), the node stays, and request 2
+  has rows 4 again. Go today merges all three into `[e, e\0\0)`.
 
 The full case list, each forward and reverse unless noted:
 
@@ -899,120 +1164,215 @@ The full case list, each forward and reverse unless noted:
    K); a dependent write over a cached base (KV).
 3. Single-key empties that are not pending clears: a cached absent point read; a one-key
    gap between cached keys; counted from request 2 on.
-4. Barriers: T2 (pending multi-key clear and a cached multi-key empty); T3 with an SVK range;
-   the 100-segment traversal budget on request 1 (101 alternating keys stop it).
-5. getKey: offsets +2, FGT, `lastLessThan`, `lastLessOrEqual`, -2; a selector landing in the
+4. Barriers: T2 (pending multi-key clear and a cached multi-key empty); T3 with an SVK range
+   and with pending writes kept inside it (RFC-098), checking the barrier's edge; T6;
+   101 alternating cached keys and unknown gaps stopping request 1 by budget.
+5. Write-map structure (D1b): T6b; T7's three variants; `set(k)` then `clear(k)` inside a
+   cleared range (empty-stack node at `k`); `AddWriteConflictRange` across an existing clear
+   and across operation nodes (interior flags only, no new boundary); writes without
+   conflicts (`NEXT_WRITE_NO_WRITE_CONFLICT_RANGE` and Go's `writeConflictsDisabled`)
+   followed by conflict ranges over them; a conflict range splitting a cached KV run, which
+   ends `skipContiguous` (K's batch) and so changes `itemsPastEnd` for an end offset below 1
+   (phase 4). Plus the D1b property test and a lazy-build test: the same history built
+   eagerly and by log replay gives identical nodes.
+6. getKey: offsets +2, FGT, `lastLessThan`, `lastLessOrEqual`, -2; a selector landing in the
    cache with no request; offsets past the data (`readThroughEnd` → `maxReadKey`,
    `readToBegin` → `""`); a backward selector whose `offset++` lands at offset 1 on a known KV;
-   `maxReadKey = \xff\xff` (end selector on the sentinel).
-6. Selector offsets on both bounds: begin offset > 1 and < 1 (U5 third branch,
+   `maxReadKey = \xff\xff` (end selector on the sentinel); T6 for getKey (`FGT(a)` with 60
+   conflict ranges: request `[FGE(a\0), FGE(c50))`, rows 1).
+7. Selector offsets on both bounds: begin offset > 1 and < 1 (U5 third branch,
    `countUncachedBack`); end offset > 1 (`countUncached`, `read_end.offset += n`) and < 1;
    the U6/U6' crossed-key clamp; the P3 nested getKey (crossed selectors, returns empty after
-   the nested request only) and the L3 nested getKey after rows were emitted; reverse P3.
-7. Bytes: unlimited stays -1 on every request; positive bytes doubling only when a request
+   the nested request only); the L3 nested getKey after rows were emitted, asserting that no
+   re-resolution or loop guard runs after it (a cache insert by another read between the
+   nested request and the resume must not change the result); reverse P3 and L3'.
+8. Bytes: unlimited stays -1 on every request; positive bytes doubling only when a request
    consumed no rows (all fetched rows locally cleared); T5; U1 soft stop with rows from the
    cache and zero requests.
-8. Saturation and counters: `begin.offset = MaxInt32` (`minRows` and `rows` clamp to
+9. Saturation and counters: `begin.offset = MaxInt32` (`minRows` and `rows` clamp to
    `MaxInt32`); `requestCount` reaching 21 in one call with bytes 1 and every fetched row
    locally cleared (request bytes 1, 2, 4, …, 65536, then 80000; the walk's recorded
    `clearLimit` is `1 << 20` at `requestCount` 20 and 21); pure-function pins for
    `setRequestLimits` and `clearLimit` at `requestCount` 0, 1, 19, 20, 21, 64.
-9. Caches: partial cache without writes (byte-limited: cached rows, more, zero requests;
-   EXACT: request for the rest with the remaining rows); a warm second call with zero
-   requests; an empty reply that caches a known-empty range; `readThrough` extending the
-   known range and the next request starting there; native `readToBegin` and
-   `readThroughEnd` reaching A8; a reverse reply inserted ascending; a reply to a selector
-   with offset > 1 cached past `read_end.key`.
-10. Interleaving: another read's cache insert between this walk's requests (through the
+10. Caches: partial cache without writes (byte-limited: cached rows, more, zero requests;
+    EXACT: request for the rest with the remaining rows); a warm second call with zero
+    requests; an empty reply that caches a known-empty range; `readThrough` extending the
+    known range and the next request starting there; native `readToBegin` and
+    `readThroughEnd` reaching A8; a reverse reply inserted ascending; a reply to a selector
+    with offset > 1 cached past `read_end.key`.
+11. Interleaving: another read's cache insert between this walk's requests (through the
     scripted native's hook) moves the next request; cache-served segments do not change
     `requestCount`.
-11. Routing: snapshot with snapshot RYW enabled (sees writes, no conflicts); snapshot with
+12. Routing: snapshot with snapshot RYW enabled (sees writes, no conflicts); snapshot with
     it disabled (`view = nil`: `getkey_after_set` returns the storage key `c`, not `b1`);
     RYW disabled (requests carry the caller's selectors and limits; `maxReadKey` clip;
-    backward `end.offset > 1` getKey).
-12. Issue-time isolation: for `StartGetRange` and `StartGetKey`, every later mutation kind
-    (`set`, `clear`, `clearRange`, `atomic`, versionstamp, `setBypassUnreadable`) between
-    issue and completion leaves the request sequence, rows, `more` and conflicts equal to
-    the run without it; a second read issued before the first's reply sends its own
-    request (first requests are computed at issue).
-13. Reset during a walk: the late reply is not cached; the read fails with the
-    incarnation's cause.
+    backward `end.offset > 1` getKey), snapshot and not.
+13. Issue-time isolation: for `StartGetRange` and `StartGetKey`, every later mutation kind
+    (`set`, `clear`, `clearRange`, `atomic`, versionstamp, `setBypassUnreadable`,
+    `AddWriteConflictRange`) between issue and completion leaves the request sequence, rows,
+    `more` and conflicts equal to the run without it; for `AddWriteConflictRange`, 60 later
+    conflict ranges inside the second request's stretch do not split it (T6 shape). A second
+    read issued before the first's reply sends its own request (first requests are computed
+    at issue).
+14. Read version (through the client and the simulated transport): a fresh transaction whose
+    first read is answered locally (`Set(k)` then `GetKey(FGE(k))`; a range fully covered by
+    pending writes and clears) sends no `GetReadVersionRequest`; the first read that needs
+    storage sends exactly one, and every request of that call carries its version; with
+    `SetReadVersion(v)` below `minAcceptableReadVersion`, a read that needs storage fails with
+    `transaction_too_old` (1007) and sends no `GetKeyValuesRequest`, and a locally answered
+    read with the same version succeeds and sends nothing.
 
 Each new branch has a mutation proof recorded in its PR: the mutation (for example,
 dropping the `min(…, clearLimit)` clamp, keeping `read_end = end` when `end.offset < 1`,
 not moving the persistent begin, adding `hasSatisfiedMinRows()` to U1', incrementing
-`requestCount` after the await), evidence it compiled, and the case that failed.
+`requestCount` after the await, re-resolving after L3, ignoring conflict-only nodes,
+coalescing adjacent clears), evidence it compiled, and the case that failed.
 
-### S2. Native getRange
+### S2. Native getRange and the phase 1 gate
 
-`nativeGetRange` cases against the existing multishard harness and the frame-level
-simulated transport (`simtransport_test.go`): per-shard selector rewriting forward and
-reverse, `readThrough` on a modified final shard, the empty-reply fallback with both
-flags, `wrong_shard_server` fallback, FGT continuation on the wire (`OrEqual=true`), the
-`bytes == 0` minRows continuation, and mapped requests byte-identical to phase 0.
+**Request-transcript gate (phase 1).** The phase-1 PR's first commit adds
+`request_transcript_test.go` and a test-only copy of the pre-change `sendRangeRPC`,
+`buildGetKeyValuesRequest` and `rangeScanImpl`. The test runs each case twice on the same
+container and shard layout, once through the copy and once through the changed code, with
+`transport.CaptureWireLog` (`transport/wirelog.go:59`), and requires identical request
+bytes. Cases: plain range reads forward and reverse, row limits 1/5/unlimited, byte targets
+unlimited/256/4096/80000, on `multiShardEnv` (`multishard_test.go`, both shard-size regimes)
+and on one shard; `wrong_shard_server` and reply-timeout injection through the simulated
+transport (`simtransport_test.go`), which drives the exact-range relocation; selector
+getKey across shards; mapped ranges through `getMappedRangeSelectors`, the positive-skip
+`getMappedRangeSelectorExact` fallback after an injected `wrong_shard_server`, and the
+`rangeScanImpl` mapped path; RYW-disabled ranges. The copy stays until phase 4 changes the
+RYW-disabled route. The existing suites run too: the wire-golden test, `mappedrange_e2e_test`,
+`mapped_skip_regression_test`, `libfdbc/mappedrange_multishard_differential_test`,
+`range_shard_pair_differential_test`, `range_division_differential_test`,
+`resolve_fallback_test`, `multishard_test`.
+
+**`nativeGetRange` (phase 2).** Against `multiShardEnv` and the simulated transport:
+per-shard selector rewriting forward and reverse; `readThrough` on a modified final shard;
+FGT continuation on the wire (`OrEqual=true`); the `bytes == 0` minRows continuation; one
+read version per call; the empty-reply fallback with both flags. Fallback scheduling, with
+replies held by the simulated transport: two non-trivial selectors with cached locations
+send `GetKeyRequest(begin)` then `GetKeyRequest(end)` before either reply is released; an
+uncached begin location sends its location request and then end's first request before
+begin's location reply is released; FGE or FGT bounds send no `GetKeyRequest` (one
+non-trivial bound sends exactly one); then the exact-range requests.
 
 ### S3. Wire goldens and differentials
 
 - Red before, green after: phase 2 turns the six `getkey_*` sections of `go.golden` into
   `libfdbc.golden`'s; phase 3 does `set_then_range`; `go-divergences.diff` is empty after
   phase 3. `libfdbc.golden` is never regenerated to remove a diff.
-- New scenarios (phase 2 and 3 for FGE, phase 4 for selectors), each the twin of an S1
-  case: `getkey_across_clears` (T1-shaped), `range_across_single_clears` (T1),
-  `range_clear_range_barrier` (T2), `range_reverse_across_clears` (T4),
-  `range_partial_cache_exact`, `range_unreadable_stop` (T3, rows 2),
-  `range_unlimited_large` (>80000 bytes in one call, FGT continuation),
-  `range_modes_with_writes` (ITERATOR iterations 1-3, WANT_ALL, EXACT, SMALL, SERIAL, reverse),
-  `snapshot_ryw_disabled_getkey`, `ryw_disabled_range_selectors`, and for phase 4
-  `range_selector_offsets`, `range_crossed_selectors`, `range_end_last_less_than` (T5).
-  Their `libfdbc.golden` sections come from a lab `-update` run
-  (`tools/clientbench/scripts/wiregolden.sh`), which the owner runs; existing sections must
-  stay byte-identical in that run.
+- New scenarios, each the twin of an S1 case. Phase 2: `getkey_across_clears` (T1-shaped),
+  `getkey_across_write_conflict_ranges` (T6), `snapshot_ryw_disabled_getkey`. Phase 3:
+  `range_across_single_clears` (T1), `range_clear_range_barrier` (T2),
+  `range_reverse_across_clears` (T4), `range_across_write_conflict_ranges` (T6),
+  `range_enclosed_write_conflict_ranges` (T6b), `range_adjacent_clears` and `range_adjacent_clears_reversed` (T7),
+  `range_adjacent_clears_no_conflict` (T7 with `NEXT_WRITE_NO_WRITE_CONFLICT_RANGE`),
+  `range_partial_cache_exact`, `range_unreadable_stop` (T3, rows 2), `range_unlimited_large`
+  (>80000 bytes in one call, FGT continuation), `range_modes_with_writes` (ITERATOR
+  iterations 1-3, WANT_ALL, EXACT, SMALL, SERIAL, reverse). Phase 4:
+  `ryw_disabled_range_selectors` (snapshot and not), `range_selector_offsets`,
+  `range_crossed_selectors`, `range_end_last_less_than` (T5). Their `libfdbc.golden` sections
+  come from a lab `-update` run (`tools/clientbench/scripts/wiregolden.sh`), which the owner
+  runs; existing sections must stay byte-identical in that run.
 - Result differentials (`pkg/fdbgo/bench`, libfdb_c in process): for every new scenario,
   rows, `more` and the commit's read-conflict ranges equal libfdb_c's, forward and reverse,
-  snapshot and not.
-- Retained after the diff is empty: all S1 traces, S2, the new golden sections, and the
+  snapshot and not. Phase 4 adds RYW disabled with `Snapshot()` ranges, forward and backward
+  with `end.offset > 1`: the commit carries no read conflict from them, while the
+  non-snapshot run carries the range conflict and the pre-read's getKey conflict.
+- Retained after the diff is empty: all S1 traces, S2, S4, the new golden sections, and the
   existing `ryw_issue_view_*`, RYW adversarial, fuzz and differential suites.
 
-Validation per phase: `just test` (fast lane, including the wire-golden test and S1/S2);
-`just test-full` at the phase boundary for the conformance and differential targets.
+### S4. Pin lifecycle and version immutability (run with `-race`)
+
+A test seam counts pin and unpin per version; a deep, deterministic dump (map entries with
+atomic stacks and their bytes, slices, flags, and the nodes after a lazy build, so the
+representation of pending node ops does not affect it) fingerprints a version.
+
+1. Two reads issued back to back with no write between share `c.w` (`pins == 2`); a `Set`
+   then clones once; both reads finish with their issue results; pins return to 0.
+2. A pinned version holding an atomic stack; a writer folds a same-type atomic
+   (`coalesceOverAtomics` rewriting the top); the pinned fingerprint is unchanged.
+3. Phase 2 bridge: the old range loop resolves atomics in `mergeBatchLocked` on its span
+   while a getKey walk pins the live version: the pinned fingerprint is unchanged, the live
+   version is unchanged, and passing `c.w` or a pinned version to `mergeBatchLocked` fails.
+4. Reset while a walk awaits storage, then the reply arrives: nothing is inserted into the
+   new cache, the read fails with the incarnation's cause, the old version's pin is released
+   once.
+5. Context cancellation while a nested getKey awaits storage (S1 case 7 shape): the read
+   fails, the parent's pin is released once, the sub walk never pinned.
+6. Stress: goroutines issue `StartGetRange`/`StartGetKey`, call or skip `Get`, cancel
+   futures, and write concurrently; after quiescence every observed version has
+   `pins == 0`, each pin was released exactly once, and each version's fingerprint at
+   release equals its fingerprint at pin.
+7. Panics: an `afterRangeReply` hook that panics; the read fails through the backstop and
+   the pin is released once.
+8. Every mutator clones a pinned version (D1's enumeration test).
+
+Validation per phase: `just test` (fast lane, including the wire-golden test, S1, S2's
+hermetic parts and S4); `just test-full` at the phase boundary for the multishard,
+conformance and differential targets.
 
 ## Compatibility impact
 
 Requests under RYW become libfdb_c's: getKey reads ask for 1-3 rows instead of 256, RYW
 range reads ask for the caller's rows plus counted clears instead of 10000 or
-`2 * remaining`, reads cross pending writes, forward multi-request reads continue with
-`firstGreaterThan(last)`, and the first request of a byte-limited call uses the caller's
-target. Results and conflicts do not change for byte-key reads (S3 differentials check
-it). Phase 4 changes selector-range results' conflicts to C++'s single range conflict
-instead of two getKey conflicts plus a range conflict, which matches libfdb_c.
+`2 * remaining`, reads cross pending writes, request ends respect the write map's structural
+boundaries, forward multi-request reads continue with `firstGreaterThan(last)`, and the first
+request of a byte-limited call uses the caller's target. Results and conflicts do not change
+for byte-key reads (S3 differentials check it). Mapped reads do not change (D4). Phase 4
+changes selector-range conflicts to C++'s single range conflict instead of two getKey
+conflicts plus a range conflict, which matches libfdb_c.
 
 ## Open items
 
 - **Write-map clone cost.** D1 trades per-read span copies for per-write clones under
-  concurrent reads. Phase 1 measures it; a persistent map is the remedy if needed.
+  concurrent reads; phase 2 measures it. A persistent map is the remedy if needed.
+- **Mapped forward continuation** is `FGE(keyAfter(last))`, not `firstGreaterThan(last)`
+  (D4); recorded in TODO.md, outside this RFC.
 - **Multi-shard requests** change from `getExactRange`-shaped to `getRange`-shaped. The lab
   cluster's scenario prefix is one shard, so no golden covers this; S2 and the multishard
   differentials do.
+- **Fallback order with uncached locations.** Go's `parked` signal reproduces flow's
+  run-to-first-wait order; when both locations are uncached, which location request reaches
+  the wire first is decided by the transport in both clients. S2 asserts population and
+  overlap there, not a total order.
 - **Forward/backward U1 asymmetry** is unobservable through the C API (A7); only S1 pins it.
-- **Segment partition.** The port assumes the Go cursor's partition equals `RYWIterator`'s,
-  including adjacent cache entries splitting an empty run (SnapshotCache.h:231-254). RFC-057's
-  property test checks the cursor against Go's materializer, not against C++; the S1 traces
-  and S3 twins are the check against libfdb_c.
+- **Segment partition.** The cache side is checked against Go's materializer (RFC-057), the
+  write side by D1b's port; libfdb_c exposes neither, so the S1 traces and their S3 twins
+  (T6, T7 included) are the check against libfdb_c.
 - **BUGGIFY** (`skipUncached` budget 0) is simulation-only and not ported.
 
 ## Review resolution index
 
+Revision 3 (review of 8ba8c70c5):
+
+| Review point | Resolved in |
+|---|---|
+| Torvalds 1: phase 1 shares pinned versions while `mergeBatchLocked` still mutates; swaps install historical versions | D1 (no swaps, explicit version parameters; `mergeBatchLocked` only on private spans with an assertion), Phases 1-2, S4.3 |
+| Torvalds 2: pin ownership for abandoned futures, cancellation, panic, repeated Get, nested walks, commit barrier | D11, S4.1-S4.8 |
+| Torvalds 3: fallback getKeys must both be in flight | A10, D4 step 4, S2 fallback scheduling |
+| Torvalds: phase 1 "no wire change" proven beyond the goldens | Phases 1, S2 request-transcript gate |
+| C++ 1: conflict-only and other structural WriteMap boundaries | A1 write-map structure (all five mutators audited), D1b, D2, T6, T6b, T7, S1 cases 4-5 and 13, S3 twins |
+| C++ 2: `resolveKey` (FGE, FGT immediate; getKey otherwise; both started) | A10, D4 step 4, S2 |
+| C++ 3: mapped FGT continuation vs FGE-only sender | D4 (mapped left on its implementation; divergence recorded), Open items |
+| C++ 4: RYW-disabled must keep the caller's snapshot flag | A10, D3 `conflict`, D4 step 5, D10, S1 case 12, S3 phase 4 differential |
+| C++ 5: `startTransaction` and `validateVersion` before lookup; owner and captured version; no GRV for local answers | A10, D4 step 2, Phases 1, S1 case 14 |
+| C++ 6: resume by suspension point; L3 breaks to the epilogue | A6 (after P3), D5 resumption table, S1 case 7 |
+
+Revision 2 (review of b73752b7b):
+
 | Review point | Resolved in |
 |---|---|
 | C++ 1: traversal vs counting; crossing KVs; non-clear empties; backward | A4, A7 (U2'), S1 cases 2-4 |
-| C++ 2: selector transformations; `end.offset < 1` → FGE; `offset > 1` + counted clears; additionalRows; crossed-key clamp; persistent begin | A6 U3-U6, A7 U3'-U6', D5, S1 case 6 |
-| C++ 3: `bytes == 0` vs -1; minRows; saturation; shift on remaining limit; requestCount uncapped | A1, A5, A10, D3, S1 T5 and cases 7-8 |
-| C++ 4: backward getKey `offset++`; reverse boundaries; `setRequestLimits(…, read_end.offset, …)` | A7 U7', A9, A11, S1 case 5 |
+| C++ 2: selector transformations; `end.offset < 1` → FGE; `offset > 1` + counted clears; additionalRows; crossed-key clamp; persistent begin | A6 U3-U6, A7 U3'-U6', D5, S1 case 7 |
+| C++ 3: `bytes == 0` vs -1; minRows; saturation; shift on remaining limit; requestCount uncapped | A1, A5, A10, D3, S1 T5 and cases 8-9 |
+| C++ 4: backward getKey `offset++`; reverse boundaries; `setRequestLimits(…, read_end.offset, …)` | A7 U7', A9, A11, S1 case 6 |
 | C++ 5: internal reads are snapshot; conflicts in the wrapper; requestCount/additionalRows before the await | A2.3, A6 U7-U8, D5 |
 | Design contract: full selectors and limits; native conversion separate; byte-key callbacks replaced | D3, D4, D5 |
-| Routing: snapshot RYW on/off, RYW disabled, partially cached reads without writes | A2, D6, D7, D10, S1 cases 9 and 11 |
+| Routing: snapshot RYW on/off, RYW disabled, partially cached reads without writes | A2, D6, D7, D10, S1 cases 10 and 12 |
 | Streaming iteration vs requestCount; C binding limits | A2, D10, S3 `range_modes_with_writes` |
-| Result assembly and cache contracts; readThrough/readToBegin/readThroughEnd; reverse inserts ascending; re-resolution | A6-A8, D5, D7 contract, S1 case 9 |
+| Result assembly and cache contracts; readThrough/readToBegin/readThroughEnd; reverse inserts ascending; re-resolution | A6-A8, D5, D7 contract, S1 case 10 |
 | Torvalds 1: return type loses minRows; selector-capable dispatch | D3, D4 |
 | Torvalds 2: omitted branches; three distinct limits | A4, A5 |
 | Torvalds 3: write view, unreadable, cache coverage, re-resolution, remaining limits, more; which stop conditions disappear | D1, D5, D7 |
