@@ -302,22 +302,58 @@ func (tx *Transaction) opContext(parent context.Context) (context.Context, conte
 // counted reports whether it did (a borrowed or refused lease counts nothing).
 func (tx *Transaction) opContextFor(parent context.Context, issued bool) (context.Context, context.CancelFunc, bool) {
 	ctx, release, owned := tx.opContextWithLease(parent, issued)
-	return ctx, release, owned != nil && issued
+	return ctx, release.cancelFunc(), owned != nil && issued
+}
+
+// opRelease ends an admitted operation: fn, when set, ends its derived context
+// and lease together; otherwise lease alone (nil when borrowed) is released.
+// A value, so an operation without a derived context allocates no closure.
+type opRelease struct {
+	fn    context.CancelFunc
+	lease *executionLease
+}
+
+func (r opRelease) release() {
+	if r.fn != nil {
+		r.fn()
+		return
+	}
+	r.lease.release()
+}
+
+func (r opRelease) cancelFunc() context.CancelFunc {
+	switch {
+	case r.fn != nil:
+		return r.fn
+	case r.lease != nil:
+		return r.lease.release
+	default:
+		return func() {}
+	}
+}
+
+// afterLease is the cleanup left for a holder that outlives the already
+// released lease: only a derived context remains to end.
+func (r opRelease) afterLease() context.CancelFunc {
+	if r.fn != nil {
+		return r.fn
+	}
+	return func() {}
 }
 
 // opContextWithLease returns release authority only to the admitting frame.
 // Borrowers retain identity and effective cancellation, but own no token.
-func (tx *Transaction) opContextWithLease(parent context.Context, issued bool) (context.Context, context.CancelFunc, *executionLease) {
+func (tx *Transaction) opContextWithLease(parent context.Context, issued bool) (context.Context, opRelease, *executionLease) {
 	if op := tx.readOperation(parent); op != nil {
 		if op.lease.isActive() {
-			return parent, func() {}, nil
+			return parent, opRelease{}, nil
 		}
 		nested := &readOperation{Context: parent, readAdmission: op.readAdmission}
 		nested.lease = tx.enterReadStateInto(parent, op.inc, false, issued, &nested.leaseStorage)
 		if nested.lease == nil {
-			return parent, func() {}, nil
+			return parent, opRelease{}, nil
 		}
-		return nested, nested.lease.release, nested.lease
+		return nested, opRelease{lease: nested.lease}, nested.lease
 	}
 	tx.readErrMu.Lock()
 	inc := tx.readIncarnationLocked()
@@ -335,7 +371,7 @@ func (tx *Transaction) opContextWithLease(parent context.Context, issued bool) (
 		if op.lease != nil {
 			op.entryErr = tx.deferredErr.Load()
 		}
-		return op, op.lease.release, op.lease
+		return op, opRelease{lease: op.lease}, op.lease
 	}
 	ctx, cancel := context.WithCancelCause(parent)
 	stop := context.AfterFunc(inc.ctx, func() { cancel(context.Cause(inc.ctx)) })
@@ -354,11 +390,11 @@ func (tx *Transaction) opContextWithLease(parent context.Context, issued bool) (
 		op.entryErr = tx.deferredErr.Load()
 	}
 	owned := op.lease
-	return op, func() {
+	return op, opRelease{fn: func() {
 		stop()
 		cancel(nil)
 		owned.release()
-	}, owned
+	}}, owned
 }
 
 func (tx *Transaction) readOperation(ctx context.Context) *readOperation {

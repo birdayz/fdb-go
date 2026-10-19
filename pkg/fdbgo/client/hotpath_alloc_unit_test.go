@@ -31,3 +31,56 @@ func TestNativeCommitCallBackstopAllocations(t *testing.T) {
 		t.Fatalf("recovered panics = %d, want 1", got)
 	}
 }
+
+// Not parallel: AllocsPerRun counts process-wide allocations. An operation
+// under an uncancellable parent allocates only its readOperation: its release
+// is the lease itself, not a bound-method closure.
+func TestJoinedOperationLeaseAllocations(t *testing.T) {
+	tx := &Transaction{}
+	defer tx.Cancel()
+	allocs := testing.AllocsPerRun(100, func() {
+		ctx, release, owned := tx.opContextWithLease(context.Background(), false)
+		if owned == nil || ctx.Done() == nil {
+			t.Fatal("joined operation was not admitted")
+		}
+		release.release()
+	})
+	if allocs != 1 {
+		t.Fatalf("ALLOC_JOINED_OPERATION: %v allocations per operation, want 1", allocs)
+	}
+}
+
+// Every admission path's release returns the lease it admitted, exactly once.
+func TestOperationReleaseEndsEveryLease(t *testing.T) {
+	cancellable, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tx := &Transaction{}
+	defer tx.Cancel()
+	users := func() int {
+		tx.readErrMu.Lock()
+		defer tx.readErrMu.Unlock()
+		return tx.readIncarnationLocked().users
+	}
+	outer, outerRelease, outerOwned := tx.opContextWithLease(context.Background(), false)
+	borrowed, borrowedRelease, borrowedOwned := tx.opContextWithLease(outer, false)
+	if borrowed != outer || borrowedOwned != nil || borrowedRelease.fn != nil || borrowedRelease.lease != nil {
+		t.Fatal("a borrower received release authority")
+	}
+	borrowedRelease.release()
+	if !outerOwned.isActive() || users() != 1 {
+		t.Fatal("a borrower's release ended its owner's lease")
+	}
+	outerOwned.release()
+	_, nestedRelease, nestedOwned := tx.opContextWithLease(outer, false)
+	_, derivedRelease, derivedOwned := tx.opContextWithLease(cancellable, false)
+	if nestedOwned == nil || derivedOwned == nil || users() != 2 {
+		t.Fatalf("nested/derived admission: users=%d", users())
+	}
+	for _, r := range []opRelease{nestedRelease, derivedRelease, outerRelease} {
+		r.release()
+		r.release()
+	}
+	if nestedOwned.isActive() || derivedOwned.isActive() || users() != 0 {
+		t.Fatalf("released operations kept leases: users=%d", users())
+	}
+}

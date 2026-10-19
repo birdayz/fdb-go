@@ -146,7 +146,7 @@ func (tx *Transaction) GetVersionstampPending(parent context.Context) ([]byte, *
 	ctx, cleanup, owned := tx.opContextWithLease(parent, false)
 	op := tx.readOperation(ctx)
 	if err := tx.readEntryError(ctx); err != nil {
-		cleanup()
+		cleanup.release()
 		return nil, nil, err
 	}
 	tx.readErrMu.Lock()
@@ -173,7 +173,7 @@ func (tx *Transaction) GetVersionstampPending(parent context.Context) ([]byte, *
 	}
 	tx.readErrMu.Unlock()
 	owned.release()
-	pending := &PendingVersionstamp{ctx: ctx, cleanup: cleanup, completion: completion, done: done}
+	pending := &PendingVersionstamp{ctx: ctx, cleanup: cleanup.afterLease(), completion: completion, done: done}
 	if ready {
 		value, err := pending.Resolve()
 		return value, nil, err
@@ -198,7 +198,7 @@ func (p *PendingCommit) Resolve() error {
 		defer p.cleanup()
 		if p.err == nil {
 			ctx, release, owned := p.tx.opContextWithLease(p.ctx, false)
-			defer release()
+			defer release.release()
 			p.err = p.tx.commitAdmitted(ctx, p.completion, owned)
 		}
 	})
@@ -211,7 +211,7 @@ func (tx *Transaction) PrepareCommit(parent context.Context) *PendingCommit {
 	ctx, cleanup, owned := tx.opContextWithLease(parent, false)
 	completion, err := tx.admitCommit(ctx)
 	owned.release()
-	return &PendingCommit{tx: tx, ctx: ctx, cleanup: cleanup, completion: completion, err: err}
+	return &PendingCommit{tx: tx, ctx: ctx, cleanup: cleanup.afterLease(), completion: completion, err: err}
 }
 
 func (tx *Transaction) admitCommit(ctx context.Context) (*versionstampCompletion, error) {
