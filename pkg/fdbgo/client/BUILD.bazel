@@ -189,6 +189,18 @@ go_test(
     deps = ["//pkg/fdbgo/wire"],
 )
 
+# gazelle:exclude commit_wire_unit_test.go
+go_test(
+    name = "commit_wire_unit_test",
+    srcs = ["commit_wire_unit_test.go"],
+    embed = [":client"],
+    deps = [
+        "//pkg/fdbgo/transport",
+        "//pkg/fdbgo/wire",
+        "//pkg/fdbgo/wire/types",
+    ],
+)
+
 # gazelle:exclude reply_error_alloc_unit_test.go
 go_test(
     name = "reply_error_alloc_unit_test",

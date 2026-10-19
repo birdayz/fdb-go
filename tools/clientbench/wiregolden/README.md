@@ -1,20 +1,35 @@
 # Wire goldens
 
 `libfdbc.golden` is the normalized request transcript of the
-[`wgscen`](../cmd/wgscen/main.go) scenarios on libfdb_c 7.3.77.
-`go-divergences.diff` is how the Go client's transcript differs from it today.
-[`scripts/wiregolden.sh`](../scripts/wiregolden.sh) captures both clients, renders
-both transcripts ([`cmd/wiregolden`](../cmd/wiregolden), normalization in
-[`internal/wiregolden`](../internal/wiregolden/wiregolden.go)) and fails if
-libfdb_c no longer matches the golden or the Go divergences changed.
+[wire-golden scenarios](../internal/wgscenarios/scenarios.go) on libfdb_c 7.3.77.
+`go.golden` is the Go client's transcript, and `go-divergences.diff` is
+`diff -u libfdbc.golden go.golden`: how Go differs from libfdb_c today.
+
+- **Fast lane** ([`golden_test.go`](golden_test.go), `just test`): runs the
+  scenarios on the Go client against a test container, records its requests
+  in process from the transport's send path (`transport.CaptureWireLog`), and
+  fails unless they equal `go.golden` and `go-divergences.diff` is the diff of
+  the two goldens. A client change that alters the Go requests fails here. It
+  is a bounded integration test, not a hermetic one: like the other
+  testcontainers tests it needs Docker, and it uses the host's `diff`. The
+  goldens come from the lab cluster; the location lookups fall in setup on
+  both clusters, so a different shard layout would show as an extra request
+  in a scenario, failing the test rather than passing it silently.
+- **Lab** ([`scripts/wiregolden.sh`](../scripts/wiregolden.sh)): captures both
+  clients with tcpdump, renders both transcripts
+  ([`cmd/wiregolden`](../cmd/wiregolden), normalization in
+  [`internal/wiregolden`](../internal/wiregolden/wiregolden.go)), and fails if
+  libfdb_c no longer matches its golden or Go no longer matches `go.golden`.
+  It is the only way to regenerate the goldens.
 
 ```
 tools/clientbench/scripts/wiregolden.sh OUTDIR CLUSTER_FILE PORTS          # check
 tools/clientbench/scripts/wiregolden.sh -update OUTDIR CLUSTER_FILE PORTS  # rewrite
 ```
 
-`-update` runs libfdb_c twice and rewrites the golden only if both transcripts
-are identical.
+`-update` runs libfdb_c twice and rewrites the goldens only if both libfdb_c
+transcripts are identical. After a Go change that is meant to alter its
+requests, rerun `-update` and commit the three files with the change.
 
 This is a lab regression check for the covered scenarios, not a proof that
 the clients send identical requests in general. Run it against an idle
@@ -68,15 +83,15 @@ its own normalization first.
 | Scenario | libfdb_c | Go |
 |---|---|---|
 | `getkey_offset` | the storage range read has limit 2 | limit 256 |
-| `clear_range_then_set` | the clear is split around the set: `[m, m1)`, `[m1\x00, n)` | one clear `[m, n)` |
-| `clear_key` | a single-key clear is sent as `(k\x00, '')` | `(k, k\x00)` |
 
-Each is a TODO.md item; fixing one changes `go-divergences.diff`, which is then
-regenerated with `-update`.
+It is a TODO.md item. Fixed: `clear_range_then_set` (a clear split around the
+operations inside it) and `clear_key` (the compact single-key clear encoding).
+Fixing a divergence changes the goldens, which are then regenerated with
+`-update`.
 
 ## Adding a scenario
 
-Append to `scenarios` in `cmd/wgscen/main.go` (one transaction, no
+Append to `scenarios` in `internal/wgscenarios/scenarios.go` (one transaction, no
 concurrency, keys under the prefix, no time or randomness in keys or values),
 then run with `-update` and review both the new golden section and the Go
 diff.
