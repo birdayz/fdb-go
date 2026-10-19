@@ -2,7 +2,10 @@ package client
 
 import (
 	"context"
+	"errors"
 	"testing"
+
+	"fdb.dev/pkg/fdbgo/wire"
 )
 
 // Not parallel: AllocsPerRun counts process-wide allocations.
@@ -106,32 +109,6 @@ func TestCreateTransactionInlineSpan(t *testing.T) {
 	}
 }
 
-// Not parallel: AllocsPerRun counts process-wide allocations. Turnover records
-// the shared immutable transaction_cancelled rather than a fresh one.
-func TestTurnoverSharedCause(t *testing.T) {
-	tx := &Transaction{}
-	defer tx.Cancel()
-	tx.readErrMu.Lock()
-	inc := tx.readIncarnationLocked()
-	tx.readErrMu.Unlock()
-	tx.startTurnover().finish()
-	if inc.cause != error(turnoverCause) || turnoverCause.Code != ErrTransactionCancelled {
-		t.Errorf("ALLOC_TURNOVER_CAUSE: turnover recorded %v, want the shared 1025", inc.cause)
-	}
-	if got := context.Cause(inc.ctx); got != error(turnoverCause) {
-		t.Errorf("retired incarnation cause = %v, want the shared 1025", got)
-	}
-	allocs := testing.AllocsPerRun(100, func() {
-		tx.readErrMu.Lock()
-		tx.readIncarnationLocked()
-		tx.readErrMu.Unlock()
-		tx.startTurnover().finish()
-	})
-	if allocs > 3 {
-		t.Fatalf("ALLOC_TURNOVER_CAUSE: incarnation+turnover = %v allocations, want <= 3", allocs)
-	}
-}
-
 // Not parallel: AllocsPerRun counts process-wide allocations. A batch's
 // storage is reused by the next batch once flushed, holding no waiter.
 func TestGRVBatchStorageReuse(t *testing.T) {
@@ -179,5 +156,25 @@ func TestPendingRangeGetReturnsOwnedRows(t *testing.T) {
 	}
 	if &first[0] == &p.kvs[0] || &second[0] == &p.kvs[0] || &first[0] == &second[0] {
 		t.Fatal("PendingRange.Get returned rows another holder shares")
+	}
+}
+
+// A turnover's transaction_cancelled is the caller's to keep: mutating the
+// error one transaction returned must not change what a later turnover reports.
+func TestTurnoverCauseIsNotShared(t *testing.T) {
+	for i := range 2 {
+		tx := &Transaction{}
+		value, pending, err := tx.GetVersionstampPending(context.Background())
+		if value != nil || pending == nil || err != nil {
+			t.Fatalf("versionstamp before commit = (%v, %v, %v), want a pending handle", value, pending, err)
+		}
+		tx.Reset()
+		_, err = pending.Resolve()
+		var fdbErr *wire.FDBError
+		if !errors.As(err, &fdbErr) || fdbErr.Code != ErrTransactionCancelled {
+			t.Fatalf("transaction %d: versionstamp after Reset = %v, want transaction_cancelled (1025)", i, err)
+		}
+		fdbErr.Code = 4100 // a caller may keep and change the error it received
+		tx.Cancel()
 	}
 }

@@ -213,6 +213,7 @@ go_test(
     name = "hotpath_alloc_unit_test",
     srcs = ["hotpath_alloc_unit_test.go"],
     embed = [":client"],
+    deps = ["//pkg/fdbgo/wire"],
 )
 
 # gazelle:exclude reply_error_alloc_unit_test.go
