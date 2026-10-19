@@ -230,31 +230,48 @@ func TestFDB_RecordLoadConflicts(t *testing.T) {
 							t.Cleanup(rc.Cancel)
 							return rc
 						}
-						seed := newContext()
-						seedStore, err := storeBuilder(seed).Create()
-						if err != nil {
-							t.Fatal(err)
-						}
-						if seedStore.omitUnsplitRecordSuffix() != layout.legacy || seedStore.metaData.IsStoreRecordVersions() {
-							t.Fatal("store layout or disabled record versions do not match the fixture")
-						}
-						if exists {
-							got, err := seedStore.SaveRecord(original)
-							if err != nil {
-								t.Fatal(err)
-							}
-							assertRecord(t, got, original)
-						}
 						actualKey := root.Sub(RecordKey).Pack(tuple.Tuple{int64(1), int64(0)})
 						if layout.legacy {
 							actualKey = root.Sub(RecordKey).Pack(primaryKey)
 						}
-						value, err := seed.Transaction().Get(actualKey).Get()
-						if err != nil || (value != nil) != exists {
-							t.Fatalf("seed physical record exists = %t, want %t (err=%v)", value != nil, exists, err)
-						}
-						if err := seed.Commit(); err != nil {
+						// The seed retries retryable errors such as commit_unknown_result. Each
+						// attempt clears the subtest's keyspace and creates the store, so an
+						// attempt that did commit cannot leave state behind; checks run after commit.
+						var (
+							layoutOK bool
+							saved    *FDBStoredRecord[proto.Message]
+							present  bool
+						)
+						if _, err := db.Run(ctx, func(seed *FDBRecordContext) (any, error) {
+							seed.Transaction().ClearRange(root)
+							seedStore, err := storeBuilder(seed).Create()
+							if err != nil {
+								return nil, err
+							}
+							layoutOK = seedStore.omitUnsplitRecordSuffix() == layout.legacy && !seedStore.metaData.IsStoreRecordVersions()
+							saved = nil
+							if exists {
+								if saved, err = seedStore.SaveRecord(original); err != nil {
+									return nil, err
+								}
+							}
+							value, err := seed.Transaction().Get(actualKey).Get()
+							if err != nil {
+								return nil, err
+							}
+							present = value != nil
+							return nil, nil
+						}); err != nil {
 							t.Fatal(err)
+						}
+						if !layoutOK {
+							t.Fatal("store layout or disabled record versions do not match the fixture")
+						}
+						if exists {
+							assertRecord(t, saved, original)
+						}
+						if present != exists {
+							t.Fatalf("seed physical record exists = %t, want %t", present, exists)
 						}
 
 						reader := newContext()
@@ -283,13 +300,15 @@ func TestFDB_RecordLoadConflicts(t *testing.T) {
 						if api.conflict != nil {
 							wantConflict = api.conflict(exists, change)
 						}
-						writer := newContext()
-						writer.Transaction().Set(changedKey, []byte("concurrent raw write"))
-						if err := writer.Commit(); err != nil {
+						// A blind, idempotent write: it retries like the seed.
+						if _, err := db.Run(ctx, func(writer *FDBRecordContext) (any, error) {
+							writer.Transaction().Set(changedKey, []byte("concurrent raw write"))
+							return nil, nil
+						}); err != nil {
 							t.Fatalf("concurrent writer commit: %v", err)
 						}
 						// Force even load-only and dry-run transactions to commit their
-						// conflict ranges. Neither transaction is retried.
+						// conflict ranges. The reader transaction is not retried.
 						reader.Transaction().Set(root.Sub("commit-sentinel").Pack(nil), []byte("read completed"))
 						err = reader.Commit()
 						if wantConflict {
