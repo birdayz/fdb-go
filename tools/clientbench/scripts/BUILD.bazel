@@ -24,6 +24,8 @@ sh_test(
         "test_gcalign.py",
         "test_matrix_plan.py",
         "test_wirediff.py",
+        "test_wiregolden.py",
         "wirediff.py",
+        "wiregolden.sh",
     ],
 )

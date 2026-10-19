@@ -44,6 +44,7 @@ go_library(
     cgo = True,
     cdeps = [":fdb_c"],
     importpath = "fdb.dev/pkg/fdbgo/libfdbc",
+    visibility = ["//tools/clientbench/cmd/wgscen:__pkg__"],
     target_compatible_with = [
         "@platforms//cpu:x86_64",
         "@platforms//os:linux",

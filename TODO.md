@@ -208,6 +208,20 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
     (`clientbench -rate`), locally and on a multi-node rerun,
     with 1-worker mean latency no worse than libfdb_c's (owner decision, 2026-10-17;
     previously within 5% of the Go client's own).
+- [ ] **Wire divergences found by the wire goldens.** The Go client's requests differ from
+  libfdb_c's in three [wire-golden](tools/clientbench/wiregolden/README.md) scenarios
+  (`go-divergences.diff`); fixing one regenerates that file.
+  - [ ] `getkey_offset`: a key selector with offset 2 is resolved by a storage range read
+    of limit 2 in libfdb_c and of limit 256 in Go. C++ resolves it through
+    `getRangeValue` with `GetRangeLimits(1)` (`ReadYourWrites.actor.cpp:140-160`); the
+    offset beyond the first row becomes `additionalRows` (`:731-749`), which
+    `setRequestLimits` adds to the one-row limit (`:569-575`).
+  - [ ] `clear_range_then_set`: libfdb_c sends a clear split around a later set in it,
+    as `writeRangeToNativeTransaction` emits one clear per cleared stretch of the write map
+    (`ReadYourWrites.actor.cpp:2001-2018`); Go sends the whole clear. The stored data is the
+    same, but the mutation stream (and so mutation logs) differs.
+  - [ ] `clear_key`: libfdb_c serializes a single-key clear `[k, k\x00)` as `(k\x00, '')`
+    (`MutationRef::serialize`, `CommitTransaction.h:318-334`); Go sends `(k, k\x00)`.
 - [ ] **Transaction options during in-flight operations.** Option setters (`SetLockAware`,
   `SetReadLockAware`, GRV cache, tags, priority) write plain `Transaction` fields under a
   shared state lease, while in-flight operations read them: GRV completion reads lock
