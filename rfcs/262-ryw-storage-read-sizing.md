@@ -1246,7 +1246,9 @@ and shard layout, once through the copy and once through the changed code, and c
   reply token, span context and debug ID, with versions numbered in order of appearance
   and body lengths kept. This is request-field equality, not literal byte identity. The
   recorder fails closed: an undecodable frame, a request kind it does not know, a
-  malformed length and a trailing partial frame are each a gate failure. Its only
+  malformed length and a trailing partial frame are each a gate failure. A body of a known
+  kind must re-encode to the bytes sent, since the generated decoder reads an
+  out-of-bounds field as absent rather than failing. Its only
   exclusions are named: frames to the ping token and `VoidReply` bodies.
 - **Results**, in full: every row's key and value, `more`, `readThrough`, a getKey's key
   and fallback flag, and every mapped row with its secondary rows.
@@ -1255,9 +1257,11 @@ and shard layout, once through the copy and once through the changed code, and c
   case fails unless exactly one injection happened in each arm.
 
 Every case runs with the read version preset and with a fresh transaction, so each arm's
-own `GetReadVersion` is in the compared transcript. Limits are compared within the C `int`
-domain: `newRangeLimits` clamps a Go limit above `MaxInt32`, which cannot change a wire
-limit capped at `REPLY_BYTE_LIMIT`. Cases: plain range reads forward and reverse, row
+own `GetReadVersion` is in the compared transcript. Equivalence is claimed only within the
+C `int` domain. `newRangeLimits` clamps a Go limit above `MaxInt32`: the first request is
+unchanged (its wire limits are capped at `REPLY_BYTE_LIMIT`), but a scan whose total passes
+`MaxInt32` rows or bytes now stops where the old Go-int budget continued, so such totals are
+excluded. Cases: plain range reads forward and reverse, row
 limits 1/5/unlimited, byte targets unlimited/256/4096/80000, on `multiShardEnv`
 (`multishard_test.go`, both shard-size regimes) and on one shard; `wrong_shard_server` and
 reply-timeout injection through the proxy transport, which drives the exact-range
@@ -1266,8 +1270,9 @@ relocation; selector getKey across shards; mapped ranges through
 `getMappedRangeWithByteTargetAndSkip` and the `getMappedRangeSelectorExact` fallback after
 an injected `wrong_shard_server`, and the `rangeScanImpl` mapped path; RYW-disabled
 ranges. Negative controls on the single-shard cluster prove the gate fails on an extra
-`GetValue`, an extra `GetReadVersion`, an undecodable frame, an unexpected request kind, a
-malformed length and a trailing partial frame. The copy stays until phase 4 changes the
+`GetValue`, an extra `GetReadVersion`, an undecodable frame, a known kind with a malformed
+field, an unexpected request kind, a malformed length and a trailing partial frame; they
+feed a socketless parser, so no real write interleaves with them. The copy stays until phase 4 changes the
 RYW-disabled route. The existing suites run too: the wire-golden test, `mappedrange_e2e_test`,
 `mapped_skip_regression_test`, `libfdbc/mappedrange_multishard_differential_test`,
 `range_shard_pair_differential_test`, `range_division_differential_test`,

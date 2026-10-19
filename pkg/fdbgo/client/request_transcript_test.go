@@ -3,7 +3,6 @@ package client
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"fmt"
 	"sort"
 	"strings"
@@ -34,9 +33,12 @@ import (
 //
 // Each case runs with the read version preset (both arms at one version) and
 // with a fresh transaction, where the arm's own GetReadVersion request is part
-// of the compared transcript. The limits compared are within the C int domain:
-// a Go row or byte limit above MaxInt32 is clamped (newRangeLimits), which
-// changes no request since the wire limit is at most REPLY_BYTE_LIMIT.
+// of the compared transcript. Equivalence is claimed only within the C int
+// domain, where every limit the cases use lies. newRangeLimits clamps a Go row
+// or byte limit above MaxInt32; that leaves the first request unchanged (its
+// wire limits are at most REPLY_BYTE_LIMIT), but a scan whose total passes
+// MaxInt32 rows or bytes now stops where the old Go-int budget went on, so
+// larger totals are excluded.
 func TestRequestTranscriptGate(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -583,9 +585,11 @@ func firstDifference(a, b string) string {
 
 // negativeControls run pairs the gate must reject, each through compareArms:
 // an extra GetValue, an extra GetReadVersion, a frame the recorder cannot
-// decode, a frame of an unexpected kind, and a partial frame left at the end
-// of the window. The frame controls feed the recording connection's parser
-// directly, since such bytes on a real socket would end the connection.
+// decode, a known request kind with a malformed field, a frame of an
+// unexpected kind, a malformed length, and a partial frame left at the end of
+// the window. The frame controls feed a socketless parser registered for the
+// one window (sendRecorder.parser): such bytes on a real socket would end the
+// connection, and no real write can interleave with them.
 func (g *transcriptGate) negativeControls(prefix []byte) {
 	pb, pe := prefix, append(append([]byte{}, prefix...), 0xff)
 	c := transcriptCase{
@@ -594,79 +598,44 @@ func (g *transcriptGate) negativeControls(prefix []byte) {
 		},
 		minStorage: 1,
 	}
-	frame := func(token transport.UID, body []byte) []byte {
-		out := binary.LittleEndian.AppendUint32(nil, uint32(16+len(body)))
-		out = append(out, make([]byte, 8)...) // checksum, not checked by the recorder
-		out = binary.LittleEndian.AppendUint64(out, token.First)
-		out = binary.LittleEndian.AppendUint64(out, token.Second)
-		return append(out, body...)
-	}
-	var injectedConn *recordingConn
-	someConn := func(t *testing.T) *recordingConn {
-		g.rec.mu.Lock()
-		defer g.rec.mu.Unlock()
-		for _, rc := range g.rec.conns {
-			rc.mu.Lock()
-			ok := rc.connected && len(rc.buf) == 0
-			rc.mu.Unlock()
-			if ok {
-				injectedConn = rc
-				return rc
-			}
-		}
-		t.Fatal("no connected recording connection")
-		return nil
-	}
 	commit := (&types.CommitTransactionRequest{}).MarshalFDB()
 	for _, nc := range []struct {
 		name  string
-		extra func(t *testing.T) func(tx *Transaction)
+		extra func(tx *Transaction, parser *recordingConn)
 		want  string
 	}{
-		{"extra-getvalue", func(*testing.T) func(*Transaction) {
-			return func(tx *Transaction) { _, _ = tx.getValue(g.ctx, pb) }
+		{"extra-getvalue", func(tx *Transaction, _ *recordingConn) { _, _ = tx.getValue(g.ctx, pb) }, "requests differ"},
+		{"extra-read-version", func(*Transaction, *recordingConn) {
+			tx := g.db.CreateTransaction()
+			defer tx.Cancel()
+			_, _ = tx.GetReadVersion(g.ctx)
 		}, "requests differ"},
-		{"extra-read-version", func(*testing.T) func(*Transaction) {
-			return func(*Transaction) {
-				tx := g.db.CreateTransaction()
-				defer tx.Cancel()
-				_, _ = tx.GetReadVersion(g.ctx)
-			}
-		}, "requests differ"},
-		{"undecodable-frame", func(t *testing.T) func(*Transaction) {
-			rc := someConn(t)
-			return func(*Transaction) { rc.observe(frame(transport.UID{First: 7}, []byte{1, 2, 3})) }
+		{"undecodable-frame", func(_ *Transaction, rc *recordingConn) {
+			rc.observe(recorderFrame(transport.UID{First: 7}, []byte{1, 2, 3}))
 		}, "undecodable frame"},
-		{"unexpected-kind", func(t *testing.T) func(*Transaction) {
-			rc := someConn(t)
-			return func(*Transaction) { rc.observe(frame(transport.UID{First: 7}, commit)) }
+		{"malformed-field", func(_ *Transaction, rc *recordingConn) {
+			rc.observe(recorderFrame(transport.UID{First: 7}, malformedGetKeyValues()))
+		}, "does not re-encode"},
+		{"unexpected-kind", func(_ *Transaction, rc *recordingConn) {
+			rc.observe(recorderFrame(transport.UID{First: 7}, commit))
 		}, "unexpected request kind"},
-		{"malformed-length", func(t *testing.T) func(*Transaction) {
-			rc := someConn(t)
-			return func(*Transaction) { rc.observe([]byte{4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}) }
+		{"malformed-length", func(_ *Transaction, rc *recordingConn) {
+			rc.observe([]byte{4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0})
 		}, "malformed frame"},
-		{"partial-frame", func(t *testing.T) func(*Transaction) {
-			rc := someConn(t)
-			return func(*Transaction) { rc.observe(frame(transport.UID{First: 7}, commit)[:20]) }
+		{"partial-frame", func(_ *Transaction, rc *recordingConn) {
+			rc.observe(recorderFrame(transport.UID{First: 7}, commit)[:20])
 		}, "partial frame"},
 	} {
 		g.t.Run("negative-control/"+nc.name, func(t *testing.T) {
-			injectedConn = nil
-			extra := nc.extra(t)
 			for _, fresh := range []bool{false, true} {
 				rv := int64(0)
 				if !fresh {
 					rv = g.readVersion(t)
 				}
 				legacy := g.run(c, legacyReadPath, rv, nil)
-				current := g.run(c, currentReadPath, rv, extra)
-				// Injected bytes never reached the socket; drop any partial frame
-				// they left so later windows parse the real stream.
-				if injectedConn != nil {
-					injectedConn.mu.Lock()
-					injectedConn.buf = nil
-					injectedConn.mu.Unlock()
-				}
+				parser, remove := g.rec.parser()
+				current := g.run(c, currentReadPath, rv, func(tx *Transaction) { nc.extra(tx, parser) })
+				remove()
 				if err := compareArms(c, legacy, legacy); err != nil {
 					t.Fatalf("control arm alone fails: %v", err)
 				}

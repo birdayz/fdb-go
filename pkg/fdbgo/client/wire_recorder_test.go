@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"reflect"
+	"slices"
 	"sync"
 
 	"fdb.dev/pkg/fdbgo/transport"
@@ -28,7 +29,16 @@ func plainDial(ctx context.Context, network, addr string) (net.Conn, error) {
 // to a server's PING; counted in excluded), a request of an expected kind
 // (rendered into requests), or a problem: a frame of another kind, a frame
 // that does not decode, or bytes left over as a partial frame when recording
-// stops. A test must treat any problem as a failure.
+// stops. A test must treat any problem as a failure. "Decodes" means the
+// generated decoder accepts the body and re-encoding what it decoded gives the
+// same bytes back: the decoder reads an out-of-bounds or unreadable field as
+// absent, so the re-encoding is what catches a malformed field of a known kind.
+//
+// Lock order: a recordingConn's mu, then the recorder's mu. A connection's
+// parser holds its own mu while it reports frames (so one connection's frames
+// are recorded in the order written), so nothing may take a connection's mu
+// while holding the recorder's: code that needs both copies the connection
+// list under the recorder's mu and releases it first (stop).
 type sendRecorder struct {
 	mu    sync.Mutex
 	on    bool
@@ -89,6 +99,21 @@ func (r *sendRecorder) wrap(dial transport.DialFunc) transport.DialFunc {
 	}
 }
 
+// parser registers a connection parser with no socket behind it, so bytes fed
+// to its observe reach the recorder and nothing else, and no real write can
+// interleave with them. remove unregisters it.
+func (r *sendRecorder) parser() (rc *recordingConn, remove func()) {
+	rc = &recordingConn{rec: r, connected: true}
+	r.mu.Lock()
+	r.conns = append(r.conns, rc)
+	r.mu.Unlock()
+	return rc, func() {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		r.conns = slices.DeleteFunc(r.conns, func(c *recordingConn) bool { return c == rc })
+	}
+}
+
 // start records from now on, with versions named from V1 again.
 func (r *sendRecorder) start() {
 	r.mu.Lock()
@@ -98,7 +123,8 @@ func (r *sendRecorder) start() {
 }
 
 // stop ends recording. A connection holding part of a frame is a problem:
-// that frame was neither compared nor excluded.
+// that frame was neither compared nor excluded. Each connection is inspected
+// with the recorder's mu released (lock order, sendRecorder).
 func (r *sendRecorder) stop() recording {
 	r.mu.Lock()
 	conns := append([]*recordingConn(nil), r.conns...)
@@ -225,8 +251,11 @@ func (c *recordingConn) observe(b []byte) {
 // decodeRecordedRequest renders a request of an expected kind with its reply
 // token, span and debug IDs left out (they identify a run, not a request) and
 // versions named; the body length is kept, so a field encoded differently
-// still shows. It returns the request kind and its reply token.
-func decodeRecordedRequest(body []byte, versionName func(int64) string) (string, string, transport.UID, error) {
+// still shows. It returns the request kind and its reply token. The body must
+// re-encode to itself: the generated decoder reads an out-of-bounds field as
+// absent instead of failing, so without that check a malformed field of a
+// known kind would compare as a missing one.
+func decodeRecordedRequest(body []byte, versionName func(int64) string) (_, _ string, _ transport.UID, err error) {
 	off := 0
 	if len(body) >= 16 && body[7] == 0x0F && body[6] == 0xDB {
 		off = 8 // protocol version prefix
@@ -244,7 +273,20 @@ func decodeRecordedRequest(body []byte, versionName func(int64) string) (string,
 		return "", "", transport.UID{}, fmt.Errorf("undecodable frame: %w", err)
 	}
 	m := mk()
-	m.(interface{ UnmarshalFromReader(*wire.Reader) }).UnmarshalFromReader(r)
+	func() {
+		defer func() {
+			if p := recover(); p != nil {
+				err = fmt.Errorf("undecodable frame: decoder panicked: %v", p)
+			}
+		}()
+		m.(interface{ UnmarshalFromReader(*wire.Reader) }).UnmarshalFromReader(r)
+	}()
+	if err != nil {
+		return "", "", transport.UID{}, err
+	}
+	if again := m.(interface{ MarshalFDB() []byte }).MarshalFDB(); !bytes.Equal(again, body[off:]) {
+		return "", "", transport.UID{}, fmt.Errorf("undecodable frame: %T does not re-encode to the bytes sent (%d bytes, re-encoded %d)", m, len(body)-off, len(again))
+	}
 	v := reflect.ValueOf(m).Elem()
 	kind := v.Type().Name()
 	var reply transport.UID
@@ -267,4 +309,31 @@ func decodeRecordedRequest(body []byte, versionName func(int64) string) (string,
 		}
 	}
 	return fmt.Sprintf("%s len=%d %v", kind, len(body), fields), kind, reply, nil
+}
+
+// recorderFrame is a non-TLS frame as the client writes it: length, an
+// unchecked checksum, the destination token, then the body.
+func recorderFrame(token transport.UID, body []byte) []byte {
+	out := binary.LittleEndian.AppendUint32(nil, uint32(16+len(body)))
+	out = append(out, make([]byte, 8)...)
+	out = binary.LittleEndian.AppendUint64(out, token.First)
+	out = binary.LittleEndian.AppendUint64(out, token.Second)
+	return append(out, body...)
+}
+
+// malformedGetKeyValues is a GetKeyValuesRequest whose Begin field offset
+// points past the object. wire.NewReader accepts it and the generated decoder
+// reads Begin as absent rather than failing.
+func malformedGetKeyValues() []byte {
+	body := (&types.GetKeyValuesRequest{
+		Begin:   types.KeySelectorRef{Key: []byte("a"), Offset: 1},
+		End:     types.KeySelectorRef{Key: []byte("b"), Offset: 1},
+		Version: 1, Limit: 1, LimitBytes: 1,
+	}).MarshalFDB()
+	le := binary.LittleEndian
+	root := int(le.Uint32(body))
+	msg := root + 4 + int(le.Uint32(body[root+4:]))
+	vtable := msg - int(int32(le.Uint32(body[msg:])))
+	le.PutUint16(body[vtable+2*(types.GetKeyValuesRequestSlotBegin+2):], 0xfff0)
+	return body
 }

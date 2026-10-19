@@ -1184,8 +1184,9 @@ func (c *rywCache) fetchServer(ctx context.Context, begin, end []byte, limit, by
 // require len(allKVs) > 0; isReached after a reply's decrement (:891); and the
 // final `limits.rows == 0` (:957). The last two need a limit that was not
 // reached on entry to reach zero, and decrement lowers rows and minRows only by
-// rows appended — setRequestLimits gives every RYW request rows >= 1 (or
-// unlimited) and minRows >= 1, and a byte limit alone is not reached until
+// rows appended — the RYW range read's limits come from newRangeLimits
+// (readpath.go:642), which gives rows >= 1 (0 becomes unlimited; callers reject
+// rows below -1) and minRows = 1, and a byte limit alone is not reached until
 // minRows is. So more=true implies rows were returned. The zero-row break at
 // readpath.go:908 is a different guard: it stops a misbehaving storage server
 // that reports more=true with an empty batch from reaching the narrowing at

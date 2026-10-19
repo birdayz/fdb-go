@@ -274,6 +274,21 @@ go_test(
     ],
 )
 
+# gazelle:exclude wire_recorder_unit_test.go
+go_test(
+    name = "wire_recorder_unit_test",
+    srcs = [
+        "wire_recorder_test.go",
+        "wire_recorder_unit_test.go",
+    ],
+    embed = [":client"],
+    deps = [
+        "//pkg/fdbgo/transport",
+        "//pkg/fdbgo/wire",
+        "//pkg/fdbgo/wire/types",
+    ],
+)
+
 # gazelle:exclude storage_plumbing_fdb_test.go
 go_test(
     name = "storage_plumbing_fdb_test",
