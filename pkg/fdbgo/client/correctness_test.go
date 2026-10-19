@@ -862,6 +862,30 @@ func TestMetricsMinVersion_FreshTenantGRV(t *testing.T) {
 	}
 }
 
+// An explicit tenant read version below the client's floor is sent as is: C++
+// starts the transaction without validateVersion (NativeAPI.actor.cpp:7818-7824).
+func TestMetricsMinVersion_OldExplicitTenantVersion(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return tx.GetReadVersion(ctx)
+	}); err != nil {
+		t.Fatalf("GRV: %v", err)
+	}
+	tx := db.CreateTransaction()
+	defer tx.Cancel()
+	tx.tenantId = 7
+	tx.SetReadVersion(1)
+	v, err := tx.metricsMinVersion(ctx)
+	if err != nil || v != 1 {
+		t.Fatalf("metricsMinVersion = %d, %v; want the explicit version 1", v, err)
+	}
+}
+
 func TestGetEstimatedRangeSizeBytes(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)

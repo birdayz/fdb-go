@@ -110,12 +110,15 @@ func isFutureVersion(err error) bool {
 // the transaction state, and so starts the transaction and reads at its
 // version, only for a tenant (ReadYourWrites.actor.cpp:1860-1863;
 // NativeAPI.actor.cpp:7820-7824); otherwise it asks for the latest version and
-// sends no GRV.
+// sends no GRV. C++ only starts the transaction here, without the reads'
+// validateVersion (NativeAPI.actor.cpp:511-523): an explicit read version below
+// the client's floor is sent as is, and the storage server clamps it.
 func (tx *Transaction) metricsMinVersion(ctx context.Context) (int64, error) {
 	if tx.tenantId < 0 {
 		return LatestVersion, nil
 	}
-	return tx.readVersionForOperation(ctx, 0)
+	rv, _, err := tx.cachedOrFetchReadVersion(ctx, 0)
+	return rv, err
 }
 
 // sendWaitMetrics sends a WaitMetricsRequest to a storage server and returns
