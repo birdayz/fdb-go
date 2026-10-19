@@ -104,7 +104,7 @@ func TestCoalescePlainSetsMatchesReplay(t *testing.T) {
 		got := coalesceCommitMutations(muts)
 		assertCoalesceMutationsEqual(t, got, want)
 		tx := &Transaction{}
-		if tx.approximateCommitSize(got, nil) != tx.approximateCommitSize(want, nil) {
+		if tx.approximateCommitSize(got, nil, nil) != tx.approximateCommitSize(want, nil, nil) {
 			t.Fatalf("trial %d: coalesced size changed", trial)
 		}
 	}

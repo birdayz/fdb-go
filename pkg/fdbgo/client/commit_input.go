@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"slices"
 	"time"
@@ -37,20 +38,25 @@ type commitOutcome struct {
 // captureCommit runs under the caller's execution lease. Operands stay in the
 // borrowed slab or in heap buffers nothing rewrites; vectors, which a retry refills, are copied.
 func (tx *Transaction) captureCommit(muts []Mutation, writeConflicts []KeyRange) *commitInput {
-	return tx.captureCommitVectors(muts, false, writeConflicts)
+	return tx.captureCommitVectors(muts, false, writeConflicts, nil, false)
 }
 
-// captureCommitVectors takes muts as is when the caller owns that vector.
-func (tx *Transaction) captureCommitVectors(muts []Mutation, mutsOwned bool, writeConflicts []KeyRange) *commitInput {
+// captureCommitVectors takes muts as is when the caller owns that vector. With
+// readsFrozen, reads is the commit's own read-conflict vector, shipped as is;
+// otherwise the transaction's read conflicts are copied.
+func (tx *Transaction) captureCommitVectors(muts []Mutation, mutsOwned bool, writeConflicts, reads []KeyRange, readsFrozen bool) *commitInput {
 	tx.conflictMu.Lock()
 	defer tx.conflictMu.Unlock()
+	if !readsFrozen {
+		reads = slices.Clone(tx.readConflicts)
+	}
 	if !mutsOwned {
 		muts = slices.Clone(muts)
 	}
 	input := &commitInput{
 		db: tx.db, tenantID: tx.tenantId, lockAware: tx.lockAware, isDummy: tx.isDummy,
 		span: tx.currentSpan(), tags: append([]string(nil), tx.tags...),
-		muts: muts, readConflicts: slices.Clone(tx.readConflicts),
+		muts: muts, readConflicts: reads,
 		writeConflicts: slices.Clone(writeConflicts),
 	}
 	tx.readVersionMu.Lock()
@@ -139,4 +145,26 @@ func (tx *Transaction) commitDummyTransaction(ctx context.Context) error {
 	defer input.release()
 	lease.release()
 	return input.commitDummyTransaction(ctx)
+}
+
+// shipReadConflicts returns a new vector of the read conflict ranges a commit
+// ships. With RYW, C++ keeps them in a CoalescedKeyRefRangeMap<bool>
+// (ReadYourWrites.h:237) whose inserts merge with equal neighbours
+// (KeyRangeMap.h:304-350); every insert is true, so it ships the sorted union
+// of the read ranges, overlapping and adjacent ones merged
+// (ReadYourWrites.actor.cpp:318-350, 1394-1399). Without RYW the native
+// transaction ships them as added.
+func shipReadConflicts(reads []KeyRange, rywDisabled bool) []KeyRange {
+	out := slices.Clone(reads)
+	if rywDisabled {
+		return out
+	}
+	return readConflictMap(out)
+}
+
+// readConflictMap is the read-conflict map's ranges: the sorted union of
+// ranges, empty ones dropped (an empty insert does nothing). It reorders ranges.
+func readConflictMap(ranges []KeyRange) []KeyRange {
+	ranges = slices.DeleteFunc(ranges, func(r KeyRange) bool { return bytes.Compare(r.Begin, r.End) >= 0 })
+	return coalesceOwnedWriteConflicts(ranges)
 }

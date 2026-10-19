@@ -833,6 +833,59 @@ func TestWatch(t *testing.T) {
 	}
 }
 
+// A tenant's WaitMetricsRequest reads at the transaction's read version, so a
+// fresh tenant transaction starts and fetches one (ReadYourWrites.actor.cpp:
+// 1860-1863; NativeAPI.actor.cpp:7820-7824). The GRV carries no tenant, so
+// this needs no tenant-mode cluster.
+func TestMetricsMinVersion_FreshTenantGRV(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	tx := db.CreateTransaction()
+	defer tx.Cancel()
+	tx.tenantId = 7
+	v, err := tx.metricsMinVersion(ctx)
+	if err != nil {
+		t.Fatalf("metricsMinVersion: %v", err)
+	}
+	if v <= 0 {
+		t.Fatalf("metricsMinVersion = %d, want a fetched read version", v)
+	}
+	tx.readVersionMu.Lock()
+	rv, has := tx.readVersion, tx.hasReadVersion
+	tx.readVersionMu.Unlock()
+	if !has || rv != v {
+		t.Fatalf("transaction read version %d (set %v), want %d", rv, has, v)
+	}
+}
+
+// An explicit tenant read version below the client's floor is sent as is: C++
+// starts the transaction without validateVersion (NativeAPI.actor.cpp:7818-7824).
+func TestMetricsMinVersion_OldExplicitTenantVersion(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return tx.GetReadVersion(ctx)
+	}); err != nil {
+		t.Fatalf("GRV: %v", err)
+	}
+	tx := db.CreateTransaction()
+	defer tx.Cancel()
+	tx.tenantId = 7
+	tx.SetReadVersion(1)
+	v, err := tx.metricsMinVersion(ctx)
+	if err != nil || v != 1 {
+		t.Fatalf("metricsMinVersion = %d, %v; want the explicit version 1", v, err)
+	}
+}
+
 func TestGetEstimatedRangeSizeBytes(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)

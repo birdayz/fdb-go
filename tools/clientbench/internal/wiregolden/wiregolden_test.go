@@ -333,3 +333,13 @@ func TestDecodeWireLog(t *testing.T) {
 		t.Fatal("WIREGOLDEN_WIRELOG: a log of undecodable sends is complete")
 	}
 }
+
+// Sampled read tags are left out of read requests; GRV tags are compared.
+func TestTranscriptSampledReadTags(t *testing.T) {
+	sampled := &types.GetValueRequest{Key: []byte("p/a"), Version: 1, HasTags: true, Tags: []byte{}}
+	grv := &types.GetReadVersionRequest{TransactionCount: 1, Tags: []types.TransactionTagCount{{Tag: []byte("t"), Count: 1}}}
+	got := transcript(t, []Request{marker("s"), {Kind: "GetValueRequest", Msg: sampled}, {Kind: "GetReadVersionRequest", Msg: grv}, marker("~end")}, []string{"s"})
+	if strings.Contains(got, "HasTags") || !strings.Contains(got, "Tags=[{Tag='t' Count=1}]") {
+		t.Fatalf("WIREGOLDEN_SAMPLED_TAGS:\n%s", got)
+	}
+}

@@ -2,6 +2,7 @@ package client
 
 import (
 	"bytes"
+	"context"
 	"testing"
 
 	"fdb.dev/pkg/fdbgo/transport"
@@ -169,4 +170,97 @@ func TestCommitClearSplitEdges(t *testing.T) {
 		t.Fatal("an RYW-disabled transaction was coalesced")
 	}
 	check("ryw disabled", ship, raw)
+}
+
+// The shipped read conflicts are the CoalescedKeyRefRangeMap's ranges
+// (KeyRangeMap.h:304-350): the sorted union, overlapping and adjacent ranges
+// merged, empty ranges dropped.
+func TestReadConflictMap(t *testing.T) {
+	r := func(b, e string) KeyRange { return KeyRange{Begin: []byte(b), End: []byte(e)} }
+	for _, tc := range []struct {
+		name     string
+		in, want []KeyRange
+	}{
+		{"unsorted disjoint", []KeyRange{r("c", "d"), r("a", "b")}, []KeyRange{r("a", "b"), r("c", "d")}},
+		{"adjacent merged", []KeyRange{r("b", "c"), r("a", "b")}, []KeyRange{r("a", "c")}},
+		{"duplicate", []KeyRange{r("a", "a\x00"), r("a", "a\x00")}, []KeyRange{r("a", "a\x00")}},
+		{"overlap", []KeyRange{r("a", "c"), r("b", "d")}, []KeyRange{r("a", "d")}},
+		{"contained", []KeyRange{r("a", "d"), r("b", "c")}, []KeyRange{r("a", "d")}},
+		{"containing", []KeyRange{r("b", "c"), r("a", "d")}, []KeyRange{r("a", "d")}},
+		{"empty key and empty range", []KeyRange{r("", "a"), r("q", "q"), r("", "b")}, []KeyRange{r("", "b")}},
+	} {
+		got := readConflictMap(tc.in)
+		if len(got) != len(tc.want) {
+			t.Fatalf("WIRE_READ_CONFLICTS %s: %q, want %q", tc.name, got, tc.want)
+		}
+		for i := range got {
+			if !bytes.Equal(got[i].Begin, tc.want[i].Begin) || !bytes.Equal(got[i].End, tc.want[i].End) {
+				t.Fatalf("WIRE_READ_CONFLICTS %s: %q, want %q", tc.name, got, tc.want)
+			}
+		}
+	}
+	reads := []KeyRange{r("c", "d"), r("a", "b"), r("b", "c")}
+	if got := shipReadConflicts(reads, false); len(got) != 1 || string(got[0].Begin) != "a" || string(got[0].End) != "d" {
+		t.Fatalf("WIRE_READ_CONFLICTS ryw: %q, want [a,d)", got)
+	}
+	if string(reads[0].Begin) != "c" {
+		t.Fatalf("shipReadConflicts mutated its input: %q", reads)
+	}
+	if got := shipReadConflicts(reads, true); len(got) != 3 || string(got[0].Begin) != "c" {
+		t.Fatalf("WIRE_READ_CONFLICTS ryw disabled: %q, want the ranges as added", got)
+	}
+}
+
+// A WaitMetricsRequest asks for latestVersion without a tenant, with no GRV,
+// and for the transaction's read version with one (ReadYourWrites.actor.cpp:
+// 1860-1863; NativeAPI.actor.cpp:7820-7824).
+func TestMetricsMinVersion(t *testing.T) {
+	ctx := context.Background()
+	tx := newUnitTx()
+	tx.tenantId = NoTenantID
+	if v, err := tx.metricsMinVersion(ctx); err != nil || v != LatestVersion {
+		t.Fatalf("WIRE_METRICS_VERSION no tenant: %d, %v; want latestVersion", v, err)
+	}
+	if !tx.readVersionState.metricStart.IsZero() {
+		t.Fatal("WIRE_METRICS_VERSION no tenant: the transaction was started")
+	}
+	tx = newUnitTx()
+	tx.tenantId = 7
+	tx.readVersionState.hasReadVersion, tx.readVersionState.readVersion = true, 1234
+	if v, err := tx.metricsMinVersion(ctx); err != nil || v != 1234 {
+		t.Fatalf("WIRE_METRICS_VERSION tenant: %d, %v; want the read version 1234", v, err)
+	}
+}
+
+func newUnitTx() *Transaction {
+	tx := &Transaction{readVersionState: &readVersionState{}}
+	tx.state.Store(int32(txStateActive))
+	return tx
+}
+
+// Read conflicts added after Commit froze its read vector neither suppress the
+// self-conflicting range nor ship: the captured reads are the frozen ones, then
+// the self-conflicting range (NativeAPI.actor.cpp:5952-5958, 6858-6860).
+func TestSelfConflictShipReads_FrozenReads(t *testing.T) {
+	tx := newUnitTx()
+	tx.tenantId = NoTenantID
+	tx.readConflicts = []KeyRange{{Begin: []byte("b"), End: []byte("b\x00")}}
+	readSnap := tx.readConflicts[:1:1]
+	writeSnap := []KeyRange{{Begin: []byte("a"), End: []byte("a\x00")}}
+	// A late read of the written key: a decision on live reads would skip SC.
+	tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: []byte("a"), End: []byte("a\x00")})
+	reads, sc, added := tx.selfConflictShipReads(writeSnap, shipReadConflicts(readSnap, false))
+	if !added {
+		t.Fatal("WIRE_SELF_CONFLICT: a read conflict added after the freeze suppressed the self-conflicting range")
+	}
+	// Another read after the self-conflicting range is created.
+	tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: []byte("c"), End: []byte("c\x00")})
+	input := tx.captureCommitVectors(nil, true, writeSnap, reads, true)
+	defer input.release()
+	got := input.readConflicts
+	if len(got) != 2 || string(got[0].Begin) != "b" || string(got[0].End) != "b\x00" ||
+		!bytes.HasPrefix(sc.Begin, selfConflictPrefix) ||
+		!bytes.Equal(got[1].Begin, sc.Begin) || !bytes.Equal(got[1].End, keyAfterBytes(sc.Begin)) {
+		t.Fatalf("WIRE_SELF_CONFLICT: captured reads %q, want [b, b\\x00) then the self-conflicting range %q", got, sc)
+	}
 }

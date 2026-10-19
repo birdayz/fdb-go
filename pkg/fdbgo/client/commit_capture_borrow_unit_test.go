@@ -82,7 +82,7 @@ func TestCaptureCommitBorrowsSlabInsteadOfCopying(t *testing.T) {
 	if &input.muts[0] == &tx.mutations[0] || &input.writeConflicts[0] == &tx.writeConflicts[0] {
 		t.Fatal("capture shares a vector a retry refills in place")
 	}
-	if owned := tx.captureCommitVectors(input.muts, true, nil); &owned.muts[0] != &input.muts[0] {
+	if owned := tx.captureCommitVectors(input.muts, true, nil, nil, false); &owned.muts[0] != &input.muts[0] {
 		t.Fatal("an owned mutation vector was copied again")
 	} else {
 		owned.release()

@@ -7,6 +7,7 @@
 package wgscenarios
 
 import (
+	"bytes"
 	"fmt"
 
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -81,6 +82,195 @@ var scenarios = []scenario{
 		return nil
 	}},
 	{"clear_key", func(tr fdb.WritableTransaction) error { tr.Clear(k("c")); return nil }},
+	{"atomic_max_missing", func(tr fdb.WritableTransaction) error { tr.Max(k("mx"), []byte{5, 0}); return nil }},
+	{"atomic_min_existing", func(tr fdb.WritableTransaction) error { tr.Min(k("a"), []byte("seed")); return nil }},
+	{"atomic_byte_min_max", func(tr fdb.WritableTransaction) error {
+		tr.ByteMin(k("b"), []byte("aaa"))
+		tr.ByteMax(k("c"), []byte("zzz"))
+		return nil
+	}},
+	{"atomic_and_or_xor", func(tr fdb.WritableTransaction) error {
+		tr.BitAnd(k("x1"), []byte{0xf0})
+		tr.BitOr(k("x2"), []byte{0x0f})
+		tr.BitXor(k("x3"), []byte{0xff})
+		return nil
+	}},
+	{"atomic_append_if_fits", func(tr fdb.WritableTransaction) error { tr.AppendIfFits(k("d"), []byte("+tail")); return nil }},
+	{"compare_and_clear_match", func(tr fdb.WritableTransaction) error { tr.CompareAndClear(k("e"), []byte("seed-e")); return nil }},
+	{"set_then_add_same_key", func(tr fdb.WritableTransaction) error {
+		tr.Set(k("sa"), []byte{1, 0, 0, 0})
+		tr.Add(k("sa"), []byte{2, 0, 0, 0})
+		return nil
+	}},
+	{"add_then_get", func(tr fdb.WritableTransaction) error {
+		tr.Add(k("ag"), []byte{1, 0, 0, 0})
+		return get(tr, k("ag"))
+	}},
+	{"versionstamped_value", func(tr fdb.WritableTransaction) error {
+		tr.SetVersionstampedValue(k("vv"), append(make([]byte, 10), 0, 0, 0, 0))
+		return nil
+	}},
+	{"set_empty_value", func(tr fdb.WritableTransaction) error { tr.Set(k("ev"), []byte{}); return nil }},
+	{"set_large_value", func(tr fdb.WritableTransaction) error { tr.Set(k("lv"), bytes.Repeat([]byte("v"), 10000)); return nil }},
+	{"clear_range_empty", func(tr fdb.WritableTransaction) error {
+		tr.ClearRange(fdb.KeyRange{Begin: k("q"), End: k("q")})
+		tr.Set(k("q1"), []byte("1"))
+		return nil
+	}},
+	{"overlapping_clear_ranges", func(tr fdb.WritableTransaction) error {
+		tr.ClearRange(fdb.KeyRange{Begin: k("f"), End: k("h")})
+		tr.ClearRange(fdb.KeyRange{Begin: k("g"), End: k("j")})
+		return nil
+	}},
+	{"set_then_clear_same_key", func(tr fdb.WritableTransaction) error {
+		tr.Set(k("sc"), []byte("1"))
+		tr.Clear(k("sc"))
+		return nil
+	}},
+	{"clear_then_get", func(tr fdb.WritableTransaction) error {
+		tr.Clear(k("a"))
+		return get(tr, k("a"))
+	}},
+	{"set_then_range", func(tr fdb.WritableTransaction) error {
+		tr.Set(k("b5"), []byte("new"))
+		_, err := tr.GetRange(fdb.KeyRange{Begin: k("a"), End: k("d")}, fdb.RangeOptions{}).GetSliceWithError()
+		return err
+	}},
+	{"snapshot_range", func(tr fdb.WritableTransaction) error {
+		_, err := tr.Snapshot().GetRange(fdb.KeyRange{Begin: k("a"), End: k("d")}, fdb.RangeOptions{}).GetSliceWithError()
+		return err
+	}},
+	{"range_exact_limit5", func(tr fdb.WritableTransaction) error {
+		_, err := tr.GetRange(fdb.KeyRange{Begin: k(""), End: k("\xff")}, fdb.RangeOptions{Limit: 5, Mode: fdb.StreamingModeExact}).GetSliceWithError()
+		return err
+	}},
+	{"range_reverse_want_all", func(tr fdb.WritableTransaction) error {
+		_, err := tr.GetRange(fdb.KeyRange{Begin: k(""), End: k("\xff")}, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll, Reverse: true}).GetSliceWithError()
+		return err
+	}},
+	{"range_small_mode", func(tr fdb.WritableTransaction) error {
+		_, err := tr.GetRange(fdb.KeyRange{Begin: k(""), End: k("\xff")}, fdb.RangeOptions{Mode: fdb.StreamingModeSmall}).GetSliceWithError()
+		return err
+	}},
+	{"getkey_first_greater_than", func(tr fdb.WritableTransaction) error {
+		_, err := tr.GetKey(fdb.FirstGreaterThan(k("b"))).Get()
+		return err
+	}},
+	{"getkey_last_less_than", func(tr fdb.WritableTransaction) error {
+		_, err := tr.GetKey(fdb.LastLessThan(k("c"))).Get()
+		return err
+	}},
+	{"getkey_last_less_or_equal", func(tr fdb.WritableTransaction) error {
+		_, err := tr.GetKey(fdb.LastLessOrEqual(k("c"))).Get()
+		return err
+	}},
+	{"getkey_negative_offset", func(tr fdb.WritableTransaction) error {
+		_, err := tr.GetKey(fdb.KeySelector{Key: k("d"), Offset: -2}).Get()
+		return err
+	}},
+	{"getkey_after_set", func(tr fdb.WritableTransaction) error {
+		tr.Set(k("b1"), []byte("1"))
+		_, err := tr.GetKey(fdb.FirstGreaterThan(k("b"))).Get()
+		return err
+	}},
+	{"explicit_conflict_ranges", func(tr fdb.WritableTransaction) error {
+		if err := tr.AddReadConflictRange(fdb.KeyRange{Begin: k("r1"), End: k("r2")}); err != nil {
+			return err
+		}
+		if err := tr.AddWriteConflictKey(k("w1")); err != nil {
+			return err
+		}
+		tr.Set(k("w2"), []byte("1"))
+		return nil
+	}},
+	{"no_write_conflict_set", func(tr fdb.WritableTransaction) error {
+		if err := tr.Options().SetNextWriteNoWriteConflictRange(); err != nil {
+			return err
+		}
+		tr.Set(k("nw"), []byte("1"))
+		tr.Set(k("nw2"), []byte("2"))
+		return nil
+	}},
+	{"ryw_disabled_set_get", func(tr fdb.WritableTransaction) error {
+		if err := tr.Options().SetReadYourWritesDisable(); err != nil {
+			return err
+		}
+		tr.Set(k("rd"), []byte("1"))
+		return get(tr, k("rd"))
+	}},
+	{"priority_batch_get", func(tr fdb.WritableTransaction) error {
+		if err := tr.Options().SetPriorityBatch(); err != nil {
+			return err
+		}
+		return get(tr, k("a"))
+	}},
+	{"priority_system_immediate_get", func(tr fdb.WritableTransaction) error {
+		if err := tr.Options().SetPrioritySystemImmediate(); err != nil {
+			return err
+		}
+		return get(tr, k("a"))
+	}},
+	{"causal_read_risky_get", func(tr fdb.WritableTransaction) error {
+		if err := tr.Options().SetCausalReadRisky(); err != nil {
+			return err
+		}
+		return get(tr, k("a"))
+	}},
+	{"read_system_key", func(tr fdb.WritableTransaction) error {
+		if err := tr.Options().SetReadSystemKeys(); err != nil {
+			return err
+		}
+		return get(tr, fdb.Key("\xff/conf/storage_engine"))
+	}},
+	{"get_read_version_only", func(tr fdb.WritableTransaction) error { _, err := tr.GetReadVersion().Get(); return err }},
+	{"estimated_range_size", func(tr fdb.WritableTransaction) error {
+		_, err := tr.GetEstimatedRangeSizeBytes(fdb.KeyRange{Begin: k(""), End: k("\xff")}).Get()
+		return err
+	}},
+	{"range_split_points", func(tr fdb.WritableTransaction) error {
+		_, err := tr.GetRangeSplitPoints(fdb.KeyRange{Begin: k(""), End: k("\xff")}, 1000).Get()
+		return err
+	}},
+	{"get_missing_then_set_missing", func(tr fdb.WritableTransaction) error {
+		if err := get(tr, k("nope")); err != nil {
+			return err
+		}
+		tr.Set(k("nope"), []byte("1"))
+		return nil
+	}},
+	{"sets_out_of_order", func(tr fdb.WritableTransaction) error {
+		tr.Set(k("z9"), []byte("1"))
+		tr.Set(k("a9"), []byte("2"))
+		tr.Set(k("m9"), []byte("3"))
+		return nil
+	}},
+	{"mixed_ops_out_of_order", func(tr fdb.WritableTransaction) error {
+		tr.Add(k("t3"), []byte{1})
+		tr.Set(k("t1"), []byte("1"))
+		tr.Clear(k("t2"))
+		tr.ClearRange(fdb.KeyRange{Begin: k("t0"), End: k("t0z")})
+		return nil
+	}},
+	{"gets_out_of_order_then_set", func(tr fdb.WritableTransaction) error {
+		if err := get(tr, k("c")); err != nil {
+			return err
+		}
+		if err := get(tr, k("a")); err != nil {
+			return err
+		}
+		tr.Set(k("x"), []byte("5"))
+		return nil
+	}},
+	{"overlapping_range_reads_then_set", func(tr fdb.WritableTransaction) error {
+		if _, err := tr.GetRange(fdb.KeyRange{Begin: k("a"), End: k("c")}, fdb.RangeOptions{}).GetSliceWithError(); err != nil {
+			return err
+		}
+		if _, err := tr.GetRange(fdb.KeyRange{Begin: k("b"), End: k("d")}, fdb.RangeOptions{}).GetSliceWithError(); err != nil {
+			return err
+		}
+		tr.Set(k("x"), []byte("6"))
+		return nil
+	}},
 	{"two_gets", func(tr fdb.WritableTransaction) error {
 		if err := get(tr, k("a")); err != nil {
 			return err

@@ -1760,6 +1760,7 @@ func (tx *Transaction) commitAdmitted(ctx context.Context, completion *versionst
 	muts := tx.mutations
 	writeConflictsSnap := tx.writeConflicts
 	nWriteConflicts := len(writeConflictsSnap)
+	readConflictsSnap := tx.readConflicts[:len(tx.readConflicts):len(tx.readConflicts)]
 	// Re-read the deferred error UNDER the snapshot lock, linearized with `muts`: the
 	// entry check (above) can miss an Atomic(badOp) that races this Commit and stores the poison —
 	// under conflictMu — AFTER that entry Load but BEFORE this snapshot. Reading it here, in the same
@@ -1797,6 +1798,11 @@ func (tx *Transaction) commitAdmitted(ctx context.Context, completion *versionst
 	// ship or be sized unvalidated. The ship-decision (coalesce vs raw; the versionstamp/rywDisabled
 	// carve-outs) lives in coalesceCommitVectors so it is unit-testable outside this inline flow.
 	shipMuts, sizeConflicts, coalesced := coalesceCommitVectors(muts, writeConflictsSnap[:nWriteConflicts], tx.rywDisabled)
+	// The read conflicts are sized, checked for self-conflict and shipped as one
+	// vector, frozen with the mutations above: C++ materializes its read-conflict
+	// map into the native transaction before sizing it (ReadYourWrites.actor.cpp:
+	// 1394-1399; NativeAPI.actor.cpp:6818, 6835).
+	shipReads := shipReadConflicts(readConflictsSnap, tx.rywDisabled)
 
 	// Transaction-size limit (transaction_too_large, 2101), in C++ commitMutations
 	// order (NativeAPI.actor.cpp:6797-6836):
@@ -1825,7 +1831,7 @@ func (tx *Transaction) commitAdmitted(ctx context.Context, completion *versionst
 		return &wire.FDBError{Code: ErrTransactionReadOnly}
 	}
 
-	if (len(shipMuts) > 0 || len(sizeConflicts) > 0) && tx.sizeLimit > 0 && tx.approximateCommitSize(shipMuts, sizeConflicts) > tx.sizeLimit {
+	if (len(shipMuts) > 0 || len(sizeConflicts) > 0) && tx.sizeLimit > 0 && tx.approximateCommitSize(shipMuts, shipReads, sizeConflicts) > tx.sizeLimit {
 		tx.state.Store(int32(txStateErrored))
 		return &wire.FDBError{Code: 2101} // transaction_too_large
 	}
@@ -1855,7 +1861,7 @@ func (tx *Transaction) commitAdmitted(ctx context.Context, completion *versionst
 	// the snapshot, and finalizeShipConflicts folds JUST the returned range into it (not a
 	// live re-read), so the RFC-090 self-conflicting retry detects an already-applied commit WITHOUT shipping
 	// a racing Set's unvalidated/unsized conflict range.
-	sc, scAdded := tx.maybeMakeSelfConflicting(writeConflictsSnap[:nWriteConflicts])
+	shipReads, sc, scAdded := tx.selfConflictShipReads(writeConflictsSnap[:nWriteConflicts], shipReads)
 	shipConflicts := finalizeShipConflicts(writeConflictsSnap[:nWriteConflicts], sc, scAdded, coalesced)
 
 	// No read version yet means no reads, so no causal consistency: a risky GRV, as
@@ -1886,7 +1892,7 @@ func (tx *Transaction) commitAdmitted(ctx context.Context, completion *versionst
 	if tx.db != nil {
 		commitTok = tx.db.grvCache.token()
 	}
-	input := tx.captureCommitVectors(shipMuts, coalesced, shipConflicts)
+	input := tx.captureCommitVectors(shipMuts, coalesced, shipConflicts, shipReads, true)
 	defer func() {
 		if input != nil {
 			input.release()
@@ -2646,9 +2652,9 @@ func (tx *Transaction) stateGetApproximateSize() (int64, error) {
 // goroutine appends to tx.mutations BEYOND `muts`, so GetApproximateSize() (which reads the live
 // buffer) could fail a small commit for a mutation that is never shipped. `muts` is an
 // append-only snapshot (elements never mutated in place) captured by Commit before this runs, so
-// iterating it needs no lock; the conflict buffers are read live under conflictMu (the marshal
-// likewise ships them from a live snapshot, so counting live conflicts matches what is sent).
-func (tx *Transaction) approximateCommitSize(muts []Mutation, writeConflicts []KeyRange) int64 {
+// iterating it needs no lock. The conflict ranges are the vectors Commit froze with `muts` and
+// ships, so the size counts exactly what is sent.
+func (tx *Transaction) approximateCommitSize(muts []Mutation, readConflicts, writeConflicts []KeyRange) int64 {
 	// The transaction_too_large (2101) check uses the NATIVE commit accounting: each mutation charged
 	// sizeof(MutationRef) and each conflict range sizeof(KeyRangeRef) (the 44/24 under pack(4)). This
 	// deliberately does NOT apply GetApproximateSize's single-key-clear adjustment: in the native
@@ -2661,9 +2667,7 @@ func (tx *Transaction) approximateCommitSize(muts []Mutation, writeConflicts []K
 	for _, m := range muts {
 		size += int64(len(m.Key)) + int64(len(m.Value)) + sizeofMutationRef
 	}
-	tx.conflictMu.Lock()
-	readConflicts := tx.readConflicts
-	tx.conflictMu.Unlock()
+	// readConflicts is the vector the commit ships (coalesced with RYW), as for writes.
 	for _, r := range readConflicts {
 		size += int64(len(r.Begin)) + int64(len(r.End)) + sizeofKeyRangeRef
 	}
@@ -2969,20 +2973,35 @@ func conflictRangesIntersect(writes, reads []KeyRange) bool {
 	return ok
 }
 
+// selfConflictShipReads makes the commit self-conflicting when its frozen write
+// and read conflicts do not intersect, and returns the read conflicts to ship
+// with the self-conflicting read range last: C++ adds it to the native
+// transaction after the RYW read conflicts (NativeAPI.actor.cpp:5952-5958).
+func (tx *Transaction) selfConflictShipReads(writeSnap, shipReads []KeyRange) (reads []KeyRange, sc KeyRange, added bool) {
+	sc, scRead, added := tx.maybeMakeSelfConflicting(writeSnap, shipReads)
+	if added {
+		shipReads = append(shipReads, scRead)
+	}
+	return shipReads, sc, added
+}
+
+// maybeMakeSelfConflicting decides on the read conflicts the commit ships and
+// returns the write and read self-conflicting ranges it added.
 // Only shipped conflicts may suppress the fence's synthetic key (NativeAPI.actor.cpp:6858).
 // Tenant marshalling prefixes that key in both commits. Caller must not hold conflictMu.
-func (tx *Transaction) maybeMakeSelfConflicting(writeSnap []KeyRange) (KeyRange, bool) {
+func (tx *Transaction) maybeMakeSelfConflicting(writeSnap, readSnap []KeyRange) (write, read KeyRange, added bool) {
 	tx.conflictMu.Lock()
 	defer tx.conflictMu.Unlock()
-	if !conflictRangesIntersect(writeSnap, tx.readConflicts) {
-		return tx.makeSelfConflictingLocked(), true
+	if !conflictRangesIntersect(writeSnap, readSnap) {
+		write, read = tx.makeSelfConflictingLocked()
+		return write, read, true
 	}
-	return KeyRange{}, false
+	return KeyRange{}, KeyRange{}, false
 }
 
 // A synthetic key avoids fencing on a hot user key (NativeAPI.actor.cpp:5952-5959).
 // It stays unprefixed until marshalling; caller must hold conflictMu.
-func (tx *Transaction) makeSelfConflictingLocked() KeyRange {
+func (tx *Transaction) makeSelfConflictingLocked() (write, read KeyRange) {
 	sc := make([]byte, len(selfConflictPrefix)+16)
 	copy(sc, selfConflictPrefix)
 	binary.LittleEndian.PutUint64(sc[len(selfConflictPrefix):], rand.Uint64())
@@ -2991,13 +3010,14 @@ func (tx *Transaction) makeSelfConflictingLocked() KeyRange {
 	rb := tx.conflictBufAlloc(len(sc) + len(end))
 	copy(rb, sc)
 	copy(rb[len(sc):], end)
-	tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: rb[:len(sc):len(sc)], End: rb[len(sc):]})
+	read = KeyRange{Begin: rb[:len(sc):len(sc)], End: rb[len(sc):]}
+	tx.readConflicts = append(tx.readConflicts, read)
 	wb := tx.conflictBufAlloc(len(sc) + len(end))
 	copy(wb, sc)
 	copy(wb[len(sc):], end)
 	wcr := KeyRange{Begin: wb[:len(sc):len(sc)], End: wb[len(sc):]}
 	tx.writeConflicts = append(tx.writeConflicts, wcr)
-	return wcr
+	return wcr, read
 }
 
 func (tx *Transaction) stateSetNextWriteNoWriteConflictRange() {
