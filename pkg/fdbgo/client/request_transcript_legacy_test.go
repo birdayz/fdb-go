@@ -3,8 +3,9 @@ package client
 // The read path's storage plumbing as it was before RFC-262 phase 1 (commit
 // 338e1644b), renamed with a legacy prefix. request_transcript_test.go runs
 // the same reads through this copy and through the current code and requires
-// the same requests on the wire. Delete it when RFC-262 phase 4 changes the
-// RYW-disabled route on purpose.
+// the same requests, compared field by field without reply tokens, spans and
+// debug IDs (body lengths included), and the same results. Delete it when
+// RFC-262 phase 4 changes the RYW-disabled route on purpose.
 
 import (
 	"bytes"
@@ -928,4 +929,112 @@ func (tx *Transaction) legacyGetMappedRangeSelectorExact(ctx context.Context, be
 			}
 		}
 	}
+}
+
+func (tx *Transaction) legacyGetMappedRangeWithByteTargetAndSkip(ctx context.Context, begin, end, mapper []byte, limit, byteTarget int, skip int32, reverse bool) ([]MappedKeyValue, bool, error) {
+	ctx, cancel := tx.opContext(ctx)
+	defer cancel()
+	// ThreadSafeTransaction checks deferredError before RYW's special-key
+	// rejection, which still precedes resetPromise (C++ 7.3.77).
+	if err := tx.readOperation(ctx).entryErr; err != nil {
+		return nil, false, err
+	}
+	// C++ :1786 — the special key space is not mapped-readable. Checked after
+	// deferred errors, before lifetime errors or taking the read version.
+	if isSpecialKey(begin) && isSpecialKey(end) {
+		return nil, false, &wire.FDBError{Code: ErrClientInvalidOperation}
+	}
+	if err := tx.ensureReadVersion(ctx); err != nil {
+		return nil, false, tx.trackReadOperation(ctx, err)
+	}
+	// C++ :1801 — key_outside_legal_range.
+	maxKey := tx.maxReadKey()
+	if bytes.Compare(begin, maxKey) > 0 || bytes.Compare(end, maxKey) > 0 {
+		return nil, false, &wire.FDBError{Code: 2004}
+	}
+	// C++ :1817 — range_limits_invalid.
+	if limit < -1 {
+		return nil, false, &wire.FDBError{Code: ErrRangeLimitsInvalid}
+	}
+	byteTarget, err := normalizeByteTarget(byteTarget)
+	if err != nil {
+		return nil, false, err
+	}
+	// A positive Skip narrows the range and cannot make inverted bounds readable.
+	if bytes.Compare(begin, end) >= 0 {
+		return nil, false, nil
+	}
+	// C++ :1219-1233 makes snapshot isolation and RYW-disabled both
+	// unsupported_operation. Only ONE of those is reachable here, and the
+	// difference matters: RYW-disabled is a runtime state, so it is guarded
+	// below; snapshot is unreachable BY CONSTRUCTION because *Snapshot exposes
+	// no GetMappedRange at all, so there is no way to ask for the unsupported
+	// thing. That is a stronger guarantee than returning 2108, not a weaker one
+	// — but it holds only while *Snapshot lacks the method, which is why
+	// TestGetMappedRange_SnapshotCannotRequestIt pins the absence rather than
+	// leaving it as an unstated property of the API surface.
+	if tx.rywDisabled {
+		return nil, false, &wire.FDBError{Code: ErrUnsupportedOperation}
+	}
+
+	if skip > 0 {
+		result, err := tx.legacyGetMappedRangeWithResolvedSkip(ctx, begin, end, mapper, newMappedRangeLimits(limit, byteTarget), skip, reverse)
+		if err != nil {
+			return nil, false, tx.trackReadOperation(ctx, err)
+		}
+		// Original anchors retain conflicts on skipped primaries, not secondaries.
+		if err := tx.addMappedRangeConflicts(begin, end, reverse, result.more, result.rows); err != nil {
+			return nil, false, err
+		}
+		return result.rows, result.more, nil
+	}
+
+	rows, more, err := tx.legacyGetMappedRangeImpl(ctx, begin, end, mapper, limit, byteTarget, reverse)
+	if err != nil {
+		return nil, false, tx.trackReadOperation(ctx, err)
+	}
+
+	// C++ addConflictRangeAndMustUnmodified (:1163-1192): the read went out at
+	// Snapshot::True, so every conflict range it needs is added here, and each
+	// one is first checked against the write map — an overlap means the mapped
+	// read observed a key this transaction wrote, which RYW cannot honour for
+	// mapped reads and which C++ reports rather than silently serving stale data.
+	if err := tx.addMappedRangeConflicts(begin, end, reverse, more, rows); err != nil {
+		return nil, false, err
+	}
+	return rows, more, nil
+}
+
+func (tx *Transaction) legacyGetMappedRangeWithResolvedSkip(ctx context.Context, begin, end, mapper []byte, limits mappedRangeLimits, skip int32, reverse bool) (mappedRangeResult, error) {
+	if bytes.Compare(begin, end) >= 0 {
+		return mappedRangeResult{}, nil
+	}
+	key, remaining := begin, int64(skip)
+	if reverse {
+		key, remaining = end, -remaining
+	}
+	exact := false
+	for remaining != 0 {
+		offset, rest := mappedSkipResolutionStep(remaining)
+		// Native getKey adds neither a RYW overlay nor independent read conflicts.
+		resolved, fallback, err := tx.legacyGetKeyForRange(ctx, key, false, offset)
+		if err != nil {
+			return mappedRangeResult{}, err
+		}
+		if (!reverse && bytes.Compare(resolved, end) >= 0) || (reverse && bytes.Compare(resolved, begin) <= 0) {
+			return mappedRangeResult{}, nil
+		}
+		exact = exact || fallback || rest != 0
+		key, remaining = resolved, rest
+	}
+	if reverse {
+		end = key
+	} else {
+		begin = key
+	}
+	// Mapped storage requests must not contain offsets that can invert the range.
+	if exact {
+		return tx.legacyGetMappedRangeSelectorExact(ctx, begin, end, mapper, limits, reverse)
+	}
+	return tx.legacyGetMappedRangeSelectors(ctx, mappedSelectorFGE(begin), mappedSelectorFGE(end), mapper, limits, reverse)
 }

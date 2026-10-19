@@ -24,6 +24,9 @@ func (tx *Transaction) getMappedRangeWithResolvedSkip(ctx context.Context, begin
 	for remaining != 0 {
 		offset, rest := mappedSkipResolutionStep(remaining)
 		// Native getKey adds neither a RYW overlay nor independent read conflicts.
+		// Each step acquires the transaction's (cached) read version itself, as
+		// before RFC-262, rather than using readVersion; both are the same
+		// cached version, so a mapped read with a skip is not single-capture.
 		resolved, fallback, err := tx.getKeyForRange(ctx, key, false, offset)
 		if err != nil {
 			return mappedRangeResult{}, err

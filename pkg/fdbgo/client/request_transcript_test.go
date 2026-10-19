@@ -3,6 +3,7 @@ package client
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
 	"sort"
 	"strings"
@@ -19,8 +20,23 @@ import (
 // operation's read version passed down) but no request may change. Every case
 // runs the same read twice on the same cluster and shard layout, once through
 // the pre-change copy (request_transcript_legacy_test.go) and once through the
-// current code, and requires the same storage and location requests, field
-// for field, and the same result.
+// current code, and requires:
+//
+//   - the same requests in the same order, of every kind a read may send
+//     (storage reads, location lookups, read versions; sendRecorder), compared
+//     field by field without the reply token, span and debug IDs, with
+//     versions numbered in order of appearance and body lengths included. This
+//     is request-field equality, not literal byte identity;
+//   - no frame the recorder could not decode or did not expect, and no partial
+//     frame;
+//   - the same full result: every row's key and value, more, readThrough, a
+//     getKey's key and fallback flag, and every mapped row with its secondary.
+//
+// Each case runs with the read version preset (both arms at one version) and
+// with a fresh transaction, where the arm's own GetReadVersion request is part
+// of the compared transcript. The limits compared are within the C int domain:
+// a Go row or byte limit above MaxInt32 is clamped (newRangeLimits), which
+// changes no request since the wire limit is at most REPLY_BYTE_LIMIT.
 func TestRequestTranscriptGate(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -29,7 +45,7 @@ func TestRequestTranscriptGate(t *testing.T) {
 	}{{"multishard", defaultShardSize}, {"multishard-larger", largerShardSize}} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 			defer cancel()
 			env := setupMultiShardEnvWithConfig(t, ctx, tc.cfg)
 			connStr, err := env.container.ClusterFile(ctx)
@@ -59,7 +75,7 @@ func TestRequestTranscriptGate(t *testing.T) {
 	}
 	t.Run("single-shard-faults", func(t *testing.T) {
 		t.Parallel()
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 		defer cancel()
 		connectCF, _ := startProxyFDBContainer(t, ctx)
 		sd := newSimDialer()
@@ -67,7 +83,7 @@ func TestRequestTranscriptGate(t *testing.T) {
 		prefix := []byte("tg_")
 		g.seed(func(tx *Transaction) {
 			for i := 0; i < 100; i++ {
-				tx.Set([]byte(fmt.Sprintf("%s%04d", prefix, i)), bytes.Repeat([]byte{'v'}, 1000))
+				tx.Set([]byte(fmt.Sprintf("%s%04d", prefix, i)), bytes.Repeat([]byte{byte('a' + i%26)}, 1000))
 			}
 		})
 		f := mappedFixture{prefix: []byte("tg_mapped"), n: 20}
@@ -77,12 +93,14 @@ func TestRequestTranscriptGate(t *testing.T) {
 				tx.Set(f.recordKey(i), []byte(fmt.Sprintf("record-%08d", i)))
 			}
 		})
-		g.runAll(transcriptCases(prefix, f, 1))
+		cases := transcriptCases(prefix, f, 1)
+		g.runAll(cases)
 
-		// Faults hit only the storage connection, so the relocation's location
-		// requests pass through and are part of the compared transcript.
+		// One process serves storage, proxies and coordination here, so a fault
+		// targets a reply by its token: only the reply to a storage request the
+		// arm sent is replaced or dropped, once.
 		sd.armAddr(storageAddrFor(t, g.db, ctx, prefix))
-		for _, c := range transcriptCases(prefix, f, 1) {
+		for _, c := range cases {
 			if !c.faultable {
 				continue
 			}
@@ -97,11 +115,10 @@ func TestRequestTranscriptGate(t *testing.T) {
 				fc := c
 				fc.name = c.name + "/" + fault.name
 				fc.setup = fault.setup
-				fc.warmLocations = true
-				fc.fault = func() (fired func() int, disarm func()) {
+				fc.fault = func() (injected func() int, disarm func()) {
 					var n atomic.Int32
-					sd.setIntercept(func(_ int, _ transport.UID, body []byte) ([]byte, bool) {
-						if n.Add(1) == 1 {
+					sd.setIntercept(func(_ int, token transport.UID, body []byte) ([]byte, bool) {
+						if g.rec.isStorageReply(token) && n.CompareAndSwap(0, 1) {
 							return fault.reply(body)
 						}
 						return body, false
@@ -111,10 +128,12 @@ func TestRequestTranscriptGate(t *testing.T) {
 				g.pair(fc)
 			}
 		}
+		g.negativeControls(prefix)
 	})
 }
 
-// readPath is one implementation of the gated entry points.
+// readPath is one implementation of the gated entry points. Each returns the
+// full rendering of its result.
 type readPath struct {
 	name          string
 	rangeRead     func(ctx context.Context, tx *Transaction, b, e []byte, limit, byteTarget int, reverse bool) (string, error)
@@ -123,59 +142,66 @@ type readPath struct {
 	mappedScan    func(ctx context.Context, tx *Transaction, b, e, mapper []byte, limit, byteTarget int, reverse bool) (string, error)
 	mappedSelect  func(ctx context.Context, tx *Transaction, b, e, mapper []byte, limits mappedRangeLimits, reverse bool) (string, error)
 	mappedExactly func(ctx context.Context, tx *Transaction, b, e, mapper []byte, limits mappedRangeLimits, reverse bool) (string, error)
+	mappedSkip    func(ctx context.Context, tx *Transaction, b, e, mapper []byte, limit, byteTarget int, skip int32, reverse bool) (string, error)
 }
 
-func renderKVs(kvs []KeyValue, more bool, readThrough []byte, err error) string {
-	keys := make([]string, len(kvs))
+func renderKVs(kvs []KeyValue, more bool, readThrough []byte) string {
+	var b strings.Builder
 	for i := range kvs {
-		keys[i] = fmt.Sprintf("%q/%d", kvs[i].Key, len(kvs[i].Value))
+		fmt.Fprintf(&b, "%q=%q\n", kvs[i].Key, kvs[i].Value)
 	}
-	return fmt.Sprintf("rows=%v more=%t readThrough=%q err=%v", keys, more, readThrough, err)
+	fmt.Fprintf(&b, "rows=%d more=%t readThrough=%q", len(kvs), more, readThrough)
+	return b.String()
 }
 
-func renderMapped(rows []MappedKeyValue, more bool, err error) string {
-	keys := make([]string, len(rows))
+func renderMapped(rows []MappedKeyValue, more bool) string {
+	var b strings.Builder
 	for i := range rows {
-		keys[i] = fmt.Sprintf("%q->%q", rows[i].Key, rows[i].GetValue.Key)
+		fmt.Fprintf(&b, "%+v\n", rows[i])
 	}
-	return fmt.Sprintf("rows=%v more=%t err=%v", keys, more, err)
+	fmt.Fprintf(&b, "rows=%d more=%t", len(rows), more)
+	return b.String()
 }
 
 var legacyReadPath = readPath{
 	name: "legacy",
 	rangeRead: func(ctx context.Context, tx *Transaction, b, e []byte, limit, byteTarget int, reverse bool) (string, error) {
 		kvs, more, rt, err := tx.legacyGetRangeReadThrough(ctx, b, e, limit, byteTarget, reverse)
-		return renderKVs(kvs, more, rt, err), err
+		return renderKVs(kvs, more, rt), err
 	},
 	// The RYW-disabled route calls getRangeReadThrough directly (range_issue.go:181).
 	rywOffRange: func(ctx context.Context, tx *Transaction, b, e []byte, limit, byteTarget int, reverse bool) (string, error) {
 		kvs, more, _, err := tx.legacyGetRangeReadThrough(ctx, b, e, limit, byteTarget, reverse)
-		return renderKVs(kvs, more, nil, err), err
+		return renderKVs(kvs, more, nil), err
 	},
 	getKey: func(ctx context.Context, tx *Transaction, key []byte, orEqual bool, offset int32) (string, error) {
 		k, fallback, err := tx.legacyGetKeyForRange(ctx, key, orEqual, offset)
-		return fmt.Sprintf("key=%q fallback=%t err=%v", k, fallback, err), err
+		return fmt.Sprintf("key=%q fallback=%t", k, fallback), err
 	},
 	mappedScan: func(ctx context.Context, tx *Transaction, b, e, mapper []byte, limit, byteTarget int, reverse bool) (string, error) {
 		if err := tx.ensureReadVersion(ctx); err != nil {
 			return "", err
 		}
 		rows, more, err := tx.legacyGetMappedRangeImpl(ctx, b, e, mapper, limit, byteTarget, reverse)
-		return renderMapped(rows, more, err), err
+		return renderMapped(rows, more), err
 	},
 	mappedSelect: func(ctx context.Context, tx *Transaction, b, e, mapper []byte, limits mappedRangeLimits, reverse bool) (string, error) {
 		if err := tx.ensureReadVersion(ctx); err != nil {
 			return "", err
 		}
 		res, err := tx.legacyGetMappedRangeSelectors(ctx, mappedSelectorFGE(b), mappedSelectorFGE(e), mapper, limits, reverse)
-		return renderMapped(res.rows, res.more, err), err
+		return renderMapped(res.rows, res.more), err
 	},
 	mappedExactly: func(ctx context.Context, tx *Transaction, b, e, mapper []byte, limits mappedRangeLimits, reverse bool) (string, error) {
 		if err := tx.ensureReadVersion(ctx); err != nil {
 			return "", err
 		}
 		res, err := tx.legacyGetMappedRangeSelectorExact(ctx, b, e, mapper, limits, reverse)
-		return renderMapped(res.rows, res.more, err), err
+		return renderMapped(res.rows, res.more), err
+	},
+	mappedSkip: func(ctx context.Context, tx *Transaction, b, e, mapper []byte, limit, byteTarget int, skip int32, reverse bool) (string, error) {
+		rows, more, err := tx.legacyGetMappedRangeWithByteTargetAndSkip(ctx, b, e, mapper, limit, byteTarget, skip, reverse)
+		return renderMapped(rows, more), err
 	},
 }
 
@@ -183,16 +209,16 @@ var currentReadPath = readPath{
 	name: "current",
 	rangeRead: func(ctx context.Context, tx *Transaction, b, e []byte, limit, byteTarget int, reverse bool) (string, error) {
 		kvs, more, rt, err := tx.getRangeReadThrough(ctx, b, e, limit, byteTarget, reverse)
-		return renderKVs(kvs, more, rt, err), err
+		return renderKVs(kvs, more, rt), err
 	},
 	rywOffRange: func(ctx context.Context, tx *Transaction, b, e []byte, limit, byteTarget int, reverse bool) (string, error) {
 		tx.SetReadYourWritesDisable()
 		kvs, more, err := tx.GetRangeWithByteTarget(ctx, b, e, limit, byteTarget, reverse)
-		return renderKVs(kvs, more, nil, err), err
+		return renderKVs(kvs, more, nil), err
 	},
 	getKey: func(ctx context.Context, tx *Transaction, key []byte, orEqual bool, offset int32) (string, error) {
 		k, fallback, err := tx.getKeyForRange(ctx, key, orEqual, offset)
-		return fmt.Sprintf("key=%q fallback=%t err=%v", k, fallback, err), err
+		return fmt.Sprintf("key=%q fallback=%t", k, fallback), err
 	},
 	mappedScan: func(ctx context.Context, tx *Transaction, b, e, mapper []byte, limit, byteTarget int, reverse bool) (string, error) {
 		rv, err := tx.operationReadVersion(ctx)
@@ -200,7 +226,7 @@ var currentReadPath = readPath{
 			return "", err
 		}
 		rows, more, err := tx.getMappedRangeImpl(ctx, b, e, mapper, limit, byteTarget, rv, reverse)
-		return renderMapped(rows, more, err), err
+		return renderMapped(rows, more), err
 	},
 	mappedSelect: func(ctx context.Context, tx *Transaction, b, e, mapper []byte, limits mappedRangeLimits, reverse bool) (string, error) {
 		rv, err := tx.operationReadVersion(ctx)
@@ -208,7 +234,7 @@ var currentReadPath = readPath{
 			return "", err
 		}
 		res, err := tx.getMappedRangeSelectors(ctx, mappedSelectorFGE(b), mappedSelectorFGE(e), mapper, limits, rv, reverse)
-		return renderMapped(res.rows, res.more, err), err
+		return renderMapped(res.rows, res.more), err
 	},
 	mappedExactly: func(ctx context.Context, tx *Transaction, b, e, mapper []byte, limits mappedRangeLimits, reverse bool) (string, error) {
 		rv, err := tx.operationReadVersion(ctx)
@@ -216,7 +242,11 @@ var currentReadPath = readPath{
 			return "", err
 		}
 		res, err := tx.getMappedRangeSelectorExact(ctx, b, e, mapper, limits, rv, reverse)
-		return renderMapped(res.rows, res.more, err), err
+		return renderMapped(res.rows, res.more), err
+	},
+	mappedSkip: func(ctx context.Context, tx *Transaction, b, e, mapper []byte, limit, byteTarget int, skip int32, reverse bool) (string, error) {
+		rows, more, err := tx.GetMappedRangeWithByteTargetAndSkip(ctx, b, e, mapper, limit, byteTarget, skip, reverse)
+		return renderMapped(rows, more), err
 	},
 }
 
@@ -228,11 +258,9 @@ type transcriptCase struct {
 	minStorage int
 	faultable  bool
 	setup      func(tx *Transaction)
-	fault      func() (fired func() int, disarm func())
-	// warmLocations runs the case with every shard located, so a fault aimed at
-	// the first reply on the storage connection hits a storage reply rather
-	// than a location reply (one process serves both on a single-process cluster).
-	warmLocations bool
+	// fault arms a fault for one run and reports how many storage replies it
+	// changed; each faulted arm must change exactly one.
+	fault func() (injected func() int, disarm func())
 }
 
 // transcriptCases is the matrix of RFC-262 S2. crossShards is the number of
@@ -313,6 +341,25 @@ func transcriptCases(prefix []byte, f mappedFixture, crossShards int) []transcri
 					},
 					minStorage: minStorage,
 				})
+			// The public mapped entry: Skip 0 takes the exact scan, a positive Skip
+			// resolves its offset with native getKeys and then reads through the
+			// selector loop or, after a partial resolution, the exact fallback
+			// (mappedrange.go:323, mappedrange_skip.go:15). A Skip past the data
+			// resolves past the range and reads nothing.
+			for _, skip := range []int32{0, 1, 7, 1000} {
+				minSkipStorage := 1
+				if skip == 0 && lim.limit == 0 {
+					minSkipStorage = crossShards
+				}
+				cases = append(cases, transcriptCase{
+					name: fmt.Sprintf("mapped-skip/reverse=%t/limit=%d/skip=%d", reverse, lim.limit, skip),
+					run: func(ctx context.Context, p readPath, tx *Transaction) (string, error) {
+						return p.mappedSkip(ctx, tx, mb, me, mapper, lim.limit, lim.bytes, skip, reverse)
+					},
+					minStorage: minSkipStorage,
+					faultable:  lim.limit == 0 && skip == 7,
+				})
+			}
 		}
 	}
 	return cases
@@ -352,8 +399,13 @@ func (g *transcriptGate) seed(fn func(tx *Transaction)) {
 // replica that is eligible soonest (soonestEligible, loadbalance.go:166-182).
 func (g *transcriptGate) layout(t *testing.T) string {
 	t.Helper()
-	locs := g.locateAll(t)
-	g.db.db.locCache.invalidateRange([]byte{}, []byte{0xff, 0xff}, NoTenantID)
+	all := []byte{0xff, 0xff}
+	g.db.db.locCache.invalidateRange([]byte{}, all, NoTenantID)
+	locs, err := g.db.db.locCache.locateRange(g.db.db, g.ctx, []byte{}, []byte{0xff}, 10000, false, NoTenantID, types.SpanContext{})
+	g.db.db.locCache.invalidateRange([]byte{}, all, NoTenantID)
+	if err != nil {
+		t.Fatalf("layout: %v", err)
+	}
 	var b strings.Builder
 	addrs := map[string]bool{}
 	for _, l := range locs {
@@ -376,17 +428,6 @@ func (g *transcriptGate) layout(t *testing.T) string {
 	}
 	q.mu.Unlock()
 	return b.String()
-}
-
-// locateAll fills the location cache with every shard.
-func (g *transcriptGate) locateAll(t *testing.T) []LocationResult {
-	t.Helper()
-	g.db.db.locCache.invalidateRange([]byte{}, []byte{0xff, 0xff}, NoTenantID)
-	locs, err := g.db.db.locCache.locateRange(g.db.db, g.ctx, []byte{}, []byte{0xff}, 10000, false, NoTenantID, types.SpanContext{})
-	if err != nil {
-		t.Fatalf("locate all: %v", err)
-	}
-	return locs
 }
 
 // requireShards waits until [begin, end) spans at least n shards: a gate that
@@ -413,72 +454,227 @@ func (g *transcriptGate) runAll(cases []transcriptCase) {
 	}
 }
 
-// pair runs c through both paths at one read version with a cold location
-// cache each time. Data distribution can move a shard between the two runs;
-// a mismatch counts only when the shard map was the same before and after.
-func (g *transcriptGate) pair(c transcriptCase) {
-	g.t.Run(c.name, func(t *testing.T) {
-		for attempt := 1; ; attempt++ {
-			before := g.layout(t)
-			rvTx := g.db.CreateTransaction()
-			rv, err := rvTx.GetReadVersion(g.ctx)
-			rvTx.Cancel()
-			if err != nil {
-				t.Fatalf("read version: %v", err)
-			}
-			legacyReqs, legacyRes := g.run(t, c, legacyReadPath, rv)
-			currentReqs, currentRes := g.run(t, c, currentReadPath, rv)
-			after := g.layout(t)
-			same := legacyRes == currentRes && strings.Join(legacyReqs, "\n") == strings.Join(currentReqs, "\n")
-			if !same && before != after && attempt < 5 {
-				t.Logf("attempt %d: shard map moved during the pair; retrying", attempt)
-				continue
-			}
-			if !same {
-				t.Fatalf("transcripts differ\nlegacy result:  %s\ncurrent result: %s\nlegacy requests:\n%s\ncurrent requests:\n%s",
-					legacyRes, currentRes, strings.Join(legacyReqs, "\n"), strings.Join(currentReqs, "\n"))
-			}
-			storage := 0
-			for _, r := range legacyReqs {
-				if !strings.HasPrefix(r, "GetKeyServerLocations") {
-					storage++
-				}
-			}
-			if storage < c.minStorage {
-				t.Fatalf("%d storage requests, want >= %d:\n%s", storage, c.minStorage, strings.Join(legacyReqs, "\n"))
-			}
-			return
-		}
-	})
+// armResult is one run of a case.
+type armResult struct {
+	path     string
+	rec      recording
+	result   string
+	err      error
+	injected int
 }
 
-func (g *transcriptGate) run(t *testing.T, c transcriptCase, p readPath, rv int64) ([]string, string) {
-	t.Helper()
-	if c.warmLocations {
-		g.locateAll(t)
-	} else {
-		g.db.db.locCache.invalidateRange([]byte{}, []byte{0xff, 0xff}, NoTenantID)
+// pair runs c through both paths, with a preset read version and with a fresh
+// one. Data distribution can move a shard between the two runs; a mismatch
+// counts only when the shard map was the same before and after.
+func (g *transcriptGate) pair(c transcriptCase) {
+	for _, fresh := range []bool{false, true} {
+		name := c.name + "/preset-version"
+		if fresh {
+			name = c.name + "/fresh-version"
+		}
+		g.t.Run(name, func(t *testing.T) {
+			for attempt := 1; ; attempt++ {
+				before := g.layout(t)
+				rv := int64(0)
+				if !fresh {
+					rv = g.readVersion(t)
+				}
+				legacy := g.run(c, legacyReadPath, rv, nil)
+				current := g.run(c, currentReadPath, rv, nil)
+				err := compareArms(c, legacy, current)
+				if err != nil && attempt < 5 && g.layout(t) != before {
+					t.Logf("attempt %d: shard map moved during the pair; retrying", attempt)
+					continue
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+		})
 	}
+}
+
+func (g *transcriptGate) readVersion(t *testing.T) int64 {
+	t.Helper()
 	tx := g.db.CreateTransaction()
 	defer tx.Cancel()
-	tx.SetReadVersion(rv)
+	rv, err := tx.GetReadVersion(g.ctx)
+	if err != nil {
+		t.Fatalf("read version: %v", err)
+	}
+	return rv
+}
+
+// run executes c through p with a cold location cache, at rv when rv > 0 and
+// otherwise at the read version the transaction acquires itself. extra, when
+// set, runs after the read inside the recorded window (negative controls).
+func (g *transcriptGate) run(c transcriptCase, p readPath, rv int64, extra func(tx *Transaction)) armResult {
+	g.db.db.locCache.invalidateRange([]byte{}, []byte{0xff, 0xff}, NoTenantID)
+	tx := g.db.CreateTransaction()
+	defer tx.Cancel()
+	if rv > 0 {
+		tx.SetReadVersion(rv)
+	}
 	if c.setup != nil {
 		c.setup(tx)
 	}
-	var fired func() int
+	var injected func() int
 	if c.fault != nil {
 		var disarm func()
-		fired, disarm = c.fault()
+		injected, disarm = c.fault()
 		defer disarm()
 	}
 	g.rec.start()
 	res, err := c.run(g.ctx, p, tx)
-	reqs := g.rec.stop()
-	if err != nil {
-		t.Fatalf("%s: %v", p.name, err)
+	if extra != nil {
+		extra(tx)
 	}
-	if fired != nil && fired() == 0 {
-		t.Fatalf("%s: the fault never fired", p.name)
+	arm := armResult{path: p.name, rec: g.rec.stop(), result: res, err: err, injected: -1}
+	if injected != nil {
+		arm.injected = injected()
 	}
-	return reqs, res
+	return arm
+}
+
+// compareArms is the gate's verdict on one pair.
+func compareArms(c transcriptCase, legacy, current armResult) error {
+	for _, a := range []armResult{legacy, current} {
+		if len(a.rec.problems) > 0 {
+			return fmt.Errorf("%s: recorder problems (fails closed):\n%s", a.path, strings.Join(a.rec.problems, "\n"))
+		}
+		if a.err != nil {
+			return fmt.Errorf("%s: %v", a.path, a.err)
+		}
+		if a.injected != -1 && a.injected != 1 {
+			return fmt.Errorf("%s: the fault changed %d storage replies, want exactly 1", a.path, a.injected)
+		}
+	}
+	if legacy.result != current.result {
+		return fmt.Errorf("results differ at %s", firstDifference(legacy.result, current.result))
+	}
+	lr, cr := strings.Join(legacy.rec.requests, "\n"), strings.Join(current.rec.requests, "\n")
+	if lr != cr {
+		return fmt.Errorf("requests differ\nlegacy:\n%s\ncurrent:\n%s", lr, cr)
+	}
+	storage := 0
+	for _, r := range legacy.rec.requests {
+		if !strings.HasPrefix(r, "GetKeyServerLocationsRequest") && !strings.HasPrefix(r, "GetReadVersionRequest") {
+			storage++
+		}
+	}
+	if storage < c.minStorage {
+		return fmt.Errorf("%d storage requests, want >= %d:\n%s", storage, c.minStorage, lr)
+	}
+	return nil
+}
+
+func firstDifference(a, b string) string {
+	i := 0
+	for i < len(a) && i < len(b) && a[i] == b[i] {
+		i++
+	}
+	clip := func(s string) string {
+		lo, hi := max(0, i-80), min(len(s), i+80)
+		return fmt.Sprintf("%q", s[lo:hi])
+	}
+	return fmt.Sprintf("byte %d (lengths %d, %d)\nlegacy:  %s\ncurrent: %s", i, len(a), len(b), clip(a), clip(b))
+}
+
+// negativeControls run pairs the gate must reject, each through compareArms:
+// an extra GetValue, an extra GetReadVersion, a frame the recorder cannot
+// decode, a frame of an unexpected kind, and a partial frame left at the end
+// of the window. The frame controls feed the recording connection's parser
+// directly, since such bytes on a real socket would end the connection.
+func (g *transcriptGate) negativeControls(prefix []byte) {
+	pb, pe := prefix, append(append([]byte{}, prefix...), 0xff)
+	c := transcriptCase{
+		run: func(ctx context.Context, p readPath, tx *Transaction) (string, error) {
+			return p.rangeRead(ctx, tx, pb, pe, 5, ByteLimitUnlimited, false)
+		},
+		minStorage: 1,
+	}
+	frame := func(token transport.UID, body []byte) []byte {
+		out := binary.LittleEndian.AppendUint32(nil, uint32(16+len(body)))
+		out = append(out, make([]byte, 8)...) // checksum, not checked by the recorder
+		out = binary.LittleEndian.AppendUint64(out, token.First)
+		out = binary.LittleEndian.AppendUint64(out, token.Second)
+		return append(out, body...)
+	}
+	var injectedConn *recordingConn
+	someConn := func(t *testing.T) *recordingConn {
+		g.rec.mu.Lock()
+		defer g.rec.mu.Unlock()
+		for _, rc := range g.rec.conns {
+			rc.mu.Lock()
+			ok := rc.connected && len(rc.buf) == 0
+			rc.mu.Unlock()
+			if ok {
+				injectedConn = rc
+				return rc
+			}
+		}
+		t.Fatal("no connected recording connection")
+		return nil
+	}
+	commit := (&types.CommitTransactionRequest{}).MarshalFDB()
+	for _, nc := range []struct {
+		name  string
+		extra func(t *testing.T) func(tx *Transaction)
+		want  string
+	}{
+		{"extra-getvalue", func(*testing.T) func(*Transaction) {
+			return func(tx *Transaction) { _, _ = tx.getValue(g.ctx, pb) }
+		}, "requests differ"},
+		{"extra-read-version", func(*testing.T) func(*Transaction) {
+			return func(*Transaction) {
+				tx := g.db.CreateTransaction()
+				defer tx.Cancel()
+				_, _ = tx.GetReadVersion(g.ctx)
+			}
+		}, "requests differ"},
+		{"undecodable-frame", func(t *testing.T) func(*Transaction) {
+			rc := someConn(t)
+			return func(*Transaction) { rc.observe(frame(transport.UID{First: 7}, []byte{1, 2, 3})) }
+		}, "undecodable frame"},
+		{"unexpected-kind", func(t *testing.T) func(*Transaction) {
+			rc := someConn(t)
+			return func(*Transaction) { rc.observe(frame(transport.UID{First: 7}, commit)) }
+		}, "unexpected request kind"},
+		{"malformed-length", func(t *testing.T) func(*Transaction) {
+			rc := someConn(t)
+			return func(*Transaction) { rc.observe([]byte{4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}) }
+		}, "malformed frame"},
+		{"partial-frame", func(t *testing.T) func(*Transaction) {
+			rc := someConn(t)
+			return func(*Transaction) { rc.observe(frame(transport.UID{First: 7}, commit)[:20]) }
+		}, "partial frame"},
+	} {
+		g.t.Run("negative-control/"+nc.name, func(t *testing.T) {
+			injectedConn = nil
+			extra := nc.extra(t)
+			for _, fresh := range []bool{false, true} {
+				rv := int64(0)
+				if !fresh {
+					rv = g.readVersion(t)
+				}
+				legacy := g.run(c, legacyReadPath, rv, nil)
+				current := g.run(c, currentReadPath, rv, extra)
+				// Injected bytes never reached the socket; drop any partial frame
+				// they left so later windows parse the real stream.
+				if injectedConn != nil {
+					injectedConn.mu.Lock()
+					injectedConn.buf = nil
+					injectedConn.mu.Unlock()
+				}
+				if err := compareArms(c, legacy, legacy); err != nil {
+					t.Fatalf("control arm alone fails: %v", err)
+				}
+				err := compareArms(c, legacy, current)
+				if err == nil || !strings.Contains(err.Error(), nc.want) {
+					t.Fatalf("fresh=%t: gate verdict %v, want an error containing %q", fresh, err, nc.want)
+				}
+			}
+		})
+	}
 }

@@ -40,7 +40,7 @@ func TestStorageRequestsCarryOperationVersion(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	db, rec := openRecordedDB(t, ctx)
+	db, recorder := openRecordedDB(t, ctx)
 	prefix := t.Name() + "/"
 	seedPlumbingKeys(t, ctx, db, prefix, "a", "b", "c")
 	begin, end := []byte(prefix), []byte(prefix+"\xff")
@@ -54,7 +54,7 @@ func TestStorageRequestsCarryOperationVersion(t *testing.T) {
 	older := own - 1
 	mapper := []byte("\x01m\x00")
 
-	rec.start()
+	recorder.start()
 	if _, _, _, err := tx.getRangeImpl(ctx, begin, end, newRangeLimits(0, ByteLimitUnlimited), older, false); err != nil {
 		t.Fatalf("getRangeImpl: %v", err)
 	}
@@ -65,21 +65,29 @@ func TestStorageRequestsCarryOperationVersion(t *testing.T) {
 	// request is what is under test.
 	_, _, _ = tx.getMappedRangeImpl(ctx, begin, end, mapper, 0, ByteLimitUnlimited, older, false)
 	_, _ = tx.getMappedRangeSelectors(ctx, firstGreaterOrEqual(begin), firstGreaterOrEqual(end), mapper, newMappedRangeLimits(0, ByteLimitUnlimited), older, false)
-	reqs := rec.stop()
+	rec := recorder.stop()
+	if len(rec.problems) > 0 {
+		t.Fatalf("recorder problems:\n%s", strings.Join(rec.problems, "\n"))
+	}
 
+	// The recorder numbers versions in order of appearance; every storage
+	// request must name the same one, and it must be the older version.
+	if name := rec.versions[older]; name != "V1" || len(rec.versions) != 1 {
+		t.Errorf("versions sent %v, want only the operation's %d (the transaction's is %d)", rec.versions, older, own)
+	}
 	kinds := map[string]int{}
-	for _, r := range reqs {
+	for _, r := range rec.requests {
 		kind, _, _ := strings.Cut(r, " ")
-		if kind == "GetKeyServerLocations" {
+		if kind == "GetKeyServerLocationsRequest" {
 			continue
 		}
 		kinds[kind]++
-		if !strings.Contains(r, fmt.Sprintf(" Version:%d ", older)) {
-			t.Errorf("request not at the operation's version %d (transaction's is %d):\n%s", older, own, r)
+		if !strings.Contains(r, "Version=V1") {
+			t.Errorf("request not at the operation's version:\n%s", r)
 		}
 	}
-	if kinds["GetKeyValues"] != 1 || kinds["GetKey"] != 1 || kinds["GetMappedKeyValues"] != 2 {
-		t.Fatalf("storage requests %v, want 1 GetKeyValues, 1 GetKey, 2 GetMappedKeyValues:\n%s", kinds, strings.Join(reqs, "\n"))
+	if kinds["GetKeyValuesRequest"] != 1 || kinds["GetKeyRequest"] != 1 || kinds["GetMappedKeyValuesRequest"] != 2 || len(kinds) != 3 {
+		t.Fatalf("storage requests %v, want 1 GetKeyValues, 1 GetKey, 2 GetMappedKeyValues:\n%s", kinds, strings.Join(rec.requests, "\n"))
 	}
 }
 
@@ -112,10 +120,14 @@ func TestExactRangeMinRowsOnStorage(t *testing.T) {
 			}
 			rec.start()
 			kvs, more, _, err := tx.getRangeImpl(ctx, begin, end, rangeLimits{rows: -1, minRows: 3, bytes: 1}, rv, reverse)
-			reqs := rec.stop()
+			recorded := rec.stop()
 			if err != nil {
 				t.Fatal(err)
 			}
+			if len(recorded.problems) > 0 {
+				t.Fatalf("recorder problems:\n%s", strings.Join(recorded.problems, "\n"))
+			}
+			reqs := recorded.requests
 			first, second := prefix+"a", prefix+"a\x00"
 			wantLimit := int32(2)
 			if reverse {
@@ -123,20 +135,24 @@ func TestExactRangeMinRowsOnStorage(t *testing.T) {
 				wantLimit = -2
 			}
 			if len(kvs) != 3 || !more || string(kvs[0].Key) != first {
-				t.Fatalf("got %d rows (first %q), more=%t; want 3 rows from %q and more", len(kvs), kvs[0].Key, more, first)
+				var got []byte
+				if len(kvs) > 0 {
+					got = kvs[0].Key
+				}
+				t.Fatalf("got %d rows (first %q), more=%t; want 3 rows from %q and more", len(kvs), got, more, first)
 			}
 			if len(reqs) != 2 {
 				t.Fatalf("got %d requests, want 2:\n%s", len(reqs), strings.Join(reqs, "\n"))
 			}
-			if !strings.Contains(reqs[0], " LimitBytes:1 ") || !strings.Contains(reqs[0], fmt.Sprintf(" Limit:%d ", 80000*(1-2*boolInt(reverse)))) {
+			if !strings.Contains(reqs[0], " LimitBytes=1 ") || !strings.Contains(reqs[0], fmt.Sprintf(" Limit=%d ", 80000*(1-2*boolInt(reverse)))) {
 				t.Errorf("first request is not the caller's byte limit under the row ceiling:\n%s", reqs[0])
 			}
-			if !strings.Contains(reqs[1], fmt.Sprintf(" Limit:%d LimitBytes:80000 ", wantLimit)) {
+			if !strings.Contains(reqs[1], fmt.Sprintf(" Limit=%d LimitBytes=80000 ", wantLimit)) {
 				t.Errorf("second request does not ask for the %d missing rows without a byte limit:\n%s", wantLimit, reqs[1])
 			}
-			field := fmt.Sprintf("Begin:{Key:%v OrEqual:false Offset:1}", []byte(second))
+			field := fmt.Sprintf("Begin={Key:%v OrEqual:false Offset:1}", []byte(second))
 			if reverse {
-				field = fmt.Sprintf("End:{Key:%v OrEqual:false Offset:1}", []byte(second))
+				field = fmt.Sprintf("End={Key:%v OrEqual:false Offset:1}", []byte(second))
 			}
 			if !strings.Contains(reqs[1], field) {
 				t.Errorf("second request does not continue after the first reply (%s):\n%s", field, reqs[1])

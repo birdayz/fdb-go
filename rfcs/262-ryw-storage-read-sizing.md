@@ -777,7 +777,8 @@ It ports A10 for plain key-values, in this order:
    `conflict` by porting `getRangeFinished` (NAPI:4558-4590); with `true` it computes none.
    RYW routes always pass `true` (A2.3, RYW:759, 1063).
 
-Shared plumbing changes, all byte-identical for existing callers (phase 1):
+Shared plumbing changes, none of which changes an existing caller's requests (phase 1;
+request-field equality within the C `int` limit domain, S2):
 - `rangeRPCOps.build` and `buildGetKeyValuesRequest` (`readpath.go:1226-1246`) take
   `KeySelector`s; byte-key callers pass `FGE(key)`.
 - `sendRangeRPC` (`readpath.go:991-1007`) takes `rangeLimits` and the read version and
@@ -795,7 +796,9 @@ Shared plumbing changes, all byte-identical for existing callers (phase 1):
 (`mappedrange_selectors.go:17-290`) are not moved onto `nativeGetRange`. They reach
 `sendRangeRPC` through the new signature with FGE selectors and
 `rangeLimits{rows, 1, bytes}` built from `mappedRangeLimits.requestLimits()`, so their
-requests are byte-identical (phase 1 gate). Their forward continuation is
+requests do not change (phase 1 gate). A positive skip resolves through `getKeyForRange`
+(`mappedrange_skip.go`), which acquires the transaction's cached read version per step as
+before; mapped reads with a skip are not single-capture until the mapped sender is ported. Their forward continuation is
 `FGE(keyAfter(last))` (`mappedrange_selectors.go:179`) where NativeAPI sends
 `firstGreaterThan(last)` (NAPI:4850); that divergence predates this RFC and is recorded in
 TODO.md for a follow-up that ports the mapped sender and changes those bytes on purpose.
@@ -1233,16 +1236,38 @@ coalescing adjacent clears), evidence it compiled, and the case that failed.
 
 **Request-transcript gate (phase 1).** The phase-1 PR's first commit adds
 `request_transcript_test.go` and a test-only copy of the pre-change `sendRangeRPC`,
-`buildGetKeyValuesRequest` and `rangeScanImpl`. The test runs each case twice on the same
-container and shard layout, once through the copy and once through the changed code, with
-`transport.CaptureWireLog` (`transport/wirelog.go:59`), and requires identical request
-bytes. Cases: plain range reads forward and reverse, row limits 1/5/unlimited, byte targets
-unlimited/256/4096/80000, on `multiShardEnv` (`multishard_test.go`, both shard-size regimes)
-and on one shard; `wrong_shard_server` and reply-timeout injection through the simulated
-transport (`simtransport_test.go`), which drives the exact-range relocation; selector
-getKey across shards; mapped ranges through `getMappedRangeSelectors`, the positive-skip
-`getMappedRangeSelectorExact` fallback after an injected `wrong_shard_server`, and the
-`rangeScanImpl` mapped path; RYW-disabled ranges. The copy stays until phase 4 changes the
+`buildGetKeyValuesRequest`, `rangeScanImpl`, getKey and mapped senders
+(`request_transcript_legacy_test.go`). The test runs each case twice on the same container
+and shard layout, once through the copy and once through the changed code, and compares:
+
+- **Requests**, recorded at the client's send path (`wire_recorder_test.go`): every frame
+  the read sends, in order, of every kind a read may send (storage reads, location
+  lookups, `GetReadVersion`). Requests are decoded and compared field by field without the
+  reply token, span context and debug ID, with versions numbered in order of appearance
+  and body lengths kept. This is request-field equality, not literal byte identity. The
+  recorder fails closed: an undecodable frame, a request kind it does not know, a
+  malformed length and a trailing partial frame are each a gate failure. Its only
+  exclusions are named: frames to the ping token and `VoidReply` bodies.
+- **Results**, in full: every row's key and value, `more`, `readThrough`, a getKey's key
+  and fallback flag, and every mapped row with its secondary rows.
+- **Faults**: an injected `wrong_shard_server` or reply timeout is delivered to the reply
+  token of a recorded storage request, never to a location or read-version reply, and the
+  case fails unless exactly one injection happened in each arm.
+
+Every case runs with the read version preset and with a fresh transaction, so each arm's
+own `GetReadVersion` is in the compared transcript. Limits are compared within the C `int`
+domain: `newRangeLimits` clamps a Go limit above `MaxInt32`, which cannot change a wire
+limit capped at `REPLY_BYTE_LIMIT`. Cases: plain range reads forward and reverse, row
+limits 1/5/unlimited, byte targets unlimited/256/4096/80000, on `multiShardEnv`
+(`multishard_test.go`, both shard-size regimes) and on one shard; `wrong_shard_server` and
+reply-timeout injection through the proxy transport, which drives the exact-range
+relocation; selector getKey across shards; mapped ranges through
+`getMappedRangeSelectors`, positive mapped skips through
+`getMappedRangeWithByteTargetAndSkip` and the `getMappedRangeSelectorExact` fallback after
+an injected `wrong_shard_server`, and the `rangeScanImpl` mapped path; RYW-disabled
+ranges. Negative controls on the single-shard cluster prove the gate fails on an extra
+`GetValue`, an extra `GetReadVersion`, an undecodable frame, an unexpected request kind, a
+malformed length and a trailing partial frame. The copy stays until phase 4 changes the
 RYW-disabled route. The existing suites run too: the wire-golden test, `mappedrange_e2e_test`,
 `mapped_skip_regression_test`, `libfdbc/mappedrange_multishard_differential_test`,
 `range_shard_pair_differential_test`, `range_division_differential_test`,
