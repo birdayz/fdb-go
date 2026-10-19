@@ -11,6 +11,11 @@ import (
 // only admission waiters replace it with a private publication channel.
 var unobservedReadReady = make(chan struct{})
 
+// turnoverCause is the transaction_cancelled every turnover records, shared
+// because nothing writes an FDBError after construction or compares causes by
+// identity.
+var turnoverCause = &wire.FDBError{Code: ErrTransactionCancelled}
+
 // executionLease protects reset-owned state, not wire I/O ownership. Its identity
 // is immutable; readErrMu serializes accounting, while borrowers sample active.
 // A published token is never copied or reactivated.
@@ -214,7 +219,7 @@ func (tx *Transaction) turnoverLocked(old *readIncarnation) turnoverToken {
 	tx.readLife = nil
 	tx.readGen++
 	tx.readErr = nil
-	recordReadCauseLocked(old, &wire.FDBError{Code: ErrTransactionCancelled})
+	recordReadCauseLocked(old, turnoverCause)
 	cause := old.cause
 	tx.stopTimebombLocked(old)
 	first, native := old.nativeCommit, old.nativeCommits

@@ -29,8 +29,8 @@ func TestReadOnlyCommitFinishAllocations(t *testing.T) {
 			t.Fatal("Commit did not publish its lazy replacement")
 		}
 	})
-	if allocs != 10 {
-		t.Fatalf("TURNOVER_FINISH_ALLOC: %v allocations, want 10", allocs)
+	if allocs != 9 {
+		t.Fatalf("TURNOVER_FINISH_ALLOC: %v allocations, want 9", allocs)
 	}
 	t.Logf("TURNOVER_FINISH_ALLOC: %v", allocs)
 }

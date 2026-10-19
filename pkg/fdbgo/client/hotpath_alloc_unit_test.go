@@ -105,3 +105,29 @@ func TestCreateTransactionInlineSpan(t *testing.T) {
 		t.Fatalf("ALLOC_INITIAL_SPAN: CreateTransaction+Cancel = %v allocations, want <= 6", allocs)
 	}
 }
+
+// Not parallel: AllocsPerRun counts process-wide allocations. Turnover records
+// the shared immutable transaction_cancelled rather than a fresh one.
+func TestTurnoverSharedCause(t *testing.T) {
+	tx := &Transaction{}
+	defer tx.Cancel()
+	tx.readErrMu.Lock()
+	inc := tx.readIncarnationLocked()
+	tx.readErrMu.Unlock()
+	tx.startTurnover().finish()
+	if inc.cause != error(turnoverCause) || turnoverCause.Code != ErrTransactionCancelled {
+		t.Errorf("ALLOC_TURNOVER_CAUSE: turnover recorded %v, want the shared 1025", inc.cause)
+	}
+	if got := context.Cause(inc.ctx); got != error(turnoverCause) {
+		t.Errorf("retired incarnation cause = %v, want the shared 1025", got)
+	}
+	allocs := testing.AllocsPerRun(100, func() {
+		tx.readErrMu.Lock()
+		tx.readIncarnationLocked()
+		tx.readErrMu.Unlock()
+		tx.startTurnover().finish()
+	})
+	if allocs > 3 {
+		t.Fatalf("ALLOC_TURNOVER_CAUSE: incarnation+turnover = %v allocations, want <= 3", allocs)
+	}
+}
