@@ -86,11 +86,10 @@ its own normalization first.
 | Scenarios | libfdb_c | Go |
 |---|---|---|
 | `set_then_range` | storage reads sized by `getRangeValue` (80000 rows) | 10000 rows |
-| `getkey_across_clears`, `getkey_across_write_conflict_ranges`, `getkey_enclosed_write_conflict_ranges`, `getkey_adjacent_clears`, `getkey_adjacent_clears_reversed`, `getkey_adjacent_clears_no_conflict`, `snapshot_ryw_disabled_getkey` | **pending libfdb_c capture** (RFC-262 phase 2; no section in `libfdbc.golden` yet) | the Go sections |
 
 `set_then_range` is a TODO.md item (RFC-262 phase 3); the `getkey_*` scenarios
-match since RFC-262 phase 2. The pending sections need a lab `-update` run;
-until then they appear in the diff as additions. Fixed: `clear_range_then_set` (a clear split around the
+match since RFC-262 phase 2, including the scenarios it added for clears,
+write conflict ranges and the traversal budget. Fixed: `clear_range_then_set` (a clear split around the
 operations inside it), `clear_key` (the compact single-key clear encoding),
 `add_then_get` (read conflict ranges sorted and merged), `estimated_range_size`
 (`latestVersion` in the metrics request).

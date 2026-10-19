@@ -216,7 +216,7 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
     equal libfdb_c's. New phase-2 sections (`getkey_across_clears`,
     `getkey_across_write_conflict_ranges`, `getkey_enclosed_write_conflict_ranges`,
     `getkey_adjacent_clears{,_reversed,_no_conflict}`, `snapshot_ryw_disabled_getkey`)
-    are pending a lab libfdb_c capture (`scripts/wiregolden.sh -update`).
+    were captured from libfdb_c and match.
   - [ ] `set_then_range` (RFC-262 phase 3; RYW storage reads): libfdb_c sizes each storage read
     of a key selector or an RYW range read in `getRangeValue`/`getRangeValueBack`
     (limits 1, 2, -1, -3 in the scenarios; 80000 rows for an iterator-mode RYW read; a
