@@ -73,9 +73,11 @@ func (tx *Transaction) startNativeCommit(caller context.Context, inc *readIncarn
 
 func (n *nativeCommit) call(caller context.Context, input *commitInput) (result commitOutcome, err error, panicked any) {
 	defer func() {
-		panicked = recover()
-		pb := panicBackstop{name: "nativeCommit", db: input.db}
-		pb.recovered(panicked)
+		// The backstop escapes; build it only for an actual panic.
+		if panicked = recover(); panicked != nil {
+			pb := panicBackstop{name: "nativeCommit", db: input.db}
+			pb.recovered(panicked)
+		}
 	}()
 	if input.readState != nil {
 		// Caller cancellation applies through GRV only; native owner drop applies throughout.
