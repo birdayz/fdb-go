@@ -695,6 +695,7 @@ func grvBatcherIndex(flags uint32) int {
 type grvBatcher struct {
 	mu         sync.Mutex
 	pending    []grvRequest
+	spare      []grvRequest // a flushed batch's cleared storage, for the next batch
 	inFlight   int
 	batchTime  time.Duration
 	priority   uint32 // fixed priority bits for this batcher
@@ -912,6 +913,9 @@ func (b *grvBatcher) admit(db *database, req grvRequest) []grvRequest {
 	if b.inFlight > 0 {
 		b.overlapped = true
 	}
+	if b.pending == nil {
+		b.pending, b.spare = b.spare, nil
+	}
 	b.pending = append(b.pending, req)
 	if len(b.pending) == grvMaxBatchSize {
 		return b.detachLocked()
@@ -972,6 +976,17 @@ func (b *grvBatcher) expiredBatch() []grvRequest {
 	return b.detachLocked()
 }
 
+// recycleBatch keeps a flushed batch's storage (at most grvMaxBatchSize
+// requests) for the next batch, cleared so it retains no waiter.
+func (b *grvBatcher) recycleBatch(batch []grvRequest) {
+	clear(batch)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.spare == nil {
+		b.spare = batch[:0]
+	}
+}
+
 func (b *grvBatcher) finishBatch() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -1011,6 +1026,7 @@ func (b *grvBatcher) flushWithin(db *database, ctx context.Context, batch []grvR
 	// callback (not a standing loop) — there is nothing to re-arm, and the next
 	// queued request arms a fresh timer; the log is rate-limited, the metric
 	// counts every occurrence.
+	defer b.recycleBatch(batch) // after the backstop: nothing reads batch then
 	published := 0
 	defer b.recoverFlush(db, batch, &published)
 	retired := false

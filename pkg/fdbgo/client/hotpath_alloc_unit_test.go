@@ -131,3 +131,38 @@ func TestTurnoverSharedCause(t *testing.T) {
 		t.Fatalf("ALLOC_TURNOVER_CAUSE: incarnation+turnover = %v allocations, want <= 3", allocs)
 	}
 }
+
+// Not parallel: AllocsPerRun counts process-wide allocations. A batch's
+// storage is reused by the next batch once flushed, holding no waiter.
+func TestGRVBatchStorageReuse(t *testing.T) {
+	b := &grvBatcher{}
+	req := grvRequest{reply: make(chan grvResult, 1), tags: []string{"tag"}}
+	cycle := func() {
+		batch := b.admit(nil, req) // serial fast path: nothing in flight
+		if len(batch) != 1 || batch[0].reply != req.reply {
+			t.Fatalf("serial GRV was not dispatched alone: %d", len(batch))
+		}
+		b.finishBatch()
+		b.recycleBatch(batch)
+	}
+	cycle()
+	if len(b.spare) != 0 || cap(b.spare) == 0 {
+		t.Fatalf("flushed batch storage was not kept: len=%d cap=%d", len(b.spare), cap(b.spare))
+	}
+	if kept := b.spare[:1][0]; kept.reply != nil || kept.tags != nil {
+		t.Fatal("kept batch storage retains a completed waiter")
+	}
+	if allocs := testing.AllocsPerRun(100, cycle); allocs != 0 {
+		t.Fatalf("ALLOC_GRV_BATCH: %v allocations per serial batch, want 0", allocs)
+	}
+
+	// The real flush recycles too, after its panic backstop has failed the batch.
+	batch := b.admit(nil, req)
+	b.flush(nil, batch)
+	if result := <-req.reply; result.err == nil {
+		t.Fatal("flush without a database did not fail its waiter")
+	}
+	if b.inFlight != 0 || cap(b.spare) == 0 || b.spare[:1][0].reply != nil {
+		t.Fatal("flush did not recycle the cleared batch")
+	}
+}
