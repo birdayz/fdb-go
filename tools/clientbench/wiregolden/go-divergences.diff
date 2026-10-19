@@ -1,0 +1,25 @@
+--- golden
++++ go
+@@ -34,11 +34,11 @@
+ GetReadVersionRequest {TransactionCount=1 Flags=134217728 MaxVersion=-1}
+ == getkey_offset
+ GetReadVersionRequest {TransactionCount=1 Flags=134217728 MaxVersion=-1}
+-GetKeyValuesRequest {Begin={Key='<p>b\x00' Offset=1} End={Key='\xff' Offset=1} Version=V1 Limit=2 LimitBytes=80000 TenantInfo={TenantId=-1} SsLatestCommitVersions='\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff\xff\xff\xff\xff\xff\xff'}
++GetKeyValuesRequest {Begin={Key='<p>b\x00' Offset=1} End={Key='\xff' Offset=1} Version=V1 Limit=256 LimitBytes=80000 TenantInfo={TenantId=-1} SsLatestCommitVersions='\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff\xff\xff\xff\xff\xff\xff'}
+ GetReadVersionRequest {TransactionCount=1 Flags=134217728 MaxVersion=-1}
+ == clear_range_then_set
+ GetReadVersionRequest {TransactionCount=1 Flags=134217729 MaxVersion=-1}
+-CommitTransactionRequest {Transaction={ReadConflictRanges=[{Begin='\xff/SC/<random>' End='\xff/SC/<random>\x00'}] WriteConflictRanges=[{Begin='<p>m' End='<p>n'} {Begin='\xff/SC/<random>' End='\xff/SC/<random>\x00'}] Mutations=[{MutType=1 Param1='<p>m' Param2='<p>m1'} {MutType=1 Param1='<p>m1\x00' Param2='<p>n'} {Param1='<p>m1' Param2='5'}] ReadSnapshot=V1} TenantInfo={TenantId=-1}}
++CommitTransactionRequest {Transaction={ReadConflictRanges=[{Begin='\xff/SC/<random>' End='\xff/SC/<random>\x00'}] WriteConflictRanges=[{Begin='<p>m' End='<p>n'} {Begin='\xff/SC/<random>' End='\xff/SC/<random>\x00'}] Mutations=[{MutType=1 Param1='<p>m' Param2='<p>n'} {Param1='<p>m1' Param2='5'}] ReadSnapshot=V1} TenantInfo={TenantId=-1}}
+ GetReadVersionRequest {TransactionCount=1 Flags=134217728 MaxVersion=-1}
+ == atomic_add
+ GetReadVersionRequest {TransactionCount=1 Flags=134217729 MaxVersion=-1}
+@@ -54,7 +54,7 @@
+ GetReadVersionRequest {TransactionCount=1 Flags=134217728 MaxVersion=-1}
+ == clear_key
+ GetReadVersionRequest {TransactionCount=1 Flags=134217729 MaxVersion=-1}
+-CommitTransactionRequest {Transaction={ReadConflictRanges=[{Begin='\xff/SC/<random>' End='\xff/SC/<random>\x00'}] WriteConflictRanges=[{Begin='<p>c' End='<p>c\x00'} {Begin='\xff/SC/<random>' End='\xff/SC/<random>\x00'}] Mutations=[{MutType=1 Param1='<p>c\x00' Param2=''}] ReadSnapshot=V1} TenantInfo={TenantId=-1}}
++CommitTransactionRequest {Transaction={ReadConflictRanges=[{Begin='\xff/SC/<random>' End='\xff/SC/<random>\x00'}] WriteConflictRanges=[{Begin='<p>c' End='<p>c\x00'} {Begin='\xff/SC/<random>' End='\xff/SC/<random>\x00'}] Mutations=[{MutType=1 Param1='<p>c' Param2='<p>c\x00'}] ReadSnapshot=V1} TenantInfo={TenantId=-1}}
+ GetReadVersionRequest {TransactionCount=1 Flags=134217728 MaxVersion=-1}
+ == two_gets
+ GetReadVersionRequest {TransactionCount=1 Flags=134217728 MaxVersion=-1}

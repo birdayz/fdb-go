@@ -1,0 +1,20 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "wiregolden",
+    srcs = ["wiregolden.go"],
+    importpath = "fdb.dev/tools/clientbench/internal/wiregolden",
+    visibility = ["//tools/clientbench:__subpackages__"],
+    deps = [
+        "//pkg/fdbgo/wire",
+        "//pkg/fdbgo/wire/types",
+        "//tools/clientbench/internal/wiretrace",
+    ],
+)
+
+go_test(
+    name = "wiregolden_test",
+    srcs = ["wiregolden_test.go"],
+    embed = [":wiregolden"],
+    deps = ["//pkg/fdbgo/wire/types"],
+)
