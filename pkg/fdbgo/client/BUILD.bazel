@@ -201,6 +201,13 @@ go_test(
     ],
 )
 
+# gazelle:exclude commit_alloc_unit_test.go
+go_test(
+    name = "commit_alloc_unit_test",
+    srcs = ["commit_alloc_unit_test.go"],
+    embed = [":client"],
+)
+
 # gazelle:exclude reply_error_alloc_unit_test.go
 go_test(
     name = "reply_error_alloc_unit_test",
