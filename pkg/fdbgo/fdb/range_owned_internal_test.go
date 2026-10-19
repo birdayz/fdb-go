@@ -61,12 +61,12 @@ func TestNativeExactRangeAllocations(t *testing.T) {
 			if nativeReads != samples+1 || exactReads != samples+1 || selectorReads != samples+1 || native <= 0 || selectorAllocs <= native {
 				t.Fatal("native range allocation controls did not execute")
 			}
-			if got := selectorAllocs - native; got != 19 {
-				t.Errorf("selector range overhead = %.0f allocations, want unchanged 19", got)
+			if got := selectorAllocs - native; got != 18 {
+				t.Errorf("selector range overhead = %.0f allocations, want unchanged 18", got)
 			}
-			// Two owned byte clones, the result, the first batch and the facade row slice.
-			if got := exactAllocs - native; got != 5 {
-				t.Errorf("native exact range overhead = %.0f allocations, want 5 (no private key/range reboxing)", got)
+			// Two owned byte clones, the result and the first batch; the rows are the client's.
+			if got := exactAllocs - native; got != 4 {
+				t.Errorf("native exact range overhead = %.0f allocations, want 4 (no private key/range reboxing)", got)
 			}
 		})
 	}

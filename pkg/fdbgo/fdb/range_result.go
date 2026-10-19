@@ -3,6 +3,7 @@ package fdb
 import (
 	"bytes"
 	"math"
+	"unsafe"
 
 	"fdb.dev/pkg/fdbgo/client"
 	"fdb.dev/pkg/fdbgo/internal/rangecheck"
@@ -193,11 +194,28 @@ func (rr goRangeResult) GetSliceWithError() ([]KeyValue, error) {
 		kvs = append(kvs, rest...)
 		remaining -= len(rest)
 	}
-	result := make([]KeyValue, len(kvs))
-	for i, kv := range kvs {
-		result[i] = KeyValue{Key: Key(kv.Key), Value: kv.Value}
+	return ownedKeyValues(kvs), nil
+}
+
+// KeyValue and client.KeyValue are both {[]byte, []byte}: equal sizes and
+// Value offsets, and both fields convert to []byte without a conversion.
+const (
+	_ = unsafe.Sizeof(KeyValue{}) - unsafe.Sizeof(client.KeyValue{})
+	_ = unsafe.Sizeof(client.KeyValue{}) - unsafe.Sizeof(KeyValue{})
+	_ = unsafe.Offsetof(KeyValue{}.Value) - unsafe.Offsetof(client.KeyValue{}.Value)
+	_ = unsafe.Offsetof(client.KeyValue{}.Value) - unsafe.Offsetof(KeyValue{}.Value)
+)
+
+var _ = func(a KeyValue, b client.KeyValue) [4][]byte { return [4][]byte{a.Key, a.Value, b.Key, b.Value} }
+
+// ownedKeyValues reinterprets rows the caller exclusively owns as the public
+// type without copying. PendingRange.Get returns a fresh copy per call and
+// append into it reallocates, so neither the cache nor another result aliases kvs.
+func ownedKeyValues(kvs []client.KeyValue) []KeyValue {
+	if len(kvs) == 0 {
+		return make([]KeyValue, 0)
 	}
-	return result, nil
+	return unsafe.Slice((*KeyValue)(unsafe.Pointer(unsafe.SliceData(kvs))), len(kvs))
 }
 
 // GetSliceOrPanic returns all key-value pairs or panics on error.

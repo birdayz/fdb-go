@@ -166,3 +166,18 @@ func TestGRVBatchStorageReuse(t *testing.T) {
 		t.Fatal("flush did not recycle the cleared batch")
 	}
 }
+
+// GetSliceWithError reuses PendingRange.Get's rows without a copy: each Get
+// must return storage no cache or earlier result shares.
+func TestPendingRangeGetReturnsOwnedRows(t *testing.T) {
+	p := &PendingRange{done: closedDone, kvs: []KeyValue{{Key: []byte("a"), Value: []byte("1")}}}
+	p.state.Store(pendingClaimed)
+	first, _, _ := p.Get()
+	second, _, _ := p.Get()
+	if len(first) != 1 || len(second) != 1 || cap(first) != 1 {
+		t.Fatalf("Get rows: len=%d/%d cap=%d", len(first), len(second), cap(first))
+	}
+	if &first[0] == &p.kvs[0] || &second[0] == &p.kvs[0] || &first[0] == &second[0] {
+		t.Fatal("PendingRange.Get returned rows another holder shares")
+	}
+}
