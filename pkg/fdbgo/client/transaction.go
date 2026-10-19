@@ -756,6 +756,19 @@ func (tx *Transaction) ensureReadVersionFlags(ctx context.Context, extraFlags ui
 	return tx.readEntryError(ctx)
 }
 
+// operationReadVersion is ensureReadVersion returning the version: C++ getRange and
+// getKey start the transaction and validate its version once (NativeAPI.actor.cpp:4617-4618),
+// and every request the operation sends carries that version.
+func (tx *Transaction) operationReadVersion(ctx context.Context) (int64, error) {
+	ctx, release := tx.opContext(ctx)
+	defer release()
+	readVersion, err := tx.readVersionForOperation(ctx, 0)
+	if err != nil {
+		return 0, err
+	}
+	return readVersion, tx.readEntryError(ctx)
+}
+
 // readVersionForOperation returns the GRV captured by this operation, not a
 // later read of the mutable handle. C++ RYWImpl::getReadVersion returns the
 // value from its completed future even if the handle is subsequently reset.

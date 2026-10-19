@@ -12,7 +12,7 @@ func (tx *Transaction) GetMappedRangeWithByteTargetAndSkip(ctx context.Context, 
 	return tx.getMappedRangeWithByteTargetAndSkip(ctx, begin, end, mapper, limit, byteTarget, skip, reverse)
 }
 
-func (tx *Transaction) getMappedRangeWithResolvedSkip(ctx context.Context, begin, end, mapper []byte, limits mappedRangeLimits, skip int32, reverse bool) (mappedRangeResult, error) {
+func (tx *Transaction) getMappedRangeWithResolvedSkip(ctx context.Context, begin, end, mapper []byte, limits mappedRangeLimits, skip int32, readVersion int64, reverse bool) (mappedRangeResult, error) {
 	if bytes.Compare(begin, end) >= 0 {
 		return mappedRangeResult{}, nil
 	}
@@ -24,6 +24,9 @@ func (tx *Transaction) getMappedRangeWithResolvedSkip(ctx context.Context, begin
 	for remaining != 0 {
 		offset, rest := mappedSkipResolutionStep(remaining)
 		// Native getKey adds neither a RYW overlay nor independent read conflicts.
+		// Each step acquires the transaction's (cached) read version itself, as
+		// before RFC-262, rather than using readVersion; both are the same
+		// cached version, so a mapped read with a skip is not single-capture.
 		resolved, fallback, err := tx.getKeyForRange(ctx, key, false, offset)
 		if err != nil {
 			return mappedRangeResult{}, err
@@ -41,9 +44,9 @@ func (tx *Transaction) getMappedRangeWithResolvedSkip(ctx context.Context, begin
 	}
 	// Mapped storage requests must not contain offsets that can invert the range.
 	if exact {
-		return tx.getMappedRangeSelectorExact(ctx, begin, end, mapper, limits, reverse)
+		return tx.getMappedRangeSelectorExact(ctx, begin, end, mapper, limits, readVersion, reverse)
 	}
-	return tx.getMappedRangeSelectors(ctx, mappedSelectorFGE(begin), mappedSelectorFGE(end), mapper, limits, reverse)
+	return tx.getMappedRangeSelectors(ctx, mappedSelectorFGE(begin), mappedSelectorFGE(end), mapper, limits, readVersion, reverse)
 }
 
 func mappedSkipResolutionStep(remaining int64) (offset int32, rest int64) {

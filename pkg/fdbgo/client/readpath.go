@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
 	"sync"
 	"time"
 
@@ -135,17 +134,19 @@ func (tx *Transaction) getKey(parentCtx context.Context, selectorKey []byte, orE
 func (tx *Transaction) getKeyForRange(parentCtx context.Context, selectorKey []byte, orEqual bool, offset int32) ([]byte, bool, error) {
 	ctx, cancel := tx.opContext(parentCtx)
 	defer cancel()
-	if err := tx.ensureReadVersion(ctx); err != nil {
+	readVersion, err := tx.operationReadVersion(ctx)
+	if err != nil {
 		return nil, false, err
 	}
 	if sp := tx.startOpSpan("fdbgo.getKey"); sp != nil { // RFC-115 §4 Layer 2 (C++ NAPI:getKey)
 		defer sp.End()
 	}
-	k, fallback, err := tx.getKeyImpl(ctx, selectorKey, orEqual, offset)
+	k, fallback, err := tx.getKeyImpl(ctx, readVersion, selectorKey, orEqual, offset)
 	return k, fallback, tx.mapReadError(ctx, err)
 }
 
-func (tx *Transaction) getKeyImpl(ctx context.Context, selectorKey []byte, orEqual bool, offset int32) ([]byte, bool, error) {
+// getKeyImpl sends every request at readVersion, the version its operation captured.
+func (tx *Transaction) getKeyImpl(ctx context.Context, readVersion int64, selectorKey []byte, orEqual bool, offset int32) ([]byte, bool, error) {
 	tx.hadRead.Store(true) // a read was issued — the rywDisabled GetKey choke (RFC-059)
 	// Three independent budgets, because getKey's loop iterates for two
 	// unrelated reasons: successful partial selector resolutions
@@ -188,7 +189,7 @@ func (tx *Transaction) getKeyImpl(ctx context.Context, selectorKey []byte, orEqu
 			return nil, false, fmt.Errorf("no storage servers for key")
 		}
 
-		replyKey, replyOrEqual, replyOffset, err := tx.sendGetKey(ctx, selectorKey, orEqual, offset, loc.Servers)
+		replyKey, replyOrEqual, replyOffset, err := tx.sendGetKey(ctx, readVersion, selectorKey, orEqual, offset, loc.Servers)
 		if err != nil {
 			// Reply timeout (slow-but-alive server): re-send, bounded, then a
 			// RETRYABLE transaction_too_old — same contract as getValue/
@@ -265,7 +266,7 @@ func keyResolutionNeedsRangeFallback(key []byte, orEqual bool, offset int32, loc
 // Returns (key, orEqual, offset, error). The caller must check offset==0 && orEqual
 // to determine if the selector is fully resolved. Matches C++ getKey() which uses
 // the reply's KeySelector to drive the resolution loop.
-func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqual bool, offset int32, servers []ServerInfo) ([]byte, bool, int32, error) {
+func (tx *Transaction) sendGetKey(ctx context.Context, readVersion int64, selectorKey []byte, orEqual bool, offset int32, servers []ServerInfo) ([]byte, bool, int32, error) {
 	servers, ok := tx.db.failMon.liveServers(servers, EndpointGetKey)
 	if !ok {
 		return nil, false, 0, tx.db.allAlternativesFailed(ctx)
@@ -276,9 +277,6 @@ func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqu
 	}
 
 	// Capture tx fields before closures (see sendGetValue comment).
-	tx.readVersionMu.Lock()
-	readVersion := tx.readVersion
-	tx.readVersionMu.Unlock()
 	lockAware := tx.lockAware || tx.readLockAware
 	tenantId := tx.tenantId
 	span := childSpanContext(tx.currentSpan()) // RFC-115 §4: per-op CHILD span context on the wire (C++ GetValueRequest(span.context):3677 — child of the tx span, not the tx span itself)
@@ -634,13 +632,14 @@ func (tx *Transaction) getRangeReadThrough(parentCtx context.Context, begin, end
 	tx.db.metrics.getRangeRequests.Add(1)
 	ctx, cancel := tx.opContext(parentCtx)
 	defer cancel()
-	if err := tx.ensureReadVersion(ctx); err != nil {
+	readVersion, err := tx.operationReadVersion(ctx)
+	if err != nil {
 		return nil, false, nil, err
 	}
 	if sp := tx.startOpSpan("fdbgo.getRange"); sp != nil { // RFC-115 §4 Layer 2 (C++ NAPI:getRange)
 		defer sp.End()
 	}
-	kvs, more, readThrough, err := tx.getRangeImpl(ctx, begin, end, limit, byteTarget, reverse)
+	kvs, more, readThrough, err := tx.getRangeImpl(ctx, begin, end, newRangeLimits(limit, byteTarget), readVersion, reverse)
 	return kvs, more, readThrough, tx.mapReadError(ctx, err)
 }
 
@@ -671,8 +670,9 @@ func (e *RangeMaterializationLimitError) Error() string {
 // semantics cannot drift between the plain and mapped paths — which is the
 // whole reason this is generic rather than duplicated.
 type rangeScanOps[T any] struct {
-	// send issues one shard-local request and parses its reply.
-	send func(ctx context.Context, begin, end []byte, limit int, byteTarget int, reverse bool, servers []ServerInfo) ([]T, bool, error)
+	// send issues one shard-local request at the scan's limits and read version
+	// and parses its reply.
+	send func(ctx context.Context, begin, end []byte, limits rangeLimits, readVersion int64, reverse bool, servers []ServerInfo) ([]T, bool, error)
 	// key returns the PRIMARY key of an element. For a mapped row this is the
 	// primary (index) row's key, never a secondary key: it drives shard
 	// re-query bounds, which are bounds in the primary range only.
@@ -691,13 +691,15 @@ var plainRangeScanOps = rangeScanOps[KeyValue]{
 	limitBytes: func(kv *KeyValue) int { return 8 + len(kv.Key) + len(kv.Value) },
 }
 
-func (tx *Transaction) getRangeImpl(ctx context.Context, begin, end []byte, limit int, byteTarget int, reverse bool) ([]KeyValue, bool, []byte, error) {
+func (tx *Transaction) getRangeImpl(ctx context.Context, begin, end []byte, limits rangeLimits, readVersion int64, reverse bool) ([]KeyValue, bool, []byte, error) {
 	ops := plainRangeScanOps
 	ops.send = tx.sendGetRange
-	return rangeScanImpl(tx, ctx, begin, end, limit, byteTarget, reverse, ops)
+	return rangeScanImpl(tx, ctx, begin, end, limits, readVersion, reverse, ops)
 }
 
-func rangeScanImpl[T any](tx *Transaction, ctx context.Context, begin, end []byte, limit int, byteTarget int, reverse bool, ops rangeScanOps[T]) ([]T, bool, []byte, error) {
+// rangeScanImpl is NativeAPI getExactRange over [begin, end), consuming limits as
+// replies arrive (NativeAPI.actor.cpp:4255-4444). Every request carries readVersion.
+func rangeScanImpl[T any](tx *Transaction, ctx context.Context, begin, end []byte, limits rangeLimits, readVersion int64, reverse bool, ops rangeScanOps[T]) ([]T, bool, []byte, error) {
 	tx.hadRead.Store(true) // a read was issued (RFC-059 poison signal)
 	// C++ getExactRange locates GET_RANGE_SHARD_LIMIT (=2, ClientKnobs.cpp:101) shards at a time
 	// (NativeAPI.actor.cpp:4272-4278) and the soft byte limit below depends on those pairs. Go
@@ -708,13 +710,9 @@ func rangeScanImpl[T any](tx *Transaction, ctx context.Context, begin, end []byt
 
 	var allKVs []T
 	var materializedBytes int64 // RFC-115 §2: bound total materialized bytes vs WithRangeByteCeiling
-	remaining := limit
-	if remaining <= 0 {
-		remaining = math.MaxInt // C++ ROW_LIMIT_UNLIMITED: 0 or negative = no limit
-	}
+	byteLimited := limits.hasByteLimit()
 	curBegin := begin
 	curEnd := end
-	bytesLeft := byteTarget // C++ limits.bytes after decrement
 	relocateRetries := 0
 	timeoutRetries := 0
 	// C++ getRange's own loop, before any getRangeFallback, reports readThrough when the
@@ -728,8 +726,9 @@ func rangeScanImpl[T any](tx *Transaction, ctx context.Context, begin, end []byt
 	//	// Soft byte limit - return results early if the user specified a byte limit and we got results
 	//	if (limits.hasSatisfiedMinRows() && output.size() > 0) { output.more = true; return output; }
 	//
-	// hasSatisfiedMinRows() is hasByteLimit() && minRows == 0 (:2875), and minRows starts at 1
-	// (FDBTypes.h GetRangeLimits ctor), so ANY non-empty reply satisfies it. C++ checks it before
+	// hasSatisfiedMinRows() is hasByteLimit() && minRows == 0 (:2875). A caller's own limits
+	// start with minRows 1 (FDBTypes.h GetRangeLimits ctor), so for them ANY non-empty reply
+	// satisfies it; a RYW request can ask for more (setRequestLimits). C++ checks it before
 	// re-querying a shard or moving to a location pair's second shard, but relocates after the
 	// second without checking (:4392-4407). A call whose first rows come from a pair's second
 	// shard therefore also reads the next pair's first, unless that shard's reply was cut short;
@@ -745,7 +744,7 @@ func rangeScanImpl[T any](tx *Transaction, ctx context.Context, begin, end []byt
 	// where C cuts 18 at a 4096-byte target — libfdbc:TestLibFDBC_ByteTargetCutIsNotTheClientSideBudget).
 	//
 	// EXACT falls out of this rather than being special-cased: mode_bytes_array[EXACT] is
-	// BYTE_LIMIT_UNLIMITED (fdb_c.cpp:1002), so byteTarget is unlimited, this can never fire,
+	// BYTE_LIMIT_UNLIMITED (fdb_c.cpp:1002), so the byte limit is unlimited, this can never fire,
 	// and the loop keeps absorbing across replies exactly as it did before.
 	//
 	// It is checked where the loop is about to fetch MORE data, never where the scan is
@@ -753,9 +752,9 @@ func rangeScanImpl[T any](tx *Transaction, ctx context.Context, begin, end []byt
 	// output.more = false (:4391-4400), so a range drained before its bytes run out still
 	// reports more=false; a check placed before that would label every completed byte-limited
 	// drain as having more.
-	softByteStop := func() bool { return byteTarget != ByteLimitUnlimited && len(allKVs) > 0 }
+	softByteStop := func() bool { return limits.hasSatisfiedMinRows() && len(allKVs) > 0 }
 
-	for remaining > 0 && bytes.Compare(curBegin, curEnd) < 0 {
+	for !limits.isReached() && bytes.Compare(curBegin, curEnd) < 0 {
 		// Get all shard locations for current range. C++ getKeyRangeLocations
 		// receives the reverse flag so the proxy returns shards in scan order.
 		locations, err := tx.db.locCache.locateRange(tx.db, ctx, curBegin, curEnd, getRangeShardLimit, reverse, tx.tenantId, tx.currentSpan())
@@ -769,7 +768,7 @@ func rangeScanImpl[T any](tx *Transaction, ctx context.Context, begin, end []byt
 		// C++ getExactRange iterates shard=0,1,2,... linearly. With reverse=true
 		// on the request, locations[0] is already the shard nearest end.
 		relocated := false
-		for shard := 0; shard < len(locations) && remaining > 0; shard++ {
+		for shard := 0; shard < len(locations) && !limits.isReached(); shard++ {
 			loc := locations[shard]
 
 			// Clamp shard boundaries to user's requested range.
@@ -797,8 +796,8 @@ func rangeScanImpl[T any](tx *Transaction, ctx context.Context, begin, end []byt
 
 			// Inner loop: re-query same shard while more=true (C++ stays on same
 			// shard index, mutates locations[shard].range in-place).
-			for remaining > 0 {
-				kvs, more, err := ops.send(ctx, shardBegin, shardEnd, remaining, bytesLeft, reverse, loc.Servers)
+			for !limits.isReached() {
+				kvs, more, err := ops.send(ctx, shardBegin, shardEnd, limits, readVersion, reverse, loc.Servers)
 				if err != nil {
 					// Reply timeout (a slow-but-alive server): the location is
 					// fine — re-send the SAME shard (no relocate), matching
@@ -851,7 +850,7 @@ func rangeScanImpl[T any](tx *Transaction, ctx context.Context, begin, end []byt
 				}
 				if firstReply {
 					firstReply = false
-					if byteTarget != ByteLimitUnlimited && len(kvs) > 0 && !more {
+					if byteLimited && len(kvs) > 0 && !more {
 						if !reverse && loc.ShardEnd != nil && bytes.Compare(loc.ShardEnd, curEnd) < 0 {
 							readThrough = shardEnd
 						} else if reverse && bytes.Compare(loc.ShardBegin, curBegin) > 0 {
@@ -866,7 +865,6 @@ func rangeScanImpl[T any](tx *Transaction, ctx context.Context, begin, end []byt
 				} else {
 					allKVs = append(allKVs, kvs...)
 				}
-				remaining -= len(kvs)
 
 				// RFC-115 §2: opt-in OOM ceiling. Checked AFTER each batch append so a
 				// runaway unbounded scan errors instead of OOM-ing; the overshoot is at
@@ -880,16 +878,16 @@ func rangeScanImpl[T any](tx *Transaction, ctx context.Context, begin, end []byt
 					}
 				}
 
-				if byteTarget != ByteLimitUnlimited {
+				size := 0
+				if limits.hasByteLimit() {
 					for i := range kvs {
-						bytesLeft -= ops.limitBytes(&kvs[i])
+						size += ops.limitBytes(&kvs[i])
 					}
-					bytesLeft = max(0, bytesLeft)
 				}
-				// C++ limits.isReached(): rows == 0 || (bytes == 0 && minRows == 0). A row
-				// or byte limit met reports more regardless of the shard's own flag
-				// (:4359-4362), and no request goes out with a zero byte budget.
-				if remaining <= 0 || (bytesLeft == 0 && len(allKVs) > 0) {
+				limits.decrement(len(kvs), size)
+				// A row or byte limit met reports more regardless of the shard's own flag
+				// (:4359-4362).
+				if limits.isReached() {
 					return allKVs, true, readThrough, nil
 				}
 
@@ -956,11 +954,11 @@ func rangeScanImpl[T any](tx *Transaction, ctx context.Context, begin, end []byt
 		}
 	}
 
-	return allKVs, remaining <= 0, readThrough, nil
+	return allKVs, limits.rows == 0, readThrough, nil
 }
 
-func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limit int, byteTarget int, reverse bool, servers []ServerInfo) ([]KeyValue, bool, error) {
-	return sendRangeRPC(tx, ctx, begin, end, limit, byteTarget, reverse, servers, rangeRPCOps[KeyValue]{
+func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limits rangeLimits, readVersion int64, reverse bool, servers []ServerInfo) ([]KeyValue, bool, error) {
+	return sendRangeRPC(tx, ctx, firstGreaterOrEqual(begin), firstGreaterOrEqual(end), limits, readVersion, reverse, servers, rangeRPCOps[KeyValue]{
 		endpoint: EndpointGetKeyValues,
 		build:    buildGetKeyValuesRequest,
 		putBuf:   func(bufp *[]byte) { getKeyValuesBufPool.Put(bufp) },
@@ -978,33 +976,20 @@ func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limi
 // and not the other.
 type rangeRPCOps[T any] struct {
 	endpoint int
-	build    func(begin, end []byte, version int64, limit int32, limitBytes int32, lockAware bool, tenantId int64, span types.SpanContext, replyToken transport.UID, serverToken transport.UID) ([]byte, *[]byte)
+	build    func(begin, end KeySelector, version int64, limit int32, limitBytes int32, lockAware bool, tenantId int64, span types.SpanContext, replyToken transport.UID, serverToken transport.UID) ([]byte, *[]byte)
 	putBuf   func(*[]byte)
 	parse    func([]byte) ([]T, bool, float64, error)
 }
 
-// byteTarget is the per-fetch BYTE target for this read (ByteLimitUnlimited when the streaming
+// limits.bytes is the per-fetch BYTE target left for this read (unlimited when the streaming
 // mode has none). It is not the same thing as replyByteLimit: that is CLIENT_KNOBS->REPLY_BYTE_LIMIT,
-// a flat ceiling on any single reply, while byteTarget is the mode's own, usually much smaller,
-// target — and it is the value the STORAGE SERVER truncates against, which is what actually
-// divides a scan into batches.
-func sendRangeRPC[T any](tx *Transaction, ctx context.Context, begin, end []byte, limit int, byteTarget int, reverse bool, servers []ServerInfo, ops rangeRPCOps[T]) ([]T, bool, error) {
-	// C++ transformRangeLimits (NativeAPI.actor.cpp:4223), called from BOTH range loops
-	// (getExactRange:4299, getRange:4681). Both dimensions are clamped to REPLY_BYTE_LIMIT:
-	// the row limit because "Can't get more than this many rows anyway", the byte limit
-	// because it is the hard per-reply ceiling.
-	wl := limit
-	if wl > replyByteLimit {
-		wl = replyByteLimit
-	}
-	wireLimit := int32(wl)
-	if reverse {
-		wireLimit = -wireLimit
-	}
-	wireLimitBytes := int32(replyByteLimit)
-	if byteTarget != ByteLimitUnlimited && byteTarget < replyByteLimit {
-		wireLimitBytes = int32(byteTarget)
-	}
+// a flat ceiling on any single reply, while the target is the mode's own, usually much smaller,
+// one — and it is the value the STORAGE SERVER truncates against, which is what actually
+// divides a scan into batches. The request is sent at readVersion, the version the read's
+// operation captured (NativeAPI.actor.cpp:4617-4618).
+func sendRangeRPC[T any](tx *Transaction, ctx context.Context, begin, end KeySelector, limits rangeLimits, readVersion int64, reverse bool, servers []ServerInfo, ops rangeRPCOps[T]) ([]T, bool, error) {
+	// C++ transformRangeLimits, called from BOTH range loops (getExactRange:4299, getRange:4681).
+	wireLimit, wireLimitBytes := transformRangeLimits(limits, reverse)
 	servers, ok := tx.db.failMon.liveServers(servers, ops.endpoint)
 	if !ok {
 		return nil, false, tx.db.allAlternativesFailed(ctx)
@@ -1016,9 +1001,6 @@ func sendRangeRPC[T any](tx *Transaction, ctx context.Context, begin, end []byte
 	}
 
 	// Capture tx fields before closures (see sendGetValue comment).
-	tx.readVersionMu.Lock()
-	readVersion := tx.readVersion
-	tx.readVersionMu.Unlock()
 	lockAware := tx.lockAware || tx.readLockAware
 	tenantId := tx.tenantId
 	span := childSpanContext(tx.currentSpan()) // RFC-115 §4: per-op CHILD span context on the wire (C++ GetValueRequest(span.context):3677 — child of the tx span, not the tx span itself)
@@ -1223,10 +1205,10 @@ func isServerTimeout(err error) bool {
 	return isReplyTimeout(err) || errors.Is(err, context.DeadlineExceeded)
 }
 
-func buildGetKeyValuesRequest(begin, end []byte, version int64, limit int32, limitBytes int32, lockAware bool, tenantId int64, span types.SpanContext, replyToken transport.UID, _ transport.UID) ([]byte, *[]byte) {
+func buildGetKeyValuesRequest(begin, end KeySelector, version int64, limit int32, limitBytes int32, lockAware bool, tenantId int64, span types.SpanContext, replyToken transport.UID, _ transport.UID) ([]byte, *[]byte) {
 	req := types.GetKeyValuesRequest{
-		Begin:                  types.KeySelectorRef{Key: begin, OrEqual: false, Offset: 1}, // firstGreaterOrEqual(begin)
-		End:                    types.KeySelectorRef{Key: end, OrEqual: false, Offset: 1},   // firstGreaterOrEqual(end)
+		Begin:                  begin.ref(),
+		End:                    end.ref(),
 		Version:                version,
 		Limit:                  limit,
 		LimitBytes:             limitBytes,

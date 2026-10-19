@@ -1180,13 +1180,18 @@ func (c *rywCache) fetchServer(ctx context.Context, begin, end []byte, limit, by
 // it and real cached rows are lost — silently, since the invariant still holds
 // and later reads just see a known-empty range.
 //
-// The read path cannot produce that pair. Its only two more=true returns
-// (readpath.go:761 and :819) both take more from `remaining <= 0`, and remaining
-// starts at the caller's positive limit and only ever decreases by rows
-// appended — so more=true implies rows were returned. The zero-row break at
-// readpath.go:778 is a different guard: it stops a misbehaving storage server
+// The read path cannot produce that pair. rangeScanImpl returns more=true in
+// four places: the two soft byte stops (readpath.go:794 and :916), which
+// require len(allKVs) > 0; isReached after a reply's decrement (:891); and the
+// final `limits.rows == 0` (:957). The last two need a limit that was not
+// reached on entry to reach zero, and decrement lowers rows and minRows only by
+// rows appended — the RYW range read's limits come from newRangeLimits
+// (readpath.go:642), which gives rows >= 1 (0 becomes unlimited; callers reject
+// rows below -1) and minRows = 1, and a byte limit alone is not reached until
+// minRows is. So more=true implies rows were returned. The zero-row break at
+// readpath.go:908 is a different guard: it stops a misbehaving storage server
 // that reports more=true with an empty batch from reaching the narrowing at
-// :787, which would index kvs[len(kvs)-1] on an empty slice. It bounds the
+// :921, which would index kvs[len(kvs)-1] on an empty slice. It bounds the
 // inner re-query loop; it is not what establishes the invariant relied on here.
 func (c *rywCache) cacheServerResult(fetchBegin, fetchEnd []byte, serverKVs []KeyValue, serverMore bool, reverse bool) {
 	c.cacheServerReply(fetchBegin, fetchEnd, serverKVs, serverMore, reverse, nil)

@@ -77,13 +77,14 @@ func mappedRangeShardSelectors(begin, end KeySelector, shard LocationResult, rev
 	return reqBegin, reqEnd, modified
 }
 
-func (tx *Transaction) sendGetMappedSelectors(ctx context.Context, begin, end KeySelector, mapper []byte, limits mappedRangeLimits, reverse bool, servers []ServerInfo) ([]MappedKeyValue, bool, error) {
+func (tx *Transaction) sendGetMappedSelectors(ctx context.Context, begin, end KeySelector, mapper []byte, limits mappedRangeLimits, readVersion int64, reverse bool, servers []ServerInfo) ([]MappedKeyValue, bool, error) {
 	// FDB 7.3.77 constructs a KeyRange before rejecting resolved inversion.
 	if !mappedSelectorIsFGE(begin) || !mappedSelectorIsFGE(end) || bytes.Compare(begin.Key, end.Key) >= 0 {
 		return nil, false, &wire.FDBError{Code: ErrInternalError}
 	}
 	rows, byteTarget := limits.requestLimits()
-	return sendRangeRPC(tx, ctx, begin.Key, end.Key, rows, byteTarget, reverse, servers, rangeRPCOps[MappedKeyValue]{
+	requestLimits := rangeLimits{rows: clampInt32(int64(rows)), minRows: 1, bytes: clampInt32(int64(byteTarget))}
+	return sendRangeRPC(tx, ctx, begin, end, requestLimits, readVersion, reverse, servers, rangeRPCOps[MappedKeyValue]{
 		endpoint: EndpointGetMappedKeyValues,
 		build:    buildGetMappedKeyValuesRequest(mapper),
 		putBuf:   func(bufp *[]byte) { getMappedKeyValuesBufPool.Put(bufp) },
@@ -110,7 +111,7 @@ func (tx *Transaction) appendMappedSelectorRows(result *mappedRangeResult, rows 
 
 // getMappedRangeSelectors retains NativeAPI's direct-read pagination after
 // client-side resolution. Nonpositive Skip uses the existing exact scanner.
-func (tx *Transaction) getMappedRangeSelectors(ctx context.Context, begin, end KeySelector, mapper []byte, limits mappedRangeLimits, reverse bool) (mappedRangeResult, error) {
+func (tx *Transaction) getMappedRangeSelectors(ctx context.Context, begin, end KeySelector, mapper []byte, limits mappedRangeLimits, readVersion int64, reverse bool) (mappedRangeResult, error) {
 	originalBegin, originalEnd, originalLimits := begin, end, limits
 	var output mappedRangeResult
 	var materializedBytes int64
@@ -132,12 +133,12 @@ func (tx *Transaction) getMappedRangeSelectors(ctx context.Context, begin, end K
 			loc.ShardEnd = allKeysEnd
 		}
 		reqBegin, reqEnd, modified := mappedRangeShardSelectors(begin, end, loc, reverse)
-		rows, more, err := tx.sendGetMappedSelectors(ctx, reqBegin, reqEnd, mapper, limits, reverse, loc.Servers)
+		rows, more, err := tx.sendGetMappedSelectors(ctx, reqBegin, reqEnd, mapper, limits, readVersion, reverse, loc.Servers)
 		if err != nil {
 			if isWrongShardServer(err) || isAllAlternativesFailed(err) || isMaybeDelivered(err) {
 				tx.db.locCache.invalidate(locationKey, tx.tenantId, backward)
 				if isWrongShardServer(err) {
-					return tx.getMappedRangeSelectorFallback(ctx, originalBegin, originalEnd, mapper, originalLimits, reverse)
+					return tx.getMappedRangeSelectorFallback(ctx, originalBegin, originalEnd, mapper, originalLimits, readVersion, reverse)
 				}
 				if err := sleepCtx(ctx, wrongShardRetryDelay); err != nil {
 					return mappedRangeResult{}, err
@@ -166,7 +167,7 @@ func (tx *Transaction) getMappedRangeSelectors(ctx context.Context, begin, end K
 		}
 		if !more {
 			if len(rows) == 0 {
-				return tx.getMappedRangeSelectorFallback(ctx, originalBegin, originalEnd, mapper, originalLimits, reverse)
+				return tx.getMappedRangeSelectorFallback(ctx, originalBegin, originalEnd, mapper, originalLimits, readVersion, reverse)
 			}
 			if reverse {
 				end = mappedSelectorFGE(loc.ShardBegin)
@@ -181,11 +182,11 @@ func (tx *Transaction) getMappedRangeSelectors(ctx context.Context, begin, end K
 	}
 }
 
-func (tx *Transaction) getMappedRangeSelectorFallback(ctx context.Context, begin, end KeySelector, mapper []byte, limits mappedRangeLimits, reverse bool) (mappedRangeResult, error) {
+func (tx *Transaction) getMappedRangeSelectorFallback(ctx context.Context, begin, end KeySelector, mapper []byte, limits mappedRangeLimits, readVersion int64, reverse bool) (mappedRangeResult, error) {
 	if bytes.Compare(begin.Key, end.Key) >= 0 {
 		return mappedRangeResult{}, nil
 	}
-	return tx.getMappedRangeSelectorExact(ctx, begin.Key, end.Key, mapper, limits, reverse)
+	return tx.getMappedRangeSelectorExact(ctx, begin.Key, end.Key, mapper, limits, readVersion, reverse)
 }
 
 // mappedExactLocations obtains the two clipped intervals used by getExactRange.
@@ -222,7 +223,7 @@ func (tx *Transaction) mappedExactLocations(ctx context.Context, begin, end []by
 
 // getMappedRangeSelectorExact is the positive-Skip fallback's NativeAPI:4255-4444
 // result-state machine, including the exact-only reverse More correction.
-func (tx *Transaction) getMappedRangeSelectorExact(ctx context.Context, begin, end, mapper []byte, limits mappedRangeLimits, reverse bool) (mappedRangeResult, error) {
+func (tx *Transaction) getMappedRangeSelectorExact(ctx context.Context, begin, end, mapper []byte, limits mappedRangeLimits, readVersion int64, reverse bool) (mappedRangeResult, error) {
 	var output mappedRangeResult
 	var materializedBytes int64
 	for {
@@ -235,7 +236,7 @@ func (tx *Transaction) getMappedRangeSelectorExact(ctx context.Context, begin, e
 		}
 		for shard := 0; ; {
 			loc := &locations[shard]
-			rows, more, err := tx.sendGetMappedSelectors(ctx, mappedSelectorFGE(loc.ShardBegin), mappedSelectorFGE(loc.ShardEnd), mapper, limits, reverse, loc.Servers)
+			rows, more, err := tx.sendGetMappedSelectors(ctx, mappedSelectorFGE(loc.ShardBegin), mappedSelectorFGE(loc.ShardEnd), mapper, limits, readVersion, reverse, loc.Servers)
 			if err != nil {
 				if isWrongShardServer(err) || isAllAlternativesFailed(err) || isMaybeDelivered(err) {
 					if reverse {
