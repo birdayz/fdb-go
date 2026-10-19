@@ -154,6 +154,15 @@ func TestTranscriptBoundaries(t *testing.T) {
 	}
 }
 
+// Literal bytes that look like a placeholder do not render as one.
+func TestTranscriptPlaceholderLookalikes(t *testing.T) {
+	got := transcript(t, []Request{marker("l"), get("p/a", 1), get("<p>a", 1), get(selfConflictPrefix+"<R1:16>", 1), marker("~end")}, []string{"l"})
+	want := "== l\nGetValueRequest {Key='<p>a' Version=V1}\nGetValueRequest {Key='\\x3cp\\x3ea' Version=V1}\nGetValueRequest {Key='\\xff/SC/\\x3cR1:16\\x3e' Version=V1}\n"
+	if got != want {
+		t.Fatalf("WIREGOLDEN_LOOKALIKE:\n%s\nwant\n%s", got, want)
+	}
+}
+
 func TestFileIDSkipsProtocolVersion(t *testing.T) {
 	plain := []byte{0, 0, 0, 0, 0x2a, 0, 0, 0}
 	versioned := append([]byte{1, 2, 3, 4, 5, 6, 0xDB, 0x0F}, plain...)

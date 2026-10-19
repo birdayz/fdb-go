@@ -64,7 +64,8 @@ var keyFields = map[string]bool{"Key": true, "Begin": true, "End": true, "Param1
 // randomFields hold random identities, normalized as a whole.
 var randomFields = map[string]bool{"IdempotencyId": true}
 
-// Version sentinels, flow/FDBTypes.h:575-576 (invalidVersion, latestVersion).
+// Version sentinels, fdbclient/include/fdbclient/FDBTypes.h:575-576 (invalidVersion,
+// latestVersion).
 const (
 	invalidVersion = -1
 	latestVersion  = -2
@@ -286,7 +287,8 @@ func (n *normalizer) bytes(b []byte, kind string) string {
 func escape(s string) string {
 	var out strings.Builder
 	for i := 0; i < len(s); i++ {
-		if c := s[i]; c >= 0x20 && c < 0x7f && c != '\\' && c != '\'' {
+		// < and > are escaped so literal bytes never read as <p> or <Rn:len>.
+		if c := s[i]; c >= 0x20 && c < 0x7f && c != '\\' && c != '\'' && c != '<' && c != '>' {
 			out.WriteByte(c)
 		} else {
 			fmt.Fprintf(&out, "\\x%02x", c)

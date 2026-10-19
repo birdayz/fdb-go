@@ -13,7 +13,8 @@
 # not deterministic, or a changed libfdb_c), or when the Go client's
 # differences from the golden are not exactly the known ones
 # (wiregolden/go-divergences.diff). Requires docker (wirecapture.sh), Bazel and
-# LIBFDB_C_DIR (default ~/.local/share/foundationdb/7.3.77/lib).
+# LIBFDB_C_DIR (default ~/.local/share/foundationdb/7.3.77/lib). BAZEL overrides
+# the Bazel command (default bazelisk).
 set -euo pipefail
 update=0
 [[ ${1:-} == -update ]] && { update=1; shift; }
@@ -27,13 +28,21 @@ root=$(cd "$here/../../.." && pwd)
 data=$here/../wiregolden
 lib=${LIBFDB_C_DIR:-$HOME/.local/share/foundationdb/7.3.77/lib}
 [[ -f $cluster ]] || { echo "wiregolden: no cluster file $cluster" >&2; exit 2; }
+bazel=${BAZEL:-bazelisk}
 cd "$root"
-bin() {
-  bazelisk build "$1" >/dev/null 2>&1 || bazelisk build "$1"
-  bazelisk cquery --output=files "$1" 2>/dev/null | head -1
-}
+# Build outside command substitution, so a failed build stops the script
+# instead of installing an older output.
 for t in //tools/clientbench/cmd/wgscen:wgscen_go //tools/clientbench/cmd/wgscen:wgscen_cgo //tools/clientbench/cmd/wiregolden; do
-  install -m755 "$(bin "$t")" "$out/$(basename "${t##*:}")"
+  if ! "$bazel" build "$t" >&2; then
+    echo "wiregolden: building $t failed" >&2
+    exit 2
+  fi
+  f=$("$bazel" cquery --output=files "$t" 2>/dev/null | head -1)
+  if [[ -z $f || ! -x $f ]]; then
+    echo "wiregolden: no executable for $t" >&2
+    exit 2
+  fi
+  install -m755 "$f" "$out/$(basename "${t##*:}")"
 done
 "$out/wgscen_go" -list >"$out/scenarios.txt"
 # diffu A B LABEL_A LABEL_B > OUT: 0 equal, 1 different; anything else is a failure.
