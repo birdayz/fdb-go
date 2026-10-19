@@ -32,8 +32,8 @@ func (tx *Transaction) getEstimatedRangeSizeBytesImpl(ctx context.Context, begin
 	if bytes.Compare(begin, end) > 0 {
 		return 0, &wire.FDBError{Code: ErrInvertedRange} // 2005
 	}
-	// This path bypasses GRV, but uses the same captured deferred-before-
-	// resetPromise entry verdict. Range construction above precedes dispatch.
+	// Without a tenant this path bypasses GRV, but uses the same captured
+	// deferred-before-resetPromise entry verdict. Range construction above precedes dispatch.
 	if err := tx.readEntryError(ctx); err != nil {
 		return 0, err
 	}
@@ -42,17 +42,9 @@ func (tx *Transaction) getEstimatedRangeSizeBytesImpl(ctx context.Context, begin
 	if err := tx.checkTimeout(ctx); err != nil {
 		return 0, err
 	}
-	// C++ passes the transaction state, and so starts the transaction and reads
-	// at its version, only for a tenant (ReadYourWrites.actor.cpp:1860-1863;
-	// NativeAPI.actor.cpp:7820-7824); otherwise it asks for the latest version
-	// and sends no GRV.
-	minVersion := LatestVersion
-	if tx.tenantId >= 0 {
-		v, err := tx.readVersionForOperation(ctx, 0)
-		if err != nil {
-			return 0, err
-		}
-		minVersion = v
+	minVersion, err := tx.metricsMinVersion(ctx)
+	if err != nil {
+		return 0, err
 	}
 	// C++ uses std::numeric_limits<int>::max() — get ALL locations at once.
 	const shardLimit = math.MaxInt32
@@ -118,6 +110,18 @@ func isFutureVersion(err error) bool {
 // the bytes field from the StorageMetrics reply. Uses min.bytes=0, max.bytes=-1
 // (reversed range) to get an immediate response instead of waiting for a
 // threshold change.
+// metricsMinVersion is the version a WaitMetricsRequest asks for. C++ passes
+// the transaction state, and so starts the transaction and reads at its
+// version, only for a tenant (ReadYourWrites.actor.cpp:1860-1863;
+// NativeAPI.actor.cpp:7820-7824); otherwise it asks for the latest version and
+// sends no GRV.
+func (tx *Transaction) metricsMinVersion(ctx context.Context) (int64, error) {
+	if tx.tenantId < 0 {
+		return LatestVersion, nil
+	}
+	return tx.readVersionForOperation(ctx, 0)
+}
+
 func (tx *Transaction) sendWaitMetrics(ctx context.Context, begin, end []byte, minVersion int64, servers []ServerInfo) (int64, error) {
 	for _, server := range servers {
 		conn, err := tx.db.getOrDial(ctx, server.Address)
