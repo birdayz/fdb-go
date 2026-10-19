@@ -587,3 +587,71 @@ func BenchmarkRYWPinnedClone(b *testing.B) {
 		})
 	}
 }
+
+// S1 case 14 (hermetic part): a getKey answered from the write map takes no read
+// version. The transaction has no database, so a GRV or a storage read would fail.
+func TestRYWLocalGetKeyTakesNoReadVersion(t *testing.T) {
+	t.Parallel()
+	tx := &Transaction{}
+	tx.Set([]byte("k"), []byte("v"))
+	tx.ClearRange([]byte("k\x00"), []byte("m"))
+	for _, sel := range []KeySelector{firstGreaterOrEqual([]byte("k")), {Key: []byte("k"), OrEqual: true, Offset: 0}} {
+		k, err := tx.GetKey(context.Background(), sel.Key, sel.OrEqual, sel.Offset)
+		if err != nil || string(k) != "k" {
+			t.Fatalf("GetKey(%s) = %q, %v; want k from the write map", selString(sel), k, err)
+		}
+	}
+	tx.readVersionMu.Lock()
+	has := tx.hasReadVersion
+	tx.readVersionMu.Unlock()
+	if has {
+		t.Fatal("a locally answered getKey acquired a read version")
+	}
+}
+
+// S1 case 13 for StartGetKey: every later mutation kind between issue and
+// completion leaves the requests and the result equal to the run without it; 60
+// later conflict ranges do not split the request (T6 shape).
+func TestRYWStartGetKeyIssueTimeIsolation(t *testing.T) {
+	t.Parallel()
+	later := map[string]func(tx *Transaction){
+		"none":         func(*Transaction) {},
+		"set":          func(tx *Transaction) { tx.Set([]byte("b5"), []byte("x")) },
+		"clear":        func(tx *Transaction) { tx.Clear([]byte("c")) },
+		"clearRange":   func(tx *Transaction) { _ = tx.ClearRange([]byte("b"), []byte("d")) },
+		"atomic":       func(tx *Transaction) { tx.Atomic(MutAddValue, []byte("b5"), pinNum(1)) },
+		"versionstamp": func(tx *Transaction) { tx.Atomic(MutSetVersionstampedValue, []byte("b5"), make([]byte, 14)) },
+		"bypass":       func(tx *Transaction) { tx.ryw.setBypassUnreadable(true) },
+		"conflicts": func(tx *Transaction) {
+			for i := 0; i < 60; i++ {
+				k := fmt.Sprintf("c%02d", i)
+				_ = tx.stateAddWriteConflictRange([]byte(k), []byte(k+"\x00"))
+			}
+		},
+	}
+	run := func(mutate func(tx *Transaction)) (string, string) {
+		tx := &Transaction{}
+		g := newGatedStorage("a", "b", "c", "d", "e")
+		tx.nativeRange = g.native
+		tx.Set([]byte("b1"), []byte("w"))
+		p := tx.StartGetKey(context.Background(), KeySelector{Key: []byte("a"), OrEqual: false, Offset: 3})
+		mutate(tx)
+		close(g.gate)
+		k, err := p.Get()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var reqs []string
+		for _, r := range g.m.requests {
+			reqs = append(reqs, reqString(r, false))
+		}
+		return string(k), strings.Join(reqs, "\n")
+	}
+	wantKey, wantReqs := run(later["none"])
+	for name, mutate := range later {
+		k, reqs := run(mutate)
+		if k != wantKey || reqs != wantReqs {
+			t.Errorf("%s after issue: key %q requests\n%s\nwant %q\n%s", name, k, reqs, wantKey, wantReqs)
+		}
+	}
+}
