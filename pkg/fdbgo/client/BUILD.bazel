@@ -35,6 +35,7 @@ go_library(
         "range_limits.go",
         "read_incarnation.go",
         "read_send.go",
+        "read_tags.go",
         "read_version_state.go",
         "readpath.go",
         "rpc.go",
@@ -207,6 +208,13 @@ go_test(
 go_test(
     name = "commit_alloc_unit_test",
     srcs = ["commit_alloc_unit_test.go"],
+    embed = [":client"],
+)
+
+# gazelle:exclude read_tags_unit_test.go
+go_test(
+    name = "read_tags_unit_test",
+    srcs = ["read_tags_unit_test.go"],
     embed = [":client"],
 )
 

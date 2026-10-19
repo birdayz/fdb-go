@@ -377,7 +377,12 @@ type transcriptGate struct {
 func newTranscriptGate(t *testing.T, ctx context.Context, cf *ClusterFile, dial transport.DialFunc) *transcriptGate {
 	t.Helper()
 	rec := &sendRecorder{}
-	db := newTestDatabase(t, ctx, cf, rec.wrap(dial))
+	// Never sample read tags: the legacy arm cannot send them, so a sampled
+	// request would differ from it by chance.
+	db, err := OpenDatabaseFromConfig(ctx, cf, WithDialFunc(rec.wrap(dial)), WithAPIVersion(730), withReadTagSampling(0, nil))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
 	t.Cleanup(func() { db.Close() })
 	// A hedge sends a second request after a load-dependent delay; it is not
 	// part of what either path decides.
