@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"encoding/binary"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/onsi/gomega"
 )
@@ -129,17 +131,78 @@ func (w *gatedWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// stop waits for a write in progress to finish.
+// stop waits for a write in progress to finish: with the writer blocked and
+// the capture already unpublished (stop has started), stop does not return
+// until the write is released.
 func TestCaptureWireLogStopWaitsForWrite(t *testing.T) {
 	w := &gatedWriter{entered: make(chan struct{}), release: make(chan struct{})}
 	entered := w.entered
 	stop := CaptureWireLog(w)
-	go LogSend(UID{First: 1}, []byte("body"))
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			close(w.release)
+		}
+	}
+	defer release() // never strand the blocked writer
+	wrote := make(chan struct{})
+	go func() { LogSend(UID{First: 1}, []byte("body")); close(wrote) }()
 	<-entered
-	stopped := make(chan bool)
-	go func() { stop(); stopped <- w.finished.Load() }()
-	close(w.release)
-	if !<-stopped {
+	stopped := make(chan struct{})
+	go func() { stop(); close(stopped) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for globalWireLog.Load() != nil {
+		if time.Now().After(deadline) {
+			t.Fatal("stop did not start")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	select {
+	case <-stopped:
 		t.Fatal("WIRELOG_STOP_WAIT: stop returned while a write was in progress")
+	case <-time.After(50 * time.Millisecond):
+	}
+	release()
+	for _, ch := range []chan struct{}{wrote, stopped} {
+		select {
+		case <-ch:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the write or stop did not finish after release")
+		}
+	}
+	if !w.finished.Load() {
+		t.Fatal("the write did not finish")
+	}
+}
+
+// Race-lane stress: frames logged concurrently with stop (run under -race).
+// After stop returns, nothing more is written. The two tests above are the
+// deterministic regressions.
+func TestCaptureWireLogStop(t *testing.T) {
+	var buf bytes.Buffer
+	stop := CaptureWireLog(&buf)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for range 1000 {
+				LogSend(UID{First: 1}, []byte("body"))
+				LogRecv(UID{First: 2}, []byte("reply"))
+			}
+		}()
+	}
+	close(start)
+	stop()
+	n := buf.Len() // safe to read: nothing writes to buf after stop
+	wg.Wait()
+	if buf.Len() != n {
+		t.Fatalf("WIRELOG_AFTER_STOP: %d bytes written after stop", buf.Len()-n)
+	}
+	if globalWireLog.Load() != nil {
+		t.Fatal("stop left the capture installed")
 	}
 }
