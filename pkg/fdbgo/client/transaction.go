@@ -407,6 +407,9 @@ type Transaction struct {
 	// (nil while unsampled — the C++ NoopTracer effect); lock order is
 	// readVersionMu → traceMu, never the reverse.
 	spanContext atomic.Pointer[types.SpanContext]
+	// initialSpan is CreateTransaction's span, written before tx is published
+	// and never again; later spans are fresh pointees.
+	initialSpan types.SpanContext
 	traceMu     sync.Mutex
 	txSpan      oteltrace.Span
 	traceCtx    context.Context

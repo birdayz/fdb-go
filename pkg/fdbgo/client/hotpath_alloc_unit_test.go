@@ -84,3 +84,24 @@ func TestOperationReleaseEndsEveryLease(t *testing.T) {
 		t.Fatalf("released operations kept leases: users=%d", users())
 	}
 }
+
+// Not parallel: AllocsPerRun counts process-wide allocations. A new
+// transaction's first span lives inline; a later span is a fresh pointee, so
+// the published first span is never written again.
+func TestCreateTransactionInlineSpan(t *testing.T) {
+	d := &Database{db: &database{}}
+	tx := d.CreateTransaction()
+	defer tx.Cancel()
+	if tx.spanContext.Load() != &tx.initialSpan || tx.currentSpan() != tx.initialSpan || tx.initialSpan.SpanID == 0 {
+		t.Error("ALLOC_INITIAL_SPAN: the first span is not the transaction's inline span")
+	}
+	first := tx.initialSpan
+	tx.regenerateSpan()
+	if p := tx.spanContext.Load(); p == &tx.initialSpan || *p == first || tx.initialSpan != first {
+		t.Fatal("regenerating the span wrote the published inline span")
+	}
+	allocs := testing.AllocsPerRun(100, func() { d.CreateTransaction().Cancel() })
+	if allocs > 6 {
+		t.Fatalf("ALLOC_INITIAL_SPAN: CreateTransaction+Cancel = %v allocations, want <= 6", allocs)
+	}
+}

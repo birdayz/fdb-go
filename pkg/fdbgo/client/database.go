@@ -1056,7 +1056,9 @@ func (d *Database) CreateTransaction() *Transaction {
 	}
 	// Generate the per-transaction trace span (RFC-115 §4) — a real, default-unsampled
 	// SpanContext stamped on every request, matching C++ (which never sends a zero span).
-	tx.regenerateSpan()
+	// No SPAN_PARENT can be set yet, so this is regenerateSpan's fresh-span branch.
+	tx.initialSpan = newSpanContext(d.db.tracingSampleRate)
+	tx.spanContext.Store(&tx.initialSpan)
 	return tx
 }
 
