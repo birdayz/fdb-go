@@ -147,8 +147,31 @@ func Decode(r io.Reader, serverPorts []uint16) (*Capture, error) {
 	return c, parseErr
 }
 
-func (c *Capture) add(f wiretrace.Frame) {
-	id, ok := fileID(f.Body)
+// DecodeWireLog decodes the sends of a binary wire log
+// (transport.SetWireLog): the client's requests, in the order it sent them.
+func DecodeWireLog(log []byte) (*Capture, error) {
+	c := &Capture{Other: map[uint32]int{}}
+	for len(log) > 0 {
+		if len(log) < 29 {
+			return nil, fmt.Errorf("wire log: truncated entry header")
+		}
+		dir, n := log[0], int(binary.LittleEndian.Uint32(log[25:29]))
+		if len(log) < 29+n {
+			return nil, fmt.Errorf("wire log: truncated entry body")
+		}
+		if dir == 'S' {
+			c.addBody(int64(binary.LittleEndian.Uint64(log[1:9])), log[29:29+n])
+		}
+		log = log[29+n:]
+	}
+	c.Complete = c.Undecodable == 0 && len(c.Requests) > 0
+	return c, nil
+}
+
+func (c *Capture) add(f wiretrace.Frame) { c.addBody(f.TimeNS, f.Body) }
+
+func (c *Capture) addBody(timeNS int64, body []byte) {
+	id, ok := fileID(body)
 	if !ok {
 		c.Undecodable++
 		return
@@ -156,17 +179,17 @@ func (c *Capture) add(f wiretrace.Frame) {
 	mk := requests[id]
 	if mk == nil {
 		c.Other[id]++
-		c.Requests = append(c.Requests, Request{TimeNS: f.TimeNS, Seq: len(c.Requests), Kind: fmt.Sprintf("FileID(%d)", id)})
+		c.Requests = append(c.Requests, Request{TimeNS: timeNS, Seq: len(c.Requests), Kind: fmt.Sprintf("FileID(%d)", id)})
 		return
 	}
-	r, err := wire.NewReader(f.Body)
+	r, err := wire.NewReader(body)
 	if err != nil {
 		c.Undecodable++
 		return
 	}
 	m := mk()
 	m.UnmarshalFromReader(r)
-	c.Requests = append(c.Requests, Request{TimeNS: f.TimeNS, Seq: len(c.Requests), Kind: reflect.TypeOf(m).Elem().Name(), Msg: m})
+	c.Requests = append(c.Requests, Request{TimeNS: timeNS, Seq: len(c.Requests), Kind: reflect.TypeOf(m).Elem().Name(), Msg: m})
 }
 
 // fileID returns the root file identifier of an FDB object-serialized body,

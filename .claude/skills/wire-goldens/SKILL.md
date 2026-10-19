@@ -23,16 +23,28 @@ the covered scenarios.
 
 | Path | What |
 |---|---|
-| `tools/clientbench/cmd/wgscen/main.go` | the scenarios; one binary per client (`wgscen_go`, `wgscen_cgo` with the `libfdbc` tag over `pkg/fdbgo/libfdbc`); `-list` prints their names |
+| `tools/clientbench/internal/wgscenarios` | the scenarios |
+| `tools/clientbench/cmd/wgscen` | runs them on one client per binary (`wgscen_go`, `wgscen_cgo` with the `libfdbc` tag over `pkg/fdbgo/libfdbc`); `-list` prints their names |
+| `tools/clientbench/wiregolden/golden_test.go` | the fast-lane check: the Go client's requests, recorded in process (`transport.SetWireLog`), must equal `go.golden` |
 | `tools/clientbench/internal/wiregolden` | pcap → decoded requests (the request types in its `requests` map, via `pkg/fdbgo/wire/types`) → normalized transcript, with boundary checks |
 | `tools/clientbench/cmd/wiregolden` | the transcript CLI (`-expect` takes the `-list` output) |
 | `tools/clientbench/scripts/wiregolden.sh` | build, capture both clients (`wirecapture.sh`, tcpdump in docker), render, compare |
 | `tools/clientbench/wiregolden/libfdbc.golden` | libfdb_c's transcript, the spec |
-| `tools/clientbench/wiregolden/go-divergences.diff` | the Go client's known differences, each a TODO.md item |
+| `tools/clientbench/wiregolden/go.golden` | the Go client's transcript |
+| `tools/clientbench/wiregolden/go-divergences.diff` | `diff -u libfdbc.golden go.golden`: the known differences, each a TODO.md item |
 
 Format, normalization and boundaries: `tools/clientbench/wiregolden/README.md`.
 
-## Run it
+## Fast lane
+
+`just test` runs `//tools/clientbench/wiregolden:wiregolden_test`: the scenarios on
+the Go client against a test container, compared with `go.golden`. A change that
+alters the Go client's requests fails it (`WIREGOLDEN_GO`, with the diff). If the
+change is intended (a divergence fix), regenerate the goldens with the lab run below
+and commit them with the change. The fast lane never regenerates anything and needs
+no libfdb_c.
+
+## Lab run (both clients, regenerates the goldens)
 
 Needs docker, an idle cluster (only the scenarios' traffic may reach its ports), and
 libfdb_c 7.3.77 (`LIBFDB_C_DIR`, default `~/.local/share/foundationdb/7.3.77/lib`).
@@ -58,8 +70,9 @@ Outputs per run: `OUTDIR/{cgo,go}/capture.pcap`, `OUTDIR/{cgo,go}.transcript`,
 
 ## Workflows
 
-**Check a client change.** Run before and after. A change in `go.diff` that you did not
-intend is a regression.
+**Check a client change.** The fast lane does it. For a change meant to alter the
+requests, run the lab check before and after; a change in `go.diff` you did not intend
+is a regression.
 
 **Investigate "what does libfdb_c send for X".** Add a scenario, run, and read its
 section in `OUTDIR/cgo.transcript`. Then find the C++ code that produces it (the 7.3.77
@@ -74,7 +87,7 @@ is still the spec.
    runs must agree), check that only the intended lines changed, and commit
    `go-divergences.diff` with the fix. The diff shrinking is the red→green evidence.
 
-**Add a scenario.** Append to `scenarios` in `wgscen/main.go`: one transaction, no
+**Add a scenario.** Append to `scenarios` in `internal/wgscenarios/scenarios.go`: one transaction, no
 goroutines, keys under the `\x02wg/d/` prefix, no time or randomness in keys or values.
 Seed data goes in the setup transaction, which is not compared. Run with `-update`, then
 review the new golden section line by line and the Go diff before committing.
@@ -101,8 +114,8 @@ marker, including libfdb_c's startup `GlobalConfigRefreshRequest`.
   `-update` would show it.
 - `SsLatestCommitVersions` and `MaxVersion` were constant on the local cluster; a
   configuration where they vary needs normalization first (README).
-- It needs docker and a live cluster, so it is a lab check, not a Bazel test target.
-  Run it at client-change and PR boundaries.
+- The libfdb_c side needs tcpdump (docker) and libfdb_c, so it is a lab run; the
+  fast lane checks the Go side against the committed goldens.
 
 ## Hard rules
 

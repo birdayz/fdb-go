@@ -304,3 +304,32 @@ func TestDecodeIncomplete(t *testing.T) {
 		}
 	}
 }
+
+func wireLogEntry(dir byte, body []byte) []byte {
+	e := make([]byte, 29, 29+len(body))
+	e[0] = dir
+	binary.LittleEndian.PutUint32(e[25:29], uint32(len(body)))
+	return append(e, body...)
+}
+
+// Only sends are requests; a truncated log is an error.
+func TestDecodeWireLog(t *testing.T) {
+	log := append(wireLogEntry('S', getBody(MarkerPrefix+"one")), wireLogEntry('R', []byte("reply"))...)
+	log = append(log, wireLogEntry('S', getBody("p/a"))...)
+	log = append(log, wireLogEntry('S', getBody(MarkerPrefix+"~end"))...)
+	c, err := DecodeWireLog(log)
+	if err != nil || !c.Complete || len(c.Requests) != 3 {
+		t.Fatalf("WIREGOLDEN_WIRELOG: %v, %+v", err, c)
+	}
+	if tr := transcript(t, c.Requests, []string{"one"}); tr != "== one\nGetValueRequest {Key='<p>a' Version=V1 SsLatestCommitVersions=''}\n" {
+		t.Fatalf("transcript %q", tr)
+	}
+	for _, bad := range [][]byte{log[:10], log[:len(log)-1]} {
+		if _, err := DecodeWireLog(bad); err == nil {
+			t.Fatalf("WIREGOLDEN_WIRELOG: a truncated log of %d bytes decoded", len(bad))
+		}
+	}
+	if c, err := DecodeWireLog(wireLogEntry('S', []byte{1, 2})); err != nil || c.Complete {
+		t.Fatal("WIREGOLDEN_WIRELOG: a log of undecodable sends is complete")
+	}
+}

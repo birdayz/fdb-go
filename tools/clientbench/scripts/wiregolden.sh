@@ -7,12 +7,14 @@
 #   PORTS: the cluster's fdbserver ports, comma-separated. Use an idle cluster:
 #   the transcript holds every request to those ports.
 #   -update runs libfdb_c twice, requires identical transcripts, and rewrites
-#   the golden from them and the known Go divergences from the Go run.
+#   the golden from them, and go.golden and the known Go divergences from the
+#   Go run.
 #
 # Fails when libfdb_c's transcript differs from the golden (a scenario that is
 # not deterministic, or a changed libfdb_c), or when the Go client's
 # differences from the golden are not exactly the known ones
-# (wiregolden/go-divergences.diff). Requires docker (wirecapture.sh), Bazel and
+# (wiregolden/go-divergences.diff, the diff of libfdbc.golden and go.golden).
+# The fast lane checks the Go side alone (wiregolden/golden_test.go). Requires docker (wirecapture.sh), Bazel and
 # LIBFDB_C_DIR (default ~/.local/share/foundationdb/7.3.77/lib). BAZEL overrides
 # the Bazel command (default bazelisk).
 set -euo pipefail
@@ -54,8 +56,9 @@ diffu() {
 }
 run() { # client name
   rm -rf "$out/$2"
+  # A scenario run takes seconds; an unreachable cluster would block forever.
   LD_LIBRARY_PATH=$lib WIRETRACE=true "$here/wirecapture.sh" "$out/$2" "$ports" -- \
-    "$out/wgscen_$1" -cluster-file "$cluster" >/dev/null
+    timeout 300 "$out/wgscen_$1" -cluster-file "$cluster" >/dev/null
   "$out/wiregolden" -pcap "$out/$2/capture.pcap" -server-ports "$ports" -expect "$out/scenarios.txt" >"$out/$2.transcript"
 }
 run cgo cgo
@@ -71,6 +74,7 @@ if ((update)); then
 fi
 diffu "$data/libfdbc.golden" "$out/go.transcript" golden go >"$out/go.diff" || true
 if ((update)); then
+  cp "$out/go.transcript" "$data/go.golden"
   cp "$out/go.diff" "$data/go-divergences.diff"
   echo "wiregolden: golden and known Go divergences updated"
   exit 0
@@ -78,6 +82,10 @@ fi
 status=0
 if ! diffu "$data/libfdbc.golden" "$out/cgo.transcript" golden libfdb_c; then
   echo "wiregolden: libfdb_c differs from the golden" >&2
+  status=1
+fi
+if ! diffu "$data/go.golden" "$out/go.transcript" go.golden go; then
+  echo "wiregolden: the Go client's requests differ from go.golden" >&2
   status=1
 fi
 if ! diffu "$data/go-divergences.diff" "$out/go.diff" known now; then

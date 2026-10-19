@@ -1,0 +1,9 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "wgscenarios",
+    srcs = ["scenarios.go"],
+    importpath = "fdb.dev/tools/clientbench/internal/wgscenarios",
+    visibility = ["//tools/clientbench:__subpackages__"],
+    deps = ["//pkg/fdbgo/fdb"],
+)

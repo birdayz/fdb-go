@@ -1,0 +1,18 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "wiregolden_test",
+    srcs = ["golden_test.go"],
+    data = [
+        "go.golden",
+        "go-divergences.diff",
+        "libfdbc.golden",
+    ],
+    deps = [
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/transport",
+        "//pkg/testcontainers/foundationdb",
+        "//tools/clientbench/internal/wgscenarios",
+        "//tools/clientbench/internal/wiregolden",
+    ],
+)

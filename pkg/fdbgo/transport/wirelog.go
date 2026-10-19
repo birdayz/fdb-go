@@ -49,6 +49,17 @@ func init() {
 	globalWireLog = &WireLog{w: f, binary: true}
 }
 
+// SetWireLog writes the wire log to w in the binary format, or turns it off
+// for a nil w. The send and receive paths read the log without
+// synchronization, so call it only while no connection is open.
+func SetWireLog(w io.Writer) {
+	if w == nil {
+		globalWireLog = nil
+		return
+	}
+	globalWireLog = &WireLog{w: w, binary: true}
+}
+
 // LogSend records an outbound frame.
 func LogSend(token UID, body []byte) {
 	if globalWireLog == nil {
