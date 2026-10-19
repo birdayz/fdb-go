@@ -3189,9 +3189,9 @@ func (tx *Transaction) stateReadTags() []string { return append([]string(nil), t
 
 // encodeTagSet serializes tags the way TagSet's dynamic_size_traits does
 // (TagThrottle.actor.h): each tag as a single length byte followed by its bytes,
-// concatenated, with no count prefix. Returns nil for an empty set so the caller
-// leaves the optional field absent, as C++ does (NativeAPI.actor.cpp:6815-6816
-// only assigns tagSet when the set is non-empty).
+// concatenated, with no count prefix. Returns nil for an empty set, so a commit
+// leaves its optional tagSet absent (NativeAPI.actor.cpp:6815-6816 assigns it only
+// when non-empty); a sampled read sends the empty set present (readTagSample).
 func encodeTagSet(tags []string) []byte {
 	if len(tags) == 0 {
 		return nil

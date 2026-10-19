@@ -43,6 +43,7 @@ func (tx *Transaction) sampleReadTags() readTagSample {
 	if tx.db == nil || !tx.db.sampleReadTags() {
 		return readTagSample{}
 	}
+	// Unsynchronized with SetAutoThrottleTag: TODO.md "Transaction options during in-flight operations".
 	return readTagSample{present: true, tags: encodeTagSet(tx.readTags)}
 }
 
