@@ -13,6 +13,102 @@ import (
 	"fdb.dev/pkg/fdbgo/wire/types"
 )
 
+// A completed mapped RPC must publish into its captured incarnation, including
+// when the admitting frame ended before its borrowed async read.
+func TestMappedRangeConflictPublicationAfterReset(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+	for _, skip := range []int32{0, 1} {
+		t.Run(fmt.Sprintf("skip=%d", skip), func(t *testing.T) {
+			fixture := newMappedFixture(t, 3)
+			fixture.seed(t, ctx, db, 1, func(int) []byte { return []byte("record") })
+			begin, end := fixture.indexRange()
+			mapper := fixture.getRangeMapper()
+			read := func(tx *Transaction, ctx context.Context) ([]MappedKeyValue, bool, error) {
+				if skip == 0 {
+					return tx.GetMappedRange(ctx, begin, end, mapper, 1, false)
+				}
+				return tx.GetMappedRangeWithByteTargetAndSkip(ctx, begin, end, mapper, 1, ByteLimitUnlimited, skip, false)
+			}
+			control := db.CreateTransaction()
+			rows, _, err := read(control, ctx)
+			control.Cancel()
+			if err != nil || len(rows) != 1 || !bytes.Equal(rows[0].Key, fixture.indexEntryKey(int(skip))) {
+				t.Fatalf("live mapped control = %+v, %v; want primary %q", rows, err, fixture.indexEntryKey(int(skip)))
+			}
+			if len(control.readConflicts) < 2 {
+				t.Fatalf("live mapped control recorded %d conflicts, want primary and secondary", len(control.readConflicts))
+			}
+			tx := db.CreateTransaction()
+			defer tx.Cancel()
+			entered := make(chan struct{})
+			release, resume := releaseGate(t)
+			defer resume()
+			var publications atomic.Int32
+			tx.beforeReadConflict = func() {
+				if publications.Add(1) == 1 {
+					close(entered)
+					<-release
+				}
+			}
+			operation, leave := tx.opContext(context.Background())
+			defer leave()
+			original := tx.readOperation(operation).inc
+			type result struct {
+				rows []MappedKeyValue
+				more bool
+				err  error
+			}
+			done := make(chan result, 1)
+			go func() {
+				rows, more, err := read(tx, operation)
+				done <- result{rows, more, err}
+			}()
+			select {
+			case <-entered:
+			case got := <-done:
+				t.Fatalf("mapped read completed before conflict publication: %+v", got)
+			case <-ctx.Done():
+				t.Fatal("mapped read never reached conflict publication")
+			}
+			leave()
+			resetDone := make(chan struct{})
+			go func() { tx.Reset(); close(resetDone) }()
+			select {
+			case <-resetDone:
+			case <-ctx.Done():
+				t.Fatal("Reset waited on the borrowed completed mapped read")
+			}
+			tx.readErrMu.Lock()
+			replacement := tx.readIncarnationLocked()
+			tx.readErrMu.Unlock()
+			if replacement == original || tx.readOperation(operation).inc != original {
+				t.Fatal("Reset did not separate the captured operation from its replacement")
+			}
+			resume()
+			select {
+			case got := <-done:
+				if code, _ := fdbErrorCode(got.err); code != ErrTransactionCancelled || len(got.rows) != 0 || got.more {
+					t.Fatalf("retired mapped read = %+v; want no rows and transaction_cancelled (1025)", got)
+				}
+			case <-ctx.Done():
+				t.Fatal("retired mapped read did not finish after publication resumed")
+			}
+			if n := publications.Load(); n != 1 {
+				t.Errorf("retired mapped read attempted %d publications, want 1", n)
+			}
+			tx.conflictMu.Lock()
+			defer tx.conflictMu.Unlock()
+			if len(tx.readConflicts) != 0 {
+				t.Fatalf("replacement inherited retired mapped conflicts: %+v", tx.readConflicts)
+			}
+		})
+	}
+}
+
 // Hold each real FDB read phase before the transport publishes its response.
 func TestMappedSkipPendingRetirementAcrossResolutionAndMappedRead(t *testing.T) {
 	t.Parallel()

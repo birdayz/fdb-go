@@ -46,6 +46,10 @@ const (
 	// transient one. C++ has no such cap (it relies on the transaction
 	// timeout); this is the bounded-client analog.
 	maxSelectorResolutionSteps = 1000
+	// maxRelocateRetries bounds a range read's relocations after wrong_shard_server,
+	// all_alternatives_failed or a maybe-delivered teardown; C++ relies on the
+	// transaction timeout (default 5s).
+	maxRelocateRetries = 5
 )
 
 // readTypeNormal is C++ ReadType::NORMAL (FDBTypes.h:1732, enum value 3) — the read-priority rank
@@ -94,11 +98,12 @@ func (tx *Transaction) pipelineReplyTimeout() time.Duration {
 // Returns ctx.Err() if the context was cancelled, nil otherwise.
 func sleepCtx(ctx context.Context, d time.Duration) error {
 	timer := time.NewTimer(d)
+	defer timer.Stop()
+	notifyParked(ctx) // the delay is already running when the actor suspends
 	select {
 	case <-timer.C:
 		return nil
 	case <-ctx.Done():
-		timer.Stop()
 		return ctx.Err()
 	}
 }
@@ -148,6 +153,10 @@ func (tx *Transaction) getKeyForRange(parentCtx context.Context, selectorKey []b
 // getKeyImpl sends every request at readVersion, the version its operation captured.
 func (tx *Transaction) getKeyImpl(ctx context.Context, readVersion int64, selectorKey []byte, orEqual bool, offset int32) ([]byte, bool, error) {
 	tx.hadRead.Store(true) // a read was issued — the rywDisabled GetKey choke (RFC-059)
+	if fn := tx.resolveKeyFn; fn != nil {
+		key, err := fn(ctx, KeySelector{Key: selectorKey, OrEqual: orEqual, Offset: offset}, readVersion)
+		return key, false, err
+	}
 	// Three independent budgets, because getKey's loop iterates for two
 	// unrelated reasons: successful partial selector resolutions
 	// (PROGRESS — a deep selector legitimately crosses many shards) and error
@@ -289,27 +298,31 @@ func (tx *Transaction) sendGetKey(ctx context.Context, readVersion int64, select
 
 	makeSender := func(server ServerInfo) sendFunc {
 		return func() inFlightRPC {
-			conn, err := tx.db.getOrDial(ctx, server.Address)
+			conn, permit, err := tx.db.getOrDialForSend(ctx, server.Address)
 			if err != nil {
 				tx.db.handleDialError(ctx, server.Address)
 				return inFlightRPC{err: err, addr: server.Address}
 			}
 			gkToken := getAdjustedEndpoint(server.Token, EndpointGetKey)
+			defer permit.Release()
 			replyToken, replyCh, replyHandle := conn.PrepareReplyTo(gkToken)
+			replyCleanup := replyGuard{handle: replyHandle}
+			defer replyCleanup.close()
 			reqData, bufp := buildGetKeyRequest(selectorKey, orEqual, offset, readVersion, lockAware, tenantId, span, tags, replyToken)
 
 			delta := tx.db.queueModel.startRequest(server.Address)
 			start := time.Now()
 
-			if err := sendReadFrame(ctx, conn, gkToken, reqData, replyHandle); err != nil {
+			if err := sendReadFrame(ctx, conn, gkToken, reqData, replyHandle, permit); err != nil {
 				getKeyBufPool.Put(bufp) // the write queue owns its copy
 				tx.db.queueModel.endRequest(server.Address, delta, readFailureLatency(err, start), false)
 				replyHandle.Cancel()
-				replyHandle.Release()
+				replyCleanup.release()
 				tx.db.handleReadConnError(server.Address, err)
 				return inFlightRPC{err: err, addr: server.Address}
 			}
 			getKeyBufPool.Put(bufp)
+			replyCleanup.transfer()
 			return inFlightRPC{
 				replyCh:     replyCh,
 				replyHandle: replyHandle,
@@ -534,26 +547,30 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 	// Build a sender closure for a given server.
 	makeSender := func(server ServerInfo) sendFunc {
 		return func() inFlightRPC {
-			conn, err := tx.db.getOrDial(ctx, server.Address)
+			conn, permit, err := tx.db.getOrDialForSend(ctx, server.Address)
 			if err != nil {
 				tx.db.handleDialError(ctx, server.Address)
 				return inFlightRPC{err: err, addr: server.Address}
 			}
+			defer permit.Release()
 			replyToken, replyCh, replyHandle := conn.PrepareReplyTo(server.Token)
+			replyCleanup := replyGuard{handle: replyHandle}
+			defer replyCleanup.close()
 			body, poolBuf := buildGetValueRequest(key, readVersion, lockAware, tenantId, span, tags, replyToken, server.Token)
 
 			delta := tx.db.queueModel.startRequest(server.Address)
 			start := time.Now()
 
-			if err := sendReadFrame(ctx, conn, server.Token, body, replyHandle); err != nil {
+			if err := sendReadFrame(ctx, conn, server.Token, body, replyHandle, permit); err != nil {
 				getValueBufPool.Put(poolBuf) // the write queue owns its copy
 				tx.db.queueModel.endRequest(server.Address, delta, readFailureLatency(err, start), false)
 				replyHandle.Cancel()
-				replyHandle.Release()
+				replyCleanup.release()
 				tx.db.handleReadConnError(server.Address, err)
 				return inFlightRPC{err: err, addr: server.Address}
 			}
 			getValueBufPool.Put(poolBuf)
+			replyCleanup.transfer()
 			return inFlightRPC{
 				replyCh:     replyCh,
 				replyHandle: replyHandle,
@@ -605,19 +622,21 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 // sendGetValueToServer sends a getValue RPC to a single specific server.
 // Used as fallback after hedge fails.
 func (tx *Transaction) sendGetValueToServer(ctx context.Context, key []byte, server ServerInfo, readVersion int64, lockAware bool, tenantId int64, tags readTagSample) ([]byte, error) {
-	conn, err := tx.db.getOrDial(ctx, server.Address)
+	conn, permit, err := tx.db.getOrDialForSend(ctx, server.Address)
 	if err != nil {
 		tx.db.handleDialError(ctx, server.Address)
 		return nil, err
 	}
+	defer permit.Release()
 	replyToken, replyCh, replyHandle := conn.PrepareReplyTo(server.Token)
-	defer replyHandle.Release()
+	replyCleanup := replyGuard{handle: replyHandle}
+	defer replyCleanup.close()
 	body, poolBuf := buildGetValueRequest(key, readVersion, lockAware, tenantId, childSpanContext(tx.currentSpan()), tags, replyToken, server.Token)
 
 	delta := tx.db.queueModel.startRequest(server.Address)
 	start := time.Now()
 
-	if err := sendReadFrame(ctx, conn, server.Token, body, replyHandle); err != nil {
+	if err := sendReadFrame(ctx, conn, server.Token, body, replyHandle, permit); err != nil {
 		getValueBufPool.Put(poolBuf) // the write queue owns its copy
 		tx.db.queueModel.endRequest(server.Address, delta, readFailureLatency(err, start), false)
 		replyHandle.Cancel()
@@ -631,6 +650,7 @@ func (tx *Transaction) sendGetValueToServer(ctx context.Context, key []byte, ser
 		replyHandle.Cancel()
 		return nil, err
 	}
+	replyCleanup.release()
 	if resp.Err != nil {
 		tx.db.queueModel.endRequest(server.Address, delta, readFailureLatency(resp.Err, start), false)
 		tx.db.handleReadConnError(server.Address, resp.Err)
@@ -733,7 +753,6 @@ func rangeScanImpl[T any](tx *Transaction, ctx context.Context, begin, end []byt
 	// fetches more per locate RPC, always a whole number of pairs so pair origins coincide.
 	const cppGetRangeShardLimit = 2
 	const getRangeShardLimit = 50 * cppGetRangeShardLimit
-	const maxRelocateRetries = 5 // Bound retry loop; C++ relies on transaction timeout (default 5s)
 
 	var allKVs []T
 	var materializedBytes int64 // RFC-115 §2: bound total materialized bytes vs WithRangeByteCeiling
@@ -991,12 +1010,15 @@ func rangeScanImpl[T any](tx *Transaction, ctx context.Context, begin, end []byt
 }
 
 func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limits rangeLimits, readVersion int64, reverse bool, servers []ServerInfo, tags readTagSample) ([]KeyValue, bool, error) {
-	return sendRangeRPC(tx, ctx, firstGreaterOrEqual(begin), firstGreaterOrEqual(end), limits, readVersion, reverse, servers, tags, rangeRPCOps[KeyValue]{
-		endpoint: EndpointGetKeyValues,
-		build:    buildGetKeyValuesRequest,
-		putBuf:   func(bufp *[]byte) { getKeyValuesBufPool.Put(bufp) },
-		parse:    parseGetKeyValuesReply,
-	})
+	return sendRangeRPC(tx, ctx, firstGreaterOrEqual(begin), firstGreaterOrEqual(end), limits, readVersion, reverse, servers, tags, plainRangeRPCOps)
+}
+
+// plainRangeRPCOps sends a GetKeyValuesRequest.
+var plainRangeRPCOps = rangeRPCOps[KeyValue]{
+	endpoint: EndpointGetKeyValues,
+	build:    buildGetKeyValuesRequest,
+	putBuf:   func(bufp *[]byte) { getKeyValuesBufPool.Put(bufp) },
+	parse:    parseGetKeyValuesReply,
 }
 
 // rangeRPCOps is the per-request-kind half of the shard-local range RPC: which
@@ -1040,27 +1062,31 @@ func sendRangeRPC[T any](tx *Transaction, ctx context.Context, begin, end KeySel
 
 	makeSender := func(server ServerInfo) sendFunc {
 		return func() inFlightRPC {
-			conn, err := tx.db.getOrDial(ctx, server.Address)
+			conn, permit, err := tx.db.getOrDialForSend(ctx, server.Address)
 			if err != nil {
 				tx.db.handleDialError(ctx, server.Address)
 				return inFlightRPC{err: err, addr: server.Address}
 			}
 			gkvToken := getAdjustedEndpoint(server.Token, ops.endpoint)
+			defer permit.Release()
 			replyToken, replyCh, replyHandle := conn.PrepareReplyTo(gkvToken)
+			replyCleanup := replyGuard{handle: replyHandle}
+			defer replyCleanup.close()
 			body, poolBuf := ops.build(begin, end, readVersion, wireLimit, wireLimitBytes, lockAware, tenantId, span, tags, replyToken, server.Token)
 
 			delta := tx.db.queueModel.startRequest(server.Address)
 			start := time.Now()
 
-			if err := sendReadFrame(ctx, conn, gkvToken, body, replyHandle); err != nil {
+			if err := sendReadFrame(ctx, conn, gkvToken, body, replyHandle, permit); err != nil {
 				ops.putBuf(poolBuf) // the write queue owns its copy
 				tx.db.queueModel.endRequest(server.Address, delta, readFailureLatency(err, start), false)
 				replyHandle.Cancel()
-				replyHandle.Release()
+				replyCleanup.release()
 				tx.db.handleReadConnError(server.Address, err)
 				return inFlightRPC{err: err, addr: server.Address}
 			}
 			ops.putBuf(poolBuf)
+			replyCleanup.transfer()
 			return inFlightRPC{
 				replyCh:     replyCh,
 				replyHandle: replyHandle,
@@ -1489,7 +1515,11 @@ func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int6
 	// Only a successful read adds its conflict (ReadYourWrites.actor.cpp:384-388). A failed watch
 	// read does not fail commit, so a conflict added before it would outlive it.
 	if addConflict {
-		tx.addReadConflictForKey(key)
+		if err := tx.addReadConflictsFor(ctx, [][2][]byte{{key, keyAfterBytes(key)}}); err != nil {
+			tx.db.releaseWatch()
+			watchCancel()
+			return value, readVersion, span, nil, nil, err
+		}
 	}
 	// watchCtx/watchCancel were minted synchronously above (before this blocking read), so a
 	// Cancel/reset during setup cancels the very context the read (above) and WatchPoll hold; WatchPoll
@@ -1669,31 +1699,37 @@ func (tx *Transaction) sendWatch(ctx context.Context, key, value []byte, readVer
 	// NOT be re-read from tx here, because the transaction may have been
 	// postCommitReset() (readVersion → 0) by the time this async poll runs.
 	tenantId := tx.watchTenant(ctx)
+	var replyCleanup replyGuard
+	defer replyCleanup.close()
+	var sendCleanup sendGuard
+	defer sendCleanup.close()
 
 	for _, server := range order {
-		conn, err := tx.db.getOrDial(ctx, server.Address)
+		conn, permit, err := tx.db.getOrDialForSend(ctx, server.Address)
 		if err != nil {
 			tx.db.handleDialError(ctx, server.Address)
 			continue
 		}
+		sendCleanup.permit = permit
 		watchToken := getAdjustedEndpoint(server.Token, EndpointWatchValue)
 		replyToken, replyCh, replyHandle := conn.PrepareReplyTo(watchToken)
+		replyCleanup.handle = replyHandle
 		reqData := buildWatchValueRequest(key, value, readVersion, tenantId, span, tags, replyToken)
 
 		delta := tx.db.queueModel.startRequest(server.Address)
 		start := time.Now()
 
-		if err := sendReadFrame(ctx, conn, watchToken, reqData, replyHandle); err != nil {
+		if err := sendReadFrame(ctx, conn, watchToken, reqData, replyHandle, permit); err != nil {
 			tx.db.queueModel.endRequest(server.Address, delta, readFailureLatency(err, start), false)
 			replyHandle.Cancel()
-			replyHandle.Release()
+			replyCleanup.release()
 			tx.db.handleReadConnError(server.Address, err)
 			continue
 		}
 		// Long-poll: no short timeout. Use the caller's context deadline.
 		select {
 		case resp := <-replyCh:
-			replyHandle.Release()
+			replyCleanup.release()
 			if resp.Err != nil {
 				tx.db.queueModel.endRequest(server.Address, delta, readFailureLatency(resp.Err, start), false)
 				tx.db.handleReadConnError(server.Address, resp.Err)
@@ -1704,7 +1740,7 @@ func (tx *Transaction) sendWatch(ctx context.Context, key, value []byte, readVer
 		case <-ctx.Done():
 			tx.db.queueModel.endRequest(server.Address, delta, readFailureLatency(ctx.Err(), start), false)
 			replyHandle.Cancel()
-			replyHandle.Release()
+			replyCleanup.release()
 			return ctx.Err()
 		}
 	}

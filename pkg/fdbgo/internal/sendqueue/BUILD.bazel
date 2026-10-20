@@ -1,0 +1,14 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "sendqueue",
+    srcs = ["queue.go"],
+    importpath = "fdb.dev/pkg/fdbgo/internal/sendqueue",
+    visibility = ["//pkg/fdbgo:__subpackages__"],
+)
+
+go_test(
+    name = "sendqueue_test",
+    srcs = ["queue_test.go"],
+    embed = [":sendqueue"],
+)

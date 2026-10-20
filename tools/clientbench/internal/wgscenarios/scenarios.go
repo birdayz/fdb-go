@@ -277,6 +277,77 @@ var scenarios = []scenario{
 		}
 		return get(tr, k("missing"))
 	}},
+	// RFC-262 phase 2: twins of the S1 getKey traces (ryw_walk_trace_test.go).
+	{"getkey_across_clears", func(tr fdb.WritableTransaction) error {
+		tr.Clear(k("b"))
+		tr.Clear(k("c"))
+		tr.Set(k("c1"), []byte("1"))
+		tr.Clear(k("d"))
+		_, err := tr.GetKey(fdb.KeySelector{Key: k("a"), Offset: 3}).Get()
+		return err
+	}},
+	{"getkey_across_write_conflict_ranges", func(tr fdb.WritableTransaction) error {
+		if err := pointConflicts(tr, 0, 60); err != nil {
+			return err
+		}
+		_, err := tr.GetKey(fdb.FirstGreaterThan(k("a"))).Get()
+		return err
+	}},
+	{"getkey_enclosed_write_conflict_ranges", func(tr fdb.WritableTransaction) error {
+		if err := tr.AddWriteConflictRange(fdb.KeyRange{Begin: k("c00"), End: k("c50")}); err != nil {
+			return err
+		}
+		if err := pointConflicts(tr, 0, 100); err != nil {
+			return err
+		}
+		_, err := tr.GetKey(fdb.FirstGreaterThan(k("a"))).Get()
+		return err
+	}},
+	{"getkey_adjacent_clears", func(tr fdb.WritableTransaction) error {
+		return adjacentClears(tr, "c", "c\x00", false)
+	}},
+	{"getkey_adjacent_clears_reversed", func(tr fdb.WritableTransaction) error {
+		return adjacentClears(tr, "c\x00", "c", false)
+	}},
+	{"getkey_adjacent_clears_no_conflict", func(tr fdb.WritableTransaction) error {
+		return adjacentClears(tr, "c\x00", "c", true)
+	}},
+	{"snapshot_ryw_disabled_getkey", func(tr fdb.WritableTransaction) error {
+		if err := tr.Options().SetSnapshotRywDisable(); err != nil {
+			return err
+		}
+		tr.Set(k("b1"), []byte("1"))
+		_, err := tr.Snapshot().GetKey(fdb.FirstGreaterThan(k("b"))).Get()
+		return err
+	}},
+}
+
+// pointConflicts adds write conflict ranges [c<i>, c<i>\0) for i in [lo, hi): conflict-only
+// write-map nodes (RFC-262 T6).
+func pointConflicts(tr fdb.WritableTransaction, lo, hi int) error {
+	for i := lo; i < hi; i++ {
+		c := fmt.Sprintf("c%02d", i)
+		if err := tr.AddWriteConflictRange(fdb.KeyRange{Begin: k(c), End: k(c + "\x00")}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// adjacentClears is RFC-262 T7 for getKey: the barrier [a5,b5), two adjacent
+// single-key clears in the given order (the second without a write conflict when
+// noConflict), then the 4th key >= a.
+func adjacentClears(tr fdb.WritableTransaction, first, second string, noConflict bool) error {
+	tr.ClearRange(fdb.KeyRange{Begin: k("a5"), End: k("b5")})
+	tr.Clear(k(first))
+	if noConflict {
+		if err := tr.Options().SetNextWriteNoWriteConflictRange(); err != nil {
+			return err
+		}
+	}
+	tr.Clear(k(second))
+	_, err := tr.GetKey(fdb.KeySelector{Key: k("a"), Offset: 4}).Get()
+	return err
 }
 
 // Names lists the scenarios in run order.

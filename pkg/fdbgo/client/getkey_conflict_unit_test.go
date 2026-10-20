@@ -34,7 +34,7 @@ func TestCommit_RYWPoisonBeatsTimeout(t *testing.T) {
 
 // TestAddGetKeyConflictRange_RYWDisabledFullSpan pins the RFC-058 full-span rule: when RYW is
 // disabled, GetKey resolves against STORAGE only (Transaction.GetKey uses tx.getKey, not
-// getKeyRYW), so the local write-map did NOT satisfy the read — the read-conflict must be the
+// the RYW walk), so the local write-map did NOT satisfy the read — the read-conflict must be the
 // FULL base↔resolved span, NOT filtered through the bypassed write-map. Filtering would
 // subtract a local Set/Clear segment and MISS a conflict from a concurrent insert into that
 // gap (an unsafe under-conflict).

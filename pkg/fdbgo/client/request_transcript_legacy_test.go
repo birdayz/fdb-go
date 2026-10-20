@@ -188,7 +188,7 @@ func (tx *Transaction) legacySendGetKey(ctx context.Context, selectorKey []byte,
 			delta := tx.db.queueModel.startRequest(server.Address)
 			start := time.Now()
 
-			if err := sendReadFrame(ctx, conn, gkToken, reqData, replyHandle); err != nil {
+			if err := sendReadFrame(ctx, conn, gkToken, reqData, replyHandle, nil); err != nil {
 				getKeyBufPool.Put(bufp) // the write queue owns its copy
 				tx.db.queueModel.endRequest(server.Address, delta, readFailureLatency(err, start), false)
 				replyHandle.Cancel()
@@ -610,7 +610,7 @@ func legacySendRangeRPC[T any](tx *Transaction, ctx context.Context, begin, end 
 			delta := tx.db.queueModel.startRequest(server.Address)
 			start := time.Now()
 
-			if err := sendReadFrame(ctx, conn, gkvToken, body, replyHandle); err != nil {
+			if err := sendReadFrame(ctx, conn, gkvToken, body, replyHandle, nil); err != nil {
 				ops.putBuf(poolBuf) // the write queue owns its copy
 				tx.db.queueModel.endRequest(server.Address, delta, readFailureLatency(err, start), false)
 				replyHandle.Cancel()
@@ -983,7 +983,7 @@ func (tx *Transaction) legacyGetMappedRangeWithByteTargetAndSkip(ctx context.Con
 			return nil, false, tx.trackReadOperation(ctx, err)
 		}
 		// Original anchors retain conflicts on skipped primaries, not secondaries.
-		if err := tx.addMappedRangeConflicts(begin, end, reverse, result.more, result.rows); err != nil {
+		if err := tx.addMappedRangeConflicts(ctx, begin, end, reverse, result.more, result.rows); err != nil {
 			return nil, false, err
 		}
 		return result.rows, result.more, nil
@@ -999,7 +999,7 @@ func (tx *Transaction) legacyGetMappedRangeWithByteTargetAndSkip(ctx context.Con
 	// one is first checked against the write map — an overlap means the mapped
 	// read observed a key this transaction wrote, which RYW cannot honour for
 	// mapped reads and which C++ reports rather than silently serving stale data.
-	if err := tx.addMappedRangeConflicts(begin, end, reverse, more, rows); err != nil {
+	if err := tx.addMappedRangeConflicts(ctx, begin, end, reverse, more, rows); err != nil {
 		return nil, false, err
 	}
 	return rows, more, nil

@@ -116,6 +116,7 @@ type simDialer struct {
 	mu        sync.Mutex
 	conns     map[string][]*simConn // by dial addr
 	armedAddr map[string]bool       // addrs to arm, incl. conns dialed later
+	armNew    bool                  // arm every conn dialed later (armEverything)
 	intercept atomic.Pointer[frameIntercept]
 }
 
@@ -131,7 +132,7 @@ func (d *simDialer) dial(ctx context.Context, network, addr string) (net.Conn, e
 	sc := newSimConn(c, d)
 	d.mu.Lock()
 	d.conns[addr] = append(d.conns[addr], sc)
-	if d.armedAddr[addr] {
+	if d.armedAddr[addr] || d.armNew {
 		sc.armed.Store(true)
 	}
 	d.mu.Unlock()
@@ -174,6 +175,14 @@ func (d *simDialer) armAll() {
 			c.armed.Store(true)
 		}
 	}
+}
+
+// armEverything arms every connection, including every one dialed later.
+func (d *simDialer) armEverything() {
+	d.armAll()
+	d.mu.Lock()
+	d.armNew = true
+	d.mu.Unlock()
 }
 
 // newSimTestDB starts an FDB container (via startProxyFDB — external coordinators,

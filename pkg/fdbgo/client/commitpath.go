@@ -83,14 +83,16 @@ func (input *commitInput) commitNative(ctx context.Context) (result commitOutcom
 	}
 	result.epoch = commitEpoch
 
-	conn, err := input.db.getOrDial(ctx, proxy.Address)
+	conn, permit, err := input.db.getOrDialForSend(ctx, proxy.Address)
 	if err != nil {
 		input.db.handleDialError(ctx, proxy.Address)
 		return result, input.unknownResult(ctx)
 	}
 
+	defer permit.Release()
 	replyToken, replyCh, replyHandle := conn.PrepareReplyTo(proxy.Token)
-	defer replyHandle.Release()
+	replyCleanup := replyGuard{handle: replyHandle}
+	defer replyCleanup.close()
 	body, poolBuf := buildCommitInputRequest(input, replyToken)
 
 	// Capture the proxy-change channel BEFORE sending the commit frame.
@@ -107,7 +109,7 @@ func (input *commitInput) commitNative(ctx context.Context) (result commitOutcom
 	}
 	// Native owner drop cancels only this wait; queued bytes own their storage
 	// independently and may still reach the server after the actor is gone.
-	_, sendErr := conn.SendFrameEagerContext(ctx, proxy.Token, body)
+	_, sendErr := conn.SendFrameEagerContextOrdered(ctx, proxy.Token, body, permit)
 	marshalBufPool.Put(poolBuf)
 	if sendErr != nil {
 		replyHandle.Cancel()
@@ -124,6 +126,7 @@ func (input *commitInput) commitNative(ctx context.Context) (result commitOutcom
 		replyHandle.Cancel()
 		return result, input.unknownResult(ctx)
 	}
+	replyCleanup.release()
 	if resp.Err != nil {
 		if !isEndpointNotFound(resp.Err) {
 			input.db.handleConnError(proxy.Address)

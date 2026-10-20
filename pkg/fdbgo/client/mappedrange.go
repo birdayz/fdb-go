@@ -374,7 +374,7 @@ func (tx *Transaction) getMappedRangeWithByteTargetAndSkip(ctx context.Context, 
 			return nil, false, tx.trackReadOperation(ctx, err)
 		}
 		// Original anchors retain conflicts on skipped primaries, not secondaries.
-		if err := tx.addMappedRangeConflicts(begin, end, reverse, result.more, result.rows); err != nil {
+		if err := tx.addMappedRangeConflicts(ctx, begin, end, reverse, result.more, result.rows); err != nil {
 			return nil, false, err
 		}
 		return result.rows, result.more, nil
@@ -390,7 +390,7 @@ func (tx *Transaction) getMappedRangeWithByteTargetAndSkip(ctx context.Context, 
 	// one is first checked against the write map — an overlap means the mapped
 	// read observed a key this transaction wrote, which RYW cannot honour for
 	// mapped reads and which C++ reports rather than silently serving stale data.
-	if err := tx.addMappedRangeConflicts(begin, end, reverse, more, rows); err != nil {
+	if err := tx.addMappedRangeConflicts(ctx, begin, end, reverse, more, rows); err != nil {
 		return nil, false, err
 	}
 	return rows, more, nil
@@ -450,13 +450,13 @@ func primaryConflictRange(begin, end []byte, reverse, more bool, rows []MappedKe
 // addMappedRangeConflicts implements C++ addConflictRangeAndMustUnmodified.
 // Insert each range before checking the next: a later 2039 must retain the
 // earlier conflicts and the failing range's unmodified prefix.
-func (tx *Transaction) addMappedRangeConflicts(begin, end []byte, reverse, more bool, rows []MappedKeyValue) error {
+func (tx *Transaction) addMappedRangeConflicts(ctx context.Context, begin, end []byte, reverse, more bool, rows []MappedKeyValue) error {
 	// Primary range first, exactly as C++ does — and NARROWED, see
 	// primaryConflictRange. The narrowing is not an optimization: the same range
 	// feeds the mustUnmodified check, where recording a superset would raise
 	// get_mapped_range_reads_your_writes on a write C++ lets through.
 	primary := primaryConflictRange(begin, end, reverse, more, rows)
-	if err := tx.addMappedRangeConflictMustUnmodified(primary[0], primary[1]); err != nil {
+	if err := tx.addMappedRangeConflictMustUnmodified(ctx, primary[0], primary[1]); err != nil {
 		return err
 	}
 	for i := range rows {
@@ -467,7 +467,7 @@ func (tx *Transaction) addMappedRangeConflicts(begin, end []byte, reverse, more 
 			// singleKeyRange. The point lookup gets a conflict range whether or
 			// not the key EXISTED: a miss is a real observation, and a later
 			// insert at that key must conflict.
-			if err := tx.addMappedRangeConflictMustUnmodified(k, keyAfterBytes(k)); err != nil {
+			if err := tx.addMappedRangeConflictMustUnmodified(ctx, k, keyAfterBytes(k)); err != nil {
 				return err
 			}
 		case MappedResultGetRange:
@@ -481,7 +481,7 @@ func (tx *Transaction) addMappedRangeConflicts(begin, end []byte, reverse, more 
 			if n := len(gr.Rows); n > 0 && bytes.Compare(rangeEnd, gr.Rows[n-1].Key) <= 0 {
 				rangeEnd = keyAfterBytes(gr.Rows[n-1].Key)
 			}
-			if err := tx.addMappedRangeConflictMustUnmodified(gr.Begin.Key, rangeEnd); err != nil {
+			if err := tx.addMappedRangeConflictMustUnmodified(ctx, gr.Begin.Key, rangeEnd); err != nil {
 				return err
 			}
 		}
@@ -492,21 +492,22 @@ func (tx *Transaction) addMappedRangeConflicts(begin, end []byte, reverse, more 
 // addMappedRangeConflictMustUnmodified mirrors updateConflictMap<true>: all
 // segments before the first operation or clear are unmodified and stay recorded
 // even when that modified segment raises 2039 (ReadYourWrites.actor.cpp:335-350).
-func (tx *Transaction) addMappedRangeConflictMustUnmodified(begin, end []byte) error {
+func (tx *Transaction) addMappedRangeConflictMustUnmodified(ctx context.Context, begin, end []byte) error {
 	if bytes.Compare(begin, end) >= 0 {
 		return nil
 	}
 	c := &tx.ryw
 	c.mu.Lock()
-	c.ensureSortedLocked()
+	w := c.liveLocked()
+	w.ensureSorted()
 	prefixEnd := end
-	if i := sort.SearchStrings(c.sortedKeys, string(begin)); i < len(c.sortedKeys) && c.sortedKeys[i] < string(end) {
-		prefixEnd = []byte(c.sortedKeys[i])
+	if i := sort.SearchStrings(w.sortedKeys, string(begin)); i < len(w.sortedKeys) && w.sortedKeys[i] < string(end) {
+		prefixEnd = []byte(w.sortedKeys[i])
 	}
-	if i := sort.Search(len(c.cleared), func(i int) bool {
-		return bytes.Compare(c.cleared[i].end, begin) > 0
-	}); i < len(c.cleared) && bytes.Compare(c.cleared[i].begin, prefixEnd) < 0 {
-		prefixEnd = c.cleared[i].begin
+	if i := sort.Search(len(w.cleared), func(i int) bool {
+		return bytes.Compare(w.cleared[i].end, begin) > 0
+	}); i < len(w.cleared) && bytes.Compare(w.cleared[i].begin, prefixEnd) < 0 {
+		prefixEnd = w.cleared[i].begin
 		if bytes.Compare(prefixEnd, begin) < 0 {
 			prefixEnd = begin
 		}
@@ -516,7 +517,9 @@ func (tx *Transaction) addMappedRangeConflictMustUnmodified(begin, end []byte) e
 	prefixEnd = bytes.Clone(prefixEnd)
 	c.mu.Unlock()
 	if bytes.Compare(begin, prefixEnd) < 0 {
-		tx.addReadConflict(begin, prefixEnd)
+		if err := tx.addReadConflictsFor(ctx, [][2][]byte{{begin, prefixEnd}}); err != nil {
+			return err
+		}
 	}
 	if bytes.Compare(prefixEnd, end) < 0 {
 		return &wire.FDBError{Code: ErrGetMappedRangeReadsYourWrites}

@@ -94,10 +94,10 @@ func materializedRYWBounds(c *rywCache, hi []byte, includeWrites bool) [][]byte 
 		bounds = append(bounds, key, append(append([]byte{}, key...), 0))
 	}
 	if includeWrites {
-		for key := range c.writes {
+		for key := range c.liveLocked().writes {
 			addKey([]byte(key))
 		}
-		for _, ranges := range [][]rywRange{c.cleared, c.unreadableRanges} {
+		for _, ranges := range [][]rywRange{c.liveLocked().cleared, c.liveLocked().unreadableRanges} {
 			for _, r := range ranges {
 				bounds = append(bounds, r.begin, r.end)
 			}
@@ -166,8 +166,8 @@ func TestRYWBoundariesMatchMaterializedKeys(t *testing.T) {
 								wantPrev = b
 							}
 						}
-						floor, ceil := c.mergedBoundsLocked(p, hi, includeWrites)
-						prev := c.prevBoundaryLocked(p, hi, includeWrites)
+						floor, ceil := c.mergedBoundsLocked(p, hi, c.viewLocked(includeWrites))
+						prev := c.prevBoundaryLocked(p, hi, c.viewLocked(includeWrites))
 						if !bytes.Equal(floor, wantFloor) || !bytes.Equal(ceil, wantCeil) || !bytes.Equal(prev, wantPrev) {
 							t.Fatalf("writes=%t p=%x hi=%x: bounds=(%x,%x), prev=%x; want (%x,%x), prev=%x", includeWrites, p, hi, floor, ceil, prev, wantFloor, wantCeil, wantPrev)
 						}
@@ -176,7 +176,7 @@ func TestRYWBoundariesMatchMaterializedKeys(t *testing.T) {
 			}
 			if shape == "unreadable-head" {
 				for _, p := range [][]byte{[]byte("m\x00"), []byte("u")} {
-					cur := c.newSegCursor([]byte{0xff}, true)
+					cur := c.newSegCursor([]byte{0xff}, c.viewLocked(true))
 					cur.seek(p)
 					if !cur.valid() || cur.typ != segUnreadable {
 						t.Fatalf("unreadable span without a write entry at %x classified as %v", p, cur.typ)
@@ -206,7 +206,7 @@ func TestRYWBoundaryAllocations(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			p := []byte(tc.probe)
 			var floor, ceil []byte
-			n := testing.AllocsPerRun(100, func() { floor, ceil = c.mergedBoundsLocked(p, hi, true) })
+			n := testing.AllocsPerRun(100, func() { floor, ceil = c.mergedBoundsLocked(p, hi, c.viewLocked(true)) })
 			if string(floor) != tc.floor || string(ceil) != tc.ceil {
 				t.Fatalf("bounds=(%x,%x), want (%x,%x)", floor, ceil, tc.floor, tc.ceil)
 			}
@@ -218,7 +218,7 @@ func TestRYWBoundaryAllocations(t *testing.T) {
 	}
 	probe := []byte("record/" + string(bytes.Repeat([]byte{'p'}, 64)))
 	var prev []byte
-	if n := testing.AllocsPerRun(100, func() { prev = c.prevBoundaryLocked(probe, hi, true) }); n != 0 {
+	if n := testing.AllocsPerRun(100, func() { prev = c.prevBoundaryLocked(probe, hi, c.viewLocked(true)) }); n != 0 {
 		t.Fatalf("RYW_BOUND_ALLOC: predecessor allocated %v times, want 0", n)
 	}
 	if string(prev) != "b" {
@@ -234,14 +234,14 @@ func TestRYWBoundarySuccessorsOwnTheirStorage(t *testing.T) {
 	c := &rywCache{serverCache: snapshotCache{entries: []cacheEntry{{
 		begin: []byte("a"), end: []byte("b"), kvs: []KeyValue{{Key: key, Value: []byte("v")}},
 	}}}}
-	_, first := c.mergedBoundsLocked(key, []byte{0xff}, true)
+	_, first := c.mergedBoundsLocked(key, []byte{0xff}, c.viewLocked(true))
 	if string(first) != "a\x00" || cap(first) != len(first) || key[:cap(key)][1] != 0xee {
 		t.Fatalf("successor did not use independent exact-capacity storage: %x, cap=%d", first, cap(first))
 	}
 	for i := range 20 {
-		_, next := c.mergedBoundsLocked(key, []byte{0xff}, true)
+		_, next := c.mergedBoundsLocked(key, []byte{0xff}, c.viewLocked(true))
 		next[0] = byte(i)
-		_ = c.prevBoundaryLocked([]byte(fmt.Sprintf("z%d", i)), []byte{0xff}, true)
+		_ = c.prevBoundaryLocked([]byte(fmt.Sprintf("z%d", i)), []byte{0xff}, c.viewLocked(true))
 	}
 	if string(first) != "a\x00" || key[0] != 'a' {
 		t.Fatal("later boundary selection reused an earlier successor or cache key")

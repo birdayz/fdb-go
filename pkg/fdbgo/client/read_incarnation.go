@@ -436,6 +436,32 @@ func (tx *Transaction) readLifetimeError(ctx context.Context) error {
 	return ctxErr
 }
 
+// addReadConflictsFor publishes only into the issuing incarnation. conflictMu
+// spans the lifetime check and append: a later retirement must clear these
+// conflicts before publishing the replacement incarnation. readErrMu stays a leaf.
+func (tx *Transaction) addReadConflictsFor(ctx context.Context, ranges [][2][]byte) error {
+	if hook := tx.beforeReadConflict; hook != nil {
+		hook()
+	}
+	tx.conflictMu.Lock()
+	defer tx.conflictMu.Unlock()
+	if ctx != nil {
+		if op := tx.readOperation(ctx); op != nil {
+			tx.readErrMu.Lock()
+			cause := op.inc.cause
+			if cause == nil && tx.readLife != op.inc {
+				cause = &wire.FDBError{Code: ErrTransactionCancelled}
+			}
+			tx.readErrMu.Unlock()
+			if cause != nil {
+				return cause
+			}
+		}
+	}
+	tx.addReadConflictsLocked(ranges)
+	return nil
+}
+
 // mapReadError changes only interruption errors. Completed protocol/transport
 // errors and successful outcomes are immutable; current transaction state and
 // timeout options cannot classify an old operation after reset.

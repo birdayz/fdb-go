@@ -544,4 +544,49 @@ func TestReadTagSamplingShardContinuations(t *testing.T) {
 			checkNewRequests(t, got, draws.count(), 2, tagged)
 		})
 	}
+	for _, route := range []string{"native-range", "native-fallback-partial-getKey"} {
+		t.Run(route, func(t *testing.T) {
+			draws := &readTagDraws{}
+			db, rec := openReadTagDB(t, ctx, cf, plainDial, 0.5, draws.draw)
+			db.db.hedgeEnabled.Store(false)
+			tx := db.CreateTransaction()
+			defer tx.Cancel()
+			if err := tx.SetAutoThrottleTag("rt"); err != nil {
+				t.Fatal(err)
+			}
+			rv, err := tx.GetReadVersion(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.db.locCache.locateRange(db.db, ctx, begin, end, 100, false, NoTenantID, types.SpanContext{}); err != nil {
+				t.Fatal(err)
+			}
+			draws.script(alternatingDraws(100)...)
+			rec.start()
+			if route == "native-range" {
+				r, err := tx.nativeGetRange(ctx, firstGreaterOrEqual(begin), firstGreaterOrEqual(end), newRangeLimits(0, -1), true, false)
+				if err != nil || len(r.kvs) != 100 {
+					t.Fatalf("native range = %d rows, %v; want 100", len(r.kvs), err)
+				}
+			} else {
+				r, err := tx.nativeGetRangeFallback(ctx, KeySelector{Key: []byte(env.prefix + "0000"), Offset: 100}, firstGreaterOrEqual(end), newRangeLimits(0, -1), rv, false)
+				if err != nil || len(r.kvs) != 1 || string(r.kvs[0].Key) != env.prefix+"0099" {
+					t.Fatalf("fallback partial resolution = %+v, %v; want key 0099", r.kvs, err)
+				}
+			}
+			got := taggedRequests(t, rec.stop())
+			kinds := map[string]int{}
+			for i := range got {
+				kinds[got[i].kind]++
+				got[i].kind = ""
+			}
+			if route == "native-fallback-partial-getKey" && (kinds["GetKeyRequest"] < 2 || kinds["GetKeyValuesRequest"] < 1) {
+				t.Fatalf("fallback request kinds %v, want multiple getKey steps and an exact range", kinds)
+			}
+			if route == "native-range" && kinds["GetKeyValuesRequest"] < 2 {
+				t.Fatalf("native request kinds %v, want multiple shards", kinds)
+			}
+			checkNewRequests(t, got, draws.count(), 2, tagged)
+		})
+	}
 }

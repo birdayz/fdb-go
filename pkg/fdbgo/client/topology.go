@@ -122,15 +122,16 @@ func (db *database) monitorProxiesOneGeneration(poll coordPollFunc, pause func()
 // long poll, which C++ waits on with no client timeout (tryGetReply, :920-926);
 // a dead coordinator surfaces as a connection error via the connection monitor.
 func (db *database) pollCoordinator(ctx context.Context, snap *ClusterFile, addr string, known transport.UID) (*DBInfo, error) {
-	conn, err := db.getOrDial(ctx, addr)
+	conn, permit, err := db.getOrDialForSend(ctx, addr)
 	if err != nil {
 		return nil, err
 	}
+	defer permit.Release()
 	timeout := coordinatorLongPollCeiling
 	if known == (transport.UID{}) {
 		timeout = CoordinatorTimeout
 	}
-	return db.openDatabaseCoord(ctx, conn, snap, known, timeout)
+	return db.openDatabaseCoord(ctx, conn, snap, known, timeout, permit)
 }
 
 // sleep waits d or until the database closes.

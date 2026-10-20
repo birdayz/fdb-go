@@ -6,6 +6,7 @@ import (
 	"math/rand/v2"
 	"time"
 
+	"fdb.dev/pkg/fdbgo/internal/sendqueue"
 	"fdb.dev/pkg/fdbgo/transport"
 	"fdb.dev/pkg/fdbgo/wire"
 )
@@ -13,13 +14,16 @@ import (
 // sendReadFrame owns a copy of the encoding through eventual writer completion.
 // A caller interrupted during the flush must still observe an already-published
 // reply (the server can reply before the socket writer acknowledges its batch).
-func sendReadFrame(ctx context.Context, conn *transport.Conn, token transport.UID, body []byte, reply *transport.ReplyHandle) error {
-	_, err := conn.SendFrameContext(ctx, token, body)
+func sendReadFrame(ctx context.Context, conn *transport.Conn, token transport.UID, body []byte, reply *transport.ReplyHandle, permit *sendqueue.Permit) error {
+	_, err := conn.SendFrameContextOrdered(ctx, token, body, permit)
 	if err != nil && ctx.Err() != nil {
 		if reply.KeepReadyOrCancel() {
 			return nil
 		}
 		return ctx.Err()
+	}
+	if err == nil {
+		reply.NotifyWait(ctx) // a ready reply does not suspend the resolver
 	}
 	return err
 }

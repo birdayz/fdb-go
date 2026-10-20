@@ -1,14 +1,5 @@
 --- golden
 +++ go
-@@ -26,7 +26,7 @@
- GetKeyValuesRequest {Begin={Key='<p>' Offset=1} End={Key='<p>\xff' Offset=1} Version=V1 Limit=80000 LimitBytes=80000 TenantInfo={TenantId=-1} SsLatestCommitVersions='\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff\xff\xff\xff\xff\xff\xff'}
- == getkey_offset
- GetReadVersionRequest {TransactionCount=1 Flags=134217728 MaxVersion=-1}
--GetKeyValuesRequest {Begin={Key='<p>b\x00' Offset=1} End={Key='\xff' Offset=1} Version=V1 Limit=2 LimitBytes=80000 TenantInfo={TenantId=-1} SsLatestCommitVersions='\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff\xff\xff\xff\xff\xff\xff'}
-+GetKeyValuesRequest {Begin={Key='<p>b\x00' Offset=1} End={Key='\xff' Offset=1} Version=V1 Limit=256 LimitBytes=80000 TenantInfo={TenantId=-1} SsLatestCommitVersions='\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff\xff\xff\xff\xff\xff\xff'}
- == clear_range_then_set
- GetReadVersionRequest {TransactionCount=1 Flags=134217729 MaxVersion=-1}
- CommitTransactionRequest {Transaction={ReadConflictRanges=[{Begin='\xff/SC/<R1:16>' End='\xff/SC/<R1:16>\x00'}] WriteConflictRanges=[{Begin='<p>m' End='<p>n'} {Begin='\xff/SC/<R1:16>' End='\xff/SC/<R1:16>\x00'}] Mutations=[{MutType=1 Param1='<p>m' Param2='<p>m1'} {MutType=1 Param1='<p>m1\x00' Param2='<p>n'} {Param1='<p>m1' Param2='5'}] ReadSnapshot=V1} TenantInfo={TenantId=-1} IdempotencyId=''}
 @@ -90,7 +90,7 @@
  CommitTransactionRequest {Transaction={ReadConflictRanges=[{Begin='\xff/SC/<R1:16>' End='\xff/SC/<R1:16>\x00'}] WriteConflictRanges=[{Begin='<p>a' End='<p>a\x00'} {Begin='\xff/SC/<R1:16>' End='\xff/SC/<R1:16>\x00'}] Mutations=[{MutType=1 Param1='<p>a\x00' Param2=''}] ReadSnapshot=V1} TenantInfo={TenantId=-1} IdempotencyId=''}
  == set_then_range
@@ -18,28 +9,3 @@
  CommitTransactionRequest {Transaction={ReadConflictRanges=[{Begin='<p>a' End='<p>b5'} {Begin='<p>b5\x00' End='<p>d'} {Begin='\xff/SC/<R1:16>' End='\xff/SC/<R1:16>\x00'}] WriteConflictRanges=[{Begin='<p>b5' End='<p>b5\x00'} {Begin='\xff/SC/<R1:16>' End='\xff/SC/<R1:16>\x00'}] Mutations=[{Param1='<p>b5' Param2='new'}] ReadSnapshot=V1} TenantInfo={TenantId=-1} IdempotencyId=''}
  == snapshot_range
  GetReadVersionRequest {TransactionCount=1 Flags=134217728 MaxVersion=-1}
-@@ -107,19 +107,19 @@
- GetKeyValuesRequest {Begin={Key='<p>lv\x00' Offset=1} End={Key='<p>\xff' Offset=1} Version=V1 Limit=80000 LimitBytes=80000 TenantInfo={TenantId=-1} SsLatestCommitVersions='\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff\xff\xff\xff\xff\xff\xff'}
- == getkey_first_greater_than
- GetReadVersionRequest {TransactionCount=1 Flags=134217728 MaxVersion=-1}
--GetKeyValuesRequest {Begin={Key='<p>b\x00' Offset=1} End={Key='\xff' Offset=1} Version=V1 Limit=1 LimitBytes=80000 TenantInfo={TenantId=-1} SsLatestCommitVersions='\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff\xff\xff\xff\xff\xff\xff'}
-+GetKeyValuesRequest {Begin={Key='<p>b\x00' Offset=1} End={Key='\xff' Offset=1} Version=V1 Limit=256 LimitBytes=80000 TenantInfo={TenantId=-1} SsLatestCommitVersions='\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff\xff\xff\xff\xff\xff\xff'}
- == getkey_last_less_than
- GetReadVersionRequest {TransactionCount=1 Flags=134217728 MaxVersion=-1}
--GetKeyValuesRequest {Begin={Key='' Offset=1} End={Key='<p>c' Offset=1} Version=V1 Limit=-1 LimitBytes=80000 TenantInfo={TenantId=-1} SsLatestCommitVersions='\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff\xff\xff\xff\xff\xff\xff'}
-+GetKeyValuesRequest {Begin={Key='' Offset=1} End={Key='<p>c' Offset=1} Version=V1 Limit=-256 LimitBytes=80000 TenantInfo={TenantId=-1} SsLatestCommitVersions='\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff\xff\xff\xff\xff\xff\xff'}
- == getkey_last_less_or_equal
- GetReadVersionRequest {TransactionCount=1 Flags=134217728 MaxVersion=-1}
--GetKeyValuesRequest {Begin={Key='' Offset=1} End={Key='<p>c\x00' Offset=1} Version=V1 Limit=-1 LimitBytes=80000 TenantInfo={TenantId=-1} SsLatestCommitVersions='\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff\xff\xff\xff\xff\xff\xff'}
-+GetKeyValuesRequest {Begin={Key='' Offset=1} End={Key='<p>c\x00' Offset=1} Version=V1 Limit=-256 LimitBytes=80000 TenantInfo={TenantId=-1} SsLatestCommitVersions='\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff\xff\xff\xff\xff\xff\xff'}
- == getkey_negative_offset
- GetReadVersionRequest {TransactionCount=1 Flags=134217728 MaxVersion=-1}
--GetKeyValuesRequest {Begin={Key='' Offset=1} End={Key='<p>d' Offset=1} Version=V1 Limit=-3 LimitBytes=80000 TenantInfo={TenantId=-1} SsLatestCommitVersions='\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff\xff\xff\xff\xff\xff\xff'}
-+GetKeyValuesRequest {Begin={Key='' Offset=1} End={Key='<p>d' Offset=1} Version=V1 Limit=-256 LimitBytes=80000 TenantInfo={TenantId=-1} SsLatestCommitVersions='\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff\xff\xff\xff\xff\xff\xff'}
- == getkey_after_set
- GetReadVersionRequest {TransactionCount=1 Flags=134217728 MaxVersion=-1}
--GetKeyValuesRequest {Begin={Key='<p>b\x00' Offset=1} End={Key='\xff' Offset=1} Version=V1 Limit=1 LimitBytes=80000 TenantInfo={TenantId=-1} SsLatestCommitVersions='\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff\xff\xff\xff\xff\xff\xff'}
-+GetKeyValuesRequest {Begin={Key='<p>b\x00' Offset=1} End={Key='<p>b1' Offset=1} Version=V1 Limit=256 LimitBytes=80000 TenantInfo={TenantId=-1} SsLatestCommitVersions='\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff\xff\xff\xff\xff\xff\xff'}
- CommitTransactionRequest {Transaction={ReadConflictRanges=[{Begin='<p>b\x00' End='<p>b1'} {Begin='\xff/SC/<R1:16>' End='\xff/SC/<R1:16>\x00'}] WriteConflictRanges=[{Begin='<p>b1' End='<p>b1\x00'} {Begin='\xff/SC/<R1:16>' End='\xff/SC/<R1:16>\x00'}] Mutations=[{Param1='<p>b1' Param2='1'}] ReadSnapshot=V1} TenantInfo={TenantId=-1} IdempotencyId=''}
- == explicit_conflict_ranges
- GetReadVersionRequest {TransactionCount=1 Flags=134217729 MaxVersion=-1}

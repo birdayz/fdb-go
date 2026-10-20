@@ -226,7 +226,7 @@ func TestMappedSkipConflictPreservesWithinRangePrefix(t *testing.T) {
 		case "unreadable":
 			tx.ryw.atomic(MutSetVersionstampedValue, []byte("m"), make([]byte, 14))
 		}
-		err := tx.addMappedRangeConflictMustUnmodified([]byte("a"), []byte("z"))
+		err := tx.addMappedRangeConflictMustUnmodified(context.Background(), []byte("a"), []byte("z"))
 		if !mappedSkipHasError(err, 2039) || len(tx.readConflicts) != 1 || string(tx.readConflicts[0].Begin) != "a" || string(tx.readConflicts[0].End) != "m" {
 			t.Fatalf("kind=%s error=%v conflicts=%+v; want 2039 with [a,m) retained", kind, err, tx.readConflicts)
 		}
@@ -241,7 +241,7 @@ func TestMappedSkipSecondaryFailureKeepsEarlierConflicts(t *testing.T) {
 		{Key: []byte("primary/c"), Kind: MappedResultGetValue, GetValue: MappedGetValue{Key: []byte("secondary/earlier")}},
 		{Key: []byte("primary/d"), Kind: MappedResultGetRange, GetRange: MappedGetRange{Begin: mappedSelectorFGE([]byte("secondary/h")), End: mappedSelectorFGE([]byte("secondary/z"))}},
 	}}
-	err := tx.addMappedRangeConflicts([]byte("primary/a"), []byte("primary/z"), false, result.more, result.rows)
+	err := tx.addMappedRangeConflicts(context.Background(), []byte("primary/a"), []byte("primary/z"), false, result.more, result.rows)
 	if !mappedSkipHasError(err, 2039) || len(tx.readConflicts) != 3 {
 		t.Fatalf("secondary failure lost prior conflicts: error=%v conflicts=%+v", err, tx.readConflicts)
 	}
@@ -256,10 +256,10 @@ func TestMappedSkipConflictAtBeginInsertsNothing(t *testing.T) {
 	t.Parallel()
 	tx := &Transaction{}
 	tx.ryw.addClearedRange([]byte("a"), []byte("n"))
-	if err := tx.addMappedRangeConflictMustUnmodified([]byte("m"), []byte("z")); !mappedSkipHasError(err, 2039) || len(tx.readConflicts) != 0 {
+	if err := tx.addMappedRangeConflictMustUnmodified(context.Background(), []byte("m"), []byte("z")); !mappedSkipHasError(err, 2039) || len(tx.readConflicts) != 0 {
 		t.Fatalf("modified begin inserted conflicts: error=%v conflicts=%+v", err, tx.readConflicts)
 	}
-	if err := tx.addMappedRangeConflictMustUnmodified([]byte("z"), []byte("z")); err != nil || len(tx.readConflicts) != 0 {
+	if err := tx.addMappedRangeConflictMustUnmodified(context.Background(), []byte("z"), []byte("z")); err != nil || len(tx.readConflicts) != 0 {
 		t.Fatalf("empty interval inserted conflicts: error=%v conflicts=%+v", err, tx.readConflicts)
 	}
 }

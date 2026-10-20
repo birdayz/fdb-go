@@ -109,24 +109,14 @@ func TestSendPingWithReply_DropsToNilOnFullWriteCh(t *testing.T) {
 // failing slow-but-live requests. The fix breaks back to the outer loop on
 // observed traffic so the next cycle re-attempts the PING.
 //
-// Deterministic: the single writeCh slot is held by a dummy, so every PING attempt
-// drops while it sits there. Steady traffic keeps the liveness check from firing.
-// Draining the dummy then lets the NEXT attempt enqueue a real PING — which appears
-// only if the monitor is still cycling the outer loop (the fix); with the bug it is
-// wedged in the inner loop and no further PING is ever enqueued.
-//
-// The liveness margin is deliberately WIDE (1ms traffic ticks vs a 60ms
-// monitorTimeout window): the traffic goroutine must advance bytesReceived at
-// least once inside EVERY inner-loop window, or the monitor takes the
-// frozen-bytes kill path — which on this socket-less Conn panics in
-// failConnection and reads as "monitor never re-pinged". At a 5ms window that
-// race was lost under full-suite CPU contention (a starved ticker goroutine
-// missing one window); 60 tick chances per window puts it beyond scheduler
-// jitter while keeping the whole test under a second.
+// The first wait observation proves the initial ping dropped. Traffic is tied
+// to the monitor's own waits, rather than a ticker that another test can starve.
 func TestMonitor_DroppedPingRePingsInsteadOfStalling(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
+	client, peer := net.Pipe()
 	c := &Conn{
+		conn:                client,
 		ctx:                 ctx,
 		cancel:              cancel,
 		writeCh:             make(chan writeReq, 1),
@@ -134,63 +124,124 @@ func TestMonitor_DroppedPingRePingsInsteadOfStalling(t *testing.T) {
 		monitorLoopInterval: 5 * time.Millisecond,
 		monitorTimeout:      60 * time.Millisecond,
 	}
-	// Pending work so the monitor actually pings (C++ outstandingReplies > 0).
+	// Pending work and a full inbox force the first real ping send to drop.
 	c.pending[UID{First: 99}] = pendingEntry{ch: make(chan Response, 1)}
-	// Occupy the only writeCh slot so every PING attempt drops to nil.
 	c.writeCh <- writeReq{}
-
-	// Steady traffic: bytesReceived advances so the liveness check never declares
-	// the conn dead — failConnection on this socket-less test Conn would panic, and
-	// the healthy-but-quiet path is exactly what we're proving.
-	stop := make(chan struct{})
-	go func() {
-		tk := time.NewTicker(time.Millisecond)
-		defer tk.Stop()
-		for {
-			select {
-			case <-stop:
-				return
-			case <-tk.C:
-				c.bytesReceived.Add(1)
-			}
-		}
-	}()
-
+	traffic := &monitorTrafficContext{Context: ctx, conn: c, firstWait: make(chan struct{})}
+	c.ctx = traffic
 	c.loopWG.Add(1)
 	go c.connectionMonitor()
 	t.Cleanup(func() {
-		cancel()        // stop the monitor
-		c.loopWG.Wait() // no goroutine leak
-		close(stop)     // stop traffic
+		cancel()
+		c.loopWG.Wait()
+		client.Close()
+		peer.Close()
 	})
-
-	// Let several ping cycles elapse — each drops because the dummy holds the
-	// slot. A dropped-ping cycle is one loop interval plus one inner-loop
-	// window (~65ms), so 200ms covers about three.
-	time.Sleep(200 * time.Millisecond)
-
-	// Free the slot. With the fix the monitor is still cycling the outer loop and
-	// the next attempt enqueues a real PING here; with the bug it is wedged in the
-	// inner loop and nothing more is ever enqueued.
 	select {
-	case <-c.writeCh: // drain the dummy
-	default:
-		t.Fatal("dummy writeReq unexpectedly already drained — monitor consumed the slot?")
+	case <-traffic.firstWait:
+	case <-time.After(2 * time.Second):
+		t.Fatal("monitor did not reach its first dropped-ping wait")
 	}
-
-	pingEP := WellKnownToken(WLTokenPingPacket)
-	deadline := time.After(2 * time.Second)
-	for {
-		select {
-		case req := <-c.writeCh:
-			if req.token == pingEP {
-				return // re-ping observed — fix works
-			}
-		case <-deadline:
-			t.Fatal("monitor never re-pinged after a dropped ping + observed traffic: " +
-				"a nil replyCh gives the inner loop no success path, so it must break " +
-				"to the outer loop on observed traffic instead of wedging")
+	if !traffic.dropped {
+		t.Fatal("first ping did not drop with the dummy still queued and no reply registration")
+	}
+	select {
+	case request := <-c.writeCh:
+		if request.token != (UID{}) {
+			t.Fatalf("initial full-slot control was replaced by token %+v", request.token)
 		}
+	default:
+		t.Fatal("dummy disappeared before the test freed the ping slot")
+	}
+	select {
+	case request := <-c.writeCh:
+		if request.token != WellKnownToken(WLTokenPingPacket) {
+			t.Fatalf("re-ping step queued token %+v, want PingRequest", request.token)
+		}
+		token, ok := extractPingReplyToken(request.body)
+		if !ok || !c.HasPendingReply(token) {
+			t.Fatal("re-ping did not encode and register its real reply token")
+		}
+		c.queued.Add(-1) // the test consumed the real ping as its writer
+	case <-time.After(2 * time.Second):
+		t.Fatal("monitor did not re-ping after the initial drop, observed traffic, and freed slot")
+	}
+}
+
+// Each wait evaluation advances the fixture's synthetic traffic after the
+// monitor snapshots bytesReceived, even if the OS delays the monitor itself.
+type monitorTrafficContext struct {
+	context.Context
+	conn      *Conn
+	firstWait chan struct{}
+	once      sync.Once
+	dropped   bool
+}
+
+func (c *monitorTrafficContext) Done() <-chan struct{} {
+	c.conn.bytesReceived.Add(1)
+	if c.conn.monitorCycles.Load() > 0 {
+		c.once.Do(func() {
+			c.conn.pendingMu.RLock()
+			_, work := c.conn.pending[UID{First: 99}]
+			c.dropped = work && len(c.conn.pending) == 1 && len(c.conn.writeCh) == 1
+			c.conn.pendingMu.RUnlock()
+			close(c.firstWait)
+		})
+	}
+	return c.Context.Done()
+}
+
+func TestMonitorTrafficContextObservation(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name              string
+		work, full, extra bool
+		want              bool
+	}{
+		{name: "dropped", work: true, full: true, want: true},
+		{name: "no-work", full: true},
+		{name: "empty-slot", work: true},
+		{name: "retained-registration", work: true, full: true, extra: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			conn := &Conn{pending: make(map[UID]pendingEntry), writeCh: make(chan writeReq, 1)}
+			if tc.work {
+				conn.pending[UID{First: 99}] = pendingEntry{}
+			}
+			if tc.extra {
+				conn.pending[UID{First: 100}] = pendingEntry{}
+			}
+			if tc.full {
+				conn.writeCh <- writeReq{}
+			}
+			traffic := &monitorTrafficContext{Context: ctx, conn: conn, firstWait: make(chan struct{})}
+			if traffic.Done() != ctx.Done() || conn.bytesReceived.Load() != 1 {
+				t.Fatal("observer did not delegate cancellation and advance traffic")
+			}
+			select {
+			case <-traffic.firstWait:
+				t.Fatal("outer wait incorrectly reported an attempted ping")
+			default:
+			}
+			conn.monitorCycles.Store(1)
+			traffic.Done()
+			if conn.bytesReceived.Load() != 2 || traffic.dropped != tc.want {
+				t.Fatalf("inner wait: bytes=%d dropped=%t, want 2/%t", conn.bytesReceived.Load(), traffic.dropped, tc.want)
+			}
+			select {
+			case <-traffic.firstWait:
+			default:
+				t.Fatal("inner wait did not publish its observation")
+			}
+			conn.pending = nil
+			traffic.Done()
+			if conn.bytesReceived.Load() != 3 || traffic.dropped != tc.want {
+				t.Fatal("later wait changed the first observation or stopped advancing traffic")
+			}
+		})
 	}
 }
 

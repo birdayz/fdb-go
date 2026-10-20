@@ -88,11 +88,13 @@ func (tr Transaction) Get(key KeyConvertible) FutureByteSlice {
 func (tr Transaction) GetKey(sel Selectable) FutureKey {
 	inner, ctx := tr.t.inner, tr.t.ctx
 	ks := sel.FDBKeySelector()
-	key := bytes.Clone(ks.Key.FDBKey())
+	key := ks.Key.FDBKey() // StartGetKey takes its own copy
 	// OrEqual values in our KeySelector match the C++ wire convention
-	// (same as Apple Go binding). Pass directly — no inversion needed.
+	// (same as Apple Go binding). Pass directly — no inversion needed. Issued in the
+	// call, like fdb_transaction_get_key: a Set after it is not visible to it (RFC-262 D6).
+	p := inner.StartGetKey(ctx, client.KeySelector{Key: key, OrEqual: ks.OrEqual, Offset: int32(ks.Offset)})
 	return newFutureKey(func() (Key, error) {
-		k, err := inner.GetKey(ctx, key, ks.OrEqual, int32(ks.Offset))
+		k, err := p.Get()
 		return Key(k), convertError(err)
 	})
 }

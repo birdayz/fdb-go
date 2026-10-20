@@ -1,21 +1,24 @@
 package transport
 
-// enqueue hands req to writeLoop, counting it first so that no direct write
-// can overtake it. done (nil: none) abandons the enqueue as c.ctx does.
-func (c *Conn) enqueue(req writeReq, done <-chan struct{}) bool {
-	c.queued.Add(1)
-	select {
-	case c.writeCh <- req:
-		return true
-	case <-c.ctx.Done():
-	case <-done:
-	}
-	c.queued.Add(-1)
-	return false
-}
-
 // tryEnqueue is enqueue for fire-and-forget frames that a full queue drops.
 func (c *Conn) tryEnqueue(req writeReq) bool {
+	if order := c.peerSendOrder.Load(); order != nil {
+		reserved, accepted, held := c.reserveColdControl(order, req)
+		if reserved {
+			return accepted
+		}
+		if held {
+			return c.tryEnqueueHeld(req)
+		}
+	}
+	if c.sendWaiters.Pending() {
+		return false
+	}
+	c.writeAdmission.RLock()
+	defer c.writeAdmission.RUnlock()
+	if c.writeClosed || c.ctx.Err() != nil || c.sendWaiters.Pending() {
+		return false
+	}
 	c.queued.Add(1)
 	select {
 	case c.writeCh <- req:

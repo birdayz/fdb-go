@@ -212,7 +212,12 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   libfdb_c's in three [wire-golden](tools/clientbench/wiregolden/README.md) scenarios
   (`go-divergences.diff`); fixing one regenerates the goldens. The fast lane checks the
   Go client against `go.golden` (`tools/clientbench/wiregolden/golden_test.go`).
-  - [ ] `getkey_*`, `set_then_range` (RYW storage reads): libfdb_c sizes each storage read
+  - [x] `getkey_*` (RFC-262 phase 2): getKey runs the ported walk; the six sections
+    equal libfdb_c's. New phase-2 sections (`getkey_across_clears`,
+    `getkey_across_write_conflict_ranges`, `getkey_enclosed_write_conflict_ranges`,
+    `getkey_adjacent_clears{,_reversed,_no_conflict}`, `snapshot_ryw_disabled_getkey`)
+    were captured from libfdb_c and match.
+  - [ ] `set_then_range` (RFC-262 phase 3; RYW storage reads): libfdb_c sizes each storage read
     of a key selector or an RYW range read in `getRangeValue`/`getRangeValueBack`
     (limits 1, 2, -1, -3 in the scenarios; 80000 rows for an iterator-mode RYW read; a
     read past a pending write to the end of the unknown stretch); Go reads 256 rows (or
@@ -266,6 +271,45 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
     NativeAPI `getRange` sends `firstGreaterThan(last)` (`NativeAPI.actor.cpp:4850`). Same
     rows, different `Begin` bytes. RFC-262 D4 leaves mapped reads on their sender; port the
     selector-capable sender for them and add a mapped multi-request golden scenario.
+- [ ] **Explicit write-conflict-range errors are immediate.** `AddWriteConflictRange`
+  returns `key_outside_legal_range` (2004) from the call, while the C binding runs RYW
+  `addWriteConflictRange` on the network thread and records the error as the
+  transaction's deferred error (`ThreadSafeTransaction.cpp:659-663`, check at
+  `ReadYourWrites.actor.cpp:2466-2468`), surfacing it on the next operation.
+  `AddWriteConflictKey` already defers it. Align the range form (the facade's return
+  value then only carries synchronous errors such as inverted ranges) with a test.
+- [ ] **Panic-safe locks outside the GetKey walk.** Scoped recovery now unwinds GetKey
+  walk locks, but older paths still pair bare Lock/Unlock around fallible work:
+  `ryw.go:620-632` (`get` / `localPointLocked`), `ryw.go:643-645` (`getSnapshot`),
+  and `transaction.go:3223-3225` (`stateAddReadConflictRange` / `conflictRanges`).
+  Scope deferred unlocks there and pin a panic inside each locked operation; do not
+  treat a panic after a reply outside the lock as proof. Also audit transport
+  `writer_turn.go:52-99`: `NotifySuspend` and the coalescing wait run with `writeMu`
+  held and no panic rollback for the lock, counted frame or `turnCollecting`; pin a
+  suspension-observer panic and prove connection reuse after recovery.
+- [ ] **Panic-safe QueueModel accounting in read senders.** Reply registration
+  cleanup does not release a delta when a recovered panic occurs after
+  `startRequest`: `readpath.go:313` (getKey), `:561` (getValue), `:636` (single-server
+  getValue), `:1077` (range family), and `:1719` (watch). Add a separately owned
+  accounting guard through sender-to-RPC ownership transfer and pin a panic after
+  each increment. C++ `ModelHolder::~ModelHolder` removes the delta without a
+  latency sample (`LoadBalance.actor.h:53-67`); `replyGuard` only owns the endpoint.
+- [ ] **Join monitor reply waiters on connection close.** `sendPingWithReply`
+  launches its reply-wait goroutine outside `Conn.loopWG` (`transport/conn.go`).
+  Connection cancellation wakes it, but `Close` can return before it releases
+  its reply handle. Track that owner through shutdown and pin zero live waiters
+  on return; the cold-control outbox worker is tracked separately.
+- [ ] **Full-queue control packets must not be dropped.** The pre-existing
+  transport `tryEnqueue` policy drops monitor pings and ping replies when its
+  bounded queue is full; C++ queues them as ordinary packets in `Peer::unsent`
+  (`FlowTransport.actor.cpp:1967-1998,2078`). Cold-prefix control packets now join
+  the ordered outbox, but its full-capacity fallback retains this divergence.
+- [ ] **Reads after an illegal Set precede its deferred verdict.** `stateSet`
+  (`transaction.go:1268-1284`) buffers illegal keys/values until commit validation;
+  C++ RYW set throws before modifying WriteMap (`ReadYourWrites.actor.cpp:2344-2353`)
+  and the thread-safe wrapper defers that error. A later GetKey/conflict filter can
+  therefore observe a Go write that C++ never installed. Align mutation admission
+  and first-error ordering, with an illegal-Set-then-read/conflict regression.
 - [ ] **Transaction options during in-flight operations.** Option setters (`SetLockAware`,
   `SetReadLockAware`, GRV cache, tags, priority, `SetAutoThrottleTag`) write plain
   `Transaction` fields under a shared state lease, while in-flight operations read them:

@@ -297,7 +297,7 @@ func TestRywAtomic_ChainFolds(t *testing.T) {
 		c.atomic(MutAddValue, key, le8(1))
 	}
 	c.mu.Lock()
-	entry := c.writes[string(key)]
+	entry := c.liveLocked().writes[string(key)]
 	c.mu.Unlock()
 	if !entry.hasAtomics {
 		t.Fatal("expected a pending atomic chain on an unread key")
@@ -389,7 +389,7 @@ func TestRywAtomic_EmptyOperandFirstInTxn(t *testing.T) {
 	c.atomic(MutAndV2, key, []byte{})     // empty operand, first in the txn -> allocBytes(0)
 	c.atomic(MutAndV2, key, []byte{0x30}) // folds onto it
 	c.mu.Lock()
-	entry := c.writes[string(key)]
+	entry := c.liveLocked().writes[string(key)]
 	c.mu.Unlock()
 	if len(entry.atomics) != 1 {
 		t.Fatalf("chain length = %d, want 1 (AndV2 is associative and always folds)", len(entry.atomics))

@@ -17,6 +17,7 @@ import (
 	oteltrace "go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
 
+	"fdb.dev/pkg/fdbgo/internal/sendqueue"
 	"fdb.dev/pkg/fdbgo/transport"
 	"fdb.dev/pkg/fdbgo/wire"
 )
@@ -388,7 +389,9 @@ type database struct {
 	afterLocationSend atomic.Pointer[func()]
 	// rangeReadPanics is the RFC-110 backstop shared by this database's range reads.
 	rangeReadPanics panicBackstop
-	maxWatches      atomic.Int64
+	// resolveKeyPanics is the getRange fallback resolveKey goroutines' backstop.
+	resolveKeyPanics panicBackstop
+	maxWatches       atomic.Int64
 
 	// Lifecycle.
 	ctx       context.Context
@@ -511,9 +514,10 @@ func (db *database) handleDialError(ctx context.Context, addr string) {
 // conn/err — written by the dialer before close(done), so the channel close
 // establishes the happens-before.
 type dialCall struct {
-	done chan struct{}
-	conn *transport.Conn
-	err  error
+	done  chan struct{}
+	conn  *transport.Conn
+	err   error
+	sends sendqueue.Queue
 }
 
 // getOrDialConn returns a pooled or freshly-dialed connection.
@@ -533,43 +537,8 @@ type dialCall struct {
 // — it never aborts the dial that the other waiters share (matching C++, where the
 // connectionKeeper's dial outlives any single request).
 func (db *database) getOrDialConn(ctx context.Context, addr string) (conn *transport.Conn, dialed bool, err error) {
-	// An already-canceled caller must not start (or coalesce onto) a dial.
-	if err := ctx.Err(); err != nil {
-		return nil, false, err
-	}
-	db.connMu.Lock()
-	// Fast path: a live pooled connection.
-	if c, ok := db.connPool[addr]; ok {
-		if !c.IsClosed() {
-			db.connMu.Unlock()
-			return c, false, nil
-		}
-		delete(db.connPool, addr)
-	}
-	// Join the in-flight dial for addr, or start one (becoming its owner).
-	call, owner := db.dialing[addr], false
-	if call == nil {
-		call = &dialCall{done: make(chan struct{})}
-		db.dialing[addr] = call
-		owner = true
-	}
-	db.connMu.Unlock()
-
-	if owner {
-		go db.dialAndPool(addr, call)
-	}
-
-	// Every caller — owner included — waits the same way: a caller's ctx cancels
-	// only its own wait, never the shared dial.
-	select {
-	case <-call.done:
-		if call.err != nil {
-			return nil, false, call.err
-		}
-		return call.conn, owner, nil
-	case <-ctx.Done():
-		return nil, false, ctx.Err()
-	}
+	conn, dialed, _, err = db.getOrDialConnFor(ctx, addr, false)
+	return conn, dialed, err
 }
 
 // dialAndPool runs the single shared dial for addr and publishes the result to all
@@ -591,26 +560,43 @@ func (db *database) dialAndPool(addr string, call *dialCall) {
 	// caller re-dials. The connMu section below is closure-scoped so a panic in
 	// it unwinds the lock (else this recover's Lock would deadlock).
 	pb := &panicBackstop{name: "dialAndPool", db: db}
+	var c *transport.Conn // owned here until the result is published
 	defer func() {
 		r := recover()
 		if !pb.recovered(r) {
 			return
 		}
 		db.connMu.Lock()
-		delete(db.dialing, addr)
-		db.connMu.Unlock()
+		defer db.connMu.Unlock()
+		select {
+		case <-call.done:
+			return
+		default:
+		}
+		if db.dialing[addr] == call {
+			delete(db.dialing, addr)
+		}
+		if c != nil {
+			if db.connPool[addr] == c {
+				delete(db.connPool, addr)
+			}
+			_ = c.Close()
+		}
 		call.err = fmt.Errorf("fdbgo: panic dialing %s: %v", addr, r)
+		call.sends.Seal()
 		close(call.done)
 	}()
 
 	dialCtx, cancel := context.WithTimeout(db.ctx, DefaultRPCTimeout)
 	defer cancel() // RFC-110: release the dial timer even if transport.Dial panics
-	c, dialErr := transport.Dial(dialCtx, addr, db.tlsConfig, db.dialFn, db.dialOpts...)
+	dialOpts := append([]transport.DialOption{}, db.dialOpts...)
+	dialOpts = append(dialOpts, transport.WithSendOrder(&call.sends))
+	var dialErr error
+	c, dialErr = transport.Dial(dialCtx, addr, db.tlsConfig, db.dialFn, dialOpts...)
 
 	func() {
 		db.connMu.Lock()
 		defer db.connMu.Unlock()
-		delete(db.dialing, addr)
 		switch {
 		case dialErr != nil:
 			call.err = dialErr
@@ -633,8 +619,18 @@ func (db *database) dialAndPool(addr string, call *dialCall) {
 			// (it never reaches connMu/db), so nesting it here is lock-order-safe.
 			db.failMon.markAlive(addr)
 		}
+		call.sends.Seal() // no arrival after dial completion can extend this cohort
+		drained := !call.sends.Pending()
+		if call.err != nil || drained {
+			if db.dialing[addr] == call {
+				delete(db.dialing, addr)
+			}
+			if call.conn != nil && drained {
+				call.conn.ClearSendOrder(&call.sends)
+			}
+		}
+		close(call.done) // membership and result become visible atomically under connMu
 	}()
-	close(call.done) // wake all waiters (conn/err already set under the lock)
 }
 
 // warmConnections pre-establishes TCP connections to all known proxies.
@@ -796,11 +792,12 @@ func (db *database) tryOneCoordinator(ctx context.Context, snap *ClusterFile, ad
 			info, err = nil, fmt.Errorf("fdbgo: panic contacting coordinator %s: %v", addr, r)
 		}
 	}()
-	conn, dialErr := db.getOrDial(ctx, addr)
+	conn, permit, dialErr := db.getOrDialForSend(ctx, addr)
 	if dialErr != nil {
 		return nil, dialErr
 	}
-	info, err = db.openDatabaseCoord(ctx, conn, snap, transport.UID{}, CoordinatorTimeout)
+	defer permit.Release()
+	info, err = db.openDatabaseCoord(ctx, conn, snap, transport.UID{}, CoordinatorTimeout, permit)
 	if err != nil {
 		return nil, fmt.Errorf("coordinator %s: %w", addr, err)
 	}
@@ -937,6 +934,7 @@ func OpenDatabaseFromConfig(ctx context.Context, cf *ClusterFile, opts ...Option
 	}
 
 	db.rangeReadPanics.name, db.rangeReadPanics.db = "rangeRead", db
+	db.resolveKeyPanics.name, db.resolveKeyPanics.db = "resolveKey", db
 	db.readTags = readTagSampling{rate: readTagSampleRate}
 	if o.readTagSampling != nil {
 		db.readTags = *o.readTagSampling

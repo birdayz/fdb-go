@@ -85,9 +85,11 @@ its own normalization first.
 
 | Scenarios | libfdb_c | Go |
 |---|---|---|
-| `getkey_*`, `set_then_range` | storage reads sized by `getRangeValue` (limits 1, 2, -1, -3; 80000 rows) | 256 (or 10000) rows |
+| `set_then_range` | storage reads sized by `getRangeValue` (80000 rows) | 10000 rows |
 
-It is a TODO.md item. Fixed: `clear_range_then_set` (a clear split around the
+`set_then_range` is a TODO.md item (RFC-262 phase 3); the `getkey_*` scenarios
+match since RFC-262 phase 2, including the scenarios it added for clears,
+write conflict ranges and the traversal budget. Fixed: `clear_range_then_set` (a clear split around the
 operations inside it), `clear_key` (the compact single-key clear encoding),
 `add_then_get` (read conflict ranges sorted and merged), `estimated_range_size`
 (`latestVersion` in the metrics request).
