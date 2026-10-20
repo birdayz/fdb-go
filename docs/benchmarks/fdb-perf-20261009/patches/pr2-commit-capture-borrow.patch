@@ -1,0 +1,458 @@
+From 27cb32c5ff156790a8cf19c3aeaf1621e8754040 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Johannes=20Br=C3=BCderl?= <johannes.bruederl@gmail.com>
+Date: Sat, 10 Oct 2026 23:41:22 +0200
+Subject: [PATCH] perf(fdbgo): borrow the conflict slab at commit capture, not
+ copy it
+
+captureCommit copied every operand and conflict bound into a fresh arena
+so a concurrent reset could not rewrite bytes the commit RPC still ships:
+23% of allocated bytes on a 50-Set commit. The bytes already live in the
+append-only slab (or in buffers nothing rewrites), so the capture now
+borrows the slab; reset neither reuses in place nor pools a borrowed slab,
+and the commit releases it before publishCommit. Vectors are still copied.
+Wire bytes are unchanged.
+---
+ pkg/fdbgo/client/BUILD.bazel                  |  11 +-
+ .../client/commit_capture_borrow_unit_test.go | 223 ++++++++++++++++++
+ pkg/fdbgo/client/commit_input.go              |  58 ++---
+ pkg/fdbgo/client/ryw.go                       |   2 +-
+ pkg/fdbgo/client/transaction.go               |  26 +-
+ 5 files changed, 281 insertions(+), 39 deletions(-)
+ create mode 100644 pkg/fdbgo/client/commit_capture_borrow_unit_test.go
+
+diff --git a/pkg/fdbgo/client/BUILD.bazel b/pkg/fdbgo/client/BUILD.bazel
+index 13eddf77c..00fc7ab2f 100644
+--- a/pkg/fdbgo/client/BUILD.bazel
++++ b/pkg/fdbgo/client/BUILD.bazel
+@@ -72,12 +72,19 @@ go_test(
+     embed = [":client"],
+ )
+ 
++# gazelle:exclude commit_capture_borrow_unit_test.go
+ # gazelle:exclude conflictbuf_unit_test.go
+ go_test(
+     name = "conflictbuf_unit_test",
+-    srcs = ["conflictbuf_unit_test.go"],
++    srcs = [
++        "commit_capture_borrow_unit_test.go",
++        "conflictbuf_unit_test.go",
++    ],
+     embed = [":client"],
+-    deps = ["//pkg/fdbgo/wire"],
++    deps = [
++        "//pkg/fdbgo/transport",
++        "//pkg/fdbgo/wire",
++    ],
+ )
+ 
+ # gazelle:exclude grv_batch_unit_test.go
+diff --git a/pkg/fdbgo/client/commit_capture_borrow_unit_test.go b/pkg/fdbgo/client/commit_capture_borrow_unit_test.go
+new file mode 100644
+index 000000000..fbcd87d0f
+--- /dev/null
++++ b/pkg/fdbgo/client/commit_capture_borrow_unit_test.go
+@@ -0,0 +1,223 @@
++package client
++
++import (
++	"bytes"
++	"fmt"
++	"sync"
++	"testing"
++	"unsafe"
++
++	"fdb.dev/pkg/fdbgo/transport"
++)
++
++var borrowReplyToken = transport.UID{First: 7, Second: 9}
++
++// borrowTx buffers n Sets of 100-byte values, enough to promote to the bulk slab.
++func borrowTx(n int, fill byte) *Transaction {
++	tx := &Transaction{}
++	tx.tenantId = NoTenantID
++	tx.readVersion = 42
++	for i := range n {
++		tx.Set([]byte(fmt.Sprintf("borrow/key/%04d", i)), bytes.Repeat([]byte{fill}, 100))
++	}
++	tx.AddReadConflictKey([]byte("borrow/read"))
++	return tx
++}
++
++func captureUnderLease(tx *Transaction) *commitInput {
++	lease := tx.enterState()
++	defer lease.release()
++	tx.conflictMu.Lock()
++	muts, writes := tx.mutations, tx.writeConflicts
++	tx.conflictMu.Unlock()
++	return tx.captureCommit(muts, writes)
++}
++
++// deepCopyInput is the pre-borrow capture: every operand in fresh storage.
++func deepCopyInput(in *commitInput) *commitInput {
++	out := *in
++	out.slab = nil
++	out.muts = make([]Mutation, len(in.muts))
++	for i, m := range in.muts {
++		out.muts[i] = Mutation{Type: m.Type, Key: bytes.Clone(m.Key), Value: bytes.Clone(m.Value)}
++	}
++	cloneRanges := func(rs []KeyRange) []KeyRange {
++		c := make([]KeyRange, len(rs))
++		for i, r := range rs {
++			c[i] = KeyRange{Begin: bytes.Clone(r.Begin), End: bytes.Clone(r.End)}
++		}
++		return c
++	}
++	out.readConflicts = cloneRanges(in.readConflicts)
++	out.writeConflicts = cloneRanges(in.writeConflicts)
++	return &out
++}
++
++func commitFrame(in *commitInput) []byte {
++	body, poolBuf := buildCommitInputRequest(in, borrowReplyToken)
++	frame := bytes.Clone(body)
++	marshalBufPool.Put(poolBuf)
++	return frame
++}
++
++func TestCaptureCommitBorrowsSlabInsteadOfCopying(t *testing.T) {
++	t.Parallel()
++	tx := borrowTx(50, 'a')
++	defer tx.Cancel()
++	input := captureUnderLease(tx)
++	if input.slab == nil || input.slab != tx.conflictBufOwner || input.slab.borrows.Load() != 1 {
++		t.Fatal("capture did not borrow the current slab")
++	}
++	for i, m := range input.muts {
++		own := tx.mutations[i]
++		if unsafe.SliceData(m.Key) != unsafe.SliceData(own.Key) || unsafe.SliceData(m.Value) != unsafe.SliceData(own.Value) {
++			t.Fatalf("mutation %d was copied instead of borrowed", i)
++		}
++	}
++	if &input.muts[0] == &tx.mutations[0] {
++		t.Fatal("capture shares the mutation vector a retry refills in place")
++	}
++	owner := input.slab
++	input.release()
++	input.release()
++	if owner.borrows.Load() != 0 || input.slab != nil {
++		t.Fatalf("release left %d borrows", owner.borrows.Load())
++	}
++}
++
++// A retry may carve over its own slab only when no captured commit reads it.
++func TestRetryReusesSlabOnlyWhenSoleHolder(t *testing.T) {
++	t.Parallel()
++	for _, released := range []bool{false, true} {
++		t.Run(fmt.Sprintf("released=%t", released), func(t *testing.T) {
++			t.Parallel()
++			tx := borrowTx(50, 'a')
++			defer tx.Cancel()
++			backing := unsafe.SliceData(tx.conflictBuf)
++			input := captureUnderLease(tx)
++			want := commitFrame(deepCopyInput(input))
++			if released {
++				input.release()
++			}
++			tx.reset(false)
++			for i := range 50 {
++				tx.Set([]byte(fmt.Sprintf("borrow/key/%04d", i)), bytes.Repeat([]byte{'z'}, 100))
++			}
++			reused := unsafe.SliceData(tx.conflictBuf) == backing
++			if reused != released {
++				t.Fatalf("retry reused the slab=%t, want %t", reused, released)
++			}
++			if released {
++				return
++			}
++			if got := commitFrame(input); !bytes.Equal(got, want) {
++				t.Fatal("COMMIT_CAPTURE_MUTATED: captured frame changed after retry carved new writes")
++			}
++			input.release()
++		})
++	}
++}
++
++// Without a pool handle, reset would pool the slab under a fresh one; the
++// capture must install the handle that carries its borrow.
++func TestCaptureCommitTracksOwnerlessSlab(t *testing.T) {
++	t.Parallel()
++	tx := &Transaction{}
++	defer tx.Cancel()
++	tx.conflictBuf = make([]byte, 0, 4096)
++	tx.Set([]byte("ownerless"), []byte("value"))
++	input := captureUnderLease(tx)
++	if input.slab == nil || tx.conflictBufOwner != input.slab {
++		t.Fatal("capture of an ownerless slab did not record its borrow")
++	}
++	tx.postCommitReset()
++	if tx.conflictBuf != nil || tx.conflictBufOwner != nil {
++		t.Fatal("post-commit reset kept the borrowed slab")
++	}
++	if m := input.muts[0]; len(input.muts) != 1 || string(m.Key) != "ownerless" || string(m.Value) != "value" {
++		t.Fatal("COMMIT_CAPTURE_MUTATED: ownerless capture changed after post-commit reset")
++	}
++	input.release()
++}
++
++// A borrowed slab never reaches the pool: later transactions drawing from the
++// same pool must not overwrite what the in-flight commit ships.
++func TestPostCommitResetDoesNotPoolBorrowedSlab(t *testing.T) {
++	t.Parallel()
++	tx := borrowTx(50, 'a')
++	defer tx.Cancel()
++	input := captureUnderLease(tx)
++	want := commitFrame(deepCopyInput(input))
++	tx.postCommitReset()
++	for range 64 {
++		other := borrowTx(50, 'q')
++		other.postCommitReset()
++	}
++	if got := commitFrame(input); !bytes.Equal(got, want) {
++		t.Fatal("COMMIT_CAPTURE_MUTATED: pooled slab was reused while the commit read it")
++	}
++	input.release()
++}
++
++// Reset, retry and Cancel race the commit's encoding the way a caller's
++// goroutine may during the commit RPC. Run under -race: any write to bytes the
++// commit still reads is a reported race, not only a byte mismatch.
++func TestConcurrentResetDuringCommitKeepsCapturedBytes(t *testing.T) {
++	t.Parallel()
++	for _, mode := range []string{"Reset", "retry", "postcommit", "Cancel"} {
++		t.Run(mode, func(t *testing.T) {
++			t.Parallel()
++			tx := borrowTx(50, 'a')
++			input := captureUnderLease(tx)
++			want := commitFrame(deepCopyInput(input))
++			var wg sync.WaitGroup
++			wg.Add(2)
++			go func() {
++				defer wg.Done()
++				for range 20 {
++					if got := commitFrame(input); !bytes.Equal(got, want) {
++						t.Error("COMMIT_CAPTURE_MUTATED: frame changed during concurrent reset")
++						return
++					}
++				}
++			}()
++			go func() {
++				defer wg.Done()
++				switch mode {
++				case "Reset":
++					tx.Reset()
++				case "retry":
++					tx.reset(false)
++				case "postcommit":
++					tx.postCommitReset()
++				case "Cancel":
++					tx.Cancel()
++					return
++				}
++				for i := range 50 {
++					tx.Set([]byte(fmt.Sprintf("borrow/key/%04d", i)), bytes.Repeat([]byte{'z'}, 100))
++				}
++			}()
++			wg.Wait()
++			input.release()
++			tx.Cancel()
++		})
++	}
++}
++
++// The borrow changes only where the bytes live, never what is encoded.
++func TestCaptureCommitFrameMatchesDeepCopy(t *testing.T) {
++	t.Parallel()
++	tx := borrowTx(50, 'a')
++	defer tx.Cancel()
++	tx.Clear([]byte("borrow/clear"))
++	if err := tx.ClearRange([]byte("borrow/range/a"), []byte("borrow/range/z")); err != nil {
++		t.Fatal(err)
++	}
++	tx.Atomic(MutAddValue, []byte("borrow/counter"), []byte{1, 0, 0, 0})
++	input := captureUnderLease(tx)
++	defer input.release()
++	if got, want := commitFrame(input), commitFrame(deepCopyInput(input)); !bytes.Equal(got, want) {
++		t.Fatal("borrowed capture encodes differently from an owned copy")
++	}
++}
+diff --git a/pkg/fdbgo/client/commit_input.go b/pkg/fdbgo/client/commit_input.go
+index a440446c1..c6394578c 100644
+--- a/pkg/fdbgo/client/commit_input.go
++++ b/pkg/fdbgo/client/commit_input.go
+@@ -2,14 +2,17 @@ package client
+ 
+ import (
+ 	"context"
++	"slices"
+ 	"time"
+ 
+ 	"fdb.dev/pkg/fdbgo/wire/types"
+ )
+ 
+-// commitInput owns every reset-sensitive byte used after commit dispatch.
++// commitInput keeps every reset-sensitive byte used after commit dispatch: it
++// owns the vectors and borrows the operand slab until release.
+ // Neither the wire wait nor the uncertain-delivery barrier reads the handle.
+ type commitInput struct {
++	slab           *conflictBuf // borrowed operand storage; see release
+ 	db             *database
+ 	muts           []Mutation
+ 	readConflicts  []KeyRange
+@@ -30,52 +33,42 @@ type commitOutcome struct {
+ 	epoch   int64
+ }
+ 
+-// captureCommit runs under the caller's execution lease. One byte arena owns
+-// mutation operands and conflict boundaries, including pooled conflict buffers.
++// captureCommit runs under the caller's execution lease. Operands and conflict
++// bounds live either in the transaction's append-only slab, which it borrows
++// until release, or in heap buffers nothing rewrites; only the vectors, which
++// a retry refills in place, are copied.
+ func (tx *Transaction) captureCommit(muts []Mutation, writeConflicts []KeyRange) *commitInput {
+ 	tx.conflictMu.Lock()
+ 	defer tx.conflictMu.Unlock()
+ 	input := &commitInput{
+ 		db: tx.db, tenantID: tx.tenantId, lockAware: tx.lockAware, isDummy: tx.isDummy,
+ 		span: tx.currentSpan(), tags: append([]string(nil), tx.tags...),
+-		muts: make([]Mutation, len(muts)), readConflicts: make([]KeyRange, len(tx.readConflicts)),
+-		writeConflicts: make([]KeyRange, len(writeConflicts)),
++		muts: slices.Clone(muts), readConflicts: slices.Clone(tx.readConflicts),
++		writeConflicts: slices.Clone(writeConflicts),
+ 	}
+ 	tx.readVersionMu.Lock()
+ 	input.readVersion, input.metricStart = tx.readVersion, tx.metricStart
+ 	tx.readVersionMu.Unlock()
+-	size := 0
+-	for _, m := range muts {
+-		size += len(m.Key) + len(m.Value)
+-	}
+-	for _, kr := range tx.readConflicts {
+-		size += len(kr.Begin) + len(kr.End)
+-	}
+-	for _, kr := range writeConflicts {
+-		size += len(kr.Begin) + len(kr.End)
+-	}
+-	arena := make([]byte, size)
+-	copyBytes := func(src []byte) []byte {
+-		if src == nil {
+-			return nil
++	if tx.conflictBuf != nil {
++		if tx.conflictBufOwner == nil {
++			// Reset pools an ownerless slab under a fresh handle; give it one now
++			// so the borrow is visible there.
++			tx.conflictBufOwner = &conflictBuf{}
+ 		}
+-		dst := arena[:len(src):len(src)]
+-		copy(dst, src)
+-		arena = arena[len(src):]
+-		return dst
+-	}
+-	for i, m := range muts {
+-		input.muts[i] = Mutation{Type: m.Type, Key: copyBytes(m.Key), Value: copyBytes(m.Value)}
+-	}
+-	for i, kr := range tx.readConflicts {
+-		input.readConflicts[i] = KeyRange{Begin: copyBytes(kr.Begin), End: copyBytes(kr.End)}
+-	}
+-	for i, kr := range writeConflicts {
+-		input.writeConflicts[i] = KeyRange{Begin: copyBytes(kr.Begin), End: copyBytes(kr.End)}
++		tx.conflictBufOwner.borrows.Add(1)
++		input.slab = tx.conflictBufOwner
+ 	}
+ 	return input
+ }
+ 
++// release ends the borrow once nothing reads the captured bytes. Idempotent.
++func (input *commitInput) release() {
++	if input.slab != nil {
++		input.slab.borrows.Add(-1)
++		input.slab = nil
++	}
++}
++
+ // publishCommit does not reinterpret the detached operation's outcome. A stale
+ // completion returns to its caller but cannot publish into or reset a successor.
+ func (tx *Transaction) publishCommit(inc *readIncarnation, released *executionLease, result commitOutcome) {
+@@ -107,4 +100,5 @@ func (tx *Transaction) commitDummyTransaction(ctx context.Context) {
+ 	input := tx.captureCommit(nil, writeConflicts)
+ 	lease.release()
+ 	input.commitDummyTransaction(ctx)
++	input.release()
+ }
+diff --git a/pkg/fdbgo/client/ryw.go b/pkg/fdbgo/client/ryw.go
+index 41ee63702..5cc024221 100644
+--- a/pkg/fdbgo/client/ryw.go
++++ b/pkg/fdbgo/client/ryw.go
+@@ -352,7 +352,7 @@ func coalesceCommitMutations(muts []Mutation) []Mutation {
+ }
+ 
+ // Ordered Sets need only last-write-wins, not replay (C++ WriteMap.cpp:125-137).
+-// Operands remain owned by the leased snapshot until captureCommit copies them.
++// Operands stay in the transaction's slab, which captureCommit borrows.
+ func coalescePlainSetMutations(muts []Mutation) ([]Mutation, bool) {
+ 	unique := 0
+ 	for i, m := range muts {
+diff --git a/pkg/fdbgo/client/transaction.go b/pkg/fdbgo/client/transaction.go
+index 170cb824f..9699f5308 100644
+--- a/pkg/fdbgo/client/transaction.go
++++ b/pkg/fdbgo/client/transaction.go
+@@ -1301,6 +1301,15 @@ var conflictBufPool = sync.Pool{
+ 
+ type conflictBuf struct {
+ 	b []byte
++	// Captured commits still reading this slab; while nonzero the transaction
++	// may neither reuse it in place nor return it to the pool.
++	borrows atomic.Int32
++}
++
++// conflictBufBorrowedLocked runs under conflictMu, which captureCommit also
++// holds to borrow, so a zero count cannot become nonzero before the caller acts.
++func (tx *Transaction) conflictBufBorrowedLocked() bool {
++	return tx.conflictBufOwner != nil && tx.conflictBufOwner.borrows.Load() != 0
+ }
+ 
+ // Arenas over 32 KiB are not pooled: large values must not inflate later transactions.
+@@ -2016,10 +2025,13 @@ func (tx *Transaction) commitAdmitted(parent context.Context, completion *versio
+ 	input := tx.captureCommit(shipMuts, shipConflicts)
+ 	input.versionstamp = completion
+ 	if err := tx.readEntryError(ctx); err != nil {
++		input.release()
+ 		return err
+ 	}
+ 	op.lease.release()
+ 	result, err := input.commit(context.WithoutCancel(ctx))
++	// Before publishCommit's reset, so the slab can return to the pool.
++	input.release()
+ 	if err != nil {
+ 		return err
+ 	}
+@@ -3533,8 +3545,9 @@ func (tx *Transaction) postCommitResetFields() {
+ 	tx.readConflicts = tx.readConflicts[:0]
+ 	tx.writeConflicts = tx.writeConflicts[:0]
+ 	tx.singleKeyClearCount = 0 // cleared with mutations (GetApproximateSize accounting)
+-	// Do not keep arenas over 32 KiB alive in unrelated transactions.
+-	if pool := conflictBufPoolFor(cap(tx.conflictBuf)); pool != nil && cap(tx.conflictBuf) > 0 {
++	// Do not keep arenas over 32 KiB alive in unrelated transactions, nor pool
++	// one an in-flight commit still reads.
++	if pool := conflictBufPoolFor(cap(tx.conflictBuf)); pool != nil && cap(tx.conflictBuf) > 0 && !tx.conflictBufBorrowedLocked() {
+ 		cb := tx.conflictBufOwner
+ 		if cb == nil {
+ 			cb = &conflictBuf{}
+@@ -3615,8 +3628,13 @@ func (tx *Transaction) resetFields(userReset bool) {
+ 	tx.mutations = tx.mutations[:0]
+ 	tx.readConflicts = tx.readConflicts[:0]
+ 	tx.writeConflicts = tx.writeConflicts[:0]
+-	tx.singleKeyClearCount = 0          // cleared with mutations (GetApproximateSize accounting)
+-	tx.conflictBuf = tx.conflictBuf[:0] // reuse buffer for retry
++	tx.singleKeyClearCount = 0 // cleared with mutations (GetApproximateSize accounting)
++	if tx.conflictBufBorrowedLocked() {
++		// A captured commit still reads it: leave it to that commit and the GC.
++		tx.conflictBuf, tx.conflictBufOwner = nil, nil
++	} else {
++		tx.conflictBuf = tx.conflictBuf[:0] // reuse buffer for retry
++	}
+ 	tx.conflictMu.Unlock()
+ 	tx.ryw.reset()
+ 	tx.deferredErr.Store(nil) // C++ resetRyow clears deferredError (ReadYourWrites.actor.cpp:2719)
+-- 
+2.55.0
+

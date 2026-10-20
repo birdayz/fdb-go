@@ -37,6 +37,8 @@ def parse_args(argv=None):
     ap.add_argument('--prefix', required=True, help='owned names are PREFIX or PREFIX-*')
     ap.add_argument('--protect-name', action='append', default=[], help='glob of names never deleted (repeat)')
     ap.add_argument('--protect-id', action='append', type=int, default=[], help='resource ID never deleted (repeat)')
+    ap.add_argument('--protect-file', action='append', default=[],
+                    help='private kind/id/name list (inventory.py snapshot); every ID and name is protected (repeat)')
     ap.add_argument('--deadline', help='wait until this UTC ISO time or epoch, then act')
     ap.add_argument('--poll-seconds', type=float, default=30.0)
     ap.add_argument('--retries', type=int, default=6, help='attempts for firewall/network deletes')
@@ -47,6 +49,11 @@ def parse_args(argv=None):
     args = ap.parse_args(argv)
     args.campaign = mc.parse_campaign_label(args.label)
     mc.check_name(args.prefix)
+    for path in args.protect_file:
+        protected = mc.read_protect_file(path)
+        args.protect_id += protected['ids']
+        # Names in the file are literal, not globs.
+        args.protect_name += [''.join(f'[{c}]' if c in '*?[' else c for c in n) for n in protected['names']]
     return args
 
 
@@ -55,7 +62,7 @@ def list_kind(args, kind, runner):
     rc, out, err = runner(argv)
     if rc:
         raise mc.GuardError(f'list failed: {mc.quote(argv)}: {err.strip()}')
-    return json.loads(out or '[]') or []
+    return mc.parse_json_list(out, mc.quote(argv))
 
 
 def classify(args, kind, items):
@@ -144,9 +151,9 @@ def run(args, runner=mc.default_runner, clock=time.time, sleep=time.sleep, out=s
     return ok, receipt
 
 
-def main(argv=None):
+def main(argv=None, runner=mc.default_runner):
     try:
-        ok, _ = run(parse_args(argv))
+        ok, _ = run(parse_args(argv), runner=runner)
     except mc.GuardError as exc:
         print('REFUSED: ' + str(exc), file=sys.stderr)
         return 2

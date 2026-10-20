@@ -1,0 +1,43 @@
+{
+  "schema": "r18-offline-artifact-review-v1",
+  "reviewed_files": {
+    "prepare-r18.py": "70e994661cb3b772d6a1e3b2c7b4ce597b337ae2ab7f47f1316e98f0b4a27355",
+    "acquire-r18.py": "38e6b93079362833a42fb0c00d9174d6a93287f76af4263e69d18e5225e68c7c",
+    "analyze-r18.py": "ef7bcf1aea5693993258911ffe063c1dd1b896e93280594ec27d1c344ab62605",
+    "selfcheck-r18.py": "6b7b410ae3ac1dbbd5310d2525da0a8ae359abce84466b50fbe5cbc5f57ebf50"
+  },
+  "registration_sha256": "8fb5c623fc8dbe81d71e6cada2cf66ac2292362464466543e95650c52b229698",
+  "scope": "Offline local artifacts only; source review, AST-extracted preparation and validation code, and synthetic statistics/trace fixtures. No VM, SSH, network, acquisition, subprocess execution, repository build/test, or real R18 outcome analysis.",
+  "status": "passed; no remaining source/schema blocker in these versions",
+  "resolved_findings": [
+    "timing-complete.json now binds execution_manifest_sha256 to the same campaign seal.",
+    "Each singleton frozen.execute deadline is min(now+180, overall deadline), so setup overhead after reserve_process cannot move its timeout beyond the hard global cap.",
+    "Analyzer permits exactly declared GOMAXPROCS selection plus selected_run_index metadata in singleton plans, while validating the global scheduler separately.",
+    "Analyzer handles the unchanged R16 parser's custom FormatError as an explicit failed analysis status."
+  ],
+  "preparation_fixture": {
+    "actual_prepare_body_executed_with_synthetic_file_pins": true,
+    "timing_entries": 18,
+    "blocks": 6,
+    "distinct_arm_orders": 6,
+    "trace_entries": 2,
+    "unique_prefixes": 20,
+    "prefix_bytes": 68,
+    "environment": "GOMAXPROCS=2 only go2; go8/cgo=8",
+    "analyzer_global_singleton_trace_plan_checks": "passed",
+    "singleton_frozen_runner_dump_plan_and_schedule_hashes_match_prepins": "all passed",
+    "actual_acquisition_executed": false
+  },
+  "selfcheck": {
+    "script": "selfcheck-r18.py",
+    "timing_statistics": "six paired ratios, geometric mean, observed range, zero-without-pair-exclusion, no absolute-E pairing, and short/instrumented-run rejection from timing statistics passed",
+    "trace_parser": "exact unique A-E tuple matching, split unfinished/resumed reconstruction, carry-in/out entry counts, unknown terminal end, and ambiguous marker rejection passed",
+    "valid_acquisition_fixtures": 5,
+    "invalid_acquisition_mutations_rejected": 110,
+    "population": "go8/go2/cgo at5000 plus go8/go2 at200; each with200 warmup",
+    "only_ast_extracted_read_and_check_observations_executed": true,
+    "syntax_and_cli_help": "passed"
+  },
+  "real_artifacts_verified": false,
+  "caveat": "Actual R18 acquisition remains to be validated; synthetic fixture passes are not a performance result or full end-to-end raw-campaign verification. No confidence interval or confirmatory claim is produced."
+}

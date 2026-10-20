@@ -1,0 +1,21 @@
+{
+  "decision_utc": "2026-10-20T13:09:02.239976+00:00",
+  "authorization": [
+    "root4333",
+    "root4334"
+  ],
+  "decision": "A1 declined: no reattempts in this campaign",
+  "reason": "PROTOCOL.md:102 conservative stop-on-runner-failure; sealed protocol environment_policy.restart_policy requires new protocol/campaign version; no fresh protocol under existing hard guard",
+  "M1w1_write_loss": {
+    "set100": "contaminated: first arm not launched because pre-arm CPU gate",
+    "batchset50": "unreachable after runner stop; unverifiable",
+    "batchset50x1000": "unreachable after runner stop; unverifiable"
+  },
+  "report_as_protocol_consequence": true,
+  "next_campaign_backlog": [
+    "w1 write cases",
+    "pre-arm burst fix"
+  ],
+  "originals_retained": true,
+  "A1_executions": 0
+}

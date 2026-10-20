@@ -121,3 +121,6 @@ The `set100` commit-batch counts in RFC-259 come from the server's own trace-log
 (`ProxyMetrics.CommitBatchIn` and `TxnCommitIn` deltas around a run) and from client
 event traces recorded with the prototype's `FDBGO_EXP_TRACE`. Those raw files were not
 kept; the RFC states them as observations, not as table results.
+
+The controller-side drivers behind these results, with a script-to-result map, are in
+[`tools/benchcampaign/campaigns/rfc-259`](../../../tools/benchcampaign/campaigns/rfc-259/README.md).

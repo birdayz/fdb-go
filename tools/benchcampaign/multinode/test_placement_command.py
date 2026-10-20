@@ -79,8 +79,8 @@ class Temp(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.tmp = Path(self._tmp.name)
-        if mc.inside_git_worktree(self.tmp):
-            self.skipTest('temporary directory lies inside a Git work tree')
+        # The tools refuse outputs inside a Git work tree; a TMPDIR there is a broken fixture.
+        self.assertFalse(mc.inside_git_worktree(self.tmp), f'TMPDIR {self.tmp} lies inside a Git work tree')
         fixtures = {}
         for store, chunks in [('benchfetch/small', 1), ('benchfetch/split', 2), ('benchfetch/planskip', None)]:
             prefix = pr.pack(list(pc.STORES[store][0]))
@@ -240,10 +240,7 @@ class PlacementCommandTest(Temp):
             self.assertEqual(pc.main(self.argv(work_dir=str(work / 'linked-root')), runner=tools), 2)
 
     def test_r2_template_renders_into_this_command(self):
-        try:
-            import bench_runner_mn as r2
-        except ImportError as exc:  # the single-node modules are not beside us
-            self.skipTest(f'bench_runner_mn not importable: {exc}')
+        import bench_runner_mn as r2
         template = ['python3', '-B', str(HERE / 'placement_command.py'),
                     '--store', '{store}', '--case', '{case}', '--when', '{when}', '--preset', '{preset}',
                     '--layout', '{layout}', '--record-format', '{record_format}',

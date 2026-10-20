@@ -1,0 +1,185 @@
+{
+  "get100": {
+    "baseline": {
+      "cpu_us": {
+        "median": 50.0313,
+        "minimum": 44.7791,
+        "maximum": 50.32275
+      },
+      "allocs": {
+        "median": 51.8095,
+        "minimum": 51.8,
+        "maximum": 51.8296
+      },
+      "bytes": {
+        "median": 5330.7244,
+        "minimum": 5326.2664,
+        "maximum": 5332.1572
+      },
+      "mean_us": {
+        "median": 356.28067935,
+        "minimum": 355.26734175,
+        "maximum": 359.2528685
+      },
+      "p99_us": {
+        "median": 551.975,
+        "minimum": 529.293,
+        "maximum": 567.746
+      }
+    },
+    "reclaim": {
+      "cpu_us": {
+        "median": 48.3165,
+        "minimum": 41.8669,
+        "maximum": 49.5697
+      },
+      "allocs": {
+        "median": 49.81065,
+        "minimum": 49.8012,
+        "maximum": 49.8676
+      },
+      "bytes": {
+        "median": 5200.252,
+        "minimum": 5199.8356,
+        "maximum": 5207.468
+      },
+      "mean_us": {
+        "median": 353.50821265,
+        "minimum": 347.57309665,
+        "maximum": 357.1785347
+      },
+      "p99_us": {
+        "median": 569.148,
+        "minimum": 526.337,
+        "maximum": 605.107
+      }
+    },
+    "paired_cpu_ratios": [
+      0.9349651958167985,
+      0.9850355952327724,
+      0.9657254558646287
+    ]
+  },
+  "set100": {
+    "baseline": {
+      "cpu_us": {
+        "median": 57.3486,
+        "minimum": 55.7867,
+        "maximum": 57.73125
+      },
+      "allocs": {
+        "median": 55.87045,
+        "minimum": 55.855,
+        "maximum": 55.87415
+      },
+      "bytes": {
+        "median": 6410.874,
+        "minimum": 6410.338,
+        "maximum": 6413.7912
+      },
+      "mean_us": {
+        "median": 1008.90068645,
+        "minimum": 1007.8166816,
+        "maximum": 1009.9939694
+      },
+      "p99_us": {
+        "median": 1133.367,
+        "minimum": 1117.436,
+        "maximum": 1141.893
+      }
+    },
+    "reclaim": {
+      "cpu_us": {
+        "median": 55.13825,
+        "minimum": 53.7298,
+        "maximum": 55.2164
+      },
+      "allocs": {
+        "median": 53.83795,
+        "minimum": 53.8277,
+        "maximum": 53.86645
+      },
+      "bytes": {
+        "median": 6279.8568,
+        "minimum": 6271.9108,
+        "maximum": 6282.808
+      },
+      "mean_us": {
+        "median": 1008.276713,
+        "minimum": 1007.8686252,
+        "maximum": 1009.24203935
+      },
+      "p99_us": {
+        "median": 1121.936,
+        "minimum": 1109.662,
+        "maximum": 1125.442
+      }
+    },
+    "paired_cpu_ratios": [
+      0.9614576467429022,
+      0.9564386705640359,
+      0.9631292046312113
+    ]
+  },
+  "range100": {
+    "baseline": {
+      "cpu_us": {
+        "median": 95.66025,
+        "minimum": 95.38685,
+        "maximum": 95.75475
+      },
+      "allocs": {
+        "median": 58.3337,
+        "minimum": 58.30055,
+        "maximum": 58.3397
+      },
+      "bytes": {
+        "median": 43921.7572,
+        "minimum": 43920.3104,
+        "maximum": 43927.994
+      },
+      "mean_us": {
+        "median": 474.4504906,
+        "minimum": 472.0211869,
+        "maximum": 474.988085
+      },
+      "p99_us": {
+        "median": 939.99,
+        "minimum": 921.726,
+        "maximum": 949.188
+      }
+    },
+    "reclaim": {
+      "cpu_us": {
+        "median": 94.1891,
+        "minimum": 92.28645,
+        "maximum": 94.50315
+      },
+      "allocs": {
+        "median": 56.29425,
+        "minimum": 56.29015,
+        "maximum": 56.3079
+      },
+      "bytes": {
+        "median": 43788.6088,
+        "minimum": 43784.2804,
+        "maximum": 43789.7996
+      },
+      "mean_us": {
+        "median": 472.50121565,
+        "minimum": 471.1385355,
+        "maximum": 474.5700359
+      },
+      "p99_us": {
+        "median": 934.009,
+        "minimum": 919.151,
+        "maximum": 984.695
+      }
+    },
+    "paired_cpu_ratios": [
+      0.984621093923547,
+      0.9907356202663157,
+      0.963779342539143
+    ]
+  }
+}

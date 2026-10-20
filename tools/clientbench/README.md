@@ -252,6 +252,11 @@ counts. Go MemStats and heap profiles exclude the native C++ heap; native client
 internal counters are **unobserved**, never synthetic zeros. Process RSS high
 water includes setup, not just the measured window.
 
+Wire captures (`scripts/wirecapture.sh` output, with `events.csv`) have two small
+readers: `scripts/wire_batch_timeline.py <dir> [workers]` prints commit batch sizes as
+runs of whole and split batches, and `scripts/wire_grv_rounds.py <dir>` lists the GRV
+requests sent between consecutive commit batches.
+
 ## Workloads and safety
 
 `--allow-writes` is required for **every** workload: setup overwrites fixture keys

@@ -63,6 +63,35 @@ the campaign archive).
 | M2 (`M2rl`, `M2skip`) | Multi-node VPC `USE_REMOTE_FETCH` vs `SCAN_AND_FETCH` across 9 storage servers (`double` `ssd-2`) | [phase-m2-remotefetch.md](phase-m2-remotefetch/) |
 | M1 (`M1w1`, `M1w8`, `M1w32`, `M1w64`) | Multi-node VPC pure-Go vs CGo (`libfdb_c` 7.3.77) at 1, 8, 32, and 64 workers | [phase-m1-client.md](phase-m1-client/) |
 
+## Protocol, tooling and verification
+
+- The frozen protocol, arm orders, diagnostic protocol and provisioning plan are in
+  [`protocol/`](https://github.com/birdayz/fdb-go/tree/master/docs/benchmarks/hcloud-multinode-vpc-20261014/protocol). The plan is
+  kept as frozen. Names in it that are not in the repository: `build-client-vm.sh` and
+  `build-harness-vm.sh` are now `tools/benchcampaign/singlenode/build_client_vm.sh` and
+  `build_harness_vm.sh`; `all-binaries.sha256`, `client-binaries.sha256`,
+  `runtime.sha256`, `source-receipt.json` and the other `provenance/` and results files
+  are raw campaign data outside Git (the reused binary archive's sha256 is in
+  `docs/perf/EXCLUDED.md`); `install-units.sh` and `cluster-ssd/layout.json` are
+  outputs of `tools/benchcampaign/multinode/fdb_cluster.py render`.
+- The controller driver and analyzer that ran are kept as
+  [`tools/benchcampaign/campaigns/hcloud-multinode-vpc-20261014/as-run/`](https://github.com/birdayz/fdb-go/tree/master/tools/benchcampaign/campaigns/hcloud-multinode-vpc-20261014/as-run),
+  with three known defects. A read-only check of the retained campaign data found that
+  none affected these results:
+  - **Cases without an R4 verdict (M2):** all 12 `M2rl` and 4 `M2skip` cases in
+    `metrics.csv` have an R4 verdict, all `clean`. For M1 the analyzer iterates the R4
+    cases, so a case without a verdict cannot be analyzed; every analyzed workload
+    (7 at 1 worker, 5 at 8/32/64) is `clean`, and `batchset50` and `batchset50x1000`
+    at 8–64 workers are `N/A`, as reported.
+  - **CSV not compared with raw output (M2):** all 576 `metrics.csv` rows (432 `M2rl`,
+    144 `M2skip`; 192 runs, 3 repeats each) equal the benchmark result lines of their
+    run's raw stdout in `N`, `ns/op`, `B/op`, `allocs/op`, `rows/op` and `prefix-B`, and
+    every run's `result.json` status is `ok`. A one-digit change to one row is
+    detected (positive control).
+  - **Telemetry deleted on re-invocation:** each phase started once in the two
+    retained driver logs, and the node samplers' start times follow that order
+    (`M2rl`, `M2skip`, `M1w1`, `M1w64`, `M1w8`, `M1w32`).
+
 ## Headline findings
 
 - **M2 (`USE_REMOTE_FETCH` vs `SCAN_AND_FETCH` on a 3-node `double` `ssd-2`

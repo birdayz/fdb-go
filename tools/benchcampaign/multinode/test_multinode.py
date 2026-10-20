@@ -40,8 +40,8 @@ class Temp(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.tmp = Path(self._tmp.name)
-        if mc.inside_git_worktree(self.tmp):
-            self.skipTest('temporary directory lies inside a Git work tree')
+        # The tools refuse outputs inside a Git work tree; a TMPDIR there is a broken fixture.
+        self.assertFalse(mc.inside_git_worktree(self.tmp), f'TMPDIR {self.tmp} lies inside a Git work tree')
 
 
 class FakeRunner:
@@ -188,7 +188,7 @@ class ProvisionTest(Temp):
             name = argv[3]
             return 0, json.dumps(dict(id=1, name=name, public_net=dict(ipv4=dict(ip='198.51.100.9')),
                                       private_net=[dict(ip='10.88.0.10')], labels={'campaign': 'mn-test'})), ''
-        runner = FakeRunner({('hcloud', 'server', 'list'): (0, 'null', ''), ('hcloud', 'network', 'list'): (0, '[]', ''),
+        runner = FakeRunner({('hcloud', 'server', 'list'): (0, '[]', ''), ('hcloud', 'network', 'list'): (0, '[]', ''),
                              ('hcloud', 'firewall', 'list'): (0, '[]', ''), ('hcloud', 'server', 'describe'): describe})
         result = provision.run(args, runner=runner, now=1792020000, out=io.StringIO())
         self.assertTrue(result['executed'])
@@ -409,8 +409,8 @@ class CloudInitTest(Temp):
         self.assertFalse(target.exists())
         self.assertEqual(sorted(p.name for p in checkout.iterdir()), ['.git'])
 
-    @unittest.skipUnless(shutil.which('ssh-keygen'), 'ssh-keygen not installed')
     def test_generate_real_throwaway_keys(self):
+        self.assertIsNotNone(shutil.which('ssh-keygen'), 'ssh-keygen (openssh-client) is required')
         keys = rci.generate_keys(self.tmp / 'keys', ['h1', 'h2'])
         for h in ['h1', 'h2']:
             priv = keys / h / 'ssh_host_ed25519_key'
@@ -1147,9 +1147,9 @@ class SealTest(Temp):
 
     REAL_SCRIPTS = HERE.parent.parent / 'clientbench' / 'scripts'
 
-    @unittest.skipUnless((REAL_SCRIPTS / 'matrix_plan.py').is_file() and (REAL_SCRIPTS / 'run.py').is_file(),
-                         'frozen clientbench scripts not present (Bazel sandbox)')
     def test_client_plans_with_frozen_scripts(self):
+        for name in ('matrix_plan.py', 'run.py'):
+            self.assertTrue((self.REAL_SCRIPTS / name).is_file(), f'{name} missing under {self.REAL_SCRIPTS}; declare it as test data')
         with contextlib.redirect_stdout(io.StringIO()):
             seal.main(self.client_args(self.REAL_SCRIPTS, self.tmp / 'real', '--allow-new-harness', 'range1000'))
         manifest = json.loads((self.tmp / 'real' / 'manifest.json').read_text())

@@ -1,0 +1,147 @@
+diff --git a/tools/clientbench/internal/bench/lifecycle.go b/tools/clientbench/internal/bench/lifecycle.go
+index 1e3189870..ea2b364f0 100644
+--- a/tools/clientbench/internal/bench/lifecycle.go
++++ b/tools/clientbench/internal/bench/lifecycle.go
+@@ -65,7 +65,7 @@ func drainFinalizers(ctx context.Context, maxRounds int) (report FinalizerDrain,
+ 	if err != nil {
+ 		return report, err
+ 	}
+-	var previous uint64
++	var previous, previousCleanups uint64
+ 	stable := false
+ 	for report.Rounds < maxRounds {
+ 		if err := ctx.Err(); err != nil {
+@@ -101,16 +101,15 @@ func drainFinalizers(ctx context.Context, maxRounds int) (report FinalizerDrain,
+ 				stable = false
+ 				break
+ 			}
+-			if report.After.CleanupsQueued != report.Before.CleanupsQueued {
+-				return report, fmt.Errorf("unexpected runtime cleanups queued during drain: %+v", report)
+-			}
+ 			if report.After.FinalizersExecuted == report.After.FinalizersQueued && report.After.CleanupsExecuted == report.After.CleanupsQueued {
+-				// Future finalizers can release transactions for the NEXT GC cycle.
+-				if stable && report.After.FinalizersQueued == previous {
++				// Finalizers and cleanups can release objects for the NEXT GC
++				// cycle (the Go client stops an unreachable transaction's
++				// timeout timer from a cleanup), so both must be stable.
++				if stable && report.After.FinalizersQueued == previous && report.After.CleanupsQueued == previousCleanups {
+ 					report.Complete = true
+ 					return report, nil
+ 				}
+-				previous, stable = report.After.FinalizersQueued, true
++				previous, previousCleanups, stable = report.After.FinalizersQueued, report.After.CleanupsQueued, true
+ 				break
+ 			}
+ 			select {
+diff --git a/tools/clientbench/internal/bench/lifecycle_test.go b/tools/clientbench/internal/bench/lifecycle_test.go
+index 7d6bd3a69..9334b681d 100644
+--- a/tools/clientbench/internal/bench/lifecycle_test.go
++++ b/tools/clientbench/internal/bench/lifecycle_test.go
+@@ -40,6 +40,46 @@ func TestFinalizerDrainFollowsDependencyChain(t *testing.T) {
+ 	t.Logf("CLIENTBENCH_FINALIZER_CHAIN completed=5 rounds=%d", report.Rounds)
+ }
+ 
++type cleanupNode struct {
++	pad [1024]byte
++}
++
++// unreachableCleanupChain registers count cleanups whose arguments hold the
++// next node, so each node becomes unreachable only after its predecessor's
++// cleanup has run: one more GC cycle per link.
++//
++//go:noinline
++func unreachableCleanupChain(count int, executed *atomic.Int64) {
++	var next *cleanupNode
++	for range count {
++		node := &cleanupNode{}
++		runtime.AddCleanup(node, func(held *cleanupNode) {
++			executed.Add(1)
++			runtime.KeepAlive(held)
++		}, next)
++		next = node
++	}
++	runtime.KeepAlive(next)
++}
++
++// Not parallel: the other drain tests assert that no cleanups are queued.
++func TestFinalizerDrainWaitsForCleanupChain(t *testing.T) {
++	var executed atomic.Int64
++	unreachableCleanupChain(5, &executed)
++	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
++	defer cancel()
++	report, err := drainFinalizers(ctx, 16)
++	if err != nil || !report.Complete || report.Rounds < 2 || executed.Load() != 5 {
++		t.Fatalf("cleanup chain not fully drained: executed=%d report=%+v err=%v", executed.Load(), report, err)
++	}
++	// An automatic GC may queue some of the chain before the drain's first
++	// snapshot, so the chain's own count, not the snapshot delta, proves it ran.
++	if report.After.CleanupsExecuted != report.After.CleanupsQueued {
++		t.Fatalf("invalid cleanup fixpoint counters: %+v", report)
++	}
++	t.Logf("CLIENTBENCH_CLEANUP_CHAIN completed=5 rounds=%d", report.Rounds)
++}
++
+ func TestFinalizerDrainFailsClosed(t *testing.T) {
+ 	t.Parallel()
+ 	ctx, cancel := context.WithCancel(context.Background())
+diff --git a/tools/clientbench/scripts/analyze.py b/tools/clientbench/scripts/analyze.py
+--- a/tools/clientbench/scripts/analyze.py
++++ b/tools/clientbench/scripts/analyze.py
+@@ -32,8 +32,8 @@
+     'but excludes earlier harness identity hashing, final JSON output and process exit. '
+     'Whole process CPU through shutdown is absolute E/transactions, retained only in raw/per-run/absolute tables. '
+     'It includes arm-specific executable/library identity hashing and is not paired cross-arm client-cost evidence. '
+-    'Go finalizers are drained using exact runtime counters; cleanups are runtime estimates and must not increase '
+-    'during either drain. The terminal shutdown, not GC counts alone, establishes that native network work has stopped.'
++    'Go finalizer counters are exact; cleanup counters are runtime estimates. Both queued counts must stabilize '
++    'with executed matching queued during each drain. The terminal shutdown, not GC counts alone, establishes that native network work has stopped.'
+ )
+ 
+ 
+diff --git a/tools/clientbench/scripts/run.py b/tools/clientbench/scripts/run.py
+--- a/tools/clientbench/scripts/run.py
++++ b/tools/clientbench/scripts/run.py
+@@ -192,8 +192,7 @@
+                 any(after[k] < before[k] for k in before) or
+                 after['gc_cycles'] < before['gc_cycles'] + drain['rounds'] or
+                 after['finalizers_executed'] != after['finalizers_queued'] or
+-                after['cleanups_executed_estimate'] != after['cleanups_queued_estimate'] or
+-                after['cleanups_queued_estimate'] != before['cleanups_queued_estimate']):
++                after['cleanups_executed_estimate'] != after['cleanups_queued_estimate']):
+             raise ValueError('incomplete finalizer fixpoint: ' + name)
+     snapshots = [summary['stats_after_identity'], summary['stats_before'], summary['stats_after'],
+                  life['stats_after_measurement_drain'], life['stats_after_shutdown']]
+diff --git a/tools/clientbench/scripts/test_campaign.py b/tools/clientbench/scripts/test_campaign.py
+--- a/tools/clientbench/scripts/test_campaign.py
++++ b/tools/clientbench/scripts/test_campaign.py
+@@ -312,6 +312,20 @@
+                 self.assertIn('schedule differs from counterbalanced plan', result.stderr)
+                 self.assertFalse((out / 'analysis.json').exists())
+ 
++    def test_completed_cleanups_are_accepted(self):
++        out, schedule = self.fixture('completed_cleanups')
++        for entry in schedule:
++            path = out / entry['run_id'] / 'summary.json'
++            summary = json.loads(path.read_text())
++            life = summary['lifecycle']
++            life['measurement_drain']['after'].update(cleanups_queued_estimate=38, cleanups_executed_estimate=38)
++            life['shutdown_drain']['before'].update(cleanups_queued_estimate=38, cleanups_executed_estimate=38)
++            life['shutdown_drain']['after'].update(cleanups_queued_estimate=76, cleanups_executed_estimate=76)
++            path.write_text(json.dumps(summary))
++        result = self.analyze(out)
++        self.assertEqual(result.returncode, 0, result.stderr)
++        self.assertTrue((out / 'analysis.json').exists())
++
+     def test_corrupt_campaigns_never_report_success(self):
+         def mutate_json(path, fn):
+             value = json.loads(path.read_text())
+@@ -336,7 +350,8 @@
+             ('no_barrier', 'summary.json', lambda x: x['lifecycle'].update(measurement_barrier_complete=False)),
+             ('one_gc', 'summary.json', lambda x: x['lifecycle']['measurement_drain'].update(rounds=1)),
+             ('pending_finalizer', 'summary.json', lambda x: x['lifecycle']['shutdown_drain']['after'].update(finalizers_queued=11)),
+-            ('unexpected_cleanup', 'summary.json', lambda x: x['lifecycle']['measurement_drain']['after'].update(cleanups_queued_estimate=1, cleanups_executed_estimate=1)),
++            ('pending_cleanup', 'summary.json', lambda x: x['lifecycle']['measurement_drain']['after'].update(cleanups_queued_estimate=1, cleanups_executed_estimate=0)),
++            ('pending_shutdown_cleanup', 'summary.json', lambda x: x['lifecycle']['shutdown_drain']['after'].update(cleanups_queued_estimate=1, cleanups_executed_estimate=0)),
+             ('missing_shutdown_cpu', 'summary.json', lambda x: x['lifecycle']['stats_after_shutdown'].pop('process_user_cpu_us')),
+             ('decreasing_drained_cpu', 'summary.json', lambda x: x['lifecycle']['stats_after_measurement_drain'].update(process_user_cpu_us=0)),
+             ('negative_cpu', 'summary.json', lambda x: x['stats_after'].update(process_user_cpu_us=-1)),

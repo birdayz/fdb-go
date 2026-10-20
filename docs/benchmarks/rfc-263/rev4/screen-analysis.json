@@ -1,0 +1,281 @@
+{
+  "get100": {
+    "baseline": {
+      "cpu_us": {
+        "median": 49.06445,
+        "minimum": 48.11435,
+        "maximum": 49.99385
+      },
+      "allocs": {
+        "median": 51.78725,
+        "minimum": 51.7681,
+        "maximum": 51.7877
+      },
+      "bytes": {
+        "median": 5326.2632,
+        "minimum": 5325.1596,
+        "maximum": 5327.0664
+      },
+      "mean_us": {
+        "median": 359.42253575,
+        "minimum": 355.5791993,
+        "maximum": 362.8088929
+      },
+      "p99_us": {
+        "median": 549.912,
+        "minimum": 543.921,
+        "maximum": 579.167
+      }
+    },
+    "lazy": {
+      "cpu_us": {
+        "median": 47.7132,
+        "minimum": 46.07625,
+        "maximum": 47.845
+      },
+      "allocs": {
+        "median": 47.78375,
+        "minimum": 47.7635,
+        "maximum": 47.78485
+      },
+      "bytes": {
+        "median": 5207.7988,
+        "minimum": 5206.932,
+        "maximum": 5208.138
+      },
+      "mean_us": {
+        "median": 352.38306355,
+        "minimum": 351.39519285,
+        "maximum": 354.11350305
+      },
+      "p99_us": {
+        "median": 512.851,
+        "minimum": 480.63,
+        "maximum": 556.604
+      },
+      "paired_cpu_ratios": [
+        0.9724596933217431,
+        0.957017713178721,
+        0.9576404960266531
+      ]
+    },
+    "shards": {
+      "cpu_us": {
+        "median": 48.9026,
+        "minimum": 44.9317,
+        "maximum": 50.23125
+      },
+      "allocs": {
+        "median": 47.7826,
+        "minimum": 47.7732,
+        "maximum": 47.80685
+      },
+      "bytes": {
+        "median": 5194.4784,
+        "minimum": 5193.7056,
+        "maximum": 5198.7724
+      },
+      "mean_us": {
+        "median": 354.7315778,
+        "minimum": 354.0650507,
+        "maximum": 355.1472091
+      },
+      "p99_us": {
+        "median": 525.104,
+        "minimum": 486.14,
+        "maximum": 531.907
+      },
+      "paired_cpu_ratios": [
+        0.9967012776052723,
+        1.0047485840758414,
+        0.9338523746034186
+      ]
+    }
+  },
+  "set100": {
+    "baseline": {
+      "cpu_us": {
+        "median": 57.3947,
+        "minimum": 56.39515,
+        "maximum": 57.5777
+      },
+      "allocs": {
+        "median": 55.84845,
+        "minimum": 55.8355,
+        "maximum": 55.85685
+      },
+      "bytes": {
+        "median": 6408.8024,
+        "minimum": 6405.6812,
+        "maximum": 6411.58
+      },
+      "mean_us": {
+        "median": 1009.51229075,
+        "minimum": 1009.0663006,
+        "maximum": 1011.43150325
+      },
+      "p99_us": {
+        "median": 1123.738,
+        "minimum": 1122.586,
+        "maximum": 1182.65
+      }
+    },
+    "lazy": {
+      "cpu_us": {
+        "median": 54.3563,
+        "minimum": 52.6478,
+        "maximum": 54.9503
+      },
+      "allocs": {
+        "median": 51.8273,
+        "minimum": 51.82715,
+        "maximum": 51.8383
+      },
+      "bytes": {
+        "median": 6287.4408,
+        "minimum": 6283.0724,
+        "maximum": 6288.62
+      },
+      "mean_us": {
+        "median": 1010.995582,
+        "minimum": 1007.97011255,
+        "maximum": 1011.28541475
+      },
+      "p99_us": {
+        "median": 1161.861,
+        "minimum": 1146.772,
+        "maximum": 1191.356
+      },
+      "paired_cpu_ratios": [
+        0.9470613140237687,
+        0.9743798890507428,
+        0.9143783096580794
+      ]
+    },
+    "shards": {
+      "cpu_us": {
+        "median": 55.704,
+        "minimum": 55.4979,
+        "maximum": 56.03255
+      },
+      "allocs": {
+        "median": 51.82345,
+        "minimum": 51.8192,
+        "maximum": 51.829
+      },
+      "bytes": {
+        "median": 6273.2728,
+        "minimum": 6269.29,
+        "maximum": 6276.5052
+      },
+      "mean_us": {
+        "median": 1009.59930435,
+        "minimum": 1007.44590975,
+        "maximum": 1011.08814655
+      },
+      "p99_us": {
+        "median": 1127.366,
+        "minimum": 1118.488,
+        "maximum": 1148.786
+      },
+      "paired_cpu_ratios": [
+        0.9705425762309063,
+        0.993570369083157,
+        0.9638783765242447
+      ]
+    }
+  },
+  "range100": {
+    "baseline": {
+      "cpu_us": {
+        "median": 94.3542,
+        "minimum": 93.5611,
+        "maximum": 95.2509
+      },
+      "allocs": {
+        "median": 58.31615,
+        "minimum": 58.2938,
+        "maximum": 58.3254
+      },
+      "bytes": {
+        "median": 43921.2184,
+        "minimum": 43917.3392,
+        "maximum": 43921.9876
+      },
+      "mean_us": {
+        "median": 481.9560067,
+        "minimum": 480.6976762,
+        "maximum": 484.08423125
+      },
+      "p99_us": {
+        "median": 993.161,
+        "minimum": 985.497,
+        "maximum": 1017.597
+      }
+    },
+    "lazy": {
+      "cpu_us": {
+        "median": 94.892,
+        "minimum": 94.0503,
+        "maximum": 95.7474
+      },
+      "allocs": {
+        "median": 54.16845,
+        "minimum": 54.1174,
+        "maximum": 54.17695
+      },
+      "bytes": {
+        "median": 43781.8816,
+        "minimum": 43781.3448,
+        "maximum": 43786.2176
+      },
+      "mean_us": {
+        "median": 477.77436955,
+        "minimum": 473.808497,
+        "maximum": 482.9057165
+      },
+      "p99_us": {
+        "median": 997.78,
+        "minimum": 968.124,
+        "maximum": 1043.776
+      },
+      "paired_cpu_ratios": [
+        0.99623205659999,
+        1.0147656384135522,
+        1.0052286687522913
+      ]
+    },
+    "shards": {
+      "cpu_us": {
+        "median": 96.3462,
+        "minimum": 95.7325,
+        "maximum": 97.6947
+      },
+      "allocs": {
+        "median": 54.1722,
+        "minimum": 54.1296,
+        "maximum": 54.18735
+      },
+      "bytes": {
+        "median": 43768.4876,
+        "minimum": 43765.0464,
+        "maximum": 43772.4816
+      },
+      "mean_us": {
+        "median": 477.16531825,
+        "minimum": 476.925933,
+        "maximum": 490.1676328
+      },
+      "p99_us": {
+        "median": 1011.846,
+        "minimum": 997.91,
+        "maximum": 1102.107
+      },
+      "paired_cpu_ratios": [
+        1.0256564504902315,
+        1.0211119377833735,
+        1.023208363304835
+      ]
+    }
+  }
+}

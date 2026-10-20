@@ -1,0 +1,185 @@
+{
+  "get100": {
+    "baseline": {
+      "cpu_us": {
+        "median": 49.79425,
+        "minimum": 47.66865,
+        "maximum": 50.8662
+      },
+      "allocs": {
+        "median": 51.8285,
+        "minimum": 51.78135,
+        "maximum": 51.8321
+      },
+      "bytes": {
+        "median": 5331.4044,
+        "minimum": 5324.6416,
+        "maximum": 5332.5956
+      },
+      "mean_us": {
+        "median": 355.50411135,
+        "minimum": 355.28972895,
+        "maximum": 356.88409085
+      },
+      "p99_us": {
+        "median": 519.424,
+        "minimum": 499.436,
+        "maximum": 545.243
+      }
+    },
+    "merged": {
+      "cpu_us": {
+        "median": 48.89865,
+        "minimum": 48.1871,
+        "maximum": 49.1768
+      },
+      "allocs": {
+        "median": 47.78625,
+        "minimum": 47.7627,
+        "maximum": 47.82
+      },
+      "bytes": {
+        "median": 5195.0316,
+        "minimum": 5191.016,
+        "maximum": 5198.0876
+      },
+      "mean_us": {
+        "median": 353.8534702,
+        "minimum": 353.72064985,
+        "maximum": 354.6017459
+      },
+      "p99_us": {
+        "median": 509.946,
+        "minimum": 495.168,
+        "maximum": 529.964
+      }
+    },
+    "paired_cpu_ratios": [
+      0.9667873755067216,
+      0.9677241850213629,
+      1.0258031221777837
+    ]
+  },
+  "set100": {
+    "baseline": {
+      "cpu_us": {
+        "median": 57.9325,
+        "minimum": 57.7407,
+        "maximum": 58.1664
+      },
+      "allocs": {
+        "median": 55.85895,
+        "minimum": 55.85345,
+        "maximum": 55.8701
+      },
+      "bytes": {
+        "median": 6411.3868,
+        "minimum": 6406.0816,
+        "maximum": 6413.7296
+      },
+      "mean_us": {
+        "median": 1007.7120939,
+        "minimum": 1007.67014435,
+        "maximum": 1009.9175014
+      },
+      "p99_us": {
+        "median": 1125.071,
+        "minimum": 1119.1,
+        "maximum": 1147.894
+      }
+    },
+    "merged": {
+      "cpu_us": {
+        "median": 54.89895,
+        "minimum": 54.86825,
+        "maximum": 55.3234
+      },
+      "allocs": {
+        "median": 51.81175,
+        "minimum": 51.80765,
+        "maximum": 51.81345
+      },
+      "bytes": {
+        "median": 6270.5676,
+        "minimum": 6269.4156,
+        "maximum": 6271.3048
+      },
+      "mean_us": {
+        "median": 1008.9890221,
+        "minimum": 1007.4955055,
+        "maximum": 1008.99447175
+      },
+      "p99_us": {
+        "median": 1117.918,
+        "minimum": 1117.637,
+        "maximum": 1121.285
+      }
+    },
+    "paired_cpu_ratios": [
+      0.943825816966496,
+      0.9581352494860644,
+      0.9471065464117724
+    ]
+  },
+  "range100": {
+    "baseline": {
+      "cpu_us": {
+        "median": 94.1853,
+        "minimum": 92.91145,
+        "maximum": 94.6879
+      },
+      "allocs": {
+        "median": 58.30055,
+        "minimum": 58.2751,
+        "maximum": 58.30875
+      },
+      "bytes": {
+        "median": 43921.1952,
+        "minimum": 43920.596,
+        "maximum": 43921.724
+      },
+      "mean_us": {
+        "median": 480.345105,
+        "minimum": 476.4721456,
+        "maximum": 481.55087315
+      },
+      "p99_us": {
+        "median": 989.945,
+        "minimum": 941.854,
+        "maximum": 992.961
+      }
+    },
+    "merged": {
+      "cpu_us": {
+        "median": 96.58925,
+        "minimum": 96.2646,
+        "maximum": 96.95745
+      },
+      "allocs": {
+        "median": 54.18725,
+        "minimum": 54.15585,
+        "maximum": 54.19005
+      },
+      "bytes": {
+        "median": 43768.4224,
+        "minimum": 43768.0328,
+        "maximum": 43771.0132
+      },
+      "mean_us": {
+        "median": 474.73757525,
+        "minimum": 474.2578202,
+        "maximum": 479.24325625
+      },
+      "p99_us": {
+        "median": 1014.773,
+        "minimum": 975.608,
+        "maximum": 1048.416
+      }
+    },
+    "paired_cpu_ratios": [
+      1.029432936986982,
+      1.020080179199243,
+      1.0360897392086768
+    ]
+  }
+}

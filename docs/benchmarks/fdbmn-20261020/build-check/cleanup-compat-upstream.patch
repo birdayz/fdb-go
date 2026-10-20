@@ -1,0 +1,86 @@
+diff --git a/tools/clientbench/internal/bench/lifecycle.go b/tools/clientbench/internal/bench/lifecycle.go
+index 1e3189870..ea2b364f0 100644
+--- a/tools/clientbench/internal/bench/lifecycle.go
++++ b/tools/clientbench/internal/bench/lifecycle.go
+@@ -65,7 +65,7 @@ func drainFinalizers(ctx context.Context, maxRounds int) (report FinalizerDrain,
+ 	if err != nil {
+ 		return report, err
+ 	}
+-	var previous uint64
++	var previous, previousCleanups uint64
+ 	stable := false
+ 	for report.Rounds < maxRounds {
+ 		if err := ctx.Err(); err != nil {
+@@ -101,16 +101,15 @@ func drainFinalizers(ctx context.Context, maxRounds int) (report FinalizerDrain,
+ 				stable = false
+ 				break
+ 			}
+-			if report.After.CleanupsQueued != report.Before.CleanupsQueued {
+-				return report, fmt.Errorf("unexpected runtime cleanups queued during drain: %+v", report)
+-			}
+ 			if report.After.FinalizersExecuted == report.After.FinalizersQueued && report.After.CleanupsExecuted == report.After.CleanupsQueued {
+-				// Future finalizers can release transactions for the NEXT GC cycle.
+-				if stable && report.After.FinalizersQueued == previous {
++				// Finalizers and cleanups can release objects for the NEXT GC
++				// cycle (the Go client stops an unreachable transaction's
++				// timeout timer from a cleanup), so both must be stable.
++				if stable && report.After.FinalizersQueued == previous && report.After.CleanupsQueued == previousCleanups {
+ 					report.Complete = true
+ 					return report, nil
+ 				}
+-				previous, stable = report.After.FinalizersQueued, true
++				previous, previousCleanups, stable = report.After.FinalizersQueued, report.After.CleanupsQueued, true
+ 				break
+ 			}
+ 			select {
+diff --git a/tools/clientbench/internal/bench/lifecycle_test.go b/tools/clientbench/internal/bench/lifecycle_test.go
+index 7d6bd3a69..9334b681d 100644
+--- a/tools/clientbench/internal/bench/lifecycle_test.go
++++ b/tools/clientbench/internal/bench/lifecycle_test.go
+@@ -40,6 +40,46 @@ func TestFinalizerDrainFollowsDependencyChain(t *testing.T) {
+ 	t.Logf("CLIENTBENCH_FINALIZER_CHAIN completed=5 rounds=%d", report.Rounds)
+ }
+ 
++type cleanupNode struct {
++	pad [1024]byte
++}
++
++// unreachableCleanupChain registers count cleanups whose arguments hold the
++// next node, so each node becomes unreachable only after its predecessor's
++// cleanup has run: one more GC cycle per link.
++//
++//go:noinline
++func unreachableCleanupChain(count int, executed *atomic.Int64) {
++	var next *cleanupNode
++	for range count {
++		node := &cleanupNode{}
++		runtime.AddCleanup(node, func(held *cleanupNode) {
++			executed.Add(1)
++			runtime.KeepAlive(held)
++		}, next)
++		next = node
++	}
++	runtime.KeepAlive(next)
++}
++
++// Not parallel: the other drain tests assert that no cleanups are queued.
++func TestFinalizerDrainWaitsForCleanupChain(t *testing.T) {
++	var executed atomic.Int64
++	unreachableCleanupChain(5, &executed)
++	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
++	defer cancel()
++	report, err := drainFinalizers(ctx, 16)
++	if err != nil || !report.Complete || report.Rounds < 2 || executed.Load() != 5 {
++		t.Fatalf("cleanup chain not fully drained: executed=%d report=%+v err=%v", executed.Load(), report, err)
++	}
++	// An automatic GC may queue some of the chain before the drain's first
++	// snapshot, so the chain's own count, not the snapshot delta, proves it ran.
++	if report.After.CleanupsExecuted != report.After.CleanupsQueued {
++		t.Fatalf("invalid cleanup fixpoint counters: %+v", report)
++	}
++	t.Logf("CLIENTBENCH_CLEANUP_CHAIN completed=5 rounds=%d", report.Rounds)
++}
++
+ func TestFinalizerDrainFailsClosed(t *testing.T) {
+ 	t.Parallel()
+ 	ctx, cancel := context.WithCancel(context.Background())

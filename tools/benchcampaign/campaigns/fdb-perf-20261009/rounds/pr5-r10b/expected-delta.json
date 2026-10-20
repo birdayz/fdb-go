@@ -1,0 +1,1 @@
+["./pkg/fdbgo/transport/BUILD.bazel", "./pkg/fdbgo/transport/conn.go", "./pkg/fdbgo/transport/conn_direct_write_test.go", "./pkg/fdbgo/transport/direct_write.go", "./pkg/fdbgo/transport/direct_write_other.go", "./pkg/fdbgo/transport/direct_write_unix.go", "./pkg/fdbgo/transport/framing.go", "./pkg/fdbgo/transport/write_context.go", "./pkg/fdbgo/transport/write_context_test.go"]

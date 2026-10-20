@@ -1,0 +1,740 @@
+{
+  "version": 1,
+  "status": "AUTHORIZED FIXED PRE-MEASUREMENT PROTOCOL; live progress in state.json",
+  "campaign": "fdbmn-20261020-NONCE",
+  "authorization": "Owner GO via root request4155 on2026-10-20: run now on current master fa8725f1dcf6ff3ac66825ab6e3e819efbc0abcc instead of waiting for RFC-263. Campaign-only provisioning/teardown authorized,8h fixed lifetime,original17 protections,primaryIP owner-only remediation.",
+  "reference_protocol": {
+    "path": "${FDB_PERF_HOME}/hcloud-multinode-vpc-20261014/protocol.json",
+    "archive_orders": "${FDB_PERF_HOME}/hcloud-multinode-vpc-20261014/orders.json",
+    "version": 2,
+    "reused": "Topology, frozen harness, workload/cell contracts, samples, seeds, CPU placement, threshold gates, P0/H5/H6, R1-R4 and bootstrap. M1 adds previous-final Go arm."
+  },
+  "production_revisions": {
+    "before_allocation_work_after_read_parity": "267a41434a81723b07e7150869d702636a1b91a9",
+    "final": "fa8725f1dcf6ff3ac66825ab6e3e819efbc0abcc"
+  },
+  "frozen_harness_revision": "d94b4c61377d173b7c6884fde426a227dab0f0bb",
+  "new_harness_revision": null,
+  "new_harness_note": "None planned; reuse_only. If frozen harness fails after merge stop before timing and report minimal reviewed compatibility-only adaptation, never silently change harness.",
+  "topology": {
+    "provider": "hcloud",
+    "location": "fsn1",
+    "network": {
+      "name": "fdbmn-20261020-NONCE",
+      "ip_range": "10.89.20.0/24",
+      "subnet": {
+        "type": "cloud",
+        "network_zone": "eu-central",
+        "ip_range": "10.89.20.0/24"
+      },
+      "isolation": "New /24; protected existing CIDRs: <existing-cidr>; re-list on launch day; never attach existing hosts."
+    },
+    "hosts": {
+      "client": {
+        "name": "fdbmn-20261020-NONCE-client",
+        "type": "ccx43",
+        "private_ip": "10.89.20.10",
+        "fdbserver_processes": 0
+      },
+      "node1": {
+        "name": "fdbmn-20261020-NONCE-node1",
+        "type": "ccx43",
+        "private_ip": "10.89.20.11"
+      },
+      "node2": {
+        "name": "fdbmn-20261020-NONCE-node2",
+        "type": "ccx43",
+        "private_ip": "10.89.20.12"
+      },
+      "node3": {
+        "name": "fdbmn-20261020-NONCE-node3",
+        "type": "ccx43",
+        "private_ip": "10.89.20.13"
+      }
+    },
+    "image": {
+      "os": "Ubuntu24.04 x86_64",
+      "prepared_immutable_id": "<image-id>",
+      "policy": "Verify one immutable ID before owner approval; every staged create uses IMAGE_ID, never a mutable alias"
+    },
+    "labels": {
+      "campaign": "fdbmn-20261020-NONCE",
+      "deadline": 1792518906,
+      "role": "client|fdb-server",
+      "node": "client|node1|node2|node3"
+    },
+    "firewall": {
+      "name": "fdbmn-20261020-NONCE-fw",
+      "public_inbound": "TCP 22 and ICMP echo from the controller CIDR only; all other public inbound dropped by hcloud.",
+      "private_network": "hcloud firewalls do not filter private networks; each host loads nftables (input policy drop): loopback, established, source 10.89.20.0/24, controller SSH/ICMP, DHCP replies.",
+      "ipv6": "servers created --without-ipv6",
+      "fdb_bind": "Private campaign addresses only; no public fdbserver binding"
+    },
+    "ssh": "Host keys generated on the controller before boot and injected by cloud-init; controller connects only with StrictHostKeyChecking=yes and a campaign known_hosts keyed by HostKeyAlias. Password login disabled. No SSH between VMs; the controller orchestrates every host."
+  },
+  "cluster": {
+    "fdb_version": "7.3.77",
+    "api": 730,
+    "configure": "configure new double ssd-2 commit_proxies=1 grv_proxies=1 resolvers=1 logs=2",
+    "redundancy": "double: two replicas per shard on different zones; zoneid = machineid = node name",
+    "coordinators": [
+      "10.89.20.11:4500",
+      "10.89.20.12:4500",
+      "10.89.20.13:4500"
+    ],
+    "process_layout": {
+      "node1": [
+        {
+          "port": 4500,
+          "class": "stateless",
+          "cpus": [
+            2,
+            3
+          ],
+          "roles": "cluster_controller, master, data_distributor, ratekeeper, coordinator"
+        },
+        {
+          "port": 4501,
+          "class": "commit_proxy",
+          "cpus": [
+            4,
+            5
+          ]
+        },
+        {
+          "port": 4502,
+          "class": "grv_proxy",
+          "cpus": [
+            6,
+            7
+          ]
+        },
+        {
+          "port": 4503,
+          "class": "resolution",
+          "cpus": [
+            8,
+            9
+          ]
+        },
+        {
+          "port": 4504,
+          "class": "storage",
+          "cpus": [
+            10,
+            11
+          ]
+        },
+        {
+          "port": 4505,
+          "class": "storage",
+          "cpus": [
+            12,
+            13
+          ]
+        },
+        {
+          "port": 4506,
+          "class": "storage",
+          "cpus": [
+            14,
+            15
+          ]
+        }
+      ],
+      "node2": [
+        {
+          "port": 4500,
+          "class": "coordinator",
+          "cpus": [
+            2,
+            3
+          ]
+        },
+        {
+          "port": 4501,
+          "class": "transaction",
+          "cpus": [
+            4,
+            5
+          ],
+          "roles": "log"
+        },
+        {
+          "port": 4502,
+          "class": "storage",
+          "cpus": [
+            6,
+            7
+          ]
+        },
+        {
+          "port": 4503,
+          "class": "storage",
+          "cpus": [
+            8,
+            9
+          ]
+        },
+        {
+          "port": 4504,
+          "class": "storage",
+          "cpus": [
+            10,
+            11
+          ]
+        }
+      ],
+      "node3": "same as node2"
+    },
+    "storage_servers": 9,
+    "pinning": "Each process pinned by its systemd unit CPUAffinity to one full SMT sibling pair; CPUs 0-1 are housekeeping (sshd, sampler). Sibling pairs are assumed (2k,2k+1) and MUST be verified from /sys/devices/system/cpu/cpu*/topology/thread_siblings_list on every node before the units are installed; a different topology requires a regenerated layout, not ad-hoc pinning. Guest affinity is not physical-host isolation.",
+    "process_options": "--memory 4GiB (stateless/proxy/resolution/coordinator), 8GiB (log, storage); storage --cache-memory 2GiB --storage-memory 1GiB (ssd-2) or 2GiB (memory); --trace-format json --maxlogssize 256MiB; Restart=no.",
+    "role_verification": "fdb_cluster.py check-roles on status json after configure and before and after every phase: every role on its expected process and nowhere else, 9 storage roles, 3 coordinators, double/ssd-2/1/1/1/2.",
+    "engines": {
+      "M1": "ssd-2",
+      "M2": "ssd-2"
+    },
+    "generator": "tools/benchcampaign/multinode/fdb_cluster.py render (units, cluster file, fdbmonitor-format conf, nftables, configure command)"
+  },
+  "runtime": {
+    "go": "1.26.9",
+    "bazel": "9.0.1",
+    "bazelisk": "1.29.0",
+    "foundationdb": "7.3.77",
+    "api": 730,
+    "GOMAXPROCS": 8,
+    "GOGC": 100,
+    "GOMEMLIMIT": "off",
+    "GODEBUG": "",
+    "TZ": "UTC",
+    "LC_ALL": "C",
+    "client_vm": {
+      "housekeeping_cpus": "0-1",
+      "idle_sentinel_cpus": "2-7",
+      "client_cpus": "8-15",
+      "note": "No fdbserver runs on the client. clientbench's matrix_plan requires a 'server' CPU group: on the client VM it is the idle sentinel 2-7 and must stay quiet (same thresholds as the single-node server group)."
+    },
+    "server_vm": {
+      "housekeeping_cpus": "0-1",
+      "fdb_cpus": "2-15 per layout"
+    },
+    "packages": "FoundationDB clients+server 7.3.77 .deb from GitHub releases with the SHA-256 pins used by the single-node setup-vm.sh; server package installed on the client only for the pinned fdbserver/fdbcli identity, its service masked; foundationdb.service masked on every host.",
+    "clock": "chrony tracking receipt on all four hosts before and after every phase; server telemetry is aligned to client run windows by UTC timestamps."
+  },
+  "phases": [
+    {
+      "id": "M1w1",
+      "kind": "client",
+      "question": "Previous-final pure Go vs post-RFC-263 pure Go vs Apple binding/libfdb_c 7.3.77, within this worker level",
+      "engine": "ssd-2",
+      "arms": [
+        "before-Go",
+        "final-Go",
+        "CGo-7.3.77"
+      ],
+      "workloads": [
+        "grv",
+        "get100",
+        "get1000",
+        "range100",
+        "set100",
+        "batchset50",
+        "batchset50x1000"
+      ],
+      "new_harness_workloads": [],
+      "workers": 1,
+      "iterations_per_worker": 3000,
+      "warmup_per_worker": 200,
+      "iterations": 3000,
+      "warmup": 200,
+      "blocks": 6,
+      "repeats_per_arm_process": 1,
+      "order_seed": 742001,
+      "frozen_order_key": "M1w1",
+      "per_workload_campaign_wall_cap_seconds": 900,
+      "per_process_timeout_seconds": 180,
+      "expected_wall_seconds": 1650,
+      "wall_cap_seconds": 3150,
+      "nominal_observations_per_arm_per_case": 6,
+      "claim_scope": "Within-worker-level paired ratios final/before, final/cgo, before/cgo only. Worker phases fixed and counts differ: no scaling/capacity claim. Historical campaign comparison descriptive."
+    },
+    {
+      "id": "M1w8",
+      "kind": "client",
+      "question": "Previous-final pure Go vs post-RFC-263 pure Go vs Apple binding/libfdb_c 7.3.77, within this worker level",
+      "engine": "ssd-2",
+      "arms": [
+        "before-Go",
+        "final-Go",
+        "CGo-7.3.77"
+      ],
+      "workloads": [
+        "grv",
+        "get100",
+        "get1000",
+        "range100",
+        "set100",
+        "batchset50",
+        "batchset50x1000"
+      ],
+      "new_harness_workloads": [],
+      "workers": 8,
+      "iterations_per_worker": 1500,
+      "warmup_per_worker": 100,
+      "iterations": 12000,
+      "warmup": 800,
+      "blocks": 6,
+      "repeats_per_arm_process": 1,
+      "order_seed": 742101,
+      "frozen_order_key": "M1w8",
+      "per_workload_campaign_wall_cap_seconds": 900,
+      "per_process_timeout_seconds": 180,
+      "expected_wall_seconds": 1425,
+      "wall_cap_seconds": 2850,
+      "nominal_observations_per_arm_per_case": 6,
+      "claim_scope": "Within-worker-level paired ratios final/before, final/cgo, before/cgo only. Worker phases fixed and counts differ: no scaling/capacity claim. Historical campaign comparison descriptive."
+    },
+    {
+      "id": "M1w32",
+      "kind": "client",
+      "question": "Previous-final pure Go vs post-RFC-263 pure Go vs Apple binding/libfdb_c 7.3.77, within this worker level",
+      "engine": "ssd-2",
+      "arms": [
+        "before-Go",
+        "final-Go",
+        "CGo-7.3.77"
+      ],
+      "workloads": [
+        "grv",
+        "get100",
+        "get1000",
+        "range100",
+        "set100",
+        "batchset50",
+        "batchset50x1000"
+      ],
+      "new_harness_workloads": [],
+      "workers": 32,
+      "iterations_per_worker": 750,
+      "warmup_per_worker": 50,
+      "iterations": 24000,
+      "warmup": 1600,
+      "blocks": 6,
+      "repeats_per_arm_process": 1,
+      "order_seed": 742201,
+      "frozen_order_key": "M1w32",
+      "per_workload_campaign_wall_cap_seconds": 900,
+      "per_process_timeout_seconds": 180,
+      "expected_wall_seconds": 1290,
+      "wall_cap_seconds": 2850,
+      "nominal_observations_per_arm_per_case": 6,
+      "claim_scope": "Within-worker-level paired ratios final/before, final/cgo, before/cgo only. Worker phases fixed and counts differ: no scaling/capacity claim. Historical campaign comparison descriptive."
+    },
+    {
+      "id": "M1w64",
+      "kind": "client",
+      "question": "Previous-final pure Go vs post-RFC-263 pure Go vs Apple binding/libfdb_c 7.3.77, within this worker level",
+      "engine": "ssd-2",
+      "arms": [
+        "before-Go",
+        "final-Go",
+        "CGo-7.3.77"
+      ],
+      "workloads": [
+        "grv",
+        "get100",
+        "get1000",
+        "range100",
+        "set100",
+        "batchset50",
+        "batchset50x1000"
+      ],
+      "new_harness_workloads": [],
+      "workers": 64,
+      "iterations_per_worker": 500,
+      "warmup_per_worker": 25,
+      "iterations": 32000,
+      "warmup": 1600,
+      "blocks": 6,
+      "repeats_per_arm_process": 1,
+      "order_seed": 742301,
+      "frozen_order_key": "M1w64",
+      "per_workload_campaign_wall_cap_seconds": 900,
+      "per_process_timeout_seconds": 180,
+      "expected_wall_seconds": 1500,
+      "wall_cap_seconds": 3150,
+      "nominal_observations_per_arm_per_case": 6,
+      "claim_scope": "Within-worker-level paired ratios final/before, final/cgo, before/cgo only. Worker phases fixed and counts differ: no scaling/capacity claim. Historical campaign comparison descriptive."
+    },
+    {
+      "id": "M2rl",
+      "kind": "testingb",
+      "question": "New master strict USE_REMOTE_FETCH vs SCAN_AND_FETCH; previous report descriptive comparator only",
+      "engine": "ssd-2",
+      "binary_kind": "fetch",
+      "arms": [
+        "final-ordinary",
+        "final-remote"
+      ],
+      "payloads": [
+        "small",
+        "split"
+      ],
+      "cells": [
+        "limit1",
+        "rows10",
+        "rows1000"
+      ],
+      "dirs": [
+        "forward",
+        "reverse"
+      ],
+      "new_harness_cells": [],
+      "placement_required": true,
+      "repeats_per_arm_process": 3,
+      "benchtime": "3s",
+      "blocks": 6,
+      "order_seed": 742401,
+      "frozen_order_key": "M2rl",
+      "process_timeout_seconds": 600,
+      "expected_wall_seconds": 3600,
+      "wall_cap_seconds": 4700,
+      "nominal_observations_per_arm_per_case": 18,
+      "claim_scope": "Claims are restricted to the arm contrast (USE_REMOTE_FETCH / SCAN_AND_FETCH) within each cell under its fixed placement label; no cross-phase, cross-engine or single-node-vs-multi-node effect is claimed (phases are not counterbalanced against each other)."
+    },
+    {
+      "id": "M2skip",
+      "kind": "testingb",
+      "question": "New master strict USE_REMOTE_FETCH vs SCAN_AND_FETCH; previous report descriptive comparator only",
+      "engine": "ssd-2",
+      "binary_kind": "planskip",
+      "arms": [
+        "final-ordinary",
+        "final-remote"
+      ],
+      "cells": [
+        "rows10",
+        "rows1000"
+      ],
+      "dirs": [
+        "forward",
+        "reverse"
+      ],
+      "new_harness_cells": [],
+      "placement_required": true,
+      "repeats_per_arm_process": 3,
+      "benchtime": "3s",
+      "blocks": 6,
+      "order_seed": 742501,
+      "frozen_order_key": "M2skip",
+      "process_timeout_seconds": 600,
+      "expected_wall_seconds": 960,
+      "wall_cap_seconds": 1300,
+      "nominal_observations_per_arm_per_case": 18,
+      "claim_scope": "Claims are restricted to the arm contrast (USE_REMOTE_FETCH / SCAN_AND_FETCH) within each cell under its fixed placement label; no cross-phase, cross-engine or single-node-vs-multi-node effect is claimed (phases are not counterbalanced against each other)."
+    }
+  ],
+  "phase_order": {
+    "default": [
+      "gate-F0",
+      "gate-P0",
+      "M2rl",
+      "M2skip",
+      "DD-on-settle",
+      "M1w1",
+      "M1w64",
+      "M1w8",
+      "M1w32"
+    ],
+    "rationale": "Owner: preserve previous phase sequence M2 before M1, including worker order. No M2 after R1 clears.",
+    "lifetime_gate": "A phase starts only if remaining hard lifetime >= its wall_cap_seconds + 600 s (its collection) + 300 s (final teardown verification). Otherwise that phase is recorded as unexecuted for budget and the next phase in phase_order is evaluated by the same rule (skip-and-continue; a deterministic time rule, independent of results). Sample counts are never reduced.",
+    "capacity_gate": "Before P0/timing, one full planned-iterations/warmup smoke per arm for every M1 workload/worker level; use slowest actual full-process wall in 1.3 x blocks x3arms x(wall+3swaits+2shealth), require workload<=900s and sum<=phasecap. Separate32GRV compatibility check is not a capacity estimate. R1+R3+R4 M1grv and R2+R3+R4 M2skiprows10forward diagnostics must reconcile clean. No sample reductions or post-timing amendments.",
+    "counterbalancing": "Only arms are counterbalanced (within blocks of each case). Phases, worker levels and cases run in a fixed preregistered order; this order is disclosed with every result and limits claims to within-case arm contrasts. Balanced whole-concurrency superblocks were considered and not adopted: they would split each one-workload run.py campaign across levels and do not fit the budget.",
+    "dedicated_cluster_clears": "R1 (client_campaign_mn / cluster_gate.ServerGate.clear_user_keys) clears ALL user keys once before each M1 workload campaign. This is authorized because the cluster is dedicated to this campaign (no other data). It destroys M2's placed fixtures, which is safe because phase_order runs every M2 phase before any M1 phase and the lifetime gate is skip-and-continue in that order, never a reorder. Any M2 phase run after any M1 campaign (a reordering amendment, or the optional M2mem) requires a complete P0 re-run (new placement attempts, receipts, controls and a reseal) before its timing. The 'owned store only' rule binds H6 (ballast and control clears) and R2 (no user-key clear at all); it does not restrict R1's authorized full clear in M1.",
+    "operational_finish_utc": "2026-10-20T17:30:00Z",
+    "runner_lifetime_deadline_utc": "2026-10-20T17:20:00Z",
+    "budget_drop_rule": "Owner4186/4187: collection,teardown,inventory finishedby17:30Z; providerhardguard17:55:06Z unchanged. RuntimeR1/R2deadline17:20 plus existing900sreserve forcesmeasurementend17:05,phasecollection600s=>17:15,finalcollection/teardown/verification900s=>17:30. Ifsetupreadinessafter11:15Z oranyphaseoverruns,dropM1w32firstthenM1w8 andreportbefore skip. Neverextend.",
+    "capacity_adverse_amendment": "Owner4186: retain old-Go w64/batchset50 process_behind1037 in persistedvalidation after32000completed/0measurementerrors and complete drain as adverse,noncomparable historical overload; do not retry orpatch it. Continuecapacityremainingworkerlevels, thennormal sealedphases withunchangedgates. Ifanyarmoverloaded in measuredcase omitentirecase/no cross-armcomparison."
+  },
+  "gates": {
+    "F0_cluster": "All four hosts: cloud-init done, pinned host keys matched, packages hash-verified, foundationdb.service masked, apt timers off, chrony synced, nftables loaded, CPU sibling map verified, units active with expected CPUAffinity (taskset -pc on every MainPID), check-roles passed, client-to-node 100-packet ping receipts (p50/p99, 0% loss), MTU recorded, no fdbserver on the client.",
+    "P0_placement": "Required before any M2 phase. See placement."
+  },
+  "placement": {
+    "goal": "For every M2 cell, the index entries the cell scans and the records they map to live on disjoint storage servers (server level); machine-level disjointness is reported separately.",
+    "mechanism": "Preregistered, in order. (1) If `fdbcli --exec help` of 7.3.77 (receipt retained) lists a supported range split/move command, it may be proposed in a protocol amendment; not assumed to exist. (2) Default: ballast-driven data distribution, per attempt (see acceptance) and per M2 store (benchfetch/small, benchfetch/split, benchfetch/planskip and, with H4, the persistent SQL store), strictly in this order: (a) DD on; clear the store prefix; run the benchmark's own untimed fixture step and keep its fixture receipt; (b) H6 writes 256 MiB x 2^(k-1) of raw ballast values (100 KB each) in the BALLAST RANGE [prefix+(1,1000000), strinc(prefix+(1,))), i.e. record primary keys >= 1,000,000, which sort after every fixture record and before the index subspace; (c) wait until status json moving_data in_flight_bytes and in_queue_bytes are 0 for 120 s (settle); (d) `fdbcli --exec 'datadistribution off'` (freeze) and save its receipt and a status json showing DD disabled; (e) H6 clears ONLY the ballast range (never the fixture, never the index subspace, never metadata); (f) verify the ballast range is empty: an H6 range read of the whole ballast range at a recorded positive read version returning 0 keys, retained as a receipt; (g) canonical probe (H5) of every physical key of the record and index data subspaces, then placement_receipt.py receipt and controls. With DD frozen, clearing the ballast cannot move shard boundaries or teams; the canonical receipt is taken on exactly the fixture the benchmark will time. Per-process fixture clears/reseeds later rewrite the same keys into the same frozen shards; every case's before/after receipts prove it.",
+    "verification": "placement_receipt.py receipt (probe format fdb-bench-placement-probe/v3) must pass ALL of: (a) read_version a positive integer and boundaries_read_version equal to it; (b) boundaries_complete true, boundary_range exactly [prefix, strinc(prefix)), boundaries strictly increasing and inside it; (c) every physical key listed once; (d) Record Layer stores (--layout recordlayer): the probe key set EQUALS the canonical fixture key set: index keys prefix+(2,'price_idx',id,id), record keys prefix+(1,id,s) with s in {0} for unsplit (benchfetch/small, planskip) and s in {1,2} for split (benchfetch/split); any omitted chunk, stray suffix, inline version key (-1), suffix-less legacy key, foreign ID or mislabelled kind fails; (e) SQL (--layout opaque, H4 only): prefix from the H4 store_prefix_hex receipt, unique keys, exactly one index entry and a fixed number of record keys per ID; (f) the benchmark's own untimed fixture receipt (FDB_BENCH_AUDIT fixture line: prefix_bytes, rows, chunks; store_prefix_hex for SQL) matches the probed prefix length/bytes, row count and chunk count; (g) exactly 2 replicas per key, every address a storage role in status json at the same time, one server set per shard; (h) scanned_subspaces exactly [prefix+(1,), prefix+(2,)] and keys_complete true; for SQL, indexed IDs and recorded IDs both exactly 0..rows-1. These are the INTEGRITY checks: integrity_ok is a verdict on the input only. Shards holding both index entries and records are legitimate colocation, reported as shared_shards (descriptive), not an integrity error. Separately, passed = integrity_ok and every cell at server-disjoint fraction >= 1.0. A receipt without integrity proves nothing for any cell; a receipt with integrity but a fraction < 1.0 is a valid measurement of partial colocation. (i) provenance (placement_receipt v3 integrity): addresses_basis kind 'transactional' at the probe read version V1 (location-cache/diagnostic documents fail integrity); recheck read version V2 >= V1 with identical boundaries; DD required off, mode 0 with the key present at V1 and V2; moveKeysLock owner present and identical at V1 and V2 (any value) and write token present and identical; keyServers digest of the store range unchanged; the probe's fixture_receipt_sha256 equal to the --fixture-receipt file's and its cluster identity (cluster file SHA-256 and description:id) equal to the pinned cluster file's. The receipt preserves all of it; seal_multinode and placement_command require placement_receipt.sealed_errors == [] for the pinned cluster.",
+    "acceptance": "Pass = every M2 cell of a store at server-disjoint fraction 1.0 with integrity passed. Attempts are preregistered and evaluated before ANY timing, so no performance data can influence selection: attempt k (k = 1..3) = the full mechanism sequence (a)-(g) with ballast 256 MiB x 2^(k-1). An attempt whose receipt or controls lack integrity is not a placement outcome: P0 stops for investigation (a tooling/input defect), it is not retried as a placement attempt. Stop at the first attempt whose receipts are integrity_ok and pass (fraction 1.0) for all cells of all M2 stores; if none passes, use attempt 3 (the LAST attempt, never the best-looking one). Each cell's label is then fixed from the used attempt's receipt and written into the sealed plan before timing: 'cross-server' iff server-disjoint fraction == 1.0, otherwise 'partially colocated (f = <fraction>)'. Partially colocated cells are timed and analysed separately, never pooled with or reported as cross-server. All attempts' receipts are retained and reported.",
+    "stability": "Placement receipts before the first and after the last process of every case; `placement_receipt.py compare` must report equal: both receipts integrity_ok and identical store, prefix, boundaries and per-key server sets (partial placements compare normally). Otherwise the whole case is contaminated (retained, not rerun).",
+    "data_distribution": "DD off for M2 only; DD re-enabled and in-flight 0 before M1. M1 requires moving_data in_flight_bytes == 0 and in_queue_bytes == 0 at every pre-arm check (wait up to 60 s, then abort that campaign). Status json under DD off (verified in 7.3.77 source): cluster.data_distribution_disabled is true only when \\xff/dataDistributionMode is present and 0 (Status.actor.cpp loadConfiguration), and cluster.data.moving_data is ABSENT, because the disabled data distributor emits MovingData with AverageShardSize -1 (DataDistribution.actor.cpp) and dataStatusFetcher writes moving_data only when AverageShardSize >= 0. Hence the M2 server gate must require data_distribution_disabled true and accept moving_data absent (or all zero); movement is detected by the placement before/after compare. The M1 gate (DD on) requires moving_data present with in_flight_bytes and in_queue_bytes numeric.",
+    "hypothesis_scope": "Cross-server remote fetch may make storage servers fetch mapped records from other storage servers or fall back; that mechanism is a hypothesis to be checked against the 7.3.77 storage-server source, not asserted. Logical remote-fetch counters are not RPC counts.",
+    "controls": "Mutation controls, both required before any M2 timing and retained: (1) offline: `placement_receipt.py controls` on every real probe used for placement: the original must be integrity_ok (its disjointness fraction is irrelevant, so a partially colocated original qualifies) and each injected defect (duplicate key, omitted chunk, stray suffix, version key, truncated boundaries, incomplete key scan, zero read version, foreign address; omitted record for SQL) must be rejected BY INTEGRITY; (2) on-cluster (H5/H6 qualification, once per cluster configuration, run with data distribution OFF (`fdbcli --exec 'datadistribution off'`, receipt) and turned back on before placement attempt step (a)): on the scratch owned prefixes tuple('benchfetch','control','small') and tuple('benchfetch','control','split') write the canonical fixtures with H6 (placementprobe control-write), probe with H5 -> the receipt must be integrity_ok (original control; 'pass' here means integrity_ok, NOT receipt.passed at server-disjoint fraction 1.0: the scratch fixture may legitimately be colocated, and its disjointness fraction is irrelevant to qualification); then with H6 (i) delete chunk 2 of one split record, (ii) write a stray suffix-3 key, (iii) write an inline version key (-1), each followed by a fresh probe -> the receipt must have integrity_ok false with an error naming that defect (mutation controls); then clear the scratch prefix and verify it is empty. H5 must take the store prefix from the benchmark-owned fixture receipt (or the deterministic tuple the frozen fixture code uses, cross-checked against prefix_bytes), never from a hand-typed value, and must read boundaries (no limit, or a limit it proves was not reached) and addresses at one read version.",
+    "disjointness_unit": "Server-disjoint means storage-PROCESS (address) disjoint: no storage process serving an index entry serves any chunk of its record. With double replication on three machines every team spans two of the three machines, so any two teams share a machine and machine-level disjointness is structurally 0; it is reported descriptively and never claimed.",
+    "label_sealing": "seal_multinode.py testingb-plans requires one placement receipt per M2 store (--placement-receipt STORE=PATH) and refuses any receipt that is not integrity_ok, or whose store, layout, record format or preset differs from the case, or whose cell for the case does not have exactly the preset bounds the benchmark scans (placement_receipt.PRESETS, e.g. rows10 = [100,110)), the matching row count and a complete population. It accepts integrity_ok partial receipts and writes each case's label (cross-server | partially colocated (f = x.xxxx)) and the receipt SHA-256 into the sealed plan.",
+    "probe_scope": "The probe lists EVERY physical key of exactly two data subspaces of the store, each read completely (keys_complete true): the record subspace prefix+(1,) and the index subspace prefix+(2,) (scanned_subspaces_hex states both). Store metadata is out of scope by design and is NOT canonical input: store header prefix+(0,), index state/secondary/range/uniqueness/other subspaces prefix+(3..10,), and any non-data key. A listed key outside the two data subspaces fails integrity; it is never silently accepted. Leftover ballast is a non-canonical record key and fails integrity, which is why (e)-(f) precede the probe.",
+    "limitations": "Two-replica teams over nine storage processes on three machines: server (process) disjointness is achievable, machine disjointness is not. Client-side counters are logical; placement is observed and receipted, not controlled at the storage-server level."
+  },
+  "sample_policy": {
+    "order_algorithm": "random.Random(order_seed); all arm permutations repeated blocks/n! times; shuffled once. Identical to run.py's one-workload derivation, so client schedules are checked against orders.json.",
+    "client_blocks": 6,
+    "testingb_blocks": 6,
+    "testingb_count": 3,
+    "testingb_benchtime": "3s",
+    "cooldown_seconds": 2,
+    "quiescence_seconds": 1,
+    "max_steal_fraction": 0.01,
+    "analysis_seed": 492817,
+    "bootstrap_resamples": 20000,
+    "unit_of_resampling": "whole balanced block, keeping within-process repeats clustered",
+    "uncertainty": "nominal 95% paired block-bootstrap percentile intervals and raw per-run results; client p99 from per-transaction samples within a run; testing.B means are not p99",
+    "absolute_estimand": "Median of run-level statistics; never pool transaction percentiles across processes.",
+    "relative_estimand": "Geometric mean of within-block ratios final/before, final/cgo, before/cgo (M1); remote/ordinary (M2). M2 uses median of 3 within-process repeats. Bootstrap whole six balanced blocks with all arms clustered; never pool tx percentiles.",
+    "mixed80_20_estimand": "Per-class (read, write) latency quantiles and combined completed-transaction throughput per run; ratios per class; no single blended latency.",
+    "interval_limits": "Exploratory nominal 95% intervals, 20000 resamples, seed 492817; six blocks give limited resolution; no noninferiority, equivalence, capacity or multiplicity-adjusted claim.",
+    "exclusions": "No post-hoc outlier removal; warmup predefined and separate; adverse/aborted runs retained. No repeated campaigns to obtain favourable results.",
+    "performance_decision": "No default flip or minimum-improvement rule. Report uncertainty, order effects and regressions; no aggregate speedup across workloads.",
+    "data_generation": "No random data seed: frozen payload algorithms and exact ID ranges; arm namespaces differ but have equal byte lengths.",
+    "physical_prefix_rule": "SQL rows are paired with the FDB_BENCH_AUDIT receipt of their own measured invocation (D1 SQL prefix pairing fix in the testing.B analyzer): when measured invocations' store prefixes differ, the difference is disclosed per case as physical_prefix_confound, never averaged away. Applies to M2sql."
+  },
+  "client_contract": {
+    "units": {
+      "grv": "one read-only transaction/GetReadVersion",
+      "get100/get1000": "one Transact/Get of the named value size",
+      "range100": "one transaction/range returning exactly 100 8-byte values",
+      "range1000": "NEW (H1): one transaction/range returning exactly 1000 8-byte values, same API/streaming mode as range100, exact CheckRange",
+      "set100": "one 100-byte Set+commit",
+      "batchset50": "50 x 100-byte Sets + one commit",
+      "batchset50x1000": "50 x 1000-byte Sets + one commit",
+      "mixed80_20": "NEW (H2): worker w's i-th transaction is a set100 write (overwrite of its prepared key) iff (i + w) mod 5 == 4, otherwise a get100 read-only transaction; exactly 20% writes per worker; raw rows carry the class"
+    },
+    "workers_override": "matrix_plan.py always writes workers=1; seal_multinode.py sets workloads[].workers to the phase's workers after make_plan (the only data override). Iterations and warmup are totals across workers.",
+    "caps": "matrix_plan.py default campaign cap 180 s; run.py maximum 900 s; every M1 campaign uses 900 s and a 180 s per-process timeout; waits (12 runs x 3 s) are far below the cap.",
+    "write_state": "One committed clear of owned user keys before each one-workload campaign, never per arm; fresh equal-length arm prefixes as sealed; overwrite-only timed writes; exact persisted final-value validation.",
+    "network": "Client reaches the cluster only over the private interface (ip route get receipts). No netem. Real RTT is a measured receipt, not a parameter."
+  },
+  "remote_contract": {
+    "fixture": "1000 Orders IDs 0..999, price=id, quantity=id%7+1; VALUE price_idx; nil initial continuation; no store record versions. Placement ballast exists only during P0 steps (b)-(e): it is cleared (DD frozen) and verified absent before the canonical probe and before any timing.",
+    "small": "No padding, unsplit metadata, exactly 1 data key-value per record.",
+    "split": "100000-byte deterministic padding; split-enabled; exactly 2 data key-values per record on all 1000 rows.",
+    "limit1": "TupleRangeAll, ReturnedRowLimit 1; ID 0 forward, 999 reverse; ReturnLimitReached.",
+    "rows10": "IDs 100..109 forward, 109..100 reverse; SourceExhausted.",
+    "rows100": "NEW (H3): TupleRangeBetween((100),(200)); IDs 100..199 forward, 199..100 reverse; SourceExhausted; same audits as rows10.",
+    "rows1000": "TupleRangeAll drained; IDs 0..999 forward or reversed; SourceExhausted.",
+    "skip": "Final executor, Skip 3: rows10 selects [100,113) returning 10; rows100 (NEW, H3) selects [100,203) returning 100; rows1000 selects all returning 997. Ordinary eligible leaf gets Skip 3; strict remote leaf Skip 0 plus one outer Skip; existing counter guards.",
+    "sql": "Explicit method on warmed pinned connection; EXPLAIN shows non-covering IDX_A on measured and audited connections; rows10 a in [100,110), rows100 (NEW) a in [100,200), rows1000 all; ordinary remote 0/record loads > 0; strict remote > 0/index 0/record loads 0.",
+    "strictness": "Only SCAN_AND_FETCH and strict USE_REMOTE_FETCH timed; no fallback; before/after untimed audits as in the single-node contract.",
+    "limitations": "Two-replica teams over nine storage processes on three machines: server (process) disjointness is achievable, machine disjointness is not. Client-side counters are logical; placement is observed and receipted, not controlled at the storage-server level."
+  },
+  "harness_requirements": {
+    "reuse_frozen_binaries": {
+      "M1": "Rebuild all three arms from frozen harness under Go 1.26.9. Old archive is a verified reference, not mix-and-match.",
+      "M2rl": "Rebuild fetch on merged new master with frozen d94b4c6 benchfetch harness",
+      "M2skip": "Rebuild planskip on merged new master with frozen d94b4c6 harness",
+      "condition": "No range1000, mixed80_20, rows100, SQL or memory phase. No timed harness change without review and rebuild of all affected arms."
+    },
+    "new_harness_commit_required": {
+      "H1": "clientbench workload range1000 (tools/clientbench/internal/bench/workload.go dataset + operation + validation; smoke test).",
+      "H2": "clientbench workload mixed80_20 (deterministic class schedule, per-class raw rows, write validation; analyze.py per-class summary).",
+      "H3": "rows100 cells in benchfetch (BenchmarkIndexFetch cell=rows100), planskip (cell=rows100, [100,203)) and fetchmethod (query=rows100).",
+      "H4": "SQL fetchmethod persistent fixture: fixed database path per campaign, one seeding step, FDB_BENCH_REUSE_FIXTURE mode that audits instead of recreating, and a store_prefix_hex receipt.",
+      "rule": "Every H item lands in one separately reviewed harness commit (same review gate as d94b4c6), is overlaid byte-identically into every compared tree, and all arms of an affected campaign are rebuilt from it. Cells needing it are listed under new_harness_* and seal_multinode.py leaves them unsealed until --allow-new-harness names them."
+    },
+    "new_campaign_tools_required": {
+      "H5": "Placement probe placementprobe_cgo (Go + libfdb_c 7.3.77 via the Apple binding, build tag libfdbc, built on the client VM like the CGo arm) emitting fdb-bench-placement-probe/v3. ONE transaction at read version V1 with READ_SYSTEM_KEYS reads: \\xff/dataDistributionMode, \\xff/moveKeysLock/Owner and /Write, the raw \\xff/keyServers entries from the last key <= keyServers+prefix to keyServers+strinc(prefix) (boundaries derived from them, team identities compared as raw bytes, never decoded), every key of the record (1,) and index (2,) subspaces, and every key's addresses via LocalityGetAddressesForKey in that same transaction. A second snapshot at V2 >= V1 rereads mode, lock owner, write token and keyServers; DD mode != 0 or absent at either version, or any difference in lock owner, write token or keyServers bytes, emits nothing (the owner may be any value: a DD restart under mode 0 leaves a random owner). placementprobe_go (pure-Go client) is diagnostic only: its addresses come from the client location cache, its probes need --diagnostic and fail receipt integrity.",
+      "H6": "Ballast and control writer/clearer restricted to owned prefixes (benchfetch/small, benchfetch/split, benchfetch/planskip, benchfetch/control, H4 SQL store); refuses any other prefix. Ballast writes and clears only the ballast range [prefix+(1,1000000), strinc(prefix+(1,))) and refuses a clear while DD is enabled; after a clear it reads the whole ballast range at a recorded read version and writes a verify-empty receipt (0 keys). Writes receipts of every key range it wrote or cleared.",
+      "R1": "Multi-node client adapter derived from the single-node client_campaign.py: cluster guard against the generated 3-coordinator cluster file in 10.89.20.0/24, engine guard from status json, no network namespace, DD in-flight pre-arm gate, check-roles before/after.",
+      "R2": "Multi-node testing.B runner derived from bench_runner.py executing seal_multinode testingb plans, with placement receipts/compare per case.",
+      "R3": "Per-node 1 Hz /proc/stat sampler pinned to CPUs 0-1, started/stopped by the controller over SSH; server steal >1% in any complete interval overlapping a run window contaminates that block post hoc.",
+      "note": "These do not change timed binaries but need review before use.",
+      "R4": "Server-telemetry reconciliation (environment_policy.server_telemetry_reconciliation): per-case clean/contaminated/unverifiable verdicts from all hosts' receipts.",
+      "H5_H6_implementation": {
+        "tool": "tools/benchcampaign/multinode/placementprobe: library (pure Go, no cgo) + cmd/placementprobe with two binaries selected by build tag as tools/clientbench/cmd/clientbench: //tools/benchcampaign/multinode/placementprobe/cmd/placementprobe:placementprobe_cgo (production; libfdb_c) and :placementprobe_go (diagnostic probes; exact ballast/control). Unreviewed until its review gate.",
+        "commands": {
+          "probe": "placementprobe_cgo probe --cluster-file F --store S --fixture-receipt R --output O   (placementprobe_go requires --diagnostic and is never sealable)",
+          "ballast-write": "placementprobe ballast-write --cluster-file F --store S --fixture-receipt R --ballast-mib N --output O",
+          "ballast-clear": "placementprobe ballast-clear --cluster-file F --store S --fixture-receipt R --output O",
+          "ballast-verify-empty": "placementprobe ballast-verify-empty --cluster-file F --store S --fixture-receipt R --output O",
+          "control-write": "placementprobe control-write --cluster-file F --store benchfetch/control-{small,split} --rows 1000 --fixture-receipt-out R --output O",
+          "control-mutate": "placementprobe control-mutate --cluster-file F --store benchfetch/control-split --defect {delete-chunk,stray-suffix,version-key} --output O",
+          "control-clear": "placementprobe control-clear --cluster-file F --store benchfetch/control-{small,split} --output O"
+        },
+        "owned_stores": {
+          "benchfetch/small": "tuple('benchfetch','small'), fixture receipt payload small",
+          "benchfetch/split": "tuple('benchfetch','split'), fixture receipt payload split",
+          "benchfetch/planskip": "tuple('benchfetch','planskip')",
+          "sql/IDX_A": "H4 store_prefix_hex from its fixture receipt; must not be a system prefix or overlap tuple(benchfetch)",
+          "benchfetch/control-small": "scratch: tuple('benchfetch','control','small')",
+          "benchfetch/control-split": "scratch: tuple('benchfetch','control','split')"
+        },
+        "prefix_source": "Benchmark stores: the fixture receipt (a JSON object, or a benchmark log from which the FDB_BENCH_AUDIT lines with phase fixture and the store's payload are taken; exactly one distinct receipt ignoring the per-benchmark case name) must agree with the store's fixed tuple prefix in prefix_bytes (and store_prefix_hex when present). Control stores: the fixed scratch tuple; control-write emits the fixture receipt the control probe uses.",
+        "versioning_finding": "Address source decision: libfdb_c. 7.3.77 libfdb_c getAddressesForKey (fdbclient/NativeAPI.actor.cpp getAddressesForKeyActor) does NOT use the location cache: it starts the transaction, reads \\xff/serverTag and the \\xff/keyServers entry for the key, decodes src and calls transactionalGetServerInterfaces, so addresses are consistent with the transaction's read version. The pure-Go client's GetAddressesForKey (pkg/fdbgo/client/transaction.go) answers from its location cache, a divergence from the C++ spec reported separately; it is not used for sealed probes. Hand-decoding keyServers/serverList (the alternative) was rejected: it would need decodeKeyServersValue/decodeServerListValue reimplemented and golden-pinned, while libfdb_c is the spec and the CGo arm already builds against it. Stability over [V1, V2] is established by the moveKeysLock and the raw shard map, not by boundary identity nor by a fixed owner. 7.3.77 source: (1) setDDMode (fdbclient/ManagementAPI.actor.cpp ~2280-2305) and DataDistributionImpl::commit (fdbclient/SpecialKeySpace.actor.cpp ~2716-2730) write dataDistributionModeKey, moveKeysLockOwnerKey = dataDistributionModeLock AND a fresh random moveKeysLockWriteKey on every toggle; (2) takeMoveKeysLock (fdbserver/MoveKeys.actor.cpp ~252-271) writes ONLY moveKeysLockOwnerKey = a random UID, leaving the write token, and DataDistributor::init (fdbserver/DataDistribution.actor.cpp ~536) calls it on every DD (re)start before it reads the mode and waits disabled, so a healthy frozen cluster may show a random owner; (3) checkMoveKeysLock (MoveKeys.actor.cpp ~282-337) throws unless DD is enabled in memory, and otherwise writes a NEW random moveKeysLockWriteKey (plus the owner when taking from prevOwner) in the calling transaction; it is called with isWrite in every DD transaction that changes the shard map: startMoveKeys, finishMoveKeys, startMoveShards, finishMoveShards, removeStorageServer, removeKeysFromFailedServer, cleanUpDataMoveBackground, cleanUpDataMoveCore. Therefore requiring mode key present and 0 at V1 and V2, the owner present and identical (any value, recorded), the write token present and identical, and the raw keyServers bytes identical rules out an intervening toggle (new token), DD restart (new owner) or shard-map commit (new token with new keyServers bytes), including a 0->1->0 toggle with a relocation that leaves every boundary key identical.",
+        "dd_mode": "\\xff/dataDistributionMode (fdbclient/SystemData.cpp), value a 4-byte little-endian int (BinaryWriter), absent = 1 (on); `fdbcli datadistribution off` writes 0 through the special key \\xff\\xff/management/data_distribution/mode (DataDistributionImpl::commit). ballast-write requires mode 1 (absent or 1), ballast-clear requires the key present with mode 0; each reads the key non-snapshot inside its own committing transaction, so a concurrent mode change conflicts and is re-checked. Mode 2 (security mode) is refused by both.",
+        "ballast": "Keys prefix+(1, 1000000+i), deterministic 100000-byte values, 50 per transaction; ballast-write refuses a non-empty ballast range; ballast-clear clears exactly [prefix+(1,1000000), strinc(prefix+(1,))); ballast-verify-empty reads that range at a fresh positive read version and fails (receipt still written) on any key.",
+        "key_scan_limit": "Each data subspace is read in one transaction at V1 and must complete within the MVCC window (~5 s); transaction_too_old fails the probe (rerun it), never mixes versions.",
+        "receipts": "fdb-bench-ballast-receipt/v1 for every write/clear/verify/control action; all outputs created exclusively outside any Git work tree; exit 0 ok, 1 ran but failed, 2 refused before touching the cluster.",
+        "compatibility_evidence": "placementprobe/testdata/probe-benchfetch-{small,split}.golden.json: the Go test requires Probe() on a synthetic fake to reproduce them; test_placementprobe.py regenerates them from the same specification and requires placement_receipt integrity_ok, passed and controls ok on them.",
+        "cluster_identity": "Every probe and ballast/control receipt records the cluster identity: SHA-256 of the cluster file it was given and the connection string's description:id. placement_receipt verifies the probe's identity against --cluster-file; seal_multinode testingb-plans verifies every placement receipt against its --cluster-file (pinned in the manifest) and refuses a mismatch; placement_command requires --expect-cluster-sha256 (a sealed literal in R2's template) and refuses a cluster file that does not hash to it.",
+        "owned_store_boundary": "Every destructive or probing operation takes an OwnedStore, obtainable only via OpenStore (prefix resolved from the store's fixture receipt) or OpenControlStore (fixed scratch prefix), and re-validates it at the call: the prefix must equal the store's tuple prefix (or be a valid non-overlapping SQL prefix), ballast only on benchmark stores, mutations only on control stores; ranges are derived inside.",
+        "build_gate": "`just test` never compiles placementprobe_cgo (it has no CGo test target; placementprobe_cmd_test covers main.go with the pure-Go backend only). Before P0 (provision-plan step 11c), build //tools/benchcampaign/multinode/placementprobe/cmd/placementprobe:placementprobe_cgo on the client VM against the installed, hash-verified libfdb_c 7.3.77, the same way clientbench_cgo is built (build-client-vm.sh pattern); record its SHA-256 and ldd linkage in the binary receipt and pins; run its CLI refusal paths (no arguments; an unowned store) and require exit 2 with no output written. Any failure blocks P0; no placement receipt may come from another binary."
+      }
+    }
+  },
+  "execution_gates": [
+    "All binaries built and hash-verified before any timing; no compilation, profiling, downloads, package installation or other workload during a measurement phase on any of the four hosts.",
+    "Identical harness bytes across the arms of a campaign; archived sources, overlays, build info and complete hashes.",
+    "Correctness/path audits outside timing as in the single-node contract; placement receipts for M2.",
+    "Background CPU, steal, memory, disk and network telemetry at 1 Hz on the client (live) and on every server node (post hoc).",
+    "Only this campaign's cluster active on these hosts; no CI runner, existing server or the <existing-network> network touched.",
+    "Lifetime gate per phase (cap + 600 s); teardown guard armed before provisioning with the hard deadline; deletion only of campaign-labelled, prefix-named resources."
+  ],
+  "environment_policy": {
+    "pre_arm_window_seconds": 1,
+    "pre_arm_thresholds": {
+      "client_vm_all_cpu_aggregate_busy": 0.15,
+      "client_vm_housekeeping_aggregate_busy": 0.3,
+      "client_vm_housekeeping_max_core_busy": 0.8,
+      "client_vm_idle_sentinel_aggregate_busy": 0.15,
+      "client_vm_idle_sentinel_max_core_busy": 0.5,
+      "client_vm_client_aggregate_busy": 0.05,
+      "client_vm_client_max_core_busy": 0.15,
+      "any_cpu_steal": 0.01
+    },
+    "server_pre_arm": "status json: database available, check-roles passed, no recovery in progress, moving_data in_flight_bytes == 0 and in_queue_bytes == 0 (M1; absent or 0 when DD frozen in M2), storage data lag below 1 s (when present), storage durability lag below 60 s (FDB 7.3.77 TARGET_DURABILITY_LAG_VERSIONS = 5 s normal storage write batching cycle), and log queue below 100 MB.",
+    "during_arm": "Client VM: live 1 Hz CPU/steal/OOM/pressure checks abort the case immediately (as single-node). Server nodes: cannot be checked live without SSH from the client; they are checked by post-hoc reconciliation (below), not ignored.",
+    "environment_failure": "Pre-arm failure aborts that case before another arm. Live client-side failure (missing telemetry, OOM, >1% steal on a client CPU in a complete 1 s interval, unhealthy status json) aborts the case. Server-side failures are decided by the reconciliation audit and omit the whole case. Complete and incomplete data retained; never presented as clean; no single-arm or single-case rerun.",
+    "historical_correctness_failure": "Do not patch old production to make it benchmarkable; a final-tree correctness failure stops measurement for investigation.",
+    "restart_policy": "No automatic retry after adverse timing or an aborted campaign; any justified restart needs a new protocol/campaign version with original artifacts retained.",
+    "server_telemetry_reconciliation": {
+      "unit_of_omission": "The CASE: one (phase, workload) client campaign at one worker level, or one (phase, cell) testing.B case. A contaminated case is omitted ENTIRELY: no ratios, no intervals, no point estimates; its raw data are retained and listed as contaminated with the reason.",
+      "inputs": "Per node: R3 1 Hz /proc/stat + /proc/vmstat samples with CLOCK_REALTIME and CLOCK_MONOTONIC stamps; systemd MainPID, NRestarts and ActiveEnterTimestampMonotonic for every unit before and after each phase; chronyc tracking (offset, root dispersion) before and after each phase; status json + check-roles before and after each case. Client: run.py / runner per-run start/end UTC.",
+      "clock_alignment": "Sealed formula, per (case, node). Each host's clock error bound is chrony's full root distance, |offset| + root_dispersion + 0.5 * root_delay, and the two hosts' bounds ADD because their offsets can have opposite signs: u = max_phase(|off_c| + disp_c + 0.5*delay_c) + max_phase(|off_n| + disp_n + 0.5*delay_n) + 1 s + 0.001 s, where for host h (c = client, n = the node) off_h, disp_h and delay_h are the chronyc tracking 'System time' offset, 'Root dispersion' and 'Root delay' of a receipt taken on h for the phase, max_phase is the maximum over all of h's receipts for the phase (before and after), 1 s is the sampler granularity, and 0.001 s is the timestamp precision (run.py UTC stamps have microsecond resolution; R3 samplers must stamp at millisecond resolution or finer, else the protocol must be amended to their resolution before timing). Each run window [s, e] (client UTC) is widened to [s - u, e + u]; EVERY node sample interval intersecting the widened window counts toward that run (ambiguity contaminates, never cleans). If any chrony receipt of either host is missing, lacks any of the three fields, or reports an unsynchronised clock, u is undefined and every case of the phase is unverifiable (omitted).",
+      "contamination": "Any of, in an interval counted toward any run of the case: steal > 1% on any FDB CPU of any node; OOM kill delta > 0; MainPID change, NRestarts > 0 or unit inactive; role or process-class change (check-roles before vs after); recovery (status json generation/recovery state change); placement compare unequal (M2).",
+      "missing_data": "A missing sampler file, a gap > 2 s in a node's samples overlapping a widened run window, a missing unit/chrony/status receipt, or an unparsable sample makes the case unverifiable, which is treated exactly like contaminated: omitted, never ignored, never assumed clean. Scope of sample errors: see sample_error_scope (sealed verbatim; it governs where it is more specific).",
+      "merge_audit": "R4 (reconciliation tool) merges all four hosts' receipts per case and writes one verdict per case: clean | contaminated(reason) | unverifiable(reason), with the exact samples used. The clean verdict for ANY case is deferred until reconciliation of the whole phase is complete; no ratio, interval or summary is computed or shown for a phase before its R4 audit is finished and retained. R4's verdict is reviewed together with the analysis; it is not overridden by hand.",
+      "live_versus_posthoc": "Live client-side aborts stop the case at once (no further arms). Post-hoc server contamination cannot stop a case that already ran; it removes the whole case from analysis. Neither leads to a rerun within this campaign.",
+      "sample_error_scope": "Any unparsable or malformed sample line or field on a node \u2014 bad JSON, wrong sequence number, a missing timestamp, a read error, malformed /proc/stat or /proc/vmstat text, a missing FDB CPU or oom_kill \u2014 and a missing or unsealed samples.jsonl or receipt, makes EVERY case of the phase unverifiable. Local to the run windows they touch: a gap over 2 s, a CLOCK_REALTIME step, invalid counter deltas (idle and iowait may decrease), steal, OOM kills and a vanished MainPID.",
+      "case_status_rejudgement": "R4 (reconcile_telemetry.py) re-judges every case's status_before/status_after with cluster_gate.status_verdict under the phase's expected_dd_state (frozen for testing.B/M2, on for client/M1) and requires the runner_verdict recorded by R1/R2 (omitted, adverse, source, source_sha256); a missing or unreadable runner verdict makes the case unverifiable.",
+      "code_pins": "R4 imports cluster_gate.py, which imports the single-node bench_runner.py (and client_campaign.py); the frozen tools copy and the pins recorded for R4 must include reconcile_telemetry.py, build_reconcile_input.py, cluster_gate.py, fdb_cluster.py, mn_common.py and the single-node bench_runner.py and client_campaign.py."
+    },
+    "arm_correctness": "final-Go and CGo-7.3.77 are both built from the final production revision, so a correctness failure in either arm is a final-tree failure: it stops the whole phase for investigation (no further case of that phase runs; data retained). Only an arm built from a historical revision (before-Go, if amended in) follows historical_correctness_failure.",
+    "recovery_scope": "R1/R2 take a per-case baseline of cluster.generation and the role/process-class map at the case's first server gate and compare it at every pre-arm gate and at case end. A recovery (generation change, or recovery_state.name not fully_recovered) contaminates only the cases whose window [first server gate, last post-case gate] overlaps it: a live observation aborts the running case; cases entirely before or after are unaffected. R4 still reconciles server telemetry, restarts and clocks for every case, and its omission rules apply independently."
+  },
+  "budget": {
+    "server_types": "4 x ccx43 fsn1",
+    "lifetime_hours": 8,
+    "fixed_seconds": {
+      "setup_gates_F0_P0_controls_capacity_smokes": 4500,
+      "per_phase_collection": 600,
+      "final_teardown_verification": 300
+    },
+    "phase_caps_seconds": {
+      "M1w1": 3150,
+      "M1w64": 3150,
+      "M1w8": 2850,
+      "M1w32": 2850,
+      "M2rl": 4700,
+      "M2skip": 1300
+    },
+    "expected_phase_seconds": {
+      "M1w1": 1650,
+      "M1w64": 1500,
+      "M1w8": 1425,
+      "M1w32": 1290,
+      "M2rl": 3600,
+      "M2skip": 960
+    },
+    "expected_total_seconds": 18825,
+    "worst_case_total_seconds": 26400,
+    "note": "Prebuild before paid launch. VM compilation if needed consumes same 8h and triggers deterministic skips, never extension. Totals recomputed (old budget had stale arithmetic). No sample reductions."
+  },
+  "pending_receipts": [
+    "Current authorized-master local build/compiler/source verification",
+    "Unchanged launch inventory and pinned image approval",
+    "Final executable plan seals with actualcluster/placement",
+    "F0/P0/diagnostic/capacity qualification",
+    "T0+8hdeadline and trackedguardfutureid beforefirstcreate",
+    "Complete telemetry/reconciliation and verified campaign-only teardown"
+  ],
+  "revision_history": [
+    {
+      "version": 1,
+      "date": "2026-10-20",
+      "changes": [
+        "Preparation only, previous protocol shape retained with changes in PROTOCOL.md",
+        "Owner: M2 before M1, M2 new master only, M1 old/new/CGo6 permutations",
+        "Unique label/prefix/nonoverlapping CIDR,17 protected resources,8h lifetime proposal"
+      ]
+    },
+    {
+      "version": 1,
+      "date": "2026-10-20",
+      "changes": [
+        "Owner GO: current master fa8725f1dcf6ff3ac66825ab6e3e819efbc0abcc replaces RFC-263 placeholder; no RFC-263 merge claim",
+        "Same frozen harness,seeds,orders,three M1 arms, M2thenM1w1/w64/w8/w32",
+        "Controller /32 and ed25519 key provided privately; new campaign project SSH key; private key never copied"
+      ]
+    },
+    {
+      "version": 1,
+      "date": "2026-10-20",
+      "changes": [
+        "Declared d94b4c613 + #948 lifecycle drain fix + matching run.py validator identically in all3M1arms; initialgrv32txcompleted0errorsbutfrozenguardrejected38queued=38executedcleanups",
+        "ExactupstreamGo2filehunk plusonlyvalidatorpredicate/tests/scopeprose corrections; no workload,timingwindow,CPUaccounting,pacing,numericanalysis,BUILD,main oroutputformatchange",
+        "CombinedpatchSHA 31bc349b7a1ef71fc5bbf300ed728fe536e161f5610a1187edc718e63fddb007",
+        "ClientharnessarchiveSHA 76990b867f337bdad0132cc69aa3f6f9a9bcf0cb0859cc8c7f8514def684f508"
+      ]
+    }
+  ],
+  "testingb_write_state": "M2 (R2, bench_runner_mn.py) NEVER clears the user keyspace, per arm or per case: a whole-keyspace or cross-store clear would destroy the other stores' placed fixtures. Each benchmark process reseeds only its own fixture under its fixed owned prefix (the frozen fixture code clears its own store subspace and rewrites it), which lands in the same frozen shards because data distribution is off. The only other clears are H6's ballast-range clear and verify-empty in P0 and the scratch control-prefix clears; the SQL store (H4) audits its persistent fixture instead of recreating it. This replaces the single-node rule 'clear the owned user keyspace between fresh arm processes' for M2 only; M1 keeps one committed user-key clear before each workload campaign, never per arm.",
+  "reporting": {
+    "repository_docs_dir": "docs/benchmarks/fdbmn-20261020/",
+    "state_location": "${FDB_PERF_HOME}/campaigns/fdbmn-20261020",
+    "rule": "Write-up only after run; no credentials/existing-machine addresses in repo; report both Go SHAs plus harness SHA.",
+    "writeup_dir": "${FDB_PERF_HOME}/campaigns/fdbmn-20261020",
+    "repository_write_authorized": false
+  },
+  "selected_scope": "reuse_only",
+  "arm_mapping": {
+    "before-Go": "Previous campaign final Go tree; before is the existing sealer slot, NOT original allocation baseline",
+    "final-Go": "Current master fa8725f1dcf6ff3ac66825ab6e3e819efbc0abcc, owner-approved replacement of RFC-263 placeholder; includes #962-#969 wire fixes/allocation cuts/read-tag sampling/RFC-262phase2/follow-up",
+    "CGo-7.3.77": "Apple Go binding built on the same new production tree, linked to hash-pinned libfdb_c 7.3.77"
+  },
+  "safety": {
+    "campaign_label": "campaign=fdbmn-20261020-NONCE",
+    "name_prefix": "fdbmn-20261020-NONCE",
+    "protected_inventory": "inventory/protect.tsv",
+    "protected_resources": 17,
+    "existing_cidrs": [
+      "<existing-cidr>"
+    ],
+    "provision_staging": [
+      "client",
+      "node1",
+      "node2",
+      "node3"
+    ],
+    "implicit_primary_ip_policy": {
+      "owner_approved_unlabelled_exception": true,
+      "before_next_create": "After each one-server provision invocation, read-only list every primaryIP; require assignment to recorded campaign server ID, auto_delete=true and no protected IDs; persist server/IP IDs as campaign-owned outside Git",
+      "failure": "Stop and report exact ID to owner before continuing; no campaign IP mutation",
+      "survivor": "Full 10-kind exact inventory diff must pass; on surviving primaryIP verify recorded campaign-owned ID and report to owner; never delete automatically"
+    },
+    "lifetime_hours": 8,
+    "deadline": 1792518906,
+    "cloud_mutations_authorized": true
+  },
+  "harness_compatibility": {
+    "description": "d94b4c613 + #948 lifecycle drain fix + matching run.py validator",
+    "upstream_commit": "066920ebb8d22c5618b31ef0a56fa7674c773cdb",
+    "client_harness_archive": "/srv/fdb-bench/frozen/cleanup-compat/client-harness.tar.gz",
+    "patch_file": "/srv/fdb-bench/frozen/cleanup-compat/combined.patch",
+    "patch_sha256": "31bc349b7a1ef71fc5bbf300ed728fe536e161f5610a1187edc718e63fddb007",
+    "archive_sha256": "76990b867f337bdad0132cc69aa3f6f9a9bcf0cb0859cc8c7f8514def684f508"
+  },
+  "harness_compatibility_authorization": [
+    "root4166",
+    "root4167",
+    "root4170"
+  ]
+}

@@ -1,0 +1,140 @@
+From 1c9689bb215678ec20d90154a10bf622ce0db14a Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Johannes=20Br=C3=BCderl?= <johannes.bruederl@gmail.com>
+Date: Sun, 11 Oct 2026 01:32:46 +0200
+Subject: [PATCH] fix(fdbgo): fetch a write-only commit's GRV with
+ CAUSAL_READ_RISKY
+
+C++ tryCommit gets a missing read version through
+startTransaction(FLAG_CAUSAL_READ_RISKY) (NativeAPI.actor.cpp:6575-6577):
+with no reads the transaction needs no causal consistency, so the GRV
+proxy skips its updateLastCommit wait (GrvProxyServer.actor.cpp:647-648).
+Go's commit path asked for an ordinary GRV. Batchers are keyed by full
+flags, so risky and ordinary requests never share a batch.
+---
+ CHANGELOG.md                             |  1 +
+ pkg/fdbgo/client/grv_batch_flags_test.go | 48 ++++++++++++++++++++++++
+ pkg/fdbgo/client/transaction.go          | 17 +++++++--
+ 3 files changed, 63 insertions(+), 3 deletions(-)
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index c69dfa023..659ec0061 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -29,6 +29,7 @@ project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (
+   **1.26.x** (the `MODULE.bazel` / `go.mod` pins; the CI doc-guard enforces docs match them).
+ 
+ ### Changed
++- A write-only transaction fetches its commit read version with `CAUSAL_READ_RISKY`, as libfdb_c does, so its GRV skips the proxy's last-commit wait.
+ - SQL planning has no task budget by default, as in Java (was 150,000 tasks, 250,000 right-deep); the
+   caller's context bounds it, and `MAX_TOTAL_TASK_COUNT`, `MAX_TASK_QUEUE_SIZE` and
+   `MAX_NUM_MATCHES_PER_RULE_CALL` opt into Java's caps (54F02 when exhausted).
+diff --git a/pkg/fdbgo/client/grv_batch_flags_test.go b/pkg/fdbgo/client/grv_batch_flags_test.go
+index 33e86a318..db17feec4 100644
+--- a/pkg/fdbgo/client/grv_batch_flags_test.go
++++ b/pkg/fdbgo/client/grv_batch_flags_test.go
+@@ -217,3 +217,51 @@ func TestGRVBatcherSeparatesFullFlags(t *testing.T) {
+ 		t.Fatalf("missing tagged GRV wire population: normal=%t risky=%t", seenNormal, seenRisky)
+ 	}
+ }
++
++// C++ tryCommit fetches a missing read version with FLAG_CAUSAL_READ_RISKY
++// (NativeAPI.actor.cpp:6575-6577); a transaction that already read keeps its
++// ordinary GRV and the commit issues none.
++func TestCommitPathGRVIsCausalReadRisky(t *testing.T) {
++	t.Parallel()
++	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
++	defer cancel()
++	observer := &grvFlagsObserver{}
++	db := newTestDatabase(t, ctx, sharedClusterFile, observer.dial)
++	defer db.Close()
++	const writeOnly, readFirst = "commit-grv-write-only", "commit-grv-read-first"
++	for _, tag := range []string{writeOnly, readFirst} {
++		tx := db.CreateTransaction()
++		if err := tx.SetTag(tag); err != nil {
++			t.Fatal(err)
++		}
++		key := []byte("commit-grv-flags/" + tag)
++		if tag == readFirst {
++			if _, err := tx.Get(ctx, key); err != nil {
++				t.Fatal(err)
++			}
++		}
++		tx.Set(key, []byte("v"))
++		if err := tx.Commit(ctx); err != nil {
++			t.Fatalf("%s commit: %v", tag, err)
++		}
++	}
++	observer.mu.Lock()
++	defer observer.mu.Unlock()
++	if observer.err != nil {
++		t.Fatal("GRV request observer:", observer.err)
++	}
++	got := map[string][]uint32{}
++	for _, req := range observer.requests {
++		for _, tag := range []string{writeOnly, readFirst} {
++			if req.tags[tag] > 0 {
++				got[tag] = append(got[tag], req.flags)
++			}
++		}
++	}
++	if f := got[writeOnly]; len(f) != 1 || f[0] != grvPriorityDefault|grvFlagCausalReadRisky {
++		t.Errorf("COMMIT_GRV_FLAGS: write-only commit GRV flags = %#x, want one with %#x", f, grvPriorityDefault|grvFlagCausalReadRisky)
++	}
++	if f := got[readFirst]; len(f) != 1 || f[0] != grvPriorityDefault {
++		t.Errorf("read-first transaction GRV flags = %#x, want one with %#x", f, grvPriorityDefault)
++	}
++}
+diff --git a/pkg/fdbgo/client/transaction.go b/pkg/fdbgo/client/transaction.go
+index 170cb824f..7db566d7f 100644
+--- a/pkg/fdbgo/client/transaction.go
++++ b/pkg/fdbgo/client/transaction.go
+@@ -788,9 +788,14 @@ func (tx *Transaction) checkReadState(ctx context.Context) error {
+ }
+ 
+ func (tx *Transaction) ensureReadVersion(ctx context.Context) error {
++	return tx.ensureReadVersionFlags(ctx, 0)
++}
++
++// ensureReadVersionFlags adds extraFlags to the GRV it issues, if it issues one.
++func (tx *Transaction) ensureReadVersionFlags(ctx context.Context, extraFlags uint32) error {
+ 	ctx, release := tx.opContext(ctx)
+ 	defer release()
+-	if _, err := tx.readVersionForOperation(ctx); err != nil {
++	if _, err := tx.readVersionForOperationFlags(ctx, extraFlags); err != nil {
+ 		return err
+ 	}
+ 	return tx.readEntryError(ctx)
+@@ -800,6 +805,10 @@ func (tx *Transaction) ensureReadVersion(ctx context.Context) error {
+ // later read of the mutable handle. C++ RYWImpl::getReadVersion returns the
+ // value from its completed future even if the handle is subsequently reset.
+ func (tx *Transaction) readVersionForOperation(parentCtx context.Context) (int64, error) {
++	return tx.readVersionForOperationFlags(parentCtx, 0)
++}
++
++func (tx *Transaction) readVersionForOperationFlags(parentCtx context.Context, extraFlags uint32) (int64, error) {
+ 	ctx, cancel := tx.opContext(parentCtx)
+ 	defer cancel()
+ 	if err := tx.checkReadState(ctx); err != nil {
+@@ -827,7 +836,7 @@ func (tx *Transaction) readVersionForOperation(parentCtx context.Context) (int64
+ 		tx.ensureTxSpan()
+ 	}
+ 	if !tx.hasReadVersion {
+-		flags := tx.grvFlags()
++		flags := tx.grvFlags() | extraFlags
+ 		rv, locked, rvAt, err := tx.db.grvBatchers[grvBatcherIndex(flags)].getReadVersion(tx.db, ctx, flags, tx.currentSpan(), tx.tags, tx.useGrvCache, tx.skipGrvCache)
+ 		if err != nil {
+ 			tx.readVersionMu.Unlock()
+@@ -1980,7 +1989,9 @@ func (tx *Transaction) commitAdmitted(parent context.Context, completion *versio
+ 	// C++ tryCommit calls startTransaction(CAUSAL_READ_RISKY) to ensure a
+ 	// read version exists before commit, even for write-only transactions.
+ 	// Without this, ReadSnapshot=0 is sent which crashes the FDB server.
+-	if err := tx.ensureReadVersion(ctx); err != nil {
++	// A transaction with no reads needs no causal consistency, so its GRV
++	// skips the proxy's updateLastCommit wait (NativeAPI.actor.cpp:6575-6577).
++	if err := tx.ensureReadVersionFlags(ctx, grvFlagCausalReadRisky); err != nil {
+ 		return err
+ 	}
+ 
+-- 
+2.55.0
+

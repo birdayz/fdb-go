@@ -1,0 +1,14 @@
+--- a/src/fdb/range.go
++++ b/src/fdb/range.go
+@@ -226,6 +226,11 @@
+ 		return true
+ 	}
+ 
++	// Empty batch: mark done so subsequent Advance() calls return false
++	// instead of falling through the f==nil path with empty kvs, which
++	// causes Get() to panic with index-out-of-bounds.
++	ri.done = true
++
+ 	return false
+ }
+ 

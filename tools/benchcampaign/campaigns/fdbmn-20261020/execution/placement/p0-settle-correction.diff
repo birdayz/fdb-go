@@ -1,0 +1,108 @@
+--- original-deployed-p0.py
++++ corrected-p0.py
+@@ -152,6 +152,14 @@
+          f'{defect}: rejection did not name intended physical defect: {receipt.get("errors")}')
+ 
+ 
++def settle_errors(errors):
++    transient_prefixes = ('storage data lag ', 'storage durability lag ', 'log queue ',
++        'moving_data.in_flight_bytes missing or not a number:',
++        'moving_data.in_queue_bytes missing or not a number:')
++    transient = [e for e in errors if e.startswith(transient_prefixes)]
++    return [e for e in errors if e not in transient], transient
++
++
+ def same_epoch(receipts):
+     need(len(receipts) >= 3, 'need nonempty all-store receipt population')
+     owners = {(r['move_keys_owner_hex'], r['move_keys_write_token_hex']) for r in receipts}
+@@ -221,13 +229,14 @@
+     def cli_exec(self, folder, label, command):
+         return self.run(folder, label, [self.cli, '-C', self.cluster, '--exec', command], timeout=240)[1]
+ 
+-    def status(self, folder, label, mode):
++    def status(self, folder, label, mode, *, settling=False):
+         status = json.loads(self.cli_exec(folder, label, 'status json'))
+         errors, movement, roles = self.cg.status_verdict(status, self.layout, 'ssd-2', mode)
+         dump(folder / (label + '.json'), status)
+         dump(folder / (label + '-verdict.json'), dict(errors=errors, movement=movement, roles=roles))
+-        need(not errors, f'{label}: status invalid: {errors}')
+-        return status, movement
++        hard, pending = settle_errors(errors) if settling else (errors, [])
++        need(not hard, f'{label}: status invalid: {hard}')
++        return status, movement + pending
+ 
+     def pp_cmd(self, folder, label, cmd, store, fixture=None, **flags):
+         output = folder / (label + '.json')
+@@ -328,26 +337,31 @@
+             self.cleared(clear)
+         dump(q / 'qualified.json', dict(ok=True, originals=['small', 'split'], defects=list(DEFECTS)))
+ 
+-    def settle(self, folder):
++    def settle(self, folder, *, deadline_epoch=None):
+         start, zero_start, poll = time.monotonic(), None, 0
+-        initial_roles = None
+-        while time.monotonic() - start <= self.a.settle_timeout_seconds:
+-            status, movement = self.status(folder, f'settle-{poll:04d}', 'enabled')
++        if deadline_epoch is None:
++            deadline_epoch = time.time() + self.a.settle_timeout_seconds
++        end = start + max(0, deadline_epoch - time.time())
++        initial_roles = getattr(self, 'settle_expected_roles', None)
++        while time.monotonic() < end:
++            status, movement = self.status(folder, f'settle-{poll:04d}', 'enabled', settling=True)
+             now = time.monotonic()
++            need(now <= end, 'original settle deadline expired during status poll')
+             roles = self.cg.role_identity(status)
++            if initial_roles is None:
++                initial_roles = roles
++            need(roles == initial_roles, 'roles/recovery changed during settling')
+             if movement:
+-                zero_start, initial_roles = None, None
++                zero_start = None
+             elif zero_start is None:
+-                zero_start, initial_roles = now, roles
+-            else:
+-                need(roles == initial_roles, 'roles/recovery changed during zero-movement settling interval')
+-                if time.monotonic() - zero_start >= 120:
+-                    dump(folder / 'settled.json', dict(zero_movement_seconds=time.monotonic() - zero_start,
+-                         polls=poll + 1, period_seconds=5))
+-                    return
++                zero_start = now
++            elif now - zero_start >= 120:
++                dump(folder / 'settled.json', dict(zero_movement_seconds=now - zero_start,
++                     polls=poll + 1, period_seconds=5, deadline_epoch=deadline_epoch))
++                return
+             poll += 1
+-            time.sleep(5)
+-        raise Failure('movement failed to remain zero for 120s within settle budget')
++            time.sleep(min(5, max(0, end - time.monotonic())))
++        raise Failure('movement/health failed to remain valid and zero for 120s within original settle budget')
+ 
+     def attempt(self, k, mib):
+         a = mkdir(self.out / f'attempt-{k}')
+@@ -366,9 +380,17 @@
+             count = math.ceil((mib * 1024 * 1024) / 100000)
+             need(receipt.get('keys_written') == count and receipt.get('total_bytes') == count * 100000 and
+                  receipt.get('value_bytes') == 100000, 'ballast size differs from protocol')
+-        self.settle(a)
++        return self.complete_attempt(k, mib, a, fixtures)
++
++    def complete_attempt(self, k, mib, a, fixtures, *, deadline_epoch=None, before_clear=None):
++        if deadline_epoch is None:
++            self.settle(a)
++        else:
++            self.settle(a, deadline_epoch=deadline_epoch)
+         self.cli_exec(a, 'dd-off', 'datadistribution off')
+         self.status(a, 'dd-off-status', 'disabled')
++        if before_clear is not None:
++            before_clear(a, fixtures)
+         for name, fixture in fixtures.items():
+             b = a / name
+             self.pp_cmd(b, 'ballast-clear', 'ballast-clear', 'benchfetch/' + name, fixture)
+@@ -418,6 +440,7 @@
+                       self.out / 'placement-command.json', *fixtures.values(), *map(Path, selected.values()),
+                       Path(sys.executable).resolve(), Path(__file__).absolute(),
+                       Path(__file__).absolute().with_name('placement_checked.py')]
++        seal_paths += list(getattr(self, 'extra_seal_paths', []))
+         dump(self.out / 'seal-pins.json', {str(p): sha(p) for p in seal_paths})
+         self.check_pins()
+         passed = all(r['passed'] for r in final_receipts)

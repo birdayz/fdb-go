@@ -1,0 +1,148 @@
+{
+  "campaign": "old-batch-attribution-r2-cpu",
+  "purpose": "Attribution-only old affef937 Go profile, no performance comparison. Root#491 explicitly authorized omission of CGo for single-arm pprof attribution; timed comparisons still require native.",
+  "source_commit": "affef93729368a3fb183df90c5332b5bd2289b25",
+  "harness_id": "3d2504ae0db14fad14f0384287377998231cf049310c8289d6e7245d3428e0d0",
+  "fdb_version": "7.3.77",
+  "fdb_api_version": 730,
+  "go_version": "1.26.9",
+  "pinned_files": [
+    "/usr/lib/libfdb_c.so",
+    "/usr/sbin/fdbserver",
+    "/etc/foundationdb/fdb.cluster",
+    "/etc/foundationdb/foundationdb.conf",
+    "/opt/fdbperf/scripts/astra-perf-run.py",
+    "/opt/fdbperf/scripts/astra-perf-analyze.py",
+    "/opt/fdbperf/artifacts/ownership-001-build/harness-v6.tar.gz",
+    "/opt/fdbperf/artifacts/ownership-001-build/harness-v6.sha256",
+    "/opt/fdbperf/artifacts/hillclimb-arena-003-build/published-full.tar.gz",
+    "/opt/fdbperf/artifacts/hillclimb-arena-003-build/base.sha256",
+    "/opt/fdbperf/artifacts/hillclimb-arena-003-build/candidate.sha256",
+    "/opt/fdbperf/artifacts/hillclimb-arena-003-build/arena-003.patch",
+    "/opt/fdbperf/artifacts/hillclimb-arena-003-build/full-base.sha256",
+    "/opt/fdbperf/artifacts/hillclimb-arena-003-build/full-new.sha256",
+    "/opt/fdbperf/artifacts/hillclimb-arena-003-build/binaries.sha256",
+    "/opt/fdbperf/artifacts/hillclimb-arena-003-build/runtime.sha256",
+    "/opt/fdbperf/artifacts/hillclimb-arena-003-build/validate-profile.py",
+    "/opt/fdbperf/scripts/astra-perf-attribution-r2.py"
+  ],
+  "seed": 491001,
+  "blocks": 1,
+  "cooldown_seconds": 2,
+  "quiescence_seconds": 1,
+  "max_busy_fraction": 0.15,
+  "max_steal_fraction": 0.01,
+  "telemetry_seconds": 1,
+  "cpu_sets": [
+    {
+      "name": "housekeeping",
+      "cpus": [
+        0,
+        1
+      ],
+      "max_busy_fraction": 0.3,
+      "max_cpu_busy_fraction": 0.8
+    },
+    {
+      "name": "server",
+      "cpus": [
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "max_busy_fraction": 0.15,
+      "max_cpu_busy_fraction": 0.5
+    },
+    {
+      "name": "client",
+      "cpus": [
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15
+      ],
+      "max_busy_fraction": 0.05,
+      "max_cpu_busy_fraction": 0.15
+    }
+  ],
+  "timeout_seconds": 180,
+  "environment": {
+    "GOMAXPROCS": "8",
+    "GOGC": "100",
+    "GOMEMLIMIT": "off",
+    "GODEBUG": "",
+    "LC_ALL": "C",
+    "TZ": "UTC"
+  },
+  "arms": [
+    {
+      "name": "old",
+      "binary": "/opt/fdbperf/bin/candidate-hc03-base",
+      "command": [
+        "taskset",
+        "--cpu-list",
+        "8-15",
+        "{binary}",
+        "--cluster-file",
+        "/etc/foundationdb/fdb.cluster",
+        "--workload",
+        "{workload}",
+        "--iterations",
+        "{iterations}",
+        "--warmup",
+        "{warmup}",
+        "--workers",
+        "{workers}",
+        "--output",
+        "{output}",
+        "--run-id",
+        "{run_id}",
+        "--block",
+        "{block}",
+        "--source-revision",
+        "affef93729368a3fb183df90c5332b5bd2289b25",
+        "--harness-id",
+        "{harness_id}",
+        "--allow-writes",
+        "--transaction-timeout-ms",
+        "30000",
+        "--retry-limit",
+        "10",
+        "--prefix",
+        "clientbench/r2cp/xxxxxxxxxxxxxxxxxxxxxxxx/{workload:_<16}/b{block:03d}/old/",
+        "--profile",
+        "cpu"
+      ],
+      "source_revision": "affef93729368a3fb183df90c5332b5bd2289b25"
+    }
+  ],
+  "workloads": [
+    {
+      "name": "batchset50",
+      "iterations": 3000,
+      "warmup": 100,
+      "workers": 1
+    },
+    {
+      "name": "batchset50x1000",
+      "iterations": 2000,
+      "warmup": 100,
+      "workers": 1
+    }
+  ],
+  "interpretation": "Single-arm/single-run attribution only, no old/new/CGo comparison or timing inference. Go pprof heap is coarse sampled lifetime including preparation; exact MemStats differences cover measured phase.",
+  "correctness_status_at_authorization": "Root454 reports published baseline affef937 fast102/102 green (2actual100cached),6823frozen hashes/population verified. Candidate003 main-module compile/Bazel/runtime approval and final Opus5.5xhigh PR review pending. Remote harness standalone builds/tests are a separate narrow scope.",
+  "prefix_policy": "Unique68B prefixes; same workload/key shape as003 campaigns.",
+  "measured_unit": "One completed harness transaction operation; batch=50 distinct Sets+Commit, point/get=Transact Get+emptyCommit, read=ReadTransact Get noCommit, range=Transact WantAll100rows, set=one100B Set+Commit.",
+  "campaign_wall_cap_seconds": 180,
+  "diagnostic_profile": "cpu",
+  "attribution_only": true,
+  "authorization": "root request#491; perf-lead R2"
+}

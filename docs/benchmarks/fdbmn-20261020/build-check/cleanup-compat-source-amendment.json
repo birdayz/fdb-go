@@ -1,0 +1,40 @@
+{
+  "both_external_client_harnesses_identical": true,
+  "changed_files": {
+    "tools/clientbench/internal/bench/lifecycle.go": {
+      "cleanup_compat_sha256": "4374b421d96b4d88ed24486e5adefbea030cca66ed10aac7414bc22819681235",
+      "original_sha256": "c6cfcef4efdfac6e53aea3a1d474a5519a95717105b4135048cad4e0abd03ccf"
+    },
+    "tools/clientbench/internal/bench/lifecycle_test.go": {
+      "cleanup_compat_sha256": "cb908bd3801d419ccbcb0c1e6186b2e165bc60f8fe10175479e4c0e8dce29b17",
+      "original_sha256": "e7e8125722aecfd968778d8a9da9845aab4ca41bde3731b5bf6cf923dc5453ef"
+    },
+    "tools/clientbench/scripts/analyze.py": {
+      "cleanup_compat_sha256": "a51c5e20e58060970637cf6f6f03ef077dddc007d311e809af6cae576c083608",
+      "original_sha256": "5d3086d28e7e856f4b9f9033e6f6790e1e90031fa2efe19b122b27b731fe577b"
+    },
+    "tools/clientbench/scripts/run.py": {
+      "cleanup_compat_sha256": "615995331fd062ca980dcf110859afda6ab481f1fa1eddaf6e0bd84c40e7555d",
+      "original_sha256": "536c2360d963b25f547c27f5007e4b7181374644cb92b59eeed2d3fbf2e20793"
+    },
+    "tools/clientbench/scripts/test_campaign.py": {
+      "cleanup_compat_sha256": "228664e32b4e8aca5f22ab557df50456b455768d0e96a03687931fcbb8e6ccbd",
+      "original_sha256": "b5e8038dda7a389622e08c7a3b66c01ed3696fff12707dbca4f4b92edbf22c93"
+    }
+  },
+  "combined_patch_sha256": "31bc349b7a1ef71fc5bbf300ed728fe536e161f5610a1187edc718e63fddb007",
+  "description": "d94b4c613 + #948 lifecycle drain fix + matching run.py validator",
+  "new_archive_sha256": "76990b867f337bdad0132cc69aa3f6f9a9bcf0cb0859cc8c7f8514def684f508",
+  "new_client_harness_archive": "${FDB_PERF_HOME}/campaigns/fdbmn-20261020/frozen/cleanup-compat/client-harness.tar.gz",
+  "original_archive_sha256": "b705edda9bb2186c97ed16370347790cf5033ccd0b8882d13b1035e7dc94ad81",
+  "original_client_harness_archive": "${FDB_PERF_HOME}/hcloud-rebench-20261014/overlays/final/client-harness.tar.gz",
+  "python_syntax_parsed_without_execution": [
+    "tools/clientbench/scripts/analyze.py",
+    "tools/clientbench/scripts/run.py",
+    "tools/clientbench/scripts/test_campaign.py"
+  ],
+  "regular_files": 28,
+  "tests_run": false,
+  "upstream_commit": "066920ebb8d22c5618b31ef0a56fa7674c773cdb",
+  "upstream_patch_sha256": "8d25bd6b4eaa91b6f3eb44da5360d5235f27fbf319dbb0dfab96f1f4397727d3"
+}

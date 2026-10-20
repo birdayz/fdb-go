@@ -1,0 +1,45 @@
+{
+  "schema": "r17-offline-acquisition-review-v1",
+  "requests": [1451, 1452, 1459],
+  "reviewed_files": {
+    "prepare-r17.py": "3256bae5b706bea0259b14c7f574369129fb7a116938857be005edc31e761c1f",
+    "acquire-r17.py": "f3bbcae599ebe24d517258cdbd9bb1441d2db0eaf8cb4957cdf481a869c66159"
+  },
+  "scope": "Local artifact source review and synthetic AST-extracted checks only; no acquisition, VM, SSH, network, repository operation, subprocess execution, or real performance analysis.",
+  "status": "passed; no remaining analyzer/schema blocker in reviewed versions",
+  "initial_findings_resolved": [
+    "Frozen V7 permits nonzero callback retries; acquisition now checks all eight completed segment summaries and measured/warmup attempts before marking the segment complete or continuing.",
+    "Preparation now explicitly checks wrapper, patch, FDB server and all three frozen V7 script hashes instead of merely pinning whatever bytes are present."
+  ],
+  "synthetic_preparation": {
+    "execution": "Actual prepare-r17.py 80-segment loop extracted with AST; file identity reads replaced by synthetic pin values; frozen scheduler and serialization functions used unchanged.",
+    "plans": 80,
+    "runs": 640,
+    "unique_prefixes": 640,
+    "prefix_bytes": 68,
+    "global_paired_blocks_per_workload": 160,
+    "first_arm_counts_per_workload": {"new": 80, "cgo": 80},
+    "common_pin_map_equal_across_all_plans": true,
+    "analyzer_validate_plan_and_validate_command": "passed for all generated plans/runs",
+    "prepin_plan_schedule_hashes_equal_frozen_runner_dump": "passed for all 80 plans and 80 schedules",
+    "fixture_correction": "Initial synthetic fixture did not account for controller-local /usr/sbin path resolution and lacked the resolved server hash. Corrected synthetic digest lookup to use the server filename; no production-script change was needed."
+  },
+  "synthetic_zero_retry_gate": {
+    "functions_executed": ["read", "check_zero_retry_segment"],
+    "extraction": "AST function definitions only; acquisition top-level code was never executed",
+    "valid_fixture": "8 runs: 2 blocks x 2 workloads x 2 arms; exact 5000/2500 measured and 200 warmup rows",
+    "valid_fixture_passed": true,
+    "mutated_failure_cases_rejected": 152,
+    "mutation_scope": [
+      "errors, warmup_errors, retries, warmup_retries changed to 1 or boolean false in each run",
+      "failure text and warmup_requested mismatch in each run",
+      "missing measured/warmup sample row and attempts=2 in each run",
+      "NEW transaction_retries, connection_failures, grv_cache_hits changed to 1 or boolean false",
+      "NEW read_versions_completed, grv_successful_batch_replies, commit_started, commit_completed changed from expected counts"
+    ],
+    "restored_valid_fixture_passed": true,
+    "reproduction_script": "selfcheck-acquisition-r17.py"
+  },
+  "operational_caveat": "Normal TERM handling lets frozen run.py clean up its separately sessioned benchmark. Outer acquisition's 30-second SIGKILL fallback targets the runner group only and cannot guarantee cleanup if the runner was unresponsive. Parent acknowledged explicit process inspection/cleanup of any failed campaign before a later experiment; never blindly rerun.",
+  "pinned_files_modified_by_reviewer": false
+}

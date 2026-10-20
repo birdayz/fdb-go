@@ -1,0 +1,25 @@
+{
+  "activation_utc": "2026-10-20T13:13:19.616081+00:00",
+  "authorization": [
+    "root4333",
+    "root4334"
+  ],
+  "first_phase_using_deviation": "M1w8",
+  "prior_phase": "M1w64",
+  "prior_phase_runner_quiescent": true,
+  "prior_phase_errors": [],
+  "prior_phase_R4_complete": true,
+  "prior_phase_expected_cases": 7,
+  "prior_phase_R3_results_collected": true,
+  "source_ack_sha256": "383444fd2403b068d823219481b5240ad6f2803f54fbecd5def47e84465e0fdd",
+  "operator_sources_sha256": {
+    "execution/run_phase_ops60.py": "ff09735342dd74a7e68ff9fe5113ebf37b8bafefdcdb619f9123cd280d3452d3",
+    "execution/remote_ops60.py": "8fda5f40a931e92962887941de89534cf633e9aa4ef878418d1bf9c50117462b"
+  },
+  "routine_polls_seconds": 60,
+  "ssh_multiplexing": "ControlMaster=auto,ControlPersist=120s,privateControlPath",
+  "hosts_seals_workload_commands_gates_unchanged": true,
+  "A1_executions": 0,
+  "no_deviation_applied_mid_phase": true,
+  "no_deadline_or_reserve_extension": true
+}

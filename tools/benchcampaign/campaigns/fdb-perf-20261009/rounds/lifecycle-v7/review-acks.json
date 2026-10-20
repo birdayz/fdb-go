@@ -1,0 +1,27 @@
+{
+  "code": {
+    "sha": "06097ca4609b1b927a9827f4fff5e8cedf358e46",
+    "verdict": "ACK",
+    "reviewer": "clientbench-code-review",
+    "provider": "claude-subscription",
+    "model": "claude-opus-5-5",
+    "effort": "xhigh",
+    "scope": "M4 delta bc7f43203..06097ca46; prior lifecycle and guardrail review retained",
+    "medium_or_higher_findings": 0,
+    "note": "Nonblocking: A=E corrupt fixture also violates A<=B, so the nondecreasing guard rejects it before the explicit positive shutdown-delta guard."
+  },
+  "spec": {
+    "sha": "06097ca4609b1b927a9827f4fff5e8cedf358e46",
+    "verdict": "ACK",
+    "reviewer": "clientbench-spec-review",
+    "provider": "claude-subscription",
+    "model": "claude-opus-5-5",
+    "effort": "xhigh",
+    "scope": "092e898..06097ca lifecycle/identity changes plus pass over25a02a3..092e898; actual Go1.26.9 runtime and FDB7.3.77 sources",
+    "medium_or_higher_findings": 0,
+    "notes": [
+      "Orphan transaction timeout timers can expire after D and are discarded at StopNetwork; D is not a terminal teardown snapshot.",
+      "Native finalizer dependency chains require additional forced-GC rounds; drained/shutdown CPU includes this explicitly labelled accounting cost."
+    ]
+  }
+}

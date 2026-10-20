@@ -1,0 +1,56 @@
+--- ${FDB_PERF_HOME}/results/fdb-perf-20261009/hillclimb-arena-003-recovery-001/scripts/astra-perf-run.py	2026-10-09 19:13:33.000000000 +0200
++++ ${FDB_PERF_HOME}/results/fdb-perf-20261009/work-arena-003-r1/astra-perf-run-r1.py	2026-10-10 14:37:41.159308641 +0200
+@@ -1,7 +1,8 @@
+ #!/usr/bin/env python3
+ """Run a preregistered counterbalanced FDB measurement plan, one process at a time.
+ 
+-Standard library only. Plan fields: seed, blocks (multiple of factorial(arms)),
++Standard library only. Plan fields: seed, blocks (multiple of factorial(arms),
++or explicit_orders with pairwise precedence balance and near-balanced positions),
+ workloads [{name, iterations, warmup, workers}], arms [{name, binary, command}],
+ cooldown_seconds, timeout_seconds, environment. A command is an argv list with
+ {binary}, {workload}, {iterations}, {warmup}, {workers}, {output}, {run_id} tokens.
+@@ -176,6 +177,24 @@
+     raise KeyboardInterrupt("received signal " + str(signum))
+ 
+ 
++def counterbalanced_orders(plan):
++    arms = [a["name"] for a in plan["arms"]]
++    n, blocks = len(arms), plan["blocks"]
++    if "explicit_orders" not in plan:
++        assert blocks % math.factorial(n) == 0, "exact counterbalancing required"
++        return list(itertools.permutations(range(n))) * (blocks // math.factorial(n))
++    orders = plan["explicit_orders"]
++    assert len(orders) == blocks and blocks % 2 == 0
++    assert all(len(order) == n and set(order) == set(arms) for order in orders)
++    assert len({tuple(order) for order in orders}) == blocks
++    for arm in arms:
++        counts = [sum(order.index(arm) == position for order in orders) for position in range(n)]
++        assert max(counts) - min(counts) <= 1, "unbalanced positions"
++    for a, b in itertools.combinations(arms, 2):
++        assert sum(order.index(a) < order.index(b) for order in orders) == blocks // 2, "unbalanced pairwise precedence"
++    return [tuple(arms.index(arm) for arm in order) for order in orders]
++
++
+ def main():
+     ap = argparse.ArgumentParser()
+     ap.add_argument("--plan", required=True)
+@@ -187,16 +206,15 @@
+     plan = json.loads(Path(args.plan).read_text())
+     n = len(plan["arms"])
+     assert n >= 2 and plan["blocks"] >= 2
+-    assert plan["blocks"] % math.factorial(n) == 0, "exact counterbalancing required"
+     assert len({a["name"] for a in plan["arms"]}) == n
+     assert len({w["name"] for w in plan["workloads"]}) == len(plan["workloads"])
+     if not plan["workloads"] or any(w["iterations"] <= 0 or w["warmup"] < 0 or w["workers"] <= 0 for w in plan["workloads"]):
+         raise ValueError("nonempty workloads with positive iterations/workers and nonnegative warmup required")
+     rng = random.Random(plan["seed"])
+     order_by_workload = {}
+-    permutations = list(itertools.permutations(range(n)))
++    balanced_orders = counterbalanced_orders(plan)
+     for w in plan["workloads"]:
+-        orders = permutations * (plan["blocks"] // len(permutations))
++        orders = list(balanced_orders)
+         rng.shuffle(orders)
+         order_by_workload[w["name"]] = orders
+     schedule = []

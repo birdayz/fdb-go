@@ -1,0 +1,988 @@
+{
+  "M1": {
+    "reason": "perf-lead2 cancelled: uncleared (A) superlinear range-read regression; no final combined arm handoff",
+    "run": false
+  },
+  "R17": {
+    "acquisition_finished_utc": "2026-10-11T16:34:48Z",
+    "acquisition_started_utc": "2026-10-11T15:18:04Z",
+    "archive": "fullstack-r17.tar.gz",
+    "archive_sha256": "4943768b532b2c57797c677f37b9381c10d922fbee81ef7821a3174a29d2e6f0",
+    "files_verified_on_vm_and_locally": 27153,
+    "independent_raw_math_audit": "work-fullstack-r17/independent-audit/AUDIT.md",
+    "paired_blocks_per_workload": 160,
+    "primary_endpoints": [
+      {
+        "L16_ci99_high": 0.8759159731359356,
+        "L16_ci99_low": 0.8503731068111029,
+        "L8_ci99_high": 0.8748727243363882,
+        "L8_ci99_low": 0.850939904149342,
+        "all_data_and_host_gates_passed": true,
+        "decision": "confirmed improvement",
+        "denominator": "cgo",
+        "endpoint": 1,
+        "geometric_mean_ratio": 0.8624688902109732,
+        "improvement_confirmed": true,
+        "metric": "shutdown_process_cpu_ns_per_op",
+        "numerator": "new",
+        "paired_blocks": 160,
+        "pairs_below_one": 157,
+        "workload": "batchset50"
+      },
+      {
+        "L16_ci99_high": 0.8016440605299249,
+        "L16_ci99_low": 0.7763798018918904,
+        "L8_ci99_high": 0.801046646873508,
+        "L8_ci99_low": 0.7767884122348676,
+        "all_data_and_host_gates_passed": true,
+        "decision": "confirmed improvement",
+        "denominator": "cgo",
+        "endpoint": 2,
+        "geometric_mean_ratio": 0.7882906280267935,
+        "improvement_confirmed": true,
+        "metric": "process_cpu_ns_per_op",
+        "numerator": "new",
+        "paired_blocks": 160,
+        "pairs_below_one": 157,
+        "workload": "batchset50"
+      },
+      {
+        "L16_ci99_high": 0.6527331769952672,
+        "L16_ci99_low": 0.6008154729948564,
+        "L8_ci99_high": 0.65004302785629,
+        "L8_ci99_low": 0.6034936429100713,
+        "all_data_and_host_gates_passed": true,
+        "decision": "confirmed improvement",
+        "denominator": "cgo",
+        "endpoint": 3,
+        "geometric_mean_ratio": 0.6257370698452677,
+        "improvement_confirmed": true,
+        "metric": "mean_ns",
+        "numerator": "new",
+        "paired_blocks": 160,
+        "pairs_below_one": 159,
+        "workload": "read1000"
+      },
+      {
+        "L16_ci99_high": 0.5495497282049395,
+        "L16_ci99_low": 0.46316644941255253,
+        "L8_ci99_high": 0.5487610002995867,
+        "L8_ci99_low": 0.4666953980851385,
+        "all_data_and_host_gates_passed": true,
+        "decision": "confirmed improvement",
+        "denominator": "cgo",
+        "endpoint": 4,
+        "geometric_mean_ratio": 0.5072585188868085,
+        "improvement_confirmed": true,
+        "metric": "p99_ns",
+        "numerator": "new",
+        "paired_blocks": 160,
+        "pairs_below_one": 154,
+        "workload": "read1000"
+      },
+      {
+        "L16_ci99_high": 0.9344912232879534,
+        "L16_ci99_low": 0.8838697312379613,
+        "L8_ci99_high": 0.9331499626017478,
+        "L8_ci99_low": 0.8856773085012705,
+        "all_data_and_host_gates_passed": true,
+        "decision": "confirmed improvement",
+        "denominator": "cgo",
+        "endpoint": 5,
+        "geometric_mean_ratio": 0.9086611652517078,
+        "improvement_confirmed": true,
+        "metric": "shutdown_process_cpu_ns_per_op",
+        "numerator": "new",
+        "paired_blocks": 160,
+        "pairs_below_one": 120,
+        "workload": "read1000"
+      }
+    ],
+    "timing_processes": 640
+  },
+  "R18": {
+    "acquisition_finished_utc": "2026-10-11T16:40:09Z",
+    "archive": "fullstack-r18.tar.gz",
+    "archive_sha256": "2a3b3b79f88008d45cb8c06321525405c437caa13d42d7a6995e20904c6c3842",
+    "comparisons": [
+      {
+        "blocks": 6,
+        "denominator": "go8",
+        "geometric_mean_ratio": 1.034390588900604,
+        "interpretation": "descriptive only; no CI, test, equivalence, or shipping recommendation",
+        "maximum_ratio": 1.2964511677402646,
+        "metric": "mean_ns",
+        "minimum_ratio": 0.9377916995665954,
+        "numerator": "go2",
+        "ratios_in_block_order": [
+          0.97049645451955,
+          1.057639226744227,
+          0.9521856022228016,
+          1.2964511677402646,
+          0.9377916995665954,
+          1.0308410447235992
+        ]
+      },
+      {
+        "blocks": 6,
+        "denominator": "go8",
+        "geometric_mean_ratio": 1.1572160082016143,
+        "interpretation": "descriptive only; no CI, test, equivalence, or shipping recommendation",
+        "maximum_ratio": 1.4415539243598101,
+        "metric": "p99_ns",
+        "minimum_ratio": 0.7874445575702916,
+        "numerator": "go2",
+        "ratios_in_block_order": [
+          1.2997221168849737,
+          0.9972192563314987,
+          1.3550560772634557,
+          1.4415539243598101,
+          0.7874445575702916,
+          1.204584538679962
+        ]
+      },
+      {
+        "blocks": 6,
+        "denominator": "go8",
+        "geometric_mean_ratio": 0.9277387846773962,
+        "interpretation": "descriptive only; no CI, test, equivalence, or shipping recommendation",
+        "maximum_ratio": 1.0253709785948886,
+        "metric": "window_cpu_ns_per_op",
+        "minimum_ratio": 0.8869795386748456,
+        "numerator": "go2",
+        "ratios_in_block_order": [
+          0.9036125832900963,
+          0.9271054840785441,
+          0.9070603561598547,
+          1.0253709785948886,
+          0.9225970221861107,
+          0.8869795386748456
+        ]
+      },
+      {
+        "blocks": 6,
+        "denominator": "go8",
+        "geometric_mean_ratio": 0.8551575235049531,
+        "interpretation": "descriptive only; no CI, test, equivalence, or shipping recommendation",
+        "maximum_ratio": 0.9105320466465517,
+        "metric": "window_user_cpu_ns_per_op",
+        "minimum_ratio": 0.7847636347384147,
+        "numerator": "go2",
+        "ratios_in_block_order": [
+          0.8515404963629569,
+          0.8826124466906928,
+          0.8452304702720691,
+          0.9105320466465517,
+          0.861573080287111,
+          0.7847636347384147
+        ]
+      },
+      {
+        "blocks": 6,
+        "denominator": "go8",
+        "geometric_mean_ratio": 0.9787193812343327,
+        "interpretation": "descriptive only; no CI, test, equivalence, or shipping recommendation",
+        "maximum_ratio": 1.1118948999312375,
+        "metric": "window_system_cpu_ns_per_op",
+        "minimum_ratio": 0.9384002428140031,
+        "numerator": "go2",
+        "ratios_in_block_order": [
+          0.9384002428140031,
+          0.9595249188023995,
+          0.9469655514073766,
+          1.1118948999312375,
+          0.9653489254734572,
+          0.9603344883874109
+        ]
+      },
+      {
+        "blocks": 6,
+        "denominator": "go8",
+        "geometric_mean_ratio": 0.9185731887970939,
+        "interpretation": "descriptive only; no CI, test, equivalence, or shipping recommendation",
+        "maximum_ratio": 1.0152967034184566,
+        "metric": "drained_cpu_ns_per_op",
+        "minimum_ratio": 0.8764152189623152,
+        "numerator": "go2",
+        "ratios_in_block_order": [
+          0.8981056338028169,
+          0.9188513426779671,
+          0.8957214049666375,
+          1.0152967034184566,
+          0.9133433616841597,
+          0.8764152189623152
+        ]
+      },
+      {
+        "blocks": 6,
+        "denominator": "go8",
+        "geometric_mean_ratio": 0.8407420957304416,
+        "interpretation": "descriptive only; no CI, test, equivalence, or shipping recommendation",
+        "maximum_ratio": 0.9016619332795047,
+        "metric": "drained_user_cpu_ns_per_op",
+        "minimum_ratio": 0.767419041204118,
+        "numerator": "go2",
+        "ratios_in_block_order": [
+          0.8480674110484363,
+          0.866704963268129,
+          0.8226533690130113,
+          0.9016619332795047,
+          0.8440767022768333,
+          0.767419041204118
+        ]
+      },
+      {
+        "blocks": 6,
+        "denominator": "go8",
+        "geometric_mean_ratio": 0.9768177324791658,
+        "interpretation": "descriptive only; no CI, test, equivalence, or shipping recommendation",
+        "maximum_ratio": 1.106132874800638,
+        "metric": "drained_system_cpu_ns_per_op",
+        "minimum_ratio": 0.9335780358520188,
+        "numerator": "go2",
+        "ratios_in_block_order": [
+          0.9335780358520188,
+          0.9595249188023995,
+          0.9461934911950927,
+          1.106132874800638,
+          0.9653489254734572,
+          0.959848636413003
+        ]
+      },
+      {
+        "blocks": 6,
+        "denominator": "go8",
+        "geometric_mean_ratio": 0.9094582936806542,
+        "interpretation": "descriptive only; no CI, test, equivalence, or shipping recommendation",
+        "maximum_ratio": 1.0066818734832097,
+        "metric": "shutdown_cpu_ns_per_op",
+        "minimum_ratio": 0.8660564111520768,
+        "numerator": "go2",
+        "ratios_in_block_order": [
+          0.8826850879577561,
+          0.9067233328427002,
+          0.8922447173359885,
+          1.0066818734832097,
+          0.9088531785865246,
+          0.8660564111520768
+        ]
+      },
+      {
+        "blocks": 6,
+        "denominator": "go8",
+        "geometric_mean_ratio": 0.8267315050990258,
+        "interpretation": "descriptive only; no CI, test, equivalence, or shipping recommendation",
+        "maximum_ratio": 0.893468051520148,
+        "metric": "shutdown_user_cpu_ns_per_op",
+        "minimum_ratio": 0.7456062987075464,
+        "numerator": "go2",
+        "ratios_in_block_order": [
+          0.8310222883997954,
+          0.8531550473489798,
+          0.8127855523977409,
+          0.893468051520148,
+          0.8317287633715981,
+          0.7456062987075464
+        ]
+      },
+      {
+        "blocks": 6,
+        "denominator": "go8",
+        "geometric_mean_ratio": 0.975242518196272,
+        "interpretation": "descriptive only; no CI, test, equivalence, or shipping recommendation",
+        "maximum_ratio": 1.1012227630900915,
+        "metric": "shutdown_system_cpu_ns_per_op",
+        "minimum_ratio": 0.9220985459188734,
+        "numerator": "go2",
+        "ratios_in_block_order": [
+          0.9220985459188734,
+          0.9513522183945043,
+          0.9515963169627861,
+          1.1012227630900915,
+          0.9711937549819961,
+          0.9636587679367293
+        ]
+      },
+      {
+        "blocks": 6,
+        "denominator": "go8",
+        "geometric_mean_ratio": 0.9967473245100513,
+        "interpretation": "descriptive only; no CI, test, equivalence, or shipping recommendation",
+        "maximum_ratio": 0.9978694743061942,
+        "metric": "go_alloc_bytes_per_op",
+        "minimum_ratio": 0.9951481274455003,
+        "numerator": "go2",
+        "ratios_in_block_order": [
+          0.9967421996794238,
+          0.9976334121903304,
+          0.9978694743061942,
+          0.9960187168139555,
+          0.9970746458781853,
+          0.9951481274455003
+        ]
+      },
+      {
+        "blocks": 6,
+        "denominator": "go8",
+        "geometric_mean_ratio": 0.9991200648112458,
+        "interpretation": "descriptive only; no CI, test, equivalence, or shipping recommendation",
+        "maximum_ratio": 0.9994006445897807,
+        "metric": "go_mallocs_per_op",
+        "minimum_ratio": 0.9989149191087268,
+        "numerator": "go2",
+        "ratios_in_block_order": [
+          0.999204826814295,
+          0.999008949599623,
+          0.9994006445897807,
+          0.9990917998191137,
+          0.9990993197791639,
+          0.9989149191087268
+        ]
+      },
+      {
+        "blocks": 6,
+        "denominator": "cgo",
+        "geometric_mean_ratio": 0.6330289747695199,
+        "interpretation": "descriptive only; no CI, test, equivalence, or shipping recommendation",
+        "maximum_ratio": 0.7296061829982892,
+        "metric": "mean_ns",
+        "minimum_ratio": 0.4665922643831444,
+        "numerator": "go8",
+        "ratios_in_block_order": [
+          0.6820462272420881,
+          0.6417021361191745,
+          0.7296061829982892,
+          0.4665922643831444,
+          0.7231569892681851,
+          0.5972217407241122
+        ]
+      },
+      {
+        "blocks": 6,
+        "denominator": "cgo",
+        "geometric_mean_ratio": 0.5573074323900402,
+        "interpretation": "descriptive only; no CI, test, equivalence, or shipping recommendation",
+        "maximum_ratio": 0.6649098354144249,
+        "metric": "p99_ns",
+        "minimum_ratio": 0.40486703739517843,
+        "numerator": "go8",
+        "ratios_in_block_order": [
+          0.6199330964474831,
+          0.5534218156016372,
+          0.6649098354144249,
+          0.40486703739517843,
+          0.5533989762665801,
+          0.586211567466468
+        ]
+      },
+      {
+        "blocks": 6,
+        "denominator": "cgo",
+        "geometric_mean_ratio": 0.9342479181282328,
+        "interpretation": "descriptive only; no CI, test, equivalence, or shipping recommendation",
+        "maximum_ratio": 1.1118822770887853,
+        "metric": "window_cpu_ns_per_op",
+        "minimum_ratio": 0.6911927781392965,
+        "numerator": "go8",
+        "ratios_in_block_order": [
+          1.0067259439982532,
+          0.9521735580267272,
+          1.1118822770887853,
+          0.6911927781392965,
+          0.9980991440983074,
+          0.9043025842765069
+        ]
+      },
+      {
+        "blocks": 6,
+        "denominator": "cgo",
+        "geometric_mean_ratio": 0.7832109257060362,
+        "interpretation": "descriptive only; no CI, test, equivalence, or shipping recommendation",
+        "maximum_ratio": 0.8849131769225533,
+        "metric": "window_user_cpu_ns_per_op",
+        "minimum_ratio": 0.5748567027195425,
+        "numerator": "go8",
+        "ratios_in_block_order": [
+          0.8080614739597605,
+          0.8296491455171696,
+          0.8849131769225533,
+          0.5748567027195425,
+          0.8777537183726408,
+          0.7710820833523083
+        ]
+      },
+      {
+        "blocks": 6,
+        "denominator": "cgo",
+        "geometric_mean_ratio": 1.080574089070015,
+        "interpretation": "descriptive only; no CI, test, equivalence, or shipping recommendation",
+        "maximum_ratio": 1.3324536702802363,
+        "metric": "window_system_cpu_ns_per_op",
+        "minimum_ratio": 0.8155437291875217,
+        "numerator": "go8",
+        "ratios_in_block_order": [
+          1.204572760810963,
+          1.0669893502524186,
+          1.3324536702802363,
+          0.8155437291875217,
+          1.1041570250845119,
+          1.0322953324251714
+        ]
+      },
+      {
+        "blocks": 6,
+        "denominator": "cgo",
+        "geometric_mean_ratio": 0.9470050093571414,
+        "interpretation": "descriptive only; no CI, test, equivalence, or shipping recommendation",
+        "maximum_ratio": 1.125012198902386,
+        "metric": "drained_cpu_ns_per_op",
+        "minimum_ratio": 0.7038096612009928,
+        "numerator": "go8",
+        "ratios_in_block_order": [
+          1.019648136531016,
+          0.9647074245251505,
+          1.125012198902386,
+          0.7038096612009928,
+          1.008736107193677,
+          0.9180739924296604
+        ]
+      },
+      {
+        "blocks": 6,
+        "denominator": "cgo",
+        "geometric_mean_ratio": 0.8158125426671826,
+        "interpretation": "descriptive only; no CI, test, equivalence, or shipping recommendation",
+        "maximum_ratio": 0.922787231958139,
+        "metric": "drained_user_cpu_ns_per_op",
+        "minimum_ratio": 0.6033170390404736,
+        "numerator": "go8",
+        "ratios_in_block_order": [
+          0.8405698021959775,
+          0.8597116689905958,
+          0.922787231958139,
+          0.6033170390404736,
+          0.9104580551864719,
+          0.8048381474402894
+        ]
+      },
+      {
+        "blocks": 6,
+        "denominator": "cgo",
+        "geometric_mean_ratio": 1.0765599441949523,
+        "interpretation": "descriptive only; no CI, test, equivalence, or shipping recommendation",
+        "maximum_ratio": 1.3256898178594916,
+        "metric": "drained_system_cpu_ns_per_op",
+        "minimum_ratio": 0.8119148832852122,
+        "numerator": "go8",
+        "ratios_in_block_order": [
+          1.201038845680302,
+          1.0662804959212002,
+          1.3256898178594916,
+          0.8119148832852122,
+          1.0976982276316536,
+          1.02888158831092
+        ]
+      },
+      {
+        "blocks": 6,
+        "denominator": "cgo",
+        "geometric_mean_ratio": 0.9566862640969482,
+        "interpretation": "descriptive only; no CI, test, equivalence, or shipping recommendation",
+        "maximum_ratio": 1.1191317837258774,
+        "metric": "shutdown_cpu_ns_per_op",
+        "minimum_ratio": 0.7216006048518311,
+        "numerator": "go8",
+        "ratios_in_block_order": [
+          1.0272096510733049,
+          0.9737531712425854,
+          1.1191317837258774,
+          0.7216006048518311,
+          1.0173554834822547,
+          0.9329500793237587
+        ]
+      },
+      {
+        "blocks": 6,
+        "denominator": "cgo",
+        "geometric_mean_ratio": 0.855034804434138,
+        "interpretation": "descriptive only; no CI, test, equivalence, or shipping recommendation",
+        "maximum_ratio": 0.9641435432230523,
+        "metric": "shutdown_user_cpu_ns_per_op",
+        "minimum_ratio": 0.6359373226147579,
+        "numerator": "go8",
+        "ratios_in_block_order": [
+          0.8748856544873728,
+          0.9084046918851051,
+          0.9641435432230523,
+          0.6359373226147579,
+          0.9497927960606407,
+          0.8442813819993501
+        ]
+      },
+      {
+        "blocks": 6,
+        "denominator": "cgo",
+        "geometric_mean_ratio": 1.0572538118499688,
+        "interpretation": "descriptive only; no CI, test, equivalence, or shipping recommendation",
+        "maximum_ratio": 1.2718462171430975,
+        "metric": "shutdown_system_cpu_ns_per_op",
+        "minimum_ratio": 0.8130587898453904,
+        "numerator": "go8",
+        "ratios_in_block_order": [
+          1.1845487139593873,
+          1.0358335543175547,
+          1.2718462171430975,
+          0.8130587898453904,
+          1.0794206153308936,
+          1.01973047131634
+        ]
+      },
+      {
+        "blocks": 6,
+        "denominator": "cgo",
+        "geometric_mean_ratio": 4.728428056084939,
+        "interpretation": "descriptive only; no CI, test, equivalence, or shipping recommendation",
+        "maximum_ratio": 4.733030106219406,
+        "metric": "go_alloc_bytes_per_op",
+        "minimum_ratio": 4.722988833920794,
+        "numerator": "go8",
+        "ratios_in_block_order": [
+          4.724965763373034,
+          4.730590852884287,
+          4.722988833920794,
+          4.7286936150875745,
+          4.7303066771797315,
+          4.733030106219406
+        ]
+      },
+      {
+        "blocks": 6,
+        "denominator": "cgo",
+        "geometric_mean_ratio": 4.078927238929233,
+        "interpretation": "descriptive only; no CI, test, equivalence, or shipping recommendation",
+        "maximum_ratio": 4.0797134864274955,
+        "metric": "go_mallocs_per_op",
+        "minimum_ratio": 4.077982568059889,
+        "numerator": "go8",
+        "ratios_in_block_order": [
+          4.07868363614006,
+          4.079616904179926,
+          4.077982568059889,
+          4.078884670365987,
+          4.078682426720362,
+          4.0797134864274955
+        ]
+      },
+      {
+        "blocks": 6,
+        "denominator": "cgo",
+        "geometric_mean_ratio": 0.6547992140029893,
+        "interpretation": "descriptive only; no CI, test, equivalence, or shipping recommendation",
+        "maximum_ratio": 0.6947205027437056,
+        "metric": "mean_ns",
+        "minimum_ratio": 0.6049140860181017,
+        "numerator": "go2",
+        "ratios_in_block_order": [
+          0.6619234453568817,
+          0.6786893510452024,
+          0.6947205027437056,
+          0.6049140860181017,
+          0.6781706220192734,
+          0.6156406831396903
+        ]
+      },
+      {
+        "blocks": 6,
+        "denominator": "cgo",
+        "geometric_mean_ratio": 0.6449250822514934,
+        "interpretation": "descriptive only; no CI, test, equivalence, or shipping recommendation",
+        "maximum_ratio": 0.9009901133105604,
+        "metric": "p99_ns",
+        "minimum_ratio": 0.43577101202608953,
+        "numerator": "go2",
+        "ratios_in_block_order": [
+          0.8057407564417792,
+          0.5518828913918923,
+          0.9009901133105604,
+          0.5836376666009495,
+          0.43577101202608953,
+          0.7061413905654529
+        ]
+      },
+      {
+        "blocks": 6,
+        "denominator": "cgo",
+        "geometric_mean_ratio": 0.8667380281516743,
+        "interpretation": "descriptive only; no CI, test, equivalence, or shipping recommendation",
+        "maximum_ratio": 1.008544334263984,
+        "metric": "window_cpu_ns_per_op",
+        "minimum_ratio": 0.7087290153184101,
+        "numerator": "go2",
+        "ratios_in_block_order": [
+          0.9096902309214224,
+          0.8827653274411585,
+          1.008544334263984,
+          0.7087290153184101,
+          0.9208432981916042,
+          0.8020978890240468
+        ]
+      },
+      {
+        "blocks": 6,
+        "denominator": "cgo",
+        "geometric_mean_ratio": 0.6697687156087958,
+        "interpretation": "descriptive only; no CI, test, equivalence, or shipping recommendation",
+        "maximum_ratio": 0.7562489748717816,
+        "metric": "window_user_cpu_ns_per_op",
+        "minimum_ratio": 0.5234254500557134,
+        "numerator": "go2",
+        "ratios_in_block_order": [
+          0.688097068627477,
+          0.7322586622197517,
+          0.7479555806802005,
+          0.5234254500557134,
+          0.7562489748717816,
+          0.6051171784132268
+        ]
+      },
+      {
+        "blocks": 6,
+        "denominator": "cgo",
+        "geometric_mean_ratio": 1.0575788038324578,
+        "interpretation": "descriptive only; no CI, test, equivalence, or shipping recommendation",
+        "maximum_ratio": 1.2617877246017069,
+        "metric": "window_system_cpu_ns_per_op",
+        "minimum_ratio": 0.9067989131545078,
+        "numerator": "go2",
+        "ratios_in_block_order": [
+          1.130371371232142,
+          1.023802869663977,
+          1.2617877246017069,
+          0.9067989131545078,
+          1.0658967977193028,
+          0.9913488099292391
+        ]
+      },
+      {
+        "blocks": 6,
+        "denominator": "cgo",
+        "geometric_mean_ratio": 0.8698934112520111,
+        "interpretation": "descriptive only; no CI, test, equivalence, or shipping recommendation",
+        "maximum_ratio": 1.0076975074054515,
+        "metric": "drained_cpu_ns_per_op",
+        "minimum_ratio": 0.7145756288514287,
+        "numerator": "go2",
+        "ratios_in_block_order": [
+          0.9157517359150493,
+          0.8864227123163381,
+          1.0076975074054515,
+          0.7145756288514287,
+          0.9213224271964657,
+          0.8046140190988478
+        ]
+      },
+      {
+        "blocks": 6,
+        "denominator": "cgo",
+        "geometric_mean_ratio": 0.6858879468451874,
+        "interpretation": "descriptive only; no CI, test, equivalence, or shipping recommendation",
+        "maximum_ratio": 0.7684964327831763,
+        "metric": "drained_user_cpu_ns_per_op",
+        "minimum_ratio": 0.5439880078016999,
+        "numerator": "go2",
+        "ratios_in_block_order": [
+          0.7128598559538389,
+          0.7451163704936762,
+          0.7591340252525544,
+          0.5439880078016999,
+          0.7684964327831763,
+          0.6176481194331254
+        ]
+      },
+      {
+        "blocks": 6,
+        "denominator": "cgo",
+        "geometric_mean_ratio": 1.0516028435664106,
+        "interpretation": "descriptive only; no CI, test, equivalence, or shipping recommendation",
+        "maximum_ratio": 1.2543590770022588,
+        "metric": "drained_system_cpu_ns_per_op",
+        "minimum_ratio": 0.8980857439416963,
+        "numerator": "go2",
+        "ratios_in_block_order": [
+          1.1212634865321924,
+          1.023122706269372,
+          1.2543590770022588,
+          0.8980857439416963,
+          1.0596618045383353,
+          0.9875705895706812
+        ]
+      },
+      {
+        "blocks": 6,
+        "denominator": "cgo",
+        "geometric_mean_ratio": 0.8700662573333302,
+        "interpretation": "descriptive only; no CI, test, equivalence, or shipping recommendation",
+        "maximum_ratio": 0.9985394220322161,
+        "metric": "shutdown_cpu_ns_per_op",
+        "minimum_ratio": 0.7264222487988586,
+        "numerator": "go2",
+        "ratios_in_block_order": [
+          0.906702641208696,
+          0.8829247207952257,
+          0.9985394220322161,
+          0.7264222487988586,
+          0.9246267649152776,
+          0.8079873974831797
+        ]
+      },
+      {
+        "blocks": 6,
+        "denominator": "cgo",
+        "geometric_mean_ratio": 0.7068842107818862,
+        "interpretation": "descriptive only; no CI, test, equivalence, or shipping recommendation",
+        "maximum_ratio": 0.7899699877267692,
+        "metric": "shutdown_user_cpu_ns_per_op",
+        "minimum_ratio": 0.5681896805255475,
+        "numerator": "go2",
+        "ratios_in_block_order": [
+          0.7270494786802493,
+          0.7750100479172723,
+          0.7836419423692637,
+          0.5681896805255475,
+          0.7899699877267692,
+          0.6295015163002274
+        ]
+      },
+      {
+        "blocks": 6,
+        "denominator": "cgo",
+        "geometric_mean_ratio": 1.0310788698411713,
+        "interpretation": "descriptive only; no CI, test, equivalence, or shipping recommendation",
+        "maximum_ratio": 1.2102841759764236,
+        "metric": "shutdown_system_cpu_ns_per_op",
+        "minimum_ratio": 0.8953588471082268,
+        "numerator": "go2",
+        "ratios_in_block_order": [
+          1.0922706467120227,
+          0.98544254978747,
+          1.2102841759764236,
+          0.8953588471082268,
+          1.0483265606081873,
+          0.9826722096162446
+        ]
+      },
+      {
+        "blocks": 6,
+        "denominator": "cgo",
+        "geometric_mean_ratio": 4.713048014040926,
+        "interpretation": "descriptive only; no CI, test, equivalence, or shipping recommendation",
+        "maximum_ratio": 4.719395494239317,
+        "metric": "go_alloc_bytes_per_op",
+        "minimum_ratio": 4.7095727683944055,
+        "numerator": "go2",
+        "ratios_in_block_order": [
+          4.7095727683944055,
+          4.719395494239317,
+          4.7129263848585685,
+          4.709867346705869,
+          4.716468855044196,
+          4.71006604734742
+        ]
+      },
+      {
+        "blocks": 6,
+        "denominator": "cgo",
+        "geometric_mean_ratio": 4.07533804731933,
+        "interpretation": "descriptive only; no CI, test, equivalence, or shipping recommendation",
+        "maximum_ratio": 4.075573798213654,
+        "metric": "go_mallocs_per_op",
+        "minimum_ratio": 4.075008838131542,
+        "numerator": "go2",
+        "ratios_in_block_order": [
+          4.075440376279627,
+          4.075573798213654,
+          4.075538407144943,
+          4.075180226570546,
+          4.075008838131542,
+          4.075286667281503
+        ]
+      }
+    ],
+    "confirmatory": false,
+    "files_verified_on_vm_and_locally": 2132,
+    "independent_audit_scope": "No production analyzer/parser imported: all198 CPU/latency ratios and33 GMs/ranges match exactly; every whole/phase per-TID+aggregate selected-syscall count independently matches; archive SHA independently verified",
+    "independent_raw_math_trace_audit": "work-fullstack-r18/independent-audit/AUDIT.md",
+    "paired_blocks": 6,
+    "separate_trace_processes": 2,
+    "timing_processes": 18,
+    "trace_phase_counts": [
+      {
+        "go2_phase_entries": 801,
+        "go2_phase_entries_divided_by_200": 4.005,
+        "go8_phase_entries": 800,
+        "go8_phase_entries_divided_by_200": 4.0,
+        "syscall": "read"
+      },
+      {
+        "go2_phase_entries": 401,
+        "go2_phase_entries_divided_by_200": 2.005,
+        "go8_phase_entries": 400,
+        "go8_phase_entries_divided_by_200": 2.0,
+        "syscall": "write"
+      },
+      {
+        "go2_phase_entries": 0,
+        "go2_phase_entries_divided_by_200": 0.0,
+        "go8_phase_entries": 0,
+        "go8_phase_entries_divided_by_200": 0.0,
+        "syscall": "readv"
+      },
+      {
+        "go2_phase_entries": 0,
+        "go2_phase_entries_divided_by_200": 0.0,
+        "go8_phase_entries": 0,
+        "go8_phase_entries_divided_by_200": 0.0,
+        "syscall": "writev"
+      },
+      {
+        "go2_phase_entries": 0,
+        "go2_phase_entries_divided_by_200": 0.0,
+        "go8_phase_entries": 0,
+        "go8_phase_entries_divided_by_200": 0.0,
+        "syscall": "pread64"
+      },
+      {
+        "go2_phase_entries": 0,
+        "go2_phase_entries_divided_by_200": 0.0,
+        "go8_phase_entries": 0,
+        "go8_phase_entries_divided_by_200": 0.0,
+        "syscall": "pwrite64"
+      },
+      {
+        "go2_phase_entries": 0,
+        "go2_phase_entries_divided_by_200": 0.0,
+        "go8_phase_entries": 0,
+        "go8_phase_entries_divided_by_200": 0.0,
+        "syscall": "sendmsg"
+      },
+      {
+        "go2_phase_entries": 0,
+        "go2_phase_entries_divided_by_200": 0.0,
+        "go8_phase_entries": 0,
+        "go8_phase_entries_divided_by_200": 0.0,
+        "syscall": "recvfrom"
+      },
+      {
+        "go2_phase_entries": 0,
+        "go2_phase_entries_divided_by_200": 0.0,
+        "go8_phase_entries": 0,
+        "go8_phase_entries_divided_by_200": 0.0,
+        "syscall": "sendto"
+      },
+      {
+        "go2_phase_entries": 0,
+        "go2_phase_entries_divided_by_200": 0.0,
+        "go8_phase_entries": 0,
+        "go8_phase_entries_divided_by_200": 0.0,
+        "syscall": "recvmsg"
+      },
+      {
+        "go2_phase_entries": 0,
+        "go2_phase_entries_divided_by_200": 0.0,
+        "go8_phase_entries": 0,
+        "go8_phase_entries_divided_by_200": 0.0,
+        "syscall": "recvmmsg"
+      },
+      {
+        "go2_phase_entries": 0,
+        "go2_phase_entries_divided_by_200": 0.0,
+        "go8_phase_entries": 0,
+        "go8_phase_entries_divided_by_200": 0.0,
+        "syscall": "sendmmsg"
+      },
+      {
+        "go2_phase_entries": 779,
+        "go2_phase_entries_divided_by_200": 3.895,
+        "go8_phase_entries": 788,
+        "go8_phase_entries_divided_by_200": 3.94,
+        "syscall": "epoll_pwait"
+      },
+      {
+        "go2_phase_entries": 0,
+        "go2_phase_entries_divided_by_200": 0.0,
+        "go8_phase_entries": 0,
+        "go8_phase_entries_divided_by_200": 0.0,
+        "syscall": "epoll_wait"
+      },
+      {
+        "go2_phase_entries": 0,
+        "go2_phase_entries_divided_by_200": 0.0,
+        "go8_phase_entries": 0,
+        "go8_phase_entries_divided_by_200": 0.0,
+        "syscall": "epoll_ctl"
+      },
+      {
+        "go2_phase_entries": 1139,
+        "go2_phase_entries_divided_by_200": 5.695,
+        "go8_phase_entries": 1870,
+        "go8_phase_entries_divided_by_200": 9.35,
+        "syscall": "futex"
+      },
+      {
+        "go2_phase_entries": 864,
+        "go2_phase_entries_divided_by_200": 4.32,
+        "go8_phase_entries": 1051,
+        "go8_phase_entries_divided_by_200": 5.255,
+        "syscall": "nanosleep"
+      },
+      {
+        "go2_phase_entries": 0,
+        "go2_phase_entries_divided_by_200": 0.0,
+        "go8_phase_entries": 0,
+        "go8_phase_entries_divided_by_200": 0.0,
+        "syscall": "clock_nanosleep"
+      },
+      {
+        "go2_phase_entries": 64,
+        "go2_phase_entries_divided_by_200": 0.32,
+        "go8_phase_entries": 46,
+        "go8_phase_entries_divided_by_200": 0.23,
+        "syscall": "sched_yield"
+      },
+      {
+        "go2_phase_entries": 0,
+        "go2_phase_entries_divided_by_200": 0.0,
+        "go8_phase_entries": 0,
+        "go8_phase_entries_divided_by_200": 0.0,
+        "syscall": "getrusage"
+      }
+    ]
+  },
+  "deletion": {
+    "action": {
+      "command": "delete_server",
+      "error": null,
+      "finished": "2026-10-11T16:41:58Z",
+      "id": "<action-id>",
+      "progress": 100,
+      "resources": [
+        {
+          "id": "<server-id>",
+          "type": "server"
+        }
+      ],
+      "started": "2026-10-11T16:41:48Z",
+      "status": "success"
+    },
+    "observed_utc": "2026-10-11T16:42:11.941697+00:00"
+  },
+  "recorded_utc": "2026-10-11T16:45:40.693522+00:00",
+  "scope": [
+    "One reimaged existing instance/fresh cluster, not independent host replication",
+    "R17 five registered endpoints pass both joint circular moving-block 99% intervals (L8 and L16,100000 each)",
+    "E-A CPU includes startup, fixture, warmup, validation, CSV, forced GC and shutdown; not isolated steady-state CPU",
+    "R18 descriptive only; no CI, equivalence, causal syscall attribution or shipping-knob decision",
+    "No repository changes/builds/tests during R17/R18; benchmark validity is not repository correctness approval"
+  ],
+  "status": "R17 and R18 complete, sealed, downloaded and verified; VM deleted"
+}

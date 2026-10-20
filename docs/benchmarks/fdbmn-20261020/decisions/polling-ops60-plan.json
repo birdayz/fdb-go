@@ -1,0 +1,36 @@
+{
+  "planned_utc": "2026-10-20T13:10:57.820300+00:00",
+  "authorization": [
+    "root4333",
+    "root4334"
+  ],
+  "effective_boundary": "M1w64 complete/quiescent/R3+R4 collected -> M1w8 launch only",
+  "not_active_for_running_M1w64": true,
+  "scope": "operator-side controller/transport only; not a protocol or frozen harness amendment",
+  "poll_interval_seconds": {
+    "before": 10,
+    "after": 60
+  },
+  "ssh_options_added": [
+    "ControlMaster=auto",
+    "ControlPersist=120s",
+    "ControlPath=${FDB_PERF_HOME}/campaigns/fdbmn-20261020/private/cm/%h-%p"
+  ],
+  "control_directory_mode": "0700",
+  "connection_reuse_caveat": "may not eliminate per-channel PAM work; no guarantee of zero bursts",
+  "host_configuration_changes": false,
+  "old_sources_unchanged": true,
+  "sealed_inputs_unchanged": true,
+  "benchmark_commands_timing_pacing_gates_R3_R4_unchanged": true,
+  "bounded_units_and_cgroup_quiescence_unchanged": true,
+  "stop_quiescence_polling_unchanged": "10s maximum outside measurement; safety only",
+  "file_sha256": {
+    "execution/run_phase.py": "247d5b1b5d0d2e4a199109160fe52136561a132a2feca74745d551dff6ba0fa9",
+    "execution/remote.py": "189889a901402573c354a263f503777f88c08c75040a0b1a39cccc3329a69c5a",
+    "execution/run_phase_ops60.py": "ff09735342dd74a7e68ff9fe5113ebf37b8bafefdcdb619f9123cd280d3452d3",
+    "execution/remote_ops60.py": "8fda5f40a931e92962887941de89534cf633e9aa4ef878418d1bf9c50117462b",
+    "provenance/prearm-burst-attribution.json": "7415bcf55b68eadebc4d922c31ed330a27e5fcea2613db3181c1b8e806834b96"
+  },
+  "review": "pending exact source ACK",
+  "activation_receipt_required_before_use": true
+}

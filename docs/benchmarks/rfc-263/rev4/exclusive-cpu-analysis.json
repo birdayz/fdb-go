@@ -1,0 +1,200 @@
+{
+  "method": "First matching category wins; each full raw-profile sample record is assigned exactly once.",
+  "matching_scope": "Any resolved stack frame, inline frames included; descendant CPU is included. These are caller-context groups, not flat function self-time groups.",
+  "precedence": [
+    {
+      "category": "GC_mark_assist_sweep",
+      "regex": "^runtime\\.(?:gcDrain|gcBgMarkWorker|gcAssistAlloc|gcStart|gcMarkDone|gcSweep|sweepone|bgsweep)"
+    },
+    {
+      "category": "write_barrier_stacks",
+      "regex": "^(?:runtime\\.(?:wbBufFlush|bulkBarrierPreWrite|wbMove)|gcWriteBarrier)"
+    },
+    {
+      "category": "timeout_and_cleanup_admin",
+      "regex": "(?:\\(\\*timeoutQueue(?:Root)?\\)|\\(\\*realTimer\\)|\\(\\*Transaction\\)\\.(?:armTimeoutLocked|armReadTimeoutLocked|configureReadTimeout|armTimebombLocked|disarmTimebombLocked|stopTimebombLocked|fireTimebomb|fireTimeout|fireReadTimeout)|runtime\\.(?:runCleanups|runFinalizers|runfinq|addCleanup)|runtime\\.AddCleanup)"
+    },
+    {
+      "category": "other_allocation_stacks",
+      "regex": "^runtime\\.(?:mallocgc|newobject|growslice|makeslice|\\(\\*mcache\\)|\\(\\*mheap\\)|\\(\\*mcentral\\))"
+    },
+    {
+      "category": "all_other_including_unknown",
+      "regex": null
+    }
+  ],
+  "unknown_stack_handling": "Empty-stack sample weights are included in the remainder, not discarded.",
+  "transactions_per_arm": 500000,
+  "profiles": {
+    "baseline": {
+      "path": "/tmp/rfc263-rev4-screen.2KEIQu/pprof/attribution-baseline-range32-cpu-raw.txt",
+      "sha256": "689a742c717b86b7d5ca9369baa3241b5a7c327a98f7d81e482b997ce65fa556",
+      "sample_records": 1844,
+      "sample_count": 3012,
+      "period_ns": 10000000,
+      "cpu_ns": 30120000000,
+      "cpu_seconds": 30.12,
+      "unknown_stack_records": 1,
+      "unknown_stack_cpu_ns": 40000000,
+      "category_cpu_ns": {
+        "GC_mark_assist_sweep": 4000000000,
+        "all_other_including_unknown": 19670000000,
+        "other_allocation_stacks": 4140000000,
+        "write_barrier_stacks": 1140000000,
+        "timeout_and_cleanup_admin": 1170000000
+      },
+      "category_sample_records": {
+        "GC_mark_assist_sweep": 224,
+        "all_other_including_unknown": 1134,
+        "other_allocation_stacks": 290,
+        "write_barrier_stacks": 106,
+        "timeout_and_cleanup_admin": 90
+      },
+      "write_barrier_subpartition_cpu_ns": {
+        "other_mutator_context": 1140000000
+      },
+      "write_barrier_subpartition_sample_records": {
+        "other_mutator_context": 106
+      },
+      "assertions_passed": [
+        "expected_nonempty_record_population",
+        "all_sample_records_parsed",
+        "per_record_CPU_equals_count_times_period",
+        "record_count_conserved_across_exclusive_categories",
+        "expected_full_CPU_total_conserved_across_exclusive_categories",
+        "write_barrier_subpartition_CPU_and_records_conserved"
+      ]
+    },
+    "merged": {
+      "path": "/tmp/rfc263-rev4-screen.2KEIQu/pprof/attribution-merged-range32-cpu-raw.txt",
+      "sha256": "8f94573a3770db9b80d9f497bf38415b43ff37394c647500963834246dc53c2f",
+      "sample_records": 2025,
+      "sample_count": 3309,
+      "period_ns": 10000000,
+      "cpu_ns": 33090000000,
+      "cpu_seconds": 33.09,
+      "unknown_stack_records": 1,
+      "unknown_stack_cpu_ns": 10000000,
+      "category_cpu_ns": {
+        "timeout_and_cleanup_admin": 950000000,
+        "all_other_including_unknown": 19500000000,
+        "GC_mark_assist_sweep": 5840000000,
+        "other_allocation_stacks": 4760000000,
+        "write_barrier_stacks": 2040000000
+      },
+      "category_sample_records": {
+        "timeout_and_cleanup_admin": 66,
+        "all_other_including_unknown": 1136,
+        "GC_mark_assist_sweep": 297,
+        "other_allocation_stacks": 343,
+        "write_barrier_stacks": 183
+      },
+      "write_barrier_subpartition_cpu_ns": {
+        "other_mutator_context": 2020000000,
+        "queue_context": 20000000
+      },
+      "write_barrier_subpartition_sample_records": {
+        "other_mutator_context": 181,
+        "queue_context": 2
+      },
+      "assertions_passed": [
+        "expected_nonempty_record_population",
+        "all_sample_records_parsed",
+        "per_record_CPU_equals_count_times_period",
+        "record_count_conserved_across_exclusive_categories",
+        "expected_full_CPU_total_conserved_across_exclusive_categories",
+        "write_barrier_subpartition_CPU_and_records_conserved"
+      ]
+    }
+  },
+  "rows": [
+    {
+      "category": "GC_mark_assist_sweep",
+      "baseline_cpu_ns": 4000000000,
+      "merged_cpu_ns": 5840000000,
+      "delta_cpu_ns": 1840000000,
+      "baseline_cpu_seconds": 4.0,
+      "merged_cpu_seconds": 5.84,
+      "delta_cpu_seconds": 1.84,
+      "delta_us_per_transaction": 3.68
+    },
+    {
+      "category": "write_barrier_stacks",
+      "baseline_cpu_ns": 1140000000,
+      "merged_cpu_ns": 2040000000,
+      "delta_cpu_ns": 900000000,
+      "baseline_cpu_seconds": 1.14,
+      "merged_cpu_seconds": 2.04,
+      "delta_cpu_seconds": 0.9,
+      "delta_us_per_transaction": 1.8
+    },
+    {
+      "category": "timeout_and_cleanup_admin",
+      "baseline_cpu_ns": 1170000000,
+      "merged_cpu_ns": 950000000,
+      "delta_cpu_ns": -220000000,
+      "baseline_cpu_seconds": 1.17,
+      "merged_cpu_seconds": 0.95,
+      "delta_cpu_seconds": -0.22,
+      "delta_us_per_transaction": -0.44
+    },
+    {
+      "category": "other_allocation_stacks",
+      "baseline_cpu_ns": 4140000000,
+      "merged_cpu_ns": 4760000000,
+      "delta_cpu_ns": 620000000,
+      "baseline_cpu_seconds": 4.14,
+      "merged_cpu_seconds": 4.76,
+      "delta_cpu_seconds": 0.62,
+      "delta_us_per_transaction": 1.24
+    },
+    {
+      "category": "all_other_including_unknown",
+      "baseline_cpu_ns": 19670000000,
+      "merged_cpu_ns": 19500000000,
+      "delta_cpu_ns": -170000000,
+      "baseline_cpu_seconds": 19.67,
+      "merged_cpu_seconds": 19.5,
+      "delta_cpu_seconds": -0.17,
+      "delta_us_per_transaction": -0.34
+    }
+  ],
+  "write_barrier_subpartition": {
+    "parent_category": "write_barrier_stacks",
+    "queue_context_regex": "\\(\\*timeoutQueue(?:Root)?\\)",
+    "method": "Within the existing write-barrier category only: any timeoutQueue/timeoutQueueRoot frame selects queue_context; all other records select other_mutator_context.",
+    "caveat": "Queue context includes descendants of queue functions, not just pointer-slot/swap/grow writes. Non-queue barrier CPU is not directly removed merely by changing queue backing storage to noscan.",
+    "rows": [
+      {
+        "category": "queue_context",
+        "baseline_cpu_ns": 0,
+        "merged_cpu_ns": 20000000,
+        "delta_cpu_ns": 20000000,
+        "baseline_cpu_seconds": 0.0,
+        "merged_cpu_seconds": 0.02,
+        "delta_cpu_seconds": 0.02,
+        "delta_us_per_transaction": 0.04
+      },
+      {
+        "category": "other_mutator_context",
+        "baseline_cpu_ns": 1140000000,
+        "merged_cpu_ns": 2020000000,
+        "delta_cpu_ns": 880000000,
+        "baseline_cpu_seconds": 1.14,
+        "merged_cpu_seconds": 2.02,
+        "delta_cpu_seconds": 0.88,
+        "delta_us_per_transaction": 1.76
+      }
+    ],
+    "assertion_passed": "subcategory_CPU_and_records_reconcile_to_parent; subcategory_deltas_reconcile_to_parent_delta"
+  },
+  "total_delta_cpu_ns": 2970000000,
+  "total_delta_cpu_seconds": 2.97,
+  "total_delta_us_per_transaction": 5.94,
+  "assertions_passed": [
+    "all_category_CPU_totals_reconcile_to_both_full_raw_profiles",
+    "all_category_deltas_reconcile_to_2_970_000_000_ns"
+  ],
+  "scope_caveat": "Sampled CPU attribution does not by itself identify retained object types or establish the causal retention mechanism. Cumulative function deltas must not be added to these exclusive group totals.",
+  "output_text": "baseline: records=1844, total_ns=30120000000, total_s=30.12\nmerged: records=2025, total_ns=33090000000, total_s=33.09\ngroup baseline_s merged_s delta_s delta_us_per_tx\nGC_mark_assist_sweep 4.00 5.84 +1.84 +3.68\nwrite_barrier_stacks 1.14 2.04 +0.90 +1.80\ntimeout_and_cleanup_admin 1.17 0.95 -0.22 -0.44\nother_allocation_stacks 4.14 4.76 +0.62 +1.24\nall_other_including_unknown 19.67 19.50 -0.17 -0.34\nTOTAL 30.12 33.09 +2.97 +5.94\nWRITE_BARRIER_SUBPARTITION baseline_s merged_s delta_s delta_us_per_tx\nqueue_context 0.00 0.02 +0.02 +0.04\nother_mutator_context 1.14 2.02 +0.88 +1.76\n"
+}

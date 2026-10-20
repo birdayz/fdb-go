@@ -1,0 +1,30 @@
+--- ${FDB_PERF_HOME}/results/fdb-perf-20261009/hillclimb-arena-003-recovery-001/scripts/astra-perf-run.py	2026-10-09 19:13:33.000000000 +0200
++++ ${FDB_PERF_HOME}/results/fdb-perf-20261009/work-arena-003-r2/astra-perf-attribution-r2.py	2026-10-10 14:43:48.110850333 +0200
+@@ -176,6 +176,17 @@
+     raise KeyboardInterrupt("received signal " + str(signum))
+ 
+ 
++def validate_campaign_kind(plan):
++    n = len(plan["arms"])
++    if plan.get("attribution_only") is True:
++        assert n == 1 and plan["blocks"] == 1, "attribution is single-arm/single-run only"
++        command = plan["arms"][0]["command"]
++        assert "--profile" in command and command[command.index("--profile") + 1] in ("cpu", "heap")
++    else:
++        assert n >= 2 and plan["blocks"] >= 2
++    assert plan["blocks"] % math.factorial(n) == 0, "exact counterbalancing required"
++
++
+ def main():
+     ap = argparse.ArgumentParser()
+     ap.add_argument("--plan", required=True)
+@@ -186,8 +197,7 @@
+     out.mkdir(parents=True, exist_ok=False)
+     plan = json.loads(Path(args.plan).read_text())
+     n = len(plan["arms"])
+-    assert n >= 2 and plan["blocks"] >= 2
+-    assert plan["blocks"] % math.factorial(n) == 0, "exact counterbalancing required"
++    validate_campaign_kind(plan)
+     assert len({a["name"] for a in plan["arms"]}) == n
+     assert len({w["name"] for w in plan["workloads"]}) == len(plan["workloads"])
+     if not plan["workloads"] or any(w["iterations"] <= 0 or w["warmup"] < 0 or w["workers"] <= 0 for w in plan["workloads"]):

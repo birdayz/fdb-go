@@ -9,6 +9,8 @@ dedicated cloud machines. The benchmark sources themselves live elsewhere:
 | Directory | Use |
 |---|---|
 | [`singlenode/`](singlenode/README.md) | One dedicated host: `fdbserver` and clients on disjoint CPU groups, the client in a network namespace. Protocol sealing, the client campaign adapter, the testing.B phase runner and analyzer, runtime/source receipts, and controller-side drivers. |
+| [`campaigns/`](campaigns/README.md) | Scripts written for one campaign (round drivers, frozen runners, execution and analysis adapters), kept as the record of what ran. |
+| `check_imports.py` | Checks that every file imported under `docs/perf/IMPORT-PROVENANCE.tsv` that is JSON, JSONL, Python or shell still parses; with `FDB_PERF_HOME` set it also parses the sources. Run by hand after an import. |
 | [`multinode/`](multinode/README.md) | A private cloud network: one client machine and three FoundationDB server machines. Provisioning, teardown guard, cluster layout, plan sealing, the placement probe and ballast tool, shard-placement receipts, the client adapter and testing.B runner, the per-node sampler and telemetry reconciliation. |
 
 Results and insights are written up under `docs/benchmarks/<campaign id>/`, one folder per campaign with a README index and one report per phase: [`hcloud-rebench-20261014`](../../docs/benchmarks/hcloud-rebench-20261014/README.md) for the single-node campaign, and `docs/benchmarks/hcloud-multinode-vpc-20261014/` for the multi-node one.

@@ -1,0 +1,188 @@
+{
+  "get100": {
+    "baseline": {
+      "cpu_us": {
+        "median": 46.3905,
+        "minimum": 46.10795,
+        "maximum": 47.7024
+      },
+      "allocs": {
+        "median": 51.80825,
+        "minimum": 51.7993,
+        "maximum": 51.82575
+      },
+      "bytes": {
+        "median": 5329.8416,
+        "minimum": 5328.156,
+        "maximum": 5332.3712
+      },
+      "mean_us": {
+        "median": 355.51359265,
+        "minimum": 354.1382554,
+        "maximum": 359.49887395
+      },
+      "p99_us": {
+        "median": 559.44,
+        "minimum": 552.577,
+        "maximum": 566.714
+      }
+    },
+    "candidate": {
+      "cpu_us": {
+        "median": 47.6435,
+        "minimum": 46.76915,
+        "maximum": 49.82555
+      },
+      "allocs": {
+        "median": 47.8074,
+        "minimum": 47.76255,
+        "maximum": 47.81605
+      },
+      "bytes": {
+        "median": 5210.7924,
+        "minimum": 5206.2824,
+        "maximum": 5211.3504
+      },
+      "mean_us": {
+        "median": 353.5667722,
+        "minimum": 352.85520805,
+        "maximum": 354.4967739
+      },
+      "p99_us": {
+        "median": 494.056,
+        "minimum": 493.194,
+        "maximum": 516.969
+      }
+    },
+    "cpu_ratios": [
+      1.0081622314913614,
+      1.0445082427718522,
+      1.0333033674236223
+    ],
+    "cpu_beyond_observed_spread": false
+  },
+  "set100": {
+    "baseline": {
+      "cpu_us": {
+        "median": 56.44865,
+        "minimum": 55.56565,
+        "maximum": 57.2863
+      },
+      "allocs": {
+        "median": 55.8572,
+        "minimum": 55.85225,
+        "maximum": 55.8724
+      },
+      "bytes": {
+        "median": 6408.3472,
+        "minimum": 6406.4388,
+        "maximum": 6408.4044
+      },
+      "mean_us": {
+        "median": 1008.74009695,
+        "minimum": 1008.6805818,
+        "maximum": 1009.43927145
+      },
+      "p99_us": {
+        "median": 1120.302,
+        "minimum": 1116.325,
+        "maximum": 1134.058
+      }
+    },
+    "candidate": {
+      "cpu_us": {
+        "median": 54.8111,
+        "minimum": 54.16655,
+        "maximum": 55.6135
+      },
+      "allocs": {
+        "median": 51.8139,
+        "minimum": 51.80145,
+        "maximum": 51.82945
+      },
+      "bytes": {
+        "median": 6282.254,
+        "minimum": 6281.9188,
+        "maximum": 6284.7292
+      },
+      "mean_us": {
+        "median": 1009.05347885,
+        "minimum": 1008.64668825,
+        "maximum": 1010.08589995
+      },
+      "p99_us": {
+        "median": 1125.332,
+        "minimum": 1122.606,
+        "maximum": 1127.035
+      }
+    },
+    "cpu_ratios": [
+      0.9455410805026683,
+      0.9709904488415578,
+      1.0008611435302206
+    ],
+    "cpu_beyond_observed_spread": false
+  },
+  "range100": {
+    "baseline": {
+      "cpu_us": {
+        "median": 95.84595,
+        "minimum": 95.51515,
+        "maximum": 96.1152
+      },
+      "allocs": {
+        "median": 58.3222,
+        "minimum": 58.3133,
+        "maximum": 58.32625
+      },
+      "bytes": {
+        "median": 43922.7748,
+        "minimum": 43918.902,
+        "maximum": 43923.9956
+      },
+      "mean_us": {
+        "median": 473.33745885,
+        "minimum": 471.2745983,
+        "maximum": 475.389581
+      },
+      "p99_us": {
+        "median": 923.499,
+        "minimum": 919.722,
+        "maximum": 943.978
+      }
+    },
+    "candidate": {
+      "cpu_us": {
+        "median": 96.6283,
+        "minimum": 93.9801,
+        "maximum": 96.7304
+      },
+      "allocs": {
+        "median": 54.1923,
+        "minimum": 54.1541,
+        "maximum": 54.1967
+      },
+      "bytes": {
+        "median": 43782.986,
+        "minimum": 43781.8172,
+        "maximum": 43786.5552
+      },
+      "mean_us": {
+        "median": 475.5888149,
+        "minimum": 471.02838915,
+        "maximum": 479.15563155
+      },
+      "p99_us": {
+        "median": 967.723,
+        "minimum": 959.317,
+        "maximum": 1021.395
+      }
+    },
+    "cpu_ratios": [
+      1.011654172139184,
+      0.9805328237656363,
+      1.0064006525502731
+    ],
+    "cpu_beyond_observed_spread": false
+  }
+}

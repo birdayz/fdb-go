@@ -3,7 +3,7 @@
 fakes only: no fdbcli, FDB, ssh, cloud or benchmark process is ever run.
 
 The end-to-end adapter tests seal plans through the real frozen
-tools/clientbench/scripts and skip when those scripts are absent."""
+tools/clientbench/scripts and fail when those scripts are absent."""
 import copy
 import json
 import os
@@ -109,8 +109,8 @@ class Temp(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.tmp = Path(self._tmp.name)
-        if mc.inside_git_worktree(self.tmp):
-            self.skipTest('temporary directory lies inside a Git work tree')
+        # The tools refuse outputs inside a Git work tree; a TMPDIR there is a broken fixture.
+        self.assertFalse(mc.inside_git_worktree(self.tmp), f'TMPDIR {self.tmp} lies inside a Git work tree')
 
 
 class ClusterFileGuardTest(Temp):
@@ -376,8 +376,7 @@ class CampaignFixture(Temp):
 
     def setUp(self):
         super().setUp()
-        if not HAVE_SCRIPTS:
-            self.skipTest('frozen clientbench scripts not present')
+        self.assertTrue(HAVE_SCRIPTS, f'frozen clientbench scripts missing under {REAL_SCRIPTS}; declare them as test data')
         t = self.tmp
         self.protocol_doc = self.make_protocol()
         self.lay = layout()

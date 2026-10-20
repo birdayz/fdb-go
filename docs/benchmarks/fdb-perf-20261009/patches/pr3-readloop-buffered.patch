@@ -1,0 +1,174 @@
+From 239e5a8cdbef6b10be0b1ce32c7460b7dc87f964 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Johannes=20Br=C3=BCderl?= <johannes.bruederl@gmail.com>
+Date: Sun, 11 Oct 2026 00:30:57 +0200
+Subject: [PATCH] perf(transport): buffer the connection reader like
+ connectionReader
+
+readLoop read each frame with three socket reads (length, checksum,
+payload) plus the EAGAIN that parks it: about 9 read syscalls per
+transaction against libfdb_c's 4.6 on batchset50. A 16 KiB bufio.Reader
+drains every frame a read delivers, as C++ connectionReader's packet
+buffer does (FlowTransport.actor.cpp:1426-1460); larger payloads bypass
+the buffer.
+---
+ pkg/fdbgo/transport/BUILD.bazel              |   1 +
+ pkg/fdbgo/transport/conn.go                  |   9 +-
+ pkg/fdbgo/transport/conn_read_buffer_test.go | 105 +++++++++++++++++++
+ 3 files changed, 114 insertions(+), 1 deletion(-)
+ create mode 100644 pkg/fdbgo/transport/conn_read_buffer_test.go
+
+diff --git a/pkg/fdbgo/transport/BUILD.bazel b/pkg/fdbgo/transport/BUILD.bazel
+index d480bd773..ea85b1a09 100644
+--- a/pkg/fdbgo/transport/BUILD.bazel
++++ b/pkg/fdbgo/transport/BUILD.bazel
+@@ -25,6 +25,7 @@ go_test(
+         "conn_handshake_timeout_test.go",
+         "conn_lifecycle_test.go",
+         "conn_monitor_pacing_test.go",
++        "conn_read_buffer_test.go",
+         "conn_recover_test.go",
+         "conn_unit_test.go",
+         "connclosed_error_test.go",
+diff --git a/pkg/fdbgo/transport/conn.go b/pkg/fdbgo/transport/conn.go
+index 78f6b02b8..ef1c8d4d3 100644
+--- a/pkg/fdbgo/transport/conn.go
++++ b/pkg/fdbgo/transport/conn.go
+@@ -883,9 +883,12 @@ func (c *Conn) readLoop() {
+ 
+ 	pingToken := WellKnownToken(WLTokenPingPacket)
+ 	var fr FrameReader
++	// C++ connectionReader reads into a packet buffer: one read usually carries
++	// whole frames, where length, checksum and payload reads cost three each.
++	in := bufio.NewReaderSize(c.conn, readBufferSize)
+ 
+ 	for {
+-		token, body, err := fr.Read(c.conn, c.useTLS)
++		token, body, err := fr.Read(in, c.useTLS)
+ 		if err != nil {
+ 			// Only log if this is unexpected (server died, not our Close).
+ 			if c.debugFrames && c.ctx.Err() == nil {
+@@ -928,6 +931,10 @@ func (c *Conn) readLoop() {
+ 	}
+ }
+ 
++// readBufferSize exceeds C++ MIN_PACKET_BUFFER_BYTES (4 KiB, flow/Knobs.cpp:226)
++// so a burst of replies drains in one read; larger payloads bypass it.
++const readBufferSize = 16 << 10
++
+ // failAllPending delivers an error to all pending request channels.
+ // Matches C++ connectionKeeper's disconnect promise that wakes all
+ // in-flight deliver() actors.
+diff --git a/pkg/fdbgo/transport/conn_read_buffer_test.go b/pkg/fdbgo/transport/conn_read_buffer_test.go
+new file mode 100644
+index 000000000..e75ae133c
+--- /dev/null
++++ b/pkg/fdbgo/transport/conn_read_buffer_test.go
+@@ -0,0 +1,105 @@
++package transport
++
++import (
++	"bytes"
++	"context"
++	"net"
++	"sync/atomic"
++	"testing"
++	"time"
++)
++
++type readCountingConn struct {
++	net.Conn
++	reads atomic.Int32
++}
++
++func (c *readCountingConn) Read(p []byte) (int, error) {
++	c.reads.Add(1)
++	return c.Conn.Read(p)
++}
++
++func dialCounted(t *testing.T, s *simServer) (*Conn, *readCountingConn) {
++	t.Helper()
++	counted := &readCountingConn{Conn: s.cli}
++	handshook := make(chan error, 1)
++	go func() { handshook <- s.handshake() }()
++	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
++	defer cancel()
++	dial := func(context.Context, string, string) (net.Conn, error) { return counted, nil }
++	c, err := dialWith(ctx, "sim", dial, nil, withMonitorCadence(time.Hour, time.Hour))
++	if err != nil {
++		t.Fatalf("dial: %v", err)
++	}
++	if err := <-handshook; err != nil {
++		t.Fatalf("handshake: %v", err)
++	}
++	t.Cleanup(func() { _ = c.Close() })
++	return c, counted
++}
++
++// sendReplies writes one frame per body to the client in a single socket write.
++func sendReplies(t *testing.T, s *simServer, tokens []UID, bodies [][]byte) {
++	t.Helper()
++	var wire bytes.Buffer
++	for i, body := range bodies {
++		if err := WriteFrame(&wire, tokens[i], body, false); err != nil {
++			t.Fatalf("frame: %v", err)
++		}
++	}
++	go func() { _, _ = s.srv.Write(wire.Bytes()) }()
++}
++
++func awaitReplies(t *testing.T, chans []<-chan Response, bodies [][]byte) {
++	t.Helper()
++	for i, ch := range chans {
++		select {
++		case r := <-ch:
++			if r.Err != nil || !bytes.Equal(r.Body, bodies[i]) {
++				t.Fatalf("reply %d: err=%v, %d bytes, want %d", i, r.Err, len(r.Body), len(bodies[i]))
++			}
++		case <-time.After(5 * time.Second):
++			t.Fatalf("reply %d not delivered", i)
++		}
++	}
++}
++
++func prepareReplies(c *Conn, n int) ([]UID, []<-chan Response) {
++	tokens, chans := make([]UID, n), make([]<-chan Response, n)
++	for i := range n {
++		tokens[i], chans[i], _ = c.PrepareReply()
++	}
++	return tokens, chans
++}
++
++// One socket read must deliver every frame it carries, as C++ connectionReader
++// does; reading length, checksum and payload separately cost three reads each.
++func TestReadLoopDrainsCoalescedRepliesWithOneRead(t *testing.T) {
++	t.Parallel()
++	s := newSimServer(t)
++	c, counted := dialCounted(t, s)
++	tokens, chans := prepareReplies(c, 3)
++	bodies := [][]byte{[]byte("first"), bytes.Repeat([]byte{'b'}, 900), []byte("third")}
++	before := counted.reads.Load()
++	sendReplies(t, s, tokens, bodies)
++	awaitReplies(t, chans, bodies)
++	// The read that carried the frames, plus the next one the loop blocks in.
++	if reads := counted.reads.Load() - before; reads > 2 {
++		t.Fatalf("READLOOP_UNBUFFERED: %d socket reads for 3 coalesced frames, want <= 2", reads)
++	}
++}
++
++// Frames larger than the read buffer, and frames straddling it, arrive intact.
++func TestReadLoopBufferBoundaries(t *testing.T) {
++	t.Parallel()
++	s := newSimServer(t)
++	c, _ := dialCounted(t, s)
++	sizes := []int{1, readBufferSize - 30, 3 * readBufferSize, 0, readBufferSize + 7, 64}
++	tokens, chans := prepareReplies(c, len(sizes))
++	bodies := make([][]byte, len(sizes))
++	for i, n := range sizes {
++		bodies[i] = bytes.Repeat([]byte{byte('a' + i)}, n)
++	}
++	sendReplies(t, s, tokens, bodies)
++	awaitReplies(t, chans, bodies)
++}
+-- 
+2.55.0
+

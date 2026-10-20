@@ -1,0 +1,15 @@
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+
+# Standard-library controls of the frozen fdbmn-20261020 analysis adapter and
+# phase controller: synthetic fixtures and fake runners only, no SSH or FDB.
+sh_test(
+    name = "fdbmn_20261020_test",
+    srcs = ["test.sh"],
+    data = [
+        "execution/analyze_campaign.py",
+        "execution/controller-tests/test_run_phase.py",
+        "execution/remote.py",
+        "execution/run_phase.py",
+        "execution/test_analyze_campaign.py",
+    ],
+)

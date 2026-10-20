@@ -1,0 +1,228 @@
+{
+  "M1w1": {
+    "arms": [
+      "before-Go",
+      "final-Go",
+      "CGo-7.3.77"
+    ],
+    "orders": [
+      [
+        "CGo-7.3.77",
+        "final-Go",
+        "before-Go"
+      ],
+      [
+        "final-Go",
+        "before-Go",
+        "CGo-7.3.77"
+      ],
+      [
+        "before-Go",
+        "CGo-7.3.77",
+        "final-Go"
+      ],
+      [
+        "before-Go",
+        "final-Go",
+        "CGo-7.3.77"
+      ],
+      [
+        "final-Go",
+        "CGo-7.3.77",
+        "before-Go"
+      ],
+      [
+        "CGo-7.3.77",
+        "before-Go",
+        "final-Go"
+      ]
+    ],
+    "seed": 742001
+  },
+  "M1w32": {
+    "arms": [
+      "before-Go",
+      "final-Go",
+      "CGo-7.3.77"
+    ],
+    "orders": [
+      [
+        "CGo-7.3.77",
+        "before-Go",
+        "final-Go"
+      ],
+      [
+        "before-Go",
+        "final-Go",
+        "CGo-7.3.77"
+      ],
+      [
+        "CGo-7.3.77",
+        "final-Go",
+        "before-Go"
+      ],
+      [
+        "final-Go",
+        "before-Go",
+        "CGo-7.3.77"
+      ],
+      [
+        "before-Go",
+        "CGo-7.3.77",
+        "final-Go"
+      ],
+      [
+        "final-Go",
+        "CGo-7.3.77",
+        "before-Go"
+      ]
+    ],
+    "seed": 742201
+  },
+  "M1w64": {
+    "arms": [
+      "before-Go",
+      "final-Go",
+      "CGo-7.3.77"
+    ],
+    "orders": [
+      [
+        "final-Go",
+        "CGo-7.3.77",
+        "before-Go"
+      ],
+      [
+        "CGo-7.3.77",
+        "before-Go",
+        "final-Go"
+      ],
+      [
+        "before-Go",
+        "CGo-7.3.77",
+        "final-Go"
+      ],
+      [
+        "CGo-7.3.77",
+        "final-Go",
+        "before-Go"
+      ],
+      [
+        "before-Go",
+        "final-Go",
+        "CGo-7.3.77"
+      ],
+      [
+        "final-Go",
+        "before-Go",
+        "CGo-7.3.77"
+      ]
+    ],
+    "seed": 742301
+  },
+  "M1w8": {
+    "arms": [
+      "before-Go",
+      "final-Go",
+      "CGo-7.3.77"
+    ],
+    "orders": [
+      [
+        "final-Go",
+        "before-Go",
+        "CGo-7.3.77"
+      ],
+      [
+        "CGo-7.3.77",
+        "final-Go",
+        "before-Go"
+      ],
+      [
+        "before-Go",
+        "CGo-7.3.77",
+        "final-Go"
+      ],
+      [
+        "before-Go",
+        "final-Go",
+        "CGo-7.3.77"
+      ],
+      [
+        "CGo-7.3.77",
+        "before-Go",
+        "final-Go"
+      ],
+      [
+        "final-Go",
+        "CGo-7.3.77",
+        "before-Go"
+      ]
+    ],
+    "seed": 742101
+  },
+  "M2rl": {
+    "arms": [
+      "final-ordinary",
+      "final-remote"
+    ],
+    "orders": [
+      [
+        "final-remote",
+        "final-ordinary"
+      ],
+      [
+        "final-ordinary",
+        "final-remote"
+      ],
+      [
+        "final-ordinary",
+        "final-remote"
+      ],
+      [
+        "final-remote",
+        "final-ordinary"
+      ],
+      [
+        "final-remote",
+        "final-ordinary"
+      ],
+      [
+        "final-ordinary",
+        "final-remote"
+      ]
+    ],
+    "seed": 742401
+  },
+  "M2skip": {
+    "arms": [
+      "final-ordinary",
+      "final-remote"
+    ],
+    "orders": [
+      [
+        "final-remote",
+        "final-ordinary"
+      ],
+      [
+        "final-ordinary",
+        "final-remote"
+      ],
+      [
+        "final-remote",
+        "final-ordinary"
+      ],
+      [
+        "final-ordinary",
+        "final-remote"
+      ],
+      [
+        "final-remote",
+        "final-ordinary"
+      ],
+      [
+        "final-ordinary",
+        "final-remote"
+      ]
+    ],
+    "seed": 742501
+  }
+}
