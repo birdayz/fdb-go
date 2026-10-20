@@ -271,6 +271,13 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
     NativeAPI `getRange` sends `firstGreaterThan(last)` (`NativeAPI.actor.cpp:4850`). Same
     rows, different `Begin` bytes. RFC-262 D4 leaves mapped reads on their sender; port the
     selector-capable sender for them and add a mapped multi-request golden scenario.
+- [ ] **Explicit write-conflict-range errors are immediate.** `AddWriteConflictRange`
+  returns `key_outside_legal_range` (2004) from the call, while the C binding runs RYW
+  `addWriteConflictRange` on the network thread and records the error as the
+  transaction's deferred error (`ThreadSafeTransaction.cpp:659-663`, check at
+  `ReadYourWrites.actor.cpp:2466-2468`), surfacing it on the next operation.
+  `AddWriteConflictKey` already defers it. Align the range form (the facade's return
+  value then only carries synchronous errors such as inverted ranges) with a test.
 - [ ] **Transaction options during in-flight operations.** Option setters (`SetLockAware`,
   `SetReadLockAware`, GRV cache, tags, priority, `SetAutoThrottleTag`) write plain
   `Transaction` fields under a shared state lease, while in-flight operations read them:
