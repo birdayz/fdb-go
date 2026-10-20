@@ -17,7 +17,8 @@ Each campaign's reports live in a folder named after the campaign.
   multi-node `USE_REMOTE_FETCH` vs `SCAN_AND_FETCH` (`M2rl`, `M2skip`) and
   pure-Go vs CGo concurrency scaling at 1, 8, 32, and 64 workers (`M1`).
 - [fdbmn-20261020](fdbmn-20261020/README.md): the multi-node phases repeated on
-  master `fa8725f1d` under a new preregistered protocol (executed; results to follow).
+  master `fa8725f1d` under a new preregistered protocol; results in
+  [RESULTS.md](fdbmn-20261020/RESULTS.md).
 - [fdb-perf-20261009](fdb-perf-20261009/README.md): one dedicated VM, rounds
   R1–R18 of pure-Go vs CGo client comparisons, including the R17 confirmatory
   round and its preregistration.

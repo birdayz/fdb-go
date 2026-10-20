@@ -6,9 +6,11 @@ repeating the [`hcloud-multinode-vpc-20261014`](../hcloud-multinode-vpc-20261014
 phases M1 (pure-Go vs CGo at 1/8/32/64 workers) and M2 (`USE_REMOTE_FETCH` vs
 `SCAN_AND_FETCH`) under a preregistered protocol.
 
-**Status: executed and torn down on 2026-10-20.** These are the campaign's
-protocol, procedure and decision documents as they stand after execution. The
-analysis and the results write-up follow in a later change, in this directory.
+**Status: executed and torn down on 2026-10-20.** Results are in
+[RESULTS.md](RESULTS.md) and local diagnostic profiles in
+[profiles-local.md](profiles-local.md). The 32-worker M1 phase was dropped for
+budget before measurement. The protocol, procedure and decision documents in this
+directory are as they stood after execution.
 
 ## Known corrections
 
