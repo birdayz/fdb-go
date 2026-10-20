@@ -1,0 +1,25 @@
+{
+  "CPU_metric": "shutdown_process_cpu_ns_per_op = lifecycle-inclusive process E-A divided by measured transactions; not isolated steady state",
+  "Go_heap_scope": "native C++ heap excluded",
+  "M1": "three arms; 18 runs per case; all six permutations; direct final/before, final/cgo, before/cgo",
+  "M2": "two methods on current production; 12 processes and 36 testing.B mean samples per case; three repeats clustered within process",
+  "analysis_adapter_sha256": "700fd3c18a319ea6738c00652846313797a4f4bfbcf50e4b3aee37e720a70289",
+  "client_harness_compatibility": {
+    "archive_sha256": "76990b867f337bdad0132cc69aa3f6f9a9bcf0cb0859cc8c7f8514def684f508",
+    "patch_sha256": "31bc349b7a1ef71fc5bbf300ed728fe536e161f5610a1187edc718e63fddb007",
+    "scope": "cleanup-chain drain and matching validator only; no workload/timing/pacing/numeric-estimator change",
+    "upstream_commit": "066920ebb8d22c5618b31ef0a56fa7674c773cdb"
+  },
+  "frozen_harness_revision": "d94b4c61377d173b7c6884fde426a227dab0f0bb",
+  "historical": "separate cohort description only; no pooled blocks, cross-cohort CI, or ratio-of-ratios",
+  "independent_blocks_per_case": 6,
+  "interval": "nominal 95% paired-block percentile; no multiplicity adjustment",
+  "production_revisions": {
+    "before_allocation_work_after_read_parity": "267a41434a81723b07e7150869d702636a1b91a9",
+    "final": "fa8725f1dcf6ff3ac66825ab6e3e819efbc0abcc"
+  },
+  "raw_summary_sha256": "01344cc23c3fad32b1c8b2daba18326ec9a121d756d5c0de78721bd8408254f7",
+  "sanitization": "aggregate estimates only; no raw transactions, host traces, addresses, cloud identifiers, private paths or credentials",
+  "seed": 492817,
+  "whole_paired_block_resamples": 20000
+}

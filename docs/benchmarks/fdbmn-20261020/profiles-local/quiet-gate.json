@@ -1,0 +1,18 @@
+{
+ "busy": [],
+ "busy_after_settle": [],
+ "checked_utc": "2026-10-20T16:05:57.630980+00:00",
+ "lock": "${FDB_PERF_HOME}/validation/fast.lock",
+ "post_settle_load": [
+  "5.99",
+  "5.49",
+  "6.12"
+ ],
+ "pre_load": [
+  "5.27",
+  "5.34",
+  "6.13"
+ ],
+ "result": "passed",
+ "rule": "no bazel build/test, no testcontainers; 60 s settle; load1 <= 7.5"
+}

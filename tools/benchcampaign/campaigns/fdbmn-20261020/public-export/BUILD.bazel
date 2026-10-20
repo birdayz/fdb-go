@@ -1,0 +1,11 @@
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+
+# Tiny offline fixtures; no private campaign inputs or estimators.
+sh_test(
+    name = "export_public_results_test",
+    srcs = ["test.sh"],
+    data = [
+        "export_public_results.py",
+        "test_export_public_results.py",
+    ],
+)

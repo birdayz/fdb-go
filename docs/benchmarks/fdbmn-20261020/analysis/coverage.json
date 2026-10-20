@@ -1,0 +1,199 @@
+{
+  "A1_executions": 0,
+  "budget_unexecuted_cases": 7,
+  "cases_in_executed_phases": 37,
+  "contaminated_cases": 7,
+  "eligible_cases": 26,
+  "phases": {
+    "M1w1": {
+      "batchset50": {
+        "R4_verdict": "unverifiable",
+        "analysis_status": "N/A"
+      },
+      "batchset50x1000": {
+        "R4_verdict": "unverifiable",
+        "analysis_status": "N/A"
+      },
+      "get100": {
+        "R4_verdict": "clean",
+        "analysis_status": "clean"
+      },
+      "get1000": {
+        "R4_verdict": "clean",
+        "analysis_status": "clean"
+      },
+      "grv": {
+        "R4_verdict": "clean",
+        "analysis_status": "clean"
+      },
+      "range100": {
+        "R4_verdict": "clean",
+        "analysis_status": "clean"
+      },
+      "set100": {
+        "R4_verdict": "contaminated",
+        "analysis_status": "N/A"
+      }
+    },
+    "M1w32": {
+      "batchset50": {
+        "R4_verdict": "not run",
+        "analysis_status": "unexecuted-for-budget"
+      },
+      "batchset50x1000": {
+        "R4_verdict": "not run",
+        "analysis_status": "unexecuted-for-budget"
+      },
+      "get100": {
+        "R4_verdict": "not run",
+        "analysis_status": "unexecuted-for-budget"
+      },
+      "get1000": {
+        "R4_verdict": "not run",
+        "analysis_status": "unexecuted-for-budget"
+      },
+      "grv": {
+        "R4_verdict": "not run",
+        "analysis_status": "unexecuted-for-budget"
+      },
+      "range100": {
+        "R4_verdict": "not run",
+        "analysis_status": "unexecuted-for-budget"
+      },
+      "set100": {
+        "R4_verdict": "not run",
+        "analysis_status": "unexecuted-for-budget"
+      }
+    },
+    "M1w64": {
+      "batchset50": {
+        "R4_verdict": "contaminated",
+        "analysis_status": "N/A"
+      },
+      "batchset50x1000": {
+        "R4_verdict": "unverifiable",
+        "analysis_status": "N/A"
+      },
+      "get100": {
+        "R4_verdict": "clean",
+        "analysis_status": "clean"
+      },
+      "get1000": {
+        "R4_verdict": "clean",
+        "analysis_status": "clean"
+      },
+      "grv": {
+        "R4_verdict": "clean",
+        "analysis_status": "clean"
+      },
+      "range100": {
+        "R4_verdict": "clean",
+        "analysis_status": "clean"
+      },
+      "set100": {
+        "R4_verdict": "clean",
+        "analysis_status": "clean"
+      }
+    },
+    "M1w8": {
+      "batchset50": {
+        "R4_verdict": "contaminated",
+        "analysis_status": "N/A"
+      },
+      "batchset50x1000": {
+        "R4_verdict": "unverifiable",
+        "analysis_status": "N/A"
+      },
+      "get100": {
+        "R4_verdict": "clean",
+        "analysis_status": "clean"
+      },
+      "get1000": {
+        "R4_verdict": "clean",
+        "analysis_status": "clean"
+      },
+      "grv": {
+        "R4_verdict": "clean",
+        "analysis_status": "clean"
+      },
+      "range100": {
+        "R4_verdict": "clean",
+        "analysis_status": "clean"
+      },
+      "set100": {
+        "R4_verdict": "clean",
+        "analysis_status": "clean"
+      }
+    },
+    "M2rl": {
+      "small-limit1-forward": {
+        "R4_verdict": "clean",
+        "analysis_status": "clean"
+      },
+      "small-limit1-reverse": {
+        "R4_verdict": "clean",
+        "analysis_status": "clean"
+      },
+      "small-rows10-forward": {
+        "R4_verdict": "clean",
+        "analysis_status": "clean"
+      },
+      "small-rows10-reverse": {
+        "R4_verdict": "clean",
+        "analysis_status": "clean"
+      },
+      "small-rows1000-forward": {
+        "R4_verdict": "clean",
+        "analysis_status": "clean"
+      },
+      "small-rows1000-reverse": {
+        "R4_verdict": "clean",
+        "analysis_status": "clean"
+      },
+      "split-limit1-forward": {
+        "R4_verdict": "clean",
+        "analysis_status": "clean"
+      },
+      "split-limit1-reverse": {
+        "R4_verdict": "contaminated",
+        "analysis_status": "N/A"
+      },
+      "split-rows10-forward": {
+        "R4_verdict": "contaminated",
+        "analysis_status": "N/A"
+      },
+      "split-rows10-reverse": {
+        "R4_verdict": "clean",
+        "analysis_status": "clean"
+      },
+      "split-rows1000-forward": {
+        "R4_verdict": "contaminated",
+        "analysis_status": "N/A"
+      },
+      "split-rows1000-reverse": {
+        "R4_verdict": "clean",
+        "analysis_status": "clean"
+      }
+    },
+    "M2skip": {
+      "skip3-rows10-forward": {
+        "R4_verdict": "contaminated",
+        "analysis_status": "N/A"
+      },
+      "skip3-rows10-reverse": {
+        "R4_verdict": "clean",
+        "analysis_status": "clean"
+      },
+      "skip3-rows1000-forward": {
+        "R4_verdict": "clean",
+        "analysis_status": "clean"
+      },
+      "skip3-rows1000-reverse": {
+        "R4_verdict": "clean",
+        "analysis_status": "clean"
+      }
+    }
+  },
+  "planned_cases": 44,
+  "unverifiable_cases": 4
+}

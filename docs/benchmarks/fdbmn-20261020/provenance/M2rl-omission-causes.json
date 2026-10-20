@@ -1,0 +1,36 @@
+{
+  "raw_source_sha256": "88eb0bc75a76f03ad94a7422bfc7792970832ef19ae04a241d85924093bffd94",
+  "records": [
+    {
+      "all_groups_other_than_client_pass": true,
+      "client_aggregate_busy": 0.033877038895859475,
+      "client_max_cpu_busy": 0.15151515151515152,
+      "no_retry": true,
+      "reason": "pre-arm client maximum per-CPU busy >0.15",
+      "run": "M2rl-c07-b02-p1-final-remote",
+      "steal": 0.0,
+      "whole_case_excluded": true
+    },
+    {
+      "all_groups_other_than_client_pass": true,
+      "client_aggregate_busy": 0.04025157232704402,
+      "client_max_cpu_busy": 0.15841584158415842,
+      "no_retry": true,
+      "reason": "pre-arm client maximum per-CPU busy >0.15",
+      "run": "M2rl-c08-b02-p0-final-ordinary",
+      "steal": 0.0,
+      "whole_case_excluded": true
+    },
+    {
+      "all_groups_other_than_client_pass": true,
+      "client_aggregate_busy": 0.037783375314861464,
+      "client_max_cpu_busy": 0.15151515151515152,
+      "no_retry": true,
+      "reason": "pre-arm client maximum per-CPU busy >0.15",
+      "run": "M2rl-c10-b05-p1-final-remote",
+      "steal": 0.0,
+      "whole_case_excluded": true
+    }
+  ],
+  "sanitized": true
+}

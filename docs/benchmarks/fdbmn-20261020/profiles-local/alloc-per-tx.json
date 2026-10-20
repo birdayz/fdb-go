@@ -1,0 +1,380 @@
+{
+ "M1w1/batchset50/before": {
+  "any_load_flag": false,
+  "bytes_per_tx_median": 64055.645333333334,
+  "mallocs_per_tx_median": 321.302,
+  "runs": 3
+ },
+ "M1w1/batchset50/cgo": {
+  "any_load_flag": false,
+  "bytes_per_tx_median": 1635.9146666666666,
+  "mallocs_per_tx_median": 59.037,
+  "runs": 3
+ },
+ "M1w1/batchset50/final": {
+  "any_load_flag": false,
+  "bytes_per_tx_median": 76499.648,
+  "mallocs_per_tx_median": 232.377,
+  "runs": 3
+ },
+ "M1w1/batchset50x1000/before": {
+  "any_load_flag": false,
+  "bytes_per_tx_median": 207408.096,
+  "mallocs_per_tx_median": 322.1546666666667,
+  "runs": 3
+ },
+ "M1w1/batchset50x1000/cgo": {
+  "any_load_flag": false,
+  "bytes_per_tx_median": 1634.0666666666666,
+  "mallocs_per_tx_median": 59.034666666666666,
+  "runs": 3
+ },
+ "M1w1/batchset50x1000/final": {
+  "any_load_flag": false,
+  "bytes_per_tx_median": 269097.9093333333,
+  "mallocs_per_tx_median": 233.18,
+  "runs": 3
+ },
+ "M1w1/get100/before": {
+  "any_load_flag": false,
+  "bytes_per_tx_median": 6269.933333333333,
+  "mallocs_per_tx_median": 69.11733333333333,
+  "runs": 3
+ },
+ "M1w1/get100/cgo": {
+  "any_load_flag": false,
+  "bytes_per_tx_median": 690.0773333333333,
+  "mallocs_per_tx_median": 16.049,
+  "runs": 3
+ },
+ "M1w1/get100/final": {
+  "any_load_flag": false,
+  "bytes_per_tx_median": 5817.52,
+  "mallocs_per_tx_median": 54.32033333333333,
+  "runs": 3
+ },
+ "M1w1/get1000/before": {
+  "any_load_flag": false,
+  "bytes_per_tx_median": 8145.8133333333335,
+  "mallocs_per_tx_median": 69.13166666666666,
+  "runs": 3
+ },
+ "M1w1/get1000/cgo": {
+  "any_load_flag": false,
+  "bytes_per_tx_median": 1603.952,
+  "mallocs_per_tx_median": 16.051,
+  "runs": 3
+ },
+ "M1w1/get1000/final": {
+  "any_load_flag": false,
+  "bytes_per_tx_median": 7691.696,
+  "mallocs_per_tx_median": 54.39,
+  "runs": 3
+ },
+ "M1w1/grv/before": {
+  "any_load_flag": true,
+  "bytes_per_tx_median": 3837.0826666666667,
+  "mallocs_per_tx_median": 38.059333333333335,
+  "runs": 3
+ },
+ "M1w1/grv/cgo": {
+  "any_load_flag": true,
+  "bytes_per_tx_median": 450.22133333333335,
+  "mallocs_per_tx_median": 10.052,
+  "runs": 3
+ },
+ "M1w1/grv/final": {
+  "any_load_flag": true,
+  "bytes_per_tx_median": 3382.992,
+  "mallocs_per_tx_median": 30.137,
+  "runs": 3
+ },
+ "M1w1/range100/before": {
+  "any_load_flag": false,
+  "bytes_per_tx_median": 48115.24,
+  "mallocs_per_tx_median": 74.55733333333333,
+  "runs": 3
+ },
+ "M1w1/range100/cgo": {
+  "any_load_flag": false,
+  "bytes_per_tx_median": 24094.341333333334,
+  "mallocs_per_tx_median": 224.043,
+  "runs": 3
+ },
+ "M1w1/range100/final": {
+  "any_load_flag": false,
+  "bytes_per_tx_median": 42633.2,
+  "mallocs_per_tx_median": 59.21366666666667,
+  "runs": 3
+ },
+ "M1w1/set100/before": {
+  "any_load_flag": false,
+  "bytes_per_tx_median": 10202.021333333334,
+  "mallocs_per_tx_median": 101.20466666666667,
+  "runs": 3
+ },
+ "M1w1/set100/cgo": {
+  "any_load_flag": false,
+  "bytes_per_tx_median": 466.072,
+  "mallocs_per_tx_median": 10.05,
+  "runs": 3
+ },
+ "M1w1/set100/final": {
+  "any_load_flag": false,
+  "bytes_per_tx_median": 6827.8133333333335,
+  "mallocs_per_tx_median": 58.291666666666664,
+  "runs": 3
+ },
+ "M1w64/batchset50/before": {
+  "any_load_flag": false,
+  "bytes_per_tx_median": 78398.20025,
+  "mallocs_per_tx_median": 318.65159375,
+  "runs": 3
+ },
+ "M1w64/batchset50/cgo": {
+  "any_load_flag": false,
+  "bytes_per_tx_median": 1618.61575,
+  "mallocs_per_tx_median": 59.00434375,
+  "runs": 3
+ },
+ "M1w64/batchset50/final": {
+  "any_load_flag": false,
+  "bytes_per_tx_median": 75490.67275,
+  "mallocs_per_tx_median": 229.255,
+  "runs": 3
+ },
+ "M1w64/batchset50x1000/before": {
+  "any_load_flag": false,
+  "bytes_per_tx_median": 263413.78025,
+  "mallocs_per_tx_median": 320.129125,
+  "runs": 3
+ },
+ "M1w64/batchset50x1000/cgo": {
+  "any_load_flag": true,
+  "bytes_per_tx_median": 1619.18625,
+  "mallocs_per_tx_median": 59.004625,
+  "runs": 3
+ },
+ "M1w64/batchset50x1000/final": {
+  "any_load_flag": true,
+  "bytes_per_tx_median": 268135.2605,
+  "mallocs_per_tx_median": 230.49115625,
+  "runs": 3
+ },
+ "M1w64/get100/before": {
+  "any_load_flag": false,
+  "bytes_per_tx_median": 6241.31475,
+  "mallocs_per_tx_median": 66.6798125,
+  "runs": 3
+ },
+ "M1w64/get100/cgo": {
+  "any_load_flag": false,
+  "bytes_per_tx_median": 665.50525,
+  "mallocs_per_tx_median": 16.00259375,
+  "runs": 3
+ },
+ "M1w64/get100/final": {
+  "any_load_flag": false,
+  "bytes_per_tx_median": 5368.39475,
+  "mallocs_per_tx_median": 51.50834375,
+  "runs": 3
+ },
+ "M1w64/get1000/before": {
+  "any_load_flag": false,
+  "bytes_per_tx_median": 8098.66,
+  "mallocs_per_tx_median": 66.7495,
+  "runs": 3
+ },
+ "M1w64/get1000/cgo": {
+  "any_load_flag": false,
+  "bytes_per_tx_median": 1577.75425,
+  "mallocs_per_tx_median": 16.00340625,
+  "runs": 3
+ },
+ "M1w64/get1000/final": {
+  "any_load_flag": false,
+  "bytes_per_tx_median": 7239.73375,
+  "mallocs_per_tx_median": 51.571375,
+  "runs": 3
+ },
+ "M1w64/grv/before": {
+  "any_load_flag": false,
+  "bytes_per_tx_median": 3502.205,
+  "mallocs_per_tx_median": 34.4448125,
+  "runs": 3
+ },
+ "M1w64/grv/cgo": {
+  "any_load_flag": false,
+  "bytes_per_tx_median": 426.006,
+  "mallocs_per_tx_median": 10.0038125,
+  "runs": 3
+ },
+ "M1w64/grv/final": {
+  "any_load_flag": false,
+  "bytes_per_tx_median": 2941.27075,
+  "mallocs_per_tx_median": 27.2364375,
+  "runs": 3
+ },
+ "M1w64/range100/before": {
+  "any_load_flag": false,
+  "bytes_per_tx_median": 47969.743,
+  "mallocs_per_tx_median": 72.863,
+  "runs": 3
+ },
+ "M1w64/range100/cgo": {
+  "any_load_flag": false,
+  "bytes_per_tx_median": 24072.8335,
+  "mallocs_per_tx_median": 224.00321875,
+  "runs": 3
+ },
+ "M1w64/range100/final": {
+  "any_load_flag": false,
+  "bytes_per_tx_median": 42430.65875,
+  "mallocs_per_tx_median": 58.03890625,
+  "runs": 3
+ },
+ "M1w64/set100/before": {
+  "any_load_flag": false,
+  "bytes_per_tx_median": 10498.6045,
+  "mallocs_per_tx_median": 98.99225,
+  "runs": 3
+ },
+ "M1w64/set100/cgo": {
+  "any_load_flag": false,
+  "bytes_per_tx_median": 441.43825,
+  "mallocs_per_tx_median": 10.00384375,
+  "runs": 3
+ },
+ "M1w64/set100/final": {
+  "any_load_flag": false,
+  "bytes_per_tx_median": 6465.95275,
+  "mallocs_per_tx_median": 55.613125,
+  "runs": 3
+ },
+ "M1w8/batchset50/before": {
+  "any_load_flag": true,
+  "bytes_per_tx_median": 73242.52066666666,
+  "mallocs_per_tx_median": 320.56641666666667,
+  "runs": 3
+ },
+ "M1w8/batchset50/cgo": {
+  "any_load_flag": true,
+  "bytes_per_tx_median": 1620.6253333333334,
+  "mallocs_per_tx_median": 59.00925,
+  "runs": 3
+ },
+ "M1w8/batchset50/final": {
+  "any_load_flag": true,
+  "bytes_per_tx_median": 75584.56,
+  "mallocs_per_tx_median": 229.7845,
+  "runs": 3
+ },
+ "M1w8/batchset50x1000/before": {
+  "any_load_flag": true,
+  "bytes_per_tx_median": 250985.422,
+  "mallocs_per_tx_median": 320.50625,
+  "runs": 3
+ },
+ "M1w8/batchset50x1000/cgo": {
+  "any_load_flag": false,
+  "bytes_per_tx_median": 1621.6993333333332,
+  "mallocs_per_tx_median": 59.01,
+  "runs": 3
+ },
+ "M1w8/batchset50x1000/final": {
+  "any_load_flag": true,
+  "bytes_per_tx_median": 268099.5673333333,
+  "mallocs_per_tx_median": 230.73566666666667,
+  "runs": 3
+ },
+ "M1w8/get100/before": {
+  "any_load_flag": false,
+  "bytes_per_tx_median": 6215.8713333333335,
+  "mallocs_per_tx_median": 67.98475,
+  "runs": 3
+ },
+ "M1w8/get100/cgo": {
+  "any_load_flag": false,
+  "bytes_per_tx_median": 668.9773333333334,
+  "mallocs_per_tx_median": 15.999,
+  "runs": 3
+ },
+ "M1w8/get100/final": {
+  "any_load_flag": false,
+  "bytes_per_tx_median": 5359.754,
+  "mallocs_per_tx_median": 51.88333333333333,
+  "runs": 3
+ },
+ "M1w8/get1000/before": {
+  "any_load_flag": false,
+  "bytes_per_tx_median": 8074.2,
+  "mallocs_per_tx_median": 67.9985,
+  "runs": 3
+ },
+ "M1w8/get1000/cgo": {
+  "any_load_flag": false,
+  "bytes_per_tx_median": 1579.6206666666667,
+  "mallocs_per_tx_median": 16.000833333333333,
+  "runs": 3
+ },
+ "M1w8/get1000/final": {
+  "any_load_flag": false,
+  "bytes_per_tx_median": 7229.666666666667,
+  "mallocs_per_tx_median": 51.94258333333333,
+  "runs": 3
+ },
+ "M1w8/grv/before": {
+  "any_load_flag": false,
+  "bytes_per_tx_median": 3579.156,
+  "mallocs_per_tx_median": 36.02575,
+  "runs": 3
+ },
+ "M1w8/grv/cgo": {
+  "any_load_flag": false,
+  "bytes_per_tx_median": 429.4066666666667,
+  "mallocs_per_tx_median": 10.009666666666666,
+  "runs": 3
+ },
+ "M1w8/grv/final": {
+  "any_load_flag": false,
+  "bytes_per_tx_median": 2975.6433333333334,
+  "mallocs_per_tx_median": 27.813666666666666,
+  "runs": 3
+ },
+ "M1w8/range100/before": {
+  "any_load_flag": false,
+  "bytes_per_tx_median": 47993.102666666666,
+  "mallocs_per_tx_median": 74.07383333333334,
+  "runs": 3
+ },
+ "M1w8/range100/cgo": {
+  "any_load_flag": false,
+  "bytes_per_tx_median": 24074.734,
+  "mallocs_per_tx_median": 224.00825,
+  "runs": 3
+ },
+ "M1w8/range100/final": {
+  "any_load_flag": false,
+  "bytes_per_tx_median": 42720.66733333333,
+  "mallocs_per_tx_median": 59.84608333333333,
+  "runs": 3
+ },
+ "M1w8/set100/before": {
+  "any_load_flag": true,
+  "bytes_per_tx_median": 10402.443333333333,
+  "mallocs_per_tx_median": 99.91375,
+  "runs": 3
+ },
+ "M1w8/set100/cgo": {
+  "any_load_flag": true,
+  "bytes_per_tx_median": 445.436,
+  "mallocs_per_tx_median": 10.010166666666667,
+  "runs": 3
+ },
+ "M1w8/set100/final": {
+  "any_load_flag": true,
+  "bytes_per_tx_median": 6375.952666666667,
+  "mallocs_per_tx_median": 55.851083333333335,
+  "runs": 3
+ }
+}

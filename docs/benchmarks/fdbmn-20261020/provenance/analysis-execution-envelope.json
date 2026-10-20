@@ -1,0 +1,18 @@
+{
+  "after_exact_inventory_verification": true,
+  "analysis_output": "retained seeded aggregate analysis",
+  "authorization": "owner-approved offline analysis after exact teardown verification",
+  "avoid_fdb_server_cpus": "8-10,20-22",
+  "avoid_profile_cpus": "2-5,14-17",
+  "cpu_set": "0,1,6,7,11,12,13,18,19,23",
+  "nice": 15,
+  "no_A1": true,
+  "no_diagnostic_capacity_substitution": true,
+  "raw_source_sha256": "301eef44b994c08e5d561819c37db434d756c9a4eb56b80c4ab136b522731515",
+  "recorded_before_execution_utc": "2026-10-20T13:31:03.818086+00:00",
+  "sanitized": true,
+  "seed": 492817,
+  "source_sha256": "700fd3c18a319ea6738c00652846313797a4f4bfbcf50e4b3aee37e720a70289",
+  "statistics": "pure seeded deterministic offline bootstrap; no timing-sensitive benchmark/host steps",
+  "whole_paired_block_resamples": 20000
+}
