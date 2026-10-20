@@ -43,6 +43,237 @@ func heldWire(t *testing.T, peer net.Conn, want uint64) {
 	}
 }
 
+type fullAdmissionHandoffFixture struct {
+	conn      *Conn
+	peer      net.Conn
+	queue     chan writeReq
+	mutex     *sync.RWMutex
+	fifo      *sendqueue.Queue
+	order     *sendqueue.Queue
+	admission peerAdmission
+	follower  *sendqueue.Permit
+	cohort    *sendqueue.Permit
+}
+
+func newFullAdmissionHandoffFixture(t *testing.T, route string) *fullAdmissionHandoffFixture {
+	t.Helper()
+	f := &fullAdmissionHandoffFixture{}
+	if route == "ordinary" {
+		f.conn, f.peer = admissionConn(t)
+		f.queue, f.mutex, f.fifo = f.conn.writeCh, &f.conn.writeAdmission, &f.conn.sendWaiters
+		admissionFill(t, f.conn)
+		return f
+	}
+	f.order = &sendqueue.Queue{}
+	first, _ := f.order.Reserve()
+	t.Cleanup(first.Release)
+	if route == "prefix" {
+		f.admission.permit, _ = f.order.Reserve()
+		f.follower, _ = f.order.Reserve()
+	} else {
+		f.cohort, f.admission.held = first, true
+	}
+	f.conn, f.peer = heldOutboxConn(t, f.order)
+	t.Cleanup(f.releasePermits)
+	f.order.Seal()
+	if route == "prefix" {
+		f.queue, f.mutex, f.fifo = f.conn.prefixCh, &f.conn.writeAdmission, f.order
+		if ok, err := f.conn.SendFrameDeferredContextOrdered(context.Background(), UID{First: 1}, admissionBody(1), first); !ok || err != nil {
+			t.Fatal(ok, err)
+		}
+	} else {
+		f.queue, f.mutex, f.fifo = f.conn.heldCh, &f.conn.heldAdmission, &f.conn.heldWaiters
+		if ok, err := f.conn.SendFrameDeferredContext(context.Background(), UID{First: 1}, admissionBody(1)); !ok || err != nil {
+			t.Fatal(ok, err)
+		}
+	}
+	return f
+}
+
+func (f *fullAdmissionHandoffFixture) releaseHeldCohort() {
+	if f.cohort != nil {
+		f.cohort.Release()
+		f.conn.ClearSendOrder(f.order)
+	}
+}
+
+func (f *fullAdmissionHandoffFixture) releasePermits() {
+	f.admission.permit.Release()
+	f.follower.Release()
+	f.releaseHeldCohort()
+	if f.order != nil && !f.order.Pending() {
+		f.conn.ClearSendOrder(f.order)
+	}
+}
+
+// Exclusive: each rejected write returns its completion to the shared pool,
+// whose reference census must finish before another test can reacquire it.
+func TestFullAdmissionHandoffReleasesReader(t *testing.T) {
+	for _, route := range []string{"prefix", "held", "ordinary"} {
+		for _, action := range []string{"fifo", "cancel", "close", "panic"} {
+			t.Run(route+"/"+action, func(t *testing.T) {
+				f := newFullAdmissionHandoffFixture(t, route)
+				c := f.conn
+				ctx, cancel := context.WithCancel(context.Background())
+				resumeCh := make(chan struct{})
+				resume := sync.OnceFunc(func() { close(resumeCh) })
+				completion := newWriteCompletion()
+				type observation struct {
+					unlocked bool
+					queued   int64
+					held     int64
+					buffered int
+					pending  bool
+					refs     int32
+				}
+				observed := make(chan observation, 1)
+				ctx, signal := WithSuspendHandoff(ctx, resumeCh, func() {
+					unlocked := f.mutex.TryLock()
+					if unlocked {
+						f.mutex.Unlock()
+					}
+					observed <- observation{unlocked, c.queued.Load(), c.heldCount.Load(), len(f.queue), f.fifo.Pending(), completion.refs.Load()}
+					if action == "panic" && unlocked {
+						panic(replyPanicMarker)
+					}
+				})
+				defer signal.Fire()
+				type outcome struct {
+					admissionResult
+					panicValue any
+				}
+				headDone := make(chan outcome, 1)
+				go func() {
+					var result outcome
+					defer func() {
+						result.panicValue = recover()
+						f.admission.permit.Release()
+						headDone <- result
+					}()
+					result.enqueued, result.err = c.writeAdmittedContext(ctx, UID{First: 2}, admissionBody(2), f.admission, completion)
+				}()
+				var head outcome
+				var headJoined, tailJoined bool
+				var tail <-chan admissionResult
+				waitHead := func() outcome {
+					if !headJoined {
+						head, headJoined = <-headDone, true
+					}
+					return head
+				}
+				defer func() {
+					cancel()
+					resume()
+					c.cancel()
+					waitHead()
+					if tail != nil && !tailJoined {
+						<-tail
+					}
+					f.releasePermits()
+					c.finishOwnedWrites(nil)
+				}()
+				probe := admissionAwait(t, observed, "full-queue handoff observer")
+				if !probe.unlocked {
+					// This is the red proof, not a timeout: cancel and release the
+					// mutant's handoff, then join it before failing the lock assertion.
+					cancel()
+					resume()
+					waitHead()
+					t.Fatal("full-queue NotifySuspend retained its admission reader lock")
+				}
+				wantHeld := int64(0)
+				if route == "held" {
+					wantHeld = 2
+				}
+				if probe.queued != 2 || probe.held != wantHeld || probe.buffered != 1 || !probe.pending || probe.refs != 2 {
+					t.Fatalf("handoff lost its unaccepted FIFO owner: %+v, want queued=2 held=%d buffered=1 pending=true refs=2", probe, wantHeld)
+				}
+				switch action {
+				case "fifo":
+					tailCtx, tailSignal := WithSuspendSignal(ctx)
+					defer tailSignal.Fire()
+					tailDone := make(chan admissionResult, 1)
+					tail = tailDone
+					go func() {
+						ok, err := c.SendFrameDeferredContextOrdered(tailCtx, UID{First: 3}, admissionBody(3), f.follower)
+						tailDone <- admissionResult{ok, err}
+					}()
+					admissionAwait(t, tailSignal.Done(), "follower reserved behind the paused handoff")
+					select {
+					case result := <-tail:
+						tailJoined = true
+						t.Fatalf("follower escaped the paused FIFO head: %+v", result)
+					default:
+					}
+					wantQueued := int64(3)
+					if route == "prefix" {
+						wantQueued = 2 // the follower still waits for its cold permit
+						select {
+						case <-f.follower.Ready():
+							t.Fatal("prefix handoff released its permit before acceptance")
+						default:
+						}
+					}
+					if len(f.queue) != 1 || c.queued.Load() != wantQueued || !f.fifo.Pending() {
+						t.Fatal("follower changed the full channel or lost the paused head's credit")
+					}
+					f.releaseHeldCohort()
+					admissionDrain(t, c, f.peer, 1, true)
+					resume()
+					admissionDrain(t, c, f.peer, 2, true)
+					admissionDrain(t, c, f.peer, 3, true)
+					tailResult := admissionAwait(t, tail, "FIFO follower completing")
+					tailJoined = true
+					if !tailResult.enqueued || tailResult.err != nil {
+						t.Fatalf("resumed FIFO follower = %+v", tailResult)
+					}
+					result := waitHead()
+					if !result.enqueued || result.err != nil || result.panicValue != nil {
+						t.Fatalf("resumed FIFO head = %+v", result)
+					}
+				case "cancel":
+					// Make the channel send-ready while the head still owns its
+					// handoff; cancellation must be rechecked before admission.
+					f.releaseHeldCohort()
+					admissionDrain(t, c, f.peer, 1, true)
+					cancel()
+					resume()
+					result := waitHead()
+					if result.enqueued || !errors.Is(result.err, context.Canceled) || result.panicValue != nil {
+						t.Fatalf("cancelled handoff = %+v, want unaccepted/context.Canceled", result)
+					}
+				case "close":
+					// There is no writer in this fixture: run its real finalizer
+					// while the handoff remains paused, freeing the full slot.
+					c.failConnection(errConnClosed)
+					c.finishOwnedWrites(nil)
+					cancel() // an observed closed connection wins over caller cancellation
+					resume()
+					result := waitHead()
+					if result.enqueued || !errors.Is(result.err, ErrConnClosed) || result.panicValue != nil {
+						t.Fatalf("closed handoff = %+v, want unaccepted/connection closed", result)
+					}
+				case "panic":
+					result := waitHead()
+					if result.enqueued || result.panicValue != replyPanicMarker {
+						t.Fatalf("notification panic = %+v", result)
+					}
+					f.releasePermits()
+					admissionDrain(t, c, f.peer, 1, true)
+				}
+				if refs := completion.refs.Load(); refs != 0 {
+					t.Errorf("completed handoff retained %d completion owners", refs)
+				}
+				f.releasePermits()
+				admissionQuiesced(t, c)
+				if f.order != nil && f.order.Pending() {
+					t.Error("completed handoff retained a cold-prefix owner")
+				}
+			})
+		}
+	}
+}
+
 func TestHeldOutboxFlushesAvailablePrefixBeforeMissingMember(t *testing.T) {
 	t.Parallel()
 	var order sendqueue.Queue

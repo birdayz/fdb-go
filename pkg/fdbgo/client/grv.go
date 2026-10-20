@@ -1457,7 +1457,7 @@ retry:
 			replyCleanup.handle = replyHandle
 			body := buildGetReadVersionRequest(replyToken, flags, txnCount, span, tags)
 
-			if err := sendReadFrame(ctx, conn, proxy.Token, body, replyHandle, permit); err != nil {
+			if err := sendReadFrame(ctx, conn, proxy.Token, body, replyHandle, permit, nil); err != nil {
 				replyHandle.Cancel()
 				replyCleanup.release()
 				if ended := grvRPCEnded(ctx, db); ended != nil {

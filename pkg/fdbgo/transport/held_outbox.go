@@ -6,6 +6,8 @@ import (
 	"fdb.dev/pkg/fdbgo/internal/sendqueue"
 )
 
+// NotifySuspend may block on a handoff. Publish the sender's FIFO position first,
+// and hold no admission locks needed by its successor or transport loops.
 func (c *Conn) enqueueAdmitted(ctx context.Context, request writeReq, done <-chan struct{}, admission peerAdmission) (bool, error) {
 	if admission.permit != nil {
 		return c.enqueuePrefix(ctx, request, done, admission.permit, false)
@@ -28,7 +30,12 @@ func (c *Conn) enqueuePrefix(ctx context.Context, request writeReq, done <-chan 
 		}
 	}()
 	c.writeAdmission.RLock()
-	defer c.writeAdmission.RUnlock()
+	reader := true
+	defer func() {
+		if reader {
+			c.writeAdmission.RUnlock()
+		}
+	}()
 	if c.writeClosed || c.ctx.Err() != nil {
 		return false, errConnClosed
 	}
@@ -38,7 +45,14 @@ func (c *Conn) enqueuePrefix(ctx context.Context, request writeReq, done <-chan 
 	select {
 	case c.prefixCh <- request:
 	default:
+		reader = false
+		c.writeAdmission.RUnlock()
 		NotifySuspend(ctx)
+		c.writeAdmission.RLock()
+		reader = true
+		if c.writeClosed || c.ctx.Err() != nil {
+			return false, errConnClosed
+		}
 		if err := ctx.Err(); err != nil {
 			return false, err
 		}
@@ -102,7 +116,12 @@ func (c *Conn) enqueueHeld(ctx context.Context, request writeReq, done <-chan st
 		return false, errConnClosed
 	}
 	c.heldAdmission.RLock()
-	defer c.heldAdmission.RUnlock()
+	reader := true
+	defer func() {
+		if reader {
+			c.heldAdmission.RUnlock()
+		}
+	}()
 	if c.heldClosed || c.ctx.Err() != nil {
 		return false, errConnClosed
 	}
@@ -110,7 +129,14 @@ func (c *Conn) enqueueHeld(ctx context.Context, request writeReq, done <-chan st
 		return false, err
 	}
 	if !c.tryHeldCounted(request) {
+		reader = false
+		c.heldAdmission.RUnlock()
 		NotifySuspend(ctx)
+		c.heldAdmission.RLock()
+		reader = true
+		if c.heldClosed || c.ctx.Err() != nil {
+			return false, errConnClosed
+		}
 		if err := ctx.Err(); err != nil {
 			return false, err
 		}

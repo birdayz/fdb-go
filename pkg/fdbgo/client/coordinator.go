@@ -35,7 +35,7 @@ func (db *database) openDatabaseCoord(ctx context.Context, conn *transport.Conn,
 	}
 
 	destToken := transport.WellKnownToken(transport.WLTokenClientLeaderRegOpenDatabase)
-	if err := sendReadFrame(ctx, conn, destToken, body, replyHandle, permit); err != nil {
+	if err := sendReadFrame(ctx, conn, destToken, body, replyHandle, permit, nil); err != nil {
 		replyHandle.Cancel()
 		return nil, fmt.Errorf("send OpenDatabaseCoordRequest: %w", err)
 	}

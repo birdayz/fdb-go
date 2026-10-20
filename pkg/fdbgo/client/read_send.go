@@ -14,16 +14,20 @@ import (
 // sendReadFrame owns a copy of the encoding through eventual writer completion.
 // A caller interrupted during the flush must still observe an already-published
 // reply (the server can reply before the socket writer acknowledges its batch).
-func sendReadFrame(ctx context.Context, conn *transport.Conn, token transport.UID, body []byte, reply *transport.ReplyHandle, permit *sendqueue.Permit) error {
+func sendReadFrame(ctx context.Context, conn *transport.Conn, token transport.UID, body []byte, reply *transport.ReplyHandle, permit *sendqueue.Permit, replyWait func(context.Context)) error {
 	_, err := conn.SendFrameContextOrdered(ctx, token, body, permit)
 	if err != nil && ctx.Err() != nil {
-		if reply.KeepReadyOrCancel() {
-			return nil
+		if !reply.KeepReadyOrCancel() {
+			return ctx.Err()
 		}
-		return ctx.Err()
+		err = nil
 	}
 	if err == nil {
-		reply.NotifyWait(ctx) // a ready reply does not suspend the resolver
+		if replyWait != nil {
+			replyWait(ctx)
+		} else {
+			reply.NotifyWait(ctx)
+		}
 	}
 	return err
 }

@@ -63,7 +63,12 @@ func (c *Conn) enqueueWaiting(ctx context.Context, request writeReq, done <-chan
 	}
 
 	c.writeAdmission.RLock()
-	defer c.writeAdmission.RUnlock()
+	reader := true
+	defer func() {
+		if reader {
+			c.writeAdmission.RUnlock()
+		}
+	}()
 	if c.writeClosed || c.ctx.Err() != nil {
 		return false, errConnClosed
 	}
@@ -71,7 +76,17 @@ func (c *Conn) enqueueWaiting(ctx context.Context, request writeReq, done <-chan
 		return false, err
 	}
 	if !c.tryEnqueueCounted(request) {
+		reader = false
+		c.writeAdmission.RUnlock()
 		NotifySuspend(ctx) // the FIFO place exists before channel backpressure
+		c.writeAdmission.RLock()
+		reader = true
+		if c.writeClosed || c.ctx.Err() != nil {
+			return false, errConnClosed
+		}
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
 		select {
 		case c.writeCh <- request:
 		case <-done:

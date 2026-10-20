@@ -152,6 +152,12 @@ func (tx *Transaction) getKeyForRange(parentCtx context.Context, selectorKey []b
 
 // getKeyImpl sends every request at readVersion, the version its operation captured.
 func (tx *Transaction) getKeyImpl(ctx context.Context, readVersion int64, selectorKey []byte, orEqual bool, offset int32) ([]byte, bool, error) {
+	return tx.getKeyImplWithReplyWait(ctx, readVersion, selectorKey, orEqual, offset, nil)
+}
+
+// A fallback resolver hands off at its first reply wait even if Go's concurrent
+// read loop has already published the reply. Ordinary getKey leaves it nil.
+func (tx *Transaction) getKeyImplWithReplyWait(ctx context.Context, readVersion int64, selectorKey []byte, orEqual bool, offset int32, replyWait func(context.Context)) ([]byte, bool, error) {
 	tx.hadRead.Store(true) // a read was issued — the rywDisabled GetKey choke (RFC-059)
 	if fn := tx.resolveKeyFn; fn != nil {
 		key, err := fn(ctx, KeySelector{Key: selectorKey, OrEqual: orEqual, Offset: offset}, readVersion)
@@ -192,7 +198,7 @@ func (tx *Transaction) getKeyImpl(ctx context.Context, readVersion int64, select
 		// through the location lookup + proxy request + invalidate, mirroring C++ getKey's
 		// Reverse{k.isBackward()} (NativeAPI:3787-3788). See keySelectorIsBackward for the predicate.
 		isBackward := keySelectorIsBackward(orEqual, offset)
-		loc, err := tx.db.locCache.locate(tx.db, ctx, selectorKey, tx.tenantId, tx.currentSpan(), isBackward)
+		loc, err := tx.db.locCache.locateWithReplyWait(tx.db, ctx, selectorKey, tx.tenantId, tx.currentSpan(), isBackward, replyWait)
 		if err != nil {
 			return nil, false, fmt.Errorf("locate key: %w", err)
 		}
@@ -203,7 +209,7 @@ func (tx *Transaction) getKeyImpl(ctx context.Context, readVersion int64, select
 		if redraw {
 			tags = tx.sampleReadTags() // GetKeyRequest per loop iteration (NativeAPI.actor.cpp:3806)
 		}
-		replyKey, replyOrEqual, replyOffset, err := tx.sendGetKey(ctx, readVersion, selectorKey, orEqual, offset, loc.Servers, tags)
+		replyKey, replyOrEqual, replyOffset, err := tx.sendGetKey(ctx, readVersion, selectorKey, orEqual, offset, loc.Servers, tags, replyWait)
 		redraw = err == nil || readTagRetry(err)
 		if err != nil {
 			// Reply timeout (slow-but-alive server): re-send, bounded, then a
@@ -281,7 +287,7 @@ func keyResolutionNeedsRangeFallback(key []byte, orEqual bool, offset int32, loc
 // Returns (key, orEqual, offset, error). The caller must check offset==0 && orEqual
 // to determine if the selector is fully resolved. Matches C++ getKey() which uses
 // the reply's KeySelector to drive the resolution loop.
-func (tx *Transaction) sendGetKey(ctx context.Context, readVersion int64, selectorKey []byte, orEqual bool, offset int32, servers []ServerInfo, tags readTagSample) ([]byte, bool, int32, error) {
+func (tx *Transaction) sendGetKey(ctx context.Context, readVersion int64, selectorKey []byte, orEqual bool, offset int32, servers []ServerInfo, tags readTagSample, replyWait func(context.Context)) ([]byte, bool, int32, error) {
 	servers, ok := tx.db.failMon.liveServers(servers, EndpointGetKey)
 	if !ok {
 		return nil, false, 0, tx.db.allAlternativesFailed(ctx)
@@ -313,7 +319,7 @@ func (tx *Transaction) sendGetKey(ctx context.Context, readVersion int64, select
 			delta := tx.db.queueModel.startRequest(server.Address)
 			start := time.Now()
 
-			if err := sendReadFrame(ctx, conn, gkToken, reqData, replyHandle, permit); err != nil {
+			if err := sendReadFrame(ctx, conn, gkToken, reqData, replyHandle, permit, replyWait); err != nil {
 				getKeyBufPool.Put(bufp) // the write queue owns its copy
 				tx.db.queueModel.endRequest(server.Address, delta, readFailureLatency(err, start), false)
 				replyHandle.Cancel()
@@ -561,7 +567,7 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 			delta := tx.db.queueModel.startRequest(server.Address)
 			start := time.Now()
 
-			if err := sendReadFrame(ctx, conn, server.Token, body, replyHandle, permit); err != nil {
+			if err := sendReadFrame(ctx, conn, server.Token, body, replyHandle, permit, nil); err != nil {
 				getValueBufPool.Put(poolBuf) // the write queue owns its copy
 				tx.db.queueModel.endRequest(server.Address, delta, readFailureLatency(err, start), false)
 				replyHandle.Cancel()
@@ -636,7 +642,7 @@ func (tx *Transaction) sendGetValueToServer(ctx context.Context, key []byte, ser
 	delta := tx.db.queueModel.startRequest(server.Address)
 	start := time.Now()
 
-	if err := sendReadFrame(ctx, conn, server.Token, body, replyHandle, permit); err != nil {
+	if err := sendReadFrame(ctx, conn, server.Token, body, replyHandle, permit, nil); err != nil {
 		getValueBufPool.Put(poolBuf) // the write queue owns its copy
 		tx.db.queueModel.endRequest(server.Address, delta, readFailureLatency(err, start), false)
 		replyHandle.Cancel()
@@ -1077,7 +1083,7 @@ func sendRangeRPC[T any](tx *Transaction, ctx context.Context, begin, end KeySel
 			delta := tx.db.queueModel.startRequest(server.Address)
 			start := time.Now()
 
-			if err := sendReadFrame(ctx, conn, gkvToken, body, replyHandle, permit); err != nil {
+			if err := sendReadFrame(ctx, conn, gkvToken, body, replyHandle, permit, nil); err != nil {
 				ops.putBuf(poolBuf) // the write queue owns its copy
 				tx.db.queueModel.endRequest(server.Address, delta, readFailureLatency(err, start), false)
 				replyHandle.Cancel()
@@ -1719,7 +1725,7 @@ func (tx *Transaction) sendWatch(ctx context.Context, key, value []byte, readVer
 		delta := tx.db.queueModel.startRequest(server.Address)
 		start := time.Now()
 
-		if err := sendReadFrame(ctx, conn, watchToken, reqData, replyHandle, permit); err != nil {
+		if err := sendReadFrame(ctx, conn, watchToken, reqData, replyHandle, permit, nil); err != nil {
 			tx.db.queueModel.endRequest(server.Address, delta, readFailureLatency(err, start), false)
 			replyHandle.Cancel()
 			replyCleanup.release()

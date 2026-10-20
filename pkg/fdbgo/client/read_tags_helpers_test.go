@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"fdb.dev/pkg/fdbgo/transport"
-	"fdb.dev/pkg/fdbgo/wire/types"
 )
 
 // readTagDraws scripts sampleReadTags' random source and counts its draws. At
@@ -71,16 +70,7 @@ var (
 // taggedRequests returns the recorded read requests of the five kinds that carry read tags.
 func taggedRequests(t *testing.T, rec recording) []taggedRequest {
 	t.Helper()
-	// The database's coordinator long poll may fall into a recording window;
-	// it is background traffic, not a read.
-	coordPoll := fmt.Sprintf("unexpected request kind: file identifier %d ", types.OpenDatabaseCoordRequestFileID)
-	var problems []string
-	for _, p := range rec.problems {
-		if !strings.HasPrefix(p, coordPoll) {
-			problems = append(problems, p)
-		}
-	}
-	if len(problems) > 0 {
+	if problems := rec.readProblems(); len(problems) > 0 {
 		t.Fatalf("recorder problems:\n%s", strings.Join(problems, "\n"))
 	}
 	var out []taggedRequest

@@ -104,6 +104,10 @@ type LocationResult struct {
 // matching C++ getKey's Reverse{k.isBackward()} threading (NativeAPI.actor.cpp:3786-3788 →
 // getCachedLocation:1944-1955). Forward callers pass false.
 func (lc *locationCache) locate(db *database, ctx context.Context, key []byte, tenantId int64, span types.SpanContext, isBackward bool) (LocationResult, error) {
+	return lc.locateWithReplyWait(db, ctx, key, tenantId, span, isBackward, nil)
+}
+
+func (lc *locationCache) locateWithReplyWait(db *database, ctx context.Context, key []byte, tenantId int64, span types.SpanContext, isBackward bool, replyWait func(context.Context)) (LocationResult, error) {
 	// System key space (\xff\xff prefix) is handled specially in C++ client.
 	// Don't send GetKeyServerLocationsRequest for it — clamp to normal key range.
 	if len(key) >= 2 && key[0] == 0xff && key[1] == 0xff {
@@ -127,7 +131,7 @@ func (lc *locationCache) locate(db *database, ctx context.Context, key []byte, t
 	lc.mu.RUnlock()
 
 	// Cache miss — query commit proxy.
-	return lc.refresh(db, ctx, key, tenantId, span, isBackward)
+	return lc.refresh(db, ctx, key, tenantId, span, isBackward, replyWait)
 }
 
 // lookupLocked finds the entry containing key for the given tenant.
@@ -309,11 +313,11 @@ func (lc *locationCache) invalidateRange(begin, end []byte, tenantId int64) {
 // reused across the queryLocations proxy retries — matching C++ getKeyLocation_internal
 // (NativeAPI.actor.cpp:3017 `Span("NAPI:getKeyLocation", spanContext)`, built once
 // before basicLoadBalance).
-func (lc *locationCache) refresh(db *database, ctx context.Context, key []byte, tenantId int64, span types.SpanContext, isBackward bool) (LocationResult, error) {
+func (lc *locationCache) refresh(db *database, ctx context.Context, key []byte, tenantId int64, span types.SpanContext, isBackward bool, replyWait func(context.Context)) (LocationResult, error) {
 	child := childSpanContext(span)
 	entries, err := lc.queryLocations(db, ctx, tenantId, func(replyToken transport.UID) []byte {
 		return buildGetKeyServerLocationsRequest(key, isBackward, tenantId, child, replyToken)
-	})
+	}, replyWait)
 	if err != nil {
 		return LocationResult{}, err
 	}
@@ -488,7 +492,7 @@ func stripTenantPrefix(entries []locationEntry, tenantId int64) {
 // Cycles all commit proxies with exponential backoff until success or ctx
 // cancellation. The buildRequest callback constructs the request body given
 // a reply token. Used by both refresh (single key) and refreshRange (range).
-func (lc *locationCache) queryLocations(db *database, ctx context.Context, tenantId int64, buildRequest func(replyToken transport.UID) []byte) ([]locationEntry, error) {
+func (lc *locationCache) queryLocations(db *database, ctx context.Context, tenantId int64, buildRequest func(replyToken transport.UID) []byte, replyWait func(context.Context)) ([]locationEntry, error) {
 	var backoff time.Duration
 	var replyCleanup replyGuard
 	defer replyCleanup.close()
@@ -555,7 +559,7 @@ func (lc *locationCache) queryLocations(db *database, ctx context.Context, tenan
 			replyCleanup.handle = replyHandle
 			body := buildRequest(replyToken)
 
-			if err := sendReadFrame(ctx, conn, locToken, body, replyHandle, permit); err != nil {
+			if err := sendReadFrame(ctx, conn, locToken, body, replyHandle, permit, replyWait); err != nil {
 				replyHandle.Cancel()
 				replyCleanup.release()
 				db.handleReadConnError(proxy.Address, err)
@@ -615,7 +619,7 @@ func (lc *locationCache) refreshRange(db *database, ctx context.Context, begin, 
 	child := childSpanContext(span) // getKeyRangeLocations child, reused across proxy retries (:3184)
 	return lc.queryLocations(db, ctx, tenantId, func(replyToken transport.UID) []byte {
 		return buildGetKeyServerLocationsRangeRequest(begin, end, limit, reverse, tenantId, child, replyToken)
-	})
+	}, nil)
 }
 
 // buildGetKeyServerLocationsRequest constructs the request with embedded reply token.

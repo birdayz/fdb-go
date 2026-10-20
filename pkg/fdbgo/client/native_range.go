@@ -338,10 +338,7 @@ func fallbackFlags(b, e []byte, more, reverse bool) (readToBegin, readThroughEnd
 	return readToBegin, readThroughEnd
 }
 
-type (
-	resolveKeyStartObserver  struct{}
-	resolveKeyWorkerObserver struct{}
-)
+type resolveKeyStartObserver struct{}
 
 func awaitResolveKeyStart(ctx context.Context, parked <-chan struct{}) {
 	select {
@@ -393,6 +390,14 @@ func (tx *Transaction) startResolveKey(ctx context.Context, sel KeySelector, rv 
 		beforeWait = func() { hook(sel) }
 	}
 	pctx, park := transport.WithSuspendHandoff(ctx, resume, beforeWait)
+	observe := tx.resolveKeyWorkerObserver
+	beforeReplyWait := tx.beforeResolveKeyReplyWait
+	replyWait := func(ctx context.Context) {
+		if beforeReplyWait != nil {
+			beforeReplyWait(sel, park.Done())
+		}
+		notifyParked(ctx)
+	}
 	go func() {
 		// A client goroutine boundary (panicbackstop.go): every exit publishes the
 		// result and closes done and parked, so the fallback's wait and cleanup
@@ -400,10 +405,10 @@ func (tx *Transaction) startResolveKey(ctx context.Context, sel KeySelector, rv 
 		defer park.Fire()
 		defer close(fut.done)
 		if tx.resolveKeyBackstop().run(func() {
-			if observe, ok := pctx.Value(resolveKeyWorkerObserver{}).(func(KeySelector)); ok {
+			if observe != nil {
 				observe(sel)
 			}
-			fut.key, _, fut.err = tx.getKeyImpl(pctx, rv, sel.Key, sel.OrEqual, sel.Offset)
+			fut.key, _, fut.err = tx.getKeyImplWithReplyWait(pctx, rv, sel.Key, sel.OrEqual, sel.Offset, replyWait)
 		}) {
 			fut.key, fut.err = nil, &wire.FDBError{Code: ErrInternalError}
 		}

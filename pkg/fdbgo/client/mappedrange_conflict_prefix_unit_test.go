@@ -69,12 +69,15 @@ func TestMappedRangeConflictPublicationRetainsIncarnation(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		pauseAt  int
-		modified bool
+		modified string
 	}{
 		{name: "primary", pauseAt: 1},
 		{name: "point", pauseAt: 2},
 		{name: "range", pauseAt: 3},
-		{name: "modified-prefix", pauseAt: 3, modified: true},
+		{name: "modified-prefix", pauseAt: 3, modified: "n"},
+		{name: "modified-primary-begin", pauseAt: 1, modified: "a"},
+		{name: "modified-point", pauseAt: 2, modified: "j"},
+		{name: "modified-at-begin", pauseAt: 3, modified: "m"},
 	} {
 		for _, reset := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/reset=%t", tc.name, reset), func(t *testing.T) {
@@ -90,9 +93,18 @@ func TestMappedRangeConflictPublicationRetainsIncarnation(t *testing.T) {
 					}},
 				}
 				want := [][2]string{{"a", "e"}, {"j", "j\x00"}, {"m", "o\x00"}}
-				if tc.modified {
-					tx.ryw.set([]byte("n"), nil)
-					want[2][1] = "n"
+				if tc.modified != "" {
+					tx.ryw.set([]byte(tc.modified), nil)
+					switch tc.modified {
+					case "a":
+						want = nil
+					case "j":
+						want = want[:1]
+					case "m":
+						want = want[:2] // no empty [m,m) conflict before 2039
+					default:
+						want[2][1] = tc.modified
+					}
 				}
 				entered, release := make(chan struct{}), make(chan struct{})
 				resume := sync.OnceFunc(func() { close(release) })
@@ -151,7 +163,10 @@ func TestMappedRangeConflictPublicationRetainsIncarnation(t *testing.T) {
 					if publications != tc.pauseAt {
 						t.Errorf("retired mapped read attempted %d publications, want %d", publications, tc.pauseAt)
 					}
-				} else if tc.modified {
+				} else if tc.modified != "" {
+					if publications != tc.pauseAt {
+						t.Errorf("modified mapped read attempted %d checks, want %d", publications, tc.pauseAt)
+					}
 					if code, _ := fdbErrorCode(err); code != ErrGetMappedRangeReadsYourWrites {
 						t.Errorf("modified mapped read = %v, want 2039", err)
 					}
