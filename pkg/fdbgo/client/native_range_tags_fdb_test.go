@@ -16,17 +16,20 @@ import (
 // range loop already covered by TestReadTagSamplingOneDrawPerRequest.
 func TestNativeReadTagSampling(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-	t.Cleanup(cancel)
+	// Seed before scheduling the parallel cases. Their deadlines start only
+	// after each child's t.Parallel returns, not while it waits to run.
+	seedCtx, cancelSeed := context.WithTimeout(context.Background(), 3*time.Minute)
+	t.Cleanup(cancelSeed)
 	prefix := t.Name() + "/"
-	seed := newTestDatabase(t, ctx, sharedClusterFile, plainDial)
+	seed := newTestDatabase(t, seedCtx, sharedClusterFile, plainDial)
 	for _, k := range []string{"a", "b", "c", "d", "e"} {
-		setKey(t, ctx, seed, []byte(prefix+k), []byte("v"))
-		setKey(t, ctx, seed, []byte(prefix+"large/"+k), bytes.Repeat([]byte("v"), 40000))
+		setKey(t, seedCtx, seed, []byte(prefix+k), []byte("v"))
+		setKey(t, seedCtx, seed, []byte(prefix+"large/"+k), bytes.Repeat([]byte("v"), 40000))
 	}
 	seed.Close()
+	cancelSeed()
 
-	setup := func(t *testing.T) (*Transaction, *sendRecorder, *simDialer, *readTagDraws, int64, *sync.Map) {
+	setup := func(t *testing.T, ctx context.Context) (*Transaction, *sendRecorder, *simDialer, *readTagDraws, int64, *sync.Map) {
 		t.Helper()
 		sim, draws, aliases := newSimDialer(), &readTagDraws{}, &sync.Map{}
 		dial := func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -55,7 +58,9 @@ func TestNativeReadTagSampling(t *testing.T) {
 		for _, fault := range []string{"hedge", "alternative", "reply-timeout", "maybe-delivered", "wrong-shard", "all-alternatives-failed"} {
 			t.Run(route+"/"+fault, func(t *testing.T) {
 				t.Parallel()
-				tx, rec, sim, draws, _, aliases := setup(t)
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+				t.Cleanup(cancel)
+				tx, rec, sim, draws, _, aliases := setup(t, ctx)
 				tx.rpcTimeoutOverride = 300 * time.Millisecond
 				var reply []byte
 				var alternative ServerInfo
@@ -129,7 +134,9 @@ func TestNativeReadTagSampling(t *testing.T) {
 	for _, route := range []string{"native-progress", "walk-storage-progress"} {
 		t.Run(route, func(t *testing.T) {
 			t.Parallel()
-			tx, rec, _, draws, _, _ := setup(t)
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+			t.Cleanup(cancel)
+			tx, rec, _, draws, _, _ := setup(t, ctx)
 			tx.db.hedgeEnabled.Store(false)
 			draws.script(alternatingDraws(100)...)
 			rec.start()
@@ -159,7 +166,9 @@ func TestNativeReadTagSampling(t *testing.T) {
 	for _, hedge := range []bool{false, true} {
 		t.Run(fmt.Sprintf("fallback-two-nontrivial-selectors/hedge=%t", hedge), func(t *testing.T) {
 			t.Parallel()
-			tx, rec, sim, draws, rv, _ := setup(t)
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+			t.Cleanup(cancel)
+			tx, rec, sim, draws, rv, _ := setup(t, ctx)
 			tx.db.hedgeEnabled.Store(hedge)
 			plan := &replyPlan{rec: rec}
 			if hedge {
