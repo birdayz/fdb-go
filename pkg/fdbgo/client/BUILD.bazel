@@ -32,6 +32,7 @@ go_library(
         "native_range.go",
         "options.go",
         "panicbackstop.go",
+        "peer_send.go",
         "pending_get.go",
         "range_issue.go",
         "range_limits.go",
@@ -65,6 +66,7 @@ go_library(
         "//pkg/fdbgo/internal/diag",
         "//pkg/fdbgo/internal/hrtimer",
         "//pkg/fdbgo/internal/rangecheck",
+        "//pkg/fdbgo/internal/sendqueue",
         "//pkg/fdbgo/transport",
         "//pkg/fdbgo/wire",
         "//pkg/fdbgo/wire/types",
@@ -344,12 +346,14 @@ go_test(
 
 # gazelle:exclude native_range_unit_test.go
 # gazelle:exclude native_range_suspend_test.go
+# gazelle:exclude peer_send_unit_test.go
 # gazelle:exclude reply_guard_unit_test.go
 go_test(
     name = "native_range_unit_test",
     srcs = [
         "native_range_suspend_test.go",
         "native_range_unit_test.go",
+        "peer_send_unit_test.go",
         "reply_guard_unit_test.go",
     ],
     embed = [":client"],

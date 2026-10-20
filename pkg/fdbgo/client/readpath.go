@@ -298,12 +298,13 @@ func (tx *Transaction) sendGetKey(ctx context.Context, readVersion int64, select
 
 	makeSender := func(server ServerInfo) sendFunc {
 		return func() inFlightRPC {
-			conn, err := tx.db.getOrDial(ctx, server.Address)
+			conn, permit, err := tx.db.getOrDialForSend(ctx, server.Address)
 			if err != nil {
 				tx.db.handleDialError(ctx, server.Address)
 				return inFlightRPC{err: err, addr: server.Address}
 			}
 			gkToken := getAdjustedEndpoint(server.Token, EndpointGetKey)
+			defer permit.Release()
 			replyToken, replyCh, replyHandle := conn.PrepareReplyTo(gkToken)
 			replyCleanup := replyGuard{handle: replyHandle}
 			defer replyCleanup.close()
@@ -312,7 +313,7 @@ func (tx *Transaction) sendGetKey(ctx context.Context, readVersion int64, select
 			delta := tx.db.queueModel.startRequest(server.Address)
 			start := time.Now()
 
-			if err := sendReadFrame(ctx, conn, gkToken, reqData, replyHandle); err != nil {
+			if err := sendReadFrame(ctx, conn, gkToken, reqData, replyHandle, permit); err != nil {
 				getKeyBufPool.Put(bufp) // the write queue owns its copy
 				tx.db.queueModel.endRequest(server.Address, delta, readFailureLatency(err, start), false)
 				replyHandle.Cancel()
@@ -546,11 +547,12 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 	// Build a sender closure for a given server.
 	makeSender := func(server ServerInfo) sendFunc {
 		return func() inFlightRPC {
-			conn, err := tx.db.getOrDial(ctx, server.Address)
+			conn, permit, err := tx.db.getOrDialForSend(ctx, server.Address)
 			if err != nil {
 				tx.db.handleDialError(ctx, server.Address)
 				return inFlightRPC{err: err, addr: server.Address}
 			}
+			defer permit.Release()
 			replyToken, replyCh, replyHandle := conn.PrepareReplyTo(server.Token)
 			replyCleanup := replyGuard{handle: replyHandle}
 			defer replyCleanup.close()
@@ -559,7 +561,7 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 			delta := tx.db.queueModel.startRequest(server.Address)
 			start := time.Now()
 
-			if err := sendReadFrame(ctx, conn, server.Token, body, replyHandle); err != nil {
+			if err := sendReadFrame(ctx, conn, server.Token, body, replyHandle, permit); err != nil {
 				getValueBufPool.Put(poolBuf) // the write queue owns its copy
 				tx.db.queueModel.endRequest(server.Address, delta, readFailureLatency(err, start), false)
 				replyHandle.Cancel()
@@ -620,11 +622,12 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 // sendGetValueToServer sends a getValue RPC to a single specific server.
 // Used as fallback after hedge fails.
 func (tx *Transaction) sendGetValueToServer(ctx context.Context, key []byte, server ServerInfo, readVersion int64, lockAware bool, tenantId int64, tags readTagSample) ([]byte, error) {
-	conn, err := tx.db.getOrDial(ctx, server.Address)
+	conn, permit, err := tx.db.getOrDialForSend(ctx, server.Address)
 	if err != nil {
 		tx.db.handleDialError(ctx, server.Address)
 		return nil, err
 	}
+	defer permit.Release()
 	replyToken, replyCh, replyHandle := conn.PrepareReplyTo(server.Token)
 	replyCleanup := replyGuard{handle: replyHandle}
 	defer replyCleanup.close()
@@ -633,7 +636,7 @@ func (tx *Transaction) sendGetValueToServer(ctx context.Context, key []byte, ser
 	delta := tx.db.queueModel.startRequest(server.Address)
 	start := time.Now()
 
-	if err := sendReadFrame(ctx, conn, server.Token, body, replyHandle); err != nil {
+	if err := sendReadFrame(ctx, conn, server.Token, body, replyHandle, permit); err != nil {
 		getValueBufPool.Put(poolBuf) // the write queue owns its copy
 		tx.db.queueModel.endRequest(server.Address, delta, readFailureLatency(err, start), false)
 		replyHandle.Cancel()
@@ -1059,12 +1062,13 @@ func sendRangeRPC[T any](tx *Transaction, ctx context.Context, begin, end KeySel
 
 	makeSender := func(server ServerInfo) sendFunc {
 		return func() inFlightRPC {
-			conn, err := tx.db.getOrDial(ctx, server.Address)
+			conn, permit, err := tx.db.getOrDialForSend(ctx, server.Address)
 			if err != nil {
 				tx.db.handleDialError(ctx, server.Address)
 				return inFlightRPC{err: err, addr: server.Address}
 			}
 			gkvToken := getAdjustedEndpoint(server.Token, ops.endpoint)
+			defer permit.Release()
 			replyToken, replyCh, replyHandle := conn.PrepareReplyTo(gkvToken)
 			replyCleanup := replyGuard{handle: replyHandle}
 			defer replyCleanup.close()
@@ -1073,7 +1077,7 @@ func sendRangeRPC[T any](tx *Transaction, ctx context.Context, begin, end KeySel
 			delta := tx.db.queueModel.startRequest(server.Address)
 			start := time.Now()
 
-			if err := sendReadFrame(ctx, conn, gkvToken, body, replyHandle); err != nil {
+			if err := sendReadFrame(ctx, conn, gkvToken, body, replyHandle, permit); err != nil {
 				ops.putBuf(poolBuf) // the write queue owns its copy
 				tx.db.queueModel.endRequest(server.Address, delta, readFailureLatency(err, start), false)
 				replyHandle.Cancel()
@@ -1693,13 +1697,16 @@ func (tx *Transaction) sendWatch(ctx context.Context, key, value []byte, readVer
 	tenantId := tx.watchTenant(ctx)
 	var replyCleanup replyGuard
 	defer replyCleanup.close()
+	var sendCleanup sendGuard
+	defer sendCleanup.close()
 
 	for _, server := range order {
-		conn, err := tx.db.getOrDial(ctx, server.Address)
+		conn, permit, err := tx.db.getOrDialForSend(ctx, server.Address)
 		if err != nil {
 			tx.db.handleDialError(ctx, server.Address)
 			continue
 		}
+		sendCleanup.permit = permit
 		watchToken := getAdjustedEndpoint(server.Token, EndpointWatchValue)
 		replyToken, replyCh, replyHandle := conn.PrepareReplyTo(watchToken)
 		replyCleanup.handle = replyHandle
@@ -1708,7 +1715,7 @@ func (tx *Transaction) sendWatch(ctx context.Context, key, value []byte, readVer
 		delta := tx.db.queueModel.startRequest(server.Address)
 		start := time.Now()
 
-		if err := sendReadFrame(ctx, conn, watchToken, reqData, replyHandle); err != nil {
+		if err := sendReadFrame(ctx, conn, watchToken, reqData, replyHandle, permit); err != nil {
 			tx.db.queueModel.endRequest(server.Address, delta, readFailureLatency(err, start), false)
 			replyHandle.Cancel()
 			replyCleanup.release()

@@ -101,6 +101,9 @@ func TestFallbackStartsEndAtTransportSuspension(t *testing.T) {
 				if string(s.Key) == "end" {
 					defer close(endJoined)
 					close(endSent)
+					if ctx.Err() == nil {
+						notifyParked(ctx)
+					}
 					<-ctx.Done()
 					return nil, ctx.Err()
 				}
@@ -152,6 +155,9 @@ func TestResolveKeyPanicPublishesAndJoins(t *testing.T) {
 		}
 		defer close(endJoined)
 		close(endStarted)
+		if ctx.Err() == nil {
+			notifyParked(ctx)
+		}
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}

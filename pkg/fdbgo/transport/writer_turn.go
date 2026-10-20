@@ -43,7 +43,7 @@ func turnWaitWithin(minDelay, maxDelay, limit time.Duration) bool {
 // takeTurn reports false, having done nothing, when the connection is busy or
 // cannot take turns. Otherwise it returns once the batch is written or handed
 // to writeLoop, or the connection fails.
-func (c *Conn) takeTurn(ctx context.Context, token UID, body []byte) (bool, error) {
+func (c *Conn) takeTurn(ctx context.Context, token UID, body []byte, accepted func()) (bool, error) {
 	if c.raw == nil || c.coalesce == nil || c.queued.Load() != 0 ||
 		!turnWaitWithin(c.minCoalesce, c.maxCoalesce, c.turnDelayLimit) {
 		return false, nil
@@ -64,6 +64,9 @@ func (c *Conn) takeTurn(ctx context.Context, token UID, body []byte) (bool, erro
 	c.turns.Add(1)
 	c.turnCollecting = true
 	c.turnMu.Unlock()
+	if accepted != nil {
+		accepted()
+	}
 
 	NotifySuspend(ctx) // the frame holds its turn; the sender waits out the coalescing delay
 	c.coalesceWait(time.Since(c.lastWrite))

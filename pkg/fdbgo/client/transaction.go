@@ -890,12 +890,15 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 	// Send request without waiting for response.
 	var replyCleanup replyGuard
 	defer replyCleanup.close()
+	var sendCleanup sendGuard
+	defer sendCleanup.close()
 	for _, server := range servers {
-		conn, dialErr := tx.db.getOrDial(ctx, server.Address)
+		conn, permit, dialErr := tx.db.getOrDialForSend(ctx, server.Address)
 		if dialErr != nil {
 			tx.db.handleDialError(ctx, server.Address)
 			continue
 		}
+		sendCleanup.permit = permit
 		replyToken, replyCh, replyHandle := conn.PrepareReplyTo(server.Token)
 		replyCleanup.handle = replyHandle
 		body, poolBuf := buildGetValueRequest(key, readVersion, tx.lockAware || tx.readLockAware, tx.tenantId, childSpanContext(tx.currentSpan()), tags, replyToken, server.Token)
@@ -910,9 +913,9 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 		tx.readErrMu.Unlock()
 		var sendErr error
 		if first {
-			_, sendErr = conn.SendFrameEagerContext(ctx, server.Token, body)
+			_, sendErr = conn.SendFrameEagerContextOrdered(ctx, server.Token, body, permit)
 		} else {
-			_, sendErr = conn.SendFrameDeferredContext(ctx, server.Token, body)
+			_, sendErr = conn.SendFrameDeferredContextOrdered(ctx, server.Token, body, permit)
 		}
 		getValueBufPool.Put(poolBuf)
 		if sendErr != nil {

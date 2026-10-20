@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"fdb.dev/pkg/fdbgo/internal/sendqueue"
 	"fdb.dev/pkg/fdbgo/transport"
 	"fdb.dev/pkg/fdbgo/wire"
 	"fdb.dev/pkg/fdbgo/wire/types"
@@ -23,7 +24,7 @@ var errLongPollExpired = errors.New("coordinator long poll expired")
 // ClientDBInfo. The coordinator holds the request while its info id equals
 // known (Coordination.actor.cpp:234-249), so a non-zero known is a long poll;
 // timeout bounds the wait.
-func (db *database) openDatabaseCoord(ctx context.Context, conn *transport.Conn, snap *ClusterFile, known transport.UID, timeout time.Duration) (*DBInfo, error) {
+func (db *database) openDatabaseCoord(ctx context.Context, conn *transport.Conn, snap *ClusterFile, known transport.UID, timeout time.Duration, permit *sendqueue.Permit) (*DBInfo, error) {
 	replyToken, replyCh, replyHandle := conn.PrepareReply()
 	replyCleanup := replyGuard{handle: replyHandle}
 	defer replyCleanup.close()
@@ -34,7 +35,7 @@ func (db *database) openDatabaseCoord(ctx context.Context, conn *transport.Conn,
 	}
 
 	destToken := transport.WellKnownToken(transport.WLTokenClientLeaderRegOpenDatabase)
-	if err := sendReadFrame(ctx, conn, destToken, body, replyHandle); err != nil {
+	if err := sendReadFrame(ctx, conn, destToken, body, replyHandle, permit); err != nil {
 		replyHandle.Cancel()
 		return nil, fmt.Errorf("send OpenDatabaseCoordRequest: %w", err)
 	}

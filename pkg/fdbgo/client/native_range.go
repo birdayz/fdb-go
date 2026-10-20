@@ -278,13 +278,14 @@ func (tx *Transaction) nativeGetRangeFallback(ctx context.Context, begin, end Ke
 	// created (:4465-4466); parked marks that wait.
 	fb, parked := tx.startResolveKey(rctx, begin, readVersion)
 	<-parked // closed on begin's first wait, or when its goroutine ends
-	fe, _ := tx.startResolveKey(rctx, end, readVersion)
+	fe, endParked := tx.startResolveKey(rctx, end, readVersion)
 	defer func() { // an abandoned resolution ends with the call
 		cancel()
 		<-fb.done
 		<-fe.done
 	}()
-	b, err := fb.wait() // :4468
+	awaitResolveKeyStart(rctx, endParked) // end also runs to its first wait before fb.wait
+	b, err := fb.wait()                   // :4468
 	if err != nil {
 		return nativeRangeResult{}, err
 	}
@@ -310,6 +311,22 @@ func fallbackFlags(b, e []byte, more, reverse bool) (readToBegin, readThroughEnd
 	readToBegin = len(b) == 0 && ((reverse && !more) || !reverse)
 	readThroughEnd = bytes.Equal(e, allKeysEnd) && ((!reverse && !more) || reverse)
 	return readToBegin, readThroughEnd
+}
+
+type resolveKeyStartObserver struct{}
+
+func awaitResolveKeyStart(ctx context.Context, parked <-chan struct{}) {
+	select {
+	case <-parked:
+		return
+	default:
+	}
+	// Observe only an unready startup, without changing transaction layout or
+	// the ready path. Tests use this context-scoped barrier before releasing end.
+	if observe, ok := ctx.Value(resolveKeyStartObserver{}).(func()); ok {
+		observe()
+	}
+	<-parked
 }
 
 // keyFuture is a key being resolved.

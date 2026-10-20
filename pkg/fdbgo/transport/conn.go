@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"fdb.dev/pkg/fdbgo/internal/hrtimer"
+	"fdb.dev/pkg/fdbgo/internal/sendqueue"
 	"fdb.dev/pkg/fdbgo/wire"
 	"fdb.dev/pkg/fdbgo/wire/types"
 )
@@ -149,6 +150,8 @@ type Conn struct {
 	writeCh        chan writeReq // channel-based write loop for coalescing
 	writeAdmission sync.RWMutex
 	writeClosed    bool // protected by writeAdmission
+	sendWaiters    sendqueue.Queue
+	peerSendOrder  atomic.Pointer[sendqueue.Queue]
 	ctx            context.Context
 	cancel         context.CancelFunc
 	loopWG         sync.WaitGroup // tracks readLoop + writeLoop goroutines
@@ -574,21 +577,24 @@ func (c *Conn) Send(destToken UID, body []byte) (replyToken UID, replyCh <-chan 
 // callers (SendAndWait) can return it to the pool. Send exposes only the
 // receive-only view.
 func (c *Conn) sendInternal(destToken UID, body []byte) (replyToken UID, replyCh chan Response, err error) {
-	replyToken = NewUID()
+	token := NewUID()
 	ch := getReplyChannel()
 	c.pendingMu.Lock()
-	c.pending[replyToken] = pendingEntry{ch: ch, dest: destToken}
+	c.pending[token] = pendingEntry{ch: ch, dest: destToken}
 	c.pendingMu.Unlock()
+	transferred := false
+	defer func() {
+		if !transferred {
+			c.cancelPending(token, ch)
+		}
+	}()
 
 	if err = c.SendFrame(destToken, body); err != nil {
-		c.pendingMu.Lock()
-		delete(c.pending, replyToken)
-		c.pendingMu.Unlock()
-		putReplyChannel(ch)
 		return UID{}, nil, fmt.Errorf("write frame: %w", err)
 	}
 
-	return replyToken, ch, nil
+	transferred = true
+	return token, ch, nil
 }
 
 // cancelPending removes a still-pending reply token and returns its channel to
@@ -657,19 +663,25 @@ func putReplyChannelImpl(ch chan Response) {
 // SendFrame writes a raw frame and flushes. Returns once the frame is written, or
 // once writeLoop holds whatever a full socket refused, ahead of every later frame.
 func (c *Conn) SendFrame(destToken UID, body []byte) error {
+	permit, err := c.beginSend(c.ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer permit.Release()
+	accepted := acceptedPermit(permit)
 	if c.debugFrames {
 		fmt.Fprintf(c.debugWriter, "[send %s] token=%016x:%016x bodyLen=%d\n", c.conn.RemoteAddr(),
 			destToken.First, destToken.Second, len(body))
 	}
 	LogSend(destToken, body)
-	if direct, err := c.tryWriteDirect(destToken, body); direct {
+	if direct, err := c.tryWriteDirect(destToken, body, accepted); direct {
 		return err
 	}
-	if took, err := c.takeTurn(context.Background(), destToken, body); took {
+	if took, err := c.takeTurn(c.ctx, destToken, body, accepted); took {
 		return err
 	}
 	errCh := errChanPool.Get().(chan error)
-	if !c.enqueue(writeReq{token: destToken, body: body, errCh: errCh}, nil) {
+	if !c.enqueue(writeReq{token: destToken, body: body, errCh: errCh}, accepted) {
 		errChanPool.Put(errCh)
 		return errConnClosed
 	}
@@ -692,8 +704,13 @@ func (c *Conn) SendFrame(destToken UID, body []byte) error {
 // The write loop will flush it with the next batch. Used for pipelining:
 // send N frames, then call Flush() (or let the write loop auto-flush).
 func (c *Conn) SendFrameDeferred(destToken UID, body []byte) error {
+	permit, err := c.beginSend(c.ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer permit.Release()
 	LogSend(destToken, body)
-	if !c.enqueue(writeReq{token: destToken, body: body}, nil) {
+	if !c.enqueue(writeReq{token: destToken, body: body}, acceptedPermit(permit)) {
 		return errConnClosed
 	}
 	return nil
@@ -703,11 +720,16 @@ func (c *Conn) SendFrameDeferred(destToken UID, body []byte) error {
 // queued every earlier frame is already written; otherwise it sends a flush
 // marker through the write channel and waits for acknowledgment.
 func (c *Conn) Flush() error {
+	permit, err := c.beginSend(c.ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer permit.Release()
 	if c.queued.Load() == 0 && c.ctx.Err() == nil {
 		return nil
 	}
 	errCh := errChanPool.Get().(chan error)
-	if !c.enqueue(writeReq{errCh: errCh}, nil) { // empty token+body = flush-only request
+	if !c.enqueue(writeReq{errCh: errCh}, acceptedPermit(permit)) { // empty token+body = flush-only request
 		errChanPool.Put(errCh)
 		return errConnClosed
 	}
@@ -1348,6 +1370,13 @@ func (c *Conn) connectionMonitor() {
 // The reply is registered in the pending map so readLoop dispatches it.
 func (c *Conn) sendPingWithReply() <-chan struct{} {
 	replyToken, replyCh, replyHandle := c.PrepareReply()
+	transferred := false
+	defer func() {
+		if !transferred {
+			replyHandle.Cancel()
+			replyHandle.Release()
+		}
+	}()
 	pingEP := WellKnownToken(WLTokenPingPacket)
 	body := BuildPingRequest(replyToken)
 	if !c.tryEnqueue(writeReq{token: pingEP, body: body}) {
@@ -1360,8 +1389,6 @@ func (c *Conn) sendPingWithReply() <-chan struct{} {
 		// falls through to the timer → bytesReceived check and kills a genuinely
 		// stuck conn. The pending reply is cancelled here (no leak); the
 		// reply-waiter goroutine below is only reached on the sent path.
-		replyHandle.Cancel()
-		replyHandle.Release()
 		return nil
 	}
 	// Sent path only — allocate the done channel here so the drop path above
@@ -1369,15 +1396,21 @@ func (c *Conn) sendPingWithReply() <-chan struct{} {
 	// then signal done.
 	done := make(chan struct{})
 	go func() {
-		defer replyHandle.Release()
-		defer close(done)
+		received := false
+		defer func() {
+			if !received {
+				replyHandle.Cancel()
+			}
+			replyHandle.Release()
+			close(done)
+		}()
 		select {
 		case <-replyCh:
-			// Reply arrived.
+			received = true
 		case <-c.ctx.Done():
-			replyHandle.Cancel()
 		}
 	}()
+	transferred = true
 	return done
 }
 

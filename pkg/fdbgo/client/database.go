@@ -17,6 +17,7 @@ import (
 	oteltrace "go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
 
+	"fdb.dev/pkg/fdbgo/internal/sendqueue"
 	"fdb.dev/pkg/fdbgo/transport"
 	"fdb.dev/pkg/fdbgo/wire"
 )
@@ -513,9 +514,10 @@ func (db *database) handleDialError(ctx context.Context, addr string) {
 // conn/err — written by the dialer before close(done), so the channel close
 // establishes the happens-before.
 type dialCall struct {
-	done chan struct{}
-	conn *transport.Conn
-	err  error
+	done  chan struct{}
+	conn  *transport.Conn
+	err   error
+	sends sendqueue.Queue
 }
 
 // getOrDialConn returns a pooled or freshly-dialed connection.
@@ -535,48 +537,8 @@ type dialCall struct {
 // — it never aborts the dial that the other waiters share (matching C++, where the
 // connectionKeeper's dial outlives any single request).
 func (db *database) getOrDialConn(ctx context.Context, addr string) (conn *transport.Conn, dialed bool, err error) {
-	// An already-canceled caller must not start (or coalesce onto) a dial.
-	if err := ctx.Err(); err != nil {
-		return nil, false, err
-	}
-	db.connMu.Lock()
-	// Fast path: a live pooled connection.
-	if c, ok := db.connPool[addr]; ok {
-		if !c.IsClosed() {
-			db.connMu.Unlock()
-			return c, false, nil
-		}
-		delete(db.connPool, addr)
-	}
-	// Join the in-flight dial for addr, or start one (becoming its owner).
-	call, owner := db.dialing[addr], false
-	if call == nil {
-		call = &dialCall{done: make(chan struct{})}
-		db.dialing[addr] = call
-		owner = true
-	}
-	db.connMu.Unlock()
-
-	if owner {
-		go db.dialAndPool(addr, call)
-	}
-
-	// Every caller — owner included — waits the same way: a caller's ctx cancels
-	// only its own wait, never the shared dial.
-	select {
-	case <-call.done: // a dial that already finished is not a wait
-	default:
-		notifyParked(ctx) // the caller waits for the dial (and its handshake)
-	}
-	select {
-	case <-call.done:
-		if call.err != nil {
-			return nil, false, call.err
-		}
-		return call.conn, owner, nil
-	case <-ctx.Done():
-		return nil, false, ctx.Err()
-	}
+	conn, dialed, _, err = db.getOrDialConnFor(ctx, addr, false)
+	return conn, dialed, err
 }
 
 // dialAndPool runs the single shared dial for addr and publishes the result to all
@@ -604,7 +566,9 @@ func (db *database) dialAndPool(addr string, call *dialCall) {
 			return
 		}
 		db.connMu.Lock()
-		delete(db.dialing, addr)
+		if db.dialing[addr] == call {
+			delete(db.dialing, addr)
+		}
 		db.connMu.Unlock()
 		call.err = fmt.Errorf("fdbgo: panic dialing %s: %v", addr, r)
 		close(call.done)
@@ -612,12 +576,24 @@ func (db *database) dialAndPool(addr string, call *dialCall) {
 
 	dialCtx, cancel := context.WithTimeout(db.ctx, DefaultRPCTimeout)
 	defer cancel() // RFC-110: release the dial timer even if transport.Dial panics
-	c, dialErr := transport.Dial(dialCtx, addr, db.tlsConfig, db.dialFn, db.dialOpts...)
+	dialOpts := append([]transport.DialOption{}, db.dialOpts...)
+	dialOpts = append(dialOpts, transport.WithSendOrder(&call.sends))
+	c, dialErr := transport.Dial(dialCtx, addr, db.tlsConfig, db.dialFn, dialOpts...)
 
 	func() {
 		db.connMu.Lock()
 		defer db.connMu.Unlock()
-		delete(db.dialing, addr)
+		defer func() {
+			drained := call.sends.SealIfEmpty()
+			if call.err != nil || drained {
+				if db.dialing[addr] == call {
+					delete(db.dialing, addr)
+				}
+				if call.conn != nil && drained {
+					call.conn.ClearSendOrder(&call.sends)
+				}
+			}
+		}()
 		switch {
 		case dialErr != nil:
 			call.err = dialErr
@@ -803,11 +779,12 @@ func (db *database) tryOneCoordinator(ctx context.Context, snap *ClusterFile, ad
 			info, err = nil, fmt.Errorf("fdbgo: panic contacting coordinator %s: %v", addr, r)
 		}
 	}()
-	conn, dialErr := db.getOrDial(ctx, addr)
+	conn, permit, dialErr := db.getOrDialForSend(ctx, addr)
 	if dialErr != nil {
 		return nil, dialErr
 	}
-	info, err = db.openDatabaseCoord(ctx, conn, snap, transport.UID{}, CoordinatorTimeout)
+	defer permit.Release()
+	info, err = db.openDatabaseCoord(ctx, conn, snap, transport.UID{}, CoordinatorTimeout, permit)
 	if err != nil {
 		return nil, fmt.Errorf("coordinator %s: %w", addr, err)
 	}

@@ -283,7 +283,10 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   `ryw.go:620-632` (`get` / `localPointLocked`), `ryw.go:643-645` (`getSnapshot`),
   and `transaction.go:3223-3225` (`stateAddReadConflictRange` / `conflictRanges`).
   Scope deferred unlocks there and pin a panic inside each locked operation; do not
-  treat a panic after a reply outside the lock as proof.
+  treat a panic after a reply outside the lock as proof. Also audit transport
+  `writer_turn.go:52-99`: `NotifySuspend` and the coalescing wait run with `writeMu`
+  held and no panic rollback for the lock, counted frame or `turnCollecting`; pin a
+  suspension-observer panic and prove connection reuse after recovery.
 - [ ] **Reads after an illegal Set precede its deferred verdict.** `stateSet`
   (`transaction.go:1268-1284`) buffers illegal keys/values until commit validation;
   C++ RYW set throws before modifying WriteMap (`ReadYourWrites.actor.cpp:2344-2353`)

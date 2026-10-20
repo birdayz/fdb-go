@@ -128,12 +128,15 @@ func (tx *Transaction) metricsMinVersion(ctx context.Context) (int64, error) {
 func (tx *Transaction) sendWaitMetrics(ctx context.Context, begin, end []byte, minVersion int64, servers []ServerInfo) (int64, error) {
 	var replyCleanup replyGuard
 	defer replyCleanup.close()
+	var sendCleanup sendGuard
+	defer sendCleanup.close()
 	for _, server := range servers {
-		conn, err := tx.db.getOrDial(ctx, server.Address)
+		conn, permit, err := tx.db.getOrDialForSend(ctx, server.Address)
 		if err != nil {
 			tx.db.handleDialError(ctx, server.Address)
 			continue
 		}
+		sendCleanup.permit = permit
 		wmToken := getAdjustedEndpoint(server.Token, EndpointWaitMetrics)
 		replyToken, replyCh, replyHandle := conn.PrepareReplyTo(wmToken)
 		replyCleanup.handle = replyHandle
@@ -145,7 +148,7 @@ func (tx *Transaction) sendWaitMetrics(ctx context.Context, begin, end []byte, m
 			TenantInfo: types.TenantInfo{TenantId: tx.tenantId},
 			MinVersion: minVersion,
 		}
-		if err := sendReadFrame(ctx, conn, wmToken, req.MarshalFDB(), replyHandle); err != nil {
+		if err := sendReadFrame(ctx, conn, wmToken, req.MarshalFDB(), replyHandle, permit); err != nil {
 			replyHandle.Cancel()
 			replyCleanup.release()
 			tx.db.handleReadConnError(server.Address, err)
@@ -285,12 +288,15 @@ func (tx *Transaction) getRangeSplitPointsImpl(ctx context.Context, begin, end [
 func (tx *Transaction) sendSplitRange(ctx context.Context, begin, end []byte, chunkSize int64, servers []ServerInfo) ([][]byte, error) {
 	var replyCleanup replyGuard
 	defer replyCleanup.close()
+	var sendCleanup sendGuard
+	defer sendCleanup.close()
 	for _, server := range servers {
-		conn, err := tx.db.getOrDial(ctx, server.Address)
+		conn, permit, err := tx.db.getOrDialForSend(ctx, server.Address)
 		if err != nil {
 			tx.db.handleDialError(ctx, server.Address)
 			continue
 		}
+		sendCleanup.permit = permit
 		srToken := getAdjustedEndpoint(server.Token, EndpointGetRangeSplitPoints)
 		replyToken, replyCh, replyHandle := conn.PrepareReplyTo(srToken)
 		replyCleanup.handle = replyHandle
@@ -300,7 +306,7 @@ func (tx *Transaction) sendSplitRange(ctx context.Context, begin, end []byte, ch
 			Reply:      types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
 			TenantInfo: types.TenantInfo{TenantId: tx.tenantId},
 		}
-		if err := sendReadFrame(ctx, conn, srToken, req.MarshalFDB(), replyHandle); err != nil {
+		if err := sendReadFrame(ctx, conn, srToken, req.MarshalFDB(), replyHandle, permit); err != nil {
 			replyHandle.Cancel()
 			replyCleanup.release()
 			tx.db.handleReadConnError(server.Address, err)

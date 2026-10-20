@@ -1390,6 +1390,8 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uin
 	var backoff time.Duration
 	var replyCleanup replyGuard
 	defer replyCleanup.close()
+	var sendCleanup sendGuard
+	defer sendCleanup.close()
 	closed := db.ctx.Done() // ctx may be a caller's, which Close does not cancel
 
 retry:
@@ -1441,7 +1443,7 @@ retry:
 			if db.failMon.endpointFailed(proxy.Address, proxy.Token) {
 				continue
 			}
-			conn, err := db.getOrDial(ctx, proxy.Address)
+			conn, permit, err := db.getOrDialForSend(ctx, proxy.Address)
 			if err != nil {
 				if ended := grvRPCEnded(ctx, db); ended != nil {
 					return 0, false, false, false, nil, 0, attemptEpoch, ended
@@ -1450,11 +1452,12 @@ retry:
 				continue
 			}
 
+			sendCleanup.permit = permit
 			replyToken, replyCh, replyHandle := conn.PrepareReplyTo(proxy.Token)
 			replyCleanup.handle = replyHandle
 			body := buildGetReadVersionRequest(replyToken, flags, txnCount, span, tags)
 
-			if err := sendReadFrame(ctx, conn, proxy.Token, body, replyHandle); err != nil {
+			if err := sendReadFrame(ctx, conn, proxy.Token, body, replyHandle, permit); err != nil {
 				replyHandle.Cancel()
 				replyCleanup.release()
 				if ended := grvRPCEnded(ctx, db); ended != nil {
