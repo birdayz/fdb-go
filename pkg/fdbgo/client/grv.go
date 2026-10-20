@@ -1388,6 +1388,8 @@ const (
 // cancellation or Close (matching C++ infinite loop + quorum(ok,1) wait).
 func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uint32, txnCount uint32, span types.SpanContext, tags []types.TransactionTagCount) (version int64, locked bool, rkDefaultThrottled, rkBatchThrottled bool, tagThrottleInfo []types.TransactionTagThrottle, proxyTagThrottledDuration float64, attemptEpoch int64, err error) {
 	var backoff time.Duration
+	var replyCleanup replyGuard
+	defer replyCleanup.close()
 	closed := db.ctx.Done() // ctx may be a caller's, which Close does not cancel
 
 retry:
@@ -1449,11 +1451,12 @@ retry:
 			}
 
 			replyToken, replyCh, replyHandle := conn.PrepareReplyTo(proxy.Token)
+			replyCleanup.handle = replyHandle
 			body := buildGetReadVersionRequest(replyToken, flags, txnCount, span, tags)
 
 			if err := sendReadFrame(ctx, conn, proxy.Token, body, replyHandle); err != nil {
 				replyHandle.Cancel()
-				replyHandle.Release()
+				replyCleanup.release()
 				if ended := grvRPCEnded(ctx, db); ended != nil {
 					return 0, false, false, false, nil, 0, attemptEpoch, ended
 				}
@@ -1468,19 +1471,19 @@ retry:
 			case resp = <-replyCh:
 			case <-proxiesChanged:
 				replyHandle.Cancel()
-				replyHandle.Release()
+				replyCleanup.release()
 				backoff = 0
 				continue retry
 			case <-ctx.Done():
 				replyHandle.Cancel()
-				replyHandle.Release()
+				replyCleanup.release()
 				return 0, false, false, false, nil, 0, attemptEpoch, ctx.Err()
 			case <-closed:
 				replyHandle.Cancel()
-				replyHandle.Release()
+				replyCleanup.release()
 				return 0, false, false, false, nil, 0, attemptEpoch, db.ctx.Err()
 			}
-			replyHandle.Release()
+			replyCleanup.release()
 			if resp.Err != nil {
 				db.handleReadConnError(proxy.Address, resp.Err)
 				continue

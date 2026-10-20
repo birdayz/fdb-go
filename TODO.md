@@ -278,6 +278,18 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   `ReadYourWrites.actor.cpp:2466-2468`), surfacing it on the next operation.
   `AddWriteConflictKey` already defers it. Align the range form (the facade's return
   value then only carries synchronous errors such as inverted ranges) with a test.
+- [ ] **Panic-safe locks outside the GetKey walk.** Scoped recovery now unwinds GetKey
+  walk locks, but older paths still pair bare Lock/Unlock around fallible work:
+  `ryw.go:620-632` (`get` / `localPointLocked`), `ryw.go:643-645` (`getSnapshot`),
+  and `transaction.go:3223-3225` (`stateAddReadConflictRange` / `conflictRanges`).
+  Scope deferred unlocks there and pin a panic inside each locked operation; do not
+  treat a panic after a reply outside the lock as proof.
+- [ ] **Reads after an illegal Set precede its deferred verdict.** `stateSet`
+  (`transaction.go:1268-1284`) buffers illegal keys/values until commit validation;
+  C++ RYW set throws before modifying WriteMap (`ReadYourWrites.actor.cpp:2344-2353`)
+  and the thread-safe wrapper defers that error. A later GetKey/conflict filter can
+  therefore observe a Go write that C++ never installed. Align mutation admission
+  and first-error ordering, with an illegal-Set-then-read/conflict regression.
 - [ ] **Transaction options during in-flight operations.** Option setters (`SetLockAware`,
   `SetReadLockAware`, GRV cache, tags, priority, `SetAutoThrottleTag`) write plain
   `Transaction` fields under a shared state lease, while in-flight operations read them:

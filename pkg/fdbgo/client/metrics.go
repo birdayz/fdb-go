@@ -126,6 +126,8 @@ func (tx *Transaction) metricsMinVersion(ctx context.Context) (int64, error) {
 // (reversed range) to get an immediate response instead of waiting for a
 // threshold change.
 func (tx *Transaction) sendWaitMetrics(ctx context.Context, begin, end []byte, minVersion int64, servers []ServerInfo) (int64, error) {
+	var replyCleanup replyGuard
+	defer replyCleanup.close()
 	for _, server := range servers {
 		conn, err := tx.db.getOrDial(ctx, server.Address)
 		if err != nil {
@@ -134,6 +136,7 @@ func (tx *Transaction) sendWaitMetrics(ctx context.Context, begin, end []byte, m
 		}
 		wmToken := getAdjustedEndpoint(server.Token, EndpointWaitMetrics)
 		replyToken, replyCh, replyHandle := conn.PrepareReplyTo(wmToken)
+		replyCleanup.handle = replyHandle
 		req := types.WaitMetricsRequest{
 			Keys:       types.KeyRangeRef{Begin: begin, End: end},
 			Min:        types.StorageMetrics{Bytes: 0},
@@ -144,7 +147,7 @@ func (tx *Transaction) sendWaitMetrics(ctx context.Context, begin, end []byte, m
 		}
 		if err := sendReadFrame(ctx, conn, wmToken, req.MarshalFDB(), replyHandle); err != nil {
 			replyHandle.Cancel()
-			replyHandle.Release()
+			replyCleanup.release()
 			tx.db.handleReadConnError(server.Address, err)
 			continue
 		}
@@ -152,7 +155,7 @@ func (tx *Transaction) sendWaitMetrics(ctx context.Context, begin, end []byte, m
 		select {
 		case resp := <-replyCh:
 			cancel()
-			replyHandle.Release()
+			replyCleanup.release()
 			if resp.Err != nil {
 				tx.db.handleReadConnError(server.Address, resp.Err)
 				continue
@@ -161,7 +164,7 @@ func (tx *Transaction) sendWaitMetrics(ctx context.Context, begin, end []byte, m
 		case <-rctx.Done():
 			cancel()
 			replyHandle.Cancel()
-			replyHandle.Release()
+			replyCleanup.release()
 			continue
 		}
 	}
@@ -280,6 +283,8 @@ func (tx *Transaction) getRangeSplitPointsImpl(ctx context.Context, begin, end [
 }
 
 func (tx *Transaction) sendSplitRange(ctx context.Context, begin, end []byte, chunkSize int64, servers []ServerInfo) ([][]byte, error) {
+	var replyCleanup replyGuard
+	defer replyCleanup.close()
 	for _, server := range servers {
 		conn, err := tx.db.getOrDial(ctx, server.Address)
 		if err != nil {
@@ -288,6 +293,7 @@ func (tx *Transaction) sendSplitRange(ctx context.Context, begin, end []byte, ch
 		}
 		srToken := getAdjustedEndpoint(server.Token, EndpointGetRangeSplitPoints)
 		replyToken, replyCh, replyHandle := conn.PrepareReplyTo(srToken)
+		replyCleanup.handle = replyHandle
 		req := types.SplitRangeRequest{
 			Keys:       types.KeyRangeRef{Begin: begin, End: end},
 			ChunkSize:  chunkSize,
@@ -296,7 +302,7 @@ func (tx *Transaction) sendSplitRange(ctx context.Context, begin, end []byte, ch
 		}
 		if err := sendReadFrame(ctx, conn, srToken, req.MarshalFDB(), replyHandle); err != nil {
 			replyHandle.Cancel()
-			replyHandle.Release()
+			replyCleanup.release()
 			tx.db.handleReadConnError(server.Address, err)
 			continue
 		}
@@ -304,7 +310,7 @@ func (tx *Transaction) sendSplitRange(ctx context.Context, begin, end []byte, ch
 		select {
 		case resp := <-replyCh:
 			cancel()
-			replyHandle.Release()
+			replyCleanup.release()
 			if resp.Err != nil {
 				tx.db.handleReadConnError(server.Address, resp.Err)
 				continue
@@ -313,7 +319,7 @@ func (tx *Transaction) sendSplitRange(ctx context.Context, begin, end []byte, ch
 		case <-rctx.Done():
 			cancel()
 			replyHandle.Cancel()
-			replyHandle.Release()
+			replyCleanup.release()
 			continue
 		}
 	}

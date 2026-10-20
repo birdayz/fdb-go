@@ -27,6 +27,10 @@ var sentinelEnd = []byte{0xff, 0xff, 0x00}
 
 func (c *rywCache) newIterLocked(w *rywWrites) *rywIter {
 	if w != nil {
+		// Legacy private spans have no node boundaries and are neither live nor pinned.
+		if w != c.w && w.pins <= 0 {
+			panic("rywCache.newIterLocked: the write-map version is neither live nor pinned")
+		}
 		w.nodes.build()
 	}
 	return &rywIter{c: c, w: w}

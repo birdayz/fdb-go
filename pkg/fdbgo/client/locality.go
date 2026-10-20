@@ -490,6 +490,8 @@ func stripTenantPrefix(entries []locationEntry, tenantId int64) {
 // a reply token. Used by both refresh (single key) and refreshRange (range).
 func (lc *locationCache) queryLocations(db *database, ctx context.Context, tenantId int64, buildRequest func(replyToken transport.UID) []byte) ([]locationEntry, error) {
 	var backoff time.Duration
+	var replyCleanup replyGuard
+	defer replyCleanup.close()
 
 	for {
 		proxies := db.getCommitProxies()
@@ -547,11 +549,12 @@ func (lc *locationCache) queryLocations(db *database, ctx context.Context, tenan
 			}
 
 			replyToken, replyCh, replyHandle := conn.PrepareReplyTo(locToken)
+			replyCleanup.handle = replyHandle
 			body := buildRequest(replyToken)
 
 			if err := sendReadFrame(ctx, conn, locToken, body, replyHandle); err != nil {
 				replyHandle.Cancel()
-				replyHandle.Release()
+				replyCleanup.release()
 				db.handleReadConnError(proxy.Address, err)
 				continue
 			}
@@ -563,7 +566,7 @@ func (lc *locationCache) queryLocations(db *database, ctx context.Context, tenan
 			select {
 			case resp := <-replyCh:
 				rpcCancel()
-				replyHandle.Release()
+				replyCleanup.release()
 				if resp.Err != nil {
 					db.handleReadConnError(proxy.Address, resp.Err)
 					continue
@@ -586,7 +589,7 @@ func (lc *locationCache) queryLocations(db *database, ctx context.Context, tenan
 			case <-rctx.Done():
 				rpcCancel()
 				replyHandle.Cancel()
-				replyHandle.Release()
+				replyCleanup.release()
 				if ctx.Err() != nil {
 					return nil, ctx.Err()
 				}

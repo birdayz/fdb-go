@@ -626,6 +626,14 @@ func (c *Conn) PrepareReplyTo(dest UID) (UID, <-chan Response, *ReplyHandle) {
 	return h.token, h.ch, h
 }
 
+// HasPendingReply reports whether token still owns a reply registration.
+func (c *Conn) HasPendingReply(token UID) bool {
+	c.pendingMu.RLock()
+	_, pending := c.pending[token]
+	c.pendingMu.RUnlock()
+	return pending
+}
+
 // getReplyChannel gets a reply channel from the pool.
 func getReplyChannel() chan Response {
 	return replyChanPool.Get().(chan Response)

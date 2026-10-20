@@ -305,6 +305,8 @@ func (tx *Transaction) sendGetKey(ctx context.Context, readVersion int64, select
 			}
 			gkToken := getAdjustedEndpoint(server.Token, EndpointGetKey)
 			replyToken, replyCh, replyHandle := conn.PrepareReplyTo(gkToken)
+			replyCleanup := replyGuard{handle: replyHandle}
+			defer replyCleanup.close()
 			reqData, bufp := buildGetKeyRequest(selectorKey, orEqual, offset, readVersion, lockAware, tenantId, span, tags, replyToken)
 
 			delta := tx.db.queueModel.startRequest(server.Address)
@@ -314,11 +316,12 @@ func (tx *Transaction) sendGetKey(ctx context.Context, readVersion int64, select
 				getKeyBufPool.Put(bufp) // the write queue owns its copy
 				tx.db.queueModel.endRequest(server.Address, delta, readFailureLatency(err, start), false)
 				replyHandle.Cancel()
-				replyHandle.Release()
+				replyCleanup.release()
 				tx.db.handleReadConnError(server.Address, err)
 				return inFlightRPC{err: err, addr: server.Address}
 			}
 			getKeyBufPool.Put(bufp)
+			replyCleanup.transfer()
 			return inFlightRPC{
 				replyCh:     replyCh,
 				replyHandle: replyHandle,
@@ -549,6 +552,8 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 				return inFlightRPC{err: err, addr: server.Address}
 			}
 			replyToken, replyCh, replyHandle := conn.PrepareReplyTo(server.Token)
+			replyCleanup := replyGuard{handle: replyHandle}
+			defer replyCleanup.close()
 			body, poolBuf := buildGetValueRequest(key, readVersion, lockAware, tenantId, span, tags, replyToken, server.Token)
 
 			delta := tx.db.queueModel.startRequest(server.Address)
@@ -558,11 +563,12 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 				getValueBufPool.Put(poolBuf) // the write queue owns its copy
 				tx.db.queueModel.endRequest(server.Address, delta, readFailureLatency(err, start), false)
 				replyHandle.Cancel()
-				replyHandle.Release()
+				replyCleanup.release()
 				tx.db.handleReadConnError(server.Address, err)
 				return inFlightRPC{err: err, addr: server.Address}
 			}
 			getValueBufPool.Put(poolBuf)
+			replyCleanup.transfer()
 			return inFlightRPC{
 				replyCh:     replyCh,
 				replyHandle: replyHandle,
@@ -620,7 +626,8 @@ func (tx *Transaction) sendGetValueToServer(ctx context.Context, key []byte, ser
 		return nil, err
 	}
 	replyToken, replyCh, replyHandle := conn.PrepareReplyTo(server.Token)
-	defer replyHandle.Release()
+	replyCleanup := replyGuard{handle: replyHandle}
+	defer replyCleanup.close()
 	body, poolBuf := buildGetValueRequest(key, readVersion, lockAware, tenantId, childSpanContext(tx.currentSpan()), tags, replyToken, server.Token)
 
 	delta := tx.db.queueModel.startRequest(server.Address)
@@ -640,6 +647,7 @@ func (tx *Transaction) sendGetValueToServer(ctx context.Context, key []byte, ser
 		replyHandle.Cancel()
 		return nil, err
 	}
+	replyCleanup.release()
 	if resp.Err != nil {
 		tx.db.queueModel.endRequest(server.Address, delta, readFailureLatency(resp.Err, start), false)
 		tx.db.handleReadConnError(server.Address, resp.Err)
@@ -1058,6 +1066,8 @@ func sendRangeRPC[T any](tx *Transaction, ctx context.Context, begin, end KeySel
 			}
 			gkvToken := getAdjustedEndpoint(server.Token, ops.endpoint)
 			replyToken, replyCh, replyHandle := conn.PrepareReplyTo(gkvToken)
+			replyCleanup := replyGuard{handle: replyHandle}
+			defer replyCleanup.close()
 			body, poolBuf := ops.build(begin, end, readVersion, wireLimit, wireLimitBytes, lockAware, tenantId, span, tags, replyToken, server.Token)
 
 			delta := tx.db.queueModel.startRequest(server.Address)
@@ -1067,11 +1077,12 @@ func sendRangeRPC[T any](tx *Transaction, ctx context.Context, begin, end KeySel
 				ops.putBuf(poolBuf) // the write queue owns its copy
 				tx.db.queueModel.endRequest(server.Address, delta, readFailureLatency(err, start), false)
 				replyHandle.Cancel()
-				replyHandle.Release()
+				replyCleanup.release()
 				tx.db.handleReadConnError(server.Address, err)
 				return inFlightRPC{err: err, addr: server.Address}
 			}
 			ops.putBuf(poolBuf)
+			replyCleanup.transfer()
 			return inFlightRPC{
 				replyCh:     replyCh,
 				replyHandle: replyHandle,
@@ -1680,6 +1691,8 @@ func (tx *Transaction) sendWatch(ctx context.Context, key, value []byte, readVer
 	// NOT be re-read from tx here, because the transaction may have been
 	// postCommitReset() (readVersion → 0) by the time this async poll runs.
 	tenantId := tx.watchTenant(ctx)
+	var replyCleanup replyGuard
+	defer replyCleanup.close()
 
 	for _, server := range order {
 		conn, err := tx.db.getOrDial(ctx, server.Address)
@@ -1689,6 +1702,7 @@ func (tx *Transaction) sendWatch(ctx context.Context, key, value []byte, readVer
 		}
 		watchToken := getAdjustedEndpoint(server.Token, EndpointWatchValue)
 		replyToken, replyCh, replyHandle := conn.PrepareReplyTo(watchToken)
+		replyCleanup.handle = replyHandle
 		reqData := buildWatchValueRequest(key, value, readVersion, tenantId, span, tags, replyToken)
 
 		delta := tx.db.queueModel.startRequest(server.Address)
@@ -1697,14 +1711,14 @@ func (tx *Transaction) sendWatch(ctx context.Context, key, value []byte, readVer
 		if err := sendReadFrame(ctx, conn, watchToken, reqData, replyHandle); err != nil {
 			tx.db.queueModel.endRequest(server.Address, delta, readFailureLatency(err, start), false)
 			replyHandle.Cancel()
-			replyHandle.Release()
+			replyCleanup.release()
 			tx.db.handleReadConnError(server.Address, err)
 			continue
 		}
 		// Long-poll: no short timeout. Use the caller's context deadline.
 		select {
 		case resp := <-replyCh:
-			replyHandle.Release()
+			replyCleanup.release()
 			if resp.Err != nil {
 				tx.db.queueModel.endRequest(server.Address, delta, readFailureLatency(resp.Err, start), false)
 				tx.db.handleReadConnError(server.Address, resp.Err)
@@ -1715,7 +1729,7 @@ func (tx *Transaction) sendWatch(ctx context.Context, key, value []byte, readVer
 		case <-ctx.Done():
 			tx.db.queueModel.endRequest(server.Address, delta, readFailureLatency(ctx.Err(), start), false)
 			replyHandle.Cancel()
-			replyHandle.Release()
+			replyCleanup.release()
 			return ctx.Err()
 		}
 	}

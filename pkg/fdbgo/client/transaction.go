@@ -315,6 +315,8 @@ type txOptions struct {
 	// afterRangeReply parks an issued range read after a storage reply, before
 	// it merges the reply or records its conflict.
 	afterRangeReply func()
+	// beforeReadConflict pauses a completed read before publishing its conflicts.
+	beforeReadConflict func()
 	// nativeRange, when set, replaces nativeGetRange under the RYW walk (a test seam
 	// for hermetic walk and pin-lifecycle tests).
 	nativeRange nativeRangeFunc
@@ -463,6 +465,7 @@ type Transaction struct {
 	// together (a mutex, not the atomic deferred-error contract above).
 	resetMu   sync.Mutex
 	readReady chan struct{}
+	// Lock order: conflictMu -> readErrMu -> timeoutQueue.mu (RFC-263), never the reverse.
 	readErrMu sync.Mutex
 	// timebomb is the transaction's TIMEOUT timer, reused across incarnations;
 	// while timebombArmed it is armed for timebombInc at timebombGen (all under
@@ -885,6 +888,8 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 	// One GetValueRequest for every server tried (NativeAPI.actor.cpp:3681).
 	tags := tx.sampleReadTags()
 	// Send request without waiting for response.
+	var replyCleanup replyGuard
+	defer replyCleanup.close()
 	for _, server := range servers {
 		conn, dialErr := tx.db.getOrDial(ctx, server.Address)
 		if dialErr != nil {
@@ -892,6 +897,7 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 			continue
 		}
 		replyToken, replyCh, replyHandle := conn.PrepareReplyTo(server.Token)
+		replyCleanup.handle = replyHandle
 		body, poolBuf := buildGetValueRequest(key, readVersion, tx.lockAware || tx.readLockAware, tx.tenantId, childSpanContext(tx.currentSpan()), tags, replyToken, server.Token)
 		// RFC-114: stamp sentAt BEFORE sending. The frame may be written, and its reply
 		// delivered (stamping resp.RecvAt), before the send returns — RecvAt−sentAt
@@ -911,7 +917,7 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 		getValueBufPool.Put(poolBuf)
 		if sendErr != nil {
 			replyHandle.Cancel()
-			replyHandle.Release()
+			replyCleanup.release()
 			tx.db.handleReadConnError(server.Address, sendErr)
 			continue
 		}
@@ -930,6 +936,7 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 			// Failure can detach the registry before this send is registered.
 			// Retire it here, preserving any already-published reply without
 			// requiring the caller to Resolve just to release its resources.
+			replyCleanup.transfer()
 			p.retireLocked()
 			return p.memoVal, nil, p.memoErr
 		}
@@ -938,6 +945,7 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 		}
 		tx.pendingReads[p] = struct{}{}
 		tx.readErrMu.Unlock()
+		replyCleanup.transfer()
 		return nil, p, nil
 	}
 	// If every dial above failed because the SetTimeout deadline expired (ctx
@@ -2771,6 +2779,11 @@ func (tx *Transaction) addReadConflicts(ranges [][2][]byte) {
 		return
 	}
 	tx.conflictMu.Lock()
+	tx.addReadConflictsLocked(ranges)
+	tx.conflictMu.Unlock()
+}
+
+func (tx *Transaction) addReadConflictsLocked(ranges [][2][]byte) {
 	for _, r := range ranges {
 		begin, end := r[0], r[1]
 		buf := tx.conflictBufAlloc(len(begin) + len(end))
@@ -2779,7 +2792,6 @@ func (tx *Transaction) addReadConflicts(ranges [][2][]byte) {
 		copy(buf[nb:], end)
 		tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: buf[:nb:nb], End: buf[nb:]})
 	}
-	tx.conflictMu.Unlock()
 }
 
 // conflictBufAlloc reserves n bytes for conflict keys or mutation operands.

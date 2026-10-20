@@ -60,6 +60,8 @@ func sendFrameWithHedge(
 ) hedgeResult {
 	// Send to primary immediately.
 	pResult := primary()
+	primaryCleanup := replyGuard{handle: pResult.replyHandle}
+	defer primaryCleanup.close()
 	if pResult.err != nil {
 		// Primary failed to send — try secondary immediately (no hedge delay).
 		if secondary != nil {
@@ -74,6 +76,7 @@ func sendFrameWithHedge(
 
 	if secondary == nil {
 		// No secondary — just wait for primary.
+		primaryCleanup.transfer()
 		return waitForReply(ctx, pResult, timeout)
 	}
 
@@ -85,7 +88,7 @@ func sendFrameWithHedge(
 	select {
 	case resp := <-pResult.replyCh:
 		// Primary replied before hedge timer. Use it.
-		pResult.replyHandle.Release()
+		primaryCleanup.release()
 		res := processReply(pResult, resp)
 		if res.err == nil || !movesToNextAlternative(ctx, res.err) {
 			return res
@@ -105,18 +108,20 @@ func sendFrameWithHedge(
 		sResult := secondary()
 		if sResult.err != nil {
 			// Secondary failed to send — wait for primary only.
+			primaryCleanup.transfer()
 			return waitForReply(ctx, pResult, timeout)
 		}
 
 		// Race both replies.
+		primaryCleanup.transfer()
 		return raceReplies(ctx, pResult, sResult, timeout)
 
 	case <-ctx.Done():
-		if result, ready := readyReply(pResult); ready {
+		if result, ready := readyReplyOwned(pResult, &primaryCleanup); ready {
 			return result
 		}
 		pResult.replyHandle.Cancel()
-		pResult.replyHandle.Release()
+		primaryCleanup.release()
 		// Return the primary's accounting so the caller endRequests its startRequest delta — like
 		// waitForReply's ctx.Done branch. Dropping it (returning a bare {err}) leaked the started
 		// request's QueueModel delta permanently, biasing server selection (RFC-010 #5; C++
@@ -156,74 +161,79 @@ type inFlightRPC struct {
 }
 
 func waitForReply(ctx context.Context, inflight inFlightRPC, timeout time.Duration) hedgeResult {
+	replyCleanup := replyGuard{handle: inflight.replyHandle}
+	defer replyCleanup.close()
 	timer := getTimer(timeout)
 	defer putTimer(timer)
 
 	select {
 	case resp := <-inflight.replyCh:
-		inflight.replyHandle.Release()
+		replyCleanup.release()
 		return processReply(inflight, resp)
 	case <-timer.C:
 		inflight.replyHandle.Cancel()
-		inflight.replyHandle.Release()
+		replyCleanup.release()
 		// Internal reply timeout, distinct from a caller deadline: the read
 		// path re-sends (libfdb_c loadBalance has no per-read client timeout).
 		return hedgeResult{addr: inflight.addr, delta: inflight.delta, start: inflight.start, err: errReplyTimeout}
 	case <-ctx.Done():
-		if result, ready := readyReply(inflight); ready {
+		if result, ready := readyReplyOwned(inflight, &replyCleanup); ready {
 			return result
 		}
 		inflight.replyHandle.Cancel()
-		inflight.replyHandle.Release()
+		replyCleanup.release()
 		return hedgeResult{addr: inflight.addr, delta: inflight.delta, start: inflight.start, err: ctx.Err()}
 	}
 }
 
 func raceReplies(ctx context.Context, a, b inFlightRPC, timeout time.Duration) hedgeResult {
+	aCleanup, bCleanup := replyGuard{handle: a.replyHandle}, replyGuard{handle: b.replyHandle}
+	defer aCleanup.close()
+	defer bCleanup.close()
 	timer := getTimer(timeout)
 	defer putTimer(timer)
 
 	select {
 	case resp := <-a.replyCh:
-		a.replyHandle.Release() // Winner: release
-		b.replyHandle.Cancel()  // Loser: cancel + release
-		b.replyHandle.Release()
+		aCleanup.release()     // Winner: release
+		b.replyHandle.Cancel() // Loser: cancel + release
+		bCleanup.release()
 		res := processReply(a, resp)
 		res.others = []rpcAccount{accountOf(b)} // loser b: caller must endRequest it
 		return res
 	case resp := <-b.replyCh:
-		b.replyHandle.Release() // Winner: release
-		a.replyHandle.Cancel()  // Loser: cancel + release
-		a.replyHandle.Release()
+		bCleanup.release()     // Winner: release
+		a.replyHandle.Cancel() // Loser: cancel + release
+		aCleanup.release()
 		res := processReply(b, resp)
 		res.others = []rpcAccount{accountOf(a)} // loser a: caller must endRequest it
 		return res
 	case <-timer.C:
 		a.replyHandle.Cancel()
-		a.replyHandle.Release()
+		aCleanup.release()
 		b.replyHandle.Cancel()
-		b.replyHandle.Release()
+		bCleanup.release()
 		// No winner before the internal reply timeout — both alternatives were
 		// slow. Retryable internal signal, not a caller deadline (the read path
 		// re-sends). Both started requests must still be ended by the caller.
 		return hedgeResult{err: errReplyTimeout, others: []rpcAccount{accountOf(a), accountOf(b)}}
 	case <-ctx.Done():
-		if result, ready := readyReply(a); ready {
+		if result, ready := readyReplyOwned(a, &aCleanup); ready {
 			b.replyHandle.Cancel()
-			b.replyHandle.Release()
+			bCleanup.release()
 			result.others = []rpcAccount{accountOf(b)}
 			return result
 		}
-		if result, ready := readyReply(b); ready {
+		if result, ready := readyReplyOwned(b, &bCleanup); ready {
 			a.replyHandle.Cancel()
-			a.replyHandle.Release()
+			aCleanup.release()
 			result.others = []rpcAccount{accountOf(a)}
 			return result
 		}
 		a.replyHandle.Cancel()
-		a.replyHandle.Release()
+		aCleanup.release()
 		b.replyHandle.Cancel()
-		b.replyHandle.Release()
+		bCleanup.release()
 		return hedgeResult{err: ctx.Err(), others: []rpcAccount{accountOf(a), accountOf(b)}}
 	}
 }
@@ -237,9 +247,14 @@ func accountOf(r inFlightRPC) rpcAccount {
 // readyReply preserves a queued response when cancellation and reply readiness
 // are observed together, matching the read-first ordering of C++ RYW choose.
 func readyReply(inflight inFlightRPC) (hedgeResult, bool) {
+	owner := replyGuard{handle: inflight.replyHandle}
+	return readyReplyOwned(inflight, &owner)
+}
+
+func readyReplyOwned(inflight inFlightRPC, owner *replyGuard) (hedgeResult, bool) {
 	select {
 	case resp := <-inflight.replyCh:
-		inflight.replyHandle.Release()
+		owner.release()
 		return processReply(inflight, resp), true
 	default:
 		return hedgeResult{}, false

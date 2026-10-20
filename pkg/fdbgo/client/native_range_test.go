@@ -3,6 +3,7 @@ package client
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
 	"strings"
 	"sync"
@@ -63,14 +64,47 @@ func TestNativeResolveKeyLocationPanic(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	db, _ := newSimTestDB(t, ctx)
+	sim, rec := newSimDialer(), &sendRecorder{}
+	db := newTestDatabase(t, ctx, startProxyFDB(t, ctx), rec.wrap(sim.dial))
+	defer db.Close()
 	tx := db.CreateTransaction()
 	defer tx.Cancel()
 	rv, err := tx.GetReadVersion(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	hook := func() { panic("resolver afterLocationSend") }
+	held, release := make(chan struct{}), make(chan struct{})
+	var heldOnce, releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	defer unblock()
+	sim.setIntercept(func(_ int, token transport.UID, body []byte) ([]byte, bool) {
+		if rec.replyKind(token) == "GetKeyServerLocationsRequest" {
+			heldOnce.Do(func() { close(held) })
+			<-release
+		}
+		return body, false
+	})
+	sim.armEverything()
+	rec.start()
+	var pendingToken transport.UID
+	var pendingConn *transport.Conn
+	var pendingAddr string
+	hook := func() {
+		for _, msg := range rec.messages() {
+			if q, ok := msg.(*types.GetKeyServerLocationsRequest); ok {
+				pendingToken = transport.UID{First: binary.LittleEndian.Uint64(q.Reply.Token[:8]), Second: binary.LittleEndian.Uint64(q.Reply.Token[8:])}
+			}
+		}
+		db.db.connMu.Lock()
+		for addr, conn := range db.db.connPool {
+			if conn.HasPendingReply(pendingToken) {
+				pendingConn, pendingAddr = conn, addr
+				break
+			}
+		}
+		db.db.connMu.Unlock()
+		panic("resolver afterLocationSend")
+	}
 	db.db.afterLocationSend.Store(&hook)
 	defer db.db.afterLocationSend.Store(nil)
 	done := make(chan error, 1)
@@ -88,6 +122,32 @@ func TestNativeResolveKeyLocationPanic(t *testing.T) {
 	}
 	if n := db.db.resolveKeyPanics.consecutive.Load(); n != 1 {
 		t.Fatalf("resolver backstop caught %d panics, want exactly one", n)
+	}
+	select {
+	case <-held:
+	case <-ctx.Done():
+		t.Fatal("location reply was not held")
+	}
+	if pendingConn == nil {
+		t.Fatal("positive control: location send never had a pending reply registration")
+	}
+	if pendingConn.HasPendingReply(pendingToken) {
+		t.Fatal("resolver panic retained its reply token while the reply is held")
+	}
+	if pendingConn.IsClosed() {
+		t.Fatal("panic cleanup closed the shared connection")
+	}
+	db.db.afterLocationSend.Store(nil)
+	unblock()
+	loc, err := db.db.locCache.locate(db.db, ctx, []byte("rfc262/resolver-panic"), NoTenantID, types.SpanContext{}, false)
+	if err != nil || len(loc.Servers) == 0 {
+		t.Fatalf("location lookup after panic = %+v, %v", loc, err)
+	}
+	if reused, err := db.db.getOrDial(ctx, pendingAddr); err != nil || reused != pendingConn {
+		t.Fatalf("connection was not reusable after panic: same=%t err=%v", reused == pendingConn, err)
+	}
+	if n := nrCount(rec.stop().msgs, "GetKeyServerLocationsRequest"); n < 2 {
+		t.Fatalf("location sends = %d, want the panicking attempt and a successful reuse", n)
 	}
 }
 

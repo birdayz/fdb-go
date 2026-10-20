@@ -269,6 +269,53 @@ func TestGetKeyCompletedOutcomeSurvivesReset(t *testing.T) {
 	}
 }
 
+// A borrowed async read can outlive its admitting frame. Reset drains state
+// leases, not that retired frame's borrowed lease, so the last conflict publish
+// must recheck its captured incarnation instead of appending to the new handle.
+func TestCompletedReadCannotPublishAfterReset(t *testing.T) {
+	t.Parallel()
+	for _, route := range []string{"getKey", "range"} {
+		t.Run(route, func(t *testing.T) {
+			t.Parallel()
+			tx := &Transaction{}
+			m := newMemStorage("a", "c")
+			tx.nativeRange = m.native
+			if route == "range" {
+				tx.ryw.withLock(func() { tx.ryw.serverCache.insert([]byte("a"), []byte("z"), m.kvs) })
+			}
+			entered, release := make(chan struct{}), make(chan struct{})
+			tx.beforeReadConflict = func() { close(entered); <-release }
+			parent, leave := tx.opContext(context.Background())
+			done := make(chan error, 1)
+			go func() {
+				if route == "getKey" {
+					_, err := tx.StartGetKey(parent, fgtSel("a")).Get()
+					done <- err
+				} else {
+					_, _, err := tx.StartGetRange(parent, []byte("a"), []byte("d"), 0, -1, false).Get()
+					done <- err
+				}
+			}()
+			<-entered // after the last resume, before publishing read conflicts
+			leave()
+			joined(t, "Reset with a completed borrowed read", tx.Reset)
+			close(release)
+			joined(t, "old read completion", func() {
+				if err := <-done; err == nil {
+					t.Error("retired read succeeded instead of failing reset")
+				} else if code, _ := fdbErrorCode(err); code != ErrTransactionCancelled {
+					t.Errorf("retired read error = %v, want transaction_cancelled", err)
+				}
+			})
+			tx.conflictMu.Lock()
+			defer tx.conflictMu.Unlock()
+			if len(tx.readConflicts) != 0 {
+				t.Fatalf("new incarnation inherited old conflicts: %+v", tx.readConflicts)
+			}
+		})
+	}
+}
+
 func TestAddWriteConflictKeyLegalRange(t *testing.T) {
 	t.Parallel()
 	for _, mode := range []string{"user", "read-system", "access-system"} {

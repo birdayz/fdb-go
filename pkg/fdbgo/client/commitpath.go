@@ -90,7 +90,8 @@ func (input *commitInput) commitNative(ctx context.Context) (result commitOutcom
 	}
 
 	replyToken, replyCh, replyHandle := conn.PrepareReplyTo(proxy.Token)
-	defer replyHandle.Release()
+	replyCleanup := replyGuard{handle: replyHandle}
+	defer replyCleanup.close()
 	body, poolBuf := buildCommitInputRequest(input, replyToken)
 
 	// Capture the proxy-change channel BEFORE sending the commit frame.
@@ -124,6 +125,7 @@ func (input *commitInput) commitNative(ctx context.Context) (result commitOutcom
 		replyHandle.Cancel()
 		return result, input.unknownResult(ctx)
 	}
+	replyCleanup.release()
 	if resp.Err != nil {
 		if !isEndpointNotFound(resp.Err) {
 			input.db.handleConnError(proxy.Address)

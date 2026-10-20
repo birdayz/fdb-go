@@ -185,6 +185,100 @@ func liveOf(c *rywCache) *rywWrites {
 	return c.liveLocked()
 }
 
+func TestRYWPinHookPanicDoesNotLeak(t *testing.T) {
+	t.Parallel()
+	for _, held := range []bool{false, true} {
+		t.Run(fmt.Sprintf("existing-pin=%t", held), func(t *testing.T) {
+			t.Parallel()
+			tx := &Transaction{}
+			tx.nativeRange = newMemStorage("a", "c").native
+			c := &tx.ryw
+			var existing, observed *rywWrites
+			var pinsAtHook int
+			c.withLock(func() {
+				if held {
+					existing = c.pinWritesLocked()
+				}
+				c.onPin = func(w *rywWrites, pin bool) {
+					if !pin {
+						t.Error("failed pin called the unpin observer")
+						return
+					}
+					observed, pinsAtHook = w, w.pins
+					panic("pin observer")
+				}
+			})
+			joined(t, "pin observer panic", func() {
+				_, err := tx.StartGetKey(context.Background(), fgtSel("a")).Get()
+				if code, _ := fdbErrorCode(err); code != ErrInternalError {
+					t.Errorf("read error = %v, want internal_error", err)
+				}
+			})
+			want := 0
+			if held {
+				want = 1
+			}
+			if observed == nil || pinsAtHook != want+1 {
+				t.Fatalf("pin hook saw version %p with %d pins, want a version with %d", observed, pinsAtHook, want+1)
+			}
+			if got := pinsOf(c, observed); got != want {
+				t.Fatalf("pins after hook panic = %d, want %d", got, want)
+			}
+			c.withLock(func() {
+				c.onPin = nil
+				if existing != nil {
+					c.unpinWritesLocked(existing)
+				}
+			})
+			if got := pinsOf(c, observed); got != 0 {
+				t.Fatalf("pins after release = %d, want 0", got)
+			}
+			joined(t, "Reset after pin hook panic", tx.Reset)
+			tx.Set([]byte("k"), []byte("v"))
+			key, err := tx.StartGetKey(context.Background(), firstGreaterOrEqual([]byte("k"))).Get()
+			if err != nil || string(key) != "k" {
+				t.Fatalf("read after Reset = %q, %v; want k", key, err)
+			}
+		})
+	}
+}
+
+func TestRYWWalkRejectsPrivateSpan(t *testing.T) {
+	t.Parallel()
+	for _, populated := range []bool{false, true} {
+		t.Run(fmt.Sprintf("populated=%t", populated), func(t *testing.T) {
+			t.Parallel()
+			c := &rywCache{}
+			if populated {
+				c.set([]byte("b"), []byte("v"))
+			}
+			c.withLock(func() {
+				pinned := c.pinWritesLocked()
+				defer c.unpinWritesLocked(pinned)
+				span := c.captureWriteSpanLocked(allKeysBegin, allKeysEnd)
+				c.mutableWritesLocked() // keep the pinned version detached from the live one
+				for _, w := range []*rywWrites{nil, c.w, pinned} {
+					c.newIterLocked(w).skip([]byte("a")) // snapshot, live and pinned remain valid
+				}
+				if span.nodes.sorted != nil || span.nodes.log != nil {
+					t.Fatal("private-span precondition: nodes are not empty")
+				}
+				func() {
+					defer func() {
+						if got := recover(); got != "rywCache.newIterLocked: the write-map version is neither live nor pinned" {
+							t.Errorf("private span panic = %v, want the version-ownership guard", got)
+						}
+					}()
+					c.newIterLocked(span).skip([]byte("a"))
+				}()
+				if span.nodes.sorted != nil || span.nodes.log != nil {
+					t.Fatal("private span reached the node builder before rejection")
+				}
+			})
+		})
+	}
+}
+
 // S4.1: two reads issued back to back share the version; a Set clones once; both
 // reads finish with their issue results; pins return to 0.
 func TestRYWPinSharedThenCloned(t *testing.T) {

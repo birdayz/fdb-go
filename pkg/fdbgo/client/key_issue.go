@@ -124,7 +124,12 @@ func (r *keyRead) read() ([]byte, error) {
 			return nil, tx.trackReadOperation(ctx, err)
 		}
 		if !r.snapshot { // getKeyAndConflictRange (NAPI:5761-5787)
-			tx.addGetKeyConflictRange(sel.Key, sel.OrEqual, sel.Offset, resolved)
+			b, e := getKeyConflictSpan(sel, resolved)
+			if bytes.Compare(b, e) < 0 {
+				if err := tx.addReadConflictsFor(ctx, [][2][]byte{{b, e}}); err != nil {
+					return nil, tx.trackReadOperation(ctx, err)
+				}
+			}
 		}
 		// readThrough(GetKeyReq) clamps the returned key to getMaxReadKey (RYW:182-183);
 		// the conflict above stays on the unclamped key (NAPI:5767).
@@ -162,12 +167,16 @@ func (r *keyRead) read() ([]byte, error) {
 	key := bytes.Clone(r.walk.keyResult())
 	if !r.snapshot { // RYW getKey adds its conflict for every key (RYW:1695-1709, 230-243)
 		if r.local {
-			tx.addReadConflicts(r.localConflicts)
+			if err := tx.addReadConflictsFor(ctx, r.localConflicts); err != nil {
+				return nil, tx.trackReadOperation(ctx, err)
+			}
 		} else if b, e := getKeyConflictSpan(sel, key); bytes.Compare(b, e) < 0 {
 			// Filtered through the read's own version (RYW:388, 322-351).
 			var ranges [][2][]byte
 			tx.ryw.withLock(func() { ranges = r.view.conflictRanges(b, e) })
-			tx.addReadConflicts(ranges)
+			if err := tx.addReadConflictsFor(ctx, ranges); err != nil {
+				return nil, tx.trackReadOperation(ctx, err)
+			}
 		}
 	}
 	return key, tx.trackReadOperation(ctx, nil)

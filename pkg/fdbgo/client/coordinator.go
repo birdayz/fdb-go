@@ -25,7 +25,8 @@ var errLongPollExpired = errors.New("coordinator long poll expired")
 // timeout bounds the wait.
 func (db *database) openDatabaseCoord(ctx context.Context, conn *transport.Conn, snap *ClusterFile, known transport.UID, timeout time.Duration) (*DBInfo, error) {
 	replyToken, replyCh, replyHandle := conn.PrepareReply()
-	defer replyHandle.Release()
+	replyCleanup := replyGuard{handle: replyHandle}
+	defer replyCleanup.close()
 	body, err := buildOpenDatabaseCoordRequest(snap, db.tlsConfig != nil, known, replyToken)
 	if err != nil {
 		replyHandle.Cancel()
@@ -42,6 +43,7 @@ func (db *database) openDatabaseCoord(ctx context.Context, conn *transport.Conn,
 	defer timer.Stop()
 	select {
 	case resp := <-replyCh:
+		replyCleanup.release()
 		if resp.Err != nil {
 			return nil, fmt.Errorf("coordinator response: %w", resp.Err)
 		}

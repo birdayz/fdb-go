@@ -196,29 +196,31 @@ func (r *rangeRead) read(clone bool) ([]KeyValue, bool, error) {
 		return kvs, more, tx.trackReadOperation(ctx, err)
 	}
 	if !r.snapshot {
-		r.addConflicts(kvs, more)
+		if err := r.addConflicts(kvs, more); err != nil {
+			return kvs, more, tx.trackReadOperation(ctx, err)
+		}
 	}
 	return kvs, more, tx.trackReadOperation(ctx, nil)
 }
 
 // addConflicts adds the conflict clamped to the rows returned (RFC-121 D1), filtered through
 // the issue-time write map (D2); inverted ranges and \xff\xff keys add none, as in C++.
-func (r *rangeRead) addConflicts(kvs []KeyValue, more bool) {
+func (r *rangeRead) addConflicts(kvs []KeyValue, more bool) error {
 	begin, end, tx := r.begin, r.end, r.tx
 	if bytes.Compare(begin, end) > 0 || isSpecialKey(begin) || isSpecialKey(end) {
-		return
+		return nil
 	}
 	cBegin, cEnd := rangeConflictExtent(begin, end, kvs, more, r.reverse)
 	if bytes.Compare(cBegin, cEnd) >= 0 {
-		return
+		return nil
 	}
 	switch {
 	case r.path == rangePathRYWDisabled || !r.ryw.writesAtIssue:
-		tx.addReadConflict(cBegin, cEnd) // no local writes in range at issue: nothing to filter
+		return tx.addReadConflictsFor(r.ctx, [][2][]byte{{cBegin, cEnd}}) // no local writes to filter
 	case r.ryw.known:
-		tx.addReadConflicts(r.ryw.localConflicts) // the same extent, filtered at issue
+		return tx.addReadConflictsFor(r.ctx, r.ryw.localConflicts)
 	default:
-		tx.addReadConflicts(r.ryw.conflictRanges(cBegin, cEnd))
+		return tx.addReadConflictsFor(r.ctx, r.ryw.conflictRanges(cBegin, cEnd))
 	}
 }
 

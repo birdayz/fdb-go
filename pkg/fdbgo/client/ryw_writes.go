@@ -99,7 +99,15 @@ func (c *rywCache) pinWritesLocked() *rywWrites {
 	w := c.liveLocked()
 	w.pins++
 	if c.onPin != nil {
+		observed := false
+		defer func() {
+			if !observed { // a panicking observer never transfers the pin to the caller
+				w.pins--
+				c.dropObsoleteBaseLocked()
+			}
+		}()
 		c.onPin(w, true)
+		observed = true
 	}
 	return w
 }
