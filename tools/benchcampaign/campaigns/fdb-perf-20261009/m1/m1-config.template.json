@@ -1,0 +1,124 @@
+{
+ "schema": "m1-v1",
+ "study": "M1 record-layer paired timing (R19 candidate)",
+ "campaign": "m1comb01",
+ "denominator": "base",
+ "arms": [
+  {
+   "name": "base",
+   "commit": "8ba75870489c9d1186d67f900ba867e77d1f0dd4",
+   "binary": "bin/recordlayer_test.base",
+   "binary_sha256": "FILL"
+  },
+  {
+   "name": "new",
+   "commit": "FILL_COMBINED_FULLSHA",
+   "binary": "bin/recordlayer_test.new",
+   "binary_sha256": "FILL"
+  }
+ ],
+ "benches": [
+  {
+   "name": "StoreOpen",
+   "regex": "^BenchmarkStoreOpen$",
+   "result": "BenchmarkStoreOpen-8",
+   "n": 2000
+  },
+  {
+   "name": "SaveRecord",
+   "regex": "^BenchmarkSaveRecord$",
+   "result": "BenchmarkSaveRecord-8",
+   "n": 400
+  },
+  {
+   "name": "LoadRecord",
+   "regex": "^BenchmarkLoadRecord$",
+   "result": "BenchmarkLoadRecord-8",
+   "n": 2000
+  },
+  {
+   "name": "ScanIndex",
+   "regex": "^BenchmarkScanIndex$",
+   "result": "BenchmarkScanIndex-8",
+   "n": 1500
+  },
+  {
+   "name": "ScanIdxRecSerial",
+   "regex": "^BenchmarkScanIndexRecords$/^serial$",
+   "result": "BenchmarkScanIndexRecords/serial-8",
+   "n": 10
+  },
+  {
+   "name": "ScanIdxRecPipe",
+   "regex": "^BenchmarkScanIndexRecords$/^pipelined$",
+   "result": "BenchmarkScanIndexRecords/pipelined-8",
+   "n": 50
+  }
+ ],
+ "pairs": 48,
+ "warmup_blocks": 1,
+ "schedule_seed": 919001,
+ "client_cpus": "8-15",
+ "go_env": {
+  "GOMAXPROCS": "8",
+  "GOGC": "100",
+  "GODEBUG": ""
+ },
+ "cluster_file": "/etc/foundationdb/fdb.cluster",
+ "cooldown_s": 1.0,
+ "quiescence_s": 0.5,
+ "process_timeout_s": 20,
+ "campaign_cap_s": 1680,
+ "gates": {
+  "campaign_steal_max": 0.01,
+  "process_steal_max": 0.05
+ },
+ "primary_metrics_universe": [
+  "ns/op",
+  "proc-cpu-ns/op"
+ ],
+ "secondary_metrics": [
+  "proc-user-ns/op",
+  "proc-sys-ns/op",
+  "B/op",
+  "allocs/op"
+ ],
+ "familywise_alpha": 0.05,
+ "primary": [
+  {
+   "arm": "new",
+   "bench": "StoreOpen",
+   "metric": "ns/op"
+  },
+  {
+   "arm": "new",
+   "bench": "LoadRecord",
+   "metric": "ns/op"
+  },
+  {
+   "arm": "new",
+   "bench": "ScanIndex",
+   "metric": "ns/op"
+  },
+  {
+   "arm": "new",
+   "bench": "ScanIndex",
+   "metric": "proc-cpu-ns/op"
+  },
+  {
+   "arm": "new",
+   "bench": "ScanIdxRecPipe",
+   "metric": "proc-cpu-ns/op"
+  }
+ ],
+ "bootstrap": {
+  "resamples": 100000,
+  "primary_block_len": 8,
+  "primary_seed": 919707,
+  "sensitivity_block_len": 16,
+  "sensitivity_seed": 919708
+ },
+ "post_reserve_s": 360,
+ "hard_wall_s": 20,
+ "kill_grace_s": 3
+}

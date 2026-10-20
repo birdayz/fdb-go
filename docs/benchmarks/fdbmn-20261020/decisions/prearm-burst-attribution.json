@@ -1,0 +1,176 @@
+{
+  "created_utc": "2026-10-20T13:10:30.733794+00:00",
+  "evidence_scope": "existing collected local artifacts only; no new host probes",
+  "conclusion": "5/5 status-poll proxy overlaps and systemd-user/PAM PID churn support controller SSH session startup; not PID-proven attribution",
+  "limitations": [
+    "quiescence JSON contains seconds=1 but no start/end clocks; inferred window ends at following failure log",
+    "failed gates precede process snapshots/benchmark launches",
+    "nearby processes.txt has lifetime %CPU and last CPU, not interval attribution",
+    "multiplexing reduces connection startup but does not guarantee per-channel PAM work disappears"
+  ],
+  "failures": [
+    {
+      "phase": "M2rl",
+      "run": "M2rl-c07-b02-p1-final-remote",
+      "gate_path": "results-raw/M2rl/M2rl-c07-b02-p1-final-remote/quiescence.json",
+      "gate_sha256": "02a062fc634a065be00f9de9d717aeda50589cc7521cedaae17259be369c4480",
+      "following_failure_log_utc": "2026-10-20T12:09:57.192355+00:00",
+      "poll_start_utc": "2026-10-20T12:09:56.466426+00:00",
+      "poll_duration_seconds": 0.729719,
+      "proxy_window_overlap": true,
+      "max_busy_cpu": 8,
+      "cpu_jiffy_deltas_user_nice_system_idle_iowait_irq_softirq_steal": [
+        8,
+        0,
+        7,
+        84,
+        0,
+        0,
+        0,
+        0
+      ],
+      "cpu_busy_fraction": 0.15151515151515152,
+      "client_aggregate_busy_fraction": 0.033877038895859475,
+      "steal_fraction": 0.0
+    },
+    {
+      "phase": "M2rl",
+      "run": "M2rl-c08-b02-p0-final-ordinary",
+      "gate_path": "results-raw/M2rl/M2rl-c08-b02-p0-final-ordinary/quiescence.json",
+      "gate_sha256": "907829e0a414f90cada4ca067c0f40d569812998698dd17012fbfd1c174d7d9c",
+      "following_failure_log_utc": "2026-10-20T12:11:45.158693+00:00",
+      "poll_start_utc": "2026-10-20T12:11:44.248838+00:00",
+      "poll_duration_seconds": 0.693029,
+      "proxy_window_overlap": true,
+      "max_busy_cpu": 11,
+      "cpu_jiffy_deltas_user_nice_system_idle_iowait_irq_softirq_steal": [
+        10,
+        0,
+        6,
+        85,
+        0,
+        0,
+        0,
+        0
+      ],
+      "cpu_busy_fraction": 0.15841584158415842,
+      "client_aggregate_busy_fraction": 0.04025157232704402,
+      "steal_fraction": 0.0
+    },
+    {
+      "phase": "M2rl",
+      "run": "M2rl-c10-b05-p1-final-remote",
+      "gate_path": "results-raw/M2rl/M2rl-c10-b05-p1-final-remote/quiescence.json",
+      "gate_sha256": "981613f82b5adb635ab0b7682fc8bd031ec199310c877f45d56fa2ef0391b36c",
+      "following_failure_log_utc": "2026-10-20T12:24:10.181426+00:00",
+      "poll_start_utc": "2026-10-20T12:24:09.545624+00:00",
+      "poll_duration_seconds": 0.794374,
+      "proxy_window_overlap": true,
+      "max_busy_cpu": 14,
+      "cpu_jiffy_deltas_user_nice_system_idle_iowait_irq_softirq_steal": [
+        9,
+        0,
+        6,
+        84,
+        0,
+        0,
+        0,
+        0
+      ],
+      "cpu_busy_fraction": 0.15151515151515152,
+      "client_aggregate_busy_fraction": 0.037783375314861464,
+      "steal_fraction": 0.0
+    },
+    {
+      "phase": "M2skip",
+      "run": "M2skip-c00-b03-p0-final-ordinary",
+      "gate_path": "results-raw/M2skip/M2skip-c00-b03-p0-final-ordinary/quiescence.json",
+      "gate_sha256": "2e7f300c081cd12485cb15539c34dc16d322ca7e00d8be3777f8a3b3b09b60e2",
+      "following_failure_log_utc": "2026-10-20T12:35:41.489936+00:00",
+      "poll_start_utc": "2026-10-20T12:35:40.525292+00:00",
+      "poll_duration_seconds": 0.957106,
+      "proxy_window_overlap": true,
+      "max_busy_cpu": 11,
+      "cpu_jiffy_deltas_user_nice_system_idle_iowait_irq_softirq_steal": [
+        18,
+        0,
+        5,
+        76,
+        0,
+        0,
+        0,
+        0
+      ],
+      "cpu_busy_fraction": 0.23232323232323232,
+      "client_aggregate_busy_fraction": 0.0678391959798995,
+      "steal_fraction": 0.0
+    },
+    {
+      "phase": "M1w1",
+      "run": "set100/b000-set100-p0-cgo",
+      "gate_path": "results-raw/M1w1/set100/b000-set100-p0-cgo/quiescence.json",
+      "gate_sha256": "2274fd2ac319fb884ddb79c1f11a93b30b4a44e6b697c0214c2b8397654257fc",
+      "following_failure_log_utc": "2026-10-20T13:01:37.017574+00:00",
+      "poll_start_utc": "2026-10-20T13:01:35.685969+00:00",
+      "poll_duration_seconds": 0.729787,
+      "proxy_window_overlap": true,
+      "max_busy_cpu": 10,
+      "cpu_jiffy_deltas_user_nice_system_idle_iowait_irq_softirq_steal": [
+        10,
+        0,
+        7,
+        82,
+        0,
+        0,
+        0,
+        0
+      ],
+      "cpu_busy_fraction": 0.1717171717171717,
+      "client_aggregate_busy_fraction": 0.04005006257822278,
+      "steal_fraction": 0.0
+    }
+  ],
+  "manager_churn_examples": [
+    {
+      "path": "results-raw/M2rl/M2rl-c07-b00-p0-final-remote/before/processes.txt",
+      "snapshot_utc": "2026-10-20T12:08:01.834766+00:00",
+      "systemd_user": {
+        "pid": 32126,
+        "psr": 14,
+        "lifetime_percent_cpu": 2.8
+      },
+      "sd_pam": {
+        "pid": 32127,
+        "psr": 11,
+        "lifetime_percent_cpu": 0.0
+      },
+      "after_pids": [
+        32318,
+        32319
+      ]
+    },
+    {
+      "path": "results-raw/M2rl/M2rl-c07-b02-p0-final-ordinary/after/processes.txt",
+      "snapshot_utc": "2026-10-20T12:09:53.477503+00:00",
+      "before_pids": [
+        32929,
+        32930
+      ],
+      "after_pids": [
+        33130,
+        33131
+      ]
+    }
+  ],
+  "excluded_causes": {
+    "collection_pull": "all pull operations start after phase terminal/quiescence; not causal for these pre-arm windows",
+    "steal": "zero for every failed gate",
+    "first_case_or_phase_boundary": "first four failures are b2/b3/b5 after previous arm launches; w1 set100 is fifth case after72 completed processes"
+  },
+  "operator_polling": {
+    "source": "execution/run_phase.py execute_runner self.sleep(10)",
+    "transport": "execution/remote.py opens separate SSH per call",
+    "not_sealed_manifest_inputs": true,
+    "no_declared_10_second_protocol_interval": true
+  }
+}

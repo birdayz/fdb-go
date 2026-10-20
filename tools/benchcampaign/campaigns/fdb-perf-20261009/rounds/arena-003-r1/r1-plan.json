@@ -1,0 +1,289 @@
+{
+  "campaign": "hillclimb-arena-003-read-aa-r1",
+  "purpose": "Perf-lead R1 prespecified four-arm read1000 variability diagnostic: exact old binary repeated as old-aa alongside old/new/native CGo. Test variability at 5000 operations; not a rerun replacing original adverse 1000-op result, and not a noninferiority/no-regression proof.",
+  "source_commit": "affef93729368a3fb183df90c5332b5bd2289b25",
+  "harness_id": "3d2504ae0db14fad14f0384287377998231cf049310c8289d6e7245d3428e0d0",
+  "fdb_version": "7.3.77",
+  "fdb_api_version": 730,
+  "go_version": "1.26.9",
+  "pinned_files": [
+    "/usr/lib/libfdb_c.so",
+    "/usr/sbin/fdbserver",
+    "/etc/foundationdb/fdb.cluster",
+    "/etc/foundationdb/foundationdb.conf",
+    "/opt/fdbperf/scripts/astra-perf-run.py",
+    "/opt/fdbperf/scripts/astra-perf-analyze.py",
+    "/opt/fdbperf/artifacts/ownership-001-build/harness-v6.tar.gz",
+    "/opt/fdbperf/artifacts/ownership-001-build/harness-v6.sha256",
+    "/opt/fdbperf/artifacts/hillclimb-arena-003-build/published-full.tar.gz",
+    "/opt/fdbperf/artifacts/hillclimb-arena-003-build/base.sha256",
+    "/opt/fdbperf/artifacts/hillclimb-arena-003-build/candidate.sha256",
+    "/opt/fdbperf/artifacts/hillclimb-arena-003-build/arena-003.patch",
+    "/opt/fdbperf/artifacts/hillclimb-arena-003-build/full-base.sha256",
+    "/opt/fdbperf/artifacts/hillclimb-arena-003-build/full-new.sha256",
+    "/opt/fdbperf/artifacts/hillclimb-arena-003-build/binaries.sha256",
+    "/opt/fdbperf/artifacts/hillclimb-arena-003-build/runtime.sha256",
+    "/opt/fdbperf/scripts/astra-perf-run-r1.py"
+  ],
+  "seed": 477001,
+  "blocks": 6,
+  "cooldown_seconds": 2,
+  "quiescence_seconds": 1,
+  "max_busy_fraction": 0.15,
+  "max_steal_fraction": 0.01,
+  "telemetry_seconds": 1,
+  "cpu_sets": [
+    {
+      "name": "housekeeping",
+      "cpus": [
+        0,
+        1
+      ],
+      "max_busy_fraction": 0.3,
+      "max_cpu_busy_fraction": 0.8
+    },
+    {
+      "name": "server",
+      "cpus": [
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "max_busy_fraction": 0.15,
+      "max_cpu_busy_fraction": 0.5
+    },
+    {
+      "name": "client",
+      "cpus": [
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15
+      ],
+      "max_busy_fraction": 0.05,
+      "max_cpu_busy_fraction": 0.15
+    }
+  ],
+  "timeout_seconds": 180,
+  "environment": {
+    "GOMAXPROCS": "8",
+    "GOGC": "100",
+    "GOMEMLIMIT": "off",
+    "GODEBUG": "",
+    "LC_ALL": "C",
+    "TZ": "UTC"
+  },
+  "arms": [
+    {
+      "name": "old",
+      "binary": "/opt/fdbperf/bin/candidate-hc03-base",
+      "command": [
+        "taskset",
+        "--cpu-list",
+        "8-15",
+        "{binary}",
+        "--cluster-file",
+        "/etc/foundationdb/fdb.cluster",
+        "--workload",
+        "{workload}",
+        "--iterations",
+        "{iterations}",
+        "--warmup",
+        "{warmup}",
+        "--workers",
+        "{workers}",
+        "--output",
+        "{output}",
+        "--run-id",
+        "{run_id}",
+        "--block",
+        "{block}",
+        "--source-revision",
+        "affef93729368a3fb183df90c5332b5bd2289b25",
+        "--harness-id",
+        "{harness_id}",
+        "--allow-writes",
+        "--transaction-timeout-ms",
+        "30000",
+        "--retry-limit",
+        "10",
+        "--prefix",
+        "clientbench/a3r1/xxxxxxxxxxxxxxxxxxxxxxxx/{workload:_<16}/b{block:03d}/old/"
+      ],
+      "source_revision": "affef93729368a3fb183df90c5332b5bd2289b25"
+    },
+    {
+      "name": "new",
+      "binary": "/opt/fdbperf/bin/candidate-hc03-arena",
+      "command": [
+        "taskset",
+        "--cpu-list",
+        "8-15",
+        "{binary}",
+        "--cluster-file",
+        "/etc/foundationdb/fdb.cluster",
+        "--workload",
+        "{workload}",
+        "--iterations",
+        "{iterations}",
+        "--warmup",
+        "{warmup}",
+        "--workers",
+        "{workers}",
+        "--output",
+        "{output}",
+        "--run-id",
+        "{run_id}",
+        "--block",
+        "{block}",
+        "--source-revision",
+        "affef93729368a3fb183df90c5332b5bd2289b25.arenapatch.bc57f249650603cf657a2f86c8e05351de33b9c51a8b33708e45c5fadd0fe9ce",
+        "--harness-id",
+        "{harness_id}",
+        "--allow-writes",
+        "--transaction-timeout-ms",
+        "30000",
+        "--retry-limit",
+        "10",
+        "--prefix",
+        "clientbench/a3r1/xxxxxxxxxxxxxxxxxxxxxxxx/{workload:_<16}/b{block:03d}/new/"
+      ],
+      "source_revision": "affef93729368a3fb183df90c5332b5bd2289b25.arenapatch.bc57f249650603cf657a2f86c8e05351de33b9c51a8b33708e45c5fadd0fe9ce"
+    },
+    {
+      "name": "cgo",
+      "binary": "/opt/fdbperf/bin/candidate-v6-cgo",
+      "command": [
+        "taskset",
+        "--cpu-list",
+        "8-15",
+        "{binary}",
+        "--cluster-file",
+        "/etc/foundationdb/fdb.cluster",
+        "--workload",
+        "{workload}",
+        "--iterations",
+        "{iterations}",
+        "--warmup",
+        "{warmup}",
+        "--workers",
+        "{workers}",
+        "--output",
+        "{output}",
+        "--run-id",
+        "{run_id}",
+        "--block",
+        "{block}",
+        "--source-revision",
+        "26abdbaac12be60ea8955027f6047e10474596f1.clientpatch.cf470a02f825538d43ddfc346e27368b3870681361a7e23435218e5b225dcc1a",
+        "--harness-id",
+        "{harness_id}",
+        "--allow-writes",
+        "--transaction-timeout-ms",
+        "30000",
+        "--retry-limit",
+        "10",
+        "--prefix",
+        "clientbench/a3r1/xxxxxxxxxxxxxxxxxxxxxxxx/{workload:_<16}/b{block:03d}/cgo/"
+      ],
+      "source_revision": "26abdbaac12be60ea8955027f6047e10474596f1.clientpatch.cf470a02f825538d43ddfc346e27368b3870681361a7e23435218e5b225dcc1a"
+    },
+    {
+      "name": "old-aa",
+      "binary": "/opt/fdbperf/bin/candidate-hc03-base",
+      "command": [
+        "taskset",
+        "--cpu-list",
+        "8-15",
+        "{binary}",
+        "--cluster-file",
+        "/etc/foundationdb/fdb.cluster",
+        "--workload",
+        "{workload}",
+        "--iterations",
+        "{iterations}",
+        "--warmup",
+        "{warmup}",
+        "--workers",
+        "{workers}",
+        "--output",
+        "{output}",
+        "--run-id",
+        "{run_id}",
+        "--block",
+        "{block}",
+        "--source-revision",
+        "affef93729368a3fb183df90c5332b5bd2289b25",
+        "--harness-id",
+        "{harness_id}",
+        "--allow-writes",
+        "--transaction-timeout-ms",
+        "30000",
+        "--retry-limit",
+        "10",
+        "--prefix",
+        "clientbench/a3r1/xxxxxxxxxxxxxxxxxxxxxxxx/{workload:_<16}/b{block:03d}/aaa/"
+      ],
+      "source_revision": "affef93729368a3fb183df90c5332b5bd2289b25"
+    }
+  ],
+  "workloads": [
+    {
+      "name": "read1000",
+      "iterations": 5000,
+      "warmup": 200,
+      "workers": 1
+    }
+  ],
+  "interpretation": "Six partially counterbalanced blocks, NOT all24 four-arm orders: three reversal pairs, every pairwise precedence3/3, each arm1or2 times/position. Fixed-seed shuffled orders. Paired run-level geometric ratios; A/A measures observed variation, not proof patch cost is zero. Profile-free exploratory diagnostic. Native internal counters unobserved. No capacity/global-native-win/noninferiority claims.",
+  "correctness_status_at_authorization": "Root454 reports published baseline affef937 fast102/102 green (2actual100cached),6823frozen hashes/population verified. Candidate003 main-module compile/Bazel/runtime approval and final Opus5.5xhigh PR review pending. Remote harness standalone builds/tests are a separate narrow scope.",
+  "prefix_policy": "All24 unique prefixes are68bytes. old-aa arm uses aaa suffix, preserving79B measured key and159B conflicts. old and old-aa share exact binary and source_revision; only run/output/prefix/block placement differs.",
+  "measured_unit": "One completed harness transaction operation; batch=50 distinct Sets+Commit, point/get=Transact Get+emptyCommit, read=ReadTransact Get noCommit, range=Transact WantAll100rows, set=one100B Set+Commit.",
+  "campaign_wall_cap_seconds": 180,
+  "explicit_orders": [
+    [
+      "cgo",
+      "old",
+      "old-aa",
+      "new"
+    ],
+    [
+      "new",
+      "old-aa",
+      "old",
+      "cgo"
+    ],
+    [
+      "old",
+      "old-aa",
+      "new",
+      "cgo"
+    ],
+    [
+      "cgo",
+      "new",
+      "old-aa",
+      "old"
+    ],
+    [
+      "old-aa",
+      "cgo",
+      "new",
+      "old"
+    ],
+    [
+      "old",
+      "new",
+      "cgo",
+      "old-aa"
+    ]
+  ],
+  "hypothesis": "H0 proposed by coordinator: original read CPU+11% may reflect short-run variability. Alternative: patch/source/fixture-induced cost persists. Data will be reported regardless of direction; no repeat-until-green. The owner adds8B and fixture slab/pool behavior differs, so no-zero-code-cost assumption."
+}

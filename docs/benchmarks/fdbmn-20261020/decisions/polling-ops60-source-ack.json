@@ -1,0 +1,16 @@
+{
+  "review_utc": "2026-10-20T13:11:49.469812+00:00",
+  "reviewer": "prep-review",
+  "ack": true,
+  "file_sha256": {
+    "execution/run_phase_ops60.py": "ff09735342dd74a7e68ff9fe5113ebf37b8bafefdcdb619f9123cd280d3452d3",
+    "execution/remote_ops60.py": "8fda5f40a931e92962887941de89534cf633e9aa4ef878418d1bf9c50117462b",
+    "execution/run_phase.py": "247d5b1b5d0d2e4a199109160fe52136561a132a2feca74745d551dff6ba0fa9",
+    "execution/remote.py": "189889a901402573c354a263f503777f88c08c75040a0b1a39cccc3329a69c5a"
+  },
+  "tests": "13 existing in-memory controller controls + delayed-runner exact60s/quiescentR4 + mock SSH safety/owner checks + local ssh-G synthetic192.0.2.1 only; no host contact",
+  "activation_condition": "after M1w64 future152 quiescent and complete R3/R4 collection, before M1w8 only",
+  "poll_exit_detection_additional_bound": "<=60s plus bounded SSH, paid from unchanged reserves",
+  "no_A1": true,
+  "source_freeze": true
+}

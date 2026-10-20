@@ -1,0 +1,112 @@
+From f57001b255b25e27a4374a27120cd0cf9e2709de Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Johannes=20Br=C3=BCderl?= <johannes.bruederl@gmail.com>
+Date: Sun, 11 Oct 2026 11:08:37 +0200
+Subject: [PATCH] perf(fdbgo): send a lone pipelined Get without waking
+ writeLoop
+
+Every Get queued its frame for writeLoop, so even a transaction's single
+Get paid a goroutine handoff, and Resolve's flush could wait for another.
+When the transaction has no pipelined read outstanding, the frame now goes
+out through the idle-writer direct path (SendFrameEagerContext); reads
+issued while one is outstanding still queue, so writeLoop coalesces a
+burst into one write.
+---
+ pkg/fdbgo/client/transaction.go               | 12 ++++++++-
+ pkg/fdbgo/transport/conn_direct_write_test.go | 26 +++++++++++++++++++
+ pkg/fdbgo/transport/write_context.go          | 20 +++++++++++---
+ 3 files changed, 54 insertions(+), 4 deletions(-)
+
+diff --git a/pkg/fdbgo/client/transaction.go b/pkg/fdbgo/client/transaction.go
+index 170cb824f..f1be0d714 100644
+--- a/pkg/fdbgo/client/transaction.go
++++ b/pkg/fdbgo/client/transaction.go
+@@ -1000,7 +1000,17 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
+ 		// can deliver the reply (stamping resp.RecvAt) before we'd otherwise record
+ 		// sentAt — making RecvAt−sentAt negative and silently dropped by the sketch.
+ 		sentAt := time.Now()
+-		_, sendErr := conn.SendFrameDeferredContext(ctx, server.Token, body)
++		// The first read of a burst goes out at once; later ones queue while it is
++		// outstanding, so writeLoop can coalesce them into one write.
++		tx.readErrMu.Lock()
++		first := len(tx.pendingReads) == 0
++		tx.readErrMu.Unlock()
++		var sendErr error
++		if first {
++			_, sendErr = conn.SendFrameEagerContext(ctx, server.Token, body)
++		} else {
++			_, sendErr = conn.SendFrameDeferredContext(ctx, server.Token, body)
++		}
+ 		getValueBufPool.Put(poolBuf)
+ 		if sendErr != nil {
+ 			replyHandle.Cancel()
+diff --git a/pkg/fdbgo/transport/conn_direct_write_test.go b/pkg/fdbgo/transport/conn_direct_write_test.go
+index 0a4e7d316..4d6f6d82a 100644
+--- a/pkg/fdbgo/transport/conn_direct_write_test.go
++++ b/pkg/fdbgo/transport/conn_direct_write_test.go
+@@ -423,3 +423,29 @@ func TestDirectWriteTailsUnderConcurrency(t *testing.T) {
+ 		t.Fatal("WRITE_TAIL: the idle 1 MiB direct write was not partial")
+ 	}
+ }
++
++// An eager send writes at once on an idle connection and otherwise queues
++// without waiting, behind what is already queued.
++func TestSendFrameEagerContext(t *testing.T) {
++	t.Parallel()
++	cli, srv := tcpPair(t)
++	c := directConn(t, cli)
++	if enqueued, err := c.SendFrameEagerContext(context.Background(), UID{First: 1}, []byte("lone")); !enqueued || err != nil {
++		t.Fatalf("idle eager send = (%v, %v)", enqueued, err)
++	}
++	if token, _ := readFrame(t, srv); token.First != 1 || c.queued.Load() != 0 {
++		t.Fatalf("WRITE_EAGER: peer got token %d, %d queued; want the frame written by its caller", token.First, c.queued.Load())
++	}
++	if err := c.SendFrameDeferred(UID{First: 2}, []byte("queued")); err != nil {
++		t.Fatal(err)
++	}
++	if enqueued, err := c.SendFrameEagerContext(context.Background(), UID{First: 3}, []byte("behind")); !enqueued || err != nil {
++		t.Fatalf("eager send behind a queued frame = (%v, %v)", enqueued, err)
++	}
++	if n := len(c.writeCh); n != 2 {
++		t.Fatalf("WRITE_REORDER: %d frames queued, want the eager frame behind the queued one", n)
++	}
++	if first, second := <-c.writeCh, <-c.writeCh; first.token.First != 2 || second.token.First != 3 {
++		t.Fatalf("queue order = %d, %d", first.token.First, second.token.First)
++	}
++}
+diff --git a/pkg/fdbgo/transport/write_context.go b/pkg/fdbgo/transport/write_context.go
+index 09a70dfd6..9aface839 100644
+--- a/pkg/fdbgo/transport/write_context.go
++++ b/pkg/fdbgo/transport/write_context.go
+@@ -102,12 +102,26 @@ func (c *Conn) writeContext(ctx context.Context, token UID, body []byte, flush b
+ // does not wait for its acknowledgment. The boolean reports enqueue, not wire
+ // delivery. FlushContext may subsequently wait for the batch.
+ func (c *Conn) SendFrameDeferredContext(ctx context.Context, token UID, body []byte) (bool, error) {
++	return c.sendWithoutAck(ctx, token, body, false)
++}
++
++// SendFrameEagerContext is SendFrameDeferredContext for a frame nothing is about
++// to join: an idle writer lets the caller write it at once.
++func (c *Conn) SendFrameEagerContext(ctx context.Context, token UID, body []byte) (bool, error) {
++	return c.sendWithoutAck(ctx, token, body, true)
++}
++
++func (c *Conn) sendWithoutAck(ctx context.Context, token UID, body []byte, eager bool) (bool, error) {
+ 	if err := ctx.Err(); err != nil {
+ 		return false, err
+ 	}
+-	request := writeReq{token: token, body: bytes.Clone(body)}
+-	LogSend(token, request.body)
+-	return c.enqueueOwned(ctx, request)
++	LogSend(token, body)
++	if eager {
++		if direct, err := c.tryWriteDirect(token, body); direct {
++			return true, err
++		}
++	}
++	return c.enqueueOwned(ctx, writeReq{token: token, body: bytes.Clone(body)})
+ }
+ 
+ func (c *Conn) enqueueOwned(ctx context.Context, request writeReq) (bool, error) {
+-- 
+2.55.0
+

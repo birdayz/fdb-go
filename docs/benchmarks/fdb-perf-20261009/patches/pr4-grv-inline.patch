@@ -1,0 +1,211 @@
+From a50aed30413e486b958ae7ccdc70bcde4f0f5f00 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Johannes=20Br=C3=BCderl?= <johannes.bruederl@gmail.com>
+Date: Sun, 11 Oct 2026 01:04:43 +0200
+Subject: [PATCH] perf(fdbgo): run a lone GRV on its caller, not a new
+ goroutine
+
+An idle batcher detaches a batch holding only the arriving request; the
+spawned flush goroutine then woke the caller with the reply. Running that
+batch's RPC on the caller saves the spawn and both handoffs on every
+transaction's GRV. Its RPC is bounded by the caller's ctx as well as Close;
+batches with other members still flush on their own goroutine, so one
+caller's cancellation never abandons another's version.
+---
+ pkg/fdbgo/client/BUILD.bazel             |  7 ++-
+ pkg/fdbgo/client/grv.go                  | 33 ++++++++++--
+ pkg/fdbgo/client/grv_inline_unit_test.go | 65 ++++++++++++++++++++++++
+ 3 files changed, 100 insertions(+), 5 deletions(-)
+ create mode 100644 pkg/fdbgo/client/grv_inline_unit_test.go
+
+diff --git a/pkg/fdbgo/client/BUILD.bazel b/pkg/fdbgo/client/BUILD.bazel
+index 13eddf77c..8816e271e 100644
+--- a/pkg/fdbgo/client/BUILD.bazel
++++ b/pkg/fdbgo/client/BUILD.bazel
+@@ -81,10 +81,15 @@ go_test(
+ )
+ 
+ # gazelle:exclude grv_batch_unit_test.go
++# gazelle:exclude grv_inline_unit_test.go
+ go_test(
+     name = "grv_batch_unit_test",
+-    srcs = ["grv_batch_unit_test.go"],
++    srcs = [
++        "grv_batch_unit_test.go",
++        "grv_inline_unit_test.go",
++    ],
+     embed = [":client"],
++    deps = ["//pkg/fdbgo/wire/types"],
+ )
+ 
+ # gazelle:exclude ryw_issue_view_unit_test.go
+diff --git a/pkg/fdbgo/client/grv.go b/pkg/fdbgo/client/grv.go
+index 61789d150..1c064ef89 100644
+--- a/pkg/fdbgo/client/grv.go
++++ b/pkg/fdbgo/client/grv.go
+@@ -849,11 +849,17 @@ func (b *grvBatcher) getReadVersion(db *database, ctx context.Context, flags uin
+ 	req := grvRequest{reply: make(chan grvResult, 1), spanContext: span, tags: tags}
+ 
+ 	b = b.forFlags(flags)
+-	if batch := b.admit(req, func(seq uint64) {
++	switch batch := b.admit(req, func(seq uint64) {
+ 		if batch := b.timerBatch(seq); batch != nil {
+ 			b.flush(db, batch)
+ 		}
+-	}); batch != nil {
++	}); len(batch) {
++	case 0:
++	case 1:
++		// An idle batcher detached only this request: a goroutine would just hand
++		// the reply back, so run the RPC here, bounded by this caller's ctx too.
++		b.flushWithin(db, ctx, batch)
++	default:
+ 		go b.flush(db, batch)
+ 	}
+ 
+@@ -941,7 +947,13 @@ func (b *grvBatcher) observeLatency(elapsed time.Duration) {
+ }
+ 
+ // flush sends a detached batch without holding mu, allowing overlapping RPCs.
++// Callers cancel their own waits; only Close cancels a shared batch's RPC.
+ func (b *grvBatcher) flush(db *database, batch []grvRequest) {
++	b.flushWithin(db, nil, batch)
++}
++
++// flushWithin runs the batch's RPC under ctx (nil: db.ctx); Close also ends it.
++func (b *grvBatcher) flushWithin(db *database, ctx context.Context, batch []grvRequest) {
+ 	// RFC-110: once the batch is popped, b.pending no longer references
+ 	// it — a panic anywhere below (sendGRVRequest decode, applyGRVReply, the
+ 	// adaptive-window math) would orphan it, and every waiter blocked on its
+@@ -961,6 +973,9 @@ func (b *grvBatcher) flush(db *database, batch []grvRequest) {
+ 		}
+ 	}
+ 	defer retire() // retire before the panic backstop publishes errors
++	if ctx == nil {
++		ctx = db.ctx
++	}
+ 
+ 	// Collect per-tx span contexts so GetReadVersionRequest carries the
+ 	// readVersionBatcher span (C++
+@@ -978,8 +993,7 @@ func (b *grvBatcher) flush(db *database, batch []grvRequest) {
+ 	// by a reply it was meant to retire.
+ 	tok := db.grvCache.token()
+ 	requestTime := time.Now()
+-	// Callers cancel their own waits; only Close cancels the shared recovery.
+-	version, locked, rkDefault, rkBatch, tagThrottleInfoEntries, _, attemptEpoch, err := b.sendGRVRequest(db, db.ctx, flags, uint32(len(batch)), batchGRVSpanContext(spans), aggregateBatchTags(batch))
++	version, locked, rkDefault, rkBatch, tagThrottleInfoEntries, _, attemptEpoch, err := b.sendGRVRequest(db, ctx, flags, uint32(len(batch)), batchGRVSpanContext(spans), aggregateBatchTags(batch))
+ 	elapsed := time.Since(requestTime)
+ 
+ 	if err == nil {
+@@ -1283,6 +1297,7 @@ const (
+ // db.ctx cancellation (matching C++ infinite loop + quorum(ok,1) wait).
+ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uint32, txnCount uint32, span types.SpanContext, tags []types.TransactionTagCount) (version int64, locked bool, rkDefaultThrottled, rkBatchThrottled bool, tagThrottleInfo []types.TransactionTagThrottle, proxyTagThrottledDuration float64, attemptEpoch int64, err error) {
+ 	var backoff time.Duration
++	closed := db.ctx.Done() // ctx may be a caller's, which Close does not cancel
+ 
+ retry:
+ 	for {
+@@ -1316,6 +1331,9 @@ retry:
+ 			case <-ctx.Done():
+ 				timer.Stop()
+ 				return 0, false, false, false, nil, 0, attemptEpoch, ctx.Err()
++			case <-closed:
++				timer.Stop()
++				return 0, false, false, false, nil, 0, attemptEpoch, db.ctx.Err()
+ 			}
+ 		}
+ 
+@@ -1353,6 +1371,10 @@ retry:
+ 				replyHandle.Cancel()
+ 				replyHandle.Release()
+ 				return 0, false, false, false, nil, 0, attemptEpoch, ctx.Err()
++			case <-closed:
++				replyHandle.Cancel()
++				replyHandle.Release()
++				return 0, false, false, false, nil, 0, attemptEpoch, db.ctx.Err()
+ 			}
+ 			replyHandle.Release()
+ 			if resp.Err != nil {
+@@ -1420,6 +1442,9 @@ retry:
+ 		case <-ctx.Done():
+ 			timer.Stop()
+ 			return 0, false, false, false, nil, 0, attemptEpoch, ctx.Err()
++		case <-closed:
++			timer.Stop()
++			return 0, false, false, false, nil, 0, attemptEpoch, db.ctx.Err()
+ 		}
+ 	}
+ }
+diff --git a/pkg/fdbgo/client/grv_inline_unit_test.go b/pkg/fdbgo/client/grv_inline_unit_test.go
+new file mode 100644
+index 000000000..2457c36f7
+--- /dev/null
++++ b/pkg/fdbgo/client/grv_inline_unit_test.go
+@@ -0,0 +1,65 @@
++package client
++
++import (
++	"context"
++	"errors"
++	"testing"
++	"time"
++
++	"fdb.dev/pkg/fdbgo/wire/types"
++)
++
++// noProxyDB has no GRV proxies, so a GRV RPC backs off until its context ends.
++func noProxyDB(t *testing.T) (*database, context.CancelFunc) {
++	t.Helper()
++	ctx, cancel := context.WithCancel(context.Background())
++	t.Cleanup(cancel)
++	return &database{ctx: ctx, proxiesChanged: make(chan struct{}), failMon: newFailureMonitor()}, cancel
++}
++
++func batcherInFlight(b *grvBatcher) int {
++	b.mu.Lock()
++	defer b.mu.Unlock()
++	return b.inFlight
++}
++
++// The sole request of an idle batcher runs its RPC on the caller, so the
++// batch is retired by the time the caller's own deadline returns it.
++func TestGRVSoleRequestRunsOnCaller(t *testing.T) {
++	t.Parallel()
++	db, _ := noProxyDB(t)
++	b := &grvBatcher{priority: grvPriorityDefault}
++	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
++	defer cancel()
++	_, _, _, err := b.getReadVersion(db, ctx, grvPriorityDefault, types.SpanContext{}, nil, false, false)
++	if !errors.Is(err, context.DeadlineExceeded) {
++		t.Fatalf("err = %v, want the caller's deadline", err)
++	}
++	if n := batcherInFlight(b); n != 0 {
++		t.Fatalf("GRV_INLINE: %d batch still in flight after its only caller returned", n)
++	}
++}
++
++// Close still ends an RPC run on a caller whose own context never fires.
++func TestGRVSoleRequestEndsOnClose(t *testing.T) {
++	t.Parallel()
++	db, closeDB := noProxyDB(t)
++	b := &grvBatcher{priority: grvPriorityDefault}
++	done := make(chan error, 1)
++	go func() {
++		_, _, _, err := b.getReadVersion(db, context.Background(), grvPriorityDefault, types.SpanContext{}, nil, false, false)
++		done <- err
++	}()
++	closeDB()
++	select {
++	case err := <-done:
++		if !errors.Is(err, context.Canceled) {
++			t.Fatalf("err = %v, want the database's cancellation", err)
++		}
++	case <-time.After(5 * time.Second):
++		t.Fatal("GRV run on the caller ignored database Close")
++	}
++	if n := batcherInFlight(b); n != 0 {
++		t.Fatalf("%d batch still in flight after Close", n)
++	}
++}
+-- 
+2.55.0
+

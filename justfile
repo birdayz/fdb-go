@@ -112,6 +112,11 @@ test_full_first := "//conformance:rfc257_oracle_test //pkg/relational/conformanc
 test *args:
     bazelisk test //... --build_tests_only --test_tag_filters=-test-full,-conformance_java,-stress {{args}}
 
+# The fast-lane target set (`just test`) under -race, on {{race_base}} so the default
+# output base keeps its cache. Not the CI race job's target set, and not `race-all`.
+test-race *args:
+    bazelisk --output_base={{race_base}} test //... --build_tests_only --test_tag_filters=-test-full,-conformance_java,-stress --@rules_go//go/config:race {{args}}
+
 # The end-to-end SQL suite: the driver's own tests plus every sqltest package
 # (cached; an edited test reruns only its own package).
 sqltest *args:

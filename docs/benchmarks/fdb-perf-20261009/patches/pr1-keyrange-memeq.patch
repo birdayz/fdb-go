@@ -1,0 +1,176 @@
+From dc069960e74a3613bbd49c6bb49391e6e91c4321 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Johannes=20Br=C3=BCderl?= <johannes.bruederl@gmail.com>
+Date: Sat, 10 Oct 2026 23:34:16 +0200
+Subject: [PATCH] perf(wire): compare equalsKeyAfter with memcmp, once per
+ range
+
+keyRangeEqualsKeyAfter walked begin byte by byte and writeToBuffer
+evaluated it twice per range. On batchset50 (50 Sets/commit) it was
+5.6% of client CPU. Same predicate as C++ equalsKeyAfter
+(FDBTypes.h:309-313), so the serialized bytes are unchanged; a
+reference-oracle test and fuzz target pin the equivalence.
+---
+ pkg/fdbgo/wire/types/BUILD.bazel              |  1 +
+ .../types/keyrange_equals_key_after_test.go   | 81 +++++++++++++++++++
+ pkg/fdbgo/wire/types/keyrangeref_custom.go    | 23 ++----
+ 3 files changed, 89 insertions(+), 16 deletions(-)
+ create mode 100644 pkg/fdbgo/wire/types/keyrange_equals_key_after_test.go
+
+diff --git a/pkg/fdbgo/wire/types/BUILD.bazel b/pkg/fdbgo/wire/types/BUILD.bazel
+index cbbec3d03..5f439958e 100644
+--- a/pkg/fdbgo/wire/types/BUILD.bazel
++++ b/pkg/fdbgo/wire/types/BUILD.bazel
+@@ -70,6 +70,7 @@ go_test(
+         "ground_truth_test.go",
+         "inline_error_test.go",
+         "key_value_vector_test.go",
++        "keyrange_equals_key_after_test.go",
+         "keyrangeref_test.go",
+         "locations_marshal_test.go",
+         "mappedkeyvalues_ground_truth_test.go",
+diff --git a/pkg/fdbgo/wire/types/keyrange_equals_key_after_test.go b/pkg/fdbgo/wire/types/keyrange_equals_key_after_test.go
+new file mode 100644
+index 000000000..fe2139266
+--- /dev/null
++++ b/pkg/fdbgo/wire/types/keyrange_equals_key_after_test.go
+@@ -0,0 +1,81 @@
++package types
++
++import (
++	"bytes"
++	"testing"
++)
++
++// equalsKeyAfterReference is the byte-at-a-time form of C++ equalsKeyAfter
++// (FDBTypes.h:309-313), kept as the oracle for the memcmp implementation.
++func equalsKeyAfterReference(begin, end []byte) bool {
++	if len(end) != len(begin)+1 || end[len(end)-1] != 0 {
++		return false
++	}
++	for i := range begin {
++		if begin[i] != end[i] {
++			return false
++		}
++	}
++	return true
++}
++
++var equalsKeyAfterSeeds = []struct {
++	name       string
++	begin, end []byte
++	want       bool
++}{
++	{"both empty", nil, nil, false},
++	{"empty begin, zero end", nil, []byte{0}, true},
++	{"empty begin, nonzero end", nil, []byte{1}, false},
++	{"empty begin, two zeros", nil, []byte{0, 0}, false},
++	{"key after", []byte("k"), []byte("k\x00"), true},
++	{"zero-suffixed key after", []byte("k\x00"), []byte("k\x00\x00"), true},
++	{"trailing nonzero", []byte("k"), []byte("k\x01"), false},
++	{"prefix mismatch", []byte("k"), []byte("j\x00"), false},
++	{"end shorter", []byte("kk"), []byte("k"), false},
++	{"end equal length", []byte("k\x00"), []byte("k\x00"), false},
++	{"end two longer", []byte("k"), []byte("k\x00\x00"), false},
++	{"first byte differs, long", append([]byte{1}, bytes.Repeat([]byte("a"), 99)...), append(append([]byte{2}, bytes.Repeat([]byte("a"), 99)...), 0), false},
++	{"last byte differs, long", append(bytes.Repeat([]byte("a"), 99), 1), append(append(bytes.Repeat([]byte("a"), 99), 2), 0), false},
++	{"long key after", bytes.Repeat([]byte{0xff}, 100), append(bytes.Repeat([]byte{0xff}, 100), 0), true},
++}
++
++func TestKeyRangeEqualsKeyAfterMatchesReference(t *testing.T) {
++	t.Parallel()
++	for _, tc := range equalsKeyAfterSeeds {
++		if got := keyRangeEqualsKeyAfter(tc.begin, tc.end); got != tc.want {
++			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
++		}
++		if ref := equalsKeyAfterReference(tc.begin, tc.end); ref != tc.want {
++			t.Errorf("%s: reference got %v, want %v", tc.name, ref, tc.want)
++		}
++	}
++}
++
++// The serialized bytes depend on this predicate (single-key ranges ship as
++// (end, empty)), so any disagreement with the reference is a wire change.
++func FuzzKeyRangeEqualsKeyAfter(f *testing.F) {
++	for _, tc := range equalsKeyAfterSeeds {
++		f.Add(tc.begin, tc.end)
++	}
++	f.Fuzz(func(t *testing.T, begin, end []byte) {
++		want := equalsKeyAfterReference(begin, end)
++		if got := keyRangeEqualsKeyAfter(begin, end); got != want {
++			t.Fatalf("begin=%x end=%x: got %v, reference %v", begin, end, got, want)
++		}
++		// Derived key-after pair: must always take the single-key encoding.
++		after := append(bytes.Clone(begin), 0)
++		if !keyRangeEqualsKeyAfter(begin, after) {
++			t.Fatalf("begin=%x: begin+\\x00 not recognized", begin)
++		}
++		m := KeyRangeRef{Begin: begin, End: end}
++		req := &SplitRangeRequest{Keys: m, ChunkSize: 1}
++		var back SplitRangeRequest
++		if err := back.UnmarshalFDB(req.MarshalFDB()); err != nil {
++			t.Fatalf("round trip: %v", err)
++		}
++		if want && (!bytes.Equal(back.Keys.Begin, begin) || !bytes.Equal(back.Keys.End, end)) {
++			t.Fatalf("single-key round trip: got [%x,%x), want [%x,%x)", back.Keys.Begin, back.Keys.End, begin, end)
++		}
++	})
++}
+diff --git a/pkg/fdbgo/wire/types/keyrangeref_custom.go b/pkg/fdbgo/wire/types/keyrangeref_custom.go
+index 488718211..aace1daa1 100644
+--- a/pkg/fdbgo/wire/types/keyrangeref_custom.go
++++ b/pkg/fdbgo/wire/types/keyrangeref_custom.go
+@@ -13,6 +13,7 @@ package types
+ // FuzzSplitRangeRequest_RoundTrip 2026-04-25.
+ 
+ import (
++	"bytes"
+ 	"encoding/binary"
+ 
+ 	"fdb.dev/pkg/fdbgo/wire"
+@@ -55,21 +56,10 @@ func (m *KeyRangeRef) UnmarshalFDB(data []byte) error {
+ 	return nil
+ }
+ 
+-// equalsKeyAfter returns true if begin + '\x00' == end.
+-// C++ FDBTypes.h: equalsKeyAfter(begin, end)
++// keyRangeEqualsKeyAfter returns true if begin + '\x00' == end, as C++
++// equalsKeyAfter (FDBTypes.h:309-313): size, trailing zero, then a memcmp prefix.
+ func keyRangeEqualsKeyAfter(begin, end []byte) bool {
+-	if len(end) != len(begin)+1 {
+-		return false
+-	}
+-	if end[len(end)-1] != 0 {
+-		return false
+-	}
+-	for i := range begin {
+-		if begin[i] != end[i] {
+-			return false
+-		}
+-	}
+-	return true
++	return len(end) == len(begin)+1 && end[len(begin)] == 0 && bytes.Equal(begin, end[:len(begin)])
+ }
+ 
+ // precomputeSize replaces the generated precomputeSize for KeyRangeRef.
+@@ -92,7 +82,8 @@ func (m *KeyRangeRef) precomputeSize(ps *wire.PrecomputeSize) int {
+ // writeToBuffer replaces the generated writeToBuffer for KeyRangeRef.
+ func (m *KeyRangeRef) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
+ 	var beginOff, endOff int
+-	if keyRangeEqualsKeyAfter(m.Begin, m.End) {
++	single := keyRangeEqualsKeyAfter(m.Begin, m.End)
++	if single {
+ 		// C++: serialize(end, empty) — swap field order
+ 		endOff, _ = wb.VisitDynamicSize(m.End)
+ 		beginOff, _ = wb.VisitDynamicSize(nil) // empty
+@@ -117,7 +108,7 @@ func (m *KeyRangeRef) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmp
+ 	// Normal: serializer(ar, begin, end) → slot 0 = begin, slot 1 = end.
+ 	// Optimized: serializer(ar, end, empty) → slot 0 = end, slot 1 = empty.
+ 	// Our variables: when optimized, endOff = end data, beginOff = empty data.
+-	if keyRangeEqualsKeyAfter(m.Begin, m.End) {
++	if single {
+ 		// Optimized: slot 0 = end (endOff), slot 1 = empty (beginOff)
+ 		selfW.WriteRelativeOffset(endOff, int(vt[KeyRangeRefSlotBegin+2]))
+ 		selfW.WriteRelativeOffset(beginOff, int(vt[KeyRangeRefSlotEnd+2]))
+-- 
+2.55.0
+

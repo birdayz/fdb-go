@@ -16,6 +16,15 @@ Each campaign's reports live in a folder named after the campaign.
   FoundationDB server hosts, `double` redundancy, `ssd-2`, 9 storage servers);
   multi-node `USE_REMOTE_FETCH` vs `SCAN_AND_FETCH` (`M2rl`, `M2skip`) and
   pure-Go vs CGo concurrency scaling at 1, 8, 32, and 64 workers (`M1`).
+- [fdbmn-20261020](fdbmn-20261020/README.md): the multi-node phases repeated on
+  master `fa8725f1d` under a new preregistered protocol (executed; results to follow).
+- [fdb-perf-20261009](fdb-perf-20261009/README.md): one dedicated VM, rounds
+  R1–R18 of pure-Go vs CGo client comparisons, including the R17 confirmatory
+  round and its preregistration.
+
+The two 2026-10-14 campaigns keep their frozen protocol versions under `protocol/`
+([single-node](hcloud-rebench-20261014/protocol/),
+[multi-node](hcloud-multinode-vpc-20261014/protocol/), with the provisioning plan).
 
 ## Change-specific comparisons
 
@@ -23,6 +32,10 @@ Each campaign's reports live in a folder named after the campaign.
   — before/after latency and allocations, including the cost of Java-compatible reads.
 - [RFC-259 prototype](rfc-259/README.md): server CPU per transaction with GRV batch
   windows and write coalescing, against libfdb_c, at 1–32 workers.
+- [RFC-263 revision 4](rfc-263/README.md): local screens of the transaction timer
+  and incarnation prototypes.
+
+Design notes, draft RFCs and the benchmark backlog: [docs/perf](../perf/README.md).
 
 ## 2026-10-12, master 9a9a448
 

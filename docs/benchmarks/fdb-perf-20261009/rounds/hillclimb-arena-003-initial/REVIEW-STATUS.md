@@ -1,0 +1,5 @@
+# Initial003 proposal review
+
+readorder-final semantic ACK exact patch e8162019ac2854d2f2dc46b2285e27fab685f5f1ef1d3537ef2f6916a79a83d6. transaction.go2991–3008 retains prior slabs and caps nonoverlapping slices; oversized leaves active slab untouched, matching C++7.3.77 Arena.cpp349–370 allocation and463–477 retained-block ownership. Go3013–3028 severs next before Put, typed capacities from constructors1321–1346. Go3585–3595/3660–3671 clears vectors+RYW after transaction_lifetime.go155–169 drains users; matches RYWactor2699–2715 lifetime intent. captureCommit57–74 owns independent bytes before transaction.go2056–2061 releases lease. No Medium+ semantic finding. No tests/builds/remote calls by reviewer. Basewatch/COW excluded.
+
+Root request430 supersedes the initial test-API requirement in429: new integration tests must use existing execution-lease/Get/Snapshot APIs, not BeginRead/acquireView from WIP. Initial proposal/source preserved here; revised003 must be rebased onto root's forthcoming post312 PR789 export. No build/timing before root alias review and the corrected export. Initial003 has no measurements and is not the future PR measurement baseline.

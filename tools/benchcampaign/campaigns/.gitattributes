@@ -1,0 +1,3 @@
+# Archived patches keep their original bytes, trailing whitespace included.
+*.patch -whitespace
+*.diff -whitespace

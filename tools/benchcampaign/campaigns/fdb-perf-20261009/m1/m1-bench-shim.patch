@@ -1,0 +1,113 @@
+diff --git a/pkg/recordlayer/benchmark_test.go b/pkg/recordlayer/benchmark_test.go
+index 28dfc9e76..85bbf75d1 100644
+--- a/pkg/recordlayer/benchmark_test.go
++++ b/pkg/recordlayer/benchmark_test.go
+@@ -6,6 +6,7 @@ import (
+ 	"os"
+ 	"strings"
+ 	"sync"
++	"syscall"
+ 	"testing"
+ 	"time"
+ 
+@@ -28,6 +29,9 @@ func ensureBenchDB(b *testing.B) {
+ 		if sharedDB != nil {
+ 			return
+ 		}
++		if m1Open(b) {
++			return
++		}
+ 		// Container startup is BOUNDED. An unbounded context here blocks
+ 		// forever when Docker is slow — a pull, a busy host, an
+ 		// oversubscribed daemon — and a benchmark that hangs reports
+@@ -69,9 +73,50 @@ func ensureBenchDB(b *testing.B) {
+ // isolation across concurrent benchmarks. Uses b.Name() as the key prefix.
+ // This is separate from specSubspace() which relies on Ginkgo's CurrentSpecReport.
+ func benchSubspace(b *testing.B) subspace.Subspace {
++	if p := os.Getenv("M1_KEY_PREFIX"); p != "" {
++		return subspace.FromBytes(tuple.Tuple{p, b.Name()}.Pack())
++	}
+ 	return subspace.FromBytes(tuple.Tuple{b.Name()}.Pack())
+ }
+ 
++// m1Open connects to the native cluster named by M1_FDB_CLUSTER_FILE (M1 harness shim).
++func m1Open(b *testing.B) bool {
++	cf := os.Getenv("M1_FDB_CLUSTER_FILE")
++	if cf == "" {
++		if os.Getenv("M1_KEY_PREFIX") != "" {
++			b.Fatal("M1_KEY_PREFIX set without M1_FDB_CLUSTER_FILE")
++		}
++		return false
++	}
++	fdb.MustAPIVersion(730)
++	dbConn, err := fdb.OpenDatabase(cf)
++	if err != nil {
++		b.Fatalf("open %s: %v", cf, err)
++	}
++	sharedDB = NewFDBDatabase(dbConn)
++	return true
++}
++
++// m1ProcCPU reports whole-process CPU (all threads) over the timed loop, per op.
++func m1ProcCPU(b *testing.B) func() {
++	u0, s0 := m1Rusage(b)
++	return func() {
++		u1, s1 := m1Rusage(b)
++		n := float64(b.N)
++		b.ReportMetric(float64(u1-u0+s1-s0)/n, "proc-cpu-ns/op")
++		b.ReportMetric(float64(u1-u0)/n, "proc-user-ns/op")
++		b.ReportMetric(float64(s1-s0)/n, "proc-sys-ns/op")
++	}
++}
++
++func m1Rusage(b *testing.B) (user, sys int64) {
++	var ru syscall.Rusage
++	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &ru); err != nil {
++		b.Fatalf("getrusage: %v", err)
++	}
++	return ru.Utime.Nano(), ru.Stime.Nano()
++}
++
+ // benchMetaData builds metadata with Order/Customer/TypedRecord primary keys.
+ func benchMetaData(b *testing.B) *RecordMetaData {
+ 	b.Helper()
+@@ -167,6 +212,7 @@ func BenchmarkSaveRecord(b *testing.B) {
+ 	}
+ 
+ 	b.ResetTimer()
++	defer m1ProcCPU(b)()
+ 	b.ReportAllocs()
+ 	for i := 0; i < b.N; i++ {
+ 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+@@ -258,6 +304,7 @@ func BenchmarkLoadRecord(b *testing.B) {
+ 	pk := tuple.Tuple{int64(1)}
+ 
+ 	b.ResetTimer()
++	defer m1ProcCPU(b)()
+ 	b.ReportAllocs()
+ 	for i := 0; i < b.N; i++ {
+ 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+@@ -474,6 +521,7 @@ func BenchmarkScanIndex(b *testing.B) {
+ 	}
+ 
+ 	b.ResetTimer()
++	defer m1ProcCPU(b)()
+ 	b.ReportAllocs()
+ 	for i := 0; i < b.N; i++ {
+ 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+@@ -530,6 +578,7 @@ func BenchmarkScanIndexRecords(b *testing.B) {
+ 			name = "pipelined"
+ 		}
+ 		b.Run(name, func(b *testing.B) {
++			defer m1ProcCPU(b)()
+ 			b.ReportAllocs()
+ 			for range b.N {
+ 				_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+@@ -807,6 +856,7 @@ func BenchmarkStoreOpen(b *testing.B) {
+ 	}
+ 
+ 	b.ResetTimer()
++	defer m1ProcCPU(b)()
+ 	b.ReportAllocs()
+ 	for i := 0; i < b.N; i++ {
+ 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {

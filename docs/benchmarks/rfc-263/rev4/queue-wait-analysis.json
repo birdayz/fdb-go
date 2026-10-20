@@ -1,0 +1,266 @@
+{
+  "lazy-get100": {
+    "caller_delay_ns": 299484515,
+    "drainer_delay_ns": 172670909,
+    "root_drainer_delay_ns": 0,
+    "shard_drainer_delay_ns": 172670909,
+    "other_mutex_inside_queue_delay_ns": 0,
+    "unlock_source_lines": {
+      "timeoutQueue.schedule:107": 299484515,
+      "timeoutQueue.fire:204": 148036955,
+      "timeoutQueue.fire:155": 24633954
+    },
+    "population": 1000000,
+    "measured_window_cpu_s": 31.507176,
+    "queue_wait_ns": 472155424,
+    "queue_wait_over_window_cpu_pct": 1.4985647206211055,
+    "scope": "Whole mutex profile divided by measured-window client CPU: cumulative wait/CPU ratio, not CPU consumed. Exact q.mu and root.mu unlock source lines only."
+  },
+  "lazy-set100": {
+    "caller_delay_ns": 108641581,
+    "drainer_delay_ns": 37920336,
+    "root_drainer_delay_ns": 0,
+    "shard_drainer_delay_ns": 37920336,
+    "other_mutex_inside_queue_delay_ns": 0,
+    "unlock_source_lines": {
+      "timeoutQueue.schedule:107": 108641581,
+      "timeoutQueue.fire:155": 21898368,
+      "timeoutQueue.fire:204": 16021968
+    },
+    "population": 400000,
+    "measured_window_cpu_s": 15.734448,
+    "queue_wait_ns": 146561917,
+    "queue_wait_over_window_cpu_pct": 0.9314716156550265,
+    "scope": "Whole mutex profile divided by measured-window client CPU: cumulative wait/CPU ratio, not CPU consumed. Exact q.mu and root.mu unlock source lines only."
+  },
+  "lazy-range100": {
+    "caller_delay_ns": 389979949,
+    "drainer_delay_ns": 408219914,
+    "root_drainer_delay_ns": 0,
+    "shard_drainer_delay_ns": 408219914,
+    "other_mutex_inside_queue_delay_ns": 0,
+    "unlock_source_lines": {
+      "timeoutQueue.schedule:107": 389979949,
+      "timeoutQueue.fire:204": 254984000,
+      "timeoutQueue.fire:155": 153235914
+    },
+    "population": 500000,
+    "measured_window_cpu_s": 32.057741,
+    "queue_wait_ns": 798199863,
+    "queue_wait_over_window_cpu_pct": 2.489881813568835,
+    "scope": "Whole mutex profile divided by measured-window client CPU: cumulative wait/CPU ratio, not CPU consumed. Exact q.mu and root.mu unlock source lines only."
+  },
+  "shards-get100": {
+    "caller_delay_ns": 36104551,
+    "drainer_delay_ns": 33567864,
+    "root_drainer_delay_ns": 0,
+    "shard_drainer_delay_ns": 33567864,
+    "other_mutex_inside_queue_delay_ns": 0,
+    "unlock_source_lines": {
+      "timeoutQueue.fire:194": 33567864,
+      "timeoutQueue.schedule:123": 22877371,
+      "timeoutQueue.remove:134": 13227180
+    },
+    "population": 1000000,
+    "measured_window_cpu_s": 31.973122,
+    "queue_wait_ns": 69672415,
+    "queue_wait_over_window_cpu_pct": 0.21790932709042302,
+    "scope": "Whole mutex profile divided by measured-window client CPU: cumulative wait/CPU ratio, not CPU consumed. Exact q.mu and root.mu unlock source lines only."
+  },
+  "shards-set100": {
+    "caller_delay_ns": 9663821,
+    "drainer_delay_ns": 21697683,
+    "root_drainer_delay_ns": 0,
+    "shard_drainer_delay_ns": 21697683,
+    "other_mutex_inside_queue_delay_ns": 0,
+    "unlock_source_lines": {
+      "timeoutQueue.fire:194": 21697683,
+      "timeoutQueue.schedule:123": 6675797,
+      "timeoutQueue.remove:134": 2988024
+    },
+    "population": 400000,
+    "measured_window_cpu_s": 16.320384,
+    "queue_wait_ns": 31361504,
+    "queue_wait_over_window_cpu_pct": 0.19216155698297294,
+    "scope": "Whole mutex profile divided by measured-window client CPU: cumulative wait/CPU ratio, not CPU consumed. Exact q.mu and root.mu unlock source lines only."
+  },
+  "shards-range100": {
+    "caller_delay_ns": 36355587,
+    "drainer_delay_ns": 721626728,
+    "root_drainer_delay_ns": 0,
+    "shard_drainer_delay_ns": 721626728,
+    "other_mutex_inside_queue_delay_ns": 0,
+    "unlock_source_lines": {
+      "timeoutQueue.fire:194": 721626728,
+      "timeoutQueue.remove:134": 20021383,
+      "timeoutQueue.schedule:123": 16334204
+    },
+    "population": 500000,
+    "measured_window_cpu_s": 32.938331,
+    "queue_wait_ns": 757982315,
+    "queue_wait_over_window_cpu_pct": 2.301216521869308,
+    "scope": "Whole mutex profile divided by measured-window client CPU: cumulative wait/CPU ratio, not CPU consumed. Exact q.mu and root.mu unlock source lines only."
+  },
+  "lazy2b-get100": {
+    "caller_delay_ns": 348894431,
+    "drainer_delay_ns": 268711034,
+    "root_drainer_delay_ns": 0,
+    "shard_drainer_delay_ns": 268711034,
+    "other_mutex_inside_queue_delay_ns": 0,
+    "unlock_source_lines": {
+      "timeoutQueue.schedule:114": 348894431,
+      "timeoutQueue.fire:141": 194065457,
+      "timeoutQueue.fire:211": 74645577
+    },
+    "population": 1000000,
+    "measured_window_cpu_s": 31.638005,
+    "queue_wait_ns": 617605465,
+    "queue_wait_over_window_cpu_pct": 1.9520999032650763,
+    "scope": "Whole mutex profile divided by measured-window client CPU: cumulative wait/CPU ratio, not CPU consumed. Exact q.mu and root.mu unlock source lines only."
+  },
+  "lazy2b-set100": {
+    "caller_delay_ns": 117870949,
+    "drainer_delay_ns": 24642300,
+    "root_drainer_delay_ns": 0,
+    "shard_drainer_delay_ns": 24642300,
+    "other_mutex_inside_queue_delay_ns": 0,
+    "unlock_source_lines": {
+      "timeoutQueue.schedule:114": 117870949,
+      "timeoutQueue.fire:141": 23753210,
+      "timeoutQueue.fire:211": 889090
+    },
+    "population": 400000,
+    "measured_window_cpu_s": 15.568391,
+    "queue_wait_ns": 142513249,
+    "queue_wait_over_window_cpu_pct": 0.9154012704331488,
+    "scope": "Whole mutex profile divided by measured-window client CPU: cumulative wait/CPU ratio, not CPU consumed. Exact q.mu and root.mu unlock source lines only."
+  },
+  "lazy2b-range100": {
+    "caller_delay_ns": 197220764,
+    "drainer_delay_ns": 57130194,
+    "root_drainer_delay_ns": 0,
+    "shard_drainer_delay_ns": 57130194,
+    "other_mutex_inside_queue_delay_ns": 0,
+    "unlock_source_lines": {
+      "timeoutQueue.schedule:114": 197220764,
+      "timeoutQueue.fire:141": 28796523,
+      "timeoutQueue.fire:211": 28333671
+    },
+    "population": 500000,
+    "measured_window_cpu_s": 32.050583,
+    "queue_wait_ns": 254350958,
+    "queue_wait_over_window_cpu_pct": 0.7935922975254458,
+    "scope": "Whole mutex profile divided by measured-window client CPU: cumulative wait/CPU ratio, not CPU consumed. Exact q.mu and root.mu unlock source lines only."
+  },
+  "merged-get100": {
+    "caller_delay_ns": 28479865,
+    "drainer_delay_ns": 96626628,
+    "root_drainer_delay_ns": 3034581,
+    "shard_drainer_delay_ns": 93592047,
+    "other_mutex_inside_queue_delay_ns": 0,
+    "unlock_source_lines": {
+      "timeoutQueueRoot.fire:187": 55114374,
+      "timeoutQueue.collect:209": 31180621,
+      "timeoutQueue.schedule:130": 28479865,
+      "timeoutQueue.fire:148": 6068004,
+      "timeoutQueueRoot.fire:197": 2261248,
+      "timeoutQueue.collect:234": 1229048,
+      "timeoutQueueRoot.fire:160": 704624,
+      "timeoutQueueRoot.fire:156": 57689,
+      "timeoutQueueRoot.fire:193": 11020
+    },
+    "population": 1000000,
+    "measured_window_cpu_s": 33.082513,
+    "queue_wait_ns": 125106493,
+    "queue_wait_over_window_cpu_pct": 0.37816502331609453,
+    "scope": "Whole mutex profile divided by measured-window client CPU: cumulative wait/CPU ratio, not CPU consumed. Exact q.mu and root.mu unlock source lines only."
+  },
+  "merged-set100": {
+    "caller_delay_ns": 476367,
+    "drainer_delay_ns": 5766962,
+    "root_drainer_delay_ns": 951,
+    "shard_drainer_delay_ns": 5766011,
+    "other_mutex_inside_queue_delay_ns": 0,
+    "unlock_source_lines": {
+      "timeoutQueue.collect:209": 3912912,
+      "timeoutQueueRoot.fire:187": 1693462,
+      "timeoutQueue.schedule:130": 476367,
+      "timeoutQueue.fire:148": 155840,
+      "timeoutQueue.collect:234": 3797,
+      "timeoutQueueRoot.fire:156": 951
+    },
+    "population": 400000,
+    "measured_window_cpu_s": 16.027027,
+    "queue_wait_ns": 6243329,
+    "queue_wait_over_window_cpu_pct": 0.03895500394427488,
+    "scope": "Whole mutex profile divided by measured-window client CPU: cumulative wait/CPU ratio, not CPU consumed. Exact q.mu and root.mu unlock source lines only."
+  },
+  "merged-range100": {
+    "caller_delay_ns": 3803890,
+    "drainer_delay_ns": 48385340,
+    "root_drainer_delay_ns": 671,
+    "shard_drainer_delay_ns": 48384669,
+    "other_mutex_inside_queue_delay_ns": 0,
+    "unlock_source_lines": {
+      "timeoutQueueRoot.fire:187": 32444600,
+      "timeoutQueue.collect:209": 14217838,
+      "timeoutQueue.schedule:130": 3803890,
+      "timeoutQueue.collect:234": 986568,
+      "timeoutQueue.fire:148": 735663,
+      "timeoutQueueRoot.fire:197": 671
+    },
+    "population": 500000,
+    "measured_window_cpu_s": 33.102646,
+    "queue_wait_ns": 52189230,
+    "queue_wait_over_window_cpu_pct": 0.15765878655138324,
+    "scope": "Whole mutex profile divided by measured-window client CPU: cumulative wait/CPU ratio, not CPU consumed. Exact q.mu and root.mu unlock source lines only."
+  },
+  "reclaim-get100": {
+    "caller_delay_ns": 5428823,
+    "drainer_delay_ns": 0,
+    "root_drainer_delay_ns": 0,
+    "shard_drainer_delay_ns": 0,
+    "other_mutex_inside_queue_delay_ns": 0,
+    "unlock_source_lines": {
+      "timeoutQueue.remove:143": 3073096,
+      "timeoutQueue.schedule:133": 2355727
+    },
+    "population": 1000000,
+    "measured_window_cpu_s": 31.474576,
+    "queue_wait_ns": 5428823,
+    "queue_wait_over_window_cpu_pct": 0.01724828000860123,
+    "scope": "Whole mutex profile divided by measured-window client CPU: cumulative wait/CPU ratio, not CPU consumed. Exact q.mu and root.mu unlock source lines only."
+  },
+  "reclaim-set100": {
+    "caller_delay_ns": 80301,
+    "drainer_delay_ns": 0,
+    "root_drainer_delay_ns": 0,
+    "shard_drainer_delay_ns": 0,
+    "other_mutex_inside_queue_delay_ns": 0,
+    "unlock_source_lines": {
+      "timeoutQueue.schedule:133": 65584,
+      "timeoutQueue.remove:143": 14717
+    },
+    "population": 400000,
+    "measured_window_cpu_s": 15.700038,
+    "queue_wait_ns": 80301,
+    "queue_wait_over_window_cpu_pct": 0.0005114700996265105,
+    "scope": "Whole mutex profile divided by measured-window client CPU: cumulative wait/CPU ratio, not CPU consumed. Exact q.mu and root.mu unlock source lines only."
+  },
+  "reclaim-range100": {
+    "caller_delay_ns": 5202183,
+    "drainer_delay_ns": 0,
+    "root_drainer_delay_ns": 0,
+    "shard_drainer_delay_ns": 0,
+    "other_mutex_inside_queue_delay_ns": 0,
+    "unlock_source_lines": {
+      "timeoutQueue.remove:143": 3098739,
+      "timeoutQueue.schedule:133": 2103444
+    },
+    "population": 500000,
+    "measured_window_cpu_s": 29.561032,
+    "queue_wait_ns": 5202183,
+    "queue_wait_over_window_cpu_pct": 0.017598110241888714,
+    "scope": "Whole mutex profile divided by measured-window client CPU: cumulative wait/CPU ratio, not CPU consumed. Exact q.mu and root.mu unlock source lines only."
+  }
+}

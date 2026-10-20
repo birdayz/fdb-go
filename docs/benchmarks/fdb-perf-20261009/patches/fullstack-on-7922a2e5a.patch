@@ -1,0 +1,2788 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index ce60da77e..dcbf84ab0 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -127,6 +127,7 @@ project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (
+ - A vector query without `OPTIONS EF_SEARCH` searches with Java's default, min(max(4k, 64), max(k, 400)), instead of 200.
+ - **Breaking (behaviour):** `FDBDatabase.Run`, `RunWithWeakReads`, `RunWithVersionstamp`, `RunRead` and `FDBDatabaseRunner.RunWithRetry` retry as Java's transaction runner does: at most 10 attempts (`FDBDatabase.SetMaxAttempts`, `SetRetryDelays`), each a fresh transaction whose backend retry limit is 0, retried while any cause in the error is retriable, with Java's randomized exponential delay between attempts (recorded as `EventRetryDelay`). They used to retry without bound. Weak reads apply to the first attempt only. A context that ends between attempts returns an error wrapping both the context's error and the last attempt's. A transactor implementing `AttemptTransactor` receives each attempt's identity; `SetAttemptObserver` reports each attempt. The online indexer bounds its transactions with `OnlineIndexerBuilder.SetMaxAttempts` (default the database's). A SQL DDL statement runs in one attempt, as in Java: a conflicting DDL fails with 40001 instead of re-executing. An SPFresh write that meets a split in progress (`SPFreshSplitWindowError`, a retryable 1020) does not use up attempts; SPFresh's background lifecycles keep the client's unbounded loop (DIVERGENCES.md).
+ - **Breaking (behaviour):** a body that commits the context `Run` (or a variant, or `RunWithRetry`) handed it is refused before anything commits, with `RecordContextNotActiveError` ("Transaction is no longer active.", a `RecordCoreStorageError`); `Run` commits. A context refuses a second commit the same way.
++- Pure-Go client: a transaction with no read version when it commits fetches one with `CAUSAL_READ_RISKY`, as libfdb_c does, so that GRV skips the proxy's last-commit wait.
+ - Pure-Go client: a commit made while no commit proxy is known waits for the proxy set to change (bounded by its context) and then fails with `commit_unknown_result` (1021), as libfdb_c does. The Go-only error 1200 (`ErrAllProxiesUnreachable`) is gone, and code 1200 now has its canonical FDB name, `recruitment_failed`.
+ - `fdb.Database.TransactCtx` / `ReadTransactCtx` and the tenant forms return the error the transaction body returned (or panicked with), chain intact, when the retry loop gives up on that error's code, as the Apple binding does; they returned a bare `fdb.Error{Code}`.
+ - HNSW graphs are written byte-for-byte as Java writes them, for the same inserts and deletes:
+diff --git a/TODO_OLD.md b/TODO_OLD.md
+index 83a86daed..fab4b2933 100644
+--- a/TODO_OLD.md
++++ b/TODO_OLD.md
+@@ -852,16 +852,6 @@ rather than no-op — but each is a small feature, scoped separately.
+ **GRV / read-version audit (same grind) — NO consistency divergence found** (version-vector is OFF by
+ default, `ServerKnobs.cpp:39`, so Go's empty `ssLatestCommitVersions`/`maxVersion` is exactly correct;
+ read-version reuse, `read_snapshot`, 1007 aging all match). Latency/observability findings only:
+-- **Write-only commits omit `CAUSAL_READ_RISKY` on the commit-path GRV.** C++ `tryCommit` does
+-  `startTransaction(GetReadVersionRequest::FLAG_CAUSAL_READ_RISKY)` (`NativeAPI.actor.cpp:6578`) — a
+-  write-only/no-prior-read commit doesn't need full causal consistency for its `read_snapshot`. Go's
+-  commit path (`transaction.go:1507`) calls plain `ensureReadVersion` → `grvFlags()`, setting the flag
+-  only if the USER did. Effect: an extra TLog epoch-confirmation round-trip per write-only commit
+-  (latency/throughput, NOT consistency — the read_snapshot is equally valid). **Infra implication, why
+-  not a grind fix:** Go's `grvBatcherIndex` keys batchers only on the PRIORITY mask, NOT the risky flag
+-  (unlike C++'s `readVersionBatcher`, keyed by full flags) — so adding the flag would mix risky/non-risky
+-  GRVs in one batch. The faithful fix re-keys the GRV batcher on the risky flag + threads it through the
+-  commit-path `ensureReadVersion`; deliberate, FDB-C-dev-reviewed.
+ - `SetReadVersion` accepts `v<=0` / double-set silently where libfdb_c `setVersion` throws →
+   `CATCH_AND_DIE` aborts the process (`NativeAPI.actor.cpp:5519`, `fdb_c.cpp:932`). Go's graceful
+   defer-to-1007 is arguably BETTER (no panic in library code per CLAUDE.md) — leave as a documented,
+diff --git a/pkg/fdbgo/client/BUILD.bazel b/pkg/fdbgo/client/BUILD.bazel
+index 13eddf77c..07210abc9 100644
+--- a/pkg/fdbgo/client/BUILD.bazel
++++ b/pkg/fdbgo/client/BUILD.bazel
+@@ -72,19 +72,46 @@ go_test(
+     embed = [":client"],
+ )
+ 
++# gazelle:exclude commit_capture_borrow_unit_test.go
+ # gazelle:exclude conflictbuf_unit_test.go
+ go_test(
+     name = "conflictbuf_unit_test",
+-    srcs = ["conflictbuf_unit_test.go"],
++    srcs = [
++        "commit_capture_borrow_unit_test.go",
++        "conflictbuf_unit_test.go",
++    ],
++    embed = [":client"],
++    deps = [
++        "//pkg/fdbgo/transport",
++        "//pkg/fdbgo/wire",
++    ],
++)
++
++# gazelle:exclude lease_alloc_unit_test.go
++go_test(
++    name = "lease_alloc_unit_test",
++    srcs = ["lease_alloc_unit_test.go"],
+     embed = [":client"],
+-    deps = ["//pkg/fdbgo/wire"],
+ )
+ 
+ # gazelle:exclude grv_batch_unit_test.go
++# gazelle:exclude grv_inline_unit_test.go
+ go_test(
+     name = "grv_batch_unit_test",
+-    srcs = ["grv_batch_unit_test.go"],
++    srcs = [
++        "grv_batch_unit_test.go",
++        "grv_inline_unit_test.go",
++    ],
+     embed = [":client"],
++    deps = ["//pkg/fdbgo/wire/types"],
++)
++
++# gazelle:exclude reply_error_alloc_unit_test.go
++go_test(
++    name = "reply_error_alloc_unit_test",
++    srcs = ["reply_error_alloc_unit_test.go"],
++    embed = [":client"],
++    deps = ["//pkg/fdbgo/wire"],
+ )
+ 
+ # gazelle:exclude ryw_issue_view_unit_test.go
+diff --git a/pkg/fdbgo/client/commit_capture_borrow_unit_test.go b/pkg/fdbgo/client/commit_capture_borrow_unit_test.go
+new file mode 100644
+index 000000000..0bfcc308e
+--- /dev/null
++++ b/pkg/fdbgo/client/commit_capture_borrow_unit_test.go
+@@ -0,0 +1,246 @@
++package client
++
++import (
++	"bytes"
++	"fmt"
++	"sync"
++	"testing"
++	"unsafe"
++
++	"fdb.dev/pkg/fdbgo/transport"
++)
++
++var borrowReplyToken = transport.UID{First: 7, Second: 9}
++
++// borrowTx buffers every operand kind; 50 Sets promote it to the bulk slab.
++func borrowTx(n int, fill byte) *Transaction {
++	tx := &Transaction{}
++	tx.tenantId = NoTenantID
++	tx.readVersion = 42
++	for i := range n {
++		tx.Set([]byte(fmt.Sprintf("borrow/key/%04d", i)), bytes.Repeat([]byte{fill}, 100))
++	}
++	tx.Clear([]byte("borrow/clear"))
++	if err := tx.ClearRange([]byte("borrow/range/a"), []byte("borrow/range/z")); err != nil {
++		panic(err)
++	}
++	tx.Atomic(MutAddValue, []byte("borrow/counter"), []byte{fill, 0, 0, 0})
++	tx.AddReadConflictKey([]byte("borrow/read"))
++	return tx
++}
++
++func captureUnderLease(tx *Transaction) *commitInput {
++	lease := tx.enterState()
++	defer lease.release()
++	tx.conflictMu.Lock()
++	muts, writes := tx.mutations, tx.writeConflicts
++	tx.conflictMu.Unlock()
++	return tx.captureCommit(muts, writes)
++}
++
++// deepCopyInput is the pre-borrow capture: every operand in fresh storage.
++func deepCopyInput(in *commitInput) *commitInput {
++	out := *in
++	out.slab = nil
++	out.muts = make([]Mutation, len(in.muts))
++	for i, m := range in.muts {
++		out.muts[i] = Mutation{Type: m.Type, Key: bytes.Clone(m.Key), Value: bytes.Clone(m.Value)}
++	}
++	cloneRanges := func(rs []KeyRange) []KeyRange {
++		c := make([]KeyRange, len(rs))
++		for i, r := range rs {
++			c[i] = KeyRange{Begin: bytes.Clone(r.Begin), End: bytes.Clone(r.End)}
++		}
++		return c
++	}
++	out.readConflicts = cloneRanges(in.readConflicts)
++	out.writeConflicts = cloneRanges(in.writeConflicts)
++	return &out
++}
++
++func commitFrame(in *commitInput) []byte {
++	body, poolBuf := buildCommitInputRequest(in, borrowReplyToken)
++	frame := bytes.Clone(body)
++	marshalBufPool.Put(poolBuf)
++	return frame
++}
++
++func TestCaptureCommitBorrowsSlabInsteadOfCopying(t *testing.T) {
++	t.Parallel()
++	tx := borrowTx(50, 'a')
++	defer tx.Cancel()
++	input := captureUnderLease(tx)
++	if input.slab == nil || input.slab != tx.conflictBufOwner || input.slab.borrows.Load() != 1 {
++		t.Fatal("capture did not borrow the current slab")
++	}
++	for i, m := range input.muts {
++		own := tx.mutations[i]
++		if unsafe.SliceData(m.Key) != unsafe.SliceData(own.Key) || unsafe.SliceData(m.Value) != unsafe.SliceData(own.Value) {
++			t.Fatalf("mutation %d was copied instead of borrowed", i)
++		}
++	}
++	if &input.muts[0] == &tx.mutations[0] || &input.writeConflicts[0] == &tx.writeConflicts[0] {
++		t.Fatal("capture shares a vector a retry refills in place")
++	}
++	if owned := tx.captureCommitVectors(input.muts, true, nil); &owned.muts[0] != &input.muts[0] {
++		t.Fatal("an owned mutation vector was copied again")
++	} else {
++		owned.release()
++	}
++	owner := input.slab
++	input.release()
++	input.release()
++	if owner.borrows.Load() != 0 || input.slab != nil {
++		t.Fatalf("release left %d borrows", owner.borrows.Load())
++	}
++}
++
++// A retry may carve over its own slab only when no captured commit reads it.
++func TestRetryReusesSlabOnlyWhenSoleHolder(t *testing.T) {
++	t.Parallel()
++	for _, released := range []bool{false, true} {
++		t.Run(fmt.Sprintf("released=%t", released), func(t *testing.T) {
++			t.Parallel()
++			tx := borrowTx(50, 'a')
++			defer tx.Cancel()
++			backing := unsafe.SliceData(tx.conflictBuf)
++			input := captureUnderLease(tx)
++			want := commitFrame(deepCopyInput(input))
++			if released {
++				input.release()
++			}
++			tx.reset(false)
++			for i := range 50 {
++				tx.Set([]byte(fmt.Sprintf("borrow/key/%04d", i)), bytes.Repeat([]byte{'z'}, 100))
++			}
++			reused := unsafe.SliceData(tx.conflictBuf) == backing
++			if reused != released {
++				t.Fatalf("retry reused the slab=%t, want %t", reused, released)
++			}
++			if released {
++				return
++			}
++			if got := commitFrame(input); !bytes.Equal(got, want) {
++				t.Fatal("COMMIT_CAPTURE_MUTATED: captured frame changed after retry carved new writes")
++			}
++			input.release()
++		})
++	}
++}
++
++// Reset checks the borrow on the handle, so capturing an ownerless slab must
++// install one; otherwise post-commit reset would pool it under a fresh handle.
++func TestCaptureCommitTracksOwnerlessSlab(t *testing.T) {
++	t.Parallel()
++	tx := &Transaction{}
++	defer tx.Cancel()
++	tx.conflictBuf = make([]byte, 0, 4096)
++	tx.Set([]byte("ownerless"), []byte("value"))
++	input := captureUnderLease(tx)
++	defer input.release()
++	tx.conflictMu.Lock()
++	defer tx.conflictMu.Unlock()
++	if input.slab == nil || tx.conflictBufOwner != input.slab {
++		t.Fatal("capture of an ownerless slab did not record its borrow")
++	}
++	if tx.dropConflictBufLocked() {
++		t.Fatal("COMMIT_CAPTURE_POOLED: post-commit reset pooled the borrowed ownerless slab")
++	}
++}
++
++// Post-commit reset pools the slab only once no captured commit reads it.
++func TestPostCommitResetPoolsSlabOnlyWhenSoleHolder(t *testing.T) {
++	t.Parallel()
++	for _, released := range []bool{false, true} {
++		tx := borrowTx(50, 'a')
++		input := captureUnderLease(tx)
++		if released {
++			input.release()
++		}
++		tx.conflictMu.Lock()
++		pooled := tx.dropConflictBufLocked()
++		tx.conflictMu.Unlock()
++		if pooled != released {
++			t.Fatalf("COMMIT_CAPTURE_POOLED: released=%t pooled=%t", released, pooled)
++		}
++		input.release()
++		tx.Cancel()
++	}
++}
++
++// Captured bounds are capacity-capped: an append to one must reallocate
++// rather than overwrite its neighbour in the shared slab.
++func TestConflictBoundsAreCapacityCapped(t *testing.T) {
++	t.Parallel()
++	tx := borrowTx(2, 'a')
++	defer tx.Cancel()
++	_ = tx.AddReadConflictRange([]byte("cap/a"), []byte("cap/z"))
++	for _, rs := range [][]KeyRange{tx.readConflicts, tx.writeConflicts} {
++		for i, r := range rs {
++			if cap(r.Begin) != len(r.Begin) || cap(r.End) != len(r.End) {
++				t.Fatalf("range %d: begin %d/%d end %d/%d (len/cap)", i, len(r.Begin), cap(r.Begin), len(r.End), cap(r.End))
++			}
++		}
++	}
++}
++
++// Resets race the commit's encoding as a caller may during the RPC; under -race
++// any write to bytes the commit still reads is reported, not only a mismatch.
++func TestConcurrentResetDuringCommitKeepsCapturedBytes(t *testing.T) {
++	t.Parallel()
++	for _, mode := range []string{"Reset", "retry", "postcommit"} {
++		t.Run(mode, func(t *testing.T) {
++			t.Parallel()
++			tx := borrowTx(50, 'a')
++			input := captureUnderLease(tx)
++			want := commitFrame(deepCopyInput(input))
++			var wg sync.WaitGroup
++			wg.Add(2)
++			go func() {
++				defer wg.Done()
++				for range 20 {
++					if got := commitFrame(input); !bytes.Equal(got, want) {
++						t.Error("COMMIT_CAPTURE_MUTATED: frame changed during concurrent reset")
++						return
++					}
++				}
++			}()
++			go func() {
++				defer wg.Done()
++				switch mode {
++				case "Reset":
++					tx.Reset()
++				case "retry":
++					tx.reset(false)
++				case "postcommit":
++					tx.postCommitReset()
++				}
++				for i := range 50 {
++					tx.Set([]byte(fmt.Sprintf("borrow/key/%04d", i)), bytes.Repeat([]byte{'z'}, 100))
++				}
++			}()
++			wg.Wait()
++			input.release()
++			tx.Cancel()
++		})
++	}
++}
++
++// commitAdmitted hands a coalesced vector to the capture uncopied, so coalescing
++// must never return the transaction's own op-log vector, which a retry refills.
++func TestCoalescedMutationsNeverAliasTheOpLog(t *testing.T) {
++	t.Parallel()
++	for _, n := range []int{1, 2, 50} {
++		tx := borrowTx(n, 'a')
++		for _, muts := range [][]Mutation{tx.mutations, tx.mutations[:n]} {
++			ship, _, coalesced := coalesceCommitVectors(muts, tx.writeConflicts, false)
++			if !coalesced || len(ship) == 0 {
++				t.Fatalf("n=%d: precondition: want a coalesced vector", n)
++			}
++			if unsafe.SliceData(ship) == unsafe.SliceData(muts) {
++				t.Fatalf("n=%d: coalesced mutations alias the op-log vector", n)
++			}
++		}
++		tx.Cancel()
++	}
++}
+diff --git a/pkg/fdbgo/client/commit_input.go b/pkg/fdbgo/client/commit_input.go
+index a440446c1..3c825bb53 100644
+--- a/pkg/fdbgo/client/commit_input.go
++++ b/pkg/fdbgo/client/commit_input.go
+@@ -2,14 +2,16 @@ package client
+ 
+ import (
+ 	"context"
++	"slices"
+ 	"time"
+ 
+ 	"fdb.dev/pkg/fdbgo/wire/types"
+ )
+ 
+-// commitInput owns every reset-sensitive byte used after commit dispatch.
+-// Neither the wire wait nor the uncertain-delivery barrier reads the handle.
++// commitInput owns the vectors and borrows the operand slab used after commit
++// dispatch; neither the wire wait nor the uncertain-delivery barrier reads the handle.
+ type commitInput struct {
++	slab           *conflictBuf // borrowed operand storage; see release
+ 	db             *database
+ 	muts           []Mutation
+ 	readConflicts  []KeyRange
+@@ -30,52 +32,47 @@ type commitOutcome struct {
+ 	epoch   int64
+ }
+ 
+-// captureCommit runs under the caller's execution lease. One byte arena owns
+-// mutation operands and conflict boundaries, including pooled conflict buffers.
++// captureCommit runs under the caller's execution lease. Operands stay in the
++// borrowed slab or in heap buffers nothing rewrites; vectors, which a retry refills, are copied.
+ func (tx *Transaction) captureCommit(muts []Mutation, writeConflicts []KeyRange) *commitInput {
++	return tx.captureCommitVectors(muts, false, writeConflicts)
++}
++
++// captureCommitVectors takes muts as is when the caller owns that vector.
++func (tx *Transaction) captureCommitVectors(muts []Mutation, mutsOwned bool, writeConflicts []KeyRange) *commitInput {
+ 	tx.conflictMu.Lock()
+ 	defer tx.conflictMu.Unlock()
++	if !mutsOwned {
++		muts = slices.Clone(muts)
++	}
+ 	input := &commitInput{
+ 		db: tx.db, tenantID: tx.tenantId, lockAware: tx.lockAware, isDummy: tx.isDummy,
+ 		span: tx.currentSpan(), tags: append([]string(nil), tx.tags...),
+-		muts: make([]Mutation, len(muts)), readConflicts: make([]KeyRange, len(tx.readConflicts)),
+-		writeConflicts: make([]KeyRange, len(writeConflicts)),
++		muts: muts, readConflicts: slices.Clone(tx.readConflicts),
++		writeConflicts: slices.Clone(writeConflicts),
+ 	}
+ 	tx.readVersionMu.Lock()
+ 	input.readVersion, input.metricStart = tx.readVersion, tx.metricStart
+ 	tx.readVersionMu.Unlock()
+-	size := 0
+-	for _, m := range muts {
+-		size += len(m.Key) + len(m.Value)
+-	}
+-	for _, kr := range tx.readConflicts {
+-		size += len(kr.Begin) + len(kr.End)
+-	}
+-	for _, kr := range writeConflicts {
+-		size += len(kr.Begin) + len(kr.End)
+-	}
+-	arena := make([]byte, size)
+-	copyBytes := func(src []byte) []byte {
+-		if src == nil {
+-			return nil
++	if len(tx.conflictBuf) > 0 {
++		if tx.conflictBufOwner == nil {
++			// Reset checks the borrow on the handle; an ownerless slab would look free.
++			tx.conflictBufOwner = &conflictBuf{}
+ 		}
+-		dst := arena[:len(src):len(src)]
+-		copy(dst, src)
+-		arena = arena[len(src):]
+-		return dst
+-	}
+-	for i, m := range muts {
+-		input.muts[i] = Mutation{Type: m.Type, Key: copyBytes(m.Key), Value: copyBytes(m.Value)}
+-	}
+-	for i, kr := range tx.readConflicts {
+-		input.readConflicts[i] = KeyRange{Begin: copyBytes(kr.Begin), End: copyBytes(kr.End)}
+-	}
+-	for i, kr := range writeConflicts {
+-		input.writeConflicts[i] = KeyRange{Begin: copyBytes(kr.Begin), End: copyBytes(kr.End)}
++		tx.conflictBufOwner.borrows.Add(1)
++		input.slab = tx.conflictBufOwner
+ 	}
+ 	return input
+ }
+ 
++// release ends the borrow once nothing reads the captured bytes. Idempotent.
++func (input *commitInput) release() {
++	if input.slab != nil {
++		input.slab.borrows.Add(-1)
++		input.slab = nil
++	}
++}
++
+ // publishCommit does not reinterpret the detached operation's outcome. A stale
+ // completion returns to its caller but cannot publish into or reset a successor.
+ func (tx *Transaction) publishCommit(inc *readIncarnation, released *executionLease, result commitOutcome) {
+@@ -105,6 +102,7 @@ func (tx *Transaction) commitDummyTransaction(ctx context.Context) {
+ 	writeConflicts := tx.writeConflicts
+ 	tx.conflictMu.Unlock()
+ 	input := tx.captureCommit(nil, writeConflicts)
++	defer input.release()
+ 	lease.release()
+ 	input.commitDummyTransaction(ctx)
+ }
+diff --git a/pkg/fdbgo/client/commitpath.go b/pkg/fdbgo/client/commitpath.go
+index 8c950a43c..9990b98b1 100644
+--- a/pkg/fdbgo/client/commitpath.go
++++ b/pkg/fdbgo/client/commitpath.go
+@@ -243,7 +243,7 @@ func (input *commitInput) commitDummyTransaction(ctx context.Context) {
+ 		// C++ sets RAW_ACCESS, CAUSAL_WRITE_RISKY, LOCK_AWARE on the dummy.
+ 		dummy.writeSystemKeys = true // RAW_ACCESS equivalent
+ 		dummy.readSystemKeys = true  // RAW_ACCESS equivalent
+-		dummy.causalReadRisky = true // CAUSAL_WRITE_RISKY — faster GRV for dummy
++		dummy.causalReadRisky = true // redundant with Commit's risky GRV; harmless
+ 		dummy.lockAware = true
+ 
+ 		// C++ commitDummyTransaction (NativeAPI.actor.cpp:6328-6330) adds ONLY a
+@@ -262,7 +262,7 @@ func (input *commitInput) commitDummyTransaction(ctx context.Context) {
+ 		dummy.addReadConflictForKey(key)
+ 		dummy.addWriteConflictForKey(key)
+ 
+-		// Use uppercase Commit() which calls ensureReadVersion() before
++		// Use uppercase Commit() which fetches a read version before
+ 		// sending the request. Without a read version, ReadSnapshot=0
+ 		// is sent to FDB which crashes the server.
+ 		if err := dummy.Commit(ctx); err != nil {
+diff --git a/pkg/fdbgo/client/fault_test.go b/pkg/fdbgo/client/fault_test.go
+index 9d199b8fb..9e3887819 100644
+--- a/pkg/fdbgo/client/fault_test.go
++++ b/pkg/fdbgo/client/fault_test.go
+@@ -844,16 +844,11 @@ func TestPipelinedGet_Resolve_TimeoutRetries(t *testing.T) {
+ // fails, the request never reached the server, so the arm marks the connection
+ // bad (handleConnError) and re-drives through the full getValue path.
+ //
+-// The flush error is driven through a REAL conn deterministically (a write-fault
+-// wrapper would race the writeLoop's unconditional auto-flush, which clears
+-// hasDirty so Conn.Flush() short-circuits to nil): a conn dialed to the storage
+-// server, then Close()d (joins the loops) and SendFrameDeferred'd — which sets
+-// hasDirty=true UNCONDITIONALLY (conn.go:464) before its own ctx-done return — so
+-// Resolve()'s Flush() sees hasDirty=true + cancelled ctx + an exited writeLoop and
+-// returns errConnClosed (conn.go:485/495), a faithful flush error (a conn torn
+-// down between the deferred send and the flush). resolveFull then re-dials a clean
+-// conn (the pool self-heals on a closed entry, database.go:375-378) and returns
+-// the value.
++// The flush error is driven through a REAL conn deterministically: a conn dialed
++// to the storage server, then Close()d (joins the loops), so Resolve()'s flush
++// finds a dead connection and returns errConnClosed — a faithful flush error (a
++// conn torn down between the deferred send and the flush). resolveFull then
++// re-dials a clean conn (the pool self-heals on a closed entry) and returns the value.
+ //
+ // Revert-proof: with the flush-error arm removed, the ignored flush error falls
+ // through to the select, whose replyCh never fires and whose timer is set far
+@@ -886,7 +881,7 @@ func TestPipelinedGet_Resolve_FlushErrorRetries(t *testing.T) {
+ 		t.Fatalf("dial %s: %v", addr, err)
+ 	}
+ 	conn.Close()                                                   // joins the loops; ctx cancelled; IsClosed
+-	_ = conn.SendFrameDeferred(transport.UID{First: 1}, []byte{0}) // sets hasDirty=true on the closed conn
++	_ = conn.SendFrameDeferred(transport.UID{First: 1}, []byte{0}) // a deferred send the flush follows
+ 
+ 	p := &PendingGet{
+ 		key:         key,
+diff --git a/pkg/fdbgo/client/grv.go b/pkg/fdbgo/client/grv.go
+index 61789d150..01cde186a 100644
+--- a/pkg/fdbgo/client/grv.go
++++ b/pkg/fdbgo/client/grv.go
+@@ -849,11 +849,22 @@ func (b *grvBatcher) getReadVersion(db *database, ctx context.Context, flags uin
+ 	req := grvRequest{reply: make(chan grvResult, 1), spanContext: span, tags: tags}
+ 
+ 	b = b.forFlags(flags)
+-	if batch := b.admit(req, func(seq uint64) {
++	switch batch := b.admit(req, func(seq uint64) {
+ 		if batch := b.timerBatch(seq); batch != nil {
+ 			b.flush(db, batch)
+ 		}
+-	}); batch != nil {
++	}); len(batch) {
++	case 0:
++	case 1:
++		// An idle batcher detached only this request: a goroutine would just hand
++		// the reply back, so run the RPC here, bounded by this caller's ctx too.
++		// Accepted divergence: C++ runs every batch to its reply (NativeAPI.actor.cpp
++		// :7266-7287, :7382), so a cancelled lone caller here also skips tag throttles,
++		// the minAcceptable floor and one batch-window sample.
++		b.flushWithin(db, ctx, batch)
++		result := <-req.reply
++		return result.version, result.locked, result.instant, result.err
++	default:
+ 		go b.flush(db, batch)
+ 	}
+ 
+@@ -941,7 +952,14 @@ func (b *grvBatcher) observeLatency(elapsed time.Duration) {
+ }
+ 
+ // flush sends a detached batch without holding mu, allowing overlapping RPCs.
++// Callers cancel their own waits; only Close cancels a shared batch's RPC.
+ func (b *grvBatcher) flush(db *database, batch []grvRequest) {
++	b.flushWithin(db, nil, batch)
++}
++
++// flushWithin runs the batch's RPC under ctx; Close also ends it. A nil ctx
++// means db.ctx, read only once the panic backstop below is armed.
++func (b *grvBatcher) flushWithin(db *database, ctx context.Context, batch []grvRequest) {
+ 	// RFC-110: once the batch is popped, b.pending no longer references
+ 	// it — a panic anywhere below (sendGRVRequest decode, applyGRVReply, the
+ 	// adaptive-window math) would orphan it, and every waiter blocked on its
+@@ -961,6 +979,9 @@ func (b *grvBatcher) flush(db *database, batch []grvRequest) {
+ 		}
+ 	}
+ 	defer retire() // retire before the panic backstop publishes errors
++	if ctx == nil {
++		ctx = db.ctx
++	}
+ 
+ 	// Collect per-tx span contexts so GetReadVersionRequest carries the
+ 	// readVersionBatcher span (C++
+@@ -978,8 +999,7 @@ func (b *grvBatcher) flush(db *database, batch []grvRequest) {
+ 	// by a reply it was meant to retire.
+ 	tok := db.grvCache.token()
+ 	requestTime := time.Now()
+-	// Callers cancel their own waits; only Close cancels the shared recovery.
+-	version, locked, rkDefault, rkBatch, tagThrottleInfoEntries, _, attemptEpoch, err := b.sendGRVRequest(db, db.ctx, flags, uint32(len(batch)), batchGRVSpanContext(spans), aggregateBatchTags(batch))
++	version, locked, rkDefault, rkBatch, tagThrottleInfoEntries, _, attemptEpoch, err := b.sendGRVRequest(db, ctx, flags, uint32(len(batch)), batchGRVSpanContext(spans), aggregateBatchTags(batch))
+ 	elapsed := time.Since(requestTime)
+ 
+ 	if err == nil {
+@@ -993,7 +1013,7 @@ func (b *grvBatcher) flush(db *database, batch []grvRequest) {
+ 		// here (C++ parity: its cached path returns before the counters); the
+ 		// background refresher has no waiters and adds nothing. Two accepted
+ 		// edge divergences: waiters whose ctx expired mid-batch are still
+-		// counted (C++ cancels abandoned futures before its counter), and
++		// counted, except a lone inline one (C++ cancels abandoned futures before its counter), and
+ 		// under a LOCKED database non-lock-aware waiters are counted here
+ 		// while C++'s database_locked throw (:7425-7426) precedes its
+ 		// counters — fixing either would need per-waiter counting at the
+@@ -1279,13 +1299,18 @@ const (
+ // sendGRVRequest cycles all GRV proxies, matching C++ basicLoadBalance
+ // with AtMostOnce::False. On broken_promise (transport error), tries next
+ // proxy. On FDB application error, propagates immediately. If all proxies
+-// fail, applies exponential backoff and retries — loops until success or
+-// db.ctx cancellation (matching C++ infinite loop + quorum(ok,1) wait).
++// fail, applies exponential backoff and retries — loops until success, ctx
++// cancellation or Close (matching C++ infinite loop + quorum(ok,1) wait).
+ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uint32, txnCount uint32, span types.SpanContext, tags []types.TransactionTagCount) (version int64, locked bool, rkDefaultThrottled, rkBatchThrottled bool, tagThrottleInfo []types.TransactionTagThrottle, proxyTagThrottledDuration float64, attemptEpoch int64, err error) {
+ 	var backoff time.Duration
++	closed := db.ctx.Done() // ctx may be a caller's, which Close does not cancel
+ 
+ retry:
+ 	for {
++		// A cancelled caller must not kick a topology refresh on its way out.
++		if err := grvRPCEnded(ctx, db); err != nil {
++			return 0, false, false, false, nil, 0, attemptEpoch, err
++		}
+ 		proxiesChanged := db.waitProxiesChanged()
+ 		// Re-read the proxy list each cycle — topology may have refreshed — and
+ 		// take the epoch FROM THAT SAME LOAD. A retry can cross a cluster
+@@ -1316,6 +1341,9 @@ retry:
+ 			case <-ctx.Done():
+ 				timer.Stop()
+ 				return 0, false, false, false, nil, 0, attemptEpoch, ctx.Err()
++			case <-closed:
++				timer.Stop()
++				return 0, false, false, false, nil, 0, attemptEpoch, db.ctx.Err()
+ 			}
+ 		}
+ 
+@@ -1325,6 +1353,9 @@ retry:
+ 			proxy := proxies[(startIdx+i)%len(proxies)]
+ 			conn, err := db.getOrDial(ctx, proxy.Address)
+ 			if err != nil {
++				if ended := grvRPCEnded(ctx, db); ended != nil {
++					return 0, false, false, false, nil, 0, attemptEpoch, ended
++				}
+ 				db.handleDialError(ctx, proxy.Address)
+ 				continue
+ 			}
+@@ -1335,6 +1366,9 @@ retry:
+ 			if err := sendReadFrame(ctx, conn, proxy.Token, body, replyHandle); err != nil {
+ 				replyHandle.Cancel()
+ 				replyHandle.Release()
++				if ended := grvRPCEnded(ctx, db); ended != nil {
++					return 0, false, false, false, nil, 0, attemptEpoch, ended
++				}
+ 				db.handleReadConnError(proxy.Address, err)
+ 				continue
+ 			}
+@@ -1353,6 +1387,10 @@ retry:
+ 				replyHandle.Cancel()
+ 				replyHandle.Release()
+ 				return 0, false, false, false, nil, 0, attemptEpoch, ctx.Err()
++			case <-closed:
++				replyHandle.Cancel()
++				replyHandle.Release()
++				return 0, false, false, false, nil, 0, attemptEpoch, db.ctx.Err()
+ 			}
+ 			replyHandle.Release()
+ 			if resp.Err != nil {
+@@ -1401,6 +1439,9 @@ retry:
+ 		}
+ 
+ 		// All proxies exhausted — backoff with recovery/topology wakeup.
++		if err := grvRPCEnded(ctx, db); err != nil {
++			return 0, false, false, false, nil, 0, attemptEpoch, err
++		}
+ 		db.kickTopology()
+ 		if backoff == 0 {
+ 			backoff = loadBalanceStartBackoff
+@@ -1420,10 +1461,22 @@ retry:
+ 		case <-ctx.Done():
+ 			timer.Stop()
+ 			return 0, false, false, false, nil, 0, attemptEpoch, ctx.Err()
++		case <-closed:
++			timer.Stop()
++			return 0, false, false, false, nil, 0, attemptEpoch, db.ctx.Err()
+ 		}
+ 	}
+ }
+ 
++// grvRPCEnded reports a caller's or the database's end, which must neither count
++// against a proxy nor kick a topology refresh.
++func grvRPCEnded(ctx context.Context, db *database) error {
++	if err := ctx.Err(); err != nil {
++		return err
++	}
++	return db.ctx.Err()
++}
++
+ // grvPriorityToPriority converts GRV wire priority bits to TransactionPriority.
+ func grvPriorityToPriority(flags uint32) TransactionPriority {
+ 	switch flags & grvPriorityMask {
+diff --git a/pkg/fdbgo/client/grv_batch_flags_test.go b/pkg/fdbgo/client/grv_batch_flags_test.go
+index 33e86a318..7ea55421e 100644
+--- a/pkg/fdbgo/client/grv_batch_flags_test.go
++++ b/pkg/fdbgo/client/grv_batch_flags_test.go
+@@ -217,3 +217,56 @@ func TestGRVBatcherSeparatesFullFlags(t *testing.T) {
+ 		t.Fatalf("missing tagged GRV wire population: normal=%t risky=%t", seenNormal, seenRisky)
+ 	}
+ }
++
++// C++ tryCommit fetches a missing read version risky (NativeAPI.actor.cpp:6576-6578);
++// a transaction that already read keeps its ordinary GRV.
++func TestCommitPathGRVIsCausalReadRisky(t *testing.T) {
++	t.Parallel()
++	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
++	defer cancel()
++	observer := &grvFlagsObserver{}
++	db := newTestDatabase(t, ctx, sharedClusterFile, observer.dial)
++	defer db.Close()
++	const writeOnly, readFirst = "commit-grv-write-only", "commit-grv-read-first"
++	for _, tag := range []string{writeOnly, readFirst} {
++		tx := db.CreateTransaction()
++		if err := tx.SetTag(tag); err != nil {
++			t.Fatal(err)
++		}
++		key := []byte("commit-grv-flags/" + tag)
++		if tag == readFirst {
++			if _, err := tx.Get(ctx, key); err != nil {
++				t.Fatal(err)
++			}
++		}
++		tx.Set(key, []byte("v"))
++		if err := tx.Commit(ctx); err != nil {
++			t.Fatalf("%s commit: %v", tag, err)
++		}
++	}
++	observer.mu.Lock()
++	defer observer.mu.Unlock()
++	if observer.err != nil {
++		t.Fatal("GRV request observer:", observer.err)
++	}
++	got := map[string][]uint32{}
++	for _, req := range observer.requests {
++		for _, tag := range []string{writeOnly, readFirst} {
++			if req.tags[tag] > 0 {
++				got[tag] = append(got[tag], req.flags)
++			}
++		}
++	}
++	// A proxy change may legitimately resend a GRV, so check every frame.
++	for tag, want := range map[string]uint32{writeOnly: grvPriorityDefault | grvFlagCausalReadRisky, readFirst: grvPriorityDefault} {
++		f := got[tag]
++		if len(f) == 0 {
++			t.Errorf("COMMIT_GRV_FLAGS: %s sent no GRV", tag)
++		}
++		for _, flags := range f {
++			if flags != want {
++				t.Errorf("COMMIT_GRV_FLAGS: %s GRV flags = %#x, want %#x", tag, flags, want)
++			}
++		}
++	}
++}
+diff --git a/pkg/fdbgo/client/grv_inline_unit_test.go b/pkg/fdbgo/client/grv_inline_unit_test.go
+new file mode 100644
+index 000000000..60842fc03
+--- /dev/null
++++ b/pkg/fdbgo/client/grv_inline_unit_test.go
+@@ -0,0 +1,106 @@
++package client
++
++import (
++	"context"
++	"errors"
++	"testing"
++	"time"
++
++	"fdb.dev/pkg/fdbgo/wire/types"
++)
++
++// noProxyDB has no GRV proxies, so a GRV RPC backs off until its context ends.
++func noProxyDB(t *testing.T) (*database, context.CancelFunc) {
++	t.Helper()
++	ctx, cancel := context.WithCancel(context.Background())
++	t.Cleanup(cancel)
++	return &database{ctx: ctx, proxiesChanged: make(chan struct{}), failMon: newFailureMonitor()}, cancel
++}
++
++func batcherInFlight(b *grvBatcher) int {
++	b.mu.Lock()
++	defer b.mu.Unlock()
++	return b.inFlight
++}
++
++// A lone request's RPC is bounded by its caller's ctx: when that deadline
++// returns the caller, its batch is already retired.
++func TestGRVSoleRequestBoundedByCallerContext(t *testing.T) {
++	t.Parallel()
++	db, _ := noProxyDB(t)
++	b := &grvBatcher{priority: grvPriorityDefault}
++	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
++	defer cancel()
++	_, _, _, err := b.getReadVersion(db, ctx, grvPriorityDefault, types.SpanContext{}, nil, false, false)
++	if !errors.Is(err, context.DeadlineExceeded) {
++		t.Fatalf("err = %v, want the caller's deadline", err)
++	}
++	if n := batcherInFlight(b); n != 0 {
++		t.Fatalf("GRV_INLINE: %d batch still in flight after its only caller returned", n)
++	}
++}
++
++// Close still ends an RPC run on a caller whose own context never fires.
++func TestGRVSoleRequestEndsOnClose(t *testing.T) {
++	t.Parallel()
++	db, closeDB := noProxyDB(t)
++	b := &grvBatcher{priority: grvPriorityDefault}
++	done := make(chan error, 1)
++	go func() {
++		_, _, _, err := b.getReadVersion(db, context.Background(), grvPriorityDefault, types.SpanContext{}, nil, false, false)
++		done <- err
++	}()
++	closeDB()
++	select {
++	case err := <-done:
++		if !errors.Is(err, context.Canceled) {
++			t.Fatalf("err = %v, want the database's cancellation", err)
++		}
++	case <-time.After(5 * time.Second):
++		t.Fatal("GRV run on the caller ignored database Close")
++	}
++	if n := batcherInFlight(b); n != 0 {
++		t.Fatalf("%d batch still in flight after Close", n)
++	}
++}
++
++// A batch with other members keeps running under db.ctx: one caller's deadline
++// must never end its siblings' GRV.
++func TestGRVSharedBatchOutlivesOneCallersContext(t *testing.T) {
++	t.Parallel()
++	db, closeDB := noProxyDB(t)
++	b := &grvBatcher{priority: grvPriorityDefault, inFlight: 1}
++	siblings := make([]grvRequest, grvMaxBatchSize-1)
++	for i := range siblings {
++		siblings[i] = batchRequest()
++		if b.admit(siblings[i], ignoreBatchTimer) != nil {
++			t.Fatal("precondition: sibling dispatched early")
++		}
++	}
++	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
++	defer cancel()
++	if _, _, _, err := b.getReadVersion(db, ctx, grvPriorityDefault, types.SpanContext{}, nil, false, false); !errors.Is(err, context.DeadlineExceeded) {
++		t.Fatalf("err = %v, want the caller's deadline", err)
++	}
++	for i, s := range siblings {
++		select {
++		case r := <-s.reply:
++			t.Fatalf("GRV_SHARED_CANCELLED: sibling %d got %v from another caller's deadline", i, r.err)
++		default:
++		}
++	}
++	if n := batcherInFlight(b); n != 2 {
++		t.Fatalf("inFlight = %d, want the shared batch still running", n)
++	}
++	closeDB()
++	for i, s := range siblings {
++		select {
++		case r := <-s.reply:
++			if !errors.Is(r.err, context.Canceled) {
++				t.Fatalf("sibling %d: %v, want Close", i, r.err)
++			}
++		case <-time.After(5 * time.Second):
++			t.Fatalf("sibling %d never answered after Close", i)
++		}
++	}
++}
+diff --git a/pkg/fdbgo/client/grv_reply_wait_test.go b/pkg/fdbgo/client/grv_reply_wait_test.go
+index 92b392df6..7e1ed4dfd 100644
+--- a/pkg/fdbgo/client/grv_reply_wait_test.go
++++ b/pkg/fdbgo/client/grv_reply_wait_test.go
+@@ -3,6 +3,7 @@ package client
+ import (
+ 	"context"
+ 	"encoding/binary"
++	"errors"
+ 	"fmt"
+ 	"io"
+ 	"net"
+@@ -481,3 +482,54 @@ func TestGRVProxyChangeDuringSendIsNotLost(t *testing.T) {
+ 	}
+ 	assertGRVProxiesHealthy(t, db, addrs, failuresBefore)
+ }
++
++// A lone GRV runs on its caller: cancelling it while the reply is withheld
++// returns promptly, retires the batch and blames no proxy.
++func TestGRVCancelledLoneCallerAbandonsHeldReply(t *testing.T) {
++	t.Parallel()
++	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
++	defer cancel()
++	db, g, addrs := newGRVReplyGateDB(t, ctx)
++	failuresBefore := db.db.metrics.Snapshot().ClientConnectionFailures
++	g.arm(1<<30, false)
++	callerCtx, callerCancel := context.WithCancel(ctx)
++	done := startGatedGRV(db, callerCtx)
++	awaitGateSignal(t, g.heldCh, "withholding the GRV reply")
++	callerCancel()
++	select {
++	case r := <-done:
++		if !errors.Is(r.err, context.Canceled) {
++			t.Fatalf("cancelled lone GRV returned %v, want context.Canceled", r.err)
++		}
++	case <-time.After(grvProxyChangeBound):
++		t.Fatal("cancelled lone GRV kept waiting for its withheld reply")
++	}
++	b := db.db.grvBatchers[grvBatcherDefault]
++	b.mu.Lock()
++	inFlight := b.inFlight
++	b.mu.Unlock()
++	if inFlight != 0 {
++		t.Fatalf("cancelled lone GRV left %d batch in flight", inFlight)
++	}
++	assertGRVProxiesHealthy(t, db, addrs, failuresBefore)
++}
++
++// Close ends a lone GRV whose caller's own ctx never fires.
++func TestGRVCloseEndsLoneCallerHeldReply(t *testing.T) {
++	t.Parallel()
++	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
++	defer cancel()
++	db, g, _ := newGRVReplyGateDB(t, ctx)
++	g.arm(1<<30, false)
++	done := startGatedGRV(db, context.Background())
++	awaitGateSignal(t, g.heldCh, "withholding the GRV reply")
++	db.Close()
++	select {
++	case r := <-done:
++		if !errors.Is(r.err, context.Canceled) {
++			t.Fatalf("lone GRV after Close returned %v, want context.Canceled", r.err)
++		}
++	case <-time.After(grvProxyChangeBound):
++		t.Fatal("Close did not end a lone GRV waiting on a withheld reply")
++	}
++}
+diff --git a/pkg/fdbgo/client/inband_reply_error.go b/pkg/fdbgo/client/inband_reply_error.go
+index 2433568f5..767724c4e 100644
+--- a/pkg/fdbgo/client/inband_reply_error.go
++++ b/pkg/fdbgo/client/inband_reply_error.go
+@@ -45,12 +45,8 @@ const (
+ // basicLoadBalance does.
+ //
+ // BOTH callers pass through here unconditionally, and nil is the HOT path --
+-// every successful GRV and every successful commit reaches it. nil needs no
+-// guard of its own: isMaybeDelivered is an errors.As test, which is false for
+-// nil. An explicit `err == nil` clause used to sit here; deleting it reddened
+-// nothing, because it never did any work, so it is gone rather than left
+-// looking load-bearing. The nil cases in the test pin the CONTRACT, not that
+-// clause.
++// every successful GRV and every successful commit reaches it; isMaybeDelivered
++// answers nil without allocating (fdbErrorCode).
+ func dispositionForReplyError(err error, atMostOnce bool) replyDisposition {
+ 	if !isMaybeDelivered(err) {
+ 		return replySurfaceError
+diff --git a/pkg/fdbgo/client/lease_alloc_unit_test.go b/pkg/fdbgo/client/lease_alloc_unit_test.go
+new file mode 100644
+index 000000000..2f795b24d
+--- /dev/null
++++ b/pkg/fdbgo/client/lease_alloc_unit_test.go
+@@ -0,0 +1,20 @@
++package client
++
++import "testing"
++
++// Not parallel: AllocsPerRun panics under t.Parallel and counts process-wide.
++func TestStateLeaseDoesNotAllocate(t *testing.T) {
++	if testing.CoverMode() != "" {
++		t.Skip("coverage instrumentation changes inlining decisions")
++	}
++	tx := &Transaction{}
++	defer tx.Cancel()
++	for name, call := range map[string]func(){
++		"enterState": func() { tx.enterState().release() },
++		"TenantId":   func() { _ = tx.TenantId() },
++	} {
++		if n := testing.AllocsPerRun(100, call); n != 0 {
++			t.Errorf("LEASE_ALLOC: %s allocated %v times per call, want 0", name, n)
++		}
++	}
++}
+diff --git a/pkg/fdbgo/client/metrics.go b/pkg/fdbgo/client/metrics.go
+index e7a62738e..c019bd7e6 100644
+--- a/pkg/fdbgo/client/metrics.go
++++ b/pkg/fdbgo/client/metrics.go
+@@ -3,7 +3,6 @@ package client
+ import (
+ 	"bytes"
+ 	"context"
+-	"errors"
+ 	"fmt"
+ 	"math"
+ 
+@@ -99,8 +98,8 @@ func (tx *Transaction) getEstimatedRangeSizeBytesImpl(ctx context.Context, begin
+ 
+ // isFutureVersion returns true if the error is FDB error 1009.
+ func isFutureVersion(err error) bool {
+-	var fdbErr *wire.FDBError
+-	return errors.As(err, &fdbErr) && fdbErr.Code == ErrFutureVersion
++	code, ok := fdbErrorCode(err)
++	return ok && code == ErrFutureVersion
+ }
+ 
+ // sendWaitMetrics sends a WaitMetricsRequest to a storage server and returns
+@@ -335,8 +334,8 @@ func parseSplitRangeReply(data []byte) ([][]byte, error) {
+ }
+ 
+ func isOperationFailed(err error) bool {
+-	var fdbErr *wire.FDBError
+-	return errors.As(err, &fdbErr) && fdbErr.Code == ErrOperationFailed
++	code, ok := fdbErrorCode(err)
++	return ok && code == ErrOperationFailed
+ }
+ 
+ // parseWaitMetricsReply parses the ErrorOr-wrapped StorageMetrics reply.
+diff --git a/pkg/fdbgo/client/readpath.go b/pkg/fdbgo/client/readpath.go
+index 4dbf42516..a07dd701f 100644
+--- a/pkg/fdbgo/client/readpath.go
++++ b/pkg/fdbgo/client/readpath.go
+@@ -1004,16 +1004,26 @@ func sendRangeRPC[T any](tx *Transaction, ctx context.Context, begin, end []byte
+ 	return kvs, more, err
+ }
+ 
++// fdbErrorCode returns err's FDB error code. errors.AsType, unlike errors.As,
++// does not heap-allocate a target on every call.
++func fdbErrorCode(err error) (int, bool) {
++	fdbErr, ok := errors.AsType[*wire.FDBError](err)
++	if !ok {
++		return 0, false
++	}
++	return fdbErr.Code, true
++}
++
+ // isWrongShardServer returns true if the error is FDB error 1001 (wrong_shard_server).
+ func isWrongShardServer(err error) bool {
+-	var fdbErr *wire.FDBError
+-	return errors.As(err, &fdbErr) && fdbErr.Code == ErrWrongShardServer
++	code, ok := fdbErrorCode(err)
++	return ok && code == ErrWrongShardServer
+ }
+ 
+ // isAllAlternativesFailed returns true if the error is FDB error 1006.
+ func isAllAlternativesFailed(err error) bool {
+-	var fdbErr *wire.FDBError
+-	return errors.As(err, &fdbErr) && fdbErr.Code == ErrAllAlternativesFailed
++	code, ok := fdbErrorCode(err)
++	return ok && code == ErrAllAlternativesFailed
+ }
+ 
+ // isMaybeDelivered reports whether err carries request_maybe_delivered (1030)
+@@ -1033,23 +1043,16 @@ func isAllAlternativesFailed(err error) bool {
+ // the same for teardowns coded 1030; this predicate is what additionally catches
+ // an IN-BAND 1100, which no transport arm ever sees.
+ func isMaybeDelivered(err error) bool {
+-	var fdbErr *wire.FDBError
+-	return errors.As(err, &fdbErr) &&
+-		(fdbErr.Code == ErrRequestMaybeDelivered || fdbErr.Code == ErrBrokenPromise)
++	code, ok := fdbErrorCode(err)
++	return ok && (code == ErrRequestMaybeDelivered || code == ErrBrokenPromise)
+ }
+ 
+ // isFutureVersionOrProcessBehind returns true for errors that should trigger
+ // future_version backoff in the QueueModel. Matches C++ ModelHolder::release()
+ // which passes futureVersion=true for future_version (1009) and process_behind (1037).
+ func isFutureVersionOrProcessBehind(err error) bool {
+-	if err == nil {
+-		return false
+-	}
+-	var fdbErr *wire.FDBError
+-	if !errors.As(err, &fdbErr) {
+-		return false
+-	}
+-	return fdbErr.Code == ErrFutureVersion || fdbErr.Code == ErrProcessBehind
++	code, ok := fdbErrorCode(err)
++	return ok && (code == ErrFutureVersion || code == ErrProcessBehind)
+ }
+ 
+ // resolveFallback runs the sequential fallback after the speculative hedge fails: it tries every replica
+diff --git a/pkg/fdbgo/client/reply_error_alloc_unit_test.go b/pkg/fdbgo/client/reply_error_alloc_unit_test.go
+new file mode 100644
+index 000000000..a5baae2ea
+--- /dev/null
++++ b/pkg/fdbgo/client/reply_error_alloc_unit_test.go
+@@ -0,0 +1,32 @@
++package client
++
++import (
++	"errors"
++	"testing"
++
++	"fdb.dev/pkg/fdbgo/wire"
++)
++
++// Every successful GRV, commit and read reply classifies a nil error. Not
++// parallel: AllocsPerRun panics under t.Parallel and counts process-wide.
++func TestNilReplyErrorClassifiesWithoutAllocating(t *testing.T) {
++	for name, classify := range map[string]func(error) bool{
++		"isMaybeDelivered":               isMaybeDelivered,
++		"isWrongShardServer":             isWrongShardServer,
++		"isAllAlternativesFailed":        isAllAlternativesFailed,
++		"isFutureVersionOrProcessBehind": isFutureVersionOrProcessBehind,
++		"isFutureVersion":                isFutureVersion,
++		"isOperationFailed":              isOperationFailed,
++	} {
++		if n := testing.AllocsPerRun(100, func() { _ = classify(nil) }); n != 0 {
++			t.Errorf("REPLY_ERR_ALLOC: %s(nil) allocated %v times, want 0", name, n)
++		}
++	}
++	if n := testing.AllocsPerRun(100, func() { _ = dispositionForReplyError(nil, true) }); n != 0 {
++		t.Errorf("REPLY_ERR_ALLOC: dispositionForReplyError(nil) allocated %v times, want 0", n)
++	}
++	wrapped := errors.Join(errors.New("context"), &wire.FDBError{Code: ErrWrongShardServer})
++	if !isWrongShardServer(wrapped) || isAllAlternativesFailed(wrapped) || isMaybeDelivered(wrapped) {
++		t.Error("REPLY_ERR_CLASSIFY: a wrapped 1001 is no longer classified by its code")
++	}
++}
+diff --git a/pkg/fdbgo/client/ryw.go b/pkg/fdbgo/client/ryw.go
+index 41ee63702..b248fee34 100644
+--- a/pkg/fdbgo/client/ryw.go
++++ b/pkg/fdbgo/client/ryw.go
+@@ -352,7 +352,7 @@ func coalesceCommitMutations(muts []Mutation) []Mutation {
+ }
+ 
+ // Ordered Sets need only last-write-wins, not replay (C++ WriteMap.cpp:125-137).
+-// Operands remain owned by the leased snapshot until captureCommit copies them.
++// Operands stay in the transaction's slab, which captureCommit borrows.
+ func coalescePlainSetMutations(muts []Mutation) ([]Mutation, bool) {
+ 	unique := 0
+ 	for i, m := range muts {
+@@ -438,6 +438,7 @@ func coalesceWriteConflicts(in []KeyRange) []KeyRange {
+ // hammers an unrelated key ships uncoalesced — safe (no wrong bytes, no dropped op), identical to pre-#28
+ // and the rywDisabled path (FDB-C-dev delta ACK: non-blocking). Extracted from Commit as a PURE function so
+ // the ship-decision is unit-testable / revert-provable outside Commit's inline flow.
++// A coalesced shipMuts is always a fresh vector: captureCommitVectors keeps it uncopied.
+ func coalesceCommitVectors(rawMuts []Mutation, rawConflicts []KeyRange, rywDisabled bool) (shipMuts []Mutation, sizeConflicts []KeyRange, coalesced bool) {
+ 	if rywDisabled || mutationsHaveVersionstamp(rawMuts) {
+ 		return rawMuts, rawConflicts, false
+diff --git a/pkg/fdbgo/client/transaction.go b/pkg/fdbgo/client/transaction.go
+index 170cb824f..78f323a8f 100644
+--- a/pkg/fdbgo/client/transaction.go
++++ b/pkg/fdbgo/client/transaction.go
+@@ -788,9 +788,14 @@ func (tx *Transaction) checkReadState(ctx context.Context) error {
+ }
+ 
+ func (tx *Transaction) ensureReadVersion(ctx context.Context) error {
++	return tx.ensureReadVersionFlags(ctx, 0)
++}
++
++// ensureReadVersionFlags adds extraFlags to the read-version GRV, if it issues one.
++func (tx *Transaction) ensureReadVersionFlags(ctx context.Context, extraFlags uint32) error {
+ 	ctx, release := tx.opContext(ctx)
+ 	defer release()
+-	if _, err := tx.readVersionForOperation(ctx); err != nil {
++	if _, err := tx.readVersionForOperation(ctx, extraFlags); err != nil {
+ 		return err
+ 	}
+ 	return tx.readEntryError(ctx)
+@@ -799,7 +804,7 @@ func (tx *Transaction) ensureReadVersion(ctx context.Context) error {
+ // readVersionForOperation returns the GRV captured by this operation, not a
+ // later read of the mutable handle. C++ RYWImpl::getReadVersion returns the
+ // value from its completed future even if the handle is subsequently reset.
+-func (tx *Transaction) readVersionForOperation(parentCtx context.Context) (int64, error) {
++func (tx *Transaction) readVersionForOperation(parentCtx context.Context, extraFlags uint32) (int64, error) {
+ 	ctx, cancel := tx.opContext(parentCtx)
+ 	defer cancel()
+ 	if err := tx.checkReadState(ctx); err != nil {
+@@ -827,7 +832,7 @@ func (tx *Transaction) readVersionForOperation(parentCtx context.Context) (int64
+ 		tx.ensureTxSpan()
+ 	}
+ 	if !tx.hasReadVersion {
+-		flags := tx.grvFlags()
++		flags := tx.grvFlags() | extraFlags
+ 		rv, locked, rvAt, err := tx.db.grvBatchers[grvBatcherIndex(flags)].getReadVersion(tx.db, ctx, flags, tx.currentSpan(), tx.tags, tx.useGrvCache, tx.skipGrvCache)
+ 		if err != nil {
+ 			tx.readVersionMu.Unlock()
+@@ -995,12 +1000,21 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
+ 		}
+ 		replyToken, replyCh, replyHandle := conn.PrepareReply()
+ 		body, poolBuf := buildGetValueRequest(key, readVersion, tx.lockAware || tx.readLockAware, tx.tenantId, childSpanContext(tx.currentSpan()), replyToken, server.Token)
+-		// RFC-114: stamp sentAt BEFORE enqueueing the frame. SendFrameDeferred only
+-		// enqueues onto the write channel, so for a very fast read the write+read loops
+-		// can deliver the reply (stamping resp.RecvAt) before we'd otherwise record
+-		// sentAt — making RecvAt−sentAt negative and silently dropped by the sketch.
++		// RFC-114: stamp sentAt BEFORE sending. The frame may be written, and its reply
++		// delivered (stamping resp.RecvAt), before the send returns — RecvAt−sentAt
++		// would go negative and be silently dropped by the sketch.
+ 		sentAt := time.Now()
+-		_, sendErr := conn.SendFrameDeferredContext(ctx, server.Token, body)
++		// The first read of a burst goes out at once; later ones queue while it is
++		// outstanding, so writeLoop can coalesce them into one write.
++		tx.readErrMu.Lock()
++		first := len(tx.pendingReads) == 0
++		tx.readErrMu.Unlock()
++		var sendErr error
++		if first {
++			_, sendErr = conn.SendFrameEagerContext(ctx, server.Token, body)
++		} else {
++			_, sendErr = conn.SendFrameDeferredContext(ctx, server.Token, body)
++		}
+ 		getValueBufPool.Put(poolBuf)
+ 		if sendErr != nil {
+ 			replyHandle.Cancel()
+@@ -1301,6 +1315,32 @@ var conflictBufPool = sync.Pool{
+ 
+ type conflictBuf struct {
+ 	b []byte
++	// Captured commits still reading this slab; while nonzero the transaction
++	// may neither reuse it in place nor return it to the pool.
++	borrows atomic.Int32
++}
++
++// dropConflictBufLocked drops the slab, pooling it unless it is over 32 KiB
++// or an in-flight commit still reads it. Reports whether it was pooled.
++func (tx *Transaction) dropConflictBufLocked() (pooled bool) {
++	if pool := conflictBufPoolFor(cap(tx.conflictBuf)); pool != nil && cap(tx.conflictBuf) > 0 && !tx.conflictBufBorrowedLocked() {
++		cb := tx.conflictBufOwner
++		if cb == nil {
++			cb = &conflictBuf{}
++		}
++		cb.b = tx.conflictBuf[:0]
++		pool.Put(cb)
++		pooled = true
++	}
++	tx.conflictBufOwner = nil
++	tx.conflictBuf = nil
++	return pooled
++}
++
++// conflictBufBorrowedLocked runs under conflictMu, which captureCommit also
++// holds to borrow, so a zero count cannot become nonzero before the caller acts.
++func (tx *Transaction) conflictBufBorrowedLocked() bool {
++	return tx.conflictBufOwner != nil && tx.conflictBufOwner.borrows.Load() != 0
+ }
+ 
+ // Arenas over 32 KiB are not pooled: large values must not inflate later transactions.
+@@ -1977,10 +2017,9 @@ func (tx *Transaction) commitAdmitted(parent context.Context, completion *versio
+ 	sc, scAdded := tx.maybeMakeSelfConflicting(writeConflictsSnap[:nWriteConflicts])
+ 	shipConflicts := finalizeShipConflicts(writeConflictsSnap[:nWriteConflicts], sc, scAdded, coalesced)
+ 
+-	// C++ tryCommit calls startTransaction(CAUSAL_READ_RISKY) to ensure a
+-	// read version exists before commit, even for write-only transactions.
+-	// Without this, ReadSnapshot=0 is sent which crashes the FDB server.
+-	if err := tx.ensureReadVersion(ctx); err != nil {
++	// No read version yet means no reads, so no causal consistency: a risky GRV, as
++	// C++ tryCommit (NativeAPI.actor.cpp:6576-6578). ReadSnapshot=0 would crash the server.
++	if err := tx.ensureReadVersionFlags(ctx, grvFlagCausalReadRisky); err != nil {
+ 		return err
+ 	}
+ 
+@@ -1992,7 +2031,7 @@ func (tx *Transaction) commitAdmitted(parent context.Context, completion *versio
+ 	//
+ 	// RFC-090/093: detach ONLY the commit RPC + its commit_unknown_result
+ 	// idempotency barrier (commitDummyTransaction) from the caller ctx. The GRV
+-	// above (ensureReadVersion, :1106) is deliberately left on the LIVE ctx
++	// above (ensureReadVersionFlags) is deliberately left on the LIVE ctx
+ 	// (RFC-093) so a cancel during the commit-path read version aborts promptly —
+ 	// a GRV is a cancellable read, matching C++ NativeAPI.actor.cpp (the GRV future
+ 	// is cancelled uniformly with the commit). Here we WithoutCancel so a late
+@@ -2013,13 +2052,16 @@ func (tx *Transaction) commitAdmitted(parent context.Context, completion *versio
+ 	if tx.db != nil {
+ 		commitTok = tx.db.grvCache.token()
+ 	}
+-	input := tx.captureCommit(shipMuts, shipConflicts)
++	input := tx.captureCommitVectors(shipMuts, coalesced, shipConflicts)
++	defer input.release() // a panicking commit must not pin the slab forever
+ 	input.versionstamp = completion
+ 	if err := tx.readEntryError(ctx); err != nil {
+ 		return err
+ 	}
+ 	op.lease.release()
+ 	result, err := input.commit(context.WithoutCancel(ctx))
++	// Before publishCommit's reset, so the slab can return to the pool.
++	input.release()
+ 	if err != nil {
+ 		return err
+ 	}
+@@ -2614,7 +2656,7 @@ func (tx *Transaction) OnError(ctx context.Context, err error) (rerr error) {
+ func (tx *Transaction) GetReadVersion(ctx context.Context) (int64, error) {
+ 	ctx, cancel := tx.opContext(ctx)
+ 	defer cancel()
+-	rv, err := tx.readVersionForOperation(ctx)
++	rv, err := tx.readVersionForOperation(ctx, 0)
+ 	if err != nil {
+ 		return 0, err
+ 	}
+@@ -2901,7 +2943,7 @@ func (tx *Transaction) addReadConflictForKey(key []byte) {
+ 	copy(buf, key)
+ 	copy(buf[n:], key)
+ 	buf[2*n] = 0 // explicit zero — pooled buffer may have stale data
+-	tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: buf[:n], End: buf[n : n+n+1]})
++	tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: buf[:n:n], End: buf[n : n+n+1]})
+ 	tx.conflictMu.Unlock()
+ }
+ 
+@@ -2912,7 +2954,7 @@ func (tx *Transaction) addReadConflict(begin, end []byte) {
+ 	nb := len(begin)
+ 	copy(buf, begin)
+ 	copy(buf[nb:], end)
+-	tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: buf[:nb], End: buf[nb:]})
++	tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: buf[:nb:nb], End: buf[nb:]})
+ 	tx.conflictMu.Unlock()
+ }
+ 
+@@ -2933,7 +2975,7 @@ func (tx *Transaction) addReadConflicts(ranges [][2][]byte) {
+ 		nb := len(begin)
+ 		copy(buf, begin)
+ 		copy(buf[nb:], end)
+-		tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: buf[:nb], End: buf[nb:]})
++		tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: buf[:nb:nb], End: buf[nb:]})
+ 	}
+ 	tx.conflictMu.Unlock()
+ }
+@@ -2971,7 +3013,8 @@ func (tx *Transaction) conflictBufAlloc(n int) []byte {
+ 	}
+ 	start := len(tx.conflictBuf)
+ 	tx.conflictBuf = tx.conflictBuf[:start+n]
+-	return tx.conflictBuf[start : start+n]
++	// Capped: a borrowed commit reads neighbouring bytes an append could clobber.
++	return tx.conflictBuf[start : start+n : start+n]
+ }
+ 
+ // addWriteConflictForKey adds a write conflict range [key, key\x00). Takes
+@@ -3004,7 +3047,7 @@ func (tx *Transaction) addWriteConflictForKeyLocked(key []byte) {
+ 	copy(buf, key)
+ 	copy(buf[n:], key)
+ 	buf[2*n] = 0 // explicit zero — pooled buffer may have stale data
+-	tx.writeConflicts = append(tx.writeConflicts, KeyRange{Begin: buf[:n], End: buf[n : n+n+1]})
++	tx.writeConflicts = append(tx.writeConflicts, KeyRange{Begin: buf[:n:n], End: buf[n : n+n+1]})
+ }
+ 
+ // addWriteConflict adds a write conflict range [begin, end). Takes conflictMu
+@@ -3030,7 +3073,7 @@ func (tx *Transaction) addWriteConflictLocked(begin, end []byte) {
+ 	nb := len(begin)
+ 	copy(buf, begin)
+ 	copy(buf[nb:], end)
+-	tx.writeConflicts = append(tx.writeConflicts, KeyRange{Begin: buf[:nb], End: buf[nb:]})
++	tx.writeConflicts = append(tx.writeConflicts, KeyRange{Begin: buf[:nb:nb], End: buf[nb:]})
+ }
+ 
+ // selfConflictPrefix is C++ makeSelfConflicting's key prefix "\xFF/SC/" (NativeAPI.actor.cpp:5953).
+@@ -3137,11 +3180,11 @@ func (tx *Transaction) makeSelfConflictingLocked() KeyRange {
+ 	rb := tx.conflictBufAlloc(len(sc) + len(end))
+ 	copy(rb, sc)
+ 	copy(rb[len(sc):], end)
+-	tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: rb[:len(sc)], End: rb[len(sc):]})
++	tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: rb[:len(sc):len(sc)], End: rb[len(sc):]})
+ 	wb := tx.conflictBufAlloc(len(sc) + len(end))
+ 	copy(wb, sc)
+ 	copy(wb[len(sc):], end)
+-	wcr := KeyRange{Begin: wb[:len(sc)], End: wb[len(sc):]}
++	wcr := KeyRange{Begin: wb[:len(sc):len(sc)], End: wb[len(sc):]}
+ 	tx.writeConflicts = append(tx.writeConflicts, wcr)
+ 	return wcr
+ }
+@@ -3533,17 +3576,7 @@ func (tx *Transaction) postCommitResetFields() {
+ 	tx.readConflicts = tx.readConflicts[:0]
+ 	tx.writeConflicts = tx.writeConflicts[:0]
+ 	tx.singleKeyClearCount = 0 // cleared with mutations (GetApproximateSize accounting)
+-	// Do not keep arenas over 32 KiB alive in unrelated transactions.
+-	if pool := conflictBufPoolFor(cap(tx.conflictBuf)); pool != nil && cap(tx.conflictBuf) > 0 {
+-		cb := tx.conflictBufOwner
+-		if cb == nil {
+-			cb = &conflictBuf{}
+-		}
+-		cb.b = tx.conflictBuf[:0]
+-		pool.Put(cb)
+-	}
+-	tx.conflictBufOwner = nil
+-	tx.conflictBuf = nil
++	tx.dropConflictBufLocked()
+ 	tx.conflictMu.Unlock()
+ 	tx.ryw.reset()
+ 	tx.deferredErr.Store(nil) // C++ resetRyow clears deferredError (ReadYourWrites.actor.cpp:2719)
+@@ -3615,8 +3648,13 @@ func (tx *Transaction) resetFields(userReset bool) {
+ 	tx.mutations = tx.mutations[:0]
+ 	tx.readConflicts = tx.readConflicts[:0]
+ 	tx.writeConflicts = tx.writeConflicts[:0]
+-	tx.singleKeyClearCount = 0          // cleared with mutations (GetApproximateSize accounting)
+-	tx.conflictBuf = tx.conflictBuf[:0] // reuse buffer for retry
++	tx.singleKeyClearCount = 0 // cleared with mutations (GetApproximateSize accounting)
++	if tx.conflictBufBorrowedLocked() {
++		// A captured commit still reads it: leave it to that commit and the GC.
++		tx.conflictBuf, tx.conflictBufOwner = nil, nil
++	} else {
++		tx.conflictBuf = tx.conflictBuf[:0] // reuse buffer for retry
++	}
+ 	tx.conflictMu.Unlock()
+ 	tx.ryw.reset()
+ 	tx.deferredErr.Store(nil) // C++ resetRyow clears deferredError (ReadYourWrites.actor.cpp:2719)
+diff --git a/pkg/fdbgo/client/transaction_lifetime.go b/pkg/fdbgo/client/transaction_lifetime.go
+index e3984b737..698652b7a 100644
+--- a/pkg/fdbgo/client/transaction_lifetime.go
++++ b/pkg/fdbgo/client/transaction_lifetime.go
+@@ -6,8 +6,8 @@ import (
+ 	"fdb.dev/pkg/fdbgo/wire"
+ )
+ 
+-// executionLease protects reset-owned state, not wire I/O ownership. All fields
+-// are guarded by readErrMu. Nested operations borrow the same token.
++// executionLease protects reset-owned state, not wire I/O ownership. tx and inc
++// are immutable; readErrMu guards active. Nested operations borrow the same token.
+ type executionLease struct {
+ 	tx     *Transaction
+ 	inc    *readIncarnation
+@@ -30,18 +30,22 @@ func (l *executionLease) release() {
+ 	l.tx.readErrMu.Unlock()
+ }
+ 
+-// enterState admits synchronous, context-free state access. The lease, rather
+-// than a separate readiness check, protects the entire mutable-state phase.
++// enterState admits synchronous, context-free state access; the lease protects the
++// whole mutable-state phase. Keep it inlinable (TestStateLeaseDoesNotAllocate).
+ func (tx *Transaction) enterState() *executionLease {
++	return &executionLease{tx: tx, inc: tx.admitState(), active: true}
++}
++
++// admitState waits out a turnover and counts one user of the current incarnation.
++func (tx *Transaction) admitState() *readIncarnation {
+ 	for {
+ 		tx.readErrMu.Lock()
+ 		ready := tx.readReady
+ 		if ready == nil {
+ 			inc := tx.readIncarnationLocked()
+ 			inc.users++
+-			lease := &executionLease{tx: tx, inc: inc, active: true}
+ 			tx.readErrMu.Unlock()
+-			return lease
++			return inc
+ 		}
+ 		tx.readErrMu.Unlock()
+ 		<-ready
+diff --git a/pkg/fdbgo/client/versionstamp.go b/pkg/fdbgo/client/versionstamp.go
+index bfbd6dd2c..fc447d43a 100644
+--- a/pkg/fdbgo/client/versionstamp.go
++++ b/pkg/fdbgo/client/versionstamp.go
+@@ -51,9 +51,8 @@ func (c *versionstampCompletion) finishNative(result commitOutcome, err error) {
+ 	if c == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+ 		return
+ 	}
+-	var fdbErr *wire.FDBError
+ 	// flow/Error.h aliases actor_cancelled to operation_cancelled (1101).
+-	if errors.As(err, &fdbErr) && fdbErr != nil && fdbErr.Code == 1101 {
++	if code, ok := fdbErrorCode(err); ok && code == 1101 {
+ 		return
+ 	}
+ 	if err != nil {
+diff --git a/pkg/fdbgo/transport/BUILD.bazel b/pkg/fdbgo/transport/BUILD.bazel
+index d480bd773..e1785801f 100644
+--- a/pkg/fdbgo/transport/BUILD.bazel
++++ b/pkg/fdbgo/transport/BUILD.bazel
+@@ -4,6 +4,9 @@ go_library(
+     name = "transport",
+     srcs = [
+         "conn.go",
++        "direct_write.go",
++        "direct_write_other.go",
++        "direct_write_unix.go",
+         "framing.go",
+         "handshake.go",
+         "wellknown.go",
+@@ -22,9 +25,11 @@ go_library(
+ go_test(
+     name = "transport_test",
+     srcs = [
++        "conn_direct_write_test.go",
+         "conn_handshake_timeout_test.go",
+         "conn_lifecycle_test.go",
+         "conn_monitor_pacing_test.go",
++        "conn_read_buffer_test.go",
+         "conn_recover_test.go",
+         "conn_unit_test.go",
+         "connclosed_error_test.go",
+diff --git a/pkg/fdbgo/transport/conn.go b/pkg/fdbgo/transport/conn.go
+index 78f6b02b8..7fcbc7f70 100644
+--- a/pkg/fdbgo/transport/conn.go
++++ b/pkg/fdbgo/transport/conn.go
+@@ -137,7 +137,6 @@ type Conn struct {
+ 	conn           net.Conn
+ 	useTLS         bool
+ 	wbuf           *bufio.Writer // owned exclusively by writeLoop
+-	hasDirty       atomic.Bool   // true when wbuf has unflushed data
+ 	writeCh        chan writeReq // channel-based write loop for coalescing
+ 	writeAdmission sync.RWMutex
+ 	writeClosed    bool // protected by writeAdmission
+@@ -184,6 +183,19 @@ type Conn struct {
+ 	// regression test, so the rate is asserted directly.
+ 	monitorCycles atomic.Int64
+ 
++	// writeMu orders socket writes between writeLoop and direct writers; queued
++	// counts frames handed to writeLoop and not yet flushed.
++	writeMu sync.Mutex
++	queued  atomic.Int64
++	// raw is set for plaintext TCP only: a direct write needs a non-blocking
++	// socket write, so a full socket never holds its caller past its ctx.
++	raw       *rawWriter
++	tail      []byte        // unwritten end of a direct write, under writeMu
++	tailFrame []byte        // the whole frame tail ends, pooled once written
++	tailBuf   *[]byte       // tailFrame's pool handle
++	tailKick  chan struct{} // wakes writeLoop to finish tail
++	tails     atomic.Int64  // partial direct writes, so tests can tell a tail occurred
++
+ 	// Debug tracing (set before first use).
+ 	debugFrames bool
+ 	debugWriter io.Writer
+@@ -433,6 +445,10 @@ func dialWith(ctx context.Context, addr string, dialFn DialFunc, tlsConfig *tls.
+ 		//	init( CONNECTION_MONITOR_TIMEOUT,   isSimulated ? 1.50 : 2.0 );
+ 		monitorLoopInterval: 1 * time.Second,
+ 		monitorTimeout:      2 * time.Second,
++		tailKick:            make(chan struct{}, 1),
++	}
++	if tlsConfig == nil {
++		c.raw = newRawWriter(netConn)
+ 	}
+ 	// Apply test-only knobs BEFORE any loop goroutine starts (no data race).
+ 	for _, o := range opts {
+@@ -565,19 +581,19 @@ func putReplyChannelImpl(ch chan Response) {
+ 	replyChanPool.Put(ch)
+ }
+ 
+-// SendFrame writes a raw frame and flushes. Blocks until the frame is written
+-// to the TCP socket (or returns error). For single-frame RPCs where we
+-// immediately wait for the response.
++// SendFrame writes a raw frame and flushes. Returns once the frame is written, or
++// once writeLoop holds whatever a full socket refused, ahead of every later frame.
+ func (c *Conn) SendFrame(destToken UID, body []byte) error {
+ 	if c.debugFrames {
+ 		fmt.Fprintf(c.debugWriter, "[send %s] token=%016x:%016x bodyLen=%d\n", c.conn.RemoteAddr(),
+ 			destToken.First, destToken.Second, len(body))
+ 	}
+ 	LogSend(destToken, body)
++	if direct, err := c.tryWriteDirect(destToken, body); direct {
++		return err
++	}
+ 	errCh := errChanPool.Get().(chan error)
+-	select {
+-	case c.writeCh <- writeReq{token: destToken, body: body, errCh: errCh}:
+-	case <-c.ctx.Done():
++	if !c.enqueue(writeReq{token: destToken, body: body, errCh: errCh}, nil) {
+ 		errChanPool.Put(errCh)
+ 		return errConnClosed
+ 	}
+@@ -601,26 +617,21 @@ func (c *Conn) SendFrame(destToken UID, body []byte) error {
+ // send N frames, then call Flush() (or let the write loop auto-flush).
+ func (c *Conn) SendFrameDeferred(destToken UID, body []byte) error {
+ 	LogSend(destToken, body)
+-	c.hasDirty.Store(true) // mark dirty so Flush() knows to synchronize
+-	select {
+-	case c.writeCh <- writeReq{token: destToken, body: body}:
+-		return nil
+-	case <-c.ctx.Done():
++	if !c.enqueue(writeReq{token: destToken, body: body}, nil) {
+ 		return errConnClosed
+ 	}
++	return nil
+ }
+ 
+-// Flush ensures all pending frames are flushed to the TCP socket.
+-// For the write-loop architecture, this sends a synchronous flush marker
+-// through the write channel and waits for acknowledgment.
++// Flush ensures all pending frames are flushed to the TCP socket. With nothing
++// queued every earlier frame is already written; otherwise it sends a flush
++// marker through the write channel and waits for acknowledgment.
+ func (c *Conn) Flush() error {
+-	if !c.hasDirty.Load() {
++	if c.queued.Load() == 0 && c.ctx.Err() == nil {
+ 		return nil
+ 	}
+ 	errCh := errChanPool.Get().(chan error)
+-	select {
+-	case c.writeCh <- writeReq{errCh: errCh}: // empty token+body = flush-only request
+-	case <-c.ctx.Done():
++	if !c.enqueue(writeReq{errCh: errCh}, nil) { // empty token+body = flush-only request
+ 		errChanPool.Put(errCh)
+ 		return errConnClosed
+ 	}
+@@ -628,7 +639,6 @@ func (c *Conn) Flush() error {
+ 	// errCh is not pooled on the ctx.Done path (stale-value hazard).
+ 	select {
+ 	case err := <-errCh:
+-		c.hasDirty.Store(false)
+ 		errChanPool.Put(errCh)
+ 		return err
+ 	case <-c.ctx.Done():
+@@ -643,7 +653,8 @@ func (c *Conn) Flush() error {
+ // one flush (one write() syscall).
+ //
+ // This matches C++ FlowTransport's connectionWriter actor which yields to
+-// let senders enqueue, then flushes everything at once.
++// let senders enqueue, then flushes everything at once. It holds writeMu from
++// its first write to the flush, so direct writers never interleave a batch.
+ func (c *Conn) writeLoop() {
+ 	defer c.loopWG.Done()
+ 	var owned []*writeCompletion
+@@ -654,10 +665,13 @@ func (c *Conn) writeLoop() {
+ 	var errChans []chan<- error
+ 
+ 	for {
+-		// Wait for first frame.
++		// Wait for first frame, or for the tail of a direct write.
+ 		var req writeReq
++		first := false
+ 		select {
+ 		case req = <-c.writeCh:
++			first = true
++		case <-c.tailKick:
+ 		case <-c.ctx.Done():
+ 			return
+ 		}
+@@ -667,13 +681,29 @@ func (c *Conn) writeLoop() {
+ 		if req.owned != nil {
+ 			owned = append(owned, req.owned)
+ 		}
+-		// Process first frame.
++		c.writeMu.Lock()
++		var batched int64
+ 		var writeErr error
+-		if req.token != (UID{}) || req.body != nil {
+-			writeErr = WriteFrame(c.wbuf, req.token, req.body, c.useTLS)
++		// A direct write's unwritten end precedes every frame queued after it.
++		if c.tail != nil {
++			_, writeErr = c.wbuf.Write(c.tail)
++			putFrame(c.tailBuf, c.tailFrame) // wbuf has copied or written it
++			c.tail, c.tailFrame, c.tailBuf = nil, nil, nil
++			batched++
+ 		}
+-		if req.errCh != nil {
+-			errChans = append(errChans, req.errCh)
++		// Process first frame.
++		if first {
++			batched++
++			if writeErr == nil && (req.token != (UID{}) || req.body != nil) {
++				writeErr = WriteFrame(c.wbuf, req.token, req.body, c.useTLS)
++			}
++			if req.errCh != nil {
++				errChans = append(errChans, req.errCh)
++			}
++		}
++		if batched == 0 { // a kick whose tail an earlier batch already wrote
++			c.writeMu.Unlock()
++			continue
+ 		}
+ 
+ 		// Drain all queued frames without blocking (natural coalescing).
+@@ -681,6 +711,7 @@ func (c *Conn) writeLoop() {
+ 		for draining && writeErr == nil {
+ 			select {
+ 			case req = <-c.writeCh:
++				batched++
+ 				if req.owned != nil {
+ 					owned = append(owned, req.owned)
+ 				}
+@@ -699,16 +730,19 @@ func (c *Conn) writeLoop() {
+ 		if writeErr == nil {
+ 			writeErr = c.wbuf.Flush()
+ 		}
+-		c.hasDirty.Store(false)
++		if writeErr != nil {
++			// Fail under writeMu so no direct write can follow a torn frame.
++			writeErr = codedConnClosed(writeErr)
++			c.failConnection(writeErr)
++		}
++		c.queued.Add(-batched)
++		c.writeMu.Unlock()
+ 
+ 		// Notify all waiting senders. A write error means the frame may or may
+ 		// not have reached the peer before the socket died — code it as the
+ 		// request_maybe_delivered teardown (C++ has no synchronous send errors
+ 		// at all; a failed send there surfaces only as the disconnect signal →
+ 		// request_maybe_delivered, fdbrpc.h:794-799).
+-		if writeErr != nil {
+-			writeErr = codedConnClosed(writeErr)
+-		}
+ 		for _, ch := range errChans {
+ 			ch <- writeErr
+ 		}
+@@ -719,10 +753,8 @@ func (c *Conn) writeLoop() {
+ 		}
+ 		owned = owned[:0]
+ 		if writeErr != nil {
+-			// The socket writer is terminal after any frame/flush failure. Cancel
+-			// connection admission, fail replies, then let the deferred ownership
+-			// finalizer drain requests that arrived outside this failed batch.
+-			c.failConnection(writeErr)
++			// The socket writer is terminal after any frame/flush failure; the
++			// deferred ownership finalizer drains requests outside this batch.
+ 			return
+ 		}
+ 	}
+@@ -832,8 +864,8 @@ func (c *Conn) SetDebug(enabled bool) {
+ 	c.debugWriter = os.Stderr
+ }
+ 
+-// BytesReceived returns the total bytes received on this connection.
+-// Used by the connection monitor for dead-connection detection.
++// BytesReceived returns the socket bytes received since the handshake, frame
++// headers and partial frames included. The connection monitor watches it.
+ func (c *Conn) BytesReceived() int64 {
+ 	return c.bytesReceived.Load()
+ }
+@@ -883,9 +915,12 @@ func (c *Conn) readLoop() {
+ 
+ 	pingToken := WellKnownToken(WLTokenPingPacket)
+ 	var fr FrameReader
++	// C++ connectionReader reads into a packet buffer: one read usually carries
++	// whole frames, where length, checksum and payload reads cost three each.
++	in := bufio.NewReaderSize(socketCounter{c.conn, &c.bytesReceived}, readBufferSize)
+ 
+ 	for {
+-		token, body, err := fr.Read(c.conn, c.useTLS)
++		token, body, err := fr.Read(in, c.useTLS)
+ 		if err != nil {
+ 			// Only log if this is unexpected (server died, not our Close).
+ 			if c.debugFrames && c.ctx.Err() == nil {
+@@ -895,9 +930,6 @@ func (c *Conn) readLoop() {
+ 			return
+ 		}
+ 
+-		// Track bytes received for connection monitor dead-connection detection.
+-		c.bytesReceived.Add(int64(len(body)))
+-
+ 		LogRecv(token, body)
+ 
+ 		if c.debugFrames {
+@@ -928,6 +960,23 @@ func (c *Conn) readLoop() {
+ 	}
+ }
+ 
++// socketCounter counts bytes as the socket delivers them, as C++ connectionReader
++// does (peer->bytesReceived += totalReadBytes), so a large frame in transit is progress.
++type socketCounter struct {
++	r io.Reader
++	n *atomic.Int64
++}
++
++func (s socketCounter) Read(p []byte) (int, error) {
++	n, err := s.r.Read(p)
++	s.n.Add(int64(n))
++	return n, err
++}
++
++// readBufferSize exceeds C++ MIN_PACKET_BUFFER_BYTES (4 KiB, flow/Knobs.cpp:226)
++// so a burst of replies drains in one read; larger payloads bypass it.
++const readBufferSize = 16 << 10
++
+ // failAllPending delivers an error to all pending request channels.
+ // Matches C++ connectionKeeper's disconnect promise that wakes all
+ // in-flight deliver() actors.
+@@ -959,11 +1008,8 @@ func (c *Conn) handlePing(body []byte) {
+ 	replyBody := buildVoidReply()
+ 
+ 	// Send ping reply through the write loop. Fire-and-forget (no errCh).
+-	select {
+-	case c.writeCh <- writeReq{token: replyToken, body: replyBody}:
+-	default:
+-		// Write channel full — drop ping reply. Server will retry.
+-	}
++	// A full write channel drops the ping reply; the server will retry.
++	c.tryEnqueue(writeReq{token: replyToken, body: replyBody})
+ }
+ 
+ // extractPingReplyToken extracts the reply UID from a PingRequest FlatBuffers body.
+@@ -1174,9 +1220,7 @@ func (c *Conn) sendPingWithReply() <-chan struct{} {
+ 	replyToken, replyCh, replyHandle := c.PrepareReply()
+ 	pingEP := WellKnownToken(WLTokenPingPacket)
+ 	body := BuildPingRequest(replyToken)
+-	select {
+-	case c.writeCh <- writeReq{token: pingEP, body: body}:
+-	default:
++	if !c.tryEnqueue(writeReq{token: pingEP, body: body}) {
+ 		// writeCh is saturated — we could not send the PING. Return a nil
+ 		// channel, NOT a closed one. A closed channel makes the monitor's
+ 		// `case <-replyCh` fire immediately and falsely conclude "connection
+diff --git a/pkg/fdbgo/transport/conn_direct_write_test.go b/pkg/fdbgo/transport/conn_direct_write_test.go
+new file mode 100644
+index 000000000..38fba6bef
+--- /dev/null
++++ b/pkg/fdbgo/transport/conn_direct_write_test.go
+@@ -0,0 +1,453 @@
++package transport
++
++import (
++	"bytes"
++	"context"
++	"errors"
++	"fmt"
++	"io"
++	"net"
++	"sync"
++	"testing"
++	"time"
++
++	"fdb.dev/pkg/fdbgo/wire"
++)
++
++// tcpPair returns a connected loopback pair; direct writes need a real socket.
++func tcpPair(t *testing.T) (*net.TCPConn, net.Conn) {
++	t.Helper()
++	ln, err := net.Listen("tcp", "127.0.0.1:0")
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer ln.Close()
++	accepted := make(chan net.Conn, 1)
++	go func() {
++		c, _ := ln.Accept()
++		accepted <- c
++	}()
++	cli, err := net.Dial("tcp", ln.Addr().String())
++	if err != nil {
++		t.Fatal(err)
++	}
++	srv := <-accepted
++	if srv == nil {
++		t.Fatal("accept failed")
++	}
++	t.Cleanup(func() { cli.Close(); srv.Close() })
++	return cli.(*net.TCPConn), srv
++}
++
++// directConn has no writeLoop: a frame queued instead of written by its
++// caller stays in writeCh.
++func directConn(t *testing.T, nc *net.TCPConn) *Conn {
++	t.Helper()
++	ctx, cancel := context.WithCancel(context.Background())
++	t.Cleanup(cancel)
++	return &Conn{
++		conn: nc, ctx: ctx, cancel: cancel, writeCh: make(chan writeReq, 8),
++		pending: make(map[UID]chan Response), raw: newRawWriter(nc), tailKick: make(chan struct{}, 1),
++	}
++}
++
++func within[T any](t *testing.T, ch <-chan T, what string) T {
++	t.Helper()
++	select {
++	case v := <-ch:
++		return v
++	case <-time.After(30 * time.Second):
++		t.Fatalf("%s did not happen", what)
++		var zero T
++		return zero
++	}
++}
++
++func waitFor(t *testing.T, cond func() bool, what string) {
++	t.Helper()
++	deadline := time.Now().Add(30 * time.Second)
++	for !cond() {
++		if time.Now().After(deadline) {
++			t.Fatalf("%s did not happen", what)
++		}
++		time.Sleep(time.Millisecond)
++	}
++}
++
++func readFrame(t *testing.T, r net.Conn) (UID, []byte) {
++	t.Helper()
++	_ = r.SetReadDeadline(time.Now().Add(10 * time.Second))
++	var fr FrameReader
++	token, body, err := fr.Read(r, false)
++	if err != nil {
++		t.Fatalf("peer read: %v", err)
++	}
++	return token, body
++}
++
++// An idle writer lets the caller write its own frame; the round trip through
++// writeLoop and back cost two goroutine handoffs per request.
++func TestSendWritesDirectlyWhenWriterIdle(t *testing.T) {
++	t.Parallel()
++	cli, srv := tcpPair(t)
++	c := directConn(t, cli)
++	sends := []func() error{
++		func() error { return c.SendFrame(UID{First: 1}, []byte("commit")) },
++		func() error {
++			_, err := c.SendFrameContext(context.Background(), UID{First: 2}, []byte("read"))
++			return err
++		},
++	}
++	for i, send := range sends {
++		done := make(chan error, 1)
++		go func() { done <- send() }()
++		if err := within(t, done, fmt.Sprintf("send %d without a writeLoop", i)); err != nil {
++			t.Fatalf("send %d: %v", i, err)
++		}
++		if token, _ := readFrame(t, srv); token.First != uint64(i+1) {
++			t.Fatalf("send %d: peer got token %d", i, token.First)
++		}
++	}
++	if n := len(c.writeCh); n != 0 || c.queued.Load() != 0 {
++		t.Fatalf("WRITE_DIRECT: %d frames queued (counter %d), want both written by their callers", n, c.queued.Load())
++	}
++}
++
++// A caller must not write ahead of a frame already handed to writeLoop.
++func TestDirectWriteNeverOvertakesQueuedFrame(t *testing.T) {
++	t.Parallel()
++	cli, _ := tcpPair(t)
++	c := directConn(t, cli)
++	if err := c.SendFrameDeferred(UID{First: 1}, []byte("first")); err != nil {
++		t.Fatal(err)
++	}
++	done := make(chan error, 1)
++	go func() { done <- c.SendFrame(UID{First: 2}, []byte("second")) }()
++	deadline := time.Now().Add(5 * time.Second)
++	for len(c.writeCh) < 2 {
++		if time.Now().After(deadline) {
++			t.Fatal("WRITE_REORDER: second frame bypassed the queue")
++		}
++		time.Sleep(time.Millisecond)
++	}
++	if first, second := <-c.writeCh, <-c.writeCh; first.token.First != 1 || second.token.First != 2 {
++		t.Fatalf("queue order = %d, %d", first.token.First, second.token.First)
++	}
++	c.cancel()
++	if err := within(t, done, "stranded queued sender"); !errors.Is(err, ErrConnClosed) {
++		t.Fatalf("stranded queued sender returned %v", err)
++	}
++}
++
++// With nothing queued every earlier frame is on the socket, so a flush on a
++// live connection has nothing to wait for; on a dead one it still fails.
++func TestFlushWithNothingQueued(t *testing.T) {
++	t.Parallel()
++	cli, _ := tcpPair(t)
++	c := directConn(t, cli)
++	done := make(chan error, 2)
++	go func() { done <- c.Flush() }()
++	go func() { done <- c.FlushContext(context.Background()) }()
++	for range 2 {
++		if err := within(t, done, "flush with nothing queued"); err != nil {
++			t.Fatal(err)
++		}
++	}
++	c.cancel()
++	if err := c.Flush(); !errors.Is(err, ErrConnClosed) {
++		t.Fatalf("Flush on a dead connection = %v, want the teardown", err)
++	}
++	if err := c.FlushContext(context.Background()); !errors.Is(err, ErrConnClosed) {
++		t.Fatalf("FlushContext on a dead connection = %v, want the teardown", err)
++	}
++}
++
++// A failed direct write fails the connection exactly as a failed writeLoop write.
++func TestDirectWriteFailureFailsConnection(t *testing.T) {
++	t.Parallel()
++	cli, _ := tcpPair(t)
++	c := directConn(t, cli)
++	_, replies, handle := c.PrepareReply()
++	defer handle.Release()
++	cli.Close() // the next socket write fails
++	err := c.SendFrame(UID{First: 1}, []byte("x"))
++	var fe *wire.FDBError
++	if !errors.Is(err, ErrConnClosed) || !errors.As(err, &fe) || fe.Code != codeRequestMaybeDelivered {
++		t.Fatalf("SendFrame = %v, want the coded request_maybe_delivered teardown", err)
++	}
++	if !c.IsClosed() {
++		t.Fatal("failed direct write left the connection open")
++	}
++	if r := within(t, replies, "pending reply"); !errors.Is(r.Err, ErrConnClosed) {
++		t.Fatalf("pending reply = %v, want the coded teardown", r.Err)
++	}
++}
++
++// dialStalledPeer dials a peer that completes the handshake and then reads
++// nothing until release is closed; frames it later reads arrive on frames.
++func dialStalledPeer(t *testing.T) (c *Conn, release chan struct{}, frames <-chan []byte) {
++	t.Helper()
++	ln, err := net.Listen("tcp", "127.0.0.1:0")
++	if err != nil {
++		t.Fatal(err)
++	}
++	t.Cleanup(func() { ln.Close() })
++	release = make(chan struct{})
++	stop := make(chan struct{})
++	t.Cleanup(func() { close(stop) })
++	out := make(chan []byte, 64)
++	go func() {
++		srv, err := ln.Accept()
++		if err != nil {
++			return
++		}
++		defer srv.Close()
++		var buf [ConnectPacketSize]byte
++		if _, err := io.ReadFull(srv, buf[:]); err != nil {
++			return
++		}
++		sp := ConnectPacket{ProtocolVersion: ProtocolVersion73, ConnectionID: 0x5151}
++		if _, err := srv.Write(sp.Marshal()); err != nil {
++			return
++		}
++		select {
++		case <-release:
++		case <-stop:
++			return
++		}
++		var fr FrameReader
++		for {
++			token, body, err := fr.Read(srv, false)
++			if err != nil {
++				close(out)
++				return
++			}
++			out <- append([]byte(fmt.Sprint(token.First, ":")), body...)
++		}
++	}()
++	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
++	defer cancel()
++	c, err = dialWith(ctx, ln.Addr().String(), nil, nil, withMonitorCadence(time.Hour, time.Hour))
++	if err != nil {
++		t.Fatal(err)
++	}
++	t.Cleanup(func() { _ = c.Close() })
++	return c, release, out
++}
++
++// A full socket never holds a direct writer: the unwritten tail goes to
++// writeLoop, later senders queue behind it and can still give up on their ctx,
++// and the peer receives every frame whole and in order.
++func TestDirectWriteTailOnFullSocket(t *testing.T) {
++	t.Parallel()
++	c, release, frames := dialStalledPeer(t)
++	big := bytes.Repeat([]byte{'b'}, 32<<20) // beyond loopback's autotuned socket buffers
++	sent := make(chan error, 1)
++	go func() {
++		_, err := c.SendFrameContext(context.Background(), UID{First: 1}, big)
++		sent <- err
++	}()
++	if err := within(t, sent, "direct write into a full socket returning"); err != nil {
++		t.Fatal(err)
++	}
++	if c.queued.Load() == 0 {
++		t.Fatal("precondition: the socket took a 32 MiB frame whole")
++	}
++	// Once writeLoop has taken the kick it is stuck writing the tail, so a
++	// frame queued now stays in writeCh until the peer reads.
++	waitFor(t, func() bool { return len(c.tailKick) == 0 }, "writeLoop taking the tail")
++	ctx, cancel := context.WithCancel(context.Background())
++	defer cancel()
++	type outcome struct {
++		enqueued bool
++		err      error
++	}
++	abandoned := make(chan outcome, 1)
++	go func() {
++		enqueued, err := c.SendFrameContext(ctx, UID{First: 2}, []byte("after"))
++		abandoned <- outcome{enqueued, err}
++	}()
++	waitFor(t, func() bool { return len(c.writeCh) == 1 }, "second frame queued behind the tail")
++	cancel()
++	if r := within(t, abandoned, "queued sender honouring its ctx"); !r.enqueued || !errors.Is(r.err, context.Canceled) {
++		t.Fatalf("queued sender behind a full socket = (%v, %v), want (true, context.Canceled)", r.enqueued, r.err)
++	}
++	close(release)
++	if got := within(t, frames, "first frame"); !bytes.Equal(got, append([]byte("1:"), big...)) {
++		t.Fatalf("WRITE_TAIL: first frame arrived as %d bytes", len(got))
++	}
++	if got := within(t, frames, "second frame"); string(got) != "2:after" {
++		t.Fatalf("WRITE_TAIL: second frame %q", got)
++	}
++}
++
++// Direct writers and writeLoop share one socket: every frame arrives whole and
++// each sender's frames in its own order. Run under -race.
++func TestDirectAndQueuedWritersInterleaveSafely(t *testing.T) {
++	t.Parallel()
++	c, release, frames := dialStalledPeer(t)
++	close(release)
++	const senders, perSender = 8, 50
++	got := make(chan error, 1)
++	go func() {
++		next := make([]int, senders)
++		for range senders * perSender {
++			f, ok := <-frames
++			if !ok {
++				got <- errors.New("peer stream ended")
++				return
++			}
++			var w, seq int
++			if _, err := fmt.Sscanf(string(f), "%d:%d/%d", &w, &w, &seq); err != nil || seq != next[w] {
++				got <- fmt.Errorf("frame %q: sender %d expected seq %d (%v)", f, w, next[w], err)
++				return
++			}
++			next[w]++
++		}
++		got <- nil
++	}()
++	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
++	defer cancel()
++	var wg sync.WaitGroup
++	for w := range senders {
++		wg.Add(1)
++		go func() {
++			defer wg.Done()
++			for seq := range perSender {
++				token, body := UID{First: uint64(w)}, []byte(fmt.Sprint(w, "/", seq))
++				var err error
++				switch seq % 3 {
++				case 0:
++					err = c.SendFrame(token, body)
++				case 1:
++					_, err = c.SendFrameContext(ctx, token, body)
++				default:
++					err = c.SendFrameDeferred(token, body)
++				}
++				if err != nil {
++					t.Error(err)
++					return
++				}
++			}
++		}()
++	}
++	wg.Wait()
++	if err := c.Flush(); err != nil {
++		t.Fatal(err)
++	}
++	if err := within(t, got, "peer receiving every frame"); err != nil {
++		_ = c.Close()
++		t.Fatal(err)
++	}
++}
++
++// A fixed 32 KiB send buffer makes every large direct write partial, so tails,
++// leftover kicks and tail-blocked direct writers all occur under -race.
++func TestDirectWriteTailsUnderConcurrency(t *testing.T) {
++	t.Parallel()
++	c, release, frames := dialStalledPeer(t)
++	if err := c.conn.(*net.TCPConn).SetWriteBuffer(32 << 10); err != nil {
++		t.Fatal(err)
++	}
++	close(release)
++	const senders, perSender = 4, 12
++	sizes := []int{1 << 20, 1 << 10, 64 << 10, 300 << 10}
++	got := make(chan error, 1)
++	go func() {
++		next := make([]int, senders)
++		for range senders * perSender {
++			f, ok := <-frames
++			if !ok {
++				got <- errors.New("peer stream ended")
++				return
++			}
++			var w, seq int
++			if _, err := fmt.Sscanf(string(f), "%d:%d/%d/", &w, &w, &seq); err != nil || seq != next[w] {
++				got <- fmt.Errorf("frame from sender %d: seq %d, want %d (%v)", w, seq, next[w], err)
++				return
++			}
++			want := len(fmt.Sprint(w, "/", seq, "/")) + sizes[seq%len(sizes)]
++			if body := f[bytes.IndexByte(f, ':')+1:]; len(body) != want {
++				got <- fmt.Errorf("sender %d frame %d: %d bytes, want %d", w, seq, len(body), want)
++				return
++			}
++			next[w]++
++		}
++		got <- nil
++	}()
++	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
++	defer cancel()
++	send := func(w, seq int) error {
++		body := append([]byte(fmt.Sprint(w, "/", seq, "/")), make([]byte, sizes[seq%len(sizes)])...)
++		token := UID{First: uint64(w)}
++		var err error
++		switch seq % 3 {
++		case 0:
++			err = c.SendFrame(token, body)
++		case 1:
++			_, err = c.SendFrameContext(ctx, token, body)
++		default:
++			err = c.SendFrameDeferred(token, body)
++		}
++		return err
++	}
++	// On the idle connection this 1 MiB frame goes direct and cannot fit the
++	// 64 KiB send buffer, so at least one tail is certain; the rest race it.
++	if err := send(0, 0); err != nil {
++		t.Fatal(err)
++	}
++	var wg sync.WaitGroup
++	for w := range senders {
++		wg.Add(1)
++		go func() {
++			defer wg.Done()
++			for seq := range perSender {
++				if w == 0 && seq == 0 {
++					continue
++				}
++				if err := send(w, seq); err != nil {
++					t.Error(err)
++					return
++				}
++			}
++		}()
++	}
++	wg.Wait()
++	if err := c.Flush(); err != nil {
++		t.Fatal(err)
++	}
++	if err := within(t, got, "peer receiving every frame"); err != nil {
++		t.Fatal(err)
++	}
++	if c.tails.Load() == 0 {
++		t.Fatal("WRITE_TAIL: the idle 1 MiB direct write was not partial")
++	}
++}
++
++// An eager send writes at once on an idle connection and otherwise queues
++// without waiting, behind what is already queued.
++func TestSendFrameEagerContext(t *testing.T) {
++	t.Parallel()
++	cli, srv := tcpPair(t)
++	c := directConn(t, cli)
++	if enqueued, err := c.SendFrameEagerContext(context.Background(), UID{First: 1}, []byte("lone")); !enqueued || err != nil {
++		t.Fatalf("idle eager send = (%v, %v)", enqueued, err)
++	}
++	if token, _ := readFrame(t, srv); token.First != 1 || c.queued.Load() != 0 {
++		t.Fatalf("WRITE_EAGER: peer got token %d, %d queued; want the frame written by its caller", token.First, c.queued.Load())
++	}
++	if err := c.SendFrameDeferred(UID{First: 2}, []byte("queued")); err != nil {
++		t.Fatal(err)
++	}
++	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
++	defer cancel()
++	if enqueued, err := c.SendFrameEagerContext(ctx, UID{First: 3}, []byte("behind")); !enqueued || err != nil {
++		t.Fatalf("eager send behind a queued frame = (%v, %v)", enqueued, err)
++	}
++	if n := len(c.writeCh); n != 2 {
++		t.Fatalf("WRITE_REORDER: %d frames queued, want the eager frame behind the queued one", n)
++	}
++	if first, second := <-c.writeCh, <-c.writeCh; first.token.First != 2 || second.token.First != 3 {
++		t.Fatalf("WRITE_REORDER: queue order = %d, %d", first.token.First, second.token.First)
++	}
++}
+diff --git a/pkg/fdbgo/transport/conn_read_buffer_test.go b/pkg/fdbgo/transport/conn_read_buffer_test.go
+new file mode 100644
+index 000000000..86756b27d
+--- /dev/null
++++ b/pkg/fdbgo/transport/conn_read_buffer_test.go
+@@ -0,0 +1,132 @@
++package transport
++
++import (
++	"bytes"
++	"context"
++	"net"
++	"sync/atomic"
++	"testing"
++	"time"
++)
++
++type readCountingConn struct {
++	net.Conn
++	reads atomic.Int32
++}
++
++func (c *readCountingConn) Read(p []byte) (int, error) {
++	c.reads.Add(1)
++	return c.Conn.Read(p)
++}
++
++func dialCounted(t *testing.T, s *simServer) (*Conn, *readCountingConn) {
++	t.Helper()
++	counted := &readCountingConn{Conn: s.cli}
++	handshook := make(chan error, 1)
++	go func() { handshook <- s.handshake() }()
++	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
++	defer cancel()
++	dial := func(context.Context, string, string) (net.Conn, error) { return counted, nil }
++	c, err := dialWith(ctx, "sim", dial, nil, withMonitorCadence(time.Hour, time.Hour))
++	if err != nil {
++		t.Fatalf("dial: %v", err)
++	}
++	if err := <-handshook; err != nil {
++		t.Fatalf("handshake: %v", err)
++	}
++	t.Cleanup(func() { _ = c.Close() })
++	return c, counted
++}
++
++// sendReplies writes one frame per body to the client in a single socket write.
++func sendReplies(t *testing.T, s *simServer, tokens []UID, bodies [][]byte) {
++	t.Helper()
++	var wire bytes.Buffer
++	for i, body := range bodies {
++		if err := WriteFrame(&wire, tokens[i], body, false); err != nil {
++			t.Fatalf("frame: %v", err)
++		}
++	}
++	go func() { _, _ = s.srv.Write(wire.Bytes()) }()
++}
++
++func awaitReplies(t *testing.T, chans []<-chan Response, bodies [][]byte) {
++	t.Helper()
++	for i, ch := range chans {
++		select {
++		case r := <-ch:
++			if r.Err != nil || !bytes.Equal(r.Body, bodies[i]) {
++				t.Fatalf("reply %d: err=%v, %d bytes, want %d", i, r.Err, len(r.Body), len(bodies[i]))
++			}
++		case <-time.After(5 * time.Second):
++			t.Fatalf("reply %d not delivered", i)
++		}
++	}
++}
++
++func prepareReplies(c *Conn, n int) ([]UID, []<-chan Response) {
++	tokens, chans := make([]UID, n), make([]<-chan Response, n)
++	for i := range n {
++		tokens[i], chans[i], _ = c.PrepareReply()
++	}
++	return tokens, chans
++}
++
++// One socket read must deliver every frame it carries, as C++ connectionReader
++// does; reading length, checksum and payload separately cost three reads each.
++func TestReadLoopDrainsCoalescedRepliesWithOneRead(t *testing.T) {
++	t.Parallel()
++	s := newSimServer(t)
++	c, counted := dialCounted(t, s)
++	tokens, chans := prepareReplies(c, 3)
++	bodies := [][]byte{[]byte("first"), bytes.Repeat([]byte{'b'}, 900), []byte("third")}
++	before := counted.reads.Load()
++	sendReplies(t, s, tokens, bodies)
++	awaitReplies(t, chans, bodies)
++	// The read that carried the frames, plus the next one the loop blocks in.
++	if reads := counted.reads.Load() - before; reads > 2 {
++		t.Fatalf("READLOOP_UNBUFFERED: %d socket reads for 3 coalesced frames, want <= 2", reads)
++	}
++}
++
++// Frames larger than the read buffer, and frames straddling it, arrive intact.
++func TestReadLoopBufferBoundaries(t *testing.T) {
++	t.Parallel()
++	s := newSimServer(t)
++	c, _ := dialCounted(t, s)
++	sizes := []int{1, readBufferSize - 30, 3 * readBufferSize, 0, readBufferSize + 7, 64}
++	tokens, chans := prepareReplies(c, len(sizes))
++	bodies := make([][]byte, len(sizes))
++	for i, n := range sizes {
++		bodies[i] = bytes.Repeat([]byte{byte('a' + i)}, n)
++	}
++	sendReplies(t, s, tokens, bodies)
++	awaitReplies(t, chans, bodies)
++}
++
++// Liveness counts bytes as they arrive, not frames as they complete: a large
++// reply still in transit is progress to the connection monitor, as in C++.
++func TestBytesReceivedCountsPartialFrames(t *testing.T) {
++	t.Parallel()
++	s := newSimServer(t)
++	c, _ := dialCounted(t, s)
++	token, replies, _ := c.PrepareReply()
++	var wire bytes.Buffer
++	if err := WriteFrame(&wire, token, bytes.Repeat([]byte{'p'}, 4096), false); err != nil {
++		t.Fatal(err)
++	}
++	half := wire.Bytes()[:wire.Len()/2]
++	go func() { _, _ = s.srv.Write(half) }()
++	deadline := time.Now().Add(5 * time.Second)
++	for c.BytesReceived() != int64(len(half)) {
++		if time.Now().After(deadline) {
++			t.Fatalf("LIVENESS_PER_FRAME: %d bytes counted with half a frame delivered, want %d", c.BytesReceived(), len(half))
++		}
++		time.Sleep(time.Millisecond)
++	}
++	select {
++	case r := <-replies:
++		t.Fatalf("LIVENESS_PER_FRAME: half a frame produced a reply: %+v", r)
++	default:
++	}
++}
+diff --git a/pkg/fdbgo/transport/direct_write.go b/pkg/fdbgo/transport/direct_write.go
+new file mode 100644
+index 000000000..86c5e3a67
+--- /dev/null
++++ b/pkg/fdbgo/transport/direct_write.go
+@@ -0,0 +1,64 @@
++package transport
++
++// enqueue hands req to writeLoop, counting it first so that no direct write
++// can overtake it. done (nil: none) abandons the enqueue as c.ctx does.
++func (c *Conn) enqueue(req writeReq, done <-chan struct{}) bool {
++	c.queued.Add(1)
++	select {
++	case c.writeCh <- req:
++		return true
++	case <-c.ctx.Done():
++	case <-done:
++	}
++	c.queued.Add(-1)
++	return false
++}
++
++// tryEnqueue is enqueue for fire-and-forget frames that a full queue drops.
++func (c *Conn) tryEnqueue(req writeReq) bool {
++	c.queued.Add(1)
++	select {
++	case c.writeCh <- req:
++		return true
++	default:
++		c.queued.Add(-1)
++		return false
++	}
++}
++
++// tryWriteDirect writes the frame on the caller's goroutine when writeLoop is idle,
++// saving two handoffs; it never blocks, and writeLoop finishes what a full socket refuses.
++func (c *Conn) tryWriteDirect(token UID, body []byte) (bool, error) {
++	if c.raw == nil || c.queued.Load() != 0 || !c.writeMu.TryLock() {
++		return false, nil
++	}
++	defer c.writeMu.Unlock()
++	// A frame may have been queued between the Load and the TryLock. writeLoop
++	// keeps the lock until its batch is flushed, so zero here means a quiet socket.
++	if c.queued.Load() != 0 || c.ctx.Err() != nil {
++		return false, nil
++	}
++	bufp, frame := encodeFrame(token, body, c.useTLS)
++	n, err := c.raw.write(frame)
++	if err != nil {
++		// As in writeLoop: maybe delivered, and failed under writeMu so that no
++		// frame follows a torn one.
++		putFrame(bufp, frame)
++		err = codedConnClosed(err)
++		c.failConnection(err)
++		return true, err
++	}
++	if n == len(frame) {
++		putFrame(bufp, frame)
++		return true, nil
++	}
++	// writeLoop writes the rest before any later frame, then pools the buffer.
++	c.tail, c.tailFrame, c.tailBuf = frame[n:], frame, bufp
++	c.queued.Add(1)
++	c.tails.Add(1)
++	select {
++	case c.tailKick <- struct{}{}:
++	default:
++	}
++	return true, nil
++}
+diff --git a/pkg/fdbgo/transport/direct_write_other.go b/pkg/fdbgo/transport/direct_write_other.go
+new file mode 100644
+index 000000000..98ef848b8
+--- /dev/null
++++ b/pkg/fdbgo/transport/direct_write_other.go
+@@ -0,0 +1,16 @@
++//go:build !unix
++
++package transport
++
++import (
++	"errors"
++	"net"
++)
++
++type rawWriter struct{}
++
++func newRawWriter(net.Conn) *rawWriter { return nil }
++
++func (*rawWriter) write([]byte) (int, error) {
++	return 0, errors.New("transport: direct writes are unix-only")
++}
+diff --git a/pkg/fdbgo/transport/direct_write_unix.go b/pkg/fdbgo/transport/direct_write_unix.go
+new file mode 100644
+index 000000000..4a05c9c48
+--- /dev/null
++++ b/pkg/fdbgo/transport/direct_write_unix.go
+@@ -0,0 +1,55 @@
++//go:build unix
++
++package transport
++
++import (
++	"net"
++	"syscall"
++)
++
++// rawWriter makes non-blocking socket writes without allocating per call;
++// writeMu serializes its use.
++type rawWriter struct {
++	rc  syscall.RawConn
++	buf []byte
++	n   int
++	err error
++	fn  func(uintptr) bool
++}
++
++func newRawWriter(nc net.Conn) *rawWriter {
++	tc, ok := nc.(*net.TCPConn)
++	if !ok {
++		return nil
++	}
++	rc, err := tc.SyscallConn()
++	if err != nil {
++		return nil
++	}
++	w := &rawWriter{rc: rc}
++	w.fn = func(fd uintptr) bool {
++		for {
++			w.n, w.err = syscall.Write(int(fd), w.buf)
++			if w.err != syscall.EINTR {
++				return true // never wait for writability
++			}
++		}
++	}
++	return w
++}
++
++// write makes one attempt; a full socket takes nothing rather than waiting.
++func (w *rawWriter) write(b []byte) (int, error) {
++	w.buf = b
++	err := w.rc.Write(w.fn)
++	w.buf = nil
++	switch {
++	case err != nil:
++		return 0, err
++	case w.err == syscall.EAGAIN:
++		return 0, nil
++	case w.err != nil:
++		return 0, w.err
++	}
++	return w.n, nil
++}
+diff --git a/pkg/fdbgo/transport/framing.go b/pkg/fdbgo/transport/framing.go
+index 200871651..52fa77727 100644
+--- a/pkg/fdbgo/transport/framing.go
++++ b/pkg/fdbgo/transport/framing.go
+@@ -38,6 +38,14 @@ const (
+ // WriteFrame writes a framed message to w.
+ // If tls is true, the checksum is omitted.
+ func WriteFrame(w io.Writer, token UID, body []byte, tls bool) error {
++	bufp, frame := encodeFrame(token, body, tls)
++	_, err := w.Write(frame)
++	putFrame(bufp, frame)
++	return err
++}
++
++// encodeFrame builds the frame in a pooled buffer; putFrame returns it.
++func encodeFrame(token UID, body []byte, tls bool) (*[]byte, []byte) {
+ 	payloadLen := 16 + len(body) // token + body
+ 	headerSize := packetLenWidth
+ 	if !tls {
+@@ -76,10 +84,12 @@ func WriteFrame(w io.Writer, token UID, body []byte, tls bool) error {
+ 		binary.LittleEndian.PutUint64(buf[off:], checksum)
+ 	}
+ 
+-	_, err := w.Write(buf)
+-	*bufp = buf[:0] // reset length, keep capacity
++	return bufp, buf
++}
++
++func putFrame(bufp *[]byte, frame []byte) {
++	*bufp = frame[:0] // reset length, keep capacity
+ 	writeFramePool.Put(bufp)
+-	return err
+ }
+ 
+ // FrameReader reads framed messages with a persistent header buffer to avoid
+diff --git a/pkg/fdbgo/transport/write_context.go b/pkg/fdbgo/transport/write_context.go
+index 626d56a43..18e1a10aa 100644
+--- a/pkg/fdbgo/transport/write_context.go
++++ b/pkg/fdbgo/transport/write_context.go
+@@ -42,9 +42,9 @@ func (c *writeCompletion) complete(err error) {
+ 	c.release()
+ }
+ 
+-// SendFrameContext is a cancellable read-send. It copies body: after return the
+-// caller may recycle its own encoding even if the queued copy has not yet been
+-// written. enqueued reports ownership transfer, NOT delivery to the peer.
++// SendFrameContext is a cancellable read-send: a direct write never blocks and a
++// queued copy is abandoned on ctx. After return the caller may recycle body.
++// enqueued reports ownership transfer, NOT delivery to the peer.
+ // At-most-once commit dispatch must continue to use SendFrame instead.
+ func (c *Conn) SendFrameContext(ctx context.Context, token UID, body []byte) (enqueued bool, err error) {
+ 	return c.writeContext(ctx, token, body, false)
+@@ -53,7 +53,7 @@ func (c *Conn) SendFrameContext(ctx context.Context, token UID, body []byte) (en
+ // FlushContext waits for an ordered flush marker without coupling a read's
+ // cancellation to the lifetime of the shared connection.
+ func (c *Conn) FlushContext(ctx context.Context) error {
+-	if !c.hasDirty.Load() {
++	if c.queued.Load() == 0 && c.ctx.Err() == nil {
+ 		return ctx.Err()
+ 	}
+ 	_, err := c.writeContext(ctx, UID{}, nil, true)
+@@ -64,12 +64,15 @@ func (c *Conn) writeContext(ctx context.Context, token UID, body []byte, flush b
+ 	if err := ctx.Err(); err != nil {
+ 		return false, err
+ 	}
++	if !flush {
++		LogSend(token, body)
++		if direct, err := c.tryWriteDirect(token, body); direct {
++			return true, err
++		}
++	}
+ 	completion := newWriteCompletion()
+ 	defer completion.release() // caller reference, including abandonment
+ 	request := writeReq{token: token, body: bytes.Clone(body), owned: completion}
+-	if !flush {
+-		LogSend(token, request.body)
+-	}
+ 	enqueued, err := c.enqueueOwned(ctx, request)
+ 	if !enqueued {
+ 		completion.release() // ownership never transferred to the writer
+@@ -99,16 +102,27 @@ func (c *Conn) writeContext(ctx context.Context, token UID, body []byte, flush b
+ // does not wait for its acknowledgment. The boolean reports enqueue, not wire
+ // delivery. FlushContext may subsequently wait for the batch.
+ func (c *Conn) SendFrameDeferredContext(ctx context.Context, token UID, body []byte) (bool, error) {
++	return c.sendWithoutAck(ctx, token, body, false)
++}
++
++// SendFrameEagerContext is SendFrameDeferredContext for a frame nothing is about
++// to join: an idle writer lets the caller write it at once. (true, err) means the
++// direct write failed: maybe delivered, and the connection is failed.
++func (c *Conn) SendFrameEagerContext(ctx context.Context, token UID, body []byte) (bool, error) {
++	return c.sendWithoutAck(ctx, token, body, true)
++}
++
++func (c *Conn) sendWithoutAck(ctx context.Context, token UID, body []byte, eager bool) (bool, error) {
+ 	if err := ctx.Err(); err != nil {
+ 		return false, err
+ 	}
+-	request := writeReq{token: token, body: bytes.Clone(body)}
+-	LogSend(token, request.body)
+-	enqueued, err := c.enqueueOwned(ctx, request)
+-	if enqueued {
+-		c.hasDirty.Store(true)
++	LogSend(token, body)
++	if eager {
++		if direct, err := c.tryWriteDirect(token, body); direct {
++			return true, err
++		}
+ 	}
+-	return enqueued, err
++	return c.enqueueOwned(ctx, writeReq{token: token, body: bytes.Clone(body)})
+ }
+ 
+ func (c *Conn) enqueueOwned(ctx context.Context, request writeReq) (bool, error) {
+@@ -119,14 +133,13 @@ func (c *Conn) enqueueOwned(ctx context.Context, request writeReq) (bool, error)
+ 	if c.writeClosed || c.ctx.Err() != nil {
+ 		return false, errConnClosed
+ 	}
+-	select {
+-	case c.writeCh <- request:
++	if c.enqueue(request, ctx.Done()) {
+ 		return true, nil
+-	case <-ctx.Done():
+-		return false, ctx.Err()
+-	case <-c.ctx.Done():
+-		return false, errConnClosed
+ 	}
++	if err := ctx.Err(); err != nil && c.ctx.Err() == nil {
++		return false, err
++	}
++	return false, errConnClosed
+ }
+ 
+ // finishOwnedWrites runs after writer recovery has cancelled the connection,
+diff --git a/pkg/fdbgo/transport/write_context_test.go b/pkg/fdbgo/transport/write_context_test.go
+index e4959a9de..547a100f9 100644
+--- a/pkg/fdbgo/transport/write_context_test.go
++++ b/pkg/fdbgo/transport/write_context_test.go
+@@ -53,8 +53,8 @@ func TestWriteContextCancellationBeforeEnqueue(t *testing.T) {
+ 	if enqueued, err := conn.SendFrameDeferredContext(ctx, UID{First: 1}, []byte("body")); enqueued || !errors.Is(err, context.Canceled) {
+ 		t.Fatalf("pre-enqueue deferred cancellation=(%v, %v), want false, context.Canceled", enqueued, err)
+ 	}
+-	if conn.hasDirty.Load() {
+-		t.Fatal("failed deferred enqueue marked connection dirty")
++	if conn.queued.Load() != 0 {
++		t.Fatal("failed deferred enqueue left a frame counted as queued")
+ 	}
+ }
+ 
+diff --git a/pkg/fdbgo/wire/types/BUILD.bazel b/pkg/fdbgo/wire/types/BUILD.bazel
+index cbbec3d03..5f439958e 100644
+--- a/pkg/fdbgo/wire/types/BUILD.bazel
++++ b/pkg/fdbgo/wire/types/BUILD.bazel
+@@ -70,6 +70,7 @@ go_test(
+         "ground_truth_test.go",
+         "inline_error_test.go",
+         "key_value_vector_test.go",
++        "keyrange_equals_key_after_test.go",
+         "keyrangeref_test.go",
+         "locations_marshal_test.go",
+         "mappedkeyvalues_ground_truth_test.go",
+diff --git a/pkg/fdbgo/wire/types/keyrange_equals_key_after_test.go b/pkg/fdbgo/wire/types/keyrange_equals_key_after_test.go
+new file mode 100644
+index 000000000..c700b6e94
+--- /dev/null
++++ b/pkg/fdbgo/wire/types/keyrange_equals_key_after_test.go
+@@ -0,0 +1,65 @@
++package types
++
++import (
++	"bytes"
++	"testing"
++)
++
++// equalsKeyAfterReference is the pre-change Go loop, kept as the oracle.
++func equalsKeyAfterReference(begin, end []byte) bool {
++	if len(end) != len(begin)+1 || end[len(end)-1] != 0 {
++		return false
++	}
++	for i := range begin {
++		if begin[i] != end[i] {
++			return false
++		}
++	}
++	return true
++}
++
++var equalsKeyAfterSeeds = []struct {
++	name       string
++	begin, end []byte
++	want       bool
++}{
++	{"both empty", nil, nil, false},
++	{"empty begin, zero end", nil, []byte{0}, true},
++	{"empty begin, nonzero end", nil, []byte{1}, false},
++	{"empty begin, two zeros", nil, []byte{0, 0}, false},
++	{"key after", []byte("k"), []byte("k\x00"), true},
++	{"zero-suffixed key after", []byte("k\x00"), []byte("k\x00\x00"), true},
++	{"trailing nonzero", []byte("k"), []byte("k\x01"), false},
++	{"prefix mismatch", []byte("k"), []byte("j\x00"), false},
++	{"end shorter", []byte("kk"), []byte("k"), false},
++	{"end equal length", []byte("k\x00"), []byte("k\x00"), false},
++	{"end two longer", []byte("k"), []byte("k\x00\x00"), false},
++	{"first byte differs, long", append([]byte{1}, bytes.Repeat([]byte("a"), 99)...), append(append([]byte{2}, bytes.Repeat([]byte("a"), 99)...), 0), false},
++	{"last byte differs, long", append(bytes.Repeat([]byte("a"), 99), 1), append(append(bytes.Repeat([]byte("a"), 99), 2), 0), false},
++	{"long key after", bytes.Repeat([]byte{0xff}, 100), append(bytes.Repeat([]byte{0xff}, 100), 0), true},
++}
++
++func TestKeyRangeEqualsKeyAfterSeeds(t *testing.T) {
++	t.Parallel()
++	for _, tc := range equalsKeyAfterSeeds {
++		if got := keyRangeEqualsKeyAfter(tc.begin, tc.end); got != tc.want {
++			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
++		}
++		if ref := equalsKeyAfterReference(tc.begin, tc.end); ref != tc.want {
++			t.Errorf("%s: reference got %v, want %v", tc.name, ref, tc.want)
++		}
++	}
++}
++
++// The serialized bytes depend on this predicate (single-key ranges ship as
++// (end, empty)), so any disagreement with the reference is a wire change.
++func FuzzKeyRangeEqualsKeyAfter(f *testing.F) {
++	for _, tc := range equalsKeyAfterSeeds {
++		f.Add(tc.begin, tc.end)
++	}
++	f.Fuzz(func(t *testing.T, begin, end []byte) {
++		if got, want := keyRangeEqualsKeyAfter(begin, end), equalsKeyAfterReference(begin, end); got != want {
++			t.Fatalf("begin=%x end=%x: got %v, reference %v", begin, end, got, want)
++		}
++	})
++}
+diff --git a/pkg/fdbgo/wire/types/keyrangeref_custom.go b/pkg/fdbgo/wire/types/keyrangeref_custom.go
+index 488718211..ec27a2f5c 100644
+--- a/pkg/fdbgo/wire/types/keyrangeref_custom.go
++++ b/pkg/fdbgo/wire/types/keyrangeref_custom.go
+@@ -13,6 +13,7 @@ package types
+ // FuzzSplitRangeRequest_RoundTrip 2026-04-25.
+ 
+ import (
++	"bytes"
+ 	"encoding/binary"
+ 
+ 	"fdb.dev/pkg/fdbgo/wire"
+@@ -55,21 +56,10 @@ func (m *KeyRangeRef) UnmarshalFDB(data []byte) error {
+ 	return nil
+ }
+ 
+-// equalsKeyAfter returns true if begin + '\x00' == end.
+-// C++ FDBTypes.h: equalsKeyAfter(begin, end)
++// keyRangeEqualsKeyAfter returns true if begin + '\x00' == end: C++
++// equalsKeyAfter (FDBTypes.h:309-313).
+ func keyRangeEqualsKeyAfter(begin, end []byte) bool {
+-	if len(end) != len(begin)+1 {
+-		return false
+-	}
+-	if end[len(end)-1] != 0 {
+-		return false
+-	}
+-	for i := range begin {
+-		if begin[i] != end[i] {
+-			return false
+-		}
+-	}
+-	return true
++	return len(end) == len(begin)+1 && end[len(begin)] == 0 && bytes.Equal(begin, end[:len(begin)])
+ }
+ 
+ // precomputeSize replaces the generated precomputeSize for KeyRangeRef.
+@@ -92,7 +82,8 @@ func (m *KeyRangeRef) precomputeSize(ps *wire.PrecomputeSize) int {
+ // writeToBuffer replaces the generated writeToBuffer for KeyRangeRef.
+ func (m *KeyRangeRef) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
+ 	var beginOff, endOff int
+-	if keyRangeEqualsKeyAfter(m.Begin, m.End) {
++	single := keyRangeEqualsKeyAfter(m.Begin, m.End)
++	if single {
+ 		// C++: serialize(end, empty) — swap field order
+ 		endOff, _ = wb.VisitDynamicSize(m.End)
+ 		beginOff, _ = wb.VisitDynamicSize(nil) // empty
+@@ -117,7 +108,7 @@ func (m *KeyRangeRef) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmp
+ 	// Normal: serializer(ar, begin, end) → slot 0 = begin, slot 1 = end.
+ 	// Optimized: serializer(ar, end, empty) → slot 0 = end, slot 1 = empty.
+ 	// Our variables: when optimized, endOff = end data, beginOff = empty data.
+-	if keyRangeEqualsKeyAfter(m.Begin, m.End) {
++	if single {
+ 		// Optimized: slot 0 = end (endOff), slot 1 = empty (beginOff)
+ 		selfW.WriteRelativeOffset(endOff, int(vt[KeyRangeRefSlotBegin+2]))
+ 		selfW.WriteRelativeOffset(beginOff, int(vt[KeyRangeRefSlotEnd+2]))

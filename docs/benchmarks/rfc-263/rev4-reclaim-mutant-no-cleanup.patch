@@ -1,0 +1,10 @@
+--- /tmp/rfc263-rev4-screen.2KEIQu/reclaim-fixed-timeout_queue.go	2026-10-20 13:12:59.986979631 +0200
++++ pkg/fdbgo/client/timeout_queue.go	2026-10-20 13:13:05.475062045 +0200
+@@ -100,7 +100,6 @@
+ 	q = root.shards[(root.next.Add(1)-1)%uint64(len(root.shards))]
+ 	n := &timeoutNode{tx: weak.Make(tx), queue: q, index: -1}
+ 	// Unreachability, not commit, authorizes unlinking the current arm.
+-	runtime.AddCleanup(tx, func(n *timeoutNode) { n.queue.remove(n) }, n)
+ 	return n
+ }
+ 

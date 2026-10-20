@@ -1,0 +1,369 @@
+{
+  "version": 4,
+  "status": "frozen_design_execution_approvals_recorded_separately_in_provenance",
+  "campaign": "hcloud-rebench-20261014-adapter-diagnostic",
+  "authorization": "Owner requested professional hcloud rebenchmark scenarios on a 16-vCPU machine; no feature work or default flip authorized.",
+  "cloud": {
+    "server_id": "<redacted>",
+    "type": "ccx43",
+    "location": "fsn1",
+    "dedicated_vcpus": 16,
+    "memory_gib": 64,
+    "gross_eur_per_hour": 0.526337,
+    "hard_lifetime_seconds": 21600,
+    "created_utc": "2026-10-14T18:29:01Z"
+  },
+  "production_revisions": {
+    "legacy_published": "9a9a448670a748e4ea721772ba96d70ccc4210a0",
+    "before_allocation_work_after_read_parity": "3824f14654edae8431b0085de8ebf83f5a460a08",
+    "original_remote_fetch": "5052212f520d1f888429d0bbcc749b657e27f39e",
+    "final": "267a41434a81723b07e7150869d702636a1b91a9"
+  },
+  "baseline_interpretation": "Report legacy-to-final and post-parity-to-final separately: correctness work changed the required read work before allocation optimization. Client production/dependency inputs are unchanged between legacy and post-parity, verified by Git diff; the client binary retains its actual post-parity source identity.",
+  "runtime": {
+    "go": "1.26.9",
+    "bazel": "9.0.1",
+    "bazelisk": "1.29.0",
+    "foundationdb": "7.3.77",
+    "api": 730,
+    "GOMAXPROCS": 8,
+    "GOGC": 100,
+    "GOMEMLIMIT": "off",
+    "GODEBUG": "",
+    "TZ": "UTC",
+    "LC_ALL": "C",
+    "guest_topology": "AMD EPYC Milan; eight exported cores, two SMT threads per core; one NUMA node",
+    "housekeeping_cpus": "0-1",
+    "server_cpus": "2-7",
+    "client_cpus": "8-15",
+    "affinity_evidence": "lscpu and thread_siblings_list verify complete disjoint sibling groups; guest affinity is not a claim of physical host isolation",
+    "cluster": "one dedicated FDB process; single redundancy; SSD engine for client; memory engine for Record Layer and SQL; no other workload during timing",
+    "network": "private host/client veth; client network namespace has no default route; server binds only 172.31.99.1:4500; baseline has no artificial delay",
+    "fdb_memory_limit": "16GiB",
+    "fdb_storage_memory_limit": "8GiB",
+    "fdb_cache_memory": "2GiB",
+    "fdb_trace_format": "json",
+    "fdb_trace_total_limit": "256MiB"
+  },
+  "sample_policy": {
+    "seed": 641001,
+    "client_three_arm_blocks": 6,
+    "client_iterations_per_worker": 3000,
+    "client_warmup_per_worker": 200,
+    "testing_b_three_arm_blocks": 6,
+    "testing_b_samples_per_arm_per_block": 3,
+    "testing_b_benchtime_seconds": 3,
+    "two_arm_blocks": 6,
+    "four_arm_remote_blocks": 8,
+    "four_arm_orders": "two randomized complete Williams-square repetitions, preregistered before timing",
+    "cooldown_seconds": 2,
+    "quiescence_seconds": 1,
+    "max_steal_fraction": 0.01,
+    "unit_of_resampling": "whole balanced block, keeping within-process repeats clustered",
+    "uncertainty": "nominal 95% paired block-bootstrap intervals and raw per-run results; client p99 comes from per-transaction samples, testing.B means are not p99",
+    "exclusions": "No post-hoc outlier removal; warmup is predefined and separate; all adverse/aborted runs retained. No repeated campaigns to obtain favorable results. Any environmental failure is diagnosed and a new protocol/campaign version identifies the restart.",
+    "performance_decision": "No automatic default flip or fixed minimum improvement policy. Report uncertainty, order effects and regressions; no aggregate speedup fabricated across workloads.",
+    "order_seed": 641001,
+    "analysis_seed": 391706,
+    "bootstrap_resamples": 20000,
+    "data_generation": "No random data seed: frozen payload algorithms and exact ID ranges; arm namespaces differ but have equal byte lengths.",
+    "absolute_estimand": "Median of run-level statistics; do not pool transaction percentiles across processes.",
+    "relative_estimand": "For each case/metric, take median of the three within-process testing.B repeats per arm/block, then geometric mean of within-block numerator/denominator ratios. Client has one process per arm/block and uses that process statistic. Bootstrap resamples whole paired block log-ratios.",
+    "interval_limits": "Nominal exploratory percentile block-bootstrap 95% intervals, 20000 resamples, seed391706; six/eight independent blocks have limited resolution; no noninferiority, equivalence, production-capacity or multiplicity-adjusted claim.",
+    "testing_b_scope": "Classic B keeps existing timed result checks byte-identical across trees and adds untimed reset/post-write validation. New C/D loops stop the timer for explicit validation. Reported testing.B means/B-op follow those scopes, not whole-process throughput or p99; raw process CPU/wall time is retained separately.",
+    "client_scope": "Closed-loop completion latency includes retries, materialization and exact byte checks. p99 comparisons use run-level quantiles and paired blocks, not individual transactions as independent replicates. Go allocations exclude native libfdb_c heap. Lifecycle CPU scopes retain the clientbench definitions."
+  },
+  "phases": [
+    {
+      "id": "A",
+      "question": "Client cumulative before/final with native control",
+      "arms": [
+        "before-Go",
+        "final-Go",
+        "CGo-7.3.77"
+      ],
+      "workloads": [
+        "grv"
+      ],
+      "workers": 1,
+      "wall_cap_seconds": 180,
+      "order_seed": 641001,
+      "data_seed": null,
+      "repeats_per_arm_process": 1,
+      "read_benchtime": null,
+      "write_benchtime": null,
+      "warmup": 8,
+      "blocks": 6,
+      "iterations": 32,
+      "per_workload_campaign_wall_cap_seconds": 180,
+      "per_process_timeout_seconds": 180,
+      "frozen_order_key": "A",
+      "nominal_observations_per_arm_per_case": 6
+    },
+    {
+      "id": "B",
+      "question": "Record Layer published baseline, parity cost and optimized final",
+      "arms": [
+        "legacy",
+        "before",
+        "final"
+      ],
+      "workloads": [
+        "SaveRecord",
+        "LoadRecord",
+        "SaveRecordWithIndex",
+        "ScanIndexRecords/serial",
+        "ScanIndexRecords/pipelined",
+        "ScanRecords",
+        "ScanRecordsSplitVersioned",
+        "SaveSplitRecord"
+      ],
+      "wall_cap_seconds": 3600,
+      "order_seed": 641101,
+      "data_seed": null,
+      "repeats_per_arm_process": 3,
+      "read_benchtime": "3s",
+      "write_benchtime": "1000x",
+      "warmup": "Untimed committed fixture+exact audit; Go testing.B calibration retained in raw logs but not treated as a reported repeat.",
+      "blocks": 6,
+      "frozen_order_key": "B",
+      "nominal_observations_per_arm_per_case": 18
+    },
+    {
+      "id": "C1",
+      "question": "Initial and final remote fetch against ordinary controls",
+      "arms": [
+        "pr2-ordinary",
+        "pr2-remote",
+        "final-ordinary",
+        "final-remote"
+      ],
+      "cells": {
+        "range": [
+          "limit-1-broad",
+          "exact-10",
+          "all-1000"
+        ],
+        "record": [
+          "small-unsplit",
+          "two-chunk-split"
+        ]
+      },
+      "reverse": false,
+      "skip": 0,
+      "wall_cap_seconds": 4200,
+      "order_seed": 641201,
+      "data_seed": null,
+      "repeats_per_arm_process": 3,
+      "read_benchtime": "3s",
+      "write_benchtime": "1000x",
+      "warmup": "Untimed committed fixture+exact audit; Go testing.B calibration retained in raw logs but not treated as a reported repeat.",
+      "blocks": 8,
+      "frozen_order_key": "C1",
+      "nominal_observations_per_arm_per_case": 24
+    },
+    {
+      "id": "D1",
+      "question": "SQL before/final including parity anchor",
+      "arms": [
+        "legacy",
+        "before",
+        "final"
+      ],
+      "workloads": [
+        "FDB_PlanCacheHit",
+        "FDB_IndexScanRange",
+        "FDB_TimestampInsert"
+      ],
+      "wall_cap_seconds": 1800,
+      "order_seed": 641301,
+      "data_seed": null,
+      "repeats_per_arm_process": 3,
+      "read_benchtime": "3s",
+      "write_benchtime": "1000x",
+      "warmup": "Untimed committed fixture+exact audit; Go testing.B calibration retained in raw logs but not treated as a reported repeat.",
+      "blocks": 6,
+      "frozen_order_key": "D1",
+      "nominal_observations_per_arm_per_case": 18
+    },
+    {
+      "id": "C2",
+      "question": "Current reverse and executor positive-Skip paths",
+      "arms": [
+        "final-ordinary",
+        "final-remote"
+      ],
+      "cells": [
+        "reverse-small-1000",
+        "reverse-split-1000",
+        "executor-skip3-small-10",
+        "executor-skip3-small-1000"
+      ],
+      "wall_cap_seconds": 1500,
+      "order_seed": 641401,
+      "data_seed": null,
+      "repeats_per_arm_process": 3,
+      "read_benchtime": "3s",
+      "write_benchtime": "1000x",
+      "warmup": "Untimed committed fixture+exact audit; Go testing.B calibration retained in raw logs but not treated as a reported repeat.",
+      "blocks": 6,
+      "frozen_order_key": "C2",
+      "nominal_observations_per_arm_per_case": 18
+    },
+    {
+      "id": "D2",
+      "question": "Actual noncovering SQL remote fetch, warmed pinned connections",
+      "arms": [
+        "final-ordinary",
+        "final-remote"
+      ],
+      "rows": [
+        10,
+        1000
+      ],
+      "wall_cap_seconds": 1200,
+      "order_seed": 641501,
+      "data_seed": null,
+      "repeats_per_arm_process": 3,
+      "read_benchtime": "3s",
+      "write_benchtime": "1000x",
+      "warmup": "Untimed committed fixture+exact audit; Go testing.B calibration retained in raw logs but not treated as a reported repeat.",
+      "blocks": 6,
+      "frozen_order_key": "D2",
+      "nominal_observations_per_arm_per_case": 18
+    },
+    {
+      "id": "A2",
+      "question": "Client closed-loop concurrency scaling",
+      "arms": [
+        "before-Go",
+        "final-Go",
+        "CGo-7.3.77"
+      ],
+      "workloads": [
+        "get100",
+        "range100",
+        "batchset50"
+      ],
+      "workers": 8,
+      "wall_cap_seconds": 1500,
+      "order_seed": 641601,
+      "data_seed": null,
+      "repeats_per_arm_process": 1,
+      "read_benchtime": null,
+      "write_benchtime": null,
+      "warmup": 1600,
+      "blocks": 6,
+      "iterations": 24000,
+      "per_workload_campaign_wall_cap_seconds": 360,
+      "per_process_timeout_seconds": 180,
+      "frozen_order_key": "A2",
+      "nominal_observations_per_arm_per_case": 6
+    },
+    {
+      "id": "C3",
+      "question": "Synthetic network latency sensitivity, not a real multi-host result",
+      "arms": [
+        "final-ordinary",
+        "final-remote"
+      ],
+      "rows": 1000,
+      "records": [
+        "small-unsplit",
+        "two-chunk-split"
+      ],
+      "netem_one_way_ms": 0.25,
+      "nominal_rtt_ms": 0.5,
+      "verify_actual_rtt": true,
+      "wall_cap_seconds": 1200,
+      "order_seed": 641701,
+      "data_seed": null,
+      "repeats_per_arm_process": 3,
+      "read_benchtime": "3s",
+      "write_benchtime": "1000x",
+      "warmup": "Untimed committed fixture+exact audit; Go testing.B calibration retained in raw logs but not treated as a reported repeat.",
+      "blocks": 6,
+      "frozen_order_key": "C3",
+      "nominal_observations_per_arm_per_case": 18
+    }
+  ],
+  "execution_gates": [
+    "All required binaries built before any timing; no compilation, profiling, downloads, package installation or other workload during a measurement phase.",
+    "Identical benchmark and client harness bytes across comparable production revisions; archive baseline plus benchmark-only overlay, actual compiler/build info and complete hashes.",
+    "Correctness/path audits run outside timing: exact ordered IDs, payload/checksum, actual split chunk count, nonempty populations, noncovering plan and expected remote/index/load counters. Logical counters are not asserted as wire RPC counts.",
+    "Fresh processes and equal-length namespaces; fixtures prepared and cleared outside timed windows. Preserve physical prefix/schema evidence to detect key-length confounds.",
+    "Background CPU, steal, memory, disk and network telemetry at 1 Hz; no performance-profile instrumentation in timing.",
+    "Only one owned cluster configuration active; no CI runners or shared production data touched.",
+    "Before a phase, require enough remaining lifetime for its preregistered wall cap plus artifact collection; otherwise mark the whole phase unexecuted for budget, never silently reduce sample count.",
+    "Collect and verify raw artifacts on controller, then delete only server <server-id> with exact campaign labels. Controller-side six-hour cleanup guard bounds spend even if orchestration stops."
+  ],
+  "write_state": {
+    "cluster_reset": "A/A2: clear owned user keys before each separate one-workload client campaign; each arm uses a fresh, unique equal-width namespace with identical seeded logical key populations and overwrite-only timed writes. Global prefix growth across the18 runs is bounded, retained and counterbalanced, not asserted globally equal. B/C/D: clear this owned cluster user keyspace between fresh arm processes after clients exit, await commit, cooldown then quiescence. Never clear system keys.",
+    "record_layer": "Clear each benchmark subspace at every body invocation, including calibration, outside timer. Measured write body is fixed1000x: IDs0..999, one transaction+commit per record for SaveRecord/SaveRecordWithIndex/SaveSplitRecord. Untimed verification checks exact presence/population. No insert/overwrite mix is reported as one population.",
+    "sql_insert": "Fresh schema for each body invocation. Fixed1000x: IDs1..1000, timestamp seconds cycle0..59 and deterministic evt labels, one autocommit INSERT per iteration. Verify count1000 and endpoint IDs outside timer; schema allocation and teardown are untimed.",
+    "client": "Frozen Dataset.Seed and ValidateSeed before warmup. Set100 overwrites one prepared key per worker; batchset50 and batchset50x1000 overwrite50 distinct prepared worker-local keys per transaction. Deterministic warmup/measured payloads and exact persisted final-value validation. RYW is one noncommitted local Set+Get, not a durable transaction.",
+    "client_units": {
+      "grv": "one read-only transaction/GetReadVersion",
+      "get100/get1000/get10000": "one Transact callback/Get of the named value byte size; transaction API fast-path behavior is part of implementation",
+      "read1000": "one read-only transaction/Get of one1000-byte value, NOT1000 reads",
+      "range10/range100": "one transaction/range returning exactly10/100 8-byte values",
+      "set100": "one100-byte Set+commit",
+      "ryw": "one uncommitted local Set+Get",
+      "batchset50": "50x100-byte Sets+one commit",
+      "batchset50x1000": "50x1000-byte Sets+one commit"
+    }
+  },
+  "environment_policy": {
+    "pre_arm_window_seconds": 1,
+    "pre_arm_thresholds": {
+      "all_cpu_aggregate_busy": 0.15,
+      "housekeeping_aggregate_busy": 0.3,
+      "housekeeping_max_core_busy": 0.8,
+      "server_aggregate_busy": 0.15,
+      "server_max_core_busy": 0.5,
+      "client_aggregate_busy": 0.05,
+      "client_max_core_busy": 0.15,
+      "any_cpu_steal": 0.01
+    },
+    "during_arm_cadence_seconds": 1,
+    "during_arm_receipts": "CPU/steal counters, pressure, memory, disk/network totals, benchmark process and FDB process stats; sampler and runner pinned to housekeeping CPUs0-1.",
+    "environment_failure": "Pre-arm threshold/build/profile/install conflict aborts that case campaign before another arm. During-arm missing telemetry, OOM, server unavailability or >1% steal on a client/server CPU in a complete1-second interval marks the entire balanced block contaminated and aborts that case; retain complete and incomplete data, do not present it as clean or rerun one arm.",
+    "historical_correctness_failure": "Do not patch old production to make it benchmarkable. Report that tree/case as correctness-failed/not-comparable, retain its data, omit that case ratio, and continue only other predeclared cases. A final-tree correctness failure stops measurement for investigation.",
+    "restart_policy": "No automatic retry after adverse timing or an aborted campaign. Any justified environmental restart needs a separately named protocol/campaign version and retained original artifacts."
+  },
+  "remote_contract": {
+    "fixture": "1000 Orders IDs0..999, price=id, quantity=id%7+1; VALUE price_idx; nil initial continuation; no store record versions; same committed fixture per process.",
+    "small": "No padding, unsplit metadata, exactly1 data key-value per record.",
+    "split": "100000-byte deterministic padding plus protobuf fields; split-enabled metadata; exactly2 data key-values per record verified on all1000 rows.",
+    "limit1": "TupleRangeAll and ReturnedRowLimit1; expected ID0 forward,999 reverse, terminal ReturnLimitReached.",
+    "rows10": "TupleRangeBetween((100),(110)); IDs100..109 forward,109..100 reverse; no row limit; terminal SourceExhausted.",
+    "rows1000": "TupleRangeAll drained; IDs0..999 forward or reversed; terminal SourceExhausted.",
+    "strictness": "Only SCAN_AND_FETCH and strict USE_REMOTE_FETCH are timed; no fallback. Before/after untimed audits check ordered IDs/fields/checksums/chunks; strict remote openings>0, index scans0, record loads0; ordinary remote0/index scans>0 and completed loads positive.",
+    "skip": "Final executor only: cell rows10 selects [100,113),13input rows; Skip3 returns10 IDs103..112 forward or109..100 reverse. Cell rows1000 is all1000 inputs, returning997 IDs3..999 forward or996..0 reverse. No returned-row limit; exhausted terminal. Ordinary eligible leaf gets Skip3, strict remote leaf gets Skip0 plus one outer Skip. Remote openings1 and entries returned+4; ordinary completed loads exactly returned. Labels do not imply identical input and output cardinalities.",
+    "sql": "Explicit method on warmed pinned connection, noncovering IDX_A EXPLAIN on measured and audited connections; audited timer reset after warmup; ordinary remote0/record loads>0; strict remote>0/index0/record loads0; measured connection has no timer.",
+    "limitations": "One FDB process/storage role cannot establish cross-storage-process or cross-machine benefit. Logical remote openings are not wire RPC counts."
+  },
+  "network_sensitivity": {
+    "topology": "Host fdb-bench-host172.31.99.1/30 -> namespace fdb-bench-client/fdb-bench-peer172.31.99.2/30; server172.31.99.1:4500; no namespace default route.",
+    "server_to_client": "tc qdisc replace dev fdb-bench-host root netem limit100000 delay250us",
+    "client_to_server": "ip netns exec fdb-bench-client tc qdisc replace dev fdb-bench-peer root netem limit100000 delay250us",
+    "loss_percent": 0,
+    "jitter_us": 0,
+    "reorder_percent": 0,
+    "verification": "Save both tc -s -j qdisc show receipts and a100-packet unloaded ping before the phase; nominal added RTT500us, report actual p50/p99 and no qdisc drops. Both arms use the identical topology and affect all external FDB traffic consistently.",
+    "restore": "Delete both root qdiscs, save tc receipts and100-packet zero-delay ping proving restoration. No real WAN/multi-host performance claim."
+  },
+  "harness_revision": "d94b4c61377d173b7c6884fde426a227dab0f0bb",
+  "pending_receipts": [],
+  "pre_timing_amendment": {
+    "reason": "Capacity check only: existing 180s campaign ceiling cannot fit predefined 18-arm SSD writes plus 54s waits; no performance campaign has started. Preserve samples/orders and increase explicit configurable cap. Diagnostic smoke durations are not performance samples.",
+    "methodology_design_ack": "pr3-sol 2026-10-14 before timing",
+    "prior_protocol": "protocol-v3.json",
+    "per_workload_campaign_cap_seconds": 360,
+    "per_process_timeout_seconds": 180,
+    "unchanged": "All iterations, warmup, workers, blocks, comparisons, frozen orders, abort/no-retry rules, full-phase lifetime+600 collection gates unchanged."
+  },
+  "harness_previous_revision": "c8845e84f6e4c54c0ca5183e7c4f0c33f1b030ec",
+  "harness_script_delta": "Explicit client wall-cap setting; no Go source or production input changed; existing binaries remain byte-identical and correctly attributable to production source plus common Go overlay.",
+  "diagnostic_only_not_performance": true
+}

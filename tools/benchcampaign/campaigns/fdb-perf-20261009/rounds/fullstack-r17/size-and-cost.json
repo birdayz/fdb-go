@@ -1,0 +1,106 @@
+{
+  "absolute_log_effect": 0.07257069283483537,
+  "pilot_csv": "${FDB_PERF_HOME}/results/fdb-perf-20261009/fullstack-r16-extracted/artifacts/fullstack-r16-read1000/r16-per-block.csv",
+  "pilot_csv_sha256": "541a552b0a518fbdc3efc2f56691d5bf7d71da5044d16a8a42fae88ceaba87fe",
+  "pilot_ratios": [
+    1.1308005361572568,
+    0.8437083879254602,
+    0.8320993403330111,
+    0.9603474007683825,
+    1.1178754073247472,
+    0.7841773429038541
+  ],
+  "projected_total_minutes": 76.53544589273203,
+  "sample_log_sd": 0.15739946062930055,
+  "scope": "R16 was three-arm: pair process sums are measured components, not always adjacent spans. R17 runtime is projected by adding two measured average orchestration gaps per pair. Normal-approximate power is a planning calculation, not guaranteed bootstrap power.",
+  "sizing": [
+    {
+      "normal_approx_pairs": 70,
+      "rounded_multiple_8": 72,
+      "sigma_factor": 1
+    },
+    {
+      "normal_approx_pairs": 110,
+      "rounded_multiple_8": 112,
+      "sigma_factor": 1.25
+    },
+    {
+      "normal_approx_pairs": 158,
+      "rounded_multiple_8": 160,
+      "sigma_factor": 1.5
+    }
+  ],
+  "target_power": 0.9,
+  "target_ratio": 0.93,
+  "two_sided_confidence": 0.99,
+  "workloads": {
+    "batchset50": {
+      "interrun_gaps_seconds": [
+        3.073336,
+        3.0631,
+        3.071598,
+        3.071417,
+        3.072855,
+        3.071156,
+        3.070797,
+        3.071624,
+        3.071947,
+        3.070996,
+        3.07095,
+        3.070979,
+        3.071348,
+        3.071138,
+        3.071638,
+        3.072589,
+        3.070993
+      ],
+      "mean_interrun_gap_seconds": 3.0710859411764706,
+      "mean_process_pair_seconds": 11.535780796833333,
+      "process_pair_seconds": [
+        11.139103765,
+        11.793404902,
+        11.590732235,
+        11.869145749,
+        11.290065559,
+        11.532232571
+      ],
+      "projected_160_pairs_minutes": 47.14120714449673,
+      "projected_pair_including_two_gaps_seconds": 17.677952679186273
+    },
+    "read1000": {
+      "interrun_gaps_seconds": [
+        3.082938,
+        3.082552,
+        3.080846,
+        3.081462,
+        3.08084,
+        3.08276,
+        3.081607,
+        3.07964,
+        3.080525,
+        3.079298,
+        3.083464,
+        3.0802,
+        3.053706,
+        3.080314,
+        3.080755,
+        3.079854,
+        3.08008
+      ],
+      "mean_interrun_gap_seconds": 3.0794612352941177,
+      "mean_process_pair_seconds": 4.86391706,
+      "process_pair_seconds": [
+        4.598720169,
+        5.107391987,
+        5.227839744,
+        4.834316549,
+        4.199908191,
+        5.21532572
+      ],
+      "projected_160_pairs_minutes": 29.394238748235296,
+      "projected_pair_including_two_gaps_seconds": 11.022839530588236
+    }
+  },
+  "z_ci": 2.5758293035489,
+  "z_power": 1.2815515655446008
+}

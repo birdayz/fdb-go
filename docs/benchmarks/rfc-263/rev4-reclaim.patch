@@ -1,0 +1,951 @@
+diff --git a/pkg/fdbgo/client/BUILD.bazel b/pkg/fdbgo/client/BUILD.bazel
+index 868d74b5f..ea9d45f87 100644
+--- a/pkg/fdbgo/client/BUILD.bazel
++++ b/pkg/fdbgo/client/BUILD.bazel
+@@ -605,3 +605,10 @@ go_test(
+         "@io_opentelemetry_go_otel_sdk//trace/tracetest",
+     ],
+ )
++
++# gazelle:exclude rev4_screen_test.go
++go_test(
++    name = "rev4_screen_test",
++    srcs = ["rev4_screen_test.go"],
++    embed = [":client"],
++)
+diff --git a/pkg/fdbgo/client/read_incarnation.go b/pkg/fdbgo/client/read_incarnation.go
+index 458bddafa..d09be77de 100644
+--- a/pkg/fdbgo/client/read_incarnation.go
++++ b/pkg/fdbgo/client/read_incarnation.go
+@@ -216,7 +216,7 @@ func (tx *Transaction) armTimeoutLocked() {
+ 		tx.timeoutNode = n
+ 	}
+ 	// Convert before acquiring the queue lock: contention must not extend the budget.
+-	q.schedule(n, tx.timeoutArm, deadline)
++	n.queue.schedule(n, tx.timeoutArm, deadline)
+ }
+ 
+ // disarmTimeoutLocked cancels the generation's pending timeout. It leaves
+@@ -224,9 +224,6 @@ func (tx *Transaction) armTimeoutLocked() {
+ // by the new arm's number once something re-arms.
+ func (tx *Transaction) disarmTimeoutLocked() {
+ 	tx.timeoutArmed = false
+-	if n := tx.timeoutNode; n != nil {
+-		n.queue.remove(n)
+-	}
+ }
+ 
+ func (tx *Transaction) timeoutQueue() *timeoutQueue {
+diff --git a/pkg/fdbgo/client/rev4_screen_test.go b/pkg/fdbgo/client/rev4_screen_test.go
+new file mode 100644
+index 000000000..1a205a3b0
+--- /dev/null
++++ b/pkg/fdbgo/client/rev4_screen_test.go
+@@ -0,0 +1,429 @@
++package client
++
++import (
++	"runtime"
++	"sync"
++	"sync/atomic"
++	"testing"
++	"time"
++	"unsafe"
++	"weak"
++)
++
++type rev4ManualTimer struct{}
++
++func (rev4ManualTimer) request(time.Duration) {}
++func rev4Queue() (*timeoutQueue, *atomic.Int64) {
++	c := &atomic.Int64{}
++	q := newTimeoutQueue()
++	for _, shard := range q.root.shards {
++		shard.now = c.Load
++		shard.timer = rev4ManualTimer{}
++	}
++	return q, c
++}
++
++func rev4Arm(tx *Transaction, q *timeoutQueue, deadline int64) {
++	tx.readErrMu.Lock()
++	defer tx.readErrMu.Unlock()
++	tx.timeoutArmed = true
++	tx.timeoutArm++
++	if tx.timeoutNode == nil {
++		tx.timeoutNode = q.newNode(tx)
++	}
++	tx.timeoutNode.queue.schedule(tx.timeoutNode, tx.timeoutArm, deadline)
++}
++
++func TestRev4LogicalContinuationFIFO(t *testing.T) {
++	q, clock := rev4Queue()
++	a, b := &Transaction{}, &Transaction{}
++	rev4Arm(b, q, int64(100*time.Second))
++	clock.Store(int64(2 * time.Second))
++	rev4Arm(a, q, int64(100*time.Second))
++	clock.Store(int64(3 * time.Second))
++	rev4Arm(a, q, int64(100*time.Second))
++	clock.Store(int64(4 * time.Second))
++	rev4Arm(b, q, int64(100*time.Second))
++	if b.timeoutNode.wake != int64(10*time.Second) || a.timeoutNode.wake != int64(12*time.Second) {
++		t.Fatal("stub population wrong")
++	}
++	clock.Store(int64(15 * time.Second))
++	q.fire()
++	if a.timeoutNode.seq != 5 || b.timeoutNode.seq != 6 || a.timeoutNode.wake != int64(25*time.Second) || b.timeoutNode.wake != int64(25*time.Second) {
++		t.Fatalf("CONTINUATION_FIFO: A=%d B=%d wakeA=%d wakeB=%d", a.timeoutNode.seq, b.timeoutNode.seq, a.timeoutNode.wake, b.timeoutNode.wake)
++	}
++	runtime.KeepAlive(a)
++	runtime.KeepAlive(b)
++}
++
++func TestRev4RearmAndDisarmNeedNoQueueLock(t *testing.T) {
++	q, clock := rev4Queue()
++	tx := &Transaction{}
++	rev4Arm(tx, q, int64(100*time.Second))
++	clock.Store(int64(4 * time.Second))
++	q.mu.Lock()
++	done := make(chan struct{})
++	go func() {
++		rev4Arm(tx, q, int64(100*time.Second))
++		tx.readErrMu.Lock()
++		tx.disarmTimeoutLocked()
++		tx.readErrMu.Unlock()
++		close(done)
++	}()
++	select {
++	case <-done:
++		q.mu.Unlock()
++	case <-time.After(time.Second):
++		q.mu.Unlock()
++		<-done
++		t.Fatal("FAST_REARM_OR_DISARM_TOOK_QUEUE_LOCK")
++	}
++	runtime.KeepAlive(tx)
++}
++
++func TestRev4StubRepairIsNotActorResumption(t *testing.T) {
++	q, clock := rev4Queue()
++	tx := &Transaction{}
++	rev4Arm(tx, q, int64(100*time.Second))
++	clock.Store(int64(4 * time.Second))
++	rev4Arm(tx, q, int64(100*time.Second))
++	clock.Store(int64(10 * time.Second))
++	q.fire()
++	if tx.timeoutNode.wake != int64(14*time.Second) || tx.timeoutNode.seq != 2 || q.root.seq.Load() != 2 {
++		t.Fatal("STUB_REPAIR_TOOK_SEQUENCE")
++	}
++	clock.Store(int64(14 * time.Second))
++	q.fire()
++	if tx.timeoutNode.seq != 3 || tx.timeoutNode.wake != int64(24*time.Second) {
++		t.Fatal("ACTUAL_INTERVAL_DID_NOT_REQUEUE")
++	}
++	runtime.KeepAlive(tx)
++}
++
++func TestRev4EarlierKeyIsEager(t *testing.T) {
++	q, clock := rev4Queue()
++	tx := &Transaction{}
++	rev4Arm(tx, q, int64(100*time.Second))
++	clock.Store(int64(time.Second))
++	rev4Arm(tx, q, int64(2*time.Second))
++	if tx.timeoutNode.wake != int64(2*time.Second+100*time.Microsecond) || q.reqAt != tx.timeoutNode.wake {
++		t.Fatal("EARLIER_KEY_LOST_WAKE")
++	}
++	runtime.KeepAlive(tx)
++}
++
++func TestRev4PopRaceWithRearm(t *testing.T) {
++	q, clock := rev4Queue()
++	tx := &Transaction{}
++	rev4Arm(tx, q, int64(time.Second))
++	parked, resume, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
++	q.beforeDeliver = func(*timeoutNode) { close(parked); <-resume }
++	clock.Store(int64(time.Second + 100*time.Microsecond))
++	go func() { q.fire(); close(done) }()
++	<-parked
++	rev4Arm(tx, q, int64(100*time.Second))
++	close(resume)
++	<-done
++	if tx.readLife != nil || !tx.timeoutArmed || !tx.timeoutNode.queued.Load() {
++		t.Fatal("STALE_POP_FIRED")
++	}
++	runtime.KeepAlive(tx)
++}
++
++func TestRev4EagerSequencePublishedWithInsertion(t *testing.T) {
++	q, clock := rev4Queue()
++	a, b, d := &Transaction{}, &Transaction{}, &Transaction{}
++	var order []*Transaction
++	q.deliver = func(tx *Transaction, _ uint64) { order = append(order, tx) }
++	parked, resume, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
++	q.beforeEagerSchedule = func(n *timeoutNode) {
++		if n.tx.Value() == a {
++			close(parked)
++			<-resume
++		}
++	}
++	go func() {
++		rev4Arm(a, q, int64(time.Second))
++		close(done)
++	}()
++	<-parked
++	rev4Arm(d, q, int64(2*time.Second))
++	rev4Arm(b, q, int64(time.Second))
++	clock.Store(int64(1500 * time.Millisecond))
++	q.fire()
++	close(resume)
++	<-done
++	clock.Store(int64(3 * time.Second))
++	q.fire()
++	if len(order) != 3 || order[0] != b || order[1] != d || order[2] != a {
++		t.Fatalf("EAGER_PUBLICATION_FIFO: got %v, want [%p %p %p]", order, b, d, a)
++	}
++	runtime.KeepAlive(a)
++	runtime.KeepAlive(b)
++	runtime.KeepAlive(d)
++}
++
++func TestRev4CrossShardUnequalWakes(t *testing.T) {
++	q, clock := rev4Queue()
++	a, b := &Transaction{}, &Transaction{}
++	b.timeoutNode = q.newNode(b)
++	a.timeoutNode = q.newNode(a)
++	rev4Arm(a, q, int64(20*time.Millisecond))
++	rev4Arm(b, q, int64(10*time.Millisecond))
++	var order []*Transaction
++	q.deliver = func(tx *Transaction, _ uint64) { order = append(order, tx) }
++	clock.Store(int64(25 * time.Millisecond))
++	q.fire()
++	if a.timeoutNode.queue == b.timeoutNode.queue || len(order) != 2 || order[0] != a || order[1] != b {
++		t.Fatalf("CROSS_SHARD_FIFO: got %v, want [%p %p] on distinct shards", order, a, b)
++	}
++	runtime.KeepAlive(a)
++	runtime.KeepAlive(b)
++}
++
++func TestRev4GlobalDrainerCallbackRescans(t *testing.T) {
++	q, clock := rev4Queue()
++	a, b, c := &Transaction{}, &Transaction{}, &Transaction{}
++	rev4Arm(a, q, int64(time.Millisecond))
++	rev4Arm(b, q, int64(time.Millisecond))
++	var order []*Transaction
++	q.deliver = func(tx *Transaction, _ uint64) { order = append(order, tx) }
++	parked, resume, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
++	q.beforeDeliver = func(n *timeoutNode) {
++		if n == a.timeoutNode {
++			close(parked)
++			<-resume
++		}
++	}
++	clock.Store(int64(2 * time.Millisecond))
++	go func() { q.fire(); close(done) }()
++	<-parked
++	rev4Arm(c, q, int64(3*time.Millisecond))
++	clock.Store(int64(4 * time.Millisecond))
++	b.timeoutNode.queue.fire()
++	if len(order) != 0 {
++		t.Fatal("GLOBAL_DRAINER_OVERLAP: another shard delivered while the owner was paused")
++	}
++	close(resume)
++	<-done
++	if len(order) != 3 || order[0] != a || order[1] != b || order[2] != c {
++		t.Fatalf("GLOBAL_DRAINER_RESCAN: got %v, want [%p %p %p]", order, a, b, c)
++	}
++	runtime.KeepAlive(a)
++	runtime.KeepAlive(b)
++	runtime.KeepAlive(c)
++}
++
++func TestRev4ShardCohortFrontier(t *testing.T) {
++	q, clock := rev4Queue()
++	a, b := &Transaction{}, &Transaction{}
++	a.timeoutNode = q.newNode(a)
++	b.timeoutNode = q.newNode(b)
++	parkedA, parkedB := make(chan struct{}), make(chan struct{})
++	resumeA, resumeB := make(chan struct{}), make(chan struct{})
++	doneA, doneB := make(chan struct{}), make(chan struct{})
++	a.timeoutNode.queue.beforeEagerSchedule = func(*timeoutNode) {
++		close(parkedA)
++		<-resumeA
++	}
++	b.timeoutNode.queue.beforeEagerSchedule = func(*timeoutNode) {
++		close(parkedB)
++		<-resumeB
++	}
++	go func() { rev4Arm(a, q, int64(time.Second)); close(doneA) }()
++	<-parkedA
++	go func() { rev4Arm(b, q, int64(time.Second)); close(doneB) }()
++	<-parkedB
++	published := false
++	q.root.afterScan = func(shard *timeoutQueue) {
++		if shard == a.timeoutNode.queue && !published {
++			published = true
++			close(resumeA)
++			<-doneA
++			close(resumeB)
++			<-doneB
++		}
++	}
++	var order []*Transaction
++	q.deliver = func(tx *Transaction, _ uint64) { order = append(order, tx) }
++	clock.Store(int64(15 * time.Second))
++	q.fire()
++	q.fire()
++	if !published || a.timeoutNode.seq != 1 || b.timeoutNode.seq != 2 || len(order) != 2 || order[0] != a || order[1] != b {
++		t.Fatalf("SHARD_COHORT_FRONTIER: published=%t seqA=%d seqB=%d got %v, want [%p %p]", published, a.timeoutNode.seq, b.timeoutNode.seq, order, a, b)
++	}
++	runtime.KeepAlive(a)
++	runtime.KeepAlive(b)
++}
++
++func TestRev4DeferredHeadDoesNotHideEligibleWork(t *testing.T) {
++	q, clock := rev4Queue()
++	old, late := &Transaction{}, &Transaction{}
++	rev4Arm(old, q, int64(2*time.Second))
++	for range 15 {
++		q.newNode(&Transaction{})
++	}
++	late.timeoutNode = q.newNode(late)
++	if late.timeoutNode.queue != old.timeoutNode.queue {
++		t.Fatal("probe must place the deferred head and eligible work in the same shard")
++	}
++	parked, resume, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
++	late.timeoutNode.queue.beforeEagerSchedule = func(*timeoutNode) { close(parked); <-resume }
++	go func() { rev4Arm(late, q, int64(time.Second)); close(done) }()
++	<-parked
++	cohort := 0
++	q.root.afterFrontier = func(_ int64, _ uint64) {
++		cohort++
++		if cohort == 1 {
++			close(resume)
++			<-done
++		}
++	}
++	var order []*Transaction
++	var deliveredIn []int
++	q.deliver = func(tx *Transaction, _ uint64) {
++		order = append(order, tx)
++		deliveredIn = append(deliveredIn, cohort)
++	}
++	clock.Store(int64(3 * time.Second))
++	q.fire()
++	if len(order) != 2 || order[0] != old || order[1] != late || deliveredIn[0] != 1 || deliveredIn[1] != 2 {
++		t.Fatalf("DEFERRED_HEAD_COHORT: got %v in cohorts %v, want [%p %p] in [1 2]", order, deliveredIn, old, late)
++	}
++	runtime.KeepAlive(old)
++	runtime.KeepAlive(late)
++}
++
++type rev4HookTimer struct{ requestFn func(time.Duration) }
++
++func (timer rev4HookTimer) request(d time.Duration) { timer.requestFn(d) }
++
++func TestRev4StaggeredExitCallbackKeepsWake(t *testing.T) {
++	q, clock := rev4Queue()
++	a, future := &Transaction{}, &Transaction{}
++	a.timeoutNode = q.newNode(a)
++	rev4Arm(future, q, int64(100*time.Second))
++	later := future.timeoutNode.queue
++	if a.timeoutNode.queue != q || later == q {
++		t.Fatal("probe requires A on shard0 and a future head on a later shard")
++	}
++	parked, resume, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
++	paused := false
++	later.timer = rev4HookTimer{requestFn: func(time.Duration) {
++		if !paused {
++			paused = true
++			close(parked)
++			<-resume
++		}
++	}}
++	var order []*Transaction
++	q.deliver = func(tx *Transaction, _ uint64) { order = append(order, tx) }
++	clock.Store(int64(5 * time.Second))
++	go func() { q.fire(); close(done) }()
++	<-parked
++	q.mu.Lock()
++	exited := !q.running
++	q.mu.Unlock()
++	if !exited {
++		t.Fatal("earlier shard must have finished exit before the callback")
++	}
++	rev4Arm(a, q, int64(6*time.Second))
++	clock.Store(int64(7 * time.Second))
++	q.fire()
++	close(resume)
++	<-done
++	if len(order) != 1 || order[0] != a {
++		t.Fatalf("STAGGERED_EXIT_LOST_WAKE: got %v, want [%p] without another manual timer fire", order, a)
++	}
++	runtime.KeepAlive(a)
++	runtime.KeepAlive(future)
++}
++
++func TestRev4CollectedTransactionUnlinksBeforeWake(t *testing.T) {
++	q, clock := rev4Queue()
++	var n *timeoutNode
++	var txWeak weak.Pointer[Transaction]
++	control := make(chan struct{})
++	func() {
++		tx := &Transaction{}
++		rev4Arm(tx, q, int64(100*time.Second))
++		n = tx.timeoutNode
++		txWeak = weak.Make(tx)
++		runtime.AddCleanup(tx, func(ch chan struct{}) { close(ch) }, control)
++	}()
++	runtime.GC()
++	select {
++	case <-control:
++	case <-time.After(2 * time.Second):
++		t.Fatal("test cleanup positive control did not run")
++	}
++	if txWeak.Value() != nil {
++		t.Fatal("cleanup ran but the transaction weak pointer remains live")
++	}
++	until := time.Now().Add(2 * time.Second)
++	for {
++		n.queue.mu.Lock()
++		unlinked := n.index == -1 && !n.queued.Load() && len(n.queue.heap) == 0
++		n.queue.mu.Unlock()
++		if unlinked {
++			break
++		}
++		if time.Now().After(until) {
++			t.Fatal("GC_CLEANUP_DID_NOT_UNLINK: collected node still queued without any timer dispatch")
++		}
++		time.Sleep(time.Millisecond)
++	}
++	if clock.Load() != 0 {
++		t.Fatal("probe must reclaim before the logical wake clock advances")
++	}
++}
++
++func TestRev4CreateAllocationsWithCleanup(t *testing.T) {
++	q, _ := rev4Queue()
++	for _, shard := range q.root.shards {
++		shard.heap = make([]*timeoutNode, 0, 1024)
++	}
++	db := &Database{db: &database{timeouts: q}}
++	db.db.txDefaults.Store(&TransactionDefaults{Timeout: 30000})
++	var last *Transaction
++	allocs := testing.AllocsPerRun(100, func() { last = db.CreateTransaction() })
++	if allocs != 9 {
++		t.Fatalf("CLEANUP_CREATE_ALLOC: got %g, want 9 (baseline11; no-cleanup7)", allocs)
++	}
++	runtime.KeepAlive(last)
++}
++
++func TestRev4LayoutAndConstructionCosts(t *testing.T) {
++	allocs := testing.AllocsPerRun(100, func() { runtime.KeepAlive(newTimeoutQueue()) })
++	if unsafe.Sizeof(timeoutNode{}) != 64 {
++		t.Fatalf("node size changed: %d", unsafe.Sizeof(timeoutNode{}))
++	}
++	t.Logf("LAYOUT queue=%d root=%d node=%d ready=%d construction_allocations=%g", unsafe.Sizeof(timeoutQueue{}), unsafe.Sizeof(timeoutQueueRoot{}), unsafe.Sizeof(timeoutNode{}), unsafe.Sizeof(timeoutReady{}), allocs)
++}
++
++func TestRev4ConcurrentArms(t *testing.T) {
++	q, clock := rev4Queue()
++	q.deliver = func(*Transaction, uint64) {}
++	txs := make([]*Transaction, 32)
++	var wg sync.WaitGroup
++	for i := range txs {
++		txs[i] = &Transaction{}
++		tx := txs[i]
++		wg.Go(func() {
++			for arm := 0; arm < 1000; arm++ {
++				rev4Arm(tx, q, clock.Load()+int64(100*time.Second))
++				if arm%2 == 0 {
++					tx.readErrMu.Lock()
++					tx.disarmTimeoutLocked()
++					tx.readErrMu.Unlock()
++				}
++				if arm%10 == 0 {
++					clock.Add(int64(100 * time.Millisecond))
++					q.fire()
++				}
++			}
++		})
++	}
++	wg.Wait()
++	runtime.KeepAlive(txs)
++}
+diff --git a/pkg/fdbgo/client/timeout_queue.go b/pkg/fdbgo/client/timeout_queue.go
+index 07672fd2f..097e0ffab 100644
+--- a/pkg/fdbgo/client/timeout_queue.go
++++ b/pkg/fdbgo/client/timeout_queue.go
+@@ -2,192 +2,294 @@ package client
+ 
+ import (
+ 	"cmp"
++	"runtime"
+ 	"slices"
+ 	"sync"
++	"sync/atomic"
+ 	"time"
+ 	"weak"
+ )
+ 
++// Disposable rev4 lower-bound-key screen, not an approved implementation.
+ const (
+-	// timeoutSlack is the timebomb's margin past its deadline (RYW:1569,
+-	// endTime + 0.0001).
+-	timeoutSlack = 100 * time.Microsecond
+-	// timeoutInterval is CLIENT_KNOBS->TRANSACTION_TIMEOUT_DELAY_INTERVAL
+-	// (ClientKnobs.cpp:94): the longest single wait of a timebomb.
++	timeoutSlack    = 100 * time.Microsecond
+ 	timeoutInterval = 10 * time.Second
++	inReady         = -2
+ )
+ 
+-// inReady marks a node collected into the drainer's ready batch.
+-const inReady = -2
+-
+-// timeoutTimer requests one callback to the queue's fire at or after d from
+-// now, replacing any earlier request. Callbacks may still overlap: a request
+-// made while a callback runs can start another.
+-type timeoutTimer interface{ request(d time.Duration) }
+-
+-// realTimer is the production timeoutTimer. Its timer is created on the first
+-// request; only timeoutQueue.mu's holder calls request.
+-type realTimer struct {
+-	t    *time.Timer
+-	fire func()
+-}
++type (
++	timeoutTimer interface{ request(time.Duration) }
++	realTimer    struct {
++		t    *time.Timer
++		fire func()
++	}
++)
+ 
+ func (r *realTimer) request(d time.Duration) {
+ 	if r.t == nil {
+ 		r.t = time.AfterFunc(d, r.fire)
+-		return
++	} else {
++		r.t.Reset(d)
+ 	}
+-	r.t.Reset(d)
+ }
+ 
+ var monoStart = time.Now()
+ 
+-// monoNow is the monotonic clock in nanoseconds since process start.
+ func monoNow() int64 { return int64(time.Since(monoStart)) }
+ 
+-// timeoutQueue delivers TIMEOUT expiries for one database, as C++'s run-loop
+-// timer queue does for its timebombs (TaskQueue.h). It is allocated on its own
+-// and refers to no database or transaction. mu is a leaf inside
+-// Transaction.readErrMu: nothing is acquired or delivered while holding it.
+-type timeoutQueue struct {
+-	mu        sync.Mutex
+-	heap      []*timeoutNode // min-heap on (wake, seq); slots past len are nil
+-	ready     []*timeoutNode // the drainer's due batch; slots past len are nil
+-	seq       uint64
+-	running   bool // a drainer owns delivery
+-	requested bool // a timer request for reqAt is outstanding
+-	reqAt     int64
+-	compare   func() // test hook counting heap comparisons
+-	timer     timeoutTimer
+-	now       func() int64
+-	deliver   func(*Transaction, uint64)
+-	// beforeDeliver runs on the drainer before a delivery, with mu released.
+-	beforeDeliver func(*timeoutNode)
+-}
+-
+-// timeoutNode is one Transaction object's place in its queue, allocated on its
+-// first arm and reused for the transaction's lifetime.
++type (
++	timeoutReady struct {
++		node     *timeoutNode
++		arm, seq uint64
++	}
++	timeoutQueueRoot struct {
++		mu             sync.Mutex
++		running, again bool
++		_              [54]byte
++		seq            atomic.Uint64
++		_              [56]byte
++		next           atomic.Uint64
++		shards         [16]*timeoutQueue
++		ready          []timeoutReady // only the global drainer accesses this slice
++		afterFrontier  func(now int64, frontier uint64)
++		beforeScan     func(*timeoutQueue)
++		afterScan      func(*timeoutQueue)
++	}
++	timeoutQueue struct {
++		root                *timeoutQueueRoot
++		mu                  sync.Mutex
++		heap                []*timeoutNode
++		running, requested  bool
++		reqAt               int64
++		compare             func()
++		timer               timeoutTimer
++		now                 func() int64
++		deliver             func(*Transaction, uint64)
++		beforeDeliver       func(*timeoutNode)
++		beforeEagerSchedule func(*timeoutNode)
++	}
++)
++
+ type timeoutNode struct {
+ 	tx    weak.Pointer[Transaction]
+ 	queue *timeoutQueue
+-	// Guarded by queue.mu.
+-	deadline, wake int64
+-	seq            uint64
+-	index          int // heap position; inReady in the ready batch; -1 otherwise
+-	arm            uint64
++	// Physical heap state: q.mu; wake writes also hold tx.readErrMu, so
++	// the arming caller can read it under that lock for the fast path.
++	wake   int64
++	index  int
++	queued atomic.Bool
++	// Logical current-arm state: tx.readErrMu, independent of the lower bound.
++	deadline, desiredWake int64
++	seq                   uint64
+ }
+ 
+ func newTimeoutQueue() *timeoutQueue {
+-	q := &timeoutQueue{now: monoNow, deliver: (*Transaction).fireTimeout}
+-	q.timer = &realTimer{fire: q.fire}
+-	return q
++	root := &timeoutQueueRoot{}
++	for i := range root.shards {
++		q := &timeoutQueue{root: root, now: monoNow, deliver: (*Transaction).fireTimeout}
++		q.timer = &realTimer{fire: q.fire}
++		root.shards[i] = q
++	}
++	return root.shards[0]
+ }
+ 
+-// detachedTimeouts serves transactions without a Database.
+ var detachedTimeouts = newTimeoutQueue()
+ 
+ func (q *timeoutQueue) newNode(tx *Transaction) *timeoutNode {
+-	return &timeoutNode{tx: weak.Make(tx), queue: q, index: -1}
++	root := q.root
++	q = root.shards[(root.next.Add(1)-1)%uint64(len(root.shards))]
++	n := &timeoutNode{tx: weak.Make(tx), queue: q, index: -1}
++	// Unreachability, not commit, authorizes unlinking the current arm.
++	runtime.AddCleanup(tx, func(n *timeoutNode) { n.queue.remove(n) }, n)
++	return n
+ }
+ 
+-// schedule (re)queues n for an absolute monotonic deadline under arm. A node
+-// in the ready batch is withdrawn by the push itself.
+-func (q *timeoutQueue) schedule(n *timeoutNode, arm uint64, deadline int64) {
+-	q.mu.Lock()
++// Caller holds tx.readErrMu. A later logical key can reuse an earlier queued
++// lower bound; claiming a node or lowering its key requires eager insertion.
++func (q *timeoutQueue) schedule(n *timeoutNode, _ uint64, deadline int64) {
+ 	now := q.now()
++	n.deadline = deadline
++	n.desiredWake = min(deadline+int64(timeoutSlack), now+int64(timeoutInterval))
++	if n.queued.Load() && n.desiredWake >= n.wake {
++		n.seq = q.root.seq.Add(1)
++		return
++	}
++	if q.beforeEagerSchedule != nil {
++		q.beforeEagerSchedule(n)
++	}
++	q.mu.Lock()
++	n.seq = q.root.seq.Add(1)
+ 	if n.index >= 0 {
+-		q.removeAt(n.index)
++		n.wake = n.desiredWake
++		if !q.down(n.index) {
++			q.up(n.index)
++		}
++	} else {
++		q.pushExact(n, n.desiredWake)
+ 	}
+-	n.deadline = deadline
+-	n.arm = arm
+-	q.pushLocked(n, now)
+ 	if !q.running && (!q.requested || n.wake < q.reqAt) {
+-		q.requestLocked(n.wake, now)
++		q.requestLocked(n.wake, q.now())
+ 	}
+ 	q.mu.Unlock()
+ }
+ 
+-// remove unqueues n by its index, without searching, or withdraws it from the
+-// ready batch. A request left for a removed head wakes once and finds nothing.
+ func (q *timeoutQueue) remove(n *timeoutNode) {
+ 	q.mu.Lock()
+ 	if n.index >= 0 {
+ 		q.removeAt(n.index)
+ 	}
+ 	n.index = -1
++	n.queued.Store(false)
+ 	q.mu.Unlock()
+ }
+ 
+-// fire is every timer callback. One drainer at a time delivers; a callback
+-// that finds one running returns, because the drainer examines the heap again
+-// before it exits. Due nodes are delivered as a batch in enqueue order, as C++
+-// moves all due timers to its FIFO ready queue (TaskQueue.h:76-84, 146-148).
++// Each shard's runtime timer enters the same global drainer. No producer
++// takes root.mu, and a callback never holds its shard lock while taking it.
+ func (q *timeoutQueue) fire() {
+ 	q.mu.Lock()
+-	if q.running {
+-		q.mu.Unlock()
++	q.requested = false
++	q.mu.Unlock()
++	q.root.fire()
++}
++
++func (root *timeoutQueueRoot) fire() {
++	root.mu.Lock()
++	if root.running {
++		root.again = true
++		root.mu.Unlock()
+ 		return
+ 	}
+-	q.running = true
+-	q.requested = false
++	root.running = true
++	root.mu.Unlock()
+ 	for {
+-		now := q.now()
+-		// Unlike C++'s 100 ns TIME_EPS, collect only wakes at or before now.
+-		// This follows RFC-263's executable spec and may dispatch 100 ns later.
+-		for len(q.heap) > 0 && q.heap[0].wake <= now {
+-			n := q.heap[0]
+-			q.removeAt(0)
+-			n.index = inReady
+-			q.ready = append(q.ready, n)
+-		}
+-		if len(q.ready) == 0 {
+-			break
+-		}
+-		slices.SortFunc(q.ready, func(a, b *timeoutNode) int { return cmp.Compare(a.seq, b.seq) })
+-		for _, n := range q.ready {
+-			if n.index != inReady {
+-				continue // removed or rescheduled since collection
++		for {
++			now, frontier := root.shards[0].now(), root.seq.Load()
++			if root.afterFrontier != nil {
++				root.afterFrontier(now, frontier)
++			}
++			for _, q := range root.shards {
++				if root.beforeScan != nil {
++					root.beforeScan(q)
++				}
++				q.collect(now)
++				if root.afterScan != nil {
++					root.afterScan(q)
++				}
+ 			}
+-			n.index = -1
+-			tx := n.tx.Value()
+-			if tx == nil {
+-				continue
++			if len(root.ready) == 0 {
++				break
+ 			}
+-			if now < n.deadline {
+-				q.pushLocked(n, now) // the timebomb's loop: wait again (RYW:1568-1570)
+-				continue
++			root.deliverReady(now, frontier)
++		}
++		for _, q := range root.shards {
++			q.mu.Lock()
++			if len(q.heap) > 0 {
++				q.requestLocked(q.heap[0].wake, q.now())
+ 			}
+-			arm := n.arm
++			q.running = false
+ 			q.mu.Unlock()
+-			if q.beforeDeliver != nil {
+-				q.beforeDeliver(n)
++		}
++		// A callback during the staggered shard exit must not lose its wake.
++		root.mu.Lock()
++		if root.again {
++			root.again = false
++			root.mu.Unlock()
++			continue
++		}
++		root.running = false
++		root.mu.Unlock()
++		return
++	}
++}
++
++func (q *timeoutQueue) collect(now int64) {
++	q.mu.Lock()
++	q.running = true
++	popped := 0
++	for len(q.heap) > 0 && q.heap[0].wake <= now {
++		n := q.heap[0]
++		q.removeAt(0)
++		q.mu.Unlock()
++		tx := n.tx.Value()
++		if tx != nil {
++			tx.readErrMu.Lock()
++			q.mu.Lock()
++			if n.index == -1 && tx.timeoutArmed {
++				if n.desiredWake > now {
++					// A cancelled delay's physical wake only repairs its lower bound.
++					q.pushExact(n, n.desiredWake)
++				} else {
++					n.index = inReady
++					q.root.ready = append(q.root.ready, timeoutReady{n, tx.timeoutArm, n.seq})
++				}
+ 			}
+-			q.deliver(tx, arm)
++			q.mu.Unlock()
++			tx.readErrMu.Unlock()
++		}
++		q.mu.Lock()
++		popped++
++		if popped%16 == 0 {
++			q.mu.Unlock()
++			runtime.Gosched()
+ 			q.mu.Lock()
+ 		}
+-		clear(q.ready)
+-		q.ready = q.ready[:0]
+ 	}
+-	if len(q.heap) > 0 {
+-		q.requestLocked(q.heap[0].wake, q.now())
+-	}
+-	q.running = false
+ 	q.mu.Unlock()
+ }
+ 
+-// pushLocked gives n a fresh wake and sequence, as each C++ delay takes a new
+-// FIFO sequence at addTimer (TaskQueue.h:41-43).
+-func (q *timeoutQueue) pushLocked(n *timeoutNode, now int64) {
+-	n.wake = min(n.deadline+int64(timeoutSlack), now+int64(timeoutInterval))
+-	q.seq++
+-	n.seq = q.seq
++func (root *timeoutQueueRoot) deliverReady(now int64, frontier uint64) {
++	// Immutable logical keys, not physical lower bounds, order all shards.
++	slices.SortFunc(root.ready, func(a, b timeoutReady) int { return cmp.Compare(a.seq, b.seq) })
++	for _, r := range root.ready {
++		n := r.node
++		tx := n.tx.Value()
++		if tx == nil {
++			continue
++		}
++		tx.readErrMu.Lock()
++		q := n.queue
++		q.mu.Lock()
++		if n.index != inReady || !tx.timeoutArmed || tx.timeoutArm != r.arm || n.seq != r.seq {
++			q.mu.Unlock()
++			tx.readErrMu.Unlock()
++			continue
++		}
++		n.index = -1
++		if r.seq > frontier {
++			// A producer published after this cohort began. Preserve its key
++			// and sequence for the next cohort without resuming its actor.
++			q.pushExact(n, n.desiredWake)
++		} else if now < n.deadline {
++			n.desiredWake = min(n.deadline+int64(timeoutSlack), now+int64(timeoutInterval))
++			n.seq = root.seq.Add(1)
++			q.pushExact(n, n.desiredWake)
++		} else {
++			q.mu.Unlock()
++			tx.readErrMu.Unlock()
++			if hook := root.shards[0].beforeDeliver; hook != nil {
++				hook(n)
++			}
++			root.shards[0].deliver(tx, r.arm)
++			continue
++		}
++		q.mu.Unlock()
++		tx.readErrMu.Unlock()
++	}
++	clear(root.ready)
++	root.ready = root.ready[:0]
++}
++
++func (q *timeoutQueue) pushExact(n *timeoutNode, wake int64) {
++	n.wake = wake
+ 	n.index = len(q.heap)
+ 	q.heap = append(q.heap, n)
++	n.queued.Store(true)
+ 	q.up(n.index)
+ }
+ 
+ func (q *timeoutQueue) requestLocked(wake, now int64) {
+-	q.requested, q.reqAt = true, wake
++	q.requested = true
++	q.reqAt = wake
+ 	q.timer.request(time.Duration(max(wake-now, 0)))
+ }
+ 
+@@ -195,11 +297,7 @@ func (q *timeoutQueue) less(i, j int) bool {
+ 	if q.compare != nil {
+ 		q.compare()
+ 	}
+-	a, b := q.heap[i], q.heap[j]
+-	if a.wake != b.wake {
+-		return a.wake < b.wake
+-	}
+-	return a.seq < b.seq
++	return q.heap[i].wake < q.heap[j].wake
+ }
+ 
+ func (q *timeoutQueue) swap(i, j int) {
+@@ -210,35 +308,34 @@ func (q *timeoutQueue) swap(i, j int) {
+ 
+ func (q *timeoutQueue) up(i int) {
+ 	for i > 0 {
+-		parent := (i - 1) / 2
+-		if !q.less(i, parent) {
++		p := (i - 1) / 2
++		if !q.less(i, p) {
+ 			return
+ 		}
+-		q.swap(i, parent)
+-		i = parent
++		q.swap(i, p)
++		i = p
+ 	}
+ }
+ 
+ func (q *timeoutQueue) down(i int) bool {
+ 	start, n := i, len(q.heap)
+ 	for {
+-		child := 2*i + 1
+-		if child >= n {
++		c := 2*i + 1
++		if c >= n {
+ 			break
+ 		}
+-		if right := child + 1; right < n && q.less(right, child) {
+-			child = right
++		if r := c + 1; r < n && q.less(r, c) {
++			c = r
+ 		}
+-		if !q.less(child, i) {
++		if !q.less(c, i) {
+ 			break
+ 		}
+-		q.swap(i, child)
+-		i = child
++		q.swap(i, c)
++		i = c
+ 	}
+ 	return i > start
+ }
+ 
+-// removeAt deletes heap[i] and clears the vacated slot.
+ func (q *timeoutQueue) removeAt(i int) {
+ 	last := len(q.heap) - 1
+ 	n := q.heap[i]
+@@ -251,4 +348,5 @@ func (q *timeoutQueue) removeAt(i int) {
+ 		q.up(i)
+ 	}
+ 	n.index = -1
++	n.queued.Store(false)
+ }

@@ -1,0 +1,187 @@
+{
+  "campaign": "baseline-pilot-v3",
+  "purpose": "Readiness pilot only; excluded from headline inference",
+  "source_commit": "26abdbaac12be60ea8955027f6047e10474596f1",
+  "harness_id": "41f594c990477bc4b29c565160599a57266cecb23adaae582180f7464fb2d0ea",
+  "fdb_version": "7.3.77",
+  "fdb_api_version": 730,
+  "go_version": "1.26.9",
+  "pinned_files": [
+    "/usr/lib/libfdb_c.so",
+    "/usr/sbin/fdbserver",
+    "/etc/foundationdb/fdb.cluster",
+    "/etc/foundationdb/foundationdb.conf",
+    "/opt/fdbperf/artifacts/source-provenance/harness-frozen.tar.gz"
+  ],
+  "seed": 391704,
+  "blocks": 4,
+  "cooldown_seconds": 2,
+  "quiescence_seconds": 1,
+  "max_busy_fraction": 0.15,
+  "max_steal_fraction": 0.01,
+  "telemetry_seconds": 1,
+  "cpu_sets": [
+    {
+      "name": "housekeeping",
+      "cpus": [
+        0,
+        1
+      ],
+      "max_busy_fraction": 0.3,
+      "max_cpu_busy_fraction": 0.8
+    },
+    {
+      "name": "server",
+      "cpus": [
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "max_busy_fraction": 0.15,
+      "max_cpu_busy_fraction": 0.5
+    },
+    {
+      "name": "client",
+      "cpus": [
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15
+      ],
+      "max_busy_fraction": 0.05,
+      "max_cpu_busy_fraction": 0.15
+    }
+  ],
+  "timeout_seconds": 180,
+  "environment": {
+    "GOMAXPROCS": "8",
+    "GOGC": "100",
+    "GOMEMLIMIT": "off",
+    "GODEBUG": "",
+    "LC_ALL": "C",
+    "TZ": "UTC"
+  },
+  "arms": [
+    {
+      "name": "go",
+      "binary": "/opt/fdbperf/bin/baseline-go",
+      "command": [
+        "taskset",
+        "--cpu-list",
+        "8-15",
+        "{binary}",
+        "--cluster-file",
+        "/etc/foundationdb/fdb.cluster",
+        "--workload",
+        "{workload}",
+        "--iterations",
+        "{iterations}",
+        "--warmup",
+        "{warmup}",
+        "--workers",
+        "{workers}",
+        "--output",
+        "{output}",
+        "--run-id",
+        "{run_id}",
+        "--block",
+        "{block}",
+        "--source-revision",
+        "{source_revision}",
+        "--harness-id",
+        "{harness_id}",
+        "--allow-writes",
+        "--transaction-timeout-ms",
+        "30000",
+        "--retry-limit",
+        "10"
+      ]
+    },
+    {
+      "name": "cgo",
+      "binary": "/opt/fdbperf/bin/baseline-cgo",
+      "command": [
+        "taskset",
+        "--cpu-list",
+        "8-15",
+        "{binary}",
+        "--cluster-file",
+        "/etc/foundationdb/fdb.cluster",
+        "--workload",
+        "{workload}",
+        "--iterations",
+        "{iterations}",
+        "--warmup",
+        "{warmup}",
+        "--workers",
+        "{workers}",
+        "--output",
+        "{output}",
+        "--run-id",
+        "{run_id}",
+        "--block",
+        "{block}",
+        "--source-revision",
+        "{source_revision}",
+        "--harness-id",
+        "{harness_id}",
+        "--allow-writes",
+        "--transaction-timeout-ms",
+        "30000",
+        "--retry-limit",
+        "10"
+      ]
+    }
+  ],
+  "workloads": [
+    {
+      "name": "get100",
+      "iterations": 250,
+      "warmup": 500,
+      "workers": 1
+    },
+    {
+      "name": "get1000",
+      "iterations": 250,
+      "warmup": 500,
+      "workers": 1
+    },
+    {
+      "name": "get10000",
+      "iterations": 250,
+      "warmup": 500,
+      "workers": 1
+    },
+    {
+      "name": "read1000",
+      "iterations": 250,
+      "warmup": 500,
+      "workers": 1
+    },
+    {
+      "name": "set100",
+      "iterations": 250,
+      "warmup": 500,
+      "workers": 1
+    },
+    {
+      "name": "range10",
+      "iterations": 250,
+      "warmup": 500,
+      "workers": 1
+    },
+    {
+      "name": "range100",
+      "iterations": 250,
+      "warmup": 500,
+      "workers": 1
+    }
+  ]
+}

@@ -41,6 +41,11 @@ production code. The campaign tooling is in
   multiplicity correction and no equivalence claim.
 - testing.B phases report `ns/op` (a mean, not a percentile), `B/op` and
   `allocs/op`; the client phases report per-run latency statistics and CPU.
+- The frozen protocol and its earlier versions are in
+  [`protocol/`](https://github.com/birdayz/fdb-go/tree/master/docs/benchmarks/hcloud-rebench-20261014/protocol); the arm orders are
+  `tools/benchcampaign/singlenode/testdata/orders.json`. The controller scripts that
+  ran C2, D2 and C3 and restored the case labels are kept as
+  [`as-run/`](https://github.com/birdayz/fdb-go/tree/master/tools/benchcampaign/campaigns/hcloud-rebench-20261014/as-run).
 
 ## Phases
 

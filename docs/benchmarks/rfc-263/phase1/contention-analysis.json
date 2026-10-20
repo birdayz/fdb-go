@@ -1,0 +1,47 @@
+{
+  "get100": {
+    "caller_delay_ns": 1068121769,
+    "drainer_delay_ns": 723967084,
+    "caller_contentions": 28834,
+    "drainer_contentions": 17334,
+    "caller_samples": 7,
+    "drainer_samples": 2,
+    "pprof_all_locks_cumulative_reference_ns": 1792306750,
+    "population": 1000000,
+    "window_cpu_seconds": 32.06972,
+    "post_identity_shutdown_cpu_seconds": 33.06079,
+    "queue_delay_us_per_tx": 1.7920888529999999,
+    "queue_delay_over_window_cpu_pct": 5.588102587113328,
+    "queue_delay_over_post_identity_shutdown_cpu_pct": 5.420586903700729
+  },
+  "set100": {
+    "caller_delay_ns": 1079591457,
+    "drainer_delay_ns": 178222322,
+    "caller_contentions": 17380,
+    "drainer_contentions": 3873,
+    "caller_samples": 6,
+    "drainer_samples": 2,
+    "pprof_all_locks_cumulative_reference_ns": 1257816690,
+    "population": 400000,
+    "window_cpu_seconds": 15.916724,
+    "post_identity_shutdown_cpu_seconds": 16.451214,
+    "queue_delay_us_per_tx": 3.1445344475000003,
+    "queue_delay_over_window_cpu_pct": 7.902466481167858,
+    "queue_delay_over_post_identity_shutdown_cpu_pct": 7.645720121323569
+  },
+  "range100": {
+    "caller_delay_ns": 351536901,
+    "drainer_delay_ns": 1016837887,
+    "caller_contentions": 4372,
+    "drainer_contentions": 4866,
+    "caller_samples": 7,
+    "drainer_samples": 2,
+    "pprof_all_locks_cumulative_reference_ns": 1368420000,
+    "population": 500000,
+    "window_cpu_seconds": 32.498693,
+    "post_identity_shutdown_cpu_seconds": 33.130826,
+    "queue_delay_us_per_tx": 2.7367495760000002,
+    "queue_delay_over_window_cpu_pct": 4.210553292097008,
+    "queue_delay_over_post_identity_shutdown_cpu_pct": 4.130216336894226
+  }
+}

@@ -95,6 +95,53 @@ def dump_json(path, value, exclusive=True):
         stream.write('\n')
 
 
+def parse_json_list(text, what):
+    """Strictly parse `hcloud ... list -o json` output: a JSON list of objects.
+    Empty output, null, {}, false, 0, "" or any other non-list fails closed, so
+    an unreadable listing never passes as an empty one."""
+    try:
+        value = json.loads(text)
+    except (TypeError, ValueError) as exc:
+        raise GuardError(f'{what}: output is not JSON: {exc}') from None
+    if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
+        raise GuardError(f'{what}: expected a JSON list of objects, got {type(value).__name__}')
+    return value
+
+
+PROTECT_KINDS = ('server', 'network', 'firewall', 'ssh-key', 'volume', 'primary-ip',
+                 'floating-ip', 'load-balancer', 'placement-group', 'certificate')
+
+
+def read_protect_file(path):
+    """Read a private protected-resource list: one `kind<TAB>id<TAB>name[<TAB>cidr]`
+    line per existing resource ('#' comments and blank lines ignored), as written
+    by `inventory.py snapshot`. Returns dict(names, ids, cidrs). The file names the
+    project's other resources, so it must live outside the repository."""
+    require_outside_repo(path, 'protect file')
+    try:
+        text = Path(path).read_text()
+    except (OSError, UnicodeDecodeError) as exc:
+        raise GuardError(f'cannot read protect file {path}: {exc}') from None
+    names, ids, cidrs = [], [], []
+    for number, line in enumerate(text.splitlines(), 1):
+        if not line.strip() or line.startswith('#'):
+            continue
+        fields = line.split('\t')
+        if len(fields) not in (3, 4) or fields[0] not in PROTECT_KINDS or not re.fullmatch(r'[0-9]+', fields[1]):
+            raise GuardError(f'{path}:{number}: expected kind<TAB>id<TAB>name[<TAB>cidr]')
+        ids.append(int(fields[1]))
+        if fields[2]:
+            names.append(fields[2])
+        if len(fields) == 4 and fields[3]:
+            try:
+                cidrs.append(str(ipaddress.ip_network(fields[3], strict=False)))
+            except ValueError:
+                raise GuardError(f'{path}:{number}: invalid network range') from None
+    if not ids:
+        raise GuardError(f'{path}: empty protect file')
+    return dict(names=names, ids=ids, cidrs=cidrs)
+
+
 def ip_in(network, address):
     return ipaddress.ip_address(address) in ipaddress.ip_network(network)
 

@@ -170,8 +170,8 @@ class Temp(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.tmp = Path(self._tmp.name)
-        if mc.inside_git_worktree(self.tmp):
-            self.skipTest('temporary directory lies inside a Git work tree')
+        # The tools refuse outputs inside a Git work tree; a TMPDIR there is a broken fixture.
+        self.assertFalse(mc.inside_git_worktree(self.tmp), f'TMPDIR {self.tmp} lies inside a Git work tree')
 
 
 class ParserTest(unittest.TestCase):

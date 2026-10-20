@@ -1,0 +1,185 @@
+{
+  "get100": {
+    "baseline": {
+      "cpu_us": {
+        "median": 49.8939,
+        "minimum": 47.76815,
+        "maximum": 50.23985
+      },
+      "allocs": {
+        "median": 51.81255,
+        "minimum": 51.8007,
+        "maximum": 51.82345
+      },
+      "bytes": {
+        "median": 5328.5428,
+        "minimum": 5328.3188,
+        "maximum": 5328.7404
+      },
+      "mean_us": {
+        "median": 357.89747855,
+        "minimum": 356.4271158,
+        "maximum": 358.1943617
+      },
+      "p99_us": {
+        "median": 531.298,
+        "minimum": 520.517,
+        "maximum": 540.776
+      }
+    },
+    "lazy2b": {
+      "cpu_us": {
+        "median": 48.139,
+        "minimum": 45.26005,
+        "maximum": 48.77425
+      },
+      "allocs": {
+        "median": 47.80305,
+        "minimum": 47.7806,
+        "maximum": 47.8076
+      },
+      "bytes": {
+        "median": 5210.4284,
+        "minimum": 5209.7884,
+        "maximum": 5212.8132
+      },
+      "mean_us": {
+        "median": 352.7791197,
+        "minimum": 352.5857788,
+        "maximum": 352.8986259
+      },
+      "p99_us": {
+        "median": 502.793,
+        "minimum": 487.364,
+        "maximum": 518.933
+      }
+    },
+    "paired_cpu_ratios": [
+      0.9008794811290242,
+      0.9775593810064958,
+      1.0077635411880093
+    ]
+  },
+  "set100": {
+    "baseline": {
+      "cpu_us": {
+        "median": 56.8553,
+        "minimum": 56.5901,
+        "maximum": 57.21755
+      },
+      "allocs": {
+        "median": 55.8487,
+        "minimum": 55.8452,
+        "maximum": 55.8514
+      },
+      "bytes": {
+        "median": 6410.2064,
+        "minimum": 6409.016,
+        "maximum": 6412.1908
+      },
+      "mean_us": {
+        "median": 1010.69125365,
+        "minimum": 1009.1943036,
+        "maximum": 1011.8824115
+      },
+      "p99_us": {
+        "median": 1132.447,
+        "minimum": 1119.944,
+        "maximum": 1144.54
+      }
+    },
+    "lazy2b": {
+      "cpu_us": {
+        "median": 55.00495,
+        "minimum": 54.52925,
+        "maximum": 55.29545
+      },
+      "allocs": {
+        "median": 51.80435,
+        "minimum": 51.80265,
+        "maximum": 51.81075
+      },
+      "bytes": {
+        "median": 6283.2356,
+        "minimum": 6282.5936,
+        "maximum": 6283.5028
+      },
+      "mean_us": {
+        "median": 1008.40821035,
+        "minimum": 1007.70754595,
+        "maximum": 1009.59120035
+      },
+      "p99_us": {
+        "median": 1121.626,
+        "minimum": 1119.563,
+        "maximum": 1127.468
+      }
+    },
+    "paired_cpu_ratios": [
+      0.9664071600409315,
+      0.9635828528311489,
+      0.9674551009316634
+    ]
+  },
+  "range100": {
+    "baseline": {
+      "cpu_us": {
+        "median": 96.11355,
+        "minimum": 91.339,
+        "maximum": 96.2185
+      },
+      "allocs": {
+        "median": 58.32275,
+        "minimum": 58.28865,
+        "maximum": 58.3506
+      },
+      "bytes": {
+        "median": 43922.012,
+        "minimum": 43921.146,
+        "maximum": 43929.848
+      },
+      "mean_us": {
+        "median": 477.4194759,
+        "minimum": 472.30173695,
+        "maximum": 501.6351218
+      },
+      "p99_us": {
+        "median": 958.647,
+        "minimum": 947.066,
+        "maximum": 1150.891
+      }
+    },
+    "lazy2b": {
+      "cpu_us": {
+        "median": 95.4392,
+        "minimum": 95.09025,
+        "maximum": 96.77095
+      },
+      "allocs": {
+        "median": 54.16655,
+        "minimum": 54.13385,
+        "maximum": 54.17695
+      },
+      "bytes": {
+        "median": 43782.5372,
+        "minimum": 43782.4768,
+        "maximum": 43783.9232
+      },
+      "mean_us": {
+        "median": 476.86253945,
+        "minimum": 473.5856607,
+        "maximum": 479.42763115
+      },
+      "p99_us": {
+        "median": 993.624,
+        "minimum": 978.274,
+        "maximum": 1017.058
+      }
+    },
+    "paired_cpu_ratios": [
+      1.0410695321823098,
+      1.005741619335159,
+      0.9929838196591427
+    ]
+  }
+}

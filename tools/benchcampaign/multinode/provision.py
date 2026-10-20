@@ -51,6 +51,8 @@ def parse_args(argv=None):
                     help='an existing private range the campaign network must not overlap (repeat)')
     ap.add_argument('--protected-name', action='append', default=[],
                     help='a resource name the campaign must never use (repeat)')
+    ap.add_argument('--protect-file', action='append', default=[],
+                    help='private kind/id/name[/cidr] list (inventory.py snapshot): its names and network ranges are protected (repeat)')
     key = ap.add_mutually_exclusive_group(required=True)
     key.add_argument('--ssh-key-name', help='existing hcloud project SSH key (public) to install for root')
     key.add_argument('--ssh-public-key', help='controller public key file; creates a campaign-labelled hcloud SSH key')
@@ -70,6 +72,10 @@ def parse_args(argv=None):
     args.campaign = mc.parse_campaign_label(args.label)
     args.network_name = args.network_name or args.prefix
     args.node_ip = args.node_ip or ['10.88.0.11', '10.88.0.12', '10.88.0.13']
+    for path in args.protect_file:
+        protected = mc.read_protect_file(path)
+        args.protected_name += protected['names']
+        args.protected_cidr += protected['cidrs']
     return args
 
 
@@ -168,8 +174,7 @@ def _json_list(runner, argv):
     rc, out, err = runner(argv)
     if rc:
         raise mc.GuardError(f'read-only preflight failed: {mc.quote(argv)}: {err.strip()}')
-    value = json.loads(out or '[]')
-    return value or []
+    return mc.parse_json_list(out, mc.quote(argv))
 
 
 def preflight(args, runner):

@@ -1,0 +1,209 @@
+From 5bb36ed8fbf55f7f4242bc42b6989b5a199857ec Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Johannes=20Br=C3=BCderl?= <johannes.bruederl@gmail.com>
+Date: Sun, 11 Oct 2026 01:32:46 +0200
+Subject: [PATCH] fix(fdbgo): fetch a write-only commit's GRV with
+ CAUSAL_READ_RISKY
+
+C++ tryCommit gets a missing read version through
+startTransaction(FLAG_CAUSAL_READ_RISKY) (NativeAPI.actor.cpp:6576-6578):
+with no reads the transaction needs no causal consistency, so the GRV
+proxy skips its updateLastCommit wait (GrvProxyServer.actor.cpp:647-648).
+Go's commit path asked for an ordinary GRV. Batchers are keyed by full
+flags, so risky and ordinary requests never share a batch.
+---
+ CHANGELOG.md                             |  1 +
+ TODO_OLD.md                              | 10 -----
+ pkg/fdbgo/client/commitpath.go           |  4 +-
+ pkg/fdbgo/client/grv_batch_flags_test.go | 53 ++++++++++++++++++++++++
+ pkg/fdbgo/client/transaction.go          | 22 ++++++----
+ 5 files changed, 69 insertions(+), 21 deletions(-)
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index c69dfa023..64494377b 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -127,6 +127,7 @@ project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (
+ - A vector query without `OPTIONS EF_SEARCH` searches with Java's default, min(max(4k, 64), max(k, 400)), instead of 200.
+ - **Breaking (behaviour):** `FDBDatabase.Run`, `RunWithWeakReads`, `RunWithVersionstamp`, `RunRead` and `FDBDatabaseRunner.RunWithRetry` retry as Java's transaction runner does: at most 10 attempts (`FDBDatabase.SetMaxAttempts`, `SetRetryDelays`), each a fresh transaction whose backend retry limit is 0, retried while any cause in the error is retriable, with Java's randomized exponential delay between attempts (recorded as `EventRetryDelay`). They used to retry without bound. Weak reads apply to the first attempt only. A context that ends between attempts returns an error wrapping both the context's error and the last attempt's. A transactor implementing `AttemptTransactor` receives each attempt's identity; `SetAttemptObserver` reports each attempt. The online indexer bounds its transactions with `OnlineIndexerBuilder.SetMaxAttempts` (default the database's). A SQL DDL statement runs in one attempt, as in Java: a conflicting DDL fails with 40001 instead of re-executing. An SPFresh write that meets a split in progress (`SPFreshSplitWindowError`, a retryable 1020) does not use up attempts; SPFresh's background lifecycles keep the client's unbounded loop (DIVERGENCES.md).
+ - **Breaking (behaviour):** a body that commits the context `Run` (or a variant, or `RunWithRetry`) handed it is refused before anything commits, with `RecordContextNotActiveError` ("Transaction is no longer active.", a `RecordCoreStorageError`); `Run` commits. A context refuses a second commit the same way.
++- Pure-Go client: a transaction with no read version when it commits fetches one with `CAUSAL_READ_RISKY`, as libfdb_c does, so that GRV skips the proxy's last-commit wait.
+ - Pure-Go client: a commit made while no commit proxy is known waits for the proxy set to change (bounded by its context) and then fails with `commit_unknown_result` (1021), as libfdb_c does. The Go-only error 1200 (`ErrAllProxiesUnreachable`) is gone, and code 1200 now has its canonical FDB name, `recruitment_failed`.
+ - `fdb.Database.TransactCtx` / `ReadTransactCtx` and the tenant forms return the error the transaction body returned (or panicked with), chain intact, when the retry loop gives up on that error's code, as the Apple binding does; they returned a bare `fdb.Error{Code}`.
+ - HNSW graphs are written byte-for-byte as Java writes them, for the same inserts and deletes:
+diff --git a/TODO_OLD.md b/TODO_OLD.md
+index 83a86daed..fab4b2933 100644
+--- a/TODO_OLD.md
++++ b/TODO_OLD.md
+@@ -852,16 +852,6 @@ rather than no-op — but each is a small feature, scoped separately.
+ **GRV / read-version audit (same grind) — NO consistency divergence found** (version-vector is OFF by
+ default, `ServerKnobs.cpp:39`, so Go's empty `ssLatestCommitVersions`/`maxVersion` is exactly correct;
+ read-version reuse, `read_snapshot`, 1007 aging all match). Latency/observability findings only:
+-- **Write-only commits omit `CAUSAL_READ_RISKY` on the commit-path GRV.** C++ `tryCommit` does
+-  `startTransaction(GetReadVersionRequest::FLAG_CAUSAL_READ_RISKY)` (`NativeAPI.actor.cpp:6578`) — a
+-  write-only/no-prior-read commit doesn't need full causal consistency for its `read_snapshot`. Go's
+-  commit path (`transaction.go:1507`) calls plain `ensureReadVersion` → `grvFlags()`, setting the flag
+-  only if the USER did. Effect: an extra TLog epoch-confirmation round-trip per write-only commit
+-  (latency/throughput, NOT consistency — the read_snapshot is equally valid). **Infra implication, why
+-  not a grind fix:** Go's `grvBatcherIndex` keys batchers only on the PRIORITY mask, NOT the risky flag
+-  (unlike C++'s `readVersionBatcher`, keyed by full flags) — so adding the flag would mix risky/non-risky
+-  GRVs in one batch. The faithful fix re-keys the GRV batcher on the risky flag + threads it through the
+-  commit-path `ensureReadVersion`; deliberate, FDB-C-dev-reviewed.
+ - `SetReadVersion` accepts `v<=0` / double-set silently where libfdb_c `setVersion` throws →
+   `CATCH_AND_DIE` aborts the process (`NativeAPI.actor.cpp:5519`, `fdb_c.cpp:932`). Go's graceful
+   defer-to-1007 is arguably BETTER (no panic in library code per CLAUDE.md) — leave as a documented,
+diff --git a/pkg/fdbgo/client/commitpath.go b/pkg/fdbgo/client/commitpath.go
+index 8c950a43c..9990b98b1 100644
+--- a/pkg/fdbgo/client/commitpath.go
++++ b/pkg/fdbgo/client/commitpath.go
+@@ -243,7 +243,7 @@ func (input *commitInput) commitDummyTransaction(ctx context.Context) {
+ 		// C++ sets RAW_ACCESS, CAUSAL_WRITE_RISKY, LOCK_AWARE on the dummy.
+ 		dummy.writeSystemKeys = true // RAW_ACCESS equivalent
+ 		dummy.readSystemKeys = true  // RAW_ACCESS equivalent
+-		dummy.causalReadRisky = true // CAUSAL_WRITE_RISKY — faster GRV for dummy
++		dummy.causalReadRisky = true // redundant with Commit's risky GRV; harmless
+ 		dummy.lockAware = true
+ 
+ 		// C++ commitDummyTransaction (NativeAPI.actor.cpp:6328-6330) adds ONLY a
+@@ -262,7 +262,7 @@ func (input *commitInput) commitDummyTransaction(ctx context.Context) {
+ 		dummy.addReadConflictForKey(key)
+ 		dummy.addWriteConflictForKey(key)
+ 
+-		// Use uppercase Commit() which calls ensureReadVersion() before
++		// Use uppercase Commit() which fetches a read version before
+ 		// sending the request. Without a read version, ReadSnapshot=0
+ 		// is sent to FDB which crashes the server.
+ 		if err := dummy.Commit(ctx); err != nil {
+diff --git a/pkg/fdbgo/client/grv_batch_flags_test.go b/pkg/fdbgo/client/grv_batch_flags_test.go
+index 33e86a318..7ea55421e 100644
+--- a/pkg/fdbgo/client/grv_batch_flags_test.go
++++ b/pkg/fdbgo/client/grv_batch_flags_test.go
+@@ -217,3 +217,56 @@ func TestGRVBatcherSeparatesFullFlags(t *testing.T) {
+ 		t.Fatalf("missing tagged GRV wire population: normal=%t risky=%t", seenNormal, seenRisky)
+ 	}
+ }
++
++// C++ tryCommit fetches a missing read version risky (NativeAPI.actor.cpp:6576-6578);
++// a transaction that already read keeps its ordinary GRV.
++func TestCommitPathGRVIsCausalReadRisky(t *testing.T) {
++	t.Parallel()
++	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
++	defer cancel()
++	observer := &grvFlagsObserver{}
++	db := newTestDatabase(t, ctx, sharedClusterFile, observer.dial)
++	defer db.Close()
++	const writeOnly, readFirst = "commit-grv-write-only", "commit-grv-read-first"
++	for _, tag := range []string{writeOnly, readFirst} {
++		tx := db.CreateTransaction()
++		if err := tx.SetTag(tag); err != nil {
++			t.Fatal(err)
++		}
++		key := []byte("commit-grv-flags/" + tag)
++		if tag == readFirst {
++			if _, err := tx.Get(ctx, key); err != nil {
++				t.Fatal(err)
++			}
++		}
++		tx.Set(key, []byte("v"))
++		if err := tx.Commit(ctx); err != nil {
++			t.Fatalf("%s commit: %v", tag, err)
++		}
++	}
++	observer.mu.Lock()
++	defer observer.mu.Unlock()
++	if observer.err != nil {
++		t.Fatal("GRV request observer:", observer.err)
++	}
++	got := map[string][]uint32{}
++	for _, req := range observer.requests {
++		for _, tag := range []string{writeOnly, readFirst} {
++			if req.tags[tag] > 0 {
++				got[tag] = append(got[tag], req.flags)
++			}
++		}
++	}
++	// A proxy change may legitimately resend a GRV, so check every frame.
++	for tag, want := range map[string]uint32{writeOnly: grvPriorityDefault | grvFlagCausalReadRisky, readFirst: grvPriorityDefault} {
++		f := got[tag]
++		if len(f) == 0 {
++			t.Errorf("COMMIT_GRV_FLAGS: %s sent no GRV", tag)
++		}
++		for _, flags := range f {
++			if flags != want {
++				t.Errorf("COMMIT_GRV_FLAGS: %s GRV flags = %#x, want %#x", tag, flags, want)
++			}
++		}
++	}
++}
+diff --git a/pkg/fdbgo/client/transaction.go b/pkg/fdbgo/client/transaction.go
+index 170cb824f..ea04efcb0 100644
+--- a/pkg/fdbgo/client/transaction.go
++++ b/pkg/fdbgo/client/transaction.go
+@@ -788,9 +788,14 @@ func (tx *Transaction) checkReadState(ctx context.Context) error {
+ }
+ 
+ func (tx *Transaction) ensureReadVersion(ctx context.Context) error {
++	return tx.ensureReadVersionFlags(ctx, 0)
++}
++
++// ensureReadVersionFlags adds extraFlags to the read-version GRV, if it issues one.
++func (tx *Transaction) ensureReadVersionFlags(ctx context.Context, extraFlags uint32) error {
+ 	ctx, release := tx.opContext(ctx)
+ 	defer release()
+-	if _, err := tx.readVersionForOperation(ctx); err != nil {
++	if _, err := tx.readVersionForOperation(ctx, extraFlags); err != nil {
+ 		return err
+ 	}
+ 	return tx.readEntryError(ctx)
+@@ -799,7 +804,7 @@ func (tx *Transaction) ensureReadVersion(ctx context.Context) error {
+ // readVersionForOperation returns the GRV captured by this operation, not a
+ // later read of the mutable handle. C++ RYWImpl::getReadVersion returns the
+ // value from its completed future even if the handle is subsequently reset.
+-func (tx *Transaction) readVersionForOperation(parentCtx context.Context) (int64, error) {
++func (tx *Transaction) readVersionForOperation(parentCtx context.Context, extraFlags uint32) (int64, error) {
+ 	ctx, cancel := tx.opContext(parentCtx)
+ 	defer cancel()
+ 	if err := tx.checkReadState(ctx); err != nil {
+@@ -827,7 +832,7 @@ func (tx *Transaction) readVersionForOperation(parentCtx context.Context) (int64
+ 		tx.ensureTxSpan()
+ 	}
+ 	if !tx.hasReadVersion {
+-		flags := tx.grvFlags()
++		flags := tx.grvFlags() | extraFlags
+ 		rv, locked, rvAt, err := tx.db.grvBatchers[grvBatcherIndex(flags)].getReadVersion(tx.db, ctx, flags, tx.currentSpan(), tx.tags, tx.useGrvCache, tx.skipGrvCache)
+ 		if err != nil {
+ 			tx.readVersionMu.Unlock()
+@@ -1977,10 +1982,9 @@ func (tx *Transaction) commitAdmitted(parent context.Context, completion *versio
+ 	sc, scAdded := tx.maybeMakeSelfConflicting(writeConflictsSnap[:nWriteConflicts])
+ 	shipConflicts := finalizeShipConflicts(writeConflictsSnap[:nWriteConflicts], sc, scAdded, coalesced)
+ 
+-	// C++ tryCommit calls startTransaction(CAUSAL_READ_RISKY) to ensure a
+-	// read version exists before commit, even for write-only transactions.
+-	// Without this, ReadSnapshot=0 is sent which crashes the FDB server.
+-	if err := tx.ensureReadVersion(ctx); err != nil {
++	// No read version yet means no reads, so no causal consistency: a risky GRV, as
++	// C++ tryCommit (NativeAPI.actor.cpp:6576-6578). ReadSnapshot=0 would crash the server.
++	if err := tx.ensureReadVersionFlags(ctx, grvFlagCausalReadRisky); err != nil {
+ 		return err
+ 	}
+ 
+@@ -1992,7 +1996,7 @@ func (tx *Transaction) commitAdmitted(parent context.Context, completion *versio
+ 	//
+ 	// RFC-090/093: detach ONLY the commit RPC + its commit_unknown_result
+ 	// idempotency barrier (commitDummyTransaction) from the caller ctx. The GRV
+-	// above (ensureReadVersion, :1106) is deliberately left on the LIVE ctx
++	// above (ensureReadVersionFlags) is deliberately left on the LIVE ctx
+ 	// (RFC-093) so a cancel during the commit-path read version aborts promptly —
+ 	// a GRV is a cancellable read, matching C++ NativeAPI.actor.cpp (the GRV future
+ 	// is cancelled uniformly with the commit). Here we WithoutCancel so a late
+@@ -2614,7 +2618,7 @@ func (tx *Transaction) OnError(ctx context.Context, err error) (rerr error) {
+ func (tx *Transaction) GetReadVersion(ctx context.Context) (int64, error) {
+ 	ctx, cancel := tx.opContext(ctx)
+ 	defer cancel()
+-	rv, err := tx.readVersionForOperation(ctx)
++	rv, err := tx.readVersionForOperation(ctx, 0)
+ 	if err != nil {
+ 		return 0, err
+ 	}
+-- 
+2.55.0
+

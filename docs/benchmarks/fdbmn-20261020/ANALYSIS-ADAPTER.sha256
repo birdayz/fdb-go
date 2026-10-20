@@ -1,0 +1,6 @@
+700fd3c18a319ea6738c00652846313797a4f4bfbcf50e4b3aee37e720a70289  ${FDB_PERF_HOME}/campaigns/fdbmn-20261020/execution/analyze_campaign.py
+1d622f864dfa0fb3785af9f08d6e609bee4cdd059edc0b34b449dc8cad5fb967  ${FDB_PERF_HOME}/campaigns/fdbmn-20261020/execution/test_analyze_campaign.py
+a4fd2722c518466200454631a1a2fa4bdcc4a3018bdeed1c0baa62b2f8d639b7  ${FDB_PERF_HOME}/campaigns/fdbmn-20261020/execution/ANALYSIS-ADAPTER.md
+5efe3e63eebbdbd2ba07db996ad9b927fce539e00836fc338abc12d0a855e093  ${FDB_PERF_HOME}/campaigns/fdbmn-20261020/execution/analysis-adapter-mock-controls.log
+e02e66d1dc050da25c88299ea9e76970ce9ae436e6559861d50646b7551e2687  ${FDB_PERF_HOME}/campaigns/fdbmn-20261020/execution/analysis-adapter-help.txt
+bff8e58806ee225c50b6f452bdd06dace3fef329810c99d8f167e645bf9e7c2e  ${FDB_PERF_HOME}/campaigns/fdbmn-20261020/execution/analysis-adapter-preparation.json

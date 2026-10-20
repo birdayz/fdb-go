@@ -29,6 +29,9 @@ dependents and is not the check the hook and CI make.
   every small edit. If a touched regression target is outside the fast lane
   (tagged `test-full`/`conformance_java`/`stress`/`manual`), run `just test-full`,
   which is cached the same way; use it at workstream/PR boundaries too.
+- On a shared machine, run heavy lanes through `tools/lanes/run-verified-lane.sh`:
+  it serializes them (`FDB_LANE_LOCK`) and shuts the lane's Bazel server down
+  afterwards.
 - The pre-commit hook retains secret scanning and the dirty-tree guard, then runs
   `just test` without redundant generation/lint/build passes. Codegen drift stays
   in CI; run `just generate` for codegen-input changes and `just install-hooks`

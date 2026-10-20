@@ -1,0 +1,479 @@
+From 582bc92e414ae5d12dc6edad8d0de29465e7c7dd Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Johannes=20Br=C3=BCderl?= <johannes.bruederl@gmail.com>
+Date: Sun, 11 Oct 2026 01:15:02 +0200
+Subject: [PATCH] perf(transport): let a caller write its frame when the writer
+ is idle
+
+Every SendFrame/SendFrameContext woke writeLoop and then waited for its
+acknowledgment: two goroutine handoffs per GRV and commit. When nothing is
+queued and writeLoop is not mid-batch, the caller now writes the frame
+itself under writeMu; otherwise it queues as before, so frames never
+overtake queued ones and concurrent senders still coalesce. A flush with
+nothing queued returns at once. Deferred (pipelined) frames still queue.
+---
+ pkg/fdbgo/transport/BUILD.bazel               |   1 +
+ pkg/fdbgo/transport/conn.go                   |  48 +++-
+ pkg/fdbgo/transport/conn_direct_write_test.go | 206 ++++++++++++++++++
+ pkg/fdbgo/transport/conn_lifecycle_test.go    |   9 +-
+ pkg/fdbgo/transport/write_context.go          |  14 +-
+ 5 files changed, 268 insertions(+), 10 deletions(-)
+ create mode 100644 pkg/fdbgo/transport/conn_direct_write_test.go
+
+diff --git a/pkg/fdbgo/transport/BUILD.bazel b/pkg/fdbgo/transport/BUILD.bazel
+index d480bd773..c79cf41dd 100644
+--- a/pkg/fdbgo/transport/BUILD.bazel
++++ b/pkg/fdbgo/transport/BUILD.bazel
+@@ -23,6 +23,7 @@ go_test(
+     name = "transport_test",
+     srcs = [
+         "conn_handshake_timeout_test.go",
++        "conn_direct_write_test.go",
+         "conn_lifecycle_test.go",
+         "conn_monitor_pacing_test.go",
+         "conn_recover_test.go",
+diff --git a/pkg/fdbgo/transport/conn.go b/pkg/fdbgo/transport/conn.go
+index 78f6b02b8..1fd41d00b 100644
+--- a/pkg/fdbgo/transport/conn.go
++++ b/pkg/fdbgo/transport/conn.go
+@@ -184,6 +184,12 @@ type Conn struct {
+ 	// regression test, so the rate is asserted directly.
+ 	monitorCycles atomic.Int64
+ 
++	// writeMu orders socket writes between writeLoop and direct writers; queued
++	// counts frames handed to writeLoop and not yet flushed.
++	writeMu      sync.Mutex
++	queued       atomic.Int64
++	directWrites bool // set at dial: a caller may write when nothing is queued
++
+ 	// Debug tracing (set before first use).
+ 	debugFrames bool
+ 	debugWriter io.Writer
+@@ -433,6 +439,7 @@ func dialWith(ctx context.Context, addr string, dialFn DialFunc, tlsConfig *tls.
+ 		//	init( CONNECTION_MONITOR_TIMEOUT,   isSimulated ? 1.50 : 2.0 );
+ 		monitorLoopInterval: 1 * time.Second,
+ 		monitorTimeout:      2 * time.Second,
++		directWrites:        true,
+ 	}
+ 	// Apply test-only knobs BEFORE any loop goroutine starts (no data race).
+ 	for _, o := range opts {
+@@ -574,10 +581,15 @@ func (c *Conn) SendFrame(destToken UID, body []byte) error {
+ 			destToken.First, destToken.Second, len(body))
+ 	}
+ 	LogSend(destToken, body)
++	if direct, err := c.tryWriteDirect(destToken, body); direct {
++		return err
++	}
+ 	errCh := errChanPool.Get().(chan error)
++	c.queued.Add(1)
+ 	select {
+ 	case c.writeCh <- writeReq{token: destToken, body: body, errCh: errCh}:
+ 	case <-c.ctx.Done():
++		c.queued.Add(-1)
+ 		errChanPool.Put(errCh)
+ 		return errConnClosed
+ 	}
+@@ -596,16 +608,39 @@ func (c *Conn) SendFrame(destToken UID, body []byte) error {
+ 	}
+ }
+ 
++// tryWriteDirect writes the frame on the caller's goroutine when the writer is
++// idle and nothing is queued ahead of it, saving the handoff to writeLoop and back.
++func (c *Conn) tryWriteDirect(token UID, body []byte) (bool, error) {
++	if !c.directWrites || c.queued.Load() != 0 || !c.writeMu.TryLock() {
++		return false, nil
++	}
++	// Recheck under the lock: writeLoop releases it only once its batch is flushed.
++	if c.queued.Load() != 0 || c.ctx.Err() != nil {
++		c.writeMu.Unlock()
++		return false, nil
++	}
++	err := WriteFrame(c.conn, token, body, c.useTLS)
++	c.writeMu.Unlock()
++	if err != nil {
++		// As in writeLoop: the frame may or may not have reached the peer.
++		err = codedConnClosed(err)
++		c.failConnection(err)
++	}
++	return true, err
++}
++
+ // SendFrameDeferred writes a raw frame WITHOUT waiting for flush.
+ // The write loop will flush it with the next batch. Used for pipelining:
+ // send N frames, then call Flush() (or let the write loop auto-flush).
+ func (c *Conn) SendFrameDeferred(destToken UID, body []byte) error {
+ 	LogSend(destToken, body)
+ 	c.hasDirty.Store(true) // mark dirty so Flush() knows to synchronize
++	c.queued.Add(1)
+ 	select {
+ 	case c.writeCh <- writeReq{token: destToken, body: body}:
+ 		return nil
+ 	case <-c.ctx.Done():
++		c.queued.Add(-1)
+ 		return errConnClosed
+ 	}
+ }
+@@ -614,13 +649,15 @@ func (c *Conn) SendFrameDeferred(destToken UID, body []byte) error {
+ // For the write-loop architecture, this sends a synchronous flush marker
+ // through the write channel and waits for acknowledgment.
+ func (c *Conn) Flush() error {
+-	if !c.hasDirty.Load() {
++	if !c.hasDirty.Load() || c.queued.Load() == 0 {
+ 		return nil
+ 	}
+ 	errCh := errChanPool.Get().(chan error)
++	c.queued.Add(1)
+ 	select {
+ 	case c.writeCh <- writeReq{errCh: errCh}: // empty token+body = flush-only request
+ 	case <-c.ctx.Done():
++		c.queued.Add(-1)
+ 		errChanPool.Put(errCh)
+ 		return errConnClosed
+ 	}
+@@ -667,6 +704,8 @@ func (c *Conn) writeLoop() {
+ 		if req.owned != nil {
+ 			owned = append(owned, req.owned)
+ 		}
++		c.writeMu.Lock()
++		batched := int64(1)
+ 		// Process first frame.
+ 		var writeErr error
+ 		if req.token != (UID{}) || req.body != nil {
+@@ -681,6 +720,7 @@ func (c *Conn) writeLoop() {
+ 		for draining && writeErr == nil {
+ 			select {
+ 			case req = <-c.writeCh:
++				batched++
+ 				if req.owned != nil {
+ 					owned = append(owned, req.owned)
+ 				}
+@@ -700,6 +740,8 @@ func (c *Conn) writeLoop() {
+ 			writeErr = c.wbuf.Flush()
+ 		}
+ 		c.hasDirty.Store(false)
++		c.queued.Add(-batched)
++		c.writeMu.Unlock()
+ 
+ 		// Notify all waiting senders. A write error means the frame may or may
+ 		// not have reached the peer before the socket died — code it as the
+@@ -959,10 +1001,12 @@ func (c *Conn) handlePing(body []byte) {
+ 	replyBody := buildVoidReply()
+ 
+ 	// Send ping reply through the write loop. Fire-and-forget (no errCh).
++	c.queued.Add(1)
+ 	select {
+ 	case c.writeCh <- writeReq{token: replyToken, body: replyBody}:
+ 	default:
+ 		// Write channel full — drop ping reply. Server will retry.
++		c.queued.Add(-1)
+ 	}
+ }
+ 
+@@ -1174,9 +1218,11 @@ func (c *Conn) sendPingWithReply() <-chan struct{} {
+ 	replyToken, replyCh, replyHandle := c.PrepareReply()
+ 	pingEP := WellKnownToken(WLTokenPingPacket)
+ 	body := BuildPingRequest(replyToken)
++	c.queued.Add(1)
+ 	select {
+ 	case c.writeCh <- writeReq{token: pingEP, body: body}:
+ 	default:
++		c.queued.Add(-1)
+ 		// writeCh is saturated — we could not send the PING. Return a nil
+ 		// channel, NOT a closed one. A closed channel makes the monitor's
+ 		// `case <-replyCh` fire immediately and falsely conclude "connection
+diff --git a/pkg/fdbgo/transport/conn_direct_write_test.go b/pkg/fdbgo/transport/conn_direct_write_test.go
+new file mode 100644
+index 000000000..ee90b717a
+--- /dev/null
++++ b/pkg/fdbgo/transport/conn_direct_write_test.go
+@@ -0,0 +1,206 @@
++package transport
++
++import (
++	"context"
++	"errors"
++	"fmt"
++	"net"
++	"sync"
++	"testing"
++	"time"
++)
++
++// directConn has no writeLoop: a frame that is queued instead of written by its
++// caller stays in writeCh.
++func directConn(t *testing.T, nc net.Conn) *Conn {
++	t.Helper()
++	ctx, cancel := context.WithCancel(context.Background())
++	t.Cleanup(cancel)
++	return &Conn{
++		conn: nc, ctx: ctx, cancel: cancel, writeCh: make(chan writeReq, 8),
++		pending: make(map[UID]chan Response), directWrites: true,
++	}
++}
++
++func readFrameWithin(t *testing.T, r net.Conn) (UID, []byte) {
++	t.Helper()
++	_ = r.SetReadDeadline(time.Now().Add(5 * time.Second))
++	var fr FrameReader
++	token, body, err := fr.Read(r, false)
++	if err != nil {
++		t.Fatalf("peer read: %v", err)
++	}
++	return token, body
++}
++
++// An idle writer lets the caller write its own frame; the round trip through
++// writeLoop and back cost two goroutine handoffs per request.
++func TestSendWritesDirectlyWhenWriterIdle(t *testing.T) {
++	t.Parallel()
++	cli, srv := net.Pipe()
++	defer srv.Close()
++	c := directConn(t, cli)
++	for i, send := range []func() error{
++		func() error { return c.SendFrame(UID{First: 1}, []byte("commit")) },
++		func() error {
++			_, err := c.SendFrameContext(context.Background(), UID{First: 2}, []byte("read"))
++			return err
++		},
++	} {
++		done := make(chan error, 1)
++		go func() { done <- send() }()
++		token, body := readFrameWithin(t, srv)
++		if token.First != uint64(i+1) {
++			t.Fatalf("send %d: peer got token %d", i, token.First)
++		}
++		if err := <-done; err != nil {
++			t.Fatalf("send %d: %v (body %q)", i, err, body)
++		}
++	}
++	if n := len(c.writeCh); n != 0 || c.queued.Load() != 0 {
++		t.Fatalf("WRITE_DIRECT: %d frames queued, queued=%d, want written by the caller", n, c.queued.Load())
++	}
++}
++
++// A caller must not write ahead of a frame already handed to writeLoop.
++func TestDirectWriteNeverOvertakesQueuedFrame(t *testing.T) {
++	t.Parallel()
++	cli, srv := net.Pipe()
++	defer srv.Close()
++	c := directConn(t, cli)
++	if err := c.SendFrameDeferred(UID{First: 1}, []byte("first")); err != nil {
++		t.Fatal(err)
++	}
++	done := make(chan error, 1)
++	go func() { done <- c.SendFrame(UID{First: 2}, []byte("second")) }()
++	deadline := time.Now().Add(5 * time.Second)
++	for len(c.writeCh) < 2 {
++		if time.Now().After(deadline) {
++			t.Fatal("WRITE_REORDER: second frame bypassed the queue")
++		}
++		time.Sleep(time.Millisecond)
++	}
++	if first, second := <-c.writeCh, <-c.writeCh; first.token.First != 1 || second.token.First != 2 {
++		t.Fatalf("queue order = %d, %d", first.token.First, second.token.First)
++	}
++	c.cancel()
++	if err := <-done; !errors.Is(err, ErrConnClosed) {
++		t.Fatalf("stranded queued sender returned %v", err)
++	}
++}
++
++// With nothing queued every earlier frame is already on the socket, so a flush
++// has nothing to wait for.
++func TestFlushWithNothingQueuedDoesNotWait(t *testing.T) {
++	t.Parallel()
++	cli, srv := net.Pipe()
++	defer srv.Close()
++	c := directConn(t, cli)
++	c.hasDirty.Store(true)
++	done := make(chan error, 2)
++	go func() { done <- c.Flush() }()
++	go func() { done <- c.FlushContext(context.Background()) }()
++	for range 2 {
++		select {
++		case err := <-done:
++			if err != nil {
++				t.Fatal(err)
++			}
++		case <-time.After(5 * time.Second):
++			t.Fatal("FLUSH_WAITS: flush with nothing queued waited for a writer")
++		}
++	}
++}
++
++type failingConn struct{ net.Conn }
++
++func (failingConn) Write([]byte) (int, error) { return 0, errors.New("forced write failure") }
++
++// A failed direct write fails the connection exactly as a failed writeLoop write.
++func TestDirectWriteFailureFailsConnection(t *testing.T) {
++	t.Parallel()
++	cli, srv := net.Pipe()
++	defer srv.Close()
++	c := directConn(t, failingConn{cli})
++	_, replies, handle := c.PrepareReply()
++	defer handle.Release()
++	if err := c.SendFrame(UID{First: 1}, []byte("x")); !errors.Is(err, ErrConnClosed) {
++		t.Fatalf("SendFrame = %v, want the coded teardown", err)
++	}
++	if !c.IsClosed() {
++		t.Fatal("failed direct write left the connection open")
++	}
++	if r := <-replies; !errors.Is(r.Err, ErrConnClosed) {
++		t.Fatalf("pending reply = %v, want the coded teardown", r.Err)
++	}
++}
++
++// Direct writers and writeLoop share one socket: every frame must arrive whole
++// and each sender's frames in its own order. Run under -race.
++func TestDirectAndQueuedWritersInterleaveSafely(t *testing.T) {
++	t.Parallel()
++	s := newSimServer(t)
++	go func() { _ = s.handshake() }()
++	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
++	defer cancel()
++	c, err := dialWith(ctx, "sim", s.dialFunc(), nil, withMonitorCadence(time.Hour, time.Hour))
++	if err != nil {
++		t.Fatalf("dial: %v", err)
++	}
++	defer c.Close()
++	const senders, frames = 8, 50
++	got := make(chan error, 1)
++	go func() {
++		next := make([]uint64, senders)
++		var fr FrameReader
++		for range senders * frames {
++			token, body, err := fr.Read(s.srv, false)
++			if err != nil {
++				got <- err
++				return
++			}
++			w, seq := token.First, token.Second
++			if seq != next[w] || string(body) != fmt.Sprint(w, "/", seq) {
++				got <- fmt.Errorf("sender %d: frame %d %q, want %d", w, seq, body, next[w])
++				return
++			}
++			next[w]++
++		}
++		got <- nil
++	}()
++	var wg sync.WaitGroup
++	for w := range senders {
++		wg.Add(1)
++		go func() {
++			defer wg.Done()
++			for seq := range frames {
++				token, body := UID{First: uint64(w), Second: uint64(seq)}, []byte(fmt.Sprint(w, "/", seq))
++				var err error
++				switch seq % 3 {
++				case 0:
++					err = c.SendFrame(token, body)
++				case 1:
++					_, err = c.SendFrameContext(ctx, token, body)
++				default:
++					err = c.SendFrameDeferred(token, body)
++				}
++				if err != nil {
++					t.Error(err)
++					return
++				}
++			}
++		}()
++	}
++	wg.Wait()
++	if err := c.Flush(); err != nil {
++		t.Fatal(err)
++	}
++	select {
++	case err := <-got:
++		if err != nil {
++			t.Fatal(err)
++		}
++	case <-ctx.Done():
++		t.Fatal("peer did not receive every frame")
++	}
++}
+diff --git a/pkg/fdbgo/transport/conn_lifecycle_test.go b/pkg/fdbgo/transport/conn_lifecycle_test.go
+index 7bd9fb534..3619f8c1c 100644
+--- a/pkg/fdbgo/transport/conn_lifecycle_test.go
++++ b/pkg/fdbgo/transport/conn_lifecycle_test.go
+@@ -237,7 +237,7 @@ func waitWriteChLen(t *testing.T, c *Conn, n int) {
+ }
+ 
+ // TestConn_CtxCancelUnblocksStrandedSendFrame is the Bug 1 proof, made
+-// deterministic. Sender A blocks writeLoop *permanently* inside Flush (the server
++// deterministic. Queued frame A blocks writeLoop *permanently* inside Flush (the server
+ // reads one byte then stalls), and sender B then provably sits in writeCh
+ // (len==1) where writeLoop — being stuck — can never dequeue it. Cancelling the
+ // context (what Close / monitor death / readLoop error all do) must unblock B.
+@@ -260,9 +260,9 @@ func TestConn_CtxCancelUnblocksStrandedSendFrame(t *testing.T) {
+ 	}
+ 	defer c.Close()
+ 
+-	// Sender A → writeLoop dequeues it and blocks in Flush (server reads 1 byte).
+-	aDone := make(chan struct{})
+-	go func() { _ = c.SendFrame(UID{First: 1}, []byte("AAAAAAAA")); close(aDone) }()
++	// Frame A (deferred, so it is queued rather than written by its caller) →
++	// writeLoop dequeues it and blocks in Flush (server reads 1 byte).
++	_ = c.SendFrameDeferred(UID{First: 1}, []byte("AAAAAAAA"))
+ 	awaitWithin(t, 2*time.Second, readStarted, "writeLoop never reached Flush (server saw no bytes)")
+ 
+ 	// Sender B queues behind the stuck writeLoop. Wait until it is provably in
+@@ -277,7 +277,6 @@ func TestConn_CtxCancelUnblocksStrandedSendFrame(t *testing.T) {
+ 	c.cancel()
+ 
+ 	awaitWithin(t, 3*time.Second, bDone, "SendFrame B stranded — Bug 1: queued sender hangs on <-errCh after ctx cancel")
+-	awaitWithin(t, 3*time.Second, aDone, "SendFrame A stranded after ctx cancel")
+ }
+ 
+ // TestConn_CtxCancelUnblocksStrandedFlush is the Flush analog: a flush-only
+diff --git a/pkg/fdbgo/transport/write_context.go b/pkg/fdbgo/transport/write_context.go
+index 626d56a43..241ecc970 100644
+--- a/pkg/fdbgo/transport/write_context.go
++++ b/pkg/fdbgo/transport/write_context.go
+@@ -53,7 +53,7 @@ func (c *Conn) SendFrameContext(ctx context.Context, token UID, body []byte) (en
+ // FlushContext waits for an ordered flush marker without coupling a read's
+ // cancellation to the lifetime of the shared connection.
+ func (c *Conn) FlushContext(ctx context.Context) error {
+-	if !c.hasDirty.Load() {
++	if !c.hasDirty.Load() || c.queued.Load() == 0 {
+ 		return ctx.Err()
+ 	}
+ 	_, err := c.writeContext(ctx, UID{}, nil, true)
+@@ -64,12 +64,15 @@ func (c *Conn) writeContext(ctx context.Context, token UID, body []byte, flush b
+ 	if err := ctx.Err(); err != nil {
+ 		return false, err
+ 	}
++	if !flush {
++		LogSend(token, body)
++		if direct, err := c.tryWriteDirect(token, body); direct {
++			return true, err
++		}
++	}
+ 	completion := newWriteCompletion()
+ 	defer completion.release() // caller reference, including abandonment
+ 	request := writeReq{token: token, body: bytes.Clone(body), owned: completion}
+-	if !flush {
+-		LogSend(token, request.body)
+-	}
+ 	enqueued, err := c.enqueueOwned(ctx, request)
+ 	if !enqueued {
+ 		completion.release() // ownership never transferred to the writer
+@@ -119,12 +122,15 @@ func (c *Conn) enqueueOwned(ctx context.Context, request writeReq) (bool, error)
+ 	if c.writeClosed || c.ctx.Err() != nil {
+ 		return false, errConnClosed
+ 	}
++	c.queued.Add(1)
+ 	select {
+ 	case c.writeCh <- request:
+ 		return true, nil
+ 	case <-ctx.Done():
++		c.queued.Add(-1)
+ 		return false, ctx.Err()
+ 	case <-c.ctx.Done():
++		c.queued.Add(-1)
+ 		return false, errConnClosed
+ 	}
+ }
+-- 
+2.55.0
+

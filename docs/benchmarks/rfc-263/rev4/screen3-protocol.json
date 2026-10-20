@@ -1,0 +1,9 @@
+{
+  "authorization": "root requests 4178 and 4179; quiet machine, campaign executing on Hetzner",
+  "candidate": "16 stable transaction producer heaps, lower-bound reuse, one global drainer, sampled clock and ticket frontier",
+  "primary": {"workers": 8, "workloads": ["get100", "set100", "range100"], "pairs_per_workload": 3, "iterations": 20000, "warmup": 2000, "order": ["baseline,candidate", "candidate,baseline", "baseline,candidate"]},
+  "mutex": {"workers": 32, "get100_iterations": 1000000, "set100_iterations": 400000, "range100_iterations": 500000, "arms": ["baseline", "candidate"], "pairs": 1},
+  "range32_confirmation": {"workers": 32, "workload": "range100", "iterations": 500000, "warmup": 2000, "pairs": 3, "profile": "none", "order": ["baseline,candidate", "candidate,baseline", "baseline,candidate"], "purpose": "Predeclared before any candidate measurement, to judge 32-worker range CPU rather than select a favorable single profiled pair"},
+  "acceptance": ["32-worker cumulative wait/client-CPU ratio below 1% for every workload, counting shard and root mutexes", "8-worker CPU neutral or better for every workload", "32-worker range CPU not worse than baseline"],
+  "reporting": "Report all completed pairs and spreads; no reruns to remove unfavorable measurements. Mutex-profiled CPU is diagnostic, separate from unprofiled primary/confirmation. Retain source archives, binary hashes, per-run argv/environment, load average, idle snapshots, raw CSV, summaries, and all invalidated attempts with reasons."
+}

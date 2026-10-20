@@ -1,0 +1,1359 @@
+diff --git a/pkg/fdbgo/client/BUILD.bazel b/pkg/fdbgo/client/BUILD.bazel
+index 13eddf77c..8816e271e 100644
+--- a/pkg/fdbgo/client/BUILD.bazel
++++ b/pkg/fdbgo/client/BUILD.bazel
+@@ -81,10 +81,15 @@ go_test(
+ )
+ 
+ # gazelle:exclude grv_batch_unit_test.go
++# gazelle:exclude grv_inline_unit_test.go
+ go_test(
+     name = "grv_batch_unit_test",
+-    srcs = ["grv_batch_unit_test.go"],
++    srcs = [
++        "grv_batch_unit_test.go",
++        "grv_inline_unit_test.go",
++    ],
+     embed = [":client"],
++    deps = ["//pkg/fdbgo/wire/types"],
+ )
+ 
+ # gazelle:exclude ryw_issue_view_unit_test.go
+diff --git a/pkg/fdbgo/client/grv.go b/pkg/fdbgo/client/grv.go
+index 61789d150..01cde186a 100644
+--- a/pkg/fdbgo/client/grv.go
++++ b/pkg/fdbgo/client/grv.go
+@@ -849,11 +849,22 @@ func (b *grvBatcher) getReadVersion(db *database, ctx context.Context, flags uin
+ 	req := grvRequest{reply: make(chan grvResult, 1), spanContext: span, tags: tags}
+ 
+ 	b = b.forFlags(flags)
+-	if batch := b.admit(req, func(seq uint64) {
++	switch batch := b.admit(req, func(seq uint64) {
+ 		if batch := b.timerBatch(seq); batch != nil {
+ 			b.flush(db, batch)
+ 		}
+-	}); batch != nil {
++	}); len(batch) {
++	case 0:
++	case 1:
++		// An idle batcher detached only this request: a goroutine would just hand
++		// the reply back, so run the RPC here, bounded by this caller's ctx too.
++		// Accepted divergence: C++ runs every batch to its reply (NativeAPI.actor.cpp
++		// :7266-7287, :7382), so a cancelled lone caller here also skips tag throttles,
++		// the minAcceptable floor and one batch-window sample.
++		b.flushWithin(db, ctx, batch)
++		result := <-req.reply
++		return result.version, result.locked, result.instant, result.err
++	default:
+ 		go b.flush(db, batch)
+ 	}
+ 
+@@ -941,7 +952,14 @@ func (b *grvBatcher) observeLatency(elapsed time.Duration) {
+ }
+ 
+ // flush sends a detached batch without holding mu, allowing overlapping RPCs.
++// Callers cancel their own waits; only Close cancels a shared batch's RPC.
+ func (b *grvBatcher) flush(db *database, batch []grvRequest) {
++	b.flushWithin(db, nil, batch)
++}
++
++// flushWithin runs the batch's RPC under ctx; Close also ends it. A nil ctx
++// means db.ctx, read only once the panic backstop below is armed.
++func (b *grvBatcher) flushWithin(db *database, ctx context.Context, batch []grvRequest) {
+ 	// RFC-110: once the batch is popped, b.pending no longer references
+ 	// it — a panic anywhere below (sendGRVRequest decode, applyGRVReply, the
+ 	// adaptive-window math) would orphan it, and every waiter blocked on its
+@@ -961,6 +979,9 @@ func (b *grvBatcher) flush(db *database, batch []grvRequest) {
+ 		}
+ 	}
+ 	defer retire() // retire before the panic backstop publishes errors
++	if ctx == nil {
++		ctx = db.ctx
++	}
+ 
+ 	// Collect per-tx span contexts so GetReadVersionRequest carries the
+ 	// readVersionBatcher span (C++
+@@ -978,8 +999,7 @@ func (b *grvBatcher) flush(db *database, batch []grvRequest) {
+ 	// by a reply it was meant to retire.
+ 	tok := db.grvCache.token()
+ 	requestTime := time.Now()
+-	// Callers cancel their own waits; only Close cancels the shared recovery.
+-	version, locked, rkDefault, rkBatch, tagThrottleInfoEntries, _, attemptEpoch, err := b.sendGRVRequest(db, db.ctx, flags, uint32(len(batch)), batchGRVSpanContext(spans), aggregateBatchTags(batch))
++	version, locked, rkDefault, rkBatch, tagThrottleInfoEntries, _, attemptEpoch, err := b.sendGRVRequest(db, ctx, flags, uint32(len(batch)), batchGRVSpanContext(spans), aggregateBatchTags(batch))
+ 	elapsed := time.Since(requestTime)
+ 
+ 	if err == nil {
+@@ -993,7 +1013,7 @@ func (b *grvBatcher) flush(db *database, batch []grvRequest) {
+ 		// here (C++ parity: its cached path returns before the counters); the
+ 		// background refresher has no waiters and adds nothing. Two accepted
+ 		// edge divergences: waiters whose ctx expired mid-batch are still
+-		// counted (C++ cancels abandoned futures before its counter), and
++		// counted, except a lone inline one (C++ cancels abandoned futures before its counter), and
+ 		// under a LOCKED database non-lock-aware waiters are counted here
+ 		// while C++'s database_locked throw (:7425-7426) precedes its
+ 		// counters — fixing either would need per-waiter counting at the
+@@ -1279,13 +1299,18 @@ const (
+ // sendGRVRequest cycles all GRV proxies, matching C++ basicLoadBalance
+ // with AtMostOnce::False. On broken_promise (transport error), tries next
+ // proxy. On FDB application error, propagates immediately. If all proxies
+-// fail, applies exponential backoff and retries — loops until success or
+-// db.ctx cancellation (matching C++ infinite loop + quorum(ok,1) wait).
++// fail, applies exponential backoff and retries — loops until success, ctx
++// cancellation or Close (matching C++ infinite loop + quorum(ok,1) wait).
+ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uint32, txnCount uint32, span types.SpanContext, tags []types.TransactionTagCount) (version int64, locked bool, rkDefaultThrottled, rkBatchThrottled bool, tagThrottleInfo []types.TransactionTagThrottle, proxyTagThrottledDuration float64, attemptEpoch int64, err error) {
+ 	var backoff time.Duration
++	closed := db.ctx.Done() // ctx may be a caller's, which Close does not cancel
+ 
+ retry:
+ 	for {
++		// A cancelled caller must not kick a topology refresh on its way out.
++		if err := grvRPCEnded(ctx, db); err != nil {
++			return 0, false, false, false, nil, 0, attemptEpoch, err
++		}
+ 		proxiesChanged := db.waitProxiesChanged()
+ 		// Re-read the proxy list each cycle — topology may have refreshed — and
+ 		// take the epoch FROM THAT SAME LOAD. A retry can cross a cluster
+@@ -1316,6 +1341,9 @@ retry:
+ 			case <-ctx.Done():
+ 				timer.Stop()
+ 				return 0, false, false, false, nil, 0, attemptEpoch, ctx.Err()
++			case <-closed:
++				timer.Stop()
++				return 0, false, false, false, nil, 0, attemptEpoch, db.ctx.Err()
+ 			}
+ 		}
+ 
+@@ -1325,6 +1353,9 @@ retry:
+ 			proxy := proxies[(startIdx+i)%len(proxies)]
+ 			conn, err := db.getOrDial(ctx, proxy.Address)
+ 			if err != nil {
++				if ended := grvRPCEnded(ctx, db); ended != nil {
++					return 0, false, false, false, nil, 0, attemptEpoch, ended
++				}
+ 				db.handleDialError(ctx, proxy.Address)
+ 				continue
+ 			}
+@@ -1335,6 +1366,9 @@ retry:
+ 			if err := sendReadFrame(ctx, conn, proxy.Token, body, replyHandle); err != nil {
+ 				replyHandle.Cancel()
+ 				replyHandle.Release()
++				if ended := grvRPCEnded(ctx, db); ended != nil {
++					return 0, false, false, false, nil, 0, attemptEpoch, ended
++				}
+ 				db.handleReadConnError(proxy.Address, err)
+ 				continue
+ 			}
+@@ -1353,6 +1387,10 @@ retry:
+ 				replyHandle.Cancel()
+ 				replyHandle.Release()
+ 				return 0, false, false, false, nil, 0, attemptEpoch, ctx.Err()
++			case <-closed:
++				replyHandle.Cancel()
++				replyHandle.Release()
++				return 0, false, false, false, nil, 0, attemptEpoch, db.ctx.Err()
+ 			}
+ 			replyHandle.Release()
+ 			if resp.Err != nil {
+@@ -1401,6 +1439,9 @@ retry:
+ 		}
+ 
+ 		// All proxies exhausted — backoff with recovery/topology wakeup.
++		if err := grvRPCEnded(ctx, db); err != nil {
++			return 0, false, false, false, nil, 0, attemptEpoch, err
++		}
+ 		db.kickTopology()
+ 		if backoff == 0 {
+ 			backoff = loadBalanceStartBackoff
+@@ -1420,10 +1461,22 @@ retry:
+ 		case <-ctx.Done():
+ 			timer.Stop()
+ 			return 0, false, false, false, nil, 0, attemptEpoch, ctx.Err()
++		case <-closed:
++			timer.Stop()
++			return 0, false, false, false, nil, 0, attemptEpoch, db.ctx.Err()
+ 		}
+ 	}
+ }
+ 
++// grvRPCEnded reports a caller's or the database's end, which must neither count
++// against a proxy nor kick a topology refresh.
++func grvRPCEnded(ctx context.Context, db *database) error {
++	if err := ctx.Err(); err != nil {
++		return err
++	}
++	return db.ctx.Err()
++}
++
+ // grvPriorityToPriority converts GRV wire priority bits to TransactionPriority.
+ func grvPriorityToPriority(flags uint32) TransactionPriority {
+ 	switch flags & grvPriorityMask {
+diff --git a/pkg/fdbgo/client/grv_inline_unit_test.go b/pkg/fdbgo/client/grv_inline_unit_test.go
+new file mode 100644
+index 000000000..60842fc03
+--- /dev/null
++++ b/pkg/fdbgo/client/grv_inline_unit_test.go
+@@ -0,0 +1,106 @@
++package client
++
++import (
++	"context"
++	"errors"
++	"testing"
++	"time"
++
++	"fdb.dev/pkg/fdbgo/wire/types"
++)
++
++// noProxyDB has no GRV proxies, so a GRV RPC backs off until its context ends.
++func noProxyDB(t *testing.T) (*database, context.CancelFunc) {
++	t.Helper()
++	ctx, cancel := context.WithCancel(context.Background())
++	t.Cleanup(cancel)
++	return &database{ctx: ctx, proxiesChanged: make(chan struct{}), failMon: newFailureMonitor()}, cancel
++}
++
++func batcherInFlight(b *grvBatcher) int {
++	b.mu.Lock()
++	defer b.mu.Unlock()
++	return b.inFlight
++}
++
++// A lone request's RPC is bounded by its caller's ctx: when that deadline
++// returns the caller, its batch is already retired.
++func TestGRVSoleRequestBoundedByCallerContext(t *testing.T) {
++	t.Parallel()
++	db, _ := noProxyDB(t)
++	b := &grvBatcher{priority: grvPriorityDefault}
++	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
++	defer cancel()
++	_, _, _, err := b.getReadVersion(db, ctx, grvPriorityDefault, types.SpanContext{}, nil, false, false)
++	if !errors.Is(err, context.DeadlineExceeded) {
++		t.Fatalf("err = %v, want the caller's deadline", err)
++	}
++	if n := batcherInFlight(b); n != 0 {
++		t.Fatalf("GRV_INLINE: %d batch still in flight after its only caller returned", n)
++	}
++}
++
++// Close still ends an RPC run on a caller whose own context never fires.
++func TestGRVSoleRequestEndsOnClose(t *testing.T) {
++	t.Parallel()
++	db, closeDB := noProxyDB(t)
++	b := &grvBatcher{priority: grvPriorityDefault}
++	done := make(chan error, 1)
++	go func() {
++		_, _, _, err := b.getReadVersion(db, context.Background(), grvPriorityDefault, types.SpanContext{}, nil, false, false)
++		done <- err
++	}()
++	closeDB()
++	select {
++	case err := <-done:
++		if !errors.Is(err, context.Canceled) {
++			t.Fatalf("err = %v, want the database's cancellation", err)
++		}
++	case <-time.After(5 * time.Second):
++		t.Fatal("GRV run on the caller ignored database Close")
++	}
++	if n := batcherInFlight(b); n != 0 {
++		t.Fatalf("%d batch still in flight after Close", n)
++	}
++}
++
++// A batch with other members keeps running under db.ctx: one caller's deadline
++// must never end its siblings' GRV.
++func TestGRVSharedBatchOutlivesOneCallersContext(t *testing.T) {
++	t.Parallel()
++	db, closeDB := noProxyDB(t)
++	b := &grvBatcher{priority: grvPriorityDefault, inFlight: 1}
++	siblings := make([]grvRequest, grvMaxBatchSize-1)
++	for i := range siblings {
++		siblings[i] = batchRequest()
++		if b.admit(siblings[i], ignoreBatchTimer) != nil {
++			t.Fatal("precondition: sibling dispatched early")
++		}
++	}
++	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
++	defer cancel()
++	if _, _, _, err := b.getReadVersion(db, ctx, grvPriorityDefault, types.SpanContext{}, nil, false, false); !errors.Is(err, context.DeadlineExceeded) {
++		t.Fatalf("err = %v, want the caller's deadline", err)
++	}
++	for i, s := range siblings {
++		select {
++		case r := <-s.reply:
++			t.Fatalf("GRV_SHARED_CANCELLED: sibling %d got %v from another caller's deadline", i, r.err)
++		default:
++		}
++	}
++	if n := batcherInFlight(b); n != 2 {
++		t.Fatalf("inFlight = %d, want the shared batch still running", n)
++	}
++	closeDB()
++	for i, s := range siblings {
++		select {
++		case r := <-s.reply:
++			if !errors.Is(r.err, context.Canceled) {
++				t.Fatalf("sibling %d: %v, want Close", i, r.err)
++			}
++		case <-time.After(5 * time.Second):
++			t.Fatalf("sibling %d never answered after Close", i)
++		}
++	}
++}
+diff --git a/pkg/fdbgo/client/grv_reply_wait_test.go b/pkg/fdbgo/client/grv_reply_wait_test.go
+index 92b392df6..7e1ed4dfd 100644
+--- a/pkg/fdbgo/client/grv_reply_wait_test.go
++++ b/pkg/fdbgo/client/grv_reply_wait_test.go
+@@ -3,6 +3,7 @@ package client
+ import (
+ 	"context"
+ 	"encoding/binary"
++	"errors"
+ 	"fmt"
+ 	"io"
+ 	"net"
+@@ -481,3 +482,54 @@ func TestGRVProxyChangeDuringSendIsNotLost(t *testing.T) {
+ 	}
+ 	assertGRVProxiesHealthy(t, db, addrs, failuresBefore)
+ }
++
++// A lone GRV runs on its caller: cancelling it while the reply is withheld
++// returns promptly, retires the batch and blames no proxy.
++func TestGRVCancelledLoneCallerAbandonsHeldReply(t *testing.T) {
++	t.Parallel()
++	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
++	defer cancel()
++	db, g, addrs := newGRVReplyGateDB(t, ctx)
++	failuresBefore := db.db.metrics.Snapshot().ClientConnectionFailures
++	g.arm(1<<30, false)
++	callerCtx, callerCancel := context.WithCancel(ctx)
++	done := startGatedGRV(db, callerCtx)
++	awaitGateSignal(t, g.heldCh, "withholding the GRV reply")
++	callerCancel()
++	select {
++	case r := <-done:
++		if !errors.Is(r.err, context.Canceled) {
++			t.Fatalf("cancelled lone GRV returned %v, want context.Canceled", r.err)
++		}
++	case <-time.After(grvProxyChangeBound):
++		t.Fatal("cancelled lone GRV kept waiting for its withheld reply")
++	}
++	b := db.db.grvBatchers[grvBatcherDefault]
++	b.mu.Lock()
++	inFlight := b.inFlight
++	b.mu.Unlock()
++	if inFlight != 0 {
++		t.Fatalf("cancelled lone GRV left %d batch in flight", inFlight)
++	}
++	assertGRVProxiesHealthy(t, db, addrs, failuresBefore)
++}
++
++// Close ends a lone GRV whose caller's own ctx never fires.
++func TestGRVCloseEndsLoneCallerHeldReply(t *testing.T) {
++	t.Parallel()
++	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
++	defer cancel()
++	db, g, _ := newGRVReplyGateDB(t, ctx)
++	g.arm(1<<30, false)
++	done := startGatedGRV(db, context.Background())
++	awaitGateSignal(t, g.heldCh, "withholding the GRV reply")
++	db.Close()
++	select {
++	case r := <-done:
++		if !errors.Is(r.err, context.Canceled) {
++			t.Fatalf("lone GRV after Close returned %v, want context.Canceled", r.err)
++		}
++	case <-time.After(grvProxyChangeBound):
++		t.Fatal("Close did not end a lone GRV waiting on a withheld reply")
++	}
++}
+diff --git a/pkg/fdbgo/transport/BUILD.bazel b/pkg/fdbgo/transport/BUILD.bazel
+index d480bd773..e1785801f 100644
+--- a/pkg/fdbgo/transport/BUILD.bazel
++++ b/pkg/fdbgo/transport/BUILD.bazel
+@@ -4,6 +4,9 @@ go_library(
+     name = "transport",
+     srcs = [
+         "conn.go",
++        "direct_write.go",
++        "direct_write_other.go",
++        "direct_write_unix.go",
+         "framing.go",
+         "handshake.go",
+         "wellknown.go",
+@@ -22,9 +25,11 @@ go_library(
+ go_test(
+     name = "transport_test",
+     srcs = [
++        "conn_direct_write_test.go",
+         "conn_handshake_timeout_test.go",
+         "conn_lifecycle_test.go",
+         "conn_monitor_pacing_test.go",
++        "conn_read_buffer_test.go",
+         "conn_recover_test.go",
+         "conn_unit_test.go",
+         "connclosed_error_test.go",
+diff --git a/pkg/fdbgo/transport/conn.go b/pkg/fdbgo/transport/conn.go
+index 78f6b02b8..4fa4b9242 100644
+--- a/pkg/fdbgo/transport/conn.go
++++ b/pkg/fdbgo/transport/conn.go
+@@ -16,6 +16,7 @@ import (
+ 	"runtime/debug"
+ 	"sync"
+ 	"sync/atomic"
++	"syscall"
+ 	"time"
+ 
+ 	"fdb.dev/pkg/fdbgo/wire"
+@@ -137,7 +138,6 @@ type Conn struct {
+ 	conn           net.Conn
+ 	useTLS         bool
+ 	wbuf           *bufio.Writer // owned exclusively by writeLoop
+-	hasDirty       atomic.Bool   // true when wbuf has unflushed data
+ 	writeCh        chan writeReq // channel-based write loop for coalescing
+ 	writeAdmission sync.RWMutex
+ 	writeClosed    bool // protected by writeAdmission
+@@ -184,6 +184,16 @@ type Conn struct {
+ 	// regression test, so the rate is asserted directly.
+ 	monitorCycles atomic.Int64
+ 
++	// writeMu orders socket writes between writeLoop and direct writers; queued
++	// counts frames handed to writeLoop and not yet flushed.
++	writeMu sync.Mutex
++	queued  atomic.Int64
++	// raw is set for plaintext TCP only: a direct write needs a non-blocking
++	// socket write, so a full socket never holds its caller past its ctx.
++	raw      syscall.RawConn
++	tail     []byte        // unwritten end of a direct write, under writeMu
++	tailKick chan struct{} // wakes writeLoop to finish tail
++
+ 	// Debug tracing (set before first use).
+ 	debugFrames bool
+ 	debugWriter io.Writer
+@@ -433,6 +443,10 @@ func dialWith(ctx context.Context, addr string, dialFn DialFunc, tlsConfig *tls.
+ 		//	init( CONNECTION_MONITOR_TIMEOUT,   isSimulated ? 1.50 : 2.0 );
+ 		monitorLoopInterval: 1 * time.Second,
+ 		monitorTimeout:      2 * time.Second,
++		tailKick:            make(chan struct{}, 1),
++	}
++	if tlsConfig == nil {
++		c.raw = rawConnFor(netConn)
+ 	}
+ 	// Apply test-only knobs BEFORE any loop goroutine starts (no data race).
+ 	for _, o := range opts {
+@@ -574,10 +588,11 @@ func (c *Conn) SendFrame(destToken UID, body []byte) error {
+ 			destToken.First, destToken.Second, len(body))
+ 	}
+ 	LogSend(destToken, body)
++	if direct, err := c.tryWriteDirect(destToken, body); direct {
++		return err
++	}
+ 	errCh := errChanPool.Get().(chan error)
+-	select {
+-	case c.writeCh <- writeReq{token: destToken, body: body, errCh: errCh}:
+-	case <-c.ctx.Done():
++	if !c.enqueue(writeReq{token: destToken, body: body, errCh: errCh}, nil) {
+ 		errChanPool.Put(errCh)
+ 		return errConnClosed
+ 	}
+@@ -601,26 +616,21 @@ func (c *Conn) SendFrame(destToken UID, body []byte) error {
+ // send N frames, then call Flush() (or let the write loop auto-flush).
+ func (c *Conn) SendFrameDeferred(destToken UID, body []byte) error {
+ 	LogSend(destToken, body)
+-	c.hasDirty.Store(true) // mark dirty so Flush() knows to synchronize
+-	select {
+-	case c.writeCh <- writeReq{token: destToken, body: body}:
+-		return nil
+-	case <-c.ctx.Done():
++	if !c.enqueue(writeReq{token: destToken, body: body}, nil) {
+ 		return errConnClosed
+ 	}
++	return nil
+ }
+ 
+-// Flush ensures all pending frames are flushed to the TCP socket.
+-// For the write-loop architecture, this sends a synchronous flush marker
+-// through the write channel and waits for acknowledgment.
++// Flush ensures all pending frames are flushed to the TCP socket. With nothing
++// queued every earlier frame is already written; otherwise it sends a flush
++// marker through the write channel and waits for acknowledgment.
+ func (c *Conn) Flush() error {
+-	if !c.hasDirty.Load() {
++	if c.queued.Load() == 0 && c.ctx.Err() == nil {
+ 		return nil
+ 	}
+ 	errCh := errChanPool.Get().(chan error)
+-	select {
+-	case c.writeCh <- writeReq{errCh: errCh}: // empty token+body = flush-only request
+-	case <-c.ctx.Done():
++	if !c.enqueue(writeReq{errCh: errCh}, nil) { // empty token+body = flush-only request
+ 		errChanPool.Put(errCh)
+ 		return errConnClosed
+ 	}
+@@ -628,7 +638,6 @@ func (c *Conn) Flush() error {
+ 	// errCh is not pooled on the ctx.Done path (stale-value hazard).
+ 	select {
+ 	case err := <-errCh:
+-		c.hasDirty.Store(false)
+ 		errChanPool.Put(errCh)
+ 		return err
+ 	case <-c.ctx.Done():
+@@ -643,7 +652,8 @@ func (c *Conn) Flush() error {
+ // one flush (one write() syscall).
+ //
+ // This matches C++ FlowTransport's connectionWriter actor which yields to
+-// let senders enqueue, then flushes everything at once.
++// let senders enqueue, then flushes everything at once. It holds writeMu from
++// its first write to the flush, so direct writers never interleave a batch.
+ func (c *Conn) writeLoop() {
+ 	defer c.loopWG.Done()
+ 	var owned []*writeCompletion
+@@ -654,10 +664,13 @@ func (c *Conn) writeLoop() {
+ 	var errChans []chan<- error
+ 
+ 	for {
+-		// Wait for first frame.
++		// Wait for first frame, or for the tail of a direct write.
+ 		var req writeReq
++		first := false
+ 		select {
+ 		case req = <-c.writeCh:
++			first = true
++		case <-c.tailKick:
+ 		case <-c.ctx.Done():
+ 			return
+ 		}
+@@ -667,13 +680,28 @@ func (c *Conn) writeLoop() {
+ 		if req.owned != nil {
+ 			owned = append(owned, req.owned)
+ 		}
+-		// Process first frame.
++		c.writeMu.Lock()
++		var batched int64
+ 		var writeErr error
+-		if req.token != (UID{}) || req.body != nil {
+-			writeErr = WriteFrame(c.wbuf, req.token, req.body, c.useTLS)
++		// A direct write's unwritten end precedes every frame queued after it.
++		if c.tail != nil {
++			_, writeErr = c.wbuf.Write(c.tail)
++			c.tail = nil
++			batched++
++		}
++		// Process first frame.
++		if first {
++			batched++
++			if writeErr == nil && (req.token != (UID{}) || req.body != nil) {
++				writeErr = WriteFrame(c.wbuf, req.token, req.body, c.useTLS)
++			}
++			if req.errCh != nil {
++				errChans = append(errChans, req.errCh)
++			}
+ 		}
+-		if req.errCh != nil {
+-			errChans = append(errChans, req.errCh)
++		if batched == 0 { // a kick whose tail an earlier batch already wrote
++			c.writeMu.Unlock()
++			continue
+ 		}
+ 
+ 		// Drain all queued frames without blocking (natural coalescing).
+@@ -681,6 +709,7 @@ func (c *Conn) writeLoop() {
+ 		for draining && writeErr == nil {
+ 			select {
+ 			case req = <-c.writeCh:
++				batched++
+ 				if req.owned != nil {
+ 					owned = append(owned, req.owned)
+ 				}
+@@ -699,16 +728,19 @@ func (c *Conn) writeLoop() {
+ 		if writeErr == nil {
+ 			writeErr = c.wbuf.Flush()
+ 		}
+-		c.hasDirty.Store(false)
++		if writeErr != nil {
++			// Fail under writeMu so no direct write can follow a torn frame.
++			writeErr = codedConnClosed(writeErr)
++			c.failConnection(writeErr)
++		}
++		c.queued.Add(-batched)
++		c.writeMu.Unlock()
+ 
+ 		// Notify all waiting senders. A write error means the frame may or may
+ 		// not have reached the peer before the socket died — code it as the
+ 		// request_maybe_delivered teardown (C++ has no synchronous send errors
+ 		// at all; a failed send there surfaces only as the disconnect signal →
+ 		// request_maybe_delivered, fdbrpc.h:794-799).
+-		if writeErr != nil {
+-			writeErr = codedConnClosed(writeErr)
+-		}
+ 		for _, ch := range errChans {
+ 			ch <- writeErr
+ 		}
+@@ -719,10 +751,8 @@ func (c *Conn) writeLoop() {
+ 		}
+ 		owned = owned[:0]
+ 		if writeErr != nil {
+-			// The socket writer is terminal after any frame/flush failure. Cancel
+-			// connection admission, fail replies, then let the deferred ownership
+-			// finalizer drain requests that arrived outside this failed batch.
+-			c.failConnection(writeErr)
++			// The socket writer is terminal after any frame/flush failure; the
++			// deferred ownership finalizer drains requests outside this batch.
+ 			return
+ 		}
+ 	}
+@@ -883,9 +913,12 @@ func (c *Conn) readLoop() {
+ 
+ 	pingToken := WellKnownToken(WLTokenPingPacket)
+ 	var fr FrameReader
++	// C++ connectionReader reads into a packet buffer: one read usually carries
++	// whole frames, where length, checksum and payload reads cost three each.
++	in := bufio.NewReaderSize(c.conn, readBufferSize)
+ 
+ 	for {
+-		token, body, err := fr.Read(c.conn, c.useTLS)
++		token, body, err := fr.Read(in, c.useTLS)
+ 		if err != nil {
+ 			// Only log if this is unexpected (server died, not our Close).
+ 			if c.debugFrames && c.ctx.Err() == nil {
+@@ -928,6 +961,10 @@ func (c *Conn) readLoop() {
+ 	}
+ }
+ 
++// readBufferSize exceeds C++ MIN_PACKET_BUFFER_BYTES (4 KiB, flow/Knobs.cpp:226)
++// so a burst of replies drains in one read; larger payloads bypass it.
++const readBufferSize = 16 << 10
++
+ // failAllPending delivers an error to all pending request channels.
+ // Matches C++ connectionKeeper's disconnect promise that wakes all
+ // in-flight deliver() actors.
+@@ -959,11 +996,8 @@ func (c *Conn) handlePing(body []byte) {
+ 	replyBody := buildVoidReply()
+ 
+ 	// Send ping reply through the write loop. Fire-and-forget (no errCh).
+-	select {
+-	case c.writeCh <- writeReq{token: replyToken, body: replyBody}:
+-	default:
+-		// Write channel full — drop ping reply. Server will retry.
+-	}
++	// A full write channel drops the ping reply; the server will retry.
++	c.tryEnqueue(writeReq{token: replyToken, body: replyBody})
+ }
+ 
+ // extractPingReplyToken extracts the reply UID from a PingRequest FlatBuffers body.
+@@ -1174,9 +1208,7 @@ func (c *Conn) sendPingWithReply() <-chan struct{} {
+ 	replyToken, replyCh, replyHandle := c.PrepareReply()
+ 	pingEP := WellKnownToken(WLTokenPingPacket)
+ 	body := BuildPingRequest(replyToken)
+-	select {
+-	case c.writeCh <- writeReq{token: pingEP, body: body}:
+-	default:
++	if !c.tryEnqueue(writeReq{token: pingEP, body: body}) {
+ 		// writeCh is saturated — we could not send the PING. Return a nil
+ 		// channel, NOT a closed one. A closed channel makes the monitor's
+ 		// `case <-replyCh` fire immediately and falsely conclude "connection
+diff --git a/pkg/fdbgo/transport/conn_direct_write_test.go b/pkg/fdbgo/transport/conn_direct_write_test.go
+new file mode 100644
+index 000000000..b9e05c6be
+--- /dev/null
++++ b/pkg/fdbgo/transport/conn_direct_write_test.go
+@@ -0,0 +1,319 @@
++package transport
++
++import (
++	"bytes"
++	"context"
++	"errors"
++	"fmt"
++	"io"
++	"net"
++	"sync"
++	"testing"
++	"time"
++
++	"fdb.dev/pkg/fdbgo/wire"
++)
++
++// tcpPair returns a connected loopback pair; direct writes need a real socket.
++func tcpPair(t *testing.T) (*net.TCPConn, net.Conn) {
++	t.Helper()
++	ln, err := net.Listen("tcp", "127.0.0.1:0")
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer ln.Close()
++	accepted := make(chan net.Conn, 1)
++	go func() {
++		c, _ := ln.Accept()
++		accepted <- c
++	}()
++	cli, err := net.Dial("tcp", ln.Addr().String())
++	if err != nil {
++		t.Fatal(err)
++	}
++	srv := <-accepted
++	if srv == nil {
++		t.Fatal("accept failed")
++	}
++	t.Cleanup(func() { cli.Close(); srv.Close() })
++	return cli.(*net.TCPConn), srv
++}
++
++// directConn has no writeLoop: a frame queued instead of written by its
++// caller stays in writeCh.
++func directConn(t *testing.T, nc *net.TCPConn) *Conn {
++	t.Helper()
++	ctx, cancel := context.WithCancel(context.Background())
++	t.Cleanup(cancel)
++	return &Conn{
++		conn: nc, ctx: ctx, cancel: cancel, writeCh: make(chan writeReq, 8),
++		pending: make(map[UID]chan Response), raw: rawConnFor(nc), tailKick: make(chan struct{}, 1),
++	}
++}
++
++func within[T any](t *testing.T, ch <-chan T, what string) T {
++	t.Helper()
++	select {
++	case v := <-ch:
++		return v
++	case <-time.After(30 * time.Second):
++		t.Fatalf("%s did not happen", what)
++		var zero T
++		return zero
++	}
++}
++
++func readFrame(t *testing.T, r net.Conn) (UID, []byte) {
++	t.Helper()
++	_ = r.SetReadDeadline(time.Now().Add(10 * time.Second))
++	var fr FrameReader
++	token, body, err := fr.Read(r, false)
++	if err != nil {
++		t.Fatalf("peer read: %v", err)
++	}
++	return token, body
++}
++
++// An idle writer lets the caller write its own frame; the round trip through
++// writeLoop and back cost two goroutine handoffs per request.
++func TestSendWritesDirectlyWhenWriterIdle(t *testing.T) {
++	t.Parallel()
++	cli, srv := tcpPair(t)
++	c := directConn(t, cli)
++	sends := []func() error{
++		func() error { return c.SendFrame(UID{First: 1}, []byte("commit")) },
++		func() error {
++			_, err := c.SendFrameContext(context.Background(), UID{First: 2}, []byte("read"))
++			return err
++		},
++	}
++	for i, send := range sends {
++		done := make(chan error, 1)
++		go func() { done <- send() }()
++		if err := within(t, done, fmt.Sprintf("send %d without a writeLoop", i)); err != nil {
++			t.Fatalf("send %d: %v", i, err)
++		}
++		if token, _ := readFrame(t, srv); token.First != uint64(i+1) {
++			t.Fatalf("send %d: peer got token %d", i, token.First)
++		}
++	}
++	if n := len(c.writeCh); n != 0 || c.queued.Load() != 0 {
++		t.Fatalf("WRITE_DIRECT: %d frames queued (counter %d), want both written by their callers", n, c.queued.Load())
++	}
++}
++
++// A caller must not write ahead of a frame already handed to writeLoop.
++func TestDirectWriteNeverOvertakesQueuedFrame(t *testing.T) {
++	t.Parallel()
++	cli, _ := tcpPair(t)
++	c := directConn(t, cli)
++	if err := c.SendFrameDeferred(UID{First: 1}, []byte("first")); err != nil {
++		t.Fatal(err)
++	}
++	done := make(chan error, 1)
++	go func() { done <- c.SendFrame(UID{First: 2}, []byte("second")) }()
++	deadline := time.Now().Add(5 * time.Second)
++	for len(c.writeCh) < 2 {
++		if time.Now().After(deadline) {
++			t.Fatal("WRITE_REORDER: second frame bypassed the queue")
++		}
++		time.Sleep(time.Millisecond)
++	}
++	if first, second := <-c.writeCh, <-c.writeCh; first.token.First != 1 || second.token.First != 2 {
++		t.Fatalf("queue order = %d, %d", first.token.First, second.token.First)
++	}
++	c.cancel()
++	if err := within(t, done, "stranded queued sender"); !errors.Is(err, ErrConnClosed) {
++		t.Fatalf("stranded queued sender returned %v", err)
++	}
++}
++
++// With nothing queued every earlier frame is on the socket, so a flush on a
++// live connection has nothing to wait for; on a dead one it still fails.
++func TestFlushWithNothingQueued(t *testing.T) {
++	t.Parallel()
++	cli, _ := tcpPair(t)
++	c := directConn(t, cli)
++	done := make(chan error, 2)
++	go func() { done <- c.Flush() }()
++	go func() { done <- c.FlushContext(context.Background()) }()
++	for range 2 {
++		if err := within(t, done, "flush with nothing queued"); err != nil {
++			t.Fatal(err)
++		}
++	}
++	c.cancel()
++	if err := c.Flush(); !errors.Is(err, ErrConnClosed) {
++		t.Fatalf("Flush on a dead connection = %v, want the teardown", err)
++	}
++	if err := c.FlushContext(context.Background()); !errors.Is(err, ErrConnClosed) {
++		t.Fatalf("FlushContext on a dead connection = %v, want the teardown", err)
++	}
++}
++
++// A failed direct write fails the connection exactly as a failed writeLoop write.
++func TestDirectWriteFailureFailsConnection(t *testing.T) {
++	t.Parallel()
++	cli, _ := tcpPair(t)
++	c := directConn(t, cli)
++	_, replies, handle := c.PrepareReply()
++	defer handle.Release()
++	cli.Close() // the next socket write fails
++	err := c.SendFrame(UID{First: 1}, []byte("x"))
++	var fe *wire.FDBError
++	if !errors.Is(err, ErrConnClosed) || !errors.As(err, &fe) || fe.Code != codeRequestMaybeDelivered {
++		t.Fatalf("SendFrame = %v, want the coded request_maybe_delivered teardown", err)
++	}
++	if !c.IsClosed() {
++		t.Fatal("failed direct write left the connection open")
++	}
++	if r := within(t, replies, "pending reply"); !errors.Is(r.Err, ErrConnClosed) {
++		t.Fatalf("pending reply = %v, want the coded teardown", r.Err)
++	}
++}
++
++// dialStalledPeer dials a peer that completes the handshake and then reads
++// nothing until release is closed; frames it later reads arrive on frames.
++func dialStalledPeer(t *testing.T) (c *Conn, release chan struct{}, frames <-chan []byte) {
++	t.Helper()
++	ln, err := net.Listen("tcp", "127.0.0.1:0")
++	if err != nil {
++		t.Fatal(err)
++	}
++	t.Cleanup(func() { ln.Close() })
++	release = make(chan struct{})
++	out := make(chan []byte, 64)
++	go func() {
++		srv, err := ln.Accept()
++		if err != nil {
++			return
++		}
++		defer srv.Close()
++		var buf [ConnectPacketSize]byte
++		if _, err := io.ReadFull(srv, buf[:]); err != nil {
++			return
++		}
++		sp := ConnectPacket{ProtocolVersion: ProtocolVersion73, ConnectionID: 0x5151}
++		if _, err := srv.Write(sp.Marshal()); err != nil {
++			return
++		}
++		<-release
++		var fr FrameReader
++		for {
++			token, body, err := fr.Read(srv, false)
++			if err != nil {
++				close(out)
++				return
++			}
++			out <- append([]byte(fmt.Sprint(token.First, ":")), body...)
++		}
++	}()
++	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
++	defer cancel()
++	c, err = dialWith(ctx, ln.Addr().String(), nil, nil, withMonitorCadence(time.Hour, time.Hour))
++	if err != nil {
++		t.Fatal(err)
++	}
++	t.Cleanup(func() { _ = c.Close() })
++	return c, release, out
++}
++
++// A full socket never holds a direct writer: the unwritten tail goes to
++// writeLoop, later senders queue behind it and can still give up on their ctx,
++// and the peer receives every frame whole and in order.
++func TestDirectWriteTailOnFullSocket(t *testing.T) {
++	t.Parallel()
++	c, release, frames := dialStalledPeer(t)
++	big := bytes.Repeat([]byte{'b'}, 32<<20) // beyond loopback's autotuned socket buffers
++	sent := make(chan error, 1)
++	go func() {
++		_, err := c.SendFrameContext(context.Background(), UID{First: 1}, big)
++		sent <- err
++	}()
++	if err := within(t, sent, "direct write into a full socket returning"); err != nil {
++		t.Fatal(err)
++	}
++	if c.queued.Load() == 0 {
++		t.Fatal("precondition: the socket took a 32 MiB frame whole")
++	}
++	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
++	defer cancel()
++	abandoned := make(chan error, 1)
++	go func() {
++		enqueued, err := c.SendFrameContext(ctx, UID{First: 2}, []byte("after"))
++		if !enqueued {
++			err = fmt.Errorf("not enqueued: %w", err)
++		}
++		abandoned <- err
++	}()
++	if err := within(t, abandoned, "queued sender honouring its ctx"); !errors.Is(err, context.DeadlineExceeded) {
++		t.Fatalf("queued sender behind a full socket returned %v, want its deadline", err)
++	}
++	close(release)
++	if got := within(t, frames, "first frame"); !bytes.Equal(got, append([]byte("1:"), big...)) {
++		t.Fatalf("WRITE_TAIL: first frame arrived as %d bytes", len(got))
++	}
++	if got := within(t, frames, "second frame"); string(got) != "2:after" {
++		t.Fatalf("WRITE_TAIL: second frame %q", got)
++	}
++}
++
++// Direct writers and writeLoop share one socket: every frame arrives whole and
++// each sender's frames in its own order. Run under -race.
++func TestDirectAndQueuedWritersInterleaveSafely(t *testing.T) {
++	t.Parallel()
++	c, release, frames := dialStalledPeer(t)
++	close(release)
++	const senders, perSender = 8, 50
++	got := make(chan error, 1)
++	go func() {
++		next := make([]int, senders)
++		for range senders * perSender {
++			f, ok := <-frames
++			if !ok {
++				got <- errors.New("peer stream ended")
++				return
++			}
++			var w, seq int
++			if _, err := fmt.Sscanf(string(f), "%d:%d/%d", &w, &w, &seq); err != nil || seq != next[w] {
++				got <- fmt.Errorf("frame %q: sender %d expected seq %d (%v)", f, w, next[w], err)
++				return
++			}
++			next[w]++
++		}
++		got <- nil
++	}()
++	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
++	defer cancel()
++	var wg sync.WaitGroup
++	for w := range senders {
++		wg.Add(1)
++		go func() {
++			defer wg.Done()
++			for seq := range perSender {
++				token, body := UID{First: uint64(w)}, []byte(fmt.Sprint(w, "/", seq))
++				var err error
++				switch seq % 3 {
++				case 0:
++					err = c.SendFrame(token, body)
++				case 1:
++					_, err = c.SendFrameContext(ctx, token, body)
++				default:
++					err = c.SendFrameDeferred(token, body)
++				}
++				if err != nil {
++					t.Error(err)
++					return
++				}
++			}
++		}()
++	}
++	wg.Wait()
++	if err := c.Flush(); err != nil {
++		t.Fatal(err)
++	}
++	if err := within(t, got, "peer receiving every frame"); err != nil {
++		_ = c.Close()
++		t.Fatal(err)
++	}
++}
+diff --git a/pkg/fdbgo/transport/conn_read_buffer_test.go b/pkg/fdbgo/transport/conn_read_buffer_test.go
+new file mode 100644
+index 000000000..e75ae133c
+--- /dev/null
++++ b/pkg/fdbgo/transport/conn_read_buffer_test.go
+@@ -0,0 +1,105 @@
++package transport
++
++import (
++	"bytes"
++	"context"
++	"net"
++	"sync/atomic"
++	"testing"
++	"time"
++)
++
++type readCountingConn struct {
++	net.Conn
++	reads atomic.Int32
++}
++
++func (c *readCountingConn) Read(p []byte) (int, error) {
++	c.reads.Add(1)
++	return c.Conn.Read(p)
++}
++
++func dialCounted(t *testing.T, s *simServer) (*Conn, *readCountingConn) {
++	t.Helper()
++	counted := &readCountingConn{Conn: s.cli}
++	handshook := make(chan error, 1)
++	go func() { handshook <- s.handshake() }()
++	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
++	defer cancel()
++	dial := func(context.Context, string, string) (net.Conn, error) { return counted, nil }
++	c, err := dialWith(ctx, "sim", dial, nil, withMonitorCadence(time.Hour, time.Hour))
++	if err != nil {
++		t.Fatalf("dial: %v", err)
++	}
++	if err := <-handshook; err != nil {
++		t.Fatalf("handshake: %v", err)
++	}
++	t.Cleanup(func() { _ = c.Close() })
++	return c, counted
++}
++
++// sendReplies writes one frame per body to the client in a single socket write.
++func sendReplies(t *testing.T, s *simServer, tokens []UID, bodies [][]byte) {
++	t.Helper()
++	var wire bytes.Buffer
++	for i, body := range bodies {
++		if err := WriteFrame(&wire, tokens[i], body, false); err != nil {
++			t.Fatalf("frame: %v", err)
++		}
++	}
++	go func() { _, _ = s.srv.Write(wire.Bytes()) }()
++}
++
++func awaitReplies(t *testing.T, chans []<-chan Response, bodies [][]byte) {
++	t.Helper()
++	for i, ch := range chans {
++		select {
++		case r := <-ch:
++			if r.Err != nil || !bytes.Equal(r.Body, bodies[i]) {
++				t.Fatalf("reply %d: err=%v, %d bytes, want %d", i, r.Err, len(r.Body), len(bodies[i]))
++			}
++		case <-time.After(5 * time.Second):
++			t.Fatalf("reply %d not delivered", i)
++		}
++	}
++}
++
++func prepareReplies(c *Conn, n int) ([]UID, []<-chan Response) {
++	tokens, chans := make([]UID, n), make([]<-chan Response, n)
++	for i := range n {
++		tokens[i], chans[i], _ = c.PrepareReply()
++	}
++	return tokens, chans
++}
++
++// One socket read must deliver every frame it carries, as C++ connectionReader
++// does; reading length, checksum and payload separately cost three reads each.
++func TestReadLoopDrainsCoalescedRepliesWithOneRead(t *testing.T) {
++	t.Parallel()
++	s := newSimServer(t)
++	c, counted := dialCounted(t, s)
++	tokens, chans := prepareReplies(c, 3)
++	bodies := [][]byte{[]byte("first"), bytes.Repeat([]byte{'b'}, 900), []byte("third")}
++	before := counted.reads.Load()
++	sendReplies(t, s, tokens, bodies)
++	awaitReplies(t, chans, bodies)
++	// The read that carried the frames, plus the next one the loop blocks in.
++	if reads := counted.reads.Load() - before; reads > 2 {
++		t.Fatalf("READLOOP_UNBUFFERED: %d socket reads for 3 coalesced frames, want <= 2", reads)
++	}
++}
++
++// Frames larger than the read buffer, and frames straddling it, arrive intact.
++func TestReadLoopBufferBoundaries(t *testing.T) {
++	t.Parallel()
++	s := newSimServer(t)
++	c, _ := dialCounted(t, s)
++	sizes := []int{1, readBufferSize - 30, 3 * readBufferSize, 0, readBufferSize + 7, 64}
++	tokens, chans := prepareReplies(c, len(sizes))
++	bodies := make([][]byte, len(sizes))
++	for i, n := range sizes {
++		bodies[i] = bytes.Repeat([]byte{byte('a' + i)}, n)
++	}
++	sendReplies(t, s, tokens, bodies)
++	awaitReplies(t, chans, bodies)
++}
+diff --git a/pkg/fdbgo/transport/direct_write.go b/pkg/fdbgo/transport/direct_write.go
+new file mode 100644
+index 000000000..fb4bcd52d
+--- /dev/null
++++ b/pkg/fdbgo/transport/direct_write.go
+@@ -0,0 +1,64 @@
++package transport
++
++import "bytes"
++
++// enqueue hands req to writeLoop, counting it first so that no direct write
++// can overtake it. done (nil: none) abandons the enqueue as c.ctx does.
++func (c *Conn) enqueue(req writeReq, done <-chan struct{}) bool {
++	c.queued.Add(1)
++	select {
++	case c.writeCh <- req:
++		return true
++	case <-c.ctx.Done():
++	case <-done:
++	}
++	c.queued.Add(-1)
++	return false
++}
++
++// tryEnqueue is enqueue for fire-and-forget frames that a full queue drops.
++func (c *Conn) tryEnqueue(req writeReq) bool {
++	c.queued.Add(1)
++	select {
++	case c.writeCh <- req:
++		return true
++	default:
++		c.queued.Add(-1)
++		return false
++	}
++}
++
++// tryWriteDirect writes the frame on the caller's goroutine when nothing is
++// queued and writeLoop is idle, saving the handoff to writeLoop and back. The
++// write never blocks: whatever a full socket refuses, writeLoop finishes.
++// Unlike C++'s connectionWriter this first frame is not coalesced with others.
++func (c *Conn) tryWriteDirect(token UID, body []byte) (bool, error) {
++	if c.raw == nil || c.queued.Load() != 0 || !c.writeMu.TryLock() {
++		return false, nil
++	}
++	defer c.writeMu.Unlock()
++	// A frame may have been queued between the Load and the TryLock. writeLoop
++	// keeps the lock until its batch is flushed, so zero here means a quiet socket.
++	if c.queued.Load() != 0 || c.ctx.Err() != nil {
++		return false, nil
++	}
++	bufp, frame := encodeFrame(token, body, c.useTLS)
++	defer putFrame(bufp, frame)
++	n, err := writeNonBlocking(c.raw, frame)
++	if err != nil {
++		// As in writeLoop: maybe delivered, and failed under writeMu so that no
++		// frame follows a torn one.
++		err = codedConnClosed(err)
++		c.failConnection(err)
++		return true, err
++	}
++	if n < len(frame) {
++		c.tail = bytes.Clone(frame[n:])
++		c.queued.Add(1)
++		select {
++		case c.tailKick <- struct{}{}:
++		default:
++		}
++	}
++	return true, nil
++}
+diff --git a/pkg/fdbgo/transport/direct_write_other.go b/pkg/fdbgo/transport/direct_write_other.go
+new file mode 100644
+index 000000000..868824814
+--- /dev/null
++++ b/pkg/fdbgo/transport/direct_write_other.go
+@@ -0,0 +1,15 @@
++//go:build !unix
++
++package transport
++
++import (
++	"errors"
++	"net"
++	"syscall"
++)
++
++func rawConnFor(net.Conn) syscall.RawConn { return nil }
++
++func writeNonBlocking(syscall.RawConn, []byte) (int, error) {
++	return 0, errors.New("transport: direct writes are unix-only")
++}
+diff --git a/pkg/fdbgo/transport/direct_write_unix.go b/pkg/fdbgo/transport/direct_write_unix.go
+new file mode 100644
+index 000000000..4c607b4ba
+--- /dev/null
++++ b/pkg/fdbgo/transport/direct_write_unix.go
+@@ -0,0 +1,45 @@
++//go:build unix
++
++package transport
++
++import (
++	"errors"
++	"net"
++	"syscall"
++)
++
++func rawConnFor(nc net.Conn) syscall.RawConn {
++	tc, ok := nc.(*net.TCPConn)
++	if !ok {
++		return nil
++	}
++	rc, err := tc.SyscallConn()
++	if err != nil {
++		return nil
++	}
++	return rc
++}
++
++// writeNonBlocking makes one write attempt on the non-blocking socket and
++// reports how much it took; a full socket takes nothing rather than waiting.
++func writeNonBlocking(rc syscall.RawConn, b []byte) (int, error) {
++	var n int
++	var werr error
++	if err := rc.Write(func(fd uintptr) bool {
++		for {
++			n, werr = syscall.Write(int(fd), b)
++			if !errors.Is(werr, syscall.EINTR) {
++				return true
++			}
++		}
++	}); err != nil {
++		return 0, err
++	}
++	if errors.Is(werr, syscall.EAGAIN) {
++		return 0, nil
++	}
++	if werr != nil {
++		return 0, werr
++	}
++	return n, nil
++}
+diff --git a/pkg/fdbgo/transport/framing.go b/pkg/fdbgo/transport/framing.go
+index 200871651..52fa77727 100644
+--- a/pkg/fdbgo/transport/framing.go
++++ b/pkg/fdbgo/transport/framing.go
+@@ -38,6 +38,14 @@ const (
+ // WriteFrame writes a framed message to w.
+ // If tls is true, the checksum is omitted.
+ func WriteFrame(w io.Writer, token UID, body []byte, tls bool) error {
++	bufp, frame := encodeFrame(token, body, tls)
++	_, err := w.Write(frame)
++	putFrame(bufp, frame)
++	return err
++}
++
++// encodeFrame builds the frame in a pooled buffer; putFrame returns it.
++func encodeFrame(token UID, body []byte, tls bool) (*[]byte, []byte) {
+ 	payloadLen := 16 + len(body) // token + body
+ 	headerSize := packetLenWidth
+ 	if !tls {
+@@ -76,10 +84,12 @@ func WriteFrame(w io.Writer, token UID, body []byte, tls bool) error {
+ 		binary.LittleEndian.PutUint64(buf[off:], checksum)
+ 	}
+ 
+-	_, err := w.Write(buf)
+-	*bufp = buf[:0] // reset length, keep capacity
++	return bufp, buf
++}
++
++func putFrame(bufp *[]byte, frame []byte) {
++	*bufp = frame[:0] // reset length, keep capacity
+ 	writeFramePool.Put(bufp)
+-	return err
+ }
+ 
+ // FrameReader reads framed messages with a persistent header buffer to avoid
+diff --git a/pkg/fdbgo/transport/write_context.go b/pkg/fdbgo/transport/write_context.go
+index 626d56a43..09a70dfd6 100644
+--- a/pkg/fdbgo/transport/write_context.go
++++ b/pkg/fdbgo/transport/write_context.go
+@@ -42,9 +42,9 @@ func (c *writeCompletion) complete(err error) {
+ 	c.release()
+ }
+ 
+-// SendFrameContext is a cancellable read-send. It copies body: after return the
+-// caller may recycle its own encoding even if the queued copy has not yet been
+-// written. enqueued reports ownership transfer, NOT delivery to the peer.
++// SendFrameContext is a cancellable read-send: a direct write never blocks and a
++// queued copy is abandoned on ctx. After return the caller may recycle body.
++// enqueued reports ownership transfer, NOT delivery to the peer.
+ // At-most-once commit dispatch must continue to use SendFrame instead.
+ func (c *Conn) SendFrameContext(ctx context.Context, token UID, body []byte) (enqueued bool, err error) {
+ 	return c.writeContext(ctx, token, body, false)
+@@ -53,7 +53,7 @@ func (c *Conn) SendFrameContext(ctx context.Context, token UID, body []byte) (en
+ // FlushContext waits for an ordered flush marker without coupling a read's
+ // cancellation to the lifetime of the shared connection.
+ func (c *Conn) FlushContext(ctx context.Context) error {
+-	if !c.hasDirty.Load() {
++	if c.queued.Load() == 0 && c.ctx.Err() == nil {
+ 		return ctx.Err()
+ 	}
+ 	_, err := c.writeContext(ctx, UID{}, nil, true)
+@@ -64,12 +64,15 @@ func (c *Conn) writeContext(ctx context.Context, token UID, body []byte, flush b
+ 	if err := ctx.Err(); err != nil {
+ 		return false, err
+ 	}
++	if !flush {
++		LogSend(token, body)
++		if direct, err := c.tryWriteDirect(token, body); direct {
++			return true, err
++		}
++	}
+ 	completion := newWriteCompletion()
+ 	defer completion.release() // caller reference, including abandonment
+ 	request := writeReq{token: token, body: bytes.Clone(body), owned: completion}
+-	if !flush {
+-		LogSend(token, request.body)
+-	}
+ 	enqueued, err := c.enqueueOwned(ctx, request)
+ 	if !enqueued {
+ 		completion.release() // ownership never transferred to the writer
+@@ -104,11 +107,7 @@ func (c *Conn) SendFrameDeferredContext(ctx context.Context, token UID, body []b
+ 	}
+ 	request := writeReq{token: token, body: bytes.Clone(body)}
+ 	LogSend(token, request.body)
+-	enqueued, err := c.enqueueOwned(ctx, request)
+-	if enqueued {
+-		c.hasDirty.Store(true)
+-	}
+-	return enqueued, err
++	return c.enqueueOwned(ctx, request)
+ }
+ 
+ func (c *Conn) enqueueOwned(ctx context.Context, request writeReq) (bool, error) {
+@@ -119,14 +118,13 @@ func (c *Conn) enqueueOwned(ctx context.Context, request writeReq) (bool, error)
+ 	if c.writeClosed || c.ctx.Err() != nil {
+ 		return false, errConnClosed
+ 	}
+-	select {
+-	case c.writeCh <- request:
++	if c.enqueue(request, ctx.Done()) {
+ 		return true, nil
+-	case <-ctx.Done():
+-		return false, ctx.Err()
+-	case <-c.ctx.Done():
+-		return false, errConnClosed
+ 	}
++	if err := ctx.Err(); err != nil && c.ctx.Err() == nil {
++		return false, err
++	}
++	return false, errConnClosed
+ }
+ 
+ // finishOwnedWrites runs after writer recovery has cancelled the connection,
+diff --git a/pkg/fdbgo/transport/write_context_test.go b/pkg/fdbgo/transport/write_context_test.go
+index e4959a9de..547a100f9 100644
+--- a/pkg/fdbgo/transport/write_context_test.go
++++ b/pkg/fdbgo/transport/write_context_test.go
+@@ -53,8 +53,8 @@ func TestWriteContextCancellationBeforeEnqueue(t *testing.T) {
+ 	if enqueued, err := conn.SendFrameDeferredContext(ctx, UID{First: 1}, []byte("body")); enqueued || !errors.Is(err, context.Canceled) {
+ 		t.Fatalf("pre-enqueue deferred cancellation=(%v, %v), want false, context.Canceled", enqueued, err)
+ 	}
+-	if conn.hasDirty.Load() {
+-		t.Fatal("failed deferred enqueue marked connection dirty")
++	if conn.queued.Load() != 0 {
++		t.Fatal("failed deferred enqueue left a frame counted as queued")
+ 	}
+ }
+ 
