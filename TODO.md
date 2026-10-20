@@ -287,6 +287,23 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   `writer_turn.go:52-99`: `NotifySuspend` and the coalescing wait run with `writeMu`
   held and no panic rollback for the lock, counted frame or `turnCollecting`; pin a
   suspension-observer panic and prove connection reuse after recovery.
+- [ ] **Panic-safe QueueModel accounting in read senders.** Reply registration
+  cleanup does not release a delta when a recovered panic occurs after
+  `startRequest`: `readpath.go:313` (getKey), `:561` (getValue), `:636` (single-server
+  getValue), `:1077` (range family), and `:1719` (watch). Add a separately owned
+  accounting guard through sender-to-RPC ownership transfer and pin a panic after
+  each increment. C++ `ModelHolder::~ModelHolder` removes the delta without a
+  latency sample (`LoadBalance.actor.h:53-67`); `replyGuard` only owns the endpoint.
+- [ ] **Join monitor reply waiters on connection close.** `sendPingWithReply`
+  launches its reply-wait goroutine outside `Conn.loopWG` (`transport/conn.go`).
+  Connection cancellation wakes it, but `Close` can return before it releases
+  its reply handle. Track that owner through shutdown and pin zero live waiters
+  on return; the cold-control outbox worker is tracked separately.
+- [ ] **Full-queue control packets must not be dropped.** The pre-existing
+  transport `tryEnqueue` policy drops monitor pings and ping replies when its
+  bounded queue is full; C++ queues them as ordinary packets in `Peer::unsent`
+  (`FlowTransport.actor.cpp:1967-1998,2078`). Cold-prefix control packets now join
+  the ordered outbox, but its full-capacity fallback retains this divergence.
 - [ ] **Reads after an illegal Set precede its deferred verdict.** `stateSet`
   (`transaction.go:1268-1284`) buffers illegal keys/values until commit validation;
   C++ RYW set throws before modifying WriteMap (`ReadYourWrites.actor.cpp:2344-2353`)

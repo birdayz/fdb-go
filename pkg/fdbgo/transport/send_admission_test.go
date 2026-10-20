@@ -21,7 +21,9 @@ func admissionConn(t *testing.T) (*Conn, net.Conn) {
 	c := directConn(t, cli)
 	c.raw = nil
 	c.writeCh = make(chan writeReq, 1)
-	WithSendOrder(&sendqueue.Queue{})(c)
+	var order sendqueue.Queue
+	order.Seal()
+	WithSendOrder(&order)(c)
 	return c, peer
 }
 
@@ -95,7 +97,18 @@ func admissionFinish(c *Conn, request writeReq) {
 
 func admissionDrain(t *testing.T, c *Conn, peer net.Conn, want uint64, acknowledge bool) writeReq {
 	t.Helper()
-	request := admissionAwait(t, c.writeCh, "queued request")
+	next := make(chan writeReq, 1)
+	go func() {
+		for {
+			request, frame, ready := c.nextWrite(true)
+			if frame || !ready {
+				next <- request
+				return
+			}
+			// Shared outbox/tail wakes carry no frame to decode or finish.
+		}
+	}()
+	request := admissionAwait(t, next, "queued request")
 	marker := request.token == (UID{}) && request.body == nil
 	if marker {
 		if want != 0 {
@@ -141,8 +154,8 @@ func admissionRequireSend(t *testing.T, done <-chan admissionResult) {
 
 func admissionQuiesced(t *testing.T, c *Conn) {
 	t.Helper()
-	if c.sendWaiters.Pending() || c.queued.Load() != 0 || len(c.writeCh) != 0 {
-		t.Errorf("admission did not drain: pending=%t queued=%d buffered=%d", c.sendWaiters.Pending(), c.queued.Load(), len(c.writeCh))
+	if c.sendWaiters.Pending() || c.heldWaiters.Pending() || c.heldCount.Load() != 0 || c.queued.Load() != 0 || len(c.writeCh)+len(c.prefixCh)+len(c.heldCh) != 0 {
+		t.Errorf("admission did not drain: pending=%t heldPending=%t held=%d queued=%d buffered=%d/%d/%d", c.sendWaiters.Pending(), c.heldWaiters.Pending(), c.heldCount.Load(), c.queued.Load(), len(c.writeCh), len(c.prefixCh), len(c.heldCh))
 	}
 }
 
@@ -320,9 +333,9 @@ func TestAdmissionPendingCountBlocksDirectAndTurn(t *testing.T) {
 			var took bool
 			var err error
 			if mode == "direct" {
-				took, err = c.tryWriteDirect(UID{First: 3}, admissionBody(3), nil)
+				took, err = c.tryWriteDirect(UID{First: 3}, admissionBody(3))
 			} else {
-				took, err = c.takeTurn(c.ctx, UID{First: 3}, admissionBody(3), nil)
+				took, err = c.takeTurn(c.ctx, UID{First: 3}, admissionBody(3))
 			}
 			if took || err != nil {
 				t.Errorf("%s bypassed the counted waiter: took=%t err=%v", mode, took, err)
@@ -416,6 +429,7 @@ func TestAdmissionColdPermitReleasedBeforeFlush(t *testing.T) {
 	first, _ := order.Reserve()
 	second, _ := order.Reserve()
 	WithSendOrder(&order)(c)
+	order.Seal()
 	ctx, signal := admissionSignal(t, c.ctx)
 	head := make(chan admissionResult, 1)
 	go func() {

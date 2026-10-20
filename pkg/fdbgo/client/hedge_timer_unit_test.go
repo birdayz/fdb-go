@@ -38,7 +38,8 @@ func TestHedgeTimerAllocations(t *testing.T) {
 					if shape == "race" {
 						s := makeRPC("secondary", false)
 						if control {
-							result, _ = readyReply(p)
+							owner := replyGuard{handle: p.replyHandle}
+							result, _ = readyReplyOwned(p, &owner)
 							s.replyHandle.Cancel()
 							s.replyHandle.Release()
 							result.others = []rpcAccount{accountOf(s)}
@@ -46,7 +47,8 @@ func TestHedgeTimerAllocations(t *testing.T) {
 							result = raceReplies(context.Background(), p, s, time.Hour)
 						}
 					} else if control {
-						result, _ = readyReply(p)
+						owner := replyGuard{handle: p.replyHandle}
+						result, _ = readyReplyOwned(p, &owner)
 					} else {
 						var secondary sendFunc
 						if shape == "hedge" {

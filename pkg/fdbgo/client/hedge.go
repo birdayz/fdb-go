@@ -244,13 +244,8 @@ func accountOf(r inFlightRPC) rpcAccount {
 	return rpcAccount{addr: r.addr, delta: r.delta, start: r.start}
 }
 
-// readyReply preserves a queued response when cancellation and reply readiness
-// are observed together, matching the read-first ordering of C++ RYW choose.
-func readyReply(inflight inFlightRPC) (hedgeResult, bool) {
-	owner := replyGuard{handle: inflight.replyHandle}
-	return readyReplyOwned(inflight, &owner)
-}
-
+// readyReplyOwned preserves a queued response when cancellation and reply
+// readiness are observed together, matching C++ RYW choose's read-first ordering.
 func readyReplyOwned(inflight inFlightRPC, owner *replyGuard) (hedgeResult, bool) {
 	select {
 	case resp := <-inflight.replyCh:

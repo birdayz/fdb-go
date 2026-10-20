@@ -8,9 +8,14 @@ import (
 
 // enqueueOrdered keeps full-queue senders in peer order before reporting their
 // first wait. Every reservation remains counted until enqueue or abandonment.
-func (c *Conn) enqueueOrdered(ctx context.Context, request writeReq, done <-chan struct{}, accepted func()) (enqueued bool, err error) {
+// Keep hot-path defers open-coded: returns × defers must stay ≤ 15 in Go 1.26.
+func (c *Conn) enqueueOrdered(ctx context.Context, request writeReq, done <-chan struct{}) (enqueued bool, err error) {
 	c.queued.Add(1)
+	reader := false
 	defer func() {
+		if reader {
+			c.writeAdmission.RUnlock()
+		}
 		if !enqueued {
 			c.queued.Add(-1)
 		}
@@ -24,22 +29,22 @@ func (c *Conn) enqueueOrdered(ctx context.Context, request writeReq, done <-chan
 		permit, first = c.sendWaiters.Reserve()
 	} else {
 		c.writeAdmission.RLock()
+		reader = true
 		if c.writeClosed || c.ctx.Err() != nil {
-			c.writeAdmission.RUnlock()
 			return false, errConnClosed
 		}
 		if !c.sendWaiters.Pending() && c.tryEnqueueCounted(request) {
-			enqueued = true
-			c.writeAdmission.RUnlock()
-			if accepted != nil {
-				accepted()
-			}
 			return true, nil
 		}
 		// Publish while still admitted, before a child can start at NotifySuspend.
 		permit, first = c.sendWaiters.Reserve()
+		reader = false
 		c.writeAdmission.RUnlock()
 	}
+	return c.enqueueWaiting(ctx, request, done, permit, first)
+}
+
+func (c *Conn) enqueueWaiting(ctx context.Context, request writeReq, done <-chan struct{}, permit *sendqueue.Permit, first bool) (bool, error) {
 	defer permit.Release()
 	if first && !c.finishAdmissionBarrier(ctx) {
 		return false, errConnClosed
@@ -74,10 +79,6 @@ func (c *Conn) enqueueOrdered(ctx context.Context, request writeReq, done <-chan
 		case <-c.ctx.Done():
 			return false, errConnClosed
 		}
-	}
-	enqueued = true
-	if accepted != nil {
-		accepted()
 	}
 	return true, nil
 }

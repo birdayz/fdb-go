@@ -312,6 +312,8 @@ type txOptions struct {
 	afterPendingSend func(*PendingGet)
 	// beforeRangeGoroutine parks a started range read's goroutine before it claims the read.
 	beforeRangeGoroutine func()
+	// beforeResolveKeyResume observes a fallback resolver's unready startup gate.
+	beforeResolveKeyResume func(KeySelector)
 	// afterRangeReply parks an issued range read after a storage reply, before
 	// it merges the reply or records its conflict.
 	afterRangeReply func()
@@ -465,7 +467,8 @@ type Transaction struct {
 	// together (a mutex, not the atomic deferred-error contract above).
 	resetMu   sync.Mutex
 	readReady chan struct{}
-	// Lock order: conflictMu -> readErrMu -> timeoutQueue.mu (RFC-263), never the reverse.
+	// Lock order: conflictMu -> readErrMu, never the reverse. Any future lock
+	// nested under readErrMu (such as RFC-263's timeout queue) must be a leaf.
 	readErrMu sync.Mutex
 	// timebomb is the transaction's TIMEOUT timer, reused across incarnations;
 	// while timebombArmed it is armed for timebombInc at timebombGen (all under

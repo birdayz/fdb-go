@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -274,7 +275,7 @@ func TestGetKeyCompletedOutcomeSurvivesReset(t *testing.T) {
 // must recheck its captured incarnation instead of appending to the new handle.
 func TestCompletedReadCannotPublishAfterReset(t *testing.T) {
 	t.Parallel()
-	for _, route := range []string{"getKey", "range"} {
+	for _, route := range []string{"getKey", "range", "watch"} {
 		t.Run(route, func(t *testing.T) {
 			t.Parallel()
 			tx := &Transaction{}
@@ -283,23 +284,44 @@ func TestCompletedReadCannotPublishAfterReset(t *testing.T) {
 			if route == "range" {
 				tx.ryw.withLock(func() { tx.ryw.serverCache.insert([]byte("a"), []byte("z"), m.kvs) })
 			}
+			if route == "watch" {
+				tx.db = &database{ctx: context.Background()}
+				tx.db.maxWatches.Store(1)
+				// Model an acquired GRV, not a user-set version needing DB-floor validation.
+				tx.readVersionState = &readVersionState{readVersion: 1, hasReadVersion: true}
+				tx.ryw.cachePointResult([]byte("a"), []byte("value"))
+			}
 			entered, release := make(chan struct{}), make(chan struct{})
+			resume := sync.OnceFunc(func() { close(release) })
+			defer resume()
 			tx.beforeReadConflict = func() { close(entered); <-release }
 			parent, leave := tx.opContext(context.Background())
+			defer leave()
 			done := make(chan error, 1)
 			go func() {
-				if route == "getKey" {
+				switch route {
+				case "getKey":
 					_, err := tx.StartGetKey(parent, fgtSel("a")).Get()
 					done <- err
-				} else {
+				case "range":
 					_, _, err := tx.StartGetRange(parent, []byte("a"), []byte("d"), 0, -1, false).Get()
+					done <- err
+				case "watch":
+					_, _, _, watchCtx, watchCancel, err := tx.WatchSetup(parent, []byte("a"))
+					if watchCancel != nil {
+						watchCancel()
+						tx.db.releaseWatch()
+					}
+					if watchCtx != nil || watchCancel != nil {
+						t.Error("retired watch setup returned poll ownership")
+					}
 					done <- err
 				}
 			}()
-			<-entered // after the last resume, before publishing read conflicts
+			joined(t, "completed read reaching conflict publication", func() { <-entered })
 			leave()
 			joined(t, "Reset with a completed borrowed read", tx.Reset)
-			close(release)
+			resume()
 			joined(t, "old read completion", func() {
 				if err := <-done; err == nil {
 					t.Error("retired read succeeded instead of failing reset")
@@ -307,12 +329,50 @@ func TestCompletedReadCannotPublishAfterReset(t *testing.T) {
 					t.Errorf("retired read error = %v, want transaction_cancelled", err)
 				}
 			})
+			if route == "watch" {
+				if n := tx.db.outstandingWatches.Load(); n != 0 {
+					t.Fatalf("failed watch setup retained %d watch slots", n)
+				}
+				tx.watchMu.Lock()
+				remaining := len(tx.watchCancels)
+				tx.watchMu.Unlock()
+				if remaining != 0 {
+					t.Fatalf("failed watch setup retained %d watch contexts", remaining)
+				}
+			}
 			tx.conflictMu.Lock()
 			defer tx.conflictMu.Unlock()
 			if len(tx.readConflicts) != 0 {
 				t.Fatalf("new incarnation inherited old conflicts: %+v", tx.readConflicts)
 			}
 		})
+	}
+}
+
+func TestWatchSetupPublishesLiveReadConflict(t *testing.T) {
+	t.Parallel()
+	db := &database{ctx: context.Background()}
+	db.maxWatches.Store(1)
+	tx := &Transaction{db: db, readVersionState: &readVersionState{readVersion: 1, hasReadVersion: true}}
+	key := []byte("watch-key")
+	tx.ryw.cachePointResult(key, []byte("value"))
+	value, version, _, watchCtx, watchCancel, err := tx.WatchSetup(context.Background(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if watchCancel == nil {
+		t.Fatal("successful watch setup has no cancellation ownership")
+	}
+	defer watchCancel()
+	defer db.releaseWatch()
+	if string(value) != "value" || version != 1 || watchCtx == nil || watchCtx.Err() != nil {
+		t.Fatalf("watch setup = %q, version %d, context %v", value, version, watchCtx)
+	}
+	if n := db.outstandingWatches.Load(); n != 1 {
+		t.Fatalf("successful watch setup reserved %d slots, want 1", n)
+	}
+	if len(tx.readConflicts) != 1 || string(tx.readConflicts[0].Begin) != string(key) || string(tx.readConflicts[0].End) != string(key)+"\x00" {
+		t.Fatalf("watch conflicts = %+v, want [%q,%q)", tx.readConflicts, key, keyAfterBytes(key))
 	}
 }
 

@@ -274,18 +274,43 @@ func (l *nativeRangeLoop) onReply(kvs []KeyValue, more, modified bool, shardBegi
 // range between them at readVersion.
 func (tx *Transaction) nativeGetRangeFallback(ctx context.Context, begin, end KeySelector, limits rangeLimits, readVersion int64, reverse bool) (nativeRangeResult, error) {
 	rctx, cancel := context.WithCancel(ctx)
-	// resolveKey(begin) runs to its first wait before resolveKey(end) is
-	// created (:4465-4466); parked marks that wait.
-	fb, parked := tx.startResolveKey(rctx, begin, readVersion)
-	<-parked // closed on begin's first wait, or when its goroutine ends
-	fe, endParked := tx.startResolveKey(rctx, end, readVersion)
-	defer func() { // an abandoned resolution ends with the call
+	var startup chan struct{}
+	if !begin.isFirstGreaterOrEqual() && !begin.isFirstGreaterThan() &&
+		!end.isFirstGreaterOrEqual() && !end.isFirstGreaterThan() {
+		startup = make(chan struct{})
+	}
+	released := startup == nil
+	releaseStartup := func() {
+		if !released {
+			close(startup)
+			released = true
+		}
+	}
+	var fb, fe *keyFuture
+	defer func() { // cancel before releasing continuations, then join both actors
 		cancel()
-		<-fb.done
-		<-fe.done
+		releaseStartup()
+		if fb != nil {
+			<-fb.done
+		}
+		if fe != nil {
+			<-fe.done
+		}
 	}()
-	awaitResolveKeyStart(rctx, endParked) // end also runs to its first wait before fb.wait
-	b, err := fb.wait()                   // :4468
+	// Neither worker can resume its first wait while the parent's synchronous
+	// resolveKey calls are still starting (:4465-4469).
+	var parked <-chan struct{}
+	fb, parked = tx.startResolveKey(rctx, begin, readVersion, startup)
+	select {
+	case <-parked:
+	case <-rctx.Done():
+		return nativeRangeResult{}, rctx.Err()
+	}
+	var endParked <-chan struct{}
+	fe, endParked = tx.startResolveKey(rctx, end, readVersion, startup)
+	awaitResolveKeyStart(rctx, endParked)
+	releaseStartup()
+	b, err := fb.wait() // :4468
 	if err != nil {
 		return nativeRangeResult{}, err
 	}
@@ -313,7 +338,10 @@ func fallbackFlags(b, e []byte, more, reverse bool) (readToBegin, readThroughEnd
 	return readToBegin, readThroughEnd
 }
 
-type resolveKeyStartObserver struct{}
+type (
+	resolveKeyStartObserver  struct{}
+	resolveKeyWorkerObserver struct{}
+)
 
 func awaitResolveKeyStart(ctx context.Context, parked <-chan struct{}) {
 	select {
@@ -326,7 +354,10 @@ func awaitResolveKeyStart(ctx context.Context, parked <-chan struct{}) {
 	if observe, ok := ctx.Value(resolveKeyStartObserver{}).(func()); ok {
 		observe()
 	}
-	<-parked
+	select {
+	case <-parked:
+	case <-ctx.Done():
+	}
 }
 
 // keyFuture is a key being resolved.
@@ -349,7 +380,7 @@ func (f *keyFuture) wait() ([]byte, error) {
 // both ready with no request; otherwise a goroutine runs getKeyImpl at version rv.
 // parked closes when that goroutine first blocks on the network (location
 // lookup or GetKeyRequest), or finishes. The goroutine stops when ctx ends.
-func (tx *Transaction) startResolveKey(ctx context.Context, sel KeySelector, rv int64) (fut *keyFuture, parked <-chan struct{}) {
+func (tx *Transaction) startResolveKey(ctx context.Context, sel KeySelector, rv int64, resume <-chan struct{}) (fut *keyFuture, parked <-chan struct{}) {
 	if sel.isFirstGreaterOrEqual() {
 		return readyKeyFuture(sel.Key), closedChan
 	}
@@ -357,7 +388,11 @@ func (tx *Transaction) startResolveKey(ctx context.Context, sel KeySelector, rv 
 		return readyKeyFuture(keyAfterSelectorKey(sel.Key)), closedChan
 	}
 	fut = &keyFuture{done: make(chan struct{})}
-	pctx, park := withParkSignal(ctx)
+	var beforeWait func()
+	if hook := tx.beforeResolveKeyResume; hook != nil {
+		beforeWait = func() { hook(sel) }
+	}
+	pctx, park := transport.WithSuspendHandoff(ctx, resume, beforeWait)
 	go func() {
 		// A client goroutine boundary (panicbackstop.go): every exit publishes the
 		// result and closes done and parked, so the fallback's wait and cleanup
@@ -365,6 +400,9 @@ func (tx *Transaction) startResolveKey(ctx context.Context, sel KeySelector, rv 
 		defer park.Fire()
 		defer close(fut.done)
 		if tx.resolveKeyBackstop().run(func() {
+			if observe, ok := pctx.Value(resolveKeyWorkerObserver{}).(func(KeySelector)); ok {
+				observe(sel)
+			}
 			fut.key, _, fut.err = tx.getKeyImpl(pctx, rv, sel.Key, sel.OrEqual, sel.Offset)
 		}) {
 			fut.key, fut.err = nil, &wire.FDBError{Code: ErrInternalError}

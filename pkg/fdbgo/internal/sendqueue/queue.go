@@ -13,7 +13,8 @@ type Queue struct {
 	pending atomic.Bool
 	head    *Permit
 	tail    *Permit
-	sealed  bool // under mu; an empty detached generation cannot be reopened
+	sealed  bool // under mu; no reservation may extend a completed dial generation
+	drained chan struct{}
 }
 
 // Permit is one reservation in a Queue. Its links and membership are guarded by
@@ -62,16 +63,32 @@ func (q *Queue) TryReserve() (*Permit, bool, bool) {
 	return p, first, true
 }
 
-// SealIfEmpty permanently refuses new reservations if no permits remain. It is
-// atomic with TryReserve and returns true again for an already sealed queue.
-func (q *Queue) SealIfEmpty() bool {
+// Seal fixes the generation's membership. The shared channel closes after its
+// last existing permit releases, immediately if the generation is already empty.
+func (q *Queue) Seal() <-chan struct{} {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if q.head != nil {
-		return false
+	if !q.sealed {
+		q.sealed = true
+		if q.drained == nil {
+			q.drained = make(chan struct{})
+		}
+		if q.head == nil {
+			close(q.drained)
+		}
 	}
-	q.sealed = true
-	return true
+	return q.drained
+}
+
+// Drained returns one stable completion channel, also before Seal. It closes
+// only once the generation is sealed and empty; callers never allocate a per-waiter signal.
+func (q *Queue) Drained() <-chan struct{} {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.drained == nil {
+		q.drained = make(chan struct{})
+	}
+	return q.drained
 }
 
 // Ready closes once the permit becomes head. Releasing a permit before it is
@@ -112,6 +129,9 @@ func (p *Permit) Release() {
 			close(q.head.ready)
 		} else {
 			q.pending.Store(false)
+			if q.sealed {
+				close(q.drained)
+			}
 		}
 	}
 }

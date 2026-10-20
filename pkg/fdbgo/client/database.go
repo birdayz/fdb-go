@@ -560,17 +560,30 @@ func (db *database) dialAndPool(addr string, call *dialCall) {
 	// caller re-dials. The connMu section below is closure-scoped so a panic in
 	// it unwinds the lock (else this recover's Lock would deadlock).
 	pb := &panicBackstop{name: "dialAndPool", db: db}
+	var c *transport.Conn // owned here until the result is published
 	defer func() {
 		r := recover()
 		if !pb.recovered(r) {
 			return
 		}
 		db.connMu.Lock()
+		defer db.connMu.Unlock()
+		select {
+		case <-call.done:
+			return
+		default:
+		}
 		if db.dialing[addr] == call {
 			delete(db.dialing, addr)
 		}
-		db.connMu.Unlock()
+		if c != nil {
+			if db.connPool[addr] == c {
+				delete(db.connPool, addr)
+			}
+			_ = c.Close()
+		}
 		call.err = fmt.Errorf("fdbgo: panic dialing %s: %v", addr, r)
+		call.sends.Seal()
 		close(call.done)
 	}()
 
@@ -578,22 +591,12 @@ func (db *database) dialAndPool(addr string, call *dialCall) {
 	defer cancel() // RFC-110: release the dial timer even if transport.Dial panics
 	dialOpts := append([]transport.DialOption{}, db.dialOpts...)
 	dialOpts = append(dialOpts, transport.WithSendOrder(&call.sends))
-	c, dialErr := transport.Dial(dialCtx, addr, db.tlsConfig, db.dialFn, dialOpts...)
+	var dialErr error
+	c, dialErr = transport.Dial(dialCtx, addr, db.tlsConfig, db.dialFn, dialOpts...)
 
 	func() {
 		db.connMu.Lock()
 		defer db.connMu.Unlock()
-		defer func() {
-			drained := call.sends.SealIfEmpty()
-			if call.err != nil || drained {
-				if db.dialing[addr] == call {
-					delete(db.dialing, addr)
-				}
-				if call.conn != nil && drained {
-					call.conn.ClearSendOrder(&call.sends)
-				}
-			}
-		}()
 		switch {
 		case dialErr != nil:
 			call.err = dialErr
@@ -616,8 +619,18 @@ func (db *database) dialAndPool(addr string, call *dialCall) {
 			// (it never reaches connMu/db), so nesting it here is lock-order-safe.
 			db.failMon.markAlive(addr)
 		}
+		call.sends.Seal() // no arrival after dial completion can extend this cohort
+		drained := !call.sends.Pending()
+		if call.err != nil || drained {
+			if db.dialing[addr] == call {
+				delete(db.dialing, addr)
+			}
+			if call.conn != nil && drained {
+				call.conn.ClearSendOrder(&call.sends)
+			}
+		}
+		close(call.done) // membership and result become visible atomically under connMu
 	}()
-	close(call.done) // wake all waiters (conn/err already set under the lock)
 }
 
 // warmConnections pre-establishes TCP connections to all known proxies.

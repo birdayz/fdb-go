@@ -983,7 +983,7 @@ func (tx *Transaction) legacyGetMappedRangeWithByteTargetAndSkip(ctx context.Con
 			return nil, false, tx.trackReadOperation(ctx, err)
 		}
 		// Original anchors retain conflicts on skipped primaries, not secondaries.
-		if err := tx.addMappedRangeConflicts(begin, end, reverse, result.more, result.rows); err != nil {
+		if err := tx.addMappedRangeConflicts(ctx, begin, end, reverse, result.more, result.rows); err != nil {
 			return nil, false, err
 		}
 		return result.rows, result.more, nil
@@ -999,7 +999,7 @@ func (tx *Transaction) legacyGetMappedRangeWithByteTargetAndSkip(ctx context.Con
 	// one is first checked against the write map — an overlap means the mapped
 	// read observed a key this transaction wrote, which RYW cannot honour for
 	// mapped reads and which C++ reports rather than silently serving stale data.
-	if err := tx.addMappedRangeConflicts(begin, end, reverse, more, rows); err != nil {
+	if err := tx.addMappedRangeConflicts(ctx, begin, end, reverse, more, rows); err != nil {
 		return nil, false, err
 	}
 	return rows, more, nil

@@ -1,20 +1,22 @@
 package transport
 
-// enqueue hands req to writeLoop, counting it first so that no direct write
-// can overtake it. accepted runs once its queue position belongs to writeLoop.
-func (c *Conn) enqueue(req writeReq, accepted func()) bool {
-	enqueued, _ := c.enqueueOrdered(c.ctx, req, nil, accepted)
-	return enqueued
-}
-
 // tryEnqueue is enqueue for fire-and-forget frames that a full queue drops.
 func (c *Conn) tryEnqueue(req writeReq) bool {
-	if c.sendWaiters.Pending() || c.peerSendPending() {
+	if order := c.peerSendOrder.Load(); order != nil {
+		reserved, accepted, held := c.reserveColdControl(order, req)
+		if reserved {
+			return accepted
+		}
+		if held {
+			return c.tryEnqueueHeld(req)
+		}
+	}
+	if c.sendWaiters.Pending() {
 		return false
 	}
 	c.writeAdmission.RLock()
 	defer c.writeAdmission.RUnlock()
-	if c.writeClosed || c.ctx.Err() != nil || c.sendWaiters.Pending() || c.peerSendPending() {
+	if c.writeClosed || c.ctx.Err() != nil || c.sendWaiters.Pending() {
 		return false
 	}
 	c.queued.Add(1)
@@ -30,7 +32,7 @@ func (c *Conn) tryEnqueue(req writeReq) bool {
 // tryWriteDirect writes the frame on the caller's goroutine when writeLoop is idle,
 // saving two handoffs; it never blocks, and writeLoop finishes what a full socket refuses.
 // A coalescing connection never writes directly: every frame waits in writeLoop.
-func (c *Conn) tryWriteDirect(token UID, body []byte, accepted func()) (bool, error) {
+func (c *Conn) tryWriteDirect(token UID, body []byte) (bool, error) {
 	if c.raw == nil || c.coalesce != nil || c.queued.Load() != 0 || !c.writeMu.TryLock() {
 		return false, nil
 	}
@@ -39,9 +41,6 @@ func (c *Conn) tryWriteDirect(token UID, body []byte, accepted func()) (bool, er
 	// keeps the lock until its batch is flushed, so zero here means a quiet socket.
 	if c.queued.Load() != 0 || c.ctx.Err() != nil {
 		return false, nil
-	}
-	if accepted != nil {
-		defer accepted()
 	}
 	bufp, frame := encodeFrame(token, body, c.useTLS)
 	n, err := c.raw.write(frame)

@@ -63,37 +63,60 @@ func (c *Conn) FlushContext(ctx context.Context) error {
 }
 
 // SendFrameContextOrdered sends using a place reserved before a cold peer dial.
-// The place is released on acceptance, before any flush or reply wait.
+// The place is released on acceptance, before any flush or reply wait. Its owner
+// must pass it here: a nil-permit send on the same connection can wait for that
+// still-owned place and deadlock. Release abandoned places instead.
 func (c *Conn) SendFrameContextOrdered(ctx context.Context, token UID, body []byte, permit *sendqueue.Permit) (bool, error) {
 	return c.writeContext(ctx, token, body, false, permit)
 }
 
+// Keep hot-path defers open-coded: returns × defers must stay ≤ 15 in Go 1.26.
 func (c *Conn) writeContext(ctx context.Context, token UID, body []byte, flush bool, permit *sendqueue.Permit) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		permit.Release()
 		return false, err
 	}
-	permit, err := c.beginSend(ctx, permit)
+	admission, err := c.beginSend(ctx, permit)
 	if err != nil {
 		return false, err
 	}
-	defer permit.Release()
-	accepted := acceptedPermit(permit)
+	if admission.permit != nil {
+		return c.writePrefixContext(ctx, token, body, flush, admission)
+	}
 	if !flush {
 		LogSend(token, body)
-		if direct, err := c.tryWriteDirect(token, body, accepted); direct {
-			return true, err
-		}
-		if took, err := c.takeTurn(ctx, token, body, accepted); took {
-			return true, err
+		if admission.ordinary() {
+			if direct, err := c.tryWriteDirect(token, body); direct {
+				return true, err
+			}
+			if took, err := c.takeTurn(ctx, token, body); took {
+				return true, err
+			}
 		}
 	}
-	completion := newWriteCompletion()
-	defer completion.release() // caller reference, including abandonment
+	return c.writeAdmittedContext(ctx, token, body, admission, newWriteCompletion())
+}
+
+// Keep this cold owner separate: returns × defers must stay ≤ 15 in Go 1.26.
+func (c *Conn) writePrefixContext(ctx context.Context, token UID, body []byte, flush bool, admission peerAdmission) (bool, error) {
+	defer admission.permit.Release()
+	if !flush {
+		LogSend(token, body)
+	}
+	return c.writeAdmittedContext(ctx, token, body, admission, newWriteCompletion())
+}
+
+// Keep this hot helper's defers open-coded: returns × defers must stay ≤ 15 in Go 1.26.
+func (c *Conn) writeAdmittedContext(ctx context.Context, token UID, body []byte, admission peerAdmission, completion *writeCompletion) (enqueued bool, err error) {
+	defer func() {
+		completion.release() // caller reference, including abandonment
+		if !enqueued {
+			completion.release() // writer reference never transferred, including panic
+		}
+	}()
 	request := writeReq{token: token, body: bytes.Clone(body), owned: completion}
-	enqueued, err := c.enqueueOrdered(ctx, request, ctx.Done(), accepted)
+	enqueued, err = c.enqueueAdmitted(ctx, request, ctx.Done(), admission)
 	if !enqueued {
-		completion.release() // ownership never transferred to the writer
 		return false, err
 	}
 	select {
@@ -151,19 +174,18 @@ func (c *Conn) sendWithoutAck(ctx context.Context, token UID, body []byte, eager
 		permit.Release()
 		return false, err
 	}
-	permit, err := c.beginSend(ctx, permit)
+	admission, err := c.beginSend(ctx, permit)
 	if err != nil {
 		return false, err
 	}
-	defer permit.Release()
-	accepted := acceptedPermit(permit)
+	defer admission.permit.Release()
 	LogSend(token, body)
-	if eager {
-		if direct, err := c.tryWriteDirect(token, body, accepted); direct {
+	if eager && admission.ordinary() {
+		if direct, err := c.tryWriteDirect(token, body); direct {
 			return true, err
 		}
 	}
-	return c.enqueueOrdered(ctx, writeReq{token: token, body: bytes.Clone(body)}, ctx.Done(), accepted)
+	return c.enqueueAdmitted(ctx, writeReq{token: token, body: bytes.Clone(body)}, ctx.Done(), admission)
 }
 
 // finishOwnedWrites runs after writer recovery has cancelled the connection,
@@ -175,11 +197,32 @@ func (c *Conn) finishOwnedWrites(batch []*writeCompletion) {
 		}
 	}
 	c.writeAdmission.Lock()
-	defer c.writeAdmission.Unlock()
 	c.writeClosed = true
+	for _, queue := range []chan writeReq{c.prefixCh, c.writeCh} {
+		c.failWriteQueue(queue, false)
+	}
+	c.writeAdmission.Unlock()
+	c.heldAdmission.Lock()
+	c.heldClosed = true
+	c.failWriteQueue(c.heldCh, true)
+	c.heldAdmission.Unlock()
+	if c.hasPendingWrite {
+		c.queued.Add(-1)
+		if c.pendingWrite.owned != nil {
+			c.pendingWrite.owned.complete(errConnClosed)
+		}
+		c.pendingWrite, c.hasPendingWrite = writeReq{}, false
+	}
+}
+
+func (c *Conn) failWriteQueue(queue <-chan writeReq, held bool) {
 	for {
 		select {
-		case request := <-c.writeCh:
+		case request := <-queue:
+			c.queued.Add(-1)
+			if held {
+				c.heldCount.Add(-1)
+			}
 			if request.owned != nil {
 				request.owned.complete(errConnClosed)
 			}

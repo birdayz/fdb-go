@@ -13,8 +13,10 @@ import (
 // path fires it before blocking: the dial wait, a full write queue, the flush
 // acknowledgment, the writer turn's coalescing delay, the reply wait, and delays.
 type SuspendSignal struct {
-	once sync.Once
-	ch   chan struct{}
+	once       sync.Once
+	ch         chan struct{}
+	resume     <-chan struct{}
+	beforeWait func()
 }
 
 // suspendWatchers counts unfired signals, so with none live NotifySuspend is one
@@ -26,7 +28,14 @@ type suspendKey struct{}
 // WithSuspendSignal returns ctx carrying a new signal. The owner must Fire it
 // when the goroutine ends, whether or not it waited.
 func WithSuspendSignal(ctx context.Context) (context.Context, *SuspendSignal) {
-	s := &SuspendSignal{ch: make(chan struct{})}
+	return WithSuspendHandoff(ctx, nil, nil)
+}
+
+// WithSuspendHandoff also holds the notifying worker until resume closes. Fire
+// remains nonblocking so completion and panic cleanup cannot wait on a successor.
+// beforeWait optionally observes an unready gate, outside the signal's Once.
+func WithSuspendHandoff(ctx context.Context, resume <-chan struct{}, beforeWait func()) (context.Context, *SuspendSignal) {
+	s := &SuspendSignal{ch: make(chan struct{}), resume: resume, beforeWait: beforeWait}
 	suspendWatchers.Add(1)
 	return context.WithValue(ctx, suspendKey{}, s), s
 }
@@ -49,5 +58,19 @@ func NotifySuspend(ctx context.Context) {
 	}
 	if s, ok := ctx.Value(suspendKey{}).(*SuspendSignal); ok {
 		s.Fire()
+		if s.resume != nil {
+			select {
+			case <-s.resume:
+				return
+			default:
+			}
+			if s.beforeWait != nil {
+				s.beforeWait()
+			}
+			select {
+			case <-s.resume:
+			case <-ctx.Done():
+			}
+		}
 	}
 }

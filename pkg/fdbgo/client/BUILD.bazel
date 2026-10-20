@@ -346,6 +346,7 @@ go_test(
 
 # gazelle:exclude native_range_unit_test.go
 # gazelle:exclude native_range_suspend_test.go
+# gazelle:exclude peer_send_load_unit_test.go
 # gazelle:exclude peer_send_unit_test.go
 # gazelle:exclude reply_guard_unit_test.go
 go_test(
@@ -353,6 +354,7 @@ go_test(
     srcs = [
         "native_range_suspend_test.go",
         "native_range_unit_test.go",
+        "peer_send_load_unit_test.go",
         "peer_send_unit_test.go",
         "reply_guard_unit_test.go",
     ],
@@ -494,12 +496,14 @@ go_test(
         "native_commit_fdb_test.go",
         "native_commit_send_test.go",
         "native_commit_waiters_test.go",
+        "native_range_handoff_fdb_test.go",
         "native_range_tags_fdb_test.go",
         "native_range_test.go",
         "nil_shard_end_test.go",
         "option_fences_test.go",
         "panicbackstop_test.go",
         "parse_fuzz_test.go",
+        "peer_send_bench_test.go",
         "poison_recheck_fault_test.go",
         "rangeceiling_test.go",
         "read_incarnation_fdb_test.go",

@@ -144,18 +144,31 @@ var errChanPool = sync.Pool{New: func() any { return make(chan error, 1) }}
 // If the server kills the connection, readLoop cancels the context
 // and IsClosed() returns true — the connection pool will evict it.
 type Conn struct {
-	conn           net.Conn
-	useTLS         bool
-	wbuf           *bufio.Writer // owned exclusively by writeLoop
-	writeCh        chan writeReq // channel-based write loop for coalescing
-	writeAdmission sync.RWMutex
-	writeClosed    bool // protected by writeAdmission
-	sendWaiters    sendqueue.Queue
-	peerSendOrder  atomic.Pointer[sendqueue.Queue]
-	ctx            context.Context
-	cancel         context.CancelFunc
-	loopWG         sync.WaitGroup // tracks readLoop + writeLoop goroutines
-	closeOnce      sync.Once      // guards the single failConnection teardown
+	conn            net.Conn
+	useTLS          bool
+	wbuf            *bufio.Writer // owned exclusively by writeLoop
+	writeCh         chan writeReq // channel-based write loop for coalescing
+	writeAdmission  sync.RWMutex
+	writeClosed     bool // protected by writeAdmission
+	sendWaiters     sendqueue.Queue
+	peerSendOrder   atomic.Pointer[sendqueue.Queue]
+	prefixCh        chan writeReq
+	heldCh          chan writeReq
+	prefixDone      <-chan struct{}
+	prefixOpen      bool // writer-owned after dial
+	heldAdmission   sync.RWMutex
+	heldClosed      bool // protected by heldAdmission
+	heldWaiters     sendqueue.Queue
+	heldCount       atomic.Int64 // buffered held frames and admission waiters
+	coldControls    chan coldControl
+	controlMu       sync.Mutex // pre-seal control reservation and inbox append
+	controlsClosed  bool       // protected by writeAdmission
+	pendingWrite    writeReq   // writer-owned ordinary request held behind the outbox
+	hasPendingWrite bool
+	ctx             context.Context
+	cancel          context.CancelFunc
+	loopWG          sync.WaitGroup // tracks readLoop + writeLoop goroutines
+	closeOnce       sync.Once      // guards the single failConnection teardown
 
 	// Connection monitor cadence. Set once at dial time before the monitor
 	// goroutine starts. Tests inject small values for deterministic, fast
@@ -209,7 +222,7 @@ type Conn struct {
 	tail      []byte        // unwritten end of a direct write, under writeMu
 	tailFrame []byte        // the whole frame tail ends, pooled once written
 	tailBuf   *[]byte       // tailFrame's pool handle
-	tailKick  chan struct{} // wakes writeLoop to finish tail
+	tailKick  chan struct{} // wakes writeLoop for a tail or held-outbox change
 
 	// minCoalesce/maxCoalesce are connectionWriter's write delay bounds; coalesce
 	// is its timer, nil when the delay is disabled or unsupported, in which case
@@ -559,6 +572,10 @@ func dialWith(ctx context.Context, addr string, dialFn DialFunc, tlsConfig *tls.
 
 	// Start read, write, and connection monitor loops.
 	c.loopWG.Add(3)
+	if c.coldControls != nil {
+		c.loopWG.Add(1)
+		go c.coldControlLoop()
+	}
 	go c.readLoop()
 	go c.writeLoop()
 	go c.connectionMonitor()
@@ -663,25 +680,26 @@ func putReplyChannelImpl(ch chan Response) {
 // SendFrame writes a raw frame and flushes. Returns once the frame is written, or
 // once writeLoop holds whatever a full socket refused, ahead of every later frame.
 func (c *Conn) SendFrame(destToken UID, body []byte) error {
-	permit, err := c.beginSend(c.ctx, nil)
+	admission, err := c.beginSend(c.ctx, nil)
 	if err != nil {
 		return err
 	}
-	defer permit.Release()
-	accepted := acceptedPermit(permit)
+	defer admission.permit.Release()
 	if c.debugFrames {
 		fmt.Fprintf(c.debugWriter, "[send %s] token=%016x:%016x bodyLen=%d\n", c.conn.RemoteAddr(),
 			destToken.First, destToken.Second, len(body))
 	}
 	LogSend(destToken, body)
-	if direct, err := c.tryWriteDirect(destToken, body, accepted); direct {
-		return err
-	}
-	if took, err := c.takeTurn(c.ctx, destToken, body, accepted); took {
-		return err
+	if admission.ordinary() {
+		if direct, err := c.tryWriteDirect(destToken, body); direct {
+			return err
+		}
+		if took, err := c.takeTurn(c.ctx, destToken, body); took {
+			return err
+		}
 	}
 	errCh := errChanPool.Get().(chan error)
-	if !c.enqueue(writeReq{token: destToken, body: body, errCh: errCh}, accepted) {
+	if ok, _ := c.enqueueAdmitted(c.ctx, writeReq{token: destToken, body: body, errCh: errCh}, nil, admission); !ok {
 		errChanPool.Put(errCh)
 		return errConnClosed
 	}
@@ -704,13 +722,13 @@ func (c *Conn) SendFrame(destToken UID, body []byte) error {
 // The write loop will flush it with the next batch. Used for pipelining:
 // send N frames, then call Flush() (or let the write loop auto-flush).
 func (c *Conn) SendFrameDeferred(destToken UID, body []byte) error {
-	permit, err := c.beginSend(c.ctx, nil)
+	admission, err := c.beginSend(c.ctx, nil)
 	if err != nil {
 		return err
 	}
-	defer permit.Release()
+	defer admission.permit.Release()
 	LogSend(destToken, body)
-	if !c.enqueue(writeReq{token: destToken, body: body}, acceptedPermit(permit)) {
+	if ok, _ := c.enqueueAdmitted(c.ctx, writeReq{token: destToken, body: body}, nil, admission); !ok {
 		return errConnClosed
 	}
 	return nil
@@ -720,16 +738,16 @@ func (c *Conn) SendFrameDeferred(destToken UID, body []byte) error {
 // queued every earlier frame is already written; otherwise it sends a flush
 // marker through the write channel and waits for acknowledgment.
 func (c *Conn) Flush() error {
-	permit, err := c.beginSend(c.ctx, nil)
+	admission, err := c.beginSend(c.ctx, nil)
 	if err != nil {
 		return err
 	}
-	defer permit.Release()
-	if c.queued.Load() == 0 && c.ctx.Err() == nil {
+	defer admission.permit.Release()
+	if admission.ordinary() && c.queued.Load() == 0 && c.ctx.Err() == nil {
 		return nil
 	}
 	errCh := errChanPool.Get().(chan error)
-	if !c.enqueue(writeReq{errCh: errCh}, acceptedPermit(permit)) { // empty token+body = flush-only request
+	if ok, _ := c.enqueueAdmitted(c.ctx, writeReq{errCh: errCh}, nil, admission); !ok { // empty token+body = flush-only request
 		errChanPool.Put(errCh)
 		return errConnClosed
 	}
@@ -791,7 +809,11 @@ func (c *Conn) writeLoop() {
 		defer c.coalesce.Close()
 	}
 	var owned []*writeCompletion
-	defer func() { c.finishOwnedWrites(owned) }()
+	var inBatch int64
+	defer func() {
+		c.queued.Add(-inBatch)
+		c.finishOwnedWrites(owned)
+	}()
 	defer c.failTailMarkers()
 	defer c.recoverLoop("writeLoop")
 
@@ -799,24 +821,23 @@ func (c *Conn) writeLoop() {
 	var errChans []chan<- error
 
 	for {
-		// Wait for first frame, or for the tail of a direct write.
-		var req writeReq
-		first := false
-		select {
-		case req = <-c.writeCh:
-			first = true
-		case <-c.tailKick:
-		case <-c.ctx.Done():
+		// The finite cold prefix precedes held frames, including any held
+		// admission head not yet in its channel, then ordinary warm traffic.
+		req, first, ready := c.nextWrite(true)
+		if !ready {
 			return
 		}
-
-		if !c.lockForBatch(req, first) {
-			continue // a sender's turn writes the frame
+		if first {
+			inBatch = 1
+			if req.owned != nil {
+				owned = append(owned, req.owned)
+			}
 		}
-		// Capture ownership before encoding: recovery must finish this request
-		// even if encoding or the socket writer fails.
-		if req.owned != nil {
-			owned = append(owned, req.owned)
+		if !c.lockForBatch(req, first) {
+			inBatch = 0
+			clear(owned)
+			owned = owned[:0]
+			continue // a sender's turn now owns this request and its completion
 		}
 		if first && c.tail == nil {
 			// The rest of a partial write goes on without a new delay, as
@@ -828,17 +849,16 @@ func (c *Conn) writeLoop() {
 			c.writeMu.Unlock()
 			return // torn down while waiting: write nothing
 		}
-		var batched int64
 		var writeErr error
 		// A direct write's unwritten end precedes every frame queued after it.
 		if c.tail != nil {
+			inBatch++
 			_, writeErr = c.wbuf.Write(c.tail)
 			putFrame(c.tailBuf, c.tailFrame) // wbuf has copied or written it
 			c.tail, c.tailFrame, c.tailBuf = nil, nil, nil
-			batched++
 			// Flush markers a turn left behind the tail complete with this batch.
 			for _, m := range c.takeTailMarkers() {
-				batched++
+				inBatch++
 				if m.owned != nil {
 					owned = append(owned, m.owned)
 				}
@@ -849,7 +869,6 @@ func (c *Conn) writeLoop() {
 		}
 		// Process first frame.
 		if first {
-			batched++
 			if writeErr == nil && (req.token != (UID{}) || req.body != nil) {
 				writeErr = WriteFrame(c.wbuf, req.token, req.body, c.useTLS)
 			}
@@ -857,28 +876,28 @@ func (c *Conn) writeLoop() {
 				errChans = append(errChans, req.errCh)
 			}
 		}
-		if batched == 0 { // a kick whose tail an earlier batch already wrote
+		if inBatch == 0 { // an outbox wake, or an already-written tail's stale kick
 			c.writeMu.Unlock()
 			continue
 		}
 
-		// Drain all queued frames without blocking (natural coalescing).
-		draining := true
-		for draining && writeErr == nil {
-			select {
-			case req = <-c.writeCh:
-				batched++
-				if req.owned != nil {
-					owned = append(owned, req.owned)
-				}
-				if req.token != (UID{}) || req.body != nil {
-					writeErr = WriteFrame(c.wbuf, req.token, req.body, c.useTLS)
-				}
-				if req.errCh != nil {
-					errChans = append(errChans, req.errCh)
-				}
-			default:
-				draining = false
+		// Do not wait here for an unbuilt prefix member or held head: flush
+		// this available batch before the next blocking priority read.
+		for writeErr == nil {
+			var available bool
+			req, _, available = c.nextWrite(false)
+			if !available {
+				break
+			}
+			inBatch++
+			if req.owned != nil {
+				owned = append(owned, req.owned)
+			}
+			if req.token != (UID{}) || req.body != nil {
+				writeErr = WriteFrame(c.wbuf, req.token, req.body, c.useTLS)
+			}
+			if req.errCh != nil {
+				errChans = append(errChans, req.errCh)
 			}
 		}
 
@@ -891,7 +910,8 @@ func (c *Conn) writeLoop() {
 			writeErr = codedConnClosed(writeErr)
 			c.failConnection(writeErr)
 		}
-		c.queued.Add(-batched)
+		c.queued.Add(-inBatch)
+		inBatch = 0
 		c.writeMu.Unlock()
 
 		// Notify all waiting senders. A write error means the frame may or may

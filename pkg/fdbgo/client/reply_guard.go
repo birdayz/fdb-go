@@ -6,6 +6,7 @@ import "fdb.dev/pkg/fdbgo/transport"
 // another owner. Its deferred close also unregisters a request whose builder or
 // sender panics, like C++ ReplyPromise/FlowReceiver destruction (fdbrpc.h:48-53).
 // A retry loop reuses one guard, releasing each attempt before registering another.
+// This guard does not own the load balancer's QueueModel accounting.
 type replyGuard struct {
 	handle *transport.ReplyHandle
 }

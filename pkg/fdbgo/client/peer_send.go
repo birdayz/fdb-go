@@ -23,7 +23,7 @@ func (db *database) getOrDialConnFor(ctx context.Context, addr string, sending b
 	if call != nil {
 		select {
 		case <-call.done:
-			drained := call.sends.SealIfEmpty()
+			drained := !call.sends.Pending()
 			if call.err != nil || call.conn == nil || call.conn.IsClosed() || drained {
 				if db.dialing[addr] == call {
 					delete(db.dialing, addr)
@@ -32,12 +32,17 @@ func (db *database) getOrDialConnFor(ctx context.Context, addr string, sending b
 					call.conn.ClearSendOrder(&call.sends)
 				}
 				call = nil
+			} else if sending {
+				// The finite pre-dial cohort is sealed. Later callers build and
+				// append their frames to the held outbox without another permit.
+				db.connMu.Unlock()
+				return call.conn, false, nil, nil
 			}
 		default: // running dials survive even when all current senders canceled
 		}
 	}
-	// A retained cold generation takes precedence over the newly pooled socket:
-	// returning that socket early would let a newcomer overtake its dial waiters.
+	// Running-dial senders reserve before waiting. Completed-dial callers above
+	// instead establish their position when the built frame enters the outbox.
 	if !sending || call == nil {
 		if c := db.connPool[addr]; c != nil {
 			if !c.IsClosed() {

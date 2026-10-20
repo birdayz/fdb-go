@@ -6,36 +6,49 @@ import (
 	"fdb.dev/pkg/fdbgo/internal/sendqueue"
 )
 
-// WithSendOrder shares a cold peer's outbox reservations with control and legacy
-// senders that did not acquire their own place while waiting for its dial.
+// WithSendOrder attaches one finite cold cohort before the connection loops
+// start. Prefix and held frames have independent bounded admission channels.
 func WithSendOrder(order *sendqueue.Queue) DialOption {
-	return func(c *Conn) { c.peerSendOrder.Store(order) }
+	return func(c *Conn) {
+		c.peerSendOrder.Store(order)
+		if order != nil {
+			c.prefixCh = make(chan writeReq, cap(c.writeCh))
+			c.heldCh = make(chan writeReq, cap(c.writeCh))
+			c.coldControls = make(chan coldControl, cap(c.writeCh))
+			c.prefixDone = order.Drained()
+			c.prefixOpen = true
+		}
+	}
 }
 
-// ClearSendOrder detaches a drained dial generation. Its pool owner serializes
-// this with reservations; a stale generation cannot detach its replacement.
+// ClearSendOrder detaches a drained dial generation. The writer retains its
+// finite prefix and held channels until those accepted frames have drained.
 func (c *Conn) ClearSendOrder(order *sendqueue.Queue) {
 	c.peerSendOrder.CompareAndSwap(order, nil)
 }
 
-func (c *Conn) beginSend(ctx context.Context, permit *sendqueue.Permit) (*sendqueue.Permit, error) {
+type peerAdmission struct {
+	permit *sendqueue.Permit
+	held   bool
+}
+
+func (a peerAdmission) ordinary() bool { return a.permit == nil && !a.held }
+
+func (c *Conn) beginSend(ctx context.Context, permit *sendqueue.Permit) (peerAdmission, error) {
 	if permit == nil {
-		for {
-			order := c.peerSendOrder.Load()
-			if order == nil || !order.Pending() {
-				break
-			}
+		if order := c.peerSendOrder.Load(); order != nil {
 			var reserved bool
 			permit, _, reserved = order.TryReserve()
-			if reserved {
-				break
+			if !reserved && order.Pending() {
+				// Waiting for Drained here would let an unbuilt frame suspend
+				// before establishing its held-outbox position. Nil is not a
+				// permit whose Ready a post-dial sender should wait on.
+				return peerAdmission{held: true}, nil
 			}
-			// A pool lookup sealed this drained generation after our Load.
-			c.peerSendOrder.CompareAndSwap(order, nil)
 		}
 	}
 	if permit == nil {
-		return nil, nil
+		return peerAdmission{}, nil
 	}
 	transferred := false
 	defer func() {
@@ -51,28 +64,21 @@ func (c *Conn) beginSend(ctx context.Context, permit *sendqueue.Permit) (*sendqu
 	select {
 	case <-permit.Ready():
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return peerAdmission{}, ctx.Err()
 	case <-c.ctx.Done():
-		return nil, errConnClosed
+		return peerAdmission{}, errConnClosed
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return peerAdmission{}, err
 	}
 	if c.ctx.Err() != nil {
-		return nil, errConnClosed
+		return peerAdmission{}, errConnClosed
 	}
 	transferred = true
-	return permit, nil
+	return peerAdmission{permit: permit}, nil
 }
 
 func (c *Conn) peerSendPending() bool {
 	order := c.peerSendOrder.Load()
 	return order != nil && order.Pending()
-}
-
-func acceptedPermit(permit *sendqueue.Permit) func() {
-	if permit == nil {
-		return nil
-	}
-	return permit.Release
 }

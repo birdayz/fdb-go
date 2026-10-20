@@ -2,7 +2,11 @@ package client
 
 import (
 	"bytes"
+	"context"
+	"fmt"
+	"sync"
 	"testing"
+	"time"
 
 	"fdb.dev/pkg/fdbgo/wire"
 )
@@ -39,7 +43,7 @@ func TestMappedRangeConflictMustUnmodified(t *testing.T) {
 			t.Parallel()
 			tx := &Transaction{}
 			tc.modify(&tx.ryw)
-			err := tx.addMappedRangeConflictMustUnmodified([]byte(tc.begin), []byte(tc.end))
+			err := tx.addMappedRangeConflictMustUnmodified(context.Background(), []byte(tc.begin), []byte(tc.end))
 			if tc.wantError {
 				if fe, ok := err.(*wire.FDBError); !ok || fe.Code != 2039 {
 					t.Fatalf("error=%v, want 2039", err)
@@ -57,6 +61,115 @@ func TestMappedRangeConflictMustUnmodified(t *testing.T) {
 				t.Fatalf("conflict ranges=%+v, want [%q,%q)", tx.readConflicts, tc.begin, tc.prefixEnd)
 			}
 		})
+	}
+}
+
+func TestMappedRangeConflictPublicationRetainsIncarnation(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		pauseAt  int
+		modified bool
+	}{
+		{name: "primary", pauseAt: 1},
+		{name: "point", pauseAt: 2},
+		{name: "range", pauseAt: 3},
+		{name: "modified-prefix", pauseAt: 3, modified: true},
+	} {
+		for _, reset := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/reset=%t", tc.name, reset), func(t *testing.T) {
+				t.Parallel()
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				tx := &Transaction{}
+				rows := []MappedKeyValue{
+					{Key: []byte("b"), Kind: MappedResultGetValue, GetValue: MappedGetValue{Key: []byte("j")}},
+					{Key: []byte("c"), Kind: MappedResultGetRange, GetRange: MappedGetRange{
+						Begin: firstGreaterOrEqual([]byte("m")), End: firstGreaterOrEqual([]byte("q")),
+						Rows: []KeyValue{{Key: []byte("o")}}, More: true,
+					}},
+				}
+				want := [][2]string{{"a", "e"}, {"j", "j\x00"}, {"m", "o\x00"}}
+				if tc.modified {
+					tx.ryw.set([]byte("n"), nil)
+					want[2][1] = "n"
+				}
+				entered, release := make(chan struct{}), make(chan struct{})
+				resume := sync.OnceFunc(func() { close(release) })
+				defer resume()
+				publications := 0
+				tx.beforeReadConflict = func() {
+					publications++
+					if publications == tc.pauseAt {
+						close(entered)
+						<-release
+					}
+				}
+				parent, leave := tx.opContext(context.Background())
+				defer leave()
+				done := make(chan error, 1)
+				go func() {
+					borrowed, releaseBorrowed := tx.opContext(parent)
+					defer releaseBorrowed()
+					done <- tx.addMappedRangeConflicts(borrowed, []byte("a"), []byte("e"), false, false, rows)
+				}()
+				select {
+				case <-entered:
+				case err := <-done:
+					t.Fatalf("mapped read completed before publication %d: %v", tc.pauseAt, err)
+				case <-ctx.Done():
+					t.Fatal("mapped read never reached conflict publication")
+				}
+				tx.conflictMu.Lock()
+				prior := len(tx.readConflicts)
+				tx.conflictMu.Unlock()
+				if prior != tc.pauseAt-1 {
+					t.Fatalf("published prefix has %d ranges, want %d", prior, tc.pauseAt-1)
+				}
+				leave() // the async read borrowed this now-retired frame's lease
+				if reset {
+					resetDone := make(chan struct{})
+					go func() { tx.Reset(); close(resetDone) }()
+					select {
+					case <-resetDone:
+					case <-ctx.Done():
+						t.Fatal("Reset waited on a borrowed completed read")
+					}
+				}
+				resume()
+				var err error
+				select {
+				case err = <-done:
+				case <-ctx.Done():
+					t.Fatal("mapped read did not finish after publication resumed")
+				}
+				if reset {
+					if code, _ := fdbErrorCode(err); code != ErrTransactionCancelled {
+						t.Errorf("retired mapped read = %v, want transaction_cancelled (1025)", err)
+					}
+					want = nil
+					if publications != tc.pauseAt {
+						t.Errorf("retired mapped read attempted %d publications, want %d", publications, tc.pauseAt)
+					}
+				} else if tc.modified {
+					if code, _ := fdbErrorCode(err); code != ErrGetMappedRangeReadsYourWrites {
+						t.Errorf("modified mapped read = %v, want 2039", err)
+					}
+				} else if err != nil {
+					t.Errorf("live mapped read = %v", err)
+				}
+				tx.conflictMu.Lock()
+				defer tx.conflictMu.Unlock()
+				if len(tx.readConflicts) != len(want) {
+					t.Fatalf("conflicts = %+v, want %v", tx.readConflicts, want)
+				}
+				for i, r := range tx.readConflicts {
+					if string(r.Begin) != want[i][0] || string(r.End) != want[i][1] {
+						t.Errorf("conflict %d = [%q,%q), want %v", i, r.Begin, r.End, want[i])
+					}
+				}
+			})
+		}
 	}
 }
 
@@ -83,7 +196,7 @@ func TestMappedRangeConflictBatchOrder(t *testing.T) {
 				tx.ryw.set([]byte("n"), nil)
 				want = [][2]string{{"a", "e"}, {"j", "j\x00"}, {"m", "n"}}
 			}
-			err := tx.addMappedRangeConflicts([]byte("a"), []byte("e"), false, false, rows)
+			err := tx.addMappedRangeConflicts(context.Background(), []byte("a"), []byte("e"), false, false, rows)
 			if failAt == "none" {
 				if err != nil {
 					t.Fatal(err)
@@ -134,7 +247,7 @@ func TestMappedRangeConflictBatchAllocations(t *testing.T) {
 	allocations := testing.AllocsPerRun(100, func() {
 		clear(tx.readConflicts)
 		tx.readConflicts, tx.conflictBuf = tx.readConflicts[:0], tx.conflictBuf[:0]
-		if err := tx.addMappedRangeConflicts(begin, end, false, false, rows); err != nil {
+		if err := tx.addMappedRangeConflicts(context.Background(), begin, end, false, false, rows); err != nil {
 			t.Fatal(err)
 		}
 	})

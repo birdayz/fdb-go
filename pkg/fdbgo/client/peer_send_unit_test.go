@@ -7,8 +7,10 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
+	"fdb.dev/pkg/fdbgo/internal/sendqueue"
 	"fdb.dev/pkg/fdbgo/transport"
 )
 
@@ -318,7 +320,10 @@ func TestColdPeerClosedGenerationReleasesWaiter(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	firstPeer, _ := sendPipe(t, ctx, nil, nil)
+	handshake := make(chan struct{})
+	var handshakeOnce sync.Once
+	defer handshakeOnce.Do(func() { close(handshake) })
+	firstPeer, _ := sendPipe(t, ctx, handshake, nil)
 	secondPeer, _ := sendPipe(t, ctx, nil, nil)
 	var dials atomic.Int32
 	db := sendDatabase(ctx, func(context.Context, string, string) (net.Conn, error) {
@@ -328,16 +333,27 @@ func TestColdPeerClosedGenerationReleasesWaiter(t *testing.T) {
 		return secondPeer, nil
 	})
 	defer closeSendDatabase(db)
-	first, held, err := db.getOrDialForSend(ctx, "peer")
-	if err != nil || held == nil {
-		t.Fatalf("first cold owner: permit=%v err=%v", held, err)
-	}
-	defer held.Release()
+	ownerCtx, ownerSignal := transport.WithSuspendSignal(ctx)
+	defer ownerSignal.Fire()
+	var first *transport.Conn
+	var held *sendqueue.Permit
+	ownerResult := make(chan error, 1)
+	go func() {
+		var err error
+		first, held, err = db.getOrDialForSend(ownerCtx, "peer")
+		ownerResult <- err
+	}()
+	sendAwait(t, ctx, ownerSignal.Done(), "owner's cold dial wait")
 	waitCtx, signal := transport.WithSuspendSignal(ctx)
 	defer signal.Fire()
 	result := make(chan error, 1)
 	go func() { _, permit, err := db.getOrDialForSend(waitCtx, "peer"); permit.Release(); result <- err }()
-	sendAwait(t, ctx, signal.Done(), "waiter behind the held cold owner")
+	sendAwait(t, ctx, signal.Done(), "waiter joining the unfinished cold dial")
+	handshakeOnce.Do(func() { close(handshake) })
+	if err := <-ownerResult; err != nil || held == nil {
+		t.Fatalf("first cold owner: permit=%v err=%v", held, err)
+	}
+	defer held.Release()
 	first.Close()
 	select {
 	case err := <-result:
@@ -363,6 +379,36 @@ func TestColdPeerClosedGenerationReleasesWaiter(t *testing.T) {
 	db.connMu.Unlock()
 	if generation == nil || !retained || !generation.sends.Pending() {
 		t.Fatal("old owner's late release removed or drained the replacement generation")
+	}
+}
+
+func TestDialPoolingPanicClosesUnpublishedConn(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	peer, frames := sendPipe(t, ctx, nil, nil)
+	db := sendDatabase(ctx, func(context.Context, string, string) (net.Conn, error) { return peer, nil })
+	db.connPool = nil // panic after Dial starts its loops, before pool publication
+	call := &dialCall{done: make(chan struct{})}
+	permit, _ := call.sends.Reserve()
+	defer permit.Release()
+	db.dialing["peer"] = call
+	db.dialAndPool("peer", call)
+	sendAwait(t, ctx, call.done, "pooling panic result publication")
+	if call.err == nil || db.dialing["peer"] != nil {
+		t.Fatalf("pooling panic was not rolled back: err=%v retained=%t", call.err, db.dialing["peer"] != nil)
+	}
+	if late, _, ok := call.sends.TryReserve(); ok {
+		late.Release()
+		t.Error("pooling panic left its cold generation open")
+	}
+	select {
+	case _, ok := <-frames:
+		if ok {
+			t.Fatal("unpublished connection emitted a frame instead of closing")
+		}
+	case <-ctx.Done():
+		t.Fatal("pooling panic leaked the successfully dialed connection")
 	}
 }
 
@@ -443,6 +489,83 @@ func TestFallbackReadyEndDoesNotWait(t *testing.T) {
 	if !errors.Is(err, failure) || observations.Load() != 0 {
 		t.Fatalf("ready end startup: err=%v wait observations=%d", err, observations.Load())
 	}
+}
+
+func TestFallbackStartupCancellationAndEndPanic(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"cancel", "end-panic"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			entered, resumed := make(chan struct{}), make(chan struct{})
+			tx := &Transaction{}
+			tx.resolveKeyFn = func(ctx context.Context, selector KeySelector, _ int64) ([]byte, error) {
+				if string(selector.Key) == "begin" {
+					notifyParked(ctx)
+					close(resumed)
+					return []byte("b"), ctx.Err()
+				}
+				close(entered)
+				if mode == "end-panic" {
+					panic("end startup panic")
+				}
+				// Hold the test's pre-start gate, not a production network wait.
+				// Cancellation must release begin even before end can announce one.
+				<-ctx.Done()
+				return nil, ctx.Err()
+			}
+			done := make(chan error, 1)
+			go func() {
+				_, err := tx.nativeGetRangeFallback(ctx, sel("begin", false, 2), sel("end", false, 2), newRangeLimits(1, -1), 1, false)
+				done <- err
+			}()
+			sendAwait(t, ctx, entered, "end entering startup")
+			if mode == "cancel" {
+				cancel()
+			}
+			select {
+			case err := <-done:
+				if mode == "cancel" && !errors.Is(err, context.Canceled) {
+					t.Fatalf("canceled startup = %v", err)
+				}
+				if mode == "end-panic" {
+					if code, _ := fdbErrorCode(err); code != ErrInternalError {
+						t.Fatalf("end panic = %v, want internal_error", err)
+					}
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("startup cancellation/panic stranded a resolver")
+			}
+			select {
+			case <-resumed:
+			default:
+				t.Fatal("begin was not resumed and joined after startup teardown")
+			}
+		})
+	}
+}
+
+func TestSleepHandoffStartsTimerBeforeSuspension(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		resume := make(chan struct{})
+		ctx, signal := transport.WithSuspendHandoff(context.Background(), resume, nil)
+		defer signal.Fire()
+		done := make(chan error, 1)
+		go func() { done <- sleepCtx(ctx, time.Second) }()
+		<-signal.Done()
+		time.Sleep(2 * time.Second)
+		close(resume)
+		synctest.Wait()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatal(err)
+			}
+		default:
+			t.Error("sleep timer started after the startup handoff instead of before its wait")
+		}
+	})
 }
 
 func TestWarmPeerSendAdmissionAllocs(t *testing.T) {

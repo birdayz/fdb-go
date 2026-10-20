@@ -155,11 +155,14 @@ func TestQueueSealPreventsLateReservation(t *testing.T) {
 			}
 			owner.Release()
 		}
-		if !q.SealIfEmpty() || q.Pending() {
-			t.Fatal("empty queue did not seal")
+		drained := q.Seal()
+		if q.Drained() != drained || q.Seal() != drained || q.Pending() {
+			t.Fatal("empty queue did not seal idempotently")
 		}
-		if !q.SealIfEmpty() {
-			t.Fatal("sealing was not idempotent")
+		select {
+		case <-drained:
+		default:
+			t.Fatal("sealed empty generation did not report drainage")
 		}
 		if p, first, ok := stale.TryReserve(); p != nil || first || ok || q.Pending() {
 			t.Fatalf("stale reservation resurrected sealed queue: permit=%p first=%t ok=%t pending=%t", p, first, ok, q.Pending())
@@ -172,48 +175,61 @@ func TestQueueSealPreventsLateReservation(t *testing.T) {
 			}()
 			q.Reserve()
 		}()
-		if q.Pending() || !q.SealIfEmpty() {
+		if q.Pending() || q.Seal() != drained {
 			t.Fatal("failed Reserve changed the sealed generation")
 		}
 	}
 }
 
-func TestQueueSealRefusesPending(t *testing.T) {
+func TestQueueSealBoundsPendingGeneration(t *testing.T) {
 	t.Parallel()
 	var q Queue
-	head, first, ok := q.TryReserve()
-	if head == nil || !first || !ok || !q.Pending() {
-		t.Fatal("positive control: first TryReserve did not establish a live generation")
+	beforeSeal := q.Drained()
+	select {
+	case <-beforeSeal:
+		t.Fatal("unsealed generation already reports drainage")
+	default:
 	}
-	if q.SealIfEmpty() {
-		t.Fatal("sealed a pending head")
+	head, _ := q.Reserve()
+	tail, _ := q.Reserve()
+	drained := q.Seal()
+	if drained != beforeSeal {
+		t.Fatal("sealing replaced the shared pre-seal drain signal")
 	}
-	tail, first, ok := q.TryReserve()
-	if tail == nil || first || !ok {
-		t.Fatal("refused seal prevented a follower reservation")
+	if p, first, ok := q.TryReserve(); p != nil || first || ok || !q.Pending() {
+		t.Fatal("a sealed pending generation accepted another sender")
 	}
 	requireReady(t, tail, false)
 	head.Release()
 	requireReady(t, tail, true)
-	if q.SealIfEmpty() {
-		t.Fatal("sealed while the granted tail still owned its permit")
+	select {
+	case <-drained:
+		t.Fatal("generation drained while its tail still owned a permit")
+	default:
 	}
 	tail.Release()
-	if !q.SealIfEmpty() || q.Pending() {
-		t.Fatal("last release did not allow sealing")
+	tail.Release()
+	select {
+	case <-drained:
+	default:
+		t.Fatal("last release did not drain the sealed generation")
+	}
+	if q.Pending() || q.Seal() != drained || q.Drained() != drained {
+		t.Fatal("drained generation changed its shared signal")
 	}
 }
 
 func TestQueueConcurrentReleaseReserveAndSeal(t *testing.T) {
 	t.Parallel()
-	var accepted, rejected, sealed, refused int
+	var accepted, rejected int
 	for _, order := range []string{"reserve-before-seal", "seal-before-reserve", "race"} {
 		for i := 0; i < 100; i++ {
 			var q Queue
 			old, _ := q.Reserve()
 			start, released, reserved, sealDone := make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{})
 			var next *Permit
-			var first, ok, didSeal bool
+			var first, ok bool
+			var drained <-chan struct{}
 			var wg sync.WaitGroup
 			wg.Go(func() { <-start; old.Release(); close(released) })
 			wg.Go(func() {
@@ -231,46 +247,51 @@ func TestQueueConcurrentReleaseReserveAndSeal(t *testing.T) {
 				} else if order == "reserve-before-seal" {
 					<-reserved
 				}
-				didSeal = q.SealIfEmpty()
+				drained = q.Seal()
 				close(sealDone)
 			})
 			close(start)
 			wg.Wait()
-			if didSeal {
-				sealed++
-			} else {
-				refused++
-			}
 			if ok {
 				accepted++
-				if next == nil || didSeal || !q.Pending() || order == "seal-before-reserve" {
-					t.Fatalf("%s iteration %d: accepted=%t sealed=%t pending=%t permit=%p", order, i, ok, didSeal, q.Pending(), next)
+				if next == nil || !q.Pending() || order == "seal-before-reserve" {
+					t.Fatalf("%s iteration %d: accepted=%t pending=%t permit=%p", order, i, ok, q.Pending(), next)
 				}
 				requireReady(t, next, true)
+				select {
+				case <-drained:
+					t.Fatalf("%s iteration %d: accepted sender was not counted at seal", order, i)
+				default:
+				}
 				next.Release()
 			} else {
 				rejected++
-				if next != nil || first || !didSeal || q.Pending() || order == "reserve-before-seal" {
-					t.Fatalf("%s iteration %d: refused permit=%p first=%t sealed=%t pending=%t", order, i, next, first, didSeal, q.Pending())
+				if next != nil || first || q.Pending() || order == "reserve-before-seal" {
+					t.Fatalf("%s iteration %d: refused permit=%p first=%t pending=%t", order, i, next, first, q.Pending())
 				}
 			}
-			if !q.SealIfEmpty() {
-				t.Fatalf("%s iteration %d: drained generation could not seal", order, i)
+			select {
+			case <-drained:
+			default:
+				t.Fatalf("%s iteration %d: released sealed generation did not drain", order, i)
+			}
+			if q.Seal() != drained || q.Drained() != drained {
+				t.Fatalf("%s iteration %d: shared drain signal changed", order, i)
 			}
 			if p, first, ok := q.TryReserve(); p != nil || first || ok || q.Pending() {
 				t.Fatalf("%s iteration %d: sealed generation resurrected", order, i)
 			}
 		}
 	}
-	if accepted == 0 || rejected == 0 || sealed == 0 || refused == 0 {
-		t.Fatalf("vacuous seal race: %d accepted %d rejected %d seals %d refusals", accepted, rejected, sealed, refused)
+	if accepted == 0 || rejected == 0 {
+		t.Fatalf("vacuous seal race: %d accepted %d rejected", accepted, rejected)
 	}
 }
 
 func TestQueueSealedTryReserveDoesNotAllocate(t *testing.T) {
 	var q Queue
-	q.SealIfEmpty()
-	if got := testing.AllocsPerRun(100, func() { q.TryReserve() }); got != 0 {
+	q.Seal()
+	if got := testing.AllocsPerRun(100, func() { q.TryReserve(); q.Drained() }); got != 0 {
 		t.Fatalf("sealed TryReserve allocated %g objects, want zero", got)
 	}
 }

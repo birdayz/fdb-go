@@ -97,13 +97,13 @@ func (tx *Transaction) pipelineReplyTimeout() time.Duration {
 // sleepCtx sleeps for the given duration but returns early if ctx is cancelled.
 // Returns ctx.Err() if the context was cancelled, nil otherwise.
 func sleepCtx(ctx context.Context, d time.Duration) error {
-	notifyParked(ctx) // a delay is a wait (native_range.go)
 	timer := time.NewTimer(d)
+	defer timer.Stop()
+	notifyParked(ctx) // the delay is already running when the actor suspends
 	select {
 	case <-timer.C:
 		return nil
 	case <-ctx.Done():
-		timer.Stop()
 		return ctx.Err()
 	}
 }
@@ -1515,7 +1515,11 @@ func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int6
 	// Only a successful read adds its conflict (ReadYourWrites.actor.cpp:384-388). A failed watch
 	// read does not fail commit, so a conflict added before it would outlive it.
 	if addConflict {
-		tx.addReadConflictForKey(key)
+		if err := tx.addReadConflictsFor(ctx, [][2][]byte{{key, keyAfterBytes(key)}}); err != nil {
+			tx.db.releaseWatch()
+			watchCancel()
+			return value, readVersion, span, nil, nil, err
+		}
 	}
 	// watchCtx/watchCancel were minted synchronously above (before this blocking read), so a
 	// Cancel/reset during setup cancels the very context the read (above) and WatchPoll hold; WatchPoll

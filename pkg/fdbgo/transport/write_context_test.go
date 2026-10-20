@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"runtime"
 	"sync"
@@ -87,6 +88,119 @@ func TestWriteContextCancellationAfterEnqueueRetainsWriterOwnership(t *testing.T
 		t.Fatalf("writer ownership refs=%d after caller abandonment, want 1", refs)
 	}
 	request.owned.complete(nil)
+}
+
+type writePanicContext struct {
+	context.Context
+	observe func()
+}
+
+func (c *writePanicContext) Value(key any) any {
+	value := c.Context.Value(key)
+	if _, ok := value.(*SuspendSignal); ok {
+		c.observe()
+	}
+	return value
+}
+
+// Exclusive: the final completion census must precede another pool acquisition.
+func TestWriteContextNotificationPanicRetainsWriterOwner(t *testing.T) {
+	conn := testOwnedConn(1)
+	defer conn.cancel()
+	ctx, signal := WithSuspendSignal(context.Background())
+	defer signal.Fire()
+	var request writeReq
+	var before int32
+	ctx = &writePanicContext{Context: ctx, observe: func() {
+		request = <-conn.writeCh
+		before = request.owned.refs.Load()
+		panic(replyPanicMarker)
+	}}
+	requireReplyPanic(t, func() {
+		_, _ = conn.SendFrameContext(ctx, UID{First: 262}, []byte("owned before suspension"))
+	})
+	if before != 2 || request.token.First != 262 || string(request.body) != "owned before suspension" {
+		t.Fatalf("panic did not follow actual frame transfer: refs=%d token=%d body=%q", before, request.token.First, request.body)
+	}
+	if refs := request.owned.refs.Load(); refs != 1 {
+		t.Fatalf("caller panic retained %d completion owners, want only the writer", refs)
+	}
+	admissionFinish(conn, request)
+	if refs := request.owned.refs.Load(); refs != 0 || conn.queued.Load() != 0 {
+		t.Fatalf("writer completion retained refs=%d queued=%d", refs, conn.queued.Load())
+	}
+	if conn.IsClosed() {
+		t.Fatal("local notification panic closed the shared connection")
+	}
+	if ok, err := conn.SendFrameDeferredContext(context.Background(), UID{First: 263}, []byte("reused")); !ok || err != nil {
+		t.Fatal(ok, err)
+	}
+	reused := <-conn.writeCh
+	if reused.token.First != 263 || string(reused.body) != "reused" {
+		t.Fatalf("same-connection reuse frame = %d/%q", reused.token.First, reused.body)
+	}
+	admissionFinish(conn, reused)
+}
+
+type writeAdmissionPanicContext struct {
+	context.Context
+	conn       *Conn
+	completion *writeCompletion
+	reader     bool
+	refs       int32
+	queued     int64
+	empty      bool
+}
+
+func (c *writeAdmissionPanicContext) observe() {
+	c.refs = c.completion.refs.Load()
+	c.queued = c.conn.queued.Load()
+	c.empty = len(c.conn.writeCh)+len(c.conn.prefixCh)+len(c.conn.heldCh) == 0
+	panic(replyPanicMarker)
+}
+
+func (c *writeAdmissionPanicContext) Done() <-chan struct{} {
+	if !c.reader {
+		c.observe()
+	}
+	return c.Context.Done()
+}
+
+func (c *writeAdmissionPanicContext) Err() error {
+	if c.reader {
+		c.observe()
+	}
+	return c.Context.Err()
+}
+
+// Exclusive: failed admission returns the completion to the shared pool.
+func TestWriteContextAdmissionPanicReleasesBothOwners(t *testing.T) {
+	for _, reader := range []bool{false, true} {
+		t.Run(fmt.Sprintf("reader=%t", reader), func(t *testing.T) {
+			conn := testOwnedConn(1)
+			defer conn.cancel()
+			completion := newWriteCompletion()
+			ctx := &writeAdmissionPanicContext{Context: context.Background(), conn: conn, completion: completion, reader: reader}
+			var caller context.Context = ctx
+			var wantQueued int64
+			if reader {
+				conn.ctx, caller, wantQueued = ctx, context.Background(), 1
+			}
+			requireReplyPanic(t, func() {
+				_, _ = conn.writeAdmittedContext(caller, UID{First: 262}, []byte("not admitted"), peerAdmission{}, completion)
+			})
+			if ctx.refs != 2 || !ctx.empty || ctx.queued != wantQueued {
+				t.Fatalf("panic boundary: refs=%d empty=%t queued=%d, want 2/true/%d", ctx.refs, ctx.empty, ctx.queued, wantQueued)
+			}
+			if refs := completion.refs.Load(); refs != 0 || conn.queued.Load() != 0 || len(completion.done) != 0 {
+				t.Fatalf("failed admission retained refs=%d queued=%d replies=%d", refs, conn.queued.Load(), len(completion.done))
+			}
+			if !conn.writeAdmission.TryLock() {
+				t.Fatal("admission panic retained its reader lock")
+			}
+			conn.writeAdmission.Unlock()
+		})
+	}
 }
 
 func TestWriteContextWriterAcknowledgmentReleasesWaiter(t *testing.T) {

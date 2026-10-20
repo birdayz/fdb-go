@@ -370,7 +370,7 @@ func TestStartResolveKeyTrivial(t *testing.T) {
 		{sel("k", true, 1), "k\x00"},
 		{sel("\xff\xff", true, 1), "\xff\xff"},
 	} {
-		fut, parked := tx.startResolveKey(context.Background(), tc.sel, 1)
+		fut, parked := tx.startResolveKey(context.Background(), tc.sel, 1, nil)
 		select {
 		case <-parked:
 		default:
