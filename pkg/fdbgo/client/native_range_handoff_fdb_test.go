@@ -337,7 +337,11 @@ func checkFallbackContinuationHandoff(t *testing.T, mode string, forced bool) []
 				t.Fatal("forced PING was not answered by the real peer")
 			}
 		}
-		_ = taggedRequests(t, rec.stop()) // malformed frames never authorize a retry
+		// Validate every recorded frame, including PING request structure and
+		// padding, even off the target connection or after its frame. Only the
+		// forced fixture also checks a real PING response; ordinary attempts
+		// rely on validated request bytes, not an observed control reply.
+		_ = taggedRequests(t, rec.stop())
 		if ctx.Err() != nil || conn.IsClosed() {
 			t.Fatal("control write coincided with cancellation or connection failure")
 		}

@@ -28,7 +28,7 @@ func plainDial(ctx context.Context, network, addr string) (net.Conn, error) {
 // own Database, so a test using it can run in parallel with other tests.
 //
 // It fails closed. While recording, a frame is either connection upkeep (a
-// PING to the well-known ping endpoint, or the empty reply the client sends
+// valid PingRequest to the well-known ping endpoint, or the empty reply the client sends
 // to a server's PING; counted in excluded), a request of an expected kind
 // (rendered into requests), or a problem: a frame of another kind, a frame
 // that does not decode, or bytes left over as a partial frame when recording
@@ -252,8 +252,10 @@ func decodeRecordedCoordWrite(body []byte) (reply transport.UID, recognized bool
 	return transport.UID{First: binary.LittleEndian.Uint64(req.Reply.Token[:8]), Second: binary.LittleEndian.Uint64(req.Reply.Token[8:])}, true, nil
 }
 
-// priorNonStorageWrites returns non-storage kinds preceding the unique target
-// reply token on its own connection in the latest recording window. The target
+// priorNonStorageWrites returns kinds other than the four storage-read RPCs in
+// storageRequest preceding the unique target reply token on its own connection
+// in the latest recording window. This is not a server-role classification:
+// location, GRV, watches and metrics are outside that four-kind set. The target
 // itself is excluded, even when it is a location request. Decoder failures are
 // errors, never evidence that an attempt may be retried. No connection lock is
 // acquired here; observe takes that lock before the recorder lock.
@@ -291,6 +293,50 @@ func (r *sendRecorder) priorNonStorageWrites(target transport.UID) ([]string, er
 	return kinds, nil
 }
 
+// validateRecordedPing decodes C++ 7.3.77's PingRequest (file identifier
+// 4707015, one nested ReplyPromise<Void> with an inline UID). As with other
+// recorded requests, re-encoding catches fields the permissive Reader treats as
+// absent. The forced-control fixture appends zero padding, which the C++ object
+// reader ignores. This fixture policy accepts only that zero padding, not
+// every C++-legal layout. frame rejects embedded protocol prefixes first:
+// network delivery uses AssumeVersion and does not consume a version header.
+func validateRecordedPing(body []byte) (err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			err = fmt.Errorf("PingRequest decoder panicked: %v", p)
+		}
+	}()
+	r, err := wire.NewReader(body)
+	if err != nil {
+		return err
+	}
+	if r.FileIdentifier() != 4707015 {
+		return fmt.Errorf("PingRequest file identifier %d, want 4707015", r.FileIdentifier())
+	}
+	if !r.FieldPresent(0) {
+		return fmt.Errorf("PingRequest missing ReplyPromise")
+	}
+	reply, err := r.ReadNestedReader(0)
+	if err != nil {
+		return err
+	}
+	off, obj := reply.FieldOffset(0), reply.ObjectBytes()
+	if off < 4 || off+16 > len(obj) {
+		return fmt.Errorf("PingRequest ReplyPromise UID is absent or out of bounds")
+	}
+	token := transport.UID{First: binary.LittleEndian.Uint64(obj[off:]), Second: binary.LittleEndian.Uint64(obj[off+8:])}
+	again := transport.BuildPingRequest(token)
+	if len(body) < len(again) || !bytes.Equal(again, body[:len(again)]) {
+		return fmt.Errorf("PingRequest does not re-encode to the bytes sent")
+	}
+	for _, b := range body[len(again):] {
+		if b != 0 {
+			return fmt.Errorf("PingRequest has a nonzero trailing byte")
+		}
+	}
+	return nil
+}
+
 func (r *sendRecorder) frame(conn *recordingConn, token transport.UID, body []byte) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -298,11 +344,28 @@ func (r *sendRecorder) frame(conn *recordingConn, token transport.UID, body []by
 		return
 	}
 	write := sendRecordedWrite{conn: conn, token: token, body: bytes.Clone(body)}
-	if token == pingToken || bytes.Equal(body, pingReplyBody) {
+	// Unlike wire.Reader's generic IncludeVersion support, C++ network
+	// delivery uses AssumeVersion and reads the file identifier at raw offset
+	// four. Do not let any classifier normalize an invalid network prefix.
+	if len(body) >= 8 && body[7] == 0x0F && body[6] == 0xDB {
+		write.problem = fmt.Sprintf("embedded protocol prefix in raw network frame (token %x, %d bytes)", token, len(body))
+		r.rec.writes = append(r.rec.writes, write)
+		r.rec.problems = append(r.rec.problems, write.problem)
+		return
+	}
+	if token == pingToken {
 		write.kind = "PING"
-		if token != pingToken {
-			write.kind = "VoidReply"
+		if err := validateRecordedPing(body); err != nil {
+			write.problem = fmt.Sprintf("invalid PingRequest: %v (token %x, %d bytes)", err, token, len(body))
+			r.rec.problems = append(r.rec.problems, write.problem)
+		} else {
+			r.rec.excluded++
 		}
+		r.rec.writes = append(r.rec.writes, write)
+		return
+	}
+	if bytes.Equal(body, pingReplyBody) {
+		write.kind = "VoidReply"
 		r.rec.writes = append(r.rec.writes, write)
 		r.rec.excluded++
 		return
@@ -359,7 +422,7 @@ func (r *sendRecorder) problem(conn *recordingConn, raw []byte, p string) {
 // readProblems is the recorder validation used by taggedRequests, including
 // before a handoff fixture discards an independently observed control-write
 // confound. Only the existing coordinator long-poll exclusion is filtered;
-// strict coordinator decoding failures must remain fatal on every connection.
+// strict coordinator and PING decoding failures remain fatal on every connection.
 func (rec recording) readProblems() []string {
 	coordPoll := fmt.Sprintf("unexpected request kind: file identifier %d ", types.OpenDatabaseCoordRequestFileID)
 	var problems []string
@@ -531,6 +594,29 @@ func TestSendRecorderPriorNonStorageWrites(t *testing.T) {
 		raw   []byte
 	}
 	ping := write{token: transport.UID{First: ^uint64(0), Second: 1}, body: transport.BuildPingRequest(transport.UID{First: 8})}
+	// Captured libfdb_c 7.3.77 PingRequest, independent of BuildPingRequest.
+	cppPingBody, err := hex.DecodeString("14000000c7d247000600080004000600140004000c00000004000000140000000400000016000000d89e50573e31458e1b000000480ea5c5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cppPing := write{token: ping.token, body: cppPingBody}
+	paddedPing := write{token: ping.token, body: append(bytes.Clone(cppPing.body), make([]byte, 1<<20)...)}
+	prefixedPing := write{token: ping.token, body: append(binary.LittleEndian.AppendUint64(nil, transport.ProtocolVersion73), paddedPing.body...)}
+	badPingPrefix := write{token: ping.token, body: append(binary.LittleEndian.AppendUint64(nil, 0x0FDB000000000000), cppPing.body...)}
+	futurePingPrefix := write{token: ping.token, body: append(binary.LittleEndian.AppendUint64(nil, 0x0FDB00B075000000), cppPing.body...)}
+	badPing := write{token: ping.token, body: []byte{1, 2, 3}}
+	wrongPingKind := write{token: ping.token, body: bytes.Clone(cppPing.body)}
+	binary.LittleEndian.PutUint32(wrongPingKind.body[4:8], 0xdeadbeef)
+	missingPingReply := write{token: ping.token, body: bytes.Clone(cppPing.body)}
+	binary.LittleEndian.PutUint16(missingPingReply.body[12:14], 0)
+	badPingReply := write{token: ping.token, body: bytes.Clone(cppPing.body)}
+	binary.LittleEndian.PutUint32(badPingReply.body[32:36], ^uint32(0))
+	badPingUID := write{token: ping.token, body: bytes.Clone(cppPing.body[:len(cppPing.body)-1])}
+	badPingLayout := write{token: ping.token, body: bytes.Clone(cppPing.body)}
+	badPingLayout.body[8]++ // invalid PingRequest vtable length, still Reader-decodable
+	badPingSuffix := write{token: ping.token, body: append(bytes.Clone(cppPing.body), 0, 1)}
+	otherBadPing, otherPrefixedPing := badPing, prefixedPing
+	otherBadPing.conn, otherPrefixedPing.conn = 1, 1
 	void := write{token: transport.UID{First: 9}, body: voidBody}
 	grv := write{token: transport.UID{First: 10}, body: (&types.GetReadVersionRequest{Reply: promise(60)}).MarshalFDB()}
 	location := write{token: transport.UID{First: 11}, body: (&types.GetKeyServerLocationsRequest{Reply: promise(61)}).MarshalFDB()}
@@ -543,6 +629,8 @@ func TestSendRecorderPriorNonStorageWrites(t *testing.T) {
 	}).MarshalFDB()}
 	prefixedCoord := coord
 	prefixedCoord.body = append(binary.LittleEndian.AppendUint64(nil, transport.ProtocolVersion73), coord.body...)
+	otherPrefixedCoord := prefixedCoord
+	otherPrefixedCoord.conn = 1
 	badCoord := coord
 	badCoord.body = bytes.Clone(coord.body)
 	coordReader, err := wire.NewReader(badCoord.body)
@@ -560,6 +648,10 @@ func TestSendRecorderPriorNonStorageWrites(t *testing.T) {
 	key := write{token: transport.UID{First: 13}, body: (&types.GetKeyRequest{Reply: promise(63)}).MarshalFDB()}
 	rangeRead := write{token: transport.UID{First: 14}, body: (&types.GetKeyValuesRequest{Reply: promise(64)}).MarshalFDB()}
 	mapped := write{token: transport.UID{First: 15}, body: (&types.GetMappedKeyValuesRequest{Reply: promise(65)}).MarshalFDB()}
+	prefixedValue, prefixedGRV, prefixedLocation := value, grv, location
+	prefixedValue.body = append(binary.LittleEndian.AppendUint64(nil, transport.ProtocolVersion73), value.body...)
+	prefixedGRV.body = append(binary.LittleEndian.AppendUint64(nil, transport.ProtocolVersion73), grv.body...)
+	prefixedLocation.body = append(binary.LittleEndian.AppendUint64(nil, transport.ProtocolVersion73), location.body...)
 	targetWrite := write{token: transport.UID{First: 16}, body: (&types.GetKeyRequest{Reply: promise(70)}).MarshalFDB()}
 	targetLocation := write{token: transport.UID{First: 17}, body: (&types.GetKeyServerLocationsRequest{Reply: promise(70)}).MarshalFDB()}
 	malformed := write{token: transport.UID{First: 18}, body: malformedGetKeyValues()}
@@ -579,10 +671,31 @@ func TestSendRecorderPriorNonStorageWrites(t *testing.T) {
 		readProblems                 int
 	}{
 		{name: "ping-literal-uid", writes: []write{ping, targetWrite}, target: target, want: []string{"PING"}, requests: 1, excluded: 1},
+		{name: "ping-cpp-payload", writes: []write{cppPing, targetWrite}, target: target, want: []string{"PING"}, requests: 1, excluded: 1},
+		{name: "ping-valid-padded-payload", writes: []write{paddedPing, targetWrite}, target: target, want: []string{"PING"}, requests: 1, excluded: 1},
+		{name: "ping-exact73-prefix-predecessor", writes: []write{prefixedPing, targetWrite}, target: target, wantErr: "protocol prefix", requests: 1, problems: 1, readProblems: 1},
+		{name: "ping-exact73-prefix-other-connection-blocks-retry", writes: []write{ping, otherPrefixedPing, targetWrite}, target: target, want: []string{"PING"}, requests: 1, excluded: 1, problems: 1, readProblems: 1},
+		{name: "ping-exact73-prefix-post-target-blocks-retry", writes: []write{ping, targetWrite, prefixedPing}, target: target, want: []string{"PING"}, requests: 1, excluded: 1, problems: 1, readProblems: 1},
+		{name: "ping-invalid-protocol-prefix", writes: []write{badPingPrefix, targetWrite}, target: target, wantErr: "protocol prefix", requests: 1, problems: 1, readProblems: 1},
+		{name: "ping-future-protocol-prefix", writes: []write{futurePingPrefix, targetWrite}, target: target, wantErr: "protocol prefix", requests: 1, problems: 1, readProblems: 1},
+		{name: "bad-ping-predecessor", writes: []write{badPing, targetWrite}, target: target, wantErr: "invalid PingRequest", requests: 1, problems: 1, readProblems: 1},
+		{name: "bad-ping-other-connection-blocks-retry", writes: []write{ping, otherBadPing, targetWrite}, target: target, want: []string{"PING"}, requests: 1, excluded: 1, problems: 1, readProblems: 1},
+		{name: "bad-ping-post-target-blocks-retry", writes: []write{ping, targetWrite, badPing}, target: target, want: []string{"PING"}, requests: 1, excluded: 1, problems: 1, readProblems: 1},
+		{name: "ping-wrong-file-identifier", writes: []write{wrongPingKind, targetWrite}, target: target, wantErr: "file identifier", requests: 1, problems: 1, readProblems: 1},
+		{name: "ping-missing-reply", writes: []write{missingPingReply, targetWrite}, target: target, wantErr: "missing ReplyPromise", requests: 1, problems: 1, readProblems: 1},
+		{name: "ping-invalid-reply-offset", writes: []write{badPingReply, targetWrite}, target: target, wantErr: "out of bounds", requests: 1, problems: 1, readProblems: 1},
+		{name: "ping-truncated-reply-uid", writes: []write{badPingUID, targetWrite}, target: target, wantErr: "UID is absent or out of bounds", requests: 1, problems: 1, readProblems: 1},
+		{name: "ping-noncanonical-layout", writes: []write{badPingLayout, targetWrite}, target: target, wantErr: "does not re-encode", requests: 1, problems: 1, readProblems: 1},
+		{name: "ping-nonzero-suffix", writes: []write{badPingSuffix, targetWrite}, target: target, wantErr: "nonzero trailing byte", requests: 1, problems: 1, readProblems: 1},
 		{name: "void-literal-payload", writes: []write{void, targetWrite}, target: target, want: []string{"VoidReply"}, requests: 1, excluded: 1},
 		{name: "known-nonstorage", writes: []write{grv, location, targetWrite}, target: target, want: []string{"GetReadVersionRequest", "GetKeyServerLocationsRequest"}, requests: 3},
 		{name: "known-coordinator-typed-vectors", writes: []write{coord, targetWrite}, target: target, want: []string{"OpenDatabaseCoordRequest"}, requests: 1, problems: 1},
-		{name: "known-coordinator-with-protocol-prefix", writes: []write{prefixedCoord, targetWrite}, target: target, want: []string{"OpenDatabaseCoordRequest"}, requests: 1, problems: 1},
+		{name: "coordinator-protocol-prefix-blocks-retry", writes: []write{prefixedCoord, targetWrite}, target: target, wantErr: "protocol prefix", requests: 1, problems: 1, readProblems: 1},
+		{name: "coordinator-prefix-other-connection-blocks-retry", writes: []write{ping, otherPrefixedCoord, targetWrite}, target: target, want: []string{"PING"}, requests: 1, excluded: 1, problems: 1, readProblems: 1},
+		{name: "coordinator-prefix-post-target-blocks-retry", writes: []write{ping, targetWrite, prefixedCoord}, target: target, want: []string{"PING"}, requests: 1, excluded: 1, problems: 1, readProblems: 1},
+		{name: "storage-protocol-prefix-blocks-retry", writes: []write{prefixedValue, targetWrite}, target: target, wantErr: "protocol prefix", requests: 1, problems: 1, readProblems: 1},
+		{name: "grv-protocol-prefix-blocks-retry", writes: []write{prefixedGRV, targetWrite}, target: target, wantErr: "protocol prefix", requests: 1, problems: 1, readProblems: 1},
+		{name: "location-protocol-prefix-blocks-retry", writes: []write{prefixedLocation, targetWrite}, target: target, wantErr: "protocol prefix", requests: 1, problems: 1, readProblems: 1},
 		{name: "malformed-coordinator-vector", writes: []write{badCoord, targetWrite}, target: target, wantErr: "vector start out of bounds", requests: 1, problems: 2, readProblems: 1},
 		{name: "coordinator-roundtrip-rejects-trailing-bytes", writes: []write{nonRoundTripCoord, targetWrite}, target: target, wantErr: "does not re-encode", requests: 1, problems: 2, readProblems: 1},
 		{name: "bad-coordinator-other-connection-blocks-retry", writes: []write{ping, otherBadCoord, targetWrite}, target: target, want: []string{"PING"}, requests: 1, excluded: 1, problems: 2, readProblems: 1},
@@ -630,11 +743,11 @@ func TestSendRecorderPriorNonStorageWrites(t *testing.T) {
 			check()
 			got := rec.stop()
 			check() // retain the same census after recording stops
-			if len(got.requests) != tc.requests || len(got.msgs) != tc.requests || got.excluded != tc.excluded || len(got.problems) != tc.problems {
-				t.Fatalf("recorder semantics changed: requests=%d messages=%d excluded=%d problems=%q, want %d/%d/%d/%d", len(got.requests), len(got.msgs), got.excluded, got.problems, tc.requests, tc.requests, tc.excluded, tc.problems)
-			}
 			if problems := got.readProblems(); len(problems) != tc.readProblems {
 				t.Fatalf("actual read/retry validation returned %q, want %d blocking problems", problems, tc.readProblems)
+			}
+			if len(got.requests) != tc.requests || len(got.msgs) != tc.requests || got.excluded != tc.excluded || len(got.problems) != tc.problems {
+				t.Fatalf("recorder semantics changed: requests=%d messages=%d excluded=%d problems=%q, want %d/%d/%d/%d", len(got.requests), len(got.msgs), got.excluded, got.problems, tc.requests, tc.requests, tc.excluded, tc.problems)
 			}
 			coordReply := transport.UID{First: 66, Second: 7}
 			if got.replyKinds[coordReply] != "" || got.storageReplies[coordReply] {
