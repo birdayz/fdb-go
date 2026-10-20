@@ -13,9 +13,11 @@ import (
 	"fdb.dev/pkg/fdbgo/transport"
 )
 
+// This finite 64-sender, eight-pass campaign proves cohort membership stays
+// bounded. It does not establish a drain deadline or sustained-load latency SLO.
 func TestColdPeerGenerationIsBoundedUnderLoad(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // hang guard, not a drainage bound
 	defer cancel()
 	const senders, passes = 64, 8
 	handshake, releaseHead := make(chan struct{}), make(chan struct{})

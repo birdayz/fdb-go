@@ -520,6 +520,9 @@ func (tx *Transaction) addMappedRangeConflictMustUnmodified(ctx context.Context,
 		if err := tx.addReadConflictsFor(ctx, [][2][]byte{{begin, prefixEnd}}); err != nil {
 			return err
 		}
+	} else if err := tx.addReadConflictsFor(ctx, nil); err != nil {
+		// A modification at begin still belongs to the captured incarnation.
+		return err
 	}
 	if bytes.Compare(prefixEnd, end) < 0 {
 		return &wire.FDBError{Code: ErrGetMappedRangeReadsYourWrites}

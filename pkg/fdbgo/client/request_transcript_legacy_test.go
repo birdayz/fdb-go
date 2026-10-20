@@ -188,7 +188,7 @@ func (tx *Transaction) legacySendGetKey(ctx context.Context, selectorKey []byte,
 			delta := tx.db.queueModel.startRequest(server.Address)
 			start := time.Now()
 
-			if err := sendReadFrame(ctx, conn, gkToken, reqData, replyHandle, nil); err != nil {
+			if err := sendReadFrame(ctx, conn, gkToken, reqData, replyHandle, nil, nil); err != nil {
 				getKeyBufPool.Put(bufp) // the write queue owns its copy
 				tx.db.queueModel.endRequest(server.Address, delta, readFailureLatency(err, start), false)
 				replyHandle.Cancel()
@@ -610,7 +610,7 @@ func legacySendRangeRPC[T any](tx *Transaction, ctx context.Context, begin, end 
 			delta := tx.db.queueModel.startRequest(server.Address)
 			start := time.Now()
 
-			if err := sendReadFrame(ctx, conn, gkvToken, body, replyHandle, nil); err != nil {
+			if err := sendReadFrame(ctx, conn, gkvToken, body, replyHandle, nil, nil); err != nil {
 				ops.putBuf(poolBuf) // the write queue owns its copy
 				tx.db.queueModel.endRequest(server.Address, delta, readFailureLatency(err, start), false)
 				replyHandle.Cancel()

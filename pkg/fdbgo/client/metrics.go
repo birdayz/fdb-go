@@ -148,7 +148,7 @@ func (tx *Transaction) sendWaitMetrics(ctx context.Context, begin, end []byte, m
 			TenantInfo: types.TenantInfo{TenantId: tx.tenantId},
 			MinVersion: minVersion,
 		}
-		if err := sendReadFrame(ctx, conn, wmToken, req.MarshalFDB(), replyHandle, permit); err != nil {
+		if err := sendReadFrame(ctx, conn, wmToken, req.MarshalFDB(), replyHandle, permit, nil); err != nil {
 			replyHandle.Cancel()
 			replyCleanup.release()
 			tx.db.handleReadConnError(server.Address, err)
@@ -306,7 +306,7 @@ func (tx *Transaction) sendSplitRange(ctx context.Context, begin, end []byte, ch
 			Reply:      types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
 			TenantInfo: types.TenantInfo{TenantId: tx.tenantId},
 		}
-		if err := sendReadFrame(ctx, conn, srToken, req.MarshalFDB(), replyHandle, permit); err != nil {
+		if err := sendReadFrame(ctx, conn, srToken, req.MarshalFDB(), replyHandle, permit, nil); err != nil {
 			replyHandle.Cancel()
 			replyCleanup.release()
 			tx.db.handleReadConnError(server.Address, err)

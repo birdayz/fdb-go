@@ -299,11 +299,18 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   Connection cancellation wakes it, but `Close` can return before it releases
   its reply handle. Track that owner through shutdown and pin zero live waiters
   on return; the cold-control outbox worker is tracked separately.
-- [ ] **Full-queue control packets must not be dropped.** The pre-existing
-  transport `tryEnqueue` policy drops monitor pings and ping replies when its
-  bounded queue is full; C++ queues them as ordinary packets in `Peer::unsent`
-  (`FlowTransport.actor.cpp:1967-1998,2078`). Cold-prefix control packets now join
-  the ordered outbox, but its full-capacity fallback retains this divergence.
+- [ ] **Control packets must not be dropped behind FIFO gaps or full queues.**
+  Transport `tryEnqueue` drops monitor pings and ping replies when the ordinary
+  or held sender FIFO is pending, even if its channel has a free slot; it also
+  drops them when the ordinary, held or cold-control inbox is full. C++ queues
+  these packets as ordinary entries in `Peer::unsent`
+  (`FlowTransport.actor.cpp:1967-1998,2078`). Cold-prefix controls join the
+  ordered outbox, but these admission failures remain. Connection teardown is
+  a separate lifecycle outcome, not another instance of this enqueue gap.
+- [ ] **Measure multicore send-admission contention.** Compare the merged
+  RFC-262 sender with follow-ups under concurrent same-peer and independent-peer
+  traffic, reporting throughput, client CPU, allocations and mutex/block profiles.
+  Single-thread loopback RPC measurements do not establish contention cost.
 - [ ] **Reads after an illegal Set precede its deferred verdict.** `stateSet`
   (`transaction.go:1268-1284`) buffers illegal keys/values until commit validation;
   C++ RYW set throws before modifying WriteMap (`ReadYourWrites.actor.cpp:2344-2353`)

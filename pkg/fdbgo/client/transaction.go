@@ -314,6 +314,10 @@ type txOptions struct {
 	beforeRangeGoroutine func()
 	// beforeResolveKeyResume observes a fallback resolver's unready startup gate.
 	beforeResolveKeyResume func(KeySelector)
+	// resolveKeyWorkerObserver observes the resolver before it starts its read.
+	resolveKeyWorkerObserver func(KeySelector)
+	// beforeResolveKeyReplyWait observes the resolver before its reply handoff.
+	beforeResolveKeyReplyWait func(KeySelector, <-chan struct{})
 	// afterRangeReply parks an issued range read after a storage reply, before
 	// it merges the reply or records its conflict.
 	afterRangeReply func()
