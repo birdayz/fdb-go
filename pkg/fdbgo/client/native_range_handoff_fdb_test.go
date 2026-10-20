@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -57,7 +58,7 @@ func checkFallbackContinuationHandoff(t *testing.T, mode string, forced bool) []
 	var frontends sync.Map
 	var control *handoffControlGate
 	if forced {
-		control = &handoffControlGate{entered: make(chan struct{}), release: make(chan struct{})}
+		control = &handoffControlGate{ctx: ctx, entered: make(chan struct{}), release: make(chan struct{})}
 		defer control.resume()
 	}
 	if ready {
@@ -94,7 +95,7 @@ func checkFallbackContinuationHandoff(t *testing.T, mode string, forced bool) []
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ready {
+	if ready && !forced { // only clean attempts require the bare-TCP fast path
 		frontend, ok := frontends.Load(server.Address)
 		if !ok {
 			t.Fatal("storage connection has no bare TCP frontend")
@@ -222,22 +223,28 @@ func checkFallbackContinuationHandoff(t *testing.T, mode string, forced bool) []
 	var pingReply <-chan transport.Response
 	tx.resolveKeyWorkerObserver = func(selector KeySelector) {
 		if forced && string(selector.Key) == prefix+"a" {
-			control.addr = server.Address
-			control.active.Store(true)
 			endpoint := transport.WellKnownToken(1)
 			token, replies, handle := conn.PrepareReplyTo(endpoint)
 			pingReply, pingCleanup.handle = replies, handle
-			// Padding exceeds the tiny frontend buffers, so this real PING keeps
-			// the writer busy until begin positively reports its flush wait.
-			body := append(transport.BuildPingRequest(token), make([]byte, 1<<20)...)
+			body := transport.BuildPingRequest(token)
+			control.addr, control.body = server.Address, bytes.Clone(body)
+			control.active.Store(true)
+			// Only the discarded forced attempt uses a Write wrapper, not bare
+			// TCP. The small real PING is forwarded, but its Write cannot return
+			// until begin positively reports the accepted-frame flush wait.
 			if accepted, err := conn.SendFrameDeferredContext(ctx, endpoint, body); !accepted || err != nil {
 				t.Errorf("forced PING enqueue = %t, %v", accepted, err)
 				return
 			}
 			select {
 			case <-control.entered:
+				select {
+				case <-control.release:
+					t.Error("forced control Write gate was released before begin started")
+				default:
+				}
 			case <-ctx.Done():
-				t.Error("forced control writer never reached the TCP frontend gate")
+				t.Error("forced control writer never reached its Write-return gate")
 				return
 			}
 		}
@@ -538,8 +545,181 @@ func TestHandoffFlushWaitRejectsFIFO(t *testing.T) {
 	}
 }
 
+func TestHandoffControlConn(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, action string
+		inactive     bool
+		otherAddr    bool
+		otherToken   bool
+		coalesced    bool
+	}{
+		{name: "release", action: "release"},
+		{name: "cancel", action: "cancel"},
+		{name: "close", action: "close"},
+		{name: "inactive", action: "none", inactive: true},
+		{name: "other-address", action: "none", otherAddr: true},
+		{name: "other-endpoint", action: "none", otherToken: true},
+		{name: "coalesced", action: "release", coalesced: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			gate := &handoffControlGate{ctx: ctx, addr: "selected", body: transport.BuildPingRequest(transport.UID{First: 901}), entered: make(chan struct{}), release: make(chan struct{})}
+			if tc.otherAddr {
+				gate.addr = "other"
+			}
+			ping, endpoint := transport.WellKnownToken(1), transport.WellKnownToken(1)
+			if tc.otherToken {
+				endpoint = transport.WellKnownToken(2)
+			}
+			other, tail := transport.BuildPingRequest(transport.UID{First: 900}), transport.BuildPingRequest(transport.UID{First: 902})
+			wantBodies := [][]byte{other, gate.body}
+			wantTokens := []transport.UID{ping, endpoint}
+			if tc.coalesced {
+				wantBodies, wantTokens = append(wantBodies, tail), append(wantTokens, ping)
+			}
+			client, peer := net.Pipe()
+			conn := &handoffControlConn{Conn: client, addr: "selected", gate: gate, closed: make(chan struct{})}
+			peerDone := make(chan struct{})
+			seen := make(chan []byte, len(wantBodies))
+			peerErrors := make(chan error, 1)
+			go func() {
+				defer close(peerDone)
+				defer peer.Close()
+				if _, err := transport.ReadConnectPacket(peer); err != nil {
+					peerErrors <- err
+					return
+				}
+				for _, wantToken := range wantTokens {
+					token, body, err := transport.ReadFrame(peer, false)
+					if err != nil {
+						peerErrors <- err
+						return
+					}
+					if token != wantToken {
+						peerErrors <- fmt.Errorf("unexpected control endpoint %v, want %v", token, wantToken)
+						return
+					}
+					seen <- body
+				}
+				<-ctx.Done()
+			}()
+			defer func() { cancel(); gate.resume(); conn.Close(); peer.Close(); <-peerDone }()
+			handshake := (&transport.ConnectPacket{ProtocolVersion: transport.ProtocolVersion73}).Marshal()
+			for _, part := range [][]byte{handshake[:17], handshake[17:]} {
+				if _, err := conn.Write(part); err != nil {
+					t.Fatal(err)
+				}
+			}
+			gate.active.Store(!tc.inactive)
+			encode := func(token transport.UID, body []byte) []byte {
+				var frame bytes.Buffer
+				if err := transport.WriteFrame(&frame, token, body, false); err != nil {
+					t.Fatal(err)
+				}
+				return frame.Bytes()
+			}
+			otherFrame := encode(ping, other)
+			otherDone := make(chan struct{})
+			var otherErr error
+			go func() { _, otherErr = conn.Write(otherFrame); close(otherDone) }()
+			defer func() { gate.resume(); conn.Close(); <-otherDone }()
+			select {
+			case <-otherDone:
+				if otherErr != nil {
+					t.Fatal(otherErr)
+				}
+			case <-gate.entered:
+				t.Fatal("unrelated PING entered the selected Write gate")
+			case err := <-peerErrors:
+				t.Fatal(err)
+			case <-ctx.Done():
+				t.Fatal("unrelated PING Write did not complete")
+			}
+			frame := encode(endpoint, gate.body)
+			parts := [][]byte{frame[:7], frame[7:29], frame[29:]}
+			if tc.coalesced {
+				parts = [][]byte{append(frame, encode(ping, tail)...)}
+			}
+			written := make(chan struct{})
+			var writeErr error
+			go func() {
+				defer close(written)
+				for _, part := range parts {
+					if _, err := conn.Write(part); err != nil {
+						writeErr = err
+						return
+					}
+				}
+			}()
+			defer func() { gate.resume(); conn.Close(); <-written }()
+			select {
+			case <-gate.entered:
+				if tc.action == "none" {
+					t.Fatal("unmatched frame entered the selected Write gate")
+				}
+			case <-written:
+				if tc.action != "none" || writeErr != nil {
+					t.Fatalf("selected PING Write returned without entering its gate: %v", writeErr)
+				}
+			case err := <-peerErrors:
+				t.Fatal(err)
+			case <-ctx.Done():
+				t.Fatal("selected PING never reached its Write-return boundary")
+			}
+			for _, want := range wantBodies {
+				select {
+				case got := <-seen:
+					if !bytes.Equal(got, want) {
+						t.Fatal("Write gate changed or reordered the real peer's PING bytes")
+					}
+				case <-ctx.Done():
+					t.Fatal("Write gate withheld bytes instead of only its return")
+				}
+			}
+			if tc.action == "none" {
+				return
+			}
+			select {
+			case <-written:
+				t.Fatal("selected PING Write returned before release, cancellation, or Close")
+			default:
+			}
+			var wantErr error
+			switch tc.action {
+			case "release":
+				gate.resume()
+			case "cancel":
+				wantErr = context.Canceled
+				cancel()
+			case "close":
+				wantErr = net.ErrClosed
+				if err := conn.Close(); err != nil {
+					t.Fatal(err)
+				}
+				select {
+				case <-conn.closed:
+				default:
+					t.Fatal("Close did not publish Write-gate cancellation")
+				}
+			}
+			select {
+			case <-written:
+				if !errors.Is(writeErr, wantErr) {
+					t.Fatalf("Write after %s = %v, want %v", tc.action, writeErr, wantErr)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatalf("%s did not unblock the selected PING Write", tc.action)
+			}
+		})
+	}
+}
+
 type handoffControlGate struct {
-	addr        string // published by active before any intercepted write
+	ctx         context.Context
+	addr        string // addr/body are published by active, then immutable
+	body        []byte
 	active      atomic.Bool
 	entered     chan struct{}
 	release     chan struct{}
@@ -549,33 +729,71 @@ type handoffControlGate struct {
 
 func (g *handoffControlGate) resume() { g.releaseOnce.Do(func() { close(g.release) }) }
 
-type handoffControlWriter struct {
-	io.Writer
-	frontend, peer *net.TCPConn
-	addr           string
-	gate           *handoffControlGate
+// handoffControlConn is used only by the forced, discarded attempt. Unlike a
+// bridge-side gate, holding this Write's return positively keeps the transport
+// writer occupied regardless of kernel buffering. Clean attempts stay bare TCP.
+// The transport serializes writes; Close touches only the closed channel.
+type handoffControlConn struct {
+	net.Conn
+	addr      string
+	gate      *handoffControlGate
+	pending   []byte
+	connected bool
+	closed    chan struct{}
+	closeOnce sync.Once
 }
 
-func (w *handoffControlWriter) Write(body []byte) (int, error) {
-	var restoreErr error
-	if w.gate.active.Load() && w.addr == w.gate.addr {
-		w.gate.once.Do(func() {
-			close(w.gate.entered)
-			<-w.gate.release
-			// Restore throughput once begin has positively entered its flush wait.
-			if restoreErr = w.peer.SetReadBuffer(1 << 20); restoreErr == nil {
-				restoreErr = w.frontend.SetWriteBuffer(1 << 20)
+func (c *handoffControlConn) Write(p []byte) (int, error) {
+	n, err := c.Conn.Write(p)
+	if err != nil {
+		return n, err
+	}
+	c.pending = append(c.pending, p[:n]...)
+	if !c.connected {
+		if len(c.pending) < transport.ConnectPacketSize {
+			return n, nil
+		}
+		c.pending = c.pending[transport.ConnectPacketSize:]
+		c.connected = true
+	}
+	hold := false
+	for len(c.pending) >= 12 {
+		size := int(binary.LittleEndian.Uint32(c.pending))
+		if size < 16 {
+			return n, fmt.Errorf("forced control frame has invalid payload length %d", size)
+		}
+		if len(c.pending) < 12+size {
+			break
+		}
+		token := transport.UID{First: binary.LittleEndian.Uint64(c.pending[12:20]), Second: binary.LittleEndian.Uint64(c.pending[20:28])}
+		if c.gate.active.Load() && c.addr == c.gate.addr && token == transport.WellKnownToken(1) && bytes.Equal(c.pending[28:12+size], c.gate.body) {
+			hold = true
+		}
+		c.pending = c.pending[12+size:]
+	}
+	if hold {
+		c.gate.once.Do(func() {
+			close(c.gate.entered)
+			select {
+			case <-c.gate.release:
+			case <-c.gate.ctx.Done():
+				err = c.gate.ctx.Err()
+			case <-c.closed:
+				err = net.ErrClosed
 			}
 		})
 	}
-	if restoreErr != nil {
-		return 0, restoreErr
-	}
-	return w.Writer.Write(body)
+	return n, err
 }
 
-// The bridge returns a bare TCP socket, so the real sender can finish without a
-// flush suspension. Recording and reply rewriting stay behind that socket.
+func (c *handoffControlConn) Close() error {
+	c.closeOnce.Do(func() { close(c.closed) })
+	return c.Conn.Close()
+}
+
+// Clean attempts return a bare TCP socket so the real sender can finish without
+// a flush suspension. Only the forced attempt wraps Write to hold its return;
+// neither direction of the bridge is gated or depends on socket buffer sizes.
 func handoffTCPDialer(t *testing.T, dial transport.DialFunc, frontends *sync.Map, control *handoffControlGate) transport.DialFunc {
 	t.Helper()
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -609,23 +827,11 @@ func handoffTCPDialer(t *testing.T, dial transport.DialFunc, frontends *sync.Map
 			peer.Close()
 			closeBackend() // also unblock a simulator forwarding into its pipe
 		})
-		var upstream io.Writer = backend
-		if control != nil {
-			if err := frontend.SetWriteBuffer(1024); err != nil {
-				stop()
-				return nil, err
-			}
-			if err := peer.SetReadBuffer(1024); err != nil {
-				stop()
-				return nil, err
-			}
-			upstream = &handoffControlWriter{Writer: backend, frontend: frontend, peer: peer, addr: addr, gate: control}
-		}
 		up, down := make(chan struct{}), make(chan struct{})
 		go func() {
 			defer close(up)
 			defer stop()
-			_, _ = io.Copy(upstream, peer)
+			_, _ = io.Copy(backend, peer)
 		}()
 		go func() {
 			defer close(down)
@@ -634,6 +840,9 @@ func handoffTCPDialer(t *testing.T, dial transport.DialFunc, frontends *sync.Map
 		}()
 		t.Cleanup(func() { stop(); <-up; <-down })
 		frontends.Store(addr, frontend)
+		if control != nil {
+			return &handoffControlConn{Conn: frontend, addr: addr, gate: control, closed: make(chan struct{})}, nil
+		}
 		return frontend, nil
 	}
 }
