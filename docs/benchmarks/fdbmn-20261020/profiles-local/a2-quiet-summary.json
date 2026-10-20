@@ -1,0 +1,261 @@
+{
+ "dirs": {
+  "forward": {
+   "complete_blocks": 6,
+   "load1_start_min_median_max": [
+    6.62,
+    7.49,
+    9.26
+   ],
+   "new_over_old_gmean": {
+    "ordinary": 1.0144242093805704,
+    "remote": 1.1643671198004344
+   },
+   "new_over_old_range": {
+    "ordinary": [
+     0.9868017455755852,
+     1.0676667421515578
+    ],
+    "remote": [
+     1.147925132967171,
+     1.1867702749225397
+    ]
+   },
+   "per_block": [
+    {
+     "block": 0,
+     "load1_start": {
+      "new-ordinary": 9.26,
+      "new-remote": 8.91,
+      "old-ordinary": 8.45,
+      "old-remote": 9.0
+     },
+     "ns_op_median": {
+      "new-ordinary": 716635.0,
+      "new-remote": 595383.0,
+      "old-ordinary": 671216.0,
+      "old-remote": 514794.0
+     }
+    },
+    {
+     "block": 1,
+     "load1_start": {
+      "new-ordinary": 8.54,
+      "new-remote": 8.2,
+      "old-ordinary": 8.79,
+      "old-remote": 8.44
+     },
+     "ns_op_median": {
+      "new-ordinary": 711893.0,
+      "new-remote": 599982.0,
+      "old-ordinary": 719469.0,
+      "old-remote": 510492.0
+     }
+    },
+    {
+     "block": 2,
+     "load1_start": {
+      "new-ordinary": 7.53,
+      "new-remote": 7.96,
+      "old-ordinary": 7.45,
+      "old-remote": 8.23
+     },
+     "ns_op_median": {
+      "new-ordinary": 719923.0,
+      "new-remote": 596638.0,
+      "old-ordinary": 689095.0,
+      "old-remote": 516998.0
+     }
+    },
+    {
+     "block": 3,
+     "load1_start": {
+      "new-ordinary": 7.12,
+      "new-remote": 7.54,
+      "old-ordinary": 7.28,
+      "old-remote": 7.42
+     },
+     "ns_op_median": {
+      "new-ordinary": 708021.0,
+      "new-remote": 594608.0,
+      "old-ordinary": 701341.0,
+      "old-remote": 517985.0
+     }
+    },
+    {
+     "block": 4,
+     "load1_start": {
+      "new-ordinary": 6.88,
+      "new-remote": 6.62,
+      "old-ordinary": 6.95,
+      "old-remote": 7.08
+     },
+     "ns_op_median": {
+      "new-ordinary": 711061.0,
+      "new-remote": 599286.0,
+      "old-ordinary": 717433.0,
+      "old-remote": 513936.0
+     }
+    },
+    {
+     "block": 5,
+     "load1_start": {
+      "new-ordinary": 6.99,
+      "new-remote": 7.14,
+      "old-ordinary": 7.4,
+      "old-remote": 7.26
+     },
+     "ns_op_median": {
+      "new-ordinary": 713881.0,
+      "new-remote": 603265.0,
+      "old-ordinary": 723429.0,
+      "old-remote": 508325.0
+     }
+    }
+   ],
+   "remote_over_ordinary_gmean": {
+    "new": 0.8383142088494431,
+    "old": 0.7303591917559037
+   },
+   "remote_over_ordinary_range": {
+    "new": [
+     0.8287525193666545,
+     0.8450498052196375
+    ],
+    "old": [
+     0.7026605237003216,
+     0.7669572834974137
+    ]
+   }
+  },
+  "reverse": {
+   "complete_blocks": 6,
+   "load1_start_min_median_max": [
+    6.42,
+    7.545,
+    8.67
+   ],
+   "new_over_old_gmean": {
+    "ordinary": 0.9882449252871142,
+    "remote": 1.1671459350716022
+   },
+   "new_over_old_range": {
+    "ordinary": [
+     0.9642368914169873,
+     1.0121561358450266
+    ],
+    "remote": [
+     1.150137354393695,
+     1.183533974655009
+    ]
+   },
+   "per_block": [
+    {
+     "block": 0,
+     "load1_start": {
+      "new-ordinary": 6.42,
+      "new-remote": 6.91,
+      "old-ordinary": 6.54,
+      "old-remote": 6.69
+     },
+     "ns_op_median": {
+      "new-ordinary": 727885.0,
+      "new-remote": 594100.0,
+      "old-ordinary": 719143.0,
+      "old-remote": 516547.0
+     }
+    },
+    {
+     "block": 1,
+     "load1_start": {
+      "new-ordinary": 6.61,
+      "new-remote": 7.16,
+      "old-ordinary": 7.0,
+      "old-remote": 7.37
+     },
+     "ns_op_median": {
+      "new-ordinary": 727960.0,
+      "new-remote": 604819.0,
+      "old-ordinary": 741658.0,
+      "old-remote": 511028.0
+     }
+    },
+    {
+     "block": 2,
+     "load1_start": {
+      "new-ordinary": 7.29,
+      "new-remote": 7.52,
+      "old-ordinary": 7.57,
+      "old-remote": 7.06
+     },
+     "ns_op_median": {
+      "new-ordinary": 724277.0,
+      "new-remote": 602084.0,
+      "old-ordinary": 737788.0,
+      "old-remote": 513455.0
+     }
+    },
+    {
+     "block": 3,
+     "load1_start": {
+      "new-ordinary": 8.12,
+      "new-remote": 7.29,
+      "old-ordinary": 7.76,
+      "old-remote": 7.72
+     },
+     "ns_op_median": {
+      "new-ordinary": 722980.0,
+      "new-remote": 600356.0,
+      "old-ordinary": 749795.0,
+      "old-remote": 518192.0
+     }
+    },
+    {
+     "block": 4,
+     "load1_start": {
+      "new-ordinary": 8.29,
+      "new-remote": 8.61,
+      "old-ordinary": 8.67,
+      "old-remote": 8.29
+     },
+     "ns_op_median": {
+      "new-ordinary": 729028.0,
+      "new-remote": 598532.0,
+      "old-ordinary": 739661.0,
+      "old-remote": 518212.0
+     }
+    },
+    {
+     "block": 5,
+     "load1_start": {
+      "new-ordinary": 8.0,
+      "new-remote": 8.35,
+      "old-ordinary": 7.92,
+      "old-remote": 8.32
+     },
+     "ns_op_median": {
+      "new-ordinary": 726611.0,
+      "new-remote": 601886.0,
+      "old-ordinary": 722993.0,
+      "old-remote": 508565.0
+     }
+    }
+   ],
+   "remote_over_ordinary_gmean": {
+    "new": 0.8263249181071274,
+    "old": 0.6996652110239849
+   },
+   "remote_over_ordinary_range": {
+    "new": [
+     0.8162003613208131,
+     0.8312896861283735
+    ],
+    "old": [
+     0.689034568493834,
+     0.718281343209904
+    ]
+   }
+  }
+ },
+ "note": "local single-storage cluster, shared host; median of 3 testing.B repeats per process; per-block ratios, geometric mean over blocks"
+}
