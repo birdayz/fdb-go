@@ -37,6 +37,7 @@ go_library(
         "range_limits.go",
         "read_incarnation.go",
         "read_send.go",
+        "read_tags.go",
         "read_version_state.go",
         "readpath.go",
         "rpc.go",
@@ -216,6 +217,18 @@ go_test(
     embed = [":client"],
 )
 
+# gazelle:exclude read_tags_unit_test.go
+go_test(
+    name = "read_tags_unit_test",
+    srcs = ["read_tags_unit_test.go"],
+    embed = [":client"],
+    deps = [
+        "//pkg/fdbgo/transport",
+        "//pkg/fdbgo/wire",
+        "//pkg/fdbgo/wire/types",
+    ],
+)
+
 # gazelle:exclude hotpath_alloc_unit_test.go
 go_test(
     name = "hotpath_alloc_unit_test",
@@ -354,10 +367,13 @@ go_test(
     ],
 )
 
+# gazelle:exclude read_tags_plumbing_fdb_test.go
 # gazelle:exclude storage_plumbing_fdb_test.go
 go_test(
     name = "storage_plumbing_fdb_test",
     srcs = [
+        "read_tags_helpers_test.go",
+        "read_tags_plumbing_fdb_test.go",
         "storage_plumbing_fdb_test.go",
         "testmain_test.go",
         "wire_recorder_test.go",
@@ -471,6 +487,7 @@ go_test(
         "native_commit_fdb_test.go",
         "native_commit_send_test.go",
         "native_commit_waiters_test.go",
+        "native_range_tags_fdb_test.go",
         "native_range_test.go",
         "nil_shard_end_test.go",
         "option_fences_test.go",
@@ -480,6 +497,8 @@ go_test(
         "rangeceiling_test.go",
         "read_incarnation_fdb_test.go",
         "read_incarnation_test.go",
+        "read_tags_fdb_test.go",
+        "read_tags_helpers_test.go",
         "read_write_context_fdb_test.go",
         "readpath_test.go",
         "readpath_timeout_test.go",

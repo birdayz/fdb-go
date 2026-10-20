@@ -362,6 +362,10 @@ type database struct {
 	// unsampled (default, matches C++ TRACING_SAMPLE_RATE). Read-only after open.
 	tracingSampleRate float64
 
+	// Read tag sampling (sampleReadTags): READ_TAG_SAMPLE_RATE unless a test
+	// overrides it. The zero value never samples. Read-only after open.
+	readTags readTagSampling
+
 	// OpenTelemetry export backend (WithTracer, RFC-115 §4 Layer 2). Never nil after
 	// open — defaulted to a no-op tracer (C++ NoopTracer analog) so the span-emission
 	// paths are unconditional and allocation-free when unset. Read-only after open.
@@ -941,6 +945,10 @@ func OpenDatabaseFromConfig(ctx context.Context, cf *ClusterFile, opts ...Option
 
 	db.rangeReadPanics.name, db.rangeReadPanics.db = "rangeRead", db
 	db.resolveKeyPanics.name, db.resolveKeyPanics.db = "resolveKey", db
+	db.readTags = readTagSampling{rate: readTagSampleRate}
+	if o.readTagSampling != nil {
+		db.readTags = *o.readTagSampling
+	}
 	db.hedgeEnabled.Store(true)                       // default: hedge on (matches C++)
 	db.maxWatches.Store(defaultMaxOutstandingWatches) // C++ DEFAULT_MAX_OUTSTANDING_WATCHES (10000)
 

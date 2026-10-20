@@ -56,7 +56,10 @@ type recording struct {
 	// storageReplies are the reply tokens of the storage requests sent, so a
 	// fault can target the reply to a storage request.
 	storageReplies map[transport.UID]bool
-	versions       map[int64]string
+	// replyKinds maps each recorded request's reply token to its kind, so a
+	// fault can target the reply to one kind of request.
+	replyKinds map[transport.UID]string
+	versions   map[int64]string
 }
 
 var (
@@ -121,7 +124,7 @@ func (r *sendRecorder) start() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.on = true
-	r.rec = recording{storageReplies: map[transport.UID]bool{}, versions: map[int64]string{}}
+	r.rec = recording{storageReplies: map[transport.UID]bool{}, replyKinds: map[transport.UID]string{}, versions: map[int64]string{}}
 }
 
 // stop ends recording. A connection holding part of a frame is a problem:
@@ -143,6 +146,17 @@ func (r *sendRecorder) stop() recording {
 	rec := r.rec
 	rec.problems = append(rec.problems, partial...)
 	return rec
+}
+
+// replyKind returns the kind of the request recorded in this window whose
+// reply token is token, or "" for any other reply.
+func (r *sendRecorder) replyKind(token transport.UID) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.on {
+		return ""
+	}
+	return r.rec.replyKinds[token]
 }
 
 // isStorageReply reports whether token is the reply token of a storage request
@@ -170,6 +184,9 @@ func (r *sendRecorder) frame(token transport.UID, body []byte) {
 	}
 	if storageRequest[kind] {
 		r.rec.storageReplies[reply] = true
+	}
+	if reply != (transport.UID{}) {
+		r.rec.replyKinds[reply] = kind
 	}
 	r.rec.requests = append(r.rec.requests, req)
 	r.rec.msgs = append(r.rec.msgs, msg)

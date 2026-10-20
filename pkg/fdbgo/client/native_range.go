@@ -74,6 +74,8 @@ func (tx *Transaction) nativeGetRangeAt(ctx context.Context, begin, end KeySelec
 	l.start()
 	relocateRetries, timeoutRetries := 0, 0
 	var materializedBytes int64
+	var tags readTagSample
+	redraw := true
 	for !l.atEnd() { // :4631-4637
 		locationKey, backward := l.location() // :4638-4639
 		loc, err := tx.db.locCache.locate(tx.db, ctx, locationKey, tx.tenantId, tx.currentSpan(), backward)
@@ -84,7 +86,11 @@ func (tx *Transaction) nativeGetRangeAt(ctx context.Context, begin, end KeySelec
 			loc.ShardEnd = allKeysEnd
 		}
 		reqBegin, reqEnd, modified := nativeRequestSelectors(l.begin, l.end, loc.ShardBegin, loc.ShardEnd, reverse) // :4651-4679
-		kvs, more, err := sendRangeRPC(tx, ctx, reqBegin, reqEnd, l.limits, readVersion, reverse, loc.Servers, plainRangeRPCOps)
+		if redraw {
+			tags = tx.sampleReadTags() // one native request (:4684), before loadBalance waits
+		}
+		kvs, more, err := sendRangeRPC(tx, ctx, reqBegin, reqEnd, l.limits, readVersion, reverse, loc.Servers, tags, plainRangeRPCOps)
+		redraw = err == nil || readTagRetry(err)
 		if err != nil {
 			switch {
 			case isReplyTimeout(err):

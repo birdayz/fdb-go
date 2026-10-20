@@ -11,7 +11,8 @@ import (
 func openRecordedDB(t *testing.T, ctx context.Context) (*Database, *sendRecorder) {
 	t.Helper()
 	rec := &sendRecorder{}
-	db, err := OpenDatabaseFromConfig(ctx, sharedClusterFile, WithDialFunc(rec.wrap(plainDial)), WithAPIVersion(730))
+	// Never sample read tags, so recorded requests compare without chance fields.
+	db, err := OpenDatabaseFromConfig(ctx, sharedClusterFile, WithDialFunc(rec.wrap(plainDial)), WithAPIVersion(730), withReadTagSampling(0, nil))
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}

@@ -193,7 +193,7 @@ func TestRequestBuildersCarrySelectors(t *testing.T) {
 	t.Parallel()
 	begin := KeySelector{Key: []byte("b"), OrEqual: true, Offset: 3}
 	end := KeySelector{Key: []byte("e"), Offset: -2}
-	body, bufp := buildGetKeyValuesRequest(begin, end, 7, 2, 80000, false, -1, types.SpanContext{}, transport.UID{}, transport.UID{})
+	body, bufp := buildGetKeyValuesRequest(begin, end, 7, 2, 80000, false, -1, types.SpanContext{}, readTagSample{}, transport.UID{}, transport.UID{})
 	var req types.GetKeyValuesRequest
 	if err := req.UnmarshalFDB(body); err != nil {
 		t.Fatal(err)
@@ -202,7 +202,7 @@ func TestRequestBuildersCarrySelectors(t *testing.T) {
 	if got := fmt.Sprintf("%q %t %d / %q %t %d", req.Begin.Key, req.Begin.OrEqual, req.Begin.Offset, req.End.Key, req.End.OrEqual, req.End.Offset); got != `"b" true 3 / "e" false -2` {
 		t.Errorf("GetKeyValuesRequest selectors = %s", got)
 	}
-	body, bufp = buildGetMappedKeyValuesRequest([]byte("m"))(begin, end, 7, 2, 80000, false, -1, types.SpanContext{}, transport.UID{}, transport.UID{})
+	body, bufp = buildGetMappedKeyValuesRequest([]byte("m"))(begin, end, 7, 2, 80000, false, -1, types.SpanContext{}, readTagSample{}, transport.UID{}, transport.UID{})
 	var mreq types.GetMappedKeyValuesRequest
 	if err := mreq.UnmarshalFDB(body); err != nil {
 		t.Fatal(err)
@@ -231,7 +231,7 @@ func TestExactRangeHonorsMinRows(t *testing.T) {
 			}
 			var requests []string
 			ops := plainRangeScanOps
-			ops.send = func(_ context.Context, b, e []byte, l rangeLimits, readVersion int64, _ bool, _ []ServerInfo) ([]KeyValue, bool, error) {
+			ops.send = func(_ context.Context, b, e []byte, l rangeLimits, readVersion int64, _ bool, _ []ServerInfo, _ readTagSample) ([]KeyValue, bool, error) {
 				limit, limitBytes := transformRangeLimits(l, reverse)
 				requests = append(requests, fmt.Sprintf("%s..%s %+v v%d wire=%d/%d", b, e, l, readVersion, limit, limitBytes))
 				if len(requests) > len(replies) {
