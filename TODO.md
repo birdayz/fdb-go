@@ -286,7 +286,11 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   treat a panic after a reply outside the lock as proof. Also audit transport
   `writer_turn.go:52-99`: `NotifySuspend` and the coalescing wait run with `writeMu`
   held and no panic rollback for the lock, counted frame or `turnCollecting`; pin a
-  suspension-observer panic and prove connection reuse after recovery.
+  suspension-observer panic and prove connection reuse after recovery. A fallback
+  startup handoff at `writer_turn.go:67` also retains `writeMu` until the other
+  resolver parks, stalling unrelated frames on that connection. Startup completion
+  or cancellation releases this bounded handoff; it is not a permanent deadlock,
+  but notification should not serialize unrelated writes behind that startup.
 - [ ] **Panic-safe QueueModel accounting in read senders.** Reply registration
   cleanup does not release a delta when a recovered panic occurs after
   `startRequest`: `readpath.go:313` (getKey), `:561` (getValue), `:636` (single-server

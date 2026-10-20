@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"net"
 	"runtime"
@@ -19,15 +20,33 @@ import (
 
 func TestFallbackContinuationWaitsForEndStartup(t *testing.T) {
 	t.Parallel()
-	for _, mode := range []string{"unready-reply", "ready-storage-reply", "ready-location-reply"} {
+	for _, mode := range []string{"unready-reply", "ready-storage-reply", "ready-location-reply", "ready-storage-with-control"} {
 		t.Run(mode, func(t *testing.T) {
 			t.Parallel()
-			checkFallbackContinuationHandoff(t, mode)
+			const attempts = 5
+			for attempt := 1; attempt <= attempts; attempt++ {
+				var confounds []string
+				forced := mode == "ready-storage-with-control" && attempt == 1
+				if !t.Run(fmt.Sprintf("attempt-%d", attempt), func(t *testing.T) {
+					confounds = checkFallbackContinuationHandoff(t, mode, forced)
+				}) {
+					return // semantic failures are never retried
+				}
+				if len(confounds) == 0 {
+					if forced {
+						t.Fatal("forced control write did not exercise the flush-confound retry")
+					}
+					t.Logf("attempt %d passed the strict handoff assertions", attempt)
+					return
+				}
+				t.Logf("attempt %d discarded: preceding non-storage writes on begin's connection: %v", attempt, confounds)
+			}
+			t.Fatalf("control writes confounded all %d attempts", attempts)
 		})
 	}
 }
 
-func checkFallbackContinuationHandoff(t *testing.T, mode string) {
+func checkFallbackContinuationHandoff(t *testing.T, mode string, forced bool) []string {
 	t.Helper()
 	ready, locationReady := mode != "unready-reply", mode == "ready-location-reply"
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -36,8 +55,13 @@ func checkFallbackContinuationHandoff(t *testing.T, mode string) {
 	sim, draws, rec := newSimDialer(), &readTagDraws{}, &sendRecorder{}
 	dial := rec.wrap(sim.dial)
 	var frontends sync.Map
+	var control *handoffControlGate
+	if forced {
+		control = &handoffControlGate{entered: make(chan struct{}), release: make(chan struct{})}
+		defer control.resume()
+	}
 	if ready {
-		dial = handoffTCPDialer(t, dial, &frontends)
+		dial = handoffTCPDialer(t, dial, &frontends, control)
 	}
 	db, err := OpenDatabaseFromConfig(ctx, sharedClusterFile, WithDialFunc(dial), WithAPIVersion(730), WithCoalesceDelay(0, 0), withReadTagSampling(0.5, draws.draw))
 	if err != nil {
@@ -163,11 +187,17 @@ func checkFallbackContinuationHandoff(t *testing.T, mode string) {
 	var endOnce sync.Once
 	unblockEnd := func() { endOnce.Do(func() { close(releaseEnd) }) }
 	defer unblockEnd()
-	beginAtGate := make(chan struct{})
+	beginAtGate, firstFlush := make(chan struct{}), make(chan bool, 1)
 	var gateOnce sync.Once
 	tx.beforeResolveKeyResume = func(selector KeySelector) {
 		if string(selector.Key) == prefix+"a" {
-			gateOnce.Do(func() { close(beginAtGate) })
+			gateOnce.Do(func() {
+				firstFlush <- handoffFlushWait()
+				close(beginAtGate)
+				if control != nil {
+					control.resume()
+				}
+			})
 		}
 	}
 	beforeNotify, releaseNotify := make(chan (<-chan struct{}), 1), make(chan struct{})
@@ -187,7 +217,30 @@ func checkFallbackContinuationHandoff(t *testing.T, mode string) {
 			}
 		}
 	}
+	var pingCleanup replyGuard
+	defer pingCleanup.close()
+	var pingReply <-chan transport.Response
 	tx.resolveKeyWorkerObserver = func(selector KeySelector) {
+		if forced && string(selector.Key) == prefix+"a" {
+			control.addr = server.Address
+			control.active.Store(true)
+			endpoint := transport.WellKnownToken(1)
+			token, replies, handle := conn.PrepareReplyTo(endpoint)
+			pingReply, pingCleanup.handle = replies, handle
+			// Padding exceeds the tiny frontend buffers, so this real PING keeps
+			// the writer busy until begin positively reports its flush wait.
+			body := append(transport.BuildPingRequest(token), make([]byte, 1<<20)...)
+			if accepted, err := conn.SendFrameDeferredContext(ctx, endpoint, body); !accepted || err != nil {
+				t.Errorf("forced PING enqueue = %t, %v", accepted, err)
+				return
+			}
+			select {
+			case <-control.entered:
+			case <-ctx.Done():
+				t.Error("forced control writer never reached the TCP frontend gate")
+				return
+			}
+		}
 		if string(selector.Key) == prefix+"d" {
 			close(endEntered)
 			select {
@@ -208,17 +261,29 @@ func checkFallbackContinuationHandoff(t *testing.T, mode string) {
 	}()
 	defer func() {
 		cancel()
+		if control != nil {
+			control.resume()
+		}
 		unblockNotify()
 		unblockPartial()
 		unblockEnd()
 		<-done
 	}()
 	var beginParked <-chan struct{}
+	earlyFlush := false
 	if ready {
 		select {
 		case beginParked = <-beforeNotify:
 		case <-endEntered:
-			t.Fatal("begin suspended before its controlled post-send reply boundary")
+			select {
+			case flush := <-firstFlush:
+				if !flush {
+					t.Fatal("begin suspended before its controlled post-send reply boundary")
+				}
+			case <-ctx.Done():
+				t.Fatal("begin's early suspension was not observed")
+			}
+			earlyFlush = true
 		case <-ctx.Done():
 			t.Fatal("begin never reached its post-send reply boundary")
 		}
@@ -236,8 +301,47 @@ func checkFallbackContinuationHandoff(t *testing.T, mode string) {
 		}
 		tx.db.connMu.Unlock()
 	}
+	if ready && (ctx.Err() != nil || conn.IsClosed()) {
+		t.Fatal("reply publication control lost its live context or connection")
+	}
 	if !conn.HasPendingReply(beginToken) {
 		t.Fatal("positive control: held begin reply has no registration")
+	}
+	if earlyFlush {
+		// The accepted begin frame reached the peer. Its recorder has therefore
+		// parsed every earlier frame on that connection, even behind the bridge.
+		confounds, err := rec.priorNonStorageWrites(beginToken)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(confounds) == 0 {
+			t.Fatal("begin suspended before its controlled post-send reply boundary")
+		}
+		if forced {
+			pingSeen := false
+			for _, kind := range confounds {
+				pingSeen = pingSeen || kind == "PING"
+			}
+			if !pingSeen {
+				t.Fatalf("forced PING absent from preceding writes: %v", confounds)
+			}
+			unblockPartial()
+			select {
+			case response := <-pingReply:
+				value, decodeErr := wire.ReadErrorOr(response.Body)
+				if response.Err != nil || decodeErr != nil || value.FileIdentifier() != types.VoidReplyFileID || value.VTableLength() != 2 {
+					t.Fatalf("forced control reply = %x, %v/%v; want a real empty VoidReply value", response.Body, response.Err, decodeErr)
+				}
+				pingCleanup.release()
+			case <-ctx.Done():
+				t.Fatal("forced PING was not answered by the real peer")
+			}
+		}
+		_ = taggedRequests(t, rec.stop()) // malformed frames never authorize a retry
+		if ctx.Err() != nil || conn.IsClosed() {
+			t.Fatal("control write coincided with cancellation or connection failure")
+		}
+		return confounds
 	}
 	unblockPartial()
 	for conn.HasPendingReply(beginToken) {
@@ -344,11 +448,131 @@ func checkFallbackContinuationHandoff(t *testing.T, mode string) {
 	} else {
 		checkNewRequests(t, requests, draws.count(), 4, taggedRequest{has: true, tags: tags})
 	}
+	return nil
+}
+
+// handoffFlushWait observes the accepted-frame wait, not dial, FIFO, or reply
+// suspension. Only that wait can be confounded by an earlier background write.
+func handoffFlushWait() bool {
+	var pcs [32]uintptr
+	n := runtime.Callers(2, pcs[:])
+	frames := runtime.CallersFrames(pcs[:n])
+	for {
+		frame, more := frames.Next()
+		if frame.Function == "fdb.dev/pkg/fdbgo/transport.NotifySuspend" {
+			caller, _ := frames.Next()
+			return caller.Function == "fdb.dev/pkg/fdbgo/transport.(*Conn).writeAdmittedContext"
+		}
+		if !more {
+			return false
+		}
+	}
+}
+
+func TestHandoffFlushWaitRejectsUnrelatedStack(t *testing.T) {
+	t.Parallel()
+	if handoffFlushWait() {
+		t.Fatal("ordinary test stack was classified as an accepted-frame flush wait")
+	}
+}
+
+func TestHandoffFlushWaitRejectsFIFO(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	client, peer := net.Pipe()
+	peerDone := make(chan struct{})
+	go func() {
+		defer close(peerDone)
+		defer peer.Close()
+		if _, err := transport.ReadConnectPacket(peer); err != nil {
+			return
+		}
+		packet := transport.ConnectPacket{ProtocolVersion: transport.ProtocolVersion73, ConnectionID: 969}
+		if _, err := peer.Write(packet.Marshal()); err != nil {
+			return
+		}
+		<-ctx.Done() // no socket reads: the real writer cannot drain its full queue
+	}()
+	defer func() { cancel(); client.Close(); peer.Close(); <-peerDone }()
+	conn, err := transport.Dial(ctx, "fifo-observer", nil, func(context.Context, string, string) (net.Conn, error) { return client, nil }, transport.WithCoalesceDelay(0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	resumeCh := make(chan struct{})
+	resume := sync.OnceFunc(func() { close(resumeCh) })
+	fillCtx, fillSignal := transport.WithSuspendHandoff(ctx, resumeCh, nil)
+	defer fillSignal.Fire()
+	observed := make(chan bool, 1)
+	headCtx, headSignal := transport.WithSuspendHandoff(ctx, resumeCh, func() { observed <- handoffFlushWait() })
+	defer headSignal.Fire()
+	var workers sync.WaitGroup
+	defer func() { cancel(); resume(); conn.Close(); workers.Wait() }()
+	workers.Add(1)
+	go func() {
+		defer workers.Done()
+		body := bytes.Repeat([]byte("f"), 64<<10)
+		for range 1024 {
+			if _, err := conn.SendFrameDeferredContext(fillCtx, transport.UID{First: 1}, body); err != nil {
+				return
+			}
+		}
+	}()
+	handoffAwait(t, ctx, fillSignal.Done(), "full queue retaining its first admission owner")
+	workers.Add(1)
+	go func() {
+		defer workers.Done()
+		_, _ = conn.SendFrameContext(headCtx, transport.UID{First: 2}, []byte("FIFO follower"))
+	}()
+	select {
+	case flush := <-observed:
+		if flush {
+			t.Fatal("FIFO suspension beneath writeAdmittedContext was classified as an accepted-frame flush")
+		}
+	case <-ctx.Done():
+		t.Fatal("full-queue SendFrameContext never reported its FIFO suspension")
+	}
+}
+
+type handoffControlGate struct {
+	addr        string // published by active before any intercepted write
+	active      atomic.Bool
+	entered     chan struct{}
+	release     chan struct{}
+	once        sync.Once
+	releaseOnce sync.Once
+}
+
+func (g *handoffControlGate) resume() { g.releaseOnce.Do(func() { close(g.release) }) }
+
+type handoffControlWriter struct {
+	io.Writer
+	frontend, peer *net.TCPConn
+	addr           string
+	gate           *handoffControlGate
+}
+
+func (w *handoffControlWriter) Write(body []byte) (int, error) {
+	var restoreErr error
+	if w.gate.active.Load() && w.addr == w.gate.addr {
+		w.gate.once.Do(func() {
+			close(w.gate.entered)
+			<-w.gate.release
+			// Restore throughput once begin has positively entered its flush wait.
+			if restoreErr = w.peer.SetReadBuffer(1 << 20); restoreErr == nil {
+				restoreErr = w.frontend.SetWriteBuffer(1 << 20)
+			}
+		})
+	}
+	if restoreErr != nil {
+		return 0, restoreErr
+	}
+	return w.Writer.Write(body)
 }
 
 // The bridge returns a bare TCP socket, so the real sender can finish without a
 // flush suspension. Recording and reply rewriting stay behind that socket.
-func handoffTCPDialer(t *testing.T, dial transport.DialFunc, frontends *sync.Map) transport.DialFunc {
+func handoffTCPDialer(t *testing.T, dial transport.DialFunc, frontends *sync.Map, control *handoffControlGate) transport.DialFunc {
 	t.Helper()
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		backend, err := dial(ctx, network, addr)
@@ -381,11 +605,23 @@ func handoffTCPDialer(t *testing.T, dial transport.DialFunc, frontends *sync.Map
 			peer.Close()
 			closeBackend() // also unblock a simulator forwarding into its pipe
 		})
+		var upstream io.Writer = backend
+		if control != nil {
+			if err := frontend.SetWriteBuffer(1024); err != nil {
+				stop()
+				return nil, err
+			}
+			if err := peer.SetReadBuffer(1024); err != nil {
+				stop()
+				return nil, err
+			}
+			upstream = &handoffControlWriter{Writer: backend, frontend: frontend, peer: peer, addr: addr, gate: control}
+		}
 		up, down := make(chan struct{}), make(chan struct{})
 		go func() {
 			defer close(up)
 			defer stop()
-			_, _ = io.Copy(backend, peer)
+			_, _ = io.Copy(upstream, peer)
 		}()
 		go func() {
 			defer close(down)

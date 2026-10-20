@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
+	"testing"
 
 	"fdb.dev/pkg/fdbgo/transport"
 	"fdb.dev/pkg/fdbgo/wire"
@@ -53,6 +56,7 @@ type recording struct {
 	msgs     []any
 	problems []string
 	excluded int
+	writes   []sendRecordedWrite // raw bodies and connection identity, upkeep included
 	// storageReplies are the reply tokens of the storage requests sent, so a
 	// fault can target the reply to a storage request.
 	storageReplies map[transport.UID]bool
@@ -60,6 +64,15 @@ type recording struct {
 	// fault can target the reply to one kind of request.
 	replyKinds map[transport.UID]string
 	versions   map[int64]string
+}
+
+type sendRecordedWrite struct {
+	conn    *recordingConn
+	token   transport.UID
+	body    []byte // payload, or rejected framing bytes when no payload could be decoded
+	kind    string
+	reply   transport.UID
+	problem string
 }
 
 var (
@@ -167,21 +180,156 @@ func (r *sendRecorder) isStorageReply(token transport.UID) bool {
 	return r.on && r.rec.storageReplies[token]
 }
 
-func (r *sendRecorder) frame(token transport.UID, body []byte) {
+// decodeRecordedCoordWrite recognizes only the client's typed-vector encoding.
+// The generated OpenDatabaseCoordRequest treats those vectors as byte strings,
+// so its MarshalFDB cannot round-trip a real coordinator long poll.
+func decodeRecordedCoordWrite(body []byte) (reply transport.UID, recognized bool, err error) {
+	off := 0
+	if len(body) >= 16 && body[7] == 0x0F && body[6] == 0xDB {
+		off = 8
+	}
+	if len(body) < off+8 || binary.LittleEndian.Uint32(body[off+4:off+8]) != types.OpenDatabaseCoordRequestFileID {
+		return reply, false, nil
+	}
+	recognized = true
+	defer func() {
+		if p := recover(); p != nil {
+			err = fmt.Errorf("OpenDatabaseCoordRequest decoder panicked: %v", p)
+		}
+	}()
+	r, err := wire.NewReader(body[off:])
+	if err != nil {
+		return reply, true, err
+	}
+	var scalar types.OpenDatabaseCoordRequest
+	scalar.UnmarshalFromReader(r)
+	req := types.CoordOpenDatabaseRequest{
+		TraceLogGroup: scalar.TraceLogGroup, KnownClientInfoID: scalar.KnownClientInfoID,
+		ClusterKey: scalar.ClusterKey, Reply: scalar.Reply, Internal: scalar.Internal,
+	}
+	n, err := r.ReadVectorCount(types.OpenDatabaseCoordRequestSlotIssues)
+	if err != nil {
+		return reply, true, err
+	}
+	for i := 0; i < n; i++ {
+		issue, err := r.ReadVectorBytes(types.OpenDatabaseCoordRequestSlotIssues, i)
+		if err != nil {
+			return reply, true, err
+		}
+		req.Issues = append(req.Issues, issue)
+	}
+	for _, vector := range []struct {
+		slot   int
+		decode func(*wire.Reader)
+	}{
+		{types.OpenDatabaseCoordRequestSlotSupportedVersions, func(v *wire.Reader) {
+			req.SupportedVersions = append(req.SupportedVersions, types.ClientVersionRef{ClientVersion: v.ReadBytes(0), SourceVersion: v.ReadBytes(1), ProtocolVersion: v.ReadBytes(2)})
+		}},
+		{types.OpenDatabaseCoordRequestSlotCoordinators, func(v *wire.Reader) {
+			var addr types.NetworkAddress
+			addr.UnmarshalFromReader(v)
+			req.Coordinators = append(req.Coordinators, addr)
+		}},
+		{types.OpenDatabaseCoordRequestSlotHostnames, func(v *wire.Reader) {
+			req.Hostnames = append(req.Hostnames, types.Hostname{Host: v.ReadBytes(0), Service: v.ReadBytes(1), IsTLS: v.ReadBool(2)})
+		}},
+	} {
+		n, err := r.ReadVectorCount(vector.slot)
+		if err != nil {
+			return reply, true, err
+		}
+		for i := 0; i < n; i++ {
+			element, err := r.ReadVectorElementReader(vector.slot, i)
+			if err != nil {
+				return reply, true, err
+			}
+			vector.decode(element)
+		}
+	}
+	if again := req.MarshalFDB(); !bytes.Equal(again, body[off:]) {
+		return reply, true, fmt.Errorf("OpenDatabaseCoordRequest does not re-encode to the bytes sent")
+	}
+	return transport.UID{First: binary.LittleEndian.Uint64(req.Reply.Token[:8]), Second: binary.LittleEndian.Uint64(req.Reply.Token[8:])}, true, nil
+}
+
+// priorNonStorageWrites returns non-storage kinds preceding the unique target
+// reply token on its own connection in the latest recording window. The target
+// itself is excluded, even when it is a location request. Decoder failures are
+// errors, never evidence that an attempt may be retried. No connection lock is
+// acquired here; observe takes that lock before the recorder lock.
+func (r *sendRecorder) priorNonStorageWrites(target transport.UID) ([]string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if target == (transport.UID{}) {
+		return nil, fmt.Errorf("zero target reply token")
+	}
+	at := -1
+	for i, write := range r.rec.writes {
+		if write.reply == target {
+			if at != -1 {
+				return nil, fmt.Errorf("ambiguous target reply token %x", target)
+			}
+			at = i
+		}
+	}
+	if at == -1 {
+		return nil, fmt.Errorf("target reply token %x was not recorded", target)
+	}
+	conn := r.rec.writes[at].conn
+	var kinds []string
+	for _, write := range r.rec.writes[:at] {
+		if write.conn != conn {
+			continue
+		}
+		if write.problem != "" {
+			return nil, fmt.Errorf("preceding write on target connection: %s", write.problem)
+		}
+		if !storageRequest[write.kind] {
+			kinds = append(kinds, write.kind)
+		}
+	}
+	return kinds, nil
+}
+
+func (r *sendRecorder) frame(conn *recordingConn, token transport.UID, body []byte) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if !r.on {
 		return
 	}
+	write := sendRecordedWrite{conn: conn, token: token, body: bytes.Clone(body)}
 	if token == pingToken || bytes.Equal(body, pingReplyBody) {
+		write.kind = "PING"
+		if token != pingToken {
+			write.kind = "VoidReply"
+		}
+		r.rec.writes = append(r.rec.writes, write)
 		r.rec.excluded++
 		return
 	}
-	req, kind, reply, msg, err := decodeRecordedRequest(bytes.Clone(body), r.rec.versionName)
+	req, kind, reply, msg, err := decodeRecordedRequest(write.body, r.rec.versionName)
+	write.kind, write.reply = kind, reply
 	if err != nil {
-		r.rec.problems = append(r.rec.problems, fmt.Sprintf("%v (token %x, %d bytes)", err, token, len(body)))
+		problem := fmt.Sprintf("%v (token %x, %d bytes)", err, token, len(body))
+		write.problem = problem
+		var strictProblem string
+		if coordReply, recognized, coordErr := decodeRecordedCoordWrite(write.body); recognized {
+			write.kind, write.reply, write.problem = "OpenDatabaseCoordRequest", coordReply, ""
+			if coordErr != nil {
+				strictProblem = fmt.Sprintf("invalid OpenDatabaseCoordRequest: %v (token %x, %d bytes)", coordErr, token, len(body))
+				write.problem = strictProblem
+			}
+		}
+		r.rec.writes = append(r.rec.writes, write)
+		r.rec.problems = append(r.rec.problems, problem) // retain valid coordinator long-poll semantics
+		if strictProblem != "" {
+			// This must survive readProblems even if the bad frame belongs to
+			// another connection or follows the retry census's target frame.
+			r.rec.problems = append(r.rec.problems, strictProblem)
+		}
 		return
 	}
+	r.rec.writes = append(r.rec.writes, write)
 	if storageRequest[kind] {
 		r.rec.storageReplies[reply] = true
 	}
@@ -199,12 +347,28 @@ func (r *sendRecorder) messages() []any {
 	return append([]any(nil), r.rec.msgs...)
 }
 
-func (r *sendRecorder) problem(p string) {
+func (r *sendRecorder) problem(conn *recordingConn, raw []byte, p string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.on {
 		r.rec.problems = append(r.rec.problems, p)
+		r.rec.writes = append(r.rec.writes, sendRecordedWrite{conn: conn, body: bytes.Clone(raw), problem: p})
 	}
+}
+
+// readProblems is the recorder validation used by taggedRequests, including
+// before a handoff fixture discards an independently observed control-write
+// confound. Only the existing coordinator long-poll exclusion is filtered;
+// strict coordinator decoding failures must remain fatal on every connection.
+func (rec recording) readProblems() []string {
+	coordPoll := fmt.Sprintf("unexpected request kind: file identifier %d ", types.OpenDatabaseCoordRequestFileID)
+	var problems []string
+	for _, p := range rec.problems {
+		if !strings.HasPrefix(p, coordPoll) {
+			problems = append(problems, p)
+		}
+	}
+	return problems
 }
 
 // versionName numbers versions in order of appearance, so arms that took
@@ -259,7 +423,7 @@ func (c *recordingConn) observe(b []byte) {
 	for len(c.buf) >= 12 {
 		n := int(binary.LittleEndian.Uint32(c.buf))
 		if n < 16 {
-			c.rec.problem(fmt.Sprintf("malformed frame: payload length %d", n))
+			c.rec.problem(c, c.buf, fmt.Sprintf("malformed frame: payload length %d", n))
 			c.buf = nil // the stream cannot be resynchronized
 			return
 		}
@@ -270,7 +434,7 @@ func (c *recordingConn) observe(b []byte) {
 			First:  binary.LittleEndian.Uint64(c.buf[12:20]),
 			Second: binary.LittleEndian.Uint64(c.buf[20:28]),
 		}
-		c.rec.frame(token, c.buf[28:12+n])
+		c.rec.frame(c, token, c.buf[28:12+n])
 		c.buf = c.buf[12+n:]
 	}
 }
@@ -346,6 +510,178 @@ func recorderFrame(token transport.UID, body []byte) []byte {
 	out = binary.LittleEndian.AppendUint64(out, token.First)
 	out = binary.LittleEndian.AppendUint64(out, token.Second)
 	return append(out, body...)
+}
+
+func TestSendRecorderPriorNonStorageWrites(t *testing.T) {
+	t.Parallel()
+	target := transport.UID{First: 70, Second: 7}
+	promise := func(first uint64) types.ReplyPromise {
+		return types.ReplyPromise{Token: wire.UIDFromParts(first, 7)}
+	}
+	// Literal C++ well-known UID(-1,1) and VoidReply bytes: do not derive
+	// these positive controls from the classifier's pingToken/pingReplyBody.
+	voidBody, err := hex.DecodeString("200000004aad1e020000000000000400040006000600040008000900080004000800000008000000020000001e000000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	type write struct {
+		conn  int
+		token transport.UID
+		body  []byte
+		raw   []byte
+	}
+	ping := write{token: transport.UID{First: ^uint64(0), Second: 1}, body: transport.BuildPingRequest(transport.UID{First: 8})}
+	void := write{token: transport.UID{First: 9}, body: voidBody}
+	grv := write{token: transport.UID{First: 10}, body: (&types.GetReadVersionRequest{Reply: promise(60)}).MarshalFDB()}
+	location := write{token: transport.UID{First: 11}, body: (&types.GetKeyServerLocationsRequest{Reply: promise(61)}).MarshalFDB()}
+	coord := write{token: transport.UID{First: 20}, body: (&types.CoordOpenDatabaseRequest{
+		Issues:            [][]byte{[]byte("issue")},
+		SupportedVersions: []types.ClientVersionRef{{ClientVersion: []byte("7.3.77"), SourceVersion: []byte("source"), ProtocolVersion: []byte("protocol")}},
+		TraceLogGroup:     []byte("test"), ClusterKey: []byte("desc:abcdef"), KnownClientInfoID: [16]byte{3},
+		Coordinators: []types.NetworkAddress{{Ip: types.IPAddress{AddrTag: 1, AddrAlt0: 0x7f000001}, Port: 4500, Flags: types.FlagTLS}},
+		Reply:        promise(66), Hostnames: []types.Hostname{{Host: []byte("coord.invalid"), Service: []byte("4500"), IsTLS: true}}, Internal: true,
+	}).MarshalFDB()}
+	prefixedCoord := coord
+	prefixedCoord.body = append(binary.LittleEndian.AppendUint64(nil, transport.ProtocolVersion73), coord.body...)
+	badCoord := coord
+	badCoord.body = bytes.Clone(coord.body)
+	coordReader, err := wire.NewReader(badCoord.body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vectorAt := coordReader.FieldOffset(types.OpenDatabaseCoordRequestSlotSupportedVersions)
+	if vectorAt < 4 || vectorAt+4 > len(coordReader.ObjectBytes()) {
+		t.Fatal("valid coordinator request omitted its supported-version vector")
+	}
+	binary.LittleEndian.PutUint32(coordReader.ObjectBytes()[vectorAt:], ^uint32(0))
+	nonRoundTripCoord := coord
+	nonRoundTripCoord.body = append(bytes.Clone(coord.body), 0xff)
+	value := write{token: transport.UID{First: 12}, body: (&types.GetValueRequest{Reply: promise(62)}).MarshalFDB()}
+	key := write{token: transport.UID{First: 13}, body: (&types.GetKeyRequest{Reply: promise(63)}).MarshalFDB()}
+	rangeRead := write{token: transport.UID{First: 14}, body: (&types.GetKeyValuesRequest{Reply: promise(64)}).MarshalFDB()}
+	mapped := write{token: transport.UID{First: 15}, body: (&types.GetMappedKeyValuesRequest{Reply: promise(65)}).MarshalFDB()}
+	targetWrite := write{token: transport.UID{First: 16}, body: (&types.GetKeyRequest{Reply: promise(70)}).MarshalFDB()}
+	targetLocation := write{token: transport.UID{First: 17}, body: (&types.GetKeyServerLocationsRequest{Reply: promise(70)}).MarshalFDB()}
+	malformed := write{token: transport.UID{First: 18}, body: malformedGetKeyValues()}
+	unknown := write{token: transport.UID{First: 19}, body: []byte{0, 0, 0, 0, 0xef, 0xbe, 0xad, 0xde}}
+	badFrame := write{raw: append(binary.LittleEndian.AppendUint32(nil, 1), make([]byte, 8)...)}
+	otherPing, otherVoid, otherGRV, otherMalformed, duplicate := ping, void, grv, malformed, targetWrite
+	otherPing.conn, otherVoid.conn, otherGRV.conn, otherMalformed.conn, duplicate.conn = 1, 1, 1, 1, 1
+	otherBadCoord := badCoord
+	otherBadCoord.conn = 1
+	for _, tc := range []struct {
+		name                         string
+		writes                       []write
+		target                       transport.UID
+		want                         []string
+		wantErr                      string
+		requests, excluded, problems int
+		readProblems                 int
+	}{
+		{name: "ping-literal-uid", writes: []write{ping, targetWrite}, target: target, want: []string{"PING"}, requests: 1, excluded: 1},
+		{name: "void-literal-payload", writes: []write{void, targetWrite}, target: target, want: []string{"VoidReply"}, requests: 1, excluded: 1},
+		{name: "known-nonstorage", writes: []write{grv, location, targetWrite}, target: target, want: []string{"GetReadVersionRequest", "GetKeyServerLocationsRequest"}, requests: 3},
+		{name: "known-coordinator-typed-vectors", writes: []write{coord, targetWrite}, target: target, want: []string{"OpenDatabaseCoordRequest"}, requests: 1, problems: 1},
+		{name: "known-coordinator-with-protocol-prefix", writes: []write{prefixedCoord, targetWrite}, target: target, want: []string{"OpenDatabaseCoordRequest"}, requests: 1, problems: 1},
+		{name: "malformed-coordinator-vector", writes: []write{badCoord, targetWrite}, target: target, wantErr: "vector start out of bounds", requests: 1, problems: 2, readProblems: 1},
+		{name: "coordinator-roundtrip-rejects-trailing-bytes", writes: []write{nonRoundTripCoord, targetWrite}, target: target, wantErr: "does not re-encode", requests: 1, problems: 2, readProblems: 1},
+		{name: "bad-coordinator-other-connection-blocks-retry", writes: []write{ping, otherBadCoord, targetWrite}, target: target, want: []string{"PING"}, requests: 1, excluded: 1, problems: 2, readProblems: 1},
+		{name: "bad-coordinator-post-target-blocks-retry", writes: []write{ping, targetWrite, badCoord}, target: target, want: []string{"PING"}, requests: 1, excluded: 1, problems: 2, readProblems: 1},
+		{name: "other-connection", writes: []write{otherPing, otherVoid, otherGRV, value, targetWrite}, target: target, requests: 3, excluded: 2},
+		{name: "post-target", writes: []write{targetWrite, ping, void, grv}, target: target, requests: 2, excluded: 2},
+		{name: "storage-only", writes: []write{value, key, rangeRead, mapped, targetWrite}, target: target, requests: 5},
+		{name: "target-location-is-not-its-own-confound", writes: []write{value, targetLocation}, target: target, requests: 2},
+		{name: "missing-target", writes: []write{ping, value}, target: target, wantErr: "was not recorded", requests: 1, excluded: 1},
+		{name: "zero-target", writes: []write{targetWrite}, wantErr: "zero target", requests: 1},
+		{name: "duplicate-target", writes: []write{targetWrite, duplicate}, target: target, wantErr: "ambiguous target", requests: 2},
+		{name: "malformed-body-is-not-a-retry-confound", writes: []write{ping, malformed, targetWrite}, target: target, wantErr: "does not re-encode", requests: 1, excluded: 1, problems: 1, readProblems: 1},
+		{name: "unknown-body-is-not-a-retry-confound", writes: []write{unknown, targetWrite}, target: target, wantErr: "unexpected request kind", requests: 1, problems: 1, readProblems: 1},
+		{name: "bad-framing", writes: []write{badFrame, targetWrite}, target: target, wantErr: "malformed frame: payload length 1", requests: 1, problems: 1, readProblems: 1},
+		{name: "malformed-other-connection-stays-a-recorder-problem", writes: []write{otherMalformed, targetWrite}, target: target, requests: 1, problems: 1, readProblems: 1},
+		{name: "malformed-post-target-stays-a-recorder-problem", writes: []write{targetWrite, malformed}, target: target, requests: 1, problems: 1, readProblems: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rec := &sendRecorder{}
+			first, removeFirst := rec.parser()
+			defer removeFirst()
+			second, removeSecond := rec.parser()
+			defer removeSecond()
+			parsers := []*recordingConn{first, second}
+			rec.start()
+			for _, w := range tc.writes {
+				raw := w.raw
+				if raw == nil {
+					raw = recorderFrame(w.token, w.body)
+				}
+				parsers[w.conn].observe(raw)
+			}
+			check := func() {
+				t.Helper()
+				got, err := rec.priorNonStorageWrites(tc.target)
+				if tc.wantErr != "" {
+					if err == nil || !strings.Contains(err.Error(), tc.wantErr) || len(got) != 0 {
+						t.Fatalf("prior writes = %q, %v; want no retry evidence and error containing %q", got, err, tc.wantErr)
+					}
+				} else if err != nil || !slices.Equal(got, tc.want) {
+					t.Fatalf("prior writes = %q, %v; want %q", got, err, tc.want)
+				}
+			}
+			check()
+			got := rec.stop()
+			check() // retain the same census after recording stops
+			if len(got.requests) != tc.requests || len(got.msgs) != tc.requests || got.excluded != tc.excluded || len(got.problems) != tc.problems {
+				t.Fatalf("recorder semantics changed: requests=%d messages=%d excluded=%d problems=%q, want %d/%d/%d/%d", len(got.requests), len(got.msgs), got.excluded, got.problems, tc.requests, tc.requests, tc.excluded, tc.problems)
+			}
+			if problems := got.readProblems(); len(problems) != tc.readProblems {
+				t.Fatalf("actual read/retry validation returned %q, want %d blocking problems", problems, tc.readProblems)
+			}
+			coordReply := transport.UID{First: 66, Second: 7}
+			if got.replyKinds[coordReply] != "" || got.storageReplies[coordReply] {
+				t.Fatal("history-only coordinator classification changed the original reply maps")
+			}
+			if len(got.writes) != len(tc.writes) {
+				t.Fatalf("retained %d raw writes, want %d", len(got.writes), len(tc.writes))
+			}
+			for i, w := range tc.writes {
+				body := w.body
+				if w.raw != nil {
+					body = w.raw
+				}
+				if got.writes[i].conn != parsers[w.conn] || got.writes[i].token != w.token || !bytes.Equal(got.writes[i].body, body) {
+					t.Errorf("raw write %d lost connection, token, or bytes", i)
+				}
+			}
+		})
+	}
+}
+
+func TestSendRecorderPriorWritesStayWithinWindow(t *testing.T) {
+	t.Parallel()
+	rec := &sendRecorder{}
+	parser, remove := rec.parser()
+	defer remove()
+	ping := recorderFrame(transport.UID{First: ^uint64(0), Second: 1}, transport.BuildPingRequest(transport.UID{First: 8}))
+	target := transport.UID{First: 70, Second: 7}
+	request := recorderFrame(transport.UID{First: 9}, (&types.GetKeyRequest{Reply: types.ReplyPromise{Token: wire.UIDFromParts(target.First, target.Second)}}).MarshalFDB())
+	parser.observe(ping) // outside a recording window
+	rec.start()
+	parser.observe(request)
+	rec.stop()
+	parser.observe(ping) // after stop, also outside the window
+	if got, err := rec.priorNonStorageWrites(target); err != nil || len(got) != 0 {
+		t.Fatalf("out-of-window upkeep entered the census: %q, %v", got, err)
+	}
+	rec.start()
+	parser.observe(ping)
+	if got, err := rec.priorNonStorageWrites(target); err == nil || len(got) != 0 {
+		t.Fatalf("previous window's target survived start: %q, %v", got, err)
+	}
+	parser.observe(request)
+	if got, err := rec.priorNonStorageWrites(target); err != nil || !slices.Equal(got, []string{"PING"}) {
+		t.Fatalf("new window's preceding upkeep was lost: %q, %v", got, err)
+	}
+	rec.stop()
 }
 
 // malformedGetKeyValues is a GetKeyValuesRequest whose Begin field offset
