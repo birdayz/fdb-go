@@ -1501,6 +1501,14 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   onProxiesChanged); the Go-internal 1200 is gone from the client, both
   onError sets and the wire name map
   (`TestCommit_NoProxies_WaitsForContext`/`_WakesOnProxyChange`).
+- [ ] vectorindex peel deferred drain: phase-two split transaction is bounded
+  by work, not time. Under race, call 12's callback_including_precommit was
+  4.17–4.41 s and its commit 93–118 ms over ten runs (callback plus commit at
+  most 4.52 s of the 5 s window); master failed once under heavy load without
+  a captured code. Decide time-bounding
+  vs Java parity (Java shares atomic phase two). The peel fixtures now record
+  each attempt's durations and FDB error codes, so the next failure is
+  diagnosable.
 
 ## 4. WS-H — stored-query runtime
 

@@ -18,6 +18,7 @@ go_deps.module_override(
     patches = [
         "//patches:fdb-go-range-iterator-done.patch",
         "//patches:fdb-go-native-cdeps.patch",
+        "//patches:fdb-go-string-array-alignment.patch",
     ],
     path = "github.com/apple/foundationdb/bindings/go",
 )

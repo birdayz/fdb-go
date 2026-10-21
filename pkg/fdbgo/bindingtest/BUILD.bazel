@@ -1,0 +1,11 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+# This regression needs the patched binding's private decoder, not a copy.
+# gazelle:ignore
+
+go_test(
+    name = "string_array_test",
+    srcs = ["string_array_test.go"],
+    embed = ["@com_github_apple_foundationdb_bindings_go//src/fdb"],
+    deps = ["//pkg/fdbgo/bindingtest/stringarray"],
+)
