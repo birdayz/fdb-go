@@ -12,6 +12,7 @@ import (
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"time"
 
 	"fdb.dev/tools/clientbench/internal/bench"
 )
@@ -29,6 +30,8 @@ func run() error {
 	flag.StringVar(&cfg.Workload, "workload", "get100", "get100|get1000|get10000|read1000|grv|set100|range10|range100|ryw|batchset50|batchset50x1000")
 	flag.IntVar(&cfg.Iterations, "iterations", 2000, "total measured operations across all workers")
 	flag.IntVar(&cfg.Warmup, "warmup", 500, "total warmup operations across all workers")
+	flag.DurationVar(&cfg.Duration, "duration", 0, "fixed-time measured window, e.g. 30s; 0 preserves count mode; requires rate 0")
+	flag.DurationVar(&cfg.WarmupDuration, "warmup-duration", 10*time.Second, "separate fixed-time warmup when duration is set")
 	flag.IntVar(&cfg.Workers, "workers", 1, "workers, deterministic round-robin assignment; with -rate, the most operations in flight")
 	flag.Float64Var(&cfg.Rate, "rate", 0, "operations per second, started at seeded Poisson arrival times; 0 runs a closed loop")
 	flag.Uint64Var(&cfg.Seed, "seed", 1, "seed of the -rate arrival times")
@@ -49,6 +52,15 @@ func run() error {
 	}
 	if err := cfg.Validate(); err != nil {
 		return err
+	}
+	if cfg.Duration > 0 {
+		// The backend interface cannot cancel a stuck transaction or Close safely
+		// while workers own it. A hard guard fails the process instead of racing it.
+		watchdog := time.AfterFunc(cfg.WarmupDuration+cfg.Duration+120*time.Second, func() {
+			fmt.Fprintln(os.Stderr, "clientbench duration watchdog expired; process stopped without claiming a complete result")
+			os.Exit(1)
+		})
+		defer watchdog.Stop()
 	}
 	procs, err := strconv.Atoi(os.Getenv("GOMAXPROCS"))
 	if err != nil || procs <= 0 || procs != runtime.GOMAXPROCS(0) {

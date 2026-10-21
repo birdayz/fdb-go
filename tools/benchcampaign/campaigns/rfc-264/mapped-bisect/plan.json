@@ -1,0 +1,150 @@
+{
+  "schema": 1,
+  "purpose": "Locate the local planskip USE_REMOTE_FETCH regression; no builds or timings are authorized by this file.",
+  "root": "${FDB_PERF_HOME}/rfc-264-mapped",
+  "repository": "${FDB_BISECT_REPOSITORY}",
+  "worktree": "${FDB_PERF_HOME}/worktrees/rfc-264-mapped-bisect",
+  "harness_revision": "d94b4c61377d173b7c6884fde426a227dab0f0bb",
+  "harness_paths": [
+    "pkg/recordlayer/benchfetch/planskip/BUILD.bazel",
+    "pkg/recordlayer/benchfetch/planskip/planskip_bench_test.go",
+    "pkg/testutil/benchcluster/BUILD.bazel",
+    "pkg/testutil/benchcluster/benchcluster.go",
+    "pkg/testutil/benchcluster/benchcluster_test.go"
+  ],
+  "build": {
+    "cpus": [
+      0,
+      1,
+      6,
+      7,
+      11,
+      12,
+      13,
+      18,
+      19,
+      23
+    ],
+    "nice": 19,
+    "jobs": 10,
+    "target": "//pkg/recordlayer/benchfetch/planskip:planskip_test",
+    "configuration": "default",
+    "batch": true
+  },
+  "arms": [
+    {
+      "id": "old",
+      "revision": "267a41434a81723b07e7150869d702636a1b91a9",
+      "binary": "${FDB_PERF_HOME}/profiles/reference-client/bin/old-planskip",
+      "sha256": "69931dd8640781beb13b254b88869cccb85f7854b7b4d0132ae28d8a9a44a6e6"
+    },
+    {
+      "id": "590aa97e3",
+      "revision": "590aa97e326b612cf7768c3c14578d3470281443",
+      "binary": "bin/590aa97e3",
+      "build": true
+    },
+    {
+      "id": "203560a9e",
+      "revision": "203560a9e21e57a3c561736423e5a27f0d443781",
+      "binary": "bin/203560a9e",
+      "build": true
+    },
+    {
+      "id": "7d0f13860",
+      "revision": "7d0f13860df22c1d9817d0d0cf73c64edaba204a",
+      "binary": "bin/7d0f13860",
+      "build": true
+    },
+    {
+      "id": "34a94d93f",
+      "revision": "34a94d93ffb5baf99498122c274a1c553eac1a6a",
+      "binary": "bin/34a94d93f",
+      "build": true
+    },
+    {
+      "id": "eecd839d9",
+      "revision": "eecd839d99b2e7854e68b432552e1d6a4c333ae8",
+      "binary": "bin/eecd839d9",
+      "build": true
+    },
+    {
+      "id": "0b0d1e71c",
+      "revision": "0b0d1e71c67f3d1e92c26d62b8ed5af78056373c",
+      "binary": "bin/0b0d1e71c",
+      "build": true
+    },
+    {
+      "id": "ae14b2208",
+      "revision": "ae14b220883c4985031d5659f8b34cd7ecece8a9",
+      "binary": "bin/ae14b2208",
+      "build": true
+    },
+    {
+      "id": "master",
+      "revision": "fa8725f1dcf6ff3ac66825ab6e3e819efbc0abcc",
+      "binary": "${FDB_PERF_HOME}/profiles/reference-client/bin/master-planskip",
+      "sha256": "b2020a2044a5feba3e674d5e12a26ed76ff5b114be1bd38aa74491f5d53c29a4"
+    }
+  ],
+  "timing": {
+    "blocks": 4,
+    "repeats": 3,
+    "benchtime": "1s",
+    "total_processes": 144,
+    "client_cpus": "2-5,14-17",
+    "cluster_file": "${FDB_BENCH_CLUSTER_FILE}",
+    "fdbcli": "${FDBCLI}",
+    "lock": "${FDB_PERF_HOME}/validation/fast.lock",
+    "settle_seconds": 60,
+    "load1_gate": 7.5,
+    "hard_limit_seconds": 1200,
+    "cleanup_reserve_seconds": 30,
+    "cells": [
+      [
+        "reverse",
+        "SCAN_AND_FETCH"
+      ],
+      [
+        "reverse",
+        "USE_REMOTE_FETCH"
+      ],
+      [
+        "forward",
+        "SCAN_AND_FETCH"
+      ],
+      [
+        "forward",
+        "USE_REMOTE_FETCH"
+      ]
+    ],
+    "environment": {
+      "PATH": "/usr/bin:/bin",
+      "HOME": "${HOME}",
+      "TZ": "UTC",
+      "LC_ALL": "C",
+      "GOMAXPROCS": "8",
+      "GOGC": "100",
+      "GOMEMLIMIT": "off",
+      "GODEBUG": ""
+    },
+    "owned_range": [
+      "\\x02benchfetch\\x00",
+      "\\x02benchfetch\\x01"
+    ],
+    "schedule": "For block b, rotate cells left b. For cell position c, rotate chronological arms left (2*b+2*c) mod 9; reverse arm order when (b+c) is odd. No resuming, rerunning, or adaptive sampling.",
+    "gate": "Hold fast.lock; no active Bazel clients/actions or testcontainers before and after 60 seconds settle; load1 <=7.5 after settle; one storage server and initially empty owned range. Abort on renewed build/testcontainer activity, any process/audit failure, changed binary/plan, or deadline. Do not extend slot.",
+    "runtime_estimate": "144 processes at ~6 seconds is 14m24s, plus settle and cleanup; projection only, hard stop at 20 minutes."
+  },
+  "estimators": {
+    "process": "Median ns/op of exactly three successful testing.B result lines matching the one scheduled benchmark. Require at least three paired before/after audit receipts (calibration adds pairs) and one fixture receipt, all exact expected path/rows/checksum; no profiling.",
+    "primary": "For each direction and arm, geometric mean over four complete blocks of median_ns(arm, USE_REMOTE_FETCH) / median_ns(old, USE_REMOTE_FETCH).",
+    "secondary": [
+      "Adjacent chronological arm ratios for each direction/method, geometric mean over the same four blocks.",
+      "Each arm's USE_REMOTE_FETCH / SCAN_AND_FETCH ratio within each block/direction, geometric mean over four blocks.",
+      "Difference-in-differences: (remote_arm/remote_old)/(ordinary_arm/ordinary_old) within block/direction, geometric mean over four blocks."
+    ],
+    "dispersion": "Report the four individual block ratios and their min/max; these ranges are not confidence intervals. Preserve all three raw repeats, ns/op medians, allocation metrics, process position, wall time and load snapshots.",
+    "completeness": "Publish comparative estimators only if all 144 processes complete successfully, each arm/cell has four blocks, and gate/provenance/audits remain valid. A partial/failed run is diagnostic only; no outlier or slow-process deletion."
+  }
+}

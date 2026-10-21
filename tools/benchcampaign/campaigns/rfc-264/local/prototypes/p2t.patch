@@ -1,0 +1,368 @@
+diff --git a/pkg/fdbgo/internal/hrtimer/BUILD.bazel b/pkg/fdbgo/internal/hrtimer/BUILD.bazel
+index f83b51e30..84cc1e624 100644
+--- a/pkg/fdbgo/internal/hrtimer/BUILD.bazel
++++ b/pkg/fdbgo/internal/hrtimer/BUILD.bazel
+@@ -24,4 +24,13 @@ go_test(
+     name = "hrtimer_test",
+     srcs = ["hrtimer_linux_test.go"],
+     embed = [":hrtimer"],
++    deps = select({
++        "@rules_go//go/platform:android": [
++            "@org_golang_x_sys//unix",
++        ],
++        "@rules_go//go/platform:linux": [
++            "@org_golang_x_sys//unix",
++        ],
++        "//conditions:default": [],
++    }),
+ )
+diff --git a/pkg/fdbgo/internal/hrtimer/hrtimer_linux.go b/pkg/fdbgo/internal/hrtimer/hrtimer_linux.go
+index 482715432..d240497af 100644
+--- a/pkg/fdbgo/internal/hrtimer/hrtimer_linux.go
++++ b/pkg/fdbgo/internal/hrtimer/hrtimer_linux.go
+@@ -5,6 +5,7 @@ package hrtimer
+ import (
+ 	"errors"
+ 	"os"
++	"syscall"
+ 	"time"
+ 
+ 	"golang.org/x/sys/unix"
+@@ -14,7 +15,8 @@ import (
+ // without holding a thread or P, and a ready timerfd wakes epoll_wait whatever
+ // the runtime's own timeout.
+ type Timer struct {
+-	f *os.File
++	f  *os.File
++	rc syscall.RawConn
+ }
+ 
+ // New creates a disarmed timer.
+@@ -24,7 +26,13 @@ func New() (*Timer, error) {
+ 		return nil, err
+ 	}
+ 	// A non-blocking fd makes os.NewFile register it with the netpoller.
+-	return &Timer{f: os.NewFile(uintptr(fd), "hrtimer")}, nil
++	f := os.NewFile(uintptr(fd), "hrtimer")
++	rc, err := f.SyscallConn()
++	if err != nil {
++		_ = f.Close()
++		return nil, err
++	}
++	return &Timer{f: f, rc: rc}, nil
+ }
+ 
+ // Reset arms the timer to expire d from now, replacing any pending expiry.
+@@ -43,13 +51,12 @@ func (t *Timer) Stop() error {
+ }
+ 
+ func (t *Timer) set(value unix.Timespec) error {
+-	rc, err := t.f.SyscallConn()
+-	if err != nil {
++	if t.rc == nil {
+ 		return ErrClosed
+ 	}
+ 	its := unix.ItimerSpec{Value: value}
+ 	var serr error
+-	if err := rc.Control(func(fd uintptr) {
++	if err := t.rc.Control(func(fd uintptr) {
+ 		serr = unix.TimerfdSettime(int(fd), 0, &its, nil)
+ 	}); err != nil {
+ 		return ErrClosed
+diff --git a/pkg/fdbgo/internal/hrtimer/hrtimer_linux_test.go b/pkg/fdbgo/internal/hrtimer/hrtimer_linux_test.go
+index a5ca18f4b..84a8829b8 100644
+--- a/pkg/fdbgo/internal/hrtimer/hrtimer_linux_test.go
++++ b/pkg/fdbgo/internal/hrtimer/hrtimer_linux_test.go
+@@ -4,8 +4,12 @@ package hrtimer
+ 
+ import (
+ 	"errors"
++	"runtime"
++	"sync"
+ 	"testing"
+ 	"time"
++
++	"golang.org/x/sys/unix"
+ )
+ 
+ func newTimer(t *testing.T) *Timer {
+@@ -103,6 +107,279 @@ func TestStopKeepsTheWaiterParkedAndCloseWakesIt(t *testing.T) {
+ 	}
+ }
+ 
++func TestResetClearsUnreadExpiry(t *testing.T) {
++	t.Parallel()
++	tm := newTimer(t)
++	if err := tm.Reset(time.Nanosecond); err != nil {
++		t.Fatal(err)
++	}
++	deadline := time.Now().Add(5 * time.Second)
++	var pollErr error
++	var readable bool
++	if err := tm.rc.Control(func(fd uintptr) {
++		poll := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
++		for time.Now().Before(deadline) {
++			var n int
++			n, pollErr = unix.Poll(poll, int(time.Until(deadline)/time.Millisecond)+1)
++			if errors.Is(pollErr, unix.EINTR) {
++				continue
++			}
++			readable = n == 1 && poll[0].Revents&unix.POLLIN != 0
++			return
++		}
++	}); err != nil {
++		t.Fatal(err)
++	}
++	if pollErr != nil || !readable {
++		t.Fatalf("expiry was not positively readable: readable=%t err=%v", readable, pollErr)
++	}
++	if err := tm.Reset(time.Hour); err != nil {
++		t.Fatal(err)
++	}
++	if err := tm.rc.Control(func(fd uintptr) {
++		poll := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
++		var n int
++		n, pollErr = unix.Poll(poll, 0)
++		readable = n != 0
++	}); err != nil {
++		t.Fatal(err)
++	}
++	if pollErr != nil || readable {
++		t.Fatalf("Reset retained old expiry: readable=%t err=%v", readable, pollErr)
++	}
++	if err := tm.Reset(time.Millisecond); err != nil {
++		t.Fatal(err)
++	}
++	select {
++	case err := <-waitAsync(tm):
++		if err != nil {
++			t.Fatal(err)
++		}
++	case <-time.After(5 * time.Second):
++		t.Fatal("new expiry did not wake Wait after replacing unread readiness")
++	}
++}
++
++func TestControlKeepsDescriptorAliveUntilReturn(t *testing.T) {
++	t.Parallel()
++	tm := newTimer(t)
++	entered, release := make(chan struct{}), make(chan struct{})
++	var once sync.Once
++	resume := func() { once.Do(func() { close(release) }) }
++	t.Cleanup(resume)
++	controlled := make(chan error, 1)
++	go func() {
++		var kernelErr error
++		err := tm.rc.Control(func(fd uintptr) {
++			close(entered)
++			<-release
++			var current unix.ItimerSpec
++			kernelErr = unix.TimerfdGettime(int(fd), &current)
++		})
++		if err == nil {
++			err = kernelErr
++		}
++		controlled <- err
++	}()
++	select {
++	case <-entered:
++	case <-time.After(5 * time.Second):
++		t.Fatal("Control did not enter its callback")
++	}
++	closed := make(chan error, 1)
++	go func() { closed <- tm.Close() }()
++	deadline := time.Now().Add(5 * time.Second)
++	for {
++		err := tm.Stop()
++		if errors.Is(err, ErrClosed) {
++			break // Close has marked the file closing while Control still holds it.
++		}
++		if err != nil {
++			t.Fatal(err)
++		}
++		if time.Now().After(deadline) {
++			t.Fatal("Close did not enter its closing state")
++		}
++		runtime.Gosched()
++	}
++	select {
++	case err := <-closed:
++		t.Fatalf("Close returned before Control released its descriptor: %v", err)
++	default:
++	}
++	resume()
++	select {
++	case err := <-controlled:
++		if err != nil {
++			t.Fatalf("descriptor died inside Control: %v", err)
++		}
++	case <-time.After(5 * time.Second):
++		t.Fatal("Control did not return")
++	}
++	select {
++	case err := <-closed:
++		if err != nil {
++			t.Fatal(err)
++		}
++	case <-time.After(5 * time.Second):
++		t.Fatal("Close did not finish after Control returned")
++	}
++}
++
++func TestClosedTimerCannotModifyReusedDescriptor(t *testing.T) {
++	// Exclusive: parallel file creation could consume the descriptor being reused.
++	tm := newTimer(t)
++	var originalFD int
++	if err := tm.rc.Control(func(fd uintptr) { originalFD = int(fd) }); err != nil {
++		t.Fatal(err)
++	}
++	if err := tm.Close(); err != nil {
++		t.Fatal(err)
++	}
++	replacement := newTimer(t)
++	var replacementFD int
++	if err := replacement.rc.Control(func(fd uintptr) { replacementFD = int(fd) }); err != nil {
++		t.Fatal(err)
++	}
++	if replacementFD != originalFD {
++		t.Fatalf("descriptor reuse precondition: original=%d replacement=%d", originalFD, replacementFD)
++	}
++	if err := replacement.Reset(time.Hour); err != nil {
++		t.Fatal(err)
++	}
++	if err := tm.Reset(time.Nanosecond); !errors.Is(err, ErrClosed) {
++		t.Fatalf("stale Reset on reused descriptor = %v, want ErrClosed", err)
++	}
++	if err := tm.Stop(); !errors.Is(err, ErrClosed) {
++		t.Fatalf("stale Stop on reused descriptor = %v, want ErrClosed", err)
++	}
++	var current unix.ItimerSpec
++	var kernelErr error
++	if err := replacement.rc.Control(func(fd uintptr) {
++		kernelErr = unix.TimerfdGettime(int(fd), &current)
++	}); err != nil {
++		t.Fatal(err)
++	}
++	if kernelErr != nil || current.Value.Sec < 30*60 || current.Interval != (unix.Timespec{}) {
++		t.Fatalf("stale timer modified replacement: current=%+v err=%v", current, kernelErr)
++	}
++	if err := replacement.Reset(time.Millisecond); err != nil {
++		t.Fatal(err)
++	}
++	select {
++	case err := <-waitAsync(replacement):
++		if err != nil {
++			t.Fatal(err)
++		}
++	case <-time.After(5 * time.Second):
++		t.Fatal("replacement descriptor no longer delivers expiry")
++	}
++}
++
++func TestResetStopRaceClose(t *testing.T) {
++	t.Parallel()
++	const rounds, attempts = 16, 64
++	type result struct {
++		success, closed int
++		err             error
++	}
++	var success, closed int
++	for round := range rounds {
++		tm := newTimer(t)
++		if err := tm.Reset(time.Hour); err != nil {
++			t.Fatal(err)
++		}
++		if err := tm.Stop(); err != nil {
++			t.Fatal(err)
++		}
++		waited := waitAsync(tm)
++		start := make(chan struct{})
++		started := make(chan error, 2)
++		run := func(operation func() error) <-chan result {
++			done := make(chan result, 1)
++			go func() {
++				var r result
++				err := operation()
++				started <- err
++				if err == nil {
++					r.success++
++				} else {
++					r.err = err
++				}
++				<-start
++				for range attempts - 1 {
++					err := operation()
++					switch {
++					case err == nil:
++						r.success++
++					case errors.Is(err, ErrClosed):
++						r.closed++
++					default:
++						r.err = err
++					}
++				}
++				done <- r
++			}()
++			return done
++		}
++		reset := run(func() error { return tm.Reset(time.Hour) })
++		stop := run(tm.Stop)
++		for range 2 {
++			select {
++			case err := <-started:
++				if err != nil {
++					close(start)
++					t.Fatalf("round %d: control before Close = %v", round, err)
++				}
++			case <-time.After(5 * time.Second):
++				close(start)
++				t.Fatalf("round %d: initial control did not return", round)
++			}
++		}
++		close(start)
++		if err := tm.Close(); err != nil {
++			t.Fatal(err)
++		}
++		for _, done := range []<-chan result{reset, stop} {
++			select {
++			case r := <-done:
++				if r.err != nil || r.success == 0 || r.success+r.closed != attempts {
++					t.Fatalf("round %d: incomplete or invalid control results: %+v", round, r)
++				}
++				success += r.success
++				closed += r.closed
++			case <-time.After(5 * time.Second):
++				t.Fatalf("round %d: control did not return after Close", round)
++			}
++		}
++		for _, err := range []error{tm.Reset(time.Hour), tm.Stop()} {
++			if !errors.Is(err, ErrClosed) {
++				t.Fatalf("round %d: post-close control = %v, want ErrClosed", round, err)
++			}
++		}
++		select {
++		case err := <-waited:
++			if !errors.Is(err, ErrClosed) {
++				t.Fatalf("round %d: Wait after Close = %v, want ErrClosed", round, err)
++			}
++		case <-time.After(5 * time.Second):
++			t.Fatalf("round %d: Close did not wake Wait", round)
++		}
++	}
++	t.Logf("%d rounds, %d raced controls: %d succeeded, %d ErrClosed; %d post-close checks", rounds, 2*rounds*attempts, success, closed, 2*rounds)
++}
++
++func TestZeroTimerReportsErrClosed(t *testing.T) {
++	t.Parallel()
++	var tm Timer
++	if err := tm.Reset(time.Millisecond); !errors.Is(err, ErrClosed) {
++		t.Fatalf("zero timer Reset = %v, want ErrClosed", err)
++	}
++	if err := tm.Stop(); !errors.Is(err, ErrClosed) {
++		t.Fatalf("zero timer Stop = %v, want ErrClosed", err)
++	}
++}
++
+ func TestClosedTimerReportsErrClosed(t *testing.T) {
+ 	t.Parallel()
+ 	tm, err := New()

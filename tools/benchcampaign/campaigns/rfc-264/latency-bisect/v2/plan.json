@@ -1,0 +1,218 @@
+{
+  "version": 2,
+  "state": "Recorded design; portable copy requires separate build/timing approval, and is not authorization to run.",
+  "repository": "${FDB_BISECT_REPOSITORY}",
+  "harness_revision": "d94b4c61377d173b7c6884fde426a227dab0f0bb",
+  "harness_amendment": "#948 exact lifecycle fix plus matching campaign validator; workload/timing source unchanged",
+  "harness_archive": "${FDB_PERF_HOME}/reference-inputs/frozen/cleanup-compat/client-harness.tar.gz",
+  "harness_id": "76990b867f337bdad0132cc69aa3f6f9a9bcf0cb0859cc8c7f8514def684f508",
+  "harness_regular_files": 28,
+  "validator_sha256": "615995331fd062ca980dcf110859afda6ab481f1fa1eddaf6e0bd84c40e7555d",
+  "cluster_file": "${FDB_PERF_HOME}/cluster/reference.cluster",
+  "cluster_file_sha256": "fba1be7844c7c9f82471b6cb50b4b6a731ab08776c5bd502d593a2c827f1e62c",
+  "fdbcli": "${FDB_PERF_HOME}/profiles/reference-client/bin/fdbcli",
+  "lock": "${FDB_PERF_HOME}/validation/fast.lock",
+  "client_cpus": "2-5,14-17",
+  "server_cpus": "8-10,20-22; inspect only, never change affinity or restart cluster",
+  "environment": {
+    "TZ": "UTC",
+    "LC_ALL": "C",
+    "GOMAXPROCS": "8",
+    "GOGC": "100",
+    "GOMEMLIMIT": "off",
+    "GODEBUG": ""
+  },
+  "prefix_root": "clientbench/rfc-264-latency-v2/",
+  "prefix_end": "clientbench/rfc-264-latency-v20",
+  "prefix_bytes": 68,
+  "counts": {
+    "8": {
+      "iterations": 12000,
+      "warmup": 800
+    }
+  },
+  "gate": "Shared validation lock; no Bazel clients/actions or testcontainers/reapers; 60 s continuously quiet settle; load1 <=7.5 afterward. Monitor build/container activity throughout. Load is an initial gate, not later sample censoring.",
+  "settle_seconds": 60,
+  "load_gate": 7.5,
+  "cleanup_reserve_seconds": 30,
+  "process_timeout_seconds": 30,
+  "arms": [
+    {
+      "id": "old",
+      "revision": "267a41434a81723b07e7150869d702636a1b91a9",
+      "note": "old anchor",
+      "build": false,
+      "binary": "${FDB_PERF_HOME}/profiles/reference-client/bin/old-go",
+      "sha256": "c70e4d275d586f73430f0129c536a8fa6bcc950678c83d06a98f8c65a09f7e34"
+    },
+    {
+      "id": "e21c7d4dc",
+      "revision": "e21c7d4dcf5cc966cc4b4066c1d1697256aaaa31",
+      "note": "#943 precise GRV timer",
+      "build": true,
+      "binary": "${FDB_PERF_HOME}/rfc-264-latency/bin/e21c7d4dc",
+      "sha256": "6c51602db147458435f8ea6ea370a300cf12f6b91473b67f9e5455c6ffb029e3"
+    },
+    {
+      "id": "066920ebb",
+      "revision": "066920ebb8d22c5618b31ef0a56fa7674c773cdb",
+      "note": "#948, pre-#952",
+      "build": true,
+      "binary": "${FDB_PERF_HOME}/rfc-264-latency/bin/066920ebb",
+      "sha256": "94c0c227809d98d3b175e402321912e8c7a93889f4b3b9ba1bc7c85895755ffa"
+    },
+    {
+      "id": "57ddc9a77",
+      "revision": "57ddc9a7773951dafbbb9669f819f2faf6f5d14d",
+      "note": "#952 post-publication feedback",
+      "build": true,
+      "binary": "${FDB_PERF_HOME}/rfc-264-latency/bin/57ddc9a77",
+      "sha256": "78b3894b06198269c52dfc4796fd4b50960c4eb4b893339bb1f480afd90bf687"
+    },
+    {
+      "id": "590aa97e3",
+      "revision": "590aa97e326b612cf7768c3c14578d3470281443",
+      "note": "#953, pre-#954",
+      "build": true,
+      "binary": "${FDB_PERF_HOME}/rfc-264-latency/bin/590aa97e3",
+      "sha256": "c567fac1711198e15768097fdd654e4cde5a7d2e39e188e65f5c4bddceb424db"
+    },
+    {
+      "id": "203560a9e",
+      "revision": "203560a9e21e57a3c561736423e5a27f0d443781",
+      "note": "#954 C++ coalescing floor",
+      "build": true,
+      "binary": "${FDB_PERF_HOME}/rfc-264-latency/bin/203560a9e",
+      "sha256": "4a0f678481c8b2a6f4392dfcdc0225d8c51f85cd21fefde33b0ab9e9ddf08750"
+    },
+    {
+      "id": "7d0f13860",
+      "revision": "7d0f13860df22c1d9817d0d0cf73c64edaba204a",
+      "note": "#956 sender-owned writer turn",
+      "build": true,
+      "binary": "${FDB_PERF_HOME}/rfc-264-latency/bin/7d0f13860",
+      "sha256": "b3c825248ab33c9f82d4ae891769d98933f8d9a1b4bc1ff9fd1d7d88973edf72"
+    },
+    {
+      "id": "34a94d93f",
+      "revision": "34a94d93ffb5baf99498122c274a1c553eac1a6a",
+      "note": "pre-#965; grouped #951/#961/#962/#963/#964/#966 interval",
+      "build": true,
+      "binary": "${FDB_PERF_HOME}/rfc-264-latency/bin/34a94d93f",
+      "sha256": "7a3ac54f0c884a9aaacc633e6c7c822f6f0637c8c4038dde99ff2925850f2eec"
+    },
+    {
+      "id": "eecd839d9",
+      "revision": "eecd839d99b2e7854e68b432552e1d6a4c333ae8",
+      "note": "#965 RFC-262 phase 1",
+      "build": true,
+      "binary": "${FDB_PERF_HOME}/rfc-264-latency/bin/eecd839d9",
+      "sha256": "5e354a317d405e649e4fdce0719034766954cacb60f185377920611292bba272"
+    },
+    {
+      "id": "0b0d1e71c",
+      "revision": "0b0d1e71c67f3d1e92c26d62b8ed5af78056373c",
+      "note": "#967 read-tag sampling",
+      "build": true,
+      "binary": "${FDB_PERF_HOME}/rfc-264-latency/bin/0b0d1e71c",
+      "sha256": "0335e5a73522297cb7010eed08e9eaf79eab2f5e9f343d8425e0d7ad6ef74a6f"
+    },
+    {
+      "id": "ae14b2208",
+      "revision": "ae14b220883c4985031d5659f8b34cd7ecece8a9",
+      "note": "#968 RFC-262 phase 2",
+      "build": true,
+      "binary": "${FDB_PERF_HOME}/rfc-264-latency/bin/ae14b2208",
+      "sha256": "79060b5b67c064c936324cd508f50a1cf1b6ea82a4476e2aa08404859813c111"
+    },
+    {
+      "id": "master",
+      "revision": "fa8725f1dcf6ff3ac66825ab6e3e819efbc0abcc",
+      "note": "#969 current anchor",
+      "build": false,
+      "binary": "${FDB_PERF_HOME}/profiles/reference-client/bin/master-go",
+      "sha256": "187a282a8bb337a60ae88e5d54c227bed3bc79e1dc172e4184120df14408d252"
+    }
+  ],
+  "slots": {
+    "narrow": {
+      "arms": [
+        "old",
+        "e21c7d4dc",
+        "066920ebb",
+        "57ddc9a77",
+        "590aa97e3",
+        "203560a9e",
+        "7d0f13860",
+        "34a94d93f",
+        "eecd839d9",
+        "0b0d1e71c",
+        "ae14b2208",
+        "master"
+      ],
+      "blocks": 4,
+      "cells": [
+        [
+          "get100",
+          8
+        ],
+        [
+          "get1000",
+          8
+        ]
+      ],
+      "processes": 96,
+      "wall_cap_seconds": 1200,
+      "rotation": "Cells rotate left by block b; rotate chronological arms left by (4*b + 2*cell_position) mod 12; reverse in odd blocks.",
+      "fixed_design": "Both cells retained: predicted 4-6.5 minutes, below 20-minute cap. Never drop blocks or cells after timing starts."
+    }
+  },
+  "estimators": {
+    "process": "p50/p99 from sorted measured samples at ceil(q*N)-1, empirical inverse CDF; warmup excluded; never pool processes.",
+    "primary": "For each cell and metric, geometric mean of within-block arm/old process-quantile ratios.",
+    "adjacent": "For each cell and metric, geometric mean of within-block chronologically later/earlier revision process-quantile ratios.",
+    "absolute_display": "Geometric mean of process p50/p99, not a percentile of pooled operations.",
+    "ranges": "Retain all block ratios and label block min/max, not CI; no bootstrap or confidence/equivalence claim.",
+    "validity": "Require every scheduled process, zero errors, exact raw counts/checks, persistence/lifecycle/identity/GRV validation, stable pins and successful cleanup. Aborted/partial slots have no comparative summary."
+  },
+  "fdbcli_sha256": "6dfe3328389fe8ff8175ddc080e278c5b07d1d2601f97079cba1194bfb2e41fb",
+  "study": "New narrow get100 w8 source-interval bisect; not an amendment or execution of v1 SLOT2",
+  "cell_roles": {
+    "get100/w8": "PRIMARY: p50 adjacent-interval ratios and anchor endpoint",
+    "get1000/w8": "SECONDARY, EXPLORATORY: p50; not previously tested in local SLOT1",
+    "p99": "Descriptive diagnostics only, not a primary/secondary endpoint"
+  },
+  "interpretation": "Report every one of the eleven primary adjacent-revision p50 ratios with four block ratios and block min/max (not CI), plus the master/old endpoint. Identify the largest upward point-estimate interval and any intervals upward in all four sampled blocks; these are descriptive source intervals, not significance tests or causal mechanisms. If the +20% endpoint does not recur, say so without suppressing the complete results. Secondary get1000 is exploratory; it cannot redefine the primary or gate reporting.",
+  "prerequisite": "Separate owner authorization for this new study; v1 global SLOT1 criterion failed, so original SLOT2 remains unrun. Primary-only v1 get100/w8 p50 reproduced at1.2045574711834806.",
+  "provenance": {
+    "source_plan_sha256": "72a5bc23927e6b2bd787bb1684546fc3782b25bf7224eef46b49a4c49ebbcb47",
+    "build_manifest": "${FDB_PERF_HOME}/rfc-264-latency/build-manifest.json",
+    "pins": [
+      {
+        "path": "${FDB_PERF_HOME}/rfc-264-latency/plan.json",
+        "sha256": "72a5bc23927e6b2bd787bb1684546fc3782b25bf7224eef46b49a4c49ebbcb47"
+      },
+      {
+        "path": "${FDB_PERF_HOME}/rfc-264-latency/build-manifest.json",
+        "sha256": "bb586e10ee0a09e18b229e848b445e888369de2f76f17c3f0684b65f0301f01d"
+      },
+      {
+        "path": "${FDB_PERF_HOME}/rfc-264-latency/slot1-reference/summary.json",
+        "sha256": "1013d2d2377a445df7fe2a2d6444e7f86fb0a3e8db1489a57d1e9b2be5601374"
+      },
+      {
+        "path": "${FDB_PERF_HOME}/rfc-264-latency/slot1-reference/verdict.json",
+        "sha256": "b06a040ea43f4c1681cf19d142784ae70928cae251b585d42c767eaa6b0bae1f"
+      }
+    ],
+    "reuse": "Exact existing 10 interiors plus 2 anchors; no rebuild or main-checkout edits."
+  },
+  "estimate": {
+    "nominal_seconds": 244,
+    "conservative_seconds": 388,
+    "hard_cap_seconds": 1200,
+    "calculation": "60s settle +96*(1.5s nominal or3s conservative)/process +30s cleanup reserve +10s summary/controller allowance",
+    "observed_budget_input": "Previous valid get100/w8 eight processes: wall min0.502106/median0.552681/max0.602089s, for budgeting only.",
+    "secondary_retained": "96 total processes; even conservative estimate fits20min. No cell removal or optional block reduction."
+  }
+}
