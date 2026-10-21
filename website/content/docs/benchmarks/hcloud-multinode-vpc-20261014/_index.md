@@ -1,7 +1,7 @@
 ---
 title: "4-node VPC campaign (2026-10-14)"
 description: "Preregistered 4-host VPC benchmark campaign (1 client VM + 3 FDB 7.3.77 server VMs, double ssd-2, 9 storage servers): pure-Go vs CGo at 1, 8, 32, and 64 workers and cross-server USE_REMOTE_FETCH vs SCAN_AND_FETCH."
-weight: 1
+weight: 2
 ---
 
 A preregistered multi-node benchmark campaign across **four dedicated 16-vCPU
@@ -15,6 +15,9 @@ cloud hosts on an isolated private VPC**, measuring:
    (`pkg/fdbgo`) against Apple's Go binding over `libfdb_c` 7.3.77 at 1, 8, 32,
    and 64 closed-loop workers against a 3-node `double`-redundancy `ssd-2`
    cluster.
+
+Followed by [fdbmn-20261020](/docs/benchmarks/fdbmn-20261020/), which repeats M1 and
+M2 on master `fa8725f1d` with the final tree of this campaign as a third arm.
 
 every phase's plan and shard-placement labels were sealed before timing, every
 run was executed once in a counterbalanced block order, 1 Hz server telemetry

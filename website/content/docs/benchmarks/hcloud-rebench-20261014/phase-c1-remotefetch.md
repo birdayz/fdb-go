@@ -265,6 +265,6 @@ Hypotheses, not tested here:
   (0.947 vs 0.855).
 - Case labels in the aggregate CSV were reconstructed from the pinned plan and
   the unchanged per-run logs, for the same runner bug described in
-  [phase B](phase-b-recordlayer.md#limits); 576 labels were
+  [phase B](../phase-b-recordlayer/#limits); 576 labels were
   restored in a separate working copy and no measurement was repeated or
   changed.

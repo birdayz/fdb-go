@@ -219,7 +219,7 @@ Hypotheses (not tested):
   The phase has not been rerun with the fix.
 - Case labels in the aggregate CSV were reconstructed from the pinned plan and
   the unchanged per-run logs, for the same runner bug described in
-  [phase B](phase-b-recordlayer.md#limits). All 57 original CSV rows were
+  [phase B](../phase-b-recordlayer/#limits). All 57 original CSV rows were
   checked against the raw output and the 54 included labels restored in a
   separate working copy; no measurement was repeated or changed, and the
   frozen analyzer was used unmodified.

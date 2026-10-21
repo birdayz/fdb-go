@@ -246,7 +246,7 @@ Hypotheses, not tested here:
   compared across them.
 - Case labels in the aggregate CSV were reconstructed from the pinned plan and
   the unchanged per-run logs, for the same runner bug described in
-  [phase B](phase-b-recordlayer.md#limits). All 144 labels were restored in a
+  [phase B](../phase-b-recordlayer/#limits). All 144 labels were restored in a
   separate working copy; every other CSV field matched the raw output exactly,
   and no measurement was repeated or changed. Hashes are in the campaign's
   analysis report.

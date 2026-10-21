@@ -285,7 +285,7 @@ Hypotheses, not tested here:
   or parser failures.
 - Case labels in the aggregate CSV were reconstructed from the pinned plan and
   the unchanged per-run logs, for the same runner bug described in
-  [phase B](phase-b-recordlayer.md#limits); all 72 labels were restored in a
+  [phase B](../phase-b-recordlayer/#limits); all 72 labels were restored in a
   separate working copy, every other field matched the raw output, and no
   measurement was repeated or changed. Input pins were verified before
   analysis; hashes are recorded in the campaign's analysis report.

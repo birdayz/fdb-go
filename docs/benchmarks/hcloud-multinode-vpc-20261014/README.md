@@ -12,6 +12,9 @@ cloud hosts on an isolated private VPC**, measuring:
    and 64 closed-loop workers against a 3-node `double`-redundancy `ssd-2`
    cluster.
 
+Followed by [fdbmn-20261020](../fdbmn-20261020/README.md), which repeats M1 and
+M2 on master `fa8725f1d` with the final tree of this campaign as a third arm.
+
 every phase's plan and shard-placement labels were sealed before timing, every
 run was executed once in a counterbalanced block order, 1 Hz server telemetry
 was collected on all three server hosts and reconciled with conservative clock
