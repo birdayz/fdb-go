@@ -67,11 +67,11 @@ def parse_ci(cell: str):
     return float(m.group(1)), float(m.group(2)), float(m.group(3))
 
 
-def ci_class(pt: float, lo: float, hi: float) -> str:
+def ci_class(pt: float, lo: float, hi: float, higher_is_better: bool = False) -> str:
     if hi < 1.0:
-        return 'ci-win'
+        return 'ci-reg' if higher_is_better else 'ci-win'
     if lo > 1.0:
-        return 'ci-reg'
+        return 'ci-win' if higher_is_better else 'ci-reg'
     return 'ci-neutral'
 
 
@@ -100,8 +100,11 @@ def render_summary_html(summary: str) -> str:
     return f'<p class="bench-summary">{html.escape(summary)}</p>'
 
 
-def render_forest_svg(title: str, subtitle: str, groups: list, ticks: list, left_label: str, right_label: str, summary: str = '') -> str:
-    """Render a log2-scaled forest plot SVG with exact 95% CI whiskers and right-aligned numeric column."""
+def render_forest_svg(title: str, subtitle: str, groups: list, ticks: list, left_label: str, right_label: str, summary: str = '', higher_is_better: bool = False) -> str:
+    """Render a log2-scaled forest plot SVG with exact 95% CI whiskers and right-aligned numeric column.
+
+    higher_is_better colors intervals above 1.0 as favorable (e.g. throughput ratios).
+    """
     max_label_chars = max((len(lbl) for _, rows in groups for lbl, _ in rows), default=20)
     pad_l = max(165, int(max_label_chars * 7.8) + 26)
     pad_r = 195
@@ -165,7 +168,7 @@ def render_forest_svg(title: str, subtitle: str, groups: list, ticks: list, left
                 out.append(f'<text class="axis-text" x="{pad_l + 10}" y="{cy + 4:.1f}">{html.escape(cell)}</text>')
             else:
                 pt, lo, hi = parsed
-                cls = ci_class(pt, lo, hi)
+                cls = ci_class(pt, lo, hi, higher_is_better)
                 x_pt = x_of(pt)
                 x_lo = x_of(lo)
                 x_hi = x_of(hi)
@@ -181,12 +184,13 @@ def render_forest_svg(title: str, subtitle: str, groups: list, ticks: list, left
                 out.append(f'<text class="val-text" x="{W - pad_r + 12}" y="{cy + 4:.1f}">{pt:.3f}× [{lo:.3f}, {hi:.3f}]</text>')
             y += row_h
 
+    favorable, unfavorable = ('above', 'below') if higher_is_better else ('below', 'above')
     out.extend([
         '</svg>',
         '<div class="bench-legend">'
-        '<span><i class="bench-swatch" style="background:#0d9488"></i> 95% CI below 1.0×</span>'
+        f'<span><i class="bench-swatch" style="background:#0d9488"></i> 95% CI {favorable} 1.0×</span>'
         '<span><i class="bench-swatch" style="background:#64748b"></i> 95% CI includes 1.0× (inconclusive)</span>'
-        '<span><i class="bench-swatch" style="background:#d97706"></i> 95% CI above 1.0×</span>'
+        f'<span><i class="bench-swatch" style="background:#d97706"></i> 95% CI {unfavorable} 1.0×</span>'
         '</div>',
         '</figure>',
     ])
@@ -350,6 +354,31 @@ def extract_md_table(text: str, heading_substr: str) -> list:
         cells = [c.strip().replace('**', '') for c in tl.strip('|').split('|')]
         rows.append(cells)
     return rows
+
+
+def build_section_charts(cid: str, fname: str, raw_md: str) -> list:
+    """Charts injected after headings other than ## Results: [(heading line prefix, svg)]."""
+    if cid == 'fdbmn-20261020' and fname == 'phase-m1-client.md':
+        heading = '## Throughput (post-hoc, exploratory)'
+        if heading not in raw_md:
+            return []
+        groups = []
+        for contrast, col in (('master / old Go', 2), ('master / CGo', 3)):
+            for ph, label in (('M1w1', '1 worker'), ('M1w8', '8 workers'), ('M1w64', '64 workers')):
+                rows = extract_md_table(raw_md, f'#### `{ph}`: throughput')
+                if not rows:
+                    raise ValueError(f'{fname}: missing table #### `{ph}`: throughput')
+                groups.append((f'{contrast}: {ph} ({label})', [(r[0], r[col]) for r in rows if parse_ci(r[col])]))
+        c = render_forest_svg(
+            'Figure M1.5: Throughput, operations per second (post-hoc)',
+            'Above 1.0× means master completes more operations per second. Post-hoc, not preregistered.',
+            groups, [0.4, 0.7, 1.0, 1.4, 2.0], 'Denominator more ops/s', 'Master more ops/s',
+            summary='At 8 and 64 workers master completes fewer operations per second than old Go on get, range and set (0.718–0.903), and more on grv at 64 workers (1.057). Against CGo its rate is higher or the interval includes 1.0 in every cell except grv at 8 workers (0.979).',
+            higher_is_better=True,
+        )
+        verify_summary_numbers(fname, c, raw_md)
+        return [(heading, c)]
+    return []
 
 
 def build_page_charts(cid: str, fname: str, raw_md: str) -> str:
@@ -734,6 +763,13 @@ def transform_body(text: str, is_index: bool, cid: str = '', fname: str = '') ->
                 count=1,
                 flags=re.M,
             )
+
+    if not is_index and cid and fname:
+        for heading, svg in build_section_charts(cid, fname, text):
+            pattern = r'^(' + re.escape(heading) + r'[^\n]*)$'
+            if not re.search(pattern, body, flags=re.M):
+                raise ValueError(f'{fname}: heading {heading!r} not found for chart')
+            body = re.sub(pattern, lambda m, svg=svg: m.group(1) + '\n\n' + svg, body, count=1, flags=re.M)
 
     # Rewrite relative repo links that escape docs/benchmarks/<campaign>/ to GitHub URLs.
     body = body.replace('(../campaign-harness.md)', '(https://github.com/birdayz/fdb-go/blob/master/docs/benchmarks/campaign-harness.md)')

@@ -232,6 +232,62 @@ transactions.
 | M1w64 | set100 | master | 192000 | 5470.9 | 5383.5 | 8122.7 | 134.7 | 6,419 | 55.4 |
 | M1w64 | set100 | CGo | 192000 | 6055.6 | 5993.7 | 9176.0 | 107.8 | 440 | 10.0 |
 
+## Throughput (post-hoc, exploratory)
+
+**Post-hoc and exploratory: throughput was not preregistered.** The rates and
+intervals below are derived afterwards from the retained raw data of the same
+eligible cases. They do not change any estimate, exclusion or result above.
+
+- **Throughput:** completed operations divided by the measured wall window, in
+  operations per second. One operation is one workload transaction. The window
+  excludes setup, warmup, validation and shutdown.
+- **Busy cores:** client process user+system CPU during the measured window
+  divided by its wall time (1.0 = one core busy), including Go and native
+  threads but not the FDB servers. This is not the lifecycle E−A CPU reported
+  above.
+- **Estimates:** absolute ops/s and busy cores are medians of six processes per
+  arm. Ratios are geometric means of six within-block throughput ratios, with
+  the same bootstrap as above (20,000 resamples, seed 492817). **Above 1 means
+  the numerator completes more operations per second.** Ratios are not
+  quotients of the displayed medians.
+- **Closed loop:** each phase runs a fixed number of workers, so the measured
+  rate is 0.973–1.000 (median 0.998) of workers divided by mean latency. The
+  rates describe these operating points, not peak or saturated throughput.
+
+#### `M1w1`: throughput
+
+| Workload | Ops/s old Go / master / CGo | master / old Go | master / CGo | old Go / CGo | Busy cores old Go / master / CGo |
+|---|---:|---:|---:|---:|---:|
+| grv | 989 / 927 / 607 | 0.956 [0.929, 0.998] | 1.553 [1.523, 1.606] | 1.624 [1.600, 1.649] | 0.246 / 0.308 / 0.255 |
+| get100 | 712 / 653 / 442 | 0.914 [0.883, 0.942] | 1.468 [1.431, 1.507] | 1.607 [1.572, 1.638] | 0.351 / 0.387 / 0.328 |
+| get1000 | 699 / 650 / 437 | 0.919 [0.907, 0.934] | 1.478 [1.465, 1.492] | 1.607 [1.584, 1.637] | 0.353 / 0.397 / 0.338 |
+| range100 | 594 / 552 / 403 | 0.929 [0.917, 0.942] | 1.412 [1.341, 1.527] | 1.521 [1.452, 1.647] | 0.415 / 0.442 / 0.353 |
+
+#### `M1w8`: throughput
+
+| Workload | Ops/s old Go / master / CGo | master / old Go | master / CGo | old Go / CGo | Busy cores old Go / master / CGo |
+|---|---:|---:|---:|---:|---:|
+| grv | 4,589 / 4,511 / 4,598 | 0.984 [0.970, 0.996] | 0.979 [0.959, 0.998] | 0.995 [0.973, 1.011] | 0.477 / 0.404 / 0.563 |
+| get100 | 3,784 / 3,397 / 3,306 | 0.903 [0.885, 0.920] | 1.027 [1.002, 1.049] | 1.137 [1.128, 1.146] | 0.894 / 0.642 / 0.601 |
+| get1000 | 3,760 / 3,283 / 3,194 | 0.875 [0.867, 0.883] | 1.012 [0.985, 1.036] | 1.157 [1.124, 1.186] | 0.945 / 0.653 / 0.559 |
+| range100 | 2,975 / 2,692 / 2,599 | 0.897 [0.881, 0.911] | 1.031 [1.010, 1.053] | 1.149 [1.140, 1.161] | 1.358 / 1.031 / 0.778 |
+| set100 | 2,110 / 1,783 / 1,814 | 0.854 [0.828, 0.882] | 0.990 [0.956, 1.027] | 1.159 [1.126, 1.183] | 0.793 / 0.393 / 0.332 |
+
+#### `M1w64`: throughput
+
+| Workload | Ops/s old Go / master / CGo | master / old Go | master / CGo | old Go / CGo | Busy cores old Go / master / CGo |
+|---|---:|---:|---:|---:|---:|
+| grv | 30,937 / 32,673 / 31,850 | 1.057 [1.036, 1.080] | 1.028 [0.979, 1.081] | 0.973 [0.928, 1.008] | 1.494 / 1.228 / 2.135 |
+| get100 | 27,430 / 21,479 / 18,613 | 0.769 [0.745, 0.792] | 1.140 [1.097, 1.179] | 1.481 [1.439, 1.532] | 3.590 / 2.147 / 1.580 |
+| get1000 | 25,634 / 20,749 / 15,074 | 0.798 [0.779, 0.819] | 1.368 [1.294, 1.436] | 1.714 [1.620, 1.802] | 3.531 / 2.251 / 1.378 |
+| range100 | 18,919 / 17,509 / 11,776 | 0.718 [0.440, 0.925] | 1.158 [0.691, 1.514] | 1.613 [1.569, 1.650] | 3.742 / 3.726 / 2.296 |
+| set100 | 14,688 / 11,654 / 10,457 | 0.796 [0.787, 0.804] | 1.113 [1.104, 1.121] | 1.399 [1.385, 1.413] | 2.911 / 1.409 / 0.987 |
+
+Range100 at 64 workers has a wide, unstable interval here as well. Process,
+absolute, paired and omission records, all marked post-hoc, are in
+[`analysis/M1-throughput.csv`](analysis/M1-throughput.csv); formulas and scopes
+are in [`analysis/throughput-method.json`](analysis/throughput-method.json).
+
 ## Comparison with the 2026-10-14 campaign
 
 Old Go is the revision the 2026-10-14 campaign measured as its final pure-Go
