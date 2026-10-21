@@ -125,9 +125,9 @@ func TestSetTimeout_BoundsHungGRV(t *testing.T) {
 // TestSetTimeout_BoundsHungPipelinedRead covers the pipelined read path
 // (GetPipelined/PendingGet.Resolve) — what the fdb facade Get routes through. A
 // dropped reply under SetTimeout(300ms) must return transaction_timed_out (1031)
-// in well under one readRPCTimeout (5s), proving the deferred reply wait is capped
-// by the deadline (RFC-112), not the fixed 5s pipeline timer. Revert-proof:
-// without pipelineReplyTimeout the Resolve waits the full 5s before re-driving.
+// in well under one readRPCTimeout (5s), proving timeout delivery interrupts the
+// deferred reply wait (RFC-112), not the fixed 5s pipeline timer, as C++ races the
+// read against resetPromise (ReadYourWrites.actor.cpp:361-391).
 func TestSetTimeout_BoundsHungPipelinedRead(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -172,6 +172,38 @@ func TestSetTimeout_BoundsHungPipelinedRead(t *testing.T) {
 	}
 	if elapsed > 3*time.Second {
 		t.Fatalf("pipelined Get took %v — SetTimeout(300ms) did not bound the deferred reply wait", elapsed)
+	}
+}
+
+// TestSetTimeout_UndeliveredKeepsPipelinedReplyWait: until the timeout is
+// delivered, a pipelined Get keeps waiting for its reply. C++ races only the
+// reply and resetPromise (ReadYourWrites.actor.cpp:361-391), so an elapsed
+// deadline must not end the wait and resend the read.
+func TestSetTimeout_UndeliveredKeepsPipelinedReplyWait(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	db, _, _ := timeoutObserverDatabase(t, ctx)
+	tx := db.CreateTransaction()
+	defer tx.Cancel()
+	tx.rpcTimeoutOverride = time.Hour
+	tx.SetTimeout(60000)
+	// The deadline passes; the manual queue does not run the callback.
+	tx.creationTime = time.Now().Add(-2 * time.Minute)
+	tx.deadlineNs.Store(tx.creationTime.Add(tx.timeoutDur()).UnixNano())
+	var sent *PendingGet
+	tx.afterPendingSend = func(p *PendingGet) { sent = p }
+	_, pending, err := tx.GetPipelined(ctx, []byte(t.Name()))
+	if err != nil || pending == nil || sent != pending {
+		t.Fatalf("GetPipelined = pending %v, sent %v, err %v; want one sent pending read", pending != nil, sent != nil, err)
+	}
+	select {
+	case <-sent.timer.C:
+		t.Fatal("the reply wait ended at the elapsed deadline before the timeout was delivered")
+	case <-time.After(50 * time.Millisecond):
+	}
+	if _, err := pending.Resolve(); err != nil {
+		t.Fatalf("Resolve with an undelivered timeout = %v, want the reply", err)
 	}
 }
 

@@ -1598,7 +1598,8 @@ the selected contention design and reruns its gates. B3a/B3b remain separate lat
 
 - Go's elapsed-deadline publication at read entry and in `OnError` (`transaction.go:2298,
   2752-2770`), which C4 does not have. It is existing behaviour, left unchanged here, and
-  belongs in TODO.md as a separate divergence item.
+  belongs in TODO.md as a separate divergence item. (Since removed by that item: an elapsed
+  deadline is no longer a cause before delivery.)
 - The monotonic deadline (C1: Go converts a wall-clock `deadlineNs` once per arm) and the
   interval's BUGGIFY value.
 - Implementing the unselected sharding/wheel alternatives, node pooling, embedding the

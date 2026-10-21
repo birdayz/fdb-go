@@ -312,19 +312,32 @@ func TestRawOwnedNoWriteCommitKeepsExistingCallerBehavior(t *testing.T) {
 	}
 }
 
-func TestOwnedOnErrorPublishesActualTimeout(t *testing.T) {
+// An elapsed deadline without a delivered timeout is no cause at OnError entry
+// (C++ C4): the retry is granted and the old owner retires with 1025. The
+// retry's re-arm is already expired, so its successor records 1031 (C3).
+func TestOwnedOnErrorElapsedDeadlineIsNoCause(t *testing.T) {
 	t.Parallel()
 	tx := &Transaction{}
+	tx.backoffJitter = func() float64 { return 0 }
 	defer tx.Cancel()
 	initial := tx.enterState()
 	inc := initial.inc
 	initial.release()
-	// No ambient timer: this must be the owned OnError's synchronous check.
+	// No ambient timer: only the owned OnError itself could publish 1031.
+	tx.creationTime = time.Now().Add(-time.Hour)
 	tx.timeoutNs.Store(int64(time.Second))
-	tx.deadlineNs.Store(time.Now().Add(-time.Hour).UnixNano())
-	err := tx.OnError(context.Background(), &wire.FDBError{Code: 1020})
-	requireScopeCode(t, err, 1031)
-	requireScopeCode(t, tx.readIncarnationCause(inc), 1031)
+	tx.deadlineNs.Store(tx.creationTime.Add(time.Second).UnixNano())
+	if err := tx.OnError(context.Background(), &wire.FDBError{Code: 1020}); err != nil {
+		t.Fatalf("OnError with an undelivered timeout = %v, want a granted retry", err)
+	}
+	requireScopeCode(t, tx.readIncarnationCause(inc), 1025)
+	tx.readErrMu.Lock()
+	successor := tx.readLife
+	tx.readErrMu.Unlock()
+	if successor == nil || successor == inc {
+		t.Fatal("retry did not publish a successor")
+	}
+	requireScopeCode(t, tx.readIncarnationCause(successor), 1031)
 }
 
 func TestCommitOwnedAndPreparedTokenHandoff(t *testing.T) {

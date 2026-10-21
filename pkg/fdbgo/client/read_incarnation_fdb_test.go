@@ -952,9 +952,10 @@ func TestFDBOnErrorReleasedCleanupCannotCancelReplacementWatch(t *testing.T) {
 	}
 }
 
-// A synchronous expiry check must publish into the same resetPromise that its
-// operation captured, even when Reset retires that owner before publication.
-func TestReadIncarnation_SynchronousTimeoutCannotPoisonReplacement(t *testing.T) {
+// An elapsed deadline is no cause until its timeout is delivered (C++ C4,
+// RYW:1567-1574): each entry check proceeds while the timeout is pending and
+// returns the delivered 1031 afterwards.
+func TestReadIncarnation_ElapsedTimeoutIsNoCauseUntilDelivered(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name string
@@ -965,11 +966,18 @@ func TestReadIncarnation_SynchronousTimeoutCannotPoisonReplacement(t *testing.T)
 			return err
 		}},
 		{"get", func(ctx context.Context, tx *Transaction, key []byte) error {
-			_, err := tx.Get(ctx, key)
+			got, err := tx.Get(ctx, key)
+			if err == nil && string(got) != "seed" {
+				return fmt.Errorf("read %q, want seed", got)
+			}
 			return err
 		}},
-		{"commit", func(ctx context.Context, tx *Transaction, _ []byte) error { return tx.Commit(ctx) }},
-		{"prepared-commit", func(ctx context.Context, tx *Transaction, _ []byte) error {
+		{"commit", func(ctx context.Context, tx *Transaction, key []byte) error {
+			tx.Set(key, []byte("committed"))
+			return tx.Commit(ctx)
+		}},
+		{"prepared-commit", func(ctx context.Context, tx *Transaction, key []byte) error {
+			tx.Set(key, []byte("committed"))
 			return tx.PrepareCommit(ctx).Resolve()
 		}},
 		{"on-error", func(ctx context.Context, tx *Transaction, _ []byte) error {
@@ -993,16 +1001,16 @@ func TestReadIncarnation_SynchronousTimeoutCannotPoisonReplacement(t *testing.T)
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			for _, reset := range []bool{false, true} {
-				name := "timeout-first"
-				if reset {
-					name = "reset-first"
+			for _, delivered := range []bool{false, true} {
+				name := "pending"
+				if delivered {
+					name = "delivered"
 				}
 				t.Run(name, func(t *testing.T) {
 					t.Parallel()
 					ctx, cancel := context.WithTimeout(context.Background(), readIncarnationTestTimeout)
 					defer cancel()
-					db := openTestDB(t, ctx)
+					db, q, clock := timeoutObserverDatabase(t, ctx)
 					key := []byte(t.Name())
 					if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 						tx.Set(key, []byte("seed"))
@@ -1012,59 +1020,37 @@ func TestReadIncarnation_SynchronousTimeoutCannotPoisonReplacement(t *testing.T)
 					}
 					tx := db.CreateTransaction()
 					defer tx.Cancel()
+					tx.backoffJitter = func() float64 { return 0 }
 					tx.SetTimeout(60000)
 					tx.readErrMu.Lock()
-					old := tx.readLife
-					node, armed := tx.timeoutNode, tx.timeoutArmed
-					if node != nil {
-						node.queue.remove(node)
-					}
+					inc, node, armed := tx.readLife, tx.timeoutNode, tx.timeoutArmed
 					tx.readErrMu.Unlock()
-					if node == nil || !armed {
-						t.Fatal("timeout callback must remain undelivered before synchronous expiry")
+					if inc == nil || node == nil || !armed {
+						t.Fatal("SetTimeout did not arm a pending timeout")
 					}
-					// Model a due deadline whose asynchronous callback has not run.
-					// Only the synchronous public-operation check can publish 1031.
-					tx.deadlineNs.Store(time.Now().Add(-time.Second).UnixNano())
-					parked := make(chan struct{})
-					release, releaseIt := releaseGate(t)
-					defer releaseIt()
-					tx.beforeReadTimeoutPublication = func() { close(parked); <-release }
-					done := make(chan error, 1)
-					go func() { done <- tc.run(ctx, tx, key) }()
-					waitReadParked(t, ctx, parked, "synchronous timeout publication")
-					var resetDone <-chan struct{}
-					want := 1031
-					if reset {
-						resetDone = retireParkedRead(t, ctx, tx)
-						want = 1025
-					}
-					releaseIt()
-					select {
-					case err := <-done:
-						if fdbCodeOf(err) != want {
-							t.Errorf("old operation returned %v, want literal %d from its captured owner", err, want)
+					// The deadline passes; the manual queue does not run the callback.
+					tx.creationTime = time.Now().Add(-2 * time.Minute)
+					tx.deadlineNs.Store(tx.creationTime.Add(tx.timeoutDur()).UnixNano())
+					if delivered {
+						clock.Store(node.deadline + int64(timeoutSlack))
+						q.fire()
+						if code := fdbCodeOf(context.Cause(inc.ctx)); code != ErrTransactionTimedOut {
+							t.Fatalf("queue delivery recorded %v, want literal 1031", context.Cause(inc.ctx))
 						}
-					case <-ctx.Done():
-						t.Fatal(ctx.Err())
 					}
-					if reset {
-						waitReadParked(t, ctx, resetDone, "Reset after synchronous timeout lease drain")
-					} else {
-						tx.Reset()
+					err := tc.run(ctx, tx, key)
+					if delivered {
+						if code := fdbCodeOf(err); code != 1031 {
+							t.Fatalf("operation after delivery = %v, want literal 1031", err)
+						}
+						return
 					}
-					tx.beforeReadTimeoutPublication = nil
-					if code := fdbCodeOf(tx.readIncarnationCause(old)); code != want {
-						t.Errorf("old owner cause = %d, want %d", code, want)
+					if err != nil {
+						t.Fatalf("operation with an elapsed, undelivered timeout = %v, want success", err)
 					}
-					if got, err := tx.Get(ctx, key); err != nil || string(got) != "seed" {
-						t.Fatalf("replacement read = %q, %v; want seed/nil, not retired timeout poison", got, err)
+					if code := fdbCodeOf(tx.readIncarnationCause(inc)); code == 1031 {
+						t.Fatal("an elapsed deadline was published as 1031 before delivery")
 					}
-					tx.Set(key, []byte("replacement"))
-					if err := tx.Commit(ctx); err != nil {
-						t.Fatalf("replacement commit: %v", err)
-					}
-					assertIndependentRead(t, ctx, db, key, []byte("replacement"))
 				})
 			}
 		})

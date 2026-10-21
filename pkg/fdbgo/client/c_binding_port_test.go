@@ -1319,25 +1319,39 @@ func TestErrorPredicate_CPort(t *testing.T) {
 // Transaction timeout and retry limit
 // ---------------------------------------------------------------------------
 
+// awaitTimeoutDelivery waits until the armed timeout records 1031, the point at
+// which C++'s timebomb sets resetPromise; an elapsed deadline alone is no cause.
+func awaitTimeoutDelivery(t *testing.T, tx *Transaction) {
+	t.Helper()
+	tx.readErrMu.Lock()
+	inc := tx.readIncarnationLocked()
+	tx.readErrMu.Unlock()
+	select {
+	case <-inc.ctx.Done():
+	case <-time.After(time.Minute):
+		t.Fatal("the armed timeout was never delivered")
+	}
+	if code := fdbCodeOf(context.Cause(inc.ctx)); code != ErrTransactionTimedOut {
+		t.Fatalf("delivered cause %v, want transaction_timed_out", context.Cause(inc.ctx))
+	}
+}
+
 // TestSetTimeout_CPort verifies that a 1ms timeout eventually fires with error 1031.
 // Ported from unit_tests.cpp line 769
 // https://github.com/apple/foundationdb/blob/7.3.77/bindings/c/test/unit/unit_tests.cpp#L769
 //
 // The C test sets a 1ms timeout and loops Get + OnError until 1031 escapes.
-// Our Go implementation checks the deadline before each operation, so with
-// a 1ms timeout the first or second operation will return 1031, and OnError
-// will refuse to retry it.
+// Once the timeout is delivered every operation returns 1031, and OnError
+// refuses to retry it.
 func TestSetTimeout_CPort(t *testing.T) {
 	t.Parallel()
 
 	tx := &Transaction{}
 	tx.SetTimeout(1) // 1 millisecond
-
-	// Burn through the timeout — sleep to guarantee deadline passes.
-	time.Sleep(2 * time.Millisecond)
+	awaitTimeoutDelivery(t, tx)
 
 	// Now any operation should return 1031.
-	err := tx.checkTimeout(context.Background())
+	err := recordedCause(tx)
 	if err == nil {
 		t.Fatal("expected timeout error after 1ms")
 	}
@@ -1412,15 +1426,13 @@ func TestSetRetryLimit_Zero(t *testing.T) {
 
 // TestSetTimeout_Get verifies that a timed-out transaction returns 1031 on Get.
 // This is a pure unit test — no database needed — using ensureReadVersion
-// which calls checkTimeout before the GRV fetch.
+// which checks the recorded cause before the GRV fetch.
 func TestSetTimeout_Get(t *testing.T) {
 	t.Parallel()
 
 	tx := &Transaction{}
 	tx.SetTimeout(1) // 1ms
-
-	// Wait for deadline to pass.
-	time.Sleep(2 * time.Millisecond)
+	awaitTimeoutDelivery(t, tx)
 
 	// ensureReadVersion should return timeout error.
 	err := tx.ensureReadVersion(context.Background())
@@ -1456,8 +1468,8 @@ func TestSetTimeout_Preserved(t *testing.T) {
 		t.Error("deadline should be re-computed after reset")
 	}
 
-	// And checkTimeout should not fire (we have 500ms).
-	if err := tx.checkTimeout(context.Background()); err != nil {
+	// And no cause is recorded (we have 500ms).
+	if err := recordedCause(tx); err != nil {
 		t.Errorf("timeout should not fire yet: %v", err)
 	}
 }
@@ -1474,7 +1486,7 @@ func TestSetTimeout_OverallBudget(t *testing.T) {
 	tx.SetTimeout(500) // 500ms budget from creationTime → deadline = 300ms from now
 
 	// Deadline should NOT have fired yet (300ms from now).
-	if err := tx.checkTimeout(context.Background()); err != nil {
+	if err := recordedCause(tx); err != nil {
 		t.Fatalf("timeout should not fire yet (300ms remaining): %v", err)
 	}
 
@@ -1488,14 +1500,15 @@ func TestSetTimeout_OverallBudget(t *testing.T) {
 	// After OnError, deadline is still anchored to the original creationTime.
 	// Verify creationTime was NOT updated by checking the deadline is the same.
 	// The deadline should be creationTime + 500ms = now - 200ms + 500ms = now + 300ms.
-	if err := tx.checkTimeout(context.Background()); err != nil {
+	if err := recordedCause(tx); err != nil {
 		t.Errorf("timeout should not fire after OnError (budget not exhausted): %v", err)
 	}
 
-	// Now simulate exhausted budget: set creationTime far in the past.
-	tx.creationTime = time.Now().Add(-1 * time.Second)                   // 1s ago
-	tx.deadlineNs.Store(tx.creationTime.Add(tx.timeoutDur()).UnixNano()) // deadline = 500ms ago
-	if err := tx.checkTimeout(context.Background()); err == nil {
+	// Now exhaust the budget: re-arming from a creationTime 1s ago is expired at
+	// arm, which records 1031 synchronously (C++ timebomb, RYW:1567-1573).
+	tx.creationTime = time.Now().Add(-1 * time.Second)
+	tx.SetTimeout(500)
+	if err := recordedCause(tx); err == nil {
 		t.Error("timeout should fire: budget exhausted (creationTime 1s ago, 500ms timeout)")
 	}
 }
@@ -1512,7 +1525,7 @@ func TestSetTimeout_ResetRestartsTimer(t *testing.T) {
 	tx.SetTimeout(500) // deadline = -10s + 500ms = -9.5s → already expired
 
 	// Should be timed out.
-	if err := tx.checkTimeout(context.Background()); err == nil {
+	if err := recordedCause(tx); err == nil {
 		t.Fatal("timeout should fire (budget exhausted from past creationTime)")
 	}
 
@@ -1521,7 +1534,7 @@ func TestSetTimeout_ResetRestartsTimer(t *testing.T) {
 	tx.SetTimeout(500) // re-apply → deadline = now() + 500ms
 
 	// After Reset, the full 500ms budget should be available.
-	if err := tx.checkTimeout(context.Background()); err != nil {
+	if err := recordedCause(tx); err != nil {
 		t.Errorf("timeout should not fire after Reset (fresh 500ms budget): %v", err)
 	}
 
@@ -1546,8 +1559,8 @@ func TestSetTimeout_Disabled(t *testing.T) {
 		t.Error("deadline should be zero when timeout disabled")
 	}
 
-	// checkTimeout should always pass.
-	if err := tx.checkTimeout(context.Background()); err != nil {
+	// No cause is ever recorded.
+	if err := recordedCause(tx); err != nil {
 		t.Errorf("disabled timeout should not fire: %v", err)
 	}
 }
@@ -1611,7 +1624,7 @@ func TestSetTimeout_CommitCheck(t *testing.T) {
 	tx := &Transaction{}
 	tx.SetTimeout(1)                     // 1ms
 	tx.Set([]byte("key"), []byte("val")) // need mutations for commit path
-	time.Sleep(2 * time.Millisecond)
+	awaitTimeoutDelivery(t, tx)
 
 	err := tx.Commit(context.Background())
 	if err == nil {
@@ -3163,10 +3176,14 @@ func TestDatabaseLevelTimeout_CPort(t *testing.T) {
 	// Set a very short timeout at database level.
 	db.SetTransactionTimeout(1) // 1ms
 
-	// A transaction should time out almost immediately.
+	// Read until the timeout is delivered, as the C test loops; an elapsed
+	// deadline alone is no cause.
 	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
-		time.Sleep(50 * time.Millisecond)
-		return tx.Get(ctx, []byte("db_timeout_test"))
+		for {
+			if _, err := tx.Get(ctx, []byte("db_timeout_test")); err != nil {
+				return nil, err
+			}
+		}
 	})
 
 	// Should get transaction_timed_out (1031) — non-retryable, escapes retry loop.

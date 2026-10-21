@@ -14,15 +14,17 @@ import (
 // poisoned by SetReadYourWritesDisable-after-an-op AND past its timeout must report
 // client_invalid_operation (2000), NOT transaction_timed_out (1031). Reads check the poison
 // before the timeout, and libfdb_c's checkDeferredError runs before any commit logic, so the
-// Commit gate must out-rank checkTimeout. White-box: the poison check returns before any DB
+// Commit gate must out-rank the recorded timeout. White-box: the poison check returns before any DB
 // interaction, so no container is needed and it is deterministic (deadline set in the past, no
 // sleep).
 func TestCommit_RYWPoisonBeatsTimeout(t *testing.T) {
 	t.Parallel()
 	tx := &Transaction{}
 	tx.state.Store(int32(txStateActive))
-	tx.timeoutNs.Store(int64(time.Millisecond))
-	tx.deadlineNs.Store(time.Now().Add(-time.Hour).UnixNano()) // already elapsed → checkTimeout would return 1031
+	// Expired at arm, so 1031 is recorded; the option must precede the poison,
+	// which makes later options no-ops.
+	tx.creationTime = time.Now().Add(-time.Hour)
+	tx.SetTimeout(1)
 	tx.deferredErr.Store(&wire.FDBError{Code: 2000})
 
 	err := tx.Commit(context.Background())
