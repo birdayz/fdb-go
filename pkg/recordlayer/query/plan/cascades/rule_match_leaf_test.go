@@ -23,6 +23,7 @@ func (c *testMatchCandidate) GetSargableAliases() []values.CorrelationIdentifier
 func (c *testMatchCandidate) GetRecordTypes() []string                           { return nil }
 func (c *testMatchCandidate) IsUnique() bool                                     { return false }
 func (c *testMatchCandidate) GetTraversal() *Traversal                           { return c.traversal }
+
 func (c *testMatchCandidate) ComputeBoundParameterPrefixMap(
 	bindings map[values.CorrelationIdentifier]*predicates.ComparisonRange,
 ) map[values.CorrelationIdentifier]*predicates.ComparisonRange {

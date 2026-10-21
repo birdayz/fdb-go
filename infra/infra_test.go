@@ -433,6 +433,7 @@ func TestGoModBuildToolchain(t *testing.T) {
 	for _, tc := range []struct{ mod, want string }{
 		{"module example\ngo 1.26.0\ntoolchain go1.26.10\n", "1.26.10"},
 		{"module example\ngo 1.26.0\n", "1.26.0"},
+		{"module example\ngo 1.27.3\n", "1.27.3"},
 		{"module example\n", ""},
 	} {
 		if got := goModBuildToolchain([]byte(tc.mod)); got != tc.want {

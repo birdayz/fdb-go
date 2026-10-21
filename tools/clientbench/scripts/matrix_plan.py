@@ -97,7 +97,7 @@ def make_plan(args):
                                  LC_ALL='C', TZ='UTC'),
                 workloads=[dict(name=w, iterations=args.iterations, warmup=args.warmup, workers=1)
                            for w in args.workload],
-                go_version='go1.26.10', fdb_version='7.3.77', fdb_api_version=730,
+                go_version='go1.27.3', fdb_version='7.3.77', fdb_api_version=730,
                 native_library_sha256=digest(args.native_library), pinned_files=sorted(pinned), arms=[])
     for name, binary, revision in arms:
         binary = str(Path(binary).resolve())

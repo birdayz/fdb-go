@@ -1548,11 +1548,14 @@ type bakedReferenceTreePlan struct {
 	children []plans.RecordQueryPlan
 }
 
-func (*bakedReferenceTreePlan) GetResultType() values.Type                           { return values.UnknownType }
-func (p *bakedReferenceTreePlan) GetChildren() []plans.RecordQueryPlan               { return p.children }
+func (*bakedReferenceTreePlan) GetResultType() values.Type { return values.UnknownType }
+
+func (p *bakedReferenceTreePlan) GetChildren() []plans.RecordQueryPlan { return p.children }
+
 func (*bakedReferenceTreePlan) EqualsPlanWithoutChildren(plans.RecordQueryPlan) bool { return false }
 func (*bakedReferenceTreePlan) HashCodeWithoutChildren() uint64                      { return 0 }
 func (*bakedReferenceTreePlan) Explain() string                                      { return "baked-reference-tree" }
+
 func (p *bakedReferenceTreePlan) EqualsWithoutChildren(
 	other expressions.RelationalExpression,
 	_ *expressions.AliasMap,

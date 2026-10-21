@@ -1,12 +1,14 @@
 package gofumpt
 
 import (
+	"bytes"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"golang.org/x/tools/go/analysis"
@@ -93,6 +95,53 @@ func TestFlagsMatchOptions(t *testing.T) {
 		if fl := fs.Lookup(name); fl == nil {
 			t.Errorf("format.Options.%s has no flag %q — buildFlags() needs updating", f.Name, name)
 		}
+	}
+}
+
+func TestExtraFlagRoundTrips(t *testing.T) {
+	t.Parallel()
+	fs := buildFlags()
+	if err := fs.Set("extra", "group_params,balance_calls"); err != nil {
+		t.Fatal(err)
+	}
+	opts := optsFromFlags(&fs)
+	if !opts.Extra.GroupParams || !opts.Extra.BalanceCalls || opts.Extra.ClotheReturns {
+		t.Fatalf("extra options = %+v, want only GroupParams and BalanceCalls", opts.Extra)
+	}
+}
+
+func TestExtraFlagRejectsUnknownRule(t *testing.T) {
+	t.Parallel()
+	fs := buildFlags()
+	if err := fs.Set("extra", "unknown_rule"); err == nil {
+		t.Fatal("extra accepted an unknown formatting rule")
+	}
+}
+
+func TestExtraBoolFlag(t *testing.T) {
+	t.Parallel()
+	fs := buildFlags()
+	if err := fs.Parse([]string{"-extra"}); err != nil {
+		t.Fatal(err)
+	}
+	opts := optsFromFlags(&fs)
+	if !opts.Extra.GroupParams || !opts.Extra.ClotheReturns || !opts.Extra.BalanceCalls {
+		t.Fatalf("-extra options = %+v, want all extra rules", opts.Extra)
+	}
+}
+
+func TestFlagDefaults(t *testing.T) {
+	t.Parallel()
+	var zero optionFlag
+	if got := zero.String(); got != "" {
+		t.Fatalf("zero flag string = %q, want empty", got)
+	}
+	fs := buildFlags()
+	var output bytes.Buffer
+	fs.SetOutput(&output)
+	fs.PrintDefaults()
+	if text := output.String(); !strings.Contains(text, "-extra") || strings.Contains(text, "panic calling String method") {
+		t.Fatalf("invalid flag defaults:\n%s", text)
 	}
 }
 

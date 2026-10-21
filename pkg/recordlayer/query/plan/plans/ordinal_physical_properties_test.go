@@ -320,6 +320,7 @@ func (*physicalPropertiesTestPlan) EqualsPlanWithoutChildren(other RecordQueryPl
 }
 func (*physicalPropertiesTestPlan) HashCodeWithoutChildren() uint64 { return 0x232 }
 func (*physicalPropertiesTestPlan) Explain() string                 { return "physical-properties-fixture" }
+
 func (p *physicalPropertiesTestPlan) EqualsWithoutChildren(
 	other expressions.RelationalExpression,
 	_ *expressions.AliasMap,

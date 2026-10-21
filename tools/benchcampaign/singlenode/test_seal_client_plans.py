@@ -59,7 +59,7 @@ class SealClientPlansTest(unittest.TestCase):
         self.orders = self.root / 'orders.json'
         protocol = json.loads((TESTDATA / 'protocol.json').read_text())
         # Match the current plan generator without rewriting historical protocol data.
-        protocol['runtime']['go'] = '1.26.10'
+        protocol['runtime']['go'] = '1.27.3'
         # Protocol v4: the client campaigns' wall cap is 360 seconds, processes 180.
         protocol['harness_revision'] = HARNESS_REVISION
         for phase in protocol['phases']:

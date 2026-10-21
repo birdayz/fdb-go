@@ -82,7 +82,7 @@ func TestFDB_ExistsOverJoinFlattenOrdinalSeed(t *testing.T) {
 			}
 			parts := make([]string, len(cols))
 			for i, v := range vals {
-				cell := *(v.(*any))
+				cell := *v.(*any)
 				if cell == nil {
 					parts[i] = "<NULL>"
 				} else {

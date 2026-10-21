@@ -116,7 +116,7 @@ type Context struct {
 	// whose tuple path contains non-string elements. YAML list of
 	// strings, integers, and tagged objects:
 	//
-	//	keyspace_tuple: ["myapp", 42, {"uuid": "0195c7…"}, {"bytes_hex": "deadbeef"}]
+	//   keyspace_tuple: ["myapp", 42, {"uuid": "0195c7…"}, {"bytes_hex": "deadbeef"}]
 	//
 	// Mutually exclusive with keyspace_path and database/schema.
 	KeyspaceTuple *structpb.ListValue `protobuf:"bytes,7,opt,name=keyspace_tuple,json=keyspaceTuple,proto3" json:"keyspace_tuple,omitempty"`

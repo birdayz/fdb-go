@@ -66,7 +66,7 @@ import (
 // from green to red with no change in this repository, which makes the failure
 // unattributable and trains everyone to rerun it. Bumping this is a reviewable
 // diff, which is the point.
-const govulncheckVersion = "v1.6.0"
+const govulncheckVersion = "v1.9.0"
 
 // scanPatterns is the shipped surface. Test infrastructure is excluded:
 // pkg/testcontainers wraps the Docker SDK, which carries open upstream

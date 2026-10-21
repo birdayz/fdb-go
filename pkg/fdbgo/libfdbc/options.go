@@ -15,8 +15,9 @@ type txOptions struct {
 }
 
 func (o txOptions) SetTimeout(milliseconds int64) error { return convErr(o.o.SetTimeout(milliseconds)) }
-func (o txOptions) SetRetryLimit(retries int64) error   { return convErr(o.o.SetRetryLimit(retries)) }
-func (o txOptions) SetPriorityBatch() error             { return convErr(o.o.SetPriorityBatch()) }
+
+func (o txOptions) SetRetryLimit(retries int64) error { return convErr(o.o.SetRetryLimit(retries)) }
+func (o txOptions) SetPriorityBatch() error           { return convErr(o.o.SetPriorityBatch()) }
 func (o txOptions) SetPrioritySystemImmediate() error {
 	return convErr(o.o.SetPrioritySystemImmediate())
 }
@@ -62,7 +63,9 @@ func (o txOptions) SetSkipGrvCache() error { return nil }
 func (o txOptions) SetAutoThrottleTag(tag string) error { return convErr(o.o.SetAutoThrottleTag(tag)) }
 func (o txOptions) SetTag(tag string) error             { return convErr(o.o.SetTag(tag)) }
 func (o txOptions) SetReportConflictingKeys() error     { return convErr(o.o.SetReportConflictingKeys()) }
-func (o txOptions) SetSpecialKeySpaceRelaxed() error    { return convErr(o.o.SetSpecialKeySpaceRelaxed()) }
+
+func (o txOptions) SetSpecialKeySpaceRelaxed() error { return convErr(o.o.SetSpecialKeySpaceRelaxed()) }
+
 func (o txOptions) SetSpecialKeySpaceEnableWrites() error {
 	return convErr(o.o.SetSpecialKeySpaceEnableWrites())
 }
@@ -99,9 +102,11 @@ func (o txOptions) SetReadServerSideCacheEnable() error {
 func (o txOptions) SetReadServerSideCacheDisable() error {
 	return convErr(o.o.SetReadServerSideCacheDisable())
 }
+
 func (o txOptions) SetUseProvisionalProxies() error { return convErr(o.o.SetUseProvisionalProxies()) }
 func (o txOptions) SetBypassStorageQuota() error    { return convErr(o.o.SetBypassStorageQuota()) }
 func (o txOptions) SetInitializeNewDatabase() error { return convErr(o.o.SetInitializeNewDatabase()) }
+
 func (o txOptions) SetAuthorizationToken(token string) error {
 	return convErr(o.o.SetAuthorizationToken(token))
 }

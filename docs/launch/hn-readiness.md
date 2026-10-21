@@ -113,7 +113,7 @@ The owner delegated release decisions; API reduction remains a v0.3.0 launch wor
 | H | Limits (retries, timeouts, statement memory/rows) not settable from the DSN | done [#799]: DSN-settable timeouts and statement limits; no retry-limit parameter | hn-sql-ws3 |
 | H | Unbounded default limits | not started: [#799] keeps Java's unbounded defaults; decide or document | hn-sql-ws3 |
 | H | No CONTRIBUTING / SUPPORT / issue templates | done [#788]: `CONTRIBUTING.md`, `SUPPORT.md`, issue forms | release-ws |
-| M | `go 1.26.0` language floor and explicit toolchain pin; root v0.1.0 has no GitHub release (only `cmd/frl/v0.1.0` does) | in progress: v0.2.0 gets a GitHub release ([#825]). `go 1.26.0` is the dependencies' floor; `toolchain go1.26.10` preserves the tested build pin | release-ws |
+| M | `go 1.27.3` minimum; root v0.1.0 has no GitHub release (only `cmd/frl/v0.1.0` does) | in progress: v0.2.0 gets a GitHub release ([#825]). `go 1.27.3` enforces the minimum and selects the tested build SDK without a redundant toolchain directive | release-ws |
 
 ## 3. Launch framing (from the HN-thread simulation)
 

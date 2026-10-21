@@ -23,6 +23,27 @@ var Analyzer = &analysis.Analyzer{
 	Flags: buildFlags(),
 }
 
+type optionFlag struct {
+	flag.Value
+	value reflect.Value
+}
+
+func (f *optionFlag) String() string {
+	if f == nil || f.Value == nil {
+		return ""
+	}
+	return f.Value.String()
+}
+
+func (f *optionFlag) IsBoolFlag() bool {
+	b, ok := f.Value.(interface{ IsBoolFlag() bool })
+	return ok && b.IsBoolFlag()
+}
+
+func (f *optionFlag) Get() any {
+	return f.value.Elem().Interface()
+}
+
 // buildFlags generates flags from format.Options struct fields via reflection.
 func buildFlags() flag.FlagSet {
 	var fs flag.FlagSet
@@ -30,6 +51,11 @@ func buildFlags() flag.FlagSet {
 	for i := range t.NumField() {
 		f := t.Field(i)
 		name := strings.ToLower(f.Name)
+		value := reflect.New(f.Type)
+		if fv, ok := value.Interface().(flag.Value); ok {
+			fs.Var(&optionFlag{Value: fv, value: value}, name, f.Name+" option")
+			continue
+		}
 		switch f.Type.Kind() {
 		case reflect.String:
 			fs.String(name, "", f.Name+" option")
@@ -52,11 +78,8 @@ func optsFromFlags(fs *flag.FlagSet) format.Options {
 		if fl == nil {
 			continue
 		}
-		switch f.Type.Kind() {
-		case reflect.String:
-			v.Field(i).SetString(fl.Value.String())
-		case reflect.Bool:
-			v.Field(i).SetBool(fl.Value.(flag.Getter).Get().(bool))
+		if getter, ok := fl.Value.(flag.Getter); ok {
+			v.Field(i).Set(reflect.ValueOf(getter.Get()))
 		}
 	}
 	return opts
