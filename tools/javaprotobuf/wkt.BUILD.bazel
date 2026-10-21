@@ -1,0 +1,13 @@
+load("@protobuf//bazel:proto_library.bzl", "proto_library")
+
+package(default_visibility = ["//visibility:public"])
+
+proto_library(
+    name = "descriptor_proto",
+    srcs = ["google/protobuf/descriptor.proto"],
+)
+
+proto_library(
+    name = "any_proto",
+    srcs = ["google/protobuf/any.proto"],
+)

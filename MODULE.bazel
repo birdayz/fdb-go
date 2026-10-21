@@ -138,7 +138,6 @@ maven.install(
         "org.foundationdb:fdb-relational-api:4.14.2.0",
         "org.foundationdb:fdb-relational-core:4.14.2.0",
         "com.google.code.gson:gson:2.10.1",
-        "com.google.protobuf:protobuf-java-util:4.29.3",
     ],
     known_contributing_modules = [
         "bazel_worker_java",
@@ -148,7 +147,27 @@ maven.install(
         "https://repo1.maven.org/maven2",
     ],
 )
+
+# Match the protobuf runtime declared by Record Layer 4.14.2.0, even when
+# another module contributes a newer protobuf artifact to this Maven install.
+maven.artifact(
+    artifact = "protobuf-java",
+    force_version = True,
+    group = "com.google.protobuf",
+    version = "3.25.9",
+)
+maven.artifact(
+    artifact = "protobuf-java-util",
+    force_version = True,
+    group = "com.google.protobuf",
+    version = "3.25.9",
+)
 use_repo(maven, "maven")
+
+register_toolchains(
+    "//tools/javaprotobuf:java_toolchain",
+    "//tools/javaprotobuf:unsupported_java_toolchain",
+)
 
 # SIFT-1M benchmark dataset (industry-standard ANN benchmark, ~160MB compressed).
 # Downloaded on demand via FTP from INRIA TEXMEX. Cached by Bazel repository cache.
@@ -162,6 +181,14 @@ sift_dataset(name = "sift1m")
 # the Go parser from the .g4 grammar files. Pin must match the antlr4-go
 # runtime declared in go.mod (github.com/antlr4-go/antlr/v4).
 http_file = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_file")
+
+http_file(
+    name = "java_protoc_linux_x86_64",
+    downloaded_file_path = "protoc",
+    executable = True,
+    sha256 = "277c8548ead748ac3e600d3b860f114d36a1311dff29568cd95115ad65f59e2f",
+    urls = ["https://repo1.maven.org/maven2/com/google/protobuf/protoc/3.25.9/protoc-3.25.9-linux-x86_64.exe"],
+)
 
 http_file(
     name = "antlr4_tool_jar",
@@ -182,6 +209,16 @@ http_file(
 # vexillographer at build time. Only the sdist carries a complete package.
 # Version tracks the C client pin (bazel_dep foundationdb + .bazelrc FDB_VERSION).
 http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+
+# The runtime jar also contains the matching well-known .proto sources. Only
+# Java's proto graph uses these; native codegen keeps the protobuf module pin.
+http_archive(
+    name = "java_protobuf_wkt",
+    build_file = "//tools/javaprotobuf:wkt.BUILD.bazel",
+    sha256 = "df18b719cd0c5a11e569013216cc9de47a0a954adeede685c0f98ce4c42d4d1a",
+    type = "zip",
+    urls = ["https://repo1.maven.org/maven2/com/google/protobuf/protobuf-java/3.25.9/protobuf-java-3.25.9.jar"],
+)
 
 http_archive(
     name = "fdb_python",

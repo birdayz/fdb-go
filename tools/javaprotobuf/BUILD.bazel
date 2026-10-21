@@ -1,0 +1,49 @@
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load(":toolchain.bzl", "java_proto_toolchain")
+
+exports_files(["wkt.BUILD.bazel"])
+
+java_proto_toolchain(
+    name = "java_language_toolchain",
+    denylisted_protos = [
+        "@java_protobuf_wkt//:any_proto",
+        "@java_protobuf_wkt//:descriptor_proto",
+    ],
+    protoc = "@java_protoc_linux_x86_64//file:protoc",
+    runtime = "@maven//:com_google_protobuf_protobuf_java",
+)
+
+# Root registrations precede the protobuf module's toolchains. Fail closed on
+# other execution platforms rather than silently restoring its newer runtime.
+java_proto_toolchain(
+    name = "unsupported_java_language_toolchain",
+    denylisted_protos = [
+        "@java_protobuf_wkt//:any_proto",
+        "@java_protobuf_wkt//:descriptor_proto",
+    ],
+    protoc = ":unsupported_protoc.sh",
+    runtime = "@maven//:com_google_protobuf_protobuf_java",
+)
+
+toolchain(
+    name = "unsupported_java_toolchain",
+    toolchain = ":unsupported_java_language_toolchain",
+    toolchain_type = "@protobuf//bazel/private:java_toolchain_type",
+)
+
+sh_test(
+    name = "unsupported_protoc_test",
+    srcs = ["unsupported_protoc_test.sh"],
+    args = ["$(location unsupported_protoc.sh)"],
+    data = ["unsupported_protoc.sh"],
+)
+
+toolchain(
+    name = "java_toolchain",
+    exec_compatible_with = [
+        "@platforms//cpu:x86_64",
+        "@platforms//os:linux",
+    ],
+    toolchain = ":java_language_toolchain",
+    toolchain_type = "@protobuf//bazel/private:java_toolchain_type",
+)
