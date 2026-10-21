@@ -43,6 +43,9 @@ type Config struct {
 	// same operations at the same offsets. Rate 0 is a closed loop.
 	Rate float64 `json:"rate,omitempty"`
 	Seed uint64  `json:"seed"`
+	// Duration selects fixed-time closed-loop mode; zero preserves count mode.
+	Duration       time.Duration `json:"duration_ns,omitempty"`
+	WarmupDuration time.Duration `json:"warmup_duration_ns,omitempty"`
 }
 
 func (c Config) Validate() error {
@@ -55,11 +58,20 @@ func (c Config) Validate() error {
 	if !strings.HasPrefix(c.Prefix, "clientbench/") || !strings.HasSuffix(c.Prefix, "/") || len(c.Prefix) > 256 {
 		return errors.New("prefix must start with clientbench/ and end with /, at most 256 bytes")
 	}
-	if c.Iterations <= 0 || c.Iterations > 10000000 || c.Warmup < 0 || c.Warmup > 10000000 || c.Workers <= 0 || c.Workers > 1024 {
+	if c.Workers <= 0 || c.Workers > 1024 || (c.Duration == 0 && (c.Iterations <= 0 || c.Iterations > 10000000 || c.Warmup < 0 || c.Warmup > 10000000)) {
 		return errors.New("invalid iterations (1..10000000), warmup (0..10000000), or workers (1..1024)")
 	}
 	if math.IsNaN(c.Rate) || c.Rate < 0 || c.Rate > 1e6 {
 		return errors.New("rate must be 0 (closed loop) or a positive number of operations per second up to 1e6")
+	}
+	if c.Duration < 0 || c.WarmupDuration < 0 {
+		return errors.New("duration and warmup-duration must be nonnegative")
+	}
+	if c.Duration > 0 && c.Rate != 0 {
+		return errors.New("duration mode requires rate 0 (closed loop)")
+	}
+	if c.Duration > 0 && (c.Duration > time.Duration(math.MaxInt64)-120*time.Second || c.WarmupDuration > time.Duration(math.MaxInt64)-120*time.Second-c.Duration) {
+		return errors.New("duration plus warmup-duration exceeds the watchdog budget range")
 	}
 	if c.TimeoutMS <= 0 || c.RetryLimit < 0 {
 		return errors.New("positive transaction timeout and nonnegative retry limit required")
@@ -368,6 +380,9 @@ func timing(cfg Config) string {
 func Run(cfg Config, db LifecycleDatabase, metadata map[string]any, afterIdentity Stats) error {
 	if err := cfg.Validate(); err != nil {
 		return err
+	}
+	if cfg.Duration > 0 {
+		return runDuration(cfg, db, metadata, afterIdentity)
 	}
 	if err := os.MkdirAll(cfg.Output, 0o755); err != nil {
 		return err

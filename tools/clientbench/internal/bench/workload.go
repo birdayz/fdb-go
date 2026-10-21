@@ -115,20 +115,24 @@ func batchSet50Payload(valueBytes, worker, index int, phase byte) []byte {
 	return out
 }
 
+type correctnessError struct{ message string }
+
+func (e *correctnessError) Error() string { return e.message }
+
 func CheckValue(actual, expected []byte) error {
 	if !bytes.Equal(actual, expected) {
-		return fmt.Errorf("value mismatch: got %d bytes, expected exact %d bytes", len(actual), len(expected))
+		return &correctnessError{fmt.Sprintf("value mismatch: got %d bytes, expected exact %d bytes", len(actual), len(expected))}
 	}
 	return nil
 }
 
 func CheckRange(rows, expected []KV) error {
 	if len(rows) != len(expected) {
-		return fmt.Errorf("range count %d, want %d", len(rows), len(expected))
+		return &correctnessError{fmt.Sprintf("range count %d, want %d", len(rows), len(expected))}
 	}
 	for i := range rows {
 		if !bytes.Equal(rows[i].Key, expected[i].Key) || !bytes.Equal(rows[i].Value, expected[i].Value) {
-			return fmt.Errorf("range key/value mismatch at row %d", i)
+			return &correctnessError{fmt.Sprintf("range key/value mismatch at row %d", i)}
 		}
 	}
 	return nil
@@ -232,7 +236,7 @@ func (d Dataset) Operation(db Database, workload string, worker int, payload []b
 				return err
 			}
 			if version <= 0 {
-				return fmt.Errorf("invalid read version %d", version)
+				return &correctnessError{fmt.Sprintf("invalid read version %d", version)}
 			}
 			return nil
 		case "batchset50", "batchset50x1000":

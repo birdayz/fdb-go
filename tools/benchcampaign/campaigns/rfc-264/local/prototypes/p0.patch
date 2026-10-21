@@ -1,0 +1,360 @@
+diff --git a/pkg/fdbgo/client/pending_get.go b/pkg/fdbgo/client/pending_get.go
+index 1f0d3cb67..6a376b3fa 100644
+--- a/pkg/fdbgo/client/pending_get.go
++++ b/pkg/fdbgo/client/pending_get.go
+@@ -231,6 +231,14 @@ func (p *PendingGet) full(ctx context.Context, abort <-chan struct{}, keepTags b
+ }
+ 
+ func (p *PendingGet) resolve(ctx context.Context, abort <-chan struct{}) ([]byte, error) {
++	// A published response has no dependency on a later connection-wide flush.
++	// ResolveOrAbort has already admitted this read's incarnation and lease.
++	select {
++	case response := <-p.replyCh:
++		p.replyConsumed = true
++		return p.resolveReply(ctx, response, abort)
++	default:
++	}
+ 	if !p.flushed {
+ 		p.flushed = true
+ 		if err := p.conn.FlushContext(ctx); err != nil {
+diff --git a/pkg/fdbgo/client/read_write_context_fdb_test.go b/pkg/fdbgo/client/read_write_context_fdb_test.go
+index c18dea611..006d5a2e4 100644
+--- a/pkg/fdbgo/client/read_write_context_fdb_test.go
++++ b/pkg/fdbgo/client/read_write_context_fdb_test.go
+@@ -3,7 +3,10 @@ package client
+ import (
+ 	"bytes"
+ 	"context"
++	"encoding/binary"
+ 	"errors"
++	"fmt"
++	"io"
+ 	"net"
+ 	"sync"
+ 	"sync/atomic"
+@@ -205,3 +208,325 @@ func TestReadWriteContext_RealFDBBackpressure(t *testing.T) {
+ 		})
+ 	}
+ }
++
++// pendingReplyWriteGate forwards one actual GetValue frame, then holds Write's
++// return. The real reply can therefore be published while the writer still owns
++// its bytes and any later Flush marker remains behind it.
++type pendingReplyWriteGate struct {
++	key            []byte
++	armed          atomic.Bool
++	parked         chan struct{}
++	failed         chan error
++	release        chan struct{}
++	once           sync.Once
++	mu             sync.Mutex
++	bodyErr        error
++	writeErr       error
++	injected       atomic.Bool
++	expiredVersion bool
++	rewritten      atomic.Bool
++}
++
++func (g *pendingReplyWriteGate) releaseIt() { g.once.Do(func() { close(g.release) }) }
++
++func (g *pendingReplyWriteGate) fail(err error) (int, error) {
++	select {
++	case g.failed <- err:
++	default:
++	}
++	return 0, err
++}
++
++func (g *pendingReplyWriteGate) dial(ctx context.Context, network, addr string) (net.Conn, error) {
++	c, err := (&net.Dialer{}).DialContext(ctx, network, addr)
++	if err != nil {
++		return nil, err
++	}
++	return &pendingReplyWriteConn{Conn: c, gate: g, hello: transport.ConnectPacketSize}, nil
++}
++
++type pendingReplyWriteConn struct {
++	net.Conn
++	gate    *pendingReplyWriteGate
++	hello   int
++	pending []byte
++	blocked atomic.Bool
++}
++
++func (c *pendingReplyWriteConn) Write(p []byte) (int, error) {
++	incoming := p
++	if c.hello > 0 {
++		n := min(c.hello, len(incoming))
++		c.hello -= n
++		incoming = incoming[n:]
++	}
++	frameStart := len(p) - len(incoming) - len(c.pending)
++	c.pending = append(c.pending, incoming...)
++	for len(c.pending) >= 4 {
++		length := int(binary.LittleEndian.Uint32(c.pending)) + 12
++		if length < 28 || length > 100<<20+12 {
++			return c.gate.fail(fmt.Errorf("invalid outbound frame length %d", length))
++		}
++		if len(c.pending) < length {
++			break
++		}
++		token, body, err := transport.ReadFrame(bytes.NewReader(c.pending[:length]), false)
++		if err != nil {
++			return c.gate.fail(err)
++		}
++		start, end := frameStart, frameStart+length
++		frameStart = end
++		c.pending = c.pending[length:]
++		// StorageServerInterface.h: GetValueRequest::file_identifier.
++		if len(body) < 8 || binary.LittleEndian.Uint32(body[4:8]) != 8454530 {
++			continue
++		}
++		var request types.GetValueRequest
++		if err := request.UnmarshalFDB(body); err != nil {
++			return c.gate.fail(err)
++		}
++		if !bytes.Equal(request.Key, c.gate.key) || !c.gate.armed.CompareAndSwap(true, false) {
++			continue
++		}
++		forward := p
++		if c.gate.expiredVersion {
++			if start < 0 || end > len(p) {
++				return c.gate.fail(errors.New("target GetValue frame was split across Write calls"))
++			}
++			// Change only the forwarded copy. waitForVersion rejects version
++			// <= 0 unconditionally (storageserver.actor.cpp:2271–2273), unlike
++			// version 1, which can still exist on a fresh storage server.
++			vector := request.SsLatestCommitVersions
++			// Canonical empty VersionVector: uint64 count=0, int64 max=-1.
++			if len(vector) != 16 || binary.LittleEndian.Uint64(vector[:8]) != 0 || binary.LittleEndian.Uint64(vector[8:]) != ^uint64(0) {
++				return c.gate.fail(errors.New("target GetValue unexpectedly carries a nonempty commit-version vector"))
++			}
++			request.Version = 0
++			var frame bytes.Buffer
++			if err := transport.WriteFrame(&frame, token, request.MarshalFDB(), false); err != nil {
++				return c.gate.fail(err)
++			}
++			forward = append(bytes.Clone(p[:start]), frame.Bytes()...)
++			forward = append(forward, p[end:]...)
++			c.gate.rewritten.Store(true)
++		}
++		c.blocked.Store(true)
++		before := bytes.Clone(p)
++		n, writeErr := c.Conn.Write(forward)
++		if writeErr == nil && n != len(forward) {
++			writeErr = io.ErrShortWrite
++		}
++		if writeErr != nil {
++			c.gate.mu.Lock()
++			c.gate.bodyErr = fmt.Errorf("forward actual GetValue: %w", writeErr)
++			c.gate.mu.Unlock()
++		}
++		close(c.gate.parked)
++		<-c.gate.release
++		if !bytes.Equal(before, p) {
++			c.gate.mu.Lock()
++			c.gate.bodyErr = errors.New("accepted GetValue bytes changed before Write returned")
++			c.gate.mu.Unlock()
++			return n, io.ErrUnexpectedEOF
++		}
++		if writeErr == nil {
++			n = len(p) // the successful forwarded fault copy can have a different size
++			writeErr = c.gate.writeErr
++			c.gate.injected.Store(writeErr != nil)
++		}
++		return n, writeErr
++	}
++	return c.Conn.Write(p)
++}
++
++func (c *pendingReplyWriteConn) Close() error {
++	if c.blocked.Load() {
++		c.gate.releaseIt()
++	}
++	return c.Conn.Close()
++}
++
++func TestPendingGet_ReadyReplyBeforeWriteAcknowledgment(t *testing.T) {
++	t.Parallel()
++	for _, replyError := range []bool{false, true} {
++		for _, mode := range []string{"plain", "expired-timer", "closed-abort", "caller-cancel", "transaction-cancel", "reset", "late-write-error"} {
++			t.Run(fmt.Sprintf("error-%t/%s", replyError, mode), func(t *testing.T) {
++				t.Parallel()
++				ctx, cancel := context.WithTimeout(context.Background(), readIncarnationTestTimeout)
++				defer cancel()
++				key := []byte(t.Name())
++				want := []byte("published-real-peer-value")
++				gate := &pendingReplyWriteGate{key: key, parked: make(chan struct{}), failed: make(chan error, 1), release: make(chan struct{}), expiredVersion: replyError}
++				if mode == "late-write-error" {
++					gate.writeErr = io.ErrUnexpectedEOF
++				}
++				db := newTestDatabase(t, ctx, sharedClusterFile, gate.dial)
++				t.Cleanup(func() { _ = db.Close() })
++				t.Cleanup(gate.releaseIt)
++				rv := seedReadIncarnationValues(t, ctx, db, key, append(bytes.Clone(key), 'b'), want, []byte("other"))
++				tx := db.CreateTransaction()
++				tx.SetReadVersion(rv)
++				readCtx, stopRead := context.WithCancel(ctx)
++				defer stopRead()
++				gate.armed.Store(true)
++				_, pending, err := tx.GetPipelined(readCtx, key)
++				if err != nil || pending == nil {
++					t.Fatalf("GetPipelined pending=%v err=%v", pending, err)
++				}
++				select {
++				case <-gate.parked:
++				case err := <-gate.failed:
++					t.Fatalf("prepare real GetValue forwarding gate: %v", err)
++				case <-ctx.Done():
++					t.Fatal("actual GetValue never reached the forwarding gate")
++				}
++				gate.mu.Lock()
++				forwardErr := gate.bodyErr
++				gate.mu.Unlock()
++				if forwardErr != nil {
++					t.Fatal(forwardErr)
++				}
++				if gate.rewritten.Load() != replyError {
++					t.Fatal("expired-version forwarding fault did not match the test case")
++				}
++				tick := time.NewTicker(time.Millisecond)
++				defer tick.Stop()
++				for len(pending.replyCh) == 0 {
++					select {
++					case <-tick.C:
++					case <-ctx.Done():
++						t.Fatal("the real peer response was not published while Write return was held")
++					}
++				}
++
++				// Positively park an independent Flush marker. Early resolution must
++				// not release the writer's credit or manufacture its acknowledgment.
++				witness := &writeWaitWitness{Context: ctx, queued: make(chan struct{})}
++				flushed := make(chan error, 1)
++				flushJoined := false
++				go func() { flushed <- pending.conn.FlushContext(witness) }()
++				t.Cleanup(func() {
++					gate.releaseIt()
++					if !flushJoined {
++						select {
++						case <-flushed:
++						case <-time.After(5 * time.Second):
++							t.Error("flush worker did not join after gate release")
++						}
++					}
++				})
++				waitReadParked(t, ctx, witness.queued, "flush marker behind the forwarded request")
++				putTimer(pending.timer)
++				pending.timer = getTimer(time.Hour)
++				// Observe a regression's own Flush wait directly, before a monitor
++				// timeout could close the connection and accidentally release it.
++				var ownWait *transport.SuspendSignal
++				pending.ctx, ownWait = transport.WithSuspendSignal(pending.ctx)
++				t.Cleanup(ownWait.Fire)
++				var abort <-chan struct{}
++				switch mode {
++				case "expired-timer":
++					pending.timer.Reset(0) // due when the ready-arm select is polled
++				case "closed-abort":
++					closed := make(chan struct{})
++					close(closed)
++					abort = closed
++				case "caller-cancel":
++					stopRead()
++				case "transaction-cancel":
++					tx.Cancel()
++				case "reset":
++					tx.Reset()
++				}
++				type outcome struct {
++					value     []byte
++					err       error
++					abandoned bool
++				}
++				done := make(chan outcome, 1)
++				resolveJoined := false
++				go func() {
++					value, err, abandoned := pending.ResolveOrAbort(abort)
++					done <- outcome{value, err, abandoned}
++				}()
++				t.Cleanup(func() {
++					gate.releaseIt()
++					if !resolveJoined {
++						select {
++						case <-done:
++						case <-time.After(5 * time.Second):
++							t.Error("resolver worker did not join after gate release")
++						}
++					}
++				})
++				var got outcome
++				select {
++				case got = <-done:
++					resolveJoined = true
++				case <-ownWait.Done():
++					t.Fatal("already-published Get entered a transport wait before resolving")
++				case <-time.After(10 * time.Second):
++					gate.releaseIt()
++					t.Fatal("already-published Get waited for the held Write acknowledgment")
++				}
++				select {
++				case <-ownWait.Done():
++					t.Fatal("already-published Get entered a transport wait before resolving")
++				default:
++				}
++				if got.abandoned {
++					t.Fatal("an already-published response lost to the abort arm")
++				}
++				if replyError {
++					if fdbCodeOf(got.err) != 1007 {
++						t.Fatalf("ready real-peer error = %v, want code 1007", got.err)
++					}
++				} else if got.err != nil || !bytes.Equal(got.value, want) {
++					t.Fatalf("ready value=%q err=%v, want %q", got.value, got.err, want)
++				}
++				select {
++				case <-gate.release:
++					t.Fatal("Write returned before the ready response resolved")
++				case err := <-flushed:
++					flushJoined = true
++					t.Fatalf("independent flush completed before Write returned: %v", err)
++				default:
++				}
++				if pending.replyHandle != nil || pending.timer != nil || !pending.settledFlag.Load() {
++					t.Fatal("ready resolution retained its reply handle, timer or unsettled state")
++				}
++				gate.releaseIt()
++				select {
++				case err := <-flushed:
++					flushJoined = true
++					if mode == "late-write-error" {
++						if err == nil || !gate.injected.Load() {
++							t.Fatalf("late write failure was not observed: flush=%v injected=%v", err, gate.injected.Load())
++						}
++						waitReadParked(t, ctx, pending.conn.Done(), "late write failure connection teardown")
++					} else if err != nil {
++						t.Fatalf("flush after release: %v", err)
++					}
++				case <-ctx.Done():
++					t.Fatal("writer did not drain after gate release")
++				}
++				gate.mu.Lock()
++				bodyErr := gate.bodyErr
++				gate.mu.Unlock()
++				if bodyErr != nil {
++					t.Fatal(bodyErr)
++				}
++				memoValue, memoErr := pending.Resolve()
++				if !bytes.Equal(memoValue, got.value) || (memoErr == nil) != (got.err == nil) || fdbCodeOf(memoErr) != fdbCodeOf(got.err) {
++					t.Fatalf("ready memo changed after writer retirement: value=%q err=%v, first=%q/%v", memoValue, memoErr, got.value, got.err)
++				}
++				if mode == "reset" {
++					tx.Set(append(bytes.Clone(key), 'c'), []byte("replacement"))
++					if err := tx.Commit(ctx); err != nil {
++						t.Fatalf("old ready response poisoned replacement incarnation: %v", err)
++					}
++				}
++			})
++		}
++	}
++}

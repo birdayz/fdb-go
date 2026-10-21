@@ -43,6 +43,23 @@ as the difference between a short and a long run. Server work counts come from t
 servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
 `NetworkMetrics`), as deltas around a run with idle time on both sides.
 
+- [x] **RFC-264 results-only decision: Rejected.** The [completed local screen](docs/benchmarks/rfc-264/local-quick-screen.md)
+  retained all 72 processes with verified cleanup. P0 and P2t passed throughput/CPU
+  noninferiority bounds but failed their intended p50 improvement conditions; neither
+  is promoted. The [Rejected RFC](rfcs/264-send-wait-cost-and-ordering.md) retains the
+  historical bisect results, common harness and reproduction inputs, not production
+  prototype changes. Keep #954's C++-parity 10/20 µs default; the owner accepts its
+  latency-versus-CPU/allocation trade-off. Remaining unbuilt ideas are not pursued
+  under this RFC; no further prototype or measurement is authorized.
+- [ ] **Deferred — zero-delay option comparison; owner rescheduling required.** The
+  previously assigned `WithCoalesceDelay(0, 0)` versus 10/20 µs comparison for
+  get100/get1000 at 8/64 workers remains deferred, not an active RFC-264 workstream.
+  If separately authorized, report latency p50/p99, successful ops/s, errors/retries
+  per 1k completed operations with raw counts, and cores busy plus CPU/op. Add other
+  metrics only to explain an outlier. The [option godoc](pkg/fdbgo/client/options.go) documents the
+  explicit option and unchanged default; update the measured trade-off only if
+  warranted by those separately authorized results. No run is currently authorized.
+
 - [ ] **Timeout delivery parity (C++ C4).** Go's read-entry `checkTimeout` and
   `OnError` elapsed-budget checks synchronously publish 1031 before the pending timer
   resumes. C++ 7.3.77 records expiry only at an actual expired arm or timebomb resumption
