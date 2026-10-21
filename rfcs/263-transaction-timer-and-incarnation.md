@@ -1,6 +1,6 @@
 # RFC-263: Transaction timeout queue and lazy read incarnations
 
-**Status:** Accepted (design), revision 6; implementation complete, pending merge gates.
+**Status:** Implemented — revision 6 merged in #973 (`ee05cf5b6`).
 Revision 3's design was accepted (FDB C++ maintainer
 and Torvalds ACK at `2638d7dcf`), but its Phase 1 checkpoint `0a57d49cc` was rejected
 for merge on measured CPU and queue contention. Revision 4 received the FDB C++ design
@@ -11,8 +11,8 @@ future-positive rearm's recovery contract. Both official design reviewers ACKed
 `d364c1a5e` before the owner authorized production implementation. The selected code,
 20 canonical regression tests and compiled mutation proofs are implemented;
 CPU qualification and separate queue-wait diagnostics pass the owner-approved amended
-rules; full/full-race, all five final-HEAD reviews and CI remain pending. This is not
-merge approval.
+rules. The owner's final race (157/157), full (210/210, including `client_test`),
+all five final-HEAD reviews and CI (7/7) passed before merge.
 B3a/B3b remain separate later work.
 **8-worker p999 blocker: cleared by the preregistered rule (owner decision).**
 The complete fixed-population confirmation gives get100: 0.952 [0.902,1.005] and
@@ -973,7 +973,7 @@ neither allocation counts nor reduced mutex wait establishes complete lifetime c
 
 The selected revision 6 production implementation received the design ACKs before
 implementation. The statuses below supersede historical prototype-only and
-pending-design-approval language; they do not authorize merge.
+pending-design-approval language; final owner verification and merge are recorded in item 6.
 
 1. **Met in the ordinary fast lane:** lower-bound reuse and logical disarm complete
    while the shard lock is held; lowering a desired key inserts/fixes eagerly and
@@ -984,8 +984,8 @@ pending-design-approval language; they do not authorize merge.
    Separate stub-repair, reverse-logical-order and eager-publication mutants fail
    their exact assertions; exact restoration passes. Fixed-frontier ordering has its
    own compiled named-red proof as well.
-3. **Met in whole fast opt/race lanes, not full/full-race:** pop/rearm, requeue/rearm,
-   immutable ready records, batch withdrawal, overlapping callbacks and staggered-exit
+3. **Met in recorded fast opt/race proofs and final owner full/race lanes:** pop/rearm,
+   requeue/rearm, immutable ready records, batch withdrawal, overlapping callbacks and staggered-exit
    wake handling are pinned. Physical/logical assertions and synchronous C3 coverage
    remain. Generation-delivery barriers have bounded failure-path proof. A separate
    paired failure control shows deferred turnover publication prevents cleanup's
@@ -1011,11 +1011,12 @@ pending-design-approval language; they do not authorize merge.
    +1.66% and descriptive confirmation get 8w +1.69% remain ABOVE baseline; this
    amended 2% NI rule does not retrospectively neutralize those screens. Neither
    these gates nor the separate p999 clearance authorizes merge.
-6. **Partly met / merge gates pending:** exclusive timing windows, frozen harness and
+6. **Met; merged in #973 (`ee05cf5b6`):** exclusive timing windows, frozen harness and
    source/binary identities, complete raw rows/load records, invalid attempts and whole
    fast-lane validation are recorded. The preregistered 8-worker get/set p999 gate is
-   met, with power/epoch/order caveats. Owner-run full/full-race, all five final-HEAD
-   reviews and CI remain pending. Neither a fast pass nor a benchmark clears them.
+   met, with power/epoch/order caveats. The owner's final race passed 157/157 targets;
+   full passed 210/210, including `client_test`; all five final-HEAD reviews and CI
+   (7/7) passed before merge.
 7. **Met within the stated rearm contract:** four real-finalizer weak-nil-dispatch,
    positive-default Reset, popped-before-weak-read and immutable-ready probes establish
    distinct weak identities, same-shard renewal, correct deadline and fresh delivery.
@@ -1064,7 +1065,7 @@ corrected arm is rebuilt and run from scratch only after the owner's explicit re
 
 The [CPU plan amendment A1](../docs/benchmarks/rfc-263/rev6-cpu-plan.md#amendment-a1-lifecycle-fixpoint-2026-10-20) preserves the first invalid CPU epoch and corrects only its CPU-specific lifecycle helper: a completed finalizer/cleanup fixpoint may queue cleanup during forced GC, provided executed=queued at exit and every other lifecycle/resource check passes. Original-fa and production historical counters both demonstrate this; no CPU endpoint look motivated the amendment. The fresh, separately authorized A1 batch used frozen disjoint prefix namespaces, unchanged seeded ordering and byte-identical production code/binary. Its original UNRESOLVED result remains retained; the later [A2 result](../docs/benchmarks/rfc-263/rev6-cpu-results.md) supersedes only the two grv-w8 bounds without pooling, yielding combined CPU PASS and separate queue-wait diagnostic PASS.
 
-**Deferred, separate PR:** correct `tools/clientbench/scripts/run.py:validate_lifecycle` and its fixture in the same way. Its entry/exit cleanup-queued equality wrongly rejects baseline fa's `AddCleanup` work; retain the producer's completed 2–16-round fixpoint, pending-queue rejection, counter/GC and all other lifecycle checks. That shared runner is deliberately unchanged in RFC-263; the TODO entry remains open until its own regression and review gates pass.
+**Completed in follow-up:** `tools/clientbench/scripts/run.py:validate_lifecycle` now removes only the entry/exit cleanup-queued equality, retaining the producer's completed 2–16-round fixpoint, pending-queue rejection, counter/GC and all other lifecycle checks. The real e1-r000 lifecycle-only fixture accepts newly discovered cleanup; pending exit work, incomplete drains and >16 rounds remain rejected. The standalone A1 helper stays byte-identical for frozen replay and matches the corrected canonical guard; the original invalid epoch is not reclassified.
 
 ## Problem
 

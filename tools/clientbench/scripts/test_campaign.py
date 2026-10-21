@@ -18,6 +18,56 @@ import r3_plan
 import run
 
 
+class LifecycleTest(unittest.TestCase):
+    def setUp(self):
+        # Lifecycle-only projection of the preserved pre-A1 e1-r000 summary.
+        # It contains no cluster/identity fields or samples and does not make
+        # that invalid campaign performance evidence.
+        path = Path(__file__).with_name('testdata') / 'lifecycle-e1-r000.json'
+        self.summary = json.loads(path.read_text())
+
+    def test_e1_r000_cleanup_discovered_during_drain_is_accepted(self):
+        life = self.summary['lifecycle']
+        self.assertIs(run.validate_lifecycle(self.summary), life)
+        for name, before, after in (('measurement_drain', 21977, 22002),
+                                    ('shutdown_drain', 22002, 22003)):
+            drain = life[name]
+            self.assertEqual(drain['before']['cleanups_queued_estimate'], before)
+            self.assertEqual(drain['after']['cleanups_queued_estimate'], after)
+            self.assertEqual(drain['after']['cleanups_executed_estimate'], after)
+
+    def test_pending_cleanup_at_exit_is_rejected(self):
+        for name in ('measurement_drain', 'shutdown_drain'):
+            bad = copy.deepcopy(self.summary)
+            bad['lifecycle'][name]['after']['cleanups_executed_estimate'] -= 1
+            with self.subTest(drain=name), self.assertRaisesRegex(ValueError, 'finalizer fixpoint: ' + name):
+                run.validate_lifecycle(bad)
+
+    def test_incomplete_lifecycle_or_drain_is_rejected(self):
+        for name in (None, 'measurement_drain', 'shutdown_drain'):
+            bad = copy.deepcopy(self.summary)
+            life = bad['lifecycle']
+            (life if name is None else life[name])['complete'] = False
+            with self.subTest(drain=name), self.assertRaises(ValueError):
+                run.validate_lifecycle(bad)
+
+    def test_more_than_16_rounds_is_rejected(self):
+        for name in ('measurement_drain', 'shutdown_drain'):
+            bad = copy.deepcopy(self.summary)
+            life = bad['lifecycle']
+            life[name]['rounds'] = 17
+            # Keep the GC and snapshot guards valid: only the round limit
+            # must reject this otherwise completed drain.
+            life[name]['after']['gc_cycles'] += 15
+            life['stats_after_shutdown']['go_gc_cycles'] += 15
+            if name == 'measurement_drain':
+                life['stats_after_measurement_drain']['go_gc_cycles'] += 15
+                for side in ('before', 'after'):
+                    life['shutdown_drain'][side]['gc_cycles'] += 15
+            with self.subTest(drain=name), self.assertRaisesRegex(ValueError, 'finalizer fixpoint: ' + name):
+                run.validate_lifecycle(bad)
+
+
 class CampaignTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -336,7 +386,7 @@ class CampaignTest(unittest.TestCase):
             ('no_barrier', 'summary.json', lambda x: x['lifecycle'].update(measurement_barrier_complete=False)),
             ('one_gc', 'summary.json', lambda x: x['lifecycle']['measurement_drain'].update(rounds=1)),
             ('pending_finalizer', 'summary.json', lambda x: x['lifecycle']['shutdown_drain']['after'].update(finalizers_queued=11)),
-            ('unexpected_cleanup', 'summary.json', lambda x: x['lifecycle']['measurement_drain']['after'].update(cleanups_queued_estimate=1, cleanups_executed_estimate=1)),
+            ('pending_cleanup', 'summary.json', lambda x: x['lifecycle']['measurement_drain']['after'].update(cleanups_queued_estimate=1)),
             ('missing_shutdown_cpu', 'summary.json', lambda x: x['lifecycle']['stats_after_shutdown'].pop('process_user_cpu_us')),
             ('decreasing_drained_cpu', 'summary.json', lambda x: x['lifecycle']['stats_after_measurement_drain'].update(process_user_cpu_us=0)),
             ('negative_cpu', 'summary.json', lambda x: x['stats_after'].update(process_user_cpu_us=-1)),

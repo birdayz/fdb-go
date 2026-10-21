@@ -25,6 +25,7 @@ sh_test(
         "test_matrix_plan.py",
         "test_wirediff.py",
         "test_wiregolden.py",
+        "testdata/lifecycle-e1-r000.json",
         "wirediff.py",
         "wiregolden.sh",
     ],
