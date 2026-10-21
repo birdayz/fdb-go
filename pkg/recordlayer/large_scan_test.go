@@ -28,41 +28,43 @@ var _ = Describe("LargeScanSequentialAccess", func() {
 
 		GinkgoWriter.Printf("Testing sequential access order with %d records\n", numRecords)
 
-		// Write records
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-			store, err := NewStoreBuilder().
-				SetContext(rtx).
-				SetMetaDataProvider(metaData).
-				SetSubspace(testSubspace).
-				CreateOrOpen()
-			if err != nil {
-				return nil, err
-			}
-
-			for i := 0; i < numRecords; i++ {
-				record := &demopb.Order{
-					OrderId: proto.Int64(int64(i)),
-					Price:   proto.Int32(int32(i)),
-					Flower: &demopb.Flower{
-						Type:  proto.String(fmt.Sprintf("sequential_%d", i)),
-						Color: demopb.Color_RED.Enum(),
-					},
-				}
-
-				_, err := store.SaveRecord(record)
+		// Write records in batches: 10K saves in one transaction exceed FDB's
+		// 5-second transaction lifetime under -race on a loaded host.
+		const writeBatch = 500
+		for start := 0; start < numRecords; start += writeBatch {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).
+					SetMetaDataProvider(metaData).
+					SetSubspace(testSubspace).
+					CreateOrOpen()
 				if err != nil {
-					return nil, fmt.Errorf("failed to save record %d: %w", i, err)
+					return nil, err
 				}
-			}
 
-			GinkgoWriter.Printf("Successfully wrote %d records\n", numRecords)
+				for i := start; i < min(start+writeBatch, numRecords); i++ {
+					record := &demopb.Order{
+						OrderId: proto.Int64(int64(i)),
+						Price:   proto.Int32(int32(i)),
+						Flower: &demopb.Flower{
+							Type:  proto.String(fmt.Sprintf("sequential_%d", i)),
+							Color: demopb.Color_RED.Enum(),
+						},
+					}
 
-			return nil, nil
-		})
-		Expect(err).NotTo(HaveOccurred())
+					_, err := store.SaveRecord(record)
+					if err != nil {
+						return nil, fmt.Errorf("failed to save record %d: %w", i, err)
+					}
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		}
+		GinkgoWriter.Printf("Successfully wrote %d records\n", numRecords)
 
 		// Read back and verify order
-		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(metaData).
@@ -86,7 +88,11 @@ var _ = Describe("LargeScanSequentialAccess", func() {
 			expectedID := int64(0)
 			recordCount := 0
 			for record, iterErr := range Seq2(cursor, ctx) {
-				Expect(iterErr).NotTo(HaveOccurred())
+				if iterErr != nil {
+					// Returned, not asserted, so Run retries a retryable error such
+					// as transaction_too_old (1007) with a fresh read version.
+					return nil, iterErr
+				}
 				order, ok := record.Record.(*demopb.Order)
 				if !ok {
 					return nil, fmt.Errorf("unexpected record type: %T", record.Record)
