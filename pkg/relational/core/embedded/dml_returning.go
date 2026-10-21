@@ -5,8 +5,7 @@
 package embedded
 
 import (
-	"strings"
-
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/parser"
@@ -74,7 +73,7 @@ func buildReturning(
 		return nil, err
 	}
 	visitor := NewPlanVisitorWithTemplate(md, templateName)
-	visitor.cteScopes = map[string]semantic.ScopeSource{strings.ToUpper(dmlReturningSource): source}
+	visitor.cteScopes = map[string]semantic.ScopeSource{unicode15.ToUpperString(dmlReturningSource): source}
 	visitor.cteProducers = visitor.cteProducers.With(producer)
 	main, err := visitor.VisitQuery(q)
 	if err != nil {

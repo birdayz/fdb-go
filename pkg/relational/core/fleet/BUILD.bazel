@@ -11,6 +11,7 @@ go_library(
     importpath = "fdb.dev/pkg/relational/core/fleet",
     visibility = ["//visibility:public"],
     deps = [
+        "//internal/unicode15",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/recordlayer",
         "//pkg/relational/api",

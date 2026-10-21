@@ -1,8 +1,7 @@
 package embedded
 
 import (
-	"strings"
-
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/relational/core/query/logical"
 	"fdb.dev/pkg/relational/core/query/semantic"
@@ -23,7 +22,7 @@ func parentBindingNames(parent []semantic.ScopeSource) map[string]struct{} {
 		if name == "" {
 			name = source.Alias.Name()
 		}
-		names[strings.ToUpper(name)] = struct{}{}
+		names[unicode15.ToUpperString(name)] = struct{}{}
 	}
 	return names
 }

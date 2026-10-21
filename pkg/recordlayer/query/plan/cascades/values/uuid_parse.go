@@ -2,8 +2,9 @@ package values
 
 import (
 	"strconv"
-	"unicode"
 	"unicode/utf16"
+
+	"fdb.dev/internal/unicode15"
 )
 
 // ParseJavaUUID parses s exactly as java.util.UUID.fromString does: five
@@ -89,10 +90,10 @@ func javaHexDigit(c rune) int {
 		return int(c-0xFF21) + 10
 	case c >= 0xFF41 && c <= 0xFF46: // fullwidth a-f
 		return int(c-0xFF41) + 10
-	case unicode.IsDigit(c):
+	case unicode15.IsDigit(c):
 		// Nd digits come in contiguous blocks of ten starting at zero.
 		k := 0
-		for unicode.IsDigit(c - rune(k) - 1) {
+		for unicode15.IsDigit(c - rune(k) - 1) {
 			k++
 		}
 		return k % 10

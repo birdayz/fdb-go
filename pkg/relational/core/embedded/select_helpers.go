@@ -3,8 +3,8 @@ package embedded
 import (
 	"fmt"
 	"strconv"
-	"strings"
 
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/relational/api"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 )
@@ -26,7 +26,7 @@ import (
 func jdbcColumnName(name string, position int) string {
 	base := parseColRef(name).bare()
 	if isSimpleIdentifier(base) {
-		return strings.ToUpper(base)
+		return unicode15.ToUpperString(base)
 	}
 	return fmt.Sprintf("_%d", position)
 }

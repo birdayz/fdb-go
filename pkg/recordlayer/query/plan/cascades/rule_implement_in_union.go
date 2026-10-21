@@ -10,8 +10,8 @@ package cascades
 
 import (
 	"errors"
-	"strings"
 
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -136,7 +136,7 @@ func bakeMergeComparisonKeys(keys []values.Value, requested *properties.Requeste
 func uniqueUpperFieldIndex(rt *values.RecordType, name string) (int, bool) {
 	idx, count := -1, 0
 	for i, f := range rt.Fields {
-		if strings.EqualFold(f.Name, name) {
+		if unicode15.EqualFold(f.Name, name) {
 			idx, count = i, count+1
 		}
 	}

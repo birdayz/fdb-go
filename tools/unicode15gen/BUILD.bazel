@@ -1,0 +1,20 @@
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+
+sh_test(
+    name = "regeneration_test",
+    srcs = ["regeneration_test.sh"],
+    args = [
+        "$(rootpath @cc_mvdan_gofumpt//:gofumpt)",
+        "$(rootpath //tools/unicode15gen/norm)",
+        "$(rootpath @unicode15_xtext_source//file)",
+    ],
+    data = [
+        "properties.py",
+        "//internal/unicode15:all_sources",
+        "//internal/unicode15/text:snapshot_inputs",
+        "//internal/unicode15/ucd:files",
+        "//tools/unicode15gen/norm",
+        "@cc_mvdan_gofumpt//:gofumpt",
+        "@unicode15_xtext_source//file",
+    ],
+)

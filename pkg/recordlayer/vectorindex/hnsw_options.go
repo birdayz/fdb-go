@@ -8,8 +8,8 @@ package vectorindex
 
 import (
 	"fmt"
-	"strings"
 
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/rabitq"
 	"fdb.dev/pkg/recordlayer"
 )
@@ -153,7 +153,7 @@ func readHNSWOptions(index *recordlayer.Index) (hnswOptions, error) {
 	}
 	boolOpt := func(name string, set *bool) {
 		if v, ok := hnswOptionValue(index, name); ok && err == nil {
-			*set = strings.EqualFold(v, "true")
+			*set = unicode15.EqualFold(v, "true")
 		}
 	}
 	boolOpt(recordlayer.IndexOptionHNSWUseInlining, &c.UseInlining)

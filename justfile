@@ -31,7 +31,7 @@ ensure-buf:
 # Regenerate protobuf code + gomock mocks + ANTLR parser. All three are
 # committed to git (clean + regenerate, same pattern). CI re-runs
 # `just generate` and fails on any diff, so CI is the source of truth.
-generate: ensure-buf generate-mocks generate-parser generate-frl
+generate: ensure-buf generate-mocks generate-parser generate-frl generate-unicode15
     rm -rf gen/
     .tools/buf generate
     bazelisk run //:gazelle
@@ -179,6 +179,18 @@ golden:
 golden-update:
     GOLDEN_UPDATE=1 go test ./pkg/simfdb/hunt/golden/ -run TestGolden -count=1
     @echo "review the baseline diff:  git diff pkg/simfdb/hunt/golden/testdata/"
+
+# Regenerate the frozen compatibility data, never host/compiler Unicode tables.
+generate-unicode15:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    GOFUMPT=$(bazelisk run --run_under="echo" @cc_mvdan_gofumpt//:gofumpt 2>/dev/null)
+    python3 tools/unicode15gen/properties.py \
+      --data internal/unicode15/ucd --formatter "$GOFUMPT" \
+      --output internal/unicode15/tables.go
+    bazelisk run //tools/unicode15gen/norm -- \
+      -data "$PWD/internal/unicode15/ucd" \
+      -output "$PWD/internal/unicode15/text/unicode/norm/tables15.0.0.go"
 
 # Regenerate BUILD files after adding/removing Go files or deps
 gazelle:

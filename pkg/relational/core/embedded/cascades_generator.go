@@ -23,6 +23,7 @@ import (
 	"sync"
 	"time"
 
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer/vectorindex"
 
 	"github.com/antlr4-go/antlr/v4"
@@ -1078,7 +1079,7 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	// The target is bare here: resolveQualifiedTableNames stripped any
 	// qualifier from its segments, and a dot left in it belongs to the name.
 	if dmlTarget != "" && md.GetRecordType(dmlTarget) == nil {
-		return nil, api.NewErrorf(api.ErrCodeUndefinedTable, "Unknown table %s", strings.ToUpper(dmlTarget))
+		return nil, api.NewErrorf(api.ErrCodeUndefinedTable, "Unknown table %s", unicode15.ToUpperString(dmlTarget))
 	}
 
 	// SOURCE tables too, and AFTER the target check so the target keeps its own
@@ -1104,7 +1105,7 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	if insOp, ok := logicalOp.(*logical.LogicalInsert); ok && insOp.Source == nil && insOp.ValuesArray == nil && insStmt != nil {
 		rt := md.GetRecordType(insOp.Table)
 		if rt == nil {
-			return nil, api.NewErrorf(api.ErrCodeUndefinedTable, "Unknown table %s", strings.ToUpper(insOp.Table))
+			return nil, api.NewErrorf(api.ErrCodeUndefinedTable, "Unknown table %s", unicode15.ToUpperString(insOp.Table))
 		}
 		arr, vErr := c.buildInsertValuesArray(insStmt, rt.Descriptor, insOp.Table, md)
 		if vErr != nil {
@@ -3477,7 +3478,7 @@ func (d *metadataIndexDef) IndexPrimaryKeyComponentTypes() []values.Type {
 			return unknown
 		}
 		for i := range flatColumns {
-			if !strings.EqualFold(flatColumns[i], pkCols[i]) {
+			if !unicode15.EqualFold(flatColumns[i], pkCols[i]) {
 				return unknown
 			}
 		}
@@ -3545,7 +3546,7 @@ func (d *metadataIndexDef) IndexPrimaryKeyComponentTypes() []values.Type {
 		return unknown
 	}
 	for i := range actualSuffix {
-		if !strings.EqualFold(actualSuffix[i], nameTrimmed[i]) {
+		if !unicode15.EqualFold(actualSuffix[i], nameTrimmed[i]) {
 			return unknown
 		}
 	}
@@ -3933,7 +3934,7 @@ func commonCoveredPrimaryKeyColumns(
 			return nil, false, false
 		}
 		for i := range other {
-			if !strings.EqualFold(other[i], common[i]) {
+			if !unicode15.EqualFold(other[i], common[i]) {
 				return nil, false, false
 			}
 		}
@@ -5040,7 +5041,7 @@ func validateTablesAndColumnsInner(op logical.LogicalOperator, md *recordlayer.R
 					if i < len(proj.ProjectedValues) && proj.ProjectedValues[i] != nil {
 						continue
 					}
-					upper := strings.ToUpper(col)
+					upper := unicode15.ToUpperString(col)
 					ref := parseColRef(upper)
 					// This projection carries ProjectionRefs, so the split has a
 					// counterparty and the census can say whether it is
@@ -5051,9 +5052,9 @@ func validateTablesAndColumnsInner(op logical.LogicalOperator, md *recordlayer.R
 					recordProjQualVsScan(proj, i, upper, ref)
 					if ref.isQualified() {
 						qual := ref.table
-						scanName := strings.ToUpper(scan.Table)
+						scanName := unicode15.ToUpperString(scan.Table)
 						if scan.Alias != "" {
-							scanName = strings.ToUpper(scan.Alias)
+							scanName = unicode15.ToUpperString(scan.Alias)
 						}
 						if qual != scanName {
 							return api.NewErrorf(api.ErrCodeUndefinedColumn,
@@ -5183,7 +5184,7 @@ func referencesInformationSchema(ctx antlr.Tree) bool {
 		if tn := atom.TableName(); tn != nil {
 			if fid := tn.FullId(); fid != nil {
 				for _, uid := range fid.AllUid() {
-					if strings.EqualFold(functions.NormalizeIdentifier(uid.GetText()), "INFORMATION_SCHEMA") {
+					if unicode15.EqualFold(functions.NormalizeIdentifier(uid.GetText()), "INFORMATION_SCHEMA") {
 						return true
 					}
 				}
@@ -5218,7 +5219,7 @@ func findUnsupportedFunctionInParseTree(ctx antlr.Tree) string {
 			// (SemanticAnalyzer.java:1105-1107), so `bitmap_bucket_number(x)`
 			// is refused in lower case. The allow-list reads it upper-cased.
 			if name := extractFunctionNameFromCall(fc); name != "" {
-				if !isAllowedFunction(strings.ToUpper(name)) {
+				if !isAllowedFunction(unicode15.ToUpperString(name)) {
 					return name
 				}
 			}
@@ -5385,7 +5386,7 @@ func startsWithCreateSchemaTemplate(ddl string) bool {
 	if len(t) < len("CREATE SCHEMA TEMPLATE") {
 		return false
 	}
-	return strings.EqualFold(t[:len("CREATE SCHEMA TEMPLATE")], "CREATE SCHEMA TEMPLATE")
+	return unicode15.EqualFold(t[:len("CREATE SCHEMA TEMPLATE")], "CREATE SCHEMA TEMPLATE")
 }
 
 // BuildSchemaTemplateFromDDL parses schemaDDL as a single CREATE SCHEMA

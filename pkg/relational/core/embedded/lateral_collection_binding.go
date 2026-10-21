@@ -10,8 +10,8 @@ package embedded
 import (
 	"errors"
 	"slices"
-	"strings"
 
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
@@ -97,7 +97,7 @@ func bindLateralCollections(op logical.LogicalOperator, sq *selectQuery, md *rec
 			// build that reaches binding first: Java's CTE branch reads a WITH
 			// CTE or an operator of this block's prefix or any enclosing
 			// block (the prefix scope's chain).
-			_, withCTE := cteScopes[strings.ToUpper(j.segments[0])]
+			_, withCTE := cteScopes[unicode15.ToUpperString(j.segments[0])]
 			return singleSegmentAtError(j.segments[0], withCTE || scopeNamesSource(resolver.Scope(), j.segments[0]), md)
 		}
 		path, sourceQualified := unnestSemanticPath(resolver.Scope(), j)
@@ -233,7 +233,7 @@ func ownedByFromPrefix(collection values.Value, prefix *semantic.Scope) bool {
 		return true
 	}
 	for _, src := range prefix.Sources() {
-		if strings.EqualFold(src.CorrelationName, owner.Correlation().Name()) {
+		if unicode15.EqualFold(src.CorrelationName, owner.Correlation().Name()) {
 			return true
 		}
 	}

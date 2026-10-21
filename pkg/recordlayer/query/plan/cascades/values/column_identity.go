@@ -6,7 +6,7 @@
 
 package values
 
-import "strings"
+import "fdb.dev/internal/unicode15"
 
 // ColumnIdentity is a column's identity — RFC-197's triple, as ONE comparable
 // key an escaping helper can return instead of a bare display name.
@@ -140,7 +140,7 @@ func OrdinalOfNameIn(layout Type, name string) (ColumnIdentity, bool) {
 		return ColumnIdentity{}, false
 	}
 	for i, f := range rt.Fields {
-		if strings.EqualFold(f.Name, name) {
+		if unicode15.EqualFold(f.Name, name) {
 			return ColumnIdentity{Domain: domain, Ordinal: i}, true
 		}
 	}

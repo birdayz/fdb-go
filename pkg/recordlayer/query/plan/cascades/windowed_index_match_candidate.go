@@ -6,9 +6,9 @@
 package cascades
 
 import (
-	"strings"
 	"sync"
 
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
@@ -232,10 +232,10 @@ func (c *WindowedIndexScanMatchCandidate) PushValueThroughFetch(
 func (c *WindowedIndexScanMatchCandidate) buildTranslateValueFunction() plans.TranslateValueFunction {
 	coveredColumns := make(map[string]struct{}, len(c.columnNames)+len(c.primaryKeyColumns))
 	for _, col := range c.columnNames {
-		coveredColumns[strings.ToUpper(col)] = struct{}{}
+		coveredColumns[unicode15.ToUpperString(col)] = struct{}{}
 	}
 	for _, col := range c.primaryKeyColumns {
-		coveredColumns[strings.ToUpper(col)] = struct{}{}
+		coveredColumns[unicode15.ToUpperString(col)] = struct{}{}
 	}
 	// The index definition's column names die HERE, resolved once against the
 	// row layout, exactly as in ValueIndexScanMatchCandidate — see

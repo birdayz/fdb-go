@@ -1,0 +1,9 @@
+filegroup(
+    name = "files",
+    srcs = glob([
+        "*.txt",
+        "LICENSE",
+        "SHA256SUMS",
+    ]),
+    visibility = ["//visibility:public"],
+)

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"strings"
 
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
@@ -229,7 +230,7 @@ func positionalMergeSpans(rc *values.RecordConstructorValue) (spans []legSpan, m
 		// a nil LegType to every reader of this span.
 		legType, isRT := qov.FlowedType().(*values.RecordType)
 		if !isRT || legType == nil {
-			elemName := strings.ToUpper(f.Name)
+			elemName := unicode15.ToUpperString(f.Name)
 			spansList = append(spansList, legSpan{
 				Alias: qov.Correlation(), Kind: values.LegKindFlatRun,
 				LegType: &values.RecordType{Fields: []values.Field{{Name: elemName, FieldType: qov.Type(), Ordinal: 0}}},
@@ -327,7 +328,7 @@ func unnestMixedSeedSpans(v values.Value) (spans []legSpan, mergedType *values.R
 					return nil, nil, false
 				}
 				seen[elemQOV.Correlation().String()] = struct{}{}
-				elemName := strings.ToUpper(f.Name)
+				elemName := unicode15.ToUpperString(f.Name)
 				elemLegType := &values.RecordType{Fields: []values.Field{{Name: elemName, FieldType: elemQOV.Type(), Ordinal: 0}}}
 				mergedFields[i] = values.Field{Name: elemName, FieldType: elemQOV.Type(), Ordinal: i}
 				spansList = append(spansList, legSpan{Alias: elemQOV.Correlation(), Kind: values.LegKindFlatRun, LegType: elemLegType, Offset: i, Width: 1})
@@ -577,7 +578,7 @@ func resolveSpanLeaf(fv values.FieldValue, fieldName string, legRVs map[values.C
 	if rc, isRC := legRVs[alias].(*values.RecordConstructorValue); isRC && term >= 0 && term < len(rc.Fields) {
 		if slotQOV, isQ := values.AsQuantifiedObjectValue(rc.Fields[term].Value); isQ {
 			if values.IsMixedSeedElementType(slotQOV.Type()) {
-				elemName := strings.ToUpper(fieldName)
+				elemName := unicode15.ToUpperString(fieldName)
 				return slotQOV.Correlation(), &values.RecordType{Fields: []values.Field{
 					{Name: elemName, FieldType: slotQOV.Type(), Ordinal: 0},
 				}}, 0, true
@@ -1172,7 +1173,7 @@ func rowSlotForLegColumn(rt *values.RecordType, name string, owner values.Correl
 	qual, col := name[:di], name[di+1:]
 	for i := range rt.Legs {
 		leg := rt.Legs[i]
-		if !strings.EqualFold(leg.Name, qual) {
+		if !unicode15.EqualFold(leg.Name, qual) {
 			continue
 		}
 		end := leg.Start + leg.Width
@@ -1180,7 +1181,7 @@ func rowSlotForLegColumn(rt *values.RecordType, name string, owner values.Correl
 			break
 		}
 		for k := leg.Start; k < end; k++ {
-			if strings.EqualFold(rt.Fields[k].Name, col) {
+			if unicode15.EqualFold(rt.Fields[k].Name, col) {
 				// The census is told WHICH leg answered, so it can ask whether
 				// that leg also states an identity — the fact that decides
 				// whether this reader can be re-keyed off the name.
@@ -1249,7 +1250,7 @@ func positionalMatchesLegType(row *PositionalRow, legType *values.RecordType) bo
 		return false
 	}
 	for i := range legType.Fields {
-		if !strings.EqualFold(row.Type.Fields[i].Name, legType.Fields[i].Name) {
+		if !unicode15.EqualFold(row.Type.Fields[i].Name, legType.Fields[i].Name) {
 			return false
 		}
 	}

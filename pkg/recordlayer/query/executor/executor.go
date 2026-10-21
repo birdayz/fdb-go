@@ -26,7 +26,6 @@ import (
 	"math"
 	"reflect"
 	"sort"
-	"strings"
 
 	"github.com/google/uuid"
 	"google.golang.org/protobuf/proto"
@@ -34,6 +33,7 @@ import (
 	"google.golang.org/protobuf/types/dynamicpb"
 
 	"fdb.dev/gen"
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/indexfetch"
@@ -3487,7 +3487,7 @@ func nestedLoopJoinOutputSourceOrigins(
 // keeps its own name.
 func legFieldName(fieldName, alias string, legWidth int) string {
 	if alias != "" && legWidth == 1 && fieldName == values.OrdinalFieldName(0) {
-		return strings.ToUpper(alias)
+		return unicode15.ToUpperString(alias)
 	}
 	return fieldName
 }
@@ -4028,7 +4028,7 @@ func buildInsertRecord(desc protoreflect.MessageDescriptor, datum map[string]any
 	folded := make(map[string]any, len(datum))
 	foldedCount := make(map[string]int, len(datum))
 	for k, v := range datum {
-		lk := strings.ToLower(k)
+		lk := unicode15.ToLowerString(k)
 		folded[lk] = v
 		foldedCount[lk]++
 	}
@@ -4037,7 +4037,7 @@ func buildInsertRecord(desc protoreflect.MessageDescriptor, datum map[string]any
 		fd := fields.Get(i)
 		v, ok := datum[string(fd.Name())]
 		if !ok {
-			lk := strings.ToLower(string(fd.Name()))
+			lk := unicode15.ToLowerString(string(fd.Name()))
 			if foldedCount[lk] == 1 {
 				v, ok = folded[lk]
 			}
@@ -5015,7 +5015,7 @@ func mapFieldFold(m map[string]any, field string) any {
 		return v
 	}
 	for k, v := range m {
-		if strings.EqualFold(k, field) {
+		if unicode15.EqualFold(k, field) {
 			return v
 		}
 	}

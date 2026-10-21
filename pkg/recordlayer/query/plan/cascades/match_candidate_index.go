@@ -9,10 +9,10 @@
 package cascades
 
 import (
-	"strings"
 	"sync"
 
 	"fdb.dev/gen"
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer/indexpredicate"
 	"fdb.dev/pkg/recordlayer/protoname"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -541,7 +541,7 @@ func (c *ValueIndexScanMatchCandidate) WithValueColumns(names []string) *ValueIn
 	}
 	upper := make([]string, len(names))
 	for i, n := range names {
-		upper[i] = strings.ToUpper(n)
+		upper[i] = unicode15.ToUpperString(n)
 	}
 	c.valueColumnNames = upper
 	return c
@@ -1003,12 +1003,12 @@ func (c *ValueIndexScanMatchCandidate) columnsDescribe(expansion *valueIndexExpa
 		}
 		// The expansion registers the key expression's stored names; the
 		// candidate holds layout names (layoutFieldPath).
-		if !strings.EqualFold(protoname.ToUserIdentifier(column.name), c.columnNames[i]) || column.function != function {
+		if !unicode15.EqualFold(protoname.ToUserIdentifier(column.name), c.columnNames[i]) || column.function != function {
 			return false
 		}
 	}
 	for i, column := range expansion.valueColumns {
-		if column.function != "" || !strings.EqualFold(protoname.ToUserIdentifier(column.name), c.valueColumnNames[i]) {
+		if column.function != "" || !unicode15.EqualFold(protoname.ToUserIdentifier(column.name), c.valueColumnNames[i]) {
 			return false
 		}
 	}
@@ -1473,7 +1473,7 @@ func (c *ValueIndexScanMatchCandidate) plainFieldColumnsForShortcut() ([]string,
 			return nil, false
 		}
 		for i, rootName := range rootNames {
-			if !strings.EqualFold(protoname.ToUserIdentifier(rootName), c.columnNames[i]) {
+			if !unicode15.EqualFold(protoname.ToUserIdentifier(rootName), c.columnNames[i]) {
 				return nil, false
 			}
 		}

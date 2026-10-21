@@ -6,9 +6,9 @@
 package parser
 
 import (
-	"unicode"
-
 	"github.com/antlr4-go/antlr/v4"
+
+	"fdb.dev/internal/unicode15"
 )
 
 // caseInsensitiveCharStream wraps an antlr.CharStream and upper-cases every
@@ -35,5 +35,5 @@ func (c *caseInsensitiveCharStream) LA(i int) int {
 	if r <= 0 {
 		return r
 	}
-	return int(unicode.ToUpper(rune(r)))
+	return int(unicode15.ToUpper(rune(r)))
 }

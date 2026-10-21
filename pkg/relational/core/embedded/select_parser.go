@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
@@ -124,7 +125,7 @@ func logicalGroupKeys(keys []groupKeyRef) []logical.GroupKey {
 // key without segments (an expression) keeps the flat rebuild.
 func stripGroupKeyLeadingSegments(k logical.GroupKey, stripped string) logical.GroupKey {
 	for n := 1; n < len(k.Segs); n++ {
-		if !strings.EqualFold(strings.Join(k.Segs[n:], "."), stripped) {
+		if !unicode15.EqualFold(strings.Join(k.Segs[n:], "."), stripped) {
 			continue
 		}
 		rest := k.Segs[n:]
@@ -1564,7 +1565,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 				// the two aliases differ only in case. groupByAliases
 				// below uses uppercase keys for lookup; the dedup
 				// check uses the same normalisation.
-				aliasKey := strings.ToUpper(aliasName)
+				aliasKey := unicode15.ToUpperString(aliasName)
 				if seenAliases[aliasKey] {
 					return nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
 						"duplicate alias %q in GROUP BY", aliasName)
@@ -1601,7 +1602,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 					if cls.groupByAliases == nil {
 						cls.groupByAliases = make(map[string]int)
 					}
-					cls.groupByAliases[strings.ToUpper(aliasName)] = len(cls.groupBy) - 1
+					cls.groupByAliases[unicode15.ToUpperString(aliasName)] = len(cls.groupBy) - 1
 				}
 				continue
 			}
@@ -1652,7 +1653,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 				if cls.groupByAliases == nil {
 					cls.groupByAliases = make(map[string]int)
 				}
-				cls.groupByAliases[strings.ToUpper(aliasName)] = len(cls.groupBy) - 1
+				cls.groupByAliases[unicode15.ToUpperString(aliasName)] = len(cls.groupBy) - 1
 			}
 		}
 
@@ -1824,7 +1825,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 		// structural segments, so rewrites keep both channels in sync
 		// (a display like "X.COL1" is a rendered join, never a bare).
 		aliasResolves := func(name string) (key groupKeyRef, outName string, ok bool) {
-			idx, aliased := cls.groupByAliases[strings.ToUpper(name)]
+			idx, aliased := cls.groupByAliases[unicode15.ToUpperString(name)]
 			if !aliased {
 				return groupKeyRef{}, "", false
 			}
@@ -2548,7 +2549,7 @@ func visibleFromAliases(primaryTable, primaryAlias string, priorJoins []joinClau
 			eff = table
 		}
 		if eff != "" {
-			set[strings.ToUpper(eff)] = struct{}{}
+			set[unicode15.ToUpperString(eff)] = struct{}{}
 		}
 	}
 	add(primaryTable, primaryAlias)
@@ -2557,7 +2558,7 @@ func visibleFromAliases(primaryTable, primaryAlias string, priorJoins []joinClau
 		// visible source; the hidden body tables are out of scope.
 		if pj.derivedQuery != nil || pj.catalogAwareInnerPlan != nil {
 			if pj.alias != "" {
-				set[strings.ToUpper(pj.alias)] = struct{}{}
+				set[unicode15.ToUpperString(pj.alias)] = struct{}{}
 			}
 			continue
 		}
@@ -2572,10 +2573,10 @@ func visibleFromAliases(primaryTable, primaryAlias string, priorJoins []joinClau
 		if unnestCandidateShape(pj, resolvesToTable) {
 			asAlias, atAlias := unnestAliases(pj)
 			if asAlias != "" {
-				set[strings.ToUpper(asAlias)] = struct{}{}
+				set[unicode15.ToUpperString(asAlias)] = struct{}{}
 			}
 			if atAlias != "" {
-				set[strings.ToUpper(atAlias)] = struct{}{}
+				set[unicode15.ToUpperString(atAlias)] = struct{}{}
 			}
 			continue
 		}
@@ -2733,11 +2734,11 @@ func rememberTemplateAliasTableQualifiers(sq *selectQuery, resolvesToTable table
 	visible := visibleFromAliases(sq.tableName, sq.tableAlias, nil, resolvesToTable)
 	for i, j := range sq.joins {
 		if len(j.segments) == 2 && resolvesToTable(j.segments) {
-			if _, collision := visible[strings.ToUpper(j.segments[0])]; collision {
+			if _, collision := visible[unicode15.ToUpperString(j.segments[0])]; collision {
 				if sq.tableQualifierAliases == nil {
 					sq.tableQualifierAliases = make(map[string]bool)
 				}
-				sq.tableQualifierAliases[strings.ToUpper(j.segments[0])] = true
+				sq.tableQualifierAliases[unicode15.ToUpperString(j.segments[0])] = true
 			}
 		}
 		visible = visibleFromAliases(sq.tableName, sq.tableAlias, sq.joins[:i+1], resolvesToTable)
@@ -2834,12 +2835,12 @@ func assignFromLegBindingIDs(fs *fromSource) {
 	// spelling equals the rendered source path. Capture, do not infer, that fact.
 	effective := func(alias, table string, path []string, explicit bool) string {
 		if !explicit && (alias == "" || alias == table) && len(path) > 0 {
-			return strings.ToUpper(path[len(path)-1])
+			return unicode15.ToUpperString(path[len(path)-1])
 		}
 		if alias != "" {
-			return strings.ToUpper(alias)
+			return unicode15.ToUpperString(alias)
 		}
-		return strings.ToUpper(table)
+		return unicode15.ToUpperString(table)
 	}
 	keys := make([]string, 1+len(fs.joins))
 	keys[0] = effective(fs.tableAlias, fs.tableName, fs.sourceSegments, fs.tableAliasExplicit)
@@ -3139,7 +3140,7 @@ func parseJoinParts(srcBase *antlrgen.TableSourceBaseContext, leftAlias string) 
 		// hides them (star expansion + unqualified resolution).
 		for _, u := range joins[i].usingUids.AllUid() {
 			joins[i].usingHiddenCols = append(joins[i].usingHiddenCols,
-				strings.ToUpper(functions.NormalizeIdentifier(u.GetText())))
+				unicode15.ToUpperString(functions.NormalizeIdentifier(u.GetText())))
 			joins[i].usingColTexts = append(joins[i].usingColTexts, u.GetText())
 		}
 		joins[i].onExpr = synth
@@ -3420,7 +3421,7 @@ func cteNamePredicate(cteScopes map[string]semantic.ScopeSource) func(string) bo
 		return nil
 	}
 	return func(name string) bool {
-		_, ok := cteScopes[strings.ToUpper(functions.NormalizeIdentifier(name))]
+		_, ok := cteScopes[unicode15.ToUpperString(functions.NormalizeIdentifier(name))]
 		return ok
 	}
 }
@@ -3710,7 +3711,7 @@ func retargetUsingJoins(primaryTable, primaryAlias string, primaryIsBase bool,
 			return s
 		}
 		if cteScopes != nil {
-			if src, ok := cteScopes[strings.ToUpper(functions.NormalizeIdentifier(table))]; ok {
+			if src, ok := cteScopes[unicode15.ToUpperString(functions.NormalizeIdentifier(table))]; ok {
 				s.cols = src.Table
 			}
 		}
@@ -3806,7 +3807,7 @@ func retargetUsingJoins(primaryTable, primaryAlias string, primaryIsBase bool,
 					// row-version pseudo-column may live outside the
 					// descriptors, so it declines and lets the parse-time
 					// predicate stand; ordinary resolution reports it downstream.
-					if !strings.EqualFold(col, values.PseudoFieldRowVersion) {
+					if !unicode15.EqualFold(col, values.PseudoFieldRowVersion) {
 						return api.NewErrorf(api.ErrCodeUndefinedColumn, "Unknown reference %s", functions.NormalizeIdentifier(colText))
 					}
 					owners = nil
@@ -3990,7 +3991,7 @@ func columnCounts(cols semantic.Table) map[string]int {
 // user's quoting back at them, matching the spelling every other error in this
 // layer uses.
 func usingColumnKey(colText string) semantic.Identifier {
-	return semantic.FromNormalized(strings.ToUpper(functions.NormalizeIdentifier(colText)))
+	return semantic.FromNormalized(unicode15.ToUpperString(functions.NormalizeIdentifier(colText)))
 }
 
 func sliceAt(xs []string, i int) string {

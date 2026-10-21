@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"strings"
 
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -548,7 +549,7 @@ func renderColumn(v values.Value) string {
 		if p, ok := av.Operand.(*pathColumn); ok {
 			operand = p.displayName()
 		}
-		return strings.ToLower(av.Op.Symbol()) + "(" + operand + ")"
+		return unicode15.ToLowerString(av.Op.Symbol()) + "(" + operand + ")"
 	}
 	return values.ExplainValue(v)
 }

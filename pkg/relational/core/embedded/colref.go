@@ -7,8 +7,7 @@
 package embedded
 
 import (
-	"strings"
-
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/core/query/logical"
 )
@@ -127,7 +126,7 @@ func recordProjQualVsScan(proj *logical.LogicalProject, slot int, upper string, 
 	// than an empty one that would read as a disagreement.
 	if slot < len(proj.ProjectionRefs) {
 		if r := proj.ProjectionRefs[slot]; r.Present {
-			ident, present = strings.ToUpper(r.Qualifier), true
+			ident, present = unicode15.ToUpperString(r.Qualifier), true
 		}
 	}
 	class := values.QualRecBare
@@ -136,7 +135,7 @@ func recordProjQualVsScan(proj *logical.LogicalProject, slot int, upper string, 
 	case !ref.isQualified():
 	case !present:
 		class = values.QualRecManufactured
-	case strings.EqualFold(ref.table, ident):
+	case unicode15.EqualFold(ref.table, ident):
 		class, witness = values.QualRecAgreed, ident
 	default:
 		class = values.QualRecDiverged

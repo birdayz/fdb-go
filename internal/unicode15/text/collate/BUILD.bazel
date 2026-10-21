@@ -1,0 +1,25 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+filegroup(
+    name = "unicodepin_sources",
+    srcs = glob(["*.go"]),
+    visibility = ["//visibility:public"],
+)
+
+go_library(
+    name = "collate",
+    srcs = [
+        "collate.go",
+        "index.go",
+        "option.go",
+        "sort.go",
+        "tables.go",
+    ],
+    importpath = "fdb.dev/internal/unicode15/text/collate",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//internal/unicode15/text/internal/colltab",
+        "//internal/unicode15/text/language",
+        "//internal/unicode15/text/unicode/norm",
+    ],
+)

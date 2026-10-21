@@ -6,8 +6,8 @@ import (
 	"math"
 	"reflect"
 	"sort"
-	"strings"
 
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -90,7 +90,7 @@ func (r *staticRows) ColumnTypeLength(index int) (int64, bool) {
 	if index < 0 || index >= len(r.colTypes) {
 		return 0, false
 	}
-	switch strings.ToUpper(r.colTypes[index]) {
+	switch unicode15.ToUpperString(r.colTypes[index]) {
 	case "STRING":
 		return math.MaxInt64, true
 	case "BYTES":
@@ -107,7 +107,7 @@ func (r *staticRows) ColumnTypePrecisionScale(index int) (precision, scale int64
 }
 
 func dbTypeToScanType(typeName string) reflect.Type {
-	switch strings.ToUpper(typeName) {
+	switch unicode15.ToUpperString(typeName) {
 	case "BIGINT":
 		return reflect.TypeFor[int64]()
 	case "INTEGER", "INT":
@@ -175,7 +175,7 @@ func projectSystemRows(in driver.Rows, sq *selectQuery) (driver.Rows, error) {
 	if sq.projCols != nil {
 		idxByCol := make(map[string]int, len(rows.cols))
 		for i, c := range rows.cols {
-			idxByCol[strings.ToUpper(c)] = i
+			idxByCol[unicode15.ToUpperString(c)] = i
 		}
 		projIdx := make([]int, len(sq.projCols))
 		projNames := make([]string, len(sq.projCols))
@@ -184,7 +184,7 @@ func projectSystemRows(in driver.Rows, sq *selectQuery) (driver.Rows, error) {
 				return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 					"computed expressions in INFORMATION_SCHEMA SELECT are not supported (%s)", col.name)
 			}
-			idx, found := idxByCol[strings.ToUpper(col.name)]
+			idx, found := idxByCol[unicode15.ToUpperString(col.name)]
 			if !found {
 				return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
 					"column %q not found in INFORMATION_SCHEMA.%s", col.name, sq.tableName)
@@ -218,14 +218,14 @@ func projectSystemRows(in driver.Rows, sq *selectQuery) (driver.Rows, error) {
 	if len(sq.orderBy) > 0 {
 		colIdx := make(map[string]int, len(rows.cols))
 		for i, c := range rows.cols {
-			colIdx[strings.ToUpper(c)] = i
+			colIdx[unicode15.ToUpperString(c)] = i
 		}
 		sort.SliceStable(rows.rows, func(ii, jj int) bool {
 			for _, ob := range sq.orderBy {
 				if ob.expr != nil {
 					continue // not supported here
 				}
-				idx, found := colIdx[strings.ToUpper(ob.colName)]
+				idx, found := colIdx[unicode15.ToUpperString(ob.colName)]
 				if !found {
 					continue
 				}

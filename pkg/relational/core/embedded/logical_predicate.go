@@ -49,6 +49,7 @@ import (
 	"slices"
 	"strings"
 
+	"fdb.dev/internal/unicode15"
 	recordlayer "fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/protoname"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -1002,7 +1003,7 @@ func aggBodySourceColumns(sq *selectQuery, md *recordlayer.RecordMetaData, templ
 // established meaning of "no type", not a new state.
 func aggregateOutputColumn(ac aggSelectCol, name string, srcCols []semantic.Column) aggOutputCol {
 	unknown := aggOutputCol{name: name, typ: "UNKNOWN", nullable: true}
-	switch strings.ToUpper(ac.aggFunc) {
+	switch unicode15.ToUpperString(ac.aggFunc) {
 	case "COUNT":
 		return aggOutputCol{name: name, typ: "BIGINT", nullable: true}
 	case "AVG":
@@ -1156,8 +1157,8 @@ func clauseFault(resolver *expr.Resolver, where antlrgen.IExpressionContext, err
 	var buildErr *api.Error
 	if errors.As(err, &buildErr) && buildErr.Code == api.ErrCodeUndefinedColumn && whereErr.Code == api.ErrCodeUndefinedColumn {
 		var missing *semantic.ColumnNotFoundError
-		if errors.As(walkErr, &missing) && strings.HasSuffix(strings.ToUpper(buildErr.Message),
-			strings.ToUpper("."+missing.Id.Name())) {
+		if errors.As(walkErr, &missing) && strings.HasSuffix(unicode15.ToUpperString(buildErr.Message),
+			unicode15.ToUpperString("."+missing.Id.Name())) {
 			return err
 		}
 	}
@@ -1672,7 +1673,7 @@ func buildCTEColumnSource(
 			if src, ok, nestedErr := buildCTEColumnSource(md, templateName, nname, nq.Query(), scoped); nestedErr != nil {
 				return semantic.ScopeSource{}, false, nestedErr
 			} else if ok {
-				scoped[strings.ToUpper(nname)] = applyCTEColumnAliases(src, nq.GetColumnAliases())
+				scoped[unicode15.ToUpperString(nname)] = applyCTEColumnAliases(src, nq.GetColumnAliases())
 			} else {
 				// A DECLARED nested name SHADOWS an outer same-name CTE even
 				// when its schema is not derivable (join-shaped body):
@@ -1683,7 +1684,7 @@ func buildCTEColumnSource(
 				// the CATALOG, and a same-named base table would bind its
 				// ordinals onto the CTE's rows just as silently. The
 				// tombstone hard-declines both resolution paths.
-				scoped[strings.ToUpper(nname)] = semantic.ScopeSource{}
+				scoped[unicode15.ToUpperString(nname)] = semantic.ScopeSource{}
 			}
 		}
 		priorCTEs = scoped
@@ -1923,7 +1924,7 @@ func buildWherePredicateForJoinsWithCTEScopes(
 				CorrelationName: binding,
 			}) == nil
 		}
-		if src, found := cteScopes[strings.ToUpper(tableName)]; found && src.Table != nil {
+		if src, found := cteScopes[unicode15.ToUpperString(tableName)]; found && src.Table != nil {
 			// found-with-nil-Table is a TOMBSTONE (declared CTE, schema
 			// underivable) — decline instead of AddSource(nil) nil-deref.
 			return scope.AddSource(cteSourceAs(src, aliasID, binding)) == nil
@@ -3040,7 +3041,7 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuildUnfolded(op logical.Logica
 	var pred predicates.QueryPredicate
 	var ok bool
 	if queryCTEScopes != nil && len(sq.joins) == 0 {
-		if src, found := queryCTEScopes[strings.ToUpper(sq.tableName)]; found && src.Table != nil {
+		if src, found := queryCTEScopes[unicode15.ToUpperString(sq.tableName)]; found && src.Table != nil {
 			// A TOMBSTONE entry (nil Table: declared CTE, schema underivable)
 			// must not reach scope construction — ResolveColumn nil-derefs.
 			pred, ok = buildWherePredicateFromCTEScope(src, sq.tableAlias, sq.whereExpr, md)
@@ -3099,7 +3100,7 @@ func singleSourceQueryBlockCTEScopes(
 	if sq == nil || sq.tableName == "" || sq.derivedQuery != nil || len(sq.joins) != 0 {
 		return cteScopes
 	}
-	key := strings.ToUpper(sq.tableName)
+	key := unicode15.ToUpperString(sq.tableName)
 	if _, globallyVisible := cteScopes[key]; globallyVisible {
 		return cteScopes
 	}
@@ -3140,7 +3141,7 @@ func selectSourceCTEScope(name string, path []string, source logical.ScanSource,
 		name = producer.Name()
 	}
 	for _, registry := range scopes {
-		src, found := registry[strings.ToUpper(name)]
+		src, found := registry[unicode15.ToUpperString(name)]
 		if !found {
 			continue
 		}
@@ -3203,8 +3204,8 @@ func buildSelectScopeChecked(
 	}
 	schemaStrip := newUnnestTableResolver(md, templateName)
 	additionalTableQualifiers := func(tableName, alias string) []semantic.Identifier {
-		if sq.tableQualifierAliases == nil || !sq.tableQualifierAliases[strings.ToUpper(alias)] ||
-			tableName == "" || strings.EqualFold(tableName, alias) {
+		if sq.tableQualifierAliases == nil || !sq.tableQualifierAliases[unicode15.ToUpperString(alias)] ||
+			tableName == "" || unicode15.EqualFold(tableName, alias) {
 			return nil
 		}
 		return []semantic.Identifier{semantic.FromNormalized(tableName)}
@@ -3430,7 +3431,7 @@ func hiddenColumnSet(hidden []string) map[string]struct{} {
 	}
 	out := make(map[string]struct{}, len(hidden))
 	for _, h := range hidden {
-		out[strings.ToUpper(h)] = struct{}{}
+		out[unicode15.ToUpperString(h)] = struct{}{}
 	}
 	return out
 }
@@ -4248,7 +4249,7 @@ func resolveProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *re
 
 func aggregateCallDraftValue(call logical.AggregateCall, operand values.Value) values.Value {
 	var op values.AggregateOp
-	switch strings.ToUpper(call.Func) {
+	switch unicode15.ToUpperString(call.Func) {
 	case "COUNT":
 		if call.Star {
 			op = values.AggCountStar
@@ -4412,10 +4413,10 @@ func validateAggCallProvenance(agg *logical.LogicalAggregate, aggCols []aggSelec
 				i, prov.AggColIdx, len(aggCols))
 		}
 		ac, call := aggCols[prov.AggColIdx], agg.Calls[i]
-		if call.Func != strings.ToUpper(ac.aggFunc) || call.Distinct != ac.aggDistinct {
+		if call.Func != unicode15.ToUpperString(ac.aggFunc) || call.Distinct != ac.aggDistinct {
 			return api.NewErrorf(api.ErrCodeInternalError,
 				"aggregate call %d (%s, distinct=%v) no longer matches parsed column %d (%s, distinct=%v)",
-				i, call.Func, call.Distinct, prov.AggColIdx, strings.ToUpper(ac.aggFunc), ac.aggDistinct)
+				i, call.Func, call.Distinct, prov.AggColIdx, unicode15.ToUpperString(ac.aggFunc), ac.aggDistinct)
 		}
 		// Compared on the PRE-STRIP text recorded by the producer, never on
 		// call.Operand: the producer applies a qualifier strip this side cannot
@@ -5056,7 +5057,7 @@ func aggregateCallOutputSlot(av *values.AggregateValue, agg *logical.LogicalAggr
 			}
 			continue
 		}
-		if call.Star || !strings.EqualFold(call.Func, av.Op.Symbol()) {
+		if call.Star || !unicode15.EqualFold(call.Func, av.Op.Symbol()) {
 			continue
 		}
 		if i < len(agg.AggregateOperands) && agg.AggregateOperands[i] != nil &&
@@ -5233,7 +5234,7 @@ func normalizeAggregateBindingName(s string) string {
 // aggResultName produces: FN(<ExplainValue verbatim, spaces stripped, one
 // outer-paren pair stripped>), with COUNT(*)/no-operand => "FN(*)".
 func canonicalAggName(funcSymbol string, operand values.Value) string {
-	fn := strings.ToUpper(funcSymbol)
+	fn := unicode15.ToUpperString(funcSymbol)
 	if fn == "COUNT(*)" {
 		return "COUNT(*)"
 	}
@@ -5285,7 +5286,7 @@ func enclosingCorrelations(enclosing *semantic.Scope, local map[string]struct{})
 		if name == "" {
 			continue
 		}
-		if _, shadowed := local[strings.ToUpper(name)]; shadowed {
+		if _, shadowed := local[unicode15.ToUpperString(name)]; shadowed {
 			continue
 		}
 		if out == nil {
@@ -5333,7 +5334,7 @@ func outerColumnSegsFilter(sq *selectQuery, resolver *expr.Resolver) func(segs [
 	local := map[string]struct{}{}
 	for _, src := range resolver.Scope().Sources() {
 		if name := scopeSourceCorrelation(src); name != "" {
-			local[strings.ToUpper(name)] = struct{}{}
+			local[unicode15.ToUpperString(name)] = struct{}{}
 		}
 	}
 	outer := enclosingCorrelations(sq.enclosingScope, local)
@@ -5426,9 +5427,9 @@ func validateQualifyOverAggregate(sq *selectQuery, resolver *expr.Resolver) erro
 		if gb.expr != nil {
 			continue
 		}
-		keys[parseColRef(strings.ToUpper(gb.display)).bare()] = true
+		keys[parseColRef(unicode15.ToUpperString(gb.display)).bare()] = true
 		if gb.qualified {
-			keys[strings.ToUpper(gb.bare)] = true
+			keys[unicode15.ToUpperString(gb.bare)] = true
 		}
 	}
 	isOuter := outerColumnRefFilter(sq, resolver)
@@ -5448,7 +5449,7 @@ func validateQualifyOverAggregate(sq *selectQuery, resolver *expr.Resolver) erro
 			}
 			uids := c.FullColumnName().FullId().AllUid()
 			bare := functions.NormalizeIdentifier(uids[len(uids)-1].GetText())
-			if !keys[strings.ToUpper(bare)] {
+			if !keys[unicode15.ToUpperString(bare)] {
 				bad = bare
 			}
 			return
@@ -5482,9 +5483,9 @@ func validateGroupByProjection(sq *selectQuery, md *recordlayer.RecordMetaData, 
 
 	groupBySet := make(map[string]bool, len(sq.groupBy))
 	for _, gb := range sq.groupBy {
-		groupBySet[strings.ToUpper(gb.display)] = true
+		groupBySet[unicode15.ToUpperString(gb.display)] = true
 		if gb.qualified {
-			groupBySet[strings.ToUpper(gb.bare)] = true
+			groupBySet[unicode15.ToUpperString(gb.bare)] = true
 		}
 	}
 
@@ -5515,9 +5516,9 @@ func validateGroupByProjection(sq *selectQuery, md *recordlayer.RecordMetaData, 
 			fields := rt.Descriptor.Fields()
 			for i := 0; i < fields.Len(); i++ {
 				stored := string(fields.Get(i).Name())
-				tableFields[strings.ToUpper(stored)] = true
+				tableFields[unicode15.ToUpperString(stored)] = true
 				// The column as SQL names it: a quoted name may hold dots.
-				tableFields[strings.ToUpper(recordlayer.ToUserIdentifier(stored))] = true
+				tableFields[unicode15.ToUpperString(recordlayer.ToUserIdentifier(stored))] = true
 			}
 		}
 		collect(sq.tableName)
@@ -5562,13 +5563,13 @@ func validateGroupByProjection(sq *selectQuery, md *recordlayer.RecordMetaData, 
 	sourceNames := make(map[string]bool)
 	for _, n := range []string{sq.tableName, sq.tableAlias} {
 		if n != "" {
-			sourceNames[strings.ToUpper(n)] = true
+			sourceNames[unicode15.ToUpperString(n)] = true
 		}
 	}
 	for _, j := range sq.joins {
 		for _, n := range []string{j.tableName, j.alias} {
 			if n != "" {
-				sourceNames[strings.ToUpper(n)] = true
+				sourceNames[unicode15.ToUpperString(n)] = true
 			}
 		}
 	}
@@ -5596,7 +5597,7 @@ func validateGroupByProjection(sq *selectQuery, md *recordlayer.RecordMetaData, 
 		return dotted && tableFields[root]
 	}
 	checkColumn := func(col string) error {
-		upper := strings.ToUpper(col)
+		upper := unicode15.ToUpperString(col)
 		bare := parseColRef(upper).bare()
 		if !existsAsField(upper) {
 			return api.NewErrorf(api.ErrCodeUndefinedColumn,
@@ -5612,7 +5613,7 @@ func validateGroupByProjection(sq *selectQuery, md *recordlayer.RecordMetaData, 
 	groupByExprSet := make(map[string]bool)
 	for _, gb := range sq.groupBy {
 		if gb.expr != nil {
-			groupByExprSet[strings.ToUpper(gb.display)] = true
+			groupByExprSet[unicode15.ToUpperString(gb.display)] = true
 		}
 	}
 
@@ -5638,17 +5639,17 @@ func validateGroupByProjection(sq *selectQuery, md *recordlayer.RecordMetaData, 
 		for _, gb := range sq.groupBy {
 			if gb.expr != nil {
 				for _, c := range harvestBareColumnRefsOutsideSubqueries(gb.expr) {
-					groupByColumns[strings.ToUpper(c)] = true
+					groupByColumns[unicode15.ToUpperString(c)] = true
 				}
 				continue
 			}
-			groupByColumns[parseColRef(strings.ToUpper(gb.display)).bare()] = true
+			groupByColumns[parseColRef(unicode15.ToUpperString(gb.display)).bare()] = true
 			if gb.qualified {
-				groupByColumns[strings.ToUpper(gb.bare)] = true
+				groupByColumns[unicode15.ToUpperString(gb.bare)] = true
 			}
 		}
 		for _, ref := range harvestLocalBareColumnRefsOutsideSubqueries(sq.havingExpr, isOuter) {
-			bare := strings.ToUpper(ref)
+			bare := unicode15.ToUpperString(ref)
 			if groupByColumns[bare] {
 				continue
 			}
@@ -5669,13 +5670,13 @@ func validateGroupByProjection(sq *selectQuery, md *recordlayer.RecordMetaData, 
 		for _, gb := range sq.groupBy {
 			if gb.expr != nil {
 				for _, c := range harvestBareColumnRefsOutsideSubqueries(gb.expr) {
-					groupByColumns[strings.ToUpper(c)] = true
+					groupByColumns[unicode15.ToUpperString(c)] = true
 				}
 				continue
 			}
-			groupByColumns[parseColRef(strings.ToUpper(gb.display)).bare()] = true
+			groupByColumns[parseColRef(unicode15.ToUpperString(gb.display)).bare()] = true
 			if gb.qualified {
-				groupByColumns[strings.ToUpper(gb.bare)] = true
+				groupByColumns[unicode15.ToUpperString(gb.bare)] = true
 			}
 		}
 		for _, ob := range sq.orderBy {
@@ -5686,7 +5687,7 @@ func validateGroupByProjection(sq *selectQuery, md *recordlayer.RecordMetaData, 
 				continue
 			}
 			for _, ref := range harvestLocalBareColumnRefsOutsideSubqueries(ob.rawExpr, isOuter) {
-				bare := strings.ToUpper(ref)
+				bare := unicode15.ToUpperString(ref)
 				if groupByColumns[bare] {
 					continue
 				}
@@ -5698,7 +5699,7 @@ func validateGroupByProjection(sq *selectQuery, md *recordlayer.RecordMetaData, 
 					// already carry its parse-derived qualifier separately;
 					// restore that source spelling for the user-facing 42803
 					// diagnostic without using it as binding identity.
-					if ob.qualified && strings.EqualFold(ob.bare, ref) {
+					if ob.qualified && unicode15.EqualFold(ob.bare, ref) {
 						diagnosticRef = ob.qualifier + "." + ob.bare
 					}
 					return api.NewErrorf(api.ErrCodeGroupingError,
@@ -5731,7 +5732,7 @@ func validateGroupByProjection(sq *selectQuery, md *recordlayer.RecordMetaData, 
 			if col == "" {
 				col = ac.outName
 			}
-			if groupByExprSet[strings.ToUpper(col)] {
+			if groupByExprSet[unicode15.ToUpperString(col)] {
 				continue
 			}
 			// An enclosing query's column from a star (`SELECT a.*, outer.*
@@ -5860,7 +5861,7 @@ func recordTypeCI(md *recordlayer.RecordMetaData, name string) *recordlayer.Reco
 		return rt
 	}
 	for n, rt := range md.RecordTypes() {
-		if strings.EqualFold(n, name) {
+		if unicode15.EqualFold(n, name) {
 			return rt
 		}
 	}
@@ -6589,7 +6590,7 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 			// output column IS its explain). RFC-142. That naming rule still
 			// applies; it is applied at the READ below, to the key this
 			// ordinal names.
-			groupKeyOrdinalByDisplay[strings.ToUpper(gk.Display)] = gkOrdinal
+			groupKeyOrdinalByDisplay[unicode15.ToUpperString(gk.Display)] = gkOrdinal
 		}
 	}
 	// colToIdx maps a NON-aliased select item's canonical text to its select-list
@@ -6604,7 +6605,7 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 	// same expression, so the sort order is identical either way.
 	colToIdx := make(map[string]int, len(sq.projCols))
 	for i, c := range sq.projCols {
-		key := strings.ToUpper(c.name)
+		key := unicode15.ToUpperString(c.name)
 		if _, dup := colToIdx[key]; !dup {
 			colToIdx[key] = i
 		}
@@ -6623,7 +6624,7 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 	// First-match semantics mirror colToIdx; existing entries win.
 	if proj != nil {
 		for i, ptext := range proj.Projections {
-			key := strings.ToUpper(ptext)
+			key := unicode15.ToUpperString(ptext)
 			if _, dup := colToIdx[key]; !dup {
 				colToIdx[key] = i
 			}
@@ -6690,7 +6691,7 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 		if outputBound[i] || sort.Keys[i].Pos > 0 {
 			continue
 		}
-		upper := strings.ToUpper(sort.Keys[i].Expr)
+		upper := unicode15.ToUpperString(sort.Keys[i].Expr)
 		if idx, ok := colToIdx[upper]; ok && proj != nil {
 			if idx < len(proj.ProjectedValues) && proj.ProjectedValues[idx] != nil {
 				// ORDER BY resolves in the SELECT output namespace before the
@@ -6707,7 +6708,7 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 			}
 		}
 		if groupKeyOrdinalByDisplay != nil && !sort.Keys[i].AggregateOutputValueExact {
-			if gkOrdinal, ok := groupKeyOrdinalByDisplay[strings.ToUpper(sort.Keys[i].Expr)]; ok {
+			if gkOrdinal, ok := groupKeyOrdinalByDisplay[unicode15.ToUpperString(sort.Keys[i].Expr)]; ok {
 				// The name is spelled FROM the ordinal — the same authority
 				// (aggregateGroupKeyOutputName over that slot's own key Value)
 				// the map used to transport, now read off the key the ordinal
@@ -6731,13 +6732,13 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 				// projection.
 				if proj != nil && !operatorContains(proj, sort) {
 					for pi, ptext := range proj.Projections {
-						if !strings.EqualFold(ptext, sort.Keys[i].Expr) {
+						if !unicode15.EqualFold(ptext, sort.Keys[i].Expr) {
 							continue
 						}
 						if pi < len(proj.Aliases) && proj.Aliases[pi] != "" {
-							explain = strings.ToUpper(proj.Aliases[pi])
+							explain = unicode15.ToUpperString(proj.Aliases[pi])
 						} else {
-							explain = strings.ToUpper(ptext)
+							explain = unicode15.ToUpperString(ptext)
 						}
 						break
 					}
@@ -7094,7 +7095,7 @@ func bindExactCTESortKeysOnSort(
 		}
 		rootOrdinal := -1
 		for ordinal, field := range record.Fields {
-			if strings.EqualFold(field.Name, segments[0]) {
+			if unicode15.EqualFold(field.Name, segments[0]) {
 				if rootOrdinal >= 0 {
 					// Duplicate output labels carry no unique identity.
 					rootOrdinal = -1
@@ -7108,7 +7109,7 @@ func bindExactCTESortKeysOnSort(
 		}
 
 		owner, err := values.NewQuantifiedObjectValue(
-			values.NamedCorrelationIdentifier(strings.ToUpper(correlation)), record,
+			values.NamedCorrelationIdentifier(unicode15.ToUpperString(correlation)), record,
 		)
 		if err != nil {
 			return err
@@ -7188,7 +7189,7 @@ func bindExactCTEProjection(
 
 		ordinal := -1
 		for candidate, field := range record.Fields {
-			if !strings.EqualFold(field.Name, ref.Bare) {
+			if !unicode15.EqualFold(field.Name, ref.Bare) {
 				continue
 			}
 			if ordinal >= 0 {
@@ -7203,7 +7204,7 @@ func bindExactCTEProjection(
 		}
 
 		owner, err := values.NewQuantifiedObjectValue(
-			values.NamedCorrelationIdentifier(strings.ToUpper(correlation)), record,
+			values.NamedCorrelationIdentifier(unicode15.ToUpperString(correlation)), record,
 		)
 		if err != nil {
 			return err
@@ -7292,9 +7293,9 @@ func directCTEJoinQualifierMatchesScan(qualifier string, scan *logical.LogicalSc
 		return false
 	}
 	if scan.Alias != "" {
-		return strings.EqualFold(qualifier, scan.Alias)
+		return unicode15.EqualFold(qualifier, scan.Alias)
 	}
-	return strings.EqualFold(qualifier, scan.Table)
+	return unicode15.EqualFold(qualifier, scan.Table)
 }
 
 // singleCTEInput returns only the one-source, row-shape-preserving input class
@@ -7338,9 +7339,9 @@ func cteSortQualifierMatchesScan(qualifier string, scan *logical.LogicalScan) bo
 	if qualifier == "" || scan == nil {
 		return false
 	}
-	return (scan.Binding != "" && strings.EqualFold(qualifier, scan.Binding)) ||
-		(scan.Alias != "" && strings.EqualFold(qualifier, scan.Alias)) ||
-		strings.EqualFold(qualifier, scan.Table)
+	return (scan.Binding != "" && unicode15.EqualFold(qualifier, scan.Binding)) ||
+		(scan.Alias != "" && unicode15.EqualFold(qualifier, scan.Alias)) ||
+		unicode15.EqualFold(qualifier, scan.Table)
 }
 
 // aggregateGroupKeyOutputName returns the OUTPUT column name a group-key Value is
@@ -7396,7 +7397,7 @@ func findOrderByForKey(sq *selectQuery, keyExpr string) *orderByClause {
 		if name == "" && ob.rawExpr != nil {
 			name = canonicalTextOf(ob.rawExpr)
 		}
-		if strings.EqualFold(name, keyExpr) {
+		if unicode15.EqualFold(name, keyExpr) {
 			return ob
 		}
 	}
@@ -7420,7 +7421,7 @@ func findOrderByForKey(sq *selectQuery, keyExpr string) *orderByClause {
 		if ob.colName == "" || ob.rawExpr == nil {
 			continue
 		}
-		if strings.EqualFold(canonicalTextOf(ob.rawExpr), keyExpr) {
+		if unicode15.EqualFold(canonicalTextOf(ob.rawExpr), keyExpr) {
 			return ob
 		}
 	}
@@ -7442,7 +7443,7 @@ func buildOuterPlanOnDerived(sq *selectQuery, innerOp logical.LogicalOperator) l
 	if sq.whereExpr != nil {
 		op = logical.NewFilter(op, canonicalTextOf(sq.whereExpr))
 	}
-	return buildSelectShell(op, sq, strings.ToUpper(sq.tableName)+".")
+	return buildSelectShell(op, sq, unicode15.ToUpperString(sq.tableName)+".")
 }
 
 func hasProjectionStar(sq *selectQuery) bool {
@@ -7596,7 +7597,7 @@ func starSourceNeedsProjection(source semantic.ScopeSource) (bool, error) {
 	}
 	needed, visible := false, 0
 	for position, column := range columns {
-		_, hidden := source.HiddenColumns[strings.ToUpper(column.Id.Name())]
+		_, hidden := source.HiddenColumns[unicode15.ToUpperString(column.Id.Name())]
 		if column.Ephemeral || hidden {
 			needed = true
 			continue
@@ -7675,7 +7676,7 @@ func starColumnsFromScopeChecked(resolver *expr.Resolver, qualifier string) ([]p
 						if column.Ephemeral {
 							continue
 						}
-						if _, hidden := source.HiddenColumns[strings.ToUpper(name)]; hidden {
+						if _, hidden := source.HiddenColumns[unicode15.ToUpperString(name)]; hidden {
 							continue
 						}
 						bound, err := resolver.ResolveIdentifierPath([]semantic.Identifier{source.Alias, column.Id})
@@ -7737,7 +7738,7 @@ func starColumnsFromScopeChecked(resolver *expr.Resolver, qualifier string) ([]p
 			if column.Ephemeral {
 				continue
 			}
-			if _, hidden := source.HiddenColumns[strings.ToUpper(name)]; hidden {
+			if _, hidden := source.HiddenColumns[unicode15.ToUpperString(name)]; hidden {
 				continue
 			}
 			bound, err := expr.SourceColumnValue(source, position)
@@ -7908,7 +7909,7 @@ func validateUnionOrderByColumns(sort *logical.LogicalSort, leftBranch logical.L
 			// than SQL-normalized labels. Retain that relaxed lookup only
 			// after exact identity fails: quoted x and X are distinct slots.
 			for label, n := range matches {
-				if strings.EqualFold(label, bareName) {
+				if unicode15.EqualFold(label, bareName) {
 					count += n
 					ordinal = leftOrdinals[label]
 				}
@@ -8019,7 +8020,7 @@ func resolveProjectionTypes(op logical.LogicalOperator, md *recordlayer.RecordMe
 			continue
 		}
 		bare := parseColRef(col).bare()
-		fd := desc.Fields().ByName(protoreflect.Name(strings.ToLower(bare)))
+		fd := desc.Fields().ByName(protoreflect.Name(unicode15.ToLowerString(bare)))
 		if fd == nil {
 			fd = desc.Fields().ByName(protoreflect.Name(bare))
 		}
@@ -8090,14 +8091,14 @@ func (p *existsSubqueryPlanner) visibleScopeNames() map[string]struct{} {
 	visible := map[string]struct{}{}
 	for _, src := range p.outerScopes {
 		if n := src.Alias.Name(); n != "" {
-			visible[strings.ToUpper(n)] = struct{}{}
+			visible[unicode15.ToUpperString(n)] = struct{}{}
 		}
 		if src.CorrelationName != "" {
-			visible[strings.ToUpper(src.CorrelationName)] = struct{}{}
+			visible[unicode15.ToUpperString(src.CorrelationName)] = struct{}{}
 		}
 	}
 	for name := range p.cteScopes {
-		visible[strings.ToUpper(name)] = struct{}{}
+		visible[unicode15.ToUpperString(name)] = struct{}{}
 	}
 	return visible
 }
@@ -8209,7 +8210,7 @@ func splitOuterOnlyConjuncts(pred predicates.QueryPredicate, innerAliases map[st
 			return
 		}
 		for c := range corrs {
-			name := strings.ToUpper(c.Name())
+			name := unicode15.ToUpperString(c.Name())
 			if _, isInner := innerAliases[name]; isInner {
 				keep = append(keep, p)
 				return
@@ -8265,7 +8266,7 @@ func splitConjunctsByOuterRef(pred predicates.QueryPredicate, outerAliases, inne
 		}
 		hasOuter := false
 		for c := range predicates.GetCorrelatedToOfPredicate(p) {
-			name := strings.ToUpper(c.Name())
+			name := unicode15.ToUpperString(c.Name())
 			_, isOuter := outerAliases[name]
 			_, isInner := innerAliases[name]
 			if isOuter && !isInner {
@@ -8527,7 +8528,7 @@ func aggregateCallOutputTypeChecked(call logical.AggregateCall, operands []value
 	if operandCode == values.TypeCodeUnknown || operandCode.IsNumeric() {
 		return typ, nil
 	}
-	switch strings.ToUpper(call.Func) {
+	switch unicode15.ToUpperString(call.Func) {
 	case "SUM", "AVG", "MIN", "MAX":
 		return values.UnknownType, api.NewError(api.ErrCodeUnsupportedOperation,
 			"unable to encapsulate aggregate operation due to type mismatch(es)")
@@ -8605,14 +8606,14 @@ func innerSourceAliases(op logical.LogicalOperator) map[string]struct{} {
 			if a == "" {
 				a = o.Table
 			}
-			out[strings.ToUpper(a)] = struct{}{}
+			out[unicode15.ToUpperString(a)] = struct{}{}
 		case *logical.LogicalCTE:
 			if o.Binding != "" {
-				out[strings.ToUpper(o.Binding)] = struct{}{}
+				out[unicode15.ToUpperString(o.Binding)] = struct{}{}
 			} else if o.PreserveMainSource {
 				walk(o.Main)
 			} else {
-				out[strings.ToUpper(o.Name())] = struct{}{}
+				out[unicode15.ToUpperString(o.Name())] = struct{}{}
 			}
 			return
 		case *logical.LogicalUnnest:

@@ -1,0 +1,14 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+filegroup(
+    name = "unicodepin_sources",
+    srcs = glob(["*.go"]),
+    visibility = ["//visibility:public"],
+)
+
+go_library(
+    name = "transform",
+    srcs = ["transform.go"],
+    importpath = "fdb.dev/internal/unicode15/text/transform",
+    visibility = ["//:__subpackages__"],
+)

@@ -4,7 +4,7 @@
 
 package values
 
-import "strings"
+import "fdb.dev/internal/unicode15"
 
 // ResolveAssignmentColumn resolves one name of a DML statement's assigned field
 // (a segment of an UPDATE's SET column: a qualifier, a column or a struct
@@ -42,7 +42,7 @@ func ResolveAssignmentColumn(names []string, column string) (idx, hits int) {
 		return idx, 1
 	}
 	for i, n := range names {
-		if strings.EqualFold(n, column) {
+		if unicode15.EqualFold(n, column) {
 			hits++
 			idx = i
 		}

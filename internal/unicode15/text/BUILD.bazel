@@ -1,0 +1,10 @@
+filegroup(
+    name = "snapshot_inputs",
+    srcs = [
+        "LICENSE",
+        "PATENTS",
+        "SOURCE_SHA256SUMS",
+        "snapshot.py",
+    ],
+    visibility = ["//visibility:public"],
+)

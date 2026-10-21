@@ -1,6 +1,6 @@
 package values
 
-import "strings"
+import "fdb.dev/internal/unicode15"
 
 // This file holds the ONE predicate every ordering-claim producer must ask
 // before it states that a scan delivers rows in a column's order.
@@ -87,7 +87,7 @@ func ColumnCanExtendOrderingClaim(layout Type, name string) bool {
 		return true
 	}
 	for _, f := range rt.Fields {
-		if strings.EqualFold(f.Name, name) && TypeTerminatesOrderingClaim(f.FieldType) {
+		if unicode15.EqualFold(f.Name, name) && TypeTerminatesOrderingClaim(f.FieldType) {
 			return false
 		}
 	}
@@ -129,7 +129,7 @@ func ColumnCouldBeFloat(layout Type, name string) bool {
 		return true
 	}
 	for _, f := range rt.Fields {
-		if strings.EqualFold(f.Name, name) {
+		if unicode15.EqualFold(f.Name, name) {
 			return TypeTerminatesOrderingClaim(f.FieldType)
 		}
 	}

@@ -10,6 +10,7 @@ go_library(
     importpath = "fdb.dev/pkg/relational/core/parser",
     visibility = ["//visibility:public"],
     deps = [
+        "//internal/unicode15",
         "//pkg/relational/api",
         "//pkg/relational/core/parser/gen",
         "@com_github_antlr4_go_antlr_v4//:antlr",

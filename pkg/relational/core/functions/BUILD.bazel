@@ -13,6 +13,7 @@ go_library(
     importpath = "fdb.dev/pkg/relational/core/functions",
     visibility = ["//visibility:public"],
     deps = [
+        "//internal/unicode15",
         "//pkg/recordlayer/protoname",
         "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/relational/api",

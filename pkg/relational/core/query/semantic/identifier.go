@@ -21,7 +21,7 @@
 // type passes are follow-up work.
 package semantic
 
-import "strings"
+import "fdb.dev/internal/unicode15"
 
 // Identifier is a SQL identifier — a table, column, alias, or
 // function name. Carries the normalized form (case-folded per SQL
@@ -60,7 +60,7 @@ func New(raw string, caseSensitive bool) Identifier {
 	if caseSensitive {
 		return Identifier{name: raw}
 	}
-	return Identifier{name: strings.ToUpper(raw)}
+	return Identifier{name: unicode15.ToUpperString(raw)}
 }
 
 // NewUnquoted is the common path — a case-insensitive bare
@@ -131,7 +131,7 @@ func NormalizeString(s string, caseSensitive bool) string {
 	if caseSensitive {
 		return s
 	}
-	return strings.ToUpper(s)
+	return unicode15.ToUpperString(s)
 }
 
 // isQuoted reports whether s starts and ends with quoteRune and has

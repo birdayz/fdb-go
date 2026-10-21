@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"strings"
 
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -84,7 +85,7 @@ func NewRecordLayerResultSet(
 ) *RecordLayerResultSet {
 	idx := make(map[string]int, len(columns))
 	for i, c := range columns {
-		idx[strings.ToUpper(c.Name)] = i
+		idx[unicode15.ToUpperString(c.Name)] = i
 	}
 	return &RecordLayerResultSet{
 		ctx:      ctx,
@@ -197,7 +198,7 @@ func (rs *RecordLayerResultSet) positionalAligned(row *PositionalRow) bool {
 			// loud producer bug, preserving the fail-closed projection controls.
 			duplicateDisplay := false
 			for j := 0; j < i; j++ {
-				if strings.EqualFold(columnDisplayName(rs.columns[j]), disp) {
+				if unicode15.EqualFold(columnDisplayName(rs.columns[j]), disp) {
 					duplicateDisplay = true
 					break
 				}
@@ -230,7 +231,7 @@ func (rs *RecordLayerResultSet) positionalAligned(row *PositionalRow) bool {
 			// the slot's bare leaf equals a bare display ("C.NAME" slot ↔ "NAME"
 			// label). Stripping BOTH sides would falsely align permuted qualifiers
 			// ("X.NAME" vs "Y.NAME"), so only the slot side is stripped.
-			if !strings.EqualFold(f.Name, disp) && !strings.EqualFold(bareLeafName(f.Name), disp) {
+			if !unicode15.EqualFold(f.Name, disp) && !unicode15.EqualFold(bareLeafName(f.Name), disp) {
 				aligned = false
 				break
 			}
@@ -302,7 +303,7 @@ func columnDisplayName(c ColumnDef) string {
 }
 
 func (rs *RecordLayerResultSet) columnValueByName(name string) (any, error) {
-	idx, ok := rs.colIndex[strings.ToUpper(name)]
+	idx, ok := rs.colIndex[unicode15.ToUpperString(name)]
 	if !ok {
 		return nil, api.NewError(api.ErrCodeInvalidColumnReference,
 			fmt.Sprintf("column %q not found", name))
@@ -614,7 +615,7 @@ func NewResultSetMetaData(columns []ColumnDef) api.ResultSetMetaData {
 }
 
 func dataTypeFromName(typeName string) api.DataType {
-	switch strings.ToUpper(typeName) {
+	switch unicode15.ToUpperString(typeName) {
 	case "BIGINT":
 		return api.NewLongType(true)
 	case "INTEGER":
@@ -639,7 +640,7 @@ func dataTypeFromName(typeName string) api.DataType {
 }
 
 func jdbcTypeCode(typeName string) int {
-	switch strings.ToUpper(typeName) {
+	switch unicode15.ToUpperString(typeName) {
 	case "BIGINT":
 		return api.JDBCBigInt
 	case "INTEGER":

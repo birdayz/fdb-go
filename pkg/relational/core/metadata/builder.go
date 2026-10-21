@@ -26,6 +26,7 @@ import (
 	"github.com/google/uuid"
 
 	"fdb.dev/gen"
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/protoscope"
 	"fdb.dev/pkg/relational/api"
@@ -1501,7 +1502,7 @@ func buildAggregateIndex(idx indexSpec) (*recordlayer.Index, error) {
 		gke = recordlayer.GroupAll(recordlayer.Concat(groupByExprs...))
 	}
 
-	switch strings.ToUpper(idx.aggType) {
+	switch unicode15.ToUpperString(idx.aggType) {
 	case "SUM":
 		return recordlayer.NewSumIndex(idx.name, gke), nil
 	case "COUNT":

@@ -1,8 +1,7 @@
 package cascades
 
 import (
-	"strings"
-
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -134,7 +133,7 @@ func recordTypesOverlap(a, b []string) bool {
 	}
 	for _, ta := range a {
 		for _, tb := range b {
-			if strings.EqualFold(ta, tb) {
+			if unicode15.EqualFold(ta, tb) {
 				return true
 			}
 		}

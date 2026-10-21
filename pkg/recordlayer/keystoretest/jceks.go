@@ -8,16 +8,19 @@ import (
 	"bytes"
 	"crypto/cipher"
 	"crypto/des"
-	"crypto/md5" //nolint:gosec // PBEWithMD5AndTripleDES is MD5-based
 	"crypto/rand"
-	"crypto/sha1" //nolint:gosec // the JCEKS integrity digest is SHA-1
 	"encoding/asn1"
 	"encoding/binary"
 	"encoding/hex"
 	"os"
 	"slices"
-	"strings"
 	"unicode/utf16"
+
+	"crypto/md5" //nolint:gosec // PBEWithMD5AndTripleDES is MD5-based
+
+	"crypto/sha1" //nolint:gosec // the JCEKS integrity digest is SHA-1
+
+	"fdb.dev/internal/unicode15"
 )
 
 // JCEKSEntry is one entry of a JCEKS store WriteJCEKS writes: a secret key
@@ -77,7 +80,7 @@ func WriteJCEKS(path, storePassword, keyPassword string, iterations int, entries
 			kind = JCEKSSecretKey
 		}
 		writeU32(&out, int(kind))
-		writeUTF(&out, strings.ToLower(e.Alias))
+		writeUTF(&out, unicode15.ToLowerString(e.Alias))
 		out.Write(make([]byte, 8)) // creation date
 		switch kind {
 		case JCEKSPrivateKey:

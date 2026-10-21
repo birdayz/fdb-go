@@ -6,13 +6,13 @@ package recordlayer
 
 import (
 	"fmt"
-	"strings"
 
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/descriptorpb"
 
 	"fdb.dev/gen"
+	"fdb.dev/internal/unicode15"
 )
 
 // relationalUnionName is Java's RecordMetaDataBuilder.DEFAULT_UNION_NAME
@@ -68,7 +68,7 @@ func validateRecordDataTypes(fd protoreflect.FileDescriptor) error {
 // javaFieldTypeName is Descriptors.FieldDescriptor.Type.name(): the upper-case
 // protobuf type name, which is what Java's messages print.
 func javaFieldTypeName(k protoreflect.Kind) string {
-	return strings.ToUpper(k.String())
+	return unicode15.ToUpperString(k.String())
 }
 
 // validateRecordUnion ports Java's RecordMetaDataBuilder.validateUnion

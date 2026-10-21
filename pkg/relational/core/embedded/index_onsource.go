@@ -16,6 +16,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"fdb.dev/gen"
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
@@ -266,14 +267,14 @@ func parseOnSourceIndexDefinition(def *antlrgen.IndexOnSourceDefinitionContext, 
 		if rerr != nil {
 			return fmt.Errorf("index %q: %w", indexName, rerr)
 		}
-		names = append(names, strings.ToUpper(k.name))
+		names = append(names, unicode15.ToUpperString(k.name))
 		vals = append(vals, fv)
 		dir := logical.SortAsc
 		if k.isDescending {
 			dir = logical.SortDesc
 		}
 		sortKeys = append(sortKeys, logical.SortKey{
-			Expr:       strings.ToUpper(k.name),
+			Expr:       unicode15.ToUpperString(k.name),
 			Dir:        dir,
 			NullsFirst: !k.isNullsLast,
 			Value:      fv,
@@ -284,7 +285,7 @@ func parseOnSourceIndexDefinition(def *antlrgen.IndexOnSourceDefinitionContext, 
 		if rerr != nil {
 			return fmt.Errorf("index %q: %w", indexName, rerr)
 		}
-		names = append(names, strings.ToUpper(v))
+		names = append(names, unicode15.ToUpperString(v))
 		vals = append(vals, fv)
 	}
 
@@ -308,7 +309,7 @@ func parseOnSourceIndexDefinition(def *antlrgen.IndexOnSourceDefinitionContext, 
 
 func findView(md *recordlayer.RecordMetaData, name string) *gen.PView {
 	for _, v := range md.Views() {
-		if strings.EqualFold(v.GetName(), name) {
+		if unicode15.EqualFold(v.GetName(), name) {
 			return v
 		}
 	}

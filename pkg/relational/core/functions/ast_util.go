@@ -9,6 +9,7 @@ package functions
 import (
 	"strings"
 
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/relational/api"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 )
@@ -36,7 +37,7 @@ func NormalizeIdentifier(s string) string {
 	if len(s) >= 2 && ((s[0] == '"' && s[len(s)-1] == '"') || (s[0] == '`' && s[len(s)-1] == '`')) {
 		return s[1 : len(s)-1]
 	}
-	return strings.ToUpper(s)
+	return unicode15.ToUpperString(s)
 }
 
 // FullIdToName converts a FullId parse-tree node to a dot-separated,

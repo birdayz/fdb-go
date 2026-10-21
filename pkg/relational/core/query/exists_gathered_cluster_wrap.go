@@ -40,8 +40,7 @@ package query
 // composition succeeds.
 
 import (
-	"strings"
-
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -189,14 +188,14 @@ func wrapRVFullyBaked(v values.Value, boxBinding string, scalarAliases map[value
 	values.WalkValue(v, func(n values.Value) bool {
 		if field, isField := values.AsFieldValue(n); isField {
 			qov, isQOV := values.AsQuantifiedObjectValue(field.ChildValue())
-			if !isQOV || !strings.EqualFold(qov.Correlation().Name(), boxBinding) {
+			if !isQOV || !unicode15.EqualFold(qov.Correlation().Name(), boxBinding) {
 				ok = false
 				return false
 			}
 			return true
 		}
 		if qov, isQOV := values.AsQuantifiedObjectValue(n); isQOV {
-			if !strings.EqualFold(qov.Correlation().Name(), boxBinding) {
+			if !unicode15.EqualFold(qov.Correlation().Name(), boxBinding) {
 				ok = false
 				return false
 			}
@@ -372,7 +371,7 @@ func (t *cascadesTranslator) translateExistsOverGatheredCluster(
 		return nil
 	}
 
-	boxBinding := strings.ToUpper(legBinding(join))
+	boxBinding := unicode15.ToUpperString(legBinding(join))
 	if boxBinding == "" {
 		return nil
 	}

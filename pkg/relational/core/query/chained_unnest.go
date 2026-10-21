@@ -5,8 +5,7 @@
 package query
 
 import (
-	"strings"
-
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -594,10 +593,10 @@ func (t *cascadesTranslator) rotateBuriedChainedSpine(j *logical.LogicalJoin) (*
 	}
 	for _, un := range spineUnnests {
 		if un.Alias != "" {
-			spineAliases[strings.ToUpper(un.Alias)] = struct{}{}
+			spineAliases[unicode15.ToUpperString(un.Alias)] = struct{}{}
 		}
 		if un.AtAlias != "" {
-			spineAliases[strings.ToUpper(un.AtAlias)] = struct{}{}
+			spineAliases[unicode15.ToUpperString(un.AtAlias)] = struct{}{}
 		}
 	}
 	for _, leg := range trailingRev {

@@ -4,7 +4,11 @@
 
 package semantic
 
-import "strings"
+import (
+	"strings"
+
+	"fdb.dev/internal/unicode15"
+)
 
 // QualifiedName is a dot-separated SQL name like `schema.table.col`.
 // The leaf (last segment) is the "simple name"; the preceding
@@ -59,7 +63,7 @@ func ParseQualifiedName(raw string, caseSensitive bool) QualifiedName {
 		} else if caseSensitive {
 			segs[i] = p
 		} else {
-			segs[i] = strings.ToUpper(p)
+			segs[i] = unicode15.ToUpperString(p)
 		}
 	}
 	return QualifiedName{segments: segs, wasQuotedPerSegment: quoted}
@@ -81,7 +85,7 @@ func FromSegments(segments []string, caseSensitive bool) QualifiedName {
 		} else if caseSensitive {
 			out[i] = s
 		} else {
-			out[i] = strings.ToUpper(s)
+			out[i] = unicode15.ToUpperString(s)
 		}
 	}
 	return QualifiedName{segments: out, wasQuotedPerSegment: quoted}

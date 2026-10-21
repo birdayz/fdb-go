@@ -1,10 +1,12 @@
 package norecover
 
 import (
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"go/types"
+	"strings"
 	"testing"
 
 	"golang.org/x/tools/go/analysis"
@@ -99,5 +101,30 @@ func f() {
 	diags := analyze(t, Allowlist, "pkg/foo/random.go", src)
 	if len(diags) != 0 {
 		t.Fatalf("shadowed non-builtin recover: want 0 diagnostics, got %d", len(diags))
+	}
+}
+
+func TestUnicode15LocaleBoundaryLimits(t *testing.T) {
+	t.Parallel()
+	for file, limit := range map[string]int{
+		"internal/unicode15/text/internal/language/language.go": 5,
+		"internal/unicode15/text/internal/language/parse.go":    1,
+		"internal/unicode15/text/language/parse.go":             3,
+	} {
+		t.Run(file, func(t *testing.T) {
+			t.Parallel()
+			var source strings.Builder
+			source.WriteString("package p\n")
+			for n := 0; n <= limit; n++ {
+				fmt.Fprintf(&source, "func f%d() { defer func() { _ = recover() }() }\n", n)
+				want := 0
+				if n == limit {
+					want = 1
+				}
+				if got := len(analyze(t, Allowlist, file, source.String())); got != want {
+					t.Errorf("%d recover sites: got %d diagnostics, want %d", n+1, got, want)
+				}
+			}
+		})
 	}
 }

@@ -10,10 +10,11 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"unicode"
 
 	"github.com/rivo/uniseg"
-	"golang.org/x/text/unicode/norm"
+
+	"fdb.dev/internal/unicode15"
+	"fdb.dev/internal/unicode15/text/unicode/norm"
 )
 
 // TokenizerMode controls whether tokenization is for indexing or querying.
@@ -221,7 +222,7 @@ func (b *breakIteratorWrapper) Next() string {
 // Multilingual Plane: Java tests UTF-16 chars, and a surrogate is neither.
 func hasLetterOrDigit(s string) bool {
 	for _, r := range s {
-		if r <= 0xFFFF && (unicode.IsLetter(r) || unicode.IsDigit(r)) {
+		if r <= 0xFFFF && (unicode15.IsLetter(r) || unicode15.IsDigit(r)) {
 			return true
 		}
 	}
@@ -234,7 +235,7 @@ func hasLetterOrDigit(s string) bool {
 // the rare words where that differs are pinned in the conformance suite.
 func lowerWord(s string) string {
 	if !strings.ContainsRune(s, 'Σ') {
-		return strings.ToLower(s)
+		return unicode15.ToLowerString(s)
 	}
 	runes := []rune(s)
 	first, last := -1, -1
@@ -252,7 +253,7 @@ func lowerWord(s string) string {
 		if r == 'Σ' && first < i && i == last {
 			r = 'ς'
 		} else {
-			r = unicode.ToLower(r)
+			r = unicode15.ToLower(r)
 		}
 		b.WriteRune(r)
 	}
@@ -261,8 +262,8 @@ func lowerWord(s string) string {
 
 // isCased is Unicode's Cased property; Java's set is narrower (U+10780 differs).
 func isCased(r rune) bool {
-	return unicode.IsUpper(r) || unicode.IsLower(r) || unicode.IsTitle(r) ||
-		unicode.In(r, unicode.Other_Lowercase, unicode.Other_Uppercase)
+	return unicode15.IsUpper(r) || unicode15.IsLower(r) || unicode15.IsTitle(r) ||
+		unicode15.In(r, unicode15.Other_Lowercase, unicode15.Other_Uppercase)
 }
 
 // stripMarks removes all Unicode combining marks (category M: Mn, Mc, Me)
@@ -271,7 +272,7 @@ func stripMarks(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
 	for _, r := range s {
-		if !unicode.In(r, unicode.Mn, unicode.Mc, unicode.Me) {
+		if !unicode15.In(r, unicode15.Mn, unicode15.Mc, unicode15.Me) {
 			b.WriteRune(r)
 		}
 	}

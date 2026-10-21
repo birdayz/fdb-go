@@ -7,8 +7,8 @@ package logical
 
 import (
 	"fmt"
-	"strings"
 
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -110,7 +110,7 @@ func FindOwnerInlineValues(op LogicalOperator, alias string) *LogicalInlineValue
 		}
 		switch typed := current.(type) {
 		case *LogicalInlineValues:
-			if !strings.EqualFold(typed.Alias, alias) {
+			if !unicode15.EqualFold(typed.Alias, alias) {
 				return
 			}
 			if found != nil && found != typed {

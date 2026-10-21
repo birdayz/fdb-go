@@ -10,6 +10,7 @@ import (
 	"database/sql/driver"
 	"strings"
 
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -76,7 +77,7 @@ func (c *EmbeddedConnection) execSystemTableQuery(ctx context.Context, sel antlr
 			"QUALIFY is not supported against INFORMATION_SCHEMA")
 	}
 
-	upper := strings.ToUpper(sq.tableName)
+	upper := unicode15.ToUpperString(sq.tableName)
 	const prefix = "INFORMATION_SCHEMA."
 	if !strings.HasPrefix(upper, prefix) {
 		// referencesInformationSchema matched somewhere in the parse tree, but

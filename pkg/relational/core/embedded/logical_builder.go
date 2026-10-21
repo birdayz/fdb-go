@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/core/functions"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
@@ -91,7 +92,7 @@ func logicalAggregateCalls(
 		preStrip := arg
 		arg = strip(arg)
 		call := logical.AggregateCall{
-			Func:       strings.ToUpper(ac.aggFunc),
+			Func:       unicode15.ToUpperString(ac.aggFunc),
 			Operand:    arg,
 			Star:       arg == "*",
 			Distinct:   ac.aggDistinct,
@@ -192,7 +193,7 @@ func buildAggregateOutputSlots(keys []logical.GroupKey, aggCols []aggSelectCol, 
 			if len(ac.groupColSegs) != 1 {
 				groupName = strip(ac.groupCol)
 			}
-			qualifierStripped := !strings.EqualFold(groupName, ac.groupCol)
+			qualifierStripped := !unicode15.EqualFold(groupName, ac.groupCol)
 			for i, key := range keys {
 				same := false
 				switch {
@@ -209,16 +210,16 @@ func buildAggregateOutputSlots(keys []logical.GroupKey, aggCols []aggSelectCol, 
 					// the projection failed its native-ordinal contract. For a
 					// flat stripped key Display and Bare are the same string,
 					// so this is the previous rule at that shape.
-					same = strings.EqualFold(groupName, key.Display)
+					same = unicode15.EqualFold(groupName, key.Display)
 				case ac.groupColBare != "" && key.Bare != "":
 					same = ac.groupColQualified == key.Qualified &&
-						strings.EqualFold(ac.groupColBare, key.Bare) &&
-						(!ac.groupColQualified || strings.EqualFold(ac.groupColQualifier, key.Qualifier))
+						unicode15.EqualFold(ac.groupColBare, key.Bare) &&
+						(!ac.groupColQualified || unicode15.EqualFold(ac.groupColQualifier, key.Qualifier))
 				default:
 					// Expression-redirected GROUP BY items have no column
 					// segments. Their parse-derived canonical rendering is
 					// the remaining identity channel.
-					same = strings.EqualFold(strings.TrimSpace(strip(ac.groupCol)), strings.TrimSpace(key.Display))
+					same = unicode15.EqualFold(strings.TrimSpace(strip(ac.groupCol)), strings.TrimSpace(key.Display))
 				}
 				if same {
 					// FIRST-MATCH, AND THE REASON IT IS SAFE IS NOT THE ONE THAT
@@ -679,7 +680,7 @@ func buildPostAggregateProjection(op logical.LogicalOperator, aggCols []aggSelec
 // table qualifier like "X.").
 func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix string) logical.LogicalOperator {
 	strip := func(s string) string {
-		if stripPrefix != "" && strings.HasPrefix(strings.ToUpper(s), stripPrefix) {
+		if stripPrefix != "" && strings.HasPrefix(unicode15.ToUpperString(s), stripPrefix) {
 			return s[len(stripPrefix):]
 		}
 		return s
@@ -903,7 +904,7 @@ func aggOperandCanonicalText(ctx antlr.Tree) string {
 			// DATA: the executor keys aggregate slots by this name, so
 			// `COUNT(CASE WHEN s='x' …)` and `… s='X' …` must stay distinct.
 			if foldsInCacheText(sym.GetTokenType()) {
-				b.WriteString(strings.ToUpper(sym.GetText()))
+				b.WriteString(unicode15.ToUpperString(sym.GetText()))
 			} else {
 				b.WriteString(sym.GetText())
 			}

@@ -6,8 +6,8 @@ package vectorindex
 
 import (
 	"math"
-	"strings"
 
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer"
 )
 
@@ -200,7 +200,7 @@ func parseGuardiannConfig(index *recordlayer.Index) (guardiannConfig, error) {
 	}
 	boolOpt := func(name string, set *bool) {
 		if v, ok := read(name); ok {
-			*set = strings.EqualFold(v, "true")
+			*set = unicode15.EqualFold(v, "true")
 		}
 	}
 	floatOpt(recordlayer.IndexOptionHNSWSampleVectorStatsProbability, &c.sampleVectorStatsProbability)

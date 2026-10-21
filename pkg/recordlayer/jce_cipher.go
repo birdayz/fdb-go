@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"fdb.dev/internal/unicode15"
 )
 
 // The AES transformations TransformedRecordSerializerJCE can run. Java
@@ -106,7 +108,7 @@ func parseJCETransformation(name string) (jceTransformation, error) {
 func parseJCETokens(name string) (jceTransformation, bool) {
 	tokens := strings.Split(name, "/")
 	for i, tok := range tokens {
-		tokens[i] = strings.ToUpper(strings.TrimFunc(tok, func(r rune) bool { return r <= ' ' }))
+		tokens[i] = unicode15.ToUpperString(strings.TrimFunc(tok, func(r rune) bool { return r <= ' ' }))
 		if tokens[i] == "" {
 			return jceTransformation{}, false
 		}

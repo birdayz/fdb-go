@@ -1,0 +1,9 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "gen",
+    srcs = ["gen.go"],
+    importpath = "fdb.dev/tools/unicode15gen/internal/gen",
+    visibility = ["//visibility:public"],
+    deps = ["@cc_mvdan_gofumpt//format"],
+)

@@ -15,6 +15,7 @@ import (
 	"weak"
 
 	"fdb.dev/gen"
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
@@ -205,7 +206,7 @@ func normalizeQueryBindings(tree antlr.ParseTree, md *recordlayer.RecordMetaData
 			if token != nil && token.GetTokenType() != antlr.TokenEOF {
 				spelling := token.GetText()
 				if foldsInCacheText(token.GetTokenType()) {
-					spelling = strings.ToUpper(spelling)
+					spelling = unicode15.ToUpperString(spelling)
 				}
 				appendText(spelling)
 			}

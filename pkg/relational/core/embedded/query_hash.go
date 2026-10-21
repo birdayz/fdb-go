@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"fdb.dev/internal/unicode15"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 	"github.com/antlr4-go/antlr/v4"
 )
@@ -139,7 +140,7 @@ func planCacheText(tree antlr.ParseTree) string {
 			}
 			text := tok.GetText()
 			if foldsInCacheText(tok.GetTokenType()) {
-				text = strings.ToUpper(text)
+				text = unicode15.ToUpperString(text)
 			}
 			b.WriteString(text)
 			return

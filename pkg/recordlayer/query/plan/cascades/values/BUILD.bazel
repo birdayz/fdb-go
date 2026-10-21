@@ -116,6 +116,7 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//gen",
+        "//internal/unicode15",
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer/javanum",
         "//pkg/recordlayer/protoname",
@@ -254,6 +255,7 @@ go_test(
         "type_test.go",
         "type_vector_test.go",
         "unbound_eval_context_test.go",
+        "unicode15_case_test.go",
         "unresolved_reference_test.go",
         "unstamped_child_of_stamped_parent_test.go",
         "unsynthesisable_name_stamping_test.go",
@@ -599,6 +601,7 @@ go_test(
         "census_export_test.go",
         "census_hooks.go",
         "census_sites.go",
+        "unicode15_case_test.go",
     ],
     deps = [
         "//gen",

@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/internal/fdbclient"
 )
 
@@ -178,7 +179,7 @@ func validateKnobValue(knob FDBClientKnob, value string) error {
 	case KnobValueDouble:
 		valid = javaDoubleSyntax.MatchString(value)
 	case KnobValueBoolean:
-		valid = strings.EqualFold(value, "true") || strings.EqualFold(value, "false") || isValidKnobInteger(value, 32)
+		valid = unicode15.EqualFold(value, "true") || unicode15.EqualFold(value, "false") || isValidKnobInteger(value, 32)
 	case KnobValueString:
 		valid = true
 	}

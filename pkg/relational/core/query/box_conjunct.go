@@ -26,8 +26,7 @@ package query
 // silent wrong-rows plan.
 
 import (
-	"strings"
-
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/core/query/logical"
@@ -91,20 +90,20 @@ func (t *cascadesTranslator) classifyLegConjunct(legs []clusterLeg, gateJoin *lo
 	boxLegs := map[string]struct{}{}
 	allowed := map[string]struct{}{}
 	for a := range outerBoundAliases(gateJoin) {
-		boxLegs[strings.ToUpper(a)] = struct{}{}
-		allowed[strings.ToUpper(a)] = struct{}{}
+		boxLegs[unicode15.ToUpperString(a)] = struct{}{}
+		allowed[unicode15.ToUpperString(a)] = struct{}{}
 	}
 	if u.Alias != "" {
-		allowed[strings.ToUpper(u.Alias)] = struct{}{}
+		allowed[unicode15.ToUpperString(u.Alias)] = struct{}{}
 	}
 	if u.AtAlias != "" {
-		allowed[strings.ToUpper(u.AtAlias)] = struct{}{}
+		allowed[unicode15.ToUpperString(u.AtAlias)] = struct{}{}
 	}
 	verdict := boxConjBakeable
 	for _, conj := range splitNonExistsPredicates(pred) {
 		predicates.ReplaceValues(conj, func(v values.Value) values.Value {
 			if qov, isQOV := values.AsQuantifiedObjectValue(v); isQOV {
-				if _, ok := allowed[strings.ToUpper(qov.Correlation().Name())]; !ok {
+				if _, ok := allowed[unicode15.ToUpperString(qov.Correlation().Name())]; !ok {
 					verdict = boxConjUnbakeable
 				}
 				return v

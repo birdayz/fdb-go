@@ -5,8 +5,7 @@
 package query
 
 import (
-	"strings"
-
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -140,7 +139,7 @@ func (t *cascadesTranslator) buildClusterPullUp(j *logical.LogicalJoin) *cluster
 				// positionally — the same rule as the seed's nullable wrap).
 				typ = values.WithNullability(typ, true).(*values.RecordType)
 			}
-			span := clusterLegSpan{binding: strings.ToUpper(leg.binding), start: offset, typ: typ}
+			span := clusterLegSpan{binding: unicode15.ToUpperString(leg.binding), start: offset, typ: typ}
 			if _, dup := pu.legByBinding[span.binding]; dup {
 				// Two legs binding the SAME correlation are unclassifiable —
 				// an unminted duplicate can only reach here through a path the
@@ -192,7 +191,7 @@ func (pu *clusterPullUp) bake(v values.Value) values.Value {
 	if !isQOV {
 		return v
 	}
-	alias := strings.ToUpper(qov.Correlation().Name())
+	alias := unicode15.ToUpperString(qov.Correlation().Name())
 	leg, isLeg := pu.legByBinding[alias]
 	if !isLeg {
 		return v
@@ -259,11 +258,11 @@ func innerLexicalBindings(op logical.LogicalOperator) map[string]struct{} {
 			if node.Binding == "" && node.PreserveMainSource {
 				walk(node.Main)
 			} else {
-				out[strings.ToUpper(sourceBinding(node))] = struct{}{}
+				out[unicode15.ToUpperString(sourceBinding(node))] = struct{}{}
 			}
 			return
 		case *logical.LogicalScan, *logical.LogicalInlineValues, *logical.LogicalUnnest:
-			out[strings.ToUpper(sourceBinding(op))] = struct{}{}
+			out[unicode15.ToUpperString(sourceBinding(op))] = struct{}{}
 			return
 		}
 		for _, child := range op.Children() {
@@ -299,7 +298,7 @@ func rebuildInnerInScope(op logical.LogicalOperator, rewrite func(values.Value) 
 	}
 	fn := func(v values.Value) values.Value {
 		for correlation := range values.GetCorrelatedToOfValue(v) {
-			if scope.contains(strings.ToUpper(correlation.Name())) {
+			if scope.contains(unicode15.ToUpperString(correlation.Name())) {
 				return v
 			}
 		}
@@ -343,7 +342,7 @@ func rebuildInnerInScope(op logical.LogicalOperator, rewrite func(values.Value) 
 		if exported == "" {
 			exported = o.Name()
 		}
-		mainBindings[strings.ToUpper(exported)] = struct{}{}
+		mainBindings[unicode15.ToUpperString(exported)] = struct{}{}
 		// The definition cannot see its own newly exported binding or Main's
 		// FROM locals. Other enclosing bindings remain visible, including an
 		// older same-named export in an enclosing lexical frame.
@@ -538,7 +537,7 @@ func collectClusterOuterRefs(op logical.LogicalOperator, outerAliases, skip map[
 		if !isQOV {
 			return v
 		}
-		alias := strings.ToUpper(qov.Correlation().Name())
+		alias := unicode15.ToUpperString(qov.Correlation().Name())
 		if _, isOuter := outerAliases[alias]; isOuter {
 			refs[alias] = struct{}{}
 		}
@@ -573,27 +572,27 @@ func outerSubtreeAliases(op logical.LogicalOperator) map[string]struct{} {
 			if a == "" {
 				a = o.Table
 			}
-			out[strings.ToUpper(a)] = struct{}{}
+			out[unicode15.ToUpperString(a)] = struct{}{}
 			if o.Binding != "" {
 				// A later duplicate leg is addressed ONLY by its minted
 				// binding (the resolver's QOV emission) — without this
 				// entry a binding-correlated reference is invisible to
 				// the guard and the classification silently skips it.
-				out[strings.ToUpper(o.Binding)] = struct{}{}
+				out[unicode15.ToUpperString(o.Binding)] = struct{}{}
 			}
 		case *logical.LogicalUnnest:
 			if o.Alias != "" {
-				out[strings.ToUpper(o.Alias)] = struct{}{}
+				out[unicode15.ToUpperString(o.Alias)] = struct{}{}
 			}
 			if o.AtAlias != "" {
-				out[strings.ToUpper(o.AtAlias)] = struct{}{}
+				out[unicode15.ToUpperString(o.AtAlias)] = struct{}{}
 			}
 			if o.Binding != "" {
-				out[strings.ToUpper(o.Binding)] = struct{}{}
+				out[unicode15.ToUpperString(o.Binding)] = struct{}{}
 			}
 		case *logical.LogicalCTE:
 			if o.Binding != "" || !o.PreserveMainSource {
-				out[strings.ToUpper(sourceBinding(o))] = struct{}{}
+				out[unicode15.ToUpperString(sourceBinding(o))] = struct{}{}
 			} else {
 				walk(o.Main)
 			}
@@ -686,7 +685,7 @@ func clusterProjectionsResolvable(p *logical.LogicalProject, csq logical.Correla
 						ok = false
 						return false
 					}
-					leg, isLeg := pu.legByBinding[strings.ToUpper(qov.Correlation().Name())]
+					leg, isLeg := pu.legByBinding[unicode15.ToUpperString(qov.Correlation().Name())]
 					if !isLeg {
 						ok = false
 						return false
@@ -771,7 +770,7 @@ func bakeClusterLegRefs(v values.Value, pu *clusterPullUp, seedQOV values.Value)
 		if !isQOV {
 			return node
 		}
-		alias := strings.ToUpper(qov.Correlation().Name())
+		alias := unicode15.ToUpperString(qov.Correlation().Name())
 		leg, found := pu.legByBinding[alias]
 		if !found {
 			return node
@@ -821,7 +820,7 @@ func clusterSeedSlotByName(pu *clusterPullUp, f string) (int, bool) {
 	pos := 0
 	for _, leg := range pu.legs {
 		for i := range leg.typ.Fields {
-			if strings.EqualFold(leg.binding+"."+leg.typ.Fields[i].Name, f) {
+			if unicode15.EqualFold(leg.binding+"."+leg.typ.Fields[i].Name, f) {
 				return pos + i, true
 			}
 		}
@@ -853,7 +852,7 @@ func (t *cascadesTranslator) translateClusteredOuterScalar(p *logical.LogicalPro
 	// The rightmost leg's BINDING — the name the resolver's outer-leg QOV
 	// emissions carry (== the alias upper form except for a later
 	// duplicate leg, where only the minted binding addresses the leg).
-	rightmost := strings.ToUpper(sourceBinding(p.Input))
+	rightmost := unicode15.ToUpperString(sourceBinding(p.Input))
 	// The classifier's skip set is the inner's WHOLE own-alias universe — the
 	// subquery alias plus every source the inner binds (join legs, unnest) —
 	// exactly the universe the ordinal path's shadow check uses. Skipping only
@@ -861,7 +860,7 @@ func (t *cascadesTranslator) translateClusteredOuterScalar(p *logical.LogicalPro
 	// refs whenever the inner joins a table the outer FROM also binds, and
 	// spuriously DECLINED a query the fallback handles today.
 	innerOwn := outerSubtreeAliases(csq.InnerPlan)
-	innerOwn[strings.ToUpper(csq.InnerAlias)] = struct{}{}
+	innerOwn[unicode15.ToUpperString(csq.InnerAlias)] = struct{}{}
 	refs, exhaustive := collectClusterOuterRefs(csq.InnerPlan, outerSubtreeAliases(p.Input), innerOwn)
 	nonRightmost := false
 	for a := range refs {

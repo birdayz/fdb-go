@@ -18,6 +18,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/vectorcodec"
 	"fdb.dev/pkg/relational/api"
@@ -38,7 +39,7 @@ func bindStatementParameters(tree antlr.Tree, args []driver.NamedValue) (func(),
 	named := map[string]any{}
 	for _, a := range args {
 		if a.Name != "" {
-			named[strings.ToUpper(a.Name)] = a.Value
+			named[unicode15.ToUpperString(a.Name)] = a.Value
 		} else {
 			positional = append(positional, a.Value)
 		}
@@ -63,7 +64,7 @@ func bindStatementParameters(tree antlr.Tree, args []driver.NamedValue) (func(),
 			case pp.NAMED_PARAMETER() != nil:
 				name := pp.NAMED_PARAMETER().GetText()[1:]
 				param = name
-				v, ok := named[strings.ToUpper(name)]
+				v, ok := named[unicode15.ToUpperString(name)]
 				if !ok {
 					return api.NewErrorf(api.ErrCodeUndefinedParameter, "No value found for parameter %s", name)
 				}

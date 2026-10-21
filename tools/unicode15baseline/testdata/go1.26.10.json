@@ -1,0 +1,484 @@
+{
+  "CodePoints": 1114112,
+  "Scalars": 1112064,
+  "Texts": 4186,
+  "CollationKeys": 2088,
+  "PropertiesSHA256": "6ee6e83a7c299f80417498863059d97977a70c4fec6d680f1776206047cb9c93",
+  "NormalizationSHA256": "f0b2b0fa662353c009f26f72830c1e7e6f14a47315af125cdab18054c36af6ec",
+  "TextSHA256": "71274b74809c5813a39fe49607a2d03dd03c5309fa9b47b704e7cd4609375629",
+  "CollationSHA256": "d07060602a890739ed09d9b9370d060449a98bda1c4926040b5053052b6830a4",
+  "Samples": [
+    {
+      "Input": "",
+      "Lower": "",
+      "Upper": "",
+      "Tokens": null
+    },
+    {
+      "Input": "A",
+      "Lower": "a",
+      "Upper": "A",
+      "Tokens": [
+        "a"
+      ]
+    },
+    {
+      "Input": "a",
+      "Lower": "a",
+      "Upper": "A",
+      "Tokens": [
+        "a"
+      ]
+    },
+    {
+      "Input": "ASCII 0123",
+      "Lower": "ascii 0123",
+      "Upper": "ASCII 0123",
+      "Tokens": [
+        "ascii",
+        "0123"
+      ]
+    },
+    {
+      "Input": "café naïve coöperate",
+      "Lower": "café naïve coöperate",
+      "Upper": "CAFÉ NAÏVE COÖPERATE",
+      "Tokens": [
+        "cafe",
+        "naive",
+        "cooperate"
+      ]
+    },
+    {
+      "Input": "İstanbul ıi I",
+      "Lower": "istanbul ıi i",
+      "Upper": "İSTANBUL II I",
+      "Tokens": [
+        "istanbul",
+        "ıi",
+        "i"
+      ]
+    },
+    {
+      "Input": "Straße STRASSE ß",
+      "Lower": "straße strasse ß",
+      "Upper": "STRAßE STRASSE ß",
+      "Tokens": [
+        "straße",
+        "strasse",
+        "ß"
+      ]
+    },
+    {
+      "Input": "ΟΔΟΣ ΣΟΦΟΣ Σ ΣΑ ΑΣ. ΑΣ'Σ",
+      "Lower": "οδοσ σοφοσ σ σα ασ. ασ'σ",
+      "Upper": "ΟΔΟΣ ΣΟΦΟΣ Σ ΣΑ ΑΣ. ΑΣ'Σ",
+      "Tokens": [
+        "οδος",
+        "σοφος",
+        "σ",
+        "σα",
+        "ας",
+        "ασ'ς"
+      ]
+    },
+    {
+      "Input": "Ὀδυσσεύς",
+      "Lower": "ὀδυσσεύς",
+      "Upper": "ὈΔΥΣΣΕΎΣ",
+      "Tokens": [
+        "οδυσσευς"
+      ]
+    },
+    {
+      "Input": "ΑΣͺ",
+      "Lower": "ασͺ",
+      "Upper": "ΑΣͺ",
+      "Tokens": [
+        "ασ "
+      ]
+    },
+    {
+      "Input": "ĿΣ",
+      "Lower": "ŀσ",
+      "Upper": "ĿΣ",
+      "Tokens": [
+        "l·ς"
+      ]
+    },
+    {
+      "Input": "ΑΣﹰΒ",
+      "Lower": "ασﹰβ",
+      "Upper": "ΑΣﹰΒ",
+      "Tokens": [
+        "ασ β"
+      ]
+    },
+    {
+      "Input": "𐞀Σ",
+      "Lower": "𐞀σ",
+      "Upper": "𐞀Σ",
+      "Tokens": [
+        "𐞀ς"
+      ]
+    },
+    {
+      "Input": "AΣʕ",
+      "Lower": "aσʕ",
+      "Upper": "AΣʕ",
+      "Tokens": [
+        "aσʕ"
+      ]
+    },
+    {
+      "Input": "x:y",
+      "Lower": "x:y",
+      "Upper": "X:Y",
+      "Tokens": [
+        "x:y"
+      ]
+    },
+    {
+      "Input": "foo_bar __init__ a_1 _",
+      "Lower": "foo_bar __init__ a_1 _",
+      "Upper": "FOO_BAR __INIT__ A_1 _",
+      "Tokens": [
+        "foo_bar",
+        "__init__",
+        "a_1"
+      ]
+    },
+    {
+      "Input": "中华人民共和国",
+      "Lower": "中华人民共和国",
+      "Upper": "中华人民共和国",
+      "Tokens": [
+        "中",
+        "华",
+        "人",
+        "民",
+        "共",
+        "和",
+        "国"
+      ]
+    },
+    {
+      "Input": "한국어 문장입니다",
+      "Lower": "한국어 문장입니다",
+      "Upper": "한국어 문장입니다",
+      "Tokens": [
+        "한국어",
+        "문장입니다"
+      ]
+    },
+    {
+      "Input": "مرحبا بالعالم",
+      "Lower": "مرحبا بالعالم",
+      "Upper": "مرحبا بالعالم",
+      "Tokens": [
+        "مرحبا",
+        "بالعالم"
+      ]
+    },
+    {
+      "Input": "שלום עולם",
+      "Lower": "שלום עולם",
+      "Upper": "שלום עולם",
+      "Tokens": [
+        "שלום",
+        "עולם"
+      ]
+    },
+    {
+      "Input": "नमस्ते दुनिया",
+      "Lower": "नमस्ते दुनिया",
+      "Upper": "नमस्ते दुनिया",
+      "Tokens": [
+        "नमसत",
+        "दनय"
+      ]
+    },
+    {
+      "Input": "Привет мир ЁЖ",
+      "Lower": "привет мир ёж",
+      "Upper": "ПРИВЕТ МИР ЁЖ",
+      "Tokens": [
+        "привет",
+        "мир",
+        "еж"
+      ]
+    },
+    {
+      "Input": "Ᲊ",
+      "Lower": "Ᲊ",
+      "Upper": "Ᲊ",
+      "Tokens": null
+    },
+    {
+      "Input": "Ɤ",
+      "Lower": "Ɤ",
+      "Upper": "Ɤ",
+      "Tokens": null
+    },
+    {
+      "Input": "꟎",
+      "Lower": "꟎",
+      "Upper": "꟎",
+      "Tokens": null
+    },
+    {
+      "Input": "꟱",
+      "Lower": "꟱",
+      "Upper": "꟱",
+      "Tokens": null
+    },
+    {
+      "Input": "𜳖",
+      "Lower": "𜳖",
+      "Upper": "𜳖",
+      "Tokens": null
+    },
+    {
+      "Input": "𜳰",
+      "Lower": "𜳰",
+      "Upper": "𜳰",
+      "Tokens": null
+    },
+    {
+      "Input": "᫏",
+      "Lower": "᫏",
+      "Upper": "᫏",
+      "Tokens": null
+    },
+    {
+      "Input": "ࢗ",
+      "Lower": "ࢗ",
+      "Upper": "ࢗ",
+      "Tokens": null
+    },
+    {
+      "Input": "ɤ",
+      "Lower": "ɤ",
+      "Upper": "ɤ",
+      "Tokens": [
+        "ɤ"
+      ]
+    },
+    {
+      "Input": "ʕ",
+      "Lower": "ʕ",
+      "Upper": "ʕ",
+      "Tokens": [
+        "ʕ"
+      ]
+    },
+    {
+      "Input": "ﬅ",
+      "Lower": "ﬅ",
+      "Upper": "ﬅ",
+      "Tokens": [
+        "st"
+      ]
+    },
+    {
+      "Input": "ﬆ",
+      "Lower": "ﬆ",
+      "Upper": "ﬆ",
+      "Tokens": [
+        "st"
+      ]
+    },
+    {
+      "Input": "ΐ",
+      "Lower": "ΐ",
+      "Upper": "ΐ",
+      "Tokens": [
+        "ι"
+      ]
+    },
+    {
+      "Input": "ΐ",
+      "Lower": "ΐ",
+      "Upper": "ΐ",
+      "Tokens": [
+        "ι"
+      ]
+    },
+    {
+      "Input": "ΰ",
+      "Lower": "ΰ",
+      "Upper": "ΰ",
+      "Tokens": [
+        "υ"
+      ]
+    },
+    {
+      "Input": "ΰ",
+      "Lower": "ΰ",
+      "Upper": "ΰ",
+      "Tokens": [
+        "υ"
+      ]
+    },
+    {
+      "Input": "ꟓ",
+      "Lower": "ꟓ",
+      "Upper": "ꟓ",
+      "Tokens": [
+        "ꟓ"
+      ]
+    },
+    {
+      "Input": "ꟕ",
+      "Lower": "ꟕ",
+      "Upper": "ꟕ",
+      "Tokens": [
+        "ꟕ"
+      ]
+    },
+    {
+      "Input": "𘳿",
+      "Lower": "𘳿",
+      "Upper": "𘳿",
+      "Tokens": null
+    },
+    {
+      "Input": "𲎰",
+      "Lower": "𲎰",
+      "Upper": "𲎰",
+      "Tokens": null
+    },
+    {
+      "Input": "𮯰",
+      "Lower": "𮯰",
+      "Upper": "𮯰",
+      "Tokens": null
+    },
+    {
+      "Input": "𐵀",
+      "Lower": "𐵀",
+      "Upper": "𐵀",
+      "Tokens": null
+    },
+    {
+      "Input": "𑷠",
+      "Lower": "𑷠",
+      "Upper": "𑷠",
+      "Tokens": null
+    },
+    {
+      "Input": "𐵐",
+      "Lower": "𐵐",
+      "Upper": "𐵐",
+      "Tokens": null
+    },
+    {
+      "Input": "𖺠",
+      "Lower": "𖺠",
+      "Upper": "𖺠",
+      "Tokens": null
+    },
+    {
+      "Input": "𐐔",
+      "Lower": "𐐼",
+      "Upper": "𐐔",
+      "Tokens": null
+    },
+    {
+      "Input": "𝐀𝐁𝐂 𝟙𝟚",
+      "Lower": "𝐀𝐁𝐂 𝟙𝟚",
+      "Upper": "𝐀𝐁𝐂 𝟙𝟚",
+      "Tokens": [
+        "abc",
+        "12"
+      ]
+    },
+    {
+      "Input": "Ⅻ ⅻ ℃",
+      "Lower": "ⅻ ⅻ ℃",
+      "Upper": "Ⅻ Ⅻ ℃",
+      "Tokens": [
+        "xii",
+        "xii",
+        "°c"
+      ]
+    },
+    {
+      "Input": "ﬁnance ﬂ ǅ ǆ",
+      "Lower": "ﬁnance ﬂ ǆ ǆ",
+      "Upper": "ﬁNANCE ﬂ Ǆ Ǆ",
+      "Tokens": [
+        "finance",
+        "fl",
+        "dz",
+        "dz"
+      ]
+    },
+    {
+      "Input": "ＡＢＣ１２３ ｶﾀｶﾅ",
+      "Lower": "ａｂｃ１２３ ｶﾀｶﾅ",
+      "Upper": "ＡＢＣ１２３ ｶﾀｶﾅ",
+      "Tokens": [
+        "abc123",
+        "カタカナ"
+      ]
+    },
+    {
+      "Input": "ıd",
+      "Lower": "ıd",
+      "Upper": "ID",
+      "Tokens": [
+        "ıd"
+      ]
+    },
+    {
+      "Input": "ſelect",
+      "Lower": "ſelect",
+      "Upper": "SELECT",
+      "Tokens": [
+        "select"
+      ]
+    },
+    {
+      "Input": "\"ıd\"",
+      "Lower": "\"ıd\"",
+      "Upper": "\"ID\"",
+      "Tokens": [
+        "ıd"
+      ]
+    },
+    {
+      "Input": "a\ufffdb",
+      "Lower": "a�b",
+      "Upper": "A�B",
+      "Tokens": [
+        "a",
+        "b"
+      ]
+    },
+    {
+      "Input": "\ufffd\ufffd",
+      "Lower": "��",
+      "Upper": "��",
+      "Tokens": null
+    },
+    {
+      "Input": "\ufffd\ufffd\ufffd",
+      "Lower": "���",
+      "Upper": "���",
+      "Tokens": null
+    }
+  ],
+  "FoldPairs": [
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    true
+  ]
+}

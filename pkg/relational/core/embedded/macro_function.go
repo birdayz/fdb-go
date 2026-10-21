@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
@@ -208,7 +209,7 @@ func unknownScalarFunction(n antlr.Tree, md *recordlayer.RecordMetaData) string 
 	}
 	if udf, ok := n.(*antlrgen.UserDefinedScalarFunctionCallContext); ok && udf.UserDefinedScalarFunctionName() != nil {
 		name := udf.UserDefinedScalarFunctionName().GetText()
-		if !isAllowedFunction(strings.ToUpper(name)) && !hasMacro(md, functions.NormalizeIdentifier(name)) {
+		if !isAllowedFunction(unicode15.ToUpperString(name)) && !hasMacro(md, functions.NormalizeIdentifier(name)) {
 			// visitUserDefinedScalarFunctionCall reports the normalized name.
 			return functions.NormalizeIdentifier(name)
 		}

@@ -11,8 +11,8 @@ package plans
 import (
 	"math"
 	"slices"
-	"strings"
 
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
@@ -823,7 +823,7 @@ func nestedColumnCanExtendOrderingClaim(keyTypes []values.Type, i int, layout va
 		}
 		ordinal := -1
 		for j, field := range record.Fields {
-			if strings.EqualFold(field.Name, name) {
+			if unicode15.EqualFold(field.Name, name) {
 				if ordinal >= 0 {
 					return false
 				}
@@ -998,7 +998,7 @@ func orderingColumnOfPath(root values.Value, layout values.Type, path []string) 
 		}
 		ordinal := -1
 		for j, field := range record.Fields {
-			if strings.EqualFold(field.Name, name) {
+			if unicode15.EqualFold(field.Name, name) {
 				if ordinal >= 0 {
 					return nil
 				}
