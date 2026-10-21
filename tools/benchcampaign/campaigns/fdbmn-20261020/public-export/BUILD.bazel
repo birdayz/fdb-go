@@ -6,6 +6,10 @@ sh_test(
     srcs = ["test.sh"],
     data = [
         "export_public_results.py",
+        "export_throughput.py",
+        "m2_throughput.py",
         "test_export_public_results.py",
+        "test_m2_throughput.py",
+        "test_throughput.py",
     ],
 )
