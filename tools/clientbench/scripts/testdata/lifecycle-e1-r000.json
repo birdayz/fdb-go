@@ -1,0 +1,94 @@
+{
+  "backend": {
+    "native_library": false
+  },
+  "lifecycle": {
+    "complete": true,
+    "database_closed": true,
+    "measurement_barrier_complete": true,
+    "measurement_drain": {
+      "after": {
+        "cleanups_executed_estimate": 22002,
+        "cleanups_queued_estimate": 22002,
+        "finalizers_executed": 0,
+        "finalizers_queued": 0,
+        "gc_cycles": 219
+      },
+      "before": {
+        "cleanups_executed_estimate": 21977,
+        "cleanups_queued_estimate": 21977,
+        "finalizers_executed": 0,
+        "finalizers_queued": 0,
+        "gc_cycles": 217
+      },
+      "complete": true,
+      "rounds": 2,
+      "wall_ns": 1884840
+    },
+    "network_stopped": false,
+    "shutdown_drain": {
+      "after": {
+        "cleanups_executed_estimate": 22003,
+        "cleanups_queued_estimate": 22003,
+        "finalizers_executed": 0,
+        "finalizers_queued": 0,
+        "gc_cycles": 221
+      },
+      "before": {
+        "cleanups_executed_estimate": 22002,
+        "cleanups_queued_estimate": 22002,
+        "finalizers_executed": 0,
+        "finalizers_queued": 0,
+        "gc_cycles": 219
+      },
+      "complete": true,
+      "rounds": 2,
+      "wall_ns": 1116866
+    },
+    "stats_after_measurement_drain": {
+      "go_gc_cycles": 219,
+      "go_gc_pause_ns": 17641714,
+      "go_mallocs": 1265505,
+      "go_total_alloc_bytes": 971487168,
+      "process_high_water_rss_kb": 38336,
+      "process_system_cpu_us": 530320,
+      "process_user_cpu_us": 1516497
+    },
+    "stats_after_shutdown": {
+      "go_gc_cycles": 221,
+      "go_gc_pause_ns": 17688414,
+      "go_mallocs": 1353582,
+      "go_total_alloc_bytes": 972128336,
+      "process_high_water_rss_kb": 38336,
+      "process_system_cpu_us": 535444,
+      "process_user_cpu_us": 1522035
+    }
+  },
+  "stats_after": {
+    "go_gc_cycles": 217,
+    "go_gc_pause_ns": 17583032,
+    "go_mallocs": 1265438,
+    "go_total_alloc_bytes": 971465576,
+    "process_high_water_rss_kb": 38336,
+    "process_system_cpu_us": 527687,
+    "process_user_cpu_us": 1515221
+  },
+  "stats_after_identity": {
+    "go_gc_cycles": 0,
+    "go_gc_pause_ns": 0,
+    "go_mallocs": 1408,
+    "go_total_alloc_bytes": 299088,
+    "process_high_water_rss_kb": 38336,
+    "process_system_cpu_us": 4057,
+    "process_user_cpu_us": 5063
+  },
+  "stats_before": {
+    "go_gc_cycles": 29,
+    "go_gc_pause_ns": 1527643,
+    "go_mallocs": 139323,
+    "go_total_alloc_bytes": 95641304,
+    "process_high_water_rss_kb": 38336,
+    "process_system_cpu_us": 61547,
+    "process_user_cpu_us": 131833
+  }
+}

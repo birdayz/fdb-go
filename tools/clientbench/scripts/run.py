@@ -192,8 +192,7 @@ def validate_lifecycle(summary):
                 any(after[k] < before[k] for k in before) or
                 after['gc_cycles'] < before['gc_cycles'] + drain['rounds'] or
                 after['finalizers_executed'] != after['finalizers_queued'] or
-                after['cleanups_executed_estimate'] != after['cleanups_queued_estimate'] or
-                after['cleanups_queued_estimate'] != before['cleanups_queued_estimate']):
+                after['cleanups_executed_estimate'] != after['cleanups_queued_estimate']):
             raise ValueError('incomplete finalizer fixpoint: ' + name)
     snapshots = [summary['stats_after_identity'], summary['stats_before'], summary['stats_after'],
                  life['stats_after_measurement_drain'], life['stats_after_shutdown']]

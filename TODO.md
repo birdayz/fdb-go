@@ -348,9 +348,10 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
     native GRV without derived contexts and the first native commit inline (#947, 89 →
     67 allocations per `set100` transaction); the TIMEOUT timer no longer retains
     finished transactions (#948).
-  - [ ] **RFC-263 B1 / generation-scoped timeout merge gates.** Revision 6 is implemented,
-    with canonical resurrection/C7 regressions and compiled mutation proofs
-    ([evidence](docs/benchmarks/rfc-263/rev6-production-evidence.md)); acceptance remains open.
+  - [x] **RFC-263 B1 / generation-scoped timeout merge gates.** Revision 6 merged in
+    #973 (`ee05cf5b6`), with canonical resurrection/C7 regressions and compiled mutation
+    proofs ([evidence](docs/benchmarks/rfc-263/rev6-production-evidence.md));
+    all B1 merge gates passed.
     The later non-inferiority confirmation cleared only the 8w p999 blocker: 97.5% upper
     bounds 1.005 (get) and 1.041 (set), both <1.05
     ([confirmation](docs/benchmarks/rfc-263/rev6-confirm-results.md)). The original screen's
@@ -367,18 +368,18 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
     retrospectively neutralized by the later NI rule. P999 clearance did not waive
     either CPU criterion. Get A/A log SD
     0.25–0.27 exceeded planned 0.15, so planned power was not established despite clearance.
-    Set epoch ratios 0.965 → 1.054 and order/serial effects remain disclosed. Owner-run
-    full/full-race, all five official final-HEAD reviews, CI and owner merge
-    approval remain open. B3a/B3b are separate work below.
-  - [ ] **Clientbench lifecycle validator: allow cleanup queued during a completed drain (separate PR).**
-    `tools/clientbench/scripts/run.py:validate_lifecycle` incorrectly requires cleanup
-    queued at exit to equal entry; forced GC legitimately queues baseline-fa as well
-    as RFC-263 transaction `AddCleanup` work. Keep complete=true, 2–16 rounds,
-    executed=queued at exit, counter/GC and every other lifecycle/resource check;
-    update the rejecting fixture and add pending-queue/incomplete/round-limit controls.
-    RFC-263 CPU amendment A1 fixes only its CPU-specific helper and preserves the
-    invalid original epoch; the shared runner remains unchanged here. See
-    [A1 and census evidence](docs/benchmarks/rfc-263/rev6-cpu-plan.md#amendment-a1-lifecycle-fixpoint-2026-10-20).
+    Set epoch ratios 0.965 → 1.054 and order/serial effects remain disclosed. The owner's
+    final race passed 157/157 targets and full passed 210/210, including `client_test`;
+    all five official final-HEAD reviews and CI (7/7) passed before merge.
+    B3a/B3b are separate work below.
+  - [x] **Clientbench lifecycle validator: allow cleanup queued during a completed drain.**
+    `tools/clientbench/scripts/run.py:validate_lifecycle` now drops only the entry/exit
+    cleanup-queued equality, matching the producer's fixpoint and RFC-263 CPU amendment A1.
+    The real e1-r000 lifecycle-only fixture passes; pending exit cleanup, incomplete
+    drains and >16 rounds fail. Complete=true, 2–16 rounds, executed=queued at exit,
+    counter/GC and every other lifecycle/resource check remain. The standalone A1
+    helper stays byte-identical for frozen replay; the original epoch remains invalid.
+    See [A1 and census evidence](docs/benchmarks/rfc-263/rev6-cpu-plan.md#amendment-a1-lifecycle-fixpoint-2026-10-20).
   - [ ] **RFC-263 B3a/B3b follow-up.** Deferred lazy-incarnation/turnover work is not part
     of B1. The broader Client CPU per transaction parent item remains open.
   - Remaining hot spots on `set100` (67 allocations, 7.8 KB per transaction): each
