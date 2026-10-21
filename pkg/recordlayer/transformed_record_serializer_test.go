@@ -240,7 +240,7 @@ func TestTransformedSerializer_PrefixRefusals(t *testing.T) {
 		{"empty", "transformation prefix malformed", nil},
 		{
 			"encrypted, key past int", "unrecognized transformation encoding",
-			pad(protowire.AppendVarint(nil, transformPrefixEncrypted+(uint64(1<<31))<<3)),
+			pad(protowire.AppendVarint(nil, transformPrefixEncrypted+uint64(1<<31)<<3)),
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {

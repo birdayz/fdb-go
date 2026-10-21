@@ -48,13 +48,10 @@
     "exclude_files": {
       "metadata_proto": "uses deprecated proto fields intentionally",
       "metadata_extension_options": "reads the deprecated (field).indexed option, as Java's setRecords does",
-      "key_expression_absent_child_conformance": "sets the deprecated record_count_key, which Java's loader still reads"
-    }
-  },
-  "SA5011": {
-    "exclude_files": {
-      "_test\\.go$": "t.Fatal guards are not understood by SA5011",
-      "pkg/relational/sqltest/testkit/": "test helpers outside _test.go files; t.Fatal guards are not understood by SA5011"
+      "key_expression_absent_child_conformance": "sets the deprecated record_count_key, which Java's loader still reads",
+      "conformance/extension_options_conformance_test\\.go$": "tests Java's legacy (field).indexed option",
+      "conformance/ws_j_index_fidelity_conformance_test\\.go$": "compares Java's legacy value_expression and index_type loading",
+      "pkg/relational/core/catalog/template_version_guard_fdb_test\\.go$": "verifies deprecated value_expression survives raw metadata loading"
     }
   },
   "SA9004": {

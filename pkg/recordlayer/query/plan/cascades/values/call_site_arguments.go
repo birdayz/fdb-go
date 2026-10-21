@@ -43,6 +43,7 @@ func (a CallSiteArguments) IsWindowed() bool            { return !a.window.IsNon
 func (a CallSiteArguments) HasOptions() bool            { return !a.options.IsEmpty() }
 func (a CallSiteArguments) Arity() int                  { return len(a.values) }
 func (a CallSiteArguments) IsSimple() bool              { return !a.IsWindowed() && !a.HasOptions() }
+
 func (a CallSiteArguments) WithOptions(o CallSiteOptions) CallSiteArguments {
 	a.options = o
 	return a

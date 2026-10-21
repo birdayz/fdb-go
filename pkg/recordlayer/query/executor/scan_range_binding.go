@@ -542,7 +542,6 @@ func bindScanComparisonsToRangeSetWithTerminalWideningAndCompatibility(
 				component.alternatives = []any{negativeZeroLike(value)}
 				bound.components = append(bound.components, component)
 				bound.terminalZeroIndex = len(bound.components) - 1
-				equalityCount++
 				return bound.spec(), nil
 			}
 			if reverse {

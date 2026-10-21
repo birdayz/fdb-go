@@ -26,7 +26,8 @@ type benchResult struct {
 	Iterations int64
 }
 
-func (r benchResult) GoAvgUs() float64   { return float64(r.GoNanos) / float64(r.Iterations) / 1000 }
+func (r benchResult) GoAvgUs() float64 { return float64(r.GoNanos) / float64(r.Iterations) / 1000 }
+
 func (r benchResult) JavaAvgUs() float64 { return float64(r.JavaNanos) / float64(r.Iterations) / 1000 }
 func (r benchResult) Ratio() float64     { return r.GoAvgUs() / r.JavaAvgUs() }
 

@@ -1184,7 +1184,9 @@ func (tx *simTxn) BitXor(key fdb.KeyConvertible, param []byte)  { tx.atomic(atom
 func (tx *simTxn) Max(key fdb.KeyConvertible, param []byte)     { tx.atomic(atomicMax, key, param) }
 func (tx *simTxn) Min(key fdb.KeyConvertible, param []byte)     { tx.atomic(atomicMin, key, param) }
 func (tx *simTxn) ByteMax(key fdb.KeyConvertible, param []byte) { tx.atomic(atomicByteMax, key, param) }
+
 func (tx *simTxn) ByteMin(key fdb.KeyConvertible, param []byte) { tx.atomic(atomicByteMin, key, param) }
+
 func (tx *simTxn) AppendIfFits(key fdb.KeyConvertible, param []byte) {
 	tx.atomic(atomicAppendIfFits, key, param)
 }

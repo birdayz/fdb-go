@@ -102,10 +102,13 @@ type ClientMetrics struct {
 // observeReadLatency/Commit/GRV/Total record one latency sample (RFC-114). nil-safe
 // for hand-constructed test databases is unnecessary — the sketches are value
 // fields of ClientMetrics, always present.
-func (m *ClientMetrics) observeReadLatency(d time.Duration)   { m.readLatency.addSample(d.Seconds()) }
+func (m *ClientMetrics) observeReadLatency(d time.Duration) { m.readLatency.addSample(d.Seconds()) }
+
 func (m *ClientMetrics) observeCommitLatency(d time.Duration) { m.commitLatency.addSample(d.Seconds()) }
-func (m *ClientMetrics) observeGRVLatency(d time.Duration)    { m.grvLatency.addSample(d.Seconds()) }
-func (m *ClientMetrics) observeTotalLatency(d time.Duration)  { m.totalLatency.addSample(d.Seconds()) }
+
+func (m *ClientMetrics) observeGRVLatency(d time.Duration) { m.grvLatency.addSample(d.Seconds()) }
+
+func (m *ClientMetrics) observeTotalLatency(d time.Duration) { m.totalLatency.addSample(d.Seconds()) }
 
 // countConnectionFailure records one connection/dial failure (RFC-114), the
 // single sink handleConnError routes through.

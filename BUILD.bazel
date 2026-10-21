@@ -174,7 +174,7 @@ nogo(
         "@co_honnef_go_tools//staticcheck/sa5008",
         "@co_honnef_go_tools//staticcheck/sa5009",
         "@co_honnef_go_tools//staticcheck/sa5010",
-        "@co_honnef_go_tools//staticcheck/sa5011",
+        # SA5011 was retired in upstream 5161aaa18; nilness above checks proven nil uses.
         "@co_honnef_go_tools//staticcheck/sa5012",
         "@co_honnef_go_tools//staticcheck/sa6000",
         "@co_honnef_go_tools//staticcheck/sa6001",

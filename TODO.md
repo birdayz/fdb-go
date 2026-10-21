@@ -1975,3 +1975,10 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   `conformance/testdata/unicode15_java.json`, immutable
   `tools/unicode15baseline/testdata/go1.26.10.json` and the raw write/update/delete
   fixtures plus mixed-compiler harness in `tools/unicode15store/`.
+
+## Static analysis coverage
+
+- [ ] Restore the dereference-then-later-nil-check coverage when an upstream-supported
+  SA5011 replacement is available. Staticcheck 2026.2 retired SA5011 in `5161aaa18`;
+  nogo's enabled x/tools `nilness` checks proven-nil uses but not that pattern.
+  See CHANGELOG.md, Unreleased.

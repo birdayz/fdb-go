@@ -76,8 +76,15 @@ Each is described in full under Compatibility or Changed below.
 - **DSN booleans are strictly `true`/`false`** (any case): a bare `?flag`, `1`/`0`, `t`/`f`,
   `yes`/`no` and `on`/`off` now fail at open with 22023.
 - **Required versions:** Java `fdb-record-layer-core` **4.14.2.0**, FDB C++ client **7.3.77**, Go
-  **1.26.0** or newer (`go.mod` says `go 1.26.0`; its `toolchain go1.26.10` line pins the
-  toolchain this repository builds and tests with).
+  **1.27.3** or newer (`go.mod` enforces this minimum).
+- **Go 1.27 runtime defaults** apply to applications built with this module, because their
+  `go` line must be at least 1.27.3:
+  - `x509sslcertoverrideplatform=1`: on macOS and Windows, a nonempty `SSL_CERT_FILE` or
+    `SSL_CERT_DIR` replaces the platform certificate verifier. Pure-Go client TLS connections
+    without a configured CA file are affected. Add `godebug x509sslcertoverrideplatform=0`
+    to the application's `go.mod` to keep the previous behavior.
+  - `tracebacklabels=1`: tracebacks include goroutine labels.
+  - Legacy GODEBUG values removed in Go 1.27 abort program startup if set.
 
 ### Added
 - Pure-Go `fdb.MappedRangeReader` capability with byte-driven batch iteration for exact primary ranges; the libfdb_c backend does not expose it.
@@ -88,11 +95,10 @@ Each is described in full under Compatibility or Changed below.
   and tags now apply to every statement transaction, autocommit and read-only ones included.
 
 ### Changed
-- Development builds use Bazel 9.3.1, Bazelisk 1.30.0, and updated stable BCR build rules; the Go toolchain remains go1.26.10.
-- Builds and `frl` release binaries use go1.26.10 (GO-2026-6809, `crypto/x509`).
-  The pure-Go client's TLS uses `crypto/x509` (`pkg/fdbgo/client/tls.go`). A
-  dependency's `toolchain` line does not affect downstream builds; applications
-  must select a patched Go toolchain themselves.
+- Development builds use Bazel 9.3.1, Bazelisk 1.30.0, and updated stable BCR build rules.
+- Require Go 1.27 (minimum toolchain Go 1.27.3).
+- Go 1.27.3 includes the GO-2026-6809 `crypto/x509` fix used by pure-Go client TLS.
+- Staticcheck 2026.2 retires SA5011 (upstream `5161aaa18`); nogo keeps x/tools `nilness`, which checks proven-nil uses but does not replace SA5011's dereference-then-later-nil-check coverage. Its upstream replacement is tracked in TODO.md.
 - Remote-fetch index scans avoid per-row raw/pending wrappers and read-only local-version key repacking. A fixed 1,000-row benchmark reduces remote-fetch median allocations from 35,988 to 21,915 per scan (39.10%) and bytes from 3,381,658 to 2,640,724 (21.91%); returned records and entries remain independently owned. See [RFC-258 PR4 measurements](https://github.com/birdayz/fdb-go/blob/master/docs/benchmarks/rfc-258-pr4-allocations.md) for scope and reproduction; unquiet timings are informational only.
 - Record scans follow Java's scanTypedRecords: sizes include inline versions, every key-value is charged, scan, byte and time limits finish the record that crosses them, and `FDBStoredRecord.VersionedInline` is reported. A page ending exactly at its row limit now stops with `ReturnLimitReached` and a resumable token, so the next page is empty. `CountRecords` follows Java's countRecords: it ignores `ReturnedRowLimit` and `TimeLimit`, and on unsplit stores with inline versions counts key-values (about twice the records).
 - SQL pages under `EXECUTION_SCANNED_ROWS_LIMIT`, `EXECUTION_SCANNED_BYTES_LIMIT` or a time limit that end in a table scan now finish the record that crosses the limit, so a page returns one row more than a single-key-value budget. `ExecutionStats.RecordsScanned` counts a table scan's key-values, so a table with `STORE_ROW_VERSIONS` charges two per row.

@@ -1,8 +1,6 @@
 module fdb.dev/tools/bazelscaleset
 
-go 1.26.4
-
-toolchain go1.26.10
+go 1.27.3
 
 require (
 	github.com/actions/scaleset v0.4.0

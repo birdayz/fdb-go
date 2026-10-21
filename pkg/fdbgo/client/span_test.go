@@ -121,7 +121,7 @@ func TestBatchGRVSpanContext(t *testing.T) {
 			if !isSampled(got) || got.TraceID == ([16]byte{}) {
 				t.Errorf("batch %+v: want sampled non-zero root, got %+v", batch, got)
 			}
-			if got.TraceID == (sampledSpan(3)).TraceID {
+			if got.TraceID == sampledSpan(3).TraceID {
 				t.Error("must not adopt the sampled tx's traceID")
 			}
 		}
