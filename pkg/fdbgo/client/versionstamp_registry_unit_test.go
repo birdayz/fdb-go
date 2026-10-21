@@ -207,16 +207,16 @@ func TestVersionstampRegistryRetirement(t *testing.T) {
 				}
 				requireRegistry(t, tx, inc, latest.completion, 2, older.completion)
 				tx.readErrMu.Lock()
-				gen := inc.timerGen
-				inc.timer.Stop()
+				arm := tx.timeoutArm
+				tx.timeoutNode.queue.remove(tx.timeoutNode)
 				tx.readErrMu.Unlock()
 				want := 1025
 				if timeoutFirst {
 					want = 1031
-					tx.fireReadTimeout(inc, gen)
+					tx.fireTimeout(arm)
 				}
 				tx.Cancel()
-				tx.fireReadTimeout(inc, gen)
+				tx.fireTimeout(arm)
 				requireRegistry(t, tx, inc, latest.completion, 0)
 				tx.Reset()
 				fresh := registryStamp(t, tx)

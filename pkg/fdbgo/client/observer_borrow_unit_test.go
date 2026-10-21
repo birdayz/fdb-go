@@ -77,9 +77,9 @@ func TestOnErrorBorrowedAdmissionIsReadOnly(t *testing.T) {
 			state, retries, backoff := tx.state.Load(), tx.retryCount, tx.backoff
 			cause := tx.readIncarnationCause(op.inc)
 			tx.readErrMu.Lock()
-			hasTimer := op.inc.timer != nil
+			armed := tx.timeoutArmed
 			tx.readErrMu.Unlock()
-			if hasTimer {
+			if armed {
 				t.Fatal("borrowed test unexpectedly armed an ambient timebomb")
 			}
 			err := tx.OnError(caller, tc.input)

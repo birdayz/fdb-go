@@ -53,6 +53,7 @@ go_library(
         "sizelimits.go",
         "span.go",
         "tag_throttle.go",
+        "timeout_queue.go",
         "tls.go",
         "topology.go",
         "transaction.go",
@@ -161,11 +162,21 @@ go_test(
 # gazelle:exclude lazy_successor_unit_test.go
 # gazelle:exclude turnover_finish_unit_test.go
 # gazelle:exclude turnover_ready_unit_test.go
+# gazelle:exclude timeout_alloc_unit_test.go
+# gazelle:exclude timeout_generation_unit_test.go
+# gazelle:exclude timeout_init_alloc_unit_test.go
+# gazelle:exclude timeout_queue_regression_unit_test.go
+# gazelle:exclude timeout_queue_unit_test.go
 go_test(
     name = "lease_alloc_unit_test",
     srcs = [
         "lazy_successor_unit_test.go",
         "lease_alloc_unit_test.go",
+        "timeout_alloc_unit_test.go",
+        "timeout_generation_unit_test.go",
+        "timeout_init_alloc_unit_test.go",
+        "timeout_queue_regression_unit_test.go",
+        "timeout_queue_unit_test.go",
         "turnover_finish_unit_test.go",
         "turnover_ready_unit_test.go",
     ],
@@ -552,6 +563,7 @@ go_test(
         "tenant_commit_test.go",
         "tenant_fence_test.go",
         "testmain_test.go",
+        "timeout_observer_fdb_test.go",
         "tls_test.go",
         "topology_unit2_test.go",
         "topology_unit_test.go",

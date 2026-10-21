@@ -296,8 +296,8 @@ func (r *sendRecorder) priorNonStorageWrites(target transport.UID) ([]string, er
 // validateRecordedPing decodes C++ 7.3.77's PingRequest (file identifier
 // 4707015, one nested ReplyPromise<Void> with an inline UID). As with other
 // recorded requests, re-encoding catches fields the permissive Reader treats as
-// absent. The forced-control fixture appends zero padding, which the C++ object
-// reader ignores. This fixture policy accepts only that zero padding, not
+// absent. The validator's padded unit case accepts zero padding, which the C++
+// object reader ignores. This validation policy accepts only that zero padding, not
 // every C++-legal layout. frame rejects embedded protocol prefixes first:
 // network delivery uses AssumeVersion and does not consume a version header.
 func validateRecordedPing(body []byte) (err error) {

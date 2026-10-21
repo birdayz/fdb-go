@@ -308,6 +308,56 @@ func TestReadIncarnation_GRVHeldCancellationAndResetIsolation(t *testing.T) {
 	}
 }
 
+func TestTimeoutNoEarlierThanDeadline(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), readIncarnationTestTimeout)
+	defer cancel()
+	db, gate, _ := newGRVReplyGateDB(t, ctx)
+	gate.arm(1, false)
+
+	tx := db.CreateTransaction()
+	defer tx.Cancel()
+	tx.SetTimeout(0)
+	tx.SetSkipGrvCache()
+	tx.rpcTimeoutOverride = time.Hour
+	// Anchor the short budget when it is armed, after the GRV reply is held.
+	tx.creationTime = time.Time{}
+	type result struct {
+		completed time.Time
+		err       error
+	}
+	done := make(chan result, 1)
+	go func() {
+		_, err := tx.GetReadVersion(ctx)
+		done <- result{completed: time.Now(), err: err}
+	}()
+	waitReadParked(t, ctx, gate.heldCh, "actual GRV reply before timeout arm")
+	select {
+	case got := <-done:
+		t.Fatalf("GRV completed before timeout arm: %v", got.err)
+	default:
+	}
+	tx.SetTimeout(50)
+	deadline := tx.deadlineTime()
+	select {
+	case got := <-done:
+		if code := fdbCodeOf(got.err); code != ErrTransactionTimedOut {
+			t.Fatalf("held GRV returned %v, want transaction_timed_out %d", got.err, ErrTransactionTimedOut)
+		}
+		if got.completed.Before(deadline) {
+			t.Fatalf("GRV timed out %v before its original deadline", deadline.Sub(got.completed))
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	gate.release()
+	control := db.CreateTransaction()
+	defer control.Cancel()
+	if rv, err := control.GetReadVersion(ctx); err != nil || rv <= 0 {
+		t.Fatalf("independent GRV after timeout: version=%d, err=%v", rv, err)
+	}
+}
+
 func TestReadIncarnation_EarlyReplacementTimeoutStopsHeldGRV(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), readIncarnationTestTimeout)
@@ -350,17 +400,19 @@ func TestReadIncarnation_EarlyReplacementTimeoutStopsHeldGRV(t *testing.T) {
 
 	tx.readErrMu.Lock()
 	inc := tx.readLife
-	timer := inc.timer
+	node, armed := tx.timeoutNode, tx.timeoutArmed
 	tx.readErrMu.Unlock()
 	if inc != captured.inc {
 		t.Fatal("held GRV did not use the early-captured replacement")
 	}
-	if timer == nil {
-		t.Fatal("replacement GRV is blocked without an armed timeout timer")
+	if node == nil || !armed {
+		t.Fatal("replacement GRV is blocked without an armed timeout")
 	}
-	// Expire the actual registered timebomb only once the real FDB reply is
+	// Expire the actual registered timeout only once the real FDB reply is
 	// held. This removes the scheduling race between GRV dispatch and timeout.
-	timer.Reset(0)
+	tx.readErrMu.Lock()
+	node.queue.schedule(node, node.queue.now()-int64(timeoutSlack))
+	tx.readErrMu.Unlock()
 	select {
 	case err := <-done:
 		if code := fdbCodeOf(err); code != 1031 {
@@ -533,11 +585,10 @@ func TestReadIncarnation_TerminationBeforePipelinedRegistrationRetiresResources(
 				tx.Cancel()
 			} else {
 				wantCode = 1031
-				inc := tx.readOperation(sent.ctx).inc
 				tx.readErrMu.Lock()
-				generation := inc.timerGen
+				arm := tx.timeoutArm
 				tx.readErrMu.Unlock()
-				tx.fireReadTimeout(inc, generation)
+				tx.fireTimeout(arm)
 			}
 			var wantValue []byte
 			if tc.ready {
@@ -767,7 +818,7 @@ func TestFDBOnErrorCannotEraseTerminalCauseAtTurnover(t *testing.T) {
 				t.Fatalf("watch setup charged %d slots, want 1", got)
 			}
 			tx.readErrMu.Lock()
-			old, timerGen := tx.readLife, tx.readLife.timerGen
+			old, arm := tx.readLife, tx.timeoutArm
 			tx.readErrMu.Unlock()
 			pause := &pausedCommit{reached: make(chan struct{}), release: make(chan struct{})}
 			defer pause.unblock()
@@ -782,7 +833,7 @@ func TestFDBOnErrorCannotEraseTerminalCauseAtTurnover(t *testing.T) {
 			if terminal == "cancel" {
 				tx.Cancel()
 			} else {
-				tx.fireReadTimeout(old, timerGen)
+				tx.fireTimeout(arm)
 				want = 1031
 			}
 			waitCommitLifetimeGate(t, ctx, old.ctx.Done(), "terminal cause published before retirement claim")
@@ -847,7 +898,7 @@ func TestFDBOnErrorReleasedCleanupCannotCancelReplacementWatch(t *testing.T) {
 	}
 	_, oldWatchDone := watch([]byte(t.Name() + "/old"))
 	tx.readErrMu.Lock()
-	old, timerGen := tx.readLife, tx.readLife.timerGen
+	arm := tx.timeoutArm
 	tx.readErrMu.Unlock()
 	claim := &pausedCommit{reached: make(chan struct{}), release: make(chan struct{})}
 	defer claim.unblock()
@@ -864,7 +915,7 @@ func TestFDBOnErrorReleasedCleanupCannotCancelReplacementWatch(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- tx.OnError(ctx, &wire.FDBError{Code: 1020}) }()
 	waitCommitLifetimeGate(t, ctx, claim.reached, "conditional turnover")
-	tx.fireReadTimeout(old, timerGen)
+	tx.fireTimeout(arm)
 	claim.unblock()
 	waitCommitLifetimeGate(t, ctx, cleanup.reached, "released-owner terminal cleanup")
 
@@ -964,9 +1015,12 @@ func TestReadIncarnation_SynchronousTimeoutCannotPoisonReplacement(t *testing.T)
 					tx.SetTimeout(60000)
 					tx.readErrMu.Lock()
 					old := tx.readLife
-					timer := old.timer
+					node, armed := tx.timeoutNode, tx.timeoutArmed
+					if node != nil {
+						node.queue.remove(node)
+					}
 					tx.readErrMu.Unlock()
-					if timer == nil || !timer.Stop() {
+					if node == nil || !armed {
 						t.Fatal("timeout callback must remain undelivered before synchronous expiry")
 					}
 					// Model a due deadline whose asynchronous callback has not run.
@@ -1080,7 +1134,6 @@ func testReadCancellationObservation(t *testing.T, watch bool, cleanObservations
 			defer cancelCaller()
 			operation, release := tx.opContext(caller)
 			defer release()
-			inc := tx.readOperation(operation).inc
 			turnoverDone := make(chan error, 1)
 			var observed atomic.Bool
 			entry := &errObservationContext{Context: operation, cleanObservations: cleanObservations, before: func() {
@@ -1090,10 +1143,10 @@ func testReadCancellationObservation(t *testing.T, watch bool, cleanObservations
 					tx.Cancel()
 				case "timeout":
 					tx.readErrMu.Lock()
-					gen, timer := inc.timerGen, inc.timer
+					arm := tx.timeoutArm
+					tx.timeoutNode.queue.remove(tx.timeoutNode)
 					tx.readErrMu.Unlock()
-					timer.Stop()
-					tx.fireReadTimeout(inc, gen)
+					tx.fireTimeout(arm)
 				case "reset":
 					go func() { tx.Reset(); turnoverDone <- nil }()
 				case "commit-reuse":

@@ -398,7 +398,9 @@ type database struct {
 	cancel    context.CancelFunc
 	closeOnce sync.Once
 	connected chan struct{}
-	wg        sync.WaitGroup
+	// timeouts delivers its transactions' TIMEOUT expiries; Close leaves it running.
+	timeouts *timeoutQueue
+	wg       sync.WaitGroup
 	// closeMu guards `closed`, the barrier that stops the lazy GRV-cache background refresher from
 	// registering a wg slot once Close() has begun. Without it, the refresher's one-shot db.wg.Add(1)
 	// (grv.go) can race Close's db.wg.Wait() at a zero counter → "sync: WaitGroup misuse: Add called
@@ -920,6 +922,7 @@ func OpenDatabaseFromConfig(ctx context.Context, cf *ClusterFile, opts ...Option
 		connected:         make(chan struct{}),
 		ctx:               bgCtx,
 		cancel:            cancel,
+		timeouts:          newTimeoutQueue(),
 		failMon:           failMon,
 		queueModel:        queueModel,
 		// hedgeEnabled default: set after struct init (atomic.Bool zero = false)

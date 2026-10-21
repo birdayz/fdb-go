@@ -282,6 +282,38 @@ func TestSetTimeout_BoundsHungMetrics(t *testing.T) {
 	})
 }
 
+// TestSetTimeout_ExpiredReadMapsTimeout uses a real transaction and public
+// SetTimeout, not timedTx's synthetic fields. Backdating creation makes expiry
+// synchronous, as C++ timebomb does when its deadline has already passed.
+func TestSetTimeout_ExpiredReadMapsTimeout(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	db, _ := newSimTestDB(t, ctx)
+	tx := db.CreateTransaction()
+	defer tx.Cancel()
+	tx.creationTime = time.Now().Add(-time.Second)
+	tx.SetTimeout(1)
+
+	opCtx, release := tx.opContext(ctx)
+	defer release()
+	if ctx.Err() != nil || opCtx.Err() == nil {
+		t.Fatalf("caller error=%v, operation error=%v; want only our timeout fired", ctx.Err(), opCtx.Err())
+	}
+	for _, interruption := range []error{context.DeadlineExceeded, context.Canceled} {
+		got := tx.mapReadError(opCtx, interruption)
+		var fdbErr *wire.FDBError
+		if !errors.As(got, &fdbErr) || fdbErr.Code != 1031 {
+			t.Fatalf("mapReadError(%v) = %v, want transaction_timed_out (1031)", interruption, got)
+		}
+	}
+	_, err := tx.Get(ctx, []byte(t.Name()))
+	var fdbErr *wire.FDBError
+	if !errors.As(err, &fdbErr) || fdbErr.Code != 1031 {
+		t.Fatalf("Get after expired SetTimeout = %v, want transaction_timed_out (1031)", err)
+	}
+}
+
 // TestMapTimeout pins the error-mapping contract (RFC-112): our SetTimeout deadline
 // → 1031; the caller's own cancellation → preserved; no timeout set → preserved.
 func TestMapTimeout(t *testing.T) {
@@ -310,7 +342,7 @@ func TestMapTimeout(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			tx := timedTx(tc.timeout, tc.deadline)
+			tx := timedTx(t, tc.timeout, tc.deadline)
 			ctx, release := tx.opContext(tc.parent)
 			defer release()
 			got := tx.mapReadError(ctx, tc.in)

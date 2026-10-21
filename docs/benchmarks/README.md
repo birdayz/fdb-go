@@ -36,8 +36,9 @@ The two 2026-10-14 campaigns keep their frozen protocol versions under `protocol
   — before/after latency and allocations, including the cost of Java-compatible reads.
 - [RFC-259 prototype](rfc-259/README.md): server CPU per transaction with GRV batch
   windows and write coalescing, against libfdb_c, at 1–32 workers.
-- [RFC-263 revision 4](rfc-263/README.md): local screens of the transaction timer
-  and incarnation prototypes.
+- [RFC-263 revisions 4–6](rfc-263/README.md): timer/incarnation prototype screens,
+  production proofs and traces, and fixed-population p999 confirmation. CPU qualification
+  passed, along with p999 and queue-wait; merge gates remain pending.
 
 Design notes, draft RFCs and the benchmark backlog: [docs/perf](../perf/README.md).
 

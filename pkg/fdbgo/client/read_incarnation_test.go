@@ -107,28 +107,28 @@ func TestReadIncarnationTimerRetirement(t *testing.T) {
 	defer release()
 	tx.SetTimeout(60_000)
 	tx.readErrMu.Lock()
-	inc, gen := tx.readLife, tx.readLife.timerGen
+	arm := tx.timeoutArm
 	tx.readErrMu.Unlock()
 	tx.SetTimeout(0)
-	tx.fireReadTimeout(inc, gen) // callback already scheduled when Stop lost the race
+	tx.fireTimeout(arm) // delivery already popped when removal lost the race
 	if err := tx.readEntryError(ctx); err != nil {
 		t.Fatalf("retired timeout poisoned a cleared configuration: %v", err)
 	}
 	tx.SetTimeout(60_000)
 	tx.readErrMu.Lock()
-	gen = inc.timerGen
+	arm = tx.timeoutArm
 	tx.readErrMu.Unlock()
 	tx.SetTimeout(120_000)
-	tx.fireReadTimeout(inc, gen)
+	tx.fireTimeout(arm)
 	if err := tx.readEntryError(ctx); err != nil {
 		t.Fatalf("retired timeout poisoned rearmed configuration: %v", err)
 	}
 	tx.readErrMu.Lock()
-	gen = inc.timerGen
-	timer := inc.timer
+	arm = tx.timeoutArm
+	node := tx.timeoutNode
 	tx.readErrMu.Unlock()
-	timer.Stop() // Deliver this callback explicitly, without leaving a live timer.
-	tx.fireReadTimeout(inc, gen)
+	node.queue.remove(node) // Deliver this callback explicitly, without leaving a queued timeout.
+	tx.fireTimeout(arm)
 	tx.SetTimeout(0)
 	if got := fdbCodeOf(tx.readEntryError(ctx)); got != 1031 {
 		t.Fatalf("clearing timeout erased terminal cause: code=%d", got)
@@ -141,7 +141,7 @@ func TestReadIncarnationTimerRetirement(t *testing.T) {
 	tx.Reset()
 	fresh, stop := tx.opContext(context.Background())
 	defer stop()
-	tx.fireReadTimeout(inc, gen)
+	tx.fireTimeout(arm)
 	if err := tx.readEntryError(fresh); err != nil {
 		t.Fatalf("old timer poisoned replacement incarnation: %v", err)
 	}
