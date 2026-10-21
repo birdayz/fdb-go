@@ -56,7 +56,7 @@ def make_plan(args):
                 timeout_seconds=180, campaign_wall_cap_seconds=180,
                 environment=dict(GOMAXPROCS='8', GOGC='100', GOMEMLIMIT='off', GODEBUG='', LC_ALL='C', TZ='UTC'),
                 workloads=[dict(name='batchset50', iterations=3000, warmup=200, workers=1)],
-                go_version='go1.26.9', fdb_version='7.3.77', fdb_api_version=730,
+                go_version='go1.26.10', fdb_version='7.3.77', fdb_api_version=730,
                 native_library_sha256=digest(args.native_library), pinned_files=sorted(pinned), arms=[])
     for arm, binary in [('go', args.go_binary), ('cgo', args.cgo_binary)]:
         binary = str(Path(binary).resolve())

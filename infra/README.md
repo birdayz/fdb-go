@@ -146,7 +146,7 @@ jobs: the runner account still has Docker and passwordless sudo.
 
 PR CI and the CLI release workflow run `python3 scripts/update-third-party-notices.py`
 from the repository root, after setup-go selects `go.mod`'s exact toolchain (currently
-Go 1.26.9). The generator uses the root `go.mod`/`go.sum` and `go list -mod=readonly
+Go 1.26.10). The generator uses the root `go.mod`/`go.sum` and `go list -mod=readonly
 -deps` for `./cmd/frl`, not a build or test. Its validated target inputs are
 `linux/amd64`, `linux/arm64`, `darwin/amd64`, and `darwin/arm64`, with `CGO_ENABLED=0`;
 it pins `GOTOOLCHAIN` from `go.mod` and clears ambient `GOFLAGS` and `GOEXPERIMENT`.

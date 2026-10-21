@@ -58,6 +58,8 @@ class SealClientPlansTest(unittest.TestCase):
         self.protocol = self.root / 'protocol.json'
         self.orders = self.root / 'orders.json'
         protocol = json.loads((TESTDATA / 'protocol.json').read_text())
+        # Match the current plan generator without rewriting historical protocol data.
+        protocol['runtime']['go'] = '1.26.10'
         # Protocol v4: the client campaigns' wall cap is 360 seconds, processes 180.
         protocol['harness_revision'] = HARNESS_REVISION
         for phase in protocol['phases']:
@@ -159,6 +161,13 @@ class SealClientPlansTest(unittest.TestCase):
         orders['A']['orders'][0], orders['A']['orders'][1] = orders['A']['orders'][1], orders['A']['orders'][0]
         self.orders.write_text(json.dumps(orders))
         with self.assertRaisesRegex(ValueError, 'frozen order'):
+            seal.seal(copy.copy(self.args))
+
+    def test_rejects_a_protocol_with_the_old_toolchain(self):
+        protocol = json.loads(self.protocol.read_text())
+        protocol['runtime']['go'] = '1.26.9'
+        self.protocol.write_text(json.dumps(protocol))
+        with self.assertRaisesRegex(ValueError, 'plan API/Go version differs'):
             seal.seal(copy.copy(self.args))
 
     def test_rejects_other_harness_revision_missing_pins_and_reused_output(self):
