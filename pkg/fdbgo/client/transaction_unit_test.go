@@ -163,7 +163,7 @@ func TestIsSpecialKey(t *testing.T) {
 
 func TestCheckTimeout_DisabledWhenZero(t *testing.T) {
 	t.Parallel()
-	tx := timedTx(0, time.Now().Add(-time.Hour)) // deadline long past
+	tx := timedTx(t, 0, time.Now().Add(-time.Hour)) // deadline long past
 	if err := tx.checkTimeout(context.Background()); err != nil {
 		t.Errorf("timeout=0 must always return nil, got %v", err)
 	}
@@ -171,7 +171,7 @@ func TestCheckTimeout_DisabledWhenZero(t *testing.T) {
 
 func TestCheckTimeout_NotExpired(t *testing.T) {
 	t.Parallel()
-	tx := timedTx(5*time.Second, time.Now().Add(time.Hour))
+	tx := timedTx(t, 5*time.Second, time.Now().Add(time.Hour))
 	if err := tx.checkTimeout(context.Background()); err != nil {
 		t.Errorf("future deadline: got %v, want nil", err)
 	}
@@ -179,7 +179,7 @@ func TestCheckTimeout_NotExpired(t *testing.T) {
 
 func TestCheckTimeout_Expired(t *testing.T) {
 	t.Parallel()
-	tx := timedTx(5*time.Second, time.Now().Add(-time.Second))
+	tx := timedTx(t, 5*time.Second, time.Now().Add(-time.Second))
 	err := tx.checkTimeout(context.Background())
 	var fdbErr *wire.FDBError
 	if !errors.As(err, &fdbErr) || fdbErr.Code != ErrTransactionTimedOut {
@@ -1042,13 +1042,16 @@ func TestValidateMutation_LegacyVersionstampSizeDiscount(t *testing.T) {
 	})
 }
 
-// timedTx builds a bare Transaction with the given SetTimeout budget and deadline —
-// the unit-test shape for checkTimeout/opContext/mapReadError probes.
-func timedTx(timeout time.Duration, deadline time.Time) *Transaction {
+// timedTx configures the given timeout budget/deadline through the same
+// incarnation setup as SetTimeout, including synchronous expiry publication.
+func timedTx(t *testing.T, timeout time.Duration, deadline time.Time) *Transaction {
+	t.Helper()
 	tx := &Transaction{}
 	tx.timeoutNs.Store(int64(timeout))
 	if !deadline.IsZero() {
 		tx.deadlineNs.Store(deadline.UnixNano())
 	}
+	tx.configureReadTimeout()
+	t.Cleanup(tx.Cancel)
 	return tx
 }

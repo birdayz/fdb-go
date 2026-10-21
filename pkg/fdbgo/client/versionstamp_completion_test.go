@@ -143,15 +143,15 @@ func TestVersionstampRetirementFirstCause(t *testing.T) {
 			defer secondProducer.cleanup()
 			second := pendingStamp(t, ctx, tx)
 			tx.readErrMu.Lock()
-			inc, gen := tx.readLife, tx.readLife.timerGen
+			arm := tx.timeoutArm
 			tx.readErrMu.Unlock()
 			want := 1025
 			if timeoutFirst {
 				want = 1031
-				tx.fireReadTimeout(inc, gen)
+				tx.fireTimeout(arm)
 			}
 			tx.Cancel()
-			tx.fireReadTimeout(inc, gen)
+			tx.fireTimeout(arm)
 			tx.Reset()
 			defer tx.Cancel()
 			for _, p := range []*PendingVersionstamp{first, second} {

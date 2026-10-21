@@ -214,9 +214,9 @@ func (tx *Transaction) turnoverLocked(old *readIncarnation) turnoverToken {
 	tx.readLife = nil
 	tx.readGen++
 	tx.readErr = nil
-	recordReadCauseLocked(old, &wire.FDBError{Code: ErrTransactionCancelled})
+	tx.recordCauseLocked(old, &wire.FDBError{Code: ErrTransactionCancelled})
 	cause := old.cause
-	tx.stopTimebombLocked(old)
+	tx.disarmTimeoutLocked()
 	first, native := old.nativeCommit, old.nativeCommits
 	old.nativeCommit, old.nativeCommits = nil, nil
 	var drained <-chan struct{}
@@ -244,16 +244,16 @@ func (token turnoverToken) finish() {
 	tx := token.tx
 	tx.readErrMu.Lock()
 	// Captured successors and positive final timeouts must exist at publication.
-	// Construct behind readReady so the timebomb is armed only once below.
-	inc := tx.readLife
-	if inc != nil || tx.timeoutNs.Load() > 0 {
-		inc = tx.readIncarnationLocked()
+	// The timeout is armed for the published generation once readReady is clear.
+	if tx.readLife != nil || tx.timeoutNs.Load() > 0 {
+		tx.readIncarnationLocked()
 	}
 	ready := tx.readReady
 	tx.readReady = nil
+	tx.armTimeoutLocked()
+	inc := tx.readLife
 	var cause error
 	if inc != nil {
-		tx.armReadTimeoutLocked(inc)
 		cause = inc.cause
 	}
 	if ready != unobservedReadReady {

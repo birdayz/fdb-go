@@ -72,9 +72,9 @@ func TestDeferredErrorOutranksExpiredTimeoutAtReadEntry(t *testing.T) {
 			// Literal mutation type 1 is ClearRange, never a legal atomic op.
 			tx.Atomic(MutationType(1), key, []byte("value"))
 			tx.readErrMu.Lock()
-			inc, generation := tx.readLife, tx.readLife.timerGen
+			inc, arm := tx.readLife, tx.timeoutArm
 			tx.readErrMu.Unlock()
-			tx.fireReadTimeout(inc, generation)
+			tx.fireTimeout(arm)
 			if fdbCodeOf(tx.readIncarnationCause(inc)) != 1031 {
 				t.Fatal("timeout precondition was not established")
 			}
@@ -360,9 +360,9 @@ func TestMappedRangeSpecialKeyOutranksLifetimeWithoutDeferredError(t *testing.T)
 			} else {
 				tx.SetTimeout(60000)
 				tx.readErrMu.Lock()
-				inc, generation := tx.readLife, tx.readLife.timerGen
+				arm := tx.timeoutArm
 				tx.readErrMu.Unlock()
-				tx.fireReadTimeout(inc, generation)
+				tx.fireTimeout(arm)
 			}
 			if tx.checkCancelled() == nil {
 				t.Fatal("terminal precondition not established")

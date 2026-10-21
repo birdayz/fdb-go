@@ -88,9 +88,9 @@ func TestFDBVersionstampRetirementAndNativeCommitLifetime(t *testing.T) {
 				tx.Reset()
 			case "timeout":
 				tx.readErrMu.Lock()
-				inc, gen := tx.readLife, tx.readLife.timerGen
+				arm := tx.timeoutArm
 				tx.readErrMu.Unlock()
-				tx.fireReadTimeout(inc, gen)
+				tx.fireTimeout(arm)
 				tx.Cancel() // must not erase the earlier timeout
 			case "caller":
 				interrupt()

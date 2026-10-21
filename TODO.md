@@ -43,6 +43,13 @@ as the difference between a short and a long run. Server work counts come from t
 servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
 `NetworkMetrics`), as deltas around a run with idle time on both sides.
 
+- [ ] **Timeout delivery parity (C++ C4).** Go's read-entry `checkTimeout` and
+  `OnError` elapsed-budget checks synchronously publish 1031 before the pending timer
+  resumes. C++ 7.3.77 records expiry only at an actual expired arm or timebomb resumption
+  (`ReadYourWrites.actor.cpp:1567-1579, 1506-1517`); deadline passage alone is not a cause.
+  RFC-263 phase 1 preserves these existing publication points. Resolve separately with
+  deterministic pending-versus-delivered regressions; do not fold it into lazy successors.
+
 - [ ] **Server CPU per transaction.** At 8–64 workers the Go client makes the servers do
   1.5–2.4× the CPU per transaction of libfdb_c; at 1 worker it is even.
   - 3-node cluster (`hcloud-multinode-vpc-20261014` phase M1, server node CPU per
@@ -341,6 +348,39 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
     native GRV without derived contexts and the first native commit inline (#947, 89 →
     67 allocations per `set100` transaction); the TIMEOUT timer no longer retains
     finished transactions (#948).
+  - [ ] **RFC-263 B1 / generation-scoped timeout merge gates.** Revision 6 is implemented,
+    with canonical resurrection/C7 regressions and compiled mutation proofs
+    ([evidence](docs/benchmarks/rfc-263/rev6-production-evidence.md)); acceptance remains open.
+    The later non-inferiority confirmation cleared only the 8w p999 blocker: 97.5% upper
+    bounds 1.005 (get) and 1.041 (set), both <1.05
+    ([confirmation](docs/benchmarks/rfc-263/rev6-confirm-results.md)). The original screen's
+    get p999 +9.30% (4/6 pairs adverse), set p999 +8.94% (5/6) and set mean +0.104%
+    (6/6), and its adverse production range trace remain recorded, not erased by clearance
+    ([screen and traces](docs/benchmarks/rfc-263/rev6-production-tail-results.md)).
+    The separate [A1/A2 CPU qualification](docs/benchmarks/rfc-263/rev6-cpu-results.md)
+    now passes the owner-approved 2% rule: A1 remains historically unresolved solely
+    on both grv-w8 endpoints; A2 replaces only those estimates without pooling, and
+    all sixteen final upper 95% bounds are ≤1.02. Both endpoints improve strictly for
+    grv-w8/grv-w32/set100-w8/set100-w32. All eight production queue-wait cells are <1%
+    (maximum 0.008781790%); mutex/block views stay separate. Earlier range 8w +1.66%
+    and confirmation get 8w +1.69% remain ABOVE baseline historical findings, not
+    retrospectively neutralized by the later NI rule. P999 clearance did not waive
+    either CPU criterion. Get A/A log SD
+    0.25–0.27 exceeded planned 0.15, so planned power was not established despite clearance.
+    Set epoch ratios 0.965 → 1.054 and order/serial effects remain disclosed. Owner-run
+    full/full-race, all five official final-HEAD reviews, CI and owner merge
+    approval remain open. B3a/B3b are separate work below.
+  - [ ] **Clientbench lifecycle validator: allow cleanup queued during a completed drain (separate PR).**
+    `tools/clientbench/scripts/run.py:validate_lifecycle` incorrectly requires cleanup
+    queued at exit to equal entry; forced GC legitimately queues baseline-fa as well
+    as RFC-263 transaction `AddCleanup` work. Keep complete=true, 2–16 rounds,
+    executed=queued at exit, counter/GC and every other lifecycle/resource check;
+    update the rejecting fixture and add pending-queue/incomplete/round-limit controls.
+    RFC-263 CPU amendment A1 fixes only its CPU-specific helper and preserves the
+    invalid original epoch; the shared runner remains unchanged here. See
+    [A1 and census evidence](docs/benchmarks/rfc-263/rev6-cpu-plan.md#amendment-a1-lifecycle-fixpoint-2026-10-20).
+  - [ ] **RFC-263 B3a/B3b follow-up.** Deferred lazy-incarnation/turnover work is not part
+    of B1. The broader Client CPU per transaction parent item remains open.
   - Remaining hot spots on `set100` (67 allocations, 7.8 KB per transaction): each
     transaction's first `Set` builds its `rywCache` map (about 6 allocations); every
     commit starts a goroutine (`startNativeCommit`: a weak pointer, a cleanup, two

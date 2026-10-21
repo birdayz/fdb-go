@@ -26,18 +26,9 @@ func TestOnErrorObserverReentry(t *testing.T) {
 					synctest.Test(t, func(t *testing.T) {
 						caller, cancel := context.WithCancelCause(context.Background())
 						defer cancel(nil)
-						tx := &Transaction{}
+						tx := &Transaction{db: &database{timeouts: newTimeoutQueue()}}
 						tx.backoffJitter = func() float64 { return 0 }
-						defer func() {
-							tx.Cancel()
-							// Runtime cleanups run outside this bubble, where even
-							// stopping an already-stopped bubble timer is forbidden.
-							tx.readErrMu.Lock()
-							if tx.timebomb != nil {
-								tx.timebomb.cleanup.Stop()
-							}
-							tx.readErrMu.Unlock()
-						}()
+						defer tx.Cancel()
 						initial := tx.enterState()
 						inc := initial.inc
 						initial.release()
@@ -122,7 +113,7 @@ func TestOnErrorObserverReentry(t *testing.T) {
 								return true
 							})
 						}
-						tx.db = &database{logger: slog.New(h)}
+						tx.db.logger = slog.New(h)
 						err := tx.OnError(caller, &wire.FDBError{Code: code})
 						if !called || site != "disabled" && handled == 0 {
 							t.Fatalf("observer population empty: called=%v handled=%d", called, handled)

@@ -340,6 +340,9 @@ type txOptions struct {
 	beforeReadVersionLock func()
 	// beforeReadFailureDelivery observes terminal-state publication ordering.
 	beforeReadFailureDelivery func(error)
+	// afterTimeoutRecord runs after a timeout delivery records its cause and
+	// before it cancels the incarnation.
+	afterTimeoutRecord func()
 	// beforeReadTimeoutPublication parks an expired synchronous check before
 	// publishing its terminal cause, without holding a transaction lock.
 	beforeReadTimeoutPublication func()
@@ -471,18 +474,17 @@ type Transaction struct {
 	// together (a mutex, not the atomic deferred-error contract above).
 	resetMu   sync.Mutex
 	readReady chan struct{}
-	// Lock order: conflictMu -> readErrMu, never the reverse. Any future lock
-	// nested under readErrMu (such as RFC-263's timeout queue) must be a leaf.
+	// Lock order: conflictMu -> readErrMu -> timeoutQueue.mu, never the reverse.
+	// timeoutQueue.mu is a leaf; delivery runs without it.
 	readErrMu sync.Mutex
-	// timebomb is the transaction's TIMEOUT timer, reused across incarnations;
-	// while timebombArmed it is armed for timebombInc at timebombGen (all under
-	// readErrMu).
-	timebomb      *timebomb
-	timebombArmed bool
-	timebombInc   *readIncarnation
-	timebombGen   uint64
-	readLife      *readIncarnation
-	readErr       error
+	// TIMEOUT is armed for the current read generation, whether or not its
+	// incarnation exists (all under readErrMu). timeoutNode is this object's
+	// queue entry; timeoutArm numbers arms so a stale delivery is rejected.
+	timeoutNode  *timeoutNode
+	timeoutArmed bool
+	timeoutArm   uint64
+	readLife     *readIncarnation
+	readErr      error
 	// readGen is the read-tracking incarnation, bumped on every reset. C++
 	// swaps the reading AndFuture on resetRyow (:2715): a read issued under an
 	// old incarnation that fails AFTER a reset must not poison the new one.

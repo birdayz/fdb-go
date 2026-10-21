@@ -3,7 +3,6 @@ package client
 import (
 	"context"
 	"errors"
-	"runtime"
 	"time"
 	"weak"
 
@@ -11,17 +10,16 @@ import (
 )
 
 // readIncarnation is the lifetime of one C++ resetPromise. Its mutable fields
-// are protected by Transaction.readErrMu, a leaf lock: cancellation delivery
-// and all other transaction locks must stay outside it (RFC-256).
+// are protected by Transaction.readErrMu: cancellation delivery and all other
+// transaction locks stay outside it (RFC-256); only the leaf locks
+// nativeCommit.mu and timeoutQueue.mu nest inside.
 type readIncarnation struct {
-	ctx      context.Context
-	cancel   context.CancelCauseFunc
-	gen      uint64
-	cause    error
-	timer    *time.Timer // the transaction's timebomb while armed for this incarnation
-	timerGen uint64
-	users    int
-	drained  chan struct{}
+	ctx     context.Context
+	cancel  context.CancelCauseFunc
+	gen     uint64
+	cause   error
+	users   int
+	drained chan struct{}
 	// issuedReads counts issued reads not yet complete; Commit waits for zero
 	// (issuedReadsDone closes then), as C++ commit waits on `reading`.
 	issuedReads     int
@@ -115,38 +113,40 @@ func (tx *Transaction) readIncarnationLocked() *readIncarnation {
 	if tx.readLife == nil {
 		ctx, cancel := context.WithCancelCause(context.Background())
 		tx.readLife = &readIncarnation{ctx: ctx, cancel: cancel, gen: tx.readGen}
-		tx.armReadTimeoutLocked(tx.readLife)
 	}
 	return tx.readLife
 }
 
-// recordReadCauseLocked linearizes failure before delivering it. In particular,
-// SetTimeout cannot retire a callback after that callback has recorded failure.
-func recordReadCauseLocked(inc *readIncarnation, cause error) {
-	if inc.cause == nil {
-		inc.cause = cause
-		inc.timerGen++
-		if inc.versionstamp != nil {
-			inc.versionstamp.selectLocked(commitOutcome{}, cause, true)
-		}
-		for completion := range inc.versionstamps {
-			completion.selectLocked(commitOutcome{}, cause, true)
-		}
-		if inc.nativeCommit != nil {
-			inc.nativeCommit.selectResult(cause, false, nil)
-		}
-		for native := range inc.nativeCommits {
-			native.selectResult(cause, false, nil)
-		}
+// recordCauseLocked linearizes failure before delivering it. A cause recorded
+// into the current incarnation also retires its generation's pending timeout;
+// a retired, captured incarnation leaves its successor's timeout alone.
+func (tx *Transaction) recordCauseLocked(inc *readIncarnation, cause error) {
+	if inc.cause != nil {
+		return
+	}
+	inc.cause = cause
+	if inc == tx.readLife {
+		tx.disarmTimeoutLocked()
+	}
+	if inc.versionstamp != nil {
+		inc.versionstamp.selectLocked(commitOutcome{}, cause, true)
+	}
+	for completion := range inc.versionstamps {
+		completion.selectLocked(commitOutcome{}, cause, true)
+	}
+	if inc.nativeCommit != nil {
+		inc.nativeCommit.selectResult(cause, false, nil)
+	}
+	for native := range inc.nativeCommits {
+		native.selectResult(cause, false, nil)
 	}
 }
 
 func (tx *Transaction) failCapturedIncarnation(inc *readIncarnation, cause error) {
 	tx.readErrMu.Lock()
-	recordReadCauseLocked(inc, cause)
+	tx.recordCauseLocked(inc, cause)
 	pending := tx.detachPendingLocked(inc)
 	cause = inc.cause
-	tx.stopTimebombLocked(inc)
 	tx.readErrMu.Unlock()
 	if tx.beforeReadFailureDelivery != nil {
 		tx.beforeReadFailureDelivery(cause)
@@ -155,28 +155,25 @@ func (tx *Transaction) failCapturedIncarnation(inc *readIncarnation, cause error
 	retirePending(pending, false)
 }
 
-// configureReadTimeout replaces the incarnation's timebomb, not the deadlines
-// of individual operations. Clearing/changing TIMEOUT therefore reaches reads
-// already waiting. Once the timebomb fires, only reset can clear its cause.
+// configureReadTimeout replaces the generation's pending timeout, not the
+// deadlines of individual operations, so clearing or changing TIMEOUT reaches
+// reads already waiting. A pending timeout is replaced without a cause, as C++
+// replaces its timebomb actor (RYW:2570-2573); only delivery, or arming an
+// already-expired deadline, records 1031, and only reset clears it.
 func (tx *Transaction) configureReadTimeout() {
 	tx.readErrMu.Lock()
 	// Turnover arms the replacement only after reset-owned options and deadlines
-	// are final. Creating it here would leave an unarmed incarnation behind the
-	// not-ready barrier.
+	// are final (turnoverToken.finish).
 	if tx.readReady != nil {
 		tx.readErrMu.Unlock()
 		return
 	}
-	if tx.readLife == nil && tx.timeoutNs.Load() <= 0 {
-		tx.readErrMu.Unlock()
-		return
-	}
-	inc := tx.readIncarnationLocked()
-	tx.stopTimebombLocked(inc)
-	tx.armReadTimeoutLocked(inc)
-	cause := inc.cause
+	tx.armTimeoutLocked()
+	inc := tx.readLife
+	var cause error
 	var pending []*PendingGet
-	if cause != nil {
+	if inc != nil && inc.cause != nil {
+		cause = inc.cause
 		pending = tx.detachPendingLocked(inc)
 	}
 	tx.readErrMu.Unlock()
@@ -186,106 +183,84 @@ func (tx *Transaction) configureReadTimeout() {
 	}
 }
 
-func (tx *Transaction) armReadTimeoutLocked(inc *readIncarnation) {
+// armTimeoutLocked arms TIMEOUT for the current read generation, whether or
+// not its incarnation exists yet (C++ resetTimeout, RYW:1576-1579). An already
+// expired deadline records 1031 synchronously, as the timebomb actor does
+// before its first wait (RYW:1567-1573). The caller delivers a recorded cause.
+func (tx *Transaction) armTimeoutLocked() {
 	if tx.readReady != nil {
 		return
 	}
-	inc.timerGen++
-	gen := inc.timerGen
-	if inc.cause == nil && tx.timeoutNs.Load() > 0 {
-		delay := time.Until(tx.deadlineTime())
-		if delay <= 0 {
-			recordReadCauseLocked(inc, &wire.FDBError{Code: ErrTransactionTimedOut})
-		} else {
-			inc.timer = tx.armTimebombLocked(inc, gen, delay)
-		}
-	}
-}
-
-// timebomb is one TIMEOUT timer of a transaction. Its callback identifies the
-// timebomb it belongs to, so an expiry already in flight when the timer is
-// replaced cannot fire the replacement's incarnation.
-type timebomb struct {
-	timer   *time.Timer
-	cleanup runtime.Cleanup // stops timer once the transaction is unreachable
-}
-
-// armTimebombLocked points the transaction's timebomb at inc. libfdb_c's
-// timebomb dies with its transaction; here the timer holds the transaction only
-// weakly, and a cleanup stops it once the transaction is unreachable, so an
-// abandoned transaction is not kept alive until its deadline. A stopped timer
-// is re-armed; one whose expiry is in flight is replaced.
-func (tx *Transaction) armTimebombLocked(inc *readIncarnation, gen uint64, delay time.Duration) *time.Timer {
-	if tx.timebombArmed {
-		tx.disarmTimebombLocked()
-	}
-	tx.timebombInc, tx.timebombGen, tx.timebombArmed = inc, gen, true
-	if b := tx.timebomb; b != nil {
-		b.timer.Reset(delay)
-		return b.timer
-	}
-	b := &timebomb{}
-	self := weak.Make(tx)
-	b.timer = time.AfterFunc(delay, func() {
-		if t := self.Value(); t != nil {
-			t.fireTimebomb(b)
-		}
-	})
-	b.cleanup = runtime.AddCleanup(tx, func(t *time.Timer) { t.Stop() }, b.timer)
-	tx.timebomb = b
-	return b.timer
-}
-
-// disarmTimebombLocked stops the armed timebomb. If its expiry is already in
-// flight, the callback finds it disarmed, and the next arm builds a new one.
-func (tx *Transaction) disarmTimebombLocked() {
-	tx.timebombArmed = false
-	tx.timebombInc = nil
-	if !tx.timebomb.timer.Stop() {
-		// Retire it: its in-flight callback finds another timebomb, and its
-		// cleanup registration no longer has a timer to stop.
-		tx.timebomb.cleanup.Stop()
-		tx.timebomb = nil
-	}
-}
-
-// stopTimebombLocked disarms the timebomb if it is armed for inc.
-func (tx *Transaction) stopTimebombLocked(inc *readIncarnation) {
-	if inc.timer == nil {
+	if tx.timeoutNs.Load() <= 0 {
+		tx.disarmTimeoutLocked()
 		return
 	}
-	inc.timer = nil
-	if tx.timebombArmed && tx.timebombInc == inc {
-		tx.disarmTimebombLocked()
+	if inc := tx.readLife; inc != nil && inc.cause != nil {
+		return
 	}
+	q := tx.timeoutQueue()
+	// Convert before acquiring the queue lock: contention must not extend the budget.
+	delay := time.Until(tx.deadlineTime())
+	deadline := q.now() + int64(delay)
+	if delay <= 0 {
+		inc := tx.readLife
+		if inc == nil {
+			inc = tx.readIncarnationLocked()
+		}
+		tx.recordCauseLocked(inc, &wire.FDBError{Code: ErrTransactionTimedOut})
+		return
+	}
+	tx.timeoutArm++
+	tx.timeoutArmed = true
+	n := tx.timeoutNode
+	if n == nil {
+		n = q.newNode(tx)
+		tx.timeoutNode = n
+	} else if weak.Make(tx) != n.tx {
+		// The caller is strong: a different weak identity means resurrection.
+		oldQueue := n.queue
+		oldQueue.retire(n)
+		n = oldQueue.newNodeForShard(tx)
+		tx.timeoutNode = n
+	}
+	n.queue.schedule(n, deadline)
 }
 
-// fireTimebomb fires the incarnation b was armed for, if b is still the armed
-// timebomb.
-func (tx *Transaction) fireTimebomb(b *timebomb) {
+// disarmTimeoutLocked cancels the generation's pending timeout. It leaves
+// timeoutArm alone: a delivery popped earlier is rejected by !timeoutArmed, or
+// by the new arm's number once something re-arms.
+func (tx *Transaction) disarmTimeoutLocked() {
+	tx.timeoutArmed = false
+}
+
+func (tx *Transaction) timeoutQueue() *timeoutQueue {
+	if tx.db != nil && tx.db.timeouts != nil {
+		return tx.db.timeouts
+	}
+	return detachedTimeouts
+}
+
+// fireTimeout delivers the timeout armed as arm. Claim and record are one
+// critical section, so a turnover or re-arm after the queue popped the node
+// makes this a no-op. A generation without an incarnation gets one.
+func (tx *Transaction) fireTimeout(arm uint64) {
 	tx.readErrMu.Lock()
-	if tx.timebomb != b || !tx.timebombArmed {
+	if !tx.timeoutArmed || tx.timeoutArm != arm {
 		tx.readErrMu.Unlock()
 		return
 	}
-	tx.timebombArmed = false
-	inc, gen := tx.timebombInc, tx.timebombGen
-	tx.timebombInc = nil
-	tx.readErrMu.Unlock()
-	tx.fireReadTimeout(inc, gen)
-}
-
-func (tx *Transaction) fireReadTimeout(inc *readIncarnation, gen uint64) {
-	tx.readErrMu.Lock()
-	if tx.readLife != inc || inc.timerGen != gen || inc.cause != nil {
-		tx.readErrMu.Unlock()
-		return
+	tx.timeoutArmed = false
+	inc := tx.readLife
+	if inc == nil {
+		inc = tx.readIncarnationLocked()
 	}
-	recordReadCauseLocked(inc, &wire.FDBError{Code: ErrTransactionTimedOut})
-	cause := inc.cause
-	inc.timer = nil
+	tx.recordCauseLocked(inc, &wire.FDBError{Code: ErrTransactionTimedOut})
 	pending := tx.detachPendingLocked(inc)
+	cause := inc.cause
 	tx.readErrMu.Unlock()
+	if tx.afterTimeoutRecord != nil {
+		tx.afterTimeoutRecord()
+	}
 	inc.cancel(cause)
 	retirePending(pending, false)
 }

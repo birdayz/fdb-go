@@ -130,7 +130,7 @@ func TestLazySuccessorPublication(t *testing.T) {
 							t.Fatal("canceled turnover waiter did not capture a leaseless replacement")
 						}
 						captured = op.inc
-						if captured.timer != nil {
+						if tx.timeoutArmed {
 							t.Fatal("capturing the replacement armed a timer before publication")
 						}
 					}
@@ -191,11 +191,11 @@ func TestLazySuccessorPublication(t *testing.T) {
 						t.Fatal("finish dropped a captured or timed replacement")
 					}
 					if timeout == "future" {
-						if inc.timer == nil || inc.timerGen != 1 {
-							t.Fatalf("replacement timebomb: timer=%v, generation=%d", inc.timer, inc.timerGen)
+						if !tx.timeoutArmed || tx.timeoutNode == nil || tx.timeoutArm != 1 {
+							t.Fatalf("replacement timeout: armed=%v, arm=%d", tx.timeoutArmed, tx.timeoutArm)
 						}
-						inc.timer.Stop()
-						tx.fireReadTimeout(inc, inc.timerGen)
+						tx.timeoutNode.queue.remove(tx.timeoutNode)
+						tx.fireTimeout(tx.timeoutArm)
 					}
 					if timeout != "zero" {
 						requireLazySuccessorCode(t, context.Cause(inc.ctx), 1031)
