@@ -42,10 +42,13 @@ SECTION_PAGES = [
     "/docs/benchmarks/",
     "/docs/benchmarks/hcloud-rebench-20261014/",
     "/docs/benchmarks/hcloud-multinode-vpc-20261014/",
+    "/docs/benchmarks/fdbmn-20261020/",
 ]
 ARTICLE_PAGES = [
     "/docs/getting-started/",
     "/docs/maturity/",
+    "/docs/benchmarks/fdbmn-20261020/phase-m1-client/",
+    "/docs/benchmarks/fdbmn-20261020/phase-m2-remotefetch/",
     "/docs/benchmarks/hcloud-multinode-vpc-20261014/phase-m1-client/",
     "/docs/benchmarks/hcloud-multinode-vpc-20261014/phase-m2-remotefetch/",
     "/docs/benchmarks/hcloud-rebench-20261014/phase-a-client/",

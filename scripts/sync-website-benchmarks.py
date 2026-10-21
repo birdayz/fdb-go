@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Sync docs/benchmarks/{hcloud-rebench-20261014,hcloud-multinode-vpc-20261014}
+"""Sync the benchmark campaigns listed in CAMPAIGNS from docs/benchmarks/<campaign>/
 into website/content/docs/benchmarks/ with Hugo front matter, clean links, and
 precision SVG forest/interval and absolute-latency charts generated directly
 from the Markdown tables on each page.
@@ -10,6 +10,7 @@ import argparse
 import html
 import math
 from pathlib import Path
+import posixpath
 import re
 import sys
 
@@ -19,10 +20,20 @@ DST_ROOT = REPO / 'website/content/docs/benchmarks'
 
 CAMPAIGNS = [
     (
+        'fdbmn-20261020',
+        '4-node VPC campaign, master (2026-10-20)',
+        'Preregistered repeat of the 4-host VPC campaign on master fa8725f1d: master vs old Go (267a41434) vs CGo (libfdb_c 7.3.77) at 1, 8, and 64 workers, and USE_REMOTE_FETCH vs SCAN_AND_FETCH across 9 storage servers.',
+        1,
+        [
+            ('phase-m1-client.md', 'Phase M1: Client (1, 8, 64 workers)', 'Master vs old Go vs CGo client latency, lifecycle CPU, and Go allocations at 1, 8, and 64 closed-loop workers over a real VPC to a 3-node double ssd-2 cluster.', 1),
+            ('phase-m2-remotefetch.md', 'Phase M2: Remote fetch (3-node cluster)', 'Record Layer USE_REMOTE_FETCH vs SCAN_AND_FETCH on master across 9 storage servers, with the 2026-10-14 cohort for comparison.', 2),
+        ],
+    ),
+    (
         'hcloud-multinode-vpc-20261014',
         '4-node VPC campaign (2026-10-14)',
         'Preregistered 4-host VPC benchmark campaign (1 client VM + 3 FDB 7.3.77 server VMs, double ssd-2, 9 storage servers): pure-Go vs CGo at 1, 8, 32, and 64 workers and cross-server USE_REMOTE_FETCH vs SCAN_AND_FETCH.',
-        1,
+        2,
         [
             ('phase-m1-client.md', 'Phase M1: Client (1, 8, 32, 64 workers)', 'Pure-Go vs CGo client latency and process CPU across 1, 8, 32, and 64 closed-loop workers over a real VPC to a 3-node double ssd-2 cluster.', 1),
             ('phase-m2-remotefetch.md', 'Phase M2: Remote fetch (3-node cluster)', 'Record Layer USE_REMOTE_FETCH vs SCAN_AND_FETCH across 9 storage servers on a 3-node VPC cluster with verified shard placement.', 2),
@@ -32,7 +43,7 @@ CAMPAIGNS = [
         'hcloud-rebench-20261014',
         'Single-node 16-vCPU campaign (2026-10-14)',
         'Preregistered 8-phase benchmark campaign on a dedicated 16-vCPU host comparing the pure-Go client, Record Layer, mapped remote fetch, and SQL across the RFC-258 trees.',
-        2,
+        3,
         [
             ('phase-a-client.md', 'Phase A: Client (1 worker)', 'Pure-Go client vs CGo (libfdb_c 7.3.77) and vs pre-allocation pure-Go across 11 workloads at 1 closed-loop worker.', 1),
             ('phase-a2-client-8w.md', 'Phase A2: Client (8 workers)', 'Pure-Go client vs CGo and vs pre-allocation pure-Go at 8 concurrent closed-loop workers.', 2),
@@ -251,6 +262,72 @@ def render_grouped_bars_svg(title: str, subtitle: str, items: list, unit: str, m
     return '\n'.join(out)
 
 
+def render_arm_bars_svg(title: str, subtitle: str, items: list, arms: list, unit: str, max_val: float, ticks: list, summary: str = '') -> str:
+    """Render horizontal bars for several arms per row: bar to p50, whisker to p99.
+
+    items: [(label, [(p50, p99) per arm])]; arms: [(name, bar_class, stroke_class, swatch_color)].
+    """
+    max_label_chars = max((len(lbl) for lbl, _ in items), default=16)
+    pad_l = max(165, int(max_label_chars * 7.8) + 26)
+    pad_r = 230
+    plot_w = 960
+    W = pad_l + plot_w + pad_r
+    bar_h = 9
+    bar_step = 12
+    row_h = len(arms) * bar_step + 8
+    pad_t = 28
+    pad_b = 28
+    H = pad_t + len(items) * row_h + pad_b
+
+    def x_of(v: float) -> float:
+        if not (0.0 <= v <= max_val):
+            raise ValueError(f'{title}: value {v} falls outside [0, {max_val}]')
+        return pad_l + (v / max_val) * plot_w
+
+    out = [
+        '<figure class="bench-figure">',
+        f'<figcaption><strong>{html.escape(title)}</strong><span>{html.escape(subtitle)}</span></figcaption>',
+    ]
+    if summary:
+        out.append(render_summary_html(summary))
+    out.append(f'<svg class="bench-svg" viewBox="0 0 {W} {H}" role="img" aria-label="{html.escape(title)}">')
+    y_top = pad_t - 6
+    y_bot = H - pad_b + 4
+    for t in ticks:
+        x = x_of(t)
+        out.append(f'<line class="grid-line" x1="{x:.1f}" y1="{y_top}" x2="{x:.1f}" y2="{y_bot}"/>')
+        out.append(f'<text class="axis-text" x="{x:.1f}" y="{y_bot + 15}" text-anchor="middle">{t:g} {html.escape(unit)}</text>')
+
+    y = pad_t
+    for label, values in items:
+        if len(values) != len(arms):
+            raise ValueError(f'{title}: {label} has {len(values)} values for {len(arms)} arms')
+        mid = y + (len(arms) * bar_step) / 2
+        out.append(f'<text class="row-label" x="{pad_l - 12}" y="{mid + 4:.1f}" text-anchor="end">{html.escape(label)}</text>')
+        for i, ((name, bar_cls, stroke_cls, _), (p50, p99)) in enumerate(zip(arms, values)):
+            by = y + 4 + i * bar_step
+            cy = by + bar_h / 2
+            w = max(1.5, x_of(p50) - pad_l)
+            x99 = x_of(p99)
+            out.append(
+                f'<g class="{stroke_cls}"><title>{html.escape(label)} {html.escape(name)}: p50 {p50:.1f} {unit}, p99 {p99:.1f} {unit}</title>'
+                f'<rect class="{bar_cls}" x="{pad_l}" y="{by}" width="{w:.1f}" height="{bar_h}" rx="2"/>'
+                f'<line x1="{pad_l + w:.1f}" y1="{cy:.1f}" x2="{x99:.1f}" y2="{cy:.1f}" stroke-width="1.6"/>'
+                f'<line x1="{x99:.1f}" y1="{cy - 4:.1f}" x2="{x99:.1f}" y2="{cy + 4:.1f}" stroke-width="1.8"/></g>'
+            )
+            cls = 'val-text' if i == 0 else 'axis-text'
+            out.append(f'<text class="{cls}" x="{W - pad_r + 10}" y="{by + bar_h:.1f}">{html.escape(name)} {p50:.0f} / p99 {p99:.0f} {html.escape(unit)}</text>')
+        y += row_h
+
+    legend = ''.join(f'<span><i class="bench-swatch" style="background:{color}"></i> {html.escape(name)}</span>' for name, _, _, color in arms)
+    out.extend([
+        '</svg>',
+        f'<div class="bench-legend">{legend}</div>',
+        '</figure>',
+    ])
+    return '\n'.join(out)
+
+
 def extract_md_table(text: str, heading_substr: str) -> list:
     """Return data rows (as lists of stripped cell strings) of the first markdown table after heading_substr."""
     idx = text.find(heading_substr)
@@ -277,6 +354,104 @@ def extract_md_table(text: str, heading_substr: str) -> list:
 
 def build_page_charts(cid: str, fname: str, raw_md: str) -> str:
     """Build precision SVG charts directly from the exact numbers in raw_md."""
+    if cid == 'fdbmn-20261020' and fname == 'phase-m1-client.md':
+        phases = [
+            ('M1w1', 'M1w1 (1 worker, 4/7 clean)'),
+            ('M1w8', 'M1w8 (8 workers, 5/7 clean)'),
+            ('M1w64', 'M1w64 (64 workers, 5/7 clean)'),
+        ]
+
+        def rows_of(ph: str, contrast: str, col: int) -> list:
+            rows = extract_md_table(raw_md, f'#### `{ph}`: {contrast}')
+            if not rows:
+                raise ValueError(f'{fname}: missing table #### `{ph}`: {contrast}')
+            return [(r[0], r[col] if parse_ci(r[col]) else 'N/A (excluded)') for r in rows]
+
+        p50_old = [(label, rows_of(ph, 'master / old Go', 2)) for ph, label in phases]
+        p50_cgo = [(label, rows_of(ph, 'master / CGo', 2)) for ph, label in phases]
+        cpu = [(f'master / old Go: {label}', rows_of(ph, 'master / old Go', 4)) for ph, label in phases]
+        cpu += [(f'master / CGo: {label}', rows_of(ph, 'master / CGo', 4)) for ph, label in phases]
+
+        abs_rows = extract_md_table(raw_md, '## Absolute values')
+        by_key = {(r[0], r[1], r[2]): r for r in abs_rows if len(r) >= 7}
+        arm_names = ['master', 'old Go', 'CGo']
+        abs_items = []
+        for ph in ('M1w8', 'M1w64'):
+            for w in ('grv', 'get100', 'get1000', 'range100', 'set100'):
+                vals = []
+                for a in arm_names:
+                    r = by_key.get((ph, w, a))
+                    if r is None:
+                        raise ValueError(f'{fname}: missing absolute row {ph} {w} {a}')
+                    vals.append((float(r[5]), float(r[6])))
+                abs_items.append((f'{ph} {w}', vals))
+
+        c1 = render_forest_svg(
+            'Figure M1.1: p50 latency, master / old Go',
+            'Below 1.0× means master has lower p50.',
+            p50_old, [0.7, 1.0, 1.4, 2.0, 2.5], 'Master lower', 'Old Go lower',
+            summary='At 8 and 64 workers master has higher p50 than old Go on every get, range and set workload, from 1.112 to 1.435; grv p50 is lower (0.941 and 0.923). At 1 worker master p50 is 1.049–1.091.',
+        )
+        c2 = render_forest_svg(
+            'Figure M1.2: p50 latency, master / CGo',
+            'Below 1.0× means master has lower p50 than libfdb_c 7.3.77.',
+            p50_cgo, [0.5, 0.7, 1.0, 1.4, 2.0], 'Master lower', 'CGo lower',
+            summary='Master p50 is below CGo at 1 worker (0.636–0.697) and at 64 workers for get100, get1000 and set100 (0.770–0.934). At 8 workers the get1000 and set100 intervals include 1.0, and grv is above it (1.025).',
+        )
+        c3 = render_forest_svg(
+            'Figure M1.3: Lifecycle CPU (E−A) per transaction',
+            'Below 1.0× means master uses less process CPU. Includes startup, warmup, validation, and shutdown.',
+            cpu, [0.5, 0.7, 1.0, 1.4, 2.0], 'Master less CPU', 'Denominator less CPU',
+            summary='Master uses less CPU than old Go in every 8- and 64-worker cell except range100 at 64 workers, down to 0.553 (set100, 8 workers), and more at 1 worker (1.125–1.292). Against CGo it uses more on get, range and set at 8 and 64 workers (1.037–1.354) and less on grv.',
+        )
+        c4 = render_arm_bars_svg(
+            'Figure M1.4: p50 and p99 latency at 8 and 64 workers',
+            'Bar is p50, whisker is p99, in µs per transaction (medians of six runs).',
+            abs_items,
+            [('master', 'bar-go', 'ci-win', '#0d9488'), ('old Go', 'bar-before', 'ci-neutral', '#64748b'), ('CGo', 'bar-cgo', 'ci-reg', '#d97706')],
+            'µs', 14000.0, [0, 2000, 4000, 6000, 8000, 10000, 12000, 14000],
+            summary='Each worker count ran as a separate phase with its own transaction count, so compare arms within a count.',
+        )
+        for c in (c1, c2, c3, c4):
+            verify_summary_numbers(fname, c, raw_md)
+        return '\n\n'.join([c1, c2, c3, c4])
+
+    if cid == 'fdbmn-20261020' and fname == 'phase-m2-remotefetch.md':
+        rl_rows = extract_md_table(raw_md, '### `M2rl`')
+        sk_rows = extract_md_table(raw_md, '### `M2skip`')
+        if not rl_rows or not sk_rows:
+            raise ValueError(f'{fname}: missing M2 result tables')
+
+        def place(p: str) -> str:
+            m = re.search(r'f = ([0-9.]+)', p)
+            return f'f={m.group(1)}' if m else p
+
+        def cell(c: str) -> str:
+            return c if parse_ci(c) else 'N/A (excluded)'
+        ns_groups = [
+            ('M2rl: BenchmarkIndexFetch', [(f'{r[0]} [{place(r[1])}]', cell(r[2])) for r in rl_rows]),
+            ('M2skip: BenchmarkPlanSkip', [(f'{r[0]} [{place(r[1])}]', cell(r[2])) for r in sk_rows]),
+        ]
+        al_groups = [
+            ('M2rl: client Go allocs/op', [(r[0], cell(r[4])) for r in rl_rows]),
+            ('M2skip: client Go allocs/op', [(r[0], cell(r[4])) for r in sk_rows]),
+        ]
+        c1 = render_forest_svg(
+            'Figure M2.1: Time per operation, USE_REMOTE_FETCH / SCAN_AND_FETCH',
+            'Below 1.0× means USE_REMOTE_FETCH is faster. 3-node cluster, 9 storage servers, master.',
+            ns_groups, [0.7, 1.0, 1.4, 2.0, 2.5], 'USE_REMOTE_FETCH faster', 'SCAN_AND_FETCH faster',
+            summary='USE_REMOTE_FETCH is slower on every 1,000-row scan (1.152–1.220 cross-server, 2.304 on the partially colocated f=0.820 split case), on split-rows10-reverse (1.326) and on skip3-rows10-reverse (1.169). It is faster on both one-row small fetches (0.976, 0.974). Four cases are excluded by the pre-arm client CPU gate.',
+        )
+        c2 = render_forest_svg(
+            'Figure M2.2: Client allocations per operation, USE_REMOTE_FETCH / SCAN_AND_FETCH',
+            'Below 1.0× means USE_REMOTE_FETCH allocates fewer Go objects.',
+            al_groups, [0.35, 0.5, 0.7, 1.0, 1.2], 'USE_REMOTE_FETCH fewer allocs', 'SCAN_AND_FETCH fewer allocs',
+            summary='USE_REMOTE_FETCH allocates fewer Go objects in 10 of 12 eligible cases, down to 0.454. The one-row small fetches allocate more (1.080, 1.090).',
+        )
+        for c in (c1, c2):
+            verify_summary_numbers(fname, c, raw_md)
+        return '\n\n'.join([c1, c2])
+
     if cid == 'hcloud-multinode-vpc-20261014' and fname == 'phase-m1-client.md':
         mean_groups, p99_groups, cpu_groups = [], [], []
         for h, label in [
@@ -495,6 +670,50 @@ def build_page_charts(cid: str, fname: str, raw_md: str) -> str:
     return ''
 
 
+def synced_pages() -> set:
+    """Repository paths of the Markdown files this script turns into site pages."""
+    pages = set()
+    for cid, _, _, _, children in CAMPAIGNS:
+        pages.add(f'docs/benchmarks/{cid}/README.md')
+        pages.update(f'docs/benchmarks/{cid}/{fname}' for fname, *_ in children)
+    return pages
+
+
+GITHUB_BASE = 'https://github.com/birdayz/fdb-go'
+LINK_RE = re.compile(r'\]\(([^)\s#]*)(#[^)\s]*)?\)')
+
+
+def rewrite_repo_links(body: str, cid: str) -> str:
+    """Point relative links to files that are not site pages at GitHub."""
+    pages = synced_pages()
+
+    def repl(m):
+        target, anchor = m.group(1), m.group(2) or ''
+        if not target or re.match(r'^[a-z]+:', target) or target.startswith('/'):
+            return m.group(0)
+        path = posixpath.normpath(posixpath.join(f'docs/benchmarks/{cid}', target))
+        if path.startswith('..') or path in pages:
+            return m.group(0)
+        kind = 'tree' if target.endswith('/') or (REPO / path).is_dir() else 'blob'
+        return f']({GITHUB_BASE}/{kind}/master/{path}{anchor})'
+
+    return LINK_RE.sub(repl, body)
+
+
+WEBSITE_END = '<!-- website: end of published content -->'
+
+
+def published_readme(cid: str, text: str) -> str:
+    """Cut a campaign README at WEBSITE_END; the site links to the full directory instead."""
+    if WEBSITE_END not in text:
+        return text
+    head = text.split(WEBSITE_END, 1)[0].rstrip()
+    url = f'{GITHUB_BASE}/tree/master/docs/benchmarks/{cid}'
+    return (f'{head}\n\n## Protocol and records\n\n'
+            f'The protocol, detailed analysis (`RESULTS.md`), execution records, decisions and campaign tools are in '
+            f'[`docs/benchmarks/{cid}`]({url}).\n')
+
+
 def transform_body(text: str, is_index: bool, cid: str = '', fname: str = '') -> str:
     # Strip the top-level H1 heading because Hugo renders `title` from front matter.
     lines = text.splitlines()
@@ -521,14 +740,17 @@ def transform_body(text: str, is_index: bool, cid: str = '', fname: str = '') ->
     body = body.replace('(../../../tools/benchcampaign/singlenode/README.md)', '(https://github.com/birdayz/fdb-go/blob/master/tools/benchcampaign/singlenode/README.md)')
     body = body.replace('(../../../tools/benchcampaign/multinode/README.md)', '(https://github.com/birdayz/fdb-go/blob/master/tools/benchcampaign/multinode/README.md)')
 
+    if cid:
+        body = rewrite_repo_links(body, cid)
+
     # Rewrite cross-campaign and sibling `.md` links to Hugo page paths.
     body = re.sub(r'\(\.\./([a-z0-9-]+)/README\.md\)', r'(/docs/benchmarks/\1/)', body)
     body = re.sub(r'\(\.\./([a-z0-9-]+)/([a-z0-9-]+)\.md\)', r'(/docs/benchmarks/\1/\2/)', body)
     body = body.replace('(README.md)', '(../)')
     if is_index:
-        body = re.sub(r'\((phase-[a-z0-9-]+)\.md\)', r'(\1/)', body)
+        body = re.sub(r'\((phase-[a-z0-9-]+)\.md(#[^)\s]*)?\)', r'(\1/\2)', body)
     else:
-        body = re.sub(r'\((phase-[a-z0-9-]+)\.md\)', r'(../\1/)', body)
+        body = re.sub(r'\((phase-[a-z0-9-]+)\.md(#[^)\s]*)?\)', r'(../\1/\2)', body)
     return body
 
 
@@ -554,7 +776,7 @@ def main():
         src_dir = SRC_ROOT / cid
         dst_dir = DST_ROOT / cid
 
-        readme_body = transform_body((src_dir / 'README.md').read_text(), is_index=True, cid=cid, fname='README.md')
+        readme_body = transform_body(published_readme(cid, (src_dir / 'README.md').read_text()), is_index=True, cid=cid, fname='README.md')
         index_md = f'---\ntitle: "{title}"\ndescription: "{desc}"\nweight: {weight}\n---\n\n{readme_body}'
         expected[dst_dir / '_index.md'] = index_md
 
