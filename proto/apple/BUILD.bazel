@@ -12,8 +12,21 @@ proto_library(
     ],
 )
 
+# Java uses the well-known descriptors that its pinned runtime implements.
+# Native proto consumers retain apple_proto and the native protobuf module.
+proto_library(
+    name = "apple_java_sources",
+    srcs = glob(["*.proto"]),
+    strip_import_prefix = "/proto/apple",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@java_protobuf_wkt//:any_proto",
+        "@java_protobuf_wkt//:descriptor_proto",
+    ],
+)
+
 java_proto_library(
     name = "apple_java_proto",
     visibility = ["//visibility:public"],
-    deps = [":apple_proto"],
+    deps = [":apple_java_sources"],
 )

@@ -7,7 +7,7 @@ proto_library(
     name = "demo_proto",
     srcs = ["record_layer_demo.proto"],
     strip_import_prefix = "/conformance",
-    deps = ["//proto/apple:apple_proto"],
+    deps = ["//proto/apple:apple_java_sources"],
 )
 
 java_proto_library(
@@ -59,6 +59,13 @@ java_binary(
     ],
     main_class = "com.birdayz.conformance.ConformanceServer",
     visibility = ["//visibility:public"],
+    runtime_deps = [":conformance_lib"],
+)
+
+java_test(
+    name = "protobuf_runtime_test",
+    main_class = "com.birdayz.conformance.ProtobufRuntimeContract",
+    use_testrunner = False,
     runtime_deps = [":conformance_lib"],
 )
 
