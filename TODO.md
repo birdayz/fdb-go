@@ -343,6 +343,12 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   - Local three-process cluster at `066920ebb`, client CPU per transaction Go / libfdb_c
     (median of 5): `get100` 0.91 at 8 workers, 1.00 at 32; `grv` 0.74 at 8, 0.64 at 32;
     `range100` 1.07 at 8, 1.02 at 32; `set100` 1.23 at 8, 1.32 at 32.
+  - 3-node cluster at `fa8725f1d` ([fdbmn-20261020](docs/benchmarks/fdbmn-20261020/phase-m1-client.md)),
+    lifecycle client CPU per transaction Go / libfdb_c at 8 and 64 workers: `grv` 0.57–0.73,
+    `get` 1.04–1.16, `set` 1.15–1.25, `range` 1.28–1.35; at 1 worker 0.78–0.91.
+  - Go 1.27.3 costs 1.0–2.8% more client CPU per operation than Go 1.26.10 in every
+    local cell (worst `get100` at 32 workers: 1.028, 95% CI 1.020–1.038), with throughput
+    within 1.1% ([#981](https://github.com/birdayz/fdb-go/pull/981)). Cause not established.
   - Done: vtable offsets without a map lookup (#944); no derived context for an operation
     whose caller cannot cancel (#945, 8 → 2 allocations per operation); a blind write's
     native GRV without derived contexts and the first native commit inline (#947, 89 →
@@ -400,6 +406,13 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
     3.0%. The initial 64-worker mean-latency increase of 10.0% is retained; 20 follow-up
     pairs give −0.5%, and all 30 pairs give +4.1%, with no strict parallel-latency
     equivalence claim. These are local-only results; client and server parity remain open.
+
+- [ ] **Multi-node throughput and saturation campaign.** Measure Go against libfdb_c on
+  `grv`, `get100`, `set100` and `range100` over a worker ladder of 1, 8, 32, 64, 128 and
+  256, four alternating blocks per cell, reporting latency, throughput, errors and
+  saturation. Throughput counts successful operations in a fixed post-warmup window,
+  checked against workers ÷ mean latency and, for writes, the servers' commit counts.
+  Needs those checks in `tools/clientbench` and owner approval of the cloud budget.
 
 ## 1. WS-E — scalar/SQL semantics and statement execution — ACTIVE
 
@@ -1903,6 +1916,24 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   read version (NativeAPI.actor.cpp:5707-5753). Found by the multi-node placement probe
   review; the probe does not rely on the Go path. Client team; held while feature work is
   paused.
+- [ ] Run the remaining `libfdbc`-tagged tests under Bazel. CI's `libfdbc-differential`
+  job runs them with a standalone `go test -tags libfdbc` over `pkg/fdbgo/libfdbc/...`
+  and `pkg/internal/fdbclient/...`; only `network_lifecycle_test` and
+  `mapped_skip_regression_test` have Bazel targets, so `just test-full` skips
+  `differential_test.go` and the other cross-client differentials.
+- [ ] Java/Go raw key-value parity for shared TEXT indexes: plain, grouped and
+  no-position variants over the Unicode-delta inputs, comparing sorted relative keys,
+  values and positions; force bunch splitting with 25 common postings; cross-engine
+  update and delete, obsolete-term removal and final emptiness. Exclude the documented
+  tokenizer divergences and Go-only collation.
+- [ ] Java proto rules: fail the build if a `java_proto_library` regenerates protobuf
+  well-known types other than `any` and `descriptor`, and test that the failing fallback
+  toolchain is selected on a non-Linux platform.
+- [ ] `tools/lanes/run-verified-lane.sh`: a cancelled lane leaves its Bazel server holding
+  the lane lock until the server is shut down. Shut the server down on exit, or keep the
+  lock descriptor out of the server.
+- [ ] Update Buf from 1.67.0 to 1.74 (`BUF_VERSION` in `justfile`).
+
 ## Test lanes and test-speed work (committed with the temporal change)
 
 - [x] Fast/full lanes (`just test` / `just test-full`, `infra/test_lanes_test.go`,
