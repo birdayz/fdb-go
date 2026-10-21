@@ -191,7 +191,7 @@ class CampaignTest(unittest.TestCase):
             backend = dict(backend=entry['arm'], native_library=native, executable=binary,
                            executable_sha256=pins[binary], api_version=730,
                            loaded_fdb_libraries_sha256={str(self.root / 'native'): plan['native_library_sha256']} if native else {})
-            manifest = dict(config=cfg, backend=backend, go_version='go1.26.9', gomaxprocs=8)
+            manifest = dict(config=cfg, backend=backend, go_version='go1.26.10', gomaxprocs=8)
             before = dict(process_user_cpu_us=100, process_system_cpu_us=50, go_total_alloc_bytes=0,
                           go_mallocs=0, go_gc_cycles=0, go_gc_pause_ns=0, process_high_water_rss_kb=1)
             identity = dict(before, process_user_cpu_us=25, process_system_cpu_us=10)

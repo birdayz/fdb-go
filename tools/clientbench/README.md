@@ -19,7 +19,7 @@ Record the new source/toolchain/binary/library identities for every campaign.
 
 Requirements: Linux `/proc`, Python 3.9+, GNU `time`, `timeout`, `taskset`, and
 FoundationDB **7.3.77** headers, shared library and server. The API is **730**;
-Go **1.26.9** and the native Go binding version are pinned by the root build.
+Go **1.26.10** and the native Go binding version are pinned by the root build.
 The server must already be running on a dedicated test cluster. This tool does
 not provision, configure, restart or destroy servers.
 

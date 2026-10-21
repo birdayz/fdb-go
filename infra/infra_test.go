@@ -431,7 +431,7 @@ func goModBuildToolchain(gomod []byte) string {
 func TestGoModBuildToolchain(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct{ mod, want string }{
-		{"module example\ngo 1.26.0\ntoolchain go1.26.9\n", "1.26.9"},
+		{"module example\ngo 1.26.0\ntoolchain go1.26.10\n", "1.26.10"},
 		{"module example\ngo 1.26.0\n", "1.26.0"},
 		{"module example\n", ""},
 	} {
