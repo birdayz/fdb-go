@@ -118,9 +118,9 @@ locals {
     # Nothing installed it before: the old boxes were provisioned by hand.
     go_version = "1.26.10"
     go_sha256  = "ccfe7ae822d2c2f41f4fe7c956199967a4dac22d0ee0d2b2bfdb440aab3b20c5"
-    # bazelisk launcher (reads .bazelversion → Bazel 9.0.1; this is just the launcher).
-    bazelisk_version = "1.28.1"
-    bazelisk_sha256  = "22e7d3a188699982f661cf4687137ee52d1f24fec1ec893d91a6c4d791a75de8"
+    # bazelisk launcher (reads .bazelversion → Bazel 9.3.1; this is just the launcher).
+    bazelisk_version = "1.30.0"
+    bazelisk_sha256  = "a248ae2b2b62b5baebb748f6fba7203bff1a27e5d01b55399a8406744cb539e8"
     # just task runner (was curl|bash — now a pinned, verified release tarball).
     just_version = "1.48.1"
     just_sha256  = "9293e553ce401d1b524bf4e104918f72f268e3f9c6827e0055fe98d84a1b2522"

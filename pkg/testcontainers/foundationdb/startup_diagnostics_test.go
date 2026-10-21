@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/client"
+	"github.com/containerd/errdefs"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 )
@@ -127,7 +127,7 @@ func TestCancelledStartupKeepsDiagnosticsAndCleansUp(t *testing.T) {
 	}
 	checkCtx, checkCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer checkCancel()
-	if _, err := cli.ContainerInspect(checkCtx, captured.GetContainerID()); !client.IsErrNotFound(err) {
+	if _, err := cli.ContainerInspect(checkCtx, captured.GetContainerID()); !errdefs.IsNotFound(err) {
 		t.Errorf("cancelled startup left its container behind: %v", err)
 	} else {
 		// Startup already removed it; fallback cleanup must not terminate it twice.

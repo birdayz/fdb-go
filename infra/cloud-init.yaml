@@ -526,7 +526,7 @@ runcmd:
     "$FV" "https://github.com/apple/foundationdb/releases/download/${fdb_version}/foundationdb-clients_${fdb_version}-1_amd64.deb" "${fdb_clients_sha256}" /tmp/fdb-clients.deb
     dpkg -i /tmp/fdb-clients.deb
     rm -f /tmp/fdb-clients.deb
-    # Bazelisk launcher (reads .bazelversion → Bazel 9.0.1)
+    # Bazelisk launcher (reads .bazelversion → Bazel 9.3.1)
     "$FV" "https://github.com/bazelbuild/bazelisk/releases/download/v${bazelisk_version}/bazelisk-linux-amd64" "${bazelisk_sha256}" /usr/local/bin/bazelisk
     chmod 0755 /usr/local/bin/bazelisk
     ln -sf /usr/local/bin/bazelisk /usr/local/bin/bazel

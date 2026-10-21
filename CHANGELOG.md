@@ -88,6 +88,7 @@ Each is described in full under Compatibility or Changed below.
   and tags now apply to every statement transaction, autocommit and read-only ones included.
 
 ### Changed
+- Development builds use Bazel 9.3.1, Bazelisk 1.30.0, and updated stable BCR build rules; the Go toolchain remains go1.26.10.
 - Builds and `frl` release binaries use go1.26.10 (GO-2026-6809, `crypto/x509`).
   The pure-Go client's TLS uses `crypto/x509` (`pkg/fdbgo/client/tls.go`). A
   dependency's `toolchain` line does not affect downstream builds; applications

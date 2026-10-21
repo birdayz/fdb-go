@@ -127,7 +127,7 @@ var templateVars = map[string]string{
 	"runner_sha256":       strings.Repeat("0", 64),
 	"go_version":          "1.26.5",
 	"go_sha256":           strings.Repeat("0", 64),
-	"bazelisk_version":    "1.28.1",
+	"bazelisk_version":    "1.30.0",
 	"bazelisk_sha256":     strings.Repeat("0", 64),
 	"just_version":        "1.48.1",
 	"just_sha256":         strings.Repeat("0", 64),
