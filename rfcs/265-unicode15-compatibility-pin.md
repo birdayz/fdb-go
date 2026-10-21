@@ -187,10 +187,8 @@ Go/Java expected fixtures rather than silently changing either lookup policy.
   the owner, and hook commits use the shared fast.lock. Generator drift and both-compiler fixture equality are
   release gates, not a promise inferred from either compiler passing alone.
 
-When the implementation passes these gates, replace the runtime-following/rebuild
-concession in `docs/compatibility.md:39` with the fixed Unicode-15 contract,
-retaining the precise pre-existing segmentation/sigma and Go-only collation
-boundaries above. Design acceptance does not claim that fix has landed.
+`docs/compatibility.md` states the fixed Unicode-15 contract, retaining the
+pre-existing segmentation/sigma and Go-only collation boundaries above.
 
 ## Sources
 
