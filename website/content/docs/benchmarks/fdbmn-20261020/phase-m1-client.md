@@ -625,6 +625,183 @@ transactions.
 | M1w64 | set100 | master | 192000 | 5470.9 | 5383.5 | 8122.7 | 134.7 | 6,419 | 55.4 |
 | M1w64 | set100 | CGo | 192000 | 6055.6 | 5993.7 | 9176.0 | 107.8 | 440 | 10.0 |
 
+## Throughput (post-hoc, exploratory)
+
+<figure class="bench-figure">
+<figcaption><strong>Figure M1.5: Throughput, operations per second (post-hoc)</strong><span>Above 1.0× means master completes more operations per second. Post-hoc, not preregistered.</span></figcaption>
+<p class="bench-summary">At 8 and 64 workers master completes fewer operations per second than old Go on get, range and set (0.718–0.903), and more on grv at 64 workers (1.057). Against CGo its rate is higher or the interval includes 1.0 in every cell except grv at 8 workers (0.979).</p>
+<svg class="bench-svg" viewBox="0 0 1320 766" role="img" aria-label="Figure M1.5: Throughput, operations per second (post-hoc)">
+<line class="grid-line" x1="165.0" y1="36" x2="165.0" y2="740"/>
+<text class="axis-text" x="165.0" y="30" text-anchor="middle">0.4×</text>
+<text class="axis-text" x="165.0" y="755" text-anchor="middle">0.4×</text>
+<line class="grid-line" x1="498.8" y1="36" x2="498.8" y2="740"/>
+<text class="axis-text" x="498.8" y="30" text-anchor="middle">0.7×</text>
+<text class="axis-text" x="498.8" y="755" text-anchor="middle">0.7×</text>
+<line class="parity-line" x1="711.6" y1="36" x2="711.6" y2="740"/>
+<text class="axis-text" x="711.6" y="30" text-anchor="middle">1.0×</text>
+<text class="axis-text" x="711.6" y="755" text-anchor="middle">1.0×</text>
+<line class="grid-line" x1="912.2" y1="36" x2="912.2" y2="740"/>
+<text class="axis-text" x="912.2" y="30" text-anchor="middle">1.4×</text>
+<text class="axis-text" x="912.2" y="755" text-anchor="middle">1.4×</text>
+<line class="grid-line" x1="1125.0" y1="36" x2="1125.0" y2="740"/>
+<text class="axis-text" x="1125.0" y="30" text-anchor="middle">2.0×</text>
+<text class="axis-text" x="1125.0" y="755" text-anchor="middle">2.0×</text>
+<text class="axis-text" x="703.6" y="17" text-anchor="end">← Denominator more ops/s</text>
+<text class="axis-text" x="719.6" y="17" text-anchor="start">Master more ops/s →</text>
+<line class="section-divider" x1="8" y1="48" x2="1312" y2="48"/>
+<text class="section-title" x="10" y="63">master / old Go: M1w1 (1 worker)</text>
+<text class="row-label" x="153" y="81.0" text-anchor="end">grv</text>
+<g class="ci-reg"><title>grv: 0.956× [0.929, 0.998]</title><line x1="667.6" y1="77.0" x2="710.4" y2="77.0" stroke-width="2.2"/><line x1="667.6" y1="73.0" x2="667.6" y2="81.0" stroke-width="1.8"/><line x1="710.4" y1="73.0" x2="710.4" y2="81.0" stroke-width="1.8"/><circle cx="684.7" cy="77.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="81.0">0.956× [0.929, 0.998]</text>
+<text class="row-label" x="153" y="101.0" text-anchor="end">get100</text>
+<g class="ci-reg"><title>get100: 0.914× [0.883, 0.942]</title><line x1="637.3" y1="97.0" x2="675.9" y2="97.0" stroke-width="2.2"/><line x1="637.3" y1="93.0" x2="637.3" y2="101.0" stroke-width="1.8"/><line x1="675.9" y1="93.0" x2="675.9" y2="101.0" stroke-width="1.8"/><circle cx="657.9" cy="97.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="101.0">0.914× [0.883, 0.942]</text>
+<text class="row-label" x="153" y="121.0" text-anchor="end">get1000</text>
+<g class="ci-reg"><title>get1000: 0.919× [0.907, 0.934]</title><line x1="653.3" y1="117.0" x2="670.8" y2="117.0" stroke-width="2.2"/><line x1="653.3" y1="113.0" x2="653.3" y2="121.0" stroke-width="1.8"/><line x1="670.8" y1="113.0" x2="670.8" y2="121.0" stroke-width="1.8"/><circle cx="661.2" cy="117.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="121.0">0.919× [0.907, 0.934]</text>
+<text class="row-label" x="153" y="141.0" text-anchor="end">range100</text>
+<g class="ci-reg"><title>range100: 0.929× [0.917, 0.942]</title><line x1="659.9" y1="137.0" x2="675.9" y2="137.0" stroke-width="2.2"/><line x1="659.9" y1="133.0" x2="659.9" y2="141.0" stroke-width="1.8"/><line x1="675.9" y1="133.0" x2="675.9" y2="141.0" stroke-width="1.8"/><circle cx="667.6" cy="137.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="141.0">0.929× [0.917, 0.942]</text>
+<line class="section-divider" x1="8" y1="150" x2="1312" y2="150"/>
+<text class="section-title" x="10" y="165">master / old Go: M1w8 (8 workers)</text>
+<text class="row-label" x="153" y="183.0" text-anchor="end">grv</text>
+<g class="ci-reg"><title>grv: 0.984× [0.970, 0.996]</title><line x1="693.4" y1="179.0" x2="709.2" y2="179.0" stroke-width="2.2"/><line x1="693.4" y1="175.0" x2="693.4" y2="183.0" stroke-width="1.8"/><line x1="709.2" y1="175.0" x2="709.2" y2="183.0" stroke-width="1.8"/><circle cx="701.9" cy="179.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="183.0">0.984× [0.970, 0.996]</text>
+<text class="row-label" x="153" y="203.0" text-anchor="end">get100</text>
+<g class="ci-reg"><title>get100: 0.903× [0.885, 0.920]</title><line x1="638.7" y1="199.0" x2="661.8" y2="199.0" stroke-width="2.2"/><line x1="638.7" y1="195.0" x2="638.7" y2="203.0" stroke-width="1.8"/><line x1="661.8" y1="195.0" x2="661.8" y2="203.0" stroke-width="1.8"/><circle cx="650.7" cy="199.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="203.0">0.903× [0.885, 0.920]</text>
+<text class="row-label" x="153" y="223.0" text-anchor="end">get1000</text>
+<g class="ci-reg"><title>get1000: 0.875× [0.867, 0.883]</title><line x1="626.4" y1="219.0" x2="637.3" y2="219.0" stroke-width="2.2"/><line x1="626.4" y1="215.0" x2="626.4" y2="223.0" stroke-width="1.8"/><line x1="637.3" y1="215.0" x2="637.3" y2="223.0" stroke-width="1.8"/><circle cx="631.9" cy="219.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="223.0">0.875× [0.867, 0.883]</text>
+<text class="row-label" x="153" y="243.0" text-anchor="end">range100</text>
+<g class="ci-reg"><title>range100: 0.897× [0.881, 0.911]</title><line x1="636.0" y1="239.0" x2="656.0" y2="239.0" stroke-width="2.2"/><line x1="636.0" y1="235.0" x2="636.0" y2="243.0" stroke-width="1.8"/><line x1="656.0" y1="235.0" x2="656.0" y2="243.0" stroke-width="1.8"/><circle cx="646.7" cy="239.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="243.0">0.897× [0.881, 0.911]</text>
+<text class="row-label" x="153" y="263.0" text-anchor="end">set100</text>
+<g class="ci-reg"><title>set100: 0.854× [0.828, 0.882]</title><line x1="599.0" y1="259.0" x2="636.7" y2="259.0" stroke-width="2.2"/><line x1="599.0" y1="255.0" x2="599.0" y2="263.0" stroke-width="1.8"/><line x1="636.7" y1="255.0" x2="636.7" y2="263.0" stroke-width="1.8"/><circle cx="617.4" cy="259.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="263.0">0.854× [0.828, 0.882]</text>
+<line class="section-divider" x1="8" y1="272" x2="1312" y2="272"/>
+<text class="section-title" x="10" y="287">master / old Go: M1w64 (64 workers)</text>
+<text class="row-label" x="153" y="305.0" text-anchor="end">grv</text>
+<g class="ci-win"><title>grv: 1.057× [1.036, 1.080]</title><line x1="732.6" y1="301.0" x2="757.5" y2="301.0" stroke-width="2.2"/><line x1="732.6" y1="297.0" x2="732.6" y2="305.0" stroke-width="1.8"/><line x1="757.5" y1="297.0" x2="757.5" y2="305.0" stroke-width="1.8"/><circle cx="744.6" cy="301.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="305.0">1.057× [1.036, 1.080]</text>
+<text class="row-label" x="153" y="325.0" text-anchor="end">get100</text>
+<g class="ci-reg"><title>get100: 0.769× [0.745, 0.792]</title><line x1="536.0" y1="321.0" x2="572.5" y2="321.0" stroke-width="2.2"/><line x1="536.0" y1="317.0" x2="536.0" y2="325.0" stroke-width="1.8"/><line x1="572.5" y1="317.0" x2="572.5" y2="325.0" stroke-width="1.8"/><circle cx="554.9" cy="321.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="325.0">0.769× [0.745, 0.792]</text>
+<text class="row-label" x="153" y="345.0" text-anchor="end">get1000</text>
+<g class="ci-reg"><title>get1000: 0.798× [0.779, 0.819]</title><line x1="562.6" y1="341.0" x2="592.5" y2="341.0" stroke-width="2.2"/><line x1="562.6" y1="337.0" x2="562.6" y2="345.0" stroke-width="1.8"/><line x1="592.5" y1="337.0" x2="592.5" y2="345.0" stroke-width="1.8"/><circle cx="577.0" cy="341.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="345.0">0.798× [0.779, 0.819]</text>
+<text class="row-label" x="153" y="365.0" text-anchor="end">range100</text>
+<g class="ci-reg"><title>range100: 0.718× [0.440, 0.925]</title><line x1="221.9" y1="361.0" x2="665.0" y2="361.0" stroke-width="2.2"/><line x1="221.9" y1="357.0" x2="221.9" y2="365.0" stroke-width="1.8"/><line x1="665.0" y1="357.0" x2="665.0" y2="365.0" stroke-width="1.8"/><circle cx="513.9" cy="361.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="365.0">0.718× [0.440, 0.925]</text>
+<text class="row-label" x="153" y="385.0" text-anchor="end">set100</text>
+<g class="ci-reg"><title>set100: 0.796× [0.787, 0.804]</title><line x1="568.7" y1="381.0" x2="581.4" y2="381.0" stroke-width="2.2"/><line x1="568.7" y1="377.0" x2="568.7" y2="385.0" stroke-width="1.8"/><line x1="581.4" y1="377.0" x2="581.4" y2="385.0" stroke-width="1.8"/><circle cx="575.5" cy="381.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="385.0">0.796× [0.787, 0.804]</text>
+<line class="section-divider" x1="8" y1="394" x2="1312" y2="394"/>
+<text class="section-title" x="10" y="409">master / CGo: M1w1 (1 worker)</text>
+<text class="row-label" x="153" y="427.0" text-anchor="end">grv</text>
+<g class="ci-win"><title>grv: 1.553× [1.523, 1.606]</title><line x1="962.5" y1="423.0" x2="994.1" y2="423.0" stroke-width="2.2"/><line x1="962.5" y1="419.0" x2="962.5" y2="427.0" stroke-width="1.8"/><line x1="994.1" y1="419.0" x2="994.1" y2="427.0" stroke-width="1.8"/><circle cx="974.1" cy="423.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="427.0">1.553× [1.523, 1.606]</text>
+<text class="row-label" x="153" y="447.0" text-anchor="end">get100</text>
+<g class="ci-win"><title>get100: 1.468× [1.431, 1.507]</title><line x1="925.3" y1="443.0" x2="956.2" y2="443.0" stroke-width="2.2"/><line x1="925.3" y1="439.0" x2="925.3" y2="447.0" stroke-width="1.8"/><line x1="956.2" y1="439.0" x2="956.2" y2="447.0" stroke-width="1.8"/><circle cx="940.5" cy="443.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="447.0">1.468× [1.431, 1.507]</text>
+<text class="row-label" x="153" y="467.0" text-anchor="end">get1000</text>
+<g class="ci-win"><title>get1000: 1.478× [1.465, 1.492]</title><line x1="939.3" y1="463.0" x2="950.2" y2="463.0" stroke-width="2.2"/><line x1="939.3" y1="459.0" x2="939.3" y2="467.0" stroke-width="1.8"/><line x1="950.2" y1="459.0" x2="950.2" y2="467.0" stroke-width="1.8"/><circle cx="944.6" cy="463.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="467.0">1.478× [1.465, 1.492]</text>
+<text class="row-label" x="153" y="487.0" text-anchor="end">range100</text>
+<g class="ci-win"><title>range100: 1.412× [1.341, 1.527]</title><line x1="886.6" y1="483.0" x2="964.0" y2="483.0" stroke-width="2.2"/><line x1="886.6" y1="479.0" x2="886.6" y2="487.0" stroke-width="1.8"/><line x1="964.0" y1="479.0" x2="964.0" y2="487.0" stroke-width="1.8"/><circle cx="917.3" cy="483.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="487.0">1.412× [1.341, 1.527]</text>
+<line class="section-divider" x1="8" y1="496" x2="1312" y2="496"/>
+<text class="section-title" x="10" y="511">master / CGo: M1w8 (8 workers)</text>
+<text class="row-label" x="153" y="529.0" text-anchor="end">grv</text>
+<g class="ci-reg"><title>grv: 0.979× [0.959, 0.998]</title><line x1="686.6" y1="525.0" x2="710.4" y2="525.0" stroke-width="2.2"/><line x1="686.6" y1="521.0" x2="686.6" y2="529.0" stroke-width="1.8"/><line x1="710.4" y1="521.0" x2="710.4" y2="529.0" stroke-width="1.8"/><circle cx="698.9" cy="525.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="529.0">0.979× [0.959, 0.998]</text>
+<text class="row-label" x="153" y="549.0" text-anchor="end">get100</text>
+<g class="ci-win"><title>get100: 1.027× [1.002, 1.049]</title><line x1="712.7" y1="545.0" x2="740.1" y2="545.0" stroke-width="2.2"/><line x1="712.7" y1="541.0" x2="712.7" y2="549.0" stroke-width="1.8"/><line x1="740.1" y1="541.0" x2="740.1" y2="549.0" stroke-width="1.8"/><circle cx="727.4" cy="545.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="549.0">1.027× [1.002, 1.049]</text>
+<text class="row-label" x="153" y="569.0" text-anchor="end">get1000</text>
+<g class="ci-neutral"><title>get1000: 1.012× [0.985, 1.036]</title><line x1="702.5" y1="565.0" x2="732.6" y2="565.0" stroke-width="2.2"/><line x1="702.5" y1="561.0" x2="702.5" y2="569.0" stroke-width="1.8"/><line x1="732.6" y1="561.0" x2="732.6" y2="569.0" stroke-width="1.8"/><circle cx="718.7" cy="565.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="569.0">1.012× [0.985, 1.036]</text>
+<text class="row-label" x="153" y="589.0" text-anchor="end">range100</text>
+<g class="ci-win"><title>range100: 1.031× [1.010, 1.053]</title><line x1="717.5" y1="585.0" x2="742.4" y2="585.0" stroke-width="2.2"/><line x1="717.5" y1="581.0" x2="717.5" y2="589.0" stroke-width="1.8"/><line x1="742.4" y1="581.0" x2="742.4" y2="589.0" stroke-width="1.8"/><circle cx="729.8" cy="585.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="589.0">1.031× [1.010, 1.053]</text>
+<text class="row-label" x="153" y="609.0" text-anchor="end">set100</text>
+<g class="ci-neutral"><title>set100: 0.990× [0.956, 1.027]</title><line x1="684.7" y1="605.0" x2="727.4" y2="605.0" stroke-width="2.2"/><line x1="684.7" y1="601.0" x2="684.7" y2="609.0" stroke-width="1.8"/><line x1="727.4" y1="601.0" x2="727.4" y2="609.0" stroke-width="1.8"/><circle cx="705.6" cy="605.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="609.0">0.990× [0.956, 1.027]</text>
+<line class="section-divider" x1="8" y1="618" x2="1312" y2="618"/>
+<text class="section-title" x="10" y="633">master / CGo: M1w64 (64 workers)</text>
+<text class="row-label" x="153" y="651.0" text-anchor="end">grv</text>
+<g class="ci-neutral"><title>grv: 1.028× [0.979, 1.081]</title><line x1="698.9" y1="647.0" x2="758.0" y2="647.0" stroke-width="2.2"/><line x1="698.9" y1="643.0" x2="698.9" y2="651.0" stroke-width="1.8"/><line x1="758.0" y1="643.0" x2="758.0" y2="651.0" stroke-width="1.8"/><circle cx="728.0" cy="647.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="651.0">1.028× [0.979, 1.081]</text>
+<text class="row-label" x="153" y="671.0" text-anchor="end">get100</text>
+<g class="ci-win"><title>get100: 1.140× [1.097, 1.179]</title><line x1="766.8" y1="667.0" x2="809.8" y2="667.0" stroke-width="2.2"/><line x1="766.8" y1="663.0" x2="766.8" y2="671.0" stroke-width="1.8"/><line x1="809.8" y1="663.0" x2="809.8" y2="671.0" stroke-width="1.8"/><circle cx="789.7" cy="667.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="671.0">1.140× [1.097, 1.179]</text>
+<text class="row-label" x="153" y="691.0" text-anchor="end">get1000</text>
+<g class="ci-win"><title>get1000: 1.368× [1.294, 1.436]</title><line x1="865.3" y1="687.0" x2="927.4" y2="687.0" stroke-width="2.2"/><line x1="865.3" y1="683.0" x2="865.3" y2="691.0" stroke-width="1.8"/><line x1="927.4" y1="683.0" x2="927.4" y2="691.0" stroke-width="1.8"/><circle cx="898.5" cy="687.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="691.0">1.368× [1.294, 1.436]</text>
+<text class="row-label" x="153" y="711.0" text-anchor="end">range100</text>
+<g class="ci-neutral"><title>range100: 1.158× [0.691, 1.514]</title><line x1="491.1" y1="707.0" x2="958.9" y2="707.0" stroke-width="2.2"/><line x1="491.1" y1="703.0" x2="491.1" y2="711.0" stroke-width="1.8"/><line x1="958.9" y1="703.0" x2="958.9" y2="711.0" stroke-width="1.8"/><circle cx="799.1" cy="707.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="711.0">1.158× [0.691, 1.514]</text>
+<text class="row-label" x="153" y="731.0" text-anchor="end">set100</text>
+<g class="ci-win"><title>set100: 1.113× [1.104, 1.121]</title><line x1="770.6" y1="727.0" x2="779.7" y2="727.0" stroke-width="2.2"/><line x1="770.6" y1="723.0" x2="770.6" y2="731.0" stroke-width="1.8"/><line x1="779.7" y1="723.0" x2="779.7" y2="731.0" stroke-width="1.8"/><circle cx="775.4" cy="727.0" r="3.8"/></g>
+<text class="val-text" x="1137" y="731.0">1.113× [1.104, 1.121]</text>
+</svg>
+<div class="bench-legend"><span><i class="bench-swatch" style="background:#0d9488"></i> 95% CI above 1.0×</span><span><i class="bench-swatch" style="background:#64748b"></i> 95% CI includes 1.0× (inconclusive)</span><span><i class="bench-swatch" style="background:#d97706"></i> 95% CI below 1.0×</span></div>
+</figure>
+
+**Post-hoc and exploratory: throughput was not preregistered.** The rates and
+intervals below are derived afterwards from the retained raw data of the same
+eligible cases. They do not change any estimate, exclusion or result above.
+
+- **Throughput:** completed operations divided by the measured wall window, in
+  operations per second. One operation is one workload transaction. The window
+  excludes setup, warmup, validation and shutdown.
+- **Busy cores:** client process user+system CPU during the measured window
+  divided by its wall time (1.0 = one core busy), including Go and native
+  threads but not the FDB servers. This is not the lifecycle E−A CPU reported
+  above.
+- **Estimates:** absolute ops/s and busy cores are medians of six processes per
+  arm. Ratios are geometric means of six within-block throughput ratios, with
+  the same bootstrap as above (20,000 resamples, seed 492817). **Above 1 means
+  the numerator completes more operations per second.** Ratios are not
+  quotients of the displayed medians.
+- **Closed loop:** each phase runs a fixed number of workers, so the measured
+  rate is 0.973–1.000 (median 0.998) of workers divided by mean latency. The
+  rates describe these operating points, not peak or saturated throughput.
+
+#### `M1w1`: throughput
+
+| Workload | Ops/s old Go / master / CGo | master / old Go | master / CGo | old Go / CGo | Busy cores old Go / master / CGo |
+|---|---:|---:|---:|---:|---:|
+| grv | 989 / 927 / 607 | 0.956 [0.929, 0.998] | 1.553 [1.523, 1.606] | 1.624 [1.600, 1.649] | 0.246 / 0.308 / 0.255 |
+| get100 | 712 / 653 / 442 | 0.914 [0.883, 0.942] | 1.468 [1.431, 1.507] | 1.607 [1.572, 1.638] | 0.351 / 0.387 / 0.328 |
+| get1000 | 699 / 650 / 437 | 0.919 [0.907, 0.934] | 1.478 [1.465, 1.492] | 1.607 [1.584, 1.637] | 0.353 / 0.397 / 0.338 |
+| range100 | 594 / 552 / 403 | 0.929 [0.917, 0.942] | 1.412 [1.341, 1.527] | 1.521 [1.452, 1.647] | 0.415 / 0.442 / 0.353 |
+
+#### `M1w8`: throughput
+
+| Workload | Ops/s old Go / master / CGo | master / old Go | master / CGo | old Go / CGo | Busy cores old Go / master / CGo |
+|---|---:|---:|---:|---:|---:|
+| grv | 4,589 / 4,511 / 4,598 | 0.984 [0.970, 0.996] | 0.979 [0.959, 0.998] | 0.995 [0.973, 1.011] | 0.477 / 0.404 / 0.563 |
+| get100 | 3,784 / 3,397 / 3,306 | 0.903 [0.885, 0.920] | 1.027 [1.002, 1.049] | 1.137 [1.128, 1.146] | 0.894 / 0.642 / 0.601 |
+| get1000 | 3,760 / 3,283 / 3,194 | 0.875 [0.867, 0.883] | 1.012 [0.985, 1.036] | 1.157 [1.124, 1.186] | 0.945 / 0.653 / 0.559 |
+| range100 | 2,975 / 2,692 / 2,599 | 0.897 [0.881, 0.911] | 1.031 [1.010, 1.053] | 1.149 [1.140, 1.161] | 1.358 / 1.031 / 0.778 |
+| set100 | 2,110 / 1,783 / 1,814 | 0.854 [0.828, 0.882] | 0.990 [0.956, 1.027] | 1.159 [1.126, 1.183] | 0.793 / 0.393 / 0.332 |
+
+#### `M1w64`: throughput
+
+| Workload | Ops/s old Go / master / CGo | master / old Go | master / CGo | old Go / CGo | Busy cores old Go / master / CGo |
+|---|---:|---:|---:|---:|---:|
+| grv | 30,937 / 32,673 / 31,850 | 1.057 [1.036, 1.080] | 1.028 [0.979, 1.081] | 0.973 [0.928, 1.008] | 1.494 / 1.228 / 2.135 |
+| get100 | 27,430 / 21,479 / 18,613 | 0.769 [0.745, 0.792] | 1.140 [1.097, 1.179] | 1.481 [1.439, 1.532] | 3.590 / 2.147 / 1.580 |
+| get1000 | 25,634 / 20,749 / 15,074 | 0.798 [0.779, 0.819] | 1.368 [1.294, 1.436] | 1.714 [1.620, 1.802] | 3.531 / 2.251 / 1.378 |
+| range100 | 18,919 / 17,509 / 11,776 | 0.718 [0.440, 0.925] | 1.158 [0.691, 1.514] | 1.613 [1.569, 1.650] | 3.742 / 3.726 / 2.296 |
+| set100 | 14,688 / 11,654 / 10,457 | 0.796 [0.787, 0.804] | 1.113 [1.104, 1.121] | 1.399 [1.385, 1.413] | 2.911 / 1.409 / 0.987 |
+
+Range100 at 64 workers has a wide, unstable interval here as well. Process,
+absolute, paired and omission records, all marked post-hoc, are in
+[`analysis/M1-throughput.csv`](https://github.com/birdayz/fdb-go/blob/master/docs/benchmarks/fdbmn-20261020/analysis/M1-throughput.csv); formulas and scopes
+are in [`analysis/throughput-method.json`](https://github.com/birdayz/fdb-go/blob/master/docs/benchmarks/fdbmn-20261020/analysis/throughput-method.json).
+
 ## Comparison with the 2026-10-14 campaign
 
 Old Go is the revision the 2026-10-14 campaign measured as its final pure-Go

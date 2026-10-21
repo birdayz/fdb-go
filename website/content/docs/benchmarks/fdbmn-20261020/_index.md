@@ -60,6 +60,14 @@ cause.
   - Set100 E−A CPU relative to CGo is 2.075 (8 workers) and 2.132 (64 workers)
     for old Go, and **1.148 [1.119, 1.179]** and **1.249 [1.213, 1.284]** for
     master.
+- **Throughput (post-hoc, exploratory, not preregistered).** At 64 workers
+  master completes fewer operations per second than old Go on get100
+  (**0.769 [0.745, 0.792]**), get1000 (**0.798 [0.779, 0.819]**) and set100
+  (**0.796 [0.787, 0.804]**), with fewer median busy client cores (set100:
+  1.409 against 2.911). It completes more than CGo on the same workloads:
+  **1.140 [1.097, 1.179]**, **1.368 [1.294, 1.436]** and
+  **1.113 [1.104, 1.121]**. See
+  [Phase M1](phase-m1-client/#throughput-post-hoc-exploratory).
 - **At 1 worker** master has 4.6–9.4% higher mean latency than old Go
   (1.046–1.094) and uses more E−A CPU (1.125–1.292), with fewer allocations.
   It stays faster than CGo: p50 0.636–0.697.

@@ -10,7 +10,7 @@
 - **Mapped remote fetch is not uniformly faster in the current topology.** One-row small fetch has a modest ~2–3% mean advantage; large small-payload fetch, positive Skip and the eligible split multi-row cases are slower remotely while allocating fewer Go bytes. The prior campaign’s reverse-Skip10 result does not reproduce: remote/ordinary **0.158** then versus **1.169 [1.151, 1.185]** now. This is a descriptive cohort comparison, not a production-change causal estimate.
 - **26 cases are eligible.** No partial-arm/block salvage, reruns or capacity substitution. W1 loses all write comparisons as a consequence of the preregistered stopping policy. Both concurrent batch cases remain unavailable. W32 was dropped for budget before measurement and was not restored when execution ended early. A1 re-attempts were explicitly declined.
 
-Ratios below are numerator/denominator: **below one means less latency/CPU/allocation**, not an aggregate speedup. Brackets are nominal 95% paired-block percentile bootstrap intervals. Six blocks, not transaction counts, determine the independent sample size. There is no multiplicity correction, equivalence claim, pooled campaign inference or worker-scaling claim.
+Preregistered ratios below are numerator/denominator: **below one means less latency/CPU/allocation**, not an aggregate speedup. In the post-hoc throughput section, **above one means more operations/s**. Brackets are nominal 95% paired-block percentile bootstrap intervals. Six blocks, not transaction counts, determine the independent sample size. There is no multiplicity correction, equivalence claim, pooled campaign inference or worker-scaling claim.
 
 ## Scope, identities and statistical method
 
@@ -231,6 +231,67 @@ Measurements ended 13:27Z. Final forensic collection passed on all four roles in
 Campaign-only teardown removed four servers and the owned network, firewall and SSH public-key record. **Read-only exact inventory verification passed across all 10 kinds: the original 17 protected resources remain, with no missing/unexpected resource.** The four implicit campaign primary IPs auto-deleted with their servers; none was directly deleted. The deadline guard was cancelled after verification, and no live guard process remained. Operational completion was about four hours before 17:30Z; the 17:55:06Z provider deadline was never extended. Resource identifiers, addresses and private receipts are deliberately omitted from this public results package; raw evidence is retained by SHA256.
 
 Offline seeded analysis then ran at **nice 15**, pinned to **0,1,6,7,11,12,13,18,19,23**, avoiding the owner’s profiling and local FDB CPUs. It completed in 4m36s. It has no timing-sensitive benchmark steps. All code/protocol/build/runtime/controller/R4/raw hashes and the analysis execution envelope are retained. Independent review confirmed all 26 eligible populations, direct contrasts and historical joins, without rerunning estimators.
+
+## Post-hoc throughput and client cores busy
+
+**POST-HOC, EXPLORATORY — throughput was not preregistered.** This addendum derives new metrics and bootstrap intervals from the retained raw data; it does not change any preregistered estimate, eligibility decision or omission. It describes achieved rate at the existing fixed-worker operating points, **not saturation, peak sustainable throughput or worker scaling**.
+
+For each eligible M1 process, `throughput_ops_per_second = summary.completed × 1e9 / summary.measured_wall_ns`. `completed` equals `requested` and the number of successful measured `samples.csv` rows; retries are counted separately, not as extra operations. One operation is one logical workload transaction, not one key or RPC. The monotonic wall window starts when all ready workers are released and ends when the last worker finishes its quota. It excludes fixture/setup, warmup, forced drains, validation, CSV output and shutdown; worker scheduling, loop bookkeeping and the finite-run finishing tail remain inside it.
+
+`cpu_util_cores = 1000 × [Δprocess_user_cpu_us + Δprocess_system_cpu_us] / measured_wall_ns`, using `summary.stats_before` and `summary.stats_after`. This is **measured-phase bracketing process CPU / measured wall**, in average logical-CPU equivalents (1.0 = one client core busy), including Go and native threads but not FDB servers. The CPU reads occur just before/after the wall fences; their extra bracket duration is not recorded. This is **not lifecycle E−A CPU**: warmup cleanup can enter the window, and deferred measured-operation cleanup can fall after it. Do not read these cores as complete-lifecycle CPU or normalize them by the worker count.
+
+**Closed-loop cross-check:** all 252 process records validate complete sample indices, worker assignment, nonoverlapping per-worker operation intervals, operations ending within the wall window, and integer latency sums. With `Q = measured ops/s`, `W = workers` and `L = mean measured latency`, `Q / (W × 1e9 / L)` ranges **0.972631–0.999928** (median **0.998339**). Actual rate is thus at most **2.737% below** the full-occupancy cross-check; it never exceeds the worker-time budget. Bookkeeping and early-finishing workers prevent exact equality. This is accounting consistency, not an independent server-counter validation.
+
+Below, absolute rates and cores are **medians of six process values per arm**. Ratios are **geometric means of six within-block throughput ratios**, with the frozen M1 `bootstrap_log_ratio` API, seed **492817**, **20,000** whole-paired-block resamples and nominal 95% percentile intervals. All three arms stay aligned by block; the same seeded draws are used for the three contrasts. Ratios above one mean **more operations/s**. They are not ratios of the displayed absolute medians; the wide w64/range100 interval remains unstable. There is no multiplicity adjustment, equivalence claim or cross-campaign pooling; intervals do not establish block independence on the continuously running server.
+
+<!-- throughput-table:start -->
+|Case|Ops/s previous / new / CGo|New/previous [95%]|New/CGo [95%]|Previous/CGo [95%]|Busy cores previous / new / CGo|
+|---|---:|---|---|---|---:|
+|w1/grv|989 / 927 / 607|0.956 [0.929, 0.998]|1.553 [1.523, 1.606]|1.624 [1.600, 1.649]|0.246 / 0.308 / 0.255|
+|w1/get100|712 / 653 / 442|0.914 [0.883, 0.942]|1.468 [1.431, 1.507]|1.607 [1.572, 1.638]|0.351 / 0.387 / 0.328|
+|w1/get1000|699 / 650 / 437|0.919 [0.907, 0.934]|1.478 [1.465, 1.492]|1.607 [1.584, 1.637]|0.353 / 0.397 / 0.338|
+|w1/range100|594 / 552 / 403|0.929 [0.917, 0.942]|1.412 [1.341, 1.527]|1.521 [1.452, 1.647]|0.415 / 0.442 / 0.353|
+|w8/grv|4,589 / 4,511 / 4,598|0.984 [0.970, 0.996]|0.979 [0.959, 0.998]|0.995 [0.973, 1.011]|0.477 / 0.404 / 0.563|
+|w8/get100|3,784 / 3,397 / 3,306|0.903 [0.885, 0.920]|1.027 [1.002, 1.049]|1.137 [1.128, 1.146]|0.894 / 0.642 / 0.601|
+|w8/get1000|3,760 / 3,283 / 3,194|0.875 [0.867, 0.883]|1.012 [0.985, 1.036]|1.157 [1.124, 1.186]|0.945 / 0.653 / 0.559|
+|w8/range100|2,975 / 2,692 / 2,599|0.897 [0.881, 0.911]|1.031 [1.010, 1.053]|1.149 [1.140, 1.161]|1.358 / 1.031 / 0.778|
+|w8/set100|2,110 / 1,783 / 1,814|0.854 [0.828, 0.882]|0.990 [0.956, 1.027]|1.159 [1.126, 1.183]|0.793 / 0.393 / 0.332|
+|w64/grv|30,937 / 32,673 / 31,850|1.057 [1.036, 1.080]|1.028 [0.979, 1.081]|0.973 [0.928, 1.008]|1.494 / 1.228 / 2.135|
+|w64/get100|27,430 / 21,479 / 18,613|0.769 [0.745, 0.792]|1.140 [1.097, 1.179]|1.481 [1.439, 1.532]|3.590 / 2.147 / 1.580|
+|w64/get1000|25,634 / 20,749 / 15,074|0.798 [0.779, 0.819]|1.368 [1.294, 1.436]|1.714 [1.620, 1.802]|3.531 / 2.251 / 1.378|
+|w64/range100|18,919 / 17,509 / 11,776|0.718 [0.440, 0.925]|1.158 [0.691, 1.514]|1.613 [1.569, 1.650]|3.742 / 3.726 / 2.296|
+|w64/set100|14,688 / 11,654 / 10,457|0.796 [0.787, 0.804]|1.113 [1.104, 1.121]|1.399 [1.385, 1.413]|2.911 / 1.409 / 0.987|
+<!-- throughput-table:end -->
+
+At w64/set100, new Go achieves **11,654 median ops/s** versus previous Go's **14,688**, while measured-phase busy cores fall from **2.911 to 1.409**. The directly paired throughput ratio is **0.796 [0.787, 0.804]**. Lower CPU/op is not, by itself, higher achieved throughput; lower rate alongside fewer busy client cores also does not identify a waiting mechanism or its cause. Relative to CGo at this operating point, new Go's throughput ratio is **1.113 [1.104, 1.121]**, with median CGo throughput **10,457 ops/s** and **0.987** busy cores.
+
+[`analysis/M1-throughput.csv`](analysis/M1-throughput.csv) contains **252 process**, **42 arm-absolute**, **42 paired-comparison** and **14 whole-case omission** records across all 28 planned M1 cells. Every eligible case retains all six blocks/18 processes; no excluded write arm is salvaged. It includes raw measured counts/wall/CPU, integer latency sums, retry counts and per-process closed-loop factors. Every row is marked post-hoc and not preregistered.
+
+### M2: derived timed rates, with a different CPU scope
+
+[`analysis/M2-throughput.csv`](analysis/M2-throughput.csv) adds the 12 eligible M2 cells: **144 process**, **24 arm-absolute**, **24 paired-comparison** and **4 whole-case omission** records. Each timed repeat's rate is `1e9 / testing.B ns/op` (scan/plan executions per second, **not rows/s**). Three repeat rates are reduced to a median per process, then paired over six blocks with the frozen `bench_analyze.paired_gm` API, seed 492817 and 20,000 resamples. The six-process absolute median is computed from the process rates, **not** by inverting the published even-count latency median. This is a derived timed-benchmark rate, not measured `N / 3s`, whole-process throughput or an old/new production comparison.
+
+M2 has **no retained measured-window CPU counters**, so `cpu_util_cores` is intentionally empty. Its separate `lifecycle_cpu_util_cores = (process_user_cpu_seconds + process_system_cpu_seconds) / (process_wall_ns / 1e9)` uses GNU time CPU and runner wall receipts, including fixtures, calibration, audits and shutdown. Those lifecycle values and their separately labelled paired intervals must not be read as CPU during the timed throughput window. Three repeats remain clustered within each process; 432 repeat samples are not 432 independent replicates.
+
+### Reproduce this post-hoc addendum
+
+The [throughput exporter](../../../tools/benchcampaign/campaigns/fdbmn-20261020/public-export/export_throughput.py) reads only retained inputs and invokes the frozen numerical helpers; it does not launch benchmarks, SSH or cloud operations. [`analysis/throughput-inputs.sha256`](analysis/throughput-inputs.sha256) pins **826 files**, with paths relative to the **campaign directory**. All 810 raw inputs were also checked against the frozen per-phase analysis provenance. The original eight aggregate files and their pins remain unchanged.
+
+For this command, set `FDBMN_CAMPAIGN` to the retained `fdbmn-20261020` directory itself, not its parent archive directory. (`--campaign` also defaults to `FDB_PERF_HOME` when that variable denotes the campaign directory.) Run from the repository root:
+
+```bash
+: "${FDBMN_CAMPAIGN:?set to the retained fdbmn-20261020 campaign directory}"
+parent=$(mktemp -d)
+outputs="$PWD/docs/benchmarks/fdbmn-20261020/analysis/throughput-outputs.sha256"
+nice -n 15 taskset -c 0,1,6,7,11,12,13,18,19,23 \
+  python3 -B tools/benchcampaign/campaigns/fdbmn-20261020/public-export/export_throughput.py \
+  --campaign "$FDBMN_CAMPAIGN" \
+  --inputs-manifest docs/benchmarks/fdbmn-20261020/analysis/throughput-inputs.sha256 \
+  --output-dir "$parent/export" > "$parent/table.md"
+(cd "$parent/export" && sha256sum -c "$outputs")
+```
+
+The exporter refuses an existing output directory and checks the pinned private redaction file before publication. [`analysis/throughput-method.json`](analysis/throughput-method.json) records formulas, scopes, populations and numerical-helper hashes; [`analysis/throughput-outputs.sha256`](analysis/throughput-outputs.sha256) binds the three new aggregate files. The table printed to stdout is the generated table above.
 
 ## Public aggregate evidence and retained raw data
 
