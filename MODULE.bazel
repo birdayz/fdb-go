@@ -4,12 +4,12 @@ module(
 )
 
 # Go
-bazel_dep(name = "rules_go", version = "0.60.0")
-bazel_dep(name = "gazelle", version = "0.47.0")
-bazel_dep(name = "platforms", version = "1.0.0")
+bazel_dep(name = "rules_go", version = "0.64.2")
+bazel_dep(name = "gazelle", version = "0.54.0")
+bazel_dep(name = "platforms", version = "1.1.0")
 
 # Shell (sh_binary for codegen wrappers, e.g. the ANTLR parser generator).
-bazel_dep(name = "rules_shell", version = "0.6.1")
+bazel_dep(name = "rules_shell", version = "0.8.0")
 
 go_deps = use_extension("@gazelle//:extensions.bzl", "go_deps")
 go_deps.from_file(go_mod = "//:go.mod")
@@ -31,6 +31,7 @@ use_repo(
     "com_github_birdayz_protobuf_ecosystem",
     "com_github_charmbracelet_x_term",
     "com_github_chzyer_readline",
+    "com_github_containerd_errdefs",
     "com_github_docker_docker",
     "com_github_docker_go_connections",
     "com_github_google_cel_go",
@@ -64,7 +65,7 @@ go_sdk.from_file(go_mod = "//:go.mod")
 go_sdk.nogo(nogo = "//:nogo")
 
 # C++ (wire format generation + FDB build)
-bazel_dep(name = "rules_cc", version = "0.1.1")
+bazel_dep(name = "rules_cc", version = "0.2.26")
 
 # FDB C++ source — fetched automatically from GitHub, pinned to tag.
 # Bazel downloads, caches, and injects MODULE.bazel + BUILD.bazel via patch_cmds.
@@ -117,12 +118,12 @@ BUILDEOF""",
 )
 
 # Proto (codegen stays with buf generate)
-bazel_dep(name = "protobuf", version = "34.0.bcr.1")
+bazel_dep(name = "protobuf", version = "36.2")
 
 # Java (conformance server)
-bazel_dep(name = "rules_java", version = "9.6.1")
-bazel_dep(name = "rules_jvm_external", version = "6.10")
-bazel_dep(name = "rules_android", version = "0.7.1")  # Override transitive dep for Bazel 9 compat
+bazel_dep(name = "rules_java", version = "9.9.0")
+bazel_dep(name = "rules_jvm_external", version = "7.2")
+bazel_dep(name = "rules_android", version = "0.8.0")  # Override transitive dep for Bazel 9 compat
 
 maven = use_extension("@rules_jvm_external//:extensions.bzl", "maven")
 maven.install(

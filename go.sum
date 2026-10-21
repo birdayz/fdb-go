@@ -28,8 +28,8 @@ github.com/apple/foundationdb/bindings/go v0.0.0-20250702211439-37fcf1c8ce08 h1:
 github.com/apple/foundationdb/bindings/go v0.0.0-20250702211439-37fcf1c8ce08/go.mod h1:OMVSB21p9+xQUIqlGizHPZfjK+SHws1ht+ZytVDoz9U=
 github.com/aymanbagabas/go-udiff v0.4.1 h1:OEIrQ8maEeDBXQDoGCbbTTXYJMYRCRO1fnodZ12Gv5o=
 github.com/aymanbagabas/go-udiff v0.4.1/go.mod h1:0L9PGwj20lrtmEMeyw4WKJ/TMyDtvAoK9bf2u/mNo3w=
-github.com/bazelbuild/rules_go v0.60.0 h1:apGSxTTrFUyLNvX9NQmF4CbntWAO0/S5eALeVgB/6Qk=
-github.com/bazelbuild/rules_go v0.60.0/go.mod h1:CYcohJVxs4n7eftbC39GCqaEJm3E1EME+6QAkGguKoI=
+github.com/bazelbuild/rules_go v0.64.2 h1:bBzVLLT/gSQ+bhE7V1rQDQRBIcQgbv0kZrVCjELBE/Q=
+github.com/bazelbuild/rules_go v0.64.2/go.mod h1:fGJXke4qp7Xq27y1oZ7Qib3rhk5Ar3T1/A9jxOtkcH8=
 github.com/birdayz/protobuf-ecosystem v0.0.0-20260419220956-37793e545df0 h1:AWsy3l/Yboi68TDFuVqOOWpN79uGXZjEBkQPbdYoB2k=
 github.com/birdayz/protobuf-ecosystem v0.0.0-20260419220956-37793e545df0/go.mod h1:W456VD1Y1K2bZ5ldtC18dqn5rXa6IzXCOivolWipze0=
 github.com/cenkalti/backoff/v4 v4.3.0 h1:MyRJ/UdXutAwSAT+s3wNd7MfTIcy71VQueUuFK343L8=

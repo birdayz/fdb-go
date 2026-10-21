@@ -109,10 +109,11 @@ instead of installing silently. The pins live in **one place**: the `locals.vers
 in `main.tf` (runner, bazelisk, just, FDB client). Bump a tool by editing its
 `{version, sha256}` pair together — never one without the other.
 
-The **build itself** does not depend on this image: `.bazelversion` (Bazel 9.0.1) and
+The **build itself** does not depend on this image: `.bazelversion` (Bazel 9.3.1) and
 `MODULE.bazel.lock` (all bzlmod deps, by hash) are committed in the repo, and bazelisk on
-the box is just a launcher that reads them. `.bazelrc` configures **no remote/disk cache**,
-so every build is from source — no external cache trust boundary.
+the box is just a launcher that reads them. The checked-in `.bazelrc` does not select a
+cache, but runner provisioning installs shared disk/repository and remote-cache settings;
+those caches are part of the runner trust boundary (see below).
 
 Residual drift (documented, bounded): the Hetzner `ubuntu-24.04` base image is a rolling
 label (point-release may differ between provisions) and apt packages beyond `docker.io`

@@ -10,10 +10,11 @@ require (
 	charm.land/lipgloss/v2 v2.0.1
 	github.com/antlr4-go/antlr/v4 v4.13.1
 	github.com/apple/foundationdb/bindings/go v0.0.0-20250702211439-37fcf1c8ce08
-	github.com/bazelbuild/rules_go v0.60.0
+	github.com/bazelbuild/rules_go v0.64.2
 	github.com/birdayz/protobuf-ecosystem v0.0.0-20260419220956-37793e545df0
 	github.com/charmbracelet/x/term v0.2.2
 	github.com/chzyer/readline v1.5.1
+	github.com/containerd/errdefs v1.0.0
 	github.com/docker/docker v28.5.2+incompatible
 	github.com/docker/go-connections v0.6.0
 	github.com/google/cel-go v0.30.0
@@ -61,7 +62,6 @@ require (
 	github.com/charmbracelet/x/windows v0.2.2 // indirect
 	github.com/clipperhouse/displaywidth v0.11.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
-	github.com/containerd/errdefs v1.0.0 // indirect
 	github.com/containerd/errdefs/pkg v0.3.0 // indirect
 	github.com/containerd/log v0.1.0 // indirect
 	github.com/containerd/platforms v0.2.1 // indirect

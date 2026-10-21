@@ -19,7 +19,7 @@ fetch() {
   curl --fail --location --retry 3 --connect-timeout 15 --max-time 600 "$url" -o "$dest"
   printf '%s  %s\n' "$hash" "$dest" | sha256sum -c -
 }
-fetch https://github.com/bazelbuild/bazelisk/releases/download/v1.29.0/bazelisk-linux-amd64 5a408715e932c0250d28bd84555f12edbf70117de42f9181691c736eacc4a992 "$root/downloads/bazelisk"
+fetch https://github.com/bazelbuild/bazelisk/releases/download/v1.30.0/bazelisk-linux-amd64 a248ae2b2b62b5baebb748f6fba7203bff1a27e5d01b55399a8406744cb539e8 "$root/downloads/bazelisk"
 install -m755 "$root/downloads/bazelisk" /usr/local/bin/bazelisk
 fetch https://github.com/apple/foundationdb/releases/download/7.3.77/foundationdb-clients_7.3.77-1_amd64.deb b6c263723009bddbc30b6ae8cf9854340bd35cef14152abb0da8fb5af2b91254 "$root/downloads/fdb-clients.deb"
 fetch https://github.com/apple/foundationdb/releases/download/7.3.77/foundationdb-server_7.3.77-1_amd64.deb 789f1ed4cbacc0fd7043da2217c9e57516e4ec94fa7140853ec22a7e715785cc "$root/downloads/fdb-server.deb"
