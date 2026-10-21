@@ -1,3 +1,5 @@
+//go:build !race
+
 package vectorindex
 
 import (
@@ -14,6 +16,8 @@ import (
 	"fdb.dev/pkg/recordlayer/vectorcodec"
 )
 
+// Race instrumentation changes the CPU budget's meaning; the untagged peel
+// correctness test exercises the refits, assignment and scoring under -race.
 // The peel's performance criterion (ws-d-design.md, "Go's performance
 // criterion"): an admitted peel that outlasts FDB's 5 s transaction window
 // fails with 1007 on every attempt, so the WHOLE peel — the candidate fit,

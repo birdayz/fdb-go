@@ -1,0 +1,2 @@
+# Dependency patches keep their exact bytes; diff context lines carry whitespace.
+*.patch -whitespace

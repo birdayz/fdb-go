@@ -115,13 +115,16 @@ go_test(
     ],
 )
 
-# The GuardiANN peel's performance criterion (ws-d-design.md): a CPU-time
-# gate, kept out of the fast lane for its two-minute run.
+# The CPU-time criterion is !race; bounded peel correctness runs in both builds.
+# gazelle:exclude guardiann_peel_correctness_test.go
 # gazelle:exclude guardiann_peel_timing_test.go
 go_test(
     name = "guardiann_peel_timing_test",
     timeout = "long",
-    srcs = ["guardiann_peel_timing_test.go"],
+    srcs = [
+        "guardiann_peel_correctness_test.go",
+        "guardiann_peel_timing_test.go",
+    ],
     embed = [":vectorindex"],
     tags = ["test-full"],
     deps = [
