@@ -3,6 +3,8 @@ package values
 import (
 	"fmt"
 	"strings"
+
+	"fdb.dev/internal/unicode15"
 )
 
 // The vocabulary record sites pass to CensusHooks. It stays in production because
@@ -126,7 +128,7 @@ func ClassifyQualifierRecovery(name, identity string, identityPresent bool) (Qua
 	if !identityPresent {
 		return QualRecManufactured, manufactured
 	}
-	if strings.EqualFold(manufactured, identity) {
+	if unicode15.EqualFold(manufactured, identity) {
 		return QualRecAgreed, manufactured
 	}
 	return QualRecDiverged, manufactured

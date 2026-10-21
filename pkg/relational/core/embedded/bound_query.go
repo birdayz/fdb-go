@@ -2,8 +2,8 @@ package embedded
 
 import (
 	"maps"
-	"strings"
 
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
@@ -176,17 +176,17 @@ func boundDependencies(op logical.LogicalOperator, ctes map[*logical.CTEProducer
 			}
 			unionBindings(r.free, ctes[producer])
 		}
-		r.local[values.NamedCorrelationIdentifier(strings.ToUpper(sourceBindingName(node)))] = struct{}{}
+		r.local[values.NamedCorrelationIdentifier(unicode15.ToUpperString(sourceBindingName(node)))] = struct{}{}
 	case *logical.LogicalInlineValues:
 		if node.StreamValue() != nil {
 			addValue(node.StreamValue())
 		} else {
 			addValue(node.CollectionValue())
 		}
-		r.local[values.NamedCorrelationIdentifier(strings.ToUpper(sourceBindingName(node)))] = struct{}{}
+		r.local[values.NamedCorrelationIdentifier(unicode15.ToUpperString(sourceBindingName(node)))] = struct{}{}
 	case *logical.LogicalUnnest:
 		addValue(node.CorrelatedCollection)
-		r.local[values.NamedCorrelationIdentifier(strings.ToUpper(sourceBindingName(node)))] = struct{}{}
+		r.local[values.NamedCorrelationIdentifier(unicode15.ToUpperString(sourceBindingName(node)))] = struct{}{}
 	case *logical.LogicalCTE:
 		return boundDependencies(node.Main, ctes)
 	case *logical.LogicalUnion:

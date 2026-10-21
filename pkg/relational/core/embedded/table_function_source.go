@@ -7,8 +7,7 @@
 package embedded
 
 import (
-	"strings"
-
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/functions"
@@ -28,7 +27,7 @@ func buildTableFunctionLogical(
 ) (*logical.LogicalInlineValues, error) {
 	fn := item.TableFunction()
 	name := functions.NormalizeIdentifier(fn.TableFunctionName().GetText())
-	if !strings.EqualFold(name, "RANGE") {
+	if !unicode15.EqualFold(name, "RANGE") {
 		return nil, api.NewErrorf(api.ErrCodeUndefinedFunction, "Unknown table function %s", name)
 	}
 	if fn.InlineTableDefinition() != nil {

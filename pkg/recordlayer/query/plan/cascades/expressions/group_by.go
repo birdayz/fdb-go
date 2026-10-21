@@ -12,8 +12,8 @@ import (
 	"fmt"
 	"hash/fnv"
 	"slices"
-	"strings"
 
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -431,7 +431,7 @@ func AggregateResultColumnName(agg AggregateSpec) string {
 				// identifier", and a minted placeholder is squarely on the
 				// upper side of it. The line below is the one that must not
 				// fold, because ColumnNameValue renders real field names.
-				opName = strings.ToUpper(c.Name())
+				opName = unicode15.ToUpperString(c.Name())
 			}
 		} else {
 			opName = values.ColumnNameValue(agg.Operand)

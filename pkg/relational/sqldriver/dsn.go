@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
 )
@@ -152,7 +153,7 @@ var contractDSNOptions = []api.OptionName{
 func dsnParams(options []api.OptionName) []string {
 	out := make([]string, len(options))
 	for i, o := range options {
-		out[i] = strings.ToLower(string(o))
+		out[i] = unicode15.ToLowerString(string(o))
 	}
 	return out
 }
@@ -185,7 +186,7 @@ func (d *DSN) ConnectionOptions() (*api.Options, error) {
 	}
 	opts := api.NoOptions()
 	for _, name := range boolDSNOptions {
-		param := strings.ToLower(string(name))
+		param := unicode15.ToLowerString(string(name))
 		if raw, present := d.Options[param]; present {
 			v, err := parseDSNBool(param, raw)
 			if err != nil {
@@ -202,7 +203,7 @@ func (d *DSN) ConnectionOptions() (*api.Options, error) {
 		opts = opts.With(api.OptTransactionTags, tags)
 	}
 	for _, name := range contractDSNOptions {
-		param := strings.ToLower(string(name))
+		param := unicode15.ToLowerString(string(name))
 		raw, present := d.Options[param]
 		if !present {
 			continue
@@ -267,9 +268,9 @@ func parseDSNTags(raw string) ([]string, error) {
 // value, which Java's parseBoolean would silently read as false, is an error.
 func parseDSNBool(name, raw string) (bool, error) {
 	switch {
-	case strings.EqualFold(raw, "true"):
+	case unicode15.EqualFold(raw, "true"):
 		return true, nil
-	case strings.EqualFold(raw, "false"):
+	case unicode15.EqualFold(raw, "false"):
 		return false, nil
 	default:
 		return false, api.NewErrorf(api.ErrCodeInvalidParameter,

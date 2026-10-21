@@ -9,6 +9,7 @@ package query
 import (
 	"strings"
 
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/core/query/logical"
 )
@@ -182,7 +183,7 @@ func scalarColumnType(innerCols []values.Field, scalarCol string) values.Type {
 	// a perfectly exact field invisible.
 	var found values.Type
 	for _, c := range innerCols {
-		if !strings.EqualFold(c.Name, scalarCol) {
+		if !unicode15.EqualFold(c.Name, scalarCol) {
 			continue
 		}
 		if found != nil {
@@ -200,7 +201,7 @@ func scalarColumnType(innerCols []values.Field, scalarCol string) values.Type {
 	}
 	found = nil
 	for _, c := range innerCols {
-		if !strings.EqualFold(c.Name, bare) {
+		if !unicode15.EqualFold(c.Name, bare) {
 			continue
 		}
 		if found != nil {

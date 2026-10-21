@@ -224,6 +224,7 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//gen",
+        "//internal/unicode15",
         "//pkg/dst",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",

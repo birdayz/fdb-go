@@ -1,8 +1,7 @@
 package embedded
 
 import (
-	"strings"
-
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -19,14 +18,14 @@ func (a *bindingAllocator) reserve(name string) {
 		a.reserved = make(map[string]struct{})
 	}
 	if name != "" {
-		a.reserved[strings.ToUpper(name)] = struct{}{}
+		a.reserved[unicode15.ToUpperString(name)] = struct{}{}
 	}
 }
 
 func (a *bindingAllocator) mint() values.CorrelationIdentifier {
 	for {
 		id := a.ids.Next()
-		if _, occupied := a.reserved[strings.ToUpper(id.Name())]; occupied {
+		if _, occupied := a.reserved[unicode15.ToUpperString(id.Name())]; occupied {
 			continue
 		}
 		a.reserve(id.Name())

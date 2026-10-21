@@ -1,0 +1,27 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+
+go_library(
+    name = "unicode15baseline_lib",
+    srcs = ["main.go"],
+    importpath = "fdb.dev/tools/unicode15baseline",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//pkg/recordlayer",
+        "//tools/unicode15baseline/corpus",
+        "@org_golang_x_text//collate",
+        "@org_golang_x_text//language",
+        "@org_golang_x_text//unicode/norm",
+    ],
+)
+
+go_binary(
+    name = "unicode15baseline",
+    embed = [":unicode15baseline_lib"],
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "fixture",
+    srcs = ["testdata/go1.26.10.json"],
+    visibility = ["//visibility:public"],
+)

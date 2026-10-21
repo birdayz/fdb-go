@@ -23,8 +23,9 @@ import (
 	"encoding/asn1"
 	"hash"
 	"os"
-	"strings"
 	"unicode/utf16"
+
+	"fdb.dev/internal/unicode15"
 )
 
 // Entry is one secret key entry: its alias and its AES key bytes.
@@ -143,7 +144,7 @@ func EncodePKCS12(storePassword, entryPassword string, entries []Entry) ([]byte,
 			Value: explicit0(sb),
 			Attributes: []attribute{{
 				ID:    oidFriendlyName,
-				Value: asn1.RawValue{Class: asn1.ClassUniversal, Tag: asn1.TagSet, IsCompound: true, Bytes: bmpString(strings.ToLower(e.Alias))},
+				Value: asn1.RawValue{Class: asn1.ClassUniversal, Tag: asn1.TagSet, IsCompound: true, Bytes: bmpString(unicode15.ToLowerString(e.Alias))},
 			}},
 		})
 	}

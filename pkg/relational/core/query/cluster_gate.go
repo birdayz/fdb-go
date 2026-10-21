@@ -9,6 +9,7 @@ package query
 import (
 	"strings"
 
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/core/query/logical"
 )
@@ -284,7 +285,7 @@ func (t *cascadesTranslator) ordinalWedgeGateDecide(j *logical.LogicalJoin) wedg
 	// contract's unclassifiable-counts-as->2 direction).
 	seenBindings := make(map[string]struct{})
 	for _, leg := range t.legsOfGatedJoin(j) {
-		key := strings.ToUpper(leg.binding)
+		key := unicode15.ToUpperString(leg.binding)
 		if _, dup := seenBindings[key]; dup {
 			return wedgeGateDecision{Arity: arityPoison, Reason: "duplicate leg bindings (indistinguishable leg correlations)"}
 		}
@@ -643,11 +644,11 @@ func (t *cascadesTranslator) derivedBodyStarOrdinalLeg(body logical.LogicalOpera
 	bottomLen := len(cols) - aliasCount
 	lastIdx := make(map[string]int, len(cols))
 	for i, c := range cols {
-		lastIdx[strings.ToUpper(c.Name)] = i
+		lastIdx[unicode15.ToUpperString(c.Name)] = i
 	}
 	labels := make([]values.Field, 0, len(cols))
 	for i, c := range cols {
-		key := strings.ToUpper(c.Name)
+		key := unicode15.ToUpperString(c.Name)
 		if _, shadowed := shadowing[key]; shadowed && i < bottomLen && lastIdx[key] != i {
 			continue // a bottom-source column a link's AS/AT alias shadows
 		}
@@ -655,7 +656,7 @@ func (t *cascadesTranslator) derivedBodyStarOrdinalLeg(body logical.LogicalOpera
 	}
 	seen := make(map[string]struct{}, len(labels))
 	for _, c := range labels {
-		key := strings.ToUpper(c.Name)
+		key := unicode15.ToUpperString(c.Name)
 		if _, dup := seen[key]; dup {
 			return nil, false
 		}
@@ -697,7 +698,7 @@ func (t *cascadesTranslator) starBodyBoundaryInputOrdinals(
 	for i, output := range boundary {
 		ordinal := -1
 		for j, input := range raw {
-			if strings.EqualFold(input.Name, output.Name) {
+			if unicode15.EqualFold(input.Name, output.Name) {
 				ordinal = j // last occurrence is the shadow winner
 			}
 		}
@@ -747,12 +748,12 @@ func starSpineAliasBindings(j *logical.LogicalJoin) (map[string]starSpineAliasBi
 		corr := unnestSourceCorrelation(un).Name()
 		ord := 0
 		if un.Alias != "" {
-			bindings[strings.ToUpper(un.Alias)] = starSpineAliasBinding{Corr: corr, Ord: ord}
+			bindings[unicode15.ToUpperString(un.Alias)] = starSpineAliasBinding{Corr: corr, Ord: ord}
 			ord++
 			count++
 		}
 		if un.AtAlias != "" {
-			bindings[strings.ToUpper(un.AtAlias)] = starSpineAliasBinding{Corr: corr, Ord: ord}
+			bindings[unicode15.ToUpperString(un.AtAlias)] = starSpineAliasBinding{Corr: corr, Ord: ord}
 			count++
 		}
 		cur = bj.Left

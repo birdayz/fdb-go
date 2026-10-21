@@ -1955,3 +1955,23 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   are compared after already-issued loads quiesce, not at Java's racy
   failure-instant snapshot. Real-FDB gated Java and Go regressions pin this
   without additional reads or tolerance.
+
+## RFC-266: Full JDK 21 parity and text-index migration
+
+- [ ] **RFC-266 — full JDK 21 parity, including migration of Go-written TEXT indexes.**
+  The owner selected full parity after the pin-only RFC-265 lands; no RFC-266
+  implementation is part of that pin. Match BreakIterator segmentation,
+  NFKD/final-sigma context and the JDK Cased set (`x:y`, `ĿΣ`, `ΑΣ\u037A`,
+  `\U00010780Σ`); full English keystore-alias lowercase (`İ`, final sigma);
+  and column-label `equalsIgnoreCase` (`İ` versus `i`). Go-written v0 TEXT
+  postings for affected inputs already differ from Java's. Define how to detect
+  potentially affected/unknown-writer indexes, rebuild them, handle tokenizer
+  versions and exclude old divergent writers during rollout; prove no orphaned
+  terms with Java differentials. Widen the direct-caller Unicode guard to
+  identifier/name callers and helper indirection; route or explicitly exclude
+  the remaining `strings.EqualFold`/`strings.ToUpper` uses in
+  `pkg/internal/querycensus` and `cmd/frl`, which are outside the RFC-265 pin.
+  Evidence: [RFC-265](rfcs/265-unicode15-compatibility-pin.md#java-fidelity-and-deliberately-retained-divergences),
+  `conformance/testdata/unicode15_java.json`, immutable
+  `tools/unicode15baseline/testdata/go1.26.10.json` and the raw write/update/delete
+  fixtures plus mixed-compiler harness in `tools/unicode15store/`.

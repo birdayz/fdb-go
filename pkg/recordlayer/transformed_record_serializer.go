@@ -17,10 +17,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strings"
 
 	"google.golang.org/protobuf/proto"
 
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/dst"
 )
 
@@ -737,7 +737,7 @@ func (s *TransformedRecordSerializer) cipherBlock(keyNumber int32, op string) (c
 		if err != nil {
 			return nil, t, err
 		}
-		if !strings.EqualFold(algorithm, "AES") && !strings.EqualFold(algorithm, "Rijndael") {
+		if !unicode15.EqualFold(algorithm, "AES") && !unicode15.EqualFold(algorithm, "Rijndael") {
 			return nil, t, securityError(op, fmt.Errorf("Wrong algorithm: AES or Rijndael required (key algorithm %s)", algorithm))
 		}
 	}

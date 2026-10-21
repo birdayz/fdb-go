@@ -32,7 +32,10 @@ go_library(
     ],
     importpath = "fdb.dev/pkg/relational/api",
     visibility = ["//visibility:public"],
-    deps = ["//gen"],
+    deps = [
+        "//gen",
+        "//internal/unicode15",
+    ],
 )
 
 go_test(

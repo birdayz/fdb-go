@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"fdb.dev/gen"
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
@@ -609,7 +610,7 @@ func parseVectorIndexDefinition(def *antlrgen.VectorIndexDefinitionContext, b *m
 
 	method := "HNSW"
 	if def.GetEngine() != nil {
-		method = strings.ToUpper(def.GetEngine().GetText())
+		method = unicode15.ToUpperString(def.GetEngine().GetText())
 	}
 	options, order, err := parseVectorIndexOptions(def.VectorIndexOptions(), indexName, method)
 	if err != nil {
@@ -687,7 +688,7 @@ func plainProjectionView(b *metadata.Builder, name string) (string, map[string]s
 		if i < len(proj.Aliases) && proj.Aliases[i] != "" {
 			out = proj.Aliases[i]
 		}
-		mapping[strings.ToUpper(out)] = parseColRef(strings.ToUpper(col)).bare()
+		mapping[unicode15.ToUpperString(out)] = parseColRef(unicode15.ToUpperString(col)).bare()
 	}
 	return scan.Table, mapping, window, nil
 }
@@ -757,7 +758,7 @@ func parseVectorIndexOptions(ctx antlrgen.IVectorIndexOptionsContext, indexName,
 		if !ok {
 			continue
 		}
-		name := strings.ToLower(oc.GetOptionName().GetText())
+		name := unicode15.ToLowerString(oc.GetOptionName().GetText())
 		spec, ok := vectorSQLOptions[name]
 		key := spec.key
 		if engine == "SPFRESH" {
@@ -792,7 +793,7 @@ func parseVectorIndexOptions(ctx antlrgen.IVectorIndexOptionsContext, indexName,
 			}
 			opts[key] = values.JavaDoubleToString(f)
 		case vectorOptBool:
-			opts[key] = strconv.FormatBool(strings.EqualFold(text, "true"))
+			opts[key] = strconv.FormatBool(unicode15.EqualFold(text, "true"))
 		case vectorOptMetric:
 			if vc == nil || vc.HnswMetric() == nil {
 				return nil, nil, bad

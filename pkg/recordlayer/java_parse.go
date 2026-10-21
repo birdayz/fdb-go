@@ -6,10 +6,9 @@ package recordlayer
 
 import (
 	"errors"
-	"strings"
-	"unicode"
 	"unicode/utf8"
 
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer/javanum"
 )
 
@@ -106,10 +105,10 @@ func javaDecimalDigit(r rune) int {
 	if r >= '0' && r <= '9' {
 		return int(r - '0')
 	}
-	if !unicode.Is(unicode.Nd, r) {
+	if !unicode15.Is(unicode15.Nd, r) {
 		return -1
 	}
-	for _, rg := range unicode.Nd.R16 {
+	for _, rg := range unicode15.Nd.R16 {
 		if uint16(r) >= rg.Lo && uint16(r) <= rg.Hi {
 			return int(uint16(r)-rg.Lo) % 10
 		}
@@ -132,5 +131,5 @@ func JavaParseDouble(s string) (float64, error) {
 // which Index.getBooleanOption uses): "true" in any case is true, every other
 // value false.
 func javaParseBoolean(s string) bool {
-	return strings.EqualFold(s, "true")
+	return unicode15.EqualFold(s, "true")
 }

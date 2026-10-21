@@ -1,0 +1,27 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+filegroup(
+    name = "unicodepin_sources",
+    srcs = glob(["*.go"]),
+    visibility = ["//visibility:public"],
+)
+
+go_library(
+    name = "language",
+    srcs = [
+        "coverage.go",
+        "doc.go",
+        "language.go",
+        "match.go",
+        "parse.go",
+        "tables.go",
+        "tags.go",
+    ],
+    importpath = "fdb.dev/internal/unicode15/text/language",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//internal/unicode15",
+        "//internal/unicode15/text/internal/language",
+        "//internal/unicode15/text/internal/language/compact",
+    ],
+)

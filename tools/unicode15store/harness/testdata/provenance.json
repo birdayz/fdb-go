@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "sourceCommit": "2804215b86cbe3d06b8f865810d628c27a737d23",
+  "compiler": "go1.26.10",
+  "foundationdb": "7.3.77",
+  "writerBinarySHA256": "f298cf2dd7725ea49c46d4356b3a2f86316ea83fbed0958ba74c0289e08a8ffd",
+  "writerSourceSHA256": "5829dde7d4690a680999ca2c0e136397ea936763633d0fb34d7bf5a9714b5f09",
+  "cliSourceSHA256": "187fff4db646b8da2f06204c3984b5ccbfc0b2f403973e3b02cbc59395978565",
+  "prePinCallerSHA256": {
+    "pkg/recordlayer/text_tokenizer.go": "ad4b82816c072cf5e329d98d448591130c596acbf3ff666cfca7c7083a6e2a61",
+    "pkg/recordlayer/text_index_maintainer.go": "25d8c6811b386fae9ac20583198d478aa806dd058c090d1aa12c9d5a567a29a7",
+    "pkg/recordlayer/collate_function_key_expression.go": "6b6e23d5dcb607cf066bfcc33ccc071976dba1ef7ae3bdb5b22807986c296a4d"
+  },
+  "population": {
+    "stores": 19,
+    "textStores": 4,
+    "textCustomersPerStore": 37,
+    "textPostingsAfterWrite": 312,
+    "rawTextKeysAfterWrite": 120,
+    "collatedStores": 15,
+    "collatedCustomersPerStore": 21,
+    "rawCollatedRecordKeysAfterWrite": 315,
+    "rawCollatedIndexKeysAfterWrite": 315,
+    "rawCollatedCountKeysAfterWrite": 267
+  },
+  "goldenSHA256": {
+    "write.json": "c406b034bdd2b441a01d407d3694c9fdc20c0eeacec66d5dc58397a859e46b79",
+    "rebuild.json": "c406b034bdd2b441a01d407d3694c9fdc20c0eeacec66d5dc58397a859e46b79",
+    "update.json": "1d5762561384aa141626e7ac3358ef8035d129418b0441bf5ca185cef8ba167d",
+    "delete.json": "e89440142dd896b9f4ea3e8eac538433865080e745e9f6316a8e43461b92e6db",
+    "delete_written.json": "6359b2f2afc246409d52a013a3ab7c5136b9602fa7c0dc74092e43057080c99d"
+  }
+}

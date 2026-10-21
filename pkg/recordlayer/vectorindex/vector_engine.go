@@ -5,8 +5,7 @@
 package vectorindex
 
 import (
-	"strings"
-
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer"
 )
 
@@ -32,7 +31,7 @@ func VectorEngineOf(index *recordlayer.Index) (VectorEngineKind, error) {
 	if !ok {
 		return VectorEngineHNSW, nil
 	}
-	switch strings.ToUpper(v) {
+	switch unicode15.ToUpperString(v) {
 	case "HNSW":
 		return VectorEngineHNSW, nil
 	case "GUARDIANN":

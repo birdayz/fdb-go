@@ -4,9 +4,9 @@ import (
 	"context"
 	"database/sql/driver"
 	"fmt"
-	"strings"
 	"sync"
 
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/executor"
 	cascades "fdb.dev/pkg/recordlayer/query/plan/cascades"
@@ -630,7 +630,7 @@ func planPhysicalDMLWithMetadata(
 		harnessTarget = dop.Table
 	}
 	if harnessTarget != "" && md.GetRecordType(harnessTarget) == nil {
-		return nil, api.NewErrorf(api.ErrCodeUndefinedTable, "Unknown table %s", strings.ToUpper(harnessTarget))
+		return nil, api.NewErrorf(api.ErrCodeUndefinedTable, "Unknown table %s", unicode15.ToUpperString(harnessTarget))
 	}
 	if err := validateScanTables(logicalOp, md); err != nil {
 		return nil, err
@@ -983,7 +983,7 @@ func ResultColumnTypesForPlan(plan plans.RecordQueryPlan) []string {
 	cols := resultColumns(plan)
 	types := make([]string, len(cols))
 	for i, c := range cols {
-		types[i] = strings.ToUpper(c.TypeName)
+		types[i] = unicode15.ToUpperString(c.TypeName)
 	}
 	return types
 }

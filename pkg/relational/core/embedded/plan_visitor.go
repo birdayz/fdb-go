@@ -44,6 +44,7 @@ import (
 
 	"github.com/antlr4-go/antlr/v4"
 
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -163,7 +164,7 @@ func (v *PlanVisitor) declareCTEs(ctesCtx antlrgen.ICtesContext) ([]*logical.CTE
 	predeclared := make(map[string]struct{})
 	for _, nq := range ctesCtx.AllNamedQuery() {
 		name := functions.FullIdToName(nq.GetName())
-		upper := strings.ToUpper(name)
+		upper := unicode15.ToUpperString(name)
 		if _, exists := predeclared[upper]; exists {
 			return nil, api.NewErrorf(api.ErrCodeDuplicateAlias, "found '%s' more than once", name)
 		}
@@ -181,7 +182,7 @@ func (v *PlanVisitor) declareCTEs(ctesCtx antlrgen.ICtesContext) ([]*logical.CTE
 	}
 	for _, nq := range ctesCtx.AllNamedQuery() {
 		name := functions.FullIdToName(nq.GetName())
-		upper := strings.ToUpper(name)
+		upper := unicode15.ToUpperString(name)
 		var aliases []string
 		if list, ok := nq.GetColumnAliases().(*antlrgen.FullIdListContext); ok && list != nil {
 			for _, id := range list.AllFullId() {
@@ -360,7 +361,7 @@ func (v *PlanVisitor) declareViews(q antlr.Tree) ([]*logical.CTEProducer, error)
 			if needed[i] {
 				continue
 			}
-			upper := strings.ToUpper(vw.GetName())
+			upper := unicode15.ToUpperString(vw.GetName())
 			if _, declared := v.cteScopes[upper]; declared {
 				continue
 			}
@@ -395,7 +396,7 @@ func (v *PlanVisitor) declareViews(q antlr.Tree) ([]*logical.CTEProducer, error)
 			continue
 		}
 		name := vw.GetName()
-		upper := strings.ToUpper(name)
+		upper := unicode15.ToUpperString(name)
 		body := parsed[i]
 		producer, err := logical.PrepareCTE(name, false, v.cteProducers, func(registry logical.CTERegistry) (logical.LogicalOperator, error) {
 			previous := v.cteProducers
@@ -1294,7 +1295,7 @@ func (v *PlanVisitor) visitSimpleTableBodyUnfolded(simpleTable *antlrgen.SimpleT
 	var pred predicates.QueryPredicate
 	var predOk bool
 	if queryCTEScopes != nil && len(sq.joins) == 0 {
-		if src, found := queryCTEScopes[strings.ToUpper(sq.tableName)]; found && src.Table != nil {
+		if src, found := queryCTEScopes[unicode15.ToUpperString(sq.tableName)]; found && src.Table != nil {
 			// A TOMBSTONE entry (nil Table: declared CTE, schema underivable)
 			// must not reach scope construction — ResolveColumn nil-derefs.
 			pred, predOk = buildWherePredicateFromCTEScope(src, sq.tableAlias, sq.whereExpr, v.md)
@@ -1370,9 +1371,9 @@ func (v *PlanVisitor) assignDerivedSourceBindings(fs *fromSource) {
 	if v.enclosingScope == nil {
 		return
 	}
-	fs.bindingID = strings.ToUpper(v.bindings.mint().Name())
+	fs.bindingID = unicode15.ToUpperString(v.bindings.mint().Name())
 	for i := range fs.joins {
-		fs.joins[i].bindingID = strings.ToUpper(v.bindings.mint().Name())
+		fs.joins[i].bindingID = unicode15.ToUpperString(v.bindings.mint().Name())
 	}
 }
 
@@ -1676,15 +1677,15 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 	// Determine strip prefix for derived tables and table aliases.
 	stripPrefix := ""
 	if fs != nil && fs.derivedQuery != nil {
-		stripPrefix = strings.ToUpper(fs.tableName) + "."
+		stripPrefix = unicode15.ToUpperString(fs.tableName) + "."
 	}
 	aliasPrefix := ""
 	if fs != nil && fs.tableAlias != "" && len(fs.joins) == 0 {
-		aliasPrefix = strings.ToUpper(fs.tableAlias) + "."
+		aliasPrefix = unicode15.ToUpperString(fs.tableAlias) + "."
 	}
 
 	strip := func(s string) string {
-		upper := strings.ToUpper(s)
+		upper := unicode15.ToUpperString(s)
 		if stripPrefix != "" && strings.HasPrefix(upper, stripPrefix) {
 			return s[len(stripPrefix):]
 		}
@@ -1763,7 +1764,7 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 				cls.groupBy[j].bare == "" && cls.groupBy[j].expr != nil:
 				// Resolver unavailable/declined: token-stream identity
 				// (GetText concatenates tokens, dropping whitespace).
-				same = strings.EqualFold(cls.groupBy[i].expr.GetText(), cls.groupBy[j].expr.GetText())
+				same = unicode15.EqualFold(cls.groupBy[i].expr.GetText(), cls.groupBy[j].expr.GetText())
 			default:
 				same = groupKeysEquivalent(keys[i], keys[j])
 			}
@@ -1826,8 +1827,8 @@ func groupKeysEquivalent(a, b logical.GroupKey) bool {
 	}
 	if a.Bare != "" && b.Bare != "" {
 		return a.Qualified == b.Qualified &&
-			strings.EqualFold(a.Bare, b.Bare) &&
-			(!a.Qualified || strings.EqualFold(a.Qualifier, b.Qualifier))
+			unicode15.EqualFold(a.Bare, b.Bare) &&
+			(!a.Qualified || unicode15.EqualFold(a.Qualifier, b.Qualifier))
 	}
 	return false
 }
@@ -1875,7 +1876,7 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antl
 	}
 
 	strip := func(s string) string {
-		if stripPrefix != "" && strings.HasPrefix(strings.ToUpper(s), stripPrefix) {
+		if stripPrefix != "" && strings.HasPrefix(unicode15.ToUpperString(s), stripPrefix) {
 			return s[len(stripPrefix):]
 		}
 		return s
@@ -1888,7 +1889,7 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antl
 		if groupByAliases == nil {
 			return name, false
 		}
-		idx, ok := groupByAliases[strings.ToUpper(name)]
+		idx, ok := groupByAliases[unicode15.ToUpperString(name)]
 		if !ok || idx >= len(groupBy) {
 			return name, false
 		}
@@ -2042,7 +2043,7 @@ func bareLeafDuplicated(projCols []projCol, projAliases []string, i int) bool {
 		if j < len(projAliases) && projAliases[j] != "" {
 			other = projAliases[j]
 		}
-		if strings.EqualFold(other, leaf) {
+		if unicode15.EqualFold(other, leaf) {
 			return true
 		}
 	}
@@ -2073,7 +2074,7 @@ func mintQualifiedDatumKey(proj *logical.LogicalProject, i int, col projCol) {
 		proj.AliasSources = make([]values.ProjectionAliasSource, len(proj.Projections))
 	}
 	if i < len(proj.Aliases) && proj.Aliases[i] == "" {
-		proj.Aliases[i] = strings.ToUpper(col.name)
+		proj.Aliases[i] = unicode15.ToUpperString(col.name)
 		if i < len(proj.AliasMinted) {
 			proj.AliasMinted[i] = true
 		}
@@ -2440,7 +2441,7 @@ func (v *PlanVisitor) visitFinalProjection(op logical.LogicalOperator, cls *sele
 			continue
 		}
 		rendered := col.name
-		if stripPrefix != "" && strings.HasPrefix(strings.ToUpper(rendered), stripPrefix) {
+		if stripPrefix != "" && strings.HasPrefix(unicode15.ToUpperString(rendered), stripPrefix) {
 			rendered = rendered[len(stripPrefix):]
 		}
 		projs[i] = rendered
@@ -2478,7 +2479,7 @@ func (v *PlanVisitor) resolveEnclosingAliasSources(fs *fromSource) {
 		if name == "" || strings.Contains(name, ".") || v.md.GetRecordType(name) != nil {
 			return "", false
 		}
-		upper := strings.ToUpper(name)
+		upper := unicode15.ToUpperString(name)
 		if _, cte := v.cteScopes[upper]; cte {
 			return "", false
 		}

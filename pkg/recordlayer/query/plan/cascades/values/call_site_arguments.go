@@ -9,7 +9,8 @@ package values
 import (
 	"fmt"
 	"slices"
-	"strings"
+
+	"fdb.dev/internal/unicode15"
 )
 
 // CallSiteArguments is Java's CallSiteArguments: the arguments of one function
@@ -215,7 +216,7 @@ func EnumOption(name string, constants ...string) CallSiteOption[EnumConstant] {
 		}
 		if s, ok := raw.(string); ok {
 			for _, c := range constants {
-				if strings.EqualFold(c, s) {
+				if unicode15.EqualFold(c, s) {
 					return EnumConstant(c), nil
 				}
 			}

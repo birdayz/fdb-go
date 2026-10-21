@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 
+	"fdb.dev/internal/unicode15"
 	recordlayer "fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
@@ -167,7 +168,7 @@ func deriveLogicalResultType(op logical.LogicalOperator, md *recordlayer.RecordM
 					return nil, fmt.Errorf("projection result slot %d has no resolved computed value", i)
 				}
 				fieldType = aggregateInput.Fields[ordinal].FieldType
-				if ungrouped != nil && ordinal < len(ungrouped.Calls) && strings.EqualFold(ungrouped.Calls[ordinal].Func, "COUNT") {
+				if ungrouped != nil && ordinal < len(ungrouped.Calls) && unicode15.EqualFold(ungrouped.Calls[ordinal].Func, "COUNT") {
 					fieldType = countOnEmpty(&values.ConstantValue{Typ: fieldType}).Type()
 				}
 			} else if positionalInput != nil {
@@ -543,7 +544,7 @@ func legLabelsForType(op logical.LogicalOperator, typ values.Type) ([]OutputLabe
 		}
 		return labels, nil
 	}
-	alias := strings.ToUpper(sourceAlias(op))
+	alias := unicode15.ToUpperString(sourceAlias(op))
 	if alias == "" {
 		return nil, fmt.Errorf("scalar logical leg %T has no source alias", op)
 	}
@@ -553,7 +554,7 @@ func legLabelsForType(op logical.LogicalOperator, typ values.Type) ([]OutputLabe
 func rowLabels(typ values.Type, op logical.LogicalOperator) ([]OutputLabel, error) {
 	record, ok := typ.(*values.RecordType)
 	if !ok {
-		alias := strings.ToUpper(sourceAlias(op))
+		alias := unicode15.ToUpperString(sourceAlias(op))
 		if alias == "" {
 			return nil, fmt.Errorf("scalar logical row %T has no source alias", op)
 		}
@@ -608,7 +609,7 @@ func exactLogicalAggregateCallType(aggregate *logical.LogicalAggregate, index in
 		return nil, fmt.Errorf("aggregate call index %d is outside the native layout", index)
 	}
 	call := aggregate.Calls[index]
-	switch strings.ToUpper(call.Func) {
+	switch unicode15.ToUpperString(call.Func) {
 	case "COUNT", "COUNT(*)":
 		return values.NullableLong, nil
 	case "AVG":
@@ -639,7 +640,7 @@ func exactScanResultType(scan *logical.LogicalScan, md *recordlayer.RecordMetaDa
 	} else {
 		var bestName string
 		for name, candidate := range md.RecordTypes() {
-			if strings.EqualFold(name, scan.Table) && (recordType == nil || name < bestName) {
+			if unicode15.EqualFold(name, scan.Table) && (recordType == nil || name < bestName) {
 				bestName, recordType = name, candidate
 			}
 		}
@@ -714,7 +715,7 @@ func logicalLegFields(op logical.LogicalOperator, typ values.Type) ([]values.Fie
 		}
 		return fields, nil
 	}
-	alias := strings.ToUpper(sourceAlias(op))
+	alias := unicode15.ToUpperString(sourceAlias(op))
 	if record, ok := typ.(*values.RecordType); ok {
 		fields := make([]values.Field, len(record.Fields))
 		for i, field := range record.Fields {

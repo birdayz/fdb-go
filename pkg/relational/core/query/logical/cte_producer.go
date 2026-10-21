@@ -6,8 +6,8 @@ package logical
 
 import (
 	"slices"
-	"strings"
 
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -36,7 +36,7 @@ func (r CTERegistry) Lookup(name string, path ...string) *CTEProducer {
 			if len(path) > 0 && slices.Equal(p.producer.namePath, path) {
 				return p.producer
 			}
-		} else if strings.EqualFold(p.producer.name, name) {
+		} else if unicode15.EqualFold(p.producer.name, name) {
 			return p.producer
 		}
 	}
@@ -345,7 +345,7 @@ func FindVisibleScan(op LogicalOperator, alias string) *LogicalScan {
 		if name == "" {
 			name = scan.Table
 		}
-		if strings.EqualFold(name, alias) {
+		if unicode15.EqualFold(name, alias) {
 			return scan
 		}
 		return nil

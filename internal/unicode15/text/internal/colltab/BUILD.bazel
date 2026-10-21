@@ -1,0 +1,28 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+filegroup(
+    name = "unicodepin_sources",
+    srcs = glob(["*.go"]),
+    visibility = ["//visibility:public"],
+)
+
+go_library(
+    name = "colltab",
+    srcs = [
+        "collelem.go",
+        "colltab.go",
+        "contract.go",
+        "iter.go",
+        "numeric.go",
+        "table.go",
+        "trie.go",
+        "weighter.go",
+    ],
+    importpath = "fdb.dev/internal/unicode15/text/internal/colltab",
+    visibility = ["//internal/unicode15/text:__subpackages__"],
+    deps = [
+        "//internal/unicode15",
+        "//internal/unicode15/text/language",
+        "//internal/unicode15/text/unicode/norm",
+    ],
+)

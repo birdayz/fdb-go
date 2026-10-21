@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
-	"strings"
 	"time"
 
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
@@ -50,11 +50,11 @@ func selectIndexes(pending []*recordlayer.Index, names []string) []*recordlayer.
 	}
 	want := make(map[string]struct{}, len(names))
 	for _, n := range names {
-		want[strings.ToUpper(n)] = struct{}{}
+		want[unicode15.ToUpperString(n)] = struct{}{}
 	}
 	out := make([]*recordlayer.Index, 0, len(pending))
 	for _, idx := range pending {
-		if _, ok := want[strings.ToUpper(idx.Name)]; ok {
+		if _, ok := want[unicode15.ToUpperString(idx.Name)]; ok {
 			out = append(out, idx)
 		}
 	}

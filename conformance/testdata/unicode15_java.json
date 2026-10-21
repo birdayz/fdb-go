@@ -1,0 +1,1139 @@
+{
+  "schema": 1,
+  "java": {
+    "runtimeVersion": "21.0.12+8-LTS",
+    "vmVersion": "21.0.12+8-LTS",
+    "vendor": "Azul Systems, Inc."
+  },
+  "recordLayer": {
+    "coordinates": "org.foundationdb:fdb-record-layer-core:4.14.2.0",
+    "sha256": "2e4c97d97333198de6ced90b36914b4c9b0d938a432518bb2673183a7d7d8b4b"
+  },
+  "relational": {
+    "coordinates": "org.foundationdb:fdb-relational-core:4.14.2.0",
+    "sha256": "95965457231560e70f7e0aaf116aba67cdc9bdc5f417a47637c817d628e8c692"
+  },
+  "protobufRuntime": {
+    "module": "com.google.protobuf:protobuf-java:3.25.9",
+    "runtimeVersion": "3.25.9",
+    "lite": {
+      "coordinates": "com.google.protobuf:protobuf-java:3.25.9",
+      "sha256": "c7121034708f0b9524531a25dce7350deec9591c3c768aa36105c4fd33332ac7"
+    },
+    "core": {
+      "coordinates": "com.google.protobuf:protobuf-java:3.25.9",
+      "sha256": "c7121034708f0b9524531a25dce7350deec9591c3c768aa36105c4fd33332ac7"
+    }
+  },
+  "tokenizers": [
+    {
+      "id": "ascii",
+      "input": "Alpha beta ALPHA 123",
+      "tokens": [
+        "alpha",
+        "beta",
+        "alpha",
+        "123"
+      ],
+      "positions": {
+        "123": [
+          3
+        ],
+        "alpha": [
+          0,
+          2
+        ],
+        "beta": [
+          1
+        ]
+      }
+    },
+    {
+      "id": "u1c89",
+      "input": "Ᲊ",
+      "tokens": [],
+      "positions": {}
+    },
+    {
+      "id": "ua7cb",
+      "input": "Ɤ",
+      "tokens": [],
+      "positions": {}
+    },
+    {
+      "id": "ua7ce",
+      "input": "꟎",
+      "tokens": [],
+      "positions": {}
+    },
+    {
+      "id": "ua7f1",
+      "input": "꟱",
+      "tokens": [],
+      "positions": {}
+    },
+    {
+      "id": "u1ccd6",
+      "input": "𜳖",
+      "tokens": [],
+      "positions": {}
+    },
+    {
+      "id": "u1acf",
+      "input": "᫏",
+      "tokens": [],
+      "positions": {}
+    },
+    {
+      "id": "u0897",
+      "input": "ࢗ",
+      "tokens": [],
+      "positions": {}
+    },
+    {
+      "id": "ufb05",
+      "input": "ﬅ",
+      "tokens": [
+        "st"
+      ],
+      "positions": {
+        "st": [
+          0
+        ]
+      }
+    },
+    {
+      "id": "u18cff",
+      "input": "𘳿",
+      "tokens": [],
+      "positions": {}
+    },
+    {
+      "id": "u323b0",
+      "input": "𲎰",
+      "tokens": [],
+      "positions": {}
+    },
+    {
+      "id": "u2ebf0",
+      "input": "𮯰",
+      "tokens": [],
+      "positions": {}
+    },
+    {
+      "id": "u0264",
+      "input": "ɤ",
+      "tokens": [
+        "ɤ"
+      ],
+      "positions": {
+        "ɤ": [
+          0
+        ]
+      }
+    },
+    {
+      "id": "u0295_sigma",
+      "input": "AΣʕ",
+      "tokens": [
+        "aσʕ"
+      ],
+      "positions": {
+        "aσʕ": [
+          0
+        ]
+      }
+    },
+    {
+      "id": "delta_neighbors",
+      "input": "aᲉb aꟋb a꟎b a꟱b",
+      "tokens": [
+        "a",
+        "b",
+        "a",
+        "b",
+        "a",
+        "b",
+        "a",
+        "b"
+      ],
+      "positions": {
+        "a": [
+          0,
+          2,
+          4,
+          6
+        ],
+        "b": [
+          1,
+          3,
+          5,
+          7
+        ]
+      }
+    },
+    {
+      "id": "new_marks",
+      "input": "a᫏b aࢗb",
+      "tokens": [
+        "a",
+        "b",
+        "a",
+        "b"
+      ],
+      "positions": {
+        "a": [
+          0,
+          2
+        ],
+        "b": [
+          1,
+          3
+        ]
+      }
+    },
+    {
+      "id": "outlined_neighbors",
+      "input": "a𜳖b",
+      "tokens": [
+        "a",
+        "b"
+      ],
+      "positions": {
+        "a": [
+          0
+        ],
+        "b": [
+          1
+        ]
+      }
+    },
+    {
+      "id": "supplementary_ideographs",
+      "input": "𘳿 𲎰 𮯰",
+      "tokens": [],
+      "positions": {}
+    },
+    {
+      "id": "old_fold_pairs",
+      "input": "ﬅ ﬆ ΐ ΐ ΰ ΰ",
+      "tokens": [
+        "st",
+        "st",
+        "ι",
+        "ι",
+        "υ",
+        "υ"
+      ],
+      "positions": {
+        "st": [
+          0,
+          1
+        ],
+        "ι": [
+          2,
+          3
+        ],
+        "υ": [
+          4,
+          5
+        ]
+      }
+    },
+    {
+      "id": "supplementary_nd",
+      "input": "𞓰 𐵀 a𞓰",
+      "tokens": [
+        "a𞓰"
+      ],
+      "positions": {
+        "a𞓰": [
+          0
+        ]
+      }
+    },
+    {
+      "id": "supplementary_nfkd",
+      "input": "𝐀𝐁𝐂 𝟙𝟚",
+      "tokens": [
+        "abc",
+        "12"
+      ],
+      "positions": {
+        "12": [
+          1
+        ],
+        "abc": [
+          0
+        ]
+      }
+    },
+    {
+      "id": "supplementary_letters",
+      "input": "𐐔 a𐐔 𞤀",
+      "tokens": [
+        "a𐐼"
+      ],
+      "positions": {
+        "a𐐼": [
+          0
+        ]
+      }
+    },
+    {
+      "id": "hangul",
+      "input": "가 가 힣 한국어",
+      "tokens": [
+        "가",
+        "가",
+        "힣",
+        "한국어"
+      ],
+      "positions": {
+        "가": [
+          0,
+          1
+        ],
+        "한국어": [
+          3
+        ],
+        "힣": [
+          2
+        ]
+      }
+    },
+    {
+      "id": "dotted_i",
+      "input": "İstanbul ıi I i̇",
+      "tokens": [
+        "istanbul",
+        "ıi",
+        "i",
+        "i"
+      ],
+      "positions": {
+        "i": [
+          2,
+          3
+        ],
+        "istanbul": [
+          0
+        ],
+        "ıi": [
+          1
+        ]
+      }
+    },
+    {
+      "id": "ligatures",
+      "input": "ﬁnance ﬂ ﬀ ǅ ǆ ß ẞ",
+      "tokens": [
+        "finance",
+        "fl",
+        "ff",
+        "dz",
+        "dz",
+        "ß",
+        "ß"
+      ],
+      "positions": {
+        "dz": [
+          3,
+          4
+        ],
+        "ff": [
+          2
+        ],
+        "finance": [
+          0
+        ],
+        "fl": [
+          1
+        ],
+        "ß": [
+          5,
+          6
+        ]
+      }
+    },
+    {
+      "id": "combining",
+      "input": "café é ǰ ΐ ͅΣ",
+      "tokens": [
+        "cafe",
+        "e",
+        "j",
+        "ι",
+        "σ"
+      ],
+      "positions": {
+        "cafe": [
+          0
+        ],
+        "e": [
+          1
+        ],
+        "j": [
+          2
+        ],
+        "ι": [
+          3
+        ],
+        "σ": [
+          4
+        ]
+      }
+    },
+    {
+      "id": "sigma",
+      "input": "Α1Σ ΑΣ1 1Σ Σ1 ΑΣΑ ΑΣ́ ΆΣ",
+      "tokens": [
+        "α1ς",
+        "ας1",
+        "1σ",
+        "σ1",
+        "ασα",
+        "ας",
+        "ας"
+      ],
+      "positions": {
+        "1σ": [
+          2
+        ],
+        "α1ς": [
+          0
+        ],
+        "ας": [
+          5,
+          6
+        ],
+        "ας1": [
+          1
+        ],
+        "ασα": [
+          4
+        ],
+        "σ1": [
+          3
+        ]
+      }
+    },
+    {
+      "id": "sigma_ignorable",
+      "input": "ΑΣ­Σ Α­Σ ΑΣ‍Σ",
+      "tokens": [
+        "ασ­ς",
+        "α­ς",
+        "ασ‍ς"
+      ],
+      "positions": {
+        "α­ς": [
+          1
+        ],
+        "ασ­ς": [
+          0
+        ],
+        "ασ‍ς": [
+          2
+        ]
+      }
+    },
+    {
+      "id": "stream_safe_31",
+      "input": "á́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́b",
+      "tokens": [
+        "ab"
+      ],
+      "positions": {
+        "ab": [
+          0
+        ]
+      }
+    },
+    {
+      "id": "stream_safe_61",
+      "input": "á́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́b",
+      "tokens": [
+        "ab"
+      ],
+      "positions": {
+        "ab": [
+          0
+        ]
+      }
+    },
+    {
+      "id": "canonical_reorder",
+      "input": "à֮́̕b",
+      "tokens": [
+        "ab"
+      ],
+      "positions": {
+        "ab": [
+          0
+        ]
+      }
+    },
+    {
+      "id": "nul_replacement",
+      "input": "a\u0000b a�b",
+      "tokens": [
+        "a",
+        "b",
+        "a",
+        "b"
+      ],
+      "positions": {
+        "a": [
+          0,
+          2
+        ],
+        "b": [
+          1,
+          3
+        ]
+      }
+    },
+    {
+      "id": "empty",
+      "input": "",
+      "tokens": [],
+      "positions": {}
+    },
+    {
+      "id": "marks_only",
+      "input": "́ͅ⃝",
+      "tokens": [],
+      "positions": {}
+    },
+    {
+      "id": "x_colon_y",
+      "input": "x:y",
+      "tokens": [
+        "x",
+        "y"
+      ],
+      "positions": {
+        "x": [
+          0
+        ],
+        "y": [
+          1
+        ]
+      }
+    },
+    {
+      "id": "nfkd_sigma_boundary",
+      "input": "ĿΣ",
+      "tokens": [
+        "l·σ"
+      ],
+      "positions": {
+        "l·σ": [
+          0
+        ]
+      }
+    },
+    {
+      "id": "nfkd_sigma_space",
+      "input": "ΑΣͺ",
+      "tokens": [
+        "ας "
+      ],
+      "positions": {
+        "ας ": [
+          0
+        ]
+      }
+    },
+    {
+      "id": "nfkd_sigma_arabic_space",
+      "input": "ΑΣﹰΒ",
+      "tokens": [
+        "ας β"
+      ],
+      "positions": {
+        "ας β": [
+          0
+        ]
+      }
+    },
+    {
+      "id": "jdk_cased_subset",
+      "input": "𐞀Σ",
+      "tokens": [
+        "𐞀σ"
+      ],
+      "positions": {
+        "𐞀σ": [
+          0
+        ]
+      }
+    }
+  ],
+  "labels": [
+    {
+      "id": "ascii",
+      "left": "LABEL",
+      "right": "label",
+      "equalsIgnoreCase": true
+    },
+    {
+      "id": "dotted_i",
+      "left": "İ",
+      "right": "i",
+      "equalsIgnoreCase": true
+    },
+    {
+      "id": "dotless_i",
+      "left": "ı",
+      "right": "i",
+      "equalsIgnoreCase": true
+    },
+    {
+      "id": "long_s",
+      "left": "ſ",
+      "right": "s",
+      "equalsIgnoreCase": true
+    },
+    {
+      "id": "kelvin",
+      "left": "K",
+      "right": "k",
+      "equalsIgnoreCase": true
+    },
+    {
+      "id": "sigma",
+      "left": "Σ",
+      "right": "ς",
+      "equalsIgnoreCase": true
+    },
+    {
+      "id": "sharp_s",
+      "left": "ß",
+      "right": "SS",
+      "equalsIgnoreCase": false
+    },
+    {
+      "id": "capital_sharp_s",
+      "left": "ẞ",
+      "right": "ß",
+      "equalsIgnoreCase": true
+    },
+    {
+      "id": "u1c89",
+      "left": "Ᲊ",
+      "right": "ᲊ",
+      "equalsIgnoreCase": false
+    },
+    {
+      "id": "ua7cb",
+      "left": "Ɤ",
+      "right": "ɤ",
+      "equalsIgnoreCase": false
+    },
+    {
+      "id": "ua7ce",
+      "left": "꟎",
+      "right": "꟏",
+      "equalsIgnoreCase": false
+    },
+    {
+      "id": "ua7f1",
+      "left": "꟱",
+      "right": "S",
+      "equalsIgnoreCase": false
+    },
+    {
+      "id": "u0295",
+      "left": "ʕ",
+      "right": "ʕ",
+      "equalsIgnoreCase": true
+    },
+    {
+      "id": "fb05_fb06",
+      "left": "ﬅ",
+      "right": "ﬆ",
+      "equalsIgnoreCase": false
+    },
+    {
+      "id": "0390_1fd3",
+      "left": "ΐ",
+      "right": "ΐ",
+      "equalsIgnoreCase": false
+    },
+    {
+      "id": "03b0_1fe3",
+      "left": "ΰ",
+      "right": "ΰ",
+      "equalsIgnoreCase": false
+    },
+    {
+      "id": "supplementary_deseret",
+      "left": "𐐀",
+      "right": "𐐨",
+      "equalsIgnoreCase": true
+    }
+  ],
+  "identifiers": [
+    {
+      "id": "dotless_i",
+      "sql": "SELECT ıd FROM t",
+      "input": "ıd",
+      "parseAccepted": true,
+      "normalized": "ID",
+      "tokens": [
+        {
+          "kind": "SELECT",
+          "text": "SELECT"
+        },
+        {
+          "kind": "ID",
+          "text": "ıd"
+        },
+        {
+          "kind": "FROM",
+          "text": "FROM"
+        },
+        {
+          "kind": "ID",
+          "text": "t"
+        }
+      ]
+    },
+    {
+      "id": "long_s_keyword",
+      "sql": "ſelect id FROM t",
+      "input": "ſelect",
+      "parseAccepted": true,
+      "normalized": "SELECT",
+      "tokens": [
+        {
+          "kind": "SELECT",
+          "text": "ſelect"
+        },
+        {
+          "kind": "ID",
+          "text": "id"
+        },
+        {
+          "kind": "FROM",
+          "text": "FROM"
+        },
+        {
+          "kind": "ID",
+          "text": "t"
+        }
+      ]
+    },
+    {
+      "id": "quoted",
+      "sql": "SELECT \"ıdſ\" FROM t",
+      "input": "\"ıdſ\"",
+      "parseAccepted": true,
+      "normalized": "ıdſ",
+      "tokens": [
+        {
+          "kind": "SELECT",
+          "text": "SELECT"
+        },
+        {
+          "kind": "DOUBLE_QUOTE_ID",
+          "text": "\"ıdſ\""
+        },
+        {
+          "kind": "FROM",
+          "text": "FROM"
+        },
+        {
+          "kind": "ID",
+          "text": "t"
+        }
+      ]
+    }
+  ],
+  "aliases": [
+    {
+      "id": "ascii",
+      "input": "ALIAS",
+      "storedAlias": "alias",
+      "lowerEnglish": "alias",
+      "lookupOriginal": true,
+      "lookupNormalized": true
+    },
+    {
+      "id": "dotted_i",
+      "input": "İ",
+      "storedAlias": "i̇",
+      "lowerEnglish": "i̇",
+      "lookupOriginal": true,
+      "lookupNormalized": true
+    },
+    {
+      "id": "dotless_i",
+      "input": "ı",
+      "storedAlias": "ı",
+      "lowerEnglish": "ı",
+      "lookupOriginal": true,
+      "lookupNormalized": true
+    },
+    {
+      "id": "sigma",
+      "input": "ΑΣ",
+      "storedAlias": "ας",
+      "lowerEnglish": "ας",
+      "lookupOriginal": true,
+      "lookupNormalized": true
+    },
+    {
+      "id": "kelvin",
+      "input": "K",
+      "storedAlias": "k",
+      "lowerEnglish": "k",
+      "lookupOriginal": true,
+      "lookupNormalized": true
+    },
+    {
+      "id": "sharp_s",
+      "input": "ẞ",
+      "storedAlias": "ß",
+      "lowerEnglish": "ß",
+      "lookupOriginal": true,
+      "lookupNormalized": true
+    },
+    {
+      "id": "u1c89",
+      "input": "Ᲊ",
+      "storedAlias": "Ᲊ",
+      "lowerEnglish": "Ᲊ",
+      "lookupOriginal": true,
+      "lookupNormalized": true
+    },
+    {
+      "id": "ua7cb",
+      "input": "Ɤ",
+      "storedAlias": "Ɤ",
+      "lowerEnglish": "Ɤ",
+      "lookupOriginal": true,
+      "lookupNormalized": true
+    },
+    {
+      "id": "ua7ce",
+      "input": "꟎",
+      "storedAlias": "꟎",
+      "lowerEnglish": "꟎",
+      "lookupOriginal": true,
+      "lookupNormalized": true
+    },
+    {
+      "id": "ua7f1",
+      "input": "꟱",
+      "storedAlias": "꟱",
+      "lowerEnglish": "꟱",
+      "lookupOriginal": true,
+      "lookupNormalized": true
+    },
+    {
+      "id": "u0264",
+      "input": "ɤ",
+      "storedAlias": "ɤ",
+      "lowerEnglish": "ɤ",
+      "lookupOriginal": true,
+      "lookupNormalized": true
+    },
+    {
+      "id": "u0295",
+      "input": "ʕ",
+      "storedAlias": "ʕ",
+      "lowerEnglish": "ʕ",
+      "lookupOriginal": true,
+      "lookupNormalized": true
+    }
+  ],
+  "byteDecoding": {
+    "proto2Path": "DynamicMessageRecordSerializer.deserialize -> DynamicMessage.parseFrom -> Customer.name getField",
+    "proto2Schema": "conformance/record_layer_demo.proto: proto2 Customer.name, java_string_check_utf8=false (default)",
+    "generatedPath": "RecordLayerDemo.Customer.parseFrom -> getName (ByteString.toStringUtf8)",
+    "proto3Path": "DynamicMessage.parseFrom: proto3 Utf8Probe.name string field (strict UTF-8)",
+    "cases": [
+      {
+        "id": "ascii",
+        "utf8Hex": "416c7068612062657461",
+        "validUtf8": true,
+        "proto2": {
+          "accepted": true,
+          "decoded": "Alpha beta",
+          "decodedUtf8Hex": "416c7068612062657461",
+          "generatedDecoded": "Alpha beta",
+          "generatedNameBytesHex": "416c7068612062657461",
+          "tokens": [
+            "alpha",
+            "beta"
+          ],
+          "positions": {
+            "alpha": [
+              0
+            ],
+            "beta": [
+              1
+            ]
+          }
+        },
+        "proto3": {
+          "accepted": true,
+          "decoded": "Alpha beta"
+        }
+      },
+      {
+        "id": "dotted_i",
+        "utf8Hex": "c4b0",
+        "validUtf8": true,
+        "proto2": {
+          "accepted": true,
+          "decoded": "İ",
+          "decodedUtf8Hex": "c4b0",
+          "generatedDecoded": "İ",
+          "generatedNameBytesHex": "c4b0",
+          "tokens": [
+            "i"
+          ],
+          "positions": {
+            "i": [
+              0
+            ]
+          }
+        },
+        "proto3": {
+          "accepted": true,
+          "decoded": "İ"
+        }
+      },
+      {
+        "id": "replacement",
+        "utf8Hex": "61efbfbd62",
+        "validUtf8": true,
+        "proto2": {
+          "accepted": true,
+          "decoded": "a�b",
+          "decodedUtf8Hex": "61efbfbd62",
+          "generatedDecoded": "a�b",
+          "generatedNameBytesHex": "61efbfbd62",
+          "tokens": [
+            "a",
+            "b"
+          ],
+          "positions": {
+            "a": [
+              0
+            ],
+            "b": [
+              1
+            ]
+          }
+        },
+        "proto3": {
+          "accepted": true,
+          "decoded": "a�b"
+        }
+      },
+      {
+        "id": "nul",
+        "utf8Hex": "610062",
+        "validUtf8": true,
+        "proto2": {
+          "accepted": true,
+          "decoded": "a\u0000b",
+          "decodedUtf8Hex": "610062",
+          "generatedDecoded": "a\u0000b",
+          "generatedNameBytesHex": "610062",
+          "tokens": [
+            "a",
+            "b"
+          ],
+          "positions": {
+            "a": [
+              0
+            ],
+            "b": [
+              1
+            ]
+          }
+        },
+        "proto3": {
+          "accepted": true,
+          "decoded": "a\u0000b"
+        }
+      },
+      {
+        "id": "isolated_continuation",
+        "utf8Hex": "618062",
+        "validUtf8": false,
+        "proto2": {
+          "accepted": true,
+          "decoded": "a�b",
+          "decodedUtf8Hex": "61efbfbd62",
+          "generatedDecoded": "a�b",
+          "generatedNameBytesHex": "618062",
+          "tokens": [
+            "a",
+            "b"
+          ],
+          "positions": {
+            "a": [
+              0
+            ],
+            "b": [
+              1
+            ]
+          }
+        },
+        "proto3": {
+          "accepted": false,
+          "exceptionClass": "com.google.protobuf.InvalidProtocolBufferException",
+          "message": "Protocol message had invalid UTF-8."
+        }
+      },
+      {
+        "id": "overlong",
+        "utf8Hex": "61c0af62",
+        "validUtf8": false,
+        "proto2": {
+          "accepted": true,
+          "decoded": "a��b",
+          "decodedUtf8Hex": "61efbfbdefbfbd62",
+          "generatedDecoded": "a��b",
+          "generatedNameBytesHex": "61c0af62",
+          "tokens": [
+            "a",
+            "b"
+          ],
+          "positions": {
+            "a": [
+              0
+            ],
+            "b": [
+              1
+            ]
+          }
+        },
+        "proto3": {
+          "accepted": false,
+          "exceptionClass": "com.google.protobuf.InvalidProtocolBufferException",
+          "message": "Protocol message had invalid UTF-8."
+        }
+      },
+      {
+        "id": "truncated",
+        "utf8Hex": "61e282",
+        "validUtf8": false,
+        "proto2": {
+          "accepted": true,
+          "decoded": "a�",
+          "decodedUtf8Hex": "61efbfbd",
+          "generatedDecoded": "a�",
+          "generatedNameBytesHex": "61e282",
+          "tokens": [
+            "a"
+          ],
+          "positions": {
+            "a": [
+              0
+            ]
+          }
+        },
+        "proto3": {
+          "accepted": false,
+          "exceptionClass": "com.google.protobuf.InvalidProtocolBufferException",
+          "message": "Protocol message had invalid UTF-8."
+        }
+      },
+      {
+        "id": "surrogate",
+        "utf8Hex": "61eda08062",
+        "validUtf8": false,
+        "proto2": {
+          "accepted": true,
+          "decoded": "a�b",
+          "decodedUtf8Hex": "61efbfbd62",
+          "generatedDecoded": "a�b",
+          "generatedNameBytesHex": "61eda08062",
+          "tokens": [
+            "a",
+            "b"
+          ],
+          "positions": {
+            "a": [
+              0
+            ],
+            "b": [
+              1
+            ]
+          }
+        },
+        "proto3": {
+          "accepted": false,
+          "exceptionClass": "com.google.protobuf.InvalidProtocolBufferException",
+          "message": "Protocol message had invalid UTF-8."
+        }
+      },
+      {
+        "id": "above_max",
+        "utf8Hex": "61f490808062",
+        "validUtf8": false,
+        "proto2": {
+          "accepted": true,
+          "decoded": "a����b",
+          "decodedUtf8Hex": "61efbfbdefbfbdefbfbdefbfbd62",
+          "generatedDecoded": "a����b",
+          "generatedNameBytesHex": "61f490808062",
+          "tokens": [
+            "a",
+            "b"
+          ],
+          "positions": {
+            "a": [
+              0
+            ],
+            "b": [
+              1
+            ]
+          }
+        },
+        "proto3": {
+          "accepted": false,
+          "exceptionClass": "com.google.protobuf.InvalidProtocolBufferException",
+          "message": "Protocol message had invalid UTF-8."
+        }
+      },
+      {
+        "id": "invalid_ff",
+        "utf8Hex": "61ff62",
+        "validUtf8": false,
+        "proto2": {
+          "accepted": true,
+          "decoded": "a�b",
+          "decodedUtf8Hex": "61efbfbd62",
+          "generatedDecoded": "a�b",
+          "generatedNameBytesHex": "61ff62",
+          "tokens": [
+            "a",
+            "b"
+          ],
+          "positions": {
+            "a": [
+              0
+            ],
+            "b": [
+              1
+            ]
+          }
+        },
+        "proto3": {
+          "accepted": false,
+          "exceptionClass": "com.google.protobuf.InvalidProtocolBufferException",
+          "message": "Protocol message had invalid UTF-8."
+        }
+      }
+    ]
+  }
+}

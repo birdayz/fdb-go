@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -154,7 +155,7 @@ func (m *CatalogDatabaseMetaData) Tables(_ context.Context, catalog, schemaPatte
 	if len(types) > 0 {
 		allowed := false
 		for _, t := range types {
-			if strings.EqualFold(t, "TABLE") {
+			if unicode15.EqualFold(t, "TABLE") {
 				allowed = true
 				break
 			}

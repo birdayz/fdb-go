@@ -27,6 +27,7 @@ go_library(
     importpath = "fdb.dev/pkg/relational/core/query",
     visibility = ["//visibility:public"],
     deps = [
+        "//internal/unicode15",
         "//pkg/recordlayer",
         "//pkg/recordlayer/query/plan/cascades",
         "//pkg/recordlayer/query/plan/cascades/expressions",

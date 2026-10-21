@@ -11,6 +11,7 @@ go_library(
     importpath = "fdb.dev/pkg/relational/sqldriver",
     visibility = ["//visibility:public"],
     deps = [
+        "//internal/unicode15",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/internal/fdbclient",
         "//pkg/recordlayer",

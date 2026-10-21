@@ -12,6 +12,8 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+
+	"fdb.dev/internal/unicode15"
 )
 
 // optionContract is one option's admission rule, Java's OptionContract list
@@ -113,7 +115,7 @@ func OptionFromString(name OptionName, s string) (any, error) {
 	}
 	switch contract.kind {
 	case optionBool:
-		return strings.EqualFold(s, "true"), nil
+		return unicode15.EqualFold(s, "true"), nil
 	case optionInt:
 		n, err := strconv.ParseInt(s, 10, 32)
 		if err != nil {

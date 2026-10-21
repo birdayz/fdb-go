@@ -8,9 +8,8 @@
 package values
 
 import (
-	"strings"
-
 	"fdb.dev/gen"
+	"fdb.dev/internal/unicode15"
 )
 
 // ArithmeticLane is one row of Java's ArithmeticValue.PhysicalOperator table
@@ -176,7 +175,7 @@ func ArithmeticLanes() []ArithmeticLane {
 // ArithmeticValue's logical operators, the functions Java builds through
 // encapsulate and so the ones a lane decides.
 func IsArithmeticFunction(function string) bool {
-	f := strings.ToLower(function)
+	f := unicode15.ToLowerString(function)
 	for _, l := range arithmeticLanes {
 		if l.Function == f {
 			return true
@@ -189,7 +188,7 @@ func IsArithmeticFunction(function string) bool {
 // BinaryOperatorSignature(operator, left, right)): the row for function (any
 // case) over the two operand type codes, if there is one.
 func LookupArithmeticLane(function string, left, right TypeCode) (ArithmeticLane, bool) {
-	l, ok := arithmeticLaneIndex[arithmeticLaneKey{strings.ToLower(function), left, right}]
+	l, ok := arithmeticLaneIndex[arithmeticLaneKey{unicode15.ToLowerString(function), left, right}]
 	return l, ok
 }
 

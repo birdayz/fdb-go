@@ -5,9 +5,8 @@
 package embedded
 
 import (
-	"strings"
-
 	"fdb.dev/gen"
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -118,7 +117,7 @@ func keyExpressionTypes(
 		return result
 
 	case expression.Function != nil:
-		if strings.EqualFold(expression.Function.GetName(), "cardinality") {
+		if unicode15.EqualFold(expression.Function.GetName(), "cardinality") {
 			return []values.Type{values.NullableInt}
 		}
 		// A long-arithmetic key stores the long its evaluator computes, a

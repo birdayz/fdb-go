@@ -1,0 +1,50 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "unicode15",
+    srcs = [
+        "tables.go",
+        "unicode.go",
+    ],
+    importpath = "fdb.dev/internal/unicode15",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "unicode15_test",
+    srcs = ["compat_test.go"],
+    data = [
+        "//internal/unicode15/ucd:files",
+        "//tools/unicode15baseline:fixture",
+    ],
+    deps = [
+        ":unicode15",
+        "//internal/unicode15/text/collate",
+        "//internal/unicode15/text/language",
+        "//internal/unicode15/text/unicode/norm",
+        "//pkg/recordlayer",
+        "//tools/unicode15baseline/corpus",
+    ],
+)
+
+filegroup(
+    name = "unicodepin_sources",
+    srcs = glob(["*.go"]),
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "all_sources",
+    srcs = [
+        ":unicodepin_sources",
+        "//internal/unicode15/text/collate:unicodepin_sources",
+        "//internal/unicode15/text/internal/colltab:unicodepin_sources",
+        "//internal/unicode15/text/internal/language:unicodepin_sources",
+        "//internal/unicode15/text/internal/language/compact:unicodepin_sources",
+        "//internal/unicode15/text/internal/tag:unicodepin_sources",
+        "//internal/unicode15/text/language:unicodepin_sources",
+        "//internal/unicode15/text/transform:unicodepin_sources",
+        "//internal/unicode15/text/unicode/norm:unicodepin_sources",
+    ],
+    visibility = ["//visibility:public"],
+)

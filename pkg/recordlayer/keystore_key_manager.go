@@ -12,7 +12,6 @@ import (
 	"crypto/des"
 	"crypto/hmac"
 	"crypto/pbkdf2"
-	"crypto/sha1" //nolint:gosec // PKCS #12's legacy KDF and MAC are SHA-1 in key stores older JDKs wrote
 	"crypto/sha256"
 	"crypto/sha512"
 	"crypto/subtle"
@@ -22,9 +21,12 @@ import (
 	"hash"
 	"io"
 	"os"
-	"strings"
 	"sync"
 	"unicode/utf16"
+
+	"crypto/sha1" //nolint:gosec // PKCS #12's legacy KDF and MAC are SHA-1 in key stores older JDKs wrote
+
+	"fdb.dev/internal/unicode15"
 )
 
 // KeyStoreSerializationKeyManager is Java's KeyStoreSerializationKeyManager: the
@@ -270,10 +272,10 @@ func retryWithZero[T any](password string, attempt func(string) (T, error)) (T, 
 }
 
 // foldAlias folds an alias as Java's PKCS12KeyStore and JceKeyStore do: entries
-// are stored and looked up by alias.toLowerCase(Locale.ENGLISH). strings.ToLower is
-// Unicode simple case mapping, which Java's matches outside its few
+// are stored and looked up by alias.toLowerCase(Locale.ENGLISH). The pinned Go
+// policy is Unicode simple case mapping, which Java's matches outside its few
 // context-sensitive special cases (final sigma, dotted capital I).
-func foldAlias(s string) string { return strings.ToLower(s) }
+func foldAlias(s string) string { return unicode15.ToLowerString(s) }
 
 // PKCS #12 (RFC 7292) and the algorithms JDK key stores use.
 var (

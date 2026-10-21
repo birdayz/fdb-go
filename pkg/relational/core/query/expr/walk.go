@@ -19,6 +19,7 @@ import (
 
 	"github.com/antlr4-go/antlr/v4"
 
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
@@ -1149,7 +1150,7 @@ func (r *Resolver) walkScalarFunction(s *antlrgen.ScalarFunctionCallContext) (va
 	if s.ScalarFunctionName() == nil {
 		return nil, &UnsupportedExpressionShapeError{Shape: "ScalarFunctionCall without ScalarFunctionName"}
 	}
-	name := strings.ToUpper(s.ScalarFunctionName().GetText())
+	name := unicode15.ToUpperString(s.ScalarFunctionName().GetText())
 	args := []values.Value{}
 	if fa := s.FunctionArgs(); fa != nil {
 		fac, ok := fa.(*antlrgen.FunctionArgsContext)
@@ -1323,7 +1324,7 @@ func (r *Resolver) walkUserDefinedScalarFunction(udf *antlrgen.UserDefinedScalar
 	if ok && nameNode.DOUBLE_QUOTE_ID() != nil && nameNode.GetText() == `"`+SQLFunctionArgument+`"` {
 		return r.walkSQLFunctionArgument(udf.NamedOrUnnamedFunctionArgs())
 	}
-	if ok && !(nameNode.ID() != nil && strings.EqualFold(nameNode.ID().GetText(), "CARDINALITY")) {
+	if ok && !(nameNode.ID() != nil && unicode15.EqualFold(nameNode.ID().GetText(), "CARDINALITY")) {
 		if v, isMacro, err := r.walkMacroCall(udf); isMacro || err != nil {
 			return v, err
 		}
@@ -1332,7 +1333,7 @@ func (r *Resolver) walkUserDefinedScalarFunction(udf *antlrgen.UserDefinedScalar
 		// Quoted (DOUBLE_QUOTE_ID) or otherwise non-bare — not a built-in.
 		return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("user-defined scalar function %q", nameCtx.GetText())}
 	}
-	name := strings.ToUpper(nameNode.ID().GetText())
+	name := unicode15.ToUpperString(nameNode.ID().GetText())
 	switch name {
 	case "CARDINALITY":
 		return r.walkCardinality(udf.NamedOrUnnamedFunctionArgs())
@@ -3120,7 +3121,7 @@ func (r *Resolver) walkBytesConstant(bc *antlrgen.BytesConstantContext) (values.
 // literal text token (e.g. `x'CAFE'` → `CAFE`, `b64'yv4='` → `yv4=`).
 // Case-insensitive on the prefix.
 func stripBytesPrefix(text, prefix string) string {
-	lower := strings.ToLower(text)
+	lower := unicode15.ToLowerString(text)
 	if strings.HasPrefix(lower, prefix) {
 		text = text[len(prefix):]
 	}

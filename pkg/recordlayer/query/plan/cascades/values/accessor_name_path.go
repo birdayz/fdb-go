@@ -1,6 +1,10 @@
 package values
 
-import "strings"
+import (
+	"strings"
+
+	"fdb.dev/internal/unicode15"
+)
 
 // AccessorNamePath returns the ordered accessor NAME path (root QOV/alias
 // EXCLUDED) of a plan-time column reference, from the two STRUCTURED
@@ -64,7 +68,7 @@ func AccessorNamePath(v Value) ([]string, bool) {
 				if accs[i].Field == "" {
 					return decline(AccessorPathDeclinePureOrdinal)
 				}
-				rev = append(rev, strings.ToUpper(accs[i].Field))
+				rev = append(rev, unicode15.ToUpperString(accs[i].Field))
 			}
 			cur = fv.Child
 			continue
@@ -81,7 +85,7 @@ func AccessorNamePath(v Value) ([]string, bool) {
 		if fv.Field == "" {
 			return decline(AccessorPathDeclineEmptyName)
 		}
-		rev = append(rev, strings.ToUpper(fv.Field))
+		rev = append(rev, unicode15.ToUpperString(fv.Field))
 		cur = fv.Child
 	}
 	if len(rev) == 0 {
@@ -234,7 +238,7 @@ func orderingValueTypesEqual(left, right Value) bool {
 // not the real handle, and this one is what recognises the impostor.
 func isNamedCurrentForgery(root *quantifiedObjectValue) bool {
 	return root != nil && !root.correlation.isCurrent() &&
-		strings.EqualFold(root.correlation.Name(), CurrentCorrelation().Name())
+		unicode15.EqualFold(root.correlation.Name(), CurrentCorrelation().Name())
 }
 
 func orderingValueResolvedPath(value Value) *fieldPath {
@@ -310,7 +314,7 @@ func AccessorNamePathMatchesNames(v Value, candidate []string) bool {
 		return false
 	}
 	for i := range pv {
-		if pv[i] != strings.ToUpper(candidate[i]) {
+		if pv[i] != unicode15.ToUpperString(candidate[i]) {
 			return false
 		}
 	}

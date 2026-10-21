@@ -18,6 +18,7 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//gen",
+        "//internal/unicode15",
         "//pkg/recordlayer",
         "//pkg/recordlayer/protoscope",
         "//pkg/relational/api",

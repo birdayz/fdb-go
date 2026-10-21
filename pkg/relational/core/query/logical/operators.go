@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -163,12 +164,12 @@ type LogicalUnnest struct {
 // Display aliases never replace a carried binding at a consumer.
 func UnnestBindingName(binding, alias, atAlias string) string {
 	if binding != "" {
-		return strings.ToUpper(binding)
+		return unicode15.ToUpperString(binding)
 	}
 	if alias != "" {
-		return strings.ToUpper(alias)
+		return unicode15.ToUpperString(alias)
 	}
-	return strings.ToUpper(atAlias)
+	return unicode15.ToUpperString(atAlias)
 }
 
 // UnnestOrdinalityNames names the two physical slots without changing their
@@ -390,12 +391,12 @@ func ColumnRefFor(bare, qualifier string, qualified bool, rendered string) Colum
 	if bare == "" || rendered == "" {
 		return ColumnRef{}
 	}
-	if strings.EqualFold(rendered, bare) {
+	if unicode15.EqualFold(rendered, bare) {
 		// Either the reference was never qualified, or a prefix strip removed
 		// the qualifier — in both cases what survives is ONE segment.
 		return ColumnRef{Present: true, Bare: bare}
 	}
-	if qualified && strings.EqualFold(rendered, qualifier+"."+bare) {
+	if qualified && unicode15.EqualFold(rendered, qualifier+"."+bare) {
 		return ColumnRef{Present: true, Bare: bare, Qualifier: qualifier, Qualified: true}
 	}
 	return ColumnRef{}
@@ -1211,7 +1212,7 @@ func (d *LogicalDDL) Explain(indent string) string {
 // name hidden behind a derived-table boundary), so the caller falls back to
 // the table path.
 func FindOuterScanTable(op LogicalOperator, alias string) string {
-	want := strings.ToUpper(alias)
+	want := unicode15.ToUpperString(alias)
 	var walk func(LogicalOperator) string
 	walk = func(o LogicalOperator) string {
 		switch n := o.(type) {
@@ -1220,7 +1221,7 @@ func FindOuterScanTable(op LogicalOperator, alias string) string {
 			if a == "" {
 				a = n.Table
 			}
-			if strings.EqualFold(a, want) {
+			if unicode15.EqualFold(a, want) {
 				return n.Table
 			}
 			return ""
@@ -1261,7 +1262,7 @@ func FindOwnerUnnest(op LogicalOperator, alias string) *LogicalUnnest {
 	walk = func(o LogicalOperator) *LogicalUnnest {
 		switch n := o.(type) {
 		case *LogicalUnnest:
-			if strings.EqualFold(n.Alias, alias) {
+			if unicode15.EqualFold(n.Alias, alias) {
 				return n
 			}
 			return nil
@@ -1290,7 +1291,7 @@ func IsUnnestOrdinalAlias(op LogicalOperator, alias string) bool {
 	walk = func(o LogicalOperator) bool {
 		switch n := o.(type) {
 		case *LogicalUnnest:
-			return n.AtAlias != "" && strings.EqualFold(n.AtAlias, alias)
+			return n.AtAlias != "" && unicode15.EqualFold(n.AtAlias, alias)
 		case *LogicalCTE:
 			return walk(n.Main)
 		default:
@@ -1325,12 +1326,12 @@ func IsUnnestOrdinalAlias(op LogicalOperator, alias string) bool {
 // Main): a derived table is its own FROM scope; a same-named CTE nested inside
 // another derived body is out of the current scope.
 func OuterSourceIsDerivedTable(op LogicalOperator, alias string) bool {
-	want := strings.ToUpper(alias)
+	want := unicode15.ToUpperString(alias)
 	var walk func(LogicalOperator) bool
 	walk = func(o LogicalOperator) bool {
 		switch n := o.(type) {
 		case *LogicalCTE:
-			if strings.EqualFold(n.Name(), want) {
+			if unicode15.EqualFold(n.Name(), want) {
 				return true
 			}
 			// Only the visible Main leg is in scope; never the Body.

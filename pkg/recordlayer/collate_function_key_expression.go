@@ -10,15 +10,15 @@ import (
 	"strings"
 	"sync"
 
-	"golang.org/x/text/collate"
-	"golang.org/x/text/language"
+	"fdb.dev/internal/unicode15/text/collate"
+	"fdb.dev/internal/unicode15/text/language"
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen"
 )
 
 // Collation function names matching Java's CollateFunctionKeyExpressionFactory.
-// Both names use golang.org/x/text/collate, not Java's JRE/ICU key formats.
+// Both names use the frozen x/text collator, not Java's JRE/ICU key formats.
 // Persisting or querying those keys requires StoreBuilder.SetGoOnlyCollation.
 const (
 	CollateFuncJRE = "collate_jre"

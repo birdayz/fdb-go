@@ -1,8 +1,7 @@
 package embedded
 
 import (
-	"strings"
-
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/relational/core/functions"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 	"github.com/antlr4-go/antlr/v4"
@@ -25,7 +24,7 @@ func containsTableRef(tree antlr.Tree, upperName string) bool {
 		return false
 	}
 	if tn, ok := tree.(antlrgen.ITableNameContext); ok {
-		if strings.ToUpper(functions.FullIdToName(tn.FullId())) == upperName {
+		if unicode15.ToUpperString(functions.FullIdToName(tn.FullId())) == upperName {
 			return true
 		}
 	}

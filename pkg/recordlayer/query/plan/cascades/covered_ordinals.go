@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"strings"
 
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -58,7 +59,7 @@ func buildCoveredOrdinalSets(rowTypes []values.Type, coveredColumns map[string]s
 		}
 		ordinals := make(map[int]struct{}, len(coveredColumns))
 		for i, f := range rt.Fields {
-			if _, covered := coveredColumns[strings.ToUpper(f.Name)]; covered {
+			if _, covered := coveredColumns[unicode15.ToUpperString(f.Name)]; covered {
 				ordinals[i] = struct{}{}
 			}
 		}

@@ -61,6 +61,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer/javanum"
 	"fdb.dev/pkg/recordlayer/protoname"
 	"fdb.dev/pkg/recordlayer/vectorcodec"
@@ -356,7 +357,7 @@ func OrdinalDomainOfColumnNames(cols []string) OrdinalDomain {
 	var b strings.Builder
 	b.WriteString(strconv.Itoa(len(cols)))
 	for _, c := range cols {
-		u := strings.ToUpper(c)
+		u := unicode15.ToUpperString(c)
 		b.WriteByte(';')
 		b.WriteString(strconv.Itoa(len(u)))
 		b.WriteByte(':')
@@ -1072,11 +1073,11 @@ func protoFieldByName(m protoreflect.Message, name string) (any, bool) {
 	// then a full case-insensitive scan (both real shapes hit within these).
 	fd := fields.ByName(protoreflect.Name(name))
 	if fd == nil {
-		fd = fields.ByName(protoreflect.Name(strings.ToLower(name)))
+		fd = fields.ByName(protoreflect.Name(unicode15.ToLowerString(name)))
 	}
 	if fd == nil {
 		for i := 0; i < fields.Len(); i++ {
-			if f := fields.Get(i); strings.EqualFold(string(f.Name()), name) {
+			if f := fields.Get(i); unicode15.EqualFold(string(f.Name()), name) {
 				fd = f
 				break
 			}
@@ -1098,7 +1099,7 @@ func protoFieldByName(m protoreflect.Message, name string) (any, bool) {
 			fd = fields.ByName(protoreflect.Name(escaped))
 			if fd == nil {
 				for i := 0; i < fields.Len(); i++ {
-					if f := fields.Get(i); strings.EqualFold(string(f.Name()), escaped) {
+					if f := fields.Get(i); unicode15.EqualFold(string(f.Name()), escaped) {
 						fd = f
 						break
 					}
@@ -2012,7 +2013,7 @@ func CanBridgeOrderingFieldValues(left, right Value) bool {
 	}
 	leftName := ColumnNameValue(left)
 	rightName := ColumnNameValue(right)
-	answer := leftName != "" && strings.EqualFold(leftName, rightName)
+	answer := leftName != "" && unicode15.EqualFold(leftName, rightName)
 	// Census: this is the ANSWERING comparison a flat-dotted name can reach.
 	if h := Census(); h != nil {
 		h.OrderingBridgeDotted(leftName, rightName, answer)
@@ -2600,7 +2601,7 @@ type ScalarFunctionValue struct {
 // NewScalarFunctionValue builds a ScalarFunctionValue. The function
 // name is upper-cased so callers can pass case-insensitive identifiers.
 func NewScalarFunctionValue(name string, typ Type, args ...Value) *ScalarFunctionValue {
-	return &ScalarFunctionValue{FuncName: strings.ToUpper(name), Args: args, Typ: typ}
+	return &ScalarFunctionValue{FuncName: unicode15.ToUpperString(name), Args: args, Typ: typ}
 }
 
 func (s *ScalarFunctionValue) Children() []Value {
@@ -2888,7 +2889,7 @@ func evalScalarFunction(name string, args []any) (any, error) {
 		if !ok {
 			return nil, nil
 		}
-		return strings.ToUpper(s), nil
+		return unicode15.ToUpperString(s), nil
 	case scalarFunctionLower:
 		if len(args) != 1 || args[0] == nil {
 			return nil, nil
@@ -2897,7 +2898,7 @@ func evalScalarFunction(name string, args []any) (any, error) {
 		if !ok {
 			return nil, nil
 		}
-		return strings.ToLower(s), nil
+		return unicode15.ToLowerString(s), nil
 	case scalarFunctionLength:
 		// Rune count. Go accepts []byte for symmetry with OCTET_LENGTH
 		// (byte count there, rune count here).
@@ -4814,7 +4815,7 @@ func (c *CastValue) castEvaluated(v any, source Type) (any, error) {
 			}
 			return val != 0, nil
 		case string:
-			switch strings.ToLower(strings.TrimSpace(val)) {
+			switch unicode15.ToLowerString(strings.TrimSpace(val)) {
 			case "true", "1":
 				return true, nil
 			case "false", "0":

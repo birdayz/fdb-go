@@ -13,9 +13,9 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
-	"strings"
 	"sync/atomic"
 
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
@@ -1684,7 +1684,7 @@ func residualSelectsWholePartitions(
 	}
 	colIndex := make(map[string]int, len(partCols))
 	for i, c := range partCols {
-		colIndex[strings.ToUpper(c)] = i
+		colIndex[unicode15.ToUpperString(c)] = i
 	}
 
 	// Field-locality: every residual field must belong to THIS filter's own scan.
@@ -1718,7 +1718,7 @@ func residualSelectsWholePartitions(
 	}
 
 	for fld := range residualFields {
-		if _, ok := colIndex[strings.ToUpper(fld)]; !ok {
+		if _, ok := colIndex[unicode15.ToUpperString(fld)]; !ok {
 			return false // residual touches a non-partition column → not safe here
 		}
 	}

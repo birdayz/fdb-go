@@ -62,6 +62,10 @@ var Allowlist = map[string]int{
 	// find — caught, recorded as a finding, and the sweep continues (an unattended run
 	// must survive one poisoned seed). The panic is surfaced on the finding, never swallowed.
 	"cmd/dst-hunt/main.go": 1,
+	// Frozen locale parsers translate malformed tags to their existing syntax errors.
+	"internal/unicode15/text/internal/language/language.go": 5,
+	"internal/unicode15/text/internal/language/parse.go":    1,
+	"internal/unicode15/text/language/parse.go":             3,
 }
 
 // Analyzer is the nogo entry point, bound to the production allowlist above.

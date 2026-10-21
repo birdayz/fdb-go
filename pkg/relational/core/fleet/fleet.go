@@ -29,9 +29,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/catalog"
@@ -207,7 +207,7 @@ func (e *CatalogTargetError) Error() string {
 // (NULL, NULL, 0) and every user schema store is three longs (domain,
 // database, schema), so no user schema shares a prefix with it.
 func GuardNotCatalog(_ *keyspace.RelationalKeyspace, t Target) error {
-	if strings.EqualFold(t.DatabaseID, catalog.SysDatabaseID) {
+	if unicode15.EqualFold(t.DatabaseID, catalog.SysDatabaseID) {
 		return &CatalogTargetError{
 			DatabaseID: t.DatabaseID,
 			SchemaName: t.SchemaName,
@@ -272,13 +272,13 @@ func collectTargets(rs api.ResultSet) ([]Target, error) {
 		if err != nil {
 			return nil, fmt.Errorf("column %d name: %w", i, err)
 		}
-		idx[strings.ToUpper(name)] = i
+		idx[unicode15.ToUpperString(name)] = i
 	}
 	for _, required := range []string{
 		catalog.ColDatabaseID, catalog.ColSchemaName,
 		catalog.ColTemplateName, catalog.ColTemplateVersion,
 	} {
-		if _, ok := idx[strings.ToUpper(required)]; !ok {
+		if _, ok := idx[unicode15.ToUpperString(required)]; !ok {
 			return nil, fmt.Errorf("schema listing has no %s column — "+
 				"fan-out cannot resume without it", required)
 		}
@@ -287,16 +287,16 @@ func collectTargets(rs api.ResultSet) ([]Target, error) {
 	for rs.Next() {
 		var t Target
 		var err error
-		if t.DatabaseID, err = rs.String(idx[strings.ToUpper(catalog.ColDatabaseID)]); err != nil {
+		if t.DatabaseID, err = rs.String(idx[unicode15.ToUpperString(catalog.ColDatabaseID)]); err != nil {
 			return nil, fmt.Errorf("read %s: %w", catalog.ColDatabaseID, err)
 		}
-		if t.SchemaName, err = rs.String(idx[strings.ToUpper(catalog.ColSchemaName)]); err != nil {
+		if t.SchemaName, err = rs.String(idx[unicode15.ToUpperString(catalog.ColSchemaName)]); err != nil {
 			return nil, fmt.Errorf("read %s: %w", catalog.ColSchemaName, err)
 		}
-		if t.TemplateName, err = rs.String(idx[strings.ToUpper(catalog.ColTemplateName)]); err != nil {
+		if t.TemplateName, err = rs.String(idx[unicode15.ToUpperString(catalog.ColTemplateName)]); err != nil {
 			return nil, fmt.Errorf("read %s: %w", catalog.ColTemplateName, err)
 		}
-		v, err := rs.Long(idx[strings.ToUpper(catalog.ColTemplateVersion)])
+		v, err := rs.Long(idx[unicode15.ToUpperString(catalog.ColTemplateVersion)])
 		if err != nil {
 			return nil, fmt.Errorf("read %s: %w", catalog.ColTemplateVersion, err)
 		}
@@ -317,7 +317,7 @@ func FilterByTemplate(targets []Target, templateName string) []Target {
 	}
 	out := make([]Target, 0, len(targets))
 	for _, t := range targets {
-		if strings.EqualFold(t.TemplateName, templateName) {
+		if unicode15.EqualFold(t.TemplateName, templateName) {
 			out = append(out, t)
 		}
 	}

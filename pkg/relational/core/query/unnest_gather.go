@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"strings"
 
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -172,7 +173,7 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 		}
 		ownerCorr := seg0
 		if ownerWindow.bakeCorr != "" {
-			ownerCorr = strings.ToUpper(ownerWindow.bakeCorr)
+			ownerCorr = unicode15.ToUpperString(ownerWindow.bakeCorr)
 		}
 		ownerQOV, err := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(ownerCorr), ownerWindow.typ)
 		if err != nil {
@@ -384,7 +385,7 @@ func bakeGatheredGroupValue(
 		if !isFV || fv.Path().Len() != 1 || fv.Path().IsFrontierPinned() {
 			return node
 		}
-		qualified, col := false, strings.ToUpper(fv.DisplayName())
+		qualified, col := false, unicode15.ToUpperString(fv.DisplayName())
 		// corr is the reference's OWN correlation where it has one, and the zero
 		// identifier where the qualifier was sliced out of the NAME instead. The
 		// leg window is selected by the correlation, so only the arm that has one

@@ -8,8 +8,7 @@
 package query
 
 import (
-	"strings"
-
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -187,7 +186,7 @@ func (t *cascadesTranslator) legScanTableName(op logical.LogicalOperator) string
 			if key != nil {
 				return ""
 			}
-			return strings.ToUpper(o.Table)
+			return unicode15.ToUpperString(o.Table)
 		case *logical.LogicalInlineValues:
 			return ""
 		case *logical.LogicalFilter:
@@ -883,7 +882,7 @@ func bakeGatedJoinPredicatesChecked(preds []predicates.QueryPredicate, legTypes 
 			// A BURIED leg: the reference binds the box's quantifier —
 			// named by its rightmost leaf — not the buried alias, which has
 			// no quantifier at this select.
-			bakeCorr = strings.ToUpper(legType.bakeCorr)
+			bakeCorr = unicode15.ToUpperString(legType.bakeCorr)
 		}
 		typedQOV, err := values.NewQuantifiedObjectValue(
 			values.NamedCorrelationIdentifier(bakeCorr), legType.typ,
@@ -945,7 +944,7 @@ func legRef(v values.Value) (string, bool) {
 	if !isQOV {
 		return "", false
 	}
-	return strings.ToUpper(qov.Correlation().Name()), true
+	return unicode15.ToUpperString(qov.Correlation().Name()), true
 }
 
 // legRefRootInWindow resolves a leg reference's ROOT column within one leg

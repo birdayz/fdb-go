@@ -68,6 +68,7 @@ go_library(
     importpath = "fdb.dev/pkg/recordlayer/query/plan/plans",
     visibility = ["//visibility:public"],
     deps = [
+        "//internal/unicode15",
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer/indexfetch",
         "//pkg/recordlayer/protoname",

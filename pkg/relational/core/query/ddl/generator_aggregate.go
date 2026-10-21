@@ -15,8 +15,8 @@ package ddl
 import (
 	"fmt"
 	"strconv"
-	"strings"
 
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
@@ -223,7 +223,7 @@ func aggregateIndexType(fn string, operand values.Value, opts Options) (string, 
 	default:
 		return "", api.NewErrorf(api.ErrCodeUnsupportedOperation,
 			"Unsupported aggregate index definition containing non-indexable aggregation (%s), consider using a value index on the aggregated column instead.",
-			strings.ToLower(fn))
+			unicode15.ToLowerString(fn))
 	}
 }
 

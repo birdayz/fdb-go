@@ -8,7 +8,8 @@ package values
 
 import (
 	"sort"
-	"strings"
+
+	"fdb.dev/internal/unicode15"
 )
 
 // OrdinalSeedLegWindow is one leg's window in a pristine ordinal join seed's
@@ -188,7 +189,7 @@ func ordinalSeedLegWindows(rc *RecordConstructorValue, acceptNested bool) (map[C
 		// field-id in the group-by consumes the element by rc index either way.
 		if isMixedSeedElement(f) {
 			elemQOV := f.Value.(*quantifiedObjectValue)
-			elemName := strings.ToUpper(f.Name)
+			elemName := unicode15.ToUpperString(f.Name)
 			if _, dup := windows[elemQOV.correlation]; dup {
 				return nil, nil, nil // two element fields over one correlation — not a seed
 			}
@@ -212,7 +213,7 @@ func ordinalSeedLegWindows(rc *RecordConstructorValue, acceptNested bool) (map[C
 				Alias:  elemQOV.correlation,
 			}
 			counts[elemQOV.correlation] = 1
-			names[elemQOV.correlation] = strings.ToUpper(elemQOV.correlation.Name())
+			names[elemQOV.correlation] = unicode15.ToUpperString(elemQOV.correlation.Name())
 			mergedFields[i] = Field{Name: elemName, FieldType: elemQOV.Type(), Ordinal: i}
 			curAlias = CorrelationIdentifier{}
 			continue
@@ -249,7 +250,7 @@ func ordinalSeedLegWindows(rc *RecordConstructorValue, acceptNested bool) (map[C
 			// pair the machine namespace keeps deliberately apart.
 			// A baked leg RUN: consecutive slots, one per leg column.
 			windows[alias] = OrdinalSeedLegWindow{Kind: LegKindFlatRun, Offset: curStart, Typ: legType, Alias: alias}
-			names[alias] = strings.ToUpper(alias.Name())
+			names[alias] = unicode15.ToUpperString(alias.Name())
 		} else if acc.Ordinal != i-curStart {
 			return nil, nil, nil
 		}
@@ -320,7 +321,7 @@ func positionalMergeWindows(rc *RecordConstructorValue) (map[CorrelationIdentifi
 		// DISTINCT quantifier, named OrdinalFieldName(i) in position order.
 		qov := f.Value.(*quantifiedObjectValue)
 		mergedFields[i] = Field{Name: f.Name, FieldType: qov.Type(), Ordinal: i}
-		names[qov.correlation] = strings.ToUpper(qov.correlation.Name())
+		names[qov.correlation] = unicode15.ToUpperString(qov.correlation.Name())
 
 		// THE PER-SLOT RECORD TEST BINDS THE TYPE AND REQUIRES NON-NIL, and both
 		// halves matter.
@@ -338,7 +339,7 @@ func positionalMergeWindows(rc *RecordConstructorValue) (map[CorrelationIdentifi
 			// 1-field flat window at its own slot, numerically identical to today.
 			// Merge rows with such slots are real — the corpus has 750 of them, every
 			// distinct witness an unnest ELEMENT alias.
-			elemName := strings.ToUpper(f.Name)
+			elemName := unicode15.ToUpperString(f.Name)
 			windows[qov.correlation] = OrdinalSeedLegWindow{
 				Kind:   LegKindFlatRun,
 				Offset: i,
@@ -421,7 +422,7 @@ func finalizeSeedWindows(windows map[CorrelationIdentifier]OrdinalSeedLegWindow,
 				// this window's own correlation — exactly the text a folded key would
 				// have held.
 				h.LegIdentityConversion(LegSiteFinalizeSeedWindows, leg.Alias, w.Alias,
-					leg.Name == strings.ToUpper(w.Alias.Name()))
+					leg.Name == unicode15.ToUpperString(w.Alias.Name()))
 				h.LegIdentityLeg(leg)
 			}
 			// "Is this buried leg the box run's RIGHTMOST LEAF?" — an IDENTITY question,

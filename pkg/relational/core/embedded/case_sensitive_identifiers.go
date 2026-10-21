@@ -6,8 +6,8 @@ package embedded
 
 import (
 	"sort"
-	"strings"
 
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/relational/core/parser"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 	"github.com/antlr4-go/antlr/v4"
@@ -43,7 +43,7 @@ func caseSensitiveIdentifiers(sql string) string {
 		// before any user function (SqlFunctionCatalogImpl's lower-cased
 		// synonyms), so its name is left as written.
 		if f, ok := n.(*antlrgen.UserDefinedScalarFunctionNameContext); ok {
-			if id := f.ID(); id != nil && !strings.EqualFold(id.GetText(), "CARDINALITY") && !strings.EqualFold(id.GetText(), "JAVA_CALL") {
+			if id := f.ID(); id != nil && !unicode15.EqualFold(id.GetText(), "CARDINALITY") && !unicode15.EqualFold(id.GetText(), "JAVA_CALL") {
 				spans = append(spans, span{id.GetSymbol().GetStart(), id.GetSymbol().GetStop()})
 			}
 			return

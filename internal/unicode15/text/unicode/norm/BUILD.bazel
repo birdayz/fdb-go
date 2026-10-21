@@ -1,0 +1,25 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+filegroup(
+    name = "unicodepin_sources",
+    srcs = glob(["*.go"]),
+    visibility = ["//visibility:public"],
+)
+
+go_library(
+    name = "norm",
+    srcs = [
+        "composition.go",
+        "forminfo.go",
+        "input.go",
+        "iter.go",
+        "normalize.go",
+        "readwriter.go",
+        "tables15.0.0.go",
+        "transform.go",
+        "trie.go",
+    ],
+    importpath = "fdb.dev/internal/unicode15/text/unicode/norm",
+    visibility = ["//:__subpackages__"],
+    deps = ["//internal/unicode15/text/transform"],
+)

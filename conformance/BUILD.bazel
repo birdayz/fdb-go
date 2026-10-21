@@ -38,6 +38,7 @@ java_library(
         # in the EXPLAIN path; metrics-core comes along because
         # RecordLayerEngine.makeEngine() takes a MetricRegistry.
         "@maven//:io_dropwizard_metrics_metrics_core",
+        "@maven//:org_antlr_antlr4_runtime",
         "@maven//:org_foundationdb_fdb_relational_api",
         "@maven//:org_foundationdb_fdb_relational_core",
     ],
@@ -60,6 +61,47 @@ java_binary(
     main_class = "com.birdayz.conformance.ConformanceServer",
     visibility = ["//visibility:public"],
     runtime_deps = [":conformance_lib"],
+)
+
+# Regenerate the checked-in JDK-21 oracle without starting FoundationDB:
+# bazelisk run //conformance:unicode15_fixtures -- --write
+java_binary(
+    name = "unicode15_fixtures",
+    main_class = "com.birdayz.conformance.Unicode15Fixtures",
+    runtime_deps = [":conformance_lib"],
+)
+
+java_test(
+    name = "unicode15_fixtures_test",
+    args = [
+        "--check",
+        "$(location testdata/unicode15_java.json)",
+    ],
+    data = ["testdata/unicode15_java.json"],
+    main_class = "com.birdayz.conformance.Unicode15Fixtures",
+    use_testrunner = False,
+    runtime_deps = [":conformance_lib"],
+)
+
+# Independent Go-v0 expectations deliberately differ from the Java oracle where
+# RFC-265 preserves existing segmentation, sigma, alias and simple-fold policy.
+# gazelle:exclude unicode15_conformance_test.go
+# keep
+go_test(
+    name = "unicode15_conformance_test",
+    srcs = ["unicode15_conformance_test.go"],
+    data = ["testdata/unicode15_java.json"],
+    deps = [
+        "//gen/demopb",
+        "//internal/unicode15",
+        "//pkg/recordlayer",
+        "//pkg/recordlayer/keystoretest",
+        "//pkg/relational/core/parser",
+        "//pkg/relational/core/query/semantic",
+        "@com_github_antlr4_go_antlr_v4//:antlr",
+        "@org_golang_google_protobuf//encoding/protowire",
+        "@org_golang_google_protobuf//proto",
+    ],
 )
 
 java_test(

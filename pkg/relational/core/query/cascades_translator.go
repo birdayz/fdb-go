@@ -17,6 +17,7 @@ import (
 
 	"google.golang.org/protobuf/reflect/protoreflect"
 
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -775,7 +776,7 @@ func (t *cascadesTranslator) resolveRecordType(table string) *recordlayer.Record
 	var bestName string
 	var best *recordlayer.RecordType
 	for name, rt := range t.md.RecordTypes() {
-		if strings.EqualFold(name, table) && (best == nil || name < bestName) {
+		if unicode15.EqualFold(name, table) && (best == nil || name < bestName) {
 			bestName, best = name, rt
 		}
 	}
@@ -980,9 +981,9 @@ func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Fie
 			alias string
 			cols  []values.Field
 		}{{leftAlias, leftCols}, {rightAlias, rightCols}} {
-			prefix := strings.ToUpper(leg.alias) + "."
+			prefix := unicode15.ToUpperString(leg.alias) + "."
 			for _, c := range leg.cols {
-				name := strings.ToUpper(c.Name)
+				name := unicode15.ToUpperString(c.Name)
 				if !strings.Contains(c.Name, ".") {
 					name = prefix + name
 				}
@@ -1038,10 +1039,10 @@ func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Fie
 		// name-based resolution by a parent join's anchored RC. RFC-142.
 		var cols []values.Field
 		if o.Alias != "" {
-			cols = append(cols, values.Field{Name: strings.ToUpper(o.Alias), FieldType: values.UnknownType, Ordinal: len(cols)})
+			cols = append(cols, values.Field{Name: unicode15.ToUpperString(o.Alias), FieldType: values.UnknownType, Ordinal: len(cols)})
 		}
 		if o.AtAlias != "" {
-			cols = append(cols, values.Field{Name: strings.ToUpper(o.AtAlias), FieldType: values.NotNullInt, Ordinal: len(cols)})
+			cols = append(cols, values.Field{Name: unicode15.ToUpperString(o.AtAlias), FieldType: values.NotNullInt, Ordinal: len(cols)})
 		}
 		return cols
 	case *logical.LogicalSort:
@@ -1285,11 +1286,11 @@ func (t *cascadesTranslator) unionOutputColumns(u *logical.LogicalUnion) []value
 func (t *cascadesTranslator) aggregateOutputColumns(a *logical.LogicalAggregate) []values.Field {
 	inputCols := t.legColumns(a.Input)
 	typeOf := func(bare string) values.Type {
-		up := strings.ToUpper(bare)
+		up := unicode15.ToUpperString(bare)
 		var found values.Type
 		matched := false
 		for _, c := range inputCols {
-			if strings.ToUpper(c.Name) != up || c.FieldType == nil {
+			if unicode15.ToUpperString(c.Name) != up || c.FieldType == nil {
 				continue
 			}
 			// A name carried by MULTIPLE input columns with CONFLICTING
@@ -1347,7 +1348,7 @@ func (t *cascadesTranslator) aggregateOutputColumns(a *logical.LogicalAggregate)
 				operandCode = ot.Code()
 			}
 		}
-		if code, ok := values.JavaAggregateResultCode(strings.ToUpper(call.Func), operandCode); ok {
+		if code, ok := values.JavaAggregateResultCode(unicode15.ToUpperString(call.Func), operandCode); ok {
 			// ALL aggregate outputs are declared NULLABLE — Java's
 			// CountValue.getResultType() is Type.primitiveType(LONG)
 			// (nullable default) even though COUNT is never null per
@@ -1527,7 +1528,7 @@ func aggregateValueNativeOrdinal(av *values.AggregateValue, agg *logical.Logical
 			}
 			continue
 		}
-		if call.Star || !strings.EqualFold(call.Func, av.Op.Symbol()) {
+		if call.Star || !unicode15.EqualFold(call.Func, av.Op.Symbol()) {
 			continue
 		}
 		if i < len(agg.AggregateOperands) && agg.AggregateOperands[i] != nil &&
@@ -1559,7 +1560,7 @@ func aggregateValueOutputName(av *values.AggregateValue) string {
 			operand = operand[1 : len(operand)-1]
 		}
 	}
-	return strings.ToUpper(av.Op.Symbol()) + "(" + operand + ")"
+	return unicode15.ToUpperString(av.Op.Symbol()) + "(" + operand + ")"
 }
 
 // underlyingGroupBy returns the GroupByExpression an expression's output row is
@@ -1666,7 +1667,7 @@ func unnestOwnedByLeft(left logical.LogicalOperator, u *logical.LogicalUnnest) b
 	}
 	name := owner.Correlation().Name()
 	for binding := range outerBoundAliases(left) {
-		if strings.EqualFold(binding, name) {
+		if unicode15.EqualFold(binding, name) {
 			return true
 		}
 	}
@@ -1805,7 +1806,7 @@ func nonExistsConjunctRefsOuterLeg(pred predicates.QueryPredicate, boxAliases ma
 	}
 	for _, p := range splitNonExistsPredicates(pred) {
 		for c := range predicates.GetCorrelatedToOfPredicate(p) {
-			if _, ok := boxAliases[strings.ToUpper(c.Name())]; ok {
+			if _, ok := boxAliases[unicode15.ToUpperString(c.Name())]; ok {
 				return true
 			}
 		}
@@ -1884,7 +1885,7 @@ func existsInnerScopeCollidesOuter(esqs []logical.ExistsSubquery, outerLegs map[
 // exact here; machine q$N ids never enter this map).
 func unnestOuterLegAliases(op logical.LogicalOperator, mergedCorr values.CorrelationIdentifier) map[string]struct{} {
 	all := outerBoundAliases(op)
-	delete(all, strings.ToUpper(mergedCorr.Name()))
+	delete(all, unicode15.ToUpperString(mergedCorr.Name()))
 	return all
 }
 
@@ -2192,8 +2193,8 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 //     (the QOV) rather than a FieldValue accessor. RFC-142.
 func rewriteUnnestPredicate(p predicates.QueryPredicate, u *logical.LogicalUnnest) predicates.QueryPredicate {
 	unnestCorr := unnestSourceCorrelation(u)
-	asAlias := strings.ToUpper(u.Alias)
-	atAlias := strings.ToUpper(u.AtAlias)
+	asAlias := unicode15.ToUpperString(u.Alias)
+	atAlias := unicode15.ToUpperString(u.AtAlias)
 	withOrdinality := u.AtAlias != ""
 	rewriteValue := func(v values.Value) values.Value {
 		if v == nil {
@@ -2244,7 +2245,7 @@ func rewriteUnnestPredicate(p predicates.QueryPredicate, u *logical.LogicalUnnes
 			if fv.Path().Len() > 1 {
 				return node
 			}
-			switch strings.ToUpper(fv.DisplayName()) {
+			switch unicode15.ToUpperString(fv.DisplayName()) {
 			case asAlias:
 				if asAlias != "" {
 					if withOrdinality {
@@ -2428,7 +2429,7 @@ func pushBuriedUnnestPredicateDown(f *logical.LogicalFilter) *logical.LogicalFil
 // qualified by — the AS alias, else the AT alias (mirroring
 // unnestScopeSourceAdder's correlation-name choice). RFC-142.
 func unnestSourceCorrelation(u *logical.LogicalUnnest) values.CorrelationIdentifier {
-	return values.NamedCorrelationIdentifier(strings.ToUpper(logical.UnnestBindingName(u.Binding, u.Alias, u.AtAlias)))
+	return values.NamedCorrelationIdentifier(unicode15.ToUpperString(logical.UnnestBindingName(u.Binding, u.Alias, u.AtAlias)))
 }
 
 // newLimitExprFromLogical builds the Cascades LogicalLimitExpression for a
@@ -3789,7 +3790,7 @@ func rebaseUnnestOuterLegPredicate(
 	}
 	needsRebase := false
 	for correlation := range predicates.GetCorrelatedToOfPredicate(p) {
-		if _, isOuterLeg := outerLegs[strings.ToUpper(correlation.Name())]; isOuterLeg {
+		if _, isOuterLeg := outerLegs[unicode15.ToUpperString(correlation.Name())]; isOuterLeg {
 			needsRebase = true
 			break
 		}
@@ -3823,7 +3824,7 @@ func rebaseUnnestOuterLegPredicate(
 			if !hasOwner {
 				return node
 			}
-			leg := strings.ToUpper(qov.Correlation().Name())
+			leg := unicode15.ToUpperString(qov.Correlation().Name())
 			if _, isOuterLeg := outerLegs[leg]; !isOuterLeg {
 				return node
 			}
@@ -3841,7 +3842,7 @@ func rebaseUnnestOuterLegPredicate(
 				ok = false
 				return node
 			}
-			minted := leg + "." + strings.ToUpper(rootName)
+			minted := leg + "." + unicode15.ToUpperString(rootName)
 			if census != nil {
 				census.UnnestLegMintName(site, minted)
 			}
@@ -3988,7 +3989,7 @@ func rebaseChainedOuterLegPredicate(
 // so gate/keep are both no-ops.
 func chainedPredScanPushable(p predicates.QueryPredicate, outerLegs map[string]struct{}) bool {
 	for corr := range predicates.GetCorrelatedToOfPredicate(p) {
-		if _, ok := outerLegs[strings.ToUpper(corr.Name())]; !ok {
+		if _, ok := outerLegs[unicode15.ToUpperString(corr.Name())]; !ok {
 			return false
 		}
 	}
@@ -4048,7 +4049,7 @@ func ordinalSlotInLegWindow(rt *values.RecordType, leg values.CorrelationIdentif
 				// folding predicate rejected it, and that pair lands in ExactEqual).
 				h.LegIdentityConversion(
 					values.LegSiteOrdinalSlotInLegWindow, lw.Alias, leg,
-					lw.Name == strings.ToUpper(leg.Name()))
+					lw.Name == unicode15.ToUpperString(leg.Name()))
 				h.LegIdentityLeg(lw)
 			}
 			// "Does this correlation name that leg window?" — the same IDENTITY
@@ -4142,7 +4143,7 @@ func rebaseUnnestOuterLegPredicateOrdinal(
 			if !isQOV {
 				return node
 			}
-			leg := strings.ToUpper(qov.Correlation().Name())
+			leg := unicode15.ToUpperString(qov.Correlation().Name())
 			if _, isOuterLeg := outerLegs[leg]; !isOuterLeg {
 				return node
 			}
@@ -4179,7 +4180,7 @@ func rebaseUnnestOuterLegPredicateOrdinal(
 				ok = false
 				return node
 			}
-			ord, found := ordinalSlotInLegWindow(outerLegType, qov.Correlation(), strings.ToUpper(rootName), len(outerLegs) > 1)
+			ord, found := ordinalSlotInLegWindow(outerLegType, qov.Correlation(), unicode15.ToUpperString(rootName), len(outerLegs) > 1)
 			if !found {
 				ok = false
 				return node
@@ -4227,7 +4228,7 @@ func bakeUnnestElementRefOrdinal(
 	if qovErr != nil {
 		return p
 	}
-	mergedName := strings.ToUpper(mergedCorr.Name())
+	mergedName := unicode15.ToUpperString(mergedCorr.Name())
 	rewrite := func(v values.Value) values.Value {
 		if v == nil {
 			return v
@@ -4250,7 +4251,7 @@ func bakeUnnestElementRefOrdinal(
 				return node
 			}
 			qov, isQOV := values.AsQuantifiedObjectValue(fv.ChildValue())
-			if !isQOV || strings.ToUpper(qov.Correlation().Name()) != mergedName {
+			if !isQOV || unicode15.ToUpperString(qov.Correlation().Name()) != mergedName {
 				return node // inner-table or other QOV — not the element
 			}
 			// The slot is named by the path's ROOT, which is the element alias;
@@ -4264,7 +4265,7 @@ func bakeUnnestElementRefOrdinal(
 			if !hasName {
 				return node
 			}
-			slot, ok := elementSlots[strings.ToUpper(rootName)]
+			slot, ok := elementSlots[unicode15.ToUpperString(rootName)]
 			if !ok {
 				return node
 			}
@@ -4313,7 +4314,7 @@ func unnestExistsRefSurvivesUnbaked(
 	outerLegs map[string]struct{},
 	mergedCorr values.CorrelationIdentifier,
 ) bool {
-	mergedName := strings.ToUpper(mergedCorr.Name())
+	mergedName := unicode15.ToUpperString(mergedCorr.Name())
 	survives := false
 	scanVal := func(v values.Value) {
 		if v == nil || survives {
@@ -4335,7 +4336,7 @@ func unnestExistsRefSurvivesUnbaked(
 				return true // pinned ofOrdinal (or non-FieldValue) — descend/skip
 			}
 			if qov, isQOV := values.AsQuantifiedObjectValue(fv.ChildValue()); isQOV {
-				leg := strings.ToUpper(qov.Correlation().Name())
+				leg := unicode15.ToUpperString(qov.Correlation().Name())
 				if leg == mergedName {
 					survives = true
 					return false
@@ -5208,11 +5209,11 @@ func (s sortSource) sortKeyName(k logical.SortKey) string {
 func sortKeyQualifierIdentity(k logical.SortKey) (string, bool) {
 	if fv, ok := values.AsFieldValue(k.Value); ok {
 		if qov, isQOV := values.AsQuantifiedObjectValue(fv.ChildValue()); isQOV {
-			return strings.ToUpper(qov.Correlation().Name()), true
+			return unicode15.ToUpperString(qov.Correlation().Name()), true
 		}
 	}
 	if k.Bare != "" {
-		return strings.ToUpper(k.Qualifier), true
+		return unicode15.ToUpperString(k.Qualifier), true
 	}
 	return "", false
 }
@@ -5329,7 +5330,7 @@ func (s sortSource) sortKeyInOutput(k logical.SortKey, fields []values.RecordCon
 // resolveKeyName maps a (possibly qualified) sort-key field reference to the name
 // it resolves against the folded output record, per the source's key shape.
 func (s sortSource) resolveKeyName(field string, ident string, identPresent bool) string {
-	up := strings.ToUpper(field)
+	up := unicode15.ToUpperString(field)
 	if !s.isJoin {
 		return stripSortQualifier(up)
 	}
@@ -5339,7 +5340,7 @@ func (s sortSource) resolveKeyName(field string, ident string, identPresent bool
 	// key, or one whose qualifier is not a leg, falls back to the bare column.
 	if qual, _, ok := splitQualifier(up); ok {
 		for _, leg := range s.legAliases {
-			if leg != "" && strings.ToUpper(leg) == qual {
+			if leg != "" && unicode15.ToUpperString(leg) == qual {
 				return up
 			}
 		}
@@ -5498,7 +5499,7 @@ func nestedResolvedSortKey(k logical.SortKey) (values.FieldValue, bool) {
 // everything after the last `.`. An empty or trailing-dot input yields the
 // upper-cased whole (defensive).
 func stripSortQualifier(field string) string {
-	up := strings.ToUpper(field)
+	up := unicode15.ToUpperString(field)
 	if i := strings.LastIndex(up, "."); i >= 0 && i+1 < len(up) {
 		return up[i+1:]
 	}
@@ -5543,7 +5544,7 @@ func recordExistsSortSplit(up, ident string, identPresent bool) {
 // Only a SINGLE qualifier is split (the LAST dot) — a deeper `A.B.C` is uncommon
 // in the EXISTS fold and is treated as qualifier `A.B`, column `C`.
 func splitQualifier(field string) (string, string, bool) {
-	up := strings.ToUpper(field)
+	up := unicode15.ToUpperString(field)
 	i := strings.LastIndex(up, ".")
 	if i <= 0 || i+1 >= len(up) {
 		return "", "", false
@@ -6103,7 +6104,7 @@ func seedElementSlots(sel *expressions.SelectExpression) (*values.RecordConstruc
 	slots := map[string]int{}
 	for i, f := range rc.Fields {
 		if fieldValueReferencesInner(f.Value, innerCorr) {
-			slots[strings.ToUpper(f.Name)] = i // element slot = rc index
+			slots[unicode15.ToUpperString(f.Name)] = i // element slot = rc index
 		}
 	}
 	return rc, slots, true
@@ -7034,7 +7035,7 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 						"post-aggregate projection slot %d does not resolve: %v", ordinal, err))
 					return nil
 				}
-				if adjust && ordinal >= len(exactAggregate.GroupKeys) && strings.EqualFold(exactAggregate.Calls[ordinal-len(exactAggregate.GroupKeys)].Func, "COUNT") {
+				if adjust && ordinal >= len(exactAggregate.GroupKeys) && unicode15.EqualFold(exactAggregate.Calls[ordinal-len(exactAggregate.GroupKeys)].Func, "COUNT") {
 					resolved = countOnEmpty(resolved)
 				}
 				projected[i] = resolved
@@ -7407,7 +7408,7 @@ func rebaseCorrelatedScalarOuterValue(
 			return node
 		}
 		owner, hasOwner := values.AsQuantifiedObjectValue(fv.ChildValue())
-		if !hasOwner || !strings.EqualFold(owner.Correlation().Name(), outerAlias) {
+		if !hasOwner || !unicode15.EqualFold(owner.Correlation().Name(), outerAlias) {
 			return node
 		}
 		ordinals := fv.Path().Ordinals()
@@ -7503,7 +7504,7 @@ func partitionCorrelatedScalarWherePredicate(
 		}
 		if movable {
 			for corr := range predicates.GetCorrelatedToOfPredicate(candidate) {
-				if !strings.EqualFold(corr.Name(), outerAlias) {
+				if !unicode15.EqualFold(corr.Name(), outerAlias) {
 					movable = false
 					break
 				}
@@ -7554,7 +7555,7 @@ func rebaseCorrelatedScalarFilterPredicate(
 		}
 		if n, isField := values.AsFieldValue(node); isField {
 			child, hasChild := values.AsQuantifiedObjectValue(n.ChildValue())
-			if !hasChild || !strings.EqualFold(child.Correlation().Name(), outerAlias) {
+			if !hasChild || !unicode15.EqualFold(child.Correlation().Name(), outerAlias) {
 				return node
 			}
 			ordinals := n.Path().Ordinals()
@@ -7577,7 +7578,7 @@ func rebaseCorrelatedScalarFilterPredicate(
 		if n, isQOV := values.AsQuantifiedObjectValue(node); isQOV {
 			// A bare outer-row QOV (row-valued expression) has no scalar WHERE
 			// lowering. Field reads are handled by the FieldValue arm above.
-			if strings.EqualFold(n.Correlation().Name(), outerAlias) {
+			if unicode15.EqualFold(n.Correlation().Name(), outerAlias) {
 				ok = false
 			}
 		}
@@ -7599,7 +7600,7 @@ func rebaseCorrelatedScalarFilterPredicate(
 				}
 			}
 			if n, isQOV := values.AsQuantifiedObjectValue(node); isQOV {
-				if strings.EqualFold(n.Correlation().Name(), outerAlias) {
+				if unicode15.EqualFold(n.Correlation().Name(), outerAlias) {
 					ok = false
 					return false
 				}
@@ -8524,11 +8525,11 @@ func (t *cascadesTranslator) translateJoinWithExists(
 		// Q$DUPn, its display alias shared): an existential alias must not
 		// collide with either.
 		seen := map[string]struct{}{
-			strings.ToUpper(sourceBinding(left)):  {},
-			strings.ToUpper(sourceBinding(right)): {},
+			unicode15.ToUpperString(sourceBinding(left)):  {},
+			unicode15.ToUpperString(sourceBinding(right)): {},
 		}
 		for _, esq := range f.ExistsSubqueries {
-			key := strings.ToUpper(esq.Alias.Name())
+			key := unicode15.ToUpperString(esq.Alias.Name())
 			if _, dup := seen[key]; dup {
 				gatedFlatten = false
 				gateDecision = wedgeGateDecision{
@@ -8905,20 +8906,20 @@ func sourceAlias(op logical.LogicalOperator) string {
 	for cur := op; cur != nil; {
 		switch o := cur.(type) {
 		case *logical.LogicalInlineValues:
-			return strings.ToUpper(o.Alias)
+			return unicode15.ToUpperString(o.Alias)
 		case *logical.LogicalScan:
 			if o.Alias != "" {
-				return strings.ToUpper(o.Alias)
+				return unicode15.ToUpperString(o.Alias)
 			}
-			return strings.ToUpper(o.Table)
+			return unicode15.ToUpperString(o.Table)
 		case *logical.LogicalUnnest:
 			if o.Alias != "" {
-				return strings.ToUpper(o.Alias)
+				return unicode15.ToUpperString(o.Alias)
 			}
 			if o.AtAlias != "" {
-				return strings.ToUpper(o.AtAlias)
+				return unicode15.ToUpperString(o.AtAlias)
 			}
-			return strings.ToUpper(strings.Join(o.Segments, "."))
+			return unicode15.ToUpperString(strings.Join(o.Segments, "."))
 		case *logical.LogicalJoin:
 			return sourceAlias(o.Right)
 		case *logical.LogicalCTE:
@@ -8930,7 +8931,7 @@ func sourceAlias(op logical.LogicalOperator) string {
 			// executor qualifies merged-row keys under the alias
 			// the user specified (e.g. "sq1"), not the underlying
 			// table name buried inside the CTE body.
-			return strings.ToUpper(o.Name())
+			return unicode15.ToUpperString(o.Name())
 		default:
 			ch := cur.Children()
 			if len(ch) == 1 {
@@ -8967,19 +8968,19 @@ func mintedBindingLeg(ops ...logical.LogicalOperator) string {
 		switch o := op.(type) {
 		case *logical.LogicalInlineValues:
 			if o.Binding != "" {
-				return strings.ToUpper(o.Binding)
+				return unicode15.ToUpperString(o.Binding)
 			}
 		case *logical.LogicalScan:
 			if o.Binding != "" {
-				return strings.ToUpper(o.Binding)
+				return unicode15.ToUpperString(o.Binding)
 			}
 		case *logical.LogicalUnnest:
 			if o.Binding != "" {
-				return strings.ToUpper(o.Binding)
+				return unicode15.ToUpperString(o.Binding)
 			}
 		case *logical.LogicalCTE:
 			if o.Binding != "" {
-				return strings.ToUpper(o.Binding)
+				return unicode15.ToUpperString(o.Binding)
 			}
 		}
 		if b := mintedBindingLeg(op.Children()...); b != "" {
@@ -9002,21 +9003,21 @@ func sourceBinding(op logical.LogicalOperator) string {
 		switch o := cur.(type) {
 		case *logical.LogicalInlineValues:
 			if o.Binding != "" {
-				return strings.ToUpper(o.Binding)
+				return unicode15.ToUpperString(o.Binding)
 			}
 			return sourceAlias(cur)
 		case *logical.LogicalScan:
 			if o.Binding != "" {
-				return strings.ToUpper(o.Binding)
+				return unicode15.ToUpperString(o.Binding)
 			}
 			return sourceAlias(cur)
 		case *logical.LogicalUnnest:
-			return strings.ToUpper(logical.UnnestBindingName(o.Binding, o.Alias, o.AtAlias))
+			return unicode15.ToUpperString(logical.UnnestBindingName(o.Binding, o.Alias, o.AtAlias))
 		case *logical.LogicalJoin:
 			return sourceBinding(o.Right)
 		case *logical.LogicalCTE:
 			if o.Binding != "" {
-				return strings.ToUpper(o.Binding)
+				return unicode15.ToUpperString(o.Binding)
 			}
 			if o.PreserveMainSource {
 				return sourceBinding(o.Main)

@@ -21,8 +21,7 @@
 package cascades
 
 import (
-	"strings"
-
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -292,7 +291,7 @@ func physicalTypesFromFlatRow(
 		var found values.Type
 		matches := 0
 		for _, field := range recordType.Fields {
-			if strings.EqualFold(field.Name, columnName) {
+			if unicode15.EqualFold(field.Name, columnName) {
 				found = field.FieldType
 				matches++
 			}

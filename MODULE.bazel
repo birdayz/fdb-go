@@ -197,6 +197,14 @@ http_file(
     urls = ["https://www.antlr.org/download/antlr-4.13.1-complete.jar"],
 )
 
+# Source-only oracle for regenerating the frozen Unicode-15 runtime snapshot.
+http_file(
+    name = "unicode15_xtext_source",
+    downloaded_file_path = "text-v0.42.0.zip",
+    sha256 = "a7b64e003056b6470303f408202098d8f3714a115f23091b8cac85edeb265476",
+    urls = ["https://proxy.golang.org/golang.org/x/text/@v/v0.42.0.zip"],
+)
+
 # FDB Python client — the reference binding the binding tester drives our
 # stacktester against. It is fetched here rather than assumed present on the
 # host: relying on a host `pip install foundationdb` is what silently blanked

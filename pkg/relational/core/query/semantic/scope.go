@@ -9,8 +9,8 @@ package semantic
 
 import (
 	"fmt"
-	"strings"
 
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/relational/core/query/logical"
 )
 
@@ -208,7 +208,7 @@ func (s ScopeSource) hidesColumn(id Identifier) bool {
 	if len(s.HiddenColumns) == 0 {
 		return false
 	}
-	_, hidden := s.HiddenColumns[strings.ToUpper(id.Name())]
+	_, hidden := s.HiddenColumns[unicode15.ToUpperString(id.Name())]
 	return hidden
 }
 
@@ -286,7 +286,7 @@ func (s *Scope) AddSource(src ScopeSource) error {
 	// namespace stays case-DISJOINT from every upper-folded user
 	// correlation — quoted "q$5" cannot forge a planner-minted q$5.
 	if src.CorrelationName != "" {
-		src.CorrelationName = strings.ToUpper(src.CorrelationName)
+		src.CorrelationName = unicode15.ToUpperString(src.CorrelationName)
 	}
 	for _, existing := range s.sources {
 		if src.CorrelationName != "" && existing.CorrelationName == src.CorrelationName {
@@ -383,7 +383,7 @@ func (p resolutionPass) matches(have, want Identifier) bool {
 	if have.EqualsIgnoreQuoting(want) {
 		return true
 	}
-	return p == relaxedPass && strings.EqualFold(have.Name(), want.Name())
+	return p == relaxedPass && unicode15.EqualFold(have.Name(), want.Name())
 }
 
 // matchesColumn is matches for a candidate COLUMN: a name the statement's SQL

@@ -12,11 +12,11 @@ package embedded
 import (
 	"errors"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/antlr4-go/antlr/v4"
 
+	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
@@ -411,7 +411,7 @@ func parseStructLiteral(
 			// (parseRecordField's bare Assert.thatUnchecked) rather than
 			// letting the literal rename the target's field.
 			given := functions.NormalizeIdentifier(ewon.Uid().GetText())
-			if !strings.EqualFold(given, name) {
+			if !unicode15.EqualFold(given, name) {
 				return nil, api.NewError(api.ErrCodeInternalError, "condition is not met!")
 			}
 		}

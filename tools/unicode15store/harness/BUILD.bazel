@@ -1,0 +1,31 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "harness",
+    srcs = ["store.go"],
+    importpath = "fdb.dev/tools/unicode15store/harness",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//gen/demopb",
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+        "//pkg/recordlayer",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
+
+go_test(
+    name = "harness_test",
+    srcs = ["store_test.go"],
+    data = glob(["testdata/**"]),
+    embed = [":harness"],
+    deps = [
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+        "//pkg/recordlayer",
+        "//pkg/testcontainers/foundationdb",
+        "@com_github_testcontainers_testcontainers_go//:testcontainers-go",
+    ],
+)
