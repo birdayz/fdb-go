@@ -576,7 +576,7 @@ axis). Match the pin to the tool:
 - **binding-stress:** a reproducing seed is the signal; fix the client and add a focused
   differential/unit test for the diverging op (the seed itself isn't a committed regression).
 
-A reviewer (human or Graefe/Torvalds/@claude) catch the suite missed is doubly important: fix the bug
+A reviewer (human or Graefe/Torvalds/PR reviewer) catch the suite missed is doubly important: fix the bug
 **and** add the test that should have caught it.
 
 ---

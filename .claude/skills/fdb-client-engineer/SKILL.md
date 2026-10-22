@@ -1,6 +1,6 @@
 ---
 name: fdb-client-engineer
-description: "End-to-end engineering workflow for the pure-Go FoundationDB client (pkg/fdbgo — transport, transaction, commit path, RYW, key selectors, retry/ctx, GRV, wire encoding, the libfdb_c differential). Use for ANY client/wire change: drives RFC → review (FDB C++ maintainer + Torvalds + /code-review) → implement → review again → PR gauntlet (codex + @claude) → merge. The client analog of todo-worker: the FDB C++ dev substitutes for Graefe, C++ (libfdb_c 7.3.77) is the spec, wire compatibility is the hard line. Composes fdb-client-review (the review gate) and hunt-divergences (the differential method)."
+description: "End-to-end engineering workflow for the pure-Go FoundationDB client (pkg/fdbgo — transport, transaction, commit path, RYW, key selectors, retry/ctx, GRV, wire encoding, the libfdb_c differential). Use for ANY client/wire change: drives RFC → review (FDB C++ maintainer + Torvalds + /code-review) → implement → review again → PR gauntlet (codex + Opus 5.5 PR reviewer) → merge. The client analog of todo-worker: the FDB C++ dev substitutes for Graefe, C++ (libfdb_c 7.3.77) is the spec, wire compatibility is the hard line. Composes fdb-client-review (the review gate) and hunt-divergences (the differential method)."
 ---
 
 # FDB Client Engineering (pure-Go `pkg/fdbgo`)
@@ -130,14 +130,15 @@ commit. Fix → add the regression that should have caught it → re-review the 
 - **codex** — via the **`codex-review`** skill (`gpt-5.5 xhigh`). It repeatedly catches
   storage-shadow / cleared-base / sticky-unreadable / RYW edges the others miss. Re-review the
   delta after each fix; its ACK must be on the final HEAD.
-- **@claude** — `@claude` in a PR comment (self-hosted runner; it's queued behind CI on the
-  single box, be patient). Its **clean LGTM must be the LAST comment on the PR, on the current
-  HEAD.** Every push re-stales it → re-request. Don't comment after the LGTM.
+- **PR reviewer (Opus 5.5 subagent)** — the **`pr-review`** skill, which replaces the `@claude`
+  GitHub Action. A fresh read-only `claude-opus-5-5` reviewer checks the PR at its exact HEAD
+  against `/tmp/fdbsrc` 7.3.77. Every push makes its ACK stale; the recorded ACK naming the
+  current HEAD must be the **last comment on the PR**.
 - **CI green** on the final HEAD before merge — no exceptions. A red or flaky CI is a real bug
   (see §5), root-cause it now.
 
-Merge only when **FDB C++ maintainer + Torvalds + code-review + codex + @claude are all green on
-the same final HEAD and CI is green.** Update the RFC to **Status: Implemented** and flip the
+Merge only when **FDB C++ maintainer + Torvalds + code-review + codex + the Opus 5.5 PR reviewer
+are all green on the same final HEAD and CI is green.** Update the RFC to **Status: Implemented** and flip the
 TODO mark.
 
 ---

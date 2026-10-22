@@ -65,7 +65,7 @@ There IS a mid-shift check-in concept — a quality gate where the user (or a re
 - **DO NOT watch the clock for it.** Don't compute a T+3:30 mark, don't ScheduleWakeup for it, don't refuse to start new work because "mid-shift is in 30 min." You'll just burn shift time pacing.
 - **DO NOT stop working in anticipation.** Keep shipping commits. The check-in happens when it happens — when the user pings, when a reviewer comment arrives, when an external trigger fires. Until then, work.
 - **Late is fine.** Better to be 30 min late on a check-in (because you were heads-down on a substantive piece) than to idle for 30 min watching the clock.
-- **When the check-in DOES happen** — pause, request `@claude review` on the PR, iterate with the reviewer until LGTM, then keep going. The review is a quality gate, not a stop signal.
+- **When the check-in DOES happen** — pause, run the Opus 5.5 PR reviewer (`pr-review` skill) on the PR, iterate with it until it ACKs, then keep going. The review is a quality gate, not a stop signal.
 
 The wall-clock numbers below are descriptive context, NOT triggers:
 
@@ -98,13 +98,13 @@ Then start working on the highest-priority items from the handover. Follow the w
 - **CI must be green** on every push. Pre-commit hooks catch most issues.
 - **Review after each major unit of work.** When a significant TODO item is complete (DDL pipeline, executor wiring, cost model fix with tests — NOT a single-line fix or one more test file), trigger the review loop:
   1. Commit, push
-  2. Comment on the PR: `gh pr comment --body "@claude Completed <unit>. <1-2 sentence summary of what changed>. Please review."`
-  3. Wait for reviewer feedback: `gh run list --branch {shift-name} --limit 1 --json databaseId --jq '.[0].databaseId'` then `gh run watch <id> --exit-status` then read the latest comment
-  4. Address valid feedback (fix, commit, push, re-request). Push back on wrong suggestions with reasoning.
+  2. Run the Opus 5.5 PR reviewer (`pr-review` skill) on the pushed HEAD: the first time, start a fresh read-only reviewer subagent; afterwards send the same reviewer the new sha, the delta and a 1-2 sentence summary of the unit.
+  3. Its verdict arrives as a reply; keep working on the next item in the meantime.
+  4. Address valid feedback (fix, commit, push, send the delta back). Push back on wrong suggestions with reasoning.
   5. Iterate until no new issues. Then move to the next TODO item.
   
   **Judgment call on "major":** A unit is review-worthy when it touches >3 files, adds a new code path that could have bugs, or changes cost model / plan selection behavior. Pure test additions, doc updates, and single-file fixes don't need mid-work review — they get reviewed at end-of-shift. Don't stop working while waiting for review — start the next item immediately and handle feedback when it arrives.
-- **Mid-shift review is event-driven, NOT timer-driven.** When the user prompts for it (or an external trigger fires), pause, request `@claude review`, iterate to LGTM, then keep going. NEVER stop working in anticipation of mid-shift; NEVER compute a T+3:30 mark and pace yourself toward it. Being a bit late is fine; idling for the clock is not. A clean mid-shift review is a quality signal, not a stop signal.
+- **Mid-shift review is event-driven, NOT timer-driven.** When the user prompts for it (or an external trigger fires), pause, run the PR reviewer (`pr-review` skill), iterate to its ACK, then keep going. NEVER stop working in anticipation of mid-shift; NEVER compute a T+3:30 mark and pace yourself toward it. Being a bit late is fine; idling for the clock is not. A clean mid-shift review is a quality signal, not a stop signal.
 - **When the main task is done, keep working.** Write more tests, investigate performance, update docs, run binding stress, profile allocations, audit code you haven't touched. A foreman doesn't clock out early because the main job finished — there's always cleanup, testing, and prep for the next shift.
 - **You MUST keep working until wind-down.** Idling "because piling on more changes risks regressions" or "because the reviewer already approved" is not an option. The risk profile is low (CI + review catch regressions); the cost of an idle shift is high (less ground covered, more work dumped on the next shift). If you genuinely have nothing to do, that means you haven't looked hard enough — audit code you haven't touched, extend fuzz corpus, tighten tests, polish docs. Sitting waiting for review feedback is only acceptable inside the wind-down window. Scheduling wakeups to pass time before wind-down is a mis-use.
 - **Wind down 30 min before shift-end clock.** Day shift wind-down 13:30, hard stop 14:00. Swing wind-down 21:30, hard stop 22:00. Night wind-down 05:30, hard stop 06:00. Compute the wind-down mark from the END clock, not from your start time — late starts cut into work time, not into wind-down. Use the last 30 min for: final review iteration, verification (fuzz / stress are passive — fine), handover doc, merge. New code stops; passive verification continues.
@@ -121,27 +121,16 @@ When implementation is done and tests pass:
    gh pr ready  # remove draft status
    ```
 
-2. **Request review** by commenting on the PR:
-   ```bash
-   gh pr comment --body "@claude review"
-   ```
+2. **Request review** with the **`pr-review`** skill: a fresh, read-only reviewer subagent on Claude Opus 5.5 (`claude-opus-5-5`, effort `xhigh`) reviewing the PR at its exact HEAD sha. It replaces the `@claude` GitHub Action, which no longer completes a review; do not tag `@claude`.
 
-3. **Wait for reviewer feedback.** Use `gh run watch <id>` to wait for the review job, then read comments:
-   ```bash
-   gh run list --branch {shift-name} --limit 1 --json databaseId --jq '.[0].databaseId'
-   gh run watch <id> --exit-status
-   gh api repos/{owner}/{repo}/issues/{pr}/comments --jq '.[-1].body'
-   ```
+3. **Wait for its verdict.** It arrives as the agent's reply (ACK or NAK with `file:line` findings); there is no Actions run to watch.
 
-4. **Address feedback** — but stay critically thinking. Don't blindly apply every suggestion. If a suggestion is wrong or unnecessary, explain why in a reply. For valid feedback:
+4. **Address feedback** — but stay critically thinking. Don't blindly apply every suggestion. If a suggestion is wrong or unnecessary, tell the reviewer why. For valid feedback:
    - Fix the issue
    - Commit, push
-   - **CRITICAL: Request re-review.** Comment on the PR summarizing what was fixed and tag `@claude` to trigger another review:
-     ```bash
-     gh pr comment --body "@claude Fixed X (commit abc123). Please review again."
-     ```
+   - **CRITICAL: Request re-review.** Send the **same** reviewer the new sha, `git diff <old> <new>` and what was fixed. Every push makes its previous ACK stale.
 
-5. **Wait for the new review** (step 3 again). Read the feedback. If new issues found, fix and re-request (step 4). **Keep iterating until the reviewer finds no new issues.** Only then is the PR merge-ready.
+5. **Wait for the new verdict** (step 3 again). If new issues are found, fix and re-request (step 4). **Keep iterating until the reviewer ACKs the current HEAD.** Then record that ACK as the last PR comment (`pr-review` step 3); only then is the PR merge-ready.
 
 ## Step 6: End shift
 

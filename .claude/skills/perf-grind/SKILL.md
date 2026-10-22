@@ -103,18 +103,15 @@ After each fix:
 git push origin perf-grind-N
 ```
 
-When ready for review:
-```bash
-gh pr ready
-gh pr comment --body "@claude review"
-```
+When ready for review, mark the PR ready (`gh pr ready`) and run the **`pr-review`** skill: a
+fresh read-only reviewer subagent on Claude Opus 5.5 (`claude-opus-5-5`), which replaces the
+`@claude` GitHub Action. Do not tag `@claude`.
 
-**Iterate with the reviewer until LGTM.** Fix every issue they raise. Request re-review after each round:
-```bash
-gh pr comment --body "@claude Fixed X, Y, Z (commit abc123). Please review again."
-```
+**Iterate with the reviewer until it ACKs the current HEAD.** Fix every valid issue it raises,
+push, then send the same reviewer the new sha and the delta. Record its final ACK as the last
+PR comment.
 
-**Never merge yourself.** The human merges after reviewer LGTM.
+**Never merge yourself.** The human merges after the reviewer's ACK.
 
 ### 6. Keep going
 

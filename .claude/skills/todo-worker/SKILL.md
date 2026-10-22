@@ -1,6 +1,6 @@
 ---
 name: todo-worker
-description: Pick the next unchecked TODO.md item, write an RFC, get it reviewed by Graefe+Torvalds, implement, review again, open PR, iterate with @claude reviewer until LGTM.
+description: Pick the next unchecked TODO.md item, write an RFC, get it reviewed by Graefe+Torvalds, implement, review again, open PR, iterate with the Opus 5.5 PR reviewer (pr-review skill) until it ACKs the final HEAD.
 ---
 
 # TODO Worker Workflow
@@ -15,10 +15,10 @@ Pick the next unchecked item from TODO.md and drive it from RFC through implemen
 4. Ask the user to set a `/goal` reflecting the work, so the harness keeps driving it to completion across turns. `/goal` is a built-in CLI command — you cannot invoke it; output the exact line for the user to paste:
 
    ```
-   /goal <item-id>: <short description> — RFC written, reviewed (Graefe+Torvalds ACK), implemented, tests green, PR created, @claude LGTM
+   /goal <item-id>: <short description> — RFC written, reviewed (Graefe+Torvalds ACK), implemented, tests green, PR created, PR reviewer ACK
    ```
 
-   Example: `/goal P1.2: QOV-based FieldValue migration — RFC written, Graefe+Torvalds ACK, all stripAlias calls eliminated, tests green, PR merged with @claude LGTM`
+   Example: `/goal P1.2: QOV-based FieldValue migration — RFC written, Graefe+Torvalds ACK, all stripAlias calls eliminated, tests green, PR merged with PR reviewer ACK`
 
 ## Step 1: Load the domain-review skill (sets the reviewer gate)
 
@@ -137,82 +137,37 @@ EOF
 )"
 ```
 
-## Step 10: Tag @claude reviewer and iterate
+## Step 10: PR reviewer (Opus 5.5) and iterate
 
-Post a comment tagging @claude with context:
+Run the **`pr-review`** skill. It replaces the `@claude` GitHub Action, which no longer
+completes a review; do not tag `@claude`. Start a fresh, read-only reviewer subagent on
+`claude-opus-5-5` (effort `xhigh`) with the PR number, the exact HEAD sha, the item and
+RFC-NNN it closes, and the spec. Keep working while it reviews.
 
-```bash
-gh pr comment <PR#> --body "@claude Please review this PR. <1-2 sentence summary of what changed and why>. See RFC-NNN for the full analysis."
-```
-
-### Monitoring — how to wait for @claude's approval
-
-@claude does not post a fresh final comment; it posts ONE comment and **edits
-it in place** through three states:
-1. a `Claude Code is working…` stub (appears within seconds),
-2. a `### Tasks` checklist whose boxes flip from `- [ ]` to `- [x]`,
-3. the final review, which **opens with a `**Claude finished … in Xm Ys**` banner** and ends with a verdict (`Approved` / findings / changes requested).
-
-**Detect completion by the `Claude finished` banner (a positive signal), or by the linked GitHub Actions run reaching `completed`.** Never gate on:
-- *comment count or body length* — the stub is long; length plateaus mid-review;
-- *unchecked `- [ ]` boxes* — the FINISHED review body legitimately contains checkboxes (test plans, nit lists), so a checkbox scan false-positives as "in progress" and the poll spins until timeout (this exact bug burned ~15 min on a review that finished in 75s);
-- *the word "working"/"in progress"* — those words appear in normal review prose.
-
-Poll on a 15–20s cadence (a review takes ~1–5 min). Strongest signal — the Actions run:
-```bash
-runid=$(printf '%s' "$body" | grep -oE 'runs/[0-9]+' | head -1 | cut -d/ -f2)
-[ -n "$runid" ] && [ "$(gh run view "$runid" --json status --jq .status)" = "completed" ] && break
-```
-
-Then wait for @claude's review to **complete**:
-
-```bash
-# @claude posts ONE comment and edits it in place: a "Claude Code is
-# working…" stub → a "### Tasks" checklist → the final review, which opens
-# with a "**Claude finished … in Xm Ys**" banner.
-#
-# Detect completion by that POSITIVE banner — NOT by length, comment count,
-# or "unchecked - [ ] boxes". The finished review body legitimately contains
-# "- [ ]" (test plans, nit lists), so a checkbox scan false-positives as
-# "in progress" and the poll spins until timeout. The banner is reliable;
-# the GitHub Actions run linked in the comment ("[View job](…/runs/<id>)")
-# is an even stronger signal — `gh run view <id> --json status` is
-# "completed" when done.
-base=$(gh api repos/birdayz/fdb-record-layer-go/issues/<PR#>/comments --jq '[.[]|select(.user.login=="claude[bot]")]|length')
-while :; do
-  sleep 20
-  cnt=$(gh api repos/birdayz/fdb-record-layer-go/issues/<PR#>/comments --jq '[.[]|select(.user.login=="claude[bot]")]|length')
-  body=$(gh api repos/birdayz/fdb-record-layer-go/issues/<PR#>/comments --jq '[.[]|select(.user.login=="claude[bot]")]|last|.body')
-  [ "$cnt" -gt "$base" ] || continue                                   # new comment appeared?
-  printf '%s' "$body" | grep -qiE "Claude finished|finished @" && break # review complete
-done
-```
-
-### Handling @claude findings:
-
-- **LGTM with no findings** → proceed to Step 11.
-- **LGTM with minor findings** / **Blocking findings** → fix each finding, commit, push, then re-request and **wait for a fresh completed review**:
-  ```bash
-  gh pr comment <PR#> --body "Addressed findings: [list]. Latest HEAD <sha>."
-  gh pr comment <PR#> --body "@claude Please re-review — findings addressed in <sha>."
-  ```
-  Iterate until a clean LGTM **on the current HEAD**.
+- **ACK with no findings** → proceed to Step 11.
+- **Findings** → fix each valid one (with a regression for any bug), commit, push, then send
+  the new sha and the delta to the **same** reviewer and wait for a fresh verdict. Iterate
+  until it ACKs the current HEAD.
 
 ## Step 11: Done
 
-The item is done only when **@claude's clean LGTM is the LAST comment on the PR and was posted against the current HEAD commit.**
+The item is done only when **the reviewer's ACK names the current HEAD, CI is green on it,
+and that ACK is recorded as the LAST comment on the PR** (`pr-review` step 3).
 
-- **A prior LGTM does NOT cover later commits.** Every time you push more commits (even a one-line fix or a reviewer-requested change), the earlier approval is stale — you MUST re-request and wait for a new completed review on the new HEAD. Verify the SHA @claude reviewed matches HEAD.
-- **Do not post anything to the PR after @claude's final LGTM** — that would make your comment the last word instead of the approval. If you must comment after, re-request review again so @claude's LGTM is restored as the final comment.
+- **A prior ACK does NOT cover later commits.** Every push, even a one-line fix or a
+  reviewer-requested change, makes it stale: send the delta and wait for a new verdict on the
+  new HEAD.
+- **Do not post anything to the PR after the recorded ACK.** If you must, run the gate again
+  so the ACK is the final comment.
 - Only then tell the user the PR is ready to merge, with the URL.
 
 ## Key rules
 
-- **Never ship with a NAK** from Graefe, Torvalds, or @claude.
+- **Never ship with a NAK** from Graefe, Torvalds, or the PR reviewer.
 - **Every review cycle is parallel** — Graefe and Torvalds always launch together.
-- **@claude iteration is sequential** — fix findings, push, re-request, wait for a completed review.
-- **The final LGTM must be on the final code.** Re-request after every push; "done" = @claude's clean LGTM is the last PR comment, on the current HEAD. A stale approval on an earlier commit doesn't count.
-- **A discovered bug is not fixed until a regression test pins it.** Reviewer catches (Graefe/Torvalds/@claude) that the suite missed are doubly important: fix the bug AND add the test that should have caught it.
+- **PR reviewer iteration is sequential** — fix findings, push, send the delta, wait for a fresh verdict.
+- **The final ACK must be on the final code.** Re-review after every push; "done" = the PR reviewer's ACK on the current HEAD, recorded as the last PR comment. A stale approval on an earlier commit doesn't count.
+- **A discovered bug is not fixed until a regression test pins it.** Reviewer catches (Graefe/Torvalds/PR reviewer) that the suite missed are doubly important: fix the bug AND add the test that should have caught it.
 - **RFC status progression**: Draft → Implemented (update when the code ships).
 - **Commits pass pre-commit hooks** — never `--no-verify`.
 - **One logical change per commit** — don't batch unrelated fixes.

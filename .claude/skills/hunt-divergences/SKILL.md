@@ -160,7 +160,8 @@ classes:
 - **codex** (`codex -s read-only -a never review --base <sha>`) — the gate that
   repeatedly caught edges the others missed (storage-shadow, cleared-base, sticky-
   unreadable). Do not skip it. Re-review the delta after each fix.
-- **@claude** on the GitHub PR — final gate; LGTM must be on the final HEAD.
+- **PR reviewer** — the Opus 5.5 subagent from the `pr-review` skill (replaces `@claude`);
+  final gate, its ACK must name the final HEAD.
 
 Re-request every reviewer after a new commit; a stale ACK doesn't cover later commits.
 

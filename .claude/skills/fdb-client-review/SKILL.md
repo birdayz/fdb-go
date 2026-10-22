@@ -51,7 +51,7 @@ mutations).
 
 The PR-level gates that follow these two (see "Review gauntlet" below): **codex**
 (repeatedly catches storage-shadow / cleared-base / sticky-unreadable edges the others
-miss) and **@claude** on the GitHub PR (final gate; LGTM must be on the final HEAD).
+miss) and the **Opus 5.5 PR reviewer** subagent (final gate; ACK must be on the final HEAD).
 
 ## The spec: C++ source 7.3.77
 
@@ -149,8 +149,9 @@ after FDB C++ + Torvalds ACK the implementation:
 - **codex** (`codex -s read-only -a never review --base <master-sha>`) — the gate that
   repeatedly caught storage-shadow / cleared-base / sticky-unreadable edges the others
   missed. Do not skip it; re-review the delta after each fix.
-- **@claude** on the GitHub PR — final gate; the clean LGTM must be on the final HEAD
-  (todo-worker Steps 10–11).
+- **PR reviewer (Opus 5.5 subagent)** — the final gate, run with the **`pr-review`** skill
+  (it replaces the `@claude` GitHub Action). Its ACK must name the final HEAD and be recorded
+  as the last PR comment.
 
 ## When to use this skill
 
