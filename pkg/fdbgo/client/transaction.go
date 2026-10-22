@@ -195,8 +195,8 @@ type KeyRange struct {
 //
 // Synchronization contract (unchanged by the move): option setters are NOT
 // concurrent-safe with operations (fdb/transaction.go) — fields here are plain unless
-// a specific overlap forces more: timeoutNs/deadlineNs are atomics (read on every op
-// while Reset's sanctioned watch-teardown overlap rewrites them — RFC-175 E1),
+// a specific overlap forces more: timeoutNs/deadlineNs are atomics (read outside the
+// setters while Reset's sanctioned watch-teardown overlap rewrites them — RFC-175 E1),
 // spanParent is an atomic.Pointer (read by regenerateSpan on the commit auto-reset),
 // and nextWriteNoConflict is read/cleared under conflictMu on the mutation path.
 // Lifecycle: applyOptionDefaults resets the non-persistent fields on both reset paths
@@ -343,9 +343,6 @@ type txOptions struct {
 	// afterTimeoutRecord runs after a timeout delivery records its cause and
 	// before it cancels the incarnation.
 	afterTimeoutRecord func()
-	// beforeReadTimeoutPublication parks an expired synchronous check before
-	// publishing its terminal cause, without holding a transaction lock.
-	beforeReadTimeoutPublication func()
 	// beforeVersionstampLookup parks the synchronous getter after entry checks.
 	beforeVersionstampLookup func()
 	// beforeTurnoverRetirement parks conditional turnover before its leaf-lock
@@ -734,7 +731,7 @@ func (tx *Transaction) checkReadState(ctx context.Context) error {
 	if txState(tx.state.Load()) != txStateActive {
 		return fmt.Errorf("transaction not active")
 	}
-	return tx.checkTimeout(ctx)
+	return nil
 }
 
 func (tx *Transaction) ensureReadVersion(ctx context.Context) error {
@@ -933,7 +930,9 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 			tx.db.handleReadConnError(server.Address, sendErr)
 			continue
 		}
-		timer := getTimer(tx.pipelineReplyTimeout()) // capped by SetTimeout (RFC-112)
+		// Timeout delivery ends this wait through ctx; C++ waits for the reply or
+		// resetPromise, never the deadline itself (RYW:361-391).
+		timer := getTimer(tx.readRPCTimeout())
 		p := &PendingGet{key: bytes.Clone(key), tx: tx, addr: server.Address, tenantID: tx.tenantId, replyCh: replyCh, replyHandle: replyHandle, conn: conn, ctx: ctx, cancel: opCancel.afterLease(), timer: timer, sentAt: sentAt, gen: op.inc.gen, tags: tags}
 		if tx.afterPendingSend != nil {
 			tx.afterPendingSend(p)
@@ -1665,7 +1664,7 @@ func (tx *Transaction) commitEntryError(ctx context.Context) error {
 	if txState(tx.state.Load()) != txStateActive {
 		return fmt.Errorf("transaction not active")
 	}
-	return tx.checkTimeout(ctx)
+	return nil
 }
 
 // commitAdmitted receives execution ownership from Commit or the pending
@@ -1693,7 +1692,7 @@ func (tx *Transaction) commitAdmitted(ctx context.Context, completion *versionst
 	// flight fails this commit exactly as it would fail libfdb_c's. Then a
 	// read that failed earlier fails the commit with that same error, even if
 	// the caller swallowed it (the errored future stays in the AndFuture until
-	// reset). Checked after checkTimeout: a fired timebomb sits in
+	// reset). Checked after the recorded cause: a fired timebomb sits in
 	// resetPromise, which the C++ commit wrapper surfaces before the actor's
 	// wait(reading). Returns without resetting — the caller drives
 	// OnError/Reset, which clears it (resetRyow :2715).
@@ -2228,11 +2227,10 @@ func backoffSleep(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// backoffSleepBounded sleeps for `delay`, but never past the SetTimeout deadline: a backoff that
-// would cross creationTime+timeout is cut short and surfaces transaction_timed_out (1031), matching
-// C++ RYWImpl::onError which races the backoff delay() against the timebomb (resetPromise,
-// ReadYourWrites.actor.cpp:1517) so the wait aborts the moment the deadline passes. With no timeout
-// set it is exactly backoffSleep. A genuine parent-ctx cancellation still surfaces ctx.Err().
+// backoffSleepBounded sleeps for `delay`, but a timeout delivered during the sleep cuts it short
+// and surfaces transaction_timed_out (1031), matching C++ RYWImpl::onError which races the backoff
+// against resetPromise (ReadYourWrites.actor.cpp:1517). With no timeout set it is exactly
+// backoffSleep. A genuine parent-ctx cancellation still surfaces ctx.Err().
 func (tx *Transaction) backoffSleepBounded(parent context.Context, delay time.Duration) error {
 	ctx, cancel := tx.opContext(parent)
 	defer cancel()
@@ -2253,14 +2251,11 @@ func (tx *Transaction) borrowedOnErrorVerdict(caller context.Context, op *readOp
 	if !errors.As(err, &fdbErr) {
 		return err
 	}
-	if cause != nil || tx.timeoutNs.Load() > 0 && time.Now().After(tx.deadlineTime()) {
+	if cause != nil {
 		if callerErr := caller.Err(); callerErr != nil {
 			return callerErr
 		}
-		if cause != nil {
-			return cause
-		}
-		return &wire.FDBError{Code: ErrTransactionTimedOut}
+		return cause
 	}
 	if fdbErr.Code == ErrTransactionTimedOut || tx.hasRetryLimit && tx.retryCount >= tx.retryLimit || !onErrorRetryable(fdbErr.Code) {
 		return err
@@ -2374,20 +2369,19 @@ func (tx *Transaction) OnError(ctx context.Context, err error) (rerr error) {
 		tx.state.Store(int32(txStateErrored))
 		return err
 	}
-	// The SetTimeout deadline out-ranks the retry for an FDB error: C++ RYWImpl::onError throws
+	// A delivered timeout out-ranks the retry for an FDB error: C++ RYWImpl::onError throws
 	// transaction_timed_out at entry if the timebomb already fired (ReadYourWrites.actor.cpp:1506) —
-	// before classifying the FDB error and before any backoff. Without this, a SetTimeout txn under
-	// contention sleeps a full (growing) backoff and does one extra reset+retry before the NEXT op's
-	// checkTimeout surfaces 1031, overshooting the declared timeout. Non-retryable; mark errored.
+	// before classifying the FDB error and before any backoff. An elapsed deadline whose timeout
+	// is not yet delivered is no cause; the backoff below races its delivery. Non-retryable.
 	// BUT a done CALLER ctx out-ranks the txn timeout:
-	// if both the SetTimeout deadline and the caller's ctx have expired, a TransactCtx caller must get
+	// if both the transaction timeout and the caller's ctx have fired, a TransactCtx caller must get
 	// their own context.Canceled/DeadlineExceeded, not 1031.
-	if cerr := tx.checkTimeout(ctx); cerr != nil {
+	if cerr := tx.readIncarnationCause(op.inc); cerr != nil {
 		tx.state.Store(int32(txStateErrored))
 		if ctxErr := callerCtx.Err(); ctxErr != nil {
 			return ctxErr // the caller's own cancellation/deadline out-ranks the txn timeout
 		}
-		return cerr // transaction_timed_out (1031)
+		return cerr // the recorded cause: the timeout above, or one recorded since
 	}
 
 	// Transaction timeout is NEVER retryable — matches C++ behavior where
@@ -2702,29 +2696,6 @@ func (tx *Transaction) GetAddressesForKey(parentCtx context.Context, key []byte)
 		}
 	}
 	return addrs, nil
-}
-
-// checkTimeout publishes synchronous expiry into the captured resetPromise.
-// The lease pins its deadline while Reset retires and drains that incarnation;
-// neither failure publication nor the returned cause may select its successor.
-func (tx *Transaction) checkTimeout(parent context.Context) error {
-	ctx, release := tx.opContext(parent)
-	defer release()
-	op := tx.readOperation(ctx)
-	if op.lease == nil {
-		return tx.readLifetimeError(ctx)
-	}
-	if cause := tx.readIncarnationCause(op.inc); cause != nil {
-		return cause
-	}
-	if tx.timeoutNs.Load() > 0 && time.Now().After(tx.deadlineTime()) {
-		if tx.beforeReadTimeoutPublication != nil {
-			tx.beforeReadTimeoutPublication()
-		}
-		tx.failCapturedIncarnation(op.inc, &wire.FDBError{Code: ErrTransactionTimedOut})
-		return tx.readIncarnationCause(op.inc)
-	}
-	return nil
 }
 
 // addConflictMu protects readConflicts/writeConflicts from concurrent append.

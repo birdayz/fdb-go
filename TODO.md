@@ -60,12 +60,19 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   explicit option and unchanged default; update the measured trade-off only if
   warranted by those separately authorized results. No run is currently authorized.
 
-- [ ] **Timeout delivery parity (C++ C4).** Go's read-entry `checkTimeout` and
-  `OnError` elapsed-budget checks synchronously publish 1031 before the pending timer
-  resumes. C++ 7.3.77 records expiry only at an actual expired arm or timebomb resumption
-  (`ReadYourWrites.actor.cpp:1567-1579, 1506-1517`); deadline passage alone is not a cause.
-  RFC-263 phase 1 preserves these existing publication points. Resolve separately with
-  deterministic pending-versus-delivered regressions; do not fold it into lazy successors.
+- [x] **Timeout delivery parity (C++ C4).** Done: the eager `checkTimeout` is gone; read,
+  commit, watch and metric entry and `OnError` (owned and borrowed) test only the recorded
+  cause, as C++ tests `resetPromise.isSet()`. 1031 is recorded only by delivery or an arm
+  that is already expired (`ReadYourWrites.actor.cpp:1567-1579, 1506-1517`). An `OnError`
+  past an undelivered deadline retries, and its re-arm records 1031 for the next operation,
+  as `resetRyow` does. A pipelined Get no longer cuts its reply wait at the deadline and
+  resends; delivery ends the wait (RYW:361-391). Pinned pending versus delivered over the
+  manual timeout queue: `TestReadIncarnation_ElapsedTimeoutIsNoCauseUntilDelivered` (eight
+  entry points, real FDB), `TestSetTimeout_UndeliveredKeepsPipelinedReplyWait`,
+  `TestElapsedPendingTimeoutIsNoCause`, `TestExpiredArmIsSynchronous/OnError`,
+  `TestOwnedOnErrorElapsedDeadlineIsNoCause` and the borrowed-verdict case; all
+  mutation-checked. Tests that slept past a 1 ms timeout now wait for delivery or loop as
+  the C unit tests do.
 
 - [ ] **Server CPU per transaction.** At 8–64 workers the Go client makes the servers do
   1.5–2.4× the CPU per transaction of libfdb_c; at 1 worker it is even.

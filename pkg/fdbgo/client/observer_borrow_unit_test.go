@@ -39,12 +39,12 @@ func TestOnErrorBorrowedAdmissionIsReadOnly(t *testing.T) {
 		{name: "actual-incoming-caller-at-timeout", input: &wire.FDBError{Code: 1020}, setup: func(tx *Transaction, op *readOperation) {
 			tx.failCapturedIncarnation(op.inc, &wire.FDBError{Code: 1031})
 		}, cancel: true, want: context.Canceled},
-		{name: "elapsed-timeout-no-publication", input: &wire.FDBError{Code: 1020}, setup: func(tx *Transaction, _ *readOperation) {
-			// Deliberately no SetTimeout: no ambient timebomb may publish a
-			// cause and make the private misuse side-effect assertion vacuous.
+		{name: "elapsed-undelivered-timeout-is-no-cause", input: &wire.FDBError{Code: 1020}, setup: func(tx *Transaction, _ *readOperation) {
+			// Deliberately no SetTimeout: an elapsed deadline without a
+			// delivered timeout is no cause (C++ C4), so this is a retry.
 			tx.timeoutNs.Store(int64(time.Second))
 			tx.deadlineNs.Store(time.Now().Add(-time.Hour).UnixNano())
-		}, wantCode: 1031},
+		}, wantCode: 2000},
 		{name: "input-timeout-before-caller", input: &wire.FDBError{Code: 1031}, cancel: true, wantCode: 1031},
 		{name: "retry-limit-before-caller", input: &wire.FDBError{Code: 1020}, setup: func(tx *Transaction, _ *readOperation) { tx.hasRetryLimit = true; tx.retryLimit = 0 }, cancel: true, wantCode: 1020},
 		{name: "nonretryable-before-caller", input: &wire.FDBError{Code: 2004}, cancel: true, wantCode: 2004},

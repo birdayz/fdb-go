@@ -9,7 +9,7 @@ import (
 )
 
 // Metric-op (getRangeSplitPoints / getEstimatedRangeSizeBytes) early-return precedence — RFC-126.
-// These ops bypass ensureReadVersion (so they don't get its checkTimeout), and libfdb_c constructs a
+// These ops bypass ensureReadVersion (so they gate on readEntryError themselves), and libfdb_c constructs a
 // KeyRangeRef (inverted_range) before the op and checks resetPromise (cancel/timeout) before the maxKey
 // check. So the order must be: inverted (2005) → cancelled (1025) → timed_out (1031) → maxKey (2004).
 // Deterministic (forces the timeout state; the synchronous checks return before the locate loop, so no
@@ -19,8 +19,8 @@ func TestMetricOps_EarlyReturnPrecedence(t *testing.T) {
 	t.Parallel()
 	timedOut := func() *Transaction {
 		tx := newTestTx()
-		tx.timeoutNs.Store(1)
-		tx.deadlineNs.Store(time.Now().Add(-time.Second).UnixNano()) // already expired → checkTimeout returns 1031
+		tx.creationTime = time.Now().Add(-time.Second)
+		tx.SetTimeout(1) // expired at arm: 1031 is recorded synchronously
 		return tx
 	}
 
@@ -46,7 +46,7 @@ func TestMetricOps_EarlyReturnPrecedence(t *testing.T) {
 	}
 
 	// Poison (client_invalid_operation 2000, RFC-059) out-ranks the timeout — same order as
-	// ensureReadVersion (the deferred error before checkTimeout). A txn that is BOTH poisoned AND timed out
+	// ensureReadVersion (the deferred error before the recorded cause). A txn that is BOTH poisoned AND timed out
 	// returns 2000, not 1031.
 	const clientInvalidOperation = 2000
 	poisonedAndTimedOut := func() *Transaction {

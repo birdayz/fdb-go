@@ -74,11 +74,7 @@ func TestTenant_CreateTransaction_AppliesDatabaseDefaults(t *testing.T) {
 		t.Fatalf("tenant.CreateTransaction: %v", err)
 	}
 	defer tr.Cancel()
-	// Expire the inherited deadline before reading; an RPC need not take 1ms.
-	time.Sleep(5 * time.Millisecond)
-	_, err = tr.Get(fdb.Key("k")).Get()
-	var fe fdb.Error
-	if !errors.As(err, &fe) || fe.Code != 1031 {
+	if err := readUntilError(tr, fdb.Key("k")); !isFDBCode(err, 1031) {
 		t.Fatalf("tenant CreateTransaction did not inherit timeout: got %v, want FDB 1031", err)
 	}
 }
@@ -163,9 +159,8 @@ func TestTenant_Transact_AppliesDatabaseDefaults(t *testing.T) {
 	defer db.Options().SetTransactionTimeout(0)
 
 	_, err = tenant.Transact(func(tr fdb.WritableTransaction) (any, error) {
-		// Deadline expiration must not depend on network latency.
-		time.Sleep(5 * time.Millisecond)
-		return tr.Get(fdb.Key("k")).MustGet(), nil
+		// Read until the timeout is delivered; an elapsed deadline is no cause.
+		return nil, readUntilError(tr, fdb.Key("k"))
 	})
 	var fe fdb.Error
 	if !errors.As(err, &fe) || fe.Code != 1031 {

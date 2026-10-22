@@ -74,26 +74,6 @@ func (tx *Transaction) readRPCTimeout() time.Duration {
 	return DefaultRPCTimeout
 }
 
-// pipelineReplyTimeout is the deferred (pipelined) read's reply-wait, capped by
-// the SetTimeout deadline so a hung pipelined reply does not run a full
-// readRPCTimeout PAST the transaction timeout (RFC-112). When the timer fires the
-// read re-drives through getValue, which is opContext-bounded and maps a blown
-// deadline to transaction_timed_out (1031). With no timeout set it is the normal
-// readRPCTimeout.
-func (tx *Transaction) pipelineReplyTimeout() time.Duration {
-	d := tx.readRPCTimeout()
-	if tx.timeoutNs.Load() > 0 {
-		rem := time.Until(tx.deadlineTime())
-		if rem < 0 {
-			rem = 0
-		}
-		if rem < d {
-			d = rem
-		}
-	}
-	return d
-}
-
 // sleepCtx sleeps for the given duration but returns early if ctx is cancelled.
 // Returns ctx.Err() if the context was cancelled, nil otherwise.
 func sleepCtx(ctx context.Context, d time.Duration) error {
@@ -1429,9 +1409,6 @@ func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int6
 	}
 	if cerr := tx.readLifetimeError(ctx); cerr != nil {
 		return nil, 0, types.SpanContext{}, nil, nil, cerr
-	}
-	if terr := tx.checkTimeout(ctx); terr != nil {
-		return nil, 0, types.SpanContext{}, nil, nil, terr // transaction_timed_out (1031)
 	}
 	// C++ RYW::watch: watches are disabled when RYW is disabled
 	// (ReadYourWrites.actor.cpp:2448-2449). Returns watches_disabled (1034).

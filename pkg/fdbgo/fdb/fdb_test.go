@@ -949,6 +949,26 @@ func TestSizeLimit(t *testing.T) {
 	}
 }
 
+// readUntilError reads key until a read fails, as the C timeout tests loop: a
+// timeout fails reads only once delivered, not when its deadline passes. It
+// gives up after 30 s, so a timeout that is never delivered fails fast.
+func readUntilError(tr fdb.ReadTransaction, key fdb.Key) error {
+	giveUp := time.Now().Add(30 * time.Second)
+	for {
+		if _, err := tr.Get(key).Get(); err != nil {
+			return err
+		}
+		if time.Now().After(giveUp) {
+			return errors.New("the timeout was not delivered within 30s")
+		}
+	}
+}
+
+func isFDBCode(err error, code int) bool {
+	var fe fdb.Error
+	return errors.As(err, &fe) && fe.Code == code
+}
+
 // TestDatabaseTransactionTimeout verifies that FDB_DB_OPTION_TRANSACTION_TIMEOUT
 // applies to transactions created by Transact. Matching C++ test at unit_tests.cpp:787.
 func TestDatabaseTransactionTimeout(t *testing.T) {
@@ -962,9 +982,9 @@ func TestDatabaseTransactionTimeout(t *testing.T) {
 
 	defer db.Options().SetTransactionTimeout(0)
 	_, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
-		// Expire the deadline independently of how quickly the RPC completes.
-		time.Sleep(5 * time.Millisecond)
-		return tr.Get(fdb.Key(t.Name() + "_key")).MustGet(), nil
+		// Read until the timeout is delivered, as the C test loops; an elapsed
+		// deadline alone is no cause (ReadYourWrites.actor.cpp:1567-1574).
+		return nil, readUntilError(tr, fdb.Key(t.Name()+"_key"))
 	})
 	var fe fdb.Error
 	if !errors.As(err, &fe) || fe.Code != 1031 {
@@ -993,10 +1013,7 @@ func TestCreateTransaction_AppliesDatabaseDefaults(t *testing.T) {
 		t.Fatalf("CreateTransaction: %v", err)
 	}
 	defer tr.Cancel()
-	time.Sleep(5 * time.Millisecond)
-	_, err = tr.Get(fdb.Key(t.Name() + "_key")).Get()
-	var fe fdb.Error
-	if !errors.As(err, &fe) || fe.Code != 1031 {
+	if err := readUntilError(tr, fdb.Key(t.Name()+"_key")); !isFDBCode(err, 1031) {
 		t.Fatalf("manual CreateTransaction did not inherit timeout: got %v, want FDB 1031", err)
 	}
 }
@@ -1020,10 +1037,7 @@ func TestCreateTransaction_ResetPreservesDatabaseDefaults(t *testing.T) {
 	}
 	defer tr.Cancel()
 	tr.Reset()
-	time.Sleep(5 * time.Millisecond)
-	_, err = tr.Get(fdb.Key(t.Name() + "_key")).Get()
-	var fe fdb.Error
-	if !errors.As(err, &fe) || fe.Code != 1031 {
+	if err := readUntilError(tr, fdb.Key(t.Name()+"_key")); !isFDBCode(err, 1031) {
 		t.Fatalf("database timeout lost after Reset: got %v, want FDB 1031", err)
 	}
 }
@@ -1047,8 +1061,9 @@ func TestCreateTransaction_ResetDropsUserOptions(t *testing.T) {
 	}
 	tr.Reset()
 
-	// If Reset kept the timeout, it must expire before even a local operation.
-	time.Sleep(5 * time.Millisecond)
+	// If Reset kept the timeout, it fails reads once delivered: give a surviving
+	// 1ms timeout ample time to be delivered before the commit.
+	time.Sleep(50 * time.Millisecond)
 	tr.Set(fdb.Key(t.Name()+"_key"), []byte("v"))
 	if err := tr.Commit().Get(); err != nil {
 		t.Fatalf("commit after Reset returned %v — user-set 1ms timeout survived Reset (should be dropped, C++ reset() clears persistentOptions)", err)

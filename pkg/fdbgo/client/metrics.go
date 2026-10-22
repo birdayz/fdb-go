@@ -17,7 +17,7 @@ import (
 func (tx *Transaction) GetEstimatedRangeSizeBytes(parentCtx context.Context, begin, end []byte) (int64, error) {
 	// Bound the locate + WaitMetrics RPCs by SetTimeout (RFC-112): C++ wraps this in
 	// waitOrError(getStorageMetrics(...), resetPromise) (ReadYourWrites.actor.cpp:1863),
-	// so a hung shard-metrics RPC must surface transaction_timed_out at the deadline.
+	// so a hung shard-metrics RPC must surface transaction_timed_out once the timeout is delivered.
 	ctx, cancel := tx.opContext(parentCtx)
 	defer cancel()
 	n, err := tx.getEstimatedRangeSizeBytesImpl(ctx, begin, end)
@@ -33,13 +33,9 @@ func (tx *Transaction) getEstimatedRangeSizeBytesImpl(ctx context.Context, begin
 		return 0, &wire.FDBError{Code: ErrInvertedRange} // 2005
 	}
 	// Without a tenant this path bypasses GRV, but uses the same captured
-	// deferred-before-resetPromise entry verdict. Range construction above precedes dispatch.
+	// deferred-before-resetPromise entry verdict, which also returns a delivered
+	// timeout (1031). Range construction above precedes dispatch.
 	if err := tx.readEntryError(ctx); err != nil {
-		return 0, err
-	}
-	// resetPromise also carries the SetTimeout error → transaction_timed_out (1031). Gate it here too
-	// (this path bypasses ensureReadVersion's checkTimeout), matching C++'s resetPromise.isSet() check.
-	if err := tx.checkTimeout(ctx); err != nil {
 		return 0, err
 	}
 	minVersion, err := tx.metricsMinVersion(ctx)
@@ -194,16 +190,10 @@ func (tx *Transaction) getRangeSplitPointsImpl(ctx context.Context, begin, end [
 	if bytes.Compare(begin, end) > 0 {
 		return nil, &wire.FDBError{Code: ErrInvertedRange} // 2005
 	}
-	// Range construction precedes the captured deferred/resetPromise entry gate.
+	// Range construction precedes the captured deferred/resetPromise entry gate. C++ checks
+	// resetPromise.isSet() BEFORE the maxKey check (ReadYourWrites.actor.cpp:1872 before :1875),
+	// so a timed-out txn returns transaction_timed_out (1031), not key_outside_legal_range.
 	if err := tx.readEntryError(ctx); err != nil {
-		return nil, err
-	}
-	// C++ checks resetPromise.isSet() (which holds the SetTimeout error) BEFORE the maxKey check
-	// (ReadYourWrites.actor.cpp:1872 before :1875), so a timed-out txn returns transaction_timed_out
-	// (1031), not key_outside_legal_range. This path bypasses ensureReadVersion (where checkTimeout
-	// normally runs), so gate it explicitly — else the synchronous maxKey guard below would pre-empt
-	// 1031 with 2004.
-	if err := tx.checkTimeout(ctx); err != nil {
 		return nil, err
 	}
 	// C++ RYW::getRangeSplitPoints rejects an out-of-range key (ReadYourWrites.actor.cpp:1875-1877):

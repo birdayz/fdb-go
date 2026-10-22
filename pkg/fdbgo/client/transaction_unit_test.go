@@ -158,29 +158,39 @@ func TestIsSpecialKey(t *testing.T) {
 }
 
 // ============================================================================
-// checkTimeout — deadline enforcement.
+// Arming TIMEOUT: only an already-expired arm records 1031 synchronously.
 // ============================================================================
 
-func TestCheckTimeout_DisabledWhenZero(t *testing.T) {
+// recordedCause is the current incarnation's recorded cause, C++'s resetPromise error.
+func recordedCause(tx *Transaction) error {
+	tx.readErrMu.Lock()
+	defer tx.readErrMu.Unlock()
+	if tx.readLife == nil {
+		return nil
+	}
+	return tx.readLife.cause
+}
+
+func TestArmTimeout_DisabledWhenZero(t *testing.T) {
 	t.Parallel()
 	tx := timedTx(t, 0, time.Now().Add(-time.Hour)) // deadline long past
-	if err := tx.checkTimeout(context.Background()); err != nil {
-		t.Errorf("timeout=0 must always return nil, got %v", err)
+	if err := recordedCause(tx); err != nil {
+		t.Errorf("timeout=0 must never record a cause, got %v", err)
 	}
 }
 
-func TestCheckTimeout_NotExpired(t *testing.T) {
+func TestArmTimeout_NotExpired(t *testing.T) {
 	t.Parallel()
 	tx := timedTx(t, 5*time.Second, time.Now().Add(time.Hour))
-	if err := tx.checkTimeout(context.Background()); err != nil {
+	if err := recordedCause(tx); err != nil {
 		t.Errorf("future deadline: got %v, want nil", err)
 	}
 }
 
-func TestCheckTimeout_Expired(t *testing.T) {
+func TestArmTimeout_ExpiredAtArm(t *testing.T) {
 	t.Parallel()
 	tx := timedTx(t, 5*time.Second, time.Now().Add(-time.Second))
-	err := tx.checkTimeout(context.Background())
+	err := recordedCause(tx)
 	var fdbErr *wire.FDBError
 	if !errors.As(err, &fdbErr) || fdbErr.Code != ErrTransactionTimedOut {
 		t.Errorf("expired deadline: got %v, want FDBError %d", err, ErrTransactionTimedOut)
@@ -838,17 +848,17 @@ func TestWatch_NewWatchCtxCancelRaceFree(t *testing.T) {
 }
 
 // TestOnError_RespectsTimeoutDeadline pins the SetTimeout-bounded OnError fix (entry gate). A
-// SetTimeout transaction whose deadline already passed must surface transaction_timed_out (1031)
-// from OnError IMMEDIATELY — not sleep a full (growing) backoff and signal a retry (nil), which
+// SetTimeout armed past its deadline records 1031 at once, and OnError must surface it
+// IMMEDIATELY — not sleep a full (growing) backoff and signal a retry (nil), which
 // overshoots the declared timeout by up to one backoff. Matches C++ RYWImpl::onError's entry
-// timebomb check (ReadYourWrites.actor.cpp:1506). Revert-proof: without the entry gate,
-// OnError(not_committed) on an expired txn sleeps ~10ms then returns nil.
+// timebomb check (ReadYourWrites.actor.cpp:1506). The recorded cause also cuts the backoff
+// below, so only the non-retryable half isolates the entry gate.
 func TestOnError_RespectsTimeoutDeadline(t *testing.T) {
 	t.Parallel()
 	tx := newTestTx()
 	tx.creationTime = time.Now().Add(-1 * time.Second)
 	tx.SetTimeout(500) // deadline = creationTime+500ms → 500ms in the PAST
-	if tx.checkTimeout(context.Background()) == nil {
+	if recordedCause(tx) == nil {
 		t.Fatal("setup: deadline should already be expired")
 	}
 	start := time.Now()
@@ -865,7 +875,7 @@ func TestOnError_RespectsTimeoutDeadline(t *testing.T) {
 	// Isolate the ENTRY GATE: a NON-retryable error past the deadline must ALSO become
 	// 1031. This is the gate's unique contribution — a non-retryable code never reaches
 	// backoffSleepBounded (it returns the original error at the !onErrorRetryable branch), so only
-	// the entry checkTimeout turns it into 1031. C++ onError throws transaction_timed_out at ENTRY,
+	// the entry cause check turns it into 1031. C++ onError throws transaction_timed_out at ENTRY,
 	// before classifying the error (ReadYourWrites.actor.cpp:1506). Revert-proof of the gate ALONE.
 	tx2 := newTestTx()
 	tx2.creationTime = time.Now().Add(-1 * time.Second)

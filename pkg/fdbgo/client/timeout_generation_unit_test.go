@@ -241,6 +241,30 @@ func TestPendingTimeoutExtendedBeforeDelivery(t *testing.T) {
 	}
 }
 
+// An elapsed deadline whose timeout is still pending is no cause (C++ C4,
+// RYW:1567-1574): entry checks admit until the queue delivers 1031.
+// Mutation: publish 1031 at an entry check once the deadline has passed.
+func TestElapsedPendingTimeoutIsNoCause(t *testing.T) {
+	t.Parallel()
+	tx, _, fire := armedTimeoutTransaction(t)
+	tx.Set([]byte("key"), []byte("value"))
+	inc := tx.readLife
+	// The deadline passes while the manual queue holds the arm undelivered.
+	tx.creationTime = time.Now().Add(-2 * time.Hour)
+	tx.deadlineNs.Store(tx.creationTime.Add(tx.timeoutDur()).UnixNano())
+	if got, err := tx.Get(context.Background(), []byte("key")); err != nil || string(got) != "value" {
+		t.Fatalf("PENDING_READ: value=%q err=%v", got, err)
+	}
+	if cause := tx.readIncarnationCause(inc); cause != nil {
+		t.Fatalf("PENDING_CAUSE: %v recorded before delivery", cause)
+	}
+	fire()
+	requireTimeoutCode(t, tx.readIncarnationCause(inc), ErrTransactionTimedOut)
+	_, err := tx.Get(context.Background(), []byte("key"))
+	requireTimeoutCode(t, err, ErrTransactionTimedOut)
+	requireTimeoutCode(t, tx.OnError(context.Background(), &wire.FDBError{Code: 1020}), ErrTransactionTimedOut)
+}
+
 // Mutation: skip construction when delivery finds an unmaterialized generation.
 func TestDeliveredTimeoutIsSticky(t *testing.T) {
 	t.Parallel()
@@ -285,8 +309,17 @@ func TestExpiredArmIsSynchronous(t *testing.T) {
 					tx.deadlineNs.Store(time.Now().Add(-time.Second).UnixNano())
 					token.finish() // OnError's applyPersistentOptions re-arm (C3/C5)
 				} else {
-					tx.deadlineNs.Store(time.Now().Add(-time.Second).UnixNano())
-					requireTimeoutCode(t, tx.OnError(context.Background(), &wire.FDBError{Code: 1020}), ErrTransactionTimedOut)
+					// The deadline has passed but the arm is undelivered: no cause
+					// at OnError entry (C4). The retry re-arms from creationTime,
+					// already expired, and that records 1031 synchronously (C3).
+					tx.creationTime = time.Now().Add(-3 * time.Hour)
+					tx.deadlineNs.Store(tx.creationTime.Add(tx.timeoutDur()).UnixNano())
+					tx.backoffJitter = func() float64 { return 0 }
+					old := tx.readLife
+					if err := tx.OnError(context.Background(), &wire.FDBError{Code: 1020}); err != nil {
+						t.Fatalf("PENDING_ONERROR: OnError with an undelivered timeout = %v, want retry", err)
+					}
+					requireTimeoutCode(t, tx.readIncarnationCause(old), ErrTransactionCancelled)
 				}
 			}
 			if tx.readLife == nil || tx.readLife.cause == nil {

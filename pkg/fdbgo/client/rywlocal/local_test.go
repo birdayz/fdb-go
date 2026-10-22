@@ -162,8 +162,19 @@ func TestLocalReadsDoNotAcquireReadVersion(t *testing.T) {
 					tx.Cancel()
 				case "timed_out":
 					tx.SetTimeout(1)
-					// Start the read after expiry; no timer races a server reply.
-					time.Sleep(2 * time.Millisecond)
+					// Start the read after the timeout is delivered; an elapsed
+					// deadline alone is no cause. These GRVs finish before the
+					// metrics snapshot below, so the local read is measured alone.
+					for {
+						_, err := tx.GetReadVersion(ctx)
+						var fdbErr *wire.FDBError
+						if errors.As(err, &fdbErr) && fdbErr.Code == 1031 {
+							break
+						}
+						if err != nil {
+							t.Fatalf("waiting for timeout delivery: %v", err)
+						}
+					}
 				case "deferred":
 					tx.SetReadYourWritesDisable()
 				case "caller_cancelled":

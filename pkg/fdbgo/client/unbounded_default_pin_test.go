@@ -121,8 +121,8 @@ func TestExplicitTimeoutBounds(t *testing.T) {
 	t.Run("expired timeout stops the retry loop with 1031", func(t *testing.T) {
 		t.Parallel()
 		tx := pinTx()
-		tx.SetTimeout(1) // 1ms
-		tx.deadlineNs.Store(time.Now().Add(-time.Second).UnixNano())
+		tx.creationTime = time.Now().Add(-time.Second)
+		tx.SetTimeout(1) // expired at arm: 1031 is recorded synchronously
 
 		err := tx.OnError(context.Background(), retryableErr())
 		if err == nil {
@@ -157,8 +157,8 @@ func TestExplicitContextBounds(t *testing.T) {
 	t.Run("caller ctx out-ranks the transaction timeout", func(t *testing.T) {
 		t.Parallel()
 		tx := pinTx()
+		tx.creationTime = time.Now().Add(-time.Second)
 		tx.SetTimeout(1)
-		tx.deadlineNs.Store(time.Now().Add(-time.Second).UnixNano())
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 
