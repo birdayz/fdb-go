@@ -1254,7 +1254,8 @@ in revision 4's lifetime section.
 **Go's synchronous publication points stay as they are:** `checkTimeout` at read entry
 (`transaction.go:2752-2770`) and the `OnError` backoff check (`:2298`) publish an elapsed
 deadline without waiting for delivery. This already differs from C4, and B3a neither
-widens nor narrows it (Out of scope).
+widens nor narrows it (Out of scope). (Since removed: both points now test only the
+recorded cause; see TODO.md "Timeout delivery parity".)
 
 ### B1. Revision 3 checkpoint (historical)
 
@@ -1621,7 +1622,8 @@ revision 3 questions concern the unchanged generation/B3 design:
    handle that times out) preferable to a separate per-generation cause slot that every
    cause reader would have to consult?
 2. Should the elapsed-deadline publication at read entry (Out of scope) be filed as a C4
-   divergence, or is it an accepted Go behaviour?
+   divergence, or is it an accepted Go behaviour? (Resolved: filed and fixed as a C4
+   divergence.)
 
 ## Review resolution index
 

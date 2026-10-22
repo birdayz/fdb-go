@@ -950,11 +950,16 @@ func TestSizeLimit(t *testing.T) {
 }
 
 // readUntilError reads key until a read fails, as the C timeout tests loop: a
-// timeout fails reads only once delivered, not when its deadline passes.
-func readUntilError(tr fdb.Transaction, key fdb.Key) error {
+// timeout fails reads only once delivered, not when its deadline passes. It
+// gives up after 30 s, so a timeout that is never delivered fails fast.
+func readUntilError(tr fdb.ReadTransaction, key fdb.Key) error {
+	giveUp := time.Now().Add(30 * time.Second)
 	for {
 		if _, err := tr.Get(key).Get(); err != nil {
 			return err
+		}
+		if time.Now().After(giveUp) {
+			return errors.New("the timeout was not delivered within 30s")
 		}
 	}
 }
@@ -979,11 +984,7 @@ func TestDatabaseTransactionTimeout(t *testing.T) {
 	_, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		// Read until the timeout is delivered, as the C test loops; an elapsed
 		// deadline alone is no cause (ReadYourWrites.actor.cpp:1567-1574).
-		for {
-			if _, err := tr.Get(fdb.Key(t.Name() + "_key")).Get(); err != nil {
-				return nil, err
-			}
-		}
+		return nil, readUntilError(tr, fdb.Key(t.Name()+"_key"))
 	})
 	var fe fdb.Error
 	if !errors.As(err, &fe) || fe.Code != 1031 {

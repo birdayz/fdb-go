@@ -160,11 +160,7 @@ func TestTenant_Transact_AppliesDatabaseDefaults(t *testing.T) {
 
 	_, err = tenant.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		// Read until the timeout is delivered; an elapsed deadline is no cause.
-		for {
-			if _, err := tr.Get(fdb.Key("k")).Get(); err != nil {
-				return nil, err
-			}
-		}
+		return nil, readUntilError(tr, fdb.Key("k"))
 	})
 	var fe fdb.Error
 	if !errors.As(err, &fe) || fe.Code != 1031 {

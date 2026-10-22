@@ -17,7 +17,7 @@ import (
 func (tx *Transaction) GetEstimatedRangeSizeBytes(parentCtx context.Context, begin, end []byte) (int64, error) {
 	// Bound the locate + WaitMetrics RPCs by SetTimeout (RFC-112): C++ wraps this in
 	// waitOrError(getStorageMetrics(...), resetPromise) (ReadYourWrites.actor.cpp:1863),
-	// so a hung shard-metrics RPC must surface transaction_timed_out at the deadline.
+	// so a hung shard-metrics RPC must surface transaction_timed_out once the timeout is delivered.
 	ctx, cancel := tx.opContext(parentCtx)
 	defer cancel()
 	n, err := tx.getEstimatedRangeSizeBytesImpl(ctx, begin, end)

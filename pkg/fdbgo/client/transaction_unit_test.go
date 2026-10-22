@@ -851,8 +851,8 @@ func TestWatch_NewWatchCtxCancelRaceFree(t *testing.T) {
 // SetTimeout armed past its deadline records 1031 at once, and OnError must surface it
 // IMMEDIATELY — not sleep a full (growing) backoff and signal a retry (nil), which
 // overshoots the declared timeout by up to one backoff. Matches C++ RYWImpl::onError's entry
-// timebomb check (ReadYourWrites.actor.cpp:1506). Revert-proof: without the entry gate,
-// OnError(not_committed) on an expired txn sleeps ~10ms then returns nil.
+// timebomb check (ReadYourWrites.actor.cpp:1506). The recorded cause also cuts the backoff
+// below, so only the non-retryable half isolates the entry gate.
 func TestOnError_RespectsTimeoutDeadline(t *testing.T) {
 	t.Parallel()
 	tx := newTestTx()

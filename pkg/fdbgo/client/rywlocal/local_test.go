@@ -163,7 +163,8 @@ func TestLocalReadsDoNotAcquireReadVersion(t *testing.T) {
 				case "timed_out":
 					tx.SetTimeout(1)
 					// Start the read after the timeout is delivered; an elapsed
-					// deadline alone is no cause. No timer races a server reply.
+					// deadline alone is no cause. These GRVs finish before the
+					// metrics snapshot below, so the local read is measured alone.
 					for {
 						_, err := tx.GetReadVersion(ctx)
 						var fdbErr *wire.FDBError
