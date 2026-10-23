@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -178,7 +179,108 @@ func newNativeRangeEnv(t *testing.T, ctx context.Context, env *multiShardEnv) *n
 	for i := 0; i < 100; i++ {
 		ne.keys = append(ne.keys, []byte(fmt.Sprintf("%s%04d", env.prefix, i)))
 	}
+	ne.freezeShards(t, env)
 	return ne
+}
+
+// freezeShards turns data distribution off once no shard of the seeded range
+// can fill a reply: that shard's continuation is empty and getRange falls back
+// to getExactRange (NativeAPI.actor.cpp:4828-4836), which the transcripts exclude.
+func (ne *nativeRangeEnv) freezeShards(t *testing.T, env *multiShardEnv) {
+	t.Helper()
+	shards := func() []LocationResult {
+		locs, err := env.db.db.locCache.locateRange(env.db.db, ne.ctx, ne.prefix, ne.prefixEnd(), 1000, false, NoTenantID, types.SpanContext{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		env.db.db.locCache.invalidateRange(ne.prefix, ne.prefixEnd(), NoTenantID)
+		return locs
+	}
+	for start := time.Now(); ; time.Sleep(time.Second) {
+		full := nrFullReplyShard(shards(), ne.keys)
+		if full == nil {
+			break
+		}
+		if time.Since(start) > 2*time.Minute {
+			t.Fatalf("shard [%q, %q) still fills a reply after 2m of data distribution", full.ShardBegin, full.ShardEnd)
+		}
+	}
+	if out, err := env.container.FDBCLIExec(ne.ctx, "datadistribution off"); err != nil {
+		t.Fatalf("freeze data distribution: %v, output=%s", err, out)
+	}
+	last := nrBoundaries(shards())
+	for stable, start := 0, time.Now(); stable < 3; {
+		if time.Since(start) > 30*time.Second {
+			t.Fatal("shard map did not settle after data distribution off")
+		}
+		time.Sleep(time.Second)
+		if b := nrBoundaries(shards()); slices.EqualFunc(b, last, bytes.Equal) {
+			stable++
+		} else {
+			last, stable = b, 0
+		}
+	}
+	if full := nrFullReplyShard(shards(), ne.keys); full != nil {
+		t.Fatalf("frozen shard [%q, %q) fills a reply", full.ShardBegin, full.ShardEnd)
+	}
+}
+
+// nrFullReplyShard is the first shard holding enough seeded keys to fill a
+// storage reply's byte limit, or nil.
+func nrFullReplyShard(locs []LocationResult, keys [][]byte) *LocationResult {
+	for i := range locs {
+		n := 0
+		for _, k := range keys {
+			if bytes.Compare(k, locs[i].ShardBegin) >= 0 && (locs[i].ShardEnd == nil || bytes.Compare(k, locs[i].ShardEnd) < 0) {
+				n++
+			}
+		}
+		if n*multiShardValueBytes >= replyByteLimit {
+			return &locs[i]
+		}
+	}
+	return nil
+}
+
+func nrBoundaries(locs []LocationResult) [][]byte {
+	out := make([][]byte, len(locs))
+	for i, l := range locs {
+		out[i] = l.ShardBegin
+	}
+	return out
+}
+
+// nrRangeLocates counts getExactRange's range lookups, which only a fallback sends here.
+func nrRangeLocates(msgs []any) int {
+	n := 0
+	for _, m := range msgs {
+		if q, ok := m.(*types.GetKeyServerLocationsRequest); ok && q.HasEnd {
+			n++
+		}
+	}
+	return n
+}
+
+func TestNrFullReplyShard(t *testing.T) {
+	t.Parallel()
+	keys := make([][]byte, 20)
+	for i := range keys {
+		keys[i] = []byte(fmt.Sprintf("k%02d", i))
+	}
+	perReply := (replyByteLimit + multiShardValueBytes - 1) / multiShardValueBytes
+	split := []byte(fmt.Sprintf("k%02d", perReply))
+	small := []LocationResult{{ShardBegin: []byte("k"), ShardEnd: []byte(fmt.Sprintf("k%02d", perReply-1))}, {ShardBegin: []byte(fmt.Sprintf("k%02d", perReply-1)), ShardEnd: []byte("k10")}, {ShardBegin: []byte("k10"), ShardEnd: []byte("k17")}, {ShardBegin: []byte("k17")}}
+	if got := nrFullReplyShard(small, keys); got != nil {
+		t.Fatalf("shards under %d keys: got [%q, %q)", perReply, got.ShardBegin, got.ShardEnd)
+	}
+	full := []LocationResult{{ShardBegin: []byte("k"), ShardEnd: split}, {ShardBegin: split}}
+	if got := nrFullReplyShard(full, keys); got == nil || !bytes.Equal(got.ShardEnd, split) {
+		t.Fatalf("a %d-key shard fills a reply: got %v", perReply, got)
+	}
+	unbounded := []LocationResult{{ShardBegin: []byte("k")}}
+	if got := nrFullReplyShard(unbounded, keys); got == nil || got.ShardEnd != nil {
+		t.Fatalf("the open last shard holds all %d keys: got %v", len(keys), got)
+	}
 }
 
 func (ne *nativeRangeEnv) prefixEnd() []byte { return append(append([]byte{}, ne.prefix...), 0xff) }
@@ -434,8 +536,8 @@ func (ne *nativeRangeEnv) selectorsForward(t *testing.T) error {
 	if r.conflict == nil || !bytes.Equal(r.conflict[0], ne.prefix) || !bytes.Equal(r.conflict[1], ne.prefixEnd()) {
 		return fmt.Errorf("conflict %q, want [%q, %q)", r.conflict, ne.prefix, ne.prefixEnd())
 	}
-	if n := nrCount(got.msgs, "GetKeyRequest"); n != 0 {
-		return fmt.Errorf("unexpected fallback (%d GetKeyRequests):\n%s", n, transcript)
+	if n := nrCount(got.msgs, "GetKeyRequest") + nrRangeLocates(got.msgs); n != 0 {
+		return fmt.Errorf("unexpected fallback (%d GetKeyRequests and range locates):\n%s", n, transcript)
 	}
 	reqs := nrGetKeyValues(got.msgs)
 	if len(reqs) < 2 {
@@ -485,8 +587,8 @@ func (ne *nativeRangeEnv) selectorsReverse(t *testing.T) error {
 	if k, want := nrKeys(r.kvs), nrJoin(ne.keys, true); k != want || r.more || r.readThrough != nil || r.conflict != nil {
 		return fmt.Errorf("result %s more=%t readThrough=%q conflict=%v; want every key descending, no more, no conflict", k, r.more, r.readThrough, r.conflict)
 	}
-	if n := nrCount(got.msgs, "GetKeyRequest"); n != 0 {
-		return fmt.Errorf("unexpected fallback (%d GetKeyRequests):\n%s", n, transcript)
+	if n := nrCount(got.msgs, "GetKeyRequest") + nrRangeLocates(got.msgs); n != 0 {
+		return fmt.Errorf("unexpected fallback (%d GetKeyRequests and range locates):\n%s", n, transcript)
 	}
 	reqs := nrGetKeyValues(got.msgs)
 	if len(reqs) < 2 {

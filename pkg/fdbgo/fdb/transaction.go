@@ -377,7 +377,9 @@ func (tr Transaction) AddReadConflictKey(key KeyConvertible) error {
 	return nil
 }
 
-// AddWriteConflictRange adds a write conflict range.
+// AddWriteConflictRange adds a write conflict range. It returns only inverted_range;
+// as with libfdb_c, a range past the maximum write key fails the next operation and
+// the commit with key_outside_legal_range instead.
 func (tr Transaction) AddWriteConflictRange(er ExactRange) error {
 	begin, end := er.FDBRangeKeys()
 	return convertError(tr.t.inner.AddWriteConflictRange(begin.FDBKey(), end.FDBKey()))

@@ -403,14 +403,17 @@ func (tx *Transaction) AddReadConflictKey(key []byte) {
 }
 
 // AddWriteConflictRange adds an explicit write conflict range [begin, end).
-// Returns inverted_range (2005) if begin > end. Matches C++ fdb_transaction_add_conflict_range.
+// Returns inverted_range (2005) if begin > end. As in libfdb_c, an endpoint past the
+// maximum write key is not returned here: key_outside_legal_range (2004) becomes the
+// deferred error that the next operation and Commit return.
 func (tx *Transaction) AddWriteConflictRange(begin, end []byte) error {
 	lease := tx.enterState()
 	defer lease.release()
 	return tx.stateAddWriteConflictRange(begin, end)
 }
 
-// AddWriteConflictKey adds a write conflict on a single key.
+// AddWriteConflictKey adds a write conflict on a single key. A key past the maximum
+// write key defers key_outside_legal_range (2004) as AddWriteConflictRange does.
 func (tx *Transaction) AddWriteConflictKey(key []byte) {
 	lease := tx.enterState()
 	defer lease.release()

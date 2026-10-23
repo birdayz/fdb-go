@@ -658,12 +658,12 @@ var _ = Describe("SplitHelper", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 
-		// Java's addWriteConflictRange throws before any clear (SplitHelper.java:360).
+		// Java's addWriteConflictRange throws a synchronous failure before any clear (SplitHelper.java:360).
 		It("returns a conflict range failure without clearing", func() {
 			rs := recordSub()
 			pk := tuple.Tuple{int64(214)}
 			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
-				failure := errors.New("key_outside_legal_range")
+				failure := errors.New("inverted_range")
 				rec := &clearRecorder{WritableTransaction: tx, conflictErr: failure}
 				old := &sizeInfo{KeyCount: 2, VersionedInline: true}
 				Expect(clearPreviousRecord(nil, rec, rs, pk, true, old)).To(MatchError(failure))
@@ -674,6 +674,23 @@ var _ = Describe("SplitHelper", func() {
 				return nil, nil
 			})
 			Expect(err).NotTo(HaveOccurred())
+		})
+
+		// key_outside_legal_range is the client's deferred error, under Java's libfdb_c
+		// as here (RFC-267): the clears proceed and the commit fails.
+		It("defers an out-of-range conflict range to the commit", func() {
+			rs := subspace.FromBytes([]byte("\xff\x05split_helper_deferred"))
+			pk := tuple.Tuple{int64(216)}
+			var rec *clearRecorder
+			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
+				rec = &clearRecorder{WritableTransaction: tx}
+				return nil, clearRecordKeys(rec, rs, pk, &sizeInfo{KeyCount: 1})
+			})
+			var fe fdb.Error
+			Expect(errors.As(err, &fe)).To(BeTrue(), "commit error %v", err)
+			Expect(fe.Code).To(Equal(2004))
+			Expect(rec.conflicts).To(HaveLen(1))
+			Expect(rec.cleared).To(HaveLen(1))
 		})
 
 		// Java skips the clear when the new value overwrites the only key of a

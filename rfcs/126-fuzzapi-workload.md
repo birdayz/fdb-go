@@ -55,6 +55,8 @@ Differential probe — same op through the pure-Go client and `libfdb_c` (cgo) o
 | **`addReadConflictRange(a, "\xff\xff\xff")`** | **accept** | **2004 `key_outside_legal_range`** |
 | **`addWriteConflictRange(a, "\xff\xff\xff")`** | **accept** | **2004 `key_outside_legal_range`** |
 
+Both 2004s surface at the commit, not the call; see the RFC-267 note under §2.2.
+
 ### 2.1 Divergence A — `getRange` row limit `< -1` not rejected
 
 **C++/libfdb_c:** at api version > 13, `fdb_c.cpp:984` (`validate_and_update_parameters`) does **not**
@@ -88,6 +90,11 @@ the already-constructed (`begin <= end`) range.
 **Go:** `AddReadConflictRange`/`AddWriteConflictRange` (`transaction.go:2484/2499`) check **only**
 `begin > end → inverted_range (2005)`; there is **no** `maxReadKey` check, so a conflict range whose
 endpoint is past `\xff\xff` is silently accepted where libfdb_c rejects.
+
+> **Superseded in part by RFC-267.** The probe compared each transaction's final error, so libfdb_c's
+> 2004 above came from the commit: libfdb_c runs both RYW methods on the network thread and defers
+> the throw (`ThreadSafeTransaction.cpp:589-594`, `:659-663`). Go's write form now defers it too;
+> the read form's immediate return is an open TODO.md item.
 
 ## 3. Proposed Go change
 
@@ -141,6 +148,8 @@ check (so inverted wins when both apply, matching C++'s construct-then-check ord
       return &wire.FDBError{Code: 2004} // key_outside_legal_range
   }
   ```
+
+  RFC-267 moved this 2004 into the deferred error, as libfdb_c does; the call returns only 2005.
 
 The differential (§4.2) must exercise this read/write asymmetry under a system-key option (where
 `maxReadKey` and `maxWriteKey` diverge), not only the default where they coincide.

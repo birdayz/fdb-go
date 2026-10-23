@@ -427,6 +427,101 @@ func TestAddWriteConflictKeyPreservesDeferredOrder(t *testing.T) {
 	}
 }
 
+// libfdb_c returns success from add_conflict_range and records key_outside_legal_range as the
+// deferred error (ThreadSafeTransaction.cpp:659-663; check at ReadYourWrites.actor.cpp:2466-2468).
+func TestAddWriteConflictRangeLegalRangeIsDeferred(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"user", "read-system", "access-system"} {
+		for _, r := range [][2]string{
+			{"a", "b"},
+			{"a", "\xff"},
+			{"\xff", "\xff"},
+			{"a", "\xff\x05"},
+			{"\xff", "\xff\x05"},
+			{"a", "\xff\xff"},
+			{"a", "\xff\xff\x00"},
+			{"\xff\xffx", "\xff\xffy"},
+		} {
+			t.Run(fmt.Sprintf("%s/%x-%x", mode, r[0], r[1]), func(t *testing.T) {
+				t.Parallel()
+				tx := &Transaction{}
+				maxWrite := "\xff"
+				if mode == "read-system" {
+					tx.SetReadSystemKeys()
+				} else if mode == "access-system" {
+					tx.SetAccessSystemKeys()
+					maxWrite = "\xff\xff"
+				}
+				tx.Set([]byte("a"), []byte("v"))
+				before, conflicts := liveOf(&tx.ryw).fingerprint(), len(tx.writeConflicts)
+				if err := tx.AddWriteConflictRange([]byte(r[0]), []byte(r[1])); err != nil {
+					t.Fatalf("AddWriteConflictRange returned %v, want nil (the error is deferred)", err)
+				}
+				_, err := tx.StartGetKey(context.Background(), firstGreaterOrEqual([]byte("a"))).Get()
+				if r[0] > maxWrite || r[1] > maxWrite {
+					if code, _ := fdbErrorCode(err); code != 2004 {
+						t.Fatalf("next GetKey = %v, want deferred key_outside_legal_range", err)
+					}
+					if liveOf(&tx.ryw).fingerprint() != before || len(tx.writeConflicts) != conflicts {
+						t.Fatal("illegal write-conflict range was recorded")
+					}
+					if code, _ := fdbErrorCode(tx.Commit(context.Background())); code != 2004 {
+						t.Fatalf("Commit code %d, want deferred 2004", code)
+					}
+				} else if err != nil {
+					t.Fatalf("legal write-conflict range poisoned next GetKey: %v", err)
+				}
+			})
+		}
+	}
+}
+
+// inverted_range comes from the KeyRangeRef built on the calling thread (fdb_c.cpp:1223,
+// FDBTypes.h:318-323), so it is returned by the call even after a deferred error and never deferred.
+func TestAddWriteConflictRangeInvertedIsImmediate(t *testing.T) {
+	t.Parallel()
+	tx := &Transaction{}
+	tx.Set([]byte("a"), []byte("v"))
+	before, conflicts := liveOf(&tx.ryw).fingerprint(), len(tx.writeConflicts)
+	if code, _ := fdbErrorCode(tx.AddWriteConflictRange([]byte("b"), []byte("a"))); code != 2005 {
+		t.Fatalf("inverted range code %d, want inverted_range (2005) from the call", code)
+	}
+	if tx.deferredErr.Load() != nil || liveOf(&tx.ryw).fingerprint() != before || len(tx.writeConflicts) != conflicts {
+		t.Fatal("inverted range was deferred or recorded")
+	}
+	if _, err := tx.StartGetKey(context.Background(), firstGreaterOrEqual([]byte("a"))).Get(); err != nil {
+		t.Fatalf("inverted range was deferred: next GetKey = %v", err)
+	}
+	if err := tx.AddWriteConflictRange([]byte("a"), []byte("\xff\xff")); err != nil {
+		t.Fatalf("illegal range returned %v, want nil", err)
+	}
+	if code, _ := fdbErrorCode(tx.AddWriteConflictRange([]byte("\xff\xff\xff"), []byte("\xff\xff"))); code != 2005 {
+		t.Fatalf("inverted range after a deferred error: code %d, want 2005 from the call", code)
+	}
+	if code, _ := fdbErrorCode(tx.Commit(context.Background())); code != 2004 {
+		t.Fatalf("Commit code %d, want the first deferred error, key_outside_legal_range (2004)", code)
+	}
+}
+
+func TestAddWriteConflictRangePreservesDeferredOrder(t *testing.T) {
+	t.Parallel()
+	tx := &Transaction{}
+	tx.Set(bytes.Repeat([]byte("k"), 10001), []byte("v"))
+	if err := tx.AddWriteConflictRange([]byte("\xff\xffx"), []byte("\xff\xffy")); err != nil {
+		t.Fatalf("illegal range returned %v, want nil", err)
+	}
+	if code, _ := fdbErrorCode(tx.Commit(context.Background())); code != 2102 {
+		t.Fatalf("earlier oversized Set lost to conflict-range error: code %d, want key_too_large (2102)", code)
+	}
+	before, conflicts := liveOf(&tx.ryw).fingerprint(), len(tx.writeConflicts)
+	if err := tx.AddWriteConflictRange([]byte("a"), []byte("b")); err != nil {
+		t.Fatalf("legal range after a deferred error returned %v, want nil", err)
+	}
+	if liveOf(&tx.ryw).fingerprint() != before || len(tx.writeConflicts) != conflicts {
+		t.Fatal("a write-conflict range executed after a deferred error")
+	}
+}
+
 func TestGetKeyMaxSentinelConflict(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {

@@ -10,9 +10,10 @@ import (
 // Client-side validation for AddReadConflictRange / AddWriteConflictRange — RFC-126 Divergence B.
 // C++ rejects a conflict range whose endpoint exceeds the max key (ReadYourWrites.actor.cpp:1954 read /
 // :2466 write) with key_outside_legal_range (2004); Go used to check only inverted (begin>end). These
-// pin the SYNCHRONOUS validation edges (no DB): the inverted-wins ordering, the read-only
-// metadataVersionKey exception, and the read/write maxKey ASYMMETRY (read uses maxReadKey + the
-// exception; write uses maxWriteKey + no exception). Deterministic, no cgo.
+// pin the validation edges (no DB): the inverted-wins ordering, the read-only metadataVersionKey
+// exception, and the read/write maxKey ASYMMETRY (read uses maxReadKey + the exception; write uses
+// maxWriteKey + no exception). The write method's 2004 is deferred, as in libfdb_c (RFC-267), so it
+// is checked in the deferred-error slot. Deterministic, no cgo.
 
 func crCode(t *testing.T, err error) int {
 	t.Helper()
@@ -179,17 +180,18 @@ func TestAddWriteConflictRange_Validation(t *testing.T) {
 		name              string
 		begin, end        string
 		readSys, writeSys bool
-		want              int
+		want, deferred    int // the call's code; the deferred error's code
 	}{
-		{"in_range", "a", "m", false, false, 0},
-		{"end_past_maxWriteKey", "a", "\xff\xff\xff", false, false, 2004},
-		{"inverted_beats_maxKey", "\xff\xff\xff\xff", "\xff\xff\xff", false, false, 2005},
+		{"in_range", "a", "m", false, false, 0, 0},
+		{"end_past_maxWriteKey", "a", "\xff\xff\xff", false, false, 0, 2004},
+		// inverted_range comes from the calling thread and is never deferred.
+		{"inverted_beats_maxKey", "\xff\xff\xff\xff", "\xff\xff\xff", false, false, 2005, 0},
 		// NO metadataVersionKey exception on the write path (asymmetric with read) → 2004.
-		{"mvk_exact_no_exception", mvk, mvkEnd, false, false, 2004},
+		{"mvk_exact_no_exception", mvk, mvkEnd, false, false, 0, 2004},
 		// READ_SYSTEM_KEYS does NOT raise maxWriteKey (gated on writeSystemKeys) → still 2004 (the asymmetry).
-		{"readsys_does_not_help_write", "a", "\xff\x05", true, false, 2004},
+		{"readsys_does_not_help_write", "a", "\xff\x05", true, false, 0, 2004},
 		// ACCESS_SYSTEM_KEYS (writeSystemKeys) raises maxWriteKey to \xff\xff → in range.
-		{"writesys_allows_system_endpoint", "a", "\xff\x05", false, true, 0},
+		{"writesys_allows_system_endpoint", "a", "\xff\x05", false, true, 0, 0},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -200,6 +202,13 @@ func TestAddWriteConflictRange_Validation(t *testing.T) {
 			got := crCode(t, tx.AddWriteConflictRange([]byte(c.begin), []byte(c.end)))
 			if got != c.want {
 				t.Errorf("AddWriteConflictRange(%q,%q): code=%d, want %d", c.begin, c.end, got, c.want)
+			}
+			deferred := 0
+			if e := tx.deferredErr.Load(); e != nil {
+				deferred = e.Code
+			}
+			if deferred != c.deferred {
+				t.Errorf("AddWriteConflictRange(%q,%q): deferred code=%d, want %d", c.begin, c.end, deferred, c.deferred)
 			}
 		})
 	}
