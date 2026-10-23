@@ -93,9 +93,11 @@ Always confirm the picked version with the user before editing any files. Bumpin
    ```
    Then run `just gazelle` to update BUILD files if any new files appeared.
 
-7. **Update prose references.** Two files mention the version explicitly:
+7. **Update prose references.** These files mention the version explicitly:
    - `CLAUDE.md` — the "Java source reference" section. Update the tag and Maven artifact mention.
    - `TODO.md` — the header line "Java Record Layer version: **X.Y.Z.W**".
+   - `.bruh/review/cascades.md` and `.bruh/review/java-compat.md` — the reference version and
+     the `--branch` of their clone commands.
 
 8. **Build + test.**
    ```bash
@@ -169,7 +171,7 @@ Always confirm the picked version with the user before editing any files. Bumpin
 
 6. **Update prose / version-string references.** Each of these files mentions the FDB version literally; sweep with grep:
    ```bash
-   grep -l "$OLD_VERSION" pkg/fdbgo/wire/serializer.go pkg/fdbgo/README.md pkg/fdbgo/client/CRASH_BUG.md CLAUDE.md
+   grep -l "$OLD_VERSION" pkg/fdbgo/wire/serializer.go pkg/fdbgo/README.md pkg/fdbgo/client/CRASH_BUG.md CLAUDE.md .bruh/review/fdb-client.md
    ```
    Replace with `$VERSION`.
 
