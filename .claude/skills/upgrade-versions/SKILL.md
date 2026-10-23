@@ -8,7 +8,7 @@ user-invocable: true
 
 This project pins **two independent versions**:
 
-- **A — Java fdb-record-layer / fdb-relational artifacts.** Currently `4.11.1.0`. Used by the conformance Java server and as the canonical source for proto schemas.
+- **A — Java fdb-record-layer / fdb-relational artifacts.** Currently `4.14.2.0`. Used by the conformance Java server and as the canonical source for proto schemas.
 - **B — FDB C++ wire protocol.** Currently `7.3.77`. Used by the pure-Go FDB client (`pkg/fdbgo/`) — wire frames, request/reply types, error codes, atomic mutation semantics all match this version.
 
 These versions are independent — bumping Java does not require bumping FDB C++ or vice versa. Each procedure has its own canonical command sequence and its own set of "things you must touch."

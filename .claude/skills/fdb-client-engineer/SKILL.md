@@ -45,7 +45,7 @@ shipped + differential-proved them.)
 
 The oracle is the FoundationDB C++ source at tag **7.3.77** (the `foundationdb` pin in
 `MODULE.bazel`; exactly what `libfdb_c` and the cgo binding in the differential are built from).
-**Do NOT confuse with `4.11.1.0`** (the *Java* record-layer version — different project).
+**Do NOT confuse with `4.14.2.0`** (the *Java* record-layer version — different project).
 
 Checkout is usually present at `/tmp/fdbsrc`; clone if missing:
 ```bash
