@@ -5,9 +5,8 @@ description: Review of the SPFresh vector index (RFC-094) against the SPANN and 
 
 # SPFresh paper review
 
-Changes to the SPFresh vector index (the paths in the lens's `applies`: `spfresh_*`,
-`vector_index_*.go`, `hnsw_vector.go` and `hnsw_options.go` in `pkg/recordlayer/vectorindex/`,
-and `pkg/rabitq/`) are reviewed with the **`bruh-code-review`** skill. Its `spfresh` lens
+Changes to the SPFresh vector index (the paths in the `applies` list of
+`.bruh/review/spfresh.md`, which is the one place they are kept) are reviewed with the **`bruh-code-review`** skill. Its `spfresh` lens
 (`.bruh/review/spfresh.md`) carries this skill's former checklist: posting-list invariants,
 LIRE and SPANN fidelity unless RFC-094 justifies the divergence, measured recall and
 latency claims, two-level routing against the papers' latency model, and recall stability
