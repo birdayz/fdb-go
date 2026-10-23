@@ -1,6 +1,6 @@
 # RFC-268: Explicit read-conflict-range errors are deferred
 
-**Status:** Draft
+**Status:** Implemented
 **Item:** TODO.md §0, "Explicit read-conflict-range errors are immediate or missing."
 **Spec:** FoundationDB 7.3.77 (`/tmp/fdbsrc`); Go line numbers at `54566f2a4`.
 
@@ -140,8 +140,11 @@ Lanes: `ryw_pin_unit_test` is in `just test`; `client_test` and `bench_test` are
   end and begin past `\xff`, `READ_SYSTEM_KEYS` legal and past `\xff\xff`, the
   metadataVersionKey range and a non-exact one, inverted) and the key form (legal, `\xff`,
   `\xff\x05` with and without `READ_SYSTEM_KEYS`, `\xff\xff` under it,
-  metadataVersionKey, and a user key at 10008 and 10009 bytes and a system key at 30000 and
-  30001 bytes, the `getMaxReadKeySize` boundaries of `NativeAPI.actor.cpp:11621-11633`).
+  metadataVersionKey, and a user key at 10008 and 10009 bytes and, under `READ_SYSTEM_KEYS`,
+  a `\xff\x05`-prefixed system key at 30000 and 30001 bytes, the `getMaxReadKeySize`
+  boundaries of `NativeAPI.actor.cpp:11621-11633`; without the option a system key fails
+  the legal-range check before the clamp. The at-limit keys grow the size, the over-limit
+  keys do not, and all four return 0 everywhere).
   Red before the fix: the range form's illegal rows on every column (call go=2004 cgo=0;
   approximate size, `Get` and `Commit` go=0 cgo=2004), the key form's illegal rows on the
   later columns (go=0, cgo=2004), and the over-limit keys on the size growth. No

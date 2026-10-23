@@ -385,7 +385,10 @@ func (tx *Transaction) GetTagThrottledDuration() float64 {
 // AddReadConflictRange adds an explicit read conflict range [begin, end).
 // If any key in this range is modified by another transaction between
 // this transaction's read version and commit, the commit will fail.
-// Returns inverted_range (2005) if begin > end. Matches C++ fdb_transaction_add_conflict_range.
+// Returns inverted_range (2005) if begin > end. As in libfdb_c, an endpoint past the
+// maximum read key (other than the exact metadataVersionKey range) is not returned here:
+// key_outside_legal_range (2004) becomes the deferred error that the next operation and
+// Commit return.
 func (tx *Transaction) AddReadConflictRange(begin, end []byte) error {
 	lease := tx.enterState()
 	defer lease.release()
@@ -395,7 +398,8 @@ func (tx *Transaction) AddReadConflictRange(begin, end []byte) error {
 // AddReadConflictKey adds a read conflict on a single key. Like AddReadConflictRange it is filtered
 // through the RYW write-map (C++ addReadConflictRange over [key, keyAfter(key)) → updateConflictMap,
 // ReadYourWrites.actor.cpp:1986): a self-written independent key adds no conflict; rywDisabled adds
-// the full single-key conflict directly (:1979).
+// the full single-key conflict directly (:1979). A key at or past the maximum read key, other
+// than metadataVersionKey, defers key_outside_legal_range (2004) as AddReadConflictRange does.
 func (tx *Transaction) AddReadConflictKey(key []byte) {
 	lease := tx.enterState()
 	defer lease.release()
