@@ -98,6 +98,8 @@ Always confirm the picked version with the user before editing any files. Bumpin
    - `TODO.md` — the header line "Java Record Layer version: **X.Y.Z.W**".
    - `.bruh/review/cascades.md` and `.bruh/review/java-compat.md` — the reference version and
      the `--branch` of their clone commands.
+   - Then sweep the instruction files for the old version, which skills and agents also pin:
+     `grep -rln "$OLD_VERSION" CLAUDE.md AGENTS.md TODO.md .claude .bruh`.
 
 8. **Build + test.**
    ```bash

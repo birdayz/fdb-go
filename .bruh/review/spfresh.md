@@ -5,6 +5,7 @@ applies:
   - "pkg/recordlayer/vectorindex/vector_index_*.go"
   - "pkg/recordlayer/vectorindex/hnsw_vector.go"
   - "pkg/recordlayer/vectorindex/hnsw_options.go"
+  - "pkg/recordlayer/vectorindex/VECTOR_BENCHMARK_RESULTS.md"
   - "pkg/rabitq/**"
 references:
   - "SPANN paper: .claude/skills/spfresh-reviewer/spann-paper.pdf (arXiv:2111.08566); SPFresh paper: https://arxiv.org/pdf/2410.14452"
