@@ -272,9 +272,9 @@ func clearPreviousRecord(
 // transaction can see the record without its version, never the version without
 // the record; Go formerly cleared the record key first.
 //
-// A failure to add the conflict range (e.g. key_outside_legal_range) is returned
-// before any key is cleared, as Java's addWriteConflictRange throws first
-// (SplitHelper.java:360).
+// A synchronous conflict-range failure (inverted_range) is returned before any key
+// is cleared, as Java's addWriteConflictRange throws first (SplitHelper.java:360);
+// key_outside_legal_range is deferred to the commit, as libfdb_c does (RFC-267).
 func clearRecordKeys(tx fdb.WritableTransaction, recordSubspace subspace.Subspace, primaryKey tuple.Tuple, old *sizeInfo) error {
 	if len(primaryKey) == 0 {
 		return nil // as clearRecordKeyRange: never address the whole records subspace

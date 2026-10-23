@@ -602,8 +602,7 @@ func TestDifferential_ConflictRangeEdges(t *testing.T) {
 }
 
 // TestDifferential_WriteConflictRangeDeferred: the call returns only inverted_range; 2004 is deferred
-// to the next read and the commit (ThreadSafeTransaction.cpp:659-663). The snapshot Get adds no read
-// conflict, so a concurrent test's write conflict (ConflictRangeMaxKey commits [a, m)) cannot fail it.
+// to the next read and the commit (ThreadSafeTransaction.cpp:659-663).
 func TestDifferential_WriteConflictRangeDeferred(t *testing.T) {
 	t.Parallel()
 	pfx := fmt.Sprintf("differ_wcr_deferred_%d_", os.Getpid())
@@ -635,6 +634,7 @@ func TestDifferential_WriteConflictRangeDeferred(t *testing.T) {
 					_ = tr.Options().SetReadSystemKeys()
 				}
 				g[0] = fdbErrorCode(tr.AddWriteConflictRange(gofdb.KeyRange{Begin: gofdb.Key(c.begin), End: gofdb.Key(c.end)}))
+				// No read conflict: ConflictRangeMaxKey's concurrent [a, m) write must not fail the commit.
 				_, err = tr.Snapshot().Get(gofdb.Key(pfx + "k")).Get()
 				g[1] = fdbErrorCode(err)
 				g[2] = fdbErrorCode(tr.Commit().Get())
