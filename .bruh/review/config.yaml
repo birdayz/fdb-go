@@ -5,5 +5,4 @@ ignore:
   - "pkg/relational/core/parser/gen/**"
   - "pkg/relational/api/apimock/mocks_*.go"
   - "**/*.pb.go"
-  - "pkg/relational/conformance/explaindiff/testdata/*.golden"
   - "third_party/**"

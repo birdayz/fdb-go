@@ -1,6 +1,11 @@
 ---
 lens: spfresh
-applies: ["pkg/recordlayer/vectorindex/spfresh_*", "pkg/rabitq/**"]
+applies:
+  - "pkg/recordlayer/vectorindex/spfresh_*"
+  - "pkg/recordlayer/vectorindex/vector_index_*.go"
+  - "pkg/recordlayer/vectorindex/hnsw_vector.go"
+  - "pkg/recordlayer/vectorindex/hnsw_options.go"
+  - "pkg/rabitq/**"
 references:
   - "SPANN paper: .claude/skills/spfresh-reviewer/spann-paper.pdf (arXiv:2111.08566); SPFresh paper: https://arxiv.org/pdf/2410.14452"
   - "rfcs/094-spfresh-vector-index.md: the FDB adaptation and its declared divergences"
