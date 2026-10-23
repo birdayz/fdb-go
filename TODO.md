@@ -316,8 +316,8 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   an endpoint past `getMaxReadKey()`, other than the exact metadataVersionKey range
   (`ReadYourWrites.actor.cpp:1950-1955`), becomes the deferred error (2004) and surfaces
   on the next operation. Go's `AddReadConflictRange` returns 2004 from the call
-  (`pkg/fdbgo/client/transaction.go:3169-3182`), and `AddReadConflictKey` (`:3214-3216`)
-  has no legal-range check, so a system-key read conflict is recorded without error; the
+  (`stateAddReadConflictRange` in `pkg/fdbgo/client/transaction.go`), and
+  `AddReadConflictKey` (`stateAddReadConflictKey`) has no legal-range check, so a system-key read conflict is recorded without error; the
   Apple binding's key form calls the same C function as the range form. Defer both as
   RFC-267 does for the write form, pinned by a libfdb_c differential.
 - [ ] **Panic-safe locks outside the GetKey walk.** Scoped recovery now unwinds GetKey

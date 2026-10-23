@@ -601,13 +601,9 @@ func TestDifferential_ConflictRangeEdges(t *testing.T) {
 	}
 }
 
-// TestDifferential_WriteConflictRangeDeferred pins WHERE each explicit write-conflict-range error
-// surfaces. libfdb_c returns only inverted_range from the call (the KeyRangeRef built in
-// fdb_c.cpp:1223); key_outside_legal_range is raised on the network thread and recorded as the
-// deferred error (ThreadSafeTransaction.cpp:659-663, ReadYourWrites.actor.cpp:2466-2468), so the
-// call succeeds and the next Get and the Commit fail. Codes are compared per step, go==cgo. The
-// Get is a snapshot read: it still returns the deferred error, and it adds no read conflict, so a
-// concurrent test's write conflict (ConflictRangeMaxKey commits [a, m)) cannot fail the commit.
+// TestDifferential_WriteConflictRangeDeferred: the call returns only inverted_range; 2004 is deferred
+// to the next read and the commit (ThreadSafeTransaction.cpp:659-663). The snapshot Get adds no read
+// conflict, so a concurrent test's write conflict (ConflictRangeMaxKey commits [a, m)) cannot fail it.
 func TestDifferential_WriteConflictRangeDeferred(t *testing.T) {
 	t.Parallel()
 	pfx := fmt.Sprintf("differ_wcr_deferred_%d_", os.Getpid())
