@@ -1,0 +1,6 @@
+blocking: medium
+ignore:
+  - "gen/**"
+  - "pkg/fdbgo/wire/types/*_generated.go"
+  - "**/*.pb.go"
+  - "**/testdata/**/*.golden"
