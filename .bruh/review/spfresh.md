@@ -34,3 +34,22 @@ against VECTOR_BENCHMARK_RESULTS.md, or does not claim it; default changes are j
 numbers.
 Verify: name the claim and the missing measurement.
 Not a finding: code changes with no effect on search or rebalancing.
+
+### spfresh/routing — Two-level routing keeps the papers' latency model
+Severity: medium
+Check: SPANN navigates centroids with an in-memory graph; ours linear-scans the cached L1
+cells and an LRU of per-cell L2 refreshed from the changelog. A change to routing, the L1/L2
+caches or their refresh states the topology size at which the scan or the cache-miss rate
+breaks the latency model, or stays within the sizes VECTOR_BENCHMARK_RESULTS.md measures.
+Verify: name the topology size or the cache path and the measurement that is missing.
+Not a finding: routing code whose cost does not grow with the topology.
+
+### spfresh/stability — Recall stays flat over an update stream
+Severity: high
+Check: SPFresh §5.2: recall over an update stream stays flat. The churn soak and foreground
+fill must show it for a change to append, split, reassign, merge or their scheduling. A
+topology that quiesces with oversized or orphaned postings is a LIRE violation, not a tuning
+gap.
+Verify: point to the soak or fill result, or to the path that leaves a posting oversized or
+orphaned at quiescence.
+Not a finding: a temporary recall dip during a rebalance that recovers at quiescence.

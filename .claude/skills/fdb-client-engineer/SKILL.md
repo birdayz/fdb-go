@@ -108,7 +108,9 @@ and **wire-compat impact** (bytes? conflict ranges? error codes?). The RFC's loa
 must be a C++ citation, not an assertion.
 
 ### Step 2 — review the RFC
-Commit the RFC and run **`bruh-code-review`** on that commit (`review <sha>`). Fix the findings
+Commit the RFC and run **`bruh-code-review`** on that commit with the client lens
+(`review <sha>, lenses: fdb-client`: an RFC matches no lens path, and without it only the
+core lenses run). Fix the findings
 and review again (`previous: <run>/report.json`) until it ACKs the approach: no wire
 divergence, no invented semantics the C++ lacks. Set **Status: Accepted**. **Never start
 implementing on a NAK.**

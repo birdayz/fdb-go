@@ -71,7 +71,10 @@ Keep it short — 1-2 pages max. No fluff.
 ## Step 5: RFC review (bruh-code-review)
 
 Commit the RFC and run the **`bruh-code-review`** skill on that commit (`review <sha>`, with
-`intent:` naming the TODO item it addresses).
+`intent:` naming the TODO item it addresses, and `lenses:` naming the repository lenses of the
+area it changes: `fdb-client` for `pkg/fdbgo`, `cascades` for the planner, `java-compat` for
+record-layer or relational bytes, `spfresh` for the vector index). An RFC matches no lens path,
+so without `lenses:` only the core lenses review it.
 
 ### Handling results:
 - **ACK** (the report ends `bruh-code-review: ACK <sha>`) → proceed to implementation.

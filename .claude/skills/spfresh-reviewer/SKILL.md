@@ -8,8 +8,9 @@ description: Review of the SPFresh vector index (RFC-094) against the SPANN and 
 Changes to the SPFresh vector index (`pkg/recordlayer/vectorindex/spfresh_*`, `pkg/rabitq/`)
 are reviewed with the **`bruh-code-review`** skill. Its `spfresh` lens
 (`.bruh/review/spfresh.md`) carries this skill's former checklist: posting-list invariants,
-LIRE and SPANN fidelity unless RFC-094 justifies the divergence, and measured recall and
-latency claims, each verdict citing the paper section and our `file:line`. Change review
+LIRE and SPANN fidelity unless RFC-094 justifies the divergence, measured recall and
+latency claims, two-level routing against the papers' latency model, and recall stability
+over an update stream, each verdict citing the paper section and our `file:line`. Change review
 rules in the lens, not here.
 
 The papers stay here: `spann-paper.pdf` (SPANN, bundled under CC BY 4.0) and the linked

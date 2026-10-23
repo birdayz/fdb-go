@@ -88,7 +88,7 @@ The owner delegated release decisions; API reduction remains a v0.3.0 launch wor
 | Sev | Item | Status | Workstream |
 |---|---|---|---|
 | B | Runner trust boundaries: job-started guard, contributor approval, provisioning preserves the guard | done [#788] (settings, manual sync): [#788] installs the guard in both provisioning modes; settings require approval for all external contributors. Instead of a re-roll, on 2026-10-11 ci-health synced master's `runner-job-guard.sh` to both live runners (gh-runner-drain-0, gh-runner-fdb), which already ran the job-started hook, and tested it on each box: push, own-repo PR and non-PR `issue_comment` admitted; fork PR, foreign repo, PR comment and `issue_comment` without an issue object denied | ci-health |
-| H | `claude.yml` on self-hosted runners with write tokens | done [#788]: GitHub-hosted | ci-health |
+| H | `claude.yml` on self-hosted runners with write tokens | done [#788]: GitHub-hosted; workflow removed [#987] | ci-health |
 | H | Tag/release protection; secret scanning; push protection; Dependabot; private vulnerability reporting | done (settings) | ci-health |
 | H | Apache §4 attribution on ported files; NOTICE; trademark wording; third-party notices; SECURITY.md link | done [#788]: headers in 732 files, `NOTICE`; PR CI checks that `THIRD_PARTY_NOTICES.txt` is current | release-ws |
 
