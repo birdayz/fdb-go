@@ -101,7 +101,7 @@ Lanes: `ryw_pin_unit_test` is in `just test`; `client_test` and `bench_test` are
   the next `Get` and the `Commit` for a legal, an end-past-max, a begin-past-max, a
   read-system-keys and an inverted range; red before the fix (go=2004, cgo=0 at the call).
   It is a separate write-only test: `TestDifferential_ConflictRangeEdges` runs its shapes
-  through the read method too, which keeps the out-of-scope divergence. The commit step is
+  through the read method too, whose error site RFC-268 then fixed. The commit step is
   the discard-then-commit shape: go committed (0) where libfdb_c failed (2004).
   `TestDifferential_ConflictRangeMaxKey` compares only the final `Transact` error, which
   is 2004 on both sides before and after; its comment is corrected to say where 2004

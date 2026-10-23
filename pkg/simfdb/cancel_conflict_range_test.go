@@ -311,62 +311,84 @@ func TestOversizedConflictRangeEndpointClamped(t *testing.T) {
 	}
 }
 
-// TestOversizedConflictKeyDropped: the key forms are the range forms over [k, keyAfter(k)), so a
-// key past the size limit clamps to an empty range and records nothing, as in the client
-// (addReadConflictKeyRYW; deferWriteConflictRange). Unclamped, [k*10100, k*10100\x00) overlaps
-// the other side's [k, l) and aborts the reader with 1020.
+// TestOversizedConflictKeyDropped: a key form over the size limit clamps [k, keyAfter(k)) to empty and
+// records nothing, as in the client; at the limit it still conflicts.
 func TestOversizedConflictKeyDropped(t *testing.T) {
 	t.Parallel()
-	big := make([]byte, 10_100) // > keySizeLimit+tenantPrefixSize == 10_008
-	for i := range big {
-		big[i] = 'k'
-	}
-	for _, write := range []bool{false, true} {
-		name := "read"
-		if write {
-			name = "write"
+	key := func(prefix string, n int) []byte {
+		k := make([]byte, n)
+		copy(k, prefix)
+		for i := len(prefix); i < n; i++ {
+			k[i] = 'k'
 		}
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-			db := simfdb.New(nil)
-			reader, err := db.CreateWritableTransaction()
-			if err != nil {
-				t.Fatalf("create reader: %v", err)
-			}
-			// Pinned before the writer commits, as in TestOversizedConflictRangeEndpointClamped.
-			if _, err := reader.GetReadVersion().Get(); err != nil {
-				t.Fatalf("reader GetReadVersion: %v", err)
-			}
-			writer, err := db.CreateWritableTransaction()
-			if err != nil {
-				t.Fatalf("create writer: %v", err)
-			}
+		return k
+	}
+	for _, c := range []struct {
+		name     string
+		key      []byte
+		conflict bool
+	}{
+		{"user_at_limit", key("k", 10_008), true}, // keySizeLimit+tenantPrefixSize
+		{"user_over_limit", key("k", 10_009), false},
+		{"system_at_limit", key("\xff\x05k", 30_000), true}, // systemKeySizeLimit
+		{"system_over_limit", key("\xff\x05k", 30_001), false},
+	} {
+		// The other side's range covers the key.
+		begin, end := []byte("k"), []byte("l")
+		if c.key[0] == 0xff {
+			begin, end = []byte("\xff\x05"), []byte("\xff\x06")
+		}
+		for _, write := range []bool{false, true} {
+			name := c.name + "/read"
 			if write {
-				if err := reader.AddReadConflictRange(fdb.KeyRange{Begin: fdb.Key("k"), End: fdb.Key("l")}); err != nil {
-					t.Fatalf("reader AddReadConflictRange: %v", err)
-				}
-				if err := writer.AddWriteConflictKey(fdb.Key(big)); err != nil {
-					t.Fatalf("AddWriteConflictKey(oversized): %v", err)
-				}
-			} else {
-				if err := reader.AddReadConflictKey(fdb.Key(big)); err != nil {
-					t.Fatalf("AddReadConflictKey(oversized): %v", err)
-				}
-				if err := writer.AddWriteConflictRange(fdb.KeyRange{Begin: fdb.Key("k"), End: fdb.Key("l")}); err != nil {
-					t.Fatalf("writer AddWriteConflictRange: %v", err)
-				}
+				name = c.name + "/write"
 			}
-			// Disjoint mutations make both commits real ones (see the note above).
-			writer.Set(fdb.Key("zzz/disjoint"), []byte("x"))
-			if err := writer.Commit().Get(); err != nil {
-				t.Fatalf("writer commit: %v", err)
-			}
-			reader.Set(fdb.Key("reader/own"), []byte("y"))
-			if err := reader.Commit().Get(); err != nil {
-				t.Fatalf("reader commit: got %v (code %d), want success — the oversized %s conflict key "+
-					"clamps to an empty range and must record nothing", err, codeOf(err), name)
-			}
-		})
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				db := simfdb.New(nil)
+				reader, err := db.CreateWritableTransaction()
+				if err != nil {
+					t.Fatalf("create reader: %v", err)
+				}
+				// Pinned before the writer commits, as in TestOversizedConflictRangeEndpointClamped.
+				if _, err := reader.GetReadVersion().Get(); err != nil {
+					t.Fatalf("reader GetReadVersion: %v", err)
+				}
+				writer, err := db.CreateWritableTransaction()
+				if err != nil {
+					t.Fatalf("create writer: %v", err)
+				}
+				span := fdb.KeyRange{Begin: fdb.Key(begin), End: fdb.Key(end)}
+				if write {
+					if err := reader.AddReadConflictRange(span); err != nil {
+						t.Fatalf("reader AddReadConflictRange: %v", err)
+					}
+					if err := writer.AddWriteConflictKey(fdb.Key(c.key)); err != nil {
+						t.Fatalf("AddWriteConflictKey: %v", err)
+					}
+				} else {
+					if err := reader.AddReadConflictKey(fdb.Key(c.key)); err != nil {
+						t.Fatalf("AddReadConflictKey: %v", err)
+					}
+					if err := writer.AddWriteConflictRange(span); err != nil {
+						t.Fatalf("writer AddWriteConflictRange: %v", err)
+					}
+				}
+				// Disjoint mutations make both commits real ones (see the note above).
+				writer.Set(fdb.Key("zzz/disjoint"), []byte("x"))
+				if err := writer.Commit().Get(); err != nil {
+					t.Fatalf("writer commit: %v", err)
+				}
+				reader.Set(fdb.Key("reader/own"), []byte("y"))
+				want := 0
+				if c.conflict {
+					want = 1020 // not_committed
+				}
+				if err := reader.Commit().Get(); codeOf(err) != want {
+					t.Fatalf("reader commit: got %v (code %d), want code %d", err, codeOf(err), want)
+				}
+			})
+		}
 	}
 }
 

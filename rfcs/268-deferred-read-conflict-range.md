@@ -153,5 +153,10 @@ Lanes: `ryw_pin_unit_test` is in `just test`; `client_test` and `bench_test` are
 - `rfcs/126-fuzzapi-workload.md` §2.2/§3.2 notes point here for the read half. TODO.md:
   tick the §0 read-conflict item with a "Fixed in RFC-268" note, and repoint the
   "Panic-safe locks" item's read-conflict site to `addReadConflictRangeRYW`.
+- `pkg/simfdb` (`simfdb_test`, fast lane): SimFDB's key forms gain the clamp its range forms
+  already port (`clampConflictRange`). `TestOversizedConflictKeyDropped` checks both key
+  forms at the user (10008) and system (30000) limits, where the conflict still aborts a
+  reader with 1020, and one byte over, where nothing is recorded. The 2004 check stays
+  unported there (`pkg/simfdb/conflict.go:52-57`).
 - Revert-proof: restoring the immediate return turns the range rows of the fast-lane tests
   and the differential red; removing the key form's check turns its rows red.
