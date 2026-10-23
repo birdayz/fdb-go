@@ -23,8 +23,9 @@ Pick the next unchecked item from TODO.md and drive it from RFC through implemen
 ## Step 1: Load the domain skill
 
 Every review in Steps 5, 7 and 10 runs the **`bruh-code-review`** skill. The repository's
-lenses in `.bruh/review/` apply by path: `cascades` (planner), `java-compat` (record layer
-and SQL), `fdb-client` (`pkg/fdbgo`), `spfresh` (vector index). Two domains also have a
+lenses in `.bruh/review/` apply by path to code: `cascades` (planner), `java-compat` (record
+layer and SQL), `fdb-client` (`pkg/fdbgo`), `spfresh` (vector index). An RFC matches none of
+them, so Step 5 names them with `lenses:`. Two domains also have a
 skill that sets the key-file map and spec anchor; load the matching one:
 
 - **Query engine** (planner, optimizer, executor, plan cache): `Skill(skill: "query-engine")`

@@ -37,7 +37,7 @@ The owner delegated release decisions; API reduction remains a v0.3.0 launch wor
 | D3 | Agent material in the public tree | done (owner) | Keep `CLAUDE.md`, `AGENTS.md` and `.claude/`; CLAUDE uses plain general rules. Remove tracked `shifts/`, `TODO_OLD.md`, `TODO_client.md`, `road-to-prod.md`, `PRODUCTION_READINESS.md`, `PORT.md` and `STRESS_RELATIONAL.md`; history retains them. [#791] removed reviewer names from test names. |
 | D4 | AI-assisted disclosure | done (owner) | README states AI agents work under human direction and links Java conformance, libfdb_c differentials, the binding tester and deterministic simulation. Test infrastructure is not a universal-parity claim. |
 | D5 | Shrink the public API (about 88% of 11.5k exported identifiers should be internal) | in progress | Planner, simfdb, dst, conformance and test seams are importable. The gomock mocks moved to `pkg/relational/api/apimock` ([#810]) and the demo protos to `gen/demopb` ([#842]); both are still importable. Neither move made those packages internal. Owner assigned API reduction to v0.3.0, the HN launch release, not v0.2.0. |
-| D6 | CI fleet capacity and deployment security review | done (owner, scoped verification) | Root verified two online runners on 2026-10-11: master's root-owned 0755 job guard and hook setting on both; actual master run 38160820959 executes it before steps in all seven jobs. Default token is read-only and cannot approve PRs; Claude mention workflow uses hosted runners and a trusted-association allowlist. This checks the deployment/trust boundary, not blanket security. |
+| D6 | CI fleet capacity and deployment security review | done (owner, scoped verification) | Root verified two online runners on 2026-10-11: master's root-owned 0755 job guard and hook setting on both; actual master run 38160820959 executes it before steps in all seven jobs. Default token is read-only and cannot approve PRs; the Claude mention workflow then used hosted runners and a trusted-association allowlist; it was removed in [#987]. This checks the deployment/trust boundary, not blanket security. |
 
 ## 2. Findings, by workstream
 
@@ -142,6 +142,7 @@ The owner delegated release decisions; API reduction remains a v0.3.0 launch wor
 | Answer on bus factor | not started | owner |
 
 [#788]: https://github.com/birdayz/fdb-go/pull/788
+[#987]: https://github.com/birdayz/fdb-go/pull/987
 [#789]: https://github.com/birdayz/fdb-go/pull/789
 [#790]: https://github.com/birdayz/fdb-go/pull/790
 [#791]: https://github.com/birdayz/fdb-go/pull/791

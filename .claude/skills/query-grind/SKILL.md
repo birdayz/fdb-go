@@ -188,7 +188,8 @@ For each candidate batch:
   provides coverage guidance. Retain minimized failures; seed counts alone aren't coverage.
 - For planner/executor changes, follow the existing stress/performance and Java-reference
   requirements. A harness-only change is not a reason to invent a planner speed claim.
-- Follow RFC/design → ACK → implementation → milestone review. `bruh-code-review` reviews the
+- Follow RFC/design → ACK → implementation → milestone review. Review a design with
+  `bruh-code-review` and `lenses: cascades` (a design doc matches no lens path). It reviews the
   completed slice, with one re-review of the final HEAD after findings
   (`previous: <run>/report.json`). No per-commit review treadmill. Existing approved designs
   cover work only within their actual scope; new harness/engine mechanisms need their design
