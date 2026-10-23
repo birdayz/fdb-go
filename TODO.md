@@ -302,13 +302,15 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
     NativeAPI `getRange` sends `firstGreaterThan(last)` (`NativeAPI.actor.cpp:4850`). Same
     rows, different `Begin` bytes. RFC-262 D4 leaves mapped reads on their sender; port the
     selector-capable sender for them and add a mapped multi-request golden scenario.
-- [ ] **Explicit write-conflict-range errors are immediate.** `AddWriteConflictRange`
+- [x] **Explicit write-conflict-range errors are immediate.** `AddWriteConflictRange`
   returns `key_outside_legal_range` (2004) from the call, while the C binding runs RYW
   `addWriteConflictRange` on the network thread and records the error as the
   transaction's deferred error (`ThreadSafeTransaction.cpp:659-663`, check at
   `ReadYourWrites.actor.cpp:2466-2468`), surfacing it on the next operation.
   `AddWriteConflictKey` already defers it. Align the range form (the facade's return
   value then only carries synchronous errors such as inverted ranges) with a test.
+  Fixed in RFC-267: the range form defers 2004 through the key form's path and returns
+  only inverted_range; pinned by fast-lane tests and a libfdb_c differential.
 - [ ] **Explicit read-conflict-range errors are immediate or missing.** libfdb_c runs RYW
   `addReadConflictRange` on the network thread too (`ThreadSafeTransaction.cpp:589-594`):
   an endpoint past `getMaxReadKey()`, other than the exact metadataVersionKey range

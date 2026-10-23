@@ -89,6 +89,11 @@ the already-constructed (`begin <= end`) range.
 `begin > end → inverted_range (2005)`; there is **no** `maxReadKey` check, so a conflict range whose
 endpoint is past `\xff\xff` is silently accepted where libfdb_c rejects.
 
+> **Superseded in part by RFC-267.** The probe compared each transaction's final error, so libfdb_c's
+> 2004 above came from the commit: libfdb_c runs both RYW methods on the network thread and defers
+> the throw (`ThreadSafeTransaction.cpp:589-594`, `:659-663`). Go's write form now defers it too;
+> the read form's immediate return is an open TODO.md item.
+
 ## 3. Proposed Go change
 
 ### 3.1 Divergence A — reject `limit < -1` with `range_limits_invalid` (2012)

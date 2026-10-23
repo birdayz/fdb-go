@@ -453,6 +453,8 @@ type Transaction struct {
 	// :2534-2542; the option is NOT applied, matching the C++ throw-before-assign), and
 	// SetSizeLimit out of [32, 1e7], including a DB default (2006, extractIntOption).
 	// SetTimeout outside [0, INT_MAX] (2006 — extractIntOption's throw, also not applied).
+	// An explicit write-conflict range or key past maxWriteKey (2004 — RYW
+	// addWriteConflictRange's throw, :2466-2468; see deferWriteConflictRange).
 	// (readErr is a DIFFERENT C++ mechanism — ryw->reading, the read-future ledger —
 	// and lives under readErrMu, which also guards readGen + pendingReads.)
 	deferredErr atomic.Pointer[wire.FDBError]
@@ -3215,10 +3217,51 @@ func (tx *Transaction) stateAddReadConflictKey(key []byte) {
 	tx.addReadConflictForKeyRYW(key)
 }
 
+// stateAddWriteConflictRange returns only inverted_range, which libfdb_c raises from the
+// KeyRangeRef built on the calling thread (fdb_c.cpp:1223, FDBTypes.h:318-323). The rest runs
+// as RYW addWriteConflictRange on the network thread, whose errors are deferred.
 func (tx *Transaction) stateAddWriteConflictRange(begin, end []byte) error {
 	if bytes.Compare(begin, end) > 0 {
 		return &wire.FDBError{Code: ErrInvertedRange}
 	}
+	tx.deferWriteConflictRange(begin, end)
+	return nil
+}
+
+func (tx *Transaction) stateAddWriteConflictKey(key []byte) {
+	tx.deferWriteConflictRange(key, keyAfterBytes(key))
+}
+
+// deferWriteConflictRange is ThreadSafeTransaction::addWriteConflictRange
+// (ThreadSafeTransaction.cpp:659-663): onMainThreadVoid records a throw as the deferred error
+// and skips the work once one is set (ThreadHelper.actor.h:50-61).
+func (tx *Transaction) deferWriteConflictRange(begin, end []byte) {
+	if tx.deferredErr.Load() != nil {
+		return
+	}
+	poison := tx.addWriteConflictRangeRYW(begin, end)
+	if poison == nil {
+		return
+	}
+	// Illegal mutations are buffered until commit in Go. Preserve their
+	// earlier verdict, as for invalid Atomic (RYW:2344-2348).
+	tx.conflictMu.Lock()
+	defer tx.conflictMu.Unlock()
+	for _, m := range tx.mutations {
+		if earlier := tx.validateMutation(m, tx.maxWriteKey()); earlier != nil {
+			var fe *wire.FDBError
+			if errors.As(earlier, &fe) {
+				poison = fe
+			}
+			break
+		}
+	}
+	tx.deferredErr.CompareAndSwap(nil, poison)
+}
+
+// addWriteConflictRangeRYW is RYW addWriteConflictRange (ReadYourWrites.actor.cpp:2461-2500)
+// for a range that is not inverted.
+func (tx *Transaction) addWriteConflictRangeRYW(begin, end []byte) *wire.FDBError {
 	// C++ addWriteConflictRange (ReadYourWrites.actor.cpp:2466-2468, apiVersionAtLeast(300)): reject a
 	// range whose begin/end exceeds getMaxWriteKey() — note getMaxWriteKey (gated on writeSystemKeys),
 	// NOT getMaxReadKey, and NO metadataVersionKey exception (asymmetric with the read path above).
@@ -3243,34 +3286,6 @@ func (tx *Transaction) stateAddWriteConflictRange(begin, end []byte) error {
 		tx.ryw.addConflictRange(begin, end) // RYW:2493-2499
 	}
 	return nil
-}
-
-// The C binding defers errors raised by RYW addWriteConflictRange on the
-// network thread (ThreadSafeTransaction.cpp:659-663), before touching WriteMap.
-func (tx *Transaction) stateAddWriteConflictKey(key []byte) {
-	if tx.deferredErr.Load() != nil {
-		return // doOnMainThreadVoid skips work after the first deferred error
-	}
-	if err := tx.stateAddWriteConflictRange(key, keyAfterBytes(key)); err != nil {
-		var poison *wire.FDBError
-		if !errors.As(err, &poison) {
-			return
-		}
-		// Illegal mutations are buffered until commit in Go. Preserve their
-		// earlier verdict, as for invalid Atomic (RYW:2344-2348).
-		tx.conflictMu.Lock()
-		defer tx.conflictMu.Unlock()
-		for _, m := range tx.mutations {
-			if earlier := tx.validateMutation(m, tx.maxWriteKey()); earlier != nil {
-				var fe *wire.FDBError
-				if errors.As(earlier, &fe) {
-					poison = fe
-				}
-				break
-			}
-		}
-		tx.deferredErr.CompareAndSwap(nil, poison)
-	}
 }
 
 // postCommitReset clears mutation buffers and conflict ranges after a

@@ -172,7 +172,9 @@ func TestDifferential_ExactModeWithoutLimits(t *testing.T) {
 
 // TestDifferential_ConflictRangeMaxKey — addReadConflictRange/addWriteConflictRange reject an endpoint
 // past getMaxReadKey/getMaxWriteKey with key_outside_legal_range (2004) (ReadYourWrites.actor.cpp:1954
-// read / :2466 write). Go used to check only inverted (begin>end). Crucially this exercises the
+// read / :2466 write). Go used to check only inverted (begin>end). This compares the transaction's
+// final error, not where it surfaces: libfdb_c defers both, so its 2004 comes from the commit
+// (TestDifferential_WriteConflictRangeDeferred pins the write site). Crucially this exercises the
 // read/write ASYMMETRY: addReadConflictRange uses getMaxReadKey() + a metadataVersionKey exception;
 // addWriteConflictRange uses getMaxWriteKey() with NO exception — they diverge when only READ_SYSTEM_KEYS
 // is set (maxReadKey=\xff\xff, maxWriteKey=\xff), which a symmetric (flattened) fix would have hidden.

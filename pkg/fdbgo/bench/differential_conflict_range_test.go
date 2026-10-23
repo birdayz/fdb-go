@@ -600,3 +600,69 @@ func TestDifferential_ConflictRangeEdges(t *testing.T) {
 		}
 	}
 }
+
+// TestDifferential_WriteConflictRangeDeferred pins WHERE each explicit write-conflict-range error
+// surfaces. libfdb_c returns only inverted_range from the call (the KeyRangeRef built in
+// fdb_c.cpp:1223); key_outside_legal_range is raised on the network thread and recorded as the
+// deferred error (ThreadSafeTransaction.cpp:659-663, ReadYourWrites.actor.cpp:2466-2468), so the
+// call succeeds and the next Get and the Commit fail. Codes are compared per step, go==cgo. The
+// Get is a snapshot read: it still returns the deferred error, and it adds no read conflict, so a
+// concurrent test's write conflict (ConflictRangeMaxKey commits [a, m)) cannot fail the commit.
+func TestDifferential_WriteConflictRangeDeferred(t *testing.T) {
+	t.Parallel()
+	pfx := fmt.Sprintf("differ_wcr_deferred_%d_", os.Getpid())
+	cases := []struct {
+		name       string
+		readSystem bool
+		begin, end string
+		want       [3]int // the call, the next Get, the Commit
+	}{
+		{"legal", false, pfx + "a", pfx + "b", [3]int{0, 0, 0}},
+		{"end_past_max_write_key", false, pfx + "a", "\xff\xff\xff", [3]int{0, 2004, 2004}},
+		{"begin_past_max_write_key", false, "\xff\x05", "\xff\x06", [3]int{0, 2004, 2004}},
+		// READ_SYSTEM_KEYS raises maxReadKey only; the write check still uses \xff.
+		{"read_system_keys_end_past_max_write_key", true, pfx + "a", "\xff\x05", [3]int{0, 2004, 2004}},
+		{"inverted", false, pfx + "b", pfx + "a", [3]int{2005, 0, 0}},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			var g, cg [3]int
+			{
+				tr, err := goClient.CreateTransaction()
+				if err != nil {
+					t.Fatalf("go create: %v", err)
+				}
+				defer tr.Cancel()
+				if c.readSystem {
+					_ = tr.Options().SetReadSystemKeys()
+				}
+				g[0] = fdbErrorCode(tr.AddWriteConflictRange(gofdb.KeyRange{Begin: gofdb.Key(c.begin), End: gofdb.Key(c.end)}))
+				_, err = tr.Snapshot().Get(gofdb.Key(pfx + "k")).Get()
+				g[1] = fdbErrorCode(err)
+				g[2] = fdbErrorCode(tr.Commit().Get())
+			}
+			{
+				tr, err := cgoClient.CreateTransaction()
+				if err != nil {
+					t.Fatalf("cgo create: %v", err)
+				}
+				defer tr.Cancel()
+				if c.readSystem {
+					_ = tr.Options().SetReadSystemKeys()
+				}
+				cg[0] = fdbErrorCode(tr.AddWriteConflictRange(cgofdb.KeyRange{Begin: cgofdb.Key(c.begin), End: cgofdb.Key(c.end)}))
+				_, err = tr.Snapshot().Get(cgofdb.Key(pfx + "k")).Get()
+				cg[1] = fdbErrorCode(err)
+				cg[2] = fdbErrorCode(tr.Commit().Get())
+			}
+			if g != cg {
+				t.Errorf("DIVERGENCE (call, next Get, Commit): go=%v cgo=%v", g, cg)
+			}
+			if g != c.want {
+				t.Errorf("go (call, next Get, Commit) = %v, want %v (libfdb_c=%v)", g, c.want, cg)
+			}
+		})
+	}
+}

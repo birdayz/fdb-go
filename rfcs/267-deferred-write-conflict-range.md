@@ -1,6 +1,6 @@
 # RFC-267: Explicit write-conflict-range errors are deferred
 
-**Status:** Draft
+**Status:** Implemented
 **Item:** TODO.md §0, "Explicit write-conflict-range errors are immediate."
 **Spec:** FoundationDB 7.3.77 (`/tmp/fdbsrc`); Go line numbers at `cab2e9d50`.
 
@@ -106,4 +106,5 @@ Lanes: `ryw_pin_unit_test` is in `just test`; `client_test` and `bench_test` are
   is 2004 on both sides before and after; its comment is corrected to say where 2004
   surfaces.
 - Revert-proof: restoring the immediate return turns the three fast-lane tests red
-  (`just test`) and the differential red (`just test-full`).
+  (`just test`; the inverted-range test reaches its deferred-error half through an illegal
+  range, which then fails at the call) and the differential red (`just test-full`).
