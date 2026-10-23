@@ -454,9 +454,8 @@ type Transaction struct {
 	// SetSizeLimit out of [32, 1e7], including a DB default (2006, extractIntOption).
 	// SetTimeout outside [0, INT_MAX] (2006 — extractIntOption's throw, also not applied).
 	// An explicit write-conflict range or key past maxWriteKey (2004 — RYW
-	// addWriteConflictRange's throw, :2466-2468; see deferWriteConflictRange), and an
-	// explicit read-conflict range or key past maxReadKey other than the metadataVersionKey
-	// range (2004 — RYW addReadConflictRange's throw, :1950-1955; see deferReadConflictRange).
+	// addWriteConflictRange's throw, :2466-2468; see deferWriteConflictRange), and the read
+	// form past maxReadKey (2004, :1950-1955; see stateAddReadConflictRange).
 	// (readErr is a DIFFERENT C++ mechanism — ryw->reading, the read-future ledger —
 	// and lives under readErrMu, which also guards readGen + pendingReads.)
 	deferredErr atomic.Pointer[wire.FDBError]
@@ -3156,53 +3155,40 @@ func (tx *Transaction) grvFlags() uint32 {
 }
 
 // stateAddReadConflictRange returns only inverted_range, which libfdb_c raises from the
-// KeyRangeRef built on the calling thread (fdb_c.cpp:1223, FDBTypes.h:318-323). The rest runs
-// as RYW addReadConflictRange on the network thread, whose errors are deferred.
+// KeyRangeRef built on the calling thread (fdb_c.cpp:1223, FDBTypes.h:318-323).
 func (tx *Transaction) stateAddReadConflictRange(begin, end []byte) error {
 	if bytes.Compare(begin, end) > 0 {
 		return &wire.FDBError{Code: ErrInvertedRange}
 	}
-	tx.deferReadConflictRange(begin, end, false)
+	// libfdb_c runs the rest on the network thread and defers its throw, skipping the work once an
+	// error is deferred (ThreadSafeTransaction.cpp:589-594, ThreadHelper.actor.h:50-61).
+	if tx.deferredErr.Load() == nil {
+		if poison := tx.addReadConflictRangeRYW(begin, end); poison != nil {
+			tx.recordDeferredError(poison)
+		}
+	}
 	return nil
 }
 
-// stateAddReadConflictKey is the range form over [key, keyAfter(key)), the range the C
-// binding's key form passes (bindings/go/src/fdb/transaction.go:548-554).
+// stateAddReadConflictKey is the range form over [key, keyAfter(key)), the C binding's key form
+// (bindings/go/src/fdb/transaction.go:548-554).
 func (tx *Transaction) stateAddReadConflictKey(key []byte) {
-	tx.deferReadConflictRange(key, nil, true)
-}
-
-// deferReadConflictRange is ThreadSafeTransaction::addReadConflictRange
-// (ThreadSafeTransaction.cpp:589-594): onMainThreadVoid records a throw as the deferred error
-// and skips the work once one is set (ThreadHelper.actor.h:50-61). With single set the range
-// is [begin, keyAfter(begin)) and end is unused.
-func (tx *Transaction) deferReadConflictRange(begin, end []byte, single bool) {
-	if tx.deferredErr.Load() != nil {
-		return
-	}
-	if poison := tx.addReadConflictRangeRYW(begin, end, single); poison != nil {
-		tx.recordDeferredError(poison)
+	if tx.deferredErr.Load() == nil {
+		if poison := tx.addReadConflictKeyRYW(key); poison != nil {
+			tx.recordDeferredError(poison)
+		}
 	}
 }
 
 // addReadConflictRangeRYW is RYW addReadConflictRange (ReadYourWrites.actor.cpp:1945-1987)
-// for a range that is not inverted; single as in deferReadConflictRange.
-func (tx *Transaction) addReadConflictRangeRYW(begin, end []byte, single bool) *wire.FDBError {
+// for a range that is not inverted.
+func (tx *Transaction) addReadConflictRangeRYW(begin, end []byte) *wire.FDBError {
 	// C++ addReadConflictRange (ReadYourWrites.actor.cpp:1950-1955, apiVersionAtLeast(300)): reject a
 	// range whose begin/end exceeds getMaxReadKey(), EXCEPT the exact metadataVersionKey range. Unlike
-	// the write check (:2466-2468) it uses getMaxReadKey and has the exception. Inverted is checked
-	// first (C++ throws it from KeyRangeRef construction before this check).
+	// the write check (:2466-2468) it uses getMaxReadKey and has the exception.
 	maxKey := tx.maxReadKey()
-	var illegal bool
-	if single {
-		// keyAfter(begin) is past maxKey iff begin >= maxKey, and [begin, keyAfter(begin)) is the
-		// metadataVersionKey range iff begin is that key; no keyAfter allocation.
-		illegal = bytes.Compare(begin, maxKey) >= 0 && !bytes.Equal(begin, metadataVersionKeyBytes)
-	} else {
-		illegal = (bytes.Compare(begin, maxKey) > 0 || bytes.Compare(end, maxKey) > 0) &&
-			!(bytes.Equal(begin, metadataVersionKeyBytes) && bytes.Equal(end, metadataVersionKeyEndBytes))
-	}
-	if illegal {
+	if (bytes.Compare(begin, maxKey) > 0 || bytes.Compare(end, maxKey) > 0) &&
+		!(bytes.Equal(begin, metadataVersionKeyBytes) && bytes.Equal(end, metadataVersionKeyEndBytes)) {
 		return &wire.FDBError{Code: 2004} // key_outside_legal_range
 	}
 	// C++ addReadConflictRange (ReadYourWrites.actor.cpp:1957-1975) then CLAMPS an oversized endpoint
@@ -3212,16 +3198,6 @@ func (tx *Transaction) addReadConflictRangeRYW(begin, end []byte, single bool) *
 	// so it PASSES that check and reaches the clamp. There are no stored keys longer than the max, so
 	// the truncated range is equivalent — but without this Go shipped the full oversized key to the
 	// resolver (wire + tx-size divergence) instead of libfdb_c's truncation.
-	if single {
-		// begin and keyAfter(begin) have the same limit. Within it the clamp changes nothing; past
-		// it both endpoints become begin[:max+1] and the range is empty.
-		if len(begin) > getMaxClearKeySize(begin) {
-			return nil
-		}
-		// The Get path's single-key updateConflictMap, without the write map's range walk.
-		tx.addReadConflictForKeyRYW(begin)
-		return nil
-	}
 	if bmax := getMaxClearKeySize(begin); len(begin) > bmax {
 		begin = begin[:bmax+1]
 	}
@@ -3244,6 +3220,21 @@ func (tx *Transaction) addReadConflictRangeRYW(begin, end []byte, single bool) *
 	ranges := tx.ryw.liveLocked().conflictRanges(begin, end)
 	tx.ryw.mu.Unlock()
 	tx.addReadConflicts(ranges) // atomic append: a concurrent Commit sees all sub-ranges or none
+	return nil
+}
+
+// addReadConflictKeyRYW is addReadConflictRangeRYW on [key, keyAfter(key)) without allocating
+// keyAfter(key) or walking the write map.
+func (tx *Transaction) addReadConflictKeyRYW(key []byte) *wire.FDBError {
+	// keyAfter(key) is past maxReadKey iff key >= maxReadKey; the range is metadataVersionKey's iff key is.
+	if bytes.Compare(key, tx.maxReadKey()) >= 0 && !bytes.Equal(key, metadataVersionKeyBytes) {
+		return &wire.FDBError{Code: 2004} // key_outside_legal_range
+	}
+	// Past the size limit the clamp cuts both endpoints to key[:max+1], an empty range (RYW:1962-1975).
+	if len(key) > getMaxClearKeySize(key) {
+		return nil
+	}
+	tx.addReadConflictForKeyRYW(key) // the single-key updateConflictMap
 	return nil
 }
 
@@ -3274,10 +3265,8 @@ func (tx *Transaction) deferWriteConflictRange(begin, end []byte) {
 	}
 }
 
-// recordDeferredError stores poison as the deferred error unless one is set (the first wins).
-// Illegal mutations are buffered until commit in Go, but C++ throws them eagerly, so an earlier
-// illegal mutation's verdict out-ranks poison (RYW:2226-2235, :2344-2348). The scan runs under
-// conflictMu for a consistent snapshot of the preceding mutations.
+// recordDeferredError stores poison unless an error is deferred. Go buffers illegal mutations that
+// C++ throws eagerly (RYW:2226-2235, :2344-2348), so the earliest one out-ranks poison.
 func (tx *Transaction) recordDeferredError(poison *wire.FDBError) {
 	tx.conflictMu.Lock()
 	defer tx.conflictMu.Unlock()

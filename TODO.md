@@ -326,7 +326,7 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
 - [ ] **Panic-safe locks outside the GetKey walk.** Scoped recovery now unwinds GetKey
   walk locks, but older paths still pair bare Lock/Unlock around fallible work:
   `ryw.go:620-632` (`get` / `localPointLocked`), `ryw.go:643-645` (`getSnapshot`),
-  and `transaction.go:3237-3239` (`addReadConflictRangeRYW` / `conflictRanges`).
+  and `transaction.go:3219-3221` (`addReadConflictRangeRYW` / `conflictRanges`).
   Scope deferred unlocks there and pin a panic inside each locked operation; do not
   treat a panic after a reply outside the lock as proof. Also audit transport
   `writer_turn.go:52-99`: `NotifySuspend` and the coalescing wait run with `writeMu`

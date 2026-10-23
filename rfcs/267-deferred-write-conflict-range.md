@@ -60,7 +60,8 @@ the Apple binding over libfdb_c. Doc comments on both layers say so.
 
 Out of scope, recorded as a new TODO.md entry in this change: the read forms have the same C++ path
 (`ThreadSafeTransaction.cpp:589-594`, RYW `:1950-1955`), but Go's `AddReadConflictRange`
-returns 2004 immediately and `AddReadConflictKey` has no legal-range check at all.
+returns 2004 immediately and `AddReadConflictKey` has no legal-range check at all. RFC-268
+fixes both.
 
 ## Wire and data compatibility
 

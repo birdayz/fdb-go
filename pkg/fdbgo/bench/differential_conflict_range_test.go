@@ -663,11 +663,8 @@ func TestDifferential_WriteConflictRangeDeferred(t *testing.T) {
 	}
 }
 
-// TestDifferential_ReadConflictRangeDeferred: the call returns only inverted_range; 2004 is deferred
-// to the next operation and the commit (ThreadSafeTransaction.cpp:589-594, ReadYourWrites.actor.cpp
-// :1950-1955). The key form is the same C call over [k, k\x00) (bindings/go/src/fdb/transaction.go
-// :548-554). GetApproximateSize is the next operation: on a legal call its growth shows whether a read
-// conflict was recorded (both clients count read conflicts in it), which the read-only commit cannot.
+// TestDifferential_ReadConflictRangeDeferred (RFC-268): 2004 is deferred past the call. The growth of
+// GetApproximateSize shows what a legal call recorded, which the read-only commit cannot.
 func TestDifferential_ReadConflictRangeDeferred(t *testing.T) {
 	t.Parallel()
 	pfx := fmt.Sprintf("differ_rcr_deferred_%d_", os.Getpid())

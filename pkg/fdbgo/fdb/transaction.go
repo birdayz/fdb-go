@@ -366,16 +366,17 @@ func (tr Transaction) Reset() {
 }
 
 // AddReadConflictRange adds a read conflict range. It returns only inverted_range;
-// as with libfdb_c, a range past the maximum read key fails the next operation and
-// the commit with key_outside_legal_range instead.
+// as with libfdb_c, a range past the maximum read key, other than the exact
+// metadataVersionKey range, fails the next operation and the commit with
+// key_outside_legal_range instead.
 func (tr Transaction) AddReadConflictRange(er ExactRange) error {
 	begin, end := er.FDBRangeKeys()
 	return convertError(tr.t.inner.AddReadConflictRange(begin.FDBKey(), end.FDBKey()))
 }
 
 // AddReadConflictKey adds a read conflict on a single key. It returns nil; a key at or
-// past the maximum read key fails the next operation and the commit with
-// key_outside_legal_range, as AddReadConflictRange does.
+// past the maximum read key, other than metadataVersionKey, fails the next operation
+// and the commit with key_outside_legal_range, as AddReadConflictRange does.
 func (tr Transaction) AddReadConflictKey(key KeyConvertible) error {
 	tr.t.inner.AddReadConflictKey(key.FDBKey())
 	return nil

@@ -55,26 +55,23 @@ range; and a `k` longer than `getMaxReadKeySize(k)` clamps both endpoints to the
 
 ## Fix
 
-Mirror RFC-267's write-side split in `pkg/fdbgo/client/transaction.go`. Both forms share one
-deferral wrapper and one RYW body; the key form differs only in its final insert:
+Mirror RFC-267's write-side split in `pkg/fdbgo/client/transaction.go`:
 
 - `stateAddReadConflictRange(begin, end) error`: return 2005 for `begin > end` (step 1,
-  regardless of a deferred error); otherwise `deferReadConflictRange(begin, end, false)` and
-  return `nil`.
-- `stateAddReadConflictKey(key)`: `deferReadConflictRange(key, nil, true)`, the range
-  `[key, keyAfter(key))`.
-- `deferReadConflictRange(begin, end, single)`: return if `deferredErr` is set (step 3); else
-  run `addReadConflictRangeRYW` and record a 2004 it returns as the deferred error.
-- `addReadConflictRangeRYW(begin, end, single)` is step 4 (today's range body after the
-  inverted check): the legal-range check, the clamp, the RYW-disabled or filtered insert.
-  For `single` the check and clamp are evaluated on `[key, keyAfter(key))` without
-  allocating `keyAfter(key)`: the end is past `maxReadKey` iff `key >= maxReadKey`; the
-  range is the metadataVersionKey range iff `key == metadataVersionKey`; the clamp drops it
-  iff `len(key) > getMaxClearKeySize(key)` (`getMaxReadKeySize == getMaxKeySize ==
+  regardless of a deferred error); otherwise, unless an error is deferred (step 3), run
+  `addReadConflictRangeRYW` and record a 2004 it returns; return `nil`.
+- `stateAddReadConflictKey(key)`: the same deferral around `addReadConflictKeyRYW`.
+- `addReadConflictRangeRYW(begin, end)` is step 4 (today's range body after the inverted
+  check): the legal-range check, the clamp, the RYW-disabled or filtered insert.
+- `addReadConflictKeyRYW(key)` is step 4 on `[key, keyAfter(key))` without allocating
+  `keyAfter(key)`: the end is past `maxReadKey` iff `key >= maxReadKey`; the range is the
+  metadataVersionKey range iff `key == metadataVersionKey`; the clamp drops it iff
+  `len(key) > getMaxClearKeySize(key)` (`getMaxReadKeySize == getMaxKeySize ==
   getMaxClearKeySize`, as the range form already assumes) and leaves it unchanged
   otherwise. The insert is then today's single-key `addReadConflictForKeyRYW`, which is
   `updateConflictMap` on `[key, keyAfter(key))` without the write map's range walk
   (`transaction.go:1060-1074` keeps it off the Get hot path's re-sort).
+  `TestAddReadConflictKeyMatchesRangeForm` pins the two bodies to each other.
 - Recording the deferred error is shared with the write form and `Atomic`: RFC-267's
   "earliest illegal buffered mutation wins" scan in `deferWriteConflictRange` and the same
   scan inline in `Atomic` (`transaction.go:1408-1426`) become one
