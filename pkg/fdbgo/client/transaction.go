@@ -454,8 +454,9 @@ type Transaction struct {
 	// SetSizeLimit out of [32, 1e7], including a DB default (2006, extractIntOption).
 	// SetTimeout outside [0, INT_MAX] (2006 — extractIntOption's throw, also not applied).
 	// An explicit write-conflict range or key past maxWriteKey (2004 — RYW
-	// addWriteConflictRange's throw, :2466-2468; see deferWriteConflictRange), and the read
-	// form past maxReadKey (2004, :1950-1955; see stateAddReadConflictRange).
+	// addWriteConflictRange's throw, :2466-2468; see deferWriteConflictRange), and an explicit
+	// read-conflict range or key past maxReadKey other than the metadataVersionKey range (2004,
+	// :1950-1955; see stateAddReadConflictRange/Key).
 	// (readErr is a DIFFERENT C++ mechanism — ryw->reading, the read-future ledger —
 	// and lives under readErrMu, which also guards readGen + pendingReads.)
 	deferredErr atomic.Pointer[wire.FDBError]
