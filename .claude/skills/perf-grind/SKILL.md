@@ -103,18 +103,13 @@ After each fix:
 git push origin perf-grind-N
 ```
 
-When ready for review:
-```bash
-gh pr ready
-gh pr comment --body "@claude review"
-```
+When ready for review, mark the PR ready (`gh pr ready`) and run the **`bruh-code-review`**
+skill on it: `review PR <N> and post it`.
 
-**Iterate with the reviewer until LGTM.** Fix every issue they raise. Request re-review after each round:
-```bash
-gh pr comment --body "@claude Fixed X, Y, Z (commit abc123). Please review again."
-```
+**Iterate until it ACKs the current HEAD.** Fix every finding it raises. Review again after
+each round (`previous: <run>/report.json`) and post it; an ACK only covers the HEAD it reviewed.
 
-**Never merge yourself.** The human merges after reviewer LGTM.
+**Never merge yourself.** The human merges after the bruh-code-review ACK.
 
 ### 6. Keep going
 

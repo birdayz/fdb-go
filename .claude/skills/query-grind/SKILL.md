@@ -80,8 +80,9 @@ SimFDB is not real wire-transport fidelity. Scope all counts.
 | Existing Bazel targets/nightlies | Corpus replay, fuzz, race, coverage and mutation checks |
 
 Compose [dst](../dst/SKILL.md) for reproduction/fuzz/simulation mechanics and
-[query-engine](../query-engine/SKILL.md) for design and implementation review. A client
-bug additionally uses the client engineering/review skill and C++ as its specification.
+[query-engine](../query-engine/SKILL.md) for design and implementation; reviews run the
+`bruh-code-review` skill. A client bug additionally uses the client engineering skill
+(`fdb-client-engineer`) and C++ as its specification.
 
 ### Tool commands: discover the actual route
 
@@ -187,10 +188,12 @@ For each candidate batch:
   provides coverage guidance. Retain minimized failures; seed counts alone aren't coverage.
 - For planner/executor changes, follow the existing stress/performance and Java-reference
   requirements. A harness-only change is not a reason to invent a planner speed claim.
-- Follow RFC/design → ACK → implementation → milestone review. Graefe/Torvalds review the
-  completed slice, with Codex at that same granularity and a final delta confirmation after
-  findings. No per-commit review treadmill. Existing approved designs cover work only within
-  their actual scope; new harness/engine mechanisms need their design gate.
+- Follow RFC/design → ACK → implementation → milestone review. Review a design with
+  `bruh-code-review` and `lenses: cascades` (a design doc matches no lens path). It reviews the
+  completed slice, with one re-review of the final HEAD after findings
+  (`previous: <run>/report.json`). No per-commit review treadmill. Existing approved designs
+  cover work only within their actual scope; new harness/engine mechanisms need their design
+  gate.
 - Run `just test`, commit a logical verified change, continue on the same branch. No push
   without permission. Keep user edits out of the index/commit and preserve their bytes.
 - Record exact commands, source revisions/hashes, non-empty populations and observed

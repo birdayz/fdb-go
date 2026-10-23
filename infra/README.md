@@ -134,8 +134,7 @@ script and exercises both provisioning branches with fixture commands.
 The hook refuses other repositories, fork PR/review events, and **all** PR
 `issue_comment` events (those payloads do not identify the head repository). It does
 not reject ordinary issues or their comments, and is not a blanket agent-job ban.
-`claude.yml` separately uses GitHub-hosted runners. A maintainer can push a reviewed
-fork commit to a repository branch for the suite.
+A maintainer can push a reviewed fork commit to a repository branch for the suite.
 
 `cloud-init` is `PER_INSTANCE`, and `user_data` is pinned by `ignore_changes`: this
 change does not update existing runners. Deploy from reviewed infrastructure inputs by

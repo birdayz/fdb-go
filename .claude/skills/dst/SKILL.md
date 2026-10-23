@@ -362,8 +362,8 @@ just golden-update    # after an INTENTIONAL engine change: regenerate, then rev
 git diff pkg/simfdb/hunt/golden/testdata/   # THE review artifact
 ```
 
-- **Reviewing a golden diff (author + Graefe):** a **result-row** change is loud → almost always a bug;
-  a **plan** change with identical rows is a query-engine change → intended optimization or a regression,
+- **Reviewing a golden diff (author + `bruh-code-review`):** a **result-row** change is loud → almost
+  always a bug; a **plan** change with identical rows is a query-engine change → intended optimization or a regression,
   reviewed with its cost delta (a `IndexScan(X)` → `Scan(T)` swap is a red flag). A PR that changes engine
   behavior *must* regenerate + commit the baseline, or `just test` fails — that's the gate.
 - **Add coverage:** append a `Scenario` to `corpus()` in `golden_test.go` (new schema / index / query
@@ -576,7 +576,7 @@ axis). Match the pin to the tool:
 - **binding-stress:** a reproducing seed is the signal; fix the client and add a focused
   differential/unit test for the diverging op (the seed itself isn't a committed regression).
 
-A reviewer (human or Graefe/Torvalds/@claude) catch the suite missed is doubly important: fix the bug
+A review finding (human or `bruh-code-review`) the suite missed is doubly important: fix the bug
 **and** add the test that should have caught it.
 
 ---
@@ -634,8 +634,8 @@ handed to a background hunter.
    sweeping WIDER configs than the shipped profiles across millions of seeds for a wall-clock budget,
    failing with a full reproducer on the first `.Failed()`; and (b) the operational `dst-hunt -seconds N`
    across all profiles. Tell it to **reproduce → shrink → root-cause but NOT fix** (a Tier-1 resolver or
-   query-engine bug needs the lead, and query-engine fixes need a Graefe ACK), and to **delete the gated
-   harness if clean**. **`isolation: worktree` is necessary but NOT sufficient for SQL/metamorphic
+   query-engine bug needs the lead, and query-engine fixes need a `bruh-code-review` ACK), and to
+   **delete the gated harness if clean**. **`isolation: worktree` is necessary but NOT sufficient for SQL/metamorphic
    hunters.** The intent: a hunter that writes its gated `_test.go` / probe binary (`cmd/mmprobe`, a
    `scratch-mm/` dir) into the *shared* worktree makes your next commit's pre-commit `gazelle`/`gofumpt`/`lint`
    choke on files it's about to delete, and the commit fails until the hunter finishes. BUT a hunter that
@@ -721,7 +721,7 @@ classification is a claim with a shelf life, not a result.)
 2. **Size the fix honestly — contained vs planner vs RFC.** A finding's symptom often mis-states its
    root cause. The MIN/MAX "null-group drop" was really "Go maps SQL `MIN`/`MAX` to the wrong index type
    (`*_ever` vs Java's `permuted_*`)" — a wire/metadata-correctness bug, broader than the symptom. Some
-   fixes are executor-contained (concat continuation); some are a planner/DDL change (Graefe *design*
+   fixes are executor-contained (concat continuation); some are a planner/DDL change (a *design*
    decision, larger blast radius); some are an RFC that changes a pinned semantics (value-`DISTINCT`
    sort+dedup breaks `SELECT DISTINCT v ORDER BY <non-projected>`).
    **Don't force a planner redesign into a "fix" PR** — surface it. And check whether the code is already
@@ -731,11 +731,11 @@ classification is a claim with a shelf life, not a result.)
    that turns red when someone fixes it). On the fix: rewrite it as a CORRECTNESS test (`TestX`:
    paged==unpaged / result==model), delete the "known bug" framing, and RE-ENABLE the query in the
    sweep's quarantine list. A flipped detector is the regression that proves the fix for good.
-4. **Query-engine fixes: the full gate, every time.** Any planner/optimizer/executor change needs
-   **Graefe + Torvalds + codex** ACK before merge (PR #201 shipped a 0-row bug by skipping Graefe).
-   Run the two virtual reviewers as parallel subagents (`git diff <parent>`, "you are Goetz Graefe /
-   Linus Torvalds", <350 words), and codex via `codex exec review --base <parent-branch>` (its scope
-   flags don't take a custom prompt — it uses its own). Address every nit; re-request after changes.
+4. **Query-engine fixes: the full gate, every time.** Any planner/optimizer/executor change needs a
+   **`bruh-code-review` ACK** before merge (PR #201 shipped a 0-row bug by skipping the architectural
+   review). Review the fix's own commits (`review <parent>..HEAD`); the `cascades` lens applies to
+   planner and executor paths. Address every finding; review again after changes
+   (`previous: <run>/report.json`).
 5. **Stacked PRs for a batch of fixes.** Linear stack — base → fix1 → fix2 — so each PR's diff is only
    its own commits and shared files (TODO, the sweep) don't conflict. `gh pr create --base <parent>`.
    Read Java → implement (delegate to a fresh-context subagent with the exact path; resume the
@@ -750,7 +750,7 @@ classification is a claim with a shelf life, not a result.)
    tooling commit *added* shapes; usually auto-merges, but READ the merged `queries()` and confirm both
    coexist and only the still-open shape stays quarantined; (b) **prove the merge added no new engine
    logic** — `git diff <fixbranch> HEAD -- <each engine file>` must report IDENTICAL for every
-   planner/executor file, so the existing Graefe+Torvalds+codex ACKs still cover the logic and only the
+   planner/executor file, so the existing bruh-code-review ACKs still cover the logic and only the
    docs/harness reconciliation is new. Doc-only TODO conflicts: take the `[x]` FIXED side for the fixed
    findings, keep HEAD's side for any finding whose understanding advanced after the fix branch was cut
    (e.g. a defer-to-RFC decision). A no-master-merge freeze makes this consolidation safe — it's

@@ -126,6 +126,8 @@ need scan/time limiters and continuations; large values need split records.
 - `conformance/`: Java record-layer harness.
 - `gen/`, `proto/apple/`: generated Go and upstream protobuf definitions.
 - `.claude/`: retained agent skills; `AGENTS.md`: repository workflow rules.
+- `.bruh/review/`: lenses and config for the `bruh-code-review` skill, installed with bruh
+  (`just install` or `just install-skills` in the bruh repository puts it in `~/.bruh/skills`).
 - `STATUS.md`: current readiness; `RELEASE.md`: release gates.
 
 Development uses Go, Bazel via bazelisk, gazelle, nogo, buf, just and Docker.
