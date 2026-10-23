@@ -311,6 +311,65 @@ func TestOversizedConflictRangeEndpointClamped(t *testing.T) {
 	}
 }
 
+// TestOversizedConflictKeyDropped: the key forms are the range forms over [k, keyAfter(k)), so a
+// key past the size limit clamps to an empty range and records nothing, as in the client
+// (addReadConflictKeyRYW; deferWriteConflictRange). Unclamped, [k*10100, k*10100\x00) overlaps
+// the other side's [k, l) and aborts the reader with 1020.
+func TestOversizedConflictKeyDropped(t *testing.T) {
+	t.Parallel()
+	big := make([]byte, 10_100) // > keySizeLimit+tenantPrefixSize == 10_008
+	for i := range big {
+		big[i] = 'k'
+	}
+	for _, write := range []bool{false, true} {
+		name := "read"
+		if write {
+			name = "write"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			db := simfdb.New(nil)
+			reader, err := db.CreateWritableTransaction()
+			if err != nil {
+				t.Fatalf("create reader: %v", err)
+			}
+			// Pinned before the writer commits, as in TestOversizedConflictRangeEndpointClamped.
+			if _, err := reader.GetReadVersion().Get(); err != nil {
+				t.Fatalf("reader GetReadVersion: %v", err)
+			}
+			writer, err := db.CreateWritableTransaction()
+			if err != nil {
+				t.Fatalf("create writer: %v", err)
+			}
+			if write {
+				if err := reader.AddReadConflictRange(fdb.KeyRange{Begin: fdb.Key("k"), End: fdb.Key("l")}); err != nil {
+					t.Fatalf("reader AddReadConflictRange: %v", err)
+				}
+				if err := writer.AddWriteConflictKey(fdb.Key(big)); err != nil {
+					t.Fatalf("AddWriteConflictKey(oversized): %v", err)
+				}
+			} else {
+				if err := reader.AddReadConflictKey(fdb.Key(big)); err != nil {
+					t.Fatalf("AddReadConflictKey(oversized): %v", err)
+				}
+				if err := writer.AddWriteConflictRange(fdb.KeyRange{Begin: fdb.Key("k"), End: fdb.Key("l")}); err != nil {
+					t.Fatalf("writer AddWriteConflictRange: %v", err)
+				}
+			}
+			// Disjoint mutations make both commits real ones (see the note above).
+			writer.Set(fdb.Key("zzz/disjoint"), []byte("x"))
+			if err := writer.Commit().Get(); err != nil {
+				t.Fatalf("writer commit: %v", err)
+			}
+			reader.Set(fdb.Key("reader/own"), []byte("y"))
+			if err := reader.Commit().Get(); err != nil {
+				t.Fatalf("reader commit: got %v (code %d), want success — the oversized %s conflict key "+
+					"clamps to an empty range and must record nothing", err, codeOf(err), name)
+			}
+		})
+	}
+}
+
 // TestCancelConcurrentWithRead exercises cancellation from a caller-context
 // goroutine while the transaction's owning goroutine reads. Data operations
 // remain single-owner; Cancel must still be safe to call asynchronously, as in

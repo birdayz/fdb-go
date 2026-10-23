@@ -1303,8 +1303,14 @@ func (tx *simTxn) AddReadConflictRange(er fdb.ExactRange) error {
 	return nil
 }
 
+// AddReadConflictKey is AddReadConflictRange over [k, keyAfter(k)); the clamp empties that range
+// for a key past the size limit (client addReadConflictKeyRYW).
 func (tx *simTxn) AddReadConflictKey(key fdb.KeyConvertible) error {
-	tx.addFilteredReadConflictKey([]byte(key.FDBKey()))
+	k := []byte(key.FDBKey())
+	if len(k) > getMaxClearKeySize(k) {
+		return nil
+	}
+	tx.addFilteredReadConflictKey(k)
 	return nil
 }
 
@@ -1327,8 +1333,12 @@ func (tx *simTxn) AddWriteConflictRange(er fdb.ExactRange) error {
 	return nil
 }
 
+// AddWriteConflictKey is AddWriteConflictRange over [k, keyAfter(k)), clamp included.
 func (tx *simTxn) AddWriteConflictKey(key fdb.KeyConvertible) error {
 	k := []byte(key.FDBKey())
+	if len(k) > getMaxClearKeySize(k) {
+		return nil
+	}
 	tx.addWriteConflict(k, keyAfter(k))
 	return nil
 }
