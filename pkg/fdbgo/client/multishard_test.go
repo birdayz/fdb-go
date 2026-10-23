@@ -43,6 +43,9 @@ var (
 	largerShardSize  = shardSizeConfig{minShardBytes: "40000", maxShardBytes: "200000"}
 )
 
+// multiShardValueBytes is the size of each value setupMultiShardEnv seeds.
+const multiShardValueBytes = 10000
+
 func setupMultiShardEnv(t *testing.T, ctx context.Context) *multiShardEnv {
 	return setupMultiShardEnvWithConfig(t, ctx, defaultShardSize)
 }
@@ -78,7 +81,7 @@ func setupMultiShardEnvWithConfig(t *testing.T, ctx context.Context, cfg shardSi
 
 	// Seed 1MB: 100 keys × 10KB.
 	const numKeys = 100
-	const valueSize = 10000
+	const valueSize = multiShardValueBytes
 	for batch := 0; batch < 10; batch++ {
 		_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 			for i := 0; i < 10; i++ {
