@@ -1,25 +1,15 @@
 ---
 name: query-engine
-description: Work on the Cascades query planner/optimizer and SQL execution engine. Includes mandatory architectural review by Graefe (Cascades alignment) and Torvalds (code quality).
+description: Work on the Cascades query planner/optimizer and SQL execution engine. Includes mandatory review with the bruh-code-review skill, whose cascades lens checks Cascades and Java alignment.
 ---
 
 # Query Engine Work
 
-You are working on the Cascades-based query planner, optimizer, and SQL execution engine. This is the most architecturally sensitive part of the codebase. Every change must be reviewed by two virtual reviewers before shipping.
+You are working on the Cascades-based query planner, optimizer, and SQL execution engine. This is the most architecturally sensitive part of the codebase. Every change must pass review with the `bruh-code-review` skill before shipping.
 
-## The two reviewers
+## Review
 
-### Goetz Graefe (Cascades paper author)
-- Evaluates **Cascades framework alignment**: logical/physical separation, task stack architecture, correlation tracking, property-driven winner selection, phase boundaries
-- His word is final on architectural decisions
-- Key principle: "properties derived from the expression tree, not imperative flags"
-- Key principle: "Java is the reference implementation — Go-only inventions are suspect"
-- Will catch: rules in wrong phase, structural heuristics where algebraic checks belong, divergence from Java's match-then-implement pattern
-
-### Linus Torvalds (code reviewer)
-- Evaluates **code quality**: dead code, logic holes, incomplete conversions, papered-over regressions, test assertions downgraded to TODOs
-- Blunt and specific — file:line references
-- Will catch: dead code masking regressions, symptoms treated instead of root causes, dual mechanisms for the same concept, performance regressions hidden by bumping limits
+The `cascades` lens (`.bruh/review/cascades.md`) applies to `pkg/recordlayer/query/**` and `pkg/relational/core/**` and checks Cascades and Java alignment: rules and plans follow Java (Go-only inventions are suspect), rules fire in the right phase, properties are derived from the expression tree rather than imperative flags, alias namespaces are not confused, and planner changes pin the plan shape. The core maintainability and tests lenses check code quality: dead code, incomplete conversions, papered-over regressions, downgraded assertions. Change review rules in `.bruh/review/`, not here.
 
 ## Workflow
 
@@ -51,45 +41,26 @@ Non-deterministic test results mean the planner produces different plans across 
 
 The review unit is a COMPLETED workstream/phase (or the whole RFC
 implementation when it isn't phased) — NOT a commit. Implement the whole
-milestone with green tests per commit, then launch BOTH reviewers once in
-parallel. Do not run reviewer laps on intermediate commits (owner ruling
-2026-07-18: "not per commit"). After folding findings, the final HEAD gets
-one delta re-confirmation, not another full lap per fix commit.
-
-Use **`gpt-6-astra` with `xhigh` reasoning** for both virtual reviewers and the
-independent Codex review. Do not silently substitute another model. Run each
-review in its own read-only session; launch the two commands below in parallel
-through the tracked task runner (not detached shell jobs). Record the reviewed
-HEAD and the actual verdict; an incomplete review is not an ACK.
-
-```sh
-codex -a never exec -m gpt-6-astra -c 'model_reasoning_effort="xhigh"' -s read-only \
-  'Apply the virtual Goetz Graefe review lens. Review the completed milestone diff in /home/birdy/projects/fdb-record-layer-go. [Specify exact base/HEAD and describe what changed and why.] Read the full diff and corresponding Java source. Evaluate Cascades alignment. Do not edit files. Return ACK or NAK with file:line evidence and the reviewed SHA, under 300 words.'
-
-codex -a never exec -m gpt-6-astra -c 'model_reasoning_effort="xhigh"' -s read-only \
-  'Apply the virtual Linus Torvalds review lens. Review the completed milestone diff in /home/birdy/projects/fdb-record-layer-go. [Specify exact base/HEAD and describe what changed.] Read the full diff. Focus on dead code, logic holes, incomplete conversions, and papered-over regressions. Do not edit files. Return ACK or NAK with file:line evidence and the reviewed SHA, under 300 words.'
-```
+milestone with green tests per commit, then run the `bruh-code-review` skill once
+on the milestone (`review <base>..<HEAD>`, with `intent:` saying what changed and
+why). Do not run review laps on intermediate commits (owner ruling 2026-07-18:
+"not per commit"). After folding findings, the final HEAD gets one re-review
+(`previous: <run>/report.json`), not another full lap per fix commit. Record the
+reviewed HEAD and the report's verdict line; an incomplete review is not an ACK.
 
 ### 4. Address findings
 
-- **Graefe NAK**: architectural issue. Think hard. Read Java again. The fix is usually "do what Java does" or "track the property algebraically, not structurally."
-- **Torvalds NAK**: code quality issue. Usually concrete — delete dead code, fix the root cause instead of the symptom, complete the conversion.
-- **Both ACK**: ship it.
+- **`cascades` findings**: architectural issue. Think hard. Read Java again. The fix is usually "do what Java does" or "track the property algebraically, not structurally."
+- **Maintainability and tests findings**: code quality issue. Usually concrete — delete dead code, fix the root cause instead of the symptom, complete the conversion.
+- **ACK** (`bruh-code-review: ACK <sha>` on the current HEAD): ship it.
 
-Do NOT ship with a NAK from either reviewer. Iterate until both approve.
+Do NOT ship on a NAK. Iterate until the review ACKs the current HEAD.
 
 ### 5. For full-PR reviews
 
-When reviewing the entire PR (not just the latest commit), use `gh pr diff <number>`:
-
-Use the same `gpt-6-astra` / `xhigh` read-only sessions above, with the PR number
-and exact base/HEAD in each prompt:
-
-```text
-Run gh pr diff <number> to read the ENTIRE PR diff, not only the latest commit.
-If GitHub refuses an oversized diff, read git diff <PR-base>...<PR-head> in full
-instead. Report any incomplete scope rather than approving a sampled diff.
-```
+Review the entire PR, not just the latest commit, with `review PR <number>` (add
+`and post it` to post the review to the PR). It reviews the PR's whole diff from its
+merge base.
 
 These catch systemic issues (dead code accumulation, MaxTasks creep, test assertion downgrades) that per-commit reviews miss.
 

@@ -65,14 +65,14 @@ There IS a mid-shift check-in concept — a quality gate where the user (or a re
 - **DO NOT watch the clock for it.** Don't compute a T+3:30 mark, don't ScheduleWakeup for it, don't refuse to start new work because "mid-shift is in 30 min." You'll just burn shift time pacing.
 - **DO NOT stop working in anticipation.** Keep shipping commits. The check-in happens when it happens — when the user pings, when a reviewer comment arrives, when an external trigger fires. Until then, work.
 - **Late is fine.** Better to be 30 min late on a check-in (because you were heads-down on a substantive piece) than to idle for 30 min watching the clock.
-- **When the check-in DOES happen** — pause, request `@claude review` on the PR, iterate with the reviewer until LGTM, then keep going. The review is a quality gate, not a stop signal.
+- **When the check-in DOES happen** — pause, run the `bruh-code-review` skill on the PR (`review PR <N> and post it`), iterate until it ACKs the current HEAD, then keep going. The review is a quality gate, not a stop signal.
 
 The wall-clock numbers below are descriptive context, NOT triggers:
 
 | Phase | Approx when | What |
 |---|---|---|
 | Active work | most of the shift | Work the highest-priority TODOs. Ship features. One thing at a time. |
-| Mid-shift check-in | somewhere around the middle (event-driven) | Reviewer evaluates state, you iterate to LGTM, then keep going. |
+| Mid-shift check-in | somewhere around the middle (event-driven) | bruh-code-review evaluates the PR, you iterate to its ACK, then keep going. |
 | Wind-down | last 30 min before shift-end clock | Stop starting NEW features. Final review iteration, verification (fuzz / stress are passive — fine), write handover, merge. |
 
 Wind-down DOES have a clock trigger (last 30 min) because the shift literally ends. Mid-shift does NOT — that one's event-driven.
@@ -98,17 +98,17 @@ Then start working on the highest-priority items from the handover. Follow the w
 - **CI must be green** on every push. Pre-commit hooks catch most issues.
 - **Review after each major unit of work.** When a significant TODO item is complete (DDL pipeline, executor wiring, cost model fix with tests — NOT a single-line fix or one more test file), trigger the review loop:
   1. Commit, push
-  2. Comment on the PR: `gh pr comment --body "@claude Completed <unit>. <1-2 sentence summary of what changed>. Please review."`
-  3. Wait for reviewer feedback: `gh run list --branch {shift-name} --limit 1 --json databaseId --jq '.[0].databaseId'` then `gh run watch <id> --exit-status` then read the latest comment
-  4. Address valid feedback (fix, commit, push, re-request). Push back on wrong suggestions with reasoning.
-  5. Iterate until no new issues. Then move to the next TODO item.
+  2. Run the `bruh-code-review` skill on the PR: `review PR <N> and post it` (on later rounds add `previous: <run>/report.json`). Hand it to an agent ("Use the bruh-code-review skill to review PR <N> and post it") to keep working while it runs.
+  3. Read its report: the verdict line `bruh-code-review: ACK|NAK <sha>`, the blocking reasons and each finding with its location and fix.
+  4. Address valid findings (fix, commit, push, review again). If a finding is wrong, give the evidence in the PR description; the re-review settles it.
+  5. Iterate until it ACKs the current HEAD. Then move to the next TODO item.
   
   **Judgment call on "major":** A unit is review-worthy when it touches >3 files, adds a new code path that could have bugs, or changes cost model / plan selection behavior. Pure test additions, doc updates, and single-file fixes don't need mid-work review — they get reviewed at end-of-shift. Don't stop working while waiting for review — start the next item immediately and handle feedback when it arrives.
-- **Mid-shift review is event-driven, NOT timer-driven.** When the user prompts for it (or an external trigger fires), pause, request `@claude review`, iterate to LGTM, then keep going. NEVER stop working in anticipation of mid-shift; NEVER compute a T+3:30 mark and pace yourself toward it. Being a bit late is fine; idling for the clock is not. A clean mid-shift review is a quality signal, not a stop signal.
+- **Mid-shift review is event-driven, NOT timer-driven.** When the user prompts for it (or an external trigger fires), pause, run `bruh-code-review` on the PR, iterate to its ACK, then keep going. NEVER stop working in anticipation of mid-shift; NEVER compute a T+3:30 mark and pace yourself toward it. Being a bit late is fine; idling for the clock is not. A clean mid-shift review is a quality signal, not a stop signal.
 - **When the main task is done, keep working.** Write more tests, investigate performance, update docs, run binding stress, profile allocations, audit code you haven't touched. A foreman doesn't clock out early because the main job finished — there's always cleanup, testing, and prep for the next shift.
 - **You MUST keep working until wind-down.** Idling "because piling on more changes risks regressions" or "because the reviewer already approved" is not an option. The risk profile is low (CI + review catch regressions); the cost of an idle shift is high (less ground covered, more work dumped on the next shift). If you genuinely have nothing to do, that means you haven't looked hard enough — audit code you haven't touched, extend fuzz corpus, tighten tests, polish docs. Sitting waiting for review feedback is only acceptable inside the wind-down window. Scheduling wakeups to pass time before wind-down is a mis-use.
 - **Wind down 30 min before shift-end clock.** Day shift wind-down 13:30, hard stop 14:00. Swing wind-down 21:30, hard stop 22:00. Night wind-down 05:30, hard stop 06:00. Compute the wind-down mark from the END clock, not from your start time — late starts cut into work time, not into wind-down. Use the last 30 min for: final review iteration, verification (fuzz / stress are passive — fine), handover doc, merge. New code stops; passive verification continues.
-- **In wind-down, once the reviewer LGTMs, merge and stop.** Do not pile on more changes inside the last 30 min just to fill time — a clean LGTM in wind-down is the merge signal. Write the handover, merge the PR, clean up. Sitting through the rest of the wind-down window after a clean review is fine; shipping more code is not.
+- **In wind-down, once bruh-code-review ACKs the current HEAD, merge and stop.** Do not pile on more changes inside the last 30 min just to fill time — a clean ACK in wind-down is the merge signal. Write the handover, merge the PR, clean up. Sitting through the rest of the wind-down window after a clean review is fine; shipping more code is not.
 - **NEVER push to master directly.** Even after merging a shift PR, create a NEW branch for any remaining work. Single-line doc fixes go through a PR. If you catch yourself typing `git push origin master`, STOP. This rule is non-negotiable — dayshift-14 pushed 40+ unreviewed commits to master.
 
 ## Step 5: Review loop
@@ -121,31 +121,20 @@ When implementation is done and tests pass:
    gh pr ready  # remove draft status
    ```
 
-2. **Request review** by commenting on the PR:
-   ```bash
-   gh pr comment --body "@claude review"
-   ```
+2. **Request review** with the `bruh-code-review` skill: `review PR <N> and post it`. It posts one PR review with inline comments.
 
-3. **Wait for reviewer feedback.** Use `gh run watch <id>` to wait for the review job, then read comments:
-   ```bash
-   gh run list --branch {shift-name} --limit 1 --json databaseId --jq '.[0].databaseId'
-   gh run watch <id> --exit-status
-   gh api repos/{owner}/{repo}/issues/{pr}/comments --jq '.[-1].body'
-   ```
+3. **Read the report.** It ends with `bruh-code-review: ACK <sha>` or `NAK <sha>`, after the blocking reasons and each finding with its location and fix.
 
-4. **Address feedback** — but stay critically thinking. Don't blindly apply every suggestion. If a suggestion is wrong or unnecessary, explain why in a reply. For valid feedback:
+4. **Address feedback** — but stay critically thinking. Don't blindly apply every suggestion. If a finding is wrong or unnecessary, give the evidence in the PR description; the re-review settles it. For valid feedback:
    - Fix the issue
    - Commit, push
-   - **CRITICAL: Request re-review.** Comment on the PR summarizing what was fixed and tag `@claude` to trigger another review:
-     ```bash
-     gh pr comment --body "@claude Fixed X (commit abc123). Please review again."
-     ```
+   - **CRITICAL: Request re-review.** Review the PR again with `previous: <run>/report.json` and post it. Every push makes the previous verdict stale.
 
-5. **Wait for the new review** (step 3 again). Read the feedback. If new issues found, fix and re-request (step 4). **Keep iterating until the reviewer finds no new issues.** Only then is the PR merge-ready.
+5. **Read the new report** (step 3 again). If new issues are found, fix and re-review (step 4). **Keep iterating until bruh-code-review ACKs the current HEAD.** Only then is the PR merge-ready.
 
 ## Step 6: End shift
 
-**Only when the shift clock runs out** (not when work feels "done"). Keep working until end of shift. Then, only after the reviewer approves (no new issues in the latest review round):
+**Only when the shift clock runs out** (not when work feels "done"). Keep working until end of shift. Then, only after bruh-code-review ACKs the current HEAD:
 
 1. **Write handover** — create `shifts/YYYY-MM-DD-{shift-name}.md` with:
    - Date, **actual** start and end times (not the planned window — record when you started and when you're writing the handover), PR number

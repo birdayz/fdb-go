@@ -150,19 +150,17 @@ before implementing.
   records the gap. (E.g. a pending versionstamp reads as ABSENT in Go vs THROWS
   `accessed_unreadable` in C++ — a documented read-side approximation, commit-safe.)
 
-## Step 7 — review gauntlet (these are wire/client changes)
+## Step 7 — review (these are wire/client changes)
 
-Run the full gate set; client divergences are subtle and reviewers catch different
-classes:
-- **FDB C++ client developer** (substitute for Graefe on client/wire items) — validates
-  the fix against the C++ spec, file:line.
-- **Torvalds** — dead code, papered-over regressions, revert-proofs, scope honesty.
-- **codex** (`codex -s read-only -a never review --base <sha>`) — the gate that
-  repeatedly caught edges the others missed (storage-shadow, cleared-base, sticky-
-  unreadable). Do not skip it. Re-review the delta after each fix.
-- **@claude** on the GitHub PR — final gate; LGTM must be on the final HEAD.
+Run the **`bruh-code-review`** skill on the fix, then on the PR
+(`review PR <N> and post it`). Its `fdb-client` lens validates the fix against the C++
+spec, file:line; the core lenses check dead code, papered-over regressions, revert-proofs
+and scope honesty. Client divergences are subtle and reviewers catch different classes
+(storage-shadow, cleared-base, sticky-unreadable): ask for `thorough`, which runs each lens
+twice on different providers.
 
-Re-request every reviewer after a new commit; a stale ACK doesn't cover later commits.
+Review again after every new commit (`previous: <run>/report.json`); an ACK only covers
+the HEAD it reviewed.
 
 ## Hard rules (from CLAUDE.md — non-negotiable)
 

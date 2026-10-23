@@ -1,6 +1,6 @@
 ---
 name: todo-worker
-description: Pick the next unchecked TODO.md item, write an RFC, get it reviewed by Graefe+Torvalds, implement, review again, open PR, iterate with @claude reviewer until LGTM.
+description: Pick the next unchecked TODO.md item, write an RFC, review it with the bruh-code-review skill, implement, review again, open PR, iterate until bruh-code-review ACKs the PR's final HEAD.
 ---
 
 # TODO Worker Workflow
@@ -15,31 +15,28 @@ Pick the next unchecked item from TODO.md and drive it from RFC through implemen
 4. Ask the user to set a `/goal` reflecting the work, so the harness keeps driving it to completion across turns. `/goal` is a built-in CLI command — you cannot invoke it; output the exact line for the user to paste:
 
    ```
-   /goal <item-id>: <short description> — RFC written, reviewed (Graefe+Torvalds ACK), implemented, tests green, PR created, @claude LGTM
+   /goal <item-id>: <short description> — RFC written, reviewed (bruh-code-review ACK), implemented, tests green, PR created, bruh-code-review ACK on the PR's final HEAD
    ```
 
-   Example: `/goal P1.2: QOV-based FieldValue migration — RFC written, Graefe+Torvalds ACK, all stripAlias calls eliminated, tests green, PR merged with @claude LGTM`
+   Example: `/goal P1.2: QOV-based FieldValue migration — RFC written, bruh-code-review ACK, all stripAlias calls eliminated, tests green, PR merged with a bruh-code-review ACK on its final HEAD`
 
-## Step 1: Load the domain-review skill (sets the reviewer gate)
+## Step 1: Load the domain skill
 
-The two domains with their own architectural reviewer (substituting for the generic
-Graefe+Torvalds RFC review) are the query engine and the pure-Go FDB client. Load the
-matching skill — it sets the correct reviewer gate, key-file map, and spec anchor for the
-RFC/implementation reviews in Steps 5 and 7.
+Every review in Steps 5, 7 and 10 runs the **`bruh-code-review`** skill. The repository's
+lenses in `.bruh/review/` apply by path: `cascades` (planner), `java-compat` (record layer
+and SQL), `fdb-client` (`pkg/fdbgo`), `spfresh` (vector index). Two domains also have a
+skill that sets the key-file map and spec anchor; load the matching one:
 
 - **Query engine** (planner, optimizer, executor, plan cache): `Skill(skill: "query-engine")`
-  — loads the Graefe (Cascades) + Torvalds protocols and Java-as-spec.
+  — Java-as-spec and the planner lessons learned.
 - **Pure-Go FDB client** (anything under `pkg/fdbgo/` — transport, transaction, commit path,
   RYW, retry/ctx, wire encoding — or a `TODO-production.md` "client robustness" item):
-  `Skill(skill: "fdb-client-review")` — loads the **FDB C++ client developer** (substitute
-  for Graefe; validates Go against the 7.3.77 C++ source at `/tmp/fdbsrc`) + Torvalds
-  protocols and C++-as-spec. For a *divergence* found via differential/fuzz, also load
+  `Skill(skill: "fdb-client-engineer")` — C++-as-spec, validated against the 7.3.77 C++
+  source at `/tmp/fdbsrc`. For a *divergence* found via differential/fuzz, also load
   `hunt-divergences`.
 
-When this skill sets a domain reviewer, use it in place of Graefe in Steps 5 and 7 (e.g.
-client items → **FDB C++ dev + Torvalds**, not Graefe + Torvalds). If the item is purely
-record-layer or generic infra with no client/wire or planner contract, skip — the generic
-Graefe+Torvalds RFC review applies.
+If the item is purely record-layer or generic infra with no client/wire or planner
+contract, skip this step.
 
 ## Step 2: Research
 
@@ -71,19 +68,14 @@ The RFC must contain:
 
 Keep it short — 1-2 pages max. No fluff.
 
-## Step 5: RFC review (Graefe + Torvalds, parallel)
+## Step 5: RFC review (bruh-code-review)
 
-Launch BOTH reviewers in parallel as background agents:
-
-```
-Agent(description: "Graefe RFC review", prompt: "You are Goetz Graefe, author of the Cascades optimization framework paper. Review the RFC at /home/birdy/projects/fdb-record-layer-go/rfcs/NNN-xxx.md. [describe what changed and why]. Evaluate Cascades alignment. Under 300 words. ACK or NAK with specific reasons.", run_in_background: true)
-
-Agent(description: "Torvalds RFC review", prompt: "You are Linus Torvalds. Review the RFC at /home/birdy/projects/fdb-record-layer-go/rfcs/NNN-xxx.md. Also read the current implementation at [relevant files]. Focus on dead code, logic holes, incomplete conversions, papered-over regressions. Under 300 words. ACK or NAK with specific reasons.", run_in_background: true)
-```
+Commit the RFC and run the **`bruh-code-review`** skill on that commit (`review <sha>`, with
+`intent:` naming the TODO item it addresses).
 
 ### Handling results:
-- **Both ACK** → proceed to implementation.
-- **Any NAK** → address the specific concern, then re-launch the NAK'ing reviewer. Do NOT proceed with a NAK outstanding.
+- **ACK** (the report ends `bruh-code-review: ACK <sha>`) → proceed to implementation.
+- **NAK** → address the findings, commit, and review again with `previous: <run>/report.json`. Do NOT proceed with a NAK outstanding.
 
 ## Step 6: Implement
 
@@ -94,19 +86,14 @@ Agent(description: "Torvalds RFC review", prompt: "You are Linus Torvalds. Revie
 
 Follow CLAUDE.md rules: no skips, no mocks, DFS not BFS, Java is the reference.
 
-## Step 7: Implementation review (Graefe + Torvalds, parallel)
+## Step 7: Implementation review (bruh-code-review)
 
-After implementation passes all tests, launch BOTH reviewers on the implementation diff:
-
-```
-Agent(description: "Graefe implementation review", prompt: "You are Goetz Graefe, author of the Cascades optimization framework paper. Review the diff in /home/birdy/projects/fdb-record-layer-go. Run `git diff HEAD~N` (or `git diff master..HEAD` for all commits). [describe what changed and why]. Evaluate Cascades alignment and correctness. Under 300 words. ACK or NAK.", run_in_background: true)
-
-Agent(description: "Torvalds implementation review", prompt: "You are Linus Torvalds. Review the diff in /home/birdy/projects/fdb-record-layer-go. Run `git diff master..HEAD`. Focus on dead code, logic holes, incomplete conversions, papered-over regressions. Under 300 words. ACK or NAK with file:line references.", run_in_background: true)
-```
+After implementation passes all tests, run the **`bruh-code-review`** skill on the
+implementation (`review origin/master..HEAD`, with `intent:` naming the item and RFC-NNN).
 
 ### Handling results:
-- **Both ACK** → proceed to PR.
-- **Any NAK** → fix the issue, re-run `just test`, commit, then re-launch the NAK'ing reviewer. Iterate until both ACK.
+- **ACK** → proceed to PR.
+- **NAK** → fix the findings, re-run `just test`, commit, then review again with `previous: <run>/report.json`. Iterate until it ACKs the current HEAD.
 
 ## Step 8: Update TODO.md
 
@@ -127,7 +114,7 @@ gh pr create --title "<type>: <short description> (<item-id>)" --body "$(cat <<'
 ## Summary
 - [bullet points of what changed and why]
 
-RFC-NNN. Graefe ACK, Torvalds ACK.
+RFC-NNN. bruh-code-review ACK on the RFC and the implementation.
 
 ## Test plan
 - [x] [specific tests that prove the fix]
@@ -137,82 +124,35 @@ EOF
 )"
 ```
 
-## Step 10: Tag @claude reviewer and iterate
+## Step 10: PR review and iterate
 
-Post a comment tagging @claude with context:
+Run the **`bruh-code-review`** skill on the PR and post it: `review PR <PR#> and post it`. It
+posts one PR review with inline comments and hides earlier bruh reviews as outdated.
 
-```bash
-gh pr comment <PR#> --body "@claude Please review this PR. <1-2 sentence summary of what changed and why>. See RFC-NNN for the full analysis."
-```
-
-### Monitoring — how to wait for @claude's approval
-
-@claude does not post a fresh final comment; it posts ONE comment and **edits
-it in place** through three states:
-1. a `Claude Code is working…` stub (appears within seconds),
-2. a `### Tasks` checklist whose boxes flip from `- [ ]` to `- [x]`,
-3. the final review, which **opens with a `**Claude finished … in Xm Ys**` banner** and ends with a verdict (`Approved` / findings / changes requested).
-
-**Detect completion by the `Claude finished` banner (a positive signal), or by the linked GitHub Actions run reaching `completed`.** Never gate on:
-- *comment count or body length* — the stub is long; length plateaus mid-review;
-- *unchecked `- [ ]` boxes* — the FINISHED review body legitimately contains checkboxes (test plans, nit lists), so a checkbox scan false-positives as "in progress" and the poll spins until timeout (this exact bug burned ~15 min on a review that finished in 75s);
-- *the word "working"/"in progress"* — those words appear in normal review prose.
-
-Poll on a 15–20s cadence (a review takes ~1–5 min). Strongest signal — the Actions run:
-```bash
-runid=$(printf '%s' "$body" | grep -oE 'runs/[0-9]+' | head -1 | cut -d/ -f2)
-[ -n "$runid" ] && [ "$(gh run view "$runid" --json status --jq .status)" = "completed" ] && break
-```
-
-Then wait for @claude's review to **complete**:
-
-```bash
-# @claude posts ONE comment and edits it in place: a "Claude Code is
-# working…" stub → a "### Tasks" checklist → the final review, which opens
-# with a "**Claude finished … in Xm Ys**" banner.
-#
-# Detect completion by that POSITIVE banner — NOT by length, comment count,
-# or "unchecked - [ ] boxes". The finished review body legitimately contains
-# "- [ ]" (test plans, nit lists), so a checkbox scan false-positives as
-# "in progress" and the poll spins until timeout. The banner is reliable;
-# the GitHub Actions run linked in the comment ("[View job](…/runs/<id>)")
-# is an even stronger signal — `gh run view <id> --json status` is
-# "completed" when done.
-base=$(gh api repos/birdayz/fdb-record-layer-go/issues/<PR#>/comments --jq '[.[]|select(.user.login=="claude[bot]")]|length')
-while :; do
-  sleep 20
-  cnt=$(gh api repos/birdayz/fdb-record-layer-go/issues/<PR#>/comments --jq '[.[]|select(.user.login=="claude[bot]")]|length')
-  body=$(gh api repos/birdayz/fdb-record-layer-go/issues/<PR#>/comments --jq '[.[]|select(.user.login=="claude[bot]")]|last|.body')
-  [ "$cnt" -gt "$base" ] || continue                                   # new comment appeared?
-  printf '%s' "$body" | grep -qiE "Claude finished|finished @" && break # review complete
-done
-```
-
-### Handling @claude findings:
-
-- **LGTM with no findings** → proceed to Step 11.
-- **LGTM with minor findings** / **Blocking findings** → fix each finding, commit, push, then re-request and **wait for a fresh completed review**:
-  ```bash
-  gh pr comment <PR#> --body "Addressed findings: [list]. Latest HEAD <sha>."
-  gh pr comment <PR#> --body "@claude Please re-review — findings addressed in <sha>."
-  ```
-  Iterate until a clean LGTM **on the current HEAD**.
+- **ACK** (the report's last line is `bruh-code-review: ACK <sha>`, `<sha>` the PR's current
+  HEAD) → proceed to Step 11.
+- **NAK** → fix each finding (with a regression for any bug), commit, push, then review the PR
+  again with `previous: <run>/report.json` and post it. Iterate until it ACKs the current
+  HEAD. If you believe a finding is wrong, give the evidence in the PR description and
+  review again; the re-review settles it.
 
 ## Step 11: Done
 
-The item is done only when **@claude's clean LGTM is the LAST comment on the PR and was posted against the current HEAD commit.**
+The item is done only when **the latest bruh-code-review posted to the PR is an ACK of the
+current HEAD.** `~/.bruh/skills/bruh-code-review/bruh-review gate --report <run>/report.json`
+exits 0 on ACK and 4 on NAK.
 
-- **A prior LGTM does NOT cover later commits.** Every time you push more commits (even a one-line fix or a reviewer-requested change), the earlier approval is stale — you MUST re-request and wait for a new completed review on the new HEAD. Verify the SHA @claude reviewed matches HEAD.
-- **Do not post anything to the PR after @claude's final LGTM** — that would make your comment the last word instead of the approval. If you must comment after, re-request review again so @claude's LGTM is restored as the final comment.
+- **An ACK only covers the HEAD it reviewed.** Every push, even a one-line fix or a
+  reviewer-requested change, makes it stale: review the new HEAD and post again (`post`
+  refuses a report for a commit the PR has moved past).
 - Only then tell the user the PR is ready to merge, with the URL.
 
 ## Key rules
 
-- **Never ship with a NAK** from Graefe, Torvalds, or @claude.
-- **Every review cycle is parallel** — Graefe and Torvalds always launch together.
-- **@claude iteration is sequential** — fix findings, push, re-request, wait for a completed review.
-- **The final LGTM must be on the final code.** Re-request after every push; "done" = @claude's clean LGTM is the last PR comment, on the current HEAD. A stale approval on an earlier commit doesn't count.
-- **A discovered bug is not fixed until a regression test pins it.** Reviewer catches (Graefe/Torvalds/@claude) that the suite missed are doubly important: fix the bug AND add the test that should have caught it.
+- **Never ship with a NAK** from bruh-code-review, on the RFC, the implementation or the PR.
+- **Review iteration is sequential** — fix findings, push, review again, read the new report.
+- **The final ACK must be on the final code.** Review again after every push; "done" = a posted bruh-code-review ACK of the current HEAD. A stale ACK on an earlier commit doesn't count.
+- **A discovered bug is not fixed until a regression test pins it.** Review findings that the suite missed are doubly important: fix the bug AND add the test that should have caught it.
 - **RFC status progression**: Draft → Implemented (update when the code ships).
 - **Commits pass pre-commit hooks** — never `--no-verify`.
 - **One logical change per commit** — don't batch unrelated fixes.
