@@ -2,7 +2,7 @@
 lens: java-compat
 applies: ["pkg/recordlayer/**", "pkg/relational/**", "proto/**"]
 references:
-  - "Java Record Layer / Relational 4.14.2.0 in fdb-record-layer/ (gitignored checkout; the reference implementation)"
+  - "Java Record Layer / Relational 4.14.2.0 in fdb-record-layer/ (gitignored checkout; the reference implementation; clone if missing: git clone --depth 1 --branch 4.14.2.0 https://github.com/FoundationDB/fdb-record-layer fdb-record-layer)"
   - "DIVERGENCES.md and docs/compatibility.md: declared compatibility boundaries"
 ---
 Go and Java applications share record stores. Persisted keys, records, index entries,

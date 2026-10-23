@@ -2,7 +2,7 @@
 lens: fdb-client
 applies: ["pkg/fdbgo/**"]
 references:
-  - "FoundationDB C++ source at tag 7.3.77, the specification (clone if missing: git clone --depth 1 --branch 7.3.77 https://github.com/apple/foundationdb /tmp/fdbsrc). Key files: fdbclient/NativeAPI.actor.cpp (commit, GRV, read retry loops), fdbclient/ReadYourWrites.actor.cpp (RYW overlay, timeouts, onError, conflict ranges), fdbrpc/include/fdbrpc/LoadBalance.actor.h, fdbclient/include/fdbclient/Atomic.h, fdbclient/ClientKnobs.cpp, flow/error_definitions.h, fdbserver/storageserver.actor.cpp"
+  - "FoundationDB C++ source at tag 7.3.77, the specification (clone if missing: git clone --depth 1 --branch 7.3.77 https://github.com/apple/foundationdb /tmp/fdbsrc). Key files: fdbclient/NativeAPI.actor.cpp (commit, GRV, read retry loops), fdbclient/ReadYourWrites.actor.cpp (RYW overlay, timeouts, onError, conflict ranges), fdbrpc/include/fdbrpc/LoadBalance.actor.h, fdbclient/include/fdbclient/Atomic.h, fdbclient/ClientKnobs.cpp, flow/include/flow/error_definitions.h, fdbserver/storageserver.actor.cpp"
   - "DIVERGENCES.md and pkg/fdbgo/fdb/API_PARITY.md: declared, accepted differences"
 ---
 `pkg/fdbgo` is a pure-Go FoundationDB client that must behave exactly like libfdb_c 7.3.77:
@@ -39,7 +39,7 @@ itself does not fix.
 ### fdb-client/error-codes — Error codes and retryability
 Severity: high
 Check: every error code a changed path returns, maps, absorbs or retries: the code number
-(flow/error_definitions.h), whether onError retries it, whether the fdb.IsRetryable
+(flow/include/flow/error_definitions.h), whether onError retries it, whether the fdb.IsRetryable
 predicate agrees, and whether read-path-only errors (1006 all_alternatives_failed,
 wrong_shard_server) are absorbed instead of surfacing.
 Verify: cite the C++ site that raises or classifies the code.

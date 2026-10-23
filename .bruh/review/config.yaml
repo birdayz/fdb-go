@@ -2,5 +2,8 @@ blocking: medium
 ignore:
   - "gen/**"
   - "pkg/fdbgo/wire/types/*_generated.go"
+  - "pkg/relational/core/parser/gen/**"
+  - "pkg/relational/api/apimock/mocks_*.go"
   - "**/*.pb.go"
-  - "**/testdata/**/*.golden"
+  - "pkg/relational/conformance/explaindiff/testdata/*.golden"
+  - "third_party/**"

@@ -2,7 +2,7 @@
 lens: cascades
 applies: ["pkg/recordlayer/query/**", "pkg/relational/core/**"]
 references:
-  - "Java Record Layer / Relational 4.14.2.0 in fdb-record-layer/ (gitignored checkout; the reference implementation). Planner: fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/query/plan/cascades/"
+  - "Java Record Layer / Relational 4.14.2.0 in fdb-record-layer/ (gitignored checkout; the reference implementation; clone if missing: git clone --depth 1 --branch 4.14.2.0 https://github.com/FoundationDB/fdb-record-layer fdb-record-layer). Planner: fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/query/plan/cascades/"
   - "DIVERGENCES.md: declared differences from Java"
 ---
 The query planner is a port of Java's Cascades planner; Java 4.14.2.0 is the reference.
