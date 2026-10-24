@@ -397,6 +397,53 @@ type tripStubRule struct{}
 func (*tripStubRule) Matcher() matching.BindingMatcher { return &tripStubMatcher{} }
 func (*tripStubRule) OnMatch(call *ExpressionRuleCall) {}
 
+// countingStubRule binds once and reports a Java binding count, as a rule
+// whose Java matcher fans out does.
+type countingStubRule struct {
+	count     int
+	counted   int
+	onMatches int
+}
+
+func (*countingStubRule) Matcher() matching.BindingMatcher { return &oneBindingStubMatcher{} }
+func (r *countingStubRule) OnMatch(*ExpressionRuleCall)    { r.onMatches++ }
+func (r *countingStubRule) javaBindings(expressions.RelationalExpression) int {
+	r.counted++
+	return r.count
+}
+
+type countingStubImplRule struct{ count int }
+
+func (*countingStubImplRule) Matcher() matching.BindingMatcher { return &oneBindingStubMatcher{} }
+func (*countingStubImplRule) OnMatch(*ImplementationRuleCall)  {}
+func (r *countingStubImplRule) javaBindings(expressions.RelationalExpression) int {
+	return r.count
+}
+
+type oneBindingStubMatcher struct{}
+
+func (*oneBindingStubMatcher) RootType() string { return "any" }
+func (*oneBindingStubMatcher) BindMatches(outer *matching.PlannerBindings, _ any) []*matching.PlannerBindings {
+	return []*matching.PlannerBindings{outer}
+}
+
+// twoQuantifierCapSelect is a SELECT over two ForEach quantifiers, the shape the
+// planner also fires with its quantifiers swapped.
+func twoQuantifierCapSelect(t *testing.T) *expressions.SelectExpression {
+	t.Helper()
+	qA := expressions.ForEachQuantifier(expressions.InitialOf(mustFullUnorderedScan(t, []string{"T"}, compensationRowType("ID"))))
+	qB := expressions.ForEachQuantifier(expressions.InitialOf(mustFullUnorderedScan(t, []string{"U"}, compensationRowType("ID"))))
+	resultValue, err := qA.RequireFlowedObjectValue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sel, err := expressions.NewSelectExpression(resultValue, []expressions.Quantifier{qA, qB}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sel
+}
+
 // TestPlannerCapTrips gives both new complexity-guard error paths a POSITIVE
 // trip pin — a reverted guard stays red, not silently green.
 func TestPlannerCapTrips(t *testing.T) {
@@ -413,33 +460,77 @@ func TestPlannerCapTrips(t *testing.T) {
 		p.MaxNumMatchesPerRuleCall = 1
 		task := &TransformExprTask{Phase: PhaseRewriting, Ref: ref, Expr: scan, Rule: &tripStubRule{}}
 		task.Run(plannerTestContext(), p)
-		if !errors.Is(p.capErr, ErrPlannerRuleMatchCapHit) {
-			t.Fatalf("two bindings over cap 1 must trip ErrPlannerRuleMatchCapHit, got %v", p.capErr)
+		var budget *PlannerBudgetExceededError
+		if !errors.Is(p.capErr, ErrPlannerRuleMatchCapHit) || !errors.As(p.capErr, &budget) || budget.Observed != 2 {
+			t.Fatalf("two bindings over cap 1 must trip ErrPlannerRuleMatchCapHit observing 2, got %v", p.capErr)
 		}
 	})
 
-	t.Run("match_cap_cumulative_across_swapped_bind", func(t *testing.T) {
+	// Java counts the bindings of one rule call: per permutation only for a set
+	// matcher, which reports both orders itself. The swapped firing of any other
+	// rule adds nothing: 2 primary bindings plan under a bound of 2.
+	t.Run("swapped_firing_is_not_counted", func(t *testing.T) {
 		t.Parallel()
-		// Java counts ONE numMatches stream per rule call, with quantifier
-		// permutations inside it. Neither leg alone exceeds the cap here
-		// (2 primary, 2 swapped, cap 3); only the cumulative count trips.
-		qA := expressions.ForEachQuantifier(expressions.InitialOf(mustFullUnorderedScan(t, []string{"T"}, compensationRowType("ID"))))
-		qB := expressions.ForEachQuantifier(expressions.InitialOf(mustFullUnorderedScan(t, []string{"U"}, compensationRowType("ID"))))
-		resultValue, err := qA.RequireFlowedObjectValue()
-		if err != nil {
-			t.Fatal(err)
-		}
-		sel, err := expressions.NewSelectExpression(resultValue, []expressions.Quantifier{qA, qB}, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
+		sel := twoQuantifierCapSelect(t)
 		ref := expressions.InitialOf(sel)
 		p := NewPlanner(nil, nil)
-		p.MaxNumMatchesPerRuleCall = 3
+		p.MaxNumMatchesPerRuleCall = 2
 		task := &TransformExprTask{Phase: PhasePlanning, Ref: ref, Expr: sel, Rule: &tripStubRule{}}
 		task.Run(plannerTestContext(), p)
-		if !errors.Is(p.capErr, ErrPlannerRuleMatchCapHit) {
-			t.Fatalf("2 primary + 2 swapped bindings over cap 3 must trip cumulatively, got %v", p.capErr)
+		if p.capErr != nil {
+			t.Fatalf("2 primary bindings under cap 2 must not trip, got %v", p.capErr)
+		}
+	})
+
+	for _, tc := range []struct {
+		name      string
+		bound     int
+		javaCount int
+		trips     bool
+	}{
+		{"java_count_over_the_bound_trips", 4, 5, true},
+		{"java_count_at_the_bound_plans", 5, 5, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sel := twoQuantifierCapSelect(t)
+			for _, phase := range []PlannerPhase{PhaseRewriting, PhasePlanning} {
+				rule := &countingStubRule{count: tc.javaCount}
+				p := NewPlanner(nil, nil)
+				p.MaxNumMatchesPerRuleCall = tc.bound
+				(&TransformExprTask{Phase: phase, Ref: expressions.InitialOf(sel), Expr: sel, Rule: rule}).Run(plannerTestContext(), p)
+				var budget *PlannerBudgetExceededError
+				tripped := errors.As(p.capErr, &budget) && errors.Is(p.capErr, ErrPlannerRuleMatchCapHit)
+				if tripped != tc.trips || (tripped && budget.Observed != tc.bound+1) {
+					t.Fatalf("expression rule, phase %v: Java count %d under bound %d: capErr = %v, want trip=%v observing bound+1",
+						phase, tc.javaCount, tc.bound, p.capErr, tc.trips)
+				}
+				if tc.trips && rule.onMatches != 0 {
+					t.Fatalf("expression rule ran OnMatch %d times after the bound tripped", rule.onMatches)
+				}
+
+				implRule := &countingStubImplRule{count: tc.javaCount}
+				p = NewPlanner(nil, nil)
+				p.MaxNumMatchesPerRuleCall = tc.bound
+				(&TransformImplTask{Phase: phase, Ref: expressions.InitialOf(sel), Expr: sel, Rule: implRule}).Run(plannerTestContext(), p)
+				tripped = errors.As(p.capErr, &budget) && errors.Is(p.capErr, ErrPlannerRuleMatchCapHit)
+				if tripped != tc.trips || (tripped && budget.Observed != tc.bound+1) {
+					t.Fatalf("implementation rule, phase %v: Java count %d under bound %d: capErr = %v, want trip=%v",
+						phase, tc.javaCount, tc.bound, p.capErr, tc.trips)
+				}
+			}
+		})
+	}
+
+	t.Run("java_count_not_computed_without_a_bound", func(t *testing.T) {
+		t.Parallel()
+		sel := twoQuantifierCapSelect(t)
+		rule := &countingStubRule{count: 1000}
+		p := NewPlanner(nil, nil)
+		(&TransformExprTask{Phase: PhasePlanning, Ref: expressions.InitialOf(sel), Expr: sel, Rule: rule}).Run(plannerTestContext(), p)
+		if p.capErr != nil || rule.counted != 0 || rule.onMatches == 0 {
+			t.Fatalf("unbounded call: capErr=%v counted=%d onMatches=%d, want no error, no count, OnMatch run",
+				p.capErr, rule.counted, rule.onMatches)
 		}
 	})
 

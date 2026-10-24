@@ -113,8 +113,9 @@ type Planner struct {
 	MaxTaskQueueSize int
 
 	// MaxNumMatchesPerRuleCall caps the bindings one rule invocation may
-	// produce; 0 disables (Java default). Hitting it returns
-	// ErrPlannerRuleMatchCapHit via the task-level capErr channel.
+	// produce, counted as Java's matcher would bind (ruleCallMatches); 0
+	// disables (Java default). Hitting it returns ErrPlannerRuleMatchCapHit via
+	// the task-level capErr channel.
 	MaxNumMatchesPerRuleCall int
 
 	// DisabledRules holds rule names excluded from selection — Java's
@@ -701,10 +702,11 @@ func newQueueCapError(limit, observed int) *PlannerBudgetExceededError {
 	}
 }
 
-// newRuleMatchCapError reports the MaxNumMatchesPerRuleCall budget.
-func newRuleMatchCapError(limit, observed int) *PlannerBudgetExceededError {
+// newRuleMatchCapError reports the MaxNumMatchesPerRuleCall budget. Java
+// throws at the first binding past the bound, so it observes bound+1.
+func newRuleMatchCapError(limit int) *PlannerBudgetExceededError {
 	return &PlannerBudgetExceededError{
-		Budget: "MaxNumMatchesPerRuleCall", Limit: limit, Observed: observed, sentinel: ErrPlannerRuleMatchCapHit,
+		Budget: "MaxNumMatchesPerRuleCall", Limit: limit, Observed: limit + 1, sentinel: ErrPlannerRuleMatchCapHit,
 	}
 }
 

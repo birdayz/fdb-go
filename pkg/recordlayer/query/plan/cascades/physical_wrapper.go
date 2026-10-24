@@ -255,9 +255,10 @@ func findPhysicalPlan(ref *expressions.Reference) plans.RecordQueryPlan {
 //
 // The resulting cross product is NOT capped per rule — references here hold up
 // to 52 physical finals, and a caller looping over them yields once per member
-// inside a SINGLE OnMatch. MaxNumMatchesPerRuleCall does not apply: its counter
-// counts BINDINGS produced by the matcher (unified_tasks.go:350, :461, :560),
-// and this loop produces none. The only backstop is the opt-in, coarser
+// inside a SINGLE OnMatch. MaxNumMatchesPerRuleCall counts what Java's matcher
+// binds (ruleCallMatches); Java's ImplementStreamingAggregationRule binds the
+// rolled-up partitions once (atLeastOne) and loops inside onMatch, so these
+// loops count one binding, as there. The only backstop is the opt-in, coarser
 // Planner.MaxTasks / MaxTaskQueueSize (unbounded by default, as in Java), which
 // fails the WHOLE plan with ErrPlannerCapHit rather than capping one rule's
 // fan-out. Memoization keeps the enumerated subtrees singly represented, so the

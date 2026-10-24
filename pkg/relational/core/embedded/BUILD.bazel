@@ -276,6 +276,7 @@ go_test(
         "rfc220_probe_test.go",
         "rfc232_planning_gaps_test.go",
         "rule_call_observer_test.go",
+        "rule_match_budget_test.go",
         "same_shaped_join_legs_test.go",
         "scan_type_test.go",
         "secondary_unique_proof_reachability_test.go",
@@ -565,6 +566,7 @@ go_test(
         "index_fetch_method_plan_test.go",
         "planner_options_index_fetch_method_test.go",
         "execution_error_sqlstate_test.go",
+        "rule_match_budget_test.go",
     ],
     tags = ["resources:cpu:4"],
     deps = [

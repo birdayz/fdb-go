@@ -731,12 +731,11 @@ func (t *TransformExprTask) runRule(ctx context.Context, p *Planner) (progress b
 		}()
 	}
 
-	// Java's per-rule-call match cap counts ONE stream per rule invocation
-	// (CascadesPlanner.execute: a single numMatches over bindMatches, which
-	// enumerates quantifier permutations inside the same stream). The swapped
-	// bind below is part of THIS rule call, so it shares the counter.
-	numMatches := 0
-	fireExprRule := func(expr expressions.RelationalExpression) {
+	// Java bounds the bindings of one rule call (CascadesPlanner's numMatches).
+	// The count is taken once, on the primary firing: a rule whose Java matcher
+	// binds per partition or permutation reports that count (ruleCallMatches),
+	// so the swapped firing below adds nothing.
+	fireExprRule := func(expr expressions.RelationalExpression, swapped bool) {
 		if ctx.Err() != nil {
 			return
 		}
@@ -744,9 +743,9 @@ func (t *TransformExprTask) runRule(ctx context.Context, p *Planner) (progress b
 		if ctx.Err() != nil {
 			return
 		}
-		numMatches += len(bindings)
-		if p.MaxNumMatchesPerRuleCall > 0 && numMatches > p.MaxNumMatchesPerRuleCall {
-			p.capErr = newRuleMatchCapError(p.MaxNumMatchesPerRuleCall, numMatches)
+		if !swapped && p.MaxNumMatchesPerRuleCall > 0 &&
+			ruleCallMatches(t.Rule, expr, len(bindings)) > p.MaxNumMatchesPerRuleCall {
+			p.capErr = newRuleMatchCapError(p.MaxNumMatchesPerRuleCall)
 			return
 		}
 		for _, b := range bindings {
@@ -893,7 +892,7 @@ func (t *TransformExprTask) runRule(ctx context.Context, p *Planner) (progress b
 		}
 	}
 
-	fireExprRule(t.Expr)
+	fireExprRule(t.Expr, false)
 
 	if t.Phase == PhasePlanning && p.capErr == nil {
 		if sel, ok := t.Expr.(*expressions.SelectExpression); ok && sel.ChildrenAsSet() {
@@ -901,7 +900,7 @@ func (t *TransformExprTask) runRule(ctx context.Context, p *Planner) (progress b
 			if len(qs) >= 2 && sel.GetJoinType() != expressions.JoinLeftOuter &&
 				qs[0].Kind() == expressions.QuantifierForEach &&
 				qs[1].Kind() == expressions.QuantifierForEach {
-				fireExprRule(sel.WithSwappedQuantifiers())
+				fireExprRule(sel.WithSwappedQuantifiers(), true)
 			}
 		}
 	}
@@ -960,14 +959,12 @@ func (t *TransformImplTask) runRule(ctx context.Context, p *Planner, rule Implem
 	if ctx.Err() != nil {
 		return
 	}
-	// Java CascadesPlanner.isMaxNumMatchesPerRuleCallExceeded: one rule
-	// invocation producing more matches than the bound is a complexity
-	// blow-up; throw (here: capErr — tasks have no error channel). The
-	// counter is ONE stream per rule call in Java (quantifier permutations
-	// included), so the swapped bind below adds to it rather than resetting.
-	numMatches := len(bindings)
-	if p.MaxNumMatchesPerRuleCall > 0 && numMatches > p.MaxNumMatchesPerRuleCall {
-		p.capErr = newRuleMatchCapError(p.MaxNumMatchesPerRuleCall, numMatches)
+	// Java CascadesPlanner.isMaxNumMatchesPerRuleCallExceeded: one rule call
+	// binding more often than the bound is a complexity blow-up (here: capErr,
+	// tasks have no error channel). Counted once, as in TransformExprTask.
+	if p.MaxNumMatchesPerRuleCall > 0 &&
+		ruleCallMatches(rule, t.Expr, len(bindings)) > p.MaxNumMatchesPerRuleCall {
+		p.capErr = newRuleMatchCapError(p.MaxNumMatchesPerRuleCall)
 		return
 	}
 	for _, b := range bindings {
@@ -1085,13 +1082,6 @@ func (t *TransformImplTask) runRule(ctx context.Context, p *Planner, rule Implem
 				swapped := sel.WithSwappedQuantifiers()
 				swapBindings := rule.Matcher().BindMatches(matching.NewBindings(), swapped)
 				if ctx.Err() != nil {
-					return
-				}
-				// Same rule call as the primary bind site above: the match cap
-				// counts cumulatively across both binding streams.
-				numMatches += len(swapBindings)
-				if p.MaxNumMatchesPerRuleCall > 0 && numMatches > p.MaxNumMatchesPerRuleCall {
-					p.capErr = newRuleMatchCapError(p.MaxNumMatchesPerRuleCall, numMatches)
 					return
 				}
 				for _, b := range swapBindings {
