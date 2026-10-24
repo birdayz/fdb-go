@@ -134,31 +134,11 @@ func matrixEntries(n *yaml.Node) (int, bool) {
 	return total, true
 }
 
-// hasPushTrigger reports whether the workflow runs on `push`.
-//
-// `on` is one of YAML's genuinely awkward keys — it can be a scalar ("on: push"),
-// a sequence ("on: [push, pull_request]") or a mapping ("on:\n  push:") — and it
-// is also the YAML 1.1 boolean `true`, which some parsers hand back as a bool
-// key. All three shapes are handled because a gate that silently matched none of
-// them would count zero workflows and pass while asserting nothing.
+// hasPushTrigger reports whether the workflow runs on `push`; triggerSpec
+// handles the shapes of `on:`.
 func hasPushTrigger(n *yaml.Node) bool {
-	switch n.Kind {
-	case yaml.ScalarNode:
-		return n.Value == "push"
-	case yaml.SequenceNode:
-		for _, c := range n.Content {
-			if c.Value == "push" {
-				return true
-			}
-		}
-	case yaml.MappingNode:
-		for i := 0; i+1 < len(n.Content); i += 2 {
-			if n.Content[i].Value == "push" {
-				return true
-			}
-		}
-	}
-	return false
+	_, ok := triggerSpec(n, "push")
+	return ok
 }
 
 // usesLabel reports whether a runs-on value names the pool label, in either the

@@ -88,6 +88,9 @@ test:ci --nobuild_event_json_file_path_conversion
 # The 7.6 GB runners hold 0.6 of RAM for tests: 4500 MB measured safe, the
 # runner minus its idle baseline (~730 MB) and the Bazel server (~2500 MB).
 test:ci --local_resources=memory=HOST_RAM*0.6
+# Tests see CI, so foundationdb.SkipWithoutDocker never turns a CI run's missing
+# Docker daemon into a skip (Bazel passes tests only the --test_env variables).
+test:ci --test_env=CI
 
 # Personal overrides (gitignored), e.g. --test_output=streamed or a disk cache.
 try-import %workspace%/user.bazelrc

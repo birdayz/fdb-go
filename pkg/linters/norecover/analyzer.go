@@ -63,7 +63,7 @@ var Allowlist = map[string]int{
 	// must survive one poisoned seed). The panic is surfaced on the finding, never swallowed.
 	"cmd/dst-hunt/main.go": 1,
 	// FDB testcontainer Docker probe: testcontainers panics when it finds no Docker
-	// host; the probe turns that into ErrDockerUnavailable so a suite can tell an
+	// host; the probe turns that into a DockerUnavailableError so a suite can tell an
 	// absent daemon from a broken fixture.
 	"pkg/testcontainers/foundationdb/docker.go": 1,
 	// Frozen locale parsers translate malformed tags to their existing syntax errors.

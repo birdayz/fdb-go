@@ -103,11 +103,12 @@ jobs:
 
       # `--define gotags=fdbdocker` turns the SimFDB differential's missing-container
       # skip into a FAILURE (pkg/simfdb/differential_docker_required.go). The Docker
-      # preflight above proves the daemon answers when the job starts; the tag proves
-      # the differential actually RAN, even if the daemon is gone by the time it does,
-      # which is the one case foundationdb.SkipWithoutDocker would skip. The differential is the ONLY test that
-      # checks SimFDB against real FDB rather than against itself, so skipping it
-      # yields a green suite that has verified nothing about fidelity.
+      # preflight above proves the daemon answers when the job starts; the tag makes
+      # the differential's build itself demand a container, independent of the CI
+      # variable foundationdb.SkipWithoutDocker reads (.bazelrc forwards it under
+      # --config=ci). The differential is the ONLY test that checks SimFDB against
+      # real FDB rather than against itself, so skipping it yields a green suite
+      # that has verified nothing about fidelity.
       #
       # The flag is ADDITIVE to `.bazelrc`'s `--@rules_go//go/config:tags=` list
       # (rules_go go/private/context.bzl:998-1000 appends `--define gotags` to it), so

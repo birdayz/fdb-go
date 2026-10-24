@@ -2,9 +2,9 @@
 
 // Heavy 10K / 100K / 1M-row stress benchmarks. They run only when the `stress`
 // build tag is set: Bazel's //pkg/relational/sqldriver/stress target sets it via
-// .bazelrc, and the nightly stress workflow invokes that (manual) target. A
-// plain `go test ./...` does NOT set the tag, so these are excluded — keeping
-// the default Go test run fast and clean. See README.md in this dir.
+// .bazelrc, and `just stress` / `just test-full` invoke that (manual) target; no
+// CI workflow runs it. A plain `go test ./...` does NOT set the tag, so these
+// are excluded — keeping the default Go test run fast and clean. See README.md in this dir.
 //
 // The 10M scales need a second tag (`realcluster`) and live in
 // stress_10m_test.go: a single-node testcontainer cannot sustain them, so
