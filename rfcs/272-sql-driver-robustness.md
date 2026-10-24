@@ -92,7 +92,8 @@ auto-commit SELECT running each page in its own transaction; it stays open and i
    keeps its meaning (it sets what `ResetSession` restores); per-borrow options go through
    `SetOption`, and the operator guide's per-tenant recipe (`docs/mt-saas.md`) switches to it, so
    nothing a tenant borrow sets reaches the next borrower.
-5. **Nesting guard** tracks depth over the filled token stream, which the parser then consumes:
+5. **Nesting guard** tracks depth over the lexer's tokens in a pass of its own (no error
+   listener), so the parser still lexes lazily and reports the first error it meets:
    `LEFT_ROUND_BRACKET` increments, `RIGHT_ROUND_BRACKET` decrements, and the maximum is
    compared with 500, as the rune scan did.
 6. **GROUP BY**: the check walks keys with `WalkExpressionForProjection`, the walk that builds
@@ -120,7 +121,8 @@ its SQL items are ticked; the excluded auto-commit SELECT item stays open.
 
 One `context.AfterFunc` registration per page or catalog call on an explicit transaction and
 one per `BeginTx` with a cancellable context; nothing on the auto-commit SELECT path. The
-nesting guard reuses the token stream the parser needs anyway and drops the separate rune scan.
+nesting guard's rune scan becomes a lexer pass over warmed, pooled lexer state: linear, without
+the parser's prediction cost.
 
 ## Test plan
 
@@ -157,7 +159,7 @@ always, a broken one fails nearly always.
   value with the `SetOptions` set kept; end to end through a one-connection pool, including a
   `SetOption` (MAX_ROWS) that the next borrower no longer sees.
 - Item 5: parser tests at depth 500 and 501, parentheses in a literal, a quoted identifier and
-  both comment forms; end to end a 600-parenthesis literal, 600 sibling tuples, and 501 levels.
+  both comment forms, and the first syntax error unchanged by the guard's pass; end to end a 600-parenthesis literal, 600 sibling tuples, and 501 levels.
 - Item 6: embedded regression (refused duplicates including `<>`/`!=` and `1`/`01`; literal-case
   and parameter-value keys accepted; unresolvable keys report their own error; a duplicated
   unresolvable key fails as the single key does), end-to-end cases in `sqltest/agg`, and four

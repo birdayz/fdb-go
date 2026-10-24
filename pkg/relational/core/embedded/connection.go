@@ -518,14 +518,16 @@ func (tx *embeddedTx) release() {
 // failed commit leaves a dead handle, not a resumable one. A transaction that
 // has already ended is not committed again (25F01).
 func (tx *embeddedTx) Commit() (err error) {
-	defer tx.conn.recoverInto(&err)
-	// A dispatched commit's outcome must not be replaced by a context error,
-	// so the BeginTx binding goes first.
-	tx.detachContext()
 	defer func() {
 		tx.terminate()
 		tx.release()
 	}()
+	// Before the release above, so a panic's poison still finds and cancels
+	// this transaction.
+	defer tx.conn.recoverInto(&err)
+	// A dispatched commit's outcome must not be replaced by a context error,
+	// so the BeginTx binding goes first.
+	tx.detachContext()
 	if tx.terminated.Load() {
 		return tx.endedError()
 	}
@@ -888,11 +890,11 @@ var seriousLog = func(msg string, attrs ...any) {
 	slog.Default().Error(msg, attrs...)
 }
 
-// recoveredPanicError converts a panic that escaped statement planning/execution
-// into a returned error. This is the Go "don't leak panics" API boundary (the
-// encoding/json model): genuine internal-invariant asserts may panic freely below
-// here, but at this boundary they become a generic internal error so a single
-// statement cannot crash a shared, multi-tenant process. The panic value and the
+// recoveredPanicError converts a panic that escaped an exported connection or
+// driver entry point into a returned error. This is the Go "don't leak panics" API
+// boundary (the encoding/json model): genuine internal-invariant asserts may panic
+// freely below here, but at this boundary they become a generic internal error so
+// one call cannot crash a shared, multi-tenant process. The panic value and the
 // stack are logged SERIOUS (debug.Stack here still shows the original panic site —
 // the stack is live until recover completes the unwind); the caller gets a generic
 // message because the panic value may carry schema/row data. It deliberately does

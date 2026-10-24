@@ -55,14 +55,14 @@ type directTable struct {
 
 // run resolves tableName and runs fn over its store, in the open explicit
 // transaction or in one of its own.
-func (s *directAccessStatement) run(ctx context.Context, tableName string, opts *api.Options, fn func(directTable, *api.Options) (any, error)) (any, error) {
+func (s *directAccessStatement) run(ctx context.Context, tableName string, opts *api.Options, fn func(directTable, *api.Options) (any, error)) (_ any, err error) {
 	c := s.c
+	defer func() { c.endTxOnEndedContext(ctx, err) }()
 	if c.closed.Load() {
 		return nil, api.NewError(api.ErrCodeStatementClosed, "statement is closed")
 	}
 	merged := c.Options()
 	if opts != nil {
-		var err error
 		if merged, err = merged.WithChild(opts); err != nil {
 			return nil, err
 		}

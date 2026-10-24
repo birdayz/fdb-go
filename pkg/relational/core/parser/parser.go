@@ -51,18 +51,14 @@ func Parse(sql string) (ctx antlrgen.IRootContext, err error) {
 			}
 		}
 	}()
-	var nesting int
-	p, listener, releasePredictionState := newParser(sql, func(ts *antlr.CommonTokenStream) {
-		ts.Fill()
-		nesting = maxNesting(ts.GetAllTokens())
-	})
-	defer releasePredictionState()
-	if nesting > maxParenNesting {
+	if maxNesting(sql) > maxParenNesting {
 		return nil, &api.Error{
 			Code:    api.ErrCodeSyntaxError,
 			Message: fmt.Sprintf("syntax error: expression nesting exceeds maximum depth (%d)", maxParenNesting),
 		}
 	}
+	p, listener, releasePredictionState := newParser(sql, nil)
+	defer releasePredictionState()
 	root := p.Root()
 	if len(listener.errs) > 0 {
 		return nil, buildSyntaxError(listener.errs[0])
@@ -75,12 +71,21 @@ func Parse(sql string) (ctx antlrgen.IRootContext, err error) {
 // through it.
 const maxParenNesting = 500
 
-// maxNesting returns the deepest round-bracket nesting among tokens. A
+// maxNesting returns the deepest round-bracket nesting of sql's tokens: a
 // parenthesis inside a string literal, a quoted identifier or a comment is part
-// of that token and does not count.
-func maxNesting(tokens []antlr.Token) int {
+// of that token. A pass of its own, so the parser still lexes lazily and reports
+// the first error it meets; this pass reports none.
+func maxNesting(sql string) int {
+	lexer := antlrgen.NewRelationalLexer(newCaseInsensitiveCharStream(sql))
+	state := relationalLexerPredictionStates.acquire()
+	useLexerPredictionState(lexer, state)
+	defer func() {
+		detachLexerPredictionState(lexer, state.atn)
+		relationalLexerPredictionStates.release(state)
+	}()
+	lexer.RemoveErrorListeners()
 	deepest, depth := 0, 0
-	for _, tok := range tokens {
+	for tok := lexer.NextToken(); tok.GetTokenType() != antlr.TokenEOF; tok = lexer.NextToken() {
 		switch tok.GetTokenType() {
 		case antlrgen.RelationalLexerLEFT_ROUND_BRACKET:
 			depth++

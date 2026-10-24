@@ -47,8 +47,8 @@ accepts any non-empty path and attaches no meaning to any segment
 guards below key on "the session has a usable database path".
 
 `schema=` has **no default**. Omit it and the session schema stays empty and metadata loading is a
-silent no-op (`pkg/relational/sqldriver/driver.go:174`,
-`pkg/relational/core/embedded/connection.go:507`). Always pass it. `MAIN` is only a convention.
+silent no-op (`Connector.Connect` in `pkg/relational/sqldriver/driver.go`,
+`EmbeddedConnection.ensureMetaData`). Always pass it. `MAIN` is only a convention.
 
 The physical layout is one subspace per (database, schema) pair, and the prefix is the *plain tuple
 encoding of the two strings*:
@@ -249,7 +249,7 @@ Two details worth knowing before you deploy it:
 There is no options API for this: `OpenConnector` takes a DSN string
 (`pkg/relational/sqldriver/driver.go:123`) and the DSN is the only route through `database/sql`.
 The option can also be set directly on a connection built with `embedded.New`
-(`pkg/relational/core/embedded/connection.go:525`) via `SetOptions` (`:125`,
+via `SetOptions` (`EmbeddedConnection.SetOptions`,
 `api.NoOptions().With(api.OptRestrictDDLToSessionDatabase, true)`) — exported, but it bypasses
 `database/sql` entirely, so treat the DSN as the operator surface.
 
@@ -305,7 +305,7 @@ What happens on breach differs per limit, and two of them do **not** produce an 
   (`cascades_generator.go:1594-1600`). It is an egress cap, not a quota — the work is still done.
 - **The scanned-rows / scanned-bytes limits paginate by default.** They only raise
   `ScanLimitReachedError` (SQLSTATE `54F01`, `pkg/relational/api/errcode.go:137`) when
-  `SetFailOnScanLimitReached(true)` is also set (`pkg/relational/core/embedded/connection.go:88-91`).
+  `SetFailOnScanLimitReached(true)` is also set (`EmbeddedConnection.failOnScanLimitReached`).
   **Arming a scan limit without that flag is not a quota** — the statement silently pages on
   instead of failing, which is the opposite of what you wanted.
 - **The time and memory limits do error.** Time → `54F01` (`cascades_generator.go:1848`); memory →
@@ -317,7 +317,7 @@ What happens on breach differs per limit, and two of them do **not** produce an 
 **None of the five is settable from a DSN.** `ConnectionOptions()` decodes exactly one parameter,
 `restrict_ddl_to_session_database` (`pkg/relational/sqldriver/dsn.go:86-96`); every other query
 parameter is kept in the raw map and ignored (`dsn.go:84-85`). There is no `SET statement_timeout`
-either, and the reason is recorded at `pkg/relational/core/embedded/connection.go:139-141` — the
+either, and the reason is recorded on `EmbeddedConnection.SetStatementTimeout` — the
 grammar has no generic `SET <var> = <val>` rule. The SQL `OPTIONS(...)` clause carries an unrelated
 set (`cascades_generator.go:772`).
 
@@ -382,15 +382,15 @@ connection.
 
 ### Statement timeout
 
-`SetStatementTimeout` (`pkg/relational/core/embedded/connection.go:143`) takes a `time.Duration`,
-defaults to **off** (`connection.go:96-102`), and bounds one whole `Execute` including all its
+`SetStatementTimeout` (`EmbeddedConnection.SetStatementTimeout`) takes a `time.Duration`,
+defaults to **off** and lasts one borrow, and bounds one whole `Execute` including all its
 pages. Set it on every tenant connection: it is the only bound that spans pages, and without it the
 4-second per-page cap composes into an unbounded statement. Breach surfaces as `54F01`,
 distinguished from a caller's own context deadline by a cause tag
 (`cascades_generator.go:1304`, `:2209`).
 
 Note the semantics honestly: it is **per request, not per connection lifetime**. A continuation
-resumed by a new request starts a fresh deadline (`connection.go:98-100`).
+resumed by a new request starts a fresh deadline (`EmbeddedConnection.statementTimeout`).
 
 **Do not use `TRANSACTION_TIMEOUT`.** `api.OptTransactionTimeout`
 (`pkg/relational/api/options.go:56`) is dead code — that declaration is its only occurrence in the
@@ -972,7 +972,7 @@ These are the dangerous entries, because nothing tells the tenant.
   accepts `RETURNING` (`pkg/relational/core/parser/grammar/RelationalParser.g4:378`, `:455`) and the
   DML executes correctly with the right row count — the values simply never surface. Via `Query` you
   get `0A000 INSERT/UPDATE/DELETE return a row count, not rows — use Exec, not Query`
-  (`pkg/relational/core/embedded/connection.go:653-655`). `INSERT … RETURNING` is `42601` (not in
+  (`EmbeddedConnection.QueryContext`). `INSERT … RETURNING` is `42601` (not in
   the grammar). Pinned: `pkg/relational/sqldriver/returning_clause_probe_test.go:49`, `:61`, `:75`.
 - **`LIKE` does not treat a trailing newline as content.** `WHERE name LIKE 'abc'` matches the
   stored value `"abc\n"` — no DOTALL, and `$` matches before one final line terminator. Deliberate

@@ -406,26 +406,53 @@ func TestBeginTx_RecordContextCarriesBeginTxContext(t *testing.T) {
 }
 
 // A statement whose context ended before it reached FDB (planning checks the
-// context first) also ends the explicit transaction.
-func TestExplicitTx_ContextEndedBeforePlanningEndsTransaction(t *testing.T) {
+// context first, DirectAccess resolves the schema in a transaction of its own
+// first) also ends the explicit transaction, through each entry point.
+func TestExplicitTx_ContextEndedBeforeFDBEndsTransaction(t *testing.T) {
 	t.Parallel()
-	g := newGatedSim(t, 515)
-	c := g.connect(t, "S")
-	tx, err := c.BeginTx(context.Background(), driver.TxOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	mustExec(t, c, "INSERT INTO t (id, v) VALUES (500, 500)")
-	ctx, cancel := context.WithCancel(context.Background())
+	ended, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := c.QueryContext(ctx, "SELECT id FROM t", nil); !errors.Is(err, context.Canceled) {
-		t.Fatalf("SELECT with an ended context = %v, want context.Canceled", err)
-	}
-	wantEnded(t, "Commit", tx.Commit(), context.Canceled)
-	if err := tx.Rollback(); err != nil || c.activeTx != nil {
-		t.Fatalf("Rollback = %v, activeTx %v; want nil, nil", err, c.activeTx)
-	}
-	if n := countRows(t, c, 500); n != 0 {
-		t.Fatalf("a write of the ended transaction was committed (count %d)", n)
+	// DirectAccess runs on a connection that has not resolved the schema yet,
+	// so the ended context fails that resolution, before the transaction.
+	for name, stmt := range map[string]func(*EmbeddedConnection) error{
+		"QueryContext": func(c *EmbeddedConnection) error {
+			_, err := c.QueryContext(ended, "SELECT id FROM t", nil)
+			return err
+		},
+		"ExecContext": func(c *EmbeddedConnection) error {
+			_, err := c.ExecContext(ended, "INSERT INTO t (id, v) VALUES (501, 501)", nil)
+			return err
+		},
+		"DirectAccess": func(c *EmbeddedConnection) error {
+			key, err := api.NewKeySet().SetKeyColumn("ID", int64(500))
+			if err != nil {
+				return err
+			}
+			_, err = c.DirectAccess().ExecuteGet(ended, "T", key, nil)
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			g := newGatedSim(t, 515)
+			c := g.connect(t, "S")
+			tx, err := c.BeginTx(context.Background(), driver.TxOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if name != "DirectAccess" {
+				mustExec(t, c, "INSERT INTO t (id, v) VALUES (500, 500)")
+			}
+			if err := stmt(c); !errors.Is(err, context.Canceled) {
+				t.Fatalf("%s with an ended context = %v, want context.Canceled", name, err)
+			}
+			wantEnded(t, "Commit", tx.Commit(), context.Canceled)
+			if err := tx.Rollback(); err != nil || c.activeTx != nil {
+				t.Fatalf("Rollback = %v, activeTx %v; want nil, nil", err, c.activeTx)
+			}
+			if n := countRows(t, c, 500); n != 0 {
+				t.Fatalf("a write of the ended transaction was committed (count %d)", n)
+			}
+		})
 	}
 }

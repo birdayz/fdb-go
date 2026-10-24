@@ -51,3 +51,18 @@ func TestParse_NestingGuardIgnoresParensInsideTokens(t *testing.T) {
 		}
 	}
 }
+
+// The guard's lexer pass reports nothing: the parser still lexes lazily, so
+// the first syntax error is the one it meets first, not an unterminated
+// comment at the end of the text.
+func TestParse_NestingGuardKeepsTheFirstSyntaxError(t *testing.T) {
+	t.Parallel()
+	_, err := Parse("SELEC 1 FROM t /* x")
+	var ae *api.Error
+	if !errors.As(err, &ae) || ae.Code != api.ErrCodeSyntaxError {
+		t.Fatalf("Parse = %v, want a syntax error", err)
+	}
+	if want := "syntax error:\nSELEC 1 FROM t /* x\n^^^^^"; ae.Message != want {
+		t.Fatalf("first syntax error\n%s\nwant the misspelt keyword underlined\n%s", ae.Message, want)
+	}
+}

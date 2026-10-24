@@ -6,6 +6,7 @@ import (
 	"errors"
 	"testing"
 
+	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
 	apiddl "fdb.dev/pkg/relational/api/ddl"
@@ -201,5 +202,28 @@ func TestExportedEntriesRecoverPanics(t *testing.T) {
 				t.Fatalf("%s: the interrupted transaction's write was committed", name)
 			}
 		})
+	}
+}
+
+// A panic inside Commit still cancels the FDB transaction: the poisoning runs
+// before Commit releases the transaction from the connection.
+func TestCommitPanicCancelsTransaction(t *testing.T) {
+	t.Parallel()
+	g := newGatedSim(t, 523)
+	c := g.connect(t, "S")
+	tx, err := c.BeginTx(context.Background(), driver.TxOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustExec(t, c, "INSERT INTO t (id, v) VALUES (7, 7)")
+	fdbTx := c.activeTx.rctx.Transaction()
+	g.gate.PanicOnce(simgate.Commit)
+	if err := tx.Commit(); err == nil {
+		t.Fatal("Commit that panicked succeeded")
+	}
+	_, err = fdbTx.Get(fdb.Key("k")).Get()
+	var fe fdb.Error
+	if !errors.As(err, &fe) || fe.Code != 1025 {
+		t.Fatalf("read on the transaction after the panicking Commit = %v, want transaction_cancelled (1025)", err)
 	}
 }

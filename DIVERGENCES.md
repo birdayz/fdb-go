@@ -3362,7 +3362,7 @@ exist` from `connect` itself (`EmbeddedRelationalDriver.java:62-94`).
 **Go.** The driver opens the connection without reading the catalog. So a program may
 connect to `fdbsql:///MYAPP` and run `CREATE DATABASE /myapp` on it. The first statement
 that needs the schema reports what Java's connect reports. `loadSchemaOfDatabase`
-(`pkg/relational/core/embedded/connection.go:526`) turns UNDEFINED_SCHEMA over a missing
+(`pkg/relational/core/embedded/connection.go`) turns UNDEFINED_SCHEMA over a missing
 database into 42F00 `Database <path> does not exist`: the same code and message, one call
 later.
 

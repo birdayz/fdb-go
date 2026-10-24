@@ -1889,18 +1889,14 @@ func (r *paginatingRows) Next(dest []driver.Value) (err error) {
 	// execution (an invariant trip, or any residual eval panic) must become an error
 	// here, not crash the shared multi-tenant process.
 	defer func() {
-		if rec := recover(); rec != nil {
-			err = recoveredPanicError(rec)
-			r.conn.poison()
-		}
 		// RFC-211: stage whatever ended this statement for the record Close
-		// emits. io.EOF is exhaustion, not failure. Registered in the SAME
-		// defer as the panic recovery and AFTER it, so a recovered panic is
-		// recorded as the statement's outcome too.
+		// emits. io.EOF is exhaustion, not failure. It runs after recoverInto,
+		// so a recovered panic is recorded as the statement's outcome too.
 		if err != nil && err != io.EOF && r.statsErr == nil {
 			r.statsErr = err
 		}
 	}()
+	defer r.conn.recoverInto(&err)
 	if r.closed {
 		return io.EOF
 	}

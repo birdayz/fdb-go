@@ -316,7 +316,7 @@ panic *internally*.
 - **Every goroutine boundary recovers** (this is what makes the library never-panic to
   callers — the `encoding/json` pattern): catch-all → `debug.Stack()` (first) → log SERIOUS
   → generic internal error / `failConnection`. Never splice the panic value into a
-  tenant-visible message. Boundaries: (1) db/sql `connection.go:305,336` [new, P0.2];
+  tenant-visible message. Boundaries: (1) db/sql `connection.go` (`recoverInto`, every exported entry since RFC-272) [new, P0.2];
   (2) FDB `transaction.go:508 panicToError` [**KEEP** — also the `Must*`-API boundary,
   Apple parity]; (3) the 3 network goroutines [new, P0.2]; (4) **the remaining client
   background goroutines — `topologyMonitor`, `backgroundRefresher`, the GRV-batch `flush`,

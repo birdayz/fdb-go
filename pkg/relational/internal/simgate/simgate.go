@@ -10,7 +10,8 @@ import (
 	"fdb.dev/pkg/simfdb"
 )
 
-// Call names the transaction calls PanicOnce can arm.
+// Call selects the call PanicOnce or BlockNextIn arms; only PanicOnce takes
+// Begin.
 type Call string
 
 const (
