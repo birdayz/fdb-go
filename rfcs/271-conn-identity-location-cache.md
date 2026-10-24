@@ -22,7 +22,9 @@
 `connPool[addr]` holds, then marks `addr` failed after releasing `connMu`. Its
 callers pass only the address: the commit and `PendingGet` arms directly,
 `handleDialError`, and `handleReadConnError(addr, err)`, the wrapper the read, GRV,
-location, metrics, watch and hedged-read arms go through (21 call sites). A report
+location, metrics, watch and hedged-read arms go through (20 call sites:
+`git grep -n 'handleReadConnError(' -- 'pkg/fdbgo/client/*.go' ':!*_test.go'`, less
+the definition). A report
 can arrive after the pool replaced the connection it is about: connection A dies;
 `getOrDialConnFor` sees `A.IsClosed()`, drops it, dials B and pools it
 (`markAlive(addr)`); then a goroutine holding A's failed reply runs its handler. It
@@ -71,6 +73,13 @@ pooled connection means a later dial already succeeded.
 A connection that leaves the pool is always closed (by `handleConnError`, by the
 dial panic backstop, or because `getOrDialConnFor` drops only closed entries), so
 a non-pooled `failed` connection needs no close of its own.
+
+A send-error arm reports right after its send fails on `conn`, the connection it
+just obtained from the pool; the reply-error arms report after a wait during which
+the pool can change, and those are the reports the identity check is for.
+
+A test seam, `beforeConnFailureMark` (nil in production, like `afterLocationSend`),
+runs just before the mark so a test can attempt a redial at that instant.
 
 ## 2. The location cache is a range map
 
@@ -139,14 +148,32 @@ rethrows (`FlowTransport.actor.cpp:1195-1207`), and nothing is cached.
   or server element (`locationsUnreadable`), or an inverted range
   (`locationsInvertedRange`). `queryLocations` already treats a parse error as a
   failed attempt and asks the next proxy; it does not mark the proxy failed.
+- A key the range carries whose bytes lie outside the reply (`ReadBytes` returns
+  nil for a present field only then) is `locationsUnreadable`: decoding it as the
+  empty key would widen the range. The range checks compare with `bytes.Compare`,
+  so an absent end is the empty key, as C++ decodes it: `["a", absent)` is
+  inverted, not unbounded.
 - A result whose range is absent or empty is skipped, as C++ caches nothing for
   it; an empty range covers no key, so skipping it leaves no hole. Results without
-  servers, and servers without a valid endpoint, are still skipped as today
-  (`locateRangeWith` re-asks for a reply with a hole). A reply left with no usable
-  shard is `locationsNoShards`.
+  servers, and servers without a valid endpoint, are still skipped as today. A
+  reply left with no usable shard is `locationsNoShards`, which `queryLocations`
+  treats like any parse error. A range lookup re-asks for a reply with a hole
+  (`locateRangeWith`). A single-key lookup takes the first usable result as
+  before; its reply carries exactly one result (C++ asserts it,
+  `NativeAPI.actor.cpp:3043`), so a skipped result leaves none and the lookup is
+  asked again.
 - `KeyRangeRef.UnmarshalFromReader` performs the single-key swap only when the
   encoded key ends in `\x00`, as C++ asserts; otherwise the range stays inverted
   and is rejected.
+
+Both decoder changes are shared. `ReadVectorCount` is called by the hand-written
+reply parsers (locations, `ClientDBInfo` proxy lists in `coordinator.go`, split
+points in `metrics.go`), which already return its error, and by the generated
+decoders, which treat an error as an absent vector: an oversized vector now
+decodes as empty instead of as elements read from the bytes after it. The client
+decodes `KeyRangeRef` from a reply only in the locations reply; the other
+messages that carry one (`CommitTransactionRef`, `SplitRangeRequest`,
+`WaitMetricsRequest`) are requests it encodes.
 
 Divergence (recorded in DIVERGENCES.md): C++ never delivers a reply that fails to
 deserialize, so its request waits until the proxies change; Go discards the reply
@@ -156,8 +183,10 @@ and asks the next proxy. Only a malformed reply reaches this.
 
 No bytes change. Requests, conflict ranges and error codes are untouched; the
 changes are which connection a failure closes, the cache's in-memory shape, and
-which replies the client accepts. Every reply a 7.3.77 proxy sends decodes as
-before (ground-truth vector `GetKeyServerLocationsReply_one_range`).
+which replies the client accepts. Every reply a 7.3.77 server sends decodes as
+before: a well-formed vector never declares more elements than it holds, and C++
+writes the single-key form only with the trailing `\x00` (ground-truth vector
+`GetKeyServerLocationsReply_one_range`).
 
 ## Performance
 
@@ -181,8 +210,16 @@ assert the typed error and its defect, not only that some error occurred.
     dial failure after a later successful dial; pooled connection closed too;
     nothing pooled; failure then redial then a second report. Each asserts the
     pooled connection, `isFailed`, the counter and the Warn count.
-  - A concurrent report and redial never leave an open pooled connection whose
-    address is marked failed (repeated, run under `-race`).
+  - Ordering: the `beforeConnFailureMark` seam attempts a redial just before the
+    mark. With the mark outside `connMu` the redial completes first and the mark
+    leaves an open pooled connection's address failed; with it inside, the redial
+    waits for the lock and its `markAlive` lands last. Deterministic either way.
+    A repeated concurrent report-and-redial checks the same invariant.
+  - Every reply-failure arm through its production path (commit, GRV, location,
+    WaitMetrics, SplitRange, getValue to one server, load-balanced getValue, getKey,
+    getRange, watch): the request goes out on A, the test gives the pool a
+    replacement B, and A dies. The arm's report must leave B pooled and open and
+    the address alive.
   - Hedged path: `sendFrameWithHedge` results and losers carry the connection of
     their own request; `endOther` reports a loser against its connection.
   - Cache: merge, split (upper half and nested), unbounded entries, touching
@@ -190,10 +227,11 @@ assert the typed error and its defect, not only that some error occurred.
     per-key model of `insert`.
   - Parser: mutations of the C++ ground-truth vector for an absent key range, an
     empty range and a server without an endpoint (skipped, `locationsNoShards`);
-    a zero key-range offset, a result or server offset past the buffer, oversized
-    result and server counts (`locationsUnreadable`, the last two with a
-    `*wire.VectorCountError`); an inverted range and a single-key form without
-    `\x00` (`locationsInvertedRange`); and the C++ single-key form still decoding.
+    a zero key-range offset, a result, server or range-key offset past the buffer,
+    oversized result and server counts (`locationsUnreadable`, the last two with
+    a `*wire.VectorCountError`); an inverted range, an absent range end and a
+    single-key form without `\x00` (`locationsInvertedRange`); and the C++
+    single-key form still decoding.
   - `queryLocations` over two proxies: the first answers with an inverted range,
     the second with the valid vector; the query returns and caches the second, and
     the first proxy is not marked failed.
