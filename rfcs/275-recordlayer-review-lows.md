@@ -88,7 +88,8 @@ covers the four Low items and the Medium explicit-version/`VersionstampSaveBehav
      `AddSubdirectories` stops at the first refusal, and the duplicate-name panic goes away.
    - A NULL directory counts as constant, as it does in Java: its only value is null.
    - Byte constants are compared by content. Java compares them by identity, so Go refuses
-     equal byte siblings that Java would accept.
+     equal byte siblings that Java would accept. Floats compare as Java's `Double.equals`:
+     NaN equals NaN, and 0.0 is not -0.0.
    - The incompatibility rule cannot arise in Go: a resolver directory is always open, so the
      overlapping-type rule already refuses any same-type sibling.
    - Matching: `PathFromTuple`, which absorbs `resolveRemaining`, and `FindChildForValue`
@@ -109,8 +110,10 @@ covers the four Low items and the Medium explicit-version/`VersionstampSaveBehav
    `&RecordCoreStorageError{Message: "Error reading version", Cause: err}`.
 4. `buildRange` first collects the target indexes that apply to the record. A record that no
    target applies to is counted as scanned and skipped, with no conflict, as in Java. The
-   idempotent-only condition on the conflict is unchanged. The loop body moves into
-   `buildRangeInTransaction`, so a test can run it inside its own transaction.
+   idempotent-only condition on the conflict is unchanged. The per-record step is
+   `indexScannedRecord`, which the mutual build's fragment loop (`buildFragmentRange`)
+   shares; that loop had the same order. The loop body moves into `buildRangeInTransaction`,
+   so a test can run it inside its own transaction.
 5. **Rank and TEXT.**
    - `GetNth` returns nil after level 0 unless duplicates are counted.
    - `extractRankValue` converts tuple numbers with Java's `longValue()`: every Go integer
@@ -166,9 +169,12 @@ to the old behavior.
   - a cancelled context reaches the resolver.
 - **Error chains:** a corrupt header is a `*RecordCoreStorageError` that unwraps to the
   parse error, both for a direct open and through the store-state cache.
-- **`buildRange`,** with an idempotent VALUE index: a concurrent write to a record of a type
-  no target indexes does not conflict the build's commit, while a write to an indexed record
-  still does. The scanned count includes the skipped record.
+- **`buildRange` and the mutual fragment build,** with an idempotent VALUE index: a
+  concurrent write to a record of a type no target indexes does not conflict the build's
+  commit, while a write to an indexed record still does. The scanned count includes the
+  skipped record.
+- **Long-arithmetic key functions:** `uint64`, `uint` and a `*big.Int` past 2^64 are taken
+  with `longValue()`.
 - **Rank and TEXT:**
   - A ranked set written with duplicate counting and read without returns nil past level 0.
   - `extractRankValue` gives `longValue()` for `int64`, `uint64` above `MaxInt64`,

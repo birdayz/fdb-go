@@ -112,6 +112,28 @@ Each is described in full under Compatibility or Changed below.
   and tags now apply to every statement transaction, autocommit and read-only ones included.
 
 ### Changed
+- Record layer (RFC-275), in full:
+  - `CheckTransactionSize` returns only `TransactionSizeExceededError`. The Go-only warning
+    threshold logs at WARN and counts `CountTransactionSizeWarning` once per transaction.
+  - Header parse failures are `RecordCoreStorageError{Message: "Error reading version", Cause}`.
+  - The TEXT maintainer reads its text column as Java's `Tuple.getString` does. A non-string is a
+    `ClassCastError` and a position past the key an `IndexOutOfBoundsError`; null and `""` are
+    still skipped.
+  - BY_RANK bounds and the arguments of the long-arithmetic key functions are taken with Java's
+    `Number.longValue()`. Every Go integer carrier is accepted, with `uint64`/`*big.Int` keeping
+    their low 64 bits, and floats are truncated with NaN as 0. A float bound used to be an
+    unbounded endpoint and now selects a rank; a bound that is not a number is a
+    `ClassCastError`.
+- `keyspace` (RFC-275), in full:
+  - `AddSubdirectory`/`AddSubdirectories(...) error` refuse:
+    - a duplicate name;
+    - a same-type sibling unless both are distinct constants (a NULL directory counts as a
+      constant);
+    - an equal constant (bytes by content, floats as `Double.equals`).
+  - `PathFromTuple` and `FindChildForValue` match a stored value in declaration order. An element
+    no subdirectory of a non-leaf directory holds, or any element under a root without
+    subdirectories, is an `*ArgumentError`.
+  - `ResolverFunc`, `KeySpace.Path` and `Path.Add` take the caller's context.
 - Development builds use Bazel 9.3.1, Bazelisk 1.30.0, and updated stable BCR build rules.
 - Require Go 1.27 (minimum toolchain Go 1.27.3).
 - Go 1.27.3 includes the GO-2026-6809 `crypto/x509` fix used by pure-Go client TLS.

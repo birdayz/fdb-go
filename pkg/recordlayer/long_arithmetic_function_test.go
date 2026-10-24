@@ -3,6 +3,7 @@ package recordlayer
 import (
 	"errors"
 	"math"
+	"math/big"
 	"testing"
 
 	"google.golang.org/protobuf/types/dynamicpb"
@@ -53,6 +54,36 @@ func TestArithmeticAdd(t *testing.T) {
 			}
 			if got != tc.want {
 				t.Errorf("add(%d, %d) = %v, want %d", tc.a, tc.b, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestArithmeticWideIntegerOperands pins Key.Evaluated.getNullableLong: any
+// Number operand is taken with longValue(), which keeps an integer's low 64 bits.
+func TestArithmeticWideIntegerOperands(t *testing.T) {
+	t.Parallel()
+	huge, ok := new(big.Int).SetString("18446744073709551621", 10) // 2^64 + 5
+	if !ok {
+		t.Fatal("bad literal")
+	}
+	for _, tc := range []struct {
+		name string
+		arg  any
+		want int64
+	}{
+		{"uint64 max", uint64(math.MaxUint64), 0}, // longValue -1, + 1
+		{"big integer past 2^64", huge, 6},        // longValue 5, + 1
+		{"uint", uint(4), 5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := evaluateArithmetic(t, "add", []any{tc.arg, int64(1)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("add(%v, 1) = %v, want %d", tc.arg, got, tc.want)
 			}
 		})
 	}

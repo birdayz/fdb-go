@@ -14,6 +14,7 @@ package keyspace
 import (
 	"context"
 	"fmt"
+	"math"
 	"reflect"
 	"strings"
 
@@ -427,6 +428,15 @@ func (d *Directory) childForKey(v any) *Directory {
 // (FDB tuples decode ints as int64, but constants may be int).
 // Uses reflect.DeepEqual to safely handle non-comparable types like []byte.
 func recordTypeKeyEquals(a, b any) bool {
+	// Floats compare as Java's Double.equals / Float.equals: NaN equals NaN, 0.0 is not -0.0.
+	switch x := a.(type) {
+	case float64:
+		y, ok := b.(float64)
+		return ok && (math.IsNaN(x) && math.IsNaN(y) || x == y && math.Signbit(x) == math.Signbit(y))
+	case float32:
+		y, ok := b.(float32)
+		return ok && (math.IsNaN(float64(x)) && math.IsNaN(float64(y)) || x == y && math.Signbit(float64(x)) == math.Signbit(float64(y)))
+	}
 	if reflect.DeepEqual(a, b) {
 		return true
 	}

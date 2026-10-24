@@ -2101,33 +2101,14 @@ func (oi *OnlineIndexer) buildRangeInTransaction(ctx context.Context, rtx *FDBRe
 		// recordsScannedCounter for every record regardless of type filtering.
 		r.recordsProcessed++
 
-		// Java filters by the targets' record types before the read conflict
-		// (IndexingBase.handleCursorResult), so another type's writes do not conflict.
-		var applicable []*Index
-		for _, idx := range oi.targetIndexes {
-			if oi.shouldIndexRecordForIndex(rec, idx) {
-				applicable = append(applicable, idx)
-			}
+		indexed, err := oi.indexScannedRecord(store, rec)
+		if err != nil {
+			return r, err
 		}
-		if len(applicable) == 0 {
-			continue
-		}
-		if oi.allTargetIndexesIdempotent() {
-			if err := store.AddRecordReadConflict(rec.PrimaryKey); err != nil {
+		if indexed {
+			if reachedLimits, err = oi.transactionReachedLimits(rtx, started); err != nil {
 				return r, err
 			}
-		}
-		for _, idx := range applicable {
-			maintainer, mErr := store.getIndexMaintainer(idx)
-			if mErr != nil {
-				return r, fmt.Errorf("index %q get maintainer: %w", idx.Name, mErr)
-			}
-			if err := maintainer.Update(nil, rec); err != nil {
-				return r, fmt.Errorf("index %q record pk=%v: %w", idx.Name, rec.PrimaryKey, err)
-			}
-		}
-		if reachedLimits, err = oi.transactionReachedLimits(rtx, started); err != nil {
-			return r, err
 		}
 	}
 
@@ -2167,6 +2148,36 @@ func (oi *OnlineIndexer) buildRangeInTransaction(ctx context.Context, rtx *FDBRe
 
 	r.mergeRequests = store.GetIndexDeferredMaintenanceControl().GetMergeRequiredIndexes()
 	return r, nil
+}
+
+// indexScannedRecord maintains the target indexes that cover a scanned record
+// and reports whether any did. As in Java's IndexingBase.handleCursorResult, the
+// record-type filter comes first, so a record no target covers adds no read conflict.
+func (oi *OnlineIndexer) indexScannedRecord(store *FDBRecordStore, rec *FDBStoredRecord[proto.Message]) (bool, error) {
+	var applicable []*Index
+	for _, idx := range oi.targetIndexes {
+		if oi.shouldIndexRecordForIndex(rec, idx) {
+			applicable = append(applicable, idx)
+		}
+	}
+	if len(applicable) == 0 {
+		return false, nil
+	}
+	if oi.allTargetIndexesIdempotent() {
+		if err := store.AddRecordReadConflict(rec.PrimaryKey); err != nil {
+			return false, err
+		}
+	}
+	for _, idx := range applicable {
+		maintainer, err := store.getIndexMaintainer(idx)
+		if err != nil {
+			return false, fmt.Errorf("index %q get maintainer: %w", idx.Name, err)
+		}
+		if err := maintainer.Update(nil, rec); err != nil {
+			return false, fmt.Errorf("index %q record pk=%v: %w", idx.Name, rec.PrimaryKey, err)
+		}
+	}
+	return true, nil
 }
 
 // buildIndexingStamp creates the IndexBuildIndexingStamp proto for this build.

@@ -177,4 +177,10 @@ func TestResolverDirectory_UsesCallerContext(t *testing.T) {
 	tenant, err := path.Add(context.Background(), "tenant", "t")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(tenant.GetValue()).To(Equal(int64(7)))
+
+	// A root resolver directory resolves under the context KeySpace.Path is given.
+	rootResolved := NewDirectory("root", KeyTypeNull)
+	mustAdd(t, rootResolved, ResolverDirectory("tenant", ctxResolver{}))
+	_, err = NewKeySpace(rootResolved).Path(cancelled, "tenant", "t")
+	g.Expect(errors.Is(err, context.Canceled)).To(BeTrue(), "%v", err)
 }
