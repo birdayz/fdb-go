@@ -280,7 +280,7 @@ fdb-record-layer-go Authors") + obtain internal legal sign-off — the file is i
 crashes on `SELECT 1/0` for the weeks the sweep takes. Build the net, then refactor behind
 it. This is the minimal realization of the P0.3 policy:
 - [x] db/sql boundary recover spanning the FULL query path — `ExecContext`/`QueryContext`
-  (`connection.go`) **and** `paginatingRows.Next`/`cascadesRows.Next` (`cascades_generator.go`):
+  (`connection.go`) **and** `paginatingRows.Next` (`cascades_generator.go`):
   catch-all → `debug.Stack()` (first) → log SERIOUS server-side → generic internal error
   (panic value never leaked to the caller) → keep serving. (Since RFC-272 every exported entry
   defers `recoverInto` in `connection.go`, and the connection is closed after a panic.)
@@ -467,8 +467,8 @@ now return everywhere (div0→22012 etc.); the keep=false silent-row-drop is fix
 - [x] **GATE completed**: conformance + FDB green at every commit; `-race` on
   `//pkg/relational/...` run (found + fixed the `hadRead` client race — see P1.1); 1M stress
   green (all subtests pass, durations consistent with the baseline — no bulk-path regression).
-- [x] **P0.2 gap CLOSED:** `paginatingRows.Next` + `cascadesRows.Next` (cascades_generator.go)
-  now `recover()` → `recoveredPanicError` (since RFC-272 through `recoverInto`, which closes the
+- [x] **P0.2 gap CLOSED:** `paginatingRows.Next` (cascades_generator.go) now `recover()` →
+  `recoveredPanicError` (since RFC-272 it defers `recoverInto` in connection.go, which closes the
   connection) — the db/sql boundary recover spans the FULL query
   path (planning + first page via QueryContext/ExecContext, later pages via Rows.Next). A panic
   during later-page iteration becomes a generic internal error, not a host crash; user eval

@@ -51,9 +51,9 @@ func TestConnector_RetriesFailedInitialization(t *testing.T) {
 	}
 }
 
-// An initialization whose caller's context ends, also while the stored-query
-// warm-up runs, fails that Connect and is redone by the next one.
-func TestConnector_InitializerContextEndIsNotKept(t *testing.T) {
+// A Connect whose context ends while the connector initializes returns its
+// context error; the initialization goes on, and the next Connect uses it.
+func TestConnector_CallerContextDoesNotCutInitializationShort(t *testing.T) {
 	t.Parallel()
 	clusterFile := filepath.Join(t.TempDir(), "gated.cluster")
 	db, gate := simBackend(603)
@@ -69,22 +69,19 @@ func TestConnector_InitializerContextEndIsNotKept(t *testing.T) {
 	}()
 	<-read.Entered()
 	cancel()
-	read.Release()
 	if err := <-done; !errors.Is(err, context.Canceled) {
 		t.Fatalf("Connect whose context ended during initialization = %v, want context.Canceled", err)
 	}
-	if c.warmUp.Load() != nil {
-		t.Fatal("the cut-short warm-up was published")
-	}
+	read.Release()
 	conn, err := c.Connect(context.Background())
 	if err != nil {
-		t.Fatalf("Connect after the cut-short initialization: %v", err)
+		t.Fatalf("Connect after the first caller left: %v", err)
 	}
 	if err := conn.Close(); err != nil {
 		t.Fatal(err)
 	}
 	if c.warmUp.Load() == nil {
-		t.Fatal("the redone initialization published no warm-up")
+		t.Fatal("the initialization published no warm-up")
 	}
 }
 
@@ -128,7 +125,7 @@ func (c *waitingCtx) Done() <-chan struct{} {
 	return c.Context.Done()
 }
 
-// One caller runs the initialization while the others wait; success is kept.
+// One attempt serves every concurrent caller; success is kept.
 func TestInitFlight_ConcurrentCallersShareOneAttempt(t *testing.T) {
 	t.Parallel()
 	var f initFlight
@@ -207,9 +204,41 @@ func TestInitFlight_WaiterLeavesOnItsContext(t *testing.T) {
 	}
 }
 
-// A failure goes to the caller that ran the attempt; a waiter then runs the
-// next attempt. A panicking attempt leaves no waiter blocked either.
-func TestInitFlight_FailureReachesOnlyItsCaller(t *testing.T) {
+// The caller that started an attempt may leave on its context too: the
+// attempt is detached from it, finishes, and its success is kept.
+func TestInitFlight_StartingCallerLeavesAttemptRuns(t *testing.T) {
+	t.Parallel()
+	var f initFlight
+	var calls atomic.Int32
+	entered, release, finished := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	init := func(ctx context.Context) error {
+		calls.Add(1)
+		close(entered)
+		<-release
+		defer close(finished)
+		return ctx.Err() // the attempt's context does not end with its caller's
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	starter := make(chan error, 1)
+	go func() { starter <- f.do(ctx, init) }()
+	<-entered
+	cancel()
+	if err := <-starter; !errors.Is(err, context.Canceled) {
+		t.Fatalf("starting caller whose context ended = %v, want context.Canceled", err)
+	}
+	close(release)
+	<-finished
+	if err := f.do(context.Background(), init); err != nil {
+		t.Fatalf("caller after the attempt finished: %v", err)
+	}
+	if n := calls.Load(); n != 1 {
+		t.Fatalf("initialization ran %d times, want once", n)
+	}
+}
+
+// A failed or panicking attempt fails the callers waiting on it; the next
+// caller starts a new attempt.
+func TestInitFlight_FailureReachesItsWaitersAndIsRetried(t *testing.T) {
 	t.Parallel()
 	for _, mode := range []string{"error", "panic"} {
 		t.Run(mode, func(t *testing.T) {
@@ -230,30 +259,29 @@ func TestInitFlight_FailureReachesOnlyItsCaller(t *testing.T) {
 				return nil
 			}
 			first := make(chan error, 1)
-			go func() {
-				defer func() {
-					if r := recover(); r != nil {
-						first <- errors.New("panicked")
-					}
-				}()
-				first <- f.do(context.Background(), init)
-			}()
+			go func() { first <- f.do(context.Background(), init) }()
 			<-entered
 			second := make(chan error, 1)
 			ctx := newWaitingCtx()
 			go func() { second <- f.do(ctx, init) }()
 			select {
-			case <-ctx.waiting: // the second caller waits on the failing attempt
+			case <-ctx.waiting:
 			case err := <-second:
 				t.Fatalf("the second caller returned (%v) without waiting for the running attempt", err)
 			}
 			close(release)
-			err := <-first
-			if mode == "error" && !errors.Is(err, boom) {
-				t.Fatalf("the attempt's caller got %v, want its failure", err)
+			for name, ch := range map[string]chan error{"starting caller": first, "waiter": second} {
+				err := <-ch
+				var ae *api.Error
+				switch {
+				case mode == "error" && !errors.Is(err, boom):
+					t.Fatalf("%s got %v, want the attempt's failure", name, err)
+				case mode == "panic" && (!errors.As(err, &ae) || ae.Code != api.ErrCodeInternalError):
+					t.Fatalf("%s got %v, want the recovered panic (XX000)", name, err)
+				}
 			}
-			if err := <-second; err != nil {
-				t.Fatalf("the waiter got %v, want its own successful attempt", err)
+			if err := f.do(context.Background(), init); err != nil {
+				t.Fatalf("the next caller got %v, want its own successful attempt", err)
 			}
 			if n := calls.Load(); n != 2 {
 				t.Fatalf("initialization ran %d times, want 2", n)

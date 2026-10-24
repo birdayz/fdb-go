@@ -1723,8 +1723,8 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 	// uses (buildAggregateOutputSlots). EXPRESSION keys resolve with the
 	// walk that builds them (value context, Java's visitGroupByItem) and
 	// compare by value; one that does not resolve fails on its own error
-	// in upgradeAggregateOperands, as Java's resolution precedes the
-	// pull-up. Measured live
+	// in upgradeAggregateOperands, and a scope that cannot be built (an
+	// unresolvable FROM) fails there too, as Java fails first. Measured live
 	// (DuplicateGroupByJavaProbe): Java 42702s every duplicate shape
 	// BEFORE planning; the check therefore sits at aggregate BUILD time,
 	// not in the planner.

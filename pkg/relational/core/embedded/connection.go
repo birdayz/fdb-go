@@ -460,15 +460,24 @@ func (tx *embeddedTx) bindContext(ctx context.Context) {
 	if ctx.Done() == nil {
 		return
 	}
+	stop := afterContext(ctx, func() { tx.abort(ctx) })
+	tx.detachCtx = func() { stop() }
+}
+
+// afterContext runs f when ctx ends. Call stop once: it detaches f, waits
+// for an f already running, and reports whether f ran.
+func afterContext(ctx context.Context, f func()) (stop func() bool) {
 	done := make(chan struct{})
-	stop := context.AfterFunc(ctx, func() {
+	stopAfter := context.AfterFunc(ctx, func() {
 		defer close(done)
-		tx.abort(ctx)
+		f()
 	})
-	tx.detachCtx = func() {
-		if !stop() {
-			<-done
+	return func() bool {
+		if stopAfter() {
+			return false
 		}
+		<-done
+		return true
 	}
 }
 
@@ -483,14 +492,9 @@ func (tx *embeddedTx) detachContext() {
 // runBound runs fn with ctx bound to the transaction: if ctx ends first, the
 // transaction is aborted and the call returns ctx's error.
 func (tx *embeddedTx) runBound(ctx context.Context, fn func(*recordlayer.FDBRecordContext) (any, error)) (result any, err error) {
-	done := make(chan struct{})
-	stop := context.AfterFunc(ctx, func() {
-		defer close(done)
-		tx.abort(ctx)
-	})
+	stop := afterContext(ctx, func() { tx.abort(ctx) })
 	defer func() {
-		if !stop() {
-			<-done
+		if stop() {
 			result, err = nil, ctx.Err()
 		}
 	}()

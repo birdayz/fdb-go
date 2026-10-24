@@ -50,8 +50,9 @@ auto-commit SELECT running each page in its own transaction; it stays open and i
 - Item 6 is reachable (probe with an instrumented arm over SimFDB): the check walks keys with
   `WalkExpression` (predicate position), which refuses a comparison, while the key itself is
   built with `WalkExpressionForProjection`; unresolvable keys and a nil scope also reach it.
-  The arm then refuses `GROUP BY c = 'a', c = 'A'` and `amount = ?, amount = ?` (Java: two keys,
-  literals compared by value, `Literals.java:199-205`) and returns 42702 for
+  The arm then refuses `GROUP BY c = 'a', c = 'A'` (Java: two keys, literals compared by value,
+  `Literals.java:199-205`) and `amount = ?, amount = ?` whatever the bound values (Java: unmeasured,
+  DIVERGENCES.md), and returns 42702 for
   `GROUP BY nosuch + 1, nosuch + 1` (Java: 42703, grouping items resolve before the pull-up,
   `QueryVisitor.java:287-305`).
 
@@ -82,11 +83,12 @@ auto-commit SELECT running each page in its own transaction; it stays open and i
    sites included) the connection is closed and its transaction cancelled: `IsValid` reports
    false so database/sql discards it. `ResetSession` returns `driver.ErrBadConn` instead of XX000
    after one, the only error database/sql discards a connection for there.
-3. **Connector.** A mutex-guarded single flight (`initFlight`) replaces the `sync.Once`: one
-   `Connect` initializes while concurrent ones wait on a channel or their own context; success
-   is kept; a failure (also the initializer's context ending during the stored-query warm-up,
-   which logs its own failures) goes to that caller only, a panicking attempt releases its
-   waiters, and the next `Connect` retries.
+3. **Connector.** A single flight (`initFlight`) replaces the `sync.Once`: an attempt runs on its
+   own goroutine, detached from the cancellation of the `Connect` that started it, so no caller's
+   deadline cuts the initialization (or its stored-query warm-up) short; every `Connect`, the
+   starting one included, waits for it on its own context. Success is kept; a failure, or a panic
+   (recovered into XX000), goes to the callers waiting on that attempt, and the next `Connect`
+   starts another. A `Connect` whose context has already ended starts nothing.
 4. **ResetSession** restores the connector's configuration: the option set `SetOptions`
    installed and `New`'s values for the six Go-local settings, which no DSN sets. `SetOptions`
    keeps its meaning (it sets what `ResetSession` restores); per-borrow options go through
@@ -150,22 +152,27 @@ always, a broken one fails nearly always.
   operation) and asserts XX000 (`ResetSession`: ErrBadConn), `IsValid` false, no open
   transaction, ErrBadConn on the next statement, and no committed write; `Connector.Connect`
   with a panicking initialization returns XX000 and the next `Connect` succeeds.
-- Item 3 (`sqldriver`): retry after a failed open; an initializer's context ending during the
-  warm-up is not kept; `initFlight` unit tests for one attempt shared by concurrent callers, a
-  waiter leaving on its own context, and a failure or panic reaching only its caller; each
-  releases the first attempt only after the other callers are blocked on it (a context whose
-  `Done` reports that `initFlight.do` reached its waiting select).
+- Item 3 (`sqldriver`): retry after a failed open; a `Connect` whose context ends during the
+  initialization returns its error while the initialization finishes for the next `Connect`; a
+  panicking initialization is XX000 and retried; `initFlight` unit tests for one attempt shared by
+  concurrent callers, a waiter leaving on its own context while it waits, the starting caller
+  leaving while its attempt finishes, and a failure or panic reaching the attempt's waiters and
+  then retried; each releases the first attempt only after the other callers are blocked on it (a
+  context whose `Done` reports that `initFlight.do` reached its waiting select).
 - Item 4: all six settings set to non-defaults (asserted), `ResetSession`, each back at `New`'s
   value with the `SetOptions` set kept; end to end through a one-connection pool, including a
   `SetOption` (MAX_ROWS) that the next borrower no longer sees.
 - Item 5: parser tests at depth 500 and 501, parentheses in a literal, a quoted identifier and
-  both comment forms, and the first syntax error unchanged by the guard's pass; end to end a 600-parenthesis literal, 600 sibling tuples, and 501 levels.
-- Item 6: embedded regression (refused duplicates including `<>`/`!=` and `1`/`01`; literal-case
-  and parameter-value keys accepted; unresolvable keys report their own error; a duplicated
-  unresolvable key fails as the single key does), end-to-end cases in `sqltest/agg`, and four
+  both comment forms, and the first syntax error unchanged by the guard's pass; end to end a
+  600-parenthesis literal, a 600-tuple INSERT, and 501 levels.
+- Item 6: embedded regression (refused duplicates including `<>`/`!=` and `1`/`01`, over table,
+  VALUES, unnest and CTE sources; literal-case keys and distinct bound values accepted, equal bound
+  values refused; unresolvable keys report their own error; a duplicated unresolvable key fails as
+  the single key does), end-to-end cases in `sqltest/agg`, and four
   rows in the live-JVM `DuplicateGroupByJavaProbe` (`<>`/`!=` and `1`/`01` both 42702,
   literal-case keys planned by Go and declined by Java's planner, an undefined key twice both
-  42703). The probe runner binds no parameters, so the parameter-value shape is Go-only.
+  42703). The probe runner binds no parameters, so the parameter-value shape is unmeasured
+  (DIVERGENCES.md).
 - Item 7: a stale handle's Commit (25F01) and Rollback leave the newer transaction, through
   BeginTx and through SQL COMMIT/START TRANSACTION.
 - Item 8: self-return, a two-Valuer cycle, a Valuer returning its own array, a self pointer, and a

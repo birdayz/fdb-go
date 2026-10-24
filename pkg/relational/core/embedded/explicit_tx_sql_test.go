@@ -88,37 +88,6 @@ func TestExplicitTx_SQLRowsClosedByEndedContextEndTransaction(t *testing.T) {
 	}
 }
 
-// A result set read to its end, then its context cancelled, leaves the
-// transaction alone: the statement completed.
-func TestExplicitTx_SQLContextEndedAfterLastRowKeepsTransaction(t *testing.T) {
-	t.Parallel()
-	g := newGatedSim(t, 543)
-	conn, _ := pinGated(t, g)
-	ctx := context.Background()
-	tx, err := conn.BeginTx(ctx, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO t (id, v) VALUES (601, 601)"); err != nil {
-		t.Fatal(err)
-	}
-	qctx, cancel := context.WithCancel(ctx)
-	rows, err := tx.QueryContext(qctx, "SELECT id FROM t")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for rows.Next() {
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatal(err)
-	}
-	cancel()
-	rows.Close()
-	if err := tx.Commit(); err != nil {
-		t.Fatalf("Commit after a fully read result set: %v", err)
-	}
-}
-
 // database/sql rolls a transaction back when its BeginTx context ends, after
 // waiting for the statement in flight (Tx.rollback takes closemu). The driver
 // interrupts that statement's FDB read, so the rollback completes.

@@ -23,9 +23,10 @@ enforced by the engine:
    (`pkg/relational/core/parser/grammar/RelationalParser.g4:57-81`).
 2. Untrusted SQL must never reach the driver. The scoping controls below are defense-in-depth on
    top of that rule, not a substitute for it.
-3. Every per-statement quota ships effectively unlimited, and none of them is settable from a DSN.
-   Arming them takes code (§3). A tenant fleet run without that code has no per-statement bound
-   other than FDB's own 5-second transaction limit.
+3. Every per-statement quota ships effectively unlimited. The DSN can set the five limits for every
+   connection; the flag that makes the scan limits fail, the statement timeout and the result-byte
+   cap take code (§3). A tenant fleet run without either has no per-statement bound other than
+   FDB's own 5-second transaction limit.
 
 ---
 
@@ -372,7 +373,7 @@ The setters are `SetOption`, `SetFailOnScanLimitReached`, `SetStatementTimeout` 
 
 **The footgun to design around: this configures ONE borrow of ONE pooled connection.** Everything
 `configureTenantConn` sets lasts until the connection returns to the pool: `ResetSession` restores
-the connector's configuration (the DSN-decoded options and every governor off) before the next
+the connector's configuration (the DSN-decoded options, and the Go-local settings off) before the next
 borrower gets it. Route tenant work through a helper that acquires a `*sql.Conn`, configures it,
 uses it, and closes it — do not issue queries on the `*sql.DB` directly and assume the governors are
 on. `SetOptions` is different: it replaces the connection's option set *including what

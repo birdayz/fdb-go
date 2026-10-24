@@ -1545,16 +1545,8 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 			return query.Result{}, err
 		}
 		pr.tx, pr.ownsTx = tx, true
-		cancelDone := make(chan struct{})
-		stop := context.AfterFunc(ctx, func() {
-			tx.rctx.Cancel()
-			close(cancelDone)
-		})
-		pr.stopTxCancellation = func() {
-			if !stop() {
-				<-cancelDone
-			}
-		}
+		tx.bindContext(ctx)
+		pr.stopTxCancellation = tx.detachContext
 		defer pr.Close()
 		if err := c.ensureMetaData(ctx); err != nil {
 			pr.statsErr = err

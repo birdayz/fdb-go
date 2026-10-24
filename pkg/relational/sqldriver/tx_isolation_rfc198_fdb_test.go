@@ -269,9 +269,9 @@ func TestFDB_RFC198_ReadConflictFromSelectAlone(t *testing.T) {
 //
 // Mutation direction: restoring runInCapturedTx's silent nil-fallback for a
 // terminated captured transaction turns every subtest here into rows served
-// from a fresh auto-commit transaction — all four redden. A terminal flag set
-// only in Commit/Rollback keeps raw_commit/raw_rollback green and reddens
-// close/reset_session.
+// from a fresh auto-commit transaction — all four redden. Close or
+// ResetSession dropping the transaction without Rollback (so without the
+// terminal flag) reddens close/reset_session.
 func TestFDB_RFC198_ResultSetDiesWithItsTransaction(t *testing.T) {
 	t.Parallel()
 	if testkit.ClusterFile() == "" {

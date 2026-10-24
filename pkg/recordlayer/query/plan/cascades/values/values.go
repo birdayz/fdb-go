@@ -4140,9 +4140,6 @@ func javaFloatString(f float64, bits int) string {
 // JavaDoubleToString is Java's Double.toString(double).
 func JavaDoubleToString(f float64) string { return javaFloatString(f, 64) }
 
-// JavaFloatToString is Java's Float.toString(float).
-func JavaFloatToString(f float32) string { return javaFloatString(float64(f), 32) }
-
 // toFloat32Operand converts a FLOAT-lane operand to float32. Integer
 // operands convert DIRECTLY int64→float32 (Java's ADD_LF does `(float)l`
 // in one rounding step; routing through float64 first would double-round

@@ -228,52 +228,61 @@ type Connector struct {
 	warmUp atomic.Pointer[embedded.StoredQueryWarmUpCounts]
 }
 
-// initFlight runs an initialization until it succeeds once: one caller runs
-// it while concurrent callers wait, each on its own context; a failure goes
-// to the caller that ran the attempt, and the next caller tries again.
+// initFlight runs an initialization until it succeeds once. An attempt runs
+// on its own goroutine, detached from the cancellation of the caller that
+// started it, so no caller's deadline cuts it short; every caller waits for it
+// on its own context. A failure goes to the callers waiting on that attempt,
+// and the next caller starts another.
 type initFlight struct {
 	mu      sync.Mutex
 	done    bool
-	running chan struct{} // closed when the running attempt ends; nil when none runs
+	running *initAttempt // nil when no attempt runs
+}
+
+type initAttempt struct {
+	finished chan struct{}
+	err      error // set before finished is closed
 }
 
 func (f *initFlight) do(ctx context.Context, init func(context.Context) error) error {
-	for {
-		f.mu.Lock()
-		if f.done {
-			f.mu.Unlock()
-			return nil
-		}
-		if wait := f.running; wait != nil {
-			f.mu.Unlock()
-			select {
-			case <-wait:
-				continue
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-		}
-		wait := make(chan struct{})
-		f.running = wait
+	f.mu.Lock()
+	if f.done {
 		f.mu.Unlock()
-		return f.attempt(ctx, wait, init)
+		return nil
+	}
+	a := f.running
+	if a == nil {
+		if err := ctx.Err(); err != nil {
+			f.mu.Unlock()
+			return err
+		}
+		a = &initAttempt{finished: make(chan struct{})}
+		f.running = a
+		go f.attempt(context.WithoutCancel(ctx), a, init)
+	}
+	f.mu.Unlock()
+	select {
+	case <-a.finished:
+		return a.err
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
-// attempt runs init and publishes its outcome, also when init panics, so no
-// waiter is left blocked.
-func (f *initFlight) attempt(ctx context.Context, wait chan struct{}, init func(context.Context) error) error {
-	succeeded := false
+// attempt runs init and publishes its outcome; a panic is its error, since
+// nothing above this goroutine would recover it.
+func (f *initFlight) attempt(ctx context.Context, a *initAttempt, init func(context.Context) error) {
 	defer func() {
+		if r := recover(); r != nil {
+			a.err = embedded.RecoveredPanicError(r)
+		}
 		f.mu.Lock()
-		f.done = succeeded
+		f.done = a.err == nil
 		f.running = nil
 		f.mu.Unlock()
-		close(wait)
+		close(a.finished)
 	}()
-	err := init(ctx)
-	succeeded = err == nil
-	return err
+	a.err = init(ctx)
 }
 
 // StoredQueryWarmUp returns what the connector's start planned into its plan
@@ -287,15 +296,9 @@ func (c *Connector) StoredQueryWarmUp() embedded.StoredQueryWarmUpCounts {
 }
 
 // Connect opens a connection. Honors ctx.Done() for cancellation, also while
-// it waits for another Connect's initialization. Until one initialization
-// succeeds, each Connect runs or waits for one (initFlight).
-func (c *Connector) Connect(ctx context.Context) (_ driver.Conn, err error) {
-	// initFlight has released any waiters; the next Connect initializes again.
-	defer func() {
-		if r := recover(); r != nil {
-			err = embedded.RecoveredPanicError(r)
-		}
-	}()
+// it waits for the connector's initialization, which ctx does not cut short
+// (initFlight).
+func (c *Connector) Connect(ctx context.Context) (driver.Conn, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -378,11 +381,6 @@ func (c *Connector) initialize(ctx context.Context) error {
 	// never returned.
 	warmUp := embedded.WarmStoredQueries(ctx, c.planCache,
 		embedded.StoredQueryTemplates(ctx, c.fdbDB, c.cat))
-	// The warm-up logs its failures instead of returning them, so a warm-up
-	// cut short by this caller's context would otherwise be kept for good.
-	if err := ctx.Err(); err != nil {
-		return err
-	}
 	c.warmUp.Store(&warmUp)
 	return nil
 }

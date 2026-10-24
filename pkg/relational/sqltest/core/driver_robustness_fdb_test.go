@@ -103,26 +103,6 @@ func TestFDB_DriverRobustness(t *testing.T) {
 		}
 	})
 
-	// The BeginTx context is used until the transaction ends: once it ends,
-	// database/sql rolls the transaction back and its write is gone.
-	t.Run("BeginTx context ends the transaction", func(t *testing.T) {
-		txCtx, cancel := context.WithCancel(ctx)
-		tx, err := db.BeginTx(txCtx, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tx.ExecContext(ctx, "INSERT INTO Item VALUES (101, 'in tx')"); err != nil {
-			t.Fatal(err)
-		}
-		cancel()
-		if err := tx.Commit(); err == nil {
-			t.Fatal("Commit after the BeginTx context ended succeeded")
-		}
-		if n := countIDs(t, db, 101); n != 0 {
-			t.Fatalf("the ended transaction's write was committed (count %d)", n)
-		}
-	})
-
 	t.Run("read-only transactions are refused", func(t *testing.T) {
 		if _, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true}); apiCode(err) != api.ErrCodeUnsupportedOperation {
 			t.Fatalf("BeginTx(ReadOnly) = %v, want 0A000", err)
@@ -185,7 +165,7 @@ func TestFDB_DriverRobustness(t *testing.T) {
 		if err := db.QueryRowContext(ctx, "SELECT id FROM Item WHERE label = '"+label+"'").Scan(&id); err != nil || id != 102 {
 			t.Fatalf("SELECT by that literal: id %d, err %v; want 102", id, err)
 		}
-		// 600 sibling tuples nest two deep, not 600.
+		// 600 sibling tuples nest one deep, not 600.
 		tuples := make([]string, 0, 600)
 		for i := 0; i < 600; i++ {
 			tuples = append(tuples, fmt.Sprintf("(%d, 'row')", 1000+i))

@@ -321,9 +321,10 @@ Each is described in full under Compatibility or Changed below.
 - `fdb` `GetRange` sends its first batch at the call, as Apple's Go binding does: the rows reflect the transaction's writes as of that call, and commit waits for every issued range read (also one never consumed) and keeps its read conflict, as libfdb_c does. `GetSliceWithError` over more than batch 1's bytes (about 4 KB in the default mode) now takes two sequential round trips, batch 1 and then the rest, as libfdb_c does. `client.Transaction.StartGetRange` starts such a read and returns at once; `Database.Metrics()` (on `fdb.Database` too) reports `TransactionGetRangeRequests`. A watch whose read fails no longer leaves a read conflict.
 
 ### Fixed
-- SQL driver (RFC-272): a failed connector initialization (an FDB open failure, or a first
-  `Connect` whose context ended) is retried by the next `Connect` instead of failing the
-  `*sql.DB` for good. `ResetSession` also resets the statement timeout, result-byte cap,
+- SQL driver (RFC-272): a failed connector initialization (an FDB open failure) is retried by the
+  next `Connect` instead of failing the `*sql.DB` for good, and the initialization runs detached
+  from the `Connect` that starts it: a `Connect` whose deadline ends first returns its context
+  error while the initialization (and its stored-query warm-up) completes for the next one. `ResetSession` also resets the statement timeout, result-byte cap,
   fail-on-scan-limit flag, plan and execution-stats loggers and slow-query threshold, so a
   pooled connection's next borrower no longer inherits them. A panic in any exported connection,
   transaction, result-set or DirectAccess entry is the internal error (XX000) and closes the

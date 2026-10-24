@@ -1234,6 +1234,16 @@ transaction, and a statement cut off midway may have buffered part of its
 writes, so the transaction cannot continue; PostgreSQL aborts a transaction
 whose statement was cancelled for the second reason.
 
+## GROUP BY keys with bound parameters (RFC-272, unmeasured)
+
+Go compares `GROUP BY amount = ?, amount = ?` by the bound values: equal values
+are one key twice (42702), distinct values two keys, grouped by Go's streaming
+aggregation. Java's answer is not measured: the JVM probe runner binds no
+parameters. Reading Java, its `MutablePlanGenerationContext` folds equal
+parameter values into one constant (42702) and its planner declines a GROUP BY
+without an aggregate index for distinct ones; its plan cache constrains the
+values, Go's does not (`TODO.md`).
+
 ## Record Layer collation — explicit Go-only keys (target ICU 78.3)
 
 `collate_jre` and `collate_icu` evaluate to `golang.org/x/text/collate` sort keys,
@@ -3858,7 +3868,8 @@ negative array size). Go refuses it with `RecordCoreArgumentError` ("entry size 
 positive") when it builds the maintainer, since the same arithmetic would panic. The call sites
 are the maintainer (`bitmap_value_index_maintainer.go:47`), the chaos model
 (`pkg/recordlayer/chaos/verify_bitmap.go:55`), and the planner's bitmap aggregate candidate,
-which declines the index instead (`pkg/relational/core/embedded/cascades_generator.go:4134`).
+which declines the index instead (`tryAggregateIndexCandidate` in
+`pkg/relational/core/embedded/cascades_generator.go`).
 
 ### The compensation correlation guard refuses a residual on an outer alias the probe does not feed (RFC-150)
 
