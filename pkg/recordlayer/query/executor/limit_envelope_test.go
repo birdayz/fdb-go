@@ -423,10 +423,6 @@ func TestLimitEnvelopeDefersSortEncoding(t *testing.T) {
 		if _, err := continuation.ToBytes(); err == nil || !strings.Contains(err.Error(), "buffered row has no positional layout") {
 			t.Fatalf("deferred sort encode failure = %v", err)
 		}
-		rs := &RecordLayerResultSet{lastContinuation: continuation}
-		if _, err := rs.Continuation(); err == nil || !strings.Contains(err.Error(), "buffered row has no positional layout") {
-			t.Fatalf("result-set swallowed deferred encode failure: %v", err)
-		}
 	}
 }
 

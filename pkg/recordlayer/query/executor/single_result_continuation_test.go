@@ -15,7 +15,6 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
-	"fdb.dev/pkg/relational/api"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -310,8 +309,8 @@ func TestFirstOrDefault_StrictRequestBoundary(t *testing.T) {
 							defer cursor.Close()
 						}
 						if shape == "two" {
-							var cardinality *api.Error
-							if !errors.As(err, &cardinality) || cardinality.Code != api.ErrCodeCardinalityViolation {
+							var cardinality *ExecutionError
+							if !errors.As(err, &cardinality) || cardinality.Kind != ExecCardinalityViolation {
 								t.Fatalf("request must not hide second scalar row: error = %v, want 21000", err)
 							}
 							return

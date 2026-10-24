@@ -20,7 +20,6 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
-	"fdb.dev/pkg/relational/api"
 	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
 	"fdb.dev/pkg/testutil/allocs"
 )
@@ -1368,11 +1367,34 @@ func TestIntegration_FilterSortLimit_Pipeline(t *testing.T) {
 	}
 }
 
-// ---------- ResultSet integration tests ----------
+// ---------- Ordinal output rows over real FDB ----------
+//
+// The relational result set (pkg/relational/core/resultset) reads these
+// rows by ordinal; its accessors are unit-tested there and run end to end in
+// the SQL suites.
 
-// TestIntegration_ResultSet_TypedAccess executes a scan plan against real FDB,
-// wraps the cursor in RecordLayerResultSet, and verifies typed column access.
-func TestIntegration_ResultSet_TypedAccess(t *testing.T) {
+// collectSlots drains cursor and returns each row's positional slots.
+func collectSlots(t *testing.T, ctx context.Context, cursor recordlayer.RecordCursor[QueryResult]) [][]any {
+	t.Helper()
+	defer cursor.Close()
+	results, err := CollectAll(ctx, cursor)
+	if err != nil {
+		t.Fatalf("CollectAll: %v", err)
+	}
+	rows := make([][]any, len(results))
+	for i, r := range results {
+		if r.Positional == nil {
+			t.Fatalf("row %d has no positional output row", i)
+		}
+		rows[i] = r.Positional.Slots
+	}
+	return rows
+}
+
+// TestIntegration_ProjectionRowsAreOrdinal executes a projection over a scan
+// against real FDB and checks the output rows carry the projected columns, in
+// projection order.
+func TestIntegration_ProjectionRowsAreOrdinal(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	store := setupStore(t)
@@ -1390,8 +1412,6 @@ func TestIntegration_ResultSet_TypedAccess(t *testing.T) {
 			return nil, err
 		}
 
-		// Project ORDER_ID, PRICE so the executor emits an ordinal output row aligned
-		// to the result-set columns — the name-keyed Datum no longer backs the read.
 		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
 		proj := mustExecutorConstruct(newProjectionMapOverForTest(
 			[]values.Value{integrationField(t, scan, 0), integrationField(t, scan, 2)},
@@ -1401,48 +1421,20 @@ func TestIntegration_ResultSet_TypedAccess(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ExecutePlan: %v", err)
 		}
-
-		cols := []ColumnDef{
-			{Name: "order_id", TypeName: "BIGINT", Nullable: api.ColumnNoNulls},
-			{Name: "price", TypeName: "BIGINT", Nullable: api.ColumnNullable},
+		rows := collectSlots(t, ctx, cursor)
+		want := map[int64]int64{2001: 77, 2002: 88}
+		if len(rows) != len(want) {
+			t.Fatalf("got %d rows, want %d", len(rows), len(want))
 		}
-		rs := NewRecordLayerResultSet(ctx, cursor, cols)
-		defer rs.Close()
-
-		md := rs.MetaData()
-		if md.ColumnCount() != 2 {
-			t.Fatalf("ColumnCount = %d, want 2", md.ColumnCount())
-		}
-		name, _ := md.ColumnName(1)
-		if name != "order_id" {
-			t.Errorf("ColumnName(1) = %q, want ORDER_ID", name)
-		}
-
-		var ids []int64
-		for rs.Next() {
-			id, err := rs.Long(1)
-			if err != nil {
-				t.Fatalf("Long(1): %v", err)
+		for _, row := range rows {
+			if len(row) != 2 {
+				t.Fatalf("row %v has %d slots, want 2 (ORDER_ID, PRICE)", row, len(row))
 			}
-			if rs.WasNull() {
-				t.Error("ORDER_ID should not be null")
+			id, _ := row[0].(int64)
+			price, _ := row[1].(int64)
+			if wantPrice, ok := want[id]; !ok || price != wantPrice {
+				t.Errorf("row = %v, want ORDER_ID with its PRICE from %v", row, want)
 			}
-
-			price, err := rs.Long(2)
-			if err != nil {
-				t.Fatalf("Long(2): %v", err)
-			}
-			if rs.WasNull() {
-				t.Error("PRICE should not be null for inserted orders")
-			}
-			_ = price
-			ids = append(ids, id)
-		}
-		if rs.Err() != nil {
-			t.Fatalf("Err: %v", rs.Err())
-		}
-		if len(ids) < 2 {
-			t.Fatalf("got %d rows, want >= 2", len(ids))
 		}
 		return nil, nil
 	})
@@ -1451,70 +1443,9 @@ func TestIntegration_ResultSet_TypedAccess(t *testing.T) {
 	}
 }
 
-// TestIntegration_ResultSet_StringCoercion verifies String() works on
-// int64 values from real FDB records.
-func TestIntegration_ResultSet_StringCoercion(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	store := setupStore(t)
-
-	insertOrders(t, store,
-		&demopb.Order{OrderId: proto.Int64(3001), Price: proto.Int32(42)},
-	)
-
-	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
-		s, err := recordlayer.NewStoreBuilder().
-			SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
-			SetSubspace(testSubspace(t)).Open()
-		if err != nil {
-			return nil, err
-		}
-
-		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
-		proj := mustExecutorConstruct(newProjectionMapOverForTest(
-			[]values.Value{integrationField(t, scan, 2)},
-			scan,
-		))
-		cursor, err := ExecutePlan(ctx, proj, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
-		if err != nil {
-			t.Fatalf("ExecutePlan: %v", err)
-		}
-
-		cols := []ColumnDef{
-			{Name: "price", TypeName: "BIGINT"},
-		}
-		rs := NewRecordLayerResultSet(ctx, cursor, cols)
-		defer rs.Close()
-
-		if !rs.Next() {
-			t.Fatal("expected a row")
-		}
-
-		s2, err := rs.String(1)
-		if err != nil {
-			t.Fatalf("String(1): %v", err)
-		}
-		if s2 != "42" {
-			t.Errorf("String(1) = %q, want '42'", s2)
-		}
-
-		d, err := rs.Double(1)
-		if err != nil {
-			t.Fatalf("Double(1): %v", err)
-		}
-		if d != 42.0 {
-			t.Errorf("Double(1) = %v, want 42.0", d)
-		}
-		return nil, nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-}
-
-// TestIntegration_ResultSet_FilterPipeline tests the full executor→ResultSet
-// pipeline with a filter + sort + limit plan.
-func TestIntegration_ResultSet_FilterPipeline(t *testing.T) {
+// TestIntegration_FilterSortProjectionRows runs filter + sort + projection
+// against real FDB and checks the ordinal rows' values and order.
+func TestIntegration_FilterSortProjectionRows(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	store := setupStore(t)
@@ -1551,110 +1482,23 @@ func TestIntegration_ResultSet_FilterPipeline(t *testing.T) {
 			filter,
 			[]plans.SortKey{{Field: "price", ValueExpr: integrationField(t, scan, 2), Desc: false}},
 		))
-		// Project PRICE, ORDER_ID so the output row is ordinal-aligned to the columns.
 		proj := mustExecutorConstruct(newProjectionMapOverForTest(
 			[]values.Value{integrationField(t, sorted, 2), integrationField(t, sorted, 0)},
 			sorted,
 		))
-
 		cursor, err := ExecutePlan(ctx, proj, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
 			t.Fatalf("ExecutePlan: %v", err)
 		}
-
-		cols := []ColumnDef{
-			{Name: "price", TypeName: "BIGINT"},
-			{Name: "order_id", TypeName: "BIGINT"},
+		rows := collectSlots(t, ctx, cursor)
+		want := [][]any{{int64(30), int64(4004)}, {int64(50), int64(4002)}, {int64(90), int64(4003)}}
+		if len(rows) != len(want) {
+			t.Fatalf("got %d rows, want 3 (prices >= 30): %v", len(rows), rows)
 		}
-		rs := NewRecordLayerResultSet(ctx, cursor, cols)
-		defer rs.Close()
-
-		var prices []int64
-		for rs.Next() {
-			p, err := rs.Long(1)
-			if err != nil {
-				t.Fatalf("Long(1): %v", err)
+		for i := range want {
+			if len(rows[i]) != 2 || rows[i][0] != want[i][0] || rows[i][1] != want[i][1] {
+				t.Errorf("row %d = %v, want %v (PRICE, ORDER_ID ascending by PRICE)", i, rows[i], want[i])
 			}
-			prices = append(prices, p)
-		}
-		if rs.Err() != nil {
-			t.Fatalf("Err: %v", rs.Err())
-		}
-		if len(prices) != 3 {
-			t.Fatalf("got %d rows, want 3 (prices >= 30)", len(prices))
-		}
-		for i := 1; i < len(prices); i++ {
-			if prices[i] < prices[i-1] {
-				t.Errorf("prices not ascending: %v", prices)
-				break
-			}
-		}
-		return nil, nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-}
-
-// TestIntegration_ResultSet_ByName verifies column-by-name access with
-// real FDB data.
-func TestIntegration_ResultSet_ByName(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	store := setupStore(t)
-
-	insertOrders(t, store,
-		&demopb.Order{OrderId: proto.Int64(5001), Price: proto.Int32(99)},
-	)
-
-	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
-		s, err := recordlayer.NewStoreBuilder().
-			SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
-			SetSubspace(testSubspace(t)).Open()
-		if err != nil {
-			return nil, err
-		}
-
-		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
-		proj := mustExecutorConstruct(newProjectionMapOverForTest(
-			[]values.Value{integrationField(t, scan, 0), integrationField(t, scan, 2)},
-			scan,
-		))
-		cursor, err := ExecutePlan(ctx, proj, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
-		if err != nil {
-			t.Fatalf("ExecutePlan: %v", err)
-		}
-
-		cols := []ColumnDef{
-			{Name: "order_id", TypeName: "BIGINT"},
-			{Name: "price", TypeName: "BIGINT"},
-		}
-		rs := NewRecordLayerResultSet(ctx, cursor, cols)
-		defer rs.Close()
-
-		if !rs.Next() {
-			t.Fatal("expected a row")
-		}
-
-		id, err := rs.LongByName("order_id")
-		if err != nil {
-			t.Fatalf("LongByName ORDER_ID: %v", err)
-		}
-		if id != 5001 {
-			t.Errorf("ORDER_ID = %d, want 5001", id)
-		}
-
-		price, err := rs.LongByName("price")
-		if err != nil {
-			t.Fatalf("LongByName PRICE: %v", err)
-		}
-		if price != 99 {
-			t.Errorf("PRICE = %d, want 99", price)
-		}
-
-		_, err = rs.LongByName("NONEXISTENT")
-		if err == nil {
-			t.Fatal("expected error for nonexistent column")
 		}
 		return nil, nil
 	})

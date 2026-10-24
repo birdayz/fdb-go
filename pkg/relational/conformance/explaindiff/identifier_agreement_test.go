@@ -119,7 +119,7 @@ func identifierAgreementVerdict(perturbed, baseFailed, drained int, disagree []s
 // what it does, because the positive claim is the half that rots:
 //
 //   - RESULT-SET LABELS. This compares planned PLAN TEXT. A naming authority
-//     that only reaches executor.ColumnDef is invisible here. That axis belongs
+//     that only reaches resultset.ColumnDef is invisible here. That axis belongs
 //     to the yamsql `columns:` assertions (quoted_identifier_labels.yaml).
 //   - ROWS. Nothing executes; no FDB, no data.
 //   - ALREADY-QUOTED identifiers. `"KeepCase"` has no equivalent second

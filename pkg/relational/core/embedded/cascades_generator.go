@@ -50,6 +50,7 @@ import (
 	"fdb.dev/pkg/relational/core/query/expr"
 	"fdb.dev/pkg/relational/core/query/logical"
 	"fdb.dev/pkg/relational/core/query/semantic"
+	"fdb.dev/pkg/relational/core/resultset"
 	"fdb.dev/pkg/relational/core/rowstruct"
 	"fdb.dev/pkg/relational/core/session"
 	"google.golang.org/protobuf/proto"
@@ -1649,7 +1650,7 @@ type paginatingRows struct {
 	plan             plans.RecordQueryPlan
 	md               *recordlayer.RecordMetaData
 	scalarSubqueries []PlannedScalarSubquery
-	cols             []executor.ColumnDef
+	cols             []resultset.ColumnDef
 
 	// Carried from cascadesPlan; revalidated at the top of every page's
 	// transaction. Empty means the plan depends on no index.
@@ -1820,7 +1821,7 @@ func (r *paginatingRows) Close() error {
 // metaData is the result set's metadata (api.WithResultSetMetaDataObserver):
 // the labelled columns with their full types.
 func (r *paginatingRows) metaData() api.ResultSetMetaData {
-	return executor.NewResultSetMetaData(r.cols)
+	return resultset.NewResultSetMetaData(r.cols)
 }
 
 func (r *paginatingRows) ColumnTypeDatabaseTypeName(index int) string {
@@ -2461,7 +2462,7 @@ func (r *paginatingRows) fetchPage() error {
 			return nil, translateExecErrorCtx(r.ctx, execErr)
 		}
 
-		rs := executor.NewRecordLayerResultSet(r.ctx, cursor, r.cols)
+		rs := resultset.NewRecordLayerResultSet(r.ctx, cursor, r.cols)
 		defer rs.Close()
 
 		for rs.Next() {
@@ -2541,8 +2542,8 @@ func (r *paginatingRows) fetchPage() error {
 // public columns made a successful write fail afterwards with "no positional
 // output row aligned to column ID".
 func materializePageRow(
-	rs *executor.RecordLayerResultSet,
-	cols []executor.ColumnDef,
+	rs *resultset.RecordLayerResultSet,
+	cols []resultset.ColumnDef,
 	isUpdate bool,
 ) ([]driver.Value, error) {
 	if isUpdate {
@@ -2785,6 +2786,16 @@ func translateExecError(err error) error {
 	if errors.As(err, &aggEval) {
 		return api.NewError(api.ErrCodeGroupingError, aggEval.Error())
 	}
+	// Java's recordCoreToRelationalException leaves Cursor.checkValidRange's
+	// RecordCoreException UNKNOWN, with its message.
+	var rangeBounds *values.RangeBoundsError
+	if errors.As(err, &rangeBounds) {
+		return api.NewError(api.ErrCodeUnknown, rangeBounds.Message)
+	}
+	var execErr *executor.ExecutionError
+	if errors.As(err, &execErr) {
+		return api.NewError(executionErrorCode(execErr.Kind), execErr.Message)
+	}
 	// FDB tail: page ≥ 2 errors reach the application through THIS function,
 	// not through the QueryContext/ExecContext translateFDBError wrap (which
 	// only sees the eagerly-fetched first page). An in-transaction page fetch
@@ -2792,6 +2803,23 @@ func translateExecError(err error) error {
 	// would otherwise escape raw (RFC-198 criterion 9). translateFDBError is
 	// idempotent on *api.Error, so double translation is harmless.
 	return translateFDBError(err)
+}
+
+// executionErrorCode is the SQLSTATE of an executor failure kind; for
+// ExecIncompatibleType it is ExceptionUtil.translateErrorCode's
+// INCOMPATIBLE_TYPE → CANNOT_CONVERT_TYPE.
+func executionErrorCode(kind executor.ExecutionErrorKind) api.ErrorCode {
+	switch kind {
+	case executor.ExecIncompatibleType:
+		return api.ErrCodeCannotConvertType
+	case executor.ExecNotNullViolation:
+		return api.ErrCodeNotNullViolation
+	case executor.ExecCardinalityViolation:
+		return api.ErrCodeCardinalityViolation
+	case executor.ExecSubqueryColumnCount:
+		return api.ErrCodeSyntaxError
+	}
+	return api.ErrCodeInternalError
 }
 
 // likeErrorCode is ExceptionUtil's mapping of the LIKE semantic errors
@@ -4291,7 +4319,7 @@ func vectorDistanceOperator(m vectorindex.VectorMetric) values.DistanceOperator 
 // resultColumns are the columns Java reports for a plan: the fields of its
 // result row type (QueryPlan.getResultType). The SQL labels come from the
 // logical output row and are applied by Execute.
-func resultColumns(plan plans.RecordQueryPlan) []executor.ColumnDef {
+func resultColumns(plan plans.RecordQueryPlan) []resultset.ColumnDef {
 	switch t := plan.GetResultType().(type) {
 	case *values.RecordType:
 		return columnsOfRowType(t)
@@ -4302,11 +4330,11 @@ func resultColumns(plan plans.RecordQueryPlan) []executor.ColumnDef {
 	return nil
 }
 
-func columnsOfRowType(rowType *values.RecordType) []executor.ColumnDef {
+func columnsOfRowType(rowType *values.RecordType) []resultset.ColumnDef {
 	if rowType == nil {
 		return nil
 	}
-	cols := make([]executor.ColumnDef, len(rowType.Fields))
+	cols := make([]resultset.ColumnDef, len(rowType.Fields))
 	for ordinal, field := range rowType.Fields {
 		typeName := cascadesTypeName(field.FieldType)
 		if typeName == "" {
@@ -4316,7 +4344,7 @@ func columnsOfRowType(rowType *values.RecordType) []executor.ColumnDef {
 		if field.FieldType.IsNullable() {
 			nullable = api.ColumnNullable
 		}
-		cols[ordinal] = executor.ColumnDef{
+		cols[ordinal] = resultset.ColumnDef{
 			Name:     field.Name,
 			TypeName: typeName,
 			Nullable: nullable,

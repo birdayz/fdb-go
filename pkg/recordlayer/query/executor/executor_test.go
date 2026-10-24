@@ -23,7 +23,6 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
-	"fdb.dev/pkg/relational/api"
 	functions "fdb.dev/pkg/relational/core/functions"
 )
 
@@ -2187,9 +2186,9 @@ func TestGoToProtoValue_DoubleToIntRejects22000(t *testing.T) {
 	t.Parallel()
 	typed := (&demopb.TypedRecord{}).ProtoReflect().Descriptor()
 	_, err := goToProtoValue(typed.Fields().ByName("val_int64"), float64(20.0))
-	var apiErr *api.Error
-	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeCannotConvertType {
-		t.Fatalf("float64 → BIGINT: want 22000 (CannotConvertType), got %v", err)
+	var execErr *ExecutionError
+	if !errors.As(err, &execErr) || execErr.Kind != ExecIncompatibleType {
+		t.Fatalf("float64 → BIGINT: want ExecIncompatibleType (22000), got %v", err)
 	}
 }
 
@@ -2200,9 +2199,9 @@ func TestGoToProtoValue_StringToIntRejects22000(t *testing.T) {
 	t.Parallel()
 	typed := (&demopb.TypedRecord{}).ProtoReflect().Descriptor()
 	_, err := goToProtoValue(typed.Fields().ByName("val_int64"), "nope")
-	var apiErr *api.Error
-	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeCannotConvertType {
-		t.Fatalf("string → BIGINT: want 22000 (CannotConvertType), got %v", err)
+	var execErr *ExecutionError
+	if !errors.As(err, &execErr) || execErr.Kind != ExecIncompatibleType {
+		t.Fatalf("string → BIGINT: want ExecIncompatibleType (22000), got %v", err)
 	}
 }
 

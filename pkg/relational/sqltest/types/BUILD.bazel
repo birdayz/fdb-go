@@ -169,6 +169,7 @@ go_test(
         "//pkg/relational/api",
         "//pkg/relational/core/embedded",
         "//pkg/relational/core/metadata",
+        "//pkg/relational/core/resultset",
         "//pkg/relational/core/rowstruct",
         "//pkg/relational/internal/queryfixtures",
         "//pkg/relational/sqltest/testkit",

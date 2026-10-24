@@ -8,7 +8,6 @@ import (
 
 	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/query/executor"
 	cascades "fdb.dev/pkg/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
@@ -17,6 +16,7 @@ import (
 	"fdb.dev/pkg/relational/core/parser"
 	"fdb.dev/pkg/relational/core/query"
 	"fdb.dev/pkg/relational/core/query/logical"
+	"fdb.dev/pkg/relational/core/resultset"
 	"github.com/antlr4-go/antlr/v4"
 )
 
@@ -1001,7 +1001,7 @@ func ResultColumnNullabilityForPlan(plan plans.RecordQueryPlan) []int {
 
 // ResultColumnDefsForPlan returns the columns Execute hands to
 // NewRecordLayerResultSet before applying the query's labels.
-func ResultColumnDefsForPlan(plan plans.RecordQueryPlan) []executor.ColumnDef {
+func ResultColumnDefsForPlan(plan plans.RecordQueryPlan) []resultset.ColumnDef {
 	return resultColumns(plan)
 }
 

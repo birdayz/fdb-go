@@ -1,4 +1,4 @@
-package executor
+package resultset
 
 import (
 	"context"
@@ -6,16 +6,17 @@ import (
 	"testing"
 
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/query/executor"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 )
 
-// posResult builds a QueryResult carrying the ordinal output row the executor
+// posResult builds an executor.QueryResult carrying the ordinal output row the executor
 // produces at runtime: one slot per column, in column order, named by the
 // column's name, valued from m (nil when absent — a SQL NULL). There is no
 // name-keyed row on the read path — the reader materializes solely from this
 // positional row; these reader-unit tests feed it directly instead of a name map.
-func posResult(cols []ColumnDef, m map[string]any) QueryResult {
+func posResult(cols []ColumnDef, m map[string]any) executor.QueryResult {
 	fields := make([]values.Field, len(cols))
 	slots := make([]any, len(cols))
 	for i, c := range cols {
@@ -23,7 +24,7 @@ func posResult(cols []ColumnDef, m map[string]any) QueryResult {
 		fields[i] = values.Field{Name: c.Name, FieldType: resultSetTestFieldType(c, value), Ordinal: i}
 		slots[i] = value
 	}
-	return QueryResult{Positional: &PositionalRow{Type: &values.RecordType{Fields: fields}, Slots: slots}}
+	return executor.QueryResult{Positional: &executor.PositionalRow{Type: &values.RecordType{Fields: fields}, Slots: slots}}
 }
 
 // resultSetTestFieldType keeps the reader fixtures honest: their ColumnDef is
@@ -108,7 +109,7 @@ func TestResultSet_IterateRows(t *testing.T) {
 		{Name: "ID", TypeName: "BIGINT"},
 		{Name: "NAME", TypeName: "STRING"},
 	}
-	cursor := recordlayer.FromList([]QueryResult{
+	cursor := recordlayer.FromList([]executor.QueryResult{
 		posResult(cols, map[string]any{"ID": int64(1), "NAME": "alice"}),
 		posResult(cols, map[string]any{"ID": int64(2), "NAME": "bob"}),
 	})
@@ -150,7 +151,7 @@ func TestResultSet_ByName(t *testing.T) {
 		{Name: "PRICE", TypeName: "BIGINT"},
 		{Name: "ACTIVE", TypeName: "BOOLEAN"},
 	}
-	cursor := recordlayer.FromList([]QueryResult{
+	cursor := recordlayer.FromList([]executor.QueryResult{
 		posResult(cols, map[string]any{"PRICE": int64(42), "ACTIVE": true}),
 	})
 
@@ -186,7 +187,7 @@ func TestResultSet_WasNull(t *testing.T) {
 		{Name: "ID", TypeName: "BIGINT"},
 		{Name: "NAME", TypeName: "STRING"},
 	}
-	cursor := recordlayer.FromList([]QueryResult{
+	cursor := recordlayer.FromList([]executor.QueryResult{
 		posResult(cols, map[string]any{"ID": int64(1)}),
 	})
 
@@ -219,7 +220,7 @@ func TestResultSet_NullAlternation(t *testing.T) {
 		{Name: "T3", TypeName: "DOUBLE"},
 		{Name: "T4", TypeName: "BYTES"},
 	}
-	cursor := recordlayer.FromList([]QueryResult{
+	cursor := recordlayer.FromList([]executor.QueryResult{
 		posResult(cols, map[string]any{"PK": int64(100)}),
 	})
 
@@ -274,8 +275,8 @@ func TestResultSet_ColumnOutOfRange(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	cursor := recordlayer.FromList([]QueryResult{
-		dmap(map[string]any{"X": int64(1)}),
+	cursor := recordlayer.FromList([]executor.QueryResult{
+		posResult([]ColumnDef{{Name: "X", TypeName: "BIGINT"}}, map[string]any{"X": int64(1)}),
 	})
 	cols := []ColumnDef{{Name: "X", TypeName: "BIGINT"}}
 
@@ -305,8 +306,8 @@ func TestResultSet_BeforeAdvance(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	cursor := recordlayer.FromList([]QueryResult{
-		dmap(map[string]any{"X": int64(1)}),
+	cursor := recordlayer.FromList([]executor.QueryResult{
+		posResult([]ColumnDef{{Name: "X", TypeName: "BIGINT"}}, map[string]any{"X": int64(1)}),
 	})
 	cols := []ColumnDef{{Name: "X", TypeName: "BIGINT"}}
 
@@ -327,7 +328,7 @@ func TestResultSet_MetaData(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	cursor := recordlayer.Empty[QueryResult]()
+	cursor := recordlayer.Empty[executor.QueryResult]()
 	cols := []ColumnDef{
 		{Name: "ID", TypeName: "BIGINT", Nullable: api.ColumnNoNulls},
 		{Name: "NAME", TypeName: "STRING", Nullable: api.ColumnNullable},
@@ -384,7 +385,7 @@ func TestResultSet_TypeCoercion(t *testing.T) {
 		{Name: "BOOL_VAL", TypeName: "BOOLEAN"},
 		{Name: "STRING_VAL", TypeName: "STRING"},
 	}
-	cursor := recordlayer.FromList([]QueryResult{
+	cursor := recordlayer.FromList([]executor.QueryResult{
 		posResult(cols, map[string]any{
 			"INT_VAL":    int64(42),
 			"FLOAT_VAL":  float64(3.14),
@@ -467,7 +468,7 @@ func TestResultSet_CoercionMatrix(t *testing.T) {
 			t.Parallel()
 			ctx := context.Background()
 			cols := []ColumnDef{{Name: "V", TypeName: "STRING"}}
-			cursor := recordlayer.FromList([]QueryResult{
+			cursor := recordlayer.FromList([]executor.QueryResult{
 				posResult(cols, map[string]any{"V": tc.value}),
 			})
 			rs := NewRecordLayerResultSet(ctx, cursor, cols)
@@ -554,7 +555,7 @@ func TestResultSet_EmptyCursor(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	cursor := recordlayer.Empty[QueryResult]()
+	cursor := recordlayer.Empty[executor.QueryResult]()
 	cols := []ColumnDef{{Name: "X", TypeName: "BIGINT"}}
 
 	rs := NewRecordLayerResultSet(ctx, cursor, cols)
@@ -572,7 +573,7 @@ func TestResultSet_Continuation(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	cursor := recordlayer.Empty[QueryResult]()
+	cursor := recordlayer.Empty[executor.QueryResult]()
 	cols := []ColumnDef{{Name: "X", TypeName: "BIGINT"}}
 
 	rs := NewRecordLayerResultSet(ctx, cursor, cols)
@@ -591,7 +592,7 @@ func TestResultSet_CloseIdempotent(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	cursor := recordlayer.Empty[QueryResult]()
+	cursor := recordlayer.Empty[executor.QueryResult]()
 	rs := NewRecordLayerResultSet(ctx, cursor, nil)
 
 	if err := rs.Close(); err != nil {
@@ -624,8 +625,8 @@ func TestResultSet_PositionalDupNameRead(t *testing.T) {
 		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 2},
 		{Name: "NAME", FieldType: values.NotNullString, Ordinal: 3},
 	}}
-	pos := &PositionalRow{Type: mergedType, Slots: []any{int64(1), "alpha", int64(1), "x"}}
-	cursor := recordlayer.FromList([]QueryResult{
+	pos := &executor.PositionalRow{Type: mergedType, Slots: []any{int64(1), "alpha", int64(1), "x"}}
+	cursor := recordlayer.FromList([]executor.QueryResult{
 		{Positional: pos},
 	})
 	cols := []ColumnDef{
@@ -667,8 +668,8 @@ func TestResultSet_DottedAliasPositionalAlign(t *testing.T) {
 	rowType := &values.RecordType{Fields: []values.Field{
 		{Name: "A.B", FieldType: values.NotNullLong, Ordinal: 0},
 	}}
-	pos := &PositionalRow{Type: rowType, Slots: []any{int64(7)}}
-	cursor := recordlayer.FromList([]QueryResult{{Positional: pos}})
+	pos := &executor.PositionalRow{Type: rowType, Slots: []any{int64(7)}}
+	cursor := recordlayer.FromList([]executor.QueryResult{{Positional: pos}})
 	cols := []ColumnDef{{Name: "A.B", Label: "A.B", TypeName: "BIGINT"}}
 
 	rs := NewRecordLayerResultSet(ctx, cursor, cols)
@@ -686,11 +687,11 @@ func TestResultSet_DottedAliasPositionalAlign(t *testing.T) {
 
 	// Guard: a permuted qualifier must NOT falsely align (slot X.NAME vs label
 	// Y.NAME are different columns; stripping both sides would wrongly match).
-	permRow := &PositionalRow{
+	permRow := &executor.PositionalRow{
 		Type:  &values.RecordType{Fields: []values.Field{{Name: "X.NAME", FieldType: values.NotNullString, Ordinal: 0}}},
 		Slots: []any{"wrong"},
 	}
-	permRS := NewRecordLayerResultSet(ctx, recordlayer.FromList([]QueryResult{{Positional: permRow}}), []ColumnDef{{Name: "Y.NAME", Label: "Y.NAME", TypeName: "STRING"}})
+	permRS := NewRecordLayerResultSet(ctx, recordlayer.FromList([]executor.QueryResult{{Positional: permRow}}), []ColumnDef{{Name: "Y.NAME", Label: "Y.NAME", TypeName: "STRING"}})
 	defer permRS.Close()
 	if permRS.positionalAligned(permRow) {
 		t.Fatal("permuted qualifier (X.NAME slot vs Y.NAME label) must NOT positionally align")
@@ -699,7 +700,7 @@ func TestResultSet_DottedAliasPositionalAlign(t *testing.T) {
 
 func TestResultSet_DuplicateDisplayNamesAlignDeduplicatedExactSlotsByOrdinal(t *testing.T) {
 	t.Parallel()
-	row := &PositionalRow{
+	row := &executor.PositionalRow{
 		Type: &values.RecordType{Fields: []values.Field{
 			{Name: "ID", FieldType: values.NullableLong, Ordinal: 0},
 			{Name: "ID_2", FieldType: values.NullableLong, Ordinal: 1},
@@ -713,7 +714,7 @@ func TestResultSet_DuplicateDisplayNamesAlignDeduplicatedExactSlotsByOrdinal(t *
 		{Name: "COUNT(*)", Label: "COUNT(*)", TypeName: "BIGINT"},
 	}
 	rs := NewRecordLayerResultSet(
-		context.Background(), recordlayer.FromList([]QueryResult{{Positional: row}}), columns)
+		context.Background(), recordlayer.FromList([]executor.QueryResult{{Positional: row}}), columns)
 	defer rs.Close()
 	if !rs.Next() {
 		t.Fatalf("expected row: %v", rs.Err())
@@ -729,7 +730,7 @@ func TestResultSet_DuplicateDisplayNamesAlignDeduplicatedExactSlotsByOrdinal(t *
 	badColumns := append([]ColumnDef(nil), columns...)
 	badColumns[1] = ColumnDef{Name: "PI.ID", Label: "OTHER", TypeName: "BIGINT"}
 	bad := NewRecordLayerResultSet(
-		context.Background(), recordlayer.FromList([]QueryResult{{Positional: row}}), badColumns)
+		context.Background(), recordlayer.FromList([]executor.QueryResult{{Positional: row}}), badColumns)
 	defer bad.Close()
 	if !bad.Next() {
 		t.Fatalf("expected bad-control row: %v", bad.Err())
@@ -770,8 +771,8 @@ func TestResultSet_PositionalMisalignedIsLoud(t *testing.T) {
 		t.Parallel()
 		// Source row (ID, NAME) under a projection whose output column is the alias
 		// THE_ID: plain-identifier slot names don't match the columns → not aligned.
-		pos := &PositionalRow{Type: srcType, Slots: []any{int64(7), "src"}}
-		cursor := recordlayer.FromList([]QueryResult{{Positional: pos}})
+		pos := &executor.PositionalRow{Type: srcType, Slots: []any{int64(7), "src"}}
+		cursor := recordlayer.FromList([]executor.QueryResult{{Positional: pos}})
 		cols := []ColumnDef{
 			{Name: "THE_ID", Label: "THE_ID", TypeName: "BIGINT"},
 			{Name: "LABEL", TypeName: "STRING"},
@@ -789,8 +790,8 @@ func TestResultSet_PositionalMisalignedIsLoud(t *testing.T) {
 		t.Parallel()
 		// Positional carries the full source record; columns are a subset → count
 		// mismatch → not aligned → loud.
-		pos := &PositionalRow{Type: srcType, Slots: []any{int64(99), "src"}}
-		cursor := recordlayer.FromList([]QueryResult{{Positional: pos}})
+		pos := &executor.PositionalRow{Type: srcType, Slots: []any{int64(99), "src"}}
+		cursor := recordlayer.FromList([]executor.QueryResult{{Positional: pos}})
 		cols := []ColumnDef{{Name: "ID", TypeName: "BIGINT"}}
 		rs := NewRecordLayerResultSet(ctx, cursor, cols)
 		defer rs.Close()
@@ -805,8 +806,8 @@ func TestResultSet_PositionalMisalignedIsLoud(t *testing.T) {
 		t.Parallel()
 		// Label-less columns with name-model qualified Names ("A.ID") align by their
 		// bare leaf against the positional slot names — the read is by ordinal.
-		pos := &PositionalRow{Type: srcType, Slots: []any{int64(99), "pos"}}
-		cursor := recordlayer.FromList([]QueryResult{{Positional: pos}})
+		pos := &executor.PositionalRow{Type: srcType, Slots: []any{int64(99), "pos"}}
+		cursor := recordlayer.FromList([]executor.QueryResult{{Positional: pos}})
 		cols := []ColumnDef{
 			{Name: "A.ID", TypeName: "BIGINT"},
 			{Name: "A.NAME", TypeName: "STRING"},
@@ -831,7 +832,7 @@ func TestResultSet_PositionalMisalignedIsLoud(t *testing.T) {
 //
 // WHY THE TOKEN CARRIES NAMES AT ALL. encodeSortedRecords serializes the
 // buffered row's positional slot NAMES into the token (continuation.go, the
-// payload's "n" field) and decodeSortedRecords rebuilds the PositionalRow type
+// payload's "n" field) and decodeSortedRecords rebuilds the executor.PositionalRow type
 // from them (positionalTypeFromNames). Those names are
 // values.ProjectionColumnName's output, which RFC-229 §2.3 changed for a nested
 // projection: `SELECT n.sk, n.co ORDER BY ...` wrote ["N","N"] before and
@@ -857,7 +858,7 @@ func TestResultSet_PreRFC229SortContinuationNamesFailClosed(t *testing.T) {
 
 	// The row a PRE-229 binary buffered and encoded: both slots of one struct
 	// root named after the root, which is the defect §2.3 fixed.
-	oldToken := &PositionalRow{
+	oldToken := &executor.PositionalRow{
 		Type: &values.RecordType{Fields: []values.Field{
 			// PRE-229 continuation payloads encoded names only; the legacy
 			// decoder therefore has no declared scalar type to recover here.
@@ -872,7 +873,7 @@ func TestResultSet_PreRFC229SortContinuationNamesFailClosed(t *testing.T) {
 		{Name: "N.CO", Label: "CO", TypeName: "BIGINT"},
 	}
 
-	rs := NewRecordLayerResultSet(ctx, recordlayer.FromList([]QueryResult{{Positional: oldToken}}), newCols)
+	rs := NewRecordLayerResultSet(ctx, recordlayer.FromList([]executor.QueryResult{{Positional: oldToken}}), newCols)
 	defer rs.Close()
 	if rs.positionalAligned(oldToken) {
 		t.Fatalf("a PRE-RFC-229 sort continuation's slot names [N N] now ALIGN " +
@@ -903,7 +904,7 @@ func TestResultSet_PreRFC229SortContinuationNamesFailClosed(t *testing.T) {
 	// Without this the assertions above are satisfied by a result set that
 	// rejects everything, which would prove nothing about names.
 	okRS := NewRecordLayerResultSet(ctx,
-		recordlayer.FromList([]QueryResult{{Positional: oldToken}}),
+		recordlayer.FromList([]executor.QueryResult{{Positional: oldToken}}),
 		[]ColumnDef{
 			{Name: "N", Label: "N", TypeName: "BIGINT"},
 			{Name: "N", Label: "N", TypeName: "BIGINT"},
@@ -931,4 +932,21 @@ func containsSubstr(haystack, needle string) bool {
 		}
 	}
 	return false
+}
+
+// failingContinuation is a resumable position whose encoding fails, as a sort
+// remainder's does when a buffered row has no positional layout.
+type failingContinuation struct{}
+
+func (failingContinuation) ToBytes() ([]byte, error) {
+	return nil, errors.New("buffered row has no positional layout")
+}
+func (failingContinuation) IsEnd() bool { return false }
+
+func TestResultSet_ContinuationSurfacesEncodeFailure(t *testing.T) {
+	t.Parallel()
+	rs := &RecordLayerResultSet{lastContinuation: failingContinuation{}}
+	if _, err := rs.Continuation(); err == nil || err.Error() != "buffered row has no positional layout" {
+		t.Fatalf("result set swallowed the continuation's encode failure: %v", err)
+	}
 }
