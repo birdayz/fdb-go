@@ -41,7 +41,8 @@ end to end, not merely a type, rule or plan that exists.
 ## Validation
 
 Read `AGENTS.md` for the validation lanes and PR rules. Use **`just test`**, not
-`go test`, `go vet`, a hand-picked Bazel test list or a test filter. Bazel's cache
+`go test`, `go vet`, a hand-picked Bazel test list or a test filter; a single-target race
+or repeat run to prove one test is allowed (`AGENTS.md`). Bazel's cache
 is enabled: report executed and cached results separately. `just test` is the
 fast lane, not full-suite verification. Heavyweight, Java conformance, stress and
 manual targets belong to `just test-full`; run that lane in CI when local full

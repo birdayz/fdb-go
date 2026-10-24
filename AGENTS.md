@@ -15,6 +15,12 @@ reruns exactly the targets your change affects, dependents included, and
 answers the rest from cache; a hand-picked target list misses affected
 dependents and is not the check the hook and CI make.
 
+**Single-target race and repeat runs are allowed** for proving a concurrency fix or a
+deterministic regression: `bazelisk test //pkg/...:foo_test
+--@rules_go//go/config:race --test_filter=TestName --runs_per_test=N
+--nocache_test_results`. They are evidence for that test, not validation of the change:
+`just test` (and `just test-full` where it applies) is still the check.
+
 - `just test`: the standard fast edit/commit loop. Bazel runs nogo, unit tests,
   and bounded integration tests. Targets tagged `test-full`, `conformance_java`,
   or `stress` are excluded; `manual` targets are excluded by Bazel's wildcard.
