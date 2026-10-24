@@ -67,6 +67,7 @@ go_test(
         "resources:memory:4300",
         "stress",
     ],
+    visibility = ["//pkg/relational/sqldriver/stress/tenmguard:__pkg__"],
     deps = [
         "//gen/demopb",
         "//pkg/fdbgo/client",

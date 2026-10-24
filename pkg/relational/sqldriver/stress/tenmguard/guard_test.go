@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -17,6 +18,14 @@ func TestTenMBinaryRefusesWithoutCluster(t *testing.T) {
 	bin := os.Getenv("STRESS_10M_BIN")
 	if bin == "" {
 		t.Fatal("STRESS_10M_BIN is not set; the BUILD file passes the stress_10m_test binary")
+	}
+	// rootpath is relative to the runfiles root; the test runs in its package dir.
+	if !filepath.IsAbs(bin) {
+		ws := os.Getenv("TEST_WORKSPACE")
+		if ws == "" {
+			ws = "_main"
+		}
+		bin = filepath.Join(os.Getenv("TEST_SRCDIR"), ws, bin)
 	}
 	cmd := exec.Command(bin, "-test.run=^$")
 	for _, kv := range os.Environ() {
