@@ -490,6 +490,11 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   (`client/endpoint.go`); RFC-276 decodes `SecondaryAddress` as a `NetworkAddress`
   (vector `GetKeyServerLocationsReply_secondary_address`), so the choice can be
   ported and pinned against that vector.
+- [ ] **Presence-only Optional tables still encode as byte strings.** RFC-276 decodes
+  `ClientDBInfo.EncryptKeyProxy`, `CommitTransactionRequest.CommitCostEstimation` and
+  `TenantInfo.Token` as presence only (`optTable` in `cmd/fdb-schema-extract`), but their
+  encoders write `VisitDynamicSize` behind the union offset. Give the types Go
+  equivalents, or make the encoder refuse a presence-only field, before the client sets one.
 
 ## 1. WS-E — scalar/SQL semantics and statement execution — ACTIVE
 

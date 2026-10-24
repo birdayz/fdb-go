@@ -74,8 +74,9 @@ Each is described in full under Compatibility or Changed below.
   without the executor's wrapping context in the error string (RFC-274).
 - **frl:** `frl` is a package of the root module; retiring the nested module requires
   the post-publication retraction procedure in `RELEASE.md`.
-- **`pkg/fdbgo/wire/types`:** generated decoders return errors and
-  `NetworkAddressList.SecondaryAddress` is a `NetworkAddress` (RFC-276).
+- **`pkg/fdbgo/wire/types`:** generated decoders return errors,
+  `NetworkAddressList.SecondaryAddress` is a `NetworkAddress` and
+  `CommitTransactionRef.Read_conflict_ranges_disabled` a `SpanContext` (RFC-276).
 
 ### Compatibility
 - **Collation:** collated index access and writes that evaluate collated primary/count keys now fail with `GoOnlyCollationError` unless the store explicitly opts into Go-only bytes with `StoreBuilder.SetGoOnlyCollation(true)`; existing keys are not migrated.
@@ -347,7 +348,7 @@ Each is described in full under Compatibility or Changed below.
 
 - `pkg/fdbgo/wire/types` decoders fail on malformed input (RFC-276):
   - `UnmarshalFromReader` returns an error. `Parse<T>VectorFromReader` and the `Parse<T>StringVector` functions (`KeyValueRef`, `KeyRangeRef`, `GetValueReqAndResult`) return `([]T, error)`.
-  - Optional tables decode and encode as tables. `NetworkAddressList.SecondaryAddress` is a `NetworkAddress`, and `CommitTransactionRef.Read_conflict_ranges_disabled` (C++ `spanContext`) a `SpanContext`; both used to be read and written as byte strings. `ClientDBInfo.EncryptKeyProxy`, `CommitTransactionRequest.CommitCostEstimation` and `TenantInfo.Token` decode as presence only.
+  - Optional tables decode and encode as tables. `NetworkAddressList.SecondaryAddress` is a `NetworkAddress`, and `CommitTransactionRef.Read_conflict_ranges_disabled` (C++ `spanContext`) a `SpanContext`; both used to be read and written as byte strings. `ClientDBInfo.EncryptKeyProxy`, `CommitTransactionRequest.CommitCostEstimation` and `TenantInfo.Token` decode as presence only; their encoders still write a byte string, so a decoded message that holds one does not re-encode as C++ wrote it (the client sets none of them).
   - Presence follows C++: an Optional is present only for tag 1 with its value slot set (`HasX` used to be true for any non-zero tag), and an unknown variant tag leaves `XTag` at 0 (it kept the raw tag).
   - `pkg/fdbgo/wire`: `Reader.Err` reports a field read outside the buffer; `ReadVectorCount` fails on a vector field past the buffer, `ReadErrorOrInto` on an error code past it. `ReadOptionalInt32`, `ReadOptionalString` and `ReadInlineReplyError` take only tag 1 as present (`ReadInlineReplyError` returned an error for any non-zero tag). New: `DecodeBudget`, `DecodeError`, `DecodeBudgetError`, `FieldBoundsError`, `StringVectorError`.
   - The pure-Go client rejects a malformed reply instead of decoding it as a shorter valid one: a vector count, element, table or field outside the buffer, or row bytes that do not fill their blob, fails the read.

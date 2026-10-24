@@ -76,6 +76,29 @@ func slot2EndpointReader(t *testing.T, d []byte) *wire.Reader {
 	return ep
 }
 
+// grvProxyEndpoint is the position of the first GRV proxy's getConsistentReadVersion
+// Endpoint in an ErrorOr<ClientDBInfo>.
+func grvProxyEndpoint(t *testing.T, d []byte) int {
+	t.Helper()
+	r, err := wire.ReadErrorOr(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy, err := r.ReadVectorElementReader(types.ClientDBInfoSlotGrvProxies, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapper, err := proxy.ReadNestedReader(types.GrvProxyInterfaceSlotGetConsistentReadVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ep, err := wrapper.ReadNestedReader(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ep.ObjectPos()
+}
+
 // slot2EndpointIP is the position of that endpoint's primary IPAddress.
 func slot2EndpointIP(t *testing.T, d []byte) int {
 	t.Helper()
@@ -166,6 +189,16 @@ func TestReplyParsersFailOnFieldPastBuffer(t *testing.T) {
 			"storage server endpoint address", locationsReplyVector(t),
 			func(d []byte) (int, int) { return slot2Endpoint(t, d), types.EndpointSlotAddresses },
 			func(d []byte) error { _, err := parseGetKeyServerLocationsReply(d); return err },
+		},
+		{
+			"GRV proxy endpoint address", replyVector(t, "ClientDBInfo_secondary_address"),
+			func(d []byte) (int, int) { return grvProxyEndpoint(t, d), types.EndpointSlotAddresses },
+			func(d []byte) error { _, err := parseErrorOrClientDBInfo(d); return err },
+		},
+		{
+			"GRV proxy endpoint token", replyVector(t, "ClientDBInfo_secondary_address"),
+			func(d []byte) (int, int) { return grvProxyEndpoint(t, d), types.EndpointSlotToken },
+			func(d []byte) error { _, err := parseErrorOrClientDBInfo(d); return err },
 		},
 		{
 			"storage server endpoint token", locationsReplyVector(t),

@@ -35,8 +35,8 @@ func (e *DecodeBudgetError) Error() string {
 	return fmt.Sprintf("wire: vector of %d elements exceeds the decode budget (%d left)", e.Elements, e.Left)
 }
 
-// DecodeError reports a field a generated decoder could not decode. Field is empty
-// for a vector decoded on its own.
+// DecodeError reports a value a decoder could not decode. Field is empty when the
+// cause is a leaf read of Type (a FieldBoundsError) or a vector decoded on its own.
 type DecodeError struct {
 	Type  string
 	Field string
