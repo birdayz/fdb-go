@@ -13,7 +13,6 @@ import (
 	"encoding/base64"
 	"encoding/pem"
 	"errors"
-	"io"
 	"io/fs"
 	"maps"
 	"math/big"
@@ -245,42 +244,6 @@ func TestResolveTLSConfigFileErrors(t *testing.T) {
 	}
 }
 
-// startTLSFDBServer serves the FDB ConnectPacket exchange behind TLS with cert,
-// requiring a client certificate from clientCAs when it is non-nil.
-func startTLSFDBServer(t *testing.T, cert tls.Certificate, clientCAs *x509.CertPool) string {
-	t.Helper()
-	cfg := &tls.Config{Certificates: []tls.Certificate{cert}}
-	if clientCAs != nil {
-		cfg.ClientCAs, cfg.ClientAuth = clientCAs, tls.RequireAndVerifyClientCert
-	}
-	ln, err := tls.Listen("tcp", "127.0.0.1:0", cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { ln.Close() })
-	go func() {
-		for {
-			c, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			go func() {
-				defer c.Close()
-				var buf [transport.ConnectPacketSize]byte
-				if _, err := io.ReadFull(c, buf[:]); err != nil {
-					return
-				}
-				sp := transport.ConnectPacket{ProtocolVersion: transport.ProtocolVersion73, ConnectionID: 1}
-				if _, err := c.Write(sp.Marshal()); err != nil {
-					return
-				}
-				_, _ = io.Copy(io.Discard, c)
-			}()
-		}
-	}()
-	return ln.Addr().String()
-}
-
 // testPKI is a CA and the PEM of a client certificate and key it signed.
 type testPKI struct {
 	ca            *x509.Certificate
@@ -381,4 +344,9 @@ func TestResolveTLSConfigMutualTLS(t *testing.T) {
 	}
 	_, err := resolveTLSConfig(t.TempDir(), fakeEnv(map[string]string{"FDB_TLS_VERIFY_PEERS": "Check.Valid=2"}))
 	requireTLSError(t, "unparseable FDB_TLS_VERIFY_PEERS", err)
+	var cfgErr *TLSConfigError
+	var parseErr *transport.VerifyPeersError
+	if errors.As(err, &cfgErr); cfgErr.Setting != "FDB_TLS_VERIFY_PEERS" || !errors.As(err, &parseErr) {
+		t.Fatalf("unparseable FDB_TLS_VERIFY_PEERS: %v; want the setting and a VerifyPeersError", err)
+	}
 }

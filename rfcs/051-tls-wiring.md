@@ -72,7 +72,9 @@ convenience layer that *produces* one.
    *is* configured can't be loaded (don't run with half a config). `FDB_TLS_VERIFY_PEERS`
    rule DSL and `FDB_TLS_PASSWORD` (encrypted keys) were deferred here; RFC-277
    implements them and replaces Go's CA+SNI check, which was not libfdb_c's
-   `Check.Valid=1` (that checks no host name and trusts only the CA file).
+   `Check.Valid=1` (that checks no host name and trusts only the CA file). RFC-277 also
+   loads keys through its PKCS#8-decrypting loader and makes the default directory a
+   variable a test binary can set.
 3. **Thread a `*tls.Config`:** `database` gains `tlsConfig *tls.Config` (no parallel
    `useTLS` bool — nil-ness IS the switch). `getOrDialConn` dials
    `transport.Dial(dialCtx, addr, db.tlsConfig, db.dialFn)`.

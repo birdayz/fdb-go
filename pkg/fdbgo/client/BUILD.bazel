@@ -376,9 +376,11 @@ go_test(
 # gazelle:exclude tls_test.go
 # gazelle:exclude tls_key_unit_test.go
 # gazelle:exclude tls_key_fixtures_test.go
+# gazelle:exclude tls_fdbserver_test.go
 go_test(
     name = "tls_unit_test",
     srcs = [
+        "tls_fdbserver_test.go",
         "tls_key_fixtures_test.go",
         "tls_key_unit_test.go",
         "tls_test.go",
@@ -393,7 +395,10 @@ go_test(
 # gazelle:exclude tls_roots_unit_test.go
 go_test(
     name = "tls_roots_unit_test",
-    srcs = ["tls_roots_unit_test.go"],
+    srcs = [
+        "tls_fdbserver_test.go",
+        "tls_roots_unit_test.go",
+    ],
     embed = [":client"],
     deps = ["//pkg/fdbgo/transport"],
 )

@@ -140,20 +140,21 @@ option first and the environment second.
      `verify_peers` bullet and paragraph are rewritten. The environment path verifies
      the chain and the policy, not the host name, and `FDB_TLS_VERIFY_PEERS` works in
      pure Go.
-   - `docs/mt-saas.md:657-663`: the environment list adds `FDB_TLS_VERIFY_PEERS`,
+   - `docs/mt-saas.md`, the TLS environment list: it adds `FDB_TLS_VERIFY_PEERS`,
      `FDB_TLS_PASSWORD` and the set-but-empty rule.
-   - `rfcs/051-tls-wiring.md`: the variable list (`:43`), the deferral and its
-     "exactly `Check.Valid=1`" claim (`:71-73`), the `ServerName` description (`:84`)
-     and the follow-ups (`:140-147`) point to this RFC.
+   - `rfcs/051-tls-wiring.md`: the variable list, the deferral and its "exactly
+     `Check.Valid=1`" claim (step 2), the `ServerName` description and the follow-ups
+     point to this RFC.
    - `docs/compatibility.md` gets a TLS entry for the boundaries below.
    - The `WithTLSConfig` doc comments (client and fdb) and the `upgradeTLS` comment are
      updated.
-   - CHANGELOG.md records, for the environment path:
+   - CHANGELOG.md records, for the environment path (Breaking, with the full entry under
+     Compatibility):
      - the stricter roots and the dropped host-name check;
      - `FDB_TLS_VERIFY_PEERS` and `FDB_TLS_PASSWORD`;
      - the set-but-empty rule and `*TLSConfigError`.
 
-     It narrows the Unreleased `x509sslcertoverrideplatform` note (`:83-85`) to
+     It narrows the Unreleased `x509sslcertoverrideplatform` note to
      `WithTLSConfig` configs with nil `RootCAs`.
 
 ## Divergences kept (DIVERGENCES.md)

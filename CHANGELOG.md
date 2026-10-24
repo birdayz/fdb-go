@@ -81,6 +81,14 @@ Each is described in full under Compatibility or Changed below.
   `yes`/`no` and `on`/`off` now fail at open with 22023.
 - **Required versions:** Java `fdb-record-layer-core` **4.14.2.0**, FDB C++ client **7.3.77**, Go
   **1.27.3** or newer (`go.mod` enforces this minimum).
+- **Pure-Go client TLS (RFC-277):** a `:tls` cluster file with `FDB_TLS_*` now verifies the
+  server as libfdb_c 7.3.77 does. Trust comes only from `FDB_TLS_CA_FILE`; with no CA file no
+  server is trusted, where the system roots used to be. The host name is no longer checked, so
+  a server certificate needs no IP SANs. `FDB_TLS_VERIFY_PEERS` (default `Check.Valid=1`)
+  decides which peers to accept, and `FDB_TLS_PASSWORD` decrypts a PBES2 PKCS#8 key. A path
+  variable set but empty means no file and no default. A setting that cannot be used (a file,
+  a password, a verify-peers string) fails the open with `*client.TLSConfigError`, which reads
+  as `tls_error` (2107). `WithTLSConfig` configs keep Go's own verification.
 - **Go 1.27 runtime defaults** apply to applications built with this module, because their
   `go` line must be at least 1.27.3:
   - `x509sslcertoverrideplatform=1`: on macOS and Windows, a nonempty `SSL_CERT_FILE` or

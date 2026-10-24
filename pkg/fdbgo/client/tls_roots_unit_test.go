@@ -11,7 +11,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"io"
 	"math/big"
 	"net"
 	"os"
@@ -71,37 +70,14 @@ func writeDefaultKeyPair(dir string, cert tls.Certificate) error {
 	return os.WriteFile(filepath.Join(dir, "key.pem"), pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}), 0o600)
 }
 
-// startSystemRootServer serves the FDB ConnectPacket exchange behind TLS with
-// systemRootCert and returns a dial through transport.Dial.
+// startSystemRootServer serves systemRootCert and returns a dial through transport.Dial.
 func startSystemRootServer(t *testing.T) func(cfg *tls.Config) error {
 	t.Helper()
-	ln, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{systemRootCert}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { ln.Close() })
-	go func() {
-		for {
-			c, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			go func() {
-				defer c.Close()
-				var buf [transport.ConnectPacketSize]byte
-				if _, err := io.ReadFull(c, buf[:]); err != nil {
-					return
-				}
-				sp := transport.ConnectPacket{ProtocolVersion: transport.ProtocolVersion73, ConnectionID: 1}
-				_, _ = c.Write(sp.Marshal())
-				_, _ = io.Copy(io.Discard, c)
-			}()
-		}
-	}()
+	addr := startTLSFDBServer(t, systemRootCert, nil)
 	return func(cfg *tls.Config) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		c, err := transport.Dial(ctx, ln.Addr().String(), cfg, nil)
+		c, err := transport.Dial(ctx, addr, cfg, nil)
 		if c != nil {
 			c.Close()
 		}
@@ -148,6 +124,7 @@ func systemRootPKI() ([]byte, tls.Certificate, error) {
 // With no CA file the environment config trusts no root, as libfdb_c, which loads
 // no default verify paths; a server the system roots vouch for is refused.
 func TestResolveTLSConfigIgnoresSystemRoots(t *testing.T) {
+	t.Parallel()
 	dial := startSystemRootServer(t)
 	// The control: Go's own verification trusts the system roots.
 	if err := dial(&tls.Config{}); err != nil {
