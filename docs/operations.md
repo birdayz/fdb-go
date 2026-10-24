@@ -32,8 +32,9 @@ fdbsql:///<database-path>?cluster_file=/etc/foundationdb/fdb.cluster&schema=<nam
 ```
 
 ```go
-import _ "fdb.dev/pkg/relational/sqldriver"
+import "fdb.dev/pkg/relational/sqldriver"
 
+sqldriver.RegisterDomainIfNotExists("FRL") // once per process
 db, err := sql.Open("fdbsql", "fdbsql:///FRL/MYAPP?cluster_file=/etc/foundationdb/fdb.cluster&schema=APP")
 ```
 

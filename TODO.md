@@ -1,6 +1,6 @@
 # Java 4.14.2.0 migration
 
-Active branch: `upgrade/java-4.14.2.0` · PR #786. FDB/C++ remains **7.3.77**.
+Merged: `upgrade/java-4.14.2.0` (PR #786, 2026-10-09). FDB/C++ remains **7.3.77**.
 
 ## Execution contract
 
