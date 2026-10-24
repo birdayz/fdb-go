@@ -3226,8 +3226,8 @@ for each invocation (`pkg/fdbgo/client/readpath.go:664-682`):
 
 The positive-skip mapped selector loops (`mappedrange_selectors.go`) apply the same
 reply-timeout cap (RFC-280). Storage metrics (`GetEstimatedRangeSizeBytes`,
-`GetRangeSplitPoints`) have no cap, as in C++: without a tenant they read at the latest
-version, so no aged version ends them (RFC-280).
+`GetRangeSplitPoints`) have neither cap nor reply timeout, as in C++: without a tenant
+they read at the latest version, so no aged version ends them (RFC-280).
 
 These caps apply if no caller deadline/cancellation or configured transaction
 timeout ends the read first. They do not prove the server rejected an aged read

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -32,8 +33,8 @@ func metricsRetryDB(t *testing.T, ctx context.Context, prefix string) (*Database
 	return db, sim, rec
 }
 
-// Size estimates and split points retry wrong_shard_server past the old 50-attempt
-// cap to success, as C++ does (NativeAPI.actor.cpp:7799-7811, 8162, 8204-8208).
+// Size estimates and split points retry wrong_shard_server with no attempt cap, as
+// C++ does (NativeAPI.actor.cpp:7799-7811, 8162, 8204-8208).
 func TestMetricsRetryWrongShardWithoutCap(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
@@ -41,7 +42,7 @@ func TestMetricsRetryWrongShardWithoutCap(t *testing.T) {
 	prefix := t.Name() + "/"
 	db, sim, rec := metricsRetryDB(t, ctx, prefix)
 	begin, end := []byte(prefix), []byte(prefix+"\xff")
-	const injections = MaxWrongShardRetries + 5
+	const injections = 55 // more than any cap the client has had
 	for _, tc := range []struct {
 		kind string
 		run  func(tx *Transaction) error
@@ -72,32 +73,48 @@ func TestMetricsRetryWrongShardWithoutCap(t *testing.T) {
 	}
 }
 
-// A size estimate whose every reply is lost retries without a cap, paced by the
-// all-alternatives-failed delay rather than spinning on the 10 ms wrong-shard delay.
+// A request whose every reply is lost retries until the transaction timeout, paced
+// as loadBalance paces failed replicas rather than spinning on the 10 ms delay.
 func TestMetricsRetryIsPaced(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	prefix := t.Name() + "/"
 	db, sim, rec := metricsRetryDB(t, ctx, prefix)
-	var rounds atomic.Int32
-	sim.setIntercept(func(_ int, token transport.UID, body []byte) ([]byte, bool) {
-		if rec.replyKind(token) == "WaitMetricsRequest" {
-			rounds.Add(1)
-			return severConn, true
+	begin, end := []byte(prefix), []byte(prefix+"\xff")
+	for _, tc := range []struct {
+		kind string
+		run  func(tx *Transaction) error
+	}{
+		{"WaitMetricsRequest", func(tx *Transaction) error {
+			_, err := tx.GetEstimatedRangeSizeBytes(ctx, begin, end)
+			return err
+		}},
+		{"SplitRangeRequest", func(tx *Transaction) error {
+			_, err := tx.GetRangeSplitPoints(ctx, begin, end, 1000)
+			return err
+		}},
+	} {
+		var rounds atomic.Int32
+		sim.setIntercept(func(_ int, token transport.UID, body []byte) ([]byte, bool) {
+			if rec.replyKind(token) == tc.kind {
+				rounds.Add(1)
+				return severConn, true
+			}
+			return body, false
+		})
+		sim.armEverything()
+		rec.start()
+		tx := db.CreateTransaction()
+		tx.SetTimeout(2000)
+		err := tc.run(tx)
+		rec.stop()
+		// Unpaced, a round is the 10 ms wrong-shard delay plus its RPCs.
+		t.Logf("%s: %d rounds in 2 s: %v", tc.kind, rounds.Load(), err)
+		var fdbErr *wire.FDBError
+		if n := rounds.Load(); !errors.As(err, &fdbErr) || fdbErr.Code != ErrTransactionTimedOut || n < 2 || n > 30 {
+			t.Fatalf("%s: %d rounds, %v; want 2 to 30 rounds, then transaction_timed_out", tc.kind, n, err)
 		}
-		return body, false
-	})
-	sim.armEverything()
-	rec.start()
-	defer rec.stop()
-	opCtx, stop := context.WithTimeout(ctx, 3*time.Second)
-	defer stop()
-	_, err := db.CreateTransaction().GetEstimatedRangeSizeBytes(opCtx, []byte(prefix), []byte(prefix+"\xff"))
-	// At least 45 ms per round; unpaced, a round is the 10 ms delay plus its RPCs.
-	t.Logf("%d rounds in 3 s: %v", rounds.Load(), err)
-	if n := rounds.Load(); err == nil || n < 2 || n > 40 {
-		t.Fatalf("%d rounds in 3 s, %v; want 2 to 40 rounds and the deadline", n, err)
 	}
 }
 
@@ -154,10 +171,15 @@ func TestMappedSelectorReadsCapReplyTimeouts(t *testing.T) {
 		sim.armEverything()
 		rec.start()
 		err = tc.read(tx, rv)
-		rec.stop()
+		sent := 0
+		for _, r := range rec.stop().requests {
+			if strings.HasPrefix(r, "GetMappedKeyValuesRequest ") {
+				sent++
+			}
+		}
 		var fdbErr *wire.FDBError
-		if !errors.As(err, &fdbErr) || fdbErr.Code != ErrTransactionTooOld || dropped.Load() != maxReadTimeoutRetries+1 {
-			t.Fatalf("%s: %v after %d lost replies; want transaction_too_old after %d", tc.name, err, dropped.Load(), maxReadTimeoutRetries+1)
+		if !errors.As(err, &fdbErr) || fdbErr.Code != ErrTransactionTooOld || sent != maxReadTimeoutRetries+1 {
+			t.Fatalf("%s: %v after %d requests (%d replies lost); want transaction_too_old after %d", tc.name, err, sent, dropped.Load(), maxReadTimeoutRetries+1)
 		}
 	}
 }

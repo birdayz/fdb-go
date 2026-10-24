@@ -38,14 +38,15 @@ Change:
 
 - Both loops retry until success, a non-retryable error or the operation context ends.
   The context carries the transaction timeout (RFC-112), as C++'s `waitOrError` does.
-- A round in which no replica answered ends in `db.allAlternativesFailed`, which waits
-  C++'s jittered `allAlternativesFailedDelay` (50 ms, growing toward 1 s while failures
-  continue) before reporting 1006. Without it, an uncapped loop of instant failures
-  would spin on the 10 ms wrong-shard delay. Replicas the failure monitor holds as
-  failed are skipped first, as the reads do (`failMon.liveServers`).
-- The 5 s per-replica reply timeout stays: it moves to the next replica, which
-  `loadBalance`'s second request approximates. With no cap it no longer turns a slow
-  shard into an error.
+- Each request is sent the way `loadBalance` sends it (`sendMetricsRequest`): the
+  replicas in order, with no reply timeout. A round in which no replica answered backs
+  off from 10 ms, doubling to 5 s (`LOAD_BALANCE_*_BACKOFF`). When the failure monitor
+  excludes every replica, the request waits `allAlternativesFailedDelay` (50 ms, growing
+  while failures continue) and reports 1006, unless a replica recovers first, which
+  ends the wait as `okFuture` does. Replicas whose endpoint was reported not found are
+  skipped, as the reads skip them (`failMon.liveServers`).
+- The 5 s per-replica reply timeout goes: `loadBalance` has none, and with no cap it
+  would keep a request that a slow replica answers in more than 5 s from ever ending.
 
 This differs from the range reads' deliberate cap (DIVERGENCES.md, "Range-read retry
 bounds"). A read retries at one read version, and C++ itself ends that with
@@ -71,7 +72,10 @@ and every dial and pool lookup waits on `connMu` meanwhile.
 Change: the removal and the failure mark stay under `connMu`, so a redial cannot slip
 between them (RFC-271); the close runs after the unlock. Other closes under `connMu`
 are left: `Database.Close` and a dial that lost to `Close` happen during shutdown, and
-the dial-panic backstop only on a panic.
+the dial-panic backstop only on a panic. Between the unlock and the close, a sender can
+still take the failing connection from a completed dial whose send cohort has not
+drained; its send fails as on any connection that dies after lookup, and the read
+retries.
 
 ## 4. `TransactCtx` and a dispatched commit: kept
 
@@ -94,25 +98,30 @@ in libfdb_c releases the wait.
 
 ## Tests
 
-- `client`, fast lane (`conn_location_unit_test`): `TestHandleConnErrorClosesOutsideConnMu`.
-  The failed connection's `Close` blocks until released; `connMu` must be free
-  meanwhile, the pool empty and the address failed.
+- `client`, fast lane (`conn_location_unit_test`):
+  - `TestHandleConnErrorClosesOutsideConnMu`: the failed connection's `Close` blocks
+    until released; `connMu` must be free meanwhile, the pool empty and the address
+    failed.
+  - `TestMetricsRequestWakesOnRecovery`: with the storm delay at 30 s, a request whose
+    only replica failed reaches it within 5 s of the replica's recovery.
+  - `TestMetricsRequestSkipsEndpointNotFound`: a replica whose metrics endpoint was
+    reported not found gets no request, and the call reports 1006.
 - `client`, test-full (`client_test`, FDB in a container, replies rewritten by the
   `simDialer`):
-  - `TestMetricsRetryWrongShardWithoutCap`: `MaxWrongShardRetries` + 5 `WaitMetrics`
-    replies, then as many `SplitRange` replies, are `wrong_shard_server`; both calls
-    succeed.
-  - `TestMetricsRetryIsPaced`: every `WaitMetrics` reply severs its connection for 3 s;
-    the call ends at the deadline after at most 40 rounds.
+  - `TestMetricsRetryWrongShardWithoutCap`: 55 `WaitMetrics` replies, then 55
+    `SplitRange` replies, are `wrong_shard_server`; both calls succeed.
+  - `TestMetricsRetryIsPaced`: every `WaitMetrics`, then every `SplitRange`, reply
+    severs its connection; with a 2 s transaction timeout each call makes at most 30
+    rounds and fails with `transaction_timed_out`.
   - `TestMappedSelectorReadsCapReplyTimeouts`: every `GetMappedKeyValues` reply is
-    dropped, with a 20 ms reply timeout; both loops return `transaction_too_old` after
-    11 requests.
+    dropped, with a 20 ms reply timeout; both loops send 11 requests and return
+    `transaction_too_old`.
 
 Each fails with its fix reverted.
 
 ## Compatibility
 
 No bytes change. A size estimate or split-point request no longer fails with 1006
-after 50 rounds; it waits like libfdb_c, bounded by the context and the transaction
-timeout. A positive-skip mapped read that keeps timing out returns a retryable
+after 50 rounds, and no longer gives up on a replica after 5 s; it waits like
+libfdb_c, bounded by the context and the transaction timeout. A positive-skip mapped read that keeps timing out returns a retryable
 `transaction_too_old` instead of looping.

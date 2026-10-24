@@ -49,6 +49,21 @@ func (db *database) endOther(o rpcAccount) {
 	db.queueModel.endRequest(o.addr, o.delta, readFailureLatency(o.err, o.start), false)
 }
 
+// allExcluded reports whether the failure monitor excludes every replica's address,
+// loadBalance's "everything is down" (LoadBalance.actor.h:617-618).
+func (db *database) allExcluded(servers []ServerInfo) bool {
+	if db.failMon == nil || len(servers) == 0 {
+		return false
+	}
+	now := nowSeconds()
+	for _, s := range servers {
+		if !db.failMon.excluded(s.Address, now) {
+			return false
+		}
+	}
+	return true
+}
+
 // allAlternativesFailed waits C++'s allAlternativesFailedDelay, jittered like
 // delayJittered (flow.h:1481-1484), before reporting all_alternatives_failed,
 // so a dead-endpoint storm cannot spin location lookups.

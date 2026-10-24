@@ -872,3 +872,103 @@ func TestHandleConnErrorClosesOutsideConnMu(t *testing.T) {
 		t.Fatal("the failed connection was left open")
 	}
 }
+
+// metricsArms sends each storage-metrics request through its loadBalance-shaped loop.
+func metricsArms() []connArm {
+	servers := []ServerInfo{{Address: armAddr, Token: armToken}}
+	key, end := []byte("k"), []byte("l")
+	return []connArm{
+		{"wait metrics", false, func(ctx context.Context, _ *database, tx *Transaction) {
+			_, _ = tx.sendWaitMetrics(ctx, key, end, 1, servers)
+		}},
+		{"split range", false, func(ctx context.Context, _ *database, tx *Transaction) {
+			_, _ = tx.sendSplitRange(ctx, key, end, 1000, servers)
+		}},
+	}
+}
+
+// A metrics request whose only replica is down waits for it, as loadBalance waits on
+// okFuture: the replica's recovery ends the wait, not the 30 s storm delay.
+func TestMetricsRequestWakesOnRecovery(t *testing.T) {
+	t.Parallel()
+	for _, arm := range metricsArms() {
+		t.Run(arm.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			peer := newIdentityPeer(t)
+			db, tx := armDatabase(ctx, peer)
+			defer closeIdentityDatabase(db)
+			var dials atomic.Int32
+			dial := db.dialFn
+			db.dialFn = func(ctx context.Context, network, addr string) (net.Conn, error) {
+				if dials.Add(1) == 1 {
+					return nil, errors.New("test: replica down")
+				}
+				return dial(ctx, network, addr)
+			}
+			// A long storm: allAlternativesFailedDelay is its 30 s slow maximum.
+			now := nowSeconds()
+			db.failMon.mu.Lock()
+			db.failMon.oldestAltFailure, db.failMon.newestAltFailure, db.failMon.lastAltSkip = now-1000, now, now
+			db.failMon.mu.Unlock()
+			armCtx, stop := context.WithCancel(ctx)
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				arm.run(armCtx, db, tx)
+			}()
+			defer func() { stop(); <-done }()
+			for dials.Load() == 0 || !db.failMon.isFailed(armAddr) {
+				if ctx.Err() != nil {
+					t.Fatal("the first round did not fail")
+				}
+				time.Sleep(time.Millisecond)
+			}
+			time.Sleep(200 * time.Millisecond) // let the request park on the failed replica
+			db.failMon.markAlive(armAddr)
+			waitCtx, waitStop := context.WithTimeout(ctx, 5*time.Second)
+			defer waitStop()
+			if _, ok := peer.recv(waitCtx); !ok {
+				t.Fatal("the request still waits after its replica recovered")
+			}
+		})
+	}
+}
+
+// A replica whose metrics endpoint was reported not found is not sent to; the
+// request reports all_alternatives_failed after the delay.
+func TestMetricsRequestSkipsEndpointNotFound(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		endpoint int
+		send     func(ctx context.Context, tx *Transaction, servers []ServerInfo) error
+	}{
+		{"wait metrics", EndpointWaitMetrics, func(ctx context.Context, tx *Transaction, servers []ServerInfo) error {
+			_, err := tx.sendWaitMetrics(ctx, []byte("k"), []byte("l"), 1, servers)
+			return err
+		}},
+		{"split range", EndpointGetRangeSplitPoints, func(ctx context.Context, tx *Transaction, servers []ServerInfo) error {
+			_, err := tx.sendSplitRange(ctx, []byte("k"), []byte("l"), 1000, servers)
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			peer := newIdentityPeer(t)
+			db, tx := armDatabase(ctx, peer)
+			defer closeIdentityDatabase(db)
+			db.failMon.markEndpointNotFound(armAddr, getAdjustedEndpoint(armToken, tc.endpoint))
+			err := tc.send(ctx, tx, []ServerInfo{{Address: armAddr, Token: armToken}})
+			assertFDBErrorCode(t, err, ErrAllAlternativesFailed)
+			select {
+			case f := <-peer.frames:
+				t.Fatalf("a request reached the not-found endpoint (token %v)", f.token)
+			default:
+			}
+		})
+	}
+}

@@ -5,7 +5,10 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"math/rand/v2"
+	"time"
 
+	"fdb.dev/pkg/fdbgo/transport"
 	"fdb.dev/pkg/fdbgo/wire"
 	"fdb.dev/pkg/fdbgo/wire/types"
 )
@@ -122,10 +125,86 @@ func (tx *Transaction) metricsMinVersion(ctx context.Context) (int64, error) {
 // (reversed range) to get an immediate response instead of waiting for a
 // threshold change.
 func (tx *Transaction) sendWaitMetrics(ctx context.Context, begin, end []byte, minVersion int64, servers []ServerInfo) (int64, error) {
-	servers, ok := tx.db.failMon.liveServers(servers, EndpointWaitMetrics)
-	if !ok {
-		return 0, tx.db.allAlternativesFailed(ctx)
+	body, err := tx.sendMetricsRequest(ctx, servers, EndpointWaitMetrics, func(reply transport.UID) []byte {
+		req := types.WaitMetricsRequest{
+			Keys:       types.KeyRangeRef{Begin: begin, End: end},
+			Min:        types.StorageMetrics{Bytes: 0},
+			Max:        types.StorageMetrics{Bytes: -1},
+			Reply:      types.ReplyPromise{Token: wire.UIDFromParts(reply.First, reply.Second)},
+			TenantInfo: types.TenantInfo{TenantId: tx.tenantId},
+			MinVersion: minVersion,
+		}
+		return req.MarshalFDB()
+	})
+	if err != nil {
+		return 0, err
 	}
+	return parseWaitMetricsReply(body)
+}
+
+// sendMetricsRequest sends one storage-metrics request as loadBalance does
+// (LoadBalance.actor.h): no reply timeout, a backoff after a round without a reply
+// (:682-686), and all_alternatives_failed only when every replica stays failed for
+// allAlternativesFailedDelay (:617-639). Endpoints reported not found are skipped.
+func (tx *Transaction) sendMetricsRequest(ctx context.Context, servers []ServerInfo, endpoint int, build func(reply transport.UID) []byte) ([]byte, error) {
+	servers, ok := tx.db.failMon.liveServers(servers, endpoint)
+	if !ok {
+		return nil, tx.db.allAlternativesFailed(ctx)
+	}
+	var closed <-chan struct{} // Close ends the loop, as destroying the database cancels the actor
+	if tx.db.ctx != nil {
+		closed = tx.db.ctx.Done()
+	}
+	var backoff time.Duration
+	for {
+		if body, ok := tx.metricsRound(ctx, servers, endpoint, build); ok {
+			return body, nil
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if tx.db.ctx != nil && tx.db.ctx.Err() != nil {
+			return nil, tx.db.ctx.Err()
+		}
+		// Taken before the check, so a recovery after it wakes the wait below.
+		var recovered <-chan struct{}
+		if tx.db.failMon != nil {
+			recovered = tx.db.failMon.waitForRecovery()
+		}
+		if tx.db.allExcluded(servers) {
+			d := tx.db.failMon.allAlternativesFailedDelay(nowSeconds())
+			timer := time.NewTimer(time.Duration(float64(d) * (0.9 + 0.2*rand.Float64())))
+			select {
+			case <-recovered: // a replica is back, as okFuture (LoadBalance.actor.cpp:47-48)
+				timer.Stop()
+				backoff = 0
+				continue
+			case <-timer.C:
+				return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, ctx.Err()
+			case <-closed:
+				timer.Stop()
+				return nil, tx.db.ctx.Err()
+			}
+		}
+		backoff = time.Duration(math.Min(math.Max(float64(backoff)*loadBalanceBackoffRate, float64(loadBalanceStartBackoff)), float64(loadBalanceMaxBackoff)))
+		timer := time.NewTimer(backoff)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-closed:
+			timer.Stop()
+			return nil, tx.db.ctx.Err()
+		}
+	}
+}
+
+// metricsRound sends the request to each replica in turn until one replies.
+func (tx *Transaction) metricsRound(ctx context.Context, servers []ServerInfo, endpoint int, build func(reply transport.UID) []byte) ([]byte, bool) {
 	var replyCleanup replyGuard
 	defer replyCleanup.close()
 	var sendCleanup sendGuard
@@ -137,42 +216,30 @@ func (tx *Transaction) sendWaitMetrics(ctx context.Context, begin, end []byte, m
 			continue
 		}
 		sendCleanup.permit = permit
-		wmToken := getAdjustedEndpoint(server.Token, EndpointWaitMetrics)
-		replyToken, replyCh, replyHandle := conn.PrepareReplyTo(wmToken)
+		token := getAdjustedEndpoint(server.Token, endpoint)
+		replyToken, replyCh, replyHandle := conn.PrepareReplyTo(token)
 		replyCleanup.handle = replyHandle
-		req := types.WaitMetricsRequest{
-			Keys:       types.KeyRangeRef{Begin: begin, End: end},
-			Min:        types.StorageMetrics{Bytes: 0},
-			Max:        types.StorageMetrics{Bytes: -1},
-			Reply:      types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
-			TenantInfo: types.TenantInfo{TenantId: tx.tenantId},
-			MinVersion: minVersion,
-		}
-		if err := sendReadFrame(ctx, conn, wmToken, req.MarshalFDB(), replyHandle, permit, nil); err != nil {
+		if err := sendReadFrame(ctx, conn, token, build(replyToken), replyHandle, permit, nil); err != nil {
 			replyHandle.Cancel()
 			replyCleanup.release()
 			tx.db.handleReadConnError(server.Address, conn, err)
 			continue
 		}
-		rctx, cancel := context.WithTimeout(ctx, DefaultRPCTimeout)
 		select {
 		case resp := <-replyCh:
-			cancel()
 			replyCleanup.release()
 			if resp.Err != nil {
 				tx.db.handleReadConnError(server.Address, conn, resp.Err)
 				continue
 			}
-			return parseWaitMetricsReply(resp.Body)
-		case <-rctx.Done():
-			cancel()
+			return resp.Body, true
+		case <-ctx.Done():
 			replyHandle.Cancel()
 			replyCleanup.release()
-			continue
+			return nil, false
 		}
 	}
-	// Paced as loadBalance paces a round with no reply, since the caller retries without a cap.
-	return 0, tx.db.allAlternativesFailed(ctx)
+	return nil, false
 }
 
 // GetRangeSplitPoints returns suggested split points for the given key range.
@@ -281,55 +348,19 @@ func (tx *Transaction) getRangeSplitPointsImpl(ctx context.Context, begin, end [
 }
 
 func (tx *Transaction) sendSplitRange(ctx context.Context, begin, end []byte, chunkSize int64, servers []ServerInfo) ([][]byte, error) {
-	servers, ok := tx.db.failMon.liveServers(servers, EndpointGetRangeSplitPoints)
-	if !ok {
-		return nil, tx.db.allAlternativesFailed(ctx)
-	}
-	var replyCleanup replyGuard
-	defer replyCleanup.close()
-	var sendCleanup sendGuard
-	defer sendCleanup.close()
-	for _, server := range servers {
-		conn, permit, err := tx.db.getOrDialForSend(ctx, server.Address)
-		if err != nil {
-			tx.db.handleDialError(ctx, server.Address)
-			continue
-		}
-		sendCleanup.permit = permit
-		srToken := getAdjustedEndpoint(server.Token, EndpointGetRangeSplitPoints)
-		replyToken, replyCh, replyHandle := conn.PrepareReplyTo(srToken)
-		replyCleanup.handle = replyHandle
+	body, err := tx.sendMetricsRequest(ctx, servers, EndpointGetRangeSplitPoints, func(reply transport.UID) []byte {
 		req := types.SplitRangeRequest{
 			Keys:       types.KeyRangeRef{Begin: begin, End: end},
 			ChunkSize:  chunkSize,
-			Reply:      types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
+			Reply:      types.ReplyPromise{Token: wire.UIDFromParts(reply.First, reply.Second)},
 			TenantInfo: types.TenantInfo{TenantId: tx.tenantId},
 		}
-		if err := sendReadFrame(ctx, conn, srToken, req.MarshalFDB(), replyHandle, permit, nil); err != nil {
-			replyHandle.Cancel()
-			replyCleanup.release()
-			tx.db.handleReadConnError(server.Address, conn, err)
-			continue
-		}
-		rctx, cancel := context.WithTimeout(ctx, DefaultRPCTimeout)
-		select {
-		case resp := <-replyCh:
-			cancel()
-			replyCleanup.release()
-			if resp.Err != nil {
-				tx.db.handleReadConnError(server.Address, conn, resp.Err)
-				continue
-			}
-			return parseSplitRangeReply(resp.Body)
-		case <-rctx.Done():
-			cancel()
-			replyHandle.Cancel()
-			replyCleanup.release()
-			continue
-		}
+		return req.MarshalFDB()
+	})
+	if err != nil {
+		return nil, err
 	}
-	// Paced as loadBalance paces a round with no reply, since the caller retries without a cap.
-	return nil, tx.db.allAlternativesFailed(ctx)
+	return parseSplitRangeReply(body)
 }
 
 func parseSplitRangeReply(data []byte) ([][]byte, error) {
