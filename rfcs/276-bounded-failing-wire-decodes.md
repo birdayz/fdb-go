@@ -2,7 +2,7 @@
 
 **Status:** Implemented
 
-**Base:** stacked on PR #997 (RFC-271), which makes `ReadVectorCount` fail with
+**Base:** RFC-271 (PR #997, merged), which makes `ReadVectorCount` fail with
 `*wire.VectorCountError` on a count the buffer cannot hold and makes the locations-reply
 parser fail instead of skipping malformed entries. Both changes are prerequisites here.
 
