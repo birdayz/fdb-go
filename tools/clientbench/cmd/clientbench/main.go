@@ -27,7 +27,7 @@ func main() {
 func run() error {
 	var cfg bench.Config
 	flag.StringVar(&cfg.ClusterFile, "cluster-file", "", "existing FDB cluster file")
-	flag.StringVar(&cfg.Workload, "workload", "get100", "get100|get1000|get10000|read1000|grv|set100|range10|range100|ryw|batchset50|batchset50x1000")
+	flag.StringVar(&cfg.Workload, "workload", "get100", "get100|get1000|get10000|read1000|grv|set100|range10|range100|ryw|batchset50|batchset50x1000|getset100")
 	flag.IntVar(&cfg.Iterations, "iterations", 2000, "total measured operations across all workers")
 	flag.IntVar(&cfg.Warmup, "warmup", 500, "total warmup operations across all workers")
 	flag.DurationVar(&cfg.Duration, "duration", 0, "fixed-time measured window, e.g. 30s; 0 preserves count mode; requires rate 0")

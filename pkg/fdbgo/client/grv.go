@@ -931,7 +931,10 @@ func (b *grvBatcher) admit(db *database, req grvRequest) []grvRequest {
 	if b.inFlight == 0 && !b.overlapped {
 		return b.detachLocked()
 	}
-	deadline := b.clock().Add(b.batchTime)
+	if grvWindowScale == 0 {
+		return b.detachLocked() // lab: per-request GRV, no batch window
+	}
+	deadline := b.clock().Add(b.labBatchTime())
 	if b.window == nil {
 		if b.newWindow != nil {
 			b.window = b.newWindow(db)
@@ -1005,6 +1008,7 @@ func (b *grvBatcher) observeLatency(elapsed time.Duration) {
 	defer b.mu.Unlock()
 	// C++ readVersionBatcher starts at zero and imposes no lower bound.
 	b.batchTime = min(time.Duration(0.1*float64(elapsed)/2+0.9*float64(b.batchTime)), grvBatchTimeout)
+	b.labObserveLocked(elapsed)
 }
 
 // flush sends a detached batch without holding mu, allowing overlapping RPCs.

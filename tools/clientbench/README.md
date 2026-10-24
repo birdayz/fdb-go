@@ -40,7 +40,7 @@ bazelisk shutdown
 
 Follow the shared-machine locking/resource rules when developing in a shared
 checkout. Both executables are also built as inputs of the bounded real-FDB
-smoke test in `just test`: it exercises all eleven workloads, both backends,
+smoke test in `just test`: it exercises all twelve workloads, both backends,
 raw rows, window/drained/shutdown CPU, finalizer fixpoints, persisted validation, native linkage and overwrite
 refusal. The fast lane also runs the Go fixture/counter/scheduling tests and
 Python plan/analyzer/process-cleanup tests. These are harness checks, not a

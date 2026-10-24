@@ -33,8 +33,8 @@ for (wl, w), cell in cells.items():
     loads = [r["load1_before_long"] for r in cell]
     rounds = sorted({r["round"] for r in cell})
     print(f"\n#### {wl}, {w} workers ({len(rounds)} rounds; load1 {min(loads):.1f}–{max(loads):.1f})\n")
-    print("| arm | ops/s | client CPU µs/op | server kcycles/tx | p50 µs | p99 µs | ratios vs A: ops, CPU, server, p50, p99 | client / srv cores | err/retry |")
-    print("|---|---:|---:|---:|---:|---:|---|---|---|")
+    print("| arm | ops/s | client CPU µs/op | server kcycles/tx | p50 µs | p99 µs | ratios vs A: ops, CPU, server, p50, p99 | client / srv cores | err/retry | clean runs, foreign cores |")
+    print("|---|---:|---:|---:|---:|---:|---|---|---|---|")
     by = {(r["round"], r["arm"]): r for r in cell}
     for a in arms:
         rs = [r for r in cell if r["arm"] == a]
@@ -47,4 +47,6 @@ for (wl, w), cell in cells.items():
             ratios.append(f"{statistics.median(q):.3f}" if q else "-")
         cores = f"{statistics.median(r['client_cores_busy'] for r in rs):.2f} / {statistics.median(r['server_cores'] for r in rs):.2f}"
         er = f"{sum(r['errors'] for r in rs)}/{sum(r['retries'] for r in rs)}"
-        print(f"| {a} | " + " | ".join(cols) + f" | {', '.join(ratios)} | {cores} | {er} |")
+        fc = [r["foreign_cores"] for r in rs if "foreign_cores" in r]
+        cl = f"{sum(1 for r in rs if r.get('clean', True))}/{len(rs)}, {statistics.median(fc):.1f}" if fc else "-"
+        print(f"| {a} | " + " | ".join(cols) + f" | {', '.join(ratios)} | {cores} | {er} | {cl} |")

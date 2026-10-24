@@ -248,6 +248,18 @@ func (d Dataset) Operation(db Database, workload string, worker int, payload []b
 				tx.Set(key, payload[slot*valueBytes:(slot+1)*valueBytes])
 			}
 			return nil
+		case "getset100":
+			// Mixed read/write: read a 100-byte point, then write the worker's key.
+			kv := d.Points[100]
+			got, err := tx.Get(kv.Key)
+			if err != nil {
+				return err
+			}
+			if err := CheckValue(got, kv.Value); err != nil {
+				return err
+			}
+			tx.Set(d.Writes[worker], payload)
+			return nil
 		case "set100", "ryw":
 			tx.Set(d.Writes[worker], payload)
 			if workload == "ryw" {
@@ -277,7 +289,7 @@ func (d Dataset) ValidateWrites(db Database, workload string, warmup, measured i
 	return db.Transact(true, func(tx Transaction) error {
 		for worker, key := range d.Writes {
 			want := d.Initial
-			if workload == "set100" {
+			if setsWorkerKey(workload) {
 				for i := worker; i < warmup; i += len(d.Writes) {
 					want = d.Warmup[i]
 				}
@@ -316,3 +328,7 @@ func (d Dataset) ValidateWrites(db Database, workload string, warmup, measured i
 		return nil
 	})
 }
+
+// setsWorkerKey reports whether workload writes each operation's payload to the
+// worker's key, so the last payload is the persisted value.
+func setsWorkerKey(workload string) bool { return workload == "set100" || workload == "getset100" }

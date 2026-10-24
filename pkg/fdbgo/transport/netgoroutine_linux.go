@@ -17,6 +17,7 @@ import (
 	mathrand "math/rand/v2"
 	"net"
 	"os"
+	"runtime"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -93,6 +94,10 @@ var (
 	netgRbuf        = envInt("FDBGO_NETG_RBUF", readBufferSize)
 	netgFlushFrames = envInt("FDBGO_NETG_FLUSH_FRAMES", 0)
 	netgOutFix      = os.Getenv("FDBGO_NETG_OUTFIX") == "1"
+	// FDBGO_NETG_ADAPT=K skips the coalescing delay while the connection has
+	// fewer than K replies outstanding; FDBGO_NETG_LOCKTHREAD=1 wires each loop to its thread.
+	netgAdapt      = envInt("FDBGO_NETG_ADAPT", 0)
+	netgLockThread = os.Getenv("FDBGO_NETG_LOCKTHREAD") == "1"
 )
 
 func envInt(name string, def int) int {
@@ -226,6 +231,9 @@ func (c *Conn) ngSend(token UID, body []byte) error {
 func (c *Conn) ngClose() { c.ng.loop.submit(ngSub{op: ngOpClose, st: c.ng}) }
 
 func (l *netLoop) run(f *os.File) {
+	if netgLockThread {
+		runtime.LockOSThread()
+	}
 	var subs []ngSub
 	pollFn := func(uintptr) bool {
 		n, err := syscall.EpollWait(l.epfd, l.events[:], 0)
@@ -314,7 +322,7 @@ func (l *netLoop) apply(s *ngSub, now int64) {
 			if st.flushAt == 0 && !st.wantOut {
 				c := st.c
 				d := time.Duration(0)
-				if c.minCoalesce > 0 || c.maxCoalesce > 0 {
+				if (c.minCoalesce > 0 || c.maxCoalesce > 0) && (netgAdapt == 0 || c.pendingCount() >= netgAdapt) {
 					d = coalesceDelay(c.minCoalesce, c.maxCoalesce, time.Duration(now-st.lastWrite), mathrand.Float64())
 				}
 				st.flushAt = now + int64(d)
@@ -506,4 +514,11 @@ func (l *netLoop) teardown(st *ngConn) {
 	st.fd = -1
 	st.out, st.in = nil, nil
 	st.c.loopWG.Done()
+}
+
+func (c *Conn) pendingCount() int {
+	c.pendingMu.RLock()
+	n := len(c.pending)
+	c.pendingMu.RUnlock()
+	return n
 }

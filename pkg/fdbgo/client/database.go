@@ -1000,6 +1000,7 @@ func (d *Database) Transact(ctx context.Context, fn func(tx *Transaction) (any, 
 			continue // for commit_unknown_result: self-conflicting applied
 		}
 
+		tx.finishTimeoutLab()
 		return result, nil
 	}
 }
@@ -1020,6 +1021,7 @@ func (d *Database) ReadTransact(ctx context.Context, fn func(tx *Transaction) (a
 			}
 			continue
 		}
+		tx.finishTimeoutLab()
 		return result, nil
 	}
 }

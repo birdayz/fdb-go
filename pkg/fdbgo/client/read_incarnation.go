@@ -212,6 +212,9 @@ func (tx *Transaction) armTimeoutLocked() {
 	}
 	tx.timeoutArm++
 	tx.timeoutArmed = true
+	if tx.lazyArmLocked(deadline, delay) {
+		return
+	}
 	n := tx.timeoutNode
 	if n == nil {
 		n = q.newNode(tx)

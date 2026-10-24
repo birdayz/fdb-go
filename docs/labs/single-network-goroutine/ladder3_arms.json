@@ -2,5 +2,11 @@
   "A":     {"env": []},
   "N":     {"env": ["FDBGO_EXP_READ_NOACK=1"]},
   "W":     {"env": ["FDBGO_NETWORK_GOROUTINE=writer"]},
-  "Wbest": {"env": ["FDBGO_NETWORK_GOROUTINE=writer", "FDBGO_NETG_LOOPS=2", "FDBGO_NETG_OUTFIX=1"]}
+  "Wbest": {"env": ["FDBGO_NETWORK_GOROUTINE=writer", "FDBGO_NETG_LOOPS=2", "FDBGO_NETG_OUTFIX=1"]},
+  "T":     {"env": ["FDBGO_EXP_TIMEOUT_LAZY=1"]},
+  "NT":    {"env": ["CLIENTBENCH_ALLOW_NO_TIMEOUT=1"], "args": ["-transaction-timeout-ms=0"]},
+  "G05":   {"env": ["FDBGO_EXP_GRV_WINDOW_SCALE=0.5"]},
+  "G0":    {"env": ["FDBGO_EXP_GRV_WINDOW_SCALE=0"]},
+  "WbAd":  {"env": ["FDBGO_NETWORK_GOROUTINE=writer", "FDBGO_NETG_LOOPS=2", "FDBGO_NETG_OUTFIX=1", "FDBGO_NETG_ADAPT=16"]},
+  "WbLT":  {"env": ["FDBGO_NETWORK_GOROUTINE=writer", "FDBGO_NETG_LOOPS=2", "FDBGO_NETG_OUTFIX=1", "FDBGO_NETG_LOCKTHREAD=1"]}
 }

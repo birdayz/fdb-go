@@ -73,11 +73,12 @@ func (c Config) Validate() error {
 	if c.Duration > 0 && (c.Duration > time.Duration(math.MaxInt64)-120*time.Second || c.WarmupDuration > time.Duration(math.MaxInt64)-120*time.Second-c.Duration) {
 		return errors.New("duration plus warmup-duration exceeds the watchdog budget range")
 	}
-	if c.TimeoutMS <= 0 || c.RetryLimit < 0 {
-		return errors.New("positive transaction timeout and nonnegative retry limit required")
+	// A zero timeout (none) is allowed only as a measurement bound for the cost of arming one.
+	if c.TimeoutMS < 0 || (c.TimeoutMS == 0 && os.Getenv("CLIENTBENCH_ALLOW_NO_TIMEOUT") != "1") || c.RetryLimit < 0 {
+		return errors.New("positive transaction timeout (0 needs CLIENTBENCH_ALLOW_NO_TIMEOUT=1) and nonnegative retry limit required")
 	}
 	switch c.Workload {
-	case "get100", "get1000", "get10000", "read1000", "grv", "set100", "range10", "range100", "ryw", "batchset50", "batchset50x1000":
+	case "get100", "get1000", "get10000", "read1000", "grv", "set100", "range10", "range100", "ryw", "batchset50", "batchset50x1000", "getset100":
 	default:
 		return fmt.Errorf("unknown workload %q", c.Workload)
 	}
