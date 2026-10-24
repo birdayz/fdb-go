@@ -234,9 +234,8 @@ func (db *database) waitProxiesChanged() <-chan struct{} {
 	return db.proxiesChanged
 }
 
-// handleConnError reports that failed (nil for a dial failure), the connection an
-// RPC to addr used, has failed; with an open replacement pooled it only counts, as
-// C++ reports only the connection it holds (FlowTransport.actor.cpp:924-1001).
+// handleConnError reports that failed (nil for a dial failure) has failed; with an open
+// replacement pooled it only counts, as C++ reports only its own connection.
 func (db *database) handleConnError(addr string, failed *transport.Conn) {
 	newlyFailed := false
 	db.connMu.Lock()

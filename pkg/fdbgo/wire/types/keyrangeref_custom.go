@@ -19,10 +19,8 @@ import (
 	"fdb.dev/pkg/fdbgo/wire"
 )
 
-// UnmarshalFromReader replaces the generated reader to invert the
-// single-key serialize optimization: an empty slot 1 with a slot 0 ending in \x00
-// means slot 0 carries End and Begin = End[:-1]. Without the \x00, where C++
-// asserts, the range stays (first, empty), inverted.
+// UnmarshalFromReader inverts the single-key optimization when slot 1 is empty and
+// slot 0 ends in \x00; without the \x00, where C++ asserts, the range stays inverted.
 func (m *KeyRangeRef) UnmarshalFromReader(r *wire.Reader) {
 	var first, second []byte
 	if r.FieldPresent(KeyRangeRefSlotBegin) {

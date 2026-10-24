@@ -35,7 +35,10 @@ pool-and-`markAlive`; the counter and edge-triggered Warn (`reportConnFailure`) 
 after the unlock. A seam, `beforeConnFailureMark` (nil in production), runs just
 before the mark. Passing nil at a call site would behave the same, because a
 transport failure closes its connection before anyone sees the error; passing the
-pooled replacement would not, which the per-arm tests catch.
+pooled replacement would not, which the per-arm tests catch. The eager sends
+(commit, pipelined get) return once their frame is queued, so their send-failure
+reports fire only for a connection closed before they send; no test reaches that
+instant without a seam, and both sites pass the `conn` they sent on.
 
 ## 2. The location cache is a range map
 
@@ -89,9 +92,10 @@ while deserializing is never delivered (`FlowTransport.actor.cpp:1195-1207`).
   the tenant prefix, which C++ `toPrefixRelativeRange` clamps, `FDBTypes.cpp:26-34`)
   is not used.
 
-Both divergences (asking the next proxy where C++ never delivers the reply; keeping
-an unprefixed tenant boundary) are recorded in DIVERGENCES.md; only malformed
-replies reach them.
+Three divergences are recorded in DIVERGENCES.md: Go asks the next proxy where C++
+never delivers an undecodable reply, and keeps an unprefixed tenant boundary where
+C++ clamps it (only malformed replies reach these two); and Go skips a shard with no
+servers, which C++ caches as an empty location (unchanged by this RFC).
 
 ## Wire compatibility and performance
 
@@ -106,8 +110,9 @@ Each regression fails with its fix reverted.
 - `conn_location_unit_test` (fast lane, pipe-backed peers): a late location report
   leaves the commit on B its 1020; every failure arm (commit, GRV, location,
   WaitMetrics, SplitRange, getValue, load-balanced getValue, getKey, getRange,
-  watch, pipelined get) as a reply failure and as a send failure blocked on A, with
-  B kept, the address alive and exactly one report counted; every
+  watch, pipelined get) as a reply failure, and every waiting send (all but commit
+  and pipelined get) as a send failure blocked on A, with B kept, the address alive
+  and exactly one report counted; every
   `handleConnError` arm; the mark-versus-redial ordering through the seam
   (`connMu.TryLock` decides, no timers); hedge connections and `endOther`; cache
   merge, split, nested, unbounded, touching, empty, inverted and tenant cases plus a

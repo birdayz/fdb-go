@@ -222,7 +222,7 @@ func TestExactRangeHonorsMinRows(t *testing.T) {
 		t.Run(fmt.Sprintf("reverse=%t", reverse), func(t *testing.T) {
 			t.Parallel()
 			db := &database{}
-			db.locCache.insertSorted([]locationEntry{{begin: []byte("a"), end: []byte("z")}})
+			db.locCache.insertRanges([]locationEntry{{begin: []byte("a"), end: []byte("z")}})
 			tx := &Transaction{db: db}
 			defer tx.Cancel()
 			replies := [][]string{{"c"}, {"d", "e"}}

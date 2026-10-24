@@ -60,10 +60,9 @@ func (lc *locationCache) searchIndex(tenantId int64, key []byte) int {
 	})
 }
 
-// insertSorted caches each entry, overwriting the cached ranges it overlaps, as
-// C++ CoalescedKeyRangeMap::insert does (KeyRangeMap.h:206-253), so a tenant's
-// entries stay disjoint. Caller must hold lc.mu write lock.
-func (lc *locationCache) insertSorted(newEntries []locationEntry) {
+// insertRanges caches each entry over the ranges it overlaps, as C++
+// CoalescedKeyRangeMap::insert does (KeyRangeMap.h:206-253). Caller holds lc.mu.
+func (lc *locationCache) insertRanges(newEntries []locationEntry) {
 	for _, ne := range newEntries {
 		lc.insertRange(ne)
 	}
@@ -178,7 +177,7 @@ func (lc *locationCache) locateWithReplyWait(db *database, ctx context.Context, 
 // Caller must hold at least lc.mu.RLock(). O(log N).
 func (lc *locationCache) lookupLocked(tenantId int64, key []byte, isBackward bool) (LocationResult, bool) {
 	// searchIndex returns the first entry with begin >= key for this tenant.
-	// Entries are disjoint (insertSorted), so the containing entry (begin <= key)
+	// Entries are disjoint (insertRanges), so the containing entry (begin <= key)
 	// is at idx-1, unless idx itself has begin == key (exact match).
 	idx := lc.searchIndex(tenantId, key)
 
@@ -641,10 +640,13 @@ func (lc *locationCache) queryLocations(db *database, ctx context.Context, tenan
 				}
 				stripTenantPrefix(entries, tenantId)
 				if invertedEntry(entries) {
-					continue // malformed: a boundary without the tenant prefix, see stripTenantPrefix
+					if db.logger != nil {
+						db.logger.Debug("fdbgo: location reply discarded", "proxy", proxy.Address, "error", "inverted range after the tenant prefix strip")
+					}
+					continue
 				}
 				lc.mu.Lock()
-				lc.insertSorted(entries)
+				lc.insertRanges(entries)
 				lc.evictIfNeeded()
 				lc.mu.Unlock()
 				if len(entries) > 0 {
@@ -757,9 +759,8 @@ func (e *locationsReplyError) Error() string {
 
 func (e *locationsReplyError) Unwrap() error { return e.err }
 
-// parseGetKeyServerLocationsReply decodes a locations reply's shards. It skips an
-// absent or empty range, which C++ does not cache (KeyRangeMap.h:209-210), and a
-// shard without servers, which C++ caches empty (see DIVERGENCES.md).
+// parseGetKeyServerLocationsReply skips an absent or empty range, which C++ does not
+// cache (KeyRangeMap.h:209-210), and a shard without servers (DIVERGENCES.md).
 func parseGetKeyServerLocationsReply(data []byte) ([]locationEntry, error) {
 	r, err := wire.ReadErrorOr(data)
 	if err != nil {

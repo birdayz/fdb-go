@@ -70,16 +70,16 @@ func requireDisjoint(t *testing.T, lc *locationCache) {
 func TestLocationCacheMerge(t *testing.T) {
 	t.Parallel()
 	lc := &locationCache{maxSize: 100}
-	lc.insertSorted([]locationEntry{locEntry(NoTenantID, "a", "b", "s1"), locEntry(NoTenantID, "b", "c", "s2")})
-	lc.insertSorted([]locationEntry{locEntry(NoTenantID, "a", "c", "s3")})
+	lc.insertRanges([]locationEntry{locEntry(NoTenantID, "a", "b", "s1"), locEntry(NoTenantID, "b", "c", "s2")})
+	lc.insertRanges([]locationEntry{locEntry(NoTenantID, "a", "c", "s3")})
 	requireDisjoint(t, lc)
 	wantLookup(t, lc, NoTenantID, "a5", "s3", "a", "c")
 	wantLookup(t, lc, NoTenantID, "bb", "s3", "a", "c")
 
 	// The merged shard begins below every cached shard it absorbs.
 	lc = &locationCache{maxSize: 100}
-	lc.insertSorted([]locationEntry{locEntry(NoTenantID, "b", "c", "s2"), locEntry(NoTenantID, "c", "d", "s4")})
-	lc.insertSorted([]locationEntry{locEntry(NoTenantID, "a", "d", "s3")})
+	lc.insertRanges([]locationEntry{locEntry(NoTenantID, "b", "c", "s2"), locEntry(NoTenantID, "c", "d", "s4")})
+	lc.insertRanges([]locationEntry{locEntry(NoTenantID, "a", "d", "s3")})
 	requireDisjoint(t, lc)
 	for _, k := range []string{"a", "bb", "cc"} {
 		wantLookup(t, lc, NoTenantID, k, "s3", "a", "d")
@@ -94,8 +94,8 @@ func TestLocationCacheMerge(t *testing.T) {
 func TestLocationCacheSplit(t *testing.T) {
 	t.Parallel()
 	lc := &locationCache{maxSize: 100}
-	lc.insertSorted([]locationEntry{locEntry(NoTenantID, "a", "c", "s1")})
-	lc.insertSorted([]locationEntry{locEntry(NoTenantID, "b", "c", "s2")})
+	lc.insertRanges([]locationEntry{locEntry(NoTenantID, "a", "c", "s1")})
+	lc.insertRanges([]locationEntry{locEntry(NoTenantID, "b", "c", "s2")})
 	requireDisjoint(t, lc)
 	wantLookup(t, lc, NoTenantID, "a5", "s1", "a", "b")
 	wantLookup(t, lc, NoTenantID, "bb", "s2", "b", "c")
@@ -106,8 +106,8 @@ func TestLocationCacheSplit(t *testing.T) {
 
 	// A shard learned inside a cached one splits it in three.
 	lc = &locationCache{maxSize: 100}
-	lc.insertSorted([]locationEntry{locEntry(NoTenantID, "a", "z", "s1")})
-	lc.insertSorted([]locationEntry{locEntry(NoTenantID, "m", "n", "s2")})
+	lc.insertRanges([]locationEntry{locEntry(NoTenantID, "a", "z", "s1")})
+	lc.insertRanges([]locationEntry{locEntry(NoTenantID, "m", "n", "s2")})
 	requireDisjoint(t, lc)
 	wantLookup(t, lc, NoTenantID, "b", "s1", "a", "m")
 	wantLookup(t, lc, NoTenantID, "mm", "s2", "m", "n")
@@ -115,8 +115,8 @@ func TestLocationCacheSplit(t *testing.T) {
 
 	// The same with an unbounded last shard.
 	lc = &locationCache{maxSize: 100}
-	lc.insertSorted([]locationEntry{locEntry(NoTenantID, "", "∞", "s1")})
-	lc.insertSorted([]locationEntry{locEntry(NoTenantID, "m", "n", "s2")})
+	lc.insertRanges([]locationEntry{locEntry(NoTenantID, "", "∞", "s1")})
+	lc.insertRanges([]locationEntry{locEntry(NoTenantID, "m", "n", "s2")})
 	requireDisjoint(t, lc)
 	wantLookup(t, lc, NoTenantID, "b", "s1", "", "m")
 	wantLookup(t, lc, NoTenantID, "p", "s1", "n", "∞")
@@ -125,20 +125,20 @@ func TestLocationCacheSplit(t *testing.T) {
 func TestLocationCacheInsertEdges(t *testing.T) {
 	t.Parallel()
 	lc := &locationCache{maxSize: 100}
-	lc.insertSorted([]locationEntry{locEntry(NoTenantID, "a", "z", "s1"), locEntry(7, "a", "z", "t1")})
+	lc.insertRanges([]locationEntry{locEntry(NoTenantID, "a", "z", "s1"), locEntry(7, "a", "z", "t1")})
 	// An empty range changes nothing (KeyRangeMap.h:209-210), nor does an inverted one.
-	lc.insertSorted([]locationEntry{locEntry(NoTenantID, "m", "m", "s2"), locEntry(NoTenantID, "q", "c", "s2")})
+	lc.insertRanges([]locationEntry{locEntry(NoTenantID, "m", "m", "s2"), locEntry(NoTenantID, "q", "c", "s2")})
 	wantLookup(t, lc, NoTenantID, "m", "s1", "a", "z")
 	if len(lc.entries) != 2 {
 		t.Fatalf("entries = %d, want 2", len(lc.entries))
 	}
 	// Another tenant's ranges are separate keyspaces.
-	lc.insertSorted([]locationEntry{locEntry(NoTenantID, "b", "y", "s3")})
+	lc.insertRanges([]locationEntry{locEntry(NoTenantID, "b", "y", "s3")})
 	requireDisjoint(t, lc)
 	wantLookup(t, lc, 7, "m", "t1", "a", "z")
 	wantLookup(t, lc, NoTenantID, "m", "s3", "b", "y")
 	// Re-inserting an identical range replaces it.
-	lc.insertSorted([]locationEntry{locEntry(NoTenantID, "b", "y", "s4")})
+	lc.insertRanges([]locationEntry{locEntry(NoTenantID, "b", "y", "s4")})
 	requireDisjoint(t, lc)
 	wantLookup(t, lc, NoTenantID, "m", "s4", "b", "y")
 	if len(lc.entries) != 4 {
@@ -147,8 +147,8 @@ func TestLocationCacheInsertEdges(t *testing.T) {
 
 	// Ranges that only touch the new one keep their bounds.
 	lc = &locationCache{maxSize: 100}
-	lc.insertSorted([]locationEntry{locEntry(NoTenantID, "a", "b", "s1"), locEntry(NoTenantID, "c", "d", "s2")})
-	lc.insertSorted([]locationEntry{locEntry(NoTenantID, "b", "c", "s3")})
+	lc.insertRanges([]locationEntry{locEntry(NoTenantID, "a", "b", "s1"), locEntry(NoTenantID, "c", "d", "s2")})
+	lc.insertRanges([]locationEntry{locEntry(NoTenantID, "b", "c", "s3")})
 	requireDisjoint(t, lc)
 	wantLookup(t, lc, NoTenantID, "a", "s1", "a", "b")
 	wantLookup(t, lc, NoTenantID, "bb", "s3", "b", "c")
@@ -156,8 +156,8 @@ func TestLocationCacheInsertEdges(t *testing.T) {
 
 	// An unbounded new range replaces everything from its begin on.
 	lc = &locationCache{maxSize: 100}
-	lc.insertSorted([]locationEntry{locEntry(NoTenantID, "a", "b", "s1"), locEntry(NoTenantID, "b", "c", "s2"), locEntry(NoTenantID, "c", "∞", "s3")})
-	lc.insertSorted([]locationEntry{locEntry(NoTenantID, "bb", "∞", "s4")})
+	lc.insertRanges([]locationEntry{locEntry(NoTenantID, "a", "b", "s1"), locEntry(NoTenantID, "b", "c", "s2"), locEntry(NoTenantID, "c", "∞", "s3")})
+	lc.insertRanges([]locationEntry{locEntry(NoTenantID, "bb", "∞", "s4")})
 	requireDisjoint(t, lc)
 	wantLookup(t, lc, NoTenantID, "a", "s1", "a", "b")
 	wantLookup(t, lc, NoTenantID, "b", "s2", "b", "bb")
@@ -167,9 +167,8 @@ func TestLocationCacheInsertEdges(t *testing.T) {
 	}
 }
 
-// Random inserts agree with a per-key model of the C++ range map: every key maps
-// to the last range inserted over it, and a lookup reports the run of keys that
-// range still owns.
+// Random inserts agree with a per-key model of the C++ range map: a key maps to the
+// last range inserted over it, and a lookup reports the run that range still owns.
 func TestLocationCacheInsertModel(t *testing.T) {
 	t.Parallel()
 	const keys = 16 // single-byte keys 0..15; an end of 16 is unbounded
@@ -184,7 +183,7 @@ func TestLocationCacheInsertModel(t *testing.T) {
 			if e < keys {
 				ne.end = []byte{byte(e)}
 			}
-			lc.insertSorted([]locationEntry{ne})
+			lc.insertRanges([]locationEntry{ne})
 			for k := b; k < e; k++ {
 				model[k] = id
 			}
@@ -349,10 +348,8 @@ func locateReplyFields(t *testing.T, d []byte) locationsReplyLayout {
 	return l
 }
 
-// Each malformed reply is refused for its own defect and caches nothing; C++
-// fails such a reply in deserialization and never delivers it
-// (FlowTransport.actor.cpp:1195-1207). Results C++ would cache nothing for are
-// skipped instead.
+// Each malformed reply is refused for its own defect and caches nothing; results
+// C++ would cache nothing for are skipped instead.
 func TestParseLocationsReplyMalformed(t *testing.T) {
 	t.Parallel()
 	vector := locationsReplyVector(t)
@@ -456,11 +453,8 @@ func queryTwoProxies(t *testing.T, ctx context.Context, tenant int64, first, sec
 	}
 }
 
-// twoResultReply prepends a reply whose results are the vector's well-formed
-// shard and a second result built by second, to the vector's bytes, which keep
-// their relative offsets. FlatBuffers offsets point forward only, so the new root,
-// reply and results vector come first. second gets the buffer and the position of
-// its RelativeOffset slot and appends its object, patching the slot.
+// twoResultReply puts a root, reply and two-result vector before the vector's bytes
+// (offsets point forward only); second appends the second result for its slot.
 func twoResultReply(t *testing.T, vector []byte, second func(b []byte, slot int) []byte) []byte {
 	t.Helper()
 	le := binary.LittleEndian
@@ -502,9 +496,8 @@ func twoResultReply(t *testing.T, vector []byte, second func(b []byte, slot int)
 	return append(b, vector...)
 }
 
-// appendObject appends a vtable with the given field offsets and an object of
-// size bytes using it, patches slot to point at the object, and returns the
-// buffer and the object's position.
+// appendObject appends a vtable and a size-byte object using it, points slot at the
+// object, and returns the buffer and the object's position.
 func appendObject(b []byte, slot int, size int, fields ...uint16) ([]byte, int) {
 	le := binary.LittleEndian
 	vt := len(b)
@@ -597,9 +590,8 @@ func TestQueryLocationsSkipsMalformedReply(t *testing.T) {
 	}
 }
 
-// A tenant reply whose shard end lacks the tenant prefix is ordered as sent but
-// inverted once the prefix is stripped from its begin; it is neither cached nor
-// returned, and the next proxy's answer is used.
+// A tenant reply inverted only once the prefix is stripped from its begin is
+// neither cached nor returned; the next proxy's answer is used.
 func TestQueryLocationsSkipsReplyInvertedByTenantStrip(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)

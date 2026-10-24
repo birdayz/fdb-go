@@ -411,9 +411,8 @@ func (r *Reader) ReadNestedReader(vtableSlot int) (*Reader, error) {
 	return r.readerAtObject(targetPos)
 }
 
-// VectorCountError reports a vector whose declared element count cannot fit in
-// the rest of the buffer, at four bytes per element offset: the encoding is
-// malformed.
+// VectorCountError reports a vector whose declared count cannot fit in the rest
+// of the buffer at four bytes per element offset.
 type VectorCountError struct {
 	Slot     int
 	Count    uint32

@@ -245,7 +245,7 @@ func TestInsertSortedDedup(t *testing.T) {
 
 	lc := &locationCache{maxSize: 1000}
 
-	lc.insertSorted([]locationEntry{
+	lc.insertRanges([]locationEntry{
 		{tenantId: NoTenantID, begin: []byte("a"), end: []byte("d"), servers: []ServerInfo{{Address: "s1"}}},
 		{tenantId: NoTenantID, begin: []byte("d"), end: []byte("g"), servers: []ServerInfo{{Address: "s2"}}},
 	})
@@ -254,7 +254,7 @@ func TestInsertSortedDedup(t *testing.T) {
 	}
 
 	// Insert duplicate begin="a" with different server — should replace.
-	lc.insertSorted([]locationEntry{
+	lc.insertRanges([]locationEntry{
 		{tenantId: NoTenantID, begin: []byte("a"), end: []byte("d"), servers: []ServerInfo{{Address: "s1-replaced"}}},
 	})
 	if len(lc.entries) != 2 {
@@ -273,7 +273,7 @@ func TestInsertSortedOrder(t *testing.T) {
 	lc := &locationCache{maxSize: 1000}
 
 	// Insert out of order.
-	lc.insertSorted([]locationEntry{
+	lc.insertRanges([]locationEntry{
 		{tenantId: NoTenantID, begin: []byte("g"), end: []byte("k"), servers: []ServerInfo{{Address: "s3"}}},
 		{tenantId: NoTenantID, begin: []byte("a"), end: []byte("d"), servers: []ServerInfo{{Address: "s1"}}},
 		{tenantId: NoTenantID, begin: []byte("d"), end: []byte("g"), servers: []ServerInfo{{Address: "s2"}}},
@@ -298,7 +298,7 @@ func TestInsertSortedMultiTenant(t *testing.T) {
 
 	lc := &locationCache{maxSize: 1000}
 
-	lc.insertSorted([]locationEntry{
+	lc.insertRanges([]locationEntry{
 		{tenantId: 42, begin: []byte("a"), end: []byte("z"), servers: []ServerInfo{{Address: "t42"}}},
 		{tenantId: NoTenantID, begin: []byte("a"), end: []byte("z"), servers: []ServerInfo{{Address: "default"}}},
 		{tenantId: 10, begin: []byte("a"), end: []byte("z"), servers: []ServerInfo{{Address: "t10"}}},

@@ -16,9 +16,8 @@ import (
 	"fdb.dev/pkg/fdbgo/wire/types"
 )
 
-// identityPeer is the server end of one dialed connection: it completes the
-// handshake, answers PINGs so the connection monitor keeps it, and reports every
-// other frame.
+// identityPeer is the server end of one dialed connection: it answers PINGs, so the
+// connection monitor keeps it, and reports every other frame.
 type identityPeer struct {
 	client, server net.Conn
 	frames         chan identityFrame
@@ -307,9 +306,8 @@ func (w *warnCounter) count() int {
 	return w.n
 }
 
-// handleConnError acts on the pooled connection only when it is the failed one,
-// or is itself closed; a failure report the pool has outlived changes nothing
-// but the failure counter.
+// handleConnError evicts the pooled connection only when it failed or is closed; a
+// report the pool has outlived changes only the failure counter.
 func TestHandleConnErrorIdentity(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -411,10 +409,8 @@ func TestHandleConnErrorIdentity(t *testing.T) {
 	})
 }
 
-// A redial that lands just before a failure report marks the address failed
-// must not be overtaken by that mark: the report decides and marks under connMu,
-// the lock the dial pools and marks alive under. The seam attempts the redial at
-// that instant; it can only complete first if the mark runs outside connMu.
+// A redial attempted just before the failure mark must not be overtaken by it; the
+// seam's redial can complete first only if the mark runs outside connMu.
 func TestHandleConnErrorMarkCannotOvertakeRedial(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -454,36 +450,12 @@ func TestHandleConnErrorMarkCannotOvertakeRedial(t *testing.T) {
 	}
 }
 
-// A failure report racing the redial that replaces the failed connection never
-// leaves an open pooled connection with its address marked failed.
-func TestHandleConnErrorRacesRedial(t *testing.T) {
-	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	const addr = "peer:4500"
-	for i := 0; i < 50; i++ {
-		db, _ := identityDatabase(ctx, newIdentityPeer(t), newIdentityPeer(t))
-		a, err := db.getOrDial(ctx, addr)
-		if err != nil {
-			t.Fatal(err)
-		}
-		a.Close()
-		var wg sync.WaitGroup
-		wg.Add(2)
-		go func() { defer wg.Done(); db.handleConnError(addr, a) }()
-		go func() { defer wg.Done(); _, _ = db.getOrDial(ctx, addr) }()
-		wg.Wait()
-		if b := pooledConn(db, addr); b != nil && !b.IsClosed() && db.failMon.isFailed(addr) {
-			t.Fatalf("iteration %d: open pooled connection with its address marked failed", i)
-		}
-		closeIdentityDatabase(db)
-	}
-}
-
-// connArm runs one RPC through its production path against peer:4500.
+// connArm runs one RPC through its production path against peer:4500. An eager
+// arm's send returns once its frame is queued, so it never fails on a blocked write.
 type connArm struct {
-	name string
-	run  func(context.Context, *database, *Transaction)
+	name  string
+	eager bool
+	run   func(context.Context, *database, *Transaction)
 }
 
 const armAddr = "peer:4500"
@@ -495,40 +467,40 @@ func connArms() []connArm {
 	servers := []ServerInfo{{Address: armAddr, Token: armToken}}
 	key, end := []byte("k"), []byte("l")
 	return []connArm{
-		{"commit", func(ctx context.Context, db *database, _ *Transaction) {
+		{"commit", true, func(ctx context.Context, db *database, _ *Transaction) {
 			input := &commitInput{db: db, readVersion: 1, tenantID: NoTenantID}
 			_, _ = input.commitNative(ctx)
 		}},
-		{"grv", func(ctx context.Context, db *database, _ *Transaction) {
+		{"grv", false, func(ctx context.Context, db *database, _ *Transaction) {
 			_, _, _, _, _, _, _, _ = (&grvBatcher{}).sendGRVRequest(db, ctx, 0, 1, types.SpanContext{}, nil)
 		}},
-		{"location", func(ctx context.Context, db *database, _ *Transaction) {
+		{"location", false, func(ctx context.Context, db *database, _ *Transaction) {
 			_, _ = db.locCache.queryLocations(db, ctx, NoTenantID, func(tok transport.UID) []byte {
 				return buildGetKeyServerLocationsRequest(key, false, NoTenantID, types.SpanContext{}, tok)
 			}, nil)
 		}},
-		{"wait metrics", func(ctx context.Context, _ *database, tx *Transaction) {
+		{"wait metrics", false, func(ctx context.Context, _ *database, tx *Transaction) {
 			_, _ = tx.sendWaitMetrics(ctx, key, end, 1, servers)
 		}},
-		{"split range", func(ctx context.Context, _ *database, tx *Transaction) {
+		{"split range", false, func(ctx context.Context, _ *database, tx *Transaction) {
 			_, _ = tx.sendSplitRange(ctx, key, end, 1000, servers)
 		}},
-		{"get value from one server", func(ctx context.Context, _ *database, tx *Transaction) {
+		{"get value from one server", false, func(ctx context.Context, _ *database, tx *Transaction) {
 			_, _ = tx.sendGetValueToServer(ctx, key, servers[0], 1, false, NoTenantID, readTagSample{})
 		}},
-		{"get value", func(ctx context.Context, _ *database, tx *Transaction) {
+		{"get value", false, func(ctx context.Context, _ *database, tx *Transaction) {
 			_, _ = tx.sendGetValue(ctx, key, servers, readTagSample{})
 		}},
-		{"get key", func(ctx context.Context, _ *database, tx *Transaction) {
+		{"get key", false, func(ctx context.Context, _ *database, tx *Transaction) {
 			_, _, _, _ = tx.sendGetKey(ctx, 1, key, false, 1, servers, readTagSample{}, nil)
 		}},
-		{"get range", func(ctx context.Context, _ *database, tx *Transaction) {
+		{"get range", false, func(ctx context.Context, _ *database, tx *Transaction) {
 			_, _, _ = sendRangeRPC(tx, ctx, KeySelector{Key: key}, KeySelector{Key: end}, newRangeLimits(10, 0), 1, false, servers, readTagSample{}, plainRangeRPCOps)
 		}},
-		{"watch", func(ctx context.Context, _ *database, tx *Transaction) {
+		{"watch", false, func(ctx context.Context, _ *database, tx *Transaction) {
 			_ = tx.sendWatch(ctx, key, nil, 1, types.SpanContext{}, servers, readTagSample{})
 		}},
-		{"pipelined get", func(ctx context.Context, _ *database, tx *Transaction) {
+		{"pipelined get", true, func(ctx context.Context, _ *database, tx *Transaction) {
 			if _, p, err := tx.GetPipelined(ctx, key); err == nil && p != nil {
 				_, _ = p.Resolve()
 			}
@@ -542,7 +514,7 @@ func armDatabase(ctx context.Context, peers ...*identityPeer) (*database, *Trans
 	db, _ := identityDatabase(ctx, peers...)
 	db.queueModel = newQueueModel()
 	db.locCache.maxSize = 16
-	db.locCache.insertSorted([]locationEntry{{tenantId: NoTenantID, begin: []byte{}, end: []byte{0xff}, servers: []ServerInfo{{Address: armAddr, Token: armToken}}}})
+	db.locCache.insertRanges([]locationEntry{{tenantId: NoTenantID, begin: []byte{}, end: []byte{0xff}, servers: []ServerInfo{{Address: armAddr, Token: armToken}}}})
 	proxies := []ProxyInfo{{Address: armAddr, Token: armToken}}
 	db.dbInfo.Store(&DBInfo{GRVProxies: proxies, CommitProxies: proxies})
 	// A known version floor lets the pipelined read use version 1 without a GRV.
@@ -596,10 +568,8 @@ func requireReplacementKept(t *testing.T, db *database, b *transport.Conn) {
 	}
 }
 
-// Every reply-failure arm reports the connection its request went out on. Each
-// arm runs its production path; once A holds the request, the pool is given a
-// replacement B, and A dies. The arm's report about A must leave B pooled, open
-// and its address alive.
+// Once A holds an arm's request, the pool gets B and A dies; the arm's reply-failure
+// report must leave B pooled, open and its address alive.
 func TestLateReplyFailureEveryArm(t *testing.T) {
 	t.Parallel()
 	for _, arm := range connArms() {
@@ -660,13 +630,14 @@ func newStallPeer(t *testing.T) (*identityPeer, *writeSignalConn) {
 	return &identityPeer{client: w, server: server}, w
 }
 
-// The send-failure arms report late too: a send waits for its write, and the
-// connection can die while it waits. Each arm's first frame blocks on A; the pool
-// is given a replacement B, and A dies under the blocked write. The arm's report
-// about A must leave B pooled, open and its address alive.
+// Each waiting send's frame blocks on A; the pool then gets B and A dies under the
+// write. The arm's send-failure report must leave B alone.
 func TestLateSendFailureEveryArm(t *testing.T) {
 	t.Parallel()
 	for _, arm := range connArms() {
+		if arm.eager {
+			continue // fails only on a connection closed before it sends; see RFC-271
+		}
 		t.Run(arm.name, func(t *testing.T) {
 			t.Parallel()
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -675,6 +646,10 @@ func TestLateSendFailureEveryArm(t *testing.T) {
 			peerB, peerC := newIdentityPeer(t), newIdentityPeer(t)
 			db, tx := armDatabase(ctx, peerA, peerB, peerC)
 			defer closeIdentityDatabase(db)
+			a, err := db.getOrDial(ctx, armAddr)
+			if err != nil {
+				t.Fatal(err)
+			}
 			armCtx, stop := context.WithCancel(ctx)
 			done := make(chan struct{})
 			go func() {
@@ -687,7 +662,7 @@ func TestLateSendFailureEveryArm(t *testing.T) {
 			case <-ctx.Done():
 				t.Fatal("no frame write on A")
 			}
-			b := replaceAndKill(t, ctx, db, pooledConn(db, armAddr), func() { peerA.server.Close() }, done, peerB, peerC)
+			b := replaceAndKill(t, ctx, db, a, func() { peerA.server.Close() }, done, peerB, peerC)
 			requireReplacementKept(t, db, b)
 		})
 	}
