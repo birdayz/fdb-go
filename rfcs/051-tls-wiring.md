@@ -40,7 +40,8 @@ Read from `/tmp/fdbsrc` (FDB 7.3):
   - cert: explicit → `FDB_TLS_CERTIFICATE_FILE` → `<config_dir>/cert.pem` if it exists → none
   - key:  explicit → `FDB_TLS_KEY_FILE` → `<config_dir>/key.pem` if it exists → none
   - CA:   explicit → `FDB_TLS_CA_FILE` → none
-  - also `FDB_TLS_PASSWORD`, `FDB_TLS_VERIFY_PEERS` (`<config_dir>` = `/etc/foundationdb` on Linux)
+  - also `FDB_TLS_PASSWORD`, `FDB_TLS_VERIFY_PEERS` (`<config_dir>` = `/etc/foundationdb` on Linux),
+    implemented by RFC-277
   - A cert/key is **not** mandatory — server-auth-only TLS (CA, no client cert) is valid.
 
 The transport's `upgradeTLS` already does the actual TLS; the gaps are the
@@ -69,8 +70,9 @@ convenience layer that *produces* one.
    `*tls.Config` (`tls.LoadX509KeyPair`→`Certificates`, CA PEM→`RootCAs`). Returns a
    non-nil config (possibly empty / CA-only — all valid); **errors** if a file that
    *is* configured can't be loaded (don't run with half a config). `FDB_TLS_VERIFY_PEERS`
-   rule DSL and `FDB_TLS_PASSWORD` (encrypted keys) are deferred — see Follow-ups
-   (Go's standard CA+SNI verification is exactly the C++ `Check.Valid=1` default).
+   rule DSL and `FDB_TLS_PASSWORD` (encrypted keys) were deferred here; RFC-277
+   implements them and replaces Go's CA+SNI check, which was not libfdb_c's
+   `Check.Valid=1` (that checks no host name and trusts only the CA file).
 3. **Thread a `*tls.Config`:** `database` gains `tlsConfig *tls.Config` (no parallel
    `useTLS` bool — nil-ness IS the switch). `getOrDialConn` dials
    `transport.Dial(dialCtx, addr, db.tlsConfig, db.dialFn)`.
@@ -82,7 +84,8 @@ convenience layer that *produces* one.
    struct are removed.) An empty config still attempts a real handshake and fails
    closed. `upgradeTLS` now takes a `*tls.Config`, **clones** it, and sets
    `ServerName` (dialed host, for SNI) / `MinVersion` (TLS 1.2) **only if the caller
-   left them unset** — everything else is the caller's to control.
+   left them unset** — everything else is the caller's to control. (RFC-277: the
+   environment config verifies with a policy that reads no host name.)
 5. **README** stays accurate: TLS is reachable via `:tls` + `FDB_TLS_*` (drop-in
    C++ compat) **or** `WithTLSConfig(*tls.Config)`.
 
@@ -137,10 +140,9 @@ no handshake). `resolveTLSConfig` runs once at database open (a few `os.Stat`/ge
   for real (uniform) clusters, but a dual-listen non-TLS secondary would be dialed
   with TLS. Closing this needs per-address flags threaded from the wire
   `NetworkAddress.flags` bit through `ProxyInfo`/`connPool`.
-- **`FDB_TLS_VERIFY_PEERS` rule DSL** (`Check.Unexpired`, `S.CN=…`, etc.) — Go uses
-  standard CA + SNI verification (the C++ `Check.Valid=1` default).
+- **`FDB_TLS_VERIFY_PEERS` rule DSL** (`Check.Unexpired`, `S.CN=…`, etc.) — done by
+  RFC-277.
 - **TLS network options** (`FDB_NET_OPTION_TLS_CERT_BYTES`, …) — env + explicit
   `TLSConfig` only for now.
-- **`FDB_TLS_PASSWORD` / encrypted private keys** — Go's `tls.LoadX509KeyPair`
-  takes unencrypted PEM; encrypted-key decryption (deprecated `x509.DecryptPEMBlock`
-  / PKCS#8) is the uncommon case and deferred. Unencrypted keys (the norm) work.
+- **`FDB_TLS_PASSWORD` / encrypted private keys** — done by RFC-277 for PBES2
+  PKCS#8 keys.

@@ -55,6 +55,7 @@ go_library(
         "tag_throttle.go",
         "timeout_queue.go",
         "tls.go",
+        "tls_key.go",
         "topology.go",
         "transaction.go",
         "transaction_lifetime.go",
@@ -372,6 +373,31 @@ go_test(
     embed = [":client"],
 )
 
+# gazelle:exclude tls_test.go
+# gazelle:exclude tls_key_unit_test.go
+# gazelle:exclude tls_key_fixtures_test.go
+go_test(
+    name = "tls_unit_test",
+    srcs = [
+        "tls_key_fixtures_test.go",
+        "tls_key_unit_test.go",
+        "tls_test.go",
+    ],
+    embed = [":client"],
+    deps = [
+        "//pkg/fdbgo/transport",
+        "//pkg/fdbgo/wire",
+    ],
+)
+
+# gazelle:exclude tls_roots_unit_test.go
+go_test(
+    name = "tls_roots_unit_test",
+    srcs = ["tls_roots_unit_test.go"],
+    embed = [":client"],
+    deps = ["//pkg/fdbgo/transport"],
+)
+
 # gazelle:exclude wire_recorder_unit_test.go
 go_test(
     name = "wire_recorder_unit_test",
@@ -564,7 +590,6 @@ go_test(
         "tenant_fence_test.go",
         "testmain_test.go",
         "timeout_observer_fdb_test.go",
-        "tls_test.go",
         "topology_unit2_test.go",
         "topology_unit_test.go",
         "transaction_concurrent_unit_test.go",

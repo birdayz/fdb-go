@@ -184,7 +184,8 @@ type Option = client.Option
 // *crypto/tls.Config (in-memory certs, GetClientCertificate rotation, custom
 // VerifyPeerCertificate, cipher/version policy). It takes precedence over the
 // FDB_TLS_* environment / cluster-file ":tls" resolution and enables TLS even
-// when the cluster string lacks ":tls".
+// when the cluster string lacks ":tls". It keeps Go's verification, including the
+// per-dial host-name check libfdb_c does not make (see client.WithTLSConfig).
 func WithTLSConfig(cfg *tls.Config) Option { return client.WithTLSConfig(cfg) }
 
 // WithDialFunc overrides the dialer used for every connection (advanced / tests).

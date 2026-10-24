@@ -3,9 +3,13 @@ package client
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"fdb.dev/pkg/fdbgo/transport"
+	"fdb.dev/pkg/fdbgo/wire"
 )
 
 // defaultTLSConfigDir is FDB's default config directory on Linux
@@ -14,49 +18,98 @@ import (
 // resolveTLSConfig (tests inject a temp dir) — never mutated globally.
 const defaultTLSConfigDir = "/etc/foundationdb"
 
-// resolveTLSConfig builds a *crypto/tls.Config from the FDB_TLS_* environment,
-// the way the C++ client resolves its TLS files (flow/TLSConfig.actor.cpp), per
-// field: FDB_TLS_CERTIFICATE_FILE / FDB_TLS_KEY_FILE / FDB_TLS_CA_FILE, falling
-// back to <configDir>/cert.pem and <configDir>/key.pem when those env vars are
-// unset and the files exist (CA has no default).
-//
-// This is the env/cluster-file convenience layer: it merely *produces* a
-// standard *tls.Config. Callers who want full control pass their own
-// *tls.Config (WithTLSConfig), which takes precedence over this.
-//
-// Returns a non-nil config (possibly empty — empty attempts a real handshake and
-// fails closed against a private FDB CA, never plaintext). Errors if a file that
-// IS configured can't be loaded/parsed (don't silently run with half a config).
-// getenv is injected (production passes os.Getenv) so the resolution is testable
-// without mutating process environment — the tests stay parallel-safe.
-func resolveTLSConfig(configDir string, getenv func(string) string) (*tls.Config, error) {
-	certPath := resolveTLSPath(getenv, "FDB_TLS_CERTIFICATE_FILE", configDir, "cert.pem")
-	keyPath := resolveTLSPath(getenv, "FDB_TLS_KEY_FILE", configDir, "key.pem")
-	caPath := resolveTLSPath(getenv, "FDB_TLS_CA_FILE", "", "")
+// TLSConfigError reports a TLS setting that cannot be used. It is tls_error (2107):
+// errors.As finds a *wire.FDBError with that code, and the cause.
+type TLSConfigError struct {
+	Setting string // the variable or file at fault
+	Err     error
+}
 
-	cfg := &tls.Config{}
+func (e *TLSConfigError) Error() string {
+	return fmt.Sprintf("tls_error: %s: %v", e.Setting, e.Err)
+}
+
+func (e *TLSConfigError) Unwrap() []error {
+	return []error{&wire.FDBError{Code: 2107}, e.Err}
+}
+
+// lookupEnvFunc reads an environment variable as os.LookupEnv does; tests inject one.
+type lookupEnvFunc func(string) (string, bool)
+
+// resolveTLSConfig builds the TLS configuration of a ":tls" cluster file the way
+// libfdb_c resolves its own (flow/TLSConfig.actor.cpp):
+//   - FDB_TLS_CERTIFICATE_FILE / FDB_TLS_KEY_FILE / FDB_TLS_CA_FILE, each falling back
+//     to <configDir>/cert.pem and key.pem when unset (a set but empty variable means
+//     no file); the CA has no default;
+//   - FDB_TLS_PASSWORD decrypts an encrypted PKCS#8 key;
+//   - FDB_TLS_VERIFY_PEERS (default Check.Valid=1) decides which peers to accept,
+//     against the CA file alone, with no host-name check.
+//
+// A setting that cannot be used is a *TLSConfigError.
+func resolveTLSConfig(configDir string, lookupEnv lookupEnvFunc) (*tls.Config, error) {
+	certPath := resolveTLSPath(lookupEnv, "FDB_TLS_CERTIFICATE_FILE", configDir, "cert.pem")
+	keyPath := resolveTLSPath(lookupEnv, "FDB_TLS_KEY_FILE", configDir, "key.pem")
+	caPath := resolveTLSPath(lookupEnv, "FDB_TLS_CA_FILE", "", "")
+	password, _ := lookupEnv("FDB_TLS_PASSWORD")
+
+	policy := transport.DefaultVerifyPolicy
+	if s, ok := lookupEnv("FDB_TLS_VERIFY_PEERS"); ok {
+		p, err := transport.ParseVerifyPeers(s)
+		if err != nil {
+			return nil, &TLSConfigError{Setting: "FDB_TLS_VERIFY_PEERS", Err: err}
+		}
+		policy = p
+	}
+
+	// libfdb_c trusts only the configured CA (no default verify paths).
+	roots := x509.NewCertPool()
+	cfg := &tls.Config{
+		RootCAs:            roots,
+		InsecureSkipVerify: true, // the policy below replaces the stdlib chain and host check
+		VerifyConnection:   policy.VerifyConnection(roots),
+	}
 	if certPath != "" || keyPath != "" {
 		if certPath == "" || keyPath == "" {
-			return nil, fmt.Errorf("TLS client cert and key must both be set (cert=%q, key=%q)", certPath, keyPath)
+			return nil, &TLSConfigError{
+				Setting: "FDB_TLS_CERTIFICATE_FILE/FDB_TLS_KEY_FILE",
+				Err:     fmt.Errorf("client cert and key must both be set (cert=%q, key=%q)", certPath, keyPath),
+			}
 		}
-		cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+		cert, err := loadKeyPair(certPath, keyPath, password)
 		if err != nil {
-			return nil, fmt.Errorf("load TLS client cert/key: %w", err)
+			return nil, err
 		}
 		cfg.Certificates = []tls.Certificate{cert}
 	}
 	if caPath != "" {
 		caBytes, err := os.ReadFile(caPath)
 		if err != nil {
-			return nil, fmt.Errorf("load TLS CA %q: %w", caPath, err)
+			return nil, &TLSConfigError{Setting: caPath, Err: err}
 		}
-		pool := x509.NewCertPool()
-		if !pool.AppendCertsFromPEM(caBytes) {
-			return nil, fmt.Errorf("parse TLS CA %q: no certificates found", caPath)
+		if !roots.AppendCertsFromPEM(caBytes) {
+			return nil, &TLSConfigError{Setting: caPath, Err: errors.New("no certificates found")}
 		}
-		cfg.RootCAs = pool
 	}
 	return cfg, nil
+}
+
+func loadKeyPair(certPath, keyPath, password string) (tls.Certificate, error) {
+	certPEM, err := os.ReadFile(certPath)
+	if err != nil {
+		return tls.Certificate{}, &TLSConfigError{Setting: certPath, Err: err}
+	}
+	keyPEM, err := os.ReadFile(keyPath)
+	if err != nil {
+		return tls.Certificate{}, &TLSConfigError{Setting: keyPath, Err: err}
+	}
+	if keyPEM, err = decryptKeyPEM(keyPEM, password); err != nil {
+		return tls.Certificate{}, &TLSConfigError{Setting: keyPath, Err: err}
+	}
+	cert, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		return tls.Certificate{}, &TLSConfigError{Setting: certPath + ", " + keyPath, Err: err}
+	}
+	return cert, nil
 }
 
 // openTLSConfig applies the database-open precedence (RFC-051):
@@ -73,7 +126,7 @@ func openTLSConfig(o openOptions, cf *ClusterFile) (*tls.Config, error) {
 		return o.tlsConfig, nil
 	}
 	if cf.UseTLS {
-		cfg, err := resolveTLSConfig(defaultTLSConfigDir, os.Getenv)
+		cfg, err := resolveTLSConfig(defaultTLSConfigDir, os.LookupEnv)
 		if err != nil {
 			return nil, fmt.Errorf("resolve TLS config: %w", err)
 		}
@@ -82,10 +135,10 @@ func openTLSConfig(o openOptions, cf *ClusterFile) (*tls.Config, error) {
 	return nil, nil
 }
 
-// resolveTLSPath returns the env var if set, else <configDir>/<defaultFile> when
-// that exists (when both configDir and defaultFile are non-empty), else "".
-func resolveTLSPath(getenv func(string) string, envVar, configDir, defaultFile string) string {
-	if v := getenv(envVar); v != "" {
+// resolveTLSPath returns the env var if set, even to "", else <configDir>/<defaultFile>
+// when that exists (when both configDir and defaultFile are non-empty), else "".
+func resolveTLSPath(lookupEnv lookupEnvFunc, envVar, configDir, defaultFile string) string {
+	if v, ok := lookupEnv(envVar); ok {
 		return v
 	}
 	if configDir != "" && defaultFile != "" {

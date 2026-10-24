@@ -51,6 +51,9 @@ func WithDialFunc(fn DialFunc) Option {
 // WithTLSConfig connects to the cluster over TLS using the given standard
 // *crypto/tls.Config — bring any config: in-memory certs, rotation via
 // GetClientCertificate, custom VerifyPeerCertificate, cipher/version policy.
+// The config keeps Go's verification, including a host-name check against each
+// dialed address, which libfdb_c does not make; for libfdb_c's check set
+// InsecureSkipVerify and transport.VerifyPolicy's VerifyConnection.
 //
 // It takes precedence over the FDB_TLS_* environment / cluster-file ":tls"
 // resolution and enables TLS even when the cluster string lacks ":tls". When not

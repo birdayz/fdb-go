@@ -450,6 +450,13 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
     pairs give −0.5%, and all 30 pairs give +4.1%, with no strict parallel-latency
     equivalence claim. These are local-only results; client and server parity remain open.
 
+- [ ] **TLS settings without a network option.** RFC-277 reads `FDB_TLS_*` only. libfdb_c
+  also takes the `TLS_*` network options (`fdb.options:70-105`) and
+  `FDB_NETWORK_OPTION_TLS_*` variables (`MultiVersionTransaction.actor.cpp:3484-3536`). It
+  re-reads certificate files on change every 12 h (`Knobs.cpp:128`), and its handshake
+  timeout is 2 s (`Net2.actor.cpp:1101-1106`) where Go's is 10 s. The `fdb` facade first
+  needs network options.
+
 - [ ] **Multi-node throughput and saturation campaign.** Measure Go against libfdb_c on
   `grv`, `get100`, `set100` and `range100` over a worker ladder of 1, 8, 32, 64, 128 and
   256, four alternating blocks per cell, reporting latency, throughput, errors and

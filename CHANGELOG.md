@@ -37,6 +37,10 @@ Each is described in full under Compatibility or Changed below.
   names and options (#804).
 - **TEXT indexes:** the default tokenizer handles a word-final capital sigma and supplementary-plane
   text as Java does; rebuild Go-written TEXT indexes over such text (#803).
+- **Pure-Go client TLS** (`:tls` cluster files with `FDB_TLS_*`, RFC-277): verification follows
+  libfdb_c 7.3.77. The CA file is the only trust root (no CA file trusts nothing; the system
+  roots never count), and no host name is checked. A set but empty path variable means no file
+  and no default. A bad setting fails the open with `*client.TLSConfigError` (`tls_error`, 2107).
 - **Pure-Go client:** API versions outside 510-730 are refused with 2203 (#823).
   `SetLockAware`/`SetReadLockAware` take no argument, a read-lock-aware commit with writes fails
   with 2023 unless the transaction is also lock-aware, and `SetSizeLimit` outside
@@ -81,12 +85,15 @@ Each is described in full under Compatibility or Changed below.
   `go` line must be at least 1.27.3:
   - `x509sslcertoverrideplatform=1`: on macOS and Windows, a nonempty `SSL_CERT_FILE` or
     `SSL_CERT_DIR` replaces the platform certificate verifier. Pure-Go client TLS connections
-    without a configured CA file are affected. Add `godebug x509sslcertoverrideplatform=0`
+    through a `WithTLSConfig` config with nil `RootCAs` are affected; the `FDB_TLS_*` path
+    never reads system roots (RFC-277). Add `godebug x509sslcertoverrideplatform=0`
     to the application's `go.mod` to keep the previous behavior.
   - `tracebacklabels=1`: tracebacks include goroutine labels.
   - Legacy GODEBUG values removed in Go 1.27 abort program startup if set.
 
 ### Added
+- The pure-Go client reads `FDB_TLS_VERIFY_PEERS` (libfdb_c's verify-peers grammar,
+  `transport.ParseVerifyPeers`) and `FDB_TLS_PASSWORD` (encrypted PBES2 PKCS#8 keys) (RFC-277).
 - Pure-Go `fdb.MappedRangeReader` capability with byte-driven batch iteration for exact primary ranges; the libfdb_c backend does not expose it.
 - Record Layer remote-fetch index scans: `ScanIndexRecordsWithFetchMethod` with `USE_REMOTE_FETCH` and `USE_REMOTE_FETCH_WITH_FALLBACK`, `ScanIndexRemoteFetch` and `BuildSingleRecord`, with Java's `scan_remote_fetch_entry` event and `remote_fetch` count.
 - The SQL driver DSN sets `max_rows`, `execution_scanned_rows_limit`, `execution_scanned_bytes_limit`,
