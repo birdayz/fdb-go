@@ -7,7 +7,7 @@
 ## Problem
 
 `connectionMonitor` (`pkg/fdbgo/transport/conn.go:1275`) sends each PING through
-`sendPingWithReply` (`conn.go:1391-1432`). That function registers a reply with
+`sendPingWithReply` (`conn.go:1391-1435`). That function registers a reply with
 `PrepareReply`, enqueues the PING, then starts a goroutine that waits on the reply channel
 or `c.ctx.Done()`, cancels and releases the `ReplyHandle`, and closes a `done` channel the
 monitor selects on. The goroutine is not in `Conn.loopWG` (`conn.go:170`, `:574-581`).
@@ -15,9 +15,9 @@ monitor selects on. The goroutine is not in `Conn.loopWG` (`conn.go:170`, `:574-
 `Close` (`conn.go:974-983`) runs `failConnection` and then `loopWG.Wait()`. The cancelled
 context wakes the monitor and the waiter together. The monitor returns and calls
 `loopWG.Done()`; nothing waits for the waiter, so `Close` can return while the waiter still
-holds the handle and has not run `Cancel`/`Release`. The `Conn` and `Close` doc comments
-promise "After Close returns, zero goroutines are running on this connection"
-(`conn.go:143`, `:965-966`); the waiter breaks that promise. The same happens when the
+holds the handle and has not run `Cancel`/`Release`. The `Close` doc promises "After Close
+returns, zero goroutines are running on this connection" (`conn.go:965-966`), and the
+`Conn` doc says the same (`conn.go:143`); the waiter breaks both. The same happens when the
 monitor itself kills the connection on a frozen ping (`conn.go:1351-1359`): it returns
 while the waiter is still running.
 
@@ -36,7 +36,13 @@ while the waiter is still running.
    resetConnection` (`FlowTransport.actor.cpp:882-883`). When any arm ends, the rest are
    cancelled. Cancelling the monitor actor destroys its state, including
    `pingRequest`, so the ping reply endpoint is removed during cancellation itself.
-   Nothing that owns the ping reply outlives the monitor.
+4. When the monitor throws `connection_failed` on a frozen ping (`:674-680`), the
+   generated catch path destroys the actor state before it publishes the error:
+   `this->~State(); ...->sendErrorAndDelPromiseRef(error);`
+   (`flow/actorcompiler/ActorCompiler.cs:387-391`). The ping reply is therefore released
+   before `connectionKeeper` sees the failure and tears the connection down
+   (`FlowTransport.actor.cpp:889-897`, `conn->close()` at `:989`). Nothing that owns the ping reply outlives the
+   monitor, on any exit.
 
 ## Fix
 
@@ -48,15 +54,27 @@ started for it.
   path keeps its current behavior: it cancels and releases the registration and returns
   a nil channel, so the monitor's reply arm never fires (RFC-052).
 - The monitor's PING wait (the inner loop at `conn.go:1338-1384`) moves into a helper,
-  `monitorPing`, which owns the handle through a deferred release. If the reply was not
-  received, the defer calls `Cancel` then `Release`; if it was received, only `Release`.
+  `monitorPing`, which returns one of three outcomes: continue monitoring, stop (context
+  cancelled), or dead (frozen bytes). When the handle is non-nil, the helper defers its
+  cleanup: `Cancel` then `Release` if no reply was received, `Release` alone if one was.
   This is the cleanup the waiter does now (`conn.go:1419-1430`), run on the monitor's own
-  stack. The helper returns whether the monitor continues. All exits (reply, re-ping
-  after a dropped PING, frozen-bytes kill, context cancellation, panic) run the defer
-  before `connectionMonitor` returns and calls `loopWG.Done()`. `Close`'s
-  `loopWG.Wait()` therefore returns only after the ping reply is released.
+  stack. A dropped PING has a nil handle, so no defer is installed and nil is never
+  dereferenced. The defer runs on every exit: reply, re-ping after a dropped PING,
+  context cancellation, frozen bytes, and a panic.
+- On the dead outcome, `connectionMonitor` calls `failConnection(errConnClosed)` after
+  `monitorPing` returns, so the ping reply is released before teardown, as in C++ step 4.
+  Today `failConnection` runs first, inside the wait loop (`conn.go:1351-1359`). A panic
+  takes the same order: `monitorPing`'s defer runs during the unwind, before
+  `recoverLoop` calls `failConnection` (`conn.go:1034-1040`). `connectionMonitor` calls
+  `loopWG.Done()` last, so `Close`'s `loopWG.Wait()` returns only after the ping reply is
+  released.
 - A teardown response delivered by `failAllPending` counts as a received reply, as it
   does now: the monitor's next step sees the cancelled context and exits.
+- Comments: the `loopWG` field comment (`conn.go:170`) and the `Close` doc
+  (`conn.go:964-973`) name every joined goroutine: readLoop, writeLoop, the connection
+  monitor (which owns the ping reply) and the cold-control loop. The `sendPingWithReply`
+  doc and its drop-path comment (`conn.go:1388-1411`) describe the (channel, handle)
+  return instead of the removed waiter.
 
 The order of operations is unchanged: the PING frame, the reply token on the wire, the
 timeout and `bytesReceived` checks, and the drop/re-ping fallback.
@@ -65,7 +83,8 @@ timeout and `bytesReceived` checks, and the drop/re-ping fallback.
 
 None. The PING body (`BuildPingRequest`), its reply token, frame order and timing do not
 change. No error code changes. This only changes which goroutine releases the local reply
-registration, and when.
+registration, and when. The frozen-bytes kill still delivers the same coded teardown to
+every other pending reply; only the ping's own registration is removed first.
 
 ## Performance
 
@@ -75,29 +94,54 @@ select on the reply channel. Nothing on the request path changes.
 
 ## Executable spec
 
-1. **Close waits for the ping owner (new, revert-proven).** A serial test (it swaps the
-   package `putReplyChannel` seam, as `reply_pool_test.go` does) runs `connectionMonitor`
-   under `loopWG` on a `net.Pipe` connection with one pending request. The test takes the
-   PING from `writeCh` and delivers its reply. The hook blocks the release of that reply's
-   channel until the test closes a gate. While the release is blocked, `Close` runs in a
-   goroutine. The test asserts that `Close` has not returned when the gate opens, and that
-   it returns after. On the current code the release runs on the unjoined waiter, so
-   `Close` returns while the release is blocked and the test fails. The fixed code
-   always passes, because the release runs on the monitor before `loopWG.Done()`. The
-   gate opens after a bounded wait. That wait only limits how quickly the reverted code
-   is caught; it cannot make the correct code fail.
-2. **Cancellation releases the registration before the monitor exits.** With the PING
-   outstanding and no reply, the test cancels the connection context (not `Close`, so
-   `failAllPending` does not remove the token), waits on `loopWG`, then asserts that the
-   ping token is no longer pending. Today the waiter removes it after the join, so this
-   check can fail; after the fix it always holds.
-3. Existing pins are adapted to the new return shape and keep their assertions:
-   `TestSendPingWithReply_DropsToNilOnFullWriteCh` (a nil channel and no registration on
-   drop), `TestPingWaiterCancelsOwnedReply` (renamed: cancelling the owner removes the
-   registration), `TestPingRegistrationPanicReleasesReply`,
-   `TestHeldOutboxControlPrefixAndPostSealReply`, `TestAdmissionPingDropsBehindPendingHead`,
-   `TestMonitor_DroppedPingRePingsInsteadOfStalling` and the monitor-death tests.
-4. `-race` on `//pkg/fdbgo/transport:transport_test` with the new tests repeated
+Each new test drives `connectionMonitor` itself, started under `loopWG` on a `net.Pipe`
+connection with one dummy pending request so it pings; the test plays the writer by
+reading the PING from `writeCh`. The tests swap the package `putReplyChannel` seam to
+observe the ping channel's release, so they run serially, like `reply_pool_test.go`. A
+test context records the ping's reply channel from the monitor's own wait. On every
+path below, the release is a `putReplyChannel` call on that channel: `Release` after a
+received reply, or `Cancel` while the token is still registered. All four fail on the
+reverted code.
+
+1. **Close waits for the reply owner.** The test delivers the PING's reply. The seam
+   blocks that channel's release until a gate opens, and `Close` runs in a goroutine
+   meanwhile. The test asserts that `Close` has not returned when the gate opens, and
+   that it returns afterwards. Reverted, the release runs on the unjoined waiter, so
+   `Close` returns while it is blocked. The gate opens after a bounded wait, which only
+   limits how fast the reverted code is caught; the fixed code cannot fail it, because
+   the blocked release is on the monitor, before `loopWG.Done()`.
+2. **Cancellation releases on the monitor.** With the PING outstanding and no reply, the
+   test cancels the connection context directly (not `Close`, so `failAllPending` leaves
+   the token registered and `Cancel` must pool the channel). The seam blocks that
+   release behind a gate, and the test asserts that `connectionMonitor` has not returned
+   when the gate opens. Afterwards it asserts that the ping token is no longer
+   registered. Reverted, the waiter's `Cancel` blocks and the monitor returns anyway.
+3. **A frozen ping releases before teardown.** No reply and no traffic, so the timeout
+   fires. When the seam sees the ping channel's release, it records `IsClosed()`. The
+   test asserts that the release happened and that the connection was still open at
+   that moment, then that the monitor closed it (`Done()` fires). Reverted,
+   `failConnection` runs first and removes the token, so the release comes later (on
+   the waiter's receive path) or not at all; either way the test fails, without any
+   timing window.
+4. **A panic after the handoff releases before teardown.** The test context panics in
+   the monitor's wait after the ping is registered, inside `monitorPing`. The test makes
+   the same assertions as test 3, then checks that `recoverLoop` closed the connection.
+   Reverted, `recoverLoop` tears down while the waiter still holds the reply, so the
+   release comes after `IsClosed()` or not at all; if the panic lands on the unjoined
+   waiter instead, it is unrecovered and fails the test binary.
+5. Existing pins are adapted to the new return shape:
+   `TestSendPingWithReply_DropsToNilOnFullWriteCh` (a nil channel, a nil handle, and no
+   registration on drop), `TestHeldOutboxControlPrefixAndPostSealReply` and
+   `TestAdmissionPingDropsBehindPendingHead` (they receive on the returned channel and
+   release the returned handle as the monitor would), and
+   `TestMonitor_DroppedPingRePingsInsteadOfStalling` plus the monitor-death tests
+   (unchanged; they drive `connectionMonitor`). `TestPingWaiterCancelsOwnedReply` is
+   replaced by test 2, which drives the monitor rather than the handle.
+   `TestPingRegistrationPanicReleasesReply` keeps its first half, a panic during
+   registration that leaves no registration. Its second half (the same connection can
+   ping again and the reply completes) receives on the returned channel and releases
+   the handle.
+6. `-race` on `//pkg/fdbgo/transport:transport_test` with the new tests repeated
    (`--runs_per_test=10`).
 
 ## Out of scope
