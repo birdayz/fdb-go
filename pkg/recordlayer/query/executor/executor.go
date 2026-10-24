@@ -4470,7 +4470,7 @@ func goToProtoScalarValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.
 			if target, ok := values.FieldTypeForProtoField(fd).(*values.VectorType); ok {
 				_, payload, stride, valid := vectorcodec.Payload(b)
 				if !valid || stride*8 != target.Precision || len(payload) != target.Dimensions*stride {
-					return protoreflect.Value{}, &values.ScalarTypeMismatchError{Message: "Vector precision or dimensions do not match the target column"}
+					return protoreflect.Value{}, incompatibleTypef("Vector precision or dimensions do not match the target column")
 				}
 			}
 			return protoreflect.ValueOfBytes(b), nil

@@ -664,7 +664,8 @@ func (e plannerErr) Error() string { return string(e) }
 // RecordQueryPlanComplexityException via addLogInfo (MAX_TASK_COUNT/TASK_COUNT
 // and the queue and rule-match equivalents), and the SQL layer propagates them
 // as error context; without the numbers a user cannot tell a near-miss from a
-// query that is orders of magnitude past the bound.
+// query that is orders of magnitude past the bound. The rule-match budget is the
+// exception: like Java, it reports bound+1, that it tripped but not by how much.
 //
 // Error and Unwrap both delegate to the cap sentinel, so every existing
 // errors.Is check and every message assertion keeps working unchanged — this

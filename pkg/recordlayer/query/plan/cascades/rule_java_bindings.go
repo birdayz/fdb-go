@@ -33,9 +33,8 @@ func javaPlanPartitions(ref *expressions.Reference) []*PlanPartition {
 		properties.PropStoredRecord, properties.PropPrimaryKey)
 }
 
-// javaPartitions partitions ref's final plans by props. Java's properties map
-// holds final plans only, and the count must not touch the map the rules read,
-// so it is built afresh.
+// javaPartitions partitions ref's final plans (Java's map holds no others) by props,
+// in a fresh map so that counting leaves the one the rules read alone.
 func javaPartitions(ref *expressions.Reference, props ...*properties.ExpressionProperty) []*PlanPartition {
 	if ref == nil {
 		return nil
@@ -210,9 +209,8 @@ func (r *PushRequestedOrderingThroughSelectExistentialRule) javaBindings(expr ex
 	return countQuantifiers(expr, expressions.QuantifierExistential)
 }
 
-// ImplementNestedLoopJoinRule.java: selectExpression(exactlyInAnyOrder(outer, inner))
-// .where(canBeImplemented()): both orders of two quantifiers whose references
-// all hold plans. Go's planner fires the second order as its swapped firing.
+// ImplementNestedLoopJoinRule.java: exactlyInAnyOrder(outer, inner).where(canBeImplemented()),
+// both orders of two quantifiers over references with plans (Go's swapped firing is the second).
 func (r *ImplementNestedLoopJoinRule) javaBindings(expr expressions.RelationalExpression) int {
 	if _, ok := expr.(*expressions.SelectExpression); !ok {
 		return 0

@@ -957,9 +957,8 @@ func (t *TransformImplTask) runRule(ctx context.Context, p *Planner, rule Implem
 	if ctx.Err() != nil {
 		return
 	}
-	// Java CascadesPlanner.isMaxNumMatchesPerRuleCallExceeded: one rule call
-	// binding more often than the bound is a complexity blow-up (here: capErr,
-	// tasks have no error channel). Counted once, as in TransformExprTask.
+	// Java CascadesPlanner.isMaxNumMatchesPerRuleCallExceeded, counted once per
+	// call as in TransformExprTask (capErr: tasks have no error channel).
 	if p.MaxNumMatchesPerRuleCall > 0 &&
 		ruleCallMatches(rule, t.Expr, len(bindings)) > p.MaxNumMatchesPerRuleCall {
 		p.capErr = newRuleMatchCapError(p.MaxNumMatchesPerRuleCall)
