@@ -2139,6 +2139,12 @@ multi-page auto-commit SELECT, which stays tracked only.
 - [ ] **Low:** `handleConnError` closes the connection under `connMu`
   (`pkg/fdbgo/client/topology.go:242`), and a TLS socket close in `failConnection`
   (`pkg/fdbgo/transport/conn.go:1007`) can block for up to 5 s.
+- [ ] **Medium:** `GetEstimatedRangeSizeBytes` and `GetRangeSplitPoints` time out each
+  replica after 5 s and end with a non-retryable `all_alternatives_failed` (1006)
+  (`pkg/fdbgo/client/metrics.go:96,170,275,322`); C++ retries 1006 and wrong-shard without a
+  cap (`NativeAPI.actor.cpp:8079,8205`).
+- [ ] **Low:** a mapped-range read with a positive skip re-sends on reply timeout without the
+  10-re-send cap the other reads have (`pkg/fdbgo/client/mappedrange_selectors.go:154,265`).
 - [ ] **Low:** a `TransactCtx` deadline does not bound a dispatched commit
   (`pkg/fdbgo/client/transaction.go:1882`); documented at `pkg/fdbgo/fdb/database.go:409`.
   Decide whether to keep it.
@@ -2162,8 +2168,7 @@ multi-page auto-commit SELECT, which stays tracked only.
   `*sql.DB` for good; it runs under the first caller's context.
 - [ ] **Medium:** `ResetSession` (`pkg/relational/core/embedded/connection.go:1022`) keeps the
   statement timeout, max result bytes, fail-on-scan-limit, plan and stats loggers and
-  slow-query threshold of the previous borrower; `SetOptions` (`:181`) overwrites the options
-  it restores.
+  slow-query threshold of the previous borrower.
 - [ ] **Low:** the nesting guard counts parentheses inside string literals
   (`pkg/relational/core/parser/parser.go:45,70`) and has no test.
 - [ ] **Low:** the GROUP BY ambiguity fallback compares `GetText()` with `EqualFold`
@@ -2183,14 +2188,15 @@ multi-page auto-commit SELECT, which stays tracked only.
   a 3-way or arithmetic join returns varying row counts (TODO-production.md P2.3). Its six
   queries are two-table joins, one arithmetic, and the same queries pass in the fast-lane
   `yamsql_test` (`pkg/relational/conformance/yamsql/testdata/join_optimization_probes.yaml`). Reproduce the claim or re-include
-  the scenario; its arithmetic pin includes a row the yaml says does not qualify.
+  the scenario; its arithmetic pin includes a row the yaml says does not qualify. This item
+  supersedes the row-count bullet of TODO-production.md P2.3.
 - [ ] **Medium:** `pkg/recordlayer/query/plan/cascades/max_match_map.go:472,521` reads child
   match results from a Go map and pruning keeps the first on `maxDepth` ties, so map order
   can pick the winning match (Java uses insertion-ordered maps).
 - [ ] **Medium:** no corpus-wide plan comparison with Java: the javacorpus runner skips every
   `explain`/`explainContains`/`planHash` assertion
-  (`pkg/relational/conformance/javacorpus/testblock.go:436-437`); only the hand-written
-  plandiff probes (`conformance/*_java_probe_test.go`) compare plans.
+  (`pkg/relational/conformance/javacorpus/testblock.go:436-437`); only a few hand-written
+  conformance probes and tests compare EXPLAIN output for chosen queries.
 - [ ] **Medium:** the determinism fuzzer compares only `len(refA.Members())`
   (`pkg/recordlayer/query/plan/cascades/planner_fuzz_test.go:104`); check plan, EXPLAIN and
   rows across repeated plannings.
@@ -2213,8 +2219,11 @@ multi-page auto-commit SELECT, which stays tracked only.
   `gh stack`.
 - [ ] **Medium:** docs still describe the deleted nightlies: AGENTS.md:32, `justfile:524`,
   `infra/README.md:64,74-76,228`, `docs/operations.md:82` (the differential now runs in
-  ci.yml's `libfdbc-differential`) and `pkg/relational/sqldriver/stress/README.md:60-80`. See
-  the open nightly item in the follow-ups above.
+  ci.yml's `libfdbc-differential`), `pkg/relational/sqldriver/stress/README.md:60-80`,
+  `pkg/recordlayer/metadata_user_identifier_lookup_test.go:242-244`,
+  `cmd/fuzzrun/main.go:3-8,81`, `.bazelrc:73` and `.claude/skills/query-grind/SKILL.md:80`.
+  Sweep `git grep -n -i nightl` for the rest. See the open nightly item in the follow-ups
+  above.
 - [ ] **Medium:** five of the seven `.github/workflows/ci.yml` jobs have no `timeout-minutes`.
 - [ ] **Medium:** the Java oracle's Maven dependencies are unpinned: `maven.install` has no
   `lock_file` (`MODULE.bazel:130,275`).
@@ -2250,10 +2259,11 @@ multi-page auto-commit SELECT, which stays tracked only.
   4.12.11; SQL_CONFORMANCE's pass count omits the skipped files and plan assertions.
 - [ ] **Low:** stale: TODO.md:3 (PR #786 merged), `tools_cli.go:5-7` (no `cmd/frl/go.mod`),
   `pkg/fdbgo/client/CRASH_BUG.md` (resolved; title says otherwise).
-- [ ] **Low:** comments against CLAUDE.md's rules. Sweep `git grep -n -E '//.*\bthis shift\b'`
-  (8 hits), the review rounds `git grep -n -E 'round [0-9]+\)'` finds (3 of its 5 hits:
-  `pkg/fdbgo/client/readpath.go:1452`, `client/watch_validation_test.go:52`,
-  `cascades/values/values.go:2112`) and the "(codex)" tags in ci.yml.
+- [ ] **Low:** comments against CLAUDE.md's rules: shift tags
+  (`git grep -n -i -E 'this (same )?shift|follow-up shift|shift investigation' -- '*.go'`),
+  review rounds (`git grep -n -E 'round [0-9]+\)' -- '*.go'`: 3 of its 5 hits, e.g.
+  `pkg/fdbgo/client/readpath.go:1452`, `cascades/values/values.go:2112`; also "PR #446 round 3"
+  at `values.go:2051`) and "(codex)" tags in `.github/workflows/ci.yml` and `infra/main.tf:129`.
 - [ ] **Owner decision:** the public API surface (about 16K exported declarations outside
   `internal/`, including test hooks such as `values.SetCensusHooks`); test and tool
   dependencies in the library `go.mod` (docker, testcontainers, ginkgo, staticcheck,

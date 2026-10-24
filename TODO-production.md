@@ -733,6 +733,8 @@ Tenants remain the declared v1 non-goal (the only acknowledged libfdb_c scope bo
   deterministic. **Treat as P0/P1 correctness** (a datastore returning different row counts across
   runs, shelved by excluding the scenario instead of root-causing it — against the no-skips rule).
   Note: not currently flagged P0/P1 in TODO.md itself — it sits under the RFC-042 follow-up.
+  *(Superseded 2026-10-24: TODO.md "Quality review 2026-10-24" › Planner restates this as an
+  unreproduced historical claim; the excluded scenario's queries are two-table joins.)*
 - **INSERT…SELECT qualified-agg NULL** (TODO.md ~1037) — `wrapBareAggregateInsertSource` still
   skips qualified-operand sources.
 - **0-row coercion** (TODO.md ~1040, RFC-083 follow-up) — residual cases rely on the runtime converter.
