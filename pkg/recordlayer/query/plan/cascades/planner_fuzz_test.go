@@ -2,6 +2,9 @@ package cascades
 
 import (
 	"errors"
+	"fmt"
+	"regexp"
+	"strings"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -61,13 +64,12 @@ func plannerFuzzSameResultType(left, right expressions.Quantifier) bool {
 	return leftType.Equals(rightType)
 }
 
-// FuzzPlanner_Determinism pins that the task-stack Planner produces
-// the SAME final Reference state on identical inputs. Two fresh
-// Planner instances, same expression tree, same rules, same order →
-// same member count.
-//
-// Catches non-determinism bugs (map iteration order leaking into
-// results, pointer-address-dependent behavior, etc.).
+// FuzzPlanner_Determinism pins that the task-stack Planner produces the same
+// result on identical inputs: two fresh Planners over two separately built
+// copies of the same tree must explore the same memo (every reachable
+// Reference's members, in order) and choose the same physical plan. Both are
+// compared as text with generated aliases renumbered, so a Go map's iteration
+// order or a pointer address that leaks into either one fails the target.
 //
 // Note: the Planner is NOT rule-order-independent — the Memo's
 // cross-Reference sharing makes earlier rules' yields visible to
@@ -78,32 +80,106 @@ func plannerFuzzSameResultType(left, right expressions.Quantifier) bool {
 func FuzzPlanner_Determinism(f *testing.F) {
 	f.Add([]byte{0, 1, 2, 3, 4, 5})
 	f.Add(make([]byte, 8))
+	f.Add([]byte{0xff, 5, 1, 3, 2, 7})
+	f.Add([]byte{0xff, 6, 3, 1, 4, 8, 2})
+	f.Add([]byte{35, 4, 4, 1})
 	f.Fuzz(func(t *testing.T, b []byte) {
 		if len(b) < 4 {
 			return
 		}
-		exprA := buildFuzzExpression(b, 0, 0)
-		exprB := buildFuzzExpression(b, 0, 0)
-		refA := expressions.InitialOf(exprA)
-		refB := expressions.InitialOf(exprB)
 		rules := selectRules(b)
-
-		// Driver A: fresh Planner.
-		pA := NewPlanner(rules, nil)
-		if _, convA := exploreRewriting(pA, refA); !convA {
-			t.Fatal("Planner A did not converge — possible non-terminating rule interaction")
+		explore := func() string {
+			ref := expressions.InitialOf(buildFuzzExpression(b, 0, 0))
+			if _, converged := exploreRewriting(NewPlanner(rules, nil), ref); !converged {
+				t.Fatal("exploration did not converge — possible non-terminating rule interaction")
+			}
+			return renderMemoForDeterminism(ref)
+		}
+		if a, b := explore(), explore(); a != b {
+			t.Fatalf("two explorations of the same tree differ:\n--- A ---\n%s\n--- B ---\n%s", a, b)
 		}
 
-		// Driver B: fresh Planner, same rules same order.
-		pB := NewPlanner(rules, nil)
-		if _, convB := exploreRewriting(pB, refB); !convB {
-			t.Fatal("Planner B did not converge on input where Planner A did")
+		plan := func() string {
+			ref := expressions.InitialOf(buildFuzzExpression(b, 0, 0))
+			p := NewPlanner(rules, nil).
+				WithPlanningExpressionRules(BatchAExpressionRules()).
+				WithImplementationRules(DefaultImplementationRules())
+			p.MaxTasks = 100_000
+			best, _, err := p.Plan(ref)
+			if err != nil {
+				return "<error: " + err.Error() + ">"
+			}
+			return normalizeGeneratedAliases(ExplainPhysicalPlan(best))
 		}
+		if a, b := plan(), plan(); a != b {
+			t.Fatalf("two plannings of the same tree chose different plans:\n  A: %s\n  B: %s", a, b)
+		}
+	})
+}
 
-		// Member counts must be identical (determinism).
-		if a, b := len(refA.Members()), len(refB.Members()); a != b {
-			t.Fatalf("run A produced %d members; run B produced %d — non-determinism", a, b)
+// renderMemoForDeterminism renders every Reference reachable from root, in
+// first-visit order, as its members in insertion order: each member's type,
+// result value, predicates and child References.
+func renderMemoForDeterminism(root *expressions.Reference) string {
+	ids := map[*expressions.Reference]int{}
+	var refs []*expressions.Reference
+	var visit func(*expressions.Reference) int
+	visit = func(ref *expressions.Reference) int {
+		if id, ok := ids[ref]; ok {
+			return id
 		}
+		ids[ref] = len(refs)
+		refs = append(refs, ref)
+		for _, member := range ref.AllMembers() {
+			for _, q := range member.GetQuantifiers() {
+				if child := q.GetRangesOver(); child != nil {
+					visit(child)
+				}
+			}
+		}
+		return ids[ref]
+	}
+	visit(root)
+
+	var out strings.Builder
+	for id, ref := range refs {
+		fmt.Fprintf(&out, "R%d:\n", id)
+		for _, member := range ref.AllMembers() {
+			fmt.Fprintf(&out, "  %T", member)
+			if rv := member.GetResultValue(); rv != nil {
+				fmt.Fprintf(&out, " result=%s", values.ExplainValue(rv))
+			}
+			if wp, ok := member.(expressions.RelationalExpressionWithPredicates); ok {
+				for _, pred := range wp.GetPredicates() {
+					fmt.Fprintf(&out, " pred=%s", pred.Explain())
+				}
+			}
+			for _, q := range member.GetQuantifiers() {
+				if child := q.GetRangesOver(); child != nil {
+					fmt.Fprintf(&out, " %s->R%d", q.GetAlias(), ids[child])
+				}
+			}
+			out.WriteByte('\n')
+		}
+	}
+	return normalizeGeneratedAliases(out.String())
+}
+
+var generatedAliasPattern = regexp.MustCompile(`([A-Za-z_]*)\$([0-9]+)`)
+
+// normalizeGeneratedAliases renumbers generated aliases (q$123) densely in
+// order of first appearance, so two runs that drew different counter values
+// for the same structure render alike.
+func normalizeGeneratedAliases(s string) string {
+	seen := map[string]int{}
+	return generatedAliasPattern.ReplaceAllStringFunc(s, func(m string) string {
+		parts := generatedAliasPattern.FindStringSubmatch(m)
+		n, ok := seen[parts[2]]
+		if !ok {
+			n = len(seen)
+			seen[parts[2]] = n
+		}
+		return fmt.Sprintf("%s$%d", parts[1], n)
 	})
 }
 

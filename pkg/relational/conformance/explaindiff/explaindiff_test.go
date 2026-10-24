@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -73,6 +74,34 @@ func TestBaselineIsDeterministic(t *testing.T) {
 	if st1.Queries == 0 {
 		t.Fatal("planned 0 queries — the corpus glob or the loader is broken")
 	}
+}
+
+// TestRepeatedPlanningIsStable plans every corpus statement whose plan joins,
+// unions, intersects, iterates an IN list or reads an index ten more times and
+// requires the same EXPLAIN every time. These are the plans built from index
+// matches and enumerated join orders, where a tie decided by a Go map's
+// iteration order would pick a different winner from one planning to the next.
+// TestBaselineIsDeterministic compares two passes; ten catch a coin flip that
+// two passes miss a quarter of the time.
+func TestRepeatedPlanningIsStable(t *testing.T) {
+	t.Parallel()
+
+	multiChoice := regexp.MustCompile(`FlatMap\(|NestedLoopJoin|InJoin|InUnion|Intersection|Union|IndexScan|AggregateIndex`)
+	kept, unstable, err := explaindiff.Replan(corpusDir, 10, func(e explaindiff.Entry) bool {
+		return !e.Failed() && multiChoice.MatchString(e.Plan)
+	})
+	if err != nil {
+		t.Fatalf("replan corpus: %v", err)
+	}
+	// Population check: the filter must select the corpus's multi-choice plans
+	// (1,217 at the time of writing), not an empty or token set.
+	if kept < 1000 {
+		t.Fatalf("replanned %d statements, want at least 1000: the operator filter or the corpus is broken", kept)
+	}
+	for _, u := range unstable {
+		t.Errorf("%s planned to %d different EXPLAINs:\n  %s", u.Key, len(u.Plans), strings.Join(u.Plans, "\n  "))
+	}
+	t.Logf("replanned %d statements 10 more times each", kept)
 }
 
 // TestBaselineRoundTrips proves Render and Parse are inverses. `diff` parses
