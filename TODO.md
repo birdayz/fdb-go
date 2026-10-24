@@ -2067,43 +2067,49 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
 
 ## Quality review 2026-10-24
 
-A six-area read-only review at `1a8580372`; line numbers are from that commit. ✔ marks
-a finding re-verified by reading the code; the rest are reviewer reports to verify against
-current Go and Java (or C++ 7.3.77) before changing anything. Owner scope: work all items
-except the multi-page auto-commit SELECT, which stays tracked only.
+A six-area read-only review; line numbers are from master `12e2a8fe2`. ✔ marks a finding
+re-verified by reading the code; the rest are reviewer reports to verify against current Go
+and Java (or C++ 7.3.77) before changing anything. Owner scope: work every item except the
+multi-page auto-commit SELECT, which stays tracked only.
 
 ### Record layer
 
 - [ ] **High ✔ Unique index reports false violations.** `checkUniqueness`
-  (`pkg/recordlayer/index_maintainer.go:621`) scans `fdb.PrefixRange(Pack(value))`; Java
+  (`pkg/recordlayer/index_maintainer.go:623`) scans `fdb.PrefixRange(Pack(value))`; Java
   scans `indexSubspace.range(valueKey)`, `[pack+00, pack+ff)` (`StandardIndexMaintainer.java:490`).
   A value whose packing extends another's (bytes or strings with NUL, nested tuples:
   `b"\x01"` vs `b"\x01\x00\x05"`) collides; WRITE_ONLY indexes persist violation entries
   Java would not write.
-- [ ] **High ✔ RANK remove keeps orphaned scores.** The same prefix range in the
-  non-duplicate-counting remove (`rank_index_maintainer.go:279`): a remaining score
+- [ ] **High ✔ RANK remove keeps orphaned scores.** The non-duplicate-counting remove
+  (`pkg/recordlayer/rank_index_maintainer.go:279`) checks for other holders of a score with
+  `fdb.PrefixRange(Pack(score))` instead of Java's tuple range, so a remaining score
   `X ++ \x00…` keeps `X` in the ranked set.
-- [ ] **Medium ✔ SUM index cannot remove `math.MinInt64`.** `atomic_mutation.go:284` returns
-  an error; Java adds `-lval`, which wraps to MinInt64 and is correct mod 2^64. The test
-  that introduced the guard (`byte_limit_bug_test.go:89-111`) only asserts Go arithmetic.
+- [ ] **Medium ✔ SUM index cannot remove `math.MinInt64`.** `pkg/recordlayer/atomic_mutation.go:285`
+  returns an error; Java adds `-lval`, which wraps to MinInt64 and is correct mod 2^64. The
+  test that introduced the guard (`byte_limit_bug_test.go:89-111`) only asserts Go arithmetic.
 - [ ] **Medium:** mutual-indexing fragment edges are raw shard keys
-  (`indexing_mutual.go:105-116`), not Java's `getPrimaryKeyBoundaries` (first record key at
-  or after the boundary, split suffix dropped); a non-tuple boundary fails `Unpack` (`:383`).
-- [ ] **Medium:** mutual builds never call `transactionReachedLimits`
-  (`indexing_mutual.go:401-425`; `buildRange` does at `online_indexer.go:2111`).
-- [ ] **Medium:** the mutual FULL phase builds one chunk per fragment, then every peer falls
-  into ANY (`indexing_mutual.go:311-321,354-359`): partitioning is lost and 1020s follow.
-- [ ] **Medium:** no backoff between lessen-work retries (`online_indexer.go:1610-1631`;
-  Java `IndexingThrottle.java:391`).
+  (`pkg/recordlayer/indexing_mutual.go:105-118`), not Java's `getPrimaryKeyBoundaries` (first
+  record key at or after the boundary, split suffix dropped); a non-tuple boundary fails the
+  `Unpack` at `:368` or `:377`.
+- [ ] **Medium:** the mutual build loop (`buildFragmentRange`, `pkg/recordlayer/indexing_mutual.go:359-425`)
+  never calls `transactionReachedLimits`; `buildRange` does (`online_indexer.go:2106`).
+- [ ] **Medium:** the mutual FULL phase builds one chunk and stays on the fragment
+  (`pkg/recordlayer/indexing_mutual.go:283-294`), then skips any partly built fragment
+  (`:344-350`), so every peer falls into ANY: partitioning is lost and 1020s follow.
+- [ ] **Medium:** no backoff between lessen-work retries (`buildRangeWithRetries`,
+  `pkg/recordlayer/online_indexer.go:1605-1631`; Java waits in `IndexingThrottle.java:394`).
 - [ ] **Medium:** no explicit-version save or `VersionstampSaveBehavior`
-  (`store.go:671-688`, "Phase 2"); not listed in DIVERGENCES.md or docs/compatibility.md.
+  (`pkg/recordlayer/store.go:682`, "Phase 2"); not listed in DIVERGENCES.md or
+  docs/compatibility.md.
 - [ ] **Low:** `TransactionSizeWarningError` comes back through the error result after the
-  write (`database.go:924`, called from `store.go:644,1032`).
+  write (`pkg/recordlayer/database.go:925`, via `CheckTransactionSize` at `store.go:644,1032`).
 - [ ] **Low:** keyspace accepts sibling directories with the same key type
-  (`keyspace.go:166-174`; Java `KeySpaceDirectory.java:356-368`) and `PathFromTuple` picks
-  the first match; the resolver uses `context.Background()` (`resolver.go:110`).
-- [ ] **Low:** `%v` drops error chains (`store_builder.go:1037`, `store_state_cache.go:305`);
-  `buildRange` adds read conflicts before the record-type filter (`online_indexer.go:2093`).
+  (`pkg/recordlayer/keyspace/keyspace.go:166`; Java `KeySpaceDirectory.java:356-368`) and
+  `PathFromTuple` (`:338`) picks the first match; the resolver uses `context.Background()`
+  (`keyspace/resolver.go:111`).
+- [ ] **Low:** `%v` drops error chains (`pkg/recordlayer/store_builder.go:1037`,
+  `store_state_cache.go:305`); `buildRange` adds a record read conflict
+  (`online_indexer.go:2085`) before the per-index record-type filter (`:2093`).
 - [ ] **Low:** rank and text edges: `GetNth` returns a key where Java returns null; a
   non-int64 rank bound becomes an unbounded scan (`extractRankValue`); TEXT silently skips
   non-string columns.
@@ -2111,76 +2117,90 @@ except the multi-page auto-commit SELECT, which stays tracked only.
 ### Go FDB client
 
 - [ ] **High ✔ `handleConnError` closes the pooled connection, not the failed one**
-  (`pkg/fdbgo/client/topology.go:239`). Its 28 call sites pass only an address, so a late
-  handler can close a fresh connection `getOrDialConnFor` pooled after the failure and fail
-  its RPCs (a commit becomes 1021). Only the dial-panic path compares identity
-  (`database.go:582`).
+  (`pkg/fdbgo/client/topology.go:239`). Its 35 non-test call sites pass only an address (4
+  direct in `commitpath.go` and `pending_get.go`, 20 through `handleReadConnError`, 11 through
+  `handleDialError`), so a late handler can close a fresh connection `getOrDialConnFor` pooled
+  after the failure and fail its RPCs (a commit becomes 1021). Only the dial-panic path
+  compares identity (`pkg/fdbgo/client/database.go:582`).
 - [ ] **Medium:** the location cache keeps overlapping stale ranges. `insertSorted` replaces
-  only an equal `begin` (`locality.go:64-80`) where C++ `CoalescedKeyRangeMap::insert`
-  overwrites the range, and `lookupLocked` checks only `idx-1` (`:175-185`).
+  only an equal `begin` (`pkg/fdbgo/client/locality.go:64-80`) where C++
+  `CoalescedKeyRangeMap::insert` overwrites the range, and `lookupLocked` (`:139`) checks
+  only `idx-1`.
 - [ ] **Medium:** decoding can allocate quadratically: vector element offsets may alias one
-  inner vector (`wire/reader.go:415-466`, reachable through `GetMappedKeyValuesReply`). Add a
-  per-decode element budget in the generator and a raw-bytes `UnmarshalFDB` fuzzer.
-- [ ] **Medium:** TLS sets `ServerName` to the dialed host (`transport/conn.go:1526`), a
-  hostname check libfdb_c does not make; `FDB_TLS_VERIFY_PEERS` and `FDB_TLS_PASSWORD` are
-  never read.
+  inner vector (`pkg/fdbgo/wire/reader.go:415`, reachable through `GetMappedKeyValuesReply`).
+  Add a per-decode element budget in the generator and a raw-bytes `UnmarshalFDB` fuzzer.
+- [ ] **Medium:** TLS sets `ServerName` to the dialed host (`pkg/fdbgo/transport/conn.go:1533-1535`),
+  a hostname check libfdb_c does not make; `FDB_TLS_VERIFY_PEERS` and `FDB_TLS_PASSWORD`
+  are never read.
 - [ ] **Low:** malformed location replies are absorbed: a missing range covers the whole
-  keyspace (`locality.go:681-725`); `ReadVectorCount` truncates an oversized count instead
-  of failing (`wire/reader.go:430`).
-- [ ] **Low:** closing a TLS connection under `connMu` can stall it for 5 s
-  (`topology.go:241` → `transport/conn.go:976`).
+  keyspace (`parseGetKeyServerLocationsReply`, `pkg/fdbgo/client/locality.go:665`);
+  `ReadVectorCount` truncates an oversized count instead of failing
+  (`pkg/fdbgo/wire/reader.go:435-437`).
+- [ ] **Low:** `handleConnError` closes the connection under `connMu`
+  (`pkg/fdbgo/client/topology.go:242`), and a TLS socket close in `failConnection`
+  (`pkg/fdbgo/transport/conn.go:1007`) can block for up to 5 s.
 - [ ] **Low:** a `TransactCtx` deadline does not bound a dispatched commit
-  (`transaction.go:1893`); documented at `fdb/database.go:409`. Decide whether to keep it.
+  (`pkg/fdbgo/client/transaction.go:1882`); documented at `pkg/fdbgo/fdb/database.go:409`.
+  Decide whether to keep it.
 
 ### SQL
 
 - [ ] **Tracked only (owner excluded it from this work).** An auto-commit SELECT runs each
-  page in its own FDB transaction (`cascades_generator.go`, `runInCapturedTx` with
-  `r.tx == nil`), so one result set spans read versions; Java holds one transaction per
-  result set. User docs do not say so.
+  page in its own FDB transaction (`pkg/relational/core/embedded/cascades_generator.go`,
+  `runInCapturedTx` with `r.tx == nil`), so one result set spans read versions; Java holds
+  one transaction per result set. User docs do not say so.
 - [ ] **Medium:** inside an explicit transaction the statement context does not reach FDB
-  reads (`connection.go:950`; `recordlayer/database.go:795`, "KNOWN GAP"), and
-  `TxOptions.ReadOnly` is ignored.
-- [ ] **Medium:** panics are recovered only in Exec, Query and Rows.Next; not in
+  reads (the "KNOWN GAP" at `pkg/relational/core/embedded/connection.go:939`;
+  `pkg/recordlayer/database.go:795` sets `context.Background()`), and `TxOptions.ReadOnly`
+  is ignored.
+- [ ] **Medium:** panics are recovered only in Exec, Query and Rows.Next
+  (`pkg/relational/core/embedded/connection.go:805,841`, `cascades_generator.go`); not in
   `embeddedTx.Commit`, BeginTx, SetSchema, PlanExplain, CollectStatistics, DirectAccess or
   `paginatingRows.Close`.
-- [ ] **Medium (suspected):** a statement that fails or panics inside an explicit transaction
-  does not mark the transaction failed, so its partial writes may still commit.
-- [ ] **Medium:** connector `initialize` runs in a `sync.Once` (`sqldriver/driver.go:251`), so
-  a transient open failure breaks that `*sql.DB` for good; it runs under the first caller's
-  context.
-- [ ] **Medium:** `ResetSession` (`connection.go:1022-1049`) keeps the statement timeout, max
-  result bytes, fail-on-scan-limit, plan and stats loggers and slow-query threshold of the
-  previous borrower; `SetOptions` overwrites the options it restores (`:181-184`).
+- [ ] **Medium:** the connector's `initialize` runs in a `sync.Once`
+  (`pkg/relational/sqldriver/driver.go:251`), so a transient open failure breaks that
+  `*sql.DB` for good; it runs under the first caller's context.
+- [ ] **Medium:** `ResetSession` (`pkg/relational/core/embedded/connection.go:1022`) keeps the
+  statement timeout, max result bytes, fail-on-scan-limit, plan and stats loggers and
+  slow-query threshold of the previous borrower; `SetOptions` (`:181`) overwrites the options
+  it restores.
 - [ ] **Low:** the nesting guard counts parentheses inside string literals
-  (`parser.go:45,70`) and has no test.
+  (`pkg/relational/core/parser/parser.go:45,70`) and has no test.
 - [ ] **Low:** the GROUP BY ambiguity fallback compares `GetText()` with `EqualFold`
-  (`plan_visitor.go:1767`).
+  (`pkg/relational/core/embedded/plan_visitor.go:1767`).
 - [ ] **Low:** a stale `Tx` handle's Commit/Rollback clears a newer `activeTx`
-  (`connection.go:431,439`).
-- [ ] **Low:** a self-returning `driver.Valuer` recurses without bound (`param_binding.go:204`).
+  (`pkg/relational/core/embedded/connection.go:432,439`).
+- [ ] **Low:** a self-returning `driver.Valuer` recurses without bound
+  (`pkg/relational/core/embedded/param_binding.go:204`).
 - [ ] **Low:** dead exported helpers (`functions.ApplyMathOp`, `IsTruthy`,
-  `LiteralMatchesPKKind`, `ToIntegerArg`); `txctl_statements_probe_test.go:10-12` contradicts
-  the code.
+  `LiteralMatchesPKKind`, `ToIntegerArg`); `pkg/relational/sqldriver/txctl_statements_probe_test.go:10-12`
+  contradicts the code.
 
 ### Planner
 
-- [ ] **High ✔ A multi-way join's row count varies across runs.**
-  `joinOptimizationProbesScenario` is excluded from the cross-engine gate
-  (`conformance/yamsql_cross_engine_conformance_test.go:400`) and tracked only in
-  TODO-production.md P2.3. Reproduce, root-cause and pin it.
-- [ ] **Medium:** `max_match_map.go:472,521` reads child results from a Go map and pruning
-  keeps the first on `maxDepth` ties, so map order picks the match (Java uses
-  insertion-ordered maps). Suspected cause of the item above.
-- [ ] **Medium:** nothing compares plan choice with Java: every Java `explain:` assertion is
-  skipped (`javacorpus/testblock.go:436`).
+- [ ] **Medium:** `joinOptimizationProbesScenario` is excluded from the cross-engine gate
+  (`conformance/yamsql_cross_engine_conformance_test.go:400-406`) on a historical claim that
+  a 3-way or arithmetic join returns varying row counts (TODO-production.md P2.3). Its six
+  queries are two-table joins, one arithmetic, and the same queries pass in the fast-lane
+  `yamsql_test` (`pkg/relational/conformance/yamsql/testdata/join_optimization_probes.yaml`). Reproduce the claim or re-include
+  the scenario; its arithmetic pin includes a row the yaml says does not qualify.
+- [ ] **Medium:** `pkg/recordlayer/query/plan/cascades/max_match_map.go:472,521` reads child
+  match results from a Go map and pruning keeps the first on `maxDepth` ties, so map order
+  can pick the winning match (Java uses insertion-ordered maps).
+- [ ] **Medium:** no corpus-wide plan comparison with Java: the javacorpus runner skips every
+  `explain`/`explainContains`/`planHash` assertion
+  (`pkg/relational/conformance/javacorpus/testblock.go:436-437`); only the hand-written
+  plandiff probes (`conformance/*_java_probe_test.go`) compare plans.
 - [ ] **Medium:** the determinism fuzzer compares only `len(refA.Members())`
-  (`planner_fuzz_test.go:78`); check plan, EXPLAIN and rows across repeated plannings.
+  (`pkg/recordlayer/query/plan/cascades/planner_fuzz_test.go:104`); check plan, EXPLAIN and
+  rows across repeated plannings.
 - [ ] **Medium:** the context is checked only between tasks, and the fan-out inside one rule
-  is not counted against `MaxNumMatchesPerRuleCall` (`physical_wrapper.go:250-265`,
-  `planner.go:490-530`).
-- [ ] **Low:** quantifier order comes from map iteration (`rule_decorrelate_values.go:320,398`).
-- [ ] **Low:** `pkg/recordlayer/query/executor` imports `pkg/relational/api` (4 files).
+  is not counted against `MaxNumMatchesPerRuleCall`
+  (`pkg/recordlayer/query/plan/cascades/physical_wrapper.go:250-265`, `planner.go:490-530`).
+- [ ] **Low:** quantifier order comes from map iteration
+  (`pkg/recordlayer/query/plan/cascades/rule_decorrelate_values.go:320,398`).
+- [ ] **Low:** `pkg/recordlayer/query/executor` imports `pkg/relational/api` (`executor.go`,
+  `executor_new_plans.go`, `resultset.go`, `scalar_subquery.go`).
 
 ### Tests and CI
 
@@ -2188,40 +2208,52 @@ except the multi-page auto-commit SELECT, which stays tracked only.
   `pkg/relational/sqltest/testkit/embedded_fdb.go:47-56` treats every `Run` error other than
   `TerminationError` (timeout, pull, OOM) as "no Docker" and runs with an empty cluster file:
   30 packages, about 1,168 skip sites. Fail unless Docker is genuinely absent.
-- [ ] **High ✔ Stacked PRs get no pre-merge CI.** `ci.yml` `pull_request.branches:
-  [master, main]` filters on the base branch, and AGENTS.md requires `gh stack`.
-- [ ] **Medium:** AGENTS.md ("CI/nightlies retain…"), `justfile:524` and
-  `infra/README.md:64,74` still describe the deleted nightlies (see the open nightly item in
-  the follow-ups above).
-- [ ] **Medium:** five of the seven ci.yml jobs have no `timeout-minutes`.
+- [ ] **High ✔ Stacked PRs get no pre-merge CI.** `.github/workflows/ci.yml`
+  `pull_request.branches: [master, main]` filters on the base branch, and AGENTS.md requires
+  `gh stack`.
+- [ ] **Medium:** docs still describe the deleted nightlies: AGENTS.md:32, `justfile:524`,
+  `infra/README.md:64,74-76,228`, `docs/operations.md:82` (the differential now runs in
+  ci.yml's `libfdbc-differential`) and `pkg/relational/sqldriver/stress/README.md:60-80`. See
+  the open nightly item in the follow-ups above.
+- [ ] **Medium:** five of the seven `.github/workflows/ci.yml` jobs have no `timeout-minutes`.
 - [ ] **Medium:** the Java oracle's Maven dependencies are unpinned: `maven.install` has no
   `lock_file` (`MODULE.bazel:130,275`).
-- [ ] **Low:** tests in no lane: `core/parser/yamsql_corpus_test.go` (`yamsql` tag, run only
-  by a `go test` recipe), `sqldriver/stress/stress_10m_test.go` (`realcluster`) and
-  `tools/bazelscaleset` (no BUILD file, no workflow). The libfdbc tests have their own item.
-- [ ] **Low:** `.bazelrc:40-42` sets a no-op `--test_timeout` with a wrong comment; a stale
-  `--local_test_jobs=4` comment and five hard-coded `go-version`s in ci.yml; unused
-  `pkg/linters/gofmt`; the `golden-update` and `smoke-yamsql` recipes call `go test`;
-  non-standard skips in `cmd/fdb-diff-oracle/fuzz_test.go` and
-  `core/ddl/fdb_ddl_test.go:100-196`.
+- [ ] **Low:** tests in no lane: `pkg/relational/core/parser/yamsql_corpus_test.go` (`yamsql`
+  tag, run only by a `go test` recipe), `pkg/relational/sqldriver/stress/stress_10m_test.go`
+  (`realcluster`) and `tools/bazelscaleset` (no BUILD file, no workflow). The libfdbc tests
+  have their own item.
+- [ ] **Low:** `.bazelrc:40-42` sets a no-op `--test_timeout` with a wrong comment; comments
+  still say `.bazelrc` sets `--local_test_jobs=4` (it sets 0, `.bazelrc:63`):
+  `.github/workflows/ci.yml:619`, `infra/main.tf:226`,
+  `pkg/testcontainers/foundationdb/BUILD.bazel:30`,
+  `pkg/relational/sqltest/agg/distinctelision/distinct_unique_elision_cost_probe_test.go:866`;
+  five hard-coded `go-version`s in ci.yml; unused `pkg/linters/gofmt`; the `golden-update`
+  and `smoke-yamsql` recipes call `go test`; non-standard skips in
+  `cmd/fdb-diff-oracle/fuzz_test.go` and `pkg/relational/core/ddl/fdb_ddl_test.go:100-196`.
 
 ### Docs, API and hygiene
 
 - [ ] **Medium:** the `pkg/fdbgo/fdb` package doc (`key.go:1-37`) names itself as the Apple
   binding, gives the wrong `Error()` format and says there is no per-transaction context.
-- [ ] **Medium:** "drop-in compatible" (`pkg/fdbgo/fdb/API_PARITY.md:3`, README) fails at the
-  type level: `Transact` takes `func(WritableTransaction)`, Apple's takes `func(Transaction)`.
-- [ ] **Medium:** `pkg/recordlayer` has no package doc; the `sqldriver` package example does
-  not compile (a blank import, then `sqldriver.RegisterDomainIfNotExists`).
-- [ ] **Medium:** STATUS.md's 5 s per-RPC gap omits location lookups (`locality.go:572`) and
-  dials (`database.go:592`), and the worst case of about 11 × (hedge + fallback) before 1007.
+- [ ] **Medium:** "drop-in compatible" fails at the type level (`Transact` takes
+  `func(WritableTransaction)`, Apple's takes `func(Transaction)`) but is claimed in
+  `pkg/fdbgo/fdb/API_PARITY.md:3`, `pkg/fdbgo/fdb/database.go:395`, `pkg/fdbgo/doc.go:64`,
+  `pkg/fdbgo/README.md:73` and, as "API-compatible", `pkg/fdbgo/fdb/key.go:3`.
+- [ ] **Medium:** `pkg/recordlayer` has no package doc; the `sqldriver` package example
+  (`pkg/relational/sqldriver/driver.go:10-19`) does not compile (a blank import, then
+  `sqldriver.RegisterDomainIfNotExists`).
+- [ ] **Medium:** STATUS.md's 5 s per-RPC gap omits location lookups
+  (`pkg/fdbgo/client/locality.go:572`; C++ waits for the reply or a proxy change) and that a
+  read fails with 1007 after 10 timed-out re-sends (`readpath.go:39`). Dials are not a gap:
+  C++ also times out a connect (`CONNECTION_MONITOR_TIMEOUT`).
 - [ ] **Medium:** DIVERGENCES.md:973 and SQL_CONFORMANCE.md:3 are classified against Java
   4.12.11; SQL_CONFORMANCE's pass count omits the skipped files and plan assertions.
 - [ ] **Low:** stale: TODO.md:3 (PR #786 merged), `tools_cli.go:5-7` (no `cmd/frl/go.mod`),
-  `pkg/fdbgo/client/CRASH_BUG.md` (resolved).
-- [ ] **Low:** comments against CLAUDE.md's rules: shift tags
-  (`core/catalog/fdb_store_catalog.go:32`, `cascades/matching/list_matcher.go:16`), review
-  rounds (`client/readpath.go:1452`, `cascades/values/values.go:2112`), "(codex)" in ci.yml.
+  `pkg/fdbgo/client/CRASH_BUG.md` (resolved; title says otherwise).
+- [ ] **Low:** comments against CLAUDE.md's rules. Sweep `git grep -n -E '//.*\bthis shift\b'`
+  (8 hits), the review rounds `git grep -n -E 'round [0-9]+\)'` finds (3 of its 5 hits:
+  `pkg/fdbgo/client/readpath.go:1452`, `client/watch_validation_test.go:52`,
+  `cascades/values/values.go:2112`) and the "(codex)" tags in ci.yml.
 - [ ] **Owner decision:** the public API surface (about 16K exported declarations outside
   `internal/`, including test hooks such as `values.SetCensusHooks`); test and tool
   dependencies in the library `go.mod` (docker, testcontainers, ginkgo, staticcheck,
