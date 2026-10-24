@@ -120,7 +120,9 @@ covers the four Low items and the Medium explicit-version/`VersionstampSaveBehav
      carrier, `uint64`/`*big.Int` wrapping to their low 64 bits, and floats through
      `javaDoubleToLong` (NaN gives 0, saturation, truncation). A null element stays
      unbounded. Any other value is a `*ClassCastError` naming the Java class.
-     `javaNumberLongValue` is shared with the key-expression functions' `nullableLong`.
+     `javaNumberLongValue` is shared with the key-expression functions' `nullableLong`. The
+     SCORE_FOR_RANK aggregate and `ScoreForRank` take their rank the same way (`javaRank`);
+     a null rank answers null, as Java's `scoreForRank` does.
    - The TEXT maintainer returns `*ClassCastError` for a non-string text column and
      `*IndexOutOfBoundsError` for a position past the key. Null and `""` are still skipped.
 6. **Explicit-version saves.**
@@ -181,7 +183,9 @@ to the old behavior.
     `*big.Int` beyond the int64 range, float32, a negative double, NaN and ±Inf. A nil bound
     stays unbounded, and a bool is a `ClassCastError`.
   - `BY_RANK` with a double bound truncates, and with a string bound fails with
-    `ClassCastError`.
+    `ClassCastError`. SCORE_FOR_RANK accepts int32, double and uint64 ranks, refuses a
+    string, and answers a null rank with null.
+  - An unknown `VersionstampSaveBehavior` is an `IllegalArgumentError` and writes nothing.
   - A TEXT index over `Concat(Literal(int64(5)), Field("name"))` fails the save with a
     `ClassCastError` naming `java.lang.Long`. Null and `""` text save with no entries, and a
     position past the key is an `IndexOutOfBoundsError`.
