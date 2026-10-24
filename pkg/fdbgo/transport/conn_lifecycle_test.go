@@ -87,10 +87,10 @@ func TestSendPingWithReply_DropsToNilOnFullWriteCh(t *testing.T) {
 	}
 	c.writeCh <- writeReq{} // saturate the 1-slot writeCh (no writeLoop draining it)
 
-	got := c.sendPingWithReply()
-	if got != nil {
-		t.Fatalf("on a saturated writeCh the dropped ping must return a nil channel "+
-			"(a closed one is read as 'PING reply arrived → alive', defeating the liveness check); got %v", got)
+	got, handle := c.sendPingWithReply()
+	if got != nil || handle != nil {
+		t.Fatalf("on a saturated writeCh the dropped ping must return a nil channel and no handle "+
+			"(a closed one is read as 'PING reply arrived → alive', defeating the liveness check); got %v, %v", got, handle)
 	}
 	c.pendingMu.Lock()
 	n := len(c.pending)
@@ -384,7 +384,7 @@ func TestConn_MonitorDeathClosesSocket(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	// Tiny cadence: monitor fires in ~ (loop + timeout) = 40ms. The client has
-	// ONE loop delay, not two — C++'s first delay is server-only (:644).
+	// ONE loop delay, not two — C++'s first delay is server-only (:624).
 	c, err := dialWith(ctx, "sim", s.dialFunc(), nil, withMonitorCadence(20*time.Millisecond, 20*time.Millisecond))
 	if err != nil {
 		t.Fatalf("dial: %v", err)

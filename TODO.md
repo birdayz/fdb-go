@@ -343,11 +343,16 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   accounting guard through sender-to-RPC ownership transfer and pin a panic after
   each increment. C++ `ModelHolder::~ModelHolder` removes the delta without a
   latency sample (`LoadBalance.actor.h:53-67`); `replyGuard` only owns the endpoint.
-- [ ] **Join monitor reply waiters on connection close.** `sendPingWithReply`
+- [x] **Join monitor reply waiters on connection close.** `sendPingWithReply`
   launches its reply-wait goroutine outside `Conn.loopWG` (`transport/conn.go`).
   Connection cancellation wakes it, but `Close` can return before it releases
   its reply handle. Track that owner through shutdown and pin zero live waiters
   on return; the cold-control outbox worker is tracked separately.
+  Fixed in RFC-269: the waiter is gone. `connectionMonitor` owns the PING reply
+  handle, as C++ holds `state PingRequest` in the monitor actor, and releases it
+  on every exit before `loopWG.Done` and before any teardown it causes. Five tests,
+  each failing on the reverted code, pin the reply, Close, cancellation, frozen-ping
+  and panic exits; a unit test pins pooling a teardown reply published after the wait.
 - [ ] **Control packets must not be dropped behind FIFO gaps or full queues.**
   Transport `tryEnqueue` drops monitor pings and ping replies when the ordinary
   or held sender FIFO is pending, even if its channel has a free slot; it also
@@ -451,6 +456,14 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   saturation. Throughput counts successful operations in a fixed post-warmup window,
   checked against workers ÷ mean latency and, for writes, the servers' commit counts.
   Needs those checks in `tools/clientbench` and owner approval of the cloud budget.
+
+- [ ] **Connection monitor has no `resetPing` arm.** C++ `connectionMonitor` also
+  ends a PING wait on `peer->resetPing.onTrigger()` (`FlowTransport.actor.cpp:696-698`),
+  triggered when packets arrive from an incompatible peer (`:1596`) and when the last
+  peer reference drops with nothing outstanding (`:1892-1896`). Go's `monitorPing`
+  waits only on the reply, the timeout and cancellation. The second trigger depends on
+  the peer-reference count Go does not track (see the idle-connection divergence in
+  `connectionMonitor`); port both with the unreferenced-close knobs, pinned by tests.
 
 ## 1. WS-E — scalar/SQL semantics and statement execution — ACTIVE
 
