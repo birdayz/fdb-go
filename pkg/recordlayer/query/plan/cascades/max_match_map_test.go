@@ -1017,3 +1017,12 @@ func TestMatchResults_PutKeysByStructuralEquality(t *testing.T) {
 		t.Fatalf("get(aAgain) = %+v, %v; want depth 0", got, ok)
 	}
 }
+
+func (m matchResults) get(v values.Value) (matchResult, bool) {
+	for _, entry := range m {
+		if values.ValuesStructurallyEqual(entry.value, v) {
+			return entry.result, true
+		}
+	}
+	return matchResult{}, false
+}

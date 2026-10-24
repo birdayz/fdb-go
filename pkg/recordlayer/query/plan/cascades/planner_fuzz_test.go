@@ -114,7 +114,7 @@ func FuzzPlanner_Determinism(f *testing.F) {
 
 // renderMemoForDeterminism renders every Reference reachable from root, in
 // first-visit order, as its members in insertion order: each member's type,
-// result value, predicates and child References.
+// record types or physical plan, result value, predicates and child References.
 func renderMemoForDeterminism(root *expressions.Reference) string {
 	ids := map[*expressions.Reference]int{}
 	var refs []*expressions.Reference
@@ -141,6 +141,12 @@ func renderMemoForDeterminism(root *expressions.Reference) string {
 		fmt.Fprintf(&out, "R%d:\n", id)
 		for _, member := range ref.AllMembers() {
 			fmt.Fprintf(&out, "  %T", member)
+			if source, ok := member.(interface{ GetRecordTypes() []string }); ok {
+				fmt.Fprintf(&out, " types=%v", source.GetRecordTypes())
+			}
+			if plan := ExplainPhysicalPlan(member); plan != "" {
+				fmt.Fprintf(&out, " plan=%s", plan)
+			}
 			if rv := member.GetResultValue(); rv != nil {
 				fmt.Fprintf(&out, " result=%s", values.ExplainValue(rv))
 			}
@@ -414,4 +420,37 @@ func selectRules(b []byte) []ExpressionRule {
 		return all[:1]
 	}
 	return out
+}
+
+// TestRenderMemoForDeterminism pins the fuzzer's oracle: two builds of one
+// tree render alike although their generated aliases differ, and the same
+// members inserted in another order render differently.
+func TestRenderMemoForDeterminism(t *testing.T) {
+	t.Parallel()
+
+	tree := func(first, second string) *expressions.Reference {
+		scan := func(name string) expressions.RelationalExpression {
+			return mustPlannerFuzzConstruct(expressions.NewFullUnorderedScanExpression([]string{name}, plannerFuzzRowType()))
+		}
+		group := expressions.InitialOf(scan(first))
+		if !group.Insert(scan(second)) {
+			t.Fatalf("fixture: %s did not join the group of %s", second, first)
+		}
+		filter := mustPlannerFuzzConstruct(expressions.NewLogicalFilterExpression(
+			[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
+			expressions.ForEachQuantifier(group)))
+		return expressions.InitialOf(filter)
+	}
+
+	first, again, reordered := renderMemoForDeterminism(tree("T", "U")),
+		renderMemoForDeterminism(tree("T", "U")), renderMemoForDeterminism(tree("U", "T"))
+	if !strings.Contains(first, "q$0") {
+		t.Fatalf("fixture: rendering carries no generated alias:\n%s", first)
+	}
+	if first != again {
+		t.Fatalf("two builds of one tree render differently:\n%s\n---\n%s", first, again)
+	}
+	if first == reordered {
+		t.Fatalf("member order does not reach the rendering:\n%s", first)
+	}
 }

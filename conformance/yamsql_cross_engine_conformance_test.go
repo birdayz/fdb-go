@@ -3903,8 +3903,8 @@ func joinOptimizationProbesScenario() *yamsql.Scenario {
 			{Query: "SELECT a.ename, b.ename FROM emp AS a, emp AS b, dept AS d WHERE a.did = d.did AND b.did = d.did AND a.eid < b.eid AND a.salary + b.salary > d.did * 95", Unordered: true, Rows: [][]any{{"Alice", "Bob"}}},
 			// Flat left-associative arithmetic in both grammars: (b.salary + d.did) * 5.
 			{Query: "SELECT a.ename, b.ename FROM emp AS a, emp AS b, dept AS d WHERE a.did = d.did AND b.did = d.did AND a.salary > b.salary + d.did * 5", Unordered: true, Rows: [][]any{}},
-			// An ORDER BY the join column's index provides.
-			{Query: "SELECT e.ename FROM emp AS e, dept AS d WHERE e.did = d.did AND d.dname = 'eng' ORDER BY e.did", Rows: [][]any{{"Alice"}, {"Bob"}}},
+			// An ORDER BY the join column's index provides; rows tied on e.did are equal.
+			{Query: "SELECT e.did, d.dname FROM emp AS e, dept AS d WHERE e.did = d.did ORDER BY e.did", Rows: [][]any{{1, "eng"}, {1, "eng"}, {2, "sales"}, {2, "sales"}, {3, "hr"}}},
 		},
 	}
 }

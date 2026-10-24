@@ -105,6 +105,9 @@ slice is smaller than the map it replaces. Acceptance: no existing entry of
   firings (red before the fix).
 - `FuzzPlanner_Determinism`: with `Reference` insertion order randomized as a
   mutation, it fails and the old member-count fuzzer passes.
+  `TestRenderMemoForDeterminism` pins its oracle (alias-insensitive,
+  member-order-sensitive) and `TestReplanReportsChangedRenderings` drives the
+  replanning guard's arms with a planner whose output alternates.
 - `TestRepeatedPlanningIsStable`: with the cost model's final hash tie-break
   made a coin flip, it fails (`cross_join.yaml#0` and others plan to two
   EXPLAINs). Member order alone does not move any corpus plan. Both tests are

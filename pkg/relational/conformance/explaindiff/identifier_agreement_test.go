@@ -12,6 +12,7 @@ import (
 
 	"github.com/antlr4-go/antlr/v4"
 
+	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/conformance/explaindiff"
 	"fdb.dev/pkg/relational/conformance/yamsql"
 	"fdb.dev/pkg/relational/core/embedded"
@@ -169,13 +170,18 @@ func TestIdentifierAgreementOverCorpus(t *testing.T) {
 		if loadErr != nil {
 			t.Fatalf("load %s: %v", base, loadErr)
 		}
+		opts, optsErr := s.Options()
+		if optsErr != nil {
+			t.Fatalf("%s: %v", base, optsErr)
+		}
 		for i, tc := range s.Tests {
 			plan, isPlannable := agreementHarness(tc.Query)
 			if !isPlannable || tc.EffectiveErrorCode() != "" {
 				continue
 			}
-			// Both spellings plan with the scenario's bound arguments, as
-			// the runner executes them; an unbound `?` does not plan.
+			// Both spellings plan with the scenario's bound arguments and
+			// connection options, as the runner executes them; an unbound `?`
+			// does not plan.
 			args, argErr := explaindiff.StatementArgs(&s.Tests[i])
 			if argErr != nil {
 				t.Fatalf("%s#%d: %v", base, i, argErr)
@@ -192,7 +198,7 @@ func TestIdentifierAgreementOverCorpus(t *testing.T) {
 			}
 			pairs = append(pairs, agreementPair{
 				base: base, idx: i, plan: plan, sql: tc.Query,
-				twin: twin, schemaTemplate: s.SchemaTemplate, args: args,
+				twin: twin, schemaTemplate: s.SchemaTemplate, args: args, opts: opts,
 			})
 		}
 	}
@@ -206,9 +212,9 @@ func TestIdentifierAgreementOverCorpus(t *testing.T) {
 		wg.Go(func() {
 			for k := range work {
 				p := &pairs[k]
-				p.want = agreementPlanText(p.plan, p.sql, p.schemaTemplate, p.args)
+				p.want = agreementPlanText(p.plan, p.sql, p.schemaTemplate, p.args, p.opts)
 				if !strings.HasPrefix(p.want, agreementErrMarker) {
-					p.got = agreementPlanText(p.plan, p.twin, p.schemaTemplate, p.args)
+					p.got = agreementPlanText(p.plan, p.twin, p.schemaTemplate, p.args, p.opts)
 				}
 			}
 		})
@@ -247,6 +253,7 @@ type agreementPair struct {
 	idx                             int
 	plan                            agreementPlanner
 	args                            []driver.NamedValue
+	opts                            *api.Options
 	want, got                       string
 }
 
@@ -285,7 +292,7 @@ func agreementHarness(stmt string) (agreementPlanner, bool) {
 // perturbation must not be able to crash the planner either, and a crash that
 // vanished into a failed test binary would take the whole gate's verdict with
 // it.
-func agreementPlanText(which agreementPlanner, sql, schemaTemplate string, args []driver.NamedValue) (out string) {
+func agreementPlanText(which agreementPlanner, sql, schemaTemplate string, args []driver.NamedValue, opts *api.Options) (out string) {
 	defer func() {
 		if r := recover(); r != nil {
 			out = fmt.Sprintf("%s PANIC %v>", agreementErrMarker, r)
@@ -297,9 +304,9 @@ func agreementPlanText(which agreementPlanner, sql, schemaTemplate string, args 
 	)
 	switch which {
 	case agreementDML:
-		p, err = embedded.PlanPhysicalDMLForTestWithArgs(sql, schemaTemplate, args, nil, nil, nil)
+		p, err = embedded.PlanPhysicalDMLForTestWithArgs(sql, schemaTemplate, args, opts, nil, nil)
 	default:
-		p, err = embedded.PlanPhysicalForTestWithArgs(sql, schemaTemplate, args, nil, nil, nil)
+		p, err = embedded.PlanPhysicalForTestWithArgs(sql, schemaTemplate, args, opts, nil, nil)
 	}
 	if err != nil {
 		return agreementErrMarker + " " + collapseSQL(err.Error()) + ">"

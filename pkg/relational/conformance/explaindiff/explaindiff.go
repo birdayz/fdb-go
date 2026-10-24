@@ -273,7 +273,12 @@ func Replan(dir string, runs int, keep func(Entry) bool) (kept int, unstable []I
 	if err != nil {
 		return 0, nil, err
 	}
-	first := planJobs(jobs, nil)
+	kept, unstable = replan(jobs, runs, keep, func(js []job) []Entry { return planJobs(js, nil) })
+	return kept, unstable, nil
+}
+
+func replan(jobs []job, runs int, keep func(Entry) bool, plan func([]job) []Entry) (int, []Instability) {
+	first := plan(jobs)
 	var keptJobs []job
 	var keptFirst []Entry
 	for k, e := range first {
@@ -287,18 +292,19 @@ func Replan(dir string, runs int, keep func(Entry) bool) (kept int, unstable []I
 		seen[k] = []string{e.Plan}
 	}
 	for range runs {
-		for k, e := range planJobs(keptJobs, nil) {
+		for k, e := range plan(keptJobs) {
 			if !slices.Contains(seen[k], e.Plan) {
 				seen[k] = append(seen[k], e.Plan)
 			}
 		}
 	}
+	var unstable []Instability
 	for k, plans := range seen {
 		if len(plans) > 1 {
 			unstable = append(unstable, Instability{Key: keptFirst[k].Key(), Plans: plans})
 		}
 	}
-	return len(keptJobs), unstable, nil
+	return len(keptJobs), unstable
 }
 
 // Stats are the reconciliation counts for a Collect run. They are derived,

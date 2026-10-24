@@ -221,7 +221,7 @@ func ComputeMaxMatchMapWithEquivalence(
 	if valueEquivalence != nil {
 		veArgs = []ValueEquivalence{valueEquivalence}
 	}
-	resultsMap := recurseQueryResultValue(
+	results := recurseQueryResultValue(
 		queryValue, candidateValue, rangedOverAliases,
 		-1, matchers, math.MaxInt32, memoMap, inProgress,
 		veArgs...,
@@ -231,7 +231,7 @@ func ComputeMaxMatchMapWithEquivalence(
 	var bestMapping map[string]maxMatchEntry
 	var bestQueryValue values.Value
 	bestMaxDepth := math.MaxInt32
-	for _, entry := range resultsMap {
+	for _, entry := range results {
 		if entry.result.maxDepth < bestMaxDepth {
 			bestMapping = entry.result.valueMap
 			bestQueryValue = entry.value
@@ -536,7 +536,8 @@ type matchResultEntry struct {
 }
 
 // matchResults is Java's LinkedHashMap<Value, MatchResult>, keyed by
-// semanticEquals: a structurally equal put replaces the result in place.
+// semanticEquals: a structurally equal put replaces the result in place. No
+// current value shape puts two such variants in one frame; this is parity.
 type matchResults []matchResultEntry
 
 func (m matchResults) put(v values.Value, r matchResult) matchResults {
@@ -547,15 +548,6 @@ func (m matchResults) put(v values.Value, r matchResult) matchResults {
 		}
 	}
 	return append(m, matchResultEntry{value: v, result: r})
-}
-
-func (m matchResults) get(v values.Value) (matchResult, bool) {
-	for _, entry := range m {
-		if values.ValuesStructurallyEqual(entry.value, v) {
-			return entry.result, true
-		}
-	}
-	return matchResult{}, false
 }
 
 // crossProductChildren iterates over the Cartesian product of the

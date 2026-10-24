@@ -728,7 +728,8 @@ boundaries).
 Tenants remain the declared v1 non-goal (the only acknowledged libfdb_c scope boundary).
 
 ### [ ] P2.3 — Close known SQL-engine correctness gaps · L (query-engine, Graefe-gated)
-*(Verified 2026-06-24: all six still OPEN in TODO.md; no RFC ≤145 and no commit closes any.)*
+*(Verified 2026-06-24: all six still OPEN in TODO.md; no RFC ≤145 and no commit closes any.
+The row-count item was closed by RFC-273.)*
 - [x] **Row-count nondeterminism — not reproduced; closed by RFC-273.** The excluded
   `join_optimization_probes` scenario had six two-table joins, and its cross-engine twin pinned Eve,
   who does not qualify (95 > 3 * 50 is false; the yamsql twin dropped her in RFC-180). Twenty

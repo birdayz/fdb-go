@@ -44,6 +44,7 @@ go_test(
         "//pkg/internal/querycensus",
         "//pkg/recordlayer/query/plan/cascades",
         "//pkg/recordlayer/query/plan/cascades/values",
+        "//pkg/relational/api",
         "//pkg/relational/conformance/yamsql",
         "//pkg/relational/core/embedded",
         "//pkg/relational/core/keyspace",
