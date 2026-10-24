@@ -194,14 +194,15 @@ func TestNativeReadTagSampling(t *testing.T) {
 				sends[r.kind]++
 			}
 			selectors, exact := sends["GetKeyRequest"], sends["GetKeyValuesRequest"]
-			wantSelectors, wantExact, at := 2, 1, "exactly"
+			// Each request goes to at most two replicas; the planned drops force one hedge
+			// of the exact read and of a selector, and the other selector may hedge too.
+			minSelectors, maxSelectors, wantExact := 2, 2, 1
 			if hedge {
-				wantSelectors, wantExact, at = 3, 2, "at least"
+				minSelectors, maxSelectors, wantExact = 3, 4, 2
 			}
-			if draws.count() != 3 || len(got) != selectors+exact || selectors < wantSelectors || exact < wantExact ||
-				(!hedge && (selectors != wantSelectors || exact != wantExact)) {
-				t.Fatalf("fallback requests %v: %d draws, %d selector and %d exact sends; want 3 draws and %s %d and %d",
-					got, draws.count(), selectors, exact, at, wantSelectors, wantExact)
+			if draws.count() != 3 || len(got) != selectors+exact || selectors < minSelectors || selectors > maxSelectors || exact != wantExact {
+				t.Fatalf("fallback requests %v: %d draws, %d selector and %d exact sends; want 3 draws, %d-%d selector and %d exact sends",
+					got, draws.count(), selectors, exact, minSelectors, maxSelectors, wantExact)
 			}
 			for _, msg := range recorded.msgs {
 				switch q := msg.(type) {

@@ -66,9 +66,10 @@ const (
 	futureVersionMaxBackoff     = 8.0 // FUTURE_VERSION_MAX_BACKOFF (growth capped here)
 	futureVersionBackoffGrowth  = 2.0 // BACKOFF_GROWTH_RATE
 
-	// Speculative second request knobs (C++ CLIENT_KNOBS)
-	backupRequestDelay = 0.01 // BACKUP_REQUEST_DELAY (10ms minimum hedge delay)
-	secondMultiplier   = 2.0  // MODEL_SECOND_MULTIPLIER (latency × this = hedge delay)
+	// Speculative second request: Go-only fixed values; C++ adapts secondMultiplier
+	// and gates on secondBudget (TODO.md, "Read hedging has no second-request budget").
+	backupRequestDelay = 0.01 // 10ms minimum hedge delay
+	secondMultiplier   = 2.0  // latency × this = hedge delay
 )
 
 func newQueueModel() *QueueModel {
@@ -181,11 +182,9 @@ func (q *QueueModel) soonestEligible(servers []ServerInfo) int {
 	return bestIdx
 }
 
-// secondDelay returns the hedge delay for speculative second requests.
-// The delay is max(BACKUP_REQUEST_DELAY, secondMultiplier × latency) for the
-// best server. This balances between not sending too early (wasting work) and
-// not waiting too long (defeating the purpose of hedging).
-// Matches C++ LoadBalance.actor.h secondDelay computation.
+// secondDelay returns the hedge delay, max(backupRequestDelay, secondMultiplier ×
+// the best server's latency). C++ uses an adaptive multiplier times the second-best
+// alternative's latency plus BASE_SECOND_REQUEST_TIME (LoadBalance.actor.h:554-560).
 func (q *QueueModel) secondDelay(addr string) time.Duration {
 	q.mu.Lock()
 	d := q.getOrCreate(addr)
