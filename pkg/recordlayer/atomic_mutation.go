@@ -8,7 +8,6 @@ package recordlayer
 import (
 	"encoding/binary"
 	"fmt"
-	"math"
 
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -281,10 +280,9 @@ func (m *sumMutation) removeCommon(old, new []atomicMutationEntry) ([]atomicMuta
 
 func (m *sumMutation) applyMutation(tx fdb.WritableTransaction, fdbKey fdb.Key, entry atomicMutationEntry, remove bool) error {
 	if remove {
+		// FDB's ADD is modulo 2^64, so the wrapped negation of MinInt64 (itself)
+		// still undoes its addition, as Java's `-lval` does.
 		val := int64(binary.LittleEndian.Uint64(entry.param))
-		if val == math.MinInt64 {
-			return fmt.Errorf("sum index %q overflow: cannot negate math.MinInt64", m.index.Name)
-		}
 		tx.AddBytes(fdbKey, encodeRecordCount(-val))
 	} else {
 		tx.AddBytes(fdbKey, entry.param)
