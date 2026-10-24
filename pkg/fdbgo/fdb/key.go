@@ -18,7 +18,8 @@
 // Known differences from the Apple binding:
 //   - Transact and Transactor take func(WritableTransaction), not
 //     func(Transaction): an Apple-style closure needs its parameter type changed.
-//   - Error messages: Error.Error() returns "<description> (<code>)" where the
+//   - Error messages: Error.Error() returns "<description> (<code>)", or
+//     "FoundationDB error: <code>" for a code without a description, where the
 //     Apple binding returns "FoundationDB error code <code> (<description>)".
 //     Use Error.Code for programmatic matching.
 //   - Future.Cancel() completes the future with operation_cancelled (1101); the

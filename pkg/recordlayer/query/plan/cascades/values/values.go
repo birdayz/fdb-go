@@ -2048,8 +2048,7 @@ func explainValueOrdinalsWithAliases(v Value, withOrdinals bool, aliases map[Cor
 		// read — the rendering is injective over (field text, ordinal).
 		//
 		// EXPLAIN-FORMAT pin, not identity (RFC-176 P3): plan identity was
-		// once keyed on these renderings (the escape's origin, PR #446 round
-		// 3) but is semantic since RFC-176 P2 — the escape stays because
+		// once keyed on these renderings but is semantic since RFC-176 P2 — the escape stays because
 		// debugging output that collapses two DIFFERENT reads is still a bug
 		// (writeSemanticHash's FieldValue arm keeps the same injective
 		// discriminator).

@@ -1486,9 +1486,8 @@ func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int6
 	// future (ReadYourWrites.actor.cpp:1290), but every error path sends
 	// done.send(Void()) BEFORE rethrowing (:1299-1302, :1325-1329) — done
 	// completes successfully, so a failed watch read never poisons commit;
-	// reading only barriers on watch-setup completion (RFC-098 — resolved the
-	// opposite way the original review finding suggested: the C++ source shows
-	// watch errors are deliberately excluded).
+	// reading only barriers on watch-setup completion (RFC-098): the C++ source
+	// deliberately excludes watch errors.
 	value, err := tx.ryw.get(setupCtx, key, tx.getValue)
 	if err != nil {
 		tx.db.releaseWatch() // setup failed after the slot was reserved (C++ catch → decreaseWatchCounter)

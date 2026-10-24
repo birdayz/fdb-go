@@ -2,7 +2,8 @@
 
 This package (`pkg/fdbgo/fdb`) has an API modeled on the
 [Apple FoundationDB Go binding](https://github.com/apple/foundationdb/tree/main/bindings/go).
-Porting code from it needs the type-level changes listed below.
+Porting code from it needs the type-level changes listed below; [the parity review](../../../docs/fdb-cgo-parity.md)
+explains why some types are interfaces and which Apple types are absent by design.
 The Apple binding wraps CGo `libfdb_c`; this facade can run on **either** a pure-Go
 client (no CGo) **or** the `libfdb_c` backend (build tag `libfdbc`, RFC-109).
 
@@ -20,7 +21,9 @@ removes.)
 | `Snapshot` | Full |
 | `Database` | Superset (`+ InvalidateGRVCache`, `OpenTenantById`) |
 | `Database.Transact` / `Transactor` | The closure takes `WritableTransaction` (an interface) where Apple's takes the `Transaction` struct: change `func(tr fdb.Transaction)` to `func(tr fdb.WritableTransaction)` |
-| `Error.Error()` | `"<description> (<code>)"`; Apple's is `"FoundationDB error code <code> (<description>)"`. Match on `Error.Code` |
+| `Error.Error()` | `"<description> (<code>)"`, or `"FoundationDB error: <code>"` for a code without a description; Apple's is `"FoundationDB error code <code> (<description>)"`. Match on `Error.Code` |
+| `TransactionOptions`, `RangeResult`, `RangeIterator` | Interfaces (both backends produce them) where Apple's are structs; the method sets match |
+| `NetworkOptions`, `Cluster`, `ErrorPredicate` | Absent: no network thread to configure, `Cluster` is legacy, and `IsRetryable` / `IsOnErrorRetryable` replace the predicate type |
 | Key selectors / `subspace` / `tuple` / `directory` | Full |
 | `TransactionOptions` | **Present, but see the three tables below** |
 | `DatabaseOptions` | Mostly honored (timeouts/limits/retry); some accepted-but-ignored; two **rejected** (see below) |
