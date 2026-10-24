@@ -348,10 +348,8 @@ type database struct {
 	// slog.Default() at open). RFC-097 / P1.2.
 	logger *slog.Logger
 
-	// Speculative second request (hedge) control.
-	// When true, read RPCs send a hedge request to a second server after
-	// secondDelay if the primary is slow. Matches C++ BACKUP_REQUEST_DELAY.
-	// Default: true (always on, same as C++).
+	// Speculative second request (hedge) control: when true, a read sends a hedge to
+	// a second server after secondDelay. C++ also requires secondBudget (TODO.md).
 	hedgeEnabled atomic.Bool
 
 	// Opt-in GetRange materialization ceiling in bytes (WithRangeByteCeiling,
@@ -942,7 +940,7 @@ func OpenDatabaseFromConfig(ctx context.Context, cf *ClusterFile, opts ...Option
 	if o.readTagSampling != nil {
 		db.readTags = *o.readTagSampling
 	}
-	db.hedgeEnabled.Store(true)                       // default: hedge on (matches C++)
+	db.hedgeEnabled.Store(true)                       // default: hedge on
 	db.maxWatches.Store(defaultMaxOutstandingWatches) // C++ DEFAULT_MAX_OUTSTANDING_WATCHES (10000)
 
 	if err := db.bootstrap(ctx); err != nil {
