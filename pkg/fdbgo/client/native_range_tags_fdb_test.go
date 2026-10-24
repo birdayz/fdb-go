@@ -172,8 +172,9 @@ func TestNativeReadTagSampling(t *testing.T) {
 			tx.db.hedgeEnabled.Store(hedge)
 			plan := &replyPlan{rec: rec}
 			if hedge {
+				// One planned hedge for a selector and one for the exact read.
 				duplicateServers(&Database{db: tx.db}, 2)
-				plan.entries = []plannedReply{dropReply("GetKeyRequest")}
+				plan.entries = []plannedReply{dropReply("GetKeyRequest"), dropReply("GetKeyValuesRequest")}
 				sim.setIntercept(plan.intercept)
 				sim.armEverything()
 			}
@@ -186,12 +187,17 @@ func TestNativeReadTagSampling(t *testing.T) {
 			recorded := rec.stop()
 			got := taggedRequests(t, recorded)
 			plan.check(t)
-			wantRequests := 3
-			if hedge {
-				wantRequests++
+			// A hedge resends its request, tags included, without a new sample (C++ sends
+			// the same request to the second alternative, LoadBalance.actor.h:660-662);
+			// a reply that outlasts the hedge delay adds a hedge besides the planned ones.
+			sends := map[string]int{}
+			for _, r := range got {
+				sends[r.kind]++
 			}
-			if len(got) != wantRequests || draws.count() != 3 {
-				t.Fatalf("fallback requests %v after %d draws, want %d sends after 3 draws", got, draws.count(), wantRequests)
+			selectors, exact := sends["GetKeyRequest"], sends["GetKeyValuesRequest"]
+			if draws.count() != 3 || len(got) != selectors+exact ||
+				(!hedge && (selectors != 2 || exact != 1)) || (hedge && (selectors < 3 || exact < 2)) {
+				t.Fatalf("fallback requests %v after %d draws, want 3 draws and every planned hedge", got, draws.count())
 			}
 			for _, msg := range recorded.msgs {
 				switch q := msg.(type) {
