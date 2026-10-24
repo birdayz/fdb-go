@@ -664,11 +664,11 @@ deployment configures TLS through exactly two surfaces:
    encrypted PKCS#8 key, and `FDB_TLS_VERIFY_PEERS` sets the verify-peers policy (RFC-277).
    Setting only one of cert/key, or an unusable setting, fails the open with `tls_error`.
 
-The precedence rule is at `pkg/fdbgo/client/tls.go:62-68`. `client.WithTLSConfig`
-(`pkg/fdbgo/client/options.go:61`) is the third surface, but it is unreachable from `database/sql` —
+The precedence rule is `openTLSConfig` in `pkg/fdbgo/client/tls.go`. `client.WithTLSConfig`
+(`pkg/fdbgo/client/options.go`) is the third surface, but it is unreachable from `database/sql` —
 another reason a service that needs fine control opens the client itself and uses
 `sqldriver.RegisterBackend`. Note the footgun: `WithTLSConfig(nil)` is a **no-op**, it does not
-force plaintext (`options.go:58`).
+force plaintext (see its doc comment).
 
 ### Certificates are verified as libfdb_c verifies them
 
@@ -688,7 +688,7 @@ is dialed at a numeric address the cluster sent (`pkg/fdbgo/client/endpoint.go`)
 config needs IP SANs for every process address. For libfdb_c's check, set `InsecureSkipVerify`
 and `transport.VerifyPolicy.VerifyConnection`.
 
-### Tokens and `verify_peers` are `libfdb_c`-only; tenants are pure-Go-only
+### Tokens and TLS network options are `libfdb_c`-only; tenants are pure-Go-only
 
 Stated plainly, because these two facts together decide your build:
 

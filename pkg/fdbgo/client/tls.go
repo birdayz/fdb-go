@@ -14,9 +14,12 @@ import (
 
 // defaultTLSConfigDir is FDB's default config directory on Linux
 // (C++ platform::getDefaultConfigPath()). cert.pem / key.pem found here are used
-// only when the corresponding FDB_TLS_* env var is unset. Passed explicitly into
-// resolveTLSConfig (tests inject a temp dir) — never mutated globally.
-const defaultTLSConfigDir = "/etc/foundationdb"
+// only when the corresponding FDB_TLS_* env var is unset. A variable only so the
+// tls_roots_unit_test binary can point openTLSConfig at a temp dir.
+var defaultTLSConfigDir = "/etc/foundationdb"
+
+// errNoCertificates is the cause when the CA file holds no PEM certificate.
+var errNoCertificates = errors.New("no certificates found")
 
 // TLSConfigError reports a TLS setting that cannot be used. It is tls_error (2107):
 // errors.As finds a *wire.FDBError with that code, and the cause.
@@ -87,7 +90,7 @@ func resolveTLSConfig(configDir string, lookupEnv lookupEnvFunc) (*tls.Config, e
 			return nil, &TLSConfigError{Setting: caPath, Err: err}
 		}
 		if !roots.AppendCertsFromPEM(caBytes) {
-			return nil, &TLSConfigError{Setting: caPath, Err: errors.New("no certificates found")}
+			return nil, &TLSConfigError{Setting: caPath, Err: errNoCertificates}
 		}
 	}
 	return cfg, nil

@@ -1,7 +1,8 @@
 package client
 
 // OpenSSL 3.6 wrote these from one throwaway P-256 key, with -passout pass:fdb-tls-test:
-// openssl pkcs8 -topk8 -outform DER and the -v2/-v2prf, -scrypt or -v1 flags named.
+// openssl pkcs8 -topk8 -outform DER and the -v2/-v2prf, -scrypt or -v1 flags named
+// (pbes1: -v1 PBE-SHA1-DES with -provider legacy; pkcs12-pbe: -v1 PBE-SHA1-3DES).
 
 const fixtureKeyPassword = "fdb-tls-test"
 
@@ -17,5 +18,6 @@ var encryptedKeyFixtures = map[string]string{
 	"aes192-sha512": `MIH0MF8GCSqGSIb3DQEFDTBSMDEGCSqGSIb3DQEFDDAkBBAFaSefwNlC+MrNKHunttheAgIIADAMBggqhkiG9w0CCwUAMB0GCWCGSAFlAwQBFgQQc2ZOZsQTs7TRYB/SJhWM/QSBkNNU9vx0rRZ6uXlZcrEgFHyNm2bhDyvt8pZAWa4Ipp+210/Z7dEwfhpQekhNytHhSHomn6IileIytbXW39GbVcJ2xEoEFAnhGwzZxVgqaH7kZXaecnMD4qA1BBRVjGeAk64oHIh8L0vBpjQZQQSSxWi8DB6jiS5nz/VoOkvA4/UaFUTy6kO+W1eQtfF+7Hx0YA==`,
 	"des3":          `MIHrMFYGCSqGSIb3DQEFDTBJMDEGCSqGSIb3DQEFDDAkBBCLC3y/KYjs2NKYPn5J5oSVAgIIADAMBggqhkiG9w0CCQUAMBQGCCqGSIb3DQMHBAhyyPH/fZtRmASBkJeIUQflETRWpfc38jc/INbKVx5ZvJ18xILL7C8hmdj8QuzRooPFNOVUz2gMpcFcVMnhhR2NN1MS4dy9YG+TaJ4DtWAT4JQKLKwY98Iutd0iHLtRXnZc07tnbnk7HmHojujzeX4PQdNDAgojbGElZuABMZbxfES86+gI/IZPwEXMCLp7vGHvGVrCft9aA/T96g==`,
 	"scrypt":        `MIHsMFcGCSqGSIb3DQEFDTBKMCkGCSsGAQQB2kcECzAcBBByvJCQvPHiESE9ujdKjh1BAgJAAAIBCAIBATAdBglghkgBZQMEASoEED8T9KRw0xwltwkvwPH0DvoEgZCyWhocs6DZduVFPxqFnHikqvq3je95ejWeMXexzl1QbaDMoCq8ESAMiWyt+shk0NJB7qVsaIzH1d8Z0Vs9PiF7fpYn3ivwUofHghB7ezO8jhFoSmHwP9EUJhXqKjjaLJOoso8pwWQKC3YfFlNljNSwpOcxeB2tDV3MxWiYMLjnilryXtG4ytUvp1sN3W6xB1E=`,
-	"pbes1":         `MIGxMBwGCiqGSIb3DQEMAQMwDgQILmwnol6kqz8CAggABIGQvJ7zAm7VekBiUXTSgmHYZ1OIPGQEv5hhBVRlCwC36Hqv4nMS0tCWbdp2PxkUUADOsKwQl2Uh53W9xKATyGdSlSfAnGZEoQIFE4xj8RHlCqe+nRGa6rAfmXm9IzQNUoMjfmuXOugNVSpiJh6qY6WBPphWFB++Aa7+qEq1rGcw+yEVcl5fr8lY3wbwAcwOrWtR`,
+	"pbes1":         `MIGwMBsGCSqGSIb3DQEFCjAOBAiGuTD7GuWG6gICCAAEgZDgeSvqkycUps3jCIe616BoAUU3BN/9kzq4JkxduxkBl1PaK3XW2zSvRvYlD401NV8T3TnOrZ8Md4R9DGFwr1YYQMgK9eXyzu6q5DM/rA3hvgNpfLEAIK6mj+bPMwRSH7HAN5aHtEE9Lvk7BHT9dOENoycigS9VNpqB4t0PwMO87dc+MgDPGXDrwcOcl+niplg=`,
+	"pkcs12-pbe":    `MIGxMBwGCiqGSIb3DQEMAQMwDgQILmwnol6kqz8CAggABIGQvJ7zAm7VekBiUXTSgmHYZ1OIPGQEv5hhBVRlCwC36Hqv4nMS0tCWbdp2PxkUUADOsKwQl2Uh53W9xKATyGdSlSfAnGZEoQIFE4xj8RHlCqe+nRGa6rAfmXm9IzQNUoMjfmuXOugNVSpiJh6qY6WBPphWFB++Aa7+qEq1rGcw+yEVcl5fr8lY3wbwAcwOrWtR`,
 }

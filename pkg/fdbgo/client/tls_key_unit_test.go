@@ -14,6 +14,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"io"
+	"io/fs"
 	"maps"
 	"math/big"
 	"net"
@@ -49,15 +50,30 @@ func requireTLSError(t *testing.T, what string, err error) {
 	}
 }
 
-// OpenSSL-written PBES2 keys decrypt to the key they were made from; scrypt, PBES1
-// and a wrong password do not.
+// pbes2Fixtures are the fixtures the client decrypts.
+var pbes2Fixtures = []string{"aes256-sha256", "aes128-sha1", "aes128-sha224", "aes128-sha384", "aes192-sha512", "des3"}
+
+// refusedSchemes maps each refused fixture to the step that refuses it.
+var refusedSchemes = map[string]string{"scrypt": "derivation", "pbes1": "encryption", "pkcs12-pbe": "encryption"}
+
+// requireKeyScheme asserts err names the refused scheme step part.
+func requireKeyScheme(t *testing.T, what string, err error, part string) {
+	t.Helper()
+	var scheme *keySchemeError
+	if !errors.As(err, &scheme) || scheme.Part != part {
+		t.Fatalf("%s: %v; want the %s refused", what, err, part)
+	}
+}
+
+// OpenSSL-written PBES2 keys decrypt to the key they were made from; scrypt, PBES1,
+// PKCS#12 PBE and a wrong password do not.
 func TestDecryptPKCS8Fixtures(t *testing.T) {
 	t.Parallel()
 	want, err := base64.StdEncoding.DecodeString(fixturePublicKey)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"aes256-sha256", "aes128-sha1", "aes128-sha224", "aes128-sha384", "aes192-sha512", "des3"} {
+	for _, name := range pbes2Fixtures {
 		keyPEM, err := decryptKeyPEM(encryptedPEM(fixtureDER(t, name)), fixtureKeyPassword)
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
@@ -71,14 +87,13 @@ func TestDecryptPKCS8Fixtures(t *testing.T) {
 		if err != nil || !bytes.Equal(pub, want) {
 			t.Fatalf("%s: decrypted to another key (%v)", name, err)
 		}
-		if _, err := decryptKeyPEM(encryptedPEM(fixtureDER(t, name)), "wrong"); err == nil {
-			t.Errorf("%s: a wrong password decrypted", name)
+		if _, err := decryptKeyPEM(encryptedPEM(fixtureDER(t, name)), "wrong"); !errors.Is(err, errKeyPassword) {
+			t.Errorf("%s with a wrong password: %v; want %v", name, err, errKeyPassword)
 		}
 	}
-	for _, name := range []string{"scrypt", "pbes1"} {
-		if _, err := decryptKeyPEM(encryptedPEM(fixtureDER(t, name)), fixtureKeyPassword); err == nil {
-			t.Errorf("%s: decrypted; want an unsupported-scheme error", name)
-		}
+	for name, part := range refusedSchemes {
+		_, err := decryptKeyPEM(encryptedPEM(fixtureDER(t, name)), fixtureKeyPassword)
+		requireKeyScheme(t, name, err, part)
 	}
 }
 
@@ -128,7 +143,7 @@ func TestResolveTLSConfigKeys(t *testing.T) {
 		}
 		return resolveTLSConfig(t.TempDir(), fakeEnv(env))
 	}
-	for _, name := range []string{"aes256-sha256", "des3"} {
+	for _, name := range pbes2Fixtures {
 		cfg, err := resolve(encryptedPEM(fixtureDER(t, name)), fixtureKeyPassword, true)
 		if err != nil || len(cfg.Certificates) != 1 {
 			t.Fatalf("%s: %v", name, err)
@@ -136,11 +151,18 @@ func TestResolveTLSConfigKeys(t *testing.T) {
 	}
 	_, err := resolve(encryptedPEM(fixtureDER(t, "aes256-sha256")), "wrong", true)
 	requireTLSError(t, "wrong password", err)
+	if !errors.Is(err, errKeyPassword) {
+		t.Fatalf("wrong password: %v; want %v", err, errKeyPassword)
+	}
 	_, err = resolve(encryptedPEM(fixtureDER(t, "aes256-sha256")), "", false)
 	requireTLSError(t, "no password", err)
-	for _, name := range []string{"scrypt", "pbes1"} {
+	if !errors.Is(err, errKeyPassword) {
+		t.Fatalf("no password: %v; want %v", err, errKeyPassword)
+	}
+	for name, part := range refusedSchemes {
 		_, err := resolve(encryptedPEM(fixtureDER(t, name)), fixtureKeyPassword, true)
 		requireTLSError(t, name, err)
+		requireKeyScheme(t, name, err, part)
 	}
 	legacy := pem.EncodeToMemory(&pem.Block{
 		Type:    "EC PRIVATE KEY",
@@ -149,6 +171,7 @@ func TestResolveTLSConfigKeys(t *testing.T) {
 	})
 	_, err = resolve(legacy, fixtureKeyPassword, true)
 	requireTLSError(t, "legacy encrypted PEM", err)
+	requireKeyScheme(t, "legacy encrypted PEM", err, "legacy PEM encryption")
 
 	// An unencrypted key ignores the password, as OpenSSL does.
 	_, certPEM, keyPEM := testCertPEM(t)
@@ -181,8 +204,44 @@ func TestResolveTLSConfigEmptyPathVariables(t *testing.T) {
 	}
 	ca := writeTLSTemp(t, "ca.pem", caPEM)
 	keyOnly := fakeEnv(map[string]string{"FDB_TLS_CERTIFICATE_FILE": "", "FDB_TLS_CA_FILE": ca})
-	if _, err := resolveTLSConfig(dir, keyOnly); err == nil {
-		t.Fatal("an empty certificate variable with the default key: want the cert/key pairing error")
+	_, err := resolveTLSConfig(dir, keyOnly)
+	requireTLSError(t, "key without certificate", err)
+	var cfgErr *TLSConfigError
+	if errors.As(err, &cfgErr); cfgErr.Setting != "FDB_TLS_CERTIFICATE_FILE/FDB_TLS_KEY_FILE" {
+		t.Fatalf("an empty certificate variable with the default key: %v; want the cert/key pairing error", err)
+	}
+}
+
+// Each unusable file is tls_error naming the file; a missing one unwraps to fs.ErrNotExist.
+func TestResolveTLSConfigFileErrors(t *testing.T) {
+	t.Parallel()
+	caPEM, certPEM, keyPEM := testCertPEM(t)
+	_, _, otherKeyPEM := testCertPEM(t)
+	ca := writeTLSTemp(t, "ca.pem", caPEM)
+	cert := writeTLSTemp(t, "cert.pem", certPEM)
+	key := writeTLSTemp(t, "key.pem", keyPEM)
+	missing := filepath.Join(t.TempDir(), "missing.pem")
+	emptyFile := writeTLSTemp(t, "empty.pem", nil)
+	otherKey := writeTLSTemp(t, "other-key.pem", otherKeyPEM)
+	for _, tc := range []struct {
+		name, cert, key, ca string
+		setting             string
+		cause               error // nil: crypto/tls's own pairing error
+	}{
+		{"empty CA file", cert, key, emptyFile, emptyFile, errNoCertificates},
+		{"missing certificate file", missing, key, ca, missing, fs.ErrNotExist},
+		{"missing key file", cert, missing, ca, missing, fs.ErrNotExist},
+		{"empty certificate file", emptyFile, key, ca, emptyFile + ", " + key, nil},
+		{"key of another certificate", cert, otherKey, ca, cert + ", " + otherKey, nil},
+	} {
+		_, err := resolveTLSConfig(t.TempDir(), fakeEnv(map[string]string{
+			"FDB_TLS_CERTIFICATE_FILE": tc.cert, "FDB_TLS_KEY_FILE": tc.key, "FDB_TLS_CA_FILE": tc.ca,
+		}))
+		requireTLSError(t, tc.name, err)
+		var cfgErr *TLSConfigError
+		if errors.As(err, &cfgErr); cfgErr.Setting != tc.setting || (tc.cause != nil && !errors.Is(err, tc.cause)) {
+			t.Errorf("%s: %v; want setting %q and cause %v", tc.name, err, tc.setting, tc.cause)
+		}
 	}
 }
 

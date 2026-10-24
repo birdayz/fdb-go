@@ -127,7 +127,7 @@ option first and the environment second.
      `*wire.FDBError{Code: 2107}` (tls_error) and its cause. It covers an unreadable or
      empty file, a certificate without its key or a key without its certificate, a
      wrong password, an unsupported key format and a verify-peers parse error.
-3. **Transport** (`transport/conn.go`) is unchanged. `upgradeTLS` still fills an empty
+3. **Transport** (`transport/conn.go`): only the `upgradeTLS` comment changes. `upgradeTLS` still fills an empty
    `ServerName` with the dialed host, so a `WithTLSConfig` config keeps its meaning as a
    Go `*tls.Config`. That covers the stdlib's per-dial host check, its roots, the verified
    chains its callbacks receive, and the `cs.ServerName` a custom `VerifyConnection`
@@ -164,7 +164,7 @@ option first and the environment second.
 - A bad configuration fails the database open with `tls_error`. libfdb_c logs
   `Net2TLSInitError` and then fails every TLS connection (`Net2.actor.cpp:1405-1419`).
 - Keys:
-  - a legacy RFC 1423 encrypted PEM key, PBES1 and scrypt PBES2 keys are refused with
+  - a legacy RFC 1423 encrypted PEM key, PBES1, PKCS#12 PBE and scrypt PBES2 keys are refused with
     `tls_error`; OpenSSL loads them;
   - a certificate whose key does not match is refused by `crypto/tls`; OpenSSL drops the
     key;
@@ -230,9 +230,16 @@ Regressions (each fails when its part is reverted; rejections assert their cause
     and with SHA-384, and DES-EDE3 with OpenSSL's default PRF (SHA-256). Each decrypts
     with `FDB_TLS_PASSWORD` to the public key recorded beside it, and loads with a
     matching certificate;
-  - a wrong or missing password, a scrypt key, a PBES1 key and a legacy encrypted PEM
-    key are each a `*TLSConfigError` with code 2107;
+  - a wrong or missing password, a scrypt key, a PBES1 key, a PKCS#12 PBE key and a
+    legacy encrypted PEM key are each a `*TLSConfigError` with code 2107, and each names
+    its cause (a wrong password, or the refused scheme);
   - an unencrypted key loads with a password set.
+- `client`, file errors: an empty CA file, a missing certificate or key file, an empty
+  certificate file and a key that does not match its certificate are each a
+  `*TLSConfigError` with code 2107, a missing file unwrapping to `fs.ErrNotExist`.
+- `client`, the production lookup: `openTLSConfig` reads the process environment, where
+  an unset path variable falls back to the default directory and a set but empty one
+  does not, and `FDB_TLS_CA_FILE` and `FDB_TLS_VERIFY_PEERS` decide a handshake.
 - `client`, the system roots are not trusted. A test binary sets `SSL_CERT_FILE` to a CA
   it generates in `TestMain`, before the process loads its roots. A stdlib config then
   accepts a server signed by that CA, which is the control. The environment config with

@@ -456,6 +456,10 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   re-reads certificate files on change every 12 h (`Knobs.cpp:128`), and its handshake
   timeout is 2 s (`Net2.actor.cpp:1101-1106`) where Go's is 10 s. The `fdb` facade first
   needs network options.
+- [ ] **TLS differential.** RFC-277's verify-peers cases are pinned against the C++ source,
+  not measured: run libfdb_c and the Go client with the same `FDB_TLS_*` against one TLS
+  listener per `TestVerifyPolicyMatching` case (OpenSSL's Latin-1 widening, SAN
+  fall-throughs, `ssl_server` purpose), and open a TLS testcontainer fdbserver (test-full).
 
 - [ ] **Multi-node throughput and saturation campaign.** Measure Go against libfdb_c on
   `grv`, `get100`, `set100` and `range100` over a worker ladder of 1, 8, 32, 64, 128 and

@@ -34,6 +34,20 @@ var (
 	errKeyPassword = errors.New("wrong password or corrupt key")
 )
 
+// keySchemeError reports a key encryption the client does not decrypt: Part names
+// the refused step and OID its algorithm (nil for legacy PEM encryption).
+type keySchemeError struct {
+	Part string
+	OID  asn1.ObjectIdentifier
+}
+
+func (e *keySchemeError) Error() string {
+	if e.OID == nil {
+		return "legacy encrypted PEM key: convert it with openssl pkcs8 -topk8"
+	}
+	return fmt.Sprintf("unsupported key %s %v: only PBES2 with PBKDF2 and AES-CBC or DES-EDE3-CBC is supported", e.Part, e.OID)
+}
+
 // encryptedPrivateKeyInfo is RFC 5958's EncryptedPrivateKeyInfo.
 type encryptedPrivateKeyInfo struct {
 	Algorithm     pkix.AlgorithmIdentifier
@@ -67,7 +81,7 @@ func decryptKeyPEM(keyPEM []byte, password string) ([]byte, error) {
 			continue
 		}
 		if strings.Contains(block.Headers["Proc-Type"], "ENCRYPTED") {
-			return nil, errors.New("legacy encrypted PEM key: convert it with openssl pkcs8 -topk8")
+			return nil, &keySchemeError{Part: "legacy PEM encryption"}
 		}
 		if block.Type != "ENCRYPTED PRIVATE KEY" {
 			return keyPEM, nil
@@ -88,14 +102,14 @@ func decryptPKCS8(der []byte, password string) ([]byte, error) {
 		return nil, errors.New("malformed encrypted private key")
 	}
 	if !info.Algorithm.Algorithm.Equal(oidPBES2) {
-		return nil, fmt.Errorf("unsupported key encryption %v: only PBES2 is supported", info.Algorithm.Algorithm)
+		return nil, &keySchemeError{Part: "encryption", OID: info.Algorithm.Algorithm}
 	}
 	var params pbes2Params
 	if _, err := asn1.Unmarshal(info.Algorithm.Parameters.FullBytes, &params); err != nil {
 		return nil, errors.New("malformed PBES2 parameters")
 	}
 	if !params.KeyDerivationFunc.Algorithm.Equal(oidPBKDF2) {
-		return nil, fmt.Errorf("unsupported key derivation %v: only PBKDF2 is supported", params.KeyDerivationFunc.Algorithm)
+		return nil, &keySchemeError{Part: "derivation", OID: params.KeyDerivationFunc.Algorithm}
 	}
 	var kdf pbkdf2Params
 	if _, err := asn1.Unmarshal(params.KeyDerivationFunc.Parameters.FullBytes, &kdf); err != nil {
@@ -154,7 +168,7 @@ func pbkdf2PRF(oid asn1.ObjectIdentifier) (func() hash.Hash, error) {
 	case oid.Equal(oidHMACSHA512):
 		return sha512.New, nil
 	}
-	return nil, fmt.Errorf("unsupported PBKDF2 PRF %v", oid)
+	return nil, &keySchemeError{Part: "PBKDF2 PRF", OID: oid}
 }
 
 func pbes2Cipher(oid asn1.ObjectIdentifier) (func([]byte) (cipher.Block, error), int, error) {
@@ -168,5 +182,5 @@ func pbes2Cipher(oid asn1.ObjectIdentifier) (func([]byte) (cipher.Block, error),
 	case oid.Equal(oidDESEDE3CBC):
 		return des.NewTripleDESCipher, 24, nil
 	}
-	return nil, 0, fmt.Errorf("unsupported key cipher %v", oid)
+	return nil, 0, &keySchemeError{Part: "cipher", OID: oid}
 }

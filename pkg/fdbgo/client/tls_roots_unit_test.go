@@ -23,11 +23,15 @@ import (
 )
 
 // systemRootCert is the server certificate signed by the CA TestMain puts into the
-// system roots.
-var systemRootCert tls.Certificate
+// system roots, and systemRootsFile that CA.
+var (
+	systemRootCert  tls.Certificate
+	systemRootsFile string
+)
 
 // TestMain installs a fresh CA as the process's system roots before anything loads
-// them; x509 reads SSL_CERT_FILE once per process.
+// them; x509 reads SSL_CERT_FILE once per process. It also gives openTLSConfig a
+// default directory holding cert.pem and key.pem.
 func TestMain(m *testing.M) {
 	dir, err := os.MkdirTemp("", "fdb-tls-roots")
 	if err != nil {
@@ -38,16 +42,71 @@ func TestMain(m *testing.M) {
 	if err == nil {
 		err = os.WriteFile(filepath.Join(dir, "roots.pem"), caPEM, 0o600)
 	}
+	if err == nil {
+		err = writeDefaultKeyPair(dir, cert)
+	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
-	os.Setenv("SSL_CERT_FILE", filepath.Join(dir, "roots.pem"))
+	systemRootsFile = filepath.Join(dir, "roots.pem")
+	os.Setenv("SSL_CERT_FILE", systemRootsFile)
 	os.Setenv("SSL_CERT_DIR", dir)
 	systemRootCert = cert
+	defaultTLSConfigDir = dir
 	code := m.Run()
 	os.RemoveAll(dir)
 	os.Exit(code)
+}
+
+func writeDefaultKeyPair(dir string, cert tls.Certificate) error {
+	keyDER, err := x509.MarshalPKCS8PrivateKey(cert.PrivateKey)
+	if err != nil {
+		return err
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Certificate[0]})
+	if err := os.WriteFile(filepath.Join(dir, "cert.pem"), certPEM, 0o600); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "key.pem"), pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}), 0o600)
+}
+
+// startSystemRootServer serves the FDB ConnectPacket exchange behind TLS with
+// systemRootCert and returns a dial through transport.Dial.
+func startSystemRootServer(t *testing.T) func(cfg *tls.Config) error {
+	t.Helper()
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{systemRootCert}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer c.Close()
+				var buf [transport.ConnectPacketSize]byte
+				if _, err := io.ReadFull(c, buf[:]); err != nil {
+					return
+				}
+				sp := transport.ConnectPacket{ProtocolVersion: transport.ProtocolVersion73, ConnectionID: 1}
+				_, _ = c.Write(sp.Marshal())
+				_, _ = io.Copy(io.Discard, c)
+			}()
+		}
+	}()
+	return func(cfg *tls.Config) error {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		c, err := transport.Dial(ctx, ln.Addr().String(), cfg, nil)
+		if c != nil {
+			c.Close()
+		}
+		return err
+	}
 }
 
 func systemRootPKI() ([]byte, tls.Certificate, error) {
@@ -89,38 +148,7 @@ func systemRootPKI() ([]byte, tls.Certificate, error) {
 // With no CA file the environment config trusts no root, as libfdb_c, which loads
 // no default verify paths; a server the system roots vouch for is refused.
 func TestResolveTLSConfigIgnoresSystemRoots(t *testing.T) {
-	ln, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{systemRootCert}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ln.Close()
-	go func() {
-		for {
-			c, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			go func() {
-				defer c.Close()
-				var buf [transport.ConnectPacketSize]byte
-				if _, err := io.ReadFull(c, buf[:]); err != nil {
-					return
-				}
-				sp := transport.ConnectPacket{ProtocolVersion: transport.ProtocolVersion73, ConnectionID: 1}
-				_, _ = c.Write(sp.Marshal())
-				_, _ = io.Copy(io.Discard, c)
-			}()
-		}
-	}()
-	dial := func(cfg *tls.Config) error {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		c, err := transport.Dial(ctx, ln.Addr().String(), cfg, nil)
-		if c != nil {
-			c.Close()
-		}
-		return err
-	}
+	dial := startSystemRootServer(t)
 	// The control: Go's own verification trusts the system roots.
 	if err := dial(&tls.Config{}); err != nil {
 		t.Fatalf("stdlib config with system roots: %v", err)
@@ -141,5 +169,42 @@ func TestResolveTLSConfigIgnoresSystemRoots(t *testing.T) {
 	}
 	if err := transport.DefaultVerifyPolicy.Verify([]*x509.Certificate{leaf}, nil); !errors.As(err, &pe) || !errors.As(err, &unknownCA) {
 		t.Fatalf("policy with nil roots: %v; want unknown authority", err)
+	}
+}
+
+// openTLSConfig reads the process environment: an unset path variable falls back to
+// the default directory and a set but empty one does not; the CA file and the
+// verify-peers policy decide the handshake.
+func TestOpenTLSConfigReadsEnvironment(t *testing.T) {
+	for _, v := range []string{"FDB_TLS_CERTIFICATE_FILE", "FDB_TLS_KEY_FILE", "FDB_TLS_CA_FILE", "FDB_TLS_PASSWORD", "FDB_TLS_VERIFY_PEERS"} {
+		t.Setenv(v, "")
+		os.Unsetenv(v)
+	}
+	open := func() *tls.Config {
+		t.Helper()
+		cfg, err := openTLSConfig(openOptions{}, &ClusterFile{UseTLS: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cfg
+	}
+	if cfg := open(); len(cfg.Certificates) != 1 {
+		t.Fatalf("unset variables: %d certificates; want the default cert.pem and key.pem", len(cfg.Certificates))
+	}
+	t.Setenv("FDB_TLS_CERTIFICATE_FILE", "")
+	t.Setenv("FDB_TLS_KEY_FILE", "")
+	if cfg := open(); len(cfg.Certificates) != 0 {
+		t.Fatalf("empty variables: %d certificates; want none", len(cfg.Certificates))
+	}
+
+	dial := startSystemRootServer(t)
+	t.Setenv("FDB_TLS_CA_FILE", systemRootsFile)
+	if err := dial(open()); err != nil {
+		t.Fatalf("CA file from the environment: %v", err)
+	}
+	t.Setenv("FDB_TLS_VERIFY_PEERS", "S.CN=nobody")
+	var pe *transport.PeerVerifyError
+	if err := dial(open()); !errors.As(err, &pe) {
+		t.Fatalf("FDB_TLS_VERIFY_PEERS from the environment: %v; want a PeerVerifyError", err)
 	}
 }

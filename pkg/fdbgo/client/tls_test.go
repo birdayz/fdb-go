@@ -109,7 +109,7 @@ func TestResolveTLSPath(t *testing.T) {
 }
 
 // TestResolveTLSConfig loads real files into a *tls.Config and checks the error
-// paths. Uses an injected getenv (no global env mutation) so it stays parallel.
+// paths. Uses an injected environment lookup (no global env mutation) so it stays parallel.
 func TestResolveTLSConfig(t *testing.T) {
 	t.Parallel()
 	caPEM, certPEM, keyPEM := testCertPEM(t)
