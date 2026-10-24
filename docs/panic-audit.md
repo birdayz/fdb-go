@@ -18,7 +18,7 @@ an error instead: a planner bug must fail the QUERY, never the process. This is 
 (`RecordCoreException` propagates through the cursor future chain as a recoverable error) and
 it matters because exported executor entry points (`ExecutePlan`) deliberately have **no**
 recover boundary — direct Record Layer API clients would crash on what SQL clients survive
-only via the `cascades_generator.go` boundary recover.
+only via the SQL connection's boundary recover (`recoverInto`, which `Rows.Next` defers).
 
 ## The gate (RFC-134) — this is what keeps the discipline honest
 
@@ -81,8 +81,8 @@ allowlist (file → permitted AST count). Keep the two in sync.
 | `pkg/fdbgo/fdb/transaction.go` | 1 | `Transact` closure boundary |
 | `pkg/fdbgo/libfdbc/backend.go` | 1 | cgo libfdb_c backend: translate cgo/callback panics to Go errors (`cgo && libfdbc` only) |
 | `pkg/relational/core/parser/parser.go` | 4 | ANTLR bailout panic → syntax error |
-| `pkg/relational/core/embedded/connection.go` | 2 | public SQL connection API: panic → SQL error |
-| `pkg/relational/core/embedded/cascades_generator.go` | 1 | executor eval bridge: panic → SQL error |
+| `pkg/relational/core/embedded/connection.go` | 1 | public SQL connection API: panic → SQL error (`recoverInto`, deferred by every exported connection, transaction, result-set and DirectAccess entry; it closes the connection) |
+| `pkg/relational/sqldriver/driver.go` | 1 | `Connector.Connect`: a panic initializing the connector → SQL internal error; the next `Connect` initializes again |
 | `pkg/recordlayer/merge_cursor.go` | 1 | `tuple.Pack()` on user-derived comparison keys → cursor error |
 | `pkg/recordlayer/query/plan/cascades/values/required_bindings.go` | 1 | RFC-232 binding admission: a hostile implementation of the open `Value` interface → typed `LayoutForeignValue` error |
 | `cmd/fdb-stacktester/directory_ops.go` | 1 | binding-tester harness binary (cgo-dependent build) |

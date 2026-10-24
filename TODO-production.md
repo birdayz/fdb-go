@@ -280,9 +280,10 @@ fdb-record-layer-go Authors") + obtain internal legal sign-off — the file is i
 crashes on `SELECT 1/0` for the weeks the sweep takes. Build the net, then refactor behind
 it. This is the minimal realization of the P0.3 policy:
 - [x] db/sql boundary recover spanning the FULL query path — `ExecContext`/`QueryContext`
-  (`connection.go`) **and** `paginatingRows.Next`/`cascadesRows.Next` (`cascades_generator.go`):
+  (`connection.go`) **and** `paginatingRows.Next` (`cascades_generator.go`):
   catch-all → `debug.Stack()` (first) → log SERIOUS server-side → generic internal error
-  (panic value never leaked to the caller) → keep serving.
+  (panic value never leaked to the caller) → keep serving. (Since RFC-272 every exported entry
+  defers `recoverInto` in `connection.go`, and the connection is closed after a panic.)
 - [x] recover→`failConnection` in `readLoop` (inline, `conn.go:619`), `writeLoop` +
   `connectionMonitor` (`recoverLoop`, `conn.go:432,782`) — a panic there is otherwise an
   uncatchable whole-host crash. The false `conn.go` comment is corrected (`:612-615`) and the
@@ -316,7 +317,7 @@ panic *internally*.
 - **Every goroutine boundary recovers** (this is what makes the library never-panic to
   callers — the `encoding/json` pattern): catch-all → `debug.Stack()` (first) → log SERIOUS
   → generic internal error / `failConnection`. Never splice the panic value into a
-  tenant-visible message. Boundaries: (1) db/sql `connection.go:305,336` [new, P0.2];
+  tenant-visible message. Boundaries: (1) db/sql `connection.go` (`recoverInto`, every exported entry since RFC-272) [new, P0.2];
   (2) FDB `transaction.go:508 panicToError` [**KEEP** — also the `Must*`-API boundary,
   Apple parity]; (3) the 3 network goroutines [new, P0.2]; (4) **the remaining client
   background goroutines — `topologyMonitor`, `backgroundRefresher`, the GRV-batch `flush`,
@@ -400,9 +401,10 @@ accumulator / sumtype alternatives.
     would change the ported signature). Switching here would *diverge* from the Apple Go binding
     (a client-spec violation), so parity wins. `panicToError` is the documented boundary.
 - [x] **P0.3-F — fuzz net** (`M`) — DONE. The eval/value layer (where panics actually hide) was
-  already well-fuzzed: `embedded_test.go` has `FuzzApplyMathOp`, `FuzzApplyBitOp`,
-  `FuzzCompareValues`, `FuzzCastValue`, `FuzzLikePrefixStrinc`, `FuzzLikePatternToPrefix`; `values/`
-  has `FuzzSimplifyValue_ArithmeticTree`/`_CastChain`, `FuzzAndOrValue_Kleene3VL`,
+  already well-fuzzed: `embedded_test.go` has `FuzzCompareValues` (its `FuzzApplyMathOp` and
+  `FuzzApplyBitOp` were removed in RFC-272 with the test-only `functions` helpers they fuzzed;
+  SQL arithmetic is `values.ArithmeticValue`); `values/` has `FuzzCastValue_ScalarInvariants`,
+  `FuzzSimplifyValue_ArithmeticTree`/`_CastChain`, `FuzzAndOrValue_Kleene3VL`,
   `FuzzCaseExpression_FirstMatchWins`, etc. The remaining **SQL-string → no-panic** gap is now
   closed by a complementary pair (2026-06-24):
   - **`FuzzSQLPlan`** (`pkg/relational/core/embedded`) — SQL string → parse → semantic analysis →
@@ -465,8 +467,9 @@ now return everywhere (div0→22012 etc.); the keep=false silent-row-drop is fix
 - [x] **GATE completed**: conformance + FDB green at every commit; `-race` on
   `//pkg/relational/...` run (found + fixed the `hadRead` client race — see P1.1); 1M stress
   green (all subtests pass, durations consistent with the baseline — no bulk-path regression).
-- [x] **P0.2 gap CLOSED:** `paginatingRows.Next` + `cascadesRows.Next` (cascades_generator.go)
-  now `recover()` → `recoveredPanicError` — the db/sql boundary recover spans the FULL query
+- [x] **P0.2 gap CLOSED:** `paginatingRows.Next` (cascades_generator.go) now `recover()` →
+  `recoveredPanicError` (since RFC-272 it defers `recoverInto` in connection.go, which closes the
+  connection) — the db/sql boundary recover spans the FULL query
   path (planning + first page via QueryContext/ExecContext, later pages via Rows.Next). A panic
   during later-page iteration becomes a generic internal error, not a host crash; user eval
   errors already return cleanly via the sweep. (`-race` job into CI still tracked under P1.1.)

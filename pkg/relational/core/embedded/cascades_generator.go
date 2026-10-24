@@ -1538,23 +1538,14 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 	// page. The captured transaction and ownership are separate: a statement
 	// must never commit or abort an application's explicit transaction.
 	if pr.isUpdate && pr.tx == nil {
-		tx, err := c.beginTransaction()
+		tx, err := c.beginTransaction(ctx)
 		if err != nil {
 			pr.statsErr = err
 			pr.Close()
 			return query.Result{}, err
 		}
 		pr.tx, pr.ownsTx = tx, true
-		cancelDone := make(chan struct{})
-		stop := context.AfterFunc(ctx, func() {
-			tx.rctx.Cancel()
-			close(cancelDone)
-		})
-		pr.stopTxCancellation = func() {
-			if !stop() {
-				<-cancelDone
-			}
-		}
+		tx.bindContext(ctx)
 		defer pr.Close()
 		if err := c.ensureMetaData(ctx); err != nil {
 			pr.statsErr = err
@@ -1584,7 +1575,7 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 	if pr.isUpdate {
 		n, err := pr.countAll()
 		if pr.ownsTx {
-			pr.detachTxCancellation()
+			pr.tx.detachContext() // a dispatched commit's outcome must not become ctx's error
 			if err != nil && ctx.Err() != nil {
 				err = translateExecErrorCtx(ctx, ctx.Err())
 			}
@@ -1725,8 +1716,11 @@ type paginatingRows struct {
 	bufPos       int
 	continuation []byte
 	exhausted    bool
-	closed       bool
-	fetchErr     error
+	// finished records that the caller was handed io.EOF: the statement read
+	// to its end.
+	finished bool
+	closed   bool
+	fetchErr error
 
 	// tx is either the explicit transaction that was open when Execute ran, the
 	// statement-owned auto-commit DML transaction, or nil for auto-commit SELECT.
@@ -1750,9 +1744,6 @@ type paginatingRows struct {
 	// after the complete DML drain; ambiguity is reported, never replayed.
 	// Borrowed explicit transactions remain application-owned.
 	ownsTx bool
-	// stopTxCancellation detaches and drains the pre-commit cancellation hook.
-	// It is consumed exactly once before commit or during terminal cleanup.
-	stopTxCancellation func()
 
 	// isUpdate is the statement-kind fact that used to share a field with the
 	// routing decision above (`respectActiveTx`), conflating two independent
@@ -1775,22 +1766,19 @@ func (r *paginatingRows) Columns() []string {
 	return cols
 }
 
-func (r *paginatingRows) detachTxCancellation() {
-	if stop := r.stopTxCancellation; stop != nil {
-		r.stopTxCancellation = nil
-		stop()
-	}
-}
-
-func (r *paginatingRows) Close() error {
+func (r *paginatingRows) Close() (err error) {
+	defer r.conn.recoverInto(&err)
 	if r.closed {
 		return nil
 	}
 	r.closed = true
-	r.detachTxCancellation()
-	if r.ownsTx && !r.tx.terminated.Load() {
-		// Commit terminates on every outcome, including ambiguity. Reaching
-		// this arm means execution ended before commit and must be aborted.
+	if r.tx != nil && !r.ownsTx && !r.finished && r.ctx.Err() != nil {
+		// database/sql closes the rows of an ended context itself, so no later
+		// page reaches runInCapturedTx; end the transaction here instead.
+		r.tx.abort(r.ctx)
+	}
+	if r.ownsTx {
+		// Aborts it before commit; afterwards only releases it.
 		if err := r.tx.Rollback(); err != nil {
 			r.statsErr = errors.Join(r.statsErr, err)
 		}
@@ -1881,17 +1869,14 @@ func (r *paginatingRows) Next(dest []driver.Value) (err error) {
 	// execution (an invariant trip, or any residual eval panic) must become an error
 	// here, not crash the shared multi-tenant process.
 	defer func() {
-		if rec := recover(); rec != nil {
-			err = recoveredPanicError(rec)
-		}
 		// RFC-211: stage whatever ended this statement for the record Close
-		// emits. io.EOF is exhaustion, not failure. Registered in the SAME
-		// defer as the panic recovery and AFTER it, so a recovered panic is
-		// recorded as the statement's outcome too.
+		// emits. io.EOF is exhaustion, not failure. It runs after recoverInto,
+		// so a recovered panic is recorded as the statement's outcome too.
 		if err != nil && err != io.EOF && r.statsErr == nil {
 			r.statsErr = err
 		}
 	}()
+	defer r.conn.recoverInto(&err)
 	if r.closed {
 		return io.EOF
 	}
@@ -1901,6 +1886,7 @@ func (r *paginatingRows) Next(dest []driver.Value) (err error) {
 	// setMaxRows semantics. SQL LIMIT is no longer applied here; it is the
 	// RecordQueryLimitPlan operator's job inside the plan (RFC-128).
 	if r.maxRows > 0 && r.emitted >= r.maxRows {
+		r.finished = true
 		return io.EOF
 	}
 
@@ -1968,6 +1954,7 @@ func (r *paginatingRows) nextRow() ([]driver.Value, error) {
 
 	// Buffer exhausted. If source is done, we're done.
 	if r.exhausted {
+		r.finished = true
 		return nil, io.EOF
 	}
 	if r.fetchErr != nil {
@@ -1987,6 +1974,7 @@ func (r *paginatingRows) nextRow() ([]driver.Value, error) {
 			break
 		}
 		if r.exhausted {
+			r.finished = true
 			return nil, io.EOF
 		}
 	}

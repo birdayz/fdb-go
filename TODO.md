@@ -2064,3 +2064,16 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   SA5011 replacement is available. Staticcheck 2026.2 retired SA5011 in `5161aaa18`;
   nogo's enabled x/tools `nilness` checks proven-nil uses but not that pattern.
   See CHANGELOG.md, Unreleased.
+
+## GROUP BY duplicate-key check: follow-ups found by RFC-272
+
+- [ ] Found while removing the `GetText` fallback (RFC-272 item 6); each predates it and needs a
+  JVM probe before Go changes. (1) The 42702 check runs at aggregate build time, before WHERE and
+  SELECT-list resolution and before 42803: `WHERE nosuch = 1 GROUP BY amount+1, amount+1` and
+  `SELECT nosuch, COUNT(*) … GROUP BY amount+1, amount+1` are 42702 (Java 42703), and
+  `SELECT category, COUNT(*) … GROUP BY amount+1, amount+1` is 42702 (Java 42803)
+  (`QueryVisitor.java:274-305`, `LogicalOperator.java:436-455`). (2) An unknown function or a
+  scalar subquery as a GROUP BY key returns a raw `*expr.UnsupportedExpressionShapeError`, not an
+  `api.Error` (Java 0AF00 / 42601). (3) `category || 'a'` as a key is 42804; Java is 0AF00
+  "Unsupported operator ||". Parameter keys (`amount = ?, amount = ?`) are value-dependent; the
+  probe runner binds no parameters, so Java's answer is unmeasured (DIVERGENCES.md).

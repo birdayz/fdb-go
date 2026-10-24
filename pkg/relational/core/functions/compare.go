@@ -8,26 +8,6 @@ import (
 	"strings"
 )
 
-// IsTruthy returns true when v is a non-nil, non-zero boolean or
-// non-zero numeric. Used by SELECT-projection boolean coercion and by
-// the `IF(cond, a, b)` scalar function.
-func IsTruthy(v any) bool {
-	if v == nil {
-		return false
-	}
-	switch n := v.(type) {
-	case bool:
-		return n
-	case int64:
-		return n != 0
-	case float64:
-		return n != 0
-	case string:
-		return n != ""
-	}
-	return true
-}
-
 // CompareValues returns -1/0/1 for a < b / a == b / a > b under SQL
 // ordering semantics. NULL sorts before non-NULL (sort-site callers
 // should honour NULLS FIRST / LAST before reaching here). Numeric
