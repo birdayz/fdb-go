@@ -159,8 +159,8 @@ and scope honesty. Client divergences are subtle and reviewers catch different c
 (storage-shadow, cleared-base, sticky-unreadable): ask for `replicas: 2`, which runs each
 lens twice, with the copies on different providers.
 
-Review again after every new commit (`previous: <run>/report.json`); an ACK only covers
-the HEAD it reviewed.
+Push and post a new review after every new commit (a posted run re-checks the PR's open
+findings itself); an ACK only covers the HEAD it reviewed.
 
 ## Hard rules (from CLAUDE.md — non-negotiable)
 

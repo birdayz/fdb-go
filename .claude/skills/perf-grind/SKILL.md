@@ -106,8 +106,8 @@ git push origin perf-grind-N
 When ready for review, mark the PR ready (`gh pr ready`) and run the **`bruh-code-review`**
 skill on it: `review PR <N> and post it`.
 
-**Iterate until it ACKs the current HEAD.** Fix every finding it raises. Review again after
-each round (`previous: <run>/report.json`) and post it; an ACK only covers the HEAD it reviewed.
+**Iterate until it ACKs the current HEAD.** Fix every finding it raises. Push and post a new review
+after each round (it re-checks the PR's open findings itself); an ACK only covers the HEAD it reviewed.
 
 **Never merge yourself.** The human merges after the bruh-code-review ACK.
 

@@ -101,17 +101,17 @@ One branch, one PR. Drive every non-trivial client change through this. (For a o
 fix you may collapse the RFC into the PR description — but the review gates are never skipped.)
 
 ### Step 1 — RFC
-Write `rfcs/NNN-short-title.md`. Number = next free. Include: **Status: Draft**, the **Item** it
+Write `rfcs/NNN-short-title.md`. Number: as todo-worker Step 4 (counts RFCs in open PRs), and
+open the draft PR right after committing it (todo-worker Step 5). Include: **Status: Draft**, the **Item** it
 closes, the **problem** (with the C++ behavior cited `file:line` from `/tmp/fdbsrc`), the
 **proposed Go change**, the **executable spec** (exactly what the test/differential will prove),
 and **wire-compat impact** (bytes? conflict ranges? error codes?). The RFC's load-bearing claim
 must be a C++ citation, not an assertion.
 
 ### Step 2 — review the RFC
-Commit the RFC and run **`bruh-code-review`** on that commit with the client lens
-(`review <sha>, lenses: fdb-client`: an RFC matches no lens path, and without it only the
-core lenses run). Fix the findings
-and review again (`previous: <run>/report.json`) until it ACKs the approach: no wire
+Commit the RFC, push, open the draft PR, and post a **`bruh-code-review`** of it with the client
+lens (`review PR <N> and post it, lenses: fdb-client`: an RFC matches no lens path, and without
+it only the core lenses run). Fix the findings, push and post again until it ACKs the approach: no wire
 divergence, no invented semantics the C++ lacks. Set **Status: Accepted**. **Never start
 implementing on a NAK.**
 
@@ -121,9 +121,8 @@ Port 1:1. Write the test BEFORE assuming the code is right. `just test` (or the 
 follow **`hunt-divergences`**: a red→green differential in `pkg/fdbgo/bench` IS the proof.
 
 ### Step 4 — review the implementation
-Run **`bruh-code-review`** on the implementation (`review origin/master..HEAD`). **An ACK only
-covers the HEAD it reviewed** — review again after every new commit
-(`previous: <run>/report.json`). Fix → add the regression that should have caught it →
+Post a **`bruh-code-review`** of the PR with the implementation pushed. **An ACK only
+covers the HEAD it reviewed** — push and post again after every new commit. Fix → add the regression that should have caught it →
 re-review.
 
 ### Step 5 — PR review (the published gate)

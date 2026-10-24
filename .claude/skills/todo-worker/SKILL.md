@@ -62,9 +62,12 @@ Create `rfcs/NNN-<short-name>.md`. NNN is one above the highest number on master
 PR (another branch may have taken the next one):
 
 ```bash
-{ ls rfcs; gh pr list --state open --json files --jq '.[].files[].path' | sed -n 's#^rfcs/##p'; } \
-  | grep -E '^[0-9]{3}-' | sort -V | tail -1
+{ ls rfcs; gh pr list --state open --limit 500 --json files --jq '.[].files[].path' \
+    | sed -n 's#^rfcs/##p'; } | grep -E '^[0-9]{3}-' | sort -V | tail -1
 ```
+
+Step 5 opens the draft PR as soon as the RFC is committed, so the number is visible to other
+runs from then on.
 
 The RFC must contain:
 - **Problem**: what's broken/missing and why it matters
@@ -75,17 +78,23 @@ The RFC must contain:
 
 Keep it short — 1-2 pages max. No fluff.
 
-## Step 5: RFC review (bruh-code-review)
+## Step 5: Draft PR and RFC review (bruh-code-review)
 
-Commit the RFC and run the **`bruh-code-review`** skill on that commit (`review <sha>`, with
+Commit the RFC, push the branch and open a **draft** PR (`gh pr create --draft`, title and body
+as in Step 9). Every review from here on is posted to it: the PR keeps one bruh summary, a
+`bruh/review` commit status, and the open findings as review threads, and each posted run
+re-checks those findings itself (no `previous:`).
+
+Run the **`bruh-code-review`** skill on the PR and post it (`review PR <N> and post it`, with
 `intent:` naming the TODO item it addresses, and `lenses:` naming the repository lenses of the
 area it changes: `fdb-client` for `pkg/fdbgo`, `cascades` for the planner, `java-compat` for
 record-layer or relational bytes, `spfresh` for the vector index). An RFC matches no lens path,
 so without `lenses:` only the core lenses review it.
 
 ### Handling results:
-- **ACK** (the report ends `bruh-code-review: ACK <sha>`) → proceed to implementation.
-- **NAK** → address the findings, commit, and review again with `previous: <run>/report.json`. Do NOT proceed with a NAK outstanding.
+- **ACK** (the summary says ACK on the current HEAD) → set the RFC's **Status: Accepted**,
+  commit, and proceed to implementation.
+- **NAK** → address the findings, commit, push, and post a new review. Do NOT proceed with a NAK outstanding.
 
 ## Step 6: Implement
 
@@ -98,12 +107,12 @@ Follow CLAUDE.md rules: no skips, no mocks, DFS not BFS, Java is the reference.
 
 ## Step 7: Implementation review (bruh-code-review)
 
-After implementation passes all tests, run the **`bruh-code-review`** skill on the
-implementation (`review origin/master..HEAD`, with `intent:` naming the item and RFC-NNN).
+After implementation passes all tests, push and post a review of the PR (`review PR <N> and
+post it`, with `intent:` naming the item and RFC-NNN).
 
 ### Handling results:
-- **ACK** → proceed to PR.
-- **NAK** → fix the findings, re-run `just test`, commit, then review again with `previous: <run>/report.json`. Iterate until it ACKs the current HEAD.
+- **ACK** → proceed.
+- **NAK** → fix the findings, re-run `just test`, commit, push, and post a new review. Iterate until it ACKs the current HEAD.
 
 ## Step 8: Update TODO.md
 
@@ -111,13 +120,9 @@ Mark the item as done: `- [x] **P0.X ...** Fixed in RFC-NNN — [short descripti
 
 Commit this with the implementation (or as a separate commit if already committed).
 
-## Step 9: Push and create PR
+## Step 9: Mark the PR ready
 
-```bash
-git push -u origin <branch-name>
-```
-
-Create the PR:
+Push, update the PR body, and mark it ready (`gh pr ready <N>`). The body Step 5 opened it with:
 
 ```bash
 gh pr create --title "<type>: <short description> (<item-id>)" --body "$(cat <<'EOF'
@@ -137,12 +142,13 @@ EOF
 ## Step 10: PR review and iterate
 
 Run the **`bruh-code-review`** skill on the PR and post it: `review PR <PR#> and post it`. It
-posts one PR review with inline comments and hides earlier bruh reviews as outdated.
+edits the PR's bruh summary, sets the `bruh/review` status, resolves the threads of findings it
+re-checked as fixed, and posts a review only for new findings.
 
 - **ACK** (the report's last line is `bruh-code-review: ACK <sha>`, `<sha>` the PR's current
   HEAD) → proceed to Step 11.
-- **NAK** → fix each finding (with a regression for any bug), commit, push, then review the PR
-  again with `previous: <run>/report.json` and post it. Iterate until it ACKs the current
+- **NAK** → fix each finding (with a regression for any bug), commit, push, then post a new
+  review of the PR. Iterate until it ACKs the current
   HEAD. If you believe a finding is wrong, give the evidence in the PR description and
   review again; the re-review settles it.
 
@@ -150,8 +156,9 @@ posts one PR review with inline comments and hides earlier bruh reviews as outda
 
 The item is done only when **the latest bruh-code-review posted to the PR is an ACK of the
 current HEAD**: the PR's bruh summary says ACK on that commit and its `bruh/review` commit
-status is success (`gh pr checks <N>`). Headless, `bruh review <N> --post` exits 0 on ACK and
-4 on NAK.
+status is success (`gh pr checks <N>`). Headless, `bruh review <N> --post` exits 0 on ACK,
+4 on NAK and 3 when the PR moved past the reviewed commit (nothing posted: push, then post
+again).
 
 - **An ACK only covers the HEAD it reviewed.** Every push, even a one-line fix or a
   reviewer-requested change, makes it stale: review the new HEAD and post again (`post`
