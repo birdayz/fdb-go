@@ -1093,7 +1093,7 @@ func (s simSnapshot) ReadTransact(fn func(fdb.ReadTransaction) (any, error)) (an
 func (tx *simTxn) GetEstimatedRangeSizeBytes(r fdb.ExactRange) fdb.FutureInt64 {
 	begin, end := r.FDBRangeKeys()
 	b, e := []byte(begin.FDBKey()), []byte(end.FDBKey())
-	// The client's precedence, verbatim (client/metrics.go:29-38): inverted_range(2005) FIRST —
+	// The client's precedence, verbatim (client/metrics.go getEstimatedRangeSizeBytesImpl): inverted_range(2005) FIRST —
 	// libfdb_c's KeyRangeRef constructor throws before the metric op runs — and only then
 	// transaction_cancelled(1025), which this path must gate EXPLICITLY because it never fetches a
 	// read version and so never passes through ensureReadVersion's checkCancelled. Adding the
@@ -1117,7 +1117,7 @@ func (tx *simTxn) GetEstimatedRangeSizeBytes(r fdb.ExactRange) fdb.FutureInt64 {
 
 func (tx *simTxn) GetRangeSplitPoints(r fdb.ExactRange, chunkSize int64) fdb.FutureKeyArray {
 	// Same entry-point precedence as its sibling GetEstimatedRangeSizeBytes
-	// (client/metrics.go:177-187): inverted_range(2005), then transaction_cancelled(1025), gated
+	// (client/metrics.go getRangeSplitPointsImpl): inverted_range(2005), then transaction_cancelled(1025), gated
 	// explicitly because this path fetches no read version either.
 	begin, end := r.FDBRangeKeys()
 	if bytes.Compare([]byte(begin.FDBKey()), []byte(end.FDBKey())) > 0 {

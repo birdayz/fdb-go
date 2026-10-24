@@ -936,17 +936,26 @@ func TestMetricsRequestWakesOnRecovery(t *testing.T) {
 			db.failMon.mu.Lock()
 			db.failMon.oldestAltFailure, db.failMon.newestAltFailure, db.failMon.lastAltSkip = now-1000, now, now
 			db.failMon.mu.Unlock()
-			startArm(t, ctx, arm, db, tx)
-			for dials.Load() == 0 || !db.failMon.isFailed(armAddr) {
-				if ctx.Err() != nil {
-					t.Fatal("the first round did not fail")
+			parked := make(chan struct{})
+			var parks atomic.Int32
+			hook := func() {
+				if parks.Add(1) == 1 {
+					close(parked)
 				}
-				time.Sleep(time.Millisecond)
 			}
-			time.Sleep(200 * time.Millisecond) // let the request park on the failed replica
+			db.beforeAltFailureWait.Store(&hook)
+			startArm(t, ctx, arm, db, tx)
+			select {
+			case <-parked:
+			case <-ctx.Done():
+				t.Fatal("the request did not wait for its failed replica")
+			}
 			db.failMon.markFailed("other:4500")
 			db.failMon.markAlive("other:4500")
 			noFrame(t, peer, time.Second, "another address recovered")
+			if n := parks.Load(); n != 1 {
+				t.Fatalf("another address's recovery restarted the wait (%d waits)", n)
+			}
 			db.failMon.markAlive(armAddr)
 			waitCtx, waitStop := context.WithTimeout(ctx, 5*time.Second)
 			defer waitStop()
@@ -1045,9 +1054,55 @@ func metricsReplyToken(t *testing.T, name string, body []byte) transport.UID {
 	return replyToken(req.Reply.Token)
 }
 
-// A replica answering a metrics request with an in-band broken_promise has its
-// endpoint marked not found, as the reads mark theirs.
-func TestMetricsRequestNotesBrokenPromise(t *testing.T) {
+// An in-band broken_promise is not a response: the request marks that endpoint not
+// found and goes on to the next replica in the same call, as loadBalance does.
+func TestMetricsRequestBrokenPromiseTriesNextReplica(t *testing.T) {
+	t.Parallel()
+	replies := map[string]string{"wait metrics": "StorageMetrics_basic", "split range": "SplitRangeReply_two_points"}
+	for _, arm := range metricsArms() {
+		t.Run(arm.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			peer := newIdentityPeer(t)
+			db, tx := armDatabase(ctx, peer)
+			defer closeIdentityDatabase(db)
+			second := transport.UID{First: 0x99, Second: 0xaa}
+			servers := []ServerInfo{{Address: armAddr, Token: armToken}, {Address: armAddr, Token: second}}
+			var err error
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				if arm.name == "wait metrics" {
+					_, err = tx.sendWaitMetrics(ctx, []byte("k"), []byte("l"), 1, servers)
+				} else {
+					_, err = tx.sendSplitRange(ctx, []byte("k"), []byte("l"), 1000, servers)
+				}
+			}()
+			endpoint := metricsEndpoints[arm.name]
+			for i, body := range [][]byte{(&types.ErrorOrError{ErrorCode: 1100}).MarshalFDB(), replyVector(t, replies[arm.name])} {
+				f, ok := peer.recv(ctx)
+				if want := getAdjustedEndpoint(servers[i].Token, endpoint); !ok || f.token != want {
+					t.Fatalf("request %d went to %v (%t), want %v", i, f.token, ok, want)
+				}
+				if err := transport.WriteFrame(peer.server, metricsReplyToken(t, arm.name, f.body), body, false); err != nil {
+					t.Fatal(err)
+				}
+			}
+			<-done
+			if err != nil {
+				t.Fatalf("second replica's reply: %v", err)
+			}
+			if !db.failMon.endpointFailed(armAddr, getAdjustedEndpoint(armToken, endpoint)) {
+				t.Fatal("broken_promise did not mark the endpoint not found")
+			}
+		})
+	}
+}
+
+// A replica the failure monitor excludes is skipped, not dialed, while another is
+// available, as loadBalance skips failed alternatives (LoadBalance.actor.h:595-614).
+func TestMetricsRequestSkipsExcludedReplica(t *testing.T) {
 	t.Parallel()
 	for _, arm := range metricsArms() {
 		t.Run(arm.name, func(t *testing.T) {
@@ -1057,23 +1112,34 @@ func TestMetricsRequestNotesBrokenPromise(t *testing.T) {
 			peer := newIdentityPeer(t)
 			db, tx := armDatabase(ctx, peer)
 			defer closeIdentityDatabase(db)
-			var err error
+			const dead = "dead:4500"
+			db.failMon.markFailed(dead)
+			var deadDials atomic.Int32
+			dial := db.dialFn
+			db.dialFn = func(ctx context.Context, network, addr string) (net.Conn, error) {
+				if addr == dead {
+					deadDials.Add(1)
+					return nil, errors.New("test: unreachable")
+				}
+				return dial(ctx, network, addr)
+			}
+			servers := []ServerInfo{{Address: dead, Token: armToken}, {Address: armAddr, Token: armToken}}
+			armCtx, stop := context.WithCancel(ctx)
 			done := make(chan struct{})
 			go func() {
 				defer close(done)
-				err = metricsArmError(ctx, arm.name, tx)
+				if arm.name == "wait metrics" {
+					_, _ = tx.sendWaitMetrics(armCtx, []byte("k"), []byte("l"), 1, servers)
+				} else {
+					_, _ = tx.sendSplitRange(armCtx, []byte("k"), []byte("l"), 1000, servers)
+				}
 			}()
-			f, ok := peer.recv(ctx)
-			if !ok {
-				t.Fatal("no request")
+			defer func() { stop(); <-done }()
+			if _, ok := peer.recv(ctx); !ok {
+				t.Fatal("no request reached the available replica")
 			}
-			if err := transport.WriteFrame(peer.server, metricsReplyToken(t, arm.name, f.body), (&types.ErrorOrError{ErrorCode: 1100}).MarshalFDB(), false); err != nil {
-				t.Fatal(err)
-			}
-			<-done
-			assertFDBErrorCode(t, err, 1100)
-			if !db.failMon.endpointFailed(armAddr, getAdjustedEndpoint(armToken, metricsEndpoints[arm.name])) {
-				t.Fatal("broken_promise did not mark the endpoint not found")
+			if n := deadDials.Load(); n != 0 {
+				t.Fatalf("the excluded replica was dialed %d times", n)
 			}
 		})
 	}

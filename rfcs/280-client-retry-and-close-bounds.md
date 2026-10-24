@@ -2,9 +2,9 @@
 
 **Status:** Implemented
 
-**Base:** stacked on PR #1004 (RFC-276), itself on PR #997 (RFC-271). RFC-271 rewrites
-`handleConnError` to name the failed connection; item 3 changes that code, and items 1
-and 2 touch files RFC-276 also edits.
+**Base:** stacked on PR #1004 (RFC-276), which builds on RFC-271 (PR #997, merged).
+RFC-271 rewrote `handleConnError` to name the failed connection; item 3 changes that
+code, and items 1 and 2 touch files RFC-276 also edits.
 
 **Items** (the Go FDB client entries of the 2026-10-24 quality review, open PR #994):
 
@@ -39,16 +39,19 @@ Change:
 - Both loops retry until success, a non-retryable error or the operation context ends.
   The context carries the transaction timeout (RFC-112), as C++'s `waitOrError` does.
 - Each request is sent the way `loadBalance` sends it (`sendMetricsRequest`): the
-  replicas in order, with no reply timeout. A round in which no replica answered backs
-  off from 10 ms, doubling to 5 s (`LOAD_BALANCE_*_BACKOFF`). When the failure monitor
-  excludes every replica, the request waits `allAlternativesFailedDelay` (50 ms, growing
-  while failures continue) and reports 1006, unless one of its own replicas recovers
+  replicas the failure monitor does not exclude, in order, with no reply timeout
+  (`LoadBalance.actor.h:595-614`). A round in which no replica answered backs off from
+  10 ms, doubling to 5 s (`LOAD_BALANCE_*_BACKOFF`). When every replica is excluded,
+  the request sends nothing and waits `allAlternativesFailedDelay` (50 ms, growing
+  while failures continue), then reports 1006, unless one of its own replicas recovers
   first, which ends the wait as `okFuture` does (another address recovering does not).
+- An in-band `broken_promise` or `request_maybe_delivered` reply is not a response, as
+  in `checkAndProcessResult` (`:344-377`): the request marks a `broken_promise`
+  endpoint not found and goes on to the next replica in the same round.
 - Replicas whose endpoint was reported not found are dropped before every round
   (`failMon.liveServers`), as `loadBalance` checks each alternative's state per
   attempt (`LoadBalance.actor.h:600-601`); with none left the request reports 1006
-  after the delay, so the caller re-locates. An in-band `broken_promise` reply marks
-  the replying endpoint not found, as the reads do (`noteReadBrokenPromise`).
+  after the delay, so the caller re-locates.
 - The 5 s per-replica reply timeout goes: `loadBalance` has none, and with no cap it
   would keep a request that a slow replica answers in more than 5 s from ever ending.
 
@@ -79,12 +82,12 @@ are left: `Database.Close` and a dial that lost to `Close` happen during shutdow
 the dial-panic backstop only on a panic. Between the unlock and the close, a sender can
 still take the failing connection from a completed dial whose send cohort has not
 drained; its send fails as on any connection that dies after lookup, and the read
-retries.
+retries. `Database.Close` can likewise return while such a connection is still closing;
+its loops end with the close.
 
 ## 4. `TransactCtx` and a dispatched commit: kept
 
-libfdb_c has no context. What ends its wait for a dispatched commit is the transaction:
-RYW `commit` waits on `resetPromise.getFuture() || tr.commit()`
+In libfdb_c the transaction ends the wait for a dispatched commit: RYW `commit` waits on `resetPromise.getFuture() || tr.commit()`
 (`ReadYourWrites.actor.cpp:1381`, `:1405`), so a timeout or `cancel` returns
 `transaction_timed_out` or `transaction_cancelled` at once. The native commit is held by
 `Transaction::committing` (`NativeAPI.actor.cpp:6942-6945`) and runs on; only `reset`
@@ -93,12 +96,14 @@ or destruction drops it (`:6172`, `:5486`). Go does the same: a timeout, `Cancel
 (`client/native_commit.go`; `TestCommitWait_TransactionInterrupts`,
 `TestCommitWait_TransactionInterruptionLeavesNativeFenceAlive`).
 
-`TransactCtx`'s context is Go's own (RFC-090). Making it end the wait would return a
-Go context error for a commit that may have applied, and the retry loop would stop
-there; RFC-090 chose to keep an in-flight commit's outcome
-(`TestCommitWait_CallerContextStaysDetached`). That stays. The `TransactCtx` doc now
-names the libfdb_c bound, the transaction timeout, instead of saying that cancellation
-in libfdb_c releases the wait.
+So does cancelling the commit future: `fdb_future_cancel` (`bindings/c/fdb_c.cpp:180-182`)
+cancels the main-thread actor that holds the RYW commit
+(`ThreadSafeTransaction.cpp:666-671`), while `committing` keeps the native commit
+running. The closest Go analogue, `TransactCtx`'s context, deliberately does not end the
+wait (RFC-090): it would return a Go context error for a commit that may have applied,
+and the retry loop would stop there (`TestCommitWait_CallerContextStaysDetached`). That
+stays, recorded as a difference from `fdb_future_cancel`. The `TransactCtx` doc says so
+and names the bound that matches libfdb_c, the transaction timeout or `Cancel`.
 
 ## Tests
 
@@ -107,13 +112,17 @@ in libfdb_c releases the wait.
     until released; `connMu` must be free meanwhile, the pool empty and the address
     failed.
   - `TestMetricsRequestWakesOnRecovery`: with the storm delay at 30 s, a request whose
-    only replica failed stays parked when another address recovers, and reaches its
-    replica within 5 s of that replica's recovery.
+    only replica failed parks (a test hook reports it) and stays parked, without
+    restarting its wait, when another address recovers; it reaches its replica within
+    5 s of that replica's recovery.
   - `TestMetricsRequestSkipsEndpointNotFound`: a replica whose metrics endpoint was
     reported not found before the request, or by an ENDPOINT_NOT_FOUND packet while it
     waits, gets no further request, and the call reports 1006.
-  - `TestMetricsRequestNotesBrokenPromise`: an in-band `broken_promise` reply marks the
-    endpoint not found.
+  - `TestMetricsRequestBrokenPromiseTriesNextReplica`: an in-band `broken_promise`
+    from the first replica marks its endpoint not found, and the second replica's reply
+    completes the call.
+  - `TestMetricsRequestSkipsExcludedReplica`: an excluded replica listed first is not
+    dialed; the request reaches the available one.
   - `TestMetricsRequestWaitsForSlowReply`: a reply that comes after more than the old
     5 s timeout is used, with one request sent.
 - `client`, test-full (`client_test`, FDB in a container, replies rewritten by the

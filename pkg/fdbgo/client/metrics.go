@@ -124,7 +124,7 @@ func (tx *Transaction) metricsMinVersion(ctx context.Context) (int64, error) {
 // (reversed range) to get an immediate response instead of waiting for a
 // threshold change.
 func (tx *Transaction) sendWaitMetrics(ctx context.Context, begin, end []byte, minVersion int64, servers []ServerInfo) (int64, error) {
-	body, addr, err := tx.sendMetricsRequest(ctx, servers, EndpointWaitMetrics, func(reply transport.UID) []byte {
+	body, err := tx.sendMetricsRequest(ctx, servers, EndpointWaitMetrics, func(reply transport.UID) []byte {
 		req := types.WaitMetricsRequest{
 			Keys:       types.KeyRangeRef{Begin: begin, End: end},
 			Min:        types.StorageMetrics{Bytes: 0},
@@ -138,14 +138,12 @@ func (tx *Transaction) sendWaitMetrics(ctx context.Context, begin, end []byte, m
 	if err != nil {
 		return 0, err
 	}
-	n, err := parseWaitMetricsReply(body)
-	tx.db.noteReadBrokenPromise(err, servers, addr, EndpointWaitMetrics)
-	return n, err
+	return parseWaitMetricsReply(body)
 }
 
 // sendMetricsRequest sends a request as loadBalance does (LoadBalance.actor.h:589-686):
 // no reply timeout, and 1006 only once every replica stays failed for the delay.
-func (tx *Transaction) sendMetricsRequest(ctx context.Context, servers []ServerInfo, endpoint int, build func(reply transport.UID) []byte) ([]byte, string, error) {
+func (tx *Transaction) sendMetricsRequest(ctx context.Context, servers []ServerInfo, endpoint int, build func(reply transport.UID) []byte) ([]byte, error) {
 	var closed <-chan struct{} // Close ends the loop, as destroying the database cancels the actor
 	if tx.db.ctx != nil {
 		closed = tx.db.ctx.Done()
@@ -155,23 +153,23 @@ func (tx *Transaction) sendMetricsRequest(ctx context.Context, servers []ServerI
 		// Endpoints reported not found never recover, so each round drops them first.
 		live, ok := tx.db.failMon.liveServers(servers, endpoint)
 		if !ok {
-			return nil, "", tx.db.allAlternativesFailed(ctx)
+			return nil, tx.db.allAlternativesFailed(ctx)
 		}
-		if body, addr, ok := tx.metricsRound(ctx, live, endpoint, build); ok {
-			return body, addr, nil
-		}
-		if err := ctx.Err(); err != nil {
-			return nil, "", err
-		}
-		if tx.db.ctx != nil && tx.db.ctx.Err() != nil {
-			return nil, "", tx.db.ctx.Err()
-		}
+		// Excluded replicas are skipped; with none left, wait before sending (:595-639).
 		if recovered, wait := tx.db.altFailureWait(live); wait > 0 {
 			if err := tx.db.awaitAlternative(ctx, closed, live, recovered, wait); err != nil {
-				return nil, "", err
+				return nil, err
 			}
 			backoff = 0
-			continue
+		}
+		if body, ok := tx.metricsRound(ctx, tx.db.notExcluded(live), endpoint, build); ok {
+			return body, nil
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if tx.db.ctx != nil && tx.db.ctx.Err() != nil {
+			return nil, tx.db.ctx.Err()
 		}
 		backoff = time.Duration(math.Min(math.Max(float64(backoff)*loadBalanceBackoffRate, float64(loadBalanceStartBackoff)), float64(loadBalanceMaxBackoff)))
 		timer := time.NewTimer(backoff)
@@ -179,16 +177,16 @@ func (tx *Transaction) sendMetricsRequest(ctx context.Context, servers []ServerI
 		case <-timer.C:
 		case <-ctx.Done():
 			timer.Stop()
-			return nil, "", ctx.Err()
+			return nil, ctx.Err()
 		case <-closed:
 			timer.Stop()
-			return nil, "", tx.db.ctx.Err()
+			return nil, tx.db.ctx.Err()
 		}
 	}
 }
 
 // metricsRound sends the request to each replica in turn until one replies.
-func (tx *Transaction) metricsRound(ctx context.Context, servers []ServerInfo, endpoint int, build func(reply transport.UID) []byte) ([]byte, string, bool) {
+func (tx *Transaction) metricsRound(ctx context.Context, servers []ServerInfo, endpoint int, build func(reply transport.UID) []byte) ([]byte, bool) {
 	var replyCleanup replyGuard
 	defer replyCleanup.close()
 	var sendCleanup sendGuard
@@ -216,14 +214,20 @@ func (tx *Transaction) metricsRound(ctx context.Context, servers []ServerInfo, e
 				tx.db.handleReadConnError(server.Address, conn, resp.Err)
 				continue
 			}
-			return resp.Body, server.Address, true
+			// An in-band broken_promise or request_maybe_delivered is not a response:
+			// loadBalance moves on to the next replica (LoadBalance.actor.h:344-377).
+			if err := wire.ReadErrorOrInto(resp.Body, new(wire.Reader)); isMaybeDelivered(err) {
+				tx.db.noteBrokenPromise(err, server.Address, token)
+				continue
+			}
+			return resp.Body, true
 		case <-ctx.Done():
 			replyHandle.Cancel()
 			replyCleanup.release()
-			return nil, "", false
+			return nil, false
 		}
 	}
-	return nil, "", false
+	return nil, false
 }
 
 // GetRangeSplitPoints returns suggested split points for the given key range.
@@ -332,7 +336,7 @@ func (tx *Transaction) getRangeSplitPointsImpl(ctx context.Context, begin, end [
 }
 
 func (tx *Transaction) sendSplitRange(ctx context.Context, begin, end []byte, chunkSize int64, servers []ServerInfo) ([][]byte, error) {
-	body, addr, err := tx.sendMetricsRequest(ctx, servers, EndpointGetRangeSplitPoints, func(reply transport.UID) []byte {
+	body, err := tx.sendMetricsRequest(ctx, servers, EndpointGetRangeSplitPoints, func(reply transport.UID) []byte {
 		req := types.SplitRangeRequest{
 			Keys:       types.KeyRangeRef{Begin: begin, End: end},
 			ChunkSize:  chunkSize,
@@ -344,9 +348,7 @@ func (tx *Transaction) sendSplitRange(ctx context.Context, begin, end []byte, ch
 	if err != nil {
 		return nil, err
 	}
-	points, err := parseSplitRangeReply(body)
-	tx.db.noteReadBrokenPromise(err, servers, addr, EndpointGetRangeSplitPoints)
-	return points, err
+	return parseSplitRangeReply(body)
 }
 
 func parseSplitRangeReply(data []byte) ([][]byte, error) {

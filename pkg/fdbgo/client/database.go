@@ -388,6 +388,8 @@ type database struct {
 	// beforeConnFailureMark runs in handleConnError just before it marks the address
 	// failed (test seam). Nil in production.
 	beforeConnFailureMark atomic.Pointer[func()]
+	// beforeAltFailureWait runs when a request starts waiting for an excluded replica (tests).
+	beforeAltFailureWait atomic.Pointer[func()]
 	// rangeReadPanics is the RFC-110 backstop shared by this database's range reads.
 	rangeReadPanics panicBackstop
 	// resolveKeyPanics is the getRange fallback resolveKey goroutines' backstop.

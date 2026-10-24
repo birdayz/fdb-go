@@ -72,6 +72,9 @@ func (db *database) altFailureWait(servers []ServerInfo) (<-chan struct{}, time.
 // awaitAlternative waits until one of servers is no longer excluded, as okFuture
 // (LoadBalance.actor.cpp:47-48), or reports all_alternatives_failed after wait.
 func (db *database) awaitAlternative(ctx context.Context, closed <-chan struct{}, servers []ServerInfo, recovered <-chan struct{}, wait time.Duration) error {
+	if hook := db.beforeAltFailureWait.Load(); hook != nil {
+		(*hook)()
+	}
 	timer := time.NewTimer(wait)
 	defer timer.Stop()
 	for {
@@ -90,6 +93,21 @@ func (db *database) awaitAlternative(ctx context.Context, closed <-chan struct{}
 			return db.ctx.Err()
 		}
 	}
+}
+
+// notExcluded returns the replicas the failure monitor does not exclude.
+func (db *database) notExcluded(servers []ServerInfo) []ServerInfo {
+	if db.failMon == nil {
+		return servers
+	}
+	now := nowSeconds()
+	live := make([]ServerInfo, 0, len(servers))
+	for _, s := range servers {
+		if !db.failMon.excluded(s.Address, now) {
+			live = append(live, s)
+		}
+	}
+	return live
 }
 
 // allExcluded reports whether the failure monitor excludes every replica's address,

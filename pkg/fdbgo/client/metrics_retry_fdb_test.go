@@ -33,6 +33,25 @@ func metricsRetryDB(t *testing.T, ctx context.Context, prefix string) (*Database
 	return db, sim, rec
 }
 
+// metricsCall is a storage-metrics call and the kind of request it sends.
+type metricsCall struct {
+	kind string
+	run  func(tx *Transaction) error
+}
+
+func metricsCalls(ctx context.Context, begin, end []byte) []metricsCall {
+	return []metricsCall{
+		{"WaitMetricsRequest", func(tx *Transaction) error {
+			_, err := tx.GetEstimatedRangeSizeBytes(ctx, begin, end)
+			return err
+		}},
+		{"SplitRangeRequest", func(tx *Transaction) error {
+			_, err := tx.GetRangeSplitPoints(ctx, begin, end, 1000)
+			return err
+		}},
+	}
+}
+
 // Size estimates and split points retry wrong_shard_server with no attempt cap, as
 // C++ does (NativeAPI.actor.cpp:7799-7811, 8162, 8204-8208).
 func TestMetricsRetryWrongShardWithoutCap(t *testing.T) {
@@ -43,19 +62,7 @@ func TestMetricsRetryWrongShardWithoutCap(t *testing.T) {
 	db, sim, rec := metricsRetryDB(t, ctx, prefix)
 	begin, end := []byte(prefix), []byte(prefix+"\xff")
 	const injections = 55 // more than any cap the client has had
-	for _, tc := range []struct {
-		kind string
-		run  func(tx *Transaction) error
-	}{
-		{"WaitMetricsRequest", func(tx *Transaction) error {
-			_, err := tx.GetEstimatedRangeSizeBytes(ctx, begin, end)
-			return err
-		}},
-		{"SplitRangeRequest", func(tx *Transaction) error {
-			_, err := tx.GetRangeSplitPoints(ctx, begin, end, 1000)
-			return err
-		}},
-	} {
+	for _, tc := range metricsCalls(ctx, begin, end) {
 		var injected atomic.Int32
 		sim.setIntercept(func(_ int, token transport.UID, body []byte) ([]byte, bool) {
 			if rec.replyKind(token) == tc.kind && injected.Add(1) <= injections {
@@ -82,19 +89,7 @@ func TestMetricsRetryIsPaced(t *testing.T) {
 	prefix := t.Name() + "/"
 	db, sim, rec := metricsRetryDB(t, ctx, prefix)
 	begin, end := []byte(prefix), []byte(prefix+"\xff")
-	for _, tc := range []struct {
-		kind string
-		run  func(tx *Transaction) error
-	}{
-		{"WaitMetricsRequest", func(tx *Transaction) error {
-			_, err := tx.GetEstimatedRangeSizeBytes(ctx, begin, end)
-			return err
-		}},
-		{"SplitRangeRequest", func(tx *Transaction) error {
-			_, err := tx.GetRangeSplitPoints(ctx, begin, end, 1000)
-			return err
-		}},
-	} {
+	for _, tc := range metricsCalls(ctx, begin, end) {
 		var rounds atomic.Int32
 		sim.setIntercept(func(_ int, token transport.UID, body []byte) ([]byte, bool) {
 			if rec.replyKind(token) == tc.kind {
