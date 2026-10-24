@@ -75,9 +75,10 @@ go_test(
     # find the corpus at all, which is a far worse outcome than a drifted count.
     # keep: so are the yaml-tests descriptor sets and metadata JSON that
     # `load schema template` reads.
-    # keep: TestSQLConformanceStatesTheLedger reads SQL_CONFORMANCE.md and the
-    # vendored VERSION.
+    # keep: TestSQLConformanceStatesTheLedger reads SQL_CONFORMANCE.md,
+    # DIVERGENCES.md and the vendored VERSION.
     data = [
+        "//:DIVERGENCES.md",
         "//:SQL_CONFORMANCE.md",
         "//third_party/apple/fdb-record-layer:version",
         "//third_party/apple/fdb-record-layer:yamltests_main_proto",

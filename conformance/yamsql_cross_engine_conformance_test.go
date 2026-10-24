@@ -3960,7 +3960,7 @@ func unionColumnsScenario() *yamsql.Scenario {
 			// branch) and is likewise not cross-engine.
 			// ORDER BY on right-side column name fails — result schema is left's names only.
 			{Query: "SELECT id, v FROM a UNION ALL SELECT id, w FROM b ORDER BY w", ErrorCode: "42703"},
-			// LIMIT/OFFSET on UNION rejected at parse time.
+			// LIMIT/OFFSET on UNION rejected (0AF00).
 			{Query: "SELECT v FROM a UNION ALL SELECT w FROM b ORDER BY v LIMIT 2 OFFSET 1", ErrorCode: "0AF00"},
 			// Plain UNION (without ALL) rejected.
 			{Query: "SELECT v FROM a UNION SELECT v FROM a ORDER BY v", ErrorCode: "0AF00"},
@@ -4108,12 +4108,8 @@ func compositePKCrossScenario() *yamsql.Scenario {
 func uniqueViolationScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name: "unique_violation",
-		// NOT NULL dropped from `name`: fdb-relational 4.12.11.0 allows NOT NULL
-		// only on ARRAY columns ("NOT NULL is only allowed for ARRAY column
-		// type") — scalar NOT NULL is a Go-only extension Java cannot CREATE, so
-		// keeping it makes the schema un-creatable in Java (fails deterministically
-		// on a fresh per-scenario server). The unique-constraint behaviour under
-		// test (PK + UNIQUE INDEX on email) is unaffected; the data is non-null.
+		// No NOT NULL on `name`: neither engine accepts it on a scalar column
+		// (0A000). The unique-constraint behaviour under test is unaffected.
 		SchemaTemplate: "CREATE TABLE t (id BIGINT, name STRING, email STRING, PRIMARY KEY (id))" +
 			" CREATE UNIQUE INDEX t_email ON t (email)",
 		Setup: []string{
@@ -4148,11 +4144,8 @@ func uniqueViolationScenario() *yamsql.Scenario {
 func notNullViolationScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name: "not_null_violation",
-		// NOT NULL dropped: fdb-relational 4.12.11.0 allows NOT NULL only on ARRAY
-		// columns, so scalar NOT NULL is a Go-only extension Java cannot CREATE.
-		// The 23502 NOT-NULL-violation tests are error_code (skipped cross-engine,
-		// covered Go-only via the yamsql twin); the cross-engine SELECT below is
-		// unaffected by the dropped constraint (its row is non-null).
+		// No scalar NOT NULL: neither engine accepts it (0A000). The 23502 tests are
+		// error_code (skipped cross-engine, covered Go-only via the yamsql twin).
 		SchemaTemplate: "CREATE TABLE t (id BIGINT, name STRING, PRIMARY KEY (id))",
 		Setup: []string{
 			"INSERT INTO t VALUES (1, 'alice')",
@@ -4521,10 +4514,7 @@ func dmlWithNullSafeScenario() *yamsql.Scenario {
 func insertSelectScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name: "insert_select",
-		// NOT NULL dropped from dst.v: fdb-relational 4.12.11.0 allows NOT NULL
-		// only on ARRAY columns (scalar NOT NULL is a Go-only extension Java
-		// cannot CREATE). The INSERT…SELECT under test copies non-null values, so
-		// the constraint is immaterial to the cross-engine result.
+		// No NOT NULL on dst.v: neither engine accepts it on a scalar column (0A000).
 		SchemaTemplate: "CREATE TABLE src (id BIGINT, v BIGINT, PRIMARY KEY (id))" +
 			"\nCREATE TABLE dst (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 		Setup: []string{
@@ -4804,7 +4794,7 @@ func orderByLimitScenario() *yamsql.Scenario {
 		Tests: []yamsql.Test{
 			// Multi-column ORDER BY: rejected by Java's Cascades (no multi-key sort rule).
 			{Query: "SELECT id, grp, v FROM t ORDER BY grp, v DESC", ErrorCode: "0AF00"},
-			// LIMIT clause rejected at parse time (0AF00).
+			// LIMIT clause rejected (0AF00).
 			{Query: "SELECT id FROM t ORDER BY id LIMIT 3", ErrorCode: "0AF00"},
 			{Query: "SELECT id FROM t ORDER BY id LIMIT 100", ErrorCode: "0AF00"},
 			{Query: "SELECT id FROM t ORDER BY id LIMIT 0", ErrorCode: "0AF00"},

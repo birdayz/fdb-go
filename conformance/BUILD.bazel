@@ -577,7 +577,11 @@ go_test(
         "whole_struct_comparison_java_probe_test.go",
         "window_in_where_java_probe_test.go",
     ],
-    data = [":conformance_server"],
+    data = [
+        ":conformance_server",
+        "//:DIVERGENCES.md",
+        "//:SQL_CONFORMANCE.md",
+    ],
     tags = [
         "conformance_java",
         "resources:cpu:3",
@@ -601,6 +605,7 @@ go_test(
         "//pkg/recordlayer/vectorcodec",
         "//pkg/relational/api",
         "//pkg/relational/conformance/plandiff",
+        "//pkg/relational/conformance/plandiff/seedcorpus",
         "//pkg/relational/conformance/yamsql",
         "//pkg/relational/core/catalog",
         "//pkg/relational/core/embedded",

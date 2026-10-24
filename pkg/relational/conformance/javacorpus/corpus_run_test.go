@@ -384,30 +384,14 @@ func TestSkipClassesAreAllReachable(t *testing.T) {
 // such accidents rather than arguing that today's names happen to avoid them.
 func producedClasses(t *testing.T, census string) map[string]bool {
 	t.Helper()
+	parsed, err := parseLedgerLine(census)
+	if err != nil {
+		t.Fatal(err)
+	}
 	out := map[string]bool{}
-	for _, group := range []string{"file_skips{", "inner_skips{"} {
-		i := strings.Index(census, group)
-		if i < 0 {
-			t.Fatalf("pinned census has no %s group", group)
-		}
-		rest := census[i+len(group):]
-		j := strings.Index(rest, "}")
-		if j < 0 {
-			t.Fatalf("pinned census group %s is unterminated", group)
-		}
-		body := rest[:j]
-		if body == "" {
-			continue
-		}
-		for _, kv := range strings.Split(body, ",") {
-			name, count, ok := strings.Cut(kv, "=")
-			if !ok {
-				t.Fatalf("pinned census entry %q is not name=count", kv)
-			}
-			if count == "0" {
-				continue
-			}
-			out[name] = true
+	for _, c := range append(parsed.fileSkips, parsed.innerSkips...) {
+		if c.n != 0 {
+			out[c.class] = true
 		}
 	}
 	return out

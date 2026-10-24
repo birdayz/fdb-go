@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -15,6 +16,7 @@ import (
 
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/conformance/plandiff"
+	"fdb.dev/pkg/relational/conformance/plandiff/seedcorpus"
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -66,6 +68,9 @@ type docClaimCase struct {
 	setup        []string
 	sql          string
 }
+
+// nullV gives t a NULL v, for the cases that measure where NULLs sort.
+const nullV = "INSERT INTO t VALUES (4, NULL, 'd', 0.5, true, 4)"
 
 var docClaimCases = []docClaimCase{
 	// DML.
@@ -153,8 +158,8 @@ var docClaimCases = []docClaimCase{
 	{name: "order_by_index", schema: "main", sql: "SELECT v FROM t ORDER BY v"},
 	{name: "order_by_no_index", schema: "main", sql: "SELECT id, s FROM t ORDER BY s"},
 	{name: "order_by_aggregate", schema: "main", sql: "SELECT v, COUNT(*) AS n FROM t GROUP BY v ORDER BY COUNT(*)"},
-	{name: "order_by_nulls_first", schema: "main", sql: "SELECT v FROM t ORDER BY v NULLS FIRST"},
-	{name: "order_by_nulls_last", schema: "main", sql: "SELECT v FROM t ORDER BY v NULLS LAST"},
+	{name: "order_by_nulls_first", schema: "main", setup: []string{nullV}, sql: "SELECT v FROM t ORDER BY v NULLS FIRST"},
+	{name: "order_by_nulls_last", schema: "main", setup: []string{nullV}, sql: "SELECT v FROM t ORDER BY v NULLS LAST"},
 	{name: "limit", schema: "main", sql: "SELECT id FROM t ORDER BY id LIMIT 2"},
 	{name: "limit_offset", schema: "main", sql: "SELECT id FROM t ORDER BY id LIMIT 2 OFFSET 1"},
 	{name: "limit_in_subquery", schema: "main", sql: "SELECT x.k FROM (SELECT id AS k FROM t LIMIT 1) AS x"},
@@ -266,11 +271,69 @@ var _ = Describe("DocClaimsJavaProbe", func() {
 				drift = append(drift, fmt.Sprintf("Go %q: %q,", c.name, goAnswer))
 			}
 		}
-		Expect(docClaimWantJava).To(HaveLen(len(docClaimCases)))
-		for name := range docClaimWantGo {
-			Expect(docClaimWantJava).To(HaveKey(name), "Go pin %s names no case", name)
+		cases := map[string]bool{}
+		for _, c := range docClaimCases {
+			Expect(cases).NotTo(HaveKey(c.name), "duplicate case %s", c.name)
+			cases[c.name] = true
+		}
+		for _, pins := range []map[string]string{docClaimWantJava, docClaimWantGo} {
+			for name := range pins {
+				Expect(cases).To(HaveKey(name), "pin %s names no case", name)
+			}
 		}
 		Expect(drift).To(BeEmpty(), "answers that differ from their pins:\n%s", strings.Join(drift, "\n"))
+	})
+})
+
+// docClaimCitation is a backticked multi-word name in a document; a DSN key is
+// not a citation.
+var docClaimCitation = regexp.MustCompile("(DSN )?`([a-z][a-z0-9]*(?:_[a-z0-9]+)+)`")
+
+// findAbove reads the repository file rel from the nearest directory above the
+// working directory that has it.
+func findAbove(rel string) string {
+	dir, err := os.Getwd()
+	Expect(err).NotTo(HaveOccurred())
+	for {
+		raw, err := os.ReadFile(filepath.Join(dir, rel))
+		if err == nil {
+			return string(raw)
+		}
+		parent := filepath.Dir(dir)
+		Expect(parent).NotTo(Equal(dir), "no %s above the working directory", rel)
+		dir = parent
+	}
+}
+
+var _ = Describe("DocClaimsJavaProbe citations", func() {
+	It("names every case in the documents, and cites only cases or cross-engine entries", func() {
+		sqlConformance := findAbove("SQL_CONFORMANCE.md")
+		divergences := findAbove("DIVERGENCES.md")
+		// DIVERGENCES.md cites cases in the Go-only extensions table and the
+		// Java upstream bugs rows above the signed-zero row.
+		section := func(from, to string) string {
+			begin := strings.Index(divergences, from)
+			end := strings.Index(divergences, to)
+			Expect(begin).To(BeNumerically(">=", 0), from)
+			Expect(end).To(BeNumerically(">", begin), to)
+			return divergences[begin:end]
+		}
+		cited := sqlConformance + section("## Go-Only Extensions", "### Go-only SQLSTATEs") +
+			section("## Java Upstream Bugs", "| Signed-zero comparison")
+
+		known := map[string]bool{}
+		for _, c := range docClaimCases {
+			known[c.name] = true
+			Expect(cited).To(ContainSubstring("`"+c.name+"`"), "case %s is cited by neither document", c.name)
+		}
+		for _, q := range seedcorpus.SeedRunCorpus() {
+			known[q.Name] = true
+		}
+		for _, m := range docClaimCitation.FindAllStringSubmatch(cited, -1) {
+			if m[1] == "" {
+				Expect(known).To(HaveKey(m[2]), "the documents cite %s, which is neither a case nor a cross-engine entry", m[2])
+			}
+		}
 	})
 })
 
@@ -352,7 +415,7 @@ var docClaimWantJava = map[string]string{
 	"order_by_index":                   `[{"name":"V","type":"BIGINT"}] [[10],[10],[20]]`,
 	"order_by_no_index":                `ERROR UnableToPlanException 0AF00 "Cascades planner could not plan query"`,
 	"order_by_aggregate":               `ERROR UnableToPlanException 0AF00 "Cascades planner could not plan query"`,
-	"order_by_nulls_first":             `[{"name":"V","type":"BIGINT"}] [[10],[10],[20]]`,
+	"order_by_nulls_first":             `[{"name":"V","type":"BIGINT"}] [[null],[10],[10],[20]]`,
 	"order_by_nulls_last":              `ERROR UnableToPlanException 0AF00 "Cascades planner could not plan query"`,
 	"limit":                            `ERROR RelationalException 0AF00 "LIMIT clause is not supported."`,
 	"limit_offset":                     `ERROR RelationalException 0AF00 "OFFSET clause is not supported."`,
@@ -425,7 +488,7 @@ var docClaimWantGo = map[string]string{
 	"recursive_union_distinct_diamond": `[{"name":"ID","type":"BIGINT"}] [[1],[2],[3],[4]]`,
 	"order_by_no_index":                `[{"name":"ID","type":"BIGINT"},{"name":"S","type":"STRING"}] [[1,"a"],[2,"b"],[3,"c"]]`,
 	"order_by_aggregate":               `[{"name":"V","type":"BIGINT"},{"name":"N","type":"BIGINT"}] [[20,1],[10,2]]`,
-	"order_by_nulls_last":              `[{"name":"V","type":"BIGINT"}] [[10],[10],[20]]`,
+	"order_by_nulls_last":              `[{"name":"V","type":"BIGINT"}] [[10],[10],[20],[null]]`,
 	"limit":                            `[{"name":"ID","type":"BIGINT"}] [[1],[2]]`,
 	"limit_offset":                     `[{"name":"ID","type":"BIGINT"}] [[2],[3]]`,
 	"limit_in_subquery":                `[{"name":"K","type":"BIGINT"}] [[1]]`,

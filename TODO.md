@@ -1984,6 +1984,14 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   the lane lock until the server is shut down. Shut the server down on exit, or keep the
   lock descriptor out of the server.
 - [ ] Update Buf from 1.67.0 to 1.74 (`BUF_VERSION` in `justfile`).
+- [ ] SQL: the ANSI forms `POSITION(x IN s)` and `EXTRACT(<field> FROM x)` fail with 0AF00
+  "projection slot 0 has no resolved Value", and `YEAR` over a BIGINT answers NULL rather than
+  refusing the type. `DocClaimsJavaProbe` pins them as they are (`position_in`, `extract_year`,
+  `date_part_of_integer`); Java answers the operand unchanged for both ANSI forms and refuses
+  `YEAR` (0AF00).
+- [ ] `SQL_ANSI_CONFORMANCE.md`'s `Java?` column is still pinned against 4.12.11.0
+  (`pkg/relational/conformance/yamsql/ansi_roster.go`, the notice in `ansiledger.go`). Re-verify
+  it on 4.14.2.0, as RFC-278 did for SQL_CONFORMANCE.md.
 
 ## Test lanes and test-speed work (committed with the temporal change)
 

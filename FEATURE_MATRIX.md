@@ -90,7 +90,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `dotted_column_group_by` | 4 | 3 | 0 | 1 | A COLUMN WHOSE QUOTED NAME HOLDS DOTS GROUPS UNDER A TABLE ALIAS, as Java's |
 | `empty_result_aggregate` | 4 | 4 | 0 | 0 | Aggregates over empty result sets |
 | `escaped_table_grouped_aggregate` | 4 | 4 | 0 | 0 | RFC-238 §7c predicted five matching gates turn on when the escaped-name |
-| `go_extensions_group_by` | 5 | 5 | 0 | 0 | Go extensions: GROUP BY (Java rejects) |
+| `go_extensions_group_by` | 5 | 5 | 0 | 0 | Go extensions: GROUP BY over unordered input (Java refuses) |
 | `group_by_case` | 1 | 1 | 0 | 0 | GROUP BY with CASE expression |
 | `group_by_count_star` | 4 | 4 | 0 | 0 | GROUP BY with COUNT(*) edge cases |
 | `group_by_derived_expr` | 4 | 4 | 0 | 0 | GROUP BY expressions through derived tables — regression guards for |

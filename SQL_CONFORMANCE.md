@@ -103,7 +103,7 @@ difference is in DIVERGENCES.md. The run of Java's own yamsql corpus against Go 
 | Chained CTEs | Y | Y | Y | `with_chained` |
 | WITH RECURSIVE (level-order) | Y | Y | Y | `recursive_level_order`. RecursiveLevelUnionPlan |
 | Recursive DFS order | Y | Y | P | `TRAVERSAL ORDER PRE_ORDER` / `POST_ORDER` (`recursive_pre_order`; Java's `recursive-cte.yamsql`) |
-| UNION DISTINCT in recursive CTE | N | Y | Y | Java accepts it and runs UNION ALL: a node reached twice is returned twice (`recursive_union_distinct_diamond`). Go deduplicates (`recursive_union_distinct`) |
+| UNION DISTINCT in recursive CTE | N | Y | Y | Java accepts it and runs UNION ALL: a node reached twice is returned twice, where Go returns it once (`recursive_union_distinct_diamond`). Over a tree, where no node repeats, both answer alike (`recursive_union_distinct`) |
 
 ## Ordering / Limiting / Distinct
 
@@ -112,7 +112,7 @@ difference is in DIVERGENCES.md. The run of Java's own yamsql corpus against Go 
 | ORDER BY (index-backed) | Y | Y | Y | `order_by_index`. Sort elimination via ImplementSortRule (PLANNING phase, D-1 aligned) |
 | ORDER BY (no index) | N | Ext | Y | Java: 0AF00 (`order_by_no_index`). Go extension: in-memory sort |
 | ORDER BY aggregate | P | Y | Y | Java orders by an aggregate only through a permuted aggregate index (Java's `aggregate-index-tests.yamsql:381-386`); otherwise 0AF00 (`order_by_aggregate`). Go sorts |
-| NULLS FIRST / LAST | P | Y | Y | Java answers only the null order an index provides: NULLS FIRST over an ascending index (`order_by_nulls_first`), 0AF00 for NULLS LAST over it (`order_by_nulls_last`). Go sorts |
+| NULLS FIRST / LAST | P | Y | Y | Java answers only the null order an index provides: NULLS FIRST over an ascending index (`order_by_nulls_first`), 0AF00 for NULLS LAST over it (`order_by_nulls_last`). Go puts the NULL where either clause asks |
 | LIMIT / OFFSET | N | Ext | Y | Java: 0AF00 `LIMIT clause is not supported.` / `OFFSET clause is not supported.` (`limit`, `limit_offset`). Go answers them on the outer SELECT and in a derived table (`limit_in_subquery`) |
 | SELECT DISTINCT | N | Y | Y | Java plans DISTINCT but returns every row, duplicates included, whether or not an index orders the column (`distinct_ordered`, `distinct_unordered`); DIVERGENCES.md "Java Upstream Bugs". Go deduplicates (ImplementDistinctFinalRule, D-3 aligned) |
 | DISTINCT + ORDER BY | N | Y | Y | Same Java defect (`distinct_order_by`) |
