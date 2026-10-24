@@ -101,7 +101,7 @@ cause is different, measured on Bazel 9.0.1 with four 5 s go_tests tagged
 
 **Any non-zero `--local_test_jobs` makes Bazel ignore `resources:` tags on
 tests.** The tags work. Recorded in `.bazelrc`; the wrong claim in
-`nightly-coverage.yml` is corrected.
+`nightly-coverage.yml` (deleted 2026-10-09) is corrected.
 
 Tried and reverted: dropping `--local_test_jobs=4` and the `exclusive` tags of
 the four memory-motivated targets (client, million_record, factory,
@@ -151,8 +151,8 @@ not enough on this box; CPU has to be priced too (§5).
    - CurrentTimestamp seeding: 100-row transactions could be 1,000-row ones.
 
    Signal-reducing options, all owner calls:
-   - RowDiff_Paging: 25 serial seeds, 378 s. The nightly runs 5,000; seeds
-     could run in parallel or be fewer.
+   - RowDiff_Paging: 25 serial seeds, 378 s. The nightly ran 5,000 (deleted
+     2026-10-09); seeds could run in parallel or be fewer.
    - PlannerCapHit_SelectPathSQLSTATE and PlannerOptions_PlanRightDeep: these
      run the planner to the 150k-task cap, and embedded unit tests already pin
      the same cap.

@@ -12,9 +12,8 @@ import (
 	"golang.org/x/tools/go/analysis"
 )
 
-// Stub packages stand in for testing and the testcontainers package: the
-// analyzer resolves callees by package path, and analysistest's toolchain
-// subprocess does not work in the Bazel sandbox.
+// Stubs for testing and the testcontainers package: callees resolve by package
+// path, and analysistest's toolchain subprocess fails in the Bazel sandbox.
 var stubs = map[string]string{
 	"testing": `package testing
 type common struct{}

@@ -47,7 +47,7 @@ func TestCancelledStartupKeepsDiagnosticsAndCleansUp(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	if err := checkDocker(ctx, tcDockerClient); err != nil {
+	if err := tcProber.check(ctx); err != nil {
 		if SkipWithoutDocker(err) {
 			t.Skipf("FDB not available (no Docker): %v", err)
 		}

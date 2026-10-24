@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -18,9 +19,8 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 )
 
-// DockerUnavailableError reports that no Docker daemon is reachable: none could
-// be discovered, or every one discovered refused the connection. It is the only
-// startup failure a suite may answer with a skip; see SkipWithoutDocker.
+// DockerUnavailableError reports that no Docker daemon is reachable, the one
+// startup failure a suite may skip on (see SkipWithoutDocker).
 type DockerUnavailableError struct {
 	Err error
 }
@@ -29,8 +29,7 @@ func (e *DockerUnavailableError) Error() string { return "docker unavailable: " 
 
 func (e *DockerUnavailableError) Unwrap() error { return e.Err }
 
-// dockerProbeTimeout bounds the daemon probe. A daemon that does not answer in
-// this time is hung, not absent, so the probe reports a failure, not a skip.
+// dockerProbeTimeout bounds the probe; a daemon slower than this is hung, not absent.
 const dockerProbeTimeout = 15 * time.Second
 
 // SkipWithoutDocker reports whether a suite may skip its FDB tests after Run
@@ -52,23 +51,43 @@ func skipWithoutDocker(err error, ci bool) bool {
 	return errors.As(err, &unavailable)
 }
 
-// dockerClientFunc builds the client the probe pings. Run passes
-// tcDockerClient; tests pass fakes.
+// dockerClientFunc builds the client the probe pings.
 type dockerClientFunc func(context.Context) (*testcontainers.DockerClient, error)
 
-// tcDockerClient builds the client testcontainers itself would use.
 func tcDockerClient(ctx context.Context) (*testcontainers.DockerClient, error) {
 	return testcontainers.NewDockerClientWithOpts(ctx)
 }
 
-// checkDocker returns a *DockerUnavailableError when no Docker daemon is
-// reachable, nil when one answers, and any other probe failure as an ordinary
-// error.
-func checkDocker(ctx context.Context, newClient dockerClientFunc) error {
+// dockerProber keeps a discovery panic's verdict: testcontainers caches discovery
+// per process, so later clients would ping a default host it never chose.
+type dockerProber struct {
+	newClient dockerClientFunc
+	mu        sync.Mutex
+	discovery error
+}
+
+// tcProber is the prober Run and RunCluster use.
+var tcProber = &dockerProber{newClient: tcDockerClient}
+
+// check returns a *DockerUnavailableError when no Docker daemon is reachable,
+// nil when one answers, and any other probe failure as an ordinary error.
+func (d *dockerProber) check(ctx context.Context) error {
+	d.mu.Lock()
+	discovery := d.discovery
+	d.mu.Unlock()
+	if discovery != nil {
+		return discovery
+	}
 	ctx, cancel := context.WithTimeout(ctx, dockerProbeTimeout)
 	defer cancel()
-	p := probeDocker(ctx, newClient)
-	return classifyDockerProbe(p, ctx.Err(), dialDocker)
+	p := probeDocker(ctx, d.newClient)
+	err := classifyDockerProbe(p, ctx.Err(), dialDocker)
+	if p.panicked != nil {
+		d.mu.Lock()
+		d.discovery = err
+		d.mu.Unlock()
+	}
+	return err
 }
 
 // probe is one probe outcome: the discovery panic, or the ping and its host.
@@ -78,8 +97,8 @@ type probe struct {
 	host     string
 }
 
-// probeDocker pings the daemon. Testcontainers' discovery panics, with every
-// candidate host's error joined, when none answers; the panic becomes a value.
+// probeDocker pings the daemon; testcontainers' discovery panics, with every
+// candidate host's error joined, when none answers.
 func probeDocker(ctx context.Context, newClient dockerClientFunc) (p probe) {
 	defer func() { p.panicked = recover() }()
 	cli, err := newClient(ctx)
@@ -91,10 +110,8 @@ func probeDocker(ctx context.Context, newClient dockerClientFunc) (p probe) {
 	return probe{pingErr: err, host: cli.DaemonHost()}
 }
 
-// classifyDockerProbe turns a probe outcome into checkDocker's result: no
-// daemon only if every cause is a host that does not exist or refuses a dial.
-// A probe that outlived its context is a hung daemon, checked first because the
-// Docker client reports a deadline as a connection failure.
+// classifyDockerProbe: no daemon only if every cause is a host that does not
+// exist or refuses a dial. A probe past its deadline is a hung daemon.
 func classifyDockerProbe(p probe, ctxErr error, dial func(host string) error) error {
 	if p.panicked == nil && p.pingErr == nil {
 		return nil
@@ -110,8 +127,10 @@ func classifyDockerProbe(p probe, ctxErr error, dial func(host string) error) er
 	switch {
 	case ctxErr != nil:
 		return fmt.Errorf("docker probe: daemon did not answer: %w", cause)
+	case onlyNoDaemon(cause, host, dial) && p.panicked != nil:
+		return &DockerUnavailableError{Err: fmt.Errorf("docker host discovery: %w", cause)}
 	case onlyNoDaemon(cause, host, dial):
-		return &DockerUnavailableError{Err: cause}
+		return &DockerUnavailableError{Err: fmt.Errorf("ping %s: %w", host, cause)}
 	case p.panicked != nil:
 		return fmt.Errorf("docker probe panicked: %w", cause)
 	default:
@@ -126,17 +145,15 @@ var (
 	noHostPrefix = "checked path: "
 )
 
-// cannotConnect starts the Docker client's error for a failed dial, a timeout
-// included, so the host is dialed again to tell an absent daemon from a stuck one.
+// cannotConnect is the Docker client's error for any failed dial, timeouts
+// included, so the host is dialed again to tell absent from stuck.
 const cannotConnect = "Cannot connect to the Docker daemon at "
 
 // checkHost matches how discovery names the host each joined error is about.
 var checkHost = regexp.MustCompile(`^check host ("(?:[^"\\]|\\.)*"): `)
 
-// onlyNoDaemon reports whether every cause in err says no daemon is there: a
-// candidate host that does not exist, or one whose dial finds no socket or is
-// refused. host is the daemon a ping error is about; discovery's joined errors
-// each name their own.
+// onlyNoDaemon reports whether every cause in err is a host that does not exist
+// or whose socket is missing or refuses a dial; host is the pinged daemon's.
 func onlyNoDaemon(err error, host string, dial func(string) error) bool {
 	if err == nil {
 		return false

@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -16,6 +16,7 @@ import (
 
 	"github.com/docker/docker/client"
 	"github.com/testcontainers/testcontainers-go"
+	"github.com/testcontainers/testcontainers-go/wait"
 )
 
 // socketClient returns a Docker client for a unix socket at path.
@@ -234,7 +235,7 @@ func TestRunProbesDockerFirst(t *testing.T) {
 				ctx, cancel = context.WithTimeout(ctx, tc.timeout)
 				defer cancel()
 			}
-			c, err := run(ctx, tc.newClient, "")
+			c, err := run(ctx, &dockerProber{newClient: tc.newClient}, "")
 			if c != nil || err == nil {
 				t.Fatalf("run = (%v, %v), want no container and an error", c, err)
 			}
@@ -282,11 +283,35 @@ func TestCheckDockerAnsweringDaemon(t *testing.T) {
 		w.Header().Set("Api-Version", "1.43")
 		_, _ = w.Write([]byte("OK"))
 	})
-	err := checkDocker(context.Background(), func(context.Context) (*testcontainers.DockerClient, error) {
+	prober := &dockerProber{newClient: func(context.Context) (*testcontainers.DockerClient, error) {
 		return socketClient(t, ok), nil
+	}}
+	if err := prober.check(context.Background()); err != nil {
+		t.Fatalf("check against an answering daemon = %v", err)
+	}
+}
+
+// After a discovery panic testcontainers' clients ping a default host discovery
+// never chose, so the prober answers later checks with the panic's verdict.
+func TestProberKeepsDiscoveryVerdict(t *testing.T) {
+	t.Parallel()
+	ok := fakeDaemon(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Api-Version", "1.43")
+		_, _ = w.Write([]byte("OK"))
 	})
-	if err != nil {
-		t.Fatalf("checkDocker against an answering daemon = %v", err)
+	calls := 0
+	prober := &dockerProber{newClient: func(context.Context) (*testcontainers.DockerClient, error) {
+		calls++
+		if calls == 1 {
+			panic(errors.New("socket not found"))
+		}
+		return socketClient(t, ok), nil
+	}}
+	first := prober.check(context.Background())
+	second := prober.check(context.Background())
+	var unavailable *DockerUnavailableError
+	if !errors.As(first, &unavailable) || second != first || calls != 1 {
+		t.Fatalf("checks = (%v, %v) after %d client builds, want one discovery verdict twice", first, second, calls)
 	}
 }
 
@@ -349,41 +374,53 @@ func TestTestcontainersVersionPinned(t *testing.T) {
 	}
 }
 
-// The real Run with the Docker socket masked in a user and mount namespace:
-// discovery panics on the first call and the ping is refused on the next.
+// The real Run and RunCluster in a container with no Docker socket: discovery
+// panics, and every later call must keep that verdict.
 func TestRunWithoutDocker(t *testing.T) {
 	t.Parallel()
-	const sock = "/var/run/docker.sock"
-	if _, err := os.Stat(sock); err != nil {
-		t.Skipf("no %s to mask: %v", sock, err)
-	}
-	if err := exec.Command("unshare", "-r", "-m", "true").Run(); err != nil {
-		t.Skipf("unprivileged user namespaces unavailable: %v", err)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	if err := tcProber.check(ctx); err != nil {
+		if SkipWithoutDocker(err) {
+			t.Skipf("no Docker to run the child in: %v", err)
+		}
+		t.Fatal(err)
 	}
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("unshare", "-r", "-m", "sh", "-c",
-		`mount --bind /dev/null "$1" && { [ ! -d /run/user ] || mount -t tmpfs none /run/user; } &&
-		exec "$2" -test.run='^TestRunWithoutDockerChild$' -test.v`,
-		"sh", sock, self)
-	// No other way to a daemon: no properties file, docker context or rootless socket.
-	home := t.TempDir()
-	cmd.Env = []string{noDockerChildEnv + "=1", "HOME=" + home, "XDG_RUNTIME_DIR=" + home}
-	for _, kv := range os.Environ() {
-		k, _, _ := strings.Cut(kv, "=")
-		if k != "CI" && k != "HOME" && k != "XDG_RUNTIME_DIR" && !strings.HasPrefix(k, "DOCKER_") &&
-			!strings.HasPrefix(k, "TESTCONTAINERS_") && k != noDockerChildEnv &&
-			k != "XML_OUTPUT_FILE" && k != "TEST_PREMATURE_EXIT_FILE" {
-			cmd.Env = append(cmd.Env, kv)
-		}
-	}
-	out, err := cmd.CombinedOutput()
+	ctr, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+		ContainerRequest: testcontainers.ContainerRequest{
+			Image:      defaultImage + ":" + fdbVersion(),
+			Entrypoint: []string{"/child", "-test.run=^TestRunWithoutDockerChild$", "-test.v"},
+			Env:        map[string]string{noDockerChildEnv: "1", "HOME": "/tmp"},
+			Files:      []testcontainers.ContainerFile{{HostFilePath: self, ContainerFilePath: "/child", FileMode: 0o755}},
+			WaitingFor: wait.ForExit().WithExitTimeout(time.Minute),
+		},
+		Started: true,
+	})
+	testcontainers.CleanupContainer(t, ctr)
 	if err != nil {
-		t.Fatalf("child failed: %v\n%s", err, out)
+		t.Fatal(err)
 	}
-	for _, want := range []string{"attempt 0: discovery panic: unavailable", "attempt 1: ping: unavailable"} {
+	state, err := ctr.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logs, err := ctr.Logs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logs.Close()
+	out, err := io.ReadAll(logs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.ExitCode != 0 {
+		t.Fatalf("child exited %d:\n%s", state.ExitCode, out)
+	}
+	for _, want := range []string{"Run 0: unavailable", "Run 1: unavailable", "RunCluster: unavailable"} {
 		if !strings.Contains(string(out), want) {
 			t.Fatalf("child output lacks %q:\n%s", want, out)
 		}
@@ -394,18 +431,21 @@ func TestRunWithoutDockerChild(t *testing.T) {
 	if os.Getenv(noDockerChildEnv) == "" {
 		t.Skip("runs only as TestRunWithoutDocker's child")
 	}
-	for i, arm := range []string{"discovery panic", "ping"} {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		c, err := Run(ctx, "")
-		cancel()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	assertDiscoveryVerdict := func(what string, started bool, err error) {
+		t.Helper()
 		var unavailable *DockerUnavailableError
-		if c != nil || !errors.As(err, &unavailable) || !SkipWithoutDocker(err) {
-			t.Fatalf("attempt %d: Run = (%v, %v), want a DockerUnavailableError a suite may skip", i, c, err)
+		if started || !errors.As(err, &unavailable) || !SkipWithoutDocker(err) ||
+			!strings.HasPrefix(err.Error(), "docker unavailable: docker host discovery: ") {
+			t.Fatalf("%s: started %t, err %v; want the skippable discovery verdict", what, started, err)
 		}
-		// Only discovery's joined errors name the host they checked.
-		if fromDiscovery := strings.Contains(err.Error(), "check host "); fromDiscovery != (i == 0) {
-			t.Fatalf("attempt %d: %v: want the %s arm", i, err, arm)
-		}
-		t.Logf("attempt %d: %s: unavailable: %v", i, arm, err)
+		t.Logf("%s: unavailable: %v", what, err)
 	}
+	for i := range 2 {
+		c, err := Run(ctx, "")
+		assertDiscoveryVerdict(fmt.Sprintf("Run %d", i), c != nil, err)
+	}
+	cl, err := RunCluster(ctx, 1)
+	assertDiscoveryVerdict("RunCluster", cl != nil, err)
 }

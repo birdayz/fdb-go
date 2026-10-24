@@ -1,6 +1,5 @@
-// Package dockerskip requires foundationdb.SkipWithoutDocker in any `if err != nil`
-// right after foundationdb.Run or RunCluster that skips (t.Skip*, testing.M.Run,
-// `return 0`). An error stored and checked later is out of its reach.
+// Package dockerskip requires foundationdb.SkipWithoutDocker in a skipping `if err != nil`
+// right after foundationdb.Run or RunCluster; an error checked later is out of reach.
 package dockerskip
 
 import (

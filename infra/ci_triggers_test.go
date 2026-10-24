@@ -37,9 +37,8 @@ func triggerSpec(on *yaml.Node, event string) (spec *yaml.Node, ok bool) {
 	return nil, false
 }
 
-// prBaseFilter reports how a workflow's `on:` runs on pull requests: ok is false
-// when it does not run on pull_request at all, and filter names the base-branch
-// filter ("branches" or "branches-ignore") when one restricts it.
+// prBaseFilter reports whether `on:` runs on pull_request and names the
+// base-branch filter ("branches" or "branches-ignore") that restricts it.
 func prBaseFilter(on *yaml.Node) (filter string, ok bool) {
 	spec, ok := triggerSpec(on, "pull_request")
 	for j := 0; spec != nil && spec.Kind == yaml.MappingNode && j+1 < len(spec.Content); j += 2 {
@@ -50,9 +49,8 @@ func prBaseFilter(on *yaml.Node) (filter string, ok bool) {
 	return "", ok
 }
 
-// jobsWithoutTimeout lists the jobs of a workflow that set no timeout-minutes,
-// sorted, and counts the jobs it parsed. GitHub's default is 360 minutes, six
-// hours of a self-hosted runner.
+// jobsWithoutTimeout lists, sorted, the jobs without timeout-minutes (GitHub's
+// default is six hours of a runner) and counts the jobs it parsed.
 func jobsWithoutTimeout(workflow []byte) (missing []string, jobs int, err error) {
 	var wf struct {
 		Jobs map[string]struct {
@@ -179,7 +177,7 @@ func bazelrcForwardsCI(bazelrc string) bool {
 	for _, line := range strings.Split(bazelrc, "\n") {
 		f := strings.Fields(line)
 		if len(f) == 2 && (f[0] == "test" || f[0] == "test:ci") &&
-			(f[1] == "--test_env=CI" || strings.HasPrefix(f[1], "--test_env=CI=")) {
+			(f[1] == "--test_env=CI" || (strings.HasPrefix(f[1], "--test_env=CI=") && len(f[1]) > len("--test_env=CI="))) {
 			return true
 		}
 	}
@@ -195,6 +193,7 @@ func TestBazelrcForwardsCI(t *testing.T) {
 		{"test:ci --test_env=CI\n", true},
 		{"test --test_env=CI\n", true},
 		{"test:ci --test_env=CI=true\n", true},
+		{"test:ci --test_env=CI=\n", false},
 		{"# test:ci --test_env=CI\n", false},
 		{"test:ci --test_env=CIX\n", false},
 		{"build:ci --test_env=CI\n", false},

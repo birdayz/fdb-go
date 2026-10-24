@@ -88,11 +88,11 @@ type Container struct {
 // With no reachable Docker daemon, Run returns a [*DockerUnavailableError];
 // [SkipWithoutDocker] decides whether a suite may skip.
 func Run(ctx context.Context, img string, opts ...testcontainers.ContainerCustomizer) (*Container, error) {
-	return run(ctx, tcDockerClient, img, opts...)
+	return run(ctx, tcProber, img, opts...)
 }
 
-func run(ctx context.Context, newClient dockerClientFunc, img string, opts ...testcontainers.ContainerCustomizer) (*Container, error) {
-	if err := checkDocker(ctx, newClient); err != nil {
+func run(ctx context.Context, prober *dockerProber, img string, opts ...testcontainers.ContainerCustomizer) (*Container, error) {
+	if err := prober.check(ctx); err != nil {
 		return nil, err
 	}
 	return retryContainerStart(ctx, maxContainerStartAttempts,

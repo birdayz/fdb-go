@@ -83,7 +83,7 @@ type workflowFile struct {
 
 // A MATRIX JOB CONSUMES ONE SLOT PER ENTRY, NOT ONE PER JOB.
 //
-// No workflow in this repo uses `strategy.matrix` today — verified across all 14
+// No workflow in this repo uses `strategy.matrix` today — verified across all 3
 // files, where the only occurrence of the word is prose in a comment. So the
 // count this gate reports is correct as it stands, and this code changes no
 // number now.
@@ -92,7 +92,7 @@ type workflowFile struct {
 // matrix job as ONE slot UNDER-states the fan-out, so the gate would go on
 // passing while the fleet is oversubscribed — the failure mode is silent and it
 // is exactly the one the gate was written to catch. Adding a 3-entry matrix to
-// any push-triggered lane would take the real fan-out to 7 against 2 slots with
+// any push-triggered lane would take the real fan-out from 7 to 9 against 2 slots with
 // this file still green. A gate wrong in the safe direction is noise; wrong in
 // the unsafe direction it is worse than absent, because it reads as coverage.
 //
