@@ -128,14 +128,16 @@ not enough on this box; CPU has to be priced too (§5).
    benchmarks (§2) assert nothing that a regression would trip. Options:
    convert them to `Benchmark*` functions, or move them to a `stress_bench`
    target that runs only in `nightly-stress.yml`. Either way they leave the
-   exclusive serial tail.
+   exclusive serial tail. (Every nightly was deleted on 2026-10-09; no CI
+   workflow runs the stress target now.)
 3. **Drop `TestFDB_Stress_1M`.** `Stress_1M_LatencyAttribution` runs the same
    `runStressHarness(t, h, 1_000_000)` over an identical fixture with every
    assertion `Stress_1M` makes, plus telemetry validation. The only difference
    is a pinned `Conn` with loggers installed. The plain pooled path stays
    covered at 10K and 100K. Saves ~3 min of exclusive time.
 4. **Whether stress belongs in `test-full` at all.** CI's full lane already
-   excludes it (`--test_tag_filters=-stress`) and `nightly-stress.yml` runs it.
+   excludes it (`--test_tag_filters=-stress`) and `nightly-stress.yml` ran it
+   (deleted 2026-10-09; nothing in CI runs it now).
    AGENTS.md defines test-full as including it. Even after the changes above it
    is the longest exclusive item (~25 min).
 5. **Further safe sqldriver de-duplication, not done here** (read-only analysis,

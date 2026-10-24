@@ -28,6 +28,7 @@ func (m *M) Run() int { return 0 }
 `,
 	TestcontainersPkg: `package foundationdb
 type Container struct{}
+func (c *Container) Run() (int, error) { return 0, nil }
 type Cluster struct{}
 func Run(ctx any, img string) (*Container, error) { return nil, nil }
 func RunCluster(ctx any, size int) (*Cluster, error) { return nil, nil }
@@ -209,6 +210,30 @@ func f(t *testing.T, k int) {
 		}
 	}
 }`, true},
+		{"inside a select case", `
+func f(t *testing.T, ch chan int) {
+	select {
+	case <-ch:
+		_, err := fdbtc.Run(nil, "")
+		if err != nil {
+			t.Skip("no Docker")
+		}
+	}
+}`, true},
+		{"a method named Run", `
+func f(t *testing.T, c *fdbtc.Container) {
+	_, err := c.Run()
+	if err != nil {
+		t.Skip("no Docker")
+	}
+}`, false},
+		{"a call through a func value", `
+func f(t *testing.T, fns []func() (int, error)) {
+	_, err := fns[0]()
+	if err != nil {
+		t.Skip("x")
+	}
+}`, false},
 		{"another package's Run", `
 func f(t *testing.T) {
 	_, err := fixture.Run(nil, "")

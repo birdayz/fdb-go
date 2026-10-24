@@ -1,9 +1,6 @@
-// Package dockerskip is a nogo analyzer that keeps FDB testcontainer suites from
-// skipping on a broken fixture. When the error of a foundationdb.Run or
-// RunCluster call is checked in the `if err != nil` that follows it, and that
-// branch skips (t.Skip*, testing.M.Run, or `return 0`), the branch must ask
-// foundationdb.SkipWithoutDocker: only a machine without Docker may skip, and
-// any other startup failure on a machine with Docker must fail.
+// Package dockerskip requires foundationdb.SkipWithoutDocker in any `if err != nil`
+// right after foundationdb.Run or RunCluster that skips (t.Skip*, testing.M.Run,
+// `return 0`). An error stored and checked later is out of its reach.
 package dockerskip
 
 import (

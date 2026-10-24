@@ -55,6 +55,8 @@ go_test(
         "retry_test.go",
         "startup_diagnostics_test.go",
     ],
+    # docker_test.go pins the testcontainers release its error matching was read from.
+    data = ["//:go.mod"],
     embed = [":foundationdb"],
     tags = ["resources:memory:1100"],
     deps = [

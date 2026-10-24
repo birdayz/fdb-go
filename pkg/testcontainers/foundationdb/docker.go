@@ -4,9 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/docker/docker/client"
@@ -29,13 +34,8 @@ func (e *DockerUnavailableError) Unwrap() error { return e.Err }
 const dockerProbeTimeout = 15 * time.Second
 
 // SkipWithoutDocker reports whether a suite may skip its FDB tests after Run
-// returned err.
-//
-// Only a machine with no Docker daemon may skip. Every other startup failure (an
-// image pull, a timeout, an OOM-killed container, a failed cleanup) happens
-// where Docker runs, and skipping it turns a broken fixture into a green run
-// that tested nothing. With CI set in the environment it never skips; Bazel
-// tests see CI because .bazelrc's ci config forwards it.
+// returned err: only when no Docker daemon is reachable, and never with CI set
+// (.bazelrc forwards CI to tests under --config=ci).
 func SkipWithoutDocker(err error) bool {
 	return skipWithoutDocker(err, os.Getenv("CI") != "")
 }
@@ -67,82 +67,125 @@ func tcDockerClient(ctx context.Context) (*testcontainers.DockerClient, error) {
 func checkDocker(ctx context.Context, newClient dockerClientFunc) error {
 	ctx, cancel := context.WithTimeout(ctx, dockerProbeTimeout)
 	defer cancel()
-	panicked, err := probeDocker(ctx, newClient)
-	return classifyDockerProbe(panicked, err, ctx.Err())
+	p := probeDocker(ctx, newClient)
+	return classifyDockerProbe(p, ctx.Err(), dialDocker)
 }
 
-// probeDocker pings the daemon. Testcontainers panics, with the error of every
-// candidate host it tried, when its Docker-host discovery finds none that
-// answers; that panic is returned as a value.
-func probeDocker(ctx context.Context, newClient dockerClientFunc) (panicked any, err error) {
-	defer func() { panicked = recover() }()
+// probe is one probe outcome: the discovery panic, or the ping and its host.
+type probe struct {
+	panicked any
+	pingErr  error
+	host     string
+}
+
+// probeDocker pings the daemon. Testcontainers' discovery panics, with every
+// candidate host's error joined, when none answers; the panic becomes a value.
+func probeDocker(ctx context.Context, newClient dockerClientFunc) (p probe) {
+	defer func() { p.panicked = recover() }()
 	cli, err := newClient(ctx)
 	if err != nil {
-		return nil, err
+		return probe{pingErr: err}
 	}
 	defer cli.Close()
 	_, err = cli.Ping(ctx)
-	return nil, err
+	return probe{pingErr: err, host: cli.DaemonHost()}
 }
 
-// classifyDockerProbe turns a probe outcome into checkDocker's result.
-//
-//   - the probe's context ended: a hung daemon, an ordinary error, checked first
-//     because the Docker client reports a deadline as a connection failure;
-//   - a panic whose error says only that no daemon is there: unavailable;
-//   - any other panic: a fault, an ordinary error;
-//   - a ping that succeeded: nil;
-//   - a ping refused or with no socket: unavailable;
-//   - any other ping failure: an ordinary error.
-func classifyDockerProbe(panicked any, pingErr, ctxErr error) error {
-	if panicked == nil && pingErr == nil {
+// classifyDockerProbe turns a probe outcome into checkDocker's result: no
+// daemon only if every cause is a host that does not exist or refuses a dial.
+// A probe that outlived its context is a hung daemon, checked first because the
+// Docker client reports a deadline as a connection failure.
+func classifyDockerProbe(p probe, ctxErr error, dial func(host string) error) error {
+	if p.panicked == nil && p.pingErr == nil {
 		return nil
 	}
-	cause := pingErr
-	if panicked != nil {
-		e, ok := panicked.(error)
+	cause, host := p.pingErr, p.host
+	if p.panicked != nil {
+		e, ok := p.panicked.(error)
 		if !ok {
-			return fmt.Errorf("docker probe panicked: %v", panicked)
+			return fmt.Errorf("docker probe panicked: %v", p.panicked)
 		}
-		cause = e
+		cause, host = e, ""
 	}
 	switch {
 	case ctxErr != nil:
 		return fmt.Errorf("docker probe: daemon did not answer: %w", cause)
-	case onlyNoDaemon(cause):
+	case onlyNoDaemon(cause, host, dial):
 		return &DockerUnavailableError{Err: cause}
-	case panicked != nil:
+	case p.panicked != nil:
 		return fmt.Errorf("docker probe panicked: %w", cause)
 	default:
 		return fmt.Errorf("docker probe: %w", cause)
 	}
 }
 
-// noHostTexts are testcontainers' internal discovery errors that say a candidate
-// Docker host does not exist: core.ErrSocketNotFound when there is no candidate
-// at all, and the rootless-socket errors ("rootless Docker not found", "checked
-// path: ...") it joins in beside the refused default socket.
-var noHostTexts = []string{"socket not found", "rootless Docker not found"}
+// Testcontainers' internal discovery errors for a candidate host that does not
+// exist (core.ErrSocketNotFound and the rootless-socket errors).
+var (
+	noHostTexts  = []string{"socket not found", "rootless Docker not found"}
+	noHostPrefix = "checked path: "
+)
 
-const noHostPrefix = "checked path: "
+// cannotConnect starts the Docker client's error for a failed dial, a timeout
+// included, so the host is dialed again to tell an absent daemon from a stuck one.
+const cannotConnect = "Cannot connect to the Docker daemon at "
 
-// onlyNoDaemon reports whether err says nothing but that no Docker daemon is
-// there: every joined cause is a refused or missing socket, or a candidate host
-// that does not exist.
-func onlyNoDaemon(err error) bool {
+// checkHost matches how discovery names the host each joined error is about.
+var checkHost = regexp.MustCompile(`^check host ("(?:[^"\\]|\\.)*"): `)
+
+// onlyNoDaemon reports whether every cause in err says no daemon is there: a
+// candidate host that does not exist, or one whose dial finds no socket or is
+// refused. host is the daemon a ping error is about; discovery's joined errors
+// each name their own.
+func onlyNoDaemon(err error, host string, dial func(string) error) bool {
 	if err == nil {
 		return false
 	}
 	if joined, ok := err.(interface{ Unwrap() []error }); ok {
 		errs := joined.Unwrap()
 		for _, e := range errs {
-			if !onlyNoDaemon(e) {
+			if !onlyNoDaemon(e, host, dial) {
 				return false
 			}
 		}
 		return len(errs) > 0
 	}
 	text := err.Error()
-	return slices.Contains(noHostTexts, text) || strings.HasPrefix(text, noHostPrefix) ||
-		client.IsErrConnectionFailed(err)
+	if slices.Contains(noHostTexts, text) || strings.HasPrefix(text, noHostPrefix) {
+		return true
+	}
+	if m := checkHost.FindStringSubmatch(text); m != nil {
+		h, uerr := strconv.Unquote(m[1])
+		if uerr != nil {
+			return false
+		}
+		host = h
+	}
+	if host == "" || !client.IsErrConnectionFailed(err) || !strings.Contains(text, cannotConnect) {
+		return false
+	}
+	derr := dial(host)
+	return errors.Is(derr, syscall.ENOENT) || errors.Is(derr, syscall.ECONNREFUSED)
+}
+
+// dialDocker opens and closes a connection to a Docker host given as a URL.
+func dialDocker(host string) error {
+	u, err := url.Parse(host)
+	if err != nil {
+		return err
+	}
+	var network, addr string
+	switch u.Scheme {
+	case "unix":
+		network, addr = "unix", u.Path
+	case "tcp":
+		network, addr = "tcp", u.Host
+	default:
+		return fmt.Errorf("docker host %q: scheme %q not dialed", host, u.Scheme)
+	}
+	conn, err := net.DialTimeout(network, addr, 2*time.Second)
+	if err != nil {
+		return err
+	}
+	return conn.Close()
 }

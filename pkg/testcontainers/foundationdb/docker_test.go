@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -70,42 +71,64 @@ func fakeDaemon(t *testing.T, h http.HandlerFunc) string {
 
 // discoveryFailure is the value testcontainers panics with when no candidate
 // Docker host answers: one wrapped `docker info` failure per host, joined.
-func discoveryFailure(causes ...error) error {
-	errs := make([]error, len(causes))
-	for i, c := range causes {
-		errs[i] = fmt.Errorf("check host %q: %w", fmt.Sprintf("unix:///run/%d.sock", i), fmt.Errorf("docker info: %w", c))
+func discoveryFailure(failures ...[2]any) error {
+	errs := make([]error, len(failures))
+	for i, f := range failures {
+		errs[i] = fmt.Errorf("check host %q: %w", f[0].(string), fmt.Errorf("docker info: %w", f[1].(error)))
 	}
 	return errors.Join(errs...)
+}
+
+func at(host string, err error) [2]any { return [2]any{host, err} }
+
+// dialAnswers fakes dialDocker with one outcome per host.
+func dialAnswers(outcomes map[string]error) func(string) error {
+	return func(host string) error {
+		if err, ok := outcomes[host]; ok {
+			return err
+		}
+		return fmt.Errorf("unexpected dial of %q", host)
+	}
 }
 
 func TestClassifyDockerProbe(t *testing.T) {
 	t.Parallel()
 	refused := refusedPing(t)
+	const a, b = "unix:///a.sock", "unix:///b.sock"
+	gone := dialAnswers(map[string]error{a: syscall.ENOENT, b: syscall.ECONNREFUSED})
+	listening := dialAnswers(map[string]error{a: nil, b: syscall.ECONNREFUSED})
+	stuck := dialAnswers(map[string]error{a: syscall.EAGAIN})
+	daemon500 := errors.New("Error response from daemon: 500")
 	for _, tc := range []struct {
 		name        string
-		panicked    any
-		pingErr     error
+		p           probe
 		ctxErr      error
+		dial        func(string) error
 		wantErr     bool
 		unavailable bool
 	}{
-		{name: "daemon answers"},
-		{name: "no candidate host", panicked: errors.New("socket not found"), wantErr: true, unavailable: true},
-		{name: "every candidate refused", panicked: discoveryFailure(refused, refused), wantErr: true, unavailable: true},
-		{name: "one candidate erred otherwise", panicked: discoveryFailure(refused, errors.New("Error response from daemon: 500")), wantErr: true},
-		{name: "discovery outlived the probe", panicked: discoveryFailure(refused), ctxErr: context.DeadlineExceeded, wantErr: true},
-		{name: "refused default socket, no rootless one", panicked: errors.Join(
-			discoveryFailure(refused), errors.New("rootless Docker not found")), wantErr: true, unavailable: true},
-		{name: "refused default socket, rootless path checked", panicked: errors.Join(
-			discoveryFailure(refused), errors.New("checked path: $XDG_RUNTIME_DIR")), wantErr: true, unavailable: true},
-		{name: "non-error panic", panicked: "nil map write", wantErr: true},
-		{name: "socket refuses the connection", pingErr: refused, wantErr: true, unavailable: true},
-		{name: "ping outlived the probe", pingErr: refused, ctxErr: context.DeadlineExceeded, wantErr: true},
-		{name: "daemon answers with an error", pingErr: errors.New("Error response from daemon: 500"), wantErr: true},
+		{name: "daemon answers", p: probe{host: a}, dial: gone},
+		{name: "no candidate host", p: probe{panicked: errors.New("socket not found")}, dial: gone, wantErr: true, unavailable: true},
+		{name: "every candidate gone", p: probe{panicked: discoveryFailure(at(a, refused), at(b, refused))}, dial: gone, wantErr: true, unavailable: true},
+		{name: "refused default socket, no rootless one", p: probe{panicked: errors.Join(
+			discoveryFailure(at(a, refused)), errors.New("rootless Docker not found"))}, dial: gone, wantErr: true, unavailable: true},
+		{name: "refused default socket, rootless path checked", p: probe{panicked: errors.Join(
+			discoveryFailure(at(a, refused)), errors.New("checked path: $XDG_RUNTIME_DIR"))}, dial: gone, wantErr: true, unavailable: true},
+		{name: "a candidate still listens", p: probe{panicked: discoveryFailure(at(a, refused), at(b, refused))}, dial: listening, wantErr: true},
+		{name: "a candidate is stuck", p: probe{panicked: discoveryFailure(at(a, refused))}, dial: stuck, wantErr: true},
+		{name: "a candidate erred otherwise", p: probe{panicked: discoveryFailure(at(a, refused), at(b, daemon500))}, dial: gone, wantErr: true},
+		{name: "discovery error without a host", p: probe{panicked: fmt.Errorf("docker info: %w", refused)}, dial: gone, wantErr: true},
+		{name: "discovery outlived the probe", p: probe{panicked: discoveryFailure(at(a, refused))}, ctxErr: context.DeadlineExceeded, dial: gone, wantErr: true},
+		{name: "non-error panic", p: probe{panicked: "nil map write"}, dial: gone, wantErr: true},
+		{name: "ping refused, socket gone", p: probe{pingErr: refused, host: a}, dial: gone, wantErr: true, unavailable: true},
+		{name: "ping refused, socket listens", p: probe{pingErr: refused, host: a}, dial: listening, wantErr: true},
+		{name: "ping refused, no host known", p: probe{pingErr: refused}, dial: gone, wantErr: true},
+		{name: "ping outlived the probe", p: probe{pingErr: refused, host: a}, ctxErr: context.DeadlineExceeded, dial: gone, wantErr: true},
+		{name: "daemon answers with an error", p: probe{pingErr: daemon500, host: a}, dial: gone, wantErr: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			err := classifyDockerProbe(tc.panicked, tc.pingErr, tc.ctxErr)
+			err := classifyDockerProbe(tc.p, tc.ctxErr, tc.dial)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("classifyDockerProbe = %v, want error %t", err, tc.wantErr)
 			}
@@ -117,16 +140,49 @@ func TestClassifyDockerProbe(t *testing.T) {
 	}
 }
 
+func TestDialDocker(t *testing.T) {
+	t.Parallel()
+	listening := fakeDaemon(t, func(http.ResponseWriter, *http.Request) {})
+	for _, tc := range []struct {
+		host string
+		want error
+	}{
+		{"unix://" + missingSocket(t), syscall.ENOENT},
+		{"unix://" + listening, nil},
+		{"tcp://127.0.0.1:1", syscall.ECONNREFUSED},
+	} {
+		if err := dialDocker(tc.host); !errors.Is(err, tc.want) && (tc.want != nil || err != nil) {
+			t.Errorf("dialDocker(%q) = %v, want %v", tc.host, err, tc.want)
+		}
+	}
+	for _, host := range []string{"npipe:////./pipe/docker_engine", "::bad"} {
+		if err := dialDocker(host); err == nil {
+			t.Errorf("dialDocker(%q) = nil, want an error", host)
+		}
+	}
+}
+
 // Run's probe end to end, through the client constructor it calls: a fake
 // constructor stands in for testcontainers' discovery and the daemon behind it.
 func TestRunProbesDockerFirst(t *testing.T) {
 	t.Parallel()
 	refused := refusedPing(t)
-	missing := missingSocket(t)
+	missing := "unix://" + missingSocket(t)
 	hung := fakeDaemon(t, func(w http.ResponseWriter, r *http.Request) { <-r.Context().Done() })
 	erroring := fakeDaemon(t, func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "boom", http.StatusInternalServerError)
 	})
+	resetting := resettingSocket(t)
+	// Answers 500 should the test run as root, which the mode does not stop.
+	denied := fakeDaemon(t, func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	})
+	if err := os.Chmod(denied, 0); err != nil {
+		t.Fatal(err)
+	}
+	via := func(path string) dockerClientFunc {
+		return func(context.Context) (*testcontainers.DockerClient, error) { return socketClient(t, path), nil }
+	}
 	for _, tc := range []struct {
 		name        string
 		newClient   dockerClientFunc
@@ -139,15 +195,17 @@ func TestRunProbesDockerFirst(t *testing.T) {
 			unavailable: true,
 		},
 		{
-			name:        "discovery is refused everywhere",
-			newClient:   func(context.Context) (*testcontainers.DockerClient, error) { panic(discoveryFailure(refused)) },
+			name: "discovery is refused everywhere",
+			newClient: func(context.Context) (*testcontainers.DockerClient, error) {
+				panic(discoveryFailure(at(missing, refused)))
+			},
 			unavailable: true,
 		},
 		{
 			name: "discovery outlives the probe",
 			newClient: func(ctx context.Context) (*testcontainers.DockerClient, error) {
 				<-ctx.Done()
-				panic(discoveryFailure(refused))
+				panic(discoveryFailure(at(missing, refused)))
 			},
 			timeout: 200 * time.Millisecond,
 		},
@@ -162,26 +220,11 @@ func TestRunProbesDockerFirst(t *testing.T) {
 			name:      "constructor error",
 			newClient: func(context.Context) (*testcontainers.DockerClient, error) { return nil, errors.New("bad TLS config") },
 		},
-		{
-			name: "socket refuses the ping",
-			newClient: func(context.Context) (*testcontainers.DockerClient, error) {
-				return socketClient(t, missing), nil
-			},
-			unavailable: true,
-		},
-		{
-			name: "daemon hangs",
-			newClient: func(context.Context) (*testcontainers.DockerClient, error) {
-				return socketClient(t, hung), nil
-			},
-			timeout: 200 * time.Millisecond,
-		},
-		{
-			name: "daemon answers with an error",
-			newClient: func(context.Context) (*testcontainers.DockerClient, error) {
-				return socketClient(t, erroring), nil
-			},
-		},
+		{name: "socket refuses the ping", newClient: via(strings.TrimPrefix(missing, "unix://")), unavailable: true},
+		{name: "daemon hangs", newClient: via(hung), timeout: 200 * time.Millisecond},
+		{name: "daemon answers with an error", newClient: via(erroring)},
+		{name: "daemon resets the connection", newClient: via(resetting)},
+		{name: "socket permission denied", newClient: via(denied)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -204,6 +247,33 @@ func TestRunProbesDockerFirst(t *testing.T) {
 			}
 		})
 	}
+}
+
+// resettingSocket accepts connections and closes them at once: a daemon that is
+// there but failing.
+func resettingSocket(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "dkr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	path := filepath.Join(dir, "r.sock")
+	l, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { l.Close() })
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			c.Close()
+		}
+	}()
+	return path
 }
 
 func TestCheckDockerAnsweringDaemon(t *testing.T) {
@@ -263,11 +333,24 @@ func TestSkipWithoutDockerReadsCI(t *testing.T) {
 
 const noDockerChildEnv = "FDB_TC_NO_DOCKER_CHILD"
 
-// The real Run on a host whose Docker socket is masked: testcontainers'
-// discovery panics on the first call and the probe's ping is refused on later
-// ones, and Run must answer both with a DockerUnavailableError. The child runs
-// in a user and mount namespace with /dev/null bound over the socket, so the
-// host's daemon stays untouched.
+// testcontainersVersion is the release whose discovery errors noHostTexts and
+// checkHost were read from; a bump must re-read internal/core/docker_host.go.
+const testcontainersVersion = "github.com/testcontainers/testcontainers-go v0.41.0"
+
+func TestTestcontainersVersionPinned(t *testing.T) {
+	t.Parallel()
+	gomod, err := os.ReadFile("../../../go.mod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(gomod), "\t"+testcontainersVersion+"\n") {
+		t.Fatalf("go.mod no longer requires %s: re-check noHostTexts and checkHost against the new "+
+			"release's Docker-host discovery errors, then update testcontainersVersion", testcontainersVersion)
+	}
+}
+
+// The real Run with the Docker socket masked in a user and mount namespace:
+// discovery panics on the first call and the ping is refused on the next.
 func TestRunWithoutDocker(t *testing.T) {
 	t.Parallel()
 	const sock = "/var/run/docker.sock"
@@ -275,21 +358,32 @@ func TestRunWithoutDocker(t *testing.T) {
 		t.Skipf("no %s to mask: %v", sock, err)
 	}
 	if err := exec.Command("unshare", "-r", "-m", "true").Run(); err != nil {
-		t.Skipf("unprivileged namespaces unavailable: %v", err)
+		t.Skipf("unprivileged user namespaces unavailable: %v", err)
 	}
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
 	cmd := exec.Command("unshare", "-r", "-m", "sh", "-c",
-		`mount --bind /dev/null "$1" && exec "$2" -test.run='^TestRunWithoutDockerChild$' -test.v`,
+		`mount --bind /dev/null "$1" && { [ ! -d /run/user ] || mount -t tmpfs none /run/user; } &&
+		exec "$2" -test.run='^TestRunWithoutDockerChild$' -test.v`,
 		"sh", sock, self)
-	cmd.Env = append(os.Environ(), noDockerChildEnv+"=1", "DOCKER_HOST=", "CI=")
+	// No other way to a daemon: no properties file, docker context or rootless socket.
+	home := t.TempDir()
+	cmd.Env = []string{noDockerChildEnv + "=1", "HOME=" + home, "XDG_RUNTIME_DIR=" + home}
+	for _, kv := range os.Environ() {
+		k, _, _ := strings.Cut(kv, "=")
+		if k != "CI" && k != "HOME" && k != "XDG_RUNTIME_DIR" && !strings.HasPrefix(k, "DOCKER_") &&
+			!strings.HasPrefix(k, "TESTCONTAINERS_") && k != noDockerChildEnv &&
+			k != "XML_OUTPUT_FILE" && k != "TEST_PREMATURE_EXIT_FILE" {
+			cmd.Env = append(cmd.Env, kv)
+		}
+	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("child failed: %v\n%s", err, out)
 	}
-	for _, want := range []string{"attempt 0: unavailable", "attempt 1: unavailable"} {
+	for _, want := range []string{"attempt 0: discovery panic: unavailable", "attempt 1: ping: unavailable"} {
 		if !strings.Contains(string(out), want) {
 			t.Fatalf("child output lacks %q:\n%s", want, out)
 		}
@@ -300,7 +394,7 @@ func TestRunWithoutDockerChild(t *testing.T) {
 	if os.Getenv(noDockerChildEnv) == "" {
 		t.Skip("runs only as TestRunWithoutDocker's child")
 	}
-	for i := range 2 {
+	for i, arm := range []string{"discovery panic", "ping"} {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		c, err := Run(ctx, "")
 		cancel()
@@ -308,6 +402,10 @@ func TestRunWithoutDockerChild(t *testing.T) {
 		if c != nil || !errors.As(err, &unavailable) || !SkipWithoutDocker(err) {
 			t.Fatalf("attempt %d: Run = (%v, %v), want a DockerUnavailableError a suite may skip", i, c, err)
 		}
-		t.Logf("attempt %d: unavailable: %v", i, err)
+		// Only discovery's joined errors name the host they checked.
+		if fromDiscovery := strings.Contains(err.Error(), "check host "); fromDiscovery != (i == 0) {
+			t.Fatalf("attempt %d: %v: want the %s arm", i, err, arm)
+		}
+		t.Logf("attempt %d: %s: unavailable: %v", i, arm, err)
 	}
 }

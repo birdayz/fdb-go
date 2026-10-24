@@ -3,11 +3,8 @@ name: CI
 on:
   push:
     branches: [ master, main ]
-  # Every pull request, whatever its base: a stacked PR (gh stack) targets the
-  # branch below it, and a base filter would leave it without pre-merge CI.
-  # infra/merge-current-master.sh merges the head into whichever base it has. Fork
-  # PRs are refused on the self-hosted runners by the host-side job hook
-  # (infra/runner-job-guard.sh), independent of the base.
+  # Any base: a stacked PR (gh stack) targets the branch below it. Fork PRs are
+  # refused on the runners by infra/runner-job-guard.sh, whatever the base.
   pull_request:
   workflow_dispatch:
 
@@ -29,7 +26,6 @@ jobs:
   ci:
     name: Build, Lint & Test
     runs-on: hetzner-fdb-vm
-    # Worst observed run 79 min (cold cache), warm runs under 30.
     timeout-minutes: 120
     steps:
       - name: Checkout code
@@ -93,13 +89,11 @@ jobs:
             exit 1
           fi
 
-      - name: Check Docker (else the PRIMARY merge gate silently no-ops)
-        # The whole test suite drives real FDB testcontainers; without Docker every
-        # FDB test hits the allowed `FDB not available (no Docker)` skip and this job
-        # — the gate that BLOCKS MERGES — reports SUCCESS with no coverage
-        # (RFC-107). This matters more than the race job: fail loudly.
+      - name: Check Docker
+        # One clear failure up front instead of every FDB suite failing on its own
+        # (CI never skips them: SkipWithoutDocker reads the forwarded CI variable).
         run: |
-          docker info >/dev/null 2>&1 || { echo "::error::Docker unavailable — the test suite would skip (exit 0) and the merge gate would silently pass with no coverage"; exit 1; }
+          docker info >/dev/null 2>&1 || { echo "::error::Docker unavailable: every FDB test suite would fail"; exit 1; }
 
       # `--define gotags=fdbdocker` turns the SimFDB differential's missing-container
       # skip into a FAILURE (pkg/simfdb/differential_docker_required.go). The Docker
@@ -189,7 +183,6 @@ jobs:
     # them here, on the second runner, takes their quarter off the critical path.
     # Same bazel flags as the main lane, so the build reuses this runner's disk cache.
     runs-on: hetzner-fdb-vm
-    # Worst observed run 15 min.
     timeout-minutes: 45
     steps:
       - name: Checkout code
@@ -212,9 +205,9 @@ jobs:
           go-version: '1.27.3'
           cache: false
 
-      - name: Check Docker (else the conformance gate silently no-ops)
+      - name: Check Docker
         run: |
-          docker info >/dev/null 2>&1 || { echo "::error::Docker unavailable — the conformance suite would skip (exit 0) and the gate would silently pass with no coverage"; exit 1; }
+          docker info >/dev/null 2>&1 || { echo "::error::Docker unavailable: every conformance suite would fail"; exit 1; }
 
       - name: Java conformance tests
         id: test
@@ -306,7 +299,6 @@ jobs:
   frl-go-install:
     name: go install lane (cmd/frl)
     runs-on: hetzner-fdb-vm
-    # Worst observed run 4 min; a cold `go build ./...` needs more.
     timeout-minutes: 30
     steps:
       # Full history, blobless: the secret scan reads every commit a change adds.
@@ -387,7 +379,6 @@ jobs:
   govulncheck:
     name: Vulnerability scan
     runs-on: hetzner-fdb-vm
-    # Worst observed run 2 min.
     timeout-minutes: 20
     steps:
       - name: Checkout code
@@ -494,7 +485,6 @@ jobs:
   race:
     name: Race detector (SQL layer + client + cascades)
     runs-on: hetzner-fdb-vm
-    # Worst observed run 65 min (cold race output_base), warm runs under 15.
     timeout-minutes: 100
     steps:
       - name: Checkout code
@@ -511,12 +501,10 @@ jobs:
           PR_BASE_REF: ${{ github.base_ref }}
         run: infra/merge-current-master.sh
 
-      - name: Check Docker (else the race gates silently no-op)
-        # Both race steps below drive real FDB testcontainers; without Docker the
-        # tests skip (exit 0) and the gate passes with no race coverage
-        # (RFC-107). Fail loudly so a green race job always means -race actually ran.
+      - name: Check Docker
+        # One clear failure up front instead of every FDB race suite failing on its own.
         run: |
-          docker info >/dev/null 2>&1 || { echo "::error::Docker unavailable — race tests would skip (exit 0) and the gate would silently pass"; exit 1; }
+          docker info >/dev/null 2>&1 || { echo "::error::Docker unavailable: every FDB race suite would fail"; exit 1; }
 
       - name: Set up Go
         # For `go run ./cmd/test-budget` in the budget step. It is deliberately not

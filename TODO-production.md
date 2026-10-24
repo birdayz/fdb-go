@@ -593,6 +593,10 @@ recorded.)* The required gates already run per-PR; only the heaviest is nightly 
   `push`+`pull_request`) over `pkg/fdbgo/libfdbc` + `fdbclient` (byte-identical cross-client).
 - **1M stress** — nightly (`nightly-stress.yml`), correctness-asserting; off-PR **by design**
   (RFC-107: too heavy for every PR) — the one gate the owner keeps nightly.
+
+  *Current state:* every nightly workflow was deleted on 2026-10-09. The libfdb_c differential
+  is ci.yml's per-PR `libfdbc-differential` job; no CI workflow runs the stress target, active
+  fuzzing or coverage. Which nightlies return is open in TODO.md.
 Caveat (Torvalds): detection, not repair — see the won't-fix note.
 
 ### [x] P1.7 — Reconcile contradictory docs · S — DONE (README + docs guard + generated FEATURE_MATRIX.md)
@@ -693,7 +697,8 @@ paths now routed through it:
   libfdbc` of `recordlayer` + `sqldriver` + `fdbclient` compiles. Default build is behavior-preserving
   — `NewFDBDatabaseWithBackend` keeps the pure-Go concrete handle, so CreateTransaction/locality are
   unaffected.
-- **Gate:** `nightly-libfdbc.yml` runs a per-PR + nightly byte-identical cross-client differential.
+- **Gate:** a per-PR byte-identical cross-client differential, now ci.yml's `libfdbc-differential`
+  job (`nightly-libfdbc.yml` was deleted on 2026-10-09).
 - Build-tag selection (not runtime config) is deliberate — the libfdb_c network thread is
   once-per-process.
 
@@ -743,7 +748,8 @@ Tenants remain the declared v1 non-goal (the only acknowledged libfdb_c scope bo
 
 ### [x] P2.4 — Broaden fuzz coverage in CI · S — DONE
 *(2026-06-25; counts corrected per codex per-PR review.)* The tree has **140** `func Fuzz` targets.
-Nightly active-fuzz coverage: diff-fuzz (18, `cmd/fdb-diff-oracle`) + client-fuzz (26, `//pkg/fdbgo`)
+Nightly active-fuzz coverage (deleted with every nightly on 2026-10-09; only the per-PR seed replay
+runs now): diff-fuzz (18, `cmd/fdb-diff-oracle`) + client-fuzz (26, `//pkg/fdbgo`)
 + the new **`engine-fuzz`** job (`nightly-fuzz.yml`), which discovers and fuzzes the
 `//pkg/relational` + `//pkg/recordlayer` **+ `//pkg/rabitq`** targets at 60s each — the previously
 seed-replay-only set (was 8 actively-fuzzed at the 2026-06-07 baseline). With rabitq added (the lone
