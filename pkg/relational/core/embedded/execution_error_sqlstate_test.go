@@ -10,8 +10,7 @@ import (
 	"fdb.dev/pkg/relational/api"
 )
 
-// The executor names its SQL-visible failures; translateExecError gives each
-// the SQLSTATE and message the executor used to build itself.
+// Each executor failure kind reaches SQL with its SQLSTATE and message.
 func TestTranslateExecErrorMapsExecutorFailures(t *testing.T) {
 	t.Parallel()
 	for _, c := range []struct {

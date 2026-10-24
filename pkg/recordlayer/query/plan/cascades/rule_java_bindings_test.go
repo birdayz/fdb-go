@@ -64,6 +64,10 @@ func TestJavaBindingsCountJavasMatcherBindings(t *testing.T) {
 	logicalOnly := func() *expressions.Reference {
 		return expressions.InitialOf(mustFullUnorderedScan(t, []string{"TBL"}, javaBindingsRowType()))
 	}
+	exploratoryPlansOnly := func() *expressions.Reference {
+		plan := mustJavaBindingsConstruct(plans.NewRecordQueryScanPlan([]string{"TBL"}, javaBindingsRowType(), false))
+		return expressions.InitialOf(plan)
+	}
 	forEach := func(ref *expressions.Reference) expressions.Quantifier { return expressions.ForEachQuantifier(ref) }
 	existential := func(ref *expressions.Reference) expressions.Quantifier {
 		return expressions.ExistentialQuantifier(ref)
@@ -88,6 +92,7 @@ func TestJavaBindingsCountJavasMatcherBindings(t *testing.T) {
 		{"filter: one per plan partition", &ImplementFilterRule{}, filter(forEach(partitioned()), truePredicate), 3},
 		{"filter over a reference without plans", &ImplementFilterRule{}, filter(forEach(logicalOnly()), truePredicate), 0},
 		{"filter with an index-only predicate", &ImplementFilterRule{}, filter(forEach(partitioned()), indexOnly), 0},
+		{"filter over exploratory plans only", &ImplementFilterRule{}, filter(forEach(exploratoryPlansOnly()), truePredicate), 0},
 		{
 			"type filter: stored-record partitions", &ImplementTypeFilterRule{},
 			mustJavaBindingsConstruct(expressions.NewLogicalTypeFilterExpression([]string{"TBL"}, forEach(partitioned()))), 2,

@@ -1667,7 +1667,7 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   `Boolean.parseBoolean`), and the corpus runner routes a string option through
   it, as Java's `TestBlockOptions.parseConnectionOptions`.
 - [x] Recursive result metadata in the corpus runner (CQ-74 closed). A result
-  column carries its planned type (`executor.ColumnDef.DataType`, from
+  column carries its planned type (`resultset.ColumnDef.DataType`, from
   `rowstruct.DataTypeOf`); `api.WithResultSetMetaDataObserver` hands a query's
   metadata to the caller, and the runner ports `extractDescriptors` over it.
   An array column's `DatabaseTypeName` is Java's `ARRAY` (was the element

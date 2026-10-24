@@ -7,17 +7,14 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 )
 
-// javaBindingCounter is a rule whose Java matcher binds more than once per rule
-// call (once per plan partition, quantifier, combination or permutation) where
-// the Go rule binds once and enumerates in OnMatch. javaBindings is Java's
-// binding count for expr, the number MaxNumMatchesPerRuleCall bounds.
+// javaBindingCounter is a rule whose Java matcher binds per plan partition,
+// quantifier, combination or permutation; javaBindings is that count for expr.
 type javaBindingCounter interface {
 	javaBindings(expr expressions.RelationalExpression) int
 }
 
-// ruleCallMatches is what MaxNumMatchesPerRuleCall bounds for one call of rule
-// on expr: the rule's Java binding count, else its goBindings. Java counts each
-// binding before onMatch runs, so the count does not depend on OnMatch's guards.
+// ruleCallMatches is what MaxNumMatchesPerRuleCall bounds for one rule call:
+// Java's count where the rule reports it, else the Go bindings.
 func ruleCallMatches(rule any, expr expressions.RelationalExpression, goBindings int) int {
 	if adapter, ok := rule.(*expressionRuleAdapter); ok {
 		rule = adapter.rule
@@ -28,15 +25,27 @@ func ruleCallMatches(rule any, expr expressions.RelationalExpression, goBindings
 	return goBindings
 }
 
-// javaPlanPartitions is Java's Reference.toPlanPartitions: the plans of ref
+// javaPlanPartitions is Java's Reference.toPlanPartitions: the final plans of ref
 // partitioned by ordering, distinct records, stored record and primary key.
 func javaPlanPartitions(ref *expressions.Reference) []*PlanPartition {
+	return javaPartitions(ref, properties.PropRichOrdering, properties.PropDistinctRecords,
+		properties.PropStoredRecord, properties.PropPrimaryKey)
+}
+
+// javaPartitions partitions ref's final plans by props. Java's properties map
+// holds final plans only, and the count must not touch the map the rules read,
+// so it is built afresh.
+func javaPartitions(ref *expressions.Reference, props ...*properties.ExpressionProperty) []*PlanPartition {
 	if ref == nil {
 		return nil
 	}
-	computeRefPlanProperties(ref)
-	return withPlans(RollUpPlanPartitions(ToPlanPartitions(ref), properties.PropRichOrdering,
-		properties.PropDistinctRecords, properties.PropStoredRecord, properties.PropPrimaryKey))
+	pm := NewPlanPropertiesMap()
+	for _, m := range ref.FinalMembers() {
+		if plan, ok := m.(physicalPlanExpression); ok {
+			pm.Add(plan)
+		}
+	}
+	return withPlans(RollUpPlanPartitions(toPartitionsFromMap(pm), props...))
 }
 
 // javaStoredRecordPartitions is filterPlanPartitions(storedRecord, …) over
@@ -165,13 +174,8 @@ func (r *ImplementSortRule) javaBindings(expr expressions.RelationalExpression) 
 	if _, ok := expr.(*expressions.LogicalSortExpression); !ok {
 		return 0
 	}
-	ref := onlyQuantifier(expr, expressions.QuantifierForEach)
-	if ref == nil {
-		return 0
-	}
-	computeRefPlanProperties(ref)
-	return len(withPlans(RollUpPlanPartitions(ToPlanPartitions(ref), properties.PropRichOrdering,
-		properties.PropDistinctRecords, properties.PropPrimaryKey)))
+	return len(javaPartitions(onlyQuantifier(expr, expressions.QuantifierForEach),
+		properties.PropRichOrdering, properties.PropDistinctRecords, properties.PropPrimaryKey))
 }
 
 // PartitionSelectRule.java: selectExpression(combinations(all(anyQuantifier()), 0, n)),

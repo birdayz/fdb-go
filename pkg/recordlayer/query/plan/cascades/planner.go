@@ -674,7 +674,8 @@ type PlannerBudgetExceededError struct {
 	Budget string
 	// Limit is the configured bound.
 	Limit int
-	// Observed is the value that exceeded it.
+	// Observed is the value that exceeded it; for MaxNumMatchesPerRuleCall it is
+	// the bound+1 Java reports, since Java stops at the first binding past it.
 	Observed int
 
 	sentinel plannerErr

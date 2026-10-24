@@ -9,10 +9,8 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
-// A cancelled rule call's yields are dropped, so its memoize calls must not
-// search or grow the memo. Each subtest memoizes four new expressions through
-// one entry point and cancels after the second: the memo gains exactly two
-// references.
+// After a cancel, each memoize entry point leaves the memo alone: four calls,
+// cancelled after the second, add two references.
 func TestMemoizeAfterCancellationLeavesTheMemoAlone(t *testing.T) {
 	t.Parallel()
 

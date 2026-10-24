@@ -102,8 +102,9 @@ already, so no plan changes.
   their `values` errors, mapped there with the same code and message.
 - `resultset.go` and its tests move to `pkg/relational/core/resultset`. The
   executor tests that asserted `*api.Error` codes assert `ExecutionError` kinds;
-  the four FDB tests that read rows through the result set read the ordinal
-  rows instead (its accessors stay unit-tested with it), and the continuation
+  of the four FDB tests that read rows through the result set, two read the
+  ordinal rows instead and the string-coercion and by-name ones are dropped
+  (those accessors stay unit-tested with the result set); the continuation
   encode-failure check moves with it.
 - A nogo analyzer, `recordlayerdeps`, fails the build when a non-test file under
   `pkg/recordlayer` imports `pkg/relational`. Test files are exempt: two executor

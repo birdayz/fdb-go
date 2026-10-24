@@ -2805,9 +2805,8 @@ func translateExecError(err error) error {
 	return translateFDBError(err)
 }
 
-// executionErrorCode is the SQLSTATE of an executor failure kind; for
-// ExecIncompatibleType it is ExceptionUtil.translateErrorCode's
-// INCOMPATIBLE_TYPE → CANNOT_CONVERT_TYPE.
+// executionErrorCode is an executor failure kind's SQLSTATE (ExecIncompatibleType:
+// ExceptionUtil's INCOMPATIBLE_TYPE → CANNOT_CONVERT_TYPE).
 func executionErrorCode(kind executor.ExecutionErrorKind) api.ErrorCode {
 	switch kind {
 	case executor.ExecIncompatibleType:

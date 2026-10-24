@@ -412,10 +412,10 @@ func (r *countingStubRule) javaBindings(expressions.RelationalExpression) int {
 	return r.count
 }
 
-type countingStubImplRule struct{ count int }
+type countingStubImplRule struct{ count, onMatches int }
 
-func (*countingStubImplRule) Matcher() matching.BindingMatcher { return &oneBindingStubMatcher{} }
-func (*countingStubImplRule) OnMatch(*ImplementationRuleCall)  {}
+func (*countingStubImplRule) Matcher() matching.BindingMatcher  { return &oneBindingStubMatcher{} }
+func (r *countingStubImplRule) OnMatch(*ImplementationRuleCall) { r.onMatches++ }
 func (r *countingStubImplRule) javaBindings(expressions.RelationalExpression) int {
 	return r.count
 }
@@ -517,6 +517,9 @@ func TestPlannerCapTrips(t *testing.T) {
 				if tripped != tc.trips || (tripped && budget.Observed != tc.bound+1) {
 					t.Fatalf("implementation rule, phase %v: Java count %d under bound %d: capErr = %v, want trip=%v",
 						phase, tc.javaCount, tc.bound, p.capErr, tc.trips)
+				}
+				if tc.trips && implRule.onMatches != 0 {
+					t.Fatalf("implementation rule ran OnMatch %d times after the bound tripped", implRule.onMatches)
 				}
 			}
 		})

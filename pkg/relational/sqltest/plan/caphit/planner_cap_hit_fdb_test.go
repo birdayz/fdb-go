@@ -3,9 +3,11 @@ package sqltest
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 	"fdb.dev/pkg/relational/sqltest/testkit"
@@ -116,4 +118,56 @@ func TestFDB_PlannerCapHit_SelectPathSQLSTATE(t *testing.T) {
 		rows.Close()
 	}
 	testkit.AssertPlannerCapHit(t, err)
+}
+
+// matchesConn pins a connection with MAX_NUM_MATCHES_PER_RULE_CALL set to bound.
+func matchesConn(t *testing.T, db *sql.DB, bound int) *sql.Conn {
+	t.Helper()
+	return testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+		if err := ec.SetOption(api.OptMaxNumMatchesPerRuleCall, bound); err != nil {
+			t.Fatalf("SetOption: %v", err)
+		}
+	})
+}
+
+// TestFDB_MaxNumMatchesPerRuleCall_CountsPlanPartitions bounds the bindings
+// Java's matchers make per rule call. The select over ORDERS implements over a
+// reference holding the scan and each index's plan, one plan partition apiece, so
+// a bound of 2 fails with 54F02; unset, or at 1000, the query runs with the same
+// plan.
+func TestFDB_MaxNumMatchesPerRuleCall_CountsPlanPartitions(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db := capHitDB(t, "matches")
+	if _, err := db.ExecContext(ctx, "INSERT INTO ORDERS VALUES (1, 10, 'open', 5, 'gold')"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+	const query = "SELECT id FROM ORDERS WHERE amount + 0 = 5"
+
+	rows, err := matchesConn(t, db, 2).QueryContext(ctx, query)
+	if rows != nil {
+		rows.Close()
+	}
+	if !errors.Is(err, cascades.ErrPlannerRuleMatchCapHit) {
+		t.Fatalf("bound 2: err = %v, want ErrPlannerRuleMatchCapHit", err)
+	}
+	testkit.RequireSQLSTATE(t, err, api.ErrCodePlanComplexityLimitReached)
+
+	unbounded := testkit.PinEmbeddedConn(t, db, func(*embedded.EmbeddedConnection) {})
+	generous := matchesConn(t, db, 1000)
+	var plans []string
+	for _, conn := range []*sql.Conn{unbounded, generous} {
+		var id int64
+		if err := conn.QueryRowContext(ctx, query).Scan(&id); err != nil || id != 1 {
+			t.Fatalf("query: id = %d, err = %v, want 1", id, err)
+		}
+		plan, err := testkit.ExplainPlanOnErr(ctx, conn, query)
+		if err != nil {
+			t.Fatal(err)
+		}
+		plans = append(plans, plan)
+	}
+	if plans[0] != plans[1] {
+		t.Fatalf("a bound that does not trip changed the plan:\n  unset: %s\n  1000:  %s", plans[0], plans[1])
+	}
 }

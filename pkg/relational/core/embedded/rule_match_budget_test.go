@@ -9,11 +9,8 @@ import (
 	"fdb.dev/pkg/relational/api"
 )
 
-// MAX_NUM_MATCHES_PER_RULE_CALL bounds the bindings Java's matcher would make
-// per rule call. A filter over a table with two indexes reaches rules whose
-// inputs hold several plan partitions (the scan and each index's ordering), so
-// a bound of 2 now trips where a Go root binding used to count 1; the same
-// query plans with the bound unset and with a generous one.
+// A filter over a table with two indexes reaches rules over references with
+// several plan partitions, so Java's per-partition count trips a bound of 2.
 func TestMaxNumMatchesPerRuleCallCountsPlanPartitions(t *testing.T) {
 	t.Parallel()
 	const ddl = "CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id)) " +

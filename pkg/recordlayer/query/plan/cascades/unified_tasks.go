@@ -731,10 +731,8 @@ func (t *TransformExprTask) runRule(ctx context.Context, p *Planner) (progress b
 		}()
 	}
 
-	// Java bounds the bindings of one rule call (CascadesPlanner's numMatches).
-	// The count is taken once, on the primary firing: a rule whose Java matcher
-	// binds per partition or permutation reports that count (ruleCallMatches),
-	// so the swapped firing below adds nothing.
+	// Java bounds one rule call's bindings; counted once (ruleCallMatches), so
+	// the swapped firing, whose orders a set-matcher rule reports, adds nothing.
 	fireExprRule := func(expr expressions.RelationalExpression, swapped bool) {
 		if ctx.Err() != nil {
 			return
