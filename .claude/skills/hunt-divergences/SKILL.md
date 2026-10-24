@@ -157,7 +157,8 @@ Run the **`bruh-code-review`** skill on the fix, then on the PR
 spec, file:line; the core lenses check dead code, papered-over regressions, revert-proofs
 and scope honesty. Client divergences are subtle and reviewers catch different classes
 (storage-shadow, cleared-base, sticky-unreadable): ask for `replicas: 2`, which runs each
-lens twice, with the copies on different providers.
+lens twice, and set each copy's `model` in the plan to a different provider (both copies
+otherwise run on your own model).
 
 Push and post a new review after every new commit (a posted run re-checks the PR's open
 findings itself); an ACK only covers the HEAD it reviewed.

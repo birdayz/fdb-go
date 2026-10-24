@@ -121,7 +121,7 @@ When implementation is done and tests pass:
    gh pr ready  # remove draft status
    ```
 
-2. **Request review** with the `bruh-code-review` skill: `review PR <N> and post it`. It posts one PR review with inline comments.
+2. **Request review** with the `bruh-code-review` skill: `review PR <N> and post it`. It edits the PR's bruh summary, sets the `bruh/review` status, resolves the threads of fixed findings, and posts a review only for new findings.
 
 3. **Read the report.** It ends with `bruh-code-review: ACK <sha>` or `NAK <sha>`, after the blocking reasons and each finding with its location and fix.
 

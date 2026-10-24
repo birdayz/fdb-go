@@ -1,6 +1,6 @@
 ---
 name: todo-worker
-description: Pick the next unchecked TODO.md item, write an RFC, review it with the bruh-code-review skill, implement, review again, open PR, iterate until bruh-code-review ACKs the PR's final HEAD.
+description: Pick the next unchecked TODO.md item, claim an RFC number with a draft PR, write the RFC and post a bruh-code-review of it, implement, post reviews until bruh-code-review ACKs the PR's final HEAD.
 ---
 
 # TODO Worker Workflow
@@ -58,16 +58,18 @@ Use `fix/` for bugs, `feat/` for features, `refactor/` for cleanups.
 
 ## Step 4: Write the RFC
 
-Create `rfcs/NNN-<short-name>.md`. NNN is one above the highest number on master or in an open
-PR (another branch may have taken the next one):
+Claim the number first, then write. NNN is one above the highest number on origin/master or in
+any PR branch (another run may have taken the next one):
 
 ```bash
-{ ls rfcs; gh pr list --state open --limit 500 --json files --jq '.[].files[].path' \
-    | sed -n 's#^rfcs/##p'; } | grep -E '^[0-9]{3}-' | sort -V | tail -1
+git fetch -q origin master '+refs/pull/*/head:refs/remotes/origin/pr/*'
+for r in origin/master $(git for-each-ref --format='%(refname:short)' refs/remotes/origin/pr); do
+  git ls-tree --name-only "$r" rfcs/; done | sed 's#^rfcs/##' | grep -E '^[0-9]{3}-' | sort -V | tail -1
 ```
 
-Step 5 opens the draft PR as soon as the RFC is committed, so the number is visible to other
-runs from then on.
+Commit a one-line stub `rfcs/NNN-<short-name>.md` (`# RFC-NNN: <title>`, **Status: Draft**),
+push, and open the draft PR at once (Step 5's command). The number is taken from then on; then
+write the RFC into the stub.
 
 The RFC must contain:
 - **Problem**: what's broken/missing and why it matters
@@ -80,8 +82,8 @@ Keep it short — 1-2 pages max. No fluff.
 
 ## Step 5: Draft PR and RFC review (bruh-code-review)
 
-Commit the RFC, push the branch and open a **draft** PR (`gh pr create --draft`, title and body
-as in Step 9). Every review from here on is posted to it: the PR keeps one bruh summary, a
+The draft PR is open from Step 4 (`gh pr create --draft --title "<type>: <short description>
+(<item-id>)" --body "RFC-NNN, in progress."`). Commit the RFC and push. Every review from here on is posted to it: the PR keeps one bruh summary, a
 `bruh/review` commit status, and the open findings as review threads, and each posted run
 re-checks those findings itself (no `previous:`).
 
@@ -117,19 +119,20 @@ post it`, with `intent:` naming the item and RFC-NNN).
 ## Step 8: Update TODO.md
 
 Mark the item as done: `- [x] **P0.X ...** Fixed in RFC-NNN — [short description of what was done].`
+Set the RFC's **Status: Implemented**.
 
 Commit this with the implementation (or as a separate commit if already committed).
 
 ## Step 9: Mark the PR ready
 
-Push, update the PR body, and mark it ready (`gh pr ready <N>`). The body Step 5 opened it with:
+Push, write the PR body, and mark it ready:
 
 ```bash
-gh pr create --title "<type>: <short description> (<item-id>)" --body "$(cat <<'EOF'
+gh pr edit <N> --body "$(cat <<'EOF'
 ## Summary
 - [bullet points of what changed and why]
 
-RFC-NNN. bruh-code-review ACK on the RFC and the implementation.
+RFC-NNN. [The bruh-code-review verdicts so far, as the PR's bruh summary shows them.]
 
 ## Test plan
 - [x] [specific tests that prove the fix]
@@ -137,6 +140,7 @@ RFC-NNN. bruh-code-review ACK on the RFC and the implementation.
 - [x] Pre-commit hook green
 EOF
 )"
+gh pr ready <N>
 ```
 
 ## Step 10: PR review and iterate
