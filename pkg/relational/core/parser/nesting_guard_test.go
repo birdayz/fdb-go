@@ -31,6 +31,13 @@ func TestParse_NestingGuardBoundary(t *testing.T) {
 	if _, err := Parse("SELECT 1) " + nested(maxParenNesting+1)); !isNestingError(err) {
 		t.Fatalf("stray ')' then depth %d: %v, want the nesting error", maxParenNesting+1, err)
 	}
+	// A ')' inside a literal does not lower the depth either.
+	half := maxParenNesting / 2
+	inLiteral := "SELECT " + strings.Repeat("(", half) + "')))' || " + strings.Repeat("(", maxParenNesting+1-half) +
+		"'x'" + strings.Repeat(")", maxParenNesting+1) + " FROM t"
+	if _, err := Parse(inLiteral); !isNestingError(err) {
+		t.Fatalf("depth %d with ')' in a literal: %v, want the nesting error", maxParenNesting+1, err)
+	}
 }
 
 // A parenthesis inside a string literal, a quoted identifier or a comment is
@@ -43,8 +50,6 @@ func TestParse_NestingGuardIgnoresParensInsideTokens(t *testing.T) {
 		"quoted identifier": `SELECT "` + many + `" FROM t`,
 		"block comment":     "SELECT 1 /* " + many + " */ FROM t",
 		"line comment":      "SELECT 1 FROM t -- " + many + "\n",
-		"closing in literal": "SELECT * FROM t WHERE s = '" + strings.Repeat(")", 2*maxParenNesting) + "' AND " +
-			strings.Repeat("(", 3) + "s = 'x'" + strings.Repeat(")", 3),
 	} {
 		if _, err := Parse(sql); err != nil {
 			t.Errorf("%s: %v, want it parsed", name, err)

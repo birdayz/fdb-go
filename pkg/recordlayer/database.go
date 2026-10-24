@@ -799,8 +799,8 @@ func NewFDBRecordContext(tx fdb.WritableTransaction, env *dst.Env) *FDBRecordCon
 
 // NewRecordContext wraps an externally-created FDB transaction in a context that inherits
 // everything this database gives the contexts it opens itself: the DST environment and the
-// StoreTimer. It is the form every caller holding an *FDBDatabase should use — SQL's
-// explicit BeginTx→COMMIT path among them.
+// StoreTimer. It is the form every caller holding an *FDBDatabase should use; one with a
+// context (SQL's explicit BeginTx→COMMIT path) uses NewRecordContextIn.
 //
 // The point is that per-database state is threaded in ONE place. NewFDBRecordContext takes
 // the fields one by one, which is why env was silently dropped on the explicit-transaction

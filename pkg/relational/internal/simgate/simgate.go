@@ -34,11 +34,12 @@ type Backend struct {
 	mu     sync.Mutex
 	gates  map[Call]*Gate
 	panics map[Call]bool
+	open   map[*txn]bool // CreateWritableTransaction's, until committed or cancelled
 }
 
 // New wraps sim.
 func New(sim *simfdb.SimDB) *Backend {
-	return &Backend{SimDB: sim, gates: make(map[Call]*Gate), panics: make(map[Call]bool)}
+	return &Backend{SimDB: sim, gates: make(map[Call]*Gate), panics: make(map[Call]bool), open: make(map[*txn]bool)}
 }
 
 // Gate is one armed blocking call: the next such call blocks on it until
@@ -138,7 +139,25 @@ func (b *Backend) CreateWritableTransaction() (fdb.WritableTransaction, error) {
 	if err != nil {
 		return nil, err
 	}
-	return b.wrap(tx), nil
+	t := b.wrap(tx)
+	b.mu.Lock()
+	b.open[t] = true
+	b.mu.Unlock()
+	return t, nil
+}
+
+// OpenTransactions counts the transactions CreateWritableTransaction made that
+// were neither committed nor cancelled.
+func (b *Backend) OpenTransactions() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.open)
+}
+
+func (b *Backend) closed(t *txn) {
+	b.mu.Lock()
+	delete(b.open, t)
+	b.mu.Unlock()
 }
 
 // Transact is SimFDB's, with each attempt's transaction wrapped.
@@ -186,7 +205,11 @@ func (t *txn) Commit() fdb.FutureNil {
 		panic("simgate: Commit")
 	}
 	t.hold(Commit, true)
-	return t.WritableTransaction.Commit()
+	f := t.WritableTransaction.Commit()
+	if f.Get() == nil {
+		t.b.closed(t)
+	}
+	return f
 }
 
 func (t *txn) Cancel() {
@@ -195,6 +218,7 @@ func (t *txn) Cancel() {
 	}
 	t.hold(Cancel, false)
 	t.WritableTransaction.Cancel()
+	t.b.closed(t)
 	t.cancelOnce.Do(func() { close(t.cancelled) })
 }
 

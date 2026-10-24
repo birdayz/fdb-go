@@ -126,8 +126,8 @@ func TestExplicitTx_SQLBeginTxContextUnblocksRollback(t *testing.T) {
 	}
 }
 
-// The catalog read a statement makes inside the transaction (its first,
-// loading the schema) takes the statement's context too.
+// The statement's binding covers its first read in the transaction, the
+// catalog load, too.
 func TestExplicitTx_StatementContextInterruptsCatalogRead(t *testing.T) {
 	t.Parallel()
 	g := newGatedSim(t, 547)

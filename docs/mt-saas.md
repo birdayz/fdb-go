@@ -373,7 +373,8 @@ The setters are `SetOption`, `SetFailOnScanLimitReached`, `SetStatementTimeout` 
 
 **The footgun to design around: this configures ONE borrow of ONE pooled connection.** Everything
 `configureTenantConn` sets lasts until the connection returns to the pool: `ResetSession` restores
-the connector's configuration (the DSN-decoded options, and the Go-local settings off) before the next
+the connector's configuration (the DSN-decoded options, and the Go-local settings back at their
+defaults) before the next
 borrower gets it. Route tenant work through a helper that acquires a `*sql.Conn`, configures it,
 uses it, and closes it — do not issue queries on the `*sql.DB` directly and assume the governors are
 on. `SetOptions` is different: it replaces the connection's option set *including what

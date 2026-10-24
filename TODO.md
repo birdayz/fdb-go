@@ -2067,15 +2067,13 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
 
 ## GROUP BY duplicate-key check: follow-ups found by RFC-272
 
-- [ ] Found while removing the `GetText` fallback (RFC-272 item 6); each needs a JVM probe before
-  Go changes, and (1)-(3) predate it. (1) The 42702 check runs at aggregate build time, before WHERE and
+- [ ] Found while removing the `GetText` fallback (RFC-272 item 6); each predates it and needs a
+  JVM probe before Go changes. (1) The 42702 check runs at aggregate build time, before WHERE and
   SELECT-list resolution and before 42803: `WHERE nosuch = 1 GROUP BY amount+1, amount+1` and
   `SELECT nosuch, COUNT(*) … GROUP BY amount+1, amount+1` are 42702 (Java 42703), and
   `SELECT category, COUNT(*) … GROUP BY amount+1, amount+1` is 42702 (Java 42803)
   (`QueryVisitor.java:274-305`, `LogicalOperator.java:436-455`). (2) An unknown function or a
   scalar subquery as a GROUP BY key returns a raw `*expr.UnsupportedExpressionShapeError`, not an
   `api.Error` (Java 0AF00 / 42601). (3) `category || 'a'` as a key is 42804; Java is 0AF00
-  "Unsupported operator ||". (4) A refusal that depends on parameter values is plan-cache
-  sensitive: a plan cached for `amount + ?, amount + ?` bound to (1, 2) serves (1, 1) without the
-  42702. Comparison keys (`amount = ?, amount = ?`) became parameter-dependent with RFC-272; the
-  probe runner binds no parameters, so Java's answer for them is unmeasured.
+  "Unsupported operator ||". Parameter keys (`amount = ?, amount = ?`) are value-dependent; the
+  probe runner binds no parameters, so Java's answer is unmeasured (DIVERGENCES.md).

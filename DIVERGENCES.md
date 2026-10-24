@@ -1241,8 +1241,8 @@ are one key twice (42702), distinct values two keys, grouped by Go's streaming
 aggregation. Java's answer is not measured: the JVM probe runner binds no
 parameters. Reading Java, its `MutablePlanGenerationContext` folds equal
 parameter values into one constant (42702) and its planner declines a GROUP BY
-without an aggregate index for distinct ones; its plan cache constrains the
-values, Go's does not (`TODO.md`).
+without an aggregate index for distinct ones. Both plan caches hold such a plan
+only for the values it was planned with (Go pins them).
 
 ## Record Layer collation — explicit Go-only keys (target ICU 78.3)
 

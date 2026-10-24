@@ -1,20 +1,7 @@
 package embedded
 
-// The GROUP BY duplicate-key gate (visitSelectGroupBy) compares EXPRESSION keys
-// by their resolved Value, never by GetText. Java's identity is the value the
-// grouping expression resolves to (Expression.pullUp's size()==1 assertion,
-// Expression.java:288-291, reached from LogicalOperator.generateGroupBy,
-// LogicalOperator.java:454), and every grouping item is resolved in value
-// context (ExpressionVisitor.visitGroupByItem, ExpressionVisitor.java:273-276)
-// BEFORE that check runs (QueryVisitor.java:287-305). Hence three classes:
-//
-//   - a duplicate spelled differently is still refused (typed equality, not
-//     token text: `<>`/`!=`, `1`/`01`);
-//   - keys that differ only in literal case or bound parameter value are NOT
-//     duplicates (Java dedups literals by value, MutablePlanGenerationContext
-//     .java:242 / Literals.java:199-205, and 'a' != 'A');
-//   - a key that does not resolve reports its own resolution error, exactly as
-//     the same key alone does, never a 42702 manufactured from source text.
+// The GROUP BY duplicate-key gate compares expression keys by the Value they
+// resolve to in value context (Java's visitGroupByItem), never by their text.
 
 import (
 	"context"
@@ -92,8 +79,8 @@ func runDuplicateGateQuery(c *EmbeddedConnection, sql string, args []driver.Name
 
 func TestGroupByDuplicateGateComparesResolvedValues(t *testing.T) {
 	t.Parallel()
-	// Each statement text runs once on this connection: a cached plan would
-	// answer a later run without reaching the gate.
+	// Each statement text runs once on this connection, except where a test
+	// checks what a cached plan answers.
 	c := newDuplicateGateConnection(t, 5207)
 
 	wantErr := func(t *testing.T, sql string, args []driver.NamedValue, code api.ErrorCode, msg string) {
@@ -154,12 +141,18 @@ func TestGroupByDuplicateGateComparesResolvedValues(t *testing.T) {
 		// 10 and 20 bound to two `?`: (t,f), (f,t), (f,f).
 		wantRows(t, "SELECT COUNT(*) FROM T_G1 GROUP BY amount = ?, amount = ?",
 			[]driver.NamedValue{{Ordinal: 1, Value: int64(10)}, {Ordinal: 2, Value: int64(20)}}, 3)
-		// Equal bound values make the keys equal: 42702. (Another statement
-		// text, so no plan cached for 10/20 answers it; TODO.md records
-		// that a cached plan would.)
-		wantErr(t, "SELECT COUNT(*) FROM T_G1 WHERE id > 0 GROUP BY amount = ?, amount = ?",
+		// Equal bound values make the keys equal: 42702, also with the plan
+		// for 10/20 cached under the same text (the gate pins the values).
+		wantErr(t, "SELECT COUNT(*) FROM T_G1 GROUP BY amount = ?, amount = ?",
 			[]driver.NamedValue{{Ordinal: 1, Value: int64(10)}, {Ordinal: 2, Value: int64(10)}},
 			api.ErrCodeAmbiguousColumn, "Ambiguous columns for amount = ?")
+		wantRows(t, "SELECT COUNT(*) FROM T_G1 GROUP BY amount = ?, amount = ?",
+			[]driver.NamedValue{{Ordinal: 1, Value: int64(20)}, {Ordinal: 2, Value: int64(30)}}, 3)
+		wantRows(t, "SELECT COUNT(*) FROM T_G1 GROUP BY amount + ?, amount + ?",
+			[]driver.NamedValue{{Ordinal: 1, Value: int64(1)}, {Ordinal: 2, Value: int64(2)}}, 3)
+		wantErr(t, "SELECT COUNT(*) FROM T_G1 GROUP BY amount + ?, amount + ?",
+			[]driver.NamedValue{{Ordinal: 1, Value: int64(1)}, {Ordinal: 2, Value: int64(1)}},
+			api.ErrCodeAmbiguousColumn, "Ambiguous columns for amount + ?")
 	})
 
 	t.Run("an unresolvable key reports its own error, not 42702", func(t *testing.T) {

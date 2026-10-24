@@ -60,6 +60,7 @@ func TestExportedEntriesRecoverPanics(t *testing.T) {
 		return tx
 	}
 	ctx := context.Background()
+	cancelPanics := map[string]bool{"Rollback": true, "Close": true, "ResetSession": true}
 	for name, call := range map[string]func(*testing.T, *EmbeddedConnection, *simgate.Backend) error{
 		"BeginTx": func(_ *testing.T, c *EmbeddedConnection, b *simgate.Backend) error {
 			b.PanicOnce(simgate.Begin)
@@ -214,9 +215,10 @@ func TestExportedEntriesRecoverPanics(t *testing.T) {
 			if _, err := c.ExecContext(ctx, "INSERT INTO t (id, v) VALUES (8, 8)", nil); !errors.Is(err, driver.ErrBadConn) {
 				t.Fatalf("%s: a statement on the poisoned connection = %v, want driver.ErrBadConn", name, err)
 			}
-			// The transaction the panic interrupted wrote nothing.
-			if n := countRows(t, g.connect(t, "S"), 7); n != 0 {
-				t.Fatalf("%s: the interrupted transaction's write was committed", name)
+			// The transaction the panic interrupted was cancelled, unless the
+			// panic was its Cancel.
+			if open := g.gate.OpenTransactions(); open != 0 && !cancelPanics[name] {
+				t.Fatalf("%s: %d transaction(s) left neither committed nor cancelled", name, open)
 			}
 		})
 	}

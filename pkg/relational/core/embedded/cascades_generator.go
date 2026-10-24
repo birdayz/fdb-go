@@ -1546,7 +1546,6 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 		}
 		pr.tx, pr.ownsTx = tx, true
 		tx.bindContext(ctx)
-		pr.stopTxCancellation = tx.detachContext
 		defer pr.Close()
 		if err := c.ensureMetaData(ctx); err != nil {
 			pr.statsErr = err
@@ -1576,7 +1575,7 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 	if pr.isUpdate {
 		n, err := pr.countAll()
 		if pr.ownsTx {
-			pr.detachTxCancellation()
+			pr.tx.detachContext() // a dispatched commit's outcome must not become ctx's error
 			if err != nil && ctx.Err() != nil {
 				err = translateExecErrorCtx(ctx, ctx.Err())
 			}
@@ -1745,9 +1744,6 @@ type paginatingRows struct {
 	// after the complete DML drain; ambiguity is reported, never replayed.
 	// Borrowed explicit transactions remain application-owned.
 	ownsTx bool
-	// stopTxCancellation detaches and drains the pre-commit cancellation hook.
-	// It is consumed exactly once before commit or during terminal cleanup.
-	stopTxCancellation func()
 
 	// isUpdate is the statement-kind fact that used to share a field with the
 	// routing decision above (`respectActiveTx`), conflating two independent
@@ -1770,20 +1766,12 @@ func (r *paginatingRows) Columns() []string {
 	return cols
 }
 
-func (r *paginatingRows) detachTxCancellation() {
-	if stop := r.stopTxCancellation; stop != nil {
-		r.stopTxCancellation = nil
-		stop()
-	}
-}
-
 func (r *paginatingRows) Close() (err error) {
 	defer r.conn.recoverInto(&err)
 	if r.closed {
 		return nil
 	}
 	r.closed = true
-	r.detachTxCancellation()
 	if r.tx != nil && !r.ownsTx && !r.finished && r.ctx.Err() != nil {
 		// database/sql closes the rows of an ended context itself, so no later
 		// page reaches runInCapturedTx; end the transaction here instead.

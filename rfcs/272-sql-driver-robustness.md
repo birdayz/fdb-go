@@ -100,7 +100,9 @@ auto-commit SELECT running each page in its own transaction; it stays open and i
    compared with 500, as the rune scan did.
 6. **GROUP BY**: the check walks keys with `WalkExpressionForProjection`, the walk that builds
    them, and the `GetText` arm is removed; a key that does not resolve fails on its own error
-   when the key is built (`upgradeAggregateOperands`).
+   when the key is built (`upgradeAggregateOperands`). The comparison reads the keys' literals
+   and parameters, so it pins them: a plan cached for one binding never serves another whose
+   equal values would be refused.
 7. **Stale handles.** `Commit`/`Rollback` release the transaction from the connection only
    while it is still the connection's transaction, also when it already ended (a context ended
    it), so the connection is free for the next `BeginTx`; a handle for a different transaction
@@ -167,7 +169,8 @@ always, a broken one fails nearly always.
   600-parenthesis literal, a 600-tuple INSERT, and 501 levels.
 - Item 6: embedded regression (refused duplicates including `<>`/`!=` and `1`/`01`, over table,
   VALUES, unnest and CTE sources; literal-case keys and distinct bound values accepted, equal bound
-  values refused; unresolvable keys report their own error; a duplicated unresolvable key fails as
+  values refused, also under the text a plan for distinct values was cached with; unresolvable
+  keys report their own error; a duplicated unresolvable key fails as
   the single key does), end-to-end cases in `sqltest/agg`, and four
   rows in the live-JVM `DuplicateGroupByJavaProbe` (`<>`/`!=` and `1`/`01` both 42702,
   literal-case keys planned by Go and declined by Java's planner, an undefined key twice both

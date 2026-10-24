@@ -57,8 +57,8 @@ Each is described in full under Compatibility or Changed below.
   error and the transaction is over, so later statements and `Commit` return 25F01. The
   `BeginTx` context now bounds the transaction (`DIVERGENCES.md`).
 - **Go API:** `functions.ApplyMathOp`, `ApplyBitOp`, `IsTruthy`, `LiteralMatchesPKKind`,
-  `ToIntegerArg`, `ToFloat64` and `AddInt64Checked`/`SubInt64Checked`/`MulInt64Checked` are
-  removed; nothing outside their tests called them (RFC-272).
+  `ToIntegerArg`, `ToFloat64`, `AddInt64Checked`/`SubInt64Checked`/`MulInt64Checked` and
+  `values.JavaFloatToString` are removed; nothing outside their tests called them (RFC-272).
 - **Go API moves:** the gomock mocks moved to `pkg/relational/api/apimock` (#810), the demo protos
   to `fdb.dev/gen/demopb` (#842), and index-predicate normalization, the plan walkers and the
   R-tree to `pkg/recordlayer/indexpredicate`, `pkg/recordlayer/query/plan/plans` and
@@ -112,7 +112,7 @@ Each is described in full under Compatibility or Changed below.
   context error, and its writes are discarded. `Commit` on an ended transaction is 25F01.
   `DIVERGENCES.md` "Driver transactions" has the comparison with Java. `functions.ApplyMathOp`,
   `ApplyBitOp`, `IsTruthy`, `LiteralMatchesPKKind`, `ToIntegerArg`, `ToFloat64` and
-  `Add/Sub/MulInt64Checked` are removed.
+  `Add/Sub/MulInt64Checked` and `values.JavaFloatToString` are removed.
 - Development builds use Bazel 9.3.1, Bazelisk 1.30.0, and updated stable BCR build rules.
 - Require Go 1.27 (minimum toolchain Go 1.27.3).
 - Go 1.27.3 includes the GO-2026-6809 `crypto/x509` fix used by pure-Go client TLS.
@@ -341,8 +341,8 @@ Each is described in full under Compatibility or Changed below.
   (`GROUP BY c = 'a', c = 'A'` was refused; Java declines it in its planner), `<>`/`!=` and other
   spellings of one comparison are still refused, and a key that does not resolve reports its own
   error (42703 for an undefined column) instead of 42702. With parameters the bound values decide
-  (`amount = ?, amount = ?`: 42702 for equal values, two keys otherwise); Java's answer there is
-  unmeasured, and a plan cached for one binding answers the other (`TODO.md`) (RFC-272).
+  (`amount = ?, amount = ?`: 42702 for equal values, two keys otherwise; a cached plan serves only
+  the values it was planned with); Java's answer there is unmeasured (RFC-272).
 - Built-in TEXT tokenization, casing/name lookup and Go-only collated keys use frozen Unicode-15 data, so compiler upgrades preserve existing terms, positions and keys; pre-existing Java differences remain explicit in `docs/compatibility.md` (RFC-265).
 - Ordinary, covering and fetch query index scans over one physical range pass Skip to the index cursor, as Java's plans do: skipped entries no longer count against scan-record or byte limits, and their records are not loaded. Multi-range and residual key-filter scans, and the mapped reads of remote-fetch plans, still skip once above the combined cursor.
 - Range-read shard lookups ask a commit proxy once for the shards a read needs, as libfdb_c does, instead of filling the cache for the whole range first; a reverse read over more uncached shards than one lookup returns no longer repeats the same location request until its deadline, and `GetLocations` with a limit of 0 returns every shard.
