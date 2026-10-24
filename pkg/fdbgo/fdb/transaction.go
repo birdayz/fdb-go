@@ -10,7 +10,7 @@ import (
 	"fdb.dev/pkg/fdbgo/wire"
 )
 
-// transaction wraps client.Transaction with the Apple-compatible API.
+// transaction wraps client.Transaction with the API modeled on Apple's binding.
 type transaction struct {
 	inner *client.Transaction
 	db    Database

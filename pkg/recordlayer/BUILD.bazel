@@ -24,6 +24,7 @@ go_library(
         "database.go",
         "dedup_cursor.go",
         "dimensions_key_expression.go",
+        "doc.go",
         "endpoint_type.go",
         "errors.go",
         "execute_state.go",

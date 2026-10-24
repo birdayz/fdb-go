@@ -70,8 +70,8 @@ Pick at least one bound for every transaction. Any of these terminates it:
 | `Transaction.SetRetryLimit` / `DatabaseOptions.SetTransactionRetryLimit` | the retry loop | The most recent error escapes once the cap is hit. |
 | `Database.TransactCtx` / `ReadTransactCtx` with a deadline `ctx` | retry loop, backoff, and reads | Go's **extra** bound (RFC-090) — not a substitute for a `libfdb_c` mechanism that does not exist. |
 
-The no-context `Database.Transact` runs on `context.Background()` to stay drop-in compatible with the Apple Go
-binding, so a `ctx` deadline is not available to it — bound it with a timeout or retry limit, or use
+The no-context `Database.Transact` runs on `context.Background()`, as the Apple Go binding has no context,
+so a `ctx` deadline is not available to it — bound it with a timeout or retry limit, or use
 `TransactCtx`.
 
 Migrating from `libfdb_c`: if you set a transaction timeout there, keep setting it here — it works the same

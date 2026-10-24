@@ -1299,7 +1299,7 @@ func compositeSecondaryIndexPrefixPushdownScenario() *yamsql.Scenario {
 // tests (CLAUDE.md gotcha — LIMIT not supported by fdb-relational).
 // Skip the range-over-secondary-index ORDER-BY-PK tests where the
 // planner can't reconcile index order with PK order (ORDER BY natural-
-// order continuation gotcha from earlier in this shift).
+// order continuation gotcha).
 func secondaryIndexPushdownScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name: "secondary_index_pushdown",
@@ -1350,7 +1350,7 @@ func secondaryIndexPushdownScenario() *yamsql.Scenario {
 // Excludes tests that require rows added via mid-stream INSERT (the
 // ESCAPE-clause subset depends on a runtime INSERT of x_ray / y%lo).
 // Excludes ORDER BY non-PK / non-index-leading column forms (planner
-// natural-order gotcha from earlier in this shift).
+// natural-order gotcha).
 func likePrefixPushdownScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name: "like_prefix_pushdown",
