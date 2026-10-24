@@ -364,7 +364,10 @@ func (m *permutedMinMaxIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
 	if err := m.StandardIndexMaintainer.DeleteWhere(prefix); err != nil {
 		return err
 	}
-	return deleteWhereRange(m.tx, m.secondarySubspace, prefix)
+	// Java clears the permuted entries over permutedSubspace.subspace(prefix).range(),
+	// not the primary's [key, strinc(key)): a group extending the prefix keeps them.
+	m.tx.ClearRange(m.secondarySubspace.Sub(prefix...))
+	return nil
 }
 
 // getExtremum finds the current min/max entry for a given group key by scanning

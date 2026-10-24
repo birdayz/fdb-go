@@ -593,15 +593,10 @@ func (store *FDBRecordStore) ScanUniquenessViolationsForValue(
 	valueKey tuple.Tuple,
 ) ([]UniquenessViolation, error) {
 	violationSubspace := store.subspace.Sub(IndexUniquenessViolationsKey, index.SubspaceTupleKey())
-	// The key format is [valueKey..., primaryKey...]. To scan for a specific valueKey,
-	// use a prefix range on the valueKey portion.
-	prefixKey := violationSubspace.Pack(valueKey)
-	pr, err := fdb.PrefixRange(prefixKey)
-	if err != nil {
-		return nil, fmt.Errorf("scan violations for value: prefix range: %w", err)
-	}
-
-	kvs, err := store.context.Transaction().GetRange(pr, fdb.RangeOptions{}).GetSliceWithError()
+	// The key format is [valueKey..., primaryKey...]. Java scans the value's
+	// tuple range (TupleRange.allOf); a byte prefix range would also return, and
+	// resolve by deletion, the violations of values whose packing extends it.
+	kvs, err := store.context.Transaction().GetRange(violationSubspace.Sub(valueKey...), fdb.RangeOptions{}).GetSliceWithError()
 	if err != nil {
 		return nil, fmt.Errorf("scan violations for value on index %q: %w", index.Name, err)
 	}

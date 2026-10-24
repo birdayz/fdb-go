@@ -1,9 +1,11 @@
 # RFC-270: Tuple-range index probes and SUM removal of MinInt64
 
-**Status:** Draft
+**Status:** Implemented
 **Item:** TODO.md "Quality review 2026-10-24", Record layer: the unique-index false
 violation, the RANK orphaned score and the SUM `math.MinInt64` removal (High, High, Medium),
-plus the same range bug at the other sites it reaches.
+plus the same range bug at the other sites it reaches. That section is added by PR #994,
+which has not merged; the PR body lists the items this change closes, and they are checked
+off in TODO.md once #994 is on master.
 **Spec:** Java Record Layer 4.14.2.0 (`fdb-record-layer/`, tag `4.14.2.0`).
 
 ## Problem
@@ -83,7 +85,9 @@ behavior so the bytes of a shared store agree:
 ## Fix
 
 - Items 1-6 use the tuple range Java uses. A `subspace.Subspace` is an `fdb.ExactRange` over
-  `[p+00, p+ff)`, so each site reads or clears `sub.Sub(t...)`. In `DeleteRecordsWhere` the
+  `[p+00, p+ff)`, so each site reads or clears `sub.Sub(t...)`. For item 4 that is equivalent
+  to Java's `[pack, pack+ff)` rather than identical: every violation key carries a primary key
+  after the value, so nothing is stored at `pack` itself. In `DeleteRecordsWhere` the
   version-mutation removal takes the range that was actually cleared:
   - the tuple range for records and legacy versions;
   - `[key, strinc(key))` for index subspaces, the range the maintainer cleared, which is
@@ -93,7 +97,10 @@ behavior so the bytes of a shared store agree:
   `removeVersionDataInRange(fdb.ExactRange)`.
 - Item 7 clears `[pack, pack+ff)`. That range is the tuple range plus the key at `pack`
   itself, where a grouped aggregate stores its value.
-- SUM drops the guard and adds the wrapped negation, as Java does.
+- SUM drops the guard and adds the wrapped negation, as Java does. The
+  `BUG2_SumIndex_NegationOverflow` spec in `byte_limit_bug_test.go` goes too: it asserts only
+  Go arithmetic, and its claim that the wrapped negation corrupts the sum is false. The
+  real-FDB SUM spec below replaces it.
 
 ## Performance
 
@@ -110,20 +117,36 @@ bytes and strings where one packing extends another:
 - **Unique (WRITE_ONLY).** No violation entries are written for the extending value. A true
   duplicate still records both sides.
 - **`ScanUniquenessViolationsForValue`.** It returns only the value's own violations.
-  `ResolveUniquenessViolationByDeletion` keeps the records of the extending value.
+  `ResolveUniquenessViolationByDeletion` keeps the records of the extending value. The
+  resolution also clears the extending value's violations, which is Java's survivor clear;
+  the spec pins it.
 - **RANK** (string and bytes) and **TIME_WINDOW_LEADERBOARD.** After the shorter score's
-  record is deleted, the score is gone and the remaining record is at rank 0.
+  record is deleted, the score is gone and the remaining record is at rank 0. Both specs
+  assert that the ranked set does not count duplicates, the only configuration that probes
+  the B-tree before removing.
 - **SUM.** A record holding `math.MinInt64` is updated, re-saved and deleted, and the sum is
   checked at each step.
 - **`DeleteRecordsWhere`** at the default format and at format 5 (legacy versions). The
   extending prefix keeps its records, its versions (including versions still pending in the
-  clearing transaction), its counts and its permuted entries.
+  clearing transaction), its counts and its permuted entries. It loses its standard VALUE
+  entries, as in Java; the spec pins that too.
 - **`DeleteIndexEntriesInRange`.** The extending value's entry is kept. A grouped COUNT key
   stored at the prefix itself is cleared.
 
-Cross-engine (`conformance/tuple_range_probe_conformance_test.go`, `conformance_java`): Java
-and Go save the same records under unique, RANK and SUM indexes, including a RANK removal of
-`"a"` and a SUM removal of `MinInt64`. The verdicts and the index key-value pairs must be
-equal.
+Cross-engine (`conformance/tuple_range_probe_conformance_test.go`, `conformance_java`). A new
+Java step, `tupleRangeOpsJava`, runs a list of ops on a store built from the meta-data proto,
+one transaction each: save, delete, `deleteRecordsWhere`, mark WRITE_ONLY, resolve
+violations, and an all-time leaderboard window. Go runs the same ops. The two engines must
+agree on every verdict, on the record and legacy-version keys, and on the key-value pairs of
+the index, secondary, record-count and violation spaces. The scenarios:
 
-Each spec is checked red against the code before its fix, then green.
+- unique, RANK and SUM, including a RANK removal of `"a"`, a SUM removal of `MinInt64` and a
+  real duplicate;
+- WRITE_ONLY unique indexes with extending values, then a resolution;
+- a leaderboard removal;
+- `deleteRecordsWhere` with VALUE and PERMUTED_MAX indexes, a record-count key and record
+  versions, at the default format and at format 5.
+
+Each spec is checked red against the code before its fix, then green. The two kept Java
+ranges are checked the same way: a mutation that narrows either one to the tuple range fails
+the specs.

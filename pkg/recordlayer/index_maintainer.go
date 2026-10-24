@@ -613,17 +613,15 @@ func (m *StandardIndexMaintainer) evaluateIndex(record *FDBStoredRecord[proto.Me
 }
 
 // checkUniqueness verifies no other record has the same index value.
-// Scans the FULL prefix range (no limit) so FDB's read-conflict tracking
-// covers the entire range, preventing concurrent inserts of conflicting entries.
+// Scans the value's whole tuple range (no limit) so FDB's read-conflict
+// tracking covers it, preventing concurrent inserts of conflicting entries.
 // Java reads the full range too (no limit) and registers the scan as a
 // commit check via addIndexUniquenessCommitCheck().
 // Matches Java's standardIndexMaintainer.checkUniqueness().
 func (m *StandardIndexMaintainer) checkUniqueness(entry EvaluatedIndexEntry) error {
-	prefixKey := m.indexSubspace.Pack(entry.key)
-	r, err := fdb.PrefixRange(prefixKey)
-	if err != nil {
-		return fmt.Errorf("prefix range for uniqueness check on index %q: %w", m.index.Name, err)
-	}
+	// Java's indexSubspace.range(valueKey), [pack+00, pack+ff): a byte prefix
+	// range would also cover values whose packing extends this one ("a" and "a\x00b").
+	r := m.indexSubspace.Sub(entry.key...)
 
 	// No Limit — read the full range so FDB records a read conflict on the
 	// entire prefix. With Limit:1, FDB only tracks conflict up to the first

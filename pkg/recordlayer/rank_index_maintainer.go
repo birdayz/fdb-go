@@ -273,14 +273,9 @@ func (m *rankIndexMaintainer) updateRankedSet(entry EvaluatedIndexEntry, remove 
 			}
 		} else {
 			// Only remove from ranked set if no other record has this score.
-			// Check the B-tree (after our clear) for remaining entries.
-			valueKey := entry.key
-			prefixBytes := m.indexSubspace.Pack(valueKey)
-			r, err := fdb.PrefixRange(prefixBytes)
-			if err != nil {
-				return err
-			}
-			kvs, err := m.tx.GetRange(r, fdb.RangeOptions{Limit: 1}).GetSliceWithError()
+			// Check the B-tree (after our clear) for remaining entries in Java's
+			// indexSubspace.range(valueKey), which excludes extending packings.
+			kvs, err := m.tx.GetRange(m.indexSubspace.Sub(entry.key...), fdb.RangeOptions{Limit: 1}).GetSliceWithError()
 			if err != nil {
 				return err
 			}
