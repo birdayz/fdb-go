@@ -235,10 +235,8 @@ func (db *database) waitProxiesChanged() <-chan struct{} {
 }
 
 // handleConnError reports that failed (nil for a dial failure), the connection an
-// RPC to addr used, has failed. A report the pool has outlived with an open
-// replacement changes nothing but the counter: C++ connectionKeeper closes and
-// reports only its own connection (FlowTransport.actor.cpp:924-1001). The mark
-// shares connMu with dialAndPool's markAlive, so neither overtakes the other.
+// RPC to addr used, has failed; with an open replacement pooled it only counts, as
+// C++ reports only the connection it holds (FlowTransport.actor.cpp:924-1001).
 func (db *database) handleConnError(addr string, failed *transport.Conn) {
 	newlyFailed := false
 	db.connMu.Lock()
@@ -251,19 +249,15 @@ func (db *database) handleConnError(addr string, failed *transport.Conn) {
 		if hook := db.beforeConnFailureMark.Load(); hook != nil {
 			(*hook)()
 		}
+		// Under connMu, as dialAndPool's markAlive is: a redial cannot land between.
 		newlyFailed = db.failMon.markFailed(addr)
 	}
 	db.connMu.Unlock()
 	db.reportConnFailure(addr, newlyFailed)
 }
 
-// reportConnFailure makes an endpoint failure observable (RFC-114). handleConnError
-// is the SINGLE sink for endpoint failures: the COUNTER ticks on every event (the
-// rate signal, like logRetryEvent's counter), but the Warn is edge-triggered on the
-// alive→failed transition so a flapping or down peer hit by the ~18 retry arms
-// doesn't melt the log (the storm-hygiene rule logRetryEvent follows; one Warn per
-// failure episode, re-armed by markAlive). Report transport failures there, not
-// valid replies or slow responses from a healthy proxy.
+// reportConnFailure makes an endpoint failure observable (RFC-114): the counter
+// ticks on every report, the Warn only on the alive-to-failed transition.
 func (db *database) reportConnFailure(addr string, newlyFailed bool) {
 	db.metrics.countConnectionFailure()
 	if newlyFailed && db.logger != nil {

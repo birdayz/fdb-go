@@ -456,6 +456,121 @@ func queryTwoProxies(t *testing.T, ctx context.Context, tenant int64, first, sec
 	}
 }
 
+// twoResultReply prepends a reply whose results are the vector's well-formed
+// shard and a second result built by second, to the vector's bytes, which keep
+// their relative offsets. FlatBuffers offsets point forward only, so the new root,
+// reply and results vector come first. second gets the buffer and the position of
+// its RelativeOffset slot and appends its object, patching the slot.
+func twoResultReply(t *testing.T, vector []byte, second func(b []byte, slot int) []byte) []byte {
+	t.Helper()
+	le := binary.LittleEndian
+	layout := locateReplyFields(t, vector)
+	pair := layout.result + int(le.Uint32(vector[layout.result:]))
+	b := make([]byte, 0, 256)
+	u16 := func(v uint16) { b = le.AppendUint16(b, v) }
+	u32 := func(v uint32) { b = le.AppendUint32(b, v) }
+	u32(0)                                      // 0: root offset, patched below
+	u32(types.GetKeyServerLocationsReplyFileID) // 4
+	u16(8)                                      // 8: ErrorOr vtable: tag at 8, value at 4
+	u16(9)
+	u16(8)
+	u16(4)
+	root := len(b) // 16: ErrorOr object
+	u32(uint32(root - 8))
+	u32(0) // 20: value offset, patched below
+	b = append(b, 2, 0, 0, 0)
+	vt := len(b) // 28: reply vtable: results at 4
+	u16(6)
+	u16(8)
+	u16(4)
+	u16(0)
+	reply := len(b) // 36: reply object
+	le.PutUint32(b[root+4:], uint32(reply-(root+4)))
+	u32(uint32(reply - vt))
+	u32(4) // 40: results offset → 44
+	u32(2) // 44: two results
+	first := len(b)
+	u32(0) // 48: first result, patched below
+	slot := len(b)
+	u32(0) // 52: second result, patched by second
+	b = second(b, slot)
+	for len(b)%4 != 0 {
+		b = append(b, 0)
+	}
+	le.PutUint32(b[0:], uint32(root))
+	le.PutUint32(b[first:], uint32(len(b)+pair-first))
+	return append(b, vector...)
+}
+
+// appendObject appends a vtable with the given field offsets and an object of
+// size bytes using it, patches slot to point at the object, and returns the
+// buffer and the object's position.
+func appendObject(b []byte, slot int, size int, fields ...uint16) ([]byte, int) {
+	le := binary.LittleEndian
+	vt := len(b)
+	b = le.AppendUint16(b, uint16(4+2*len(fields)))
+	b = le.AppendUint16(b, uint16(size))
+	for _, f := range fields {
+		b = le.AppendUint16(b, f)
+	}
+	for len(b)%4 != 0 {
+		b = append(b, 0)
+	}
+	obj := len(b)
+	b = le.AppendUint32(b, uint32(obj-vt))
+	b = append(b, make([]byte, size-4)...)
+	le.PutUint32(b[slot:], uint32(obj-slot))
+	return b, obj
+}
+
+// appendString appends a length-prefixed string and patches slot to point at it.
+func appendString(b []byte, slot int, s string) []byte {
+	le := binary.LittleEndian
+	pos := len(b)
+	b = le.AppendUint32(b, uint32(len(s)))
+	b = append(b, s...)
+	for len(b)%4 != 0 {
+		b = append(b, 0)
+	}
+	le.PutUint32(b[slot:], uint32(pos-slot))
+	return b
+}
+
+// A result the parser skips does not cost the reply its other shards.
+func TestParseLocationsReplySkipsOnlyTheUnusableResult(t *testing.T) {
+	t.Parallel()
+	vector := locationsReplyVector(t)
+	cases := []struct {
+		name   string
+		second func(b []byte, slot int) []byte
+	}{
+		{"absent range", func(b []byte, slot int) []byte {
+			b, _ = appendObject(b, slot, 4)
+			return b
+		}},
+		{"empty range", func(b []byte, slot int) []byte {
+			b, pair := appendObject(b, slot, 8, 4)
+			b, _ = appendObject(b, pair+4, 4)
+			return b
+		}},
+		{"no servers", func(b []byte, slot int) []byte {
+			b, pair := appendObject(b, slot, 8, 4)
+			b, kr := appendObject(b, pair+4, 12, 4, 8)
+			b = appendString(b, kr+4, "x")
+			return appendString(b, kr+8, "y")
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			entries, err := parseGetKeyServerLocationsReply(twoResultReply(t, vector, tc.second))
+			if err != nil || len(entries) != 1 || string(entries[0].begin) != "range_begin" || string(entries[0].end) != "range_end" {
+				t.Fatalf("parse = %+v, %v; want only the well-formed shard", entries, err)
+			}
+		})
+	}
+}
+
 // A malformed reply from one proxy is not a transport failure: the query moves
 // to the next proxy and caches that proxy's answer.
 func TestQueryLocationsSkipsMalformedReply(t *testing.T) {

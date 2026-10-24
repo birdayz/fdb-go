@@ -17,7 +17,8 @@ import (
 )
 
 // identityPeer is the server end of one dialed connection: it completes the
-// handshake and reports every frame other than a PING.
+// handshake, answers PINGs so the connection monitor keeps it, and reports every
+// other frame.
 type identityPeer struct {
 	client, server net.Conn
 	frames         chan identityFrame
@@ -50,6 +51,9 @@ func newIdentityPeer(t *testing.T) *identityPeer {
 				return
 			}
 			if token == ping {
+				if reply, ok := pingReplyToken(body); ok {
+					_ = transport.WriteFrame(server, reply, (&types.VoidReply{}).MarshalFDB(), false)
+				}
 				continue
 			}
 			select {
@@ -68,6 +72,24 @@ func newIdentityPeer(t *testing.T) *identityPeer {
 	return p
 }
 
+// pingReplyToken reads the reply token of a PingRequest: field 0 is a nested
+// ReplyPromise whose field 0 is the inline UID.
+func pingReplyToken(body []byte) (transport.UID, bool) {
+	r, err := wire.NewReader(body)
+	if err != nil {
+		return transport.UID{}, false
+	}
+	promise, err := r.ReadNestedReader(0)
+	if err != nil || !promise.FieldPresent(0) {
+		return transport.UID{}, false
+	}
+	off, obj := promise.FieldOffset(0), promise.ObjectBytes()
+	if off+16 > len(obj) {
+		return transport.UID{}, false
+	}
+	return transport.UID{First: binary.LittleEndian.Uint64(obj[off:]), Second: binary.LittleEndian.Uint64(obj[off+8:])}, true
+}
+
 // recv returns the next frame; it may run off the test goroutine.
 func (p *identityPeer) recv(ctx context.Context) (identityFrame, bool) {
 	select {
@@ -75,6 +97,34 @@ func (p *identityPeer) recv(ctx context.Context) (identityFrame, bool) {
 		return f, true
 	case <-ctx.Done():
 		return identityFrame{}, false
+	}
+}
+
+// The fake peer answers the connection monitor's PING, so a test's connection
+// cannot be torn down by the monitor's timer.
+func TestIdentityPeerAnswersPing(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	db, _ := identityDatabase(ctx, newIdentityPeer(t))
+	defer closeIdentityDatabase(db)
+	c, err := db.getOrDial(ctx, armAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ping := transport.WellKnownToken(transport.WLTokenPingPacket)
+	token, replies, handle := c.PrepareReplyTo(ping)
+	defer handle.Release()
+	if err := c.SendFrame(ping, transport.BuildPingRequest(token)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case resp := <-replies:
+		if resp.Err != nil {
+			t.Fatalf("ping reply: %v", resp.Err)
+		}
+	case <-ctx.Done():
+		t.Fatal("the peer did not answer the PING")
 	}
 }
 
@@ -509,6 +559,11 @@ func replaceAndKill(t *testing.T, ctx context.Context, db *database, a *transpor
 	db.connMu.Lock()
 	if db.connPool[armAddr] == a {
 		delete(db.connPool, armAddr)
+	}
+	// A send still blocked in A's first write keeps A's dial joinable; drop it so
+	// the next dial is a new connection.
+	if call := db.dialing[armAddr]; call != nil && call.conn == a {
+		delete(db.dialing, armAddr)
 	}
 	db.connMu.Unlock()
 	b, err := db.getOrDial(ctx, armAddr)

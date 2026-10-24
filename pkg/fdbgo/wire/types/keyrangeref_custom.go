@@ -5,7 +5,7 @@ package types
 // C++ KeyRangeRef::serialize (FDBTypes.h:385-395) has an optimization:
 // when begin + '\x00' == end (single-key range), it serializes as
 // (end, empty) instead of (begin, end), saving len(begin)+4 bytes.
-// On deserialization, begin is reconstructed from end[:-1].
+// On deserialization, begin is reconstructed from end[:-1] when end ends in \x00.
 //
 // Both directions must be customized — without an override on
 // UnmarshalFromReader, single-key-optimized payloads emitted by C++
@@ -20,10 +20,9 @@ import (
 )
 
 // UnmarshalFromReader replaces the generated reader to invert the
-// single-key serialize optimization. Slot 1 (End) being empty signals
-// "first slot carries End; reconstruct Begin = End[:-1]".
-//
-// Matches C++ KeyRangeRef::serialize deserialization branch.
+// single-key serialize optimization: an empty slot 1 with a slot 0 ending in \x00
+// means slot 0 carries End and Begin = End[:-1]. Without the \x00, where C++
+// asserts, the range stays (first, empty), inverted.
 func (m *KeyRangeRef) UnmarshalFromReader(r *wire.Reader) {
 	var first, second []byte
 	if r.FieldPresent(KeyRangeRefSlotBegin) {
@@ -34,8 +33,6 @@ func (m *KeyRangeRef) UnmarshalFromReader(r *wire.Reader) {
 	}
 	if len(second) == 0 && len(first) > 0 && first[len(first)-1] == 0 {
 		// Single-key optimization: writer emitted (end, empty).
-		// Reconstruct: begin = end[:-1], end = first. C++ asserts the trailing
-		// \x00 (internal_error); without it the range stays (first, empty), inverted.
 		// Note: m.Begin and m.End share the same backing array — same
 		// zero-copy convention as the rest of wire deserialization.
 		// Callers that mutate must copy first.

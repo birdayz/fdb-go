@@ -528,9 +528,8 @@ func stripTenantPrefix(entries []locationEntry, tenantId int64) {
 	}
 }
 
-// invertedEntry reports an entry with begin >= end, which only a boundary that
-// stripTenantPrefix leaves unprefixed can produce from a reply the parser
-// accepted. Such a reply is not used, as one the parser rejects.
+// invertedEntry reports an entry with begin >= end: after the parser, only a
+// boundary stripTenantPrefix leaves unprefixed produces one.
 func invertedEntry(entries []locationEntry) bool {
 	for _, e := range entries {
 		if e.end != nil && bytes.Compare(e.begin, e.end) >= 0 {
@@ -724,21 +723,24 @@ func buildGetKeyServerLocationsRangeRequest(begin, end []byte, limit int, revers
 type locationsDefect int
 
 const (
-	// locationsUnreadable: a vector or element does not decode within the reply.
-	// C++ loads FlatBuffers without bounds checks (flat_buffers.h:1140-1153), so
-	// such a reply has no defined C++ result; Go discards it.
-	locationsUnreadable locationsDefect = iota + 1
-	// locationsInvertedRange: a shard range with begin > end; C++ throws
-	// inverted_range, or asserts first for a single-key form without its trailing
-	// \x00 (FDBTypes.h:384-399).
-	locationsInvertedRange
-	// locationsNoShards: no result names a non-empty range with a server.
-	locationsNoShards
+	locationsUnreadable    locationsDefect = iota + 1 // out of bounds: no defined C++ result
+	locationsInvertedRange                            // C++ throws or asserts (FDBTypes.h:384-399)
+	locationsNoShards                                 // no non-empty range with a server
 )
 
-// locationsReplyError reports a reply nothing is cached from. C++ fails a reply
-// that does not deserialize and never delivers it (FlowTransport.actor.cpp:1195-1207);
-// queryLocations asks the next proxy.
+func (d locationsDefect) String() string {
+	switch d {
+	case locationsUnreadable:
+		return "unreadable"
+	case locationsInvertedRange:
+		return "inverted range"
+	default:
+		return "no shards"
+	}
+}
+
+// locationsReplyError reports a reply nothing is cached from; C++ never delivers
+// a reply that fails to deserialize (FlowTransport.actor.cpp:1195-1207).
 type locationsReplyError struct {
 	defect locationsDefect
 	detail string
@@ -746,17 +748,18 @@ type locationsReplyError struct {
 }
 
 func (e *locationsReplyError) Error() string {
+	msg := "locations reply " + e.defect.String() + ": " + e.detail
 	if e.err != nil {
-		return "locations reply: " + e.detail + ": " + e.err.Error()
+		return msg + ": " + e.err.Error()
 	}
-	return "locations reply: " + e.detail
+	return msg
 }
 
 func (e *locationsReplyError) Unwrap() error { return e.err }
 
-// parseGetKeyServerLocationsReply decodes a locations reply's shards, skipping
-// results C++ caches nothing for: an absent or empty range (KeyRangeMap.h:209-210),
-// or no servers (locateRangeWith re-asks for the hole).
+// parseGetKeyServerLocationsReply decodes a locations reply's shards. It skips an
+// absent or empty range, which C++ does not cache (KeyRangeMap.h:209-210), and a
+// shard without servers, which C++ caches empty (see DIVERGENCES.md).
 func parseGetKeyServerLocationsReply(data []byte) ([]locationEntry, error) {
 	r, err := wire.ReadErrorOr(data)
 	if err != nil {
