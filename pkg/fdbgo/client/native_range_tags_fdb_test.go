@@ -187,17 +187,21 @@ func TestNativeReadTagSampling(t *testing.T) {
 			recorded := rec.stop()
 			got := taggedRequests(t, recorded)
 			plan.check(t)
-			// A hedge resends its request, tags included, without a new sample (C++ sends
-			// the same request to the second alternative, LoadBalance.actor.h:660-662);
-			// a reply that outlasts the hedge delay adds a hedge besides the planned ones.
+			// A hedge resends its request with its tags (LoadBalance.actor.h:660-662). Go also
+			// hedges a slow reply that C++'s second-request budget would not (TODO.md).
 			sends := map[string]int{}
 			for _, r := range got {
 				sends[r.kind]++
 			}
 			selectors, exact := sends["GetKeyRequest"], sends["GetKeyValuesRequest"]
-			if draws.count() != 3 || len(got) != selectors+exact ||
-				(!hedge && (selectors != 2 || exact != 1)) || (hedge && (selectors < 3 || exact < 2)) {
-				t.Fatalf("fallback requests %v after %d draws, want 3 draws and every planned hedge", got, draws.count())
+			wantSelectors, wantExact, at := 2, 1, "exactly"
+			if hedge {
+				wantSelectors, wantExact, at = 3, 2, "at least"
+			}
+			if draws.count() != 3 || len(got) != selectors+exact || selectors < wantSelectors || exact < wantExact ||
+				(!hedge && (selectors != wantSelectors || exact != wantExact)) {
+				t.Fatalf("fallback requests %v: %d draws, %d selector and %d exact sends; want 3 draws and %s %d and %d",
+					got, draws.count(), selectors, exact, at, wantSelectors, wantExact)
 			}
 			for _, msg := range recorded.msgs {
 				switch q := msg.(type) {
