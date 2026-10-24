@@ -2150,9 +2150,8 @@ func (oi *OnlineIndexer) buildRangeInTransaction(ctx context.Context, rtx *FDBRe
 	return r, nil
 }
 
-// indexScannedRecord maintains the target indexes that cover a scanned record
-// and reports whether any did. As in Java's IndexingBase.handleCursorResult, the
-// record-type filter comes first, so a record no target covers adds no read conflict.
+// indexScannedRecord maintains the targets covering rec, reporting whether any did. As in Java's
+// handleCursorResult, the record-type filter precedes the read conflict.
 func (oi *OnlineIndexer) indexScannedRecord(store *FDBRecordStore, rec *FDBStoredRecord[proto.Message]) (bool, error) {
 	var applicable []*Index
 	for _, idx := range oi.targetIndexes {

@@ -52,7 +52,8 @@ func (store *FDBRecordStore) recordVersionForSave(version *FDBRecordVersion, beh
 	switch behavior {
 	case VersionstampSaveBehaviorNoVersion:
 		if version != nil {
-			return nil, &RecordCoreError{Message: "Nonnull version supplied with a NO_VERSION behavior: " + version.String()}
+			// Java appends FDBRecordVersion.toString(): "FDBRecordVersion(" + printable bytes + ")".
+			return nil, &RecordCoreError{Message: "Nonnull version supplied with a NO_VERSION behavior: FDBRecordVersion(" + fdb.Printable(version.ToBytes()) + ")"}
 		}
 		return nil, nil
 	case VersionstampSaveBehaviorIfPresent:

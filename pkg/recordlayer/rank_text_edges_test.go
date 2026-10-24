@@ -109,6 +109,9 @@ var _ = Describe("Rank and TEXT edges match Java", func() {
 			_, err = scoreForRank("1")
 			var cast *ClassCastError
 			Expect(errors.As(err, &cast)).To(BeTrue(), "%v", err)
+			got, err := scoreForRank(nil)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(got).To(BeNil(), "a null rank answers null")
 
 			m, err := store.getIndexMaintainer(rankIdx)
 			Expect(err).NotTo(HaveOccurred())

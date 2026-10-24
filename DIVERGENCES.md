@@ -4502,6 +4502,7 @@ It differs in three places:
 - **Byte constants.** Two constant `BYTES` siblings with equal content are refused.
   Java compares constants with `Objects.equals`, which for arrays is identity, so
   it accepts them and then matches the first.
-  Floats compare as Java's `Double.equals` does.
+  Integer constants compare by value too. Java's `Objects.equals` tells an `Integer` 1
+  from a `Long` 1 and accepts both. Floats compare as Java's `Double.equals` does.
 - **No constant resolver directories.** A resolver directory is always open, so
   Java's `isCompatible` check, which applies only between constants, never applies.

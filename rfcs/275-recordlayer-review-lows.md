@@ -129,7 +129,9 @@ covers the four Low items and the Medium explicit-version/`VersionstampSaveBehav
    - Add `VersionstampSaveBehavior` (`Default`, `NoVersion`, `WithVersion`, `IfPresent`), whose
      `String` gives Java's constant names, and `recordVersionForSave`.
    - `saveRecordInternal` takes the version and the behavior, and chooses the version right
-     after resolving the record type, before the existing record is loaded. Its callers:
+     after resolving the record type, before the primary key is evaluated and the existing
+     record is loaded. A pipelined save resolved its target earlier, so it chooses at its
+     save; it always uses the default behavior, which cannot fail. Its callers:
      - `SaveRecordWithVersion` (new, the four-argument Java mapping);
      - `OverrideLockSaveRecordWithVersion` (new);
      - the typed store's `SaveRecordWithVersion` (new; its `SaveRecordWithOptions` delegates
@@ -185,7 +187,6 @@ to the old behavior.
   - `BY_RANK` with a double bound truncates, and with a string bound fails with
     `ClassCastError`. SCORE_FOR_RANK accepts int32, double and uint64 ranks, refuses a
     string, and answers a null rank with null.
-  - An unknown `VersionstampSaveBehavior` is an `IllegalArgumentError` and writes nothing.
   - A TEXT index over `Concat(Literal(int64(5)), Field("name"))` fails the save with a
     `ClassCastError` naming `java.lang.Long`. Null and `""` text save with no entries, and a
     position past the key is an `IndexOutOfBoundsError`.
@@ -195,7 +196,9 @@ to the old behavior.
     the saving transaction and after commit. The exception is `NO_VERSION` with a version,
     which is refused and has its own spec;
   - a supplied incomplete version, completed at commit;
-  - `NO_VERSION` with a version, refused before the existence check;
+  - `NO_VERSION` with a version, refused before the primary key and the existence check, with
+    Java's message;
+  - an unknown `VersionstampSaveBehavior`, an `IllegalArgumentError` that writes nothing;
   - a re-save with no version clears the stored one;
   - a VERSION index key with a complete version;
   - the override-lock, typed, pipelined and batch saves.

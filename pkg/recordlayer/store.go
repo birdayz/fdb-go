@@ -744,7 +744,7 @@ func (store *FDBRecordStore) startExistingRecordLoads(tx fdb.ReadTransaction, wi
 	keys := make([][]byte, 0, len(window))
 	for i, record := range window {
 		load := &loads[i]
-		if load.target, load.err = store.saveTargetFor(record); load.err != nil {
+		if load.target, load.err = store.saveTargetFor(record, nil); load.err != nil {
 			continue
 		}
 		key := load.target.primaryKey.Pack()
@@ -759,7 +759,7 @@ func (store *FDBRecordStore) startExistingRecordLoads(tx fdb.ReadTransaction, wi
 }
 
 // saveTargetFor resolves record's type, Java form and primary key.
-func (store *FDBRecordStore) saveTargetFor(record proto.Message) (saveTarget, error) {
+func (store *FDBRecordStore) saveTargetFor(record proto.Message, afterType func() error) (saveTarget, error) {
 	if record == nil {
 		return saveTarget{}, fmt.Errorf("cannot save nil record")
 	}
@@ -770,6 +770,12 @@ func (store *FDBRecordStore) saveTargetFor(record proto.Message) (saveTarget, er
 	recordType, err := store.metaData.GetRecordTypeForDescriptor(descriptor)
 	if err != nil {
 		return saveTarget{}, err
+	}
+	// Java chooses the save's version here, before the primary key (FDBRecordStore.java:555).
+	if afterType != nil {
+		if err := afterType(); err != nil {
+			return saveTarget{}, err
+		}
 	}
 	recordTypeName := string(descriptor.Name())
 
@@ -833,8 +839,17 @@ func (store *FDBRecordStore) saveRecordInternal(
 	var err error
 	if load != nil {
 		target, err = load.target, load.err
-	} else {
-		target, err = store.saveTargetFor(record)
+	}
+	var savedVersion *FDBRecordVersion
+	chooseVersion := func() (err error) {
+		savedVersion, err = store.recordVersionForSave(version, behavior)
+		return err
+	}
+	if load == nil {
+		target, err = store.saveTargetFor(record, chooseVersion)
+	} else if err == nil {
+		// A pipelined save resolved its target before its load; it chooses now.
+		err = chooseVersion()
 	}
 	if err != nil {
 		return nil, err
@@ -842,12 +857,6 @@ func (store *FDBRecordStore) saveRecordInternal(
 	recordTypeName, recordType := target.recordTypeName, target.recordType
 	record, writeRecord, primaryKey := target.record, target.write, target.primaryKey
 	defer store.context.Timer().RecordSince(EventSaveRecord, startTime)
-
-	// Java chooses the version before it loads the existing record.
-	savedVersion, err := store.recordVersionForSave(version, behavior)
-	if err != nil {
-		return nil, err
-	}
 
 	recordsSubspace := store.recordsSubspace
 	splitEnabled := store.metaData.IsSplitLongRecords()

@@ -155,6 +155,26 @@ var _ = Describe("SaveRecordWithVersion", func() {
 			_, err := store.SaveRecordWithVersion(order(1), RecordExistenceCheckErrorIfNotExists, complete(3), VersionstampSaveBehaviorNoVersion)
 			var coreErr *RecordCoreError
 			Expect(errors.As(err, &coreErr)).To(BeTrue(), "%v", err)
+			Expect(coreErr.Message).To(Equal(`Nonnull version supplied with a NO_VERSION behavior: FDBRecordVersion(\x00\x00\x00\x00\x00\x00\x00\x01\x00\x03\x00\x07)`))
+		})
+	})
+
+	It("refuses a version with NO_VERSION before the primary key's collation check", func() {
+		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(FunctionExpr(CollateFuncJRE, Field("name")))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+		run(md, specSubspace(), 0, func(store *FDBRecordStore) {
+			customer := &demopb.Customer{CustomerId: proto.Int64(1), Name: proto.String("n")}
+			_, err := store.SaveRecord(customer)
+			var collation *GoOnlyCollationError
+			Expect(errors.As(err, &collation)).To(BeTrue(), "the primary key's own refusal: %v", err)
+			_, err = store.SaveRecordWithVersion(customer, RecordExistenceCheckNone, complete(3), VersionstampSaveBehaviorNoVersion)
+			Expect(errors.As(err, &collation)).To(BeFalse(), "%v", err)
+			var coreErr *RecordCoreError
+			Expect(errors.As(err, &coreErr)).To(BeTrue(), "%v", err)
 			Expect(coreErr.Message).To(HavePrefix("Nonnull version supplied with a NO_VERSION behavior"))
 		})
 	})
