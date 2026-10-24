@@ -412,11 +412,12 @@ func (r *countingStubRule) javaBindings(expressions.RelationalExpression) int {
 	return r.count
 }
 
-type countingStubImplRule struct{ count, onMatches int }
+type countingStubImplRule struct{ count, counted, onMatches int }
 
 func (*countingStubImplRule) Matcher() matching.BindingMatcher  { return &oneBindingStubMatcher{} }
 func (r *countingStubImplRule) OnMatch(*ImplementationRuleCall) { r.onMatches++ }
 func (r *countingStubImplRule) javaBindings(expressions.RelationalExpression) int {
+	r.counted++
 	return r.count
 }
 
@@ -543,6 +544,7 @@ func TestPlannerCapTrips(t *testing.T) {
 		trips     bool
 	}{
 		{"java_count_over_the_bound_trips", 4, 5, true},
+		{"java_count_far_over_the_bound_reports_bound_plus_one", 2, 5, true},
 		{"java_count_at_the_bound_plans", 5, 5, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -588,6 +590,13 @@ func TestPlannerCapTrips(t *testing.T) {
 		if p.capErr != nil || rule.counted != 0 || rule.onMatches == 0 {
 			t.Fatalf("unbounded call: capErr=%v counted=%d onMatches=%d, want no error, no count, OnMatch run",
 				p.capErr, rule.counted, rule.onMatches)
+		}
+		implRule := &countingStubImplRule{count: 1000}
+		p = NewPlanner(nil, nil)
+		(&TransformImplTask{Phase: PhasePlanning, Ref: expressions.InitialOf(sel), Expr: sel, Rule: implRule}).Run(plannerTestContext(), p)
+		if p.capErr != nil || implRule.counted != 0 || implRule.onMatches == 0 {
+			t.Fatalf("unbounded implementation call: capErr=%v counted=%d onMatches=%d, want no error, no count, OnMatch run",
+				p.capErr, implRule.counted, implRule.onMatches)
 		}
 	})
 

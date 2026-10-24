@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"math"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -82,6 +83,13 @@ func TestJavaBindingsCountJavasMatcherBindings(t *testing.T) {
 		return mustJavaBindingsConstruct(expressions.NewSelectExpression(result, qs, nil))
 	}
 	rowType := javaBindingsRowType()
+	nQuantifiers := func(n int) []expressions.Quantifier {
+		qs := make([]expressions.Quantifier, n)
+		for i := range qs {
+			qs[i] = forEach(logicalOnly())
+		}
+		return qs
+	}
 
 	for _, tc := range []struct {
 		name string
@@ -129,6 +137,8 @@ func TestJavaBindingsCountJavasMatcherBindings(t *testing.T) {
 			"partition select over three quantifiers", &PartitionSelectRule{},
 			sel(forEach(logicalOnly()), forEach(logicalOnly()), forEach(logicalOnly())), 7,
 		},
+		{"partition select over 30 quantifiers", &PartitionSelectRule{}, sel(nQuantifiers(30)...), 1<<30 - 1},
+		{"partition select over 31 quantifiers saturates", &PartitionSelectRule{}, sel(nQuantifiers(31)...), math.MaxInt32},
 		{
 			"ordering push through select: ForEach quantifiers", &PushRequestedOrderingThroughSelectRule{},
 			sel(forEach(logicalOnly()), forEach(logicalOnly()), existential(logicalOnly())), 2,

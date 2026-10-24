@@ -20,7 +20,7 @@ import (
 func capHitDB(t *testing.T, tag string) *sql.DB {
 	t.Helper()
 	ctx := context.Background()
-	dbPath := "/FRL/capacity_" + tag
+	dbPath := capHitPath(tag)
 	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -115,11 +115,13 @@ func TestFDB_PlannerCapHit_SelectPathSQLSTATE(t *testing.T) {
 	testkit.AssertPlannerCapHit(t, err)
 }
 
+func capHitPath(tag string) string { return "/FRL/capacity_" + tag }
+
 // capHitOpen opens capHitDB's database through a new connector, which has its
 // own plan cache.
 func capHitOpen(t *testing.T, tag string) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper("/FRL/capacity_"+tag)+"?cluster_file="+testkit.ClusterFile()+"&schema=MAIN")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(capHitPath(tag))+"?cluster_file="+testkit.ClusterFile()+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

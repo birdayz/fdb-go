@@ -2786,12 +2786,6 @@ func translateExecError(err error) error {
 	if errors.As(err, &aggEval) {
 		return api.NewError(api.ErrCodeGroupingError, aggEval.Error())
 	}
-	// Java's recordCoreToRelationalException leaves Cursor.checkValidRange's
-	// RecordCoreException UNKNOWN, with its message.
-	var rangeBounds *values.RangeBoundsError
-	if errors.As(err, &rangeBounds) {
-		return api.NewError(api.ErrCodeUnknown, rangeBounds.Message)
-	}
 	var execErr *executor.ExecutionError
 	if errors.As(err, &execErr) {
 		return api.NewError(executionErrorCode(execErr.Kind), execErr.Message)
