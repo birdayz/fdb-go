@@ -13,6 +13,8 @@ covers four Medium items:
 
 ## Problem and Java behavior
 
+Go line numbers are at the base commit, `da73f1db1`.
+
 1. **Fragment edges.** Go's `computeFragments` (`indexing_mutual.go:105-120`) asks
    `LocalityGetBoundaryKeys` for the whole records subspace, outside any transaction and at a
    fresh read version. It keeps each raw key minus the records prefix as a fragment edge.

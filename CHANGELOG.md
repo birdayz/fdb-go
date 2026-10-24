@@ -199,9 +199,13 @@ Each is described in full under Compatibility or Changed below.
   `DIVERGENCES.md` "Driver transactions" has the comparison with Java. `functions.ApplyMathOp`,
   `ApplyBitOp`, `IsTruthy`, `LiteralMatchesPKKind`, `ToIntegerArg`, `ToFloat64` and
   `Add/Sub/MulInt64Checked` and `values.JavaFloatToString` are removed.
-- Online indexer (RFC-279): a mutual build whose fragment walk finds nothing to build in FULL
-  and then in ANY fails with Java's `IndexingValidationError` "Mutual indexing failure - third
-  iteration". A walk finds work whenever a range is missing.
+- Online indexer (RFC-279):
+  - A mutual build whose fragment walk finds nothing to build in FULL and then in ANY fails
+    with Java's `IndexingValidationError` "Mutual indexing failure - third iteration". A walk
+    finds work whenever a range is missing.
+  - A mutual build reads the shard map in a transaction, and an error reading it fails that
+    transaction, and the build when it is not retried. It used to fall back to one fragment.
+    A database without a shard map (`BackendCapabilityError`) still builds one fragment.
 - Development builds use Bazel 9.3.1, Bazelisk 1.30.0, and updated stable BCR build rules.
 - Require Go 1.27 (minimum toolchain Go 1.27.3).
 - Go 1.27.3 includes the GO-2026-6809 `crypto/x509` fix used by pure-Go client TLS.

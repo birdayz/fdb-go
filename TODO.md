@@ -1989,6 +1989,10 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   Go returns an error, and nil for ELSE_SKIP (`time_window_leaderboard_maintainer.go`); the RANK
   maintainer already answers nil and `("*")`.
 
+- [ ] Online indexer: one scan-and-mark loop. `buildRangeInTransaction` and the mutual
+  `buildFragmentRange` each unpack the range, scan with the limits and mark the built range; a
+  fix to one has to be copied to the other (RFC-279 copied the transaction-limit check).
+
 - [ ] `keyspace`: resolved paths with logical names. A resolver directory's `Path` holds only the
   resolved `int64`, and `PathFromTuple` makes no reverse lookup. Java's `ResolvedKeySpacePath`
   carries both (`DirectoryLayerDirectory.pathFromKey`). See DIVERGENCES.md, "Key-space paths hold
