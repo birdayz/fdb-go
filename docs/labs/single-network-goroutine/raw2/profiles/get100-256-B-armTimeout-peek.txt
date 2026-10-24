@@ -1,0 +1,20 @@
+File: clientbench-go-ladder
+Build ID: 28c40e28ebd99e34992e0580487201abf68341d7
+Type: cpu
+Time: 2026-10-24 12:56:35 CEST
+Duration: 10.53s, Total samples = 52.39s (497.53%)
+Showing nodes accounting for 52.39s, 100% of 52.39s total
+----------------------------------------------------------+-------------
+      flat  flat%   sum%        cum   cum%   calls calls% + context 	 	 
+----------------------------------------------------------+-------------
+                                             3.78s 67.14% |   fdb.dev/pkg/fdbgo/client.(*Transaction).configureReadTimeout
+                                             1.85s 32.86% |   fdb.dev/pkg/fdbgo/client.turnoverToken.finish
+     0.14s  0.27%  0.27%      5.63s 10.75%                | fdb.dev/pkg/fdbgo/client.(*Transaction).armTimeoutLocked
+                                             2.94s 52.22% |   fdb.dev/pkg/fdbgo/client.(*timeoutQueue).newNode
+                                             1.08s 19.18% |   fdb.dev/pkg/fdbgo/client.(*timeoutQueue).schedule
+                                             0.94s 16.70% |   weak.Make[go.shape.c82802d6e04c84543c9af0707405beb03537c4e8d25e1e0fe0102a5d14cdd4c8]
+                                             0.36s  6.39% |   time.Until
+                                             0.14s  2.49% |   fdb.dev/pkg/fdbgo/client.monoNow
+                                             0.02s  0.36% |   fdb.dev/pkg/fdbgo/client.(*Transaction).deadlineTime (inline)
+                                             0.01s  0.18% |   fdb.dev/pkg/fdbgo/client.(*Transaction).timeoutQueue (inline)
+----------------------------------------------------------+-------------

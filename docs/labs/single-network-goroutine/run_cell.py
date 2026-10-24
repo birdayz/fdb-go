@@ -24,7 +24,15 @@ import sys
 import tempfile
 import time
 
-ARMS = {"A": "0", "B": "1"}  # A = today's design, B = FDBGO_NETWORK_GOROUTINE=1
+# A = today's design; B = the network goroutine; W = variant (a), one writer
+# goroutine per process with per-connection readLoops; S = variant (b), today's
+# design with the coalescing delay timed from the sender.
+ARMS = {
+    "A": [],
+    "B": ["FDBGO_NETWORK_GOROUTINE=1"],
+    "W": ["FDBGO_NETWORK_GOROUTINE=writer"],
+    "S": ["FDBGO_COALESCE_FROM_SENDER=1"],
+}
 CLIENT_EVENTS = ["raw_syscalls:sys_enter", "syscalls:sys_enter_futex", "syscalls:sys_enter_epoll_pwait",
                  "syscalls:sys_enter_epoll_wait", "syscalls:sys_enter_nanosleep", "syscalls:sys_enter_read",
                  "syscalls:sys_enter_write", "syscalls:sys_enter_timerfd_settime", "context-switches"]
@@ -43,12 +51,21 @@ def wait_quiet(limit, max_wait=1800):
     return waited
 
 
+def arm_spec(arm):
+    """An arm is a list of env assignments, or a dict with env, args, gomaxprocs, cpus."""
+    spec = ARMS[arm]
+    return spec if isinstance(spec, dict) else {"env": spec}
+
+
 def run(args, arm, iterations, outdir, perf_target):
-    env = ["PATH=/usr/bin:/bin", f"HOME={os.environ.get('HOME', '/')}", f"GOMAXPROCS={args.gomaxprocs}",
-           "GOGC=100", "GOMEMLIMIT=off", f"FDBGO_NETWORK_GOROUTINE={ARMS[arm]}"]
-    client = ["env", "-i", *env, "taskset", "-c", args.client_cpus, args.binary,
+    spec = arm_spec(arm)
+    env = ["PATH=/usr/bin:/bin", f"HOME={os.environ.get('HOME', '/')}",
+           f"GOMAXPROCS={spec.get('gomaxprocs', args.gomaxprocs)}",
+           "GOGC=100", "GOMEMLIMIT=off", *spec.get("env", [])]
+    client = ["env", "-i", *env, "taskset", "-c", spec.get("cpus", args.client_cpus), args.binary,
               "-cluster-file", args.cluster_file, "-workload", args.workload, "-workers", str(args.workers),
-              "-iterations", str(iterations), "-warmup", str(iterations // 20), "-allow-writes", "-output", outdir]
+              "-iterations", str(iterations), "-warmup", str(iterations // 20), "-allow-writes", "-output", outdir,
+              *spec.get("args", [])]
     if perf_target == "server":
         cmd = ["perf", "stat", "-x,", "-p", args.server_pids, "-e", "task-clock,cycles,instructions", "--", *client]
         want = 3
@@ -102,20 +119,27 @@ def main():
     ap.add_argument("--short", type=int, required=True)
     ap.add_argument("--long", type=int, required=True)
     ap.add_argument("--order", default="ABAB")
+    ap.add_argument("--round-len", type=int, default=2, help="slots per pairing round (one of each arm)")
+    ap.add_argument("--round-base", type=int, default=0)
     ap.add_argument("--client-cpus", default="1-8")
     ap.add_argument("--gomaxprocs", type=int, default=8)
     ap.add_argument("--syscalls", action="store_true")
     ap.add_argument("--load-max", type=float, default=16.0, help="wait for load1 <= this before each run")
     ap.add_argument("--out", required=True)
+    ap.add_argument("--arms", help="JSON file of arm label -> spec, replacing the built-in arms")
     args = ap.parse_args()
-    for i, arm in enumerate(args.order):
+    if args.arms:
+        ARMS.clear()
+        ARMS.update(json.load(open(args.arms)))
+    order = args.order.split(",") if "," in args.order else list(args.order)
+    for i, arm in enumerate(order):
         tmp = tempfile.mkdtemp(prefix="netg-")
         try:
             target = "client" if args.syscalls else "server"
             cs, ss, la_s = run(args, arm, args.short, os.path.join(tmp, "short"), target)
             cl, sl, la_l = run(args, arm, args.long, os.path.join(tmp, "long"), target)
             tx = (sl["completed"] + sl["warmup_completed"]) - (ss["completed"] + ss["warmup_completed"])
-            row = {"workload": args.workload, "workers": args.workers, "arm": arm, "slot": i,
+            row = {"workload": args.workload, "workers": args.workers, "arm": arm, "slot": i, "round": args.round_base + i // args.round_len,
                    "load1_before_short": la_s[0], "load1_before_long": la_l[0],
                    "waited_s": la_s[1] + la_l[1]}
             if args.syscalls:

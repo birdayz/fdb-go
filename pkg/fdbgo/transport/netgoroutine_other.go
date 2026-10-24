@@ -2,7 +2,10 @@
 
 package transport
 
-const netgEnabled = false
+const (
+	netgEnabled = false
+	netgWriter  = false
+)
 
 type ngConn struct{}
 

@@ -2,6 +2,8 @@ package transport
 
 import (
 	"context"
+	"os"
+	"time"
 
 	"fdb.dev/pkg/fdbgo/internal/sendqueue"
 )
@@ -30,6 +32,9 @@ func (c *Conn) ngWrite(ctx context.Context, token UID, body []byte, flush bool, 
 			}
 		}
 	}
+	if c.ctx.Err() != nil {
+		return false, errConnClosed
+	}
 	if flush {
 		return true, nil
 	}
@@ -38,3 +43,17 @@ func (c *Conn) ngWrite(ctx context.Context, token UID, body []byte, flush bool, 
 	}
 	return true, nil
 }
+
+// coalesceFromSender is experiment (b): writeLoop times its coalescing delay
+// from when the batch's first frame was queued, not from when it picked it up.
+var coalesceFromSender = os.Getenv("FDBGO_COALESCE_FROM_SENDER") == "1"
+
+func (c *Conn) stampQueued() {
+	if coalesceFromSender && c.firstQueued.Load() == 0 {
+		c.firstQueued.CompareAndSwap(0, monoNow())
+	}
+}
+
+var monoBase = time.Now()
+
+func monoNow() int64 { return int64(time.Since(monoBase)) }

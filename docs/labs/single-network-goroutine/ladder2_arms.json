@@ -1,0 +1,38 @@
+{
+ "A": {
+  "env": []
+ },
+ "B": {
+  "env": [
+   "FDBGO_NETWORK_GOROUTINE=1"
+  ]
+ },
+ "W": {
+  "env": [
+   "FDBGO_NETWORK_GOROUTINE=writer"
+  ]
+ },
+ "Bbest": {
+  "env": [
+   "FDBGO_NETWORK_GOROUTINE=1",
+   "FDBGO_NETG_LOOPS=2",
+   "FDBGO_NETG_OUTFIX=1"
+  ]
+ },
+ "Wbest": {
+  "env": [
+   "FDBGO_NETWORK_GOROUTINE=writer",
+   "FDBGO_NETG_LOOPS=2",
+   "FDBGO_NETG_OUTFIX=1"
+  ]
+ },
+ "Bbest16": {
+  "env": [
+   "FDBGO_NETWORK_GOROUTINE=1",
+   "FDBGO_NETG_LOOPS=2",
+   "FDBGO_NETG_OUTFIX=1"
+  ],
+  "gomaxprocs": 16,
+  "cpus": "1-8,13-20"
+ }
+}

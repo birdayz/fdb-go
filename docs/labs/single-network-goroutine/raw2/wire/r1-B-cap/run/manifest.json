@@ -1,0 +1,44 @@
+{
+  "attempts_scope": "transaction callback entries only; internal RPC retries unobserved",
+  "backend": {
+    "api_version": 730,
+    "backend": "go",
+    "coalesce_delay": "",
+    "executable": "/var/tmp/netg-bench/bin/clientbench-go",
+    "executable_sha256": "695170cdda7c180f4ea69c8a9213ef01ee4b67266a83a71185ab3befa2fe1ed4",
+    "go_build_info": "go\tgo1.27.3\npath\tfdb.dev/tools/clientbench/cmd/clientbench\nmod\tfdb.dev\tv0.1.1-0.20261024064314-376f81bad10e+dirty\t\ndep\tgithub.com/cespare/xxhash/v2\tv2.3.0\th1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=\ndep\tgithub.com/klauspost/cpuid/v2\tv2.2.10\th1:tBs3QSyvjDyFTq3uoc/9xFpCuOsJQFNPiAhYdw2skhE=\ndep\tgithub.com/zeebo/xxh3\tv1.1.0\th1:s7DLGDK45Dyfg7++yxI0khrfwq9661w9EN78eP/UZVs=\ndep\tgo.opentelemetry.io/otel\tv1.45.0\th1:pdrWmLHofpubmArBv1LgFSv1Z0Ie/ppdZzu+kUN5EeU=\ndep\tgo.opentelemetry.io/otel/trace\tv1.45.0\th1:l/mP6Uv7oNO7/TblbhpbgMidxhq1uO/rPsikOyVhxag=\ndep\tgolang.org/x/sys\tv0.49.0\th1:XbzkgYJHdqh/8m2Uu0W/dQv8nktxx4BFHp1M0gROTXA=\nbuild\t-buildmode=exe\nbuild\t-compiler=gc\nbuild\t-trimpath=true\nbuild\tCGO_ENABLED=1\nbuild\tGOARCH=amd64\nbuild\tGOOS=linux\nbuild\tGOAMD64=v1\nbuild\tvcs=git\nbuild\tvcs.revision=376f81bad10ec5fc93f18bf06c347a163b4c05a8\nbuild\tvcs.time=2026-10-24T06:43:14Z\nbuild\tvcs.modified=true\n",
+    "loaded_fdb_libraries_sha256": {},
+    "native_library": false
+  },
+  "config": {
+    "cluster_file": "/var/tmp/netg-fdb/fdb.cluster",
+    "workload": "get100",
+    "iterations": 200000,
+    "warmup": 20000,
+    "workers": 64,
+    "output": "/var/tmp/fdbgo-netg/docs/labs/single-network-goroutine/raw2/wire/r1-B-cap/run",
+    "run_id": "",
+    "block": -1,
+    "source_revision": "",
+    "harness_id": "",
+    "allow_writes": true,
+    "prefix": "clientbench/v1/",
+    "transaction_timeout_ms": 30000,
+    "retry_limit": 10,
+    "profile": "none",
+    "seed": 1,
+    "warmup_duration_ns": 10000000000
+  },
+  "environment": {
+    "GODEBUG": "",
+    "GOGC": "100",
+    "GOMAXPROCS": "8",
+    "GOMEMLIMIT": "off"
+  },
+  "go_version": "go1.27.3",
+  "gomaxprocs": 8,
+  "memory_scope": "Go allocation counters exclude native libfdb_c heap; RSS high-water includes setup and is process lifetime, not interval peak",
+  "pid": 538099,
+  "started_utc": "2026-10-24T09:07:44.392974307Z",
+  "timing": "closed-loop completion latency including transaction retries, result materialization, exact byte checks; no serialization or generation"
+}

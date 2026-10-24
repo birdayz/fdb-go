@@ -23,6 +23,7 @@ func (c *Conn) tryEnqueue(req writeReq) bool {
 		return false
 	}
 	c.queued.Add(1)
+	c.stampQueued()
 	select {
 	case c.writeCh <- req:
 		return true

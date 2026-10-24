@@ -17,6 +17,7 @@ import (
 	mathrand "math/rand/v2"
 	"net"
 	"os"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -26,7 +27,13 @@ import (
 	"github.com/zeebo/xxh3"
 )
 
-var netgEnabled = os.Getenv("FDBGO_NETWORK_GOROUTINE") == "1"
+// "1": the loop owns reads and writes. "writer": variant (a), the loop owns
+// writes only and each connection keeps its readLoop.
+var (
+	netgMode    = os.Getenv("FDBGO_NETWORK_GOROUTINE")
+	netgEnabled = netgMode == "1" || netgMode == "writer"
+	netgWriter  = netgMode == "writer"
+)
 
 const (
 	ngOpFrame = iota
@@ -49,6 +56,10 @@ type ngConn struct {
 	flushAt   int64 // monotonic ns; 0 = nothing scheduled
 	lastWrite int64
 	wantOut   bool // EPOLLOUT armed: the socket refused part of out
+	readable  bool // the loop reads this socket (not in writer mode)
+	loop      *netLoop
+	nframes   int // frames in out
+	outOff    int // written prefix of out (FDBGO_NETG_OUTFIX)
 	in        []byte
 	closed    bool
 }
@@ -72,19 +83,47 @@ type netLoop struct {
 	Wakes, Iterations, Writes, Reads atomic.Int64
 }
 
+// Round-2 levers, each off by default (docs/labs/single-network-goroutine):
+// FDBGO_NETG_LOOPS=K shards connections over K loops (round-robin);
+// FDBGO_NETG_RBUF=bytes sets the per-connection read buffer;
+// FDBGO_NETG_FLUSH_FRAMES=N writes a connection as soon as N frames are pending;
+// FDBGO_NETG_OUTFIX=1 keeps the out buffer's capacity across writes.
 var (
-	netgOnce sync.Once
-	netg     *netLoop
-	netgErr  error
+	netgLoops       = envInt("FDBGO_NETG_LOOPS", 1)
+	netgRbuf        = envInt("FDBGO_NETG_RBUF", readBufferSize)
+	netgFlushFrames = envInt("FDBGO_NETG_FLUSH_FRAMES", 0)
+	netgOutFix      = os.Getenv("FDBGO_NETG_OUTFIX") == "1"
 )
 
-var monoBase = time.Now()
+func envInt(name string, def int) int {
+	if v, err := strconv.Atoi(os.Getenv(name)); err == nil && v > 0 {
+		return v
+	}
+	return def
+}
 
-func monoNow() int64 { return int64(time.Since(monoBase)) }
+var (
+	netgOnce  sync.Once
+	netgLoopv []*netLoop
+	netgErr   error
+	netgNext  atomic.Uint32
+)
 
 func getNetLoop() (*netLoop, error) {
-	netgOnce.Do(func() { netg, netgErr = startNetLoop() })
-	return netg, netgErr
+	netgOnce.Do(func() {
+		for range netgLoops {
+			l, err := startNetLoop()
+			if err != nil {
+				netgErr = err
+				return
+			}
+			netgLoopv = append(netgLoopv, l)
+		}
+	})
+	if netgErr != nil {
+		return nil, netgErr
+	}
+	return netgLoopv[int(netgNext.Add(1)-1)%len(netgLoopv)], nil
 }
 
 func startNetLoop() (*netLoop, error) {
@@ -161,8 +200,11 @@ func netgRegister(c *Conn) bool {
 		syscall.Close(dup)
 		return false
 	}
-	_ = tc.Close() // the dup keeps the socket open
-	st := &ngConn{c: c, fd: dup, lastWrite: monoNow(), in: make([]byte, 0, readBufferSize)}
+	st := &ngConn{c: c, fd: dup, lastWrite: monoNow(), readable: !netgWriter, loop: l}
+	if st.readable {
+		_ = tc.Close() // the dup keeps the socket open
+		st.in = make([]byte, 0, netgRbuf)
+	}
 	c.ng = st
 	l.submit(ngSub{op: ngOpRegister, st: st})
 	return true
@@ -177,11 +219,11 @@ func (c *Conn) ngSend(token UID, body []byte) error {
 	}
 	LogSend(token, body)
 	bufp, frame := encodeFrame(token, body, false)
-	netg.submit(ngSub{op: ngOpFrame, st: c.ng, bufp: bufp, frame: frame})
+	c.ng.loop.submit(ngSub{op: ngOpFrame, st: c.ng, bufp: bufp, frame: frame})
 	return nil
 }
 
-func (c *Conn) ngClose() { netg.submit(ngSub{op: ngOpClose, st: c.ng}) }
+func (c *Conn) ngClose() { c.ng.loop.submit(ngSub{op: ngOpClose, st: c.ng}) }
 
 func (l *netLoop) run(f *os.File) {
 	var subs []ngSub
@@ -241,7 +283,13 @@ func (l *netLoop) run(f *os.File) {
 				l.write(st, monoNow())
 			}
 			if ev.Events&(syscall.EPOLLIN|syscall.EPOLLERR|syscall.EPOLLHUP) != 0 && !st.closed {
-				l.readConn(st)
+				if st.readable {
+					l.readConn(st)
+				} else if ev.Events&(syscall.EPOLLERR|syscall.EPOLLHUP) != 0 {
+					// readLoop sees the failure; stop level-triggered HUP reports.
+					_ = syscall.EpollCtl(l.epfd, syscall.EPOLL_CTL_DEL, st.fd, nil)
+					st.closed = true
+				}
 			}
 		}
 	}
@@ -252,13 +300,17 @@ func (l *netLoop) apply(s *ngSub, now int64) {
 	switch s.op {
 	case ngOpRegister:
 		l.conns[int32(st.fd)] = st
-		ev := syscall.EpollEvent{Events: syscall.EPOLLIN | syscall.EPOLLRDHUP, Fd: int32(st.fd)}
+		ev := syscall.EpollEvent{Events: st.inEvents(), Fd: int32(st.fd)}
 		if err := syscall.EpollCtl(l.epfd, syscall.EPOLL_CTL_ADD, st.fd, &ev); err != nil {
 			l.fail(st, err)
 		}
 	case ngOpFrame:
 		if !st.closed {
 			st.out = append(st.out, s.frame...)
+			st.nframes++
+			if netgFlushFrames > 0 && st.nframes >= netgFlushFrames && st.flushAt > now && !st.wantOut {
+				st.flushAt = now // enough frames for one packet: write without the rest of the delay
+			}
 			if st.flushAt == 0 && !st.wantOut {
 				c := st.c
 				d := time.Duration(0)
@@ -274,9 +326,7 @@ func (l *netLoop) apply(s *ngSub, now int64) {
 		}
 		putFrame(s.bufp, s.frame)
 	case ngOpClose:
-		if !st.closed {
-			l.teardown(st)
-		}
+		l.teardown(st)
 	}
 }
 
@@ -316,8 +366,9 @@ func (l *netLoop) armTimer(d int64) {
 }
 
 func (l *netLoop) write(st *ngConn, now int64) {
-	for len(st.out) > 0 {
-		n, err := syscall.Write(st.fd, st.out)
+	st.nframes = 0
+	for len(st.out) > st.outOff {
+		n, err := syscall.Write(st.fd, st.out[st.outOff:])
 		l.Writes.Add(1)
 		if err == syscall.EINTR {
 			continue
@@ -325,7 +376,7 @@ func (l *netLoop) write(st *ngConn, now int64) {
 		if err == syscall.EAGAIN {
 			if !st.wantOut {
 				st.wantOut = true
-				ev := syscall.EpollEvent{Events: syscall.EPOLLIN | syscall.EPOLLRDHUP | syscall.EPOLLOUT, Fd: int32(st.fd)}
+				ev := syscall.EpollEvent{Events: st.inEvents() | syscall.EPOLLOUT, Fd: int32(st.fd)}
 				_ = syscall.EpollCtl(l.epfd, syscall.EPOLL_CTL_MOD, st.fd, &ev)
 			}
 			return
@@ -335,14 +386,25 @@ func (l *netLoop) write(st *ngConn, now int64) {
 			return
 		}
 		st.lastWrite = now
-		st.out = st.out[n:]
+		if netgOutFix {
+			st.outOff += n
+		} else {
+			st.out = st.out[n:]
+		}
 	}
-	st.out = st.out[:0]
+	st.out, st.outOff = st.out[:0], 0
 	if st.wantOut {
 		st.wantOut = false
-		ev := syscall.EpollEvent{Events: syscall.EPOLLIN | syscall.EPOLLRDHUP, Fd: int32(st.fd)}
+		ev := syscall.EpollEvent{Events: st.inEvents(), Fd: int32(st.fd)}
 		_ = syscall.EpollCtl(l.epfd, syscall.EPOLL_CTL_MOD, st.fd, &ev)
 	}
+}
+
+func (st *ngConn) inEvents() uint32 {
+	if st.readable {
+		return syscall.EPOLLIN | syscall.EPOLLRDHUP
+	}
+	return 0
 }
 
 var errNetgEOF = errors.New("netgoroutine: peer closed")
@@ -429,17 +491,19 @@ func (l *netLoop) parse(st *ngConn) bool {
 }
 
 func (l *netLoop) fail(st *ngConn, err error) {
-	if !st.closed {
-		l.teardown(st)
-	}
+	l.teardown(st)
 	st.c.failConnection(err)
 }
 
 func (l *netLoop) teardown(st *ngConn) {
+	if st.fd < 0 {
+		return
+	}
 	st.closed = true
 	delete(l.conns, int32(st.fd))
 	_ = syscall.EpollCtl(l.epfd, syscall.EPOLL_CTL_DEL, st.fd, nil)
 	_ = syscall.Close(st.fd)
+	st.fd = -1
 	st.out, st.in = nil, nil
 	st.c.loopWG.Done()
 }

@@ -23,6 +23,7 @@ func (c *Conn) enqueueAdmitted(ctx context.Context, request writeReq, done <-cha
 func (c *Conn) enqueuePrefix(ctx context.Context, request writeReq, done <-chan struct{}, permit *sendqueue.Permit, counted bool) (enqueued bool, err error) {
 	if !counted {
 		c.queued.Add(1)
+		c.stampQueued()
 	}
 	defer func() {
 		if !enqueued {
@@ -73,6 +74,7 @@ func (c *Conn) enqueuePrefix(ctx context.Context, request writeReq, done <-chan 
 // this channel. Later warm traffic stays ordinary; it cannot extend the cohort.
 func (c *Conn) enqueueHeld(ctx context.Context, request writeReq, done <-chan struct{}) (enqueued bool, err error) {
 	c.queued.Add(1)
+	c.stampQueued()
 	c.heldCount.Add(1)
 	defer func() {
 		if !enqueued {
@@ -192,6 +194,7 @@ func (c *Conn) tryEnqueueHeld(request writeReq) bool {
 		return false
 	}
 	c.queued.Add(1)
+	c.stampQueued()
 	c.heldCount.Add(1)
 	if c.tryHeldCounted(request) {
 		return true
@@ -332,6 +335,7 @@ func (c *Conn) tryEnqueueColdControl(request writeReq, permit *sendqueue.Permit)
 		return false
 	}
 	c.queued.Add(1)
+	c.stampQueued()
 	select {
 	case c.coldControls <- coldControl{request: request, permit: permit}:
 		return true
