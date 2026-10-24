@@ -1,7 +1,7 @@
 // Package fdb provides a pure-Go client for FoundationDB.
 //
-// This package is API-compatible with the official Apple FDB Go binding
-// (fdb.dev/pkg/fdbgo/fdb) but requires no
+// Its API is modeled on Apple's FoundationDB Go binding
+// (github.com/apple/foundationdb/bindings/go/src/fdb) but requires no
 // C library (libfdb_c). It uses a native Go wire protocol implementation.
 //
 // Basic usage:
@@ -15,16 +15,18 @@
 //	    return tr.Get(fdb.Key("foo")).MustGet(), nil
 //	})
 //
-// Known behavioral differences from the Apple C binding:
-//   - Error messages: Error.Error() returns "FoundationDB error: <code>" rather
-//     than the human-readable description from libfdb_c. Use Error.Code for
-//     programmatic matching.
+// Known differences from the Apple binding:
+//   - Transact and Transactor take func(WritableTransaction), not
+//     func(Transaction): an Apple-style closure needs its parameter type changed.
+//   - Error messages: Error.Error() returns "<description> (<code>)" where the
+//     Apple binding returns "FoundationDB error code <code> (<description>)".
+//     Use Error.Code for programmatic matching.
 //   - Future.Cancel() completes the future with operation_cancelled (1101); the
 //     operation behind it continues, except a watch, which is cancelled.
-//   - No per-transaction context.Context: matching the Apple binding, methods
-//     like Get/GetRange do not accept a context parameter. Use SetTimeout for
-//     deadlines, or call Cancel() from another goroutine for cancellation.
-//     context.Background() is used internally for all operations.
+//   - As in the Apple binding, methods like Get/GetRange take no context.
+//     TransactCtx and ReadTransactCtx bound the retry loop, backoff and reads
+//     with a context; Transact and ReadTransact run on context.Background().
+//     Use SetTimeout for deadlines, or Cancel() from another goroutine.
 //
 // Retries and timeouts are UNBOUNDED by default here — exactly as in libfdb_c,
 // whose per-transaction defaults are timeoutInSeconds=0.0 and maxRetries=-1

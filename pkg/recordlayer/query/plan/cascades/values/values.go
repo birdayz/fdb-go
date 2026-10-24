@@ -2108,8 +2108,8 @@ func explainValueOrdinalsWithAliases(v Value, withOrdinals bool, aliases map[Cor
 		// A baked ordinal accessor renders its ordinal (Java's FieldPath
 		// `#ordinal` syntax) alongside the name: two reads of DUPLICATE-named
 		// slots differ only by ordinal, and explain output rendering both as
-		// the bare name would make different plans read identically (PR #446
-		// round 2). FrontierPinned deliberately does NOT render: it is an
+		// the bare name would make different plans read identically.
+		// FrontierPinned deliberately does NOT render: it is an
 		// evaluation-contract marker, not part of the value's identity.
 		// ColumnNameValue drops the discriminator: a column's NAME is the
 		// same whether the reference is lazy or baked.

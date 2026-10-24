@@ -1,7 +1,8 @@
 # FDB Go Facade — API Parity with the Apple Go Binding
 
-This package (`pkg/fdbgo/fdb`) is a drop-in-compatible API with the
+This package (`pkg/fdbgo/fdb`) has an API modeled on the
 [Apple FoundationDB Go binding](https://github.com/apple/foundationdb/tree/main/bindings/go).
+Porting code from it needs the type-level changes listed below.
 The Apple binding wraps CGo `libfdb_c`; this facade can run on **either** a pure-Go
 client (no CGo) **or** the `libfdb_c` backend (build tag `libfdbc`, RFC-109).
 
@@ -18,6 +19,8 @@ removes.)
 | `Transaction` / `ReadTransaction` | Methods present; read/write/atomic/range/watch/versionstamp all real wire traffic |
 | `Snapshot` | Full |
 | `Database` | Superset (`+ InvalidateGRVCache`, `OpenTenantById`) |
+| `Database.Transact` / `Transactor` | The closure takes `WritableTransaction` (an interface) where Apple's takes the `Transaction` struct: change `func(tr fdb.Transaction)` to `func(tr fdb.WritableTransaction)` |
+| `Error.Error()` | `"<description> (<code>)"`; Apple's is `"FoundationDB error code <code> (<description>)"`. Match on `Error.Code` |
 | Key selectors / `subspace` / `tuple` / `directory` | Full |
 | `TransactionOptions` | **Present, but see the three tables below** |
 | `DatabaseOptions` | Mostly honored (timeouts/limits/retry); some accepted-but-ignored; two **rejected** (see below) |

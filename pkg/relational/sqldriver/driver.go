@@ -7,12 +7,13 @@
 // Package sqldriver implements a database/sql driver for the
 // FoundationDB Record Layer relational (SQL) layer.
 //
-// Register the driver by blank-importing this package, then open a
-// connection:
+// Importing this package registers the "fdbsql" driver. Register a domain,
+// then open a connection:
 //
 //	import (
 //	    "database/sql"
-//	    _ "fdb.dev/pkg/relational/sqldriver"
+//
+//	    "fdb.dev/pkg/relational/sqldriver"
 //	)
 //
 //	sqldriver.RegisterDomainIfNotExists("FRL")

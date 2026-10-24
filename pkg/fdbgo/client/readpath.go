@@ -1449,7 +1449,7 @@ func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int6
 	// async poll is observed by WatchPoll, which drains and releases. watchCancel is the SCOPED cancel
 	// (cancels+deregisters only this watch): the setup-error paths below call it, WatchPoll defers it on
 	// completion, and the fdb facade wires the Watch future's Cancel() to it — so one watch is freed
-	// without touching siblings (round 18). The async WatchPoll USES this context, never a lazy fetch
+	// without touching siblings. The async WatchPoll USES this context, never a lazy fetch
 	// (which races Cancel/reset — RFC-115 §4).
 	watchCtx, watchCancel := tx.newWatchCtx(callerCtx)
 	setupCtx, setupCancel := context.WithCancel(ctx)
