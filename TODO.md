@@ -311,7 +311,7 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   value then only carries synchronous errors such as inverted ranges) with a test.
   Fixed in RFC-267: the range form defers 2004 through the key form's path and returns
   only inverted_range; pinned by fast-lane tests and a libfdb_c differential.
-- [ ] **Explicit read-conflict-range errors are immediate or missing.** libfdb_c runs RYW
+- [x] **Explicit read-conflict-range errors are immediate or missing.** libfdb_c runs RYW
   `addReadConflictRange` on the network thread too (`ThreadSafeTransaction.cpp:589-594`):
   an endpoint past `getMaxReadKey()`, other than the exact metadataVersionKey range
   (`ReadYourWrites.actor.cpp:1950-1955`), becomes the deferred error (2004) and surfaces
@@ -320,10 +320,13 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   `AddReadConflictKey` (`stateAddReadConflictKey`) has no legal-range check, so a system-key read conflict is recorded without error; the
   Apple binding's key form calls the same C function as the range form. Defer both as
   RFC-267 does for the write form, pinned by a libfdb_c differential.
+  Fixed in RFC-268: both forms defer 2004 through RFC-267's deferred-error path; the
+  range form returns only inverted_range, and the key form also drops an oversized key as
+  the range clamp does. Pinned by fast-lane tests and a libfdb_c differential.
 - [ ] **Panic-safe locks outside the GetKey walk.** Scoped recovery now unwinds GetKey
   walk locks, but older paths still pair bare Lock/Unlock around fallible work:
   `ryw.go:620-632` (`get` / `localPointLocked`), `ryw.go:643-645` (`getSnapshot`),
-  and `transaction.go:3223-3225` (`stateAddReadConflictRange` / `conflictRanges`).
+  and `transaction.go:3220-3222` (`addReadConflictRangeRYW` / `conflictRanges`).
   Scope deferred unlocks there and pin a panic inside each locked operation; do not
   treat a panic after a reply outside the lock as proof. Also audit transport
   `writer_turn.go:52-99`: `NotifySuspend` and the coalescing wait run with `writeMu`

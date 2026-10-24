@@ -454,7 +454,9 @@ type Transaction struct {
 	// SetSizeLimit out of [32, 1e7], including a DB default (2006, extractIntOption).
 	// SetTimeout outside [0, INT_MAX] (2006 — extractIntOption's throw, also not applied).
 	// An explicit write-conflict range or key past maxWriteKey (2004 — RYW
-	// addWriteConflictRange's throw, :2466-2468; see deferWriteConflictRange).
+	// addWriteConflictRange's throw, :2466-2468; see deferWriteConflictRange), and an explicit
+	// read-conflict range or key past maxReadKey other than the metadataVersionKey range (2004,
+	// :1950-1955; see stateAddReadConflictRange/Key).
 	// (readErr is a DIFFERENT C++ mechanism — ryw->reading, the read-future ledger —
 	// and lives under readErrMu, which also guards readGen + pendingReads.)
 	deferredErr atomic.Pointer[wire.FDBError]
@@ -1408,22 +1410,7 @@ func (tx *Transaction) stateAtomic(op MutationType, key, operand []byte) {
 		// code; only if every preceding mutation is legal is THIS bad op the first illegal
 		// one. Compute under conflictMu for a consistent preceding-mutation snapshot; store-if-unset
 		// keeps the first bad Atomic's verdict (race-free vs Commit's lock-free Load).
-		tx.conflictMu.Lock()
-		if tx.deferredErr.Load() == nil {
-			poison := &wire.FDBError{Code: code}
-			maxWrite := tx.maxWriteKey()
-			for _, m := range tx.mutations {
-				if e := tx.validateMutation(m, maxWrite); e != nil {
-					var fe *wire.FDBError
-					if errors.As(e, &fe) {
-						poison = fe
-					}
-					break
-				}
-			}
-			tx.deferredErr.Store(poison)
-		}
-		tx.conflictMu.Unlock()
+		tx.recordDeferredError(&wire.FDBError{Code: code})
 		return
 	}
 	// API < 520 versionstamp offset zero-extension (C++ RYW::atomicOp, ReadYourWrites.actor.cpp:2250-2261).
@@ -3168,19 +3155,44 @@ func (tx *Transaction) grvFlags() uint32 {
 	return flags
 }
 
+// stateAddReadConflictRange returns only inverted_range, which libfdb_c raises from the
+// KeyRangeRef built on the calling thread (fdb_c.cpp:1223, FDBTypes.h:318-323).
 func (tx *Transaction) stateAddReadConflictRange(begin, end []byte) error {
 	if bytes.Compare(begin, end) > 0 {
 		return &wire.FDBError{Code: ErrInvertedRange}
 	}
-	// C++ addReadConflictRange (ReadYourWrites.actor.cpp:1954-1957, apiVersionAtLeast(300)): reject a
-	// range whose begin/end exceeds getMaxReadKey(), EXCEPT the exact metadataVersionKey range. Inverted
-	// is checked first (C++ throws it from KeyRangeRef construction before this check).
+	// libfdb_c runs the rest on the network thread and defers its throw, skipping the work once an
+	// error is deferred (ThreadSafeTransaction.cpp:589-594, ThreadHelper.actor.h:50-61).
+	if tx.deferredErr.Load() == nil {
+		if poison := tx.addReadConflictRangeRYW(begin, end); poison != nil {
+			tx.recordDeferredError(poison)
+		}
+	}
+	return nil
+}
+
+// stateAddReadConflictKey is the range form over [key, keyAfter(key)), the C binding's key form
+// (bindings/go/src/fdb/transaction.go:548-554).
+func (tx *Transaction) stateAddReadConflictKey(key []byte) {
+	if tx.deferredErr.Load() == nil {
+		if poison := tx.addReadConflictKeyRYW(key); poison != nil {
+			tx.recordDeferredError(poison)
+		}
+	}
+}
+
+// addReadConflictRangeRYW is RYW addReadConflictRange (ReadYourWrites.actor.cpp:1945-1987)
+// for a range that is not inverted.
+func (tx *Transaction) addReadConflictRangeRYW(begin, end []byte) *wire.FDBError {
+	// C++ addReadConflictRange (ReadYourWrites.actor.cpp:1950-1955, apiVersionAtLeast(300)): reject a
+	// range whose begin/end exceeds getMaxReadKey(), EXCEPT the exact metadataVersionKey range. Unlike
+	// the write check (:2466-2468) it uses getMaxReadKey and has the exception.
 	maxKey := tx.maxReadKey()
 	if (bytes.Compare(begin, maxKey) > 0 || bytes.Compare(end, maxKey) > 0) &&
 		!(bytes.Equal(begin, metadataVersionKeyBytes) && bytes.Equal(end, metadataVersionKeyEndBytes)) {
 		return &wire.FDBError{Code: 2004} // key_outside_legal_range
 	}
-	// C++ addReadConflictRange (ReadYourWrites.actor.cpp:1958-1976) then CLAMPS an oversized endpoint
+	// C++ addReadConflictRange (ReadYourWrites.actor.cpp:1957-1975) then CLAMPS an oversized endpoint
 	// to getMaxReadKeySize+1 bytes and DROPS the whole range if the clamp collapses it to empty.
 	// getMaxReadKeySize == getMaxKeySize == getMaxClearKeySize (hasRawAccess is always true here). The
 	// legal-range check above runs on the RAW keys first (C++ order); a non-system key >10 KB is < \xff
@@ -3212,9 +3224,19 @@ func (tx *Transaction) stateAddReadConflictRange(begin, end []byte) error {
 	return nil
 }
 
-// stateAddReadConflictKey shares the Get path's helper, which applies the same RYW filtering.
-func (tx *Transaction) stateAddReadConflictKey(key []byte) {
-	tx.addReadConflictForKeyRYW(key)
+// addReadConflictKeyRYW is addReadConflictRangeRYW on [key, keyAfter(key)) without allocating
+// keyAfter(key) or walking the write map.
+func (tx *Transaction) addReadConflictKeyRYW(key []byte) *wire.FDBError {
+	// keyAfter(key) is past maxReadKey iff key >= maxReadKey; the range is metadataVersionKey's iff key is.
+	if bytes.Compare(key, tx.maxReadKey()) >= 0 && !bytes.Equal(key, metadataVersionKeyBytes) {
+		return &wire.FDBError{Code: 2004} // key_outside_legal_range
+	}
+	// Past the size limit the clamp cuts both endpoints to key[:max+1], an empty range (RYW:1962-1975).
+	if len(key) > getMaxClearKeySize(key) {
+		return nil
+	}
+	tx.addReadConflictForKeyRYW(key) // the single-key updateConflictMap
+	return nil
 }
 
 // stateAddWriteConflictRange returns only inverted_range, which libfdb_c raises from the
@@ -3239,16 +3261,22 @@ func (tx *Transaction) deferWriteConflictRange(begin, end []byte) {
 	if tx.deferredErr.Load() != nil {
 		return
 	}
-	poison := tx.addWriteConflictRangeRYW(begin, end)
-	if poison == nil {
-		return
+	if poison := tx.addWriteConflictRangeRYW(begin, end); poison != nil {
+		tx.recordDeferredError(poison)
 	}
-	// Illegal mutations are buffered until commit in Go. Preserve their
-	// earlier verdict, as for invalid Atomic (RYW:2344-2348).
+}
+
+// recordDeferredError stores poison unless an error is deferred. Go buffers illegal mutations that
+// C++ throws eagerly (RYW:2226-2235, :2344-2348), so the earliest one out-ranks poison.
+func (tx *Transaction) recordDeferredError(poison *wire.FDBError) {
 	tx.conflictMu.Lock()
 	defer tx.conflictMu.Unlock()
+	if tx.deferredErr.Load() != nil {
+		return
+	}
+	maxWrite := tx.maxWriteKey()
 	for _, m := range tx.mutations {
-		if earlier := tx.validateMutation(m, tx.maxWriteKey()); earlier != nil {
+		if earlier := tx.validateMutation(m, maxWrite); earlier != nil {
 			var fe *wire.FDBError
 			if errors.As(earlier, &fe) {
 				poison = fe
@@ -3264,14 +3292,14 @@ func (tx *Transaction) deferWriteConflictRange(begin, end []byte) {
 func (tx *Transaction) addWriteConflictRangeRYW(begin, end []byte) *wire.FDBError {
 	// C++ addWriteConflictRange (ReadYourWrites.actor.cpp:2466-2468, apiVersionAtLeast(300)): reject a
 	// range whose begin/end exceeds getMaxWriteKey() — note getMaxWriteKey (gated on writeSystemKeys),
-	// NOT getMaxReadKey, and NO metadataVersionKey exception (asymmetric with the read path above).
+	// NOT getMaxReadKey, and NO metadataVersionKey exception (asymmetric with addReadConflictRangeRYW).
 	maxKey := tx.maxWriteKey()
 	if bytes.Compare(begin, maxKey) > 0 || bytes.Compare(end, maxKey) > 0 {
 		return &wire.FDBError{Code: 2004} // key_outside_legal_range
 	}
 	// C++ addWriteConflictRange (ReadYourWrites.actor.cpp:2474-2492) CLAMPS an oversized endpoint to
 	// getMaxKeySize+1 (== getMaxClearKeySize) and DROPS the range if the clamp collapses it to empty —
-	// identical to the read path above. Without this Go shipped the full oversized key to the resolver.
+	// identical to addReadConflictRangeRYW. Without this Go shipped the full oversized key to the resolver.
 	if bmax := getMaxClearKeySize(begin); len(begin) > bmax {
 		begin = begin[:bmax+1]
 	}

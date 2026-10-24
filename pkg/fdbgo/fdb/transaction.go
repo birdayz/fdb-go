@@ -365,13 +365,15 @@ func (tr Transaction) Reset() {
 	tr.t.db.applyTxDefaults(tr.t)
 }
 
-// AddReadConflictRange adds a read conflict range.
+// AddReadConflictRange adds a read conflict range. As in libfdb_c it returns only inverted_range;
+// key_outside_legal_range is deferred to the next operation and the commit (RFC-268).
 func (tr Transaction) AddReadConflictRange(er ExactRange) error {
 	begin, end := er.FDBRangeKeys()
 	return convertError(tr.t.inner.AddReadConflictRange(begin.FDBKey(), end.FDBKey()))
 }
 
-// AddReadConflictKey adds a read conflict on a single key.
+// AddReadConflictKey adds a read conflict on a single key. It returns nil; an illegal key
+// defers key_outside_legal_range as AddReadConflictRange does.
 func (tr Transaction) AddReadConflictKey(key KeyConvertible) error {
 	tr.t.inner.AddReadConflictKey(key.FDBKey())
 	return nil

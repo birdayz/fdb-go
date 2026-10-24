@@ -93,8 +93,8 @@ endpoint is past `\xff\xff` is silently accepted where libfdb_c rejects.
 
 > **Superseded in part by RFC-267.** The probe compared each transaction's final error, so libfdb_c's
 > 2004 above came from the commit: libfdb_c runs both RYW methods on the network thread and defers
-> the throw (`ThreadSafeTransaction.cpp:589-594`, `:659-663`). Go's write form now defers it too;
-> the read form's immediate return is an open TODO.md item.
+> the throw (`ThreadSafeTransaction.cpp:589-594`, `:659-663`). Go now defers both: the write form
+> in RFC-267, the read range and key forms in RFC-268.
 
 ## 3. Proposed Go change
 
@@ -138,6 +138,9 @@ check (so inverted wins when both apply, matching C++'s construct-then-check ord
       return &wire.FDBError{Code: 2004} // key_outside_legal_range
   }
   ```
+
+  RFC-268 moved this 2004 into the deferred error, as libfdb_c does, and applied the same check
+  to `AddReadConflictKey`; the range call returns only 2005.
 
 - **`AddWriteConflictRange`** — `getMaxWriteKey()` (`tx.maxWriteKey()`, `transaction.go:1082`), **no**
   metadataVersion exception (`ReadYourWrites.actor.cpp:2466-2468` throws unconditionally on out-of-range):

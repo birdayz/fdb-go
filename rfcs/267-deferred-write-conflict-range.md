@@ -60,7 +60,8 @@ the Apple binding over libfdb_c. Doc comments on both layers say so.
 
 Out of scope, recorded as a new TODO.md entry in this change: the read forms have the same C++ path
 (`ThreadSafeTransaction.cpp:589-594`, RYW `:1950-1955`), but Go's `AddReadConflictRange`
-returns 2004 immediately and `AddReadConflictKey` has no legal-range check at all.
+returns 2004 immediately and `AddReadConflictKey` has no legal-range check at all. RFC-268
+fixes both.
 
 ## Wire and data compatibility
 
@@ -100,7 +101,7 @@ Lanes: `ryw_pin_unit_test` is in `just test`; `client_test` and `bench_test` are
   the next `Get` and the `Commit` for a legal, an end-past-max, a begin-past-max, a
   read-system-keys and an inverted range; red before the fix (go=2004, cgo=0 at the call).
   It is a separate write-only test: `TestDifferential_ConflictRangeEdges` runs its shapes
-  through the read method too, which keeps the out-of-scope divergence. The commit step is
+  through the read method too, whose error site RFC-268 then fixed. The commit step is
   the discard-then-commit shape: go committed (0) where libfdb_c failed (2004).
   `TestDifferential_ConflictRangeMaxKey` compares only the final `Transact` error, which
   is 2004 on both sides before and after; its comment is corrected to say where 2004

@@ -12,8 +12,8 @@ import (
 // :2466 write) with key_outside_legal_range (2004); Go used to check only inverted (begin>end). These
 // pin the validation edges (no DB): the inverted-wins ordering, the read-only metadataVersionKey
 // exception, and the read/write maxKey ASYMMETRY (read uses maxReadKey + the exception; write uses
-// maxWriteKey + no exception). The write method's 2004 is deferred, as in libfdb_c (RFC-267), so it
-// is checked in the deferred-error slot. Deterministic, no cgo.
+// maxWriteKey + no exception). Both methods' 2004 is deferred, as in libfdb_c (RFC-267 write,
+// RFC-268 read), so it is checked in the deferred-error slot. Deterministic, no cgo.
 
 func crCode(t *testing.T, err error) int {
 	t.Helper()
@@ -145,18 +145,26 @@ func TestAddReadConflictRange_Validation(t *testing.T) {
 		name              string
 		begin, end        string
 		readSys, writeSys bool
-		want              int
+		key               bool // AddReadConflictKey(begin); end is begin+"\x00"
+		want, deferred    int  // the call's code; the deferred error's code
 	}{
-		{"in_range", "a", "m", false, false, 0},
-		{"end_past_maxReadKey", "a", "\xff\xff\xff", false, false, 2004},
-		// Inverted wins over maxKey: begin>end AND both past maxKey → inverted_range (2005), checked first.
-		{"inverted_beats_maxKey", "\xff\xff\xff\xff", "\xff\xff\xff", false, false, 2005},
+		{"in_range", "a", "m", false, false, false, 0, 0},
+		{"end_past_maxReadKey", "a", "\xff\xff\xff", false, false, false, 0, 2004},
+		// Inverted wins over maxKey: begin>end AND both past maxKey → inverted_range (2005), from the
+		// calling thread and never deferred.
+		{"inverted_beats_maxKey", "\xff\xff\xff\xff", "\xff\xff\xff", false, false, false, 2005, 0},
 		// metadataVersionKey EXACT range is exempt (read path only).
-		{"mvk_exact_exception", mvk, mvkEnd, false, false, 0},
+		{"mvk_exact_exception", mvk, mvkEnd, false, false, false, 0, 0},
 		// metadataVersionKey non-exact end is NOT exempt → 2004 (still past maxReadKey).
-		{"mvk_non_exact", mvk, "\xff/metadataVersionZZ", false, false, 2004},
+		{"mvk_non_exact", mvk, "\xff/metadataVersionZZ", false, false, false, 0, 2004},
 		// READ_SYSTEM_KEYS raises maxReadKey to \xff\xff → an endpoint in (\xff, \xff\xff] is in range.
-		{"readsys_allows_system_endpoint", "a", "\xff\x05", true, false, 0},
+		{"readsys_allows_system_endpoint", "a", "\xff\x05", true, false, false, 0, 0},
+		// The key form is the range [k, k\x00): k == maxReadKey is illegal through its end.
+		{"key_in_range", "a", "a\x00", false, false, true, 0, 0},
+		{"key_at_maxReadKey", "\xff", "\xff\x00", false, false, true, 0, 2004},
+		{"key_mvk_exception", mvk, mvkEnd, false, false, true, 0, 0},
+		{"key_readsys_allows_system_key", "\xff\x05", "\xff\x05\x00", true, false, true, 0, 0},
+		{"key_readsys_at_maxReadKey", "\xff\xff", "\xff\xff\x00", true, false, true, 0, 2004},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -164,9 +172,21 @@ func TestAddReadConflictRange_Validation(t *testing.T) {
 			tx := newTestTx()
 			tx.readSystemKeys = c.readSys
 			tx.writeSystemKeys = c.writeSys
-			got := crCode(t, tx.AddReadConflictRange([]byte(c.begin), []byte(c.end)))
+			got := 0
+			if c.key {
+				tx.AddReadConflictKey([]byte(c.begin))
+			} else {
+				got = crCode(t, tx.AddReadConflictRange([]byte(c.begin), []byte(c.end)))
+			}
 			if got != c.want {
 				t.Errorf("AddReadConflictRange(%q,%q): code=%d, want %d", c.begin, c.end, got, c.want)
+			}
+			deferred := 0
+			if e := tx.deferredErr.Load(); e != nil {
+				deferred = e.Code
+			}
+			if deferred != c.deferred {
+				t.Errorf("AddReadConflict(%q,%q): deferred code=%d, want %d", c.begin, c.end, deferred, c.deferred)
 			}
 		})
 	}

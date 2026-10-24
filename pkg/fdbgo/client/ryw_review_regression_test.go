@@ -522,6 +522,212 @@ func TestAddWriteConflictRangePreservesDeferredOrder(t *testing.T) {
 	}
 }
 
+// libfdb_c returns success from add_conflict_range and records RYW addReadConflictRange's
+// key_outside_legal_range as the deferred error (ThreadSafeTransaction.cpp:589-594; check at
+// ReadYourWrites.actor.cpp:1950-1955). The key form is the same call over [k, k\x00)
+// (bindings/go/src/fdb/transaction.go:548-554).
+func TestAddReadConflictRangeLegalRangeIsDeferred(t *testing.T) {
+	t.Parallel()
+	mvk, mvkEnd := string(metadataVersionKeyBytes), string(metadataVersionKeyEndBytes)
+	type add struct {
+		begin, end string
+		key        bool
+	}
+	var adds []add
+	for _, r := range [][2]string{
+		{"b", "c"},
+		{"b", "\xff"},
+		{"\xff", "\xff"},
+		{"b", "\xff\x05"},
+		{"\xff", "\xff\x05"},
+		{"b", "\xff\xff"},
+		{"b", "\xff\xff\x00"},
+		{"\xff\xffx", "\xff\xffy"},
+		{mvk, mvkEnd},
+		{mvk, mvk + "Z"},
+	} {
+		adds = append(adds, add{r[0], r[1], false})
+	}
+	for _, k := range []string{"", "k", "\xfe\xff", "\xff", "\xff\x05", "\xff\xff", "\xff\xffx", mvk} {
+		adds = append(adds, add{k, k + "\x00", true})
+	}
+	for _, mode := range []string{"user", "read-system", "access-system"} {
+		for _, a := range adds {
+			form := "range"
+			if a.key {
+				form = "key"
+			}
+			t.Run(fmt.Sprintf("%s/%s/%x-%x", mode, form, a.begin, a.end), func(t *testing.T) {
+				t.Parallel()
+				tx := &Transaction{}
+				maxRead := "\xff"
+				if mode == "read-system" {
+					tx.SetReadSystemKeys()
+					maxRead = "\xff\xff"
+				} else if mode == "access-system" {
+					tx.SetAccessSystemKeys()
+					maxRead = "\xff\xff"
+				}
+				tx.Set([]byte("a"), []byte("v"))
+				conflicts := len(tx.readConflicts)
+				if a.key {
+					tx.AddReadConflictKey([]byte(a.begin))
+				} else if err := tx.AddReadConflictRange([]byte(a.begin), []byte(a.end)); err != nil {
+					t.Fatalf("AddReadConflictRange returned %v, want nil (the error is deferred)", err)
+				}
+				illegal := (a.begin > maxRead || a.end > maxRead) && !(a.begin == mvk && a.end == mvkEnd)
+				_, err := tx.StartGetKey(context.Background(), firstGreaterOrEqual([]byte("a"))).Get()
+				if illegal {
+					if code, _ := fdbErrorCode(err); code != 2004 {
+						t.Fatalf("next GetKey = %v, want deferred key_outside_legal_range", err)
+					}
+					if len(tx.readConflicts) != conflicts {
+						t.Fatal("illegal read-conflict range was recorded")
+					}
+					if code, _ := fdbErrorCode(tx.Commit(context.Background())); code != 2004 {
+						t.Fatalf("Commit code %d, want deferred 2004", code)
+					}
+				} else {
+					if err != nil {
+						t.Fatalf("legal read-conflict range poisoned next GetKey: %v", err)
+					}
+					// The added range does not touch the self-written "a", so the RYW filter keeps
+					// it whole; an empty one records nothing (RYW:1973-1975).
+					want := []KeyRange{}
+					if a.begin < a.end {
+						want = []KeyRange{{Begin: []byte(a.begin), End: []byte(a.end)}}
+					}
+					if got := tx.readConflicts[conflicts:]; fmt.Sprintf("%q", got) != fmt.Sprintf("%q", want) {
+						t.Fatalf("legal read conflict recorded %q, want %q", got, want)
+					}
+				}
+			})
+		}
+	}
+}
+
+// inverted_range comes from the KeyRangeRef built on the calling thread (fdb_c.cpp:1223,
+// FDBTypes.h:318-323), so it is returned by the call even after a deferred error and never deferred.
+func TestAddReadConflictRangeInvertedIsImmediate(t *testing.T) {
+	t.Parallel()
+	tx := &Transaction{}
+	tx.Set([]byte("a"), []byte("v"))
+	conflicts := len(tx.readConflicts)
+	if code, _ := fdbErrorCode(tx.AddReadConflictRange([]byte("c"), []byte("b"))); code != 2005 {
+		t.Fatalf("inverted range code %d, want inverted_range (2005) from the call", code)
+	}
+	if tx.deferredErr.Load() != nil || len(tx.readConflicts) != conflicts {
+		t.Fatal("inverted range was deferred or recorded")
+	}
+	if _, err := tx.StartGetKey(context.Background(), firstGreaterOrEqual([]byte("a"))).Get(); err != nil {
+		t.Fatalf("inverted range was deferred: next GetKey = %v", err)
+	}
+	if err := tx.AddReadConflictRange([]byte("b"), []byte("\xff\xff")); err != nil {
+		t.Fatalf("illegal range returned %v, want nil", err)
+	}
+	if code, _ := fdbErrorCode(tx.AddReadConflictRange([]byte("\xff\xff\xff"), []byte("\xff\xff"))); code != 2005 {
+		t.Fatalf("inverted range after a deferred error: code %d, want 2005 from the call", code)
+	}
+	if code, _ := fdbErrorCode(tx.Commit(context.Background())); code != 2004 {
+		t.Fatalf("Commit code %d, want the first deferred error, key_outside_legal_range (2004)", code)
+	}
+}
+
+func TestAddReadConflictRangePreservesDeferredOrder(t *testing.T) {
+	t.Parallel()
+	for _, key := range []bool{false, true} {
+		t.Run(fmt.Sprintf("key=%t", key), func(t *testing.T) {
+			t.Parallel()
+			tx := &Transaction{}
+			tx.Set(bytes.Repeat([]byte("k"), 10001), []byte("v"))
+			if key {
+				tx.AddReadConflictKey([]byte("\xff\xffx"))
+			} else if err := tx.AddReadConflictRange([]byte("\xff\xffx"), []byte("\xff\xffy")); err != nil {
+				t.Fatalf("illegal range returned %v, want nil", err)
+			}
+			conflicts := len(tx.readConflicts)
+			if key {
+				tx.AddReadConflictKey([]byte("b"))
+			} else if err := tx.AddReadConflictRange([]byte("b"), []byte("c")); err != nil {
+				t.Fatalf("legal range after a deferred error returned %v, want nil", err)
+			}
+			if len(tx.readConflicts) != conflicts {
+				t.Fatal("a read-conflict range executed after a deferred error")
+			}
+			if code, _ := fdbErrorCode(tx.Commit(context.Background())); code != 2102 {
+				t.Fatalf("earlier oversized Set lost to conflict-range error: code %d, want key_too_large (2102)", code)
+			}
+		})
+	}
+}
+
+// The key form is addReadConflictRange over [k, k\x00): it records what the range form records,
+// including nothing for a key the size clamp (ReadYourWrites.actor.cpp:1962-1975) empties.
+func TestAddReadConflictKeyMatchesRangeForm(t *testing.T) {
+	t.Parallel()
+	limit := getMaxClearKeySize([]byte("k"))
+	sysLimit := getMaxClearKeySize([]byte("\xff"))
+	keys := map[string][]byte{
+		"empty":           {},
+		"user":            []byte("k"),
+		"self_written":    []byte("w"),
+		"at_limit":        bytes.Repeat([]byte("k"), limit),
+		"over_limit":      bytes.Repeat([]byte("k"), limit+1),
+		"far_over_limit":  bytes.Repeat([]byte("k"), 2*limit),
+		"system":          []byte("\xff\x05"),
+		"sys_at_limit":    append([]byte("\xff\x05"), bytes.Repeat([]byte("s"), sysLimit-2)...),
+		"sys_over_limit":  append([]byte("\xff\x05"), bytes.Repeat([]byte("s"), sysLimit-1)...),
+		"max_read_key":    []byte("\xff\xff"),
+		"metadataVersion": metadataVersionKeyBytes,
+	}
+	for name, k := range keys {
+		for _, mode := range []string{"user", "read-system", "access-system"} {
+			for _, rywDisabled := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%s/rywDisabled=%t", name, mode, rywDisabled), func(t *testing.T) {
+					t.Parallel()
+					var txs [2]*Transaction
+					for i := range txs {
+						tx := &Transaction{}
+						if mode == "read-system" {
+							tx.SetReadSystemKeys()
+						} else if mode == "access-system" {
+							tx.SetAccessSystemKeys()
+						}
+						tx.rywDisabled = rywDisabled
+						tx.Set([]byte("w"), []byte("v"))
+						txs[i] = tx
+					}
+					txs[0].AddReadConflictKey(k)
+					if err := txs[1].AddReadConflictRange(k, keyAfterBytes(k)); err != nil {
+						t.Fatalf("AddReadConflictRange: %v", err)
+					}
+					var got [2]string
+					for i, tx := range txs {
+						code := 0
+						if e := tx.deferredErr.Load(); e != nil {
+							code = e.Code
+						}
+						got[i] = fmt.Sprintf("deferred=%d conflicts=%q", code, tx.readConflicts)
+					}
+					if got[0] != got[1] {
+						t.Fatalf("key form: %s\nrange form: %s", got[0], got[1])
+					}
+					switch name {
+					case "over_limit", "far_over_limit", "sys_over_limit":
+						if len(txs[0].readConflicts) != 0 {
+							t.Fatalf("oversized key recorded %d read conflicts, want none", len(txs[0].readConflicts))
+						}
+					case "at_limit":
+						if len(txs[0].readConflicts) != 1 {
+							t.Fatalf("key at the size limit recorded %d read conflicts, want 1", len(txs[0].readConflicts))
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestGetKeyMaxSentinelConflict(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
