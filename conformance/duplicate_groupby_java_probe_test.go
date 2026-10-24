@@ -107,10 +107,9 @@ var _ = Describe("DuplicateGroupByJavaProbe", func() {
 			{"paren_twin_aggonly", "SELECT COUNT(*) FROM T_G1 GROUP BY (amount+1), amount+1", "java_42702_go_plans"},
 			{"paren_twin_proj", "SELECT amount+1, COUNT(*) FROM T_G1 GROUP BY (amount+1), amount+1", "java_42702_go_plans"},
 			{"paren_twin_having", "SELECT COUNT(*) FROM T_G1 GROUP BY (amount+1), amount+1 HAVING amount+1 > 11", "java_42702_go_plans"},
-			// The COMPARISON spelling diverges the same way, by a second and
-			// independent route: Go's gate resolves with WalkExpression
-			// (posPredicate), which will not fold a comparison to a Value at all,
-			// so identity falls to a GetText compare the parentheses defeat.
+			// The COMPARISON spelling diverges the same way: the gate resolves
+			// both keys in value context, and the parenthesised one comes back
+			// wrapped in a record constructor, as `(amount+1)` does above.
 			{"cmp_twin", "SELECT COUNT(*) FROM T_G1 GROUP BY (amount=1), amount=1", "java_42702_go_plans"},
 			// THE CONTROLS that keep the three above honest: with the spellings
 			// made to coincide, Go's gate DOES refuse, so what is pinned is the

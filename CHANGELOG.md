@@ -51,6 +51,14 @@ Each is described in full under Compatibility or Changed below.
   `FindRegisteredMessageType` is replaced by `GeneratedMessageType` (#842).
 - **SQL driver:** an unknown DSN parameter, or a DSN boolean other than `true`/`false`, fails at
   open with 22023 (#799).
+- **SQL driver transactions (RFC-272):** `TxOptions{ReadOnly: true}` is refused with 0A000 (it
+  was ignored). Inside an explicit transaction a statement whose context ends (its deadline, a
+  cancel, the statement timeout) cancels the FDB transaction: the statement returns the context's
+  error and the transaction is over, so later statements and `Commit` return 25F01. The
+  `BeginTx` context now bounds the transaction (`DIVERGENCES.md`).
+- **Go API:** `functions.ApplyMathOp`, `ApplyBitOp`, `IsTruthy`, `LiteralMatchesPKKind`,
+  `ToIntegerArg`, `ToFloat64` and `AddInt64Checked`/`SubInt64Checked`/`MulInt64Checked` are
+  removed; nothing outside their tests called them (RFC-272).
 - **Go API moves:** the gomock mocks moved to `pkg/relational/api/apimock` (#810), the demo protos
   to `fdb.dev/gen/demopb` (#842), and index-predicate normalization, the plan walkers and the
   R-tree to `pkg/recordlayer/indexpredicate`, `pkg/recordlayer/query/plan/plans` and
@@ -303,6 +311,25 @@ Each is described in full under Compatibility or Changed below.
 - `fdb` `GetRange` sends its first batch at the call, as Apple's Go binding does: the rows reflect the transaction's writes as of that call, and commit waits for every issued range read (also one never consumed) and keeps its read conflict, as libfdb_c does. `GetSliceWithError` over more than batch 1's bytes (about 4 KB in the default mode) now takes two sequential round trips, batch 1 and then the rest, as libfdb_c does. `client.Transaction.StartGetRange` starts such a read and returns at once; `Database.Metrics()` (on `fdb.Database` too) reports `TransactionGetRangeRequests`. A watch whose read fails no longer leaves a read conflict.
 
 ### Fixed
+- SQL driver (RFC-272): a failed connector initialization (an FDB open failure, or a first
+  `Connect` whose context ended) is retried by the next `Connect` instead of failing the
+  `*sql.DB` for good. `ResetSession` also resets the statement timeout, result-byte cap,
+  fail-on-scan-limit flag, plan and execution-stats loggers and slow-query threshold, so a
+  pooled connection's next borrower no longer inherits them. A panic in any exported connection,
+  transaction, result-set or DirectAccess entry is the internal error (XX000) and closes the
+  connection, which the pool then discards. A stale `driver.Tx` no longer ends the newer
+  transaction on its connection, and `Commit` on an ended transaction is 25F01 instead of a
+  second commit. A self-returning `driver.Valuer` (or any cycle through Valuers, pointers and
+  arrays) is 22023 instead of a stack overflow. Parentheses inside string literals, quoted
+  identifiers and comments no longer count toward the 500-level nesting limit. Per-borrow
+  options belong in `SetOption`: `SetOptions` sets what `ResetSession` restores, so code that
+  copied the earlier `docs/mt-saas.md` recipe (`SetOptions` per tenant borrow) hands one
+  borrow's options to the next borrower; the recipe now uses `SetOption`.
+- GROUP BY duplicate-key detection (42702) compares expression keys by their resolved value in
+  value context, as Java does: keys differing only in literal case or bound value are two keys
+  (`GROUP BY c = 'a', c = 'A'` was refused), `<>`/`!=` and comparison duplicates are still
+  refused, and a key that does not resolve reports its own error (42703 for an undefined column)
+  instead of 42702 (RFC-272).
 - Built-in TEXT tokenization, casing/name lookup and Go-only collated keys use frozen Unicode-15 data, so compiler upgrades preserve existing terms, positions and keys; pre-existing Java differences remain explicit in `docs/compatibility.md` (RFC-265).
 - Ordinary, covering and fetch query index scans over one physical range pass Skip to the index cursor, as Java's plans do: skipped entries no longer count against scan-record or byte limits, and their records are not loaded. Multi-range and residual key-filter scans, and the mapped reads of remote-fetch plans, still skip once above the combined cursor.
 - Range-read shard lookups ask a commit proxy once for the shards a read needs, as libfdb_c does, instead of filling the cache for the whole range first; a reverse read over more uncached shards than one lookup returns no longer repeats the same location request until its deadline, and `GetLocations` with a limit of 0 returns every shard.

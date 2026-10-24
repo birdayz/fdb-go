@@ -808,7 +808,14 @@ func NewFDBRecordContext(tx fdb.WritableTransaction, env *dst.Env) *FDBRecordCon
 // the identical failure for instrumentation, where the symptom is even quieter (a metric
 // that reads zero looks exactly like a workload that did nothing).
 func (d *FDBDatabase) NewRecordContext(tx fdb.WritableTransaction) *FDBRecordContext {
+	return d.NewRecordContextIn(context.Background(), tx)
+}
+
+// NewRecordContextIn is NewRecordContext with ctx as the context's Context(),
+// which bounds the reads and child transactions that take it from there.
+func (d *FDBDatabase) NewRecordContextIn(ctx context.Context, tx fdb.WritableTransaction) *FDBRecordContext {
 	rc := NewFDBRecordContext(tx, d.Env())
+	rc.ctx = ctx
 	rc.SetTimer(d.Timer())
 	rc.database = d
 	return rc

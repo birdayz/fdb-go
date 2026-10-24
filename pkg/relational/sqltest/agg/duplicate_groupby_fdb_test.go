@@ -84,6 +84,49 @@ func TestFDB_DuplicateGroupBy(t *testing.T) {
 		}
 	})
 
+	// Comparison keys resolve in value context, as Java resolves every
+	// grouping item, and compare by value: a duplicate spelled differently is
+	// refused, keys that differ only in literal case or bound value are two
+	// keys, and a key that does not resolve fails on its own error.
+	t.Run("comparison keys compare by resolved value", func(t *testing.T) {
+		t.Parallel()
+		for _, q := range []string{
+			`SELECT COUNT(*) FROM t1 GROUP BY amount = 1, AMOUNT = 1`,
+			`SELECT COUNT(*) FROM t1 GROUP BY amount <> 1, amount != 1`,
+		} {
+			var apiErr *api.Error
+			if _, err := db.QueryContext(ctx, q); !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeAmbiguousColumn {
+				t.Errorf("%s: expected 42702 AMBIGUOUS_COLUMN, got %v", q, err)
+			}
+		}
+		for _, c := range []struct {
+			q    string
+			args []any
+			want int
+		}{
+			{`SELECT COUNT(*) FROM t1 GROUP BY category = 'a', category = 'A'`, nil, 2},
+			{`SELECT COUNT(*) FROM t1 GROUP BY amount = ?, amount = ?`, []any{int64(10), int64(20)}, 3},
+		} {
+			rows, err := db.QueryContext(ctx, c.q, c.args...)
+			if err != nil {
+				t.Errorf("%s: %v, want %d groups", c.q, err, c.want)
+				continue
+			}
+			n := 0
+			for rows.Next() {
+				n++
+			}
+			if err := rows.Err(); err != nil || n != c.want {
+				t.Errorf("%s: %d groups (err %v), want %d", c.q, n, err, c.want)
+			}
+			rows.Close()
+		}
+		var apiErr *api.Error
+		if _, err := db.QueryContext(ctx, `SELECT COUNT(*) FROM t1 GROUP BY nosuch + 1, nosuch + 1`); !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeUndefinedColumn {
+			t.Errorf("duplicate key over an undefined column: %v, want 42703", err)
+		}
+	})
+
 	t.Run("distinct expressions still group", func(t *testing.T) {
 		t.Parallel()
 		rows, err := db.QueryContext(ctx,

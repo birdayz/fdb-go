@@ -21,6 +21,7 @@ var driverTestFiles = []string{
 	"clusterfile_lookup_test.go",
 	"column_metadata_probe_test.go",
 	"connector_dsn_freeze_test.go",
+	"connector_init_retry_test.go",
 	"driver_test.go",
 	"dsn_ddl_scope_option_test.go",
 	"dsn_execution_test.go",

@@ -43,7 +43,9 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"log/slog"
 	"os"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 
@@ -200,8 +202,9 @@ func (d *Driver) OpenConnector(name string) (driver.Connector, error) {
 }
 
 // Connector holds a parsed DSN and produces connections on demand.
-// The FDB database, keyspace, and factory are initialised lazily on
-// the first Connect call. The catalog Bootstrap (Initialize) is deferred
+// The FDB database, keyspace, and factory are initialised lazily by the
+// first Connect that succeeds in doing so; a failed initialization is retried
+// by the next Connect. The catalog Bootstrap (Initialize) is deferred
 // further — it runs inside the first DDL transaction, not at Connect time.
 type Connector struct {
 	driver *Driver
@@ -211,7 +214,7 @@ type Connector struct {
 	// connect-time failure. Never nil.
 	connOpts *api.Options
 
-	once    sync.Once
+	init    initFlight
 	fdbDB   *recordlayer.FDBDatabase
 	cat     *catalog.RecordLayerStoreCatalog
 	ks      *keyspace.RelationalKeyspace
@@ -222,10 +225,57 @@ type Connector struct {
 	planCache *embedded.RelationalPlanCache
 	// warmUp is the stored-query warm-up's outcome (Java's
 	// OFFLINE_STORED_QUERIES_* counts). Atomic because StoredQueryWarmUp is a
-	// public accessor a caller may poll while another goroutine's first
-	// Connect is still inside once.Do; nil until initialize stores it.
-	warmUp  atomic.Pointer[embedded.StoredQueryWarmUpCounts]
-	initErr error
+	// public accessor a caller may poll while another goroutine's Connect is
+	// still initializing; nil until initialize stores it.
+	warmUp atomic.Pointer[embedded.StoredQueryWarmUpCounts]
+}
+
+// initFlight runs an initialization until it succeeds once: one caller runs
+// it while concurrent callers wait, each on its own context; a failure goes
+// to the caller that ran the attempt, and the next caller tries again.
+type initFlight struct {
+	mu      sync.Mutex
+	done    bool
+	running chan struct{} // closed when the running attempt ends; nil when none runs
+}
+
+func (f *initFlight) do(ctx context.Context, init func(context.Context) error) error {
+	for {
+		f.mu.Lock()
+		if f.done {
+			f.mu.Unlock()
+			return nil
+		}
+		if wait := f.running; wait != nil {
+			f.mu.Unlock()
+			select {
+			case <-wait:
+				continue
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		wait := make(chan struct{})
+		f.running = wait
+		f.mu.Unlock()
+		return f.attempt(ctx, wait, init)
+	}
+}
+
+// attempt runs init and publishes its outcome, also when init panics, so no
+// waiter is left blocked.
+func (f *initFlight) attempt(ctx context.Context, wait chan struct{}, init func(context.Context) error) error {
+	succeeded := false
+	defer func() {
+		f.mu.Lock()
+		f.done = succeeded
+		f.running = nil
+		f.mu.Unlock()
+		close(wait)
+	}()
+	err := init(ctx)
+	succeeded = err == nil
+	return err
 }
 
 // StoredQueryWarmUp returns what the connector's start planned into its plan
@@ -238,9 +288,20 @@ func (c *Connector) StoredQueryWarmUp() embedded.StoredQueryWarmUpCounts {
 	return embedded.StoredQueryWarmUpCounts{}
 }
 
-// Connect opens a connection. Honors ctx.Done() for cancellation.
-// On first call, initialises the FDB database and catalog (idempotent).
-func (c *Connector) Connect(ctx context.Context) (driver.Conn, error) {
+// Connect opens a connection. Honors ctx.Done() for cancellation, also while
+// it waits for another Connect's initialization. Until one initialization
+// succeeds, each Connect runs or waits for one (initFlight).
+func (c *Connector) Connect(ctx context.Context) (_ driver.Conn, err error) {
+	// A panic while initializing is the connection layer's internal error, as
+	// at the embedded connection's entry points; initFlight has already
+	// released any waiters, and the next Connect initializes again.
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Default().Error("recovered panic opening an SQL connection",
+				"panic", r, "stack", string(debug.Stack()))
+			err = api.NewError(api.ErrCodeInternalError, "internal error")
+		}
+	}()
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -248,9 +309,8 @@ func (c *Connector) Connect(ctx context.Context) (driver.Conn, error) {
 		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
 			"remote (gRPC) mode is not yet implemented")
 	}
-	c.once.Do(func() { c.initErr = c.initialize(ctx) })
-	if c.initErr != nil {
-		return nil, c.initErr
+	if err := c.init.do(ctx, c.initialize); err != nil {
+		return nil, err
 	}
 	conn := embedded.New(c.dsn.Path, c.fdbDB, c.cat, c.factory, c.ks)
 	conn.SetOptions(c.connOpts)
@@ -324,6 +384,11 @@ func (c *Connector) initialize(ctx context.Context) error {
 	// never returned.
 	warmUp := embedded.WarmStoredQueries(ctx, c.planCache,
 		embedded.StoredQueryTemplates(ctx, c.fdbDB, c.cat))
+	// The warm-up logs its failures instead of returning them, so a warm-up
+	// cut short by this caller's context would otherwise be kept for good.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	c.warmUp.Store(&warmUp)
 	return nil
 }

@@ -86,6 +86,11 @@ func bindStatementParameters(tree antlr.Tree, args []driver.NamedValue) (func(),
 			if errors.As(err, &unsupported) {
 				return api.NewErrorf(api.ErrCodeInvalidParameter, "parameter %s has unsupported type %T", param, raw)
 			}
+			var tooDeep *parameterNestingError
+			if errors.As(err, &tooDeep) {
+				return api.NewErrorf(api.ErrCodeInvalidParameter,
+					"parameter %s nests Valuer results, pointers or arrays more than %d levels deep", param, maxParameterNesting)
+			}
 			var overflow *timeOutOfDomainParameterError
 			if errors.As(err, &overflow) {
 				return api.NewErrorf(api.ErrCodeDatetimeFieldOverflow,
@@ -174,10 +179,23 @@ func writeBindingKey(b *strings.Builder, v any) {
 // its element type, and nil an untyped NULL. Known types, and pointers to
 // them, are typed before any Valuer, whose Value would erase their lane.
 func parameterConstant(raw any) (values.Value, error) {
+	return nestedParameterConstant(raw, 0)
+}
+
+// maxParameterNesting bounds the Valuer results, pointers and array elements
+// typing one parameter may pass through, so a Valuer that returns itself (or
+// any cycle) is an error rather than a goroutine stack overflow.
+const maxParameterNesting = 32
+
+// nestedParameterConstant is parameterConstant at nesting depth.
+func nestedParameterConstant(raw any, depth int) (values.Value, error) {
+	if depth > maxParameterNesting {
+		return nil, &parameterNestingError{}
+	}
 	if raw == nil {
 		return values.NewNullValue(values.NullType), nil
 	}
-	if v, ok, err := knownParameter(raw); ok {
+	if v, ok, err := knownParameter(raw, depth); ok {
 		return v, err
 	}
 	rv := reflect.ValueOf(raw)
@@ -185,7 +203,7 @@ func parameterConstant(raw any) (values.Value, error) {
 		if rv.IsNil() {
 			return values.NewNullValue(values.NullType), nil
 		}
-		return parameterConstant(rv.Elem().Interface())
+		return nestedParameterConstant(rv.Elem().Interface(), depth+1)
 	}
 	if vr, ok := raw.(driver.Valuer); ok {
 		// As database/sql answers: a nil pointer whose Value has a value
@@ -201,14 +219,14 @@ func parameterConstant(raw any) (values.Value, error) {
 		if i, ok := dv.(int64); ok {
 			return intParameter(i), nil
 		}
-		return parameterConstant(dv)
+		return nestedParameterConstant(dv, depth+1)
 	}
 	switch rv.Kind() {
 	case reflect.Pointer:
 		if rv.IsNil() {
 			return values.NewNullValue(values.NullType), nil
 		}
-		return parameterConstant(rv.Elem().Interface())
+		return nestedParameterConstant(rv.Elem().Interface(), depth+1)
 	case reflect.Int32:
 		return &values.ConstantValue{Value: rv.Int(), Typ: values.NotNullInt}, nil
 	case reflect.Int64:
@@ -242,7 +260,7 @@ func parameterConstant(raw any) (values.Value, error) {
 			reflect.Copy(reflect.ValueOf(b), rv)
 			return &values.ConstantValue{Value: b, Typ: values.NotNullBytes}, nil
 		}
-		return arrayParameter(rv)
+		return arrayParameter(rv, depth)
 	}
 	return nil, &unsupportedParameterError{}
 }
@@ -252,7 +270,7 @@ var valuerType = reflect.TypeFor[driver.Valuer]()
 // knownParameter types the values a Valuer would misreport: a UUID (its Value
 // is text), a time, a VECTOR, and database/sql's null wrappers, typed by their
 // payload (an invalid one is an untyped NULL).
-func knownParameter(raw any) (values.Value, bool, error) {
+func knownParameter(raw any, depth int) (values.Value, bool, error) {
 	switch v := raw.(type) {
 	case uuid.UUID:
 		return &values.ConstantValue{Value: [16]byte(v), Typ: values.NotNullUuid}, true, nil
@@ -270,7 +288,7 @@ func knownParameter(raw any) (values.Value, bool, error) {
 		if !valid {
 			return values.NewNullValue(values.NullType), true, nil
 		}
-		v, err := parameterConstant(payload)
+		v, err := nestedParameterConstant(payload, depth+1)
 		return v, true, err
 	}
 	return nil, false, nil
@@ -320,6 +338,12 @@ type unsupportedParameterError struct{}
 
 func (*unsupportedParameterError) Error() string { return "unsupported parameter type" }
 
+// parameterNestingError marks a value nested past maxParameterNesting; the
+// binder reports it as 22023 naming the parameter.
+type parameterNestingError struct{}
+
+func (*parameterNestingError) Error() string { return "parameter nesting too deep" }
+
 // timeOutOfDomainParameterError marks a time whose UTC year is outside
 // 0000-9999; the binder reports it as 22008 naming the parameter.
 type timeOutOfDomainParameterError struct{ instant string }
@@ -348,7 +372,7 @@ func intParameter(i int64) values.Value {
 // static type is the untyped empty array (NONE), which any array column
 // accepts. A NULL element is refused, as every ARRAY element is; a directly
 // nested array is not supported.
-func arrayParameter(rv reflect.Value) (values.Value, error) {
+func arrayParameter(rv reflect.Value, depth int) (values.Value, error) {
 	static, err := staticElementType(rv.Type().Elem())
 	if err != nil {
 		return nil, err
@@ -356,7 +380,7 @@ func arrayParameter(rv reflect.Value) (values.Value, error) {
 	elems := make([]any, rv.Len())
 	var types []values.Type
 	for i := range elems {
-		ev, err := parameterConstant(rv.Index(i).Interface())
+		ev, err := nestedParameterConstant(rv.Index(i).Interface(), depth+1)
 		if err != nil {
 			return nil, err
 		}

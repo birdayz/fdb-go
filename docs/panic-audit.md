@@ -81,8 +81,9 @@ allowlist (file → permitted AST count). Keep the two in sync.
 | `pkg/fdbgo/fdb/transaction.go` | 1 | `Transact` closure boundary |
 | `pkg/fdbgo/libfdbc/backend.go` | 1 | cgo libfdb_c backend: translate cgo/callback panics to Go errors (`cgo && libfdbc` only) |
 | `pkg/relational/core/parser/parser.go` | 4 | ANTLR bailout panic → syntax error |
-| `pkg/relational/core/embedded/connection.go` | 2 | public SQL connection API: panic → SQL error |
+| `pkg/relational/core/embedded/connection.go` | 3 | public SQL connection API: panic → SQL error (`ExecContext`, `QueryContext`, and `recoverInto`, which every other exported connection, transaction, result-set and DirectAccess entry defers) |
 | `pkg/relational/core/embedded/cascades_generator.go` | 1 | executor eval bridge: panic → SQL error |
+| `pkg/relational/sqldriver/driver.go` | 1 | `Connector.Connect`: a panic initializing the connector → SQL internal error; the next `Connect` initializes again |
 | `pkg/recordlayer/merge_cursor.go` | 1 | `tuple.Pack()` on user-derived comparison keys → cursor error |
 | `pkg/recordlayer/query/plan/cascades/values/required_bindings.go` | 1 | RFC-232 binding admission: a hostile implementation of the open `Value` interface → typed `LayoutForeignValue` error |
 | `cmd/fdb-stacktester/directory_ops.go` | 1 | binding-tester harness binary (cgo-dependent build) |

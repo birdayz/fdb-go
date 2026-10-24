@@ -42,13 +42,17 @@ func configureTenantConn(driverConn any) error {
 	if !ok {
 		return fmt.Errorf("not an embedded connection: %T", driverConn)
 	}
-	ec.SetOptions(api.NewOptionsBuilder().
-		Set(api.OptMaxRows, int64(10_000)).                    // egress cap
-		Set(api.OptExecutionScannedRowsLimit, int64(500_000)). // per page
-		Set(api.OptExecutionScannedBytesLimit, int64(64<<20)). // per page
-		Set(api.OptExecutionTimeLimit, int64(2_000)).          // millis, narrows the 4s cap
-		Set(api.OptMaxStatementMemoryBytes, int64(256<<20)).   // statement-wide
-		Build())
+	for name, value := range map[api.OptionName]any{
+		api.OptMaxRows:                    int64(10_000),    // egress cap
+		api.OptExecutionScannedRowsLimit:  int64(500_000),   // per page
+		api.OptExecutionScannedBytesLimit: int64(64 << 20),  // per page
+		api.OptExecutionTimeLimit:         int64(2_000),     // millis, narrows the 4s cap
+		api.OptMaxStatementMemoryBytes:    int64(256 << 20), // statement-wide
+	} {
+		if err := ec.SetOption(name, value); err != nil {
+			return err
+		}
+	}
 	ec.SetFailOnScanLimitReached(true) // without this the scan limits only paginate
 	ec.SetStatementTimeout(30 * time.Second)
 	ec.SetMaxResultBytes(32 << 20)
@@ -132,6 +136,11 @@ func TestMTSaaSDocSnippetsCompile(t *testing.T) {
 	_ = installPlanLogger
 	_ = retainClientDatabaseForMetrics
 	_ = openTenantDB
+
+	// The §3 recipe's option values pass SetOption's contract checks.
+	if err := configureTenantConn(embedded.New("/T/1", nil, nil, nil, nil)); err != nil {
+		t.Fatalf("configureTenantConn: %v", err)
+	}
 
 	// The §2 option-set form the doc offers as the embedded.New alternative to
 	// the DSN parameter.

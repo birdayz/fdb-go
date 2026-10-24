@@ -400,9 +400,10 @@ accumulator / sumtype alternatives.
     would change the ported signature). Switching here would *diverge* from the Apple Go binding
     (a client-spec violation), so parity wins. `panicToError` is the documented boundary.
 - [x] **P0.3-F — fuzz net** (`M`) — DONE. The eval/value layer (where panics actually hide) was
-  already well-fuzzed: `embedded_test.go` has `FuzzApplyMathOp`, `FuzzApplyBitOp`,
-  `FuzzCompareValues`, `FuzzCastValue`, `FuzzLikePrefixStrinc`, `FuzzLikePatternToPrefix`; `values/`
-  has `FuzzSimplifyValue_ArithmeticTree`/`_CastChain`, `FuzzAndOrValue_Kleene3VL`,
+  already well-fuzzed: `embedded_test.go` has `FuzzCompareValues` (its `FuzzApplyMathOp` and
+  `FuzzApplyBitOp` were removed in RFC-272 with the test-only `functions` helpers they fuzzed;
+  SQL arithmetic is `values.ArithmeticValue`); `values/` has `FuzzCastValue_ScalarInvariants`,
+  `FuzzSimplifyValue_ArithmeticTree`/`_CastChain`, `FuzzAndOrValue_Kleene3VL`,
   `FuzzCaseExpression_FirstMatchWins`, etc. The remaining **SQL-string → no-panic** gap is now
   closed by a complementary pair (2026-06-24):
   - **`FuzzSQLPlan`** (`pkg/relational/core/embedded`) — SQL string → parse → semantic analysis →

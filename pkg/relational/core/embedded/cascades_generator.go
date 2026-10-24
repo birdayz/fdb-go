@@ -1538,7 +1538,7 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 	// page. The captured transaction and ownership are separate: a statement
 	// must never commit or abort an application's explicit transaction.
 	if pr.isUpdate && pr.tx == nil {
-		tx, err := c.beginTransaction()
+		tx, err := c.beginTransaction(ctx)
 		if err != nil {
 			pr.statsErr = err
 			pr.Close()
@@ -1725,8 +1725,11 @@ type paginatingRows struct {
 	bufPos       int
 	continuation []byte
 	exhausted    bool
-	closed       bool
-	fetchErr     error
+	// finished records that the caller was handed io.EOF: the statement read
+	// to its end.
+	finished bool
+	closed   bool
+	fetchErr error
 
 	// tx is either the explicit transaction that was open when Execute ran, the
 	// statement-owned auto-commit DML transaction, or nil for auto-commit SELECT.
@@ -1782,15 +1785,24 @@ func (r *paginatingRows) detachTxCancellation() {
 	}
 }
 
-func (r *paginatingRows) Close() error {
+func (r *paginatingRows) Close() (err error) {
+	defer r.conn.recoverInto(&err)
 	if r.closed {
 		return nil
 	}
 	r.closed = true
 	r.detachTxCancellation()
-	if r.ownsTx && !r.tx.terminated.Load() {
-		// Commit terminates on every outcome, including ambiguity. Reaching
-		// this arm means execution ended before commit and must be aborted.
+	if r.tx != nil && !r.ownsTx && !r.finished && r.ctx.Err() != nil {
+		// The statement's context ended before its result set was read to the
+		// end. database/sql closes the rows itself then, so no later page
+		// (runInCapturedTx) would see the context; ending the transaction
+		// here keeps the outcome independent of when the deadline landed.
+		r.tx.abort(r.ctx)
+	}
+	if r.ownsTx {
+		// Execution ended before commit (abort it) or after it (Rollback then
+		// only releases it from the connection, as it does after a context
+		// ended it).
 		if err := r.tx.Rollback(); err != nil {
 			r.statsErr = errors.Join(r.statsErr, err)
 		}
@@ -1883,6 +1895,7 @@ func (r *paginatingRows) Next(dest []driver.Value) (err error) {
 	defer func() {
 		if rec := recover(); rec != nil {
 			err = recoveredPanicError(rec)
+			r.conn.poison()
 		}
 		// RFC-211: stage whatever ended this statement for the record Close
 		// emits. io.EOF is exhaustion, not failure. Registered in the SAME
@@ -1901,6 +1914,7 @@ func (r *paginatingRows) Next(dest []driver.Value) (err error) {
 	// setMaxRows semantics. SQL LIMIT is no longer applied here; it is the
 	// RecordQueryLimitPlan operator's job inside the plan (RFC-128).
 	if r.maxRows > 0 && r.emitted >= r.maxRows {
+		r.finished = true
 		return io.EOF
 	}
 
@@ -1968,6 +1982,7 @@ func (r *paginatingRows) nextRow() ([]driver.Value, error) {
 
 	// Buffer exhausted. If source is done, we're done.
 	if r.exhausted {
+		r.finished = true
 		return nil, io.EOF
 	}
 	if r.fetchErr != nil {
@@ -1987,6 +2002,7 @@ func (r *paginatingRows) nextRow() ([]driver.Value, error) {
 			break
 		}
 		if r.exhausted {
+			r.finished = true
 			return nil, io.EOF
 		}
 	}

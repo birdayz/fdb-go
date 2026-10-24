@@ -332,19 +332,24 @@ import (
 	"fdb.dev/pkg/relational/core/embedded"
 )
 
-// configureTenantConn arms the per-statement governors on one pooled connection.
+// configureTenantConn arms the per-statement governors for one borrow of a
+// pooled connection.
 func configureTenantConn(driverConn any) error {
 	ec, ok := driverConn.(*embedded.EmbeddedConnection)
 	if !ok {
 		return fmt.Errorf("not an embedded connection: %T", driverConn)
 	}
-	ec.SetOptions(api.NewOptionsBuilder().
-		Set(api.OptMaxRows, int64(10_000)).                       // egress cap
-		Set(api.OptExecutionScannedRowsLimit, int64(500_000)).    // per page
-		Set(api.OptExecutionScannedBytesLimit, int64(64<<20)).    // per page
-		Set(api.OptExecutionTimeLimit, int64(2_000)).             // millis, narrows the 4s cap
-		Set(api.OptMaxStatementMemoryBytes, int64(256<<20)).      // statement-wide
-		Build())
+	for name, value := range map[api.OptionName]any{
+		api.OptMaxRows:                    int64(10_000),    // egress cap
+		api.OptExecutionScannedRowsLimit:  int64(500_000),   // per page
+		api.OptExecutionScannedBytesLimit: int64(64 << 20),  // per page
+		api.OptExecutionTimeLimit:         int64(2_000),     // millis, narrows the 4s cap
+		api.OptMaxStatementMemoryBytes:    int64(256 << 20), // statement-wide
+	} {
+		if err := ec.SetOption(name, value); err != nil {
+			return err
+		}
+	}
 	ec.SetFailOnScanLimitReached(true) // without this the scan limits only paginate
 	ec.SetStatementTimeout(30 * time.Second)
 	ec.SetMaxResultBytes(32 << 20)
@@ -362,15 +367,18 @@ if err := conn.Raw(configureTenantConn); err != nil {
 // ... use conn (NOT db) for this tenant's statements ...
 ```
 
-The setters are `SetOptions` (`connection.go:125`), `SetFailOnScanLimitReached` (`:132`),
-`SetStatementTimeout` (`:143`), `SetMaxResultBytes` (`:154`).
+The setters are `SetOption`, `SetFailOnScanLimitReached`, `SetStatementTimeout` and
+`SetMaxResultBytes` on `*embedded.EmbeddedConnection`.
 
-**The footgun to design around: this configures ONE pooled connection.** `Connector.Connect`
-installs only the DSN-decoded options (`pkg/relational/sqldriver/driver.go:173`), so a connection
-the pool hands you later has *not* been through `configureTenantConn`. Route tenant work through a
-helper that acquires a `*sql.Conn`, configures it, uses it, and closes it — do not issue queries on
-the `*sql.DB` directly and assume the governors are on. `SetOptions` is also not safe to call
-concurrently with execution on the same connection (`connection.go:121-123`).
+**The footgun to design around: this configures ONE borrow of ONE pooled connection.** Everything
+`configureTenantConn` sets lasts until the connection returns to the pool: `ResetSession` restores
+the connector's configuration (the DSN-decoded options and every governor off) before the next
+borrower gets it. Route tenant work through a helper that acquires a `*sql.Conn`, configures it,
+uses it, and closes it — do not issue queries on the `*sql.DB` directly and assume the governors are
+on. `SetOptions` is different: it replaces the connection's option set *including what
+`ResetSession` restores*, so what it installs reaches every later borrower; do not use it for
+per-tenant settings. None of the setters is safe to call concurrently with execution on the same
+connection.
 
 ### Statement timeout
 

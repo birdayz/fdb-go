@@ -564,18 +564,11 @@ func TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot(t *testing.T) {
 		// makes this a divergence rather than conformance, and it is pinned
 		// there in both directions.
 		//
-		// THE COMPARISON SPELLING FAILS DIFFERENTLY, and is worth pinning beside
-		// it because it is a second, independent route to the same place:
-		//
-		//   GROUP BY (c1 = 1), c1 = 1
-		//     walk[0] err=unsupported shape: *antlrgen.BinaryComparisonPredicateContext
-		//     walk[1] err=unsupported shape: *antlrgen.BinaryComparisonPredicateContext
-		//
-		// The gate resolves with WalkExpression (posPredicate), which refuses to
-		// fold a comparison to a Value, while the grouping key is MINTED with
-		// WalkExpressionForProjection (posProjection), which folds it happily.
-		// Both gate walks fail, so identity falls to the GetText token-stream
-		// compare, where "(c1=1)" and "c1=1" differ and nothing is refused.
+		// THE COMPARISON SPELLING takes the same route: the gate resolves both
+		// keys in value context with WalkExpressionForProjection, the walk that
+		// mints the grouping key, so `GROUP BY (c1 = 1), c1 = 1` compares a
+		// record-wrapped comparison with a bare one, exactly as the arithmetic
+		// pair does, and nothing is refused.
 		//
 		// NO MULTI-MATCH REACHES THE REBASE, and that is measured, not assumed.
 		// Instrumenting the first-match loop to count matching keys reports
@@ -585,24 +578,10 @@ func TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot(t *testing.T) {
 		// loop, so it binds the one correct slot. The loop's CONCLUSION holds;
 		// what does not hold is the reason previously given for it.
 		//
-		// WHICH SPELLING CAN ARM THE LOOP, stated precisely because the obvious
-		// reading is backwards. For the ARITHMETIC pair the loop can never be
-		// armed by normalizing: walkAtom dispatches RecordConstructor the same
-		// way in both positions, so any unwrap makes the GATE see AV vs AV and
-		// refuse 42702 BEFORE the loop. It is the COMPARISON pair that carries
-		// the hazard — its gate failure (posPredicate will not fold a comparison
-		// at all) is independent of the wrapper, so it survives any unwrap.
-		//
-		// And the danger is DIRECTION-ASYMMETRIC, with the naive fix landing on
-		// the wrong side:
-		//   unwrap in WalkExpressionForProjection ONLY -> gate still compares
-		//     RCV vs AV and does not refuse, while GroupKeys becomes [AV, AV] and
-		//     a reference matches BOTH — ARMED;
-		//   unwrap in WalkExpression ONLY (the gate's walk) -> gate sees AV vs AV
-		//     -> 42702 — safe;
-		//   unwrap in both, or beneath both -> safe.
-		// The projection walk is the one that mints the planner's value, so it is
-		// where someone would naturally change it. Do the loop guard first.
+		// NEITHER SPELLING CAN ARM THE LOOP by normalizing: the gate resolves
+		// each key with the walk that mints it, so an unwrap that makes the two
+		// keys equal makes the gate see them equal and refuse 42702 before the
+		// loop. Do the loop guard first all the same.
 		//
 		// BOUND AND OWNERSHIP: identical to the join divergence below. The rows
 		// are arithmetically correct, so this is conformance-only — Go answers
@@ -656,7 +635,7 @@ func TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot(t *testing.T) {
 		eq(t, "SELECT max(c2) FROM (SELECT id, c1, c2 FROM flat) t "+
 			"GROUP BY (c1 + 1), c1 + 1 HAVING c1 + 1 > 120", 1, "[[330]]", why)
 		// THE CONTROL that keeps this arm honest: with the parentheses removed
-		// the texts coincide and the refusal DOES fire, so what is pinned above
+		// the keys coincide and the refusal DOES fire, so what is pinned above
 		// is the normalization hole and not a claim that the gate never works.
 		for _, q := range []string{
 			"SELECT max(c2) FROM flat GROUP BY c1 = 1, c1 = 1",

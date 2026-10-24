@@ -1218,6 +1218,22 @@ intentional divergence at the statement layer:
 Go rejects up front to avoid a surprise write on a misused method; the plan
 path is identical to Java, only the execute-then-throw side effect differs.
 
+## Driver transactions: contexts and read-only (RFC-272)
+
+The database/sql driver follows database/sql's contract where Java's JDBC
+surface has no counterpart:
+
+| Aspect | Java (JDBC) | Go (database/sql) |
+|---|---|---|
+| Read-only transaction | `setReadOnly` is accepted and ignored, a hint (`EmbeddedRelationalConnection.java:143`) | `TxOptions{ReadOnly: true}` is refused with 0A000: database/sql requires a driver that does not enforce it to return an error |
+| Cancelling a statement | `Statement.cancel` throws UNSUPPORTED_OPERATION | A statement's context that ends before or while the statement runs in an explicit transaction cancels the FDB transaction; the statement returns the context's error and the transaction is over (later statements and `Commit` 25F01) |
+| Transaction context | none | The `BeginTx` context is used until the transaction ends; when it ends the FDB transaction is cancelled and database/sql rolls it back |
+
+An FDB operation in flight can only be interrupted by cancelling its
+transaction, and a statement cut off midway may have buffered part of its
+writes, so the transaction cannot continue; PostgreSQL aborts a transaction
+whose statement was cancelled for the second reason.
+
 ## Record Layer collation — explicit Go-only keys (target ICU 78.3)
 
 `collate_jre` and `collate_icu` evaluate to `golang.org/x/text/collate` sort keys,

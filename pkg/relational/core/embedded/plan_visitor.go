@@ -1721,13 +1721,12 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 	// above has already folded a single-source qualifier away, so column
 	// keys compare by the same post-strip identity the slot-matching loop
 	// uses (buildAggregateOutputSlots). EXPRESSION keys resolve through
-	// the semantic scope and compare by VALUE equality — key.Display is
-	// the RAW SOURCE SLICE (canonicalTextOf keeps original whitespace),
-	// so a text comparison let `GROUP BY amount+1, amount + 1` through
-	// while catching only the byte-identical spelling (measured live:
-	// Java 42702s both). When no resolver exists or a walk declines, the
-	// fallback identity is the token-concatenated GetText — token-stream
-	// equality, whitespace-invariant. Measured live
+	// the semantic scope in value context, the walk that builds the key
+	// (Java's visitGroupByItem), and compare by VALUE equality: literals
+	// and parameters by value, `<>` and `!=` alike. A key that does not
+	// resolve is no duplicate here; it fails on its own resolution error
+	// when the key is built (upgradeAggregateOperands), as in Java, which
+	// resolves every grouping item before the pull-up. Measured live
 	// (DuplicateGroupByJavaProbe): Java 42702s every duplicate shape
 	// BEFORE planning; the check therefore sits at aggregate BUILD time,
 	// not in the planner.
@@ -1745,7 +1744,7 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 				if k.bare != "" || k.expr == nil {
 					continue
 				}
-				if val, walkErr := resolver.WalkExpression(k.expr); walkErr == nil {
+				if val, walkErr := resolver.WalkExpressionForProjection(k.expr); walkErr == nil {
 					exprKeyVals[i] = val
 				}
 			}
@@ -1753,20 +1752,11 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 	}
 	for i := range keys {
 		for j := i + 1; j < len(keys); j++ {
-			same := false
-			switch {
-			case exprKeyVals[i] != nil && exprKeyVals[j] != nil:
+			same := groupKeysEquivalent(keys[i], keys[j])
+			if exprKeyVals[i] != nil && exprKeyVals[j] != nil {
 				// Both walks resolved in the SAME scope, so leaf
 				// correlations already agree — the identity alias map.
 				same = values.SemanticEqualsUnderAliasMap(exprKeyVals[i], exprKeyVals[j], nil)
-			case i < len(cls.groupBy) && j < len(cls.groupBy) &&
-				cls.groupBy[i].bare == "" && cls.groupBy[i].expr != nil &&
-				cls.groupBy[j].bare == "" && cls.groupBy[j].expr != nil:
-				// Resolver unavailable/declined: token-stream identity
-				// (GetText concatenates tokens, dropping whitespace).
-				same = unicode15.EqualFold(cls.groupBy[i].expr.GetText(), cls.groupBy[j].expr.GetText())
-			default:
-				same = groupKeysEquivalent(keys[i], keys[j])
 			}
 			if same {
 				return nil, "", api.NewErrorf(api.ErrCodeAmbiguousColumn,

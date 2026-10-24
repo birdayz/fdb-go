@@ -61,8 +61,10 @@ auto-commit SELECT running each page in its own transaction; it stays open and i
    (`FDBDatabase.NewRecordContextIn`). `BeginTx` binds its context with `context.AfterFunc`:
    when it ends, the FDB transaction is cancelled and the `embeddedTx` ends with the context's
    error as cause; database/sql then rolls back. `runInCapturedTx` binds the statement's context
-   the same way while it runs work on a captured transaction, and a context already ended there
-   also ends the transaction, so whether a deadline lands during a read or between two pages does
+   the same way while it runs work on a captured transaction, a context already ended there also
+   ends the transaction, and so does `paginatingRows.Close` when the statement's context ended
+   before the result set was read to its end (database/sql closes the rows itself then and never
+   fetches another page), so whether a deadline lands during a read or between two pages does
    not decide the outcome. The statement returns the context error (54F01 for the statement
    timeout, as today); later statements and `Commit` get 25F01 wrapping the cause. This holds for
    SELECT too: a read cannot be abandoned without cancelling its transaction, and it is
@@ -74,10 +76,11 @@ auto-commit SELECT running each page in its own transaction; it stays open and i
 2. **Panics.** `recoveredPanicError` (XX000 "internal error", value and stack logged) at every
    exported entry that does work: `embeddedTx.Commit`/`Rollback`, `BeginTx`, `Close`,
    `ResetSession`, `Ping`, `SetSchema`, `PlanExplain`, `CollectStatistics`, `ClearStatistics`,
-   `StatisticsStatus`, `ApplyMetadataOperation`, the five DirectAccess `Execute*` methods and
-   `paginatingRows.Close`. After any recovered panic (the existing three sites included) the
-   connection is closed and its transaction cancelled: `IsValid` reports false so database/sql
-   discards it, and `ResetSession` returns `driver.ErrBadConn`.
+   `StatisticsStatus`, `ApplyMetadataOperation`, the five DirectAccess `Execute*` methods,
+   `paginatingRows.Close` and `Connector.Connect`. After any recovered panic (the existing three
+   sites included) the connection is closed and its transaction cancelled: `IsValid` reports
+   false so database/sql discards it. `ResetSession` returns `driver.ErrBadConn` instead of XX000
+   after one, the only error database/sql discards a connection for there.
 3. **Connector.** A mutex-guarded single flight (`initFlight`) replaces the `sync.Once`: one
    `Connect` initializes while concurrent ones wait on a channel or their own context; success
    is kept; a failure (also the initializer's context ending during the stored-query warm-up,
@@ -120,25 +123,34 @@ nesting guard reuses the token stream the parser needs anyway and drops the sepa
 
 ## Test plan
 
-Deterministic seams, no timing: `pkg/relational/internal/simgate` (testonly) wraps SimFDB so a
-test can hold a read in flight until the transaction is cancelled, or make one transaction call
-panic.
+Deterministic seams: `pkg/relational/internal/simgate` (testonly) wraps SimFDB so a test can
+hold a read, a commit or a cancel in flight until it releases it (a read or commit also until
+the transaction is cancelled), or make one transaction call panic. Where a test asserts that
+something does not happen while a call is held, it waits 200 ms: a correct driver passes
+always, a broken one fails nearly always.
 
 - Item 1 (embedded, SimFDB): a statement context and a BeginTx context each interrupt a read held
   in flight (statement error, 25F01 with the cause afterwards, write not committed, Rollback frees
-  the connection for the next BeginTx); a context ended between two pages ends the transaction; a
-  BeginTx context ending concurrently with Commit 40 times never replaces a commit's outcome
-  (race lane); ReadOnly is 0A000. End to end (`sqltest/core`): a statement timeout in an explicit
-  transaction makes Commit 25F01 and drops the write; ReadOnly is refused.
-- Item 2: a table test drives every listed entry through a deterministic panic (simgate call,
-  panicking logger, Struct or metadata operation) and asserts XX000, `IsValid` false, no open
-  transaction, ErrBadConn on the next statement, and no committed write; `ResetSession` returns
-  ErrBadConn.
+  the connection for the next BeginTx), also the statement's first read, its catalog load; a
+  context ended between two pages ends the transaction, at the driver and through database/sql's
+  `Rows` (closed by the ended context), while a result set read to its end keeps it; through
+  database/sql's `Tx`, a cancelled BeginTx context with a read held in flight lets the rollback
+  complete (a 30 s watchdog fails a hang); a commit held in flight while the BeginTx context ends
+  keeps its success; Close and ResetSession wait for an abort held in its Cancel; a 40-iteration
+  Commit/cancel race (race lane) as extra coverage; ReadOnly is 0A000. End to end
+  (`sqltest/core`): a statement timeout in an explicit transaction makes Commit 25F01 and drops
+  the write; ReadOnly is refused.
+- Item 2: a table test drives every listed entry, `ExecContext`, `QueryContext` and `Rows.Next`
+  included, through a deterministic panic (simgate call, panicking logger, Struct or metadata
+  operation) and asserts XX000 (`ResetSession`: ErrBadConn), `IsValid` false, no open
+  transaction, ErrBadConn on the next statement, and no committed write; `Connector.Connect`
+  with a panicking initialization returns XX000 and the next `Connect` succeeds.
 - Item 3 (`sqldriver`): retry after a failed open; an initializer's context ending during the
   warm-up is not kept; `initFlight` unit tests for one attempt shared by concurrent callers, a
   waiter leaving on its own context, and a failure or panic reaching only its caller.
 - Item 4: all six settings set to non-defaults (asserted), `ResetSession`, each back at `New`'s
-  value with the `SetOptions` set kept; end to end through a one-connection pool.
+  value with the `SetOptions` set kept; end to end through a one-connection pool, including a
+  `SetOption` (MAX_ROWS) that the next borrower no longer sees.
 - Item 5: parser tests at depth 500 and 501, parentheses in a literal, a quoted identifier and
   both comment forms; end to end a 600-parenthesis literal, 600 sibling tuples, and 501 levels.
 - Item 6: embedded regression (refused duplicates including `<>`/`!=` and `1`/`01`; literal-case

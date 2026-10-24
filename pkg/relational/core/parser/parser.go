@@ -42,12 +42,6 @@ func Parse(sql string) (ctx antlrgen.IRootContext, err error) {
 	if err := checkSQLText(sql); err != nil {
 		return nil, err
 	}
-	if maxNesting(sql) > 500 {
-		return nil, &api.Error{
-			Code:    api.ErrCodeSyntaxError,
-			Message: "syntax error: expression nesting exceeds maximum depth (500)",
-		}
-	}
 	defer func() {
 		if r := recover(); r != nil {
 			ctx = nil
@@ -57,8 +51,18 @@ func Parse(sql string) (ctx antlrgen.IRootContext, err error) {
 			}
 		}
 	}()
-	p, listener, releasePredictionState := newParser(sql, nil)
+	var nesting int
+	p, listener, releasePredictionState := newParser(sql, func(ts *antlr.CommonTokenStream) {
+		ts.Fill()
+		nesting = maxNesting(ts.GetAllTokens())
+	})
 	defer releasePredictionState()
+	if nesting > maxParenNesting {
+		return nil, &api.Error{
+			Code:    api.ErrCodeSyntaxError,
+			Message: fmt.Sprintf("syntax error: expression nesting exceeds maximum depth (%d)", maxParenNesting),
+		}
+	}
 	root := p.Root()
 	if len(listener.errs) > 0 {
 		return nil, buildSyntaxError(listener.errs[0])
@@ -66,23 +70,28 @@ func Parse(sql string) (ctx antlrgen.IRootContext, err error) {
 	return root, nil
 }
 
-// maxNesting returns the maximum parenthesis nesting depth in sql.
-func maxNesting(sql string) int {
-	max, cur := 0, 0
-	for _, c := range sql {
-		switch c {
-		case '(':
-			cur++
-			if cur > max {
-				max = cur
-			}
-		case ')':
-			if cur > 0 {
-				cur--
+// maxParenNesting bounds the parenthesis depth Parse accepts, so a deeply
+// nested statement is refused before the recursive-descent parser recurses
+// through it.
+const maxParenNesting = 500
+
+// maxNesting returns the deepest round-bracket nesting among tokens. A
+// parenthesis inside a string literal, a quoted identifier or a comment is part
+// of that token and does not count.
+func maxNesting(tokens []antlr.Token) int {
+	deepest, depth := 0, 0
+	for _, tok := range tokens {
+		switch tok.GetTokenType() {
+		case antlrgen.RelationalLexerLEFT_ROUND_BRACKET:
+			depth++
+			deepest = max(deepest, depth)
+		case antlrgen.RelationalLexerRIGHT_ROUND_BRACKET:
+			if depth > 0 {
+				depth--
 			}
 		}
 	}
-	return max
+	return deepest
 }
 
 // ParseFunction parses a CREATE FUNCTION ... statement and returns
