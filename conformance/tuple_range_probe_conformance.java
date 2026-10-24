@@ -29,17 +29,7 @@ class TupleRangeProbeSteps extends ConformanceBase {
         RecordMetaDataOptionsProto.registerAllExtensions(EXTENSION_REGISTRY);
     }
 
-    /**
-     * Runs ops on the store at subspace under metaData, each in its own transaction, and returns
-     * each op's verdict ("ok", or the root exception's full class name), the record and legacy
-     * version keys (spaces 1 and 8, whose values carry commit versions), and the key-value pairs
-     * of the index, secondary, record count and uniqueness violation spaces (2, 3, 4, 7), all
-     * relative to the subspace. An op is "save" (arg: a serialized recordTypeName), "delete"
-     * (arg: a packed primary key), "deleteWhere:TYPE:FIELD" (arg: a packed one-element tuple,
-     * deleteRecordsWhere(TYPE, FIELD == value)), "writeOnly:INDEX", "resolve:INDEX" (arg: a packed
-     * (valueKey, remainPrimaryKey) of nested tuples) or "allTimeWindow:INDEX" (an all-time
-     * leaderboard window at update timestamp 500). formatVersion 0 is the default.
-     */
+    /** Runs ops one transaction each (Go's applyProbeOp is the twin) and dumps the keyspaces goProbeDump reads. */
     @ConformanceStep("tupleRangeOpsJava")
     public Map<String, Object> tupleRangeOpsJava(String clusterFile, byte[] subspace, byte[] metaData,
                                                  String recordTypeName, String[] ops, byte[][] args,

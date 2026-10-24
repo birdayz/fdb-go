@@ -280,11 +280,19 @@ var _ = Describe("Tuple-range index probes", func() {
 				save(store, typed(shortS, 1, 5))
 				save(store, typed(longS, 2, 7))
 			})
-			// Records 3 and 4 still have pending version mutations when the clear runs.
+			// Records 3 and 4 still have pending version mutations and local versions
+			// when the clear runs; record 3 reads its local version back in that transaction.
 			runFormat(func(store *FDBRecordStore) {
 				save(store, typed(shortS, 4, 6))
-				save(store, typed(longS, 3, 8))
+				saved, err := store.SaveRecord(typed(longS, 3, 8))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(saved.Version).NotTo(BeNil())
+				Expect(saved.Version.IsComplete()).To(BeFalse())
 				Expect(store.DeleteRecordsWhere(tuple.Tuple{shortS})).To(Succeed())
+				rec, err := store.LoadRecord(tuple.Tuple{longS, int64(3)})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(rec).NotTo(BeNil())
+				Expect(rec.Version).To(Equal(saved.Version))
 			})
 			runFormat(func(store *FDBRecordStore) {
 				for _, pk := range []tuple.Tuple{{shortS, int64(1)}, {shortS, int64(4)}} {

@@ -199,6 +199,8 @@ func expectOpsAsJava(md *recordlayer.RecordMetaData, format int32, ops []probeOp
 	Expect(got.KVs).To(Equal(java.KVs), "index, secondary, count and violation key-value pairs")
 }
 
+// applyProbeOp is tupleRangeOpsJava's dispatch: save, delete, deleteWhere:TYPE:FIELD, writeOnly:INDEX,
+// resolve:INDEX (arg: packed (valueKey, keptPK)) and allTimeWindow:INDEX (update timestamp 500).
 func applyProbeOp(store *recordlayer.FDBRecordStore, md *recordlayer.RecordMetaData, op probeOp) error {
 	parts := strings.Split(op.op, ":")
 	switch parts[0] {

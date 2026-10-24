@@ -624,7 +624,7 @@ func (m *StandardIndexMaintainer) checkUniqueness(entry EvaluatedIndexEntry) err
 	r := m.indexSubspace.Sub(entry.key...)
 
 	// No Limit — read the full range so FDB records a read conflict on the
-	// entire prefix. With Limit:1, FDB only tracks conflict up to the first
+	// whole range r. With Limit:1, FDB only tracks conflict up to the first
 	// key found, allowing concurrent inserts at higher keys to go undetected.
 	kvs, err := m.tx.GetRange(r, fdb.RangeOptions{}).GetSliceWithError()
 	if err != nil {
