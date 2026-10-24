@@ -333,3 +333,109 @@ func FuzzParseKeyValueRefStringVector(f *testing.F) {
 		}
 	})
 }
+
+// An Optional is present only with tag 1 and its value slot, and a variant only
+// with a known tag and its value slot; anything else loads as absent, as in C++.
+func TestOptionalAndVariantTags(t *testing.T) {
+	t.Parallel()
+	value := vectorBytes(t, findVector(t, "GetValueReply_present"))
+	decodeValue := func(d []byte) GetValueReply {
+		t.Helper()
+		var m GetValueReply
+		if err := m.UnmarshalFromReader(replyReader(t, d)); err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+	if m := decodeValue(value); !m.HasValue || len(m.Value) == 0 {
+		t.Fatalf("well-formed reply: HasValue %t, %d value bytes", m.HasValue, len(m.Value))
+	}
+	d := bytes.Clone(value)
+	d[fieldPos(t, replyReader(t, d), GetValueReplySlotValue)] = 2
+	if m := decodeValue(d); m.HasValue || m.Value != nil {
+		t.Fatalf("value tag 2: HasValue %t, %q; want absent", m.HasValue, m.Value)
+	}
+	d = bytes.Clone(value)
+	le.PutUint16(d[vtablePos(d, replyReader(t, d).ObjectPos())+4+2*(GetValueReplySlotValue+1):], 0)
+	if m := decodeValue(d); m.HasValue || m.Value != nil {
+		t.Fatalf("value tag 1 without its value slot: HasValue %t, %q; want absent", m.HasValue, m.Value)
+	}
+
+	inline := MarshalErrorOrInlineError(1001, 0.5)
+	if e := wire.ReadInlineReplyError(replyReader(t, inline), GetValueReplySlotError); e == nil || e.Code != 1001 {
+		t.Fatalf("inline error with tag 1: %v, want code 1001", e)
+	}
+	d = bytes.Clone(inline)
+	d[fieldPos(t, replyReader(t, d), GetValueReplySlotError)] = 2
+	if e := wire.ReadInlineReplyError(replyReader(t, d), GetValueReplySlotError); e != nil {
+		t.Fatalf("inline error with tag 2: %v, want none", e)
+	}
+	if m := decodeValue(d); m.HasError {
+		t.Fatalf("inline error with tag 2 decodes as present: %+v", m.Error)
+	}
+
+	d = bytes.Clone(vectorBytes(t, findVector(t, "GetMappedKeyValuesReply_getrange")))
+	e, err := replyReader(t, d).ReadVectorElementReader(GetMappedKeyValuesReplySlotData, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d[fieldPos(t, e, MappedKeyValueRefSlotReqAndResult)] = 3
+	var m GetMappedKeyValuesReply
+	if err := m.UnmarshalFromReader(replyReader(t, d)); err != nil || m.Data[0].ReqAndResultTag != 0 {
+		t.Fatalf("variant tag 3: %v, tag %d; want no alternative", err, m.Data[0].ReqAndResultTag)
+	}
+}
+
+// KeyRangeRef's hand-written decoder fails on a key outside the buffer.
+func TestKeyRangeRefDecodeFailsOutsideBuffer(t *testing.T) {
+	t.Parallel()
+	d := vectorBytes(t, findVector(t, "CommitTransactionRequest_single_set"))
+	var req CommitTransactionRequest
+	if err := req.UnmarshalFDB(d); err != nil || len(req.Transaction.WriteConflictRanges) == 0 {
+		t.Fatalf("well-formed request: %v, %d write conflict ranges", err, len(req.Transaction.WriteConflictRanges))
+	}
+	r, err := wire.NewReader(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr, err := r.ReadNestedReader(CommitTransactionRequestSlotTransaction)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kr, err := tr.ReadVectorElementReader(CommitTransactionRefSlotWriteConflictRanges, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	le.PutUint32(d[fieldPos(t, kr, KeyRangeRefSlotBegin):], 1<<20)
+	err = req.UnmarshalFDB(d)
+	var decodeErr *wire.DecodeError
+	var bounds *wire.FieldBoundsError
+	if !errors.As(err, &decodeErr) || decodeErr.Type != "KeyRangeRef" || !errors.As(err, &bounds) {
+		t.Fatalf("got %v; want a KeyRangeRef DecodeError", err)
+	}
+}
+
+// An ErrorOr error whose code lies outside the buffer is a decode error, not an
+// FDB error with code 0.
+func TestErrorOrErrorCodeOutsideBuffer(t *testing.T) {
+	t.Parallel()
+	d := (&ErrorOrError{ErrorCode: 1020}).MarshalFDB()
+	var fdbErr *wire.FDBError
+	if err := wire.ReadErrorOrInto(d, &wire.Reader{}); !errors.As(err, &fdbErr) || fdbErr.Code != 1020 {
+		t.Fatalf("well-formed error: %v", err)
+	}
+	root, err := wire.ReaderAtRootObject(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, err := root.ReadNestedReader(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	le.PutUint16(d[vtablePos(d, e.ObjectPos())+4:], 0xFFF0)
+	err = wire.ReadErrorOrInto(d, &wire.Reader{})
+	var decodeErr *wire.DecodeError
+	if !errors.As(err, &decodeErr) || errors.As(err, &fdbErr) {
+		t.Fatalf("error code past the buffer: %v; want a DecodeError", err)
+	}
+}

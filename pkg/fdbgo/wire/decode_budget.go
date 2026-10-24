@@ -53,7 +53,8 @@ func (e *DecodeError) Error() string {
 
 func (e *DecodeError) Unwrap() error { return e.Err }
 
-// FieldBoundsError reports a present field whose bytes lie outside the buffer.
+// FieldBoundsError reports a present field whose bytes lie outside the buffer, or
+// a vtable entry that does.
 type FieldBoundsError struct {
 	Slot int
 }

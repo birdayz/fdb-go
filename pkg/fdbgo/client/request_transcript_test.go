@@ -620,6 +620,9 @@ func (g *transcriptGate) negativeControls(prefix []byte) {
 		}, "undecodable frame"},
 		{"malformed-field", func(_ *Transaction, rc *recordingConn) {
 			rc.observe(recorderFrame(transport.UID{First: 7}, malformedGetKeyValues()))
+		}, "decode GetKeyValuesRequest.Begin"},
+		{"noncanonical-body", func(_ *Transaction, rc *recordingConn) {
+			rc.observe(recorderFrame(transport.UID{First: 7}, nonCanonicalGetKeyValues()))
 		}, "does not re-encode"},
 		{"unexpected-kind", func(_ *Transaction, rc *recordingConn) {
 			rc.observe(recorderFrame(transport.UID{First: 7}, commit))

@@ -1354,7 +1354,7 @@ func parseGetValueReply(data []byte) ([]byte, float64, error) {
 	}
 	// Inline LoadBalancedReply.error: the SS delivers wrong_shard_server etc. for
 	// reads through this field, not the ErrorOr root. Decoded from the nested
-	// Error table (the generated reply.Error is mis-typed). RFC-010 #1.
+	// Error table. RFC-010 #1.
 	if ferr := wire.ReadInlineReplyError(&r, types.GetValueReplySlotError); ferr != nil {
 		return nil, reply.Penalty, ferr
 	}

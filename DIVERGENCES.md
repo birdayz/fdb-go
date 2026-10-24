@@ -1327,15 +1327,6 @@ being silently ignored.
 | A shard with no storage servers | Cached as an empty `LocationInfo` (`setCachedLocation` inserts whatever list it gets, `NativeAPI.actor.cpp:2001-2019`) | Its range is cleared from the cache, not cached, and a lookup re-asks (`locateRangeWith`) | Go has no read path over an empty replica list; asking again waits for data distribution to assign one. |
 | A tenant shard boundary without the tenant prefix | Clamped to `allKeys` for the caller (`toPrefixRelativeRange`, `FDBTypes.cpp:26-34`); the absolute range is cached | `stripTenantPrefix` keeps the boundary; a reply it leaves with an inverted range is discarded as above | The commit proxy clamps every shard to the tenant (`TenantAPI::clampRangeToTenant`), so only a malformed reply has such a boundary. |
 
-### Bounded, failing reply decodes (RFC-276)
-
-| Aspect | C++ `libfdb_c` | Go | Why |
-|---|---|---|---|
-| Vector element offsets that alias one element | Decoded once per offset, with no bound: `ObjectReader` holds no buffer length (`ObjectSerializer.h:96-128`) and a vector load reserves the stored count (`flat_buffers.h:1140-1153`) | A decode fails with `*wire.DecodeBudgetError` once its vectors of tables hold more than `len(buffer)/4` elements in total (`wire.DecodeBudget`, generated `decode`, `parseGetKeyServerLocationsReply`) | C++ writes each element's 4-byte offset once, so no reply it writes reaches the bound; only aliasing does, and it would let a few KB allocate gigabytes. |
-| A present field, vector or table outside the buffer; a vtable longer than the buffer | Undefined behaviour (reads past the buffer) | The decode fails with `*wire.DecodeError` (`wire.Reader.Err`, `ReadVectorCount`, `ReadNestedReader`), and the reply parser returns it | C++ has no defined result; Go's old reads returned zero, nil or an absent field, so a malformed reply decoded as a valid shorter one. |
-| A string-strategy vector whose elements do not fill its blob | `ASSERT` in `dynamic_size_traits<VectorRef<T, String>>::load` (`Arena.h:1514-1525`) | `Parse<T>StringVector` fails with `*wire.StringVectorError` | Same rule; an error instead of an assertion. |
-| The locations reply's endpoint scan for a server without a slot-2 endpoint | No scan: C++ decodes the `StorageServerInterface` | Scans the slots the schema defines, not the vtable length the reply claims | The scan is Go's own; bounding it keeps a reply's cost linear in its size. |
-
 **Coordinator topology adoption is a CONFIRMED NON-divergence (RFC-115 §3, FDB-C-dev verified).** The
 libfdb_c client adopts cluster topology on the **first successful** coordinator reply, **not** a majority
 quorum: `monitorProxiesOneGeneration` adopts the first successful `OpenDatabaseCoordRequest`
@@ -1344,6 +1335,16 @@ leader-election metadata, not a client adoption gate (`monitorLeaderOneGeneratio
 with no quorum wait, `:604`/`:634`). Go's first-reply-wins therefore **matches** C++ semantics; adding a
 quorum would make Go *stricter* than libfdb_c — a conformance violation. (Cluster-file re-read is
 failure-gated in both, `:888-900` — RFC-111.)
+
+### Bounded, failing reply decodes (RFC-276)
+
+| Aspect | C++ `libfdb_c` | Go | Why |
+|---|---|---|---|
+| Vector element offsets that alias one element | Decoded once per offset, with no bound: `ObjectReader` holds no buffer length (`ObjectSerializer.h:96-128`) and a vector load reserves the stored count (`flat_buffers.h:1140-1153`) | A decode fails with `*wire.DecodeBudgetError` once its vectors of tables hold more than `len(buffer)/4` elements in total (`wire.DecodeBudget`, generated `decode`, `parseGetKeyServerLocationsReply`) | C++ writes each element's 4-byte offset once, so no reply it writes reaches the bound; only aliasing does, and it would let a few KB allocate gigabytes. |
+| A present field, vector or table outside the buffer; a vtable longer than the buffer | Undefined behaviour (reads past the buffer) | A generated decoder fails with `*wire.DecodeError` (`wire.Reader.Err`, `ReadVectorCount`, `ReadNestedReader`); a hand-written reply parser (locations, ClientDBInfo, split points, the ErrorOr envelope) fails with its own parse error. Either way the reply is not used | C++ has no defined result; Go's old reads returned zero, nil or an absent field, so a malformed reply decoded as a valid shorter one. |
+| A present field whose RelativeOffset is 0 | Reads the offset word itself: an empty string or vector | The same, except a nested table, which fails, and a locations range key, which RFC-271 rejects | C++ never writes a zero offset. |
+| A string-strategy vector whose elements do not fill its blob | `ASSERT` in `dynamic_size_traits<VectorRef<T, String>>::load` (`Arena.h:1514-1525`) | `Parse<T>StringVector` fails with `*wire.StringVectorError` | Same rule; an error instead of an assertion. |
+| The locations reply's endpoint scan for a server without a slot-2 endpoint | No scan: C++ decodes the `StorageServerInterface` | Scans the slots the schema defines, not the vtable length the reply claims | The scan is Go's own; bounding it keeps a reply's cost linear in its size. |
 
 ---
 

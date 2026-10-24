@@ -794,8 +794,7 @@ func TestSendRecorderPriorWritesStayWithinWindow(t *testing.T) {
 }
 
 // malformedGetKeyValues is a GetKeyValuesRequest whose Begin field offset
-// points past the object. wire.NewReader accepts it and the generated decoder
-// reads Begin as absent rather than failing.
+// points past the object. wire.NewReader accepts it; the generated decoder fails.
 func malformedGetKeyValues() []byte {
 	body := (&types.GetKeyValuesRequest{
 		Begin:   types.KeySelectorRef{Key: []byte("a"), Offset: 1},
@@ -808,4 +807,11 @@ func malformedGetKeyValues() []byte {
 	vtable := msg - int(int32(le.Uint32(body[msg:])))
 	le.PutUint16(body[vtable+2*(types.GetKeyValuesRequestSlotBegin+2):], 0xfff0)
 	return body
+}
+
+// nonCanonicalGetKeyValues decodes as a GetKeyValuesRequest but carries a
+// trailing byte, so it does not re-encode to the bytes sent.
+func nonCanonicalGetKeyValues() []byte {
+	body := (&types.GetKeyValuesRequest{Version: 1, Limit: 1, LimitBytes: 1}).MarshalFDB()
+	return append(body, 0xff)
 }

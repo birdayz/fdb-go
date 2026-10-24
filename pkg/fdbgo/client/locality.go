@@ -814,8 +814,8 @@ func parseGetKeyServerLocationsReply(data []byte) ([]locationEntry, error) {
 		if err != nil {
 			return nil, &locationsReplyError{defect: locationsUnreadable, detail: fmt.Sprintf("result %d range", i), err: err}
 		}
-		// ReadBytes returns nil for a present key only when its bytes lie outside the
-		// reply; decoding that as the empty key would widen the range.
+		// A present key with a zero RelativeOffset reads as empty, as in C++, and would
+		// widen the range; a key outside the reply also fails the decode below.
 		for _, slot := range [...]int{types.KeyRangeRefSlotBegin, types.KeyRangeRefSlotEnd} {
 			if krR.FieldPresent(slot) && krR.ReadBytes(slot) == nil {
 				return nil, &locationsReplyError{defect: locationsUnreadable, detail: fmt.Sprintf("result %d range key", i)}

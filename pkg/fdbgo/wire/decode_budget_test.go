@@ -82,9 +82,10 @@ func TestReaderRecordsFieldOutsideBuffer(t *testing.T) {
 	for _, tc := range cases {
 		d := scalarMessage(2)
 		tc.edit(d)
+		binary.LittleEndian.PutUint16(d[30:], 0xFFF0) // slot 1, also past the buffer
 		err := read(d, func(r *Reader) {
 			tc.read(r)
-			r.ReadUint32(1) // a later absent read keeps the first fault
+			r.ReadUint32(1) // a later fault does not replace the first
 		})
 		var bounds *FieldBoundsError
 		if !errors.As(err, &bounds) || bounds.Slot != tc.slot {

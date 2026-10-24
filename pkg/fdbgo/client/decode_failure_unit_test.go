@@ -231,3 +231,41 @@ func TestParseLocationsReplyEndpointScanBounded(t *testing.T) {
 		t.Fatalf("parse allocates %.0f times for a 32K-slot vtable, want at most 500", allocs)
 	}
 }
+
+// The range-read parser fails on a row blob the rows do not fill exactly.
+func TestParseGetKeyValuesReplyRejectsRowBlobOverrun(t *testing.T) {
+	t.Parallel()
+	rows := []byte{1, 0, 0, 0, 1, 0, 0, 0, 'k', 1, 0, 0, 0, 'v'}
+	for _, tc := range []struct {
+		name string
+		data []byte
+		ok   bool
+	}{
+		{"exact", rows, true},
+		{"trailing byte", append(bytes.Clone(rows), 0), false},
+		{"count above the rows", append([]byte{2, 0, 0, 0}, rows[4:]...), false},
+	} {
+		kvs, _, _, err := parseGetKeyValuesReply(types.MarshalErrorOrValueGetKeyValuesReply(&types.GetKeyValuesReply{Data: tc.data}))
+		var vecErr *wire.StringVectorError
+		if tc.ok != (err == nil) || (!tc.ok && !errors.As(err, &vecErr)) {
+			t.Errorf("%s: %d rows, %v", tc.name, len(kvs), err)
+		}
+	}
+}
+
+// ClientDBInfo.forward is present only with tag 1 and its value slot, as in C++.
+func TestParseClientDBInfoForwardTag(t *testing.T) {
+	t.Parallel()
+	d := (&types.ClientDBInfo{HasForward: true, Forward: []byte("desc:id@10.0.0.1:4500")}).MarshalFDB()
+	if info, err := parseStandaloneClientDBInfo(d); err != nil || info.Forward != "desc:id@10.0.0.1:4500" {
+		t.Fatalf("forward tag 1: %+v, %v", info, err)
+	}
+	r, err := wire.NewReader(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d[r.ObjectPos()+r.FieldOffset(types.ClientDBInfoSlotForward)] = 2
+	if info, err := parseStandaloneClientDBInfo(d); err != nil || info.Forward != "" {
+		t.Fatalf("forward tag 2: %+v, %v; want no forward", info, err)
+	}
+}

@@ -19,7 +19,7 @@ type Reader struct {
 	objPos    int    // absolute position of object in data
 	vtable    []byte // slice starting at the message's vtable
 	headerOff int    // 0 or 8 (protocol version prefix)
-	fault     int    // 1 + slot of the first present field read outside the buffer, or 0
+	fault     int    // 1 + slot of the first field found outside the buffer (see Err), or 0
 }
 
 // NewReader parses the buffer, navigates through the FakeRoot to the message object.
@@ -162,8 +162,9 @@ func (r *Reader) outside(vtableSlot, off int) {
 	}
 }
 
-// Err reports the first present field a read found outside the buffer. Reads of
-// such a field return zero or nil, as for an absent one.
+// Err reports the first slot a read found outside the buffer: a present field
+// whose bytes lie past it, or a vtable entry past it. Such reads return zero or
+// nil, as for an absent field.
 func (r *Reader) Err() error {
 	if r.fault == 0 {
 		return nil
@@ -387,12 +388,12 @@ func (r *Reader) ReadVectorUint64(vtableSlot int) []uint64 {
 // ReadOptionalInt32 reads an Optional<int32>. Returns (value, present).
 // Optional uses 2 vtable slots: typeSlot (uint8 tag) and valueSlot (RelativeOffset).
 func (r *Reader) ReadOptionalInt32(typeSlot, valueSlot int) (int32, bool) {
-	typeOff := r.fieldOffset(typeSlot)
-	if typeOff < 4 || typeOff+1 > len(r.object) || r.object[typeOff] == 0 {
-		return 0, false
+	if r.ReadUint8(typeSlot) != 1 {
+		return 0, false // tag 1 is the only alternative, as in C++
 	}
 	valOff := r.fieldOffset(valueSlot)
 	if valOff < 4 || int(valOff)+4 > len(r.object) {
+		r.outside(valueSlot, valOff)
 		return 0, false
 	}
 	relOffset := binary.LittleEndian.Uint32(r.object[valOff:])
@@ -401,6 +402,7 @@ func (r *Reader) ReadOptionalInt32(typeSlot, valueSlot int) (int32, bool) {
 	}
 	target := r.objPos + int(valOff) + int(relOffset)
 	if target+4 > len(r.data) {
+		r.outside(valueSlot, valOff)
 		return 0, false
 	}
 	return int32(binary.LittleEndian.Uint32(r.data[target:])), true
@@ -408,12 +410,12 @@ func (r *Reader) ReadOptionalInt32(typeSlot, valueSlot int) (int32, bool) {
 
 // ReadOptionalString reads an Optional<string>. Returns (value, present).
 func (r *Reader) ReadOptionalString(typeSlot, valueSlot int) (string, bool) {
-	typeOff := r.fieldOffset(typeSlot)
-	if typeOff < 4 || typeOff+1 > len(r.object) || r.object[typeOff] == 0 {
-		return "", false
+	if r.ReadUint8(typeSlot) != 1 {
+		return "", false // tag 1 is the only alternative, as in C++
 	}
 	valOff := r.fieldOffset(valueSlot)
 	if valOff < 4 || int(valOff)+4 > len(r.object) {
+		r.outside(valueSlot, valOff)
 		return "", false
 	}
 	relOffset := binary.LittleEndian.Uint32(r.object[valOff:])
@@ -422,11 +424,13 @@ func (r *Reader) ReadOptionalString(typeSlot, valueSlot int) (string, bool) {
 	}
 	target := r.objPos + int(valOff) + int(relOffset)
 	if target+4 > len(r.data) {
+		r.outside(valueSlot, valOff)
 		return "", false
 	}
 	length := binary.LittleEndian.Uint32(r.data[target:])
 	end := target + 4 + int(length)
 	if end > len(r.data) {
+		r.outside(valueSlot, valOff)
 		return "", false
 	}
 	return string(r.data[target+4 : end]), true
@@ -701,7 +705,11 @@ func ReadErrorOrInto(data []byte, r *Reader) error {
 			return fmt.Errorf("wire: ErrorOr error payload: %w", err)
 		}
 		// Error is a single-field table: uint16 error_code at slot 0.
-		return &FDBError{Code: int(errObj.ReadUint16(0))}
+		code := errObj.ReadUint16(0)
+		if err := errObj.Err(); err != nil {
+			return &DecodeError{Type: "Error", Err: err}
+		}
+		return &FDBError{Code: int(code)}
 	case errorOrTagValue:
 		if err := root.readNestedInto(errorOrValueSlot, r); err != nil {
 			return fmt.Errorf("wire: ErrorOr value payload: %w", err)
@@ -721,10 +729,8 @@ func ReadErrorOrInto(data []byte, r *Reader) error {
 //
 // FDB delivers wrong_shard_server / future_version / process_behind for reads
 // through this field, not the ErrorOr root (C++ storageserver.actor.cpp
-// sendErrorWithPenalty sets reply.error; LoadBalance.actor.h re-throws it). The
-// generated reply structs mis-decode this field as a length-prefixed byte string
-// (Optional<Error> wrongly classified as Optional<bytes>), so callers MUST use
-// this helper and ignore the generated reply.Error field.
+// sendErrorWithPenalty sets reply.error; LoadBalance.actor.h re-throws it). It
+// reads the same field as the generated reply's Error without decoding the reply.
 func ReadInlineReplyError(r *Reader, tagSlot int) *FDBError {
 	// Tag 1 is the Optional's only alternative; any other tag loads as absent in C++.
 	if !r.FieldPresent(tagSlot) || r.ReadUint8(tagSlot) != 1 {

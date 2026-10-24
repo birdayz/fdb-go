@@ -566,3 +566,72 @@ func TestFrameParserRejectsCorruptLength(t *testing.T) {
 		t.Fatal("a frame shorter than its token was accepted")
 	}
 }
+
+// pastBuffer points slot of the message in d past the end of the buffer; reply
+// selects an ErrorOr reply over a request.
+func pastBuffer(t *testing.T, d []byte, reply bool, slot int) []byte {
+	t.Helper()
+	d = bytes.Clone(d)
+	var obj int
+	if reply {
+		var r wire.Reader
+		if err := wire.ReadErrorOrInto(d, &r); err != nil {
+			t.Fatal(err)
+		}
+		obj = r.ObjectPos()
+	} else {
+		r, err := wire.NewReader(d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		obj = r.ObjectPos()
+	}
+	vtable := obj - int(int32(binary.LittleEndian.Uint32(d[obj:])))
+	binary.LittleEndian.PutUint16(d[vtable+4+2*slot:], 0xFFF0)
+	return d
+}
+
+// A request or reply with a field past the buffer is undecodable; a request is
+// dropped and a reply marks its request malformed.
+func TestDecodeFieldsPastBuffer(t *testing.T) {
+	t.Parallel()
+	v := loadVectors(t)
+	lo := [4]byte{127, 0, 0, 1}
+	kinds := []struct {
+		req, reply         string
+		reqSlot, replySlot int
+	}{
+		{"GetReadVersionRequest_causal_risky", "GetReadVersionReply_locked", types.GetReadVersionRequestSlotTransactionCount, types.GetReadVersionReplySlotVersion},
+		{"CommitTransactionRequest_single_set", "CommitID_committed", types.CommitTransactionRequestSlotTransaction, types.CommitIDSlotVersion},
+		{"GetKeyValuesRequest_basic", "GetKeyValuesReply_two_rows", types.GetKeyValuesRequestSlotBegin, types.GetKeyValuesReplySlotVersion},
+	}
+	for i, k := range kinds {
+		req, reply := unhex(t, v[k.req].Hex), unhex(t, v[k.reply].Hex)
+		for _, badReply := range []bool{false, true} {
+			sent, answer := pastBuffer(t, req, false, k.reqSlot), reply
+			if badReply {
+				sent, answer = req, pastBuffer(t, reply, true, k.replySlot)
+			}
+			up := Flow{Endpoint{lo, uint16(50100 + 2*i)}, Endpoint{lo, 4721}}
+			down := Flow{up.Dst, up.Src}
+			c := newCapture()
+			c.packet(1, up, 100, true, nil)
+			c.packet(2, down, 900, true, nil)
+			c.packet(10, up, 101, false, append(connectPacket(), fdbFrame(bytes.Repeat([]byte{7}, 16), sent)...))
+			c.packet(20, down, 901, false, append(connectPacket(), fdbFrame(unhex(t, v[k.req].ReplyToken), answer)...))
+			trace, _, err := Decode(&c.Buffer, []uint16{4721})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if trace.Undecodable != 1 {
+				t.Errorf("%s, bad reply %t: %d undecodable, want 1", k.req, badReply, trace.Undecodable)
+			}
+			if badReply && (len(trace.Requests) != 1 || !trace.Requests[0].Malformed) {
+				t.Errorf("%s: a reply past the buffer left %d requests, want one malformed", k.req, len(trace.Requests))
+			}
+			if !badReply && len(trace.Requests) != 0 {
+				t.Errorf("%s: a request past the buffer was kept", k.req)
+			}
+		}
+	}
+}

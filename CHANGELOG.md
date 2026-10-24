@@ -74,6 +74,9 @@ Each is described in full under Compatibility or Changed below.
   without the executor's wrapping context in the error string (RFC-274).
 - **frl:** `frl` is a package of the root module; retiring the nested module requires
   the post-publication retraction procedure in `RELEASE.md`.
+- **`pkg/fdbgo/wire/types`:** `UnmarshalFromReader` returns an error, and
+  `Parse<T>VectorFromReader` and `ParseKeyValueRefStringVector` return `([]T, error)`
+  (RFC-276).
 
 ### Compatibility
 - **Collation:** collated index access and writes that evaluate collated primary/count keys now fail with `GoOnlyCollationError` unless the store explicitly opts into Go-only bytes with `StoreBuilder.SetGoOnlyCollation(true)`; existing keys are not migrated.
@@ -381,6 +384,7 @@ Each is described in full under Compatibility or Changed below.
 - Record scans with an inclusive high bound end at `pack(high)+\xFF`, as Java's `TupleRange.toRange`, not at `strinc(pack(high))`.
 - Key-value cursors reject invalid endpoint pairs (e.g. a TREE_END low, mismatched PREFIX_STRING bounds) with an error, as Java's `TupleRange.toRange` does, instead of scanning the whole subspace.
 - Record and COUNT/atomic cursors implement PREFIX_STRING ranges.
+- The pure-Go client rejects a malformed reply instead of decoding it as a shorter valid one: a vector count, element, table or field outside the buffer, or row bytes that do not fill their blob, fails the read. A reply whose vector offsets alias one element no longer allocates without bound (a 24 KB reply allocated 292 MB); each decode is limited to `len/4` elements, which no reply an FDB server writes reaches (RFC-276).
 - Reverse `ScanRecordsByType` scans preserve empty non-nil continuations as positions before the range prefix, returning no rows as Java does.
 - Key-value cursor continuations on narrowed ranges are byte-identical to Java's, and resuming a Java token stays inside the range. Previously Go resuming a Java token could return rows outside the range, and Java resuming a Go token rebuilt a key with the shared prefix doubled. `TupleRange.Prepend` turns an open bound into the inclusive prefix as Java does, and atomic aggregate indexes (COUNT, SUM, ...) accept `BY_GROUP` scans.
 

@@ -92,7 +92,12 @@ never reject a reply C++ writes.
    `Optional` is present only with tag 1 and its value slot present. A variant decodes
    only a known tag with its value slot present (`LoadAlternative`,
    `flat_buffers.h:863-886`). Anything else leaves the zero value, as C++ leaves the
-   member empty. `wire.ReadInlineReplyError` uses the same tag rule.
+   member empty. `wire.ReadInlineReplyError`, `ReadOptionalInt32` and
+   `ReadOptionalString` use the same tag rule.
+
+   A present field whose RelativeOffset is 0 keeps reading as empty: C++ then reads the
+   offset word itself, a zero length or count, so the value is the same. A nested table
+   with a zero offset still fails, as before.
 
    `UnmarshalFromReader(r) error` and `UnmarshalFDB(data) error` start one budget per
    decode from the whole buffer and call `decode`. `Parse<T>VectorFromReader` returns
@@ -116,6 +121,12 @@ never reject a reply C++ writes.
      leaf reads (id, forward) return `r.Err()`.
    - `parseGetKeyReply` decodes the reply through the generated `GetKeyReply` and its
      selector through the generated `KeySelectorRef`, replacing its own leaf reads.
+   - `wire.ReadErrorOrInto` fails with a `DecodeError` when an error alternative's code
+     lies outside the buffer, instead of returning `FDBError{Code: 0}`.
+
+   Hand-written parsers keep their own error types (`locationsReplyError`, the
+   `fmt` errors of the proxy-list and split-point walks); only the generated decoders
+   and the paths above produce a `DecodeError`.
 
    Every non-generated `UnmarshalFromReader` caller returns the error:
    - client: `parseCommitOutcome` (commitpath.go), `ReadEndpointFromSlot` (endpoint.go),
@@ -130,7 +141,8 @@ never reject a reply C++ writes.
    one.
 4. **DIVERGENCES.md.** A row in the pure-Go client section: Go rejects replies whose
    offsets alias beyond the budget, or whose present fields do not resolve. In libfdb_c
-   these are undefined behaviour.
+   these are undefined behaviour. **CHANGELOG.md** records the `wire/types` signature
+   changes as breaking.
 
 ## Fuzzers
 
@@ -165,8 +177,9 @@ Regressions (each fails when its part of the change is reverted; the PR records 
 revert):
 
 - `wire`: a present scalar, byte string or bare out-of-line scalar outside the buffer,
-  and a vtable longer than the buffer, give `Err() = *FieldBoundsError`; a vector field
-  past the buffer is a `ReadVectorCount` error.
+  and a vtable longer than the buffer, give `Err() = *FieldBoundsError`, and a later
+  fault does not replace the first. A vector field past the buffer is a
+  `ReadVectorCount` error.
 - `wire/types`:
   - The aliasing `GetMappedKeyValuesReply` (2000 offsets to one row of 1000 empty rows,
     24 KB) fails with `*wire.DecodeBudgetError`.
@@ -177,24 +190,34 @@ revert):
     `Optional<Error>` (`GetKeyValuesReply.Error`) and variant alternative
     (`MappedKeyValueRef.ReqAndResult`).
   - A `GetValueReply` whose present value lies past the buffer fails with a
-    `FieldBoundsError`.
+    `FieldBoundsError`, and so does a `KeyRangeRef` conflict range whose begin does.
+  - Tags: a `GetValueReply` value with tag 2, or with tag 1 and no value slot, an inline
+    error with tag 2, and a variant with tag 3 all read as absent.
+  - An ErrorOr error whose code lies past the buffer fails with a `DecodeError`.
   - `Parse<T>VectorFromReader` returns the element error. `ParseKeyValueRefStringVector`
     fails with a `StringVectorError` on a short blob, a count the blob cannot hold, an
     element that overruns it, and trailing bytes.
-- `client`: one table test over the reply parsers. Each moves one present field of a
-  ground-truth reply past the buffer and expects a `*wire.DecodeError`:
+- `client`: one table test over the reply parsers. Each moves one present field past
+  the buffer and expects a `*wire.DecodeError`. The replies are ground-truth vectors,
+  except `ClientDBInfo`, which has none and is Go-marshaled:
   - `GetValueReply` value, `GetKeyReply` penalty, `GetKeyValuesReply` rows,
     `GetMappedKeyValuesReply` rows;
   - `GetReadVersionReply` version, `CommitID` version, `StorageMetrics` bytes;
   - `ClientDBInfo` id, and the locations reply's slot-2 endpoint address.
 
   Further cases:
+  - `parseGetKeyValuesReply` fails with a `StringVectorError` on a row blob with a
+    trailing byte or a count above its rows;
+  - `ClientDBInfo.forward` with tag 2 reads as no forward;
   - an aliasing `GetKeyServerLocationsReply` (300 results × 300 servers) fails with a
     budget error;
   - a server with a zero token whose vtable claims 32K slots costs at most 500
     allocations.
-- `tools/clientbench`: a commit reply whose version lies past the buffer is malformed
-  (wiretrace), and a send whose key lies past the buffer is undecodable (wiregolden).
+- `tools/clientbench`: in wiretrace, a GRV, commit or range request with a field past
+  the buffer is dropped as undecodable, and such a reply marks its request malformed.
+  In wiregolden, a send whose key lies past the buffer is undecodable.
+- The send recorder's transcript gate reports the decode failure for a malformed
+  request, and still reports "does not re-encode" for a request with a trailing byte.
 - `FuzzUnmarshalFDB`: the aliasing seed fails the allocation oracle.
 
 Non-regression guards (pass before and after):
