@@ -457,6 +457,18 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   checked against workers ÷ mean latency and, for writes, the servers' commit counts.
   Needs those checks in `tools/clientbench` and owner approval of the cloud budget.
 
+- [ ] **Read hedging has no second-request budget.** C++ `loadBalance` sends the second
+  request only while `model->secondBudget >= 1.0`, spending 1.0 per hedge; a
+  `QueueModel` starts at 0 and gains `SECOND_REQUEST_BUDGET_GROWTH` (0.05) per first
+  reply that completes unhedged, capped at 100 (`LoadBalance.actor.h:695-716`,
+  `QueueModel.h:121`, `flow/Knobs.cpp:278-283`). Its delay is the adaptive
+  `secondMultiplier` (from 1.0) times the second-best alternative's latency plus
+  `BASE_SECOND_REQUEST_TIME`, sent at once past `INSTANT_SECOND_REQUEST_MULTIPLIER`
+  (`:554-560`). Go's `sendFrameWithHedge` hedges every read with a second replica after
+  max(10ms, 2 × the best server's latency) (`client/loadbalance.go` `secondDelay`), so a
+  fresh database hedges where libfdb_c would not. Port the budget and multiplier, then
+  revisit the hedge tests that rely on a fresh database hedging.
+
 - [ ] **Connection monitor has no `resetPing` arm.** C++ `connectionMonitor` also
   ends a PING wait on `peer->resetPing.onTrigger()` (`FlowTransport.actor.cpp:696-698`),
   triggered when packets arrive from an incompatible peer (`:1596`) and when the last
