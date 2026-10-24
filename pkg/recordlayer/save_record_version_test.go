@@ -74,10 +74,14 @@ var _ = Describe("SaveRecordWithVersion", func() {
 		{true, VersionstampSaveBehaviorDefault, true, "supplied"},
 		{false, VersionstampSaveBehaviorDefault, true, "supplied"},
 		{true, VersionstampSaveBehaviorNoVersion, false, "none"},
+		{false, VersionstampSaveBehaviorNoVersion, false, "none"},
 		{true, VersionstampSaveBehaviorWithVersion, false, "assigned"},
 		{false, VersionstampSaveBehaviorWithVersion, false, "assigned"},
+		{true, VersionstampSaveBehaviorWithVersion, true, "supplied"},
 		{false, VersionstampSaveBehaviorWithVersion, true, "supplied"},
 		{true, VersionstampSaveBehaviorIfPresent, false, "none"},
+		{false, VersionstampSaveBehaviorIfPresent, false, "none"},
+		{true, VersionstampSaveBehaviorIfPresent, true, "supplied"},
 		{false, VersionstampSaveBehaviorIfPresent, true, "supplied"},
 	}
 	for _, format := range []int32{0, formatVersionSaveUnsplitWithSuffix} {
@@ -190,7 +194,7 @@ var _ = Describe("SaveRecordWithVersion", func() {
 		})
 	})
 
-	It("keeps the default behavior on the override-lock, typed, pipelined and batch saves", func() {
+	It("honors the behavior on the override-lock and typed saves and keeps the default on the plain, pipelined and batch saves", func() {
 		md := metaData(true)
 		ks := specSubspace()
 		v := complete(4)
@@ -239,7 +243,7 @@ var _ = Describe("SaveRecordWithVersion", func() {
 })
 
 func describeSaveCase(format int32, storeVersions bool, behavior VersionstampSaveBehavior, supplied bool) string {
-	name := []string{"DEFAULT", "NO_VERSION", "WITH_VERSION", "IF_PRESENT"}[behavior]
+	name := behavior.String()
 	versions := "unversioned metadata"
 	if storeVersions {
 		versions = "versioned metadata"

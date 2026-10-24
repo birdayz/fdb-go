@@ -395,7 +395,8 @@ func (ks *KeySpace) PathFromTuple(t tuple.Tuple) (*Path, tuple.Tuple, error) {
 	var path *Path
 	dir := ks.root
 	for i, v := range t {
-		if dir.IsLeaf() {
+		// The root holds no element; Java's root.findChildForKey throws when it has no subdirectories.
+		if path != nil && dir.IsLeaf() {
 			return path, t[i:], nil
 		}
 		child := dir.childForKey(v)

@@ -32,7 +32,6 @@ var _ = Describe("Explicit-version saves match Java", func() {
 		behavior recordlayer.VersionstampSaveBehavior
 		want     string
 	}
-	behaviorNames := []string{"DEFAULT", "NO_VERSION", "WITH_VERSION", "IF_PRESENT"}
 	complete := func(b byte) []byte { return []byte{0, 0, 0, 0, 0, 0, 0, 2, 0, b, 0, 1} }
 	saves := []versionedSave{
 		{1, complete(1), recordlayer.VersionstampSaveBehaviorDefault, "ok"},
@@ -76,7 +75,7 @@ var _ = Describe("Explicit-version saves match Java", func() {
 					Expect(err).NotTo(HaveOccurred())
 					records[i] = BytesToIntArray(b)
 					versions[i] = BytesToIntArray(s.version)
-					behaviors[i] = behaviorNames[s.behavior]
+					behaviors[i] = s.behavior.String()
 					want = append(want, s.want)
 				}
 

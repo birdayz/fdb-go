@@ -38,6 +38,10 @@ Each is described in full under Compatibility or Changed below.
 - **TEXT indexes:** the default tokenizer handles a word-final capital sigma and supplementary-plane
   text as Java does; rebuild Go-written TEXT indexes over such text (#803).
 - **Pure-Go client:** API versions outside 510-730 are refused with 2203 (#823).
+  `SetLockAware`/`SetReadLockAware` take no argument, a read-lock-aware commit with writes fails
+  with 2023 unless the transaction is also lock-aware, and `SetSizeLimit` outside
+  [32, 10,000,000] is a deferred error (#820). `SetTimeout` outside [0, INT_MAX] is a deferred
+  2006 (#799).
 - **Record layer (RFC-275):**
   - `TransactionSizeWarningError` is removed. Past `TransactionSizeWarnBytes`, saves and deletes
     succeed, and the warning is logged and counted as `CountTransactionSizeWarning`.
@@ -51,10 +55,8 @@ Each is described in full under Compatibility or Changed below.
     rules, instead of panicking on a duplicate name.
   - `ResolverFunc`, `KeySpace.Path` and `Path.Add` take a `context.Context`.
   - `PathFromTuple` fails on an element that no subdirectory of a non-leaf directory holds.
-  `SetLockAware`/`SetReadLockAware` take no argument, a read-lock-aware commit with writes fails
-  with 2023 unless the transaction is also lock-aware, and `SetSizeLimit` outside
-  [32, 10,000,000] is a deferred error (#820). `SetTimeout` outside [0, INT_MAX] is a deferred
-  2006 (#799).
+  - `FindChildForValue` matches a stored value: a resolver directory is found by its `int64`,
+    not by its string name.
 - **Continuations:** restart paged queries across this release; plan changes and cursor
   encoding corrections do not preserve old tokens. See `docs/upgrade.md`.
 - **Record layer:** `FDBDatabase.Run` and its variants make at most 10 attempts by default, and a
@@ -318,6 +320,13 @@ Each is described in full under Compatibility or Changed below.
 - `fdb` `GetRange` sends its first batch at the call, as Apple's Go binding does: the rows reflect the transaction's writes as of that call, and commit waits for every issued range read (also one never consumed) and keeps its read conflict, as libfdb_c does. `GetSliceWithError` over more than batch 1's bytes (about 4 KB in the default mode) now takes two sequential round trips, batch 1 and then the rest, as libfdb_c does. `client.Transaction.StartGetRange` starts such a read and returns at once; `Database.Metrics()` (on `fdb.Database` too) reports `TransactionGetRangeRequests`. A watch whose read fails no longer leaves a read conflict.
 
 ### Fixed
+- Record layer (RFC-275):
+  - An online build no longer conflicts on writes to records of a type its target indexes do not
+    cover. Java filters by record type before it adds the read conflict.
+  - `GetNth` returns nil past level 0 of a ranked set without duplicate counting.
+  - Key-space matching follows Java's declaration order.
+  - The behavior changes listed under Breaking changes are Java's (`RecordCoreStorageException`,
+    `ClassCastException`, `RecordCoreArgumentException`).
 - Built-in TEXT tokenization, casing/name lookup and Go-only collated keys use frozen Unicode-15 data, so compiler upgrades preserve existing terms, positions and keys; pre-existing Java differences remain explicit in `docs/compatibility.md` (RFC-265).
 - Ordinary, covering and fetch query index scans over one physical range pass Skip to the index cursor, as Java's plans do: skipped entries no longer count against scan-record or byte limits, and their records are not loaded. Multi-range and residual key-filter scans, and the mapped reads of remote-fetch plans, still skip once above the combined cursor.
 - Range-read shard lookups ask a commit proxy once for the shards a read needs, as libfdb_c does, instead of filling the cache for the whole range first; a reverse read over more uncached shards than one lookup returns no longer repeats the same location request until its deadline, and `GetLocations` with a limit of 0 returns every shard.

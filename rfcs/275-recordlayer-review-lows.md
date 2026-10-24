@@ -95,7 +95,10 @@ covers the four Low items and the Medium explicit-version/`VersionstampSaveBehav
      share one declaration-order matcher, `childForKey`. With the sibling rules the order is
      not observable, because at most one child can match.
    - `PathFromTuple` returns the `ArgumentError` for an element no child of a non-leaf
-     directory holds. A remainder is left only past a leaf.
+     directory holds, including a root without subdirectories. A remainder is left only past
+     a leaf below the root.
+   - `FindChildForValue` takes a stored value, as Java's `findChildForValue` does. A resolver
+     directory is now found by its `int64` and no longer by its string name.
    - The test that pinned constant-first matching built a tree that is now refused. It is
      replaced by tests of the sibling rules.
    - `ResolverFunc`, `KeySpace.Path` and `Path.Add` take a `context.Context`, and
@@ -110,15 +113,16 @@ covers the four Low items and the Medium explicit-version/`VersionstampSaveBehav
    `buildRangeInTransaction`, so a test can run it inside its own transaction.
 5. **Rank and TEXT.**
    - `GetNth` returns nil after level 0 unless duplicates are counted.
-   - `extractRankValue` converts tuple numbers with Java's `longValue()`: `uint64`/`*big.Int`
-     wrap to their low 64 bits, and floats go through `javaDoubleToLong` (NaN gives 0,
-     saturation, truncation). A null element stays unbounded. Any other value is a
-     `*ClassCastError` naming the Java class.
+   - `extractRankValue` converts tuple numbers with Java's `longValue()`: every Go integer
+     carrier, `uint64`/`*big.Int` wrapping to their low 64 bits, and floats through
+     `javaDoubleToLong` (NaN gives 0, saturation, truncation). A null element stays
+     unbounded. Any other value is a `*ClassCastError` naming the Java class.
+     `javaNumberLongValue` is shared with the key-expression functions' `nullableLong`.
    - The TEXT maintainer returns `*ClassCastError` for a non-string text column and
      `*IndexOutOfBoundsError` for a position past the key. Null and `""` are still skipped.
 6. **Explicit-version saves.**
-   - Add `VersionstampSaveBehavior` (`Default`, `NoVersion`, `WithVersion`, `IfPresent`) and
-     `recordVersionForSave`.
+   - Add `VersionstampSaveBehavior` (`Default`, `NoVersion`, `WithVersion`, `IfPresent`), whose
+     `String` gives Java's constant names, and `recordVersionForSave`.
    - `saveRecordInternal` takes the version and the behavior, and chooses the version right
      after resolving the record type, before the existing record is loaded. Its callers:
      - `SaveRecordWithVersion` (new, the four-argument Java mapping);
@@ -156,9 +160,9 @@ to the old behavior.
   - every sibling rule through `AddSubdirectory`, including two NULL siblings and equal byte
     constants, plus the valid cases;
   - `AddSubdirectories` stops at a refusal;
-  - `PathFromTuple` rejects an unmatched element under a non-leaf directory and at the root,
-    and keeps a remainder past a leaf;
-  - `FindChildForValue` matches by stored value;
+  - `PathFromTuple` rejects an unmatched element under a non-leaf directory, at the root and
+    under a root without subdirectories, and keeps a remainder past a leaf;
+  - `FindChildForValue` matches by stored value, including a resolver directory's `int64`;
   - a cancelled context reaches the resolver.
 - **Error chains:** a corrupt header is a `*RecordCoreStorageError` that unwraps to the
   parse error, both for a direct open and through the store-state cache.
@@ -178,7 +182,8 @@ to the old behavior.
 - **Explicit versions,** on real FDB:
   - every behavior with no version and with a complete version, on metadata that stores
     versions and metadata that does not, at the default and the legacy format, read back in
-    the saving transaction and after commit;
+    the saving transaction and after commit. The exception is `NO_VERSION` with a version,
+    which is refused and has its own spec;
   - a supplied incomplete version, completed at commit;
   - `NO_VERSION` with a version, refused before the existence check;
   - a re-save with no version clears the stored one;

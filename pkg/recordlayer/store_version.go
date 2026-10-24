@@ -31,6 +31,21 @@ const (
 	VersionstampSaveBehaviorIfPresent
 )
 
+// String returns the Java enum constant's name.
+func (b VersionstampSaveBehavior) String() string {
+	switch b {
+	case VersionstampSaveBehaviorDefault:
+		return "DEFAULT"
+	case VersionstampSaveBehaviorNoVersion:
+		return "NO_VERSION"
+	case VersionstampSaveBehaviorWithVersion:
+		return "WITH_VERSION"
+	case VersionstampSaveBehaviorIfPresent:
+		return "IF_PRESENT"
+	}
+	return fmt.Sprintf("VersionstampSaveBehavior(%d)", int(b))
+}
+
 // recordVersionForSave is Java's FDBRecordStore.recordVersionForSave
 // (FDBRecordStore.java:621-633).
 func (store *FDBRecordStore) recordVersionForSave(version *FDBRecordVersion, behavior VersionstampSaveBehavior) (*FDBRecordVersion, error) {
@@ -44,7 +59,7 @@ func (store *FDBRecordStore) recordVersionForSave(version *FDBRecordVersion, beh
 		return version, nil
 	case VersionstampSaveBehaviorDefault, VersionstampSaveBehaviorWithVersion:
 	default:
-		return nil, &IllegalArgumentError{Message: fmt.Sprintf("unknown VersionstampSaveBehavior %d", behavior)}
+		return nil, &IllegalArgumentError{Message: "unknown " + behavior.String()}
 	}
 	if version == nil && (behavior == VersionstampSaveBehaviorWithVersion || store.metaData.IsStoreRecordVersions()) {
 		return IncompleteVersion(store.context.ClaimLocalVersion())

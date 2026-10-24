@@ -596,6 +596,12 @@ func TestFindChildForValue(t *testing.T) {
 
 	// Value of unsupported type matches nothing
 	g.Expect(root.FindChildForValue(3.14)).To(BeNil())
+
+	// A resolver directory holds its stored int64, not the logical name it resolves.
+	tenants := NewDirectory("tenants", KeyTypeNull)
+	mustAdd(t, tenants, ResolverDirectory("tenant", NewMemoryResolver(0)))
+	g.Expect(tenants.FindChildForValue(int64(1000))).To(Equal(tenants.GetSubdirectory("tenant")))
+	g.Expect(tenants.FindChildForValue("acme")).To(BeNil())
 }
 
 // TestSiblingKeyTypes pins Java's KeySpaceDirectory.addSubdirectory rules: a
@@ -681,6 +687,11 @@ func TestPathFromTuple_NoSubdirectory(t *testing.T) {
 	_, _, err = ks.PathFromTuple(tuple.Tuple{"not a long"})
 	g.Expect(errors.As(err, &argErr)).To(BeTrue(), "%v", err)
 	g.Expect(argErr.ParentDir).To(Equal("root"))
+
+	// A root without subdirectories holds nothing; it is not a leaf to take a remainder at.
+	_, _, err = NewKeySpace(NewDirectory("empty", KeyTypeNull)).PathFromTuple(tuple.Tuple{int64(1)})
+	g.Expect(errors.As(err, &argErr)).To(BeTrue(), "%v", err)
+	g.Expect(argErr.ParentDir).To(Equal("empty"))
 
 	path, remainder, err := ks.PathFromTuple(tuple.Tuple{int64(1), "x", int64(9)})
 	g.Expect(err).NotTo(HaveOccurred())
