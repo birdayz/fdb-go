@@ -923,12 +923,8 @@ func TestPipelinedGet_Resolve_FlushErrorRetries(t *testing.T) {
 	}
 }
 
-// TestPipelinedGet_LateFailureKeepsReplacement pins the late report a pipelined
-// read makes: its connection A died, the pool has since dialed B, and only then is
-// the read resolved. Its failure arms (flush and transport-error reply) report A,
-// which must leave B open and its address alive; C++ connectionKeeper closes and
-// reports only the connection it holds (FlowTransport.actor.cpp:924-1001).
-// Revert-proof: a report that closes whatever the pool holds closes B.
+// A pipelined read resolved after its connection A died and the pool redialed B
+// reports A from its flush and reply arms; B must stay open and its address alive.
 func TestPipelinedGet_LateFailureKeepsReplacement(t *testing.T) {
 	t.Parallel()
 	for _, arm := range []string{"flush", "reply"} {

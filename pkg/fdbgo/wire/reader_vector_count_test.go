@@ -23,8 +23,7 @@ func vectorMessage(count uint32, room int) []byte {
 	return d
 }
 
-// A count the buffer cannot hold is malformed; ReadVectorCount used to cap it
-// and let callers read the bytes after the vector as element offsets.
+// A count the buffer cannot hold is malformed and is an error, not a shorter vector.
 func TestReadVectorCount_RejectsOversizedCount(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {

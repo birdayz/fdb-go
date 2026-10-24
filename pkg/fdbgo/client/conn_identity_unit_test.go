@@ -119,14 +119,8 @@ func replyToken(tok [16]byte) transport.UID {
 	return transport.UID{First: binary.LittleEndian.Uint64(tok[:8]), Second: binary.LittleEndian.Uint64(tok[8:])}
 }
 
-// A late failure report for a connection the pool has already replaced must not
-// close the replacement. A location query on connection A sees A die; before its
-// handler runs, a commit dials B and waits for B's reply. The handler then runs
-// for A. If it closed whatever the pool held, the commit would lose B and report
-// commit_unknown_result (1021); the replacement must instead deliver the proxy's
-// answer (not_committed, 1020), and B's dial must still count as the address
-// being alive. C++ connectionKeeper closes and reports only its own connection
-// (FlowTransport.actor.cpp:924-1001).
+// A location query's late report about dead connection A must not close B, on
+// which a commit waits: the commit gets B's not_committed (1020), not 1021.
 func TestLateConnErrorKeepsReplacementConn(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -144,9 +138,11 @@ func TestLateConnErrorKeepsReplacementConn(t *testing.T) {
 	commitErr := make(chan error, 1)
 	var commitReply transport.UID
 	var connA *transport.Conn
+	captured := make(chan struct{}) // the hook has taken the commit frame from B
 	var once sync.Once
 	hook := func() {
 		once.Do(func() {
+			defer close(captured)
 			connA = pooledConn(db, addr)
 			if _, ok := peerA.recv(ctx); !ok {
 				t.Error("no location request on A")
@@ -191,6 +187,11 @@ func TestLateConnErrorKeepsReplacementConn(t *testing.T) {
 
 	// The location query retries after handling A's failure: on B when B survived,
 	// on a third connection when the handler closed B.
+	select {
+	case <-captured:
+	case <-ctx.Done():
+		t.Fatal("the location query did not reach its seam")
+	}
 	for _, want := range []int{0, 1} {
 		select {
 		case got := <-dials:

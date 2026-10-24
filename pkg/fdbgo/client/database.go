@@ -504,11 +504,8 @@ func (db *database) getOrDial(ctx context.Context, addr string) (*transport.Conn
 }
 
 // handleDialError reacts to a getOrDial error. A context cancellation is the
-// CALLER giving up, not the endpoint failing — evicting the pooled connection and
-// marking the endpoint failed there would punish a healthy peer (and, in a
-// concurrent cold dial, could drop the very connection a sibling caller just
-// pooled). So only a genuine transport failure (ctx still live) feeds
-// handleConnError. A failed dial has no connection to name.
+// caller giving up, not the endpoint failing, so only a dial failure with a live
+// ctx is reported; it has no connection to name.
 func (db *database) handleDialError(ctx context.Context, addr string) {
 	if ctx.Err() == nil {
 		db.handleConnError(addr, nil)

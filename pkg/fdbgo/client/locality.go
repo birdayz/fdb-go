@@ -60,18 +60,17 @@ func (lc *locationCache) searchIndex(tenantId int64, key []byte) int {
 	})
 }
 
-// insertSorted caches each entry as C++ setCachedLocation does
-// (NativeAPI.actor.cpp:2001-2020): CoalescedKeyRangeMap::insert
-// (KeyRangeMap.h:206-253) overwrites every cached range the new one overlaps,
-// keeps the parts outside it with their servers, and ignores an empty range. A
-// tenant's entries therefore stay disjoint, which is what lookupLocked and
-// invalidate rely on. Caller must hold lc.mu write lock.
+// insertSorted caches each entry, overwriting the cached ranges it overlaps, as
+// C++ CoalescedKeyRangeMap::insert does (KeyRangeMap.h:206-253), so a tenant's
+// entries stay disjoint. Caller must hold lc.mu write lock.
 func (lc *locationCache) insertSorted(newEntries []locationEntry) {
 	for _, ne := range newEntries {
 		lc.insertRange(ne)
 	}
 }
 
+// insertRange trims or drops what ne overlaps and inserts it; a range with
+// begin >= end inserts nothing.
 func (lc *locationCache) insertRange(ne locationEntry) {
 	if ne.end != nil && bytes.Compare(ne.begin, ne.end) >= 0 {
 		return
@@ -633,6 +632,9 @@ func (lc *locationCache) queryLocations(db *database, ctx context.Context, tenan
 				}
 				entries, err := parseGetKeyServerLocationsReply(resp.Body)
 				if err != nil {
+					if db.logger != nil {
+						db.logger.Debug("fdbgo: location reply discarded", "proxy", proxy.Address, "error", err)
+					}
 					continue
 				}
 				for i := range entries {
@@ -726,8 +728,9 @@ const (
 	// C++ loads FlatBuffers without bounds checks (flat_buffers.h:1140-1153), so
 	// such a reply has no defined C++ result; Go discards it.
 	locationsUnreadable locationsDefect = iota + 1
-	// locationsInvertedRange: a shard range with begin > end, for which
-	// KeyRangeRef::serialize throws inverted_range (FDBTypes.h:384-399).
+	// locationsInvertedRange: a shard range with begin > end; C++ throws
+	// inverted_range, or asserts first for a single-key form without its trailing
+	// \x00 (FDBTypes.h:384-399).
 	locationsInvertedRange
 	// locationsNoShards: no result names a non-empty range with a server.
 	locationsNoShards
@@ -751,11 +754,9 @@ func (e *locationsReplyError) Error() string {
 
 func (e *locationsReplyError) Unwrap() error { return e.err }
 
-// parseGetKeyServerLocationsReply decodes the shards of a locations reply. A
-// result whose range is absent or empty is skipped: C++ decodes an absent range as
-// the empty KeyRangeRef() and caching an empty range is a no-op
-// (KeyRangeMap.h:209-210). A result without servers is skipped too; locateRangeWith
-// asks again for a reply with that hole.
+// parseGetKeyServerLocationsReply decodes a locations reply's shards, skipping
+// results C++ caches nothing for: an absent or empty range (KeyRangeMap.h:209-210),
+// or no servers (locateRangeWith re-asks for the hole).
 func parseGetKeyServerLocationsReply(data []byte) ([]locationEntry, error) {
 	r, err := wire.ReadErrorOr(data)
 	if err != nil {

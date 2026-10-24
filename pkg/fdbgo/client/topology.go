@@ -234,14 +234,11 @@ func (db *database) waitProxiesChanged() <-chan struct{} {
 	return db.proxiesChanged
 }
 
-// handleConnError reports that failed, the connection an RPC to addr ran on, has
-// failed; failed is nil for a dial failure. It evicts the pooled connection and
-// marks addr failed so backoff sleeps wake on recovery. A report about a
-// connection the pool has already replaced with an open one is superseded: C++
-// connectionKeeper closes and reports only the connection it holds, before it
-// reconnects (FlowTransport.actor.cpp:924-1001), so the replacement keeps its RPCs
-// and the alive state its dial recorded. The decision and the mark share connMu
-// with dialAndPool's pool-and-markAlive, so neither can overtake the other.
+// handleConnError reports that failed (nil for a dial failure), the connection an
+// RPC to addr used, has failed. A report the pool has outlived with an open
+// replacement changes nothing but the counter: C++ connectionKeeper closes and
+// reports only its own connection (FlowTransport.actor.cpp:924-1001). The mark
+// shares connMu with dialAndPool's markAlive, so neither overtakes the other.
 func (db *database) handleConnError(addr string, failed *transport.Conn) {
 	newlyFailed := false
 	db.connMu.Lock()
