@@ -63,6 +63,11 @@ The decision and `markFailed` run in one `connMu` critical section, the lock und
 which `dialAndPool` pools a new connection and calls `markAlive`, so a mark cannot
 overtake a redial's recovery and a redial cannot slip between the decision and the
 mark. (`failureMonitor` takes only its own lock; `dialAndPool` already nests it.)
+`recordConnFailure`, which did the mark, the counter and the Warn after the
+unlock, becomes `reportConnFailure(addr, newlyFailed)`: the counter and the
+edge-triggered Warn, run after `connMu` is released, so no logging happens under
+the pool lock. `handleConnError` stays the single failure sink and the comment
+says so.
 
 `handleReadConnError(addr, conn, err)` takes and forwards the connection. Every
 call site passes the connection it sent on; the hedged read path carries it in
@@ -74,9 +79,13 @@ A connection that leaves the pool is always closed (by `handleConnError`, by the
 dial panic backstop, or because `getOrDialConnFor` drops only closed entries), so
 a non-pooled `failed` connection needs no close of its own.
 
-A send-error arm reports right after its send fails on `conn`, the connection it
-just obtained from the pool; the reply-error arms report after a wait during which
-the pool can change, and those are the reports the identity check is for.
+Send-error reports can be late too: a send waits for its write (and, on a cold
+peer, for its place in the outbox), and the connection can die while it waits,
+after which another caller may pool a replacement. Every report, send or reply,
+names the connection its request used. Passing nil at a call site would behave
+the same in every reachable state, because a transport failure closes its
+connection before any send or reply sees the error; passing the pooled
+replacement would not, and the per-arm tests below catch that.
 
 A test seam, `beforeConnFailureMark` (nil in production, like `afterLocationSend`),
 runs just before the mark so a test can attempt a redial at that instant.
@@ -148,9 +157,11 @@ rethrows (`FlowTransport.actor.cpp:1195-1207`), and nothing is cached.
   or server element (`locationsUnreadable`), or an inverted range
   (`locationsInvertedRange`). `queryLocations` already treats a parse error as a
   failed attempt and asks the next proxy; it does not mark the proxy failed.
-- A key the range carries whose bytes lie outside the reply (`ReadBytes` returns
-  nil for a present field only then) is `locationsUnreadable`: decoding it as the
-  empty key would widen the range. The range checks compare with `bytes.Compare`,
+- A present key-range slot that does not decode (`ReadNestedReader` fails on a
+  present slot: zero or out-of-bounds offset) is `locationsUnreadable`, and so is
+  a present key whose bytes `ReadBytes` cannot return (it returns nil for a
+  present field with a zero offset or with bytes outside the reply): decoding
+  either as empty would widen the range. The range checks compare with `bytes.Compare`,
   so an absent end is the empty key, as C++ decodes it: `["a", absent)` is
   inverted, not unbounded.
 - A result whose range is absent or empty is skipped, as C++ caches nothing for
@@ -211,15 +222,19 @@ assert the typed error and its defect, not only that some error occurred.
     nothing pooled; failure then redial then a second report. Each asserts the
     pooled connection, `isFailed`, the counter and the Warn count.
   - Ordering: the `beforeConnFailureMark` seam attempts a redial just before the
-    mark. With the mark outside `connMu` the redial completes first and the mark
-    leaves an open pooled connection's address failed; with it inside, the redial
-    waits for the lock and its `markAlive` lands last. Deterministic either way.
-    A repeated concurrent report-and-redial checks the same invariant.
-  - Every reply-failure arm through its production path (commit, GRV, location,
+    mark. It asks `connMu.TryLock()` whether the pool lock is free: if it is (the
+    mark runs outside `connMu`), the seam completes the redial before returning,
+    and the mark then leaves an open pooled connection's address failed; if not,
+    it starts the redial on a goroutine, which waits for the lock, so its
+    `markAlive` lands last. No timer is involved. A repeated concurrent
+    report-and-redial checks the same invariant.
+  - Every failure arm through its production path (commit, GRV, location,
     WaitMetrics, SplitRange, getValue to one server, load-balanced getValue, getKey,
-    getRange, watch): the request goes out on A, the test gives the pool a
-    replacement B, and A dies. The arm's report must leave B pooled and open and
-    the address alive.
+    getRange, watch, pipelined get with its resolve), twice. Reply arms: the
+    request reaches A, the test gives the pool a replacement B, and A dies. Send
+    arms: A's peer reads nothing, so the request's write blocks; once it starts,
+    the test pools B and kills A under the blocked write. Either way the arm's
+    report must leave B pooled and open and the address alive.
   - Hedged path: `sendFrameWithHedge` results and losers carry the connection of
     their own request; `endOther` reports a loser against its connection.
   - Cache: merge, split (upper half and nested), unbounded entries, touching
@@ -236,7 +251,10 @@ assert the typed error and its defect, not only that some error occurred.
     the second with the valid vector; the query returns and caches the second, and
     the first proxy is not marked failed.
 - `wire_test`: `ReadVectorCount` rejects an oversized count and accepts one that
-  fits exactly.
+  fits exactly. `types_test`: a generated decoder (`GetReadVersionReply` tag
+  throttles) decodes an oversized vector as empty and keeps the other fields.
+  `conn_location_unit_test`: the split-point and `ClientDBInfo` proxy-list parsers
+  return the `*wire.VectorCountError`.
 - `client_test` (test-full, real FDB): a `PendingGet` resolved after its
   connection A died and the pool redialed B, for the flush arm and the
   transport-error reply arm: the value is returned, B stays open, `addr` is not
