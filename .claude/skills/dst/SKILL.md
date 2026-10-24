@@ -286,8 +286,8 @@ bazelisk test //pkg/simfdb/hunt/sqlpage:sqlpage_test --test_output=errors
 # dst-hunt -profiles sqlpage   (SQL runs are ~1-2/sec/core — far slower than the raw drivers)
 ```
 
-- **Mechanism:** `conn.Raw(func(dc any){ dc.(*embedded.EmbeddedConnection).SetOptions(
-  api.NewOptionsBuilder().Set(api.OptExecutionScannedRowsLimit, N).Build()) })` on a pinned `*sql.Conn`,
+- **Mechanism:** `conn.Raw(func(dc any){ dc.(*embedded.EmbeddedConnection).SetOption(
+  api.OptExecutionScannedRowsLimit, N) })` on a pinned `*sql.Conn` (it lasts that borrow),
   then query — the driver auto-resumes across internal continuations to a full result, so paged==unpaged
   must hold. This is the same knob the `flatmap_continuation_drop_fdb_test` uses.
 - **FOUND A BUG FAMILY** (executor-continuation gaps, all TODO.md "## DST findings", each pinned by a

@@ -4139,9 +4139,6 @@ func javaFloatString(f float64, bits int) string {
 // JavaDoubleToString is Java's Double.toString(double).
 func JavaDoubleToString(f float64) string { return javaFloatString(f, 64) }
 
-// JavaFloatToString is Java's Float.toString(float).
-func JavaFloatToString(f float32) string { return javaFloatString(float64(f), 32) }
-
 // toFloat32Operand converts a FLOAT-lane operand to float32. Integer
 // operands convert DIRECTLY int64→float32 (Java's ADD_LF does `(float)l`
 // in one rounding step; routing through float64 first would double-round
@@ -4410,10 +4407,8 @@ func (e *AggregateEvalError) Error() string {
 	return e.Message
 }
 
-// addInt64Checked / subInt64Checked / mulInt64Checked mirror
-// embedded.functions.{Add,Sub,Mul}Int64Checked. Re-implemented in
-// cascades to keep the value-layer arithmetic free of cross-package
-// imports (the package-structure goal in RFC-025).
+// addInt64Checked / subInt64Checked / mulInt64Checked are Java's
+// Math.addExact / subtractExact / multiplyExact.
 //
 // Add/Sub overflow: signed-overflow detection via the standard
 // "different sign" check (well-defined under int64 wrap semantics).

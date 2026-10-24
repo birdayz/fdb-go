@@ -1243,7 +1243,8 @@ func (c *EmbeddedConnection) ensureCatalogInit(ctx context.Context) error {
 }
 
 // Ping implements driver.Pinger. Bootstraps the catalog on first call.
-func (c *EmbeddedConnection) Ping(ctx context.Context) error {
+func (c *EmbeddedConnection) Ping(ctx context.Context) (err error) {
+	defer c.recoverInto(&err)
 	if c.closed.Load() {
 		return driver.ErrBadConn
 	}
@@ -1271,11 +1272,12 @@ func (c *EmbeddedConnection) runDDL(ctx context.Context, action apiddl.ConstantA
 // yaml-tests Command.applyMetadataOperationEmbedded, which the `load schema
 // template` and `set schema state` commands use to reach the catalog without
 // SQL. The catalog is bootstrapped first, as any DDL on the connection is.
-func (c *EmbeddedConnection) ApplyMetadataOperation(ctx context.Context, op func(factory apiddl.MetadataOperationsFactory, txn api.Transaction) error) error {
+func (c *EmbeddedConnection) ApplyMetadataOperation(ctx context.Context, op func(factory apiddl.MetadataOperationsFactory, txn api.Transaction) error) (err error) {
+	defer c.recoverInto(&err)
 	if err := c.ensureCatalogInit(ctx); err != nil {
 		return err
 	}
-	_, err := c.sess.DB.RunWithMaxAttempts(ctx, 1, configured(c.Options(), func(rctx *recordlayer.FDBRecordContext) (any, error) {
+	_, err = c.sess.DB.RunWithMaxAttempts(ctx, 1, configured(c.Options(), func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		return nil, op(c.sess.Factory, catalog.NewFDBTransaction(rctx))
 	}))
 	return translateFDBError(err)
