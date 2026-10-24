@@ -884,6 +884,10 @@ func TestJavaTupleValueClassName(t *testing.T) {
 		want string
 	}{
 		{"string", "x", "java.lang.String"},
+		{"long", int64(1), "java.lang.Long"},
+		{"big integer", uint64(1 << 63), "java.math.BigInteger"},
+		{"float", float32(1), "java.lang.Float"},
+		{"double", float64(1), "java.lang.Double"},
 		{"bytes", []byte{1}, "[B"},
 		{"bool", true, "java.lang.Boolean"},
 		{"uuid", tuple.UUID{}, "java.util.UUID"},

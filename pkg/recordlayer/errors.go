@@ -664,11 +664,15 @@ type RecordCoreStorageError struct {
 	StoredVersion *int32      // LogMessageKeys.STORED_VERSION
 	ExpectedType  string      // Bound protobuf full name, the language-independent message identity
 	ActualType    string      // LogMessageKeys.ACTUAL_TYPE (stored Any type URL)
+	Cause         error       // the exception's cause, e.g. the store header's parse error
 }
 
 func (*RecordCoreInternalError) JavaRecordCoreException() {}
 
 func (e *RecordCoreStorageError) Error() string {
+	if e.Cause != nil && e.KeyTuple == nil && e.IndexName == "" {
+		return fmt.Sprintf("%s: %v", e.Message, e.Cause)
+	}
 	if e.KeyTuple != nil {
 		message := fmt.Sprintf("%s (key_tuple=%v", e.Message, e.KeyTuple)
 		if e.Version != nil && e.StoredVersion != nil {
@@ -684,6 +688,9 @@ func (e *RecordCoreStorageError) Error() string {
 }
 
 func (*RecordCoreStorageError) JavaRecordCoreException() {}
+
+// Unwrap returns the cause.
+func (e *RecordCoreStorageError) Unwrap() error { return e.Cause }
 
 // RecordContextNotActiveError is Java's RecordContextNotActiveException, a
 // RecordCoreStorageException: the context's transaction is no longer active.

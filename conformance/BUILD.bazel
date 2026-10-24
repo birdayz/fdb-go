@@ -802,6 +802,7 @@ go_test(
         "vector_index_conformance_test.go",
         "version_conformance_test.go",
         "version_index_conformance_test.go",
+        "version_save_conformance_test.go",
         "ws_f_join_unnest_conformance_test.go",
         "ws_f_table_qualifier_conformance_test.go",
         "ws_j_enum_conformance_test.go",

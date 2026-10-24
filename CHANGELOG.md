@@ -38,6 +38,19 @@ Each is described in full under Compatibility or Changed below.
 - **TEXT indexes:** the default tokenizer handles a word-final capital sigma and supplementary-plane
   text as Java does; rebuild Go-written TEXT indexes over such text (#803).
 - **Pure-Go client:** API versions outside 510-730 are refused with 2203 (#823).
+- **Record layer (RFC-275):**
+  - `TransactionSizeWarningError` is removed. Past `TransactionSizeWarnBytes`, saves and deletes
+    succeed, and the warning is logged and counted as `CountTransactionSizeWarning`.
+  - A corrupt store header is a `RecordCoreStorageError` ("Error reading version") that unwraps to
+    the parse error.
+  - A TEXT index whose text column is not a string fails the save with `ClassCastError`, as Java
+    does.
+  - A BY_RANK bound that is not a number also fails with `ClassCastError`.
+- **`keyspace` (RFC-275):**
+  - `AddSubdirectory` and `AddSubdirectories` return an `*ArgumentError` under Java's sibling
+    rules, instead of panicking on a duplicate name.
+  - `ResolverFunc`, `KeySpace.Path` and `Path.Add` take a `context.Context`.
+  - `PathFromTuple` fails on an element that no subdirectory of a non-leaf directory holds.
   `SetLockAware`/`SetReadLockAware` take no argument, a read-lock-aware commit with writes fails
   with 2023 unless the transaction is also lock-aware, and `SetSizeLimit` outside
   [32, 10,000,000] is a deferred error (#820). `SetTimeout` outside [0, INT_MAX] is a deferred
@@ -87,6 +100,8 @@ Each is described in full under Compatibility or Changed below.
   - Legacy GODEBUG values removed in Go 1.27 abort program startup if set.
 
 ### Added
+- Record Layer explicit-version saves: `SaveRecordWithVersion`, `OverrideLockSaveRecordWithVersion`
+  and the typed store's `SaveRecordWithVersion`, with Java's `VersionstampSaveBehavior` (RFC-275).
 - Pure-Go `fdb.MappedRangeReader` capability with byte-driven batch iteration for exact primary ranges; the libfdb_c backend does not expose it.
 - Record Layer remote-fetch index scans: `ScanIndexRecordsWithFetchMethod` with `USE_REMOTE_FETCH` and `USE_REMOTE_FETCH_WITH_FALLBACK`, `ScanIndexRemoteFetch` and `BuildSingleRecord`, with Java's `scan_remote_fetch_entry` event and `remote_fetch` count.
 - The SQL driver DSN sets `max_rows`, `execution_scanned_rows_limit`, `execution_scanned_bytes_limit`,

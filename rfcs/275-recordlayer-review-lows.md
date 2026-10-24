@@ -1,6 +1,6 @@
 # RFC-275: Record-layer review lows and explicit-version saves
 
-**Status:** Draft
+**Status:** Implemented
 **Item:** TODO.md "Quality review 2026-10-24", Record layer (PR #994, unmerged). This RFC
 covers the four Low items and the Medium explicit-version/`VersionstampSaveBehavior` item:
 - the transaction size warning;
@@ -19,45 +19,53 @@ covers the four Low items and the Medium explicit-version/`VersionstampSaveBehav
    (`store.go:644,1032`). A caller's ordinary `if err != nil` then aborts a transaction that
    succeeded. Java has no user size threshold at all. The only size check is the online
    indexer's write limit (`IndexingBase.hadTransactionReachedLimits`), and FDB's own 2101 is
-   counted and wrapped. A warning must never reach the error result.
+   counted and wrapped.
 2. **Keyspace.**
-   - Siblings: `AddSubdirectory` rejects only duplicate names. Java
-     (`KeySpaceDirectory.java:349-385`) also throws `RecordCoreArgumentException` for a
-     same-type sibling where either directory is open (`"Cannot add directory due to
-     overlapping type"`), for an equal constant (`"... overlapping constant value"`), and for
-     an incompatible directory class (`"... incompatibility with existing subdirectory"`).
-     Only two `DirectoryLayerDirectory`s are compatible with each other.
-   - Ambiguous trees: without these checks, `PathFromTuple` resolves an ambiguous tree by
-     its own constant-first rule.
-   - Unmatched elements: `PathFromTuple` returns an element no child of a non-leaf
-     directory matches as a remainder. Java throws `"No subdirectory available to hold
-     provided type"` (`:325-330`).
+   - Siblings: `AddSubdirectory` rejects only duplicate names, and does so by panicking.
+     Java (`KeySpaceDirectory.java:349-385`) throws `RecordCoreArgumentException`:
+     - `"Subdirectory already exists"` for a duplicate name;
+     - `"Cannot add directory due to overlapping type"` for a same-type sibling when either
+       directory is not constant;
+     - `"... overlapping constant value"` for an equal constant;
+     - `"... incompatibility with existing subdirectory"` when either directory's
+       `isCompatible` refuses the other. Only a `DirectoryLayerDirectory` overrides
+       `isCompatible`, and it refuses any sibling that is not one too.
+   - Constant-first matching: without these checks, a tree can be ambiguous. Go resolves it
+     by a constant-first rule in `PathFromTuple`, its `resolveRemaining` and
+     `FindChildForValue`, and the constant-first test pins that. Java matches children in
+     declaration order (`findChildForKey`, `:309-338`). Its sibling rules guarantee that at
+     most one child holds any element.
+   - Unmatched elements: an element that no child of a non-leaf directory matches is
+     returned as a remainder. Java throws `"No subdirectory available to hold provided type"`
+     (`:325-330`).
    - Context: `ResolverDirectory` resolves with `context.Background()` (`resolver.go:111`),
      because `ResolverFunc`, `KeySpace.Path` and `Path.Add` take no context.
 3. **Error chains.** `store_builder.go:1037` and `store_state_cache.go:305` format the
    header-parse error with `%v`. Java throws `RecordCoreStorageException("Error reading
    version", cause)` (`FDBRecordStore.java:2758-2763`).
-4. **`buildRange` read conflicts.** `online_indexer.go:2083` adds a record read conflict for
-   every scanned record and only then filters by index. Java filters first:
-   `getRecordIfTypeMatch` keeps only the target indexes' record types, and only then calls
-   `addRecordReadConflict` (`IndexingBase.java:843-854`). The result is that a concurrent
+4. **`buildRange` read conflicts.** When every target index is idempotent, the build scans at
+   snapshot isolation and adds a read conflict for each record
+   (`online_indexer.go:2084-2085`). It adds the conflict before the per-index record-type
+   filter. Java filters first: `getRecordIfTypeMatch` keeps only the target indexes' record
+   types, and `addRecordReadConflict` follows (`IndexingBase.java:843-854`). So a concurrent
    write to a record of a type no target indexes fails Go's build transaction with 1020.
 5. **Rank and TEXT edges.**
    - `GetNth` keeps the last key after drilling past level 0 even without duplicate
      counting. Java returns null there (`RankedSet.java:576-581`).
    - `extractRankValue` turns any non-`int` rank bound into an unbounded endpoint. Java
-     casts to `Number`: a long, BigInteger or floating value is taken with `longValue()`,
-     and a non-number throws `ClassCastException`
-     (`RankedSetIndexHelper.java:204-216`).
+     casts the bound to `Number` and takes `longValue()`; a non-number throws
+     `ClassCastException` and a null stays unbounded (`RankedSetIndexHelper.java:204-216`).
    - The TEXT maintainer silently skips a text column that is not a string, or a position
-     past the key. Java's `Tuple.getString` throws `ClassCastException`, and the tuple
-     index throws `IndexOutOfBoundsException` (`TextIndexMaintainer.java:288-293`).
-     Validation does not catch this: for `Concat(Literal(5), Field("name"))` it checks the
-     first field it finds, `name`, which is a string.
+     past the key. Java's `Tuple.getString` throws `ClassCastException`, and the tuple index
+     throws `IndexOutOfBoundsException` (`TextIndexMaintainer.java:288-293`). Null and `""`
+     are skipped in Java too. Validation does not catch the non-string case: for
+     `Concat(Literal(5), Field("name"))` it checks the first field it finds, `name`, which is
+     a string.
 6. **Explicit-version saves.** Go saves a version only when the metadata stores versions,
-   and never takes one from the caller (`store.go:681`, "Phase 2"). Java's
-   `saveRecord(rec, existenceCheck, version, behavior)` (`FDBRecordStore.java:503,621-633`)
-   works as follows:
+   and never takes one from the caller (`store.go:682`, "Phase 2").
+   `SaveRecordWithOptions` nevertheless documents itself as Java's four-argument
+   `saveRecordAsync`. Java's `saveRecord(rec, existenceCheck, version, behavior)`
+   (`FDBRecordStore.java:503`) chooses the version in `recordVersionForSave` (`:621-633`):
    - `NO_VERSION` with a non-null version throws `RecordCoreException`.
    - `IF_PRESENT` stores exactly the supplied version, or none.
    - `WITH_VERSION`, or metadata that stores versions, assigns an incomplete version when
@@ -65,48 +73,72 @@ covers the four Low items and the Medium explicit-version/`VersionstampSaveBehav
    - Otherwise the supplied version is stored, complete or incomplete.
    - The version is chosen before the existing record is loaded.
 
+   Java's old format never reads back a version when the metadata stores none
+   (`loadRecordVersionAsync`, `:1104`), even if a save wrote one.
+
 ## Fix
 
 1. On the warning, `CheckTransactionSize` logs at WARN (`slog`) and increments a new
    Go-only count, `CountTransactionSizeWarning`, once per transaction, then returns nil.
    `TransactionSizeWarningError` is removed. `TransactionSizeExceededError` stays: it is an
-   opt-in stop signal. Both thresholds are documented as Go-only extensions.
+   opt-in stop signal.
 2. **Keyspace.**
-   - `AddSubdirectory` and `AddSubdirectories` return an error and apply Java's four sibling
-     checks. A typed `*KeySpaceDirectoryError` carries the parent, name, type and value, and
-     a resolver directory is compatible only with another resolver directory. This also
-     replaces the duplicate-name panic.
-   - `PathFromTuple` walks the children in declaration order, as Java does. It returns
-     `"No subdirectory available to hold provided type"` for an element that no child of a
-     non-leaf directory matches. A remainder is left only past a leaf.
+   - `AddSubdirectory` and `AddSubdirectories` return an `*ArgumentError` under Java's rules.
+     The error carries the parent, the directory name, the type and the value.
+     `AddSubdirectories` stops at the first refusal, and the duplicate-name panic goes away.
+   - A NULL directory counts as constant, as it does in Java: its only value is null.
+   - Byte constants are compared by content. Java compares them by identity, so Go refuses
+     equal byte siblings that Java would accept.
+   - The incompatibility rule cannot arise in Go: a resolver directory is always open, so the
+     overlapping-type rule already refuses any same-type sibling.
+   - Matching: `PathFromTuple`, which absorbs `resolveRemaining`, and `FindChildForValue`
+     share one declaration-order matcher, `childForKey`. With the sibling rules the order is
+     not observable, because at most one child can match.
+   - `PathFromTuple` returns the `ArgumentError` for an element no child of a non-leaf
+     directory holds. A remainder is left only past a leaf.
+   - The test that pinned constant-first matching built a tree that is now refused. It is
+     replaced by tests of the sibling rules.
    - `ResolverFunc`, `KeySpace.Path` and `Path.Add` take a `context.Context`, and
      `ResolverDirectory` passes it to `Resolve`.
    - A path still stores the resolved (stored) value. Java's resolved paths also carry the
-     logical name, which Go does not model; reverse lookup stays out of scope.
+     logical name. This is recorded in DIVERGENCES.md and as a TODO item.
 3. `RecordCoreStorageError` gains a `Cause`, with `Unwrap`. Both header-parse sites return
    `&RecordCoreStorageError{Message: "Error reading version", Cause: err}`.
 4. `buildRange` first collects the target indexes that apply to the record. A record that no
    target applies to is counted as scanned and skipped, with no conflict, as in Java. The
-   loop body moves into `buildRangeInTransaction`, so a test can run it inside its own
-   transaction.
+   idempotent-only condition on the conflict is unchanged. The loop body moves into
+   `buildRangeInTransaction`, so a test can run it inside its own transaction.
 5. **Rank and TEXT.**
    - `GetNth` returns nil after level 0 unless duplicates are counted.
-   - `extractRankValue` converts every tuple number with Java's `longValue()` (two's-complement
-     wrap for `uint64`/`*big.Int`, `javaDoubleToLong` for floats). A null element stays
-     unbounded, and any other value is a `*ClassCastError`.
+   - `extractRankValue` converts tuple numbers with Java's `longValue()`: `uint64`/`*big.Int`
+     wrap to their low 64 bits, and floats go through `javaDoubleToLong` (NaN gives 0,
+     saturation, truncation). A null element stays unbounded. Any other value is a
+     `*ClassCastError` naming the Java class.
    - The TEXT maintainer returns `*ClassCastError` for a non-string text column and
-     `*IndexOutOfBoundsError` for a missing one. Null and `""` are still skipped, as in Java.
+     `*IndexOutOfBoundsError` for a position past the key. Null and `""` are still skipped.
 6. **Explicit-version saves.**
-   - Add `VersionstampSaveBehavior` (`Default`, `NoVersion`, `WithVersion`, `IfPresent`), and
-     `SaveRecordWithVersion(rec, existenceCheck, version, behavior)` plus an override-lock
-     twin.
-   - `saveRecordInternal` takes the version and behavior and chooses the version first, as
-     `recordVersionForSave` does. It writes the version through the existing
-     `saveRecordVersion`, which already handles complete versions, incomplete ones and the
-     legacy format.
-   - VERSION index maintenance already reads the stored record's version, and a complete
-     version gives a plain index key.
-   - The batch and dry-run saves keep the default behavior, as Java's do.
+   - Add `VersionstampSaveBehavior` (`Default`, `NoVersion`, `WithVersion`, `IfPresent`) and
+     `recordVersionForSave`.
+   - `saveRecordInternal` takes the version and the behavior, and chooses the version right
+     after resolving the record type, before the existing record is loaded. Its callers:
+     - `SaveRecordWithVersion` (new, the four-argument Java mapping);
+     - `OverrideLockSaveRecordWithVersion` (new);
+     - the typed store's `SaveRecordWithVersion` (new; its `SaveRecordWithOptions` delegates
+       to it with the default);
+     - `SaveRecordWithOptions`, `OverrideLockSaveRecord` and `SaveRecordsPipelined`, all with
+       the default and no version.
+
+     `SaveRecordWithOptions`'s doc now names the two-argument Java overload, and the
+     "Phase 2" note is gone.
+   - `SaveRecordBatch` chooses its version through `recordVersionForSave(nil, Default)`, so
+     its behavior is unchanged. `DryRunSaveRecord` is unchanged; Java's dry run ignores the
+     version too.
+   - The version is written by the existing `saveRecordVersion`, which already handles
+     complete versions, incomplete ones and the legacy format. VERSION index maintenance
+     reads the stored record's version, and a complete version gives a plain index key.
+7. **Records.** CHANGELOG `[Unreleased]` lists the breaking changes (the removed warning
+   error, the keyspace signatures, the new errors) and adds the explicit-version API.
+   DIVERGENCES.md records the Go-only size thresholds and the key-space path model.
 
 ## Performance
 
@@ -115,27 +147,45 @@ records it does not index.
 
 ## Test plan
 
-Each regression fails before its fix.
+Each regression fails before its fix. For the new API, the red evidence is a mutation back
+to the old behavior.
 
-- **Transaction size:** a `SaveRecord` past the warning threshold returns no error. The count
-  is incremented once per transaction, and the exceeded error is unchanged.
-- **Keyspace:** each sibling rule and the valid cases; `PathFromTuple` rejects an unmatched
-  element under a non-leaf directory; a cancelled context reaches the resolver.
+- **Transaction size:** a save and a delete past the warning threshold each return no error
+  and count the warning once per transaction. The exceeded error is unchanged.
+- **Keyspace:**
+  - every sibling rule through `AddSubdirectory`, including two NULL siblings and equal byte
+    constants, plus the valid cases;
+  - `AddSubdirectories` stops at a refusal;
+  - `PathFromTuple` rejects an unmatched element under a non-leaf directory and at the root,
+    and keeps a remainder past a leaf;
+  - `FindChildForValue` matches by stored value;
+  - a cancelled context reaches the resolver.
 - **Error chains:** a corrupt header is a `*RecordCoreStorageError` that unwraps to the
-  parse error, for both the builder path and the cached path.
-- **`buildRange`:** inside the build transaction, a concurrent write to a record of a type
-  no target indexes no longer conflicts the build's commit. A record of the indexed type
-  still conflicts.
-- **Rank and TEXT:** a ranked set written with duplicate counting and read without returns
-  nil past level 0. `BY_RANK` with a string bound fails; a double bound is truncated. A TEXT
-  index over `Concat(Literal(int64(5)), Field("name"))` fails the save.
-- **Explicit versions** (real FDB):
-  - every behavior with no version, a complete version and an incomplete one, on metadata
-    that stores versions and metadata that does not;
-  - `NO_VERSION` with a version is refused before the existence check;
+  parse error, both for a direct open and through the store-state cache.
+- **`buildRange`,** with an idempotent VALUE index: a concurrent write to a record of a type
+  no target indexes does not conflict the build's commit, while a write to an indexed record
+  still does. The scanned count includes the skipped record.
+- **Rank and TEXT:**
+  - A ranked set written with duplicate counting and read without returns nil past level 0.
+  - `extractRankValue` gives `longValue()` for `int64`, `uint64` above `MaxInt64`,
+    `*big.Int` beyond the int64 range, float32, a negative double, NaN and ±Inf. A nil bound
+    stays unbounded, and a bool is a `ClassCastError`.
+  - `BY_RANK` with a double bound truncates, and with a string bound fails with
+    `ClassCastError`.
+  - A TEXT index over `Concat(Literal(int64(5)), Field("name"))` fails the save with a
+    `ClassCastError` naming `java.lang.Long`. Null and `""` text save with no entries, and a
+    position past the key is an `IndexOutOfBoundsError`.
+- **Explicit versions,** on real FDB:
+  - every behavior with no version and with a complete version, on metadata that stores
+    versions and metadata that does not, at the default and the legacy format, read back in
+    the saving transaction and after commit;
+  - a supplied incomplete version, completed at commit;
+  - `NO_VERSION` with a version, refused before the existence check;
+  - a re-save with no version clears the stored one;
   - a VERSION index key with a complete version;
-  - the legacy format.
-- **Explicit versions, cross-engine:** a Java step saves the same records with the same
-  versions and behaviors. The verdicts and the bytes of the record, index and legacy-version
-  spaces must be equal. Complete versions make the bytes comparable; for assigned versions,
-  only the keys are compared.
+  - the override-lock, typed, pipelined and batch saves.
+- **Explicit versions, cross-engine** (`conformance/version_save_conformance_test.go`): a new
+  Java step saves the same records with the same complete versions and behaviors, including
+  a `NO_VERSION` refusal and a clearing re-save. It runs on metadata with and without
+  versions and a VERSION index, at the default and the legacy format. The verdicts and the
+  record, index and legacy-version key-value pairs must be equal.

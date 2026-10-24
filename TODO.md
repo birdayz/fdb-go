@@ -1932,6 +1932,11 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
 
 ## Follow-ups after the 4.14.2.0 migration (not blocking)
 
+- [ ] `keyspace`: resolved paths with logical names. A resolver directory's `Path` holds only the
+  resolved `int64`, and `PathFromTuple` makes no reverse lookup. Java's `ResolvedKeySpacePath`
+  carries both (`DirectoryLayerDirectory.pathFromKey`). See DIVERGENCES.md, "Key-space paths hold
+  the stored value" (RFC-275).
+
 - [ ] **Decide which nightly nets to bring back (all deleted 2026-10-09).** The seven nightly
   workflows (coverage, factory, fuzz, oracles, reconcile, rowdiff, stress), `cmd/verify-pr-checks`
   (used only by reconcile) and the `census_test` target were removed: a late nightly could hold

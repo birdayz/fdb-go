@@ -43,13 +43,26 @@ var _ = Describe("Edge case hardening", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-				_, err := NewStoreBuilder().
-					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
-				return nil, err
-			})
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("parse store header"))
+			// Both header readers, the open's state load and Create's existence
+			// check, keep the parse error as the cause of Java's
+			// RecordCoreStorageException("Error reading version").
+			for _, create := range []bool{false, true} {
+				_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+					b := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks)
+					var err error
+					if create {
+						_, err = b.Create()
+					} else {
+						_, err = b.Open()
+					}
+					return nil, err
+				})
+				var storageErr *RecordCoreStorageError
+				Expect(errors.As(err, &storageErr)).To(BeTrue(), "create=%v: %v", create, err)
+				Expect(storageErr.Message).To(Equal("Error reading version"))
+				Expect(storageErr.Cause).To(HaveOccurred())
+				Expect(errors.Unwrap(storageErr)).To(BeIdenticalTo(storageErr.Cause))
+			}
 		})
 
 		It("returns error when store header is empty bytes", func() {

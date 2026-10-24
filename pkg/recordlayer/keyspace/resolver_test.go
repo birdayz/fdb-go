@@ -2,6 +2,7 @@ package keyspace
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 
@@ -94,12 +95,12 @@ func TestResolverDirectory(t *testing.T) {
 	resolver := NewMemoryResolver(1000)
 
 	root := NewDirectory("root", KeyTypeNull)
-	root.AddSubdirectory(ResolverDirectory("app", resolver))
+	mustAdd(t, root, ResolverDirectory("app", resolver))
 
 	ks := NewKeySpace(root)
 
 	// Path with string name — should resolve to int64
-	path, err := ks.Path("app", "myapp")
+	path, err := ks.Path(ctx, "app", "myapp")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(path.GetValue()).To(Equal(int64(1000)))
 
@@ -107,12 +108,12 @@ func TestResolverDirectory(t *testing.T) {
 	g.Expect(path.ToTuple()).To(Equal(tuple.Tuple{int64(1000)}))
 
 	// Second time returns same value
-	path2, err := ks.Path("app", "myapp")
+	path2, err := ks.Path(ctx, "app", "myapp")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(path2.GetValue()).To(Equal(int64(1000)))
 
 	// Different name gets different value
-	path3, err := ks.Path("app", "otherapp")
+	path3, err := ks.Path(ctx, "app", "otherapp")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(path3.GetValue()).To(Equal(int64(1001)))
 
@@ -130,17 +131,50 @@ func TestResolverDirectoryTypeError(t *testing.T) {
 	resolver := NewMemoryResolver(0)
 
 	root := NewDirectory("root", KeyTypeNull)
-	root.AddSubdirectory(ResolverDirectory("app", resolver))
+	mustAdd(t, root, ResolverDirectory("app", resolver))
 	ks := NewKeySpace(root)
 
 	// Matches Java's DirectoryLayerDirectory.isValueValid: strings OK, ints rejected.
 	// Passing an int is rejected (would be a cluster-specific value, likely a bug).
-	_, err := ks.Path("app", int64(42))
+	_, err := ks.Path(ctx, "app", int64(42))
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("expected string"))
 
 	// Passing a string succeeds (resolved to int64).
-	path, err := ks.Path("app", "myapp")
+	path, err := ks.Path(ctx, "app", "myapp")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(path.GetValue()).To(BeAssignableToTypeOf(int64(0)))
+}
+
+// ctxResolver resolves only while its caller's context is live.
+type ctxResolver struct{}
+
+func (ctxResolver) Resolve(ctx context.Context, _ string) (int64, error) { return 7, ctx.Err() }
+
+func (ctxResolver) ReverseLookup(ctx context.Context, _ int64) (string, bool, error) {
+	return "", false, ctx.Err()
+}
+
+// TestResolverDirectory_UsesCallerContext pins that a resolver directory
+// resolves under the context Path and Add are given.
+func TestResolverDirectory_UsesCallerContext(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	root := NewDirectory("root", KeyTypeNull)
+	app := NewDirectory("app", KeyTypeString)
+	mustAdd(t, root, app)
+	mustAdd(t, app, ResolverDirectory("tenant", ctxResolver{}))
+	ks := NewKeySpace(root)
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	path, err := ks.Path(context.Background(), "app", "a")
+	g.Expect(err).NotTo(HaveOccurred())
+	_, err = path.Add(cancelled, "tenant", "t")
+	g.Expect(errors.Is(err, context.Canceled)).To(BeTrue(), "%v", err)
+
+	tenant, err := path.Add(context.Background(), "tenant", "t")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(tenant.GetValue()).To(Equal(int64(7)))
 }

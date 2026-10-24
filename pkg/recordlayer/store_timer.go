@@ -144,6 +144,10 @@ var (
 	CountDeleteIndexKey        = Event{"delete_index_key", "Delete Index Key", KindCount}
 	CountDeleteIndexKeyBytes   = Event{"delete_index_key_bytes", "Delete Index Key Bytes", KindSize}
 	CountDeleteIndexValueBytes = Event{"delete_index_value_bytes", "Delete Index Value Bytes", KindSize}
+
+	// CountTransactionSizeWarning is Go-only: a transaction crossed
+	// ContextConfig.TransactionSizeWarnBytes (Java has no such threshold).
+	CountTransactionSizeWarning = Event{"transaction_size_warning", "Transaction Size Warning", KindCount}
 )
 
 // Counter tracks an occurrence count plus a cumulative value.

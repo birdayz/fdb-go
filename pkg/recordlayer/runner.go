@@ -28,9 +28,9 @@ type RecordContextConfig struct {
 	// TransactionID is an optional identifier for tracing/debugging.
 	TransactionID string
 
-	// TransactionSizeWarnBytes triggers a warning when the approximate
-	// transaction size exceeds this threshold. Zero disables the check.
-	// FDB's hard limit is 10MB; a typical warning threshold is 8MB.
+	// TransactionSizeWarnBytes (Go-only) logs a warning and counts
+	// CountTransactionSizeWarning, once per transaction, when the approximate
+	// size passes it; operations still succeed. Zero disables the check.
 	TransactionSizeWarnBytes int64
 
 	// TransactionSizeErrorBytes causes operations to return

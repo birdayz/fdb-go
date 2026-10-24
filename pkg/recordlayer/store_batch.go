@@ -287,17 +287,14 @@ func (store *FDBRecordStore) SaveRecordBatch(
 
 		// Save version if versioning is enabled. One SET_VERSIONSTAMPED_VALUE
 		// mutation per record — no round trip, just added to the write set.
-		var savedVersion *FDBRecordVersion
-		if store.metaData.IsStoreRecordVersions() {
-			localVer := store.context.ClaimLocalVersion()
-			version, verErr := IncompleteVersion(localVer)
-			if verErr != nil {
-				return nil, fmt.Errorf("record %d: create incomplete version: %w", i, verErr)
-			}
-			if err := store.saveRecordVersion(p.primaryKey, version, &newsizeInfo); err != nil {
+		savedVersion, verErr := store.recordVersionForSave(nil, VersionstampSaveBehaviorDefault)
+		if verErr != nil {
+			return nil, fmt.Errorf("record %d: create incomplete version: %w", i, verErr)
+		}
+		if savedVersion != nil {
+			if err := store.saveRecordVersion(p.primaryKey, savedVersion, &newsizeInfo); err != nil {
 				return nil, fmt.Errorf("record %d: save version: %w", i, err)
 			}
-			savedVersion = version
 		}
 
 		// Record count

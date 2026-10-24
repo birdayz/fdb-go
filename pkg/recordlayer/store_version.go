@@ -14,6 +14,44 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
 
+// VersionstampSaveBehavior is Java's FDBRecordStoreBase.VersionstampSaveBehavior:
+// how a save chooses the version stored with the record.
+type VersionstampSaveBehavior int
+
+const (
+	// VersionstampSaveBehaviorDefault stores the supplied version; without one it
+	// assigns an incomplete version when the metadata stores record versions.
+	VersionstampSaveBehaviorDefault VersionstampSaveBehavior = iota
+	// VersionstampSaveBehaviorNoVersion stores no version; supplying one is an error.
+	VersionstampSaveBehaviorNoVersion
+	// VersionstampSaveBehaviorWithVersion always stores a version, assigning an
+	// incomplete one when none is supplied, even if the metadata stores none.
+	VersionstampSaveBehaviorWithVersion
+	// VersionstampSaveBehaviorIfPresent stores exactly the supplied version, if any.
+	VersionstampSaveBehaviorIfPresent
+)
+
+// recordVersionForSave is Java's FDBRecordStore.recordVersionForSave
+// (FDBRecordStore.java:621-633).
+func (store *FDBRecordStore) recordVersionForSave(version *FDBRecordVersion, behavior VersionstampSaveBehavior) (*FDBRecordVersion, error) {
+	switch behavior {
+	case VersionstampSaveBehaviorNoVersion:
+		if version != nil {
+			return nil, &RecordCoreError{Message: "Nonnull version supplied with a NO_VERSION behavior: " + version.String()}
+		}
+		return nil, nil
+	case VersionstampSaveBehaviorIfPresent:
+		return version, nil
+	case VersionstampSaveBehaviorDefault, VersionstampSaveBehaviorWithVersion:
+	default:
+		return nil, &IllegalArgumentError{Message: fmt.Sprintf("unknown VersionstampSaveBehavior %d", behavior)}
+	}
+	if version == nil && (behavior == VersionstampSaveBehaviorWithVersion || store.metaData.IsStoreRecordVersions()) {
+		return IncompleteVersion(store.context.ClaimLocalVersion())
+	}
+	return version, nil
+}
+
 // saveRecordVersion stores the version for a record.
 //
 // In the modern layout (format version >= SAVE_VERSION_WITH_RECORD and the unsplit

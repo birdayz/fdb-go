@@ -302,7 +302,7 @@ func loadRecordStoreState(store *FDBRecordStore, existenceCheck StoreExistenceCh
 	if storeInfoValue != nil {
 		header = &gen.DataStoreInfo{}
 		if err := UnmarshalVTAsJava(header, storeInfoValue); err != nil {
-			return nil, fmt.Errorf("failed to parse store header: %v", err)
+			return nil, &RecordCoreStorageError{Message: "Error reading version", Cause: err}
 		}
 		exists = true
 	} else if existenceCheck == ExistenceCheckErrorIfNotExists {

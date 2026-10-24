@@ -12,6 +12,7 @@
 package keyspace
 
 import (
+	"context"
 	"fmt"
 	"reflect"
 	"strings"
@@ -109,9 +110,41 @@ func (t KeyType) ValidateValue(v any) error {
 // For example, a DirectoryLayerDirectory would resolve a string name to
 // a compact int64 via FDB's directory layer.
 //
-// The function receives the raw value and returns the resolved value.
-// Phase 2 (LocatableResolver) will plug into this hook.
-type ResolverFunc func(value any) (any, error)
+// The function receives the caller's context and the raw value and returns the
+// resolved value.
+type ResolverFunc func(ctx context.Context, value any) (any, error)
+
+// ArgumentError is Java's RecordCoreArgumentException from building or reading
+// a key space, with the LogMessageKeys it carries.
+type ArgumentError struct {
+	Message   string
+	ParentDir string      // PARENT_DIR
+	DirName   string      // DIR_NAME, when the error names a directory
+	DirType   *KeyType    // DIR_TYPE, when the error names a type
+	DirValue  any         // DIR_VALUE, for an overlapping constant
+	KeyTuple  tuple.Tuple // key_tuple, for a key no subdirectory holds
+	KeyPos    int         // key_tuple_pos
+}
+
+func (e *ArgumentError) Error() string {
+	var sb strings.Builder
+	sb.WriteString(e.Message)
+	fmt.Fprintf(&sb, " (parent_dir=%s", e.ParentDir)
+	if e.DirName != "" {
+		fmt.Fprintf(&sb, ", dir_name=%s", e.DirName)
+	}
+	if e.DirType != nil {
+		fmt.Fprintf(&sb, ", dir_type=%s", *e.DirType)
+	}
+	if e.DirValue != nil {
+		fmt.Fprintf(&sb, ", dir_value=%v", e.DirValue)
+	}
+	if e.KeyTuple != nil {
+		fmt.Fprintf(&sb, ", key_tuple=%v, key_tuple_pos=%d", e.KeyTuple, e.KeyPos)
+	}
+	sb.WriteString(")")
+	return sb.String()
+}
 
 // Directory is a node in the KeySpace tree. Each directory has a name,
 // a key type, optional constant value, and optional children.
@@ -161,25 +194,44 @@ func NewConstantDirectory(name string, keyType KeyType, value any) *Directory {
 	}
 }
 
-// AddSubdirectory adds a child directory. Returns the parent for chaining.
-// Panics if a child with the same name already exists.
-func (d *Directory) AddSubdirectory(child *Directory) *Directory {
-	if _, exists := d.childMap[child.Name]; exists {
-		panic(fmt.Sprintf("keyspace: duplicate subdirectory name %q in directory %q", child.Name, d.Name))
+// AddSubdirectory adds a child directory. Like Java's
+// KeySpaceDirectory.addSubdirectory, it refuses a duplicate name and a sibling of
+// the same key type unless both are distinct constants, so that at most one
+// child can hold any key element. Go's resolver directories are always open, so
+// Java's incompatible-constant rule cannot arise.
+func (d *Directory) AddSubdirectory(child *Directory) error {
+	// A NULL directory's only value is null, which Java's isConstant counts as a constant.
+	constant := func(dir *Directory) bool { return dir.IsConstant() || dir.KeyType == KeyTypeNull }
+	for _, existing := range d.children {
+		if existing.Name == child.Name {
+			return &ArgumentError{Message: "Subdirectory already exists", ParentDir: d.Name, DirName: child.Name}
+		}
+		if existing.KeyType != child.KeyType {
+			continue
+		}
+		keyType := child.KeyType
+		if !constant(existing) || !constant(child) {
+			return &ArgumentError{Message: "Cannot add directory due to overlapping type", ParentDir: d.Name, DirName: existing.Name, DirType: &keyType}
+		}
+		if recordTypeKeyEquals(existing.Value, child.Value) {
+			return &ArgumentError{Message: "Cannot add directory due to overlapping constant value", ParentDir: d.Name, DirName: existing.Name, DirType: &keyType, DirValue: existing.Value}
+		}
 	}
 	child.parent = d
 	d.children = append(d.children, child)
 	d.childMap[child.Name] = child
-	return d
+	return nil
 }
 
-// AddSubdirectories adds multiple child directories in one call.
-// Returns the parent for chaining. Panics on duplicate names.
-func (d *Directory) AddSubdirectories(children ...*Directory) *Directory {
+// AddSubdirectories adds child directories in order, stopping at the first
+// AddSubdirectory error.
+func (d *Directory) AddSubdirectories(children ...*Directory) error {
 	for _, child := range children {
-		d.AddSubdirectory(child)
+		if err := d.AddSubdirectory(child); err != nil {
+			return err
+		}
 	}
-	return d
+	return nil
 }
 
 // GetSubdirectory returns a child directory by name, or nil if not found.
@@ -331,72 +383,43 @@ func validateDirectory(d *Directory, path []string) error {
 }
 
 // PathFromTuple resolves a tuple back to a path by matching values against
-// the directory tree. Returns the deepest matching path and any remaining
-// tuple elements that didn't match a directory.
+// the directory tree. Returns the leaf-most path and the tuple elements left
+// over past a leaf directory. An element that no subdirectory of a non-leaf
+// directory holds is an ArgumentError.
 //
 // Matches Java's KeySpace.resolveFromKey / KeySpaceDirectory.pathFromKey.
 func (ks *KeySpace) PathFromTuple(t tuple.Tuple) (*Path, tuple.Tuple, error) {
 	if len(t) == 0 {
 		return nil, nil, fmt.Errorf("keyspace: empty tuple")
 	}
-
-	// First pass: prefer constant directories with matching values.
-	for _, dir := range ks.root.children {
-		if dir.IsConstant() && recordTypeKeyEquals(dir.Value, t[0]) {
-			path := &Path{directory: dir, value: t[0]}
-			return resolveRemaining(path, t[1:])
+	var path *Path
+	dir := ks.root
+	for i, v := range t {
+		if dir.IsLeaf() {
+			return path, t[i:], nil
 		}
-	}
-	// Second pass: fall back to open-type directories.
-	for _, dir := range ks.root.children {
-		if dir.IsConstant() {
-			continue
+		child := dir.childForKey(v)
+		if child == nil {
+			return nil, nil, &ArgumentError{Message: "No subdirectory available to hold provided type", ParentDir: dir.Name, KeyTuple: t, KeyPos: i}
 		}
-		if err := dir.KeyType.ValidateValue(t[0]); err == nil {
-			path := &Path{directory: dir, value: t[0]}
-			return resolveRemaining(path, t[1:])
-		}
-	}
-
-	return nil, t, fmt.Errorf("keyspace: no root directory matches tuple value %v (%T)", t[0], t[0])
-}
-
-// resolveRemaining walks deeper into the tree matching remaining tuple elements.
-func resolveRemaining(path *Path, remaining tuple.Tuple) (*Path, tuple.Tuple, error) {
-	for len(remaining) > 0 {
-		matched := false
-		// Prefer constant directories first (matches Java priority)
-		for _, dir := range path.directory.children {
-			if dir.IsConstant() && recordTypeKeyEquals(dir.Value, remaining[0]) {
-				path = &Path{directory: dir, parent: path, value: remaining[0]}
-				remaining = remaining[1:]
-				matched = true
-				break
-			}
-		}
-		if matched {
-			continue
-		}
-		// Fall back to open-type matches
-		for _, dir := range path.directory.children {
-			if dir.IsConstant() {
-				continue
-			}
-			if err := dir.KeyType.ValidateValue(remaining[0]); err == nil {
-				path = &Path{directory: dir, parent: path, value: remaining[0]}
-				remaining = remaining[1:]
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			break // remaining elements don't match any child directory
-		}
-	}
-	if len(remaining) > 0 {
-		return path, remaining, nil
+		path = &Path{directory: child, parent: path, value: v}
+		dir = child
 	}
 	return path, nil, nil
+}
+
+// childForKey is the first child, in declaration order, whose key type holds v
+// and whose constant, if any, equals it: Java's findChildForKey.
+func (d *Directory) childForKey(v any) *Directory {
+	for _, child := range d.children {
+		if child.KeyType.ValidateValue(v) != nil {
+			continue
+		}
+		if !child.IsConstant() || recordTypeKeyEquals(child.Value, v) {
+			return child
+		}
+	}
+	return nil
 }
 
 // recordTypeKeyEquals compares values with int type normalization
@@ -424,8 +447,9 @@ func toInt64(v any) (int64, bool) {
 	}
 }
 
-// Path starts navigating the key space from a named root subdirectory with a value.
-func (ks *KeySpace) Path(name string, value any) (*Path, error) {
+// Path starts navigating the key space from a named root subdirectory with a
+// value; ctx bounds the directory's resolver, if it has one.
+func (ks *KeySpace) Path(ctx context.Context, name string, value any) (*Path, error) {
 	dir := ks.root.GetSubdirectory(name)
 	if dir == nil {
 		return nil, fmt.Errorf("keyspace: no root directory named %q", name)
@@ -436,7 +460,7 @@ func (ks *KeySpace) Path(name string, value any) (*Path, error) {
 		return nil, fmt.Errorf("keyspace: directory %q: %w", name, err)
 	}
 	if dir.Resolver != nil {
-		resolved, err := dir.Resolver(value)
+		resolved, err := dir.Resolver(ctx, value)
 		if err != nil {
 			return nil, fmt.Errorf("keyspace: directory %q resolve: %w", name, err)
 		}
@@ -457,8 +481,9 @@ type Path struct {
 	value     any
 }
 
-// Add navigates to a child directory with the given value.
-func (p *Path) Add(name string, value any) (*Path, error) {
+// Add navigates to a child directory with the given value; ctx bounds the
+// directory's resolver, if it has one.
+func (p *Path) Add(ctx context.Context, name string, value any) (*Path, error) {
 	dir := p.directory.GetSubdirectory(name)
 	if dir == nil {
 		return nil, fmt.Errorf("keyspace: directory %q has no subdirectory named %q", p.directory.Name, name)
@@ -469,7 +494,7 @@ func (p *Path) Add(name string, value any) (*Path, error) {
 		return nil, fmt.Errorf("keyspace: directory %q.%q: %w", p.directory.Name, name, err)
 	}
 	if dir.Resolver != nil {
-		resolved, err := dir.Resolver(value)
+		resolved, err := dir.Resolver(ctx, value)
 		if err != nil {
 			return nil, fmt.Errorf("keyspace: directory %q.%q resolve: %w", p.directory.Name, name, err)
 		}
@@ -607,25 +632,8 @@ func (p *Path) Directory() *Directory {
 	return p.directory
 }
 
-// FindChildForValue returns the child directory that accepts the given value,
-// or nil if no child matches. Constant directories are checked first (matches
-// Java's findChildForValue which prioritizes exact constant matches over
-// open-type matches). Used for reverse resolution.
+// FindChildForValue returns the child directory that holds the stored value, or
+// nil if none does: Java's findChildForValue, which matches like pathFromKey.
 func (d *Directory) FindChildForValue(value any) *Directory {
-	// First pass: prefer constant directories with matching values.
-	for _, child := range d.children {
-		if child.IsConstant() && recordTypeKeyEquals(child.Value, value) {
-			return child
-		}
-	}
-	// Second pass: fall back to open-type directories whose type accepts the value.
-	for _, child := range d.children {
-		if child.IsConstant() {
-			continue
-		}
-		if err := child.validateInput(value); err == nil {
-			return child
-		}
-	}
-	return nil
+	return d.childForKey(value)
 }

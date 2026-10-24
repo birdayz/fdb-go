@@ -8,6 +8,8 @@ package recordlayer
 
 import (
 	"fmt"
+	"math"
+	"math/big"
 
 	"fdb.dev/pkg/recordlayer/internal/tuplefast"
 
@@ -511,17 +513,43 @@ func extractRankValue(groupPrefixSize int, maybeTuple tuple.Tuple) (*int64, erro
 		return nil, nil
 	}
 	if len(maybeTuple) == groupPrefixSize+1 {
-		switch v := maybeTuple[groupPrefixSize].(type) {
-		case int64:
-			return &v, nil
-		case int:
-			r := int64(v)
-			return &r, nil
+		// Java casts the bound to Number and takes longValue().
+		v := maybeTuple[groupPrefixSize]
+		if v == nil {
+			return nil, nil
 		}
-		return nil, nil
+		r, ok := javaNumberLongValue(v)
+		if !ok {
+			return nil, &ClassCastError{Message: fmt.Sprintf("class %s cannot be cast to class java.lang.Number", javaTupleValueClassName(v))}
+		}
+		return &r, nil
 	}
 	if len(maybeTuple) <= groupPrefixSize {
 		return nil, nil
 	}
 	return nil, fmt.Errorf("ranked set range bound is not correct size: groupPrefixSize=%d, tuple=%v", groupPrefixSize, maybeTuple)
 }
+
+// javaNumberLongValue is Number.longValue() of a tuple number: integers wrap to
+// their low 64 bits (BigInteger.longValue), floats narrow as Java's (long) cast.
+func javaNumberLongValue(v any) (int64, bool) {
+	switch x := v.(type) {
+	case int64:
+		return x, true
+	case int:
+		return int64(x), true
+	case int32:
+		return int64(x), true
+	case uint64:
+		return int64(x), true
+	case *big.Int:
+		return int64(new(big.Int).And(x, maxUint64Big).Uint64()), true
+	case float64:
+		return javaDoubleToLong(x), true
+	case float32:
+		return javaDoubleToLong(float64(x)), true
+	}
+	return 0, false
+}
+
+var maxUint64Big = new(big.Int).SetUint64(math.MaxUint64)

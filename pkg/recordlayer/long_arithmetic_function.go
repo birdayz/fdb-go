@@ -10,6 +10,7 @@ package recordlayer
 import (
 	"fmt"
 	"math"
+	"math/big"
 
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/dynamicpb"
@@ -198,10 +199,19 @@ func (*KeyExpressionInvalidResultError) JavaRecordCoreException() {}
 // javaTupleValueClassName is the ACTUAL_TYPE Java logs for a value that is not a
 // Number: result.getClass().getName() of the value after
 // TupleTypeUtil.toTupleAppropriateValue (Key.java:553-561), so both fields of the
-// error carry Java class names. A Go carrier with no Java counterpart keeps its Go
-// type name, which no Java-produced value can be.
+// error carry Java class names; numbers name the class a tuple decodes them to. A
+// Go carrier with no Java counterpart keeps its Go type name, which no
+// Java-produced value can be.
 func javaTupleValueClassName(v any) string {
 	switch x := v.(type) {
+	case int64, int, int32:
+		return "java.lang.Long"
+	case uint64, *big.Int:
+		return "java.math.BigInteger"
+	case float32:
+		return "java.lang.Float"
+	case float64:
+		return "java.lang.Double"
 	case string:
 		return "java.lang.String"
 	case []byte:

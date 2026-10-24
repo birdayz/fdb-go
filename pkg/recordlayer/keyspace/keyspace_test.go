@@ -1,6 +1,8 @@
 package keyspace
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -8,6 +10,15 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/gomega"
 )
+
+var ctx = context.Background()
+
+func mustAdd(tb testing.TB, parent *Directory, children ...*Directory) {
+	tb.Helper()
+	if err := parent.AddSubdirectories(children...); err != nil {
+		tb.Fatal(err)
+	}
+}
 
 func TestKeyTypeValidation(t *testing.T) {
 	t.Parallel()
@@ -53,9 +64,9 @@ func TestDirectoryTree(t *testing.T) {
 	officeID := NewDirectory("office_id", KeyTypeLong)
 	employees := NewConstantDirectory("employees", KeyTypeString, "emp")
 
-	root.AddSubdirectory(state)
-	state.AddSubdirectory(officeID)
-	officeID.AddSubdirectory(employees)
+	mustAdd(t, root, state)
+	mustAdd(t, state, officeID)
+	mustAdd(t, officeID, employees)
 
 	g.Expect(root.GetSubdirectory("state")).To(Equal(state))
 	g.Expect(state.GetSubdirectory("office_id")).To(Equal(officeID))
@@ -73,14 +84,14 @@ func TestValidate(t *testing.T) {
 
 	// Valid tree
 	root := NewDirectory("root", KeyTypeNull)
-	root.AddSubdirectory(NewConstantDirectory("data", KeyTypeString, "d"))
-	root.GetSubdirectory("data").AddSubdirectory(NewDirectory("id", KeyTypeLong))
+	mustAdd(t, root, NewConstantDirectory("data", KeyTypeString, "d"))
+	mustAdd(t, root.GetSubdirectory("data"), NewDirectory("id", KeyTypeLong))
 	ks := NewKeySpace(root)
 	g.Expect(ks.Validate()).To(Succeed())
 
 	// Invalid: constant value type mismatch
 	badRoot := NewDirectory("root", KeyTypeNull)
-	badRoot.AddSubdirectory(NewConstantDirectory("bad", KeyTypeLong, "not_a_long"))
+	mustAdd(t, badRoot, NewConstantDirectory("bad", KeyTypeLong, "not_a_long"))
 	badKs := NewKeySpace(badRoot)
 	g.Expect(badKs.Validate()).To(HaveOccurred())
 }
@@ -92,8 +103,8 @@ func TestDirectoryJavaAligned(t *testing.T) {
 	root := NewDirectory("root", KeyTypeNull)
 	app := NewDirectory("app", KeyTypeString)
 	table := NewDirectory("table", KeyTypeLong)
-	root.AddSubdirectory(app)
-	app.AddSubdirectory(table)
+	mustAdd(t, root, app)
+	mustAdd(t, app, table)
 
 	// IsLeaf
 	g.Expect(table.IsLeaf()).To(BeTrue())
@@ -123,8 +134,8 @@ func TestToPathString(t *testing.T) {
 	root := NewDirectory("root", KeyTypeNull)
 	app := NewDirectory("app", KeyTypeString)
 	table := NewDirectory("table", KeyTypeLong)
-	root.AddSubdirectory(app)
-	app.AddSubdirectory(table)
+	mustAdd(t, root, app)
+	mustAdd(t, app, table)
 
 	g.Expect(root.ToPathString()).To(Equal("/root"))
 	g.Expect(app.ToPathString()).To(Equal("/root/app"))
@@ -139,9 +150,9 @@ func TestToTree(t *testing.T) {
 	app := NewDirectory("app", KeyTypeString)
 	user := NewDirectory("user", KeyTypeLong)
 	session := NewDirectory("session", KeyTypeUUID)
-	root.AddSubdirectory(app)
-	app.AddSubdirectory(user)
-	app.AddSubdirectory(session)
+	mustAdd(t, root, app)
+	mustAdd(t, app, user)
+	mustAdd(t, app, session)
 
 	tree := root.ToTree()
 	// Just verify it contains expected elements
@@ -172,16 +183,18 @@ func TestToTree(t *testing.T) {
 	g.Expect(strings.Index(userLine, "+-")).To(Equal(strings.Index(sessionLine, "+-")))
 }
 
-func TestDuplicateSubdirectoryPanics(t *testing.T) {
+func TestDuplicateSubdirectoryRefused(t *testing.T) {
 	t.Parallel()
 	g := NewWithT(t)
 
 	root := NewDirectory("root", KeyTypeNull)
-	root.AddSubdirectory(NewDirectory("data", KeyTypeString))
+	mustAdd(t, root, NewDirectory("data", KeyTypeString))
 
-	g.Expect(func() {
-		root.AddSubdirectory(NewDirectory("data", KeyTypeLong))
-	}).To(Panic())
+	err := root.AddSubdirectory(NewDirectory("data", KeyTypeLong))
+	var argErr *ArgumentError
+	g.Expect(errors.As(err, &argErr)).To(BeTrue())
+	g.Expect(argErr.Message).To(Equal("Subdirectory already exists"))
+	g.Expect(root.GetSubdirectories()).To(HaveLen(1))
 }
 
 func TestKeySpacePath(t *testing.T) {
@@ -190,18 +203,18 @@ func TestKeySpacePath(t *testing.T) {
 
 	// Schema: root -> state (STRING) -> office_id (LONG)
 	root := NewDirectory("root", KeyTypeNull)
-	root.AddSubdirectory(NewDirectory("state", KeyTypeString))
-	root.GetSubdirectory("state").AddSubdirectory(NewDirectory("office_id", KeyTypeLong))
+	mustAdd(t, root, NewDirectory("state", KeyTypeString))
+	mustAdd(t, root.GetSubdirectory("state"), NewDirectory("office_id", KeyTypeLong))
 
 	ks := NewKeySpace(root)
 
 	// Navigate: state="CA", office_id=1234
-	path, err := ks.Path("state", "CA")
+	path, err := ks.Path(ctx, "state", "CA")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(path.DirectoryName()).To(Equal("state"))
 	g.Expect(path.GetValue()).To(Equal("CA"))
 
-	path2, err := path.Add("office_id", int64(1234))
+	path2, err := path.Add(ctx, "office_id", int64(1234))
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(path2.DirectoryName()).To(Equal("office_id"))
 	g.Expect(path2.GetValue()).To(Equal(int64(1234)))
@@ -220,24 +233,24 @@ func TestKeySpacePathErrors(t *testing.T) {
 	g := NewWithT(t)
 
 	root := NewDirectory("root", KeyTypeNull)
-	root.AddSubdirectory(NewDirectory("state", KeyTypeString))
+	mustAdd(t, root, NewDirectory("state", KeyTypeString))
 
 	ks := NewKeySpace(root)
 
 	// Wrong type
-	_, err := ks.Path("state", 42)
+	_, err := ks.Path(ctx, "state", 42)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("expected string"))
 
 	// Non-existent directory
-	_, err = ks.Path("nonexistent", "val")
+	_, err = ks.Path(ctx, "nonexistent", "val")
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("no root directory"))
 
 	// Non-existent subdirectory
-	path, err := ks.Path("state", "CA")
+	path, err := ks.Path(ctx, "state", "CA")
 	g.Expect(err).NotTo(HaveOccurred())
-	_, err = path.Add("nonexistent", "val")
+	_, err = path.Add(ctx, "nonexistent", "val")
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("no subdirectory"))
 }
@@ -247,12 +260,12 @@ func TestConstantDirectory(t *testing.T) {
 	g := NewWithT(t)
 
 	root := NewDirectory("root", KeyTypeNull)
-	root.AddSubdirectory(NewConstantDirectory("data", KeyTypeString, "data_prefix"))
+	mustAdd(t, root, NewConstantDirectory("data", KeyTypeString, "data_prefix"))
 
 	ks := NewKeySpace(root)
 
 	// Constant value is used regardless of what's passed
-	path, err := ks.Path("data", "ignored")
+	path, err := ks.Path(ctx, "data", "ignored")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(path.GetValue()).To(Equal("data_prefix"))
 
@@ -266,20 +279,20 @@ func TestPathDepthAndListing(t *testing.T) {
 	root := NewDirectory("root", KeyTypeNull)
 	state := NewDirectory("state", KeyTypeString)
 	officeID := NewDirectory("office_id", KeyTypeLong)
-	employees := NewDirectory("employees", KeyTypeString)
-	departments := NewDirectory("departments", KeyTypeString)
-	root.AddSubdirectory(state)
-	state.AddSubdirectory(officeID)
-	officeID.AddSubdirectory(employees)
-	officeID.AddSubdirectory(departments)
+	employees := NewConstantDirectory("employees", KeyTypeString, "e")
+	departments := NewConstantDirectory("departments", KeyTypeString, "d")
+	mustAdd(t, root, state)
+	mustAdd(t, state, officeID)
+	mustAdd(t, officeID, employees)
+	mustAdd(t, officeID, departments)
 
 	ks := NewKeySpace(root)
 
-	p1, err := ks.Path("state", "CA")
+	p1, err := ks.Path(ctx, "state", "CA")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(p1.Depth()).To(Equal(1))
 
-	p2, err := p1.Add("office_id", int64(42))
+	p2, err := p1.Add(ctx, "office_id", int64(42))
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(p2.Depth()).To(Equal(2))
 	g.Expect(p2.ListSubdirectories()).To(ConsistOf("employees", "departments"))
@@ -292,15 +305,15 @@ func TestPathString(t *testing.T) {
 	g := NewWithT(t)
 
 	root := NewDirectory("root", KeyTypeNull)
-	root.AddSubdirectory(NewDirectory("state", KeyTypeString))
-	root.GetSubdirectory("state").AddSubdirectory(NewDirectory("office_id", KeyTypeLong))
+	mustAdd(t, root, NewDirectory("state", KeyTypeString))
+	mustAdd(t, root.GetSubdirectory("state"), NewDirectory("office_id", KeyTypeLong))
 
 	ks := NewKeySpace(root)
 
-	p1, _ := ks.Path("state", "CA")
+	p1, _ := ks.Path(ctx, "state", "CA")
 	g.Expect(p1.String()).To(Equal("/state=CA"))
 
-	p2, _ := p1.Add("office_id", int64(1234))
+	p2, _ := p1.Add(ctx, "office_id", int64(1234))
 	g.Expect(p2.String()).To(Equal("/state=CA/office_id=1234"))
 }
 
@@ -311,8 +324,8 @@ func TestPathFromTuple(t *testing.T) {
 	root := NewDirectory("root", KeyTypeNull)
 	state := NewDirectory("state", KeyTypeString)
 	officeID := NewDirectory("office_id", KeyTypeLong)
-	root.AddSubdirectory(state)
-	state.AddSubdirectory(officeID)
+	mustAdd(t, root, state)
+	mustAdd(t, state, officeID)
 
 	ks := NewKeySpace(root)
 
@@ -351,14 +364,14 @@ func TestPathFromTupleRoundtrip(t *testing.T) {
 	g := NewWithT(t)
 
 	root := NewDirectory("root", KeyTypeNull)
-	root.AddSubdirectory(NewDirectory("app", KeyTypeString))
-	root.GetSubdirectory("app").AddSubdirectory(NewDirectory("table", KeyTypeLong))
+	mustAdd(t, root, NewDirectory("app", KeyTypeString))
+	mustAdd(t, root.GetSubdirectory("app"), NewDirectory("table", KeyTypeLong))
 
 	ks := NewKeySpace(root)
 
 	// Forward: Path -> Tuple
-	path, _ := ks.Path("app", "myapp")
-	path2, _ := path.Add("table", int64(99))
+	path, _ := ks.Path(ctx, "app", "myapp")
+	path2, _ := path.Add(ctx, "table", int64(99))
 	tup := path2.ToTuple()
 	g.Expect(tup).To(Equal(tuple.Tuple{"myapp", int64(99)}))
 
@@ -375,7 +388,7 @@ func TestResolverFunc(t *testing.T) {
 	g := NewWithT(t)
 
 	// Resolver that maps strings to their lengths (simulating string→long compression)
-	stringToLen := func(v any) (any, error) {
+	stringToLen := func(_ context.Context, v any) (any, error) {
 		s, ok := v.(string)
 		if !ok {
 			return nil, fmt.Errorf("expected string, got %T", v)
@@ -386,12 +399,12 @@ func TestResolverFunc(t *testing.T) {
 	root := NewDirectory("root", KeyTypeNull)
 	appDir := NewDirectory("app", KeyTypeString)
 	appDir.Resolver = stringToLen
-	root.AddSubdirectory(appDir)
+	mustAdd(t, root, appDir)
 
 	ks := NewKeySpace(root)
 
 	// Path value should be resolved
-	path, err := ks.Path("app", "myapp")
+	path, err := ks.Path(ctx, "app", "myapp")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(path.GetValue()).To(Equal(int64(5))) // len("myapp") = 5
 
@@ -403,18 +416,18 @@ func TestResolverFuncError(t *testing.T) {
 	t.Parallel()
 	g := NewWithT(t)
 
-	failingResolver := func(v any) (any, error) {
+	failingResolver := func(context.Context, any) (any, error) {
 		return nil, fmt.Errorf("resolver failed")
 	}
 
 	root := NewDirectory("root", KeyTypeNull)
 	appDir := NewDirectory("app", KeyTypeString)
 	appDir.Resolver = failingResolver
-	root.AddSubdirectory(appDir)
+	mustAdd(t, root, appDir)
 
 	ks := NewKeySpace(root)
 
-	_, err := ks.Path("app", "test")
+	_, err := ks.Path(ctx, "app", "test")
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("resolver failed"))
 }
@@ -424,11 +437,11 @@ func TestToSubspace(t *testing.T) {
 	g := NewWithT(t)
 
 	root := NewDirectory("root", KeyTypeNull)
-	root.AddSubdirectory(NewDirectory("app", KeyTypeString))
+	mustAdd(t, root, NewDirectory("app", KeyTypeString))
 
 	ks := NewKeySpace(root)
 
-	path, err := ks.Path("app", "myapp")
+	path, err := ks.Path(ctx, "app", "myapp")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	ss := path.ToSubspace()
@@ -446,13 +459,13 @@ func TestPathFlatten(t *testing.T) {
 	g := NewWithT(t)
 
 	root := NewDirectory("root", KeyTypeNull)
-	root.AddSubdirectory(NewDirectory("state", KeyTypeString))
-	root.GetSubdirectory("state").AddSubdirectory(NewDirectory("office_id", KeyTypeLong))
+	mustAdd(t, root, NewDirectory("state", KeyTypeString))
+	mustAdd(t, root.GetSubdirectory("state"), NewDirectory("office_id", KeyTypeLong))
 
 	ks := NewKeySpace(root)
 
-	p1, _ := ks.Path("state", "CA")
-	p2, _ := p1.Add("office_id", int64(1234))
+	p1, _ := ks.Path(ctx, "state", "CA")
+	p2, _ := p1.Add(ctx, "office_id", int64(1234))
 
 	flat := p2.Flatten()
 	g.Expect(flat).To(HaveLen(2))
@@ -471,19 +484,19 @@ func TestPathEqual(t *testing.T) {
 	g := NewWithT(t)
 
 	root := NewDirectory("root", KeyTypeNull)
-	root.AddSubdirectory(NewDirectory("state", KeyTypeString))
-	root.GetSubdirectory("state").AddSubdirectory(NewDirectory("id", KeyTypeLong))
+	mustAdd(t, root, NewDirectory("state", KeyTypeString))
+	mustAdd(t, root.GetSubdirectory("state"), NewDirectory("id", KeyTypeLong))
 
 	ks := NewKeySpace(root)
 
-	p1, _ := ks.Path("state", "CA")
-	p1a, _ := p1.Add("id", int64(1))
+	p1, _ := ks.Path(ctx, "state", "CA")
+	p1a, _ := p1.Add(ctx, "id", int64(1))
 
-	p2, _ := ks.Path("state", "CA")
-	p2a, _ := p2.Add("id", int64(1))
+	p2, _ := ks.Path(ctx, "state", "CA")
+	p2a, _ := p2.Add(ctx, "id", int64(1))
 
-	p3, _ := ks.Path("state", "NY")
-	p3a, _ := p3.Add("id", int64(1))
+	p3, _ := ks.Path(ctx, "state", "NY")
+	p3a, _ := p3.Add(ctx, "id", int64(1))
 
 	// Same path — equal
 	g.Expect(p1a.Equal(p2a)).To(BeTrue())
@@ -508,7 +521,7 @@ func TestKeySpaceString(t *testing.T) {
 	g := NewWithT(t)
 
 	root := NewDirectory("root", KeyTypeNull)
-	root.AddSubdirectory(NewDirectory("app", KeyTypeString))
+	mustAdd(t, root, NewDirectory("app", KeyTypeString))
 	ks := NewKeySpace(root)
 
 	// KeySpace.String() delegates to Root().ToTree()
@@ -522,11 +535,11 @@ func TestAddSubdirectories(t *testing.T) {
 	g := NewWithT(t)
 
 	root := NewDirectory("root", KeyTypeNull)
-	root.AddSubdirectories(
+	g.Expect(root.AddSubdirectories(
 		NewDirectory("a", KeyTypeString),
 		NewDirectory("b", KeyTypeLong),
 		NewDirectory("c", KeyTypeBytes),
-	)
+	)).To(Succeed())
 
 	g.Expect(root.GetSubdirectories()).To(HaveLen(3))
 	g.Expect(root.GetSubdirectory("a")).NotTo(BeNil())
@@ -543,7 +556,7 @@ func TestDeepTree(t *testing.T) {
 	cur := root
 	for i := 1; i < 10; i++ {
 		next := NewDirectory(fmt.Sprintf("level%d", i), KeyTypeLong)
-		cur.AddSubdirectory(next)
+		mustAdd(t, cur, next)
 		cur = next
 	}
 
@@ -562,77 +575,117 @@ func TestFindChildForValue(t *testing.T) {
 	g := NewWithT(t)
 
 	root := NewDirectory("root", KeyTypeNull)
-	root.AddSubdirectory(NewDirectory("state", KeyTypeString))
-	root.AddSubdirectory(NewDirectory("year", KeyTypeLong))
-	root.AddSubdirectory(NewConstantDirectory("config", KeyTypeString, "cfg"))
+	mustAdd(t, root, NewDirectory("state", KeyTypeString))
+	mustAdd(t, root, NewDirectory("year", KeyTypeLong))
+	mustAdd(t, root, NewConstantDirectory("blob", KeyTypeBytes, []byte{0xFF, 0xFE}))
+	mustAdd(t, root, NewConstantDirectory("other", KeyTypeBytes, []byte{0x01}))
 
-	// String matches the "state" directory (no constant matches "CA")
 	child := root.FindChildForValue("CA")
 	g.Expect(child).NotTo(BeNil())
 	g.Expect(child.Name).To(Equal("state"))
 
-	// Int64 matches the "year" directory
 	child = root.FindChildForValue(int64(2026))
 	g.Expect(child).NotTo(BeNil())
 	g.Expect(child.Name).To(Equal("year"))
 
-	// Constant "cfg" matches the constant "config" directory FIRST,
-	// not the open "state" directory. Constant priority matches Java.
-	child = root.FindChildForValue("cfg")
+	// Constant []byte values compare by content, without panicking.
+	child = root.FindChildForValue([]byte{0x01})
 	g.Expect(child).NotTo(BeNil())
-	g.Expect(child.Name).To(Equal("config"))
+	g.Expect(child.Name).To(Equal("other"))
+	g.Expect(root.FindChildForValue([]byte{1, 2, 3})).To(BeNil())
 
 	// Value of unsupported type matches nothing
-	child = root.FindChildForValue(3.14)
-	g.Expect(child).To(BeNil())
+	g.Expect(root.FindChildForValue(3.14)).To(BeNil())
 }
 
-// TestFindChildForValue_Bytes verifies that []byte values don't panic
-// (they are not comparable with Go's == operator).
-func TestFindChildForValue_Bytes(t *testing.T) {
+// TestSiblingKeyTypes pins Java's KeySpaceDirectory.addSubdirectory rules: a
+// sibling of the same key type is allowed only as a distinct constant beside
+// other constants, so at most one child can hold a key element.
+func TestSiblingKeyTypes(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		existing *Directory
+		added    *Directory
+		message  string
+	}{
+		{"two open", NewDirectory("a", KeyTypeString), NewDirectory("b", KeyTypeString), "Cannot add directory due to overlapping type"},
+		{"open then constant", NewDirectory("a", KeyTypeString), NewConstantDirectory("b", KeyTypeString, "x"), "Cannot add directory due to overlapping type"},
+		{"constant then open", NewConstantDirectory("a", KeyTypeLong, int64(1)), NewDirectory("b", KeyTypeLong), "Cannot add directory due to overlapping type"},
+		{"resolver beside a constant", NewConstantDirectory("a", KeyTypeLong, int64(1)), ResolverDirectory("b", NewMemoryResolver(0)), "Cannot add directory due to overlapping type"},
+		{"equal constants", NewConstantDirectory("a", KeyTypeLong, int64(1)), NewConstantDirectory("b", KeyTypeLong, 1), "Cannot add directory due to overlapping constant value"},
+		{"equal byte constants", NewConstantDirectory("a", KeyTypeBytes, []byte{1}), NewConstantDirectory("b", KeyTypeBytes, []byte{1}), "Cannot add directory due to overlapping constant value"},
+		{"two NULL directories", NewDirectory("a", KeyTypeNull), NewDirectory("b", KeyTypeNull), "Cannot add directory due to overlapping constant value"},
+		{"distinct constants", NewConstantDirectory("a", KeyTypeLong, int64(1)), NewConstantDirectory("b", KeyTypeLong, int64(2)), ""},
+		{"different types", NewDirectory("a", KeyTypeString), NewDirectory("b", KeyTypeLong), ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			g := NewWithT(t)
+			root := NewDirectory("root", KeyTypeNull)
+			mustAdd(t, root, tc.existing)
+			err := root.AddSubdirectory(tc.added)
+			if tc.message == "" {
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(root.GetSubdirectories()).To(HaveLen(2))
+				return
+			}
+			var argErr *ArgumentError
+			g.Expect(errors.As(err, &argErr)).To(BeTrue(), "%v", err)
+			g.Expect(argErr.Message).To(Equal(tc.message))
+			g.Expect(argErr.ParentDir).To(Equal("root"))
+			g.Expect(argErr.DirName).To(Equal("a"))
+			g.Expect(root.GetSubdirectories()).To(HaveLen(1), "a refused directory is not added")
+		})
+	}
+}
+
+// TestAddSubdirectories_StopsAtRefusal adds in order up to the refused child.
+func TestAddSubdirectories_StopsAtRefusal(t *testing.T) {
 	t.Parallel()
 	g := NewWithT(t)
 
 	root := NewDirectory("root", KeyTypeNull)
-	root.AddSubdirectory(NewDirectory("blob", KeyTypeBytes))
-	root.AddSubdirectory(NewConstantDirectory("marker", KeyTypeBytes, []byte{0xFF, 0xFE}))
-
-	// []byte value matches the open blob directory
-	child := root.FindChildForValue([]byte{1, 2, 3})
-	g.Expect(child).NotTo(BeNil())
-	g.Expect(child.Name).To(Equal("blob"))
-
-	// Constant []byte matches the constant directory exactly
-	child = root.FindChildForValue([]byte{0xFF, 0xFE})
-	g.Expect(child).NotTo(BeNil())
-	g.Expect(child.Name).To(Equal("marker"))
+	err := root.AddSubdirectories(
+		NewDirectory("a", KeyTypeString),
+		NewDirectory("b", KeyTypeString),
+		NewDirectory("c", KeyTypeLong),
+	)
+	var argErr *ArgumentError
+	g.Expect(errors.As(err, &argErr)).To(BeTrue(), "%v", err)
+	g.Expect(argErr.Message).To(Equal("Cannot add directory due to overlapping type"))
+	g.Expect(root.GetSubdirectories()).To(HaveLen(1))
+	g.Expect(root.GetSubdirectory("c")).To(BeNil())
 }
 
-// TestPathFromTuple_ConstantPriority verifies that when the root has both
-// a constant directory and an open-type directory of the same KeyType,
-// the constant wins when its value matches. Regression test for the
-// two-pass fix in PathFromTuple (commit 6276d9b).
-func TestPathFromTuple_ConstantPriority(t *testing.T) {
+// TestPathFromTuple_NoSubdirectory pins Java's findChildForKey: an element no
+// subdirectory of a non-leaf directory holds is an error, not a remainder; a
+// remainder is left only past a leaf.
+func TestPathFromTuple_NoSubdirectory(t *testing.T) {
 	t.Parallel()
 	g := NewWithT(t)
 
 	root := NewDirectory("root", KeyTypeNull)
-	// Order matters for the regression: open-type is added FIRST. Without
-	// two-pass, iteration would pick "state" for all strings including "cfg".
-	root.AddSubdirectory(NewDirectory("state", KeyTypeString))
-	root.AddSubdirectory(NewConstantDirectory("config", KeyTypeString, "cfg"))
+	app := NewDirectory("app", KeyTypeLong)
+	mustAdd(t, root, app)
+	mustAdd(t, app, NewDirectory("name", KeyTypeString))
 	ks := NewKeySpace(root)
 
-	// "cfg" should resolve to the constant "config" directory, not "state".
-	path, remainder, err := ks.PathFromTuple(tuple.Tuple{"cfg"})
-	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(remainder).To(BeNil())
-	g.Expect(path.DirectoryName()).To(Equal("config"))
+	_, _, err := ks.PathFromTuple(tuple.Tuple{int64(1), int64(5)})
+	var argErr *ArgumentError
+	g.Expect(errors.As(err, &argErr)).To(BeTrue(), "%v", err)
+	g.Expect(argErr.Message).To(Equal("No subdirectory available to hold provided type"))
+	g.Expect(argErr.ParentDir).To(Equal("app"))
+	g.Expect(argErr.KeyPos).To(Equal(1))
 
-	// Other strings should fall through to "state".
-	path, _, err = ks.PathFromTuple(tuple.Tuple{"CA"})
+	_, _, err = ks.PathFromTuple(tuple.Tuple{"not a long"})
+	g.Expect(errors.As(err, &argErr)).To(BeTrue(), "%v", err)
+	g.Expect(argErr.ParentDir).To(Equal("root"))
+
+	path, remainder, err := ks.PathFromTuple(tuple.Tuple{int64(1), "x", int64(9)})
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(path.DirectoryName()).To(Equal("state"))
+	g.Expect(path.DirectoryName()).To(Equal("name"))
+	g.Expect(remainder).To(Equal(tuple.Tuple{int64(9)}))
 }
 
 // TestPathEqual_Bytes verifies that Path.Equal handles []byte without panicking.
@@ -641,16 +694,16 @@ func TestPathEqual_Bytes(t *testing.T) {
 	g := NewWithT(t)
 
 	root := NewDirectory("root", KeyTypeNull)
-	root.AddSubdirectory(NewDirectory("blob", KeyTypeBytes))
+	mustAdd(t, root, NewDirectory("blob", KeyTypeBytes))
 	ks := NewKeySpace(root)
 
-	p1, err := ks.Path("blob", []byte{1, 2, 3})
+	p1, err := ks.Path(ctx, "blob", []byte{1, 2, 3})
 	g.Expect(err).NotTo(HaveOccurred())
 
-	p2, err := ks.Path("blob", []byte{1, 2, 3})
+	p2, err := ks.Path(ctx, "blob", []byte{1, 2, 3})
 	g.Expect(err).NotTo(HaveOccurred())
 
-	p3, err := ks.Path("blob", []byte{9, 9, 9})
+	p3, err := ks.Path(ctx, "blob", []byte{9, 9, 9})
 	g.Expect(err).NotTo(HaveOccurred())
 
 	g.Expect(p1.Equal(p2)).To(BeTrue(), "same bytes should be equal")
