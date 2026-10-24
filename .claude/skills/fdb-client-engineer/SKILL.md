@@ -129,9 +129,10 @@ re-review.
 ### Step 5 — PR review (the published gate)
 - **`bruh-code-review` on the PR**, posted: `review PR <N> and post it`. Client divergences are
   subtle and different reviewers catch different classes (storage-shadow / cleared-base /
-  sticky-unreadable / RYW edges): ask for `thorough`, which runs each lens twice on different
-  providers. Its ACK must be on the final HEAD; every push makes it stale → review again
-  (`previous: <run>/report.json`) and post again.
+  sticky-unreadable / RYW edges): ask for `replicas: 2`, which runs each lens twice, and put
+  the copies on different providers (each reviewer's `model` in the plan). Its ACK must be on
+  the final HEAD; every push makes it stale → post a new review (a posted run re-checks the
+  PR's open findings itself; no `previous:` needed).
 - **CI green** on the final HEAD before merge — no exceptions. A red or flaky CI is a real bug
   (see §5), root-cause it now.
 

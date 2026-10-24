@@ -12,7 +12,7 @@ Pick the next unchecked item from TODO.md and drive it from RFC through implemen
 1. Read `TODO.md`.
 2. Find the **lowest-numbered unchecked item** whose gates are satisfied. Priority order: P0 > P1 > P2 > Phase items.
 3. State clearly which item you're working on.
-4. Ask the user to set a `/goal` reflecting the work, so the harness keeps driving it to completion across turns. `/goal` is a built-in CLI command — you cannot invoke it; output the exact line for the user to paste:
+4. In an interactive session, ask the user to set a `/goal` reflecting the work, so the harness keeps driving it to completion across turns (skip this in an unattended or headless run: nobody can paste it). `/goal` is a built-in CLI command — you cannot invoke it; output the exact line for the user to paste:
 
    ```
    /goal <item-id>: <short description> — RFC written, reviewed (bruh-code-review ACK), implemented, tests green, PR created, bruh-code-review ACK on the PR's final HEAD
@@ -58,7 +58,13 @@ Use `fix/` for bugs, `feat/` for features, `refactor/` for cleanups.
 
 ## Step 4: Write the RFC
 
-Create `rfcs/NNN-<short-name>.md` (next number after `ls rfcs/ | sort -V | tail -1`).
+Create `rfcs/NNN-<short-name>.md`. NNN is one above the highest number on master or in an open
+PR (another branch may have taken the next one):
+
+```bash
+{ ls rfcs; gh pr list --state open --json files --jq '.[].files[].path' | sed -n 's#^rfcs/##p'; } \
+  | grep -E '^[0-9]{3}-' | sort -V | tail -1
+```
 
 The RFC must contain:
 - **Problem**: what's broken/missing and why it matters
@@ -143,8 +149,9 @@ posts one PR review with inline comments and hides earlier bruh reviews as outda
 ## Step 11: Done
 
 The item is done only when **the latest bruh-code-review posted to the PR is an ACK of the
-current HEAD.** `~/.bruh/skills/bruh-code-review/bruh-review gate --report <run>/report.json`
-exits 0 on ACK and 4 on NAK.
+current HEAD**: the PR's bruh summary says ACK on that commit and its `bruh/review` commit
+status is success (`gh pr checks <N>`). Headless, `bruh review <N> --post` exits 0 on ACK and
+4 on NAK.
 
 - **An ACK only covers the HEAD it reviewed.** Every push, even a one-line fix or a
   reviewer-requested change, makes it stale: review the new HEAD and post again (`post`
@@ -157,6 +164,7 @@ exits 0 on ACK and 4 on NAK.
 - **Review iteration is sequential** — fix findings, push, review again, read the new report.
 - **The final ACK must be on the final code.** Review again after every push; "done" = a posted bruh-code-review ACK of the current HEAD. A stale ACK on an earlier commit doesn't count.
 - **A discovered bug is not fixed until a regression test pins it.** Review findings that the suite missed are doubly important: fix the bug AND add the test that should have caught it.
-- **RFC status progression**: Draft → Implemented (update when the code ships).
+- **RFC status progression**: Draft → Accepted (the RFC review ACKs it) → Implemented (the
+  code ships).
 - **Commits pass pre-commit hooks** — never `--no-verify`.
 - **One logical change per commit** — don't batch unrelated fixes.

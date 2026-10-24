@@ -156,8 +156,8 @@ Run the **`bruh-code-review`** skill on the fix, then on the PR
 (`review PR <N> and post it`). Its `fdb-client` lens validates the fix against the C++
 spec, file:line; the core lenses check dead code, papered-over regressions, revert-proofs
 and scope honesty. Client divergences are subtle and reviewers catch different classes
-(storage-shadow, cleared-base, sticky-unreadable): ask for `thorough`, which runs each lens
-twice on different providers.
+(storage-shadow, cleared-base, sticky-unreadable): ask for `replicas: 2`, which runs each
+lens twice, with the copies on different providers.
 
 Review again after every new commit (`previous: <run>/report.json`); an ACK only covers
 the HEAD it reviewed.
