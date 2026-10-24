@@ -30,8 +30,8 @@ const (
 	// bounded by rows alone. This is EXACT's value, per mode_bytes_array[EXACT] (fdb_c.cpp:1002).
 	ByteLimitUnlimited = -1
 	// maxReadTimeoutRetries bounds the re-send of a read whose RPC reply
-	// timed out (errReplyTimeout). libfdb_c re-sends indefinitely (bounded by
-	// the transaction's read-version validity, ~5s MVCC window); a re-send of
+	// timed out (errReplyTimeout). libfdb_c has no per-RPC reply timeout and
+	// waits (bounded by the transaction's read-version validity, ~5s MVCC window); a re-send of
 	// our read with the same read version converges to a server-side
 	// transaction_too_old once the window passes, so a small cap is a safety
 	// backstop against a wedged connection, not the primary bound. On

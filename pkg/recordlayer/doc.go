@@ -1,7 +1,7 @@
 // Package recordlayer stores protobuf records in FoundationDB with secondary
 // indexes, schema evolution and resumable cursors. It is a port of Apple's Java
-// FoundationDB Record Layer; Go and Java can share record stores in the formats
-// that docs/compatibility.md lists.
+// FoundationDB Record Layer; Go and Java can share record stores, subject to
+// the exceptions that docs/compatibility.md lists.
 //
 // Metadata comes from a protobuf file whose union message lists the record
 // types. A store is opened inside a transaction, where records are saved,
