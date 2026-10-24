@@ -1334,13 +1334,8 @@ func (c *Conn) connectionMonitor() {
 		case pingStop:
 			return
 		case pingDead:
-			// C++ throws connection_failed (FlowTransport.actor.cpp:679); the
-			// actor's catch path destroys its state, the ping reply included,
-			// before connectionKeeper sees the error (ActorCompiler.cs:387-391).
-			// monitorPing has released the reply, so teardown comes second here
-			// too. Route through the single teardown path: cancel + CLOSE THE
-			// SOCKET (so readLoop's blocking Read unblocks — the old bare cancel()
-			// leaked the fd + goroutine until TCP keepalive) + fail all pending.
+			// monitorPing released the reply first, as the C++ actor destroys its
+			// state before publishing connection_failed (ActorCompiler.cs:387-391).
 			c.failConnection(errConnClosed)
 			return
 		}
@@ -1356,12 +1351,9 @@ const (
 	pingDead                        // no bytes arrived within the timeout
 )
 
-// monitorPing sends one PING and waits for its reply: C++ connectionMonitor's
-// `state PingRequest pingRequest` and its choose (FlowTransport.actor.cpp:665-699).
-// The PING's reply registration belongs to this call, as the reply promise is
-// actor state in C++: every exit, a panic included, releases it on the monitor's
-// own goroutine. connectionMonitor is joined by loopWG, so Close returns only
-// after the release.
+// monitorPing sends one PING and waits for its reply (FlowTransport.actor.cpp:665-699).
+// It owns the reply, as C++ holds it as actor state, and releases it on every exit
+// on the joined monitor goroutine, so Close returns only after the release.
 func (c *Conn) monitorPing() pingOutcome {
 	replyCh, reply := c.sendPingWithReply()
 	received := false

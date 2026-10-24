@@ -134,10 +134,10 @@ reverted code.
    release comes after `IsClosed()` or not at all; if the panic lands on the unjoined
    waiter instead, it is unrecovered and fails the test binary.
 5. Existing pins are adapted to the new return shape:
-   `TestSendPingWithReply_DropsToNilOnFullWriteCh` (a nil channel, a nil handle, and no
-   registration on drop), `TestHeldOutboxControlPrefixAndPostSealReply` and
-   `TestAdmissionPingDropsBehindPendingHead` (they receive on the returned channel and
-   release the returned handle as the monitor would), and
+   `TestSendPingWithReply_DropsToNilOnFullWriteCh` and
+   `TestAdmissionPingDropsBehindPendingHead` (a nil channel, a nil handle, and no
+   registration on drop), `TestHeldOutboxControlPrefixAndPostSealReply` (it receives on
+   the returned channel and releases the returned handle as the monitor would), and
    `TestMonitor_DroppedPingRePingsInsteadOfStalling` plus the monitor-death tests
    (unchanged; they drive `connectionMonitor`). `TestPingWaiterCancelsOwnedReply` is
    replaced by test 2, which drives the monitor rather than the handle.

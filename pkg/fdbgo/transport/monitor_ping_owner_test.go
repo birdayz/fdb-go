@@ -19,24 +19,26 @@ import (
 var pingOwnerDummy = UID{First: 99}
 
 // pingOwnerContext records the PING's reply channel from inside the wait that
-// owns it: every wait select evaluates Done before any arm can fire, so the
-// channel is recorded before it can be received from or released. With
-// panicInWait it then panics once, from that wait.
+// owns it: every wait select evaluates Done before any arm can fire. Recording
+// needs pendingMu's read lock (TryRLock, since a release blocked in the seam holds
+// pendingMu), so a test that takes pendingMu's write lock must first wait for
+// recorded. With panicInWait it then panics once, from that wait.
 type pingOwnerContext struct {
 	context.Context
 	conn        *Conn
 	panicInWait bool
 	ping        atomic.Pointer[chan Response]
+	recorded    chan struct{} // closed once ping is stored
 	panicked    atomic.Bool
 }
 
 func (p *pingOwnerContext) Done() <-chan struct{} {
-	// TryRLock: a release blocked in the seam holds pendingMu (ReplyHandle.Cancel).
 	if p.ping.Load() == nil && p.conn.pendingMu.TryRLock() {
 		for token, entry := range p.conn.pending {
 			if token != pingOwnerDummy {
 				ch := entry.ch
 				p.ping.Store(&ch)
+				close(p.recorded)
 			}
 		}
 		p.conn.pendingMu.RUnlock()
@@ -86,7 +88,7 @@ func newPingOwnerFixture(t *testing.T, timeout time.Duration, panicInWait, gated
 	if gated {
 		f.gate = make(chan struct{})
 	}
-	f.ctx = &pingOwnerContext{Context: base, conn: c, panicInWait: panicInWait}
+	f.ctx = &pingOwnerContext{Context: base, conn: c, panicInWait: panicInWait, recorded: make(chan struct{})}
 	c.ctx = f.ctx
 
 	// Cleanups run last-in first-out: open the gate, join the monitor, and only
@@ -146,7 +148,10 @@ func TestMonitorPingOwner_CloseWaitsForReplyRelease(t *testing.T) {
 		t.Fatal("positive control: the PING's reply token is not registered")
 	}
 
-	// Publish the reply as readLoop does: send, then delete, under pendingMu.
+	// Publish the reply as readLoop does: send, then delete, under pendingMu. Wait
+	// for the monitor's wait to record the channel first: a write lock held or
+	// queued then would fail its TryRLock, and the reply ends that wait.
+	admissionAwait(t, f.ctx.recorded, "the monitor's PING wait")
 	f.c.pendingMu.Lock()
 	f.c.pending[token].ch <- Response{}
 	delete(f.c.pending, token)
