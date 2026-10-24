@@ -333,6 +333,7 @@ go_test(
         "memo_reexplore_test.go",
         "memo_test.go",
         "memo_wsb_no_collapse_test.go",
+        "memoize_cancellation_test.go",
         "nested_leg_window_rebase_test.go",
         "normal_form_java_oracle_test.go",
         "normal_form_not_handling_test.go",
@@ -1171,6 +1172,7 @@ go_test(
         "planning_cost_model_vector_engine_test.go",
         "rule_call_observer.go",
         "index_fetch_method_stamp_test.go",
+        "memoize_cancellation_test.go",
     ],
     tags = ["resources:cpu:2"],
     deps = [
