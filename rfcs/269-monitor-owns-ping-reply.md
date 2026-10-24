@@ -56,12 +56,13 @@ started for it.
 - The monitor's PING wait (the inner loop at `conn.go:1338-1384`) moves into a helper,
   `monitorPing`, which returns one of three outcomes: continue monitoring, stop (context
   cancelled), or dead (frozen bytes). When the handle is non-nil, the helper defers its
-  cleanup: `TakeReadyOrCancel` then `Release` if no reply was received, `Release` alone
-  if one was. This is the cleanup the waiter does now (`conn.go:1419-1430`), run on the
-  monitor's own stack. `TakeReadyOrCancel` (`conn.go:74-92`) takes a reply published after
-  the wait ended, so the channel is pooled on every exit: when `Close` cancels the context
-  before `failAllPending` publishes the teardown response, the ctx arm can win, and a
-  plain `Cancel` would find the token gone and leave the channel to GC. A dropped PING has a nil handle, so no defer is installed and nil is never
+  cleanup, `releasePing`: `TakeReadyOrCancel` then `Release` if no reply was received,
+  `Release` alone if one was. This is the cleanup the waiter does now
+  (`conn.go:1419-1430`), run on the monitor's own stack. `TakeReadyOrCancel`
+  (`conn.go:74-92`) takes a reply published after the wait ended, so the channel is
+  pooled on every exit: when `Close` cancels the context before `failAllPending`
+  publishes the teardown response, the ctx arm can win, and a plain `Cancel` would find
+  the token gone and leave the channel to GC. A dropped PING has a nil handle, so no defer is installed and nil is never
   dereferenced; the re-ping exit, reachable only after a drop, has nothing to release.
   With a handle, the defer runs on every exit: reply, context cancellation, frozen
   bytes, and a panic.
@@ -98,14 +99,14 @@ select on the reply channel. Nothing on the request path changes.
 
 ## Executable spec
 
-Each new test drives `connectionMonitor` itself, started under `loopWG` on a `net.Pipe`
+Tests 1-5 drive `connectionMonitor` itself, started under `loopWG` on a `net.Pipe`
 connection with one dummy pending request so it pings; the test plays the writer by
 reading the PING from `writeCh`. The tests swap the package `putReplyChannel` seam to
 observe the ping channel's release, so they run serially, like `reply_pool_test.go`. A
 test context records the ping's reply channel from the monitor's own wait. On every
 path below, the release is a `putReplyChannel` call on that channel: `Release` after a
-received or taken reply, or a cancel while the token is still registered. All five fail
-on the reverted code.
+received or taken reply, or a cancel while the token is still registered. Tests 1-5
+fail on the reverted code; test 6 fails when `releasePing` uses a plain `Cancel`.
 
 1. **Close waits for the reply owner.** The test delivers the PING's reply. The seam
    blocks that channel's release until a gate opens, and `Close` runs in a goroutine
@@ -115,12 +116,15 @@ on the reverted code.
    limits how fast the reverted code is caught; the fixed code cannot fail it, because
    the blocked release is on the monitor, before `loopWG.Done()`.
 2. **Close waits for an outstanding PING's owner.** No reply: `Close`'s own teardown
-   ends the wait, through the reply arm (teardown response) or the ctx arm (then
-   `TakeReadyOrCancel` takes that response or cancels before it is published). Either
-   way the release reaches the seam exactly once, gated as in test 1; the test asserts
-   that `Close` has not returned when the gate opens, returns afterwards, and leaves no
-   registration. Reverted, the waiter releases after `Close` returns, or its `Cancel`
-   finds the token already removed and never reaches the seam.
+   ends the wait. The test context holds the monitor inside its wait's `Done` call
+   (after recording, before the select picks an arm) until `Close`'s `failAllPending`
+   has published the teardown response and removed the token. The select then takes
+   either arm: the reply arm, or the ctx arm followed by `TakeReadyOrCancel` taking the
+   response. Both release through `Release` without `pendingMu`, so a `Close` still
+   running can only be waiting on the monitor's join. The release is gated as in test
+   1; the test asserts that `Close` has not returned when the gate opens, returns
+   afterwards, and leaves no registration. Reverted, the waiter releases after `Close`
+   returns, or its `Cancel` finds the token already removed and never reaches the seam.
 3. **Cancellation releases on the monitor.** With the PING outstanding and no reply, the
    test cancels the connection context directly (not `Close`, so `failAllPending` leaves
    the token registered and the cancel must pool the channel). The seam blocks that
@@ -143,7 +147,12 @@ on the reverted code.
    Reverted, `recoverLoop` tears down while the waiter still holds the reply, so the
    release comes after `IsClosed()` or not at all; if the panic lands on the unjoined
    waiter instead, it is unrecovered and fails the test binary.
-6. Existing pins are adapted to the new return shape:
+6. **`releasePing` pools a published reply.** A unit test registers a reply, publishes
+   and deletes it as `failAllPending` does, calls `releasePing(h, false)`, and requires
+   the channel pooled exactly once and no registration left; a second case does the
+   same with the token still registered. With a plain `Cancel`, the published case
+   pools nothing.
+7. Existing pins are adapted to the new return shape:
    `TestSendPingWithReply_DropsToNilOnFullWriteCh` and
    `TestAdmissionPingDropsBehindPendingHead` (a nil channel, a nil handle, and no
    registration on drop), `TestHeldOutboxControlPrefixAndPostSealReply` (it receives on
@@ -155,7 +164,7 @@ on the reverted code.
    registration that leaves no registration. Its second half (the same connection can
    ping again and the reply completes) receives on the returned channel and releases
    the handle.
-7. Validation: `just test` (the fast lane, with nogo and every dependent target) and
+8. Validation: `just test` (the fast lane, with nogo and every dependent target) and
    `just test-race` (the same set under `-race`), reporting executed versus cached
    targets.
 

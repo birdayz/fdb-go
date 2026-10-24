@@ -9,39 +9,40 @@ import (
 	"time"
 )
 
-// RFC-269: connectionMonitor owns its PING reply, as C++ connectionMonitor holds
-// `state PingRequest pingRequest` (FlowTransport.actor.cpp:665). Every exit
-// releases the reply on the monitor's goroutine, before loopWG.Done and before any
-// teardown the monitor causes. These tests swap the package putReplyChannel seam,
+// RFC-269: connectionMonitor owns its PING reply. These tests swap putReplyChannel,
 // so they do not call t.Parallel (see observePool).
 
 // pingOwnerDummy is the pending request that makes the monitor ping.
 var pingOwnerDummy = UID{First: 99}
 
-// pingOwnerContext records the PING's reply channel from inside the wait that
-// owns it: every wait select evaluates Done before any arm can fire. Recording
-// needs pendingMu's read lock (TryRLock, since a release blocked in the seam holds
-// pendingMu), so a test that takes pendingMu's write lock must first wait for
-// recorded. With panicInWait it then panics once, from that wait.
+// pingOwnerContext records the PING's reply channel in the monitor's wait, whose
+// select evaluates Done before any arm can fire.
 type pingOwnerContext struct {
 	context.Context
 	conn        *Conn
 	panicInWait bool
+	hold        chan struct{} // non-nil: the recording Done blocks until closed
 	ping        atomic.Pointer[chan Response]
 	recorded    chan struct{} // closed once ping is stored
 	panicked    atomic.Bool
 }
 
 func (p *pingOwnerContext) Done() <-chan struct{} {
+	// TryRLock: a release blocked in the seam may hold pendingMu.
 	if p.ping.Load() == nil && p.conn.pendingMu.TryRLock() {
+		recordedNow := false
 		for token, entry := range p.conn.pending {
 			if token != pingOwnerDummy {
 				ch := entry.ch
 				p.ping.Store(&ch)
 				close(p.recorded)
+				recordedNow = true
 			}
 		}
 		p.conn.pendingMu.RUnlock()
+		if recordedNow && p.hold != nil {
+			<-p.hold
+		}
 	}
 	if p.panicInWait && p.ping.Load() != nil && p.panicked.CompareAndSwap(false, true) {
 		panic("injected panic in the monitor's PING wait")
@@ -49,17 +50,22 @@ func (p *pingOwnerContext) Done() <-chan struct{} {
 	return p.Context.Done()
 }
 
+type pingOwnerOptions struct {
+	timeout     time.Duration
+	panicInWait bool
+	gated       bool // the PING reply's release blocks until openGate
+	holdWait    bool // the monitor's wait blocks after recording until releaseWait
+}
+
 type pingOwnerFixture struct {
 	c           *Conn
 	ctx         *pingOwnerContext
 	cancel      context.CancelFunc
 	monitorDone chan struct{}
-	// released receives IsClosed() the first time the PING's reply channel reaches
-	// putReplyChannel: Release after a received or taken reply, or a cancel while
-	// the token is still registered. It is sent on the releasing goroutine.
-	released chan bool
-	gate     chan struct{} // non-nil: that release then blocks until openGate
-	gateOnce sync.Once
+	released    chan bool // IsClosed() at the PING reply's first putReplyChannel
+	gate        chan struct{}
+	gateOnce    sync.Once
+	holdOnce    sync.Once
 }
 
 func (f *pingOwnerFixture) openGate() {
@@ -68,11 +74,15 @@ func (f *pingOwnerFixture) openGate() {
 	}
 }
 
-// newPingOwnerFixture runs only connectionMonitor, under loopWG. The test is its
-// writer (it takes the PING from writeCh) and its reader (it publishes replies).
-// No reader means bytesReceived never moves. gated makes the PING reply's release
-// block until openGate.
-func newPingOwnerFixture(t *testing.T, timeout time.Duration, panicInWait, gated bool) *pingOwnerFixture {
+func (f *pingOwnerFixture) releaseWait() {
+	if f.ctx.hold != nil {
+		f.holdOnce.Do(func() { close(f.ctx.hold) })
+	}
+}
+
+// newPingOwnerFixture runs only connectionMonitor, under loopWG; the test plays
+// writer and reader, so bytesReceived never moves.
+func newPingOwnerFixture(t *testing.T, opts pingOwnerOptions) *pingOwnerFixture {
 	t.Helper()
 	base, cancel := context.WithCancel(context.Background())
 	client, peer := net.Pipe()
@@ -82,17 +92,19 @@ func newPingOwnerFixture(t *testing.T, timeout time.Duration, panicInWait, gated
 		writeCh:             make(chan writeReq, 1),
 		pending:             map[UID]pendingEntry{pingOwnerDummy: {ch: make(chan Response, 1)}},
 		monitorLoopInterval: time.Millisecond,
-		monitorTimeout:      timeout,
+		monitorTimeout:      opts.timeout,
 	}
 	f := &pingOwnerFixture{c: c, cancel: cancel, monitorDone: make(chan struct{}), released: make(chan bool, 1)}
-	if gated {
+	if opts.gated {
 		f.gate = make(chan struct{})
 	}
-	f.ctx = &pingOwnerContext{Context: base, conn: c, panicInWait: panicInWait, recorded: make(chan struct{})}
+	f.ctx = &pingOwnerContext{Context: base, conn: c, panicInWait: opts.panicInWait, recorded: make(chan struct{})}
+	if opts.holdWait {
+		f.ctx.hold = make(chan struct{})
+	}
 	c.ctx = f.ctx
 
-	// Cleanups run last-in first-out: open the gate, join the monitor, and only
-	// then restore the seam the monitor calls.
+	// Cleanups run last-in first-out: the seam is restored after the monitor joins.
 	orig := putReplyChannel
 	var fired atomic.Bool
 	putReplyChannel = func(ch chan Response) {
@@ -112,6 +124,7 @@ func newPingOwnerFixture(t *testing.T, timeout time.Duration, panicInWait, gated
 		c.connectionMonitor()
 	}()
 	t.Cleanup(func() {
+		f.releaseWait()
 		f.openGate()
 		cancel()
 		c.loopWG.Wait()
@@ -136,59 +149,34 @@ func (f *pingOwnerFixture) takePing(t *testing.T) UID {
 	return token
 }
 
-// gateWait is how long a gated release stays blocked while the test watches for
-// the join it must hold up. It bounds only how quickly the reverted code is
-// caught: on the fixed code the join cannot happen while the release is blocked.
+// gateWait only bounds how fast the reverted code is caught; the fixed code cannot
+// join while the gated release is blocked.
 const gateWait = 100 * time.Millisecond
 
-func TestMonitorPingOwner_CloseWaitsForReplyRelease(t *testing.T) {
-	f := newPingOwnerFixture(t, time.Minute, false, true)
-	token := f.takePing(t)
-	if !f.c.HasPendingReply(token) {
-		t.Fatal("positive control: the PING's reply token is not registered")
-	}
-
-	// Publish the reply as readLoop does: send, then delete, under pendingMu. Wait
-	// for the monitor's wait to record the channel first: a write lock held or
-	// queued then would fail its TryRLock, and the reply ends that wait.
-	admissionAwait(t, f.ctx.recorded, "the monitor's PING wait")
-	f.c.pendingMu.Lock()
-	f.c.pending[token].ch <- Response{}
-	delete(f.c.pending, token)
-	f.c.pendingMu.Unlock()
-	admissionAwait(t, f.released, "release of the received PING reply")
-
+// requireCloseWaitsForGate runs Close and requires that it returns only after the
+// gated release does.
+func requireCloseWaitsForGate(t *testing.T, f *pingOwnerFixture, token UID) {
+	t.Helper()
 	closed := make(chan struct{})
 	go func() {
 		_ = f.c.Close()
 		close(closed)
 	}()
+	if f.ctx.hold != nil {
+		// Close's teardown publishes and deregisters before the wait resumes.
+		deadline := time.Now().Add(3 * time.Second)
+		for f.c.HasPendingReply(token) {
+			if time.Now().After(deadline) {
+				t.Fatal("Close did not deregister the outstanding PING")
+			}
+			time.Sleep(time.Millisecond)
+		}
+		f.releaseWait()
+	}
+	admissionAwait(t, f.released, "release of the PING reply")
 	select {
 	case <-closed:
 		t.Fatal("Close returned while the PING reply's owner was still releasing it")
-	case <-time.After(gateWait):
-	}
-	f.openGate()
-	admissionAwait(t, closed, "Close after the PING reply release")
-}
-
-func TestMonitorPingOwner_CloseWaitsForOutstandingPing(t *testing.T) {
-	f := newPingOwnerFixture(t, time.Minute, false, true)
-	token := f.takePing(t)
-	admissionAwait(t, f.ctx.recorded, "the monitor's PING wait")
-
-	// No reply: Close's own teardown ends the wait. Whichever arm wins, the owner
-	// releases the channel once: Release after the teardown response, or
-	// TakeReadyOrCancel taking that response or cancelling before it is published.
-	closed := make(chan struct{})
-	go func() {
-		_ = f.c.Close()
-		close(closed)
-	}()
-	admissionAwait(t, f.released, "release of the outstanding PING reply")
-	select {
-	case <-closed:
-		t.Fatal("Close returned while the outstanding PING's owner was still releasing it")
 	case <-time.After(gateWait):
 	}
 	f.openGate()
@@ -198,15 +186,39 @@ func TestMonitorPingOwner_CloseWaitsForOutstandingPing(t *testing.T) {
 	}
 }
 
-func TestMonitorPingOwner_CancellationReleasesOnMonitor(t *testing.T) {
-	f := newPingOwnerFixture(t, time.Minute, false, true)
+func TestMonitorPingOwner_CloseWaitsForReplyRelease(t *testing.T) {
+	f := newPingOwnerFixture(t, pingOwnerOptions{timeout: time.Minute, gated: true})
 	token := f.takePing(t)
 	if !f.c.HasPendingReply(token) {
 		t.Fatal("positive control: the PING's reply token is not registered")
 	}
+	// A write lock taken before recording would fail the recording TryRLock.
+	admissionAwait(t, f.ctx.recorded, "the monitor's PING wait")
+	// Publish the reply as readLoop does: send, then delete, under pendingMu.
+	f.c.pendingMu.Lock()
+	f.c.pending[token].ch <- Response{}
+	delete(f.c.pending, token)
+	f.c.pendingMu.Unlock()
+	requireCloseWaitsForGate(t, f, token)
+}
 
-	// Cancel without failConnection, so the token stays registered and the owner
-	// must cancel it (pooling the channel, which reaches the seam).
+// Close tears down with the PING outstanding. The wait resumes only after Close's
+// teardown published the response, so either arm releases it through Release,
+// without pendingMu, and Close can only be waiting on the monitor's join.
+func TestMonitorPingOwner_CloseWaitsForOutstandingPing(t *testing.T) {
+	f := newPingOwnerFixture(t, pingOwnerOptions{timeout: time.Minute, gated: true, holdWait: true})
+	token := f.takePing(t)
+	admissionAwait(t, f.ctx.recorded, "the monitor's PING wait")
+	requireCloseWaitsForGate(t, f, token)
+}
+
+func TestMonitorPingOwner_CancellationReleasesOnMonitor(t *testing.T) {
+	f := newPingOwnerFixture(t, pingOwnerOptions{timeout: time.Minute, gated: true})
+	token := f.takePing(t)
+	if !f.c.HasPendingReply(token) {
+		t.Fatal("positive control: the PING's reply token is not registered")
+	}
+	// No failConnection: the token stays registered, so the owner's cancel pools it.
 	f.cancel()
 	admissionAwait(t, f.released, "release of the cancelled PING reply")
 	// The blocked cancel holds pendingMu: touch nothing that takes it until open.
@@ -222,8 +234,8 @@ func TestMonitorPingOwner_CancellationReleasesOnMonitor(t *testing.T) {
 	}
 }
 
-// awaitReleaseBeforeTeardown asserts that the PING reply was released while the
-// connection was still open, and that the monitor then closed it.
+// awaitReleaseBeforeTeardown requires the release while the connection was open,
+// then the monitor's teardown.
 func awaitReleaseBeforeTeardown(t *testing.T, f *pingOwnerFixture, token UID) {
 	t.Helper()
 	if closedAtRelease := admissionAwait(t, f.released, "release of the PING reply"); closedAtRelease {
@@ -237,7 +249,7 @@ func awaitReleaseBeforeTeardown(t *testing.T, f *pingOwnerFixture, token UID) {
 }
 
 func TestMonitorPingOwner_FrozenPingReleasesBeforeTeardown(t *testing.T) {
-	f := newPingOwnerFixture(t, 20*time.Millisecond, false, false)
+	f := newPingOwnerFixture(t, pingOwnerOptions{timeout: 20 * time.Millisecond})
 	awaitReleaseBeforeTeardown(t, f, f.takePing(t))
 }
 
@@ -247,9 +259,39 @@ func TestMonitorPingOwner_PanicReleasesBeforeTeardown(t *testing.T) {
 	seriousLog = func(string, ...any) { logged.Store(true) }
 	t.Cleanup(func() { seriousLog = orig })
 
-	f := newPingOwnerFixture(t, time.Minute, true, false)
+	f := newPingOwnerFixture(t, pingOwnerOptions{timeout: time.Minute, panicInWait: true})
 	awaitReleaseBeforeTeardown(t, f, f.takePing(t))
 	if !f.ctx.panicked.Load() || !logged.Load() {
 		t.Fatal("positive control: the monitor's PING wait did not panic into recoverLoop")
+	}
+}
+
+// releasePing pools the channel whether or not the reply was published before the
+// release: a plain Cancel leaves a published-but-unreceived channel to GC.
+func TestReleasePingPoolsPublishedReply(t *testing.T) {
+	for _, published := range []bool{false, true} {
+		name := "registered"
+		if published {
+			name = "published"
+		}
+		t.Run(name, func(t *testing.T) {
+			c := newTestConn()
+			token, _, h := c.PrepareReply()
+			ch := h.ch
+			if published { // failAllPending: send, then delete, under pendingMu
+				c.pendingMu.Lock()
+				ch <- Response{Err: errConnClosed}
+				delete(c.pending, token)
+				c.pendingMu.Unlock()
+			}
+			pooled := observePool(t)
+			releasePing(h, false)
+			if len(*pooled) != 1 || (*pooled)[0] != ch {
+				t.Fatalf("releasePing pooled %d channels, want the PING's once", len(*pooled))
+			}
+			if len(c.pending) != 0 {
+				t.Fatalf("releasePing left %d registrations", len(c.pending))
+			}
+		})
 	}
 }

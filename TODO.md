@@ -347,8 +347,9 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   on return; the cold-control outbox worker is tracked separately.
   Fixed in RFC-269: the waiter is gone. `connectionMonitor` owns the PING reply
   handle, as C++ holds `state PingRequest` in the monitor actor, and releases it
-  on every exit before `loopWG.Done` and before any teardown it causes; five
-  revert-proven tests pin the reply, Close, cancellation, frozen-ping and panic exits.
+  on every exit before `loopWG.Done` and before any teardown it causes. Five tests,
+  each failing on the reverted code, pin the reply, Close, cancellation, frozen-ping
+  and panic exits; a unit test pins pooling a teardown reply published after the wait.
 - [ ] **Connection monitor has no `resetPing` arm.** C++ `connectionMonitor` also
   ends a PING wait on `peer->resetPing.onTrigger()` (`FlowTransport.actor.cpp:696-698`),
   triggered when packets arrive from an incompatible peer (`:1596`) and when the last

@@ -1240,11 +1240,11 @@ func buildVoidReply() []byte {
 }
 
 // connectionMonitor detects dead connections by sending outbound PINGs.
-// Matches C++ FlowTransport.actor.cpp connectionMonitor() (lines 641-721):
+// Matches C++ FlowTransport.actor.cpp connectionMonitor() (lines 621-702):
 //
 // Outer loop:
 //  1. Sleep CONNECTION_MONITOR_LOOP_TIME (1s), jittered — the client's ONLY
-//     per-cycle delay; C++'s other one at :651 is server-only
+//     per-cycle delay; C++'s other one at :631 is server-only
 //  2. If no pending requests → skip the PING and loop (see the divergence note
 //     at the check itself)
 //  3. Send PING
@@ -1281,11 +1281,11 @@ func (c *Conn) connectionMonitor() {
 		// ONE jittered delay per cycle, and it is the client's only one.
 		//
 		// C++'s FIRST `delay(CONNECTION_MONITOR_LOOP_TIME)`
-		// (FlowTransport.actor.cpp:651) sits inside a block guarded by
-		// `!FlowTransport::isClient() && !peer->destination.isPublic()` (:644),
-		// so a CLIENT never executes it. The client path is delay(0) (:667),
-		// the idle/unreferenced checks (:669-680), then ONE delayJittered
-		// (:682), the PING, and delay(CONNECTION_MONITOR_TIMEOUT) (:692).
+		// (FlowTransport.actor.cpp:631) sits inside a block guarded by
+		// `!FlowTransport::isClient() && !peer->destination.isPublic()` (:624),
+		// so a CLIENT never executes it. The client path is delay(0) (:647),
+		// the idle/unreferenced checks (:649-660), then ONE delayJittered
+		// (:662), the PING, and delay(CONNECTION_MONITOR_TIMEOUT) (:672).
 		//
 		// Go used to sleep here AS WELL as below, porting the server-only
 		// delay, which put worst-case dead-connection detection at
@@ -1299,7 +1299,7 @@ func (c *Conn) connectionMonitor() {
 		// loops instead of throwing, so a delay placed only on the ping path
 		// would leave the idle path spinning hot.
 		//
-		// JITTERED, matching `delayJittered` at :682. Not cosmetic — without it
+		// JITTERED, matching `delayJittered` at :662. Not cosmetic — without it
 		// every connection a client holds pings on the same period, so a process
 		// that opened many at once keeps them in lockstep and the PINGs arrive
 		// as a synchronized burst.
@@ -1310,11 +1310,11 @@ func (c *Conn) connectionMonitor() {
 		}
 
 		// C++ checks peer->reliable.empty() && peer->unsent.empty() &&
-		// peer->outstandingReplies == 0 (:669).
+		// peer->outstandingReplies == 0 (:649).
 		//
 		// KNOWN DIVERGENCE, pre-existing and not introduced here: on that
-		// branch C++ either THROWS — connection_unreferenced (:672) or
-		// connection_idle (:677, past CONNECTION_MONITOR_IDLE_TIMEOUT = 180s) —
+		// branch C++ either THROWS — connection_unreferenced (:653) or
+		// connection_idle (:658, past CONNECTION_MONITOR_IDLE_TIMEOUT = 180s) —
 		// or falls through and PINGs anyway. Go instead skips the ping and
 		// loops, so it never pings an idle connection and never closes one:
 		// a dead idle socket goes undetected until TCP keepalive. Closing that
@@ -1352,23 +1352,14 @@ const (
 )
 
 // monitorPing sends one PING and waits for its reply (FlowTransport.actor.cpp:665-699).
-// It owns the reply, as C++ holds it as actor state, and releases it on every exit
-// on the joined monitor goroutine, so Close returns only after the release.
+// It owns the reply as C++ actor state does, releasing it on the joined monitor goroutine.
 func (c *Conn) monitorPing() pingOutcome {
 	replyCh, reply := c.sendPingWithReply()
 	received := false
 	if reply != nil {
-		defer func() {
-			if !received {
-				// Takes a reply published after the wait ended (failAllPending's
-				// teardown when the ctx arm won), so the channel is pooled either way.
-				reply.TakeReadyOrCancel()
-			}
-			reply.Release()
-		}()
+		defer func() { releasePing(reply, received) }()
 	}
-	// replyCh is nil when the PING was dropped: there is no handle to release, and
-	// a nil channel is never selected, so only the bytesReceived check ends the wait.
+	// A dropped PING has no handle and a nil replyCh, which is never selected.
 	// Wait monitorTimeout per round. Kill only if bytesReceived is truly frozen.
 	startingBytes := c.bytesReceived.Load()
 	for {
@@ -1413,11 +1404,17 @@ func (c *Conn) monitorPing() pingOutcome {
 	}
 }
 
-// sendPingWithReply sends a PingRequest and returns its reply channel and the
-// handle that owns the reply registration (C++ pingRequest.reply). The caller
-// owns the handle: it calls Release after receiving from the channel, or Cancel
-// then Release otherwise. The reply is registered in the pending map so readLoop
-// dispatches it. Both results are nil when the PING could not be enqueued.
+// releasePing ends the PING reply's registration. TakeReadyOrCancel takes a reply
+// published after the wait ended (Close's teardown when the ctx arm won), so it is pooled.
+func releasePing(reply *ReplyHandle, received bool) {
+	if !received {
+		reply.TakeReadyOrCancel()
+	}
+	reply.Release()
+}
+
+// sendPingWithReply registers and enqueues a PING, returning its reply channel and
+// handle for releasePing; both are nil when the PING could not be enqueued.
 func (c *Conn) sendPingWithReply() (<-chan Response, *ReplyHandle) {
 	replyToken, replyCh, replyHandle := c.PrepareReply()
 	transferred := false
