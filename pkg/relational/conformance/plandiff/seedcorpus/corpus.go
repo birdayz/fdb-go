@@ -3415,8 +3415,8 @@ func SeedRunCorpus() []plandiff.RunQuery {
 		},
 
 		// ===== CASE expression edge cases =====
-		// The simple-CASE form is silently broken in fdb-relational
-		// (always falls through to ELSE); we use only searched-CASE here.
+		// The simple-CASE form is silently broken in fdb-relational (the ELSE,
+		// or the last THEN without one); we use only searched-CASE here.
 		{
 			// CASE WHEN ... THEN ... (no ELSE) — defaults to NULL when
 			// no WHEN matches. Pins three-valued semantics when ELSE is
@@ -14823,7 +14823,7 @@ func SeedRunCorpus() []plandiff.RunQuery {
 			},
 			Query: "SELECT g, COUNT(*) FROM T_GBN_01 GROUP BY g ORDER BY g",
 			Divergence: &plandiff.Divergence{
-				Reason:    "Java rejects all GROUP BY forms with UnableToPlanException (TODO #39). Go correctly groups NULL into its own bucket per SQL spec.",
+				Reason:    "Java cannot plan a GROUP BY no index orders (UnableToPlanException, TODO #39). Go correctly groups NULL into its own bucket per SQL spec.",
 				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{nil, float64(2)},
@@ -15211,7 +15211,7 @@ func SeedRunCorpus() []plandiff.RunQuery {
 			},
 			Query: "SELECT grp, SUM(v) FROM T_GBY_01 GROUP BY grp ORDER BY grp",
 			Divergence: &plandiff.Divergence{
-				Reason:    "Java rejects GROUP BY with UnableToPlanException (TODO #39). Go correctly groups and aggregates per SQL spec.",
+				Reason:    "Java cannot plan a GROUP BY no index orders (UnableToPlanException, TODO #39). Go correctly groups and aggregates per SQL spec.",
 				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(1), float64(30)},
@@ -15228,7 +15228,7 @@ func SeedRunCorpus() []plandiff.RunQuery {
 			},
 			Query: "SELECT a, b, COUNT(*) FROM T_GBY_02 GROUP BY a, b ORDER BY a, b",
 			Divergence: &plandiff.Divergence{
-				Reason:    "Java rejects GROUP BY with UnableToPlanException (TODO #39). Go correctly groups by multiple keys per SQL spec.",
+				Reason:    "Java cannot plan a GROUP BY no index orders (UnableToPlanException, TODO #39). Go correctly groups by multiple keys per SQL spec.",
 				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(1), float64(1), float64(2)},
@@ -15245,7 +15245,7 @@ func SeedRunCorpus() []plandiff.RunQuery {
 			},
 			Query: "SELECT grp, SUM(v) FROM T_GBY_03 GROUP BY grp ORDER BY grp",
 			Divergence: &plandiff.Divergence{
-				Reason:    "Java rejects GROUP BY with UnableToPlanException (TODO #39). Go correctly groups NULL into its own bucket per SQL spec.",
+				Reason:    "Java cannot plan a GROUP BY no index orders (UnableToPlanException, TODO #39). Go correctly groups NULL into its own bucket per SQL spec.",
 				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{nil, float64(50)},
@@ -15261,7 +15261,7 @@ func SeedRunCorpus() []plandiff.RunQuery {
 			},
 			Query: "SELECT grp, COUNT(*), SUM(v) FROM T_GBY_04 GROUP BY grp ORDER BY grp",
 			Divergence: &plandiff.Divergence{
-				Reason:    "Java rejects GROUP BY with UnableToPlanException (TODO #39). Go correctly aggregates the single group per SQL spec.",
+				Reason:    "Java cannot plan a GROUP BY no index orders (UnableToPlanException, TODO #39). Go correctly aggregates the single group per SQL spec.",
 				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(1), float64(3), float64(60)},
@@ -15274,7 +15274,7 @@ func SeedRunCorpus() []plandiff.RunQuery {
 			SetupSqls:      nil,
 			Query:          "SELECT grp, COUNT(*) FROM T_GBY_05 GROUP BY grp ORDER BY grp",
 			Divergence: &plandiff.Divergence{
-				Reason:         "Java rejects GROUP BY with UnableToPlanException (TODO #39). Go correctly returns zero groups for empty table per SQL spec.",
+				Reason:         "Java cannot plan a GROUP BY no index orders (UnableToPlanException, TODO #39). Go correctly returns zero groups for empty table per SQL spec.",
 				Direction:      plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{},
 			},
@@ -17037,7 +17037,7 @@ func SeedRunCorpus() []plandiff.RunQuery {
 			},
 			Query: "SELECT id, CASE v WHEN 1 THEN 'one' WHEN 2 THEN 'two' ELSE 'other' END FROM T_CSE_01 ORDER BY id",
 			Divergence: &plandiff.Divergence{
-				Reason:    "Java's visitCaseExpressionFunctionCall is a no-op (visitChildren) that always falls through to ELSE. Go correctly evaluates simple CASE.",
+				Reason:    "Java's visitCaseExpressionFunctionCall is a no-op (visitChildren) that answers the ELSE, or the last THEN without one. Go correctly evaluates simple CASE.",
 				Direction: plandiff.DivergenceJavaWrongRowsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(1), "one"},

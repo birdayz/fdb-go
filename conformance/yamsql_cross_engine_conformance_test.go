@@ -4206,7 +4206,7 @@ func inSubqueryDecompositionScenario() *yamsql.Scenario {
 
 // subqueryInScenario mirrors testdata/subquery_in.yaml.
 // `col IN (subquery)` and `col NOT IN (subquery)` are rejected
-// (Java NPEs in AstNormalizer; Go emits 0AF00). EXISTS / NOT EXISTS
+// (0AF00 in both: Java "IN predicate does not support nested SELECT"). EXISTS / NOT EXISTS
 // and comma-join are the supported rewrites. Drops NOT NULL on PK.
 func subqueryInScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{

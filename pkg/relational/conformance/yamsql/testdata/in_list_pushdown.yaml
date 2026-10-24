@@ -169,8 +169,8 @@ tests:
       - [5]
 
   # -------------------------------------------------------------------
-  # IN with subquery — rejected (Java NPEs in
-  # AstNormalizer.visitInPredicate; CLAUDE.md #10 alignment). The
+  # IN with subquery — rejected, as by Java (0AF00 "IN predicate does not
+  # support nested SELECT"; CLAUDE.md #10 alignment). The
   # IN-list pushdown extractor never sees the subquery shape because
   # rejection happens at predicate eval time before any pushdown
   # decision. Type mismatch (which previously surfaced via the scan

@@ -3,8 +3,7 @@
 Java fdb-relational **4.14.2.0** vs Go implementation vs ANSI SQL standard. The Java and Go
 columns are measured against a live 4.14.2.0 JVM: `DocClaimsJavaProbe`
 (`conformance/doc_claims_java_probe_test.go`, in `//conformance:conformance_probes_test`) runs one
-query per row on both engines and pins both answers. Each row's notes name its probe cases
-(`select`, `group_by_unordered`, …).
+query per row on both engines and pins both answers. Each row's notes name its probe cases.
 Rows measured elsewhere name their test, and rows read from Java source say so. Every known
 difference is in DIVERGENCES.md. The run of Java's own yamsql corpus against Go is under
 [Yamsql Conformance](#yamsql-conformance).

@@ -36,8 +36,9 @@ The corpus number comes from `pinnedLedger`, which the Java corpus run already m
    engines, with Java's and Go's answers pinned. A Java bump that changes an answer fails the probe
    and names the case, which names the doc row.
 2. The documents cite the probe cases; rows not probed say which test measures them or that they
-   are read from source. A second spec checks that every case is cited and that every multi-word
-   name the two documents cite is a case or a cross-engine corpus entry.
+   are read from source. `TestDocClaimsCited` (`//conformance:doc_claims_cited_test`, fast lane)
+   checks that every case is cited and that every multi-word name the two documents cite is a case
+   or a cross-engine corpus entry.
 3. `TestSQLConformanceStatesTheLedger` (javacorpus) renders SQL_CONFORMANCE.md's corpus block from
    `pinnedLedger`, the vendored `VERSION` and the corpus's plan-assertion census, and fails when the
    committed block differs. The block states passing, failing and skipped files by class, and the
@@ -50,8 +51,8 @@ Test-only. The probe adds about 25 s to the Java conformance lane; the guard is 
 
 ## Test plan
 
-- The probe passes three consecutive runs (`--runs_per_test=3`); the citation spec fails when a
-  document cites a name that is no case.
+- The probe passes three consecutive runs (`--runs_per_test=3`); `TestDocClaimsCited` fails when
+  a citation is misspelled (an uncited case and an unknown name).
 - The guard fails on a block that differs from the rendering (checked with a placeholder) and
   passes with the rendered block; `TestLedgerStatementArms` drives the parser's error arms, empty
   class lists and the skipped-assertion filter.
