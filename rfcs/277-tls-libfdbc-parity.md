@@ -12,51 +12,72 @@
 
 ## Problem
 
-`client.resolveTLSConfig` (`client/tls.go`) builds a `*tls.Config` from
-`FDB_TLS_CERTIFICATE_FILE`, `FDB_TLS_KEY_FILE` and `FDB_TLS_CA_FILE`, and
-`transport.upgradeTLS` fills `ServerName` with the dialed host. Go therefore verifies
-the server against the system roots when no CA file is set, and checks the host name
-against the certificate's SANs. Neither happens in libfdb_c. Go ignores
-`FDB_TLS_VERIFY_PEERS` and `FDB_TLS_PASSWORD`, so it cannot express a verify-peers
-policy and cannot load an encrypted key. A set but empty path variable is treated as
-unset, where C++ treats it as set.
+`client.resolveTLSConfig` (`client/tls.go`) builds the TLS configuration a `:tls`
+cluster file uses. It reads `FDB_TLS_CERTIFICATE_FILE`, `FDB_TLS_KEY_FILE` and
+`FDB_TLS_CA_FILE`, and `transport.upgradeTLS` fills `ServerName` with the dialed host.
+That configuration differs from libfdb_c's in four ways:
+- it verifies the server against the system roots when no CA file is set;
+- it checks the host name against the certificate's SANs, and sends SNI for a host-name
+  address;
+- it ignores `FDB_TLS_VERIFY_PEERS` and `FDB_TLS_PASSWORD`, so it can express no
+  verify-peers policy and cannot load an encrypted key;
+- it treats a path variable that is set but empty as unset.
 
 ## C++ (7.3.77)
 
 **Configuration** (`flow/TLSConfig.actor.cpp`). These settings come from the network
 option first and the environment second.
-- Paths (`:168-212`): the network option, else `FDB_TLS_CERTIFICATE_FILE`,
-  `FDB_TLS_KEY_FILE` or `FDB_TLS_CA_FILE`. A variable that is set but empty counts as
-  set (`platform::getEnvironmentVar`, `Platform.actor.cpp:3092-3099`). Otherwise
-  `/etc/foundationdb/{cert,key}.pem` if present. The CA has no default.
+- Paths (`:168-212`): the option, else `FDB_TLS_CERTIFICATE_FILE`, `FDB_TLS_KEY_FILE` or
+  `FDB_TLS_CA_FILE`. A variable that is set but empty counts as set
+  (`platform::getEnvironmentVar`, `Platform.actor.cpp:3092-3099`), giving no file and
+  no default. Otherwise `/etc/foundationdb/{cert,key}.pem` if present. The CA has no
+  default.
 - Password (`:67-75`): the option, else `FDB_TLS_PASSWORD`, else empty.
 - Verify-peers (`:54-65`): the option, else `FDB_TLS_VERIFY_PEERS`, else
   `{"Check.Valid=1"}`.
 
 **Context** (`ConfigureSSLContext`, `:108-142`).
 - The client sets `verify_peer|verify_fail_if_no_peer_cert`.
-- The password is OpenSSL's password callback.
+- The password is OpenSSL's password callback, so encrypted PKCS#8 and legacy PEM keys
+  load.
 - The CA store holds only the configured CA: `add_certificate_authority` runs only when
-  CA bytes exist, and nothing calls `set_default_verify_paths`.
-- Nothing sets a host name: no `set1_host`, no `SSL_set_tlsext_host_name` (no SNI). A
-  grep of `flow/`, `fdbrpc/` and `fdbclient/` finds none.
+  CA bytes exist.
+- Nothing sets a host name. `grep -rnE
+  'set1_host|tlsext_host_name|X509_VERIFY_PARAM_set1|set_default_verify_paths|host_name_verification'
+  flow fdbrpc fdbclient` finds nothing. The positive control
+  `grep -rnE 'set_verify_callback|set_verify_mode'` finds `TLSConfig.actor.cpp:149`.
+  So libfdb_c sends no SNI, verifies no host name and loads no system roots.
 
-**Verify-peers** (`set_verify_peers` `:503-526`, `Rule::Rule` `:528-611`):
-- Rules are split on `|`, and any rule that matches accepts the peer.
+**Verify-peers parsing** (`set_verify_peers` `:503-526`, `Rule::Rule` `:528-611`):
+- Rules are split on `|`, and any rule that matches accepts the peer. An empty piece is
+  a rule with no criteria.
 - A rule is comma-separated `term[<>]?=value` items: `=` is exact, `>=` prefix and `<=`
-  suffix.
-- `Check.Valid` and `Check.Unexpired` take exactly `0` or `1`.
+  suffix. A trailing `,` is allowed.
+- `Check.Valid` and `Check.Unexpired` take exactly one character, `0` or `1`, and no
+  `>=`/`<=`. Any other `Check.` term is an error.
 - Other terms take an optional scope: `S.`/`Subject.` (the default), `I.`/`Issuer.` or
   `R.`/`Root.`. The field must be one of `C, CN, L, ST, O, OU, UID, DC, subjectAltName`
-  (`abbrevToNID`, `:478-488`).
-- Values are unescaped by `de4514` (`:384-468`), an RFC 4514 subset.
-- A parse error clears the rules and throws `tls_error`.
+  (`abbrevToNID`, `:478-488`), case-sensitive.
+- Values are unescaped by `de4514` (`:384-468`), an RFC 4514 subset:
+  - a value is empty or starts with `#` or a space: error;
+  - `\` before one of ``␠ " # + , ; < = > | \`` gives that character, and `\HH` a byte;
+    any other escape ends the value, which is then an error;
+  - an unescaped `" + , ; < >` or NUL ends the value;
+  - trailing unescaped spaces are dropped, and the parse then fails because the next
+    character is not `,`.
+- Criteria are a `std::set` of (field, value, operator) (`TLSConfig.actor.h:247-249`):
+  a repeated term with another value is a further requirement, and an identical repeat
+  is ignored with a warning.
+- A parse error clears the rules and throws `tls_error`. An escaped `\|` never advances
+  the split loop (`:509-516`).
 
 **Matching** (`:613-790`):
-- A DN field must occur exactly once in the name. A `subjectAltName` value is
-  `GEN:val`, with `GEN` one of `EMAIL`, `DNS`, `URI` or `IP`.
-- Both sides are compared as UTF-8 bytes; the criteria bytes are widened as Latin-1
-  (an IA5 string through `ASN1_STRING_to_UTF8`).
+- Both sides are compared as UTF-8 bytes. The criterion is widened from Latin-1 (an IA5
+  string through `ASN1_STRING_to_UTF8`).
+- An empty criterion or entry never matches, whatever the operator (`:624-628`).
+- A DN field must occur exactly once in its name.
+- A `subjectAltName` value is `GEN:val`, with `GEN` one of `EMAIL`, `DNS`, `URI` or
+  `IP`; a value without `:` never matches.
 - The `switch` in `match_extension_criteria` falls through: an email SAN is also tested
   against a `DNS:` criterion, and a URI SAN against an `IP:` criterion. An `IP:`
   criterion never matches an iPAddress SAN, an OCTET STRING that `ASN1_STRING_to_UTF8`
@@ -66,93 +87,136 @@ option first and the environment second.
 
 **Verification** (`verify_peer`, `:792-834`):
 - If any rule has `Check.Valid=0`, every peer is accepted.
-- Otherwise the chain must verify, and then one rule must match.
+- Otherwise the chain must verify, under the `ssl_server` purpose OpenSSL sets for a
+  client, and then one rule must match.
 - `Check.Unexpired` is parsed but never read: an expired certificate still fails.
 
 ## Change
 
 1. **Policy** (`transport/tls_policy.go`). `transport.ParseVerifyPeers(s)` parses the
-   C++ grammar into a `*VerifyPolicy`, including `de4514` unescaping, the field
-   whitelist and the duplicate rule. It fails with a typed `*VerifyPeersError`.
-   `(*VerifyPolicy).Verify(certs, roots)` does two things:
-   - it builds the chain with `x509.Verify` (roots as given, the peer's other
-     certificates as intermediates, `ExtKeyUsageServerAuth`, OpenSSL's `ssl_server`
-     purpose);
-   - it then applies the rules as `verify_peer` and `check_verify` do, including the
-     `Check.Valid=0` bypass and the SAN fall-through.
+   grammar above into a `*VerifyPolicy`, or fails with a typed `*VerifyPeersError`.
+   - `(*VerifyPolicy).Verify(certs, roots)` builds the chain with `x509.Verify`: the
+     roots as given, the peer's other certificates as intermediates, and
+     `ExtKeyUsageServerAuth`.
+   - It then applies the rules as `verify_peer` and `check_verify` do, including the
+     `Check.Valid=0` bypass, the empty-string rule and the SAN fall-through.
+   - DN fields come from `Subject.Names` and `Issuer.Names` by OID. SAN entries come
+     from the raw extension, so a URI is compared as written.
+   - A rejected peer is a typed `*PeerVerifyError`.
 
-   DN fields come from `Subject.Names` and `Issuer.Names` by OID. SAN entries come from
-   the raw extension, so a URI is compared as written. A failure is a typed
-   `*PeerVerifyError`.
-2. **Environment** (`client/tls.go`):
+   `(*VerifyPolicy).VerifyConnection(roots)` returns the `tls.Config.VerifyConnection`
+   hook, so a `WithTLSConfig` caller can opt into the same check.
+2. **Environment** (`client/tls.go`). The injected `getenv func(string) string` becomes
+   a lookup, `func(string) (string, bool)`, used for every variable; production passes
+   `os.LookupEnv`, and tests inject maps, so they stay parallel.
    - `resolveTLSConfig` reads `FDB_TLS_VERIFY_PEERS` (default `Check.Valid=1`) and
-     `FDB_TLS_PASSWORD`. Path variables use `LookupEnv`, so a set but empty variable
-     means no file and no default.
+     `FDB_TLS_PASSWORD`. A path variable set but empty means no file and no default.
    - The config trusts only the CA file: an empty pool when none is set.
-   - It sets `InsecureSkipVerify` (which only turns off the stdlib's own check) and a
-     `VerifyConnection` that runs the policy. It sets no `ServerName`, so no SNI is
-     sent.
-   - An encrypted PKCS#8 key (`ENCRYPTED PRIVATE KEY`, PBES2 with PBKDF2 and AES-CBC or
-     DES-EDE3-CBC, the schemes `openssl pkcs8 -topk8 -v2` writes) is decrypted with
-     the password. An unencrypted key ignores the password, as OpenSSL does.
-   - A configuration error is a typed `*TLSConfigError` carrying `tls_error` (2107).
-3. **Transport** (`transport/conn.go`). `upgradeTLS` no longer sets `ServerName`. A
-   caller's config (`WithTLSConfig`) that sets neither `ServerName` nor
-   `InsecureSkipVerify` gets the `Check.Valid=1` policy against its own `RootCAs`, run
-   before its own `VerifyConnection`. That is a chain check without a host-name check.
-   A config with `ServerName` keeps Go's host-name verification, as an explicit opt-in.
+   - It sets `InsecureSkipVerify` (which turns off only the stdlib's own chain and
+     host-name check) and a `VerifyConnection` that runs the policy. It sets no
+     `ServerName`, so no SNI is sent.
+   - An encrypted PKCS#8 key (`ENCRYPTED PRIVATE KEY`) is decrypted with the password.
+     The schemes are PBES2 with PBKDF2 (HMAC-SHA1/224/256/384/512) and AES-128/192/256-CBC
+     or DES-EDE3-CBC, which `openssl pkcs8 -topk8 -v2` writes. An unencrypted key
+     ignores the password, as OpenSSL does.
+   - A configuration error is a typed `*TLSConfigError` that unwraps to
+     `*wire.FDBError{Code: 2107}` (tls_error) and its cause. It covers an unreadable
+     file, a wrong password, an unsupported key format and a verify-peers parse error.
+3. **Transport** (`transport/conn.go`). `upgradeTLS` fills `ServerName` with the dialed
+   host only when the config leaves it empty and does not set `InsecureSkipVerify`:
+   that is the only case where Go's own verification reads it. So the environment
+   config sends no SNI.
+
+   A `WithTLSConfig` config keeps its meaning as a Go `*tls.Config`. That covers the
+   stdlib's per-dial host check, its roots, and the verified chains its own callbacks
+   receive. Rewriting it would hand those callbacks empty chains and widen trust in
+   system roots. Its doc comment, and DIVERGENCES.md, say so and point to
+   `VerifyPolicy.VerifyConnection` for libfdb_c's check.
 4. **Docs.**
-   - DIVERGENCES.md records what Go cannot or does not reproduce (below).
-   - `rfcs/051-tls-wiring.md` and `docs/mt-saas.md` drop the claim that Go's SNI and
-     host-name check are the C++ default.
-   - CHANGELOG.md records the stricter roots and the dropped host-name check.
+   - `docs/mt-saas.md`: the "Certificates must be hostname-verifiable" section and the
+     `verify_peers` bullet and paragraph are rewritten. The environment path verifies
+     the chain and the policy, not the host name, and `FDB_TLS_VERIFY_PEERS` works in
+     pure Go.
+   - `rfcs/051-tls-wiring.md`: its `FDB_TLS_VERIFY_PEERS`/`FDB_TLS_PASSWORD`
+     follow-ups and the `ServerName` description point to this RFC.
+   - The `WithTLSConfig` doc comments (client and fdb) and the `upgradeTLS` comment are
+     updated.
+   - CHANGELOG.md records the stricter roots and the dropped host-name check and SNI
+     on the environment path.
 
 ## Divergences kept (DIVERGENCES.md)
 
-- A bad configuration (an unreadable file, a wrong password, a verify-peers parse
-  error) fails the database open with `tls_error`. libfdb_c logs `Net2TLSInitError`
-  and then fails every TLS connection (`Net2.actor.cpp:1405-1419`).
+- `WithTLSConfig` keeps Go's verification, including the per-dial host check
+  libfdb_c lacks (see Change 3).
+- A bad configuration fails the database open with `tls_error`. libfdb_c logs
+  `Net2TLSInitError` and then fails every TLS connection (`Net2.actor.cpp:1405-1419`).
 - Keys:
-  - a legacy RFC 1423 encrypted PEM key (`Proc-Type: 4,ENCRYPTED`), PBES1, and scrypt
-    PBES2 keys are refused with `tls_error`; OpenSSL loads them;
-  - a certificate whose key does not match is refused by `crypto/tls`, where OpenSSL
-    drops the key.
+  - a legacy RFC 1423 encrypted PEM key, PBES1 and scrypt PBES2 keys are refused with
+    `tls_error`; OpenSSL loads them;
+  - a certificate whose key does not match is refused by `crypto/tls`; OpenSSL drops the
+    key.
+- Certificates: `crypto/tls` parses every peer certificate before any verification hook
+  runs, so a certificate `crypto/x509` cannot parse is refused even under
+  `Check.Valid=0`. That covers a non-ASCII DNS, email or URI SAN, an unparseable URI,
+  an unsupported DN string type, and an RSA key over 8192 bits. The Latin-1 widening
+  therefore reaches only DN fields.
 - Chains:
-  - `x509.Verify` may return several chains. Go accepts the peer when a rule matches
-    any one of them; OpenSSL builds a single chain.
+  - `x509.Verify` may return several chains, and Go accepts the peer when a rule
+    matches any one of them; OpenSSL builds one chain.
   - Go accepts a non-self-signed CA in the pool as an anchor, rejects SHA-1
-    signatures, and does not check OpenSSL's keyUsage and nsCertType purpose bits.
-- Grammar: an escaped `\|` hangs libfdb_c's parser (`:509-516`); Go refuses it as a
-  parse error.
-- Not added: the `TLS_*` network options, `FDB_NETWORK_OPTION_TLS_*` variables, the
-  12-hour certificate reload, and the 2 s handshake timeout. Go keeps its minimum of
-  TLS 1.2.
+    signatures, and checks only the extended key usage of OpenSSL's purpose.
+- Grammar: an escaped `\|` hangs libfdb_c's parser; Go refuses it as a parse error.
+- Deferred, as TODO.md entries:
+  - the `TLS_*` network options and `FDB_NETWORK_OPTION_TLS_*` variables (the `fdb`
+    facade has no network options);
+  - the 12-hour certificate reload;
+  - the 2 s handshake timeout, against Go's 10 s.
+
+  Go keeps its TLS 1.2 minimum.
 
 ## Wire compatibility
 
-No bytes change. The handshake no longer carries SNI, as with libfdb_c.
+No FDB protocol bytes change. On the environment path the ClientHello drops SNI, as
+libfdb_c's does.
 
 ## Tests
 
 Regressions (each fails when its part is reverted):
 
-- `transport`: verify-peers parsing over the grammar: operators, scopes, the field
-  whitelist, `de4514` escapes, `|`, empty rules, `Check.*` values, and the errors C++
-  throws. Matching over certificates the test builds:
+- `transport`, parsing: operators, scopes, the field whitelist, `de4514` escapes and
+  their failures, trailing spaces, `|` and empty rules, `Check.*` values, repeated and
+  identical terms, and the `\|` error.
+- `transport`, matching, over certificates the tests build:
   - DN exact, prefix and suffix, and a field present twice;
-  - issuer and root scopes, and `I.subjectAltName`;
-  - SAN `DNS`, `EMAIL`, `URI` and the fall-throughs;
-  - the `Check.Valid=0` bypass, an unknown CA, and an expired leaf with
-    `Check.Unexpired=0`.
-- `transport`: a handshake against a server whose certificate names another host
-  succeeds when the chain is valid. Before the change it fails the host-name check.
+  - the empty criterion `subjectAltName>=DNS:` against a DNS SAN;
+  - issuer and root scopes, `I.subjectAltName`, and two valid chains where only one
+    matches an `R.` rule;
+  - SAN `DNS`, `EMAIL` and `URI`, the fall-throughs, and an `IP:` criterion against an
+    iPAddress SAN (no match);
+  - `Check.Valid=0`, an unknown CA, a leaf with only ClientAuth (rejected), and an
+    expired leaf with `Check.Unexpired=0` (rejected).
+- `transport`, handshakes:
+  - with a policy config, a server whose certificate names another host is accepted,
+    and a server at `localhost` sees no SNI;
+  - a config with `ServerName` still rejects a mismatched host;
+  - a config with `InsecureSkipVerify` gets no `ServerName`.
 - `client`:
-  - `FDB_TLS_VERIFY_PEERS` is applied: a policy the server certificate does not meet
-    fails the handshake;
-  - `FDB_TLS_PASSWORD` decrypts an encrypted PKCS#8 key, and a wrong one is a
-    `tls_error`;
-  - with no CA file the system roots are not trusted;
-  - an empty `FDB_TLS_CERTIFICATE_FILE` suppresses the default file.
+  - `FDB_TLS_VERIFY_PEERS` is applied: a rule the server certificate does not meet
+    fails the handshake. An unparseable value is a `*TLSConfigError` with code 2107.
+  - Keys written by OpenSSL 3.6 (`openssl pkcs8 -topk8`), checked in as DER without
+    PEM armour, use AES-256/SHA-256, AES-128/SHA-1 and DES-EDE3. Each decrypts with
+    `FDB_TLS_PASSWORD` to the public key recorded beside it, and loads with a matching
+    certificate. A wrong password, a scrypt key, a PBES1 key and a legacy encrypted PEM
+    key are each a `*TLSConfigError` with code 2107. An unencrypted key loads with a
+    password set.
+  - The system roots are not trusted. A test binary sets `SSL_CERT_FILE` to a CA it
+    generates in `TestMain`, before the process loads its roots, and a server signed
+    by that CA is refused with no CA file set. Before the change this handshake
+    succeeds.
+  - Each path variable, set but empty, suppresses its file and default.
+  - `TestResolveTLSConfig`'s "nothing configured" case asserts an empty, non-nil pool,
+    no `ServerName`, `InsecureSkipVerify` and a `VerifyConnection`. It used to assert
+    nil roots.
 
 Non-regression: the existing mutual-TLS, wrong-CA and missing-client-cert handshakes,
 and the `:tls` cluster-file and `WithTLSConfig` precedence tests.
