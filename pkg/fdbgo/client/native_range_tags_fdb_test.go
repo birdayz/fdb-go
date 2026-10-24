@@ -193,20 +193,20 @@ func TestNativeReadTagSampling(t *testing.T) {
 			for _, r := range got {
 				sends[r.kind]++
 			}
-			selectors, exact := sends["GetKeyRequest"], sends["GetKeyValuesRequest"]
-			// Each request goes to at most two replicas; the planned drops force one hedge
-			// of the exact read and of a selector, and the other selector may hedge too.
-			minSelectors, maxSelectors, wantExact := 2, 2, 1
+			// Each request goes to at most two replicas; the planned drops force a hedge of
+			// the exact read and of one selector, and the other selector may hedge too.
+			wantExact, maxPerSelector := 1, 1
 			if hedge {
-				minSelectors, maxSelectors, wantExact = 3, 4, 2
+				wantExact, maxPerSelector = 2, 2
 			}
-			if draws.count() != 3 || len(got) != selectors+exact || selectors < minSelectors || selectors > maxSelectors || exact != wantExact {
-				t.Fatalf("fallback requests %v: %d draws, %d selector and %d exact sends; want 3 draws, %d-%d selector and %d exact sends",
-					got, draws.count(), selectors, exact, minSelectors, maxSelectors, wantExact)
+			if draws.count() != 3 || len(got) != sends["GetKeyRequest"]+sends["GetKeyValuesRequest"] || sends["GetKeyValuesRequest"] != wantExact {
+				t.Fatalf("fallback requests %v after %d draws; want 3 draws and %d exact sends", got, draws.count(), wantExact)
 			}
+			perSelector := map[string]int{}
 			for _, msg := range recorded.msgs {
 				switch q := msg.(type) {
 				case *types.GetKeyRequest:
+					perSelector[string(q.Sel.Key)]++
 					want := string(q.Sel.Key) == prefix+"a"
 					if string(q.Sel.Key) != prefix+"a" && string(q.Sel.Key) != prefix+"d" {
 						t.Fatalf("unexpected fallback selector %+v", q.Sel)
@@ -219,6 +219,10 @@ func TestNativeReadTagSampling(t *testing.T) {
 						t.Errorf("fallback exact request HasTags=%t Tags=%q, want new third sample", q.HasTags, q.Tags)
 					}
 				}
+			}
+			a, d := perSelector[prefix+"a"], perSelector[prefix+"d"]
+			if a < 1 || d < 1 || a > maxPerSelector || d > maxPerSelector || (hedge && a+d < 3) {
+				t.Errorf("selector sends a=%d d=%d, want 1-%d each and a planned hedge of one", a, d, maxPerSelector)
 			}
 		})
 	}

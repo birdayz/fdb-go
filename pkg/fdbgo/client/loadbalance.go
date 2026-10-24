@@ -17,9 +17,8 @@ import (
 // - Server penalty from LoadBalancedReply
 // - failedUntil with exponential backoff for future_version errors
 //
-// Selection metric: smoothOutstanding.smoothTotal() (lower = better).
-// C++ also uses latency for speculative second requests (secondDelay),
-// which we don't implement yet.
+// Selection metric: smoothOutstanding.smoothTotal() (lower = better). secondDelay
+// has no secondBudget or adaptive secondMultiplier (TODO.md).
 type QueueModel struct {
 	mu      sync.Mutex
 	servers map[string]*queueData
