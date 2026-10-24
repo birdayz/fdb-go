@@ -808,6 +808,9 @@ func parseGetKeyServerLocationsReply(data []byte) ([]locationEntry, error) {
 
 		// Pair slot 0: KeyRangeRef (nested struct).
 		if !pairR.FieldPresent(types.LocationPairSlotKeyRange) {
+			if err := pairR.Err(); err != nil {
+				return nil, &locationsReplyError{defect: locationsUnreadable, detail: fmt.Sprintf("result %d", i), err: err}
+			}
 			continue
 		}
 		krR, err := pairR.ReadNestedReader(types.LocationPairSlotKeyRange)
@@ -835,6 +838,9 @@ func parseGetKeyServerLocationsReply(data []byte) ([]locationEntry, error) {
 
 		// Pair slot 1: vector<StorageServerInterface>.
 		ssCount, err := pairR.ReadVectorCount(types.LocationPairSlotServers)
+		if err == nil {
+			err = pairR.Err()
+		}
 		if err == nil {
 			err = budget.Take(ssCount)
 		}
@@ -866,6 +872,9 @@ func parseGetKeyServerLocationsReply(data []byte) ([]locationEntry, error) {
 						break
 					}
 				}
+			}
+			if err := ssR.Err(); err != nil {
+				return nil, &locationsReplyError{defect: locationsUnreadable, detail: fmt.Sprintf("result %d server %d", i, j), err: err}
 			}
 			if endpointValid(&ep) {
 				servers = append(servers, ServerInfo{

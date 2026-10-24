@@ -728,9 +728,8 @@ func ReadErrorOrInto(data []byte, r *Reader) error {
 //
 // FDB delivers wrong_shard_server / future_version / process_behind for reads
 // through this field, not the ErrorOr root (C++ storageserver.actor.cpp
-// sendErrorWithPenalty sets reply.error; LoadBalance.actor.h re-throws it). A
-// caller that decodes the reply reads its HasError/Error instead, which fail a
-// malformed table; this reads one that does not resolve as absent.
+// sendErrorWithPenalty sets reply.error; LoadBalance.actor.h re-throws it). The
+// generated reply decoders fail a malformed error table; this reads it as absent.
 func ReadInlineReplyError(r *Reader, tagSlot int) *FDBError {
 	// Tag 1 is the Optional's only alternative; any other tag loads as absent in C++.
 	if !r.FieldPresent(tagSlot) || r.ReadUint8(tagSlot) != 1 {
@@ -741,7 +740,11 @@ func ReadInlineReplyError(r *Reader, tagSlot int) *FDBError {
 		return nil
 	}
 	// Error table: uint16 error_code at slot 0.
-	return &FDBError{Code: int(errObj.ReadUint16(0))}
+	code := errObj.ReadUint16(0)
+	if errObj.Err() != nil {
+		return nil
+	}
+	return &FDBError{Code: int(code)}
 }
 
 // ReaderAtRootObject positions a Reader at the object the footer's root_offset

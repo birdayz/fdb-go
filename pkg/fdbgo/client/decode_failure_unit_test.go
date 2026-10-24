@@ -328,3 +328,116 @@ func TestParseClientDBInfoForwardTag(t *testing.T) {
 		t.Fatalf("forward tag 2: %+v, %v; want no forward", info, err)
 	}
 }
+
+// withVTable points the object at obj at a vtable of entries appended to d.
+func withVTable(d []byte, obj int, entries ...uint16) []byte {
+	vt := len(d)
+	for _, e := range entries {
+		d = binary.LittleEndian.AppendUint16(d, e)
+	}
+	binary.LittleEndian.PutUint32(d[obj:], uint32(int32(obj-vt)))
+	return d
+}
+
+// firstLocation returns the readers of the first pair and its first server.
+func firstLocation(t *testing.T, d []byte) (pair, server *wire.Reader) {
+	t.Helper()
+	r, err := wire.ReadErrorOr(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pair, err = r.ReadVectorElementReader(types.GetKeyServerLocationsReplySlotResults, 0); err != nil {
+		t.Fatal(err)
+	}
+	if server, err = pair.ReadVectorElementReader(types.LocationPairSlotServers, 0); err != nil {
+		t.Fatal(err)
+	}
+	return pair, server
+}
+
+// A vtable that declares more entries than the buffer holds fails the hand-written
+// walks instead of reading its fields as absent.
+func TestLocationAndSplitWalksFailOnVTablePastBuffer(t *testing.T) {
+	t.Parallel()
+	// Four entries declared, two present: slot 0's entry lies past the buffer.
+	const declared, size = 8, 8
+	unreadable := func(t *testing.T, err error) {
+		t.Helper()
+		var lre *locationsReplyError
+		var bounds *wire.FieldBoundsError
+		if !errors.As(err, &lre) || lre.defect != locationsUnreadable || !errors.As(err, &bounds) {
+			t.Fatalf("got %v; want an unreadable locations reply with a FieldBoundsError", err)
+		}
+	}
+	t.Run("location pair", func(t *testing.T) {
+		t.Parallel()
+		d := locationsReplyVector(t)
+		pair, _ := firstLocation(t, d)
+		_, err := parseGetKeyServerLocationsReply(withVTable(d, pair.ObjectPos(), declared, size))
+		unreadable(t, err)
+	})
+	t.Run("storage server", func(t *testing.T) {
+		t.Parallel()
+		d := locationsReplyVector(t)
+		_, server := firstLocation(t, d)
+		_, err := parseGetKeyServerLocationsReply(withVTable(d, server.ObjectPos(), declared, size))
+		unreadable(t, err)
+	})
+	t.Run("slot-2 RequestStream", func(t *testing.T) {
+		t.Parallel()
+		d := locationsReplyVector(t)
+		_, server := firstLocation(t, d)
+		wrapper, err := server.ReadNestedReader(types.StorageServerInterfaceSlotField_2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = parseGetKeyServerLocationsReply(withVTable(d, wrapper.ObjectPos(), declared, size))
+		unreadable(t, err)
+	})
+	t.Run("split points", func(t *testing.T) {
+		t.Parallel()
+		d := replyVector(t, "SplitRangeReply_two_points")
+		points, err := parseSplitRangeReply(withVTable(d, errorOrReply(t, d), declared, size))
+		var bounds *wire.FieldBoundsError
+		if !errors.As(err, &bounds) {
+			t.Fatalf("got %d points, %v; want a FieldBoundsError", len(points), err)
+		}
+	})
+}
+
+// An absent slot-2 endpoint, or an absent RequestStream field, is not an error: the
+// scan looks for an endpoint elsewhere. C++ 7.3 writes only slot 2, so the first case
+// moves it to slot 0 for the scan to find.
+func TestLocationsSlot2EndpointAbsentUsesScan(t *testing.T) {
+	t.Parallel()
+	want, err := parseGetKeyServerLocationsReply(locationsReplyVector(t))
+	if err != nil || len(want[0].servers) != 1 {
+		t.Fatalf("well-formed reply: %+v, %v", want, err)
+	}
+	t.Run("slot 2 absent", func(t *testing.T) {
+		t.Parallel()
+		d := locationsReplyVector(t)
+		_, server := firstLocation(t, d)
+		entries := vtableAt(d, server.ObjectPos()) + 4
+		slot2 := entries + 2*types.StorageServerInterfaceSlotField_2
+		copy(d[entries:], d[slot2:slot2+2])
+		binary.LittleEndian.PutUint16(d[slot2:], 0)
+		got, err := parseGetKeyServerLocationsReply(d)
+		if err != nil || len(got[0].servers) != 1 || got[0].servers[0].Address != want[0].servers[0].Address {
+			t.Fatalf("got %+v, %v; want server %s from the scan", got, err, want[0].servers[0].Address)
+		}
+	})
+	t.Run("wrapper field absent", func(t *testing.T) {
+		t.Parallel()
+		d := locationsReplyVector(t)
+		_, server := firstLocation(t, d)
+		wrapper, err := server.ReadNestedReader(types.StorageServerInterfaceSlotField_2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := parseGetKeyServerLocationsReply(withVTable(d, wrapper.ObjectPos(), 4, 4)) // no fields
+		if err != nil || len(got) != 1 || len(got[0].servers) != 0 {
+			t.Fatalf("got %+v, %v; want the shard with no server", got, err)
+		}
+	})
+}

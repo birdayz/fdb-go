@@ -70,14 +70,19 @@ func TestReaderRecordsFieldOutsideBuffer(t *testing.T) {
 
 	type readCase struct {
 		name string
-		edit func(d []byte)
+		edit func(d []byte) []byte
 		read func(r *Reader)
 		slot int
 	}
-	fieldPast := func(d []byte) { binary.LittleEndian.PutUint16(d[28:], 0xFFF0) } // slot 0 past the object
-	targetPast := func(d []byte) { binary.LittleEndian.PutUint32(d[20:], 1<<20) } // its RelativeOffset past the buffer
+	fieldPast := func(d []byte) []byte { binary.LittleEndian.PutUint16(d[28:], 0xFFF0); return d } // slot 0 past the object
+	targetPast := func(d []byte) []byte { binary.LittleEndian.PutUint32(d[20:], 1<<20); return d } // its RelativeOffset past the buffer
+	// The target and its length word are in the buffer; the declared length or count is not.
+	lengthPast := func(d []byte) []byte {
+		binary.LittleEndian.PutUint32(d[20:], uint32(len(d)-20))
+		return binary.LittleEndian.AppendUint32(d, 1<<20)
+	}
 	cases := []readCase{
-		{"vtable longer than the buffer", func(d []byte) { binary.LittleEndian.PutUint16(d[24:], 400) }, func(r *Reader) { r.FieldPresent(100) }, 100},
+		{"vtable longer than the buffer", func(d []byte) []byte { binary.LittleEndian.PutUint16(d[24:], 400); return d }, func(r *Reader) { r.FieldPresent(100) }, 100},
 	}
 	// Every leaf read, with the field outside the object.
 	leaves := map[string]func(r *Reader){
@@ -100,10 +105,12 @@ func TestReaderRecordsFieldOutsideBuffer(t *testing.T) {
 	}
 	for name, read := range outOfLine {
 		cases = append(cases, readCase{name + " field", fieldPast, read, 0}, readCase{name + " target", targetPast, read, 0})
+		if name == "ReadBytes" || name == "ReadVectorInt32" || name == "ReadVectorUint64" {
+			cases = append(cases, readCase{name + " length", lengthPast, read, 0})
+		}
 	}
 	for _, tc := range cases {
-		d := scalarMessage(2)
-		tc.edit(d)
+		d := tc.edit(scalarMessage(2))
 		binary.LittleEndian.PutUint16(d[30:], 0xFFF0) // slot 1, also past the buffer
 		err := read(d, func(r *Reader) {
 			tc.read(r)
@@ -171,18 +178,29 @@ func TestReadOptionalTagsAndBounds(t *testing.T) {
 		t.Fatalf("tag 2: present %t/%t, %v; want absent", iok, sok, err)
 	}
 	// Each helper records the fault on a reader of its own.
-	for name, readOne := range map[string]func(r *Reader) bool{
-		"int32":  func(r *Reader) bool { _, ok := r.ReadOptionalInt32(0, 1); return ok },
-		"string": func(r *Reader) bool { _, ok := r.ReadOptionalString(0, 1); return ok },
+	valueSlotPast := optionalMessage(1, 12, 2, "hi")
+	binary.LittleEndian.PutUint16(valueSlotPast[34:], 0xFFF0)
+	readInt := func(r *Reader) bool { _, ok := r.ReadOptionalInt32(0, 1); return ok }
+	readString := func(r *Reader) bool { _, ok := r.ReadOptionalString(0, 1); return ok }
+	for _, tc := range []struct {
+		name    string
+		d       []byte
+		readOne func(r *Reader) bool
+	}{
+		{"int32 value past the buffer", optionalMessage(1, 1<<20, 2, "hi"), readInt},
+		{"string value past the buffer", optionalMessage(1, 1<<20, 2, "hi"), readString},
+		{"int32 value slot past the object", valueSlotPast, readInt},
+		{"string value slot past the object", valueSlotPast, readString},
+		{"string length past the buffer", optionalMessage(1, 12, 1<<20, "hi"), readString},
 	} {
-		r, err := NewReader(optionalMessage(1, 1<<20, 2, "hi"))
+		r, err := NewReader(tc.d)
 		if err != nil {
 			t.Fatal(err)
 		}
-		present := readOne(r)
+		present := tc.readOne(r)
 		var bounds *FieldBoundsError
 		if err := r.Err(); present || !errors.As(err, &bounds) || bounds.Slot != 1 {
-			t.Fatalf("%s value past the buffer: present %t, %v; want a FieldBoundsError for slot 1", name, present, err)
+			t.Fatalf("%s: present %t, %v; want a FieldBoundsError for slot 1", tc.name, present, err)
 		}
 	}
 }

@@ -372,6 +372,21 @@ func TestOptionalAndVariantTags(t *testing.T) {
 	if m := decodeValue(d); m.HasError {
 		t.Fatalf("inline error with tag 2 decodes as present: %+v", m.Error)
 	}
+	// An error code past the buffer: the helper reads no error, the generated decoder fails.
+	d = bytes.Clone(inline)
+	errTable, err := replyReader(t, d).ReadNestedReader(GetValueReplySlotError + 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	le.PutUint16(d[vtablePos(d, errTable.ObjectPos())+4:], 0xFFF0)
+	if e := wire.ReadInlineReplyError(replyReader(t, d), GetValueReplySlotError); e != nil {
+		t.Fatalf("inline error code past the buffer: %v, want none", e)
+	}
+	var badCode GetValueReply
+	var decodeErr *wire.DecodeError
+	if err := badCode.UnmarshalFromReader(replyReader(t, d)); !errors.As(err, &decodeErr) {
+		t.Fatalf("generated decode of an error code past the buffer: %v; want a DecodeError", err)
+	}
 
 	d = bytes.Clone(vectorBytes(t, findVector(t, "GetMappedKeyValuesReply_getrange")))
 	e, err := replyReader(t, d).ReadVectorElementReader(GetMappedKeyValuesReplySlotData, 0)

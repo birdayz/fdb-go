@@ -367,13 +367,8 @@ template <class T> bool optionalInnerIsTable() {
     return false;
 }
 
-// Optional<scalar-T> introspection. An Optional<scalar-T> serializes its inner as a BARE
-// out-of-line value behind the union's RelativeOffset (SaveAlternative non-indirection arm,
-// flat_buffers.h:848), NOT a length-prefixed byte vector: UID (16 bytes, the debugID on
-// requests; ReadUID) and every arithmetic/enum primitive (e.g. Optional<Version>). Byte-vector
-// inners stay []byte. Struct inners go through optionalInnerGoType when registered, else
-// optionalInnerIsTable (presence only). fb_size<Optional<UID>> is the offset's size (4), so the
-// inner scalar's size (16) must be queried separately.
+// An Optional<scalar-T> (UID, arithmetic, enum) is a bare out-of-line value behind the union
+// offset (flat_buffers.h:848); fb_size gives only the offset's 4 bytes, not the inner's size.
 template <class T> bool optionalInnerIsScalar() {
     if constexpr (optional_inner_t<T>::is) {
         using Inner = typename optional_inner_t<T>::type;

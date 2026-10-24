@@ -209,7 +209,7 @@ revert):
     element that overruns it, and trailing bytes.
 - `client`: one table test over the reply parsers. Each moves one present field past
   the buffer and expects a `*wire.DecodeError`. The replies are ground-truth vectors,
-  except `ClientDBInfo`, which has none and is Go-marshaled:
+  except the `ClientDBInfo` id case, which uses a minimal Go-marshaled reply:
   - `GetValueReply` value, `GetKeyReply` penalty, `GetKeyValuesReply` rows,
     `GetMappedKeyValuesReply` rows;
   - `GetReadVersionReply` version, `CommitID` version, `StorageMetrics` bytes;
@@ -233,7 +233,9 @@ revert):
 - `client`: the new ground-truth vectors `GetKeyServerLocationsReply_secondary_address`
   and `ClientDBInfo_secondary_address` (endpoints with a TLS secondary address) parse,
   with the primary address; a selector key past the buffer fails `parseGetKeyReply`;
-  a range key with a zero offset still fails the locations reply.
+  a range key with a zero offset still fails the locations reply. A location pair, a
+  server or a split-point reply whose vtable runs past the buffer fails its parse, and a
+  server whose slot-2 endpoint or its wrapper field is absent is still found by the scan.
 - `wire`: `ReadOptionalInt32`/`ReadOptionalString` treat tag 2 as absent and record a
   value past the buffer.
 
@@ -243,8 +245,9 @@ Non-regression guards (pass before and after):
   the fast lane) asserts each reply vector through its production parser. New C++
   vectors cover the fields the stricter decoders now check: the inline error on
   `GetValueReply`, `GetKeyReply`, `GetKeyValuesReply` and `GetMappedKeyValuesReply`, and a
-  `GetReadVersionReply` with an `ssVersionVectorDelta`. A `tagThrottleInfo` vector is not
-  regen-stable, because `ClientTagThrottleLimits` writes `expiration - now()`.
+  `GetReadVersionReply` with an `ssVersionVectorDelta`, and one with a `tagThrottleInfo`
+  entry. `ClientTagThrottleLimits` writes `expiration - now()`, so that vector uses
+  `NO_EXPIRATION` (DBL_MAX), the only regen-stable expiration.
 - A dense legitimate reply decodes within the budget: a `GetMappedKeyValuesReply` of
   many range rows holding many empty `KeyValueRef`s, marshaled by the Go encoder that
   the ground-truth vectors pin to C++ layout. The test calls `decode` with its own

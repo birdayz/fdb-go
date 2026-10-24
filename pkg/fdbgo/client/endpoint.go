@@ -16,6 +16,9 @@ import (
 func ReadEndpointFromSlot(r *wire.Reader, slot int) (types.Endpoint, error) {
 	var ep types.Endpoint
 	if !r.FieldPresent(slot) {
+		if err := r.Err(); err != nil {
+			return ep, err
+		}
 		return ep, &endpointAbsentError{slot: slot}
 	}
 	wrapper, err := r.ReadNestedReader(slot)
@@ -23,6 +26,9 @@ func ReadEndpointFromSlot(r *wire.Reader, slot int) (types.Endpoint, error) {
 		return ep, fmt.Errorf("read endpoint wrapper: %w", err)
 	}
 	if !wrapper.FieldPresent(0) {
+		if err := wrapper.Err(); err != nil {
+			return ep, fmt.Errorf("read endpoint wrapper: %w", err)
+		}
 		return ep, &endpointAbsentError{slot: slot, wrapper: true}
 	}
 	inner, err := wrapper.ReadNestedReader(0)

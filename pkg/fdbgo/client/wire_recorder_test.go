@@ -228,7 +228,7 @@ func decodeRecordedCoordWrite(body []byte) (reply transport.UID, recognized bool
 	}{
 		{types.OpenDatabaseCoordRequestSlotSupportedVersions, func(v *wire.Reader) error {
 			req.SupportedVersions = append(req.SupportedVersions, types.ClientVersionRef{ClientVersion: v.ReadBytes(0), SourceVersion: v.ReadBytes(1), ProtocolVersion: v.ReadBytes(2)})
-			return nil
+			return v.Err()
 		}},
 		{types.OpenDatabaseCoordRequestSlotCoordinators, func(v *wire.Reader) error {
 			var addr types.NetworkAddress
@@ -240,7 +240,7 @@ func decodeRecordedCoordWrite(body []byte) (reply transport.UID, recognized bool
 		}},
 		{types.OpenDatabaseCoordRequestSlotHostnames, func(v *wire.Reader) error {
 			req.Hostnames = append(req.Hostnames, types.Hostname{Host: v.ReadBytes(0), Service: v.ReadBytes(1), IsTLS: v.ReadBool(2)})
-			return nil
+			return v.Err()
 		}},
 	} {
 		n, err := r.ReadVectorCount(vector.slot)
