@@ -4411,10 +4411,8 @@ func (e *AggregateEvalError) Error() string {
 	return e.Message
 }
 
-// addInt64Checked / subInt64Checked / mulInt64Checked mirror
-// embedded.functions.{Add,Sub,Mul}Int64Checked. Re-implemented in
-// cascades to keep the value-layer arithmetic free of cross-package
-// imports (the package-structure goal in RFC-025).
+// addInt64Checked / subInt64Checked / mulInt64Checked are Java's
+// Math.addExact / subtractExact / multiplyExact.
 //
 // Add/Sub overflow: signed-overflow detection via the standard
 // "different sign" check (well-defined under int64 wrap semantics).

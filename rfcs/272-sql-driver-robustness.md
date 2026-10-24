@@ -62,8 +62,9 @@ auto-commit SELECT running each page in its own transaction; it stays open and i
    when it ends, the FDB transaction is cancelled and the `embeddedTx` ends with the context's
    error as cause; database/sql then rolls back. `runInCapturedTx` binds the statement's context
    the same way while it runs work on a captured transaction, a context already ended there also
-   ends the transaction, and so does `paginatingRows.Close` when the statement's context ended
-   before the result set was read to its end (database/sql closes the rows itself then and never
+   ends the transaction, so does a statement that fails with its context ended before reaching
+   FDB (planning checks the context first), and so does `paginatingRows.Close` when the
+   statement's context ended before the result set was read to its end (database/sql closes the rows itself then and never
    fetches another page), so whether a deadline lands during a read or between two pages does
    not decide the outcome. The statement returns the context error (54F01 for the statement
    timeout, as today); later statements and `Commit` get 25F01 wrapping the cause. This holds for
@@ -137,7 +138,9 @@ always, a broken one fails nearly always.
   database/sql's `Tx`, a cancelled BeginTx context with a read held in flight lets the rollback
   complete (a 30 s watchdog fails a hang); a commit held in flight while the BeginTx context ends
   keeps its success; Close and ResetSession wait for an abort held in its Cancel; a 40-iteration
-  Commit/cancel race (race lane) as extra coverage; ReadOnly is 0A000. End to end
+  Commit/cancel race (race lane) as extra coverage; ReadOnly is 0A000; BeginTx with an ended
+  context opens nothing, and the record context carries the BeginTx context (START TRANSACTION:
+  none); a context ended before planning ends the transaction. End to end
   (`sqltest/core`): a statement timeout in an explicit transaction makes Commit 25F01 and drops
   the write; ReadOnly is refused.
 - Item 2: a table test drives every listed entry, `ExecContext`, `QueryContext` and `Rows.Next`
@@ -147,7 +150,9 @@ always, a broken one fails nearly always.
   with a panicking initialization returns XX000 and the next `Connect` succeeds.
 - Item 3 (`sqldriver`): retry after a failed open; an initializer's context ending during the
   warm-up is not kept; `initFlight` unit tests for one attempt shared by concurrent callers, a
-  waiter leaving on its own context, and a failure or panic reaching only its caller.
+  waiter leaving on its own context, and a failure or panic reaching only its caller; each
+  releases the first attempt only after the other callers are blocked on it (a context whose
+  `Done` reports that `initFlight.do` reached its waiting select).
 - Item 4: all six settings set to non-defaults (asserted), `ResetSession`, each back at `New`'s
   value with the `SetOptions` set kept; end to end through a one-connection pool, including a
   `SetOption` (MAX_ROWS) that the next borrower no longer sees.
@@ -155,7 +160,10 @@ always, a broken one fails nearly always.
   both comment forms; end to end a 600-parenthesis literal, 600 sibling tuples, and 501 levels.
 - Item 6: embedded regression (refused duplicates including `<>`/`!=` and `1`/`01`; literal-case
   and parameter-value keys accepted; unresolvable keys report their own error; a duplicated
-  unresolvable key fails as the single key does) and end-to-end cases in `sqltest/agg`.
+  unresolvable key fails as the single key does), end-to-end cases in `sqltest/agg`, and four
+  rows in the live-JVM `DuplicateGroupByJavaProbe` (`<>`/`!=` and `1`/`01` both 42702,
+  literal-case keys planned by Go and declined by Java's planner, an undefined key twice both
+  42703). The probe runner binds no parameters, so the parameter-value shape is Go-only.
 - Item 7: a stale handle's Commit (25F01) and Rollback leave the newer transaction, through
   BeginTx and through SQL COMMIT/START TRANSACTION.
 - Item 8: self-return, a two-Valuer cycle, a Valuer returning its own array, a self pointer, and a

@@ -31,8 +31,8 @@ import (
 // option names, or the PlanGenerationLogger interface. A paraphrase that
 // happens to avoid the renamed symbol would compile while the doc is wrong.
 //
-// Nothing here connects to FDB; the test body only asserts the wiring exists.
-// Compilation IS the assertion.
+// Nothing here connects to FDB. Compilation is the main assertion; the test
+// body also runs the §3 recipe to check its option values pass SetOption.
 
 // configureTenantConn is docs/mt-saas.md §3, "Setting them: not a DSN, not SQL
 // — conn.Raw". The type assertion is load-bearing: Connector.Connect returns

@@ -182,9 +182,8 @@ func parameterConstant(raw any) (values.Value, error) {
 	return nestedParameterConstant(raw, 0)
 }
 
-// maxParameterNesting bounds the Valuer results, pointers and array elements
-// typing one parameter may pass through, so a Valuer that returns itself (or
-// any cycle) is an error rather than a goroutine stack overflow.
+// maxParameterNesting bounds the Valuers, pointers and arrays one parameter
+// passes through: a self-returning Valuer would otherwise overflow the stack.
 const maxParameterNesting = 32
 
 // nestedParameterConstant is parameterConstant at nesting depth.

@@ -536,10 +536,12 @@ Two caveats on reading the numbers:
 
 ### Per-tenant plan logging
 
-`PlanGenerationLogger` (`pkg/relational/core/embedded/plan_logging.go:78`) is installed **per
-connection**, via the same `conn.Raw` route as the quotas — `SetPlanLogger`
-(`pkg/relational/core/embedded/connection.go:165`). There is no DSN parameter, no context value and
-no driver-level registration. That is convenient here: the tenant ID goes in the closure.
+`PlanGenerationLogger` (`pkg/relational/core/embedded/plan_logging.go`) is installed **per
+connection borrow**, via the same `conn.Raw` route as the quotas — `SetPlanLogger` — and, like
+them, lasts until the connection returns to the pool (`ResetSession` removes it and resets the
+slow-query threshold), so install it in the same acquire/configure/use/close helper. There is no DSN
+parameter, no context value and no driver-level registration. That is convenient here: the tenant
+ID goes in the closure.
 
 `PlanGenerationLogger` is an interface with one method and the package ships no func adapter, so
 declare one and close over the tenant ID:
@@ -579,8 +581,8 @@ Sampling and log volume are the handler's problem: the engine always emits
 ### Per-tenant execution statistics
 
 `ExecutionStatsLogger` (`pkg/relational/core/embedded/execution_logging.go`) is the
-post-execution counterpart, installed the same way — per connection, via `conn.Raw` →
-`SetExecutionStatsLogger`. It is a **separate** interface from `PlanGenerationLogger`, not a second
+post-execution counterpart, installed the same way — per connection borrow, via `conn.Raw` →
+`SetExecutionStatsLogger`, removed by `ResetSession`. It is a **separate** interface from `PlanGenerationLogger`, not a second
 method on it, because a cached plan is planned once and executed many times: the two records do not
 pair up 1:1, and `PlanHash` is the join key between them.
 

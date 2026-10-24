@@ -372,3 +372,60 @@ func TestBeginTx_ReadOnlyRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// BeginTx with a context that has already ended opens nothing; one that is
+// live becomes the transaction's record context, which bounds the reads and
+// child transactions that take their context from it. START TRANSACTION,
+// which outlives its statement, carries none.
+func TestBeginTx_RecordContextCarriesBeginTxContext(t *testing.T) {
+	t.Parallel()
+	g := newGatedSim(t, 513)
+	c := g.connect(t, "S")
+	ended, cancelEnded := context.WithCancel(context.Background())
+	cancelEnded()
+	if _, err := c.BeginTx(ended, driver.TxOptions{}); !errors.Is(err, context.Canceled) || c.activeTx != nil {
+		t.Fatalf("BeginTx(ended context) = %v, activeTx %v; want context.Canceled and no transaction", err, c.activeTx)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tx, err := c.BeginTx(ctx, driver.TxOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.activeTx.rctx.Context(); got != ctx {
+		t.Fatalf("record context's Context() = %v, want the BeginTx context", got)
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	mustExec(t, c, "START TRANSACTION")
+	if got := c.activeTx.rctx.Context(); got != context.Background() {
+		t.Fatalf("START TRANSACTION's record context carries %v, want context.Background()", got)
+	}
+	mustExec(t, c, "ROLLBACK")
+}
+
+// A statement whose context ended before it reached FDB (planning checks the
+// context first) also ends the explicit transaction.
+func TestExplicitTx_ContextEndedBeforePlanningEndsTransaction(t *testing.T) {
+	t.Parallel()
+	g := newGatedSim(t, 515)
+	c := g.connect(t, "S")
+	tx, err := c.BeginTx(context.Background(), driver.TxOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustExec(t, c, "INSERT INTO t (id, v) VALUES (500, 500)")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := c.QueryContext(ctx, "SELECT id FROM t", nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("SELECT with an ended context = %v, want context.Canceled", err)
+	}
+	wantEnded(t, "Commit", tx.Commit(), context.Canceled)
+	if err := tx.Rollback(); err != nil || c.activeTx != nil {
+		t.Fatalf("Rollback = %v, activeTx %v; want nil, nil", err, c.activeTx)
+	}
+	if n := countRows(t, c, 500); n != 0 {
+		t.Fatalf("a write of the ended transaction was committed (count %d)", n)
+	}
+}

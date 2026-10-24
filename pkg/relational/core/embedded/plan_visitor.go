@@ -1720,13 +1720,11 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 	// why `GROUP BY category, T_G1.category` rejects too — the strip()
 	// above has already folded a single-source qualifier away, so column
 	// keys compare by the same post-strip identity the slot-matching loop
-	// uses (buildAggregateOutputSlots). EXPRESSION keys resolve through
-	// the semantic scope in value context, the walk that builds the key
-	// (Java's visitGroupByItem), and compare by VALUE equality: literals
-	// and parameters by value, `<>` and `!=` alike. A key that does not
-	// resolve is no duplicate here; it fails on its own resolution error
-	// when the key is built (upgradeAggregateOperands), as in Java, which
-	// resolves every grouping item before the pull-up. Measured live
+	// uses (buildAggregateOutputSlots). EXPRESSION keys resolve with the
+	// walk that builds them (value context, Java's visitGroupByItem) and
+	// compare by value; one that does not resolve fails on its own error
+	// in upgradeAggregateOperands, as Java's resolution precedes the
+	// pull-up. Measured live
 	// (DuplicateGroupByJavaProbe): Java 42702s every duplicate shape
 	// BEFORE planning; the check therefore sits at aggregate BUILD time,
 	// not in the planner.

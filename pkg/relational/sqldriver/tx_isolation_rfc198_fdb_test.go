@@ -15,9 +15,8 @@ package sqldriver_test
 //     5). paginatingRows captures the *embeddedTx at Execute time; pages
 //     fetched after the transaction ended must be 25F01, never rows from a
 //     silently opened fresh transaction. The four doors are the four sites
-//     that end a transaction, two of which (Close, ResetSession) bypass
-//     Rollback entirely — a terminal flag set only in Commit/Rollback would
-//     pass the first two doors and fail those.
+//     that end a transaction (Close and ResetSession end it through
+//     Rollback), each of which must set the terminal flag.
 
 import (
 	"context"

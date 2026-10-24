@@ -103,6 +103,16 @@ Each is described in full under Compatibility or Changed below.
   and tags now apply to every statement transaction, autocommit and read-only ones included.
 
 ### Changed
+- SQL driver transactions (RFC-272): `BeginTx` with `TxOptions{ReadOnly: true}` fails with 0A000
+  (Java accepts `setReadOnly` and ignores it; database/sql requires a driver that does not enforce
+  it to refuse it). The `BeginTx` context bounds the transaction: when it ends, the FDB transaction
+  is cancelled and database/sql rolls it back. A statement whose context ends inside an explicit
+  transaction (deadline, cancel, statement timeout, also while its rows are open) returns the
+  context error and ends the transaction; later statements and `Commit` return 25F01 wrapping the
+  context error, and its writes are discarded. `Commit` on an ended transaction is 25F01.
+  `DIVERGENCES.md` "Driver transactions" has the comparison with Java. `functions.ApplyMathOp`,
+  `ApplyBitOp`, `IsTruthy`, `LiteralMatchesPKKind`, `ToIntegerArg`, `ToFloat64` and
+  `Add/Sub/MulInt64Checked` are removed.
 - Development builds use Bazel 9.3.1, Bazelisk 1.30.0, and updated stable BCR build rules.
 - Require Go 1.27 (minimum toolchain Go 1.27.3).
 - Go 1.27.3 includes the GO-2026-6809 `crypto/x509` fix used by pure-Go client TLS.

@@ -43,9 +43,7 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
-	"log/slog"
 	"os"
-	"runtime/debug"
 	"sync"
 	"sync/atomic"
 
@@ -137,8 +135,8 @@ func applyStoreTimer(clusterFile string, db *recordlayer.FDBDatabase) {
 // make the cardinality of every record-layer metric grow with the customer list — the
 // classic way to take down a Prometheus. Per-tenant attribution is already available at a
 // layer that can afford it, because it is sampled and log-shaped rather than a live time
-// series: PlanGenerationLogger and ExecutionStatsLogger are installed per connection and
-// close over the tenant ID (see docs/mt-saas.md §4).
+// series: PlanGenerationLogger and ExecutionStatsLogger are installed per connection borrow
+// (ResetSession removes them) and close over the tenant ID (see docs/mt-saas.md §4).
 //
 // A caller who genuinely wants finer scope has it without a label: build the
 // *recordlayer.FDBDatabase, call SetTimer on it, and RegisterBackend it under a key of its
@@ -292,14 +290,10 @@ func (c *Connector) StoredQueryWarmUp() embedded.StoredQueryWarmUpCounts {
 // it waits for another Connect's initialization. Until one initialization
 // succeeds, each Connect runs or waits for one (initFlight).
 func (c *Connector) Connect(ctx context.Context) (_ driver.Conn, err error) {
-	// A panic while initializing is the connection layer's internal error, as
-	// at the embedded connection's entry points; initFlight has already
-	// released any waiters, and the next Connect initializes again.
+	// initFlight has released any waiters; the next Connect initializes again.
 	defer func() {
 		if r := recover(); r != nil {
-			slog.Default().Error("recovered panic opening an SQL connection",
-				"panic", r, "stack", string(debug.Stack()))
-			err = api.NewError(api.ErrCodeInternalError, "internal error")
+			err = embedded.RecoveredPanicError(r)
 		}
 	}()
 	if err := ctx.Err(); err != nil {

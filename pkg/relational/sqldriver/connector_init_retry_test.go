@@ -111,6 +111,23 @@ func TestConnector_PanickingInitializationIsRetried(t *testing.T) {
 	}
 }
 
+// waitingCtx reports when initFlight.do evaluates its Done channel, which it
+// does only in the select that waits for a running attempt.
+type waitingCtx struct {
+	context.Context
+	once    sync.Once
+	waiting chan struct{}
+}
+
+func newWaitingCtx() *waitingCtx {
+	return &waitingCtx{Context: context.Background(), waiting: make(chan struct{})}
+}
+
+func (c *waitingCtx) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.waiting) })
+	return c.Context.Done()
+}
+
 // One caller runs the initialization while the others wait; success is kept.
 func TestInitFlight_ConcurrentCallersShareOneAttempt(t *testing.T) {
 	t.Parallel()
@@ -127,16 +144,16 @@ func TestInitFlight_ConcurrentCallersShareOneAttempt(t *testing.T) {
 	errs := make(chan error, 8)
 	go func() { errs <- f.do(context.Background(), init) }()
 	<-entered
-	var wg sync.WaitGroup
 	for i := 0; i < 7; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			errs <- f.do(context.Background(), init)
-		}()
+		ctx := newWaitingCtx()
+		go func() { errs <- f.do(ctx, init) }()
+		select {
+		case <-ctx.waiting: // this caller is blocked on the running attempt
+		case err := <-errs:
+			t.Fatalf("a caller returned (%v) without waiting for the running attempt", err)
+		}
 	}
 	close(release)
-	wg.Wait()
 	for i := 0; i < 8; i++ {
 		if err := <-errs; err != nil {
 			t.Fatalf("caller %d: %v", i, err)
@@ -211,7 +228,13 @@ func TestInitFlight_FailureReachesOnlyItsCaller(t *testing.T) {
 			}()
 			<-entered
 			second := make(chan error, 1)
-			go func() { second <- f.do(context.Background(), init) }()
+			ctx := newWaitingCtx()
+			go func() { second <- f.do(ctx, init) }()
+			select {
+			case <-ctx.waiting: // the second caller waits on the failing attempt
+			case err := <-second:
+				t.Fatalf("the second caller returned (%v) without waiting for the running attempt", err)
+			}
 			close(release)
 			err := <-first
 			if mode == "error" && !errors.Is(err, boom) {

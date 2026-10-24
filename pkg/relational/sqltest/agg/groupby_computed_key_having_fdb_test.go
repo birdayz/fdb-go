@@ -98,11 +98,10 @@ import (
 // equality), so that interlock is measured rather than structural.
 //
 // SO IS THE COMPUTED ONE, and saying otherwise was this file's own mistake for
-// two revisions. The computed gate arm is nominally semantic, but it runs only
-// when both keys resolve through a walk WEAKER than the one that mints them, and
-// it returns false on `(c1 + 1)` vs `c1 + 1` even when it does run. NEITHER route
-// has a structural guarantee; they differ only in how easy the counterexample is
-// to write.
+// two revisions. The computed gate is semantic and resolves keys with the walk
+// that mints them, but it returns false on `(c1 + 1)` vs `c1 + 1`: the wrapper
+// mismatch. NEITHER route has a structural guarantee; they differ only in how
+// easy the counterexample is to write.
 //
 // TWO ARMS ONCE PINNED DIVERGENCES THIS FILE'S FIX DID NOT CAUSE; ONE OF THEM IS
 // NOW CLOSED AND THE OTHER IS NOT, and the difference is worth stating because
@@ -320,13 +319,10 @@ func TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot(t *testing.T) {
 		// matches with, so two keys that could both match are semantically equal
 		// and already refused. That is an impossibility proof, and it is invalid.
 		//
-		// The gate is a three-arm switch and its semantic arm needs BOTH keys to
-		// resolve through Resolver.WalkExpression, which is weaker than the
-		// WalkExpressionForProjection that mints the key Value — it will not fold
-		// a comparison. And even when the semantic arm DOES run it can return
-		// false for one expression written two ways: `(c1 + 1)` resolves to a
-		// RecordConstructorValue wrapping what `c1 + 1` resolves to bare. Both
-		// holes are measured and pinned by
+		// The gate's semantic comparison resolves both keys with the walk that
+		// mints them, but it returns false for one expression written two ways:
+		// `(c1 + 1)` resolves to a RecordConstructorValue wrapping what `c1 + 1`
+		// resolves to bare. That hole is measured and pinned by
 		// a_parenthesised_computed_key_twin_is_NOT_refused_either.
 		//
 		// What survives is the OBSERVATION, which is what this arm asserts: these
@@ -473,9 +469,7 @@ func TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot(t *testing.T) {
 		// NAME-BASED comparison over the normalized (Bare, Qualifier) pair plus
 		// the Qualified flag (plan_visitor.go). Meanwhile the SIBLING walk that
 		// binds it matches with SemanticEqualsUnderAliasMap. The computed route's
-		// gate arm is nominally semantic, but it is reached only when both keys
-		// resolve through a weaker walk than the one that mints them, and it
-		// returns false on `(c1 + 1)` vs `c1 + 1` even when reached. So on BOTH
+		// gate is semantic but returns false on `(c1 + 1)` vs `c1 + 1`. So on BOTH
 		// routes the two sites decide identity by different means, and both
 		// interlocks are MEASURED facts rather than structural ones.
 		//
@@ -540,9 +534,8 @@ func TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot(t *testing.T) {
 		// and it still returns false, because `(c1 + 1)` resolves to a
 		// one-element RecordConstructorValue WRAPPING the arithmetic while
 		// `c1 + 1` resolves to the bare ArithmeticValue. Semantically the same
-		// expression, structurally two different Value types. So the gate is not
-		// defeated by falling back to a weaker predicate here; it is defeated
-		// while running its STRONGEST one.
+		// expression, structurally two different Value types: the gate is
+		// defeated while running its semantic comparison.
 		//
 		// THE NON-UNWRAP IS CORRECT — do not "fix" it, and do not read this arm
 		// as asking for that. Java's visitRecordConstructor does not unwrap a

@@ -1793,16 +1793,12 @@ func (r *paginatingRows) Close() (err error) {
 	r.closed = true
 	r.detachTxCancellation()
 	if r.tx != nil && !r.ownsTx && !r.finished && r.ctx.Err() != nil {
-		// The statement's context ended before its result set was read to the
-		// end. database/sql closes the rows itself then, so no later page
-		// (runInCapturedTx) would see the context; ending the transaction
-		// here keeps the outcome independent of when the deadline landed.
+		// database/sql closes the rows of an ended context itself, so no later
+		// page reaches runInCapturedTx; end the transaction here instead.
 		r.tx.abort(r.ctx)
 	}
 	if r.ownsTx {
-		// Execution ended before commit (abort it) or after it (Rollback then
-		// only releases it from the connection, as it does after a context
-		// ended it).
+		// Aborts it before commit; afterwards only releases it.
 		if err := r.tx.Rollback(); err != nil {
 			r.statsErr = errors.Join(r.statsErr, err)
 		}

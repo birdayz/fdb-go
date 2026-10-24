@@ -129,31 +129,6 @@ func TestStripStringLiteralQuotes(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// helpers
-// ---------------------------------------------------------------------------
-
-func assertNoErr(t *testing.T, err error) {
-	t.Helper()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func assertErr(t *testing.T, err error) {
-	t.Helper()
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-}
-
-func assertEq(t *testing.T, got, want any) {
-	t.Helper()
-	if got != want {
-		t.Errorf("got %v (%T), want %v (%T)", got, got, want, want)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // Benchmarks
 // ---------------------------------------------------------------------------
 
