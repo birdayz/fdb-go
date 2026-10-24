@@ -622,7 +622,7 @@ runcmd:
       chmod 0600 /etc/bazelscaleset/app.pem && chown runner:runner /etc/bazelscaleset/app.pem
       # TODO: fetch the pinned bazelscaleset binary through fetch-verified.sh once a CI-built
       # release exists (version+sha in main.tf's locals, like every other tool). Until then
-      # it is placed out-of-band: a `GOOS=linux go build` of tools/bazelscaleset, scp'd in.
+      # it is placed out-of-band: a `GOOS=linux go build` of tools/bazelscaleset at 86f05ccf8.
       systemctl enable --now bazelscaleset.service
       # The watchdog backstops a wholesale supervisor hang via the heartbeat the supervisor
       # stamps on every successful poll; systemd Restart=always handles a plain crash.

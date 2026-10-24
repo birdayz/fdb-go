@@ -24,7 +24,8 @@ deterministic regression: `bazelisk test //pkg/...:foo_test
 - `just test`: the standard fast edit/commit loop. Bazel runs nogo, unit tests,
   and bounded integration tests. Targets tagged `test-full`, `conformance_java`,
   or `stress` are excluded; `manual` targets are excluded by Bazel's wildcard.
-- `just test-full`: all Bazel test targets, including manual targets. This adds
+- `just test-full`: all Bazel test targets, including manual targets, except
+  those tagged `realcluster` (they need a real FDB cluster: `just stress-10m`). This adds
   the heavyweight client, Java conformance, chaos, SQL integration/rowdiff,
   planner-sweep, full-corpus, and stress/scale suites. Requires Docker and the
   external data/toolchain dependencies declared by those targets.

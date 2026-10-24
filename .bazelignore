@@ -3,4 +3,3 @@ fdb-record-layer/
 website/public
 website/resources
 website/themes
-tools/bazelscaleset

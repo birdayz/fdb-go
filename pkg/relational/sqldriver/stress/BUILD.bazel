@@ -1,4 +1,8 @@
+load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("@rules_go//go:def.bzl", "go_test")
+
+# stress_10m_test.go belongs only to stress_10m_test below.
+# gazelle:exclude stress_10m_test.go
 
 go_test(
     name = "stress_test",
@@ -38,4 +42,58 @@ go_test(
         "@org_golang_google_protobuf//reflect/protoreflect",
         "@org_golang_google_protobuf//types/dynamicpb",
     ],
+)
+
+# The 10M scales, against a real cluster only (`just stress-10m <cluster file>`);
+# TestMain refuses the container fallback. `just test-full` skips the realcluster
+# tag and compiles it through stress_10m_build_test instead.
+go_test(
+    name = "stress_10m_test",
+    timeout = "eternal",
+    srcs = [
+        "domain_registration_test.go",
+        "first_error_test.go",
+        "latency_attribution_stress_test.go",
+        "raw_fdb_bench_test.go",
+        "recordlayer_bench_test.go",
+        "statistics_join_order_stress_test.go",
+        "stress_10m_test.go",
+        "stress_test.go",
+        "vector_stress_test.go",
+    ],
+    tags = [
+        "exclusive",
+        "manual",
+        "realcluster",
+        "resources:memory:4300",
+        "stress",
+    ],
+    deps = [
+        "//gen/demopb",
+        "//pkg/fdbgo/client",
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+        "//pkg/recordlayer",
+        "//pkg/recordlayer/query/executor",
+        "//pkg/recordlayer/vectorindex",
+        "//pkg/relational/api",
+        "//pkg/relational/core/embedded",
+        "//pkg/relational/core/keyspace",
+        "//pkg/relational/core/metadata",
+        "//pkg/relational/sqldriver",
+        "//pkg/testcontainers/foundationdb",
+        "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//types/dynamicpb",
+    ],
+)
+
+build_test(
+    name = "stress_10m_build_test",
+    tags = [
+        "manual",
+        "stress",
+    ],
+    targets = [":stress_10m_test"],
 )

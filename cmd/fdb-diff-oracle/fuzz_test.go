@@ -38,7 +38,7 @@ func startOracle(t testing.TB) *Oracle {
 	t.Helper()
 	o, err := NewOracle(oracleBinaryPath)
 	if err != nil {
-		t.Skipf("oracle not available: %v (set DIFF_ORACLE_BIN)", err)
+		t.Fatalf("oracle not available: %v (set DIFF_ORACLE_BIN)", err)
 	}
 	t.Cleanup(func() {
 		if err := o.Close(); err != nil {
@@ -103,7 +103,7 @@ func FuzzGetReadVersionRequest(f *testing.F) {
 			t.Fatalf("oracle error: %v", err)
 		}
 		if cppBytes == nil {
-			t.Skip("oracle returned error response")
+			t.Fatal("oracle returned an empty response")
 		}
 
 		compareBytesStructural(t, goBytes, cppBytes, "GetReadVersionRequest",
@@ -151,7 +151,7 @@ func FuzzGetValueRequest(f *testing.F) {
 			t.Fatalf("oracle error: %v", err)
 		}
 		if cppBytes == nil {
-			t.Skip("oracle returned error response")
+			t.Fatal("oracle returned an empty response")
 		}
 
 		compareBytesStructural(t, goBytes, cppBytes, "GetValueRequest",
@@ -208,7 +208,7 @@ func FuzzGetKeyRequest(f *testing.F) {
 			t.Fatalf("oracle error: %v", err)
 		}
 		if cppBytes == nil {
-			t.Skip("oracle returned error response")
+			t.Fatal("oracle returned an empty response")
 		}
 
 		compareBytesStructural(t, goBytes, cppBytes, "GetKeyRequest",
@@ -277,7 +277,7 @@ func FuzzGetKeyValuesRequest(f *testing.F) {
 			t.Fatalf("oracle error: %v", err)
 		}
 		if cppBytes == nil {
-			t.Skip("oracle returned error response")
+			t.Fatal("oracle returned an empty response")
 		}
 
 		compareBytesStructural(t, goBytes, cppBytes, "GetKeyValuesRequest",
@@ -325,7 +325,7 @@ func FuzzGetKeyServerLocationsRequest(f *testing.F) {
 			t.Fatalf("oracle error: %v", err)
 		}
 		if cppBytes == nil {
-			t.Skip("oracle returned error response")
+			t.Fatal("oracle returned an empty response")
 		}
 
 		compareBytesStructural(t, goBytes, cppBytes, "GetKeyServerLocationsRequest",
@@ -438,11 +438,7 @@ func FuzzCommitTransactionRequest(f *testing.F) {
 			readSnapshot, mutations, readCRs, writeCRs,
 			flags, hasDebugID, debugUID[:], false, nil, false, nil, tenantId, nil)
 		if err != nil {
-			// Oracle may crash or return errors on edge cases (e.g. C++ type
-			// construction failures). Log the error so skip rate is visible in
-			// fuzz output, then skip — Go-side MarshalFDB already exercised above.
-			t.Logf("oracle error (skipping comparison): %v", err)
-			t.Skip("oracle unavailable for this input, skipping C++ comparison")
+			t.Fatalf("oracle error: %v", err)
 		}
 
 		compareBytesStructural(t, goBytes, cppBytes, "CommitTransactionRequest",
@@ -508,7 +504,7 @@ func FuzzGetReadVersionReply(f *testing.F) {
 			t.Fatalf("oracle error: %v", err)
 		}
 		if cppBytes == nil {
-			t.Skip("oracle returned error response")
+			t.Fatal("oracle returned an empty response")
 		}
 
 		compareBytesStructural(t, goBytes, cppBytes, "GetReadVersionReply",
@@ -569,7 +565,7 @@ func FuzzGetValueReply(f *testing.F) {
 			t.Fatalf("oracle error: %v", err)
 		}
 		if cppBytes == nil {
-			t.Skip("oracle returned error response")
+			t.Fatal("oracle returned an empty response")
 		}
 
 		compareBytesStructural(t, goBytes, cppBytes, "GetValueReply",
@@ -609,7 +605,7 @@ func FuzzGetKeyReply(f *testing.F) {
 			t.Fatalf("oracle error: %v", err)
 		}
 		if cppBytes == nil {
-			t.Skip("oracle returned error response")
+			t.Fatal("oracle returned an empty response")
 		}
 
 		compareBytesStructural(t, goBytes, cppBytes, "GetKeyReply",
@@ -659,7 +655,7 @@ func FuzzGetKeyValuesReply(f *testing.F) {
 			t.Fatalf("oracle error: %v", err)
 		}
 		if cppBytes == nil {
-			t.Skip("oracle returned error response")
+			t.Fatal("oracle returned an empty response")
 		}
 
 		compareBytesStructural(t, goBytes, cppBytes, "GetKeyValuesReply",
@@ -723,7 +719,7 @@ func FuzzCommitID(f *testing.F) {
 			t.Fatalf("oracle error: %v", err)
 		}
 		if cppBytes == nil {
-			t.Skip("oracle returned error response")
+			t.Fatal("oracle returned an empty response")
 		}
 
 		compareBytesStructural(t, goBytes, cppBytes, "CommitID",
@@ -750,7 +746,7 @@ func FuzzError(f *testing.F) {
 			t.Fatalf("oracle error: %v", err)
 		}
 		if cppBytes == nil {
-			t.Skip("oracle returned error response")
+			t.Fatal("oracle returned an empty response")
 		}
 
 		compareBytesStructural(t, goBytes, cppBytes, "Error",
@@ -819,7 +815,7 @@ func FuzzClientDBInfo(f *testing.F) {
 			t.Fatalf("oracle error: %v", err)
 		}
 		if cppBytes == nil {
-			t.Skip("oracle returned error response")
+			t.Fatal("oracle returned an empty response")
 		}
 
 		compareBytesStructural(t, goBytes, cppBytes, "ClientDBInfo",
@@ -865,7 +861,7 @@ func FuzzOpenDatabaseCoordRequest(f *testing.F) {
 			t.Fatalf("oracle error: %v", err)
 		}
 		if cppBytes == nil {
-			t.Skip("oracle returned error response")
+			t.Fatal("oracle returned an empty response")
 		}
 
 		compareBytesStructural(t, goBytes, cppBytes, "OpenDatabaseCoordRequest",
@@ -902,7 +898,7 @@ func FuzzNetworkAddress(f *testing.F) {
 			t.Fatalf("oracle error: %v", err)
 		}
 		if cppBytes == nil {
-			t.Skip("oracle returned error response")
+			t.Fatal("oracle returned an empty response")
 		}
 
 		compareBytesStructural(t, goBytes, cppBytes, "NetworkAddress",
@@ -943,7 +939,7 @@ func FuzzEndpoint(f *testing.F) {
 			t.Fatalf("oracle error: %v", err)
 		}
 		if cppBytes == nil {
-			t.Skip("oracle returned error response")
+			t.Fatal("oracle returned an empty response")
 		}
 
 		compareBytesStructural(t, goBytes, cppBytes, "Endpoint",
@@ -981,7 +977,7 @@ func FuzzNetworkAddressV6(f *testing.F) {
 			t.Fatalf("oracle error: %v", err)
 		}
 		if cppBytes == nil {
-			t.Skip("oracle returned error response")
+			t.Fatal("oracle returned an empty response")
 		}
 
 		compareBytesStructural(t, goBytes, cppBytes, "NetworkAddressV6",

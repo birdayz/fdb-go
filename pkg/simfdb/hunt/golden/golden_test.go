@@ -424,6 +424,10 @@ func corpus() []Scenario {
 func TestGolden(t *testing.T) {
 	t.Parallel()
 	update := os.Getenv("GOLDEN_UPDATE") != ""
+	dir, err := goldenDir(update, os.Getenv("BUILD_WORKSPACE_DIRECTORY"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, s := range corpus() {
 		s := s
 		t.Run(s.Name, func(t *testing.T) {
@@ -439,9 +443,9 @@ func TestGolden(t *testing.T) {
 				t.Fatalf("NONDETERMINISTIC capture for %q:\n%s", s.Name, firstDiff(got, again))
 			}
 
-			path := filepath.Join("testdata", s.Name+".golden")
+			path := filepath.Join(dir, s.Name+".golden")
 			if update {
-				if err := os.MkdirAll("testdata", 0o755); err != nil {
+				if err := os.MkdirAll(dir, 0o755); err != nil {
 					t.Fatal(err)
 				}
 				if err := os.WriteFile(path, []byte(got), 0o644); err != nil {
@@ -459,6 +463,44 @@ func TestGolden(t *testing.T) {
 					"If intended, GOLDEN_UPDATE=1 and review the diff:\n%s", s.Name, firstDiff(string(want), got))
 			}
 		})
+	}
+}
+
+// goldenPkg is this package's directory relative to the workspace root.
+const goldenPkg = "pkg/simfdb/hunt/golden"
+
+// goldenDir is where baselines are read, or written under GOLDEN_UPDATE. An update
+// writes into the source tree, which only `bazel run` names (BUILD_WORKSPACE_DIRECTORY);
+// `bazel test` runs in a sandbox whose writes are discarded.
+func goldenDir(update bool, workspace string) (string, error) {
+	switch {
+	case !update:
+		return "testdata", nil
+	case workspace == "":
+		return "", errors.New("GOLDEN_UPDATE writes the source tree: run it through `just golden-update` " +
+			"(bazel run), which sets BUILD_WORKSPACE_DIRECTORY")
+	default:
+		return filepath.Join(workspace, filepath.FromSlash(goldenPkg), "testdata"), nil
+	}
+}
+
+func TestGoldenDir(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		update    bool
+		workspace string
+		want      string
+		wantErr   bool
+	}{
+		{update: false, workspace: "", want: "testdata"},
+		{update: false, workspace: "/ws", want: "testdata"},
+		{update: true, workspace: "/ws", want: "/ws/pkg/simfdb/hunt/golden/testdata"},
+		{update: true, workspace: "", wantErr: true},
+	} {
+		got, err := goldenDir(tc.update, tc.workspace)
+		if got != tc.want || (err != nil) != tc.wantErr {
+			t.Errorf("goldenDir(%t, %q) = (%q, %v), want (%q, error %t)", tc.update, tc.workspace, got, err, tc.want, tc.wantErr)
+		}
 	}
 }
 

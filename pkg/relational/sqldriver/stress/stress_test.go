@@ -6,9 +6,8 @@
 // plain `go test ./...` does NOT set the tag, so these are excluded — keeping
 // the default Go test run fast and clean. See README.md in this dir.
 //
-// The 10M scales need a second tag (`realcluster`) and live in
-// stress_10m_test.go: a single-node testcontainer cannot sustain them, so
-// registering them here would advertise coverage this file never delivers.
+// The 10M scales live in stress_10m_test.go, compiled only into the
+// stress_10m_test target: a single-node testcontainer cannot sustain them.
 
 package stress_test
 
@@ -41,6 +40,28 @@ var clusterFilePath string
 // container. Unset (the normal case) keeps the testcontainer path unchanged.
 const clusterFileEnv = "FDB_STRESS_CLUSTER_FILE"
 
+// realClusterOnly is set by the 10M scales: their binary must never fall back
+// to a container, which cannot sustain them.
+var realClusterOnly bool
+
+// containerAllowed refuses the testcontainer fallback for the 10M binary.
+func containerAllowed(realOnly bool) error {
+	if realOnly {
+		return fmt.Errorf("the 10M scales need a real cluster: set %s (`just stress-10m <cluster file>`)", clusterFileEnv)
+	}
+	return nil
+}
+
+func TestContainerAllowed(t *testing.T) {
+	t.Parallel()
+	if err := containerAllowed(false); err != nil {
+		t.Fatalf("containerAllowed(false) = %v", err)
+	}
+	if err := containerAllowed(true); err == nil || !strings.Contains(err.Error(), clusterFileEnv) {
+		t.Fatalf("containerAllowed(true) = %v, want an error naming %s", err, clusterFileEnv)
+	}
+}
+
 func TestMain(m *testing.M) { os.Exit(runTests(m)) }
 
 func runTests(m *testing.M) (code int) {
@@ -63,6 +84,10 @@ func runTests(m *testing.M) (code int) {
 		fmt.Fprintf(os.Stderr, "stress: using external cluster file %s\n", external)
 		clusterFilePath = external
 		return m.Run()
+	}
+	if err := containerAllowed(realClusterOnly); err != nil {
+		fmt.Fprintf(os.Stderr, "stress: %v\n", err)
+		return 1
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)

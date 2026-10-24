@@ -97,7 +97,7 @@ func runFDBTxn(t *testing.T, fn func(txn api.Transaction) error) error {
 func TestFDB_CreateDatabase(t *testing.T) {
 	t.Parallel()
 	if fdbTestDB == nil {
-		t.Skip("no FDB container")
+		t.Skip("FDB not available (no Docker)")
 	}
 	g := gomega.NewWithT(t)
 	cat, _, f := newFDBEnv(t)
@@ -117,7 +117,7 @@ func TestFDB_CreateDatabase(t *testing.T) {
 func TestFDB_CreateAndDropSchema(t *testing.T) {
 	t.Parallel()
 	if fdbTestDB == nil {
-		t.Skip("no FDB container")
+		t.Skip("FDB not available (no Docker)")
 	}
 	g := gomega.NewWithT(t)
 	cat, _, f := newFDBEnv(t)
@@ -159,7 +159,7 @@ func TestFDB_CreateAndDropSchema(t *testing.T) {
 func TestFDB_DropDatabase_Cascade(t *testing.T) {
 	t.Parallel()
 	if fdbTestDB == nil {
-		t.Skip("no FDB container")
+		t.Skip("FDB not available (no Docker)")
 	}
 	g := gomega.NewWithT(t)
 	cat, _, f := newFDBEnv(t)
@@ -193,7 +193,7 @@ func TestFDB_DropDatabase_Cascade(t *testing.T) {
 func TestFDB_CatalogOnly(t *testing.T) {
 	t.Parallel()
 	if fdbTestDB == nil {
-		t.Skip("no FDB container")
+		t.Skip("FDB not available (no Docker)")
 	}
 	g := gomega.NewWithT(t)
 
