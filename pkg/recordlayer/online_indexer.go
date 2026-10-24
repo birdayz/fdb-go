@@ -1519,10 +1519,7 @@ func (oi *OnlineIndexer) buildIndexAttempt(ctx context.Context) (int64, IndexBui
 
 // buildIndexMutual runs the mutual (concurrent) build path.
 func (oi *OnlineIndexer) buildIndexMutual(ctx context.Context, startTime time.Time) (int64, error) {
-	mutual, err := newMutualIndexBuilder(oi)
-	if err != nil {
-		return 0, fmt.Errorf("init mutual builder: %w", err)
-	}
+	mutual := newMutualIndexBuilder(oi)
 
 	// Mutual builds preset the out-of-range gaps as already-built (Java
 	// IndexingMutuallyByRecords), before the fragmented build loop.
@@ -1607,6 +1604,7 @@ func (oi *OnlineIndexer) buildRangeWithRetries(ctx context.Context, buildFn func
 		return buildFn(ctx)
 	}
 
+	var delay *exponentialDelay // made at the first retry: it draws from the env
 	for attempt := 0; ; attempt++ {
 		// Apply adaptive limit from throttle
 		oi.limit = oi.throttle.getLimit()
@@ -1628,7 +1626,14 @@ func (oi *OnlineIndexer) buildRangeWithRetries(ctx context.Context, buildFn func
 		if oi.maxRetries <= 0 || !oi.throttle.mayRetryAfterHandlingException(err, attempt, int(n)) {
 			return n, hasMore, err
 		}
-		// Throttle has decreased the limit — retry
+		// The limit is decreased; Java's buildCommitRetryAsync also waits before the retry.
+		if delay == nil {
+			delay = newExponentialDelay(oi.db.InitialDelay(), oi.db.MaxDelay(), oi.db.Env())
+		}
+		waitRetryDelay(ctx, oi.db.Env(), oi.db.Timer(), delay.delay())
+		if cerr := ctx.Err(); cerr != nil {
+			return n, hasMore, fmt.Errorf("%w (last attempt: %w)", cerr, err)
+		}
 	}
 }
 

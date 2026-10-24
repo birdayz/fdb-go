@@ -140,26 +140,30 @@ func attemptLoop(ctx context.Context, env *dst.Env, observe AttemptObserver, pol
 			call.Attempt++
 		}
 		call.Execution++
-		if wait := delay.delay(); env != nil {
-			// Simulated: the delay is drawn, not waited; the timer records
-			// the drawn delay, the time a real run would have spent.
-			policy.timer.Record(EventRetryDelay, int64(wait))
-		} else {
-			start := time.Now()
-			if wait > 0 {
-				timer := time.NewTimer(wait)
-				select {
-				case <-ctx.Done():
-					timer.Stop()
-				case <-timer.C:
-				}
-			}
-			policy.timer.RecordSince(EventRetryDelay, start)
-		}
+		waitRetryDelay(ctx, env, policy.timer, delay.delay())
 		if cerr := ctx.Err(); cerr != nil {
 			return nil, fmt.Errorf("%w (last attempt: %w)", cerr, err)
 		}
 	}
+}
+
+// waitRetryDelay waits wait, or until ctx ends, and times it as EventRetryDelay. Simulated: the
+// delay is drawn, not waited; the timer records it, the time a real run would have spent.
+func waitRetryDelay(ctx context.Context, env *dst.Env, timer *StoreTimer, wait time.Duration) {
+	if env != nil {
+		timer.Record(EventRetryDelay, int64(wait))
+		return
+	}
+	start := time.Now()
+	if wait > 0 {
+		t := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+		case <-t.C:
+		}
+	}
+	timer.RecordSince(EventRetryDelay, start)
 }
 
 // bodyErrorRecorder keeps the error the LAST execution's body returned, so the

@@ -69,15 +69,14 @@ var _ = Describe("Online build read conflicts match Java", func() {
 				return r.recordsProcessed, err
 			}
 			if mutual {
-				m, err := newMutualIndexBuilder(oi)
-				Expect(err).NotTo(HaveOccurred())
+				m := newMutualIndexBuilder(oi)
 				build = func(rtx *FDBRecordContext) (int64, error) {
 					store, err := oi.openStore(rtx)
 					if err != nil {
 						return 0, err
 					}
-					rs := NewIndexingRangeSet(store.subspace, oi.primaryIndex())
-					return m.buildFragmentRange(ctx, store, rs, &RangeSetRange{Begin: rangeSetFirstKey, End: rangeSetFinalKey})
+					n, _, err := m.buildFragmentRange(ctx, store, rtx.Env().Now(), &RangeSetRange{Begin: rangeSetFirstKey, End: rangeSetFinalKey})
+					return n, err
 				}
 			}
 

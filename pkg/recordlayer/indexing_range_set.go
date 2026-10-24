@@ -37,6 +37,16 @@ func (irs *IndexingRangeSet) FirstMissingRange(tr fdb.WritableTransaction) (*Ran
 	return &ranges[0], nil
 }
 
+// firstMissingRangeIn returns the first gap within [begin, end), or nil, Java's
+// IndexingRangeSet.firstMissingRangeAsync(begin, end).
+func (irs *IndexingRangeSet) firstMissingRangeIn(tr fdb.WritableTransaction, begin, end []byte) (*RangeSetRange, error) {
+	ranges, err := irs.rangeSet.MissingRanges(tr, begin, end, 1)
+	if err != nil || len(ranges) == 0 {
+		return nil, err
+	}
+	return &ranges[0], nil
+}
+
 // ContainsKey checks if a primary key (tuple-packed bytes) is in the built range.
 func (irs *IndexingRangeSet) ContainsKey(tr fdb.WritableTransaction, key []byte) (bool, error) {
 	return irs.rangeSet.Contains(tr, key)
@@ -53,7 +63,6 @@ func (irs *IndexingRangeSet) ListMissingRanges(tr fdb.WritableTransaction) ([]Ra
 }
 
 // ListMissingRangesInBytes returns missing ranges within the given byte boundaries.
-// Used by mutual indexing to check missing ranges within a fragment.
 func (irs *IndexingRangeSet) ListMissingRangesInBytes(tr fdb.WritableTransaction, begin, end []byte) ([]RangeSetRange, error) {
 	return irs.rangeSet.MissingRanges(tr, begin, end, 0)
 }

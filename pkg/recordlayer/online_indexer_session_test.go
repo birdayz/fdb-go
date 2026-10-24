@@ -149,9 +149,7 @@ var _ = Describe("OnlineIndexer batch session fencing", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 			if mutual {
-				m, setupErr := newMutualIndexBuilder(oi)
-				Expect(setupErr).NotTo(HaveOccurred())
-				_, _, err = m.buildMutual(ctx)
+				_, _, err = newMutualIndexBuilder(oi).buildMutual(ctx)
 			} else {
 				_, _, err = oi.buildRange(ctx)
 			}
@@ -193,26 +191,34 @@ var _ = Describe("OnlineIndexer batch session fencing", func() {
 			if err != nil {
 				return nil, err
 			}
-			if err := store.SaveIndexingTypeStamp(index, oi.buildIndexingStamp()); err != nil {
-				return nil, err
-			}
-			_, err = NewIndexingRangeSet(root, index).InsertRange(rc.Transaction(), nil, nil, true)
-			return nil, err
+			return nil, store.SaveIndexingTypeStamp(index, oi.buildIndexingStamp())
 		})
 		Expect(err).NotTo(HaveOccurred())
-		m, err := newMutualIndexBuilder(oi)
-		Expect(err).NotTo(HaveOccurred())
-		failure := &RecordCoreError{Message: "reject exhausted fragment commit"}
+		m := newMutualIndexBuilder(oi)
+		failure := &RecordCoreError{Message: "reject mutual commit"}
 		interleaver := &batchMutationTransactor{Transactor: sharedDB.transactor, mutate: func() error { return failure }}
 		oi.db = NewFDBDatabaseWithTransactor(interleaver, sharedDB.db)
 		_, _, err = m.buildMutual(ctx)
 		Expect(err).To(BeIdenticalTo(failure))
-		Expect(m.iterType).To(Equal(fragmentFull))
+		Expect(m.boundaries).To(BeNil(), "a failed claim publishes no fragments")
+		Expect(m.claimed).To(BeNil())
+		// The claim commits and its first chunk fails: the claim stays for the next call.
+		interleaver.mutate = func() error {
+			interleaver.mutate = func() error { return failure }
+			return nil
+		}
+		_, _, err = m.buildMutual(ctx)
+		Expect(err).To(BeIdenticalTo(failure))
+		Expect(m.boundaries).NotTo(BeNil())
+		Expect(m.claimed).To(Equal(&RangeSetRange{Begin: rangeSetFirstKey, End: rangeSetFinalKey}))
 		oi.db = sharedDB
 		_, more, err := m.buildMutual(ctx)
 		Expect(err).NotTo(HaveOccurred())
+		Expect(more).To(BeTrue())
+		Expect(m.claimed).To(BeNil(), "the chunk reached the claim's end")
+		_, more, err = m.buildMutual(ctx)
+		Expect(err).NotTo(HaveOccurred())
 		Expect(more).To(BeFalse())
-		Expect(m.iterType).To(Equal(fragmentRecover))
 		oi.cleanupPendingQueueHeartbeat(m.heartbeat)
 	})
 
@@ -800,9 +806,9 @@ var _ = Describe("Mutual heartbeat renewal concurrency", func() {
 			Expect(oi.markWriteOnly(ctx)).Error().To(Succeed())
 			Expect(oi.admittedHeartbeat).To(BeIdenticalTo(oi.sessionHeartbeat))
 			defer oi.cleanupPendingQueueHeartbeat(oi.sessionHeartbeat)
-			m, err := newMutualIndexBuilder(oi)
-			Expect(err).NotTo(HaveOccurred())
+			m := newMutualIndexBuilder(oi)
 			m.fragmentCur, m.fragmentFirst = fragment, fragment
+			Expect(m.claimNextRange(ctx)).To(BeTrue())
 			barrier := &mutualCommitBarrierTransactor{Transactor: sharedDB.db, ctx: ctx, ready: ready, release: release}
 			oi.db = NewFDBDatabaseWithTransactor(barrier, sharedDB.db)
 			builders = append(builders, m)

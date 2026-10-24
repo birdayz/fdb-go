@@ -63,4 +63,37 @@ var _ = Describe("Online indexer transaction limits", func() {
 		Expect(n).To(Equal(int64(4)))
 		Expect(hasMore).To(BeFalse())
 	})
+
+	It("commits a mutual chunk early once the write limit is passed", func() {
+		root := specSubspace()
+		builder := baseBuilder()
+		index := NewIndex("by_price", Field("price"))
+		builder.AddIndex("Order", index)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+		_, err = sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().SetContext(rc).SetMetaDataProvider(md).SetSubspace(root).Create()
+			if err != nil {
+				return nil, err
+			}
+			for i := int64(1); i <= 5; i++ {
+				if _, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(10 * i))}); err != nil {
+					return nil, err
+				}
+			}
+			return nil, disableIndexes(store, index)
+		})
+		Expect(err).NotTo(HaveOccurred())
+		oi, err := NewOnlineIndexerBuilder().SetDatabase(sharedDB).SetMetaData(md).SetIndex(index).
+			SetSubspace(root).SetMutualIndexing().SetLimit(100).SetMaxWriteLimitBytes(1).Build()
+		Expect(err).NotTo(HaveOccurred())
+		oi.sessionHeartbeat = NewIndexingHeartbeat("mutual worker", 30_000, true, nil)
+		Expect(oi.markWriteOnly(ctx)).Error().To(Succeed())
+		defer oi.cleanupPendingQueueHeartbeat(oi.sessionHeartbeat)
+
+		n, hasMore, err := newMutualIndexBuilder(oi).buildMutual(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(n).To(Equal(int64(1)), "a 1-byte write limit commits after the first record")
+		Expect(hasMore).To(BeTrue())
+	})
 })
