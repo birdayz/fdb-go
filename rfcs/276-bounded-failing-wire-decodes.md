@@ -1,6 +1,6 @@
 # RFC-276: Bounded, failing wire decodes
 
-**Status:** Draft
+**Status:** Implemented
 
 **Base:** stacked on PR #997 (RFC-271), which makes `ReadVectorCount` fail with
 `*wire.VectorCountError` on a count the buffer cannot hold and makes the locations-reply
@@ -94,6 +94,13 @@ never reject a reply C++ writes.
    `flat_buffers.h:863-886`). Anything else leaves the zero value, as C++ leaves the
    member empty. `wire.ReadInlineReplyError`, `ReadOptionalInt32` and
    `ReadOptionalString` use the same tag rule.
+
+   An `Optional` of a table decodes as that table: the extractor now gives every
+   `Optional<T>` whose `T` has a Go type a nested decode, which turns
+   `NetworkAddressList.SecondaryAddress` from a byte string into the `NetworkAddress` C++
+   writes. An `Optional` of a table with no Go type (`EncryptKeyProxyInterface`,
+   `ClientTrCommitCostEstimation`, `WipedString`) records only its presence. These
+   fields used to be read as byte strings, which the stricter reads would refuse.
 
    A present field whose RelativeOffset is 0 keeps reading as empty: C++ then reads the
    offset word itself, a zero length or count, so the value is the same. A nested table
@@ -219,6 +226,13 @@ revert):
 - The send recorder's transcript gate reports the decode failure for a malformed
   request, and still reports "does not re-encode" for a request with a trailing byte.
 - `FuzzUnmarshalFDB`: the aliasing seed fails the allocation oracle.
+
+- `client`: the new ground-truth vectors `GetKeyServerLocationsReply_secondary_address`
+  and `ClientDBInfo_secondary_address` (endpoints with a TLS secondary address) parse,
+  with the primary address; a selector key past the buffer fails `parseGetKeyReply`;
+  a range key with a zero offset still fails the locations reply.
+- `wire`: `ReadOptionalInt32`/`ReadOptionalString` treat tag 2 as absent and record a
+  value past the buffer.
 
 Non-regression guards (pass before and after):
 

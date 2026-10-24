@@ -8,9 +8,8 @@ import (
 	"github.com/zeebo/xxh3"
 )
 
-// FuzzFrameReader reads one frame from arbitrary bytes. It never panics, and a
-// frame it returns is exactly the declared length with a verified checksum. A
-// frame WriteFrame built from the same input reads back unchanged.
+// FuzzFrameReader: Read never panics, returns only a frame of the declared length with a
+// valid checksum, and reads a frame WriteFrame built back unchanged.
 func FuzzFrameReader(f *testing.F) {
 	frame := func(body []byte, tls bool) []byte {
 		var b bytes.Buffer

@@ -74,9 +74,8 @@ Each is described in full under Compatibility or Changed below.
   without the executor's wrapping context in the error string (RFC-274).
 - **frl:** `frl` is a package of the root module; retiring the nested module requires
   the post-publication retraction procedure in `RELEASE.md`.
-- **`pkg/fdbgo/wire/types`:** `UnmarshalFromReader` returns an error, and
-  `Parse<T>VectorFromReader` and `ParseKeyValueRefStringVector` return `([]T, error)`
-  (RFC-276).
+- **`pkg/fdbgo/wire/types`:** generated decoders return errors and
+  `NetworkAddressList.SecondaryAddress` is a `NetworkAddress` (RFC-276).
 
 ### Compatibility
 - **Collation:** collated index access and writes that evaluate collated primary/count keys now fail with `GoOnlyCollationError` unless the store explicitly opts into Go-only bytes with `StoreBuilder.SetGoOnlyCollation(true)`; existing keys are not migrated.
@@ -346,6 +345,11 @@ Each is described in full under Compatibility or Changed below.
 - **Breaking:** every save (untyped, pipelined, batch and dry run) resolves the record type by the record's descriptor, as Java's does: a compiled message saved into meta-data loaded without `WithLocalFileDescriptor`, or a same-named message of another shape, fails with `MetaDataError` "descriptor did not match record type" (it was matched by name).
 - `fdb` `GetRange` sends its first batch at the call, as Apple's Go binding does: the rows reflect the transaction's writes as of that call, and commit waits for every issued range read (also one never consumed) and keeps its read conflict, as libfdb_c does. `GetSliceWithError` over more than batch 1's bytes (about 4 KB in the default mode) now takes two sequential round trips, batch 1 and then the rest, as libfdb_c does. `client.Transaction.StartGetRange` starts such a read and returns at once; `Database.Metrics()` (on `fdb.Database` too) reports `TransactionGetRangeRequests`. A watch whose read fails no longer leaves a read conflict.
 
+- `pkg/fdbgo/wire/types` decoders fail on malformed input (RFC-276):
+  - `UnmarshalFromReader` returns an error, and `Parse<T>VectorFromReader` and `ParseKeyValueRefStringVector` return `([]T, error)`.
+  - `NetworkAddressList.SecondaryAddress` decodes as the `NetworkAddress` table C++ writes; it used to read the table as a byte string.
+  - The pure-Go client rejects a malformed reply instead of decoding it as a shorter valid one: a vector count, element, table or field outside the buffer, or row bytes that do not fill their blob, fails the read.
+  - Vector offsets that alias one element no longer allocate without bound (a 24 KB reply allocated 292 MB): each decode is limited to `len/4` elements, which no reply an FDB server writes reaches.
 ### Fixed
 - SQL driver (RFC-272): a failed connector initialization (an FDB open failure) is retried by the
   next `Connect` instead of failing the `*sql.DB` for good, and the initialization runs detached
@@ -384,7 +388,6 @@ Each is described in full under Compatibility or Changed below.
 - Record scans with an inclusive high bound end at `pack(high)+\xFF`, as Java's `TupleRange.toRange`, not at `strinc(pack(high))`.
 - Key-value cursors reject invalid endpoint pairs (e.g. a TREE_END low, mismatched PREFIX_STRING bounds) with an error, as Java's `TupleRange.toRange` does, instead of scanning the whole subspace.
 - Record and COUNT/atomic cursors implement PREFIX_STRING ranges.
-- The pure-Go client rejects a malformed reply instead of decoding it as a shorter valid one: a vector count, element, table or field outside the buffer, or row bytes that do not fill their blob, fails the read. A reply whose vector offsets alias one element no longer allocates without bound (a 24 KB reply allocated 292 MB); each decode is limited to `len/4` elements, which no reply an FDB server writes reaches (RFC-276).
 - Reverse `ScanRecordsByType` scans preserve empty non-nil continuations as positions before the range prefix, returning no rows as Java does.
 - Key-value cursor continuations on narrowed ranges are byte-identical to Java's, and resuming a Java token stays inside the range. Previously Go resuming a Java token could return rows outside the range, and Java resuming a Go token rebuilt a key with the shared prefix doubled. `TupleRange.Prepend` turns an open bound into the inclusive prefix as Java does, and atomic aggregate indexes (COUNT, SUM, ...) accept `BY_GROUP` scans.
 

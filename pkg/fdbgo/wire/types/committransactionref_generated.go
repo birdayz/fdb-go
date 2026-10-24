@@ -31,7 +31,7 @@ type CommitTransactionRef struct {
 	Report_conflicting_keys           bool          // slot 4
 	Lock_aware                        bool          // slot 5
 	HasRead_conflict_ranges_disabled  bool          // slot 6, optional tag
-	Read_conflict_ranges_disabled     []byte        // slot 7, optional value
+	Read_conflict_ranges_disabled     SpanContext   // slot 7, optional nested value
 	HasWrite_conflict_ranges_disabled bool          // slot 8, optional tag
 	Write_conflict_ranges_disabled    []byte        // slot 9, optional value
 }
@@ -125,7 +125,13 @@ func (m *CommitTransactionRef) decode(r *wire.Reader, b *wire.DecodeBudget) erro
 		m.Lock_aware = r.ReadBool(CommitTransactionRefSlotLock_aware)
 	}
 	if r.FieldPresent(CommitTransactionRefSlotRead_conflict_ranges_disabled) && r.ReadUint8(CommitTransactionRefSlotRead_conflict_ranges_disabled) == 1 && r.FieldPresent(CommitTransactionRefSlotRead_conflict_ranges_disabled+1) {
-		m.Read_conflict_ranges_disabled = r.ReadBytes(CommitTransactionRefSlotRead_conflict_ranges_disabled + 1)
+		nr, err := r.ReadNestedReader(CommitTransactionRefSlotRead_conflict_ranges_disabled + 1)
+		if err != nil {
+			return &wire.DecodeError{Type: "CommitTransactionRef", Field: "Read_conflict_ranges_disabled", Err: err}
+		}
+		if err := m.Read_conflict_ranges_disabled.decode(nr, b); err != nil {
+			return err
+		}
 		m.HasRead_conflict_ranges_disabled = true
 	}
 	if r.FieldPresent(CommitTransactionRefSlotWrite_conflict_ranges_disabled) && r.ReadUint8(CommitTransactionRefSlotWrite_conflict_ranges_disabled) == 1 && r.FieldPresent(CommitTransactionRefSlotWrite_conflict_ranges_disabled+1) {
@@ -185,7 +191,7 @@ func (m *CommitTransactionRef) precomputeSize(ps *wire.PrecomputeSize) int {
 		}
 	}
 	if m.HasRead_conflict_ranges_disabled {
-		ps.VisitDynamicSize(len(m.Read_conflict_ranges_disabled))
+		m.Read_conflict_ranges_disabled.precomputeSize(ps)
 	}
 	if m.HasWrite_conflict_ranges_disabled {
 		ps.VisitDynamicSize(len(m.Write_conflict_ranges_disabled))
@@ -252,7 +258,7 @@ func (m *CommitTransactionRef) writeToBuffer(wb *wire.WriteToBuffer, vtableStart
 		}
 	}
 	if m.HasRead_conflict_ranges_disabled {
-		read_conflict_ranges_disabledOff, _ = wb.VisitDynamicSize(m.Read_conflict_ranges_disabled)
+		read_conflict_ranges_disabledOff = m.Read_conflict_ranges_disabled.writeToBuffer(wb, vtableStart, tmpl)
 	}
 	if m.HasWrite_conflict_ranges_disabled {
 		write_conflict_ranges_disabledOff, _ = wb.VisitDynamicSize(m.Write_conflict_ranges_disabled)

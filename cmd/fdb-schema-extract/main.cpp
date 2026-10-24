@@ -220,6 +220,8 @@ struct GoEmitterV5 {
                 } else if (fd.nestedGoType && fd.nestedGoType[0]) {
                     // Optional<struct>: value is a nested Go struct, not []byte.
                     fprintf(f, "\t%s    %s // slot %d, optional nested value\n", gn.c_str(), fd.nestedGoType, fd.vtableSlot + 1);
+                } else if (fd.optTable) {
+                    fprintf(f, "\t%s    []byte // slot %d, optional table, not decoded\n", gn.c_str(), fd.vtableSlot + 1);
                 } else {
                     fprintf(f, "\t%s    []byte // slot %d, optional value\n", gn.c_str(), fd.vtableSlot + 1);
                 }
@@ -307,11 +309,8 @@ private:
         return 4;
     }
 
-    // ---- decode(r, b) read logic ----
-    //
-    // A field the vtable marks absent keeps its zero value (C++ flat_buffers.h:1041-1046).
-    // A present vector or table that does not resolve, or a vector the budget cannot
-    // cover, fails the decode with a wire.DecodeError naming the field.
+    // ---- decode(r, b): an absent field keeps its zero value (flat_buffers.h:1041-1046); a
+    // present one that does not resolve, or an exhausted budget, is a wire.DecodeError ----
 
     // decodeNested emits the decode of the table behind slotExpr into dst.
     void decodeNested(const char* indent, const std::string& slotExpr, const std::string& dst,
@@ -384,6 +383,8 @@ private:
                 } else if (fd.nestedGoType && fd.nestedGoType[0]) {
                     // Optional<struct>: the value is a nested table behind the union reloff.
                     decodeNested("\t\t", slot + " + 1", "m." + gn, derr);
+                } else if (fd.optTable) {
+                    // A table with no Go type: only its presence is decoded.
                 } else {
                     fprintf(f, "\t\tm.%s = %s.ReadBytes(%s + 1)\n", gn.c_str(), rv, slot.c_str());
                 }
@@ -860,7 +861,7 @@ private:
         fprintf(f, "}\n\n");
     }
 
-    // ---- FlatBuffers vector parser (same as v4) ----
+    // ---- FlatBuffers vector parser ----
 
     void emitFBVectorParser(const char* typeName) {
         std::string derr = std::string("&wire.DecodeError{Type: \"[]") + typeName + "\", Err: err}";
@@ -885,9 +886,8 @@ private:
     // ---- String vector parser (sub-slice instead of make+copy) ----
 
     void emitStringVectorParser(const char* typeName, const std::vector<FieldDesc>& fields) {
-        // C++ dynamic_size_traits<VectorRef<T, VecSerStrategy::String>>::load
-        // (flow/include/flow/Arena.h:1514-1525) reads the count, then each element, and
-        // asserts the elements fill the blob exactly; anything else is an error here.
+        // C++ asserts the elements fill the blob exactly (Arena.h:1514-1525); Go returns
+        // an error instead.
         std::string derr = std::string("&wire.DecodeError{Type: \"[]") + typeName +
                            "\", Err: &wire.StringVectorError{Count: count, Len: len(data)}}";
         fprintf(f, "// Parse%sStringVector decodes a VectorRef<%s, VecSerStrategy::String>.\n", typeName, typeName);
@@ -1574,6 +1574,35 @@ void generateTestVectors(const char* outDir) {
         r.results.emplace_back(KeyRangeRef(KeyRef(r.arena, "range_begin"_sr), KeyRef(r.arena, "range_end"_sr)),
                                servers);
         comma(); emitReplyVector(out, "GetKeyServerLocationsReply_one_range", r);
+    }
+
+    // --- Endpoints with a secondary address (TLS and plaintext ports): NetworkAddressList's
+    // Optional<NetworkAddress> is a table. ---
+    {
+        NetworkAddressList addrs;
+        addrs.address = NetworkAddress::parse("10.1.2.3:4500");
+        addrs.secondaryAddress = NetworkAddress::parse("10.1.2.3:4501:tls");
+
+        GetKeyServerLocationsReply r;
+        StorageServerInterface ssi(UID(0x5151515151515151ULL, 0x6262626262626262ULL));
+        ssi.getValue = PublicRequestStream<GetValueRequest>(
+            Endpoint(addrs, UID(0x7373737373737373ULL, 0x8484848484848484ULL)));
+        std::vector<StorageServerInterface> servers{ ssi };
+        r.results.emplace_back(KeyRangeRef(KeyRef(r.arena, "range_begin"_sr), KeyRef(r.arena, "range_end"_sr)),
+                               servers);
+        comma(); emitReplyVector(out, "GetKeyServerLocationsReply_secondary_address", r);
+
+        ClientDBInfo info;
+        GrvProxyInterface grv;
+        grv.getConsistentReadVersion = PublicRequestStream<GetReadVersionRequest>(
+            Endpoint(addrs, UID(0x9191919191919191ULL, 0xa2a2a2a2a2a2a2a2ULL)));
+        CommitProxyInterface commit;
+        commit.commit = PublicRequestStream<CommitTransactionRequest>(
+            Endpoint(addrs, UID(0xb3b3b3b3b3b3b3b3ULL, 0xc4c4c4c4c4c4c4c4ULL)));
+        info.grvProxies.push_back(grv);
+        info.commitProxies.push_back(commit);
+        info.id = UID(0xd5d5d5d5d5d5d5d5ULL, 0xe6e6e6e6e6e6e6e6ULL);
+        comma(); emitReplyVector(out, "ClientDBInfo_secondary_address", info);
     }
 
     fprintf(out, "\n]\n");

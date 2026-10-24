@@ -82,6 +82,21 @@ func TestReplyParsersFailOnFieldPastBuffer(t *testing.T) {
 			func(d []byte) error { _, _, _, _, err := parseGetKeyReply(d); return err },
 		},
 		{
+			"GetKey selector key", replyVector(t, "GetKeyReply_basic"),
+			func(d []byte) (int, int) {
+				var r wire.Reader
+				if err := wire.ReadErrorOrInto(d, &r); err != nil {
+					t.Fatal(err)
+				}
+				sel, err := r.ReadNestedReader(types.GetKeyReplySlotSel)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return sel.ObjectPos(), types.KeySelectorRefSlotKey
+			},
+			func(d []byte) error { _, _, _, _, err := parseGetKeyReply(d); return err },
+		},
+		{
 			"GetKeyValues rows", replyVector(t, "GetKeyValuesReply_two_rows"),
 			func(d []byte) (int, int) { return errorOrReply(t, d), types.GetKeyValuesReplySlotData },
 			func(d []byte) error { _, _, _, err := parseGetKeyValuesReply(d); return err },
@@ -141,9 +156,8 @@ func TestReplyParsersFailOnFieldPastBuffer(t *testing.T) {
 	}
 }
 
-// aliasedLocationsReply is a GetKeyServerLocationsReply whose n results all point at
-// one pair with m server offsets to the vector's one server. A root, reply, pair and
-// vectors go before the vector's bytes, because offsets point forward only.
+// aliasedLocationsReply has n results pointing at one pair of m servers, all the vector's
+// one server; the prefix goes before the vector because offsets point forward only.
 func aliasedLocationsReply(t *testing.T, vector []byte, n, m int) []byte {
 	t.Helper()
 	le := binary.LittleEndian
@@ -214,9 +228,8 @@ func TestParseLocationsReplyAliasedBudget(t *testing.T) {
 	}
 }
 
-// A server with no usable slot-2 endpoint is scanned only over the slots the
-// StorageServerInterface schema has, not over the vtable length the reply claims.
-// Not parallel: AllocsPerRun counts process-wide allocations.
+// A server without a slot-2 endpoint is scanned over the schema's slots, not the vtable
+// length the reply claims. Not parallel: AllocsPerRun counts process-wide allocations.
 func TestParseLocationsReplyEndpointScanBounded(t *testing.T) {
 	d := locationsReplyVector(t)
 	layout := locateReplyFields(t, d)
@@ -267,5 +280,20 @@ func TestParseClientDBInfoForwardTag(t *testing.T) {
 	d[r.ObjectPos()+r.FieldOffset(types.ClientDBInfoSlotForward)] = 2
 	if info, err := parseStandaloneClientDBInfo(d); err != nil || info.Forward != "" {
 		t.Fatalf("forward tag 2: %+v, %v; want no forward", info, err)
+	}
+}
+
+// Replies whose endpoints carry a secondary address decode; the address is an
+// Optional<NetworkAddress> table, not a byte string.
+func TestSecondaryAddressRepliesDecode(t *testing.T) {
+	t.Parallel()
+	entries, err := parseGetKeyServerLocationsReply(replyVector(t, "GetKeyServerLocationsReply_secondary_address"))
+	if err != nil || len(entries) != 1 || len(entries[0].servers) != 1 || entries[0].servers[0].Address != "10.1.2.3:4500" {
+		t.Fatalf("locations reply: %+v, %v", entries, err)
+	}
+	info, err := parseErrorOrClientDBInfo(replyVector(t, "ClientDBInfo_secondary_address"))
+	if err != nil || len(info.GRVProxies) != 1 || len(info.CommitProxies) != 1 ||
+		info.GRVProxies[0].Address != "10.1.2.3:4500" || info.CommitProxies[0].Address != "10.1.2.3:4500" {
+		t.Fatalf("ClientDBInfo: %+v, %v", info, err)
 	}
 }

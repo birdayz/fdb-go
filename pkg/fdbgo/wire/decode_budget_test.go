@@ -107,3 +107,50 @@ func TestReadVectorCountFieldPastBuffer(t *testing.T) {
 		t.Fatalf("ReadVectorCount = %d, nil; want an error", n)
 	}
 }
+
+// optionalMessage builds a message whose slots 0 and 1 are an Optional: a tag at
+// object offset 4 and a RelativeOffset at 8 to a value of 4 + len(tail) bytes.
+func optionalMessage(tag byte, rel uint32, value uint32, tail string) []byte {
+	d := make([]byte, 40+len(tail))
+	le := binary.LittleEndian
+	le.PutUint32(d[0:], 8)
+	le.PutUint32(d[4:], 1)
+	le.PutUint32(d[12:], 4)                  // message at 16
+	le.PutUint32(d[16:], uint32(0xFFFFFFF4)) // vtable at 28
+	d[20] = tag
+	le.PutUint32(d[24:], rel) // value at 36 when rel is 12
+	le.PutUint16(d[28:], 8)
+	le.PutUint16(d[30:], 12)
+	le.PutUint16(d[32:], 4)
+	le.PutUint16(d[34:], 8)
+	le.PutUint32(d[36:], value)
+	copy(d[40:], tail)
+	return d
+}
+
+// The Optional helpers follow C++: only tag 1 is present, and a value outside the
+// buffer is recorded.
+func TestReadOptionalTagsAndBounds(t *testing.T) {
+	t.Parallel()
+	read := func(d []byte) (int32, bool, string, bool, error) {
+		t.Helper()
+		r, err := NewReader(d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		i, iok := r.ReadOptionalInt32(0, 1)
+		s, sok := r.ReadOptionalString(0, 1)
+		return i, iok, s, sok, r.Err()
+	}
+	if i, iok, s, sok, err := read(optionalMessage(1, 12, 2, "hi")); i != 2 || !iok || s != "hi" || !sok || err != nil {
+		t.Fatalf("tag 1: %d %t %q %t %v", i, iok, s, sok, err)
+	}
+	if _, iok, _, sok, err := read(optionalMessage(2, 12, 2, "hi")); iok || sok || err != nil {
+		t.Fatalf("tag 2: present %t/%t, %v; want absent", iok, sok, err)
+	}
+	_, iok, _, sok, err := read(optionalMessage(1, 1<<20, 2, "hi"))
+	var bounds *FieldBoundsError
+	if iok || sok || !errors.As(err, &bounds) || bounds.Slot != 1 {
+		t.Fatalf("value past the buffer: present %t/%t, %v; want a FieldBoundsError for slot 1", iok, sok, err)
+	}
+}

@@ -501,9 +501,8 @@ func (c *recordingConn) observe(b []byte) {
 // token, span and debug IDs left out (they identify a run, not a request) and
 // versions named; the body length is kept, so a field encoded differently
 // still shows. It returns the request kind, its reply token and the decoded
-// request. The body must re-encode to itself: the generated decoder reads an
-// out-of-bounds field as absent instead of failing, so without that check a
-// malformed field of a known kind would compare as a missing one.
+// request. The body must decode and re-encode to itself, so a body with bytes
+// the decoder does not read compares as malformed rather than equal.
 func decodeRecordedRequest(body []byte, versionName func(int64) string) (_, _ string, _ transport.UID, _ any, err error) {
 	off := 0
 	if len(body) >= 16 && body[7] == 0x0F && body[6] == 0xDB {

@@ -814,16 +814,16 @@ func parseGetKeyServerLocationsReply(data []byte) ([]locationEntry, error) {
 		if err != nil {
 			return nil, &locationsReplyError{defect: locationsUnreadable, detail: fmt.Sprintf("result %d range", i), err: err}
 		}
+		var kr types.KeyRangeRef
+		if err := kr.UnmarshalFromReader(krR); err != nil {
+			return nil, &locationsReplyError{defect: locationsUnreadable, detail: fmt.Sprintf("result %d range", i), err: err}
+		}
 		// A present key with a zero RelativeOffset reads as empty, as in C++, and would
-		// widen the range; a key outside the reply also fails the decode below.
+		// widen the range.
 		for _, slot := range [...]int{types.KeyRangeRefSlotBegin, types.KeyRangeRefSlotEnd} {
 			if krR.FieldPresent(slot) && krR.ReadBytes(slot) == nil {
 				return nil, &locationsReplyError{defect: locationsUnreadable, detail: fmt.Sprintf("result %d range key", i)}
 			}
-		}
-		var kr types.KeyRangeRef
-		if err := kr.UnmarshalFromReader(krR); err != nil {
-			return nil, &locationsReplyError{defect: locationsUnreadable, detail: fmt.Sprintf("result %d range", i), err: err}
 		}
 		// An absent end is the empty key, as C++ decodes it: ["a", absent) is inverted.
 		switch c := bytes.Compare(kr.Begin, kr.End); {

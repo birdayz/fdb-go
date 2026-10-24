@@ -477,6 +477,14 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   the peer-reference count Go does not track (see the idle-connection divergence in
   `connectionMonitor`); port both with the unreferenced-close knobs, pinned by tests.
 
+- [ ] **Endpoints ignore their secondary address.** C++ `Endpoint::serialize` calls
+  `choosePrimaryAddress` on deserialization (`FlowTransport.h:62-68,97-103`): a client,
+  whose local address list is plaintext with no secondary, swaps to the secondary when
+  the primary's TLS flag differs. Go dials `NetworkAddressList.Address` as written
+  (`client/endpoint.go`); RFC-276 decodes `SecondaryAddress` as a `NetworkAddress`
+  (vector `GetKeyServerLocationsReply_secondary_address`), so the choice can be
+  ported and pinned against that vector.
+
 ## 1. WS-E — scalar/SQL semantics and statement execution — ACTIVE
 
 - [x] Invalid UTF-8 rejection on SQL, nested bindings and record writes; copied

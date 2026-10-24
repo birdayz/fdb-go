@@ -91,10 +91,8 @@ func TestSendRecorderLockOrder(t *testing.T) {
 	}
 }
 
-// TestSendRecorderRejectsMalformedField: a GetKeyValuesRequest with an
-// out-of-bounds field offset passes wire.NewReader but fails the generated
-// decoder, and one with a trailing byte decodes but does not re-encode. The
-// recorder rejects both, while the same request well formed is recorded.
+// TestSendRecorderRejectsMalformedField: a request with a field past the buffer fails to
+// decode and one with a trailing byte fails to re-encode; the well-formed one records.
 func TestSendRecorderRejectsMalformedField(t *testing.T) {
 	t.Parallel()
 	good := (&types.GetKeyValuesRequest{

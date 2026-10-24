@@ -162,9 +162,8 @@ func (r *Reader) outside(vtableSlot, off int) {
 	}
 }
 
-// Err reports the first slot a read found outside the buffer: a present field
-// whose bytes lie past it, or a vtable entry past it. Such reads return zero or
-// nil, as for an absent field.
+// Err reports the first slot a read found outside the buffer (a present field or a
+// vtable entry past it); such reads return zero or nil, as for an absent field.
 func (r *Reader) Err() error {
 	if r.fault == 0 {
 		return nil

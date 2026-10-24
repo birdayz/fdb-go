@@ -51,7 +51,7 @@ type CommitTransactionRequest struct {
 	HasDebugID              bool                 // slot 3, optional tag
 	DebugID                 [16]byte             // slot 4, optional scalar value
 	HasCommitCostEstimation bool                 // slot 5, optional tag
-	CommitCostEstimation    []byte               // slot 6, optional value
+	CommitCostEstimation    []byte               // slot 6, optional table, not decoded
 	HasTagSet               bool                 // slot 7, optional tag
 	TagSet                  []byte               // slot 8, optional value
 	SpanContext             SpanContext          // slot 9, nested
@@ -102,7 +102,6 @@ func (m *CommitTransactionRequest) decode(r *wire.Reader, b *wire.DecodeBudget) 
 		m.HasDebugID = true
 	}
 	if r.FieldPresent(CommitTransactionRequestSlotCommitCostEstimation) && r.ReadUint8(CommitTransactionRequestSlotCommitCostEstimation) == 1 && r.FieldPresent(CommitTransactionRequestSlotCommitCostEstimation+1) {
-		m.CommitCostEstimation = r.ReadBytes(CommitTransactionRequestSlotCommitCostEstimation + 1)
 		m.HasCommitCostEstimation = true
 	}
 	if r.FieldPresent(CommitTransactionRequestSlotTagSet) && r.ReadUint8(CommitTransactionRequestSlotTagSet) == 1 && r.FieldPresent(CommitTransactionRequestSlotTagSet+1) {

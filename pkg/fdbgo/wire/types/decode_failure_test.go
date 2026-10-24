@@ -26,9 +26,8 @@ func fieldPos(t testing.TB, r *wire.Reader, slot int) int {
 // vtablePos is the absolute position of the vtable of the object at obj.
 func vtablePos(d []byte, obj int) int { return obj - int(int32(le.Uint32(d[obj:]))) }
 
-// aliasedMappedReply is a GetMappedKeyValuesReply whose n Data offsets all point
-// at one row holding a range result of m empty rows. A root, reply and offset
-// vector go before a marshaled one-row reply, because offsets point forward only.
+// aliasedMappedReply has n Data offsets to one row of m empty rows; the prefix goes before
+// a marshaled one-row reply because offsets point forward only.
 func aliasedMappedReply(t testing.TB, n, m int) []byte {
 	t.Helper()
 	row := MappedKeyValueRef{ReqAndResultTag: 2, ReqAndResultAlt1: GetRangeReqAndResult{

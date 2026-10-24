@@ -341,7 +341,18 @@ FieldKind classifyField() {
 // Returns the registered Go type name for struct Optionals (e.g. Optional<ReadOptions> → "ReadOptions").
 // Detect Optional<T> where T is a registered Go struct type.
 // Uses explicit specializations to avoid template metaprogramming issues.
-template <class T> const char* optionalInnerGoType() { return ""; }
+template <class T> struct optional_inner_t { static constexpr bool is = false; };
+template <class T> struct optional_inner_t<Optional<T>> { using type = T; static constexpr bool is = true; };
+
+// Any registered Go struct inner is a nested table (e.g. Optional<NetworkAddress>, the
+// secondary address of a NetworkAddressList); the specializations below predate this.
+template <class T> const char* optionalInnerGoType() {
+    if constexpr (optional_inner_t<T>::is) {
+        if constexpr (GoTypeName<typename optional_inner_t<T>::type>::registered)
+            return GoTypeName<typename optional_inner_t<T>::type>::name();
+    }
+    return "";
+}
 template <> inline const char* optionalInnerGoType<Optional<ReadOptions>>() { return "ReadOptions"; }
 // RFC-115 §6: Optional<Error> (the inline LoadBalancedReply.error on read replies) is a
 // flatbuffers UNION — a 1-byte present tag + a RelativeOffset to a nested Error table —
@@ -360,9 +371,6 @@ template <> inline const char* optionalInnerGoType<Optional<Error>>() { return "
 // than []byte. (Optional<UID> debugID is the only Optional<scalar> in the schema; every other
 // Optional<...> is genuinely dynamic-size and stays []byte.) NOTE fb_size<Optional<UID>> is the
 // union's RelativeOffset size (4), so the inner scalar's size (16) must be queried separately.
-template <class T> struct optional_inner_t { static constexpr bool is = false; };
-template <class T> struct optional_inner_t<Optional<T>> { using type = T; static constexpr bool is = true; };
-
 // An Optional<scalar-T> serializes its inner as a BARE out-of-line value behind the
 // union's RelativeOffset (C++ SaveAlternative non-indirection arm, flat_buffers.h:848),
 // NOT a length-prefixed byte vector. This covers UID (the lone 16-byte fixed-array
@@ -371,6 +379,21 @@ template <class T> struct optional_inner_t<Optional<T>> { using type = T; static
 // complement of use_indirection for the scalar case: byte-vector inners (StringRef/KeyRef/
 // Value/Standalone) are NOT arithmetic/enum/UID → they correctly stay []byte; struct inners
 // (Tag/StorageMetadataType/Error/ReadOptions) route via optionalInnerGoType, not here.
+// An Optional<T> whose inner serializes as a flatbuffers table: neither scalar, nor
+// dynamic-size bytes, nor a vector (flat_buffers.h union save, use_indirection arm).
+template <class T> bool optionalInnerIsTable() {
+    using namespace detail;
+    if constexpr (optional_inner_t<T>::is) {
+        using Inner = typename optional_inner_t<T>::type;
+        if constexpr (is_standalone<Inner>::value)
+            return false;
+        else
+            return !std::is_arithmetic_v<Inner> && !std::is_enum_v<Inner> && !std::is_same_v<Inner, UID> &&
+                   !is_scalar<Inner> && !is_dynamic_size<Inner> && !is_vector_like<Inner>;
+    }
+    return false;
+}
+
 template <class T> bool optionalInnerIsScalar() {
     if constexpr (optional_inner_t<T>::is) {
         using Inner = typename optional_inner_t<T>::type;
@@ -418,6 +441,7 @@ struct FieldDesc {
     bool optScalar = false;        // Optional<scalar-T>: inner is a bare out-of-line scalar
     bool optScalarIsArray = false; // ...and that scalar is the fixed [16]byte UID (slice codegen);
                                    // false ⇒ arithmetic/enum primitive (value encode/decode codegen)
+    bool optTable = false;         // Optional<T> of a table with no Go type: presence only
 };
 
 template <class ParentT>
@@ -483,8 +507,9 @@ private:
                 fd.size = (uint32_t)optionalInnerScalarSize<T>();
             } else {
                 // Struct inner (Optional<ReadOptions>/<Error>) → nested table via EnsureTable<T>;
-                // everything else → length-prefixed bytes.
+                // a table with no Go type → presence only; everything else → length-prefixed bytes.
                 fd.nestedGoType = optionalInnerGoType<T>();
+                fd.optTable = !fd.nestedGoType[0] && optionalInnerIsTable<T>();
             }
             break;
         default:

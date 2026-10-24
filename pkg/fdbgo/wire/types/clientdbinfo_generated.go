@@ -53,7 +53,7 @@ type ClientDBInfo struct {
 	History       []byte   // slot 5
 	// TenantMode: unregistered nested struct at slot 6
 	HasEncryptKeyProxy bool     // slot 7, optional tag
-	EncryptKeyProxy    []byte   // slot 8, optional value
+	EncryptKeyProxy    []byte   // slot 8, optional table, not decoded
 	ClusterId          [16]byte // slot 9
 	ClusterType        int32    // slot 10
 	HasMetaclusterName bool     // slot 11, optional tag
@@ -93,7 +93,6 @@ func (m *ClientDBInfo) decode(r *wire.Reader, b *wire.DecodeBudget) error {
 		m.History = r.ReadBytes(ClientDBInfoSlotHistory)
 	}
 	if r.FieldPresent(ClientDBInfoSlotEncryptKeyProxy) && r.ReadUint8(ClientDBInfoSlotEncryptKeyProxy) == 1 && r.FieldPresent(ClientDBInfoSlotEncryptKeyProxy+1) {
-		m.EncryptKeyProxy = r.ReadBytes(ClientDBInfoSlotEncryptKeyProxy + 1)
 		m.HasEncryptKeyProxy = true
 	}
 	if r.FieldPresent(ClientDBInfoSlotClusterId) {

@@ -2,9 +2,8 @@ package wire
 
 import "fmt"
 
-// DecodeBudget bounds the vector-of-table elements one decode may produce. C++
-// writes each element's 4-byte offset once, so a buffer it wrote holds at most
-// len/4 elements in total; more means offsets alias the same elements.
+// DecodeBudget bounds the vector-of-table elements one decode may produce: C++ writes
+// each element's 4-byte offset once, so its buffers hold at most len/4; more is aliasing.
 type DecodeBudget struct {
 	left int
 }

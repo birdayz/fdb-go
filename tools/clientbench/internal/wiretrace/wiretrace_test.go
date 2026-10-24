@@ -442,13 +442,7 @@ func TestDecodeFailedCommitReplies(t *testing.T) {
 	commitReq := v["CommitTransactionRequest_single_set"]
 	lo := [4]byte{127, 0, 0, 1}
 	// A committed reply whose version lies past the buffer does not decode.
-	pastVersion := unhex(t, v["CommitID_committed"].Hex)
-	var r wire.Reader
-	if err := wire.ReadErrorOrInto(pastVersion, &r); err != nil {
-		t.Fatal(err)
-	}
-	vtable := r.ObjectPos() - int(int32(binary.LittleEndian.Uint32(pastVersion[r.ObjectPos():])))
-	binary.LittleEndian.PutUint16(pastVersion[vtable+4+2*types.CommitIDSlotVersion:], 0xFFF0)
+	pastVersion := pastBuffer(t, unhex(t, v["CommitID_committed"].Hex), true, types.CommitIDSlotVersion)
 	for _, tc := range []struct {
 		name  string
 		reply []byte

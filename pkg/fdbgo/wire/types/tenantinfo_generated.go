@@ -21,7 +21,7 @@ const TenantInfoMaxAlign = 8
 type TenantInfo struct {
 	TenantId int64  // slot 0
 	HasToken bool   // slot 1, optional tag
-	Token    []byte // slot 2, optional value
+	Token    []byte // slot 2, optional table, not decoded
 	Arena    []byte // slot 3
 }
 
@@ -45,7 +45,6 @@ func (m *TenantInfo) decode(r *wire.Reader, b *wire.DecodeBudget) error {
 		m.TenantId = r.ReadInt64(TenantInfoSlotTenantId)
 	}
 	if r.FieldPresent(TenantInfoSlotToken) && r.ReadUint8(TenantInfoSlotToken) == 1 && r.FieldPresent(TenantInfoSlotToken+1) {
-		m.Token = r.ReadBytes(TenantInfoSlotToken + 1)
 		m.HasToken = true
 	}
 	if r.FieldPresent(TenantInfoSlotArena) {
