@@ -64,13 +64,21 @@ func (lc *locationCache) searchIndex(tenantId int64, key []byte) int {
 // CoalescedKeyRangeMap::insert does (KeyRangeMap.h:206-253). Caller holds lc.mu.
 func (lc *locationCache) insertRanges(newEntries []locationEntry) {
 	for _, ne := range newEntries {
-		lc.insertRange(ne)
+		lc.overwrite(ne, true)
 	}
 }
 
-// insertRange trims or drops what ne overlaps and inserts it; a range with
-// begin >= end inserts nothing.
-func (lc *locationCache) insertRange(ne locationEntry) {
+// cacheReply caches a locations reply; a shard without servers, which C++ caches
+// as an empty location, only clears its range. Caller holds lc.mu.
+func (lc *locationCache) cacheReply(entries []locationEntry) {
+	for _, e := range entries {
+		lc.overwrite(e, len(e.servers) > 0)
+	}
+}
+
+// overwrite trims or drops what ne overlaps and, if insert, inserts it; a range
+// with begin >= end changes nothing.
+func (lc *locationCache) overwrite(ne locationEntry, insert bool) {
 	if ne.end != nil && bytes.Compare(ne.begin, ne.end) >= 0 {
 		return
 	}
@@ -100,9 +108,14 @@ func (lc *locationCache) insertRange(ne locationEntry) {
 			break
 		}
 	}
-	if tail != nil {
+	switch {
+	case !insert && tail != nil:
+		lc.entries = slices.Replace(lc.entries, idx, j, *tail)
+	case !insert:
+		lc.entries = slices.Delete(lc.entries, idx, j)
+	case tail != nil:
 		lc.entries = slices.Replace(lc.entries, idx, j, ne, *tail)
-	} else {
+	default:
 		lc.entries = slices.Replace(lc.entries, idx, j, ne)
 	}
 }
@@ -527,6 +540,14 @@ func stripTenantPrefix(entries []locationEntry, tenantId int64) {
 	}
 }
 
+// withServers returns the entries a request can be routed to.
+func withServers(entries []locationEntry) []locationEntry {
+	if !slices.ContainsFunc(entries, func(e locationEntry) bool { return len(e.servers) == 0 }) {
+		return entries
+	}
+	return slices.DeleteFunc(slices.Clone(entries), func(e locationEntry) bool { return len(e.servers) == 0 })
+}
+
 // invertedEntry reports an entry with begin >= end: after the parser, only a
 // boundary stripTenantPrefix leaves unprefixed produces one.
 func invertedEntry(entries []locationEntry) bool {
@@ -646,11 +667,11 @@ func (lc *locationCache) queryLocations(db *database, ctx context.Context, tenan
 					continue
 				}
 				lc.mu.Lock()
-				lc.insertRanges(entries)
+				lc.cacheReply(entries)
 				lc.evictIfNeeded()
 				lc.mu.Unlock()
-				if len(entries) > 0 {
-					return entries, nil
+				if usable := withServers(entries); len(usable) > 0 {
+					return usable, nil
 				}
 			case <-rctx.Done():
 				rpcCancel()
@@ -727,7 +748,7 @@ type locationsDefect int
 const (
 	locationsUnreadable    locationsDefect = iota + 1 // out of bounds: no defined C++ result
 	locationsInvertedRange                            // C++ throws or asserts (FDBTypes.h:384-399)
-	locationsNoShards                                 // no non-empty range with a server
+	locationsNoShards                                 // no non-empty range
 )
 
 func (d locationsDefect) String() string {
@@ -760,7 +781,7 @@ func (e *locationsReplyError) Error() string {
 func (e *locationsReplyError) Unwrap() error { return e.err }
 
 // parseGetKeyServerLocationsReply skips an absent or empty range, which C++ does not
-// cache (KeyRangeMap.h:209-210), and a shard without servers (DIVERGENCES.md).
+// cache (KeyRangeMap.h:209-210); a shard without servers is returned without them.
 func parseGetKeyServerLocationsReply(data []byte) ([]locationEntry, error) {
 	r, err := wire.ReadErrorOr(data)
 	if err != nil {
@@ -838,17 +859,15 @@ func parseGetKeyServerLocationsReply(data []byte) ([]locationEntry, error) {
 				})
 			}
 		}
-		if len(servers) > 0 {
-			entries = append(entries, locationEntry{
-				begin:   kr.Begin,
-				end:     kr.End,
-				servers: servers,
-			})
-		}
+		entries = append(entries, locationEntry{
+			begin:   kr.Begin,
+			end:     kr.End,
+			servers: servers,
+		})
 	}
 
 	if len(entries) == 0 {
-		return nil, &locationsReplyError{defect: locationsNoShards, detail: "no shard with a storage server"}
+		return nil, &locationsReplyError{defect: locationsNoShards, detail: "no shard"}
 	}
 	return entries, nil
 }

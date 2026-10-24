@@ -36,6 +36,9 @@ func lookupAt(t *testing.T, lc *locationCache, tenant int64, key string) (server
 	if loc.ShardEnd == nil {
 		end = "∞"
 	}
+	if len(loc.Servers) == 0 {
+		return "no servers", string(loc.ShardBegin), end
+	}
 	return loc.Servers[0].Address, string(loc.ShardBegin), end
 }
 
@@ -120,6 +123,26 @@ func TestLocationCacheSplit(t *testing.T) {
 	requireDisjoint(t, lc)
 	wantLookup(t, lc, NoTenantID, "b", "s1", "", "m")
 	wantLookup(t, lc, NoTenantID, "p", "s1", "n", "∞")
+}
+
+// A shard named without servers clears its range, as C++ caches an empty location
+// there, so no stale remainder answers for it; requests see only routable shards.
+func TestLocationCacheShardWithoutServers(t *testing.T) {
+	t.Parallel()
+	lc := &locationCache{maxSize: 100}
+	lc.insertRanges([]locationEntry{locEntry(NoTenantID, "a", "d", "old")})
+	reply := []locationEntry{locEntry(NoTenantID, "a", "b", "s1"), {tenantId: NoTenantID, begin: []byte("b"), end: []byte("c")}, locEntry(NoTenantID, "c", "d", "s3")}
+	lc.cacheReply(reply)
+	requireDisjoint(t, lc)
+	wantLookup(t, lc, NoTenantID, "a5", "s1", "a", "b")
+	wantLookup(t, lc, NoTenantID, "b5", "", "", "")
+	wantLookup(t, lc, NoTenantID, "c5", "s3", "c", "d")
+	if got := withServers(reply); len(got) != 2 || got[0].servers[0].Address != "s1" || got[1].servers[0].Address != "s3" {
+		t.Fatalf("withServers = %+v, want the two routable shards", got)
+	}
+	if got := withServers(reply[:1]); &got[0] != &reply[0] {
+		t.Fatal("withServers copied a reply whose shards all have servers")
+	}
 }
 
 func TestLocationCacheInsertEdges(t *testing.T) {
@@ -367,7 +390,6 @@ func TestParseLocationsReplyMalformed(t *testing.T) {
 	}{
 		{name: "absent key range", mutate: func(d []byte) { binary.LittleEndian.PutUint16(d[layout.keyRangeSlot:], 0) }, defect: locationsNoShards},
 		{name: "empty key range", mutate: func(d []byte) { put(d, layout.beginString, 0); put(d, layout.endString, 0) }, defect: locationsNoShards},
-		{name: "server without an endpoint", mutate: func(d []byte) { clear(d[layout.token : layout.token+8]) }, defect: locationsNoShards},
 		{name: "key range offset zero", mutate: func(d []byte) { put(d, layout.keyRangeRef, 0) }, defect: locationsUnreadable},
 		{name: "result past the buffer", mutate: func(d []byte) { put(d, layout.result, 1<<20) }, defect: locationsUnreadable},
 		{name: "server past the buffer", mutate: func(d []byte) { put(d, layout.server, 1<<20) }, defect: locationsUnreadable},
@@ -397,8 +419,15 @@ func TestParseLocationsReplyMalformed(t *testing.T) {
 		})
 	}
 
-	// The single-key form C++ writes (begin + \x00 == end) still decodes.
+	// A server without an endpoint is dropped; its shard comes back without servers.
 	d := bytes.Clone(vector)
+	clear(d[layout.token : layout.token+8])
+	if entries, err := parseGetKeyServerLocationsReply(d); err != nil || len(entries) != 1 || len(entries[0].servers) != 0 {
+		t.Fatalf("server without an endpoint: %+v, %v; want the shard without servers", entries, err)
+	}
+
+	// The single-key form C++ writes (begin + \x00 == end) still decodes.
+	d = bytes.Clone(vector)
 	d[layout.beginString+4+len("range_begin")-1] = 0
 	put(d, layout.endString, 0)
 	entries, err := parseGetKeyServerLocationsReply(d)
@@ -529,36 +558,41 @@ func appendString(b []byte, slot int, s string) []byte {
 	return b
 }
 
-// A result the parser skips does not cost the reply its other shards.
-func TestParseLocationsReplySkipsOnlyTheUnusableResult(t *testing.T) {
+// A result that names no usable shard does not cost the reply its other shards: an
+// absent or empty range is skipped, a shard without servers comes back without them.
+func TestParseLocationsReplyKeepsOtherShards(t *testing.T) {
 	t.Parallel()
 	vector := locationsReplyVector(t)
 	cases := []struct {
-		name   string
-		second func(b []byte, slot int) []byte
+		name    string
+		second  func(b []byte, slot int) []byte
+		results int
 	}{
 		{"absent range", func(b []byte, slot int) []byte {
 			b, _ = appendObject(b, slot, 4)
 			return b
-		}},
+		}, 1},
 		{"empty range", func(b []byte, slot int) []byte {
 			b, pair := appendObject(b, slot, 8, 4)
 			b, _ = appendObject(b, pair+4, 4)
 			return b
-		}},
+		}, 1},
 		{"no servers", func(b []byte, slot int) []byte {
 			b, pair := appendObject(b, slot, 8, 4)
 			b, kr := appendObject(b, pair+4, 12, 4, 8)
 			b = appendString(b, kr+4, "x")
 			return appendString(b, kr+8, "y")
-		}},
+		}, 2},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			entries, err := parseGetKeyServerLocationsReply(twoResultReply(t, vector, tc.second))
-			if err != nil || len(entries) != 1 || string(entries[0].begin) != "range_begin" || string(entries[0].end) != "range_end" {
-				t.Fatalf("parse = %+v, %v; want only the well-formed shard", entries, err)
+			if err != nil || len(entries) != tc.results || string(entries[0].begin) != "range_begin" || string(entries[0].end) != "range_end" {
+				t.Fatalf("parse = %+v, %v; want the well-formed shard and %d result(s)", entries, err, tc.results)
+			}
+			if tc.results == 2 && (string(entries[1].begin) != "x" || string(entries[1].end) != "y" || len(entries[1].servers) != 0) {
+				t.Fatalf("second result = %+v, want [x, y) without servers", entries[1])
 			}
 		})
 	}

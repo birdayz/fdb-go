@@ -53,9 +53,11 @@ of `bb` returned the stale S2; after a split learned from its upper half
 the new range overwrites what it overlaps, the rest keeps its value, an empty range
 is ignored (`:209-210`).
 
-**Change.** `insertSorted` trims an overlapping entry to its parts before `begin`
-and from `end` on (keeping its servers; a nil end stays unbounded) or drops it, then
-inserts. Touching entries keep their bounds; `begin >= end` inserts nothing.
+**Change.** `insertSorted`, renamed `insertRanges`, trims an overlapping entry to
+its parts before `begin` and from `end` on (keeping its servers; a nil end stays
+unbounded) or drops it, then inserts. Touching entries keep their bounds;
+`begin >= end` inserts nothing. Caching a reply, a shard without servers only clears
+its range, where C++ caches an empty location, so no stale remainder answers for it.
 
 ## 3. Malformed location replies are not cached
 
@@ -82,10 +84,11 @@ while deserializing is never delivered (`FlowTransport.actor.cpp:1195-1207`).
   range is inverted (an absent end compares as the empty key, as in C++).
   `queryLocations` logs it at Debug and asks the next proxy, without marking this
   one failed.
-- Results with an absent or empty range, results without servers and servers
-  without an endpoint are skipped; an empty range covers no key. Range lookups
-  re-ask for a hole (`locateRangeWith`); a single-key reply has one result
-  (`NativeAPI.actor.cpp:3043`), so a skip leaves none and is re-asked.
+- Results with an absent or empty range are skipped (they cover no key), and
+  servers without an endpoint are dropped. A shard left without servers clears its
+  range in the cache and is not returned for routing: range lookups re-ask for the
+  hole (`locateRangeWith`); a single-key reply has one result
+  (`NativeAPI.actor.cpp:3043`), so the lookup is asked again.
 - `KeyRangeRef.UnmarshalFromReader` swaps the single-key form only when the key ends
   in `\x00`. The client decodes `KeyRangeRef` from no other reply.
 - A reply that `stripTenantPrefix` leaves with an inverted entry (a boundary without
@@ -94,14 +97,15 @@ while deserializing is never delivered (`FlowTransport.actor.cpp:1195-1207`).
 
 Three divergences are recorded in DIVERGENCES.md: Go asks the next proxy where C++
 never delivers an undecodable reply, and keeps an unprefixed tenant boundary where
-C++ clamps it (only malformed replies reach these two); and Go skips a shard with no
-servers, which C++ caches as an empty location (unchanged by this RFC).
+C++ clamps it (only malformed replies reach these two); and Go clears and re-asks
+for a shard with no servers, which C++ caches as an empty location.
 
 ## Wire compatibility and performance
 
 No bytes change. Every reply a 7.3.77 server sends decodes as before (ground-truth
 vector `GetKeyServerLocationsReply_one_range`). `handleConnError` adds a comparison
-and holds `connMu` across `markFailed`; `insertSorted` stays O(log N + K).
+and holds `connMu` across `markFailed`; an insert is still a binary search plus a
+slice shift.
 
 ## Tests
 
@@ -115,8 +119,8 @@ Each regression fails with its fix reverted.
   and exactly one report counted; every
   `handleConnError` arm; the mark-versus-redial ordering through the seam
   (`connMu.TryLock` decides, no timers); hedge connections and `endOther`; cache
-  merge, split, nested, unbounded, touching, empty, inverted and tenant cases plus a
-  randomized model of `insert`; every parser defect on mutations of the C++ vector;
+  merge, split, nested, unbounded, touching, empty, inverted, server-less and tenant
+  cases plus a randomized model of `insert`; every parser defect on mutations of the C++ vector;
   `queryLocations` skipping a bad proxy, including a tenant-strip inversion; the
   `ClientDBInfo` and split-point count errors.
 - `wire_test`, `types_test`: `ReadVectorCount` bounds; a generated decoder drops an

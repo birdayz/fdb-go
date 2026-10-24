@@ -238,9 +238,9 @@ func TestLocateTenantIsolation(t *testing.T) {
 	}
 }
 
-// TestInsertSortedDedup verifies that inserting an entry with the same
+// TestInsertRangesDedup verifies that inserting an entry with the same
 // (tenantId, begin) replaces the existing one.
-func TestInsertSortedDedup(t *testing.T) {
+func TestInsertRangesDedup(t *testing.T) {
 	t.Parallel()
 
 	lc := &locationCache{maxSize: 1000}
@@ -265,9 +265,9 @@ func TestInsertSortedDedup(t *testing.T) {
 	}
 }
 
-// TestInsertSortedOrder verifies that entries are inserted in sorted order
+// TestInsertRangesOrder verifies that entries are inserted in sorted order
 // even when provided out of order.
-func TestInsertSortedOrder(t *testing.T) {
+func TestInsertRangesOrder(t *testing.T) {
 	t.Parallel()
 
 	lc := &locationCache{maxSize: 1000}
@@ -292,8 +292,8 @@ func TestInsertSortedOrder(t *testing.T) {
 	}
 }
 
-// TestInsertSortedMultiTenant verifies insertion ordering across tenants.
-func TestInsertSortedMultiTenant(t *testing.T) {
+// TestInsertRangesMultiTenant verifies insertion ordering across tenants.
+func TestInsertRangesMultiTenant(t *testing.T) {
 	t.Parallel()
 
 	lc := &locationCache{maxSize: 1000}
