@@ -21,11 +21,15 @@ func (store *FDBRecordStore) GetPrimaryKeyBoundaries(r TupleRange) ([]tuple.Tupl
 // primaryKeyBoundaries is GetPrimaryKeyBoundaries over the raw key range [begin, end). It reads
 // the shard map at the transaction's read version and looks keys up with snapshot reads.
 func (store *FDBRecordStore) primaryKeyBoundaries(begin, end fdb.Key) ([]tuple.Tuple, error) {
+	db := store.context.GetDatabase()
+	if db == nil { // a context made without a database has no shard map
+		return nil, &BackendCapabilityError{Op: "LocalityGetBoundaryKeys"}
+	}
 	readVersion, err := store.context.GetReadVersion()
 	if err != nil {
 		return nil, err
 	}
-	shardKeys, err := store.context.GetDatabase().LocalityGetBoundaryKeys(fdb.KeyRange{Begin: begin, End: end}, 0, readVersion)
+	shardKeys, err := db.LocalityGetBoundaryKeys(fdb.KeyRange{Begin: begin, End: end}, 0, readVersion)
 	if err != nil {
 		return nil, err
 	}

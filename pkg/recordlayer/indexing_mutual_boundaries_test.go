@@ -518,3 +518,100 @@ func TestMutualClaimBuiltByAPeer(t *testing.T) {
 		t.Fatalf("built %d records, then more = %t, %v; want the 41 the peer left and no more", total, more, err)
 	}
 }
+
+// The lookups are snapshot reads: a concurrent save between a boundary and the record it maps
+// to does not conflict the caller. A context without a database has no shard map.
+func TestGetPrimaryKeyBoundariesTakesNoReadConflict(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db, backend := newShardMapDB(71)
+	md, err := baseBuilder().Build()
+	if err != nil {
+		t.Fatalf("metadata: %v", err)
+	}
+	sb := NewStoreBuilder().SetMetaDataProvider(md).SetSubspace(subspace.FromBytes(tuple.Tuple{"pkbounds", "snapshot"}.Pack()))
+	seedOrders(t, db, sb, []int64{10, 50})
+	attempts := 0
+	if _, err := db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+		attempts++
+		store, err := sb.copyBuilder().SetContext(rtx).Open()
+		if err != nil {
+			return nil, err
+		}
+		backend.shards = []fdb.Key{store.recordsSubspace.Pack(tuple.Tuple{int64(5)})}
+		got, err := store.GetPrimaryKeyBoundaries(TupleRangeAll)
+		if err != nil || len(got) != 1 || !bytes.Equal(got[0].Pack(), tuple.Tuple{int64(10)}.Pack()) {
+			t.Fatalf("GetPrimaryKeyBoundaries = %v, %v; want [(10)]", got, err)
+		}
+		rtx.Transaction().Set(fdb.Key("pkbounds-snapshot-marker"), []byte{1})
+		if attempts == 1 {
+			seedOrders(t, db, sb, []int64{7})
+		}
+		return nil, nil
+	}); err != nil || attempts != 1 {
+		t.Fatalf("Run = %v after %d attempts, want one attempt despite the concurrent save", err, attempts)
+	}
+
+	tx, err := db.CreateWritableTransaction()
+	if err != nil {
+		t.Fatalf("transaction: %v", err)
+	}
+	store, err := sb.copyBuilder().SetContext(NewFDBRecordContext(tx, db.Env())).Open()
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	var unsupported *BackendCapabilityError
+	if _, err := store.GetPrimaryKeyBoundaries(TupleRangeAll); !errors.As(err, &unsupported) {
+		t.Fatalf("GetPrimaryKeyBoundaries without a database = %v, want BackendCapabilityError", err)
+	}
+}
+
+// A resumed build whose fragments are all partly built finishes them in ANY.
+func TestMutualAnyBuildsPartlyBuiltFragments(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db, _ := newShardMapDB(73)
+	ids := make([]int64, 100)
+	for i := range ids {
+		ids[i] = int64(i + 1)
+	}
+	md := priceIndexMetaData(t, nil)
+	oi := newSimMutualIndexer(t, db, "any", md, 10, ids)
+	oi.mutualBoundaries = [][]byte{tuple.Tuple{int64(50)}.Pack()}
+	// An earlier build left one chunk in each fragment.
+	for fragment := range 2 {
+		earlier := newMutualIndexBuilder(oi)
+		earlier.fragmentCur, earlier.fragmentFirst = fragment, fragment
+		if n, _, err := earlier.buildMutual(ctx); err != nil || n != 10 {
+			t.Fatalf("earlier chunk in fragment %d = %d, %v", fragment, n, err)
+		}
+	}
+	m := newMutualIndexBuilder(oi)
+	var total int64
+	for more := true; more; {
+		n, nextMore, err := m.buildMutual(ctx)
+		if err != nil {
+			t.Fatalf("buildMutual: %v", err)
+		}
+		total, more = total+n, nextMore
+	}
+	if total != 80 || m.iterType != fragmentAny {
+		t.Fatalf("built %d records ending in phase %v, want the 80 left, in ANY", total, m.iterType)
+	}
+	if _, err := db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+		store, err := oi.openStore(rtx)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := store.MarkIndexReadable("Order$price"); err != nil {
+			return nil, err
+		}
+		rows, err := AsList(ctx, store.ScanIndex(md.GetIndex("Order$price"), TupleRangeAll, nil, ForwardScan()))
+		if err == nil && len(rows) != 100 {
+			t.Fatalf("index has %d entries, want 100", len(rows))
+		}
+		return nil, err
+	}); err != nil {
+		t.Fatalf("scan index: %v", err)
+	}
+}

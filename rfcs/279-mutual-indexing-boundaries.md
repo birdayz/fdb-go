@@ -34,7 +34,7 @@ Go line numbers are at the base commit, `da73f1db1`.
 2. **Transaction limits.** `buildFragmentRange` (`:359-425`) stops only at the record limit.
    Java's `buildThisRangeOnly` runs `iterateRangeOnly`, which checks
    `hadTransactionReachedLimits` after each indexed record (`IndexingBase.java:866`). Go's
-   `buildRange` already does (`online_indexer.go:2106`).
+   `buildRange` already does (`online_indexer.go:2109`).
 3. **FULL phase.** Java's `buildNextRangeOnly` picks a range: in FULL a fragment with nothing
    built, in ANY the first missing part of one (`:309-363`, `fullyUnBuiltRange`,
    `partlyUnBuiltRange`). It then builds that range chunk by chunk until nothing in it is
@@ -56,7 +56,8 @@ Go line numbers are at the base commit, `da73f1db1`.
    shard map at the transaction's read version and looks up the first key after each
    boundary with snapshot reads, at most `DefaultPipelineSize` in flight. It unpacks each key
    with the records subspace, drops the last element when the store has a split suffix, and
-   skips a repeat of the previous key. The mutual builder uses an internal form over raw
+   skips a repeat of the previous key. A context made without a database has no shard map and
+   gets a `BackendCapabilityError`. The mutual builder uses an internal form over raw
    bytes, the records prefix plus `computeRecordsRange`, else the whole records range.
    - Detected boundaries are read in the first claim transaction (item 3), as Java reads them
      in its first build transaction. A `BackendCapabilityError` (a tenant-backed or custom
@@ -130,7 +131,9 @@ Each regression fails before its fix (mutations recorded on the PR).
     first record, a non-tuple boundary, two boundaries inside the split record and one past
     the last record to `[(10), (50)]`, reading the shard map at the transaction's version. A
     format-4 store, without the suffix, keeps the whole key. Fifteen boundaries, more than
-    the lookups in flight, with a repeat across the window's edge, give 14 sorted keys.
+    the lookups in flight, with a repeat across the window's edge, give 14 sorted keys. A
+    concurrent save inside a looked-up range does not conflict the caller (snapshot reads),
+    and a context without a database gets a `BackendCapabilityError`.
   - A mutual build with a shard boundary at `(50, 2)` inside a split record gets the edges
     `[\x00, (50), \xff]` and indexes every record.
   - With a record-type key prefix, the shard map is read over the indexed type's records
@@ -144,6 +147,8 @@ Each regression fails before its fix (mutations recorded on the PR).
 - **Peers:** a peer that finishes the claimed fragment moves the builder to the next one; a
   peer that builds the middle of a claim leaves the builder on the rest of it, in FULL, until
   the claim has nothing missing.
+- **ANY:** a resumed build whose two fragments each hold one built chunk moves to ANY and
+  builds the 80 records left; the index then has all 100.
 - **No anyJumper:** a claimed chunk that fails with 2101 is retried at a lower limit and
   succeeds.
 - **Claim publication:** a failed claim transaction leaves no boundaries and no claim. A
