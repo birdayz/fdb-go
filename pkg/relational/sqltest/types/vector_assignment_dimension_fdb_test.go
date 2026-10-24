@@ -9,9 +9,8 @@ import (
 	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
-// A vector value of another precision or dimension count reaching the
-// executor's assignment (UPDATE ... SET from a parameter) fails 22000 with the
-// executor's message.
+// Go-only: raw vector bytes of another shape fail 22000 at execution (DIVERGENCES.md,
+// "Raw bytes assigned to a VECTOR column"); Java refuses any bytes at planning.
 func TestFDB_VectorAssignmentDimensionMismatchIs22000(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

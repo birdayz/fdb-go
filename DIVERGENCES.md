@@ -957,6 +957,16 @@ where Java places QUALIFY in an aggregated block (QueryVisitor.visitSimpleTable)
 QUALIFY over grouping keys, with or without HAVING, answers as Java
 (`CorrelatedHavingExistsJavaProbe`).
 
+### Raw bytes assigned to a VECTOR column (Java refuses, Go writes them)
+
+`UPDATE t SET v = ?` with a bytes parameter for a VECTOR column: Java's PromoteValue has no
+BYTES-to-VECTOR promotion, so it refuses at planning with 22000 (INCOMPATIBLE_TYPE, "A value
+cannot be assigned to a variable…"). Go's executor writes well-formed vector bytes of the
+column's precision and dimension count and refuses other bytes at execution with 22000 "Vector
+precision or dimensions do not match the target column"
+(`TestFDB_VectorAssignmentDimensionMismatchIs22000`). Reversal: refuse BYTES-to-VECTOR at
+planning, as PromoteValue does.
+
 ### An EXISTS in an aggregated block's QUALIFY (Go refuses)
 
 `SELECT b1 FROM b GROUP BY b1 QUALIFY EXISTS (SELECT a1 FROM a)`: Java conjoins QUALIFY after its

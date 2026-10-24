@@ -4,6 +4,7 @@ import (
 	"math"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 )
 
@@ -72,6 +73,17 @@ func onlyQuantifier(expr expressions.RelationalExpression, kind expressions.Quan
 	return qs[0].GetRangesOver()
 }
 
+// allPredicatesCompensatable is Java's all(anyCompensatablePredicate()): no
+// predicate carries an index-only value.
+func allPredicatesCompensatable(preds []predicates.QueryPredicate) bool {
+	for _, pred := range preds {
+		if predicateContainsUncompensatableValues(pred) {
+			return false
+		}
+	}
+	return true
+}
+
 func countQuantifiers(expr expressions.RelationalExpression, kind expressions.QuantifierKind) int {
 	n := 0
 	for _, q := range expr.GetQuantifiers() {
@@ -86,13 +98,8 @@ func countQuantifiers(expr expressions.RelationalExpression, kind expressions.Qu
 // only(forEachQuantifierOverRef(planPartitions(any(anyPlanPartition()))))).
 func (r *ImplementFilterRule) javaBindings(expr expressions.RelationalExpression) int {
 	f, ok := expr.(*expressions.LogicalFilterExpression)
-	if !ok {
+	if !ok || !allPredicatesCompensatable(f.GetPredicates()) {
 		return 0
-	}
-	for _, pred := range f.GetPredicates() {
-		if predicateContainsUncompensatableValues(pred) {
-			return 0
-		}
 	}
 	return len(javaPlanPartitions(onlyQuantifier(f, expressions.QuantifierForEach)))
 }
@@ -119,13 +126,8 @@ func (r *ImplementDistinctFinalRule) javaBindings(expr expressions.RelationalExp
 // exactly(anyQuantifierOverRef(planPartitions(any(anyPlanPartition()))))).
 func (r *ImplementSimpleSelectRule) javaBindings(expr expressions.RelationalExpression) int {
 	sel, ok := expr.(*expressions.SelectExpression)
-	if !ok {
+	if !ok || !allPredicatesCompensatable(sel.GetPredicates()) {
 		return 0
-	}
-	for _, pred := range sel.GetPredicates() {
-		if predicateContainsUncompensatableValues(pred) {
-			return 0
-		}
 	}
 	qs := sel.GetQuantifiers()
 	if len(qs) != 1 {

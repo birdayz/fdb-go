@@ -114,7 +114,8 @@ already, so no plan changes.
 ## Performance
 
 4a adds a context read per memoize call. 4b computes nothing unless the bound
-is set; with it set, the partition counts are the ones the rules compute anyway.
+is set; with it set, each counted call partitions the reference's final plans in
+a fresh properties map.
 6 moves code and changes error construction only.
 
 ## Test plan
@@ -129,8 +130,11 @@ is set; with it set, the partition counts are the ones the rules compute anyway.
   plans; the swapped firing of a non-counting rule adds nothing (this replaces the
   cumulative-swap pin); the count is not computed without a bound.
   `TestMaxNumMatchesPerRuleCallCountsPlanPartitions`: the SQL option trips at 2 on
-  a filter over a two-index table and plans unset or at 1000.
+  a filter over a two-index table and plans unset or at 1000;
+  `TestFDB_MaxNumMatchesPerRuleCall_CountsPlanPartitions` through the driver: 54F02
+  at 2, rows and one EXPLAIN unset and at 1000, each leg on its own plan cache.
 - 6 `TestTranslateExecErrorMapsExecutorFailures` (code and message per kind, and
-  the range-bound, enum and UUID errors); the analyzer's unit test and its red run
-  against an executor file importing `api`; the existing SQLSTATE tests in the
-  sqltest packages.
+  the range-bound, enum and UUID errors); `TestFDB_RangeTableFunction` (XXXXX) and
+  `TestFDB_VectorAssignmentDimensionMismatchIs22000` end to end; the analyzer's unit
+  test and its red run against an executor file importing `api`; the existing
+  SQLSTATE tests in the sqltest packages.

@@ -2,7 +2,8 @@ package executor
 
 // ExecutionError is an execution failure whose Kind the relational layer maps
 // to an SQLSTATE, as Java's ExceptionUtil maps a SemanticException's ErrorCode.
-// Failures with a values error of their own (range bounds, enum, UUID) return it.
+// Failures with a values error of their own (range bounds, enum, UUID) return it;
+// a global arm for NonNullableFieldError would recode its other producers.
 type ExecutionError struct {
 	Kind    ExecutionErrorKind
 	Message string

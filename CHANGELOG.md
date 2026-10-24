@@ -58,7 +58,8 @@ Each is described in full under Compatibility or Changed below.
   `core/query` packages (#836). `keyspace.FDBResolver` is removed. The executor's
   `api.ResultSet` adapter (`RecordLayerResultSet`, `ColumnDef`, `NewResultSetMetaData`) moved
   to `pkg/relational/core/resultset`, and the executor returns `executor.ExecutionError` kinds
-  where it returned SQLSTATE `api.Error`s; SQL sees the same codes and messages (RFC-274).
+  where it returned SQLSTATE `api.Error`s; SQL sees the same SQLSTATE and `api.Error` message,
+  without the executor's wrapping context in the error string (RFC-274).
 - **frl:** `frl` is a package of the root module; retiring the nested module requires
   the post-publication retraction procedure in `RELEASE.md`.
 

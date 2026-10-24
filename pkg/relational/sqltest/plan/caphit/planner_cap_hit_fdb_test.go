@@ -120,6 +120,18 @@ func TestFDB_PlannerCapHit_SelectPathSQLSTATE(t *testing.T) {
 	testkit.AssertPlannerCapHit(t, err)
 }
 
+// capHitOpen opens capHitDB's database through a new connector, which has its
+// own plan cache.
+func capHitOpen(t *testing.T, tag string) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper("/FRL/capacity_"+tag)+"?cluster_file="+testkit.ClusterFile()+"&schema=MAIN")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return db
+}
+
 // matchesConn pins a connection with MAX_NUM_MATCHES_PER_RULE_CALL set to bound.
 func matchesConn(t *testing.T, db *sql.DB, bound int) *sql.Conn {
 	t.Helper()
@@ -130,11 +142,8 @@ func matchesConn(t *testing.T, db *sql.DB, bound int) *sql.Conn {
 	})
 }
 
-// TestFDB_MaxNumMatchesPerRuleCall_CountsPlanPartitions bounds the bindings
-// Java's matchers make per rule call. The select over ORDERS implements over a
-// reference holding the scan and each index's plan, one plan partition apiece, so
-// a bound of 2 fails with 54F02; unset, or at 1000, the query runs with the same
-// plan.
+// TestFDB_MaxNumMatchesPerRuleCall_CountsPlanPartitions: each index's plan is
+// its own plan partition, so bound 2 trips. Each leg opens its own plan cache.
 func TestFDB_MaxNumMatchesPerRuleCall_CountsPlanPartitions(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -144,7 +153,7 @@ func TestFDB_MaxNumMatchesPerRuleCall_CountsPlanPartitions(t *testing.T) {
 	}
 	const query = "SELECT id FROM ORDERS WHERE amount + 0 = 5"
 
-	rows, err := matchesConn(t, db, 2).QueryContext(ctx, query)
+	rows, err := matchesConn(t, capHitOpen(t, "matches"), 2).QueryContext(ctx, query)
 	if rows != nil {
 		rows.Close()
 	}
@@ -153,8 +162,8 @@ func TestFDB_MaxNumMatchesPerRuleCall_CountsPlanPartitions(t *testing.T) {
 	}
 	testkit.RequireSQLSTATE(t, err, api.ErrCodePlanComplexityLimitReached)
 
-	unbounded := testkit.PinEmbeddedConn(t, db, func(*embedded.EmbeddedConnection) {})
-	generous := matchesConn(t, db, 1000)
+	unbounded := testkit.PinEmbeddedConn(t, capHitOpen(t, "matches"), func(*embedded.EmbeddedConnection) {})
+	generous := matchesConn(t, capHitOpen(t, "matches"), 1000)
 	var plans []string
 	for _, conn := range []*sql.Conn{unbounded, generous} {
 		var id int64

@@ -177,6 +177,15 @@ func TestResultSet_ByName(t *testing.T) {
 	if !active {
 		t.Error("ACTIVE = false, want true")
 	}
+
+	// Names are matched case-insensitively, as JDBC's findColumn.
+	if lower, err := rs.LongByName("price"); err != nil || lower != 42 {
+		t.Errorf("LongByName(price) = %d, %v; want 42", lower, err)
+	}
+	var apiErr *api.Error
+	if _, err := rs.LongByName("NONEXISTENT"); !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeInvalidColumnReference {
+		t.Errorf("LongByName(NONEXISTENT) error = %v, want %s", err, api.ErrCodeInvalidColumnReference)
+	}
 }
 
 func TestResultSet_WasNull(t *testing.T) {
@@ -830,10 +839,10 @@ func TestResultSet_PositionalMisalignedIsLoud(t *testing.T) {
 // MemorySortContinuation minted by a PRE-RFC-229 binary does when resumed by a
 // post-229 one, over a nested projection.
 //
-// WHY THE TOKEN CARRIES NAMES AT ALL. encodeSortedRecords serializes the
-// buffered row's positional slot NAMES into the token (continuation.go, the
-// payload's "n" field) and decodeSortedRecords rebuilds the executor.PositionalRow type
-// from them (positionalTypeFromNames). Those names are
+// WHY THE TOKEN CARRIES NAMES AT ALL. The executor's encodeSortedRecords
+// serializes the buffered row's positional slot NAMES into the token
+// (executor/continuation.go, the payload's "n" field) and decodeSortedRecords
+// rebuilds the executor.PositionalRow type from them (positionalTypeFromNames). Those names are
 // values.ProjectionColumnName's output, which RFC-229 §2.3 changed for a nested
 // projection: `SELECT n.sk, n.co ORDER BY ...` wrote ["N","N"] before and
 // ["N.SK","N.CO"] after. A token therefore outlives the naming rule that minted

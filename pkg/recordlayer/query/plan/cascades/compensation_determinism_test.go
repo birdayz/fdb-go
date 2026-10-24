@@ -427,6 +427,28 @@ func (*oneBindingStubMatcher) BindMatches(outer *matching.PlannerBindings, _ any
 	return []*matching.PlannerBindings{outer}
 }
 
+// orderSensitiveStubRule binds once on twoQuantifierCapSelect's own order and
+// three times on its swapped order.
+type orderSensitiveStubRule struct{}
+
+func (*orderSensitiveStubRule) Matcher() matching.BindingMatcher { return &orderSensitiveStubMatcher{} }
+func (*orderSensitiveStubRule) OnMatch(*ExpressionRuleCall)      {}
+
+type orderSensitiveStubMatcher struct{}
+
+func (*orderSensitiveStubMatcher) RootType() string { return "any" }
+func (*orderSensitiveStubMatcher) BindMatches(outer *matching.PlannerBindings, in any) []*matching.PlannerBindings {
+	sel, ok := in.(*expressions.SelectExpression)
+	if !ok {
+		return nil
+	}
+	first := sel.GetQuantifiers()[0].GetRangesOver().Get()
+	if scan, ok := first.(*expressions.FullUnorderedScanExpression); ok && scan.GetRecordTypes()[0] == "T" {
+		return []*matching.PlannerBindings{outer}
+	}
+	return []*matching.PlannerBindings{outer, outer, outer}
+}
+
 // twoQuantifierCapSelect is a SELECT over two ForEach quantifiers, the shape the
 // planner also fires with its quantifiers swapped.
 func twoQuantifierCapSelect(t *testing.T) *expressions.SelectExpression {
@@ -479,6 +501,19 @@ func TestPlannerCapTrips(t *testing.T) {
 		task.Run(plannerTestContext(), p)
 		if p.capErr != nil {
 			t.Fatalf("2 primary bindings under cap 2 must not trip, got %v", p.capErr)
+		}
+	})
+
+	// The swapped firing binds 3 times, past the bound, and still adds nothing.
+	t.Run("swapped_firing_over_the_bound_is_not_counted", func(t *testing.T) {
+		t.Parallel()
+		sel := twoQuantifierCapSelect(t)
+		p := NewPlanner(nil, nil)
+		p.MaxNumMatchesPerRuleCall = 2
+		task := &TransformExprTask{Phase: PhasePlanning, Ref: expressions.InitialOf(sel), Expr: sel, Rule: &orderSensitiveStubRule{}}
+		task.Run(plannerTestContext(), p)
+		if p.capErr != nil {
+			t.Fatalf("1 primary binding under cap 2 must not trip on 3 swapped ones, got %v", p.capErr)
 		}
 	})
 
