@@ -397,8 +397,8 @@ func parseGetKeyReply(data []byte) (key []byte, orEqual bool, offset int32, pena
 	}
 	// Inline LoadBalancedReply.error: the SS delivers wrong_shard_server etc. for
 	// reads through this field, not the ErrorOr root. RFC-010 #1.
-	if ferr := wire.ReadInlineReplyError(&r, types.GetKeyReplySlotError); ferr != nil {
-		return nil, false, 0, penalty, ferr
+	if reply.HasError {
+		return nil, false, 0, penalty, &wire.FDBError{Code: int(reply.Error.ErrorCode)}
 	}
 	// Navigate into the KeySelector nested struct to extract all three fields.
 	selR, selErr := r.ReadNestedReader(types.GetKeyReplySlotSel)
@@ -1290,8 +1290,8 @@ func parseGetKeyValuesReply(data []byte) ([]KeyValue, bool, float64, error) {
 	}
 	// Inline LoadBalancedReply.error: the SS delivers wrong_shard_server etc. for
 	// reads through this field, not the ErrorOr root. RFC-010 #1.
-	if ferr := wire.ReadInlineReplyError(&r, types.GetKeyValuesReplySlotError); ferr != nil {
-		return nil, false, reply.Penalty, ferr
+	if reply.HasError {
+		return nil, false, reply.Penalty, &wire.FDBError{Code: int(reply.Error.ErrorCode)}
 	}
 
 	kvs, err := types.ParseKeyValueRefStringVector(reply.Data)
@@ -1353,10 +1353,9 @@ func parseGetValueReply(data []byte) ([]byte, float64, error) {
 		return nil, -1.0, fmt.Errorf("GetValue: %w", err)
 	}
 	// Inline LoadBalancedReply.error: the SS delivers wrong_shard_server etc. for
-	// reads through this field, not the ErrorOr root. Decoded from the nested
-	// Error table. RFC-010 #1.
-	if ferr := wire.ReadInlineReplyError(&r, types.GetValueReplySlotError); ferr != nil {
-		return nil, reply.Penalty, ferr
+	// reads through this field, not the ErrorOr root. RFC-010 #1.
+	if reply.HasError {
+		return nil, reply.Penalty, &wire.FDBError{Code: int(reply.Error.ErrorCode)}
 	}
 	if !reply.HasValue {
 		return nil, reply.Penalty, nil // key not found

@@ -173,7 +173,10 @@ never reject a reply C++ writes.
 
 ## Wire compatibility and performance
 
-No bytes change; only malformed input decodes differently. The budget is one stack value
+No bytes the client sends change; only malformed input decodes differently. The generated
+encoders of the two retyped Optional tables (`NetworkAddressList.SecondaryAddress`,
+`CommitTransactionRef` `spanContext`) now write a nested table, as C++ does, where they
+wrote a byte string; the client sets neither. The budget is one stack value
 per decode and one subtraction per vector. The fault record costs a store on the
 out-of-bounds path and one check per decoded table. The decode paths the allocation
 tests pin stay allocation-free.

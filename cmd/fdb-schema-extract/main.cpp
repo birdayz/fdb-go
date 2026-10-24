@@ -1519,8 +1519,15 @@ void generateTestVectors(const char* outDir) {
         r.ssVersionVectorDelta.setVersion(Tag(0, 7), 0x2233445500LL);
         comma(); emitReplyVector(out, "GetReadVersionReply_version_vector", r);
     }
-    // A tagThrottleInfo vector is not regen-stable: ClientTagThrottleLimits writes
-    // expiration - now() (TagThrottle.actor.h:215-226).
+    {
+        // ClientTagThrottleLimits writes expiration - now() (TagThrottle.actor.h:215-226);
+        // NO_EXPIRATION (DBL_MAX) minus any now() is DBL_MAX, so these bytes are regen-stable.
+        GetReadVersionReply r;
+        r.version = 0x3344556677LL;
+        r.tagThrottleInfo["tag_a"_sr] =
+            ClientTagThrottleLimits(12.5, ClientTagThrottleLimits::NO_EXPIRATION);
+        comma(); emitReplyVector(out, "GetReadVersionReply_tag_throttle", r);
+    }
 
     // --- Read replies carrying the inline LoadBalancedReply.error ---
     {

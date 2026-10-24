@@ -93,8 +93,8 @@ func TestReadErrorOr_ZeroFieldSuccess(t *testing.T) {
 // (Optional<Error>) that storage read replies carry (RFC-010 #1). An ErrorOrError
 // buffer's root object is byte-identical to that inline field: a uint8 present-tag
 // at slot 0 and a RelativeOffset to a nested Error table at slot 1. The real
-// replies put the same structure at slot 1/2 (the generated SlotError constant);
-// this exercises the nested-Error-table decode the generated reply.Error mis-handles.
+// replies put the same structure at slot 1/2 (the generated SlotError constant),
+// which the generated reply decoders read as the same nested Error table.
 func TestReadInlineReplyError(t *testing.T) {
 	t.Parallel()
 	for _, code := range []uint16{1001, 1009, 1037, 0xFFFF} {

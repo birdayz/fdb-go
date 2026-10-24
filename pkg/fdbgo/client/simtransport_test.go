@@ -236,8 +236,8 @@ const injectPenalty = 1.0
 // 7.3.77; Reply{}; reply.error=err; reply.penalty=penalty; promise.send(reply)).
 // The frame is type-agnostic: the inline-error slots (Penalty@0, HasError@1,
 // Error@2) are identical across GetValueReply / GetKeyReply / GetKeyValuesReply, so
-// one frame is decoded identically by all three production parsers via
-// wire.ReadInlineReplyError (readpath.go:341/948/1007). See
+// one frame is decoded identically by all three production parsers through the
+// generated reply's HasError/Error. See
 // types.MarshalErrorOrInlineError + TestMarshalErrorOrInlineError_RoundTrip.
 func inlineErrorReply(code uint16, penalty float64) []byte {
 	return types.MarshalErrorOrInlineError(code, penalty)

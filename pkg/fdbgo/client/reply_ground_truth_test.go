@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/hex"
 	"encoding/json"
+	"math"
 	"os"
 	"testing"
 
@@ -411,6 +412,17 @@ var replyAsserters = map[string]func(t *testing.T, data []byte){
 		version, _, _, _, _, _, err := parseGetReadVersionReply(data)
 		if err != nil || version != 0x2233445566 {
 			t.Fatalf("parseGetReadVersionReply: version %#x, %v", version, err)
+		}
+	},
+	"GetReadVersionReply_tag_throttle": func(t *testing.T, data []byte) {
+		version, _, _, _, throttles, _, err := parseGetReadVersionReply(data)
+		if err != nil || version != 0x3344556677 {
+			t.Fatalf("parseGetReadVersionReply: version %#x, %v", version, err)
+		}
+		// C++ sends NO_EXPIRATION (DBL_MAX) minus now(), which is DBL_MAX.
+		if len(throttles) != 1 || string(throttles[0].Tag) != "tag_a" ||
+			throttles[0].Limits.TpsRate != 12.5 || throttles[0].Limits.Duration != math.MaxFloat64 {
+			t.Fatalf("tagThrottleInfo = %+v, want tag_a at 12.5 tps with no expiration", throttles)
 		}
 	},
 	"GetValueReply_error": func(t *testing.T, data []byte) {

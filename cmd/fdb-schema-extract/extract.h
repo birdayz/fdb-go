@@ -367,22 +367,13 @@ template <class T> bool optionalInnerIsTable() {
     return false;
 }
 
-// Optional<scalar-T> introspection. Optional<UID> (the debugID on requests) is a flatbuffers
-// UNION whose single alternative is the fixed-size SCALAR UID (scalar_traits<UID>,
-// flow/IRandom.h => 16 bytes; use_indirection==false), so it serializes as a bare 16-byte
-// scalar behind the union RelativeOffset (SaveAlternative, flat_buffers.h:848), NOT a
-// length-prefixed byte vector. This captures a SCALAR inner so the codegen emits a fixed-size
-// scalar ([16]byte / ReadUID) rather than []byte; struct inners go through optionalInnerGoType
-// or optionalInnerIsTable. NOTE fb_size<Optional<UID>> is the union's RelativeOffset size (4),
-// so the inner scalar's size (16) must be queried separately.
-// An Optional<scalar-T> serializes its inner as a BARE out-of-line value behind the
-// union's RelativeOffset (C++ SaveAlternative non-indirection arm, flat_buffers.h:848),
-// NOT a length-prefixed byte vector. This covers UID (the lone 16-byte fixed-array
-// struct-scalar) AND every arithmetic/enum primitive (Optional<int64>/<Version>/<bool>/…,
-// e.g. ReadOptions.consistencyCheckStartVersion = Optional<Version>). The predicate is the
-// complement of use_indirection for the scalar case: byte-vector inners (StringRef/KeyRef/
-// Value/Standalone) are NOT arithmetic/enum/UID → they correctly stay []byte; struct inners
-// (Tag/StorageMetadataType/Error/ReadOptions) route via optionalInnerGoType, not here.
+// Optional<scalar-T> introspection. An Optional<scalar-T> serializes its inner as a BARE
+// out-of-line value behind the union's RelativeOffset (SaveAlternative non-indirection arm,
+// flat_buffers.h:848), NOT a length-prefixed byte vector: UID (16 bytes, the debugID on
+// requests; ReadUID) and every arithmetic/enum primitive (e.g. Optional<Version>). Byte-vector
+// inners stay []byte. Struct inners go through optionalInnerGoType when registered, else
+// optionalInnerIsTable (presence only). fb_size<Optional<UID>> is the offset's size (4), so the
+// inner scalar's size (16) must be queried separately.
 template <class T> bool optionalInnerIsScalar() {
     if constexpr (optional_inner_t<T>::is) {
         using Inner = typename optional_inner_t<T>::type;

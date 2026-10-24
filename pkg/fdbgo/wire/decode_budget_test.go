@@ -68,16 +68,38 @@ func TestReaderRecordsFieldOutsideBuffer(t *testing.T) {
 		t.Fatalf("well-formed reads: %v", err)
 	}
 
-	cases := []struct {
+	type readCase struct {
 		name string
 		edit func(d []byte)
 		read func(r *Reader)
 		slot int
-	}{
-		{"scalar", func(d []byte) { binary.LittleEndian.PutUint16(d[28:], 0xFFF0) }, func(r *Reader) { r.ReadUint32(0) }, 0},
-		{"bytes target", func(d []byte) { binary.LittleEndian.PutUint32(d[20:], 1<<20) }, func(r *Reader) { r.ReadBytes(0) }, 0},
-		{"bare out-of-line scalar", func(d []byte) { binary.LittleEndian.PutUint32(d[20:], 1<<20) }, func(r *Reader) { r.ReadRelOffUint64(0) }, 0},
+	}
+	fieldPast := func(d []byte) { binary.LittleEndian.PutUint16(d[28:], 0xFFF0) } // slot 0 past the object
+	targetPast := func(d []byte) { binary.LittleEndian.PutUint32(d[20:], 1<<20) } // its RelativeOffset past the buffer
+	cases := []readCase{
 		{"vtable longer than the buffer", func(d []byte) { binary.LittleEndian.PutUint16(d[24:], 400) }, func(r *Reader) { r.FieldPresent(100) }, 100},
+	}
+	// Every leaf read, with the field outside the object.
+	leaves := map[string]func(r *Reader){
+		"ReadInt8": func(r *Reader) { r.ReadInt8(0) }, "ReadUint8": func(r *Reader) { r.ReadUint8(0) },
+		"ReadInt16": func(r *Reader) { r.ReadInt16(0) }, "ReadUint16": func(r *Reader) { r.ReadUint16(0) },
+		"ReadInt32": func(r *Reader) { r.ReadInt32(0) }, "ReadUint32": func(r *Reader) { r.ReadUint32(0) },
+		"ReadInt64": func(r *Reader) { r.ReadInt64(0) }, "ReadUint64": func(r *Reader) { r.ReadUint64(0) },
+		"ReadFloat64": func(r *Reader) { r.ReadFloat64(0) }, "ReadBool": func(r *Reader) { r.ReadBool(0) },
+		"ReadUID": func(r *Reader) { r.ReadUID(0) }, "ReadUIDPair": func(r *Reader) { r.ReadUIDPair(0) },
+	}
+	// Reads through a RelativeOffset fail both with the field and with its target outside.
+	outOfLine := map[string]func(r *Reader){
+		"ReadBytes": func(r *Reader) { r.ReadBytes(0) }, "ReadVectorInt32": func(r *Reader) { r.ReadVectorInt32(0) },
+		"ReadVectorUint64": func(r *Reader) { r.ReadVectorUint64(0) }, "ReadRelOffRaw": func(r *Reader) { r.ReadRelOffRaw(0, 4) },
+		"ReadRelOffUint32": func(r *Reader) { r.ReadRelOffUint32(0) }, "ReadRelOffUint64": func(r *Reader) { r.ReadRelOffUint64(0) },
+		"ReadIPv4": func(r *Reader) { r.ReadIPv4(0) },
+	}
+	for name, read := range leaves {
+		cases = append(cases, readCase{name, fieldPast, read, 0})
+	}
+	for name, read := range outOfLine {
+		cases = append(cases, readCase{name + " field", fieldPast, read, 0}, readCase{name + " target", targetPast, read, 0})
 	}
 	for _, tc := range cases {
 		d := scalarMessage(2)

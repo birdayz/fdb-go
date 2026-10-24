@@ -23,6 +23,17 @@ func moveSlot(t *testing.T, d []byte, obj, slot int) {
 	binary.LittleEndian.PutUint16(d[entry:], 0xFFF0)
 }
 
+// moveTarget points the RelativeOffset in slot of the object at obj past the end of
+// the buffer, leaving the vtable, which identical objects share, untouched.
+func moveTarget(t *testing.T, d []byte, obj, slot int) {
+	t.Helper()
+	field := binary.LittleEndian.Uint16(d[vtableAt(d, obj)+4+2*slot:])
+	if field < 4 {
+		t.Fatalf("object at %d: slot %d absent", obj, slot)
+	}
+	binary.LittleEndian.PutUint32(d[obj+int(field):], uint32(len(d)))
+}
+
 // errorOrReply is the position of the reply inside an ErrorOr reply payload.
 func errorOrReply(t *testing.T, d []byte) int {
 	t.Helper()
@@ -36,6 +47,11 @@ func errorOrReply(t *testing.T, d []byte) int {
 // slot2Endpoint is the position of the first server's slot-2 Endpoint in a
 // GetKeyServerLocationsReply.
 func slot2Endpoint(t *testing.T, d []byte) int {
+	t.Helper()
+	return slot2EndpointReader(t, d).ObjectPos()
+}
+
+func slot2EndpointReader(t *testing.T, d []byte) *wire.Reader {
 	t.Helper()
 	r, err := wire.ReadErrorOr(d)
 	if err != nil {
@@ -57,7 +73,21 @@ func slot2Endpoint(t *testing.T, d []byte) int {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return ep.ObjectPos()
+	return ep
+}
+
+// slot2EndpointIP is the position of that endpoint's primary IPAddress.
+func slot2EndpointIP(t *testing.T, d []byte) int {
+	t.Helper()
+	r := slot2EndpointReader(t, d)
+	for _, slot := range []int{types.EndpointSlotAddresses, types.NetworkAddressListSlotAddress, types.NetworkAddressSlotIp} {
+		next, err := r.ReadNestedReader(slot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r = next
+	}
+	return r.ObjectPos()
 }
 
 // Each reply parser fails with a DecodeError when one present field of its reply
@@ -137,6 +167,11 @@ func TestReplyParsersFailOnFieldPastBuffer(t *testing.T) {
 			func(d []byte) (int, int) { return slot2Endpoint(t, d), types.EndpointSlotAddresses },
 			func(d []byte) error { _, err := parseGetKeyServerLocationsReply(d); return err },
 		},
+		{
+			"storage server endpoint token", locationsReplyVector(t),
+			func(d []byte) (int, int) { return slot2Endpoint(t, d), types.EndpointSlotToken },
+			func(d []byte) error { _, err := parseGetKeyServerLocationsReply(d); return err },
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -154,6 +189,17 @@ func TestReplyParsersFailOnFieldPastBuffer(t *testing.T) {
 			}
 		})
 	}
+	// An IPAddress shares its vtable with the ErrorOr root, so its value moves by target.
+	t.Run("storage server IPv4 address", func(t *testing.T) {
+		t.Parallel()
+		d := locationsReplyVector(t)
+		moveTarget(t, d, slot2EndpointIP(t, d), types.IPAddressSlotAddr+1)
+		_, err := parseGetKeyServerLocationsReply(d)
+		var decodeErr *wire.DecodeError
+		if !errors.As(err, &decodeErr) {
+			t.Fatalf("got %v; want a DecodeError", err)
+		}
+	})
 }
 
 // aliasedLocationsReply has n results pointing at one pair of m servers, all the vector's

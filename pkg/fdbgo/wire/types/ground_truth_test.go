@@ -387,13 +387,11 @@ func encodeVTable(vt wire.VTable) []byte {
 //
 // The request vectors above pin TransactionTagCount byte-exactly, but its
 // sibling TransactionTagThrottle is structurally different — its second slot is
-// a nested OBJECT (ClientTagThrottleLimits), not a scalar — and no emitted C++
-// vector carries a non-empty tagThrottleInfo, so the reply direction has no
-// byte-exact golden. That direction is the one production actually parses, so
-// leaving it entirely unpinned would repeat the failure this whole area was
-// fixed for: a decoder green only against itself.
+// a nested OBJECT (ClientTagThrottleLimits), not a scalar. The one C++ vector with
+// a non-empty tagThrottleInfo (GetReadVersionReply_tag_throttle, decoded in the
+// client's reply ground truth) uses NO_EXPIRATION; this pins the layouts directly.
 //
-// What makes a pin possible anyway: a serialized message carries the vtables of
+// The pin works even from an empty map: a serialized message carries the vtables of
 // its whole type closure regardless of which fields are populated, so the C++
 // bytes for GetReadVersionReply contain the exact vtables of both types even
 // though its map is empty. A vtable IS the layout — object size and per-slot

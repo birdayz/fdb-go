@@ -35,8 +35,8 @@ func plainDial(ctx context.Context, network, addr string) (net.Conn, error) {
 // that does not decode, or bytes left over as a partial frame when recording
 // stops. A test must treat any problem as a failure. "Decodes" means the
 // generated decoder accepts the body and re-encoding what it decoded gives the
-// same bytes back: the decoder reads an out-of-bounds or unreadable field as
-// absent, so the re-encoding is what catches a malformed field of a known kind.
+// same bytes back: the decoder rejects a field outside the buffer, and the
+// re-encoding catches bytes the decoder does not read.
 //
 // Lock order: a recordingConn's mu, then the recorder's mu. A connection's
 // parser holds its own mu while it reports frames (so one connection's frames
@@ -306,9 +306,8 @@ func (r *sendRecorder) priorNonStorageWrites(target transport.UID) ([]string, er
 
 // validateRecordedPing decodes C++ 7.3.77's PingRequest (file identifier
 // 4707015, one nested ReplyPromise<Void> with an inline UID). As with other
-// recorded requests, re-encoding catches fields the permissive Reader treats as
-// absent. The validator's padded unit case accepts zero padding, which the C++
-// object reader ignores. This validation policy accepts only that zero padding, not
+// recorded requests, re-encoding catches bytes the decoder does not read. The
+// validator's padded unit case accepts zero padding, which the C++ object reader ignores. This validation policy accepts only that zero padding, not
 // every C++-legal layout. frame rejects embedded protocol prefixes first:
 // network delivery uses AssumeVersion and does not consume a version header.
 func validateRecordedPing(body []byte) (err error) {
