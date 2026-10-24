@@ -1,0 +1,8 @@
+go version go1.27.3 linux/amd64
+aca1cefc1f2c24ab80cff2a08c556b74d1408df4b7c10a8105394e51e1a63266  /var/tmp/netg-bench/bin/clientbench-go
+6fe47a94e623feee8706dfac4c4577710431b050901e77d10d7b66a884b5ada1  /var/tmp/netg-fdb/fdbserver
+FoundationDB 7.3 (v7.3.77)
+source version 3ea44ce1d9003ad095e408039e1f755c319c4dfb
+7.2.6-arch2-1
+Model name:                              AMD Ryzen 9 3900X 12-Core Processor
+54566f2a4125ee054d7343ff3721dbd3bc9fd31b

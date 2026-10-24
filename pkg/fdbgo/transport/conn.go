@@ -242,6 +242,9 @@ type Conn struct {
 	turnDelayLimit time.Duration // the longest delay a sender waits out itself
 	turns          atomic.Int64  // turns taken, so tests can tell a sender wrote its batch
 
+	// ng is set when the experimental network goroutine owns this connection's I/O.
+	ng *ngConn
+
 	// Debug tracing (set before first use).
 	debugFrames bool
 	debugWriter io.Writer
@@ -562,6 +565,15 @@ func dialWith(ctx context.Context, addr string, dialFn DialFunc, tlsConfig *tls.
 	// (connectionMonitor + TCP keepalive handle liveness from here).
 	_ = netConn.SetDeadline(time.Time{})
 
+	if netgEnabled && tlsConfig == nil {
+		c.loopWG.Add(2) // the network goroutine's registration + connectionMonitor
+		if netgRegister(c) {
+			go c.connectionMonitor()
+			return c, nil
+		}
+		c.loopWG.Add(-2)
+	}
+
 	if c.minCoalesce > 0 || c.maxCoalesce > 0 {
 		if t, err := hrtimer.New(); err == nil {
 			c.coalesce = t // closed by failConnection and writeLoop
@@ -680,6 +692,10 @@ func putReplyChannelImpl(ch chan Response) {
 // SendFrame writes a raw frame and flushes. Returns once the frame is written, or
 // once writeLoop holds whatever a full socket refused, ahead of every later frame.
 func (c *Conn) SendFrame(destToken UID, body []byte) error {
+	if c.ng != nil {
+		_, err := c.ngWrite(c.ctx, destToken, body, false, nil)
+		return err
+	}
 	admission, err := c.beginSend(c.ctx, nil)
 	if err != nil {
 		return err
@@ -722,6 +738,10 @@ func (c *Conn) SendFrame(destToken UID, body []byte) error {
 // The write loop will flush it with the next batch. Used for pipelining:
 // send N frames, then call Flush() (or let the write loop auto-flush).
 func (c *Conn) SendFrameDeferred(destToken UID, body []byte) error {
+	if c.ng != nil {
+		_, err := c.ngWrite(c.ctx, destToken, body, false, nil)
+		return err
+	}
 	admission, err := c.beginSend(c.ctx, nil)
 	if err != nil {
 		return err
@@ -738,6 +758,10 @@ func (c *Conn) SendFrameDeferred(destToken UID, body []byte) error {
 // queued every earlier frame is already written; otherwise it sends a flush
 // marker through the write channel and waits for acknowledgment.
 func (c *Conn) Flush() error {
+	if c.ng != nil {
+		_, err := c.ngWrite(c.ctx, UID{}, nil, true, nil)
+		return err
+	}
 	admission, err := c.beginSend(c.ctx, nil)
 	if err != nil {
 		return err
@@ -998,6 +1022,9 @@ func (c *Conn) Close() error {
 func (c *Conn) failConnection(err error) {
 	c.closeOnce.Do(func() {
 		c.cancel()
+		if c.ng != nil {
+			c.ngClose()
+		}
 		if c.coalesce != nil {
 			// Wakes a writeLoop waiting to write, as cancelling connectionWriter
 			// cancels its delay (FlowTransport.actor.cpp:882-883).
