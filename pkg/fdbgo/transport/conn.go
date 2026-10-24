@@ -1360,7 +1360,9 @@ func (c *Conn) monitorPing() pingOutcome {
 	if reply != nil {
 		defer func() {
 			if !received {
-				reply.Cancel()
+				// Takes a reply published after the wait ended (failAllPending's
+				// teardown when the ctx arm won), so the channel is pooled either way.
+				reply.TakeReadyOrCancel()
 			}
 			reply.Release()
 		}()
@@ -1374,7 +1376,7 @@ func (c *Conn) monitorPing() pingOutcome {
 		select {
 		case <-replyCh:
 			// PING reply arrived — connection alive. C++ :690-695. A teardown
-			// response from failAllPending also lands here; the next wait sees
+			// response from failAllPending can land here; the next wait sees
 			// the cancelled context.
 			received = true
 			timer.Stop()

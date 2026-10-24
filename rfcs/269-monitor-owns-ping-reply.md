@@ -56,9 +56,12 @@ started for it.
 - The monitor's PING wait (the inner loop at `conn.go:1338-1384`) moves into a helper,
   `monitorPing`, which returns one of three outcomes: continue monitoring, stop (context
   cancelled), or dead (frozen bytes). When the handle is non-nil, the helper defers its
-  cleanup: `Cancel` then `Release` if no reply was received, `Release` alone if one was.
-  This is the cleanup the waiter does now (`conn.go:1419-1430`), run on the monitor's own
-  stack. A dropped PING has a nil handle, so no defer is installed and nil is never
+  cleanup: `TakeReadyOrCancel` then `Release` if no reply was received, `Release` alone
+  if one was. This is the cleanup the waiter does now (`conn.go:1419-1430`), run on the
+  monitor's own stack. `TakeReadyOrCancel` (`conn.go:74-92`) takes a reply published after
+  the wait ended, so the channel is pooled on every exit: when `Close` cancels the context
+  before `failAllPending` publishes the teardown response, the ctx arm can win, and a
+  plain `Cancel` would find the token gone and leave the channel to GC. A dropped PING has a nil handle, so no defer is installed and nil is never
   dereferenced; the re-ping exit, reachable only after a drop, has nothing to release.
   With a handle, the defer runs on every exit: reply, context cancellation, frozen
   bytes, and a panic.
@@ -101,8 +104,8 @@ reading the PING from `writeCh`. The tests swap the package `putReplyChannel` se
 observe the ping channel's release, so they run serially, like `reply_pool_test.go`. A
 test context records the ping's reply channel from the monitor's own wait. On every
 path below, the release is a `putReplyChannel` call on that channel: `Release` after a
-received reply, or `Cancel` while the token is still registered. All four fail on the
-reverted code.
+received or taken reply, or a cancel while the token is still registered. All five fail
+on the reverted code.
 
 1. **Close waits for the reply owner.** The test delivers the PING's reply. The seam
    blocks that channel's release until a gate opens, and `Close` runs in a goroutine
@@ -111,47 +114,54 @@ reverted code.
    `Close` returns while it is blocked. The gate opens after a bounded wait, which only
    limits how fast the reverted code is caught; the fixed code cannot fail it, because
    the blocked release is on the monitor, before `loopWG.Done()`.
-2. **Cancellation releases on the monitor.** With the PING outstanding and no reply, the
+2. **Close waits for an outstanding PING's owner.** No reply: `Close`'s own teardown
+   ends the wait, through the reply arm (teardown response) or the ctx arm (then
+   `TakeReadyOrCancel` takes that response or cancels before it is published). Either
+   way the release reaches the seam exactly once, gated as in test 1; the test asserts
+   that `Close` has not returned when the gate opens, returns afterwards, and leaves no
+   registration. Reverted, the waiter releases after `Close` returns, or its `Cancel`
+   finds the token already removed and never reaches the seam.
+3. **Cancellation releases on the monitor.** With the PING outstanding and no reply, the
    test cancels the connection context directly (not `Close`, so `failAllPending` leaves
-   the token registered and `Cancel` must pool the channel). The seam blocks that
+   the token registered and the cancel must pool the channel). The seam blocks that
    release behind a gate. As in test 1, the gate stays closed for a bounded wait for the
    monitor-exit signal; the test asserts that `connectionMonitor` has not returned when
-   the gate opens. `Cancel` holds `pendingMu` inside the seam, so nothing in the test
+   the gate opens. The cancel holds `pendingMu` inside the seam, so nothing in the test
    takes `pendingMu` until the gate is open. Afterwards it asserts that the ping token
    is no longer registered. Reverted, the waiter's `Cancel` blocks and the monitor
    returns within the wait anyway.
-3. **A frozen ping releases before teardown.** No reply and no traffic, so the timeout
+4. **A frozen ping releases before teardown.** No reply and no traffic, so the timeout
    fires. When the seam sees the ping channel's release, it records `IsClosed()`. The
    test asserts that the release happened and that the connection was still open at
    that moment, then that the monitor closed it (`Done()` fires). Reverted,
    `failConnection` runs first and removes the token, so the release comes later (on
    the waiter's receive path) or not at all; either way the test fails, without any
    timing window.
-4. **A panic after the handoff releases before teardown.** The test context panics in
+5. **A panic after the handoff releases before teardown.** The test context panics in
    the monitor's wait after the ping is registered, inside `monitorPing`. The test makes
-   the same assertions as test 3, then checks that `recoverLoop` closed the connection.
+   the same assertions as test 4, then checks that `recoverLoop` closed the connection.
    Reverted, `recoverLoop` tears down while the waiter still holds the reply, so the
    release comes after `IsClosed()` or not at all; if the panic lands on the unjoined
    waiter instead, it is unrecovered and fails the test binary.
-5. Existing pins are adapted to the new return shape:
+6. Existing pins are adapted to the new return shape:
    `TestSendPingWithReply_DropsToNilOnFullWriteCh` and
    `TestAdmissionPingDropsBehindPendingHead` (a nil channel, a nil handle, and no
    registration on drop), `TestHeldOutboxControlPrefixAndPostSealReply` (it receives on
    the returned channel and releases the returned handle as the monitor would), and
    `TestMonitor_DroppedPingRePingsInsteadOfStalling` plus the monitor-death tests
    (unchanged; they drive `connectionMonitor`). `TestPingWaiterCancelsOwnedReply` is
-   replaced by test 2, which drives the monitor rather than the handle.
+   replaced by test 3, which drives the monitor rather than the handle.
    `TestPingRegistrationPanicReleasesReply` keeps its first half, a panic during
    registration that leaves no registration. Its second half (the same connection can
    ping again and the reply completes) receives on the returned channel and releases
    the handle.
-6. Validation: `just test` (the fast lane, with nogo and every dependent target) and
+7. Validation: `just test` (the fast lane, with nogo and every dependent target) and
    `just test-race` (the same set under `-race`), reporting executed versus cached
    targets.
 
 ## Out of scope
 
-- `peer->resetPing` (`FlowTransport.actor.cpp:696-698`) has no Go counterpart; that is a
-  separate gap.
+- `peer->resetPing` (`FlowTransport.actor.cpp:696-698`) has no Go counterpart; TODO.md
+  §0 tracks it.
 - The cold-control outbox worker is already in `loopWG` (`conn.go:575-578`).
 - The idle-connection divergence documented in `connectionMonitor` is unchanged.

@@ -55,8 +55,8 @@ type pingOwnerFixture struct {
 	cancel      context.CancelFunc
 	monitorDone chan struct{}
 	// released receives IsClosed() the first time the PING's reply channel reaches
-	// putReplyChannel: Release after a received reply, or Cancel while the token
-	// is still registered. It is sent on the releasing goroutine.
+	// putReplyChannel: Release after a received or taken reply, or a cancel while
+	// the token is still registered. It is sent on the releasing goroutine.
 	released chan bool
 	gate     chan struct{} // non-nil: that release then blocks until openGate
 	gateOnce sync.Once
@@ -172,6 +172,32 @@ func TestMonitorPingOwner_CloseWaitsForReplyRelease(t *testing.T) {
 	admissionAwait(t, closed, "Close after the PING reply release")
 }
 
+func TestMonitorPingOwner_CloseWaitsForOutstandingPing(t *testing.T) {
+	f := newPingOwnerFixture(t, time.Minute, false, true)
+	token := f.takePing(t)
+	admissionAwait(t, f.ctx.recorded, "the monitor's PING wait")
+
+	// No reply: Close's own teardown ends the wait. Whichever arm wins, the owner
+	// releases the channel once: Release after the teardown response, or
+	// TakeReadyOrCancel taking that response or cancelling before it is published.
+	closed := make(chan struct{})
+	go func() {
+		_ = f.c.Close()
+		close(closed)
+	}()
+	admissionAwait(t, f.released, "release of the outstanding PING reply")
+	select {
+	case <-closed:
+		t.Fatal("Close returned while the outstanding PING's owner was still releasing it")
+	case <-time.After(gateWait):
+	}
+	f.openGate()
+	admissionAwait(t, closed, "Close after the PING reply release")
+	if f.c.HasPendingReply(token) {
+		t.Fatal("Close left the PING's reply registered")
+	}
+}
+
 func TestMonitorPingOwner_CancellationReleasesOnMonitor(t *testing.T) {
 	f := newPingOwnerFixture(t, time.Minute, false, true)
 	token := f.takePing(t)
@@ -179,11 +205,11 @@ func TestMonitorPingOwner_CancellationReleasesOnMonitor(t *testing.T) {
 		t.Fatal("positive control: the PING's reply token is not registered")
 	}
 
-	// Cancel without failConnection, so the token stays registered and the owner's
-	// Cancel must remove it (and pool the channel, which reaches the seam).
+	// Cancel without failConnection, so the token stays registered and the owner
+	// must cancel it (pooling the channel, which reaches the seam).
 	f.cancel()
 	admissionAwait(t, f.released, "release of the cancelled PING reply")
-	// The blocked Cancel holds pendingMu: touch nothing that takes it until open.
+	// The blocked cancel holds pendingMu: touch nothing that takes it until open.
 	select {
 	case <-f.monitorDone:
 		t.Fatal("connectionMonitor returned while its PING reply was still being released")
