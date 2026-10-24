@@ -2186,9 +2186,9 @@ func TestGoToProtoValue_DoubleToIntRejects22000(t *testing.T) {
 	t.Parallel()
 	typed := (&demopb.TypedRecord{}).ProtoReflect().Descriptor()
 	_, err := goToProtoValue(typed.Fields().ByName("val_int64"), float64(20.0))
-	var execErr *ExecutionError
-	if !errors.As(err, &execErr) || execErr.Kind != ExecIncompatibleType {
-		t.Fatalf("float64 → BIGINT: want ExecIncompatibleType (22000), got %v", err)
+	var mismatch *values.ScalarTypeMismatchError
+	if !errors.As(err, &mismatch) {
+		t.Fatalf("float64 → BIGINT: want ScalarTypeMismatchError (22000), got %v", err)
 	}
 }
 
@@ -2199,9 +2199,9 @@ func TestGoToProtoValue_StringToIntRejects22000(t *testing.T) {
 	t.Parallel()
 	typed := (&demopb.TypedRecord{}).ProtoReflect().Descriptor()
 	_, err := goToProtoValue(typed.Fields().ByName("val_int64"), "nope")
-	var execErr *ExecutionError
-	if !errors.As(err, &execErr) || execErr.Kind != ExecIncompatibleType {
-		t.Fatalf("string → BIGINT: want ExecIncompatibleType (22000), got %v", err)
+	var mismatch *values.ScalarTypeMismatchError
+	if !errors.As(err, &mismatch) {
+		t.Fatalf("string → BIGINT: want ScalarTypeMismatchError (22000), got %v", err)
 	}
 }
 

@@ -4470,7 +4470,7 @@ func goToProtoScalarValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.
 			if target, ok := values.FieldTypeForProtoField(fd).(*values.VectorType); ok {
 				_, payload, stride, valid := vectorcodec.Payload(b)
 				if !valid || stride*8 != target.Precision || len(payload) != target.Dimensions*stride {
-					return protoreflect.Value{}, &ExecutionError{Kind: ExecIncompatibleType, Message: "Vector precision or dimensions do not match the target column"}
+					return protoreflect.Value{}, &values.ScalarTypeMismatchError{Message: "Vector precision or dimensions do not match the target column"}
 				}
 			}
 			return protoreflect.ValueOfBytes(b), nil
@@ -4549,15 +4549,14 @@ func goToProtoScalarValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.
 	return protoreflect.Value{}, errIncompatibleAssignment()
 }
 
-// incompatibleTypef is an ExecIncompatibleType failure with a formatted message.
+// incompatibleTypef is an incompatible assignment (22000) with a formatted message.
 func incompatibleTypef(format string, args ...any) error {
-	return &ExecutionError{Kind: ExecIncompatibleType, Message: fmt.Sprintf(format, args...)}
+	return &values.ScalarTypeMismatchError{Message: fmt.Sprintf(format, args...)}
 }
 
-// errIncompatibleAssignment is Java's PromoteValue rejection, verbatim.
+// errIncompatibleAssignment is Java's PromoteValue rejection, verbatim (22000).
 func errIncompatibleAssignment() error {
-	return &ExecutionError{
-		Kind:    ExecIncompatibleType,
+	return &values.ScalarTypeMismatchError{
 		Message: "A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable.",
 	}
 }

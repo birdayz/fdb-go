@@ -434,6 +434,13 @@ type orderSensitiveStubRule struct{}
 func (*orderSensitiveStubRule) Matcher() matching.BindingMatcher { return &orderSensitiveStubMatcher{} }
 func (*orderSensitiveStubRule) OnMatch(*ExpressionRuleCall)      {}
 
+type orderSensitiveStubImplRule struct{}
+
+func (*orderSensitiveStubImplRule) Matcher() matching.BindingMatcher {
+	return &orderSensitiveStubMatcher{}
+}
+func (*orderSensitiveStubImplRule) OnMatch(*ImplementationRuleCall) {}
+
 type orderSensitiveStubMatcher struct{}
 
 func (*orderSensitiveStubMatcher) RootType() string { return "any" }
@@ -511,6 +518,18 @@ func TestPlannerCapTrips(t *testing.T) {
 		p := NewPlanner(nil, nil)
 		p.MaxNumMatchesPerRuleCall = 2
 		task := &TransformExprTask{Phase: PhasePlanning, Ref: expressions.InitialOf(sel), Expr: sel, Rule: &orderSensitiveStubRule{}}
+		task.Run(plannerTestContext(), p)
+		if p.capErr != nil {
+			t.Fatalf("1 primary binding under cap 2 must not trip on 3 swapped ones, got %v", p.capErr)
+		}
+	})
+
+	t.Run("implementation_swapped_firing_over_the_bound_is_not_counted", func(t *testing.T) {
+		t.Parallel()
+		sel := twoQuantifierCapSelect(t)
+		p := NewPlanner(nil, nil)
+		p.MaxNumMatchesPerRuleCall = 2
+		task := &TransformImplTask{Phase: PhasePlanning, Ref: expressions.InitialOf(sel), Expr: sel, Rule: &orderSensitiveStubImplRule{}}
 		task.Run(plannerTestContext(), p)
 		if p.capErr != nil {
 			t.Fatalf("1 primary binding under cap 2 must not trip on 3 swapped ones, got %v", p.capErr)

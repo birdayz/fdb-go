@@ -18,7 +18,7 @@ func TestTranslateExecErrorMapsExecutorFailures(t *testing.T) {
 		wantCode    api.ErrorCode
 		wantMessage string
 	}{
-		{&executor.ExecutionError{Kind: executor.ExecIncompatibleType, Message: "incompatible"}, api.ErrCodeCannotConvertType, "incompatible"},
+		{&values.ScalarTypeMismatchError{Message: "incompatible"}, api.ErrCodeCannotConvertType, "incompatible"},
 		{&executor.ExecutionError{Kind: executor.ExecNotNullViolation, Message: "null field"}, api.ErrCodeNotNullViolation, "null field"},
 		{&executor.ExecutionError{Kind: executor.ExecCardinalityViolation, Message: "two rows"}, api.ErrCodeCardinalityViolation, "two rows"},
 		{&executor.ExecutionError{Kind: executor.ExecSubqueryColumnCount, Message: "two columns"}, api.ErrCodeSyntaxError, "two columns"},

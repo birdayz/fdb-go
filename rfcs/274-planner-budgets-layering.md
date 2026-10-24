@@ -88,18 +88,19 @@ already, so no plan changes.
   swapped firing adds nothing, since a set-matcher rule reports both orders. The
   count is computed only when the bound is set; past it the call fails with
   `ErrPlannerRuleMatchCapHit`, observing bound+1.
-- The remaining differences go in DIVERGENCES.md: rules that take the first
-  member where Java binds each (fetch push-downs, DistinctUnion, the IN rules'
-  explode sources, DecorrelateValues, Intersection, RecursiveDfsJoin),
-  PredicateToLogicalUnion (Java fires it per match partition), and Go-only rules.
+- The remaining differences are listed in DIVERGENCES.md ("MaxNumMatchesPerRuleCall
+  counts Java's bindings only for the rules that report them"): rules that take
+  the first member where Java binds each, PredicateToLogicalUnion (Java fires it
+  per match partition), and Go-only rules.
   The `physical_wrapper.go` and task comments are updated.
 
 ### 6
 
-- `executor.ExecutionError{Kind, Message}` replaces the executor's `api` errors;
-  `translateExecError` maps each kind to the SQLSTATE the executor built before
-  (22000, 23502, 21000, 42601, XX000). Range-bound and enum/UUID failures return
-  their `values` errors, mapped there with the same code and message.
+- `executor.ExecutionError{Kind, Message}` replaces the executor's `api` errors
+  that have no record-layer type; `translateExecError` maps each kind to the
+  SQLSTATE the executor built before (23502, 21000, 42601, XX000). Type-mismatch
+  (`values.ScalarTypeMismatchError`, 22000), range-bound and enum/UUID failures
+  return their `values` errors, mapped there with the same code and message.
 - `resultset.go` and its tests move to `pkg/relational/core/resultset`. The
   executor tests that asserted `*api.Error` codes assert `ExecutionError` kinds;
   of the four FDB tests that read rows through the result set, two read the
