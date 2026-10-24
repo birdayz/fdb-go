@@ -51,35 +51,10 @@ type GetKeyServerLocationsRequest struct {
 	Arena            []byte       // slot 9
 }
 
-func (m *GetKeyServerLocationsRequest) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(GetKeyServerLocationsRequestSlotBegin) {
-		m.Begin = r.ReadBytes(GetKeyServerLocationsRequestSlotBegin)
-	}
-	if r.FieldPresent(GetKeyServerLocationsRequestSlotEnd) && r.ReadUint8(GetKeyServerLocationsRequestSlotEnd) > 0 {
-		m.End = r.ReadBytes(GetKeyServerLocationsRequestSlotEnd + 1)
-		m.HasEnd = true
-	}
-	if r.FieldPresent(GetKeyServerLocationsRequestSlotLimit) {
-		m.Limit = r.ReadInt32(GetKeyServerLocationsRequestSlotLimit)
-	}
-	if r.FieldPresent(GetKeyServerLocationsRequestSlotReverse) {
-		m.Reverse = r.ReadBool(GetKeyServerLocationsRequestSlotReverse)
-	}
-	if nr, err := r.ReadNestedReader(GetKeyServerLocationsRequestSlotReply); err == nil {
-		m.Reply.UnmarshalFromReader(nr)
-	}
-	if nr, err := r.ReadNestedReader(GetKeyServerLocationsRequestSlotSpanContext); err == nil {
-		m.SpanContext.UnmarshalFromReader(nr)
-	}
-	if nr, err := r.ReadNestedReader(GetKeyServerLocationsRequestSlotTenant); err == nil {
-		m.Tenant.UnmarshalFromReader(nr)
-	}
-	if r.FieldPresent(GetKeyServerLocationsRequestSlotMinTenantVersion) {
-		m.MinTenantVersion = r.ReadInt64(GetKeyServerLocationsRequestSlotMinTenantVersion)
-	}
-	if r.FieldPresent(GetKeyServerLocationsRequestSlotArena) {
-		m.Arena = r.ReadBytes(GetKeyServerLocationsRequestSlotArena)
-	}
+// UnmarshalFromReader decodes m from r; on error m holds a partial decode.
+func (m *GetKeyServerLocationsRequest) UnmarshalFromReader(r *wire.Reader) error {
+	b := wire.NewDecodeBudget(r.RawData())
+	return m.decode(r, &b)
 }
 
 func (m *GetKeyServerLocationsRequest) UnmarshalFDB(data []byte) error {
@@ -87,10 +62,15 @@ func (m *GetKeyServerLocationsRequest) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
+	b := wire.NewDecodeBudget(data)
+	return m.decode(r, &b)
+}
+
+func (m *GetKeyServerLocationsRequest) decode(r *wire.Reader, b *wire.DecodeBudget) error {
 	if r.FieldPresent(GetKeyServerLocationsRequestSlotBegin) {
 		m.Begin = r.ReadBytes(GetKeyServerLocationsRequestSlotBegin)
 	}
-	if r.FieldPresent(GetKeyServerLocationsRequestSlotEnd) && r.ReadUint8(GetKeyServerLocationsRequestSlotEnd) > 0 {
+	if r.FieldPresent(GetKeyServerLocationsRequestSlotEnd) && r.ReadUint8(GetKeyServerLocationsRequestSlotEnd) == 1 && r.FieldPresent(GetKeyServerLocationsRequestSlotEnd+1) {
 		m.End = r.ReadBytes(GetKeyServerLocationsRequestSlotEnd + 1)
 		m.HasEnd = true
 	}
@@ -100,20 +80,41 @@ func (m *GetKeyServerLocationsRequest) UnmarshalFDB(data []byte) error {
 	if r.FieldPresent(GetKeyServerLocationsRequestSlotReverse) {
 		m.Reverse = r.ReadBool(GetKeyServerLocationsRequestSlotReverse)
 	}
-	if nr, err := r.ReadNestedReader(GetKeyServerLocationsRequestSlotReply); err == nil {
-		m.Reply.UnmarshalFromReader(nr)
+	if r.FieldPresent(GetKeyServerLocationsRequestSlotReply) {
+		nr, err := r.ReadNestedReader(GetKeyServerLocationsRequestSlotReply)
+		if err != nil {
+			return &wire.DecodeError{Type: "GetKeyServerLocationsRequest", Field: "Reply", Err: err}
+		}
+		if err := m.Reply.decode(nr, b); err != nil {
+			return err
+		}
 	}
-	if nr, err := r.ReadNestedReader(GetKeyServerLocationsRequestSlotSpanContext); err == nil {
-		m.SpanContext.UnmarshalFromReader(nr)
+	if r.FieldPresent(GetKeyServerLocationsRequestSlotSpanContext) {
+		nr, err := r.ReadNestedReader(GetKeyServerLocationsRequestSlotSpanContext)
+		if err != nil {
+			return &wire.DecodeError{Type: "GetKeyServerLocationsRequest", Field: "SpanContext", Err: err}
+		}
+		if err := m.SpanContext.decode(nr, b); err != nil {
+			return err
+		}
 	}
-	if nr, err := r.ReadNestedReader(GetKeyServerLocationsRequestSlotTenant); err == nil {
-		m.Tenant.UnmarshalFromReader(nr)
+	if r.FieldPresent(GetKeyServerLocationsRequestSlotTenant) {
+		nr, err := r.ReadNestedReader(GetKeyServerLocationsRequestSlotTenant)
+		if err != nil {
+			return &wire.DecodeError{Type: "GetKeyServerLocationsRequest", Field: "Tenant", Err: err}
+		}
+		if err := m.Tenant.decode(nr, b); err != nil {
+			return err
+		}
 	}
 	if r.FieldPresent(GetKeyServerLocationsRequestSlotMinTenantVersion) {
 		m.MinTenantVersion = r.ReadInt64(GetKeyServerLocationsRequestSlotMinTenantVersion)
 	}
 	if r.FieldPresent(GetKeyServerLocationsRequestSlotArena) {
 		m.Arena = r.ReadBytes(GetKeyServerLocationsRequestSlotArena)
+	}
+	if err := r.Err(); err != nil {
+		return &wire.DecodeError{Type: "GetKeyServerLocationsRequest", Err: err}
 	}
 	return nil
 }
@@ -299,21 +300,28 @@ func (m *GetKeyServerLocationsRequest) MarshalFDBPooled(dst []byte) []byte {
 	return buf
 }
 
-// ParseGetKeyServerLocationsRequestVectorFromReader reads a FlatBuffers vector of GetKeyServerLocationsRequest.
-func ParseGetKeyServerLocationsRequestVectorFromReader(r *wire.Reader, slot int) []GetKeyServerLocationsRequest {
+// ParseGetKeyServerLocationsRequestVectorFromReader reads a FlatBuffers vector of GetKeyServerLocationsRequest under one decode budget.
+func ParseGetKeyServerLocationsRequestVectorFromReader(r *wire.Reader, slot int) ([]GetKeyServerLocationsRequest, error) {
+	b := wire.NewDecodeBudget(r.RawData())
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
+	if err == nil {
+		err = b.Take(count)
 	}
-	result := make([]GetKeyServerLocationsRequest, 0, count)
-	for i := 0; i < count; i++ {
+	if err != nil {
+		return nil, &wire.DecodeError{Type: "[]GetKeyServerLocationsRequest", Err: err}
+	}
+	if count == 0 {
+		return nil, nil
+	}
+	result := make([]GetKeyServerLocationsRequest, count)
+	for i := range result {
 		elemR, err := r.ReadVectorElementReader(slot, i)
 		if err != nil {
-			continue
+			return nil, &wire.DecodeError{Type: "[]GetKeyServerLocationsRequest", Err: err}
 		}
-		var elem GetKeyServerLocationsRequest
-		elem.UnmarshalFromReader(elemR)
-		result = append(result, elem)
+		if err := result[i].decode(elemR, &b); err != nil {
+			return nil, err
+		}
 	}
-	return result
+	return result, nil
 }

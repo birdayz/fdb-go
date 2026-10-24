@@ -22,13 +22,10 @@ type LocationPair struct {
 	Servers  []byte      // slot 1
 }
 
-func (m *LocationPair) UnmarshalFromReader(r *wire.Reader) {
-	if nr, err := r.ReadNestedReader(LocationPairSlotKeyRange); err == nil {
-		m.KeyRange.UnmarshalFromReader(nr)
-	}
-	if r.FieldPresent(LocationPairSlotServers) {
-		m.Servers = r.ReadBytes(LocationPairSlotServers)
-	}
+// UnmarshalFromReader decodes m from r; on error m holds a partial decode.
+func (m *LocationPair) UnmarshalFromReader(r *wire.Reader) error {
+	b := wire.NewDecodeBudget(r.RawData())
+	return m.decode(r, &b)
 }
 
 func (m *LocationPair) UnmarshalFDB(data []byte) error {
@@ -36,11 +33,25 @@ func (m *LocationPair) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
-	if nr, err := r.ReadNestedReader(LocationPairSlotKeyRange); err == nil {
-		m.KeyRange.UnmarshalFromReader(nr)
+	b := wire.NewDecodeBudget(data)
+	return m.decode(r, &b)
+}
+
+func (m *LocationPair) decode(r *wire.Reader, b *wire.DecodeBudget) error {
+	if r.FieldPresent(LocationPairSlotKeyRange) {
+		nr, err := r.ReadNestedReader(LocationPairSlotKeyRange)
+		if err != nil {
+			return &wire.DecodeError{Type: "LocationPair", Field: "KeyRange", Err: err}
+		}
+		if err := m.KeyRange.decode(nr, b); err != nil {
+			return err
+		}
 	}
 	if r.FieldPresent(LocationPairSlotServers) {
 		m.Servers = r.ReadBytes(LocationPairSlotServers)
+	}
+	if err := r.Err(); err != nil {
+		return &wire.DecodeError{Type: "LocationPair", Err: err}
 	}
 	return nil
 }
@@ -81,21 +92,28 @@ func (m *LocationPair) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tm
 	return selfStart
 }
 
-// ParseLocationPairVectorFromReader reads a FlatBuffers vector of LocationPair.
-func ParseLocationPairVectorFromReader(r *wire.Reader, slot int) []LocationPair {
+// ParseLocationPairVectorFromReader reads a FlatBuffers vector of LocationPair under one decode budget.
+func ParseLocationPairVectorFromReader(r *wire.Reader, slot int) ([]LocationPair, error) {
+	b := wire.NewDecodeBudget(r.RawData())
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
+	if err == nil {
+		err = b.Take(count)
 	}
-	result := make([]LocationPair, 0, count)
-	for i := 0; i < count; i++ {
+	if err != nil {
+		return nil, &wire.DecodeError{Type: "[]LocationPair", Err: err}
+	}
+	if count == 0 {
+		return nil, nil
+	}
+	result := make([]LocationPair, count)
+	for i := range result {
 		elemR, err := r.ReadVectorElementReader(slot, i)
 		if err != nil {
-			continue
+			return nil, &wire.DecodeError{Type: "[]LocationPair", Err: err}
 		}
-		var elem LocationPair
-		elem.UnmarshalFromReader(elemR)
-		result = append(result, elem)
+		if err := result[i].decode(elemR, &b); err != nil {
+			return nil, err
+		}
 	}
-	return result
+	return result, nil
 }

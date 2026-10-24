@@ -42,22 +42,10 @@ type SplitRangeRequest struct {
 	Field_4    []byte       // slot 4
 }
 
-func (m *SplitRangeRequest) UnmarshalFromReader(r *wire.Reader) {
-	if nr, err := r.ReadNestedReader(SplitRangeRequestSlotKeys); err == nil {
-		m.Keys.UnmarshalFromReader(nr)
-	}
-	if r.FieldPresent(SplitRangeRequestSlotChunkSize) {
-		m.ChunkSize = r.ReadInt64(SplitRangeRequestSlotChunkSize)
-	}
-	if nr, err := r.ReadNestedReader(SplitRangeRequestSlotReply); err == nil {
-		m.Reply.UnmarshalFromReader(nr)
-	}
-	if nr, err := r.ReadNestedReader(SplitRangeRequestSlotTenantInfo); err == nil {
-		m.TenantInfo.UnmarshalFromReader(nr)
-	}
-	if r.FieldPresent(SplitRangeRequestSlotField_4) {
-		m.Field_4 = r.ReadBytes(SplitRangeRequestSlotField_4)
-	}
+// UnmarshalFromReader decodes m from r; on error m holds a partial decode.
+func (m *SplitRangeRequest) UnmarshalFromReader(r *wire.Reader) error {
+	b := wire.NewDecodeBudget(r.RawData())
+	return m.decode(r, &b)
 }
 
 func (m *SplitRangeRequest) UnmarshalFDB(data []byte) error {
@@ -65,20 +53,46 @@ func (m *SplitRangeRequest) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
-	if nr, err := r.ReadNestedReader(SplitRangeRequestSlotKeys); err == nil {
-		m.Keys.UnmarshalFromReader(nr)
+	b := wire.NewDecodeBudget(data)
+	return m.decode(r, &b)
+}
+
+func (m *SplitRangeRequest) decode(r *wire.Reader, b *wire.DecodeBudget) error {
+	if r.FieldPresent(SplitRangeRequestSlotKeys) {
+		nr, err := r.ReadNestedReader(SplitRangeRequestSlotKeys)
+		if err != nil {
+			return &wire.DecodeError{Type: "SplitRangeRequest", Field: "Keys", Err: err}
+		}
+		if err := m.Keys.decode(nr, b); err != nil {
+			return err
+		}
 	}
 	if r.FieldPresent(SplitRangeRequestSlotChunkSize) {
 		m.ChunkSize = r.ReadInt64(SplitRangeRequestSlotChunkSize)
 	}
-	if nr, err := r.ReadNestedReader(SplitRangeRequestSlotReply); err == nil {
-		m.Reply.UnmarshalFromReader(nr)
+	if r.FieldPresent(SplitRangeRequestSlotReply) {
+		nr, err := r.ReadNestedReader(SplitRangeRequestSlotReply)
+		if err != nil {
+			return &wire.DecodeError{Type: "SplitRangeRequest", Field: "Reply", Err: err}
+		}
+		if err := m.Reply.decode(nr, b); err != nil {
+			return err
+		}
 	}
-	if nr, err := r.ReadNestedReader(SplitRangeRequestSlotTenantInfo); err == nil {
-		m.TenantInfo.UnmarshalFromReader(nr)
+	if r.FieldPresent(SplitRangeRequestSlotTenantInfo) {
+		nr, err := r.ReadNestedReader(SplitRangeRequestSlotTenantInfo)
+		if err != nil {
+			return &wire.DecodeError{Type: "SplitRangeRequest", Field: "TenantInfo", Err: err}
+		}
+		if err := m.TenantInfo.decode(nr, b); err != nil {
+			return err
+		}
 	}
 	if r.FieldPresent(SplitRangeRequestSlotField_4) {
 		m.Field_4 = r.ReadBytes(SplitRangeRequestSlotField_4)
+	}
+	if err := r.Err(); err != nil {
+		return &wire.DecodeError{Type: "SplitRangeRequest", Err: err}
 	}
 	return nil
 }
@@ -241,21 +255,28 @@ func (m *SplitRangeRequest) MarshalFDBPooled(dst []byte) []byte {
 	return buf
 }
 
-// ParseSplitRangeRequestVectorFromReader reads a FlatBuffers vector of SplitRangeRequest.
-func ParseSplitRangeRequestVectorFromReader(r *wire.Reader, slot int) []SplitRangeRequest {
+// ParseSplitRangeRequestVectorFromReader reads a FlatBuffers vector of SplitRangeRequest under one decode budget.
+func ParseSplitRangeRequestVectorFromReader(r *wire.Reader, slot int) ([]SplitRangeRequest, error) {
+	b := wire.NewDecodeBudget(r.RawData())
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
+	if err == nil {
+		err = b.Take(count)
 	}
-	result := make([]SplitRangeRequest, 0, count)
-	for i := 0; i < count; i++ {
+	if err != nil {
+		return nil, &wire.DecodeError{Type: "[]SplitRangeRequest", Err: err}
+	}
+	if count == 0 {
+		return nil, nil
+	}
+	result := make([]SplitRangeRequest, count)
+	for i := range result {
 		elemR, err := r.ReadVectorElementReader(slot, i)
 		if err != nil {
-			continue
+			return nil, &wire.DecodeError{Type: "[]SplitRangeRequest", Err: err}
 		}
-		var elem SplitRangeRequest
-		elem.UnmarshalFromReader(elemR)
-		result = append(result, elem)
+		if err := result[i].decode(elemR, &b); err != nil {
+			return nil, err
+		}
 	}
-	return result
+	return result, nil
 }

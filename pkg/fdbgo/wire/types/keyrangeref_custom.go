@@ -21,13 +21,16 @@ import (
 
 // UnmarshalFromReader inverts the single-key optimization when slot 1 is empty and
 // slot 0 ends in \x00; without the \x00, where C++ asserts, the range stays inverted.
-func (m *KeyRangeRef) UnmarshalFromReader(r *wire.Reader) {
+func (m *KeyRangeRef) UnmarshalFromReader(r *wire.Reader) error {
 	var first, second []byte
 	if r.FieldPresent(KeyRangeRefSlotBegin) {
 		first = r.ReadBytes(KeyRangeRefSlotBegin)
 	}
 	if r.FieldPresent(KeyRangeRefSlotEnd) {
 		second = r.ReadBytes(KeyRangeRefSlotEnd)
+	}
+	if err := r.Err(); err != nil {
+		return &wire.DecodeError{Type: "KeyRangeRef", Err: err}
 	}
 	if len(second) == 0 && len(first) > 0 && first[len(first)-1] == 0 {
 		// Single-key optimization: writer emitted (end, empty).
@@ -40,6 +43,13 @@ func (m *KeyRangeRef) UnmarshalFromReader(r *wire.Reader) {
 		m.Begin = first
 		m.End = second
 	}
+	return nil
+}
+
+// decode is the generated decoders' entry point; a KeyRangeRef holds only bytes,
+// so it charges no budget.
+func (m *KeyRangeRef) decode(r *wire.Reader, _ *wire.DecodeBudget) error {
+	return m.UnmarshalFromReader(r)
 }
 
 // UnmarshalFDB constructs a Reader and delegates.
@@ -48,8 +58,7 @@ func (m *KeyRangeRef) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
-	m.UnmarshalFromReader(r)
-	return nil
+	return m.UnmarshalFromReader(r)
 }
 
 // keyRangeEqualsKeyAfter returns true if begin + '\x00' == end: C++

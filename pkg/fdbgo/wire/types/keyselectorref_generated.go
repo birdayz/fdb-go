@@ -24,16 +24,10 @@ type KeySelectorRef struct {
 	Offset  int32  // slot 2
 }
 
-func (m *KeySelectorRef) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(KeySelectorRefSlotKey) {
-		m.Key = r.ReadBytes(KeySelectorRefSlotKey)
-	}
-	if r.FieldPresent(KeySelectorRefSlotOrEqual) {
-		m.OrEqual = r.ReadBool(KeySelectorRefSlotOrEqual)
-	}
-	if r.FieldPresent(KeySelectorRefSlotOffset) {
-		m.Offset = r.ReadInt32(KeySelectorRefSlotOffset)
-	}
+// UnmarshalFromReader decodes m from r; on error m holds a partial decode.
+func (m *KeySelectorRef) UnmarshalFromReader(r *wire.Reader) error {
+	b := wire.NewDecodeBudget(r.RawData())
+	return m.decode(r, &b)
 }
 
 func (m *KeySelectorRef) UnmarshalFDB(data []byte) error {
@@ -41,6 +35,11 @@ func (m *KeySelectorRef) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
+	b := wire.NewDecodeBudget(data)
+	return m.decode(r, &b)
+}
+
+func (m *KeySelectorRef) decode(r *wire.Reader, b *wire.DecodeBudget) error {
 	if r.FieldPresent(KeySelectorRefSlotKey) {
 		m.Key = r.ReadBytes(KeySelectorRefSlotKey)
 	}
@@ -49,6 +48,9 @@ func (m *KeySelectorRef) UnmarshalFDB(data []byte) error {
 	}
 	if r.FieldPresent(KeySelectorRefSlotOffset) {
 		m.Offset = r.ReadInt32(KeySelectorRefSlotOffset)
+	}
+	if err := r.Err(); err != nil {
+		return &wire.DecodeError{Type: "KeySelectorRef", Err: err}
 	}
 	return nil
 }
@@ -93,21 +95,28 @@ func (m *KeySelectorRef) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, 
 	return selfStart
 }
 
-// ParseKeySelectorRefVectorFromReader reads a FlatBuffers vector of KeySelectorRef.
-func ParseKeySelectorRefVectorFromReader(r *wire.Reader, slot int) []KeySelectorRef {
+// ParseKeySelectorRefVectorFromReader reads a FlatBuffers vector of KeySelectorRef under one decode budget.
+func ParseKeySelectorRefVectorFromReader(r *wire.Reader, slot int) ([]KeySelectorRef, error) {
+	b := wire.NewDecodeBudget(r.RawData())
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
+	if err == nil {
+		err = b.Take(count)
 	}
-	result := make([]KeySelectorRef, 0, count)
-	for i := 0; i < count; i++ {
+	if err != nil {
+		return nil, &wire.DecodeError{Type: "[]KeySelectorRef", Err: err}
+	}
+	if count == 0 {
+		return nil, nil
+	}
+	result := make([]KeySelectorRef, count)
+	for i := range result {
 		elemR, err := r.ReadVectorElementReader(slot, i)
 		if err != nil {
-			continue
+			return nil, &wire.DecodeError{Type: "[]KeySelectorRef", Err: err}
 		}
-		var elem KeySelectorRef
-		elem.UnmarshalFromReader(elemR)
-		result = append(result, elem)
+		if err := result[i].decode(elemR, &b); err != nil {
+			return nil, err
+		}
 	}
-	return result
+	return result, nil
 }

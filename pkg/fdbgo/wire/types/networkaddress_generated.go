@@ -38,19 +38,10 @@ type NetworkAddress struct {
 	FromHostname bool      // slot 3
 }
 
-func (m *NetworkAddress) UnmarshalFromReader(r *wire.Reader) {
-	if nr, err := r.ReadNestedReader(NetworkAddressSlotIp); err == nil {
-		m.Ip.UnmarshalFromReader(nr)
-	}
-	if r.FieldPresent(NetworkAddressSlotPort) {
-		m.Port = r.ReadUint16(NetworkAddressSlotPort)
-	}
-	if r.FieldPresent(NetworkAddressSlotFlags) {
-		m.Flags = r.ReadUint16(NetworkAddressSlotFlags)
-	}
-	if r.FieldPresent(NetworkAddressSlotFromHostname) {
-		m.FromHostname = r.ReadBool(NetworkAddressSlotFromHostname)
-	}
+// UnmarshalFromReader decodes m from r; on error m holds a partial decode.
+func (m *NetworkAddress) UnmarshalFromReader(r *wire.Reader) error {
+	b := wire.NewDecodeBudget(r.RawData())
+	return m.decode(r, &b)
 }
 
 func (m *NetworkAddress) UnmarshalFDB(data []byte) error {
@@ -58,8 +49,19 @@ func (m *NetworkAddress) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
-	if nr, err := r.ReadNestedReader(NetworkAddressSlotIp); err == nil {
-		m.Ip.UnmarshalFromReader(nr)
+	b := wire.NewDecodeBudget(data)
+	return m.decode(r, &b)
+}
+
+func (m *NetworkAddress) decode(r *wire.Reader, b *wire.DecodeBudget) error {
+	if r.FieldPresent(NetworkAddressSlotIp) {
+		nr, err := r.ReadNestedReader(NetworkAddressSlotIp)
+		if err != nil {
+			return &wire.DecodeError{Type: "NetworkAddress", Field: "Ip", Err: err}
+		}
+		if err := m.Ip.decode(nr, b); err != nil {
+			return err
+		}
 	}
 	if r.FieldPresent(NetworkAddressSlotPort) {
 		m.Port = r.ReadUint16(NetworkAddressSlotPort)
@@ -69,6 +71,9 @@ func (m *NetworkAddress) UnmarshalFDB(data []byte) error {
 	}
 	if r.FieldPresent(NetworkAddressSlotFromHostname) {
 		m.FromHostname = r.ReadBool(NetworkAddressSlotFromHostname)
+	}
+	if err := r.Err(); err != nil {
+		return &wire.DecodeError{Type: "NetworkAddress", Err: err}
 	}
 	return nil
 }
@@ -231,21 +236,28 @@ func (m *NetworkAddress) MarshalFDBPooled(dst []byte) []byte {
 	return buf
 }
 
-// ParseNetworkAddressVectorFromReader reads a FlatBuffers vector of NetworkAddress.
-func ParseNetworkAddressVectorFromReader(r *wire.Reader, slot int) []NetworkAddress {
+// ParseNetworkAddressVectorFromReader reads a FlatBuffers vector of NetworkAddress under one decode budget.
+func ParseNetworkAddressVectorFromReader(r *wire.Reader, slot int) ([]NetworkAddress, error) {
+	b := wire.NewDecodeBudget(r.RawData())
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
+	if err == nil {
+		err = b.Take(count)
 	}
-	result := make([]NetworkAddress, 0, count)
-	for i := 0; i < count; i++ {
+	if err != nil {
+		return nil, &wire.DecodeError{Type: "[]NetworkAddress", Err: err}
+	}
+	if count == 0 {
+		return nil, nil
+	}
+	result := make([]NetworkAddress, count)
+	for i := range result {
 		elemR, err := r.ReadVectorElementReader(slot, i)
 		if err != nil {
-			continue
+			return nil, &wire.DecodeError{Type: "[]NetworkAddress", Err: err}
 		}
-		var elem NetworkAddress
-		elem.UnmarshalFromReader(elemR)
-		result = append(result, elem)
+		if err := result[i].decode(elemR, &b); err != nil {
+			return nil, err
+		}
 	}
-	return result
+	return result, nil
 }

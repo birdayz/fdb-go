@@ -2,7 +2,10 @@ package types
 
 import (
 	"encoding/binary"
+	"errors"
 	"testing"
+
+	"fdb.dev/pkg/fdbgo/wire"
 )
 
 func TestParseKeyValueRefStringVector(t *testing.T) {
@@ -10,24 +13,24 @@ func TestParseKeyValueRefStringVector(t *testing.T) {
 
 	t.Run("nil", func(t *testing.T) {
 		t.Parallel()
-		if got := ParseKeyValueRefStringVector(nil); got != nil {
-			t.Errorf("expected nil, got %v", got)
+		if got, err := ParseKeyValueRefStringVector(nil); got != nil || err != nil {
+			t.Errorf("expected nil, got %v, %v", got, err)
 		}
 	})
 
 	t.Run("empty", func(t *testing.T) {
 		t.Parallel()
 		data := make([]byte, 4) // count=0
-		if got := ParseKeyValueRefStringVector(data); got != nil {
-			t.Errorf("expected nil, got %v", got)
+		if got, err := ParseKeyValueRefStringVector(data); got != nil || err != nil {
+			t.Errorf("expected nil, got %v, %v", got, err)
 		}
 	})
 
 	t.Run("single", func(t *testing.T) {
 		t.Parallel()
 		data := packKVVector([]KeyValueRef{{Key: []byte("k"), Value: []byte("v")}})
-		got := ParseKeyValueRefStringVector(data)
-		if len(got) != 1 {
+		got, err := ParseKeyValueRefStringVector(data)
+		if err != nil || len(got) != 1 {
 			t.Fatalf("expected 1, got %d", len(got))
 		}
 		if string(got[0].Key) != "k" || string(got[0].Value) != "v" {
@@ -43,8 +46,8 @@ func TestParseKeyValueRefStringVector(t *testing.T) {
 			{Key: []byte("gamma"), Value: []byte("333")},
 		}
 		data := packKVVector(input)
-		got := ParseKeyValueRefStringVector(data)
-		if len(got) != 3 {
+		got, err := ParseKeyValueRefStringVector(data)
+		if err != nil || len(got) != 3 {
 			t.Fatalf("expected 3, got %d", len(got))
 		}
 		for i, kv := range got {
@@ -55,15 +58,27 @@ func TestParseKeyValueRefStringVector(t *testing.T) {
 		}
 	})
 
-	t.Run("truncated_key", func(t *testing.T) {
-		t.Parallel()
-		data := packKVVector([]KeyValueRef{{Key: []byte("hello"), Value: []byte("world")}})
-		// Truncate inside the key data
-		got := ParseKeyValueRefStringVector(data[:8])
-		if len(got) != 0 {
-			t.Errorf("expected 0 on truncated data, got %d", len(got))
-		}
-	})
+	// A blob the elements do not fill exactly is an error, not a shorter vector.
+	two := packKVVector([]KeyValueRef{{Key: []byte("hello"), Value: []byte("world")}, {Key: []byte("k"), Value: []byte("v")}})
+	for name, data := range map[string][]byte{
+		"short_blob":      {1, 0, 0},
+		"truncated_key":   two[:8],
+		"truncated_row":   two[:len(two)-1],
+		"count_too_large": append([]byte{3, 0, 0, 0}, two[4:]...),
+		"count_too_small": append([]byte{1, 0, 0, 0}, two[4:]...),
+		"trailing_bytes":  append(append([]byte{}, two...), 0),
+		"empty_trailing":  {0, 0, 0, 0, 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			got, err := ParseKeyValueRefStringVector(data)
+			var decodeErr *wire.DecodeError
+			var vecErr *wire.StringVectorError
+			if !errors.As(err, &decodeErr) || !errors.As(err, &vecErr) || got != nil {
+				t.Fatalf("got %d rows, %v; want a StringVectorError", len(got), err)
+			}
+		})
+	}
 
 	t.Run("empty_values", func(t *testing.T) {
 		t.Parallel()
@@ -71,8 +86,8 @@ func TestParseKeyValueRefStringVector(t *testing.T) {
 			{Key: []byte("k"), Value: []byte{}},
 		}
 		data := packKVVector(input)
-		got := ParseKeyValueRefStringVector(data)
-		if len(got) != 1 {
+		got, err := ParseKeyValueRefStringVector(data)
+		if err != nil || len(got) != 1 {
 			t.Fatalf("expected 1, got %d", len(got))
 		}
 		if string(got[0].Key) != "k" || len(got[0].Value) != 0 {

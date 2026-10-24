@@ -386,9 +386,14 @@ func parseGetKeyReply(data []byte) (key []byte, orEqual bool, offset int32, pena
 	if err := wire.ReadErrorOrInto(data, &r); err != nil {
 		return nil, false, 0, -1.0, fmt.Errorf("GetKey: %w", err)
 	}
+	// The generated GetKeyReply does not decode Sel; decoding the rest checks it.
+	var reply types.GetKeyReply
+	if err := reply.UnmarshalFromReader(&r); err != nil {
+		return nil, false, 0, -1.0, fmt.Errorf("GetKey: %w", err)
+	}
 	penalty = -1.0
 	if r.FieldPresent(types.GetKeyReplySlotPenalty) {
-		penalty = r.ReadFloat64(types.GetKeyReplySlotPenalty)
+		penalty = reply.Penalty
 	}
 	// Inline LoadBalancedReply.error: the SS delivers wrong_shard_server etc. for
 	// reads through this field, not the ErrorOr root. RFC-010 #1.
@@ -400,14 +405,11 @@ func parseGetKeyReply(data []byte) (key []byte, orEqual bool, offset int32, pena
 	if selErr != nil {
 		return nil, false, 0, penalty, fmt.Errorf("read KeySelector: %w", selErr)
 	}
-	key = selR.ReadBytes(types.KeySelectorRefSlotKey)
-	if selR.FieldPresent(types.KeySelectorRefSlotOrEqual) {
-		orEqual = selR.ReadBool(types.KeySelectorRefSlotOrEqual)
+	var sel types.KeySelectorRef
+	if err := sel.UnmarshalFromReader(selR); err != nil {
+		return nil, false, 0, penalty, fmt.Errorf("GetKey: %w", err)
 	}
-	if selR.FieldPresent(types.KeySelectorRefSlotOffset) {
-		offset = selR.ReadInt32(types.KeySelectorRefSlotOffset)
-	}
-	return key, orEqual, offset, penalty, nil
+	return sel.Key, sel.OrEqual, sel.Offset, penalty, nil
 }
 
 // getValue sends a GetValueRequest to the appropriate storage server.
@@ -1283,14 +1285,19 @@ func parseGetKeyValuesReply(data []byte) ([]KeyValue, bool, float64, error) {
 		return nil, false, -1.0, fmt.Errorf("GetKeyValues: %w", err)
 	}
 	var reply types.GetKeyValuesReply
-	reply.UnmarshalFromReader(&r)
+	if err := reply.UnmarshalFromReader(&r); err != nil {
+		return nil, false, -1.0, fmt.Errorf("GetKeyValues: %w", err)
+	}
 	// Inline LoadBalancedReply.error: the SS delivers wrong_shard_server etc. for
 	// reads through this field, not the ErrorOr root. RFC-010 #1.
 	if ferr := wire.ReadInlineReplyError(&r, types.GetKeyValuesReplySlotError); ferr != nil {
 		return nil, false, reply.Penalty, ferr
 	}
 
-	kvs := types.ParseKeyValueRefStringVector(reply.Data)
+	kvs, err := types.ParseKeyValueRefStringVector(reply.Data)
+	if err != nil {
+		return nil, false, reply.Penalty, fmt.Errorf("GetKeyValues: %w", err)
+	}
 	return kvs, reply.More, reply.Penalty, nil
 }
 
@@ -1342,7 +1349,9 @@ func parseGetValueReply(data []byte) ([]byte, float64, error) {
 		return nil, -1.0, fmt.Errorf("GetValue: %w", err)
 	}
 	var reply types.GetValueReply
-	reply.UnmarshalFromReader(&r)
+	if err := reply.UnmarshalFromReader(&r); err != nil {
+		return nil, -1.0, fmt.Errorf("GetValue: %w", err)
+	}
 	// Inline LoadBalancedReply.error: the SS delivers wrong_shard_server etc. for
 	// reads through this field, not the ErrorOr root. Decoded from the nested
 	// Error table (the generated reply.Error is mis-typed). RFC-010 #1.

@@ -69,47 +69,62 @@ never reject a reply C++ writes.
    tables has its own 4-byte offset slot, so the counts of all its vectors sum to at most
    `len/4`. A sum above that means offsets alias.
 2. **Generated decoders fail.** `emitReads` emits an unexported
-   `decode(r *wire.Reader, b *wire.DecodeBudget) error` per type. It returns a typed
-   `*wire.DecodeError{Type, Field, Err}` when any of these happens:
+   `decode(r *wire.Reader, b *wire.DecodeBudget) error` per type. It fails when any of
+   these happens:
    - a vector count does not decode, including a `VectorCountError`;
    - a vector element does not resolve;
    - a present nested table, `Optional` table or variant-alternative table does not
      resolve;
    - the budget is exhausted;
-   - a present field's bytes lie outside the buffer. The `wire.Reader` leaf reads (scalars,
-     byte strings, bare out-of-line scalars) keep returning zero or nil, and now also
-     record the first such field. `decode` returns it from `r.Err()` as a
-     `*wire.FieldBoundsError` naming the slot.
+   - a present field's bytes lie outside the buffer, or the vtable claims more entries
+     than the buffer holds. The `wire.Reader` leaf reads (scalars, byte strings, bare
+     out-of-line scalars) keep returning zero or nil, and now also record the first such
+     slot. `decode` returns it from `r.Err()` as a `*wire.FieldBoundsError`.
 
-   The decode passes one budget through the whole tree. A field the vtable does not
-   reach, or marks absent, keeps its zero value, as in C++ (`flat_buffers.h:1041-1046`).
-   Every nested read checks `FieldPresent` first, so a reply from a schema with fewer
-   fields still decodes.
+   Every failure reaches callers as a `*wire.DecodeError{Type, Field, Err}` wrapping the
+   specific cause (`VectorCountError`, `DecodeBudgetError`, `FieldBoundsError`,
+   `StringVectorError`, or the reader's error). `Field` is empty when the cause is a leaf
+   read or a whole vector. The innermost type that failed names the error.
+
+   Absent fields follow C++ (`flat_buffers.h:1022-1046`). A field the vtable does not
+   reach, or marks absent, keeps its zero value, and every nested read checks
+   `FieldPresent` first, so a reply from a schema with fewer fields still decodes. An
+   `Optional` is present only with tag 1 and its value slot present. A variant decodes
+   only a known tag with its value slot present (`LoadAlternative`,
+   `flat_buffers.h:863-886`). Anything else leaves the zero value, as C++ leaves the
+   member empty. `wire.ReadInlineReplyError` uses the same tag rule.
 
    `UnmarshalFromReader(r) error` and `UnmarshalFDB(data) error` start one budget per
    decode from the whole buffer and call `decode`. `Parse<T>VectorFromReader` returns
-   `([]T, error)`. `Parse<T>StringVector` returns `([]T, error)` and fails with a
-   `*wire.StringVectorError` unless the elements fill the blob exactly, as C++ asserts.
-   An empty blob stays an empty vector. `KeyRangeRef`'s hand-written decoder gets the
-   same shape and returns its reader's `Err()`. On error the target holds a partial
-   decode, which callers discard.
-3. **Hand-written parsers.** `parseGetKeyServerLocationsReply` charges one budget for
-   the results vector and for every pair's server vector, and returns its
-   `locationsReplyError` when the budget is exhausted. Its fallback endpoint scan stops
-   at the slots the `StorageServerInterface` schema defines, not at the vtable length
-   the peer claims. `parseClientDBInfoFromReader` walks each of its two vectors
-   (grvProxies, commitProxies) once, and `parseSplitRangeReply` walks its splitPoints
-   once. No element of these holds a nested vector, so aliasing cannot multiply their
-   work. RFC-271's `ReadVectorCount` bound already covers them, pinned by its
-   oversized-count tests.
+   `([]T, error)`. `Parse<T>StringVector` returns `([]T, error)` and fails unless the
+   elements fill the blob exactly, as C++ asserts. An empty blob stays an empty vector.
+   `KeyRangeRef`'s hand-written decoder gets the same shape. On error the target holds a
+   partial decode, which callers discard.
+3. **Hand-written parsers.**
+   - `parseGetKeyServerLocationsReply` charges one budget for the results vector and
+     for every pair's server vector. A server whose slot-2 endpoint is present but does
+     not decode fails the reply with its `locationsReplyError`. Only a slot-2 endpoint
+     that is absent (`endpointAbsentError`) or has a zero token falls back to the scan.
+     The scan probes slots that may hold no endpoint at all, so it skips their errors.
+     It stops at the slots the `StorageServerInterface` schema defines, not at the
+     vtable length the peer claims. Its range-key check from RFC-271 stays: it also
+     rejects a zero offset, which `ReadBytes` reads as an empty key, as C++ does.
+   - `parseClientDBInfoFromReader` walks each of its two vectors (grvProxies,
+     commitProxies) once, and `parseSplitRangeReply` walks its splitPoints once. No
+     element of these holds a nested vector, so aliasing cannot multiply their work.
+     RFC-271's `ReadVectorCount` bound covers them. `parseClientDBInfoFromReader`'s own
+     leaf reads (id, forward) return `r.Err()`.
+   - `parseGetKeyReply` decodes the reply through the generated `GetKeyReply` and its
+     selector through the generated `KeySelectorRef`, replacing its own leaf reads.
 
    Every non-generated `UnmarshalFromReader` caller returns the error:
    - client: `parseCommitOutcome` (commitpath.go), `ReadEndpointFromSlot` (endpoint.go),
      `parseGetReadVersionReply` (grv.go), `parseGetKeyServerLocationsReply`
      (locality.go), `parseGetMappedKeyValuesReply` (mappedrange.go),
-     `parseWaitMetricsReply` (metrics.go), `parseGetKeyValuesReply` and
-     `parseGetValueReply` (readpath.go);
-   - `tools/clientbench`: wiregolden and wiretrace count the message as undecodable.
+     `parseWaitMetricsReply` (metrics.go), `parseGetKeyReply`, `parseGetKeyValuesReply`
+     and `parseGetValueReply` (readpath.go);
+   - `tools/clientbench`: wiregolden and wiretrace count the message as undecodable;
+   - the `ReadErrorOrInto` doc example.
 
    A malformed reply is then a parse failure, handled where each parser already handles
    one.
@@ -122,14 +137,14 @@ never reject a reply C++ writes.
 - `FuzzUnmarshalFDB` (`wire/types`) feeds raw bytes to every generated type's
   `UnmarshalFDB`, through a type registry the generator emits. Unlike the client parser
   fuzzers, it covers every generated type. Its oracle has two parts:
-  - the error is nil, a `NewReader` envelope error, or wraps `*wire.DecodeError`;
+  - for input `wire.NewReader` accepts, the error is nil or a `*wire.DecodeError`;
   - the bytes allocated (`runtime.MemStats.TotalAlloc`) stay within `1024·len(data) + 1 MiB`.
 
   The seeds are the ground-truth vectors and the aliasing `GetMappedKeyValuesReply`. On
   the pre-change code the aliasing seed fails the allocation bound.
-- `FuzzParseKeyValueRefStringVector` (`wire/types`). Its oracle: a nil error means
-  re-packing the rows reproduces the input exactly; otherwise the error is a
-  `*wire.DecodeError`.
+- `FuzzParseKeyValueRefStringVector` (`wire/types`). Its oracle: an error is a
+  `*wire.StringVectorError` with no rows. Otherwise the input is empty with no rows, or
+  re-packing the rows reproduces the input exactly.
 - `FuzzFrameReader` (`transport`) is new coverage, not a regression for this change. Its
   oracle: `FrameReader.Read` never panics. It returns either an error or a token and body
   whose length matches the declared packet length and whose checksum verified. A frame
@@ -146,27 +161,40 @@ tests pin stay allocation-free.
 
 ## Tests
 
-Regressions (each fails on the pre-change code):
+Regressions (each fails when its part of the change is reverted; the PR records each
+revert):
 
+- `wire`: a present scalar, byte string or bare out-of-line scalar outside the buffer,
+  and a vtable longer than the buffer, give `Err() = *FieldBoundsError`; a vector field
+  past the buffer is a `ReadVectorCount` error.
 - `wire/types`:
-  - The aliasing `GetMappedKeyValuesReply` (N offsets to one element with M rows, N×M
-    above the budget) fails with `*wire.DecodeBudgetError`.
-  - A reply fails with `*wire.DecodeError` naming the type and field in each of these
-    cases: an oversized vector count (`TestGeneratedDecoderDropsOversizedVector`
-    inverted), an unresolvable vector element, an unresolvable nested table, a present
-    `Optional<Error>` whose table does not resolve, and a present variant alternative
-    whose table does not resolve.
-  - A `GetValueReply` whose present `Optional<Value>` offset lies past the buffer fails
-    with a `*wire.FieldBoundsError`.
+  - The aliasing `GetMappedKeyValuesReply` (2000 offsets to one row of 1000 empty rows,
+    24 KB) fails with `*wire.DecodeBudgetError`.
+  - A `DecodeError` naming the type and field for an oversized vector count
+    (RFC-271's `TestGeneratedDecoderDropsOversizedVector`, inverted as
+    `TestGeneratedDecoderRejectsOversizedVector`), an unresolvable vector
+    element (`GetMappedKeyValuesReply.Data`), nested table (`MappedKeyValueRef.KeyValue`),
+    `Optional<Error>` (`GetKeyValuesReply.Error`) and variant alternative
+    (`MappedKeyValueRef.ReqAndResult`).
+  - A `GetValueReply` whose present value lies past the buffer fails with a
+    `FieldBoundsError`.
   - `Parse<T>VectorFromReader` returns the element error. `ParseKeyValueRefStringVector`
-    fails on a count the blob cannot hold, on an element that overruns it, and on
-    trailing bytes.
-- `client`, one table test over every reply parser above: a ground-truth reply with one
-  present field moved past the buffer fails with a `*wire.DecodeError`. Further cases:
-  - an aliasing `GetKeyServerLocationsReply` fails with a budget error;
-  - a server whose vtable claims 32K slots costs the parser a bounded number of
+    fails with a `StringVectorError` on a short blob, a count the blob cannot hold, an
+    element that overruns it, and trailing bytes.
+- `client`: one table test over the reply parsers. Each moves one present field of a
+  ground-truth reply past the buffer and expects a `*wire.DecodeError`:
+  - `GetValueReply` value, `GetKeyReply` penalty, `GetKeyValuesReply` rows,
+    `GetMappedKeyValuesReply` rows;
+  - `GetReadVersionReply` version, `CommitID` version, `StorageMetrics` bytes;
+  - `ClientDBInfo` id, and the locations reply's slot-2 endpoint address.
+
+  Further cases:
+  - an aliasing `GetKeyServerLocationsReply` (300 results × 300 servers) fails with a
+    budget error;
+  - a server with a zero token whose vtable claims 32K slots costs at most 500
     allocations.
-- `tools/clientbench/wiretrace`: a malformed reply counts as undecodable.
+- `tools/clientbench`: a commit reply whose version lies past the buffer is malformed
+  (wiretrace), and a send whose key lies past the buffer is undecodable (wiregolden).
 - `FuzzUnmarshalFDB`: the aliasing seed fails the allocation oracle.
 
 Non-regression guards (pass before and after):
@@ -178,6 +206,8 @@ Non-regression guards (pass before and after):
   budget and asserts the budget consumed equals the number of decoded elements, so a
   decoder that charges an element twice fails.
 - Short vtables: a reply whose nested `MappedKeyValueRef` and top-level vtables are cut
-  to fewer slots decodes with a nil error and zero-valued absent fields.
+  to fewer slots decodes with a nil error and zero-valued absent fields. That includes
+  a variant whose tag slot survives the cut and whose value slot does not.
+- An empty string-vector blob and a zero count both give no rows and no error.
 - `DecodeBudget` arms, in `wire`.
-- `FuzzFrameReader` seeds.
+- `FuzzFrameReader` and `FuzzParseKeyValueRefStringVector` seeds.

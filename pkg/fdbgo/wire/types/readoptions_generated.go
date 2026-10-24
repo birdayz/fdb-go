@@ -30,24 +30,10 @@ type ReadOptions struct {
 	LockAware                       bool     // slot 6
 }
 
-func (m *ReadOptions) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(ReadOptionsSlotType) {
-		m.Type = r.ReadInt32(ReadOptionsSlotType)
-	}
-	if r.FieldPresent(ReadOptionsSlotCacheResult) {
-		m.CacheResult = r.ReadBool(ReadOptionsSlotCacheResult)
-	}
-	if r.FieldPresent(ReadOptionsSlotDebugID) && r.ReadUint8(ReadOptionsSlotDebugID) > 0 {
-		copy(m.DebugID[:], r.ReadRelOffRaw(ReadOptionsSlotDebugID+1, 16))
-		m.HasDebugID = true
-	}
-	if r.FieldPresent(ReadOptionsSlotConsistencyCheckStartVersion) && r.ReadUint8(ReadOptionsSlotConsistencyCheckStartVersion) > 0 {
-		m.ConsistencyCheckStartVersion = int64(r.ReadRelOffUint64(ReadOptionsSlotConsistencyCheckStartVersion + 1))
-		m.HasConsistencyCheckStartVersion = true
-	}
-	if r.FieldPresent(ReadOptionsSlotLockAware) {
-		m.LockAware = r.ReadBool(ReadOptionsSlotLockAware)
-	}
+// UnmarshalFromReader decodes m from r; on error m holds a partial decode.
+func (m *ReadOptions) UnmarshalFromReader(r *wire.Reader) error {
+	b := wire.NewDecodeBudget(r.RawData())
+	return m.decode(r, &b)
 }
 
 func (m *ReadOptions) UnmarshalFDB(data []byte) error {
@@ -55,22 +41,30 @@ func (m *ReadOptions) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
+	b := wire.NewDecodeBudget(data)
+	return m.decode(r, &b)
+}
+
+func (m *ReadOptions) decode(r *wire.Reader, b *wire.DecodeBudget) error {
 	if r.FieldPresent(ReadOptionsSlotType) {
 		m.Type = r.ReadInt32(ReadOptionsSlotType)
 	}
 	if r.FieldPresent(ReadOptionsSlotCacheResult) {
 		m.CacheResult = r.ReadBool(ReadOptionsSlotCacheResult)
 	}
-	if r.FieldPresent(ReadOptionsSlotDebugID) && r.ReadUint8(ReadOptionsSlotDebugID) > 0 {
+	if r.FieldPresent(ReadOptionsSlotDebugID) && r.ReadUint8(ReadOptionsSlotDebugID) == 1 && r.FieldPresent(ReadOptionsSlotDebugID+1) {
 		copy(m.DebugID[:], r.ReadRelOffRaw(ReadOptionsSlotDebugID+1, 16))
 		m.HasDebugID = true
 	}
-	if r.FieldPresent(ReadOptionsSlotConsistencyCheckStartVersion) && r.ReadUint8(ReadOptionsSlotConsistencyCheckStartVersion) > 0 {
+	if r.FieldPresent(ReadOptionsSlotConsistencyCheckStartVersion) && r.ReadUint8(ReadOptionsSlotConsistencyCheckStartVersion) == 1 && r.FieldPresent(ReadOptionsSlotConsistencyCheckStartVersion+1) {
 		m.ConsistencyCheckStartVersion = int64(r.ReadRelOffUint64(ReadOptionsSlotConsistencyCheckStartVersion + 1))
 		m.HasConsistencyCheckStartVersion = true
 	}
 	if r.FieldPresent(ReadOptionsSlotLockAware) {
 		m.LockAware = r.ReadBool(ReadOptionsSlotLockAware)
+	}
+	if err := r.Err(); err != nil {
+		return &wire.DecodeError{Type: "ReadOptions", Err: err}
 	}
 	return nil
 }
@@ -138,21 +132,28 @@ func (m *ReadOptions) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmp
 	return selfStart
 }
 
-// ParseReadOptionsVectorFromReader reads a FlatBuffers vector of ReadOptions.
-func ParseReadOptionsVectorFromReader(r *wire.Reader, slot int) []ReadOptions {
+// ParseReadOptionsVectorFromReader reads a FlatBuffers vector of ReadOptions under one decode budget.
+func ParseReadOptionsVectorFromReader(r *wire.Reader, slot int) ([]ReadOptions, error) {
+	b := wire.NewDecodeBudget(r.RawData())
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
+	if err == nil {
+		err = b.Take(count)
 	}
-	result := make([]ReadOptions, 0, count)
-	for i := 0; i < count; i++ {
+	if err != nil {
+		return nil, &wire.DecodeError{Type: "[]ReadOptions", Err: err}
+	}
+	if count == 0 {
+		return nil, nil
+	}
+	result := make([]ReadOptions, count)
+	for i := range result {
 		elemR, err := r.ReadVectorElementReader(slot, i)
 		if err != nil {
-			continue
+			return nil, &wire.DecodeError{Type: "[]ReadOptions", Err: err}
 		}
-		var elem ReadOptions
-		elem.UnmarshalFromReader(elemR)
-		result = append(result, elem)
+		if err := result[i].decode(elemR, &b); err != nil {
+			return nil, err
+		}
 	}
-	return result
+	return result, nil
 }

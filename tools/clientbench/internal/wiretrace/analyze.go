@@ -102,7 +102,10 @@ func (t *Trace) addRequest(f Frame) {
 			return
 		}
 		var m types.GetReadVersionRequest
-		m.UnmarshalFromReader(r)
+		if err := m.UnmarshalFromReader(r); err != nil {
+			t.Undecodable++
+			return
+		}
 		req.Kind, req.TxnCount, req.ReplyToken = KindGRV, m.TransactionCount, m.Reply.Token
 	case types.CommitTransactionRequestFileID:
 		r, err := wire.NewReader(f.Body)
@@ -111,7 +114,10 @@ func (t *Trace) addRequest(f Frame) {
 			return
 		}
 		var m types.CommitTransactionRequest
-		m.UnmarshalFromReader(r)
+		if err := m.UnmarshalFromReader(r); err != nil {
+			t.Undecodable++
+			return
+		}
 		req.Kind, req.TxnCount, req.ReplyToken = KindCommit, 1, m.Reply.Token
 	case types.GetKeyValuesRequestFileID:
 		r, err := wire.NewReader(f.Body)
@@ -120,7 +126,10 @@ func (t *Trace) addRequest(f Frame) {
 			return
 		}
 		var m types.GetKeyValuesRequest
-		m.UnmarshalFromReader(r)
+		if err := m.UnmarshalFromReader(r); err != nil {
+			t.Undecodable++
+			return
+		}
 		req.Kind, req.ReplyToken = KindRange, m.Reply.Token
 		req.Params = fmt.Sprintf("limit=%d bytes=%d begin=%t/%d end=%t/%d", m.Limit, m.LimitBytes,
 			m.Begin.OrEqual, m.Begin.Offset, m.End.OrEqual, m.End.Offset)
@@ -158,11 +167,19 @@ func (t *Trace) addReply(req *Request, f Frame) {
 	switch req.Kind {
 	case KindGRV:
 		var m types.GetReadVersionReply
-		m.UnmarshalFromReader(&r)
+		if err := m.UnmarshalFromReader(&r); err != nil {
+			req.Malformed = true
+			t.Undecodable++
+			return
+		}
 		req.Version = m.Version
 	case KindCommit:
 		var m types.CommitID
-		m.UnmarshalFromReader(&r)
+		if err := m.UnmarshalFromReader(&r); err != nil {
+			req.Malformed = true
+			t.Undecodable++
+			return
+		}
 		req.Version = m.Version
 		if m.Version == -1 {
 			// An in-band conflict: CommitID{invalidVersion}, which the client maps
@@ -171,7 +188,11 @@ func (t *Trace) addReply(req *Request, f Frame) {
 		}
 	case KindRange:
 		var m types.GetKeyValuesReply
-		m.UnmarshalFromReader(&r)
+		if err := m.UnmarshalFromReader(&r); err != nil {
+			req.Malformed = true
+			t.Undecodable++
+			return
+		}
 		req.Version, req.ReplyBytes, req.More = m.Version, len(m.Data), m.More
 		if m.HasError {
 			req.ErrorCode = int(m.Error.ErrorCode)

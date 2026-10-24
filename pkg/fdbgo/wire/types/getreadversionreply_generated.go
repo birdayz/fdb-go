@@ -55,48 +55,10 @@ type GetReadVersionReply struct {
 	ProxyTagThrottledDuration float64                  // slot 11
 }
 
-func (m *GetReadVersionReply) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(GetReadVersionReplySlotProcessBusyTime) {
-		m.ProcessBusyTime = r.ReadInt32(GetReadVersionReplySlotProcessBusyTime)
-	}
-	if r.FieldPresent(GetReadVersionReplySlotVersion) {
-		m.Version = r.ReadInt64(GetReadVersionReplySlotVersion)
-	}
-	if r.FieldPresent(GetReadVersionReplySlotLocked) {
-		m.Locked = r.ReadBool(GetReadVersionReplySlotLocked)
-	}
-	if r.FieldPresent(GetReadVersionReplySlotMetadataVersion) && r.ReadUint8(GetReadVersionReplySlotMetadataVersion) > 0 {
-		m.MetadataVersion = r.ReadBytes(GetReadVersionReplySlotMetadataVersion + 1)
-		m.HasMetadataVersion = true
-	}
-	if count, err := r.ReadVectorCount(GetReadVersionReplySlotTagThrottleInfo); err == nil && count > 0 {
-		m.TagThrottleInfo = make([]TransactionTagThrottle, 0, count)
-		for i := 0; i < count; i++ {
-			if elemR, err := r.ReadVectorElementReader(GetReadVersionReplySlotTagThrottleInfo, i); err == nil {
-				var elem TransactionTagThrottle
-				elem.UnmarshalFromReader(elemR)
-				m.TagThrottleInfo = append(m.TagThrottleInfo, elem)
-			}
-		}
-	}
-	if r.FieldPresent(GetReadVersionReplySlotMidShardSize) {
-		m.MidShardSize = r.ReadInt64(GetReadVersionReplySlotMidShardSize)
-	}
-	if r.FieldPresent(GetReadVersionReplySlotRkDefaultThrottled) {
-		m.RkDefaultThrottled = r.ReadBool(GetReadVersionReplySlotRkDefaultThrottled)
-	}
-	if r.FieldPresent(GetReadVersionReplySlotRkBatchThrottled) {
-		m.RkBatchThrottled = r.ReadBool(GetReadVersionReplySlotRkBatchThrottled)
-	}
-	if r.FieldPresent(GetReadVersionReplySlotSsVersionVectorDelta) {
-		m.SsVersionVectorDelta = r.ReadBytes(GetReadVersionReplySlotSsVersionVectorDelta)
-	}
-	if r.FieldPresent(GetReadVersionReplySlotProxyId) {
-		m.ProxyId = r.ReadUID(GetReadVersionReplySlotProxyId)
-	}
-	if r.FieldPresent(GetReadVersionReplySlotProxyTagThrottledDuration) {
-		m.ProxyTagThrottledDuration = r.ReadFloat64(GetReadVersionReplySlotProxyTagThrottledDuration)
-	}
+// UnmarshalFromReader decodes m from r; on error m holds a partial decode.
+func (m *GetReadVersionReply) UnmarshalFromReader(r *wire.Reader) error {
+	b := wire.NewDecodeBudget(r.RawData())
+	return m.decode(r, &b)
 }
 
 func (m *GetReadVersionReply) UnmarshalFDB(data []byte) error {
@@ -104,6 +66,11 @@ func (m *GetReadVersionReply) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
+	b := wire.NewDecodeBudget(data)
+	return m.decode(r, &b)
+}
+
+func (m *GetReadVersionReply) decode(r *wire.Reader, b *wire.DecodeBudget) error {
 	if r.FieldPresent(GetReadVersionReplySlotProcessBusyTime) {
 		m.ProcessBusyTime = r.ReadInt32(GetReadVersionReplySlotProcessBusyTime)
 	}
@@ -113,17 +80,28 @@ func (m *GetReadVersionReply) UnmarshalFDB(data []byte) error {
 	if r.FieldPresent(GetReadVersionReplySlotLocked) {
 		m.Locked = r.ReadBool(GetReadVersionReplySlotLocked)
 	}
-	if r.FieldPresent(GetReadVersionReplySlotMetadataVersion) && r.ReadUint8(GetReadVersionReplySlotMetadataVersion) > 0 {
+	if r.FieldPresent(GetReadVersionReplySlotMetadataVersion) && r.ReadUint8(GetReadVersionReplySlotMetadataVersion) == 1 && r.FieldPresent(GetReadVersionReplySlotMetadataVersion+1) {
 		m.MetadataVersion = r.ReadBytes(GetReadVersionReplySlotMetadataVersion + 1)
 		m.HasMetadataVersion = true
 	}
-	if count, err := r.ReadVectorCount(GetReadVersionReplySlotTagThrottleInfo); err == nil && count > 0 {
-		m.TagThrottleInfo = make([]TransactionTagThrottle, 0, count)
-		for i := 0; i < count; i++ {
-			if elemR, err := r.ReadVectorElementReader(GetReadVersionReplySlotTagThrottleInfo, i); err == nil {
-				var elem TransactionTagThrottle
-				elem.UnmarshalFromReader(elemR)
-				m.TagThrottleInfo = append(m.TagThrottleInfo, elem)
+	if r.FieldPresent(GetReadVersionReplySlotTagThrottleInfo) {
+		count, err := r.ReadVectorCount(GetReadVersionReplySlotTagThrottleInfo)
+		if err == nil {
+			err = b.Take(count)
+		}
+		if err != nil {
+			return &wire.DecodeError{Type: "GetReadVersionReply", Field: "TagThrottleInfo", Err: err}
+		}
+		if count > 0 {
+			m.TagThrottleInfo = make([]TransactionTagThrottle, count)
+			for i := range m.TagThrottleInfo {
+				elemR, err := r.ReadVectorElementReader(GetReadVersionReplySlotTagThrottleInfo, i)
+				if err != nil {
+					return &wire.DecodeError{Type: "GetReadVersionReply", Field: "TagThrottleInfo", Err: err}
+				}
+				if err := m.TagThrottleInfo[i].decode(elemR, b); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -144,6 +122,9 @@ func (m *GetReadVersionReply) UnmarshalFDB(data []byte) error {
 	}
 	if r.FieldPresent(GetReadVersionReplySlotProxyTagThrottledDuration) {
 		m.ProxyTagThrottledDuration = r.ReadFloat64(GetReadVersionReplySlotProxyTagThrottledDuration)
+	}
+	if err := r.Err(); err != nil {
+		return &wire.DecodeError{Type: "GetReadVersionReply", Err: err}
 	}
 	return nil
 }
@@ -365,21 +346,28 @@ func (m *GetReadVersionReply) MarshalFDBPooled(dst []byte) []byte {
 	return buf
 }
 
-// ParseGetReadVersionReplyVectorFromReader reads a FlatBuffers vector of GetReadVersionReply.
-func ParseGetReadVersionReplyVectorFromReader(r *wire.Reader, slot int) []GetReadVersionReply {
+// ParseGetReadVersionReplyVectorFromReader reads a FlatBuffers vector of GetReadVersionReply under one decode budget.
+func ParseGetReadVersionReplyVectorFromReader(r *wire.Reader, slot int) ([]GetReadVersionReply, error) {
+	b := wire.NewDecodeBudget(r.RawData())
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
+	if err == nil {
+		err = b.Take(count)
 	}
-	result := make([]GetReadVersionReply, 0, count)
-	for i := 0; i < count; i++ {
+	if err != nil {
+		return nil, &wire.DecodeError{Type: "[]GetReadVersionReply", Err: err}
+	}
+	if count == 0 {
+		return nil, nil
+	}
+	result := make([]GetReadVersionReply, count)
+	for i := range result {
 		elemR, err := r.ReadVectorElementReader(slot, i)
 		if err != nil {
-			continue
+			return nil, &wire.DecodeError{Type: "[]GetReadVersionReply", Err: err}
 		}
-		var elem GetReadVersionReply
-		elem.UnmarshalFromReader(elemR)
-		result = append(result, elem)
+		if err := result[i].decode(elemR, &b); err != nil {
+			return nil, err
+		}
 	}
-	return result
+	return result, nil
 }

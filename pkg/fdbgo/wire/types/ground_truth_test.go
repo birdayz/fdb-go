@@ -20,7 +20,7 @@ type testVectorEntry struct {
 	Hex        string `json:"hex"`
 }
 
-func loadTestVectors(t *testing.T) []testVectorEntry {
+func loadTestVectors(t testing.TB) []testVectorEntry {
 	t.Helper()
 	data, err := os.ReadFile("testdata.json")
 	if err != nil {
@@ -38,7 +38,7 @@ func loadTestVectors(t *testing.T) []testVectorEntry {
 // vectorBytes decodes the hex payload and, for request vectors, strips the
 // 8-byte IncludeVersion protocol prefix (bytes [6]=0xDB, [7]=0x0F). Reply
 // vectors are serialized with AssumeVersion and carry no prefix.
-func vectorBytes(t *testing.T, vec testVectorEntry) []byte {
+func vectorBytes(t testing.TB, vec testVectorEntry) []byte {
 	t.Helper()
 	raw, err := hex.DecodeString(vec.Hex)
 	if err != nil {

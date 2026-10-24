@@ -47,36 +47,10 @@ type GetReadVersionRequest struct {
 	MaxVersion       int64                 // slot 7
 }
 
-func (m *GetReadVersionRequest) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(GetReadVersionRequestSlotTransactionCount) {
-		m.TransactionCount = r.ReadUint32(GetReadVersionRequestSlotTransactionCount)
-	}
-	if r.FieldPresent(GetReadVersionRequestSlotFlags) {
-		m.Flags = r.ReadUint32(GetReadVersionRequestSlotFlags)
-	}
-	if count, err := r.ReadVectorCount(GetReadVersionRequestSlotTags); err == nil && count > 0 {
-		m.Tags = make([]TransactionTagCount, 0, count)
-		for i := 0; i < count; i++ {
-			if elemR, err := r.ReadVectorElementReader(GetReadVersionRequestSlotTags, i); err == nil {
-				var elem TransactionTagCount
-				elem.UnmarshalFromReader(elemR)
-				m.Tags = append(m.Tags, elem)
-			}
-		}
-	}
-	if r.FieldPresent(GetReadVersionRequestSlotDebugID) && r.ReadUint8(GetReadVersionRequestSlotDebugID) > 0 {
-		copy(m.DebugID[:], r.ReadRelOffRaw(GetReadVersionRequestSlotDebugID+1, 16))
-		m.HasDebugID = true
-	}
-	if nr, err := r.ReadNestedReader(GetReadVersionRequestSlotReply); err == nil {
-		m.Reply.UnmarshalFromReader(nr)
-	}
-	if nr, err := r.ReadNestedReader(GetReadVersionRequestSlotSpanContext); err == nil {
-		m.SpanContext.UnmarshalFromReader(nr)
-	}
-	if r.FieldPresent(GetReadVersionRequestSlotMaxVersion) {
-		m.MaxVersion = r.ReadInt64(GetReadVersionRequestSlotMaxVersion)
-	}
+// UnmarshalFromReader decodes m from r; on error m holds a partial decode.
+func (m *GetReadVersionRequest) UnmarshalFromReader(r *wire.Reader) error {
+	b := wire.NewDecodeBudget(r.RawData())
+	return m.decode(r, &b)
 }
 
 func (m *GetReadVersionRequest) UnmarshalFDB(data []byte) error {
@@ -84,34 +58,65 @@ func (m *GetReadVersionRequest) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
+	b := wire.NewDecodeBudget(data)
+	return m.decode(r, &b)
+}
+
+func (m *GetReadVersionRequest) decode(r *wire.Reader, b *wire.DecodeBudget) error {
 	if r.FieldPresent(GetReadVersionRequestSlotTransactionCount) {
 		m.TransactionCount = r.ReadUint32(GetReadVersionRequestSlotTransactionCount)
 	}
 	if r.FieldPresent(GetReadVersionRequestSlotFlags) {
 		m.Flags = r.ReadUint32(GetReadVersionRequestSlotFlags)
 	}
-	if count, err := r.ReadVectorCount(GetReadVersionRequestSlotTags); err == nil && count > 0 {
-		m.Tags = make([]TransactionTagCount, 0, count)
-		for i := 0; i < count; i++ {
-			if elemR, err := r.ReadVectorElementReader(GetReadVersionRequestSlotTags, i); err == nil {
-				var elem TransactionTagCount
-				elem.UnmarshalFromReader(elemR)
-				m.Tags = append(m.Tags, elem)
+	if r.FieldPresent(GetReadVersionRequestSlotTags) {
+		count, err := r.ReadVectorCount(GetReadVersionRequestSlotTags)
+		if err == nil {
+			err = b.Take(count)
+		}
+		if err != nil {
+			return &wire.DecodeError{Type: "GetReadVersionRequest", Field: "Tags", Err: err}
+		}
+		if count > 0 {
+			m.Tags = make([]TransactionTagCount, count)
+			for i := range m.Tags {
+				elemR, err := r.ReadVectorElementReader(GetReadVersionRequestSlotTags, i)
+				if err != nil {
+					return &wire.DecodeError{Type: "GetReadVersionRequest", Field: "Tags", Err: err}
+				}
+				if err := m.Tags[i].decode(elemR, b); err != nil {
+					return err
+				}
 			}
 		}
 	}
-	if r.FieldPresent(GetReadVersionRequestSlotDebugID) && r.ReadUint8(GetReadVersionRequestSlotDebugID) > 0 {
+	if r.FieldPresent(GetReadVersionRequestSlotDebugID) && r.ReadUint8(GetReadVersionRequestSlotDebugID) == 1 && r.FieldPresent(GetReadVersionRequestSlotDebugID+1) {
 		copy(m.DebugID[:], r.ReadRelOffRaw(GetReadVersionRequestSlotDebugID+1, 16))
 		m.HasDebugID = true
 	}
-	if nr, err := r.ReadNestedReader(GetReadVersionRequestSlotReply); err == nil {
-		m.Reply.UnmarshalFromReader(nr)
+	if r.FieldPresent(GetReadVersionRequestSlotReply) {
+		nr, err := r.ReadNestedReader(GetReadVersionRequestSlotReply)
+		if err != nil {
+			return &wire.DecodeError{Type: "GetReadVersionRequest", Field: "Reply", Err: err}
+		}
+		if err := m.Reply.decode(nr, b); err != nil {
+			return err
+		}
 	}
-	if nr, err := r.ReadNestedReader(GetReadVersionRequestSlotSpanContext); err == nil {
-		m.SpanContext.UnmarshalFromReader(nr)
+	if r.FieldPresent(GetReadVersionRequestSlotSpanContext) {
+		nr, err := r.ReadNestedReader(GetReadVersionRequestSlotSpanContext)
+		if err != nil {
+			return &wire.DecodeError{Type: "GetReadVersionRequest", Field: "SpanContext", Err: err}
+		}
+		if err := m.SpanContext.decode(nr, b); err != nil {
+			return err
+		}
 	}
 	if r.FieldPresent(GetReadVersionRequestSlotMaxVersion) {
 		m.MaxVersion = r.ReadInt64(GetReadVersionRequestSlotMaxVersion)
+	}
+	if err := r.Err(); err != nil {
+		return &wire.DecodeError{Type: "GetReadVersionRequest", Err: err}
 	}
 	return nil
 }
@@ -323,21 +328,28 @@ func (m *GetReadVersionRequest) MarshalFDBPooled(dst []byte) []byte {
 	return buf
 }
 
-// ParseGetReadVersionRequestVectorFromReader reads a FlatBuffers vector of GetReadVersionRequest.
-func ParseGetReadVersionRequestVectorFromReader(r *wire.Reader, slot int) []GetReadVersionRequest {
+// ParseGetReadVersionRequestVectorFromReader reads a FlatBuffers vector of GetReadVersionRequest under one decode budget.
+func ParseGetReadVersionRequestVectorFromReader(r *wire.Reader, slot int) ([]GetReadVersionRequest, error) {
+	b := wire.NewDecodeBudget(r.RawData())
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
+	if err == nil {
+		err = b.Take(count)
 	}
-	result := make([]GetReadVersionRequest, 0, count)
-	for i := 0; i < count; i++ {
+	if err != nil {
+		return nil, &wire.DecodeError{Type: "[]GetReadVersionRequest", Err: err}
+	}
+	if count == 0 {
+		return nil, nil
+	}
+	result := make([]GetReadVersionRequest, count)
+	for i := range result {
 		elemR, err := r.ReadVectorElementReader(slot, i)
 		if err != nil {
-			continue
+			return nil, &wire.DecodeError{Type: "[]GetReadVersionRequest", Err: err}
 		}
-		var elem GetReadVersionRequest
-		elem.UnmarshalFromReader(elemR)
-		result = append(result, elem)
+		if err := result[i].decode(elemR, &b); err != nil {
+			return nil, err
+		}
 	}
-	return result
+	return result, nil
 }

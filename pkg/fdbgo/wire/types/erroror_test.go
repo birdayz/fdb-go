@@ -132,7 +132,9 @@ func TestMarshalErrorOrInlineError_RoundTrip(t *testing.T) {
 		}
 		// Penalty (slot 0) round-trips.
 		var reply GetValueReply
-		reply.UnmarshalFromReader(r)
+		if err := reply.UnmarshalFromReader(r); err != nil {
+			t.Fatalf("code %d: UnmarshalFromReader: %v", code, err)
+		}
 		if reply.Penalty != 1.5 {
 			t.Errorf("code %d: Penalty = %v, want 1.5", code, reply.Penalty)
 		}

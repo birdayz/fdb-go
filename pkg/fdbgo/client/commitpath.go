@@ -555,7 +555,9 @@ func parseCommitOutcome(data []byte) (commitOutcome, error) {
 		return commitOutcome{}, fmt.Errorf("commit: %w", err)
 	}
 	var reply types.CommitID
-	reply.UnmarshalFromReader(&r)
+	if err := reply.UnmarshalFromReader(&r); err != nil {
+		return commitOutcome{}, fmt.Errorf("commit: %w", err)
+	}
 	// A conflict can arrive IN-BAND: with report_conflicting_keys set, the
 	// proxy replies CommitID{version: invalidVersion, conflictingKRIndices}
 	// instead of an ErrorOr not_committed (CommitProxyServer.actor.cpp:

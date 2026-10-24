@@ -909,7 +909,9 @@ func emptyBatchReply(body []byte) []byte {
 		return body
 	}
 	var reply types.GetKeyValuesReply
-	reply.UnmarshalFromReader(&r)
+	if err := reply.UnmarshalFromReader(&r); err != nil {
+		return body
+	}
 	reply.Data = packKeyValueRefVector(nil)
 	reply.More = false
 	return types.MarshalErrorOrValueGetKeyValuesReply(&reply)

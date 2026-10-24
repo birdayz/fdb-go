@@ -162,7 +162,9 @@ func TestDecodeMatchesRequestsWithReplies(t *testing.T) {
 		t.Fatal(err)
 	}
 	var want types.GetReadVersionRequest
-	want.UnmarshalFromReader(r)
+	if err := want.UnmarshalFromReader(r); err != nil {
+		t.Fatal(err)
+	}
 	grv, cm := trace.Requests[0], trace.Requests[1]
 	if grv.Kind != KindGRV || grv.SentNS != 1000 || grv.ReplyNS != 4000 || grv.Version != 0x123456789a || grv.TxnCount != want.TransactionCount {
 		t.Fatalf("GRV = %+v", grv)
@@ -248,7 +250,9 @@ func grvFrames(t *testing.T, n int) [][]byte {
 			t.Fatal(err)
 		}
 		var m types.GetReadVersionRequest
-		m.UnmarshalFromReader(r)
+		if err := m.UnmarshalFromReader(r); err != nil {
+			t.Fatal(err)
+		}
 		m.Reply.Token[0] = byte(i + 1) // distinct reply tokens
 		frames = append(frames, fdbFrame(bytes.Repeat([]byte{7}, 16), m.MarshalFDB()))
 	}
@@ -437,12 +441,21 @@ func TestDecodeFailedCommitReplies(t *testing.T) {
 	v := loadVectors(t)
 	commitReq := v["CommitTransactionRequest_single_set"]
 	lo := [4]byte{127, 0, 0, 1}
+	// A committed reply whose version lies past the buffer does not decode.
+	pastVersion := unhex(t, v["CommitID_committed"].Hex)
+	var r wire.Reader
+	if err := wire.ReadErrorOrInto(pastVersion, &r); err != nil {
+		t.Fatal(err)
+	}
+	vtable := r.ObjectPos() - int(int32(binary.LittleEndian.Uint32(pastVersion[r.ObjectPos():])))
+	binary.LittleEndian.PutUint16(pastVersion[vtable+4+2*types.CommitIDSlotVersion:], 0xFFF0)
 	for _, tc := range []struct {
 		name  string
 		reply []byte
 	}{
 		{"conflict", unhex(t, v["CommitID_conflict"].Hex)},
 		{"malformed", []byte{1, 2, 3}},
+		{"version past the buffer", pastVersion},
 	} {
 		up := Flow{Endpoint{lo, 50020}, Endpoint{lo, 4721}}
 		down := Flow{up.Dst, up.Src}

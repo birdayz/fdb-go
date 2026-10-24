@@ -405,10 +405,12 @@ go_test(
 
 # gazelle:exclude conn_identity_unit_test.go
 # gazelle:exclude location_cache_unit_test.go
+# gazelle:exclude decode_failure_unit_test.go
 go_test(
     name = "conn_location_unit_test",
     srcs = [
         "conn_identity_unit_test.go",
+        "decode_failure_unit_test.go",
         "location_cache_unit_test.go",
     ],
     data = ["//pkg/fdbgo/wire/types:testdata.json"],

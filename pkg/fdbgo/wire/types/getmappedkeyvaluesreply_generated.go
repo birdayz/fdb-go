@@ -50,38 +50,10 @@ type GetMappedKeyValuesReply struct {
 	Arena    []byte              // slot 7
 }
 
-func (m *GetMappedKeyValuesReply) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(GetMappedKeyValuesReplySlotPenalty) {
-		m.Penalty = r.ReadFloat64(GetMappedKeyValuesReplySlotPenalty)
-	}
-	if r.FieldPresent(GetMappedKeyValuesReplySlotError) && r.ReadUint8(GetMappedKeyValuesReplySlotError) > 0 {
-		if nr, err := r.ReadNestedReader(GetMappedKeyValuesReplySlotError + 1); err == nil {
-			m.Error.UnmarshalFromReader(nr)
-		}
-		m.HasError = true
-	}
-	if count, err := r.ReadVectorCount(GetMappedKeyValuesReplySlotData); err == nil && count > 0 {
-		m.Data = make([]MappedKeyValueRef, 0, count)
-		for i := 0; i < count; i++ {
-			if elemR, err := r.ReadVectorElementReader(GetMappedKeyValuesReplySlotData, i); err == nil {
-				var elem MappedKeyValueRef
-				elem.UnmarshalFromReader(elemR)
-				m.Data = append(m.Data, elem)
-			}
-		}
-	}
-	if r.FieldPresent(GetMappedKeyValuesReplySlotVersion) {
-		m.Version = r.ReadInt64(GetMappedKeyValuesReplySlotVersion)
-	}
-	if r.FieldPresent(GetMappedKeyValuesReplySlotMore) {
-		m.More = r.ReadBool(GetMappedKeyValuesReplySlotMore)
-	}
-	if r.FieldPresent(GetMappedKeyValuesReplySlotCached) {
-		m.Cached = r.ReadBool(GetMappedKeyValuesReplySlotCached)
-	}
-	if r.FieldPresent(GetMappedKeyValuesReplySlotArena) {
-		m.Arena = r.ReadBytes(GetMappedKeyValuesReplySlotArena)
-	}
+// UnmarshalFromReader decodes m from r; on error m holds a partial decode.
+func (m *GetMappedKeyValuesReply) UnmarshalFromReader(r *wire.Reader) error {
+	b := wire.NewDecodeBudget(r.RawData())
+	return m.decode(r, &b)
 }
 
 func (m *GetMappedKeyValuesReply) UnmarshalFDB(data []byte) error {
@@ -89,22 +61,42 @@ func (m *GetMappedKeyValuesReply) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
+	b := wire.NewDecodeBudget(data)
+	return m.decode(r, &b)
+}
+
+func (m *GetMappedKeyValuesReply) decode(r *wire.Reader, b *wire.DecodeBudget) error {
 	if r.FieldPresent(GetMappedKeyValuesReplySlotPenalty) {
 		m.Penalty = r.ReadFloat64(GetMappedKeyValuesReplySlotPenalty)
 	}
-	if r.FieldPresent(GetMappedKeyValuesReplySlotError) && r.ReadUint8(GetMappedKeyValuesReplySlotError) > 0 {
-		if nr, err := r.ReadNestedReader(GetMappedKeyValuesReplySlotError + 1); err == nil {
-			m.Error.UnmarshalFromReader(nr)
+	if r.FieldPresent(GetMappedKeyValuesReplySlotError) && r.ReadUint8(GetMappedKeyValuesReplySlotError) == 1 && r.FieldPresent(GetMappedKeyValuesReplySlotError+1) {
+		nr, err := r.ReadNestedReader(GetMappedKeyValuesReplySlotError + 1)
+		if err != nil {
+			return &wire.DecodeError{Type: "GetMappedKeyValuesReply", Field: "Error", Err: err}
+		}
+		if err := m.Error.decode(nr, b); err != nil {
+			return err
 		}
 		m.HasError = true
 	}
-	if count, err := r.ReadVectorCount(GetMappedKeyValuesReplySlotData); err == nil && count > 0 {
-		m.Data = make([]MappedKeyValueRef, 0, count)
-		for i := 0; i < count; i++ {
-			if elemR, err := r.ReadVectorElementReader(GetMappedKeyValuesReplySlotData, i); err == nil {
-				var elem MappedKeyValueRef
-				elem.UnmarshalFromReader(elemR)
-				m.Data = append(m.Data, elem)
+	if r.FieldPresent(GetMappedKeyValuesReplySlotData) {
+		count, err := r.ReadVectorCount(GetMappedKeyValuesReplySlotData)
+		if err == nil {
+			err = b.Take(count)
+		}
+		if err != nil {
+			return &wire.DecodeError{Type: "GetMappedKeyValuesReply", Field: "Data", Err: err}
+		}
+		if count > 0 {
+			m.Data = make([]MappedKeyValueRef, count)
+			for i := range m.Data {
+				elemR, err := r.ReadVectorElementReader(GetMappedKeyValuesReplySlotData, i)
+				if err != nil {
+					return &wire.DecodeError{Type: "GetMappedKeyValuesReply", Field: "Data", Err: err}
+				}
+				if err := m.Data[i].decode(elemR, b); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -119,6 +111,9 @@ func (m *GetMappedKeyValuesReply) UnmarshalFDB(data []byte) error {
 	}
 	if r.FieldPresent(GetMappedKeyValuesReplySlotArena) {
 		m.Arena = r.ReadBytes(GetMappedKeyValuesReplySlotArena)
+	}
+	if err := r.Err(); err != nil {
+		return &wire.DecodeError{Type: "GetMappedKeyValuesReply", Err: err}
 	}
 	return nil
 }
@@ -322,21 +317,28 @@ func (m *GetMappedKeyValuesReply) MarshalFDBPooled(dst []byte) []byte {
 	return buf
 }
 
-// ParseGetMappedKeyValuesReplyVectorFromReader reads a FlatBuffers vector of GetMappedKeyValuesReply.
-func ParseGetMappedKeyValuesReplyVectorFromReader(r *wire.Reader, slot int) []GetMappedKeyValuesReply {
+// ParseGetMappedKeyValuesReplyVectorFromReader reads a FlatBuffers vector of GetMappedKeyValuesReply under one decode budget.
+func ParseGetMappedKeyValuesReplyVectorFromReader(r *wire.Reader, slot int) ([]GetMappedKeyValuesReply, error) {
+	b := wire.NewDecodeBudget(r.RawData())
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
+	if err == nil {
+		err = b.Take(count)
 	}
-	result := make([]GetMappedKeyValuesReply, 0, count)
-	for i := 0; i < count; i++ {
+	if err != nil {
+		return nil, &wire.DecodeError{Type: "[]GetMappedKeyValuesReply", Err: err}
+	}
+	if count == 0 {
+		return nil, nil
+	}
+	result := make([]GetMappedKeyValuesReply, count)
+	for i := range result {
 		elemR, err := r.ReadVectorElementReader(slot, i)
 		if err != nil {
-			continue
+			return nil, &wire.DecodeError{Type: "[]GetMappedKeyValuesReply", Err: err}
 		}
-		var elem GetMappedKeyValuesReply
-		elem.UnmarshalFromReader(elemR)
-		result = append(result, elem)
+		if err := result[i].decode(elemR, &b); err != nil {
+			return nil, err
+		}
 	}
-	return result
+	return result, nil
 }

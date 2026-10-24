@@ -22,13 +22,10 @@ type TransactionTagCount struct {
 	Count uint32 // slot 1
 }
 
-func (m *TransactionTagCount) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(TransactionTagCountSlotTag) {
-		m.Tag = r.ReadBytes(TransactionTagCountSlotTag)
-	}
-	if r.FieldPresent(TransactionTagCountSlotCount) {
-		m.Count = r.ReadUint32(TransactionTagCountSlotCount)
-	}
+// UnmarshalFromReader decodes m from r; on error m holds a partial decode.
+func (m *TransactionTagCount) UnmarshalFromReader(r *wire.Reader) error {
+	b := wire.NewDecodeBudget(r.RawData())
+	return m.decode(r, &b)
 }
 
 func (m *TransactionTagCount) UnmarshalFDB(data []byte) error {
@@ -36,11 +33,19 @@ func (m *TransactionTagCount) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
+	b := wire.NewDecodeBudget(data)
+	return m.decode(r, &b)
+}
+
+func (m *TransactionTagCount) decode(r *wire.Reader, b *wire.DecodeBudget) error {
 	if r.FieldPresent(TransactionTagCountSlotTag) {
 		m.Tag = r.ReadBytes(TransactionTagCountSlotTag)
 	}
 	if r.FieldPresent(TransactionTagCountSlotCount) {
 		m.Count = r.ReadUint32(TransactionTagCountSlotCount)
+	}
+	if err := r.Err(); err != nil {
+		return &wire.DecodeError{Type: "TransactionTagCount", Err: err}
 	}
 	return nil
 }
@@ -82,21 +87,28 @@ func (m *TransactionTagCount) writeToBuffer(wb *wire.WriteToBuffer, vtableStart 
 	return selfStart
 }
 
-// ParseTransactionTagCountVectorFromReader reads a FlatBuffers vector of TransactionTagCount.
-func ParseTransactionTagCountVectorFromReader(r *wire.Reader, slot int) []TransactionTagCount {
+// ParseTransactionTagCountVectorFromReader reads a FlatBuffers vector of TransactionTagCount under one decode budget.
+func ParseTransactionTagCountVectorFromReader(r *wire.Reader, slot int) ([]TransactionTagCount, error) {
+	b := wire.NewDecodeBudget(r.RawData())
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
+	if err == nil {
+		err = b.Take(count)
 	}
-	result := make([]TransactionTagCount, 0, count)
-	for i := 0; i < count; i++ {
+	if err != nil {
+		return nil, &wire.DecodeError{Type: "[]TransactionTagCount", Err: err}
+	}
+	if count == 0 {
+		return nil, nil
+	}
+	result := make([]TransactionTagCount, count)
+	for i := range result {
 		elemR, err := r.ReadVectorElementReader(slot, i)
 		if err != nil {
-			continue
+			return nil, &wire.DecodeError{Type: "[]TransactionTagCount", Err: err}
 		}
-		var elem TransactionTagCount
-		elem.UnmarshalFromReader(elemR)
-		result = append(result, elem)
+		if err := result[i].decode(elemR, &b); err != nil {
+			return nil, err
+		}
 	}
-	return result
+	return result, nil
 }

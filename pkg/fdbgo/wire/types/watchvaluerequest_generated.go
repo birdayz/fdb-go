@@ -51,34 +51,10 @@ type WatchValueRequest struct {
 	TenantInfo  TenantInfo   // slot 10, nested
 }
 
-func (m *WatchValueRequest) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(WatchValueRequestSlotKey) {
-		m.Key = r.ReadBytes(WatchValueRequestSlotKey)
-	}
-	if r.FieldPresent(WatchValueRequestSlotValue) && r.ReadUint8(WatchValueRequestSlotValue) > 0 {
-		m.Value = r.ReadBytes(WatchValueRequestSlotValue + 1)
-		m.HasValue = true
-	}
-	if r.FieldPresent(WatchValueRequestSlotVersion) {
-		m.Version = r.ReadInt64(WatchValueRequestSlotVersion)
-	}
-	if r.FieldPresent(WatchValueRequestSlotTags) && r.ReadUint8(WatchValueRequestSlotTags) > 0 {
-		m.Tags = r.ReadBytes(WatchValueRequestSlotTags + 1)
-		m.HasTags = true
-	}
-	if r.FieldPresent(WatchValueRequestSlotDebugID) && r.ReadUint8(WatchValueRequestSlotDebugID) > 0 {
-		copy(m.DebugID[:], r.ReadRelOffRaw(WatchValueRequestSlotDebugID+1, 16))
-		m.HasDebugID = true
-	}
-	if nr, err := r.ReadNestedReader(WatchValueRequestSlotReply); err == nil {
-		m.Reply.UnmarshalFromReader(nr)
-	}
-	if nr, err := r.ReadNestedReader(WatchValueRequestSlotSpanContext); err == nil {
-		m.SpanContext.UnmarshalFromReader(nr)
-	}
-	if nr, err := r.ReadNestedReader(WatchValueRequestSlotTenantInfo); err == nil {
-		m.TenantInfo.UnmarshalFromReader(nr)
-	}
+// UnmarshalFromReader decodes m from r; on error m holds a partial decode.
+func (m *WatchValueRequest) UnmarshalFromReader(r *wire.Reader) error {
+	b := wire.NewDecodeBudget(r.RawData())
+	return m.decode(r, &b)
 }
 
 func (m *WatchValueRequest) UnmarshalFDB(data []byte) error {
@@ -86,32 +62,58 @@ func (m *WatchValueRequest) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
+	b := wire.NewDecodeBudget(data)
+	return m.decode(r, &b)
+}
+
+func (m *WatchValueRequest) decode(r *wire.Reader, b *wire.DecodeBudget) error {
 	if r.FieldPresent(WatchValueRequestSlotKey) {
 		m.Key = r.ReadBytes(WatchValueRequestSlotKey)
 	}
-	if r.FieldPresent(WatchValueRequestSlotValue) && r.ReadUint8(WatchValueRequestSlotValue) > 0 {
+	if r.FieldPresent(WatchValueRequestSlotValue) && r.ReadUint8(WatchValueRequestSlotValue) == 1 && r.FieldPresent(WatchValueRequestSlotValue+1) {
 		m.Value = r.ReadBytes(WatchValueRequestSlotValue + 1)
 		m.HasValue = true
 	}
 	if r.FieldPresent(WatchValueRequestSlotVersion) {
 		m.Version = r.ReadInt64(WatchValueRequestSlotVersion)
 	}
-	if r.FieldPresent(WatchValueRequestSlotTags) && r.ReadUint8(WatchValueRequestSlotTags) > 0 {
+	if r.FieldPresent(WatchValueRequestSlotTags) && r.ReadUint8(WatchValueRequestSlotTags) == 1 && r.FieldPresent(WatchValueRequestSlotTags+1) {
 		m.Tags = r.ReadBytes(WatchValueRequestSlotTags + 1)
 		m.HasTags = true
 	}
-	if r.FieldPresent(WatchValueRequestSlotDebugID) && r.ReadUint8(WatchValueRequestSlotDebugID) > 0 {
+	if r.FieldPresent(WatchValueRequestSlotDebugID) && r.ReadUint8(WatchValueRequestSlotDebugID) == 1 && r.FieldPresent(WatchValueRequestSlotDebugID+1) {
 		copy(m.DebugID[:], r.ReadRelOffRaw(WatchValueRequestSlotDebugID+1, 16))
 		m.HasDebugID = true
 	}
-	if nr, err := r.ReadNestedReader(WatchValueRequestSlotReply); err == nil {
-		m.Reply.UnmarshalFromReader(nr)
+	if r.FieldPresent(WatchValueRequestSlotReply) {
+		nr, err := r.ReadNestedReader(WatchValueRequestSlotReply)
+		if err != nil {
+			return &wire.DecodeError{Type: "WatchValueRequest", Field: "Reply", Err: err}
+		}
+		if err := m.Reply.decode(nr, b); err != nil {
+			return err
+		}
 	}
-	if nr, err := r.ReadNestedReader(WatchValueRequestSlotSpanContext); err == nil {
-		m.SpanContext.UnmarshalFromReader(nr)
+	if r.FieldPresent(WatchValueRequestSlotSpanContext) {
+		nr, err := r.ReadNestedReader(WatchValueRequestSlotSpanContext)
+		if err != nil {
+			return &wire.DecodeError{Type: "WatchValueRequest", Field: "SpanContext", Err: err}
+		}
+		if err := m.SpanContext.decode(nr, b); err != nil {
+			return err
+		}
 	}
-	if nr, err := r.ReadNestedReader(WatchValueRequestSlotTenantInfo); err == nil {
-		m.TenantInfo.UnmarshalFromReader(nr)
+	if r.FieldPresent(WatchValueRequestSlotTenantInfo) {
+		nr, err := r.ReadNestedReader(WatchValueRequestSlotTenantInfo)
+		if err != nil {
+			return &wire.DecodeError{Type: "WatchValueRequest", Field: "TenantInfo", Err: err}
+		}
+		if err := m.TenantInfo.decode(nr, b); err != nil {
+			return err
+		}
+	}
+	if err := r.Err(); err != nil {
+		return &wire.DecodeError{Type: "WatchValueRequest", Err: err}
 	}
 	return nil
 }
@@ -312,21 +314,28 @@ func (m *WatchValueRequest) MarshalFDBPooled(dst []byte) []byte {
 	return buf
 }
 
-// ParseWatchValueRequestVectorFromReader reads a FlatBuffers vector of WatchValueRequest.
-func ParseWatchValueRequestVectorFromReader(r *wire.Reader, slot int) []WatchValueRequest {
+// ParseWatchValueRequestVectorFromReader reads a FlatBuffers vector of WatchValueRequest under one decode budget.
+func ParseWatchValueRequestVectorFromReader(r *wire.Reader, slot int) ([]WatchValueRequest, error) {
+	b := wire.NewDecodeBudget(r.RawData())
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
+	if err == nil {
+		err = b.Take(count)
 	}
-	result := make([]WatchValueRequest, 0, count)
-	for i := 0; i < count; i++ {
+	if err != nil {
+		return nil, &wire.DecodeError{Type: "[]WatchValueRequest", Err: err}
+	}
+	if count == 0 {
+		return nil, nil
+	}
+	result := make([]WatchValueRequest, count)
+	for i := range result {
 		elemR, err := r.ReadVectorElementReader(slot, i)
 		if err != nil {
-			continue
+			return nil, &wire.DecodeError{Type: "[]WatchValueRequest", Err: err}
 		}
-		var elem WatchValueRequest
-		elem.UnmarshalFromReader(elemR)
-		result = append(result, elem)
+		if err := result[i].decode(elemR, &b); err != nil {
+			return nil, err
+		}
 	}
-	return result
+	return result, nil
 }

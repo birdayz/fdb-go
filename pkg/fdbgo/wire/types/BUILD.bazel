@@ -9,6 +9,7 @@ go_library(
         "commitproxyinterface_generated.go",
         "committransactionref_generated.go",
         "committransactionrequest_generated.go",
+        "decoders_generated.go",
         "doc.go",
         "endpoint_generated.go",
         "error_generated.go",
@@ -66,6 +67,7 @@ go_test(
     srcs = [
         "bench_test.go",
         "commit_marshal_test.go",
+        "decode_failure_test.go",
         "erroror_test.go",
         "gkslr_manual_test.go",
         "ground_truth_test.go",

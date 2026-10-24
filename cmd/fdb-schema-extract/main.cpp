@@ -246,22 +246,33 @@ struct GoEmitterV5 {
         if (hasCustomSerialize) {
             // hasCustomSerialize only matches KeyRangeRef today; keep the file
             // name literal until a second custom type exists.
-            fprintf(f, "// UnmarshalFromReader / UnmarshalFDB are defined in keyrangeref_custom.go to\n");
+            fprintf(f, "// UnmarshalFromReader / UnmarshalFDB / decode are defined in keyrangeref_custom.go to\n");
             fprintf(f, "// invert the C++ single-key-range serialize optimization. The generator\n");
             fprintf(f, "// (cmd/fdb-schema-extract/main.cpp) skips them when hasCustomSerialize is true.\n\n");
         }
 
-        // UnmarshalFromReader.
+        // UnmarshalFromReader / UnmarshalFDB start one decode budget for the whole
+        // buffer; decode carries it through every nested table and vector.
         if (!hasCustomSerialize) {
-            fprintf(f, "func (m *%s) UnmarshalFromReader(r *wire.Reader) {\n", typeName);
-            emitReads(typeName, fields, "r");
+            fprintf(f, "// UnmarshalFromReader decodes m from r; on error m holds a partial decode.\n");
+            fprintf(f, "func (m *%s) UnmarshalFromReader(r *wire.Reader) error {\n", typeName);
+            fprintf(f, "\tb := wire.NewDecodeBudget(r.RawData())\n");
+            fprintf(f, "\treturn m.decode(r, &b)\n");
             fprintf(f, "}\n\n");
 
-            // UnmarshalFDB.
             fprintf(f, "func (m *%s) UnmarshalFDB(data []byte) error {\n", typeName);
             fprintf(f, "\tr, err := wire.NewReader(data)\n");
             fprintf(f, "\tif err != nil { return err }\n");
-            emitReads(typeName, fields, "r");
+            fprintf(f, "\tb := wire.NewDecodeBudget(data)\n");
+            fprintf(f, "\treturn m.decode(r, &b)\n");
+            fprintf(f, "}\n\n");
+
+            fprintf(f, "func (m *%s) decode(r *wire.Reader, b *wire.DecodeBudget) error {\n", typeName);
+            emitReads(typeName, fields);
+            // A present scalar or byte field outside the buffer read as zero or nil.
+            fprintf(f, "\tif err := r.Err(); err != nil {\n");
+            fprintf(f, "\t\treturn &wire.DecodeError{Type: \"%s\", Err: err}\n", typeName);
+            fprintf(f, "\t}\n");
             fprintf(f, "\treturn nil\n}\n\n");
         }
 
@@ -296,12 +307,29 @@ private:
         return 4;
     }
 
-    // ---- UnmarshalFromReader / UnmarshalFDB read logic (same as v4) ----
+    // ---- decode(r, b) read logic ----
+    //
+    // A field the vtable marks absent keeps its zero value (C++ flat_buffers.h:1041-1046).
+    // A present vector or table that does not resolve, or a vector the budget cannot
+    // cover, fails the decode with a wire.DecodeError naming the field.
 
-    void emitReads(const char* typeName, const std::vector<FieldDesc>& fields, const char* rv) {
+    // decodeNested emits the decode of the table behind slotExpr into dst.
+    void decodeNested(const char* indent, const std::string& slotExpr, const std::string& dst,
+                      const std::string& derr) {
+        const char* rv = "r";
+        fprintf(f, "%snr, err := %s.ReadNestedReader(%s)\n", indent, rv, slotExpr.c_str());
+        fprintf(f, "%sif err != nil {\n%s\treturn %s\n%s}\n", indent, indent, derr.c_str(), indent);
+        fprintf(f, "%sif err := %s.decode(nr, b); err != nil {\n%s\treturn err\n%s}\n",
+                indent, dst.c_str(), indent, indent);
+    }
+
+    void emitReads(const char* typeName, const std::vector<FieldDesc>& fields) {
+        const char* rv = "r";
         for (auto& fd : fields) {
             auto gn = fieldGoName(fd);
             auto slot = std::string(typeName) + "Slot" + gn;
+            std::string derr =
+                std::string("&wire.DecodeError{Type: \"") + typeName + "\", Field: \"" + gn + "\", Err: err}";
             switch (fd.kind) {
             case FieldKind::Scalar:
                 fprintf(f, "\tif %s.FieldPresent(%s) {\n", rv, slot.c_str());
@@ -315,27 +343,33 @@ private:
                 fprintf(f, "\t}\n");
                 break;
             case FieldKind::VectorOfStruct:
-                fprintf(f, "\tif count, err := %s.ReadVectorCount(%s); err == nil && count > 0 {\n", rv, slot.c_str());
-                fprintf(f, "\t\tm.%s = make([]%s, 0, count)\n", gn.c_str(), fd.elementGoType);
-                fprintf(f, "\t\tfor i := 0; i < count; i++ {\n");
-                fprintf(f, "\t\t\tif elemR, err := %s.ReadVectorElementReader(%s, i); err == nil {\n", rv, slot.c_str());
-                fprintf(f, "\t\t\t\tvar elem %s\n", fd.elementGoType);
-                fprintf(f, "\t\t\t\telem.UnmarshalFromReader(elemR)\n");
-                fprintf(f, "\t\t\t\tm.%s = append(m.%s, elem)\n", gn.c_str(), gn.c_str());
+                fprintf(f, "\tif %s.FieldPresent(%s) {\n", rv, slot.c_str());
+                fprintf(f, "\t\tcount, err := %s.ReadVectorCount(%s)\n", rv, slot.c_str());
+                fprintf(f, "\t\tif err == nil {\n\t\t\terr = b.Take(count)\n\t\t}\n");
+                fprintf(f, "\t\tif err != nil {\n\t\t\treturn %s\n\t\t}\n", derr.c_str());
+                fprintf(f, "\t\tif count > 0 {\n");
+                fprintf(f, "\t\t\tm.%s = make([]%s, count)\n", gn.c_str(), fd.elementGoType);
+                fprintf(f, "\t\t\tfor i := range m.%s {\n", gn.c_str());
+                fprintf(f, "\t\t\t\telemR, err := %s.ReadVectorElementReader(%s, i)\n", rv, slot.c_str());
+                fprintf(f, "\t\t\t\tif err != nil {\n\t\t\t\t\treturn %s\n\t\t\t\t}\n", derr.c_str());
+                fprintf(f, "\t\t\t\tif err := m.%s[i].decode(elemR, b); err != nil {\n\t\t\t\t\treturn err\n\t\t\t\t}\n",
+                        gn.c_str());
                 fprintf(f, "\t\t\t}\n");
                 fprintf(f, "\t\t}\n");
                 fprintf(f, "\t}\n");
                 break;
             case FieldKind::NestedStruct:
                 if (fd.nestedGoType[0]) {
-                    fprintf(f, "\tif nr, err := %s.ReadNestedReader(%s); err == nil {\n", rv, slot.c_str());
-                    fprintf(f, "\t\tm.%s.UnmarshalFromReader(nr)\n", gn.c_str());
+                    fprintf(f, "\tif %s.FieldPresent(%s) {\n", rv, slot.c_str());
+                    decodeNested("\t\t", slot, "m." + gn, derr);
                     fprintf(f, "\t}\n");
                 }
                 break;
             case FieldKind::Optional:
-                fprintf(f, "\tif %s.FieldPresent(%s) && %s.ReadUint8(%s) > 0 {\n",
-                        rv, slot.c_str(), rv, slot.c_str());
+                // C++ loads the value only for tag 1 with the value slot present
+                // (flat_buffers.h:1022-1037, LoadAlternative :863-886); otherwise empty.
+                fprintf(f, "\tif %s.FieldPresent(%s) && %s.ReadUint8(%s) == 1 && %s.FieldPresent(%s + 1) {\n",
+                        rv, slot.c_str(), rv, slot.c_str(), rv, slot.c_str());
                 if (fd.optScalar && fd.optScalarIsArray) {
                     // Optional<UID>: the union RelativeOffset points at a BARE fixed-size scalar
                     // (no length prefix, unlike ReadBytes). Read raw + copy into the [16]byte array.
@@ -348,10 +382,8 @@ private:
                     fprintf(f, "\t\tm.%s = %s\n", gn.c_str(),
                             bareScalarReadRHS(rv, slot, fd.scalar.goType, fd.size).c_str());
                 } else if (fd.nestedGoType && fd.nestedGoType[0]) {
-                    // Optional<struct>: read as nested reader, unmarshal.
-                    fprintf(f, "\t\tif nr, err := %s.ReadNestedReader(%s + 1); err == nil {\n", rv, slot.c_str());
-                    fprintf(f, "\t\t\tm.%s.UnmarshalFromReader(nr)\n", gn.c_str());
-                    fprintf(f, "\t\t}\n");
+                    // Optional<struct>: the value is a nested table behind the union reloff.
+                    decodeNested("\t\t", slot + " + 1", "m." + gn, derr);
                 } else {
                     fprintf(f, "\t\tm.%s = %s.ReadBytes(%s + 1)\n", gn.c_str(), rv, slot.c_str());
                 }
@@ -359,12 +391,14 @@ private:
                 fprintf(f, "\t}\n");
                 break;
             case FieldKind::Variant:
-                fprintf(f, "\tif %s.FieldPresent(%s) {\n", rv, slot.c_str());
-                fprintf(f, "\t\tm.%sTag = %s.ReadUint8(%s)\n", gn.c_str(), rv, slot.c_str());
-                fprintf(f, "\t\tswitch m.%sTag {\n", gn.c_str());
+                // As for Optional: an unknown tag or an absent value slot leaves the zero value.
+                fprintf(f, "\tif %s.FieldPresent(%s) && %s.FieldPresent(%s + 1) {\n",
+                        rv, slot.c_str(), rv, slot.c_str());
+                fprintf(f, "\t\tswitch %s.ReadUint8(%s) {\n", rv, slot.c_str());
                 for (size_t a = 0; a < fd.variantAlts.size(); a++) {
                     auto& alt = fd.variantAlts[a];
                     fprintf(f, "\t\tcase %zu:\n", a + 1);
+                    fprintf(f, "\t\t\tm.%sTag = %zu\n", gn.c_str(), a + 1);
                     if (alt.kind == FieldKind::Scalar) {
                         // Bare-OOL scalar alternative — shared with the Optional<primitive> arm.
                         // (For the uint32 IPv4 alt this stays byte-identical: no cast needed.)
@@ -374,10 +408,7 @@ private:
                         // Struct alternative: the union RelativeOffset points at a nested
                         // TABLE, so follow it with a nested reader — the same shape as the
                         // Optional<struct> arm above, not the count-prefixed ReadBytes below.
-                        fprintf(f, "\t\t\tif nr, err := %s.ReadNestedReader(%s + 1); err == nil {\n",
-                                rv, slot.c_str());
-                        fprintf(f, "\t\t\t\tm.%sAlt%zu.UnmarshalFromReader(nr)\n", gn.c_str(), a);
-                        fprintf(f, "\t\t\t}\n");
+                        decodeNested("\t\t\t", slot + " + 1", "m." + gn + "Alt" + std::to_string(a), derr);
                     } else if (alt.kind == FieldKind::VectorLike || alt.kind == FieldKind::DynamicSize) {
                         // C++ union vector alternative (use_indirection==true,
                         // flat_buffers.h:872-877): the RelativeOffset points at a
@@ -832,53 +863,60 @@ private:
     // ---- FlatBuffers vector parser (same as v4) ----
 
     void emitFBVectorParser(const char* typeName) {
-        fprintf(f, "// Parse%sVectorFromReader reads a FlatBuffers vector of %s.\n", typeName, typeName);
-        fprintf(f, "func Parse%sVectorFromReader(r *wire.Reader, slot int) []%s {\n", typeName, typeName);
+        std::string derr = std::string("&wire.DecodeError{Type: \"[]") + typeName + "\", Err: err}";
+        fprintf(f, "// Parse%sVectorFromReader reads a FlatBuffers vector of %s under one decode budget.\n",
+                typeName, typeName);
+        fprintf(f, "func Parse%sVectorFromReader(r *wire.Reader, slot int) ([]%s, error) {\n", typeName, typeName);
+        fprintf(f, "\tb := wire.NewDecodeBudget(r.RawData())\n");
         fprintf(f, "\tcount, err := r.ReadVectorCount(slot)\n");
-        fprintf(f, "\tif err != nil || count == 0 { return nil }\n");
-        fprintf(f, "\tresult := make([]%s, 0, count)\n", typeName);
-        fprintf(f, "\tfor i := 0; i < count; i++ {\n");
+        fprintf(f, "\tif err == nil {\n\t\terr = b.Take(count)\n\t}\n");
+        fprintf(f, "\tif err != nil {\n\t\treturn nil, %s\n\t}\n", derr.c_str());
+        fprintf(f, "\tif count == 0 {\n\t\treturn nil, nil\n\t}\n");
+        fprintf(f, "\tresult := make([]%s, count)\n", typeName);
+        fprintf(f, "\tfor i := range result {\n");
         fprintf(f, "\t\telemR, err := r.ReadVectorElementReader(slot, i)\n");
-        fprintf(f, "\t\tif err != nil { continue }\n");
-        fprintf(f, "\t\tvar elem %s\n", typeName);
-        fprintf(f, "\t\telem.UnmarshalFromReader(elemR)\n");
-        fprintf(f, "\t\tresult = append(result, elem)\n");
+        fprintf(f, "\t\tif err != nil {\n\t\t\treturn nil, %s\n\t\t}\n", derr.c_str());
+        fprintf(f, "\t\tif err := result[i].decode(elemR, &b); err != nil {\n\t\t\treturn nil, err\n\t\t}\n");
         fprintf(f, "\t}\n");
-        fprintf(f, "\treturn result\n");
+        fprintf(f, "\treturn result, nil\n");
         fprintf(f, "}\n\n");
     }
 
     // ---- String vector parser (sub-slice instead of make+copy) ----
 
     void emitStringVectorParser(const char* typeName, const std::vector<FieldDesc>& fields) {
+        // C++ dynamic_size_traits<VectorRef<T, VecSerStrategy::String>>::load
+        // (flow/include/flow/Arena.h:1514-1525) reads the count, then each element, and
+        // asserts the elements fill the blob exactly; anything else is an error here.
+        std::string derr = std::string("&wire.DecodeError{Type: \"[]") + typeName +
+                           "\", Err: &wire.StringVectorError{Count: count, Len: len(data)}}";
         fprintf(f, "// Parse%sStringVector decodes a VectorRef<%s, VecSerStrategy::String>.\n", typeName, typeName);
-        fprintf(f, "// Each element's DynamicSize fields are inline: [len(4)][data] per field.\n");
-        fprintf(f, "func Parse%sStringVector(data []byte) []%s {\n", typeName, typeName);
+        fprintf(f, "// Each element's DynamicSize fields are inline: [len(4)][data] per field, and the\n");
+        fprintf(f, "// elements must fill the blob exactly. An empty blob is an empty vector.\n");
+        fprintf(f, "func Parse%sStringVector(data []byte) ([]%s, error) {\n", typeName, typeName);
         int nDynFields = 0;
         for (auto& fd : fields)
             if (fd.size > 0 && fd.kind == FieldKind::DynamicSize) nDynFields++;
-        fprintf(f, "\tif len(data) < 4 { return nil }\n");
-        fprintf(f, "\tcount := binary.LittleEndian.Uint32(data[0:4])\n");
-        fprintf(f, "\tif count == 0 { return nil }\n");
-        fprintf(f, "\t// Cap allocation to prevent OOM from crafted count values.\n");
-        fprintf(f, "\t// Minimum %d bytes per element (4-byte length prefix per field).\n", 4 * nDynFields);
-        fprintf(f, "\tmaxCount := uint32((len(data) - 4) / %d)\n", 4 * nDynFields);
-        fprintf(f, "\tif maxCount == 0 { maxCount = 1 }\n");
-        fprintf(f, "\tallocCount := count\n");
-        fprintf(f, "\tif allocCount > maxCount { allocCount = maxCount }\n");
+        fprintf(f, "\tif len(data) == 0 {\n\t\treturn nil, nil\n\t}\n");
+        fprintf(f, "\tvar count uint32\n");
+        fprintf(f, "\tif len(data) >= 4 {\n\t\tcount = binary.LittleEndian.Uint32(data[0:4])\n\t}\n");
+        fprintf(f, "\t// Each element holds at least one 4-byte length per field.\n");
+        fprintf(f, "\tif len(data) < 4 || uint64(count) > uint64((len(data)-4)/%d) {\n", 4 * nDynFields);
+        fprintf(f, "\t\treturn nil, %s\n\t}\n", derr.c_str());
+        fprintf(f, "\tvar result []%s\n", typeName);
+        fprintf(f, "\tif count > 0 {\n\t\tresult = make([]%s, count)\n\t}\n", typeName);
         fprintf(f, "\tpos := 4\n");
-        fprintf(f, "\tresult := make([]%s, 0, allocCount)\n", typeName);
-        fprintf(f, "\tfor i := uint32(0); i < count; i++ {\n");
-        fprintf(f, "\t\tvar elem %s\n", typeName);
+        fprintf(f, "\tfor i := range result {\n");
+        fprintf(f, "\t\telem := &result[i]\n");
         for (auto& fd : fields) {
             if (fd.size == 0 || fd.kind != FieldKind::DynamicSize) continue;
             auto gn = fieldGoName(fd);
-            fprintf(f, "\t\tif pos+4 > len(data) { break }\n");
+            fprintf(f, "\t\tif pos+4 > len(data) {\n\t\t\treturn nil, %s\n\t\t}\n", derr.c_str());
             fprintf(f, "\t\t{\n");
             fprintf(f, "\t\t\tn := int(binary.LittleEndian.Uint32(data[pos:]))\n");
             fprintf(f, "\t\t\tpos += 4\n");
-            fprintf(f, "\t\t\tif n < 0 || pos+n > len(data) { break }\n");
-            fprintf(f, "\t\t\telem.%s = data[pos:pos+n:pos+n]\n", gn.c_str());
+            fprintf(f, "\t\t\tif n < 0 || n > len(data)-pos {\n\t\t\t\treturn nil, %s\n\t\t\t}\n", derr.c_str());
+            fprintf(f, "\t\t\telem.%s = data[pos : pos+n : pos+n]\n", gn.c_str());
             fprintf(f, "\t\t\tpos += n\n");
             fprintf(f, "\t\t}\n");
         }
@@ -896,9 +934,9 @@ private:
             fprintf(f, "\t\t\telem.End = first\n");
             fprintf(f, "\t\t}\n");
         }
-        fprintf(f, "\t\tresult = append(result, elem)\n");
         fprintf(f, "\t}\n");
-        fprintf(f, "\treturn result\n");
+        fprintf(f, "\tif pos != len(data) {\n\t\treturn nil, %s\n\t}\n", derr.c_str());
+        fprintf(f, "\treturn result, nil\n");
         fprintf(f, "}\n\n");
     }
 };
@@ -906,6 +944,9 @@ private:
 // ============================================================
 // extractType — uses GoEmitterV5
 // ============================================================
+
+// Names of the types extractType generated, in extraction order.
+static std::vector<std::string> g_generatedTypes;
 
 template <class T, bool SkipObjectWriter = false>
 void extractType(const char* outDir, const char* name) {
@@ -980,10 +1021,33 @@ wait:
     close(pipefd[0]);
     int status;
     waitpid(pid, &status, 0);
-    if (WIFEXITED(status) && WEXITSTATUS(status) == 0)
+    if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+        g_generatedTypes.push_back(name);
         fprintf(stderr, "OK %s → %s_generated.go\n", name, lowerName.c_str());
+    }
     else
         fprintf(stderr, "SKIP %s\n", name);
+}
+
+// decoders_generated.go: every generated type's UnmarshalFDB by name, for the raw-bytes
+// fuzzer. Only tests reference it, so the linker drops it from production binaries.
+void emitDecoderRegistry(const char* outDir) {
+    std::string path = std::string(outDir) + "/decoders_generated.go";
+    FILE* out = fopen(path.c_str(), "w");
+    if (!out) { perror(path.c_str()); return; }
+    fprintf(out, "// Code generated by fdb-schema-extract v5 from FDB 7.3.77. DO NOT EDIT.\n\n");
+    fprintf(out, "package types\n\n");
+    fprintf(out, "// generatedDecoders holds every generated type's UnmarshalFDB, in extraction order.\n");
+    fprintf(out, "var generatedDecoders = [...]struct {\n");
+    fprintf(out, "\tname      string\n");
+    fprintf(out, "\tunmarshal func([]byte) error\n");
+    fprintf(out, "}{\n");
+    for (auto& name : g_generatedTypes)
+        fprintf(out, "\t{\"%s\", func(d []byte) error { var m %s; return m.UnmarshalFDB(d) }},\n",
+                name.c_str(), name.c_str());
+    fprintf(out, "}\n");
+    fclose(out);
+    fprintf(stderr, "OK decoder registry → decoders_generated.go (%zu types)\n", g_generatedTypes.size());
 }
 
 // ============================================================
@@ -1587,6 +1651,8 @@ int main(int argc, char** argv) {
 
     using LocationPair = std::pair<KeyRangeRef, std::vector<StorageServerInterface>>;
     extractType<LocationPair>(outDir, "LocationPair");
+
+    emitDecoderRegistry(outDir);
 
     // Generate ground-truth test vectors for Go conformance tests.
     generateTestVectors(outDir);

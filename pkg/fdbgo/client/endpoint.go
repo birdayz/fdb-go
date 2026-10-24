@@ -16,21 +16,37 @@ import (
 func ReadEndpointFromSlot(r *wire.Reader, slot int) (types.Endpoint, error) {
 	var ep types.Endpoint
 	if !r.FieldPresent(slot) {
-		return ep, fmt.Errorf("endpoint slot %d not present", slot)
+		return ep, &endpointAbsentError{slot: slot}
 	}
 	wrapper, err := r.ReadNestedReader(slot)
 	if err != nil {
 		return ep, fmt.Errorf("read endpoint wrapper: %w", err)
 	}
 	if !wrapper.FieldPresent(0) {
-		return ep, fmt.Errorf("endpoint wrapper field 0 absent")
+		return ep, &endpointAbsentError{slot: slot, wrapper: true}
 	}
 	inner, err := wrapper.ReadNestedReader(0)
 	if err != nil {
 		return ep, fmt.Errorf("read endpoint inner: %w", err)
 	}
-	ep.UnmarshalFromReader(inner)
+	if err := ep.UnmarshalFromReader(inner); err != nil {
+		return ep, err
+	}
 	return ep, nil
+}
+
+// endpointAbsentError reports an interface slot, or its RequestStream wrapper,
+// that holds no endpoint; any other ReadEndpointFromSlot error is a malformed one.
+type endpointAbsentError struct {
+	slot    int
+	wrapper bool
+}
+
+func (e *endpointAbsentError) Error() string {
+	if e.wrapper {
+		return fmt.Sprintf("endpoint slot %d: wrapper field 0 absent", e.slot)
+	}
+	return fmt.Sprintf("endpoint slot %d not present", e.slot)
 }
 
 // endpointAddress returns "ip:port" for the endpoint's primary address.

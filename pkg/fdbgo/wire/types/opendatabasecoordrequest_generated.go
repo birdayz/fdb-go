@@ -52,34 +52,10 @@ type OpenDatabaseCoordRequest struct {
 	Internal          bool         // slot 8
 }
 
-func (m *OpenDatabaseCoordRequest) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(OpenDatabaseCoordRequestSlotIssues) {
-		m.Issues = r.ReadBytes(OpenDatabaseCoordRequestSlotIssues)
-	}
-	if r.FieldPresent(OpenDatabaseCoordRequestSlotSupportedVersions) {
-		m.SupportedVersions = r.ReadBytes(OpenDatabaseCoordRequestSlotSupportedVersions)
-	}
-	if r.FieldPresent(OpenDatabaseCoordRequestSlotTraceLogGroup) {
-		m.TraceLogGroup = r.ReadBytes(OpenDatabaseCoordRequestSlotTraceLogGroup)
-	}
-	if r.FieldPresent(OpenDatabaseCoordRequestSlotKnownClientInfoID) {
-		m.KnownClientInfoID = r.ReadUID(OpenDatabaseCoordRequestSlotKnownClientInfoID)
-	}
-	if r.FieldPresent(OpenDatabaseCoordRequestSlotClusterKey) {
-		m.ClusterKey = r.ReadBytes(OpenDatabaseCoordRequestSlotClusterKey)
-	}
-	if r.FieldPresent(OpenDatabaseCoordRequestSlotCoordinators) {
-		m.Coordinators = r.ReadBytes(OpenDatabaseCoordRequestSlotCoordinators)
-	}
-	if nr, err := r.ReadNestedReader(OpenDatabaseCoordRequestSlotReply); err == nil {
-		m.Reply.UnmarshalFromReader(nr)
-	}
-	if r.FieldPresent(OpenDatabaseCoordRequestSlotHostnames) {
-		m.Hostnames = r.ReadBytes(OpenDatabaseCoordRequestSlotHostnames)
-	}
-	if r.FieldPresent(OpenDatabaseCoordRequestSlotInternal) {
-		m.Internal = r.ReadBool(OpenDatabaseCoordRequestSlotInternal)
-	}
+// UnmarshalFromReader decodes m from r; on error m holds a partial decode.
+func (m *OpenDatabaseCoordRequest) UnmarshalFromReader(r *wire.Reader) error {
+	b := wire.NewDecodeBudget(r.RawData())
+	return m.decode(r, &b)
 }
 
 func (m *OpenDatabaseCoordRequest) UnmarshalFDB(data []byte) error {
@@ -87,6 +63,11 @@ func (m *OpenDatabaseCoordRequest) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
+	b := wire.NewDecodeBudget(data)
+	return m.decode(r, &b)
+}
+
+func (m *OpenDatabaseCoordRequest) decode(r *wire.Reader, b *wire.DecodeBudget) error {
 	if r.FieldPresent(OpenDatabaseCoordRequestSlotIssues) {
 		m.Issues = r.ReadBytes(OpenDatabaseCoordRequestSlotIssues)
 	}
@@ -105,14 +86,23 @@ func (m *OpenDatabaseCoordRequest) UnmarshalFDB(data []byte) error {
 	if r.FieldPresent(OpenDatabaseCoordRequestSlotCoordinators) {
 		m.Coordinators = r.ReadBytes(OpenDatabaseCoordRequestSlotCoordinators)
 	}
-	if nr, err := r.ReadNestedReader(OpenDatabaseCoordRequestSlotReply); err == nil {
-		m.Reply.UnmarshalFromReader(nr)
+	if r.FieldPresent(OpenDatabaseCoordRequestSlotReply) {
+		nr, err := r.ReadNestedReader(OpenDatabaseCoordRequestSlotReply)
+		if err != nil {
+			return &wire.DecodeError{Type: "OpenDatabaseCoordRequest", Field: "Reply", Err: err}
+		}
+		if err := m.Reply.decode(nr, b); err != nil {
+			return err
+		}
 	}
 	if r.FieldPresent(OpenDatabaseCoordRequestSlotHostnames) {
 		m.Hostnames = r.ReadBytes(OpenDatabaseCoordRequestSlotHostnames)
 	}
 	if r.FieldPresent(OpenDatabaseCoordRequestSlotInternal) {
 		m.Internal = r.ReadBool(OpenDatabaseCoordRequestSlotInternal)
+	}
+	if err := r.Err(); err != nil {
+		return &wire.DecodeError{Type: "OpenDatabaseCoordRequest", Err: err}
 	}
 	return nil
 }
@@ -290,21 +280,28 @@ func (m *OpenDatabaseCoordRequest) MarshalFDBPooled(dst []byte) []byte {
 	return buf
 }
 
-// ParseOpenDatabaseCoordRequestVectorFromReader reads a FlatBuffers vector of OpenDatabaseCoordRequest.
-func ParseOpenDatabaseCoordRequestVectorFromReader(r *wire.Reader, slot int) []OpenDatabaseCoordRequest {
+// ParseOpenDatabaseCoordRequestVectorFromReader reads a FlatBuffers vector of OpenDatabaseCoordRequest under one decode budget.
+func ParseOpenDatabaseCoordRequestVectorFromReader(r *wire.Reader, slot int) ([]OpenDatabaseCoordRequest, error) {
+	b := wire.NewDecodeBudget(r.RawData())
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
+	if err == nil {
+		err = b.Take(count)
 	}
-	result := make([]OpenDatabaseCoordRequest, 0, count)
-	for i := 0; i < count; i++ {
+	if err != nil {
+		return nil, &wire.DecodeError{Type: "[]OpenDatabaseCoordRequest", Err: err}
+	}
+	if count == 0 {
+		return nil, nil
+	}
+	result := make([]OpenDatabaseCoordRequest, count)
+	for i := range result {
 		elemR, err := r.ReadVectorElementReader(slot, i)
 		if err != nil {
-			continue
+			return nil, &wire.DecodeError{Type: "[]OpenDatabaseCoordRequest", Err: err}
 		}
-		var elem OpenDatabaseCoordRequest
-		elem.UnmarshalFromReader(elemR)
-		result = append(result, elem)
+		if err := result[i].decode(elemR, &b); err != nil {
+			return nil, err
+		}
 	}
-	return result
+	return result, nil
 }

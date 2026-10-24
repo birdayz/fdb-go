@@ -39,21 +39,10 @@ type CommitID struct {
 	ConflictingKRIndices    []byte // slot 5, optional value
 }
 
-func (m *CommitID) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(CommitIDSlotVersion) {
-		m.Version = r.ReadInt64(CommitIDSlotVersion)
-	}
-	if r.FieldPresent(CommitIDSlotTxnBatchId) {
-		m.TxnBatchId = r.ReadUint16(CommitIDSlotTxnBatchId)
-	}
-	if r.FieldPresent(CommitIDSlotMetadataVersion) && r.ReadUint8(CommitIDSlotMetadataVersion) > 0 {
-		m.MetadataVersion = r.ReadBytes(CommitIDSlotMetadataVersion + 1)
-		m.HasMetadataVersion = true
-	}
-	if r.FieldPresent(CommitIDSlotConflictingKRIndices) && r.ReadUint8(CommitIDSlotConflictingKRIndices) > 0 {
-		m.ConflictingKRIndices = r.ReadBytes(CommitIDSlotConflictingKRIndices + 1)
-		m.HasConflictingKRIndices = true
-	}
+// UnmarshalFromReader decodes m from r; on error m holds a partial decode.
+func (m *CommitID) UnmarshalFromReader(r *wire.Reader) error {
+	b := wire.NewDecodeBudget(r.RawData())
+	return m.decode(r, &b)
 }
 
 func (m *CommitID) UnmarshalFDB(data []byte) error {
@@ -61,19 +50,27 @@ func (m *CommitID) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
+	b := wire.NewDecodeBudget(data)
+	return m.decode(r, &b)
+}
+
+func (m *CommitID) decode(r *wire.Reader, b *wire.DecodeBudget) error {
 	if r.FieldPresent(CommitIDSlotVersion) {
 		m.Version = r.ReadInt64(CommitIDSlotVersion)
 	}
 	if r.FieldPresent(CommitIDSlotTxnBatchId) {
 		m.TxnBatchId = r.ReadUint16(CommitIDSlotTxnBatchId)
 	}
-	if r.FieldPresent(CommitIDSlotMetadataVersion) && r.ReadUint8(CommitIDSlotMetadataVersion) > 0 {
+	if r.FieldPresent(CommitIDSlotMetadataVersion) && r.ReadUint8(CommitIDSlotMetadataVersion) == 1 && r.FieldPresent(CommitIDSlotMetadataVersion+1) {
 		m.MetadataVersion = r.ReadBytes(CommitIDSlotMetadataVersion + 1)
 		m.HasMetadataVersion = true
 	}
-	if r.FieldPresent(CommitIDSlotConflictingKRIndices) && r.ReadUint8(CommitIDSlotConflictingKRIndices) > 0 {
+	if r.FieldPresent(CommitIDSlotConflictingKRIndices) && r.ReadUint8(CommitIDSlotConflictingKRIndices) == 1 && r.FieldPresent(CommitIDSlotConflictingKRIndices+1) {
 		m.ConflictingKRIndices = r.ReadBytes(CommitIDSlotConflictingKRIndices + 1)
 		m.HasConflictingKRIndices = true
+	}
+	if err := r.Err(); err != nil {
+		return &wire.DecodeError{Type: "CommitID", Err: err}
 	}
 	return nil
 }
@@ -251,21 +248,28 @@ func (m *CommitID) MarshalFDBPooled(dst []byte) []byte {
 	return buf
 }
 
-// ParseCommitIDVectorFromReader reads a FlatBuffers vector of CommitID.
-func ParseCommitIDVectorFromReader(r *wire.Reader, slot int) []CommitID {
+// ParseCommitIDVectorFromReader reads a FlatBuffers vector of CommitID under one decode budget.
+func ParseCommitIDVectorFromReader(r *wire.Reader, slot int) ([]CommitID, error) {
+	b := wire.NewDecodeBudget(r.RawData())
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
+	if err == nil {
+		err = b.Take(count)
 	}
-	result := make([]CommitID, 0, count)
-	for i := 0; i < count; i++ {
+	if err != nil {
+		return nil, &wire.DecodeError{Type: "[]CommitID", Err: err}
+	}
+	if count == 0 {
+		return nil, nil
+	}
+	result := make([]CommitID, count)
+	for i := range result {
 		elemR, err := r.ReadVectorElementReader(slot, i)
 		if err != nil {
-			continue
+			return nil, &wire.DecodeError{Type: "[]CommitID", Err: err}
 		}
-		var elem CommitID
-		elem.UnmarshalFromReader(elemR)
-		result = append(result, elem)
+		if err := result[i].decode(elemR, &b); err != nil {
+			return nil, err
+		}
 	}
-	return result
+	return result, nil
 }

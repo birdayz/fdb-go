@@ -46,6 +46,7 @@ go_test(
         "conn_writer_turn_linux_test.go",
         "connclosed_error_test.go",
         "endpoint_not_found_test.go",
+        "framing_fuzz_test.go",
         "held_outbox_test.go",
         "monitor_ping_owner_test.go",
         "ping_integration_test.go",
@@ -70,5 +71,6 @@ go_test(
         "//pkg/fdbgo/wire",
         "//pkg/testcontainers/foundationdb",
         "@com_github_onsi_gomega//:gomega",
+        "@com_github_zeebo_xxh3//:xxh3",
     ],
 )

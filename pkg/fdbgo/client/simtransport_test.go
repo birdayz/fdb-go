@@ -263,9 +263,11 @@ func partialBatchReply(body []byte, keep int) []byte {
 		return body
 	}
 	var reply types.GetKeyValuesReply
-	reply.UnmarshalFromReader(&r)
-	kvs := types.ParseKeyValueRefStringVector(reply.Data)
-	if len(kvs) <= keep {
+	if err := reply.UnmarshalFromReader(&r); err != nil {
+		return body
+	}
+	kvs, err := types.ParseKeyValueRefStringVector(reply.Data)
+	if err != nil || len(kvs) <= keep {
 		return body
 	}
 	reply.Data = packKeyValueRefVector(kvs[:keep])
@@ -332,8 +334,8 @@ func TestPartialBatchReply_RoundTrip(t *testing.T) {
 		Cached:  true,
 	}
 	// packKeyValueRefVector must round-trip through the production parser.
-	if got := types.ParseKeyValueRefStringVector(orig.Data); len(got) != 3 {
-		t.Fatalf("packed vector parses to %d rows, want 3", len(got))
+	if got, err := types.ParseKeyValueRefStringVector(orig.Data); err != nil || len(got) != 3 {
+		t.Fatalf("packed vector parses to %d rows (%v), want 3", len(got), err)
 	}
 
 	// Input is an ErrorOr<reply> SUCCESS frame — the shape a storage server sends.
@@ -343,13 +345,15 @@ func TestPartialBatchReply_RoundTrip(t *testing.T) {
 		t.Fatalf("truncated frame is not a success ErrorOr<reply>: %v", err)
 	}
 	var got types.GetKeyValuesReply
-	got.UnmarshalFromReader(&r)
+	if err := got.UnmarshalFromReader(&r); err != nil {
+		t.Fatal(err)
+	}
 	if !got.More {
 		t.Error("More was not flipped to true")
 	}
-	kvs := types.ParseKeyValueRefStringVector(got.Data)
-	if len(kvs) != 2 {
-		t.Fatalf("truncated to %d rows, want 2", len(kvs))
+	kvs, err := types.ParseKeyValueRefStringVector(got.Data)
+	if err != nil || len(kvs) != 2 {
+		t.Fatalf("truncated to %d rows (%v), want 2", len(kvs), err)
 	}
 	for i := 0; i < 2; i++ {
 		if !bytes.Equal(kvs[i].Key, rows[i].Key) || !bytes.Equal(kvs[i].Value, rows[i].Value) {

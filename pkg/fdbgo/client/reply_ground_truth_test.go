@@ -300,7 +300,9 @@ var replyAsserters = map[string]func(t *testing.T, data []byte){
 			t.Fatalf("ReadErrorOrInto: %v", err)
 		}
 		var reply types.WatchValueReply
-		reply.UnmarshalFromReader(&r)
+		if err := reply.UnmarshalFromReader(&r); err != nil {
+			t.Fatalf("UnmarshalFromReader: %v", err)
+		}
 		if reply.Version != 424242 {
 			t.Errorf("Version = %d, want 424242", reply.Version)
 		}

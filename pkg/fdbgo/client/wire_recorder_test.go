@@ -204,7 +204,9 @@ func decodeRecordedCoordWrite(body []byte) (reply transport.UID, recognized bool
 		return reply, true, err
 	}
 	var scalar types.OpenDatabaseCoordRequest
-	scalar.UnmarshalFromReader(r)
+	if err := scalar.UnmarshalFromReader(r); err != nil {
+		return reply, true, err
+	}
 	req := types.CoordOpenDatabaseRequest{
 		TraceLogGroup: scalar.TraceLogGroup, KnownClientInfoID: scalar.KnownClientInfoID,
 		ClusterKey: scalar.ClusterKey, Reply: scalar.Reply, Internal: scalar.Internal,
@@ -222,18 +224,23 @@ func decodeRecordedCoordWrite(body []byte) (reply transport.UID, recognized bool
 	}
 	for _, vector := range []struct {
 		slot   int
-		decode func(*wire.Reader)
+		decode func(*wire.Reader) error
 	}{
-		{types.OpenDatabaseCoordRequestSlotSupportedVersions, func(v *wire.Reader) {
+		{types.OpenDatabaseCoordRequestSlotSupportedVersions, func(v *wire.Reader) error {
 			req.SupportedVersions = append(req.SupportedVersions, types.ClientVersionRef{ClientVersion: v.ReadBytes(0), SourceVersion: v.ReadBytes(1), ProtocolVersion: v.ReadBytes(2)})
+			return nil
 		}},
-		{types.OpenDatabaseCoordRequestSlotCoordinators, func(v *wire.Reader) {
+		{types.OpenDatabaseCoordRequestSlotCoordinators, func(v *wire.Reader) error {
 			var addr types.NetworkAddress
-			addr.UnmarshalFromReader(v)
+			if err := addr.UnmarshalFromReader(v); err != nil {
+				return err
+			}
 			req.Coordinators = append(req.Coordinators, addr)
+			return nil
 		}},
-		{types.OpenDatabaseCoordRequestSlotHostnames, func(v *wire.Reader) {
+		{types.OpenDatabaseCoordRequestSlotHostnames, func(v *wire.Reader) error {
 			req.Hostnames = append(req.Hostnames, types.Hostname{Host: v.ReadBytes(0), Service: v.ReadBytes(1), IsTLS: v.ReadBool(2)})
+			return nil
 		}},
 	} {
 		n, err := r.ReadVectorCount(vector.slot)
@@ -245,7 +252,9 @@ func decodeRecordedCoordWrite(body []byte) (reply transport.UID, recognized bool
 			if err != nil {
 				return reply, true, err
 			}
-			vector.decode(element)
+			if err := vector.decode(element); err != nil {
+				return reply, true, err
+			}
 		}
 	}
 	if again := req.MarshalFDB(); !bytes.Equal(again, body[off:]) {
@@ -519,7 +528,9 @@ func decodeRecordedRequest(body []byte, versionName func(int64) string) (_, _ st
 				err = fmt.Errorf("undecodable frame: decoder panicked: %v", p)
 			}
 		}()
-		m.(interface{ UnmarshalFromReader(*wire.Reader) }).UnmarshalFromReader(r)
+		if derr := m.(interface{ UnmarshalFromReader(*wire.Reader) error }).UnmarshalFromReader(r); derr != nil {
+			err = fmt.Errorf("undecodable frame: %w", derr)
+		}
 	}()
 	if err != nil {
 		return "", "", transport.UID{}, nil, err
@@ -684,7 +695,7 @@ func TestSendRecorderPriorNonStorageWrites(t *testing.T) {
 		{name: "storage-protocol-prefix-blocks-retry", writes: []write{prefixedValue, targetWrite}, target: target, wantErr: "protocol prefix", requests: 1, problems: 1},
 		{name: "grv-protocol-prefix-blocks-retry", writes: []write{prefixedGRV, targetWrite}, target: target, wantErr: "protocol prefix", requests: 1, problems: 1},
 		{name: "location-protocol-prefix-blocks-retry", writes: []write{prefixedLocation, targetWrite}, target: target, wantErr: "protocol prefix", requests: 1, problems: 1},
-		{name: "malformed-coordinator-vector", writes: []write{badCoord, targetWrite}, target: target, wantErr: "vector start out of bounds", requests: 1, problems: 1},
+		{name: "malformed-coordinator-vector", writes: []write{badCoord, targetWrite}, target: target, wantErr: "lies outside the buffer", requests: 1, problems: 1},
 		{name: "coordinator-roundtrip-rejects-trailing-bytes", writes: []write{nonRoundTripCoord, targetWrite}, target: target, wantErr: "does not re-encode", requests: 1, problems: 1},
 		{name: "bad-coordinator-other-connection-blocks-retry", writes: []write{ping, otherBadCoord, targetWrite}, target: target, want: []string{"PING"}, requests: 1, excluded: 1, problems: 1},
 		{name: "bad-coordinator-post-target-blocks-retry", writes: []write{ping, targetWrite, badCoord}, target: target, want: []string{"PING"}, requests: 1, excluded: 1, problems: 1},
@@ -695,7 +706,7 @@ func TestSendRecorderPriorNonStorageWrites(t *testing.T) {
 		{name: "missing-target", writes: []write{ping, value}, target: target, wantErr: "was not recorded", requests: 1, excluded: 1},
 		{name: "zero-target", writes: []write{targetWrite}, wantErr: "zero target", requests: 1},
 		{name: "duplicate-target", writes: []write{targetWrite, duplicate}, target: target, wantErr: "ambiguous target", requests: 2},
-		{name: "malformed-body-is-not-a-retry-confound", writes: []write{ping, malformed, targetWrite}, target: target, wantErr: "does not re-encode", requests: 1, excluded: 1, problems: 1},
+		{name: "malformed-body-is-not-a-retry-confound", writes: []write{ping, malformed, targetWrite}, target: target, wantErr: "decode GetKeyValuesRequest.Begin", requests: 1, excluded: 1, problems: 1},
 		{name: "unknown-body-is-not-a-retry-confound", writes: []write{unknown, targetWrite}, target: target, wantErr: "unexpected request kind", requests: 1, problems: 1},
 		{name: "bad-framing", writes: []write{badFrame, targetWrite}, target: target, wantErr: "malformed frame: payload length 1", requests: 1, problems: 1},
 		{name: "malformed-other-connection-stays-a-recorder-problem", writes: []write{otherMalformed, targetWrite}, target: target, requests: 1, problems: 1},

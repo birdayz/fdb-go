@@ -35,7 +35,10 @@ func TestBuildOpenDatabaseCoordRequest_CarriesCoordinatorsAndKnownID(t *testing.
 	if (transport.UID{First: first, Second: second}) != known {
 		t.Errorf("knownClientInfoID = %x/%x, want %x/%x", first, second, known.First, known.Second)
 	}
-	coords := types.ParseNetworkAddressVectorFromReader(r, types.OpenDatabaseCoordRequestSlotCoordinators)
+	coords, err := types.ParseNetworkAddressVectorFromReader(r, types.OpenDatabaseCoordRequestSlotCoordinators)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(coords) != 2 {
 		t.Fatalf("coordinators = %+v, want the two IP addresses", coords)
 	}
