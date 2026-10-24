@@ -1,6 +1,6 @@
 ---
 name: todo-worker
-description: Pick the next unchecked TODO.md item, write an RFC, review it with the bruh-code-review skill, implement, review again, open PR, iterate until bruh-code-review ACKs the PR's final HEAD.
+description: Pick the next unchecked TODO.md item, claim an RFC number with a draft PR, write the RFC and post a bruh-code-review of it, implement, post reviews until bruh-code-review ACKs the PR's final HEAD.
 ---
 
 # TODO Worker Workflow
@@ -12,7 +12,7 @@ Pick the next unchecked item from TODO.md and drive it from RFC through implemen
 1. Read `TODO.md`.
 2. Find the **lowest-numbered unchecked item** whose gates are satisfied. Priority order: P0 > P1 > P2 > Phase items.
 3. State clearly which item you're working on.
-4. Ask the user to set a `/goal` reflecting the work, so the harness keeps driving it to completion across turns. `/goal` is a built-in CLI command — you cannot invoke it; output the exact line for the user to paste:
+4. In an interactive session, ask the user to set a `/goal` reflecting the work, so the harness keeps driving it to completion across turns (skip this in an unattended or headless run: nobody can paste it). `/goal` is a built-in CLI command — you cannot invoke it; output the exact line for the user to paste:
 
    ```
    /goal <item-id>: <short description> — RFC written, reviewed (bruh-code-review ACK), implemented, tests green, PR created, bruh-code-review ACK on the PR's final HEAD
@@ -58,7 +58,18 @@ Use `fix/` for bugs, `feat/` for features, `refactor/` for cleanups.
 
 ## Step 4: Write the RFC
 
-Create `rfcs/NNN-<short-name>.md` (next number after `ls rfcs/ | sort -V | tail -1`).
+Claim the number first, then write. NNN is one above the highest number on origin/master or in
+any PR branch (another run may have taken the next one):
+
+```bash
+git fetch -q origin master '+refs/pull/*/head:refs/remotes/origin/pr/*'
+for r in origin/master $(git for-each-ref --format='%(refname:short)' refs/remotes/origin/pr); do
+  git ls-tree --name-only "$r" rfcs/; done | sed 's#^rfcs/##' | grep -E '^[0-9]{3}-' | sort -V | tail -1
+```
+
+Commit a one-line stub `rfcs/NNN-<short-name>.md` (`# RFC-NNN: <title>`, **Status: Draft**),
+push, and open the draft PR at once (Step 5's command). The number is taken from then on; then
+write the RFC into the stub.
 
 The RFC must contain:
 - **Problem**: what's broken/missing and why it matters
@@ -69,17 +80,23 @@ The RFC must contain:
 
 Keep it short — 1-2 pages max. No fluff.
 
-## Step 5: RFC review (bruh-code-review)
+## Step 5: Draft PR and RFC review (bruh-code-review)
 
-Commit the RFC and run the **`bruh-code-review`** skill on that commit (`review <sha>`, with
+The draft PR is open from Step 4 (`gh pr create --draft --title "<type>: <short description>
+(<item-id>)" --body "RFC-NNN, in progress."`). Commit the RFC and push. Every review from here on is posted to it: the PR keeps one bruh summary, a
+`bruh/review` commit status, and the open findings as review threads, and each posted run
+re-checks those findings itself (no `previous:`).
+
+Run the **`bruh-code-review`** skill on the PR and post it (`review PR <N> and post it`, with
 `intent:` naming the TODO item it addresses, and `lenses:` naming the repository lenses of the
 area it changes: `fdb-client` for `pkg/fdbgo`, `cascades` for the planner, `java-compat` for
 record-layer or relational bytes, `spfresh` for the vector index). An RFC matches no lens path,
 so without `lenses:` only the core lenses review it.
 
 ### Handling results:
-- **ACK** (the report ends `bruh-code-review: ACK <sha>`) → proceed to implementation.
-- **NAK** → address the findings, commit, and review again with `previous: <run>/report.json`. Do NOT proceed with a NAK outstanding.
+- **ACK** (the summary says ACK on the current HEAD) → set the RFC's **Status: Accepted**,
+  commit, and proceed to implementation.
+- **NAK** → address the findings, commit, push, and post a new review. Do NOT proceed with a NAK outstanding.
 
 ## Step 6: Implement
 
@@ -92,33 +109,30 @@ Follow CLAUDE.md rules: no skips, no mocks, DFS not BFS, Java is the reference.
 
 ## Step 7: Implementation review (bruh-code-review)
 
-After implementation passes all tests, run the **`bruh-code-review`** skill on the
-implementation (`review origin/master..HEAD`, with `intent:` naming the item and RFC-NNN).
+After implementation passes all tests, push and post a review of the PR (`review PR <N> and
+post it`, with `intent:` naming the item and RFC-NNN).
 
 ### Handling results:
-- **ACK** → proceed to PR.
-- **NAK** → fix the findings, re-run `just test`, commit, then review again with `previous: <run>/report.json`. Iterate until it ACKs the current HEAD.
+- **ACK** → proceed.
+- **NAK** → fix the findings, re-run `just test`, commit, push, and post a new review. Iterate until it ACKs the current HEAD.
 
 ## Step 8: Update TODO.md
 
 Mark the item as done: `- [x] **P0.X ...** Fixed in RFC-NNN — [short description of what was done].`
+Set the RFC's **Status: Implemented**.
 
 Commit this with the implementation (or as a separate commit if already committed).
 
-## Step 9: Push and create PR
+## Step 9: Mark the PR ready
+
+Push, write the PR body, and mark it ready:
 
 ```bash
-git push -u origin <branch-name>
-```
-
-Create the PR:
-
-```bash
-gh pr create --title "<type>: <short description> (<item-id>)" --body "$(cat <<'EOF'
+gh pr edit <N> --body "$(cat <<'EOF'
 ## Summary
 - [bullet points of what changed and why]
 
-RFC-NNN. bruh-code-review ACK on the RFC and the implementation.
+RFC-NNN. [The bruh-code-review verdicts so far, as the PR's bruh summary shows them.]
 
 ## Test plan
 - [x] [specific tests that prove the fix]
@@ -126,25 +140,29 @@ RFC-NNN. bruh-code-review ACK on the RFC and the implementation.
 - [x] Pre-commit hook green
 EOF
 )"
+gh pr ready <N>
 ```
 
 ## Step 10: PR review and iterate
 
 Run the **`bruh-code-review`** skill on the PR and post it: `review PR <PR#> and post it`. It
-posts one PR review with inline comments and hides earlier bruh reviews as outdated.
+edits the PR's bruh summary, sets the `bruh/review` status, resolves the threads of findings it
+re-checked as fixed, and posts a review only for new findings.
 
 - **ACK** (the report's last line is `bruh-code-review: ACK <sha>`, `<sha>` the PR's current
   HEAD) → proceed to Step 11.
-- **NAK** → fix each finding (with a regression for any bug), commit, push, then review the PR
-  again with `previous: <run>/report.json` and post it. Iterate until it ACKs the current
+- **NAK** → fix each finding (with a regression for any bug), commit, push, then post a new
+  review of the PR. Iterate until it ACKs the current
   HEAD. If you believe a finding is wrong, give the evidence in the PR description and
   review again; the re-review settles it.
 
 ## Step 11: Done
 
 The item is done only when **the latest bruh-code-review posted to the PR is an ACK of the
-current HEAD.** `~/.bruh/skills/bruh-code-review/bruh-review gate --report <run>/report.json`
-exits 0 on ACK and 4 on NAK.
+current HEAD**: the PR's bruh summary says ACK on that commit and its `bruh/review` commit
+status is success (`gh pr checks <N>`). Headless, `bruh review <N> --post` exits 0 on ACK,
+4 on NAK and 3 when the PR moved past the reviewed commit (nothing posted: push, then post
+again).
 
 - **An ACK only covers the HEAD it reviewed.** Every push, even a one-line fix or a
   reviewer-requested change, makes it stale: review the new HEAD and post again (`post`
@@ -157,6 +175,7 @@ exits 0 on ACK and 4 on NAK.
 - **Review iteration is sequential** — fix findings, push, review again, read the new report.
 - **The final ACK must be on the final code.** Review again after every push; "done" = a posted bruh-code-review ACK of the current HEAD. A stale ACK on an earlier commit doesn't count.
 - **A discovered bug is not fixed until a regression test pins it.** Review findings that the suite missed are doubly important: fix the bug AND add the test that should have caught it.
-- **RFC status progression**: Draft → Implemented (update when the code ships).
+- **RFC status progression**: Draft → Accepted (the RFC review ACKs it) → Implemented (the
+  code ships).
 - **Commits pass pre-commit hooks** — never `--no-verify`.
 - **One logical change per commit** — don't batch unrelated fixes.

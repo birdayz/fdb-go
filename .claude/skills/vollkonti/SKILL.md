@@ -98,7 +98,7 @@ Then start working on the highest-priority items from the handover. Follow the w
 - **CI must be green** on every push. Pre-commit hooks catch most issues.
 - **Review after each major unit of work.** When a significant TODO item is complete (DDL pipeline, executor wiring, cost model fix with tests — NOT a single-line fix or one more test file), trigger the review loop:
   1. Commit, push
-  2. Run the `bruh-code-review` skill on the PR: `review PR <N> and post it` (on later rounds add `previous: <run>/report.json`). Hand it to an agent ("Use the bruh-code-review skill to review PR <N> and post it") to keep working while it runs.
+  2. Run the `bruh-code-review` skill on the PR: `review PR <N> and post it` (later rounds too: a posted run re-checks the PR's open findings itself). Hand it to an agent ("Use the bruh-code-review skill to review PR <N> and post it") to keep working while it runs.
   3. Read its report: the verdict line `bruh-code-review: ACK|NAK <sha>`, the blocking reasons and each finding with its location and fix.
   4. Address valid findings (fix, commit, push, review again). If a finding is wrong, give the evidence in the PR description; the re-review settles it.
   5. Iterate until it ACKs the current HEAD. Then move to the next TODO item.
@@ -121,14 +121,14 @@ When implementation is done and tests pass:
    gh pr ready  # remove draft status
    ```
 
-2. **Request review** with the `bruh-code-review` skill: `review PR <N> and post it`. It posts one PR review with inline comments.
+2. **Request review** with the `bruh-code-review` skill: `review PR <N> and post it`. It edits the PR's bruh summary, sets the `bruh/review` status, resolves the threads of fixed findings, and posts a review only for new findings.
 
 3. **Read the report.** It ends with `bruh-code-review: ACK <sha>` or `NAK <sha>`, after the blocking reasons and each finding with its location and fix.
 
 4. **Address feedback** — but stay critically thinking. Don't blindly apply every suggestion. If a finding is wrong or unnecessary, give the evidence in the PR description; the re-review settles it. For valid feedback:
    - Fix the issue
    - Commit, push
-   - **CRITICAL: Request re-review.** Review the PR again with `previous: <run>/report.json` and post it. Every push makes the previous verdict stale.
+   - **CRITICAL: Request re-review.** Review the PR again and post it. Every push makes the previous verdict stale.
 
 5. **Read the new report** (step 3 again). If new issues are found, fix and re-review (step 4). **Keep iterating until bruh-code-review ACKs the current HEAD.** Only then is the PR merge-ready.
 
