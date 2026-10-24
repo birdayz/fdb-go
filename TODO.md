@@ -350,13 +350,6 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   on every exit before `loopWG.Done` and before any teardown it causes. Five tests,
   each failing on the reverted code, pin the reply, Close, cancellation, frozen-ping
   and panic exits; a unit test pins pooling a teardown reply published after the wait.
-- [ ] **Connection monitor has no `resetPing` arm.** C++ `connectionMonitor` also
-  ends a PING wait on `peer->resetPing.onTrigger()` (`FlowTransport.actor.cpp:696-698`),
-  triggered when packets arrive from an incompatible peer (`:1596`) and when the last
-  peer reference drops with nothing outstanding (`:1892-1896`). Go's `monitorPing`
-  waits only on the reply, the timeout and cancellation. The second trigger depends on
-  the peer-reference count Go does not track (see the idle-connection divergence in
-  `connectionMonitor`); port both with the unreferenced-close knobs, pinned by tests.
 - [ ] **Control packets must not be dropped behind FIFO gaps or full queues.**
   Transport `tryEnqueue` drops monitor pings and ping replies when the ordinary
   or held sender FIFO is pending, even if its channel has a free slot; it also
@@ -460,6 +453,14 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   saturation. Throughput counts successful operations in a fixed post-warmup window,
   checked against workers ÷ mean latency and, for writes, the servers' commit counts.
   Needs those checks in `tools/clientbench` and owner approval of the cloud budget.
+
+- [ ] **Connection monitor has no `resetPing` arm.** C++ `connectionMonitor` also
+  ends a PING wait on `peer->resetPing.onTrigger()` (`FlowTransport.actor.cpp:696-698`),
+  triggered when packets arrive from an incompatible peer (`:1596`) and when the last
+  peer reference drops with nothing outstanding (`:1892-1896`). Go's `monitorPing`
+  waits only on the reply, the timeout and cancellation. The second trigger depends on
+  the peer-reference count Go does not track (see the idle-connection divergence in
+  `connectionMonitor`); port both with the unreferenced-close knobs, pinned by tests.
 
 ## 1. WS-E — scalar/SQL semantics and statement execution — ACTIVE
 

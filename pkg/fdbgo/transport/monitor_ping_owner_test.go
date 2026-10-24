@@ -202,9 +202,8 @@ func TestMonitorPingOwner_CloseWaitsForReplyRelease(t *testing.T) {
 	requireCloseWaitsForGate(t, f, token)
 }
 
-// Close tears down with the PING outstanding. The wait resumes only after Close's
-// teardown published the response, so either arm releases it through Release,
-// without pendingMu, and Close can only be waiting on the monitor's join.
+// The wait resumes only after Close's teardown published, so either arm releases
+// via Release without pendingMu, and Close can only be waiting on the join.
 func TestMonitorPingOwner_CloseWaitsForOutstandingPing(t *testing.T) {
 	f := newPingOwnerFixture(t, pingOwnerOptions{timeout: time.Minute, gated: true, holdWait: true})
 	token := f.takePing(t)

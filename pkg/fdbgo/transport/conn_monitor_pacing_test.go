@@ -10,7 +10,7 @@ import (
 // idle one where it declines to PING.
 //
 // This is a regression pin for a real defect, not a hypothetical. C++'s first
-// `delay(CONNECTION_MONITOR_LOOP_TIME)` (FlowTransport.actor.cpp:651) is inside
+// `delay(CONNECTION_MONITOR_LOOP_TIME)` (FlowTransport.actor.cpp:631) is inside
 // a `!isClient()` block, so removing Go's port of it is correct — but Go's idle
 // branch `continue`s where C++ either throws or falls through to the PING, so
 // with the leading delay gone and the remaining delay on the ping path only,

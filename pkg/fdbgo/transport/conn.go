@@ -1366,9 +1366,8 @@ func (c *Conn) monitorPing() pingOutcome {
 		timer := time.NewTimer(c.monitorTimeout)
 		select {
 		case <-replyCh:
-			// PING reply arrived — connection alive. C++ :690-695. A teardown
-			// response from failAllPending can land here; the next wait sees
-			// the cancelled context.
+			// PING reply arrived (C++ :690-695), or failAllPending's teardown
+			// response, after which the next wait sees the cancelled context.
 			received = true
 			timer.Stop()
 			return pingContinue
