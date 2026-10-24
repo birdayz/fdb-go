@@ -35,7 +35,8 @@ type Cluster struct {
 // RunCluster creates an N-container FDB cluster on a shared Docker network.
 // The first container is the coordinator; additional containers join as storage.
 //
-// All options from Run() are supported. WithNetwork is set automatically.
+// All options from Run() are supported. WithNetwork is set automatically. Like
+// Run, it returns a [*DockerUnavailableError] when no Docker daemon is reachable.
 func RunCluster(ctx context.Context, size int, opts ...testcontainers.ContainerCustomizer) (*Cluster, error) {
 	if size < 1 || size > 10 {
 		return nil, fmt.Errorf("cluster size must be 1-10, got %d", size)
@@ -49,6 +50,10 @@ func RunCluster(ctx context.Context, size int, opts ...testcontainers.ContainerC
 				return nil, err
 			}
 		}
+	}
+
+	if err := tcProber.check(ctx); err != nil {
+		return nil, err
 	}
 
 	// Create shared network.

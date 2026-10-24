@@ -1433,6 +1433,10 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   script probe has a search op, and the bits-9 script searches once
   untrained (both engines answer the same keys) and once trained (both
   refuse); an unchecked search fails it.
+- [ ] `guardiann_peel_timing_test` exceeded its CPU margin under load: 2.59 s against 2.5 s
+  in a `just test-full` run at load average 58 on the 24-thread dev box (2026-10-24, PR #998);
+  the rerun at load 27 measured 1.67 s. Process CPU time should not grow with load, so find
+  what does (GC or scheduler contention counted as CPU) before touching the margin.
 - [x] HNSW/engine: general fetch/cardinality/layer scans, ordered retrieval,
   covering/rank results, search-free continuation replay, operation-local caches,
   partition locks, cosine zero/clamp, sample-UUID closure, option catalog/identity.
