@@ -411,6 +411,18 @@ func (r *Reader) ReadNestedReader(vtableSlot int) (*Reader, error) {
 	return r.readerAtObject(targetPos)
 }
 
+// VectorCountError reports a vector whose declared count cannot fit in the rest
+// of the buffer at four bytes per element offset.
+type VectorCountError struct {
+	Slot     int
+	Count    uint32
+	Capacity int
+}
+
+func (e *VectorCountError) Error() string {
+	return fmt.Sprintf("wire: vector in slot %d declares %d elements, buffer holds at most %d", e.Slot, e.Count, e.Capacity)
+}
+
 // ReadVectorCount returns the number of elements in a vector-of-struct field.
 func (r *Reader) ReadVectorCount(vtableSlot int) (int, error) {
 	off := r.fieldOffset(vtableSlot)
@@ -426,14 +438,11 @@ func (r *Reader) ReadVectorCount(vtableSlot int) (int, error) {
 		return 0, fmt.Errorf("wire: vector start out of bounds (pos %d, buf %d)", vecStart, len(r.data))
 	}
 	count := binary.LittleEndian.Uint32(r.data[vecStart:])
-	// Cap count to prevent OOM from crafted wire data.
-	// Each vector element needs at least 4 bytes (RelativeOffset).
+	// Each element offset takes 4 bytes; a larger count is malformed, and reading
+	// it would take the bytes after the vector for element offsets.
 	maxCount := (len(r.data) - vecStart - 4) / 4
-	if maxCount < 0 {
-		maxCount = 0
-	}
-	if int(count) > maxCount {
-		count = uint32(maxCount)
+	if int64(count) > int64(maxCount) {
+		return 0, &VectorCountError{Slot: vtableSlot, Count: count, Capacity: maxCount}
 	}
 	return int(count), nil
 }

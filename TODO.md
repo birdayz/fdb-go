@@ -1,6 +1,6 @@
 # Java 4.14.2.0 migration
 
-Active branch: `upgrade/java-4.14.2.0` · PR #786. FDB/C++ remains **7.3.77**.
+Merged: `upgrade/java-4.14.2.0` (PR #786, 2026-10-09). FDB/C++ remains **7.3.77**.
 
 ## Execution contract
 
@@ -456,6 +456,18 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   saturation. Throughput counts successful operations in a fixed post-warmup window,
   checked against workers ÷ mean latency and, for writes, the servers' commit counts.
   Needs those checks in `tools/clientbench` and owner approval of the cloud budget.
+
+- [ ] **Read hedging has no second-request budget.** C++ `loadBalance` sends the second
+  request only while `model->secondBudget >= 1.0`, spending 1.0 per hedge; a
+  `QueueModel` starts at 0 and gains `SECOND_REQUEST_BUDGET_GROWTH` (0.05) per first
+  reply that completes unhedged, capped at 100 (`LoadBalance.actor.h:695-716`,
+  `QueueModel.h:121`, `flow/Knobs.cpp:278-283`). Its delay is the adaptive
+  `secondMultiplier` (from 1.0) times the second-best alternative's latency plus
+  `BASE_SECOND_REQUEST_TIME`, sent at once past `INSTANT_SECOND_REQUEST_MULTIPLIER`
+  (`:554-560`). Go's `sendFrameWithHedge` hedges every read with a second replica after
+  max(10ms, 2 × the best server's latency) (`client/loadbalance.go` `secondDelay`), so a
+  fresh database hedges where libfdb_c would not. Port the budget and multiplier, then
+  revisit the hedge tests that rely on a fresh database hedging.
 
 - [ ] **Connection monitor has no `resetPing` arm.** C++ `connectionMonitor` also
   ends a PING wait on `peer->resetPing.onTrigger()` (`FlowTransport.actor.cpp:696-698`),
@@ -1433,6 +1445,10 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   script probe has a search op, and the bits-9 script searches once
   untrained (both engines answer the same keys) and once trained (both
   refuse); an unchecked search fails it.
+- [ ] `guardiann_peel_timing_test` exceeded its CPU margin under load: 2.59 s against 2.5 s
+  in a `just test-full` run at load average 58 on the 24-thread dev box (2026-10-24, PR #998);
+  the rerun at load 27 measured 1.67 s. Process CPU time should not grow with load, so find
+  what does (GC or scheduler contention counted as CPU) before touching the margin.
 - [x] HNSW/engine: general fetch/cardinality/layer scans, ordered retrieval,
   covering/rank results, search-free continuation replay, operation-local caches,
   partition locks, cosine zero/clamp, sample-UUID closure, option catalog/identity.
@@ -2014,6 +2030,12 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   the fast lane. The test-suite speed investigation owns this now.
   - The race lane's timeout (1h0m16s, run 37669344266) is fixed by the split:
     it runs `sqldriver` (the driver's own tests) in about 11 min, green.
+- [ ] Flake: `TestNativeReadTagSampling/fallback-two-nontrivial-selectors/hedge=true`
+  (`pkg/fdbgo/client/native_range_tags_fdb_test.go:194`) failed once in a full lane at
+  `87938be26` (2026-10-24, 221 targets): 5 tagged sends, want 4, with an extra tagged
+  `GetKeyValuesRequest` (suspected: a hedge of the range read whose reply outlasted the
+  hedge delay under load). 20/20 isolated runs pass. Reproduce under load and make the
+  spec count only the planned hedge.
 
 ## Row-limit lookahead at an exact page boundary
 
@@ -2064,3 +2086,16 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   SA5011 replacement is available. Staticcheck 2026.2 retired SA5011 in `5161aaa18`;
   nogo's enabled x/tools `nilness` checks proven-nil uses but not that pattern.
   See CHANGELOG.md, Unreleased.
+
+## GROUP BY duplicate-key check: follow-ups found by RFC-272
+
+- [ ] Found while removing the `GetText` fallback (RFC-272 item 6); each predates it and needs a
+  JVM probe before Go changes. (1) The 42702 check runs at aggregate build time, before WHERE and
+  SELECT-list resolution and before 42803: `WHERE nosuch = 1 GROUP BY amount+1, amount+1` and
+  `SELECT nosuch, COUNT(*) … GROUP BY amount+1, amount+1` are 42702 (Java 42703), and
+  `SELECT category, COUNT(*) … GROUP BY amount+1, amount+1` is 42702 (Java 42803)
+  (`QueryVisitor.java:274-305`, `LogicalOperator.java:436-455`). (2) An unknown function or a
+  scalar subquery as a GROUP BY key returns a raw `*expr.UnsupportedExpressionShapeError`, not an
+  `api.Error` (Java 0AF00 / 42601). (3) `category || 'a'` as a key is 42804; Java is 0AF00
+  "Unsupported operator ||". Parameter keys (`amount = ?, amount = ?`) are value-dependent; the
+  probe runner binds no parameters, so Java's answer is unmeasured (DIVERGENCES.md).

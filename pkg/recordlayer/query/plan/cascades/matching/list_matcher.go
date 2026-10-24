@@ -13,8 +13,7 @@ package matching
 // `com.apple.foundationdb.record.query.plan.cascades.matching.structure.
 // ListMatcher`. Java extends `CollectionMatcher<T>`, where the input
 // is `Collection<T>`. The Go port operates on `[]any` so we don't
-// need to introduce a generic CollectionMatcher hierarchy this shift
-// — Cascades uses ListMatcher mostly for fixed-arity-shape pinning
+// need a generic CollectionMatcher hierarchy — Cascades uses ListMatcher mostly for fixed-arity-shape pinning
 // (e.g. an ArithmeticValue's [left, right] children, a
 // ScalarFunctionValue's Args slice), and `[]any` covers both cases via
 // the host matcher unwrapping its children.

@@ -15,6 +15,7 @@ import (
 // smoothOutstanding contribution leaks permanently.
 type rpcAccount struct {
 	addr  string
+	conn  *transport.Conn // the connection the request was sent on
 	delta float64
 	start time.Time
 	err   error // transport failure of this request, for the caller to report
@@ -32,6 +33,7 @@ type rpcAccount struct {
 type hedgeResult struct {
 	body    []byte
 	addr    string
+	conn    *transport.Conn
 	delta   float64
 	start   time.Time
 	err     error
@@ -100,7 +102,7 @@ func sendFrameWithHedge(
 			return res
 		}
 		out := waitForReply(ctx, sResult, timeout)
-		out.others = append(out.others, rpcAccount{addr: res.addr, delta: res.delta, start: res.start, err: res.err})
+		out.others = append(out.others, rpcAccount{addr: res.addr, conn: res.conn, delta: res.delta, start: res.start, err: res.err})
 		return out
 
 	case <-timer.C:
@@ -126,7 +128,7 @@ func sendFrameWithHedge(
 		// waitForReply's ctx.Done branch. Dropping it (returning a bare {err}) leaked the started
 		// request's QueueModel delta permanently, biasing server selection (RFC-010 #5; C++
 		// LoadBalance's ModelHolder RAII releases on cancel too).
-		return hedgeResult{addr: pResult.addr, delta: pResult.delta, start: pResult.start, err: ctx.Err()}
+		return hedgeResult{addr: pResult.addr, conn: pResult.conn, delta: pResult.delta, start: pResult.start, err: ctx.Err()}
 	}
 }
 
@@ -155,6 +157,7 @@ type inFlightRPC struct {
 	replyCh     <-chan transport.Response
 	replyHandle *transport.ReplyHandle
 	addr        string
+	conn        *transport.Conn
 	delta       float64
 	start       time.Time
 	err         error
@@ -175,14 +178,14 @@ func waitForReply(ctx context.Context, inflight inFlightRPC, timeout time.Durati
 		replyCleanup.release()
 		// Internal reply timeout, distinct from a caller deadline: the read
 		// path re-sends (libfdb_c loadBalance has no per-read client timeout).
-		return hedgeResult{addr: inflight.addr, delta: inflight.delta, start: inflight.start, err: errReplyTimeout}
+		return hedgeResult{addr: inflight.addr, conn: inflight.conn, delta: inflight.delta, start: inflight.start, err: errReplyTimeout}
 	case <-ctx.Done():
 		if result, ready := readyReplyOwned(inflight, &replyCleanup); ready {
 			return result
 		}
 		inflight.replyHandle.Cancel()
 		replyCleanup.release()
-		return hedgeResult{addr: inflight.addr, delta: inflight.delta, start: inflight.start, err: ctx.Err()}
+		return hedgeResult{addr: inflight.addr, conn: inflight.conn, delta: inflight.delta, start: inflight.start, err: ctx.Err()}
 	}
 }
 
@@ -241,7 +244,7 @@ func raceReplies(ctx context.Context, a, b inFlightRPC, timeout time.Duration) h
 // accountOf captures the QueueModel bookkeeping for an in-flight request so the
 // caller can endRequest it exactly once.
 func accountOf(r inFlightRPC) rpcAccount {
-	return rpcAccount{addr: r.addr, delta: r.delta, start: r.start}
+	return rpcAccount{addr: r.addr, conn: r.conn, delta: r.delta, start: r.start}
 }
 
 // readyReplyOwned preserves a queued response when cancellation and reply
@@ -260,6 +263,7 @@ func processReply(inflight inFlightRPC, resp transport.Response) hedgeResult {
 	if resp.Err != nil {
 		return hedgeResult{
 			addr:    inflight.addr,
+			conn:    inflight.conn,
 			delta:   inflight.delta,
 			start:   inflight.start,
 			err:     resp.Err,
@@ -269,6 +273,7 @@ func processReply(inflight inFlightRPC, resp transport.Response) hedgeResult {
 	return hedgeResult{
 		body:  resp.Body,
 		addr:  inflight.addr,
+		conn:  inflight.conn,
 		delta: inflight.delta,
 		start: inflight.start,
 	}

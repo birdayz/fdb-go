@@ -5,7 +5,7 @@ package types
 // C++ KeyRangeRef::serialize (FDBTypes.h:385-395) has an optimization:
 // when begin + '\x00' == end (single-key range), it serializes as
 // (end, empty) instead of (begin, end), saving len(begin)+4 bytes.
-// On deserialization, begin is reconstructed from end[:-1].
+// On deserialization, begin is reconstructed from end[:-1] when end ends in \x00.
 //
 // Both directions must be customized — without an override on
 // UnmarshalFromReader, single-key-optimized payloads emitted by C++
@@ -19,11 +19,8 @@ import (
 	"fdb.dev/pkg/fdbgo/wire"
 )
 
-// UnmarshalFromReader replaces the generated reader to invert the
-// single-key serialize optimization. Slot 1 (End) being empty signals
-// "first slot carries End; reconstruct Begin = End[:-1]".
-//
-// Matches C++ KeyRangeRef::serialize deserialization branch.
+// UnmarshalFromReader inverts the single-key optimization when slot 1 is empty and
+// slot 0 ends in \x00; without the \x00, where C++ asserts, the range stays inverted.
 func (m *KeyRangeRef) UnmarshalFromReader(r *wire.Reader) {
 	var first, second []byte
 	if r.FieldPresent(KeyRangeRefSlotBegin) {
@@ -32,9 +29,8 @@ func (m *KeyRangeRef) UnmarshalFromReader(r *wire.Reader) {
 	if r.FieldPresent(KeyRangeRefSlotEnd) {
 		second = r.ReadBytes(KeyRangeRefSlotEnd)
 	}
-	if len(second) == 0 && len(first) > 0 {
+	if len(second) == 0 && len(first) > 0 && first[len(first)-1] == 0 {
 		// Single-key optimization: writer emitted (end, empty).
-		// Reconstruct: begin = end[:-1], end = first.
 		// Note: m.Begin and m.End share the same backing array — same
 		// zero-copy convention as the rest of wire deserialization.
 		// Callers that mutate must copy first.

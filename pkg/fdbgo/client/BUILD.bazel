@@ -372,6 +372,18 @@ go_test(
     embed = [":client"],
 )
 
+# gazelle:exclude conn_identity_unit_test.go
+# gazelle:exclude location_cache_unit_test.go
+go_test(
+    name = "conn_location_unit_test",
+    srcs = [
+        "conn_identity_unit_test.go",
+        "location_cache_unit_test.go",
+    ],
+    data = ["//pkg/fdbgo/wire/types:testdata.json"],
+    embed = [":client"],
+)
+
 # gazelle:exclude wire_recorder_unit_test.go
 go_test(
     name = "wire_recorder_unit_test",

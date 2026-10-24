@@ -1,5 +1,8 @@
 # Pure Go Client Crashes FDB Server
 
+**Status: resolved on 2026-04-04** (see [RESOLVED](#resolved-2026-04-04) at the end).
+Kept for its server-crash debugging method.
+
 ## Summary
 
 Our pure Go FDB client sends wire messages that crash the FDB 7.3.77 server

@@ -51,6 +51,14 @@ Each is described in full under Compatibility or Changed below.
   `FindRegisteredMessageType` is replaced by `GeneratedMessageType` (#842).
 - **SQL driver:** an unknown DSN parameter, or a DSN boolean other than `true`/`false`, fails at
   open with 22023 (#799).
+- **SQL driver transactions (RFC-272):** `TxOptions{ReadOnly: true}` is refused with 0A000 (it
+  was ignored). Inside an explicit transaction a statement whose context ends (its deadline, a
+  cancel, the statement timeout) cancels the FDB transaction: the statement returns the context's
+  error and the transaction is over, so later statements and `Commit` return 25F01. The
+  `BeginTx` context now bounds the transaction (`DIVERGENCES.md`).
+- **Go API:** `functions.ApplyMathOp`, `ApplyBitOp`, `IsTruthy`, `LiteralMatchesPKKind`,
+  `ToIntegerArg`, `ToFloat64`, `AddInt64Checked`/`SubInt64Checked`/`MulInt64Checked` and
+  `values.JavaFloatToString` are removed; nothing outside their tests called them (RFC-272).
 - **Go API moves:** the gomock mocks moved to `pkg/relational/api/apimock` (#810), the demo protos
   to `fdb.dev/gen/demopb` (#842), and index-predicate normalization, the plan walkers and the
   R-tree to `pkg/recordlayer/indexpredicate`, `pkg/recordlayer/query/plan/plans` and
@@ -99,6 +107,16 @@ Each is described in full under Compatibility or Changed below.
   and tags now apply to every statement transaction, autocommit and read-only ones included.
 
 ### Changed
+- SQL driver transactions (RFC-272): `BeginTx` with `TxOptions{ReadOnly: true}` fails with 0A000
+  (Java accepts `setReadOnly` and ignores it; database/sql requires a driver that does not enforce
+  it to refuse it). The `BeginTx` context bounds the transaction: when it ends, the FDB transaction
+  is cancelled and database/sql rolls it back. A statement whose context ends inside an explicit
+  transaction (deadline, cancel, statement timeout, also while its rows are open) returns the
+  context error and ends the transaction; later statements and `Commit` return 25F01 wrapping the
+  context error, and its writes are discarded. `Commit` on an ended transaction is 25F01.
+  `DIVERGENCES.md` "Driver transactions" has the comparison with Java. `functions.ApplyMathOp`,
+  `ApplyBitOp`, `IsTruthy`, `LiteralMatchesPKKind`, `ToIntegerArg`, `ToFloat64` and
+  `Add/Sub/MulInt64Checked` and `values.JavaFloatToString` are removed.
 - Development builds use Bazel 9.3.1, Bazelisk 1.30.0, and updated stable BCR build rules.
 - Require Go 1.27 (minimum toolchain Go 1.27.3).
 - Go 1.27.3 includes the GO-2026-6809 `crypto/x509` fix used by pure-Go client TLS.
@@ -311,6 +329,28 @@ Each is described in full under Compatibility or Changed below.
 - `fdb` `GetRange` sends its first batch at the call, as Apple's Go binding does: the rows reflect the transaction's writes as of that call, and commit waits for every issued range read (also one never consumed) and keeps its read conflict, as libfdb_c does. `GetSliceWithError` over more than batch 1's bytes (about 4 KB in the default mode) now takes two sequential round trips, batch 1 and then the rest, as libfdb_c does. `client.Transaction.StartGetRange` starts such a read and returns at once; `Database.Metrics()` (on `fdb.Database` too) reports `TransactionGetRangeRequests`. A watch whose read fails no longer leaves a read conflict.
 
 ### Fixed
+- SQL driver (RFC-272): a failed connector initialization (an FDB open failure) is retried by the
+  next `Connect` instead of failing the `*sql.DB` for good, and the initialization runs detached
+  from the `Connect` that starts it: a `Connect` whose deadline ends first returns its context
+  error while the initialization (and its stored-query warm-up) completes for the next one. `ResetSession` also resets the statement timeout, result-byte cap,
+  fail-on-scan-limit flag, plan and execution-stats loggers and slow-query threshold, so a
+  pooled connection's next borrower no longer inherits them. A panic in any exported connection,
+  transaction, result-set or DirectAccess entry is the internal error (XX000) and closes the
+  connection, which the pool then discards. A stale `driver.Tx` no longer ends the newer
+  transaction on its connection, and `Commit` on an ended transaction is 25F01 instead of a
+  second commit. A self-returning `driver.Valuer` (or any cycle through Valuers, pointers and
+  arrays) is 22023 instead of a stack overflow. Parentheses inside string literals, quoted
+  identifiers and comments no longer count toward the 500-level nesting limit. Per-borrow
+  options belong in `SetOption`: `SetOptions` sets what `ResetSession` restores, so code that
+  copied the earlier `docs/mt-saas.md` recipe (`SetOptions` per tenant borrow) hands one
+  borrow's options to the next borrower; the recipe now uses `SetOption`.
+- GROUP BY duplicate-key detection (42702) compares expression keys by their resolved value in
+  value context, as Java does: keys differing only in literal case are two keys
+  (`GROUP BY c = 'a', c = 'A'` was refused; Java declines it in its planner), `<>`/`!=` and other
+  spellings of one comparison are still refused, and a key that does not resolve reports its own
+  error (42703 for an undefined column) instead of 42702. With parameters the bound values decide
+  (`amount = ?, amount = ?`: 42702 for equal values, two keys otherwise; a cached plan serves only
+  the values it was planned with); Java's answer there is unmeasured (RFC-272).
 - Built-in TEXT tokenization, casing/name lookup and Go-only collated keys use frozen Unicode-15 data, so compiler upgrades preserve existing terms, positions and keys; pre-existing Java differences remain explicit in `docs/compatibility.md` (RFC-265).
 - Ordinary, covering and fetch query index scans over one physical range pass Skip to the index cursor, as Java's plans do: skipped entries no longer count against scan-record or byte limits, and their records are not loaded. Multi-range and residual key-filter scans, and the mapped reads of remote-fetch plans, still skip once above the combined cursor.
 - Range-read shard lookups ask a commit proxy once for the shards a read needs, as libfdb_c does, instead of filling the cache for the whole range first; a reverse read over more uncached shards than one lookup returns no longer repeats the same location request until its deadline, and `GetLocations` with a limit of 0 returns every shard.

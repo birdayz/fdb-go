@@ -348,10 +348,8 @@ type database struct {
 	// slog.Default() at open). RFC-097 / P1.2.
 	logger *slog.Logger
 
-	// Speculative second request (hedge) control.
-	// When true, read RPCs send a hedge request to a second server after
-	// secondDelay if the primary is slow. Matches C++ BACKUP_REQUEST_DELAY.
-	// Default: true (always on, same as C++).
+	// Speculative second request (hedge) control: when true, a read sends a hedge to
+	// a second server after secondDelay. C++ also requires secondBudget (TODO.md).
 	hedgeEnabled atomic.Bool
 
 	// Opt-in GetRange materialization ceiling in bytes (WithRangeByteCeiling,
@@ -387,6 +385,9 @@ type database struct {
 	outstandingWatches atomic.Int64
 	// afterLocationSend observes a sent location query before its reply wait (test seam).
 	afterLocationSend atomic.Pointer[func()]
+	// beforeConnFailureMark runs in handleConnError just before it marks the address
+	// failed (test seam). Nil in production.
+	beforeConnFailureMark atomic.Pointer[func()]
 	// rangeReadPanics is the RFC-110 backstop shared by this database's range reads.
 	rangeReadPanics panicBackstop
 	// resolveKeyPanics is the getRange fallback resolveKey goroutines' backstop.
@@ -501,14 +502,11 @@ func (db *database) getOrDial(ctx context.Context, addr string) (*transport.Conn
 }
 
 // handleDialError reacts to a getOrDial error. A context cancellation is the
-// CALLER giving up, not the endpoint failing — evicting the pooled connection and
-// marking the endpoint failed there would punish a healthy peer (and, in a
-// concurrent cold dial, could drop the very connection a sibling caller just
-// pooled). So only a genuine transport failure (ctx still live) feeds
-// handleConnError.
+// caller giving up, not the endpoint failing, so only a dial failure with a live
+// ctx is reported; it has no connection to name.
 func (db *database) handleDialError(ctx context.Context, addr string) {
 	if ctx.Err() == nil {
-		db.handleConnError(addr)
+		db.handleConnError(addr, nil)
 	}
 }
 
@@ -942,7 +940,7 @@ func OpenDatabaseFromConfig(ctx context.Context, cf *ClusterFile, opts ...Option
 	if o.readTagSampling != nil {
 		db.readTags = *o.readTagSampling
 	}
-	db.hedgeEnabled.Store(true)                       // default: hedge on (matches C++)
+	db.hedgeEnabled.Store(true)                       // default: hedge on
 	db.maxWatches.Store(defaultMaxOutstandingWatches) // C++ DEFAULT_MAX_OUTSTANDING_WATCHES (10000)
 
 	if err := db.bootstrap(ctx); err != nil {

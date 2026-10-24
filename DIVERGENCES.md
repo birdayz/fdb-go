@@ -1230,6 +1230,32 @@ intentional divergence at the statement layer:
 Go rejects up front to avoid a surprise write on a misused method; the plan
 path is identical to Java, only the execute-then-throw side effect differs.
 
+## Driver transactions: contexts and read-only (RFC-272)
+
+The database/sql driver follows database/sql's contract where Java's JDBC
+surface has no counterpart:
+
+| Aspect | Java (JDBC) | Go (database/sql) |
+|---|---|---|
+| Read-only transaction | `setReadOnly` is accepted and ignored, a hint (`EmbeddedRelationalConnection.java:143`) | `TxOptions{ReadOnly: true}` is refused with 0A000: database/sql requires a driver that does not enforce it to return an error |
+| Cancelling a statement | `Statement.cancel` throws UNSUPPORTED_OPERATION | A statement's context that ends before or while the statement runs in an explicit transaction cancels the FDB transaction; the statement returns the context's error and the transaction is over (later statements and `Commit` 25F01) |
+| Transaction context | none | The `BeginTx` context is used until the transaction ends; when it ends the FDB transaction is cancelled and database/sql rolls it back |
+
+An FDB operation in flight can only be interrupted by cancelling its
+transaction, and a statement cut off midway may have buffered part of its
+writes, so the transaction cannot continue; PostgreSQL aborts a transaction
+whose statement was cancelled for the second reason.
+
+## GROUP BY keys with bound parameters (RFC-272, unmeasured)
+
+Go compares `GROUP BY amount = ?, amount = ?` by the bound values: equal values
+are one key twice (42702), distinct values two keys, grouped by Go's streaming
+aggregation. Java's answer is not measured: the JVM probe runner binds no
+parameters. Reading Java, its `MutablePlanGenerationContext` folds equal
+parameter values into one constant (42702) and its planner declines a GROUP BY
+without an aggregate index for distinct ones. Both plan caches hold such a plan
+only for the values it was planned with (Go pins them).
+
 ## Record Layer collation — explicit Go-only keys (target ICU 78.3)
 
 `collate_jre` and `collate_icu` evaluate to `golang.org/x/text/collate` sort keys,
@@ -1276,6 +1302,14 @@ being silently ignored.
 | IPv6 coordinator re-rendering | Canonicalized via boost `address_v6::to_string` in `toString` | Re-emitted verbatim from the stored token | Unreachable on real inputs (forward/file strings are always `toString()`-normalized); only a hand-written uppercase/expanded IPv6 in a user file would round-trip differently — and Go-accept ⊆ C++-accept still holds. |
 | `atomicReplace` chown error | Hard-fails the whole replace; original file untouched | Keeps the write (mode already preserved → still parseable); only ownership may differ | Best-effort chown suits a client lib; chown-to-self (single-service-user deployment) always succeeds, so they match in practice. |
 | Coordinator probing shape | Sequential round-robin (`monitorProxiesOneGeneration`) | Parallel race (`tryAllCoordinators`) | Benign: identical first-success outcome, lower latency; never contacts more than the coordinator set. |
+
+### Malformed GetKeyServerLocations replies (RFC-271)
+
+| Aspect | C++ `libfdb_c` | Go | Why |
+|---|---|---|---|
+| A reply that does not deserialize (an offset or count past the buffer, an inverted shard range, a single-key range without its trailing `\x00`) | Throws in deserialization; `deliver` traces `ReceiverError` and the reply is never delivered (`FlowTransport.actor.cpp:1195-1207`), so the location request waits until the proxies change | Discards the reply, caches nothing, and asks the next proxy (`parseGetKeyServerLocationsReply`, `queryLocations`) | Go has no undelivered-reply state; the next attempt is the nearest equivalent. Real proxies never send such a reply, and C++ has no defined result for out-of-bounds input (`flat_buffers.h:1140-1153`). |
+| A shard with no storage servers | Cached as an empty `LocationInfo` (`setCachedLocation` inserts whatever list it gets, `NativeAPI.actor.cpp:2001-2019`) | Its range is cleared from the cache, not cached, and a lookup re-asks (`locateRangeWith`) | Go has no read path over an empty replica list; asking again waits for data distribution to assign one. |
+| A tenant shard boundary without the tenant prefix | Clamped to `allKeys` for the caller (`toPrefixRelativeRange`, `FDBTypes.cpp:26-34`); the absolute range is cached | `stripTenantPrefix` keeps the boundary; a reply it leaves with an inverted range is discarded as above | The commit proxy clamps every shard to the tenant (`TenantAPI::clampRangeToTenant`), so only a malformed reply has such a boundary. |
 
 **Coordinator topology adoption is a CONFIRMED NON-divergence (RFC-115 §3, FDB-C-dev verified).** The
 libfdb_c client adopts cluster topology on the **first successful** coordinator reply, **not** a majority
@@ -3358,7 +3392,7 @@ exist` from `connect` itself (`EmbeddedRelationalDriver.java:62-94`).
 **Go.** The driver opens the connection without reading the catalog. So a program may
 connect to `fdbsql:///MYAPP` and run `CREATE DATABASE /myapp` on it. The first statement
 that needs the schema reports what Java's connect reports. `loadSchemaOfDatabase`
-(`pkg/relational/core/embedded/connection.go:526`) turns UNDEFINED_SCHEMA over a missing
+(`pkg/relational/core/embedded/connection.go`) turns UNDEFINED_SCHEMA over a missing
 database into 42F00 `Database <path> does not exist`: the same code and message, one call
 later.
 
@@ -3854,7 +3888,8 @@ negative array size). Go refuses it with `RecordCoreArgumentError` ("entry size 
 positive") when it builds the maintainer, since the same arithmetic would panic. The call sites
 are the maintainer (`bitmap_value_index_maintainer.go:47`), the chaos model
 (`pkg/recordlayer/chaos/verify_bitmap.go:55`), and the planner's bitmap aggregate candidate,
-which declines the index instead (`pkg/relational/core/embedded/cascades_generator.go:4134`).
+which declines the index instead (`tryAggregateIndexCandidate` in
+`pkg/relational/core/embedded/cascades_generator.go`).
 
 ### The compensation correlation guard refuses a residual on an outer alias the probe does not feed (RFC-150)
 

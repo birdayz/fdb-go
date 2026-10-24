@@ -234,27 +234,30 @@ func (db *database) waitProxiesChanged() <-chan struct{} {
 	return db.proxiesChanged
 }
 
-// handleConnError evicts a dead connection from the pool and marks the
-// endpoint as failed so the failure monitor can wake backoff sleeps on recovery.
-func (db *database) handleConnError(addr string) {
+// handleConnError reports that failed (nil for a dial failure) has failed; with an open
+// replacement pooled it only counts, as C++ reports only its own connection.
+func (db *database) handleConnError(addr string, failed *transport.Conn) {
+	newlyFailed := false
 	db.connMu.Lock()
-	if c, ok := db.connPool[addr]; ok {
-		c.Close()
-		delete(db.connPool, addr)
+	c := db.connPool[addr]
+	if c == nil || c == failed || c.IsClosed() {
+		if c != nil {
+			c.Close()
+			delete(db.connPool, addr)
+		}
+		if hook := db.beforeConnFailureMark.Load(); hook != nil {
+			(*hook)()
+		}
+		// Under connMu, as dialAndPool's markAlive is: a redial cannot land between.
+		newlyFailed = db.failMon.markFailed(addr)
 	}
 	db.connMu.Unlock()
-	db.recordConnFailure(addr)
+	db.reportConnFailure(addr, newlyFailed)
 }
 
-// recordConnFailure marks an endpoint failed and makes the failure observable
-// (RFC-114). It is the SINGLE observability sink for endpoint failures: the COUNTER
-// ticks on every event (the rate signal, like logRetryEvent's counter), but the Warn
-// is edge-triggered on the alive→failed transition so a flapping or down peer hit by
-// the ~18 retry arms doesn't melt the log (the storm-hygiene rule logRetryEvent
-// follows; one Warn per failure episode, re-armed by markAlive). Report transport
-// failures here, not valid replies or slow responses from a healthy proxy.
-func (db *database) recordConnFailure(addr string) {
-	newlyFailed := db.failMon.markFailed(addr)
+// reportConnFailure makes an endpoint failure observable (RFC-114): the counter
+// ticks on every report, the Warn only on the alive-to-failed transition.
+func (db *database) reportConnFailure(addr string, newlyFailed bool) {
 	db.metrics.countConnectionFailure()
 	if newlyFailed && db.logger != nil {
 		db.logger.Warn("fdbgo: connection to server failed", "address", addr)

@@ -29,7 +29,7 @@ import (
 // store's state cacheable, as Java's does; the header flag is what a Java
 // initialize reads, whether or not a Go state cache is configured.
 //
-// Scope (this shift): schema + database CRUD, basic existence checks,
+// Scope: schema + database CRUD, basic existence checks,
 // ListSchemasInDatabase / ListDatabases. Schema template catalog lives
 // in a sibling type returned from SchemaTemplateCatalog().
 type RecordLayerStoreCatalog struct {
