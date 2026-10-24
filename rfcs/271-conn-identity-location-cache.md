@@ -119,7 +119,11 @@ from `range.end` on, and starts the new value at `range.begin`
 overlapping the new range is trimmed to the part before `begin` and the part from
 `end` on (each keeps its servers, and a nil end stays unbounded), or dropped when
 it lies inside; the new entry is then inserted in order. Entries that only touch
-the new range keep their bounds. An empty range inserts nothing. Lookups and
+the new range keep their bounds. A range with `begin >= end` inserts nothing; that
+covers an empty range and one the tenant prefix strip in `queryLocations` leaves
+inverted (`stripTenantPrefix` keeps a boundary without the prefix, where C++
+`toPrefixRelativeRange` clamps it, `FDBTypes.cpp:26-34`; only a malformed reply
+reaches this). Lookups and
 invalidations are unchanged: on disjoint entries the containing entry is the one
 they inspect.
 
@@ -184,7 +188,9 @@ decoders, which treat an error as an absent vector: an oversized vector now
 decodes as empty instead of as elements read from the bytes after it. The client
 decodes `KeyRangeRef` from a reply only in the locations reply; the other
 messages that carry one (`CommitTransactionRef`, `SplitRangeRequest`,
-`WaitMetricsRequest`) are requests it encodes.
+`WaitMetricsRequest`) are requests it encodes. The `tools/clientbench` wire
+tracers (`wiretrace`, `wiregolden`) decode captured frames through the same
+generated decoders; well-formed frames decode as before.
 
 Divergence (recorded in DIVERGENCES.md): C++ never delivers a reply that fails to
 deserialize, so its request waits until the proxies change; Go discards the reply
@@ -232,9 +238,12 @@ assert the typed error and its defect, not only that some error occurred.
     WaitMetrics, SplitRange, getValue to one server, load-balanced getValue, getKey,
     getRange, watch, pipelined get with its resolve), twice. Reply arms: the
     request reaches A, the test gives the pool a replacement B, and A dies. Send
-    arms: A's peer reads nothing, so the request's write blocks; once it starts,
-    the test pools B and kills A under the blocked write. Either way the arm's
-    report must leave B pooled and open and the address alive.
+    arms: A's peer reads nothing after the handshake, so the request's write
+    blocks; the client's `net.Conn` wrapper signals when its second `Write`
+    starts (the connect packet is the first), and the test then pools B and kills
+    A under the blocked write. Either way the arm's report must leave B pooled
+    and open and the address alive, and the failure counter must have ticked
+    exactly once, proving the arm reported A rather than never reporting.
   - Hedged path: `sendFrameWithHedge` results and losers carry the connection of
     their own request; `endOther` reports a loser against its connection.
   - Cache: merge, split (upper half and nested), unbounded entries, touching
