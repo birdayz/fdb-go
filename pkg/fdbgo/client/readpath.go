@@ -304,7 +304,7 @@ func (tx *Transaction) sendGetKey(ctx context.Context, readVersion int64, select
 				tx.db.queueModel.endRequest(server.Address, delta, readFailureLatency(err, start), false)
 				replyHandle.Cancel()
 				replyCleanup.release()
-				tx.db.handleReadConnError(server.Address, err)
+				tx.db.handleReadConnError(server.Address, conn, err)
 				return inFlightRPC{err: err, addr: server.Address}
 			}
 			getKeyBufPool.Put(bufp)
@@ -313,6 +313,7 @@ func (tx *Transaction) sendGetKey(ctx context.Context, readVersion int64, select
 				replyCh:     replyCh,
 				replyHandle: replyHandle,
 				addr:        server.Address,
+				conn:        conn,
 				delta:       delta,
 				start:       start,
 			}
@@ -337,7 +338,7 @@ func (tx *Transaction) sendGetKey(ctx context.Context, readVersion int64, select
 
 	if result.addr != "" {
 		if result.connErr {
-			tx.db.handleReadConnError(result.addr, result.err)
+			tx.db.handleReadConnError(result.addr, result.conn, result.err)
 			tx.db.queueModel.endRequest(result.addr, result.delta, readFailureLatency(result.err, result.start), false)
 		} else if result.err != nil {
 			tx.db.queueModel.endRequest(result.addr, result.delta, readFailureLatency(result.err, result.start), false)
@@ -552,7 +553,7 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 				tx.db.queueModel.endRequest(server.Address, delta, readFailureLatency(err, start), false)
 				replyHandle.Cancel()
 				replyCleanup.release()
-				tx.db.handleReadConnError(server.Address, err)
+				tx.db.handleReadConnError(server.Address, conn, err)
 				return inFlightRPC{err: err, addr: server.Address}
 			}
 			getValueBufPool.Put(poolBuf)
@@ -561,6 +562,7 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 				replyCh:     replyCh,
 				replyHandle: replyHandle,
 				addr:        server.Address,
+				conn:        conn,
 				delta:       delta,
 				start:       start,
 			}
@@ -586,7 +588,7 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 	// Process result.
 	if result.addr != "" {
 		if result.connErr {
-			tx.db.handleReadConnError(result.addr, result.err)
+			tx.db.handleReadConnError(result.addr, result.conn, result.err)
 			tx.db.queueModel.endRequest(result.addr, result.delta, readFailureLatency(result.err, result.start), false)
 		} else if result.err != nil {
 			tx.db.queueModel.endRequest(result.addr, result.delta, readFailureLatency(result.err, result.start), false)
@@ -626,7 +628,7 @@ func (tx *Transaction) sendGetValueToServer(ctx context.Context, key []byte, ser
 		getValueBufPool.Put(poolBuf) // the write queue owns its copy
 		tx.db.queueModel.endRequest(server.Address, delta, readFailureLatency(err, start), false)
 		replyHandle.Cancel()
-		tx.db.handleReadConnError(server.Address, err)
+		tx.db.handleReadConnError(server.Address, conn, err)
 		return nil, err
 	}
 	getValueBufPool.Put(poolBuf)
@@ -639,7 +641,7 @@ func (tx *Transaction) sendGetValueToServer(ctx context.Context, key []byte, ser
 	replyCleanup.release()
 	if resp.Err != nil {
 		tx.db.queueModel.endRequest(server.Address, delta, readFailureLatency(resp.Err, start), false)
-		tx.db.handleReadConnError(server.Address, resp.Err)
+		tx.db.handleReadConnError(server.Address, conn, resp.Err)
 		return nil, resp.Err
 	}
 	val, penalty, parseErr := parseGetValueReply(resp.Body)
@@ -1068,7 +1070,7 @@ func sendRangeRPC[T any](tx *Transaction, ctx context.Context, begin, end KeySel
 				tx.db.queueModel.endRequest(server.Address, delta, readFailureLatency(err, start), false)
 				replyHandle.Cancel()
 				replyCleanup.release()
-				tx.db.handleReadConnError(server.Address, err)
+				tx.db.handleReadConnError(server.Address, conn, err)
 				return inFlightRPC{err: err, addr: server.Address}
 			}
 			ops.putBuf(poolBuf)
@@ -1077,6 +1079,7 @@ func sendRangeRPC[T any](tx *Transaction, ctx context.Context, begin, end KeySel
 				replyCh:     replyCh,
 				replyHandle: replyHandle,
 				addr:        server.Address,
+				conn:        conn,
 				delta:       delta,
 				start:       start,
 			}
@@ -1101,7 +1104,7 @@ func sendRangeRPC[T any](tx *Transaction, ctx context.Context, begin, end KeySel
 
 	if result.addr != "" {
 		if result.connErr {
-			tx.db.handleReadConnError(result.addr, result.err)
+			tx.db.handleReadConnError(result.addr, result.conn, result.err)
 			tx.db.queueModel.endRequest(result.addr, result.delta, readFailureLatency(result.err, result.start), false)
 		} else if result.err != nil {
 			tx.db.queueModel.endRequest(result.addr, result.delta, readFailureLatency(result.err, result.start), false)
@@ -1705,7 +1708,7 @@ func (tx *Transaction) sendWatch(ctx context.Context, key, value []byte, readVer
 			tx.db.queueModel.endRequest(server.Address, delta, readFailureLatency(err, start), false)
 			replyHandle.Cancel()
 			replyCleanup.release()
-			tx.db.handleReadConnError(server.Address, err)
+			tx.db.handleReadConnError(server.Address, conn, err)
 			continue
 		}
 		// Long-poll: no short timeout. Use the caller's context deadline.
@@ -1714,7 +1717,7 @@ func (tx *Transaction) sendWatch(ctx context.Context, key, value []byte, readVer
 			replyCleanup.release()
 			if resp.Err != nil {
 				tx.db.queueModel.endRequest(server.Address, delta, readFailureLatency(resp.Err, start), false)
-				tx.db.handleReadConnError(server.Address, resp.Err)
+				tx.db.handleReadConnError(server.Address, conn, resp.Err)
 				continue
 			}
 			tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), true)

@@ -1291,6 +1291,14 @@ being silently ignored.
 | `atomicReplace` chown error | Hard-fails the whole replace; original file untouched | Keeps the write (mode already preserved → still parseable); only ownership may differ | Best-effort chown suits a client lib; chown-to-self (single-service-user deployment) always succeeds, so they match in practice. |
 | Coordinator probing shape | Sequential round-robin (`monitorProxiesOneGeneration`) | Parallel race (`tryAllCoordinators`) | Benign: identical first-success outcome, lower latency; never contacts more than the coordinator set. |
 
+### Malformed GetKeyServerLocations replies (RFC-271)
+
+| Aspect | C++ `libfdb_c` | Go | Why |
+|---|---|---|---|
+| A reply that does not deserialize (an offset or count past the buffer, an inverted shard range, a single-key range without its trailing `\x00`) | Throws in deserialization; `deliver` traces `ReceiverError` and the reply is never delivered (`FlowTransport.actor.cpp:1195-1207`), so the location request waits until the proxies change | Discards the reply, caches nothing, and asks the next proxy (`parseGetKeyServerLocationsReply`, `queryLocations`) | Go has no undelivered-reply state; the next attempt is the nearest equivalent. Real proxies never send such a reply, and C++ has no defined result for out-of-bounds input (`flat_buffers.h:1140-1153`). |
+| A shard with no storage servers | Cached as an empty `LocationInfo` (`setCachedLocation` inserts whatever list it gets, `NativeAPI.actor.cpp:2001-2019`) | Its range is cleared from the cache, not cached, and a lookup re-asks (`locateRangeWith`) | Go has no read path over an empty replica list; asking again waits for data distribution to assign one. |
+| A tenant shard boundary without the tenant prefix | Clamped to `allKeys` for the caller (`toPrefixRelativeRange`, `FDBTypes.cpp:26-34`); the absolute range is cached | `stripTenantPrefix` keeps the boundary; a reply it leaves with an inverted range is discarded as above | The commit proxy clamps every shard to the tenant (`TenantAPI::clampRangeToTenant`), so only a malformed reply has such a boundary. |
+
 **Coordinator topology adoption is a CONFIRMED NON-divergence (RFC-115 §3, FDB-C-dev verified).** The
 libfdb_c client adopts cluster topology on the **first successful** coordinator reply, **not** a majority
 quorum: `monitorProxiesOneGeneration` adopts the first successful `OpenDatabaseCoordRequest`
