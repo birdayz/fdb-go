@@ -84,7 +84,17 @@ type Container struct {
 //
 // The image parameter can be empty ("") to use the default image with the version
 // from FDB_VERSION env var or the built-in default.
+//
+// With no reachable Docker daemon, Run returns a [*DockerUnavailableError];
+// [SkipWithoutDocker] decides whether a suite may skip.
 func Run(ctx context.Context, img string, opts ...testcontainers.ContainerCustomizer) (*Container, error) {
+	return run(ctx, tcProber, img, opts...)
+}
+
+func run(ctx context.Context, prober *dockerProber, img string, opts ...testcontainers.ContainerCustomizer) (*Container, error) {
+	if err := prober.check(ctx); err != nil {
+		return nil, err
+	}
 	return retryContainerStart(ctx, maxContainerStartAttempts,
 		func(attempt int) time.Duration { return time.Duration(attempt) * time.Second },
 		func() (*Container, error) { return runOnce(ctx, img, opts...) })

@@ -47,14 +47,17 @@ func TestCancelledStartupKeepsDiagnosticsAndCleansUp(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	cli, err := testcontainers.NewDockerClientWithOpts(ctx)
+	if err := tcProber.check(ctx); err != nil {
+		if SkipWithoutDocker(err) {
+			t.Skipf("FDB not available (no Docker): %v", err)
+		}
+		t.Fatal(err)
+	}
+	cli, err := tcDockerClient(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer cli.Close()
-	if _, err := cli.Ping(ctx); err != nil {
-		t.Skipf("FDB not available (no Docker): %v", err)
-	}
 
 	const marker = "startup-diagnostic-log-marker"
 	const oldMarker = "old-startup-log-must-not-be-in-tail"
