@@ -14,7 +14,7 @@ import (
 
 func rangeCopyTransaction() *Transaction {
 	db := &database{}
-	db.locCache.insertSorted([]locationEntry{{begin: []byte("a"), end: []byte("z")}})
+	db.locCache.insertRanges([]locationEntry{{begin: []byte("a"), end: []byte("z")}})
 	return &Transaction{db: db}
 }
 
@@ -342,7 +342,7 @@ func scanWith(t *testing.T, shards [][2]string, begin, end string, byteTarget in
 	t.Cleanup(tx.Cancel)
 	tx.db.locCache.entries = nil
 	for _, s := range shards {
-		tx.db.locCache.insertSorted([]locationEntry{{begin: []byte(s[0]), end: []byte(s[1])}})
+		tx.db.locCache.insertRanges([]locationEntry{{begin: []byte(s[0]), end: []byte(s[1])}})
 	}
 	var requests []string
 	ops := plainRangeScanOps

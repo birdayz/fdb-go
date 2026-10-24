@@ -116,7 +116,7 @@ func (input *commitInput) commitNative(ctx context.Context) (result commitOutcom
 		if ctx.Err() != nil {
 			return result, ctx.Err()
 		}
-		input.db.handleConnError(proxy.Address)
+		input.db.handleConnError(proxy.Address, conn)
 		return result, input.unknownResult(ctx)
 	}
 
@@ -129,7 +129,7 @@ func (input *commitInput) commitNative(ctx context.Context) (result commitOutcom
 	replyCleanup.release()
 	if resp.Err != nil {
 		if !isEndpointNotFound(resp.Err) {
-			input.db.handleConnError(proxy.Address)
+			input.db.handleConnError(proxy.Address, conn)
 		}
 		return result, input.unknownResult(ctx)
 	}

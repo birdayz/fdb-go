@@ -387,6 +387,9 @@ type database struct {
 	outstandingWatches atomic.Int64
 	// afterLocationSend observes a sent location query before its reply wait (test seam).
 	afterLocationSend atomic.Pointer[func()]
+	// beforeConnFailureMark runs in handleConnError just before it marks the address
+	// failed (test seam). Nil in production.
+	beforeConnFailureMark atomic.Pointer[func()]
 	// rangeReadPanics is the RFC-110 backstop shared by this database's range reads.
 	rangeReadPanics panicBackstop
 	// resolveKeyPanics is the getRange fallback resolveKey goroutines' backstop.
@@ -501,14 +504,11 @@ func (db *database) getOrDial(ctx context.Context, addr string) (*transport.Conn
 }
 
 // handleDialError reacts to a getOrDial error. A context cancellation is the
-// CALLER giving up, not the endpoint failing — evicting the pooled connection and
-// marking the endpoint failed there would punish a healthy peer (and, in a
-// concurrent cold dial, could drop the very connection a sibling caller just
-// pooled). So only a genuine transport failure (ctx still live) feeds
-// handleConnError.
+// caller giving up, not the endpoint failing, so only a dial failure with a live
+// ctx is reported; it has no connection to name.
 func (db *database) handleDialError(ctx context.Context, addr string) {
 	if ctx.Err() == nil {
-		db.handleConnError(addr)
+		db.handleConnError(addr, nil)
 	}
 }
 
