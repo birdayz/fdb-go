@@ -23,15 +23,8 @@ import (
 	"fdb.dev/pkg/recordlayer"
 )
 
-// Java scopes the record-layer probes and clears below to a value's tuple
-// range, so a value whose packing another extends (b"\x01" against
-// b"\x01\x00\x05", "a" against "a\x00b") is neither a duplicate, nor a holder
-// of the same score, nor inside the other's delete prefix; and SUM undoes
-// math.MinInt64 by adding it again, modulo 2^64. Where Java's own range is
-// [key, strinc(key)) (the standard index clear of deleteRecordsWhere, the
-// survivor clear after a resolved violation), the extending value is reached
-// in both engines. Each scenario runs the same ops, one transaction each,
-// through both engines; verdicts and the store's keyspaces must be equal.
+// Values whose packing extends another's ("a" and "a\x00b") and SUM over MinInt64:
+// both engines run the same ops and must agree on verdicts and keyspaces (RFC-270).
 var _ = Describe("Tuple-range index probes match Java", func() {
 	const (
 		shortS = "a"
@@ -141,10 +134,8 @@ func saveOp(r *demopb.TypedRecord) probeOp {
 	return probeOp{op: "save", arg: b, record: r}
 }
 
-// expectOpsAsJava runs ops through Java's tupleRangeOpsJava and through Go,
-// each op in its own transaction on a store of md at format (0: the default),
-// and requires the same verdicts (want, or all "ok" when want is nil) and equal
-// keyspaces.
+// expectOpsAsJava runs ops through Java's tupleRangeOpsJava and Go, one transaction
+// each at format (0: default), and requires verdicts want (nil: all "ok") and equal keyspaces.
 func expectOpsAsJava(md *recordlayer.RecordMetaData, format int32, ops []probeOp, want []string) {
 	GinkgoHelper()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)

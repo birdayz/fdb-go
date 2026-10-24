@@ -14,10 +14,8 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// Java scopes these reads and clears to a value's tuple range,
-// Subspace.range(t) = [pack+00, pack+ff). A byte-prefix range over pack(t) also
-// reaches values whose packing extends it: b"\x01" packs to 01 01 00, a byte
-// prefix of b"\x01\x00\x05" (01 01 00 ff 05 00), and "a" likewise of "a\x00b".
+// Java reads and clears these over Subspace.range(t), which excludes values whose
+// packing extends t's: b"\x01" (01 01 00) against b"\x01\x00\x05" (01 01 00 ff 05 00).
 var _ = Describe("Tuple-range index probes", func() {
 	ctx := context.Background()
 
@@ -140,9 +138,8 @@ var _ = Describe("Tuple-range index probes", func() {
 					Expect(err).NotTo(HaveOccurred())
 					Expect(rec != nil).To(Equal(want), "record %d", id)
 				}
-				// Deleting record 2 leaves one violation of "a", and Java then clears
-				// Range.startsWith(pack("a")) (removeUniquenessViolationsAsync), which
-				// takes "a\x00b"'s violations too. Go keeps Java's bytes.
+				// Java's survivor clear is Range.startsWith(pack("a")), which also takes
+				// "a\x00b"'s violations (removeUniquenessViolationsAsync); Go matches.
 				all, err = store.ScanUniquenessViolations(sIdx)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(all).To(BeEmpty())
@@ -316,9 +313,8 @@ var _ = Describe("Tuple-range index probes", func() {
 				Expect(byGroup).To(HaveLen(1))
 				Expect(byGroup[0].Key).To(Equal(tuple.Tuple{longS, int64(8), int64(10)}))
 
-				// Java clears a standard index over [key, strinc(key))
-				// (StandardIndexMaintainer.deleteWhere), so the extending prefix
-				// loses its VALUE entries while its records stay. Go keeps Java's bytes.
+				// Java clears a standard index over [key, strinc(key)), so the extending
+				// prefix loses its VALUE entries but keeps its records; Go matches.
 				entries, err := AsList(ctx, store.ScanIndex(value, TupleRangeAll, nil, ForwardScan()))
 				Expect(err).NotTo(HaveOccurred())
 				Expect(entries).To(BeEmpty())

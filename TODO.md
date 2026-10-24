@@ -2014,6 +2014,12 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   the fast lane. The test-suite speed investigation owns this now.
   - The race lane's timeout (1h0m16s, run 37669344266) is fixed by the split:
     it runs `sqldriver` (the driver's own tests) in about 11 min, green.
+- [ ] Flake: `TestNativeReadTagSampling/fallback-two-nontrivial-selectors/hedge=true`
+  (`pkg/fdbgo/client/native_range_tags_fdb_test.go:194`) failed once in a full lane at
+  `87938be26` (2026-10-24, 221 targets): 5 tagged sends, want 4, with an extra tagged
+  `GetKeyValuesRequest` (suspected: a hedge of the range read whose reply outlasted the
+  hedge delay under load). 20/20 isolated runs pass. Reproduce under load and make the
+  spec count only the planned hedge.
 
 ## Row-limit lookahead at an exact page boundary
 

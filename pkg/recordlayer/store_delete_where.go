@@ -226,9 +226,8 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 		actions = append(actions, indexAction{index: idx, prefix: idxPrefix})
 	}
 
-	// Clear records subspace. Records, legacy versions and counts are cleared
-	// over the prefix's tuple range, as Java's subspace(prefix).range() is: a
-	// byte prefix range would also clear a prefix that extends it ("a\x00b").
+	// Records, legacy versions and counts clear Java's subspace(prefix).range(),
+	// which excludes a prefix that extends this one ("a\x00b").
 	recordRange := store.subspace.Sub(RecordKey).Sub(prefix...)
 	versionRange := store.subspace.Sub(RecordVersionKey).Sub(prefix...)
 	tx.ClearRange(recordRange)
