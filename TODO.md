@@ -340,11 +340,15 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   accounting guard through sender-to-RPC ownership transfer and pin a panic after
   each increment. C++ `ModelHolder::~ModelHolder` removes the delta without a
   latency sample (`LoadBalance.actor.h:53-67`); `replyGuard` only owns the endpoint.
-- [ ] **Join monitor reply waiters on connection close.** `sendPingWithReply`
+- [x] **Join monitor reply waiters on connection close.** `sendPingWithReply`
   launches its reply-wait goroutine outside `Conn.loopWG` (`transport/conn.go`).
   Connection cancellation wakes it, but `Close` can return before it releases
   its reply handle. Track that owner through shutdown and pin zero live waiters
   on return; the cold-control outbox worker is tracked separately.
+  Fixed in RFC-269: the waiter is gone. `connectionMonitor` owns the PING reply
+  handle, as C++ holds `state PingRequest` in the monitor actor, and releases it
+  on every exit before `loopWG.Done` and before any teardown it causes; four
+  revert-proven tests pin the reply, cancellation, frozen-ping and panic exits.
 - [ ] **Control packets must not be dropped behind FIFO gaps or full queues.**
   Transport `tryEnqueue` drops monitor pings and ping replies when the ordinary
   or held sender FIFO is pending, even if its channel has a free slot; it also

@@ -167,7 +167,7 @@ type Conn struct {
 	hasPendingWrite bool
 	ctx             context.Context
 	cancel          context.CancelFunc
-	loopWG          sync.WaitGroup // tracks readLoop + writeLoop goroutines
+	loopWG          sync.WaitGroup // joins readLoop, writeLoop, connectionMonitor (and its ping reply), coldControlLoop
 	closeOnce       sync.Once      // guards the single failConnection teardown
 
 	// Connection monitor cadence. Set once at dial time before the monitor
@@ -961,16 +961,17 @@ func (c *Conn) SendAndWait(ctx context.Context, destToken UID, body []byte) ([]b
 	}
 }
 
-// Close closes the connection and waits for readLoop to exit.
+// Close closes the connection and waits for its loop goroutines to exit.
 // Safe to call multiple times. After Close returns, zero goroutines
 // are running on this connection.
 //
 // Shutdown sequence (matches C++ connectionKeeper):
-// 1. Cancel context — signals all waiters that conn is dead
-// 2. Close TCP socket — unblocks readLoop's ReadFrame
-// 3. readLoop delivers errors to all pending requests
-// 4. readLoop exits, signals WaitGroup
-// 5. Close returns
+//  1. Cancel context — signals all waiters that conn is dead
+//  2. Close TCP socket — unblocks readLoop's ReadFrame
+//  3. failConnection delivers errors to all pending requests
+//  4. readLoop, writeLoop, connectionMonitor and coldControlLoop exit and
+//     signal loopWG; the monitor first releases its PING reply (RFC-269)
+//  5. Close returns
 func (c *Conn) Close() error {
 	c.failConnection(errConnClosed)
 	c.loopWG.Wait()
@@ -1329,66 +1330,101 @@ func (c *Conn) connectionMonitor() {
 			continue
 		}
 
-		// Send PING and register for reply.
-		replyCh := c.sendPingWithReply()
-
-		// Inner loop: C++ lines 690-720.
-		// Wait 2s per round. Kill only if bytesReceived is truly frozen.
-		startingBytes := c.bytesReceived.Load()
-	pingWait:
-		for {
-			timer := time.NewTimer(c.monitorTimeout)
-			select {
-			case <-replyCh:
-				// PING reply arrived — connection alive. C++ line 710-714.
-				// replyCh is nil when the ping couldn't be sent (writeCh
-				// saturated); a nil channel is never selected, so this case is
-				// dead and we fall through to the bytesReceived check (and, on
-				// observed traffic, the re-ping break below).
-				timer.Stop()
-			case <-timer.C:
-				// Timeout. Check if ANY bytes arrived.
-				current := c.bytesReceived.Load()
-				if current == startingBytes {
-					// No bytes at all since PING was sent — connection is dead.
-					// C++ line 698-699: throw connection_failed. Route through the
-					// single teardown path: cancel + CLOSE THE SOCKET (so readLoop's
-					// blocking Read unblocks — the old bare cancel() leaked the fd +
-					// goroutine until TCP keepalive) + fail all pending.
-					c.failConnection(errConnClosed)
-					return
-				}
-				// Bytes arrived (server PINGs, other traffic) but not our PING reply.
-				// C++ line 707-708: update baseline, loop again.
-				// C++ uses timeouts counter here only for logging (ConnectionSlowPing),
-				// NOT for kill decisions — the kill condition is solely bytesReceived.
-				startingBytes = current
-				if replyCh == nil {
-					// The PING was never sent (writeCh was saturated), so no reply can
-					// arrive on this nil channel — the inner loop has no success path.
-					// We just confirmed bytes are still flowing, so the connection is
-					// NOT frozen; staying here would wait forever for an impossible
-					// reply and kill a healthy-but-quiet connection on the next idle
-					// window (failing slow-but-live requests). Break to the outer loop
-					// to re-attempt the PING next cycle, by which point writeCh has
-					// likely drained. C++ never hits this — Peer::send is unbounded, so
-					// the ping always goes out; this is the bounded-writeCh fallback.
-					break pingWait
-				}
-				continue
-			case <-c.ctx.Done():
-				timer.Stop()
-				return
-			}
-			break
+		switch c.monitorPing() {
+		case pingStop:
+			return
+		case pingDead:
+			// C++ throws connection_failed (FlowTransport.actor.cpp:679); the
+			// actor's catch path destroys its state, the ping reply included,
+			// before connectionKeeper sees the error (ActorCompiler.cs:387-391).
+			// monitorPing has released the reply, so teardown comes second here
+			// too. Route through the single teardown path: cancel + CLOSE THE
+			// SOCKET (so readLoop's blocking Read unblocks — the old bare cancel()
+			// leaked the fd + goroutine until TCP keepalive) + fail all pending.
+			c.failConnection(errConnClosed)
+			return
 		}
 	}
 }
 
-// sendPingWithReply sends a PingRequest and returns a channel that closes
-// when the PING reply arrives. Matches C++ pingRequest.reply.getFuture().
-// The reply is registered in the pending map so readLoop dispatches it.
-func (c *Conn) sendPingWithReply() <-chan struct{} {
+// pingOutcome is how one monitor PING wait ended.
+type pingOutcome uint8
+
+const (
+	pingContinue pingOutcome = iota // reply, or a dropped PING with traffic still flowing
+	pingStop                        // the connection context was cancelled
+	pingDead                        // no bytes arrived within the timeout
+)
+
+// monitorPing sends one PING and waits for its reply: C++ connectionMonitor's
+// `state PingRequest pingRequest` and its choose (FlowTransport.actor.cpp:665-699).
+// The PING's reply registration belongs to this call, as the reply promise is
+// actor state in C++: every exit, a panic included, releases it on the monitor's
+// own goroutine. connectionMonitor is joined by loopWG, so Close returns only
+// after the release.
+func (c *Conn) monitorPing() pingOutcome {
+	replyCh, reply := c.sendPingWithReply()
+	received := false
+	if reply != nil {
+		defer func() {
+			if !received {
+				reply.Cancel()
+			}
+			reply.Release()
+		}()
+	}
+	// replyCh is nil when the PING was dropped: there is no handle to release, and
+	// a nil channel is never selected, so only the bytesReceived check ends the wait.
+	// Wait monitorTimeout per round. Kill only if bytesReceived is truly frozen.
+	startingBytes := c.bytesReceived.Load()
+	for {
+		timer := time.NewTimer(c.monitorTimeout)
+		select {
+		case <-replyCh:
+			// PING reply arrived — connection alive. C++ :690-695. A teardown
+			// response from failAllPending also lands here; the next wait sees
+			// the cancelled context.
+			received = true
+			timer.Stop()
+			return pingContinue
+		case <-timer.C:
+			// Timeout. Check if ANY bytes arrived.
+			current := c.bytesReceived.Load()
+			if current == startingBytes {
+				// No bytes at all since PING was sent — connection is dead.
+				// C++ :674-679: throw connection_failed.
+				return pingDead
+			}
+			// Bytes arrived (server PINGs, other traffic) but not our PING reply.
+			// C++ :687-688: update baseline, loop again.
+			// C++ uses timeouts counter here only for logging (ConnectionSlowPing),
+			// NOT for kill decisions — the kill condition is solely bytesReceived.
+			startingBytes = current
+			if replyCh == nil {
+				// The PING was never sent (writeCh was saturated), so no reply can
+				// arrive on this nil channel — the wait has no success path.
+				// We just confirmed bytes are still flowing, so the connection is
+				// NOT frozen; staying here would wait forever for an impossible
+				// reply and kill a healthy-but-quiet connection on the next idle
+				// window (failing slow-but-live requests). Return to the outer loop
+				// to re-attempt the PING next cycle, by which point writeCh has
+				// likely drained. C++ never hits this — Peer::send is unbounded, so
+				// the ping always goes out; this is the bounded-writeCh fallback.
+				return pingContinue
+			}
+		case <-c.ctx.Done():
+			timer.Stop()
+			return pingStop
+		}
+	}
+}
+
+// sendPingWithReply sends a PingRequest and returns its reply channel and the
+// handle that owns the reply registration (C++ pingRequest.reply). The caller
+// owns the handle: it calls Release after receiving from the channel, or Cancel
+// then Release otherwise. The reply is registered in the pending map so readLoop
+// dispatches it. Both results are nil when the PING could not be enqueued.
+func (c *Conn) sendPingWithReply() (<-chan Response, *ReplyHandle) {
 	replyToken, replyCh, replyHandle := c.PrepareReply()
 	transferred := false
 	defer func() {
@@ -1402,36 +1438,17 @@ func (c *Conn) sendPingWithReply() <-chan struct{} {
 	if !c.tryEnqueue(writeReq{token: pingEP, body: body}) {
 		// writeCh is saturated — we could not send the PING. Return a nil
 		// channel, NOT a closed one. A closed channel makes the monitor's
-		// `case <-replyCh` fire immediately and falsely conclude "connection
+		// reply arm fire immediately and falsely conclude "connection
 		// alive", skipping the bytesReceived liveness check exactly when a
 		// saturated buffer signals a stuck connection (writeLoop blocked on an
 		// undrained socket). A nil channel is never selected, so the monitor
 		// falls through to the timer → bytesReceived check and kills a genuinely
-		// stuck conn. The pending reply is cancelled here (no leak); the
-		// reply-waiter goroutine below is only reached on the sent path.
-		return nil
+		// stuck conn. The pending reply is cancelled and released here (no leak),
+		// so there is no handle to return.
+		return nil, nil
 	}
-	// Sent path only — allocate the done channel here so the drop path above
-	// doesn't allocate one it never uses. Wait for the reply in the background,
-	// then signal done.
-	done := make(chan struct{})
-	go func() {
-		received := false
-		defer func() {
-			if !received {
-				replyHandle.Cancel()
-			}
-			replyHandle.Release()
-			close(done)
-		}()
-		select {
-		case <-replyCh:
-			received = true
-		case <-c.ctx.Done():
-		}
-	}()
 	transferred = true
-	return done
+	return replyCh, replyHandle
 }
 
 // pingRequestFileID is from C++ fdbrpc/FlowTransport.actor.cpp.

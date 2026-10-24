@@ -1,6 +1,6 @@
 # RFC-269: The connection monitor owns its ping reply
 
-**Status:** Draft
+**Status:** Implemented
 **Item:** TODO.md §0, "Join monitor reply waiters on connection close."
 **Spec:** FoundationDB 7.3.77 (`/tmp/fdbsrc`); Go line numbers at `54566f2a4`.
 
@@ -59,8 +59,9 @@ started for it.
   cleanup: `Cancel` then `Release` if no reply was received, `Release` alone if one was.
   This is the cleanup the waiter does now (`conn.go:1419-1430`), run on the monitor's own
   stack. A dropped PING has a nil handle, so no defer is installed and nil is never
-  dereferenced. The defer runs on every exit: reply, re-ping after a dropped PING,
-  context cancellation, frozen bytes, and a panic.
+  dereferenced; the re-ping exit, reachable only after a drop, has nothing to release.
+  With a handle, the defer runs on every exit: reply, context cancellation, frozen
+  bytes, and a panic.
 - On the dead outcome, `connectionMonitor` calls `failConnection(errConnClosed)` after
   `monitorPing` returns, so the ping reply is released before teardown, as in C++ step 4.
   Today `failConnection` runs first, inside the wait loop (`conn.go:1351-1359`). A panic
@@ -113,9 +114,12 @@ reverted code.
 2. **Cancellation releases on the monitor.** With the PING outstanding and no reply, the
    test cancels the connection context directly (not `Close`, so `failAllPending` leaves
    the token registered and `Cancel` must pool the channel). The seam blocks that
-   release behind a gate, and the test asserts that `connectionMonitor` has not returned
-   when the gate opens. Afterwards it asserts that the ping token is no longer
-   registered. Reverted, the waiter's `Cancel` blocks and the monitor returns anyway.
+   release behind a gate. As in test 1, the gate stays closed for a bounded wait for the
+   monitor-exit signal; the test asserts that `connectionMonitor` has not returned when
+   the gate opens. `Cancel` holds `pendingMu` inside the seam, so nothing in the test
+   takes `pendingMu` until the gate is open. Afterwards it asserts that the ping token
+   is no longer registered. Reverted, the waiter's `Cancel` blocks and the monitor
+   returns within the wait anyway.
 3. **A frozen ping releases before teardown.** No reply and no traffic, so the timeout
    fires. When the seam sees the ping channel's release, it records `IsClosed()`. The
    test asserts that the release happened and that the connection was still open at
@@ -141,8 +145,9 @@ reverted code.
    registration that leaves no registration. Its second half (the same connection can
    ping again and the reply completes) receives on the returned channel and releases
    the handle.
-6. `-race` on `//pkg/fdbgo/transport:transport_test` with the new tests repeated
-   (`--runs_per_test=10`).
+6. Validation: `just test` (the fast lane, with nogo and every dependent target) and
+   `just test-race` (the same set under `-race`), reporting executed versus cached
+   targets.
 
 ## Out of scope
 

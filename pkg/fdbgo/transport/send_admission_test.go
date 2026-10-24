@@ -402,7 +402,7 @@ func TestAdmissionPingDropsBehindPendingHead(t *testing.T) {
 			admissionDrain(t, c, peer, 1, true)
 			admissionControl(t, c, 1)
 			if mode == "monitor" {
-				if done := c.sendPingWithReply(); done != nil {
+				if reply, handle := c.sendPingWithReply(); reply != nil || handle != nil {
 					t.Error("monitor ping bypassed the pending FIFO")
 				}
 				c.pendingMu.RLock()
