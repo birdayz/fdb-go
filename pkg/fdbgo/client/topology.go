@@ -234,27 +234,40 @@ func (db *database) waitProxiesChanged() <-chan struct{} {
 	return db.proxiesChanged
 }
 
-// handleConnError evicts a dead connection from the pool and marks the
-// endpoint as failed so the failure monitor can wake backoff sleeps on recovery.
-func (db *database) handleConnError(addr string) {
+// handleConnError reports that failed, the connection an RPC to addr ran on, has
+// failed; failed is nil for a dial failure. It evicts the pooled connection and
+// marks addr failed so backoff sleeps wake on recovery. A report about a
+// connection the pool has already replaced with an open one is superseded: C++
+// connectionKeeper closes and reports only the connection it holds, before it
+// reconnects (FlowTransport.actor.cpp:924-1001), so the replacement keeps its RPCs
+// and the alive state its dial recorded. The decision and the mark share connMu
+// with dialAndPool's pool-and-markAlive, so neither can overtake the other.
+func (db *database) handleConnError(addr string, failed *transport.Conn) {
+	newlyFailed := false
 	db.connMu.Lock()
-	if c, ok := db.connPool[addr]; ok {
-		c.Close()
-		delete(db.connPool, addr)
+	c := db.connPool[addr]
+	if c == nil || c == failed || c.IsClosed() {
+		if c != nil {
+			c.Close()
+			delete(db.connPool, addr)
+		}
+		if hook := db.beforeConnFailureMark.Load(); hook != nil {
+			(*hook)()
+		}
+		newlyFailed = db.failMon.markFailed(addr)
 	}
 	db.connMu.Unlock()
-	db.recordConnFailure(addr)
+	db.reportConnFailure(addr, newlyFailed)
 }
 
-// recordConnFailure marks an endpoint failed and makes the failure observable
-// (RFC-114). It is the SINGLE observability sink for endpoint failures: the COUNTER
-// ticks on every event (the rate signal, like logRetryEvent's counter), but the Warn
-// is edge-triggered on the alive→failed transition so a flapping or down peer hit by
-// the ~18 retry arms doesn't melt the log (the storm-hygiene rule logRetryEvent
-// follows; one Warn per failure episode, re-armed by markAlive). Report transport
-// failures here, not valid replies or slow responses from a healthy proxy.
-func (db *database) recordConnFailure(addr string) {
-	newlyFailed := db.failMon.markFailed(addr)
+// reportConnFailure makes an endpoint failure observable (RFC-114). handleConnError
+// is the SINGLE sink for endpoint failures: the COUNTER ticks on every event (the
+// rate signal, like logRetryEvent's counter), but the Warn is edge-triggered on the
+// alive→failed transition so a flapping or down peer hit by the ~18 retry arms
+// doesn't melt the log (the storm-hygiene rule logRetryEvent follows; one Warn per
+// failure episode, re-armed by markAlive). Report transport failures there, not
+// valid replies or slow responses from a healthy proxy.
+func (db *database) reportConnFailure(addr string, newlyFailed bool) {
 	db.metrics.countConnectionFailure()
 	if newlyFailed && db.logger != nil {
 		db.logger.Warn("fdbgo: connection to server failed", "address", addr)

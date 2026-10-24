@@ -32,9 +32,11 @@ func (m *KeyRangeRef) UnmarshalFromReader(r *wire.Reader) {
 	if r.FieldPresent(KeyRangeRefSlotEnd) {
 		second = r.ReadBytes(KeyRangeRefSlotEnd)
 	}
-	if len(second) == 0 && len(first) > 0 {
+	if len(second) == 0 && len(first) > 0 && first[len(first)-1] == 0 {
 		// Single-key optimization: writer emitted (end, empty).
-		// Reconstruct: begin = end[:-1], end = first.
+		// Reconstruct: begin = end[:-1], end = first. C++ asserts the trailing
+		// \x00; without it the range stays (first, empty), inverted, which C++
+		// rejects with inverted_range.
 		// Note: m.Begin and m.End share the same backing array — same
 		// zero-copy convention as the rest of wire deserialization.
 		// Callers that mutate must copy first.

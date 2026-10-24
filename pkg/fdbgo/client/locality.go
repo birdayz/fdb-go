@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -59,24 +60,64 @@ func (lc *locationCache) searchIndex(tenantId int64, key []byte) int {
 	})
 }
 
-// insertSorted inserts entries in sorted order, replacing any existing entry
-// with the same (tenantId, begin). Caller must hold lc.mu write lock.
+// insertSorted caches each entry as C++ setCachedLocation does
+// (NativeAPI.actor.cpp:2001-2020): CoalescedKeyRangeMap::insert
+// (KeyRangeMap.h:206-253) overwrites every cached range the new one overlaps,
+// keeps the parts outside it with their servers, and ignores an empty range. A
+// tenant's entries therefore stay disjoint, which is what lookupLocked and
+// invalidate rely on. Caller must hold lc.mu write lock.
 func (lc *locationCache) insertSorted(newEntries []locationEntry) {
 	for _, ne := range newEntries {
-		idx := lc.searchIndex(ne.tenantId, ne.begin)
-		// Check for duplicate: same (tenantId, begin) at idx.
-		if idx < len(lc.entries) &&
-			lc.entries[idx].tenantId == ne.tenantId &&
-			bytes.Equal(lc.entries[idx].begin, ne.begin) {
-			// Replace in-place.
-			lc.entries[idx] = ne
-			continue
-		}
-		// Insert at idx.
-		lc.entries = append(lc.entries, locationEntry{})
-		copy(lc.entries[idx+1:], lc.entries[idx:])
-		lc.entries[idx] = ne
+		lc.insertRange(ne)
 	}
+}
+
+func (lc *locationCache) insertRange(ne locationEntry) {
+	if ne.end != nil && bytes.Compare(ne.begin, ne.end) >= 0 {
+		return
+	}
+	idx := lc.searchIndex(ne.tenantId, ne.begin)
+	// The entry before idx begins below ne.begin: keep its part below ne.begin and,
+	// when it spans the whole new range, its part from ne.end on.
+	var tail *locationEntry
+	if idx > 0 {
+		prev := &lc.entries[idx-1]
+		if prev.tenantId == ne.tenantId && endAbove(prev.end, ne.begin) {
+			if endBeyond(prev.end, ne.end) {
+				tail = &locationEntry{tenantId: prev.tenantId, begin: ne.end, end: prev.end, servers: prev.servers}
+			}
+			prev.end = ne.begin
+		}
+	}
+	// Entries from idx begin at or after ne.begin: drop those inside the new range
+	// and keep the part of the last one that extends past ne.end.
+	j := idx
+	for ; j < len(lc.entries); j++ {
+		e := &lc.entries[j]
+		if e.tenantId != ne.tenantId || (ne.end != nil && bytes.Compare(e.begin, ne.end) >= 0) {
+			break
+		}
+		if endBeyond(e.end, ne.end) {
+			e.begin = ne.end
+			break
+		}
+	}
+	if tail != nil {
+		lc.entries = slices.Replace(lc.entries, idx, j, ne, *tail)
+	} else {
+		lc.entries = slices.Replace(lc.entries, idx, j, ne)
+	}
+}
+
+// endAbove reports whether a range ending at end holds keys at or above key; a
+// nil end is unbounded.
+func endAbove(end, key []byte) bool {
+	return end == nil || bytes.Compare(end, key) > 0
+}
+
+// endBeyond reports whether range end a lies past range end b; nil is unbounded.
+func endBeyond(a, b []byte) bool {
+	return b != nil && endAbove(a, b)
 }
 
 // ServerInfo holds a storage server's address and endpoint token.
@@ -138,8 +179,8 @@ func (lc *locationCache) locateWithReplyWait(db *database, ctx context.Context, 
 // Caller must hold at least lc.mu.RLock(). O(log N).
 func (lc *locationCache) lookupLocked(tenantId int64, key []byte, isBackward bool) (LocationResult, bool) {
 	// searchIndex returns the first entry with begin >= key for this tenant.
-	// The containing entry (begin <= key) is at idx-1, unless idx itself
-	// has begin == key (exact match).
+	// Entries are disjoint (insertSorted), so the containing entry (begin <= key)
+	// is at idx-1, unless idx itself has begin == key (exact match).
 	idx := lc.searchIndex(tenantId, key)
 
 	if isBackward {
@@ -488,6 +529,18 @@ func stripTenantPrefix(entries []locationEntry, tenantId int64) {
 	}
 }
 
+// invertedEntry reports an entry with begin >= end, which only a boundary that
+// stripTenantPrefix leaves unprefixed can produce from a reply the parser
+// accepted. Such a reply is not used, as one the parser rejects.
+func invertedEntry(entries []locationEntry) bool {
+	for _, e := range entries {
+		if e.end != nil && bytes.Compare(e.begin, e.end) >= 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // queryLocations is the shared load-balance loop for location queries.
 // Cycles all commit proxies with exponential backoff until success or ctx
 // cancellation. The buildRequest callback constructs the request body given
@@ -562,7 +615,7 @@ func (lc *locationCache) queryLocations(db *database, ctx context.Context, tenan
 			if err := sendReadFrame(ctx, conn, locToken, body, replyHandle, permit, replyWait); err != nil {
 				replyHandle.Cancel()
 				replyCleanup.release()
-				db.handleReadConnError(proxy.Address, err)
+				db.handleReadConnError(proxy.Address, conn, err)
 				continue
 			}
 			if hook := db.afterLocationSend.Load(); hook != nil {
@@ -575,7 +628,7 @@ func (lc *locationCache) queryLocations(db *database, ctx context.Context, tenan
 				rpcCancel()
 				replyCleanup.release()
 				if resp.Err != nil {
-					db.handleReadConnError(proxy.Address, resp.Err)
+					db.handleReadConnError(proxy.Address, conn, resp.Err)
 					continue
 				}
 				entries, err := parseGetKeyServerLocationsReply(resp.Body)
@@ -586,6 +639,9 @@ func (lc *locationCache) queryLocations(db *database, ctx context.Context, tenan
 					entries[i].tenantId = tenantId
 				}
 				stripTenantPrefix(entries, tenantId)
+				if invertedEntry(entries) {
+					continue // malformed: a boundary without the tenant prefix, see stripTenantPrefix
+				}
 				lc.mu.Lock()
 				lc.insertSorted(entries)
 				lc.evictIfNeeded()
@@ -662,6 +718,44 @@ func buildGetKeyServerLocationsRangeRequest(begin, end []byte, limit int, revers
 	return req.MarshalFDB()
 }
 
+// locationsDefect names why a GetKeyServerLocations reply was not used.
+type locationsDefect int
+
+const (
+	// locationsUnreadable: a vector or element does not decode within the reply.
+	// C++ loads FlatBuffers without bounds checks (flat_buffers.h:1140-1153), so
+	// such a reply has no defined C++ result; Go discards it.
+	locationsUnreadable locationsDefect = iota + 1
+	// locationsInvertedRange: a shard range with begin > end, for which
+	// KeyRangeRef::serialize throws inverted_range (FDBTypes.h:384-399).
+	locationsInvertedRange
+	// locationsNoShards: no result names a non-empty range with a server.
+	locationsNoShards
+)
+
+// locationsReplyError reports a reply nothing is cached from. C++ fails a reply
+// that does not deserialize and never delivers it (FlowTransport.actor.cpp:1195-1207);
+// queryLocations asks the next proxy.
+type locationsReplyError struct {
+	defect locationsDefect
+	detail string
+	err    error
+}
+
+func (e *locationsReplyError) Error() string {
+	if e.err != nil {
+		return "locations reply: " + e.detail + ": " + e.err.Error()
+	}
+	return "locations reply: " + e.detail
+}
+
+func (e *locationsReplyError) Unwrap() error { return e.err }
+
+// parseGetKeyServerLocationsReply decodes the shards of a locations reply. A
+// result whose range is absent or empty is skipped: C++ decodes an absent range as
+// the empty KeyRangeRef() and caching an empty range is a no-op
+// (KeyRangeMap.h:209-210). A result without servers is skipped too; locateRangeWith
+// asks again for a reply with that hole.
 func parseGetKeyServerLocationsReply(data []byte) ([]locationEntry, error) {
 	r, err := wire.ReadErrorOr(data)
 	if err != nil {
@@ -671,33 +765,52 @@ func parseGetKeyServerLocationsReply(data []byte) ([]locationEntry, error) {
 	// Parse vector of pair<KeyRangeRef, vector<StorageServerInterface>> using
 	// generated slot constants and types.
 	pairCount, err := r.ReadVectorCount(types.GetKeyServerLocationsReplySlotResults)
-	if err != nil || pairCount == 0 {
-		return nil, fmt.Errorf("no location results")
+	if err != nil {
+		return nil, &locationsReplyError{defect: locationsUnreadable, detail: "results", err: err}
 	}
 
 	entries := make([]locationEntry, 0, pairCount)
 	for i := 0; i < pairCount; i++ {
 		pairR, err := r.ReadVectorElementReader(types.GetKeyServerLocationsReplySlotResults, i)
 		if err != nil {
-			continue
+			return nil, &locationsReplyError{defect: locationsUnreadable, detail: fmt.Sprintf("result %d", i), err: err}
 		}
 
 		// Pair slot 0: KeyRangeRef (nested struct).
+		if !pairR.FieldPresent(types.LocationPairSlotKeyRange) {
+			continue
+		}
+		krR, err := pairR.ReadNestedReader(types.LocationPairSlotKeyRange)
+		if err != nil {
+			return nil, &locationsReplyError{defect: locationsUnreadable, detail: fmt.Sprintf("result %d range", i), err: err}
+		}
+		// ReadBytes returns nil for a present key only when its bytes lie outside the
+		// reply; decoding that as the empty key would widen the range.
+		for _, slot := range [...]int{types.KeyRangeRefSlotBegin, types.KeyRangeRefSlotEnd} {
+			if krR.FieldPresent(slot) && krR.ReadBytes(slot) == nil {
+				return nil, &locationsReplyError{defect: locationsUnreadable, detail: fmt.Sprintf("result %d range key", i)}
+			}
+		}
 		var kr types.KeyRangeRef
-		if krR, err := pairR.ReadNestedReader(types.LocationPairSlotKeyRange); err == nil {
-			kr.UnmarshalFromReader(krR)
+		kr.UnmarshalFromReader(krR)
+		// An absent end is the empty key, as C++ decodes it: ["a", absent) is inverted.
+		switch c := bytes.Compare(kr.Begin, kr.End); {
+		case c > 0:
+			return nil, &locationsReplyError{defect: locationsInvertedRange, detail: fmt.Sprintf("result %d range [%q, %q)", i, kr.Begin, kr.End)}
+		case c == 0:
+			continue
 		}
 
 		// Pair slot 1: vector<StorageServerInterface>.
-		var servers []ServerInfo
 		ssCount, err := pairR.ReadVectorCount(types.LocationPairSlotServers)
-		if err != nil || ssCount == 0 {
-			continue
+		if err != nil {
+			return nil, &locationsReplyError{defect: locationsUnreadable, detail: fmt.Sprintf("result %d servers", i), err: err}
 		}
+		var servers []ServerInfo
 		for j := 0; j < ssCount; j++ {
 			ssR, err := pairR.ReadVectorElementReader(types.LocationPairSlotServers, j)
 			if err != nil {
-				continue
+				return nil, &locationsReplyError{defect: locationsUnreadable, detail: fmt.Sprintf("result %d server %d", i, j), err: err}
 			}
 			// Slot 2 = getKeyValues RequestStream in StorageServerInterface.
 			// We read any endpoint to get the base token; slot 2 is the most
@@ -730,7 +843,7 @@ func parseGetKeyServerLocationsReply(data []byte) ([]locationEntry, error) {
 	}
 
 	if len(entries) == 0 {
-		return nil, fmt.Errorf("no storage servers in locations reply")
+		return nil, &locationsReplyError{defect: locationsNoShards, detail: "no shard with a storage server"}
 	}
 	return entries, nil
 }

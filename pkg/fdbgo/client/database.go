@@ -387,6 +387,9 @@ type database struct {
 	outstandingWatches atomic.Int64
 	// afterLocationSend observes a sent location query before its reply wait (test seam).
 	afterLocationSend atomic.Pointer[func()]
+	// beforeConnFailureMark runs in handleConnError just before it marks the address
+	// failed (test seam). Nil in production.
+	beforeConnFailureMark atomic.Pointer[func()]
 	// rangeReadPanics is the RFC-110 backstop shared by this database's range reads.
 	rangeReadPanics panicBackstop
 	// resolveKeyPanics is the getRange fallback resolveKey goroutines' backstop.
@@ -505,10 +508,10 @@ func (db *database) getOrDial(ctx context.Context, addr string) (*transport.Conn
 // marking the endpoint failed there would punish a healthy peer (and, in a
 // concurrent cold dial, could drop the very connection a sibling caller just
 // pooled). So only a genuine transport failure (ctx still live) feeds
-// handleConnError.
+// handleConnError. A failed dial has no connection to name.
 func (db *database) handleDialError(ctx context.Context, addr string) {
 	if ctx.Err() == nil {
-		db.handleConnError(addr)
+		db.handleConnError(addr, nil)
 	}
 }
 

@@ -85,11 +85,11 @@ func TestEndpointNotFoundClassification(t *testing.T) {
 		t.Fatal("not-found disposition differs from request_maybe_delivered")
 	}
 	db := &database{failMon: newFailureMonitor(), connPool: map[string]*transport.Conn{}}
-	db.handleReadConnError("a:1", err)
+	db.handleReadConnError("a:1", nil, err)
 	if db.failMon.isFailed("a:1") {
 		t.Fatal("not-found marked the address failed")
 	}
-	db.handleReadConnError("a:1", transport.ErrConnClosed)
+	db.handleReadConnError("a:1", nil, transport.ErrConnClosed)
 	if !db.failMon.isFailed("a:1") {
 		t.Fatal("a real teardown must still mark the address failed")
 	}

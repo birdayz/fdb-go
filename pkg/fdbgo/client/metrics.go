@@ -147,7 +147,7 @@ func (tx *Transaction) sendWaitMetrics(ctx context.Context, begin, end []byte, m
 		if err := sendReadFrame(ctx, conn, wmToken, req.MarshalFDB(), replyHandle, permit, nil); err != nil {
 			replyHandle.Cancel()
 			replyCleanup.release()
-			tx.db.handleReadConnError(server.Address, err)
+			tx.db.handleReadConnError(server.Address, conn, err)
 			continue
 		}
 		rctx, cancel := context.WithTimeout(ctx, DefaultRPCTimeout)
@@ -156,7 +156,7 @@ func (tx *Transaction) sendWaitMetrics(ctx context.Context, begin, end []byte, m
 			cancel()
 			replyCleanup.release()
 			if resp.Err != nil {
-				tx.db.handleReadConnError(server.Address, resp.Err)
+				tx.db.handleReadConnError(server.Address, conn, resp.Err)
 				continue
 			}
 			return parseWaitMetricsReply(resp.Body)
@@ -299,7 +299,7 @@ func (tx *Transaction) sendSplitRange(ctx context.Context, begin, end []byte, ch
 		if err := sendReadFrame(ctx, conn, srToken, req.MarshalFDB(), replyHandle, permit, nil); err != nil {
 			replyHandle.Cancel()
 			replyCleanup.release()
-			tx.db.handleReadConnError(server.Address, err)
+			tx.db.handleReadConnError(server.Address, conn, err)
 			continue
 		}
 		rctx, cancel := context.WithTimeout(ctx, DefaultRPCTimeout)
@@ -308,7 +308,7 @@ func (tx *Transaction) sendSplitRange(ctx context.Context, begin, end []byte, ch
 			cancel()
 			replyCleanup.release()
 			if resp.Err != nil {
-				tx.db.handleReadConnError(server.Address, resp.Err)
+				tx.db.handleReadConnError(server.Address, conn, resp.Err)
 				continue
 			}
 			return parseSplitRangeReply(resp.Body)
