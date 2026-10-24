@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -184,13 +185,17 @@ func TestFDB_DriverRobustness(t *testing.T) {
 		if err := db.QueryRowContext(ctx, "SELECT id FROM Item WHERE label = '"+label+"'").Scan(&id); err != nil || id != 102 {
 			t.Fatalf("SELECT by that literal: id %d, err %v; want 102", id, err)
 		}
-		values := make([]string, 0, 600)
+		// 600 sibling tuples nest two deep, not 600.
+		tuples := make([]string, 0, 600)
 		for i := 0; i < 600; i++ {
-			values = append(values, "(1)")
+			tuples = append(tuples, fmt.Sprintf("(%d, 'row')", 1000+i))
 		}
-		if _, err := db.ExecContext(ctx, "SELECT id FROM Item WHERE id IN ("+strings.Join(values, ",")+")"); err != nil &&
-			strings.Contains(err.Error(), "nesting exceeds") {
-			t.Fatalf("600 sibling parentheses were counted as nesting: %v", err)
+		res, err := db.ExecContext(ctx, "INSERT INTO Item VALUES "+strings.Join(tuples, ", "))
+		if err != nil {
+			t.Fatalf("INSERT of 600 tuples: %v", err)
+		}
+		if n, err := res.RowsAffected(); err != nil || n != 600 {
+			t.Fatalf("INSERT of 600 tuples affected %d rows (%v), want 600", n, err)
 		}
 		deep := strings.Repeat("(", 501) + "1" + strings.Repeat(")", 501)
 		if _, err := db.ExecContext(ctx, "SELECT "+deep+" FROM Item"); apiCode(err) != api.ErrCodeSyntaxError ||

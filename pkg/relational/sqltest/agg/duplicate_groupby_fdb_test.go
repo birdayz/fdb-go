@@ -86,8 +86,10 @@ func TestFDB_DuplicateGroupBy(t *testing.T) {
 
 	// Comparison keys resolve in value context, as Java resolves every
 	// grouping item, and compare by value: a duplicate spelled differently is
-	// refused, keys that differ only in literal case or bound value are two
-	// keys, and a key that does not resolve fails on its own error.
+	// refused, keys differing in literal case are two keys (Java then declines
+	// in its planner, DuplicateGroupByJavaProbe), and a key that does not
+	// resolve fails on its own error. With parameters the bound values decide
+	// (Java unmeasured: the probe binds none; TODO.md).
 	t.Run("comparison keys compare by resolved value", func(t *testing.T) {
 		t.Parallel()
 		for _, q := range []string{

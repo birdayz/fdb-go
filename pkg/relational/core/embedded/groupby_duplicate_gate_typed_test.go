@@ -130,6 +130,23 @@ func TestGroupByDuplicateGateComparesResolvedValues(t *testing.T) {
 			api.ErrCodeAmbiguousColumn, "Ambiguous columns for amount + 1")
 	})
 
+	t.Run("duplicates are refused over every kind of source", func(t *testing.T) {
+		// Inline VALUES, a VALUES leg, an unnest and a CTE: the gate resolves
+		// the keys in each, so no source falls through to treating two equal
+		// expression keys as distinct.
+		for _, q := range []struct{ sql, display string }{
+			{"SELECT COUNT(*) FROM VALUES (1), (2) AS v(a) GROUP BY a + 1, a + 1", "a + 1"},
+			{"SELECT COUNT(*) FROM VALUES (1, 2) AS v(a, b) GROUP BY a = 1, a = 1", "a = 1"},
+			{"SELECT COUNT(*) FROM T_G1, VALUES (1) AS v(a) GROUP BY a + amount, a + amount", "a + amount"},
+			{"SELECT COUNT(*) FROM T_G1 t, t.category AS c GROUP BY amount + 1, amount + 1", "amount + 1"},
+			{"WITH w AS (SELECT amount FROM T_G1) SELECT COUNT(*) FROM w GROUP BY amount + 1, amount + 1", "amount + 1"},
+		} {
+			wantErr(t, q.sql, nil, api.ErrCodeAmbiguousColumn, "Ambiguous columns for "+q.display)
+		}
+		// Control: distinct keys over the same source group.
+		wantRows(t, "SELECT COUNT(*) FROM VALUES (1), (2) AS v(a) GROUP BY a + 1, a + 2", nil, 2)
+	})
+
 	t.Run("keys that differ in literal case or bound value are two keys", func(t *testing.T) {
 		// 'a' and 'A' are different literals: two groups (a,a,b rows).
 		wantRows(t, "SELECT COUNT(*) FROM T_G1 GROUP BY category = 'a', category = 'A'", nil, 2)
@@ -137,6 +154,12 @@ func TestGroupByDuplicateGateComparesResolvedValues(t *testing.T) {
 		// 10 and 20 bound to two `?`: (t,f), (f,t), (f,f).
 		wantRows(t, "SELECT COUNT(*) FROM T_G1 GROUP BY amount = ?, amount = ?",
 			[]driver.NamedValue{{Ordinal: 1, Value: int64(10)}, {Ordinal: 2, Value: int64(20)}}, 3)
+		// Equal bound values make the keys equal: 42702. (Another statement
+		// text, so no plan cached for 10/20 answers it; TODO.md records
+		// that a cached plan would.)
+		wantErr(t, "SELECT COUNT(*) FROM T_G1 WHERE id > 0 GROUP BY amount = ?, amount = ?",
+			[]driver.NamedValue{{Ordinal: 1, Value: int64(10)}, {Ordinal: 2, Value: int64(10)}},
+			api.ErrCodeAmbiguousColumn, "Ambiguous columns for amount = ?")
 	})
 
 	t.Run("an unresolvable key reports its own error, not 42702", func(t *testing.T) {

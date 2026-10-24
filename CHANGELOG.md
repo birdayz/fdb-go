@@ -336,10 +336,12 @@ Each is described in full under Compatibility or Changed below.
   copied the earlier `docs/mt-saas.md` recipe (`SetOptions` per tenant borrow) hands one
   borrow's options to the next borrower; the recipe now uses `SetOption`.
 - GROUP BY duplicate-key detection (42702) compares expression keys by their resolved value in
-  value context, as Java does: keys differing only in literal case or bound value are two keys
-  (`GROUP BY c = 'a', c = 'A'` was refused), `<>`/`!=` and comparison duplicates are still
-  refused, and a key that does not resolve reports its own error (42703 for an undefined column)
-  instead of 42702 (RFC-272).
+  value context, as Java does: keys differing only in literal case are two keys
+  (`GROUP BY c = 'a', c = 'A'` was refused; Java declines it in its planner), `<>`/`!=` and other
+  spellings of one comparison are still refused, and a key that does not resolve reports its own
+  error (42703 for an undefined column) instead of 42702. With parameters the bound values decide
+  (`amount = ?, amount = ?`: 42702 for equal values, two keys otherwise); Java's answer there is
+  unmeasured, and a plan cached for one binding answers the other (`TODO.md`) (RFC-272).
 - Built-in TEXT tokenization, casing/name lookup and Go-only collated keys use frozen Unicode-15 data, so compiler upgrades preserve existing terms, positions and keys; pre-existing Java differences remain explicit in `docs/compatibility.md` (RFC-265).
 - Ordinary, covering and fetch query index scans over one physical range pass Skip to the index cursor, as Java's plans do: skipped entries no longer count against scan-record or byte limits, and their records are not loaded. Multi-range and residual key-filter scans, and the mapped reads of remote-fetch plans, still skip once above the combined cursor.
 - Range-read shard lookups ask a commit proxy once for the shards a read needs, as libfdb_c does, instead of filling the cache for the whole range first; a reverse read over more uncached shards than one lookup returns no longer repeats the same location request until its deadline, and `GetLocations` with a limit of 0 returns every shard.

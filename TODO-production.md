@@ -282,7 +282,8 @@ it. This is the minimal realization of the P0.3 policy:
 - [x] db/sql boundary recover spanning the FULL query path — `ExecContext`/`QueryContext`
   (`connection.go`) **and** `paginatingRows.Next`/`cascadesRows.Next` (`cascades_generator.go`):
   catch-all → `debug.Stack()` (first) → log SERIOUS server-side → generic internal error
-  (panic value never leaked to the caller) → keep serving.
+  (panic value never leaked to the caller) → keep serving. (Since RFC-272 every exported entry
+  defers `recoverInto` in `connection.go`, and the connection is closed after a panic.)
 - [x] recover→`failConnection` in `readLoop` (inline, `conn.go:619`), `writeLoop` +
   `connectionMonitor` (`recoverLoop`, `conn.go:432,782`) — a panic there is otherwise an
   uncatchable whole-host crash. The false `conn.go` comment is corrected (`:612-615`) and the
@@ -467,7 +468,8 @@ now return everywhere (div0→22012 etc.); the keep=false silent-row-drop is fix
   `//pkg/relational/...` run (found + fixed the `hadRead` client race — see P1.1); 1M stress
   green (all subtests pass, durations consistent with the baseline — no bulk-path regression).
 - [x] **P0.2 gap CLOSED:** `paginatingRows.Next` + `cascadesRows.Next` (cascades_generator.go)
-  now `recover()` → `recoveredPanicError` — the db/sql boundary recover spans the FULL query
+  now `recover()` → `recoveredPanicError` (since RFC-272 through `recoverInto`, which closes the
+  connection) — the db/sql boundary recover spans the FULL query
   path (planning + first page via QueryContext/ExecContext, later pages via Rows.Next). A panic
   during later-page iteration becomes a generic internal error, not a host crash; user eval
   errors already return cleanly via the sweep. (`-race` job into CI still tracked under P1.1.)

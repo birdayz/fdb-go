@@ -167,7 +167,8 @@ func TestInitFlight_ConcurrentCallersShareOneAttempt(t *testing.T) {
 	}
 }
 
-// A waiter whose own context ends stops waiting; the running attempt goes on.
+// A waiter whose own context ends while it waits stops waiting; the running
+// attempt goes on.
 func TestInitFlight_WaiterLeavesOnItsContext(t *testing.T) {
 	t.Parallel()
 	var f initFlight
@@ -181,13 +182,24 @@ func TestInitFlight_WaiterLeavesOnItsContext(t *testing.T) {
 		})
 	}()
 	<-entered
-	ctx, cancel := context.WithCancel(context.Background())
+	cancellable, cancel := context.WithCancel(context.Background())
+	ctx := newWaitingCtx()
+	ctx.Context = cancellable
+	waiter := make(chan error, 1)
+	go func() {
+		waiter <- f.do(ctx, func(context.Context) error {
+			t.Error("a waiter ran its own initialization while another was running")
+			return nil
+		})
+	}()
+	select {
+	case <-ctx.waiting:
+	case err := <-waiter:
+		t.Fatalf("the waiter returned (%v) without waiting for the running attempt", err)
+	}
 	cancel()
-	if err := f.do(ctx, func(context.Context) error {
-		t.Error("a waiter ran its own initialization while another was running")
-		return nil
-	}); !errors.Is(err, context.Canceled) {
-		t.Fatalf("waiter with an ended context = %v, want context.Canceled", err)
+	if err := <-waiter; !errors.Is(err, context.Canceled) {
+		t.Fatalf("waiter whose context ended = %v, want context.Canceled", err)
 	}
 	close(release)
 	if err := <-first; err != nil {

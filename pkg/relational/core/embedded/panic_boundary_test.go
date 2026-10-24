@@ -25,6 +25,10 @@ func (panicStruct) AttributeByName(string) (any, error) {
 }
 func (panicStruct) Attributes() []any { panic("panicStruct.Attributes") }
 
+type countingStatsLogger struct{ n int }
+
+func (l *countingStatsLogger) LogExecutionStats(context.Context, ExecutionStats) { l.n++ }
+
 type panicStatsLogger struct{}
 
 func (panicStatsLogger) LogExecutionStats(context.Context, ExecutionStats) {
@@ -103,6 +107,19 @@ func TestExportedEntriesRecoverPanics(t *testing.T) {
 		"QueryContext": func(_ *testing.T, c *EmbeddedConnection, b *simgate.Backend) error {
 			b.PanicOnce(simgate.Read)
 			_, err := c.QueryContext(ctx, "SELECT id FROM t", nil)
+			return err
+		},
+		"QueryContext metadata observer": func(t *testing.T, c *EmbeddedConnection, _ *simgate.Backend) error {
+			stats := &countingStatsLogger{}
+			c.SetExecutionStatsLogger(stats)
+			observed := api.WithResultSetMetaDataObserver(ctx, func(api.ResultSetMetaData) { panic("observer") })
+			rows, err := c.QueryContext(observed, "SELECT id FROM t", nil)
+			if rows != nil {
+				t.Error("QueryContext returned rows with its recovered panic")
+			}
+			if stats.n != 1 {
+				t.Errorf("the rows made before the panic were not closed (%d execution records)", stats.n)
+			}
 			return err
 		},
 		"Rows.Next": func(t *testing.T, c *EmbeddedConnection, b *simgate.Backend) error {

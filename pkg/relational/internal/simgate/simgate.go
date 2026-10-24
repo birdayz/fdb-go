@@ -1,6 +1,6 @@
-// Package simgate wraps a SimFDB database so a test can hold an FDB read in
-// flight until it lets the read go, or make one transaction call panic. Both
-// are deterministic: no timing decides what a test observes.
+// Package simgate wraps a SimFDB database so a test can hold a read, commit or
+// cancel in flight until it lets it go, or make one transaction call (or the
+// transaction's creation) panic.
 package simgate
 
 import (

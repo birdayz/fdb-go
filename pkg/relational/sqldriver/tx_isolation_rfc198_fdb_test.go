@@ -14,9 +14,10 @@ package sqldriver_test
 //   - A result set cannot outlive its transaction — all four doors (criterion
 //     5). paginatingRows captures the *embeddedTx at Execute time; pages
 //     fetched after the transaction ended must be 25F01, never rows from a
-//     silently opened fresh transaction. The four doors are the four sites
-//     that end a transaction (Close and ResetSession end it through
-//     Rollback), each of which must set the terminal flag.
+//     silently opened fresh transaction. The four doors are the explicit
+//     end calls (Close and ResetSession end it through Rollback), each of
+//     which must set the terminal flag; a context abort (RFC-272) sets it
+//     too, pinned in the embedded explicit_tx tests.
 
 import (
 	"context"

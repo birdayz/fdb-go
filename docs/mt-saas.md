@@ -247,7 +247,7 @@ Two details worth knowing before you deploy it:
   the first `Connect`. To change a connection's configuration, open a new Connector.
 
 There is no options API for this: `OpenConnector` takes a DSN string
-(`pkg/relational/sqldriver/driver.go:123`) and the DSN is the only route through `database/sql`.
+(`Driver.OpenConnector`) and the DSN is the only route through `database/sql`.
 The option can also be set directly on a connection built with `embedded.New`
 via `SetOptions` (`EmbeddedConnection.SetOptions`,
 `api.NoOptions().With(api.OptRestrictDDLToSessionDatabase, true)`) — exported, but it bypasses
@@ -286,8 +286,8 @@ other way: a 4-second per-page cap is armed unconditionally whether or not the o
 the option can only *narrow* it, never raise it —
 
 ```go
-// pkg/relational/core/embedded/cascades_generator.go:1775-1782
-timeLimit := txPageTimeLimit                                            // 4s, :1256
+// pkg/relational/core/embedded/cascades_generator.go, paginatingRows
+timeLimit := txPageTimeLimit                                            // 4s
 if userMillis := optInt64(opts, api.OptExecutionTimeLimit, 0); userMillis > 0 {
 	if ut := time.Duration(userMillis) * time.Millisecond; ut < timeLimit {
 		timeLimit = ut
@@ -295,33 +295,33 @@ if userMillis := optInt64(opts, api.OptExecutionTimeLimit, 0); userMillis > 0 {
 }
 ```
 
-The cap exists so FDB's 5-second hard wall is never reached (`cascades_generator.go:1252-1256`). It
+The cap exists so FDB's 5-second hard wall is never reached (`txPageTimeLimit`). It
 is not a tenancy control: a statement that pages will spend 4 seconds *per page*, unbounded in
 total, unless you also set a statement timeout.
 
 What happens on breach differs per limit, and two of them do **not** produce an error:
 
 - **`MAX_ROWS` truncates cleanly.** `io.EOF`, JDBC `setMaxRows` semantics, no error
-  (`cascades_generator.go:1594-1600`). It is an egress cap, not a quota — the work is still done.
+  (`paginatingRows.Next`). It is an egress cap, not a quota — the work is still done.
 - **The scanned-rows / scanned-bytes limits paginate by default.** They only raise
   `ScanLimitReachedError` (SQLSTATE `54F01`, `pkg/relational/api/errcode.go:137`) when
   `SetFailOnScanLimitReached(true)` is also set (`EmbeddedConnection.failOnScanLimitReached`).
   **Arming a scan limit without that flag is not a quota** — the statement silently pages on
   instead of failing, which is the opposite of what you wanted.
-- **The time and memory limits do error.** Time → `54F01` (`cascades_generator.go:1848`); memory →
-  `*recordlayer.MemoryLimitExceededError` (`pkg/recordlayer/execute_state.go:211`) mapped to
-  `54F01` at `cascades_generator.go:2244-2247`.
+- **The time and memory limits do error.** Time → `54F01`; memory →
+  `*recordlayer.MemoryLimitExceededError` mapped to `54F01` (both in `translateExecError`).
 
-### Setting them: not a DSN, not SQL — `conn.Raw`
+### Setting them: the DSN for every connection, `conn.Raw` per tenant
 
-**None of the five is settable from a DSN.** `ConnectionOptions()` decodes exactly one parameter,
-`restrict_ddl_to_session_database` (`pkg/relational/sqldriver/dsn.go:86-96`); every other query
-parameter is kept in the raw map and ignored (`dsn.go:84-85`). There is no `SET statement_timeout`
-either, and the reason is recorded on `EmbeddedConnection.SetStatementTimeout` — the
-grammar has no generic `SET <var> = <val>` rule. The SQL `OPTIONS(...)` clause carries an unrelated
-set (`cascades_generator.go:772`).
+The DSN sets the five options for every connection of a `*sql.DB` (`max_rows`,
+`execution_scanned_rows_limit`, `execution_scanned_bytes_limit`, `execution_time_limit`,
+`max_statement_memory_bytes`; `DSN.ConnectionOptions`). The flag that makes the scan limits fail,
+the statement timeout and the result-byte cap have no DSN parameter, and there is no
+`SET statement_timeout` either (the grammar has no generic `SET <var> = <val>` rule). The SQL
+`OPTIONS(...)` clause carries an unrelated set.
 
-The only route is `database/sql`'s escape hatch down to the driver connection:
+For per-tenant values, or for the three settings above, the route is `database/sql`'s escape hatch
+down to the driver connection:
 
 ```go
 import (
@@ -387,7 +387,7 @@ defaults to **off** and lasts one borrow, and bounds one whole `Execute` includi
 pages. Set it on every tenant connection: it is the only bound that spans pages, and without it the
 4-second per-page cap composes into an unbounded statement. Breach surfaces as `54F01`,
 distinguished from a caller's own context deadline by a cause tag
-(`cascades_generator.go:1304`, `:2209`).
+(`errStatementTimeout`, `translateExecErrorCtx`).
 
 Note the semantics honestly: it is **per request, not per connection lifetime**. A continuation
 resumed by a new request starts a fresh deadline (`EmbeddedConnection.statementTimeout`).

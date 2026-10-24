@@ -456,3 +456,52 @@ func TestExplicitTx_ContextEndedBeforeFDBEndsTransaction(t *testing.T) {
 		})
 	}
 }
+
+// A result set read to its end has completed its statement: closing it after
+// its context ended leaves the transaction alone, whether it ended by
+// exhaustion or at MAX_ROWS.
+func TestExplicitTx_ResultSetReadToEndKeepsTransaction(t *testing.T) {
+	t.Parallel()
+	for name, maxRows := range map[string]int{"exhausted": 0, "MAX_ROWS": 1} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			g := newGatedSim(t, 517)
+			c := g.connect(t, "S")
+			mustExec(t, c, "INSERT INTO t (id, v) VALUES (1, 1)")
+			mustExec(t, c, "INSERT INTO t (id, v) VALUES (2, 2)")
+			if maxRows > 0 {
+				if err := c.SetOption(api.OptMaxRows, maxRows); err != nil {
+					t.Fatal(err)
+				}
+			}
+			tx, err := c.BeginTx(context.Background(), driver.TxOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			mustExec(t, c, "INSERT INTO t (id, v) VALUES (700, 700)")
+			ctx, cancel := context.WithCancel(context.Background())
+			rows, err := c.QueryContext(ctx, "SELECT id FROM t", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			dest := make([]driver.Value, 1)
+			n := 0
+			for err = rows.Next(dest); err == nil; err = rows.Next(dest) {
+				n++
+			}
+			if err != io.EOF || (maxRows > 0 && n != maxRows) {
+				t.Fatalf("read %d rows ending with %v, want io.EOF (MAX_ROWS %d)", n, err, maxRows)
+			}
+			cancel()
+			if err := rows.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if err := tx.Commit(); err != nil {
+				t.Fatalf("Commit after a result set read to its end: %v", err)
+			}
+			if n := countRows(t, c, 700); n != 1 {
+				t.Fatalf("committed write: count %d, want 1", n)
+			}
+		})
+	}
+}
