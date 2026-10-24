@@ -37,8 +37,8 @@ test --test_env=HOME
 # MUST match MODULE.bazel archive_override version.
 test --test_env=FDB_VERSION=7.3.77
 
-# Override eternal timeout slot (default 900s → 3600s).
-# client_test spawns ~40 FDB containers and needs ~7 min.
+# Bazel's default short/moderate/long/eternal budgets, pinned: cmd/test-budget
+# (-timeouts) and the timeout comments in BUILD files assume these values.
 test --test_timeout=60,300,900,3600
 
 # Coverage: only instrument our code, not generated types or linters.
@@ -70,7 +70,7 @@ build --allow_one_action_on_resource_unavailable
 #   the libfdb_c differential and interop tests, whose cgo needs @foundationdb's fdb_c.h — excluded
 #   from plain `go build/test ./...`.
 # `stress`: heavy million-row stress benchmarks under //pkg/relational/sqldriver/stress.
-#   The target is `manual` (runs only when invoked, e.g. by nightly), so setting the tag
+#   The target is `manual` (runs only when invoked, e.g. by `just test-full`), so setting the tag
 #   globally is inert for `bazel test //...`; it just lets that one target compile when
 #   invoked. Plain `go test ./...` doesn't set the tag, so it skips the stress package.
 build --@rules_go//go/config:tags=bazelrunfiles,stress

@@ -70,13 +70,12 @@ func runTests(m *testing.M) (code int) {
 
 	container, err := foundationdbtc.Run(ctx, "", foundationdbtc.WithStorageEngine("ssd"))
 	if err != nil {
-		var terminationErr *foundationdbtc.TerminationError
-		if errors.As(err, &terminationErr) {
-			fmt.Fprintf(os.Stderr, "%v\n", err)
-			return 1
+		if foundationdbtc.SkipWithoutDocker(err) {
+			fmt.Fprintf(os.Stderr, "stress: skipping: %v\n", err)
+			return 0
 		}
-		fmt.Fprintf(os.Stderr, "stress: no Docker, skipping\n")
-		return 0
+		fmt.Fprintf(os.Stderr, "stress: FDB container startup failed: %v\n", err)
+		return 1
 	}
 	defer func() {
 		if err := foundationdbtc.Terminate(context.Background(), container); err != nil {

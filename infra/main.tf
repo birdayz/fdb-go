@@ -223,8 +223,8 @@ resource "hcloud_server" "runner" {
 #
 # Every pool box registers itself and listens, same as the box above; the pool exists
 # to add capacity, not a different kind of runner. Each serves one job at a time, which
-# is what the box can actually do: .bazelrc caps --local_test_jobs=4 because each test
-# job runs its own FoundationDB container, and a 4-core box is saturated by one such job.
+# is what the box can actually do: a test job runs many FoundationDB containers at once,
+# up to .bazelrc's memory budget, and a 4-core box is saturated by one such job.
 #
 # Scale up: raise runner_count and apply with a fresh registration token:
 #   TOKEN=$(gh api repos/birdayz/fdb-go/actions/runners/registration-token -X POST --jq .token)

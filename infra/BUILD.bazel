@@ -13,6 +13,7 @@ load("@rules_go//go:def.bzl", "go_test")
 go_test(
     name = "infra_test",
     srcs = [
+        "ci_triggers_test.go",
         "fdb_cpp_build_test.go",
         "fleet_capacity_test.go",
         "infra_test.go",
