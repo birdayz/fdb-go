@@ -140,30 +140,33 @@ func attemptLoop(ctx context.Context, env *dst.Env, observe AttemptObserver, pol
 			call.Attempt++
 		}
 		call.Execution++
-		waitRetryDelay(ctx, env, policy.timer, delay.delay())
-		if cerr := ctx.Err(); cerr != nil {
-			return nil, fmt.Errorf("%w (last attempt: %w)", cerr, err)
+		if werr := waitRetryDelay(ctx, env, policy.timer, delay.delay(), err); werr != nil {
+			return nil, werr
 		}
 	}
 }
 
-// waitRetryDelay waits wait, or until ctx ends, and times it as EventRetryDelay. Simulated: the
-// delay is drawn, not waited; the timer records it, the time a real run would have spent.
-func waitRetryDelay(ctx context.Context, env *dst.Env, timer *StoreTimer, wait time.Duration) {
+// waitRetryDelay waits before retrying after last, timed as EventRetryDelay (simulated: recorded,
+// not waited). A ctx that ends first returns its error wrapping last.
+func waitRetryDelay(ctx context.Context, env *dst.Env, timer *StoreTimer, wait time.Duration, last error) error {
 	if env != nil {
 		timer.Record(EventRetryDelay, int64(wait))
-		return
-	}
-	start := time.Now()
-	if wait > 0 {
-		t := time.NewTimer(wait)
-		select {
-		case <-ctx.Done():
-			t.Stop()
-		case <-t.C:
+	} else {
+		start := time.Now()
+		if wait > 0 {
+			t := time.NewTimer(wait)
+			select {
+			case <-ctx.Done():
+				t.Stop()
+			case <-t.C:
+			}
 		}
+		timer.RecordSince(EventRetryDelay, start)
 	}
-	timer.RecordSince(EventRetryDelay, start)
+	if cerr := ctx.Err(); cerr != nil {
+		return fmt.Errorf("%w (last attempt: %w)", cerr, last)
+	}
+	return nil
 }
 
 // bodyErrorRecorder keeps the error the LAST execution's body returned, so the

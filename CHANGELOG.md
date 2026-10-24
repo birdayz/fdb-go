@@ -148,7 +148,8 @@ Each is described in full under Compatibility or Changed below.
 
 ### Added
 - `FDBRecordStore.GetPrimaryKeyBoundaries`, Java's `getPrimaryKeyBoundaries`: the primary keys at
-  the records' shard boundaries (RFC-279).
+  the records' shard boundaries. `IndexingRangeSet.FirstMissingRangeInBytes`, Java's
+  `firstMissingRangeAsync(begin, end)` (RFC-279).
 - Record Layer explicit-version saves: `SaveRecordWithVersion`, `OverrideLockSaveRecordWithVersion`
   and the typed store's `SaveRecordWithVersion`, with Java's `VersionstampSaveBehavior` (RFC-275).
 - The pure-Go client reads `FDB_TLS_VERIFY_PEERS` (libfdb_c's verify-peers grammar,

@@ -91,9 +91,17 @@ var _ = Describe("Online indexer transaction limits", func() {
 		Expect(oi.markWriteOnly(ctx)).Error().To(Succeed())
 		defer oi.cleanupPendingQueueHeartbeat(oi.sessionHeartbeat)
 
-		n, hasMore, err := newMutualIndexBuilder(oi).buildMutual(ctx)
+		m := newMutualIndexBuilder(oi)
+		n, hasMore, err := m.buildMutual(ctx)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(n).To(Equal(int64(1)), "a 1-byte write limit commits after the first record")
+		Expect(hasMore).To(BeTrue())
+
+		// With the default limit the rest of the claim is one chunk.
+		oi.maxWriteLimitBytes = 900_000
+		n, hasMore, err = m.buildMutual(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(n).To(Equal(int64(4)))
 		Expect(hasMore).To(BeTrue())
 	})
 })

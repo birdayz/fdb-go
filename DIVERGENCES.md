@@ -4669,3 +4669,8 @@ retries and then lessen-work, as every other build does. Peers inside one fragme
 progress by the runner's retries in both engines. Java jumps only after a range
 fails every runner attempt. No stored byte differs; the built ranges are the same
 kind of primary-key ranges.
+
+Java's `infiniteLoopProtection`, which fails a build after the same range is picked
+1000 times in a row, is not ported either. A Go claim is built until nothing in it
+is missing, and a chunk that keeps failing ends the build after the lessen-work
+retries, so no build picks one range forever.

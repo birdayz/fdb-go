@@ -99,7 +99,8 @@ covers four Medium items:
   progress by the runner's retries in both engines; Java's jump happens only after a range
   fails every runner attempt. DIVERGENCES.md records this.
 - Java's `infiniteLoopProtection`, which fails after the same range is picked 1000 times in a
-  row. Go's claim always makes progress or drops the claim.
+  row. A Go claim is built until nothing in it is missing, and a chunk that keeps failing ends
+  the build after the lessen-work retries. DIVERGENCES.md records it too.
 - A cross-engine check of the boundaries. It needs real shard splits: a multi-process cluster
   and data large enough to split, which is slow and timing-dependent. The boundaries are
   tested with an injected shard map instead.
@@ -126,21 +127,28 @@ Each regression fails before its fix (mutations recorded on the PR).
   - `GetPrimaryKeyBoundaries` on a store with a split record maps a boundary before the
     first record, a non-tuple boundary, two boundaries inside the split record and one past
     the last record to `[(10), (50)]`, reading the shard map at the transaction's version. A
-    format-4 store, without the suffix, keeps the whole key.
+    format-4 store, without the suffix, keeps the whole key. Fifteen boundaries, more than
+    the lookups in flight, with a repeat across the window's edge, give 14 sorted keys.
   - A mutual build with a shard boundary at `(50, 2)` inside a split record gets the edges
     `[\x00, (50), \xff]` and indexes every record.
   - With a record-type key prefix, the shard map is read over the indexed type's records
     only.
-- **Limits:** a mutual chunk with a 1-byte write limit indexes one record.
+  - A `BackendCapabilityError` gives one fragment and a complete build; any other shard-map
+    error fails the claim and sets no fragments.
+- **Limits:** a mutual chunk with a 1-byte write limit indexes one record; with the default
+  write limit the rest of the claim is one chunk.
 - **FULL:** one builder over two preset fragments, 100 records and limit 10 stays in FULL
-  until the build is done and visits each fragment once.
+  until the build is done, visits each fragment once, and takes 11 chunks of at most 10.
+- **No anyJumper:** a claimed chunk that fails with 2101 is retried at a lower limit and
+  succeeds.
 - **Claim publication:** a failed claim transaction leaves no boundaries and no claim. A
   failed chunk keeps the claim. A successful last chunk drops it, and the next call reports
   done.
 - **Walk:** Java's `testFullyUnBuiltRange` and `testPartlyUnBuiltRange` vectors. A walk with
   a missing range outside every fragment fails with the third-iteration error.
 - **Backoff:** two 2101 lessen-work retries record two `EventRetryDelay`s under a simulated
-  environment. A context cancelled during the wait ends the build with both errors.
+  environment, totalling what the exponential delay draws from the same seed. Cancelling the
+  context during a minute-long wait ends the build at once with both errors.
 - The existing mutual specs (concurrent builders, user writes during the build, claim loss,
   heartbeat renewal) run unchanged in intent. The heartbeat spec claims first, so its barrier
   holds the chunk transaction.

@@ -37,9 +37,9 @@ func (irs *IndexingRangeSet) FirstMissingRange(tr fdb.WritableTransaction) (*Ran
 	return &ranges[0], nil
 }
 
-// firstMissingRangeIn returns the first gap within [begin, end), or nil, Java's
+// FirstMissingRangeInBytes returns the first gap within [begin, end), or nil, Java's
 // IndexingRangeSet.firstMissingRangeAsync(begin, end).
-func (irs *IndexingRangeSet) firstMissingRangeIn(tr fdb.WritableTransaction, begin, end []byte) (*RangeSetRange, error) {
+func (irs *IndexingRangeSet) FirstMissingRangeInBytes(tr fdb.WritableTransaction, begin, end []byte) (*RangeSetRange, error) {
 	ranges, err := irs.rangeSet.MissingRanges(tr, begin, end, 1)
 	if err != nil || len(ranges) == 0 {
 		return nil, err
@@ -62,7 +62,8 @@ func (irs *IndexingRangeSet) ListMissingRanges(tr fdb.WritableTransaction) ([]Ra
 	return irs.rangeSet.MissingRanges(tr, nil, nil, 0)
 }
 
-// ListMissingRangesInBytes returns missing ranges within the given byte boundaries.
+// ListMissingRangesInBytes returns the gaps within [begin, end), Java's
+// IndexingRangeSet.listMissingRangesAsync(begin, end).
 func (irs *IndexingRangeSet) ListMissingRangesInBytes(tr fdb.WritableTransaction, begin, end []byte) ([]RangeSetRange, error) {
 	return irs.rangeSet.MissingRanges(tr, begin, end, 0)
 }

@@ -412,7 +412,7 @@ type OnlineIndexer struct {
 	indexerID uuid.UUID
 	// lastOutcome is what the last completed BuildIndex did; see LastBuildOutcome.
 	lastOutcome      IndexBuildOutcome
-	mutualBoundaries [][]byte // pre-set fragment boundaries (nil = single fragment)
+	mutualBoundaries [][]byte // pre-set fragment boundaries (nil: read from the shard map)
 	leaseLengthMs    int64    // heartbeat lease duration in ms (default defaultLeaseLengthMs)
 	// markReadableEnabled controls whether BuildIndex marks the index readable (and
 	// thus erases the per-build bookkeeping) at the end. Defaults to true. Matches
@@ -880,7 +880,8 @@ func (b *OnlineIndexerBuilder) SetMutualIndexing() *OnlineIndexerBuilder {
 
 // SetMutualIndexingBoundaries enables mutual mode with pre-set fragment boundaries.
 // Each boundary is a packed tuple representing a primary key at which to split
-// the key space. If nil/empty, the entire key space is treated as a single fragment.
+// the key space. If nil/empty, the boundaries are the primary keys at the shard
+// boundaries of the indexed records (GetPrimaryKeyBoundaries).
 // Matches Java's OnlineIndexer.Builder.setMutualIndexingBoundaries().
 func (b *OnlineIndexerBuilder) SetMutualIndexingBoundaries(boundaries [][]byte) *OnlineIndexerBuilder {
 	b.indexer.mutual = true
@@ -1630,9 +1631,8 @@ func (oi *OnlineIndexer) buildRangeWithRetries(ctx context.Context, buildFn func
 		if delay == nil {
 			delay = newExponentialDelay(oi.db.InitialDelay(), oi.db.MaxDelay(), oi.db.Env())
 		}
-		waitRetryDelay(ctx, oi.db.Env(), oi.db.Timer(), delay.delay())
-		if cerr := ctx.Err(); cerr != nil {
-			return n, hasMore, fmt.Errorf("%w (last attempt: %w)", cerr, err)
+		if werr := waitRetryDelay(ctx, oi.db.Env(), oi.db.Timer(), delay.delay(), err); werr != nil {
+			return n, hasMore, werr
 		}
 	}
 }

@@ -350,7 +350,7 @@ func (m *mutualIndexBuilder) buildClaimedRange(ctx context.Context) (n int64, bu
 		}
 
 		primaryRangeSet := NewIndexingRangeSet(store.subspace, m.indexer.primaryIndex())
-		missing, err := primaryRangeSet.firstMissingRangeIn(rtx.Transaction(), m.claimed.Begin, m.claimed.End)
+		missing, err := primaryRangeSet.FirstMissingRangeInBytes(rtx.Transaction(), m.claimed.Begin, m.claimed.End)
 		if err != nil {
 			return nil, err
 		}

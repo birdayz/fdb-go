@@ -17,18 +17,38 @@ import (
 )
 
 // shardMapBackend is simfdb with an injected shard map: LocalityGetBoundaryKeys returns
-// the injected keys inside the requested range and records each request.
+// the injected keys inside the requested range, or shardErr, and records each request.
 type shardMapBackend struct {
 	fdb.BackendDatabase
 	shards       []fdb.Key
+	shardErr     error
 	requests     []fdb.KeyRange
 	readVersions []int64
+	// transactions counts Transact calls; call failAt fails with failErr after its body.
+	transactions int
+	failAt       int
+	failErr      error
+}
+
+func (b *shardMapBackend) Transact(fn func(fdb.WritableTransaction) (any, error)) (any, error) {
+	b.transactions++
+	call := b.transactions
+	return b.BackendDatabase.Transact(func(tx fdb.WritableTransaction) (any, error) {
+		value, err := fn(tx)
+		if err == nil && call == b.failAt {
+			return nil, b.failErr
+		}
+		return value, err
+	})
 }
 
 func (b *shardMapBackend) LocalityGetBoundaryKeys(r fdb.ExactRange, _ int, readVersion int64) ([]fdb.Key, error) {
 	begin, end := r.FDBRangeKeys()
 	b.requests = append(b.requests, fdb.KeyRange{Begin: begin, End: end})
 	b.readVersions = append(b.readVersions, readVersion)
+	if b.shardErr != nil {
+		return nil, b.shardErr
+	}
 	var keys []fdb.Key
 	for _, k := range b.shards {
 		if bytes.Compare(k, begin.FDBKey()) >= 0 && bytes.Compare(k, end.FDBKey()) < 0 {
@@ -75,7 +95,8 @@ func TestGetPrimaryKeyBoundaries(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		split  bool
-		format int32 // 0: the current format
+		format int32   // 0: the current format
+		ids    []int64 // nil: 10, 50 and 90
 		large  []int64
 		shards func(records subspace.Subspace) []fdb.Key
 		want   []tuple.Tuple
@@ -99,6 +120,35 @@ func TestGetPrimaryKeyBoundaries(t *testing.T) {
 			return []fdb.Key{records.Pack(tuple.Tuple{int64(50)})}
 		},
 		want: []tuple.Tuple{{int64(50)}},
+	}, {
+		// More boundaries than lookups in flight, with a repeat across the window's edge.
+		name: "pipelined lookups", ids: []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15},
+		shards: func(records subspace.Subspace) []fdb.Key {
+			var keys []fdb.Key
+			for i := int64(1); i <= 14; i++ {
+				keys = append(keys, records.Pack(tuple.Tuple{i}))
+				if i == 10 {
+					keys = append(keys, records.Pack(tuple.Tuple{i, int64(0)}))
+				}
+			}
+			return keys
+		},
+		want: []tuple.Tuple{
+			{int64(1)},
+			{int64(2)},
+			{int64(3)},
+			{int64(4)},
+			{int64(5)},
+			{int64(6)},
+			{int64(7)},
+			{int64(8)},
+			{int64(9)},
+			{int64(10)},
+			{int64(11)},
+			{int64(12)},
+			{int64(13)},
+			{int64(14)},
+		},
 	}} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -111,7 +161,11 @@ func TestGetPrimaryKeyBoundaries(t *testing.T) {
 			if tc.format != 0 {
 				sb.SetFormatVersion(tc.format)
 			}
-			seedOrders(t, db, sb, []int64{10, 50, 90}, tc.large...)
+			ids := tc.ids
+			if ids == nil {
+				ids = []int64{10, 50, 90}
+			}
+			seedOrders(t, db, sb, ids, tc.large...)
 			var got []tuple.Tuple
 			var readVersion int64
 			if _, err := db.Run(context.Background(), func(rtx *FDBRecordContext) (any, error) {
@@ -260,6 +314,7 @@ func TestMutualFullBuildsEachFragmentToItsEnd(t *testing.T) {
 	m := newMutualIndexBuilder(oi)
 	var visited []int
 	var total int64
+	chunks := 0
 	for {
 		n, more, err := m.buildMutual(ctx)
 		if err != nil {
@@ -269,6 +324,9 @@ func TestMutualFullBuildsEachFragmentToItsEnd(t *testing.T) {
 		if !more {
 			break
 		}
+		if chunks++; n > 10 {
+			t.Fatalf("chunk of %d records, limit 10", n)
+		}
 		if m.iterType != fragmentFull {
 			t.Fatalf("left FULL after %d records", total)
 		}
@@ -276,8 +334,9 @@ func TestMutualFullBuildsEachFragmentToItsEnd(t *testing.T) {
 			visited = append(visited, m.fragmentCur)
 		}
 	}
-	if total != 100 || len(visited) != 2 {
-		t.Fatalf("built %d records over fragments %v, want 100 over each fragment once", total, visited)
+	// 49 and 51 records in chunks of up to 10: 5 + 6 chunks.
+	if total != 100 || chunks != 11 || len(visited) != 2 {
+		t.Fatalf("built %d records in %d chunks over fragments %v, want 100 in 11 over each fragment once", total, chunks, visited)
 	}
 }
 
@@ -333,5 +392,58 @@ func TestMutualThirdIterationFails(t *testing.T) {
 	}
 	if m.iterType != fragmentRecover {
 		t.Fatalf("iteration = %v, want RECOVER", m.iterType)
+	}
+}
+
+// A backend without a shard map gives one fragment; any other shard-map error fails the claim.
+func TestMutualBoundaryReadErrors(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	t.Run("no shard map", func(t *testing.T) {
+		t.Parallel()
+		db, backend := newShardMapDB(53)
+		oi := newSimMutualIndexer(t, db, "noshardmap", priceIndexMetaData(t, nil), 100, []int64{10, 50})
+		backend.shardErr = &BackendCapabilityError{Op: "LocalityGetBoundaryKeys"}
+		m := newMutualIndexBuilder(oi)
+		var total int64
+		for more := true; more; {
+			n, nextMore, err := m.buildMutual(ctx)
+			if err != nil {
+				t.Fatalf("buildMutual: %v", err)
+			}
+			total, more = total+n, nextMore
+		}
+		if want := [][]byte{rangeSetFirstKey, rangeSetFinalKey}; total != 2 || !slices.EqualFunc(m.boundaries, want, bytes.Equal) {
+			t.Fatalf("built %d records over edges %x, want 2 over one fragment", total, m.boundaries)
+		}
+	})
+	t.Run("shard map failure", func(t *testing.T) {
+		t.Parallel()
+		db, backend := newShardMapDB(59)
+		oi := newSimMutualIndexer(t, db, "shardmapfails", priceIndexMetaData(t, nil), 100, []int64{10})
+		backend.shardErr = errors.New("shard map unavailable")
+		m := newMutualIndexBuilder(oi)
+		if _, _, err := m.buildMutual(ctx); !errors.Is(err, backend.shardErr) || m.boundaries != nil {
+			t.Fatalf("buildMutual = %v with edges %x, want the shard-map error and no fragments", err, m.boundaries)
+		}
+	})
+}
+
+// A claimed chunk too large for one transaction is retried at a lower limit, where Java's
+// anyJumper fails the build (DIVERGENCES.md, "Mutual indexing has no anyJumper").
+func TestMutualTooLargeChunkRetriesAtALowerLimit(t *testing.T) {
+	t.Parallel()
+	db, backend := newShardMapDB(61)
+	ids := make([]int64, 20)
+	for i := range ids {
+		ids[i] = int64(i + 1)
+	}
+	oi := newSimMutualIndexer(t, db, "toolarge", priceIndexMetaData(t, nil), 10, ids)
+	m := newMutualIndexBuilder(oi)
+	// The claim commits; its first chunk fails.
+	backend.failAt, backend.failErr = backend.transactions+2, fdb.Error{Code: 2101}
+	n, more, err := oi.buildRangeWithRetries(context.Background(), m.buildMutual)
+	if err != nil || !more || n < 1 || n >= 10 {
+		t.Fatalf("buildRangeWithRetries = (%d, %t, %v), want a chunk below the limit of 10", n, more, err)
 	}
 }

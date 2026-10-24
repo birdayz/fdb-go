@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -18,8 +19,11 @@ func TestLessenWorkRetryWaits(t *testing.T) {
 
 	t.Run("each retry waits the backoff", func(t *testing.T) {
 		t.Parallel()
-		env := dst.NewSim(41)
-		db := NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(env)
+		newDB := func() *FDBDatabase {
+			env := dst.NewSim(41)
+			return NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(env)
+		}
+		db := newDB()
 		timer := NewStoreTimer()
 		db.SetTimer(timer)
 		oi := &OnlineIndexer{db: db, maxRetries: 5, throttle: newIndexingThrottle(100, 5, 0, 0)}
@@ -33,26 +37,32 @@ func TestLessenWorkRetryWaits(t *testing.T) {
 		if err != nil || attempts != 3 {
 			t.Fatalf("buildRangeWithRetries = %v after %d attempts, want success after 3", err, attempts)
 		}
-		if got := timer.GetCount(EventRetryDelay); got != 2 {
-			t.Fatalf("%d retry delays, want 2", got)
+		// The same seed draws the same two delays from a fresh exponential delay.
+		ref := newDB()
+		delay := newExponentialDelay(ref.InitialDelay(), ref.MaxDelay(), ref.Env())
+		want := delay.delay() + delay.delay()
+		if count, total := timer.GetCount(EventRetryDelay), timer.GetTimeNanos(EventRetryDelay); count != 2 || total != int64(want) || want == 0 {
+			t.Fatalf("%d retry delays totalling %v, want 2 totalling the exponential delay's %v", count, time.Duration(total), want)
 		}
 	})
 
-	t.Run("a cancelled context ends the wait", func(t *testing.T) {
+	t.Run("cancelling the context ends the wait", func(t *testing.T) {
 		t.Parallel()
-		env := dst.NewSim(43)
-		db := NewFDBDatabaseWithBackend(simfdb.New(env)) // no env: the delay is waited
+		db := NewFDBDatabaseWithBackend(simfdb.New(dst.NewSim(43))) // no env: the delay is waited
+		if err := db.SetRetryDelays(time.Minute, time.Minute); err != nil {
+			t.Fatal(err)
+		}
 		oi := &OnlineIndexer{db: db, maxRetries: 5, throttle: newIndexingThrottle(100, 5, 0, 0)}
 		ctx, cancel := context.WithCancel(context.Background())
-		attempts := 0
+		defer cancel()
+		start := time.Now()
 		_, _, err := oi.buildRangeWithRetries(ctx, func(context.Context) (int64, bool, error) {
-			attempts++
-			cancel()
+			time.AfterFunc(50*time.Millisecond, cancel)
 			return 10, true, tooLarge
 		})
 		var fdbErr fdb.Error
-		if attempts != 1 || !errors.Is(err, context.Canceled) || !errors.As(err, &fdbErr) || fdbErr.Code != 2101 {
-			t.Fatalf("buildRangeWithRetries = %v after %d attempts, want the cancellation and the last error after 1", err, attempts)
+		if !errors.Is(err, context.Canceled) || !errors.As(err, &fdbErr) || fdbErr.Code != 2101 || time.Since(start) > 2*time.Second {
+			t.Fatalf("buildRangeWithRetries = %v after %v, want the cancellation and the last error well within the minute's delay", err, time.Since(start))
 		}
 	})
 }
