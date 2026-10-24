@@ -45,8 +45,9 @@ the codebase (RFCs, CI workflows, code, tests) and the statuses below updated to
   stress is nightly by design).
 - **`[~]` (code landed, process remainder):** **P1.8** CI reproducibility — pinned + checksummed
   artifacts + hosted floor are in-tree, but RFC-108 is still **DRAFT** awaiting Torvalds + codex ACK.
-- **Still genuinely OPEN:** **P2.3** the six SQL-engine correctness gaps (query-engine, Graefe-gated,
-  several wire-sensitive), **P3.1** idiomatic-API pass (broad, low priority).
+- **Still genuinely OPEN:** **P2.3** the remaining SQL-engine correctness gaps (the row-count
+  item was not reproduced and is closed by RFC-273; query-engine, Graefe-gated, several
+  wire-sensitive), **P3.1** idiomatic-API pass (broad, low priority).
 - **Deferred by owner:** **P2.1** — `CHANGELOG.md`, `RELEASE.md`, and the stability statement are
   all done (RFC-131/132); **only the `v0.1.0` git tag** is intentionally on hold. Do not cut a
   release tag yet. *(Corrects the first pass, which mis-reported the CHANGELOG as missing.)*
@@ -728,11 +729,14 @@ Tenants remain the declared v1 non-goal (the only acknowledged libfdb_c scope bo
 
 ### [ ] P2.3 — Close known SQL-engine correctness gaps · L (query-engine, Graefe-gated)
 *(Verified 2026-06-24: all six still OPEN in TODO.md; no RFC ≤145 and no commit closes any.)*
-- **Row-count nondeterminism** — the 3-way arithmetic-join probe scenario is still **excluded
-  cross-engine** (`yamsql_cross_engine_conformance_test.go`, tracked under RFC-042); not yet proven
-  deterministic. **Treat as P0/P1 correctness** (a datastore returning different row counts across
-  runs, shelved by excluding the scenario instead of root-causing it — against the no-skips rule).
-  Note: not currently flagged P0/P1 in TODO.md itself — it sits under the RFC-042 follow-up.
+- [x] **Row-count nondeterminism — not reproduced; closed by RFC-273.** The excluded
+  `join_optimization_probes` scenario had six two-table joins, and its cross-engine twin pinned Eve,
+  who does not qualify (95 > 3 * 50 is false; the yamsql twin dropped her in RFC-180). Twenty
+  `yamsql_test` runs, five cross-engine runs, eleven plannings of every multi-choice corpus plan
+  (`TestRepeatedPlanningIsStable`), three-way arithmetic variants and two forced alternative plan
+  families (`join_optimization_probes_scan_only` / `_nested_loop`) all returned one row set. The
+  scenario is back in the cross-engine gate, with ORDER BYs Java cannot plan (no in-memory sort)
+  asserted unordered.
 - **INSERT…SELECT qualified-agg NULL** (TODO.md ~1037) — `wrapBareAggregateInsertSource` still
   skips qualified-operand sources.
 - **0-row coercion** (TODO.md ~1040, RFC-083 follow-up) — residual cases rely on the runtime converter.
@@ -813,4 +817,4 @@ handler, slog, online-index progress events, `PlanGenerationLogger`). Linked fro
 8. **P0.3-F** (executor + e2e fuzz net).
 9. **In parallel with P0.3:** **P1.1** (`-race` in CI), **P1.5** (govulncheck), **P1.7 + P2.1** (docs + release).
 10. **P1.2 + P1.3** (observability); **P1.9** (resource limits); **P1.8** (CI reproducibility).
-11. **P2.3** (SQL correctness — incl. promoted nondeterminism, Graefe-gated); **P2.2** (libfdb_c — mandatory for write path).
+11. **P2.3** (SQL correctness, Graefe-gated; its promoted row-count nondeterminism was not reproduced, RFC-273); **P2.2** (libfdb_c — mandatory for write path).
