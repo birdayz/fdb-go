@@ -537,6 +537,7 @@ go_test(
         "conformance_suite_test.go",
         "container_test.go",
         "correlated_having_exists_java_probe_test.go",
+        "doc_claims_java_probe_test.go",
         "dotted_and_recursive_seed_java_probe_test.go",
         "duplicate_alias_java_probe_test.go",
         "duplicate_groupby_java_probe_test.go",

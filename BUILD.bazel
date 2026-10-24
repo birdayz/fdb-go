@@ -33,6 +33,9 @@ exports_files([
     # TestSQLCoverageUpToDate / TestAnsiLedger* drift guards in the same target.
     "SQL_COVERAGE.md",
     "SQL_ANSI_CONFORMANCE.md",
+    # Hand-written matrix; its Java corpus block is guarded by
+    # TestSQLConformanceStatesTheLedger in //pkg/relational/conformance/javacorpus:javacorpus_test.
+    "SQL_CONFORMANCE.md",
 ])
 
 # gazelle:prefix fdb.dev
