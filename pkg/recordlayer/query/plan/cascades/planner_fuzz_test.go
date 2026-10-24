@@ -3,7 +3,6 @@ package cascades
 import (
 	"errors"
 	"fmt"
-	"regexp"
 	"strings"
 	"testing"
 
@@ -64,12 +63,8 @@ func plannerFuzzSameResultType(left, right expressions.Quantifier) bool {
 	return leftType.Equals(rightType)
 }
 
-// FuzzPlanner_Determinism pins that the task-stack Planner produces the same
-// result on identical inputs: two fresh Planners over two separately built
-// copies of the same tree must explore the same memo (every reachable
-// Reference's members, in order) and choose the same physical plan. Both are
-// compared as text with generated aliases renumbered, so a Go map's iteration
-// order or a pointer address that leaks into either one fails the target.
+// FuzzPlanner_Determinism pins that two fresh Planners over two copies of the
+// same tree explore the same memo (members in order) and choose the same plan.
 //
 // Note: the Planner is NOT rule-order-independent — the Memo's
 // cross-Reference sharing makes earlier rules' yields visible to
@@ -109,7 +104,7 @@ func FuzzPlanner_Determinism(f *testing.F) {
 			if err != nil {
 				return "<error: " + err.Error() + ">"
 			}
-			return normalizeGeneratedAliases(ExplainPhysicalPlan(best))
+			return canonicalPipelineExplain(ExplainPhysicalPlan(best))
 		}
 		if a, b := plan(), plan(); a != b {
 			t.Fatalf("two plannings of the same tree chose different plans:\n  A: %s\n  B: %s", a, b)
@@ -162,25 +157,7 @@ func renderMemoForDeterminism(root *expressions.Reference) string {
 			out.WriteByte('\n')
 		}
 	}
-	return normalizeGeneratedAliases(out.String())
-}
-
-var generatedAliasPattern = regexp.MustCompile(`([A-Za-z_]*)\$([0-9]+)`)
-
-// normalizeGeneratedAliases renumbers generated aliases (q$123) densely in
-// order of first appearance, so two runs that drew different counter values
-// for the same structure render alike.
-func normalizeGeneratedAliases(s string) string {
-	seen := map[string]int{}
-	return generatedAliasPattern.ReplaceAllStringFunc(s, func(m string) string {
-		parts := generatedAliasPattern.FindStringSubmatch(m)
-		n, ok := seen[parts[2]]
-		if !ok {
-			n = len(seen)
-			seen[parts[2]] = n
-		}
-		return fmt.Sprintf("%s$%d", parts[1], n)
-	})
+	return canonicalPipelineExplain(out.String())
 }
 
 // FuzzPlanner_Idempotence pins that exploration is idempotent: a

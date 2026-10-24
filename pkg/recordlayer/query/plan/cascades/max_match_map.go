@@ -380,10 +380,7 @@ func recurseQueryResultValue(
 
 	// bestMatches tracks the best result we've found so far. When
 	// no parent is matching we can prune aggressively (local decisions
-	// only); otherwise we must keep all variants. Both keep Java's
-	// BestMatches order: pruning keeps the first variant of the minimum
-	// depth, and the kept variants iterate in insertion order (Java's
-	// LinkedHashMap), which the parent's cross product then follows.
+	// only); otherwise we must keep all variants, in insertion order.
 	isPruning := !anyParentsMatching
 	var bestValue values.Value
 	var bestResult matchResult
@@ -405,7 +402,7 @@ func recurseQueryResultValue(
 		}
 	}
 
-	toResultMap := func() matchResults {
+	toResults := func() matchResults {
 		if bestMaxDepth == -1 {
 			return matchResults{{value: currentQueryValue, result: notMatched()}}
 		}
@@ -464,7 +461,7 @@ func recurseQueryResultValue(
 			}
 
 			// Recurse into each child, collecting per-child results.
-			childrenResults := make([][]childResultEntry, len(children))
+			childrenResults := make([][]matchResultEntry, len(children))
 			for i, child := range children {
 				childrenResults[i] = recurseQueryResultValue(
 					child, candidateValue, rangedOverAliases,
@@ -476,7 +473,7 @@ func recurseQueryResultValue(
 			// Cross-product of all children's results: for each
 			// combination, reconstruct the parent with the variant
 			// children and compute the parent-level result.
-			crossProductChildren(childrenResults, func(combo []childResultEntry) {
+			crossProductChildren(childrenResults, func(combo []matchResultEntry) {
 				areAllSame := true
 				childValues := make([]values.Value, len(children))
 				for i, entry := range combo {
@@ -495,7 +492,7 @@ func recurseQueryResultValue(
 
 				// Build the children result entries in the format
 				// computeForCurrent expects.
-				childEntries := make([]childResultEntry, len(combo))
+				childEntries := make([]matchResultEntry, len(combo))
 				copy(childEntries, combo)
 
 				result := computeForCurrent(maxDepthBound, resultQueryValue,
@@ -522,28 +519,25 @@ func recurseQueryResultValue(
 		}
 	}
 
-	resultMap := toResultMap()
+	results := toResults()
 
 	// Memoize if appropriate.
 	if !anyParentsMatching {
-		memoMap[currentQueryValue] = resultMap
+		memoMap[currentQueryValue] = results
 	}
 
-	return resultMap
+	return results
 }
 
-// childResultEntry pairs a Value variant with its matchResult, used
-// when iterating over children's cross-product.
-type childResultEntry struct {
+// matchResultEntry pairs a Value variant with its matchResult.
+type matchResultEntry struct {
 	value  values.Value
 	result matchResult
 }
 
-// matchResults maps Value variants to their matchResults in insertion
-// order, Java's LinkedHashMap<Value, MatchResult>. Java's Value.equals is
-// semanticEquals, so putting a structurally equal variant replaces the
-// stored result and keeps the first variant and its position.
-type matchResults []childResultEntry
+// matchResults is Java's LinkedHashMap<Value, MatchResult>, keyed by
+// semanticEquals: a structurally equal put replaces the result in place.
+type matchResults []matchResultEntry
 
 func (m matchResults) put(v values.Value, r matchResult) matchResults {
 	for i := range m {
@@ -552,7 +546,7 @@ func (m matchResults) put(v values.Value, r matchResult) matchResults {
 			return m
 		}
 	}
-	return append(m, childResultEntry{value: v, result: r})
+	return append(m, matchResultEntry{value: v, result: r})
 }
 
 func (m matchResults) get(v values.Value) (matchResult, bool) {
@@ -566,14 +560,14 @@ func (m matchResults) get(v values.Value) (matchResult, bool) {
 
 // crossProductChildren iterates over the Cartesian product of the
 // per-child result lists and calls fn for each combination.
-func crossProductChildren(childrenResults [][]childResultEntry, fn func([]childResultEntry)) {
+func crossProductChildren(childrenResults [][]matchResultEntry, fn func([]matchResultEntry)) {
 	if len(childrenResults) == 0 {
 		fn(nil)
 		return
 	}
 
 	// Build lists for CrossProduct.
-	lists := make([][]childResultEntry, len(childrenResults))
+	lists := make([][]matchResultEntry, len(childrenResults))
 	for i, entries := range childrenResults {
 		if len(entries) == 0 {
 			return // empty list → no cross product
@@ -602,7 +596,7 @@ func computeForCurrent(
 	resultQueryValue values.Value,
 	candidateValue values.Value,
 	rangedOverAliases map[values.CorrelationIdentifier]struct{},
-	childEntries []childResultEntry,
+	childEntries []matchResultEntry,
 	ve ValueEquivalence,
 ) matchResult {
 	// Try direct match at this level first.

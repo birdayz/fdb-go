@@ -32,7 +32,8 @@
 //
 // NO FDB REQUIRED. Planning is metadata-only: the corpus scenario's
 // `schema_template` is compiled to in-memory RecordMetaData and the query is
-// planned against it. `setup:` INSERTs are not replayed, so table statistics
+// planned against it under the scenario's `connection_options`, as the corpus
+// runner's connection is. `setup:` INSERTs are not replayed, so table statistics
 // are the planner defaults rather than the live cardinalities the driver
 // would fetch from FDB. That is a deliberate trade: the baseline is a
 // REGRESSION key (same input → same output → any delta is a real planner
@@ -56,6 +57,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
+	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/conformance/yamsql"
 	"fdb.dev/pkg/relational/core/embedded"
 )
@@ -200,6 +202,10 @@ func corpusJobs(dir string, bound bool) ([]job, Stats, error) {
 			// dropping it would shrink the baseline and read as "no change".
 			return nil, Stats{}, fmt.Errorf("load %s: %w", base, loadErr)
 		}
+		opts, optsErr := s.Options()
+		if optsErr != nil {
+			return nil, Stats{}, fmt.Errorf("%s: %w", base, optsErr)
+		}
 		for i, t := range s.Tests {
 			args, argErr := StatementArgs(&s.Tests[i])
 			if argErr != nil {
@@ -213,12 +219,12 @@ func corpusJobs(dir string, bound bool) ([]job, Stats, error) {
 			switch {
 			case isDML(t.Query):
 				st.DML++
-				plan = planDML(args)
+				plan = planDML(args, opts)
 			case yamsql.IsQuery(t.Query):
 				st.Queries++
-				plan = planSelect(args)
+				plan = planSelect(args, opts)
 				if bound {
-					plan = planSelectBound(args)
+					plan = planSelectBound(args, opts)
 				}
 			default:
 				st.NonQuery++
@@ -338,26 +344,26 @@ func StatementArgs(t *yamsql.Test) ([]driver.NamedValue, error) {
 }
 
 // planSelect routes a SELECT/WITH/VALUES statement through the SELECT harness.
-func planSelect(args []driver.NamedValue) planFn {
+func planSelect(args []driver.NamedValue, opts *api.Options) planFn {
 	return func(sql, schemaTemplate string, reach *cascades.ReachabilityCollector) (plans.RecordQueryPlan, error) {
 		// Statistics are nil: planner defaults (see the package doc — the
 		// baseline is a regression key, not a live-cardinality prediction).
-		return embedded.PlanPhysicalForTestWithArgs(sql, schemaTemplate, args, nil, reach)
+		return embedded.PlanPhysicalForTestWithArgs(sql, schemaTemplate, args, opts, nil, reach)
 	}
 }
 
 // planDML routes a DELETE/UPDATE statement through the DML harness — the same
 // no-FDB Cascades pipeline, entered via the DML logical builders and the DML
 // planning rule set (see embedded.PlanPhysicalDMLForTest).
-func planSelectBound(args []driver.NamedValue) planFn {
+func planSelectBound(args []driver.NamedValue, opts *api.Options) planFn {
 	return func(sql, schemaTemplate string, _ *cascades.ReachabilityCollector) (plans.RecordQueryPlan, error) {
-		return embedded.PlanPhysicalForTestWithBoundLiterals(sql, schemaTemplate, args, nil)
+		return embedded.PlanPhysicalForTestWithBoundLiterals(sql, schemaTemplate, args, opts, nil)
 	}
 }
 
-func planDML(args []driver.NamedValue) planFn {
+func planDML(args []driver.NamedValue, opts *api.Options) planFn {
 	return func(sql, schemaTemplate string, reach *cascades.ReachabilityCollector) (plans.RecordQueryPlan, error) {
-		return embedded.PlanPhysicalDMLForTestWithArgs(sql, schemaTemplate, args, nil, reach)
+		return embedded.PlanPhysicalDMLForTestWithArgs(sql, schemaTemplate, args, opts, nil, reach)
 	}
 }
 

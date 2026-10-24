@@ -76,13 +76,9 @@ func TestBaselineIsDeterministic(t *testing.T) {
 	}
 }
 
-// TestRepeatedPlanningIsStable plans every corpus statement whose plan joins,
-// unions, intersects, iterates an IN list or reads an index ten more times and
-// requires the same EXPLAIN every time. These are the plans built from index
-// matches and enumerated join orders, where a tie decided by a Go map's
-// iteration order would pick a different winner from one planning to the next.
-// TestBaselineIsDeterministic compares two passes; ten catch a coin flip that
-// two passes miss a quarter of the time.
+// TestRepeatedPlanningIsStable plans each corpus statement with a join, union,
+// intersection, IN iteration or index read ten more times and requires one
+// EXPLAIN: the plans where an order-dependent tie would pick another winner.
 func TestRepeatedPlanningIsStable(t *testing.T) {
 	t.Parallel()
 
@@ -93,8 +89,6 @@ func TestRepeatedPlanningIsStable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("replan corpus: %v", err)
 	}
-	// Population check: the filter must select the corpus's multi-choice plans
-	// (1,217 at the time of writing), not an empty or token set.
 	if kept < 1000 {
 		t.Fatalf("replanned %d statements, want at least 1000: the operator filter or the corpus is broken", kept)
 	}

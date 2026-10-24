@@ -1964,12 +1964,8 @@ func TestDecorrelateValuesRule_PushIntoExpressionsWithVariations(t *testing.T) {
 	}
 }
 
-// TestDecorrelateValuesRule_PushedQuantifierOrderFollowsTheSelect pins the
-// order in which pushed values boxes join a lower expression: the parent
-// select's quantifier order, as Java's insertion-ordered qunsToPushDown gives.
-// Four boxes feed one lower select (selectWithQuantifiersPushed) and one lower
-// DISTINCT (pushOnTopOfQuantifier). Each firing builds its own state, so a
-// map-ordered push shows up as a permuted quantifier list within a few firings.
+// TestDecorrelateValuesRule_PushedQuantifierOrderFollowsTheSelect: values boxes
+// pushed into a lower select and under a DISTINCT keep the parent's order.
 func TestDecorrelateValuesRule_PushedQuantifierOrderFollowsTheSelect(t *testing.T) {
 	t.Parallel()
 

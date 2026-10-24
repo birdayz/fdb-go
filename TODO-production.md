@@ -734,7 +734,8 @@ Tenants remain the declared v1 non-goal (the only acknowledged libfdb_c scope bo
   who does not qualify (95 > 3 * 50 is false; the yamsql twin dropped her in RFC-180). Twenty
   `yamsql_test` runs, five cross-engine runs, eleven plannings of every multi-choice corpus plan
   (`TestRepeatedPlanningIsStable`), three-way arithmetic variants and two forced alternative plan
-  families (`join_optimization_probes_scan_only` / `_nested_loop`) all returned one row set. The
+  families (`join_optimization_probes_scan_only` for every probe, `_nested_loop` for the two-way
+  joins) all returned one row set. The
   scenario is back in the cross-engine gate, with ORDER BYs Java cannot plan (no in-memory sort)
   asserted unordered.
 - **INSERT…SELECT qualified-agg NULL** (TODO.md ~1037) — `wrapBareAggregateInsertSource` still

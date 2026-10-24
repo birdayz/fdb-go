@@ -129,9 +129,7 @@ func (r *DecorrelateValuesRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
-	// Build the TranslationMap and the quantifiers to push down, in quantifier
-	// order: Java's ImmutableMap iterates in insertion order, and the pushed
-	// selects take their quantifiers in that order.
+	// Quantifiers to push down, in quantifier order as Java's ImmutableMap keeps them.
 	tmBuilder := NewTranslationMapBuilder()
 	valuesBoxIdxSet := map[int]bool{}
 	qunsToPushDown := make([]expressions.Quantifier, 0, len(valuesBoxes))

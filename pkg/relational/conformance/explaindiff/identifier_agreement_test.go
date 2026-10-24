@@ -297,9 +297,9 @@ func agreementPlanText(which agreementPlanner, sql, schemaTemplate string, args 
 	)
 	switch which {
 	case agreementDML:
-		p, err = embedded.PlanPhysicalDMLForTestWithArgs(sql, schemaTemplate, args, nil, nil)
+		p, err = embedded.PlanPhysicalDMLForTestWithArgs(sql, schemaTemplate, args, nil, nil, nil)
 	default:
-		p, err = embedded.PlanPhysicalForTestWithArgs(sql, schemaTemplate, args, nil, nil)
+		p, err = embedded.PlanPhysicalForTestWithArgs(sql, schemaTemplate, args, nil, nil, nil)
 	}
 	if err != nil {
 		return agreementErrMarker + " " + collapseSQL(err.Error()) + ">"

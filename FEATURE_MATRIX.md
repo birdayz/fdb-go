@@ -23,12 +23,12 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**409 scenarios · 3485 query/assertion cases** across 18 feature areas — 3065 supported, 101 unsupported-feature pins, 319 error-path pins.
+**409 scenarios · 3480 query/assertion cases** across 18 feature areas — 3060 supported, 101 unsupported-feature pins, 319 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
 | Aggregates & GROUP BY | 63 | 431 | 395 | 18 | 18 |
-| Joins | 68 | 340 | 323 | 2 | 15 |
+| Joins | 68 | 335 | 318 | 2 | 15 |
 | Subqueries (EXISTS / IN / scalar) | 47 | 323 | 270 | 29 | 24 |
 | CTEs | 15 | 202 | 161 | 4 | 37 |
 | Set operations (UNION / INTERSECT / EXCEPT) | 14 | 78 | 67 | 5 | 6 |
@@ -45,7 +45,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
 | Other | 48 | 488 | 421 | 9 | 58 |
-| **Total** | **409** | **3485** | **3065** | **101** | **319** |
+| **Total** | **409** | **3480** | **3060** | **101** | **319** |
 
 ## Aggregates & GROUP BY
 
@@ -159,7 +159,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `join_null_key` | 3 | 3 | 0 | 0 | SQL §7.6: NULL = NULL evaluates to UNKNOWN, so rows with NULL in a |
 | `join_on_syntax` | 6 | 6 | 0 | 0 | JOIN ... |
 | `join_optimization_probes` | 11 | 11 | 0 | 0 | — |
-| `join_optimization_probes_nested_loop` | 11 | 11 | 0 | 0 | Join probes with predicate push-down disabled: nested-loop joins. |
+| `join_optimization_probes_nested_loop` | 6 | 6 | 0 | 0 | Join probes with predicate push-down disabled: nested-loop joins. |
 | `join_optimization_probes_scan_only` | 11 | 11 | 0 | 0 | Join probes with index matching disabled: every leg is a full scan. |
 | `join_order_expression` | 3 | 3 | 0 | 0 | ORDER BY on join results with expressions |
 | `join_pagination` | 7 | 7 | 0 | 0 | JOIN with paginated results (LIMIT+OFFSET) |

@@ -1,6 +1,6 @@
 # Join probes with predicate push-down disabled: nested-loop joins.
-# join_optimization_probes.yaml's queries and rows; the two-way joins evaluate
-# every predicate in a NestedLoopJoin over the unfiltered legs.
+# join_optimization_probes.yaml's two-way queries and rows, each evaluating its
+# predicates in a NestedLoopJoin; the three-way probes plan as by default here.
 name: join_optimization_probes_nested_loop
 schema_template: |
   CREATE TABLE dept (did BIGINT, dname STRING, PRIMARY KEY (did))
@@ -69,40 +69,3 @@ tests:
       - ['eng', 2, 100]
       - ['hr', 1, 95]
       - ['sales', 2, 110]
-  - query: |-
-      SELECT a.ename, b.ename FROM emp AS a, emp AS b, dept AS d
-      WHERE a.did = d.did AND b.did = d.did AND a.salary - b.salary > d.did * 5
-      ORDER BY a.ename
-    plan_contains: "FlatMap("
-    rows:
-      - ['Alice', 'Bob']
-      - ['Diana', 'Charlie']
-  - query: |-
-      SELECT a.ename, b.ename FROM emp AS a, emp AS b, dept AS d
-      WHERE a.did = d.did AND b.did = d.did AND a.salary > b.salary + (d.did * 5)
-      ORDER BY a.ename
-    plan_contains: "FlatMap("
-    rows:
-      - ['Alice', 'Bob']
-      - ['Diana', 'Charlie']
-  - query: |-
-      SELECT e.ename, d.dname, m.ename FROM emp AS e, dept AS d, emp AS m
-      WHERE e.did = d.did AND m.did = d.did AND m.eid < e.eid
-        AND e.salary - m.salary > d.did * 10
-      ORDER BY e.ename
-    plan_contains: "FlatMap("
-    rows:
-      - ['Diana', 'sales', 'Charlie']
-  - query: |-
-      SELECT a.ename, b.ename FROM emp AS a, emp AS b, dept AS d
-      WHERE a.did = d.did AND b.did = d.did AND a.eid < b.eid
-        AND a.salary + b.salary > d.did * 95
-      ORDER BY a.ename
-    plan_contains: "FlatMap("
-    rows:
-      - ['Alice', 'Bob']
-  - query: |-
-      SELECT a.ename, b.ename FROM emp AS a, emp AS b, dept AS d
-      WHERE a.did = d.did AND b.did = d.did AND a.salary > b.salary + d.did * 5
-    plan_contains: "FlatMap("
-    rows: []

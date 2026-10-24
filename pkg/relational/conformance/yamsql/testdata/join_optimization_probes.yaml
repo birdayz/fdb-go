@@ -103,12 +103,9 @@ tests:
       - ['hr', 1, 95]
       - ['sales', 2, 110]
 
-  # Three-way joins with a cross-leg arithmetic predicate, the shape once
-  # suspected of returning varying row counts. Each is planned and run
-  # repeatedly (TestYamsqlConformance, the cross-engine gate, explaindiff)
-  # with one result. `+ - * /` fold flat and left-associative in both
-  # grammars, so `b.salary + d.did * 5` is `(b.salary + d.did) * 5`: the
-  # predicates are written so that does not matter, plus one parenthesized.
+  # Three-way joins with a cross-leg arithmetic predicate (RFC-273). `+ - * /`
+  # fold flat and left-associative in both grammars, so `b.salary + d.did * 5`
+  # is `(b.salary + d.did) * 5`: these predicates do not depend on it.
   - query: |-
       SELECT a.ename, b.ename FROM emp AS a, emp AS b, dept AS d
       WHERE a.did = d.did AND b.did = d.did AND a.salary - b.salary > d.did * 5

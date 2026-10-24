@@ -8,6 +8,7 @@ go_library(
     deps = [
         "//pkg/recordlayer/query/plan/cascades",
         "//pkg/recordlayer/query/plan/plans",
+        "//pkg/relational/api",
         "//pkg/relational/conformance/yamsql",
         "//pkg/relational/core/embedded",
     ],

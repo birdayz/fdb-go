@@ -30,8 +30,9 @@ PR.
    `UnableToPlanException` (0AF00): it has no in-memory sort and none of the
    ORDER BYs is index-provided. No run varied: `yamsql_test` x20, the
    cross-engine scenario x5 (Java and Go agree), three-way arithmetic variants,
-   and the same queries under two disabled-rule sets that force nested-loop joins,
-   full scans and other join orders. Writing the variants also showed that both
+   and the same queries under two disabled-rule sets: one forces full scans and
+   other join orders for every probe, the other nested-loop joins for the
+   two-way probes (the three-way plans do not change under it). Writing the variants also showed that both
    grammars fold `+ - * /` flat and left-associatively: `b.salary + d.did * 5`
    is `(b.salary + d.did) * 5`, which returns no rows in either engine. This is
    the documented Java quirk, not a Go bug.
@@ -67,7 +68,8 @@ PR.
    one index-ordered ORDER BY. Add the three-way probes and the flat-precedence
    case to the yamsql twin, and pin two forced-plan twins
    (`join_optimization_probes_scan_only`, `_nested_loop`) whose plan assertions
-   prove the alternative plans run. In TODO-production.md, close the P2.3
+   prove the alternative plans run. explaindiff plans each scenario under its
+   `connection_options`, so the golden and the replanning test see those plans. In TODO-production.md, close the P2.3
    row-count bullet and update the open-gap count in the summary and the
    priority list's "promoted nondeterminism". The exclusion comment was the
    only RFC-042 tracking; it goes with the re-inclusion.

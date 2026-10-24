@@ -945,12 +945,9 @@ func TestComputeMaxMatchMap_NewMaxMatchMap_NilInputs(t *testing.T) {
 	}
 }
 
-// TestComputeMaxMatchMap_TiedVariantsKeepTheFirstFound pins Java's BestMatches
-// order. The child q has two variants of depth 0 (q itself and its expansion
-// RCV(a: q.a, b: q.b), both reachable in the candidate) because the parent's
-// matcher sees RCV(f: w). Both parent combinations then tie at depth 1, and the
-// pruning parent keeps the first: Java's LinkedHashMap holds q before its
-// expansion, so the match is the unexpanded query with q -> q.
+// TestComputeMaxMatchMap_TiedVariantsKeepTheFirstFound: q and its expansion
+// both match at depth 0, so the parent's combinations tie at depth 1 and Java
+// keeps the first found, the unexpanded query with q -> q.
 func TestComputeMaxMatchMap_TiedVariantsKeepTheFirstFound(t *testing.T) {
 	t.Parallel()
 
@@ -978,8 +975,6 @@ func TestComputeMaxMatchMap_TiedVariantsKeepTheFirstFound(t *testing.T) {
 	)
 	rangedOver := map[values.CorrelationIdentifier]struct{}{qAlias: {}}
 
-	// Each computation iterates its own state, so an order taken from a Go map
-	// picks the expanded variant about half the time.
 	for run := range 64 {
 		mmm := ComputeMaxMatchMap(query, candidate, rangedOver)
 		if got := mmm.GetQueryValue(); got != query {
@@ -993,11 +988,8 @@ func TestComputeMaxMatchMap_TiedVariantsKeepTheFirstFound(t *testing.T) {
 	}
 }
 
-// TestMatchResults_PutKeysByStructuralEquality pins Java's LinkedHashMap keyed
-// by Value.equals (semanticEquals): a structurally equal variant built as a
-// separate object replaces the stored result in place, so the first-minimum
-// pick sees [A:0, B:0] and returns A, where identity keys would leave
-// [A:1, B:0, A':0] and return B.
+// TestMatchResults_PutKeysByStructuralEquality: a structurally equal variant
+// replaces the stored result in place, as Java's map keyed by semanticEquals.
 func TestMatchResults_PutKeysByStructuralEquality(t *testing.T) {
 	t.Parallel()
 
